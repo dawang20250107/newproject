@@ -1,0 +1,332 @@
+/* ===== Reset & Base ===== */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --accent: #4f6ef7;
+  --bg-light: #f5f6fa;
+  --bg-dark: #1a1d2e;
+  --text-light: #2c2f3f;
+  --text-muted: #6b7280;
+  --radius: 12px;
+  --transition: 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+  --controls-h: 56px;
+}
+
+html, body {
+  height: 100%;
+  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: #111;
+  color: var(--text-light);
+  overflow: hidden;
+}
+
+/* ===== Slideshow container ===== */
+.slideshow {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ===== Slides wrapper ===== */
+.slides-wrapper {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ===== Individual slide ===== */
+.slide {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 80px;
+  background: var(--bg-light);
+
+  /* hidden by default */
+  opacity: 0;
+  transform: translateX(60px);
+  pointer-events: none;
+  transition: opacity var(--transition), transform var(--transition);
+}
+
+.slide.active {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+/* slide leaving to the left */
+.slide.leave-left {
+  opacity: 0;
+  transform: translateX(-60px);
+  transition: opacity var(--transition), transform var(--transition);
+}
+
+/* ===== Slide variants ===== */
+.slide--cover {
+  background: linear-gradient(135deg, var(--accent) 0%, #7c3aed 100%);
+  color: #fff;
+}
+
+.slide--cover h1 {
+  font-size: clamp(2.5rem, 6vw, 4.5rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.slide--cover .subtitle {
+  margin-top: 1rem;
+  font-size: clamp(1rem, 2vw, 1.4rem);
+  opacity: 0.85;
+}
+
+.slide--dark {
+  background: var(--bg-dark);
+  color: #e5e7eb;
+}
+
+.slide--end {
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+}
+
+/* ===== Slide content ===== */
+.slide__content {
+  max-width: 900px;
+  width: 100%;
+}
+
+h2 {
+  font-size: clamp(1.8rem, 3.5vw, 2.8rem);
+  font-weight: 700;
+  margin-bottom: 1.5rem;
+  color: var(--accent);
+}
+
+.slide--dark h2 {
+  color: #a5b4fc;
+}
+
+p {
+  font-size: clamp(1rem, 1.8vw, 1.25rem);
+  line-height: 1.75;
+  color: var(--text-muted);
+}
+
+.slide--cover p,
+.slide--dark p {
+  color: rgba(255,255,255,0.75);
+}
+
+ul {
+  list-style: none;
+  margin-top: 0.5rem;
+}
+
+ul li {
+  font-size: clamp(1rem, 1.8vw, 1.2rem);
+  line-height: 1.8;
+  padding-left: 1.5rem;
+  position: relative;
+  color: var(--text-muted);
+}
+
+ul li::before {
+  content: "▸";
+  position: absolute;
+  left: 0;
+  color: var(--accent);
+}
+
+blockquote {
+  margin-top: 1.5rem;
+  padding: 1rem 1.5rem;
+  border-left: 4px solid var(--accent);
+  background: rgba(79, 110, 247, 0.07);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  font-style: italic;
+  color: var(--text-muted);
+  font-size: clamp(0.95rem, 1.6vw, 1.15rem);
+}
+
+strong { color: var(--accent); }
+
+/* ===== Cards grid ===== */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.card {
+  padding: 1.5rem;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: var(--radius);
+  transition: transform 0.2s, background 0.2s;
+}
+
+.card:hover {
+  transform: translateY(-4px);
+  background: rgba(255,255,255,0.1);
+}
+
+.card h3 {
+  font-size: 1.1rem;
+  margin-bottom: 0.5rem;
+  color: #a5b4fc;
+}
+
+.card p {
+  font-size: 0.9rem;
+  color: rgba(255,255,255,0.6);
+}
+
+/* ===== Chart placeholder ===== */
+.chart-placeholder {
+  margin-top: 1rem;
+  height: 260px;
+  border: 2px dashed #d1d5db;
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  color: #9ca3af;
+}
+
+.chart-placeholder code {
+  background: #f3f4f6;
+  padding: 0.3rem 0.8rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: var(--accent);
+}
+
+/* ===== Controls bar ===== */
+.controls {
+  height: var(--controls-h);
+  background: rgba(15, 15, 20, 0.95);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+  flex-shrink: 0;
+}
+
+.btn-nav {
+  background: none;
+  border: 1px solid rgba(255,255,255,0.15);
+  color: #e5e7eb;
+  font-size: 1.1rem;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.btn-nav:hover:not(:disabled) {
+  background: rgba(255,255,255,0.1);
+  border-color: rgba(255,255,255,0.3);
+}
+
+.btn-nav:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* ===== Progress bar ===== */
+.progress-wrap {
+  flex: 1;
+  height: 4px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+  width: 0%;
+}
+
+/* ===== Page counter ===== */
+.page-counter {
+  color: rgba(255,255,255,0.5);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 44px;
+  text-align: center;
+}
+
+/* ===== Fullscreen button ===== */
+.btn-fullscreen {
+  background: none;
+  border: 1px solid rgba(255,255,255,0.15);
+  color: #e5e7eb;
+  font-size: 1rem;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.btn-fullscreen:hover {
+  background: rgba(255,255,255,0.1);
+}
+
+/* ===== Fullscreen: hide controls bar ===== */
+:fullscreen .controls,
+:-webkit-full-screen .controls {
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+:fullscreen:hover .controls,
+:-webkit-full-screen:hover .controls {
+  opacity: 1;
+}
+
+/* ===== Keyboard hint ===== */
+.key-hint {
+  position: fixed;
+  bottom: 80px;
+  right: 24px;
+  background: rgba(0,0,0,0.6);
+  color: #9ca3af;
+  font-size: 0.72rem;
+  padding: 6px 12px;
+  border-radius: 6px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s;
+}
+
+.key-hint.visible {
+  opacity: 1;
+}
