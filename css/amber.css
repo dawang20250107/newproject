@@ -1,0 +1,16 @@
+/* ── 暖沙金 · Warm Amber ── */
+:root {
+  --bg:                  #FAF7F0;
+  --bg-cover:            #1C0E00;
+  --bg-divider:          #2C1800;
+  --bg-quote:            #F4EDE0;
+  --surface:             #EFE6D4;
+  --primary:             #7A4E0A;
+  --accent:              #C09020;
+  --text:                #1C0E00;
+  --text-muted:          #6A5030;
+  --text-on-cover:       #FAF0DC;
+  --text-on-cover-muted: rgba(250, 240, 220, 0.58);
+  --border:              rgba(122, 78, 10, 0.10);
+  --divider-num-color:   rgba(192, 144, 32, 0.18);
+}

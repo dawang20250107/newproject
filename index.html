@@ -3,97 +3,253 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>幻灯片演示</title>
-  <link rel="stylesheet" href="style.css">
+  <title>幻灯片母版库</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      min-height: 100%;
+      font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+                   system-ui, -apple-system, sans-serif;
+      background: #0c0c0c;
+      color: #e8e8e8;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .page {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 24px;
+      gap: 48px;
+    }
+
+    header { text-align: center; }
+
+    header h1 {
+      font-size: clamp(1.6rem, 4vw, 2.4rem);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: #ffffff;
+      margin-bottom: 0.5rem;
+    }
+
+    header p {
+      font-size: 0.9rem;
+      color: rgba(255,255,255,0.38);
+      letter-spacing: 0.04em;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1.5rem;
+      width: 100%;
+      max-width: 980px;
+    }
+
+    .card {
+      background: #181818;
+      border: 1px solid rgba(255,255,255,0.07);
+      border-radius: 14px;
+      overflow: hidden;
+      text-decoration: none;
+      color: inherit;
+      transition: transform 0.22s cubic-bezier(0.4,0,0.2,1),
+                  border-color 0.22s, box-shadow 0.22s;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .card:hover {
+      transform: translateY(-5px);
+      border-color: rgba(255,255,255,0.15);
+      box-shadow: 0 16px 40px rgba(0,0,0,0.5);
+    }
+
+    .card__preview {
+      height: 160px;
+      display: flex;
+      align-items: flex-end;
+      padding: 20px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card__preview::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(to top, rgba(0,0,0,0.35) 0%, transparent 60%);
+    }
+
+    /* Navy preview */
+    .card--navy .card__preview { background: #002B5C; }
+    .card--navy .preview__line { background: #C8A951; }
+
+    /* Amber preview */
+    .card--amber .card__preview { background: #1C0E00; }
+    .card--amber .preview__line { background: #C09020; }
+
+    /* Sage preview */
+    .card--sage .card__preview { background: #202820; }
+    .card--sage .preview__line { background: #7A9E7D; }
+
+    /* Mono preview */
+    .card--mono .card__preview { background: #0C0C0C; }
+    .card--mono .preview__line { background: rgba(255,255,255,0.5); }
+
+    .preview__text {
+      position: relative;
+      z-index: 1;
+    }
+
+    .preview__tag {
+      font-size: 0.58rem;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.5);
+      margin-bottom: 0.4rem;
+    }
+
+    .preview__title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1.2;
+    }
+
+    .preview__line {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      width: 36px;
+      height: 2px;
+      border-radius: 1px;
+      z-index: 1;
+    }
+
+    .card__body {
+      padding: 1.25rem 1.4rem 1.4rem;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .card__name {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #ffffff;
+      letter-spacing: -0.01em;
+    }
+
+    .card__desc {
+      font-size: 0.8rem;
+      color: rgba(255,255,255,0.42);
+      line-height: 1.55;
+      flex: 1;
+    }
+
+    .card__link {
+      margin-top: 1rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: rgba(255,255,255,0.55);
+      letter-spacing: 0.04em;
+      transition: color 0.15s;
+    }
+
+    .card:hover .card__link { color: rgba(255,255,255,0.9); }
+
+    footer {
+      font-size: 0.72rem;
+      color: rgba(255,255,255,0.2);
+      letter-spacing: 0.06em;
+      text-align: center;
+    }
+  </style>
 </head>
 <body>
+<div class="page">
 
-<div class="slideshow" id="slideshow">
+  <header>
+    <h1>幻灯片母版库</h1>
+    <p>选择主题 · 打开即用 · 支持键盘 / 触摸 / 全屏</p>
+  </header>
 
-  <div class="slides-wrapper">
+  <div class="grid">
 
-    <section class="slide slide--cover">
-      <div class="slide__content">
-        <h1>演示标题</h1>
-        <p class="subtitle">副标题 · 日期 · 演讲者</p>
-      </div>
-    </section>
-
-    <section class="slide">
-      <div class="slide__content">
-        <h2>议程</h2>
-        <ul>
-          <li>背景介绍</li>
-          <li>核心概念</li>
-          <li>数据展示</li>
-          <li>总结与展望</li>
-        </ul>
-      </div>
-    </section>
-
-    <section class="slide">
-      <div class="slide__content">
-        <h2>背景介绍</h2>
-        <p>在这里输入您的内容。支持 <strong>粗体</strong>、<em>斜体</em> 等基本格式。</p>
-        <blockquote>引用文字可以使用 blockquote 标签突出显示。</blockquote>
-      </div>
-    </section>
-
-    <section class="slide slide--dark">
-      <div class="slide__content">
-        <h2>核心概念</h2>
-        <div class="cards">
-          <div class="card">
-            <h3>概念一</h3>
-            <p>简要说明内容</p>
-          </div>
-          <div class="card">
-            <h3>概念二</h3>
-            <p>简要说明内容</p>
-          </div>
-          <div class="card">
-            <h3>概念三</h3>
-            <p>简要说明内容</p>
-          </div>
+    <a class="card card--navy" href="navy.html">
+      <div class="card__preview">
+        <div class="preview__text">
+          <div class="preview__tag">对外汇报</div>
+          <div class="preview__title">数字化转型战略</div>
         </div>
+        <div class="preview__line"></div>
       </div>
-    </section>
+      <div class="card__body">
+        <div class="card__name">麦肯锡深蓝</div>
+        <div class="card__desc">深海蓝 + 琥珀金，权威沉稳。适合正式客户汇报、董事会演示、对外发布场合。</div>
+        <div class="card__link">打开母版 →</div>
+      </div>
+    </a>
 
-    <section class="slide">
-      <div class="slide__content">
-        <h2>数据展示</h2>
-        <div class="chart-placeholder">
-          <p>在此处嵌入图表或图片</p>
-          <code>&lt;img src="chart.png" alt="图表"&gt;</code>
+    <a class="card card--amber" href="amber.html">
+      <div class="card__preview">
+        <div class="preview__text">
+          <div class="preview__tag">内部汇报</div>
+          <div class="preview__title">年度经营回顾</div>
         </div>
+        <div class="preview__line"></div>
       </div>
-    </section>
-
-    <section class="slide slide--cover slide--end">
-      <div class="slide__content">
-        <h1>谢谢</h1>
-        <p class="subtitle">Q &amp; A</p>
+      <div class="card__body">
+        <div class="card__name">暖沙金</div>
+        <div class="card__desc">米白底 + 琥珀金 + 深棕，亲切稳重。适合内部战略会议、团队汇报、管理层讨论。</div>
+        <div class="card__link">打开母版 →</div>
       </div>
-    </section>
+    </a>
 
-  </div><!-- .slides-wrapper -->
+    <a class="card card--sage" href="sage.html">
+      <div class="card__preview">
+        <div class="preview__text">
+          <div class="preview__tag">投资路演</div>
+          <div class="preview__title">Series B 融资路演</div>
+        </div>
+        <div class="preview__line"></div>
+      </div>
+      <div class="card__body">
+        <div class="card__name">莫兰迪绿</div>
+        <div class="card__desc">暖白底 + 雾霾绿 + 炭黑，清雅有质感。适合融资路演、品牌发布、外部合作提案。</div>
+        <div class="card__link">打开母版 →</div>
+      </div>
+    </a>
 
-  <!-- 底部控制栏 -->
-  <div class="controls">
-    <button class="btn-nav btn-prev" id="btnPrev" aria-label="上一张">&#8592;</button>
+    <a class="card card--mono" href="mono.html">
+      <div class="card__preview">
+        <div class="preview__text">
+          <div class="preview__tag">执行摘要</div>
+          <div class="preview__title">董事会执行摘要</div>
+        </div>
+        <div class="preview__line"></div>
+      </div>
+      <div class="card__body">
+        <div class="card__name">极简黑白</div>
+        <div class="card__desc">纯白底 + 炭黑，极致克制。适合董事会执行摘要、高层简报、需要最强视觉冲击力的场合。</div>
+        <div class="card__link">打开母版 →</div>
+      </div>
+    </a>
 
-    <div class="progress-wrap">
-      <div class="progress-bar" id="progressBar"></div>
-    </div>
-
-    <span class="page-counter" id="pageCounter">1 / 6</span>
-
-    <button class="btn-nav btn-next" id="btnNext" aria-label="下一张">&#8594;</button>
-    <button class="btn-fullscreen" id="btnFullscreen" aria-label="全屏">&#x26F6;</button>
   </div>
 
-</div><!-- .slideshow -->
+  <footer>快捷键：← → 翻页 · 空格键前进 · F 全屏 · Home / End 首尾页</footer>
 
-<script src="script.js"></script>
+</div>
 </body>
 </html>

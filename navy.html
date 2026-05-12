@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>麦肯锡深蓝 · 幻灯片母版</title>
+  <link rel="stylesheet" href="css/engine.css">
+  <link rel="stylesheet" href="css/navy.css">
+</head>
+<body>
+<div class="slideshow">
+  <div class="deck">
+
+    <!-- 1 · 封面 -->
+    <section class="slide cover">
+      <p class="cover__tag">内部汇报 · 机密</p>
+      <h1 class="cover__title">数字化转型战略 2025—2027</h1>
+      <hr class="cover__line">
+      <p class="cover__sub">战略咨询团队 · 2025年5月</p>
+    </section>
+
+    <!-- 2 · 议程 -->
+    <section class="slide">
+      <div class="slide__header">
+        <p class="slide__eyebrow">本次汇报</p>
+        <h2 class="slide__title">四个核心议题</h2>
+        <hr class="slide__rule">
+      </div>
+      <ol class="agenda-list">
+        <li>市场环境与竞争格局分析</li>
+        <li>内部能力评估与差距识别</li>
+        <li>战略机遇优先级排序</li>
+        <li>实施路线与资源配置建议</li>
+      </ol>
+    </section>
+
+    <!-- 3 · 章节分隔 -->
+    <section class="slide divider">
+      <span class="divider__num">01</span>
+      <h2 class="divider__title">市场格局正在加速重塑</h2>
+      <p class="divider__sub">外部环境分析</p>
+    </section>
+
+    <!-- 4 · 核心发现（要点） -->
+    <section class="slide">
+      <div class="slide__header">
+        <p class="slide__eyebrow">核心发现</p>
+        <h2 class="slide__title">头部集中效应显著，前三强占72%份额，竞争进入赢家通吃阶段</h2>
+        <hr class="slide__rule">
+      </div>
+      <ul class="bullet-list">
+        <li>过去三年，TOP 3 市场份额从51%扩张至72%，增速是行业均值的3.2倍</li>
+        <li>新进入者生存窗口正在关闭，A轮后存活率降至18%，创历史新低</li>
+        <li>客户采购决策周期缩短至45天，速度已取代价格成为首要选择标准</li>
+        <li>数据驱动能力成为核心护城河，领先者与跟随者的差距将在18个月内难以弥合</li>
+      </ul>
+    </section>
+
+    <!-- 5 · 双栏对比 -->
+    <section class="slide">
+      <div class="slide__header">
+        <p class="slide__eyebrow">差距分析</p>
+        <h2 class="slide__title">三大核心维度存在显著差距，需系统性突破</h2>
+        <hr class="slide__rule">
+      </div>
+      <div class="cols">
+        <div class="col">
+          <p class="col__label">现状痛点</p>
+          <ul>
+            <li>产品迭代周期 180 天</li>
+            <li>客户年留存率 67%</li>
+            <li>运营成本占营收 38%</li>
+            <li>数据决策覆盖率 &lt;20%</li>
+          </ul>
+        </div>
+        <div class="col">
+          <p class="col__label">目标状态</p>
+          <ul>
+            <li>产品迭代周期 60 天</li>
+            <li>客户年留存率 90%</li>
+            <li>运营成本占营收 22%</li>
+            <li>数据决策覆盖率 &gt;80%</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6 · 量化指标 -->
+    <section class="slide">
+      <div class="slide__header">
+        <p class="slide__eyebrow">量化目标</p>
+        <h2 class="slide__title">三年战略目标一览</h2>
+        <hr class="slide__rule">
+      </div>
+      <div class="metrics-grid">
+        <div class="metric">
+          <span class="metric__val">3.2×</span>
+          <span class="metric__label">营收增长倍数</span>
+          <span class="metric__note">↑ vs 行业均值 1.4×</span>
+        </div>
+        <div class="metric">
+          <span class="metric__val">90%</span>
+          <span class="metric__label">客户年留存率</span>
+          <span class="metric__note">↑ 较当前提升 23pp</span>
+        </div>
+        <div class="metric">
+          <span class="metric__val">60天</span>
+          <span class="metric__label">产品迭代周期</span>
+          <span class="metric__note">↓ 较当前压缩 67%</span>
+        </div>
+        <div class="metric">
+          <span class="metric__val">18月</span>
+          <span class="metric__label">战略达成周期</span>
+          <span class="metric__note">分三阶段推进</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7 · 引言 -->
+    <section class="slide quote">
+      <span class="quote__mark">"</span>
+      <blockquote class="quote__text">在这个行业，慢即是死。<br>速度不是我们的优势，<br>而是我们的生存条件。</blockquote>
+      <cite class="quote__cite">— 董事会年度战略回顾</cite>
+    </section>
+
+    <!-- 8 · 结语 -->
+    <section class="slide closing">
+      <h1 class="closing__title">谢谢</h1>
+      <hr class="closing__rule">
+      <p class="closing__sub">下一步：确认三项优先行动，<br>30天内完成资源配置并启动试点。</p>
+    </section>
+
+  </div>
+
+  <div class="ctrl">
+    <button class="btn" id="btnP" disabled>&#8592;</button>
+    <div class="prog"><div id="bar"></div></div>
+    <span id="counter"></span>
+    <button class="btn" id="btnN">&#8594;</button>
+    <button class="btn" id="btnF">&#x26F6;</button>
+  </div>
+</div>
+<script src="js/slideshow.js"></script>
+</body>
+</html>
