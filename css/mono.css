@@ -1,0 +1,29 @@
+/* ── 极简黑白 · Minimal Mono ── */
+:root {
+  --bg:                  #FFFFFF;
+  --bg-cover:            #0C0C0C;
+  --bg-divider:          #181818;
+  --bg-quote:            #F6F6F6;
+  --surface:             #F2F2F2;
+  --primary:             #0C0C0C;
+  --accent:              #0C0C0C;
+  --text:                #0C0C0C;
+  --text-muted:          #505050;
+  --text-on-cover:       #F6F6F6;
+  --text-on-cover-muted: rgba(246, 246, 246, 0.50);
+  --border:              rgba(12, 12, 12, 0.09);
+  --divider-num-color:   rgba(255, 255, 255, 0.06);
+}
+
+/* 黑白版进度条用浅色 */
+#bar { background: rgba(255, 255, 255, 0.75); }
+
+/* 黑白版分隔线用细灰 */
+.slide__rule { background: #C8C8C8; }
+
+/* 指标左边框用黑 */
+.metric { border-left-color: #0C0C0C; }
+
+/* quote 引号极淡 */
+.slide.quote .quote__mark { opacity: 0.07; color: #0C0C0C; }
+.slide.quote .quote__cite { color: #505050; }

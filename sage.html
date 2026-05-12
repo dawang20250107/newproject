@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>莫兰迪绿 · 幻灯片母版</title>
+  <link rel="stylesheet" href="css/engine.css">
+  <link rel="stylesheet" href="css/sage.css">
+</head>
+<body>
+<div class="slideshow">
+  <div class="deck">
+
+    <!-- 1 · 封面 -->
+    <section class="slide cover">
+      <p class="cover__tag">投资人路演 · 保密</p>
+      <h1 class="cover__title">Series B 融资路演 · 2025</h1>
+      <hr class="cover__line">
+      <p class="cover__sub">XX科技股份有限公司 · 2025年5月</p>
+    </section>
+
+    <!-- 2 · 议程 -->
+    <section class="slide">
+      <div class="slide__header">
+        <p class="slide__eyebrow">路演结构</p>
+        <h2 class="slide__title">今日汇报四个部分</h2>
+        <hr class="slide__rule">
+      </div>
+      <ol class="agenda-list">
+        <li>公司概况与核心价值主张</li>
+        <li>市场规模与竞争壁垒</li>
+        <li>商业模式与财务表现</li>
+        <li>融资用途与未来里程碑</li>
+      </ol>
+    </section>
+
+    <!-- 3 · 章节分隔 -->
+    <section class="slide divider">
+      <span class="divider__num">01</span>
+      <h2 class="divider__title">我们在解决一个年规模超2000亿的真实痛点</h2>
+      <p class="divider__sub">市场机会</p>
+    </section>
+
+    <!-- 4 · 核心发现 -->
+    <section class="slide">
+      <div class="slide__header">
+        <p class="slide__eyebrow">核心价值</p>
+        <h2 class="slide__title">我们是唯一同时具备技术壁垒与规模效应的玩家</h2>
+        <hr class="slide__rule">
+      </div>
+      <ul class="bullet-list">
+        <li>专有算法模型使获客成本比行业均值低64%，且随规模持续递减</li>
+        <li>服务超过1,200家企业客户，次年留存率达92%，行业最高水平</li>
+        <li>核心技术持有43项发明专利，关键算法已建立18个月以上技术护城河</li>
+        <li>现有客户中32%已购买三款以上产品，交叉销售空间巨大</li>
+      </ul>
+    </section>
+
+    <!-- 5 · 双栏对比 -->
+    <section class="slide">
+      <div class="slide__header">
+        <p class="slide__eyebrow">竞争优势</p>
+        <h2 class="slide__title">与头部竞争对手相比，我们在核心维度全面领先</h2>
+        <hr class="slide__rule">
+      </div>
+      <div class="cols">
+        <div class="col">
+          <p class="col__label">我们</p>
+          <ul>
+            <li>获客成本 ¥1,200/客户</li>
+            <li>次年留存率 92%</li>
+            <li>毛利率 78%</li>
+            <li>产品上线周期 21天</li>
+          </ul>
+        </div>
+        <div class="col">
+          <p class="col__label">行业均值</p>
+          <ul>
+            <li>获客成本 ¥3,300/客户</li>
+            <li>次年留存率 68%</li>
+            <li>毛利率 54%</li>
+            <li>产品上线周期 90天</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6 · 量化指标 -->
+    <section class="slide">
+      <div class="slide__header">
+        <p class="slide__eyebrow">财务表现</p>
+        <h2 class="slide__title">关键财务指标证明商业模式成立</h2>
+        <hr class="slide__rule">
+      </div>
+      <div class="metrics-grid">
+        <div class="metric">
+          <span class="metric__val">¥2.4亿</span>
+          <span class="metric__label">2024年ARR</span>
+          <span class="metric__note">↑ YoY +118%</span>
+        </div>
+        <div class="metric">
+          <span class="metric__val">92%</span>
+          <span class="metric__label">次年客户留存率</span>
+          <span class="metric__note">连续三年提升</span>
+        </div>
+        <div class="metric">
+          <span class="metric__val">78%</span>
+          <span class="metric__label">产品毛利率</span>
+          <span class="metric__note">↑ 行业均值 +24pp</span>
+        </div>
+        <div class="metric">
+          <span class="metric__val">6.8×</span>
+          <span class="metric__label">LTV / CAC</span>
+          <span class="metric__note">↑ 行业均值 2.1×</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7 · 引言 -->
+    <section class="slide quote">
+      <span class="quote__mark">"</span>
+      <blockquote class="quote__text">技术不是我们的差异点，<br>对客户成功的极致专注<br>才是。</blockquote>
+      <cite class="quote__cite">— 创始人 · 2024投资者大会</cite>
+    </section>
+
+    <!-- 8 · 结语 -->
+    <section class="slide closing">
+      <h1 class="closing__title">期待合作</h1>
+      <hr class="closing__rule">
+      <p class="closing__sub">本轮融资目标1.2亿元，用于产品研发与<br>销售团队扩张，计划18个月内实现盈亏平衡。</p>
+    </section>
+
+  </div>
+
+  <div class="ctrl">
+    <button class="btn" id="btnP" disabled>&#8592;</button>
+    <div class="prog"><div id="bar"></div></div>
+    <span id="counter"></span>
+    <button class="btn" id="btnN">&#8594;</button>
+    <button class="btn" id="btnF">&#x26F6;</button>
+  </div>
+</div>
+<script src="js/slideshow.js"></script>
+</body>
+</html>

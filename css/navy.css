@@ -1,0 +1,16 @@
+/* ── 麦肯锡深蓝 · McKinsey Navy ── */
+:root {
+  --bg:                  #FFFFFF;
+  --bg-cover:            #002B5C;
+  --bg-divider:          #003F85;
+  --bg-quote:            #F4F7FF;
+  --surface:             #F1F5FB;
+  --primary:             #002B5C;
+  --accent:              #C8A951;
+  --text:                #1A1D2E;
+  --text-muted:          #485060;
+  --text-on-cover:       #FFFFFF;
+  --text-on-cover-muted: rgba(255, 255, 255, 0.58);
+  --border:              rgba(0, 43, 92, 0.08);
+  --divider-num-color:   rgba(200, 169, 81, 0.20);
+}
