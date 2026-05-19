@@ -1,7 +1,16 @@
 from django.conf.urls import url
-from wxcloudrun import views
+from wxcloudrun import views, report_views
 
 urlpatterns = [
+    # ── 认证 API ──
+    url(r'^api/auth/wx-login$', report_views.wx_login, name='wx_login'),
+    url(r'^api/auth/login$', report_views.web_login, name='web_login'),
+
+    # ── 日报 API ──
+    url(r'^api/daily-report/list$', report_views.daily_report_list, name='daily_report_list'),
+    url(r'^api/daily-report/week$', report_views.weekly_analysis, name='weekly_analysis'),
+    url(r'^api/daily-report/(?P<date>\d{4}-\d{2}-\d{2})$', report_views.daily_report_detail, name='daily_report_detail'),
+
     # 主页
     url(r'^$', views.index, name='index'),
 

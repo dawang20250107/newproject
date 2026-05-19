@@ -108,6 +108,11 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# JWT 配置
+JWT_SECRET = os.environ.get('JWT_SECRET', 'kxt-jwt-dev-secret-change-in-production')
+WX_APPID   = os.environ.get('WX_APPID', '')
+WX_SECRET  = os.environ.get('WX_SECRET', '')
+
 # 日志配置
 LOGGING = {
     'version': 1,

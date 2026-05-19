@@ -1,214 +1,273 @@
 <!-- pages/daily-report/index.wxml -->
 <view class="root">
 
-  <!-- ════ 欢迎界面 ════ -->
-  <view class="welcome-overlay" wx:if="{{showWelcome}}">
-    <view class="welcome-card">
-      <text class="welcome-emoji">😊</text>
-      <text class="welcome-title">今天你开心吗？</text>
-      <text class="welcome-sub">先告诉自己一声，再开始今天的工作</text>
-      <button class="welcome-btn" bindtap="onWelcomeConfirm">是的，我很开心 :)</button>
-    </view>
+  <!-- ════ 主界面 ════ -->
+
+  <!-- ── Tab 栏 ── -->
+  <view class="tabs">
+    <view class="tab {{activeTab==='edit'?'tab-on':''}}"
+          bindtap="switchTab" data-tab="edit">📝 填写日报</view>
+    <view class="tab {{activeTab==='preview'?'tab-on':''}}"
+          bindtap="switchTab" data-tab="preview">👁 预览</view>
+    <view class="tab {{activeTab==='calendar'?'tab-on':''}}"
+          bindtap="switchTab" data-tab="calendar">📅 日历</view>
+    <view class="tab {{activeTab==='week'?'tab-on':''}}"
+          bindtap="switchTab" data-tab="week">📊 周分析</view>
   </view>
 
-  <!-- ════ 主界面 ════ -->
-  <view wx:else>
+  <!-- ════════ 填写 Tab ════════ -->
+  <view wx:if="{{activeTab==='edit'}}">
 
-    <!-- ── Tab 栏 ── -->
-    <view class="tabs">
-      <view class="tab {{activeTab==='edit'?'tab-on':''}}"
-            bindtap="switchTab" data-tab="edit">📝 填写日报</view>
-      <view class="tab {{activeTab==='preview'?'tab-on':''}}"
-            bindtap="switchTab" data-tab="preview">👁 预览复制</view>
-    </view>
-
-    <!-- ════════ 填写 Tab ════════ -->
-    <view wx:if="{{activeTab==='edit'}}">
-
-      <!-- ① 基本信息 -->
-      <view class="card">
-        <view class="card-hd">① 基本信息</view>
-        <view class="field-grid">
-          <view class="field">
-            <text class="lbl">部门</text>
-            <input class="inp" value="{{dept}}"
-                   bindinput="onFieldInput" data-field="dept" placeholder="部门"/>
-          </view>
-          <view class="field">
-            <text class="lbl">岗位</text>
-            <input class="inp" value="{{role}}"
-                   bindinput="onFieldInput" data-field="role" placeholder="岗位"/>
-          </view>
-          <view class="field">
-            <text class="lbl">姓名</text>
-            <input class="inp" value="{{name}}"
-                   bindinput="onFieldInput" data-field="name" placeholder="姓名"/>
-          </view>
-          <view class="field">
-            <text class="lbl">日期</text>
-            <picker mode="date" value="{{date}}" bindchange="onDateChange">
-              <view class="inp picker-val">{{date}}</view>
-            </picker>
-          </view>
+    <!-- ① 基本信息 -->
+    <view class="card">
+      <view class="card-hd">① 基本信息
+        <view class="date-bar">
+          <picker mode="date" value="{{date}}" bindchange="onDateChange">
+            <view class="date-chip">📅 {{date}}</view>
+          </picker>
         </view>
       </view>
-
-      <!-- ② 任务录入 -->
-      <view class="card">
-        <view class="card-hd">② 任务录入
-          <text class="card-hint">一个时段一张卡片，卡片内可加多条并行任务</text>
+      <view class="field-grid">
+        <view class="field">
+          <text class="lbl">部门</text>
+          <input class="inp" value="{{dept}}"
+                 bindinput="onFieldInput" data-field="dept" placeholder="部门"/>
         </view>
+        <view class="field">
+          <text class="lbl">岗位</text>
+          <input class="inp" value="{{role}}"
+                 bindinput="onFieldInput" data-field="role" placeholder="岗位"/>
+        </view>
+        <view class="field">
+          <text class="lbl">姓名</text>
+          <input class="inp" value="{{name}}"
+                 bindinput="onFieldInput" data-field="name" placeholder="姓名"/>
+        </view>
+      </view>
+    </view>
 
-        <!-- 时段列表 -->
-        <view wx:for="{{blocks}}" wx:for-index="bi" wx:for-item="blk" wx:key="bi">
-          <view class="block">
+    <!-- ② 任务录入 -->
+    <view class="card">
+      <view class="card-hd">② 任务录入
+        <text class="card-hint">一个时段一张卡片</text>
+      </view>
 
-            <!-- 时段头：序号 + 时间 + 时长 + 删除 -->
-            <view class="block-hd">
-              <view class="blk-num">{{bi+1}}</view>
-              <view class="time-row">
-                <button class="now-btn" bindtap="setNow"
-                        data-block-index="{{bi}}" data-field="start">现在</button>
-                <picker mode="time" value="{{blk.start}}"
-                        bindchange="onBlockTimeChange"
-                        data-block-index="{{bi}}" data-field="start">
-                  <view class="time-val {{blk.start?'':'time-ph'}}">{{blk.start||'开始'}}</view>
-                </picker>
-                <text class="arrow">→</text>
-                <button class="now-btn" bindtap="setNow"
-                        data-block-index="{{bi}}" data-field="end">现在</button>
-                <picker mode="time" value="{{blk.end}}"
-                        bindchange="onBlockTimeChange"
-                        data-block-index="{{bi}}" data-field="end">
-                  <view class="time-val {{blk.end?'':'time-ph'}}">{{blk.end||'结束'}}</view>
-                </picker>
-                <text class="dur" wx:if="{{blk.duration}}">{{blk.duration}}</text>
-              </view>
-              <view class="blk-del" bindtap="removeBlock" data-index="{{bi}}">✕</view>
+      <view wx:for="{{blocks}}" wx:for-index="bi" wx:for-item="blk" wx:key="bi">
+        <view class="block">
+          <view class="block-hd">
+            <view class="blk-num">{{bi+1}}</view>
+            <view class="time-row">
+              <button class="now-btn" bindtap="setNow"
+                      data-block-index="{{bi}}" data-field="start">现在</button>
+              <picker mode="time" value="{{blk.start}}"
+                      bindchange="onBlockTimeChange"
+                      data-block-index="{{bi}}" data-field="start">
+                <view class="time-val {{blk.start?'':'time-ph'}}">{{blk.start||'开始'}}</view>
+              </picker>
+              <text class="arrow">→</text>
+              <button class="now-btn" bindtap="setNow"
+                      data-block-index="{{bi}}" data-field="end">现在</button>
+              <picker mode="time" value="{{blk.end}}"
+                      bindchange="onBlockTimeChange"
+                      data-block-index="{{bi}}" data-field="end">
+                <view class="time-val {{blk.end?'':'time-ph'}}">{{blk.end||'结束'}}</view>
+              </picker>
+              <text class="dur" wx:if="{{blk.duration}}">{{blk.duration}}</text>
             </view>
+            <view class="blk-del" bindtap="removeBlock" data-index="{{bi}}">✕</view>
+          </view>
 
-            <!-- 任务列表 -->
-            <view wx:for="{{blk.tasks}}" wx:for-index="ti" wx:for-item="task" wx:key="ti">
-              <view class="task">
-                <!-- 描述行 -->
-                <view class="task-top">
-                  <text class="bullet">•</text>
-                  <textarea class="task-desc"
-                            value="{{task.desc}}"
-                            bindinput="onTaskInput"
-                            data-block-index="{{bi}}"
-                            data-task-index="{{ti}}"
-                            placeholder="任务描述"
-                            auto-height
-                            maxlength="500"
-                            show-confirm-bar="{{false}}"/>
-                  <view class="task-del" bindtap="removeTask"
-                        data-block-index="{{bi}}" data-task-index="{{ti}}">×</view>
-                </view>
-                <!-- 进度行 -->
-                <view class="task-prog">
-                  <slider min="0" max="100" value="{{task.progress}}"
-                          bindchanging="onProgressChanging"
-                          bindchange="onProgressChange"
+          <view wx:for="{{blk.tasks}}" wx:for-index="ti" wx:for-item="task" wx:key="ti">
+            <view class="task">
+              <view class="task-top">
+                <text class="bullet">•</text>
+                <textarea class="task-desc"
+                          value="{{task.desc}}"
+                          bindinput="onTaskInput"
                           data-block-index="{{bi}}"
                           data-task-index="{{ti}}"
-                          activeColor="{{task.progress>=100?'#7a9655':'#d97757'}}"
-                          backgroundColor="#e8e0d8"
-                          block-color="{{task.progress>=100?'#7a9655':'#c96342'}}"
-                          block-size="16"/>
-                  <view class="prog-row">
-                    <text class="prog-txt {{task.progress>=100?'prog-done':''}}">
-                      {{task.progress>=100?'✓ 已完成':task.progress+'%'}}
-                    </text>
-                    <button wx:if="{{task.progress<100}}" class="done-btn"
-                            bindtap="markDone"
-                            data-block-index="{{bi}}"
-                            data-task-index="{{ti}}">完成</button>
-                  </view>
+                          placeholder="任务描述"
+                          auto-height
+                          maxlength="500"
+                          show-confirm-bar="{{false}}"/>
+                <view class="task-del" bindtap="removeTask"
+                      data-block-index="{{bi}}" data-task-index="{{ti}}">×</view>
+              </view>
+              <view class="task-prog">
+                <slider min="0" max="100" value="{{task.progress}}"
+                        bindchanging="onProgressChanging"
+                        bindchange="onProgressChange"
+                        data-block-index="{{bi}}"
+                        data-task-index="{{ti}}"
+                        activeColor="{{task.progress>=100?'#7a9655':'#d97757'}}"
+                        backgroundColor="#e8e0d8"
+                        block-color="{{task.progress>=100?'#7a9655':'#c96342'}}"
+                        block-size="16"/>
+                <view class="prog-row">
+                  <text class="prog-txt {{task.progress>=100?'prog-done':''}}">
+                    {{task.progress>=100?'✓ 已完成':task.progress+'%'}}
+                  </text>
+                  <button wx:if="{{task.progress<100}}" class="done-btn"
+                          bindtap="markDone"
+                          data-block-index="{{bi}}"
+                          data-task-index="{{ti}}">完成</button>
                 </view>
               </view>
             </view>
-            <!-- 添加任务按钮 -->
-            <button class="add-task-btn" bindtap="addTask" data-block-index="{{bi}}">
-              ＋ 添加任务
-            </button>
+          </view>
 
+          <button class="add-task-btn" bindtap="addTask" data-block-index="{{bi}}">
+            ＋ 添加任务
+          </button>
+        </view>
+      </view>
+
+      <view class="toolbar">
+        <button class="btn-ghost" bindtap="addBlock">＋ 添加时段</button>
+        <button class="btn-danger" bindtap="clearAll">清空全部</button>
+      </view>
+    </view>
+
+    <!-- ③ 复盘 & 明日计划 -->
+    <view class="card">
+      <view class="card-hd">③ 复盘 &amp; 明日计划</view>
+      <view class="form-full">
+        <text class="lbl">行得通的是</text>
+        <textarea class="area" value="{{works}}"
+                  bindinput="onFieldInput" data-field="works"
+                  placeholder="无" auto-height show-confirm-bar="{{false}}"/>
+      </view>
+      <view class="form-full">
+        <text class="lbl">行不通的是</text>
+        <textarea class="area" value="{{notWorks}}"
+                  bindinput="onFieldInput" data-field="notWorks"
+                  placeholder="无" auto-height show-confirm-bar="{{false}}"/>
+      </view>
+      <view class="form-full">
+        <text class="lbl">明日计划（每行一条）</text>
+        <textarea class="area" value="{{plans}}"
+                  bindinput="onFieldInput" data-field="plans"
+                  placeholder="例如：&#10;跟进项目A&#10;准备周报"
+                  auto-height show-confirm-bar="{{false}}"/>
+      </view>
+      <view class="form-full">
+        <text class="lbl">结语</text>
+        <input class="inp" value="{{commit}}"
+               bindinput="onFieldInput" data-field="commit"
+               placeholder="每天结尾的一句话"/>
+      </view>
+    </view>
+
+    <!-- 保存按钮区 -->
+    <view class="save-area">
+      <view class="save-status">
+        <text wx:if="{{savedAt && !isDirty}}" class="status-saved">✓ 已保存 {{savedAt}}</text>
+        <text wx:elif="{{isDirty}}" class="status-dirty">有未保存的修改</text>
+      </view>
+      <button class="btn-save {{isDirty?'btn-save-dirty':'btn-save-ok'}}"
+              disabled="{{isSaving || !isDirty}}"
+              bindtap="onSave">
+        {{isSaving ? '保存中...' : isDirty ? '💾 保存日报' : '✓ 已保存'}}
+      </button>
+    </view>
+
+    <view style="height:60rpx"/>
+  </view>
+
+  <!-- ════════ 预览 Tab ════════ -->
+  <view wx:if="{{activeTab==='preview'}}">
+    <view class="card">
+      <view class="card-hd-row">
+        <text class="card-hd">部门群版</text>
+        <text class="tag tag-red">简短</text>
+      </view>
+      <view class="preview-box">
+        <text selectable user-select="all">{{previewDept || '暂无内容，请先在"填写日报"中录入任务'}}</text>
+      </view>
+      <button class="btn-primary" bindtap="copyDept">📋 复制部门群版</button>
+    </view>
+    <view class="card">
+      <view class="card-hd-row">
+        <text class="card-hd">日志群版</text>
+        <text class="tag tag-green">完整</text>
+      </view>
+      <view class="preview-box">
+        <text selectable user-select="all">{{previewLog || '暂无内容，请先在"填写日报"中录入任务'}}</text>
+      </view>
+      <button class="btn-green" bindtap="copyLog">📋 复制日志群版</button>
+    </view>
+    <view style="height:60rpx"/>
+  </view>
+
+  <!-- ════════ 日历 Tab ════════ -->
+  <view wx:if="{{activeTab==='calendar'}}">
+    <view class="card">
+      <view class="cal-nav">
+        <view class="cal-arrow" bindtap="onCalPrevMonth">‹</view>
+        <text class="cal-title">{{calYear}}年{{calMonth}}月</text>
+        <view class="cal-arrow" bindtap="onCalNextMonth">›</view>
+      </view>
+
+      <view wx:if="{{calLoading}}" class="cal-loading">加载中...</view>
+      <view wx:else class="cal-grid">
+        <view wx:for="{{['一','二','三','四','五','六','日']}}" wx:key="index"
+              class="cal-head-cell">{{item}}</view>
+        <view wx:for="{{calCells}}" wx:for-item="cell" wx:key="date"
+              class="cal-cell {{cell.inMonth?'':'other-month'}} {{cell.hasReport?'has-report':''}} {{cell.isToday?'is-today':''}}"
+              bindtap="onCalCellTap"
+              data-date="{{cell.date}}"
+              data-in-month="{{cell.inMonth}}">
+          <text class="cal-day-num">{{cell.day}}</text>
+          <view wx:if="{{cell.hasReport}}" class="cal-dot"></view>
+        </view>
+      </view>
+
+      <view class="cal-legend">
+        <view class="dot-legend"></view>
+        <text>已填写日报</text>
+      </view>
+    </view>
+    <view style="height:60rpx"/>
+  </view>
+
+  <!-- ════════ 周分析 Tab ════════ -->
+  <view wx:if="{{activeTab==='week'}}">
+    <view class="card">
+      <view class="week-nav">
+        <view class="week-arrow" bindtap="onWeekPrev">‹ 上周</view>
+        <text class="week-range">{{weekData ? weekData.week_start + ' — ' + weekData.week_end : '...'}}</text>
+        <view class="week-arrow" bindtap="onWeekNext">下周 ›</view>
+      </view>
+
+      <view wx:if="{{weekLoading}}" class="cal-loading">加载中...</view>
+      <view wx:elif="{{weekData}}">
+        <view class="week-stats">
+          <view class="stat-card">
+            <text class="stat-num">{{weekData.total_hours}}</text>
+            <text class="stat-lbl">工时(h)</text>
+          </view>
+          <view class="stat-card">
+            <text class="stat-num">{{weekData.completed_count}}</text>
+            <text class="stat-lbl">已完成任务</text>
           </view>
         </view>
 
-        <!-- 底部工具栏 -->
-        <view class="toolbar">
-          <button class="btn-ghost" bindtap="addBlock">＋ 添加时段</button>
-          <button class="btn-danger" bindtap="clearAll">清空全部</button>
+        <view wx:for="{{weekData.days}}" wx:for-item="day" wx:key="date" class="week-day">
+          <view class="week-day-hd">
+            <text class="wd-label">周{{day.weekday}}</text>
+            <text class="wd-date">{{day.date}}</text>
+            <text wx:if="{{day.has_report}}" class="wd-hours">{{day.hours}}h</text>
+            <text wx:else class="wd-empty">未填报</text>
+          </view>
+          <view wx:if="{{day.completed_tasks.length}}">
+            <view wx:for="{{day.completed_tasks}}" wx:for-item="task" wx:key="index"
+                  class="task-done">✓ {{task}}</view>
+          </view>
+          <view wx:elif="{{day.has_report}}" class="no-done">无已完成任务</view>
         </view>
       </view>
-
-      <!-- ③ 复盘 & 明日计划 -->
-      <view class="card">
-        <view class="card-hd">③ 复盘 &amp; 明日计划
-          <text class="card-hint">留空自动填"无"，仅出现在日志群版</text>
-        </view>
-        <view class="form-full">
-          <text class="lbl">行得通的是</text>
-          <textarea class="area" value="{{works}}"
-                    bindinput="onFieldInput" data-field="works"
-                    placeholder="无" auto-height show-confirm-bar="{{false}}"/>
-        </view>
-        <view class="form-full">
-          <text class="lbl">行不通的是</text>
-          <textarea class="area" value="{{notWorks}}"
-                    bindinput="onFieldInput" data-field="notWorks"
-                    placeholder="无" auto-height show-confirm-bar="{{false}}"/>
-        </view>
-        <view class="form-full">
-          <text class="lbl">明日计划（每行一条，自动加序号）</text>
-          <textarea class="area" value="{{plans}}"
-                    bindinput="onFieldInput" data-field="plans"
-                    placeholder="例如：&#10;复盘本周项目数据&#10;跟进GMV异常问题"
-                    auto-height show-confirm-bar="{{false}}"/>
-        </view>
-        <view class="form-full">
-          <text class="lbl">结语</text>
-          <input class="inp" value="{{commit}}"
-                 bindinput="onFieldInput" data-field="commit"
-                 placeholder="每天结尾的一句话"/>
-        </view>
-      </view>
-
-      <!-- 底部留白 -->
-      <view style="height:60rpx"/>
     </view>
-
-    <!-- ════════ 预览 Tab ════════ -->
-    <view wx:if="{{activeTab==='preview'}}">
-
-      <!-- 部门群版 -->
-      <view class="card">
-        <view class="card-hd-row">
-          <text class="card-hd">部门群版</text>
-          <text class="tag tag-red">简短</text>
-        </view>
-        <view class="preview-box">
-          <text selectable user-select="all">{{previewDept || '暂无内容，请先在"填写日报"中录入任务'}}</text>
-        </view>
-        <button class="btn-primary" bindtap="copyDept">📋 复制部门群版</button>
-      </view>
-
-      <!-- 日志群版 -->
-      <view class="card">
-        <view class="card-hd-row">
-          <text class="card-hd">日志群版</text>
-          <text class="tag tag-green">完整</text>
-        </view>
-        <view class="preview-box">
-          <text selectable user-select="all">{{previewLog || '暂无内容，请先在"填写日报"中录入任务'}}</text>
-        </view>
-        <button class="btn-green" bindtap="copyLog">📋 复制日志群版</button>
-      </view>
-
-      <!-- 底部留白 -->
-      <view style="height:60rpx"/>
-    </view>
-
+    <view style="height:60rpx"/>
   </view>
+
 </view>

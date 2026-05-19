@@ -1,27 +1,34 @@
 <template>
   <div class="app-shell">
     <ClickEffect />
-    <Sidebar :collapsed="sidebarCollapsed" @toggle="sidebarCollapsed = !sidebarCollapsed" />
-    <div class="main-area" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
-      <TopBar @toggle-sidebar="sidebarCollapsed = !sidebarCollapsed" />
-      <main class="page-content">
-        <router-view v-slot="{ Component }">
-          <transition name="page" mode="out-in">
-            <component :is="Component" />
-          </transition>
-        </router-view>
-      </main>
-    </div>
+    <template v-if="route.meta.layout !== 'auth'">
+      <Sidebar :collapsed="sidebarCollapsed" @toggle="sidebarCollapsed = !sidebarCollapsed" />
+      <div class="main-area" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+        <TopBar @toggle-sidebar="sidebarCollapsed = !sidebarCollapsed" />
+        <main class="page-content">
+          <router-view v-slot="{ Component }">
+            <transition name="page" mode="out-in">
+              <component :is="Component" />
+            </transition>
+          </router-view>
+        </main>
+      </div>
+    </template>
+    <template v-else>
+      <router-view />
+    </template>
   </div>
 </template>
 
 <script setup>
 import { ref } from 'vue'
+import { useRoute } from 'vue-router'
 import Sidebar from '@/components/Sidebar.vue'
 import TopBar  from '@/components/TopBar.vue'
 import ClickEffect from '@/components/ClickEffect.vue'
 
 const sidebarCollapsed = ref(false)
+const route = useRoute()
 </script>
 
 <style scoped>

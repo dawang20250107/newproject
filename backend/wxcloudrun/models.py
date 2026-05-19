@@ -1,3 +1,4 @@
+from django.contrib.auth.models import User
 from django.db import models
 
 
@@ -23,6 +24,47 @@ class Project(models.Model):
 
     def __str__(self):
         return self.project_name or f'Project {self.id}'
+
+
+class UserProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, null=True, blank=True)
+    openid = models.CharField(max_length=100, unique=True, null=True, blank=True)
+    display_name = models.CharField(max_length=100, blank=True, default='')
+
+    class Meta:
+        db_table = 'user_profiles'
+        verbose_name = '用户档案'
+        verbose_name_plural = '用户档案'
+
+    def __str__(self):
+        if self.user:
+            return self.user.username
+        return f'openid:{self.openid[:8] if self.openid else "?"}'
+
+
+class DailyReport(models.Model):
+    user = models.ForeignKey(UserProfile, on_delete=models.CASCADE, related_name='reports')
+    date = models.DateField('日期')
+    blocks = models.JSONField('时段数据', default=list)
+    works = models.TextField('行得通的是', blank=True, default='')
+    not_works = models.TextField('行不通的是', blank=True, default='')
+    plans = models.TextField('明日计划', blank=True, default='')
+    commit_text = models.CharField('结语', max_length=500, blank=True, default='')
+    dept = models.CharField('部门', max_length=100, blank=True, default='')
+    role = models.CharField('岗位', max_length=100, blank=True, default='')
+    name = models.CharField('姓名', max_length=100, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        db_table = 'daily_reports'
+        verbose_name = '日报'
+        verbose_name_plural = '日报'
+        unique_together = ('user', 'date')
+        ordering = ['-date']
+
+    def __str__(self):
+        return f'{self.user} - {self.date}'
 
 
 class ReceivableData(models.Model):
