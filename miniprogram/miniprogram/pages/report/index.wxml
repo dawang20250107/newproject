@@ -1,0 +1,144 @@
+<view class="page">
+  <!-- Tab 切换 -->
+  <view class="tabs">
+    <view class="tab {{tab === 'edit' ? 'active' : ''}}" data-tab="edit" bindtap="switchTab">填写</view>
+    <view class="tab {{tab === 'calendar' ? 'active' : ''}}" data-tab="calendar" bindtap="switchTab">日历</view>
+    <view class="tab {{tab === 'week' ? 'active' : ''}}" data-tab="week" bindtap="switchTab">周分析</view>
+  </view>
+
+  <!-- ── 填写 ── -->
+  <block wx:if="{{tab === 'edit'}}">
+    <view class="card">
+      <view class="row" style="justify-content:space-between">
+        <text class="label">日期</text>
+        <picker mode="date" value="{{date}}" bindchange="pickDate">
+          <view class="date-picker">{{date}}</view>
+        </picker>
+      </view>
+    </view>
+
+    <view class="card">
+      <view class="row" style="justify-content:space-between;margin-bottom:16rpx">
+        <text class="section-title">时段任务</text>
+        <view class="btn btn-ghost" bindtap="addBlock">+ 新时段</view>
+      </view>
+
+      <view wx:if="{{blocks.length === 0}}" class="empty">暂无时段，点击右上角添加</view>
+
+      <block wx:for="{{blocks}}" wx:for-item="blk" wx:for-index="i" wx:key="i">
+        <view class="block">
+          <view class="row" style="justify-content:space-between;margin-bottom:12rpx">
+            <view class="row">
+              <picker mode="time" value="{{blk.start}}" data-i="{{i}}" data-field="start" bindchange="onTimeChange">
+                <view class="time">{{blk.start || '开始'}}</view>
+              </picker>
+              <text style="margin:0 12rpx;color:#999">~</text>
+              <picker mode="time" value="{{blk.end}}" data-i="{{i}}" data-field="end" bindchange="onTimeChange">
+                <view class="time">{{blk.end || '结束'}}</view>
+              </picker>
+            </view>
+            <view class="del" data-i="{{i}}" bindtap="removeBlock">删除</view>
+          </view>
+
+          <block wx:for="{{blk.tasks}}" wx:for-item="task" wx:for-index="j" wx:key="j">
+            <view class="task">
+              <input class="task-input" placeholder="任务描述" value="{{task.desc}}"
+                data-i="{{i}}" data-j="{{j}}" bindinput="onTaskInput" />
+              <view class="row" style="margin-top:8rpx;justify-content:space-between">
+                <slider class="progress" min="0" max="100" step="10" value="{{task.progress}}"
+                  show-value data-i="{{i}}" data-j="{{j}}" bindchanging="onProgressChange" bindchange="onProgressChange" />
+                <view class="del small" data-i="{{i}}" data-j="{{j}}" bindtap="removeTask">✕</view>
+              </view>
+            </view>
+          </block>
+          <view class="btn btn-ghost small" data-i="{{i}}" bindtap="addTask">+ 任务</view>
+        </view>
+      </block>
+    </view>
+
+    <view class="card">
+      <view class="field">
+        <text class="label">行得通的是</text>
+        <textarea class="textarea" placeholder="" value="{{works}}" data-field="works" bindinput="onTextInput" auto-height />
+      </view>
+      <view class="field">
+        <text class="label">行不通的是</text>
+        <textarea class="textarea" placeholder="" value="{{not_works}}" data-field="not_works" bindinput="onTextInput" auto-height />
+      </view>
+      <view class="field">
+        <text class="label">明日计划</text>
+        <textarea class="textarea" placeholder="" value="{{plans}}" data-field="plans" bindinput="onTextInput" auto-height />
+      </view>
+      <view class="field">
+        <text class="label">结语</text>
+        <input class="input" placeholder="" value="{{commit_text}}" data-field="commit_text" bindinput="onTextInput" />
+      </view>
+    </view>
+
+    <view class="save-bar">
+      <view class="status">
+        <text wx:if="{{isDirty}}" style="color:#c96342">● 有未保存修改</text>
+        <text wx:elif="{{updatedAt}}" style="color:#3aa856">✓ 已保存</text>
+      </view>
+      <button class="btn" disabled="{{isSaving}}" bindtap="onSave">{{isSaving ? '保存中...' : '保存'}}</button>
+    </view>
+  </block>
+
+  <!-- ── 日历 ── -->
+  <block wx:if="{{tab === 'calendar'}}">
+    <view class="card">
+      <view class="cal-header">
+        <view class="cal-nav" bindtap="prevMonth">‹</view>
+        <view class="cal-title">{{calYear}} 年 {{calMonth}} 月</view>
+        <view class="cal-nav" bindtap="nextMonth">›</view>
+      </view>
+      <view class="cal-week">
+        <view class="cal-w">一</view><view class="cal-w">二</view><view class="cal-w">三</view>
+        <view class="cal-w">四</view><view class="cal-w">五</view><view class="cal-w">六</view><view class="cal-w">日</view>
+      </view>
+      <view class="cal-grid">
+        <block wx:for="{{calCells}}" wx:key="index">
+          <view wx:if="{{item.empty}}" class="cal-cell empty"></view>
+          <view wx:else class="cal-cell {{item.isToday ? 'today' : ''}}"
+            data-date="{{item.dateStr}}" bindtap="pickCell">
+            <text>{{item.day}}</text>
+            <view wx:if="{{item.hasReport}}" class="dot"></view>
+          </view>
+        </block>
+      </view>
+    </view>
+  </block>
+
+  <!-- ── 周分析 ── -->
+  <block wx:if="{{tab === 'week'}}">
+    <view wx:if="{{weekData}}" class="card">
+      <view class="week-title">{{weekData.week_start}} ~ {{weekData.week_end}}</view>
+      <view class="week-stat">
+        <view class="stat">
+          <view class="stat-num">{{weekData.total_hours}}</view>
+          <view class="stat-label">总小时</view>
+        </view>
+        <view class="stat">
+          <view class="stat-num">{{weekData.completed_count}}</view>
+          <view class="stat-label">完成任务</view>
+        </view>
+      </view>
+    </view>
+
+    <view wx:if="{{weekData}}" class="card">
+      <block wx:for="{{weekData.days}}" wx:key="date">
+        <view class="day-row" data-date="{{item.date}}" bindtap="weekDayTap">
+          <view class="day-head">
+            <text class="day-label">周{{item.weekday}}</text>
+            <text class="day-date">{{item.date}}</text>
+            <text class="day-hours" wx:if="{{item.has_report}}">{{item.hours}}h</text>
+            <text class="day-empty" wx:else>—</text>
+          </view>
+          <view wx:if="{{item.completed_tasks.length}}" class="day-tasks">
+            <text wx:for="{{item.completed_tasks}}" wx:for-item="t" wx:key="*this" class="tag">{{t}}</text>
+          </view>
+        </view>
+      </block>
+    </view>
+  </block>
+</view>

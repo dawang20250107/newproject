@@ -1,0 +1,26 @@
+<view class="page">
+  <view class="card">
+    <view class="field">
+      <text class="label">微信昵称</text>
+      <input class="input" placeholder="选填" value="{{display_name}}" data-field="display_name" bindinput="onInput" />
+    </view>
+    <view class="field">
+      <text class="label">姓名</text>
+      <input class="input" placeholder="" value="{{name}}" data-field="name" bindinput="onInput" />
+    </view>
+    <view class="field">
+      <text class="label">部门</text>
+      <input class="input" placeholder="" value="{{dept}}" data-field="dept" bindinput="onInput" />
+    </view>
+    <view class="field">
+      <text class="label">岗位</text>
+      <input class="input" placeholder="" value="{{role}}" data-field="role" bindinput="onInput" />
+    </view>
+  </view>
+
+  <view class="save-bar">
+    <text wx:if="{{isDirty}}" style="color:#c96342;font-size:24rpx">● 有未保存修改</text>
+    <text wx:else style="color:#999;font-size:24rpx">资料用于日报水印</text>
+    <button class="btn" disabled="{{isSaving || !isDirty}}" bindtap="onSave">{{isSaving ? '保存中...' : '保存'}}</button>
+  </view>
+</view>

@@ -1,17 +1,24 @@
 {
   "pages": [
-    "pages/daily-report/index",
-    "pages/mine/index"
+    "pages/report/index",
+    "pages/profile/index"
   ],
   "window": {
-    "navigationBarTitleText": "KXT",
+    "navigationBarTitleText": "日报",
     "navigationBarBackgroundColor": "#ffffff",
     "navigationBarTextStyle": "black",
-    "backgroundColor": "#f0f4f8",
-    "backgroundTextStyle": "dark",
-    "enablePullDownRefresh": false
+    "backgroundColor": "#f5f5f7"
   },
   "tabBar": {
-    "color": "#a39785",
+    "color": "#999999",
     "selectedColor": "#c96342",
-    "back
+    "backgroundColor": "#ffffff",
+    "borderStyle": "white",
+    "list": [
+      { "pagePath": "pages/report/index", "text": "日报" },
+      { "pagePath": "pages/profile/index", "text": "我的" }
+    ]
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

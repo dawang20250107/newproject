@@ -1,58 +1,40 @@
-const config = require('./config.js');
+const app = getApp ? getApp() : null
 
-function request(path, data = {}, method = 'GET', opts = {}) {
-  const url = config.API_BASE + path;
-  const silent = opts.silent || false;
-  const token = wx.getStorageSync('kxt_token');
+function _app() { return app || getApp() }
 
+function _doRequest(path, options, token) {
+  const a = _app()
   return new Promise((resolve, reject) => {
     wx.request({
-      url,
-      data,
-      method,
-      header: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      url: a.globalData.apiBase + path,
+      method: options.method || 'GET',
+      data: options.data,
+      header: Object.assign(
+        { 'Content-Type': 'application/json' },
+        token ? { 'Authorization': 'Bearer ' + token } : {},
+      ),
+      success: (r) => {
+        if (r.statusCode >= 200 && r.statusCode < 300) resolve(r.data)
+        else reject({ statusCode: r.statusCode, data: r.data })
       },
-      success(res) {
-        if (res.statusCode === 401) {
-          wx.removeStorageSync('kxt_token');
-          // Silent re-login for miniprogram
-          const app = getApp();
-          if (app && app._silentLogin) {
-            app._silentLogin().then(() => {
-              // Retry once after re-login
-              request(path, data, method, { ...opts, _retry: true }).then(resolve).catch(reject);
-            }).catch(reject);
-          } else {
-            reject(new Error('未登录'));
-          }
-          return;
-        }
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          if (res.data && res.data.code === 0) {
-            resolve(res.data.data);
-          } else if (res.data && res.data.code !== undefined) {
-            if (!silent) wx.showToast({ title: res.data.error || '请求失败', icon: 'none' });
-            reject(new Error(res.data.error || 'API Error'));
-          } else {
-            resolve(res.data);
-          }
-        } else {
-          if (!silent) wx.showToast({ title: `请求失败 (${res.statusCode})`, icon: 'none' });
-          reject(new Error(`HTTP ${res.statusCode}`));
-        }
-      },
-      fail(err) {
-        if (!silent) wx.showToast({ title: '网络异常，请检查网络', icon: 'none' });
-        reject(err);
-      },
-    });
-  });
+      fail: reject,
+    })
+  })
 }
 
-function get(path, data, opts) { return request(path, data, 'GET', opts || {}); }
-function post(path, data, opts) { return request(path, data, 'POST', opts || {}); }
-function put(path, data, opts) { return request(path, data, 'PUT', opts || {}); }
+async function request(path, options = {}) {
+  const a = _app()
+  let token = a.globalData.token
+  try {
+    return await _doRequest(path, options, token)
+  } catch (err) {
+    if (err && err.statusCode === 401) {
+      // token失效，重新登录后重试一次
+      token = await a._silentLogin(true)
+      return _doRequest(path, options, token)
+    }
+    throw err
+  }
+}
 
-module.exports = { request, get, post, put, API_BASE: config.API_BASE };
+module.exports = { request }

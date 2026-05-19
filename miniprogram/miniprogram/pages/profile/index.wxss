@@ -1,0 +1,26 @@
+.page { padding-bottom: 120rpx; }
+
+.field { margin-bottom: 28rpx; }
+.field .label { display: block; margin-bottom: 12rpx; color: #6e6e73; font-size: 26rpx; }
+.input {
+  width: 100%;
+  background: #fafafa;
+  border-radius: 8rpx;
+  padding: 20rpx;
+  font-size: 28rpx;
+  box-sizing: border-box;
+}
+
+.save-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #fff;
+  border-top: 2rpx solid #eee;
+  padding: 24rpx;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.save-bar .btn { min-width: 200rpx; }
