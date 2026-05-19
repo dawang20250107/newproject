@@ -1,0 +1,8 @@
+asgiref==3.8.1
+Django==3.2.23
+pytz==2024.1
+sqlparse==0.5.0
+PyMySQL==1.1.1
+django-cors-headers==4.3.1
+gunicorn==23.0.0
+

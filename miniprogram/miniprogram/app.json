@@ -1,0 +1,17 @@
+{
+  "pages": [
+    "pages/daily-report/index",
+    "pages/mine/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "KXT",
+    "navigationBarBackgroundColor": "#ffffff",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#f0f4f8",
+    "backgroundTextStyle": "dark",
+    "enablePullDownRefresh": false
+  },
+  "tabBar": {
+    "color": "#a39785",
+    "selectedColor": "#c96342",
+    "back

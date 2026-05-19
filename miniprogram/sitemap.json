@@ -1,0 +1,12 @@
+{
+  "desc": "KXT 数据分析平台",
+  "setting": {
+    "urlCheck": false
+  },
+  "rules": [
+    {
+      "action": "allow",
+      "page": "*"
+    }
+  ]
+}

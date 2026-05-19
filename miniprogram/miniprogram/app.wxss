@@ -1,0 +1,206 @@
+/* ===== KXT 全局样式 — 麦肯锡风格 ===== */
+/* 专业 · 简洁 · 高效 */
+
+/* CSS Variables */
+page {
+  --color-primary: #2563eb;
+  --color-primary-light: #dbeafe;
+  --color-primary-dark: #1d4ed8;
+  --color-success: #059669;
+  --color-success-light: #d1fae5;
+  --color-warning: #d97706;
+  --color-warning-light: #fef3c7;
+  --color-danger: #dc2626;
+  --color-danger-light: #fee2e2;
+  --color-bg: #f0f4f8;
+  --color-card: #ffffff;
+  --color-text: #1e293b;
+  --color-text-secondary: #64748b;
+  --color-text-tertiary: #94a3b8;
+  --color-border: #e2e8f0;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.06);
+  --shadow-lg: 0 4px 16px rgba(0,0,0,0.08);
+  --radius-sm: 8rpx;
+  --radius-md: 12rpx;
+  --radius-lg: 16rpx;
+  --radius-xl: 20rpx;
+  --space-xs: 8rpx;
+  --space-sm: 12rpx;
+  --space-md: 16rpx;
+  --space-lg: 20rpx;
+  --space-xl: 24rpx;
+}
+
+page {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+  font-size: 28rpx;
+  line-height: 1.5;
+}
+
+/* Scrollbar clean */
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* Card */
+.card {
+  background: var(--color-card);
+  border-radius: var(--radius-lg);
+  padding: var(--space-xl);
+  margin: 0 var(--space-md) var(--space-md);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Section divider */
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-lg) var(--space-xl) var(--space-sm);
+}
+.section-title-text {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.section-title-count {
+  font-size: 24rpx;
+  color: var(--color-text-tertiary);
+}
+
+/* Status badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4rpx 14rpx;
+  border-radius: 100rpx;
+  font-size: 20rpx;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.badge-normal {
+  background: var(--color-success-light);
+  color: var(--color-success);
+}
+.badge-overdue {
+  background: var(--color-danger-light);
+  color: var(--color-danger);
+}
+.badge-warning {
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+}
+.badge-pending {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+/* Loading spinner */
+.spinner {
+  width: 48rpx;
+  height: 48rpx;
+  border: 3rpx solid var(--color-border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 120rpx 0;
+  gap: var(--space-md);
+}
+.loading-text {
+  font-size: 26rpx;
+  color: var(--color-text-tertiary);
+}
+
+/* Empty state */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 100rpx 40rpx;
+}
+.empty-icon-box {
+  width: 120rpx;
+  height: 120rpx;
+  border-radius: 50%;
+  background: var(--color-primary-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: var(--space-lg);
+}
+.empty-icon-symbol {
+  font-size: 48rpx;
+  color: var(--color-primary);
+  font-weight: 300;
+}
+.empty-text {
+  font-size: 30rpx;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-xs);
+}
+.empty-sub {
+  font-size: 24rpx;
+  color: var(--color-text-tertiary);
+}
+
+/* Color utilities */
+.text-primary { color: var(--color-primary); }
+.text-success { color: var(--color-success); }
+.text-warning { color: var(--color-warning); }
+.text-danger { color: var(--color-danger); }
+.text-secondary { color: var(--color-text-secondary); }
+.text-tertiary { color: var(--color-text-tertiary); }
+
+/* KPI number */
+.kpi-number {
+  font-size: 40rpx;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.kpi-number-sm {
+  font-size: 34rpx;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+/* Button */
+.btn-primary {
+  background: var(--color-primary);
+  color: #fff;
+  border-radius: var(--radius-md);
+  padding: 24rpx 32rpx;
+  font-size: 28rpx;
+  font-weight: 600;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  transition: opacity 0.2s;
+}
+.btn-primary:active {
+  opacity: 0.8;
+}
+.btn-primary-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Bottom safe area */
+.safe-bottom {
+  height: 40rpx;
+}
