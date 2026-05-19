@@ -1,0 +1,182 @@
+.splash {
+  min-height: 100vh;
+  background: linear-gradient(160deg, #1a0e08 0%, #3d1c10 45%, #1a0e08 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ── 背景光晕 ────────────────────────── */
+.bg-glow {
+  position: absolute;
+  border-radius: 50%;
+}
+.g1 {
+  width: 500rpx; height: 500rpx;
+  background: radial-gradient(circle, rgba(201,99,66,0.28) 0%, transparent 70%);
+  top: -80rpx; left: -100rpx;
+  animation: drift 7s ease-in-out infinite;
+}
+.g2 {
+  width: 400rpx; height: 400rpx;
+  background: radial-gradient(circle, rgba(232,133,90,0.18) 0%, transparent 70%);
+  bottom: 60rpx; right: -60rpx;
+  animation: drift 9s ease-in-out 1s infinite reverse;
+}
+.g3 {
+  width: 260rpx; height: 260rpx;
+  background: radial-gradient(circle, rgba(255,200,150,0.10) 0%, transparent 70%);
+  top: 40%; left: 30%;
+  animation: drift 5s ease-in-out 0.5s infinite;
+}
+
+@keyframes drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(30rpx, 40rpx) scale(1.08); }
+  66% { transform: translate(-20rpx, 20rpx) scale(0.95); }
+}
+
+/* ── 表情环 ──────────────────────────── */
+.emoji-wrap {
+  position: relative;
+  width: 260rpx;
+  height: 260rpx;
+  margin-bottom: 70rpx;
+  transition: transform 0.15s ease;
+}
+.emoji-wrap.pressed {
+  transform: scale(0.90);
+}
+
+.center-ring {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 120rpx; height: 120rpx;
+  border-radius: 50%;
+  background: rgba(201,99,66,0.12);
+  border: 2rpx solid rgba(201,99,66,0.30);
+  animation: pulse-ring 2.5s ease-in-out infinite;
+}
+
+@keyframes pulse-ring {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.6; }
+  50% { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
+}
+
+.emoji {
+  position: absolute;
+  font-size: 68rpx;
+  line-height: 1;
+  filter: drop-shadow(0 4rpx 12rpx rgba(0,0,0,0.3));
+}
+
+/* 四角定位 */
+.e1 {
+  top: 0; left: 50%;
+  transform: translateX(-50%);
+  animation: flt1 2.4s ease-in-out infinite;
+}
+.e2 {
+  top: 50%; right: -10rpx;
+  transform: translateY(-50%);
+  animation: flt2 2.8s ease-in-out 0.3s infinite;
+}
+.e3 {
+  bottom: 0; left: 50%;
+  transform: translateX(-50%);
+  animation: flt3 2.6s ease-in-out 0.6s infinite;
+}
+.e4 {
+  top: 50%; left: -10rpx;
+  transform: translateY(-50%);
+  animation: flt4 3.0s ease-in-out 0.9s infinite;
+}
+
+@keyframes flt1 {
+  0%, 100% { transform: translateX(-50%) translateY(0) rotate(-6deg); }
+  50%       { transform: translateX(-50%) translateY(-24rpx) rotate(6deg); }
+}
+@keyframes flt2 {
+  0%, 100% { transform: translateY(-50%) rotate(6deg); }
+  50%       { transform: translateY(calc(-50% - 22rpx)) rotate(-6deg); }
+}
+@keyframes flt3 {
+  0%, 100% { transform: translateX(-50%) rotate(4deg); }
+  50%       { transform: translateX(-50%) translateY(22rpx) rotate(-4deg); }
+}
+@keyframes flt4 {
+  0%, 100% { transform: translateY(-50%) rotate(-5deg); }
+  50%       { transform: translateY(calc(-50% + 22rpx)) rotate(5deg); }
+}
+
+/* ── 品牌 ────────────────────────────── */
+.brand {
+  text-align: center;
+  margin-bottom: 90rpx;
+}
+.brand-name {
+  font-size: 60rpx;
+  font-weight: 700;
+  color: #faf7f4;
+  letter-spacing: 6rpx;
+  text-shadow: 0 4rpx 24rpx rgba(201,99,66,0.50);
+  margin-bottom: 16rpx;
+  animation: fade-in 1s ease 0.5s both;
+}
+.brand-sub {
+  font-size: 28rpx;
+  color: rgba(250,247,244,0.55);
+  letter-spacing: 3rpx;
+  animation: fade-in 1s ease 0.9s both;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(16rpx); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── 加载状态 ─────────────────────────── */
+.status-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20rpx;
+  margin-bottom: 60rpx;
+}
+.dots {
+  display: flex;
+  gap: 14rpx;
+}
+.d {
+  width: 14rpx; height: 14rpx;
+  border-radius: 50%;
+  background: rgba(201,99,66,0.75);
+}
+.d1 { animation: blink 1.4s ease-in-out infinite; }
+.d2 { animation: blink 1.4s ease-in-out 0.22s infinite; }
+.d3 { animation: blink 1.4s ease-in-out 0.44s infinite; }
+
+@keyframes blink {
+  0%, 80%, 100% { opacity: 0.25; transform: scale(0.75); }
+  40%            { opacity: 1;    transform: scale(1.25); }
+}
+
+.status-txt {
+  font-size: 26rpx;
+  color: rgba(250,247,244,0.45);
+  letter-spacing: 1rpx;
+}
+
+/* ── 点按提示 ─────────────────────────── */
+.tap-hint {
+  position: absolute;
+  bottom: 80rpx;
+  font-size: 24rpx;
+  color: rgba(250,247,244,0.25);
+  letter-spacing: 2rpx;
+  animation: fade-in 1s ease 2s both;
+}

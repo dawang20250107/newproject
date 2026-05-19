@@ -1,18 +1,21 @@
 {
   "pages": [
+    "pages/splash/index",
     "pages/report/index",
     "pages/profile/index"
   ],
   "window": {
-    "navigationBarTitleText": "日报",
-    "navigationBarBackgroundColor": "#ffffff",
+    "navigationBarTitleText": "KXT 日报",
+    "navigationBarBackgroundColor": "#faf7f4",
     "navigationBarTextStyle": "black",
-    "backgroundColor": "#f5f5f7"
+    "backgroundColor": "#faf7f4",
+    "backgroundTextStyle": "dark",
+    "enablePullDownRefresh": false
   },
   "tabBar": {
-    "color": "#999999",
+    "color": "#9b8070",
     "selectedColor": "#c96342",
-    "backgroundColor": "#ffffff",
+    "backgroundColor": "#fdfaf8",
     "borderStyle": "white",
     "list": [
       { "pagePath": "pages/report/index", "text": "日报" },

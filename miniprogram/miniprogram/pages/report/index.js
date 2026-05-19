@@ -6,9 +6,9 @@ function todayStr() { return fmtDate(new Date()) }
 
 Page({
   data: {
-    tab: 'edit',            // edit | calendar | week
-    date: todayStr(),       // 当前编辑的日期
-    blocks: [],             // [{ start, end, tasks: [{ desc, progress }] }]
+    tab: 'edit',
+    date: todayStr(),
+    blocks: [],
     works: '',
     not_works: '',
     plans: '',
@@ -16,15 +16,24 @@ Page({
     isDirty: false,
     isSaving: false,
     updatedAt: null,
+    allDone: false,
 
     // 日历
     calYear: new Date().getFullYear(),
     calMonth: new Date().getMonth() + 1,
-    calCells: [],           // [{ day, dateStr, hasReport, isToday, isCurMonth }]
+    calCells: [],
     calDates: [],
 
     // 周分析
     weekData: null,
+
+    // AI 分析
+    showModal: false,
+    analysisLoading: false,
+    analysisText: '',
+    analysisType: 'week',
+    analysisRange: '',
+    copied: false,
   },
 
   onShow() {
@@ -46,19 +55,33 @@ Page({
   async _loadReport(date) {
     try {
       const r = await request('/api/reports/' + date)
+      const blocks = r.blocks || []
       this.setData({
         date: r.date,
-        blocks: r.blocks || [],
+        blocks,
         works: r.works || '',
         not_works: r.not_works || '',
         plans: r.plans || '',
         commit_text: r.commit_text || '',
         isDirty: false,
         updatedAt: r.updated_at,
+        allDone: this._computeAllDone(blocks),
       })
     } catch (e) {
       wx.showToast({ title: '加载失败', icon: 'none' })
     }
+  },
+
+  _computeAllDone(blocks) {
+    if (!blocks || blocks.length === 0) return false
+    let hasTask = false
+    for (const blk of blocks) {
+      for (const t of (blk.tasks || [])) {
+        hasTask = true
+        if ((t.progress || 0) < 100) return false
+      }
+    }
+    return hasTask
   },
 
   pickDate(e) {
@@ -75,14 +98,14 @@ Page({
 
   addBlock() {
     const blocks = this.data.blocks.concat([{ start: '09:00', end: '12:00', tasks: [] }])
-    this.setData({ blocks, isDirty: true })
+    this.setData({ blocks, isDirty: true, allDone: this._computeAllDone(blocks) })
   },
 
   removeBlock(e) {
     const i = e.currentTarget.dataset.i
     const blocks = this.data.blocks.slice()
     blocks.splice(i, 1)
-    this.setData({ blocks, isDirty: true })
+    this.setData({ blocks, isDirty: true, allDone: this._computeAllDone(blocks) })
   },
 
   onTimeChange(e) {
@@ -98,7 +121,7 @@ Page({
     blocks[i] = Object.assign({}, blocks[i], {
       tasks: (blocks[i].tasks || []).concat([{ desc: '', progress: 0 }])
     })
-    this.setData({ blocks, isDirty: true })
+    this.setData({ blocks, isDirty: true, allDone: false })
   },
 
   removeTask(e) {
@@ -107,7 +130,7 @@ Page({
     const tasks = blocks[i].tasks.slice()
     tasks.splice(j, 1)
     blocks[i] = Object.assign({}, blocks[i], { tasks })
-    this.setData({ blocks, isDirty: true })
+    this.setData({ blocks, isDirty: true, allDone: this._computeAllDone(blocks) })
   },
 
   onTaskInput(e) {
@@ -125,7 +148,43 @@ Page({
     const tasks = blocks[i].tasks.slice()
     tasks[j] = Object.assign({}, tasks[j], { progress: e.detail.value })
     blocks[i] = Object.assign({}, blocks[i], { tasks })
-    this.setData({ blocks, isDirty: true })
+    this.setData({ blocks, isDirty: true, allDone: this._computeAllDone(blocks) })
+  },
+
+  // 单任务完成切换（点圆圈）
+  onTaskDone(e) {
+    const { i, j } = e.currentTarget.dataset
+    const blocks = this.data.blocks.slice()
+    const tasks = blocks[i].tasks.slice()
+    const current = tasks[j].progress || 0
+    const next = current >= 100 ? 0 : 100
+    tasks[j] = Object.assign({}, tasks[j], { progress: next })
+    blocks[i] = Object.assign({}, blocks[i], { tasks })
+    this.setData({ blocks, isDirty: true, allDone: this._computeAllDone(blocks) })
+    if (next === 100) {
+      wx.vibrateShort({ type: 'medium' })
+    }
+  },
+
+  // 整块一键完成
+  blockAllDone(e) {
+    const i = e.currentTarget.dataset.i
+    const blocks = this.data.blocks.slice()
+    const tasks = (blocks[i].tasks || []).map(t => Object.assign({}, t, { progress: 100 }))
+    blocks[i] = Object.assign({}, blocks[i], { tasks })
+    this.setData({ blocks, isDirty: true, allDone: this._computeAllDone(blocks) })
+    wx.vibrateShort({ type: 'medium' })
+  },
+
+  // 全局一键完成
+  onAllDone() {
+    const blocks = this.data.blocks.map(blk => ({
+      ...blk,
+      tasks: (blk.tasks || []).map(t => ({ ...t, progress: 100 })),
+    }))
+    this.setData({ blocks, isDirty: true, allDone: true })
+    wx.vibrateShort({ type: 'heavy' })
+    wx.showToast({ title: '全部完成 ✨', icon: 'none', duration: 1500 })
   },
 
   onTextInput(e) {
@@ -173,7 +232,6 @@ Page({
     const today = todayStr()
     const first = new Date(calYear, calMonth - 1, 1)
     const last = new Date(calYear, calMonth, 0)
-    // 周一为第一天: getDay() Sunday=0, Monday=1...
     const offset = (first.getDay() + 6) % 7
     const cells = []
     for (let i = 0; i < offset; i++) cells.push({ empty: true })
@@ -222,5 +280,57 @@ Page({
   weekDayTap(e) {
     const dateStr = e.currentTarget.dataset.date
     this.setData({ date: dateStr, tab: 'edit' }, () => this._loadReport(dateStr))
+  },
+
+  // ─── AI 分析 ─────────────────────────────
+
+  async onAnalysis(e) {
+    if (this.data.analysisLoading) return
+    const type = e.currentTarget.dataset.type || 'week'
+    const date = this.data.weekData
+      ? (type === 'week' ? this.data.weekData.week_start : this.data.date)
+      : this.data.date
+
+    this.setData({
+      showModal: true,
+      analysisLoading: true,
+      analysisText: '',
+      analysisType: type,
+      analysisRange: '',
+      copied: false,
+    })
+
+    try {
+      const res = await request('/api/analysis', {
+        method: 'POST',
+        data: { type, date },
+      })
+      this.setData({
+        analysisLoading: false,
+        analysisText: res.analysis || '',
+        analysisRange: res.range || '',
+      })
+    } catch (e) {
+      this.setData({ analysisLoading: false })
+      const msg = (e && e.error) ? e.error : 'AI 分析失败，请稍后重试'
+      this.setData({ analysisText: msg })
+    }
+  },
+
+  closeModal() {
+    if (this.data.analysisLoading) return
+    this.setData({ showModal: false, analysisText: '', copied: false })
+  },
+
+  copyAnalysis() {
+    const text = this.data.analysisText
+    if (!text) return
+    wx.setClipboardData({
+      data: text,
+      success: () => {
+        this.setData({ copied: true })
+        setTimeout(() => this.setData({ copied: false }), 2500)
+      },
+    })
   },
 })

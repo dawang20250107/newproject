@@ -113,6 +113,10 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'kxt-jwt-dev-secret-change-in-producti
 WX_APPID   = os.environ.get('WX_APPID', '')
 WX_SECRET  = os.environ.get('WX_SECRET', '')
 
+# Claude AI API
+CLAUDE_API_KEY   = os.environ.get('CLAUDE_API_KEY', '')
+CLAUDE_MODEL     = os.environ.get('CLAUDE_MODEL', 'claude-haiku-4-5-20251001')
+
 # 日志配置
 LOGGING = {
     'version': 1,

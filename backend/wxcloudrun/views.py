@@ -2,6 +2,7 @@ import json
 import datetime
 import logging
 import urllib.request as urllib_req
+import urllib.error
 from functools import wraps
 
 import jwt
@@ -249,3 +250,110 @@ def report_week(request):
         'total_hours': round(total_mins / 60, 1),
         'completed_count': total_done,
     })
+
+
+# ─── AI 分析 ─────────────────────────────────────────────
+
+@csrf_exempt
+@require_http_methods(['POST'])
+@jwt_required
+def analysis(request):
+    """POST /api/analysis — 调用 Claude 分析周报或月报"""
+    if not settings.CLAUDE_API_KEY:
+        return _json({'error': '未配置 AI 密钥，请在 .env 设置 CLAUDE_API_KEY'}, 503)
+
+    try:
+        body = json.loads(request.body)
+    except Exception:
+        return _json({'error': '请求格式错误'}, 400)
+
+    analysis_type = body.get('type', 'week')
+    date_str = body.get('date', datetime.date.today().isoformat())
+    p = request.profile
+    user_name = p.name or p.display_name or '同学'
+
+    try:
+        anchor = datetime.date.fromisoformat(date_str)
+    except ValueError:
+        return _json({'error': '日期格式错误'}, 400)
+
+    if analysis_type == 'week':
+        monday = anchor - datetime.timedelta(days=anchor.weekday())
+        sunday = monday + datetime.timedelta(days=6)
+        reports = DailyReport.objects.filter(
+            user=p, date__gte=monday, date__lte=sunday
+        ).order_by('date')
+        records = [
+            {'日期': str(r.date), '时段任务': r.blocks,
+             '行得通的是': r.works, '行不通的是': r.not_works,
+             '明日计划': r.plans}
+            for r in reports
+        ]
+        range_str = f'{monday} ～ {sunday}'
+        prompt = (
+            f"你是 {user_name} 的效能教练。以下是本周（{range_str}）的日报数据：\n\n"
+            f"{json.dumps(records, ensure_ascii=False, indent=2)}\n\n"
+            "请生成一份**简洁有力的周报总结**，使用中文，格式如下：\n\n"
+            "## 本周亮点\n- （2-3条核心成就）\n\n"
+            "## 遇到的挑战\n- （及解决思路）\n\n"
+            "## 时间效率\n（有效工时分析）\n\n"
+            "## 下周重点\n- （1-3个建议方向）\n\n"
+            "## 一句话激励\n（鼓励的话）\n\n"
+            "语言简洁精准，避免废话，字数控制在400字以内。"
+        )
+    elif analysis_type == 'month':
+        from calendar import monthrange
+        year, month = anchor.year, anchor.month
+        _, last_day = monthrange(year, month)
+        first_day = datetime.date(year, month, 1)
+        last_date = datetime.date(year, month, last_day)
+        reports = DailyReport.objects.filter(
+            user=p, date__gte=first_day, date__lte=last_date
+        ).order_by('date')
+        records = [
+            {'日期': str(r.date), '时段任务': r.blocks,
+             '行得通的是': r.works, '行不通的是': r.not_works}
+            for r in reports
+        ]
+        range_str = f'{year}年{month}月（共{len(records)}天有记录）'
+        prompt = (
+            f"你是 {user_name} 的效能教练。以下是{range_str}的日报数据：\n\n"
+            f"{json.dumps(records, ensure_ascii=False, indent=2)}\n\n"
+            "请生成一份**月度成长报告**，使用中文，格式如下：\n\n"
+            "## 本月核心成就 Top3\n\n"
+            "## 反复出现的挑战\n\n"
+            "## 工作模式洞察\n（高效日/低效日规律）\n\n"
+            "## 下月优化建议\n\n"
+            "## 月度激励语\n\n"
+            "语言简洁，字数控制在500字以内。"
+        )
+    else:
+        return _json({'error': '不支持的分析类型，仅支持 week / month'}, 400)
+
+    req_payload = json.dumps({
+        'model': settings.CLAUDE_MODEL,
+        'max_tokens': 1024,
+        'messages': [{'role': 'user', 'content': prompt}],
+    }).encode('utf-8')
+
+    req = urllib_req.Request(
+        'https://api.anthropic.com/v1/messages',
+        data=req_payload,
+        headers={
+            'x-api-key': settings.CLAUDE_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json',
+        },
+    )
+    try:
+        with urllib_req.urlopen(req, timeout=45) as resp:
+            result = json.loads(resp.read())
+        text = result['content'][0]['text']
+        return _json({'ok': True, 'analysis': text, 'type': analysis_type, 'range': range_str})
+    except urllib_req.HTTPError as e:
+        err_body = e.read().decode('utf-8', errors='replace')
+        logger.error(f'[analysis] Claude API 错误 {e.code}: {err_body}')
+        return _json({'error': f'AI 服务错误 ({e.code})'}, 500)
+    except Exception as e:
+        logger.error(f'[analysis] 分析失败: {e}')
+        return _json({'error': f'分析失败: {str(e)}'}, 500)

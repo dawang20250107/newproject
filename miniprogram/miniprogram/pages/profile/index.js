@@ -6,6 +6,7 @@ Page({
     dept: '',
     role: '',
     name: '',
+    avatarChar: '?',
     isDirty: false,
     isSaving: false,
   },
@@ -21,6 +22,7 @@ Page({
         dept: p.dept || '',
         role: p.role || '',
         name: p.name || '',
+        avatarChar: this._getChar(p.name || p.display_name),
         isDirty: false,
       })
     } catch (e) {
@@ -28,9 +30,21 @@ Page({
     }
   },
 
+  _getChar(str) {
+    if (!str) return '?'
+    return str.trim().charAt(0) || '?'
+  },
+
   onInput(e) {
     const field = e.currentTarget.dataset.field
-    this.setData({ [field]: e.detail.value, isDirty: true })
+    const val = e.detail.value
+    const update = { [field]: val, isDirty: true }
+    if (field === 'name') {
+      update.avatarChar = this._getChar(val || this.data.display_name)
+    } else if (field === 'display_name') {
+      update.avatarChar = this._getChar(this.data.name || val)
+    }
+    this.setData(update)
   },
 
   async onSave() {
@@ -50,7 +64,7 @@ Page({
       app.globalData.profile = r.profile
       wx.setStorageSync('kxt_profile', r.profile)
       this.setData({ isDirty: false, isSaving: false })
-      wx.showToast({ title: '已保存', icon: 'success' })
+      wx.showToast({ title: '已保存 ✓', icon: 'success' })
     } catch (e) {
       this.setData({ isSaving: false })
       wx.showToast({ title: '保存失败', icon: 'none' })

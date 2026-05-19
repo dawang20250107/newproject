@@ -14,4 +14,7 @@ urlpatterns = [
     re_path(r'^api/reports/dates$', views.report_dates, name='report_dates'),
     re_path(r'^api/reports/week$', views.report_week, name='report_week'),
     re_path(r'^api/reports/(?P<date>\d{4}-\d{2}-\d{2})$', views.report_detail, name='report_detail'),
+
+    # AI 分析
+    re_path(r'^api/analysis$', views.analysis, name='analysis'),
 ]
