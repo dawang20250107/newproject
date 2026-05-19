@@ -1,12 +1,12 @@
-import logging, json
+import logging
 from decimal import Decimal
 from django.http import JsonResponse
-from django.db.models import Sum, Count, F, Q, DecimalField
-from django.db.models.functions import Coalesce
-from django.utils.decorators import method_decorator
+from django.db.models import Sum, Q, DecimalField
+from django.db.models.functions import Coalesce, TruncMonth
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import viewsets, serializers
-from wxcloudrun.models import ProjectBase, ReceivableSource, ExpenseRecord
+
+from wxcloudrun.models import Project, ReceivableData, PaymentRegistration
 
 logger = logging.getLogger('wxcloudrun')
 
@@ -14,7 +14,7 @@ logger = logging.getLogger('wxcloudrun')
 def to_f(v):
     try:
         return float(v or 0)
-    except:
+    except Exception:
         return 0.0
 
 
@@ -30,115 +30,61 @@ def ds(qs, field):
     return float(qs.aggregate(s=Coalesce(Sum(field, output_field=DecimalField()), Decimal('0')))['s'] or 0)
 
 
-# ─── 主页 & 通用 ──────────────────────────────────────────
+# ─── 主页 ─────────────────────────────────────────────────
 
 def index(request):
     return JsonResponse({'code': 0, 'msg': 'KXT API Running', 'version': '2.0.0'})
 
 
-# ─── 认证 API ──────────────────────────────────────────
+# ─── DRF Serializers ──────────────────────────────────────
 
-@method_decorator(csrf_exempt, name='dispatch')
-class AuthViewSet(viewsets.ViewSet):
-    def login(self, request):
-        username = request.data.get('username', '')
-        password = request.data.get('password', '')
-        if username == 'admin' and password == 'admin123':
-            return JsonResponse({'code': 0, 'data': {'username': username, 'token': 'admin-token-kxt'}})
-        return err('\u7528\u6237\u540d\u6216\u5bc6\u7801\u9519\u8bef', code=401)
-
-    def logout(self, request):
-        return ok({'msg': 'ok'})
-
-    def me(self, request):
-        return ok({'username': 'admin', 'role': 'admin'})
-
-
-# ─── DRF Serializers ─────────────────────────────────────
-
-class ProjectBaseSerializer(serializers.ModelSerializer):
-    project_name = serializers.CharField(source='CONTRACT_NAME')
-    project_alias = serializers.CharField(source='PROJECT_ALIAS')
-    business_mode = serializers.CharField(source='BUSINESS_MODE')
-    department = serializers.CharField(source='DEPARTMENT')
-    manager_name = serializers.CharField(source='PROJECT_MANAGER')
-    sales_contact = serializers.CharField(source='SALES_CONTACT')
-    share_type = serializers.CharField(source='SHARE_TYPE')
-    settlement_cycle = serializers.CharField(source='SETTLEMENT_CYCLE')
-    reconciliation_period = serializers.CharField(source='RECONCILIATION_PERIOD')
-    invoice_wait_period = serializers.CharField(source='INVOICE_WAIT_PERIOD')
-    payment_period = serializers.CharField(source='PAYMENT_PERIOD')
-    total_period = serializers.CharField(source='TOTAL_PERIOD')
-    invoice_mode = serializers.CharField(source='INVOICE_MODE')
-
+class ProjectSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ProjectBase
-        fields = ['id', 'project_name', 'project_alias', 'business_mode', 'department',
-                  'manager_name', 'sales_contact', 'share_type', 'settlement_cycle',
-                  'reconciliation_period', 'invoice_wait_period', 'payment_period',
-                  'total_period', 'invoice_mode', 'created_at']
+        model = Project
+        fields = ['id', 'project_name', 'project_code', 'customer_name', 'manager_name',
+                  'contract_amount', 'business_model', 'department', 'sales_contact',
+                  'shared_type', 'settlement_cycle', 'total_zhangqi', 'created_at']
 
 
-class ReceivableSourceSerializer(serializers.ModelSerializer):
-    project_name = serializers.CharField(source='PROJECT_NAME')
-    contract_name = serializers.CharField(source='CONTRACT_NAME')
-    manager_name = serializers.CharField(source='PROJECT_MANAGER')
-    month = serializers.DateField(source='BUSINESS_MONTH', format='%Y-%m')
-    receivable_amount = serializers.DecimalField(source='ESTIMATED_RECEIVABLE', max_digits=14, decimal_places=2)
-    received_amount = serializers.DecimalField(source='RECEIVED_AMOUNT', max_digits=14, decimal_places=2)
-    unpaid_amount = serializers.DecimalField(source='TOTAL_UNPAID', max_digits=14, decimal_places=2)
-    status = serializers.CharField(source='OVERDUE_STATUS')
-
+class ReceivableDataSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ReceivableSource
-        fields = ['id', 'project_name', 'contract_name', 'manager_name', 'month',
+        model = ReceivableData
+        fields = ['id', 'project_name', 'manager_name', 'month',
                   'receivable_amount', 'received_amount', 'unpaid_amount', 'status']
 
 
-class ExpenseRecordSerializer(serializers.ModelSerializer):
-    applicant = serializers.CharField(source='APPLICANT')
-    dingtalk_id = serializers.CharField(source='DINGTALK_ID')
-    summary = serializers.CharField(source='SUMMARY')
-    project = serializers.CharField(source='PROJECT')
-    planned_date = serializers.DateField(source='PLANNED_PAYMENT_DATE', format='%Y-%m-%d', required=False, allow_null=True)
-    apply_amount = serializers.DecimalField(source='APPLICATION_AMOUNT', max_digits=14, decimal_places=2)
-    paid_amount = serializers.DecimalField(source='PAYMENT_AMOUNT', max_digits=14, decimal_places=2)
-    pay_date = serializers.DateField(source='PAYMENT_DATE', format='%Y-%m-%d', required=False, allow_null=True)
-    payment_entity = serializers.CharField(source='PAYMENT_ENTITY')
-    is_planned = serializers.BooleanField(source='IS_PLANNED')
-    has_invoice = serializers.BooleanField(source='HAS_INVOICE')
-
+class PaymentRegistrationSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ExpenseRecord
-        fields = ['id', 'applicant', 'dingtalk_id', 'summary', 'project', 'planned_date',
-                  'apply_amount', 'paid_amount', 'pay_date', 'payment_entity', 'is_planned', 'has_invoice']
+        model = PaymentRegistration
+        fields = ['id', 'applicant_name', 'invoice_no', 'description', 'project_name',
+                  'planned_date', 'apply_amount', 'paid_amount', 'pay_date',
+                  'payment_manager', 'is_paid', 'has_invoice']
 
 
-# ─── DRF ViewSets ───────────────────────────────────────
+# ─── DRF ViewSets ─────────────────────────────────────────
 
-class ProjectBaseViewSet(viewsets.ModelViewSet):
+class ProjectViewSet(viewsets.ModelViewSet):
     permission_classes = []
     authentication_classes = []
-    queryset = ProjectBase.objects.all()
-    serializer_class = ProjectBaseSerializer
+    queryset = Project.objects.all()
+    serializer_class = ProjectSerializer
 
     def list(self, request):
-        return project_list(request)
+        return projects_erp_list(request)
 
     def retrieve(self, request, pk=None):
         try:
             obj = self.get_queryset().get(pk=pk)
-        except ProjectBase.DoesNotExist:
-            return err('\u9879\u76ee\u4e0d\u5b58\u5728', code=404)
-        serializer = self.get_serializer(obj)
-        return ok(serializer.data)
+        except Project.DoesNotExist:
+            return err('项目不存在', code=404)
+        return ok(self.get_serializer(obj).data)
 
 
-class ReceivableSourceViewSet(viewsets.ModelViewSet):
+class ReceivableDataViewSet(viewsets.ModelViewSet):
     permission_classes = []
     authentication_classes = []
-    queryset = ReceivableSource.objects.all()
-    serializer_class = ReceivableSourceSerializer
+    queryset = ReceivableData.objects.all()
+    serializer_class = ReceivableDataSerializer
 
     def list(self, request):
         return receivables_list(request)
@@ -146,17 +92,16 @@ class ReceivableSourceViewSet(viewsets.ModelViewSet):
     def retrieve(self, request, pk=None):
         try:
             obj = self.get_queryset().get(pk=pk)
-        except ReceivableSource.DoesNotExist:
-            return err('\u8bb0\u5f55\u4e0d\u5b58\u5728', code=404)
-        serializer = self.get_serializer(obj)
-        return ok(serializer.data)
+        except ReceivableData.DoesNotExist:
+            return err('记录不存在', code=404)
+        return ok(self.get_serializer(obj).data)
 
 
-class ExpenseRecordViewSet(viewsets.ModelViewSet):
+class PaymentRegistrationViewSet(viewsets.ModelViewSet):
     permission_classes = []
     authentication_classes = []
-    queryset = ExpenseRecord.objects.all()
-    serializer_class = ExpenseRecordSerializer
+    queryset = PaymentRegistration.objects.all()
+    serializer_class = PaymentRegistrationSerializer
 
     def list(self, request):
         return payables_registrations_list(request)
@@ -164,28 +109,24 @@ class ExpenseRecordViewSet(viewsets.ModelViewSet):
     def retrieve(self, request, pk=None):
         try:
             obj = self.get_queryset().get(pk=pk)
-        except ExpenseRecord.DoesNotExist:
-            return err('\u8bb0\u5f55\u4e0d\u5b58\u5728', code=404)
-        serializer = self.get_serializer(obj)
-        return ok(serializer.data)
+        except PaymentRegistration.DoesNotExist:
+            return err('记录不存在', code=404)
+        return ok(self.get_serializer(obj).data)
 
 
-# ─── 仪表板 API ──────────────────────────────────────────
+# ─── 仪表板 API ───────────────────────────────────────────
 
 def dashboard_kpi(request):
-    """
-    GET /api/dashboard/kpi/
-    三行KPI：新表字段映射
-    """
+    """GET /api/dashboard/kpi"""
     try:
-        all_rs = ReceivableSource.objects.all()
-        normal_rs = all_rs.filter(TOTAL_UNPAID=0)
-        overdue_rs = all_rs.filter(OVERDUE_STATUS='\u903e\u671f')
+        all_rs = ReceivableData.objects.all()
+        normal_rs = all_rs.filter(unpaid_amount=0)
+        overdue_rs = all_rs.filter(status='abnormal')
 
         def calc(qs):
-            total = ds(qs, 'ESTIMATED_RECEIVABLE')
-            received = ds(qs, 'RECEIVED_AMOUNT')
-            unpaid = ds(qs, 'TOTAL_UNPAID')
+            total = ds(qs, 'receivable_amount')
+            received = ds(qs, 'received_amount')
+            unpaid = ds(qs, 'unpaid_amount')
             rate = round(received / total * 100, 2) if total > 0 else 0
             return {
                 'receivable': round(total, 2),
@@ -197,21 +138,15 @@ def dashboard_kpi(request):
                 'completion_rate': rate,
             }
 
-        row1 = calc(all_rs)
-        row2 = calc(normal_rs)
-        row3 = calc(overdue_rs)
-
-        overdue_projects = all_rs.filter(OVERDUE_STATUS='\u903e\u671f').values('PROJECT_NAME').distinct().count()
-        latest = all_rs.exclude(BUSINESS_MONTH=None).order_by('-BUSINESS_MONTH').first()
-        update_time = str(latest.BUSINESS_MONTH)[:10] if latest and latest.BUSINESS_MONTH else ''
-
+        overdue_projects = all_rs.filter(status='abnormal').values('project_name').distinct().count()
+        latest = all_rs.exclude(month='').order_by('-month').first()
         return ok({
-            'row1': row1,
-            'row2': row2,
-            'row3': row3,
-            'total_projects': ProjectBase.objects.count(),
+            'row1': calc(all_rs),
+            'row2': calc(normal_rs),
+            'row3': calc(overdue_rs),
+            'total_projects': Project.objects.count(),
             'overdue_projects': overdue_projects,
-            'update_time': update_time,
+            'update_time': latest.month if latest else '',
         })
     except Exception as e:
         logger.error(f'[KPI] {e}')
@@ -219,29 +154,20 @@ def dashboard_kpi(request):
 
 
 def dashboard_abnormal_ranking(request):
-    """
-    GET /api/dashboard/abnormal-ranking/
-    前端期望: [{manager_name, alert_count, total_abnormal}]
-    """
+    """GET /api/dashboard/abnormal-ranking"""
     try:
-        overdue_rs = ReceivableSource.objects.filter(OVERDUE_STATUS='\u903e\u671f')
         managers = {}
-        for r in overdue_rs:
-            key = r.PROJECT_MANAGER or '\u672a\u77e5'
+        for r in ReceivableData.objects.filter(status='abnormal'):
+            key = r.manager_name or '未知'
             if key not in managers:
                 managers[key] = {'count': 0, 'unpaid': 0.0}
             managers[key]['count'] += 1
-            managers[key]['unpaid'] += to_f(r.TOTAL_UNPAID)
+            managers[key]['unpaid'] += to_f(r.unpaid_amount)
 
         data = sorted([
-            {
-                'manager_name': k,
-                'alert_count': v['count'],
-                'total_abnormal': round(v['unpaid'], 2),
-            }
+            {'manager_name': k, 'alert_count': v['count'], 'total_abnormal': round(v['unpaid'], 2)}
             for k, v in managers.items()
         ], key=lambda x: -x['total_abnormal'])[:20]
-
         return ok(data)
     except Exception as e:
         logger.error(f'[AbnormalRanking] {e}')
@@ -249,22 +175,16 @@ def dashboard_abnormal_ranking(request):
 
 
 def dashboard_unpaid_distribution(request):
-    """
-    GET /api/dashboard/unpaid-distribution/
-    前端期望: [{name, value}] - 按项目维度的未收款
-    """
+    """GET /api/dashboard/unpaid-distribution"""
     try:
-        unpaid_rs = ReceivableSource.objects.filter(TOTAL_UNPAID__gt=0)
         proj_unpaid = {}
-        for r in unpaid_rs:
-            key = r.PROJECT_NAME or '\u672a\u77e5\u9879\u76ee'
-            proj_unpaid[key] = proj_unpaid.get(key, 0) + to_f(r.TOTAL_UNPAID)
+        for r in ReceivableData.objects.filter(unpaid_amount__gt=0):
+            key = r.project_name or '未知项目'
+            proj_unpaid[key] = proj_unpaid.get(key, 0) + to_f(r.unpaid_amount)
 
         data = sorted([
-            {'name': k, 'value': round(v, 2)}
-            for k, v in proj_unpaid.items()
+            {'name': k, 'value': round(v, 2)} for k, v in proj_unpaid.items()
         ], key=lambda x: -x['value'])[:20]
-
         return ok(data)
     except Exception as e:
         logger.error(f'[UnpaidDist] {e}')
@@ -272,21 +192,17 @@ def dashboard_unpaid_distribution(request):
 
 
 def dashboard_manager_comparison(request):
-    """
-    GET /api/dashboard/manager-comparison/
-    前端期望: [{manager_name, receivable, received, unpaid, project_count, completion_rate}]
-    """
+    """GET /api/dashboard/manager-comparison"""
     try:
-        all_rs = ReceivableSource.objects.all()
         managers = {}
-        for r in all_rs:
-            key = r.PROJECT_MANAGER or '\u672a\u77e5'
+        for r in ReceivableData.objects.all():
+            key = r.manager_name or '未知'
             if key not in managers:
                 managers[key] = {'receivable': 0.0, 'received': 0.0, 'unpaid': 0.0, 'projects': set()}
-            managers[key]['receivable'] += to_f(r.ESTIMATED_RECEIVABLE)
-            managers[key]['received'] += to_f(r.RECEIVED_AMOUNT)
-            managers[key]['unpaid'] += to_f(r.TOTAL_UNPAID)
-            managers[key]['projects'].add(r.PROJECT_NAME)
+            managers[key]['receivable'] += to_f(r.receivable_amount)
+            managers[key]['received'] += to_f(r.received_amount)
+            managers[key]['unpaid'] += to_f(r.unpaid_amount)
+            managers[key]['projects'].add(r.project_name)
 
         data = sorted([
             {
@@ -299,7 +215,6 @@ def dashboard_manager_comparison(request):
             }
             for k, v in managers.items()
         ], key=lambda x: -x['receivable'])
-
         return ok(data)
     except Exception as e:
         logger.error(f'[ManagerComparison] {e}')
@@ -307,90 +222,71 @@ def dashboard_manager_comparison(request):
 
 
 def dashboard_manager_detail(request):
-    """
-    GET /api/dashboard/manager-detail/?manager=<name>
-    前端期望: {items: [{project_name, abnormal_amount, received_amount, unpaid_amount, days_overdue, status, record_date, sub_records}]}
-    """
+    """GET /api/dashboard/manager/detail?manager=<name>"""
     try:
         import urllib.parse
         manager = urllib.parse.unquote(request.GET.get('manager', ''))
         if not manager:
-            return err('\u7f3a\u5c11 manager \u53c2\u6570')
+            return err('缺少 manager 参数')
 
-        records = ReceivableSource.objects.filter(PROJECT_MANAGER=manager)
+        records = ReceivableData.objects.filter(manager_name=manager)
         items = []
         seen = set()
-
-        for r in records.order_by('PROJECT_NAME', '-BUSINESS_MONTH'):
-            pname = r.PROJECT_NAME or ''
+        for r in records.order_by('project_name', '-month'):
+            pname = r.project_name or ''
             if pname in seen:
                 continue
             seen.add(pname)
-            proj_recs = list(records.filter(PROJECT_NAME=pname).order_by('-BUSINESS_MONTH'))
+            proj_recs = list(records.filter(project_name=pname).order_by('-month'))
             items.append({
                 'project_name': pname,
-                'abnormal_amount': round(sum(to_f(rr.ESTIMATED_RECEIVABLE) for rr in proj_recs), 2),
-                'received_amount': round(sum(to_f(rr.RECEIVED_AMOUNT) for rr in proj_recs), 2),
-                'unpaid_amount': round(sum(to_f(rr.TOTAL_UNPAID) for rr in proj_recs), 2),
+                'abnormal_amount': round(sum(to_f(rr.receivable_amount) for rr in proj_recs), 2),
+                'received_amount': round(sum(to_f(rr.received_amount) for rr in proj_recs), 2),
+                'unpaid_amount': round(sum(to_f(rr.unpaid_amount) for rr in proj_recs), 2),
                 'days_overdue': 0,
-                'status': proj_recs[0].OVERDUE_STATUS or 'normal',
-                'record_date': str(proj_recs[0].BUSINESS_MONTH)[:10] if proj_recs[0].BUSINESS_MONTH else '',
+                'status': proj_recs[0].status or 'normal',
+                'record_date': proj_recs[0].month or '',
                 'sub_records': [
                     {
-                        'month': str(rr.BUSINESS_MONTH)[:7] if rr.BUSINESS_MONTH else '',
-                        'abnormal_amount': to_f(rr.ESTIMATED_RECEIVABLE),
-                        'received_amount': to_f(rr.RECEIVED_AMOUNT),
-                        'unpaid_amount': to_f(rr.TOTAL_UNPAID),
-                        'status': rr.OVERDUE_STATUS or 'normal',
+                        'month': rr.month or '',
+                        'abnormal_amount': to_f(rr.receivable_amount),
+                        'received_amount': to_f(rr.received_amount),
+                        'unpaid_amount': to_f(rr.unpaid_amount),
+                        'status': rr.status or 'normal',
                     }
                     for rr in proj_recs
                 ],
             })
-
         return ok({'items': items})
     except Exception as e:
         logger.error(f'[ManagerDetail] {e}')
         return err(str(e))
 
 
-def dashboard_monthly_received_paid(request):
-    """
-    GET /api/dashboard/monthly-received-paid/
-    月度已收 vs 已付对比
-    """
+def dashboard_projects_monthly(request):
+    """GET /api/dashboard/projects-monthly — 月度已收 vs 已付"""
     try:
         target_month = request.GET.get('month', '').strip()
-        all_rs = ReceivableSource.objects.exclude(BUSINESS_MONTH=None)
-
-        # 月度已收
         monthly = {}
-        for r in all_rs:
-            m = str(r.BUSINESS_MONTH)[:7]
+        for r in ReceivableData.objects.exclude(month=''):
+            m = r.month
             if m not in monthly:
                 monthly[m] = {'received': 0.0, 'paid': 0.0}
-            monthly[m]['received'] += to_f(r.RECEIVED_AMOUNT)
+            monthly[m]['received'] += to_f(r.received_amount)
 
-        # 已付：从 ExpenseRecord
-        from django.db import connection
-        with connection.cursor() as cur:
-            cur.execute("""
-                SELECT DATE_FORMAT(PLANNED_PAYMENT_DATE, '%%Y-%%m') as pay_month,
-                       SUM(PAYMENT_AMOUNT) as paid
-                FROM mp_expense_record
-                WHERE PLANNED_PAYMENT_DATE IS NOT NULL AND PAYMENT_AMOUNT > 0
-                GROUP BY pay_month
-                ORDER BY pay_month
-            """)
-            paid_rows = {str(r[0])[:7]: float(r[1]) for r in cur.fetchall() if r[0]}
-
-        for m, v in monthly.items():
-            if m in paid_rows:
-                monthly[m]['paid'] = paid_rows[m]
-            else:
-                monthly[m]['paid'] = 0.0
-        for m in paid_rows:
+        paid_qs = (
+            PaymentRegistration.objects
+            .filter(planned_date__isnull=False, paid_amount__gt=0)
+            .annotate(pay_month=TruncMonth('planned_date'))
+            .values('pay_month')
+            .annotate(paid=Sum('paid_amount', output_field=DecimalField()))
+            .order_by('pay_month')
+        )
+        for row in paid_qs:
+            m = str(row['pay_month'])[:7]
             if m not in monthly:
-                monthly[m] = {'received': 0.0, 'paid': paid_rows[m]}
+                monthly[m] = {'received': 0.0, 'paid': 0.0}
+            monthly[m]['paid'] = float(row['paid'])
 
         months = sorted(monthly.keys())
         if target_month:
@@ -400,87 +296,91 @@ def dashboard_monthly_received_paid(request):
             {'month': m, 'received': round(monthly[m]['received'], 2), 'paid': round(monthly[m]['paid'], 2)}
             for m in months
         ]
-
-        total_received = sum(m['received'] for m in result)
-        total_paid = sum(m['paid'] for m in result)
-
         return ok({
-            'monthly_received': round(total_received, 2),
-            'monthly_paid': round(total_paid, 2),
+            'monthly_received': round(sum(r['received'] for r in result), 2),
+            'monthly_paid': round(sum(r['paid'] for r in result), 2),
             'months': result,
         })
     except Exception as e:
-        logger.error(f'[MonthlyReceivedPaid] {e}')
+        logger.error(f'[ProjectsMonthly] {e}')
         return err(str(e))
 
 
-# ─── 项目 API ──────────────────────────────────────────
+def dashboard_monthly_abnormal(request):
+    """GET /api/dashboard/monthly-abnormal — 月度逾期统计"""
+    try:
+        monthly = {}
+        for r in ReceivableData.objects.filter(status='abnormal').exclude(month=''):
+            m = r.month
+            if m not in monthly:
+                monthly[m] = {'count': 0, 'unpaid': 0.0}
+            monthly[m]['count'] += 1
+            monthly[m]['unpaid'] += to_f(r.unpaid_amount)
+
+        result = [
+            {'month': m, 'count': monthly[m]['count'], 'unpaid': round(monthly[m]['unpaid'], 2)}
+            for m in sorted(monthly.keys())
+        ]
+        return ok(result)
+    except Exception as e:
+        logger.error(f'[MonthlyAbnormal] {e}')
+        return err(str(e))
+
+
+# ─── 项目 API ─────────────────────────────────────────────
 
 def project_list(request):
-    """
-    GET /api/projects/
-    按项目名聚合 ReceivableSource，返回去重项目列表
-    page/page_size/keyword 参数
-    """
+    """GET /api/projects — 按项目名聚合 ReceivableData"""
     try:
         page = int(request.GET.get('page', 1))
         page_size = int(request.GET.get('page_size', 20))
         keyword = request.GET.get('keyword', '').strip()
 
-        all_rs = ReceivableSource.objects.all()
+        qs = ReceivableData.objects.all()
         if keyword:
-            all_rs = all_rs.filter(
-                Q(PROJECT_NAME__icontains=keyword) |
-                Q(PROJECT_MANAGER__icontains=keyword) |
-                Q(CONTRACT_NAME__icontains=keyword)
-            )
+            qs = qs.filter(Q(project_name__icontains=keyword) | Q(manager_name__icontains=keyword))
 
-        # 按 PROJECT_NAME 去重聚合
         seen = {}
-        for r in all_rs.order_by('PROJECT_NAME', '-BUSINESS_MONTH'):
-            pname = r.PROJECT_NAME or ''
+        for r in qs.order_by('project_name', '-month'):
+            pname = r.project_name or ''
             if pname not in seen:
                 seen[pname] = {
-                    'manager': r.PROJECT_MANAGER or '',
-                    'status': r.OVERDUE_STATUS or 'normal',
-                    'record_date': r.BUSINESS_MONTH,
+                    'manager': r.manager_name or '',
+                    'status': r.status or 'normal',
+                    'record_date': r.month,
                     'total_estimated': 0.0,
                     'total_received': 0.0,
                     'total_unpaid': 0.0,
                     'all_recs': [],
                 }
-            seen[pname]['total_estimated'] += to_f(r.ESTIMATED_RECEIVABLE)
-            seen[pname]['total_received'] += to_f(r.RECEIVED_AMOUNT)
-            seen[pname]['total_unpaid'] += to_f(r.TOTAL_UNPAID)
+            seen[pname]['total_estimated'] += to_f(r.receivable_amount)
+            seen[pname]['total_received'] += to_f(r.received_amount)
+            seen[pname]['total_unpaid'] += to_f(r.unpaid_amount)
             seen[pname]['all_recs'].append(r)
 
         items_data = sorted(seen.items(), key=lambda x: -x[1]['total_unpaid'])
         total = len(items_data)
         offset = (page - 1) * page_size
-        page_items = items_data[offset:offset + page_size]
-
         items = []
-        for pname, info in page_items:
-            all_recs = info['all_recs']
+        for pname, info in items_data[offset:offset + page_size]:
             sub_items = [
                 {
                     'id': r.id,
-                    'record_date': str(r.BUSINESS_MONTH)[:10] if r.BUSINESS_MONTH else '',
-                    'manager_name': r.PROJECT_MANAGER or '',
-                    'abnormal_amount': to_f(r.ESTIMATED_RECEIVABLE),
-                    'received_amount': to_f(r.RECEIVED_AMOUNT),
-                    'unpaid_amount': to_f(r.TOTAL_UNPAID),
+                    'record_date': r.month or '',
+                    'manager_name': r.manager_name or '',
+                    'abnormal_amount': to_f(r.receivable_amount),
+                    'received_amount': to_f(r.received_amount),
+                    'unpaid_amount': to_f(r.unpaid_amount),
                     'days_overdue': 0,
-                    'status': r.OVERDUE_STATUS or 'normal',
+                    'status': r.status or 'normal',
                 }
-                for r in all_recs
+                for r in info['all_recs']
             ]
-            latest = all_recs[0]
             items.append({
                 'project_name': pname,
                 'manager_name': info['manager'],
                 'status': info['status'],
-                'record_date': str(info['record_date'])[:10] if info['record_date'] else '',
+                'record_date': info['record_date'] or '',
                 'abnormal_amount': round(info['total_estimated'], 2),
                 'received_amount': round(info['total_received'], 2),
                 'unpaid_amount': round(info['total_unpaid'], 2),
@@ -488,95 +388,81 @@ def project_list(request):
                 'has_detail': len(sub_items) > 1,
                 'sub_items': sub_items,
             })
-
-        return ok({
-            'total': total,
-            'page': page,
-            'page_size': page_size,
-            'items': items,
-        })
+        return ok({'total': total, 'page': page, 'page_size': page_size, 'items': items})
     except Exception as e:
         logger.error(f'[ProjectList] {e}')
         return err(str(e))
 
 
 def project_detail(request, project_id):
-    """
-    GET /api/projects/<id>/
-    """
+    """GET /api/projects/<id>"""
     try:
         try:
-            record = ReceivableSource.objects.get(id=project_id)
-        except ReceivableSource.DoesNotExist:
-            return err('\u9879\u76ee\u4e0d\u5b58\u5728', code=404)
+            record = ReceivableData.objects.get(id=project_id)
+        except ReceivableData.DoesNotExist:
+            return err('项目不存在', code=404)
 
-        proj_recs = list(ReceivableSource.objects.filter(
-            PROJECT_NAME=record.PROJECT_NAME
-        ).order_by('-BUSINESS_MONTH'))
-
-        receivable_history = [
-            {
-                'month': str(r.BUSINESS_MONTH)[:7] if r.BUSINESS_MONTH else '',
-                'receivable_amount': to_f(r.ESTIMATED_RECEIVABLE),
-                'received_amount': to_f(r.RECEIVED_AMOUNT),
-                'status': r.OVERDUE_STATUS or 'normal',
-            }
-            for r in proj_recs
-        ]
-
+        proj_recs = list(ReceivableData.objects.filter(project_name=record.project_name).order_by('-month'))
         return ok({
             'id': record.id,
-            'project_name': record.PROJECT_NAME or '',
-            'manager_name': record.PROJECT_MANAGER or '',
-            'abnormal_amount': to_f(record.ESTIMATED_RECEIVABLE),
-            'received_amount': to_f(record.RECEIVED_AMOUNT),
-            'unpaid_amount': to_f(record.TOTAL_UNPAID),
+            'project_name': record.project_name or '',
+            'manager_name': record.manager_name or '',
+            'abnormal_amount': to_f(record.receivable_amount),
+            'received_amount': to_f(record.received_amount),
+            'unpaid_amount': to_f(record.unpaid_amount),
             'days_overdue': 0,
-            'status': record.OVERDUE_STATUS or 'normal',
-            'record_date': str(record.BUSINESS_MONTH)[:10] if record.BUSINESS_MONTH else '',
-            'receivable_history': receivable_history,
+            'status': record.status or 'normal',
+            'record_date': record.month or '',
+            'receivable_history': [
+                {
+                    'month': r.month or '',
+                    'receivable_amount': to_f(r.receivable_amount),
+                    'received_amount': to_f(r.received_amount),
+                    'status': r.status or 'normal',
+                }
+                for r in proj_recs
+            ],
         })
     except Exception as e:
         logger.error(f'[ProjectDetail] {e}')
         return err(str(e))
 
 
-# ─── ERP 项目 API ────────────────────────────────────────
+# ─── ERP 项目 API ──────────────────────────────────────────
 
 def projects_erp_list(request):
-    """GET /api/projects-erp/"""
+    """GET /api/projects-erp"""
     try:
         page = int(request.GET.get('page', 1))
         page_size = int(request.GET.get('page_size', 20))
         keyword = request.GET.get('keyword', '').strip()
-        qs = ProjectBase.objects.all()
+        qs = Project.objects.all()
         if keyword:
             qs = qs.filter(
-                Q(CONTRACT_NAME__icontains=keyword) |
-                Q(PROJECT_ALIAS__icontains=keyword) |
-                Q(PROJECT_MANAGER__icontains=keyword)
+                Q(project_name__icontains=keyword) |
+                Q(project_code__icontains=keyword) |
+                Q(manager_name__icontains=keyword)
             )
         total = qs.count()
-        page_data = list(qs[(page-1)*page_size: page*page_size])
         items = [
             {
                 'id': r.id,
-                'project_name': r.CONTRACT_NAME or '',
-                'project_alias': r.PROJECT_ALIAS or '',
-                'business_mode': r.BUSINESS_MODE or '',
-                'department': r.DEPARTMENT or '',
-                'manager_name': r.PROJECT_MANAGER or '',
-                'sales_contact': r.SALES_CONTACT or '',
-                'share_type': r.SHARE_TYPE or '',
-                'settlement_cycle': r.SETTLEMENT_CYCLE or '',
-                'reconciliation_period': r.RECONCILIATION_PERIOD or '',
-                'invoice_wait_period': r.INVOICE_WAIT_PERIOD or '',
-                'payment_period': r.PAYMENT_PERIOD or '',
-                'total_period': r.TOTAL_PERIOD or '',
-                'invoice_mode': r.INVOICE_MODE or '',
+                'project_name': r.project_name or '',
+                'project_alias': r.project_code or '',
+                'business_mode': r.business_model or '',
+                'department': r.department or '',
+                'manager_name': r.manager_name or '',
+                'sales_contact': r.sales_contact or '',
+                'share_type': r.shared_type or '',
+                'settlement_cycle': r.settlement_cycle or '',
+                'reconciliation_period': '',
+                'invoice_wait_period': '',
+                'payment_period': '',
+                'total_period': r.total_zhangqi or '',
+                'invoice_mode': '',
                 'created_at': str(r.created_at)[:10] if r.created_at else '',
             }
-            for r in page_data
+            for r in qs[(page-1)*page_size: page*page_size]
         ]
         return ok({'total': total, 'page': page, 'page_size': page_size, 'items': items})
     except Exception as e:
@@ -585,27 +471,27 @@ def projects_erp_list(request):
 
 
 def project_erp_detail(request, project_id):
-    """GET /api/projects-erp/<id>/"""
+    """GET /api/projects-erp/<id>"""
     try:
         try:
-            p = ProjectBase.objects.get(id=project_id)
-        except ProjectBase.DoesNotExist:
-            return err('\u9879\u76ee\u4e0d\u5b58\u5728', code=404)
+            p = Project.objects.get(id=project_id)
+        except Project.DoesNotExist:
+            return err('项目不存在', code=404)
         return ok({
             'id': p.id,
-            'project_name': p.CONTRACT_NAME or '',
-            'project_alias': p.PROJECT_ALIAS or '',
-            'business_mode': p.BUSINESS_MODE or '',
-            'department': p.DEPARTMENT or '',
-            'manager_name': p.PROJECT_MANAGER or '',
-            'sales_contact': p.SALES_CONTACT or '',
-            'share_type': p.SHARE_TYPE or '',
-            'settlement_cycle': p.SETTLEMENT_CYCLE or '',
-            'reconciliation_period': p.RECONCILIATION_PERIOD or '',
-            'invoice_wait_period': p.INVOICE_WAIT_PERIOD or '',
-            'payment_period': p.PAYMENT_PERIOD or '',
-            'total_period': p.TOTAL_PERIOD or '',
-            'invoice_mode': p.INVOICE_MODE or '',
+            'project_name': p.project_name or '',
+            'project_alias': p.project_code or '',
+            'business_mode': p.business_model or '',
+            'department': p.department or '',
+            'manager_name': p.manager_name or '',
+            'sales_contact': p.sales_contact or '',
+            'share_type': p.shared_type or '',
+            'settlement_cycle': p.settlement_cycle or '',
+            'reconciliation_period': '',
+            'invoice_wait_period': '',
+            'payment_period': '',
+            'total_period': p.total_zhangqi or '',
+            'invoice_mode': '',
             'created_at': str(p.created_at)[:10] if p.created_at else '',
         })
     except Exception as e:
@@ -614,46 +500,41 @@ def project_erp_detail(request, project_id):
 
 
 def project_erp_summary(request):
-    """GET /api/projects-erp/summary/"""
+    """GET /api/projects-erp/summary"""
     try:
-        total = ProjectBase.objects.count()
-        managers = ProjectBase.objects.values('PROJECT_MANAGER').distinct().count()
+        total = Project.objects.count()
+        managers = Project.objects.values('manager_name').distinct().count()
         return ok({'total_projects': total, 'total_managers': managers, 'new_this_month': 0})
     except Exception as e:
         logger.error(f'[ProjectERPSummary] {e}')
         return err(str(e))
 
 
-# ─── 应收账款 API ────────────────────────────────────────
+# ─── 应收账款 API ──────────────────────────────────────────
 
 def receivables_list(request):
-    """GET /api/receivables/"""
+    """GET /api/receivables"""
     try:
         page = int(request.GET.get('page', 1))
         page_size = int(request.GET.get('page_size', 20))
         keyword = request.GET.get('keyword', '').strip()
-        qs = ReceivableSource.objects.all()
+        qs = ReceivableData.objects.all()
         if keyword:
-            qs = qs.filter(
-                Q(PROJECT_NAME__icontains=keyword) |
-                Q(CONTRACT_NAME__icontains=keyword) |
-                Q(PROJECT_MANAGER__icontains=keyword)
-            )
+            qs = qs.filter(Q(project_name__icontains=keyword) | Q(manager_name__icontains=keyword))
         total = qs.count()
-        page_data = list(qs[(page-1)*page_size: page*page_size])
         items = [
             {
                 'id': r.id,
-                'project_name': r.PROJECT_NAME or '',
-                'contract_name': r.CONTRACT_NAME or '',
-                'manager_name': r.PROJECT_MANAGER or '',
-                'month': str(r.BUSINESS_MONTH)[:7] if r.BUSINESS_MONTH else '',
-                'receivable_amount': to_f(r.ESTIMATED_RECEIVABLE),
-                'received_amount': to_f(r.RECEIVED_AMOUNT),
-                'unpaid_amount': to_f(r.TOTAL_UNPAID),
-                'status': r.OVERDUE_STATUS or 'normal',
+                'project_name': r.project_name or '',
+                'contract_name': r.project_name or '',
+                'manager_name': r.manager_name or '',
+                'month': r.month or '',
+                'receivable_amount': to_f(r.receivable_amount),
+                'received_amount': to_f(r.received_amount),
+                'unpaid_amount': to_f(r.unpaid_amount),
+                'status': r.status or 'normal',
             }
-            for r in page_data
+            for r in qs[(page-1)*page_size: page*page_size]
         ]
         return ok({'total': total, 'page': page, 'page_size': page_size, 'items': items})
     except Exception as e:
@@ -661,39 +542,38 @@ def receivables_list(request):
         return err(str(e))
 
 
-# ─── 应付管理 API ────────────────────────────────────────
+# ─── 应付管理 API ──────────────────────────────────────────
 
 def payables_registrations_list(request):
-    """GET /api/payables/registrations/"""
+    """GET /api/payables/registrations"""
     try:
         page = int(request.GET.get('page', 1))
         page_size = int(request.GET.get('page_size', 20))
         keyword = request.GET.get('keyword', '').strip()
-        qs = ExpenseRecord.objects.all()
+        qs = PaymentRegistration.objects.all()
         if keyword:
             qs = qs.filter(
-                Q(APPLICANT__icontains=keyword) |
-                Q(PROJECT__icontains=keyword) |
-                Q(SUMMARY__icontains=keyword)
+                Q(applicant_name__icontains=keyword) |
+                Q(project_name__icontains=keyword) |
+                Q(description__icontains=keyword)
             )
         total = qs.count()
-        page_data = list(qs[(page-1)*page_size: page*page_size])
         items = [
             {
                 'id': r.id,
-                'applicant': r.APPLICANT or '',
-                'dingtalk_id': r.DINGTALK_ID or '',
-                'summary': r.SUMMARY or '',
-                'project': r.PROJECT or '',
-                'planned_date': str(r.PLANNED_PAYMENT_DATE)[:10] if r.PLANNED_PAYMENT_DATE else '',
-                'apply_amount': to_f(r.APPLICATION_AMOUNT),
-                'paid_amount': to_f(r.PAYMENT_AMOUNT),
-                'pay_date': str(r.PAYMENT_DATE)[:10] if r.PAYMENT_DATE else '',
-                'payment_entity': r.PAYMENT_ENTITY or '',
-                'is_planned': bool(r.IS_PLANNED),
-                'has_invoice': bool(r.HAS_INVOICE),
+                'applicant': r.applicant_name or '',
+                'dingtalk_id': r.invoice_no or '',
+                'summary': r.description or '',
+                'project': r.project_name or '',
+                'planned_date': str(r.planned_date)[:10] if r.planned_date else '',
+                'apply_amount': to_f(r.apply_amount),
+                'paid_amount': to_f(r.paid_amount),
+                'pay_date': str(r.pay_date)[:10] if r.pay_date else '',
+                'payment_entity': r.payment_manager or '',
+                'is_planned': bool(r.is_paid),
+                'has_invoice': bool(r.has_invoice),
             }
-            for r in page_data
+            for r in qs[(page-1)*page_size: page*page_size]
         ]
         return ok({'total': total, 'page': page, 'page_size': page_size, 'items': items})
     except Exception as e:
@@ -702,31 +582,28 @@ def payables_registrations_list(request):
 
 
 def payables_registrations_summary(request):
-    """GET /api/payables/registrations/summary/"""
+    """GET /api/payables/registrations/summary"""
     try:
-        all_exp = list(ExpenseRecord.objects.all())
-        total_apply = sum(to_f(r.APPLICATION_AMOUNT) for r in all_exp)
-        total_paid = sum(to_f(r.PAYMENT_AMOUNT) for r in all_exp)
-        paid_count = sum(1 for r in all_exp if r.IS_PLANNED)
+        all_exp = list(PaymentRegistration.objects.all())
+        total_apply = sum(to_f(r.apply_amount) for r in all_exp)
+        total_paid = sum(to_f(r.paid_amount) for r in all_exp)
         return ok({
             'total_apply': round(total_apply, 2),
             'total_paid': round(total_paid, 2),
             'total_pending': round(total_apply - total_paid, 2),
             'total_count': len(all_exp),
-            'paid_count': paid_count,
+            'paid_count': sum(1 for r in all_exp if r.is_paid),
         })
     except Exception as e:
         logger.error(f'[PayablesSummary] {e}')
         return err(str(e))
 
 
-# ─── 同步 API ────────────────────────────────────────
+# ─── 同步 API ─────────────────────────────────────────────
 
+@csrf_exempt
 def sync_from_docs(request):
-    """
-    POST /api/sync/from-docs/
-    从腾讯文档同步所有数据
-    """
+    """POST /api/sync/from-docs"""
     if request.method != 'POST':
         return err('仅支持 POST 请求', code=405)
     try:

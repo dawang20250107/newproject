@@ -81,9 +81,11 @@ class ReceivableData(models.Model):
         null=True, blank=True
     )
     project_name = models.CharField('项目名称', max_length=200, blank=True, default='')
+    manager_name = models.CharField('负责人', max_length=100, blank=True, default='')
     month = models.CharField('月份', max_length=7, blank=True, default='')  # YYYY-MM
     receivable_amount = models.DecimalField('应收金额', max_digits=15, decimal_places=2, default=0)
     received_amount = models.DecimalField('已回款金额', max_digits=15, decimal_places=2, default=0)
+    unpaid_amount = models.DecimalField('未收款金额', max_digits=15, decimal_places=2, default=0)
     status = models.CharField('状态', max_length=20, choices=STATUS_CHOICES, default='normal')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     is_billed = models.CharField('是否开票', max_length=20, blank=True, default='')
