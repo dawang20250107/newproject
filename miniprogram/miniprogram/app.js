@@ -1,13 +1,15 @@
-const API_BASE = 'https://kxtshare.cloud'
+// ⚠️ 替换为你的云托管环境ID（开发者工具 → 云开发控制台 → 环境ID，格式如 prod-xxxxxx）
+const CLOUD_ENV = 'YOUR_CLOUD_ENV_ID'
 
 App({
   globalData: {
-    apiBase: API_BASE,
+    cloudEnv: CLOUD_ENV,
     token: '',
     profile: null,
   },
 
   onLaunch() {
+    wx.cloud.init({ env: CLOUD_ENV, traceUser: false })
     this._restoreSession()
   },
 
@@ -20,7 +22,7 @@ App({
     } catch (e) {}
   },
 
-  // 仅供 splash 页调用，外部禁止调用
+  // 仅供 splash 页调用
   _silentLogin() {
     if (this.globalData.token) {
       return Promise.resolve(this.globalData.token)
@@ -43,11 +45,12 @@ App({
             reject(new Error('wx.login 未返回 code'))
             return
           }
-          wx.request({
-            url: API_BASE + '/api/login',
+          wx.cloud.callContainer({
+            config: { env: CLOUD_ENV },
+            path: '/api/login',
             method: 'POST',
+            header: { 'content-type': 'application/json' },
             data: { code: loginRes.code },
-            header: { 'Content-Type': 'application/json' },
             success: (r) => {
               if (r.statusCode === 200 && r.data && r.data.token) {
                 this.globalData.token = r.data.token
