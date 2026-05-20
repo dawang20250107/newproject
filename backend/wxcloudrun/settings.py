@@ -115,8 +115,9 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'kxt-jwt-dev-secret-change-in-producti
 WX_APPID   = os.environ.get('WX_APPID', '')
 WX_SECRET  = os.environ.get('WX_SECRET', '')
 
-# DeepSeek AI API (兼容 Anthropic 格式)
+# AI 大模型 API（DeepSeek，OpenAI 兼容协议）
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', os.environ.get('CLAUDE_API_KEY', ''))
+DEEPSEEK_BASE    = os.environ.get('DEEPSEEK_BASE', 'https://api.deepseek.com/v1')
 DEEPSEEK_MODEL   = os.environ.get('DEEPSEEK_MODEL', 'deepseek-v4-flash')
 
 # 日志配置
