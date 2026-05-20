@@ -21,12 +21,18 @@
 
   <!-- 加载状态 -->
   <view class="status-area">
-    <view class="dots">
+    <view class="dots" wx:if="{{!showRetryBtn}}">
       <view class="d d1"></view>
       <view class="d d2"></view>
       <view class="d d3"></view>
     </view>
     <text class="status-txt">{{statusText}}</text>
+  </view>
+
+  <!-- 重试按钮 -->
+  <view wx:if="{{showRetryBtn}}" class="retry-area">
+    <button class="retry-btn" bindtap="onTapRetry">点此重试</button>
+    <text class="retry-hint">请确认网络通畅后重试\n或联系管理员检查服务器域名配置</text>
   </view>
 
   <!-- 点按提示 -->

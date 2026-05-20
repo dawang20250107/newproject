@@ -15,8 +15,7 @@ page {
 /* ── 卡片（毛玻璃） ───────────────────── */
 .card {
   background: rgba(255, 255, 253, 0.93);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  /* backdrop-filter not supported in WXSS */
   border-radius: 24rpx;
   padding: 36rpx;
   margin: 20rpx 24rpx;

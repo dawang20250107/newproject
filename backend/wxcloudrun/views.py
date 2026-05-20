@@ -258,9 +258,9 @@ def report_week(request):
 @require_http_methods(['POST'])
 @jwt_required
 def analysis(request):
-    """POST /api/analysis — 调用 Claude 分析周报或月报"""
-    if not settings.CLAUDE_API_KEY:
-        return _json({'error': '未配置 AI 密钥，请在 .env 设置 CLAUDE_API_KEY'}, 503)
+    """POST /api/analysis — 调用 DeepSeek 分析周报或月报"""
+    if not settings.DEEPSEEK_API_KEY:
+        return _json({'error': '未配置 AI 密钥，请在 .env 设置 DEEPSEEK_API_KEY'}, 503)
 
     try:
         body = json.loads(request.body)
@@ -331,16 +331,16 @@ def analysis(request):
         return _json({'error': '不支持的分析类型，仅支持 week / month'}, 400)
 
     req_payload = json.dumps({
-        'model': settings.CLAUDE_MODEL,
+        'model': settings.DEEPSEEK_MODEL,
         'max_tokens': 1024,
         'messages': [{'role': 'user', 'content': prompt}],
     }).encode('utf-8')
 
     req = urllib_req.Request(
-        'https://api.anthropic.com/v1/messages',
+        'https://api.deepseek.com/anthropic/messages',
         data=req_payload,
         headers={
-            'x-api-key': settings.CLAUDE_API_KEY,
+            'x-api-key': settings.DEEPSEEK_API_KEY,
             'anthropic-version': '2023-06-01',
             'content-type': 'application/json',
         },
@@ -348,11 +348,20 @@ def analysis(request):
     try:
         with urllib_req.urlopen(req, timeout=45) as resp:
             result = json.loads(resp.read())
-        text = result['content'][0]['text']
+        # DeepSeek 可能返回多个 content block（thinking + text），取 type='text' 的
+        text = ''
+        for block in result.get('content', []):
+            if block.get('type') == 'text' and block.get('text'):
+                text = block['text']
+                break
+        # fallback: 直接取最后一个 block 的 text 字段
+        if not text and result.get('content'):
+            last = result['content'][-1]
+            text = last.get('text', '') or last.get('thinking', '')
         return _json({'ok': True, 'analysis': text, 'type': analysis_type, 'range': range_str})
     except urllib_req.HTTPError as e:
         err_body = e.read().decode('utf-8', errors='replace')
-        logger.error(f'[analysis] Claude API 错误 {e.code}: {err_body}')
+        logger.error(f'[analysis] DeepSeek API 错误 {e.code}: {err_body}')
         return _json({'error': f'AI 服务错误 ({e.code})'}, 500)
     except Exception as e:
         logger.error(f'[analysis] 分析失败: {e}')

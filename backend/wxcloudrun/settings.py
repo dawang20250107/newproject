@@ -1,7 +1,9 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / '.env')
 
 SECRET_KEY = os.environ.get(
     'DJANGO_SECRET_KEY',
@@ -113,9 +115,9 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'kxt-jwt-dev-secret-change-in-producti
 WX_APPID   = os.environ.get('WX_APPID', '')
 WX_SECRET  = os.environ.get('WX_SECRET', '')
 
-# Claude AI API
-CLAUDE_API_KEY   = os.environ.get('CLAUDE_API_KEY', '')
-CLAUDE_MODEL     = os.environ.get('CLAUDE_MODEL', 'claude-haiku-4-5-20251001')
+# DeepSeek AI API (兼容 Anthropic 格式)
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', os.environ.get('CLAUDE_API_KEY', ''))
+DEEPSEEK_MODEL   = os.environ.get('DEEPSEEK_MODEL', 'deepseek-v4-flash')
 
 # 日志配置
 LOGGING = {
