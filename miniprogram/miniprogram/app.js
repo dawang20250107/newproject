@@ -56,7 +56,9 @@ App({
                 wx.setStorageSync('kxt_profile', r.data.profile || null)
                 resolve(r.data.token)
               } else {
-                const errMsg = (r.data && r.data.error) ? r.data.error : 'login failed'
+                const errMsg = (r.data && r.data.error)
+                  ? r.data.error
+                  : `HTTP ${r.statusCode}`
                 reject(new Error(errMsg))
               }
             },

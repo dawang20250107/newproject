@@ -99,7 +99,11 @@ def wx_login(request):
     if not openid:
         return _json({'error': '获取openid失败'}, 400)
 
-    profile, _ = UserProfile.objects.get_or_create(openid=openid)
+    try:
+        profile, _ = UserProfile.objects.get_or_create(openid=openid)
+    except Exception as e:
+        logger.error(f'[wx_login] 数据库错误: {e}')
+        return _json({'error': f'数据库错误: {e}'}, 500)
     return _json({
         'token': _make_token(profile),
         'profile': _profile_dict(profile),
