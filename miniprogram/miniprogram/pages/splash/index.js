@@ -36,7 +36,8 @@ Page({
           wx.switchTab({ url: '/pages/report/index' })
         }, 400)
       })
-      .catch(() => {
+      .catch((err) => {
+        const errMsg = (err && (err.message || err.errMsg)) ? (err.message || err.errMsg) : String(err)
         const retryCount = this.data.retryCount + 1
         if (retryCount < MAX_RETRIES) {
           this.setData({
@@ -50,7 +51,7 @@ Page({
           }, 5000)
         } else {
           this.setData({
-            statusText: '无法连接服务器',
+            statusText: '连接失败：' + errMsg,
             showRetryBtn: true,
           })
         }

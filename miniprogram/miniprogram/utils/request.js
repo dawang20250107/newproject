@@ -27,7 +27,9 @@ async function request(path, options = {}) {
     return await _doRequest(path, options, token)
   } catch (err) {
     if (err && err.statusCode === 401) {
-      // token 失效，重新登录后重试一次
+      // 清除过期 token，强制重新走 wx.login 换新 token
+      a.globalData.token = ''
+      wx.removeStorageSync('kxt_token')
       token = await a._silentLogin()
       return _doRequest(path, options, token)
     }
