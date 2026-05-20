@@ -1,5 +1,5 @@
 {
-  "containerPort": 80,
+  "containerPort": 8080,
   "minNum": 1,
   "maxNum": 5,
   "cpu": 1,
@@ -14,7 +14,7 @@
   "healthCheck": {
     "type": "http",
     "path": "/",
-    "port": 80
+    "port": 8080
   },
   "customLogs": "stdout",
   "dataBaseName": "kxt"

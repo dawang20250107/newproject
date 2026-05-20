@@ -19,11 +19,11 @@ RUN pip install --no-cache-dir -r requirements.txt \
 # 复制后端代码（wxcloudrun app + manage.py + .env）
 COPY . .
 
-# 云托管服务端口配置为 80，gunicorn 必须绑定 0.0.0.0:80
-EXPOSE 80
+# 访问端口(外部): 80 → 服务端口(容器内): 8080，gunicorn 必须绑定 8080
+EXPOSE 8080
 
-# 启动 Gunicorn，监听 80 端口（与云托管 container.config.json containerPort 一致）
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:80", \
+# 启动 Gunicorn，监听 8080 端口（与云托管服务端口一致）
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8080", \
      "--timeout", "60", \
      "--access-logfile", "-", "--error-logfile", "-", \
      "wxcloudrun.wsgi:application"]
