@@ -9,7 +9,7 @@ App({
 
   onLaunch() {
     this._restoreSession()
-    this._silentLogin()
+    // 登录由 splash 页触发，避免重复调用 wx.login
   },
 
   _restoreSession() {
