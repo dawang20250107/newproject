@@ -1,29 +1,28 @@
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
-# 安装系统依赖
+# 安装 MySQL 客户端依赖（mysqlclient 需要）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
-    libmariadb-dev \
+    default-libmysqlclient-dev \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# 设置 pip 镜像
-RUN pip config set global.index-url https://mirrors.tencent.com/pypi/simple \
-    && pip config set global.trusted-host mirrors.tencent.com
-
-# 拷贝依赖文件并安装
+# 复制依赖文件
 COPY requirements.txt .
-RUN pip install --upgrade pip && pip install -r requirements.txt
 
-# 拷贝项目代码
+# 安装 Python 依赖
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir mysqlclient
+
+# 复制后端代码（wxcloudrun app + manage.py + .env）
 COPY . .
 
-# 收集静态文件
-RUN python manage.py collectstatic --noinput || true
+# CloudBase 云托管默认读 8080 端口
+EXPOSE 8080
 
-# 暴露端口（容器内部监听端口）
-EXPOSE 80
-
-# 启动命令（使用 gunicorn 生产服务器）
-CMD ["gunicorn", "--bind", "0.0.0.0:80", "--workers", "2", "--timeout", "60", "wxcloudrun.wsgi:application"]
+# 启动 Gunicorn
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8080", \
+     "--access-logfile", "-", "--error-logfile", "-", \
+     "wxcloudrun.wsgi:application"]
