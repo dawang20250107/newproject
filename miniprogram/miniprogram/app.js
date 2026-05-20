@@ -1,4 +1,4 @@
-const API_BASE = 'https://kxtshare.cloud'
+const API_BASE = 'https://dailyreport-248461-6-1371772686.sh.run.tcloudbase.com'
 
 App({
   globalData: {
