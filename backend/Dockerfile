@@ -20,9 +20,9 @@ RUN pip install --no-cache-dir -r requirements.txt \
 COPY . .
 
 # CloudBase 云托管默认读 8080 端口
-EXPOSE 8080
+EXPOSE 80
 
-# 启动 Gunicorn
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8080", \
+# 启动 Gunicorn，监听 80 端口（与云托管服务端口一致）
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:80", \
      "--access-logfile", "-", "--error-logfile", "-", \
      "wxcloudrun.wsgi:application"]
