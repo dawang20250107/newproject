@@ -20,66 +20,55 @@ App({
     } catch (e) {}
   },
 
-  async _silentLogin(force) {
-    if (this.globalData.token && !force) return this.globalData.token
-    if (this._loginPromise) return this._loginPromise
-
-    this._loginPromise = this._doLoginInternal()
-    try {
-      const token = await this._loginPromise
-      return token
-    } finally {
-      this._loginPromise = null
+  // 仅供 splash 页调用，外部禁止调用
+  _silentLogin() {
+    if (this.globalData.token) {
+      return Promise.resolve(this.globalData.token)
     }
+    if (this._loginPromise) {
+      return this._loginPromise
+    }
+    this._loginPromise = this._doLoginInternal()
+    this._loginPromise.finally(() => {
+      this._loginPromise = null
+    })
+    return this._loginPromise
   },
 
-  async _doLoginInternal() {
-    const maxAttempts = 3
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        const code = await new Promise((resolve, reject) => {
-          wx.login({
-            success: (res) => {
-              if (res.code) resolve(res.code)
-              else reject(new Error('wx.login failed'))
-            },
-            fail: reject,
-          })
-        })
-
-        const result = await new Promise((resolve, reject) => {
+  _doLoginInternal() {
+    return new Promise((resolve, reject) => {
+      wx.login({
+        success: (loginRes) => {
+          if (!loginRes.code) {
+            reject(new Error('wx.login 未返回 code'))
+            return
+          }
           wx.request({
             url: API_BASE + '/api/login',
             method: 'POST',
-            data: { code },
+            data: { code: loginRes.code },
             header: { 'Content-Type': 'application/json' },
             success: (r) => {
               if (r.statusCode === 200 && r.data && r.data.token) {
-                resolve(r.data)
+                this.globalData.token = r.data.token
+                this.globalData.profile = r.data.profile || null
+                wx.setStorageSync('kxt_token', r.data.token)
+                wx.setStorageSync('kxt_profile', r.data.profile || null)
+                resolve(r.data.token)
               } else {
                 const errMsg = (r.data && r.data.error) ? r.data.error : 'login failed'
                 reject(new Error(errMsg))
               }
             },
-            fail: reject,
+            fail: (err) => {
+              reject(new Error(err.errMsg || 'network error'))
+            },
           })
-        })
-
-        this.globalData.token = result.token
-        this.globalData.profile = result.profile || null
-        wx.setStorageSync('kxt_token', result.token)
-        wx.setStorageSync('kxt_profile', result.profile || null)
-        return result.token
-
-      } catch (e) {
-        const errMsg = e.message || String(e)
-        if (errMsg.includes('code been used') && attempt < maxAttempts) {
-          await new Promise(r => setTimeout(r, 3000))
-          continue
-        }
-        throw e
-      }
-    }
-    throw new Error('login failed after max attempts')
+        },
+        fail: (err) => {
+          reject(new Error(err.errMsg || 'wx.login failed'))
+        },
+      })
+    })
   },
 })
