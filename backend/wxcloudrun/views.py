@@ -337,38 +337,17 @@ def analysis(request):
     }).encode('utf-8')
 
     req = urllib_req.Request(
-<<<<<<< HEAD
-        'https://api.deepseek.com/anthropic/messages',
-        data=req_payload,
-        headers={
-            'x-api-key': settings.DEEPSEEK_API_KEY,
-            'anthropic-version': '2023-06-01',
-=======
         settings.DEEPSEEK_BASE + '/chat/completions',
         data=req_payload,
         headers={
             'Authorization': 'Bearer ' + settings.DEEPSEEK_API_KEY,
->>>>>>> b1e6258 (fix: switch AI backend from Anthropic to DeepSeek (OpenAI-compat protocol))
             'content-type': 'application/json',
         },
     )
     try:
         with urllib_req.urlopen(req, timeout=45) as resp:
             result = json.loads(resp.read())
-<<<<<<< HEAD
-        # DeepSeek 可能返回多个 content block（thinking + text），取 type='text' 的
-        text = ''
-        for block in result.get('content', []):
-            if block.get('type') == 'text' and block.get('text'):
-                text = block['text']
-                break
-        # fallback: 直接取最后一个 block 的 text 字段
-        if not text and result.get('content'):
-            last = result['content'][-1]
-            text = last.get('text', '') or last.get('thinking', '')
-=======
         text = result['choices'][0]['message']['content']
->>>>>>> b1e6258 (fix: switch AI backend from Anthropic to DeepSeek (OpenAI-compat protocol))
         return _json({'ok': True, 'analysis': text, 'type': analysis_type, 'range': range_str})
     except urllib_req.HTTPError as e:
         err_body = e.read().decode('utf-8', errors='replace')
