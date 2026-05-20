@@ -9,7 +9,6 @@ App({
 
   onLaunch() {
     this._restoreSession()
-    // 登录由 splash 页触发，避免重复调用 wx.login
   },
 
   _restoreSession() {
@@ -24,32 +23,63 @@ App({
   async _silentLogin(force) {
     if (this.globalData.token && !force) return this.globalData.token
     if (this._loginPromise) return this._loginPromise
-    this._loginPromise = new Promise((resolve, reject) => {
-      wx.login({
-        success: (res) => {
-          if (!res.code) return reject(new Error('wx.login failed'))
+
+    this._loginPromise = this._doLoginInternal()
+    try {
+      const token = await this._loginPromise
+      return token
+    } finally {
+      this._loginPromise = null
+    }
+  },
+
+  async _doLoginInternal() {
+    const maxAttempts = 3
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const code = await new Promise((resolve, reject) => {
+          wx.login({
+            success: (res) => {
+              if (res.code) resolve(res.code)
+              else reject(new Error('wx.login failed'))
+            },
+            fail: reject,
+          })
+        })
+
+        const result = await new Promise((resolve, reject) => {
           wx.request({
             url: API_BASE + '/api/login',
             method: 'POST',
-            data: { code: res.code },
+            data: { code },
             header: { 'Content-Type': 'application/json' },
             success: (r) => {
               if (r.statusCode === 200 && r.data && r.data.token) {
-                this.globalData.token = r.data.token
-                this.globalData.profile = r.data.profile || null
-                wx.setStorageSync('kxt_token', r.data.token)
-                wx.setStorageSync('kxt_profile', r.data.profile || null)
-                resolve(r.data.token)
+                resolve(r.data)
               } else {
-                reject(r.data || new Error('login failed'))
+                const errMsg = (r.data && r.data.error) ? r.data.error : 'login failed'
+                reject(new Error(errMsg))
               }
             },
             fail: reject,
           })
-        },
-        fail: reject,
-      })
-    }).finally(() => { this._loginPromise = null })
-    return this._loginPromise
+        })
+
+        this.globalData.token = result.token
+        this.globalData.profile = result.profile || null
+        wx.setStorageSync('kxt_token', result.token)
+        wx.setStorageSync('kxt_profile', result.profile || null)
+        return result.token
+
+      } catch (e) {
+        const errMsg = e.message || String(e)
+        if (errMsg.includes('code been used') && attempt < maxAttempts) {
+          await new Promise(r => setTimeout(r, 3000))
+          continue
+        }
+        throw e
+      }
+    }
+    throw new Error('login failed after max attempts')
   },
 })
