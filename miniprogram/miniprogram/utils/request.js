@@ -1,17 +1,16 @@
 function _app() { return getApp() }
 
 function _doRequest(path, options, token) {
-  const cloudEnv = _app().globalData.cloudEnv
+  const a = _app()
   return new Promise((resolve, reject) => {
-    wx.cloud.callContainer({
-      config: { env: cloudEnv },
-      path,
+    wx.request({
+      url: a.globalData.apiBase + path,
       method: options.method || 'GET',
+      data: options.data,
       header: Object.assign(
-        { 'content-type': 'application/json' },
+        { 'Content-Type': 'application/json' },
         token ? { 'Authorization': 'Bearer ' + token } : {}
       ),
-      data: options.data,
       success: (r) => {
         if (r.statusCode >= 200 && r.statusCode < 300) resolve(r.data)
         else reject({ statusCode: r.statusCode, data: r.data })

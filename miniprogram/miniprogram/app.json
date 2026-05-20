@@ -23,6 +23,5 @@
     ]
   },
   "style": "v2",
-  "sitemapLocation": "sitemap.json",
-  "cloud": true
+  "sitemapLocation": "sitemap.json"
 }
