@@ -122,22 +122,6 @@
       <text>生成今日汇报</text>
     </view>
 
-    <!-- 保存栏（毛玻璃） -->
-    <view class="save-bar">
-      <view class="save-status">
-        <text wx:if="{{isDirty}}" class="status-dirty">● 未保存</text>
-        <text wx:elif="{{updatedAt}}" class="status-ok">✓ 已保存</text>
-        <text wx:else class="status-idle">—</text>
-      </view>
-      <view class="save-actions">
-        <button class="btn btn-sm" disabled="{{isSaving}}" bindtap="onSave">
-          {{isSaving?'保存中...':'保存'}}
-        </button>
-        <view class="btn btn-ghost btn-sm all-done-btn {{allDone?'glowing':''}}"
-          bindtap="onAllDone">全完成</view>
-      </view>
-    </view>
-
   </block>
 
   <!-- ═══════════════════ 日历 Tab ═══════════════════ -->
@@ -311,4 +295,10 @@
 
     </scroll-view>
   </view>
+</view>
+
+<!-- ═══════════ 自动保存状态提示 ═══════════ -->
+<view wx:if="{{tab==='edit' && (isSaving || savedFlash)}}" class="autosave-pill">
+  <text wx:if="{{isSaving}}">保存中…</text>
+  <text wx:else class="autosave-ok">已自动保存 ✓</text>
 </view>

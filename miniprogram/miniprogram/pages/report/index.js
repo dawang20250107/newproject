@@ -16,7 +16,7 @@ Page({
     isDirty: false,
     isSaving: false,
     updatedAt: null,
-    allDone: false,
+    savedFlash: false,
 
     // 日历
     calYear: new Date().getFullYear(),
@@ -49,8 +49,12 @@ Page({
     else if (this.data.tab === 'week') this._loadWeek()
   },
 
+  onHide() { this._flushSave() },
+  onUnload() { this._flushSave() },
+
   switchTab(e) {
     const tab = e.currentTarget.dataset.tab
+    this._flushSave()
     this.setData({ tab })
     if (tab === 'edit') this._loadReport(this.data.date)
     else if (tab === 'calendar') this._loadCalendar()
@@ -72,136 +76,23 @@ Page({
         commit_text: r.commit_text || '——我承诺明天创造更高效的结果！',
         isDirty: false,
         updatedAt: r.updated_at,
-        allDone: this._computeAllDone(blocks),
       })
     } catch (e) {
       wx.showToast({ title: '加载失败', icon: 'none' })
     }
   },
 
-  _computeAllDone(blocks) {
-    if (!blocks || blocks.length === 0) return false
-    let hasTask = false
-    for (const blk of blocks) {
-      for (const t of (blk.tasks || [])) {
-        hasTask = true
-        if ((t.progress || 0) < 100) return false
-      }
-    }
-    return hasTask
+  // ─── 自动保存 ─────────────────────────────
+
+  _scheduleSave() {
+    if (this._saveTimer) clearTimeout(this._saveTimer)
+    this._saveTimer = setTimeout(() => this._autoSave(), 1000)
   },
 
-  pickDate(e) {
-    const date = e.detail.value
-    if (this.data.isDirty) {
-      wx.showModal({
-        title: '提示', content: '有未保存修改，确定切换日期？',
-        success: (res) => { if (res.confirm) this.setData({ date }, () => this._loadReport(date)) }
-      })
-    } else {
-      this.setData({ date }, () => this._loadReport(date))
-    }
-  },
-
-  addBlock() {
-    const blocks = this.data.blocks.concat([{ start: '09:00', end: '12:00', tasks: [] }])
-    this.setData({ blocks, isDirty: true, allDone: this._computeAllDone(blocks) })
-  },
-
-  removeBlock(e) {
-    const i = e.currentTarget.dataset.i
-    const blocks = this.data.blocks.slice()
-    blocks.splice(i, 1)
-    this.setData({ blocks, isDirty: true, allDone: this._computeAllDone(blocks) })
-  },
-
-  onTimeChange(e) {
-    const { i, field } = e.currentTarget.dataset
-    const blocks = this.data.blocks.slice()
-    blocks[i] = Object.assign({}, blocks[i], { [field]: e.detail.value })
-    this.setData({ blocks, isDirty: true })
-  },
-
-  addTask(e) {
-    const i = e.currentTarget.dataset.i
-    const blocks = this.data.blocks.slice()
-    blocks[i] = Object.assign({}, blocks[i], {
-      tasks: (blocks[i].tasks || []).concat([{ desc: '', progress: 0 }])
-    })
-    this.setData({ blocks, isDirty: true, allDone: false })
-  },
-
-  removeTask(e) {
-    const { i, j } = e.currentTarget.dataset
-    const blocks = this.data.blocks.slice()
-    const tasks = blocks[i].tasks.slice()
-    tasks.splice(j, 1)
-    blocks[i] = Object.assign({}, blocks[i], { tasks })
-    this.setData({ blocks, isDirty: true, allDone: this._computeAllDone(blocks) })
-  },
-
-  onTaskInput(e) {
-    const { i, j } = e.currentTarget.dataset
-    const blocks = this.data.blocks.slice()
-    const tasks = blocks[i].tasks.slice()
-    tasks[j] = Object.assign({}, tasks[j], { desc: e.detail.value })
-    blocks[i] = Object.assign({}, blocks[i], { tasks })
-    this.setData({ blocks, isDirty: true })
-  },
-
-  onProgressChange(e) {
-    const { i, j } = e.currentTarget.dataset
-    const blocks = this.data.blocks.slice()
-    const tasks = blocks[i].tasks.slice()
-    tasks[j] = Object.assign({}, tasks[j], { progress: e.detail.value })
-    blocks[i] = Object.assign({}, blocks[i], { tasks })
-    this.setData({ blocks, isDirty: true, allDone: this._computeAllDone(blocks) })
-  },
-
-  // 单任务完成切换（点圆圈）
-  onTaskDone(e) {
-    const { i, j } = e.currentTarget.dataset
-    const blocks = this.data.blocks.slice()
-    const tasks = blocks[i].tasks.slice()
-    const current = tasks[j].progress || 0
-    const next = current >= 100 ? 0 : 100
-    tasks[j] = Object.assign({}, tasks[j], { progress: next })
-    blocks[i] = Object.assign({}, blocks[i], { tasks })
-    this.setData({ blocks, isDirty: true, allDone: this._computeAllDone(blocks) })
-    if (next === 100) {
-      wx.vibrateShort({ type: 'medium' })
-    }
-  },
-
-  // 整块一键完成
-  blockAllDone(e) {
-    const i = e.currentTarget.dataset.i
-    const blocks = this.data.blocks.slice()
-    const tasks = (blocks[i].tasks || []).map(t => Object.assign({}, t, { progress: 100 }))
-    blocks[i] = Object.assign({}, blocks[i], { tasks })
-    this.setData({ blocks, isDirty: true, allDone: this._computeAllDone(blocks) })
-    wx.vibrateShort({ type: 'medium' })
-  },
-
-  // 全局一键完成
-  onAllDone() {
-    const blocks = this.data.blocks.map(blk => ({
-      ...blk,
-      tasks: (blk.tasks || []).map(t => ({ ...t, progress: 100 })),
-    }))
-    this.setData({ blocks, isDirty: true, allDone: true })
-    wx.vibrateShort({ type: 'heavy' })
-    wx.showToast({ title: '全部完成 ✨', icon: 'none', duration: 1500 })
-  },
-
-  onTextInput(e) {
-    const field = e.currentTarget.dataset.field
-    this.setData({ [field]: e.detail.value, isDirty: true })
-  },
-
-  async onSave() {
-    if (this.data.isSaving) return
-    this.setData({ isSaving: true })
+  async _autoSave() {
+    if (!this.data.isDirty) return
+    if (this.data.isSaving) { this._scheduleSave(); return }
+    this.setData({ isSaving: true, isDirty: false })
     try {
       const res = await request('/api/reports/' + this.data.date, {
         method: 'PUT',
@@ -213,12 +104,119 @@ Page({
           commit_text: this.data.commit_text,
         },
       })
-      this.setData({ isDirty: false, isSaving: false, updatedAt: res.updated_at })
-      wx.showToast({ title: '已保存', icon: 'success' })
+      this.setData({ isSaving: false, updatedAt: res.updated_at, savedFlash: true })
+      if (this._flashTimer) clearTimeout(this._flashTimer)
+      this._flashTimer = setTimeout(() => this.setData({ savedFlash: false }), 1500)
     } catch (e) {
-      this.setData({ isSaving: false })
-      wx.showToast({ title: '保存失败', icon: 'none' })
+      this.setData({ isSaving: false, isDirty: true })
+      wx.showToast({ title: '自动保存失败', icon: 'none' })
     }
+  },
+
+  _flushSave() {
+    if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null }
+    if (this.data.isDirty) this._autoSave()
+  },
+
+  pickDate(e) {
+    const date = e.detail.value
+    this._flushSave()
+    this.setData({ date }, () => this._loadReport(date))
+  },
+
+  addBlock() {
+    const blocks = this.data.blocks.concat([{ start: '09:00', end: '12:00', tasks: [] }])
+    this.setData({ blocks, isDirty: true })
+    this._scheduleSave()
+  },
+
+  removeBlock(e) {
+    const i = e.currentTarget.dataset.i
+    const blocks = this.data.blocks.slice()
+    blocks.splice(i, 1)
+    this.setData({ blocks, isDirty: true })
+    this._scheduleSave()
+  },
+
+  onTimeChange(e) {
+    const { i, field } = e.currentTarget.dataset
+    const blocks = this.data.blocks.slice()
+    blocks[i] = Object.assign({}, blocks[i], { [field]: e.detail.value })
+    this.setData({ blocks, isDirty: true })
+    this._scheduleSave()
+  },
+
+  addTask(e) {
+    const i = e.currentTarget.dataset.i
+    const blocks = this.data.blocks.slice()
+    blocks[i] = Object.assign({}, blocks[i], {
+      tasks: (blocks[i].tasks || []).concat([{ desc: '', progress: 0 }])
+    })
+    this.setData({ blocks, isDirty: true })
+    this._scheduleSave()
+  },
+
+  removeTask(e) {
+    const { i, j } = e.currentTarget.dataset
+    const blocks = this.data.blocks.slice()
+    const tasks = blocks[i].tasks.slice()
+    tasks.splice(j, 1)
+    blocks[i] = Object.assign({}, blocks[i], { tasks })
+    this.setData({ blocks, isDirty: true })
+    this._scheduleSave()
+  },
+
+  onTaskInput(e) {
+    const { i, j } = e.currentTarget.dataset
+    const blocks = this.data.blocks.slice()
+    const tasks = blocks[i].tasks.slice()
+    tasks[j] = Object.assign({}, tasks[j], { desc: e.detail.value })
+    blocks[i] = Object.assign({}, blocks[i], { tasks })
+    this.setData({ blocks, isDirty: true })
+    this._scheduleSave()
+  },
+
+  onProgressChange(e) {
+    const { i, j } = e.currentTarget.dataset
+    const blocks = this.data.blocks.slice()
+    const tasks = blocks[i].tasks.slice()
+    tasks[j] = Object.assign({}, tasks[j], { progress: e.detail.value })
+    blocks[i] = Object.assign({}, blocks[i], { tasks })
+    this.setData({ blocks, isDirty: true })
+    this._scheduleSave()
+  },
+
+  // 单任务完成切换（点圆圈）
+  onTaskDone(e) {
+    const { i, j } = e.currentTarget.dataset
+    const blocks = this.data.blocks.slice()
+    const tasks = blocks[i].tasks.slice()
+    const current = tasks[j].progress || 0
+    const next = current >= 100 ? 0 : 100
+    tasks[j] = Object.assign({}, tasks[j], { progress: next })
+    blocks[i] = Object.assign({}, blocks[i], { tasks })
+    this.setData({ blocks, isDirty: true })
+    this._scheduleSave()
+    if (next === 100) {
+      wx.vibrateShort({ type: 'medium' })
+    }
+  },
+
+  // 整块一键完成
+  blockAllDone(e) {
+    const i = e.currentTarget.dataset.i
+    const blocks = this.data.blocks.slice()
+    const tasks = (blocks[i].tasks || []).map(t => Object.assign({}, t, { progress: 100 }))
+    blocks[i] = Object.assign({}, blocks[i], { tasks })
+    this.setData({ blocks, isDirty: true })
+    this._scheduleSave()
+    wx.vibrateShort({ type: 'medium' })
+  },
+
+  onTextInput(e) {
+    const field = e.currentTarget.dataset.field
+    this.setData({ [field]: e.detail.value, isDirty: true })
+    this._scheduleSave()
   },
 
   // ─── 日历 ─────────────────────────────
@@ -269,6 +267,7 @@ Page({
   pickCell(e) {
     const dateStr = e.currentTarget.dataset.date
     if (!dateStr) return
+    this._flushSave()
     this.setData({ date: dateStr, tab: 'edit' }, () => this._loadReport(dateStr))
   },
 
@@ -286,6 +285,7 @@ Page({
 
   weekDayTap(e) {
     const dateStr = e.currentTarget.dataset.date
+    this._flushSave()
     this.setData({ date: dateStr, tab: 'edit' }, () => this._loadReport(dateStr))
   },
 

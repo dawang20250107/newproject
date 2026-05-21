@@ -2,16 +2,12 @@
 
   <!-- 头像卡 -->
   <view class="card avatar-card">
-    <view class="avatar-wrap">
-      <button class="avatar-btn" open-type="chooseAvatar" bind:chooseavatar="onChooseAvatar">
-        <image wx:if="{{avatar}}" class="avatar-img" src="{{avatar}}" mode="aspectFill" />
-        <view wx:else class="avatar">
-          <text class="avatar-char">{{avatarChar}}</text>
-        </view>
-        <view class="avatar-edit-badge">📷</view>
-      </button>
-      <view class="avatar-glow"></view>
-    </view>
+    <button class="avatar-btn" open-type="chooseAvatar" bind:chooseavatar="onChooseAvatar">
+      <image wx:if="{{avatar}}" class="avatar-img" src="{{avatar}}" mode="aspectFill" />
+      <view wx:else class="avatar">
+        <text class="avatar-char">{{avatarChar}}</text>
+      </view>
+    </button>
     <view class="avatar-info">
       <view class="avatar-name">{{name || display_name || '未设置姓名'}}</view>
       <view class="avatar-sub">{{dept || '部门未填写'}} · {{role || '岗位未填写'}}</view>
