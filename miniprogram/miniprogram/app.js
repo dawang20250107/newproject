@@ -49,7 +49,6 @@ App({
             data: { code: loginRes.code },
             header: { 'Content-Type': 'application/json' },
             success: (r) => {
-              console.log('[login] url:', API_BASE + '/api/login', 'status:', r.statusCode, 'data:', JSON.stringify(r.data))
               if (r.statusCode === 200 && r.data && r.data.token) {
                 this.globalData.token = r.data.token
                 this.globalData.profile = r.data.profile || null
