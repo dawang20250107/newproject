@@ -52,9 +52,9 @@ Page({
   onHide() { this._flushSave() },
   onUnload() { this._flushSave() },
 
-  switchTab(e) {
+  async switchTab(e) {
     const tab = e.currentTarget.dataset.tab
-    this._flushSave()
+    await this._flushSave()
     this.setData({ tab })
     if (tab === 'edit') this._loadReport(this.data.date)
     else if (tab === 'calendar') this._loadCalendar()
@@ -115,7 +115,8 @@ Page({
 
   _flushSave() {
     if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null }
-    if (this.data.isDirty) this._autoSave()
+    if (this.data.isDirty) return this._autoSave()
+    return Promise.resolve()
   },
 
   pickDate(e) {

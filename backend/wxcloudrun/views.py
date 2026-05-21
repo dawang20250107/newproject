@@ -60,6 +60,14 @@ def _profile_dict(p):
     }
 
 
+def _has_content(blocks, works, not_works, plans):
+    """日报是否有实质内容（决定是否显示日历红点 / 是否保留记录）。
+    结语为自动填充的默认语，不计入内容。"""
+    if blocks:
+        return True
+    return any((s or '').strip() for s in (works, not_works, plans))
+
+
 # ─── 主页 ─────────────────────────────────────────────────
 
 def index(request):
@@ -172,11 +180,22 @@ def report_detail(request, date):
         body = json.loads(request.body)
     except Exception:
         return _json({'error': '请求格式错误'}, 400)
+
+    blocks = body.get('blocks', []) or []
+    works = body.get('works', '') or ''
+    not_works = body.get('not_works', '') or ''
+    plans = body.get('plans', '') or ''
+
+    # 内容清空即视为删除：移除记录，日历红点随之消失
+    if not _has_content(blocks, works, not_works, plans):
+        DailyReport.objects.filter(user=p, date=d).delete()
+        return _json({'ok': True, 'deleted': True, 'updated_at': None})
+
     r, _ = DailyReport.objects.get_or_create(user=p, date=d)
-    r.blocks = body.get('blocks', [])
-    r.works = body.get('works', '') or ''
-    r.not_works = body.get('not_works', '') or ''
-    r.plans = body.get('plans', '') or ''
+    r.blocks = blocks
+    r.works = works
+    r.not_works = not_works
+    r.plans = plans
     r.commit_text = body.get('commit_text', '') or ''
     r.save()
     return _json({'ok': True, 'updated_at': r.updated_at.isoformat()})
@@ -193,10 +212,12 @@ def report_dates(request):
         month = int(request.GET['month'])
     except (KeyError, ValueError):
         return _json({'error': '需要 year 和 month 参数'}, 400)
-    dates = DailyReport.objects.filter(
-        user=p, date__year=year, date__month=month
-    ).values_list('date', flat=True)
-    return _json({'dates': [d.isoformat() for d in dates]})
+    reports = DailyReport.objects.filter(user=p, date__year=year, date__month=month)
+    dates = [
+        r.date.isoformat() for r in reports
+        if _has_content(r.blocks, r.works, r.not_works, r.plans)
+    ]
+    return _json({'dates': dates})
 
 
 @csrf_exempt
