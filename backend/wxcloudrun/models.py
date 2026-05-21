@@ -8,6 +8,7 @@ class UserProfile(models.Model):
     dept = models.CharField('部门', max_length=100, blank=True, default='')
     role = models.CharField('岗位', max_length=100, blank=True, default='')
     name = models.CharField('姓名', max_length=100, blank=True, default='')
+    avatar = models.TextField('头像(base64或URL)', blank=True, default='')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 

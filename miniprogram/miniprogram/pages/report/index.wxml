@@ -183,23 +183,18 @@
         </view>
       </view>
 
-      <!-- AI 分析按钮 -->
+      <!-- AI 分析按钮（周报 / 月报，同款大按钮） -->
       <view class="ai-btn-row">
-        <view class="ai-btn {{analysisLoading?'loading':''}}"
+        <view class="ai-btn ai-btn-big {{analysisLoading&&analysisType==='week'?'loading':''}}"
           data-type="week" bindtap="onAnalysis">
           <text class="ai-icon">🤖</text>
-          <text>{{analysisLoading&&analysisType==='week'?'AI 分析中...':'AI 智析周报'}}</text>
+          <text>{{analysisLoading&&analysisType==='week'?'分析中...':'AI 周报分析'}}</text>
         </view>
-        <view class="ai-btn ai-btn-secondary"
+        <view class="ai-btn ai-btn-big {{analysisLoading&&analysisType==='month'?'loading':''}}"
           data-type="month" bindtap="onAnalysis">
           <text class="ai-icon">📊</text>
-          <text>{{analysisLoading&&analysisType==='month'?'月报分析中...':'月报分析'}}</text>
+          <text>{{analysisLoading&&analysisType==='month'?'分析中...':'AI 月报分析'}}</text>
         </view>
-      </view>
-
-      <!-- 一键复制汇报 -->
-      <view class="copy-week-btn" bindtap="copyWeekReport">
-        <text>{{weekCopied?'✓ 已复制':'一键复制汇报'}}</text>
       </view>
     </view>
 
@@ -231,7 +226,7 @@
 
 <!-- ═══════════ AI 分析弹窗（全局浮层） ═══════════ -->
 <view wx:if="{{showModal}}" class="modal-overlay" bindtap="closeModal">
-  <view class="modal-card" catchtap="">
+  <view class="modal-card" catch:tap="noop">
     <view class="modal-handle"></view>
     <view class="modal-header">
       <view class="modal-title">
@@ -268,7 +263,7 @@
 
 <!-- ═══════════ 汇报预览弹窗（部门群版 / 日志群版） ═══════════ -->
 <view wx:if="{{showReport}}" class="modal-overlay" bindtap="closeReport">
-  <view class="modal-card" catchtap="">
+  <view class="modal-card" catch:tap="noop">
     <view class="modal-handle"></view>
     <view class="modal-header">
       <view class="modal-title">
@@ -280,10 +275,10 @@
 
     <!-- 版本切换 -->
     <view class="seg">
-      <view class="seg-item {{reportTab==='dept'?'active':''}}" data-rt="dept" bindtap="switchReportTab">
+      <view class="seg-item {{reportTab==='dept'?'active':''}}" data-rt="dept" catch:tap="switchReportTab">
         部门群版<text class="seg-tag">简短</text>
       </view>
-      <view class="seg-item {{reportTab==='log'?'active':''}}" data-rt="log" bindtap="switchReportTab">
+      <view class="seg-item {{reportTab==='log'?'active':''}}" data-rt="log" catch:tap="switchReportTab">
         日志群版<text class="seg-tag green">完整</text>
       </view>
     </view>

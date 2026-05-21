@@ -34,7 +34,6 @@ Page({
     analysisType: 'week',
     analysisRange: '',
     copied: false,
-    weekCopied: false,
 
     // 汇报生成（部门群版 / 日志群版）
     showReport: false,
@@ -424,6 +423,8 @@ Page({
     this.setData({ showReport: false })
   },
 
+  noop() {},
+
   copyReport() {
     const text = this.data.reportTab === 'dept' ? this.data.deptText : this.data.logText
     if (!text) return
@@ -433,26 +434,6 @@ Page({
         this.setData({ reportCopied: true })
         wx.vibrateShort({ type: 'light' })
         setTimeout(() => this.setData({ reportCopied: false }), 2500)
-      },
-    })
-  },
-
-  copyWeekReport() {
-    const d = this.data.weekData
-    if (!d) return
-    const lines = [`【本周工作汇报】${d.week_start} ～ ${d.week_end}`,
-      `总计 ${d.total_hours}h  完成任务 ${d.completed_count} 个`, '']
-    for (const day of (d.days || [])) {
-      if (!day.has_report) continue
-      lines.push(`${day.date}（周${day.weekday}）${day.hours}h`)
-      for (const t of (day.completed_tasks || [])) lines.push(`  ✓ ${t}`)
-      lines.push('')
-    }
-    wx.setClipboardData({
-      data: lines.join('\n').trim(),
-      success: () => {
-        this.setData({ weekCopied: true })
-        setTimeout(() => this.setData({ weekCopied: false }), 2500)
       },
     })
   },

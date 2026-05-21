@@ -3,14 +3,19 @@
   <!-- 头像卡 -->
   <view class="card avatar-card">
     <view class="avatar-wrap">
-      <view class="avatar">
-        <text class="avatar-char">{{avatarChar}}</text>
-      </view>
+      <button class="avatar-btn" open-type="chooseAvatar" bind:chooseavatar="onChooseAvatar">
+        <image wx:if="{{avatar}}" class="avatar-img" src="{{avatar}}" mode="aspectFill" />
+        <view wx:else class="avatar">
+          <text class="avatar-char">{{avatarChar}}</text>
+        </view>
+        <view class="avatar-edit-badge">📷</view>
+      </button>
       <view class="avatar-glow"></view>
     </view>
     <view class="avatar-info">
       <view class="avatar-name">{{name || display_name || '未设置姓名'}}</view>
       <view class="avatar-sub">{{dept || '部门未填写'}} · {{role || '岗位未填写'}}</view>
+      <view class="avatar-hint">点击头像 · 同步微信头像</view>
     </view>
   </view>
 
@@ -49,14 +54,14 @@
     <text class="tip-text">资料将用于日报水印和 AI 分析的个性化称呼</text>
   </view>
 
-  <!-- 保存栏 -->
-  <view class="save-bar">
-    <view class="save-status">
-      <text wx:if="{{isDirty}}" class="status-dirty">● 有未保存修改</text>
-      <text wx:else class="status-ok">资料已是最新</text>
+  <!-- 浮动保存卡（仅有改动时出现） -->
+  <view wx:if="{{isDirty}}" class="save-float">
+    <view class="save-float-info">
+      <text class="save-float-dot">●</text>
+      <text class="save-float-txt">资料有改动，记得保存</text>
     </view>
-    <button class="btn btn-sm" disabled="{{isSaving||!isDirty}}" bindtap="onSave">
-      {{isSaving?'保存中...':'保存'}}
+    <button class="btn save-float-btn" disabled="{{isSaving}}" bindtap="onSave">
+      {{isSaving?'保存中…':'保存'}}
     </button>
   </view>
 

@@ -56,6 +56,7 @@ def _profile_dict(p):
         'dept': p.dept,
         'role': p.role,
         'name': p.name,
+        'avatar': p.avatar,
     }
 
 
@@ -124,7 +125,7 @@ def profile(request):
         body = json.loads(request.body)
     except Exception:
         return _json({'error': '请求格式错误'}, 400)
-    for field in ('display_name', 'dept', 'role', 'name'):
+    for field in ('display_name', 'dept', 'role', 'name', 'avatar'):
         if field in body:
             setattr(p, field, body[field] or '')
     p.save()

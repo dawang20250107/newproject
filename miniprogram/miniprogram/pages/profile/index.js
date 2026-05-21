@@ -6,6 +6,7 @@ Page({
     dept: '',
     role: '',
     name: '',
+    avatar: '',
     avatarChar: '?',
     isDirty: false,
     isSaving: false,
@@ -22,6 +23,7 @@ Page({
         dept: p.dept || '',
         role: p.role || '',
         name: p.name || '',
+        avatar: p.avatar || '',
         avatarChar: this._getChar(p.name || p.display_name),
         isDirty: false,
       })
@@ -33,6 +35,29 @@ Page({
   _getChar(str) {
     if (!str) return '?'
     return str.trim().charAt(0) || '?'
+  },
+
+  onChooseAvatar(e) {
+    const url = e.detail && e.detail.avatarUrl
+    if (!url) return
+    wx.compressImage({
+      src: url,
+      quality: 60,
+      compressedWidth: 200,
+      success: (cr) => this._readAvatar(cr.tempFilePath),
+      fail: () => this._readAvatar(url),
+    })
+  },
+
+  _readAvatar(path) {
+    wx.getFileSystemManager().readFile({
+      filePath: path,
+      encoding: 'base64',
+      success: (res) => {
+        this.setData({ avatar: 'data:image/jpeg;base64,' + res.data, isDirty: true })
+      },
+      fail: () => wx.showToast({ title: '头像读取失败', icon: 'none' }),
+    })
   },
 
   onInput(e) {
@@ -58,6 +83,7 @@ Page({
           dept: this.data.dept,
           role: this.data.role,
           name: this.data.name,
+          avatar: this.data.avatar,
         },
       })
       const app = getApp()
