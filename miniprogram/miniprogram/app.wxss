@@ -23,7 +23,24 @@ page {
   box-shadow:
     0 4rpx 24rpx rgba(180, 100, 60, 0.08),
     0 1rpx 4rpx  rgba(0, 0, 0, 0.04);
+  animation: card-in 0.5s cubic-bezier(0.22, 0.85, 0.3, 1) both;
 }
+
+/* ── 进入动画 ─────────────────────────── */
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(28rpx) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.card:nth-child(1) { animation-delay: 0.02s; }
+.card:nth-child(2) { animation-delay: 0.08s; }
+.card:nth-child(3) { animation-delay: 0.14s; }
+.card:nth-child(4) { animation-delay: 0.20s; }
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(20rpx); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fade-up 0.45s cubic-bezier(0.22, 0.8, 0.3, 1) both; }
 
 /* ── 按钮系统 ─────────────────────────── */
 .btn {

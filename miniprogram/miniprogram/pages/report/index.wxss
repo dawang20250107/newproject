@@ -3,7 +3,7 @@
    ══════════════════════════════════════════ */
 
 .page {
-  padding-bottom: 140rpx;
+  padding-bottom: 180rpx;
   background: #faf7f4;
 }
 
@@ -25,8 +25,9 @@
   font-size: 28rpx;
   color: #9b8070;
   position: relative;
-  transition: color 0.25s ease;
+  transition: color 0.25s ease, transform 0.15s ease;
 }
+.tab:active { transform: scale(0.92); }
 .tab.active {
   color: #c96342;
   font-weight: 700;
@@ -75,6 +76,7 @@
   padding: 24rpx;
   margin-bottom: 20rpx;
   border: 1rpx solid rgba(201, 99, 66, 0.10);
+  animation: fade-up 0.4s cubic-bezier(0.22, 0.8, 0.3, 1) both;
 }
 
 /* 时段时间 */
@@ -95,15 +97,16 @@
 
 /* 全完成 & 删除 */
 .done-all-btn {
-  font-size: 22rpx;
+  font-size: 19rpx;
   color: #fff;
   background: linear-gradient(135deg, #3aa856, #5ec875);
-  padding: 8rpx 18rpx;
-  border-radius: 8rpx;
+  padding: 6rpx 14rpx;
+  border-radius: 7rpx;
   font-weight: 600;
-  box-shadow: 0 2rpx 8rpx rgba(58, 168, 86, 0.30);
+  box-shadow: 0 2rpx 6rpx rgba(58, 168, 86, 0.28);
+  margin-top: 8rpx;
 }
-.done-all-btn:active { transform: scale(0.92); }
+.done-all-btn:active { transform: scale(0.90); }
 .del-btn {
   font-size: 22rpx;
   color: #e06060;
@@ -560,3 +563,83 @@
   letter-spacing: 1rpx;
 }
 .copy-week-btn:active { background: rgba(201, 99, 66, 0.15); }
+
+/* ── 生成汇报按钮 ─────────────────────── */
+.gen-report-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12rpx;
+  margin: 8rpx 24rpx 24rpx;
+  padding: 26rpx 0;
+  border-radius: 20rpx;
+  background: linear-gradient(135deg, #c96342 0%, #e8855a 100%);
+  color: #fff;
+  font-size: 28rpx;
+  font-weight: 700;
+  letter-spacing: 2rpx;
+  box-shadow: 0 6rpx 22rpx rgba(201, 99, 66, 0.32);
+}
+.gen-report-icon { font-size: 32rpx; }
+.gen-report-hover {
+  transform: scale(0.96);
+  box-shadow: 0 3rpx 12rpx rgba(201, 99, 66, 0.24);
+}
+
+/* ── 汇报版本切换段 ───────────────────── */
+.seg {
+  display: flex;
+  margin: 16rpx 36rpx 8rpx;
+  background: rgba(201, 99, 66, 0.08);
+  border-radius: 14rpx;
+  padding: 6rpx;
+  gap: 6rpx;
+}
+.seg-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8rpx;
+  padding: 16rpx 0;
+  border-radius: 10rpx;
+  font-size: 26rpx;
+  font-weight: 600;
+  color: #9b8070;
+  transition: all 0.25s ease;
+}
+.seg-item.active {
+  background: #fff;
+  color: #c96342;
+  box-shadow: 0 2rpx 10rpx rgba(201, 99, 66, 0.18);
+}
+.seg-tag {
+  font-size: 18rpx;
+  font-weight: 500;
+  padding: 2rpx 10rpx;
+  border-radius: 6rpx;
+  background: rgba(201, 99, 66, 0.12);
+  color: #c96342;
+}
+.seg-tag.green {
+  background: rgba(58, 168, 86, 0.14);
+  color: #3aa856;
+}
+
+/* ── 汇报预览文本 ─────────────────────── */
+.report-preview {
+  background: rgba(250, 240, 235, 0.40);
+  margin: 8rpx 36rpx;
+  border-radius: 16rpx;
+  border: 1rpx solid rgba(201, 99, 66, 0.10);
+  padding: 24rpx;
+  box-sizing: border-box;
+}
+.report-text {
+  font-size: 26rpx;
+  color: #1a1208;
+  line-height: 1.85;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: -apple-system, 'PingFang SC', monospace;
+}

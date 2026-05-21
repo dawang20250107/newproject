@@ -35,6 +35,13 @@ Page({
     analysisRange: '',
     copied: false,
     weekCopied: false,
+
+    // 汇报生成（部门群版 / 日志群版）
+    showReport: false,
+    reportTab: 'dept',
+    deptText: '',
+    logText: '',
+    reportCopied: false,
   },
 
   onShow() {
@@ -321,6 +328,113 @@ Page({
   closeModal() {
     if (this.data.analysisLoading) return
     this.setData({ showModal: false, analysisText: '', copied: false })
+  },
+
+  // ─── 汇报生成（部门群版 / 日志群版）──────────
+
+  _fmtReportDate(iso) {
+    if (!iso) return ''
+    const [, m, d] = iso.split('-').map(Number)
+    return m + '月' + d + '日'
+  },
+
+  _fmtSlot(start, end) {
+    const strip = (t) => { const [h, m] = t.split(':'); return parseInt(h, 10) + ':' + m }
+    return strip(start) + '-' + strip(end)
+  },
+
+  _computeDuration(start, end) {
+    if (!start || !end) return ''
+    const [sh, sm] = start.split(':').map(Number)
+    const [eh, em] = end.split(':').map(Number)
+    const mins = (eh * 60 + em) - (sh * 60 + sm)
+    if (mins <= 0) return ''
+    const h = Math.floor(mins / 60), m = mins % 60
+    if (h === 0) return m + 'min'
+    if (m === 0) return h + 'h'
+    return h + 'h' + m + 'min'
+  },
+
+  _statusOf(p) {
+    p = Math.max(0, Math.min(100, Number(p) || 0))
+    return p >= 100 ? '已完成' : ('未完成 ' + p + '%')
+  },
+
+  _buildReportTexts(prof) {
+    const name = prof.name || prof.display_name || ''
+    const dept = prof.dept || ''
+    const role = prof.role || ''
+    const date = this._fmtReportDate(this.data.date)
+    const blocks = (this.data.blocks || []).filter(
+      b => b.start && b.end && (b.tasks || []).some(t => t.desc)
+    )
+
+    // 部门群版：带用时，无复盘
+    const deptLines = [name + '   ' + date + '：']
+    blocks.forEach((b, idx) => {
+      const slot = this._fmtSlot(b.start, b.end)
+      const dur = this._computeDuration(b.start, b.end)
+      deptLines.push(dur ? (idx + 1) + '、' + slot + '（用时' + dur + '）' : (idx + 1) + '、' + slot)
+      b.tasks.filter(t => t.desc).forEach(t => {
+        deptLines.push('    •' + t.desc + '（' + this._statusOf(t.progress) + '）')
+      })
+    })
+
+    // 日志群版：不带用时，含复盘
+    const logLines = [dept + '   ' + role + '  ' + name + '    ' + date + '：']
+    blocks.forEach((b, idx) => {
+      logLines.push((idx + 1) + '、' + this._fmtSlot(b.start, b.end))
+      b.tasks.filter(t => t.desc).forEach(t => {
+        logLines.push('    •' + t.desc + '（' + this._statusOf(t.progress) + '）')
+      })
+    })
+    logLines.push('')
+    logLines.push('行得通的是：' + (this.data.works || '无'))
+    logLines.push('行不通的是：' + (this.data.not_works || '无'))
+    logLines.push('明日计划：')
+    const plans = (this.data.plans || '').split('\n').map(s => s.trim()).filter(Boolean)
+    if (plans.length === 0) logLines.push('1、？')
+    else plans.forEach((p, i) => logLines.push((i + 1) + '、' + p.replace(/^\s*\d+[、.)]\s*/, '')))
+    if (this.data.commit_text) logLines.push(this.data.commit_text)
+
+    return { deptText: deptLines.join('\n'), logText: logLines.join('\n') }
+  },
+
+  async onGenReport() {
+    let prof = (getApp().globalData.profile) || {}
+    try {
+      const r = await request('/api/profile')
+      if (r && r.profile) prof = r.profile
+    } catch (e) {}
+    const texts = this._buildReportTexts(prof)
+    this.setData({
+      showReport: true,
+      reportTab: 'dept',
+      reportCopied: false,
+      deptText: texts.deptText,
+      logText: texts.logText,
+    })
+  },
+
+  switchReportTab(e) {
+    this.setData({ reportTab: e.currentTarget.dataset.rt, reportCopied: false })
+  },
+
+  closeReport() {
+    this.setData({ showReport: false })
+  },
+
+  copyReport() {
+    const text = this.data.reportTab === 'dept' ? this.data.deptText : this.data.logText
+    if (!text) return
+    wx.setClipboardData({
+      data: text,
+      success: () => {
+        this.setData({ reportCopied: true })
+        wx.vibrateShort({ type: 'light' })
+        setTimeout(() => this.setData({ reportCopied: false }), 2500)
+      },
+    })
   },
 
   copyWeekReport() {

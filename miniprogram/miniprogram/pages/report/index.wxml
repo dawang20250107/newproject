@@ -116,6 +116,12 @@
       </view>
     </view>
 
+    <!-- 生成汇报 -->
+    <view class="gen-report-btn" hover-class="gen-report-hover" bindtap="onGenReport">
+      <text class="gen-report-icon">📋</text>
+      <text>生成今日汇报</text>
+    </view>
+
     <!-- 保存栏（毛玻璃） -->
     <view class="save-bar">
       <view class="save-status">
@@ -255,6 +261,42 @@
     <view wx:if="{{!analysisLoading}}" class="modal-footer">
       <view class="btn modal-copy-btn" bindtap="copyAnalysis">
         <text>{{copied?'✓ 已复制':'一键复制'}}</text>
+      </view>
+    </view>
+  </view>
+</view>
+
+<!-- ═══════════ 汇报预览弹窗（部门群版 / 日志群版） ═══════════ -->
+<view wx:if="{{showReport}}" class="modal-overlay" bindtap="closeReport">
+  <view class="modal-card" catchtap="">
+    <view class="modal-handle"></view>
+    <view class="modal-header">
+      <view class="modal-title">
+        <text class="modal-icon">📋</text>
+        <text>生成汇报</text>
+      </view>
+      <view class="modal-close" bindtap="closeReport">✕</view>
+    </view>
+
+    <!-- 版本切换 -->
+    <view class="seg">
+      <view class="seg-item {{reportTab==='dept'?'active':''}}" data-rt="dept" bindtap="switchReportTab">
+        部门群版<text class="seg-tag">简短</text>
+      </view>
+      <view class="seg-item {{reportTab==='log'?'active':''}}" data-rt="log" bindtap="switchReportTab">
+        日志群版<text class="seg-tag green">完整</text>
+      </view>
+    </view>
+
+    <!-- 预览 -->
+    <scroll-view scroll-y class="modal-body report-preview">
+      <text class="report-text">{{reportTab==='dept'?deptText:logText}}</text>
+    </scroll-view>
+
+    <!-- 复制 -->
+    <view class="modal-footer">
+      <view class="btn modal-copy-btn" bindtap="copyReport">
+        <text>{{reportCopied?'✓ 已复制':(reportTab==='dept'?'复制部门群版':'复制日志群版')}}</text>
       </view>
     </view>
   </view>
