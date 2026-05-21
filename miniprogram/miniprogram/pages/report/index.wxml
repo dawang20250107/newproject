@@ -133,7 +133,7 @@
         <button class="btn btn-sm" disabled="{{isSaving}}" bindtap="onSave">
           {{isSaving?'保存中...':'保存'}}
         </button>
-        <view class="btn btn-ghost btn-xs all-done-btn {{allDone?'glowing':''}}"
+        <view class="btn btn-ghost btn-sm all-done-btn {{allDone?'glowing':''}}"
           bindtap="onAllDone">全完成</view>
       </view>
     </view>
@@ -268,31 +268,47 @@
     <view class="modal-header">
       <view class="modal-title">
         <text class="modal-icon">📋</text>
-        <text>生成汇报</text>
+        <text>今日汇报</text>
       </view>
       <view class="modal-close" bindtap="closeReport">✕</view>
     </view>
 
-    <!-- 版本切换 -->
-    <view class="seg">
-      <view class="seg-item {{reportTab==='dept'?'active':''}}" data-rt="dept" catch:tap="switchReportTab">
-        部门群版<text class="seg-tag">简短</text>
-      </view>
-      <view class="seg-item {{reportTab==='log'?'active':''}}" data-rt="log" catch:tap="switchReportTab">
-        日志群版<text class="seg-tag green">完整</text>
-      </view>
-    </view>
+    <scroll-view scroll-y class="modal-body report-modal-body">
 
-    <!-- 预览 -->
-    <scroll-view scroll-y class="modal-body report-preview">
-      <text class="report-text">{{reportTab==='dept'?deptText:logText}}</text>
+      <!-- 部门群版 -->
+      <view class="report-block">
+        <view class="report-block-hd">
+          <view class="report-block-title">
+            <text class="report-block-icon">🏢</text>
+            <text>部门群版</text>
+          </view>
+          <text class="report-block-tag">简短</text>
+        </view>
+        <scroll-view scroll-y class="report-preview">
+          <text class="report-text">{{deptText}}</text>
+        </scroll-view>
+        <view class="btn report-copy-btn" bindtap="copyDept">
+          {{deptCopied?'✓ 已复制':'复制部门群版'}}
+        </view>
+      </view>
+
+      <!-- 日志群版 -->
+      <view class="report-block">
+        <view class="report-block-hd">
+          <view class="report-block-title">
+            <text class="report-block-icon">📓</text>
+            <text>日志群版</text>
+          </view>
+          <text class="report-block-tag green">完整</text>
+        </view>
+        <scroll-view scroll-y class="report-preview">
+          <text class="report-text">{{logText}}</text>
+        </scroll-view>
+        <view class="btn report-copy-btn" bindtap="copyLog">
+          {{logCopied?'✓ 已复制':'复制日志群版'}}
+        </view>
+      </view>
+
     </scroll-view>
-
-    <!-- 复制 -->
-    <view class="modal-footer">
-      <view class="btn modal-copy-btn" bindtap="copyReport">
-        <text>{{reportCopied?'✓ 已复制':(reportTab==='dept'?'复制部门群版':'复制日志群版')}}</text>
-      </view>
-    </view>
   </view>
 </view>

@@ -37,10 +37,10 @@ Page({
 
     // 汇报生成（部门群版 / 日志群版）
     showReport: false,
-    reportTab: 'dept',
     deptText: '',
     logText: '',
-    reportCopied: false,
+    deptCopied: false,
+    logCopied: false,
   },
 
   onShow() {
@@ -69,7 +69,7 @@ Page({
         works: r.works || '',
         not_works: r.not_works || '',
         plans: r.plans || '',
-        commit_text: r.commit_text || '',
+        commit_text: r.commit_text || '——我承诺明天创造更高效的结果！',
         isDirty: false,
         updatedAt: r.updated_at,
         allDone: this._computeAllDone(blocks),
@@ -408,15 +408,11 @@ Page({
     const texts = this._buildReportTexts(prof)
     this.setData({
       showReport: true,
-      reportTab: 'dept',
-      reportCopied: false,
+      deptCopied: false,
+      logCopied: false,
       deptText: texts.deptText,
       logText: texts.logText,
     })
-  },
-
-  switchReportTab(e) {
-    this.setData({ reportTab: e.currentTarget.dataset.rt, reportCopied: false })
   },
 
   closeReport() {
@@ -425,15 +421,28 @@ Page({
 
   noop() {},
 
-  copyReport() {
-    const text = this.data.reportTab === 'dept' ? this.data.deptText : this.data.logText
+  copyDept() {
+    const text = this.data.deptText
     if (!text) return
     wx.setClipboardData({
       data: text,
       success: () => {
-        this.setData({ reportCopied: true })
+        this.setData({ deptCopied: true })
         wx.vibrateShort({ type: 'light' })
-        setTimeout(() => this.setData({ reportCopied: false }), 2500)
+        setTimeout(() => this.setData({ deptCopied: false }), 2500)
+      },
+    })
+  },
+
+  copyLog() {
+    const text = this.data.logText
+    if (!text) return
+    wx.setClipboardData({
+      data: text,
+      success: () => {
+        this.setData({ logCopied: true })
+        wx.vibrateShort({ type: 'light' })
+        setTimeout(() => this.setData({ logCopied: false }), 2500)
       },
     })
   },

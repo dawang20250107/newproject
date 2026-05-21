@@ -4,7 +4,7 @@
 
 .page {
   padding-bottom: 180rpx;
-  background: #faf7f4;
+  background: #e8e0d8;
 }
 
 /* ── Tab 栏（毛玻璃吸顶） ───────────────── */
@@ -13,7 +13,7 @@
   position: sticky;
   top: 0;
   z-index: 100;
-  background: rgba(250, 247, 244, 0.92);
+  background: rgba(232, 224, 216, 0.94);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-bottom: 1rpx solid rgba(180, 100, 60, 0.10);
@@ -241,11 +241,7 @@
 .status-idle  { color: #c5a090; }
 
 .save-actions { display: flex; gap: 16rpx; align-items: center; }
-
-.btn-xs {
-  padding: 10rpx 18rpx !important;
-  font-size: 22rpx !important;
-}
+.save-actions button.btn { line-height: normal; margin: 0; min-height: 0; }
 
 .all-done-btn {
   position: relative;
@@ -566,54 +562,51 @@
   box-shadow: 0 3rpx 12rpx rgba(201, 99, 66, 0.24);
 }
 
-/* ── 汇报版本切换段 ───────────────────── */
-.seg {
-  display: flex;
-  margin: 16rpx 36rpx 8rpx;
-  background: rgba(201, 99, 66, 0.08);
-  border-radius: 14rpx;
-  padding: 6rpx;
-  gap: 6rpx;
+/* ── 汇报双栏预览 ─────────────────────── */
+.report-modal-body { padding: 8rpx 0 12rpx; }
+
+.report-block {
+  margin: 12rpx 24rpx 16rpx;
+  background: rgba(255, 255, 253, 0.92);
+  border-radius: 20rpx;
+  padding: 24rpx;
+  border: 1rpx solid rgba(201, 99, 66, 0.10);
+  box-shadow: 0 4rpx 20rpx rgba(180, 100, 60, 0.08);
 }
-.seg-item {
-  flex: 1;
+.report-block-hd {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 8rpx;
-  padding: 16rpx 0;
-  border-radius: 10rpx;
-  font-size: 26rpx;
-  font-weight: 600;
-  color: #9b8070;
-  transition: all 0.25s ease;
+  justify-content: space-between;
+  margin-bottom: 14rpx;
 }
-.seg-item.active {
-  background: #fff;
-  color: #c96342;
-  box-shadow: 0 2rpx 10rpx rgba(201, 99, 66, 0.18);
+.report-block-title {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+  font-size: 28rpx;
+  font-weight: 700;
+  color: #1a1208;
 }
-.seg-tag {
-  font-size: 18rpx;
-  font-weight: 500;
-  padding: 2rpx 10rpx;
-  border-radius: 6rpx;
+.report-block-icon { font-size: 30rpx; }
+.report-block-tag {
+  font-size: 20rpx;
+  padding: 4rpx 14rpx;
+  border-radius: 8rpx;
   background: rgba(201, 99, 66, 0.12);
   color: #c96342;
+  font-weight: 600;
 }
-.seg-tag.green {
+.report-block-tag.green {
   background: rgba(58, 168, 86, 0.14);
   color: #3aa856;
 }
-
-/* ── 汇报预览文本 ─────────────────────── */
 .report-preview {
-  background: rgba(250, 240, 235, 0.40);
-  margin: 8rpx 36rpx;
-  border-radius: 16rpx;
-  border: 1rpx solid rgba(201, 99, 66, 0.10);
-  padding: 24rpx;
+  background: rgba(250, 240, 235, 0.45);
+  border-radius: 14rpx;
+  border: 1rpx solid rgba(201, 99, 66, 0.08);
+  padding: 20rpx;
   box-sizing: border-box;
+  max-height: 320rpx;
 }
 .report-text {
   font-size: 26rpx;
@@ -622,4 +615,13 @@
   white-space: pre-wrap;
   word-break: break-word;
   font-family: -apple-system, 'PingFang SC', monospace;
+}
+.report-copy-btn {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 16rpx;
+  padding: 18rpx;
+  font-size: 26rpx;
+  letter-spacing: 1rpx;
+  border-radius: 14rpx;
 }
