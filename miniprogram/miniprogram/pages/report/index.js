@@ -34,6 +34,7 @@ Page({
     analysisType: 'week',
     analysisRange: '',
     copied: false,
+    weekCopied: false,
   },
 
   onShow() {
@@ -320,6 +321,26 @@ Page({
   closeModal() {
     if (this.data.analysisLoading) return
     this.setData({ showModal: false, analysisText: '', copied: false })
+  },
+
+  copyWeekReport() {
+    const d = this.data.weekData
+    if (!d) return
+    const lines = [`【本周工作汇报】${d.week_start} ～ ${d.week_end}`,
+      `总计 ${d.total_hours}h  完成任务 ${d.completed_count} 个`, '']
+    for (const day of (d.days || [])) {
+      if (!day.has_report) continue
+      lines.push(`${day.date}（周${day.weekday}）${day.hours}h`)
+      for (const t of (day.completed_tasks || [])) lines.push(`  ✓ ${t}`)
+      lines.push('')
+    }
+    wx.setClipboardData({
+      data: lines.join('\n').trim(),
+      success: () => {
+        this.setData({ weekCopied: true })
+        setTimeout(() => this.setData({ weekCopied: false }), 2500)
+      },
+    })
   },
 
   copyAnalysis() {

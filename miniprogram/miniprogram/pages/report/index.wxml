@@ -70,10 +70,12 @@
                   value="{{task.desc}}"
                   data-i="{{i}}" data-j="{{j}}"
                   bindinput="onTaskInput" />
-                <view class="row" style="justify-content:space-between;margin-top:10rpx;align-items:center">
-                  <view class="progress-track">
-                    <view class="progress-fill" style="width:{{task.progress}}%"></view>
-                  </view>
+                <view class="row" style="align-items:center;margin-top:6rpx">
+                  <slider min="0" max="100" step="5" value="{{task.progress}}"
+                    data-i="{{i}}" data-j="{{j}}" bindchange="onProgressChange"
+                    activeColor="#c96342" backgroundColor="rgba(201,99,66,0.12)"
+                    block-color="#c96342" block-size="18"
+                    class="task-slider" />
                   <view class="progress-val">{{task.progress}}%</view>
                   <view class="del-sm" data-i="{{i}}" data-j="{{j}}" bindtap="removeTask">✕</view>
                 </view>
@@ -122,11 +124,11 @@
         <text wx:else class="status-idle">—</text>
       </view>
       <view class="save-actions">
-        <view class="btn btn-ghost btn-sm all-done-btn {{allDone?'glowing':''}}"
-          bindtap="onAllDone">一键完成</view>
         <button class="btn btn-sm" disabled="{{isSaving}}" bindtap="onSave">
           {{isSaving?'保存中...':'保存'}}
         </button>
+        <view class="btn btn-ghost btn-xs all-done-btn {{allDone?'glowing':''}}"
+          bindtap="onAllDone">全完成</view>
       </view>
     </view>
 
@@ -187,6 +189,11 @@
           <text class="ai-icon">📊</text>
           <text>{{analysisLoading&&analysisType==='month'?'月报分析中...':'月报分析'}}</text>
         </view>
+      </view>
+
+      <!-- 一键复制汇报 -->
+      <view class="copy-week-btn" bindtap="copyWeekReport">
+        <text>{{weekCopied?'✓ 已复制':'一键复制汇报'}}</text>
       </view>
     </view>
 
