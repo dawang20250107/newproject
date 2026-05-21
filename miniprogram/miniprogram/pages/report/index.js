@@ -1,11 +1,15 @@
 const { request } = require('../../utils/request')
+const tapfx = require('../../utils/tapfx')
 
 function pad(n) { return n < 10 ? '0' + n : '' + n }
 function fmtDate(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) }
 function todayStr() { return fmtDate(new Date()) }
 
 Page({
+  onTapFx: tapfx.onTapFx,
+
   data: {
+    ...tapfx.data,
     tab: 'edit',
     date: todayStr(),
     blocks: [],
@@ -44,6 +48,8 @@ Page({
   },
 
   onShow() {
+    const today = todayStr()
+    if (this.data.date !== today) this.setData({ date: today })
     if (this.data.tab === 'edit') this._loadReport(this.data.date)
     else if (this.data.tab === 'calendar') this._loadCalendar()
     else if (this.data.tab === 'week') this._loadWeek()

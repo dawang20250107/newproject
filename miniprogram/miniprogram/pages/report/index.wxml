@@ -1,4 +1,5 @@
-<view class="page">
+<import src="../../templates/tapfx.wxml" />
+<view class="page" capture-bind:touchstart="onTapFx">
 
   <!-- ── Tab 栏（毛玻璃吸顶） ── -->
   <view class="tabs">
@@ -302,3 +303,6 @@
   <text wx:if="{{isSaving}}">保存中…</text>
   <text wx:else class="autosave-ok">已自动保存 ✓</text>
 </view>
+
+<!-- 手指点击特效 -->
+<template is="tapfx" data="{{sparks: tapSparks}}" />

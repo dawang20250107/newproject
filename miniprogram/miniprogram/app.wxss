@@ -5,7 +5,11 @@
    ══════════════════════════════════════════ */
 
 page {
-  background: #faf7f4;
+  background:
+    radial-gradient(circle at 12% 8%, rgba(232, 133, 90, 0.14), transparent 42%),
+    radial-gradient(circle at 88% 92%, rgba(201, 99, 66, 0.12), transparent 46%),
+    radial-gradient(circle at 70% 20%, rgba(255, 240, 220, 0.30), transparent 40%),
+    #e8e0d8;
   font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
   font-size: 32rpx;
   color: #1a1208;
@@ -14,17 +18,30 @@ page {
 
 /* ── 卡片（毛玻璃） ───────────────────── */
 .card {
-  background: rgba(255, 255, 254, 0.96);
+  position: relative;
+  background:
+    linear-gradient(135deg, rgba(255,255,254,0.98), rgba(255,252,249,0.93));
   /* backdrop-filter 不支持，用高透白+多层阴影模拟毛玻璃质感 */
   border-radius: 28rpx;
   padding: 38rpx;
   margin: 22rpx 24rpx;
   border: 1rpx solid rgba(255, 255, 255, 0.95);
   box-shadow:
-    0 8rpx 40rpx rgba(180, 100, 60, 0.10),
-    0 2rpx 10rpx rgba(0, 0, 0, 0.05),
-    inset 0 1rpx 0 rgba(255, 255, 255, 0.9);
+    0 14rpx 48rpx rgba(180, 100, 60, 0.16),
+    0 4rpx 14rpx rgba(0, 0, 0, 0.06),
+    0 0 0 1rpx rgba(201, 99, 66, 0.04),
+    inset 0 1rpx 0 rgba(255, 255, 255, 0.95);
   animation: card-in 0.5s cubic-bezier(0.22, 0.85, 0.3, 1) both;
+}
+/* 卡片顶部高光 */
+.card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 12%; right: 12%;
+  height: 2rpx;
+  border-radius: 2rpx;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.9), transparent);
+  pointer-events: none;
 }
 
 /* ── 进入动画 ─────────────────────────── */
@@ -45,6 +62,7 @@ page {
 
 /* ── 按钮系统 ─────────────────────────── */
 .btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -55,13 +73,34 @@ page {
   background: linear-gradient(135deg, #c96342 0%, #e8855a 100%);
   color: #fff;
   border: none;
-  box-shadow: 0 4rpx 18rpx rgba(201, 99, 66, 0.32);
-  transition: all 0.15s ease;
+  overflow: hidden;
+  box-shadow:
+    0 6rpx 22rpx rgba(201, 99, 66, 0.38),
+    0 0 0 1rpx rgba(201, 99, 66, 0.10),
+    inset 0 1rpx 0 rgba(255, 255, 255, 0.30);
+  transition: transform 0.15s ease, box-shadow 0.25s ease;
   letter-spacing: 1rpx;
+}
+/* 按钮流光 */
+.btn::after {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0;
+  left: -60%;
+  width: 50%;
+  background: linear-gradient(100deg, transparent, rgba(255,255,255,0.35), transparent);
+  transform: skewX(-20deg);
+  animation: btn-shine 3.6s ease-in-out infinite;
+}
+@keyframes btn-shine {
+  0%, 60% { left: -60%; }
+  85%, 100% { left: 130%; }
 }
 .btn:active {
   transform: scale(0.93);
-  box-shadow: 0 2rpx 8rpx rgba(201, 99, 66, 0.20);
+  box-shadow:
+    0 2rpx 10rpx rgba(201, 99, 66, 0.24),
+    inset 0 2rpx 8rpx rgba(120, 50, 30, 0.20);
 }
 .btn[disabled] {
   background: linear-gradient(135deg, #d4b5a8, #dcc4ba);
@@ -118,4 +157,62 @@ page {
   font-size: 22rpx;
   font-weight: 500;
   border: 1rpx solid rgba(201, 99, 66, 0.18);
+}
+
+/* ── 通用动效 ─────────────────────────── */
+@keyframes pop-in {
+  0%   { transform: scale(0.6); opacity: 0; }
+  70%  { transform: scale(1.08); opacity: 1; }
+  100% { transform: scale(1); }
+}
+.pop-in { animation: pop-in 0.32s cubic-bezier(0.34, 1.56, 0.5, 1) both; }
+
+@keyframes soft-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-8rpx); }
+}
+.soft-float { animation: soft-float 3.2s ease-in-out infinite; }
+
+/* ── 全局手指点击特效 ─────────────────── */
+.tap-fx-layer {
+  position: fixed;
+  left: 0; top: 0; right: 0; bottom: 0;
+  pointer-events: none;
+  z-index: 9999;
+}
+.tap-spark {
+  position: absolute;
+  width: 0; height: 0;
+}
+/* 外圈涟漪 */
+.tap-spark::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0;
+  width: 88rpx; height: 88rpx;
+  margin-left: -44rpx; margin-top: -44rpx;
+  border-radius: 50%;
+  border: 3rpx solid rgba(201, 99, 66, 0.55);
+  background: radial-gradient(circle, rgba(232,133,90,0.18), rgba(201,99,66,0) 70%);
+  animation: tap-ripple 0.6s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+}
+/* 内核光点 */
+.tap-spark::after {
+  content: '';
+  position: absolute;
+  left: 0; top: 0;
+  width: 28rpx; height: 28rpx;
+  margin-left: -14rpx; margin-top: -14rpx;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,236,220,0.95), rgba(232,133,90,0.6) 50%, rgba(201,99,66,0) 75%);
+  animation: tap-core 0.5s ease-out forwards;
+}
+@keyframes tap-ripple {
+  0%   { transform: scale(0.25); opacity: 0.95; }
+  100% { transform: scale(1.9);  opacity: 0; }
+}
+@keyframes tap-core {
+  0%   { transform: scale(0);   opacity: 1; }
+  55%  { transform: scale(1.5); opacity: 0.85; }
+  100% { transform: scale(2.2); opacity: 0; }
 }

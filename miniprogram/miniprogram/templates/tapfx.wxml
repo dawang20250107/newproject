@@ -1,0 +1,5 @@
+<template name="tapfx">
+  <view class="tap-fx-layer">
+    <view wx:for="{{sparks}}" wx:key="id" class="tap-spark" style="left:{{item.x}}px;top:{{item.y}}px"></view>
+  </view>
+</template>

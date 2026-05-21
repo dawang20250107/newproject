@@ -6,9 +6,9 @@
   ],
   "window": {
     "navigationBarTitleText": "KXT 日报",
-    "navigationBarBackgroundColor": "#faf7f4",
+    "navigationBarBackgroundColor": "#e8e0d8",
     "navigationBarTextStyle": "black",
-    "backgroundColor": "#faf7f4",
+    "backgroundColor": "#e8e0d8",
     "backgroundTextStyle": "dark",
     "enablePullDownRefresh": false
   },

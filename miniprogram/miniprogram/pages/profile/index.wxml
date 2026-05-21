@@ -1,4 +1,5 @@
-<view class="page">
+<import src="../../templates/tapfx.wxml" />
+<view class="page" capture-bind:touchstart="onTapFx">
 
   <!-- 头像卡 -->
   <view class="card avatar-card">
@@ -60,5 +61,8 @@
       {{isSaving?'保存中…':'保存'}}
     </button>
   </view>
+
+  <!-- 手指点击特效 -->
+  <template is="tapfx" data="{{sparks: tapSparks}}" />
 
 </view>

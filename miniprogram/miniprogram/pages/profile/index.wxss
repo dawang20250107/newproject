@@ -1,4 +1,4 @@
-.page { padding-bottom: 140rpx; background: #e8e0d8; }
+.page { padding-bottom: 140rpx; background: transparent; }
 
 /* ── 头像卡 ───────────────────────────── */
 .avatar-card {

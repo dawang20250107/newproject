@@ -1,7 +1,11 @@
 const { request } = require('../../utils/request')
+const tapfx = require('../../utils/tapfx')
 
 Page({
+  onTapFx: tapfx.onTapFx,
+
   data: {
+    ...tapfx.data,
     display_name: '',
     dept: '',
     role: '',

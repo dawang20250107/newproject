@@ -4,7 +4,7 @@
 
 .page {
   padding-bottom: 60rpx;
-  background: #e8e0d8;
+  background: transparent;
 }
 
 /* ── Tab 栏（毛玻璃吸顶） ───────────────── */
