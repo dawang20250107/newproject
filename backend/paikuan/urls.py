@@ -2,6 +2,7 @@ from django.urls import path
 from paikuan import views
 
 urlpatterns = [
+    path('version', views.version),
     path('register', views.register),
     path('login', views.login),
     path('registration-status', views.registration_status),

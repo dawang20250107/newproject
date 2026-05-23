@@ -294,6 +294,24 @@ def _remaining_expr():
     )
 
 
+# ── version / deploy check ──────────────────────────────────────────────────────
+# Bump BUILD_VERSION whenever backend behaviour changes so a deploy can be verified
+# by opening /api/pk/version in a browser (no auth required).
+BUILD_VERSION = '2026-05-23.3'
+
+
+@csrf_exempt
+def version(request):
+    return ok({
+        'version': BUILD_VERSION,
+        'features': {
+            'hard_delete_user': True,      # DELETE /users/<id> permanently removes the row
+            'stats_dept_filter': True,     # GET /stats?depts=A,B filters by department
+            'no_store_headers': True,      # API responses are never cached
+        },
+    })
+
+
 # ── auth ──────────────────────────────────────────────────────────────────────
 
 @csrf_exempt
