@@ -297,7 +297,7 @@ def _remaining_expr():
 # ── version / deploy check ──────────────────────────────────────────────────────
 # Bump BUILD_VERSION whenever backend behaviour changes so a deploy can be verified
 # by opening /api/pk/version in a browser (no auth required).
-BUILD_VERSION = '2026-05-23.3'
+BUILD_VERSION = '2026-05-23.4'
 
 
 @csrf_exempt
@@ -502,14 +502,42 @@ def _parse_payment_fields(data, payment=None):
     except (InvalidOperation, TypeError) as e:
         return None, f'金额格式有误: {e}'
 
+    # Reject negative amounts
+    for amt_key in ('total_amount', 'pay1_amount', 'pay2_amount', 'pay3_amount'):
+        if fields[amt_key] < Decimal('0'):
+            return None, f'{amt_key} 金额不能为负数'
+    if fields['total_amount'] <= Decimal('0'):
+        return None, '计划总金额必须大于0'
+
+    # Hard-reject overpayment: installment sum must not exceed total
+    total_paid = fields['pay1_amount'] + fields['pay2_amount'] + fields['pay3_amount']
+    if total_paid > fields['total_amount']:
+        return None, (
+            f'实付总额（{total_paid}元）超出计划总金额（{fields[“total_amount”]}元），'
+            '请核实金额后再提交'
+        )
+
     for key in ('planned_date', 'pay1_date', 'pay2_date', 'pay3_date'):
         val = data.get(key) if key in data else getattr(payment, key, None)
         fields[key] = val or None
 
+    # Paired installment validation: date↔amount must both be present or both absent
+    for n, date_key, amt_key in (
+        (1, 'pay1_date', 'pay1_amount'),
+        (2, 'pay2_date', 'pay2_amount'),
+        (3, 'pay3_date', 'pay3_amount'),
+    ):
+        has_date = bool(fields[date_key])
+        has_amt = fields[amt_key] > Decimal('0')
+        if has_amt and not has_date:
+            return None, f'第{n}次付款填写了金额，但缺少日期'
+        if has_date and not has_amt:
+            return None, f'第{n}次付款填写了日期，但金额为0'
+
     if not fields['department']:
         return None, '部门必填'
     if fields['department'] not in VALID_DEPARTMENTS:
-        return None, f'部门“{fields["department"]}”无效，请使用系统预设部门'
+        return None, f'部门”{fields[“department”]}”无效，请使用系统预设部门'
     if not fields['project_desc']:
         return None, '付款事项描述必填'
     if not fields['payee']:
@@ -1000,6 +1028,10 @@ def payment_import(request):
     if not upload:
         return err('请上传Excel文件(.xlsx)')
 
+    MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
+    if upload.size > MAX_UPLOAD_BYTES:
+        return err('文件过大，请确认文件不超过5MB')
+
     try:
         wb = load_workbook(upload, read_only=True, data_only=True)
     except Exception:
@@ -1136,6 +1168,14 @@ def payment_export(request):
 
     status_label = {'pending': '⏳待付款', 'partial': '⚡部分付款', 'settled': '✅已付清'}
 
+    _FORMULA_CHARS = ('=', '+', '-', '@', '\t', '\r')
+
+    def _safe_text(v):
+        """Prefix text cells starting with formula chars with a single-quote prefix."""
+        if isinstance(v, str) and v and v[0] in _FORMULA_CHARS:
+            return "'" + v
+        return v
+
     for row_idx, p in enumerate(qs, start=2):
         d = apply_view_mask(p.to_dict(), perms)
         for col_idx, (_, db_col) in enumerate(cols, 1):
@@ -1149,6 +1189,8 @@ def payment_export(request):
                     val = float(val) if val != '' else 0.0
                 except (ValueError, TypeError):
                     pass
+            else:
+                val = _safe_text(val)
             ws.cell(row=row_idx, column=col_idx, value=val)
 
         # Append status column after visible cols

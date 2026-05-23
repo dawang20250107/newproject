@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth.js'
+import { ROLE_LABELS, JOB_LABELS } from '../constants.js'
 
 const props = defineProps({
   collapsed: { type: Boolean, default: false },
@@ -31,19 +32,6 @@ function onNavClick() {
   emit('close-mobile')
 }
 
-const ROLE_LABELS = {
-  super_admin: '超级管理员',
-  manager: '财务经理',
-  operator: '操作员',
-  viewer: '查看员',
-}
-
-const JOB_LABELS = {
-  cashier: '出纳',
-  finance_bp: '财务BP',
-  finance_director: '财务总监',
-  chief_cashier: '总出纳',
-}
 </script>
 
 <template>
@@ -165,12 +153,16 @@ const JOB_LABELS = {
           <div class="user-meta">
             <div class="user-name">{{ auth.user?.name }}</div>
             <div class="user-role-wrap">
-              <span :class="`badge badge-${auth.user?.role}`" style="font-size:10px;padding:2px 7px">
-                {{ ROLE_LABELS[auth.user?.role] }}
-              </span>
-              <span v-if="auth.user?.job_title" style="font-size:10px;color:#9b8070;margin-left:5px">
-                {{ JOB_LABELS[auth.user?.job_title] || '' }}
-              </span>
+              <!-- super_admin: show role badge -->
+              <template v-if="auth.user?.role === 'super_admin'">
+                <span class="badge badge-super_admin" style="font-size:10px;padding:2px 7px">超级管理员</span>
+              </template>
+              <!-- others: address by job title, not generic role name -->
+              <template v-else>
+                <span v-if="auth.user?.job_title" style="font-size:11px;color:#b09080;font-weight:600">
+                  {{ JOB_LABELS[auth.user?.job_title] || '' }}
+                </span>
+              </template>
             </div>
           </div>
         </div>

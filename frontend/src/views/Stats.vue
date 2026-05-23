@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
+import { DEPARTMENTS as ALL_DEPTS_LIST } from '../constants.js'
 
 const auth = useAuthStore()
 const today = new Date()
@@ -11,14 +12,9 @@ const data = ref(null)
 const loading = ref(false)
 const loadErr = ref('')
 
-const ALL_DEPTS = [
-  '集团总部', '劳务事业部', '运输事业部', '自营事业部',
-  '阔展事业部', '多式联运事业部', '供应链事业部',
-]
-
 const availableDepts = computed(() => {
-  if (auth.isAdmin) return ALL_DEPTS
-  return (auth.user?.departments || []).filter(d => ALL_DEPTS.includes(d))
+  if (auth.isAdmin) return ALL_DEPTS_LIST
+  return (auth.user?.departments || []).filter(d => ALL_DEPTS_LIST.includes(d))
 })
 
 const selectedDepts = ref([])

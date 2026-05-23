@@ -3,6 +3,7 @@ import { ref, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth.js'
 import api from '../api/index.js'
+import { DEPARTMENTS, JOB_OPTIONS } from '../constants.js'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -19,16 +20,7 @@ const pendingMsg = ref('')
 const pendingState = ref('waiting')   // 'waiting' | 'approved' | 'rejected'
 let pollTimer = null
 
-const DEPARTMENTS = [
-  '集团总部', '劳务事业部', '运输事业部', '自营事业部',
-  '阔展事业部', '多式联运事业部', '供应链事业部',
-]
-const JOB_TITLES = [
-  { v: 'finance_director', label: '财务总监' },
-  { v: 'finance_bp', label: '财务BP' },
-  { v: 'chief_cashier', label: '总出纳' },
-  { v: 'cashier', label: '出纳' },
-]
+const JOB_TITLES = JOB_OPTIONS
 
 function switchMode(m) {
   mode.value = m

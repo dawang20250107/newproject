@@ -9,6 +9,7 @@ const routes = [
   { path: '/stats', component: () => import('../views/Stats.vue'), meta: { page: 'stats' } },
   { path: '/users', component: () => import('../views/Users.vue'), meta: { role: 'super_admin' } },
   { path: '/permissions', component: () => import('../views/Permissions.vue'), meta: { role: 'super_admin' } },
+  { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
 const router = createRouter({

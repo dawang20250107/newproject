@@ -1,13 +1,28 @@
+import logging
 import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'paikuan-dev-key-change-in-prod-xK9mL2nP')
-JWT_SECRET = os.environ.get('JWT_SECRET', 'paikuan-jwt-secret-change-in-prod-Qr8sT1uV')
+_DEV_SECRET_KEY = 'paikuan-dev-key-change-in-prod-xK9mL2nP'
+_DEV_JWT_SECRET = 'paikuan-jwt-secret-change-in-prod-Qr8sT1uV'
 
-DEBUG = os.environ.get('DEBUG', 'True').lower() in ('true', '1', 'yes')
-ALLOWED_HOSTS = ['*']
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', _DEV_SECRET_KEY)
+JWT_SECRET = os.environ.get('JWT_SECRET', _DEV_JWT_SECRET)
+
+if SECRET_KEY == _DEV_SECRET_KEY or JWT_SECRET == _DEV_JWT_SECRET:
+    logging.warning(
+        'SECURITY: Using insecure dev secrets. '
+        'Set DJANGO_SECRET_KEY and JWT_SECRET environment variables in production.'
+    )
+
+DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
+
+ALLOWED_HOSTS = [
+    'kxtshare.cloud',
+    'localhost',
+    '127.0.0.1',
+]
 
 INSTALLED_APPS = [
     'corsheaders',
@@ -21,7 +36,13 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = [
+    'https://kxtshare.cloud',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:8080',
+]
 CORS_ALLOW_CREDENTIALS = False
 
 ROOT_URLCONF = 'wxcloudrun.urls'

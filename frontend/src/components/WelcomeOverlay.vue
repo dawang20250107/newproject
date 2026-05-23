@@ -1,5 +1,6 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted } from 'vue'
+import { JOB_LABELS } from '../constants.js'
 
 const props = defineProps({
   user: { type: Object, default: null },
@@ -17,12 +18,6 @@ const today = new Date().toLocaleDateString('zh-CN', {
   year: 'numeric', month: 'long', day: 'numeric', weekday: 'long',
 })
 
-const ROLE_LABELS = {
-  super_admin: '超级管理员',
-  manager: '财务经理',
-  operator: '操作员',
-  viewer: '查看员',
-}
 
 const motivations = [
   '每一笔排款，都是信任的证明。',
@@ -74,8 +69,9 @@ onMounted(() => {
         <div class="welcome-name">{{ user?.name || '欢迎' }}</div>
 
         <div class="welcome-role">
-          <span class="role-badge">{{ ROLE_LABELS[user?.role] || '' }}</span>
-          <span v-if="user?.job_title_label" class="job-badge">{{ user.job_title_label }}</span>
+          <!-- super_admin: show role badge; others: show job title -->
+          <span v-if="user?.role === 'super_admin'" class="role-badge">超级管理员</span>
+          <span v-else-if="JOB_LABELS[user?.job_title]" class="job-badge">{{ JOB_LABELS[user.job_title] }}</span>
         </div>
 
         <div class="welcome-date">{{ today }}</div>

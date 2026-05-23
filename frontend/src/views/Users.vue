@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import api from '../api/index.js'
+import { DEPARTMENTS, ROLE_LABELS, JOB_LABELS, JOB_OPTIONS } from '../constants.js'
 
 const users = ref([])
 const loading = ref(false)
@@ -10,18 +11,6 @@ const editUser = ref(null)
 const error = ref('')
 const approveLoading = ref({})
 
-const JOB_LABELS = {
-  finance_director: '财务总监', finance_bp: '财务BP', chief_cashier: '总出纳', cashier: '出纳',
-}
-const ROLE_LABELS = {
-  super_admin: '超级管理员', manager: '财务经理', operator: '成员', viewer: '查看员',
-}
-const JOB_OPTIONS = [
-  { v: 'finance_director', label: '财务总监' },
-  { v: 'finance_bp', label: '财务BP' },
-  { v: 'chief_cashier', label: '总出纳' },
-  { v: 'cashier', label: '出纳' },
-]
 
 // per-pending-user approval edits
 const approveJob = ref({})
@@ -33,10 +22,6 @@ const editForm = ref({ name: '', job_title: '', departments: [], is_active: true
 // a hard-deleted user on a subsequent reload. IDs are autoincrement, never reused.
 const deletedIds = new Set()
 
-const DEPARTMENTS = [
-  '集团总部', '劳务事业部', '运输事业部', '自营事业部',
-  '阔展事业部', '多式联运事业部', '供应链事业部',
-]
 
 const pendingUsers = computed(() => users.value.filter(u => !u.is_approved && u.role !== 'super_admin'))
 const activeUsers  = computed(() => users.value.filter(u => u.is_approved || u.role === 'super_admin'))
@@ -180,7 +165,7 @@ async function reject(u) {
         <div v-else class="pending-list">
           <div v-for="u in pendingUsers" :key="u.id" class="pending-card">
             <div class="pending-info">
-              <div class="pa-avatar">{{ u.name[0] }}</div>
+              <div class="pa-avatar">{{ u.name?.[0] || '?' }}</div>
               <div style="flex:1;min-width:0">
                 <div class="pa-name">{{ u.name }}</div>
                 <div class="pa-sub">
@@ -251,7 +236,7 @@ async function reject(u) {
               <tr v-for="u in activeUsers" :key="u.id">
                 <td>
                   <div style="display:flex;align-items:center;gap:8px">
-                    <div class="table-avatar">{{ u.name[0] }}</div>
+                    <div class="table-avatar">{{ u.name?.[0] || '?' }}</div>
                     <strong>{{ u.name }}</strong>
                   </div>
                 </td>

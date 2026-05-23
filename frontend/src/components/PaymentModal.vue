@@ -1,7 +1,8 @@
 <script setup>
-import { ref, watch, nextTick, computed } from 'vue'
+import { ref, watch, nextTick } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
+import { DEPARTMENTS as DEPT_CONST } from '../constants.js'
 
 const props = defineProps({
   payment: { type: Object, default: null },
@@ -10,10 +11,8 @@ const props = defineProps({
 const emit = defineEmits(['saved', 'close'])
 
 const auth = useAuthStore()
-const isNew = computed(() => !props.payment?.id)
 function vis(key) { return auth.canView(key) }
-// On create, fillable fields = anything viewable; on edit, only fields the role can edit.
-function editable(key) { return isNew.value ? true : auth.canEdit(key) }
+function editable(key) { return auth.canEdit(key) }
 
 const loading = ref(false)
 const error = ref('')
@@ -21,22 +20,14 @@ const saveStatus = ref('')  // '' | 'saving' | 'saved' | 'error'
 let saveTimer = null
 let isResetting = false
 
-const DEPT_LIST = [
-  '集团总部', '劳务事业部', '运输事业部', '自营事业部',
-  '阔展事业部', '多式联运事业部', '供应链事业部',
-]
+const DEPT_LIST = DEPT_CONST
 
 const deptOptions = ref([])
 const form = ref({})
 
 function _autoDefaultDept() {
-  // For non-admin users, pick their department automatically.
-  if (auth.isAdmin) return ''
-  const myDepts = auth.user?.departments || []
-  if (myDepts.length === 0) return ''
-  if (myDepts.length === 1) return myDepts[0]
-  // Multiple departments: pick randomly so workload distributes naturally.
-  return myDepts[Math.floor(Math.random() * myDepts.length)]
+  // Always empty on new records — user must explicitly choose a department.
+  return ''
 }
 
 function resetForm() {
