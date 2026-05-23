@@ -8,7 +8,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-from django.db.models import F, Q, ExpressionWrapper
+from django.db.models import F, Q, Sum, Count, Case, When, ExpressionWrapper
 from django.db.models import DecimalField as DjDecimalField
 from django.conf import settings
 from django.utils import timezone
@@ -67,6 +67,26 @@ EXCEL_COLUMN_MAP = [
     ('notes',           '备注',                'notes'),
 ]
 _EXCEL_HEADER_TO_COL = {h: c for _, h, c in EXCEL_COLUMN_MAP}
+_EXCEL_DATE_COLS = {'planned_date', 'pay1_date', 'pay2_date', 'pay3_date'}
+
+# Example row in the template carries this marker in 部门 so import skips it
+# even when the user forgets to delete it.
+EXAMPLE_ROW_MARKER = '示例-导入前请删除此行'
+
+
+def _normalize_date(s):
+    """Best-effort normalize a user-typed date string to ISO YYYY-MM-DD."""
+    s = (str(s) or '').strip()
+    if not s:
+        return None
+    s = s.replace('/', '-').replace('.', '-').replace('年', '-').replace('月', '-').replace('日', '')
+    parts = [p for p in s.split('-') if p != '']
+    try:
+        if len(parts) >= 3:
+            return f'{int(parts[0]):04d}-{int(parts[1]):02d}-{int(parts[2]):02d}'
+    except ValueError:
+        pass
+    return s  # leave as-is; downstream save will reject if truly invalid
 
 
 def _all_fields(value):
@@ -241,6 +261,24 @@ def can_write_dept(request, dept):
     return dept in request.pk_depts
 
 
+_DEC = DjDecimalField(max_digits=15, decimal_places=2)
+
+
+def _paid_expr():
+    """SQL expression for total paid = pay1+pay2+pay3."""
+    return ExpressionWrapper(
+        F('pay1_amount') + F('pay2_amount') + F('pay3_amount'), output_field=_DEC
+    )
+
+
+def _remaining_expr():
+    """SQL expression for remaining = total_amount - paid."""
+    return ExpressionWrapper(
+        F('total_amount') - F('pay1_amount') - F('pay2_amount') - F('pay3_amount'),
+        output_field=_DEC,
+    )
+
+
 # ── auth ──────────────────────────────────────────────────────────────────────
 
 @csrf_exempt
@@ -384,18 +422,13 @@ def _list_payments(request):
 
     # Status filter via SQL annotation — avoids fetching all rows into Python.
     if status_q:
-        qs = qs.annotate(
-            computed_paid=ExpressionWrapper(
-                F('pay1_amount') + F('pay2_amount') + F('pay3_amount'),
-                output_field=DjDecimalField(max_digits=15, decimal_places=2),
-            )
-        )
+        qs = qs.annotate(paid=_paid_expr())
         if status_q == 'pending':
-            qs = qs.filter(computed_paid=Decimal('0'))
+            qs = qs.filter(paid=Decimal('0'))
         elif status_q == 'settled':
-            qs = qs.filter(computed_paid__gte=F('total_amount'))
+            qs = qs.filter(paid__gte=F('total_amount'))
         elif status_q == 'partial':
-            qs = qs.filter(computed_paid__gt=Decimal('0'), computed_paid__lt=F('total_amount'))
+            qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'))
 
     total = qs.count()
     perms = get_request_perms(request)
@@ -415,11 +448,18 @@ def _parse_payment_fields(data, payment=None):
     fields['payee'] = (get('payee') or '').strip()
     fields['notes'] = (get('notes') or '').strip()
 
+    def _num(key):
+        raw = get(key, 0)
+        s = str(raw if raw not in (None, '') else 0)
+        # Tolerate thousands separators / full-width commas / currency symbol.
+        s = s.replace(',', '').replace('，', '').replace('¥', '').replace('￥', '').strip()
+        return Decimal(s or '0')
+
     try:
-        fields['total_amount'] = Decimal(str(get('total_amount', 0) or 0))
-        fields['pay1_amount'] = Decimal(str(get('pay1_amount', 0) or 0))
-        fields['pay2_amount'] = Decimal(str(get('pay2_amount', 0) or 0))
-        fields['pay3_amount'] = Decimal(str(get('pay3_amount', 0) or 0))
+        fields['total_amount'] = _num('total_amount')
+        fields['pay1_amount'] = _num('pay1_amount')
+        fields['pay2_amount'] = _num('pay2_amount')
+        fields['pay3_amount'] = _num('pay3_amount')
     except (InvalidOperation, TypeError) as e:
         return None, f'金额格式有误: {e}'
 
@@ -514,36 +554,38 @@ def dashboard(request):
     if perms is not None and not perms['pages'].get('dashboard', True):
         return err('无访问权限', 403, 403)
     today = timezone.localdate()
-    qs = Payment.objects.select_related('created_by').all()
-    qs = dept_filter(qs, request)
-    # Compute on full dicts; mask the per-record list before returning.
-    raw = [p.to_dict() for p in qs]
-
-    today_str = str(today)
     show_amount = perms is None or perms['view'].get('total_amount', True)
 
-    def flt(cond):
-        return [p for p in raw if cond(p)]
+    base = dept_filter(Payment.objects.all(), request).annotate(paid=_paid_expr())
 
-    def amt(lst, field='total_amount'):
-        if not show_amount:
-            return None
-        return str(sum(Decimal(p[field]) for p in lst))
+    def money(v):
+        return str(v if v is not None else Decimal('0')) if show_amount else None
 
-    today_items = flt(lambda p: p['planned_date'] == today_str)
-    pending = flt(lambda p: p['status'] == 'pending')
-    partial = flt(lambda p: p['status'] == 'partial')
-    overdue = flt(lambda p: p['status'] != 'settled' and p['planned_date'] and p['planned_date'] < today_str)
+    today_qs = base.filter(planned_date=today)
+    pending_qs = base.filter(paid=Decimal('0'))
+    overdue_qs = base.filter(paid__lt=F('total_amount'), planned_date__lt=today)
+
+    # Each rollup is a single count+sum aggregate (indexed, no full table load).
+    today_agg = today_qs.aggregate(c=Count('id'), s=Sum('total_amount'))
+    # For pending records paid=0 → remaining == total_amount.
+    pending_agg = pending_qs.aggregate(c=Count('id'), s=Sum('total_amount'))
+    overdue_agg = overdue_qs.aggregate(c=Count('id'), s=Sum(_remaining_expr()))
+    partial_count = base.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount')).count()
+
+    today_payments = [
+        apply_view_mask(p.to_dict(), perms)
+        for p in today_qs.select_related('created_by')[:50]
+    ]
 
     return ok({
-        'today_count': len(today_items),
-        'today_amount': amt(today_items),
-        'pending_count': len(pending),
-        'pending_amount': amt(pending, 'remaining'),
-        'partial_count': len(partial),
-        'overdue_count': len(overdue),
-        'overdue_amount': amt(overdue, 'remaining'),
-        'today_payments': [apply_view_mask(dict(p), perms) for p in today_items[:50]],
+        'today_count': today_agg['c'],
+        'today_amount': money(today_agg['s']),
+        'pending_count': pending_agg['c'],
+        'pending_amount': money(pending_agg['s']),
+        'partial_count': partial_count,
+        'overdue_count': overdue_agg['c'],
+        'overdue_amount': money(overdue_agg['s']),
+        'today_payments': today_payments,
     })
 
 
@@ -565,39 +607,46 @@ def stats(request):
     except ValueError:
         year, month = today.year, today.month
 
-    qs = Payment.objects.select_related('created_by').filter(
+    qs = Payment.objects.filter(
         planned_date__year=year, planned_date__month=month
     )
-    qs = dept_filter(qs, request)
-    items = [p.to_dict() for p in qs]
+    qs = dept_filter(qs, request).annotate(paid=_paid_expr())
 
     D = Decimal
-    total_amount = sum(D(p['total_amount']) for p in items)
-    total_paid = sum(D(p['total_paid']) for p in items)
-    total_remaining = sum(D(p['remaining']) for p in items)
+
+    # Overall totals + status breakdown in a single aggregate query.
+    agg = qs.aggregate(
+        total=Sum('total_amount'),
+        paid_sum=Sum('paid'),
+        cnt=Count('id'),
+        settled=Count(Case(When(paid__gte=F('total_amount'), then=1))),
+        partial=Count(Case(When(paid__gt=Decimal('0'), paid__lt=F('total_amount'), then=1))),
+        pending=Count(Case(When(paid=Decimal('0'), then=1))),
+    )
+    total_amount = agg['total'] or D(0)
+    total_paid = agg['paid_sum'] or D(0)
+    total_remaining = total_amount - total_paid
     completion_rate = round(float(total_paid / total_amount * 100), 1) if total_amount else 0.0
 
-    dept_map = {}
-    for p in items:
-        d = p['department']
-        if d not in dept_map:
-            dept_map[d] = {'dept': d, 'total': D(0), 'paid': D(0), 'remaining': D(0), 'count': 0}
-        dept_map[d]['total'] += D(p['total_amount'])
-        dept_map[d]['paid'] += D(p['total_paid'])
-        dept_map[d]['remaining'] += D(p['remaining'])
-        dept_map[d]['count'] += 1
+    # Per-department rollup grouped in SQL.
+    dept_rows = qs.values('department').annotate(
+        total=Sum('total_amount'),
+        paid_sum=Sum('paid'),
+        count=Count('id'),
+    ).order_by('-total')
 
-    by_dept = sorted([
-        {
-            'dept': v['dept'],
-            'total': str(v['total']),
-            'paid': str(v['paid']),
-            'remaining': str(v['remaining']),
-            'count': v['count'],
-            'completion_rate': round(float(v['paid'] / v['total'] * 100), 1) if v['total'] else 0.0,
-        }
-        for v in dept_map.values()
-    ], key=lambda x: x['total'], reverse=True)
+    by_dept = []
+    for r in dept_rows:
+        t = r['total'] or D(0)
+        pd = r['paid_sum'] or D(0)
+        by_dept.append({
+            'dept': r['department'],
+            'total': str(t),
+            'paid': str(pd),
+            'remaining': str(t - pd),
+            'count': r['count'],
+            'completion_rate': round(float(pd / t * 100), 1) if t else 0.0,
+        })
 
     return ok({
         'year': year, 'month': month,
@@ -605,12 +654,12 @@ def stats(request):
         'total_paid': str(total_paid),
         'total_remaining': str(total_remaining),
         'completion_rate': completion_rate,
-        'total_records': len(items),
+        'total_records': agg['cnt'],
         'by_dept': by_dept,
         'by_status': {
-            'settled': sum(1 for p in items if p['status'] == 'settled'),
-            'partial': sum(1 for p in items if p['status'] == 'partial'),
-            'pending': sum(1 for p in items if p['status'] == 'pending'),
+            'settled': agg['settled'],
+            'partial': agg['partial'],
+            'pending': agg['pending'],
         },
     })
 
@@ -790,7 +839,7 @@ def payment_template(request):
         return err('Method not allowed', 405)
     try:
         from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill, Alignment, numbers
+        from openpyxl.styles import Font, PatternFill, Alignment
     except ImportError:
         return err('服务器缺少 openpyxl 依赖', 500)
 
@@ -813,12 +862,13 @@ def payment_template(request):
         cell.fill = header_fill
         cell.alignment = center
 
-    # Row 2: example data (grayed out)
+    # Row 2: example data (grayed out). The 部门 cell carries EXAMPLE_ROW_MARKER
+    # so import skips this row even if the user forgets to delete it.
     example = {
-        '部门': '集团总部',
-        '审批单号': 'PK202601001',
-        '付款事项': '示例：工程款结算',
-        '收款方': '示例收款方名称',
+        '部门': EXAMPLE_ROW_MARKER,
+        '审批单号': '如 PK202601001',
+        '付款事项': '如：工程款结算',
+        '收款方': '如：某某公司',
         '计划总金额(元)': 100000,
         '计划付款日期': '2026-06-01',
         '第1次付款日期': '',
@@ -827,7 +877,7 @@ def payment_template(request):
         '第2次付款金额(元)': 0,
         '第3次付款日期': '',
         '第3次付款金额(元)': 0,
-        '备注': '此行为示例，导入时请删除',
+        '备注': '本行为格式示例，导入前可删除',
     }
     for col_idx, (header, _) in enumerate(cols, 1):
         cell = ws.cell(row=2, column=col_idx, value=example.get(header, ''))
@@ -889,7 +939,8 @@ def payment_import(request):
         if h in _EXCEL_HEADER_TO_COL:
             col_pos[_EXCEL_HEADER_TO_COL[h]] = i
 
-    required_headers = {'department', 'project_desc', 'payee', 'planned_date', 'total_amount'}
+    # Match the fields _parse_payment_fields actually validates as required.
+    required_headers = {'department', 'project_desc', 'payee', 'planned_date'}
     missing = required_headers - set(col_pos.keys())
     if missing:
         missing_labels = [h for _, h, c in EXCEL_COLUMN_MAP if c in missing]
@@ -902,14 +953,21 @@ def payment_import(request):
         if idx is None or idx >= len(row):
             return None
         v = row[idx]
-        # Convert date/datetime objects to ISO string for consistency
+        # Date/datetime objects → ISO string.
         if hasattr(v, 'strftime'):
             return v.strftime('%Y-%m-%d')
+        # Text dates (e.g. 2026/6/1) → normalize to ISO.
+        if col_name in _EXCEL_DATE_COLS and isinstance(v, str) and v.strip():
+            return _normalize_date(v)
         return v
 
     for row_num, row in enumerate(rows[1:], start=2):
         if all(v is None or v == '' for v in row):
             continue  # skip blank rows
+
+        dept_raw = cell_val(row, 'department')
+        if dept_raw and str(dept_raw).strip().startswith('示例'):
+            continue  # template example row — skip silently
 
         data = {col: cell_val(row, col) for col in col_pos}
 
@@ -969,18 +1027,13 @@ def payment_export(request):
             Q(approval_number__icontains=q_str) | Q(department__icontains=q_str)
         )
     if status_q:
-        qs = qs.annotate(
-            computed_paid=ExpressionWrapper(
-                F('pay1_amount') + F('pay2_amount') + F('pay3_amount'),
-                output_field=DjDecimalField(max_digits=15, decimal_places=2),
-            )
-        )
+        qs = qs.annotate(paid=_paid_expr())
         if status_q == 'pending':
-            qs = qs.filter(computed_paid=Decimal('0'))
+            qs = qs.filter(paid=Decimal('0'))
         elif status_q == 'settled':
-            qs = qs.filter(computed_paid__gte=F('total_amount'))
+            qs = qs.filter(paid__gte=F('total_amount'))
         elif status_q == 'partial':
-            qs = qs.filter(computed_paid__gt=Decimal('0'), computed_paid__lt=F('total_amount'))
+            qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'))
 
     # Cap export at 5000 rows to protect the server.
     qs = qs[:5000]
@@ -1019,9 +1072,8 @@ def payment_export(request):
             ws.cell(row=row_idx, column=col_idx, value=val)
 
         # Append status column after visible cols
-        status_col = len(cols) + 1
-        ws.cell(row=row_idx if row_idx > 2 else row_idx,
-                column=status_col, value=status_label.get(d.get('status', ''), ''))
+        ws.cell(row=row_idx, column=len(cols) + 1,
+                value=status_label.get(d.get('status', ''), ''))
 
     # Status header
     status_header_cell = ws.cell(row=1, column=len(cols) + 1, value='状态')

@@ -37,8 +37,9 @@ const importResult = ref(null)
 
 async function downloadTemplate() {
   try {
-    const res = await api.get('/payments/template', { responseType: 'blob' })
-    triggerDownload(res.data, '排款导入模板.xlsx')
+    // Interceptor returns res.data, so for a blob request this IS the Blob.
+    const blob = await api.get('/payments/template', { responseType: 'blob', timeout: 60000 })
+    triggerDownload(blob, '排款导入模板.xlsx')
   } catch { alert('模板下载失败') }
 }
 
@@ -57,6 +58,7 @@ async function onImportFile(e) {
   try {
     const res = await api.post('/payments/import', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 60000,
     })
     importResult.value = res.data
     if (res.data.created > 0) load()
@@ -74,9 +76,9 @@ async function exportExcel() {
     const params = Object.fromEntries(
       Object.entries(filters).filter(([k, v]) => v !== '' && k !== 'page' && k !== 'size')
     )
-    const res = await api.get('/payments/export', { params, responseType: 'blob' })
+    const blob = await api.get('/payments/export', { params, responseType: 'blob', timeout: 60000 })
     const date = new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '月') + '日'
-    triggerDownload(res.data, `排款记录_${date}.xlsx`)
+    triggerDownload(blob, `排款记录_${date}.xlsx`)
   } catch { alert('导出失败，请稍后重试') }
   finally { exportingXlsx.value = false }
 }
