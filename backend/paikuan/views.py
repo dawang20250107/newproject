@@ -633,7 +633,16 @@ def stats(request):
     qs = Payment.objects.filter(
         planned_date__year=year, planned_date__month=month
     )
-    qs = dept_filter(qs, request).annotate(paid=_paid_expr())
+    qs = dept_filter(qs, request)
+
+    # Optional per-department filter (user-selected; restricted by dept_filter above).
+    depts_param = request.GET.get('depts', '').strip()
+    if depts_param:
+        selected = [d.strip() for d in depts_param.split(',') if d.strip()]
+        if selected:
+            qs = qs.filter(department__in=selected)
+
+    qs = qs.annotate(paid=_paid_expr())
 
     D = Decimal
 

@@ -1,13 +1,34 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import api from '../api/index.js'
+import { useAuthStore } from '../stores/auth.js'
 
+const auth = useAuthStore()
 const today = new Date()
 const year = ref(today.getFullYear())
 const month = ref(today.getMonth() + 1)
 const data = ref(null)
 const loading = ref(false)
 const loadErr = ref('')
+
+const ALL_DEPTS = [
+  '集团总部', '劳务事业部', '运输事业部', '自营事业部',
+  '阔展事业部', '多式联运事业部', '供应链事业部',
+]
+
+const availableDepts = computed(() => {
+  if (auth.isAdmin) return ALL_DEPTS
+  return (auth.user?.departments || []).filter(d => ALL_DEPTS.includes(d))
+})
+
+const selectedDepts = ref([])
+
+function toggleDept(d) {
+  const i = selectedDepts.value.indexOf(d)
+  if (i === -1) selectedDepts.value.push(d)
+  else selectedDepts.value.splice(i, 1)
+  load()
+}
 
 function fmt(n) {
   const v = parseFloat(n || 0)
@@ -20,7 +41,9 @@ async function load() {
   loading.value = true
   loadErr.value = ''
   try {
-    const res = await api.get('/stats', { params: { year: year.value, month: month.value } })
+    const params = { year: year.value, month: month.value }
+    if (selectedDepts.value.length) params.depts = selectedDepts.value.join(',')
+    const res = await api.get('/stats', { params })
     data.value = res.data
   } catch (e) {
     loadErr.value = e?.error || '加载失败，请刷新重试'
@@ -37,16 +60,27 @@ const years = Array.from({ length: 5 }, (_, i) => today.getFullYear() - 2 + i)
 
 <template>
   <div>
-    <div class="topbar">
+    <div class="topbar" style="align-items:flex-start">
       <h1>月度统计</h1>
-      <div style="display:flex;gap:8px;align-items:center">
-        <select v-model="year" style="width:90px" @change="load">
-          <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
-        </select>
-        <select v-model="month" style="width:80px" @change="load">
-          <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
-        </select>
-        <button class="btn btn-ghost btn-sm" @click="load">查询</button>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:10px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <select v-model="year" style="width:90px" @change="load">
+            <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+          </select>
+          <select v-model="month" style="width:80px" @change="load">
+            <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" @click="load">查询</button>
+        </div>
+        <div v-if="availableDepts.length > 1" class="dept-filter">
+          <span class="dept-filter-label">部门</span>
+          <button
+            v-for="d in availableDepts" :key="d"
+            :class="['dept-chip', selectedDepts.includes(d) ? 'on' : '']"
+            @click="toggleDept(d)"
+          >{{ d }}</button>
+          <button v-if="selectedDepts.length" class="dept-chip-clear" @click="selectedDepts = []; load()">清空</button>
+        </div>
       </div>
     </div>
 
@@ -130,3 +164,48 @@ const years = Array.from({ length: 5 }, (_, i) => today.getFullYear() - 2 + i)
     </template>
   </div>
 </template>
+
+<style scoped>
+.dept-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.dept-filter-label {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  margin-right: 2px;
+}
+.dept-chip {
+  padding: 4px 11px;
+  border-radius: 16px;
+  font-size: 12px;
+  border: 1.5px solid var(--border);
+  background: rgba(255, 253, 250, 0.7);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.16s;
+  white-space: nowrap;
+}
+.dept-chip:hover { border-color: var(--primary); color: var(--primary); }
+.dept-chip.on {
+  border-color: var(--primary);
+  background: rgba(201, 99, 66, 0.1);
+  color: var(--primary);
+  font-weight: 600;
+}
+.dept-chip-clear {
+  padding: 4px 10px;
+  border-radius: 16px;
+  font-size: 11px;
+  border: 1px dashed rgba(155,128,112,0.4);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.16s;
+}
+.dept-chip-clear:hover { border-color: #c62828; color: #c62828; }
+</style>

@@ -351,8 +351,8 @@ function setPage(p) { filters.page = p; load() }
   white-space: nowrap;
   cursor: default;
 }
-.cell-desc { max-width: 240px; }
-.cell-payee { max-width: 180px; }
+.cell-desc { max-width: 160px; }
+.cell-payee { max-width: 110px; }
 .cell-tooltip {
   position: fixed;
   z-index: 9000;
