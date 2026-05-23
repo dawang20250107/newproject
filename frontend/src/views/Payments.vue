@@ -166,7 +166,6 @@ function resetFilters() {
   load()
 }
 
-const totalPages = ref(0)
 function setPage(p) { filters.page = p; load() }
 </script>
 

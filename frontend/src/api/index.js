@@ -17,6 +17,7 @@ api.interceptors.response.use(
     if (err.response?.status === 401) {
       localStorage.removeItem('pk_token')
       localStorage.removeItem('pk_user')
+      localStorage.removeItem('pk_perms')
       window.location.href = '/paikuan/#/login'
     }
     return Promise.reject(err.response?.data || err)

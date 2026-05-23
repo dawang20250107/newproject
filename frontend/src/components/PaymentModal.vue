@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, nextTick } from 'vue'
+import { ref, watch, nextTick, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { DEPARTMENTS as DEPT_CONST } from '../constants.js'
@@ -79,6 +79,16 @@ async function autosave() {
     saveStatus.value = 'error'
   }
 }
+
+// Real-time installment tracker
+const paidSoFar = computed(() =>
+  (parseFloat(form.value.pay1_amount) || 0) +
+  (parseFloat(form.value.pay2_amount) || 0) +
+  (parseFloat(form.value.pay3_amount) || 0)
+)
+const plannedTotal = computed(() => parseFloat(form.value.total_amount) || 0)
+const overpaid = computed(() => plannedTotal.value > 0 && paidSoFar.value > plannedTotal.value)
+const remaining = computed(() => plannedTotal.value - paidSoFar.value)
 
 function buildPayload() {
   const payload = { ...form.value }
@@ -211,6 +221,16 @@ async function submit() {
         </div>
       </div>
 
+      <!-- Real-time paid-so-far vs total indicator (only when pay fields and total are visible) -->
+      <div v-if="(vis('pay1') || vis('pay2') || vis('pay3')) && vis('total_amount') && plannedTotal > 0"
+           class="pay-summary" :class="{ 'pay-over': overpaid }">
+        <span>已录入：<strong>{{ paidSoFar.toFixed(2) }}</strong> 元</span>
+        <span class="pay-sep">／</span>
+        <span>计划：<strong>{{ plannedTotal.toFixed(2) }}</strong> 元</span>
+        <span v-if="overpaid" class="pay-warn">⚠️ 超出计划总额</span>
+        <span v-else-if="paidSoFar > 0" class="pay-ok">剩余 {{ remaining.toFixed(2) }} 元</span>
+      </div>
+
       <div class="modal-footer">
         <button class="btn btn-ghost" @click="emit('close')">取消</button>
         <button class="btn btn-primary" :disabled="loading" @click="submit">
@@ -248,6 +268,23 @@ async function submit() {
 .status-fade-leave-to   { opacity:0; transform:translateY(-4px); }
 
 .hint-text { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 4px; }
+
+.pay-summary {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 14px; border-radius: 8px; margin-bottom: 14px;
+  background: rgba(46, 125, 50, 0.07);
+  border: 1px solid rgba(46, 125, 50, 0.18);
+  font-size: 13px; color: #2e7d32;
+  transition: background 0.2s, border-color 0.2s;
+}
+.pay-summary.pay-over {
+  background: rgba(198, 40, 40, 0.07);
+  border-color: rgba(198, 40, 40, 0.25);
+  color: #c62828;
+}
+.pay-sep { opacity: 0.45; }
+.pay-warn { font-weight: 700; margin-left: 6px; }
+.pay-ok { color: #2e7d32; opacity: 0.75; margin-left: 6px; }
 .input-warn { border-color: #f57f17 !important; background: rgba(245,127,23,0.04) !important; }
 .field-err { font-size: 11px; color: #f57f17; margin-top: 3px; display: block; }
 </style>

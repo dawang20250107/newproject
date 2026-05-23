@@ -6,6 +6,7 @@ import functools
 import re
 import threading
 from decimal import Decimal, InvalidOperation
+from urllib.parse import quote
 
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -297,7 +298,7 @@ def _remaining_expr():
 # ── version / deploy check ──────────────────────────────────────────────────────
 # Bump BUILD_VERSION whenever backend behaviour changes so a deploy can be verified
 # by opening /api/pk/version in a browser (no auth required).
-BUILD_VERSION = '2026-05-23.4'
+BUILD_VERSION = '2026-05-23.5'
 
 
 @csrf_exempt
@@ -502,18 +503,25 @@ def _parse_payment_fields(data, payment=None):
     except (InvalidOperation, TypeError) as e:
         return None, f'金额格式有误: {e}'
 
+    _AMT_LABELS = {
+        'total_amount': '计划总金额',
+        'pay1_amount': '第1次付款金额',
+        'pay2_amount': '第2次付款金额',
+        'pay3_amount': '第3次付款金额',
+    }
     # Reject negative amounts
-    for amt_key in ('total_amount', 'pay1_amount', 'pay2_amount', 'pay3_amount'):
+    for amt_key, label in _AMT_LABELS.items():
         if fields[amt_key] < Decimal('0'):
-            return None, f'{amt_key} 金额不能为负数'
+            return None, f'{label}不能为负数'
     if fields['total_amount'] <= Decimal('0'):
         return None, '计划总金额必须大于0'
 
     # Hard-reject overpayment: installment sum must not exceed total
     total_paid = fields['pay1_amount'] + fields['pay2_amount'] + fields['pay3_amount']
     if total_paid > fields['total_amount']:
+        _ta = fields['total_amount']
         return None, (
-            f'实付总额（{total_paid}元）超出计划总金额（{fields[“total_amount”]}元），'
+            f'实付总额（{total_paid}元）超出计划总金额（{_ta}元），'
             '请核实金额后再提交'
         )
 
@@ -537,7 +545,7 @@ def _parse_payment_fields(data, payment=None):
     if not fields['department']:
         return None, '部门必填'
     if fields['department'] not in VALID_DEPARTMENTS:
-        return None, f'部门”{fields[“department”]}”无效，请使用系统预设部门'
+        return None, f'部门"{fields["department"]}"无效，请使用系统预设部门'
     if not fields['project_desc']:
         return None, '付款事项描述必填'
     if not fields['payee']:
@@ -681,6 +689,10 @@ def stats(request):
     try:
         year = int(request.GET.get('year', today.year))
         month = int(request.GET.get('month', today.month))
+        if not (1 <= month <= 12):
+            month = today.month
+        if not (2000 <= year <= 2100):
+            year = today.year
     except ValueError:
         year, month = today.year, today.month
 
@@ -795,6 +807,8 @@ def user_detail(request, pk):
         if 'is_active' in data:
             user.is_active = bool(data['is_active'])
         if data.get('password'):
+            if len(data['password']) < 6:
+                return err('新密码至少6位')
             user.set_password(data['password'])
         user.save()
         return ok(user.to_dict())
@@ -935,7 +949,12 @@ def _build_excel_response(wb, filename):
         buf.getvalue(),
         content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     )
-    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    # RFC 5987 encoding so Chinese filenames render correctly in all browsers.
+    ascii_fallback = filename.encode('ascii', 'ignore').decode() or 'export.xlsx'
+    encoded = quote(filename.encode('utf-8'), safe='')
+    response['Content-Disposition'] = (
+        f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
+    )
     return response
 
 
@@ -1101,6 +1120,12 @@ def payment_import(request):
             results['errors'].append(f'第{row_num}行: 保存失败 ({e})')
             results['skipped'] += 1
 
+    if results['created'] > 0 and results['skipped'] == 0:
+        results['message'] = f'全部 {results["created"]} 条数据成功导入'
+    elif results['created'] > 0:
+        results['message'] = f'成功导入 {results["created"]} 条，跳过 {results["skipped"]} 条（含错误）'
+    else:
+        results['message'] = f'没有可导入的数据（跳过 {results["skipped"]} 条）'
     return ok(results)
 
 
@@ -1218,11 +1243,9 @@ def payment_export(request):
 def departments(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
-    # Return canonical list first, then any custom ones in the data
-    data_depts = set(
-        Payment.objects.values_list('department', flat=True).distinct()
-    )
-    merged = DEPARTMENTS + sorted(data_depts - set(DEPARTMENTS))
+    # Only return canonical departments. Historical records with non-canonical names
+    # (from before strict validation) should not pollute the department picker.
+    merged = list(DEPARTMENTS)
     # Non-admins may only see/filter departments they are assigned to,
     # matching the row-level visibility enforced by dept_filter().
     if request.pk_role != 'super_admin':

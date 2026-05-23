@@ -19,6 +19,7 @@ const loading = ref(false)
 const pendingMsg = ref('')
 const pendingState = ref('waiting')   // 'waiting' | 'approved' | 'rejected'
 let pollTimer = null
+let approvalTimer = null
 
 const JOB_TITLES = JOB_OPTIONS
 
@@ -94,7 +95,7 @@ async function checkStatus() {
     if (s === 'approved') {
       stopPolling()
       pendingState.value = 'approved'
-      setTimeout(enterAfterApproval, 1800)
+      approvalTimer = setTimeout(enterAfterApproval, 1800)
     } else if (s === 'rejected' || s === 'none') {
       stopPolling()
       pendingState.value = 'rejected'
@@ -111,7 +112,10 @@ async function enterAfterApproval() {
     error.value = e?.error || '自动登录失败，请返回手动登录'
   }
 }
-onUnmounted(stopPolling)
+onUnmounted(() => {
+  stopPolling()
+  if (approvalTimer) { clearTimeout(approvalTimer); approvalTimer = null }
+})
 
 function toggleDept(d) {
   const idx = selectedDepts.value.indexOf(d)
