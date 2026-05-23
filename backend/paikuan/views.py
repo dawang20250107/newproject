@@ -204,12 +204,20 @@ def apply_view_mask(d, perms):
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+def _no_store(resp):
+    # API data is per-user and mutates frequently (e.g. user deletion); never let
+    # a browser or proxy serve a stale copy that would resurrect deleted records.
+    resp['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    resp['Pragma'] = 'no-cache'
+    return resp
+
+
 def ok(data=None):
-    return JsonResponse({'code': 0, 'data': data})
+    return _no_store(JsonResponse({'code': 0, 'data': data}))
 
 
 def err(msg, status=400, code=-1):
-    return JsonResponse({'code': code, 'error': msg}, status=status)
+    return _no_store(JsonResponse({'code': code, 'error': msg}, status=status))
 
 
 def parse_body(request):

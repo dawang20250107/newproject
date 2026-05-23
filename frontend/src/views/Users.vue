@@ -103,7 +103,8 @@ async function deactivate(u) {
   if (!confirm(`⚠️ 确定删除「${u.name}」的账号？\n\n此操作将永久删除该用户的登录记录，无法恢复。\n如需重新使用，须重新注册并等待审批。`)) return
   try {
     await api.delete(`/users/${u.id}`)
-    users.value = users.value.filter(x => x.id !== u.id)
+    users.value = users.value.filter(x => x.id !== u.id)  // instant feedback
+    await load()                                            // reconcile with server truth
   } catch (e) {
     alert(e?.error || '操作失败')
   }
