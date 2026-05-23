@@ -135,7 +135,12 @@ def get_job_perms(job):
         if job in _perm_cache:
             return _perm_cache[job]
     base = default_job_config(job)
-    rp = JobPermission.objects.filter(job_title=job).first()
+    try:
+        rp = JobPermission.objects.filter(job_title=job).first()
+    except Exception:
+        # paikuan_job_permissions table may not exist yet (migration pending).
+        logger.warning('get_job_perms: DB unavailable for %s, using defaults', job)
+        return base
     if not (rp and rp.config):
         result = base
     else:
@@ -673,8 +678,12 @@ def stats(request):
 @pk_required(roles=['super_admin'])
 def users(request):
     if request.method == 'GET':
-        all_users = PaikuanUser.objects.order_by('is_approved', 'id')
-        return ok([u.to_dict() for u in all_users])
+        try:
+            all_users = PaikuanUser.objects.order_by('is_approved', 'id')
+            return ok([u.to_dict() for u in all_users])
+        except Exception as e:
+            logger.error('users list failed: %s', e)
+            return err('用户列表加载失败，请确认已执行 python manage.py migrate', 500)
     # Super admin cannot create users directly — users register themselves
     return err('请通过注册流程创建用户', 405)
 
@@ -728,6 +737,9 @@ def approve_user(request, pk):
         user = PaikuanUser.objects.get(id=pk)
     except PaikuanUser.DoesNotExist:
         return err('用户不存在', 404)
+    except Exception as e:
+        logger.error('approve_user get failed: %s', e)
+        return err('操作失败，请先执行 python manage.py migrate', 500)
     if user.role == 'super_admin':
         return err('超级管理员无需审批')
     body = parse_body(request)
@@ -739,9 +751,13 @@ def approve_user(request, pk):
     user.is_approved = True
     user.is_active = True
     user.role = 'operator'   # regular member; field perms come from job_title
-    user.approved_by_id = request.pk_uid
-    user.approved_at = timezone.now()
-    user.save()
+    try:
+        user.approved_by_id = request.pk_uid
+        user.approved_at = timezone.now()
+        user.save()
+    except Exception as e:
+        logger.error('approve_user save failed: %s', e)
+        return err('审批保存失败，请检查数据库迁移是否完整', 500)
     return ok(user.to_dict())
 
 
@@ -755,11 +771,18 @@ def reject_user(request, pk):
         user = PaikuanUser.objects.get(id=pk)
     except PaikuanUser.DoesNotExist:
         return err('用户不存在', 404)
+    except Exception as e:
+        logger.error('reject_user get failed: %s', e)
+        return err('操作失败，请先执行 python manage.py migrate', 500)
     if user.role == 'super_admin':
         return err('不能拒绝超级管理员')
     if user.is_approved:
         return err('该用户已审批，不能拒绝；如需禁用请使用停用')
-    user.delete()
+    try:
+        user.delete()
+    except Exception as e:
+        logger.error('reject_user delete failed: %s', e)
+        return err('删除失败', 500)
     return ok({'rejected': pk})
 
 

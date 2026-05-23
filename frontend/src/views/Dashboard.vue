@@ -8,6 +8,7 @@ const auth = useAuthStore()
 const data = ref(null)
 const loading = ref(true)
 const loadErr = ref('')
+const welcomeName = ref('')
 
 const showAmount = computed(() => auth.canView('total_amount'))
 const showPaid = computed(() => auth.canView('pay1') || auth.canView('pay2') || auth.canView('pay3'))
@@ -31,13 +32,30 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  const name = sessionStorage.getItem('pk_welcome')
+  if (name && name !== '1') {
+    welcomeName.value = name
+    sessionStorage.removeItem('pk_welcome')
+    setTimeout(() => { welcomeName.value = '' }, 3500)
+  } else if (name === '1') {
+    sessionStorage.removeItem('pk_welcome')
+  }
+})
 
 const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })
 </script>
 
 <template>
   <div>
+    <!-- welcome toast shown once after approval auto-login -->
+    <Transition name="welcome-fade">
+      <div v-if="welcomeName" class="welcome-toast">
+        🎉 欢迎加入，{{ welcomeName }}！账号已通过审批，正式进入系统。
+      </div>
+    </Transition>
+
     <div class="topbar">
       <div>
         <h1>今日工作台</h1>
@@ -106,3 +124,25 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
     </template>
   </div>
 </template>
+
+<style scoped>
+.welcome-toast {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: linear-gradient(135deg, #c96342, #e8855a);
+  color: #fff;
+  padding: 14px 28px;
+  border-radius: 32px;
+  font-size: 15px;
+  font-weight: 600;
+  box-shadow: 0 8px 28px rgba(201,99,66,0.42);
+  z-index: 9999;
+  white-space: nowrap;
+}
+.welcome-fade-enter-active { transition: all 0.55s cubic-bezier(0.22,1,0.36,1); }
+.welcome-fade-leave-active { transition: all 0.6s ease; }
+.welcome-fade-enter-from  { opacity: 0; transform: translateX(-50%) translateY(-18px) scale(0.92); }
+.welcome-fade-leave-to    { opacity: 0; transform: translateX(-50%) translateY(-10px) scale(0.96); }
+</style>

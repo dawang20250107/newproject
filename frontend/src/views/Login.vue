@@ -112,6 +112,7 @@ async function checkStatus() {
 async function enterAfterApproval() {
   try {
     await auth.login(phone.value, password.value)
+    sessionStorage.setItem('pk_welcome', auth.user?.name || '1')
     router.push('/dashboard')
   } catch (e) {
     pendingState.value = 'rejected'
