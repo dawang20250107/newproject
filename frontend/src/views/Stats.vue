@@ -2,12 +2,11 @@
 import { ref, onMounted, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
-import { DEPARTMENTS as ALL_DEPTS_LIST } from '../constants.js'
+import { DEPARTMENTS as ALL_DEPTS_LIST, yearCST, monthCST } from '../constants.js'
 
 const auth = useAuthStore()
-const today = new Date()
-const year = ref(today.getFullYear())
-const month = ref(today.getMonth() + 1)
+const year = ref(yearCST())
+const month = ref(monthCST())
 const data = ref(null)
 const loading = ref(false)
 const loadErr = ref('')
@@ -51,7 +50,7 @@ async function load() {
 onMounted(load)
 
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
-const years = Array.from({ length: 5 }, (_, i) => today.getFullYear() - 2 + i)
+const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 </script>
 
 <template>

@@ -72,6 +72,7 @@ function toggleEditDept(d) {
 
 async function saveEdit() {
   error.value = ''
+  if (!editForm.value.name.trim()) { error.value = '姓名不能为空'; return }
   try {
     const payload = {
       name: editForm.value.name,

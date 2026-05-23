@@ -2,6 +2,7 @@
 import { ref, onMounted, reactive, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
+import { todayCST } from '../constants.js'
 import StatusBadge from '../components/StatusBadge.vue'
 import PaymentModal from '../components/PaymentModal.vue'
 
@@ -18,7 +19,7 @@ const departments = ref([])
 const showModal = ref(false)
 const editItem = ref(null)
 const loadErr = ref('')
-const today = new Date().toISOString().slice(0, 10)
+const today = todayCST()  // UTC+8，与服务端 Asia/Shanghai 保持一致
 
 const filters = reactive({
   q: '', dept: '', status: '', start_date: '', end_date: '',
@@ -102,7 +103,7 @@ async function exportExcel() {
     const blob = await api.get('/payments/export', { params, responseType: 'blob', timeout: 60000 })
     const date = new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '月') + '日'
     triggerDownload(blob, `排款记录_${date}.xlsx`)
-  } catch { alert('导出失败，请稍后重试') }
+  } catch (e) { alert(e?.error || '导出失败，请稍后重试') }
   finally { exportingXlsx.value = false }
 }
 
@@ -310,6 +311,8 @@ function setPage(p) { filters.page = p; load() }
           </div>
 
           <!-- highlighted list of skipped / non-compliant rows -->
+          <div v-if="importResult.message" class="imp-msg-banner">{{ importResult.message }}</div>
+
           <div v-if="importResult.errors?.length" class="imp-errbox">
             <div class="imp-errtitle">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -405,6 +408,11 @@ function setPage(p) { filters.page = p; load() }
   font-size: 12.5px; line-height: 1.7; color: #b35309;
 }
 .imp-allok { text-align: center; color: #2e7d32; font-size: 13.5px; padding: 6px 0 4px; }
+.imp-msg-banner {
+  font-size: 13px; color: #5a4030; background: rgba(201,99,66,0.07);
+  border: 1px solid rgba(201,99,66,0.18); border-radius: 8px;
+  padding: 8px 14px; margin-bottom: 12px; line-height: 1.5;
+}
 .btn-spin {
   display: inline-block;
   width: 11px; height: 11px;

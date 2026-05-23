@@ -298,7 +298,7 @@ def _remaining_expr():
 # ── version / deploy check ──────────────────────────────────────────────────────
 # Bump BUILD_VERSION whenever backend behaviour changes so a deploy can be verified
 # by opening /api/pk/version in a browser (no auth required).
-BUILD_VERSION = '2026-05-23.5'
+BUILD_VERSION = '2026-05-23.6'
 
 
 @csrf_exempt
@@ -528,6 +528,19 @@ def _parse_payment_fields(data, payment=None):
     for key in ('planned_date', 'pay1_date', 'pay2_date', 'pay3_date'):
         val = data.get(key) if key in data else getattr(payment, key, None)
         fields[key] = val or None
+
+    # D1: Validate that date strings represent actual calendar dates.
+    # Rejects impossible dates like 2026-02-30 or 2026-13-01 before they reach the ORM.
+    _DATE_LABELS = {
+        'planned_date': '计划付款', 'pay1_date': '第1次付款',
+        'pay2_date': '第2次付款', 'pay3_date': '第3次付款',
+    }
+    for key, label in _DATE_LABELS.items():
+        if fields[key]:
+            try:
+                datetime.date.fromisoformat(str(fields[key]))
+            except ValueError:
+                return None, f'{label}日期无效（{fields[key]}），请使用 YYYY-MM-DD 格式'
 
     # Paired installment validation: date↔amount must both be present or both absent
     for n, date_key, amt_key in (
@@ -801,7 +814,12 @@ def user_detail(request, pk):
                 return err('不能修改超级管理员的角色')
             user.role = data['role']
         if 'departments' in data:
-            user.departments = data['departments'] or []
+            depts = data['departments'] or []
+            # Approved non-admin users must retain at least one department;
+            # otherwise they'd become invisible to the system (no rows to see or edit).
+            if user.is_approved and user.role != 'super_admin' and len(depts) == 0:
+                return err('已审批用户至少需要分配一个部门')
+            user.departments = depts
         if 'job_title' in data:
             user.job_title = data['job_title'] or ''
         if 'is_active' in data:
@@ -1172,8 +1190,14 @@ def payment_export(request):
         elif status_q == 'partial':
             qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'))
 
-    # Cap export at 5000 rows to protect the server.
-    qs = qs[:5000]
+    # Reject rather than silently truncate: a truncated export is worse than no export.
+    EXPORT_CAP = 5000
+    total_count = qs.count()
+    if total_count > EXPORT_CAP:
+        return err(
+            f'当前筛选结果共 {total_count} 条，超出导出上限（{EXPORT_CAP} 条）。'
+            '请缩小日期范围或添加其他筛选条件后重试。'
+        )
 
     cols = _visible_excel_cols(perms)
 

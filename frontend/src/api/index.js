@@ -13,14 +13,20 @@ api.interceptors.request.use(cfg => {
 
 api.interceptors.response.use(
   res => res.data,
-  err => {
+  async err => {
     if (err.response?.status === 401) {
       localStorage.removeItem('pk_token')
       localStorage.removeItem('pk_user')
       localStorage.removeItem('pk_perms')
       window.location.href = '/paikuan/#/login'
     }
-    return Promise.reject(err.response?.data || err)
+    // Blob-typed requests that error return a Blob body rather than JSON.
+    // Parse it back so callers always receive a plain error object.
+    let errData = err.response?.data
+    if (errData instanceof Blob && errData.type?.includes('json')) {
+      try { errData = JSON.parse(await errData.text()) } catch {}
+    }
+    return Promise.reject(errData || err)
   }
 )
 

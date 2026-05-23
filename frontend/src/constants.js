@@ -24,3 +24,26 @@ export const JOB_OPTIONS = [
   { v: 'chief_cashier', label: '总出纳' },
   { v: 'cashier', label: '出纳' },
 ]
+
+// ── UTC+8 时间工具 ────────────────────────────────────────────────────────────
+// 系统所有日期/时间基准强制 UTC+8（北京时间），不依赖浏览器系统时区设置。
+
+/** 返回 UTC+8 今日日期，格式 YYYY-MM-DD。 */
+export function todayCST() {
+  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+}
+
+/** 返回 UTC+8 当前小时（0-23），用于时段问候语。 */
+export function hourCST() {
+  return new Date(Date.now() + 8 * 3600 * 1000).getUTCHours()
+}
+
+/** 返回 UTC+8 当前年份。 */
+export function yearCST() {
+  return new Date(Date.now() + 8 * 3600 * 1000).getUTCFullYear()
+}
+
+/** 返回 UTC+8 当前月份（1-12）。 */
+export function monthCST() {
+  return new Date(Date.now() + 8 * 3600 * 1000).getUTCMonth() + 1
+}

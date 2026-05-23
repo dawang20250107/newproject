@@ -17,6 +17,7 @@ function editable(key) { return auth.canEdit(key) }
 const loading = ref(false)
 const error = ref('')
 const saveStatus = ref('')  // '' | 'saving' | 'saved' | 'error'
+const autoSaveErr = ref('')
 let saveTimer = null
 let isResetting = false
 
@@ -74,9 +75,11 @@ async function autosave() {
   try {
     await api.put(`/payments/${props.payment.id}`, buildPayload())
     saveStatus.value = 'saved'
+    autoSaveErr.value = ''
     setTimeout(() => { if (saveStatus.value === 'saved') saveStatus.value = '' }, 2200)
-  } catch {
+  } catch (e) {
     saveStatus.value = 'error'
+    autoSaveErr.value = e?.error || '自动保存失败'
   }
 }
 
@@ -133,7 +136,9 @@ async function submit() {
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
               已保存
             </span>
-            <span v-else-if="saveStatus === 'error'" class="save-status save-err">保存失败</span>
+            <span v-else-if="saveStatus === 'error'" class="save-status save-err" :title="autoSaveErr">
+              ⚠ {{ autoSaveErr || '自动保存失败' }}
+            </span>
           </Transition>
           <button class="modal-close" @click="emit('close')">×</button>
         </div>
@@ -174,7 +179,7 @@ async function submit() {
         </div>
         <div v-if="vis('total_amount')" class="form-group">
           <label>计划总金额 (元) *</label>
-          <input v-model="form.total_amount" type="number" step="0.01" placeholder="0.00" :disabled="!editable('total_amount')" />
+          <input v-model="form.total_amount" type="number" min="0" step="0.01" placeholder="0.00" :disabled="!editable('total_amount')" />
         </div>
       </div>
 
@@ -197,7 +202,7 @@ async function submit() {
         </div>
         <div class="form-group">
           <label>第1次金额 (元)</label>
-          <input v-model="form.pay1_amount" type="number" step="0.01" placeholder="0.00" :disabled="!editable('pay1')" />
+          <input v-model="form.pay1_amount" type="number" min="0" step="0.01" placeholder="0.00" :disabled="!editable('pay1')" />
         </div>
       </div>
       <div v-if="vis('pay2')" class="inst-row">
@@ -207,7 +212,7 @@ async function submit() {
         </div>
         <div class="form-group">
           <label>第2次金额 (元)</label>
-          <input v-model="form.pay2_amount" type="number" step="0.01" placeholder="0.00" :disabled="!editable('pay2')" />
+          <input v-model="form.pay2_amount" type="number" min="0" step="0.01" placeholder="0.00" :disabled="!editable('pay2')" />
         </div>
       </div>
       <div v-if="vis('pay3')" class="inst-row">
@@ -217,7 +222,7 @@ async function submit() {
         </div>
         <div class="form-group">
           <label>第3次金额 (元)</label>
-          <input v-model="form.pay3_amount" type="number" step="0.01" placeholder="0.00" :disabled="!editable('pay3')" />
+          <input v-model="form.pay3_amount" type="number" min="0" step="0.01" placeholder="0.00" :disabled="!editable('pay3')" />
         </div>
       </div>
 

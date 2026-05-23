@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { JOB_LABELS } from '../constants.js'
+import { JOB_LABELS, hourCST } from '../constants.js'
 
 const props = defineProps({
   user: { type: Object, default: null },
@@ -10,7 +10,7 @@ const emit = defineEmits(['done'])
 const visible = ref(true)
 const progress = ref(0)
 
-const hour = new Date().getHours()
+const hour = hourCST()
 const greeting = hour < 6 ? '夜深了' : hour < 12 ? '早上好' : hour < 18 ? '下午好' : '晚上好'
 const greetIcon = hour < 6 ? '🌙' : hour < 12 ? '🌅' : hour < 18 ? '☀️' : '🌆'
 
