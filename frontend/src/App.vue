@@ -9,6 +9,7 @@ const route = useRoute()
 const auth = useAuthStore()
 const showNav = computed(() => auth.isLoggedIn && !route.meta.public)
 const navCollapsed = ref(localStorage.getItem('nav_collapsed') === '1')
+const mobileNavOpen = ref(false)
 
 // Keep permissions fresh (super_admin may have changed them since last login).
 onMounted(() => { if (auth.isLoggedIn) auth.refresh() })
@@ -22,6 +23,9 @@ watch(() => auth.isLoggedIn, (v) => {
     showWelcome.value = true
   }
 })
+
+// Close the mobile drawer whenever the route changes.
+watch(() => route.path, () => { mobileNavOpen.value = false })
 
 function onNavCollapse(v) {
   navCollapsed.value = v
@@ -39,7 +43,18 @@ function onNavCollapse(v) {
     </div>
 
     <div class="layout">
-      <AppNav v-if="showNav" :collapsed="navCollapsed" @update:collapsed="onNavCollapse" />
+      <!-- mobile hamburger + drawer backdrop (inside .layout to share the sidebar's stacking context) -->
+      <button v-if="showNav" class="mobile-nav-toggle" @click="mobileNavOpen = true" aria-label="打开导航">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+          <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+        </svg>
+      </button>
+      <Transition name="backdrop-fade">
+        <div v-if="showNav && mobileNavOpen" class="mobile-nav-backdrop" @click="mobileNavOpen = false"></div>
+      </Transition>
+
+      <AppNav v-if="showNav" :collapsed="navCollapsed" :mobile-open="mobileNavOpen"
+        @update:collapsed="onNavCollapse" @close-mobile="mobileNavOpen = false" />
       <main :class="showNav ? ['main-content', navCollapsed ? 'nav-collapsed' : ''] : ''">
         <router-view />
       </main>

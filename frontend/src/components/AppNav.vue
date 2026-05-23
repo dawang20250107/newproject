@@ -1,23 +1,34 @@
 <script setup>
+import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth.js'
 
 const props = defineProps({
   collapsed: { type: Boolean, default: false },
+  mobileOpen: { type: Boolean, default: false },
 })
-const emit = defineEmits(['update:collapsed'])
+const emit = defineEmits(['update:collapsed', 'close-mobile'])
 
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
 
+// When the mobile drawer is open we always show full labels, regardless of
+// the desktop collapse preference.
+const effectiveCollapsed = computed(() => props.mobileOpen ? false : props.collapsed)
+
 function logout() {
+  emit('close-mobile')
   auth.logout()
   router.push('/login')
 }
 
 function toggleCollapse() {
   emit('update:collapsed', !props.collapsed)
+}
+
+function onNavClick() {
+  emit('close-mobile')
 }
 
 const ROLE_LABELS = {
@@ -36,7 +47,7 @@ const JOB_LABELS = {
 </script>
 
 <template>
-  <nav :class="['sidebar', collapsed ? 'collapsed' : '']">
+  <nav :class="['sidebar', collapsed ? 'collapsed' : '', mobileOpen ? 'mobile-open' : '']">
     <!-- Brand -->
     <div class="sidebar-brand">
       <div class="brand-mark">
@@ -52,13 +63,13 @@ const JOB_LABELS = {
         </svg>
       </div>
       <Transition name="label-fade">
-        <span v-if="!collapsed" class="brand-name">排款系统</span>
+        <span v-if="!effectiveCollapsed" class="brand-name">排款系统</span>
       </Transition>
     </div>
 
     <!-- Nav links -->
     <div class="nav-links">
-      <router-link v-if="auth.canPage('dashboard')" to="/dashboard" class="nav-item" :class="{ active: route.path === '/dashboard' }">
+      <router-link v-if="auth.canPage('dashboard')" to="/dashboard" class="nav-item" :class="{ active: route.path === '/dashboard' }" @click="onNavClick">
         <span class="nav-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
@@ -66,16 +77,16 @@ const JOB_LABELS = {
           </svg>
         </span>
         <Transition name="label-fade">
-          <span v-if="!collapsed" class="nav-label">今日工作台</span>
+          <span v-if="!effectiveCollapsed" class="nav-label">今日工作台</span>
         </Transition>
         <Transition name="label-fade">
-          <span v-if="!collapsed" class="nav-arrow">
+          <span v-if="!effectiveCollapsed" class="nav-arrow">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
           </span>
         </Transition>
       </router-link>
 
-      <router-link v-if="auth.canPage('payments')" to="/payments" class="nav-item" :class="{ active: route.path === '/payments' }">
+      <router-link v-if="auth.canPage('payments')" to="/payments" class="nav-item" :class="{ active: route.path === '/payments' }" @click="onNavClick">
         <span class="nav-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z"/>
@@ -83,16 +94,16 @@ const JOB_LABELS = {
           </svg>
         </span>
         <Transition name="label-fade">
-          <span v-if="!collapsed" class="nav-label">付款台账</span>
+          <span v-if="!effectiveCollapsed" class="nav-label">付款台账</span>
         </Transition>
         <Transition name="label-fade">
-          <span v-if="!collapsed" class="nav-arrow">
+          <span v-if="!effectiveCollapsed" class="nav-arrow">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
           </span>
         </Transition>
       </router-link>
 
-      <router-link v-if="auth.canPage('stats')" to="/stats" class="nav-item" :class="{ active: route.path === '/stats' }">
+      <router-link v-if="auth.canPage('stats')" to="/stats" class="nav-item" :class="{ active: route.path === '/stats' }" @click="onNavClick">
         <span class="nav-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
@@ -100,16 +111,16 @@ const JOB_LABELS = {
           </svg>
         </span>
         <Transition name="label-fade">
-          <span v-if="!collapsed" class="nav-label">月度统计</span>
+          <span v-if="!effectiveCollapsed" class="nav-label">月度统计</span>
         </Transition>
         <Transition name="label-fade">
-          <span v-if="!collapsed" class="nav-arrow">
+          <span v-if="!effectiveCollapsed" class="nav-arrow">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
           </span>
         </Transition>
       </router-link>
 
-      <router-link v-if="auth.isSuperAdmin" to="/users" class="nav-item" :class="{ active: route.path === '/users' }">
+      <router-link v-if="auth.isSuperAdmin" to="/users" class="nav-item" :class="{ active: route.path === '/users' }" @click="onNavClick">
         <span class="nav-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
@@ -118,16 +129,16 @@ const JOB_LABELS = {
           </svg>
         </span>
         <Transition name="label-fade">
-          <span v-if="!collapsed" class="nav-label">用户管理</span>
+          <span v-if="!effectiveCollapsed" class="nav-label">用户管理</span>
         </Transition>
         <Transition name="label-fade">
-          <span v-if="!collapsed" class="nav-arrow">
+          <span v-if="!effectiveCollapsed" class="nav-arrow">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
           </span>
         </Transition>
       </router-link>
 
-      <router-link v-if="auth.isSuperAdmin" to="/permissions" class="nav-item" :class="{ active: route.path === '/permissions' }">
+      <router-link v-if="auth.isSuperAdmin" to="/permissions" class="nav-item" :class="{ active: route.path === '/permissions' }" @click="onNavClick">
         <span class="nav-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
@@ -135,10 +146,10 @@ const JOB_LABELS = {
           </svg>
         </span>
         <Transition name="label-fade">
-          <span v-if="!collapsed" class="nav-label">权限配置</span>
+          <span v-if="!effectiveCollapsed" class="nav-label">权限配置</span>
         </Transition>
         <Transition name="label-fade">
-          <span v-if="!collapsed" class="nav-arrow">
+          <span v-if="!effectiveCollapsed" class="nav-arrow">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
           </span>
         </Transition>
@@ -147,7 +158,7 @@ const JOB_LABELS = {
 
     <!-- Footer -->
     <div class="sidebar-footer">
-      <template v-if="!collapsed">
+      <template v-if="!effectiveCollapsed">
         <div class="user-info">
           <div class="user-avatar">{{ auth.user?.name?.[0] || '?' }}</div>
           <div class="user-meta">
@@ -182,7 +193,7 @@ const JOB_LABELS = {
     <!-- Collapse toggle -->
     <button class="collapse-btn" @click="toggleCollapse" :title="collapsed ? '展开导航' : '收起导航'">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-        <path v-if="!collapsed" d="M15 18l-6-6 6-6"/>
+        <path v-if="!effectiveCollapsed" d="M15 18l-6-6 6-6"/>
         <path v-else d="M9 18l6-6-6-6"/>
       </svg>
     </button>
@@ -311,4 +322,17 @@ const JOB_LABELS = {
 .label-fade-leave-active { transition: opacity 0.1s, transform 0.1s; }
 .label-fade-enter-from { opacity:0; transform:translateX(-6px); }
 .label-fade-leave-to   { opacity:0; transform:translateX(-6px); }
+
+/* ── mobile off-canvas drawer (kept scoped so it out-specifies base .sidebar) ── */
+@media (max-width: 768px) {
+  .sidebar {
+    width: var(--nav-w);
+    transform: translateX(-100%);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: 300;
+  }
+  .sidebar.collapsed { width: var(--nav-w); }   /* always full width as a drawer */
+  .sidebar.mobile-open { transform: translateX(0); }
+  .collapse-btn { display: none; }              /* collapse toggle is desktop-only */
+}
 </style>

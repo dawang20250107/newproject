@@ -374,14 +374,57 @@ tr:last-child td { border-bottom: none; }
 ::-webkit-scrollbar-thumb { background: rgba(155,128,112,0.35); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(155,128,112,0.6); }
 
+/* ── mobile hamburger + drawer backdrop (hidden on desktop) ──────────────── */
+.mobile-nav-toggle { display: none; }
+.mobile-nav-backdrop { display: none; }
+
 /* ── responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
-  .main-content { margin-left: 0 !important; padding: 16px; }
+  .main-content { margin-left: 0 !important; padding: 64px 14px 40px; }
+  /* NOTE: the off-canvas drawer transform/z-index lives in AppNav.vue scoped
+     styles so it can out-specify the scoped base .sidebar rule. */
+
+  /* hamburger button, fixed top-left */
+  .mobile-nav-toggle {
+    display: flex; align-items: center; justify-content: center;
+    position: fixed; top: 12px; left: 12px;
+    width: 42px; height: 42px; border-radius: 12px;
+    background: rgba(36, 18, 10, 0.9);
+    color: #e8d4c4; border: 1px solid rgba(255,255,255,0.1);
+    z-index: 250;
+    box-shadow: 0 4px 16px rgba(20,8,4,0.28);
+    backdrop-filter: blur(8px);
+  }
+  .mobile-nav-toggle:active { background: var(--primary); color: #fff; }
+
+  /* drawer backdrop */
+  .mobile-nav-backdrop {
+    display: block; position: fixed; inset: 0;
+    background: rgba(20,10,5,0.46); backdrop-filter: blur(3px);
+    z-index: 280;
+  }
+
   .form-row { grid-template-columns: 1fr; }
-  .modal { padding: 20px; border-radius: 18px; }
+  .modal { padding: 20px 18px; border-radius: 18px; width: 100%; max-width: 100%;
+    max-height: 92vh; }
+  .overlay { align-items: flex-end; }   /* sheet-style modal on phones */
+  .modal-footer { position: sticky; bottom: 0; background: rgba(255,252,248,0.96);
+    padding-top: 12px; }
   .kpi-grid { grid-template-columns: repeat(2,1fr); }
   .topbar { flex-direction: column; align-items: flex-start; gap: 12px; }
+
+  /* larger touch targets */
+  .btn { min-height: 38px; }
+  .btn-sm { min-height: 32px; }
+  table th, table td { padding: 10px 10px; }
 }
+
+@media (max-width: 480px) {
+  .kpi-grid { grid-template-columns: 1fr; }
+}
+
+.backdrop-fade-enter-active, .backdrop-fade-leave-active { transition: opacity 0.25s ease; }
+.backdrop-fade-enter-from, .backdrop-fade-leave-to { opacity: 0; }
 
 /* ── global mouse effects (cursor glow trail + click ripple) ─────────────── */
 .mfx-glow {
