@@ -1,0 +1,22 @@
+[Unit]
+Description=Paikuan 排款系统 Django Backend
+After=network.target mysql.service
+
+[Service]
+User=ubuntu
+WorkingDirectory=/opt/paikuan/backend
+EnvironmentFile=/opt/paikuan/backend/.env
+ExecStartPre=/opt/paikuan/venv/bin/python manage.py migrate --noinput
+ExecStart=/opt/paikuan/venv/bin/gunicorn \
+    -w 3 \
+    -b 127.0.0.1:8081 \
+    --timeout 60 \
+    --access-logfile /var/log/paikuan/access.log \
+    --error-logfile  /var/log/paikuan/error.log \
+    wxcloudrun.wsgi:application
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

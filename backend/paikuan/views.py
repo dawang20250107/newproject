@@ -8,6 +8,7 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db.models import Q
 from django.conf import settings
+from django.utils import timezone
 import jwt
 
 from paikuan.models import PaikuanUser, Payment
@@ -292,7 +293,7 @@ def payment_detail(request, pk):
 def dashboard(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
-    today = datetime.date.today()
+    today = timezone.localdate()
     qs = Payment.objects.select_related('created_by').all()
     qs = dept_filter(qs, request)
     items = [p.to_dict() for p in qs]
@@ -328,7 +329,7 @@ def dashboard(request):
 def stats(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
-    today = datetime.date.today()
+    today = timezone.localdate()
     try:
         year = int(request.GET.get('year', today.year))
         month = int(request.GET.get('month', today.month))
