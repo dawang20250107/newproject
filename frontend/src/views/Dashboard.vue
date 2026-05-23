@@ -5,6 +5,7 @@ import StatusBadge from '../components/StatusBadge.vue'
 
 const data = ref(null)
 const loading = ref(true)
+const loadErr = ref('')
 
 function fmt(n) {
   const v = parseFloat(n || 0)
@@ -13,9 +14,12 @@ function fmt(n) {
 
 async function load() {
   loading.value = true
+  loadErr.value = ''
   try {
     const res = await api.get('/dashboard')
     data.value = res.data
+  } catch (e) {
+    loadErr.value = e?.error || '加载失败，请刷新重试'
   } finally {
     loading.value = false
   }
@@ -37,6 +41,7 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
     </div>
 
     <div v-if="loading" class="empty"><div class="icon">⏳</div>加载中…</div>
+    <div v-else-if="loadErr" class="empty" style="color:#c62828"><div class="icon">⚠️</div>{{ loadErr }}</div>
 
     <template v-else-if="data">
       <div class="kpi-grid">

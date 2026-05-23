@@ -12,6 +12,7 @@ const loading = ref(false)
 const departments = ref([])
 const showModal = ref(false)
 const editItem = ref(null)
+const loadErr = ref('')
 
 const filters = reactive({
   q: '', dept: '', status: '', start_date: '', end_date: '',
@@ -25,11 +26,14 @@ function fmt(n) {
 
 async function load() {
   loading.value = true
+  loadErr.value = ''
   try {
     const params = Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== ''))
     const res = await api.get('/payments', { params })
     items.value = res.data.items
     total.value = res.data.total
+  } catch (e) {
+    loadErr.value = e?.error || '加载失败，请刷新重试'
   } finally {
     loading.value = false
   }
@@ -102,6 +106,7 @@ function setPage(p) { filters.page = p; load() }
       <div style="font-size:13px;color:var(--muted);margin-bottom:8px">共 {{ total }} 条记录</div>
 
       <div v-if="loading" class="empty"><div class="icon">⏳</div>加载中…</div>
+      <div v-else-if="loadErr" class="empty" style="color:#c62828"><div class="icon">⚠️</div>{{ loadErr }}</div>
 
       <div v-else-if="!items.length" class="empty">
         <div class="icon">📭</div>暂无数据

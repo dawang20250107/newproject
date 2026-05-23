@@ -37,7 +37,7 @@ function onNavCollapse(v) {
 
     <div class="layout">
       <AppNav v-if="showNav" :collapsed="navCollapsed" @update:collapsed="onNavCollapse" />
-      <main :class="['main-content', showNav && navCollapsed ? 'nav-collapsed' : '']">
+      <main :class="showNav ? ['main-content', navCollapsed ? 'nav-collapsed' : ''] : ''">
         <router-view />
       </main>
     </div>

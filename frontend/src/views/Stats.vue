@@ -7,6 +7,7 @@ const year = ref(today.getFullYear())
 const month = ref(today.getMonth() + 1)
 const data = ref(null)
 const loading = ref(false)
+const loadErr = ref('')
 
 function fmt(n) {
   const v = parseFloat(n || 0)
@@ -17,9 +18,12 @@ function fmt(n) {
 
 async function load() {
   loading.value = true
+  loadErr.value = ''
   try {
     const res = await api.get('/stats', { params: { year: year.value, month: month.value } })
     data.value = res.data
+  } catch (e) {
+    loadErr.value = e?.error || '加载失败，请刷新重试'
   } finally {
     loading.value = false
   }
@@ -47,6 +51,7 @@ const years = Array.from({ length: 5 }, (_, i) => today.getFullYear() - 2 + i)
     </div>
 
     <div v-if="loading" class="empty"><div class="icon">⏳</div>加载中…</div>
+    <div v-else-if="loadErr" class="empty" style="color:#c62828"><div class="icon">⚠️</div>{{ loadErr }}</div>
 
     <template v-else-if="data">
       <!-- KPI -->

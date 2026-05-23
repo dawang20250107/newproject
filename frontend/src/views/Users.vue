@@ -9,6 +9,7 @@ const showEditModal = ref(false)
 const editUser = ref(null)
 const error = ref('')
 const approveLoading = ref({})
+const approveRoles = ref({})   // keyed by user id, holds selected role for approval
 
 const JOB_LABELS = {
   cashier: '出纳', finance_bp: '财务BP', finance_director: '财务总监',
@@ -160,14 +161,14 @@ async function approve(u, role) {
             <div class="pending-actions">
               <div class="approve-role-row">
                 <span style="font-size:12px;color:var(--muted)">审批为：</span>
-                <select class="role-select" :id="`role-${u.id}`">
+                <select class="role-select" v-model="approveRoles[u.id]">
                   <option v-for="r in ROLE_OPTIONS" :key="r.v" :value="r.v">{{ r.label }}</option>
                 </select>
               </div>
               <button
                 class="btn btn-success btn-sm"
                 :disabled="approveLoading[u.id]"
-                @click="approve(u, document.getElementById(`role-${u.id}`)?.value)"
+                @click="approve(u, approveRoles[u.id] || 'operator')"
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="20 6 9 17 4 12"/>
