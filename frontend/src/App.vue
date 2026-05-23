@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch, onMounted } from 'vue'
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import AppNav from './components/AppNav.vue'
 import WelcomeOverlay from './components/WelcomeOverlay.vue'
@@ -8,11 +8,39 @@ import { useAuthStore } from './stores/auth.js'
 const route = useRoute()
 const auth = useAuthStore()
 const showNav = computed(() => auth.isLoggedIn && !route.meta.public)
-const navCollapsed = ref(localStorage.getItem('nav_collapsed') === '1')
+
+const AUTO_COLLAPSE_MS = 10000
+// User's explicit choice, if any: 'collapsed' | 'expanded' | null (never toggled).
+const navPref = ref(localStorage.getItem('nav_pref'))
+const navCollapsed = ref(navPref.value === 'collapsed')
 const mobileNavOpen = ref(false)
 
+// ── smart auto-collapse: 10s after entering, paused while hovering the nav,
+// and skipped entirely once the user has set a manual preference. ──
+let autoTimer = null
+function clearAutoTimer() {
+  if (autoTimer) { clearTimeout(autoTimer); autoTimer = null }
+}
+function scheduleAutoCollapse() {
+  clearAutoTimer()
+  if (navPref.value || navCollapsed.value || !showNav.value) return
+  autoTimer = setTimeout(() => { navCollapsed.value = true }, AUTO_COLLAPSE_MS)
+}
+function onNavHover(hovering) {
+  if (navPref.value) return
+  if (hovering) clearAutoTimer()    // pause countdown while pointer rests on nav
+  else scheduleAutoCollapse()       // restart a fresh countdown when it leaves
+}
+
 // Keep permissions fresh (super_admin may have changed them since last login).
-onMounted(() => { if (auth.isLoggedIn) auth.refresh() })
+onMounted(() => {
+  if (auth.isLoggedIn) auth.refresh()
+  scheduleAutoCollapse()
+})
+onBeforeUnmount(clearAutoTimer)
+
+// Restart the countdown whenever the nav (re)appears, e.g. right after login.
+watch(showNav, (v) => { if (v) scheduleAutoCollapse(); else clearAutoTimer() })
 
 const showWelcome = ref(false)
 // Show welcome on first login in this session
@@ -28,8 +56,11 @@ watch(() => auth.isLoggedIn, (v) => {
 watch(() => route.path, () => { mobileNavOpen.value = false })
 
 function onNavCollapse(v) {
+  // Manual toggle → remember the preference and disable auto behaviour.
   navCollapsed.value = v
-  localStorage.setItem('nav_collapsed', v ? '1' : '0')
+  navPref.value = v ? 'collapsed' : 'expanded'
+  localStorage.setItem('nav_pref', navPref.value)
+  clearAutoTimer()
 }
 </script>
 
@@ -54,7 +85,7 @@ function onNavCollapse(v) {
       </Transition>
 
       <AppNav v-if="showNav" :collapsed="navCollapsed" :mobile-open="mobileNavOpen"
-        @update:collapsed="onNavCollapse" @close-mobile="mobileNavOpen = false" />
+        @update:collapsed="onNavCollapse" @close-mobile="mobileNavOpen = false" @hover="onNavHover" />
       <main :class="showNav ? ['main-content', navCollapsed ? 'nav-collapsed' : ''] : 'main-public'">
         <router-view />
       </main>

@@ -7,7 +7,7 @@ const props = defineProps({
   collapsed: { type: Boolean, default: false },
   mobileOpen: { type: Boolean, default: false },
 })
-const emit = defineEmits(['update:collapsed', 'close-mobile'])
+const emit = defineEmits(['update:collapsed', 'close-mobile', 'hover'])
 
 const router = useRouter()
 const route = useRoute()
@@ -47,7 +47,8 @@ const JOB_LABELS = {
 </script>
 
 <template>
-  <nav :class="['sidebar', collapsed ? 'collapsed' : '', mobileOpen ? 'mobile-open' : '']">
+  <nav :class="['sidebar', collapsed ? 'collapsed' : '', mobileOpen ? 'mobile-open' : '']"
+    @mouseenter="emit('hover', true)" @mouseleave="emit('hover', false)">
     <!-- Brand -->
     <div class="sidebar-brand">
       <div class="brand-mark">
@@ -213,7 +214,8 @@ const JOB_LABELS = {
   position: fixed;
   top: 0; left: 0; bottom: 0;
   z-index: 100;
-  transition: width 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: width 0.46s cubic-bezier(0.45, 0, 0.15, 1);
+  will-change: width;
   overflow: hidden;
   box-shadow: 4px 0 32px rgba(20, 8, 4, 0.22);
 }
@@ -318,8 +320,8 @@ const JOB_LABELS = {
 }
 .collapse-btn:hover { background: var(--primary); color: #fff; border-color: var(--primary); }
 
-.label-fade-enter-active { transition: opacity 0.18s 0.06s, transform 0.18s 0.06s; }
-.label-fade-leave-active { transition: opacity 0.1s, transform 0.1s; }
+.label-fade-enter-active { transition: opacity 0.22s 0.14s, transform 0.22s 0.14s; }
+.label-fade-leave-active { transition: opacity 0.18s, transform 0.18s; }
 .label-fade-enter-from { opacity:0; transform:translateX(-6px); }
 .label-fade-leave-to   { opacity:0; transform:translateX(-6px); }
 
