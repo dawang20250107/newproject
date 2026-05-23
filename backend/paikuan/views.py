@@ -15,6 +15,17 @@ from paikuan.models import PaikuanUser, Payment
 
 logger = logging.getLogger('paikuan')
 
+DEPARTMENTS = [
+    '集团总部', '劳务事业部', '运输事业部', '自营事业部',
+    '阔展事业部', '多式联运事业部', '供应链事业部',
+]
+
+JOB_TITLES = {
+    'cashier': '出纳',
+    'finance_bp': '财务BP',
+    'finance_director': '财务总监',
+}
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -45,7 +56,6 @@ def make_token(user):
 
 
 def pk_required(roles=None):
-    """JWT auth decorator. Pass roles=['super_admin'] to restrict by role."""
     def decorator(func):
         @functools.wraps(func)
         def wrapper(request, *args, **kwargs):
@@ -69,7 +79,6 @@ def pk_required(roles=None):
 
 
 def dept_filter(qs, request):
-    """Restrict queryset to user's departments for operator role."""
     if request.pk_role in ('super_admin', 'manager', 'viewer'):
         return qs
     return qs.filter(department__in=request.pk_depts)
@@ -102,6 +111,8 @@ def register(request):
     phone = (data.get('phone') or '').strip()
     password = (data.get('password') or '').strip()
     name = (data.get('name') or '').strip()
+    job_title = (data.get('job_title') or '').strip()
+    depts = data.get('departments') or []
 
     if not phone or not password or not name:
         return err('手机号、密码和姓名均必填')
@@ -109,14 +120,33 @@ def register(request):
         return err('手机号格式有误')
     if len(password) < 6:
         return err('密码至少6位')
-    if PaikuanUser.objects.filter(phone=phone).exists():
+    if not job_title or job_title not in JOB_TITLES:
+        return err('请选择有效职务')
+    if not isinstance(depts, list) or len(depts) == 0:
+        return err('请至少选择一个部门')
+
+    # Phone ↔ name binding: same phone can only bind same name
+    existing = PaikuanUser.objects.filter(phone=phone).first()
+    if existing:
+        if existing.name != name:
+            return err(f'该手机号已被"{existing.name}"注册，姓名不符')
         return err('该手机号已注册')
 
-    is_first = PaikuanUser.objects.count() == 0
-    user = PaikuanUser(phone=phone, name=name, role='super_admin' if is_first else 'viewer')
+    is_first = not PaikuanUser.objects.exists()
+    role = 'super_admin' if is_first else 'viewer'
+
+    user = PaikuanUser(
+        phone=phone, name=name, role=role,
+        job_title=job_title,
+        departments=depts if role != 'super_admin' else [],
+        is_approved=is_first,
+    )
     user.set_password(password)
     user.save()
-    return ok({'token': make_token(user), 'user': user.to_dict()})
+
+    if is_first:
+        return ok({'token': make_token(user), 'user': user.to_dict(), 'pending': False})
+    return ok({'pending': True, 'message': '注册成功！请等待管理员审批后登录'})
 
 
 @csrf_exempt
@@ -133,9 +163,11 @@ def login(request):
     except PaikuanUser.DoesNotExist:
         return err('手机号或密码错误', 401, 401)
     if not user.is_active:
-        return err('账号已停用', 401, 401)
+        return err('账号已停用，请联系管理员', 401, 401)
     if not user.check_password(password):
         return err('手机号或密码错误', 401, 401)
+    if not user.is_approved:
+        return err('账号待审批，请联系管理员', 403, -2)
     return ok({'token': make_token(user), 'user': user.to_dict()})
 
 
@@ -201,7 +233,6 @@ def _list_payments(request):
 
 
 def _parse_payment_fields(data, payment=None):
-    """Extract and validate payment fields from request data. Returns (fields_dict, error_str)."""
     fields = {}
 
     def get(key, default=None):
@@ -371,8 +402,7 @@ def stats(request):
     ], key=lambda x: x['total'], reverse=True)
 
     return ok({
-        'year': year,
-        'month': month,
+        'year': year, 'month': month,
         'total_amount': str(total_amount),
         'total_paid': str(total_paid),
         'total_remaining': str(total_remaining),
@@ -393,29 +423,10 @@ def stats(request):
 @pk_required(roles=['super_admin'])
 def users(request):
     if request.method == 'GET':
-        return ok([u.to_dict() for u in PaikuanUser.objects.order_by('id')])
-
-    if request.method == 'POST':
-        data = parse_body(request)
-        phone = (data.get('phone') or '').strip()
-        password = (data.get('password') or '').strip()
-        name = (data.get('name') or '').strip()
-        role = (data.get('role') or 'operator').strip()
-        departments = data.get('departments') or []
-
-        if not phone or not password or not name:
-            return err('手机号、密码和姓名均必填')
-        if role not in ('super_admin', 'manager', 'operator', 'viewer'):
-            return err('角色无效')
-        if PaikuanUser.objects.filter(phone=phone).exists():
-            return err('该手机号已注册')
-
-        user = PaikuanUser(phone=phone, name=name, role=role, departments=departments)
-        user.set_password(password)
-        user.save()
-        return ok(user.to_dict())
-
-    return err('Method not allowed', 405)
+        all_users = PaikuanUser.objects.order_by('is_approved', 'id')
+        return ok([u.to_dict() for u in all_users])
+    # Super admin cannot create users directly — users register themselves
+    return err('请通过注册流程创建用户', 405)
 
 
 @csrf_exempt
@@ -433,9 +444,14 @@ def user_detail(request, pk):
         if 'role' in data:
             if data['role'] not in ('super_admin', 'manager', 'operator', 'viewer'):
                 return err('角色无效')
+            # Prevent creating a second super_admin
+            if data['role'] == 'super_admin' and user.role != 'super_admin':
+                return err('超级管理员只能有一位')
             user.role = data['role']
         if 'departments' in data:
             user.departments = data['departments'] or []
+        if 'job_title' in data:
+            user.job_title = data['job_title'] or ''
         if 'is_active' in data:
             user.is_active = bool(data['is_active'])
         if data.get('password'):
@@ -453,14 +469,40 @@ def user_detail(request, pk):
     return err('Method not allowed', 405)
 
 
+@csrf_exempt
+@pk_required(roles=['super_admin'])
+def approve_user(request, pk):
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    try:
+        user = PaikuanUser.objects.get(id=pk)
+    except PaikuanUser.DoesNotExist:
+        return err('用户不存在', 404)
+    if user.role == 'super_admin':
+        return err('超级管理员无需审批')
+    user.is_approved = True
+    user.approved_by_id = request.pk_uid
+    user.approved_at = timezone.now()
+    # Default to operator role after approval if still viewer
+    if user.role == 'viewer':
+        body = parse_body(request)
+        if body.get('role') in ('manager', 'operator', 'viewer'):
+            user.role = body['role']
+        else:
+            user.role = 'operator'
+    user.save()
+    return ok(user.to_dict())
+
+
 # ── departments ───────────────────────────────────────────────────────────────
 
 @pk_required()
 def departments(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
-    depts = list(
-        Payment.objects.values_list('department', flat=True)
-        .distinct().order_by('department')
+    # Return canonical list first, then any custom ones in the data
+    data_depts = set(
+        Payment.objects.values_list('department', flat=True).distinct()
     )
-    return ok(depts)
+    merged = DEPARTMENTS + sorted(data_depts - set(DEPARTMENTS))
+    return ok(merged)

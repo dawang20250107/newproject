@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, nextTick } from 'vue'
 import api from '../api/index.js'
 
 const props = defineProps({
@@ -10,10 +10,20 @@ const emit = defineEmits(['saved', 'close'])
 
 const loading = ref(false)
 const error = ref('')
+const saveStatus = ref('')  // '' | 'saving' | 'saved' | 'error'
+let saveTimer = null
+let isResetting = false
 
+const DEPT_LIST = [
+  '集团总部', '劳务事业部', '运输事业部', '自营事业部',
+  '阔展事业部', '多式联运事业部', '供应链事业部',
+]
+
+const deptOptions = ref([])
 const form = ref({})
 
 function resetForm() {
+  isResetting = true
   const p = props.payment
   form.value = {
     department: p?.department || '',
@@ -30,20 +40,45 @@ function resetForm() {
     pay3_amount: p?.pay3_amount && p.pay3_amount !== '0' ? p.pay3_amount : '',
     notes: p?.notes || '',
   }
+  const extra = props.departments.filter(d => !DEPT_LIST.includes(d))
+  deptOptions.value = [...DEPT_LIST, ...extra]
+  nextTick(() => { isResetting = false })
 }
 
 watch(() => props.payment, resetForm, { immediate: true })
 
+// Autosave — only for editing existing records
+watch(form, async () => {
+  if (!props.payment?.id || isResetting) return
+  clearTimeout(saveTimer)
+  saveStatus.value = 'saving'
+  saveTimer = setTimeout(autosave, 1400)
+}, { deep: true })
+
+async function autosave() {
+  try {
+    await api.put(`/payments/${props.payment.id}`, buildPayload())
+    saveStatus.value = 'saved'
+    setTimeout(() => { if (saveStatus.value === 'saved') saveStatus.value = '' }, 2200)
+  } catch {
+    saveStatus.value = 'error'
+  }
+}
+
+function buildPayload() {
+  const payload = { ...form.value }
+  for (const k of ['pay1_date', 'pay2_date', 'pay3_date', 'pay1_amount', 'pay2_amount', 'pay3_amount']) {
+    if (payload[k] === '' || payload[k] === null) payload[k] = null
+  }
+  return payload
+}
+
 async function submit() {
   error.value = ''
   loading.value = true
+  clearTimeout(saveTimer)
   try {
-    const payload = { ...form.value }
-    // clean empty date fields
-    for (const k of ['pay1_date', 'pay2_date', 'pay3_date', 'pay1_amount', 'pay2_amount', 'pay3_amount']) {
-      if (payload[k] === '') payload[k] = null
-    }
-
+    const payload = buildPayload()
     let res
     if (props.payment?.id) {
       res = await api.put(`/payments/${props.payment.id}`, payload)
@@ -64,7 +99,19 @@ async function submit() {
     <div class="modal">
       <div class="modal-header">
         <h3>{{ payment ? '编辑排款记录' : '新增排款记录' }}</h3>
-        <button class="modal-close" @click="emit('close')">×</button>
+        <div style="display:flex;align-items:center;gap:12px">
+          <Transition name="status-fade">
+            <span v-if="saveStatus === 'saving'" class="save-status saving">
+              <span class="save-spin"></span>自动保存中…
+            </span>
+            <span v-else-if="saveStatus === 'saved'" class="save-status saved">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              已保存
+            </span>
+            <span v-else-if="saveStatus === 'error'" class="save-status save-err">保存失败</span>
+          </Transition>
+          <button class="modal-close" @click="emit('close')">×</button>
+        </div>
       </div>
 
       <div v-if="error" class="alert alert-err">{{ error }}</div>
@@ -72,10 +119,9 @@ async function submit() {
       <div class="form-row">
         <div class="form-group">
           <label>部门 *</label>
-          <input v-if="!departments.length" v-model="form.department" placeholder="输入部门名称" />
-          <select v-else v-model="form.department">
-            <option value="">选择部门</option>
-            <option v-for="d in departments" :key="d" :value="d">{{ d }}</option>
+          <select v-model="form.department">
+            <option value="">请选择部门</option>
+            <option v-for="d in deptOptions" :key="d" :value="d">{{ d }}</option>
           </select>
         </div>
         <div class="form-group">
@@ -113,8 +159,7 @@ async function submit() {
         </div>
       </div>
 
-      <!-- installments -->
-      <div class="section-title" style="font-size:14px;margin-top:8px">实际付款记录</div>
+      <div class="section-title" style="font-size:13px;margin-top:4px">实际付款记录</div>
       <div class="inst-row">
         <div class="form-group">
           <label>第1次日期</label>
@@ -149,9 +194,36 @@ async function submit() {
       <div class="modal-footer">
         <button class="btn btn-ghost" @click="emit('close')">取消</button>
         <button class="btn btn-primary" :disabled="loading" @click="submit">
+          <span v-if="loading" class="save-spin btn-spin"></span>
           {{ loading ? '保存中…' : '保存' }}
         </button>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.save-status {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; border-radius: 6px; padding: 3px 9px;
+  white-space: nowrap;
+}
+.saving  { background: rgba(21,101,192,0.1); color: #1565c0; }
+.saved   { background: rgba(46,125,50,0.1); color: #2e7d32; }
+.save-err { background: rgba(198,40,40,0.1); color: #c62828; }
+
+.save-spin {
+  width: 10px; height: 10px; border-radius: 50%;
+  border: 1.5px solid rgba(21,101,192,0.3);
+  border-top-color: #1565c0;
+  animation: spin 0.7s linear infinite;
+  display: inline-block; flex-shrink: 0;
+}
+.btn-spin { border-color: rgba(255,255,255,0.35) !important; border-top-color: white !important; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.status-fade-enter-active, .status-fade-leave-active { transition: opacity 0.2s, transform 0.2s; }
+.status-fade-enter-from { opacity:0; transform:translateY(-4px); }
+.status-fade-leave-to   { opacity:0; transform:translateY(-4px); }
+</style>

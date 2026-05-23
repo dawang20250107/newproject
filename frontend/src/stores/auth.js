@@ -32,10 +32,13 @@ export const useAuthStore = defineStore('auth', () => {
     return res.data.user
   }
 
-  async function register(phone, password, name) {
-    const res = await api.post('/register', { phone, password, name })
+  async function register({ phone, password, name, job_title, departments }) {
+    const res = await api.post('/register', { phone, password, name, job_title, departments })
+    if (res.data.pending) {
+      return { pending: true, message: res.data.message }
+    }
     setAuth(res.data.token, res.data.user)
-    return res.data.user
+    return { pending: false }
   }
 
   return { token, user, isLoggedIn, role, isSuperAdmin, isManager, canWrite, login, register, logout, setAuth }

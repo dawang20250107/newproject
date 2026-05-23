@@ -10,12 +10,23 @@ class PaikuanUser(models.Model):
         ('operator', '操作员'),
         ('viewer', '查看员'),
     ]
+    JOB_TITLE_CHOICES = [
+        ('cashier', '出纳'),
+        ('finance_bp', '财务BP'),
+        ('finance_director', '财务总监'),
+    ]
     phone = models.CharField('手机号', max_length=15, unique=True)
     password_hash = models.CharField('密码哈希', max_length=256)
     name = models.CharField('姓名', max_length=50)
     role = models.CharField('角色', max_length=20, choices=ROLE_CHOICES, default='viewer')
+    job_title = models.CharField('职务', max_length=30, choices=JOB_TITLE_CHOICES, blank=True, default='')
     departments = models.JSONField('负责部门', default=list)
     is_active = models.BooleanField('是否启用', default=True)
+    is_approved = models.BooleanField('是否已审批', default=True)
+    approved_by = models.ForeignKey(
+        'self', null=True, blank=True, on_delete=models.SET_NULL, related_name='approved_users'
+    )
+    approved_at = models.DateTimeField('审批时间', null=True, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -30,13 +41,18 @@ class PaikuanUser(models.Model):
         return check_password(raw_password, self.password_hash)
 
     def to_dict(self):
+        jt_map = dict(self.JOB_TITLE_CHOICES)
         return {
             'id': self.id,
             'phone': self.phone,
             'name': self.name,
             'role': self.role,
+            'job_title': self.job_title,
+            'job_title_label': jt_map.get(self.job_title, ''),
             'departments': self.departments,
             'is_active': self.is_active,
+            'is_approved': self.is_approved,
+            'approved_at': self.approved_at.isoformat() if self.approved_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
 

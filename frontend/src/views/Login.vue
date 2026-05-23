@@ -6,83 +6,389 @@ import { useAuthStore } from '../stores/auth.js'
 const router = useRouter()
 const auth = useAuthStore()
 
-const mode = ref('login')  // 'login' | 'register'
+const mode = ref('login')
 const phone = ref('')
 const password = ref('')
 const name = ref('')
+const jobTitle = ref('')
+const selectedDepts = ref([])
 const error = ref('')
 const loading = ref(false)
+const pendingMsg = ref('')
+
+const DEPARTMENTS = [
+  '集团总部', '劳务事业部', '运输事业部', '自营事业部',
+  '阔展事业部', '多式联运事业部', '供应链事业部',
+]
+const JOB_TITLES = [
+  { v: 'cashier', label: '出纳' },
+  { v: 'finance_bp', label: '财务BP' },
+  { v: 'finance_director', label: '财务总监' },
+]
+
+function switchMode(m) {
+  mode.value = m
+  error.value = ''
+  pendingMsg.value = ''
+}
 
 async function submit() {
   error.value = ''
+  pendingMsg.value = ''
   loading.value = true
   try {
     if (mode.value === 'login') {
       await auth.login(phone.value, password.value)
+      router.push('/dashboard')
     } else {
-      await auth.register(phone.value, password.value, name.value)
+      const result = await auth.register({
+        phone: phone.value,
+        password: password.value,
+        name: name.value,
+        job_title: jobTitle.value,
+        departments: selectedDepts.value,
+      })
+      if (result.pending) {
+        pendingMsg.value = result.message || '注册成功！请等待管理员审批后登录'
+        mode.value = 'pending'
+      } else {
+        router.push('/dashboard')
+      }
     }
-    router.push('/dashboard')
   } catch (e) {
     error.value = e?.error || '操作失败，请重试'
   } finally {
     loading.value = false
   }
 }
+
+function toggleDept(d) {
+  const idx = selectedDepts.value.indexOf(d)
+  if (idx === -1) selectedDepts.value.push(d)
+  else selectedDepts.value.splice(idx, 1)
+}
 </script>
 
 <template>
   <div class="login-page">
-    <div class="login-card">
-      <div class="login-logo">💸</div>
-      <h2>排款管理系统</h2>
-      <p class="login-sub">{{ mode === 'login' ? '登录账号' : '注册新账号' }}</p>
+    <!-- animated background specific to login -->
+    <div class="login-bg">
+      <div class="login-orb lo1"></div>
+      <div class="login-orb lo2"></div>
+      <div class="login-orb lo3"></div>
+    </div>
 
-      <div v-if="error" class="alert alert-err">{{ error }}</div>
-
-      <div class="form-group" style="margin-bottom:12px">
-        <label>手机号</label>
-        <input v-model="phone" type="tel" placeholder="请输入手机号" @keyup.enter="submit" />
+    <div class="login-wrap">
+      <!-- Branding side (desktop) -->
+      <div class="login-brand">
+        <div class="brand-icon-lg">
+          <svg width="52" height="52" viewBox="0 0 60 60" fill="none">
+            <circle cx="30" cy="30" r="28" fill="url(#lg1)" opacity="0.92"/>
+            <path d="M20 30h20M30 20v20" stroke="white" stroke-width="4" stroke-linecap="round"/>
+            <defs>
+              <linearGradient id="lg1" x1="0" y1="0" x2="60" y2="60">
+                <stop offset="0%" stop-color="#e8855a"/>
+                <stop offset="100%" stop-color="#c96342"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <h1 class="brand-title">排款管理<br>系统</h1>
+        <p class="brand-sub">精准 · 高效 · 安全</p>
+        <div class="brand-features">
+          <div class="feature">
+            <span class="f-dot"></span>实时资金排款追踪
+          </div>
+          <div class="feature">
+            <span class="f-dot"></span>多部门协同管理
+          </div>
+          <div class="feature">
+            <span class="f-dot"></span>逾期预警与统计
+          </div>
+        </div>
       </div>
 
-      <div v-if="mode === 'register'" class="form-group" style="margin-bottom:12px">
-        <label>姓名</label>
-        <input v-model="name" placeholder="请输入姓名" @keyup.enter="submit" />
+      <!-- Card -->
+      <div class="login-card">
+        <!-- pending state -->
+        <template v-if="mode === 'pending'">
+          <div class="pending-state">
+            <div class="pending-icon">⏳</div>
+            <h3>注册申请已提交</h3>
+            <p>{{ pendingMsg }}</p>
+            <p class="pending-hint">管理员审批后，您可使用注册的手机号登录</p>
+            <button class="btn btn-primary mt" style="width:100%;justify-content:center" @click="switchMode('login')">
+              返回登录
+            </button>
+          </div>
+        </template>
+
+        <template v-else>
+          <!-- mode tabs -->
+          <div class="mode-tabs">
+            <button :class="['mode-tab', mode === 'login' ? 'active' : '']" @click="switchMode('login')">登录</button>
+            <button :class="['mode-tab', mode === 'register' ? 'active' : '']" @click="switchMode('register')">注册</button>
+          </div>
+
+          <div v-if="error" class="alert alert-err" style="margin-bottom:16px">{{ error }}</div>
+
+          <!-- login form -->
+          <template v-if="mode === 'login'">
+            <div class="lf-group">
+              <label>手机号</label>
+              <div class="input-wrap">
+                <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6A19.79 19.79 0 012.12 4.18 2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/>
+                </svg>
+                <input v-model="phone" type="tel" placeholder="请输入手机号" class="has-icon" @keyup.enter="submit" />
+              </div>
+            </div>
+            <div class="lf-group">
+              <label>密码</label>
+              <div class="input-wrap">
+                <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
+                </svg>
+                <input v-model="password" type="password" placeholder="请输入密码" class="has-icon" @keyup.enter="submit" />
+              </div>
+            </div>
+          </template>
+
+          <!-- register form -->
+          <template v-else>
+            <div class="lf-group">
+              <label>手机号 <span class="req">*</span></label>
+              <div class="input-wrap">
+                <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6A19.79 19.79 0 012.12 4.18 2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/>
+                </svg>
+                <input v-model="phone" type="tel" placeholder="11位手机号" class="has-icon" />
+              </div>
+            </div>
+            <div class="lf-row">
+              <div class="lf-group">
+                <label>姓名 <span class="req">*</span></label>
+                <input v-model="name" placeholder="真实姓名" />
+              </div>
+              <div class="lf-group">
+                <label>密码 <span class="req">*</span></label>
+                <input v-model="password" type="password" placeholder="至少6位" />
+              </div>
+            </div>
+
+            <div class="lf-group">
+              <label>职务 <span class="req">*</span></label>
+              <div class="radio-group">
+                <label v-for="jt in JOB_TITLES" :key="jt.v" class="radio-item" :class="{ selected: jobTitle === jt.v }">
+                  <input type="radio" v-model="jobTitle" :value="jt.v" />
+                  {{ jt.label }}
+                </label>
+              </div>
+            </div>
+
+            <div class="lf-group">
+              <label>所属部门 <span class="req">*</span> <span class="hint-text">可多选</span></label>
+              <div class="check-group">
+                <label
+                  v-for="d in DEPARTMENTS" :key="d"
+                  class="check-item"
+                  :class="{ selected: selectedDepts.includes(d) }"
+                  @click="toggleDept(d)"
+                >
+                  <span class="check-box">
+                    <svg v-if="selectedDepts.includes(d)" width="10" height="10" viewBox="0 0 12 12" fill="none">
+                      <path d="M2 6l3 3 5-5" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </span>
+                  {{ d }}
+                </label>
+              </div>
+            </div>
+          </template>
+
+          <button class="btn btn-primary submit-btn" :disabled="loading" @click="submit">
+            <span v-if="loading" class="loading-dot"></span>
+            {{ loading ? '处理中…' : (mode === 'login' ? '登 录' : '提交注册') }}
+          </button>
+        </template>
       </div>
-
-      <div class="form-group" style="margin-bottom:20px">
-        <label>密码</label>
-        <input v-model="password" type="password" placeholder="至少6位" @keyup.enter="submit" />
-      </div>
-
-      <button class="btn btn-primary" style="width:100%;justify-content:center" :disabled="loading" @click="submit">
-        {{ loading ? '处理中…' : (mode === 'login' ? '登录' : '注册') }}
-      </button>
-
-      <p class="login-toggle">
-        {{ mode === 'login' ? '没有账号？' : '已有账号？' }}
-        <a href="#" @click.prevent="mode = mode === 'login' ? 'register' : 'login'">
-          {{ mode === 'login' ? '注册' : '返回登录' }}
-        </a>
-      </p>
     </div>
   </div>
 </template>
 
 <style scoped>
 .login-page {
-  min-height: 100vh; display: flex; align-items: center; justify-content: center;
-  background: var(--bg);
+  min-height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  position: relative;
+  overflow: hidden;
 }
+
+/* extra background orbs for login page */
+.login-bg { position: fixed; inset: 0; pointer-events: none; }
+.login-orb { position: absolute; border-radius: 50%; filter: blur(80px); }
+.lo1 { width:650px; height:650px; background:radial-gradient(circle,#c96342,transparent); top:-200px; left:-200px; opacity:0.25; animation: orb1 20s ease-in-out infinite; }
+.lo2 { width:450px; height:450px; background:radial-gradient(circle,#e8a84a,transparent); bottom:-150px; right:-100px; opacity:0.2; animation: orb2 16s ease-in-out infinite; }
+.lo3 { width:350px; height:350px; background:radial-gradient(circle,#c96342,transparent); top:40%; left:45%; opacity:0.12; animation: orb3 18s ease-in-out infinite; }
+
+@keyframes orb1 { 0%,100%{transform:translate(0,0)scale(1)}33%{transform:translate(50px,70px)scale(1.07)}66%{transform:translate(-30px,40px)scale(0.96)} }
+@keyframes orb2 { 0%,100%{transform:translate(0,0)scale(1)}40%{transform:translate(-60px,-40px)scale(1.09)}70%{transform:translate(25px,60px)scale(0.93)} }
+@keyframes orb3 { 0%,100%{transform:translate(0,0)scale(1)}50%{transform:translate(-70px,-50px)scale(1.14)} }
+
+.login-wrap {
+  position: relative; z-index: 1;
+  display: flex; align-items: stretch; gap: 0;
+  max-width: 900px; width: 95vw;
+  border-radius: 26px;
+  overflow: hidden;
+  box-shadow: 0 32px 96px rgba(100,60,30,0.28), 0 1px 0 rgba(255,255,255,0.5) inset;
+  animation: cardIn 0.5s cubic-bezier(0.34,1.4,0.64,1) both;
+}
+
+@keyframes cardIn {
+  from { opacity:0; transform:scale(0.94) translateY(20px); }
+  to   { opacity:1; transform:scale(1) translateY(0); }
+}
+
+/* brand panel */
+.login-brand {
+  width: 280px; flex-shrink: 0;
+  background: linear-gradient(160deg, rgba(40,20,12,0.92) 0%, rgba(60,28,14,0.88) 100%);
+  backdrop-filter: blur(20px);
+  border-right: 1px solid rgba(255,255,255,0.07);
+  padding: 52px 36px;
+  display: flex; flex-direction: column; justify-content: center; gap: 20px;
+  color: #e8d4c4;
+}
+.brand-icon-lg {
+  width: 72px; height: 72px; border-radius: 20px;
+  background: rgba(201,99,66,0.18);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 0 28px rgba(201,99,66,0.25);
+  margin-bottom: 4px;
+}
+.brand-title { font-size: 28px; font-weight: 800; color: #fff; line-height: 1.2; }
+.brand-sub { font-size: 13px; color: rgba(201,99,66,0.9); letter-spacing: 0.2em; font-weight: 600; }
+.brand-features { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.feature { display: flex; align-items: center; gap: 10px; font-size: 13px; color: rgba(232,212,196,0.75); }
+.f-dot { width: 6px; height: 6px; border-radius: 50%; background: linear-gradient(135deg, #e8855a, #c96342); flex-shrink: 0; }
+
+/* card panel */
 .login-card {
-  width: 380px; max-width: 94vw;
-  background: var(--card); border-radius: 20px; padding: 40px 36px;
-  box-shadow: 0 8px 32px rgba(100,60,30,.18);
-  text-align: center;
+  flex: 1;
+  background: rgba(255,252,248,0.78);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  padding: 48px 44px;
+  display: flex; flex-direction: column; justify-content: center;
 }
-.login-logo { font-size: 44px; margin-bottom: 12px; }
-h2 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
-.login-sub { color: var(--muted); margin-bottom: 24px; font-size: 13px; }
-.login-toggle { margin-top: 16px; font-size: 13px; color: var(--muted); }
-.login-toggle a { color: var(--primary); font-weight: 600; }
+
+/* mode tabs */
+.mode-tabs {
+  display: flex; gap: 0; margin-bottom: 28px;
+  background: rgba(0,0,0,0.05); border-radius: 12px;
+  padding: 4px; width: fit-content;
+}
+.mode-tab {
+  padding: 8px 28px; border-radius: 8px; font-size: 14px; font-weight: 500;
+  cursor: pointer; border: none; background: transparent;
+  color: var(--muted); transition: all 0.22s;
+}
+.mode-tab.active {
+  background: rgba(255,252,248,0.9);
+  color: var(--primary); font-weight: 700;
+  box-shadow: 0 2px 10px rgba(100,60,30,0.12);
+}
+
+/* form fields */
+.lf-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.lf-group label { font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: 0.03em; display: flex; align-items: center; gap: 4px; }
+.lf-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+.req { color: #c62828; }
+.hint-text { color: rgba(155,128,112,0.6); font-weight: 400; font-size: 11px; }
+
+.input-wrap { position: relative; }
+.input-icon {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  color: rgba(155,128,112,0.6); pointer-events: none;
+}
+.has-icon { padding-left: 38px !important; }
+
+/* radio for job title */
+.radio-group { display: flex; gap: 8px; flex-wrap: wrap; }
+.radio-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: 20px;
+  border: 1.5px solid var(--border);
+  background: rgba(255,253,250,0.7);
+  font-size: 13px; cursor: pointer;
+  transition: all 0.18s;
+}
+.radio-item input { display: none; }
+.radio-item.selected {
+  border-color: var(--primary);
+  background: rgba(201,99,66,0.08);
+  color: var(--primary); font-weight: 600;
+  box-shadow: 0 0 0 2px rgba(201,99,66,0.12);
+}
+.radio-item:hover:not(.selected) { border-color: rgba(201,99,66,0.4); background: rgba(201,99,66,0.05); }
+
+/* checkboxes for departments */
+.check-group { display: flex; flex-wrap: wrap; gap: 7px; }
+.check-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-radius: 20px;
+  border: 1.5px solid var(--border);
+  background: rgba(255,253,250,0.7);
+  font-size: 12px; cursor: pointer;
+  transition: all 0.18s; user-select: none;
+}
+.check-item.selected {
+  border-color: var(--primary);
+  background: rgba(201,99,66,0.1);
+  color: var(--primary); font-weight: 600;
+}
+.check-box {
+  width: 14px; height: 14px; border-radius: 4px;
+  border: 1.5px solid currentColor;
+  background: transparent;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; transition: background 0.15s;
+}
+.check-item.selected .check-box { background: var(--primary); border-color: var(--primary); }
+
+/* submit */
+.submit-btn {
+  width: 100%; justify-content: center;
+  padding: 12px; font-size: 15px; font-weight: 600;
+  border-radius: 12px; margin-top: 8px;
+  letter-spacing: 0.04em;
+}
+
+/* loading dot */
+.loading-dot {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.4);
+  border-top-color: white;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* pending state */
+.pending-state { text-align: center; padding: 16px 0; }
+.pending-icon { font-size: 56px; margin-bottom: 16px; display: block; animation: float 2s ease-in-out infinite; }
+@keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
+.pending-state h3 { font-size: 20px; font-weight: 700; margin-bottom: 12px; }
+.pending-state p { color: var(--muted); font-size: 14px; line-height: 1.6; }
+.pending-hint { font-size: 12px; margin-top: 8px; color: rgba(155,128,112,0.7) !important; }
+.mt { margin-top: 24px; }
+
+/* responsive: hide brand panel on mobile */
+@media (max-width: 640px) {
+  .login-brand { display: none; }
+  .login-card { padding: 36px 28px; }
+  .login-wrap { max-width: 400px; }
+  .lf-row { grid-template-columns: 1fr; }
+}
 </style>
