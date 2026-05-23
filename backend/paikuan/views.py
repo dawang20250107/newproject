@@ -1,12 +1,15 @@
+import io
 import json
 import logging
 import datetime
 import functools
+import threading
 from decimal import Decimal, InvalidOperation
 
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-from django.db.models import Q
+from django.db.models import F, Q, ExpressionWrapper
+from django.db.models import DecimalField as DjDecimalField
 from django.conf import settings
 from django.utils import timezone
 import jwt
@@ -46,6 +49,25 @@ PAYMENT_FIELD_DEFS = [
 FIELD_KEYS = [f['key'] for f in PAYMENT_FIELD_DEFS]
 PAGE_KEYS = ['dashboard', 'payments', 'stats']
 
+# Ordered columns for Excel template / import / export.
+# (perm_field_key, excel_header, db_column)
+EXCEL_COLUMN_MAP = [
+    ('department',      '部门',               'department'),
+    ('approval_number', '审批单号',            'approval_number'),
+    ('project_desc',    '付款事项',            'project_desc'),
+    ('payee',           '收款方',              'payee'),
+    ('total_amount',    '计划总金额(元)',       'total_amount'),
+    ('planned_date',    '计划付款日期',         'planned_date'),
+    ('pay1',            '第1次付款日期',        'pay1_date'),
+    ('pay1',            '第1次付款金额(元)',    'pay1_amount'),
+    ('pay2',            '第2次付款日期',        'pay2_date'),
+    ('pay2',            '第2次付款金额(元)',    'pay2_amount'),
+    ('pay3',            '第3次付款日期',        'pay3_date'),
+    ('pay3',            '第3次付款金额(元)',    'pay3_amount'),
+    ('notes',           '备注',                'notes'),
+]
+_EXCEL_HEADER_TO_COL = {h: c for _, h, c in EXCEL_COLUMN_MAP}
+
 
 def _all_fields(value):
     return {k: value for k in FIELD_KEYS}
@@ -74,21 +96,41 @@ def default_job_config(job):
             'edit': _all_fields(False), 'can_create': False, 'can_delete': False}
 
 
+_perm_cache: dict = {}
+_perm_cache_lock = threading.Lock()
+
+
+def _invalidate_perm_cache(job=None):
+    with _perm_cache_lock:
+        if job:
+            _perm_cache.pop(job, None)
+        else:
+            _perm_cache.clear()
+
+
 def get_job_perms(job):
-    """Effective config for a job title = defaults merged with stored overrides."""
+    """Effective config for a job title = defaults merged with stored overrides.
+    Results are cached per-process to avoid repeated DB lookups."""
+    with _perm_cache_lock:
+        if job in _perm_cache:
+            return _perm_cache[job]
     base = default_job_config(job)
     rp = JobPermission.objects.filter(job_title=job).first()
     if not (rp and rp.config):
-        return base
-    cfg = rp.config
-    view = dict(base['view']);  view.update(cfg.get('view', {}))
-    edit = dict(base['edit']);  edit.update(cfg.get('edit', {}))
-    pages = dict(base['pages']); pages.update(cfg.get('pages', {}))
-    return {
-        'pages': pages, 'view': view, 'edit': edit,
-        'can_create': bool(cfg.get('can_create', base['can_create'])),
-        'can_delete': bool(cfg.get('can_delete', base['can_delete'])),
-    }
+        result = base
+    else:
+        cfg = rp.config
+        view = dict(base['view']);  view.update(cfg.get('view', {}))
+        edit = dict(base['edit']);  edit.update(cfg.get('edit', {}))
+        pages = dict(base['pages']); pages.update(cfg.get('pages', {}))
+        result = {
+            'pages': pages, 'view': view, 'edit': edit,
+            'can_create': bool(cfg.get('can_create', base['can_create'])),
+            'can_delete': bool(cfg.get('can_delete', base['can_delete'])),
+        }
+    with _perm_cache_lock:
+        _perm_cache[job] = result
+    return result
 
 
 def full_perms():
@@ -340,14 +382,24 @@ def _list_payments(request):
     except ValueError:
         page, size = 1, 50
 
-    perms = get_request_perms(request)
-    items = [apply_view_mask(p.to_dict(), perms) for p in qs]
-
+    # Status filter via SQL annotation — avoids fetching all rows into Python.
     if status_q:
-        items = [p for p in items if p['status'] == status_q]
+        qs = qs.annotate(
+            computed_paid=ExpressionWrapper(
+                F('pay1_amount') + F('pay2_amount') + F('pay3_amount'),
+                output_field=DjDecimalField(max_digits=15, decimal_places=2),
+            )
+        )
+        if status_q == 'pending':
+            qs = qs.filter(computed_paid=Decimal('0'))
+        elif status_q == 'settled':
+            qs = qs.filter(computed_paid__gte=F('total_amount'))
+        elif status_q == 'partial':
+            qs = qs.filter(computed_paid__gt=Decimal('0'), computed_paid__lt=F('total_amount'))
 
-    total = len(items)
-    items = items[(page - 1) * size: page * size]
+    total = qs.count()
+    perms = get_request_perms(request)
+    items = [apply_view_mask(p.to_dict(), perms) for p in qs[(page - 1) * size: page * size]]
     return ok({'items': items, 'total': total, 'page': page, 'size': size})
 
 
@@ -704,7 +756,286 @@ def permission_detail(request, job):
     obj, _ = JobPermission.objects.get_or_create(job_title=job)
     obj.config = clean
     obj.save()
+    _invalidate_perm_cache(job)
     return ok({'job_title': job, 'config': get_job_perms(job)})
+
+
+# ── Excel template / import / export ─────────────────────────────────────────
+
+def _visible_excel_cols(perms):
+    """Return [(excel_header, db_col)] for columns the user can view."""
+    return [
+        (h, c) for (fk, h, c) in EXCEL_COLUMN_MAP
+        if perms is None or perms['view'].get(fk, True)
+    ]
+
+
+def _build_excel_response(wb, filename):
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    response = HttpResponse(
+        buf.getvalue(),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return response
+
+
+@csrf_exempt
+@pk_required()
+def payment_template(request):
+    """GET — download blank Excel import template (columns filtered by view perms)."""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, numbers
+    except ImportError:
+        return err('服务器缺少 openpyxl 依赖', 500)
+
+    perms = get_request_perms(request)
+    cols = _visible_excel_cols(perms)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '排款导入模板'
+
+    header_fill = PatternFill(fill_type='solid', fgColor='C96342')
+    header_font = Font(bold=True, color='FFFFFF', size=11)
+    example_font = Font(italic=True, color='888888', size=10)
+    center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+    # Row 1: headers
+    for col_idx, (header, _) in enumerate(cols, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center
+
+    # Row 2: example data (grayed out)
+    example = {
+        '部门': '集团总部',
+        '审批单号': 'PK202601001',
+        '付款事项': '示例：工程款结算',
+        '收款方': '示例收款方名称',
+        '计划总金额(元)': 100000,
+        '计划付款日期': '2026-06-01',
+        '第1次付款日期': '',
+        '第1次付款金额(元)': 0,
+        '第2次付款日期': '',
+        '第2次付款金额(元)': 0,
+        '第3次付款日期': '',
+        '第3次付款金额(元)': 0,
+        '备注': '此行为示例，导入时请删除',
+    }
+    for col_idx, (header, _) in enumerate(cols, 1):
+        cell = ws.cell(row=2, column=col_idx, value=example.get(header, ''))
+        cell.font = example_font
+        cell.alignment = Alignment(horizontal='left', vertical='center')
+
+    # Column widths
+    widths = {
+        '部门': 14, '审批单号': 16, '付款事项': 28, '收款方': 22,
+        '计划总金额(元)': 16, '计划付款日期': 14,
+        '第1次付款日期': 14, '第1次付款金额(元)': 16,
+        '第2次付款日期': 14, '第2次付款金额(元)': 16,
+        '第3次付款日期': 14, '第3次付款金额(元)': 16,
+        '备注': 24,
+    }
+    for col_idx, (header, _) in enumerate(cols, 1):
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = widths.get(header, 14)
+
+    ws.row_dimensions[1].height = 22
+
+    return _build_excel_response(wb, 'paikuan_import_template.xlsx')
+
+
+@csrf_exempt
+@pk_required()
+def payment_import(request):
+    """POST multipart/form-data with field 'file' — bulk import payments from Excel."""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return err('服务器缺少 openpyxl 依赖', 500)
+
+    perms = get_request_perms(request)
+    if perms is not None and not perms['can_create']:
+        return err('无新增权限', 403, 403)
+
+    upload = request.FILES.get('file')
+    if not upload:
+        return err('请上传Excel文件(.xlsx)')
+
+    try:
+        wb = load_workbook(upload, read_only=True, data_only=True)
+    except Exception:
+        return err('文件格式有误，请使用下载的模板（.xlsx格式）')
+
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    wb.close()
+
+    if not rows:
+        return err('文件为空')
+
+    # Map header position → db column name
+    header_row = [str(v).strip() if v is not None else '' for v in rows[0]]
+    col_pos = {}
+    for i, h in enumerate(header_row):
+        if h in _EXCEL_HEADER_TO_COL:
+            col_pos[_EXCEL_HEADER_TO_COL[h]] = i
+
+    required_headers = {'department', 'project_desc', 'payee', 'planned_date', 'total_amount'}
+    missing = required_headers - set(col_pos.keys())
+    if missing:
+        missing_labels = [h for _, h, c in EXCEL_COLUMN_MAP if c in missing]
+        return err(f'模板缺少必要列：{", ".join(missing_labels)}，请重新下载模板')
+
+    results = {'created': 0, 'skipped': 0, 'errors': []}
+
+    def cell_val(row, col_name):
+        idx = col_pos.get(col_name)
+        if idx is None or idx >= len(row):
+            return None
+        v = row[idx]
+        # Convert date/datetime objects to ISO string for consistency
+        if hasattr(v, 'strftime'):
+            return v.strftime('%Y-%m-%d')
+        return v
+
+    for row_num, row in enumerate(rows[1:], start=2):
+        if all(v is None or v == '' for v in row):
+            continue  # skip blank rows
+
+        data = {col: cell_val(row, col) for col in col_pos}
+
+        fields, error = _parse_payment_fields(data)
+        if error:
+            results['errors'].append(f'第{row_num}行: {error}')
+            results['skipped'] += 1
+            continue
+
+        if not can_write_dept(request, fields['department']):
+            results['errors'].append(f'第{row_num}行: 无权操作部门"{fields["department"]}"')
+            results['skipped'] += 1
+            continue
+
+        try:
+            Payment.objects.create(created_by_id=request.pk_uid, **fields)
+            results['created'] += 1
+        except Exception as e:
+            results['errors'].append(f'第{row_num}行: 保存失败 ({e})')
+            results['skipped'] += 1
+
+    return ok(results)
+
+
+@csrf_exempt
+@pk_required()
+def payment_export(request):
+    """GET — export filtered payment list to Excel (same filters as list view)."""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except ImportError:
+        return err('服务器缺少 openpyxl 依赖', 500)
+
+    perms = get_request_perms(request)
+
+    qs = Payment.objects.select_related('created_by').all()
+    qs = dept_filter(qs, request)
+
+    dept = request.GET.get('dept', '').strip()
+    status_q = request.GET.get('status', '').strip()
+    start = request.GET.get('start_date', '').strip()
+    end = request.GET.get('end_date', '').strip()
+    q_str = request.GET.get('q', '').strip()
+
+    if dept:
+        qs = qs.filter(department=dept)
+    if start:
+        qs = qs.filter(planned_date__gte=start)
+    if end:
+        qs = qs.filter(planned_date__lte=end)
+    if q_str:
+        qs = qs.filter(
+            Q(project_desc__icontains=q_str) | Q(payee__icontains=q_str) |
+            Q(approval_number__icontains=q_str) | Q(department__icontains=q_str)
+        )
+    if status_q:
+        qs = qs.annotate(
+            computed_paid=ExpressionWrapper(
+                F('pay1_amount') + F('pay2_amount') + F('pay3_amount'),
+                output_field=DjDecimalField(max_digits=15, decimal_places=2),
+            )
+        )
+        if status_q == 'pending':
+            qs = qs.filter(computed_paid=Decimal('0'))
+        elif status_q == 'settled':
+            qs = qs.filter(computed_paid__gte=F('total_amount'))
+        elif status_q == 'partial':
+            qs = qs.filter(computed_paid__gt=Decimal('0'), computed_paid__lt=F('total_amount'))
+
+    # Cap export at 5000 rows to protect the server.
+    qs = qs[:5000]
+
+    cols = _visible_excel_cols(perms)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '排款记录'
+
+    header_fill = PatternFill(fill_type='solid', fgColor='C96342')
+    header_font = Font(bold=True, color='FFFFFF', size=11)
+    center = Alignment(horizontal='center', vertical='center')
+
+    for col_idx, (header, _) in enumerate(cols, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center
+
+    status_label = {'pending': '⏳待付款', 'partial': '⚡部分付款', 'settled': '✅已付清'}
+
+    for row_idx, p in enumerate(qs, start=2):
+        d = apply_view_mask(p.to_dict(), perms)
+        for col_idx, (_, db_col) in enumerate(cols, 1):
+            val = d.get(db_col)
+            if val is None:
+                val = ''
+            # Convert Decimal strings to float for Excel numeric cells
+            if db_col in ('total_amount', 'pay1_amount', 'pay2_amount', 'pay3_amount',
+                          'total_paid', 'remaining'):
+                try:
+                    val = float(val) if val != '' else 0.0
+                except (ValueError, TypeError):
+                    pass
+            ws.cell(row=row_idx, column=col_idx, value=val)
+
+        # Append status column after visible cols
+        status_col = len(cols) + 1
+        ws.cell(row=row_idx if row_idx > 2 else row_idx,
+                column=status_col, value=status_label.get(d.get('status', ''), ''))
+
+    # Status header
+    status_header_cell = ws.cell(row=1, column=len(cols) + 1, value='状态')
+    status_header_cell.font = header_font
+    status_header_cell.fill = header_fill
+    status_header_cell.alignment = center
+
+    # Auto-width approximation
+    for col in ws.columns:
+        max_len = max((len(str(c.value or '')) for c in col), default=10)
+        ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 32)
+
+    today = timezone.localdate().strftime('%Y%m%d')
+    return _build_excel_response(wb, f'排款记录_{today}.xlsx')
 
 
 # ── departments ───────────────────────────────────────────────────────────────

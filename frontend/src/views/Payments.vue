@@ -29,6 +29,69 @@ function fmt(n) {
   return v >= 10000 ? (v / 10000).toFixed(2) + ' 万' : v.toFixed(2)
 }
 
+// ── Excel import / export / template ──────────────────────────────────────────
+const importInputRef = ref(null)
+const importing = ref(false)
+const exportingXlsx = ref(false)
+const importResult = ref(null)
+
+async function downloadTemplate() {
+  try {
+    const res = await api.get('/payments/template', { responseType: 'blob' })
+    triggerDownload(res.data, '排款导入模板.xlsx')
+  } catch { alert('模板下载失败') }
+}
+
+function triggerImport() {
+  importResult.value = null
+  importInputRef.value.click()
+}
+
+async function onImportFile(e) {
+  const file = e.target.files[0]
+  if (!file) return
+  importing.value = true
+  importResult.value = null
+  const formData = new FormData()
+  formData.append('file', file)
+  try {
+    const res = await api.post('/payments/import', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    importResult.value = res.data
+    if (res.data.created > 0) load()
+  } catch (ex) {
+    importResult.value = { error: ex?.error || '导入失败，请检查文件格式' }
+  } finally {
+    importing.value = false
+    e.target.value = ''
+  }
+}
+
+async function exportExcel() {
+  exportingXlsx.value = true
+  try {
+    const params = Object.fromEntries(
+      Object.entries(filters).filter(([k, v]) => v !== '' && k !== 'page' && k !== 'size')
+    )
+    const res = await api.get('/payments/export', { params, responseType: 'blob' })
+    const date = new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '月') + '日'
+    triggerDownload(res.data, `排款记录_${date}.xlsx`)
+  } catch { alert('导出失败，请稍后重试') }
+  finally { exportingXlsx.value = false }
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
 async function load() {
   loading.value = true
   loadErr.value = ''
@@ -86,8 +149,40 @@ function setPage(p) { filters.page = p; load() }
   <div>
     <div class="topbar">
       <h1>付款台账</h1>
-      <button v-if="auth.canCreate" class="btn btn-primary" @click="openAdd">+ 新增排款</button>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" @click="downloadTemplate" title="下载Excel导入模板">
+          <span style="margin-right:4px">⬇</span>模板
+        </button>
+        <button v-if="auth.canCreate" class="btn btn-ghost btn-sm" :disabled="importing" @click="triggerImport">
+          <span v-if="importing" class="btn-spin"></span>
+          <span v-else style="margin-right:4px">📥</span>{{ importing ? '导入中…' : '导入' }}
+        </button>
+        <button class="btn btn-ghost btn-sm" :disabled="exportingXlsx" @click="exportExcel">
+          <span v-if="exportingXlsx" class="btn-spin"></span>
+          <span v-else style="margin-right:4px">📤</span>{{ exportingXlsx ? '导出中…' : '导出' }}
+        </button>
+        <button v-if="auth.canCreate" class="btn btn-primary" @click="openAdd">+ 新增排款</button>
+      </div>
     </div>
+
+    <!-- hidden file input for import -->
+    <input ref="importInputRef" type="file" accept=".xlsx,.xls" style="display:none" @change="onImportFile" />
+
+    <!-- import result feedback -->
+    <Transition name="fade-slide">
+      <div v-if="importResult" class="import-result" :class="importResult.error ? 'import-err' : 'import-ok'">
+        <div v-if="importResult.error">❌ {{ importResult.error }}</div>
+        <div v-else>
+          <strong>✅ 导入完成：成功 {{ importResult.created }} 条
+          <span v-if="importResult.skipped">，跳过 {{ importResult.skipped }} 条</span></strong>
+          <ul v-if="importResult.errors?.length" style="margin:6px 0 0;padding-left:18px;font-size:12px">
+            <li v-for="e in importResult.errors.slice(0, 10)" :key="e">{{ e }}</li>
+            <li v-if="importResult.errors.length > 10">… 共 {{ importResult.errors.length }} 个错误</li>
+          </ul>
+        </div>
+        <button class="close-btn" @click="importResult = null">✕</button>
+      </div>
+    </Transition>
 
     <div class="card" style="margin-bottom:16px">
       <div class="filter-bar">
@@ -172,3 +267,44 @@ function setPage(p) { filters.page = p; load() }
     />
   </div>
 </template>
+
+<style scoped>
+.import-result {
+  position: relative;
+  margin-bottom: 14px;
+  padding: 12px 40px 12px 16px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.import-ok {
+  background: rgba(46,125,50,0.08);
+  border: 1px solid rgba(46,125,50,0.25);
+  color: #2e7d32;
+}
+.import-err {
+  background: rgba(198,40,40,0.07);
+  border: 1px solid rgba(198,40,40,0.25);
+  color: #c62828;
+}
+.close-btn {
+  position: absolute;
+  top: 8px; right: 10px;
+  background: none; border: none;
+  cursor: pointer; font-size: 14px; color: inherit; opacity: 0.6;
+}
+.close-btn:hover { opacity: 1; }
+.btn-spin {
+  display: inline-block;
+  width: 11px; height: 11px;
+  border-radius: 50%;
+  border: 2px solid rgba(0,0,0,0.2);
+  border-top-color: var(--primary);
+  animation: spin 0.7s linear infinite;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.fade-slide-enter-active, .fade-slide-leave-active { transition: opacity 0.2s, transform 0.2s; }
+.fade-slide-enter-from, .fade-slide-leave-to { opacity: 0; transform: translateY(-6px); }
+</style>
