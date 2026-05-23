@@ -382,3 +382,42 @@ tr:last-child td { border-bottom: none; }
   .kpi-grid { grid-template-columns: repeat(2,1fr); }
   .topbar { flex-direction: column; align-items: flex-start; gap: 12px; }
 }
+
+/* ── global mouse effects (cursor glow trail + click ripple) ─────────────── */
+.mfx-glow {
+  position: fixed;
+  top: 0; left: 0;
+  width: 34px; height: 34px;
+  margin: -17px 0 0 -17px;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 99999;
+  background: radial-gradient(circle,
+    rgba(232,133,90,0.40) 0%,
+    rgba(201,99,66,0.22) 45%,
+    transparent 70%);
+  opacity: 0;
+  transition: opacity 0.35s ease, width 0.18s ease, height 0.18s ease, margin 0.18s ease;
+  will-change: transform;
+}
+.mfx-glow.on { opacity: 1; }
+.mfx-glow.press {
+  width: 20px; height: 20px; margin: -10px 0 0 -10px;
+}
+.mfx-ripple {
+  position: fixed;
+  width: 12px; height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 99998;
+  border: 2px solid var(--primary);
+  animation: mfx-ripple 0.6s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+}
+@keyframes mfx-ripple {
+  0%   { transform: scale(0.4); opacity: 0.75; }
+  100% { transform: scale(4.2); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mfx-glow, .mfx-ripple { display: none !important; }
+}

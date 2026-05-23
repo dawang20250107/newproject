@@ -37,9 +37,27 @@ function switchMode(m) {
   stopPolling()
 }
 
+function validateRegister() {
+  const ph = phone.value.trim()
+  if (!ph) return '请输入手机号'
+  if (!/^\d{8,}$/.test(ph)) return '手机号格式有误（至少8位数字）'
+  if (!name.value.trim()) return '请输入姓名'
+  if (!password.value) return '请输入密码'
+  if (password.value.length < 6) return '密码至少6位'
+  if (!jobTitle.value) return '请选择职务'
+  if (!selectedDepts.value.length) return '请至少选择一个所属部门'
+  return ''
+}
+
 async function submit() {
   error.value = ''
   pendingMsg.value = ''
+  if (mode.value === 'register') {
+    const msg = validateRegister()
+    if (msg) { error.value = msg; return }
+  } else {
+    if (!phone.value.trim() || !password.value) { error.value = '请输入手机号和密码'; return }
+  }
   loading.value = true
   try {
     if (mode.value === 'login') {
