@@ -1,7 +1,8 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth.js'
+import api from '../api/index.js'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -15,21 +16,25 @@ const selectedDepts = ref([])
 const error = ref('')
 const loading = ref(false)
 const pendingMsg = ref('')
+const pendingState = ref('waiting')   // 'waiting' | 'approved' | 'rejected'
+let pollTimer = null
 
 const DEPARTMENTS = [
   '集团总部', '劳务事业部', '运输事业部', '自营事业部',
   '阔展事业部', '多式联运事业部', '供应链事业部',
 ]
 const JOB_TITLES = [
-  { v: 'cashier', label: '出纳' },
-  { v: 'finance_bp', label: '财务BP' },
   { v: 'finance_director', label: '财务总监' },
+  { v: 'finance_bp', label: '财务BP' },
+  { v: 'chief_cashier', label: '总出纳' },
+  { v: 'cashier', label: '出纳' },
 ]
 
 function switchMode(m) {
   mode.value = m
   error.value = ''
   pendingMsg.value = ''
+  stopPolling()
 }
 
 async function submit() {
@@ -49,8 +54,10 @@ async function submit() {
         departments: selectedDepts.value,
       })
       if (result.pending) {
-        pendingMsg.value = result.message || '注册成功！请等待管理员审批后登录'
+        pendingMsg.value = result.message || '注册成功！请等待管理员审批'
+        pendingState.value = 'waiting'
         mode.value = 'pending'
+        startPolling()
       } else {
         router.push('/dashboard')
       }
@@ -61,6 +68,39 @@ async function submit() {
     loading.value = false
   }
 }
+
+// ── real-time approval polling ──
+function startPolling() {
+  stopPolling()
+  pollTimer = setInterval(checkStatus, 3000)
+}
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
+async function checkStatus() {
+  try {
+    const res = await api.get('/registration-status', { params: { phone: phone.value } })
+    const s = res.data.status
+    if (s === 'approved') {
+      stopPolling()
+      pendingState.value = 'approved'
+      setTimeout(enterAfterApproval, 1800)
+    } else if (s === 'rejected' || s === 'none') {
+      stopPolling()
+      pendingState.value = 'rejected'
+    }
+  } catch { /* keep polling */ }
+}
+async function enterAfterApproval() {
+  try {
+    await auth.login(phone.value, password.value)
+    router.push('/dashboard')
+  } catch (e) {
+    pendingState.value = 'rejected'
+    error.value = e?.error || '自动登录失败，请返回手动登录'
+  }
+}
+onUnmounted(stopPolling)
 
 function toggleDept(d) {
   const idx = selectedDepts.value.indexOf(d)
@@ -110,13 +150,42 @@ function toggleDept(d) {
 
       <!-- Card -->
       <div class="login-card">
-        <!-- pending state -->
+        <!-- pending state (real-time) -->
         <template v-if="mode === 'pending'">
-          <div class="pending-state">
-            <div class="pending-icon">⏳</div>
-            <h3>注册申请已提交</h3>
+          <!-- waiting for approval -->
+          <div v-if="pendingState === 'waiting'" class="pending-state">
+            <div class="approve-loader">
+              <div class="ring"></div>
+              <div class="ring-icon">⏳</div>
+            </div>
+            <h3>正在等待管理员审批</h3>
             <p>{{ pendingMsg }}</p>
-            <p class="pending-hint">管理员审批后，您可使用注册的手机号登录</p>
+            <p class="pending-hint">
+              <span class="live-dot"></span>实时检测中，审批通过后将自动进入系统…
+            </p>
+            <button class="btn btn-ghost mt" style="width:100%;justify-content:center" @click="switchMode('login')">
+              返回登录
+            </button>
+          </div>
+
+          <!-- approved -->
+          <div v-else-if="pendingState === 'approved'" class="pending-state">
+            <div class="success-check">
+              <svg width="40" height="40" viewBox="0 0 52 52">
+                <circle class="sc-circle" cx="26" cy="26" r="24" fill="none"/>
+                <path class="sc-check" fill="none" d="M14 27l8 8 16-16"/>
+              </svg>
+            </div>
+            <h3 style="color:#2e7d32">审批已通过！</h3>
+            <p>正在为您进入系统…</p>
+          </div>
+
+          <!-- rejected -->
+          <div v-else class="pending-state">
+            <div class="pending-icon">⚠️</div>
+            <h3 style="color:#c62828">申请未通过</h3>
+            <p>很抱歉，您的注册申请未获通过，或账号已被停用。</p>
+            <p class="pending-hint">如有疑问请联系管理员</p>
             <button class="btn btn-primary mt" style="width:100%;justify-content:center" @click="switchMode('login')">
               返回登录
             </button>
@@ -381,8 +450,33 @@ function toggleDept(d) {
 @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
 .pending-state h3 { font-size: 20px; font-weight: 700; margin-bottom: 12px; }
 .pending-state p { color: var(--muted); font-size: 14px; line-height: 1.6; }
-.pending-hint { font-size: 12px; margin-top: 8px; color: rgba(155,128,112,0.7) !important; }
+.pending-hint { font-size: 12px; margin-top: 8px; color: rgba(155,128,112,0.7) !important; display: flex; align-items: center; justify-content: center; gap: 6px; }
 .mt { margin-top: 24px; }
+
+/* waiting loader */
+.approve-loader { position: relative; width: 76px; height: 76px; margin: 0 auto 20px; }
+.approve-loader .ring {
+  position: absolute; inset: 0; border-radius: 50%;
+  border: 3px solid rgba(201,99,66,0.15);
+  border-top-color: var(--primary);
+  animation: spin 1s linear infinite;
+}
+.approve-loader .ring-icon {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 30px; animation: float 2s ease-in-out infinite;
+}
+.live-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: #2e7d32;
+  display: inline-block; animation: livepulse 1.4s ease-in-out infinite;
+}
+@keyframes livepulse { 0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(46,125,50,0.4)} 50%{opacity:0.5;box-shadow:0 0 0 5px rgba(46,125,50,0)} }
+
+/* success check */
+.success-check { margin: 0 auto 18px; width: 52px; height: 52px; }
+.sc-circle { stroke: #2e7d32; stroke-width: 2.5; stroke-dasharray: 151; stroke-dashoffset: 151; animation: scCircle 0.5s ease forwards; }
+.sc-check  { stroke: #2e7d32; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 40; stroke-dashoffset: 40; animation: scCheck 0.35s 0.45s ease forwards; }
+@keyframes scCircle { to { stroke-dashoffset: 0; } }
+@keyframes scCheck  { to { stroke-dashoffset: 0; } }
 
 /* responsive: hide brand panel on mobile */
 @media (max-width: 640px) {

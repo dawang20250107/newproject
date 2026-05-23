@@ -11,7 +11,7 @@ from django.conf import settings
 from django.utils import timezone
 import jwt
 
-from paikuan.models import PaikuanUser, Payment
+from paikuan.models import PaikuanUser, Payment, JobPermission
 
 logger = logging.getLogger('paikuan')
 
@@ -20,11 +20,117 @@ DEPARTMENTS = [
     '阔展事业部', '多式联运事业部', '供应链事业部',
 ]
 
+# Job titles double as the permission "roles" configured by super_admin.
 JOB_TITLES = {
-    'cashier': '出纳',
-    'finance_bp': '财务BP',
     'finance_director': '财务总监',
+    'finance_bp': '财务BP',
+    'chief_cashier': '总出纳',
+    'cashier': '出纳',
 }
+
+# ── permission model ────────────────────────────────────────────────────────────
+# Payment fields that can be individually permission-controlled. Each logical
+# field maps to one or more columns in the serialized payment dict.
+PAYMENT_FIELD_DEFS = [
+    {'key': 'department',      'label': '部门',         'cols': ['department']},
+    {'key': 'approval_number', 'label': '审批单号',      'cols': ['approval_number']},
+    {'key': 'project_desc',    'label': '付款事项',      'cols': ['project_desc']},
+    {'key': 'payee',           'label': '收款方',        'cols': ['payee']},
+    {'key': 'total_amount',    'label': '计划总金额',    'cols': ['total_amount']},
+    {'key': 'planned_date',    'label': '计划付款日期',  'cols': ['planned_date']},
+    {'key': 'pay1',            'label': '第1次付款',     'cols': ['pay1_date', 'pay1_amount']},
+    {'key': 'pay2',            'label': '第2次付款',     'cols': ['pay2_date', 'pay2_amount']},
+    {'key': 'pay3',            'label': '第3次付款',     'cols': ['pay3_date', 'pay3_amount']},
+    {'key': 'notes',           'label': '备注',          'cols': ['notes']},
+]
+FIELD_KEYS = [f['key'] for f in PAYMENT_FIELD_DEFS]
+PAGE_KEYS = ['dashboard', 'payments', 'stats']
+
+
+def _all_fields(value):
+    return {k: value for k in FIELD_KEYS}
+
+
+def default_job_config(job):
+    """Sensible starting permissions for each job title; super_admin can override."""
+    pages_all = {k: True for k in PAGE_KEYS}
+    if job == 'finance_director':
+        return {'pages': pages_all, 'view': _all_fields(True),
+                'edit': _all_fields(True), 'can_create': True, 'can_delete': True}
+    if job == 'finance_bp':
+        return {'pages': pages_all, 'view': _all_fields(True),
+                'edit': _all_fields(True), 'can_create': True, 'can_delete': False}
+    if job == 'chief_cashier':
+        edit = {k: (k in ('pay1', 'pay2', 'pay3')) for k in FIELD_KEYS}
+        return {'pages': pages_all, 'view': _all_fields(True),
+                'edit': edit, 'can_create': True, 'can_delete': False}
+    if job == 'cashier':
+        edit = {k: (k in ('pay1', 'pay2', 'pay3')) for k in FIELD_KEYS}
+        return {'pages': {'dashboard': True, 'payments': True, 'stats': False},
+                'view': _all_fields(True), 'edit': edit,
+                'can_create': False, 'can_delete': False}
+    # Unknown / no job title → read-only minimum.
+    return {'pages': pages_all, 'view': _all_fields(True),
+            'edit': _all_fields(False), 'can_create': False, 'can_delete': False}
+
+
+def get_job_perms(job):
+    """Effective config for a job title = defaults merged with stored overrides."""
+    base = default_job_config(job)
+    rp = JobPermission.objects.filter(job_title=job).first()
+    if not (rp and rp.config):
+        return base
+    cfg = rp.config
+    view = dict(base['view']);  view.update(cfg.get('view', {}))
+    edit = dict(base['edit']);  edit.update(cfg.get('edit', {}))
+    pages = dict(base['pages']); pages.update(cfg.get('pages', {}))
+    return {
+        'pages': pages, 'view': view, 'edit': edit,
+        'can_create': bool(cfg.get('can_create', base['can_create'])),
+        'can_delete': bool(cfg.get('can_delete', base['can_delete'])),
+    }
+
+
+def full_perms():
+    return {'pages': {k: True for k in PAGE_KEYS}, 'view': _all_fields(True),
+            'edit': _all_fields(True), 'can_create': True, 'can_delete': True}
+
+
+def effective_perms(user):
+    """Perms object sent to the client (super_admin gets full access)."""
+    cfg = full_perms() if user.role == 'super_admin' else get_job_perms(user.job_title)
+    return {**cfg, 'is_admin': user.role == 'super_admin', 'fields': PAYMENT_FIELD_DEFS}
+
+
+def get_request_perms(request):
+    """Effective perms for the authed request. None means full access (super_admin)."""
+    if request.pk_role == 'super_admin':
+        return None
+    jt = getattr(request, 'pk_job', '') or ''
+    if not jt:
+        u = PaikuanUser.objects.filter(id=request.pk_uid).only('job_title').first()
+        jt = u.job_title if u else ''
+    return get_job_perms(jt)
+
+
+def apply_view_mask(d, perms):
+    """Null out payment-dict fields the role cannot view."""
+    if perms is None:
+        return d
+    view = perms['view']
+    hide_cols = set()
+    for f in PAYMENT_FIELD_DEFS:
+        if not view.get(f['key'], True):
+            hide_cols.update(f['cols'])
+    for c in hide_cols:
+        if c in d:
+            d[c] = None
+    pay_hidden = any(not view.get(k, True) for k in ('pay1', 'pay2', 'pay3'))
+    if pay_hidden:
+        d['total_paid'] = None
+    if pay_hidden or not view.get('total_amount', True):
+        d['remaining'] = None
+    return d
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -48,6 +154,7 @@ def make_token(user):
     payload = {
         'uid': user.id,
         'role': user.role,
+        'job': user.job_title,
         'departments': user.departments,
         'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24),
         'iat': datetime.datetime.utcnow(),
@@ -66,6 +173,7 @@ def pk_required(roles=None):
                 payload = jwt.decode(token, settings.JWT_SECRET, algorithms=['HS256'])
                 request.pk_uid = payload['uid']
                 request.pk_role = payload['role']
+                request.pk_job = payload.get('job', '')
                 request.pk_depts = payload.get('departments', [])
             except jwt.ExpiredSignatureError:
                 return err('Token已过期', 401, 401)
@@ -79,25 +187,15 @@ def pk_required(roles=None):
 
 
 def dept_filter(qs, request):
-    if request.pk_role in ('super_admin', 'manager', 'viewer'):
+    """Row visibility: super_admin sees all; everyone else sees assigned departments."""
+    if request.pk_role == 'super_admin':
         return qs
     return qs.filter(department__in=request.pk_depts)
 
 
-def can_edit_payment(request, payment):
-    role = request.pk_role
-    if role in ('super_admin', 'manager'):
-        return True
-    if role == 'viewer':
-        return False
-    return payment.created_by_id == request.pk_uid
-
-
 def can_write_dept(request, dept):
-    if request.pk_role in ('super_admin', 'manager'):
+    if request.pk_role == 'super_admin':
         return True
-    if request.pk_role == 'viewer':
-        return False
     return dept in request.pk_depts
 
 
@@ -145,7 +243,8 @@ def register(request):
     user.save()
 
     if is_first:
-        return ok({'token': make_token(user), 'user': user.to_dict(), 'pending': False})
+        return ok({'token': make_token(user), 'user': user.to_dict(),
+                   'permissions': effective_perms(user), 'pending': False})
     return ok({'pending': True, 'message': '注册成功！请等待管理员审批后登录'})
 
 
@@ -168,7 +267,26 @@ def login(request):
         return err('手机号或密码错误', 401, 401)
     if not user.is_approved:
         return err('账号待审批，请联系管理员', 403, -2)
-    return ok({'token': make_token(user), 'user': user.to_dict()})
+    return ok({'token': make_token(user), 'user': user.to_dict(),
+               'permissions': effective_perms(user)})
+
+
+@csrf_exempt
+def registration_status(request):
+    """Public polling endpoint so a pending registrant can detect approval."""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    phone = (request.GET.get('phone') or '').strip()
+    if not phone:
+        return err('缺少手机号')
+    user = PaikuanUser.objects.filter(phone=phone).first()
+    if not user:
+        return ok({'status': 'none'})
+    if not user.is_active:
+        return ok({'status': 'rejected'})
+    if user.is_approved:
+        return ok({'status': 'approved'})
+    return ok({'status': 'pending'})
 
 
 @pk_required()
@@ -179,7 +297,7 @@ def me(request):
         user = PaikuanUser.objects.get(id=request.pk_uid)
     except PaikuanUser.DoesNotExist:
         return err('用户不存在', 404)
-    return ok(user.to_dict())
+    return ok({'user': user.to_dict(), 'permissions': effective_perms(user)})
 
 
 # ── payments ──────────────────────────────────────────────────────────────────
@@ -222,7 +340,8 @@ def _list_payments(request):
     except ValueError:
         page, size = 1, 50
 
-    items = [p.to_dict() for p in qs]
+    perms = get_request_perms(request)
+    items = [apply_view_mask(p.to_dict(), perms) for p in qs]
 
     if status_q:
         items = [p for p in items if p['status'] == status_q]
@@ -269,6 +388,9 @@ def _parse_payment_fields(data, payment=None):
 
 
 def _create_payment(request):
+    perms = get_request_perms(request)
+    if perms is not None and not perms['can_create']:
+        return err('无新增权限', 403, 403)
     data = parse_body(request)
     fields, error = _parse_payment_fields(data)
     if error:
@@ -291,27 +413,39 @@ def payment_detail(request, pk):
     if not dept_filter(Payment.objects.filter(id=pk), request).exists():
         return err('无权访问', 403, 403)
 
+    perms = get_request_perms(request)
+
     if request.method == 'GET':
-        return ok(p.to_dict())
+        return ok(apply_view_mask(p.to_dict(), perms))
 
     if request.method == 'PUT':
-        if not can_edit_payment(request, p):
+        # Record-level access: super_admin or write access to this department.
+        if not can_write_dept(request, p.department):
             return err('无权编辑此记录', 403, 403)
         data = parse_body(request)
         fields, error = _parse_payment_fields(data, payment=p)
         if error:
             return err(error)
+        # Field-level edit enforcement: keep old value for non-editable fields.
+        if perms is not None:
+            for f in PAYMENT_FIELD_DEFS:
+                if not perms['edit'].get(f['key'], False):
+                    for col in f['cols']:
+                        fields[col] = getattr(p, col)
         new_dept = fields['department']
         if new_dept != p.department and not can_write_dept(request, new_dept):
             return err('无权操作目标部门', 403, 403)
         for k, v in fields.items():
             setattr(p, k, v)
         p.save()
-        return ok(p.to_dict())
+        return ok(apply_view_mask(p.to_dict(), perms))
 
     if request.method == 'DELETE':
-        if request.pk_role != 'super_admin':
-            return err('仅超级管理员可删除', 403, 403)
+        if perms is not None:
+            if not perms['can_delete']:
+                return err('无删除权限', 403, 403)
+            if not can_write_dept(request, p.department):
+                return err('无权删除此记录', 403, 403)
         p.delete()
         return ok({'deleted': pk})
 
@@ -324,17 +458,24 @@ def payment_detail(request, pk):
 def dashboard(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    if perms is not None and not perms['pages'].get('dashboard', True):
+        return err('无访问权限', 403, 403)
     today = timezone.localdate()
     qs = Payment.objects.select_related('created_by').all()
     qs = dept_filter(qs, request)
-    items = [p.to_dict() for p in qs]
+    # Compute on full dicts; mask the per-record list before returning.
+    raw = [p.to_dict() for p in qs]
 
     today_str = str(today)
+    show_amount = perms is None or perms['view'].get('total_amount', True)
 
     def flt(cond):
-        return [p for p in items if cond(p)]
+        return [p for p in raw if cond(p)]
 
     def amt(lst, field='total_amount'):
+        if not show_amount:
+            return None
         return str(sum(Decimal(p[field]) for p in lst))
 
     today_items = flt(lambda p: p['planned_date'] == today_str)
@@ -350,7 +491,7 @@ def dashboard(request):
         'partial_count': len(partial),
         'overdue_count': len(overdue),
         'overdue_amount': amt(overdue, 'remaining'),
-        'today_payments': today_items[:50],
+        'today_payments': [apply_view_mask(dict(p), perms) for p in today_items[:50]],
     })
 
 
@@ -360,6 +501,11 @@ def dashboard(request):
 def stats(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    if perms is not None and not perms['pages'].get('stats', True):
+        return err('无访问权限', 403, 403)
+    if perms is not None and not perms['view'].get('total_amount', True):
+        return err('无金额查看权限，无法查看统计', 403, 403)
     today = timezone.localdate()
     try:
         year = int(request.GET.get('year', today.year))
@@ -480,18 +626,85 @@ def approve_user(request, pk):
         return err('用户不存在', 404)
     if user.role == 'super_admin':
         return err('超级管理员无需审批')
+    body = parse_body(request)
+    # Super admin may adjust job title / departments at approval time.
+    if body.get('job_title') in JOB_TITLES:
+        user.job_title = body['job_title']
+    if isinstance(body.get('departments'), list):
+        user.departments = body['departments']
     user.is_approved = True
+    user.is_active = True
+    user.role = 'operator'   # regular member; field perms come from job_title
     user.approved_by_id = request.pk_uid
     user.approved_at = timezone.now()
-    # Default to operator role after approval if still viewer
-    if user.role == 'viewer':
-        body = parse_body(request)
-        if body.get('role') in ('manager', 'operator', 'viewer'):
-            user.role = body['role']
-        else:
-            user.role = 'operator'
     user.save()
     return ok(user.to_dict())
+
+
+@csrf_exempt
+@pk_required(roles=['super_admin'])
+def reject_user(request, pk):
+    """Reject a pending registration by deleting the account."""
+    if request.method not in ('POST', 'DELETE'):
+        return err('Method not allowed', 405)
+    try:
+        user = PaikuanUser.objects.get(id=pk)
+    except PaikuanUser.DoesNotExist:
+        return err('用户不存在', 404)
+    if user.role == 'super_admin':
+        return err('不能拒绝超级管理员')
+    if user.is_approved:
+        return err('该用户已审批，不能拒绝；如需禁用请使用停用')
+    user.delete()
+    return ok({'rejected': pk})
+
+
+# ── permissions ───────────────────────────────────────────────────────────────
+
+@csrf_exempt
+@pk_required(roles=['super_admin'])
+def permissions(request):
+    """GET: full permission matrix for all job titles + field metadata."""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    jobs = [
+        {'job_title': key, 'label': label, 'config': get_job_perms(key)}
+        for key, label in JOB_TITLES.items()
+    ]
+    return ok({
+        'fields': PAYMENT_FIELD_DEFS,
+        'pages': [
+            {'key': 'dashboard', 'label': '今日工作台'},
+            {'key': 'payments', 'label': '付款台账'},
+            {'key': 'stats', 'label': '月度统计'},
+        ],
+        'jobs': jobs,
+    })
+
+
+@csrf_exempt
+@pk_required(roles=['super_admin'])
+def permission_detail(request, job):
+    """PUT: update one job title's permission config."""
+    if request.method != 'PUT':
+        return err('Method not allowed', 405)
+    if job not in JOB_TITLES:
+        return err('职务无效', 404)
+    body = parse_body(request)
+    cfg = body.get('config') or {}
+
+    # Sanitize against known keys to avoid storing junk.
+    clean = {
+        'pages': {k: bool(cfg.get('pages', {}).get(k, True)) for k in PAGE_KEYS},
+        'view': {k: bool(cfg.get('view', {}).get(k, True)) for k in FIELD_KEYS},
+        'edit': {k: bool(cfg.get('edit', {}).get(k, False)) for k in FIELD_KEYS},
+        'can_create': bool(cfg.get('can_create', False)),
+        'can_delete': bool(cfg.get('can_delete', False)),
+    }
+    obj, _ = JobPermission.objects.get_or_create(job_title=job)
+    obj.config = clean
+    obj.save()
+    return ok({'job_title': job, 'config': get_job_perms(job)})
 
 
 # ── departments ───────────────────────────────────────────────────────────────

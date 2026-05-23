@@ -11,9 +11,10 @@ class PaikuanUser(models.Model):
         ('viewer', '查看员'),
     ]
     JOB_TITLE_CHOICES = [
-        ('cashier', '出纳'),
-        ('finance_bp', '财务BP'),
         ('finance_director', '财务总监'),
+        ('finance_bp', '财务BP'),
+        ('chief_cashier', '总出纳'),
+        ('cashier', '出纳'),
     ]
     phone = models.CharField('手机号', max_length=15, unique=True)
     password_hash = models.CharField('密码哈希', max_length=256)
@@ -128,3 +129,24 @@ class Payment(models.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+class JobPermission(models.Model):
+    """Per-job-title permission config, managed by super_admin.
+
+    config schema:
+        {
+          "pages":  {"dashboard": bool, "payments": bool, "stats": bool},
+          "view":   {field_key: bool, ...},
+          "edit":   {field_key: bool, ...},
+          "can_create": bool,
+          "can_delete": bool,
+        }
+    """
+    job_title = models.CharField('职务', max_length=30, unique=True)
+    config = models.JSONField('权限配置', default=dict)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        db_table = 'paikuan_job_permissions'
+        verbose_name = '职务权限'

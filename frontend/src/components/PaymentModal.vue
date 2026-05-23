@@ -1,12 +1,19 @@
 <script setup>
-import { ref, watch, nextTick } from 'vue'
+import { ref, watch, nextTick, computed } from 'vue'
 import api from '../api/index.js'
+import { useAuthStore } from '../stores/auth.js'
 
 const props = defineProps({
   payment: { type: Object, default: null },
   departments: { type: Array, default: () => [] },
 })
 const emit = defineEmits(['saved', 'close'])
+
+const auth = useAuthStore()
+const isNew = computed(() => !props.payment?.id)
+function vis(key) { return auth.canView(key) }
+// On create, fillable fields = anything viewable; on edit, only fields the role can edit.
+function editable(key) { return isNew.value ? true : auth.canEdit(key) }
 
 const loading = ref(false)
 const error = ref('')
@@ -117,77 +124,77 @@ async function submit() {
       <div v-if="error" class="alert alert-err">{{ error }}</div>
 
       <div class="form-row">
-        <div class="form-group">
+        <div v-if="vis('department')" class="form-group">
           <label>部门 *</label>
-          <select v-model="form.department">
+          <select v-model="form.department" :disabled="!editable('department')">
             <option value="">请选择部门</option>
             <option v-for="d in deptOptions" :key="d" :value="d">{{ d }}</option>
           </select>
         </div>
-        <div class="form-group">
+        <div v-if="vis('approval_number')" class="form-group">
           <label>审批单号</label>
-          <input v-model="form.approval_number" placeholder="可选" />
+          <input v-model="form.approval_number" placeholder="可选" :disabled="!editable('approval_number')" />
         </div>
       </div>
 
-      <div class="form-row full">
+      <div v-if="vis('project_desc')" class="form-row full">
         <div class="form-group">
           <label>付款事项描述 *</label>
-          <textarea v-model="form.project_desc" rows="2" placeholder="描述付款用途"></textarea>
+          <textarea v-model="form.project_desc" rows="2" placeholder="描述付款用途" :disabled="!editable('project_desc')"></textarea>
         </div>
       </div>
 
       <div class="form-row">
-        <div class="form-group">
+        <div v-if="vis('payee')" class="form-group">
           <label>收款方 *</label>
-          <input v-model="form.payee" placeholder="收款单位/个人" />
+          <input v-model="form.payee" placeholder="收款单位/个人" :disabled="!editable('payee')" />
         </div>
-        <div class="form-group">
+        <div v-if="vis('total_amount')" class="form-group">
           <label>计划总金额 (元) *</label>
-          <input v-model="form.total_amount" type="number" step="0.01" placeholder="0.00" />
+          <input v-model="form.total_amount" type="number" step="0.01" placeholder="0.00" :disabled="!editable('total_amount')" />
         </div>
       </div>
 
       <div class="form-row">
-        <div class="form-group">
+        <div v-if="vis('planned_date')" class="form-group">
           <label>计划付款日期 *</label>
-          <input v-model="form.planned_date" type="date" />
+          <input v-model="form.planned_date" type="date" :disabled="!editable('planned_date')" />
         </div>
-        <div class="form-group">
+        <div v-if="vis('notes')" class="form-group">
           <label>备注</label>
-          <input v-model="form.notes" placeholder="可选" />
+          <input v-model="form.notes" placeholder="可选" :disabled="!editable('notes')" />
         </div>
       </div>
 
-      <div class="section-title" style="font-size:13px;margin-top:4px">实际付款记录</div>
-      <div class="inst-row">
+      <div v-if="vis('pay1') || vis('pay2') || vis('pay3')" class="section-title" style="font-size:13px;margin-top:4px">实际付款记录</div>
+      <div v-if="vis('pay1')" class="inst-row">
         <div class="form-group">
           <label>第1次日期</label>
-          <input v-model="form.pay1_date" type="date" />
+          <input v-model="form.pay1_date" type="date" :disabled="!editable('pay1')" />
         </div>
         <div class="form-group">
           <label>第1次金额 (元)</label>
-          <input v-model="form.pay1_amount" type="number" step="0.01" placeholder="0.00" />
+          <input v-model="form.pay1_amount" type="number" step="0.01" placeholder="0.00" :disabled="!editable('pay1')" />
         </div>
       </div>
-      <div class="inst-row">
+      <div v-if="vis('pay2')" class="inst-row">
         <div class="form-group">
           <label>第2次日期</label>
-          <input v-model="form.pay2_date" type="date" />
+          <input v-model="form.pay2_date" type="date" :disabled="!editable('pay2')" />
         </div>
         <div class="form-group">
           <label>第2次金额 (元)</label>
-          <input v-model="form.pay2_amount" type="number" step="0.01" placeholder="0.00" />
+          <input v-model="form.pay2_amount" type="number" step="0.01" placeholder="0.00" :disabled="!editable('pay2')" />
         </div>
       </div>
-      <div class="inst-row">
+      <div v-if="vis('pay3')" class="inst-row">
         <div class="form-group">
           <label>第3次日期</label>
-          <input v-model="form.pay3_date" type="date" />
+          <input v-model="form.pay3_date" type="date" :disabled="!editable('pay3')" />
         </div>
         <div class="form-group">
           <label>第3次金额 (元)</label>
-          <input v-model="form.pay3_amount" type="number" step="0.01" placeholder="0.00" />
+          <input v-model="form.pay3_amount" type="number" step="0.01" placeholder="0.00" :disabled="!editable('pay3')" />
         </div>
       </div>
 

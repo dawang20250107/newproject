@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import AppNav from './components/AppNav.vue'
 import WelcomeOverlay from './components/WelcomeOverlay.vue'
@@ -9,6 +9,9 @@ const route = useRoute()
 const auth = useAuthStore()
 const showNav = computed(() => auth.isLoggedIn && !route.meta.public)
 const navCollapsed = ref(localStorage.getItem('nav_collapsed') === '1')
+
+// Keep permissions fresh (super_admin may have changed them since last login).
+onMounted(() => { if (auth.isLoggedIn) auth.refresh() })
 
 const showWelcome = ref(false)
 // Show welcome on first login in this session

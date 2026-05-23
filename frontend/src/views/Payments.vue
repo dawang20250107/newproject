@@ -1,11 +1,16 @@
 <script setup>
-import { ref, onMounted, reactive } from 'vue'
+import { ref, onMounted, reactive, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import StatusBadge from '../components/StatusBadge.vue'
 import PaymentModal from '../components/PaymentModal.vue'
 
 const auth = useAuthStore()
+
+// Column visibility from field-level view permissions.
+const showPaid = computed(() => auth.canView('pay1') || auth.canView('pay2') || auth.canView('pay3'))
+const showRemaining = computed(() => auth.canView('total_amount') && showPaid.value)
+function dash(v) { return v === null || v === undefined ? '—' : fmt(v) }
 const items = ref([])
 const total = ref(0)
 const loading = ref(false)
@@ -81,7 +86,7 @@ function setPage(p) { filters.page = p; load() }
   <div>
     <div class="topbar">
       <h1>付款台账</h1>
-      <button v-if="auth.canWrite" class="btn btn-primary" @click="openAdd">+ 新增排款</button>
+      <button v-if="auth.canCreate" class="btn btn-primary" @click="openAdd">+ 新增排款</button>
     </div>
 
     <div class="card" style="margin-bottom:16px">
@@ -116,33 +121,33 @@ function setPage(p) { filters.page = p; load() }
         <table>
           <thead>
             <tr>
-              <th>部门</th>
-              <th>审批单号</th>
-              <th>付款事项</th>
-              <th>收款方</th>
-              <th>计划日期</th>
-              <th>计划总额 (元)</th>
-              <th>已付 (元)</th>
-              <th>剩余 (元)</th>
+              <th v-if="auth.canView('department')">部门</th>
+              <th v-if="auth.canView('approval_number')">审批单号</th>
+              <th v-if="auth.canView('project_desc')">付款事项</th>
+              <th v-if="auth.canView('payee')">收款方</th>
+              <th v-if="auth.canView('planned_date')">计划日期</th>
+              <th v-if="auth.canView('total_amount')">计划总额 (元)</th>
+              <th v-if="showPaid">已付 (元)</th>
+              <th v-if="showRemaining">剩余 (元)</th>
               <th>状态</th>
-              <th>操作</th>
+              <th v-if="auth.canWrite || auth.canDelete">操作</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="p in items" :key="p.id">
-              <td>{{ p.department }}</td>
-              <td>{{ p.approval_number || '—' }}</td>
-              <td style="max-width:200px;white-space:normal;word-break:break-all">{{ p.project_desc }}</td>
-              <td>{{ p.payee }}</td>
-              <td>{{ p.planned_date }}</td>
-              <td class="amt">{{ fmt(p.total_amount) }}</td>
-              <td class="amt amt-green">{{ fmt(p.total_paid) }}</td>
-              <td class="amt" :class="parseFloat(p.remaining) > 0 ? 'amt-red' : ''">{{ fmt(p.remaining) }}</td>
+              <td v-if="auth.canView('department')">{{ p.department }}</td>
+              <td v-if="auth.canView('approval_number')">{{ p.approval_number || '—' }}</td>
+              <td v-if="auth.canView('project_desc')" style="max-width:200px;white-space:normal;word-break:break-all">{{ p.project_desc }}</td>
+              <td v-if="auth.canView('payee')">{{ p.payee }}</td>
+              <td v-if="auth.canView('planned_date')">{{ p.planned_date }}</td>
+              <td v-if="auth.canView('total_amount')" class="amt">{{ dash(p.total_amount) }}</td>
+              <td v-if="showPaid" class="amt amt-green">{{ dash(p.total_paid) }}</td>
+              <td v-if="showRemaining" class="amt" :class="parseFloat(p.remaining) > 0 ? 'amt-red' : ''">{{ dash(p.remaining) }}</td>
               <td><StatusBadge :status="p.status" /></td>
-              <td>
+              <td v-if="auth.canWrite || auth.canDelete">
                 <div style="display:flex;gap:6px">
                   <button v-if="auth.canWrite" class="btn btn-ghost btn-sm" @click="openEdit(p)">编辑</button>
-                  <button v-if="auth.isSuperAdmin" class="btn btn-danger btn-sm" @click="onDelete(p)">删除</button>
+                  <button v-if="auth.canDelete" class="btn btn-danger btn-sm" @click="onDelete(p)">删除</button>
                 </div>
               </td>
             </tr>

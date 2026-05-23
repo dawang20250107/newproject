@@ -9,21 +9,25 @@ const showEditModal = ref(false)
 const editUser = ref(null)
 const error = ref('')
 const approveLoading = ref({})
-const approveRoles = ref({})   // keyed by user id, holds selected role for approval
 
 const JOB_LABELS = {
-  cashier: '出纳', finance_bp: '财务BP', finance_director: '财务总监',
+  finance_director: '财务总监', finance_bp: '财务BP', chief_cashier: '总出纳', cashier: '出纳',
 }
 const ROLE_LABELS = {
-  super_admin: '超级管理员', manager: '财务经理', operator: '操作员', viewer: '查看员',
+  super_admin: '超级管理员', manager: '财务经理', operator: '成员', viewer: '查看员',
 }
-const ROLE_OPTIONS = [
-  { v: 'manager', label: '财务经理' },
-  { v: 'operator', label: '操作员' },
-  { v: 'viewer', label: '查看员' },
+const JOB_OPTIONS = [
+  { v: 'finance_director', label: '财务总监' },
+  { v: 'finance_bp', label: '财务BP' },
+  { v: 'chief_cashier', label: '总出纳' },
+  { v: 'cashier', label: '出纳' },
 ]
 
-const editForm = ref({ name: '', role: 'operator', job_title: '', departments: [], is_active: true, password: '' })
+// per-pending-user approval edits
+const approveJob = ref({})
+const approveDepts = ref({})
+
+const editForm = ref({ name: '', job_title: '', departments: [], is_active: true, password: '' })
 
 const DEPARTMENTS = [
   '集团总部', '劳务事业部', '运输事业部', '自营事业部',
@@ -39,7 +43,20 @@ async function load() {
   try {
     const res = await api.get('/users')
     users.value = res.data
+    for (const u of users.value) {
+      if (!u.is_approved && u.role !== 'super_admin') {
+        if (!(u.id in approveJob.value)) approveJob.value[u.id] = u.job_title || 'cashier'
+        if (!(u.id in approveDepts.value)) approveDepts.value[u.id] = [...(u.departments || [])]
+      }
+    }
   } finally { loading.value = false }
+}
+
+function toggleApproveDept(uid, d) {
+  const arr = approveDepts.value[uid] || (approveDepts.value[uid] = [])
+  const i = arr.indexOf(d)
+  if (i === -1) arr.push(d)
+  else arr.splice(i, 1)
 }
 
 onMounted(load)
@@ -48,7 +65,6 @@ function openEdit(u) {
   editUser.value = u
   editForm.value = {
     name: u.name,
-    role: u.role,
     job_title: u.job_title || '',
     departments: [...(u.departments || [])],
     is_active: u.is_active,
@@ -69,7 +85,6 @@ async function saveEdit() {
   try {
     const payload = {
       name: editForm.value.name,
-      role: editForm.value.role,
       job_title: editForm.value.job_title,
       departments: editForm.value.departments,
       is_active: editForm.value.is_active,
@@ -93,15 +108,28 @@ async function deactivate(u) {
   }
 }
 
-async function approve(u, role) {
+async function approve(u) {
   approveLoading.value[u.id] = true
   try {
-    await api.post(`/users/${u.id}/approve`, { role: role || 'operator' })
+    await api.post(`/users/${u.id}/approve`, {
+      job_title: approveJob.value[u.id] || u.job_title,
+      departments: approveDepts.value[u.id] || u.departments || [],
+    })
     load()
   } catch (e) {
     alert(e?.error || '审批失败')
   } finally {
     approveLoading.value[u.id] = false
+  }
+}
+
+async function reject(u) {
+  if (!confirm(`确定拒绝「${u.name}」的注册申请？拒绝后该申请将被删除。`)) return
+  try {
+    await api.post(`/users/${u.id}/reject`, {})
+    load()
+  } catch (e) {
+    alert(e?.error || '操作失败')
   }
 }
 </script>
@@ -146,34 +174,49 @@ async function approve(u, role) {
           <div v-for="u in pendingUsers" :key="u.id" class="pending-card">
             <div class="pending-info">
               <div class="pa-avatar">{{ u.name[0] }}</div>
-              <div>
+              <div style="flex:1;min-width:0">
                 <div class="pa-name">{{ u.name }}</div>
                 <div class="pa-sub">
                   {{ u.phone }}
-                  <span v-if="u.job_title" class="pa-chip">{{ JOB_LABELS[u.job_title] || u.job_title }}</span>
-                </div>
-                <div class="pa-depts" v-if="u.departments?.length">
-                  <span v-for="d in u.departments" :key="d" class="dept-chip">{{ d }}</span>
+                  <span v-if="u.job_title" class="pa-chip">申请职务：{{ JOB_LABELS[u.job_title] || u.job_title }}</span>
                 </div>
                 <div class="pa-time">申请时间 {{ u.created_at?.slice(0, 10) }}</div>
+
+                <!-- approval config -->
+                <div class="approve-cfg">
+                  <div class="cfg-line">
+                    <span class="cfg-label">职务</span>
+                    <select class="role-select" v-model="approveJob[u.id]">
+                      <option v-for="j in JOB_OPTIONS" :key="j.v" :value="j.v">{{ j.label }}</option>
+                    </select>
+                  </div>
+                  <div class="cfg-line" style="align-items:flex-start">
+                    <span class="cfg-label" style="margin-top:5px">负责部门</span>
+                    <div class="dept-pick">
+                      <label v-for="d in DEPARTMENTS" :key="d"
+                        class="dept-mini" :class="{ on: (approveDepts[u.id] || []).includes(d) }"
+                        @click="toggleApproveDept(u.id, d)">{{ d }}</label>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
             <div class="pending-actions">
-              <div class="approve-role-row">
-                <span style="font-size:12px;color:var(--muted)">审批为：</span>
-                <select class="role-select" v-model="approveRoles[u.id]">
-                  <option v-for="r in ROLE_OPTIONS" :key="r.v" :value="r.v">{{ r.label }}</option>
-                </select>
-              </div>
               <button
                 class="btn btn-success btn-sm"
                 :disabled="approveLoading[u.id]"
-                @click="approve(u, approveRoles[u.id] || 'operator')"
+                @click="approve(u)"
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="20 6 9 17 4 12"/>
                 </svg>
                 通过
+              </button>
+              <button class="btn btn-danger btn-sm" :disabled="approveLoading[u.id]" @click="reject(u)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+                拒绝
               </button>
             </div>
           </div>
@@ -259,21 +302,18 @@ async function approve(u, role) {
             <input v-model="editForm.name" />
           </div>
           <div class="form-group">
-            <label>角色</label>
-            <select v-model="editForm.role" :disabled="editUser?.role === 'super_admin'">
-              <option v-for="r in ROLE_OPTIONS" :key="r.v" :value="r.v">{{ r.label }}</option>
-              <option v-if="editUser?.role === 'super_admin'" value="super_admin">超级管理员</option>
-            </select>
+            <label>账号角色</label>
+            <input :value="ROLE_LABELS[editUser?.role] || '成员'" disabled style="opacity:0.6" />
           </div>
         </div>
 
         <div class="form-group" style="margin-bottom:14px">
-          <label>职务</label>
+          <label>职务（决定该用户的权限）</label>
           <div class="radio-group">
-            <label v-for="jt in [['cashier','出纳'],['finance_bp','财务BP'],['finance_director','财务总监']]" :key="jt[0]"
-              class="radio-item" :class="{ selected: editForm.job_title === jt[0] }">
-              <input type="radio" v-model="editForm.job_title" :value="jt[0]" style="display:none" />
-              {{ jt[1] }}
+            <label v-for="jt in JOB_OPTIONS" :key="jt.v"
+              class="radio-item" :class="{ selected: editForm.job_title === jt.v }">
+              <input type="radio" v-model="editForm.job_title" :value="jt.v" style="display:none" />
+              {{ jt.label }}
             </label>
           </div>
         </div>
@@ -358,12 +398,30 @@ async function approve(u, role) {
 .pa-time { font-size: 11px; color: rgba(155,128,112,0.65); margin-top: 4px; }
 
 .pending-actions {
-  display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0;
+  display: flex; flex-direction: column; align-items: stretch; gap: 8px; flex-shrink: 0;
+  min-width: 96px;
 }
-.approve-role-row { display: flex; align-items: center; gap: 6px; }
 .role-select {
-  width: auto; min-width: 90px; padding: 5px 8px;
+  width: auto; min-width: 110px; padding: 5px 8px;
   font-size: 12px; border-radius: 7px;
+}
+
+.approve-cfg {
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px dashed rgba(245,127,23,0.25);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.cfg-line { display: flex; align-items: center; gap: 10px; }
+.cfg-label { font-size: 12px; color: var(--muted); width: 56px; flex-shrink: 0; }
+.dept-pick { display: flex; flex-wrap: wrap; gap: 5px; }
+.dept-mini {
+  padding: 3px 9px; border-radius: 14px; font-size: 11px; cursor: pointer;
+  border: 1.5px solid var(--border); background: rgba(255,253,250,0.7);
+  transition: all 0.16s; user-select: none;
+}
+.dept-mini.on {
+  border-color: var(--primary); background: rgba(201,99,66,0.1);
+  color: var(--primary); font-weight: 600;
 }
 
 .table-avatar {

@@ -57,7 +57,7 @@ const JOB_LABELS = {
 
     <!-- Nav links -->
     <div class="nav-links">
-      <router-link to="/dashboard" class="nav-item" :class="{ active: route.path === '/dashboard' }">
+      <router-link v-if="auth.canPage('dashboard')" to="/dashboard" class="nav-item" :class="{ active: route.path === '/dashboard' }">
         <span class="nav-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
@@ -74,7 +74,7 @@ const JOB_LABELS = {
         </Transition>
       </router-link>
 
-      <router-link to="/payments" class="nav-item" :class="{ active: route.path === '/payments' }">
+      <router-link v-if="auth.canPage('payments')" to="/payments" class="nav-item" :class="{ active: route.path === '/payments' }">
         <span class="nav-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z"/>
@@ -91,7 +91,7 @@ const JOB_LABELS = {
         </Transition>
       </router-link>
 
-      <router-link to="/stats" class="nav-item" :class="{ active: route.path === '/stats' }">
+      <router-link v-if="auth.canPage('stats')" to="/stats" class="nav-item" :class="{ active: route.path === '/stats' }">
         <span class="nav-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
@@ -118,6 +118,23 @@ const JOB_LABELS = {
         </span>
         <Transition name="label-fade">
           <span v-if="!collapsed" class="nav-label">用户管理</span>
+        </Transition>
+        <Transition name="label-fade">
+          <span v-if="!collapsed" class="nav-arrow">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
+          </span>
+        </Transition>
+      </router-link>
+
+      <router-link v-if="auth.isSuperAdmin" to="/permissions" class="nav-item" :class="{ active: route.path === '/permissions' }">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="M9 12l2 2 4-4"/>
+          </svg>
+        </span>
+        <Transition name="label-fade">
+          <span v-if="!collapsed" class="nav-label">权限配置</span>
         </Transition>
         <Transition name="label-fade">
           <span v-if="!collapsed" class="nav-arrow">
