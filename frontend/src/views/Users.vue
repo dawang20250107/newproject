@@ -29,6 +29,10 @@ const approveDepts = ref({})
 
 const editForm = ref({ name: '', job_title: '', departments: [], is_active: true, password: '' })
 
+// IDs deleted in this session — guard against any cache/proxy layer resurrecting
+// a hard-deleted user on a subsequent reload. IDs are autoincrement, never reused.
+const deletedIds = new Set()
+
 const DEPARTMENTS = [
   '集团总部', '劳务事业部', '运输事业部', '自营事业部',
   '阔展事业部', '多式联运事业部', '供应链事业部',
@@ -43,7 +47,7 @@ async function load() {
   try {
     // cache-bust so a freshly deleted/approved user can't be served from cache
     const res = await api.get('/users', { params: { _t: Date.now() } })
-    users.value = res.data
+    users.value = res.data.filter(u => !deletedIds.has(u.id))
     for (const u of users.value) {
       if (!u.is_approved && u.role !== 'super_admin') {
         if (!(u.id in approveJob.value)) approveJob.value[u.id] = u.job_title || 'cashier'
@@ -103,6 +107,7 @@ async function deactivate(u) {
   if (!confirm(`⚠️ 确定删除「${u.name}」的账号？\n\n此操作将永久删除该用户的登录记录，无法恢复。\n如需重新使用，须重新注册并等待审批。`)) return
   try {
     await api.delete(`/users/${u.id}`)
+    deletedIds.add(u.id)                                    // never let it reappear
     users.value = users.value.filter(x => x.id !== u.id)  // instant feedback
     await load()                                            // reconcile with server truth
   } catch (e) {
