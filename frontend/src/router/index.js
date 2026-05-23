@@ -16,9 +16,16 @@ const router = createRouter({
   routes,
 })
 
+function canVisit(auth, page) {
+  if (!auth.canPage(page)) return false
+  // 月度统计 is entirely amount-based; hide it from users who can't view amounts.
+  if (page === 'stats' && !auth.canView('total_amount')) return false
+  return true
+}
+
 function firstAllowedPage(auth) {
   for (const p of ['dashboard', 'payments', 'stats']) {
-    if (auth.canPage(p)) return '/' + p
+    if (canVisit(auth, p)) return '/' + p
   }
   return '/payments'
 }
@@ -28,7 +35,7 @@ router.beforeEach((to, _from, next) => {
   if (to.meta.public) return next()
   if (!auth.isLoggedIn) return next('/login')
   if (to.meta.role === 'super_admin' && !auth.isSuperAdmin) return next(firstAllowedPage(auth))
-  if (to.meta.page && !auth.canPage(to.meta.page)) return next(firstAllowedPage(auth))
+  if (to.meta.page && !canVisit(auth, to.meta.page)) return next(firstAllowedPage(auth))
   next()
 })
 

@@ -146,16 +146,31 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
   top: 24px;
   left: 50%;
   transform: translateX(-50%);
-  background: linear-gradient(135deg, #c96342, #e8855a);
+  background: linear-gradient(135deg, #c96342, #e8855a 55%, #e8a84a);
+  background-size: 200% 100%;
   color: #fff;
-  padding: 14px 28px;
+  padding: 16px 34px;
   border-radius: 32px;
-  font-size: 15px;
-  font-weight: 600;
-  box-shadow: 0 8px 28px rgba(201,99,66,0.42);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  box-shadow: 0 10px 34px rgba(201,99,66,0.5);
   z-index: 9999;
   white-space: nowrap;
+  overflow: hidden;
+  animation: toastShine 2.6s ease-in-out infinite, toastBob 2.8s ease-in-out infinite;
 }
+.welcome-toast::after {
+  content: '';
+  position: absolute; top: 0; bottom: 0; left: -60%;
+  width: 50%;
+  background: linear-gradient(100deg, transparent, rgba(255,255,255,0.45), transparent);
+  transform: skewX(-18deg);
+  animation: toastSweep 2.8s ease-in-out 0.5s infinite;
+}
+@keyframes toastShine { 0%,100% { background-position: 0% 0; } 50% { background-position: 100% 0; } }
+@keyframes toastBob { 0%,100% { transform: translateX(-50%) translateY(0); } 50% { transform: translateX(-50%) translateY(-3px); } }
+@keyframes toastSweep { 0% { left: -60%; } 55%,100% { left: 130%; } }
 .welcome-fade-enter-active { transition: all 0.55s cubic-bezier(0.22,1,0.36,1); }
 .welcome-fade-leave-active { transition: all 0.6s ease; }
 .welcome-fade-enter-from  { opacity: 0; transform: translateX(-50%) translateY(-18px) scale(0.92); }

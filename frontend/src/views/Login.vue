@@ -152,7 +152,7 @@ function toggleDept(d) {
             </defs>
           </svg>
         </div>
-        <h1 class="brand-title">排款管理<br>系统</h1>
+        <h1 class="brand-title">排款管理系统</h1>
         <p class="brand-sub">精准 · 高效 · 安全</p>
         <div class="brand-features">
           <div class="feature">
@@ -188,15 +188,18 @@ function toggleDept(d) {
           </div>
 
           <!-- approved -->
-          <div v-else-if="pendingState === 'approved'" class="pending-state">
+          <div v-else-if="pendingState === 'approved'" class="pending-state approved-state">
+            <div class="confetti">
+              <i v-for="n in 14" :key="n" :style="`--i:${n}`"></i>
+            </div>
             <div class="success-check">
               <svg width="40" height="40" viewBox="0 0 52 52">
                 <circle class="sc-circle" cx="26" cy="26" r="24" fill="none"/>
                 <path class="sc-check" fill="none" d="M14 27l8 8 16-16"/>
               </svg>
             </div>
-            <h3 style="color:#2e7d32">审批已通过！</h3>
-            <p>正在为您进入系统…</p>
+            <h3 class="approved-title">🎉 审批已通过！</h3>
+            <p class="approved-sub">恭喜加入，正在为您进入系统…</p>
           </div>
 
           <!-- rejected -->
@@ -326,11 +329,17 @@ function toggleDept(d) {
 .login-wrap {
   position: relative; z-index: 1;
   display: flex; align-items: stretch; gap: 0;
-  max-width: 900px; width: 95vw;
+  max-width: 960px; width: 95vw;
   border-radius: 26px;
   overflow: hidden;
   box-shadow: 0 32px 96px rgba(100,60,30,0.28), 0 1px 0 rgba(255,255,255,0.5) inset;
-  animation: cardIn 0.5s cubic-bezier(0.34,1.4,0.64,1) both;
+  animation: cardIn 0.5s cubic-bezier(0.34,1.4,0.64,1) both, wrapBreathe 6s ease-in-out 0.6s infinite;
+}
+
+/* gentle breathing of the whole panel */
+@keyframes wrapBreathe {
+  0%, 100% { box-shadow: 0 32px 96px rgba(100,60,30,0.28), 0 1px 0 rgba(255,255,255,0.5) inset; }
+  50%      { box-shadow: 0 38px 110px rgba(201,99,66,0.34), 0 1px 0 rgba(255,255,255,0.6) inset; }
 }
 
 @keyframes cardIn {
@@ -340,11 +349,11 @@ function toggleDept(d) {
 
 /* brand panel */
 .login-brand {
-  width: 280px; flex-shrink: 0;
+  width: 312px; flex-shrink: 0;
   background: linear-gradient(160deg, rgba(40,20,12,0.92) 0%, rgba(60,28,14,0.88) 100%);
   backdrop-filter: blur(20px);
   border-right: 1px solid rgba(255,255,255,0.07);
-  padding: 52px 36px;
+  padding: 56px 38px;
   display: flex; flex-direction: column; justify-content: center; gap: 20px;
   color: #e8d4c4;
 }
@@ -354,8 +363,13 @@ function toggleDept(d) {
   display: flex; align-items: center; justify-content: center;
   box-shadow: 0 0 28px rgba(201,99,66,0.25);
   margin-bottom: 4px;
+  animation: iconBreathe 3.4s ease-in-out infinite;
 }
-.brand-title { font-size: 28px; font-weight: 800; color: #fff; line-height: 1.2; }
+@keyframes iconBreathe {
+  0%, 100% { box-shadow: 0 0 26px rgba(201,99,66,0.25); transform: scale(1); }
+  50%      { box-shadow: 0 0 40px rgba(232,133,90,0.55); transform: scale(1.05); }
+}
+.brand-title { font-size: 31px; font-weight: 800; color: #fff; line-height: 1.2; white-space: nowrap; letter-spacing: 0.01em; }
 .brand-sub { font-size: 13px; color: rgba(201,99,66,0.9); letter-spacing: 0.2em; font-weight: 600; }
 .brand-features { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
 .feature { display: flex; align-items: center; gap: 10px; font-size: 13px; color: rgba(232,212,196,0.75); }
@@ -491,11 +505,41 @@ function toggleDept(d) {
 @keyframes livepulse { 0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(46,125,50,0.4)} 50%{opacity:0.5;box-shadow:0 0 0 5px rgba(46,125,50,0)} }
 
 /* success check */
-.success-check { margin: 0 auto 18px; width: 52px; height: 52px; }
+.success-check { margin: 0 auto 18px; width: 52px; height: 52px; animation: checkPop 0.5s cubic-bezier(0.34,1.7,0.5,1) both; }
 .sc-circle { stroke: #2e7d32; stroke-width: 2.5; stroke-dasharray: 151; stroke-dashoffset: 151; animation: scCircle 0.5s ease forwards; }
 .sc-check  { stroke: #2e7d32; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 40; stroke-dashoffset: 40; animation: scCheck 0.35s 0.45s ease forwards; }
 @keyframes scCircle { to { stroke-dashoffset: 0; } }
 @keyframes scCheck  { to { stroke-dashoffset: 0; } }
+@keyframes checkPop { 0% { transform: scale(0.3); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+
+/* approved celebration */
+.approved-state { position: relative; }
+.approved-title {
+  color: #2e7d32; font-size: 23px !important;
+  animation: joyPop 0.55s cubic-bezier(0.34,1.7,0.5,1) both;
+}
+.approved-sub { animation: slideUpJoy 0.5s 0.15s both; }
+@keyframes joyPop { 0% { transform: scale(0.6); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+@keyframes slideUpJoy { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+.confetti { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.confetti i {
+  position: absolute; top: 18%; left: 50%;
+  width: 8px; height: 14px; border-radius: 2px;
+  background: hsl(calc(var(--i) * 50), 85%, 60%);
+  opacity: 0;
+  animation: confettiBurst 1.5s calc(var(--i) * 0.04s) ease-out infinite;
+}
+@keyframes confettiBurst {
+  0%   { opacity: 0; transform: translate(0,0) rotate(0deg) scale(0.6); }
+  15%  { opacity: 1; }
+  100% {
+    opacity: 0;
+    transform:
+      translate(calc((var(--i) - 7) * 26px), calc(120px + var(--i) * 6px))
+      rotate(calc(var(--i) * 90deg)) scale(1);
+  }
+}
 
 /* responsive: hide brand panel on mobile */
 @media (max-width: 640px) {

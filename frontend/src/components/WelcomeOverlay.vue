@@ -63,6 +63,11 @@ onMounted(() => {
         <div class="particle p3"></div>
         <div class="particle p4"></div>
 
+        <!-- celebratory confetti burst -->
+        <div class="wc-confetti">
+          <i v-for="n in 18" :key="n" :style="`--i:${n}`"></i>
+        </div>
+
         <div class="welcome-icon">{{ greetIcon }}</div>
 
         <div class="welcome-greeting">{{ greeting }}</div>
@@ -125,11 +130,34 @@ onMounted(() => {
   50%      { transform:translate(10px,-15px) scale(1.1); }
 }
 
-.welcome-icon {
-  font-size: 54px; margin-bottom: 16px;
-  animation: spinIn 0.6s cubic-bezier(0.34,1.56,0.64,1) 0.1s both;
-  display: block;
+/* confetti burst from the top of the card */
+.wc-confetti { position: absolute; top: 0; left: 0; right: 0; height: 0; pointer-events: none; }
+.wc-confetti i {
+  position: absolute; top: 40px; left: 50%;
+  width: 9px; height: 15px; border-radius: 2px;
+  background: hsl(calc(var(--i) * 40), 85%, 62%);
+  opacity: 0;
+  animation: wcConfetti 1.8s calc(var(--i) * 0.05s) cubic-bezier(0.2,0.7,0.3,1) both;
 }
+@keyframes wcConfetti {
+  0%   { opacity: 0; transform: translate(0,0) rotate(0deg) scale(0.5); }
+  12%  { opacity: 1; }
+  100% {
+    opacity: 0;
+    transform:
+      translate(calc((var(--i) - 9) * 24px), calc(180px + var(--i) * 5px))
+      rotate(calc(var(--i) * 110deg)) scale(1);
+  }
+}
+
+.welcome-icon {
+  font-size: 62px; margin-bottom: 16px;
+  animation: spinIn 0.6s cubic-bezier(0.34,1.56,0.64,1) 0.1s both,
+             iconFloat 3s ease-in-out 0.8s infinite;
+  display: block;
+  filter: drop-shadow(0 6px 16px rgba(201,99,66,0.35));
+}
+@keyframes iconFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
 
 .welcome-greeting {
   font-size: 16px; color: #9b8070; font-weight: 500;

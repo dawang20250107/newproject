@@ -55,7 +55,7 @@ function onNavCollapse(v) {
 
       <AppNav v-if="showNav" :collapsed="navCollapsed" :mobile-open="mobileNavOpen"
         @update:collapsed="onNavCollapse" @close-mobile="mobileNavOpen = false" />
-      <main :class="showNav ? ['main-content', navCollapsed ? 'nav-collapsed' : ''] : ''">
+      <main :class="showNav ? ['main-content', navCollapsed ? 'nav-collapsed' : ''] : 'main-public'">
         <router-view />
       </main>
     </div>

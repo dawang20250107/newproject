@@ -62,7 +62,10 @@ function resetForm() {
   const myDepts = auth.isAdmin ? null : (auth.user?.departments || [])
   const extra = props.departments.filter(d => !DEPT_LIST.includes(d))
   const allDepts = [...DEPT_LIST, ...extra]
-  deptOptions.value = myDepts ? allDepts.filter(d => myDepts.includes(d)) : allDepts
+  let opts = myDepts ? allDepts.filter(d => myDepts.includes(d)) : allDepts
+  // When editing, never drop the record's existing department from the choices.
+  if (!isNew && p?.department && !opts.includes(p.department)) opts = [p.department, ...opts]
+  deptOptions.value = opts
   nextTick(() => { isResetting = false })
 }
 

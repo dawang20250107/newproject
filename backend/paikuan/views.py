@@ -23,6 +23,7 @@ DEPARTMENTS = [
     '集团总部', '劳务事业部', '运输事业部', '自营事业部',
     '阔展事业部', '多式联运事业部', '供应链事业部',
 ]
+VALID_DEPARTMENTS = set(DEPARTMENTS)
 
 # Job titles double as the permission "roles" configured by super_admin.
 JOB_TITLES = {
@@ -394,6 +395,9 @@ def me(request):
 @csrf_exempt
 @pk_required()
 def payments(request):
+    perms = get_request_perms(request)
+    if perms is not None and not perms['pages'].get('payments', True):
+        return err('无访问权限', 403, 403)
     if request.method == 'GET':
         return _list_payments(request)
     if request.method == 'POST':
@@ -478,6 +482,8 @@ def _parse_payment_fields(data, payment=None):
 
     if not fields['department']:
         return None, '部门必填'
+    if fields['department'] not in VALID_DEPARTMENTS:
+        return None, f'部门“{fields["department"]}”无效，请使用系统预设部门'
     if not fields['project_desc']:
         return None, '付款事项描述必填'
     if not fields['payee']:
@@ -521,6 +527,8 @@ def payment_detail(request, pk):
         return err('无权访问', 403, 403)
 
     perms = get_request_perms(request)
+    if perms is not None and not perms['pages'].get('payments', True):
+        return err('无访问权限', 403, 403)
 
     if request.method == 'GET':
         return ok(apply_view_mask(p.to_dict(), perms))
@@ -1138,4 +1146,9 @@ def departments(request):
         Payment.objects.values_list('department', flat=True).distinct()
     )
     merged = DEPARTMENTS + sorted(data_depts - set(DEPARTMENTS))
+    # Non-admins may only see/filter departments they are assigned to,
+    # matching the row-level visibility enforced by dept_filter().
+    if request.pk_role != 'super_admin':
+        allowed = set(request.pk_depts or [])
+        merged = [d for d in merged if d in allowed]
     return ok(merged)

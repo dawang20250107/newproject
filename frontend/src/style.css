@@ -99,6 +99,9 @@ body {
   transition: margin-left 0.32s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .main-content.nav-collapsed { margin-left: var(--nav-w-collapsed); }
+/* logged-out pages (login) have no sidebar — fill the whole width so the
+   page can center its own content instead of shrinking to the flex item. */
+.main-public { flex: 1; width: 100%; min-width: 0; }
 
 /* ── glassmorphism cards ─────────────────────────────────────────────────── */
 .card {
