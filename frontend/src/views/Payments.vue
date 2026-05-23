@@ -18,6 +18,7 @@ const departments = ref([])
 const showModal = ref(false)
 const editItem = ref(null)
 const loadErr = ref('')
+const today = new Date().toISOString().slice(0, 10)
 
 const filters = reactive({
   q: '', dept: '', status: '', start_date: '', end_date: '',
@@ -231,7 +232,8 @@ function setPage(p) { filters.page = p; load() }
             </tr>
           </thead>
           <tbody>
-            <tr v-for="p in items" :key="p.id">
+            <tr v-for="p in items" :key="p.id"
+              :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today }">
               <td v-if="auth.canView('department')">{{ p.department }}</td>
               <td v-if="auth.canView('approval_number')">{{ p.approval_number || '—' }}</td>
               <td v-if="auth.canView('project_desc')" style="max-width:200px;white-space:normal;word-break:break-all">{{ p.project_desc }}</td>

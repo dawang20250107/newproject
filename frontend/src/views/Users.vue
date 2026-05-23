@@ -99,7 +99,7 @@ async function saveEdit() {
 }
 
 async function deactivate(u) {
-  if (!confirm(`确定停用「${u.name}」的账号？停用后该用户将无法登录。`)) return
+  if (!confirm(`⚠️ 确定删除「${u.name}」的账号？\n\n此操作将永久删除该用户的登录记录，无法恢复。\n如需重新使用，须重新注册并等待审批。`)) return
   try {
     await api.delete(`/users/${u.id}`)
     load()
@@ -265,7 +265,7 @@ async function reject(u) {
                 <td>
                   <div style="display:flex;gap:6px">
                     <button class="btn btn-ghost btn-sm" @click="openEdit(u)">编辑</button>
-                    <button v-if="u.is_active && u.role !== 'super_admin'" class="btn btn-danger btn-sm" @click="deactivate(u)">停用</button>
+                    <button v-if="u.role !== 'super_admin'" class="btn btn-danger btn-sm" @click="deactivate(u)">删除</button>
                   </div>
                 </td>
               </tr>

@@ -84,11 +84,26 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
           <div class="value" style="color:#f57f17">{{ data.partial_count }}</div>
           <div class="sub">待完成</div>
         </div>
-        <div class="kpi-card">
+        <div :class="['kpi-card', data.overdue_count > 0 ? 'overdue-kpi-card' : '']">
           <div class="label">已逾期未付</div>
-          <div class="value" style="color:#c62828">{{ data.overdue_count }}</div>
+          <div :class="['value', data.overdue_count > 0 ? 'kpi-value-pulse' : '']" style="color:#c62828">
+            {{ data.overdue_count }}
+          </div>
           <div v-if="showAmount" class="sub">{{ fmt(data.overdue_amount) }}</div>
         </div>
+      </div>
+
+      <!-- overdue alert banner -->
+      <div v-if="data.overdue_count > 0" class="overdue-alert">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        <span>
+          当前有 <strong>{{ data.overdue_count }}</strong> 笔排款已逾期未付
+          <template v-if="showAmount">，合计 <strong>{{ fmt(data.overdue_amount) }}</strong></template>
+          ，请及时跟进处理。
+        </span>
       </div>
 
       <div class="card">
@@ -145,4 +160,18 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
 .welcome-fade-leave-active { transition: all 0.6s ease; }
 .welcome-fade-enter-from  { opacity: 0; transform: translateX(-50%) translateY(-18px) scale(0.92); }
 .welcome-fade-leave-to    { opacity: 0; transform: translateX(-50%) translateY(-10px) scale(0.96); }
+
+.overdue-alert {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(198,40,40,0.08);
+  border: 1px solid rgba(198,40,40,0.22);
+  border-left: 4px solid #c62828;
+  border-radius: 10px;
+  padding: 11px 16px;
+  margin-bottom: 16px;
+  color: #b71c1c;
+  font-size: 13.5px;
+  animation: overdue-breathe 2.8s ease-in-out infinite;
+}
+.overdue-alert svg { flex-shrink: 0; color: #c62828; }
 </style>

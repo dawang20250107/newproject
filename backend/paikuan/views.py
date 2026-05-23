@@ -3,6 +3,7 @@ import json
 import logging
 import datetime
 import functools
+import re
 import threading
 from decimal import Decimal, InvalidOperation
 
@@ -481,8 +482,14 @@ def _parse_payment_fields(data, payment=None):
         return None, '付款事项描述必填'
     if not fields['payee']:
         return None, '收款方必填'
+    # Payee must be text (letters/Chinese/digits/common punctuation only — no HTML/control chars)
+    if fields['payee'] and re.search(r'[<>{}\[\]|\\^~`@#$%&*=+]', fields['payee']):
+        return None, '收款方仅允许输入文字内容，不能含特殊符号'
     if not fields['planned_date']:
         return None, '计划付款日期必填'
+    # Approval number: must be exactly 21 digits when provided
+    if fields['approval_number'] and not re.fullmatch(r'\d{21}', fields['approval_number']):
+        return None, '审批单号须为21位数字（如不填写可留空）'
 
     return fields, None
 
@@ -706,6 +713,9 @@ def user_detail(request, pk):
             # Prevent creating a second super_admin
             if data['role'] == 'super_admin' and user.role != 'super_admin':
                 return err('超级管理员只能有一位')
+            # Prevent downgrading the only super_admin
+            if user.role == 'super_admin' and data['role'] != 'super_admin':
+                return err('不能修改超级管理员的角色')
             user.role = data['role']
         if 'departments' in data:
             user.departments = data['departments'] or []
@@ -720,10 +730,11 @@ def user_detail(request, pk):
 
     if request.method == 'DELETE':
         if user.id == request.pk_uid:
-            return err('不能停用自己的账号')
-        user.is_active = False
-        user.save()
-        return ok({'deactivated': pk})
+            return err('不能删除自己的账号')
+        if user.role == 'super_admin':
+            return err('不能删除超级管理员账号')
+        user.delete()
+        return ok({'deleted': pk})
 
     return err('Method not allowed', 405)
 

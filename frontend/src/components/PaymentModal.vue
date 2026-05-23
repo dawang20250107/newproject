@@ -29,11 +29,22 @@ const DEPT_LIST = [
 const deptOptions = ref([])
 const form = ref({})
 
+function _autoDefaultDept() {
+  // For non-admin users, pick their department automatically.
+  if (auth.isAdmin) return ''
+  const myDepts = auth.user?.departments || []
+  if (myDepts.length === 0) return ''
+  if (myDepts.length === 1) return myDepts[0]
+  // Multiple departments: pick randomly so workload distributes naturally.
+  return myDepts[Math.floor(Math.random() * myDepts.length)]
+}
+
 function resetForm() {
   isResetting = true
   const p = props.payment
+  const isNew = !p?.id
   form.value = {
-    department: p?.department || '',
+    department: p?.department || (isNew ? _autoDefaultDept() : ''),
     approval_number: p?.approval_number || '',
     project_desc: p?.project_desc || '',
     payee: p?.payee || '',
@@ -47,8 +58,11 @@ function resetForm() {
     pay3_amount: p?.pay3_amount && p.pay3_amount !== '0' ? p.pay3_amount : '',
     notes: p?.notes || '',
   }
+  // Non-admin users only see their own departments; admin sees all.
+  const myDepts = auth.isAdmin ? null : (auth.user?.departments || [])
   const extra = props.departments.filter(d => !DEPT_LIST.includes(d))
-  deptOptions.value = [...DEPT_LIST, ...extra]
+  const allDepts = [...DEPT_LIST, ...extra]
+  deptOptions.value = myDepts ? allDepts.filter(d => myDepts.includes(d)) : allDepts
   nextTick(() => { isResetting = false })
 }
 
@@ -132,8 +146,13 @@ async function submit() {
           </select>
         </div>
         <div v-if="vis('approval_number')" class="form-group">
-          <label>审批单号</label>
-          <input v-model="form.approval_number" placeholder="可选" :disabled="!editable('approval_number')" />
+          <label>审批单号 <span class="hint-text">21位数字，可选</span></label>
+          <input v-model="form.approval_number" placeholder="填写则需为21位数字" maxlength="21"
+            :disabled="!editable('approval_number')"
+            :class="{ 'input-warn': form.approval_number && !/^\d{21}$/.test(form.approval_number) }" />
+          <span v-if="form.approval_number && !/^\d{21}$/.test(form.approval_number)" class="field-err">
+            已输入 {{ form.approval_number.replace(/\D/g, '').length }} 位数字，需满21位
+          </span>
         </div>
       </div>
 
@@ -233,4 +252,8 @@ async function submit() {
 .status-fade-enter-active, .status-fade-leave-active { transition: opacity 0.2s, transform 0.2s; }
 .status-fade-enter-from { opacity:0; transform:translateY(-4px); }
 .status-fade-leave-to   { opacity:0; transform:translateY(-4px); }
+
+.hint-text { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 4px; }
+.input-warn { border-color: #f57f17 !important; background: rgba(245,127,23,0.04) !important; }
+.field-err { font-size: 11px; color: #f57f17; margin-top: 3px; display: block; }
 </style>
