@@ -1,0 +1,114 @@
+from decimal import Decimal
+from django.db import models
+from django.contrib.auth.hashers import make_password, check_password
+
+
+class PaikuanUser(models.Model):
+    ROLE_CHOICES = [
+        ('super_admin', '超级管理员'),
+        ('manager', '经理'),
+        ('operator', '操作员'),
+        ('viewer', '查看员'),
+    ]
+    phone = models.CharField('手机号', max_length=15, unique=True)
+    password_hash = models.CharField('密码哈希', max_length=256)
+    name = models.CharField('姓名', max_length=50)
+    role = models.CharField('角色', max_length=20, choices=ROLE_CHOICES, default='viewer')
+    departments = models.JSONField('负责部门', default=list)
+    is_active = models.BooleanField('是否启用', default=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        db_table = 'paikuan_users'
+        verbose_name = '排款用户'
+
+    def set_password(self, raw_password):
+        self.password_hash = make_password(raw_password)
+
+    def check_password(self, raw_password):
+        return check_password(raw_password, self.password_hash)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'phone': self.phone,
+            'name': self.name,
+            'role': self.role,
+            'departments': self.departments,
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class Payment(models.Model):
+    created_by = models.ForeignKey(
+        PaikuanUser, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='payments'
+    )
+    department = models.CharField('部门', max_length=100, db_index=True)
+    approval_number = models.CharField('审批单号', max_length=100, blank=True, default='')
+    project_desc = models.TextField('付款事项描述')
+    payee = models.CharField('收款方', max_length=200)
+    total_amount = models.DecimalField('计划总金额', max_digits=15, decimal_places=2)
+    planned_date = models.DateField('计划付款日期', db_index=True)
+    pay1_date = models.DateField('第1次付款日期', null=True, blank=True)
+    pay1_amount = models.DecimalField('第1次付款金额', max_digits=15, decimal_places=2, default=0)
+    pay2_date = models.DateField('第2次付款日期', null=True, blank=True)
+    pay2_amount = models.DecimalField('第2次付款金额', max_digits=15, decimal_places=2, default=0)
+    pay3_date = models.DateField('第3次付款日期', null=True, blank=True)
+    pay3_amount = models.DecimalField('第3次付款金额', max_digits=15, decimal_places=2, default=0)
+    notes = models.TextField('备注', blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        db_table = 'paikuan_payments'
+        verbose_name = '排款记录'
+        ordering = ['-planned_date', '-created_at']
+
+    @property
+    def total_paid(self):
+        return (
+            (self.pay1_amount or Decimal('0')) +
+            (self.pay2_amount or Decimal('0')) +
+            (self.pay3_amount or Decimal('0'))
+        )
+
+    @property
+    def remaining(self):
+        return self.total_amount - self.total_paid
+
+    @property
+    def status(self):
+        paid = self.total_paid
+        if paid >= self.total_amount:
+            return 'settled'
+        elif paid > 0:
+            return 'partial'
+        return 'pending'
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'department': self.department,
+            'approval_number': self.approval_number,
+            'project_desc': self.project_desc,
+            'payee': self.payee,
+            'total_amount': str(self.total_amount),
+            'planned_date': str(self.planned_date) if self.planned_date else None,
+            'pay1_date': str(self.pay1_date) if self.pay1_date else None,
+            'pay1_amount': str(self.pay1_amount),
+            'pay2_date': str(self.pay2_date) if self.pay2_date else None,
+            'pay2_amount': str(self.pay2_amount),
+            'pay3_date': str(self.pay3_date) if self.pay3_date else None,
+            'pay3_amount': str(self.pay3_amount),
+            'notes': self.notes,
+            'total_paid': str(self.total_paid),
+            'remaining': str(self.remaining),
+            'status': self.status,
+            'created_by_id': self.created_by_id,
+            'created_by_name': self.created_by.name if self.created_by else '',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }

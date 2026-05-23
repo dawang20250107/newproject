@@ -1,0 +1,14 @@
+[Unit]
+Description=KXT Paikuan Django Backend
+After=network.target
+
+[Service]
+User=www-data
+WorkingDirectory=/opt/kxt/backend
+ExecStart=/usr/local/bin/gunicorn wxcloudrun.wsgi:application --bind 127.0.0.1:8080 --workers 3 --timeout 60
+Restart=always
+RestartSec=5
+Environment=DJANGO_SETTINGS_MODULE=wxcloudrun.settings
+
+[Install]
+WantedBy=multi-user.target
