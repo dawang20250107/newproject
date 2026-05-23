@@ -155,7 +155,7 @@ function setPage(p) { filters.page = p; load() }
         <button class="btn btn-ghost btn-sm" @click="downloadTemplate" title="下载Excel导入模板">
           <span style="margin-right:4px">⬇</span>模板
         </button>
-        <button v-if="auth.canCreate" class="btn btn-ghost btn-sm" :disabled="importing" @click="triggerImport">
+        <button class="btn btn-ghost btn-sm" :disabled="importing" @click="triggerImport">
           <span v-if="importing" class="btn-spin"></span>
           <span v-else style="margin-right:4px">📥</span>{{ importing ? '导入中…' : '导入' }}
         </button>

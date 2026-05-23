@@ -303,12 +303,15 @@ def register(request):
     if not isinstance(depts, list) or len(depts) == 0:
         return err('请至少选择一个部门')
 
-    # Phone ↔ name binding: same phone can only bind same name
+    # Phone uniqueness
     existing = PaikuanUser.objects.filter(phone=phone).first()
     if existing:
         if existing.name != name:
             return err(f'该手机号已被"{existing.name}"注册，姓名不符')
         return err('该手机号已注册')
+    # Name uniqueness — each person should have exactly one account
+    if PaikuanUser.objects.filter(name=name).exists():
+        return err('该姓名已被注册，如有疑问请联系管理员')
 
     is_first = not PaikuanUser.objects.exists()
     role = 'super_admin' if is_first else 'viewer'

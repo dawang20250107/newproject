@@ -31,6 +31,7 @@ const JOB_LABELS = {
   cashier: '出纳',
   finance_bp: '财务BP',
   finance_director: '财务总监',
+  chief_cashier: '总出纳',
 }
 </script>
 
