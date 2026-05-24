@@ -21,10 +21,48 @@ from caiwu.models import (
 
 logger = logging.getLogger('caiwu')
 
-BUILD_VERSION = '2026-05-24.1'
+BUILD_VERSION = '2026-05-24.2'
 
 EXCEL_HEADERS = ['一级科目', '二级项目部', '三级科目明细', '金额(元)']
 IMPORT_SIZE_LIMIT = 5 * 1024 * 1024  # 5 MB
+
+# Hardcoded KXT P&L calculation formulas.
+# Keys are L1 category names; each lambda receives a name->float dict
+# (built in sort_order so earlier results are available to later ones).
+_CALC_FORMULAS = {
+    '运营毛利': lambda m: (
+        m.get('主营业务收入', 0) - m.get('主营业务成本', 0) - m.get('税金成本', 0)
+    ),
+    '经营毛利': lambda m: (
+        m.get('运营毛利', 0)
+        - m.get('销售费用', 0) - m.get('管理费用', 0) - m.get('财务费用', 0)
+        + m.get('营业外收入', 0) - m.get('营业外支出', 0)
+    ),
+    '经营净利': lambda m: m.get('经营毛利', 0) - m.get('集团管理费用', 0),
+}
+
+
+def _compute_l1_name_map(l1_cats, raw_by_id):
+    """
+    Build name->float dict for all L1 categories (sorted by sort_order).
+    Raw rows are filled from raw_by_id; calculated rows use _CALC_FORMULAS.
+    Returns (name_map, id_map) where id_map is l1_id->float.
+    """
+    name_map = {}
+    id_map = {}
+    for l1 in l1_cats:
+        if l1.is_calculated:
+            formula = _CALC_FORMULAS.get(l1.name)
+            if formula:
+                val = formula(name_map)
+                name_map[l1.name] = val
+                id_map[l1.id] = val
+        else:
+            val = raw_by_id.get(l1.id)
+            if val is not None:
+                name_map[l1.name] = float(val)
+                id_map[l1.id] = float(val)
+    return name_map, id_map
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -352,10 +390,15 @@ def categories_l1(request):
             return err('科目名称不能为空')
         if L1Category.objects.filter(name=name).exists():
             return err('该科目已存在')
+        sign = int(body.get('sign', 1))
+        if sign not in (1, -1):
+            sign = 1
         cat = L1Category.objects.create(
             name=name,
             sort_order=body.get('sort_order', 0),
             is_profit_driver=bool(body.get('is_profit_driver', False)),
+            is_calculated=bool(body.get('is_calculated', False)),
+            sign=sign,
         )
         return ok(cat.to_dict())
     return err('方法不允许', 405)
@@ -374,9 +417,14 @@ def category_l1_detail(request, cid):
             return err('科目名称不能为空')
         if L1Category.objects.filter(name=name).exclude(id=cid).exists():
             return err('该名称已被其他科目使用')
+        sign = int(body.get('sign', cat.sign))
+        if sign not in (1, -1):
+            sign = cat.sign
         cat.name = name
         cat.sort_order = body.get('sort_order', cat.sort_order)
         cat.is_profit_driver = bool(body.get('is_profit_driver', cat.is_profit_driver))
+        cat.is_calculated = bool(body.get('is_calculated', cat.is_calculated))
+        cat.sign = sign
         cat.save()
         return ok(cat.to_dict())
     if request.method == 'DELETE':
@@ -466,6 +514,7 @@ def categories_l3(request):
         cat = L3Category.objects.create(
             business_unit=bu, l1_category=l1, name=name,
             sort_order=body.get('sort_order', 0),
+            kingdee_code=(body.get('kingdee_code') or '').strip(),
         )
         return ok(cat.to_dict())
     return err('方法不允许', 405)
@@ -496,6 +545,7 @@ def category_l3_detail(request, cid):
         cat.name = name
         cat.l1_category = l1
         cat.sort_order = body.get('sort_order', cat.sort_order)
+        cat.kingdee_code = (body.get('kingdee_code') or '').strip()
         cat.save()
         return ok(cat.to_dict())
     if request.method == 'DELETE':
@@ -654,6 +704,9 @@ def batch_upload(request):
         if l1_name not in l1_map:
             errors.append(f'第{row_idx}行：一级科目"{l1_name}"不存在，请先在设置中添加')
             continue
+        if l1_map[l1_name].is_calculated:
+            errors.append(f'第{row_idx}行："{l1_name}"是计算行（由系统自动推算），不能直接导入数据')
+            continue
 
         try:
             amount = Decimal(str(amt_raw))
@@ -794,80 +847,84 @@ def _get_published_batches(bu_list, year, month):
 
 
 def _aggregate_report(batches_qs, level):
-    """Return hierarchical report rows given a published-batches queryset."""
+    """Return hierarchical report rows including calculated L1 rows."""
+    from collections import defaultdict
+
     batch_ids = list(batches_qs.values_list('id', flat=True))
     if not batch_ids:
         return []
 
     l1_cats = list(L1Category.objects.all())
-    l1_by_id = {c.id: c for c in l1_cats}
+
+    # Raw aggregation by l1_id
+    raw_agg = (
+        FinancialEntry.objects
+        .filter(batch_id__in=batch_ids)
+        .values('l1_id')
+        .annotate(amount=Sum('amount'))
+    )
+    raw_by_id = {r['l1_id']: float(r['amount']) for r in raw_agg}
+
+    # Compute all L1 amounts including calculated rows
+    name_map, id_map = _compute_l1_name_map(l1_cats, raw_by_id)
 
     if level == 1:
-        agg = (
-            FinancialEntry.objects
-            .filter(batch_id__in=batch_ids)
-            .values('l1_id')
-            .annotate(amount=Sum('amount'))
-        )
-        agg_map = {r['l1_id']: r['amount'] for r in agg}
         rows = []
         for l1 in l1_cats:
-            amt = agg_map.get(l1.id)
+            amt = id_map.get(l1.id)
             if amt is None:
                 continue
-            rows.append({'l1_id': l1.id, 'l1_name': l1.name, 'amount': float(amt)})
+            rows.append({
+                'l1_id': l1.id, 'l1_name': l1.name,
+                'amount': amt, 'is_calculated': l1.is_calculated,
+            })
         return rows
 
+    # For levels 2/3: fetch raw l2/l3 breakdown; calculated rows have no children
     if level == 2:
-        agg = (
+        l2_agg = (
             FinancialEntry.objects
             .filter(batch_id__in=batch_ids)
             .values('l1_id', 'l2_id', 'l2__name')
             .annotate(amount=Sum('amount'))
         )
-        # group by l1
-        from collections import defaultdict
         l1_children = defaultdict(list)
-        l1_totals = defaultdict(Decimal)
-        for r in agg:
-            l1_totals[r['l1_id']] += r['amount']
-            child = {
+        for r in l2_agg:
+            l1_children[r['l1_id']].append({
                 'l2_id': r['l2_id'],
                 'l2_name': r['l2__name'] or '（无项目部）',
                 'amount': float(r['amount']),
-            }
-            l1_children[r['l1_id']].append(child)
+            })
+
         rows = []
         for l1 in l1_cats:
-            if l1.id not in l1_totals:
+            amt = id_map.get(l1.id)
+            if amt is None:
                 continue
             rows.append({
                 'l1_id': l1.id, 'l1_name': l1.name,
-                'amount': float(l1_totals[l1.id]),
-                'children': sorted(l1_children[l1.id], key=lambda x: x['l2_name'] or ''),
+                'amount': amt, 'is_calculated': l1.is_calculated,
+                'children': [] if l1.is_calculated else sorted(
+                    l1_children.get(l1.id, []), key=lambda x: x['l2_name'],
+                ),
             })
         return rows
 
     if level == 3:
-        agg = (
+        l3_agg = (
             FinancialEntry.objects
             .filter(batch_id__in=batch_ids)
             .values('l1_id', 'l2_id', 'l2__name', 'l3_id', 'l3__name')
             .annotate(amount=Sum('amount'))
         )
-        from collections import defaultdict
-        # l1 -> l2 -> [l3 rows]
-        l1_totals = defaultdict(Decimal)
         l2_totals = defaultdict(Decimal)
-        l3_rows = defaultdict(list)  # key: (l1_id, l2_id)
+        l3_rows = defaultdict(list)
         l2_meta = {}
-
-        for r in agg:
-            l1_id, l2_id = r['l1_id'], r['l2_id']
-            l1_totals[l1_id] += r['amount']
-            l2_totals[(l1_id, l2_id)] += r['amount']
-            l2_meta[(l1_id, l2_id)] = r['l2__name']
-            l3_rows[(l1_id, l2_id)].append({
+        for r in l3_agg:
+            key = (r['l1_id'], r['l2_id'])
+            l2_totals[key] += r['amount']
+            l2_meta[key] = r['l2__name']
+            l3_rows[key].append({
                 'l3_id': r['l3_id'],
                 'l3_name': r['l3__name'] or '（无明细）',
                 'amount': float(r['amount']),
@@ -875,21 +932,26 @@ def _aggregate_report(batches_qs, level):
 
         rows = []
         for l1 in l1_cats:
-            if l1.id not in l1_totals:
+            amt = id_map.get(l1.id)
+            if amt is None:
                 continue
-            children = []
-            seen_l2 = {k[1] for k in l2_totals if k[0] == l1.id}
-            for l2_id in seen_l2:
-                key = (l1.id, l2_id)
-                children.append({
-                    'l2_id': l2_id,
-                    'l2_name': l2_meta.get(key) or '（无项目部）',
-                    'amount': float(l2_totals[key]),
-                    'children': l3_rows[key],
-                })
+            if l1.is_calculated:
+                children = []
+            else:
+                children = []
+                for key, tot in l2_totals.items():
+                    if key[0] != l1.id:
+                        continue
+                    l2_id = key[1]
+                    children.append({
+                        'l2_id': l2_id,
+                        'l2_name': l2_meta.get(key) or '（无项目部）',
+                        'amount': float(tot),
+                        'children': l3_rows[key],
+                    })
             rows.append({
                 'l1_id': l1.id, 'l1_name': l1.name,
-                'amount': float(l1_totals[l1.id]),
+                'amount': amt, 'is_calculated': l1.is_calculated,
                 'children': children,
             })
         return rows
@@ -933,8 +995,16 @@ def report(request):
 
     batches_qs = _get_published_batches(bu_list, year, month)
     rows = _aggregate_report(batches_qs, level)
-    total = sum(r['amount'] for r in rows)
-    return ok({'rows': rows, 'total': total, 'level': level, 'year': year, 'month': month, 'bu': bu_param or None})
+    # Use 经营净利 as headline total; fall back to sum of raw rows
+    profit_row = next((r for r in rows if r['l1_name'] == '经营净利'), None)
+    total = profit_row['amount'] if profit_row else sum(
+        r['amount'] for r in rows if not r.get('is_calculated')
+    )
+    total_label = '经营净利' if profit_row else '合计金额'
+    return ok({
+        'rows': rows, 'total': total, 'total_label': total_label,
+        'level': level, 'year': year, 'month': month, 'bu': bu_param or None,
+    })
 
 
 @cw_required()
@@ -1052,7 +1122,7 @@ def chart_trend(request):
 
     l1_cats = list(L1Category.objects.all())
 
-    # For each month, get published batch and aggregate by L1
+    # For each month, get published batch and aggregate by L1 (including calculated rows)
     result = []
     for month in range(1, 13):
         batches_qs = _get_published_batches([bu], year, month)
@@ -1064,7 +1134,9 @@ def chart_trend(request):
                 .values('l1_id')
                 .annotate(amount=Sum('amount'))
             )
-            month_data = {r['l1_id']: float(r['amount']) for r in agg}
+            raw_by_id = {r['l1_id']: float(r['amount']) for r in agg}
+            _, id_map = _compute_l1_name_map(l1_cats, raw_by_id)
+            month_data = id_map
         else:
             month_data = {}
         result.append({
@@ -1112,40 +1184,53 @@ def chart_waterfall(request):
     except Exception:
         return err('年份或月份无效')
 
+    l1_cats = list(L1Category.objects.all())
+
     def _get_l1_totals(yr, mo):
         batches_qs = _get_published_batches([bu], yr, mo)
         batch_ids = list(batches_qs.values_list('id', flat=True))
         if not batch_ids:
-            return {}
+            return {}, {}
         agg = (
             FinancialEntry.objects
             .filter(batch_id__in=batch_ids)
             .values('l1_id')
             .annotate(amount=Sum('amount'))
         )
-        return {r['l1_id']: float(r['amount']) for r in agg}
+        raw_by_id = {r['l1_id']: float(r['amount']) for r in agg}
+        name_map, id_map = _compute_l1_name_map(l1_cats, raw_by_id)
+        return name_map, id_map
 
-    base_data = _get_l1_totals(cmp_year, cmp_month)
-    curr_data = _get_l1_totals(year, month)
+    base_name_map, base_id_map = _get_l1_totals(cmp_year, cmp_month)
+    curr_name_map, curr_id_map = _get_l1_totals(year, month)
 
-    # Compute total profit for each period (sum of all L1 entries)
-    base_total = sum(base_data.values()) if base_data else 0
-    curr_total = sum(curr_data.values()) if curr_data else 0
+    # Headline profit = 经营净利 if configured, else sum of raw entries
+    base_total = base_name_map.get('经营净利', sum(
+        v for l1 in l1_cats if not l1.is_calculated
+        for v in [base_id_map.get(l1.id, 0)]
+    ))
+    curr_total = curr_name_map.get('经营净利', sum(
+        v for l1 in l1_cats if not l1.is_calculated
+        for v in [curr_id_map.get(l1.id, 0)]
+    ))
 
-    # Factor analysis using profit-driver L1 categories
-    drivers = list(L1Category.objects.filter(is_profit_driver=True))
+    # Factor analysis using profit-driver raw L1 categories (not calculated rows).
+    # delta is sign-adjusted so positive always means "profit improved".
+    drivers = [l1 for l1 in l1_cats if l1.is_profit_driver and not l1.is_calculated]
 
     factors = []
     for l1 in drivers:
-        base_v = base_data.get(l1.id, 0)
-        curr_v = curr_data.get(l1.id, 0)
-        delta = curr_v - base_v
+        base_v = base_id_map.get(l1.id, 0)
+        curr_v = curr_id_map.get(l1.id, 0)
+        raw_delta = curr_v - base_v
+        # sign=-1 means cost: cost increase hurts profit → negate
+        profit_delta = raw_delta * l1.sign
         factors.append({
             'l1_id': l1.id,
             'name': l1.name,
             'base': base_v,
             'current': curr_v,
-            'delta': delta,
+            'delta': profit_delta,
         })
 
     # Waterfall items: start → factors → end

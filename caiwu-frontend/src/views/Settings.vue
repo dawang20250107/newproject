@@ -9,7 +9,7 @@ const tab = ref('l1')  // 'l1' | 'l2' | 'l3' | 'users'
 const l1List = ref([])
 const l1Loading = ref(false)
 const showL1Form = ref(false)
-const l1Form = ref({ id: null, name: '', sort_order: 0, is_profit_driver: false })
+const l1Form = ref({ id: null, name: '', sort_order: 0, is_profit_driver: false, is_calculated: false, sign: 1 })
 const l1Err = ref('')
 
 async function loadL1() {
@@ -41,8 +41,8 @@ async function deleteL1(id) {
 
 function openL1Form(cat = null) {
   l1Form.value = cat
-    ? { id: cat.id, name: cat.name, sort_order: cat.sort_order, is_profit_driver: cat.is_profit_driver }
-    : { id: null, name: '', sort_order: 0, is_profit_driver: false }
+    ? { id: cat.id, name: cat.name, sort_order: cat.sort_order, is_profit_driver: cat.is_profit_driver, is_calculated: cat.is_calculated, sign: cat.sign ?? 1 }
+    : { id: null, name: '', sort_order: 0, is_profit_driver: false, is_calculated: false, sign: 1 }
   l1Err.value = ''
   showL1Form.value = true
 }
@@ -80,7 +80,7 @@ async function deleteL2(id) {
 const l3Bu = ref(BUSINESS_UNITS[0])
 const l3List = ref([])
 const showL3Form = ref(false)
-const l3Form = ref({ id: null, name: '', sort_order: 0, l1_category_id: null })
+const l3Form = ref({ id: null, name: '', sort_order: 0, l1_category_id: null, kingdee_code: '' })
 const l3Err = ref('')
 
 async function loadL3() {
@@ -200,11 +200,19 @@ onMounted(() => { loadL1() })
       <div v-else-if="!l1List.length" class="empty"><div class="icon">📭</div>暂无一级科目，请先添加</div>
       <div v-else class="table-wrap">
         <table>
-          <thead><tr><th>排序</th><th>科目名称</th><th>利润驱动因素</th><th>操作</th></tr></thead>
+          <thead><tr><th>排序</th><th>科目名称</th><th>类型</th><th>利润方向</th><th>瀑布图驱动</th><th>操作</th></tr></thead>
           <tbody>
             <tr v-for="c in l1List" :key="c.id">
               <td style="color:var(--muted)">{{ c.sort_order }}</td>
-              <td>{{ c.name }}</td>
+              <td>
+                {{ c.name }}
+                <span v-if="c.is_calculated" class="badge badge-muted" style="margin-left:4px">计算行</span>
+              </td>
+              <td style="font-size:12px;color:var(--muted)">{{ c.is_calculated ? '自动推算' : '原始导入' }}</td>
+              <td style="font-size:12px">
+                <span v-if="c.sign === 1" style="color:var(--success)">+ 收入类</span>
+                <span v-else style="color:var(--danger)">− 成本类</span>
+              </td>
               <td><span v-if="c.is_profit_driver" class="badge badge-success">✓ 已标记</span></td>
               <td>
                 <div style="display:flex;gap:6px">
@@ -265,15 +273,16 @@ onMounted(() => { loadL1() })
       <div v-if="!l3List.length" class="empty"><div class="icon">📭</div>暂无三级科目明细</div>
       <div v-else class="table-wrap">
         <table>
-          <thead><tr><th>排序</th><th>科目明细</th><th>所属一级</th><th>操作</th></tr></thead>
+          <thead><tr><th>排序</th><th>科目明细</th><th>所属一级</th><th>金蝶编码</th><th>操作</th></tr></thead>
           <tbody>
             <tr v-for="c in l3List" :key="c.id">
               <td style="color:var(--muted)">{{ c.sort_order }}</td>
               <td>{{ c.name }}</td>
               <td>{{ c.l1_name || '-' }}</td>
+              <td style="font-size:12px;color:var(--muted);font-family:monospace">{{ c.kingdee_code || '-' }}</td>
               <td>
                 <div style="display:flex;gap:6px">
-                  <button class="btn btn-ghost btn-sm" @click="l3Form={id:c.id,name:c.name,sort_order:c.sort_order,l1_category_id:c.l1_category_id};l3Err='';showL3Form=true">编辑</button>
+                  <button class="btn btn-ghost btn-sm" @click="l3Form={id:c.id,name:c.name,sort_order:c.sort_order,l1_category_id:c.l1_category_id,kingdee_code:c.kingdee_code||''};l3Err='';showL3Form=true">编辑</button>
                   <button class="btn btn-danger btn-sm" @click="deleteL3(c.id)">删除</button>
                 </div>
               </td>
@@ -334,6 +343,19 @@ onMounted(() => { loadL1() })
           <div v-if="l1Err" class="error-banner">{{ l1Err }}</div>
           <div class="form-row"><label>科目名称</label><input v-model="l1Form.name" placeholder="如：主营业务收入" /></div>
           <div class="form-row"><label>排序（数字越小越靠前）</label><input v-model.number="l1Form.sort_order" type="number" /></div>
+          <div class="form-row">
+            <label>利润方向</label>
+            <select v-model.number="l1Form.sign">
+              <option :value="1">+1 收入类（金额越大利润越高）</option>
+              <option :value="-1">−1 成本/费用类（金额越大利润越低）</option>
+            </select>
+          </div>
+          <div class="form-row" style="display:flex;align-items:center;gap:8px;margin-top:4px">
+            <input id="l1calc" type="checkbox" v-model="l1Form.is_calculated" style="width:auto;margin:0" />
+            <label for="l1calc" style="margin:0;cursor:pointer">
+              计算行（由系统自动推算，不可导入原始数据）
+            </label>
+          </div>
           <div class="form-row" style="display:flex;align-items:center;gap:8px;margin-top:4px">
             <input id="l1pd" type="checkbox" v-model="l1Form.is_profit_driver" style="width:auto;margin:0" />
             <label for="l1pd" style="margin:0;cursor:pointer">标记为「利润驱动因素」（瀑布图分析用）</label>
@@ -373,6 +395,10 @@ onMounted(() => { loadL1() })
               <option :value="null">不指定</option>
               <option v-for="c in l1List" :key="c.id" :value="c.id">{{ c.name }}</option>
             </select>
+          </div>
+          <div class="form-row">
+            <label>金蝶科目编码（可选）</label>
+            <input v-model="l3Form.kingdee_code" placeholder="如 6001.03.01" style="font-family:monospace" />
           </div>
           <div class="form-row"><label>排序</label><input v-model.number="l3Form.sort_order" type="number" /></div>
           <div class="modal-actions">

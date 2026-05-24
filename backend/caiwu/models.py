@@ -66,6 +66,14 @@ class L1Category(models.Model):
     name = models.CharField('科目名称', max_length=100, unique=True)
     sort_order = models.IntegerField('排序', default=0)
     is_profit_driver = models.BooleanField('利润驱动因素（瀑布图用）', default=False)
+    is_calculated = models.BooleanField(
+        '计算行', default=False,
+        help_text='计算行不接受导入数据，由报表自动推算（如运营毛利、经营净利）',
+    )
+    sign = models.IntegerField(
+        '利润方向', default=1,
+        help_text='收入类填 1，成本/费用类填 -1，用于瀑布图方向判断',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -79,6 +87,8 @@ class L1Category(models.Model):
             'name': self.name,
             'sort_order': self.sort_order,
             'is_profit_driver': self.is_profit_driver,
+            'is_calculated': self.is_calculated,
+            'sign': self.sign,
         }
 
 
@@ -110,6 +120,10 @@ class L3Category(models.Model):
     )
     name = models.CharField('科目明细', max_length=200)
     sort_order = models.IntegerField('排序', default=0)
+    kingdee_code = models.CharField(
+        '金蝶科目编码', max_length=50, blank=True, default='',
+        help_text='如 6001.03.01，用于金蝶明细账直接导入时的科目匹配',
+    )
 
     class Meta:
         app_label = 'caiwu'
@@ -125,6 +139,7 @@ class L3Category(models.Model):
             'l1_name': self.l1_category.name if self.l1_category_id else None,
             'name': self.name,
             'sort_order': self.sort_order,
+            'kingdee_code': self.kingdee_code,
         }
 
 

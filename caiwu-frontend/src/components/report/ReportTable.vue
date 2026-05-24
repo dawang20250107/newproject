@@ -5,6 +5,7 @@ const props = defineProps({
   rows: { type: Array, default: () => [] },
   level: { type: Number, default: 1 },
   total: { type: Number, default: 0 },
+  totalLabel: { type: String, default: '合计' },
 })
 
 const collapsed = ref(new Set())
@@ -37,7 +38,7 @@ function fmt(n) {
       <tbody>
         <template v-for="row in rows" :key="row.l1_id">
           <!-- L1 row -->
-          <tr :class="['l1-row', level >= 2 ? 'clickable' : '']" @click="level >= 2 && toggle(row.l1_id)">
+          <tr :class="['l1-row', level >= 2 ? 'clickable' : '', row.is_calculated ? 'l1-calc' : '']" @click="level >= 2 && toggle(row.l1_id)">
             <td v-if="level >= 2" class="toggle-cell">
               <span class="toggle-icon">{{ collapsed.has(row.l1_id) ? '›' : '⌄' }}</span>
             </td>
@@ -74,7 +75,7 @@ function fmt(n) {
         <!-- Total row -->
         <tr class="total-row">
           <td v-if="level >= 2"></td>
-          <td :colspan="level >= 3 ? 3 : (level >= 2 ? 2 : 1)" style="font-weight:700">合计</td>
+          <td :colspan="level >= 3 ? 3 : (level >= 2 ? 2 : 1)" style="font-weight:700">{{ totalLabel }}</td>
           <td class="amt total-amt" :class="total < 0 ? 'amt-red' : ''">{{ fmt(total) }}</td>
         </tr>
       </tbody>
@@ -93,6 +94,7 @@ function fmt(n) {
 .toggle-icon { display: inline-block; transition: transform .15s; }
 
 .l1-row td { font-weight: 600; background: rgba(201,99,66,.03); }
+.l1-calc td { background: rgba(201,99,66,.07); font-style: italic; }
 .l1-name { font-weight: 700; }
 .l1-amt { font-weight: 700; font-size: 14px; }
 .l2-row td { background: transparent; }

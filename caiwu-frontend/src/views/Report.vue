@@ -105,7 +105,7 @@ onMounted(load)
           <div class="sub">一级科目合计</div>
         </div>
         <div class="kpi-card">
-          <div class="label">合计金额</div>
+          <div class="label">{{ data.total_label || '合计金额' }}</div>
           <div class="value" :style="data.total < 0 ? 'color:var(--danger)' : 'color:var(--success)'">
             {{ Math.abs(data.total) >= 10000 ? (data.total / 10000).toFixed(2) + ' 万' : (data.total?.toFixed(2) || '0') }}
           </div>
@@ -120,7 +120,7 @@ onMounted(load)
             <span class="badge badge-primary" style="margin-left:8px">{{ ['一级', '二级', '三级'][level-1] }}明细</span>
           </div>
         </div>
-        <ReportTable :rows="data.rows || []" :level="level" :total="data.total || 0" />
+        <ReportTable :rows="data.rows || []" :level="level" :total="data.total || 0" :total-label="data.total_label || '合计'" />
       </div>
     </template>
   </div>
