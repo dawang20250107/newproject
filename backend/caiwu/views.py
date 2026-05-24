@@ -1888,7 +1888,7 @@ def chart_waterfall(request):
     except Exception:
         return err('年份或月份无效')
 
-    l1_cats = list(L1Category.objects.all())
+    l1_cats = list(L1Category.objects.order_by('sort_order', 'id'))
 
     def _get_l1_totals(yr, mo):
         batches_qs = _get_published_batches([bu], yr, mo)

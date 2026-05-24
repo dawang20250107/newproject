@@ -24,7 +24,7 @@ const option = computed(() => {
       baseData.push(0)
       barData.push({
         value: item.value,
-        itemStyle: { color: item.type === 'total' ? '#1565c0' : '#c96342' },
+        itemStyle: { color: item.type === 'total' ? '#a84e32' : '#d4946a' },
       })
       if (item.type === 'base') running = item.value
       else running = item.value
@@ -88,7 +88,8 @@ const option = computed(() => {
           show: true, position: 'top', fontSize: 11, color: '#1a1208',
           formatter: p => {
             const item = items[p.dataIndex]
-            const sign = item.type === 'increase' ? '+' : (item.type === 'decrease' ? '-' : '')
+            if (item.type === 'base' || item.type === 'total') return fmtAmt(item.value)
+            const sign = item.type === 'increase' ? '+' : '-'
             return sign + fmtAmt(Math.abs(item.value))
           },
         },
