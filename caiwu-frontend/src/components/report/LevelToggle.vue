@@ -1,12 +1,15 @@
 <script setup>
-const props = defineProps({ modelValue: { type: Number, default: 1 } })
+const props = defineProps({
+  modelValue: { type: Number, default: 1 },
+  maxLevel: { type: Number, default: 3 },
+})
 const emit = defineEmits(['update:modelValue'])
 </script>
 
 <template>
   <div class="level-toggle">
     <button
-      v-for="n in [1,2,3]" :key="n"
+      v-for="n in maxLevel" :key="n"
       :class="['lv-btn', { active: modelValue === n }]"
       @click="emit('update:modelValue', n)"
     >

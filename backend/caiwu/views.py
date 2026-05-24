@@ -3,6 +3,7 @@ import json
 import logging
 import datetime
 import functools
+import threading
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
 
@@ -15,8 +16,8 @@ import jwt
 
 from caiwu.models import (
     CaiwuUser, L1Category, L2Category, L3Category,
-    ImportBatch, FinancialEntry,
-    BUSINESS_UNITS, VALID_BUSINESS_UNITS, ROLES, JOB_TITLES, ALL_BU_ROLES,
+    ImportBatch, FinancialEntry, CaiwuJobPermission,
+    BUSINESS_UNITS, VALID_BUSINESS_UNITS, JOB_TITLES,
 )
 
 logger = logging.getLogger('caiwu')
@@ -63,6 +64,124 @@ def _compute_l1_name_map(l1_cats, raw_by_id):
                 name_map[l1.name] = float(val)
                 id_map[l1.id] = float(val)
     return name_map, id_map
+
+
+# ── granular job-title permission system (mirrors paikuan) ────────────────────
+
+# View-controllable report/chart elements. Each job title can be granted or
+# denied visibility of each one (super_admin always sees everything).
+PERM_FIELD_DEFS = [
+    {'key': 'report_l1',       'label': '一级科目报表'},
+    {'key': 'report_l2',       'label': '二级项目部明细'},
+    {'key': 'report_l3',       'label': '三级科目明细'},
+    {'key': 'amount',          'label': '金额数据'},
+    {'key': 'chart_trend',     'label': '走势折线图'},
+    {'key': 'chart_waterfall', 'label': '因素瀑布图'},
+    {'key': 'export',          'label': '导出 Excel'},
+]
+FIELD_KEYS = [f['key'] for f in PERM_FIELD_DEFS]
+PAGE_DEFS = [
+    {'key': 'report', 'label': '财务报表'},
+    {'key': 'data',   'label': '数据加工'},
+    {'key': 'charts', 'label': '图表分析'},
+]
+PAGE_KEYS = [p['key'] for p in PAGE_DEFS]
+
+
+def _all_fields(value):
+    return {k: value for k in FIELD_KEYS}
+
+
+def default_job_config(job):
+    """Sensible starting permissions for each job title; super_admin can override."""
+    pages_all = {k: True for k in PAGE_KEYS}
+    if job == 'finance_director':   # 财务总监 — full operational control
+        return {'pages': pages_all, 'view': _all_fields(True),
+                'can_upload': True, 'can_publish': True, 'can_delete': True}
+    if job == 'finance_bp':         # 财务BP — upload + publish, no delete
+        return {'pages': pages_all, 'view': _all_fields(True),
+                'can_upload': True, 'can_publish': True, 'can_delete': False}
+    if job == 'general_manager':    # 总经理 — read-only executive view
+        return {'pages': {'report': True, 'data': False, 'charts': True},
+                'view': _all_fields(True),
+                'can_upload': False, 'can_publish': False, 'can_delete': False}
+    # Unknown / no job title → read-only minimum.
+    return {'pages': {'report': True, 'data': False, 'charts': True},
+            'view': _all_fields(True),
+            'can_upload': False, 'can_publish': False, 'can_delete': False}
+
+
+_perm_cache = {}
+_perm_cache_lock = threading.Lock()
+
+
+def _invalidate_perm_cache(job=None):
+    with _perm_cache_lock:
+        if job:
+            _perm_cache.pop(job, None)
+        else:
+            _perm_cache.clear()
+
+
+def get_job_perms(job):
+    """Effective config for a job title = defaults merged with stored overrides."""
+    with _perm_cache_lock:
+        if job in _perm_cache:
+            return _perm_cache[job]
+    base = default_job_config(job)
+    try:
+        rp = CaiwuJobPermission.objects.filter(job_title=job).first()
+    except Exception:
+        logger.warning('get_job_perms: DB unavailable for %s, using defaults', job)
+        return base
+    if not (rp and rp.config):
+        result = base
+    else:
+        cfg = rp.config
+        view = dict(base['view']);  view.update(cfg.get('view', {}))
+        pages = dict(base['pages']); pages.update(cfg.get('pages', {}))
+        result = {
+            'pages': pages, 'view': view,
+            'can_upload': bool(cfg.get('can_upload', base['can_upload'])),
+            'can_publish': bool(cfg.get('can_publish', base['can_publish'])),
+            'can_delete': bool(cfg.get('can_delete', base['can_delete'])),
+        }
+    with _perm_cache_lock:
+        _perm_cache[job] = result
+    return result
+
+
+def full_perms():
+    return {'pages': {k: True for k in PAGE_KEYS}, 'view': _all_fields(True),
+            'can_upload': True, 'can_publish': True, 'can_delete': True}
+
+
+def effective_perms(user):
+    """Perms object sent to the client (super_admin gets full access)."""
+    cfg = full_perms() if user.role == 'super_admin' else get_job_perms(user.job_title)
+    return {**cfg, 'is_admin': user.role == 'super_admin',
+            'fields': PERM_FIELD_DEFS, 'pages_meta': PAGE_DEFS}
+
+
+def get_request_perms(request):
+    """Effective perms for the authed request. None means full access (super_admin)."""
+    if request.cw_role == 'super_admin':
+        return None
+    jt = getattr(request, 'cw_job', '') or ''
+    return get_job_perms(jt)
+
+
+def _can_view(request, field_key):
+    p = get_request_perms(request)
+    return True if p is None else bool(p['view'].get(field_key, True))
+
+
+def _page_denied(request, page):
+    """Return an err() response if the request's job lacks access to a page, else None."""
+    p = get_request_perms(request)
+    if p is not None and not p['pages'].get(page, True):
+        return err('无访问权限', 403, 403)
+    return None
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -142,24 +261,31 @@ def cw_required(roles=None):
 
 
 def _bu_filter(qs, request):
-    """Filter queryset by business_unit based on role."""
-    if request.cw_role in ALL_BU_ROLES:
+    """Row visibility: super_admin sees all; everyone else sees assigned 事业部."""
+    if request.cw_role == 'super_admin':
         return qs
     return qs.filter(business_unit__in=request.cw_depts)
 
 
 def _can_access_bu(request, bu):
-    if request.cw_role in ALL_BU_ROLES:
+    if request.cw_role == 'super_admin':
         return True
     return bu in request.cw_depts
 
 
 def _can_upload(request):
-    return request.cw_role in ('super_admin', 'manager', 'operator')
+    p = get_request_perms(request)
+    return True if p is None else bool(p.get('can_upload'))
 
 
 def _can_publish(request):
-    return request.cw_role in ('super_admin', 'manager')
+    p = get_request_perms(request)
+    return True if p is None else bool(p.get('can_publish'))
+
+
+def _can_delete(request):
+    p = get_request_perms(request)
+    return True if p is None else bool(p.get('can_delete'))
 
 
 # ── auth views ───────────────────────────────────────────────────────────────
@@ -173,24 +299,34 @@ def register(request):
     password = (body.get('password') or '').strip()
     name = (body.get('name') or '').strip()
     job_title = (body.get('job_title') or '').strip()
-    departments = body.get('departments', [])
+    departments = body.get('departments') or []
 
     if not phone or not password or not name:
         return err('手机号、密码、姓名均为必填')
+    if not phone.isdigit() or len(phone) < 8:
+        return err('手机号格式有误')
     if len(password) < 6:
         return err('密码至少6位')
-    if not name.strip():
-        return err('姓名不能为空')
-    if CaiwuUser.objects.filter(phone=phone).exists():
+    if not job_title or job_title not in JOB_TITLES:
+        return err('请选择有效职务')
+    if not isinstance(departments, list) or len(departments) == 0:
+        return err('请至少选择一个事业部')
+
+    existing = CaiwuUser.objects.filter(phone=phone).first()
+    if existing:
+        if existing.name != name:
+            return err(f'该手机号已被"{existing.name}"注册，姓名不符')
         return err('该手机号已注册')
+    if CaiwuUser.objects.filter(name=name).exists():
+        return err('该姓名已被注册，如有疑问请联系管理员')
 
     is_first = not CaiwuUser.objects.exists()
     user = CaiwuUser(
         phone=phone,
         name=name,
         role='super_admin' if is_first else 'viewer',
-        job_title=job_title if job_title in JOB_TITLES else '',
-        departments=departments if is_first else [],
+        job_title=job_title,
+        departments=departments if not is_first else [],
         is_approved=is_first,
     )
     user.set_password(password)
@@ -198,8 +334,9 @@ def register(request):
 
     if is_first:
         token = _make_token(user)
-        return ok({'token': token, 'user': user.to_dict(), 'permissions': _build_perms(user)})
-    return ok({'pending': True, 'msg': '注册成功，等待管理员审批'})
+        return ok({'token': token, 'user': user.to_dict(),
+                   'permissions': effective_perms(user), 'pending': False})
+    return ok({'pending': True, 'msg': '注册成功！请等待管理员审批后登录'})
 
 
 @csrf_exempt
@@ -222,7 +359,25 @@ def login(request):
     if not user.is_approved:
         return ok({'pending': True, 'msg': '账号待审批，请联系管理员'})
     token = _make_token(user)
-    return ok({'token': token, 'user': user.to_dict(), 'permissions': _build_perms(user)})
+    return ok({'token': token, 'user': user.to_dict(), 'permissions': effective_perms(user)})
+
+
+@csrf_exempt
+def registration_status(request):
+    """Public polling endpoint so a pending registrant can detect approval."""
+    if request.method != 'GET':
+        return err('方法不允许', 405)
+    phone = (request.GET.get('phone') or '').strip()
+    if not phone:
+        return err('缺少手机号')
+    user = CaiwuUser.objects.filter(phone=phone).first()
+    if not user:
+        return ok({'status': 'none'})
+    if not user.is_active:
+        return ok({'status': 'rejected'})
+    if user.is_approved:
+        return ok({'status': 'approved'})
+    return ok({'status': 'pending'})
 
 
 @cw_required()
@@ -234,26 +389,7 @@ def me(request):
     except CaiwuUser.DoesNotExist:
         return err('用户不存在', 404)
     token = _make_token(user)
-    return ok({'token': token, 'user': user.to_dict(), 'permissions': _build_perms(user)})
-
-
-def _build_perms(user):
-    is_admin = user.role == 'super_admin'
-    can_upload = user.role in ('super_admin', 'manager', 'operator')
-    can_publish = user.role in ('super_admin', 'manager')
-    can_delete = user.role == 'super_admin'
-    return {
-        'is_admin': is_admin,
-        'can_upload': can_upload,
-        'can_publish': can_publish,
-        'can_delete': can_delete,
-        'pages': {
-            'report': True,
-            'data': can_upload,
-            'charts': True,
-            'settings': is_admin,
-        },
-    }
+    return ok({'token': token, 'user': user.to_dict(), 'permissions': effective_perms(user)})
 
 
 # ── user management ──────────────────────────────────────────────────────────
@@ -276,8 +412,13 @@ def users(request):
             return err('手机号、密码、姓名均为必填')
         if len(password) < 6:
             return err('密码至少6位')
-        if role not in ROLES:
-            return err('角色无效')
+        if role not in ('super_admin', 'viewer'):
+            role = 'viewer'
+        if role != 'super_admin':
+            if job_title not in JOB_TITLES:
+                return err('请选择有效职务')
+            if not departments:
+                return err('请至少分配一个事业部')
         if CaiwuUser.objects.filter(phone=phone).exists():
             return err('该手机号已注册')
 
@@ -285,7 +426,7 @@ def users(request):
         user = CaiwuUser(
             phone=phone, name=name, role=role,
             job_title=job_title if job_title in JOB_TITLES else '',
-            departments=departments,
+            departments=[] if role == 'super_admin' else departments,
             is_approved=True,
             approved_by=approver,
             approved_at=timezone.now(),
@@ -311,19 +452,17 @@ def user_detail(request, uid):
         name = (body.get('name') or '').strip()
         if not name:
             return err('姓名不能为空')
-        role = (body.get('role') or user.role).strip()
-        if role not in ROLES:
-            return err('角色无效')
-        job_title = (body.get('job_title') or '').strip()
+        job_title = (body.get('job_title') or user.job_title).strip()
         departments = body.get('departments', user.departments)
 
-        if role not in ALL_BU_ROLES and not departments:
-            return err('非全局角色必须分配至少一个事业部')
+        # super_admin keeps full scope; everyone else is scoped by 事业部.
+        if user.role != 'super_admin' and not departments:
+            return err('请至少分配一个事业部')
 
         user.name = name
-        user.role = role
-        user.job_title = job_title if job_title in JOB_TITLES else ''
-        user.departments = departments
+        user.job_title = job_title if job_title in JOB_TITLES else user.job_title
+        if user.role != 'super_admin':
+            user.departments = departments
         user.is_active = bool(body.get('is_active', user.is_active))
 
         if 'password' in body and body['password']:
@@ -347,15 +486,16 @@ def user_approve(request, uid):
     except CaiwuUser.DoesNotExist:
         return err('用户不存在', 404)
     body = _parse_json(request)
-    role = (body.get('role') or 'viewer').strip()
-    if role not in ROLES:
-        return err('角色无效')
+    job_title = (body.get('job_title') or user.job_title or '').strip()
+    if job_title not in JOB_TITLES:
+        return err('请选择有效职务')
     departments = body.get('departments', [])
-    if role not in ALL_BU_ROLES and not departments:
-        return err('非全局角色必须分配至少一个事业部')
+    if not departments:
+        return err('请至少分配一个事业部')
 
     approver = CaiwuUser.objects.get(id=request.cw_uid)
-    user.role = role
+    user.role = 'viewer'
+    user.job_title = job_title
     user.departments = departments
     user.is_approved = True
     user.approved_by = approver
@@ -375,6 +515,47 @@ def user_reject(request, uid):
     user.is_active = False
     user.save()
     return ok({'id': uid, 'status': 'rejected'})
+
+
+# ── job-title permission config (super_admin) ────────────────────────────────
+
+@cw_required(roles=['super_admin'])
+def permissions(request):
+    """GET: full permission matrix for all job titles + field/page metadata."""
+    if request.method != 'GET':
+        return err('方法不允许', 405)
+    jobs = [
+        {'job_title': key, 'label': label, 'config': get_job_perms(key)}
+        for key, label in JOB_TITLES.items()
+    ]
+    return ok({
+        'fields': PERM_FIELD_DEFS,
+        'pages': PAGE_DEFS,
+        'jobs': jobs,
+    })
+
+
+@cw_required(roles=['super_admin'])
+def permission_detail(request, job):
+    """PUT: update one job title's permission config."""
+    if request.method != 'PUT':
+        return err('方法不允许', 405)
+    if job not in JOB_TITLES:
+        return err('职务无效', 404)
+    body = _parse_json(request)
+    cfg = body.get('config') or {}
+    clean = {
+        'pages': {k: bool(cfg.get('pages', {}).get(k, True)) for k in PAGE_KEYS},
+        'view': {k: bool(cfg.get('view', {}).get(k, True)) for k in FIELD_KEYS},
+        'can_upload': bool(cfg.get('can_upload', False)),
+        'can_publish': bool(cfg.get('can_publish', False)),
+        'can_delete': bool(cfg.get('can_delete', False)),
+    }
+    obj, _ = CaiwuJobPermission.objects.get_or_create(job_title=job)
+    obj.config = clean
+    obj.save()
+    _invalidate_perm_cache(job)
+    return ok({'job_title': job, 'config': get_job_perms(job)})
 
 
 # ── category management ──────────────────────────────────────────────────────
@@ -562,6 +743,9 @@ def category_l3_detail(request, cid):
 def batches(request):
     if request.method != 'GET':
         return err('方法不允许', 405)
+    denied = _page_denied(request, 'data')
+    if denied:
+        return denied
     qs = _bu_filter(ImportBatch.objects.all(), request)
     year = request.GET.get('year')
     month = request.GET.get('month')
@@ -826,7 +1010,7 @@ def batch_detail(request, bid):
         return ok(batch.to_dict())
 
     if request.method == 'DELETE':
-        if request.cw_role != 'super_admin':
+        if not _can_delete(request):
             return err('权限不足', 403)
         batch.entries.all().delete()
         batch.delete()
@@ -963,6 +1147,9 @@ def _aggregate_report(batches_qs, level):
 def report(request):
     if request.method != 'GET':
         return err('方法不允许', 405)
+    denied = _page_denied(request, 'report')
+    if denied:
+        return denied
 
     year_s = request.GET.get('year', '')
     month_s = request.GET.get('month', '')
@@ -973,6 +1160,12 @@ def report(request):
     except Exception:
         level = 1
 
+    # Clamp drill-down to what this job may view.
+    if level >= 3 and not _can_view(request, 'report_l3'):
+        level = 2
+    if level >= 2 and not _can_view(request, 'report_l2'):
+        level = 1
+
     try:
         year = int(year_s)
         month = int(month_s)
@@ -981,7 +1174,7 @@ def report(request):
         return err('年份或月份无效')
 
     # Determine accessible BUs
-    if request.cw_role in ALL_BU_ROLES:
+    if request.cw_role == 'super_admin':
         accessible = BUSINESS_UNITS
     else:
         accessible = [d for d in request.cw_depts if d in VALID_BUSINESS_UNITS]
@@ -1011,6 +1204,11 @@ def report(request):
 def report_export(request):
     if request.method != 'GET':
         return err('方法不允许', 405)
+    denied = _page_denied(request, 'report')
+    if denied:
+        return denied
+    if not _can_view(request, 'export'):
+        return err('无导出权限', 403, 403)
 
     year_s = request.GET.get('year', '')
     month_s = request.GET.get('month', '')
@@ -1021,6 +1219,11 @@ def report_export(request):
     except Exception:
         level = 1
 
+    if level >= 3 and not _can_view(request, 'report_l3'):
+        level = 2
+    if level >= 2 and not _can_view(request, 'report_l2'):
+        level = 1
+
     try:
         year = int(year_s)
         month = int(month_s)
@@ -1028,7 +1231,7 @@ def report_export(request):
     except Exception:
         return err('年份或月份无效')
 
-    if request.cw_role in ALL_BU_ROLES:
+    if request.cw_role == 'super_admin':
         accessible = BUSINESS_UNITS
     else:
         accessible = [d for d in request.cw_depts if d in VALID_BUSINESS_UNITS]
@@ -1105,6 +1308,11 @@ def chart_trend(request):
     """
     if request.method != 'GET':
         return err('方法不允许', 405)
+    denied = _page_denied(request, 'charts')
+    if denied:
+        return denied
+    if not _can_view(request, 'chart_trend'):
+        return err('无访问权限', 403, 403)
 
     bu = request.GET.get('bu', '').strip()
     year_s = request.GET.get('year', '')
@@ -1162,6 +1370,11 @@ def chart_waterfall(request):
     """
     if request.method != 'GET':
         return err('方法不允许', 405)
+    denied = _page_denied(request, 'charts')
+    if denied:
+        return denied
+    if not _can_view(request, 'chart_waterfall'):
+        return err('无访问权限', 403, 403)
 
     bu = request.GET.get('bu', '').strip()
     year_s = request.GET.get('year', '')

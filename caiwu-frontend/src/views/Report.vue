@@ -20,9 +20,16 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
 const accessibleBus = computed(() => {
-  if (auth.isAdmin || ['general_manager', 'viewer'].includes(auth.role)) return BUSINESS_UNITS
+  if (auth.isAdmin) return BUSINESS_UNITS
   return (auth.user?.departments || []).filter(d => BUSINESS_UNITS.includes(d))
 })
+
+const maxLevel = computed(() => {
+  if (!auth.canView('report_l2')) return 1
+  if (!auth.canView('report_l3')) return 2
+  return 3
+})
+const canExport = computed(() => auth.canView('export'))
 
 async function load() {
   loading.value = true
@@ -73,8 +80,8 @@ onMounted(load)
           <select v-model="month" style="width:76px" @change="load">
             <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
           </select>
-          <LevelToggle v-model="level" @update:model-value="load" />
-          <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportReport">
+          <LevelToggle v-model="level" :max-level="maxLevel" @update:model-value="load" />
+          <button v-if="canExport" class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportReport">
             {{ exporting ? '导出中…' : '导出 Excel' }}
           </button>
         </div>

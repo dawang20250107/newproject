@@ -5,6 +5,7 @@ urlpatterns = [
     # auth
     path('register', views.register),
     path('login', views.login),
+    path('registration-status', views.registration_status),
     path('me', views.me),
 
     # users (super_admin)
@@ -12,6 +13,10 @@ urlpatterns = [
     path('users/<int:uid>', views.user_detail),
     path('users/<int:uid>/approve', views.user_approve),
     path('users/<int:uid>/reject', views.user_reject),
+
+    # job-title permission matrix (super_admin)
+    path('permissions', views.permissions),
+    path('permissions/<str:job>', views.permission_detail),
 
     # categories
     path('categories/l1', views.categories_l1),

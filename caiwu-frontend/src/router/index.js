@@ -8,6 +8,8 @@ const routes = [
   { path: '/data', component: () => import('../views/DataImport.vue'), meta: { page: 'data' } },
   { path: '/charts', component: () => import('../views/Charts.vue'), meta: { page: 'charts' } },
   { path: '/settings', component: () => import('../views/Settings.vue'), meta: { page: 'settings' } },
+  { path: '/users', component: () => import('../views/Users.vue'), meta: { page: 'users' } },
+  { path: '/permissions', component: () => import('../views/Permissions.vue'), meta: { page: 'permissions' } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
@@ -22,7 +24,7 @@ router.beforeEach((to, from, next) => {
   if (!auth.isLoggedIn) return next('/login')
   if (to.meta.page && !auth.canPage(to.meta.page)) {
     // Redirect to first accessible page
-    const pages = ['report', 'data', 'charts', 'settings']
+    const pages = ['report', 'charts', 'data', 'settings']
     const first = pages.find(p => auth.canPage(p))
     return next(first ? `/${first}` : '/login')
   }

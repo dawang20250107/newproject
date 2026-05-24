@@ -19,9 +19,12 @@ const selectedL1Ids = ref([])
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 
 const accessibleBus = computed(() => {
-  if (auth.isAdmin || ['general_manager', 'viewer'].includes(auth.role)) return BUSINESS_UNITS
+  if (auth.isAdmin) return BUSINESS_UNITS
   return (auth.user?.departments || []).filter(d => BUSINESS_UNITS.includes(d))
 })
+
+const canTrend = computed(() => auth.canView('chart_trend'))
+const canWaterfall = computed(() => auth.canView('chart_waterfall'))
 
 async function loadTrend() {
   if (!trendBu.value) return
@@ -85,8 +88,8 @@ onMounted(() => {
   if (accessibleBus.value.length) {
     trendBu.value = accessibleBus.value[0]
     wfBu.value = accessibleBus.value[0]
-    loadTrend()
-    loadWaterfall()
+    if (canTrend.value) loadTrend()
+    if (canWaterfall.value) loadWaterfall()
   }
 })
 </script>
@@ -96,7 +99,7 @@ onMounted(() => {
     <div class="topbar"><h1>图表分析</h1></div>
 
     <!-- ── Trend Line Chart ──────────────────────────────── -->
-    <div class="card">
+    <div v-if="canTrend" class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
         <div class="section-title" style="margin:0">收入 / 利润走势（折线图）</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -132,7 +135,7 @@ onMounted(() => {
     </div>
 
     <!-- ── Waterfall Chart ───────────────────────────────── -->
-    <div class="card">
+    <div v-if="canWaterfall" class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
         <div class="section-title" style="margin:0">因素分析（瀑布图）</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">

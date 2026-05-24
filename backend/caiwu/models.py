@@ -201,3 +201,25 @@ class FinancialEntry(models.Model):
             models.Index(fields=['batch', 'l1']),
             models.Index(fields=['batch', 'l1', 'l2']),
         ]
+
+
+class CaiwuJobPermission(models.Model):
+    """Per-job-title granular permission config, managed by super_admin.
+
+    config schema:
+        {
+          "pages":      {"report": bool, "data": bool, "charts": bool},
+          "view":       {field_key: bool, ...},
+          "can_upload": bool,
+          "can_publish": bool,
+          "can_delete": bool,
+        }
+    """
+    job_title = models.CharField('职务', max_length=30, unique=True)
+    config = models.JSONField('权限配置', default=dict)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        app_label = 'caiwu'
+        db_table = 'caiwu_job_permissions'
+        verbose_name = '职务权限'
