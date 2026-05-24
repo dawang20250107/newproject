@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'wxcloudrun',
     'paikuan',
+    'caiwu',
 ]
 
 MIDDLEWARE = [
@@ -41,6 +42,8 @@ CORS_ALLOWED_ORIGINS = [
     'https://kxtshare.cloud',
     'http://localhost:5173',
     'http://127.0.0.1:5173',
+    'http://localhost:5174',
+    'http://127.0.0.1:5174',
     'http://localhost:8080',
 ]
 CORS_ALLOW_CREDENTIALS = False
@@ -56,32 +59,39 @@ TEMPLATES = [{
 
 WSGI_APPLICATION = 'wxcloudrun.wsgi.application'
 
-# SQLite for dev; set DB_ENGINE=django.db.backends.mysql + env vars for prod
+# SQLite for dev; set MYSQL_ADDRESS for prod
 if os.environ.get('MYSQL_ADDRESS'):
     addr = os.environ.get('MYSQL_ADDRESS', '127.0.0.1:3306')
     host, port = addr.rsplit(':', 1) if ':' in addr else (addr, '3306')
+    _mysql_base = {
+        'ENGINE': 'django.db.backends.mysql',
+        'USER': os.environ.get('MYSQL_USERNAME', 'root'),
+        'PASSWORD': os.environ.get('MYSQL_PASSWORD', ''),
+        'HOST': host,
+        'PORT': port,
+        'OPTIONS': {
+            'charset': 'utf8mb4',
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+        },
+        'CONN_MAX_AGE': 60,
+    }
     DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.mysql',
-            'NAME': os.environ.get('MYSQL_DATABASE', 'paikuan'),
-            'USER': os.environ.get('MYSQL_USERNAME', 'root'),
-            'PASSWORD': os.environ.get('MYSQL_PASSWORD', ''),
-            'HOST': host,
-            'PORT': port,
-            'OPTIONS': {
-                'charset': 'utf8mb4',
-                'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-            },
-            'CONN_MAX_AGE': 60,
-        }
+        'default': {**_mysql_base, 'NAME': os.environ.get('MYSQL_DATABASE', 'paikuan')},
+        'caiwu':   {**_mysql_base, 'NAME': os.environ.get('CAIWU_DB', 'caiwu')},
     }
 else:
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': BASE_DIR / 'db.sqlite3',
-        }
+        },
+        'caiwu': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'caiwu.sqlite3',
+        },
     }
+
+DATABASE_ROUTERS = ['caiwu.db_router.CaiwuRouter']
 
 LANGUAGE_CODE = 'zh-hans'
 TIME_ZONE = 'Asia/Shanghai'
@@ -105,5 +115,6 @@ LOGGING = {
     'root': {'handlers': ['console'], 'level': 'INFO'},
     'loggers': {
         'paikuan': {'handlers': ['console'], 'level': 'DEBUG', 'propagate': False},
+        'caiwu': {'handlers': ['console'], 'level': 'DEBUG', 'propagate': False},
     },
 }

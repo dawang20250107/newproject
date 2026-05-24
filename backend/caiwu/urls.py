@@ -1,0 +1,38 @@
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    # auth
+    path('register', views.register),
+    path('login', views.login),
+    path('me', views.me),
+
+    # users (super_admin)
+    path('users', views.users),
+    path('users/<int:uid>', views.user_detail),
+    path('users/<int:uid>/approve', views.user_approve),
+    path('users/<int:uid>/reject', views.user_reject),
+
+    # categories
+    path('categories/l1', views.categories_l1),
+    path('categories/l1/<int:cid>', views.category_l1_detail),
+    path('categories/l2', views.categories_l2),
+    path('categories/l2/<int:cid>', views.category_l2_detail),
+    path('categories/l3', views.categories_l3),
+    path('categories/l3/<int:cid>', views.category_l3_detail),
+
+    # data import batches
+    path('batches', views.batches),
+    path('batches/template', views.batch_template),
+    path('batches/upload', views.batch_upload),
+    path('batches/<int:bid>/publish', views.batch_publish),
+    path('batches/<int:bid>', views.batch_detail),
+
+    # report
+    path('report', views.report),
+    path('report/export', views.report_export),
+
+    # charts
+    path('charts/trend', views.chart_trend),
+    path('charts/waterfall', views.chart_waterfall),
+]

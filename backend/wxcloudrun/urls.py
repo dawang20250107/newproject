@@ -8,5 +8,6 @@ def index(request):
 
 urlpatterns = [
     path('api/pk/', include('paikuan.urls')),
+    path('api/cw/', include('caiwu.urls')),
     path('', index),
 ]
