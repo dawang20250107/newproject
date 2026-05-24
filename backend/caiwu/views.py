@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+from django.db import transaction
 from django.db.models import Sum, Q
 from django.conf import settings
 from django.utils import timezone
@@ -253,6 +254,13 @@ def cw_required(roles=None):
                 return err('Token已过期', 401, 401)
             except jwt.InvalidTokenError:
                 return err('Token无效', 401, 401)
+            # Re-validate user is still active (token may outlive a deactivation)
+            try:
+                u = CaiwuUser.objects.only('is_active').get(id=request.cw_uid)
+                if not u.is_active:
+                    return err('账号已停用', 401, 401)
+            except CaiwuUser.DoesNotExist:
+                return err('用户不存在', 401, 401)
             if roles and request.cw_role not in roles:
                 return err('权限不足', 403, 403)
             return func(request, *args, **kwargs)
@@ -1015,7 +1023,7 @@ def _compute_pl_check(parsed_rows):
         raw[r['l1_name']] += r['amount']
         l2_totals[r['l1_name']][r['l2_name'] or '（无项目部）'] += r['amount']
 
-    l1_cats = list(L1Category.objects.all())
+    l1_cats = list(L1Category.objects.order_by('sort_order', 'id').all())
     name_map = {}
     l1_summary = []
 
@@ -1120,19 +1128,21 @@ def batch_upload(request):
     # Compute P&L reconciliation before saving
     pl_check = _compute_pl_check(parsed_rows)
 
-    # Create draft batch + entries
+    # Create draft batch + entries atomically so a bulk_create failure
+    # doesn't leave an empty orphaned batch record.
     uploader = CaiwuUser.objects.get(id=request.cw_uid)
-    batch = ImportBatch.objects.create(
-        business_unit=bu, year=year, month=month,
-        status=ImportBatch.STATUS_DRAFT,
-        uploaded_by=uploader,
-        row_count=len(parsed_rows),
-        file_name=f.name,
-    )
-    FinancialEntry.objects.bulk_create([
-        FinancialEntry(batch=batch, l1=r['l1'], l2=r['l2'], l3=r['l3'], amount=r['amount'])
-        for r in parsed_rows
-    ])
+    with transaction.atomic(using='caiwu'):
+        batch = ImportBatch.objects.create(
+            business_unit=bu, year=year, month=month,
+            status=ImportBatch.STATUS_DRAFT,
+            uploaded_by=uploader,
+            row_count=len(parsed_rows),
+            file_name=f.name,
+        )
+        FinancialEntry.objects.bulk_create([
+            FinancialEntry(batch=batch, l1=r['l1'], l2=r['l2'], l3=r['l3'], amount=r['amount'])
+            for r in parsed_rows
+        ])
 
     return ok({
         'batch': batch.to_dict(),
@@ -1158,20 +1168,31 @@ def batch_publish(request, bid):
     if batch.status == ImportBatch.STATUS_PUBLISHED:
         return err('该批次已发布')
 
-    # Retire any previously published batch for same BU+month
-    old_published = ImportBatch.objects.filter(
-        business_unit=batch.business_unit,
-        year=batch.year,
-        month=batch.month,
-        status=ImportBatch.STATUS_PUBLISHED,
-    )
-    for old in old_published:
-        old.entries.all().delete()
-        old.delete()
+    # Use a transaction + row-level lock so concurrent publish requests for
+    # the same BU+month don't both delete each other's data.
+    with transaction.atomic(using='caiwu'):
+        # Re-fetch with lock to guard against concurrent publish
+        try:
+            batch = ImportBatch.objects.select_for_update().get(id=bid)
+        except ImportBatch.DoesNotExist:
+            return err('批次不存在', 404)
+        if batch.status == ImportBatch.STATUS_PUBLISHED:
+            return err('该批次已发布')
 
-    batch.status = ImportBatch.STATUS_PUBLISHED
-    batch.published_at = timezone.now()
-    batch.save()
+        # Retire any previously published batch for same BU+month
+        old_published = ImportBatch.objects.select_for_update().filter(
+            business_unit=batch.business_unit,
+            year=batch.year,
+            month=batch.month,
+            status=ImportBatch.STATUS_PUBLISHED,
+        )
+        for old in old_published:
+            old.entries.all().delete()
+            old.delete()
+
+        batch.status = ImportBatch.STATUS_PUBLISHED
+        batch.published_at = timezone.now()
+        batch.save()
     return ok(batch.to_dict())
 
 
@@ -1216,7 +1237,7 @@ def _aggregate_report(batches_qs, level):
     if not batch_ids:
         return []
 
-    l1_cats = list(L1Category.objects.all())
+    l1_cats = list(L1Category.objects.order_by('sort_order', 'id').all())
 
     # Raw aggregation by l1_id
     raw_agg = (

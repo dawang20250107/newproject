@@ -120,6 +120,7 @@ async function doPublish(batchId) {
     uploadResult.value = null
     upFile.value = null
     await loadBatches()
+    alert('发布成功！数据已生效，可在报表页查看。')
   } catch (e) {
     alert(e?.error || '发布失败')
   } finally { publishing.value = false }
@@ -355,7 +356,7 @@ onMounted(loadBatches)
 
             <div class="modal-actions">
               <button class="btn btn-ghost" @click="resetUpload">重新上传</button>
-              <button class="btn btn-ghost" @click="showUpload = false">保存草稿</button>
+              <button class="btn btn-ghost" @click="showUpload = false">稍后发布</button>
               <button class="btn btn-primary" :disabled="publishing" @click="doPublish(uploadResult.batch.id)">
                 {{ publishing ? '发布中…' : '确认发布' }}
               </button>
