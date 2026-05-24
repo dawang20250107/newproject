@@ -56,12 +56,11 @@ const KPI_DEFS = [
 ]
 
 const kpis = computed(() => {
-  if (!data.value?.rows) return []
   const map = {}
-  for (const row of data.value.rows) map[row.l1_name] = parseFloat(row.amount ?? 0)
-  const prevKpis = data.value.prev_kpis || {}
+  for (const row of (data.value?.rows || [])) map[row.l1_name] = parseFloat(row.amount ?? 0)
+  const prevKpis = data.value?.prev_kpis || {}
   return KPI_DEFS.map(d => {
-    const amount = map[d.key] ?? null
+    const amount = d.key in map ? map[d.key] : null
     const prev = prevKpis[d.key] ?? null
     let momPct = null
     if (amount !== null && prev !== null && prev !== 0) {
@@ -70,8 +69,10 @@ const kpis = computed(() => {
     const isNeg = amount !== null && d.calc && amount < 0
     const momDown = momPct !== null && momPct < 0
     return { ...d, amount, momPct, isNeg, momDown }
-  }).filter(d => d.amount !== null)
+  })
 })
+
+const noData = computed(() => !(data.value?.rows?.length))
 
 function fmtKpi(v) {
   if (v === null || v === undefined) return '—'
@@ -159,33 +160,22 @@ onMounted(load)
   <div>
     <div class="topbar" style="align-items:flex-start">
       <h1>财务报表</h1>
-      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:10px">
-        <div class="ctrl-row">
-          <select v-model="year" class="sel-yr" @change="load">
-            <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
-          </select>
-          <select v-model="month" class="sel-mo" @change="load">
-            <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
-          </select>
-          <div class="ctrl-sep"></div>
-          <LevelToggle v-model="level" :max-level="maxLevel" @update:model-value="load" />
-          <button v-if="canExport" class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportReport">
-            {{ exporting ? '导出中…' : '导出 Excel' }}
-          </button>
-        </div>
-
-        <!-- BU filter chips -->
-        <div v-if="accessibleBus.length > 1" style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
-          <button
-            :class="['dept-chip', !selectedBu ? 'on' : '']"
-            @click="selectedBu = ''; load()"
-          >全部</button>
-          <button
-            v-for="bu in accessibleBus" :key="bu"
-            :class="['dept-chip', selectedBu === bu ? 'on' : '']"
-            @click="selectedBu = bu; load()"
-          >{{ bu }}</button>
-        </div>
+      <div class="ctrl-row" style="justify-content:flex-end">
+        <select v-model="year" class="sel-yr" @change="load">
+          <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+        </select>
+        <select v-model="month" class="sel-mo" @change="load">
+          <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
+        </select>
+        <select v-if="accessibleBus.length > 1" v-model="selectedBu" class="sel-bu" @change="load">
+          <option value="">全部事业部</option>
+          <option v-for="bu in accessibleBus" :key="bu" :value="bu">{{ bu }}</option>
+        </select>
+        <div class="ctrl-sep"></div>
+        <LevelToggle v-model="level" :max-level="maxLevel" @update:model-value="load" />
+        <button v-if="canExport" class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportReport">
+          {{ exporting ? '导出中…' : '导出 Excel' }}
+        </button>
       </div>
     </div>
 
@@ -194,7 +184,10 @@ onMounted(load)
     <template v-else-if="data">
 
       <!-- ── KPI cards ──────────────────────────────────────────────────────── -->
-      <div v-if="kpis.length" class="kpi-grid kpi-5">
+      <div v-if="noData" class="nodata-banner">
+        📭 {{ data.year }}年{{ data.month }}月 · {{ data.bu || '全部事业部' }} 暂无已发布数据
+      </div>
+      <div class="kpi-grid kpi-5">
         <div
           v-for="kpi in kpis" :key="kpi.key"
           class="kpi-card"
@@ -202,13 +195,14 @@ onMounted(load)
             'kpi-calc': kpi.calc,
             'kpi-negative': kpi.isNeg,
             'kpi-mom-down': !kpi.isNeg && kpi.momDown,
+            'kpi-empty': kpi.amount === null,
           }"
         >
           <div class="label">{{ kpi.key }}</div>
           <div
             class="value"
-            :class="{ 'value-neg': kpi.isNeg }"
-            :style="kpi.isNeg ? '' : `color:${kpi.momDown ? 'var(--danger)' : kpi.color}`"
+            :class="{ 'value-neg': kpi.isNeg, 'value-empty': kpi.amount === null }"
+            :style="kpi.amount === null || kpi.isNeg ? '' : `color:${kpi.momDown ? 'var(--danger)' : kpi.color}`"
           >{{ fmtKpi(kpi.amount) }}</div>
 
           <!-- MoM badge -->
@@ -232,7 +226,7 @@ onMounted(load)
             </span>
             <button
               class="btn btn-ai"
-              :disabled="aiLoading"
+              :disabled="aiLoading || noData"
               @click="runAiAnalysis"
             >{{ aiLoading ? '分析中…' : (aiVisible ? '重新分析' : 'AI 分析') }}</button>
           </div>
@@ -265,14 +259,13 @@ onMounted(load)
 </template>
 
 <style scoped>
-/* ── BU chips ─────────────────────────────────────────────────────────────── */
-.dept-chip {
-  padding: 4px 11px; border-radius: 16px; font-size: 12px; cursor: pointer;
-  border: 1.5px solid var(--border); background: rgba(255,253,250,.7); color: var(--text);
-  transition: all .16s; white-space: nowrap;
+/* ── no-data banner ───────────────────────────────────────────────────────── */
+.nodata-banner {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px; margin-bottom: 16px;
+  background: rgba(180,140,110,.08); border: 1px dashed var(--border);
+  border-radius: 12px; font-size: 13px; color: var(--muted);
 }
-.dept-chip:hover { border-color: var(--primary); color: var(--primary); }
-.dept-chip.on { border-color: var(--primary); background: rgba(201,99,66,.1); color: var(--primary); font-weight: 600; }
 
 /* ── KPI grid ─────────────────────────────────────────────────────────────── */
 .kpi-5 { grid-template-columns: repeat(5, 1fr) !important; }
@@ -280,6 +273,10 @@ onMounted(load)
 @media (max-width: 560px) { .kpi-5 { grid-template-columns: repeat(2, 1fr) !important; } }
 
 .kpi-calc { border-left: 3px solid rgba(201,99,66,.3); }
+
+/* empty placeholder card */
+.kpi-empty { opacity: .72; }
+.value-empty { color: var(--muted) !important; opacity: .55; }
 
 /* negative calc KPI: red border + breathing glow */
 .kpi-negative {
