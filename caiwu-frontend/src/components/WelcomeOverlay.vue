@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { JOB_LABELS, hourCST } from '../constants.js'
 
 const props = defineProps({ user: { type: Object, default: null } })
@@ -7,8 +7,6 @@ const emit = defineEmits(['done'])
 
 const visible = ref(true)
 const progress = ref(0)
-const canvasEl = ref(null)
-let animId = null
 
 const hour = hourCST()
 const greeting = hour < 6 ? '夜深了' : hour < 12 ? '早上好' : hour < 18 ? '下午好' : '晚上好'
@@ -31,77 +29,7 @@ function dismiss() {
   setTimeout(() => emit('done'), 400)
 }
 
-// ── canvas particle emitter ───────────────────────────────────────────────────
-function launchParticles(canvas) {
-  const dpr = window.devicePixelRatio || 1
-  const w = canvas.offsetWidth
-  const h = canvas.offsetHeight
-  canvas.width  = w * dpr
-  canvas.height = h * dpr
-  const ctx = canvas.getContext('2d')
-  ctx.scale(dpr, dpr)
-
-  // burst origin ≈ center of the welcome card (card is vertically centered)
-  const ox = w / 2
-  const oy = h * 0.42
-
-  const COLORS = [
-    '#c96342', '#e8855a', '#e8a84a', '#d4946a',
-    '#f0b07a', '#c96342cc', '#e8855acc', '#ffd699',
-  ]
-
-  const particles = Array.from({ length: 90 }, () => {
-    const angle = Math.random() * Math.PI * 2
-    const speed = Math.random() * 7 + 2
-    const isCircle = Math.random() > 0.55
-    return {
-      x: ox, y: oy,
-      vx: Math.cos(angle) * speed,
-      vy: Math.sin(angle) * speed - (Math.random() * 5 + 3), // upward bias
-      r: Math.random() * 5 + 2.5,
-      color: COLORS[Math.floor(Math.random() * COLORS.length)],
-      alpha: 1,
-      decay: Math.random() * 0.013 + 0.008,
-      rot: Math.random() * Math.PI * 2,
-      rotSpd: (Math.random() - 0.5) * 0.22,
-      isCircle,
-    }
-  })
-
-  function frame() {
-    ctx.clearRect(0, 0, w, h)
-    let any = false
-    for (const p of particles) {
-      if (p.alpha <= 0) continue
-      any = true
-      p.x  += p.vx
-      p.y  += p.vy
-      p.vy += 0.18          // gravity
-      p.vx *= 0.985         // air drag
-      p.alpha -= p.decay
-      p.rot += p.rotSpd
-      ctx.save()
-      ctx.globalAlpha = Math.max(0, p.alpha)
-      ctx.fillStyle = p.color
-      ctx.translate(p.x, p.y)
-      ctx.rotate(p.rot)
-      if (p.isCircle) {
-        ctx.beginPath()
-        ctx.arc(0, 0, p.r, 0, Math.PI * 2)
-        ctx.fill()
-      } else {
-        ctx.fillRect(-p.r * 0.5, -p.r, p.r, p.r * 2.2)
-      }
-      ctx.restore()
-    }
-    if (any) animId = requestAnimationFrame(frame)
-  }
-
-  animId = requestAnimationFrame(frame)
-}
-
 onMounted(() => {
-  // progress bar
   const duration = 4000
   const interval = 40
   const steps = duration / interval
@@ -111,24 +39,12 @@ onMounted(() => {
     progress.value = Math.min(100, (step / steps) * 100)
     if (step >= steps) { clearInterval(timer); dismiss() }
   }, interval)
-
-  // fire particle emitter after card animation settles (≈ 300 ms)
-  setTimeout(() => {
-    if (canvasEl.value) launchParticles(canvasEl.value)
-  }, 320)
-})
-
-onUnmounted(() => {
-  if (animId) cancelAnimationFrame(animId)
 })
 </script>
 
 <template>
   <Transition name="welcome-fade">
     <div v-if="visible" class="welcome-overlay" @click="dismiss">
-      <!-- full-screen canvas particle emitter -->
-      <canvas ref="canvasEl" class="particle-canvas" aria-hidden="true"></canvas>
-
       <div class="welcome-card" @click.stop>
         <div class="particle p1"></div><div class="particle p2"></div>
         <div class="particle p3"></div><div class="particle p4"></div>
@@ -164,16 +80,8 @@ onUnmounted(() => {
   background: rgba(20,10,5,.55); backdrop-filter: blur(12px);
 }
 
-/* canvas covers the whole overlay, particles fly freely over it */
-.particle-canvas {
-  position: absolute; inset: 0;
-  width: 100%; height: 100%;
-  pointer-events: none;
-  z-index: 1;
-}
-
 .welcome-card {
-  position: relative; z-index: 2;
+  position: relative;
   width: 420px; max-width: 92vw;
   background: rgba(255,252,248,.78); backdrop-filter: blur(32px) saturate(200%);
   border: 1px solid rgba(255,255,255,.65); border-radius: 28px;
