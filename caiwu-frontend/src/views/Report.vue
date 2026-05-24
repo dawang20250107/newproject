@@ -160,13 +160,14 @@ onMounted(load)
     <div class="topbar" style="align-items:flex-start">
       <h1>财务报表</h1>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:10px">
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <select v-model="year" style="width:90px" @change="load">
+        <div class="ctrl-row">
+          <select v-model="year" class="sel-yr" @change="load">
             <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
           </select>
-          <select v-model="month" style="width:76px" @change="load">
+          <select v-model="month" class="sel-mo" @change="load">
             <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
           </select>
+          <div class="ctrl-sep"></div>
           <LevelToggle v-model="level" :max-level="maxLevel" @update:model-value="load" />
           <button v-if="canExport" class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportReport">
             {{ exporting ? '导出中…' : '导出 Excel' }}

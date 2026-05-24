@@ -212,10 +212,10 @@ onMounted(() => {
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
         <div class="section-title" style="margin:0">月度提交状态</div>
         <div style="display:flex;gap:8px;align-items:center">
-          <select v-model="statusYear" style="width:90px" @change="loadSubmissionStatus">
+          <select v-model="statusYear" class="sel-yr" @change="loadSubmissionStatus">
             <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
           </select>
-          <select v-model="statusMonth" style="width:76px" @change="loadSubmissionStatus">
+          <select v-model="statusMonth" class="sel-mo" @change="loadSubmissionStatus">
             <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
           </select>
         </div>

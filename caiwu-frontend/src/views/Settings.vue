@@ -167,7 +167,7 @@ onMounted(() => { loadL1() })
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
         <div style="display:flex;align-items:center;gap:10px">
           <div class="section-title" style="margin:0">二级项目部</div>
-          <select v-model="l2Bu" style="width:130px" @change="loadL2">
+          <select v-model="l2Bu" class="sel-bu-sm" @change="loadL2">
             <option v-for="bu in BUSINESS_UNITS" :key="bu" :value="bu">{{ bu }}</option>
           </select>
         </div>
@@ -199,7 +199,7 @@ onMounted(() => { loadL1() })
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
         <div style="display:flex;align-items:center;gap:10px">
           <div class="section-title" style="margin:0">三级科目明细</div>
-          <select v-model="l3Bu" style="width:130px" @change="loadL3">
+          <select v-model="l3Bu" class="sel-bu-sm" @change="loadL3">
             <option v-for="bu in BUSINESS_UNITS" :key="bu" :value="bu">{{ bu }}</option>
           </select>
         </div>

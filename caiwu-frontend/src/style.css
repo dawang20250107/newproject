@@ -188,10 +188,24 @@ input, textarea, select {
   transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
   backdrop-filter: blur(4px);
 }
+/* custom select: remove native arrow, inject clean SVG chevron */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='7' viewBox='0 0 12 7'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%239b8070' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  cursor: pointer;
+}
 input:focus, textarea:focus, select:focus {
   border-color: var(--primary);
   background: rgba(255,253,250,0.94);
   box-shadow: 0 0 0 3px rgba(201,99,66,0.14), 0 2px 8px rgba(100,60,30,0.08);
+}
+/* keep custom arrow visible on focus */
+select:focus {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='7' viewBox='0 0 12 7'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23c96342' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E");
 }
 input::placeholder { color: rgba(155,128,112,0.65); }
 
@@ -549,3 +563,37 @@ td.amt, th.amt { text-align: right; }
 
 /* convenience vars some caiwu views reference */
 :root { --danger: #c62828; --success: #2e7d32; }
+
+/* ── select width helpers (use in topbar / filter rows) ─────────────────── */
+/* Widths account for: left-pad 13px + text + right-pad 32px (custom arrow) */
+select.sel-yr  { width: 114px; min-width: 114px; }   /* "2026 年" */
+select.sel-mo  { width: 88px;  min-width: 88px;  }   /* "12 月"   */
+select.sel-bu  { width: 148px; min-width: 148px; }   /* "多式联运事业部" */
+select.sel-bu-sm { width: 120px; min-width: 120px; } /* shorter BU pickers */
+
+/* ── controls row — consistent inline filter strip ──────────────────────── */
+.ctrl-row {
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap;
+}
+.ctrl-sep {
+  width: 1px; height: 20px; background: var(--border);
+  flex-shrink: 0; margin: 0 2px;
+}
+
+/* ── topbar h1 refinement ────────────────────────────────────────────────── */
+.topbar h1 {
+  background: var(--grad);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── kpi-card value: prevent overflow on large numbers ──────────────────── */
+.kpi-card .value { word-break: break-all; min-width: 0; }
+
+/* ── table head: remove uppercase for CJK ───────────────────────────────── */
+th { text-transform: none; letter-spacing: 0.02em; }
+
+/* ── section-title: tighter spacing ─────────────────────────────────────── */
+.section-title { letter-spacing: -0.01em; }

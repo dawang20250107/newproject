@@ -163,11 +163,12 @@ onMounted(() => {
     <div class="topbar">
       <h1>图表分析</h1>
       <!-- Global BU + Year filter -->
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <select v-model="globalBu" style="width:140px">
+      <div class="ctrl-row">
+        <select v-model="globalBu" class="sel-bu">
           <option v-for="bu in accessibleBus" :key="bu" :value="bu">{{ bu }}</option>
         </select>
-        <select v-model="trendYear" style="width:90px">
+        <div class="ctrl-sep"></div>
+        <select v-model="trendYear" class="sel-yr">
           <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
         </select>
       </div>
@@ -236,17 +237,17 @@ onMounted(() => {
             <span v-else>🤖 AI分析</span>
           </button>
           <span style="font-size:12px;color:var(--muted)">对比</span>
-          <select v-model="wfCmpYear" style="width:82px" @change="loadWaterfall">
+          <select v-model="wfCmpYear" class="sel-yr" @change="loadWaterfall">
             <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
           </select>
-          <select v-model="wfCmpMonth" style="width:70px" @change="loadWaterfall">
+          <select v-model="wfCmpMonth" class="sel-mo" @change="loadWaterfall">
             <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
           </select>
           <span style="font-size:12px;color:var(--muted)">→</span>
-          <select v-model="wfYear" style="width:82px" @change="loadWaterfall">
+          <select v-model="wfYear" class="sel-yr" @change="loadWaterfall">
             <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
           </select>
-          <select v-model="wfMonth" style="width:70px" @change="loadWaterfall">
+          <select v-model="wfMonth" class="sel-mo" @change="loadWaterfall">
             <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
           </select>
         </div>
