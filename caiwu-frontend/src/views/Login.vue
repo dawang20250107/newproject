@@ -27,7 +27,7 @@ onMounted(async () => {
   // Detect whether the system has no users yet → first registrant becomes super admin.
   try {
     const res = await api.get('/registration-status', { params: { phone: '__probe__' } })
-    isFirstUser.value = res.data?.status === 'none'
+    isFirstUser.value = !res.data?.has_users
   } catch {}
 })
 
@@ -62,33 +62,31 @@ async function submit() {
   loading.value = true
   try {
     if (mode.value === 'login') {
-      const res = await api.post('/login', { phone: phone.value, password: password.value })
-      if (res.data?.pending) {
-        pendingMsg.value = res.data.msg || '账号待审批，请等待管理员审批'
+      const result = await auth.login(phone.value, password.value)
+      if (result.pending) {
+        pendingMsg.value = result.msg || '账号待审批，请等待管理员审批'
         pendingState.value = 'waiting'
         mode.value = 'pending'
         startPolling()
         return
       }
-      auth.setAuth(res.data.token, res.data.user, res.data.permissions)
       router.push('/')
     } else {
-      const res = await api.post('/register', {
+      const result = await auth.register({
         phone: phone.value,
         password: password.value,
         name: name.value,
         job_title: jobTitle.value,
         departments: selectedDepts.value,
       })
-      if (res.data?.token) {
-        auth.setAuth(res.data.token, res.data.user, res.data.permissions)
+      if (result.pending) {
+        pendingMsg.value = result.msg || '注册成功！请等待管理员审批'
+        pendingState.value = 'waiting'
+        mode.value = 'pending'
+        startPolling()
+      } else {
         router.push('/')
-        return
       }
-      pendingMsg.value = res.data?.msg || '注册成功！请等待管理员审批'
-      pendingState.value = 'waiting'
-      mode.value = 'pending'
-      startPolling()
     }
   } catch (e) {
     error.value = e?.error || '操作失败，请重试'
@@ -121,9 +119,8 @@ async function checkStatus() {
 }
 async function enterAfterApproval() {
   try {
-    const res = await api.post('/login', { phone: phone.value, password: password.value })
-    if (res.data?.token) {
-      auth.setAuth(res.data.token, res.data.user, res.data.permissions)
+    const result = await auth.login(phone.value, password.value)
+    if (!result.pending) {
       sessionStorage.setItem('cw_welcome_shown', '')
       router.push('/')
     } else {

@@ -364,12 +364,18 @@ def login(request):
 
 @csrf_exempt
 def registration_status(request):
-    """Public polling endpoint so a pending registrant can detect approval."""
+    """Public polling endpoint so a pending registrant can detect approval.
+
+    Called with phone=__probe__ by Login.vue onMounted to detect whether the
+    system has any users yet (so the UI can show a first-user hint banner).
+    """
     if request.method != 'GET':
         return err('方法不允许', 405)
     phone = (request.GET.get('phone') or '').strip()
     if not phone:
         return err('缺少手机号')
+    if phone == '__probe__':
+        return ok({'has_users': CaiwuUser.objects.exists()})
     user = CaiwuUser.objects.filter(phone=phone).first()
     if not user:
         return ok({'status': 'none'})
@@ -473,6 +479,12 @@ def user_detail(request, uid):
 
         user.save()
         return ok(user.to_dict())
+
+    if request.method == 'DELETE':
+        if user.role == 'super_admin':
+            return err('不能删除超级管理员账号', 403)
+        user.delete()
+        return ok({'deleted': uid})
 
     return err('方法不允许', 405)
 

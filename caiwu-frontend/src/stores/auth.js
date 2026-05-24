@@ -47,11 +47,29 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('cw_perms')
   }
 
+  async function login(phone, password) {
+    const res = await api.post('/login', { phone, password })
+    if (res.data?.pending) {
+      return { pending: true, msg: res.data.msg }
+    }
+    setAuth(res.data.token, res.data.user, res.data.permissions)
+    return { pending: false }
+  }
+
+  async function register(payload) {
+    const res = await api.post('/register', payload)
+    if (res.data?.pending) {
+      return { pending: true, msg: res.data.msg }
+    }
+    setAuth(res.data.token, res.data.user, res.data.permissions)
+    return { pending: false }
+  }
+
   async function refresh() {
     if (!token.value) return
     try {
       const res = await api.get('/me')
-      if (res.code === 0) setAuth(res.data.token, res.data.user, res.data.permissions)
+      if (res.data?.token) setAuth(res.data.token, res.data.user, res.data.permissions)
     } catch {}
   }
 
@@ -59,6 +77,6 @@ export const useAuthStore = defineStore('auth', () => {
     token, user, perms,
     isLoggedIn, role, isSuperAdmin, isAdmin,
     canUpload, canPublish, canDelete,
-    canPage, canView, setAuth, logout, refresh,
+    canPage, canView, setAuth, logout, login, register, refresh,
   }
 })
