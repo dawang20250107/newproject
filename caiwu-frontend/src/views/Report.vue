@@ -218,17 +218,17 @@ onMounted(load)
       <!-- ── AI analysis panel ──────────────────────────────────────────────── -->
       <div class="card ai-panel-card">
         <div class="ai-panel-header">
-          <div class="section-title" style="margin:0">🤖 AI 财务分析</div>
+          <div class="section-title" style="margin:0">✨ AI 财务分析</div>
           <div style="display:flex;align-items:center;gap:10px">
             <span class="ai-scope-label">
               {{ selectedBu ? selectedBu : (aiScope.length + ' 个事业部') }}
               · {{ data.year }}年{{ data.month }}月
             </span>
             <button
-              class="btn btn-ai"
+              class="btn btn-ghost btn-sm"
               :disabled="aiLoading || noData"
               @click="runAiAnalysis"
-            >{{ aiLoading ? '分析中…' : (aiVisible ? '重新分析' : 'AI 分析') }}</button>
+            >{{ aiLoading ? '分析中…' : (aiVisible ? '✨ 重新分析' : '✨ AI 分析') }}</button>
           </div>
         </div>
 
@@ -318,14 +318,6 @@ onMounted(load)
 }
 .ai-scope-label { font-size: 12px; color: var(--muted); }
 
-.btn-ai {
-  padding: 6px 18px; border-radius: 20px; font-size: 13px; font-weight: 600;
-  border: 1.5px solid #1565c0; background: rgba(21,101,192,.06);
-  color: #1565c0; cursor: pointer; transition: all .16s;
-}
-.btn-ai:hover:not(:disabled) { background: rgba(21,101,192,.14); }
-.btn-ai:disabled { opacity: .55; cursor: default; }
-
 .ai-loading {
   display: flex; align-items: center; gap: 8px;
   font-size: 13px; color: var(--muted); padding: 12px 0;
@@ -337,7 +329,7 @@ onMounted(load)
 
 .ai-result {
   margin-top: 8px; padding: 16px 20px;
-  background: rgba(21,101,192,.05); border: 1px solid rgba(21,101,192,.15);
+  background: rgba(201,99,66,.04); border: 1px solid rgba(201,99,66,.15);
   border-radius: 12px; font-size: 13px; line-height: 1.8; color: var(--text);
 }
 .ai-result p { margin: 0 0 8px; }

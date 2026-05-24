@@ -179,12 +179,12 @@ onMounted(() => {
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
         <div class="section-title" style="margin:0">收入 / 利润走势（折线图）</div>
         <button
-          class="btn btn-ai btn-sm"
+          class="btn btn-ghost btn-sm"
           :disabled="trendAiLoading || !trendData"
           @click="analyzeTrend"
         >
           <span v-if="trendAiLoading">分析中…</span>
-          <span v-else>🤖 AI分析</span>
+          <span v-else>✨ AI分析</span>
         </button>
       </div>
 
@@ -212,8 +212,8 @@ onMounted(() => {
       <!-- AI result panel -->
       <div v-if="trendAiText" class="ai-result">
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
-          <span style="font-size:16px">🤖</span>
-          <strong style="font-size:13px;color:#1565c0">AI 分析结果</strong>
+          <span style="font-size:16px">✨</span>
+          <strong style="font-size:13px;color:var(--primary)">AI 分析结果</strong>
         </div>
         <div
           v-for="(para, i) in renderAI(trendAiText)"
@@ -229,12 +229,12 @@ onMounted(() => {
         <div class="section-title" style="margin:0">因素分析（瀑布图）</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <button
-            class="btn btn-ai btn-sm"
+            class="btn btn-ghost btn-sm"
             :disabled="wfAiLoading || !wfData"
             @click="analyzeWaterfall"
           >
             <span v-if="wfAiLoading">分析中…</span>
-            <span v-else>🤖 AI分析</span>
+            <span v-else>✨ AI分析</span>
           </button>
           <span style="font-size:12px;color:var(--muted)">对比</span>
           <select v-model="wfCmpYear" class="sel-yr" @change="loadWaterfall">
@@ -287,8 +287,8 @@ onMounted(() => {
       <!-- AI result panel -->
       <div v-if="wfAiText" class="ai-result">
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
-          <span style="font-size:16px">🤖</span>
-          <strong style="font-size:13px;color:#1565c0">AI 分析结果</strong>
+          <span style="font-size:16px">✨</span>
+          <strong style="font-size:13px;color:var(--primary)">AI 分析结果</strong>
         </div>
         <div
           v-for="(para, i) in renderAI(wfAiText)"
@@ -309,24 +309,11 @@ onMounted(() => {
 .l1-chip:hover { border-color: var(--primary); color: var(--primary); }
 .l1-chip.on { border-color: var(--primary); background: rgba(201,99,66,.1); color: var(--primary); font-weight: 600; }
 
-.btn-ai {
-  border: 1.5px solid rgba(21,101,192,0.35);
-  background: rgba(21,101,192,0.06);
-  color: #1565c0;
-  font-size: 12px;
-  padding: 4px 14px;
-  border-radius: 14px;
-  cursor: pointer;
-  transition: all .16s;
-}
-.btn-ai:hover:not(:disabled) { background: rgba(21,101,192,0.12); border-color: #1565c0; }
-.btn-ai:disabled { opacity: 0.55; cursor: not-allowed; }
-
 .ai-result {
   margin-top: 16px; padding: 16px 20px;
-  background: rgba(21,101,192,0.05); border: 1px solid rgba(21,101,192,0.15);
+  background: rgba(201,99,66,0.04); border: 1px solid rgba(201,99,66,0.15);
   border-radius: 12px; font-size: 13px; line-height: 1.75; color: var(--text);
 }
-.ai-result h4 { font-size: 13px; font-weight: 700; color: #1565c0; margin: 12px 0 4px; }
+.ai-result h4 { font-size: 13px; font-weight: 700; color: var(--primary); margin: 12px 0 4px; }
 .ai-result p { margin: 0 0 8px; }
 </style>
