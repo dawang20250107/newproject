@@ -31,6 +31,30 @@ const maxLevel = computed(() => {
 })
 const canExport = computed(() => auth.canView('export'))
 
+// ── 5 key financial KPIs ─────────────────────────────────────────────────────
+const KPI_DEFS = [
+  { key: '主营业务收入', color: '#2e7d32' },
+  { key: '主营业务成本', color: '#c62828' },
+  { key: '运营毛利',    color: '#1565c0', calc: true },
+  { key: '经营毛利',    color: '#6a1b9a', calc: true },
+  { key: '经营净利',    color: '#e65100', calc: true },
+]
+const kpis = computed(() => {
+  if (!data.value?.rows) return []
+  const map = {}
+  for (const row of data.value.rows) map[row.l1_name] = row.amount
+  return KPI_DEFS.map(d => ({ ...d, amount: map[d.key] ?? null }))
+    .filter(d => d.amount !== null)
+})
+
+function fmtKpi(v) {
+  if (v === null || v === undefined) return '—'
+  const abs = Math.abs(v)
+  if (abs >= 100000000) return (v / 100000000).toFixed(2) + ' 亿'
+  if (abs >= 10000) return (v / 10000).toFixed(2) + ' 万'
+  return v.toFixed(2)
+}
+
 async function load() {
   loading.value = true
   loadErr.value = ''
@@ -104,19 +128,19 @@ onMounted(load)
     <div v-if="loading" class="empty"><div class="icon">⏳</div>加载中…</div>
     <div v-else-if="loadErr" class="empty" style="color:var(--danger)"><div class="icon">⚠️</div>{{ loadErr }}</div>
     <template v-else-if="data">
-      <!-- KPIs -->
-      <div class="kpi-grid">
-        <div class="kpi-card">
-          <div class="label">本期科目数</div>
-          <div class="value">{{ data.rows?.length || 0 }}</div>
-          <div class="sub">一级科目合计</div>
-        </div>
-        <div class="kpi-card">
-          <div class="label">{{ data.total_label || '合计金额' }}</div>
-          <div class="value" :style="data.total < 0 ? 'color:var(--danger)' : 'color:var(--success)'">
-            {{ Math.abs(data.total) >= 10000 ? (data.total / 10000).toFixed(2) + ' 万' : (data.total?.toFixed(2) || '0') }}
-          </div>
-          <div class="sub">{{ data.year }}年{{ data.month }}月{{ data.bu ? ' · ' + data.bu : ' · 全部事业部' }}</div>
+      <!-- 关键财务指标 KPIs -->
+      <div v-if="kpis.length" class="kpi-grid kpi-5">
+        <div
+          v-for="kpi in kpis" :key="kpi.key"
+          class="kpi-card"
+          :class="{ 'kpi-calc': kpi.calc }"
+        >
+          <div class="label">{{ kpi.key }}</div>
+          <div
+            class="value"
+            :style="`color:${kpi.amount < 0 ? 'var(--danger)' : kpi.color}`"
+          >{{ fmtKpi(kpi.amount) }}</div>
+          <div class="sub">{{ data.year }}年{{ data.month }}月{{ data.bu ? ' · ' + data.bu : '' }}</div>
         </div>
       </div>
 
@@ -141,4 +165,9 @@ onMounted(load)
 }
 .dept-chip:hover { border-color: var(--primary); color: var(--primary); }
 .dept-chip.on { border-color: var(--primary); background: rgba(201,99,66,.1); color: var(--primary); font-weight: 600; }
+
+.kpi-5 { grid-template-columns: repeat(5, 1fr) !important; }
+@media (max-width: 900px) { .kpi-5 { grid-template-columns: repeat(3, 1fr) !important; } }
+@media (max-width: 560px) { .kpi-5 { grid-template-columns: repeat(2, 1fr) !important; } }
+.kpi-calc { border-left: 3px solid rgba(201,99,66,.3); }
 </style>

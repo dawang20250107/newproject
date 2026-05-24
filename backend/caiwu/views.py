@@ -828,6 +828,227 @@ def batch_template(request):
     return _build_excel_response(wb, '财务数据导入模板.xlsx')
 
 
+# ── Kingdee 部门明细表 format detection ──────────────────────────────────────
+
+_KD_ACCT_KW   = ['科目名称', '科目全称', '一级科目名称', '一级科目']
+_KD_DEPT_KW   = ['部门']
+_KD_DEBIT_KW  = ['本期借方', '借方发生额', '本期发生(借', '发生额(借', '本月发生额(借']
+_KD_CREDIT_KW = ['本期贷方', '贷方发生额', '本期发生(贷', '发生额(贷', '本月发生额(贷']
+_KD_AMT_KW    = ['本期金额', '本月发生额', '发生额合计', '本年金额']
+_KD_L3_KW     = ['明细科目', '三级科目', '科目明细', '子目', '小科目']
+_KD_SKIP_KW   = ['合计', '小计', '总计', '期末', '期初', '余额', '科目代码', '科目编码', '编码']
+
+
+def _detect_kingdee_format(ws):
+    """Scan first 12 rows for Kingdee-style headers.
+    Returns (data_start_row, col_map) or (None, {}).
+    col_map keys: account, dept, debit(opt), credit(opt), amount(opt), l3(opt)
+    """
+    def hit(val, kws):
+        return any(k in val for k in kws)
+
+    for ri in range(1, min(13, ws.max_row + 1)):
+        cm = {}
+        for ci in range(1, min(ws.max_column + 1, 40)):
+            v = str(ws.cell(row=ri, column=ci).value or '').strip()
+            if not v:
+                continue
+            if 'account' not in cm and hit(v, _KD_ACCT_KW):
+                cm['account'] = ci
+            elif 'dept' not in cm and hit(v, _KD_DEPT_KW):
+                cm['dept'] = ci
+            elif 'debit' not in cm and hit(v, _KD_DEBIT_KW):
+                cm['debit'] = ci
+            elif 'credit' not in cm and hit(v, _KD_CREDIT_KW):
+                cm['credit'] = ci
+            elif 'amount' not in cm and hit(v, _KD_AMT_KW):
+                cm['amount'] = ci
+            elif 'l3' not in cm and hit(v, _KD_L3_KW):
+                cm['l3'] = ci
+        has_amount = ('debit' in cm and 'credit' in cm) or 'amount' in cm
+        if 'account' in cm and 'dept' in cm and has_amount:
+            return ri + 1, cm
+    return None, {}
+
+
+def _parse_kingdee_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map):
+    """Parse rows using detected Kingdee column map. Returns (parsed_rows, errors)."""
+    errors = []
+    parsed = []
+
+    for ri in range(data_start, ws.max_row + 1):
+        def cv(col):
+            return str(ws.cell(row=ri, column=col).value or '').strip()
+
+        def cn(col):
+            try:
+                return Decimal(str(ws.cell(row=ri, column=col).value or 0))
+            except (InvalidOperation, TypeError):
+                return Decimal(0)
+
+        acct = cv(cm['account'])
+        dept = cv(cm['dept'])
+
+        if not acct and not dept:
+            continue
+        if not acct or any(k in acct for k in _KD_SKIP_KW):
+            continue
+
+        # Compute amount (store as positive; abs(net) covers both directions)
+        if 'debit' in cm and 'credit' in cm:
+            amount = abs(cn(cm['credit']) - cn(cm['debit']))
+        else:
+            amount = abs(cn(cm['amount']))
+
+        if amount == 0:
+            continue
+
+        # Match L1: exact first, then partial (name-in-cell or cell-in-name)
+        l1 = l1_map.get(acct)
+        matched_name = acct
+        if not l1:
+            for name, cat in l1_map.items():
+                if name in acct or acct in name:
+                    l1 = cat
+                    matched_name = name
+                    break
+        if not l1:
+            errors.append(f'第{ri}行：科目"{acct}"未匹配到一级科目（已跳过）')
+            continue
+        if l1.is_calculated:
+            continue
+
+        l2 = None
+        if dept:
+            if dept not in l2_map:
+                l2_obj = L2Category(business_unit=bu, name=dept, sort_order=len(l2_map))
+                l2_obj.save()
+                l2_map[dept] = l2_obj
+            l2 = l2_map[dept]
+
+        l3 = None
+        l3_name = cv(cm['l3']) if 'l3' in cm else ''
+        if l3_name:
+            key = (l1.id, l3_name)
+            if key not in l3_map:
+                l3_obj = L3Category(
+                    business_unit=bu, l1_category=l1,
+                    name=l3_name, sort_order=len(l3_map),
+                )
+                l3_obj.save()
+                l3_map[key] = l3_obj
+            l3 = l3_map[key]
+
+        parsed.append({
+            'l1': l1, 'l2': l2, 'l3': l3, 'amount': amount,
+            'l1_name': matched_name, 'l2_name': dept, 'l3_name': l3_name,
+        })
+
+    return parsed, errors
+
+
+def _parse_template_rows(ws, bu, l1_map, l2_map, l3_map):
+    """Parse the KXT 4-column custom template format. Returns (parsed_rows, errors)."""
+    errors = []
+    parsed = []
+
+    for ri in range(2, ws.max_row + 1):
+        l1_name = str(ws.cell(row=ri, column=1).value or '').strip()
+        l2_name = str(ws.cell(row=ri, column=2).value or '').strip()
+        l3_name = str(ws.cell(row=ri, column=3).value or '').strip()
+        amt_raw = ws.cell(row=ri, column=4).value
+
+        if not l1_name and not l2_name and not l3_name and amt_raw is None:
+            continue
+
+        if not l1_name:
+            errors.append(f'第{ri}行：一级科目不能为空')
+            continue
+        if l1_name not in l1_map:
+            errors.append(f'第{ri}行：一级科目"{l1_name}"不存在，请先在设置中添加')
+            continue
+        if l1_map[l1_name].is_calculated:
+            continue  # skip calculated rows silently
+
+        try:
+            amount = Decimal(str(amt_raw))
+        except (InvalidOperation, TypeError):
+            errors.append(f'第{ri}行：金额"{amt_raw}"格式错误')
+            continue
+
+        l1 = l1_map[l1_name]
+        l2 = None
+        l3 = None
+
+        if l2_name:
+            if l2_name not in l2_map:
+                l2_obj = L2Category(business_unit=bu, name=l2_name, sort_order=len(l2_map))
+                l2_obj.save()
+                l2_map[l2_name] = l2_obj
+            l2 = l2_map[l2_name]
+
+        if l3_name:
+            key = (l1.id, l3_name)
+            if key not in l3_map:
+                l3_obj = L3Category(
+                    business_unit=bu, l1_category=l1, name=l3_name, sort_order=len(l3_map),
+                )
+                l3_obj.save()
+                l3_map[key] = l3_obj
+            l3 = l3_map[key]
+
+        parsed.append({
+            'l1': l1, 'l2': l2, 'l3': l3, 'amount': amount,
+            'l1_name': l1_name, 'l2_name': l2_name, 'l3_name': l3_name,
+        })
+
+    return parsed, errors
+
+
+def _compute_pl_check(parsed_rows):
+    """Compute P&L KPIs + L1/L2 summaries from uploaded rows for reconciliation display."""
+    from collections import defaultdict
+
+    raw = defaultdict(Decimal)
+    l2_totals = defaultdict(lambda: defaultdict(Decimal))
+    for r in parsed_rows:
+        raw[r['l1_name']] += r['amount']
+        l2_totals[r['l1_name']][r['l2_name'] or '（无项目部）'] += r['amount']
+
+    l1_cats = list(L1Category.objects.all())
+    name_map = {}
+    l1_summary = []
+
+    for l1 in l1_cats:
+        if l1.is_calculated:
+            formula = _CALC_FORMULAS.get(l1.name)
+            val = float(formula(name_map)) if formula else 0.0
+        else:
+            val = float(raw.get(l1.name, 0))
+        name_map[l1.name] = val
+        if val != 0 or l1.is_calculated:
+            l1_summary.append({
+                'name': l1.name, 'amount': round(val, 2),
+                'is_calculated': l1.is_calculated,
+            })
+
+    l2_summary = []
+    for l1_name, depts in l2_totals.items():
+        for dept_name, amt in sorted(depts.items()):
+            if float(amt) != 0:
+                l2_summary.append({
+                    'l1_name': l1_name,
+                    'l2_name': dept_name,
+                    'amount': round(float(amt), 2),
+                })
+
+    KPI_ORDER = ['主营业务收入', '主营业务成本', '运营毛利', '经营毛利', '经营净利']
+    nm = {r['name']: r for r in l1_summary}
+    kpis = [nm[k] for k in KPI_ORDER if k in nm]
+
+    return {'kpis': kpis, 'l1_summary': l1_summary, 'l2_summary': l2_summary}
+
+
 @cw_required()
 def batch_upload(request):
     if request.method != 'POST':
@@ -866,114 +1087,59 @@ def batch_upload(request):
     except Exception:
         return err('文件格式错误，请使用Excel(.xlsx)格式')
 
-    # Validate headers
-    headers = [str(ws.cell(row=1, column=c).value or '').strip() for c in range(1, 5)]
-    if headers != EXCEL_HEADERS:
-        return err(f'表头不符合模板格式，期望：{EXCEL_HEADERS}，实际：{headers}')
-
-    # Load all L1 categories for matching
     l1_map = {c.name: c for c in L1Category.objects.all()}
     if not l1_map:
         return err('系统尚未配置一级科目，请先在「设置」中添加一级科目')
 
-    # Load existing L2/L3 for this BU (will auto-create missing)
     l2_map = {c.name: c for c in L2Category.objects.filter(business_unit=bu)}
-    # L3 map keyed by (l1_id_or_None, name)
     l3_map = {(c.l1_category_id, c.name): c for c in L3Category.objects.filter(business_unit=bu)}
 
-    errors = []
-    preview_rows = []
-    parsed_rows = []
+    # Auto-detect format: try KXT template first, then Kingdee
+    row1_headers = [str(ws.cell(row=1, column=c).value or '').strip() for c in range(1, 5)]
+    if row1_headers == EXCEL_HEADERS:
+        parsed_rows, errors = _parse_template_rows(ws, bu, l1_map, l2_map, l3_map)
+        fmt = 'template'
+    else:
+        data_start, cm = _detect_kingdee_format(ws)
+        if data_start is None:
+            return err(
+                '无法识别文件格式。支持两种格式：\n'
+                '① KXT模板（四列：一级科目/二级项目部/三级科目明细/金额）\n'
+                '② 金蝶部门明细表（含"科目名称"+"部门"+"本期借方/贷方"列）'
+            )
+        parsed_rows, errors = _parse_kingdee_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map)
+        fmt = 'kingdee'
 
-    for row_idx in range(2, ws.max_row + 1):
-        l1_name = str(ws.cell(row=row_idx, column=1).value or '').strip()
-        l2_name = str(ws.cell(row=row_idx, column=2).value or '').strip()
-        l3_name = str(ws.cell(row=row_idx, column=3).value or '').strip()
-        amt_raw = ws.cell(row=row_idx, column=4).value
-
-        if not l1_name and not l2_name and not l3_name and amt_raw is None:
-            continue  # skip blank rows
-
-        if not l1_name:
-            errors.append(f'第{row_idx}行：一级科目不能为空')
-            continue
-        if l1_name not in l1_map:
-            errors.append(f'第{row_idx}行：一级科目"{l1_name}"不存在，请先在设置中添加')
-            continue
-        if l1_map[l1_name].is_calculated:
-            errors.append(f'第{row_idx}行："{l1_name}"是计算行（由系统自动推算），不能直接导入数据')
-            continue
-
-        try:
-            amount = Decimal(str(amt_raw))
-        except (InvalidOperation, TypeError):
-            errors.append(f'第{row_idx}行：金额"{amt_raw}"格式错误')
-            continue
-
-        l1 = l1_map[l1_name]
-        l2 = None
-        l3 = None
-
-        if l2_name:
-            if l2_name not in l2_map:
-                l2_obj = L2Category(business_unit=bu, name=l2_name, sort_order=len(l2_map))
-                l2_obj.save()
-                l2_map[l2_name] = l2_obj
-            l2 = l2_map[l2_name]
-
-        if l3_name:
-            l1_id = l1.id
-            key = (l1_id, l3_name)
-            if key not in l3_map:
-                l3_obj = L3Category(
-                    business_unit=bu, l1_category=l1, name=l3_name,
-                    sort_order=len(l3_map),
-                )
-                l3_obj.save()
-                l3_map[key] = l3_obj
-            l3 = l3_map[key]
-
-        parsed_rows.append({
-            'l1': l1, 'l2': l2, 'l3': l3, 'amount': amount,
-            'l1_name': l1_name, 'l2_name': l2_name, 'l3_name': l3_name,
-        })
-        if len(preview_rows) < 10:
-            preview_rows.append({
-                'l1': l1_name, 'l2': l2_name, 'l3': l3_name,
-                'amount': float(amount),
-            })
-
-    if errors:
-        return err(f'文件存在{len(errors)}处错误：' + '；'.join(errors[:5]) + ('…' if len(errors) > 5 else ''))
+    # Non-fatal warnings: show up to 5, but don't block import
+    warnings = errors[:10] if errors else []
 
     if not parsed_rows:
-        return err('文件中没有有效数据行')
+        hint = '；'.join(errors[:3]) if errors else '文件中没有有效数据行'
+        return err(hint)
 
-    # Create draft batch
+    # Compute P&L reconciliation before saving
+    pl_check = _compute_pl_check(parsed_rows)
+
+    # Create draft batch + entries
     uploader = CaiwuUser.objects.get(id=request.cw_uid)
     batch = ImportBatch.objects.create(
-        business_unit=bu,
-        year=year,
-        month=month,
+        business_unit=bu, year=year, month=month,
         status=ImportBatch.STATUS_DRAFT,
         uploaded_by=uploader,
         row_count=len(parsed_rows),
         file_name=f.name,
     )
-    entries = [
-        FinancialEntry(
-            batch=batch,
-            l1=r['l1'], l2=r['l2'], l3=r['l3'],
-            amount=r['amount'],
-        )
+    FinancialEntry.objects.bulk_create([
+        FinancialEntry(batch=batch, l1=r['l1'], l2=r['l2'], l3=r['l3'], amount=r['amount'])
         for r in parsed_rows
-    ]
-    FinancialEntry.objects.bulk_create(entries)
+    ])
 
     return ok({
         'batch': batch.to_dict(),
-        'preview': preview_rows,
         'row_count': len(parsed_rows),
+        'fmt': fmt,
+        'warnings': warnings,
+        'pl_check': pl_check,
     })
 
 
