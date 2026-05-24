@@ -25,7 +25,8 @@ logger = logging.getLogger('caiwu')
 
 BUILD_VERSION = '2026-05-24.2'
 
-EXCEL_HEADERS = ['一级科目', '二级项目部', '三级科目明细', '金额(元)']
+EXCEL_HEADERS = ['一级科目', '二级项目部', '三级科目明细', '借方(元)', '贷方(元)']
+PL_HEADERS = ['科目名称', '本期金额']  # 利润表模板格式
 IMPORT_SIZE_LIMIT = 5 * 1024 * 1024  # 5 MB
 
 # Hardcoded KXT P&L calculation formulas.
@@ -802,16 +803,23 @@ def batch_template(request):
         cell.font = header_font
         cell.alignment = Alignment(horizontal='center')
 
-    # Example row
+    # Example rows (revenue + cost)
     ws.cell(row=2, column=1, value='主营业务收入')
     ws.cell(row=2, column=2, value='甲项目部（可选）')
-    ws.cell(row=2, column=3, value='工程款（可选）')
-    ws.cell(row=2, column=4, value=1000000.00)
+    ws.cell(row=2, column=3, value='（可选）')
+    ws.cell(row=2, column=4, value=0)         # 借方
+    ws.cell(row=2, column=5, value=1000000.00)  # 贷方（收入在贷方）
+    ws.cell(row=3, column=1, value='主营业务成本')
+    ws.cell(row=3, column=2, value='甲项目部（可选）')
+    ws.cell(row=3, column=3, value='（可选）')
+    ws.cell(row=3, column=4, value=600000.00)  # 借方（成本在借方）
+    ws.cell(row=3, column=5, value=0)
 
     ws.column_dimensions['A'].width = 20
     ws.column_dimensions['B'].width = 20
     ws.column_dimensions['C'].width = 24
-    ws.column_dimensions['D'].width = 16
+    ws.column_dimensions['D'].width = 14
+    ws.column_dimensions['E'].width = 14
 
     # Instruction sheet
     ws2 = wb.create_sheet('填写说明')
@@ -820,7 +828,13 @@ def batch_template(request):
         ['一级科目', '必须与系统中已配置的一级科目名称完全一致', '必填'],
         ['二级项目部', '该事业部下的项目部名称，系统会自动创建不存在的项目部', '选填'],
         ['三级科目明细', '成本费用科目明细，系统会自动创建不存在的明细', '选填'],
-        ['金额(元)', '数值，可为负数（如成本类）', '必填'],
+        ['借方(元)', '会计借方发生额（成本费用在此列）', '二选一'],
+        ['贷方(元)', '会计贷方发生额（收入在此列）', '二选一'],
+        ['', '', ''],
+        ['注意：借贷方向说明', '', ''],
+        ['收入类科目（主营业务收入等）', '贷方填金额，借方填0', ''],
+        ['成本费用类科目', '借方填金额，贷方填0', ''],
+        ['红字冲销（负数）', '直接在对应列填负数', ''],
         ['', '', ''],
         ['注意事项', '', ''],
         ['1. 上传时须指定事业部、年份、月份', '', ''],
@@ -832,6 +846,21 @@ def batch_template(request):
     ws2.column_dimensions['A'].width = 18
     ws2.column_dimensions['B'].width = 40
     ws2.column_dimensions['C'].width = 10
+
+    # Profit & Loss template sheet
+    ws3 = wb.create_sheet('利润表模板')
+    pl_fill = PatternFill(start_color='1565C0', end_color='1565C0', fill_type='solid')
+    for col, h in enumerate(PL_HEADERS, 1):
+        cell = ws3.cell(row=1, column=col, value=h)
+        cell.fill = pl_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal='center')
+    l1_cats = list(L1Category.objects.order_by('sort_order', 'id').all())
+    for ri, cat in enumerate(l1_cats, 2):
+        ws3.cell(row=ri, column=1, value=cat.name)
+        ws3.cell(row=ri, column=2, value=0)
+    ws3.column_dimensions['A'].width = 22
+    ws3.column_dimensions['B'].width = 16
 
     return _build_excel_response(wb, '财务数据导入模板.xlsx')
 
@@ -902,13 +931,16 @@ def _parse_kingdee_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map):
         if not acct or any(k in acct for k in _KD_SKIP_KW):
             continue
 
-        # Compute amount (store as positive; abs(net) covers both directions)
+        # Accounting direction: revenue (sign=+1) grows on credit; cost (sign=-1) grows on debit.
+        # Formula: sign * (credit − debit) yields correct positive magnitude for normal entries
+        # and naturally handles 红字 (negative debit/credit reversal entries).
+        # Zero-amount rows are skipped below — do NOT abs() here so reversals reduce totals.
         if 'debit' in cm and 'credit' in cm:
-            amount = abs(cn(cm['credit']) - cn(cm['debit']))
+            raw_net = cn(cm['credit']) - cn(cm['debit'])
         else:
-            amount = abs(cn(cm['amount']))
+            raw_net = cn(cm['amount'])
 
-        if amount == 0:
+        if raw_net == 0:
             continue
 
         # Match L1: exact first, then partial (name-in-cell or cell-in-name)
@@ -947,6 +979,9 @@ def _parse_kingdee_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map):
                 l3_map[key] = l3_obj
             l3 = l3_map[key]
 
+        # Apply accounting sign: revenue sign=+1 → amount=credit-debit; cost sign=-1 → amount=debit-credit
+        amount = Decimal(str(l1.sign)) * raw_net
+
         parsed.append({
             'l1': l1, 'l2': l2, 'l3': l3, 'amount': amount,
             'l1_name': matched_name, 'l2_name': dept, 'l3_name': l3_name,
@@ -956,18 +991,37 @@ def _parse_kingdee_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map):
 
 
 def _parse_template_rows(ws, bu, l1_map, l2_map, l3_map):
-    """Parse the KXT 4-column custom template format. Returns (parsed_rows, errors)."""
+    """Parse the KXT 5-column template format (L1 / L2 / L3 / 借方 / 贷方).
+    Also accepts the legacy 4-column format (L1 / L2 / L3 / 金额) for backward compatibility.
+    """
     errors = []
     parsed = []
+
+    # Detect old 4-column vs new 5-column format from header row
+    h4 = str(ws.cell(row=1, column=4).value or '').strip()
+    h5 = str(ws.cell(row=1, column=5).value or '').strip()
+    five_col = bool(h5)  # if column 5 has a header it's the new format
+
+    def _to_dec(val):
+        try:
+            return Decimal(str(val))
+        except (InvalidOperation, TypeError):
+            return Decimal(0)
 
     for ri in range(2, ws.max_row + 1):
         l1_name = str(ws.cell(row=ri, column=1).value or '').strip()
         l2_name = str(ws.cell(row=ri, column=2).value or '').strip()
         l3_name = str(ws.cell(row=ri, column=3).value or '').strip()
-        amt_raw = ws.cell(row=ri, column=4).value
 
-        if not l1_name and not l2_name and not l3_name and amt_raw is None:
-            continue
+        if five_col:
+            debit_raw = ws.cell(row=ri, column=4).value
+            credit_raw = ws.cell(row=ri, column=5).value
+            if not l1_name and debit_raw is None and credit_raw is None:
+                continue
+        else:
+            amt_raw = ws.cell(row=ri, column=4).value
+            if not l1_name and amt_raw is None:
+                continue
 
         if not l1_name:
             errors.append(f'第{ri}行：一级科目不能为空')
@@ -975,34 +1029,163 @@ def _parse_template_rows(ws, bu, l1_map, l2_map, l3_map):
         if l1_name not in l1_map:
             errors.append(f'第{ri}行：一级科目"{l1_name}"不存在，请先在设置中添加')
             continue
-        if l1_map[l1_name].is_calculated:
-            continue  # skip calculated rows silently
-
-        try:
-            amount = Decimal(str(amt_raw))
-        except (InvalidOperation, TypeError):
-            errors.append(f'第{ri}行：金额"{amt_raw}"格式错误')
+        l1 = l1_map[l1_name]
+        if l1.is_calculated:
             continue
 
-        l1 = l1_map[l1_name]
+        # Compute amount using accounting direction (same as Kingdee parser)
+        if five_col:
+            debit = _to_dec(debit_raw)
+            credit = _to_dec(credit_raw)
+            raw_net = credit - debit
+        else:
+            # Legacy format: positive amount supplied directly (no sign adjustment needed)
+            try:
+                raw_net = Decimal(str(ws.cell(row=ri, column=4).value))
+                # For backward compat: assume amount already represents the correct magnitude
+                # (revenue positive, cost positive). Convert to sign * (credit-debit) space:
+                # amount = sign * raw_net / sign = raw_net, so just use raw_net directly.
+                # We still apply sign so totals are consistent: sign * raw_net / sign = raw_net / 1
+                # Actually for legacy we store raw_net directly without sign adjustment.
+                amount = raw_net
+            except (InvalidOperation, TypeError):
+                errors.append(f'第{ri}行：金额格式错误')
+                continue
+            l2 = None
+            l3 = None
+            if l2_name:
+                if l2_name not in l2_map:
+                    l2_obj = L2Category(business_unit=bu, name=l2_name, sort_order=len(l2_map))
+                    l2_obj.save()
+                    l2_map[l2_name] = l2_obj
+                l2 = l2_map[l2_name]
+            if l3_name:
+                key = (l1.id, l3_name)
+                if key not in l3_map:
+                    l3_obj = L3Category(business_unit=bu, l1_category=l1, name=l3_name, sort_order=len(l3_map))
+                    l3_obj.save()
+                    l3_map[key] = l3_obj
+                l3 = l3_map[key]
+            parsed.append({'l1': l1, 'l2': l2, 'l3': l3, 'amount': amount,
+                           'l1_name': l1_name, 'l2_name': l2_name, 'l3_name': l3_name})
+            continue
+
+        # Five-column path: apply accounting direction
+        amount = Decimal(str(l1.sign)) * raw_net
+
         l2 = None
         l3 = None
-
         if l2_name:
             if l2_name not in l2_map:
                 l2_obj = L2Category(business_unit=bu, name=l2_name, sort_order=len(l2_map))
                 l2_obj.save()
                 l2_map[l2_name] = l2_obj
             l2 = l2_map[l2_name]
-
         if l3_name:
             key = (l1.id, l3_name)
             if key not in l3_map:
-                l3_obj = L3Category(
-                    business_unit=bu, l1_category=l1, name=l3_name, sort_order=len(l3_map),
-                )
+                l3_obj = L3Category(business_unit=bu, l1_category=l1, name=l3_name, sort_order=len(l3_map))
                 l3_obj.save()
                 l3_map[key] = l3_obj
+            l3 = l3_map[key]
+
+        parsed.append({
+            'l1': l1, 'l2': l2, 'l3': l3, 'amount': amount,
+            'l1_name': l1_name, 'l2_name': l2_name, 'l3_name': l3_name,
+        })
+
+    return parsed, errors
+
+
+def _parse_profit_loss_rows(ws, l1_map):
+    """Parse 利润表 (P&L statement) in standard 2-column format: 科目名称 + 本期金额.
+    Returns dict {l1_name: Decimal(amount)}.
+    """
+    result = {}
+    for ri in range(2, ws.max_row + 1):
+        name = str(ws.cell(row=ri, column=1).value or '').strip()
+        amt_raw = ws.cell(row=ri, column=2).value
+        if not name:
+            continue
+        # Flexible name matching against L1 categories
+        matched = l1_map.get(name)
+        if not matched:
+            for k in l1_map:
+                if k in name or name in k:
+                    matched = l1_map[k]
+                    name = k
+                    break
+        if not matched:
+            continue
+        try:
+            result[name] = Decimal(str(amt_raw))
+        except (InvalidOperation, TypeError):
+            pass
+    return result
+
+
+def _parse_json_rows(data_str, bu, l1_map, l2_map, l3_map):
+    """Parse JSON array import. Each element: {l1, l2?, l3?, debit?, credit?, amount?}.
+    Returns (parsed_rows, errors).
+    """
+    errors = []
+    parsed = []
+    try:
+        rows = json.loads(data_str)
+        if not isinstance(rows, list):
+            return [], ['JSON 格式错误：根节点需为数组']
+    except json.JSONDecodeError as e:
+        return [], [f'JSON 解析失败：{e}']
+
+    def _to_dec(v):
+        try:
+            return Decimal(str(v))
+        except (InvalidOperation, TypeError):
+            return Decimal(0)
+
+    for i, row in enumerate(rows, 1):
+        l1_name = str(row.get('l1', '')).strip()
+        l2_name = str(row.get('l2', '')).strip()
+        l3_name = str(row.get('l3', '')).strip()
+
+        if not l1_name:
+            errors.append(f'第{i}项：缺少 l1 字段')
+            continue
+        l1 = l1_map.get(l1_name)
+        if not l1:
+            for k, cat in l1_map.items():
+                if k in l1_name or l1_name in k:
+                    l1 = cat
+                    l1_name = k
+                    break
+        if not l1:
+            errors.append(f'第{i}项：l1="{l1_name}" 未匹配到一级科目')
+            continue
+        if l1.is_calculated:
+            continue
+
+        if 'amount' in row:
+            amount = _to_dec(row['amount'])
+        else:
+            debit = _to_dec(row.get('debit', 0))
+            credit = _to_dec(row.get('credit', 0))
+            amount = Decimal(str(l1.sign)) * (credit - debit)
+
+        l2 = None
+        if l2_name:
+            if l2_name not in l2_map:
+                obj = L2Category(business_unit=bu, name=l2_name, sort_order=len(l2_map))
+                obj.save()
+                l2_map[l2_name] = obj
+            l2 = l2_map[l2_name]
+
+        l3 = None
+        if l3_name:
+            key = (l1.id, l3_name)
+            if key not in l3_map:
+                obj = L3Category(business_unit=bu, l1_category=l1, name=l3_name, sort_order=len(l3_map))
+                obj.save()
+                l3_map[key] = obj
             l3 = l3_map[key]
 
         parsed.append({
@@ -1082,58 +1265,97 @@ def batch_upload(request):
     except Exception:
         return err('年份或月份无效')
 
+    batch_type = request.POST.get('batch_type', ImportBatch.TYPE_DEPT).strip()
+    if batch_type not in (ImportBatch.TYPE_DEPT, ImportBatch.TYPE_PL):
+        batch_type = ImportBatch.TYPE_DEPT
+
     f = request.FILES.get('file')
     if not f:
         return err('请上传文件')
     if f.size > IMPORT_SIZE_LIMIT:
         return err(f'文件超过5MB限制（当前{f.size // 1024 // 1024}MB）')
 
-    try:
-        import openpyxl
-        wb = openpyxl.load_workbook(f, data_only=True)
-        ws = wb.active
-    except Exception:
-        return err('文件格式错误，请使用Excel(.xlsx)格式')
-
-    l1_map = {c.name: c for c in L1Category.objects.all()}
+    l1_map = {c.name: c for c in L1Category.objects.order_by('sort_order', 'id')}
     if not l1_map:
         return err('系统尚未配置一级科目，请先在「设置」中添加一级科目')
 
-    l2_map = {c.name: c for c in L2Category.objects.filter(business_unit=bu)}
-    l3_map = {(c.l1_category_id, c.name): c for c in L3Category.objects.filter(business_unit=bu)}
+    fname = f.name.lower()
 
-    # Auto-detect format: try KXT template first, then Kingdee
-    row1_headers = [str(ws.cell(row=1, column=c).value or '').strip() for c in range(1, 5)]
-    if row1_headers == EXCEL_HEADERS:
-        parsed_rows, errors = _parse_template_rows(ws, bu, l1_map, l2_map, l3_map)
-        fmt = 'template'
+    # ── JSON import ───────────────────────────────────────────────────────────
+    if fname.endswith('.json'):
+        l2_map = {c.name: c for c in L2Category.objects.filter(business_unit=bu)}
+        l3_map = {(c.l1_category_id, c.name): c for c in L3Category.objects.filter(business_unit=bu)}
+        data_str = f.read().decode('utf-8', errors='replace')
+        parsed_rows, errors = _parse_json_rows(data_str, bu, l1_map, l2_map, l3_map)
+        fmt = 'json'
+
+    # ── 利润表 (P&L reference) ─────────────────────────────────────────────────
+    elif batch_type == ImportBatch.TYPE_PL:
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(f, data_only=True)
+            ws = wb.active
+        except Exception:
+            return err('文件格式错误，请使用Excel(.xlsx)格式')
+        pl_data = _parse_profit_loss_rows(ws, l1_map)
+        if not pl_data:
+            return err('未能从利润表中读取到有效科目金额，请检查格式')
+        # Convert pl_data → parsed_rows stub so existing batch/entry storage works
+        parsed_rows = []
+        for l1_name, amt in pl_data.items():
+            l1 = l1_map.get(l1_name)
+            if l1 and not l1.is_calculated:
+                parsed_rows.append({'l1': l1, 'l2': None, 'l3': None, 'amount': amt,
+                                    'l1_name': l1_name, 'l2_name': '', 'l3_name': ''})
+        errors = []
+        fmt = 'profit_loss'
+
+    # ── Excel (Kingdee or KXT template) ─────────────────────────────────────
     else:
-        data_start, cm = _detect_kingdee_format(ws)
-        if data_start is None:
-            return err(
-                '无法识别文件格式。支持两种格式：\n'
-                '① KXT模板（四列：一级科目/二级项目部/三级科目明细/金额）\n'
-                '② 金蝶部门明细表（含"科目名称"+"部门"+"本期借方/贷方"列）'
-            )
-        parsed_rows, errors = _parse_kingdee_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map)
-        fmt = 'kingdee'
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(f, data_only=True)
+            ws = wb.active
+        except Exception:
+            return err('文件格式错误，请使用Excel(.xlsx)格式')
 
-    # Non-fatal warnings: show up to 5, but don't block import
+        l2_map = {c.name: c for c in L2Category.objects.filter(business_unit=bu)}
+        l3_map = {(c.l1_category_id, c.name): c for c in L3Category.objects.filter(business_unit=bu)}
+
+        row1_vals = [str(ws.cell(row=1, column=c).value or '').strip() for c in range(1, 6)]
+        # KXT template: first two cells match EXCEL_HEADERS (5-col) or legacy 4-col
+        is_kxt = (row1_vals[:5] == EXCEL_HEADERS or row1_vals[:4] == ['一级科目', '二级项目部', '三级科目明细', '金额(元)'])
+        if is_kxt:
+            parsed_rows, errors = _parse_template_rows(ws, bu, l1_map, l2_map, l3_map)
+            fmt = 'template'
+        else:
+            data_start, cm = _detect_kingdee_format(ws)
+            if data_start is None:
+                return err(
+                    '无法识别文件格式。支持三种格式：\n'
+                    '① KXT模板（借方/贷方两列）\n'
+                    '② 金蝶部门明细表（含"科目名称"+"部门"+"本期借方/贷方"列）\n'
+                    '③ JSON数组格式（.json文件）'
+                )
+            parsed_rows, errors = _parse_kingdee_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map)
+            fmt = 'kingdee'
+
+    # Non-fatal warnings: show first 10 but don't block import
     warnings = errors[:10] if errors else []
 
     if not parsed_rows:
         hint = '；'.join(errors[:3]) if errors else '文件中没有有效数据行'
         return err(hint)
 
-    # Compute P&L reconciliation before saving
-    pl_check = _compute_pl_check(parsed_rows)
+    # Compute P&L reconciliation preview (only meaningful for dept_detail uploads)
+    pl_check = _compute_pl_check(parsed_rows) if batch_type == ImportBatch.TYPE_DEPT else {}
 
-    # Create draft batch + entries atomically so a bulk_create failure
-    # doesn't leave an empty orphaned batch record.
+    # Create draft batch + entries atomically
     uploader = CaiwuUser.objects.get(id=request.cw_uid)
     with transaction.atomic(using='caiwu'):
         batch = ImportBatch.objects.create(
             business_unit=bu, year=year, month=month,
+            batch_type=batch_type,
             status=ImportBatch.STATUS_DRAFT,
             uploaded_by=uploader,
             row_count=len(parsed_rows),
@@ -1216,6 +1438,67 @@ def batch_detail(request, bid):
         return ok({'deleted': bid})
 
     return err('方法不允许', 405)
+
+
+@cw_required()
+def batch_submission_status(request):
+    """GET /batches/submission-status?year=&month=
+    Returns per-BU completion status: which of (部门明细表, 利润表) have been submitted/published.
+    """
+    if request.method != 'GET':
+        return err('方法不允许', 405)
+    year_s = request.GET.get('year', '').strip()
+    month_s = request.GET.get('month', '').strip()
+    try:
+        year = int(year_s)
+        month = int(month_s)
+        assert 2000 <= year <= 2100 and 1 <= month <= 12
+    except Exception:
+        return err('年份或月份无效')
+
+    # Visible BUs depend on role
+    if request.cw_role in ('super_admin', 'manager', 'general_manager'):
+        bus = BUSINESS_UNITS
+    else:
+        bus = [b for b in (request.cw_depts or []) if b in VALID_BUSINESS_UNITS]
+
+    # Fetch all batches for this period across visible BUs
+    batches_qs = ImportBatch.objects.filter(
+        business_unit__in=bus, year=year, month=month,
+    ).values('business_unit', 'batch_type', 'status', 'id', 'uploaded_at', 'uploaded_by__name')
+
+    # Build lookup: bu → {batch_type → {status, id, ...}}
+    lookup = {bu: {} for bu in bus}
+    for b in batches_qs:
+        bu = b['business_unit']
+        btype = b['batch_type']
+        existing = lookup[bu].get(btype)
+        # Keep the most recent / published one
+        if existing is None or b['status'] == 'published':
+            lookup[bu][btype] = {
+                'id': b['id'],
+                'status': b['status'],
+                'uploaded_at': b['uploaded_at'].isoformat() if b['uploaded_at'] else None,
+                'uploaded_by': b['uploaded_by__name'],
+            }
+
+    result = []
+    for bu in bus:
+        types = lookup[bu]
+        dept_info = types.get(ImportBatch.TYPE_DEPT)
+        pl_info = types.get(ImportBatch.TYPE_PL)
+        complete = (
+            dept_info is not None and dept_info['status'] == 'published' and
+            pl_info is not None and pl_info['status'] == 'published'
+        )
+        result.append({
+            'bu': bu,
+            'department_detail': dept_info,
+            'profit_loss': pl_info,
+            'complete': complete,
+        })
+
+    return ok({'year': year, 'month': month, 'bus': result})
 
 
 # ── report ───────────────────────────────────────────────────────────────────
@@ -1390,12 +1673,21 @@ def report(request):
     # Use 经营净利 as headline total; fall back to sum of raw rows
     profit_row = next((r for r in rows if r['l1_name'] == '经营净利'), None)
     total = profit_row['amount'] if profit_row else sum(
-        r['amount'] for r in rows if not r.get('is_calculated')
+        (r['amount'] for r in rows if not r.get('is_calculated')), Decimal(0)
     )
     total_label = '经营净利' if profit_row else '合计金额'
+
+    # Previous month KPIs for MoM comparison (level=1 only, lightweight)
+    prev_month = month - 1 if month > 1 else 12
+    prev_year = year if month > 1 else year - 1
+    prev_batches = _get_published_batches(bu_list, prev_year, prev_month)
+    prev_rows_l1 = _aggregate_report(prev_batches, 1)
+    prev_kpis = {r['l1_name']: float(r['amount']) for r in prev_rows_l1}
+
     return ok({
-        'rows': rows, 'total': total, 'total_label': total_label,
+        'rows': rows, 'total': float(total), 'total_label': total_label,
         'level': level, 'year': year, 'month': month, 'bu': bu_param or None,
+        'prev_kpis': prev_kpis, 'prev_year': prev_year, 'prev_month': prev_month,
     })
 
 
@@ -1616,46 +1908,44 @@ def chart_waterfall(request):
     base_name_map, base_id_map = _get_l1_totals(cmp_year, cmp_month)
     curr_name_map, curr_id_map = _get_l1_totals(year, month)
 
-    # Headline profit = 经营净利 if configured, else sum of raw entries
-    base_total = base_name_map.get('经营净利', sum(
-        v for l1 in l1_cats if not l1.is_calculated
-        for v in [base_id_map.get(l1.id, 0)]
-    ))
-    curr_total = curr_name_map.get('经营净利', sum(
-        v for l1 in l1_cats if not l1.is_calculated
-        for v in [curr_id_map.get(l1.id, 0)]
-    ))
+    def _safe_sum(id_map, cats):
+        return sum(id_map.get(l1.id, 0) or 0 for l1 in cats if not l1.is_calculated)
 
-    # Factor analysis using profit-driver raw L1 categories (not calculated rows).
-    # delta is sign-adjusted so positive always means "profit improved".
+    # Headline profit = 经营净利 if available; otherwise sum raw entries
+    base_total = base_name_map.get('经营净利') if '经营净利' in base_name_map else _safe_sum(base_id_map, l1_cats)
+    curr_total = curr_name_map.get('经营净利') if '经营净利' in curr_name_map else _safe_sum(curr_id_map, l1_cats)
+    base_total = base_total or 0
+    curr_total = curr_total or 0
+
+    # Factor analysis: profit-driver raw L1 categories (not calculated rows)
     drivers = [l1 for l1 in l1_cats if l1.is_profit_driver and not l1.is_calculated]
 
     factors = []
     for l1 in drivers:
-        base_v = base_id_map.get(l1.id, 0)
-        curr_v = curr_id_map.get(l1.id, 0)
+        base_v = base_id_map.get(l1.id) or 0
+        curr_v = curr_id_map.get(l1.id) or 0
         raw_delta = curr_v - base_v
-        # sign=-1 means cost: cost increase hurts profit → negate
-        profit_delta = raw_delta * l1.sign
+        profit_delta = raw_delta * l1.sign  # sign=-1 (cost) → cost increase → negative profit impact
         factors.append({
             'l1_id': l1.id,
             'name': l1.name,
-            'base': base_v,
-            'current': curr_v,
-            'delta': profit_delta,
+            'base': round(base_v, 2),
+            'current': round(curr_v, 2),
+            'delta': round(profit_delta, 2),
         })
 
-    # Waterfall items: start → factors → end
+    # Waterfall: base → factor deltas → current total
     waterfall = [
-        {'name': f'{cmp_year}年{cmp_month}月', 'value': base_total, 'type': 'base'},
+        {'name': f'{cmp_year}年{cmp_month}月', 'value': round(base_total, 2), 'type': 'base'},
     ]
     for f in factors:
-        waterfall.append({
-            'name': f['name'],
-            'value': f['delta'],
-            'type': 'increase' if f['delta'] >= 0 else 'decrease',
-        })
-    waterfall.append({'name': f'{year}年{month}月', 'value': curr_total, 'type': 'total'})
+        if f['delta'] != 0:  # skip zero-delta factors to reduce noise
+            waterfall.append({
+                'name': f['name'],
+                'value': f['delta'],
+                'type': 'increase' if f['delta'] >= 0 else 'decrease',
+            })
+    waterfall.append({'name': f'{year}年{month}月', 'value': round(curr_total, 2), 'type': 'total'})
 
     return ok({
         'bu': bu,
@@ -1664,3 +1954,200 @@ def chart_waterfall(request):
         'factors': factors,
         'waterfall': waterfall,
     })
+
+
+# ── AI analysis (DeepSeek) ───────────────────────────────────────────────────
+
+def _deepseek_chat(messages, timeout=90):
+    """Call DeepSeek chat completion API. Returns response text or raises."""
+    import requests as req_lib
+    resp = req_lib.post(
+        f'{settings.DEEPSEEK_BASE_URL}/chat/completions',
+        headers={
+            'Authorization': f'Bearer {settings.DEEPSEEK_API_KEY}',
+            'Content-Type': 'application/json',
+        },
+        json={
+            'model': settings.DEEPSEEK_MODEL,
+            'messages': messages,
+            'temperature': 0.3,
+            'max_tokens': 1800,
+        },
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp.json()['choices'][0]['message']['content']
+
+
+def _fmt_wan(v):
+    if v is None:
+        return '无数据'
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return '无数据'
+    sign = '-' if v < 0 else ''
+    abs_v = abs(v)
+    if abs_v >= 1e8:
+        return f'{sign}{abs_v/1e8:.2f}亿元'
+    if abs_v >= 1e4:
+        return f'{sign}{abs_v/1e4:.2f}万元'
+    return f'{sign}{abs_v:.2f}元'
+
+
+@csrf_exempt
+@cw_required()
+def report_ai_analysis(request):
+    """POST /report/ai-analysis
+    Body: {year, month, bu?, rows: [{l1_name, amount}], prev_kpis: {}}
+    Returns AI financial analysis text.
+    """
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    if not settings.DEEPSEEK_API_KEY:
+        return err('AI 分析未配置（缺少 DEEPSEEK_API_KEY）', 503)
+
+    body = _parse_json(request)
+    year = body.get('year')
+    month = body.get('month')
+    bu = body.get('bu') or '全集团'
+    rows = body.get('rows', [])
+    prev_kpis = body.get('prev_kpis', {})
+    bu_scope = body.get('bu_scope', '')  # 'all' means analyst sees all BUs
+
+    if not rows:
+        return err('请先加载报表数据再进行AI分析')
+
+    # Build KPI summary with MoM change
+    KPI_NAMES = ['主营业务收入', '主营业务成本', '运营毛利', '经营毛利', '经营净利']
+    kpi_map = {r['l1_name']: r.get('amount') for r in rows}
+
+    kpi_lines = []
+    for name in KPI_NAMES:
+        curr = kpi_map.get(name)
+        prev = prev_kpis.get(name)
+        line = f'  {name}：{_fmt_wan(curr)}'
+        if curr is not None and prev is not None and prev != 0:
+            delta_pct = (float(curr) - float(prev)) / abs(float(prev)) * 100
+            trend = '↑' if delta_pct > 0 else '↓'
+            line += f'（环比{trend}{abs(delta_pct):.1f}%，上月{_fmt_wan(prev)}）'
+        elif curr is not None and prev is not None:
+            line += f'（上月{_fmt_wan(prev)}，环比基数为零）'
+        kpi_lines.append(line)
+
+    # Other L1 items
+    other_lines = []
+    for r in rows:
+        if r['l1_name'] not in KPI_NAMES and not r.get('is_calculated'):
+            other_lines.append(f'  {r["l1_name"]}：{_fmt_wan(r.get("amount"))}')
+
+    scope_note = ''
+    if bu_scope == 'all':
+        scope_note = '（以下为全集团合并口径，已排除集团总部内部往来，代表5个核心事业部合并情况）'
+
+    prompt = f"""你是一位资深企业财务分析师，请对以下 {year}年{month}月 {bu} 的财务数据进行专业分析。{scope_note}
+
+【关键财务指标】
+{chr(10).join(kpi_lines)}
+
+【其他科目明细】
+{chr(10).join(other_lines) if other_lines else '  （无其他科目数据）'}
+
+请从纯财务角度（业财融合分析将在后续版本中加入）进行以下分析：
+
+1. **财务状况综合评价**（2-3句话，突出核心亮点或问题）
+2. **关键指标分析**（重点分析盈利能力、成本管控，如有环比数据请分析变动趋势）
+3. **风险提示**（负利润/异常波动/成本偏高等需警示的情况，如无风险可简要说明）
+4. **决策建议**（2-3条具体可操作的财务管理建议）
+
+要求：语言简明专业，适合集团领导决策参考，不超过600字。"""
+
+    try:
+        text = _deepseek_chat([
+            {'role': 'system', 'content': '你是一位专业的企业财务分析师，擅长财务报表解读和经营决策分析，用中文回答。'},
+            {'role': 'user', 'content': prompt},
+        ])
+        return ok({'analysis': text})
+    except Exception as e:
+        logger.error(f'DeepSeek AI error: {e}')
+        return err(f'AI分析服务暂时不可用，请稍后重试（{str(e)[:80]}）', 503)
+
+
+@csrf_exempt
+@cw_required()
+def chart_ai_analysis(request):
+    """POST /charts/ai-analysis
+    Body: {chart_type: 'trend'|'waterfall', bu, year, month?, data: {...}}
+    """
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    if not settings.DEEPSEEK_API_KEY:
+        return err('AI 分析未配置（缺少 DEEPSEEK_API_KEY）', 503)
+
+    body = _parse_json(request)
+    chart_type = body.get('chart_type', 'trend')
+    bu = body.get('bu', '未知事业部')
+    year = body.get('year')
+    data = body.get('data', {})
+
+    if chart_type == 'trend':
+        # Build trend narrative from 12-month data
+        months_data = data.get('months', [])
+        l1_cats = data.get('l1_categories', [])
+        selected_ids = body.get('selected_l1_ids', [])
+        sel_cats = [c for c in l1_cats if c['id'] in selected_ids] or l1_cats[:3]
+
+        trend_lines = []
+        for cat in sel_cats:
+            vals = []
+            for m in months_data:
+                v = m.get('by_l1', {}).get(str(cat['id']))
+                vals.append(f'{m["month"]}月:{_fmt_wan(v)}' if v is not None else f'{m["month"]}月:无')
+            trend_lines.append(f'  {cat["name"]}：{", ".join(vals)}')
+
+        prompt = f"""{year}年 {bu} 收入/利润走势数据如下：
+
+{chr(10).join(trend_lines)}
+
+请从财务角度分析：
+1. 全年走势特征（旺季/淡季规律、增长趋势）
+2. 月度异常波动（如某月大幅上升/下降的原因判断）
+3. 结合该事业部全局情况的简要评价
+4. 一条具体的改善建议
+
+要求：简明专业，不超过300字。"""
+
+    elif chart_type == 'waterfall':
+        base = data.get('base_period', {})
+        curr = data.get('current_period', {})
+        factors = data.get('factors', [])
+        factor_lines = [f'  {f["name"]}：变动{_fmt_wan(f["delta"])}（对利润影响）' for f in factors if f.get('delta')]
+
+        prompt = f"""{bu} 利润因素分析（{base.get("year")}年{base.get("month")}月 vs {curr.get("year")}年{curr.get("month")}月）：
+
+  基期经营净利：{_fmt_wan(base.get("total"))}
+  当期经营净利：{_fmt_wan(curr.get("total"))}
+  净变动：{_fmt_wan((curr.get("total") or 0) - (base.get("total") or 0))}
+
+【驱动因素分解】
+{chr(10).join(factor_lines) if factor_lines else "  暂无驱动因素数据"}
+
+请从财务角度分析：
+1. 利润变动的主要驱动因素评价
+2. 正/负因素各自的关键点
+3. 结合该事业部全局情况的评价
+4. 一条针对性建议
+
+要求：简明专业，不超过250字。"""
+    else:
+        return err('未知图表类型')
+
+    try:
+        text = _deepseek_chat([
+            {'role': 'system', 'content': '你是一位专业的企业财务分析师，擅长图表数据解读，用中文简洁回答。'},
+            {'role': 'user', 'content': prompt},
+        ])
+        return ok({'analysis': text})
+    except Exception as e:
+        logger.error(f'DeepSeek chart AI error: {e}')
+        return err(f'AI分析暂时不可用（{str(e)[:80]}）', 503)

@@ -38,7 +38,15 @@ function fmt(n) {
       <tbody>
         <template v-for="row in rows" :key="row.l1_id">
           <!-- L1 row -->
-          <tr :class="['l1-row', level >= 2 ? 'clickable' : '', row.is_calculated ? 'l1-calc' : '']" @click="level >= 2 && toggle(row.l1_id)">
+          <tr
+            :class="[
+              'l1-row',
+              level >= 2 ? 'clickable' : '',
+              row.is_calculated ? 'l1-calc' : '',
+              (row.is_calculated && parseFloat(row.amount) < 0) ? 'l1-calc-neg' : '',
+            ]"
+            @click="level >= 2 && toggle(row.l1_id)"
+          >
             <td v-if="level >= 2" class="toggle-cell">
               <span class="toggle-icon">{{ collapsed.has(row.l1_id) ? '›' : '⌄' }}</span>
             </td>
@@ -95,6 +103,12 @@ function fmt(n) {
 
 .l1-row td { font-weight: 600; background: rgba(201,99,66,.03); }
 .l1-calc td { background: rgba(201,99,66,.07); font-style: italic; }
+.l1-calc-neg td { background: rgba(198,40,40,.06) !important; }
+.l1-calc-neg { animation: rowBreathe 2.4s ease-in-out infinite; }
+@keyframes rowBreathe {
+  0%, 100% { box-shadow: inset 3px 0 0 rgba(198,40,40,.25); }
+  50%       { box-shadow: inset 3px 0 0 rgba(198,40,40,.70); background: rgba(198,40,40,.10); }
+}
 .l1-name { font-weight: 700; }
 .l1-amt { font-weight: 700; font-size: 14px; }
 .l2-row td { background: transparent; }

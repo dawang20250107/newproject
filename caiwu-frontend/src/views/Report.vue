@@ -16,12 +16,27 @@ const loading = ref(false)
 const loadErr = ref('')
 const exporting = ref(false)
 
+// AI analysis state
+const aiText = ref('')
+const aiLoading = ref(false)
+const aiErr = ref('')
+const aiVisible = ref(false)
+
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
 const accessibleBus = computed(() => {
   if (auth.isAdmin) return BUSINESS_UNITS
   return (auth.user?.departments || []).filter(d => BUSINESS_UNITS.includes(d))
+})
+
+const hasFullAccess = computed(() => auth.isAdmin)
+
+// For global AI analysis: all BUs except 集团总部
+const aiScope = computed(() => {
+  if (selectedBu.value) return [selectedBu.value]
+  if (hasFullAccess.value) return BUSINESS_UNITS.filter(b => b !== '集团总部')
+  return accessibleBus.value.filter(b => b !== '集团总部')
 })
 
 const maxLevel = computed(() => {
@@ -31,7 +46,7 @@ const maxLevel = computed(() => {
 })
 const canExport = computed(() => auth.canView('export'))
 
-// ── 5 key financial KPIs ─────────────────────────────────────────────────────
+// ── KPI definitions ──────────────────────────────────────────────────────────
 const KPI_DEFS = [
   { key: '主营业务收入', color: '#2e7d32' },
   { key: '主营业务成本', color: '#c62828' },
@@ -39,12 +54,23 @@ const KPI_DEFS = [
   { key: '经营毛利',    color: '#6a1b9a', calc: true },
   { key: '经营净利',    color: '#e65100', calc: true },
 ]
+
 const kpis = computed(() => {
   if (!data.value?.rows) return []
   const map = {}
-  for (const row of data.value.rows) map[row.l1_name] = row.amount
-  return KPI_DEFS.map(d => ({ ...d, amount: map[d.key] ?? null }))
-    .filter(d => d.amount !== null)
+  for (const row of data.value.rows) map[row.l1_name] = parseFloat(row.amount ?? 0)
+  const prevKpis = data.value.prev_kpis || {}
+  return KPI_DEFS.map(d => {
+    const amount = map[d.key] ?? null
+    const prev = prevKpis[d.key] ?? null
+    let momPct = null
+    if (amount !== null && prev !== null && prev !== 0) {
+      momPct = ((amount - prev) / Math.abs(prev)) * 100
+    }
+    const isNeg = amount !== null && d.calc && amount < 0
+    const momDown = momPct !== null && momPct < 0
+    return { ...d, amount, momPct, isNeg, momDown }
+  }).filter(d => d.amount !== null)
 })
 
 function fmtKpi(v) {
@@ -55,9 +81,46 @@ function fmtKpi(v) {
   return v.toFixed(2)
 }
 
+function momLabel(pct) {
+  if (pct === null) return ''
+  const abs = Math.abs(pct).toFixed(1)
+  return pct >= 0 ? `▲ ${abs}%` : `▼ ${abs}%`
+}
+
+// ── AI helpers ────────────────────────────────────────────────────────────────
+function renderAiHtml(text) {
+  if (!text) return []
+  return text.split(/\n\n+/).map(para => {
+    const html = para
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\n/g, '<br>')
+    return html
+  })
+}
+
+async function runAiAnalysis() {
+  aiLoading.value = true
+  aiErr.value = ''
+  aiVisible.value = true
+  try {
+    const res = await api.post('/report/ai-analysis', {
+      year: year.value,
+      month: month.value,
+      bus: aiScope.value,
+    })
+    aiText.value = res.data?.analysis || res.analysis || ''
+  } catch (e) {
+    aiErr.value = e?.error || 'AI 分析失败'
+  } finally {
+    aiLoading.value = false
+  }
+}
+
 async function load() {
   loading.value = true
   loadErr.value = ''
+  aiText.value = ''
+  aiVisible.value = false
   try {
     const params = { year: year.value, month: month.value, level: level.value }
     if (selectedBu.value) params.bu = selectedBu.value
@@ -110,7 +173,7 @@ onMounted(load)
           </button>
         </div>
 
-        <!-- BU filter -->
+        <!-- BU filter chips -->
         <div v-if="accessibleBus.length > 1" style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
           <button
             :class="['dept-chip', !selectedBu ? 'on' : '']"
@@ -128,22 +191,65 @@ onMounted(load)
     <div v-if="loading" class="empty"><div class="icon">⏳</div>加载中…</div>
     <div v-else-if="loadErr" class="empty" style="color:var(--danger)"><div class="icon">⚠️</div>{{ loadErr }}</div>
     <template v-else-if="data">
-      <!-- 关键财务指标 KPIs -->
+
+      <!-- ── KPI cards ──────────────────────────────────────────────────────── -->
       <div v-if="kpis.length" class="kpi-grid kpi-5">
         <div
           v-for="kpi in kpis" :key="kpi.key"
           class="kpi-card"
-          :class="{ 'kpi-calc': kpi.calc }"
+          :class="{
+            'kpi-calc': kpi.calc,
+            'kpi-negative': kpi.isNeg,
+            'kpi-mom-down': !kpi.isNeg && kpi.momDown,
+          }"
         >
           <div class="label">{{ kpi.key }}</div>
           <div
             class="value"
-            :style="`color:${kpi.amount < 0 ? 'var(--danger)' : kpi.color}`"
+            :class="{ 'value-neg': kpi.isNeg }"
+            :style="kpi.isNeg ? '' : `color:${kpi.momDown ? 'var(--danger)' : kpi.color}`"
           >{{ fmtKpi(kpi.amount) }}</div>
+
+          <!-- MoM badge -->
+          <div v-if="kpi.momPct !== null" class="mom-badge" :class="kpi.momDown ? 'mom-down' : 'mom-up'">
+            {{ momLabel(kpi.momPct) }}
+          </div>
+          <div v-else class="mom-badge mom-neutral">— 环比</div>
+
           <div class="sub">{{ data.year }}年{{ data.month }}月{{ data.bu ? ' · ' + data.bu : '' }}</div>
         </div>
       </div>
 
+      <!-- ── AI analysis panel ──────────────────────────────────────────────── -->
+      <div class="card ai-panel-card">
+        <div class="ai-panel-header">
+          <div class="section-title" style="margin:0">🤖 AI 财务分析</div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="ai-scope-label">
+              {{ selectedBu ? selectedBu : (aiScope.length + ' 个事业部') }}
+              · {{ data.year }}年{{ data.month }}月
+            </span>
+            <button
+              class="btn btn-ai"
+              :disabled="aiLoading"
+              @click="runAiAnalysis"
+            >{{ aiLoading ? '分析中…' : (aiVisible ? '重新分析' : 'AI 分析') }}</button>
+          </div>
+        </div>
+
+        <div v-if="aiLoading" class="ai-loading">
+          <span class="ai-spin">⏳</span> DeepSeek 分析中，请稍候…
+        </div>
+        <div v-else-if="aiErr" class="ai-error">{{ aiErr }}</div>
+        <div v-else-if="aiVisible && aiText" class="ai-result">
+          <p v-for="(para, i) in renderAiHtml(aiText)" :key="i" v-html="para"></p>
+        </div>
+        <div v-else-if="!aiVisible" class="ai-hint">
+          点击「AI 分析」获取财务报表的智能解读与决策建议。
+        </div>
+      </div>
+
+      <!-- ── Report table ───────────────────────────────────────────────────── -->
       <div class="card">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
           <div class="section-title" style="margin:0">
@@ -158,6 +264,7 @@ onMounted(load)
 </template>
 
 <style scoped>
+/* ── BU chips ─────────────────────────────────────────────────────────────── */
 .dept-chip {
   padding: 4px 11px; border-radius: 16px; font-size: 12px; cursor: pointer;
   border: 1.5px solid var(--border); background: rgba(255,253,250,.7); color: var(--text);
@@ -166,8 +273,77 @@ onMounted(load)
 .dept-chip:hover { border-color: var(--primary); color: var(--primary); }
 .dept-chip.on { border-color: var(--primary); background: rgba(201,99,66,.1); color: var(--primary); font-weight: 600; }
 
+/* ── KPI grid ─────────────────────────────────────────────────────────────── */
 .kpi-5 { grid-template-columns: repeat(5, 1fr) !important; }
 @media (max-width: 900px) { .kpi-5 { grid-template-columns: repeat(3, 1fr) !important; } }
 @media (max-width: 560px) { .kpi-5 { grid-template-columns: repeat(2, 1fr) !important; } }
+
 .kpi-calc { border-left: 3px solid rgba(201,99,66,.3); }
+
+/* negative calc KPI: red border + breathing glow */
+.kpi-negative {
+  border-left: 3px solid var(--danger) !important;
+  animation: negBreathe 2.2s ease-in-out infinite;
+}
+@keyframes negBreathe {
+  0%, 100% { box-shadow: 0 2px 8px rgba(198,40,40,.10); }
+  50%       { box-shadow: 0 4px 18px rgba(198,40,40,.30); background: rgba(198,40,40,.04); }
+}
+
+/* MoM down (non-calc): subtle red tint */
+.kpi-mom-down { border-left: 3px solid rgba(198,40,40,.5); }
+
+/* negative value pulsing text */
+.value-neg {
+  color: var(--danger) !important;
+  animation: valuePulse 2.2s ease-in-out infinite;
+}
+@keyframes valuePulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: .65; }
+}
+
+/* MoM badge */
+.mom-badge {
+  display: inline-block; font-size: 11px; font-weight: 600;
+  padding: 2px 7px; border-radius: 10px; margin-top: 4px;
+}
+.mom-up      { background: rgba(46,125,50,.10); color: #2e7d32; }
+.mom-down    { background: rgba(198,40,40,.10); color: var(--danger); }
+.mom-neutral { background: rgba(120,120,120,.08); color: var(--muted); font-weight: 400; }
+
+/* ── AI panel ─────────────────────────────────────────────────────────────── */
+.ai-panel-card { padding: 18px 20px; }
+.ai-panel-header {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 10px; margin-bottom: 12px;
+}
+.ai-scope-label { font-size: 12px; color: var(--muted); }
+
+.btn-ai {
+  padding: 6px 18px; border-radius: 20px; font-size: 13px; font-weight: 600;
+  border: 1.5px solid #1565c0; background: rgba(21,101,192,.06);
+  color: #1565c0; cursor: pointer; transition: all .16s;
+}
+.btn-ai:hover:not(:disabled) { background: rgba(21,101,192,.14); }
+.btn-ai:disabled { opacity: .55; cursor: default; }
+
+.ai-loading {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--muted); padding: 12px 0;
+}
+.ai-spin { animation: spin 1.2s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.ai-error { color: var(--danger); font-size: 13px; padding: 8px 0; }
+
+.ai-result {
+  margin-top: 8px; padding: 16px 20px;
+  background: rgba(21,101,192,.05); border: 1px solid rgba(21,101,192,.15);
+  border-radius: 12px; font-size: 13px; line-height: 1.8; color: var(--text);
+}
+.ai-result p { margin: 0 0 8px; }
+.ai-result p:last-child { margin-bottom: 0; }
+
+.ai-hint { font-size: 13px; color: var(--muted); padding: 4px 0; }
 </style>

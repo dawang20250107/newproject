@@ -8,13 +8,9 @@ import api from '../api/index.js'
 
 const auth = useAuthStore()
 
-// ── Trend chart state ───────────────────────────────────
-const trendBu = ref('')
+// ── Global BU + year filter ─────────────────────────────
+const globalBu = ref('')
 const trendYear = ref(yearCST())
-const trendData = ref(null)
-const trendLoading = ref(false)
-const trendErr = ref('')
-const selectedL1Ids = ref([])
 
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 
@@ -26,12 +22,20 @@ const accessibleBus = computed(() => {
 const canTrend = computed(() => auth.canView('chart_trend'))
 const canWaterfall = computed(() => auth.canView('chart_waterfall'))
 
+// ── Trend chart state ───────────────────────────────────
+const trendData = ref(null)
+const trendLoading = ref(false)
+const trendErr = ref('')
+const selectedL1Ids = ref([])
+const trendAiText = ref('')
+const trendAiLoading = ref(false)
+
 async function loadTrend() {
-  if (!trendBu.value) return
+  if (!globalBu.value) return
   trendLoading.value = true
   trendErr.value = ''
   try {
-    const res = await api.get('/charts/trend', { params: { bu: trendBu.value, year: trendYear.value } })
+    const res = await api.get('/charts/trend', { params: { bu: globalBu.value, year: trendYear.value } })
     trendData.value = res.data
     // default: select first 3 L1 categories
     if (selectedL1Ids.value.length === 0 && res.data.l1_categories?.length) {
@@ -50,8 +54,27 @@ function toggleL1(id) {
   else if (selectedL1Ids.value.length > 1) selectedL1Ids.value.splice(i, 1)
 }
 
+async function analyzeTrend() {
+  if (!trendData.value) return
+  trendAiLoading.value = true
+  trendAiText.value = ''
+  try {
+    const res = await api.post('/charts/ai-analysis', {
+      chart_type: 'trend',
+      bu: globalBu.value,
+      year: trendYear.value,
+      data: trendData.value,
+      selected_l1_ids: selectedL1Ids.value,
+    })
+    trendAiText.value = res.data?.analysis || res.data || ''
+  } catch (e) {
+    trendAiText.value = '分析失败：' + (e?.error || '未知错误')
+  } finally {
+    trendAiLoading.value = false
+  }
+}
+
 // ── Waterfall chart state ───────────────────────────────
-const wfBu = ref('')
 const wfYear = ref(yearCST())
 const wfMonth = ref(monthCST())
 const wfCmpYear = ref(yearCST())
@@ -59,16 +82,18 @@ const wfCmpMonth = ref(monthCST() === 1 ? 12 : monthCST() - 1)
 const wfData = ref(null)
 const wfLoading = ref(false)
 const wfErr = ref('')
+const wfAiText = ref('')
+const wfAiLoading = ref(false)
 
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
 async function loadWaterfall() {
-  if (!wfBu.value) return
+  if (!globalBu.value) return
   wfLoading.value = true
   wfErr.value = ''
   try {
     const res = await api.get('/charts/waterfall', {
-      params: { bu: wfBu.value, year: wfYear.value, month: wfMonth.value, compare_year: wfCmpYear.value, compare_month: wfCmpMonth.value },
+      params: { bu: globalBu.value, year: wfYear.value, month: wfMonth.value, compare_year: wfCmpYear.value, compare_month: wfCmpMonth.value },
     })
     wfData.value = res.data
   } catch (e) {
@@ -78,38 +103,88 @@ async function loadWaterfall() {
   }
 }
 
+async function analyzeWaterfall() {
+  if (!wfData.value) return
+  wfAiLoading.value = true
+  wfAiText.value = ''
+  try {
+    const res = await api.post('/charts/ai-analysis', {
+      chart_type: 'waterfall',
+      bu: globalBu.value,
+      year: wfYear.value,
+      month: wfMonth.value,
+      data: wfData.value,
+    })
+    wfAiText.value = res.data?.analysis || res.data || ''
+  } catch (e) {
+    wfAiText.value = '分析失败：' + (e?.error || '未知错误')
+  } finally {
+    wfAiLoading.value = false
+  }
+}
+
 function fmtAmt(v) {
   if (Math.abs(v) >= 100000000) return (v / 100000000).toFixed(2) + ' 亿'
   if (Math.abs(v) >= 10000) return (v / 10000).toFixed(2) + ' 万'
   return v.toFixed(2)
 }
 
+// ── AI text renderer ────────────────────────────────────
+function renderAI(text) {
+  if (!text) return []
+  const paragraphs = text.split(/\n\n+/)
+  return paragraphs.map(para => {
+    // Replace **bold** with <strong>bold</strong>
+    let html = para.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    return `<p>${html}</p>`
+  })
+}
+
+// ── Watch globalBu / trendYear to reload ────────────────
+watch(globalBu, () => {
+  if (canTrend.value) loadTrend()
+  if (canWaterfall.value) loadWaterfall()
+})
+
+watch(trendYear, () => {
+  if (canTrend.value) loadTrend()
+})
+
 onMounted(() => {
   if (accessibleBus.value.length) {
-    trendBu.value = accessibleBus.value[0]
-    wfBu.value = accessibleBus.value[0]
-    if (canTrend.value) loadTrend()
-    if (canWaterfall.value) loadWaterfall()
+    globalBu.value = accessibleBus.value[0]
+    // watchers above will fire loadTrend / loadWaterfall
   }
 })
 </script>
 
 <template>
   <div>
-    <div class="topbar"><h1>图表分析</h1></div>
+    <div class="topbar">
+      <h1>图表分析</h1>
+      <!-- Global BU + Year filter -->
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select v-model="globalBu" style="width:140px">
+          <option v-for="bu in accessibleBus" :key="bu" :value="bu">{{ bu }}</option>
+        </select>
+        <select v-model="trendYear" style="width:90px">
+          <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+        </select>
+      </div>
+    </div>
 
     <!-- ── Trend Line Chart ──────────────────────────────── -->
     <div v-if="canTrend" class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
         <div class="section-title" style="margin:0">收入 / 利润走势（折线图）</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <select v-model="trendBu" style="width:130px" @change="loadTrend">
-            <option v-for="bu in accessibleBus" :key="bu" :value="bu">{{ bu }}</option>
-          </select>
-          <select v-model="trendYear" style="width:86px" @change="loadTrend">
-            <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
-          </select>
-        </div>
+        <button
+          class="btn btn-ai btn-sm"
+          :disabled="trendAiLoading || !trendData"
+          @click="analyzeTrend"
+        >
+          <span v-if="trendAiLoading">分析中…</span>
+          <span v-else>🤖 AI分析</span>
+        </button>
       </div>
 
       <!-- L1 category selector -->
@@ -132,6 +207,19 @@ onMounted(() => {
         height="340px"
       />
       <div v-else class="empty"><div class="icon">📊</div>请选择事业部查看</div>
+
+      <!-- AI result panel -->
+      <div v-if="trendAiText" class="ai-result">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
+          <span style="font-size:16px">🤖</span>
+          <strong style="font-size:13px;color:#1565c0">AI 分析结果</strong>
+        </div>
+        <div
+          v-for="(para, i) in renderAI(trendAiText)"
+          :key="i"
+          v-html="para"
+        ></div>
+      </div>
     </div>
 
     <!-- ── Waterfall Chart ───────────────────────────────── -->
@@ -139,9 +227,14 @@ onMounted(() => {
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
         <div class="section-title" style="margin:0">因素分析（瀑布图）</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <select v-model="wfBu" style="width:130px" @change="loadWaterfall">
-            <option v-for="bu in accessibleBus" :key="bu" :value="bu">{{ bu }}</option>
-          </select>
+          <button
+            class="btn btn-ai btn-sm"
+            :disabled="wfAiLoading || !wfData"
+            @click="analyzeWaterfall"
+          >
+            <span v-if="wfAiLoading">分析中…</span>
+            <span v-else>🤖 AI分析</span>
+          </button>
           <span style="font-size:12px;color:var(--muted)">对比</span>
           <select v-model="wfCmpYear" style="width:82px" @change="loadWaterfall">
             <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
@@ -189,6 +282,19 @@ onMounted(() => {
         </div>
       </template>
       <div v-else-if="!wfLoading" class="empty"><div class="icon">📈</div>请选择事业部查看</div>
+
+      <!-- AI result panel -->
+      <div v-if="wfAiText" class="ai-result">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
+          <span style="font-size:16px">🤖</span>
+          <strong style="font-size:13px;color:#1565c0">AI 分析结果</strong>
+        </div>
+        <div
+          v-for="(para, i) in renderAI(wfAiText)"
+          :key="i"
+          v-html="para"
+        ></div>
+      </div>
     </div>
   </div>
 </template>
@@ -201,4 +307,25 @@ onMounted(() => {
 }
 .l1-chip:hover { border-color: var(--primary); color: var(--primary); }
 .l1-chip.on { border-color: var(--primary); background: rgba(201,99,66,.1); color: var(--primary); font-weight: 600; }
+
+.btn-ai {
+  border: 1.5px solid rgba(21,101,192,0.35);
+  background: rgba(21,101,192,0.06);
+  color: #1565c0;
+  font-size: 12px;
+  padding: 4px 14px;
+  border-radius: 14px;
+  cursor: pointer;
+  transition: all .16s;
+}
+.btn-ai:hover:not(:disabled) { background: rgba(21,101,192,0.12); border-color: #1565c0; }
+.btn-ai:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.ai-result {
+  margin-top: 16px; padding: 16px 20px;
+  background: rgba(21,101,192,0.05); border: 1px solid rgba(21,101,192,0.15);
+  border-radius: 12px; font-size: 13px; line-height: 1.75; color: var(--text);
+}
+.ai-result h4 { font-size: 13px; font-weight: 700; color: #1565c0; margin: 12px 0 4px; }
+.ai-result p { margin: 0 0 8px; }
 </style>

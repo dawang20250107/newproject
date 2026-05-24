@@ -30,14 +30,17 @@ urlpatterns = [
     path('batches', views.batches),
     path('batches/template', views.batch_template),
     path('batches/upload', views.batch_upload),
+    path('batches/submission-status', views.batch_submission_status),
     path('batches/<int:bid>/publish', views.batch_publish),
     path('batches/<int:bid>', views.batch_detail),
 
     # report
     path('report', views.report),
     path('report/export', views.report_export),
+    path('report/ai-analysis', views.report_ai_analysis),
 
     # charts
     path('charts/trend', views.chart_trend),
     path('charts/waterfall', views.chart_waterfall),
+    path('charts/ai-analysis', views.chart_ai_analysis),
 ]

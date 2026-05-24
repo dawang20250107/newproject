@@ -147,9 +147,16 @@ class ImportBatch(models.Model):
     STATUS_DRAFT = 'draft'
     STATUS_PUBLISHED = 'published'
 
+    # Each BU+month requires TWO source tables:
+    #  'department_detail': Kingdee 部门明细表 (main data source)
+    #  'profit_loss':       手工利润表 (reconciliation reference)
+    TYPE_DEPT = 'department_detail'
+    TYPE_PL = 'profit_loss'
+
     business_unit = models.CharField('事业部', max_length=50, db_index=True)
     year = models.IntegerField('年份')
     month = models.IntegerField('月份')
+    batch_type = models.CharField('表类型', max_length=30, default=TYPE_DEPT)
     status = models.CharField('状态', max_length=20, default=STATUS_DRAFT)
     uploaded_by = models.ForeignKey(
         CaiwuUser, null=True, on_delete=models.SET_NULL, related_name='batches',
@@ -174,6 +181,7 @@ class ImportBatch(models.Model):
             'business_unit': self.business_unit,
             'year': self.year,
             'month': self.month,
+            'batch_type': self.batch_type,
             'status': self.status,
             'uploaded_by': self.uploaded_by.name if self.uploaded_by_id else None,
             'uploaded_at': self.uploaded_at.isoformat() if self.uploaded_at else None,

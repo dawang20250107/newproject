@@ -10,6 +10,11 @@ _DEV_JWT_SECRET = 'paikuan-jwt-secret-change-in-prod-Qr8sT1uV'
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', _DEV_SECRET_KEY)
 JWT_SECRET = os.environ.get('JWT_SECRET', _DEV_JWT_SECRET)
 
+# DeepSeek AI API (stored via env var; fallback for dev only)
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', 'sk-d7721aa1a60b4a7c9b93181e9cfe7cfc')
+DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
+DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1'
+
 if SECRET_KEY == _DEV_SECRET_KEY or JWT_SECRET == _DEV_JWT_SECRET:
     logging.warning(
         'SECURITY: Using insecure dev secrets. '
