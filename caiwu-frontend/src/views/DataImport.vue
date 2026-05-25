@@ -15,7 +15,6 @@ const upBu = ref('')
 const upYear = ref(yearCST())
 const upMonth = ref(monthCST())
 const upFile = ref(null)
-const upBatchType = ref('department_detail')
 const uploading = ref(false)
 const uploadErr = ref('')
 const uploadResult = ref(null)   // {batch, row_count, fmt, warnings, pl_check}
@@ -101,10 +100,17 @@ function openUpload() {
   uploadErr.value = ''
   uploadResult.value = null
   upFile.value = null
-  upBatchType.value = 'department_detail'
   previewTab.value = 'l1'
   showUpload.value = true
 }
+
+// Derive the detected table type from the chosen file name for inline hinting
+const detectedType = computed(() => {
+  const n = upFile.value?.name?.toLowerCase() || ''
+  if (n.endsWith('.json')) return { label: '利润表', cls: 'pl' }
+  if (n.endsWith('.xlsx')) return { label: '部门明细表', cls: 'dept' }
+  return null
+})
 
 function resetUpload() {
   uploadResult.value = null
@@ -124,7 +130,6 @@ async function doUpload() {
     fd.append('year', upYear.value)
     fd.append('month', upMonth.value)
     fd.append('file', upFile.value)
-    fd.append('batch_type', upBatchType.value)
     const res = await api.post('/batches/upload', fd)
     uploadResult.value = res.data
     previewTab.value = 'l1'
@@ -322,45 +327,33 @@ onMounted(() => {
 
             <div v-if="uploadErr" class="alert alert-err" style="margin-bottom:16px">{{ uploadErr }}</div>
 
-            <!-- Opt 9: updated format hint mentioning JSON -->
-            <div class="fmt-hint">
-              <div class="fh-item">
-                <span class="fh-dot fh-kd"></span>
-                <span><strong>金蝶部门明细表</strong> — 直接上传金蝶导出的Excel（含"科目名称""部门""本期借方""本期贷方"列）</span>
+            <!-- Format guide: file type auto-determines the table type -->
+            <div class="fmt-guide">
+              <div class="fg-card">
+                <div class="fg-ico fg-json">JSON</div>
+                <div>
+                  <div class="fg-title">利润表</div>
+                  <div class="fg-desc">金蝶导出的利润表 .json 文件</div>
+                </div>
               </div>
-              <div class="fh-item">
-                <span class="fh-dot fh-tp"></span>
-                <span><strong>KXT模板</strong> — 下载模板手动填写四列格式（.xlsx）</span>
-              </div>
-              <div class="fh-item">
-                <span class="fh-dot" style="background:#1565c0"></span>
-                <span><strong>JSON格式</strong> — 支持系统导出的 .json 数据文件直接导入</span>
-              </div>
-            </div>
-
-            <!-- Opt 8 batch_type selector -->
-            <div class="form-row">
-              <label>报表类型 *</label>
-              <div style="display:flex;gap:10px;flex-wrap:wrap">
-                <label class="type-chip" :class="{ on: upBatchType === 'department_detail' }">
-                  <input type="radio" v-model="upBatchType" value="department_detail" style="display:none" />
-                  部门明细表（金蝶 / KXT模板）
-                </label>
-                <label class="type-chip" :class="{ on: upBatchType === 'profit_loss' }">
-                  <input type="radio" v-model="upBatchType" value="profit_loss" style="display:none" />
-                  利润表
-                </label>
+              <div class="fg-card">
+                <div class="fg-ico fg-xlsx">XLSX</div>
+                <div>
+                  <div class="fg-title">部门明细表</div>
+                  <div class="fg-desc">金蝶核算维度明细账 .xlsx 文件</div>
+                </div>
               </div>
             </div>
 
-            <div class="form-row">
-              <label>事业部 *</label>
-              <select v-model="upBu">
-                <option value="">请选择</option>
-                <option v-for="bu in accessibleBus" :key="bu" :value="bu">{{ bu }}</option>
-              </select>
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <!-- Period selector row -->
+            <div class="up-fields">
+              <div class="form-row">
+                <label>事业部 *</label>
+                <select v-model="upBu">
+                  <option value="">请选择</option>
+                  <option v-for="bu in accessibleBus" :key="bu" :value="bu">{{ bu }}</option>
+                </select>
+              </div>
               <div class="form-row">
                 <label>年份</label>
                 <select v-model="upYear">
@@ -374,11 +367,20 @@ onMounted(() => {
                 </select>
               </div>
             </div>
-            <!-- Opt 9: accept .xlsx and .json -->
-            <div class="form-row">
-              <label>文件（.xlsx 或 .json）</label>
-              <input type="file" accept=".xlsx,.json" @change="e => upFile = e.target.files[0]" style="padding:7px 10px" />
-            </div>
+
+            <!-- File drop zone -->
+            <label class="up-drop" :class="{ filled: upFile }">
+              <input type="file" accept=".xlsx,.json" @change="e => upFile = e.target.files[0]" hidden />
+              <template v-if="upFile">
+                <span class="up-file-name">{{ upFile.name }}</span>
+                <span v-if="detectedType" class="up-type-tag" :class="detectedType.cls">{{ detectedType.label }}</span>
+              </template>
+              <template v-else>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <span>点击选择文件（.xlsx 利润明细 / .json 利润表）</span>
+              </template>
+            </label>
+
             <div class="modal-actions">
               <button class="btn btn-ghost" @click="showUpload = false">取消</button>
               <button class="btn btn-primary" :disabled="uploading" @click="doUpload">
@@ -396,10 +398,11 @@ onMounted(() => {
                 <div style="font-size:12px;color:var(--muted);margin-top:2px">
                   {{ uploadResult.batch?.business_unit }} · {{ uploadResult.batch?.year }}年{{ uploadResult.batch?.month }}月 ·
                   共 {{ uploadResult.row_count }} 行
-                  <span v-if="uploadResult.fmt === 'kingdee'" class="badge badge-primary" style="margin-left:6px;font-size:10px">金蝶格式</span>
+                  <span v-if="uploadResult.fmt === 'kingdee_ledger'" class="badge badge-primary" style="margin-left:6px;font-size:10px">金蝶部门明细账</span>
+                  <span v-else-if="uploadResult.fmt === 'kingdee_pl_json'" class="badge badge-info" style="margin-left:6px;font-size:10px">金蝶利润表</span>
+                  <span v-else-if="uploadResult.fmt === 'kingdee'" class="badge badge-primary" style="margin-left:6px;font-size:10px">金蝶格式</span>
                   <span v-else-if="uploadResult.fmt === 'json'" class="badge badge-primary" style="margin-left:6px;font-size:10px">JSON格式</span>
                   <span v-else class="badge badge-muted" style="margin-left:6px;font-size:10px">KXT模板</span>
-                  <span v-if="uploadResult.batch?.batch_type === 'profit_loss'" class="badge badge-info" style="margin-left:6px;font-size:10px">利润表</span>
                 </div>
               </div>
               <button class="modal-close" @click="showUpload = false">×</button>
@@ -524,12 +527,33 @@ onMounted(() => {
 .modal-header h2 { font-size: 18px; font-weight: 700; }
 .modal-close { background: none; border: none; font-size: 22px; color: var(--muted); cursor: pointer; line-height: 1; padding: 0 4px; }
 
-/* Format hint */
-.fmt-hint { background: rgba(201,99,66,0.05); border: 1px solid rgba(201,99,66,0.15); border-radius: 10px; padding: 12px 14px; margin-bottom: 18px; display: flex; flex-direction: column; gap: 8px; }
-.fh-item { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
-.fh-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 4px; }
-.fh-kd { background: var(--primary); }
-.fh-tp { background: var(--muted); }
+/* Format guide cards */
+.fmt-guide { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }
+@media (max-width: 560px) { .fmt-guide { grid-template-columns: 1fr; } }
+.fg-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 12px; background: rgba(255,253,250,0.7); border: 1px solid var(--border); }
+.fg-ico { flex-shrink: 0; width: 46px; height: 46px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; letter-spacing: 0.02em; color: #fff; }
+.fg-json { background: linear-gradient(135deg, #1565c0, #42a5f5); }
+.fg-xlsx { background: linear-gradient(135deg, #c96342, #e8855a); }
+.fg-title { font-size: 14px; font-weight: 700; color: var(--text); }
+.fg-desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* Upload fields row */
+.up-fields { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+@media (max-width: 560px) { .up-fields { grid-template-columns: 1fr; } }
+
+/* File drop zone */
+.up-drop {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 22px 16px; border-radius: 12px; cursor: pointer;
+  border: 1.5px dashed rgba(201,99,66,0.35); background: rgba(201,99,66,0.03);
+  color: var(--muted); font-size: 13px; transition: all .18s; text-align: center;
+}
+.up-drop:hover { border-color: var(--primary); background: rgba(201,99,66,0.06); color: var(--primary); }
+.up-drop.filled { border-style: solid; border-color: var(--primary); background: rgba(201,99,66,0.06); color: var(--text); }
+.up-file-name { font-weight: 600; word-break: break-all; }
+.up-type-tag { flex-shrink: 0; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 10px; color: #fff; }
+.up-type-tag.pl { background: #1565c0; }
+.up-type-tag.dept { background: var(--primary); }
 
 /* Warning banner */
 .warn-banner { display: flex; align-items: flex-start; gap: 8px; padding: 10px 14px; border-radius: 8px; background: rgba(245,127,23,0.08); border: 1px solid rgba(245,127,23,0.2); color: #b45309; font-size: 13px; margin-bottom: 16px; }
@@ -571,16 +595,6 @@ td.amt, th.amt { text-align: right; font-variant-numeric: tabular-nums; }
   animation: spin 0.7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-
-/* Batch type chip selector */
-.type-chip {
-  display: inline-flex; align-items: center; padding: 6px 14px;
-  border-radius: 14px; font-size: 12px; cursor: pointer;
-  border: 1.5px solid var(--border); background: rgba(255,253,250,.7); color: var(--muted);
-  transition: all .16s; user-select: none;
-}
-.type-chip:hover { border-color: var(--primary); color: var(--primary); }
-.type-chip.on { border-color: var(--primary); background: rgba(201,99,66,.1); color: var(--primary); font-weight: 600; }
 
 /* Status badge variants */
 .badge-warn { background: rgba(245,127,23,0.12); color: #b45309; }
