@@ -302,11 +302,11 @@ onMounted(loadAll)
           </div>
           <div class="modal-body">
             <div class="form-grid">
-              <label class="form-field" v-if="modalType === 'collection'">
-                <span>项目编号（可选）</span>
+              <label class="form-field">
+                <span>项目编号{{ modalType === 'payment' ? '（不强制）' : '（可选）' }}</span>
                 <input v-model="form.project_no" placeholder="填写后可关联项目" />
               </label>
-              <label class="form-field" :class="modalType === 'payment' ? 'span2' : ''">
+              <label class="form-field">
                 <span>项目简称/摘要 <em>*</em></span>
                 <input v-model="form.short_name" />
               </label>
