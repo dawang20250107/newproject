@@ -194,6 +194,25 @@ function completenessLabel(row) {
   return '未提交'
 }
 
+// ── Opt 1: dynamic strong reminders for unsubmitted / incomplete BUs ──────────
+const statusRows = computed(() => submissionStatus.value?.bus || [])
+const completeCount = computed(() => statusRows.value.filter(r => r.complete).length)
+const reminderItems = computed(() =>
+  statusRows.value
+    .filter(r => !r.complete)
+    .map(r => ({
+      bu: r.bu,
+      kind: (r.department_detail || r.profit_loss) ? 'partial' : 'missing',
+      label: completenessLabel(r),
+    }))
+)
+const allComplete = computed(() => statusRows.value.length > 0 && reminderItems.value.length === 0)
+
+function rowAlertClass(row) {
+  if (row.complete) return ''
+  return (row.department_detail || row.profit_loss) ? 'row-partial' : 'row-missing'
+}
+
 // info is the per-type dict {status,...} or null
 function statusBadgeClass(info) {
   const status = info?.status
@@ -251,7 +270,32 @@ onMounted(() => {
       <div v-else-if="!submissionStatus || !submissionStatus.bus?.length" class="empty" style="padding:16px">
         <div class="icon">📋</div>暂无提交数据
       </div>
-      <div v-else class="table-wrap">
+      <template v-else>
+        <!-- Dynamic strong reminder: unsubmitted / incomplete BUs -->
+        <div v-if="reminderItems.length" class="submit-alert">
+          <div class="sa-icon">!</div>
+          <div class="sa-main">
+            <div class="sa-headline">
+              <strong>{{ statusYear }}年{{ statusMonth }}月</strong> 还有
+              <strong class="sa-count">{{ reminderItems.length }}</strong> 个事业部未完成提交
+              <span class="sa-sub">已完整 {{ completeCount }}/{{ statusRows.length }}</span>
+            </div>
+            <div class="sa-chips">
+              <span
+                v-for="it in reminderItems"
+                :key="it.bu"
+                class="sa-chip"
+                :class="'sa-' + it.kind"
+              ><span class="sa-dot"></span>{{ it.bu }} · {{ it.label }}</span>
+            </div>
+          </div>
+        </div>
+        <div v-else-if="allComplete" class="submit-ok">
+          <span class="sa-check">✓</span>
+          {{ statusYear }}年{{ statusMonth }}月 全部 {{ statusRows.length }} 个事业部均已完整提交
+        </div>
+
+        <div class="table-wrap">
         <table>
           <thead>
             <tr>
@@ -262,7 +306,7 @@ onMounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in submissionStatus.bus" :key="row.bu">
+            <tr v-for="row in submissionStatus.bus" :key="row.bu" :class="rowAlertClass(row)">
               <td><strong>{{ row.bu }}</strong></td>
               <td>
                 <span :class="statusBadgeClass(row.department_detail)">
@@ -275,14 +319,18 @@ onMounted(() => {
                 </span>
               </td>
               <td>
-                <span :class="['badge', row.complete ? 'badge-success' : 'badge-muted']">
-                  {{ completenessLabel(row) }}
+                <span
+                  class="badge"
+                  :class="row.complete ? 'badge-success' : (rowAlertClass(row) === 'row-missing' ? 'badge-miss' : 'badge-warn')"
+                >
+                  <span v-if="!row.complete" class="sa-dot sa-dot-inline"></span>{{ completenessLabel(row) }}
                 </span>
               </td>
             </tr>
           </tbody>
         </table>
-      </div>
+        </div>
+      </template>
     </div>
 
     <div v-if="loading" class="empty"><div class="icon">⏳</div>加载中…</div>
@@ -625,4 +673,72 @@ td.amt, th.amt { text-align: right; font-variant-numeric: tabular-nums; }
 /* Status badge variants */
 .badge-warn { background: rgba(245,127,23,0.12); color: #b45309; }
 .badge-info { background: rgba(21,101,192,0.1); color: #1565c0; }
+.badge-miss { background: rgba(211,47,47,0.12); color: #c62828; }
+
+/* ── Opt 1: dynamic strong reminder ─────────────────────────────────────────── */
+.submit-alert {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 18px; margin-bottom: 14px;
+  border-radius: 14px;
+  background: linear-gradient(120deg, rgba(211,47,47,0.10), rgba(245,127,23,0.10));
+  border: 1px solid rgba(211,47,47,0.28);
+  box-shadow: 0 0 0 0 rgba(211,47,47,0.45);
+  animation: saGlow 2s ease-in-out infinite;
+}
+@keyframes saGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(211,47,47,0.30); }
+  50%      { box-shadow: 0 0 16px 3px rgba(211,47,47,0.22); }
+}
+.sa-icon {
+  flex-shrink: 0;
+  width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; font-weight: 900; color: #fff;
+  background: linear-gradient(135deg, #e53935, #c62828);
+  box-shadow: 0 4px 12px rgba(211,47,47,0.4);
+  animation: saPulse 1.4s ease-in-out infinite;
+}
+@keyframes saPulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.14); }
+}
+.sa-main { flex: 1; min-width: 0; }
+.sa-headline { font-size: 14px; color: var(--text); font-weight: 600; }
+.sa-count { color: #c62828; font-size: 16px; margin: 0 1px; }
+.sa-sub { font-size: 12px; color: var(--muted); font-weight: 500; margin-left: 8px; }
+.sa-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.sa-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid transparent;
+}
+.sa-missing { background: rgba(211,47,47,0.12); color: #c62828; border-color: rgba(211,47,47,0.25); }
+.sa-partial { background: rgba(245,127,23,0.12); color: #b45309; border-color: rgba(245,127,23,0.25); }
+.sa-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  background: currentColor;
+  animation: saBlink 1.2s ease-in-out infinite;
+}
+.sa-dot-inline { display: inline-block; margin-right: 5px; vertical-align: middle; }
+@keyframes saBlink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+.submit-ok {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px; margin-bottom: 14px; border-radius: 12px;
+  background: rgba(46,125,50,0.08); border: 1px solid rgba(46,125,50,0.22);
+  color: #2e7d32; font-size: 13px; font-weight: 600;
+}
+.sa-check {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: #2e7d32; color: #fff; font-size: 13px; font-weight: 900;
+}
+
+/* Incomplete row highlight in the status table */
+tr.row-missing td:first-child { box-shadow: inset 3px 0 0 #e53935; }
+tr.row-partial td:first-child { box-shadow: inset 3px 0 0 #f57f17; }
+tr.row-missing { background: rgba(211,47,47,0.035); }
+tr.row-partial { background: rgba(245,127,23,0.035); }
 </style>
