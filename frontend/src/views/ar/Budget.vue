@@ -511,16 +511,17 @@ onMounted(loadAll)
 .seg-btn { padding: 7px 20px; border-radius: 9px; border: none; font-size: 13px; font-weight: 500; color: var(--muted); background: transparent; cursor: pointer; transition: all 0.18s; }
 .seg-btn.active { background: white; color: var(--primary); font-weight: 700; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
 
-/* Alert banner */
+/* Alert banner — GPU-composited, only opacity animates */
 .alert-banner {
   display: flex; align-items: flex-start; gap: 14px;
   padding: 16px 20px; margin-bottom: 16px;
-  background: rgba(198,40,40,.06); border: 1.5px solid rgba(198,40,40,.25);
-  border-radius: 12px; animation: alertGlow 1.4s ease-in-out infinite;
+  background: rgba(198,40,40,.06); border: 1.5px solid rgba(198,40,40,.3);
+  border-radius: 12px; box-shadow: 0 2px 14px rgba(198,40,40,.12);
+  animation: alertPulse 1.6s ease-in-out infinite; will-change: opacity;
 }
-@keyframes alertGlow {
-  0%,100% { box-shadow: 0 2px 12px rgba(198,40,40,.1); border-color: rgba(198,40,40,.25); }
-  50%     { box-shadow: 0 4px 24px rgba(198,40,40,.28); border-color: rgba(198,40,40,.5); background: rgba(198,40,40,.1); }
+@keyframes alertPulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.68; }
 }
 .alert-icon-wrap { color: #c62828; flex-shrink: 0; margin-top: 1px; }
 .alert-title { font-weight: 700; color: #c62828; font-size: 14px; }
