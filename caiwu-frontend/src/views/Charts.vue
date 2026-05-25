@@ -4,6 +4,7 @@ import { useAuthStore } from '../stores/auth.js'
 import { BUSINESS_UNITS, yearCST, monthCST } from '../constants.js'
 import TrendLineChart from '../components/charts/TrendLineChart.vue'
 import WaterfallChart from '../components/charts/WaterfallChart.vue'
+import AiAnalysisModal from '../components/AiAnalysisModal.vue'
 import api from '../api/index.js'
 
 const auth = useAuthStore()
@@ -29,6 +30,8 @@ const trendErr = ref('')
 const selectedL1Ids = ref([])
 const trendAiText = ref('')
 const trendAiLoading = ref(false)
+const trendAiErr = ref('')
+const trendAiVisible = ref(false)
 
 async function loadTrend() {
   if (!globalBu.value) return
@@ -54,10 +57,13 @@ function toggleL1(id) {
   else if (selectedL1Ids.value.length > 1) selectedL1Ids.value.splice(i, 1)
 }
 
+const trendHasAi = computed(() => !!trendAiText.value && !trendAiErr.value)
+
 async function analyzeTrend() {
   if (!trendData.value) return
   trendAiLoading.value = true
-  trendAiText.value = ''
+  trendAiErr.value = ''
+  trendAiVisible.value = true
   try {
     const res = await api.post('/charts/ai-analysis', {
       chart_type: 'trend',
@@ -68,7 +74,7 @@ async function analyzeTrend() {
     })
     trendAiText.value = res.data?.analysis || res.data || ''
   } catch (e) {
-    trendAiText.value = '分析失败：' + (e?.error || '未知错误')
+    trendAiErr.value = e?.error || 'AI 分析失败'
   } finally {
     trendAiLoading.value = false
   }
@@ -84,6 +90,8 @@ const wfLoading = ref(false)
 const wfErr = ref('')
 const wfAiText = ref('')
 const wfAiLoading = ref(false)
+const wfAiErr = ref('')
+const wfAiVisible = ref(false)
 
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
@@ -103,10 +111,16 @@ async function loadWaterfall() {
   }
 }
 
+const wfHasAi = computed(() => !!wfAiText.value && !wfAiErr.value)
+const changedFactors = computed(() => (wfData.value?.factors || []).filter(f => f.delta !== 0))
+const trendScopeLabel = computed(() => `${globalBu.value} · ${trendYear.value}年`)
+const wfScopeLabel = computed(() => `${globalBu.value} · ${wfCmpYear.value}年${wfCmpMonth.value}月 → ${wfYear.value}年${wfMonth.value}月`)
+
 async function analyzeWaterfall() {
   if (!wfData.value) return
   wfAiLoading.value = true
-  wfAiText.value = ''
+  wfAiErr.value = ''
+  wfAiVisible.value = true
   try {
     const res = await api.post('/charts/ai-analysis', {
       chart_type: 'waterfall',
@@ -117,7 +131,7 @@ async function analyzeWaterfall() {
     })
     wfAiText.value = res.data?.analysis || res.data || ''
   } catch (e) {
-    wfAiText.value = '分析失败：' + (e?.error || '未知错误')
+    wfAiErr.value = e?.error || 'AI 分析失败'
   } finally {
     wfAiLoading.value = false
   }
@@ -127,17 +141,6 @@ function fmtAmt(v) {
   if (Math.abs(v) >= 100000000) return (v / 100000000).toFixed(2) + ' 亿'
   if (Math.abs(v) >= 10000) return (v / 10000).toFixed(2) + ' 万'
   return v.toFixed(2)
-}
-
-// ── AI text renderer ────────────────────────────────────
-function renderAI(text) {
-  if (!text) return []
-  const paragraphs = text.split(/\n\n+/)
-  return paragraphs.map(para => {
-    // Replace **bold** with <strong>bold</strong>
-    let html = para.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    return `<p>${html}</p>`
-  })
 }
 
 // ── Watch globalBu / trendYear to reload ────────────────
@@ -178,14 +181,18 @@ onMounted(() => {
     <div v-if="canTrend" class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
         <div class="section-title" style="margin:0">收入 / 利润走势（折线图）</div>
-        <button
-          class="btn btn-ghost btn-sm"
-          :disabled="trendAiLoading || !trendData"
-          @click="analyzeTrend"
-        >
-          <span v-if="trendAiLoading">分析中…</span>
-          <span v-else>✨ AI分析</span>
-        </button>
+        <div style="display:flex;gap:8px">
+          <button
+            v-if="trendHasAi"
+            class="btn btn-ghost btn-sm"
+            @click="trendAiVisible = true"
+          >📄 查看分析</button>
+          <button
+            class="btn btn-primary btn-sm"
+            :disabled="trendAiLoading || !trendData"
+            @click="analyzeTrend"
+          >{{ trendAiLoading ? '分析中…' : (trendHasAi ? '↻ 重新分析' : '✨ AI分析') }}</button>
+        </div>
       </div>
 
       <!-- L1 category selector -->
@@ -208,19 +215,6 @@ onMounted(() => {
         height="340px"
       />
       <div v-else class="empty"><div class="icon">📊</div>请选择事业部查看</div>
-
-      <!-- AI result panel -->
-      <div v-if="trendAiText" class="ai-result">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
-          <span style="font-size:16px">✨</span>
-          <strong style="font-size:13px;color:var(--primary)">AI 分析结果</strong>
-        </div>
-        <div
-          v-for="(para, i) in renderAI(trendAiText)"
-          :key="i"
-          v-html="para"
-        ></div>
-      </div>
     </div>
 
     <!-- ── Waterfall Chart ───────────────────────────────── -->
@@ -229,13 +223,15 @@ onMounted(() => {
         <div class="section-title" style="margin:0">因素分析（瀑布图）</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <button
+            v-if="wfHasAi"
             class="btn btn-ghost btn-sm"
+            @click="wfAiVisible = true"
+          >📄 查看分析</button>
+          <button
+            class="btn btn-primary btn-sm"
             :disabled="wfAiLoading || !wfData"
             @click="analyzeWaterfall"
-          >
-            <span v-if="wfAiLoading">分析中…</span>
-            <span v-else>✨ AI分析</span>
-          </button>
+          >{{ wfAiLoading ? '分析中…' : (wfHasAi ? '↻ 重新分析' : '✨ AI分析') }}</button>
           <span style="font-size:12px;color:var(--muted)">对比</span>
           <select v-model="wfCmpYear" class="sel-yr" @change="loadWaterfall">
             <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
@@ -255,25 +251,25 @@ onMounted(() => {
 
       <div v-if="wfData && !wfData.factors?.length" class="empty" style="padding:16px">
         <div class="icon">💡</div>
-        尚未配置「利润驱动因素」科目。请在「系统设置 → 一级科目」中勾选相关科目的「利润驱动因素」标记。
+        所选两个期间的数据无变动，或对比期/当期暂无已发布数据。请调整对比期间或先在「数据加工」中发布数据。
       </div>
 
       <div v-if="wfLoading" class="empty"><div class="icon">⏳</div>加载中…</div>
       <div v-else-if="wfErr" class="empty" style="color:var(--danger)">{{ wfErr }}</div>
       <template v-else-if="wfData?.waterfall?.length">
         <WaterfallChart :waterfall="wfData.waterfall" height="380px" />
-        <!-- Factor detail table -->
-        <div v-if="wfData.factors?.length" style="margin-top:16px">
+        <!-- Factor detail table (only changed factors; A股 colors: 涨红跌绿) -->
+        <div v-if="changedFactors.length" style="margin-top:16px">
           <div class="section-title">因素明细</div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>驱动因素（一级科目）</th><th class="amt">对比期</th><th class="amt">当期</th><th class="amt">变动</th></tr></thead>
+              <thead><tr><th>一级科目</th><th class="amt">对比期</th><th class="amt">当期</th><th class="amt">利润影响</th></tr></thead>
               <tbody>
-                <tr v-for="f in wfData.factors" :key="f.l1_id">
-                  <td>{{ f.name }}</td>
+                <tr v-for="f in changedFactors" :key="f.l1_id">
+                  <td>{{ f.name }}<span v-if="f.is_driver" class="driver-dot" title="关键驱动因素">●</span></td>
                   <td class="amt">{{ fmtAmt(f.base) }}</td>
                   <td class="amt">{{ fmtAmt(f.current) }}</td>
-                  <td class="amt" :class="f.delta >= 0 ? 'amt-green' : 'amt-red'">
+                  <td class="amt" :class="f.delta >= 0 ? 'amt-red' : 'amt-green'">
                     {{ f.delta >= 0 ? '+' : '' }}{{ fmtAmt(f.delta) }}
                   </td>
                 </tr>
@@ -283,20 +279,29 @@ onMounted(() => {
         </div>
       </template>
       <div v-else-if="!wfLoading" class="empty"><div class="icon">📈</div>请选择事业部查看</div>
-
-      <!-- AI result panel -->
-      <div v-if="wfAiText" class="ai-result">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
-          <span style="font-size:16px">✨</span>
-          <strong style="font-size:13px;color:var(--primary)">AI 分析结果</strong>
-        </div>
-        <div
-          v-for="(para, i) in renderAI(wfAiText)"
-          :key="i"
-          v-html="para"
-        ></div>
-      </div>
     </div>
+
+    <!-- ── AI analysis modals ─────────────────────────────────────────────────── -->
+    <AiAnalysisModal
+      :visible="trendAiVisible"
+      :loading="trendAiLoading"
+      :text="trendAiText"
+      :error="trendAiErr"
+      title="AI 走势分析"
+      :subtitle="trendScopeLabel"
+      @close="trendAiVisible = false"
+      @reanalyze="analyzeTrend"
+    />
+    <AiAnalysisModal
+      :visible="wfAiVisible"
+      :loading="wfAiLoading"
+      :text="wfAiText"
+      :error="wfAiErr"
+      title="AI 因素分析"
+      :subtitle="wfScopeLabel"
+      @close="wfAiVisible = false"
+      @reanalyze="analyzeWaterfall"
+    />
   </div>
 </template>
 
@@ -309,11 +314,5 @@ onMounted(() => {
 .l1-chip:hover { border-color: var(--primary); color: var(--primary); }
 .l1-chip.on { border-color: var(--primary); background: rgba(201,99,66,.1); color: var(--primary); font-weight: 600; }
 
-.ai-result {
-  margin-top: 16px; padding: 16px 20px;
-  background: rgba(201,99,66,0.04); border: 1px solid rgba(201,99,66,0.15);
-  border-radius: 12px; font-size: 13px; line-height: 1.75; color: var(--text);
-}
-.ai-result h4 { font-size: 13px; font-weight: 700; color: var(--primary); margin: 12px 0 4px; }
-.ai-result p { margin: 0 0 8px; }
+.driver-dot { color: var(--primary); font-size: 9px; margin-left: 5px; vertical-align: middle; }
 </style>

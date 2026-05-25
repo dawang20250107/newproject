@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 
 const props = defineProps({
   rows: { type: Array, default: () => [] },
@@ -9,6 +9,15 @@ const props = defineProps({
 })
 
 const collapsed = ref(new Set())
+
+// When the bottom-line figure (e.g. 经营净利) already appears as a calculated
+// L1 row, a separate total row would duplicate it — suppress it and emphasise
+// the matching row instead.
+const dupRowId = computed(() => {
+  const m = props.rows.find(r => r.l1_name === props.totalLabel)
+  return m ? m.l1_id : null
+})
+const showTotalRow = computed(() => dupRowId.value === null)
 
 function toggle(id) {
   if (collapsed.value.has(id)) collapsed.value.delete(id)
@@ -44,6 +53,7 @@ function fmt(n) {
               level >= 2 ? 'clickable' : '',
               row.is_calculated ? 'l1-calc' : '',
               (row.is_calculated && parseFloat(row.amount) < 0) ? 'l1-calc-neg' : '',
+              row.l1_id === dupRowId ? 'l1-bottomline' : '',
             ]"
             @click="level >= 2 && toggle(row.l1_id)"
           >
@@ -80,8 +90,8 @@ function fmt(n) {
           </template>
         </template>
 
-        <!-- Total row -->
-        <tr class="total-row">
+        <!-- Total row (only when it doesn't duplicate a bottom-line L1 row) -->
+        <tr v-if="showTotalRow" class="total-row">
           <td v-if="level >= 2"></td>
           <td :colspan="level >= 3 ? 3 : (level >= 2 ? 2 : 1)" style="font-weight:700">{{ totalLabel }}</td>
           <td class="amt total-amt" :class="total < 0 ? 'amt-red' : ''">{{ fmt(total) }}</td>
@@ -110,6 +120,16 @@ function fmt(n) {
   50%       { box-shadow: inset 3px 0 0 rgba(198,40,40,.70); background: rgba(198,40,40,.10); }
 }
 .l1-name { font-weight: 700; }
+
+/* bottom-line row (经营净利) doubles as the report total */
+.l1-bottomline td {
+  border-top: 2px solid var(--border) !important;
+  background: rgba(201,99,66,.08) !important;
+  font-size: 14px; font-style: normal !important;
+}
+.l1-bottomline .l1-name { font-weight: 800; }
+.l1-bottomline .l1-amt { font-size: 16px; color: var(--primary); }
+.l1-bottomline.l1-calc-neg .l1-amt { color: var(--danger); }
 .l1-amt { font-weight: 700; font-size: 14px; }
 .l2-row td { background: transparent; }
 .l2-name { color: var(--text); padding-left: 24px !important; }

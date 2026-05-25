@@ -2012,7 +2012,7 @@ def chart_trend(request):
     if not _can_access_bu(request, bu):
         return err('无权访问该事业部', 403)
 
-    l1_cats = list(L1Category.objects.all())
+    l1_cats = list(L1Category.objects.order_by('sort_order', 'id'))
 
     # For each month, get published batch and aggregate by L1 (including calculated rows)
     result = []
@@ -2110,8 +2110,10 @@ def chart_waterfall(request):
     base_total = base_total or 0
     curr_total = curr_total or 0
 
-    # Factor analysis: profit-driver raw L1 categories (not calculated rows)
-    drivers = [l1 for l1 in l1_cats if l1.is_profit_driver and not l1.is_calculated]
+    # Factor analysis: ALL raw L1 categories (not calculated rows) form a complete
+    # bridge so base + Σdeltas == current exactly. is_profit_driver only flags
+    # which to emphasise; every changed raw item must appear or the bridge breaks.
+    drivers = [l1 for l1 in l1_cats if not l1.is_calculated]
 
     factors = []
     for l1 in drivers:
@@ -2125,6 +2127,7 @@ def chart_waterfall(request):
             'base': round(base_v, 2),
             'current': round(curr_v, 2),
             'delta': round(profit_delta, 2),
+            'is_driver': l1.is_profit_driver,
         })
 
     # Waterfall: base → factor deltas → current total
@@ -2201,15 +2204,47 @@ def report_ai_analysis(request):
         return err('AI 分析未配置（缺少 DEEPSEEK_API_KEY）', 503)
 
     body = _parse_json(request)
-    year = body.get('year')
-    month = body.get('month')
-    bu = body.get('bu') or '全集团'
-    rows = body.get('rows', [])
-    prev_kpis = body.get('prev_kpis', {})
-    bu_scope = body.get('bu_scope', '')  # 'all' means analyst sees all BUs
+    try:
+        year = int(body.get('year'))
+        month = int(body.get('month'))
+        assert 2000 <= year <= 2100 and 1 <= month <= 12
+    except Exception:
+        return err('年份或月份无效')
 
+    # Resolve BU scope from request, clamped to what this user may access.
+    if request.cw_role == 'super_admin':
+        accessible = list(BUSINESS_UNITS)
+    else:
+        accessible = [d for d in request.cw_depts if d in VALID_BUSINESS_UNITS]
+
+    single_bu = (body.get('bu') or '').strip()
+    req_bus = body.get('bus') or []
+    if single_bu:
+        if single_bu not in accessible:
+            return err('无权访问该事业部', 403)
+        bu_list = [single_bu]
+        bu = single_bu
+        bu_scope = ''
+    elif req_bus:
+        bu_list = [b for b in req_bus if b in accessible]
+        if not bu_list:
+            return err('无权访问所选事业部', 403)
+        bu = '全集团' if len(bu_list) > 1 else bu_list[0]
+        bu_scope = 'all' if len(bu_list) > 1 else ''
+    else:
+        bu_list = accessible
+        bu = '全集团' if len(bu_list) != 1 else bu_list[0]
+        bu_scope = 'all' if len(bu_list) > 1 else ''
+
+    # Aggregate report data server-side (single source of truth).
+    rows = _aggregate_report(_get_published_batches(bu_list, year, month), 1)
     if not rows:
-        return err('请先加载报表数据再进行AI分析')
+        return err(f'{year}年{month}月该范围内暂无已发布数据，无法进行AI分析')
+
+    prev_month = month - 1 if month > 1 else 12
+    prev_year = year if month > 1 else year - 1
+    prev_rows = _aggregate_report(_get_published_batches(bu_list, prev_year, prev_month), 1)
+    prev_kpis = {r['l1_name']: float(r['amount']) for r in prev_rows}
 
     # Build KPI summary with MoM change
     KPI_NAMES = ['主营业务收入', '主营业务成本', '运营毛利', '经营毛利', '经营净利']

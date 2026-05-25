@@ -4,6 +4,7 @@ import { useAuthStore } from '../stores/auth.js'
 import { BUSINESS_UNITS, yearCST, monthCST } from '../constants.js'
 import ReportTable from '../components/report/ReportTable.vue'
 import LevelToggle from '../components/report/LevelToggle.vue'
+import AiAnalysisModal from '../components/AiAnalysisModal.vue'
 import api from '../api/index.js'
 
 const auth = useAuthStore()
@@ -88,15 +89,14 @@ function momLabel(pct) {
   return pct >= 0 ? `▲ ${abs}%` : `▼ ${abs}%`
 }
 
-// ── AI helpers ────────────────────────────────────────────────────────────────
-function renderAiHtml(text) {
-  if (!text) return []
-  return text.split(/\n\n+/).map(para => {
-    const html = para
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\n/g, '<br>')
-    return html
-  })
+// ── AI analysis (modal-driven) ─────────────────────────────────────────────────
+const aiScopeLabel = computed(() =>
+  `${selectedBu.value || (aiScope.value.length + ' 个事业部')} · ${year.value}年${month.value}月`
+)
+const hasAnalysis = computed(() => !!aiText.value && !aiErr.value)
+
+function viewAnalysis() {
+  aiVisible.value = true
 }
 
 async function runAiAnalysis() {
@@ -215,32 +215,26 @@ onMounted(load)
         </div>
       </div>
 
-      <!-- ── AI analysis panel ──────────────────────────────────────────────── -->
-      <div class="card ai-panel-card">
-        <div class="ai-panel-header">
-          <div class="section-title" style="margin:0">✨ AI 财务分析</div>
-          <div style="display:flex;align-items:center;gap:10px">
-            <span class="ai-scope-label">
-              {{ selectedBu ? selectedBu : (aiScope.length + ' 个事业部') }}
-              · {{ data.year }}年{{ data.month }}月
-            </span>
-            <button
-              class="btn btn-ghost btn-sm"
-              :disabled="aiLoading || noData"
-              @click="runAiAnalysis"
-            >{{ aiLoading ? '分析中…' : (aiVisible ? '✨ 重新分析' : '✨ AI 分析') }}</button>
+      <!-- ── AI analysis bar ────────────────────────────────────────────────── -->
+      <div class="card ai-bar">
+        <div class="ai-bar-left">
+          <span class="ai-bar-orb">✨</span>
+          <div>
+            <div class="ai-bar-title">AI 财务分析</div>
+            <div class="ai-bar-scope">{{ aiScopeLabel }}</div>
           </div>
         </div>
-
-        <div v-if="aiLoading" class="ai-loading">
-          <span class="ai-spin">⏳</span> DeepSeek 分析中，请稍候…
-        </div>
-        <div v-else-if="aiErr" class="ai-error">{{ aiErr }}</div>
-        <div v-else-if="aiVisible && aiText" class="ai-result">
-          <p v-for="(para, i) in renderAiHtml(aiText)" :key="i" v-html="para"></p>
-        </div>
-        <div v-else-if="!aiVisible" class="ai-hint">
-          点击「AI 分析」获取财务报表的智能解读与决策建议。
+        <div class="ai-bar-actions">
+          <button
+            v-if="hasAnalysis"
+            class="btn btn-ghost btn-sm"
+            @click="viewAnalysis"
+          >📄 查看分析</button>
+          <button
+            class="btn btn-primary btn-sm"
+            :disabled="aiLoading || noData"
+            @click="runAiAnalysis"
+          >{{ aiLoading ? '分析中…' : (hasAnalysis ? '↻ 重新分析' : '✨ AI 分析') }}</button>
         </div>
       </div>
 
@@ -255,6 +249,18 @@ onMounted(load)
         <ReportTable :rows="data.rows || []" :level="level" :total="data.total || 0" :total-label="data.total_label || '合计'" />
       </div>
     </template>
+
+    <!-- ── AI analysis modal ──────────────────────────────────────────────────── -->
+    <AiAnalysisModal
+      :visible="aiVisible"
+      :loading="aiLoading"
+      :text="aiText"
+      :error="aiErr"
+      title="AI 财务分析"
+      :subtitle="aiScopeLabel"
+      @close="aiVisible = false"
+      @reanalyze="runAiAnalysis"
+    />
   </div>
 </template>
 
@@ -310,30 +316,23 @@ onMounted(load)
 .mom-down    { background: rgba(198,40,40,.10); color: var(--danger); }
 .mom-neutral { background: rgba(120,120,120,.08); color: var(--muted); font-weight: 400; }
 
-/* ── AI panel ─────────────────────────────────────────────────────────────── */
-.ai-panel-card { padding: 18px 20px; }
-.ai-panel-header {
+/* ── AI bar ───────────────────────────────────────────────────────────────── */
+.ai-bar {
   display: flex; align-items: center; justify-content: space-between;
-  flex-wrap: wrap; gap: 10px; margin-bottom: 12px;
+  flex-wrap: wrap; gap: 12px; padding: 14px 18px;
+  background: linear-gradient(120deg, rgba(201,99,66,0.05), rgba(122,159,212,0.05));
+  border: 1px solid rgba(201,99,66,0.14);
 }
-.ai-scope-label { font-size: 12px; color: var(--muted); }
-
-.ai-loading {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 13px; color: var(--muted); padding: 12px 0;
+.ai-bar-left { display: flex; align-items: center; gap: 12px; }
+.ai-bar-orb {
+  font-size: 22px; filter: drop-shadow(0 0 6px rgba(201,99,66,0.45));
+  animation: aiOrbPulse 3s ease-in-out infinite;
 }
-.ai-spin { animation: spin 1.2s linear infinite; display: inline-block; }
-@keyframes spin { to { transform: rotate(360deg); } }
-
-.ai-error { color: var(--danger); font-size: 13px; padding: 8px 0; }
-
-.ai-result {
-  margin-top: 8px; padding: 16px 20px;
-  background: rgba(201,99,66,.04); border: 1px solid rgba(201,99,66,.15);
-  border-radius: 12px; font-size: 13px; line-height: 1.8; color: var(--text);
+@keyframes aiOrbPulse {
+  0%, 100% { transform: scale(1) rotate(0deg); }
+  50% { transform: scale(1.14) rotate(8deg); }
 }
-.ai-result p { margin: 0 0 8px; }
-.ai-result p:last-child { margin-bottom: 0; }
-
-.ai-hint { font-size: 13px; color: var(--muted); padding: 4px 0; }
+.ai-bar-title { font-size: 14px; font-weight: 800; color: var(--text); }
+.ai-bar-scope { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.ai-bar-actions { display: flex; gap: 8px; }
 </style>

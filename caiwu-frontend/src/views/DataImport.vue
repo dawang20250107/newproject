@@ -86,12 +86,29 @@ function fmtDt(s) {
   return s ? new Date(s).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'
 }
 
-async function doDelete(batchId) {
-  if (!confirm('确认删除此草稿批次？')) return
+async function doDelete(batch) {
+  const msg = batch.status === 'published'
+    ? `确认删除已发布批次「${batch.business_unit} ${batch.year}年${batch.month}月 ${batch.batch_type === 'profit_loss' ? '利润表' : '部门明细表'}」？\n删除后报表和图表将不再包含这部分数据。`
+    : '确认删除此草稿批次？'
+  if (!confirm(msg)) return
   try {
-    await api.delete(`/batches/${batchId}`)
-    batches.value = batches.value.filter(b => b.id !== batchId)
+    await api.delete(`/batches/${batch.id}`)
+    batches.value = batches.value.filter(b => b.id !== batch.id)
+    await loadSubmissionStatus()
   } catch (e) { alert(e?.error || '删除失败') }
+}
+
+// Re-upload to replace an existing batch's period (entries can't be edited
+// directly — publishing a new upload replaces the same BU+month+type).
+function openReplace(batch) {
+  upBu.value = batch.business_unit
+  upYear.value = batch.year
+  upMonth.value = batch.month
+  uploadErr.value = ''
+  uploadResult.value = null
+  upFile.value = null
+  previewTab.value = 'l1'
+  showUpload.value = true
 }
 
 // ── Upload wizard ─────────────────────────────────────────────────────────────
@@ -166,23 +183,27 @@ async function downloadTemplate() {
   } catch (e) { alert(e?.error || '下载失败') }
 }
 
-// completeness label for submission status matrix
+// completeness label for submission status matrix (backend provides .complete)
 function completenessLabel(row) {
   if (!row) return '—'
-  const dept = row.department_detail
-  const pl = row.profit_loss
-  if (dept === 'published' && pl === 'published') return '完整'
+  if (row.complete) return '完整'
+  const dept = row.department_detail?.status
+  const pl = row.profit_loss?.status
   if (dept === 'draft' || pl === 'draft') return '草稿中'
-  return '未完整'
+  if (dept || pl) return '未完整'
+  return '未提交'
 }
 
-function statusBadgeClass(status) {
+// info is the per-type dict {status,...} or null
+function statusBadgeClass(info) {
+  const status = info?.status
   if (status === 'published') return 'badge badge-success'
   if (status === 'draft') return 'badge badge-warn'
   return 'badge badge-muted'
 }
 
-function statusLabel(status) {
+function statusLabel(info) {
+  const status = info?.status
   if (status === 'published') return '已发布 ✓'
   if (status === 'draft') return '草稿 ●'
   return '未提交 ○'
@@ -227,7 +248,7 @@ onMounted(() => {
       </div>
 
       <div v-if="statusLoading" class="empty" style="padding:16px"><div class="icon">⏳</div>加载中…</div>
-      <div v-else-if="!submissionStatus || !submissionStatus.rows?.length" class="empty" style="padding:16px">
+      <div v-else-if="!submissionStatus || !submissionStatus.bus?.length" class="empty" style="padding:16px">
         <div class="icon">📋</div>暂无提交数据
       </div>
       <div v-else class="table-wrap">
@@ -241,7 +262,7 @@ onMounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in submissionStatus.rows" :key="row.bu">
+            <tr v-for="row in submissionStatus.bus" :key="row.bu">
               <td><strong>{{ row.bu }}</strong></td>
               <td>
                 <span :class="statusBadgeClass(row.department_detail)">
@@ -254,7 +275,7 @@ onMounted(() => {
                 </span>
               </td>
               <td>
-                <span :class="['badge', row.department_detail === 'published' && row.profit_loss === 'published' ? 'badge-success' : 'badge-muted']">
+                <span :class="['badge', row.complete ? 'badge-success' : 'badge-muted']">
                   {{ completenessLabel(row) }}
                 </span>
               </td>
@@ -302,9 +323,14 @@ onMounted(() => {
               <td style="font-size:12px;color:var(--muted)">{{ fmtDt(b.uploaded_at) }}</td>
               <td style="font-size:12px;color:var(--muted)">{{ fmtDt(b.published_at) }}</td>
               <td>
-                <div style="display:flex;gap:6px">
+                <div style="display:flex;gap:6px;flex-wrap:wrap">
+                  <!-- draft -->
                   <button v-if="b.status === 'draft' && auth.canPublish" class="btn btn-ghost btn-sm" @click="doPublish(b.id)">发布</button>
-                  <button v-if="b.status === 'draft' && auth.canDelete" class="btn btn-danger btn-sm" @click="doDelete(b.id)">删除</button>
+                  <!-- published: re-upload to replace -->
+                  <button v-if="b.status === 'published' && auth.canUpload" class="btn btn-ghost btn-sm" @click="openReplace(b)">替换</button>
+                  <!-- delete (draft or published) -->
+                  <button v-if="auth.canDelete" class="btn btn-danger btn-sm" @click="doDelete(b)">删除</button>
+                  <span v-if="b.status === 'published' && !auth.canUpload && !auth.canDelete" style="color:var(--muted);font-size:12px">—</span>
                 </div>
               </td>
             </tr>
