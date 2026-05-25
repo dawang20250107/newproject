@@ -945,9 +945,14 @@ def permissions(request):
     return ok({
         'fields': PAYMENT_FIELD_DEFS,
         'pages': [
-            {'key': 'dashboard', 'label': '今日工作台'},
-            {'key': 'payments', 'label': '付款台账'},
-            {'key': 'stats', 'label': '月度统计'},
+            {'key': 'dashboard',    'label': '今日工作台'},
+            {'key': 'payments',     'label': '付款台账'},
+            {'key': 'stats',        'label': '月度统计'},
+            {'key': 'ar_projects',  'label': '项目台账'},
+            {'key': 'ar_records',   'label': '应收明细'},
+            {'key': 'ar_analytics', 'label': '应收分析'},
+            {'key': 'ar_cashflow',  'label': '收付对比'},
+            {'key': 'ar_budget',    'label': '预算管理'},
         ],
         'jobs': jobs,
     })

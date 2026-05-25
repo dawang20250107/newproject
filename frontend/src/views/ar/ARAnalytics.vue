@@ -158,23 +158,23 @@ onMounted(loadAll)
 
     <!-- Stats summary -->
     <div v-if="statusData" class="kpi-grid kpi-4" style="margin-bottom:16px">
-      <div class="kpi-card">
-        <div class="label">逾期笔数</div>
+      <div class="kpi-card" style="border-left:3px solid #c62828">
+        <div class="label">逾期</div>
         <div class="value" style="color:#c62828">{{ statusData.overdue?.count || 0 }}</div>
-        <div class="sub">笔</div>
+        <div class="sub">{{ statusData.overdue?.amount ? fmtWan(statusData.overdue.amount) + ' 未收' : '—' }}</div>
       </div>
-      <div class="kpi-card">
-        <div class="label">当期笔数</div>
+      <div class="kpi-card" style="border-left:3px solid #1565c0">
+        <div class="label">当期</div>
         <div class="value" style="color:#1565c0">{{ statusData.current?.count || 0 }}</div>
-        <div class="sub">笔</div>
+        <div class="sub">{{ statusData.current?.amount ? fmtWan(statusData.current.amount) : '—' }}</div>
       </div>
-      <div class="kpi-card">
-        <div class="label">未到期笔数</div>
+      <div class="kpi-card" style="border-left:3px solid #2e7d32">
+        <div class="label">未到期</div>
         <div class="value" style="color:#2e7d32">{{ statusData.not_due?.count || 0 }}</div>
-        <div class="sub">笔</div>
+        <div class="sub">{{ statusData.not_due?.amount ? fmtWan(statusData.not_due.amount) : '—' }}</div>
       </div>
-      <div class="kpi-card">
-        <div class="label">已结清笔数</div>
+      <div class="kpi-card" style="border-left:3px solid var(--muted)">
+        <div class="label">已结清</div>
         <div class="value" style="color:var(--muted)">{{ statusData.settled?.count || 0 }}</div>
         <div class="sub">笔</div>
       </div>

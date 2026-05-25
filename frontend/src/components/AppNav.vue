@@ -112,10 +112,7 @@ function onNavClick() {
       <!-- ── 应收账款 section ───────────────────── -->
       <div v-if="auth.canPage('ar_projects') || auth.canPage('ar_records') || auth.canPage('ar_analytics') || auth.canPage('ar_cashflow') || auth.canPage('ar_budget')"
            class="nav-section-label">
-        <Transition name="label-fade">
-          <span v-if="!effectiveCollapsed">应收账款</span>
-        </Transition>
-        <span v-if="effectiveCollapsed" style="display:block;width:100%;height:1px;background:rgba(255,255,255,0.1);margin:4px 0"></span>
+        <span style="display:block;width:100%;height:1px;background:rgba(255,255,255,0.1);margin:4px 0"></span>
       </div>
 
       <router-link v-if="auth.canPage('ar_projects')" to="/ar/projects" class="nav-item" :class="{ active: route.path === '/ar/projects' }" @click="onNavClick">

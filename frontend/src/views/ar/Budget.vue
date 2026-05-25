@@ -3,10 +3,11 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS } from '../../constants.js'
 import ar from '../../api/ar.js'
+import BaseChart from '../../components/ar/BaseChart.vue'
 
 const auth = useAuthStore()
 const now = new Date()
-const activeTab = ref('summary')  // summary | collection | payment
+const activeTab = ref('summary')
 const year = ref(now.getFullYear())
 const month = ref(now.getMonth() + 1)
 const selectedDept = ref('')
@@ -16,23 +17,98 @@ const months = Array.from({ length: 12 }, (_, i) => i + 1)
 const accessibleDepts = computed(() =>
   auth.isSuperAdmin ? DEPARTMENTS : (auth.user?.departments || []).filter(d => DEPARTMENTS.includes(d)))
 
-// Summary
 const summary = ref(null)
-const summLoading = ref(false)
-
-// Lists
 const collItems = ref([])
 const payItems = ref([])
 const collTotal = ref(0)
 const payTotal = ref(0)
+const summLoading = ref(false)
 const listLoading = ref(false)
 
-// Modal
 const showModal = ref(false)
-const modalType = ref('collection')  // collection | payment
+const modalType = ref('collection')
 const editItem = ref(null)
 const saving = ref(false)
 const form = reactive({ project_no: '', short_name: '', expected_date: '', sub_dept: '', delivery_dept: '', amount: '', notes: '' })
+
+// ── Computed ──────────────────────────────────────────────────────────────────
+
+const monthProgress = computed(() => {
+  const daysInMonth = new Date(year.value, month.value, 0).getDate()
+  const today = new Date()
+  const isCurrentMonth = today.getFullYear() === year.value && today.getMonth() + 1 === month.value
+  const isPast = new Date(year.value, month.value - 1) < new Date(today.getFullYear(), today.getMonth())
+  const daysPassed = isCurrentMonth ? today.getDate() : (isPast ? daysInMonth : 0)
+  return {
+    daysPassed,
+    daysInMonth,
+    pct: Math.round(daysPassed / daysInMonth * 100),
+    isCurrentMonth,
+    isPast,
+  }
+})
+
+const collAchievement = computed(() => {
+  if (!summary.value) return { pct: 0, over: false }
+  const b = parseFloat(summary.value.budget_collection) || 0
+  if (!b) return { pct: 0, over: false }
+  const pct = parseFloat(summary.value.actual_collection) / b * 100
+  return { pct: Math.min(pct, 100), rawPct: pct.toFixed(1), over: pct > 100 }
+})
+
+const payAchievement = computed(() => {
+  if (!summary.value) return { pct: 0, over: false }
+  const b = parseFloat(summary.value.budget_payment) || 0
+  if (!b) return { pct: 0, over: false }
+  const pct = parseFloat(summary.value.actual_payment) / b * 100
+  return { pct: Math.min(pct, 100), rawPct: pct.toFixed(1), over: pct > 100 }
+})
+
+const netCashflow = computed(() => {
+  if (!summary.value) return 0
+  return parseFloat(summary.value.actual_collection) - parseFloat(summary.value.actual_payment)
+})
+
+const comparisonChartOption = computed(() => {
+  if (!summary.value) return null
+  const bc = parseFloat(summary.value.budget_collection) || 0
+  const ac = parseFloat(summary.value.actual_collection) || 0
+  const bp = parseFloat(summary.value.budget_payment) || 0
+  const ap = parseFloat(summary.value.actual_payment) || 0
+  return {
+    tooltip: {
+      trigger: 'axis', axisPointer: { type: 'shadow' },
+      formatter(params) {
+        let html = `<b>${params[0].axisValueLabel}</b><br/>`
+        params.forEach(p => {
+          html += `<span style="color:${p.color}">●</span> ${p.seriesName}：${fmtAmt(p.value)}<br/>`
+        })
+        return html
+      }
+    },
+    legend: { bottom: 0, data: ['预算', '实际'] },
+    grid: { top: 16, right: 60, bottom: 48, left: 16, containLabel: true },
+    xAxis: { type: 'value', axisLabel: { formatter: v => fmtAmt(v) } },
+    yAxis: { type: 'category', data: ['付款', '收款'] },
+    series: [
+      {
+        name: '预算', type: 'bar', barMaxWidth: 30,
+        data: [bp, bc],
+        itemStyle: { color: 'rgba(155,128,112,0.2)', borderRadius: [0, 4, 4, 0],
+          borderColor: 'rgba(155,128,112,0.5)', borderWidth: 1 },
+      },
+      {
+        name: '实际', type: 'bar', barMaxWidth: 30,
+        data: [
+          { value: ap, itemStyle: { color: ap > ac ? '#c62828' : '#f57f17', borderRadius: [0, 4, 4, 0] } },
+          { value: ac, itemStyle: { color: '#2e7d32', borderRadius: [0, 4, 4, 0] } },
+        ],
+      },
+    ],
+  }
+})
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmtAmt(v) {
   const n = parseFloat(v) || 0
@@ -41,10 +117,7 @@ function fmtAmt(v) {
   return n.toFixed(2)
 }
 
-function pct(actual, budget) {
-  if (!budget || parseFloat(budget) === 0) return null
-  return ((parseFloat(actual) / parseFloat(budget)) * 100).toFixed(1)
-}
+// ── Data loading ──────────────────────────────────────────────────────────────
 
 async function loadSummary() {
   summLoading.value = true
@@ -64,30 +137,26 @@ async function loadLists() {
   } finally { listLoading.value = false }
 }
 
-async function loadAll() {
-  await Promise.all([loadSummary(), loadLists()])
-}
+async function loadAll() { await Promise.all([loadSummary(), loadLists()]) }
+
+// ── CRUD ──────────────────────────────────────────────────────────────────────
 
 function openCreate(type) {
-  modalType.value = type
-  editItem.value = null
-  const y = year.value, m = month.value
-  const d = `${y}-${String(m).padStart(2, '0')}-01`
+  modalType.value = type; editItem.value = null
+  const d = `${year.value}-${String(month.value).padStart(2, '0')}-01`
   Object.assign(form, { project_no: '', short_name: '', expected_date: d, sub_dept: '', delivery_dept: selectedDept.value || (accessibleDepts.value[0] || ''), amount: '', notes: '' })
   showModal.value = true
 }
 
 function openEdit(type, item) {
-  modalType.value = type
-  editItem.value = item
+  modalType.value = type; editItem.value = item
   Object.assign(form, { ...item })
   showModal.value = true
 }
 
 async function save() {
   if (!form.short_name || !form.expected_date || !form.amount) {
-    alert('请填写项目简称、预计日期和金额')
-    return
+    alert('请填写项目简称、预计日期和金额'); return
   }
   saving.value = true
   try {
@@ -98,8 +167,7 @@ async function save() {
       if (editItem.value) await ar.updatePaymentBudget(editItem.value.id, form)
       else await ar.createPaymentBudget(form)
     }
-    showModal.value = false
-    await loadAll()
+    showModal.value = false; await loadAll()
   } catch (e) { alert(e?.response?.data?.msg || '保存失败')
   } finally { saving.value = false }
 }
@@ -119,7 +187,10 @@ onMounted(loadAll)
 <template>
   <div>
     <div class="topbar">
-      <h1>预算管理</h1>
+      <div>
+        <h1>预算管理</h1>
+        <div style="font-size:13px;color:var(--muted);margin-top:2px">收款预算 · 付款预算 · 执行对比</div>
+      </div>
       <div class="ctrl-row">
         <select v-model="year" class="sel-yr" @change="loadAll">
           <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
@@ -134,111 +205,191 @@ onMounted(loadAll)
       </div>
     </div>
 
-    <!-- Tabs -->
-    <div style="display:flex;gap:4px;margin-bottom:16px">
-      <button :class="['tab-btn', activeTab === 'summary' ? 'active' : '']" @click="activeTab = 'summary'">执行概览</button>
-      <button :class="['tab-btn', activeTab === 'collection' ? 'active' : '']" @click="activeTab = 'collection'">收款预算</button>
-      <button :class="['tab-btn', activeTab === 'payment' ? 'active' : '']" @click="activeTab = 'payment'">付款预算</button>
+    <!-- Tab bar -->
+    <div class="segment-ctrl" style="margin-bottom:20px">
+      <button :class="['seg-btn', activeTab === 'summary' ? 'active' : '']" @click="activeTab = 'summary'">执行概览</button>
+      <button :class="['seg-btn', activeTab === 'collection' ? 'active' : '']" @click="activeTab = 'collection'">收款预算</button>
+      <button :class="['seg-btn', activeTab === 'payment' ? 'active' : '']" @click="activeTab = 'payment'">付款预算</button>
     </div>
 
-    <!-- Summary tab -->
+    <!-- ── Summary Tab ── -->
     <template v-if="activeTab === 'summary'">
+
       <!-- Alert -->
-      <div v-if="summary?.has_alert" class="cashflow-alert">
-        <span style="font-size:22px">⚠</span>
+      <div v-if="summary?.has_alert" class="alert-banner">
+        <div class="alert-icon-wrap">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </div>
         <div>
-          <div style="font-weight:700;color:#c62828">实际付款超过实际收款</div>
-          <div style="font-size:12px;color:#c62828;margin-top:4px">{{ year }}年{{ month }}月 · {{ selectedDept || '全部事业部' }}</div>
+          <div class="alert-title">实际付款超出实际收款</div>
+          <div class="alert-desc">{{ year }}年{{ month }}月 · {{ selectedDept || '全部事业部' }} · 净现金流为负，请关注资金安排</div>
         </div>
       </div>
 
-      <div v-if="summary" class="kpi-grid kpi-4">
-        <div class="kpi-card">
-          <div class="label">收款预算</div>
-          <div class="value" style="color:#1565c0">{{ fmtAmt(summary.budget_collection) }}</div>
-          <div class="sub">元</div>
-        </div>
-        <div class="kpi-card">
-          <div class="label">实际收款</div>
-          <div class="value" style="color:#2e7d32">{{ fmtAmt(summary.actual_collection) }}</div>
-          <div v-if="summary.collection_achievement_rate !== null" class="mom-badge" :class="parseFloat(summary.collection_achievement_rate) >= 100 ? 'mom-up' : 'mom-down'">
-            达成率 {{ summary.collection_achievement_rate }}%
+      <!-- Month progress bar -->
+      <div class="progress-card" style="margin-bottom:16px">
+        <div class="progress-header">
+          <div class="progress-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            本月时间进度
+          </div>
+          <div class="progress-meta">
+            {{ monthProgress.daysPassed }} / {{ monthProgress.daysInMonth }} 天
+            <span class="progress-pct-tag">{{ monthProgress.pct }}%</span>
           </div>
         </div>
-        <div class="kpi-card">
-          <div class="label">付款预算</div>
-          <div class="value" style="color:#f57f17">{{ fmtAmt(summary.budget_payment) }}</div>
-          <div class="sub">元</div>
+        <div class="progress-track">
+          <div class="progress-fill progress-fill-time" :style="`width:${monthProgress.pct}%`"></div>
         </div>
-        <div class="kpi-card" :class="summary.has_alert ? 'kpi-negative' : ''">
-          <div class="label">实际付款</div>
-          <div class="value" :style="summary.has_alert ? 'color:#c62828' : 'color:var(--text)'">{{ fmtAmt(summary.actual_payment) }}</div>
-          <div v-if="summary.payment_achievement_rate !== null" class="mom-badge mom-neutral">
-            达成率 {{ summary.payment_achievement_rate }}%
+        <div class="progress-sublabel">
+          <span v-if="monthProgress.isCurrentMonth">今天是本月第 {{ monthProgress.daysPassed }} 天，预算执行应与时间进度匹配</span>
+          <span v-else-if="monthProgress.isPast">该月已结束</span>
+          <span v-else>该月尚未开始</span>
+        </div>
+      </div>
+
+      <!-- Two big comparison cards -->
+      <div class="comparison-grid">
+        <!-- Collection card -->
+        <div class="compare-card compare-card-coll">
+          <div class="compare-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+          </div>
+          <div class="compare-content">
+            <div class="compare-title">收款执行</div>
+            <div class="compare-nums">
+              <div class="compare-actual">
+                <div class="cn-label">实际收款</div>
+                <div class="cn-value cn-coll">{{ fmtAmt(summary?.actual_collection || 0) }}</div>
+              </div>
+              <div class="compare-sep">vs</div>
+              <div class="compare-budget">
+                <div class="cn-label">收款预算</div>
+                <div class="cn-value cn-muted">{{ fmtAmt(summary?.budget_collection || 0) }}</div>
+              </div>
+            </div>
+            <div class="compare-bar-wrap">
+              <div class="compare-bar-track">
+                <div class="compare-bar-fill fill-coll"
+                  :style="`width:${collAchievement.pct}%`"></div>
+                <div class="time-marker" :style="`left:${monthProgress.pct}%`" title="本月时间进度"></div>
+              </div>
+              <div class="compare-bar-labels">
+                <span class="bar-achievement" :class="collAchievement.over ? 'ach-over' : ''">
+                  {{ collAchievement.rawPct || '0.0' }}%
+                </span>
+                <span class="bar-gap" :class="parseFloat(summary?.collection_gap || 0) > 0 ? 'gap-behind' : 'gap-ok'">
+                  差额 {{ fmtAmt(summary?.collection_gap || 0) }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Payment card -->
+        <div class="compare-card compare-card-pay">
+          <div class="compare-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+          </div>
+          <div class="compare-content">
+            <div class="compare-title">付款执行</div>
+            <div class="compare-nums">
+              <div class="compare-actual">
+                <div class="cn-label">实际付款</div>
+                <div class="cn-value" :class="summary?.has_alert ? 'cn-danger' : 'cn-pay'">{{ fmtAmt(summary?.actual_payment || 0) }}</div>
+              </div>
+              <div class="compare-sep">vs</div>
+              <div class="compare-budget">
+                <div class="cn-label">付款预算</div>
+                <div class="cn-value cn-muted">{{ fmtAmt(summary?.budget_payment || 0) }}</div>
+              </div>
+            </div>
+            <div class="compare-bar-wrap">
+              <div class="compare-bar-track">
+                <div class="compare-bar-fill" :class="summary?.has_alert ? 'fill-danger' : 'fill-pay'"
+                  :style="`width:${payAchievement.pct}%`"></div>
+                <div class="time-marker" :style="`left:${monthProgress.pct}%`" title="本月时间进度"></div>
+              </div>
+              <div class="compare-bar-labels">
+                <span class="bar-achievement" :class="payAchievement.over ? 'ach-over' : ''">
+                  {{ payAchievement.rawPct || '0.0' }}%
+                </span>
+                <span class="bar-gap">
+                  差额 {{ fmtAmt(summary?.payment_gap || 0) }}
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
-      <div v-if="summary" class="card" style="margin-top:16px">
-        <div class="section-title">收付缺口</div>
-        <div style="display:flex;gap:24px;flex-wrap:wrap;padding:8px 0">
-          <div>
-            <div style="font-size:12px;color:var(--muted)">收款缺口（预算-实际）</div>
-            <div style="font-size:18px;font-weight:700;" :class="parseFloat(summary.collection_gap) > 0 ? 'text-warn' : 'text-ok'">
-              {{ fmtAmt(summary.collection_gap) }}
-            </div>
+      <!-- Net cashflow + chart -->
+      <div class="bottom-grid">
+        <!-- Net metric -->
+        <div class="card net-card">
+          <div class="net-label">净现金流（实收 − 实付）</div>
+          <div class="net-value" :class="netCashflow >= 0 ? 'net-pos' : 'net-neg'">
+            {{ netCashflow >= 0 ? '+' : '' }}{{ fmtAmt(netCashflow) }}
           </div>
-          <div>
-            <div style="font-size:12px;color:var(--muted)">付款缺口（预算-实际）</div>
-            <div style="font-size:18px;font-weight:700;color:var(--text)">{{ fmtAmt(summary.payment_gap) }}</div>
+          <div class="net-sub">{{ year }}年{{ month }}月 · {{ selectedDept || '全部事业部' }}</div>
+          <div class="net-breakdown">
+            <div class="nb-item"><span class="nb-dot nb-coll"></span>实际收款 {{ fmtAmt(summary?.actual_collection || 0) }}</div>
+            <div class="nb-item"><span class="nb-dot nb-pay"></span>实际付款 {{ fmtAmt(summary?.actual_payment || 0) }}</div>
           </div>
-          <div>
-            <div style="font-size:12px;color:var(--muted)">净现金流（实收-实付）</div>
-            <div style="font-size:18px;font-weight:700;" :class="parseFloat(summary.actual_collection) - parseFloat(summary.actual_payment) >= 0 ? 'text-ok' : 'text-danger'">
-              {{ fmtAmt(parseFloat(summary.actual_collection) - parseFloat(summary.actual_payment)) }}
-            </div>
-          </div>
+        </div>
+
+        <!-- Bar chart -->
+        <div class="card" style="padding:20px">
+          <div class="section-title">预算 vs 实际对比</div>
+          <BaseChart v-if="comparisonChartOption" :option="comparisonChartOption" height="180px" />
+          <div v-else class="empty"><div class="icon">📊</div>暂无预算数据</div>
         </div>
       </div>
     </template>
 
-    <!-- Collection budget tab -->
+    <!-- ── Collection Budget Tab ── -->
     <template v-else-if="activeTab === 'collection'">
       <div class="card">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-          <div class="section-title" style="margin:0">收款预算 · 合计 {{ fmtAmt(collTotal) }}</div>
-          <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate('collection')">+ 新增</button>
+        <div class="list-header">
+          <div>
+            <div class="section-title" style="margin:0">收款预算</div>
+            <div style="font-size:13px;color:var(--muted);margin-top:3px">
+              合计 <b style="color:var(--text)">{{ fmtAmt(collTotal) }}</b>
+            </div>
+          </div>
+          <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate('collection')">+ 新增收款预算</button>
         </div>
         <div class="table-wrap">
-          <table>
+          <table class="budget-table">
             <thead>
               <tr>
-                <th>项目编号</th>
-                <th>项目简称/摘要</th>
-                <th>预计收款日期</th>
-                <th>二级部门</th>
-                <th>交付部门</th>
-                <th class="amt">金额</th>
-                <th>备注</th>
-                <th>操作</th>
+                <th>项目编号</th><th>项目简称 / 摘要</th>
+                <th class="ctr">预计收款日期</th><th>二级部门</th>
+                <th>交付部门</th><th class="amt">金额</th>
+                <th>备注</th><th class="ctr">操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!collItems.length">
-                <td colspan="8" style="text-align:center;padding:32px;color:var(--muted)">暂无收款预算数据</td>
+                <td colspan="8" class="empty-cell">暂无收款预算数据</td>
               </tr>
-              <tr v-for="item in collItems" :key="item.id">
-                <td class="muted mono">{{ item.project_no || '—' }}</td>
-                <td>{{ item.short_name }}</td>
-                <td>{{ item.expected_date }}</td>
-                <td>{{ item.sub_dept }}</td>
-                <td>{{ item.delivery_dept }}</td>
-                <td class="amt text-ok">{{ fmtAmt(item.amount) }}</td>
-                <td class="muted">{{ item.notes }}</td>
-                <td>
-                  <button class="btn-link" @click="openEdit('collection', item)">编辑</button>
-                  <span v-if="auth.canDelete"> · </span>
-                  <button v-if="auth.canDelete" class="btn-link btn-link-danger" @click="remove('collection', item)">删除</button>
+              <tr v-for="item in collItems" :key="item.id" class="data-row">
+                <td><span class="proj-no-tag">{{ item.project_no || '—' }}</span></td>
+                <td class="fw">{{ item.short_name }}</td>
+                <td class="ctr text-sm">{{ item.expected_date }}</td>
+                <td class="text-muted">{{ item.sub_dept }}</td>
+                <td><span class="dept-chip">{{ item.delivery_dept || '—' }}</span></td>
+                <td class="amt coll-amt fw">{{ fmtAmt(item.amount) }}</td>
+                <td class="text-muted">{{ item.notes }}</td>
+                <td class="ctr">
+                  <div class="row-acts">
+                    <button class="icon-btn" @click="openEdit('collection', item)">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4z"/></svg>
+                    </button>
+                    <button v-if="auth.canDelete" class="icon-btn icon-btn-del" @click="remove('collection', item)">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+                    </button>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -247,43 +398,49 @@ onMounted(loadAll)
       </div>
     </template>
 
-    <!-- Payment budget tab -->
+    <!-- ── Payment Budget Tab ── -->
     <template v-else>
       <div class="card">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-          <div class="section-title" style="margin:0">付款预算 · 合计 {{ fmtAmt(payTotal) }}</div>
-          <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate('payment')">+ 新增</button>
+        <div class="list-header">
+          <div>
+            <div class="section-title" style="margin:0">付款预算</div>
+            <div style="font-size:13px;color:var(--muted);margin-top:3px">
+              合计 <b style="color:var(--text)">{{ fmtAmt(payTotal) }}</b>
+            </div>
+          </div>
+          <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate('payment')">+ 新增付款预算</button>
         </div>
         <div class="table-wrap">
-          <table>
+          <table class="budget-table">
             <thead>
               <tr>
-                <th>项目编号</th>
-                <th>项目简称/摘要</th>
-                <th>预计付款日期</th>
-                <th>二级部门</th>
-                <th>交付部门</th>
-                <th class="amt">金额</th>
-                <th>备注</th>
-                <th>操作</th>
+                <th>项目编号</th><th>项目简称 / 摘要</th>
+                <th class="ctr">预计付款日期</th><th>二级部门</th>
+                <th>交付部门</th><th class="amt">金额</th>
+                <th>备注</th><th class="ctr">操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!payItems.length">
-                <td colspan="8" style="text-align:center;padding:32px;color:var(--muted)">暂无付款预算数据</td>
+                <td colspan="8" class="empty-cell">暂无付款预算数据</td>
               </tr>
-              <tr v-for="item in payItems" :key="item.id">
-                <td class="muted mono">{{ item.project_no || '—' }}</td>
-                <td>{{ item.short_name }}</td>
-                <td>{{ item.expected_date }}</td>
-                <td>{{ item.sub_dept }}</td>
-                <td>{{ item.delivery_dept }}</td>
-                <td class="amt" style="color:#f57f17">{{ fmtAmt(item.amount) }}</td>
-                <td class="muted">{{ item.notes }}</td>
-                <td>
-                  <button class="btn-link" @click="openEdit('payment', item)">编辑</button>
-                  <span v-if="auth.canDelete"> · </span>
-                  <button v-if="auth.canDelete" class="btn-link btn-link-danger" @click="remove('payment', item)">删除</button>
+              <tr v-for="item in payItems" :key="item.id" class="data-row">
+                <td><span class="proj-no-tag">{{ item.project_no || '—' }}</span></td>
+                <td class="fw">{{ item.short_name }}</td>
+                <td class="ctr text-sm">{{ item.expected_date }}</td>
+                <td class="text-muted">{{ item.sub_dept }}</td>
+                <td><span class="dept-chip">{{ item.delivery_dept || '—' }}</span></td>
+                <td class="amt pay-amt fw">{{ fmtAmt(item.amount) }}</td>
+                <td class="text-muted">{{ item.notes }}</td>
+                <td class="ctr">
+                  <div class="row-acts">
+                    <button class="icon-btn" @click="openEdit('payment', item)">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4z"/></svg>
+                    </button>
+                    <button v-if="auth.canDelete" class="icon-btn icon-btn-del" @click="remove('payment', item)">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+                    </button>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -292,12 +449,15 @@ onMounted(loadAll)
       </div>
     </template>
 
-    <!-- Budget Modal -->
+    <!-- Modal -->
     <Teleport to="body">
       <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
-        <div class="modal-box" style="max-width:460px">
+        <div class="modal-box" style="max-width:480px">
           <div class="modal-header">
-            <h3>{{ editItem ? '编辑' : '新增' }}{{ modalType === 'collection' ? '收款' : '付款' }}预算</h3>
+            <div>
+              <h3>{{ editItem ? '编辑' : '新增' }}{{ modalType === 'collection' ? '收款' : '付款' }}预算</h3>
+              <div style="font-size:12px;color:var(--muted);margin-top:2px">{{ year }}年{{ month }}月</div>
+            </div>
             <button class="modal-close" @click="showModal = false">✕</button>
           </div>
           <div class="modal-body">
@@ -307,7 +467,7 @@ onMounted(loadAll)
                 <input v-model="form.project_no" placeholder="填写后可关联项目" />
               </label>
               <label class="form-field">
-                <span>项目简称/摘要 <em>*</em></span>
+                <span>项目简称 / 摘要 <em>*</em></span>
                 <input v-model="form.short_name" />
               </label>
               <label class="form-field">
@@ -316,7 +476,7 @@ onMounted(loadAll)
               </label>
               <label class="form-field">
                 <span>金额 <em>*</em></span>
-                <input v-model="form.amount" type="number" step="0.01" />
+                <input v-model="form.amount" type="number" step="0.01" placeholder="0.00" />
               </label>
               <label class="form-field">
                 <span>交付部门</span>
@@ -346,24 +506,137 @@ onMounted(loadAll)
 </template>
 
 <style scoped>
-.tab-btn { padding: 7px 18px; border-radius: 8px; font-size: 13px; font-weight: 500; border: 1.5px solid var(--border); background: rgba(255,253,250,.6); color: var(--muted); cursor: pointer; transition: all .15s; }
-.tab-btn.active { border-color: var(--primary); background: rgba(201,99,66,.1); color: var(--primary); font-weight: 700; }
-.kpi-4 { grid-template-columns: repeat(4,1fr) !important; }
-@media (max-width:700px) { .kpi-4 { grid-template-columns: repeat(2,1fr) !important; } }
-.kpi-negative { border-left: 3px solid var(--danger) !important; animation: negBreathe 2.2s ease-in-out infinite; }
-@keyframes negBreathe { 0%,100% { box-shadow: 0 2px 8px rgba(198,40,40,.10); } 50% { box-shadow: 0 4px 18px rgba(198,40,40,.30); background: rgba(198,40,40,.04); } }
-.cashflow-alert { display:flex;align-items:flex-start;gap:14px;padding:16px 20px;margin-bottom:16px;background:rgba(198,40,40,.06);border:1.5px solid rgba(198,40,40,.25);border-radius:12px;animation:alertGlow 1.4s ease-in-out infinite; }
-@keyframes alertGlow { 0%,100% { box-shadow:0 2px 12px rgba(198,40,40,.1);border-color:rgba(198,40,40,.25); } 50% { box-shadow:0 4px 24px rgba(198,40,40,.28);border-color:rgba(198,40,40,.5);background:rgba(198,40,40,.1); } }
-.btn-link { background:none;border:none;color:var(--primary);cursor:pointer;font-size:13px;padding:2px 4px; }
-.btn-link-danger { color:var(--danger); }
-.btn-link:hover { text-decoration:underline; }
-.text-ok { color:#2e7d32; }
-.text-warn { color:#e65100; font-weight:600; }
-.text-danger { color:#c62828; font-weight:600; }
-.muted { color:var(--muted); }
-.mono { font-family:monospace;font-size:12px; }
-.mom-badge { display:inline-block;font-size:11px;font-weight:600;padding:2px 7px;border-radius:10px;margin-top:4px; }
-.mom-up { background:rgba(46,125,50,.10);color:#2e7d32; }
-.mom-down { background:rgba(198,40,40,.10);color:var(--danger); }
-.mom-neutral { background:rgba(120,120,120,.08);color:var(--muted);font-weight:400; }
+/* Segment control */
+.segment-ctrl { display: inline-flex; gap: 0; padding: 4px; background: rgba(0,0,0,0.04); border-radius: 12px; }
+.seg-btn { padding: 7px 20px; border-radius: 9px; border: none; font-size: 13px; font-weight: 500; color: var(--muted); background: transparent; cursor: pointer; transition: all 0.18s; }
+.seg-btn.active { background: white; color: var(--primary); font-weight: 700; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Alert banner */
+.alert-banner {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 16px 20px; margin-bottom: 16px;
+  background: rgba(198,40,40,.06); border: 1.5px solid rgba(198,40,40,.25);
+  border-radius: 12px; animation: alertGlow 1.4s ease-in-out infinite;
+}
+@keyframes alertGlow {
+  0%,100% { box-shadow: 0 2px 12px rgba(198,40,40,.1); border-color: rgba(198,40,40,.25); }
+  50%     { box-shadow: 0 4px 24px rgba(198,40,40,.28); border-color: rgba(198,40,40,.5); background: rgba(198,40,40,.1); }
+}
+.alert-icon-wrap { color: #c62828; flex-shrink: 0; margin-top: 1px; }
+.alert-title { font-weight: 700; color: #c62828; font-size: 14px; }
+.alert-desc  { font-size: 12.5px; color: #c62828; margin-top: 4px; opacity: .85; }
+
+/* Month progress card */
+.progress-card {
+  background: rgba(255,255,255,0.85); border: 1px solid rgba(255,255,255,0.8);
+  border-radius: 14px; padding: 18px 22px;
+  box-shadow: 0 2px 16px rgba(0,0,0,0.06);
+}
+.progress-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.progress-label { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--text); }
+.progress-meta { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.progress-pct-tag { background: rgba(21,101,192,0.1); color: #1565c0; font-weight: 700; font-size: 13px; padding: 2px 8px; border-radius: 8px; }
+.progress-track { height: 8px; background: rgba(0,0,0,0.07); border-radius: 99px; overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 99px; transition: width 0.6s cubic-bezier(0.25,0.46,0.45,0.94); }
+.progress-fill-time { background: linear-gradient(90deg, #1565c0, #42a5f5); }
+.progress-sublabel { margin-top: 8px; font-size: 12px; color: var(--muted); }
+
+/* Comparison grid */
+.comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+@media (max-width: 760px) { .comparison-grid { grid-template-columns: 1fr; } }
+
+.compare-card {
+  background: rgba(255,255,255,0.88); border: 1px solid rgba(255,255,255,0.8);
+  border-radius: 16px; padding: 22px; display: flex; gap: 16px; align-items: flex-start;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.07);
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.compare-card:hover { box-shadow: 0 8px 32px rgba(0,0,0,0.10); transform: translateY(-2px); }
+.compare-card-coll { border-top: 3px solid #2e7d32; }
+.compare-card-pay  { border-top: 3px solid #f57f17; }
+.compare-icon {
+  width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.compare-card-coll .compare-icon { background: rgba(46,125,50,0.1); color: #2e7d32; }
+.compare-card-pay  .compare-icon { background: rgba(245,127,23,0.1); color: #f57f17; }
+
+.compare-content { flex: 1; min-width: 0; }
+.compare-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin-bottom: 12px; }
+.compare-nums { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+.compare-actual, .compare-budget { flex: 1; }
+.cn-label { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+.cn-value { font-size: 22px; font-weight: 800; line-height: 1; }
+.cn-coll   { color: #2e7d32; }
+.cn-pay    { color: #e65100; }
+.cn-danger { color: #c62828; }
+.cn-muted  { color: var(--muted); font-size: 18px; font-weight: 600; }
+.compare-sep { font-size: 12px; color: var(--muted); flex-shrink: 0; padding-top: 16px; }
+
+.compare-bar-wrap { margin-top: 4px; }
+.compare-bar-track {
+  height: 10px; background: rgba(0,0,0,0.07); border-radius: 99px;
+  overflow: visible; position: relative; margin-bottom: 8px;
+}
+.compare-bar-fill {
+  height: 100%; border-radius: 99px; position: absolute; top: 0; left: 0;
+  transition: width 0.7s cubic-bezier(0.25,0.46,0.45,0.94);
+}
+.fill-coll    { background: linear-gradient(90deg, #2e7d32, #66bb6a); }
+.fill-pay     { background: linear-gradient(90deg, #e65100, #ffa726); }
+.fill-danger  { background: linear-gradient(90deg, #c62828, #ef5350); }
+.time-marker {
+  position: absolute; top: -4px; width: 2px; height: 18px; background: rgba(21,101,192,0.6);
+  border-radius: 2px; transform: translateX(-50%);
+  transition: left 0.4s ease;
+}
+.compare-bar-labels { display: flex; justify-content: space-between; align-items: center; }
+.bar-achievement { font-size: 13px; font-weight: 700; color: var(--text); }
+.ach-over { color: #2e7d32; }
+.bar-gap { font-size: 12px; color: var(--muted); }
+.gap-behind { color: #e65100; }
+.gap-ok { color: #2e7d32; }
+
+/* Bottom grid */
+.bottom-grid { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; }
+@media (max-width: 760px) { .bottom-grid { grid-template-columns: 1fr; } }
+
+.net-card { display: flex; flex-direction: column; gap: 8px; }
+.net-label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.net-value { font-size: 32px; font-weight: 800; line-height: 1; }
+.net-pos { color: #2e7d32; }
+.net-neg { color: #c62828; }
+.net-sub { font-size: 12px; color: var(--muted); }
+.net-breakdown { display: flex; flex-direction: column; gap: 5px; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
+.nb-item { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); }
+.nb-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.nb-coll { background: #2e7d32; }
+.nb-pay  { background: #f57f17; }
+
+/* List header */
+.list-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
+
+/* Budget table */
+.budget-table { width: 100%; }
+.budget-table th { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); padding: 9px 12px; background: rgba(0,0,0,0.02); }
+.budget-table td { padding: 10px 12px; vertical-align: middle; }
+.data-row { transition: background 0.12s; }
+.data-row:hover { background: rgba(201,99,66,0.03); }
+.data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.04); }
+.empty-cell { text-align: center; padding: 40px !important; color: var(--muted); }
+
+.proj-no-tag { font-family: monospace; font-size: 11.5px; color: var(--muted); background: rgba(0,0,0,0.04); padding: 2px 7px; border-radius: 5px; }
+.dept-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; background: rgba(201,99,66,0.1); color: var(--primary); font-weight: 600; }
+.fw { font-weight: 600; }
+.ctr { text-align: center; }
+.amt { text-align: right; }
+.text-muted { color: var(--muted); }
+.text-sm { font-size: 12.5px; }
+.coll-amt { color: #2e7d32; }
+.pay-amt  { color: #e65100; }
+
+.row-acts { display: flex; gap: 4px; justify-content: center; }
+.icon-btn { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255,252,250,0.7); display: flex; align-items: center; justify-content: center; color: var(--muted); cursor: pointer; transition: all 0.13s; }
+.icon-btn:hover { border-color: var(--primary); color: var(--primary); }
+.icon-btn-del:hover { border-color: var(--danger); color: var(--danger); background: rgba(198,40,40,0.07); }
 </style>
