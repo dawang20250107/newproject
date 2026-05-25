@@ -109,6 +109,65 @@ function onNavClick() {
         </Transition>
       </router-link>
 
+      <!-- ── 应收账款 section ───────────────────── -->
+      <div v-if="auth.canPage('ar_projects') || auth.canPage('ar_records') || auth.canPage('ar_analytics') || auth.canPage('ar_cashflow') || auth.canPage('ar_budget')"
+           class="nav-section-label">
+        <Transition name="label-fade">
+          <span v-if="!effectiveCollapsed">应收账款</span>
+        </Transition>
+        <span v-if="effectiveCollapsed" style="display:block;width:100%;height:1px;background:rgba(255,255,255,0.1);margin:4px 0"></span>
+      </div>
+
+      <router-link v-if="auth.canPage('ar_projects')" to="/ar/projects" class="nav-item" :class="{ active: route.path === '/ar/projects' }" @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+          </svg>
+        </span>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">项目台账</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
+      </router-link>
+
+      <router-link v-if="auth.canPage('ar_records')" to="/ar/records" class="nav-item" :class="{ active: route.path === '/ar/records' }" @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+          </svg>
+        </span>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">应收明细</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
+      </router-link>
+
+      <router-link v-if="auth.canPage('ar_analytics')" to="/ar/analytics" class="nav-item" :class="{ active: route.path === '/ar/analytics' }" @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 21H4.6A2.6 2.6 0 012 18.4V3"/><path d="M7 16l4-8 4 5 3-4"/>
+          </svg>
+        </span>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">应收分析</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
+      </router-link>
+
+      <router-link v-if="auth.canPage('ar_cashflow')" to="/ar/cashflow" class="nav-item" :class="{ active: route.path === '/ar/cashflow' }" @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 100 7h5a3.5 3.5 0 110 7H6"/>
+          </svg>
+        </span>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">收付对比</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
+      </router-link>
+
+      <router-link v-if="auth.canPage('ar_budget')" to="/ar/budget" class="nav-item" :class="{ active: route.path === '/ar/budget' }" @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 3h18v4H3zM3 10h18v4H3zM3 17h18v4H3z"/>
+          </svg>
+        </span>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">预算管理</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
+      </router-link>
+
       <router-link v-if="auth.isSuperAdmin" to="/users" class="nav-item" :class="{ active: route.path === '/users' }" @click="onNavClick">
         <span class="nav-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -228,7 +287,14 @@ function onNavClick() {
 }
 .brand-name { font-size: 15px; font-weight: 700; color: #fff; white-space: nowrap; }
 
-.nav-links { flex: 1; padding: 12px 9px; display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+.nav-links { flex: 1; padding: 12px 9px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; overflow-x: hidden; }
+
+.nav-section-label {
+  margin-top: 8px; padding: 4px 10px 2px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+  color: rgba(196,168,152,0.38); text-transform: uppercase;
+  white-space: nowrap; overflow: hidden;
+}
 
 .nav-item {
   display: flex; align-items: center; gap: 0;

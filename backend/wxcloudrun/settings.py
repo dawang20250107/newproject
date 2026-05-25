@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     'wxcloudrun',
     'paikuan',
     'caiwu',
+    'ar.apps.ArConfig',
 ]
 
 MIDDLEWARE = [

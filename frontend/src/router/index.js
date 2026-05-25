@@ -7,6 +7,13 @@ const routes = [
   { path: '/dashboard', component: () => import('../views/Dashboard.vue'), meta: { page: 'dashboard' } },
   { path: '/payments', component: () => import('../views/Payments.vue'), meta: { page: 'payments' } },
   { path: '/stats', component: () => import('../views/Stats.vue'), meta: { page: 'stats' } },
+  // AR module
+  { path: '/ar/projects', component: () => import('../views/ar/ARProjects.vue'), meta: { page: 'ar_projects' } },
+  { path: '/ar/records', component: () => import('../views/ar/ARRecords.vue'), meta: { page: 'ar_records' } },
+  { path: '/ar/analytics', component: () => import('../views/ar/ARAnalytics.vue'), meta: { page: 'ar_analytics' } },
+  { path: '/ar/cashflow', component: () => import('../views/ar/Cashflow.vue'), meta: { page: 'ar_cashflow' } },
+  { path: '/ar/budget', component: () => import('../views/ar/Budget.vue'), meta: { page: 'ar_budget' } },
+  // Admin
   { path: '/users', component: () => import('../views/Users.vue'), meta: { role: 'super_admin' } },
   { path: '/permissions', component: () => import('../views/Permissions.vue'), meta: { role: 'super_admin' } },
   { path: '/:pathMatch(.*)*', redirect: '/' },

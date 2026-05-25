@@ -50,7 +50,10 @@ PAYMENT_FIELD_DEFS = [
     {'key': 'notes',           'label': '备注',          'cols': ['notes']},
 ]
 FIELD_KEYS = [f['key'] for f in PAYMENT_FIELD_DEFS]
-PAGE_KEYS = ['dashboard', 'payments', 'stats']
+PAGE_KEYS = [
+    'dashboard', 'payments', 'stats',
+    'ar_projects', 'ar_records', 'ar_analytics', 'ar_cashflow', 'ar_budget',
+]
 
 # Ordered columns for Excel template / import / export.
 # (perm_field_key, excel_header, db_column)
@@ -99,6 +102,8 @@ def _all_fields(value):
 def default_job_config(job):
     """Sensible starting permissions for each job title; super_admin can override."""
     pages_all = {k: True for k in PAGE_KEYS}
+    ar_pages_all = {k: True for k in ('ar_projects', 'ar_records', 'ar_analytics', 'ar_cashflow', 'ar_budget')}
+    ar_pages_cashier = {k: (k in ('ar_records', 'ar_cashflow', 'ar_budget')) for k in ar_pages_all}
     if job == 'finance_director':
         return {'pages': pages_all, 'view': _all_fields(True),
                 'edit': _all_fields(True), 'can_create': True, 'can_delete': True}
@@ -107,11 +112,13 @@ def default_job_config(job):
                 'edit': _all_fields(True), 'can_create': True, 'can_delete': False}
     if job == 'chief_cashier':
         edit = {k: (k in ('pay1', 'pay2', 'pay3')) for k in FIELD_KEYS}
-        return {'pages': pages_all, 'view': _all_fields(True),
+        pages = {**pages_all, **ar_pages_all}
+        return {'pages': pages, 'view': _all_fields(True),
                 'edit': edit, 'can_create': True, 'can_delete': False}
     if job == 'cashier':
         edit = {k: (k in ('pay1', 'pay2', 'pay3')) for k in FIELD_KEYS}
-        return {'pages': {'dashboard': True, 'payments': True, 'stats': False},
+        base_pages = {'dashboard': True, 'payments': True, 'stats': False}
+        return {'pages': {**base_pages, **ar_pages_cashier},
                 'view': _all_fields(True), 'edit': edit,
                 'can_create': False, 'can_delete': False}
     # Unknown / no job title → read-only minimum.
