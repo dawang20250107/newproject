@@ -37,6 +37,10 @@ const chartData = computed(() => {
     })
   }
 
+  // intensity: each factor bar's magnitude relative to the largest factor
+  const factors = processed.filter(b => b.barType !== 'anchor')
+  const maxAbsDelta = Math.max(...factors.map(b => Math.abs(b.value)), 1)
+
   const yMin = Math.min(0, ...processed.map(b => b.lo))
   const yMax = Math.max(0, ...processed.map(b => b.hi))
   const yRange = yMax - yMin || 1
@@ -48,10 +52,26 @@ const chartData = computed(() => {
       bottomPct: pct(b.lo),
       heightPct: Math.max(pct(b.hi) - pct(b.lo), 0.8),
       topPct: pct(b.hi),
+      // min 0.28 so even the smallest factor retains some visible colour
+      intensity: b.barType === 'anchor' ? 1 : Math.max(0.28, Math.abs(b.value) / maxAbsDelta),
     })),
     zeroLinePct: pct(0),
   }
 })
+
+// Intensity-based background: small factor = lighter, large factor = deepest
+function barColorStyle(barType, intensity) {
+  if (barType === 'anchor') return {}
+  const t = intensity  // 0.28 – 1.0
+  // alpha range: ~0.36 (lightest) → 0.86 (deepest) for top gradient stop
+  const a1 = (0.36 + 0.50 * t).toFixed(2)
+  // alpha range: ~0.40 → 0.92 for bottom stop
+  const a2 = (0.40 + 0.52 * t).toFixed(2)
+  if (barType === 'increase') {
+    return { background: `linear-gradient(175deg, rgba(213,55,55,${a1}) 0%, rgba(168,22,22,${a2}) 100%)` }
+  }
+  return { background: `linear-gradient(175deg, rgba(32,140,72,${a1}) 0%, rgba(16,100,48,${a2}) 100%)` }
+}
 
 function fmtAmt(v) {
   const abs = Math.abs(v)
@@ -69,37 +89,44 @@ function fmtAmt(v) {
     <!-- Chart zone -->
     <div class="wf-chart">
       <!-- Zero axis line -->
-      <div
-        class="wf-zero-line"
-        :style="`bottom:${chartData.zeroLinePct}%`"
-      ></div>
+      <div class="wf-zero-line" :style="`bottom:${chartData.zeroLinePct}%`"></div>
 
       <!-- Bar columns -->
       <div class="wf-grid">
-        <div
-          v-for="(bar, i) in chartData.bars"
-          :key="i"
-          class="wf-col"
-        >
-          <!-- Bar body -->
+        <div v-for="(bar, i) in chartData.bars" :key="i" class="wf-col">
+
+          <!-- Bar body — intensity-tinted background overrides the CSS class background -->
           <div
             class="wf-bar"
             :class="`wf-bar-${bar.barType}`"
-            :style="`bottom:${bar.bottomPct}%;height:${bar.heightPct}%;animation-delay:${i * 0.07}s`"
+            :style="[
+              {
+                bottom: `${bar.bottomPct}%`,
+                height: `${bar.heightPct}%`,
+                animationDelay: `${i * 0.07}s`,
+              },
+              barColorStyle(bar.barType, bar.intensity),
+            ]"
           >
             <div class="wf-bar-inner">
               <div v-if="bar.barType !== 'anchor'" class="wf-shim"></div>
             </div>
           </div>
 
-          <!-- Value label above bar -->
+          <!-- Value label — 10px above bar top so it never overlaps -->
           <div
             class="wf-label"
             :class="`wf-label-${bar.barType}`"
-            :style="`bottom:calc(${bar.topPct}% + 4px);animation-delay:${i * 0.07 + 0.2}s`"
+            :style="`bottom:calc(${bar.topPct}% + 10px);animation-delay:${i * 0.07 + 0.2}s`"
           >
-            <span v-if="bar.barType === 'increase'" class="wf-arrow wf-arrow-up">↑</span>
-            <span v-if="bar.barType === 'decrease'" class="wf-arrow wf-arrow-down">↓</span>{{ fmtAmt(bar.value) }}
+            <!-- Thin SVG arrows — currentColor inherits label colour -->
+            <svg v-if="bar.barType === 'increase'" class="wf-arr" viewBox="0 0 7 10" fill="none" width="7" height="10">
+              <path d="M3.5 9V2.5M1 5L3.5 2.5L6 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <svg v-else-if="bar.barType === 'decrease'" class="wf-arr" viewBox="0 0 7 10" fill="none" width="7" height="10">
+              <path d="M3.5 1V7.5M1 5L3.5 7.5L6 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            {{ fmtAmt(bar.value) }}
           </div>
         </div>
       </div>
@@ -125,16 +152,16 @@ function fmtAmt(v) {
   width: 100%;
 }
 
-/* ── Chart zone (bars live here) ──────────────────────── */
+/* ── Chart zone ───────────────────────────────────────── */
 .wf-chart {
   flex: 1;
   position: relative;
-  margin-top: 30px;   /* headroom so labels above tallest bar are visible */
+  margin-top: 32px;   /* headroom for tallest label */
   overflow: visible;
   min-height: 120px;
 }
 
-/* Grid of columns, fills the chart zone */
+/* Grid of columns */
 .wf-grid {
   position: absolute;
   inset: 0;
@@ -170,76 +197,73 @@ function fmtAmt(v) {
   overflow: hidden;
 }
 
-/* ── Anchor bar (gray glass — base/total periods) ─────── */
+/* ── Anchor bar (gray glass) ──────────────────────────── */
 .wf-bar-anchor {
-  background: linear-gradient(
-    175deg,
-    rgba(178, 163, 151, 0.84) 0%,
-    rgba(138, 123, 112, 0.9) 100%
-  );
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: linear-gradient(175deg, rgba(178,163,151,0.84) 0%, rgba(138,123,112,0.9) 100%);
+  border: 1px solid rgba(255,255,255,0.22);
   box-shadow:
-    0 8px 24px rgba(0, 0, 0, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.38),
-    0 0 0 1px rgba(160, 145, 132, 0.22);
+    0 8px 24px rgba(0,0,0,0.18),
+    inset 0 1px 0 rgba(255,255,255,0.38),
+    0 0 0 1px rgba(160,145,132,0.22);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
 }
 
-/* ── Increase bar (A股红 — factor that improved profit) ── */
+/* ── Increase bar (A股红) ─────────────────────────────── */
+/* Background is overridden per-bar by barColorStyle; border/shadow stay */
 .wf-bar-increase {
-  background: linear-gradient(
-    175deg,
-    rgba(213, 55, 55, 0.86) 0%,
-    rgba(168, 22, 22, 0.92) 100%
-  );
-  border: 1px solid rgba(255, 135, 135, 0.28);
+  background: linear-gradient(175deg, rgba(213,55,55,0.86) 0%, rgba(168,22,22,0.92) 100%);
+  border: 1px solid rgba(255,135,135,0.28);
   box-shadow:
-    0 6px 20px rgba(195, 35, 35, 0.44),
-    inset 0 1px 0 rgba(255, 195, 195, 0.52),
-    0 0 18px rgba(195, 35, 35, 0.22),
-    0 0 0 1px rgba(210, 55, 55, 0.28);
+    0 6px 20px rgba(195,35,35,0.44),
+    inset 0 1px 0 rgba(255,195,195,0.52),
+    0 0 18px rgba(195,35,35,0.22),
+    0 0 0 1px rgba(210,55,55,0.28);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
 }
 
-/* ── Decrease bar (A股绿 — factor that hurt profit) ────── */
+/* ── Decrease bar (A股绿) ─────────────────────────────── */
 .wf-bar-decrease {
-  background: linear-gradient(
-    175deg,
-    rgba(32, 140, 72, 0.86) 0%,
-    rgba(16, 100, 48, 0.92) 100%
-  );
-  border: 1px solid rgba(90, 225, 140, 0.26);
+  background: linear-gradient(175deg, rgba(32,140,72,0.86) 0%, rgba(16,100,48,0.92) 100%);
+  border: 1px solid rgba(90,225,140,0.26);
   box-shadow:
-    0 6px 20px rgba(25, 135, 65, 0.44),
-    inset 0 1px 0 rgba(110, 245, 165, 0.48),
-    0 0 18px rgba(25, 135, 65, 0.22),
-    0 0 0 1px rgba(40, 162, 85, 0.28);
+    0 6px 20px rgba(25,135,65,0.44),
+    inset 0 1px 0 rgba(110,245,165,0.48),
+    0 0 18px rgba(25,135,65,0.22),
+    0 0 0 1px rgba(40,162,85,0.28);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
 }
 
-/* ── Shimmer marquee overlay ──────────────────────────── */
+/* ── Shimmer overlay — soft tinted flow, not blinding white ── */
 .wf-shim {
   position: absolute;
-  left: 0;
-  right: 0;
-  height: 52%;
-  background: linear-gradient(
-    to bottom,
-    transparent 0%,
-    rgba(255, 255, 255, 0.33) 50%,
-    transparent 100%
-  );
+  left: 0; right: 0;
+  height: 50%;
   pointer-events: none;
 }
 
+/* Increase: warm pinkish band rises upward — visually "growing" */
 .wf-bar-increase .wf-shim {
-  animation: wfShimUp 2.4s ease-in-out infinite;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(255, 210, 200, 0.22) 50%,
+    transparent 100%
+  );
+  animation: wfShimUp 3.2s ease-in-out infinite;
 }
+
+/* Decrease: cool greenish band falls downward — visually "draining" */
 .wf-bar-decrease .wf-shim {
-  animation: wfShimDown 2.4s ease-in-out infinite;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(200, 255, 220, 0.18) 50%,
+    transparent 100%
+  );
+  animation: wfShimDown 3.2s ease-in-out infinite;
 }
 
 @keyframes wfShimUp {
@@ -272,31 +296,17 @@ function fmtAmt(v) {
   line-height: 1;
   pointer-events: none;
   animation: wfLabelIn 0.35s ease-out both;
-  /* flex so arrow and amount are vertically centered together */
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 2px;
+  gap: 3px;
 }
-.wf-label-anchor { color: rgba(118, 104, 94, 0.92); }
+.wf-label-anchor  { color: rgba(118,104,94,0.92); }
 .wf-label-increase { color: #b71c1c; }
 .wf-label-decrease { color: #1b6e35; }
 
-.wf-arrow {
-  font-size: 8px;
-  font-weight: 400;
-  line-height: 1;
-  flex-shrink: 0;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-.wf-arrow-up {
-  background: linear-gradient(to top, #e53935, #ff8a80);
-}
-.wf-arrow-down {
-  background: linear-gradient(to bottom, #2e7d32, #80e8a0);
-}
+/* SVG arrow inherits currentColor from the label */
+.wf-arr { flex-shrink: 0; display: block; }
 
 @keyframes wfLabelIn {
   from { opacity: 0; transform: translateX(-50%) translateY(6px); }
@@ -306,10 +316,9 @@ function fmtAmt(v) {
 /* ── Zero axis line ───────────────────────────────────── */
 .wf-zero-line {
   position: absolute;
-  left: 0;
-  right: 0;
+  left: 0; right: 0;
   height: 1.5px;
-  background: rgba(158, 140, 126, 0.42);
+  background: rgba(158,140,126,0.42);
   z-index: 2;
   pointer-events: none;
 }
