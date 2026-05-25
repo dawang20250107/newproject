@@ -179,9 +179,10 @@ onMounted(load)
       </div>
     </div>
 
-    <div v-if="loading" class="empty"><div class="icon">⏳</div>加载中…</div>
+    <div v-if="loading && !data" class="empty"><div class="icon">⏳</div>加载中…</div>
     <div v-else-if="loadErr" class="empty" style="color:var(--danger)"><div class="icon">⚠️</div>{{ loadErr }}</div>
     <template v-else-if="data">
+      <div :class="{ 'data-reloading': loading }">
 
       <!-- ── KPI cards ──────────────────────────────────────────────────────── -->
       <div v-if="noData" class="nodata-banner">
@@ -247,6 +248,7 @@ onMounted(load)
           </div>
         </div>
         <ReportTable :rows="data.rows || []" :level="level" :total="data.total || 0" :total-label="data.total_label || '合计'" />
+      </div>
       </div>
     </template>
 

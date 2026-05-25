@@ -89,15 +89,6 @@ function fmtAmt(v) {
           >
             <div class="wf-bar-inner">
               <div v-if="bar.barType !== 'anchor'" class="wf-shim"></div>
-              <!-- Gradient direction arrow on the bar -->
-              <div
-                v-if="bar.barType === 'increase'"
-                class="wf-grad-arrow wf-grad-up"
-              >▲</div>
-              <div
-                v-else-if="bar.barType === 'decrease'"
-                class="wf-grad-arrow wf-grad-down"
-              >▼</div>
             </div>
           </div>
 
@@ -107,8 +98,8 @@ function fmtAmt(v) {
             :class="`wf-label-${bar.barType}`"
             :style="`bottom:calc(${bar.topPct}% + 4px);animation-delay:${i * 0.07 + 0.2}s`"
           >
-            <span v-if="bar.barType === 'increase'" class="wf-arrow wf-arrow-up">▲</span>
-            <span v-if="bar.barType === 'decrease'" class="wf-arrow wf-arrow-down">▼</span>{{ fmtAmt(bar.value) }}
+            <span v-if="bar.barType === 'increase'" class="wf-arrow wf-arrow-up">↑</span>
+            <span v-if="bar.barType === 'decrease'" class="wf-arrow wf-arrow-down">↓</span>{{ fmtAmt(bar.value) }}
           </div>
         </div>
       </div>
@@ -279,18 +270,23 @@ function fmtAmt(v) {
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
-  text-align: center;
   pointer-events: none;
   animation: wfLabelIn 0.35s ease-out both;
+  /* flex so arrow and amount are vertically centered together */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
 }
 .wf-label-anchor { color: rgba(118, 104, 94, 0.92); }
 .wf-label-increase { color: #b71c1c; }
 .wf-label-decrease { color: #1b6e35; }
 
 .wf-arrow {
-  font-size: 9px;
-  vertical-align: middle;
-  margin-right: 1px;
+  font-size: 8px;
+  font-weight: 400;
+  line-height: 1;
+  flex-shrink: 0;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -300,38 +296,6 @@ function fmtAmt(v) {
 }
 .wf-arrow-down {
   background: linear-gradient(to bottom, #2e7d32, #80e8a0);
-}
-
-/* ── Gradient direction arrow drawn on the bar ────────── */
-.wf-grad-arrow {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 15px;
-  line-height: 1;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  pointer-events: none;
-  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.25));
-}
-.wf-grad-up {
-  top: 5px;
-  background: linear-gradient(to top, #ffd0d0 0%, #ff5252 55%, #fff 100%);
-  animation: wfArrowUp 2.4s ease-in-out infinite;
-}
-.wf-grad-down {
-  top: 5px;
-  background: linear-gradient(to bottom, #d6ffe0 0%, #28c463 55%, #fff 100%);
-  animation: wfArrowDown 2.4s ease-in-out infinite;
-}
-@keyframes wfArrowUp {
-  0%, 100% { transform: translateX(-50%) translateY(0); opacity: 0.85; }
-  50%      { transform: translateX(-50%) translateY(-3px); opacity: 1; }
-}
-@keyframes wfArrowDown {
-  0%, 100% { transform: translateX(-50%) translateY(0); opacity: 0.85; }
-  50%      { transform: translateX(-50%) translateY(3px); opacity: 1; }
 }
 
 @keyframes wfLabelIn {

@@ -205,10 +205,11 @@ onMounted(() => {
         >{{ cat.name }}</button>
       </div>
 
-      <div v-if="trendLoading" class="empty"><div class="icon">⏳</div>加载中…</div>
-      <div v-else-if="trendErr" class="empty" style="color:var(--danger)">{{ trendErr }}</div>
+      <div v-if="trendLoading && !trendData" class="empty"><div class="icon">⏳</div>加载中…</div>
+      <div v-else-if="!trendLoading && trendErr" class="empty" style="color:var(--danger)">{{ trendErr }}</div>
       <TrendLineChart
         v-else-if="trendData"
+        :class="{ 'data-reloading': trendLoading }"
         :months="trendData.months"
         :l1-categories="trendData.l1_categories"
         :selected-l1-ids="selectedL1Ids"
@@ -249,36 +250,37 @@ onMounted(() => {
         </div>
       </div>
 
-      <div v-if="wfData && !wfData.factors?.length" class="empty" style="padding:16px">
-        <div class="icon">💡</div>
-        所选两个期间的数据无变动，或对比期/当期暂无已发布数据。请调整对比期间或先在「数据加工」中发布数据。
-      </div>
-
-      <div v-if="wfLoading" class="empty"><div class="icon">⏳</div>加载中…</div>
-      <div v-else-if="wfErr" class="empty" style="color:var(--danger)">{{ wfErr }}</div>
-      <template v-else-if="wfData?.waterfall?.length">
-        <WaterfallChart :waterfall="wfData.waterfall" height="380px" />
-        <!-- Factor detail table (only changed factors; A股 colors: 涨红跌绿) -->
-        <div v-if="changedFactors.length" style="margin-top:16px">
-          <div class="section-title">因素明细</div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>一级科目</th><th class="amt">对比期</th><th class="amt">当期</th><th class="amt">利润影响</th></tr></thead>
-              <tbody>
-                <tr v-for="f in changedFactors" :key="f.l1_id">
-                  <td>{{ f.name }}<span v-if="f.is_driver" class="driver-dot" title="关键驱动因素">●</span></td>
-                  <td class="amt">{{ fmtAmt(f.base) }}</td>
-                  <td class="amt">{{ fmtAmt(f.current) }}</td>
-                  <td class="amt" :class="f.delta >= 0 ? 'amt-red' : 'amt-green'">
-                    {{ f.delta >= 0 ? '+' : '' }}{{ fmtAmt(f.delta) }}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+      <div v-if="wfLoading && !wfData" class="empty"><div class="icon">⏳</div>加载中…</div>
+      <div v-else-if="!wfLoading && wfErr" class="empty" style="color:var(--danger)">{{ wfErr }}</div>
+      <div v-else-if="wfData" :class="{ 'data-reloading': wfLoading }">
+        <div v-if="!wfData.factors?.length" class="empty" style="padding:16px">
+          <div class="icon">💡</div>
+          所选两个期间的数据无变动，或对比期/当期暂无已发布数据。请调整对比期间或先在「数据加工」中发布数据。
         </div>
-      </template>
-      <div v-else-if="!wfLoading" class="empty"><div class="icon">📈</div>请选择事业部查看</div>
+        <template v-else-if="wfData.waterfall?.length">
+          <WaterfallChart :waterfall="wfData.waterfall" height="380px" />
+          <!-- Factor detail table (only changed factors; A股 colors: 涨红跌绿) -->
+          <div v-if="changedFactors.length" style="margin-top:16px">
+            <div class="section-title">因素明细</div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>一级科目</th><th class="amt">对比期</th><th class="amt">当期</th><th class="amt">利润影响</th></tr></thead>
+                <tbody>
+                  <tr v-for="f in changedFactors" :key="f.l1_id">
+                    <td>{{ f.name }}<span v-if="f.is_driver" class="driver-dot" title="关键驱动因素">●</span></td>
+                    <td class="amt">{{ fmtAmt(f.base) }}</td>
+                    <td class="amt">{{ fmtAmt(f.current) }}</td>
+                    <td class="amt" :class="f.delta >= 0 ? 'amt-red' : 'amt-green'">
+                      {{ f.delta >= 0 ? '+' : '' }}{{ fmtAmt(f.delta) }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </template>
+      </div>
+      <div v-else class="empty"><div class="icon">📈</div>请选择事业部查看</div>
     </div>
 
     <!-- ── AI analysis modals ─────────────────────────────────────────────────── -->

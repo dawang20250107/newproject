@@ -597,3 +597,10 @@ th { text-transform: none; letter-spacing: 0.02em; }
 
 /* ── section-title: tighter spacing ─────────────────────────────────────── */
 .section-title { letter-spacing: -0.01em; }
+
+/* ── reload fade: keep previous content visible while refetching ─────────── */
+.data-reloading {
+  opacity: 0.4;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
