@@ -249,19 +249,35 @@ def pk_required(roles=None):
                 return err('未认证', 401, 401)
             try:
                 payload = jwt.decode(token, settings.JWT_SECRET, algorithms=['HS256'])
-                request.pk_uid = payload['uid']
-                request.pk_role = payload['role']
-                request.pk_job = payload.get('job', '')
-                request.pk_depts = payload.get('departments', [])
+                uid = payload['uid']
             except jwt.ExpiredSignatureError:
                 return err('Token已过期', 401, 401)
-            except jwt.InvalidTokenError:
+            except (jwt.InvalidTokenError, KeyError):
                 return err('Token无效', 401, 401)
+            user = PaikuanUser.objects.filter(id=uid).first()
+            if not user:
+                return err('用户不存在或登录已失效', 401, 401)
+            if not user.is_active:
+                return err('账号已停用，请重新登录', 401, 401)
+            if not user.is_approved:
+                return err('账号待审批，请联系管理员', 403, -2)
+            request.pk_user = user
+            request.pk_uid = user.id
+            request.pk_role = user.role
+            request.pk_job = user.job_title
+            request.pk_depts = user.departments or []
             if roles and request.pk_role not in roles:
                 return err('权限不足', 403, 403)
             return func(request, *args, **kwargs)
         return wrapper
     return decorator
+
+
+def _payments_page_denied(request, perms=None):
+    perms = get_request_perms(request) if perms is None else perms
+    if perms is not None and not perms['pages'].get('payments', True):
+        return err('无访问权限', 403, 403)
+    return None
 
 
 def dept_filter(qs, request):
@@ -423,8 +439,9 @@ def me(request):
 @pk_required()
 def payments(request):
     perms = get_request_perms(request)
-    if perms is not None and not perms['pages'].get('payments', True):
-        return err('无访问权限', 403, 403)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
     if request.method == 'GET':
         return _list_payments(request)
     if request.method == 'POST':
@@ -590,6 +607,17 @@ def _create_payment(request):
     return ok(p.to_dict())
 
 
+def _editable_payment_payload(data, perms):
+    """Drop non-editable payment fields before merge+validation on update."""
+    if perms is None:
+        return data
+    editable_cols = set()
+    for f in PAYMENT_FIELD_DEFS:
+        if perms['edit'].get(f['key'], False):
+            editable_cols.update(f['cols'])
+    return {k: v for k, v in data.items() if k in editable_cols}
+
+
 @csrf_exempt
 @pk_required()
 def payment_detail(request, pk):
@@ -602,8 +630,9 @@ def payment_detail(request, pk):
         return err('无权访问', 403, 403)
 
     perms = get_request_perms(request)
-    if perms is not None and not perms['pages'].get('payments', True):
-        return err('无访问权限', 403, 403)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
 
     if request.method == 'GET':
         return ok(apply_view_mask(p.to_dict(), perms))
@@ -612,16 +641,10 @@ def payment_detail(request, pk):
         # Record-level access: super_admin or write access to this department.
         if not can_write_dept(request, p.department):
             return err('无权编辑此记录', 403, 403)
-        data = parse_body(request)
+        data = _editable_payment_payload(parse_body(request), perms)
         fields, error = _parse_payment_fields(data, payment=p)
         if error:
             return err(error)
-        # Field-level edit enforcement: keep old value for non-editable fields.
-        if perms is not None:
-            for f in PAYMENT_FIELD_DEFS:
-                if not perms['edit'].get(f['key'], False):
-                    for col in f['cols']:
-                        fields[col] = getattr(p, col)
         new_dept = fields['department']
         if new_dept != p.department and not can_write_dept(request, new_dept):
             return err('无权操作目标部门', 403, 403)
@@ -982,13 +1005,16 @@ def payment_template(request):
     """GET — download blank Excel import template (columns filtered by view perms)."""
     if request.method != 'GET':
         return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Font, PatternFill, Alignment
     except ImportError:
         return err('服务器缺少 openpyxl 依赖', 500)
 
-    perms = get_request_perms(request)
     cols = _visible_excel_cols(perms)
 
     wb = Workbook()
@@ -1052,12 +1078,15 @@ def payment_import(request):
     """POST multipart/form-data with field 'file' — bulk import payments from Excel."""
     if request.method != 'POST':
         return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
     try:
         from openpyxl import load_workbook
     except ImportError:
         return err('服务器缺少 openpyxl 依赖', 500)
 
-    perms = get_request_perms(request)
     if perms is not None and not perms['can_create']:
         return err('无新增权限', 403, 403)
 
@@ -1153,13 +1182,15 @@ def payment_export(request):
     """GET — export filtered payment list to Excel (same filters as list view)."""
     if request.method != 'GET':
         return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Font, PatternFill, Alignment
     except ImportError:
         return err('服务器缺少 openpyxl 依赖', 500)
-
-    perms = get_request_perms(request)
 
     qs = Payment.objects.select_related('created_by').all()
     qs = dept_filter(qs, request)
@@ -1267,6 +1298,9 @@ def payment_export(request):
 def departments(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
+    denied = _payments_page_denied(request)
+    if denied:
+        return denied
     # Only return canonical departments. Historical records with non-canonical names
     # (from before strict validation) should not pollute the department picker.
     merged = list(DEPARTMENTS)

@@ -26,6 +26,19 @@ const DEPT_LIST = DEPT_CONST
 const deptOptions = ref([])
 const form = ref({})
 
+const FIELD_COLS = {
+  department: ['department'],
+  approval_number: ['approval_number'],
+  project_desc: ['project_desc'],
+  payee: ['payee'],
+  total_amount: ['total_amount'],
+  planned_date: ['planned_date'],
+  pay1: ['pay1_date', 'pay1_amount'],
+  pay2: ['pay2_date', 'pay2_amount'],
+  pay3: ['pay3_date', 'pay3_amount'],
+  notes: ['notes'],
+}
+
 function _autoDefaultDept() {
   // Always empty on new records — user must explicitly choose a department.
   return ''
@@ -94,9 +107,15 @@ const overpaid = computed(() => plannedTotal.value > 0 && paidSoFar.value > plan
 const remaining = computed(() => plannedTotal.value - paidSoFar.value)
 
 function buildPayload() {
-  const payload = { ...form.value }
+  const payload = {}
+  const includeAll = !props.payment?.id
+  for (const [field, cols] of Object.entries(FIELD_COLS)) {
+    if (includeAll || editable(field)) {
+      for (const col of cols) payload[col] = form.value[col]
+    }
+  }
   for (const k of ['pay1_date', 'pay2_date', 'pay3_date', 'pay1_amount', 'pay2_amount', 'pay3_amount']) {
-    if (payload[k] === '' || payload[k] === null) payload[k] = null
+    if (k in payload && (payload[k] === '' || payload[k] === null)) payload[k] = null
   }
   return payload
 }
