@@ -13,6 +13,7 @@ urlpatterns = [
     # AR Records
     path('records', views.ar_records),
     path('records/kpi', views.ar_records_kpi),
+    path('records/recompute-all', views.ar_records_recompute_all),
     path('records/template', views.ar_record_template),
     path('records/import', views.ar_record_import),
     path('records/export', views.ar_record_export),

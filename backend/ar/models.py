@@ -171,15 +171,28 @@ class ARRecord(models.Model):
 
     def recompute_derived(self, save=True):
         base = self.actual_invoice_amount if self.actual_invoice_amount is not None else self.estimated_amount
-        base = (base or Decimal('0')) + (self.account_diff_adjustment or Decimal('0'))
+        base = (base or Decimal('0'))
         total_paid = Decimal('0')
         if self.pk:
             total_paid = (self.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0'))
         self.outstanding_amount = base - total_paid
+        has_invoice = self.actual_invoice_amount is not None
+        has_payment = total_paid != Decimal('0')
+        est = self.estimated_amount or Decimal('0')
+        inv = self.actual_invoice_amount or Decimal('0')
+        if (not has_invoice) and (not has_payment):
+            self.account_diff_adjustment = Decimal('0')
+        elif (not has_invoice) and has_payment:
+            self.account_diff_adjustment = est - total_paid
+        elif has_invoice and (not has_payment):
+            self.account_diff_adjustment = inv - est
+        else:
+            self.account_diff_adjustment = total_paid - est
         self.tax_amount = self._compute_tax()
         if save:
             ARRecord.objects.filter(pk=self.pk).update(
                 outstanding_amount=self.outstanding_amount,
+                account_diff_adjustment=self.account_diff_adjustment,
                 tax_amount=self.tax_amount,
             )
 
