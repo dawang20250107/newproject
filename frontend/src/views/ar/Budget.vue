@@ -1,17 +1,16 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
-import { DEPARTMENTS } from '../../constants.js'
+import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
 
 const auth = useAuthStore()
-const now = new Date()
 const activeTab = ref('summary')
-const year = ref(now.getFullYear())
-const month = ref(now.getMonth() + 1)
+const year = ref(yearCST())
+const month = ref(monthCST())
 const selectedDept = ref('')
-const years = Array.from({ length: 5 }, (_, i) => now.getFullYear() - 2 + i)
+const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
 const accessibleDepts = computed(() =>

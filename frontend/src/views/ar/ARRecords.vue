@@ -2,7 +2,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
-import { DEPARTMENTS } from '../../constants.js'
+import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 
 const route = useRoute()
@@ -25,7 +25,7 @@ const showModal = ref(false)
 const editRec = ref(null)
 const saving = ref(false)
 const recForm = reactive({
-  project_id: '', operation_year: new Date().getFullYear(), operation_month: new Date().getMonth() + 1,
+  project_id: '', operation_year: yearCST(), operation_month: monthCST(),
   estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
   invoice_date: '', reconciliation_time: '', account_diff_adjustment: '', notes: '',
 })
@@ -48,7 +48,7 @@ const fileInput = ref(null)
 
 const accessibleDepts = computed(() =>
   auth.isSuperAdmin ? DEPARTMENTS : (auth.user?.departments || []).filter(d => DEPARTMENTS.includes(d)))
-const years = Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i)
+const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
 // Field-permission column visibility
@@ -91,7 +91,7 @@ function openCreate() {
   editRec.value = null
   Object.assign(recForm, {
     project_id: projects.value[0]?.id || '',
-    operation_year: new Date().getFullYear(), operation_month: new Date().getMonth() + 1,
+    operation_year: yearCST(), operation_month: monthCST(),
     estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
     invoice_date: '', reconciliation_time: '', account_diff_adjustment: '', notes: '',
   })
@@ -140,7 +140,7 @@ function togglePayments(id) { expandedPayments.value[id] = !expandedPayments.val
 
 function openAddPayment(rec) {
   payRec.value = rec
-  Object.assign(payForm, { amount: '', payment_date: new Date().toISOString().slice(0, 10), notes: '' })
+  Object.assign(payForm, { amount: '', payment_date: todayCST(), notes: '' })
   showPayModal.value = true
 }
 

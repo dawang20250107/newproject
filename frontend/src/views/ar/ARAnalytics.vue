@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
-import { DEPARTMENTS } from '../../constants.js'
+import { DEPARTMENTS, yearCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
 
@@ -10,8 +10,8 @@ const auth = useAuthStore()
 const router = useRouter()
 
 const selectedDept = ref('')
-const selectedYear = ref(new Date().getFullYear())
-const years = Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i)
+const selectedYear = ref(yearCST())
+const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const accessibleDepts = computed(() =>
   auth.isSuperAdmin ? DEPARTMENTS : (auth.user?.departments || []).filter(d => DEPARTMENTS.includes(d)))
 

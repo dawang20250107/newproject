@@ -2,16 +2,15 @@
 import { ref, computed, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
-import { DEPARTMENTS } from '../../constants.js'
+import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
 
-const now = new Date()
-const CY = now.getFullYear()
-const CM = now.getMonth() + 1
+const CY = yearCST()
+const CM = monthCST()
 
 // Default: current month → current month (single-month view)
 const filters = reactive({
