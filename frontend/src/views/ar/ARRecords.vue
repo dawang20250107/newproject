@@ -154,7 +154,7 @@ async function deletePayment(rec, pay) {
 async function downloadTemplate() {
   const res = await ar.recordTemplate()
   const url = URL.createObjectURL(res)
-  const a = document.createElement('a'); a.href = url; a.download = '应收账款明细导入模板.xlsx'; a.click()
+  const a = document.createElement('a'); a.href = url; a.download = '应收账款明细导入模板-项目简称版.xlsx'; a.click()
   URL.revokeObjectURL(url)
 }
 
@@ -164,7 +164,7 @@ async function handleImport(e) {
   try {
     const fd = new FormData(); fd.append('file', f)
     const res = await ar.importRecords(fd); const d = res.data
-    alert(`导入完成：创建 ${d.created}，更新 ${d.updated}，跳过 ${d.skipped}`)
+    alert(`导入完成：创建 ${d.created}，更新 ${d.updated}，跳过 ${d.skipped}\n模板列：项目简称*（可选项目编号/交付部门兜底）、回款金额、回款时间(YYYY-MM-DD)`)
     await load()
   } catch (e) { alert(e?.response?.data?.msg || '导入失败')
   } finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
@@ -198,7 +198,7 @@ onMounted(() => {
         <div style="font-size:13px;color:var(--muted);margin-top:2px">全部明细 · 对账 / 开票 / 回款 跟踪</div>
       </div>
       <div class="ctrl-row">
-        <button class="act-btn" @click="downloadTemplate">↓ 模板</button>
+        <button class="act-btn" @click="downloadTemplate" title="模板首列为项目简称*，可选填写项目编号/交付部门兜底；支持回款金额与回款时间">↓ 模板</button>
         <label class="act-btn" style="cursor:pointer">
           {{ importing ? '导入中…' : '↑ 导入' }}
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />

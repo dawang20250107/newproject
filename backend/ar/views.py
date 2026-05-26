@@ -730,10 +730,10 @@ def ar_record_template(request):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '应收账款明细'
-    headers = ['项目编号*', '运作年*', '运作月*', '预估上账金额', '实际开票金额',
-               '税额(差额模式手填)', '开票日期(YYYY-MM-DD)', '备注']
+    headers = ['项目简称*', '项目编号', '交付部门', '运作年*', '运作月*', '预估上账金额', '实际开票金额',
+               '税额(差额模式手填)', '开票日期(YYYY-MM-DD)', '回款金额', '回款时间(YYYY-MM-DD)', '备注']
     _header_row(ws, headers, color='1B6E35')
-    ws.append([EXAMPLE_ROW_MARKER, 2026, 1, 100000, 100000, '', '2026-01-15', '示例'])
+    ws.append([EXAMPLE_ROW_MARKER, '', '劳务事业部', 2026, 1, 100000, 100000, '', '2026-01-15', 30000, '2026-01-25', '示例'])
     for col in range(1, len(headers) + 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 20
     return _export_response(wb, '应收账款明细导入模板.xlsx')
@@ -775,52 +775,107 @@ def ar_record_import(request):
     errors = []
 
     for ri in range(2, ws.max_row + 1):
-        project_no = _cv(ri, '项目编号*')
-        if not project_no or EXAMPLE_ROW_MARKER in project_no:
+        short_name = _cv(ri, '项目简称*')
+        if not short_name or EXAMPLE_ROW_MARKER in short_name:
             skipped += 1
             continue
-        try:
-            proj = ARProject.objects.get(project_no=project_no)
-        except ARProject.DoesNotExist:
-            errors.append(f'第{ri}行: 项目编号"{project_no}"不存在')
+
+        project_no_fallback = _cv(ri, '项目编号') or _cv(ri, '项目编号*')
+        delivery_dept = _cv(ri, '交付部门')
+        proj_qs = ARProject.objects.filter(short_name=short_name)
+        if project_no_fallback:
+            proj_qs = proj_qs.filter(project_no=project_no_fallback)
+
+        if proj_qs.count() > 1 and delivery_dept:
+            proj_qs = proj_qs.filter(delivery_dept=delivery_dept)
+
+        proj = proj_qs.first() if proj_qs.count() == 1 else None
+        if not proj:
+            if proj_qs.count() > 1:
+                errors.append(f'第{ri}行: 项目简称"{short_name}"匹配到多个项目，请补充唯一的交付部门/项目编号')
+            else:
+                errors.append(f'第{ri}行: 项目简称"{short_name}"未匹配到项目')
             skipped += 1
             continue
+
         if request.pk_role != 'super_admin':
             allowed = request.pk_depts
             if proj.delivery_dept not in allowed:
                 errors.append(f'第{ri}行: 无权操作部门"{proj.delivery_dept}"')
                 skipped += 1
                 continue
+
         year = int(_cv(ri, '运作年*') or 0)
         month = int(_cv(ri, '运作月*') or 0)
         if not (year and 1 <= month <= 12):
             errors.append(f'第{ri}行: 运作年月无效')
             skipped += 1
             continue
+
+        payment_amount_raw = _cv(ri, '回款金额')
+        payment_date_raw = _cv(ri, '回款时间(YYYY-MM-DD)')
+        has_payment_amount = payment_amount_raw != ''
+        has_payment_date = payment_date_raw != ''
+        if has_payment_amount != has_payment_date:
+            errors.append(f'第{ri}行: 回款金额与回款时间需同时填写或同时留空')
+            skipped += 1
+            continue
+
+        payment_amount = None
+        payment_date = None
+        if has_payment_amount:
+            payment_amount = _dec(payment_amount_raw, default=None)
+            if payment_amount is None:
+                errors.append(f'第{ri}行: 回款金额格式无效')
+                skipped += 1
+                continue
+            if payment_amount < 0:
+                errors.append(f'第{ri}行: 回款金额必须大于等于0')
+                skipped += 1
+                continue
+            payment_date = _normalize_date(payment_date_raw)
+            if not payment_date:
+                errors.append(f'第{ri}行: 回款时间格式无效，需为YYYY-MM-DD')
+                skipped += 1
+                continue
+
         try:
-            rec, created_new = ARRecord.objects.get_or_create(
-                project=proj, operation_year=year, operation_month=month,
-                defaults={'created_by': user})
-            est = _cv(ri, '预估上账金额')
-            if est and _can_ar_view(request, 'r_estimated_amount'):
-                rec.estimated_amount = _dec(est)
-            actual = _cv(ri, '实际开票金额')
-            if _can_ar_view(request, 'r_actual_invoice_amount'):
-                rec.actual_invoice_amount = _dec(actual) if actual else None
-            tax_raw = _cv(ri, '税额(差额模式手填)')
-            if _can_ar_view(request, 'r_tax_amount'):
-                rec.tax_amount = _dec(tax_raw) if tax_raw else None
-            inv_date = _normalize_date(_cv(ri, '开票日期(YYYY-MM-DD)'))
-            if _can_ar_view(request, 'r_invoice_date'):
-                rec.invoice_date = inv_date or None
-            notes = _cv(ri, '备注')
-            if _can_ar_view(request, 'r_notes'):
-                rec.notes = notes
-            rec.save()
-            if created_new:
-                created += 1
-            else:
-                updated += 1
+            with transaction.atomic():
+                rec, created_new = ARRecord.objects.get_or_create(
+                    project=proj, operation_year=year, operation_month=month,
+                    defaults={'created_by': user})
+                est = _cv(ri, '预估上账金额')
+                if est and _can_ar_view(request, 'r_estimated_amount'):
+                    rec.estimated_amount = _dec(est)
+                actual = _cv(ri, '实际开票金额')
+                if _can_ar_view(request, 'r_actual_invoice_amount'):
+                    rec.actual_invoice_amount = _dec(actual) if actual else None
+                tax_raw = _cv(ri, '税额(差额模式手填)')
+                if _can_ar_view(request, 'r_tax_amount'):
+                    rec.tax_amount = _dec(tax_raw) if tax_raw else None
+                inv_date = _normalize_date(_cv(ri, '开票日期(YYYY-MM-DD)'))
+                if _can_ar_view(request, 'r_invoice_date'):
+                    rec.invoice_date = inv_date or None
+                notes = _cv(ri, '备注')
+                if _can_ar_view(request, 'r_notes'):
+                    rec.notes = notes
+                rec.save()
+
+                if has_payment_amount:
+                    last = rec.payments.order_by('-payment_no').first()
+                    next_no = (last.payment_no + 1) if last else 1
+                    ARPayment.objects.create(
+                        ar_record=rec,
+                        payment_no=next_no,
+                        amount=payment_amount,
+                        payment_date=payment_date,
+                        notes='导入回款',
+                    )
+
+                if created_new:
+                    created += 1
+                else:
+                    updated += 1
         except Exception as e:
             errors.append(f'第{ri}行: {e}')
             skipped += 1
