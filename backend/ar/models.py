@@ -48,8 +48,19 @@ class ARProject(models.Model):
             models.Index(fields=['is_shared']),
         ]
 
+    DEPT_PROJECT_PREFIX = {
+        '劳务事业部': 'LW',
+        '运输事业部': 'YS',
+        '阔展事业部': 'KZ',
+        '多式联运事业部': 'DL',
+        '供应链事业部': 'GYL',
+        '自营事业部': 'ZY',
+    }
+
     def _gen_project_no(self):
-        dept_code = (self.delivery_dept or 'GEN').upper()[:3]
+        dept_code = self.DEPT_PROJECT_PREFIX.get(self.delivery_dept, '')
+        if not dept_code:
+            raise ValueError('当前部门不生成项目编号')
         prefix = f'{dept_code}-{datetime.date.today().strftime("%Y%m%d")}-'
         with transaction.atomic():
             last = (ARProject.objects.filter(project_no__startswith=prefix)

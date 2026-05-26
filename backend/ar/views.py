@@ -240,6 +240,8 @@ def projects(request):
         dept = data.get('delivery_dept', '')
         if dept not in VALID_DEPARTMENTS:
             return err(f'无效交付部门: {dept}')
+        if dept == '集团总部':
+            return err('集团总部无项目，不允许新增项目台账')
         denied = _dept_denied(request, dept, '无权操作此部门')
         if denied:
             return denied
