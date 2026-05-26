@@ -180,11 +180,9 @@ def projects(request):
         q = request.GET.get('q', '').strip()
         if q:
             qs = qs.filter(
-                Q(contract_name__icontains=q) |
                 Q(short_name__icontains=q) |
                 Q(project_no__icontains=q) |
-                Q(project_manager__icontains=q) |
-                Q(sales_contact__icontains=q)
+                Q(contract_name__icontains=q)
             )
         dept = request.GET.get('dept', '').strip()
         if dept:

@@ -30,6 +30,9 @@ const recForm = reactive({
 })
 
 const projects = ref([])
+const projectKeyword = ref('')
+const showProjectDropdown = ref(false)
+let projectSearchTimer = null
 const showPayModal = ref(false)
 const payRec = ref(null)
 const payForm = reactive({ amount: '', payment_date: '', notes: '' })
@@ -75,9 +78,26 @@ async function load(reset = false) {
   } finally { loading.value = false }
 }
 
-async function loadProjects() {
-  const res = await ar.listProjects({ size: 200 })
+const projectOptions = computed(() => projects.value)
+const selectedProjectLabel = computed(() => {
+  const p = projects.value.find(i => i.id === recForm.project_id)
+  return p ? `${p.project_no} · ${p.short_name || p.contract_name}` : ''
+})
+
+async function loadProjects(q = '') {
+  const res = await ar.listProjects({ size: 50, q })
   projects.value = res.data.items
+}
+
+function handleProjectSearchInput() {
+  if (projectSearchTimer) clearTimeout(projectSearchTimer)
+  projectSearchTimer = setTimeout(() => loadProjects(projectKeyword.value.trim()), 300)
+}
+
+function selectProject(p) {
+  recForm.project_id = p.id
+  projectKeyword.value = `${p.project_no} · ${p.short_name || p.contract_name}`
+  showProjectDropdown.value = false
 }
 
 function openCreate() {
@@ -89,6 +109,9 @@ function openCreate() {
     invoice_date: '', reconciliation_time: '', notes: '',
   })
   showModal.value = true
+  projectKeyword.value = ''
+  showProjectDropdown.value = false
+  loadProjects()
 }
 
 function openEdit(rec) {
@@ -101,6 +124,9 @@ function openEdit(rec) {
     notes: rec.notes,
   })
   showModal.value = true
+  projectKeyword.value = selectedProjectLabel.value
+  showProjectDropdown.value = false
+  loadProjects(projectKeyword.value)
 }
 
 async function saveRec() {
@@ -475,12 +501,27 @@ onMounted(() => {
             <div class="form-grid">
               <label class="form-field span2">
                 <span>关联项目 <em>*</em></span>
-                <select v-model="recForm.project_id" :disabled="!!editRec">
-                  <option value="" disabled>请选择项目</option>
-                  <option v-for="p in projects" :key="p.id" :value="p.id">
-                    {{ p.project_no }} · {{ p.short_name || p.contract_name }}
-                  </option>
-                </select>
+                <div class="project-picker">
+                  <input
+                    v-model="projectKeyword"
+                    :placeholder="editRec ? selectedProjectLabel || '请选择项目' : '输入简称/项目编号/合同名搜索'"
+                    :disabled="!!editRec"
+                    @focus="showProjectDropdown = true"
+                    @input="handleProjectSearchInput"
+                  />
+                  <div v-if="showProjectDropdown && !editRec" class="project-dropdown">
+                    <button
+                      v-for="p in projectOptions"
+                      :key="p.id"
+                      type="button"
+                      class="project-option"
+                      @click="selectProject(p)"
+                    >
+                      {{ p.project_no }} · {{ p.short_name || p.contract_name }}
+                    </button>
+                    <div v-if="!projectOptions.length" class="project-empty">无匹配项目</div>
+                  </div>
+                </div>
               </label>
               <label class="form-field">
                 <span>运作年 <em>*</em></span>
@@ -653,4 +694,16 @@ onMounted(() => {
 .page-btn:hover { border-color: var(--primary); color: var(--primary); }
 .page-btn:disabled { opacity: 0.35; cursor: default; }
 .page-info { font-size: 13px; color: var(--muted); }
+
+.project-picker { position: relative; }
+.project-dropdown {
+  position: absolute; z-index: 10; left: 0; right: 0; top: calc(100% + 4px);
+  max-height: 220px; overflow: auto; border: 1px solid var(--border);
+  border-radius: 8px; background: #fff; box-shadow: 0 8px 20px rgba(0,0,0,0.12);
+}
+.project-option {
+  width: 100%; text-align: left; padding: 8px 10px; border: 0; background: #fff; cursor: pointer;
+}
+.project-option:hover { background: rgba(201,99,66,0.08); }
+.project-empty { padding: 10px; color: var(--muted); font-size: 12px; }
 </style>

@@ -48,17 +48,32 @@ class ARProject(models.Model):
             models.Index(fields=['is_shared']),
         ]
 
+    PROJECT_NO_START_SEQ = 1
+    DEPT_PREFIX_MAP = {
+        '集团总部': 'JT',
+        '劳务事业部': 'LW',
+        '运输事业部': 'YS',
+        '自营事业部': 'ZY',
+        '阔展事业部': 'KZ',
+        '多式联运事业部': 'DS',
+        '供应链事业部': 'GY',
+    }
+
+    def _project_no_prefix(self):
+        dept_prefix = self.DEPT_PREFIX_MAP.get(self.delivery_dept, 'OT')
+        return f'{dept_prefix}-{datetime.date.today().year}-'
+
     def _gen_project_no(self):
-        prefix = 'PR-' + datetime.date.today().strftime('%Y%m%d') + '-'
+        prefix = self._project_no_prefix()
         with transaction.atomic():
             last = (ARProject.objects.filter(project_no__startswith=prefix)
                     .order_by('-project_no').first())
-            seq = 1
+            seq = self.PROJECT_NO_START_SEQ
             if last:
                 try:
                     seq = int(last.project_no.rsplit('-', 1)[-1]) + 1
                 except ValueError:
-                    seq = 1
+                    seq = self.PROJECT_NO_START_SEQ
             return f'{prefix}{seq:04d}'
 
     def save(self, *args, **kwargs):

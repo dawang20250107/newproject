@@ -225,3 +225,32 @@ class ARPermissionRegressionTests(TestCase):
         record.refresh_from_db()
         self.assertEqual(record.tax_amount, Decimal('60.00'))
         self.assertEqual(record.outstanding_amount, Decimal('900.00'))
+
+
+class ARProjectNoGenerationTests(TestCase):
+    def test_project_no_uses_dept_prefix_and_independent_sequence(self):
+        p1 = ARProject.objects.create(
+            contract_name='A', short_name='A', delivery_dept='阔展事业部',
+            sales_contact='S', project_manager='P',
+        )
+        p2 = ARProject.objects.create(
+            contract_name='B', short_name='B', delivery_dept='阔展事业部',
+            sales_contact='S', project_manager='P',
+        )
+        p3 = ARProject.objects.create(
+            contract_name='C', short_name='C', delivery_dept='运输事业部',
+            sales_contact='S', project_manager='P',
+        )
+        year = date.today().year
+        self.assertEqual(p1.project_no, f'KZ-{year}-0001')
+        self.assertEqual(p2.project_no, f'KZ-{year}-0002')
+        self.assertEqual(p3.project_no, f'YS-{year}-0001')
+
+    def test_existing_legacy_project_no_remains_unchanged(self):
+        legacy = ARProject.objects.create(
+            project_no='PR-20240101-0007',
+            contract_name='Legacy', short_name='Legacy', delivery_dept='集团总部',
+            sales_contact='S', project_manager='P',
+        )
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.project_no, 'PR-20240101-0007')
