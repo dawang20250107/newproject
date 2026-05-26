@@ -1206,7 +1206,8 @@ def analytics_collection_rate(request):
     by_month = {}
     for rec in qs.annotate(total_paid=Sum('payments__amount')):
         m = rec.operation_month
-        base = float(rec.actual_invoice_amount or rec.estimated_amount or 0)
+        # 应收基础口径固定为上账金额（预估上账）
+        base = float(rec.estimated_amount or 0)
         paid = float(rec.total_paid or 0)
         if m not in by_month:
             by_month[m] = {'receivable': 0.0, 'collected': 0.0}

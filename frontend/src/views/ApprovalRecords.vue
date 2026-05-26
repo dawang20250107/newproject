@@ -19,6 +19,11 @@ const form = reactive({ applicant:'', department:'', approval_number:'', summary
 const scheduleForm = reactive({ planned_date:'', total_amount:'' })
 const filters = reactive({ applicant:'', approval_number:'', dept:'', page:1, size:50 })
 const statusUpdating = ref({})
+const pendingAmountTotal = computed(() =>
+  items.value
+    .filter(i => i.status === 'pending')
+    .reduce((s, i) => s + (parseFloat(i.amount) || 0), 0)
+)
 
 const deptChoices = computed(() => auth.isAdmin ? depts.value : depts.value.filter(d => (auth.user?.departments||[]).includes(d)))
 
@@ -58,11 +63,14 @@ onMounted(()=>{load();loadDepts()})
     <button v-if="auth.canCreate" class="btn btn-primary" @click="openCreate">+ 新增审批记录</button>
   </div></div>
   <input ref="fileRef" type="file" accept=".xlsx,.xls" style="display:none" @change="onImport" />
-  <div class="card approval-card"><div class="filter-bar">
+  <div class="card approval-card"><div class="filter-row">
+    <div class="filter-bar">
     <input v-model="filters.applicant" placeholder="申请人(模糊)" @keyup.enter="load"/>
     <input v-model="filters.approval_number" placeholder="审批编号(模糊)" @keyup.enter="load"/>
     <select v-model="filters.dept" @change="load"><option value="">全部事业部</option><option v-for="d in deptChoices" :key="d" :value="d">{{d}}</option></select>
     <button class="btn btn-ghost btn-sm" @click="load">筛选</button>
+    </div>
+    <div class="pending-card">已申请待处理共计：<b>{{ pendingAmountTotal.toFixed(2) }}</b> 元</div>
   </div>
   <div v-if="loading" class="empty">加载中…</div>
   <table v-else class="approval-table"><thead><tr><th>申请人</th><th>所属事业部</th><th>审批编号</th><th>摘要</th><th>申请金额</th><th>收款主体</th><th>审批状态</th><th>操作</th></tr></thead>
@@ -94,6 +102,8 @@ onMounted(()=>{load();loadDepts()})
 
 <style scoped>
 .approval-card { padding: 12px; }
+.filter-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+.pending-card { font-size: 12px; color: #8a4d2f; background: rgba(201,99,66,0.08); border: 1px solid rgba(201,99,66,0.25); border-radius: 10px; padding: 6px 10px; white-space: nowrap; }
 .approval-table { width: 100%; table-layout: fixed; font-size: 12px; }
 .approval-table th, .approval-table td { padding: 6px 8px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .approval-table th:nth-child(1), .approval-table td:nth-child(1) { width: 8%; }
