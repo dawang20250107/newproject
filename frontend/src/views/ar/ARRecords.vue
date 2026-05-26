@@ -204,7 +204,7 @@ onMounted(() => {
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />
         </label>
         <button class="act-btn" :disabled="exporting" @click="exportData">↓ 导出</button>
-        <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增排款</button>
+        <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增应收</button>
       </div>
     </div>
 
@@ -468,7 +468,7 @@ onMounted(() => {
       <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
         <div class="modal-box" style="max-width:560px">
           <div class="modal-header">
-            <h3>{{ editRec ? '编辑应收记录' : '新增排款' }}</h3>
+            <h3>{{ editRec ? '编辑应收记录' : '新增应收' }}</h3>
             <button class="modal-close" @click="showModal = false">✕</button>
           </div>
           <div class="modal-body">

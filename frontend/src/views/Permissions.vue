@@ -128,7 +128,7 @@ async function save() {
         <div class="chip-row">
           <label class="perm-chip" :class="{ on: current.config.can_create }">
             <input type="checkbox" v-model="current.config.can_create" />
-            <span class="dot"></span>可新增排款
+            <span class="dot"></span>可新增应收
           </label>
           <label class="perm-chip danger" :class="{ on: current.config.can_delete }">
             <input type="checkbox" v-model="current.config.can_delete" />
