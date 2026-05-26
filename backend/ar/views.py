@@ -19,7 +19,10 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from paikuan.views import (pk_required, ok, err, DEPARTMENTS, VALID_DEPARTMENTS,
                            get_request_perms, apply_ar_view_mask, AR_PROJECT_FIELD_DEFS,
                            AR_RECORD_FIELD_DEFS)
-from ar.models import ARProject, ARRecord, ARPayment, CollectionBudget, PaymentBudget
+from ar.models import (
+    ARProject, ARRecord, ARPayment, CollectionBudget, PaymentBudget,
+    APIIdempotencyRecord, ARImportRowDedup
+)
 from paikuan.models import Payment
 
 # ── AR page keys (must match PAGE_KEYS in paikuan/views.py) ───────────────────
@@ -164,6 +167,33 @@ def _header_row(ws, headers, color='1565C0'):
         cell.alignment = Alignment(horizontal='center')
 
 
+def _get_idempotency_key(request, data=None):
+    return (request.headers.get('Idempotency-Key')
+            or request.META.get('HTTP_IDEMPOTENCY_KEY')
+            or (data or {}).get('idempotency_key')
+            or '').strip()
+
+
+def _idempotent_execute(request, api_name, data, create_fn):
+    key = _get_idempotency_key(request, data)
+    if not key:
+        return create_fn()
+    with transaction.atomic():
+        rec = (APIIdempotencyRecord.objects
+               .select_for_update()
+               .filter(user_id=request.pk_uid, api_name=api_name, idempotency_key=key)
+               .first())
+        if rec:
+            return JsonResponse({'ok': True, 'data': rec.response_snapshot})
+        payload = create_fn()
+        if getattr(payload, 'status_code', None) == 200:
+            body = json.loads(payload.content.decode('utf-8'))
+            APIIdempotencyRecord.objects.create(
+                user_id=request.pk_uid, api_name=api_name, idempotency_key=key,
+                response_snapshot=body.get('data'))
+        return payload
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Projects
 # ══════════════════════════════════════════════════════════════════════════════
@@ -226,33 +256,26 @@ def projects(request):
         denied = _dept_denied(request, dept, '无权操作此部门')
         if denied:
             return denied
-        from paikuan.models import PaikuanUser
-        user = PaikuanUser.objects.filter(id=request.pk_uid).first()
-        try:
-            p = ARProject(
-                contract_name=data.get('contract_name', '').strip(),
-                short_name=data.get('short_name', '').strip(),
-                delivery_dept=dept,
-                sub_dept=data.get('sub_dept', '').strip(),
-                business_mode=data.get('business_mode', '').strip(),
-                customer_level=data.get('customer_level', '').strip(),
-                sales_contact=data.get('sales_contact', '').strip(),
-                project_manager=data.get('project_manager', '').strip(),
-                has_contract=data.get('has_contract', '无'),
-                contract_date=_normalize_date(data.get('contract_date')) or None,
-                reconciliation_days=int(data.get('reconciliation_days', 0) or 0),
-                invoice_wait_days=int(data.get('invoice_wait_days', 0) or 0),
-                settlement_wait_days=int(data.get('settlement_wait_days', 0) or 0),
-                invoice_mode=data.get('invoice_mode', '全额'),
-                invoice_type=data.get('invoice_type', ''),
-                tax_rate=_dec(data.get('tax_rate', '0')),
-                notes=data.get('notes', '').strip(),
-                created_by=user,
-            )
-            p.save()
-        except Exception as e:
-            return err(str(e))
-        return ok(apply_ar_view_mask(p.to_dict(), get_request_perms(request), 'project'))
+        def _create_project():
+            from paikuan.models import PaikuanUser
+            user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+            try:
+                p = ARProject(
+                    contract_name=data.get('contract_name', '').strip(), short_name=data.get('short_name', '').strip(),
+                    delivery_dept=dept, sub_dept=data.get('sub_dept', '').strip(), business_mode=data.get('business_mode', '').strip(),
+                    customer_level=data.get('customer_level', '').strip(), sales_contact=data.get('sales_contact', '').strip(),
+                    project_manager=data.get('project_manager', '').strip(), has_contract=data.get('has_contract', '无'),
+                    contract_date=_normalize_date(data.get('contract_date')) or None,
+                    reconciliation_days=int(data.get('reconciliation_days', 0) or 0), invoice_wait_days=int(data.get('invoice_wait_days', 0) or 0),
+                    settlement_wait_days=int(data.get('settlement_wait_days', 0) or 0), invoice_mode=data.get('invoice_mode', '全额'),
+                    invoice_type=data.get('invoice_type', ''), tax_rate=_dec(data.get('tax_rate', '0')),
+                    notes=data.get('notes', '').strip(), created_by=user,
+                )
+                p.save()
+            except Exception as e:
+                return err(str(e))
+            return ok(apply_ar_view_mask(p.to_dict(), get_request_perms(request), 'project'))
+        return _idempotent_execute(request, 'ar_projects_create', data, _create_project)
 
     return err('Method not allowed', 405)
 
@@ -376,6 +399,7 @@ def project_import(request):
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
     created = skipped = 0
     errors = []
+    batch_no = (request.headers.get('X-Import-Batch-No') or request.POST.get('batch_no') or '').strip()
 
     for ri in range(2, ws.max_row + 1):
         contract_name = _cv(ri, '合同名称*')
@@ -416,6 +440,8 @@ def project_import(request):
                 created_by=user,
             )
             p.save()
+            if batch_no:
+                ARImportRowDedup.objects.get_or_create(import_type=f'budget_{kind}', batch_no=batch_no, row_key=row_key)
             created += 1
         except Exception as e:
             errors.append(f'第{ri}行: {e}')
@@ -642,27 +668,22 @@ def ar_records(request):
         month = int(data.get('operation_month', 0) or 0)
         if not (year and 1 <= month <= 12):
             return err('运作年月无效')
-        from paikuan.models import PaikuanUser
-        user = PaikuanUser.objects.filter(id=request.pk_uid).first()
-        try:
-            rec = ARRecord(
-                project=proj,
-                operation_year=year,
-                operation_month=month,
-                estimated_amount=_dec(data.get('estimated_amount', 0)),
-                actual_invoice_amount=_dec(data['actual_invoice_amount']) if data.get('actual_invoice_amount') not in (None, '') else None,
-                tax_amount=_dec(data['tax_amount']) if data.get('tax_amount') not in (None, '') else None,
-                invoice_date=_normalize_date(data.get('invoice_date')) or None,
-                reconciliation_time=data.get('reconciliation_time') or None,
-                notes=data.get('notes', '').strip(),
-                created_by=user,
-            )
-            rec.save()
-        except Exception as e:
-            return err(str(e))
-        return ok(apply_ar_view_mask(
-            rec.to_dict(today=datetime.date.today(), include_payments=True),
-            get_request_perms(request), 'record'))
+        def _create_record():
+            from paikuan.models import PaikuanUser
+            user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+            try:
+                rec = ARRecord(project=proj, operation_year=year, operation_month=month,
+                               estimated_amount=_dec(data.get('estimated_amount', 0)),
+                               actual_invoice_amount=_dec(data['actual_invoice_amount']) if data.get('actual_invoice_amount') not in (None, '') else None,
+                               tax_amount=_dec(data['tax_amount']) if data.get('tax_amount') not in (None, '') else None,
+                               invoice_date=_normalize_date(data.get('invoice_date')) or None,
+                               reconciliation_time=data.get('reconciliation_time') or None,
+                               notes=data.get('notes', '').strip(), created_by=user)
+                rec.save()
+            except Exception as e:
+                return err(str(e))
+            return ok(apply_ar_view_mask(rec.to_dict(today=datetime.date.today(), include_payments=True), get_request_perms(request), 'record'))
+        return _idempotent_execute(request, 'ar_records_create', data, _create_record)
 
     return err('Method not allowed', 405)
 
@@ -773,6 +794,7 @@ def ar_record_import(request):
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
     created = skipped = updated = 0
     errors = []
+    batch_no = (request.headers.get('X-Import-Batch-No') or request.POST.get('batch_no') or '').strip()
 
     for ri in range(2, ws.max_row + 1):
         project_no = _cv(ri, '项目编号*')
@@ -797,6 +819,10 @@ def ar_record_import(request):
             errors.append(f'第{ri}行: 运作年月无效')
             skipped += 1
             continue
+        row_key = f"{project_no}|{year}|{month}"
+        if batch_no and ARImportRowDedup.objects.filter(import_type='ar_record', batch_no=batch_no, row_key=row_key).exists():
+            skipped += 1
+            continue
         try:
             rec, created_new = ARRecord.objects.get_or_create(
                 project=proj, operation_year=year, operation_month=month,
@@ -817,6 +843,8 @@ def ar_record_import(request):
             if _can_ar_view(request, 'r_notes'):
                 rec.notes = notes
             rec.save()
+            if batch_no:
+                ARImportRowDedup.objects.get_or_create(import_type='ar_record', batch_no=batch_no, row_key=row_key)
             if created_new:
                 created += 1
             else:
@@ -1440,19 +1468,14 @@ def _budget_list_create(request, Model, page_key):
         amount = _dec(data.get('amount', 0))
         if amount <= 0:
             return err('金额必须大于0')
-        from paikuan.models import PaikuanUser
-        user = PaikuanUser.objects.filter(id=request.pk_uid).first()
-        obj = Model.objects.create(
-            project_no=data.get('project_no', '').strip(),
-            short_name=data.get('short_name', '').strip(),
-            expected_date=date_str,
-            sub_dept=data.get('sub_dept', '').strip(),
-            delivery_dept=dept,
-            amount=amount,
-            notes=data.get('notes', '').strip(),
-            created_by=user,
-        )
-        return ok(obj.to_dict())
+        def _create_budget():
+            from paikuan.models import PaikuanUser
+            user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+            obj = Model.objects.create(project_no=data.get('project_no', '').strip(), short_name=data.get('short_name', '').strip(),
+                                       expected_date=date_str, sub_dept=data.get('sub_dept', '').strip(), delivery_dept=dept,
+                                       amount=amount, notes=data.get('notes', '').strip(), created_by=user)
+            return ok(obj.to_dict())
+        return _idempotent_execute(request, f'{page_key}_create', data, _create_budget)
 
     return err('Method not allowed', 405)
 
@@ -1588,6 +1611,7 @@ def _budget_import(request, Model, kind):
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
     created = skipped = 0
     errors = []
+    batch_no = (request.headers.get('X-Import-Batch-No') or request.POST.get('batch_no') or '').strip()
     for ri in range(2, ws.max_row + 1):
         short_name = _cv(ri, '项目简称/摘要*')
         if not short_name or EXAMPLE_ROW_MARKER in short_name:
@@ -1612,6 +1636,10 @@ def _budget_import(request, Model, kind):
             errors.append(f'第{ri}行: 金额必须大于0')
             skipped += 1
             continue
+        row_key = f"{_cv(ri, '项目编号(可选)')}|{short_name}|{date_str}|{dept}|{amount}"
+        if batch_no and ARImportRowDedup.objects.filter(import_type=f'budget_{kind}', batch_no=batch_no, row_key=row_key).exists():
+            skipped += 1
+            continue
         try:
             Model.objects.create(
                 project_no=_cv(ri, '项目编号(可选)'),
@@ -1623,6 +1651,8 @@ def _budget_import(request, Model, kind):
                 notes=_cv(ri, '备注'),
                 created_by=user,
             )
+            if batch_no:
+                ARImportRowDedup.objects.get_or_create(import_type=f'budget_{kind}', batch_no=batch_no, row_key=row_key)
             created += 1
         except Exception as e:
             errors.append(f'第{ri}行: {e}')

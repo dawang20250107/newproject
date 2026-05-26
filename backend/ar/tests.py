@@ -225,3 +225,32 @@ class ARPermissionRegressionTests(TestCase):
         record.refresh_from_db()
         self.assertEqual(record.tax_amount, Decimal('60.00'))
         self.assertEqual(record.outstanding_amount, Decimal('900.00'))
+
+class ARConcurrencyAndIdempotencyTests(TestCase):
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = DEPARTMENTS[0]
+        self.user = PaikuanUser(phone='13910000999', name='u', role='operator', job_title='finance_bp', departments=[self.dept], is_active=True, is_approved=True)
+        self.user.set_password('Test123456')
+        self.user.save()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {make_token(self.user)}'}
+
+    def test_project_no_sequence_unique(self):
+        p1 = ARProject.objects.create(contract_name='A', short_name='A', delivery_dept=self.dept, sales_contact='S', project_manager='P')
+        p2 = ARProject.objects.create(contract_name='B', short_name='B', delivery_dept=self.dept, sales_contact='S', project_manager='P')
+        self.assertNotEqual(p1.project_no, p2.project_no)
+
+    def test_projects_post_idempotency_key(self):
+        payload = {
+            'contract_name': 'Contract X', 'short_name': 'PX', 'delivery_dept': self.dept,
+            'sales_contact': 'S', 'project_manager': 'P'
+        }
+        h = {**self.auth(), 'HTTP_IDEMPOTENCY_KEY': 'idem-1'}
+        r1 = self.client.post('/api/pk/ar/projects', data=json.dumps(payload), content_type='application/json', **h)
+        r2 = self.client.post('/api/pk/ar/projects', data=json.dumps(payload), content_type='application/json', **h)
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(ARProject.objects.filter(contract_name='Contract X').count(), 1)

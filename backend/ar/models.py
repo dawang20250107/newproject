@@ -49,17 +49,18 @@ class ARProject(models.Model):
         ]
 
     def _gen_project_no(self):
-        prefix = 'PR-' + datetime.date.today().strftime('%Y%m%d') + '-'
+        import zlib
+        dept_code = f"{zlib.crc32((self.delivery_dept or '').encode('utf-8')) % 10000:04d}"
+        prefix = 'PR-' + dept_code + '-' + datetime.date.today().strftime('%Y%m%d') + '-'
         with transaction.atomic():
-            last = (ARProject.objects.filter(project_no__startswith=prefix)
-                    .order_by('-project_no').first())
-            seq = 1
-            if last:
-                try:
-                    seq = int(last.project_no.rsplit('-', 1)[-1]) + 1
-                except ValueError:
-                    seq = 1
-            return f'{prefix}{seq:04d}'
+            seq_obj, _ = ARProjectNoSeq.objects.select_for_update().get_or_create(
+                delivery_dept=self.delivery_dept,
+                biz_date=datetime.date.today(),
+                defaults={'seq': 0}
+            )
+            seq_obj.seq += 1
+            seq_obj.save(update_fields=['seq'])
+            return f'{prefix}{seq_obj.seq:04d}'
 
     def save(self, *args, **kwargs):
         if not self.project_no:
@@ -97,6 +98,42 @@ class ARProject(models.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+class ARProjectNoSeq(models.Model):
+    """Project number sequence by delivery dept + date."""
+    delivery_dept = models.CharField('交付部门', max_length=50)
+    biz_date = models.DateField('业务日期')
+    seq = models.IntegerField('序号', default=0)
+
+    class Meta:
+        db_table = 'ar_project_no_seq'
+        unique_together = [('delivery_dept', 'biz_date')]
+        indexes = [models.Index(fields=['delivery_dept', 'biz_date'])]
+
+
+class APIIdempotencyRecord(models.Model):
+    user_id = models.IntegerField(db_index=True)
+    api_name = models.CharField(max_length=100)
+    idempotency_key = models.CharField(max_length=128)
+    response_snapshot = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'api_idempotency_records'
+        unique_together = [('user_id', 'api_name', 'idempotency_key')]
+
+
+class ARImportRowDedup(models.Model):
+    import_type = models.CharField(max_length=50)
+    batch_no = models.CharField(max_length=128)
+    row_key = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'ar_import_row_dedup'
+        unique_together = [('import_type', 'batch_no', 'row_key')]
+
 
 
 def _eomonth(year, month):
