@@ -181,6 +181,54 @@ async function remove(type, item) {
   } catch (e) { alert(e?.response?.data?.msg || '删除失败') }
 }
 
+// ── Template / Import / Export ─────────────────────────────────────────────────
+const importing = ref(false)
+const exporting = ref(false)
+const collFileInput = ref(null)
+const payFileInput = ref(null)
+
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a'); a.href = url; a.download = name; a.click()
+  URL.revokeObjectURL(url)
+}
+
+async function downloadTemplate(type) {
+  try {
+    const res = type === 'collection'
+      ? await ar.collectionBudgetTemplate() : await ar.paymentBudgetTemplate()
+    saveBlob(res, `${type === 'collection' ? '收款' : '付款'}预算导入模板.xlsx`)
+  } catch (e) { alert('模板下载失败') }
+}
+
+async function handleImport(type, ev) {
+  const file = ev.target.files?.[0]
+  if (!file) return
+  importing.value = true
+  try {
+    const fd = new FormData(); fd.append('file', file)
+    const res = type === 'collection'
+      ? await ar.importCollectionBudget(fd) : await ar.importPaymentBudget(fd)
+    const d = res.data
+    let msg = `导入完成：新增 ${d.created} 条，跳过 ${d.skipped} 条`
+    if (d.errors?.length) msg += `\n\n错误：\n${d.errors.slice(0, 10).join('\n')}`
+    alert(msg)
+    await loadAll()
+  } catch (e) { alert(e?.response?.data?.msg || '导入失败')
+  } finally { importing.value = false; ev.target.value = '' }
+}
+
+async function exportData(type) {
+  exporting.value = true
+  try {
+    const params = { year: year.value, month: month.value, dept: selectedDept.value }
+    const res = type === 'collection'
+      ? await ar.exportCollectionBudget(params) : await ar.exportPaymentBudget(params)
+    saveBlob(res, `${type === 'collection' ? '收款' : '付款'}预算.xlsx`)
+  } catch (e) { alert(e?.response?.data?.msg || '导出失败')
+  } finally { exporting.value = false }
+}
+
 onMounted(loadAll)
 </script>
 
@@ -357,7 +405,15 @@ onMounted(loadAll)
               合计 <b style="color:var(--text)">{{ fmtAmt(collTotal) }}</b>
             </div>
           </div>
-          <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate('collection')">+ 新增收款预算</button>
+          <div class="hdr-acts">
+            <button class="act-btn" @click="downloadTemplate('collection')">↓ 模板</button>
+            <label class="act-btn" style="cursor:pointer">
+              {{ importing ? '导入中…' : '↑ 导入' }}
+              <input ref="collFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport('collection', $event)" />
+            </label>
+            <button class="act-btn" :disabled="exporting" @click="exportData('collection')">↓ 导出</button>
+            <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate('collection')">+ 新增收款预算</button>
+          </div>
         </div>
         <div class="table-wrap">
           <table class="budget-table">
@@ -408,7 +464,15 @@ onMounted(loadAll)
               合计 <b style="color:var(--text)">{{ fmtAmt(payTotal) }}</b>
             </div>
           </div>
-          <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate('payment')">+ 新增付款预算</button>
+          <div class="hdr-acts">
+            <button class="act-btn" @click="downloadTemplate('payment')">↓ 模板</button>
+            <label class="act-btn" style="cursor:pointer">
+              {{ importing ? '导入中…' : '↑ 导入' }}
+              <input ref="payFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport('payment', $event)" />
+            </label>
+            <button class="act-btn" :disabled="exporting" @click="exportData('payment')">↓ 导出</button>
+            <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate('payment')">+ 新增付款预算</button>
+          </div>
         </div>
         <div class="table-wrap">
           <table class="budget-table">
@@ -615,7 +679,15 @@ onMounted(loadAll)
 .nb-pay  { background: #f57f17; }
 
 /* List header */
-.list-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
+.list-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; gap: 12px; flex-wrap: wrap; }
+.hdr-acts { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.act-btn {
+  padding: 6px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 500;
+  border: 1px solid var(--border); background: rgba(255,252,250,0.8); color: var(--muted);
+  cursor: pointer; transition: all 0.14s; white-space: nowrap;
+}
+.act-btn:hover { border-color: var(--primary); color: var(--primary); }
+.act-btn:disabled { opacity: 0.4; cursor: default; }
 
 /* Budget table */
 .budget-table { width: 100%; }

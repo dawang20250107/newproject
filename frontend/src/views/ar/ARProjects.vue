@@ -7,14 +7,15 @@ import ar from '../../api/ar.js'
 const auth = useAuthStore()
 const items = ref([])
 const total = ref(0)
+const stats = ref(null)
 const loading = ref(false)
 const page = ref(1)
 const size = 50
 
-const filters = reactive({ q: '', dept: '', manager: '', is_shared: '' })
+const filters = reactive({ q: '', dept: '', customer_level: '', invoice_mode: '', is_shared: '' })
+const CUSTOMER_LEVELS = ['S级', 'A级', 'B级', 'C级']
 const showModal = ref(false)
 const editItem = ref(null)
-const showExtra = ref(false)
 const saving = ref(false)
 const importing = ref(false)
 const exporting = ref(false)
@@ -22,8 +23,8 @@ const fileInput = ref(null)
 
 const form = reactive({
   contract_name: '', short_name: '', delivery_dept: '', sub_dept: '',
-  business_mode: '', customer_level: '', sales_contact: '', project_manager: '',
-  has_contract: '无', contract_date: '', reconciliation_days: 0,
+  business_mode: '', customer_level: 'A级', sales_contact: '', project_manager: '',
+  has_contract: '有', contract_date: '', reconciliation_days: 0,
   invoice_wait_days: 0, settlement_wait_days: 0, invoice_mode: '全额',
   invoice_type: '专票', tax_rate: '0.06', notes: '',
 })
@@ -40,17 +41,12 @@ const isShared = computed(() =>
 const accessibleDepts = computed(() =>
   auth.isSuperAdmin ? DEPARTMENTS : (auth.user?.departments || []).filter(d => DEPARTMENTS.includes(d)))
 
-const stats = computed(() => {
-  const total_outstanding = items.value.reduce((s, i) => s + (parseFloat(i.total_outstanding) || 0), 0)
-  const shared = items.value.filter(i => i.is_shared).length
-  return { total: total.value, total_outstanding, shared }
-})
+// Field-permission column visibility
+const show = k => auth.canArView(k)
 
-function fmtAmt(v) {
+function fmtNum(v) {
   const n = parseFloat(v) || 0
-  if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(2) + '亿'
-  if (Math.abs(n) >= 1e4) return (n / 1e4).toFixed(2) + '万'
-  return n.toFixed(2)
+  return n.toLocaleString('zh-CN')
 }
 
 async function load(reset = false) {
@@ -63,12 +59,21 @@ async function load(reset = false) {
   } finally { loading.value = false }
 }
 
+async function loadStats() {
+  try {
+    const res = await ar.projectStats({ dept: filters.dept })
+    stats.value = res.data
+  } catch { stats.value = null }
+}
+
+function reloadAll() { load(true); loadStats() }
+
 function openCreate() {
-  editItem.value = null; showExtra.value = false
+  editItem.value = null
   Object.assign(form, {
     contract_name: '', short_name: '', delivery_dept: accessibleDepts.value[0] || '',
-    sub_dept: '', business_mode: '', customer_level: '',
-    sales_contact: '', project_manager: '', has_contract: '无', contract_date: '',
+    sub_dept: '', business_mode: '', customer_level: 'A级',
+    sales_contact: '', project_manager: '', has_contract: '有', contract_date: '',
     reconciliation_days: 0, invoice_wait_days: 0, settlement_wait_days: 0,
     invoice_mode: '全额', invoice_type: '专票', tax_rate: '0.06', notes: '',
   })
@@ -76,11 +81,11 @@ function openCreate() {
 }
 
 function openEdit(item) {
-  editItem.value = item; showExtra.value = false
+  editItem.value = item
   Object.assign(form, {
     contract_name: item.contract_name, short_name: item.short_name,
     delivery_dept: item.delivery_dept, sub_dept: item.sub_dept,
-    business_mode: item.business_mode, customer_level: item.customer_level,
+    business_mode: item.business_mode, customer_level: item.customer_level || 'A级',
     sales_contact: item.sales_contact, project_manager: item.project_manager,
     has_contract: item.has_contract, contract_date: item.contract_date || '',
     reconciliation_days: item.reconciliation_days,
@@ -92,16 +97,28 @@ function openEdit(item) {
   showModal.value = true
 }
 
+// All substantive fields required (notes optional)
+const REQUIRED = [
+  ['contract_name', '合同名称'], ['short_name', '项目简称'],
+  ['delivery_dept', '交付部门'], ['sub_dept', '二级部门'],
+  ['business_mode', '业务模式'], ['customer_level', '客户等级'],
+  ['sales_contact', '销售对接人'], ['project_manager', '项目负责人'],
+  ['has_contract', '有无合同'], ['contract_date', '签订日期'],
+  ['invoice_mode', '开票模式'], ['invoice_type', '专票/普票'], ['tax_rate', '税率'],
+]
+
 async function save() {
-  if (!form.contract_name || !form.delivery_dept || !form.sales_contact || !form.project_manager) {
-    alert('请填写必填字段（合同名称、交付部门、销售对接人、项目负责人）'); return
+  const missing = REQUIRED.filter(([k]) => form[k] === '' || form[k] === null || form[k] === undefined)
+  if (missing.length) {
+    alert('请填写所有必填字段：\n' + missing.map(([, l]) => l).join('、'))
+    return
   }
   saving.value = true
   try {
     if (editItem.value) await ar.updateProject(editItem.value.id, form)
     else await ar.createProject(form)
     showModal.value = false
-    await load()
+    reloadAll()
   } catch (e) {
     alert(e?.response?.data?.msg || '保存失败')
   } finally { saving.value = false }
@@ -109,7 +126,7 @@ async function save() {
 
 async function remove(item) {
   if (!confirm(`确定删除项目「${item.short_name || item.contract_name}」？`)) return
-  try { await ar.deleteProject(item.id); await load() }
+  try { await ar.deleteProject(item.id); reloadAll() }
   catch (e) { alert(e?.response?.data?.msg || '删除失败') }
 }
 
@@ -127,7 +144,7 @@ async function handleImport(e) {
     const fd = new FormData(); fd.append('file', f)
     const res = await ar.importProjects(fd); const d = res.data
     alert(`导入完成：创建 ${d.created} 条${d.errors?.length ? `，错误 ${d.errors.length} 条` : ''}`)
-    await load()
+    reloadAll()
   } catch (e) { alert(e?.response?.data?.msg || '导入失败')
   } finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
 }
@@ -143,7 +160,7 @@ async function exportData() {
   } finally { exporting.value = false }
 }
 
-onMounted(load)
+onMounted(() => { load(); loadStats() })
 </script>
 
 <template>
@@ -152,19 +169,7 @@ onMounted(load)
     <div class="topbar">
       <div>
         <h1>项目台账</h1>
-        <div style="font-size:13px;color:var(--muted);margin-top:2px">管理应收账款关联项目 · 合同账期 · 开票配置</div>
-      </div>
-      <div class="ctrl-row" style="flex-wrap:wrap">
-        <input v-model="filters.q" placeholder="搜索编号 / 合同 / 负责人" class="search-input" @input="load(true)" />
-        <select v-model="filters.dept" class="sel-bu" @change="load(true)">
-          <option value="">全部事业部</option>
-          <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
-        </select>
-        <select v-model="filters.is_shared" class="sel-mo" @change="load(true)">
-          <option value="">全部</option>
-          <option value="true">共享业务</option>
-          <option value="false">非共享</option>
-        </select>
+        <div style="font-size:13px;color:var(--muted);margin-top:2px">为应收账款提供项目主数据 · 合同账期 · 开票配置</div>
       </div>
     </div>
 
@@ -172,88 +177,122 @@ onMounted(load)
     <div class="stats-strip">
       <div class="stat-pill">
         <div class="stat-label">项目总数</div>
-        <div class="stat-value">{{ stats.total }}</div>
+        <div class="stat-value">{{ stats?.total ?? '—' }}</div>
       </div>
-      <div class="stat-pill stat-pill-warn">
-        <div class="stat-label">未回款合计</div>
-        <div class="stat-value">{{ fmtAmt(stats.total_outstanding) }}</div>
+      <div class="stat-pill stat-pill-gold">
+        <div class="stat-label">S 级客户</div>
+        <div class="stat-value">{{ stats?.s_count ?? 0 }}</div>
+      </div>
+      <div class="stat-pill stat-pill-blue">
+        <div class="stat-label">A 级客户</div>
+        <div class="stat-value">{{ stats?.a_count ?? 0 }}</div>
       </div>
       <div class="stat-pill stat-pill-purple">
         <div class="stat-label">共享业务</div>
-        <div class="stat-value">{{ stats.shared }}</div>
+        <div class="stat-value">{{ stats?.shared ?? 0 }}</div>
+      </div>
+      <div class="stat-pill stat-pill-mom">
+        <div class="stat-label">本月新签（环比）</div>
+        <div class="stat-value">
+          {{ stats?.new_this_month ?? 0 }}
+          <span v-if="stats && stats.mom_growth !== null" class="mom-tag" :class="stats.mom_growth >= 0 ? 'mom-up' : 'mom-down'">
+            {{ stats.mom_growth >= 0 ? '▲' : '▼' }} {{ Math.abs(stats.mom_growth) }}%
+          </span>
+          <span v-else class="mom-tag mom-flat">无基期</span>
+        </div>
       </div>
       <div class="stat-actions">
-        <button class="act-btn" @click="downloadTemplate" title="下载模板">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          下载模板
-        </button>
+        <button class="act-btn" @click="downloadTemplate" title="下载模板">↓ 模板</button>
         <label class="act-btn" style="cursor:pointer">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          {{ importing ? '导入中…' : '导入' }}
+          {{ importing ? '导入中…' : '↑ 导入' }}
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" :disabled="importing" />
         </label>
-        <button class="act-btn" :disabled="exporting" @click="exportData">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-          {{ exporting ? '导出中…' : '导出' }}
-        </button>
-        <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="margin-right:4px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          新增项目
-        </button>
+        <button class="act-btn" :disabled="exporting" @click="exportData">↓ 导出</button>
+        <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增项目</button>
       </div>
     </div>
 
+    <!-- Filter strip -->
+    <div class="filter-strip">
+      <input v-model="filters.q" placeholder="搜索编号 / 合同 / 负责人 / 销售" class="search-input" @input="load(true)" />
+      <select v-model="filters.dept" class="sel-bu" @change="reloadAll">
+        <option value="">全部事业部</option>
+        <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+      </select>
+      <select v-model="filters.customer_level" class="sel-mo" @change="load(true)">
+        <option value="">全部等级</option>
+        <option v-for="l in CUSTOMER_LEVELS" :key="l" :value="l">{{ l }}</option>
+      </select>
+      <select v-model="filters.invoice_mode" class="sel-mo" @change="load(true)">
+        <option value="">全部开票</option>
+        <option value="全额">全额</option>
+        <option value="差额">差额</option>
+      </select>
+      <select v-model="filters.is_shared" class="sel-mo" @change="load(true)">
+        <option value="">全部业务</option>
+        <option value="true">共享业务</option>
+        <option value="false">非共享</option>
+      </select>
+    </div>
+
     <!-- Table card -->
-    <div class="card" :class="{ 'card-loading': loading && items.length }">
+    <div class="card" :class="{ 'data-reloading': loading && items.length }">
       <div class="table-wrap">
         <table class="proj-table">
           <thead>
             <tr>
               <th>项目编号</th>
-              <th>合同名称</th>
-              <th>事业部</th>
-              <th>负责人</th>
-              <th>销售</th>
-              <th class="ctr">总账期</th>
-              <th class="ctr">开票</th>
-              <th class="ctr">应收笔数</th>
-              <th class="amt">未回款</th>
+              <th v-if="show('p_contract_name') || show('p_short_name')">合同 / 简称</th>
+              <th v-if="show('p_delivery_dept')">交付部门</th>
+              <th v-if="show('p_sub_dept')">二级部门</th>
+              <th v-if="show('p_business_mode')">业务模式</th>
+              <th v-if="show('p_customer_level')" class="ctr">客户等级</th>
+              <th v-if="show('p_project_manager')">负责人</th>
+              <th v-if="show('p_sales_contact')">销售</th>
+              <th v-if="show('p_has_contract')" class="ctr">合同</th>
+              <th v-if="show('p_contract_date')" class="ctr">签订日期</th>
+              <th v-if="show('p_account_period')" class="ctr">总账期</th>
+              <th v-if="show('p_invoice_config')" class="ctr">开票</th>
+              <th v-if="show('p_notes')">备注</th>
               <th class="ctr">操作</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="loading && !items.length">
-              <td colspan="10" class="empty-cell"><div class="empty-inner">⏳ 加载中…</div></td>
+              <td colspan="14" class="empty-cell"><div class="empty-inner">⏳ 加载中…</div></td>
             </tr>
             <tr v-else-if="!items.length">
-              <td colspan="10" class="empty-cell"><div class="empty-inner">暂无项目数据，点击「新增项目」开始</div></td>
+              <td colspan="14" class="empty-cell"><div class="empty-inner">暂无项目数据，点击「新增项目」开始</div></td>
             </tr>
             <tr v-for="item in items" :key="item.id" class="data-row">
               <td><span class="proj-no-tag">{{ item.project_no }}</span></td>
-              <td>
+              <td v-if="show('p_contract_name') || show('p_short_name')">
                 <div class="contract-name">{{ item.contract_name }}</div>
                 <div v-if="item.short_name" class="short-name">{{ item.short_name }}</div>
               </td>
-              <td><span class="dept-chip">{{ item.delivery_dept }}</span></td>
-              <td class="person">{{ item.project_manager }}</td>
-              <td class="person">
+              <td v-if="show('p_delivery_dept')"><span class="dept-chip">{{ item.delivery_dept }}</span></td>
+              <td v-if="show('p_sub_dept')" class="text-muted">{{ item.sub_dept || '—' }}</td>
+              <td v-if="show('p_business_mode')" class="text-muted">{{ item.business_mode || '—' }}</td>
+              <td v-if="show('p_customer_level')" class="ctr">
+                <span class="level-chip" :class="'lv-' + (item.customer_level || '')">{{ item.customer_level || '—' }}</span>
+              </td>
+              <td v-if="show('p_project_manager')" class="person">{{ item.project_manager }}</td>
+              <td v-if="show('p_sales_contact')" class="person">
                 {{ item.sales_contact }}
                 <span v-if="item.is_shared" class="badge-shared">共享</span>
               </td>
-              <td class="ctr">
+              <td v-if="show('p_has_contract')" class="ctr">
+                <span :class="item.has_contract === '有' ? 'yn-yes' : 'yn-no'">{{ item.has_contract }}</span>
+              </td>
+              <td v-if="show('p_contract_date')" class="ctr text-sm">{{ item.contract_date || '—' }}</td>
+              <td v-if="show('p_account_period')" class="ctr">
                 <span class="days-chip">{{ item.total_days }}天</span>
               </td>
-              <td class="ctr">
+              <td v-if="show('p_invoice_config')" class="ctr">
                 <span class="invoice-mode" :class="item.invoice_mode === '全额' ? 'mode-full' : 'mode-diff'">{{ item.invoice_mode }}</span>
+                <div class="text-sm text-muted">{{ item.invoice_type }} · {{ (parseFloat(item.tax_rate) * 100).toFixed(0) }}%</div>
               </td>
-              <td class="ctr">
-                <span class="count-badge">{{ item.record_count || 0 }}</span>
-              </td>
-              <td class="amt">
-                <span :class="parseFloat(item.total_outstanding) > 0 ? 'amount-warn' : 'amount-zero'">
-                  {{ parseFloat(item.total_outstanding) > 0 ? fmtAmt(item.total_outstanding) : '—' }}
-                </span>
-              </td>
+              <td v-if="show('p_notes')" class="text-muted text-sm">{{ item.notes || '—' }}</td>
               <td class="ctr">
                 <div class="row-actions">
                   <button class="icon-btn" @click="openEdit(item)" title="编辑">
@@ -278,11 +317,11 @@ onMounted(load)
     <!-- Modal -->
     <Teleport to="body">
       <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
-        <div class="modal-box" style="max-width:700px">
+        <div class="modal-box" style="max-width:720px">
           <div class="modal-header">
             <div>
               <h3>{{ editItem ? '编辑项目' : '新增项目' }}</h3>
-              <div class="modal-subtitle">{{ editItem ? editItem.project_no : '编号将自动生成' }}</div>
+              <div class="modal-subtitle">{{ editItem ? editItem.project_no : '编号将自动生成 · 全部字段必填' }}</div>
             </div>
             <button class="modal-close" @click="showModal = false">✕</button>
           </div>
@@ -293,36 +332,38 @@ onMounted(load)
               <span class="derived-label">总账期</span>
               <span class="derived-value">{{ totalDays }} 天</span>
             </div>
-            <div class="derived-item" v-if="form.reconciliation_days">
-              <span class="derived-label">对账期</span>
-              <span class="derived-value">{{ form.reconciliation_days }}d</span>
-            </div>
-            <div class="derived-item" v-if="form.invoice_wait_days">
-              <span class="derived-label">开票等待</span>
-              <span class="derived-value">{{ form.invoice_wait_days }}d</span>
-            </div>
-            <div class="derived-item" v-if="form.settlement_wait_days">
-              <span class="derived-label">结算等待</span>
-              <span class="derived-value">{{ form.settlement_wait_days }}d</span>
-            </div>
             <span v-if="isShared" class="badge-shared" style="font-size:12px;padding:3px 10px">共享业务</span>
+            <span v-else class="badge-self">自营业务</span>
           </div>
 
           <div class="modal-body">
-            <div class="form-section-title">基本信息</div>
             <div class="form-grid">
               <label class="form-field span2">
                 <span>合同名称 <em>*</em></span>
                 <input v-model="form.contract_name" placeholder="请输入合同全称" />
               </label>
               <label class="form-field">
-                <span>项目简称</span>
-                <input v-model="form.short_name" placeholder="可选，显示在明细中" />
+                <span>项目简称 <em>*</em></span>
+                <input v-model="form.short_name" placeholder="显示在明细中" />
               </label>
               <label class="form-field">
                 <span>交付部门 <em>*</em></span>
                 <select v-model="form.delivery_dept">
                   <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+                </select>
+              </label>
+              <label class="form-field">
+                <span>二级部门 <em>*</em></span>
+                <input v-model="form.sub_dept" />
+              </label>
+              <label class="form-field">
+                <span>业务模式 <em>*</em></span>
+                <input v-model="form.business_mode" />
+              </label>
+              <label class="form-field">
+                <span>客户等级 <em>*</em></span>
+                <select v-model="form.customer_level">
+                  <option v-for="l in CUSTOMER_LEVELS" :key="l" :value="l">{{ l }}</option>
                 </select>
               </label>
               <label class="form-field">
@@ -333,68 +374,41 @@ onMounted(load)
                 <span>项目负责人 <em>*</em></span>
                 <input v-model="form.project_manager" />
               </label>
-            </div>
-
-            <div class="form-section-title" style="margin-top:20px">账期与开票</div>
-            <div class="form-grid">
               <label class="form-field">
-                <span>合同对账期（天）</span>
+                <span>有无合同 <em>*</em></span>
+                <select v-model="form.has_contract"><option>有</option><option>无</option></select>
+              </label>
+              <label class="form-field">
+                <span>签订日期 <em>*</em></span>
+                <input v-model="form.contract_date" type="date" />
+              </label>
+              <label class="form-field">
+                <span>合同对账期（天） <em>*</em></span>
                 <input v-model.number="form.reconciliation_days" type="number" min="0" />
               </label>
               <label class="form-field">
-                <span>开票等待期（天）</span>
+                <span>开票等待期（天） <em>*</em></span>
                 <input v-model.number="form.invoice_wait_days" type="number" min="0" />
               </label>
               <label class="form-field">
-                <span>结算等待期（天）</span>
+                <span>结算等待期（天） <em>*</em></span>
                 <input v-model.number="form.settlement_wait_days" type="number" min="0" />
               </label>
               <label class="form-field">
-                <span>开票模式</span>
-                <select v-model="form.invoice_mode">
-                  <option>全额</option><option>差额</option>
-                </select>
+                <span>开票模式 <em>*</em></span>
+                <select v-model="form.invoice_mode"><option>全额</option><option>差额</option></select>
               </label>
               <label class="form-field">
-                <span>税率（如 0.06 = 6%）</span>
+                <span>专票 / 普票 <em>*</em></span>
+                <select v-model="form.invoice_type"><option>专票</option><option>普票</option></select>
+              </label>
+              <label class="form-field">
+                <span>税率（如 0.06 = 6%） <em>*</em></span>
                 <input v-model="form.tax_rate" placeholder="0.06" />
               </label>
               <label class="form-field span2">
                 <span>备注</span>
-                <input v-model="form.notes" />
-              </label>
-            </div>
-
-            <div class="extra-toggle" @click="showExtra = !showExtra">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" :style="showExtra ? 'transform:rotate(90deg)' : ''"><path d="M9 18l6-6-6-6"/></svg>
-              {{ showExtra ? '收起次要信息' : '展开次要信息（部门 / 业务类型 / 合同）' }}
-            </div>
-            <div v-show="showExtra" class="form-grid" style="margin-top:10px">
-              <label class="form-field">
-                <span>二级部门</span>
-                <input v-model="form.sub_dept" />
-              </label>
-              <label class="form-field">
-                <span>业务模式</span>
-                <input v-model="form.business_mode" />
-              </label>
-              <label class="form-field">
-                <span>客户等级</span>
-                <input v-model="form.customer_level" />
-              </label>
-              <label class="form-field">
-                <span>有无合同</span>
-                <select v-model="form.has_contract"><option>有</option><option>无</option></select>
-              </label>
-              <label class="form-field">
-                <span>签订日期</span>
-                <input v-model="form.contract_date" type="date" />
-              </label>
-              <label class="form-field">
-                <span>发票类型</span>
-                <select v-model="form.invoice_type">
-                  <option value="">不限</option><option>专票</option><option>普票</option>
-                </select>
+                <input v-model="form.notes" placeholder="可选" />
               </label>
             </div>
           </div>
@@ -410,25 +424,25 @@ onMounted(load)
 
 <style scoped>
 /* Stats strip */
-.stats-strip {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  margin-bottom: 16px;
-}
+.stats-strip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
 .stat-pill {
   display: flex; flex-direction: column; gap: 2px;
-  padding: 10px 20px; border-radius: 12px;
+  padding: 10px 18px; border-radius: 12px;
   background: rgba(255,255,255,0.7); border: 1px solid rgba(255,255,255,0.8);
-  box-shadow: 0 2px 12px rgba(0,0,0,0.06);
-  backdrop-filter: blur(10px);
-  min-width: 90px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.06); backdrop-filter: blur(10px); min-width: 88px;
 }
-.stat-pill-warn { border-left: 3px solid #f57f17; }
+.stat-pill-gold { border-left: 3px solid #c9a227; }
+.stat-pill-blue { border-left: 3px solid #1565c0; }
 .stat-pill-purple { border-left: 3px solid #6a1b9a; }
-.stat-label { font-size: 11px; color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
-.stat-value { font-size: 20px; font-weight: 700; color: var(--text); line-height: 1.2; }
+.stat-pill-mom { border-left: 3px solid #2e7d32; }
+.stat-label { font-size: 11px; color: var(--muted); font-weight: 500; letter-spacing: 0.03em; }
+.stat-value { font-size: 20px; font-weight: 700; color: var(--text); line-height: 1.2; display: flex; align-items: baseline; gap: 6px; }
+.mom-tag { font-size: 12px; font-weight: 700; }
+.mom-up { color: #2e7d32; }
+.mom-down { color: #c62828; }
+.mom-flat { color: var(--muted); font-weight: 500; }
 .stat-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; flex-wrap: wrap; }
 .act-btn {
-  display: flex; align-items: center; gap: 5px;
   padding: 7px 13px; border-radius: 8px; font-size: 12.5px; font-weight: 500;
   border: 1px solid var(--border); background: rgba(255,252,250,0.8); color: var(--muted);
   cursor: pointer; transition: all 0.15s; white-space: nowrap;
@@ -437,10 +451,9 @@ onMounted(load)
 .act-btn:disabled { opacity: 0.45; cursor: default; }
 
 /* Table */
-.card-loading { opacity: 0.7; pointer-events: none; }
 .proj-table { width: 100%; }
-.proj-table th { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 10px 12px; }
-.proj-table td { padding: 11px 12px; vertical-align: middle; }
+.proj-table th { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 9px 11px; background: rgba(0,0,0,0.02); white-space: nowrap; }
+.proj-table td { padding: 10px 11px; vertical-align: middle; }
 .proj-table .data-row { transition: background 0.12s; }
 .proj-table .data-row:hover { background: rgba(201,99,66,0.04); }
 .proj-table .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.04); }
@@ -448,21 +461,27 @@ onMounted(load)
 .empty-cell { padding: 48px !important; text-align: center; }
 .empty-inner { color: var(--muted); font-size: 14px; }
 
-.proj-no-tag { font-family: monospace; font-size: 11.5px; color: var(--muted); background: rgba(0,0,0,0.04); padding: 2px 7px; border-radius: 5px; }
-.contract-name { font-weight: 600; font-size: 13.5px; color: var(--text); }
+.proj-no-tag { font-family: monospace; font-size: 11.5px; color: var(--muted); background: rgba(0,0,0,0.04); padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+.contract-name { font-weight: 600; font-size: 13px; color: var(--text); }
 .short-name { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
-.dept-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; background: rgba(201,99,66,0.1); color: var(--primary); font-weight: 600; }
-.person { font-size: 13px; color: var(--text); }
+.dept-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; background: rgba(201,99,66,0.1); color: var(--primary); font-weight: 600; white-space: nowrap; }
+.person { font-size: 12.5px; color: var(--text); white-space: nowrap; }
 .badge-shared { font-size: 10px; padding: 1px 7px; border-radius: 8px; background: rgba(106,27,154,0.1); color: #6a1b9a; font-weight: 600; margin-left: 5px; }
-.days-chip { font-size: 12px; padding: 2px 8px; border-radius: 8px; background: rgba(21,101,192,0.08); color: #1565c0; font-weight: 600; }
+.badge-self { font-size: 12px; padding: 2px 10px; border-radius: 8px; background: rgba(46,125,50,0.1); color: #2e7d32; font-weight: 600; }
+.level-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; font-weight: 700; background: rgba(0,0,0,0.05); color: var(--muted); }
+.level-chip.lv-S级 { background: rgba(201,162,39,0.15); color: #a8851c; }
+.level-chip.lv-A级 { background: rgba(21,101,192,0.12); color: #1565c0; }
+.level-chip.lv-B级 { background: rgba(46,125,50,0.1); color: #2e7d32; }
+.level-chip.lv-C级 { background: rgba(155,128,112,0.15); color: var(--muted); }
+.yn-yes { color: #2e7d32; font-weight: 600; }
+.yn-no { color: var(--muted); }
+.days-chip { font-size: 12px; padding: 2px 8px; border-radius: 8px; background: rgba(21,101,192,0.08); color: #1565c0; font-weight: 600; white-space: nowrap; }
 .invoice-mode { font-size: 12px; padding: 2px 8px; border-radius: 8px; font-weight: 600; }
 .mode-full { background: rgba(46,125,50,0.1); color: #2e7d32; }
 .mode-diff { background: rgba(245,127,23,0.1); color: #f57f17; }
-.count-badge { font-size: 13px; font-weight: 700; color: var(--text); }
-.amount-warn { color: #e65100; font-weight: 700; font-size: 13.5px; }
-.amount-zero { color: var(--muted); }
+.text-muted { color: var(--muted); }
+.text-sm { font-size: 12px; }
 .ctr { text-align: center; }
-.amt { text-align: right; }
 
 .row-actions { display: flex; gap: 4px; justify-content: center; }
 .icon-btn {
@@ -471,7 +490,7 @@ onMounted(load)
   color: var(--muted); cursor: pointer; transition: all 0.14s;
 }
 .icon-btn:hover { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.08); }
-.icon-btn-danger:hover { border-color: var(--danger); color: var(--danger); background: rgba(198,40,40,0.07); }
+.icon-btn-danger:hover { border-color: #c62828; color: #c62828; background: rgba(198,40,40,0.07); }
 
 .pagination { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 16px 0 4px; }
 .page-btn { padding: 5px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,252,250,0.7); color: var(--text); font-size: 13px; cursor: pointer; transition: all 0.14s; }
@@ -480,21 +499,14 @@ onMounted(load)
 .page-info { font-size: 13px; color: var(--muted); }
 
 /* Modal */
-.modal-subtitle { font-size: 12px; color: var(--muted); margin-top: 3px; font-family: monospace; }
+.modal-subtitle { font-size: 12px; color: var(--muted); margin-top: 3px; }
 .derived-bar {
   display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
-  padding: 12px 20px; background: linear-gradient(135deg, rgba(201,99,66,0.06), rgba(201,99,66,0.02));
+  padding: 12px 28px; background: linear-gradient(135deg, rgba(201,99,66,0.06), rgba(201,99,66,0.02));
   border-bottom: 1px solid rgba(201,99,66,0.1);
 }
 .derived-item { display: flex; align-items: baseline; gap: 5px; }
 .derived-label { font-size: 11px; color: var(--muted); font-weight: 500; }
 .derived-value { font-size: 16px; font-weight: 700; color: var(--primary); }
-.form-section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
-.extra-toggle {
-  display: inline-flex; align-items: center; gap: 5px;
-  font-size: 12.5px; color: var(--primary); cursor: pointer; margin: 12px 0 4px;
-  user-select: none; padding: 4px 8px; border-radius: 6px; transition: background 0.14s;
-}
-.extra-toggle:hover { background: rgba(201,99,66,0.08); }
-.search-input { padding: 7px 12px; border: 1px solid var(--border); border-radius: 9px; font-size: 13px; min-width: 220px; background: rgba(255,252,250,0.8); }
+.search-input { min-width: 220px; }
 </style>
