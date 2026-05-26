@@ -159,7 +159,9 @@ class ARRecord(models.Model):
 
     def recompute_derived(self, save=True):
         base = self.actual_invoice_amount if self.actual_invoice_amount is not None else self.estimated_amount
-        total_paid = (self.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+        total_paid = Decimal('0')
+        if self.pk:
+            total_paid = (self.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0'))
         self.outstanding_amount = base - total_paid
         self.account_diff_adjustment = (
             (self.actual_invoice_amount or Decimal('0')) - self.estimated_amount

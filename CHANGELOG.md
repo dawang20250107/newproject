@@ -1,5 +1,15 @@
 # Change Log
 
+## 2026-05-26
+
+### Paikuan system
+
+- Hardened AR backend writes so project, receivable, payment, and budget create/update/delete endpoints enforce job permissions server-side.
+- Scoped AR budget detail operations by delivery department, preventing cross-department read/update/delete by direct record ID.
+- Filtered AR project and receivable Excel exports by AR field visibility permissions.
+- Fixed new AR receivable creation so derived tax/outstanding calculations do not read child payments before the record has a primary key.
+- Added AR regression tests covering write permissions, budget department isolation, export field masking, payment-field visibility, and receivable calculation updates.
+
 ## 2026-05-25
 
 ### Caiwu system

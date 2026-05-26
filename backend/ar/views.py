@@ -16,8 +16,9 @@ from django.utils import timezone
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 
-from paikuan.views import (pk_required, ok, err, dept_filter, DEPARTMENTS, VALID_DEPARTMENTS,
-                           get_request_perms, apply_ar_view_mask)
+from paikuan.views import (pk_required, ok, err, DEPARTMENTS, VALID_DEPARTMENTS,
+                           get_request_perms, apply_ar_view_mask, AR_PROJECT_FIELD_DEFS,
+                           AR_RECORD_FIELD_DEFS)
 from ar.models import ARProject, ARRecord, ARPayment, CollectionBudget, PaymentBudget
 from paikuan.models import Payment
 
@@ -79,6 +80,66 @@ def _page_denied(request, page_key):
     if not perms['pages'].get(page_key, True):
         return err('无权访问此模块', 403)
     return None
+
+
+def _write_denied(request):
+    perms = get_request_perms(request)
+    if perms is not None and not perms.get('can_create', False):
+        return err('无写入权限', 403, 403)
+    return None
+
+
+def _delete_denied(request):
+    perms = get_request_perms(request)
+    if perms is not None and not perms.get('can_delete', False):
+        return err('无删除权限', 403, 403)
+    return None
+
+
+def _dept_denied(request, dept, msg='无权操作此部门'):
+    if request.pk_role == 'super_admin':
+        return None
+    if dept not in request.pk_depts:
+        return err(msg, 403, 403)
+    return None
+
+
+def _object_dept_denied(request, obj, dept_field='delivery_dept'):
+    return _dept_denied(request, getattr(obj, dept_field, ''), '无权访问')
+
+
+def _can_ar_view(request, field_key):
+    perms = get_request_perms(request)
+    if perms is None:
+        return True
+    return (perms.get('ar_view') or {}).get(field_key, True)
+
+
+def _ar_field_denied(request, field_key):
+    if not _can_ar_view(request, field_key):
+        return err('无权访问此字段', 403, 403)
+    return None
+
+
+def _ar_visible_payload(request, data, group, extra=()):
+    perms = get_request_perms(request)
+    if perms is None:
+        return data
+    defs = AR_PROJECT_FIELD_DEFS if group == 'project' else AR_RECORD_FIELD_DEFS
+    ar_view = perms.get('ar_view') or {}
+    cols = set(extra)
+    for f in defs:
+        if ar_view.get(f['key'], True):
+            cols.update(f['cols'])
+    return {k: v for k, v in data.items() if k in cols}
+
+
+def _visible_ar_export_cols(request, columns):
+    perms = get_request_perms(request)
+    if perms is None:
+        return columns
+    ar_view = perms.get('ar_view') or {}
+    return [col for col in columns if col[0] is None or ar_view.get(col[0], True)]
 
 
 def _export_response(wb, filename):
@@ -155,17 +216,16 @@ def projects(request):
         return ok({'items': rows, 'total': total, 'page': page, 'size': size})
 
     if request.method == 'POST':
-        if _page_denied(request, 'ar_projects'):
-            return err('无权创建', 403)
-        data = _parse_body(request)
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        data = _ar_visible_payload(request, _parse_body(request), 'project')
         dept = data.get('delivery_dept', '')
         if dept not in VALID_DEPARTMENTS:
             return err(f'无效交付部门: {dept}')
-        # Dept access check
-        if request.pk_role != 'super_admin':
-            allowed = request.pk_depts
-            if dept not in allowed:
-                return err('无权操作此部门', 403)
+        denied = _dept_denied(request, dept, '无权操作此部门')
+        if denied:
+            return denied
         from paikuan.models import PaikuanUser
         user = PaikuanUser.objects.filter(id=request.pk_uid).first()
         try:
@@ -192,7 +252,7 @@ def projects(request):
             p.save()
         except Exception as e:
             return err(str(e))
-        return ok(p.to_dict())
+        return ok(apply_ar_view_mask(p.to_dict(), get_request_perms(request), 'project'))
 
     return err('Method not allowed', 405)
 
@@ -222,7 +282,10 @@ def project_detail(request, pk):
         return ok(apply_ar_view_mask(d, get_request_perms(request), 'project'))
 
     if request.method == 'PUT':
-        data = _parse_body(request)
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        data = _ar_visible_payload(request, _parse_body(request), 'project')
         for field in ('contract_name', 'short_name', 'sub_dept', 'business_mode',
                       'customer_level', 'sales_contact', 'project_manager',
                       'has_contract', 'invoice_mode', 'invoice_type', 'notes'):
@@ -239,17 +302,17 @@ def project_detail(request, pk):
             dept = data['delivery_dept']
             if dept not in VALID_DEPARTMENTS:
                 return err(f'无效交付部门: {dept}')
+            denied = _dept_denied(request, dept, '无权操作目标部门')
+            if denied:
+                return denied
             proj.delivery_dept = dept
         proj.save()
-        return ok(proj.to_dict())
+        return ok(apply_ar_view_mask(proj.to_dict(), get_request_perms(request), 'project'))
 
     if request.method == 'DELETE':
-        if request.pk_role not in ('super_admin', 'manager'):
-            from paikuan.views import get_job_perms
-            jt = getattr(request, 'pk_job', '') or ''
-            perms = get_job_perms(jt)
-            if not perms.get('can_delete'):
-                return err('无权删除', 403)
+        denied = _delete_denied(request)
+        if denied:
+            return denied
         proj.delete()
         return ok({'deleted': pk})
 
@@ -287,6 +350,9 @@ def project_import(request):
         return denied
     if request.method != 'POST':
         return err('POST only', 405)
+    denied = _write_denied(request)
+    if denied:
+        return denied
     f = request.FILES.get('file')
     if not f:
         return err('请上传文件')
@@ -380,20 +446,31 @@ def project_export(request):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '项目信息'
-    headers = ['项目编号', '合同名称', '项目简称', '交付部门', '二级部门', '业务模式',
-               '客户等级', '销售对接人', '项目负责人', '共享业务', '有无合同', '签订日期',
-               '合同对账期(天)', '开票等待期(天)', '结算等待期(天)', '总账期(天)',
-               '开票模式', '专票/普票', '税率', '备注']
-    _header_row(ws, headers)
+    columns = _visible_ar_export_cols(request, [
+        (None, '项目编号', lambda p: p.project_no),
+        ('p_contract_name', '合同名称', lambda p: p.contract_name),
+        ('p_short_name', '项目简称', lambda p: p.short_name),
+        ('p_delivery_dept', '交付部门', lambda p: p.delivery_dept),
+        ('p_sub_dept', '二级部门', lambda p: p.sub_dept),
+        ('p_business_mode', '业务模式', lambda p: p.business_mode),
+        ('p_customer_level', '客户等级', lambda p: p.customer_level),
+        ('p_sales_contact', '销售对接人', lambda p: p.sales_contact),
+        ('p_project_manager', '项目负责人', lambda p: p.project_manager),
+        ('p_sales_contact', '共享业务', lambda p: '是' if p.is_shared else '否'),
+        ('p_has_contract', '有无合同', lambda p: p.has_contract),
+        ('p_contract_date', '签订日期', lambda p: str(p.contract_date) if p.contract_date else ''),
+        ('p_account_period', '合同对账期(天)', lambda p: p.reconciliation_days),
+        ('p_account_period', '开票等待期(天)', lambda p: p.invoice_wait_days),
+        ('p_account_period', '结算等待期(天)', lambda p: p.settlement_wait_days),
+        ('p_account_period', '总账期(天)', lambda p: p.total_days),
+        ('p_invoice_config', '开票模式', lambda p: p.invoice_mode),
+        ('p_invoice_config', '专票/普票', lambda p: p.invoice_type),
+        ('p_invoice_config', '税率', lambda p: str(p.tax_rate)),
+        ('p_notes', '备注', lambda p: p.notes),
+    ])
+    _header_row(ws, [header for _, header, _ in columns])
     for p in qs:
-        ws.append([
-            p.project_no, p.contract_name, p.short_name, p.delivery_dept,
-            p.sub_dept, p.business_mode, p.customer_level, p.sales_contact,
-            p.project_manager, '是' if p.is_shared else '否', p.has_contract,
-            str(p.contract_date) if p.contract_date else '',
-            p.reconciliation_days, p.invoice_wait_days, p.settlement_wait_days,
-            p.total_days, p.invoice_mode, p.invoice_type, str(p.tax_rate), p.notes,
-        ])
+        ws.append([getter(p) for _, _, getter in columns])
     return _export_response(wb, '项目信息.xlsx')
 
 
@@ -545,7 +622,12 @@ def ar_records(request):
         return ok({'items': rows, 'total': total, 'page': page, 'size': size})
 
     if request.method == 'POST':
-        data = _parse_body(request)
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        data = _ar_visible_payload(
+            request, _parse_body(request), 'record',
+            extra=('project_id', 'operation_year', 'operation_month'))
         project_id = data.get('project_id')
         if not project_id:
             return err('缺少 project_id')
@@ -553,10 +635,9 @@ def ar_records(request):
             proj = ARProject.objects.get(pk=int(project_id))
         except ARProject.DoesNotExist:
             return err('项目不存在', 404)
-        if request.pk_role != 'super_admin':
-            allowed = request.pk_depts
-            if proj.delivery_dept not in allowed:
-                return err('无权操作此部门', 403)
+        denied = _dept_denied(request, proj.delivery_dept, '无权操作此部门')
+        if denied:
+            return denied
         year = int(data.get('operation_year', 0) or 0)
         month = int(data.get('operation_month', 0) or 0)
         if not (year and 1 <= month <= 12):
@@ -579,7 +660,9 @@ def ar_records(request):
             rec.save()
         except Exception as e:
             return err(str(e))
-        return ok(rec.to_dict(today=datetime.date.today(), include_payments=True))
+        return ok(apply_ar_view_mask(
+            rec.to_dict(today=datetime.date.today(), include_payments=True),
+            get_request_perms(request), 'record'))
 
     return err('Method not allowed', 405)
 
@@ -606,7 +689,10 @@ def ar_record_detail(request, pk):
                                      get_request_perms(request), 'record'))
 
     if request.method == 'PUT':
-        data = _parse_body(request)
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        data = _ar_visible_payload(request, _parse_body(request), 'record')
         for field in ('estimated_amount',):
             if field in data:
                 setattr(rec, field, _dec(data[field]))
@@ -621,9 +707,14 @@ def ar_record_detail(request, pk):
         if 'notes' in data:
             rec.notes = data['notes'].strip()
         rec.save()
-        return ok(rec.to_dict(today=today, include_payments=True))
+        return ok(apply_ar_view_mask(
+            rec.to_dict(today=today, include_payments=True),
+            get_request_perms(request), 'record'))
 
     if request.method == 'DELETE':
+        denied = _delete_denied(request)
+        if denied:
+            return denied
         rec.delete()
         return ok({'deleted': pk})
 
@@ -656,6 +747,9 @@ def ar_record_import(request):
         return denied
     if request.method != 'POST':
         return err('POST only', 405)
+    denied = _write_denied(request)
+    if denied:
+        return denied
     f = request.FILES.get('file')
     if not f:
         return err('请上传文件')
@@ -708,16 +802,20 @@ def ar_record_import(request):
                 project=proj, operation_year=year, operation_month=month,
                 defaults={'created_by': user})
             est = _cv(ri, '预估上账金额')
-            if est:
+            if est and _can_ar_view(request, 'r_estimated_amount'):
                 rec.estimated_amount = _dec(est)
             actual = _cv(ri, '实际开票金额')
-            rec.actual_invoice_amount = _dec(actual) if actual else None
+            if _can_ar_view(request, 'r_actual_invoice_amount'):
+                rec.actual_invoice_amount = _dec(actual) if actual else None
             tax_raw = _cv(ri, '税额(差额模式手填)')
-            rec.tax_amount = _dec(tax_raw) if tax_raw else None
+            if _can_ar_view(request, 'r_tax_amount'):
+                rec.tax_amount = _dec(tax_raw) if tax_raw else None
             inv_date = _normalize_date(_cv(ri, '开票日期(YYYY-MM-DD)'))
-            rec.invoice_date = inv_date or None
+            if _can_ar_view(request, 'r_invoice_date'):
+                rec.invoice_date = inv_date or None
             notes = _cv(ri, '备注')
-            rec.notes = notes
+            if _can_ar_view(request, 'r_notes'):
+                rec.notes = notes
             rec.save()
             if created_new:
                 created += 1
@@ -753,33 +851,37 @@ def ar_record_export(request):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '应收账款明细'
-    headers = ['项目编号', '项目简称', '合同名称', '交付部门', '项目负责人',
-               '销售对接人', '总账期(天)', '运作年', '运作月',
-               '预估上账金额', '实际开票金额', '税额', '开票日期', '开票模式',
-               '账实差额调整', '未回款金额', '应收日期',
-               '对账状态', '对账时间', '开票状态', '是否逾期', '逾期天数', '备注']
-    _header_row(ws, headers, color='1B6E35')
+    columns = _visible_ar_export_cols(request, [
+        (None, '项目编号', lambda rec, st: rec.project.project_no),
+        ('p_short_name', '项目简称', lambda rec, st: rec.project.short_name),
+        ('p_contract_name', '合同名称', lambda rec, st: rec.project.contract_name),
+        ('p_delivery_dept', '交付部门', lambda rec, st: rec.delivery_dept),
+        ('p_project_manager', '项目负责人', lambda rec, st: rec.project.project_manager),
+        ('p_sales_contact', '销售对接人', lambda rec, st: rec.project.sales_contact),
+        ('p_account_period', '总账期(天)', lambda rec, st: rec.project.total_days),
+        (None, '运作年', lambda rec, st: rec.operation_year),
+        (None, '运作月', lambda rec, st: rec.operation_month),
+        ('r_estimated_amount', '预估上账金额', lambda rec, st: float(rec.estimated_amount)),
+        ('r_actual_invoice_amount', '实际开票金额',
+         lambda rec, st: float(rec.actual_invoice_amount) if rec.actual_invoice_amount is not None else ''),
+        ('r_tax_amount', '税额', lambda rec, st: float(rec.tax_amount) if rec.tax_amount is not None else ''),
+        ('r_invoice_date', '开票日期', lambda rec, st: str(rec.invoice_date) if rec.invoice_date else ''),
+        ('p_invoice_config', '开票模式', lambda rec, st: rec.project.invoice_mode),
+        ('r_account_diff', '账实差额调整', lambda rec, st: float(rec.account_diff_adjustment)),
+        ('r_outstanding', '未回款金额', lambda rec, st: float(rec.outstanding_amount)),
+        ('r_due_date', '应收日期', lambda rec, st: str(rec.due_date) if rec.due_date else ''),
+        ('r_reconciliation', '对账状态', lambda rec, st: rec.reconciliation_status),
+        ('r_reconciliation', '对账时间',
+         lambda rec, st: rec.reconciliation_time.strftime('%Y-%m-%d') if rec.reconciliation_time else ''),
+        ('r_invoice_status', '开票状态', lambda rec, st: rec.invoice_status),
+        ('r_due_date', '是否逾期', lambda rec, st: '是' if st['is_overdue'] else ''),
+        ('r_due_date', '逾期天数', lambda rec, st: st['overdue_days'] if st['is_overdue'] else ''),
+        ('r_notes', '备注', lambda rec, st: rec.notes),
+    ])
+    _header_row(ws, [header for _, header, _ in columns], color='1B6E35')
     for rec in qs:
         st = rec.status_dict(today)
-        ws.append([
-            rec.project.project_no, rec.project.short_name, rec.project.contract_name,
-            rec.delivery_dept, rec.project.project_manager, rec.project.sales_contact,
-            rec.project.total_days, rec.operation_year, rec.operation_month,
-            float(rec.estimated_amount),
-            float(rec.actual_invoice_amount) if rec.actual_invoice_amount is not None else '',
-            float(rec.tax_amount) if rec.tax_amount is not None else '',
-            str(rec.invoice_date) if rec.invoice_date else '',
-            rec.project.invoice_mode,
-            float(rec.account_diff_adjustment),
-            float(rec.outstanding_amount),
-            str(rec.due_date) if rec.due_date else '',
-            rec.reconciliation_status,
-            rec.reconciliation_time.strftime('%Y-%m-%d') if rec.reconciliation_time else '',
-            rec.invoice_status,
-            '是' if st['is_overdue'] else '',
-            st['overdue_days'] if st['is_overdue'] else '',
-            rec.notes,
-        ])
+        ws.append([getter(rec, st) for _, _, getter in columns])
     return _export_response(wb, '应收账款明细.xlsx')
 
 
@@ -884,12 +986,18 @@ def ar_payments(request, pk):
         allowed = request.pk_depts
         if rec.delivery_dept not in allowed:
             return err('无权访问', 403)
+    denied = _ar_field_denied(request, 'r_payments')
+    if denied:
+        return denied
 
     if request.method == 'GET':
         pays = list(rec.payments.order_by('payment_no'))
         return ok([p.to_dict() for p in pays])
 
     if request.method == 'POST':
+        denied = _write_denied(request)
+        if denied:
+            return denied
         data = _parse_body(request)
         amount = _dec(data.get('amount', 0))
         if amount <= 0:
@@ -927,11 +1035,20 @@ def ar_payment_detail(request, pk, ppk):
         allowed = request.pk_depts
         if pay.ar_record.delivery_dept not in allowed:
             return err('无权访问', 403)
+    denied = _ar_field_denied(request, 'r_payments')
+    if denied:
+        return denied
 
     if request.method == 'PUT':
+        denied = _write_denied(request)
+        if denied:
+            return denied
         data = _parse_body(request)
         if 'amount' in data:
-            pay.amount = _dec(data['amount'])
+            amount = _dec(data['amount'])
+            if amount <= 0:
+                return err('回款金额必须大于0')
+            pay.amount = amount
         if 'payment_date' in data:
             pay.payment_date = _normalize_date(data['payment_date']) or pay.payment_date
         if 'notes' in data:
@@ -940,6 +1057,9 @@ def ar_payment_detail(request, pk, ppk):
         return ok(pay.to_dict())
 
     if request.method == 'DELETE':
+        denied = _delete_denied(request)
+        if denied:
+            return denied
         pay.delete()
         return ok({'deleted': ppk})
 
@@ -1304,10 +1424,16 @@ def _budget_list_create(request, Model, page_key):
                    'total_amount': total_amount})
 
     if request.method == 'POST':
+        denied = _write_denied(request)
+        if denied:
+            return denied
         data = _parse_body(request)
         dept = data.get('delivery_dept', '').strip()
         if dept and dept not in VALID_DEPARTMENTS:
             return err(f'无效交付部门: {dept}')
+        denied = _dept_denied(request, dept, '无权操作此部门')
+        if denied:
+            return denied
         date_str = _normalize_date(data.get('expected_date'))
         if not date_str:
             return err('预计日期无效')
@@ -1339,11 +1465,17 @@ def _budget_detail(request, pk, Model, page_key):
         obj = Model.objects.get(pk=pk)
     except Model.DoesNotExist:
         return err('记录不存在', 404)
+    denied = _object_dept_denied(request, obj)
+    if denied:
+        return denied
 
     if request.method == 'GET':
         return ok(obj.to_dict())
 
     if request.method == 'PUT':
+        denied = _write_denied(request)
+        if denied:
+            return denied
         data = _parse_body(request)
         for field in ('project_no', 'short_name', 'sub_dept', 'notes'):
             if field in data:
@@ -1352,15 +1484,24 @@ def _budget_detail(request, pk, Model, page_key):
             dept = data['delivery_dept']
             if dept and dept not in VALID_DEPARTMENTS:
                 return err(f'无效交付部门: {dept}')
+            denied = _dept_denied(request, dept, '无权操作目标部门')
+            if denied:
+                return denied
             obj.delivery_dept = dept
         if 'expected_date' in data:
             obj.expected_date = _normalize_date(data['expected_date']) or obj.expected_date
         if 'amount' in data:
-            obj.amount = _dec(data['amount'])
+            amount = _dec(data['amount'])
+            if amount <= 0:
+                return err('金额必须大于0')
+            obj.amount = amount
         obj.save()
         return ok(obj.to_dict())
 
     if request.method == 'DELETE':
+        denied = _delete_denied(request)
+        if denied:
+            return denied
         obj.delete()
         return ok({'deleted': pk})
 
@@ -1420,6 +1561,9 @@ def _budget_import(request, Model, kind):
         return denied
     if request.method != 'POST':
         return err('POST only', 405)
+    denied = _write_denied(request)
+    if denied:
+        return denied
     f = request.FILES.get('file')
     if not f:
         return err('请上传文件')
@@ -1459,7 +1603,7 @@ def _budget_import(request, Model, kind):
             errors.append(f'第{ri}行: 无效交付部门"{dept}"')
             skipped += 1
             continue
-        if dept and request.pk_role != 'super_admin' and dept not in request.pk_depts:
+        if request.pk_role != 'super_admin' and dept not in request.pk_depts:
             errors.append(f'第{ri}行: 无权操作部门"{dept}"')
             skipped += 1
             continue
