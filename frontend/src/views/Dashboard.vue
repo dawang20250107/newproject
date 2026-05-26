@@ -1,12 +1,10 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
-import { useRouter } from 'vue-router'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import StatusBadge from '../components/StatusBadge.vue'
 
 const auth = useAuthStore()
-const router = useRouter()
 const data = ref(null)
 const loading = ref(true)
 const loadErr = ref('')
@@ -45,12 +43,6 @@ onMounted(() => {
     sessionStorage.removeItem('pk_welcome')
   }
 })
-function drill(type) {
-  if (type === 'today') return router.push({ path: '/payments', query: { start_date: data.value?.today, end_date: data.value?.today } })
-  if (type === 'pending') return router.push({ path: '/payments', query: { status: 'pending' } })
-  if (type === 'partial') return router.push({ path: '/payments', query: { status: 'partial' } })
-  if (type === 'overdue') return router.push({ path: '/payments', query: { status: 'pending' } })
-}
 
 const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })
 </script>
@@ -77,22 +69,22 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
 
     <template v-else-if="data">
       <div class="kpi-grid">
-        <div class="kpi-card" @click="drill('today')">
+        <div class="kpi-card">
           <div class="label">今日计划付款</div>
           <div class="value">{{ data.today_count }}</div>
           <div v-if="showAmount" class="sub">共 {{ fmt(data.today_amount) }}</div>
         </div>
-        <div class="kpi-card" @click="drill('pending')">
+        <div class="kpi-card">
           <div class="label">待付款记录</div>
           <div class="value" style="color:#c62828">{{ data.pending_count }}</div>
           <div v-if="showAmount" class="sub">{{ fmt(data.pending_amount) }}</div>
         </div>
-        <div class="kpi-card" @click="drill('partial')">
+        <div class="kpi-card">
           <div class="label">部分付款中</div>
           <div class="value" style="color:#f57f17">{{ data.partial_count }}</div>
           <div class="sub">待完成</div>
         </div>
-        <div :class="['kpi-card', data.overdue_count > 0 ? 'overdue-kpi-card' : '']" @click="drill('overdue')">
+        <div :class="['kpi-card', data.overdue_count > 0 ? 'overdue-kpi-card' : '']">
           <div class="label">已逾期未付</div>
           <div :class="['value', data.overdue_count > 0 ? 'kpi-value-pulse' : '']" style="color:#c62828">
             {{ data.overdue_count }}
@@ -197,7 +189,6 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
   animation: overdue-breathe 2.8s ease-in-out infinite;
 }
 .overdue-alert svg { flex-shrink: 0; color: #c62828; }
-.kpi-card { cursor: pointer; }
 .today-table { table-layout: fixed; width: 100%; font-size: 12px; }
 .today-table th, .today-table td { padding: 6px 8px; line-height: 1.25; }
 .today-table .desc { max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
