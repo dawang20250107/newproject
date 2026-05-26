@@ -719,6 +719,8 @@ def ar_record_detail(request, pk):
                 setattr(rec, field, _dec(data[field]))
         if 'actual_invoice_amount' in data:
             rec.actual_invoice_amount = _dec(data['actual_invoice_amount']) if data['actual_invoice_amount'] not in (None, '') else None
+        if 'account_diff_adjustment' in data:
+            rec.account_diff_adjustment = _dec(data['account_diff_adjustment'])
         if 'tax_amount' in data:
             rec.tax_amount = _dec(data['tax_amount']) if data['tax_amount'] not in (None, '') else None
         if 'invoice_date' in data:
@@ -860,7 +862,10 @@ def ar_record_import(request):
             errors.append(f'第{ri}行: {e}')
             skipped += 1
 
-    return ok({'created': created, 'updated': updated, 'skipped': skipped, 'errors': errors})
+    recomputed = created + updated
+    tip = '导入后系统已按现规则自动重算未收回金额（不沿用历史手工未收回金额）。'
+    return ok({'created': created, 'updated': updated, 'skipped': skipped, 'errors': errors,
+               'recomputed': recomputed, 'tip': tip})
 
 
 @csrf_exempt
@@ -1122,25 +1127,6 @@ def ar_record_recompute(request, pk):
     rec.recompute_derived(save=True)
     rec.save(update_fields=['updated_at'])
     return ok({'id': rec.id, 'outstanding_amount': str(rec.outstanding_amount)})
-
-
-@csrf_exempt
-@pk_required()
-def ar_records_recompute_all(request):
-    denied = _page_denied(request, 'ar_records')
-    if denied:
-        return denied
-    if request.method != 'POST':
-        return err('POST only', 405)
-    denied = _write_denied(request)
-    if denied:
-        return denied
-    qs = _apply_record_filters(_ar_dept_filter(ARRecord.objects.select_related('project'), request), request)
-    count = 0
-    for rec in qs.iterator():
-        rec.recompute_derived(save=True)
-        count += 1
-    return ok({'recomputed': count})
 
 
 # ══════════════════════════════════════════════════════════════════════════════

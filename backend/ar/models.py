@@ -175,24 +175,14 @@ class ARRecord(models.Model):
         total_paid = Decimal('0')
         if self.pk:
             total_paid = (self.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0'))
-        self.outstanding_amount = base - total_paid
-        has_invoice = self.actual_invoice_amount is not None
-        has_payment = total_paid != Decimal('0')
-        est = self.estimated_amount or Decimal('0')
-        inv = self.actual_invoice_amount or Decimal('0')
-        if (not has_invoice) and (not has_payment):
-            self.account_diff_adjustment = Decimal('0')
-        elif (not has_invoice) and has_payment:
-            self.account_diff_adjustment = est - total_paid
-        elif has_invoice and (not has_payment):
-            self.account_diff_adjustment = inv - est
-        else:
-            self.account_diff_adjustment = total_paid - est
+        # 账实差额调整改为纯手工填写，不再系统公式自动计算
+        adjusted_base = base + (self.account_diff_adjustment or Decimal('0'))
+        # 未收回金额不允许为负
+        self.outstanding_amount = max(adjusted_base - total_paid, Decimal('0'))
         self.tax_amount = self._compute_tax()
         if save:
             ARRecord.objects.filter(pk=self.pk).update(
                 outstanding_amount=self.outstanding_amount,
-                account_diff_adjustment=self.account_diff_adjustment,
                 tax_amount=self.tax_amount,
             )
 

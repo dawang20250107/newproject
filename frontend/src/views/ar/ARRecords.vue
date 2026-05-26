@@ -27,7 +27,7 @@ const saving = ref(false)
 const recForm = reactive({
   project_id: '', operation_year: new Date().getFullYear(), operation_month: new Date().getMonth() + 1,
   estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
-  invoice_date: '', reconciliation_time: '', notes: '',
+  invoice_date: '', reconciliation_time: '', account_diff_adjustment: '', notes: '',
 })
 
 const projects = ref([])
@@ -93,7 +93,7 @@ function openCreate() {
     project_id: projects.value[0]?.id || '',
     operation_year: new Date().getFullYear(), operation_month: new Date().getMonth() + 1,
     estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
-    invoice_date: '', reconciliation_time: '', notes: '',
+    invoice_date: '', reconciliation_time: '', account_diff_adjustment: '', notes: '',
   })
   showModal.value = true
   projectKeyword.value = ''
@@ -106,6 +106,7 @@ function openEdit(rec) {
     estimated_amount: rec.estimated_amount, actual_invoice_amount: rec.actual_invoice_amount || '',
     tax_amount: rec.tax_amount || '', invoice_date: rec.invoice_date || '',
     reconciliation_time: rec.reconciliation_time ? rec.reconciliation_time.slice(0, 16) : '',
+    account_diff_adjustment: rec.account_diff_adjustment || '',
     notes: rec.notes,
   })
   showModal.value = true
@@ -120,7 +121,7 @@ async function saveRec() {
       operation_month: recForm.operation_month, estimated_amount: recForm.estimated_amount || 0,
       actual_invoice_amount: recForm.actual_invoice_amount || null,
       tax_amount: recForm.tax_amount || null, invoice_date: recForm.invoice_date || null,
-      reconciliation_time: recForm.reconciliation_time || null, notes: recForm.notes,
+      reconciliation_time: recForm.reconciliation_time || null, account_diff_adjustment: recForm.account_diff_adjustment || 0, notes: recForm.notes,
     }
     if (editRec.value) await ar.updateRecord(editRec.value.id, payload)
     else await ar.createRecord(payload)
@@ -133,12 +134,6 @@ async function deleteRec(rec) {
   if (!confirm(`确定删除「${rec.short_name}」${rec.operation_year}年${rec.operation_month}月的应收记录？`)) return
   try { await ar.deleteRecord(rec.id); await load() }
   catch (e) { alert(e?.response?.data?.msg || '删除失败') }
-}
-async function recomputeAll() {
-  try {
-    await ar.recomputeAllRecords(filters)
-    await load()
-  } catch (e) { alert(e?.response?.data?.msg || '批量重算失败') }
 }
 
 function togglePayments(id) { expandedPayments.value[id] = !expandedPayments.value[id] }
@@ -178,7 +173,9 @@ async function handleImport(e) {
   try {
     const fd = new FormData(); fd.append('file', f)
     const res = await ar.importRecords(fd); const d = res.data
-    alert(`导入完成：创建 ${d.created}，更新 ${d.updated}，跳过 ${d.skipped}`)
+    let msg = `导入完成：创建 ${d.created}，更新 ${d.updated}，跳过 ${d.skipped}`
+    if (d.tip) msg += `\n${d.tip}`
+    alert(msg)
     await load()
   } catch (e) { alert(e?.response?.data?.msg || '导入失败')
   } finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
@@ -222,7 +219,6 @@ function clearFilters() {
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />
         </label>
         <button class="act-btn" :disabled="exporting" @click="exportData">↓ 导出</button>
-        <button class="act-btn" @click="recomputeAll">↻ 一键全局重算</button>
         <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增应收</button>
       </div>
     </div>
@@ -544,6 +540,10 @@ function clearFilters() {
               <label class="form-field">
                 <span>对账时间</span>
                 <input v-model="recForm.reconciliation_time" type="datetime-local" />
+              </label>
+              <label class="form-field">
+                <span>差额调整</span>
+                <input v-model="recForm.account_diff_adjustment" type="number" step="0.01" />
               </label>
               <label class="form-field span2">
                 <span>备注</span>
