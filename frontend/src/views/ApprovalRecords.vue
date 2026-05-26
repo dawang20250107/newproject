@@ -18,6 +18,7 @@ const current = ref(null)
 const form = reactive({ applicant:'', department:'', approval_number:'', summary:'', amount:'', payee:'', status:'pending' })
 const scheduleForm = reactive({ planned_date:'', total_amount:'' })
 const filters = reactive({ applicant:'', approval_number:'', dept:'', page:1, size:50 })
+const statusUpdating = ref({})
 
 const deptChoices = computed(() => auth.isAdmin ? depts.value : depts.value.filter(d => (auth.user?.departments||[]).includes(d)))
 
@@ -25,7 +26,19 @@ async function load(){ loading.value=true; try{ const r=await api.get('/approval
 async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
 function openCreate(){ Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', approval_number:'', summary:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
 async function create(){ saving.value=true; try{ await api.post('/approvals', form); showCreate.value=false; load() } catch(e){ alert(e?.error||'保存失败') } finally{ saving.value=false } }
-async function updateStatus(it, status){ try{ await api.put(`/approvals/${it.id}`,{ status }); load() } catch(e){ alert(e?.error||'更新失败') } }
+async function updateStatus(it, status){
+  const prev = it.status
+  it.status = status
+  statusUpdating.value[it.id] = true
+  try{
+    await api.put(`/approvals/${it.id}`,{ status })
+  } catch(e){
+    it.status = prev
+    alert(e?.error||'更新失败')
+  } finally {
+    statusUpdating.value[it.id] = false
+  }
+}
 function openSchedule(it){ current.value=it; Object.assign(scheduleForm,{ planned_date:'', total_amount:it.amount }); showSchedule.value=true }
 async function doSchedule(){ try{ await api.post(`/approvals/${current.value.id}/schedule`, scheduleForm); showSchedule.value=false; load(); alert('排款成功并已归档') } catch(e){ alert(e?.error||'排款失败') } }
 async function downloadTemplate(){ const b=await api.get('/approvals/template',{responseType:'blob'}); dl(b,'审批记录导入模板.xlsx') }
@@ -55,7 +68,7 @@ onMounted(()=>{load();loadDepts()})
   <table v-else class="approval-table"><thead><tr><th>申请人</th><th>所属事业部</th><th>审批编号</th><th>摘要</th><th>申请金额</th><th>收款主体</th><th>审批状态</th><th>操作</th></tr></thead>
     <tbody><tr v-for="i in items" :key="i.id"><td>{{i.applicant}}</td><td>{{i.department}}</td><td class="mono">{{i.approval_number}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}</td><td class="payee">{{i.payee}}</td>
       <td>
-        <select :value="i.status" @change="updateStatus(i, $event.target.value)">
+        <select :value="i.status" :disabled="statusUpdating[i.id]" @change="updateStatus(i, $event.target.value)">
           <option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option>
         </select>
       </td>
@@ -91,8 +104,9 @@ onMounted(()=>{load();loadDepts()})
 .approval-table th:nth-child(6), .approval-table td:nth-child(6) { width: 14%; }
 .approval-table th:nth-child(7), .approval-table td:nth-child(7) { width: 9%; }
 .approval-table th:nth-child(8), .approval-table td:nth-child(8) { width: 8%; }
+.approval-table th:nth-child(7), .approval-table td:nth-child(7) { overflow: visible; text-overflow: clip; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .summary, .payee { max-width: 100%; }
-.approval-table select { max-width: 100%; height: 28px; font-size: 12px; }
+.approval-table select { width: 100%; min-width: 90px; height: 28px; font-size: 12px; padding-right: 18px; }
 </style>
