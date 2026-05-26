@@ -729,7 +729,10 @@ def ar_record_detail(request, pk):
             rec.reconciliation_time = data['reconciliation_time'] or None
         if 'notes' in data:
             rec.notes = data['notes'].strip()
-        rec.save()
+        try:
+            rec.save()
+        except Exception as e:
+            return err(str(e))
         return ok(apply_ar_view_mask(
             rec.to_dict(today=today, include_payments=True),
             get_request_perms(request), 'record'))

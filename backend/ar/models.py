@@ -4,6 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import models, transaction
 from django.db.models import Sum
+from django.core.exceptions import ValidationError
 
 from paikuan.models import PaikuanUser
 
@@ -170,15 +171,16 @@ class ARRecord(models.Model):
         return self.tax_amount
 
     def recompute_derived(self, save=True):
-        base = self.actual_invoice_amount if self.actual_invoice_amount is not None else self.estimated_amount
-        base = (base or Decimal('0'))
+        # 未收回金额口径：上账金额 + 调整额 - 回款金额
+        base = self.estimated_amount or Decimal('0')
         total_paid = Decimal('0')
         if self.pk:
             total_paid = (self.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0'))
-        # 账实差额调整改为纯手工填写，不再系统公式自动计算
         adjusted_base = base + (self.account_diff_adjustment or Decimal('0'))
-        # 未收回金额不允许为负
-        self.outstanding_amount = max(adjusted_base - total_paid, Decimal('0'))
+        outstanding = adjusted_base - total_paid
+        if outstanding < Decimal('0'):
+            raise ValidationError('未收回金额不能为负，请调整账实差额或回款金额')
+        self.outstanding_amount = outstanding
         self.tax_amount = self._compute_tax()
         if save:
             ARRecord.objects.filter(pk=self.pk).update(
