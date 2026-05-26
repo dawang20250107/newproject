@@ -290,35 +290,9 @@ const deptCompareOption = computed(() => {
       </div>
     </div>
 
-    <!-- 超期 / 重点催收 强提醒 -->
-    <div v-if="overdue && overdue.count" class="urge-banner">
-      <div class="urge-left">
-        <div class="urge-icon">⚠</div>
-        <div>
-          <div class="urge-title">超期强提醒 · {{ overdue.count }} 笔逾期待催收</div>
-          <div class="urge-sub">逾期未收合计 <b>{{ fmtWan(overdue.amount) }} 元</b></div>
-        </div>
-      </div>
-      <div class="urge-right">
-        <div v-if="keyCollection.length" class="urge-key">
-          <span class="urge-key-label">重点催收</span>
-          <span v-for="p in keyCollection" :key="p.project_id" class="urge-chip"
-            @click="router.push({ path: '/ar/records', query: { project_id: p.project_id } })">
-            {{ p.short_name?.length > 8 ? p.short_name.slice(0, 8) + '…' : p.short_name }}
-            <b>{{ fmtWan(p.total_outstanding) }}</b>
-          </span>
-        </div>
-        <button class="urge-btn" @click="router.push({ path: '/ar/records', query: { status: 'overdue' } })">查看逾期明细</button>
-      </div>
-    </div>
-
-    <!-- 付款超收款 alert -->
-    <div v-if="hasAlert" class="cashflow-alert">
-      <span class="alert-icon">⚠</span>
-      <div>
-        <div class="alert-title">付款超出收款告警</div>
-        <div class="alert-months">以下期间付款金额超出实际收款：{{ alertMonths.join('、') }}</div>
-      </div>
+    <div v-if="hasAlert || (overdue && overdue.count)" class="section-title" style="margin:6px 0 10px;color:#c62828">
+      ⚠ 强提醒：{{ hasAlert ? `付款超出收款（${alertMonths.join('、')}）` : '' }}
+      {{ overdue && overdue.count ? `；逾期${overdue.count}笔（${fmtWan(overdue.amount)}元）` : '' }}
     </div>
 
     <!-- KPI cards (4-column grid) -->

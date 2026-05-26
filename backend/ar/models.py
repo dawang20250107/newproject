@@ -196,6 +196,9 @@ class ARRecord(models.Model):
     # ── read-only properties (not stored) ──────────────────────────────────────
     @property
     def reconciliation_status(self):
+        # 业务规则：已开票默认视作已对账
+        if self.actual_invoice_amount is not None:
+            return '已对账'
         return '已对账' if self.reconciliation_time else '未对账'
 
     @property

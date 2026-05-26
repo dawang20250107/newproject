@@ -16,8 +16,9 @@ const page = ref(1)
 const size = 50
 const activeTab = ref('all')   // all | reconciliation | invoice | collection
 const filters = reactive({
-  dept: '', year: new Date().getFullYear(), month: '', status: '',
+  dept: '', year: '', month: '', status: '',
   reconciliation_status: '', invoice_status: '', q: '', project_id: '',
+  due_start: '', due_end: '', manager: '', is_shared: '',
 })
 
 const showModal = ref(false)
@@ -26,7 +27,7 @@ const saving = ref(false)
 const recForm = reactive({
   project_id: '', operation_year: new Date().getFullYear(), operation_month: new Date().getMonth() + 1,
   estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
-  invoice_date: '', reconciliation_time: '', notes: '',
+  invoice_date: '', reconciliation_time: '', account_diff_adjustment: '', notes: '',
 })
 
 const projects = ref([])
@@ -92,7 +93,7 @@ function openCreate() {
     project_id: projects.value[0]?.id || '',
     operation_year: new Date().getFullYear(), operation_month: new Date().getMonth() + 1,
     estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
-    invoice_date: '', reconciliation_time: '', notes: '',
+    invoice_date: '', reconciliation_time: '', account_diff_adjustment: '', notes: '',
   })
   showModal.value = true
   projectKeyword.value = ''
@@ -105,6 +106,7 @@ function openEdit(rec) {
     estimated_amount: rec.estimated_amount, actual_invoice_amount: rec.actual_invoice_amount || '',
     tax_amount: rec.tax_amount || '', invoice_date: rec.invoice_date || '',
     reconciliation_time: rec.reconciliation_time ? rec.reconciliation_time.slice(0, 16) : '',
+    account_diff_adjustment: rec.account_diff_adjustment || '',
     notes: rec.notes,
   })
   showModal.value = true
@@ -119,7 +121,7 @@ async function saveRec() {
       operation_month: recForm.operation_month, estimated_amount: recForm.estimated_amount || 0,
       actual_invoice_amount: recForm.actual_invoice_amount || null,
       tax_amount: recForm.tax_amount || null, invoice_date: recForm.invoice_date || null,
-      reconciliation_time: recForm.reconciliation_time || null, notes: recForm.notes,
+      reconciliation_time: recForm.reconciliation_time || null, account_diff_adjustment: recForm.account_diff_adjustment || 0, notes: recForm.notes,
     }
     if (editRec.value) await ar.updateRecord(editRec.value.id, payload)
     else await ar.createRecord(payload)
@@ -195,6 +197,10 @@ onMounted(() => {
   if (route.query.dept) filters.dept = route.query.dept
   load(); loadProjects()
 })
+function clearFilters() {
+  Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', q: '', project_id: '', due_start: '', due_end: '', manager: '', is_shared: '' })
+  load(true)
+}
 </script>
 
 <template>
@@ -211,7 +217,7 @@ onMounted(() => {
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />
         </label>
         <button class="act-btn" :disabled="exporting" @click="exportData">↓ 导出</button>
-        <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增排款</button>
+        <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增应收</button>
       </div>
     </div>
 
@@ -222,12 +228,15 @@ onMounted(() => {
         <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
       </select>
       <select v-model="filters.year" class="sel-yr" @change="load(true)">
+        <option value="">全部年份</option>
         <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
       </select>
       <select v-model="filters.month" class="sel-mo" @change="load(true)">
         <option value="">全月</option>
         <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
       </select>
+      <input v-model="filters.due_start" type="date" class="sel-mo" @change="load(true)" />
+      <input v-model="filters.due_end" type="date" class="sel-mo" @change="load(true)" />
       <select v-model="filters.status" class="sel-mo" @change="load(true)">
         <option value="">全部状态</option>
         <option value="overdue">逾期</option>
@@ -246,7 +255,15 @@ onMounted(() => {
         <option value="已开票">已开票</option>
         <option value="已结清">已结清</option>
       </select>
+      <select v-model="filters.is_shared" class="sel-mo" @change="load(true)">
+        <option value="">共享(全部)</option>
+        <option value="1">共享</option>
+        <option value="0">非共享</option>
+      </select>
+      <input v-model="filters.manager" placeholder="负责人" class="search-input" @input="load(true)" />
       <input v-model="filters.q" placeholder="搜索项目" class="search-input" @input="load(true)" />
+      <button class="act-btn" @click="Object.assign(filters, { status: 'outstanding' }); load(true)">未结清</button>
+      <button class="act-btn" @click="clearFilters">清空筛选</button>
     </div>
 
     <!-- Tab + table card -->
@@ -475,7 +492,7 @@ onMounted(() => {
       <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
         <div class="modal-box" style="max-width:560px">
           <div class="modal-header">
-            <h3>{{ editRec ? '编辑应收记录' : '新增排款' }}</h3>
+            <h3>{{ editRec ? '编辑应收记录' : '新增应收' }}</h3>
             <button class="modal-close" @click="showModal = false">✕</button>
           </div>
           <div class="modal-body">
@@ -521,6 +538,10 @@ onMounted(() => {
               <label class="form-field">
                 <span>对账时间</span>
                 <input v-model="recForm.reconciliation_time" type="datetime-local" />
+              </label>
+              <label class="form-field">
+                <span>差额调整</span>
+                <input v-model="recForm.account_diff_adjustment" type="number" step="0.01" />
               </label>
               <label class="form-field span2">
                 <span>备注</span>

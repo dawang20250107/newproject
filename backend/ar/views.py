@@ -591,6 +591,8 @@ def ar_records(request):
             qs = qs.filter(outstanding_amount__gt=0, due_date__gt=eomonth_today)
         elif status == 'settled':
             qs = qs.filter(outstanding_amount__lte=0)
+        elif status == 'outstanding':
+            qs = qs.filter(outstanding_amount__gt=0)
 
         # Invoice status
         inv_status = request.GET.get('invoice_status', '').strip()
@@ -604,9 +606,9 @@ def ar_records(request):
         # Reconciliation status
         recon_status = request.GET.get('reconciliation_status', '').strip()
         if recon_status == '已对账':
-            qs = qs.filter(reconciliation_time__isnull=False)
+            qs = qs.filter(Q(reconciliation_time__isnull=False) | Q(actual_invoice_amount__isnull=False))
         elif recon_status == '未对账':
-            qs = qs.filter(reconciliation_time__isnull=True)
+            qs = qs.filter(reconciliation_time__isnull=True, actual_invoice_amount__isnull=True)
 
         # Date range on due_date
         due_start = request.GET.get('due_start', '').strip()
@@ -717,6 +719,8 @@ def ar_record_detail(request, pk):
                 setattr(rec, field, _dec(data[field]))
         if 'actual_invoice_amount' in data:
             rec.actual_invoice_amount = _dec(data['actual_invoice_amount']) if data['actual_invoice_amount'] not in (None, '') else None
+        if 'account_diff_adjustment' in data:
+            rec.account_diff_adjustment = _dec(data['account_diff_adjustment'])
         if 'tax_amount' in data:
             rec.tax_amount = _dec(data['tax_amount']) if data['tax_amount'] not in (None, '') else None
         if 'invoice_date' in data:
@@ -958,7 +962,7 @@ def ar_records_kpi(request):
     total = qs.count()
 
     # Reconciliation: 已对账 vs 未对账
-    recon_done = qs.filter(reconciliation_time__isnull=False).count()
+    recon_done = qs.filter(Q(reconciliation_time__isnull=False) | Q(actual_invoice_amount__isnull=False)).count()
     recon_pending = total - recon_done
 
     # Invoice: 已开票 vs 未开票
@@ -984,7 +988,7 @@ def ar_records_kpi(request):
         'reconciliation': {
             'done': recon_done, 'pending': recon_pending,
             'rate': _rate(recon_done, total),
-            'pending_amount': str(qs.filter(reconciliation_time__isnull=True)
+            'pending_amount': str(qs.filter(reconciliation_time__isnull=True, actual_invoice_amount__isnull=True)
                                   .aggregate(s=Sum('outstanding_amount'))['s'] or 0),
         },
         'invoice': {
