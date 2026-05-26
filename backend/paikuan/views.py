@@ -569,9 +569,9 @@ def _list_payments(request):
     except ValueError:
         page, size = 1, 50
 
+    qs = qs.annotate(paid=_paid_expr(), remaining=_remaining_expr())
     # Status filter via SQL annotation — avoids fetching all rows into Python.
     if status_q:
-        qs = qs.annotate(paid=_paid_expr())
         if status_q == 'pending':
             qs = qs.filter(paid=Decimal('0'))
         elif status_q == 'settled':
@@ -579,7 +579,6 @@ def _list_payments(request):
         elif status_q == 'partial':
             qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'))
 
-    qs = qs.annotate(remaining=_remaining_expr())
     if sort_by in sort_map:
         fld = sort_map[sort_by]
         qs = qs.order_by(f'-{fld}' if sort_dir != 'asc' else fld, '-id')
