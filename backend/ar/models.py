@@ -4,6 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import models, transaction
 from django.db.models import Sum
+from django.core.exceptions import ValidationError
 
 from paikuan.models import PaikuanUser
 
@@ -48,17 +49,29 @@ class ARProject(models.Model):
             models.Index(fields=['is_shared']),
         ]
 
+    DEPT_PROJECT_PREFIX = {
+        '劳务事业部': 'LW',
+        '运输事业部': 'YS',
+        '阔展事业部': 'KZ',
+        '多式联运事业部': 'DL',
+        '供应链事业部': 'GYL',
+        '自营事业部': 'ZY',
+    }
+
     def _gen_project_no(self):
-        prefix = 'PR-' + datetime.date.today().strftime('%Y%m%d') + '-'
+        dept_code = self.DEPT_PROJECT_PREFIX.get(self.delivery_dept, '')
+        if not dept_code:
+            raise ValueError('当前部门不生成项目编号')
+        prefix = f'{dept_code}-{datetime.date.today().strftime("%Y%m%d")}-'
         with transaction.atomic():
             last = (ARProject.objects.filter(project_no__startswith=prefix)
                     .order_by('-project_no').first())
-            seq = 1
+            seq = 0
             if last:
                 try:
                     seq = int(last.project_no.rsplit('-', 1)[-1]) + 1
                 except ValueError:
-                    seq = 1
+                    seq = 0
             return f'{prefix}{seq:04d}'
 
     def save(self, *args, **kwargs):
@@ -158,19 +171,20 @@ class ARRecord(models.Model):
         return self.tax_amount
 
     def recompute_derived(self, save=True):
-        base = self.actual_invoice_amount if self.actual_invoice_amount is not None else self.estimated_amount
+        # 未收回金额口径：上账金额 + 调整额 - 回款金额
+        base = self.estimated_amount or Decimal('0')
         total_paid = Decimal('0')
         if self.pk:
             total_paid = (self.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0'))
-        self.outstanding_amount = base - total_paid
-        self.account_diff_adjustment = (
-            (self.actual_invoice_amount or Decimal('0')) - self.estimated_amount
-        )
+        adjusted_base = base + (self.account_diff_adjustment or Decimal('0'))
+        outstanding = adjusted_base - total_paid
+        if outstanding < Decimal('0'):
+            raise ValidationError('未收回金额不能为负，请调整账实差额或回款金额')
+        self.outstanding_amount = outstanding
         self.tax_amount = self._compute_tax()
         if save:
             ARRecord.objects.filter(pk=self.pk).update(
                 outstanding_amount=self.outstanding_amount,
-                account_diff_adjustment=self.account_diff_adjustment,
                 tax_amount=self.tax_amount,
             )
 
@@ -184,6 +198,9 @@ class ARRecord(models.Model):
     # ── read-only properties (not stored) ──────────────────────────────────────
     @property
     def reconciliation_status(self):
+        # 业务规则：已开票默认视作已对账
+        if self.actual_invoice_amount is not None:
+            return '已对账'
         return '已对账' if self.reconciliation_time else '未对账'
 
     @property

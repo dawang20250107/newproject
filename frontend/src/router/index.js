@@ -6,6 +6,7 @@ const routes = [
   { path: '/', redirect: '/dashboard' },
   { path: '/dashboard', component: () => import('../views/Dashboard.vue'), meta: { page: 'dashboard' } },
   { path: '/payments', component: () => import('../views/Payments.vue'), meta: { page: 'payments' } },
+  { path: '/approvals', component: () => import('../views/ApprovalRecords.vue'), meta: { page: 'approval_records' } },
   { path: '/stats', component: () => import('../views/Stats.vue'), meta: { page: 'stats' } },
   // AR module
   { path: '/ar/projects', component: () => import('../views/ar/ARProjects.vue'), meta: { page: 'ar_projects' } },
@@ -32,7 +33,7 @@ function canVisit(auth, page) {
 }
 
 function firstAllowedPage(auth) {
-  for (const p of ['dashboard', 'payments', 'stats']) {
+  for (const p of ['dashboard', 'payments', 'approval_records', 'stats']) {
     if (canVisit(auth, p)) return '/' + p
   }
   return '/payments'

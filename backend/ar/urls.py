@@ -17,6 +17,7 @@ urlpatterns = [
     path('records/import', views.ar_record_import),
     path('records/export', views.ar_record_export),
     path('records/<int:pk>', views.ar_record_detail),
+    path('records/<int:pk>/recompute', views.ar_record_recompute),
     path('records/<int:pk>/payments', views.ar_payments),
     path('records/<int:pk>/payments/<int:ppk>', views.ar_payment_detail),
 
