@@ -1603,6 +1603,33 @@ def budget_summary(request):
     actual_coll = ac['total'] or Decimal('0')
     actual_paid = ap_total
 
+    # Per-dept breakdown for multi-dept comparison chart
+    by_dept_result = []
+    if len(depts) > 1:
+        for d in depts:
+            bc_d = CollectionBudget.objects.filter(
+                expected_date__range=(start_date, end_date), delivery_dept=d
+            ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+            bp_d = PaymentBudget.objects.filter(
+                expected_date__range=(start_date, end_date), delivery_dept=d
+            ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+            ac_d = ARPayment.objects.filter(
+                payment_date__range=(start_date, end_date), ar_record__delivery_dept=d
+            ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+            ap_d = Decimal('0')
+            for slot in ['pay1', 'pay2', 'pay3']:
+                r = Payment.objects.filter(
+                    **{f'{slot}_date__range': (start_date, end_date), 'department': d}
+                ).aggregate(total=Sum(f'{slot}_amount'))
+                ap_d += r['total'] or Decimal('0')
+            by_dept_result.append({
+                'dept': d,
+                'budget_collection': float(bc_d),
+                'actual_collection': float(ac_d),
+                'budget_payment': float(bp_d),
+                'actual_payment': float(ap_d),
+            })
+
     return ok({
         'year': year, 'month': month, 'depts': depts,
         'budget_collection': str(budget_coll),
@@ -1614,4 +1641,5 @@ def budget_summary(request):
         'collection_gap': str(budget_coll - actual_coll),
         'payment_gap': str(budget_paid - actual_paid),
         'has_alert': actual_paid > actual_coll,
+        'by_dept': by_dept_result,
     })

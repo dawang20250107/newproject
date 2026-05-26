@@ -78,32 +78,78 @@ const comparisonChartOption = computed(() => {
   return {
     tooltip: {
       trigger: 'axis', axisPointer: { type: 'shadow' },
+      backgroundColor: 'rgba(255,255,255,0.97)', borderColor: 'rgba(0,0,0,0.08)', textStyle: { fontSize: 12 },
       formatter(params) {
-        let html = `<b>${params[0].axisValueLabel}</b><br/>`
+        let html = `<div style="font-weight:700;margin-bottom:5px">${params[0].axisValueLabel}</div>`
         params.forEach(p => {
-          html += `<span style="color:${p.color}">●</span> ${p.seriesName}：${fmtAmt(p.value)}<br/>`
+          html += `<div style="display:flex;gap:8px"><span style="color:${p.color}">●</span><span style="flex:1">${p.seriesName}</span><b>${fmtAmt(p.value)}</b></div>`
         })
         return html
       }
     },
-    legend: { bottom: 0, data: ['预算', '实际'] },
-    grid: { top: 16, right: 60, bottom: 48, left: 16, containLabel: true },
-    xAxis: { type: 'value', axisLabel: { formatter: v => fmtAmt(v) } },
-    yAxis: { type: 'category', data: ['付款', '收款'] },
+    legend: { bottom: 0, icon: 'roundRect', itemWidth: 14, itemHeight: 8, textStyle: { fontSize: 11 }, data: ['预算', '实际'] },
+    grid: { top: 16, right: 60, bottom: 40, left: 16, containLabel: true },
+    xAxis: { type: 'value', axisLabel: { formatter: v => fmtAmt(v), fontSize: 11, color: '#888' },
+             splitLine: { lineStyle: { color: 'rgba(0,0,0,0.06)' } } },
+    yAxis: { type: 'category', data: ['付款', '收款'], axisLabel: { fontSize: 12, color: '#555' } },
     series: [
       {
-        name: '预算', type: 'bar', barMaxWidth: 30,
+        name: '预算', type: 'bar', barMaxWidth: 26,
         data: [bp, bc],
-        itemStyle: { color: 'rgba(155,128,112,0.2)', borderRadius: [0, 4, 4, 0],
-          borderColor: 'rgba(155,128,112,0.5)', borderWidth: 1 },
+        itemStyle: { color: 'rgba(155,128,112,0.18)', borderRadius: [0, 4, 4, 0],
+          borderColor: 'rgba(155,128,112,0.45)', borderWidth: 1.5 },
       },
       {
-        name: '实际', type: 'bar', barMaxWidth: 30,
+        name: '实际', type: 'bar', barMaxWidth: 26,
         data: [
-          { value: ap, itemStyle: { color: ap > ac ? '#c62828' : '#f57f17', borderRadius: [0, 4, 4, 0] } },
-          { value: ac, itemStyle: { color: '#2e7d32', borderRadius: [0, 4, 4, 0] } },
+          { value: ap, itemStyle: { borderRadius: [0, 4, 4, 0],
+            color: ap > ac ? { type: 'linear', x: 0, y: 0, x2: 1, y2: 0, colorStops: [{ offset: 0, color: '#c62828' }, { offset: 1, color: '#ef5350' }] }
+                            : { type: 'linear', x: 0, y: 0, x2: 1, y2: 0, colorStops: [{ offset: 0, color: '#e65100' }, { offset: 1, color: '#ffa726' }] } } },
+          { value: ac, itemStyle: { borderRadius: [0, 4, 4, 0],
+            color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0, colorStops: [{ offset: 0, color: '#2e7d32' }, { offset: 1, color: '#66bb6a' }] } } },
         ],
       },
+    ],
+  }
+})
+
+const deptCompareOption = computed(() => {
+  const byDept = summary.value?.by_dept
+  if (!byDept || byDept.length <= 1) return null
+  const deptNames = byDept.map(d => d.dept)
+  const SL = { color: 'rgba(0,0,0,0.06)' }
+  function grad(c1, c2, horiz = false) {
+    return { type: 'linear', x: 0, y: 0, x2: horiz ? 1 : 0, y2: horiz ? 0 : 1,
+      colorStops: [{ offset: 0, color: c1 }, { offset: 1, color: c2 }] }
+  }
+  return {
+    tooltip: {
+      trigger: 'axis', axisPointer: { type: 'shadow' },
+      backgroundColor: 'rgba(255,255,255,0.97)', borderColor: 'rgba(0,0,0,0.08)', textStyle: { fontSize: 12 },
+    },
+    legend: { bottom: 4, icon: 'roundRect', itemWidth: 14, itemHeight: 8,
+              textStyle: { fontSize: 11, color: '#555' },
+              data: ['实收', '实付', '收款预算', '付款预算'] },
+    grid: { top: 14, right: 14, bottom: 48, left: 14, containLabel: true },
+    xAxis: { type: 'category', data: deptNames,
+             axisLine: { show: false }, axisTick: { show: false },
+             axisLabel: { fontSize: 11, color: '#888', rotate: deptNames.length > 5 ? 15 : 0 } },
+    yAxis: { type: 'value', axisLabel: { formatter: v => fmtAmt(v), fontSize: 11, color: '#888' },
+             splitLine: { lineStyle: SL } },
+    series: [
+      { name: '实收', type: 'bar', barGap: '12%', barMaxWidth: 26,
+        data: byDept.map(d => d.actual_collection),
+        itemStyle: { color: grad('#66bb6a', '#2e7d32'), borderRadius: [4, 4, 0, 0] } },
+      { name: '实付', type: 'bar', barMaxWidth: 26,
+        data: byDept.map(d => ({ value: d.actual_payment,
+          itemStyle: { borderRadius: [4, 4, 0, 0],
+            color: d.actual_payment > d.actual_collection ? grad('#ef5350', '#c62828') : grad('#ffa726', '#e65100') } })) },
+      { name: '收款预算', type: 'bar', barGap: '40%', barMaxWidth: 14,
+        data: byDept.map(d => d.budget_collection),
+        itemStyle: { color: 'rgba(46,125,50,0.22)', borderColor: '#2e7d32', borderWidth: 1.5, borderRadius: [4, 4, 0, 0] } },
+      { name: '付款预算', type: 'bar', barMaxWidth: 14,
+        data: byDept.map(d => d.budget_payment),
+        itemStyle: { color: 'rgba(230,81,0,0.22)', borderColor: '#e65100', borderWidth: 1.5, borderRadius: [4, 4, 0, 0] } },
     ],
   }
 })
@@ -263,17 +309,6 @@ onMounted(loadAll)
     <!-- ── Summary Tab ── -->
     <template v-if="activeTab === 'summary'">
 
-      <!-- Alert -->
-      <div v-if="summary?.has_alert" class="alert-banner">
-        <div class="alert-icon-wrap">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        </div>
-        <div>
-          <div class="alert-title">实际付款超出实际收款</div>
-          <div class="alert-desc">{{ year }}年{{ month }}月 · {{ selectedDept || '全部事业部' }} · 净现金流为负，请关注资金安排</div>
-        </div>
-      </div>
-
       <!-- Month progress bar -->
       <div class="progress-card" style="margin-bottom:16px">
         <div class="progress-header">
@@ -391,6 +426,23 @@ onMounted(loadAll)
           <div class="section-title">预算 vs 实际对比</div>
           <BaseChart v-if="comparisonChartOption" :option="comparisonChartOption" height="180px" />
           <div v-else class="empty"><div class="icon">📊</div>暂无预算数据</div>
+        </div>
+      </div>
+
+      <!-- Per-dept comparison (only when user has access to multiple depts and no specific dept selected) -->
+      <div v-if="summary?.by_dept?.length > 1" class="card" style="margin-top:16px;padding:20px">
+        <div class="section-title">各事业部对比</div>
+        <BaseChart v-if="deptCompareOption" :option="deptCompareOption" height="240px" />
+      </div>
+
+      <!-- Alert — placed after main content so it doesn't block data view -->
+      <div v-if="summary?.has_alert" class="alert-banner" style="margin-top:16px;margin-bottom:0">
+        <div class="alert-icon-wrap">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </div>
+        <div>
+          <div class="alert-title">实际付款超出实际收款</div>
+          <div class="alert-desc">{{ year }}年{{ month }}月 · {{ selectedDept || '全部事业部' }} · 净现金流为负，请关注资金安排</div>
         </div>
       </div>
     </template>

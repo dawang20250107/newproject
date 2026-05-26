@@ -1,8 +1,11 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS } from '../../constants.js'
 import ar from '../../api/ar.js'
+
+const route = useRoute()
 
 const auth = useAuthStore()
 const items = ref([])
@@ -14,7 +17,7 @@ const size = 50
 const activeTab = ref('all')   // all | reconciliation | invoice | collection
 const filters = reactive({
   dept: '', year: new Date().getFullYear(), month: '', status: '',
-  reconciliation_status: '', invoice_status: '', q: '',
+  reconciliation_status: '', invoice_status: '', q: '', project_id: '',
 })
 
 const showModal = ref(false)
@@ -178,7 +181,13 @@ async function exportData() {
   } finally { exporting.value = false }
 }
 
-onMounted(() => { load(); loadProjects() })
+onMounted(() => {
+  // Pick up query params from router navigation (e.g., from Cashflow or Analytics)
+  if (route.query.status) filters.status = route.query.status
+  if (route.query.project_id) filters.project_id = route.query.project_id
+  if (route.query.dept) filters.dept = route.query.dept
+  load(); loadProjects()
+})
 </script>
 
 <template>

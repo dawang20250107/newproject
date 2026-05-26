@@ -10,53 +10,53 @@ const auth = useAuthStore()
 const router = useRouter()
 
 const now = new Date()
+const CY = now.getFullYear()
+const CM = now.getMonth() + 1
+
+// Default: current month → current month (single-month view)
 const filters = reactive({
-  start_year: now.getFullYear(),
-  start_month: 1,
-  end_year: now.getFullYear(),
-  end_month: now.getMonth() + 1,
-  depts: [],
+  start_year: CY,
+  start_month: CM,
+  end_year: CY,
+  end_month: CM,
+  dept: '',   // '' = all accessible depts; specific name = one dept
 })
 
 const accessibleDepts = computed(() =>
   auth.isSuperAdmin ? DEPARTMENTS : (auth.user?.departments || []).filter(d => DEPARTMENTS.includes(d)))
 
-const years = Array.from({ length: 5 }, (_, i) => now.getFullYear() - 2 + i)
+const years = Array.from({ length: 5 }, (_, i) => CY - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 const cfData = ref(null)
 const loading = ref(false)
 
-// 超期/催收 reminder (portfolio-wide, independent of date range)
 const overdue = ref(null)
 const keyCollection = ref([])
 
 function fmtWan(v) {
-  const n = Math.abs(parseFloat(v) || 0)
-  if (n >= 1e8) return (v / 1e8).toFixed(2) + '亿'
-  if (n >= 1e4) return (v / 1e4).toFixed(2) + '万'
-  return String(Math.round(v))
+  const n = parseFloat(v) || 0
+  const abs = Math.abs(n)
+  if (abs >= 1e8) return (n / 1e8).toFixed(2) + '亿'
+  if (abs >= 1e4) return (n / 1e4).toFixed(2) + '万'
+  return String(Math.round(n))
 }
-
-function toggleDept(d) {
-  const idx = filters.depts.indexOf(d)
-  if (idx === -1) filters.depts.push(d)
-  else filters.depts.splice(idx, 1)
-  load()
-}
-
-function selectAllDepts() { filters.depts = [...accessibleDepts.value]; load() }
-function clearDepts() { filters.depts = []; load() }
 
 async function load() {
   loading.value = true
   try {
-    const res = await ar.cashflow({
+    const params = {
       start_year: filters.start_year,
       start_month: filters.start_month,
       end_year: filters.end_year,
       end_month: filters.end_month,
-      depts: filters.depts.length ? filters.depts.join(',') : undefined,
-    })
+    }
+    // Single dept OR all accessible depts
+    if (filters.dept) {
+      params.depts = filters.dept
+    } else if (accessibleDepts.value.length) {
+      params.depts = accessibleDepts.value.join(',')
+    }
+    const res = await ar.cashflow(params)
     cfData.value = res.data
   } catch (e) {
     console.error(e)
@@ -73,13 +73,9 @@ async function loadReminder() {
   }
 }
 
-onMounted(() => {
-  filters.depts = [...accessibleDepts.value]
-  load()
-  loadReminder()
-})
+onMounted(() => { load(); loadReminder() })
 
-// ── KPI roll-ups ────────────────────────────────────────────────────────────────
+// ── KPI roll-ups (reactive — recompute whenever cfData changes after load()) ────
 const totals = computed(() => cfData.value?.totals)
 const sumColl = computed(() => (totals.value?.collected || []).reduce((a, b) => a + b, 0))
 const sumPaid = computed(() => (totals.value?.paid || []).reduce((a, b) => a + b, 0))
@@ -96,37 +92,65 @@ const payAchieve = computed(() => sumBudgetPaid.value ? (sumPaid.value / sumBudg
 const hasAlert = computed(() => cfData.value?.has_alert)
 const alertMonths = computed(() => cfData.value?.totals?.alert_months || [])
 
-// ── Chart options ────────────────────────────────────────────────────────────────
+// Show per-dept comparison when "全部" is selected AND multiple depts exist
+const showDeptComparison = computed(() =>
+  !filters.dept && (cfData.value?.by_dept?.length || 0) > 1)
+
+// ── Shared chart style tokens ─────────────────────────────────────────────────
+const GRID  = { top: 16, right: 16, bottom: 48, left: 16, containLabel: true }
+const GRIDL = { top: 16, right: 16, bottom: 28, left: 16, containLabel: true }
+const AXLBL = { fontSize: 11, color: '#888' }
+const SLINE = { color: 'rgba(0,0,0,0.06)' }
+const OLINE = { show: false }
+const TT_STYLE = { backgroundColor: 'rgba(255,255,255,0.97)', borderColor: 'rgba(0,0,0,0.08)', textStyle: { fontSize: 12 } }
+
+function ttFmt(params) {
+  let html = `<div style="font-weight:700;margin-bottom:5px">${params[0].axisValueLabel}</div>`
+  params.forEach(p => {
+    const c = p.color?.colorStops ? p.color.colorStops[0].color : p.color
+    html += `<div style="display:flex;gap:8px;align-items:center;margin:2px 0">
+      <span style="color:${c};font-size:13px">●</span>
+      <span style="flex:1;color:#555">${p.seriesName}</span>
+      <b>${fmtWan(p.value)}</b></div>`
+  })
+  return html
+}
+
+function gradBar(c1, c2) {
+  return { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+    colorStops: [{ offset: 0, color: c1 }, { offset: 1, color: c2 }] }
+}
+
 // 1. 收付与预算达成对比
 const budgetOption = computed(() => {
   if (!cfData.value) return null
   const t = cfData.value.totals
+  const lbls = cfData.value.months.map(ym => ym.slice(5) + '月')
   return {
-    tooltip: {
-      trigger: 'axis', axisPointer: { type: 'shadow' },
-      formatter(params) {
-        let html = `<b>${params[0].axisValueLabel}</b><br/>`
-        params.forEach(p => {
-          const color = p.color?.colorStops ? p.color.colorStops[0].color : p.color
-          html += `<span style="color:${color}">●</span> ${p.seriesName}：${fmtWan(p.value)}<br/>`
-        })
-        return html
-      }
-    },
-    legend: { bottom: 0, data: ['实收', '实付', '收款预算', '付款预算'] },
-    grid: { top: 16, right: 16, bottom: 48, left: 16, containLabel: true },
-    xAxis: { type: 'category', data: cfData.value.months },
-    yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v) } },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TT_STYLE, formatter: ttFmt },
+    legend: { bottom: 4, icon: 'roundRect', itemWidth: 14, itemHeight: 8,
+              textStyle: { fontSize: 11, color: '#555' },
+              data: ['实收', '实付', '收款预算', '付款预算'] },
+    grid: GRID,
+    xAxis: { type: 'category', data: lbls, axisLine: { lineStyle: SLINE }, axisTick: OLINE, axisLabel: AXLBL },
+    yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), ...AXLBL }, splitLine: { lineStyle: SLINE } },
     series: [
-      { name: '实收', type: 'bar', barGap: '10%', barMaxWidth: 26, data: t.collected,
-        itemStyle: { color: '#2e7d32', borderRadius: [4, 4, 0, 0] } },
-      { name: '实付', type: 'bar', barMaxWidth: 26,
+      { name: '实收', type: 'bar', barGap: '10%', barMaxWidth: 24, data: t.collected,
+        itemStyle: { color: gradBar('#66bb6a', '#2e7d32'), borderRadius: [4, 4, 0, 0] } },
+      { name: '实付', type: 'bar', barMaxWidth: 24,
         data: t.paid.map((v, i) => ({ value: v,
-          itemStyle: { color: v > 0 && v > t.collected[i] ? '#c62828' : '#f57f17', borderRadius: [4, 4, 0, 0] } })) },
+          itemStyle: { borderRadius: [4, 4, 0, 0],
+            color: v > 0 && v > t.collected[i]
+              ? gradBar('#ef5350', '#c62828')
+              : gradBar('#ffa726', '#e65100') } })) },
       { name: '收款预算', type: 'line', data: t.budget_collection, smooth: true,
-        lineStyle: { type: 'dashed', color: '#2e7d32', width: 1.5 }, symbol: 'none' },
+        symbol: 'circle', symbolSize: 4,
+        lineStyle: { type: 'dashed', color: '#2e7d32', width: 1.5, opacity: 0.65 },
+        itemStyle: { color: '#2e7d32' } },
       { name: '付款预算', type: 'line', data: t.budget_payment, smooth: true,
-        lineStyle: { type: 'dashed', color: '#f57f17', width: 1.5 }, symbol: 'none' },
+        symbol: 'circle', symbolSize: 4,
+        lineStyle: { type: 'dashed', color: '#e65100', width: 1.5, opacity: 0.65 },
+        itemStyle: { color: '#e65100' } },
     ],
   }
 })
@@ -135,17 +159,23 @@ const budgetOption = computed(() => {
 const netOption = computed(() => {
   if (!cfData.value) return null
   const t = cfData.value.totals
+  const lbls = cfData.value.months.map(ym => ym.slice(5) + '月')
   return {
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
-      formatter: p => `${p[0].axisValueLabel}<br/>净现金流：${fmtWan(p[0].value)}` },
-    grid: { top: 16, right: 16, bottom: 24, left: 16, containLabel: true },
-    xAxis: { type: 'category', data: cfData.value.months },
-    yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v) } },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TT_STYLE,
+      formatter: p => `<b>${p[0].axisValueLabel}</b><br/>净现金流：<b>${fmtWan(p[0].value)}</b>` },
+    grid: GRIDL,
+    xAxis: { type: 'category', data: lbls, axisLine: { lineStyle: SLINE }, axisTick: OLINE, axisLabel: AXLBL },
+    yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), ...AXLBL }, splitLine: { lineStyle: SLINE } },
     series: [{
-      type: 'bar', barMaxWidth: 30,
+      type: 'bar', barMaxWidth: 32,
       data: (t.net || []).map(v => ({ value: v,
-        itemStyle: { color: v >= 0 ? '#2e7d32' : '#c62828', borderRadius: v >= 0 ? [4, 4, 0, 0] : [0, 0, 4, 4] } })),
-      markLine: { silent: true, symbol: 'none', lineStyle: { color: 'rgba(0,0,0,0.25)' }, data: [{ yAxis: 0 }] },
+        itemStyle: {
+          borderRadius: v >= 0 ? [4, 4, 0, 0] : [0, 0, 4, 4],
+          color: v >= 0 ? gradBar('#66bb6a', '#2e7d32') : gradBar('#ef5350', '#c62828'),
+        }
+      })),
+      markLine: { silent: true, symbol: 'none',
+        lineStyle: { color: 'rgba(0,0,0,0.2)', type: 'dashed' }, data: [{ yAxis: 0 }] },
     }],
   }
 })
@@ -154,20 +184,64 @@ const netOption = computed(() => {
 const cumulativeOption = computed(() => {
   if (!cfData.value) return null
   const t = cfData.value.totals
+  const lbls = cfData.value.months.map(ym => ym.slice(5) + '月')
   return {
-    tooltip: { trigger: 'axis',
-      formatter: p => `${p[0].axisValueLabel}<br/>累计净现金流：${fmtWan(p[0].value)}` },
-    grid: { top: 16, right: 16, bottom: 24, left: 16, containLabel: true },
-    xAxis: { type: 'category', boundaryGap: false, data: cfData.value.months },
-    yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v) } },
+    tooltip: { trigger: 'axis', ...TT_STYLE,
+      formatter: p => `<b>${p[0].axisValueLabel}</b><br/>累计净现金流：<b>${fmtWan(p[0].value)}</b>` },
+    grid: GRIDL,
+    xAxis: { type: 'category', boundaryGap: false, data: lbls,
+             axisLine: { lineStyle: SLINE }, axisTick: OLINE, axisLabel: AXLBL },
+    yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), ...AXLBL }, splitLine: { lineStyle: SLINE } },
     series: [{
       type: 'line', smooth: true, data: t.cumulative_net || [],
-      symbol: 'circle', symbolSize: 6,
-      lineStyle: { color: '#1565c0', width: 2.5 }, itemStyle: { color: '#1565c0' },
+      symbol: 'circle', symbolSize: 7,
+      lineStyle: { color: '#1565c0', width: 2.5 },
+      itemStyle: { color: '#fff', borderColor: '#1565c0', borderWidth: 2.5 },
       areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
         colorStops: [{ offset: 0, color: 'rgba(21,101,192,0.28)' }, { offset: 1, color: 'rgba(21,101,192,0.02)' }] } },
-      markLine: { silent: true, symbol: 'none', lineStyle: { color: 'rgba(0,0,0,0.25)' }, data: [{ yAxis: 0 }] },
+      markLine: { silent: true, symbol: 'none',
+        lineStyle: { color: 'rgba(0,0,0,0.2)', type: 'dashed' }, data: [{ yAxis: 0 }] },
     }],
+  }
+})
+
+// 4. 各事业部对比 (shown only when dept='' AND multiple depts exist)
+const deptCompareOption = computed(() => {
+  if (!showDeptComparison.value) return null
+  const byDept = cfData.value.by_dept
+  const sums = byDept.map(d => ({
+    dept: d.dept,
+    coll:  d.collected.reduce((a, b) => a + b, 0),
+    paid:  d.paid.reduce((a, b) => a + b, 0),
+    bcoll: d.budget_collection.reduce((a, b) => a + b, 0),
+    bpaid: d.budget_payment.reduce((a, b) => a + b, 0),
+  }))
+  const deptNames = sums.map(d => d.dept)
+  return {
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TT_STYLE, formatter: ttFmt },
+    legend: { bottom: 4, icon: 'roundRect', itemWidth: 14, itemHeight: 8,
+              textStyle: { fontSize: 11, color: '#555' },
+              data: ['实收', '实付', '收款预算', '付款预算'] },
+    grid: { ...GRID },
+    xAxis: { type: 'category', data: deptNames,
+             axisLine: { lineStyle: SLINE }, axisTick: OLINE,
+             axisLabel: { ...AXLBL, rotate: deptNames.length > 5 ? 15 : 0 } },
+    yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), ...AXLBL }, splitLine: { lineStyle: SLINE } },
+    series: [
+      { name: '实收', type: 'bar', barGap: '12%', barMaxWidth: 26,
+        data: sums.map(d => d.coll),
+        itemStyle: { color: gradBar('#66bb6a', '#2e7d32'), borderRadius: [4, 4, 0, 0] } },
+      { name: '实付', type: 'bar', barMaxWidth: 26,
+        data: sums.map(d => ({ value: d.paid,
+          itemStyle: { borderRadius: [4, 4, 0, 0],
+            color: d.paid > d.coll ? gradBar('#ef5350', '#c62828') : gradBar('#ffa726', '#e65100') } })) },
+      { name: '收款预算', type: 'bar', barGap: '40%', barMaxWidth: 14,
+        data: sums.map(d => d.bcoll),
+        itemStyle: { color: 'rgba(46,125,50,0.25)', borderColor: '#2e7d32', borderWidth: 1.5, borderRadius: [4, 4, 0, 0] } },
+      { name: '付款预算', type: 'bar', barMaxWidth: 14,
+        data: sums.map(d => d.bpaid),
+        itemStyle: { color: 'rgba(230,81,0,0.25)', borderColor: '#e65100', borderWidth: 1.5, borderRadius: [4, 4, 0, 0] } },
+    ],
   }
 })
 </script>
@@ -181,20 +255,27 @@ const cumulativeOption = computed(() => {
       </div>
     </div>
 
-    <!-- Filter strip (single source of truth: date range + dept multi-select) -->
+    <!-- Filter strip: dept dropdown FIRST, then date range -->
     <div class="filter-strip">
-      <span class="fs-label">区间</span>
-      <select v-model="filters.start_year" class="sel-yr" @change="load"><option v-for="y in years" :key="y" :value="y">{{ y }}</option></select>
-      <select v-model="filters.start_month" class="sel-mo" @change="load"><option v-for="m in months" :key="m" :value="m">{{ m }}月</option></select>
-      <span class="fs-sep">至</span>
-      <select v-model="filters.end_year" class="sel-yr" @change="load"><option v-for="y in years" :key="y" :value="y">{{ y }}</option></select>
-      <select v-model="filters.end_month" class="sel-mo" @change="load"><option v-for="m in months" :key="m" :value="m">{{ m }}月</option></select>
+      <select v-model="filters.dept" class="sel-bu" style="min-width:120px" @change="load">
+        <option value="">全部事业部</option>
+        <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+      </select>
       <div class="ctrl-sep"></div>
-      <span class="fs-label">事业部</span>
-      <button class="chip-mini" @click="selectAllDepts">全选</button>
-      <button class="chip-mini" @click="clearDepts">清空</button>
-      <button v-for="d in accessibleDepts" :key="d"
-        :class="['dept-chip', filters.depts.includes(d) ? 'on' : '']" @click="toggleDept(d)">{{ d }}</button>
+      <span class="fs-label">区间</span>
+      <select v-model="filters.start_year" class="sel-yr" @change="load">
+        <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
+      </select>
+      <select v-model="filters.start_month" class="sel-mo" @change="load">
+        <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
+      </select>
+      <span class="fs-sep">至</span>
+      <select v-model="filters.end_year" class="sel-yr" @change="load">
+        <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
+      </select>
+      <select v-model="filters.end_month" class="sel-mo" @change="load">
+        <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
+      </select>
       <span v-if="loading" class="fs-loading">加载中…</span>
     </div>
 
@@ -212,7 +293,8 @@ const cumulativeOption = computed(() => {
           <span class="urge-key-label">重点催收</span>
           <span v-for="p in keyCollection" :key="p.project_id" class="urge-chip"
             @click="router.push({ path: '/ar/records', query: { project_id: p.project_id } })">
-            {{ p.short_name?.length > 8 ? p.short_name.slice(0,8) + '…' : p.short_name }} <b>{{ fmtWan(p.total_outstanding) }}</b>
+            {{ p.short_name?.length > 8 ? p.short_name.slice(0, 8) + '…' : p.short_name }}
+            <b>{{ fmtWan(p.total_outstanding) }}</b>
           </span>
         </div>
         <button class="urge-btn" @click="router.push({ path: '/ar/records', query: { status: 'overdue' } })">查看逾期明细</button>
@@ -228,50 +310,66 @@ const cumulativeOption = computed(() => {
       </div>
     </div>
 
-    <!-- KPI cards -->
+    <!-- KPI cards (4-column grid) -->
     <div class="cockpit-kpis">
       <div class="ck-card ck-coll">
         <div class="ck-label">区间实收</div>
-        <div class="ck-value">{{ fmtWan(sumColl) }}</div>
-        <div class="ck-sub" v-if="collAchieve !== null">预算达成 {{ collAchieve.toFixed(1) }}%</div>
-        <div class="ck-sub" v-else>无预算基准</div>
+        <div class="ck-value ck-v-coll">{{ fmtWan(sumColl) }}</div>
+        <div class="ck-sub" v-if="collAchieve !== null">
+          <span :class="collAchieve >= 100 ? 'ach-ok' : 'ach-off'">预算达成 {{ collAchieve.toFixed(1) }}%</span>
+        </div>
+        <div class="ck-sub ach-off" v-else>无预算基准</div>
       </div>
       <div class="ck-card ck-pay">
         <div class="ck-label">区间实付</div>
-        <div class="ck-value">{{ fmtWan(sumPaid) }}</div>
-        <div class="ck-sub" v-if="payAchieve !== null">预算达成 {{ payAchieve.toFixed(1) }}%</div>
-        <div class="ck-sub" v-else>无预算基准</div>
+        <div class="ck-value ck-v-pay">{{ fmtWan(sumPaid) }}</div>
+        <div class="ck-sub" v-if="payAchieve !== null">
+          <span :class="payAchieve >= 100 ? 'ach-ok' : 'ach-off'">预算达成 {{ payAchieve.toFixed(1) }}%</span>
+        </div>
+        <div class="ck-sub ach-off" v-else>无预算基准</div>
       </div>
       <div class="ck-card" :class="netTotal >= 0 ? 'ck-net-pos' : 'ck-net-neg'">
         <div class="ck-label">区间净现金流</div>
-        <div class="ck-value" :class="netTotal >= 0 ? 'v-pos' : 'v-neg'">{{ netTotal >= 0 ? '+' : '-' }}{{ fmtWan(netTotal) }}</div>
+        <div class="ck-value" :class="netTotal >= 0 ? 'v-pos' : 'v-neg'">
+          {{ netTotal >= 0 ? '+' : '' }}{{ fmtWan(netTotal) }}
+        </div>
         <div class="ck-sub">实收 − 实付</div>
       </div>
       <div class="ck-card" :class="endCumulative >= 0 ? 'ck-net-pos' : 'ck-net-neg'">
         <div class="ck-label">期末累计净现金流</div>
-        <div class="ck-value" :class="endCumulative >= 0 ? 'v-pos' : 'v-neg'">{{ endCumulative >= 0 ? '+' : '-' }}{{ fmtWan(endCumulative) }}</div>
+        <div class="ck-value" :class="endCumulative >= 0 ? 'v-pos' : 'v-neg'">
+          {{ endCumulative >= 0 ? '+' : '' }}{{ fmtWan(endCumulative) }}
+        </div>
         <div class="ck-sub">资金池走势终值</div>
       </div>
     </div>
 
-    <!-- Chart grid -->
+    <!-- Chart grid (2-col layout) -->
     <div class="cockpit-grid">
       <div class="card span2">
         <div class="section-title">收付与预算达成对比</div>
         <BaseChart v-if="budgetOption" :option="budgetOption" height="320px" />
-        <div v-else-if="!loading" class="empty"><div class="icon">📊</div>暂无数据</div>
-        <div v-else class="empty"><div class="icon">⏳</div>加载中…</div>
+        <div v-else-if="!loading" class="chart-empty">暂无数据</div>
+        <div v-else class="chart-empty">加载中…</div>
       </div>
       <div class="card">
         <div class="section-title">净现金流趋势</div>
-        <BaseChart v-if="netOption" :option="netOption" height="280px" />
-        <div v-else class="empty"><div class="icon">📊</div>暂无数据</div>
+        <BaseChart v-if="netOption" :option="netOption" height="260px" />
+        <div v-else class="chart-empty">暂无数据</div>
       </div>
       <div class="card">
         <div class="section-title">累计现金流曲线</div>
-        <BaseChart v-if="cumulativeOption" :option="cumulativeOption" height="280px" />
-        <div v-else class="empty"><div class="icon">📈</div>暂无数据</div>
+        <BaseChart v-if="cumulativeOption" :option="cumulativeOption" height="260px" />
+        <div v-else class="chart-empty">暂无数据</div>
       </div>
+    </div>
+
+    <!-- Per-dept comparison (multi-dept users, shown only when "全部" selected) -->
+    <div v-if="showDeptComparison" class="card" style="margin-top:16px">
+      <div class="section-title">各事业部对比
+        <span class="section-sub">{{ filters.start_year }}-{{ String(filters.start_month).padStart(2,'0') }} 至 {{ filters.end_year }}-{{ String(filters.end_month).padStart(2,'0') }}</span>
+      </div>
+      <BaseChart v-if="deptCompareOption" :option="deptCompareOption" height="280px" />
     </div>
 
     <!-- Monthly detail table -->
@@ -281,21 +379,31 @@ const cumulativeOption = computed(() => {
         <table>
           <thead>
             <tr>
-              <th>月份</th><th class="amt">实收</th><th class="amt">实付</th>
-              <th class="amt">收款预算</th><th class="amt">付款预算</th>
-              <th class="amt">净现金流</th><th class="amt">累计净现金流</th>
+              <th>月份</th>
+              <th class="amt">实收</th>
+              <th class="amt">实付</th>
+              <th class="amt muted">收款预算</th>
+              <th class="amt muted">付款预算</th>
+              <th class="amt">净现金流</th>
+              <th class="amt">累计净现金流</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(ym, i) in cfData.months" :key="ym"
                 :class="{ 'row-alert': cfData.totals.paid[i] > cfData.totals.collected[i] && cfData.totals.collected[i] > 0 }">
-              <td>{{ ym }}</td>
-              <td class="amt">{{ fmtWan(cfData.totals.collected[i]) }}</td>
-              <td class="amt" :class="cfData.totals.paid[i] > cfData.totals.collected[i] ? 'text-danger' : ''">{{ fmtWan(cfData.totals.paid[i]) }}</td>
+              <td class="fw">{{ ym }}</td>
+              <td class="amt text-coll">{{ fmtWan(cfData.totals.collected[i]) }}</td>
+              <td class="amt" :class="cfData.totals.paid[i] > cfData.totals.collected[i] ? 'text-danger' : 'text-pay'">
+                {{ fmtWan(cfData.totals.paid[i]) }}
+              </td>
               <td class="amt muted">{{ fmtWan(cfData.totals.budget_collection[i]) }}</td>
               <td class="amt muted">{{ fmtWan(cfData.totals.budget_payment[i]) }}</td>
-              <td class="amt" :class="cfData.totals.net[i] >= 0 ? 'text-ok' : 'text-danger'">{{ fmtWan(cfData.totals.net[i]) }}</td>
-              <td class="amt" :class="cfData.totals.cumulative_net[i] >= 0 ? 'text-ok' : 'text-danger'">{{ fmtWan(cfData.totals.cumulative_net[i]) }}</td>
+              <td class="amt" :class="cfData.totals.net[i] >= 0 ? 'text-ok' : 'text-danger'">
+                {{ cfData.totals.net[i] >= 0 ? '+' : '' }}{{ fmtWan(cfData.totals.net[i]) }}
+              </td>
+              <td class="amt" :class="cfData.totals.cumulative_net[i] >= 0 ? 'text-ok' : 'text-danger'">
+                {{ cfData.totals.cumulative_net[i] >= 0 ? '+' : '' }}{{ fmtWan(cfData.totals.cumulative_net[i]) }}
+              </td>
             </tr>
           </tbody>
         </table>
@@ -306,71 +414,77 @@ const cumulativeOption = computed(() => {
 
 <style scoped>
 .filter-strip { gap: 8px; }
-.fs-label { font-size: 12px; color: var(--muted); font-weight: 600; }
-.fs-sep { font-size: 12px; color: var(--muted); }
+.fs-label { font-size: 12px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+.fs-sep   { font-size: 12px; color: var(--muted); }
 .fs-loading { font-size: 12px; color: var(--primary); margin-left: auto; }
-.chip-mini { font-size: 11px; padding: 3px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg2); color: var(--muted); cursor: pointer; }
-.chip-mini:hover { border-color: var(--primary); color: var(--primary); }
-.dept-chip {
-  padding: 4px 12px; border-radius: 12px; font-size: 12px; cursor: pointer;
-  border: 1.5px solid var(--border); background: rgba(255,253,250,.7); color: var(--muted); transition: all .16s;
-}
-.dept-chip.on { border-color: var(--primary); background: rgba(201,99,66,.1); color: var(--primary); font-weight: 600; }
-.dept-chip:hover { border-color: var(--primary); color: var(--primary); }
 
-/* 超期 / 催收 strong reminder (GPU-composited pulse) */
+/* ── Reminder banners (GPU-composited: opacity-only pulse) ── */
 .urge-banner {
   display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
   padding: 14px 20px; margin-bottom: 16px; border-radius: 14px;
-  background: rgba(198,40,40,.07); border: 1.5px solid rgba(198,40,40,.35);
-  box-shadow: 0 2px 14px rgba(198,40,40,.12); animation: urgePulse 1.7s ease-in-out infinite; will-change: opacity;
+  background: rgba(198,40,40,.06); border: 1.5px solid rgba(198,40,40,.3);
+  box-shadow: 0 2px 14px rgba(198,40,40,.10);
+  animation: urgePulse 1.8s ease-in-out infinite; will-change: opacity;
 }
 @keyframes urgePulse { 0%,100% { opacity: 1; } 50% { opacity: .72; } }
-.urge-left { display: flex; align-items: center; gap: 12px; }
-.urge-icon { font-size: 24px; }
+.urge-left  { display: flex; align-items: center; gap: 12px; }
+.urge-icon  { font-size: 24px; }
 .urge-title { font-weight: 700; color: #c62828; font-size: 14px; }
-.urge-sub { font-size: 12.5px; color: #c62828; opacity: .9; margin-top: 2px; }
+.urge-sub   { font-size: 12.5px; color: #c62828; opacity: .9; margin-top: 2px; }
 .urge-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.urge-key { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.urge-key   { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .urge-key-label { font-size: 11px; color: #c62828; font-weight: 600; }
-.urge-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 3px 10px; border-radius: 12px; background: rgba(255,255,255,.6); border: 1px solid rgba(198,40,40,.3); color: #c62828; cursor: pointer; transition: all .14s; }
+.urge-chip  { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 3px 10px; border-radius: 12px; background: rgba(255,255,255,.6); border: 1px solid rgba(198,40,40,.3); color: #c62828; cursor: pointer; transition: all .14s; }
 .urge-chip:hover { background: #c62828; color: #fff; }
-.urge-btn { padding: 7px 16px; border-radius: 9px; border: none; background: #c62828; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: filter .14s; }
+.urge-btn   { padding: 7px 16px; border-radius: 9px; border: none; background: #c62828; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: filter .14s; }
 .urge-btn:hover { filter: brightness(1.08); }
 
-/* 付款超收款 alert (opacity-only animation, no repaint) */
 .cashflow-alert {
   display: flex; align-items: flex-start; gap: 14px; padding: 14px 20px; margin: 0 0 16px;
-  background: rgba(245,127,23,.08); border: 1.5px solid rgba(245,127,23,.35); border-radius: 12px;
+  background: rgba(245,127,23,.08); border: 1.5px solid rgba(245,127,23,.3); border-radius: 12px;
+  animation: urgePulse 1.8s ease-in-out infinite; will-change: opacity;
 }
-.alert-icon { font-size: 20px; flex-shrink: 0; }
+.alert-icon  { font-size: 20px; flex-shrink: 0; }
 .alert-title { font-weight: 700; color: #e65100; font-size: 13.5px; }
 .alert-months { font-size: 12px; color: #e65100; margin-top: 3px; opacity: .9; }
 
-/* KPI cards */
+/* ── KPI cards ── */
 .cockpit-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 16px; }
 @media (max-width: 820px) { .cockpit-kpis { grid-template-columns: repeat(2, 1fr); } }
-.ck-card { background: rgba(255,255,255,0.72); border: 1px solid rgba(255,255,255,0.8); border-radius: 14px; padding: 16px 18px; box-shadow: 0 2px 14px rgba(0,0,0,0.06); backdrop-filter: blur(10px); border-left: 3px solid var(--muted); }
-.ck-coll { border-left-color: #2e7d32; }
-.ck-pay { border-left-color: #f57f17; }
-.ck-net-pos { border-left-color: #2e7d32; }
-.ck-net-neg { border-left-color: #c62828; }
-.ck-label { font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
-.ck-value { font-size: 24px; font-weight: 800; color: var(--text); line-height: 1.1; margin-top: 6px; }
-.ck-coll .ck-value { color: #2e7d32; }
-.ck-pay .ck-value { color: #e65100; }
-.v-pos { color: #2e7d32 !important; }
-.v-neg { color: #c62828 !important; }
-.ck-sub { font-size: 11.5px; color: var(--muted); margin-top: 5px; }
+.ck-card {
+  background: rgba(255,255,255,0.78); border: 1px solid rgba(255,255,255,0.9); border-radius: 16px;
+  padding: 18px 20px; box-shadow: 0 2px 18px rgba(0,0,0,0.06); border-left: 3px solid var(--border);
+}
+.ck-coll     { border-left-color: #2e7d32; }
+.ck-pay      { border-left-color: #e65100; }
+.ck-net-pos  { border-left-color: #2e7d32; }
+.ck-net-neg  { border-left-color: #c62828; }
+.ck-label    { font-size: 11px; color: var(--muted); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.ck-value    { font-size: 26px; font-weight: 800; color: var(--text); line-height: 1.15; margin: 6px 0 4px; }
+.ck-v-coll   { color: #2e7d32; }
+.ck-v-pay    { color: #e65100; }
+.v-pos       { color: #2e7d32 !important; }
+.v-neg       { color: #c62828 !important; }
+.ck-sub      { font-size: 11.5px; }
+.ach-ok      { color: #2e7d32; font-weight: 600; }
+.ach-off     { color: var(--muted); }
 
-/* Chart grid */
+/* ── Chart grid ── */
 .cockpit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .cockpit-grid .span2 { grid-column: span 2; }
-@media (max-width: 900px) { .cockpit-grid { grid-template-columns: 1fr; } .cockpit-grid .span2 { grid-column: span 1; } }
+@media (max-width: 900px) { .cockpit-grid { grid-template-columns: 1fr; } .cockpit-grid .span2 { grid-column: 1; } }
+.chart-empty { height: 120px; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; }
 
+/* ── Section title with sub-label ── */
+.section-sub { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 8px; }
+
+/* ── Table ── */
 .row-alert { background: rgba(198,40,40,.04); }
-.text-danger { color: #c62828; font-weight: 600; }
-.text-ok { color: #2e7d32; }
-.muted { color: var(--muted); }
+.fw { font-weight: 600; }
 .amt { text-align: right; }
+.muted { color: var(--muted); }
+.text-coll   { color: #2e7d32; font-weight: 600; }
+.text-pay    { color: #e65100; }
+.text-danger { color: #c62828; font-weight: 600; }
+.text-ok     { color: #2e7d32; font-weight: 600; }
 </style>
