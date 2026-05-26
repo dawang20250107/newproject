@@ -102,11 +102,11 @@ onMounted(()=>{load();loadDepts()})
 .approval-table th:nth-child(4), .approval-table td:nth-child(4) { width: 20%; }
 .approval-table th:nth-child(5), .approval-table td:nth-child(5) { width: 10%; }
 .approval-table th:nth-child(6), .approval-table td:nth-child(6) { width: 14%; }
-.approval-table th:nth-child(7), .approval-table td:nth-child(7) { width: 9%; }
-.approval-table th:nth-child(8), .approval-table td:nth-child(8) { width: 8%; }
-.approval-table th:nth-child(7), .approval-table td:nth-child(7) { overflow: visible; text-overflow: clip; }
+.approval-table th:nth-child(7), .approval-table td:nth-child(7) { width: 12%; }
+.approval-table th:nth-child(8), .approval-table td:nth-child(8) { width: 7%; }
+.approval-table th:nth-child(7), .approval-table td:nth-child(7) { overflow: visible; text-overflow: clip; white-space: normal; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .summary, .payee { max-width: 100%; }
-.approval-table select { width: 100%; min-width: 90px; height: 28px; font-size: 12px; padding-right: 18px; }
+.approval-table select { width: 100%; min-width: 120px; height: 30px; font-size: 12px; padding: 0 22px 0 8px; background-position: right 6px center; }
 </style>
