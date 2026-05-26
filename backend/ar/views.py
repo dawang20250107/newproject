@@ -1429,25 +1429,30 @@ def _budget_list_create(request, Model, page_key):
             return denied
         data = _parse_body(request)
         dept = data.get('delivery_dept', '').strip()
-        if dept and dept not in VALID_DEPARTMENTS:
-            return err(f'无效交付部门: {dept}')
-        denied = _dept_denied(request, dept, '无权操作此部门')
-        if denied:
-            return denied
         date_str = _normalize_date(data.get('expected_date'))
         if not date_str:
             return err('预计日期无效')
         amount = _dec(data.get('amount', 0))
         if amount <= 0:
             return err('金额必须大于0')
+        resolved, emsg = _resolve_budget_project_fields(
+            request=request,
+            short_name=data.get('short_name', ''),
+            project_no=data.get('project_no', ''),
+            delivery_dept=dept,
+            sub_dept=data.get('sub_dept', ''),
+            allow_manual_sub_dept=True,
+        )
+        if emsg:
+            return err(emsg)
         from paikuan.models import PaikuanUser
         user = PaikuanUser.objects.filter(id=request.pk_uid).first()
         obj = Model.objects.create(
-            project_no=data.get('project_no', '').strip(),
-            short_name=data.get('short_name', '').strip(),
+            project_no=resolved['project_no'],
+            short_name=resolved['short_name'],
             expected_date=date_str,
-            sub_dept=data.get('sub_dept', '').strip(),
-            delivery_dept=dept,
+            sub_dept=resolved['sub_dept'],
+            delivery_dept=resolved['delivery_dept'],
             amount=amount,
             notes=data.get('notes', '').strip(),
             created_by=user,
@@ -1477,17 +1482,22 @@ def _budget_detail(request, pk, Model, page_key):
         if denied:
             return denied
         data = _parse_body(request)
-        for field in ('project_no', 'short_name', 'sub_dept', 'notes'):
-            if field in data:
-                setattr(obj, field, data[field])
-        if 'delivery_dept' in data:
-            dept = data['delivery_dept']
-            if dept and dept not in VALID_DEPARTMENTS:
-                return err(f'无效交付部门: {dept}')
-            denied = _dept_denied(request, dept, '无权操作目标部门')
-            if denied:
-                return denied
-            obj.delivery_dept = dept
+        resolved, emsg = _resolve_budget_project_fields(
+            request=request,
+            short_name=data.get('short_name', obj.short_name),
+            project_no=data.get('project_no', obj.project_no),
+            delivery_dept=data.get('delivery_dept', obj.delivery_dept),
+            sub_dept=data.get('sub_dept', obj.sub_dept),
+            allow_manual_sub_dept=True,
+        )
+        if emsg:
+            return err(emsg)
+        obj.project_no = resolved['project_no']
+        obj.short_name = resolved['short_name']
+        obj.sub_dept = resolved['sub_dept']
+        obj.delivery_dept = resolved['delivery_dept']
+        if 'notes' in data:
+            obj.notes = data.get('notes', '')
         if 'expected_date' in data:
             obj.expected_date = _normalize_date(data['expected_date']) or obj.expected_date
         if 'amount' in data:
@@ -1545,7 +1555,7 @@ def _budget_template(request, kind):
     ws = wb.active
     ws.title = f'{lbl}预算'
     headers = ['项目编号(可选)', '项目简称/摘要*', f'预计{lbl}日期(YYYY-MM-DD)*',
-               '二级部门', '交付部门', '金额*', '备注']
+               '二级部门(台账项目自动带出；非项目可手填)', '交付部门(用于简称匹配)', '金额*', '备注']
     color = '1B6E35' if kind == 'collection' else 'B25600'
     _header_row(ws, headers, color=color)
     ws.append([EXAMPLE_ROW_MARKER, '示例项目A', '2026-06-15', '华南区',
@@ -1598,27 +1608,32 @@ def _budget_import(request, Model, kind):
             errors.append(f'第{ri}行: 预计日期无效')
             skipped += 1
             continue
-        dept = _cv(ri, '交付部门')
-        if dept and dept not in VALID_DEPARTMENTS:
-            errors.append(f'第{ri}行: 无效交付部门"{dept}"')
-            skipped += 1
-            continue
-        if request.pk_role != 'super_admin' and dept not in request.pk_depts:
-            errors.append(f'第{ri}行: 无权操作部门"{dept}"')
-            skipped += 1
-            continue
         amount = _dec(_cv(ri, '金额*'))
         if amount <= 0:
             errors.append(f'第{ri}行: 金额必须大于0')
             skipped += 1
             continue
+        dept = _cv(ri, '交付部门(用于简称匹配)') or _cv(ri, '交付部门')
+        sub_dept_raw = _cv(ri, '二级部门(台账项目自动带出；非项目可手填)') or _cv(ri, '二级部门')
+        resolved, emsg = _resolve_budget_project_fields(
+            request=request,
+            short_name=short_name,
+            project_no=_cv(ri, '项目编号(可选)'),
+            delivery_dept=dept,
+            sub_dept=sub_dept_raw,
+            allow_manual_sub_dept=True,
+        )
+        if emsg:
+            errors.append(f'第{ri}行: {emsg}')
+            skipped += 1
+            continue
         try:
             Model.objects.create(
-                project_no=_cv(ri, '项目编号(可选)'),
-                short_name=short_name,
+                project_no=resolved['project_no'],
+                short_name=resolved['short_name'],
                 expected_date=date_str,
-                sub_dept=_cv(ri, '二级部门'),
-                delivery_dept=dept,
+                sub_dept=resolved['sub_dept'],
+                delivery_dept=resolved['delivery_dept'],
                 amount=amount,
                 notes=_cv(ri, '备注'),
                 created_by=user,
@@ -1628,6 +1643,59 @@ def _budget_import(request, Model, kind):
             errors.append(f'第{ri}行: {e}')
             skipped += 1
     return ok({'created': created, 'skipped': skipped, 'errors': errors})
+
+
+def _resolve_budget_project_fields(request, short_name, project_no, delivery_dept, sub_dept, allow_manual_sub_dept=False):
+    short_name = (short_name or '').strip()
+    project_no = (project_no or '').strip()
+    delivery_dept = (delivery_dept or '').strip()
+    sub_dept = (sub_dept or '').strip()
+    if not short_name:
+        return None, '项目简称/摘要不能为空'
+    if delivery_dept and delivery_dept not in VALID_DEPARTMENTS:
+        return None, f'无效交付部门: {delivery_dept}'
+
+    matched_project = None
+    if project_no:
+        matched_project = ARProject.objects.filter(project_no=project_no).first()
+        if not matched_project:
+            return None, f'项目编号不存在: {project_no}'
+    else:
+        by_name_dept = ARProject.objects.filter(short_name=short_name, delivery_dept=delivery_dept) if delivery_dept else ARProject.objects.none()
+        if delivery_dept and by_name_dept.count() == 1:
+            matched_project = by_name_dept.first()
+        elif delivery_dept and by_name_dept.count() > 1:
+            return None, f'项目简称+交付部门匹配到多条台账，请补充项目编号: {short_name}/{delivery_dept}'
+        else:
+            by_name = ARProject.objects.filter(short_name=short_name)
+            if by_name.count() == 1:
+                matched_project = by_name.first()
+            elif by_name.count() > 1:
+                return None, f'项目简称匹配到多条台账，请补充交付部门或项目编号: {short_name}'
+
+    if matched_project:
+        resolved_dept = matched_project.delivery_dept
+        denied = _dept_denied(request, resolved_dept, '无权操作此部门')
+        if denied:
+            return None, '无权操作此部门'
+        return {
+            'project_no': matched_project.project_no,
+            'short_name': matched_project.short_name or short_name,
+            'delivery_dept': resolved_dept,
+            'sub_dept': matched_project.sub_dept or '',
+        }, None
+
+    if not delivery_dept:
+        return None, '非项目手填时必须填写交付部门'
+    denied = _dept_denied(request, delivery_dept, '无权操作此部门')
+    if denied:
+        return None, '无权操作此部门'
+    return {
+        'project_no': '',
+        'short_name': short_name,
+        'delivery_dept': delivery_dept,
+        'sub_dept': sub_dept if allow_manual_sub_dept else '',
+    }, None
 
 
 def _budget_export(request, Model, kind):

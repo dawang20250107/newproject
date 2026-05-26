@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS } from '../../constants.js'
 import ar from '../../api/ar.js'
@@ -30,6 +30,9 @@ const modalType = ref('collection')
 const editItem = ref(null)
 const saving = ref(false)
 const form = reactive({ project_no: '', short_name: '', expected_date: '', sub_dept: '', delivery_dept: '', amount: '', notes: '' })
+const projectMode = ref('ledger')
+const projectOptions = ref([])
+const projectLoading = ref(false)
 
 // ── Computed ──────────────────────────────────────────────────────────────────
 
@@ -191,14 +194,37 @@ function openCreate(type) {
   modalType.value = type; editItem.value = null
   const d = `${year.value}-${String(month.value).padStart(2, '0')}-01`
   Object.assign(form, { project_no: '', short_name: '', expected_date: d, sub_dept: '', delivery_dept: selectedDept.value || (accessibleDepts.value[0] || ''), amount: '', notes: '' })
+  projectMode.value = 'ledger'
   showModal.value = true
 }
 
 function openEdit(type, item) {
   modalType.value = type; editItem.value = item
   Object.assign(form, { ...item })
+  projectMode.value = item.project_no ? 'ledger' : 'manual'
   showModal.value = true
 }
+
+async function searchProjects(q) {
+  if (!q || q.length < 1) { projectOptions.value = []; return }
+  projectLoading.value = true
+  try {
+    const res = await ar.listProjects({ q, dept: form.delivery_dept, size: 20 })
+    projectOptions.value = res.data?.items || []
+  } finally { projectLoading.value = false }
+}
+
+function pickProjectByShortName() {
+  const p = projectOptions.value.find(i => i.short_name === form.short_name)
+  if (!p) return
+  form.project_no = p.project_no || ''
+  form.delivery_dept = p.delivery_dept || form.delivery_dept
+  form.sub_dept = p.sub_dept || ''
+}
+
+watch(() => form.short_name, v => {
+  if (projectMode.value === 'ledger') searchProjects(v)
+})
 
 async function save() {
   if (!form.short_name || !form.expected_date || !form.amount) {
@@ -596,12 +622,20 @@ onMounted(loadAll)
           <div class="modal-body">
             <div class="form-grid">
               <label class="form-field">
-                <span>项目编号{{ modalType === 'payment' ? '（不强制）' : '（可选）' }}</span>
+                <span>项目编号（台账模式可自动回填）</span>
                 <input v-model="form.project_no" placeholder="填写后可关联项目" />
               </label>
               <label class="form-field">
                 <span>项目简称 / 摘要 <em>*</em></span>
-                <input v-model="form.short_name" />
+                <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+                  <label><input type="radio" value="ledger" v-model="projectMode"> 台账项目</label>
+                  <label><input type="radio" value="manual" v-model="projectMode"> 手动录入非项目</label>
+                </div>
+                <input v-model="form.short_name" :list="projectMode === 'ledger' ? 'project-short-list' : null" @change="pickProjectByShortName" />
+                <datalist id="project-short-list">
+                  <option v-for="p in projectOptions" :key="p.id" :value="p.short_name">{{ p.project_no }} / {{ p.delivery_dept }}</option>
+                </datalist>
+                <div v-if="projectMode==='ledger' && projectLoading" style="font-size:12px;color:var(--muted);margin-top:4px">项目搜索中...</div>
               </label>
               <label class="form-field">
                 <span>预计{{ modalType === 'collection' ? '收款' : '付款' }}日期 <em>*</em></span>
@@ -620,7 +654,7 @@ onMounted(loadAll)
               </label>
               <label class="form-field">
                 <span>二级部门</span>
-                <input v-model="form.sub_dept" />
+                <input v-model="form.sub_dept" :disabled="projectMode === 'ledger'" :placeholder="projectMode === 'ledger' ? '台账项目自动带出' : '非项目可手填'" />
               </label>
               <label class="form-field span2">
                 <span>备注</span>
