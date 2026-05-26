@@ -1,17 +1,16 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
-import { DEPARTMENTS } from '../../constants.js'
+import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
 
 const auth = useAuthStore()
-const now = new Date()
 const activeTab = ref('summary')
-const year = ref(now.getFullYear())
-const month = ref(now.getMonth() + 1)
+const year = ref(yearCST())
+const month = ref(monthCST())
 const selectedDept = ref('')
-const years = Array.from({ length: 5 }, (_, i) => now.getFullYear() - 2 + i)
+const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
 const accessibleDepts = computed(() =>
@@ -30,6 +29,17 @@ const modalType = ref('collection')
 const editItem = ref(null)
 const saving = ref(false)
 const form = reactive({ project_no: '', short_name: '', expected_date: '', sub_dept: '', delivery_dept: '', amount: '', notes: '' })
+const projects = ref([])
+const shortNameOptions = computed(() => {
+  const seen = new Set()
+  return projects.value
+    .filter(p => p.short_name)
+    .filter(p => {
+      if (seen.has(p.short_name)) return false
+      seen.add(p.short_name)
+      return true
+    })
+})
 
 // ── Computed ──────────────────────────────────────────────────────────────────
 
@@ -182,6 +192,10 @@ async function loadLists() {
     payItems.value = p.data.items; payTotal.value = p.data.total_amount
   } finally { listLoading.value = false }
 }
+async function loadProjects() {
+  const res = await ar.listProjects({ size: 500 })
+  projects.value = res.data.items || []
+}
 
 async function loadAll() { await Promise.all([loadSummary(), loadLists()]) }
 
@@ -206,6 +220,12 @@ async function save() {
   }
   saving.value = true
   try {
+    const matched = projects.value.find(p => p.short_name === form.short_name)
+    if (matched) {
+      form.project_no = matched.project_no
+      if (!form.delivery_dept) form.delivery_dept = matched.delivery_dept || form.delivery_dept
+      if (!form.sub_dept) form.sub_dept = matched.sub_dept || form.sub_dept
+    }
     if (modalType.value === 'collection') {
       if (editItem.value) await ar.updateCollectionBudget(editItem.value.id, form)
       else await ar.createCollectionBudget(form)
@@ -276,6 +296,7 @@ async function exportData(type) {
 }
 
 onMounted(loadAll)
+onMounted(loadProjects)
 </script>
 
 <template>
@@ -283,7 +304,10 @@ onMounted(loadAll)
     <div class="topbar">
       <div>
         <h1>预算管理</h1>
-        <div style="font-size:13px;color:var(--muted);margin-top:2px">收款预算 · 付款预算 · 执行对比</div>
+        <div style="font-size:13px;color:var(--muted);margin-top:2px">
+          收款预算 · 付款预算 · 执行对比
+          <span v-if="summary?.has_alert" style="color:#c62828;font-weight:700;margin-left:8px">⚠ 强提醒：实际付款超出实际收款</span>
+        </div>
       </div>
     </div>
 
@@ -322,19 +346,6 @@ onMounted(loadAll)
 
     <!-- ── Summary Tab ── -->
     <template v-if="activeTab === 'summary'">
-
-      <!-- Compact alert strip at top of summary tab -->
-      <div v-if="summary?.has_alert" class="alert-strip">
-        <div class="ast-pulse"></div>
-        <div class="ast-icon">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        </div>
-        <div class="ast-body">
-          <span class="ast-title">实际付款超出实际收款</span>
-          <span class="ast-sep">·</span>
-          <span class="ast-desc">{{ year }}年{{ month }}月 · {{ selectedDept || '全部事业部' }} · 净现金流为负，请关注资金安排</span>
-        </div>
-      </div>
 
       <!-- Month progress bar -->
       <div class="progress-card" style="margin-bottom:16px">
@@ -601,7 +612,12 @@ onMounted(loadAll)
               </label>
               <label class="form-field">
                 <span>项目简称 / 摘要 <em>*</em></span>
-                <input v-model="form.short_name" />
+                <input v-model="form.short_name" list="budget-project-shortnames" placeholder="可手填非项目信息；也可下拉选择项目简称" />
+                <datalist id="budget-project-shortnames">
+                  <option v-for="p in shortNameOptions" :key="p.id" :value="p.short_name">
+                    {{ p.project_no }} · {{ p.short_name }}
+                  </option>
+                </datalist>
               </label>
               <label class="form-field">
                 <span>预计{{ modalType === 'collection' ? '收款' : '付款' }}日期 <em>*</em></span>

@@ -91,6 +91,11 @@ function onNavClick() {
           </span>
         </Transition>
       </router-link>
+      <router-link v-if="auth.canPage('approval_records')" to="/approvals" class="nav-item" :class="{ active: route.path === '/approvals' }" @click="onNavClick">
+        <span class="nav-icon">🧾</span>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">审批记录</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
+      </router-link>
 
       <router-link v-if="auth.canPage('stats') && auth.canView('total_amount')" to="/stats" class="nav-item" :class="{ active: route.path === '/stats' }" @click="onNavClick">
         <span class="nav-icon">

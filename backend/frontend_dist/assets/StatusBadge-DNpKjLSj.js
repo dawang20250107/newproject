@@ -1,0 +1,1 @@
+import{B as e,E as t,N as n,U as r,V as i}from"./index-BtCs2bKH.js";var a={__name:`StatusBadge`,props:{status:String},setup(a){let[o,s]={settled:[`✅ 已付清`,`badge-settled`],partial:[`⚡ 部分付款`,`badge-partial`],pending:[`⏳ 待付款`,`badge-pending`]}[a.status]||[`—`,``];return(a,c)=>(n(),t(`span`,{class:i([`badge`,e(s)])},r(e(o)),3))}};export{a as t};

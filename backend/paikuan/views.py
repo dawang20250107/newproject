@@ -16,7 +16,7 @@ from django.conf import settings
 from django.utils import timezone
 import jwt
 
-from paikuan.models import PaikuanUser, Payment, JobPermission
+from paikuan.models import PaikuanUser, Payment, JobPermission, ApprovalRecord
 
 logger = logging.getLogger('paikuan')
 
@@ -51,7 +51,7 @@ PAYMENT_FIELD_DEFS = [
 ]
 FIELD_KEYS = [f['key'] for f in PAYMENT_FIELD_DEFS]
 PAGE_KEYS = [
-    'dashboard', 'payments', 'stats',
+    'dashboard', 'payments', 'approval_records', 'stats',
     'ar_projects', 'ar_records', 'ar_analytics', 'ar_cashflow', 'ar_budget',
 ]
 
@@ -167,7 +167,7 @@ def default_job_config(job):
                 'can_create': True, 'can_delete': False}
     if job == 'cashier':
         edit = {k: (k in ('pay1', 'pay2', 'pay3')) for k in FIELD_KEYS}
-        base_pages = {'dashboard': True, 'payments': True, 'stats': False}
+        base_pages = {'dashboard': True, 'payments': True, 'approval_records': True, 'stats': False}
         # 出纳默认看不到税额与账实差额
         ar_view = {**_all_ar_fields(True), 'r_tax_amount': False, 'r_account_diff': False}
         return {'pages': {**base_pages, **ar_pages_cashier},
@@ -549,6 +549,19 @@ def _list_payments(request):
             Q(project_desc__icontains=q) | Q(payee__icontains=q) |
             Q(approval_number__icontains=q) | Q(department__icontains=q)
         )
+    sort_by = request.GET.get('sort_by', '').strip()
+    sort_dir = request.GET.get('sort_dir', 'desc').strip().lower()
+    sort_map = {
+        'department': 'department',
+        'approval_number': 'approval_number',
+        'project_desc': 'project_desc',
+        'payee': 'payee',
+        'planned_date': 'planned_date',
+        'total_amount': 'total_amount',
+        'total_paid': 'paid',
+        'remaining': 'remaining',
+        'status': 'paid',
+    }
 
     try:
         page = max(1, int(request.GET.get('page', 1)))
@@ -566,6 +579,10 @@ def _list_payments(request):
         elif status_q == 'partial':
             qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'))
 
+    qs = qs.annotate(remaining=_remaining_expr())
+    if sort_by in sort_map:
+        fld = sort_map[sort_by]
+        qs = qs.order_by(f'-{fld}' if sort_dir != 'asc' else fld, '-id')
     total = qs.count()
     perms = get_request_perms(request)
     items = [apply_view_mask(p.to_dict(), perms) for p in qs[(page - 1) * size: page * size]]
@@ -744,6 +761,205 @@ def payment_detail(request, pk):
     return err('Method not allowed', 405)
 
 
+@csrf_exempt
+@pk_required()
+def approval_records(request):
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    if request.method == 'GET':
+        qs = dept_filter(ApprovalRecord.objects.filter(archived=False), request)
+        dept = request.GET.get('dept', '').strip()
+        applicant = request.GET.get('applicant', '').strip()
+        approval_no = request.GET.get('approval_number', '').strip()
+        if dept:
+            qs = qs.filter(department=dept)
+        if applicant:
+            qs = qs.filter(applicant__icontains=applicant)
+        if approval_no:
+            qs = qs.filter(approval_number__icontains=approval_no)
+        total_amount = qs.aggregate(s=Sum('amount'))['s'] or Decimal('0')
+        page = max(1, int(request.GET.get('page', 1) or 1))
+        size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
+        total = qs.count()
+        items = [o.to_dict() for o in qs[(page - 1) * size: page * size]]
+        return ok({'items': items, 'total': total, 'page': page, 'size': size, 'total_amount': str(total_amount)})
+    if request.method == 'POST':
+        data = parse_body(request)
+        applicant = (data.get('applicant') or '').strip()
+        department = (data.get('department') or '').strip()
+        approval_number = (data.get('approval_number') or '').strip()
+        summary = (data.get('summary') or '').strip()
+        payee = (data.get('payee') or '').strip()
+        status = (data.get('status') or 'pending').strip()
+        amount = Decimal(str(data.get('amount') or '0'))
+        if not applicant:
+            return err('申请人不能为空')
+        if amount <= 0:
+            return err('申请金额必须大于0')
+        if not re.fullmatch(r'\d{21}', approval_number or ''):
+            return err('审批编号必须为21位数字')
+        if department not in VALID_DEPARTMENTS:
+            return err('所属事业部无效')
+        if status not in {'pending', 'approved', 'rejected', 'canceled'}:
+            return err('审批状态无效')
+        if not can_write_dept(request, department):
+            return err('无权操作该部门', 403, 403)
+        rec = ApprovalRecord.objects.create(
+            applicant=applicant, department=department, approval_number=approval_number,
+            summary=summary, amount=amount, payee=payee, status=status, created_by_id=request.pk_uid
+        )
+        return ok(rec.to_dict())
+    return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def approval_record_detail(request, pk):
+    try:
+        rec = ApprovalRecord.objects.get(pk=pk)
+    except ApprovalRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    if not can_write_dept(request, rec.department):
+        return err('无权操作该部门', 403, 403)
+    if request.method == 'PUT':
+        data = parse_body(request)
+        for k in ('applicant', 'summary', 'payee'):
+            if k in data:
+                setattr(rec, k, (data.get(k) or '').strip())
+        if 'department' in data and data['department'] in VALID_DEPARTMENTS:
+            rec.department = data['department']
+        if 'approval_number' in data and re.fullmatch(r'\d{21}', str(data['approval_number'])):
+            rec.approval_number = str(data['approval_number'])
+        if 'amount' in data:
+            rec.amount = Decimal(str(data['amount'] or '0'))
+        if 'status' in data and data['status'] in {'pending', 'approved', 'rejected', 'canceled'}:
+            rec.status = data['status']
+            if rec.status in {'rejected', 'canceled'}:
+                rec.archived = True
+        rec.save()
+        return ok(rec.to_dict())
+    return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def approval_record_schedule(request, pk):
+    try:
+        rec = ApprovalRecord.objects.get(pk=pk, archived=False)
+    except ApprovalRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    if rec.status != 'approved':
+        return err('仅审批通过记录可排款')
+    data = parse_body(request)
+    planned_date = data.get('planned_date')
+    total_amount = Decimal(str(data.get('total_amount') or '0'))
+    if not planned_date or total_amount <= 0:
+        return err('计划日期和计划金额必填')
+    p = Payment.objects.create(
+        created_by_id=request.pk_uid,
+        department=rec.department,
+        approval_number=rec.approval_number,
+        project_desc=rec.summary,
+        payee=rec.payee,
+        total_amount=total_amount,
+        planned_date=planned_date,
+    )
+    rec.archived = True
+    rec.save(update_fields=['archived', 'updated_at'])
+    return ok({'payment': p.to_dict(), 'archived': rec.id})
+
+
+@pk_required()
+def approval_template(request):
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except ImportError:
+        return err('服务器缺少 openpyxl 依赖', 500)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '审批记录导入模板'
+    headers = ['申请人*', '所属事业部*', '审批编号*', '摘要', '申请金额*', '收款主体', '审批状态*']
+    header_fill = PatternFill(fill_type='solid', fgColor='C96342')
+    header_font = Font(bold=True, color='FFFFFF', size=11)
+    center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    for i, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=i, value=h); c.fill = header_fill; c.font = header_font; c.alignment = center
+    ws.append(['示例张三', '运输事业部', '123456789012345678901', '示例摘要', 10000, '某供应商', '待审批'])
+    return _build_excel_response(wb, '审批记录导入模板.xlsx')
+
+
+@csrf_exempt
+@pk_required()
+def approval_import(request):
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    f = request.FILES.get('file')
+    if not f:
+        return err('请上传文件')
+    from openpyxl import load_workbook
+    wb = load_workbook(f, data_only=True)
+    ws = wb.active
+    headers = [str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1)]
+    col = {h: i + 1 for i, h in enumerate(headers)}
+    def cv(r, h): return str(ws.cell(r, col.get(h, 0)).value or '').strip() if col.get(h) else ''
+    created = skipped = 0
+    errors = []
+    for r in range(2, ws.max_row + 1):
+        applicant = cv(r, '申请人*')
+        dept = cv(r, '所属事业部*')
+        no = cv(r, '审批编号*')
+        status_cn = cv(r, '审批状态*') or '待审批'
+        amount_raw = cv(r, '申请金额*')
+        if not applicant or not amount_raw:
+            skipped += 1; errors.append(f'第{r}行: 申请人和金额不能为空'); continue
+        if not re.fullmatch(r'\d{21}', no):
+            skipped += 1; errors.append(f'第{r}行: 审批编号必须为21位数字'); continue
+        if status_cn not in {'待审批', 'pending'}:
+            skipped += 1; errors.append(f'第{r}行: 仅允许导入待审批状态'); continue
+        if dept not in VALID_DEPARTMENTS:
+            skipped += 1; errors.append(f'第{r}行: 所属事业部无效'); continue
+        try:
+            amount = Decimal(str(amount_raw))
+            if amount <= 0:
+                raise ValueError()
+        except Exception:
+            skipped += 1; errors.append(f'第{r}行: 申请金额无效'); continue
+        ApprovalRecord.objects.create(
+            applicant=applicant, department=dept, approval_number=no,
+            summary=cv(r, '摘要'), amount=amount, payee=cv(r, '收款主体'),
+            status='pending', created_by_id=request.pk_uid
+        )
+        created += 1
+    return ok({'created': created, 'skipped': skipped, 'errors': errors})
+
+
+@pk_required()
+def approval_export(request):
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    qs = dept_filter(ApprovalRecord.objects.filter(archived=False), request)
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '审批记录'
+    headers = ['申请人', '所属事业部', '审批编号', '摘要', '申请金额', '收款主体', '审批状态']
+    header_fill = PatternFill(fill_type='solid', fgColor='C96342')
+    header_font = Font(bold=True, color='FFFFFF', size=11)
+    center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    for i, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=i, value=h); c.fill = header_fill; c.font = header_font; c.alignment = center
+    cn = {'pending': '待审批', 'approved': '审批通过', 'rejected': '已拒绝', 'canceled': '已撤销'}
+    for o in qs:
+        ws.append([o.applicant, o.department, o.approval_number, o.summary, float(o.amount), o.payee, cn.get(o.status, o.status)])
+    return _build_excel_response(wb, '审批记录.xlsx')
+
+
 # ── dashboard ─────────────────────────────────────────────────────────────────
 
 @pk_required()
@@ -778,6 +994,7 @@ def dashboard(request):
     ]
 
     return ok({
+        'today': str(today),
         'today_count': today_agg['c'],
         'today_amount': money(today_agg['s']),
         'pending_count': pending_agg['c'],
@@ -1020,6 +1237,7 @@ def permissions(request):
         'pages': [
             {'key': 'dashboard',    'label': '今日工作台'},
             {'key': 'payments',     'label': '付款台账'},
+            {'key': 'approval_records', 'label': '审批记录'},
             {'key': 'stats',        'label': '月度统计'},
             {'key': 'ar_projects',  'label': '项目台账'},
             {'key': 'ar_records',   'label': '应收明细'},
