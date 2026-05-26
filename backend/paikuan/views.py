@@ -748,9 +748,8 @@ def payment_detail(request, pk):
 @pk_required()
 def approval_records(request):
     perms = get_request_perms(request)
-    denied = _payments_page_denied(request, perms)
-    if denied:
-        return denied
+    if perms is not None and not perms['pages'].get('approval_records', True):
+        return err('无访问权限', 403, 403)
     if request.method == 'GET':
         qs = dept_filter(ApprovalRecord.objects.filter(archived=False), request)
         dept = request.GET.get('dept', '').strip()
