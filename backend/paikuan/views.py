@@ -55,6 +55,47 @@ PAGE_KEYS = [
     'ar_projects', 'ar_records', 'ar_analytics', 'ar_cashflow', 'ar_budget',
 ]
 
+# ── AR field-level permission defs ───────────────────────────────────────────
+# Per-field show/hide control for the AR module. Keys are namespaced (p_ for
+# project台账 fields, r_ for 应收明细 fields) so project/record fields never
+# collide. `cols` lists the serialized dict keys masked when the field is hidden.
+# Defined here (not in ar/views.py) so the permission system has no dependency
+# on the ar app, avoiding a circular import (ar imports paikuan, not vice versa).
+AR_PROJECT_FIELD_DEFS = [
+    {'key': 'p_contract_name',  'label': '合同名称',   'group': 'project', 'cols': ['contract_name']},
+    {'key': 'p_short_name',     'label': '项目简称',   'group': 'project', 'cols': ['short_name']},
+    {'key': 'p_delivery_dept',  'label': '交付部门',   'group': 'project', 'cols': ['delivery_dept']},
+    {'key': 'p_sub_dept',       'label': '二级部门',   'group': 'project', 'cols': ['sub_dept']},
+    {'key': 'p_business_mode',  'label': '业务模式',   'group': 'project', 'cols': ['business_mode']},
+    {'key': 'p_customer_level', 'label': '客户等级',   'group': 'project', 'cols': ['customer_level']},
+    {'key': 'p_sales_contact',  'label': '销售对接人', 'group': 'project', 'cols': ['sales_contact']},
+    {'key': 'p_project_manager','label': '项目负责人', 'group': 'project', 'cols': ['project_manager']},
+    {'key': 'p_has_contract',   'label': '有无合同',   'group': 'project', 'cols': ['has_contract']},
+    {'key': 'p_contract_date',  'label': '签订日期',   'group': 'project', 'cols': ['contract_date']},
+    {'key': 'p_account_period', 'label': '账期配置',   'group': 'project',
+        'cols': ['reconciliation_days', 'invoice_wait_days', 'settlement_wait_days', 'total_days']},
+    {'key': 'p_invoice_config', 'label': '开票配置(模式/类型/税率)', 'group': 'project',
+        'cols': ['invoice_mode', 'invoice_type', 'tax_rate']},
+    {'key': 'p_notes',          'label': '项目备注',   'group': 'project', 'cols': ['notes']},
+]
+AR_RECORD_FIELD_DEFS = [
+    {'key': 'r_estimated_amount',      'label': '预估上账金额', 'group': 'record', 'cols': ['estimated_amount']},
+    {'key': 'r_actual_invoice_amount', 'label': '实际开票金额', 'group': 'record', 'cols': ['actual_invoice_amount']},
+    {'key': 'r_tax_amount',            'label': '税额',         'group': 'record', 'cols': ['tax_amount']},
+    {'key': 'r_invoice_date',          'label': '开票日期',     'group': 'record', 'cols': ['invoice_date']},
+    {'key': 'r_account_diff',          'label': '账实差额',     'group': 'record', 'cols': ['account_diff_adjustment']},
+    {'key': 'r_outstanding',           'label': '未回款金额',   'group': 'record', 'cols': ['outstanding_amount']},
+    {'key': 'r_due_date',              'label': '应收日期/逾期', 'group': 'record',
+        'cols': ['due_date', 'is_overdue', 'overdue_days']},
+    {'key': 'r_reconciliation',        'label': '对账信息',     'group': 'record',
+        'cols': ['reconciliation_time', 'reconciliation_status']},
+    {'key': 'r_invoice_status',        'label': '开票状态',     'group': 'record', 'cols': ['invoice_status']},
+    {'key': 'r_payments',              'label': '回款记录',     'group': 'record', 'cols': ['payments']},
+    {'key': 'r_notes',                 'label': '明细备注',     'group': 'record', 'cols': ['notes']},
+]
+AR_FIELD_DEFS = AR_PROJECT_FIELD_DEFS + AR_RECORD_FIELD_DEFS
+AR_FIELD_KEYS = [f['key'] for f in AR_FIELD_DEFS]
+
 # Ordered columns for Excel template / import / export.
 # (perm_field_key, excel_header, db_column)
 EXCEL_COLUMN_MAP = [
@@ -99,6 +140,10 @@ def _all_fields(value):
     return {k: value for k in FIELD_KEYS}
 
 
+def _all_ar_fields(value):
+    return {k: value for k in AR_FIELD_KEYS}
+
+
 def default_job_config(job):
     """Sensible starting permissions for each job title; super_admin can override."""
     pages_all = {k: True for k in PAGE_KEYS}
@@ -106,24 +151,32 @@ def default_job_config(job):
     ar_pages_cashier = {k: (k in ('ar_records', 'ar_cashflow', 'ar_budget')) for k in ar_pages_all}
     if job == 'finance_director':
         return {'pages': pages_all, 'view': _all_fields(True),
-                'edit': _all_fields(True), 'can_create': True, 'can_delete': True}
+                'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
+                'can_create': True, 'can_delete': True}
     if job == 'finance_bp':
         return {'pages': pages_all, 'view': _all_fields(True),
-                'edit': _all_fields(True), 'can_create': True, 'can_delete': False}
+                'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
+                'can_create': True, 'can_delete': False}
     if job == 'chief_cashier':
         edit = {k: (k in ('pay1', 'pay2', 'pay3')) for k in FIELD_KEYS}
         pages = {**pages_all, **ar_pages_all}
+        # 总出纳默认看不到税额
+        ar_view = {**_all_ar_fields(True), 'r_tax_amount': False}
         return {'pages': pages, 'view': _all_fields(True),
-                'edit': edit, 'can_create': True, 'can_delete': False}
+                'edit': edit, 'ar_view': ar_view,
+                'can_create': True, 'can_delete': False}
     if job == 'cashier':
         edit = {k: (k in ('pay1', 'pay2', 'pay3')) for k in FIELD_KEYS}
         base_pages = {'dashboard': True, 'payments': True, 'stats': False}
+        # 出纳默认看不到税额与账实差额
+        ar_view = {**_all_ar_fields(True), 'r_tax_amount': False, 'r_account_diff': False}
         return {'pages': {**base_pages, **ar_pages_cashier},
-                'view': _all_fields(True), 'edit': edit,
+                'view': _all_fields(True), 'edit': edit, 'ar_view': ar_view,
                 'can_create': False, 'can_delete': False}
     # Unknown / no job title → read-only minimum.
     return {'pages': pages_all, 'view': _all_fields(True),
-            'edit': _all_fields(False), 'can_create': False, 'can_delete': False}
+            'edit': _all_fields(False), 'ar_view': _all_ar_fields(True),
+            'can_create': False, 'can_delete': False}
 
 
 _perm_cache: dict = {}
@@ -158,8 +211,10 @@ def get_job_perms(job):
         view = dict(base['view']);  view.update(cfg.get('view', {}))
         edit = dict(base['edit']);  edit.update(cfg.get('edit', {}))
         pages = dict(base['pages']); pages.update(cfg.get('pages', {}))
+        ar_view = dict(base.get('ar_view', _all_ar_fields(True)))
+        ar_view.update(cfg.get('ar_view', {}))
         result = {
-            'pages': pages, 'view': view, 'edit': edit,
+            'pages': pages, 'view': view, 'edit': edit, 'ar_view': ar_view,
             'can_create': bool(cfg.get('can_create', base['can_create'])),
             'can_delete': bool(cfg.get('can_delete', base['can_delete'])),
         }
@@ -170,13 +225,30 @@ def get_job_perms(job):
 
 def full_perms():
     return {'pages': {k: True for k in PAGE_KEYS}, 'view': _all_fields(True),
-            'edit': _all_fields(True), 'can_create': True, 'can_delete': True}
+            'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
+            'can_create': True, 'can_delete': True}
 
 
 def effective_perms(user):
     """Perms object sent to the client (super_admin gets full access)."""
     cfg = full_perms() if user.role == 'super_admin' else get_job_perms(user.job_title)
-    return {**cfg, 'is_admin': user.role == 'super_admin', 'fields': PAYMENT_FIELD_DEFS}
+    return {**cfg, 'is_admin': user.role == 'super_admin',
+            'fields': PAYMENT_FIELD_DEFS, 'ar_fields': AR_FIELD_DEFS}
+
+
+def apply_ar_view_mask(d, perms, group):
+    """Null out AR dict fields the role cannot view. `group` is 'project' or
+    'record'. perms None (super_admin) → unchanged."""
+    if perms is None:
+        return d
+    ar_view = perms.get('ar_view') or {}
+    defs = AR_PROJECT_FIELD_DEFS if group == 'project' else AR_RECORD_FIELD_DEFS
+    for f in defs:
+        if not ar_view.get(f['key'], True):
+            for c in f['cols']:
+                if c in d:
+                    d[c] = None
+    return d
 
 
 def get_request_perms(request):
@@ -944,6 +1016,7 @@ def permissions(request):
     ]
     return ok({
         'fields': PAYMENT_FIELD_DEFS,
+        'ar_fields': AR_FIELD_DEFS,
         'pages': [
             {'key': 'dashboard',    'label': '今日工作台'},
             {'key': 'payments',     'label': '付款台账'},
@@ -951,7 +1024,7 @@ def permissions(request):
             {'key': 'ar_projects',  'label': '项目台账'},
             {'key': 'ar_records',   'label': '应收明细'},
             {'key': 'ar_analytics', 'label': '应收分析'},
-            {'key': 'ar_cashflow',  'label': '收付对比'},
+            {'key': 'ar_cashflow',  'label': '现金流分析'},
             {'key': 'ar_budget',    'label': '预算管理'},
         ],
         'jobs': jobs,
@@ -974,6 +1047,7 @@ def permission_detail(request, job):
         'pages': {k: bool(cfg.get('pages', {}).get(k, True)) for k in PAGE_KEYS},
         'view': {k: bool(cfg.get('view', {}).get(k, True)) for k in FIELD_KEYS},
         'edit': {k: bool(cfg.get('edit', {}).get(k, False)) for k in FIELD_KEYS},
+        'ar_view': {k: bool(cfg.get('ar_view', {}).get(k, True)) for k in AR_FIELD_KEYS},
         'can_create': bool(cfg.get('can_create', False)),
         'can_delete': bool(cfg.get('can_delete', False)),
     }

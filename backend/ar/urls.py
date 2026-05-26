@@ -4,6 +4,7 @@ from ar import views
 urlpatterns = [
     # Projects
     path('projects', views.projects),
+    path('projects/stats', views.project_stats),
     path('projects/template', views.project_template),
     path('projects/import', views.project_import),
     path('projects/export', views.project_export),
@@ -11,6 +12,7 @@ urlpatterns = [
 
     # AR Records
     path('records', views.ar_records),
+    path('records/kpi', views.ar_records_kpi),
     path('records/template', views.ar_record_template),
     path('records/import', views.ar_record_import),
     path('records/export', views.ar_record_export),
@@ -29,8 +31,14 @@ urlpatterns = [
 
     # Budget
     path('budget/collection', views.budget_collection),
+    path('budget/collection/template', views.budget_collection_template),
+    path('budget/collection/import', views.budget_collection_import),
+    path('budget/collection/export', views.budget_collection_export),
     path('budget/collection/<int:pk>', views.budget_collection_detail),
     path('budget/payment', views.budget_payment),
+    path('budget/payment/template', views.budget_payment_template),
+    path('budget/payment/import', views.budget_payment_import),
+    path('budget/payment/export', views.budget_payment_export),
     path('budget/payment/<int:pk>', views.budget_payment_detail),
     path('budget/summary', views.budget_summary),
 ]

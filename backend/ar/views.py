@@ -16,7 +16,8 @@ from django.utils import timezone
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 
-from paikuan.views import pk_required, ok, err, dept_filter, DEPARTMENTS, VALID_DEPARTMENTS
+from paikuan.views import (pk_required, ok, err, dept_filter, DEPARTMENTS, VALID_DEPARTMENTS,
+                           get_request_perms, apply_ar_view_mask)
 from ar.models import ARProject, ARRecord, ARPayment, CollectionBudget, PaymentBudget
 from paikuan.models import Payment
 
@@ -136,26 +137,21 @@ def projects(request):
         elif is_shared in ('false', '0'):
             qs = qs.filter(is_shared=False)
 
+        # Customer-level filter (S/A/...)
+        level = request.GET.get('customer_level', '').strip()
+        if level:
+            qs = qs.filter(customer_level=level)
+        mode = request.GET.get('invoice_mode', '').strip()
+        if mode:
+            qs = qs.filter(invoice_mode=mode)
+
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(100, max(1, int(request.GET.get('size', 50) or 50)))
         total = qs.count()
         items = list(qs.select_related('created_by')[(page - 1) * size: page * size])
 
-        # Aggregate AR stats per project
-        project_ids = [p.id for p in items]
-        agg = (ARRecord.objects.filter(project_id__in=project_ids)
-               .values('project_id')
-               .annotate(record_count=Count('id'), total_outstanding=Sum('outstanding_amount')))
-        agg_map = {a['project_id']: a for a in agg}
-
-        rows = []
-        for p in items:
-            d = p.to_dict()
-            a = agg_map.get(p.id, {})
-            d['record_count'] = a.get('record_count', 0)
-            d['total_outstanding'] = str(a.get('total_outstanding') or 0)
-            rows.append(d)
-
+        perms = get_request_perms(request)
+        rows = [apply_ar_view_mask(p.to_dict(), perms, 'project') for p in items]
         return ok({'items': rows, 'total': total, 'page': page, 'size': size})
 
     if request.method == 'POST':
@@ -223,7 +219,7 @@ def project_detail(request, pk):
             record_count=Count('id'), total_outstanding=Sum('outstanding_amount'))
         d['record_count'] = agg['record_count'] or 0
         d['total_outstanding'] = str(agg['total_outstanding'] or 0)
-        return ok(d)
+        return ok(apply_ar_view_mask(d, get_request_perms(request), 'project'))
 
     if request.method == 'PUT':
         data = _parse_body(request)
@@ -401,6 +397,54 @@ def project_export(request):
     return _export_response(wb, '项目信息.xlsx')
 
 
+@csrf_exempt
+@pk_required()
+def project_stats(request):
+    """KPI strip for 项目台账: 项目总数 / S·A 级客户 / 共享业务 / 本月新签环比."""
+    denied = _page_denied(request, 'ar_projects')
+    if denied:
+        return denied
+    qs = _ar_dept_filter(ARProject.objects.all(), request)
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+
+    total = qs.count()
+    shared = qs.filter(is_shared=True).count()
+
+    # Customer level breakdown
+    level_rows = qs.values('customer_level').annotate(c=Count('id'))
+    level_map = {(r['customer_level'] or '未分级'): r['c'] for r in level_rows}
+    s_count = level_map.get('S级', 0) + level_map.get('S', 0)
+    a_count = level_map.get('A级', 0) + level_map.get('A', 0)
+
+    # Month-over-month new signings by contract_date
+    today = datetime.date.today()
+    this_start = datetime.date(today.year, today.month, 1)
+    if today.month == 1:
+        last_start = datetime.date(today.year - 1, 12, 1)
+    else:
+        last_start = datetime.date(today.year, today.month - 1, 1)
+    this_count = qs.filter(contract_date__gte=this_start, contract_date__lte=today).count()
+    last_end = this_start - datetime.timedelta(days=1)
+    last_count = qs.filter(contract_date__gte=last_start, contract_date__lte=last_end).count()
+    if last_count:
+        mom = round((this_count - last_count) / last_count * 100, 1)
+    else:
+        mom = None  # no baseline
+
+    return ok({
+        'total': total,
+        'shared': shared,
+        's_count': s_count,
+        'a_count': a_count,
+        'level_map': level_map,
+        'new_this_month': this_count,
+        'new_last_month': last_count,
+        'mom_growth': mom,
+    })
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # AR Records
 # ══════════════════════════════════════════════════════════════════════════════
@@ -482,6 +526,7 @@ def ar_records(request):
         total = qs.count()
         items = list(qs[(page - 1) * size: page * size])
 
+        perms = get_request_perms(request)
         if include_payments:
             # Prefetch payments
             record_ids = [r.id for r in items]
@@ -493,9 +538,9 @@ def ar_records(request):
             for r in items:
                 d = r.to_dict(today=today)
                 d['payments'] = pay_map.get(r.id, [])
-                rows.append(d)
+                rows.append(apply_ar_view_mask(d, perms, 'record'))
         else:
-            rows = [r.to_dict(today=today) for r in items]
+            rows = [apply_ar_view_mask(r.to_dict(today=today), perms, 'record') for r in items]
 
         return ok({'items': rows, 'total': total, 'page': page, 'size': size})
 
@@ -557,7 +602,8 @@ def ar_record_detail(request, pk):
     today = datetime.date.today()
 
     if request.method == 'GET':
-        return ok(rec.to_dict(today=today, include_payments=True))
+        return ok(apply_ar_view_mask(rec.to_dict(today=today, include_payments=True),
+                                     get_request_perms(request), 'record'))
 
     if request.method == 'PUT':
         data = _parse_body(request)
@@ -735,6 +781,89 @@ def ar_record_export(request):
             rec.notes,
         ])
     return _export_response(wb, '应收账款明细.xlsx')
+
+
+def _apply_record_filters(qs, request):
+    """Shared dimension filters for AR records (used by list + kpi)."""
+    project_id = request.GET.get('project_id', '').strip()
+    if project_id:
+        qs = qs.filter(project_id=int(project_id))
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+    year = request.GET.get('year', '').strip()
+    if year:
+        qs = qs.filter(operation_year=int(year))
+    month = request.GET.get('month', '').strip()
+    if month:
+        qs = qs.filter(operation_month=int(month))
+    manager = request.GET.get('manager', '').strip()
+    if manager:
+        qs = qs.filter(project__project_manager__icontains=manager)
+    q = request.GET.get('q', '').strip()
+    if q:
+        qs = qs.filter(
+            Q(project__short_name__icontains=q) |
+            Q(project__contract_name__icontains=q) |
+            Q(project__project_no__icontains=q))
+    return qs
+
+
+@csrf_exempt
+@pk_required()
+def ar_records_kpi(request):
+    """Per-tracking completion KPIs for the current filter (对账/开票/回款)."""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    today = datetime.date.today()
+    qs = _apply_record_filters(
+        _ar_dept_filter(ARRecord.objects.all(), request), request)
+
+    total = qs.count()
+
+    # Reconciliation: 已对账 vs 未对账
+    recon_done = qs.filter(reconciliation_time__isnull=False).count()
+    recon_pending = total - recon_done
+
+    # Invoice: 已开票 vs 未开票
+    inv_done = qs.filter(actual_invoice_amount__isnull=False).count()
+    inv_pending = total - inv_done
+
+    # Collection: 已结清 vs 未收
+    settled = qs.filter(outstanding_amount__lte=0).count()
+    outstanding_qs = qs.filter(outstanding_amount__gt=0)
+    outstanding_count = outstanding_qs.count()
+    outstanding_amount = outstanding_qs.aggregate(s=Sum('outstanding_amount'))['s'] or 0
+
+    # Overdue (within current filter)
+    overdue_qs = qs.filter(outstanding_amount__gt=0, due_date__lt=today)
+    overdue_count = overdue_qs.count()
+    overdue_amount = overdue_qs.aggregate(s=Sum('outstanding_amount'))['s'] or 0
+
+    def _rate(done, tot):
+        return round(done / tot * 100, 1) if tot else 100.0
+
+    return ok({
+        'total': total,
+        'reconciliation': {
+            'done': recon_done, 'pending': recon_pending,
+            'rate': _rate(recon_done, total),
+            'pending_amount': str(qs.filter(reconciliation_time__isnull=True)
+                                  .aggregate(s=Sum('outstanding_amount'))['s'] or 0),
+        },
+        'invoice': {
+            'done': inv_done, 'pending': inv_pending,
+            'rate': _rate(inv_done, total),
+        },
+        'collection': {
+            'settled': settled,
+            'outstanding_count': outstanding_count,
+            'outstanding_amount': str(outstanding_amount),
+            'rate': _rate(settled, total),
+        },
+        'overdue': {'count': overdue_count, 'amount': str(overdue_amount)},
+    })
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1119,13 +1248,24 @@ def cashflow(request):
     if total_alert:
         has_alert = True
 
+    collected_arr = [float(total_coll.get(ym, 0)) for ym in month_keys]
+    paid_arr = [float(total_paid.get(ym, 0)) for ym in month_keys]
+    net_arr = [round(collected_arr[i] - paid_arr[i], 2) for i in range(len(month_keys))]
+    cumulative = []
+    running = 0.0
+    for v in net_arr:
+        running += v
+        cumulative.append(round(running, 2))
+
     return ok({
         'months': month_keys,
         'depts': depts,
         'by_dept': by_dept,
         'totals': {
-            'collected': [float(total_coll.get(ym, 0)) for ym in month_keys],
-            'paid': [float(total_paid.get(ym, 0)) for ym in month_keys],
+            'collected': collected_arr,
+            'paid': paid_arr,
+            'net': net_arr,
+            'cumulative_net': cumulative,
             'budget_collection': [float(total_bcoll.get(ym, 0)) for ym in month_keys],
             'budget_payment': [float(total_bpaid.get(ym, 0)) for ym in month_keys],
             'alert_months': total_alert,
@@ -1249,6 +1389,168 @@ def budget_payment(request):
 @pk_required()
 def budget_payment_detail(request, pk):
     return _budget_detail(request, pk, PaymentBudget, 'ar_budget')
+
+
+def _budget_label(kind):
+    return '收款' if kind == 'collection' else '付款'
+
+
+def _budget_template(request, kind):
+    denied = _page_denied(request, 'ar_budget')
+    if denied:
+        return denied
+    lbl = _budget_label(kind)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f'{lbl}预算'
+    headers = ['项目编号(可选)', '项目简称/摘要*', f'预计{lbl}日期(YYYY-MM-DD)*',
+               '二级部门', '交付部门', '金额*', '备注']
+    color = '1B6E35' if kind == 'collection' else 'B25600'
+    _header_row(ws, headers, color=color)
+    ws.append([EXAMPLE_ROW_MARKER, '示例项目A', '2026-06-15', '华南区',
+               '劳务事业部', 100000, '示例备注'])
+    for col in range(1, len(headers) + 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 20
+    return _export_response(wb, f'{lbl}预算导入模板.xlsx')
+
+
+def _budget_import(request, Model, kind):
+    denied = _page_denied(request, 'ar_budget')
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    f = request.FILES.get('file')
+    if not f:
+        return err('请上传文件')
+    try:
+        wb = openpyxl.load_workbook(f, data_only=True)
+        ws = wb.active
+    except Exception as e:
+        return err(f'无法读取Excel: {e}')
+
+    headers = [str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1)]
+    col_map = {h: i + 1 for i, h in enumerate(headers)}
+    lbl = _budget_label(kind)
+
+    def _cv(row, name):
+        idx = col_map.get(name)
+        if idx is None:
+            return ''
+        v = ws.cell(row, idx).value
+        return str(v).strip() if v is not None else ''
+
+    from paikuan.models import PaikuanUser
+    user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+    created = skipped = 0
+    errors = []
+    for ri in range(2, ws.max_row + 1):
+        short_name = _cv(ri, '项目简称/摘要*')
+        if not short_name or EXAMPLE_ROW_MARKER in short_name:
+            skipped += 1
+            continue
+        date_str = _normalize_date(_cv(ri, f'预计{lbl}日期(YYYY-MM-DD)*'))
+        if not date_str:
+            errors.append(f'第{ri}行: 预计日期无效')
+            skipped += 1
+            continue
+        dept = _cv(ri, '交付部门')
+        if dept and dept not in VALID_DEPARTMENTS:
+            errors.append(f'第{ri}行: 无效交付部门"{dept}"')
+            skipped += 1
+            continue
+        if dept and request.pk_role != 'super_admin' and dept not in request.pk_depts:
+            errors.append(f'第{ri}行: 无权操作部门"{dept}"')
+            skipped += 1
+            continue
+        amount = _dec(_cv(ri, '金额*'))
+        if amount <= 0:
+            errors.append(f'第{ri}行: 金额必须大于0')
+            skipped += 1
+            continue
+        try:
+            Model.objects.create(
+                project_no=_cv(ri, '项目编号(可选)'),
+                short_name=short_name,
+                expected_date=date_str,
+                sub_dept=_cv(ri, '二级部门'),
+                delivery_dept=dept,
+                amount=amount,
+                notes=_cv(ri, '备注'),
+                created_by=user,
+            )
+            created += 1
+        except Exception as e:
+            errors.append(f'第{ri}行: {e}')
+            skipped += 1
+    return ok({'created': created, 'skipped': skipped, 'errors': errors})
+
+
+def _budget_export(request, Model, kind):
+    denied = _page_denied(request, 'ar_budget')
+    if denied:
+        return denied
+    qs = _ar_dept_filter(Model.objects.all(), request, dept_field='delivery_dept')
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+    year = request.GET.get('year', '').strip()
+    if year:
+        qs = qs.filter(expected_date__year=int(year))
+    month = request.GET.get('month', '').strip()
+    if month:
+        qs = qs.filter(expected_date__month=int(month))
+    if qs.count() > 5000:
+        return err('导出超过5000行，请缩小筛选范围')
+    lbl = _budget_label(kind)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f'{lbl}预算'
+    headers = ['项目编号', '项目简称/摘要', f'预计{lbl}日期', '二级部门',
+               '交付部门', '金额', '备注', '创建人']
+    color = '1B6E35' if kind == 'collection' else 'B25600'
+    _header_row(ws, headers, color=color)
+    for o in qs.select_related('created_by'):
+        ws.append([o.project_no, o.short_name, str(o.expected_date), o.sub_dept,
+                   o.delivery_dept, float(o.amount), o.notes,
+                   o.created_by.name if o.created_by else ''])
+    return _export_response(wb, f'{lbl}预算.xlsx')
+
+
+@csrf_exempt
+@pk_required()
+def budget_collection_template(request):
+    return _budget_template(request, 'collection')
+
+
+@csrf_exempt
+@pk_required()
+def budget_collection_import(request):
+    return _budget_import(request, CollectionBudget, 'collection')
+
+
+@csrf_exempt
+@pk_required()
+def budget_collection_export(request):
+    return _budget_export(request, CollectionBudget, 'collection')
+
+
+@csrf_exempt
+@pk_required()
+def budget_payment_template(request):
+    return _budget_template(request, 'payment')
+
+
+@csrf_exempt
+@pk_required()
+def budget_payment_import(request):
+    return _budget_import(request, PaymentBudget, 'payment')
+
+
+@csrf_exempt
+@pk_required()
+def budget_payment_export(request):
+    return _budget_export(request, PaymentBudget, 'payment')
 
 
 @csrf_exempt
