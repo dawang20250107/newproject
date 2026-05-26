@@ -285,17 +285,31 @@ onMounted(loadAll)
         <h1>预算管理</h1>
         <div style="font-size:13px;color:var(--muted);margin-top:2px">收款预算 · 付款预算 · 执行对比</div>
       </div>
-      <div class="ctrl-row">
-        <select v-model="year" class="sel-yr" @change="loadAll">
+    </div>
+
+    <!-- Polished filter bar -->
+    <div class="bgt-filterbar">
+      <div class="fbg">
+        <svg class="fb-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        <span class="fb-label">年月</span>
+        <select v-model="year" class="fb-sel" @change="loadAll">
           <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
         </select>
-        <select v-model="month" class="sel-mo" @change="loadAll">
+        <select v-model="month" class="fb-sel fb-sel-mo" @change="loadAll">
           <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
         </select>
-        <select v-model="selectedDept" class="sel-bu" @change="loadAll">
+      </div>
+      <div class="fb-divider"></div>
+      <div class="fbg">
+        <svg class="fb-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        <span class="fb-label">事业部</span>
+        <select v-model="selectedDept" class="fb-sel fb-sel-dept" @change="loadAll">
           <option value="">全部事业部</option>
           <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
         </select>
+      </div>
+      <div v-if="summLoading || listLoading" class="fb-loading">
+        <span class="fb-spin">↻</span> 加载中
       </div>
     </div>
 
@@ -308,6 +322,19 @@ onMounted(loadAll)
 
     <!-- ── Summary Tab ── -->
     <template v-if="activeTab === 'summary'">
+
+      <!-- Compact alert strip at top of summary tab -->
+      <div v-if="summary?.has_alert" class="alert-strip">
+        <div class="ast-pulse"></div>
+        <div class="ast-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </div>
+        <div class="ast-body">
+          <span class="ast-title">实际付款超出实际收款</span>
+          <span class="ast-sep">·</span>
+          <span class="ast-desc">{{ year }}年{{ month }}月 · {{ selectedDept || '全部事业部' }} · 净现金流为负，请关注资金安排</span>
+        </div>
+      </div>
 
       <!-- Month progress bar -->
       <div class="progress-card" style="margin-bottom:16px">
@@ -435,16 +462,6 @@ onMounted(loadAll)
         <BaseChart v-if="deptCompareOption" :option="deptCompareOption" height="240px" />
       </div>
 
-      <!-- Alert — placed after main content so it doesn't block data view -->
-      <div v-if="summary?.has_alert" class="alert-banner" style="margin-top:16px;margin-bottom:0">
-        <div class="alert-icon-wrap">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        </div>
-        <div>
-          <div class="alert-title">实际付款超出实际收款</div>
-          <div class="alert-desc">{{ year }}年{{ month }}月 · {{ selectedDept || '全部事业部' }} · 净现金流为负，请关注资金安排</div>
-        </div>
-      </div>
     </template>
 
     <!-- ── Collection Budget Tab ── -->
@@ -622,26 +639,57 @@ onMounted(loadAll)
 </template>
 
 <style scoped>
+/* ── Filter bar ── */
+.bgt-filterbar {
+  display: flex; align-items: center;
+  background: rgba(255,255,255,0.88); border: 1px solid rgba(255,255,255,0.9);
+  border-radius: 14px; padding: 4px 10px;
+  box-shadow: 0 2px 14px rgba(0,0,0,0.06);
+  margin-bottom: 20px; backdrop-filter: blur(10px);
+  flex-wrap: nowrap; overflow-x: auto;
+}
+.fbg { display: flex; align-items: center; gap: 7px; padding: 5px 10px; }
+.fb-icon { color: var(--muted); flex-shrink: 0; }
+.fb-label { font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.fb-divider { width: 1px; height: 24px; background: rgba(0,0,0,0.09); margin: 0 4px; flex-shrink: 0; }
+.fb-sel {
+  height: 30px; padding: 0 10px; border: none;
+  background: rgba(0,0,0,0.04); border-radius: 8px;
+  font-size: 12.5px; color: var(--text); cursor: pointer; outline: none;
+  transition: background .15s, color .15s;
+}
+.fb-sel:hover, .fb-sel:focus { background: rgba(201,99,66,0.09); color: var(--primary); }
+.fb-sel-mo   { width: 60px; }
+.fb-sel-dept { min-width: 110px; }
+.fb-loading  { margin-left: auto; padding-left: 12px; font-size: 12px; color: var(--primary); display: flex; align-items: center; gap: 5px; }
+.fb-spin { display: inline-block; animation: fbSpin 0.9s linear infinite; }
+@keyframes fbSpin { to { transform: rotate(360deg); } }
+
+/* ── Compact alert strip (top of summary tab) ── */
+.alert-strip {
+  position: relative; overflow: hidden;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; margin-bottom: 16px;
+  background: rgba(198,40,40,.05);
+  border-left: 3.5px solid #c62828;
+  border-radius: 0 10px 10px 0;
+  animation: alertPulse 1.8s ease-in-out infinite; will-change: opacity;
+}
+@keyframes alertPulse { 0%,100% { opacity: 1; } 50% { opacity: .72; } }
+.ast-pulse {
+  position: absolute; inset: 0;
+  background: linear-gradient(90deg, rgba(198,40,40,.06) 0%, transparent 60%);
+}
+.ast-icon { color: #c62828; flex-shrink: 0; z-index: 1; display: flex; }
+.ast-body { display: flex; align-items: center; gap: 0; flex-wrap: wrap; z-index: 1; }
+.ast-title { font-weight: 700; color: #c62828; font-size: 13px; }
+.ast-sep    { margin: 0 6px; color: rgba(198,40,40,.4); font-size: 12px; }
+.ast-desc   { font-size: 12px; color: #c62828; opacity: .82; }
+
 /* Segment control */
 .segment-ctrl { display: inline-flex; gap: 0; padding: 4px; background: rgba(0,0,0,0.04); border-radius: 12px; }
 .seg-btn { padding: 7px 20px; border-radius: 9px; border: none; font-size: 13px; font-weight: 500; color: var(--muted); background: transparent; cursor: pointer; transition: all 0.18s; }
 .seg-btn.active { background: white; color: var(--primary); font-weight: 700; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
-
-/* Alert banner — GPU-composited, only opacity animates */
-.alert-banner {
-  display: flex; align-items: flex-start; gap: 14px;
-  padding: 16px 20px; margin-bottom: 16px;
-  background: rgba(198,40,40,.06); border: 1.5px solid rgba(198,40,40,.3);
-  border-radius: 12px; box-shadow: 0 2px 14px rgba(198,40,40,.12);
-  animation: alertPulse 1.6s ease-in-out infinite; will-change: opacity;
-}
-@keyframes alertPulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.68; }
-}
-.alert-icon-wrap { color: #c62828; flex-shrink: 0; margin-top: 1px; }
-.alert-title { font-weight: 700; color: #c62828; font-size: 14px; }
-.alert-desc  { font-size: 12.5px; color: #c62828; margin-top: 4px; opacity: .85; }
 
 /* Month progress card */
 .progress-card {
