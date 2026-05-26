@@ -131,6 +131,44 @@ class Payment(models.Model):
         }
 
 
+class ApprovalRecord(models.Model):
+    STATUS_CHOICES = [
+        ('pending', '待审批'),
+        ('approved', '审批通过'),
+        ('rejected', '已拒绝'),
+        ('canceled', '已撤销'),
+    ]
+    applicant = models.CharField('申请人', max_length=100, db_index=True)
+    department = models.CharField('所属事业部', max_length=100, db_index=True)
+    approval_number = models.CharField('审批编号', max_length=21, db_index=True)
+    summary = models.CharField('摘要', max_length=500)
+    amount = models.DecimalField('申请金额', max_digits=15, decimal_places=2)
+    payee = models.CharField('收款主体', max_length=200)
+    status = models.CharField('审批状态', max_length=20, choices=STATUS_CHOICES, default='pending', db_index=True)
+    archived = models.BooleanField('是否归档', default=False, db_index=True)
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='approval_records')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'paikuan_approval_records'
+        ordering = ['-created_at']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'applicant': self.applicant,
+            'department': self.department,
+            'approval_number': self.approval_number,
+            'summary': self.summary,
+            'amount': str(self.amount),
+            'payee': self.payee,
+            'status': self.status,
+            'archived': self.archived,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class JobPermission(models.Model):
     """Per-job-title permission config, managed by super_admin.
 

@@ -23,6 +23,7 @@ const today = todayCST()  // UTC+8，与服务端 Asia/Shanghai 保持一致
 
 const filters = reactive({
   q: '', dept: '', status: '', start_date: '', end_date: '',
+  sort_by: 'planned_date', sort_dir: 'desc',
   page: 1, size: 50,
 })
 
@@ -168,6 +169,12 @@ function resetFilters() {
 }
 
 function setPage(p) { filters.page = p; load() }
+function onSort(k) {
+  if (filters.sort_by === k) filters.sort_dir = filters.sort_dir === 'asc' ? 'desc' : 'asc'
+  else { filters.sort_by = k; filters.sort_dir = 'desc' }
+  filters.page = 1
+  load()
+}
 </script>
 
 <template>
@@ -225,14 +232,14 @@ function setPage(p) { filters.page = p; load() }
         <table>
           <thead>
             <tr>
-              <th v-if="auth.canView('department')">部门</th>
-              <th v-if="auth.canView('approval_number')">审批单号</th>
-              <th v-if="auth.canView('project_desc')">付款事项</th>
-              <th v-if="auth.canView('payee')">收款方</th>
-              <th v-if="auth.canView('planned_date')">计划日期</th>
-              <th v-if="auth.canView('total_amount')">计划总额 (元)</th>
-              <th v-if="showPaid">已付 (元)</th>
-              <th v-if="showRemaining">剩余 (元)</th>
+              <th v-if="auth.canView('department')" @click="onSort('department')" style="cursor:pointer">部门</th>
+              <th v-if="auth.canView('approval_number')" @click="onSort('approval_number')" style="cursor:pointer">审批单号</th>
+              <th v-if="auth.canView('project_desc')" @click="onSort('project_desc')" style="cursor:pointer">付款事项</th>
+              <th v-if="auth.canView('payee')" @click="onSort('payee')" style="cursor:pointer">收款方</th>
+              <th v-if="auth.canView('planned_date')" @click="onSort('planned_date')" style="cursor:pointer">计划日期</th>
+              <th v-if="auth.canView('total_amount')" @click="onSort('total_amount')" style="cursor:pointer">计划总额 (元)</th>
+              <th v-if="showPaid" @click="onSort('total_paid')" style="cursor:pointer">已付 (元)</th>
+              <th v-if="showRemaining" @click="onSort('remaining')" style="cursor:pointer">剩余 (元)</th>
               <th>状态</th>
               <th v-if="auth.canWrite || auth.canDelete">操作</th>
             </tr>
