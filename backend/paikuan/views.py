@@ -549,6 +549,19 @@ def _list_payments(request):
             Q(project_desc__icontains=q) | Q(payee__icontains=q) |
             Q(approval_number__icontains=q) | Q(department__icontains=q)
         )
+    sort_by = request.GET.get('sort_by', '').strip()
+    sort_dir = request.GET.get('sort_dir', 'desc').strip().lower()
+    sort_map = {
+        'department': 'department',
+        'approval_number': 'approval_number',
+        'project_desc': 'project_desc',
+        'payee': 'payee',
+        'planned_date': 'planned_date',
+        'total_amount': 'total_amount',
+        'total_paid': 'paid',
+        'remaining': 'remaining',
+        'status': 'paid',
+    }
 
     try:
         page = max(1, int(request.GET.get('page', 1)))
@@ -566,6 +579,10 @@ def _list_payments(request):
         elif status_q == 'partial':
             qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'))
 
+    qs = qs.annotate(remaining=_remaining_expr())
+    if sort_by in sort_map:
+        fld = sort_map[sort_by]
+        qs = qs.order_by(f'-{fld}' if sort_dir != 'asc' else fld, '-id')
     total = qs.count()
     perms = get_request_perms(request)
     items = [apply_view_mask(p.to_dict(), perms) for p in qs[(page - 1) * size: page * size]]
@@ -977,6 +994,7 @@ def dashboard(request):
     ]
 
     return ok({
+        'today': str(today),
         'today_count': today_agg['c'],
         'today_amount': money(today_agg['s']),
         'pending_count': pending_agg['c'],
