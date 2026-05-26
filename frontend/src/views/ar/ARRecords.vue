@@ -135,6 +135,12 @@ async function deleteRec(rec) {
   try { await ar.deleteRecord(rec.id); await load() }
   catch (e) { alert(e?.response?.data?.msg || '删除失败') }
 }
+async function recomputeRec(rec) {
+  try {
+    await ar.recomputeRecord(rec.id)
+    await load()
+  } catch (e) { alert(e?.response?.data?.msg || '重算失败') }
+}
 
 function togglePayments(id) { expandedPayments.value[id] = !expandedPayments.value[id] }
 
@@ -450,6 +456,9 @@ function clearFilters() {
                   <div class="row-acts">
                     <button class="icon-btn" @click="openEdit(rec)" title="编辑">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4z"/></svg>
+                    </button>
+                    <button class="icon-btn" @click="recomputeRec(rec)" title="重算未收">
+                      ↻
                     </button>
                     <button v-if="auth.canDelete" class="icon-btn icon-btn-del" @click="deleteRec(rec)" title="删除">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>

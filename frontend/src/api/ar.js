@@ -18,6 +18,7 @@ const ar = {
   createRecord: d => api.post('/ar/records', d),
   getRecord: id => api.get(`/ar/records/${id}`),
   updateRecord: (id, d) => api.put(`/ar/records/${id}`, d),
+  recomputeRecord: id => api.post(`/ar/records/${id}/recompute`),
   deleteRecord: id => api.delete(`/ar/records/${id}`),
   recordTemplate: () => api.get('/ar/records/template', { responseType: 'blob' }),
   importRecords: fd => api.post('/ar/records/import', fd),

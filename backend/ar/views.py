@@ -1103,6 +1103,29 @@ def ar_payment_detail(request, pk, ppk):
     return err('Method not allowed', 405)
 
 
+@csrf_exempt
+@pk_required()
+def ar_record_recompute(request, pk):
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    try:
+        rec = ARRecord.objects.select_related('project').get(pk=pk)
+    except ARRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    denied = _object_dept_denied(request, rec)
+    if denied:
+        return denied
+    rec.recompute_derived(save=True)
+    rec.save(update_fields=['updated_at'])
+    return ok({'id': rec.id, 'outstanding_amount': str(rec.outstanding_amount)})
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Analytics
 # ══════════════════════════════════════════════════════════════════════════════
