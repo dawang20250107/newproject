@@ -30,6 +30,12 @@ const recForm = reactive({
 })
 
 const projects = ref([])
+const projectKeyword = ref('')
+const filteredProjects = computed(() => {
+  const kw = projectKeyword.value.trim().toLowerCase()
+  if (!kw) return projects.value
+  return projects.value.filter(p => (`${p.project_no} ${p.short_name || p.contract_name}`).toLowerCase().includes(kw))
+})
 const showPayModal = ref(false)
 const payRec = ref(null)
 const payForm = reactive({ amount: '', payment_date: '', notes: '' })
@@ -89,6 +95,7 @@ function openCreate() {
     invoice_date: '', reconciliation_time: '', notes: '',
   })
   showModal.value = true
+  projectKeyword.value = ''
 }
 
 function openEdit(rec) {
@@ -475,9 +482,10 @@ onMounted(() => {
             <div class="form-grid">
               <label class="form-field span2">
                 <span>关联项目 <em>*</em></span>
+                <input v-model="projectKeyword" placeholder="输入项目编号/简称模糊搜索" :disabled="!!editRec" />
                 <select v-model="recForm.project_id" :disabled="!!editRec">
                   <option value="" disabled>请选择项目</option>
-                  <option v-for="p in projects" :key="p.id" :value="p.id">
+                  <option v-for="p in filteredProjects" :key="p.id" :value="p.id">
                     {{ p.project_no }} · {{ p.short_name || p.contract_name }}
                   </option>
                 </select>

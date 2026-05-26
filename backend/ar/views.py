@@ -9,7 +9,7 @@ from urllib.parse import quote
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction
-from django.db.models import Sum, Count, Q, F, Value, Case, When, IntegerField, CharField
+from django.db.models import Sum, Count, Q, F, Value, Case, When, IntegerField, CharField, Max
 from django.db.models.functions import TruncMonth
 from django.utils import timezone
 
@@ -26,6 +26,23 @@ from paikuan.models import Payment
 AR_PAGE_KEYS = ['ar_projects', 'ar_records', 'ar_analytics', 'ar_cashflow', 'ar_budget']
 
 EXAMPLE_ROW_MARKER = '示例-导入前请删除此行'
+
+
+def _match_project_by_short_name(short_name, dept=''):
+    name = (short_name or '').strip()
+    if not name:
+        return None
+    qs = ARProject.objects.filter(short_name=name)
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+    proj = qs.order_by('-id').first()
+    if proj:
+        return proj
+    # fallback: contains match when users type partially
+    qs = ARProject.objects.filter(short_name__icontains=name)
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+    return qs.order_by('-id').first()
 
 
 def _normalize_date(s):
@@ -730,10 +747,10 @@ def ar_record_template(request):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '应收账款明细'
-    headers = ['项目编号*', '运作年*', '运作月*', '预估上账金额', '实际开票金额',
-               '税额(差额模式手填)', '开票日期(YYYY-MM-DD)', '备注']
+    headers = ['项目简称*', '运作年*', '运作月*', '预估上账金额', '实际开票金额',
+               '税额(差额模式手填)', '开票日期(YYYY-MM-DD)', '回款金额', '回款时间(YYYY-MM-DD)', '备注']
     _header_row(ws, headers, color='1B6E35')
-    ws.append([EXAMPLE_ROW_MARKER, 2026, 1, 100000, 100000, '', '2026-01-15', '示例'])
+    ws.append([EXAMPLE_ROW_MARKER, 2026, 1, 100000, 100000, '', '2026-01-15', 30000, '2026-01-20', '示例'])
     for col in range(1, len(headers) + 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 20
     return _export_response(wb, '应收账款明细导入模板.xlsx')
@@ -775,14 +792,13 @@ def ar_record_import(request):
     errors = []
 
     for ri in range(2, ws.max_row + 1):
-        project_no = _cv(ri, '项目编号*')
-        if not project_no or EXAMPLE_ROW_MARKER in project_no:
+        short_name = _cv(ri, '项目简称*')
+        if not short_name or EXAMPLE_ROW_MARKER in short_name:
             skipped += 1
             continue
-        try:
-            proj = ARProject.objects.get(project_no=project_no)
-        except ARProject.DoesNotExist:
-            errors.append(f'第{ri}行: 项目编号"{project_no}"不存在')
+        proj = _match_project_by_short_name(short_name)
+        if not proj:
+            errors.append(f'第{ri}行: 项目简称"{short_name}"未匹配到项目')
             skipped += 1
             continue
         if request.pk_role != 'super_admin':
@@ -798,9 +814,10 @@ def ar_record_import(request):
             skipped += 1
             continue
         try:
-            rec, created_new = ARRecord.objects.get_or_create(
-                project=proj, operation_year=year, operation_month=month,
-                defaults={'created_by': user})
+            with transaction.atomic():
+                rec, created_new = ARRecord.objects.select_for_update().get_or_create(
+                    project=proj, operation_year=year, operation_month=month,
+                    defaults={'created_by': user})
             est = _cv(ri, '预估上账金额')
             if est and _can_ar_view(request, 'r_estimated_amount'):
                 rec.estimated_amount = _dec(est)
@@ -817,6 +834,20 @@ def ar_record_import(request):
             if _can_ar_view(request, 'r_notes'):
                 rec.notes = notes
             rec.save()
+            pay_amount = _cv(ri, '回款金额')
+            pay_date = _normalize_date(_cv(ri, '回款时间(YYYY-MM-DD)'))
+            if pay_amount and pay_date:
+                amt = _dec(pay_amount)
+                if amt > 0:
+                    max_no = rec.payments.aggregate(m=Max('payment_no')).get('m') or 0
+                    ARPayment.objects.create(
+                        ar_record=rec,
+                        payment_no=max_no + 1,
+                        amount=amt,
+                        payment_date=pay_date,
+                        notes='导入回款'
+                    )
+                    rec.recompute_derived()
             if created_new:
                 created += 1
             else:
@@ -1442,11 +1473,15 @@ def _budget_list_create(request, Model, page_key):
             return err('金额必须大于0')
         from paikuan.models import PaikuanUser
         user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+        short_name = data.get('short_name', '').strip()
+        proj = _match_project_by_short_name(short_name, dept)
+        auto_project_no = proj.project_no if proj else data.get('project_no', '').strip()
+        auto_sub_dept = proj.sub_dept if proj else data.get('sub_dept', '').strip()
         obj = Model.objects.create(
-            project_no=data.get('project_no', '').strip(),
-            short_name=data.get('short_name', '').strip(),
+            project_no=auto_project_no,
+            short_name=short_name,
             expected_date=date_str,
-            sub_dept=data.get('sub_dept', '').strip(),
+            sub_dept=auto_sub_dept,
             delivery_dept=dept,
             amount=amount,
             notes=data.get('notes', '').strip(),
@@ -1613,11 +1648,12 @@ def _budget_import(request, Model, kind):
             skipped += 1
             continue
         try:
+            proj = _match_project_by_short_name(short_name, dept)
             Model.objects.create(
-                project_no=_cv(ri, '项目编号(可选)'),
+                project_no=(proj.project_no if proj else _cv(ri, '项目编号(可选)')),
                 short_name=short_name,
                 expected_date=date_str,
-                sub_dept=_cv(ri, '二级部门'),
+                sub_dept=(proj.sub_dept if proj else _cv(ri, '二级部门')),
                 delivery_dept=dept,
                 amount=amount,
                 notes=_cv(ri, '备注'),

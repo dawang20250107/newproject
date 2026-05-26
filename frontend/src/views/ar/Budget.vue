@@ -30,6 +30,17 @@ const modalType = ref('collection')
 const editItem = ref(null)
 const saving = ref(false)
 const form = reactive({ project_no: '', short_name: '', expected_date: '', sub_dept: '', delivery_dept: '', amount: '', notes: '' })
+const projects = ref([])
+const shortNameOptions = computed(() => {
+  const seen = new Set()
+  return projects.value
+    .filter(p => p.short_name)
+    .filter(p => {
+      if (seen.has(p.short_name)) return false
+      seen.add(p.short_name)
+      return true
+    })
+})
 
 // ── Computed ──────────────────────────────────────────────────────────────────
 
@@ -182,6 +193,10 @@ async function loadLists() {
     payItems.value = p.data.items; payTotal.value = p.data.total_amount
   } finally { listLoading.value = false }
 }
+async function loadProjects() {
+  const res = await ar.listProjects({ size: 500 })
+  projects.value = res.data.items || []
+}
 
 async function loadAll() { await Promise.all([loadSummary(), loadLists()]) }
 
@@ -206,6 +221,12 @@ async function save() {
   }
   saving.value = true
   try {
+    const matched = projects.value.find(p => p.short_name === form.short_name)
+    if (matched) {
+      form.project_no = matched.project_no
+      if (!form.delivery_dept) form.delivery_dept = matched.delivery_dept || form.delivery_dept
+      if (!form.sub_dept) form.sub_dept = matched.sub_dept || form.sub_dept
+    }
     if (modalType.value === 'collection') {
       if (editItem.value) await ar.updateCollectionBudget(editItem.value.id, form)
       else await ar.createCollectionBudget(form)
@@ -276,6 +297,7 @@ async function exportData(type) {
 }
 
 onMounted(loadAll)
+onMounted(loadProjects)
 </script>
 
 <template>
@@ -601,7 +623,12 @@ onMounted(loadAll)
               </label>
               <label class="form-field">
                 <span>项目简称 / 摘要 <em>*</em></span>
-                <input v-model="form.short_name" />
+                <input v-model="form.short_name" list="budget-project-shortnames" placeholder="可手填非项目信息；也可下拉选择项目简称" />
+                <datalist id="budget-project-shortnames">
+                  <option v-for="p in shortNameOptions" :key="p.id" :value="p.short_name">
+                    {{ p.project_no }} · {{ p.short_name }}
+                  </option>
+                </datalist>
               </label>
               <label class="form-field">
                 <span>预计{{ modalType === 'collection' ? '收款' : '付款' }}日期 <em>*</em></span>

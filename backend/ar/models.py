@@ -49,16 +49,17 @@ class ARProject(models.Model):
         ]
 
     def _gen_project_no(self):
-        prefix = 'PR-' + datetime.date.today().strftime('%Y%m%d') + '-'
+        dept_code = (self.delivery_dept or 'GEN').upper()[:3]
+        prefix = f'{dept_code}-{datetime.date.today().strftime("%Y%m%d")}-'
         with transaction.atomic():
             last = (ARProject.objects.filter(project_no__startswith=prefix)
                     .order_by('-project_no').first())
-            seq = 1
+            seq = 0
             if last:
                 try:
                     seq = int(last.project_no.rsplit('-', 1)[-1]) + 1
                 except ValueError:
-                    seq = 1
+                    seq = 0
             return f'{prefix}{seq:04d}'
 
     def save(self, *args, **kwargs):
