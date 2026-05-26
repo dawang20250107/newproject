@@ -45,15 +45,15 @@ onMounted(()=>{load();loadDepts()})
     <button v-if="auth.canCreate" class="btn btn-primary" @click="openCreate">+ 新增审批记录</button>
   </div></div>
   <input ref="fileRef" type="file" accept=".xlsx,.xls" style="display:none" @change="onImport" />
-  <div class="card"><div class="filter-bar">
+  <div class="card approval-card"><div class="filter-bar">
     <input v-model="filters.applicant" placeholder="申请人(模糊)" @keyup.enter="load"/>
     <input v-model="filters.approval_number" placeholder="审批编号(模糊)" @keyup.enter="load"/>
     <select v-model="filters.dept" @change="load"><option value="">全部事业部</option><option v-for="d in deptChoices" :key="d" :value="d">{{d}}</option></select>
     <button class="btn btn-ghost btn-sm" @click="load">筛选</button>
   </div>
   <div v-if="loading" class="empty">加载中…</div>
-  <table v-else><thead><tr><th>申请人</th><th>所属事业部</th><th>审批编号</th><th>摘要</th><th>申请金额</th><th>收款主体</th><th>审批状态</th><th>操作</th></tr></thead>
-    <tbody><tr v-for="i in items" :key="i.id"><td>{{i.applicant}}</td><td>{{i.department}}</td><td>{{i.approval_number}}</td><td>{{i.summary}}</td><td>{{i.amount}}</td><td>{{i.payee}}</td>
+  <table v-else class="approval-table"><thead><tr><th>申请人</th><th>所属事业部</th><th>审批编号</th><th>摘要</th><th>申请金额</th><th>收款主体</th><th>审批状态</th><th>操作</th></tr></thead>
+    <tbody><tr v-for="i in items" :key="i.id"><td>{{i.applicant}}</td><td>{{i.department}}</td><td class="mono">{{i.approval_number}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}</td><td class="payee">{{i.payee}}</td>
       <td>
         <select :value="i.status" @change="updateStatus(i, $event.target.value)">
           <option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option>
@@ -78,3 +78,21 @@ onMounted(()=>{load();loadDepts()})
   </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showSchedule=false">取消</button><button class="btn btn-primary" @click="doSchedule">保存并排款</button></div></div></div></Teleport>
 
 </div></template>
+
+<style scoped>
+.approval-card { padding: 12px; }
+.approval-table { width: 100%; table-layout: fixed; font-size: 12px; }
+.approval-table th, .approval-table td { padding: 6px 8px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.approval-table th:nth-child(1), .approval-table td:nth-child(1) { width: 9%; }
+.approval-table th:nth-child(2), .approval-table td:nth-child(2) { width: 12%; }
+.approval-table th:nth-child(3), .approval-table td:nth-child(3) { width: 18%; }
+.approval-table th:nth-child(4), .approval-table td:nth-child(4) { width: 20%; }
+.approval-table th:nth-child(5), .approval-table td:nth-child(5) { width: 10%; }
+.approval-table th:nth-child(6), .approval-table td:nth-child(6) { width: 14%; }
+.approval-table th:nth-child(7), .approval-table td:nth-child(7) { width: 9%; }
+.approval-table th:nth-child(8), .approval-table td:nth-child(8) { width: 8%; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.amt { text-align: right; font-variant-numeric: tabular-nums; }
+.summary, .payee { max-width: 100%; }
+.approval-table select { max-width: 100%; height: 28px; font-size: 12px; }
+</style>
