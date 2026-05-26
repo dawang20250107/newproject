@@ -7,11 +7,14 @@ const saving = ref(false)
 const saved = ref(false)
 const error = ref('')
 const fields = ref([])
+const arFields = ref([])
 const pages = ref([])
 const jobs = ref([])          // [{job_title, label, config}]
 const activeJob = ref('')
 
 const current = computed(() => jobs.value.find(j => j.job_title === activeJob.value))
+const arProjectFields = computed(() => arFields.value.filter(f => f.group === 'project'))
+const arRecordFields = computed(() => arFields.value.filter(f => f.group === 'record'))
 
 async function load() {
   loading.value = true
@@ -19,8 +22,16 @@ async function load() {
   try {
     const res = await api.get('/permissions')
     fields.value = res.data.fields
+    arFields.value = res.data.ar_fields || []
     pages.value = res.data.pages
     jobs.value = res.data.jobs
+    // Ensure ar_view object exists on each job config (older stored configs may lack it)
+    for (const j of jobs.value) {
+      if (!j.config.ar_view) j.config.ar_view = {}
+      for (const f of arFields.value) {
+        if (j.config.ar_view[f.key] === undefined) j.config.ar_view[f.key] = true
+      }
+    }
     if (!activeJob.value && jobs.value.length) activeJob.value = jobs.value[0].job_title
   } catch (e) {
     error.value = e?.error || '加载失败'
@@ -29,6 +40,12 @@ async function load() {
   }
 }
 onMounted(load)
+
+function toggleArViewAll(group, val) {
+  const c = current.value.config
+  const list = group === 'project' ? arProjectFields.value : arRecordFields.value
+  for (const f of list) c.ar_view[f.key] = val
+}
 
 function toggleViewAll(val) {
   const c = current.value.config
@@ -158,6 +175,35 @@ async function save() {
           </table>
         </div>
 
+        <!-- AR field visibility -->
+        <template v-if="arFields.length">
+          <div class="section-title" style="margin-top:24px">应收-项目台账字段（显示 / 隐藏）
+            <span class="all-inline">
+              <button class="mini" @click="toggleArViewAll('project', true)">全显示</button>
+              <button class="mini" @click="toggleArViewAll('project', false)">全隐藏</button>
+            </span>
+          </div>
+          <div class="chip-row">
+            <label v-for="f in arProjectFields" :key="f.key" class="perm-chip" :class="{ on: current.config.ar_view[f.key] }">
+              <input type="checkbox" v-model="current.config.ar_view[f.key]" />
+              <span class="dot"></span>{{ f.label }}
+            </label>
+          </div>
+
+          <div class="section-title" style="margin-top:20px">应收-明细字段（显示 / 隐藏）
+            <span class="all-inline">
+              <button class="mini" @click="toggleArViewAll('record', true)">全显示</button>
+              <button class="mini" @click="toggleArViewAll('record', false)">全隐藏</button>
+            </span>
+          </div>
+          <div class="chip-row">
+            <label v-for="f in arRecordFields" :key="f.key" class="perm-chip" :class="{ on: current.config.ar_view[f.key] }">
+              <input type="checkbox" v-model="current.config.ar_view[f.key]" />
+              <span class="dot"></span>{{ f.label }}
+            </label>
+          </div>
+        </template>
+
         <div class="modal-footer" style="border:none;padding-top:18px">
           <Transition name="status-fade">
             <span v-if="saved" class="saved-tag">✓ 已保存</span>
@@ -203,6 +249,7 @@ async function save() {
 .perm-table th.ctr, .perm-table td.ctr { text-align: center; width: 130px; }
 .perm-table .fname { font-weight: 600; }
 .all-row { display: flex; gap: 4px; justify-content: center; margin-top: 4px; }
+.all-inline { display: inline-flex; gap: 4px; margin-left: 10px; }
 .mini {
   font-size: 11px; padding: 1px 7px; border-radius: 5px;
   border: 1px solid var(--border); background: var(--bg2);

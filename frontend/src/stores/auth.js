@@ -29,6 +29,11 @@ export const useAuthStore = defineStore('auth', () => {
     if (isAdmin.value) return true
     return perms.value?.pages?.[pageKey] !== false
   }
+  // AR field show/hide (keys namespaced p_* / r_*)
+  function canArView(fieldKey) {
+    if (isAdmin.value) return true
+    return perms.value?.ar_view?.[fieldKey] !== false
+  }
   const canCreate = computed(() => isAdmin.value || perms.value?.can_create === true)
   const canDelete = computed(() => isAdmin.value || perms.value?.can_delete === true)
   // any write capability (used to show the edit button at all)
@@ -87,7 +92,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     token, user, perms, isLoggedIn, role, isSuperAdmin, isAdmin,
-    canView, canEdit, canPage, canCreate, canDelete, canWrite,
+    canView, canEdit, canPage, canArView, canCreate, canDelete, canWrite,
     login, register, logout, setAuth, setPerms, refresh,
   }
 })

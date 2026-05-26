@@ -148,10 +148,10 @@ function onNavClick() {
       <router-link v-if="auth.canPage('ar_cashflow')" to="/ar/cashflow" class="nav-item" :class="{ active: route.path === '/ar/cashflow' }" @click="onNavClick">
         <span class="nav-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 100 7h5a3.5 3.5 0 110 7H6"/>
+            <path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/>
           </svg>
         </span>
-        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">收付对比</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">现金流分析</span></Transition>
         <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
       </router-link>
 
