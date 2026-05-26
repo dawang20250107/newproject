@@ -127,8 +127,8 @@ const statusOption = computed(() => {
 function onAgingClick(p) {
   const bucket = agingData.value?.[p.dataIndex]
   if (!bucket) return
-  const statusMap = { 'current': '', '1_30': 'overdue', '31_60': 'overdue', '61_90': 'overdue', '90plus': 'overdue' }
-  router.push({ path: '/ar/records', query: { dept: selectedDept.value, status: statusMap[bucket.key] || '' } })
+  const statusMap = { 'current': 'current', '1_30': 'overdue', '31_60': 'overdue', '61_90': 'overdue', '90plus': 'overdue' }
+  openDetail(statusMap[bucket.key] || '', `${bucket.label} 明细`)
 }
 
 function onTopClick(p) {
@@ -136,6 +136,24 @@ function onTopClick(p) {
   const proj = topData.value[idx]
   router.push({ path: '/ar/records', query: { project_id: proj.project_id } })
 }
+
+// ── Drill-down detail modal ────────────────────────────────────────────────────
+const detail = ref({ open: false, title: '', loading: false, items: [] })
+
+async function openDetail(status, title) {
+  detail.value = { open: true, title, loading: true, items: [] }
+  try {
+    const res = await ar.listRecords({ dept: selectedDept.value, status, size: 200 })
+    detail.value.items = res.data.items
+  } catch (e) {
+    detail.value.items = []
+  } finally {
+    detail.value.loading = false
+  }
+}
+
+// 重点催收 = 未收 Top 项目（取前 3）
+const keyCollection = computed(() => (topData.value || []).slice(0, 3))
 
 watch([selectedDept, selectedYear], loadAll)
 onMounted(loadAll)
@@ -156,25 +174,47 @@ onMounted(loadAll)
       </div>
     </div>
 
-    <!-- Stats summary -->
+    <!-- 超期 / 重点催收 强提醒 -->
+    <div v-if="statusData && statusData.overdue?.count" class="urge-banner">
+      <div class="urge-left">
+        <div class="urge-icon">⚠</div>
+        <div>
+          <div class="urge-title">超期强提醒 · {{ statusData.overdue.count }} 笔逾期待催收</div>
+          <div class="urge-sub">逾期未收合计 <b>{{ fmtWan(statusData.overdue.amount) }} 元</b>，请尽快跟进催收</div>
+        </div>
+      </div>
+      <div class="urge-right">
+        <div v-if="keyCollection.length" class="urge-key">
+          <span class="urge-key-label">重点催收</span>
+          <span v-for="p in keyCollection" :key="p.project_id" class="urge-chip"
+            @click="$router.push({ path: '/ar/records', query: { project_id: p.project_id } })">
+            {{ p.short_name?.length > 8 ? p.short_name.slice(0,8) + '…' : p.short_name }}
+            <b>{{ fmtWan(p.total_outstanding) }}</b>
+          </span>
+        </div>
+        <button class="urge-btn" @click="openDetail('overdue', '逾期明细')">查看逾期明细</button>
+      </div>
+    </div>
+
+    <!-- Stats summary (clickable → drill-down) -->
     <div v-if="statusData" class="kpi-grid kpi-4" style="margin-bottom:16px">
-      <div class="kpi-card" style="border-left:3px solid #c62828">
-        <div class="label">逾期</div>
+      <div class="kpi-card clickable" style="border-left:3px solid #c62828" @click="openDetail('overdue', '逾期明细')">
+        <div class="label">逾期 <span class="drill-hint">点击查看</span></div>
         <div class="value" style="color:#c62828">{{ statusData.overdue?.count || 0 }}</div>
         <div class="sub">{{ statusData.overdue?.amount ? fmtWan(statusData.overdue.amount) + ' 未收' : '—' }}</div>
       </div>
-      <div class="kpi-card" style="border-left:3px solid #1565c0">
-        <div class="label">当期</div>
+      <div class="kpi-card clickable" style="border-left:3px solid #1565c0" @click="openDetail('current', '当期明细')">
+        <div class="label">当期 <span class="drill-hint">点击查看</span></div>
         <div class="value" style="color:#1565c0">{{ statusData.current?.count || 0 }}</div>
         <div class="sub">{{ statusData.current?.amount ? fmtWan(statusData.current.amount) : '—' }}</div>
       </div>
-      <div class="kpi-card" style="border-left:3px solid #2e7d32">
-        <div class="label">未到期</div>
+      <div class="kpi-card clickable" style="border-left:3px solid #2e7d32" @click="openDetail('not_due', '未到期明细')">
+        <div class="label">未到期 <span class="drill-hint">点击查看</span></div>
         <div class="value" style="color:#2e7d32">{{ statusData.not_due?.count || 0 }}</div>
         <div class="sub">{{ statusData.not_due?.amount ? fmtWan(statusData.not_due.amount) : '—' }}</div>
       </div>
-      <div class="kpi-card" style="border-left:3px solid var(--muted)">
-        <div class="label">已结清</div>
+      <div class="kpi-card clickable" style="border-left:3px solid var(--muted)" @click="openDetail('settled', '已结清明细')">
+        <div class="label">已结清 <span class="drill-hint">点击查看</span></div>
         <div class="value" style="color:var(--muted)">{{ statusData.settled?.count || 0 }}</div>
         <div class="sub">笔</div>
       </div>
@@ -203,6 +243,49 @@ onMounted(loadAll)
         <div v-else class="empty"><div class="icon">📊</div>暂无数据</div>
       </div>
     </div>
+
+    <!-- Drill-down detail modal -->
+    <Teleport to="body">
+      <div v-if="detail.open" class="modal-overlay" @click.self="detail.open = false">
+        <div class="modal-box" style="max-width:760px">
+          <div class="modal-header">
+            <div>
+              <h3>{{ detail.title }}</h3>
+              <div style="font-size:12px;color:var(--muted);margin-top:2px">{{ selectedDept || '全部事业部' }} · 共 {{ detail.items.length }} 条</div>
+            </div>
+            <button class="modal-close" @click="detail.open = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <div v-if="detail.loading" class="empty"><div class="icon">⏳</div>加载中…</div>
+            <div v-else-if="!detail.items.length" class="empty"><div class="icon">📭</div>暂无明细</div>
+            <div v-else class="table-wrap">
+              <table class="detail-table">
+                <thead>
+                  <tr><th>项目</th><th class="ctr">年月</th><th class="amt">未收金额</th><th class="ctr">应收到期</th><th class="ctr">状态</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="r in detail.items" :key="r.id">
+                    <td><div class="dt-name">{{ r.short_name || r.contract_name }}</div><div class="dt-no">{{ r.project_no }}</div></td>
+                    <td class="ctr">{{ r.operation_year }}/{{ String(r.operation_month).padStart(2,'0') }}</td>
+                    <td class="amt" :class="parseFloat(r.outstanding_amount) > 0 ? 'dt-warn' : 'dt-zero'">{{ fmtWan(r.outstanding_amount) }}</td>
+                    <td class="ctr dt-muted">{{ r.due_date || '—' }}</td>
+                    <td class="ctr">
+                      <span v-if="r.is_overdue" class="dt-pill dt-danger">逾期{{ r.overdue_days }}天</span>
+                      <span v-else-if="r.is_current" class="dt-pill dt-blue">当期</span>
+                      <span v-else-if="r.invoice_status === '已结清'" class="dt-pill dt-ok">已结清</span>
+                      <span v-else class="dt-pill dt-mut">未到期</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" @click="detail.open = false">关闭</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -212,4 +295,55 @@ onMounted(loadAll)
 .tip { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 8px; cursor: default; }
 .kpi-4 { grid-template-columns: repeat(4,1fr) !important; }
 @media (max-width: 700px) { .kpi-4 { grid-template-columns: repeat(2,1fr) !important; } }
+
+/* clickable KPI cards */
+.kpi-card.clickable { cursor: pointer; }
+.kpi-card.clickable:hover { transform: translateY(-3px); }
+.drill-hint { font-size: 10px; color: var(--muted); font-weight: 400; margin-left: 6px; opacity: 0.7; }
+
+/* 超期 / 重点催收 strong reminder banner (GPU-composited pulse) */
+.urge-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  padding: 14px 20px; margin-bottom: 16px; border-radius: 14px;
+  background: rgba(198,40,40,.07); border: 1.5px solid rgba(198,40,40,.35);
+  box-shadow: 0 2px 14px rgba(198,40,40,.12);
+  animation: urgePulse 1.7s ease-in-out infinite; will-change: opacity;
+}
+@keyframes urgePulse { 0%,100% { opacity: 1; } 50% { opacity: .72; } }
+.urge-left { display: flex; align-items: center; gap: 12px; }
+.urge-icon { font-size: 24px; }
+.urge-title { font-weight: 700; color: #c62828; font-size: 14px; }
+.urge-sub { font-size: 12.5px; color: #c62828; opacity: .9; margin-top: 2px; }
+.urge-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.urge-key { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.urge-key-label { font-size: 11px; color: #c62828; font-weight: 600; }
+.urge-chip {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px;
+  padding: 3px 10px; border-radius: 12px; background: rgba(255,255,255,.6);
+  border: 1px solid rgba(198,40,40,.3); color: #c62828; cursor: pointer; transition: all .14s;
+}
+.urge-chip:hover { background: #c62828; color: #fff; }
+.urge-chip b { font-weight: 700; }
+.urge-btn {
+  padding: 7px 16px; border-radius: 9px; border: none; background: #c62828; color: #fff;
+  font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: filter .14s;
+}
+.urge-btn:hover { filter: brightness(1.08); }
+
+/* detail modal table */
+.detail-table { width: 100%; }
+.detail-table th { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--muted); padding: 8px 10px; background: rgba(0,0,0,0.02); }
+.detail-table td { padding: 9px 10px; border-bottom: 1px solid rgba(0,0,0,0.04); }
+.detail-table .ctr { text-align: center; }
+.detail-table .amt { text-align: right; }
+.dt-name { font-weight: 600; font-size: 13px; }
+.dt-no { font-family: monospace; font-size: 11px; color: var(--muted); }
+.dt-warn { color: #e65100; font-weight: 700; }
+.dt-zero { color: var(--muted); }
+.dt-muted { color: var(--muted); font-size: 12px; }
+.dt-pill { font-size: 11px; padding: 2px 8px; border-radius: 12px; font-weight: 600; }
+.dt-danger { background: rgba(198,40,40,.1); color: #c62828; }
+.dt-blue { background: rgba(21,101,192,.1); color: #1565c0; }
+.dt-ok { background: rgba(46,125,50,.1); color: #2e7d32; }
+.dt-mut { background: rgba(0,0,0,.06); color: var(--muted); }
 </style>
