@@ -6,6 +6,7 @@ import { useAuthStore } from '../stores/auth.js'
 const auth = useAuthStore()
 const items = ref([])
 const total = ref(0)
+const totalAmount = ref(0)
 const loading = ref(false)
 const depts = ref([])
 const fileRef = ref(null)
@@ -19,15 +20,11 @@ const form = reactive({ applicant:'', department:'', approval_number:'', summary
 const scheduleForm = reactive({ planned_date:'', total_amount:'' })
 const filters = reactive({ applicant:'', approval_number:'', dept:'', page:1, size:50 })
 const statusUpdating = ref({})
-const pendingAmountTotal = computed(() =>
-  items.value
-    .filter(i => i.status === 'pending')
-    .reduce((s, i) => s + (parseFloat(i.amount) || 0), 0)
-)
+const pendingAmountTotal = computed(() => parseFloat(totalAmount.value || 0))
 
 const deptChoices = computed(() => auth.isAdmin ? depts.value : depts.value.filter(d => (auth.user?.departments||[]).includes(d)))
 
-async function load(){ loading.value=true; try{ const r=await api.get('/approvals',{params:filters}); items.value=r.data.items; total.value=r.data.total }finally{loading.value=false}}
+async function load(){ loading.value=true; try{ const r=await api.get('/approvals',{params:filters}); items.value=r.data.items; total.value=r.data.total; totalAmount.value=r.data.total_amount || 0 }finally{loading.value=false}}
 async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
 function openCreate(){ Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', approval_number:'', summary:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
 async function create(){ saving.value=true; try{ await api.post('/approvals', form); showCreate.value=false; load() } catch(e){ alert(e?.error||'保存失败') } finally{ saving.value=false } }

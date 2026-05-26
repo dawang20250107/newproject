@@ -762,11 +762,12 @@ def approval_records(request):
             qs = qs.filter(applicant__icontains=applicant)
         if approval_no:
             qs = qs.filter(approval_number__icontains=approval_no)
+        total_amount = qs.aggregate(s=Sum('amount'))['s'] or Decimal('0')
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
         total = qs.count()
         items = [o.to_dict() for o in qs[(page - 1) * size: page * size]]
-        return ok({'items': items, 'total': total, 'page': page, 'size': size})
+        return ok({'items': items, 'total': total, 'page': page, 'size': size, 'total_amount': str(total_amount)})
     if request.method == 'POST':
         data = parse_body(request)
         applicant = (data.get('applicant') or '').strip()
@@ -818,6 +819,8 @@ def approval_record_detail(request, pk):
             rec.amount = Decimal(str(data['amount'] or '0'))
         if 'status' in data and data['status'] in {'pending', 'approved', 'rejected', 'canceled'}:
             rec.status = data['status']
+            if rec.status in {'rejected', 'canceled'}:
+                rec.archived = True
         rec.save()
         return ok(rec.to_dict())
     return err('Method not allowed', 405)
