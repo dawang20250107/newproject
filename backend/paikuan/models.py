@@ -15,6 +15,9 @@ class PaikuanUser(models.Model):
         ('finance_bp', '财务BP'),
         ('chief_cashier', '总出纳'),
         ('cashier', '出纳'),
+        ('general_manager', '总经理'),
+        ('gm_assistant', '总经理助理'),
+        ('settlement_accountant', '结算会计'),
     ]
     phone = models.CharField('手机号', max_length=15, unique=True)
     password_hash = models.CharField('密码哈希', max_length=256)

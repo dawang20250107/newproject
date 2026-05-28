@@ -722,9 +722,9 @@ def ar_records(request):
         # Reconciliation status
         recon_status = request.GET.get('reconciliation_status', '').strip()
         if recon_status == '已对账':
-            qs = qs.filter(Q(reconciliation_time__isnull=False) | Q(actual_invoice_amount__isnull=False))
+            qs = qs.filter(Q(reconciliation_date__isnull=False) | Q(actual_invoice_amount__isnull=False))
         elif recon_status == '未对账':
-            qs = qs.filter(reconciliation_time__isnull=True, actual_invoice_amount__isnull=True)
+            qs = qs.filter(reconciliation_date__isnull=True, actual_invoice_amount__isnull=True)
 
         # Date range on due_date
         due_start = request.GET.get('due_start', '').strip()
@@ -790,7 +790,7 @@ def ar_records(request):
                 actual_invoice_amount=_dec(data['actual_invoice_amount']) if data.get('actual_invoice_amount') not in (None, '') else None,
                 tax_amount=_dec(data['tax_amount']) if data.get('tax_amount') not in (None, '') else None,
                 invoice_date=_normalize_date(data.get('invoice_date')) or None,
-                reconciliation_time=data.get('reconciliation_time') or None,
+                reconciliation_date=data.get('reconciliation_date') or None,
                 notes=data.get('notes', '').strip(),
                 created_by=user,
             )
@@ -841,8 +841,8 @@ def ar_record_detail(request, pk):
             rec.tax_amount = _dec(data['tax_amount']) if data['tax_amount'] not in (None, '') else None
         if 'invoice_date' in data:
             rec.invoice_date = _normalize_date(data['invoice_date']) or None
-        if 'reconciliation_time' in data:
-            rec.reconciliation_time = data['reconciliation_time'] or None
+        if 'reconciliation_date' in data:
+            rec.reconciliation_date = data['reconciliation_date'] or None
         if 'notes' in data:
             rec.notes = data['notes'].strip()
         try:
@@ -987,10 +987,10 @@ def ar_record_import(request):
             skipped += 1
             continue
         try:
-            with transaction.atomic():
-                rec, created_new = ARRecord.objects.select_for_update().get_or_create(
-                    project=proj, operation_year=year, operation_month=month,
-                    defaults={'created_by': user})
+            # 同一项目同月可有多条记录；每行导入一律新建，避免合并不同业务批次
+            rec = ARRecord(project=proj, operation_year=year, operation_month=month,
+                           created_by=user)
+            created_new = True
             est = _cv(ri, '预估上账金额')
             if est and _can_ar_view(request, 'r_estimated_amount'):
                 rec.estimated_amount = _dec(est)
@@ -1084,8 +1084,8 @@ def ar_record_export(request):
         ('r_outstanding', '未回款金额', lambda rec, st: float(rec.outstanding_amount)),
         ('r_due_date', '应收日期', lambda rec, st: str(rec.due_date) if rec.due_date else ''),
         ('r_reconciliation', '对账状态', lambda rec, st: rec.reconciliation_status),
-        ('r_reconciliation', '对账时间',
-         lambda rec, st: rec.reconciliation_time.strftime('%Y-%m-%d') if rec.reconciliation_time else ''),
+        ('r_reconciliation', '对账日期',
+         lambda rec, st: rec.reconciliation_date.strftime('%Y-%m-%d') if rec.reconciliation_date else ''),
         ('r_invoice_status', '开票状态', lambda rec, st: rec.invoice_status),
         ('r_due_date', '是否逾期', lambda rec, st: '是' if st['is_overdue'] else ''),
         ('r_due_date', '逾期天数', lambda rec, st: st['overdue_days'] if st['is_overdue'] else ''),
@@ -1138,7 +1138,7 @@ def ar_records_kpi(request):
     total = qs.count()
 
     # Reconciliation: 已对账 vs 未对账
-    recon_done = qs.filter(Q(reconciliation_time__isnull=False) | Q(actual_invoice_amount__isnull=False)).count()
+    recon_done = qs.filter(Q(reconciliation_date__isnull=False) | Q(actual_invoice_amount__isnull=False)).count()
     recon_pending = total - recon_done
 
     # Invoice: 已开票 vs 未开票
@@ -1164,7 +1164,7 @@ def ar_records_kpi(request):
         'reconciliation': {
             'done': recon_done, 'pending': recon_pending,
             'rate': _rate(recon_done, total),
-            'pending_amount': str(qs.filter(reconciliation_time__isnull=True, actual_invoice_amount__isnull=True)
+            'pending_amount': str(qs.filter(reconciliation_date__isnull=True, actual_invoice_amount__isnull=True)
                                   .aggregate(s=Sum('outstanding_amount'))['s'] or 0),
         },
         'invoice': {
@@ -1482,15 +1482,28 @@ def cashflow(request):
     if denied:
         return denied
 
-    # Date range
+    # Date range — accept day-level start_date/end_date; fall back to year/month
     today = datetime.date.today()
-    start_year = int(request.GET.get('start_year', today.year))
-    start_month = int(request.GET.get('start_month', 1))
-    end_year = int(request.GET.get('end_year', today.year))
-    end_month = int(request.GET.get('end_month', today.month))
-    start_date = datetime.date(start_year, start_month, 1)
-    end_date = datetime.date(end_year, end_month,
-                             calendar.monthrange(end_year, end_month)[1])
+    start_date_raw = (request.GET.get('start_date') or '').strip()
+    end_date_raw = (request.GET.get('end_date') or '').strip()
+    if start_date_raw and end_date_raw:
+        try:
+            start_date = datetime.date.fromisoformat(start_date_raw)
+            end_date = datetime.date.fromisoformat(end_date_raw)
+        except ValueError:
+            return err('日期格式错误，应为 YYYY-MM-DD')
+        if end_date < start_date:
+            return err('结束日期不能早于起始日期')
+        start_year, start_month = start_date.year, start_date.month
+        end_year, end_month = end_date.year, end_date.month
+    else:
+        start_year = int(request.GET.get('start_year', today.year))
+        start_month = int(request.GET.get('start_month', 1))
+        end_year = int(request.GET.get('end_year', today.year))
+        end_month = int(request.GET.get('end_month', today.month))
+        start_date = datetime.date(start_year, start_month, 1)
+        end_date = datetime.date(end_year, end_month,
+                                 calendar.monthrange(end_year, end_month)[1])
 
     # Departments to show
     if request.pk_role == 'super_admin':
@@ -1628,6 +1641,8 @@ def cashflow(request):
             'alert_months': total_alert,
         },
         'has_alert': has_alert,
+        'start_date': str(start_date),
+        'end_date': str(end_date),
     })
 
 

@@ -27,16 +27,25 @@ const saving = ref(false)
 const recForm = reactive({
   project_id: '', operation_year: yearCST(), operation_month: monthCST(),
   estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
-  invoice_date: '', reconciliation_time: '', account_diff_adjustment: '', notes: '',
+  invoice_date: '', reconciliation_date: '', account_diff_adjustment: '', notes: '',
 })
 
 const projects = ref([])
 const projectKeyword = ref('')
-const filteredProjects = computed(() => {
-  const kw = projectKeyword.value.trim().toLowerCase()
-  if (!kw) return projects.value
-  return projects.value.filter(p => (`${p.project_no} ${p.short_name || p.contract_name}`).toLowerCase().includes(kw))
-})
+const projectSearching = ref(false)
+let projectSearchTimer = null
+// Server-side search by project_no / short_name / contract_name (debounced).
+async function searchProjects(kw) {
+  projectSearching.value = true
+  try {
+    const res = await ar.listProjects({ size: 100, q: kw || undefined })
+    projects.value = res.data.items
+  } finally { projectSearching.value = false }
+}
+function onProjectKeywordInput() {
+  clearTimeout(projectSearchTimer)
+  projectSearchTimer = setTimeout(() => searchProjects(projectKeyword.value.trim()), 220)
+}
 const showPayModal = ref(false)
 const payRec = ref(null)
 const payForm = reactive({ amount: '', payment_date: '', notes: '' })
@@ -81,21 +90,17 @@ async function load(reset = false) {
   } finally { loading.value = false }
 }
 
-async function loadProjects() {
-  const res = await ar.listProjects({ size: 200 })
-  projects.value = res.data.items
-}
-
 function openCreate() {
   editRec.value = null
   Object.assign(recForm, {
-    project_id: projects.value[0]?.id || '',
+    project_id: '',
     operation_year: yearCST(), operation_month: monthCST(),
     estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
-    invoice_date: '', reconciliation_time: '', account_diff_adjustment: '', notes: '',
+    invoice_date: '', reconciliation_date: '', account_diff_adjustment: '', notes: '',
   })
   showModal.value = true
   projectKeyword.value = ''
+  searchProjects('')  // initial page of projects
 }
 
 function openEdit(rec) {
@@ -104,7 +109,7 @@ function openEdit(rec) {
     project_id: rec.project_id, operation_year: rec.operation_year, operation_month: rec.operation_month,
     estimated_amount: rec.estimated_amount, actual_invoice_amount: rec.actual_invoice_amount || '',
     tax_amount: rec.tax_amount || '', invoice_date: rec.invoice_date || '',
-    reconciliation_time: rec.reconciliation_time ? rec.reconciliation_time.slice(0, 16) : '',
+    reconciliation_date: rec.reconciliation_date || '',
     account_diff_adjustment: rec.account_diff_adjustment || '',
     notes: rec.notes,
   })
@@ -120,7 +125,7 @@ async function saveRec() {
       operation_month: recForm.operation_month, estimated_amount: recForm.estimated_amount || 0,
       actual_invoice_amount: recForm.actual_invoice_amount || null,
       tax_amount: recForm.tax_amount || null, invoice_date: recForm.invoice_date || null,
-      reconciliation_time: recForm.reconciliation_time || null, account_diff_adjustment: recForm.account_diff_adjustment || 0, notes: recForm.notes,
+      reconciliation_date: recForm.reconciliation_date || null, account_diff_adjustment: recForm.account_diff_adjustment || 0, notes: recForm.notes,
     }
     if (editRec.value) await ar.updateRecord(editRec.value.id, payload)
     else await ar.createRecord(payload)
@@ -130,7 +135,8 @@ async function saveRec() {
 }
 
 async function deleteRec(rec) {
-  if (!confirm(`确定删除「${rec.short_name}」${rec.operation_year}年${rec.operation_month}月的应收记录？`)) return
+  const amt = parseFloat(rec.estimated_amount || 0).toFixed(2)
+  if (!confirm(`确定删除「${rec.short_name || rec.contract_name}」${rec.operation_year}年${rec.operation_month}月的应收记录（${amt} 元）？同月可能存在多条记录，请确认。`)) return
   try { await ar.deleteRecord(rec.id); await load() }
   catch (e) { alert(e?.response?.data?.msg || '删除失败') }
 }
@@ -200,7 +206,7 @@ onMounted(() => {
   if (route.query.status) filters.status = route.query.status
   if (route.query.project_id) filters.project_id = route.query.project_id
   if (route.query.dept) filters.dept = route.query.dept
-  load(); loadProjects()
+  load()
   window.addEventListener('pk:depts-changed', onScopeChange)
 })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
@@ -343,7 +349,7 @@ function clearFilters() {
               <template v-else-if="activeTab === 'reconciliation'">
                 <th v-if="show('r_estimated_amount')" class="amt">预估金额</th>
                 <th v-if="show('r_reconciliation')" class="ctr">对账状态</th>
-                <th v-if="show('r_reconciliation')" class="ctr">对账时间</th>
+                <th v-if="show('r_reconciliation')" class="ctr">对账日期</th>
                 <th v-if="show('r_due_date')" class="ctr">应收到期</th>
                 <th class="ctr">状态</th>
                 <th v-if="show('r_outstanding')" class="amt">未收金额</th>
@@ -390,7 +396,7 @@ function clearFilters() {
                   <td v-if="show('r_estimated_amount')" class="amt fw">{{ fmtAmt(rec.estimated_amount) }}</td>
                   <td v-if="show('r_actual_invoice_amount')" class="amt">{{ rec.actual_invoice_amount ? fmtAmt(rec.actual_invoice_amount) : '—' }}</td>
                   <td v-if="show('r_tax_amount')" class="amt text-muted">{{ rec.tax_amount ? fmtAmt(rec.tax_amount) : '—' }}</td>
-                  <td v-if="show('r_account_diff')" class="amt" :class="parseFloat(rec.account_diff_adjustment) !== 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtAmt(rec.account_diff_adjustment) : '—' }}</td>
+                  <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtAmt(rec.account_diff_adjustment) : '—' }}</td>
                   <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtAmt(rec.outstanding_amount) : '—' }}</td>
                   <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.due_date || '—' }}</td>
                   <td v-if="show('r_reconciliation')" class="ctr">
@@ -413,7 +419,7 @@ function clearFilters() {
                   <td v-if="show('r_reconciliation')" class="ctr">
                     <span :class="['status-pill', rec.reconciliation_status === '已对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status }}</span>
                   </td>
-                  <td v-if="show('r_reconciliation')" class="ctr text-sm-muted">{{ rec.reconciliation_time ? rec.reconciliation_time.slice(0,10) : '—' }}</td>
+                  <td v-if="show('r_reconciliation')" class="ctr text-sm-muted">{{ rec.reconciliation_date || '—' }}</td>
                   <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.due_date || '—' }}</td>
                   <td class="ctr">
                     <span v-if="rec.is_overdue" class="status-pill pill-danger">逾期{{ rec.overdue_days }}天</span>
@@ -430,7 +436,7 @@ function clearFilters() {
                   <td v-if="show('r_actual_invoice_amount')" class="amt fw">{{ rec.actual_invoice_amount ? fmtAmt(rec.actual_invoice_amount) : '—' }}</td>
                   <td v-if="show('r_tax_amount')" class="amt text-muted">{{ rec.tax_amount ? fmtAmt(rec.tax_amount) : '—' }}</td>
                   <td v-if="show('r_invoice_date')" class="ctr text-sm-muted">{{ rec.invoice_date || '—' }}</td>
-                  <td v-if="show('r_account_diff')" class="amt" :class="parseFloat(rec.account_diff_adjustment) !== 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtAmt(rec.account_diff_adjustment) : '—' }}</td>
+                  <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtAmt(rec.account_diff_adjustment) : '—' }}</td>
                   <td v-if="show('r_invoice_status')" class="ctr">
                     <span :class="['status-pill', rec.invoice_status === '已结清' ? 'pill-ok' : rec.invoice_status === '部分回款' ? 'pill-blue' : rec.invoice_status === '已开票' ? 'pill-warn' : 'pill-muted']">{{ rec.invoice_status }}</span>
                   </td>
@@ -506,10 +512,13 @@ function clearFilters() {
             <div class="form-grid">
               <label class="form-field span2">
                 <span>关联项目 <em>*</em></span>
-                <input v-model="projectKeyword" placeholder="输入项目编号/简称模糊搜索" :disabled="!!editRec" />
+                <input v-model="projectKeyword"
+                       placeholder="输入项目编号 / 简称 / 合同名称 / 负责人 模糊搜索"
+                       :disabled="!!editRec"
+                       @input="onProjectKeywordInput" />
                 <select v-model="recForm.project_id" :disabled="!!editRec">
-                  <option value="" disabled>请选择项目</option>
-                  <option v-for="p in filteredProjects" :key="p.id" :value="p.id">
+                  <option value="" disabled>{{ projectSearching ? '搜索中…' : (projects.length ? '请选择项目' : '无匹配项目') }}</option>
+                  <option v-for="p in projects" :key="p.id" :value="p.id">
                     {{ p.project_no }} · {{ p.short_name || p.contract_name }}
                   </option>
                 </select>
@@ -543,8 +552,8 @@ function clearFilters() {
                 <input v-model="recForm.invoice_date" type="date" />
               </label>
               <label class="form-field">
-                <span>对账时间</span>
-                <input v-model="recForm.reconciliation_time" type="datetime-local" />
+                <span>对账日期</span>
+                <input v-model="recForm.reconciliation_date" type="date" />
               </label>
               <label class="form-field">
                 <span>差额调整</span>

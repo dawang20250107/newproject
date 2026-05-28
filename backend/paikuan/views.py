@@ -33,6 +33,9 @@ JOB_TITLES = {
     'finance_bp': '财务BP',
     'chief_cashier': '总出纳',
     'cashier': '出纳',
+    'general_manager': '总经理',
+    'gm_assistant': '总经理助理',
+    'settlement_accountant': '结算会计',
 }
 
 # ── permission model ────────────────────────────────────────────────────────────
@@ -89,7 +92,7 @@ AR_RECORD_FIELD_DEFS = [
     {'key': 'r_due_date',              'label': '应收日期/逾期', 'group': 'record',
         'cols': ['due_date', 'is_overdue', 'overdue_days']},
     {'key': 'r_reconciliation',        'label': '对账信息',     'group': 'record',
-        'cols': ['reconciliation_time', 'reconciliation_status']},
+        'cols': ['reconciliation_date', 'reconciliation_status']},
     {'key': 'r_invoice_status',        'label': '开票状态',     'group': 'record', 'cols': ['invoice_status']},
     {'key': 'r_payments',              'label': '回款记录',     'group': 'record', 'cols': ['payments']},
     {'key': 'r_notes',                 'label': '明细备注',     'group': 'record', 'cols': ['notes']},
@@ -174,6 +177,22 @@ def default_job_config(job):
         return {'pages': {**base_pages, **ar_pages_cashier},
                 'view': _all_fields(True), 'edit': edit, 'ar_view': ar_view,
                 'can_create': False, 'can_delete': False}
+    if job == 'general_manager':
+        # 总经理：全量查看，无编辑/创建（看驾驶舱用，不参与日常落单）
+        return {'pages': pages_all, 'view': _all_fields(True),
+                'edit': _all_fields(False), 'ar_view': _all_ar_fields(True),
+                'can_create': False, 'can_delete': False}
+    if job == 'gm_assistant':
+        # 总经理助理：全量查看 + 可新增（协助登记），不可删除
+        return {'pages': pages_all, 'view': _all_fields(True),
+                'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
+                'can_create': True, 'can_delete': False}
+    if job == 'settlement_accountant':
+        # 结算会计：聚焦应收/对账/开票，付款条数据只读
+        edit = {k: False for k in FIELD_KEYS}
+        return {'pages': pages_all, 'view': _all_fields(True),
+                'edit': edit, 'ar_view': _all_ar_fields(True),
+                'can_create': True, 'can_delete': False}
     # Unknown / no job title → read-only minimum.
     return {'pages': pages_all, 'view': _all_fields(True),
             'edit': _all_fields(False), 'ar_view': _all_ar_fields(True),
@@ -922,7 +941,10 @@ def approval_records(request):
             return err('申请人不能为空')
         if amount <= 0:
             return err('申请金额必须大于0')
-        if not re.fullmatch(r'\d{21}', approval_number or ''):
+        # 空审批编号自动填 21 位 0（占位，便于后续补录）
+        if not approval_number:
+            approval_number = '0' * 21
+        elif not re.fullmatch(r'\d{21}', approval_number):
             return err('审批编号必须为21位数字')
         if department not in VALID_DEPARTMENTS:
             return err('所属事业部无效')
@@ -1041,7 +1063,9 @@ def approval_import(request):
         amount_raw = cv(r, '申请金额*')
         if not applicant or not amount_raw:
             skipped += 1; errors.append(f'第{r}行: 申请人和金额不能为空'); continue
-        if not re.fullmatch(r'\d{21}', no):
+        if not no:
+            no = '0' * 21
+        elif not re.fullmatch(r'\d{21}', no):
             skipped += 1; errors.append(f'第{r}行: 审批编号必须为21位数字'); continue
         if status_cn not in {'待审批', 'pending'}:
             skipped += 1; errors.append(f'第{r}行: 仅允许导入待审批状态'); continue

@@ -136,7 +136,7 @@ class ARRecord(models.Model):
                                                   decimal_places=2, default=0)
     outstanding_amount = models.DecimalField('未回款金额', max_digits=15, decimal_places=2, default=0)
     due_date = models.DateField('应收日期', db_index=True, null=True, blank=True)
-    reconciliation_time = models.DateTimeField('对账时间', null=True, blank=True, db_index=True)
+    reconciliation_date = models.DateField('对账日期', null=True, blank=True, db_index=True)
     notes = models.TextField('备注', blank=True, default='')
     created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
                                    null=True, blank=True, related_name='created_ar_records')
@@ -145,7 +145,6 @@ class ARRecord(models.Model):
 
     class Meta:
         db_table = 'ar_records'
-        unique_together = [('project', 'operation_year', 'operation_month')]
         ordering = ['-operation_year', '-operation_month']
         indexes = [
             models.Index(fields=['delivery_dept', 'due_date']),
@@ -153,7 +152,7 @@ class ARRecord(models.Model):
             models.Index(fields=['due_date']),
             models.Index(fields=['outstanding_amount']),
             models.Index(fields=['invoice_date']),
-            models.Index(fields=['reconciliation_time']),
+            models.Index(fields=['reconciliation_date']),
         ]
 
     def _compute_due_date(self):
@@ -202,7 +201,7 @@ class ARRecord(models.Model):
         # 业务规则：已开票默认视作已对账
         if self.actual_invoice_amount is not None:
             return '已对账'
-        return '已对账' if self.reconciliation_time else '未对账'
+        return '已对账' if self.reconciliation_date else '未对账'
 
     @property
     def invoice_status(self):
@@ -255,7 +254,7 @@ class ARRecord(models.Model):
             'account_diff_adjustment': str(self.account_diff_adjustment),
             'outstanding_amount': str(self.outstanding_amount),
             'due_date': str(self.due_date) if self.due_date else None,
-            'reconciliation_time': self.reconciliation_time.isoformat() if self.reconciliation_time else None,
+            'reconciliation_date': str(self.reconciliation_date) if self.reconciliation_date else None,
             'reconciliation_status': self.reconciliation_status,
             'invoice_status': self.invoice_status,
             'notes': self.notes,

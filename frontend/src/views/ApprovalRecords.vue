@@ -2,6 +2,7 @@
 import { ref, reactive, onMounted, onBeforeUnmount, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
+import { todayCST } from '../constants.js'
 
 const auth = useAuthStore()
 const items = ref([])
@@ -45,7 +46,7 @@ async function updateStatus(it, status){
     statusUpdating.value[it.id] = false
   }
 }
-function openSchedule(it){ current.value=it; Object.assign(scheduleForm,{ planned_date:'', total_amount:it.amount }); showSchedule.value=true }
+function openSchedule(it){ current.value=it; Object.assign(scheduleForm,{ planned_date: todayCST(), total_amount:it.amount }); showSchedule.value=true }
 async function doSchedule(){ try{ await api.post(`/approvals/${current.value.id}/schedule`, scheduleForm); showSchedule.value=false; load(); alert('排款成功并已归档') } catch(e){ alert(e?.error||'排款失败') } }
 async function downloadTemplate(){ const b=await api.get('/approvals/template',{responseType:'blob'}); dl(b,'审批记录导入模板.xlsx') }
 function dl(blob,name){ const u=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=u;a.download=name;a.click();URL.revokeObjectURL(u) }
@@ -93,7 +94,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <Teleport to="body"><div v-if="showCreate" class="modal-overlay" @click.self="showCreate=false"><div class="modal-box"><div class="modal-header"><h3>新增审批记录</h3></div><div class="modal-body"><div class="form-grid">
     <label class="form-field"><span>申请人*</span><input v-model="form.applicant"/></label>
     <label class="form-field"><span>所属事业部*</span><select v-model="form.department"><option v-for="d in deptChoices" :key="d" :value="d">{{d}}</option></select></label>
-    <label class="form-field"><span>审批编号*</span><input v-model="form.approval_number"/></label>
+    <label class="form-field"><span>审批编号</span><input v-model="form.approval_number" placeholder="21位数字；留空自动填21个0占位"/></label>
     <label class="form-field"><span>摘要</span><input v-model="form.summary"/></label>
     <label class="form-field"><span>申请金额*</span><input v-model="form.amount" type="number" step="0.01"/></label>
     <label class="form-field"><span>收款主体</span><input v-model="form.payee"/></label>

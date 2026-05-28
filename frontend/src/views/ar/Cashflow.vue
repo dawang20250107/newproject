@@ -12,19 +12,19 @@ const router = useRouter()
 const CY = yearCST()
 const CM = monthCST()
 
-// Default: current month → current month (single-month view)
+// Default: current month start → current month end (day-level)
+function monthStartISO(y, m) { return `${y}-${String(m).padStart(2, '0')}-01` }
+function monthEndISO(y, m) {
+  const d = new Date(y, m, 0)  // last day of month m (1-12)
+  return `${y}-${String(m).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 const filters = reactive({
-  start_year: CY,
-  start_month: CM,
-  end_year: CY,
-  end_month: CM,
+  start_date: monthStartISO(CY, CM),
+  end_date: monthEndISO(CY, CM),
   dept: '',   // '' = all accessible depts; specific name = one dept
 })
 
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
-
-const years = Array.from({ length: 5 }, (_, i) => CY - 2 + i)
-const months = Array.from({ length: 12 }, (_, i) => i + 1)
 const cfData = ref(null)
 const loading = ref(false)
 
@@ -40,13 +40,13 @@ function fmtWan(v) {
 }
 
 async function load() {
+  if (!filters.start_date || !filters.end_date) return
+  if (filters.end_date < filters.start_date) { alert('结束日期不能早于起始日期'); return }
   loading.value = true
   try {
     const params = {
-      start_year: filters.start_year,
-      start_month: filters.start_month,
-      end_year: filters.end_year,
-      end_month: filters.end_month,
+      start_date: filters.start_date,
+      end_date: filters.end_date,
     }
     // Single dept OR all accessible depts
     if (filters.dept) {
@@ -270,23 +270,13 @@ const deptCompareOption = computed(() => {
         </select>
       </div>
       <div class="cfb-div"></div>
-      <!-- Date range group -->
+      <!-- Date range group — day precision -->
       <div class="cfb-group">
         <svg class="cfb-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
         <span class="cfb-lbl">区间</span>
-        <select v-model="filters.start_year" class="cfb-sel cfb-yr" @change="load">
-          <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
-        </select>
-        <select v-model="filters.start_month" class="cfb-sel cfb-mo" @change="load">
-          <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
-        </select>
+        <input v-model="filters.start_date" type="date" class="cfb-date" @change="load" />
         <span class="cfb-to">至</span>
-        <select v-model="filters.end_year" class="cfb-sel cfb-yr" @change="load">
-          <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
-        </select>
-        <select v-model="filters.end_month" class="cfb-sel cfb-mo" @change="load">
-          <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
-        </select>
+        <input v-model="filters.end_date" type="date" class="cfb-date" @change="load" />
       </div>
       <div v-if="loading" class="cfb-loading">
         <span class="cfb-spin">↻</span> 加载中
@@ -355,7 +345,7 @@ const deptCompareOption = computed(() => {
     <!-- Per-dept comparison (multi-dept users, shown only when "全部" selected) -->
     <div v-if="showDeptComparison" class="card" style="margin-top:16px">
       <div class="section-title">各事业部对比
-        <span class="section-sub">{{ filters.start_year }}-{{ String(filters.start_month).padStart(2,'0') }} 至 {{ filters.end_year }}-{{ String(filters.end_month).padStart(2,'0') }}</span>
+        <span class="section-sub">{{ filters.start_date }} 至 {{ filters.end_date }}</span>
       </div>
       <BaseChart v-if="deptCompareOption" :option="deptCompareOption" height="280px" />
     </div>
@@ -421,9 +411,15 @@ const deptCompareOption = computed(() => {
   transition: background .15s, color .15s;
 }
 .cfb-sel:hover, .cfb-sel:focus { background: rgba(201,99,66,0.09); color: var(--primary); }
-.cfb-yr   { width: 70px; }
-.cfb-mo   { width: 58px; }
 .cfb-dept { min-width: 110px; }
+.cfb-date {
+  height: 30px; padding: 0 8px; border: none;
+  background: rgba(0,0,0,0.04); border-radius: 8px;
+  font-size: 12.5px; color: var(--text); cursor: pointer; outline: none;
+  width: 138px; font-variant-numeric: tabular-nums;
+  transition: background .15s, color .15s;
+}
+.cfb-date:hover, .cfb-date:focus { background: rgba(201,99,66,0.09); color: var(--primary); }
 .cfb-to   { font-size: 12px; color: var(--muted); }
 .cfb-loading { margin-left: auto; padding-left: 12px; font-size: 12px; color: var(--primary); display: flex; align-items: center; gap: 5px; white-space: nowrap; }
 .cfb-spin { display: inline-block; animation: cfSpin 0.9s linear infinite; }
