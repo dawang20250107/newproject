@@ -1,3 +1,6 @@
+import calendar
+import datetime
+
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 
@@ -9,3 +12,22 @@ def update_ar_record_on_payment_change(sender, instance, **kwargs):
         record.recompute_derived(save=True)
     except Exception:
         pass
+
+
+@receiver(post_save, sender='ar.ARProject')
+def update_ar_record_due_dates_on_project_change(sender, instance, **kwargs):
+    """When a project's total_days changes, recompute due_date for all linked ARRecords."""
+    from ar.models import ARRecord
+    total_days = instance.total_days
+    updates = []
+    for rec in instance.ar_records.only('id', 'operation_year', 'operation_month', 'due_date'):
+        try:
+            last_day = calendar.monthrange(rec.operation_year, rec.operation_month)[1]
+            eom = datetime.date(rec.operation_year, rec.operation_month, last_day)
+            new_due = eom + datetime.timedelta(days=total_days)
+            if new_due != rec.due_date:
+                updates.append((rec.pk, new_due))
+        except Exception:
+            pass
+    for pk, due in updates:
+        ARRecord.objects.filter(pk=pk).update(due_date=due)

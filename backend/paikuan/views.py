@@ -1110,7 +1110,8 @@ def dashboard(request):
     # For pending records paid=0 → remaining == total_amount.
     pending_agg = pending_qs.aggregate(c=Count('id'), s=Sum('total_amount'))
     overdue_agg = overdue_qs.aggregate(c=Count('id'), s=Sum(_remaining_expr()))
-    partial_count = base.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount')).count()
+    partial_agg = base.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount')).aggregate(
+        c=Count('id'), s=Sum(_remaining_expr()))
 
     today_payments = [
         apply_view_mask(p.to_dict(), perms)
@@ -1122,7 +1123,8 @@ def dashboard(request):
         'today_amount': money(today_agg['s']),
         'pending_count': pending_agg['c'],
         'pending_amount': money(pending_agg['s']),
-        'partial_count': partial_count,
+        'partial_count': partial_agg['c'],
+        'partial_amount': money(partial_agg['s']),
         'overdue_count': overdue_agg['c'],
         'overdue_amount': money(overdue_agg['s']),
         'today_payments': today_payments,

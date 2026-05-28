@@ -143,7 +143,10 @@ async function handleImport(e) {
   try {
     const fd = new FormData(); fd.append('file', f)
     const res = await ar.importProjects(fd); const d = res.data
-    alert(`导入完成：创建 ${d.created} 条${d.errors?.length ? `，错误 ${d.errors.length} 条` : ''}`)
+    const parts = [`新增 ${d.created} 条`]
+    if (d.updated) parts.push(`更新 ${d.updated} 条`)
+    if (d.errors?.length) parts.push(`错误 ${d.errors.length} 条：${d.errors.slice(0, 3).join('；')}`)
+    alert(`导入完成：${parts.join('，')}`)
     reloadAll()
   } catch (e) { alert(e?.response?.data?.msg || '导入失败')
   } finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }

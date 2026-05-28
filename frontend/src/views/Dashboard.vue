@@ -82,7 +82,7 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
         <div class="kpi-card">
           <div class="label">部分付款中</div>
           <div class="value" style="color:#f57f17">{{ data.partial_count }}</div>
-          <div class="sub">待完成</div>
+          <div v-if="showAmount" class="sub">{{ fmt(data.partial_amount) }}</div>
         </div>
         <div :class="['kpi-card', data.overdue_count > 0 ? 'overdue-kpi-card' : '']">
           <div class="label">已逾期未付</div>

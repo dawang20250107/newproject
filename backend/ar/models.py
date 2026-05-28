@@ -30,8 +30,9 @@ class ARProject(models.Model):
     total_days = models.IntegerField('总账期(天)', default=0)
     invoice_mode = models.CharField('开票模式', max_length=4,
                                     choices=[('全额', '全额'), ('差额', '差额')], default='全额')
-    invoice_type = models.CharField('专票/普票', max_length=4,
-                                    choices=[('专票', '专票'), ('普票', '普票')], blank=True, default='')
+    invoice_type = models.CharField('专票/普票/不开票', max_length=4,
+                                    choices=[('专票', '专票'), ('普票', '普票'), ('不开票', '不开票')],
+                                    blank=True, default='')
     tax_rate = models.DecimalField('税率', max_digits=6, decimal_places=4, default=Decimal('0'))
     notes = models.TextField('备注', blank=True, default='')
     created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,

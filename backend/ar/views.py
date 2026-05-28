@@ -27,6 +27,8 @@ from paikuan.models import Payment
 AR_PAGE_KEYS = ['ar_projects', 'ar_records', 'ar_analytics', 'ar_cashflow', 'ar_budget']
 
 EXAMPLE_ROW_MARKER = '示例-导入前请删除此行'
+VALID_CUSTOMER_LEVELS = ['S级', 'A级', 'B级', 'C级', 'D级']
+VALID_INVOICE_TYPES = ['专票', '普票', '不开票']
 
 
 def _match_project_by_short_name(short_name, dept=''):
@@ -397,15 +399,23 @@ def project_template(request):
                '开票模式(全额/差额)', '专票/普票/不开票', '税率(如0.06)', '备注']
     _header_row(ws, headers)
     tip_vals = [
-        '★必填：合同全称', '★必填：简称用于明细显示',
-        f'★必填：可选值：{chr(10).join(VALID_DEPARTMENTS)}',
-        '选填：可空', '选填：自由填写',
-        '选填：S级/A级/B级/C级/D级，默认A级',
-        '★必填：销售对接人姓名', '★必填：项目负责人姓名',
-        '有 或 无，默认无',
-        '选填：如 2026-01-15 或 2026/1/15',
-        '整数天数，默认0', '整数天数，默认0', '整数天数，默认0',
-        '全额 或 差额', '专票、普票 或 不开票', '选填：如 0.06 表示6%', '选填备注',
+        '★必填：合同/项目全称，与应收明细无关联',
+        '★必填：简称须唯一，应收账款明细导入时用此简称匹配项目',
+        f'★必填：可选值：{"、".join(VALID_DEPARTMENTS)}',
+        '选填：华南区/华北区等，可空',
+        '选填：劳务外包/运输/供应链等，自由填写',
+        f'选填：{"/".join(VALID_CUSTOMER_LEVELS)}，默认可空',
+        '★必填：销售对接人姓名（与项目负责人不同时自动标记为共享业务）',
+        '★必填：项目负责人姓名',
+        '"有"或"无"，默认无',
+        '选填：格式 2026-01-15 / 2026/1/15 / 2026年1月15日 均可',
+        '整数天数，默认0（计算逻辑：总账期 = 合同对账期 + 开票等待期 + 结算等待期）',
+        '整数天数，默认0（同上，三项之和即为应收日期的延迟天数）',
+        '整数天数，默认0（应收日期 = 运作月月末 + 总账期天数）',
+        '"全额"或"差额"（全额模式下税额自动计算：税额=开票金额/(1+税率)×税率）',
+        f'{"/".join(VALID_INVOICE_TYPES)}，选填',
+        '选填：如 0.06 表示6%，范围 0~1（全额模式有效，差额模式请手填税额）',
+        '选填备注',
     ]
     ws.append(tip_vals)
     tip_row = ws.max_row
@@ -418,12 +428,12 @@ def project_template(request):
         cell.alignment = Alignment(wrap_text=True)
     example = [EXAMPLE_ROW_MARKER, '物流外包A', '劳务事业部', '华南区', '劳务外包',
                'A级', '张三', '李四', '有', '2026-01-01', 30, 0, 60,
-               '全额', '专票', 0.06, '示例备注']
+               '全额', '专票', 0.06, '示例备注（此行含"示例"标记，导入时自动跳过）']
     ws.append(example)
-    col_widths = [28, 16, 16, 14, 14, 12, 12, 12, 10, 16, 14, 14, 14, 16, 16, 12, 20]
+    col_widths = [28, 18, 16, 14, 14, 12, 16, 16, 10, 18, 20, 20, 20, 18, 18, 14, 24]
     for col, w in enumerate(col_widths, start=1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = w
-    ws.row_dimensions[tip_row].height = 48
+    ws.row_dimensions[tip_row].height = 60
     return _export_response(wb, '项目信息导入模板.xlsx')
 
 
@@ -459,56 +469,94 @@ def project_import(request):
 
     from paikuan.models import PaikuanUser
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
-    created = skipped = 0
+    created = updated = skipped = 0
     errors = []
 
     for ri in range(2, ws.max_row + 1):
         contract_name = _cv(ri, '合同名称*')
-        if not contract_name or EXAMPLE_ROW_MARKER in contract_name:
+        if not contract_name or EXAMPLE_ROW_MARKER in contract_name or contract_name.startswith('★'):
             skipped += 1
             continue
         dept = _cv(ri, '交付部门*')
         if dept not in VALID_DEPARTMENTS:
-            errors.append(f'第{ri}行: 无效交付部门"{dept}"')
+            errors.append(f'第{ri}行: 交付部门"{dept}"无效，可选值为：{"/".join(VALID_DEPARTMENTS)}')
             skipped += 1
             continue
         if request.pk_role != 'super_admin':
             allowed = request.pk_depts
             if dept not in allowed:
-                errors.append(f'第{ri}行: 无权操作部门"{dept}"')
+                errors.append(f'第{ri}行: 无权操作部门"{dept}"，您的授权部门为：{"/".join(allowed)}')
+                skipped += 1
+                continue
+        # ── field-level validation ────────────────────────────────────────────
+        customer_level_val = _cv(ri, '客户等级')
+        if customer_level_val and customer_level_val not in VALID_CUSTOMER_LEVELS:
+            errors.append(f'第{ri}行: 客户等级"{customer_level_val}"无效，应为：{"/".join(VALID_CUSTOMER_LEVELS)}')
+            skipped += 1
+            continue
+        invoice_type_val = _cv(ri, '专票/普票/不开票') or _cv(ri, '专票/普票')
+        if invoice_type_val and invoice_type_val not in VALID_INVOICE_TYPES:
+            errors.append(f'第{ri}行: 发票类型"{invoice_type_val}"无效，应为：{"/".join(VALID_INVOICE_TYPES)}')
+            skipped += 1
+            continue
+        invoice_mode_val = _cv(ri, '开票模式(全额/差额)') or '全额'
+        if invoice_mode_val not in ('全额', '差额'):
+            errors.append(f'第{ri}行: 开票模式"{invoice_mode_val}"无效，应为"全额"或"差额"')
+            skipped += 1
+            continue
+        tax_raw = _cv(ri, '税率(如0.06)')
+        if tax_raw:
+            try:
+                tax_val = float(tax_raw)
+                if not (0 <= tax_val <= 1):
+                    errors.append(f'第{ri}行: 税率"{tax_raw}"超出范围，应在0到1之间（如 0.06 表示6%）')
+                    skipped += 1
+                    continue
+            except (ValueError, TypeError):
+                errors.append(f'第{ri}行: 税率"{tax_raw}"格式错误，应填数字（如 0.06）')
                 skipped += 1
                 continue
         try:
-            tax_raw = _cv(ri, '税率(如0.06)')
-            p = ARProject(
-                contract_name=contract_name,
-                short_name=_cv(ri, '项目简称'),
-                delivery_dept=dept,
+            int_days = lambda col: int(_cv(ri, col) or 0)
+            field_vals = dict(
+                short_name=_cv(ri, '项目简称*') or _cv(ri, '项目简称'),
                 sub_dept=_cv(ri, '二级部门'),
                 business_mode=_cv(ri, '业务模式'),
-                customer_level=_cv(ri, '客户等级'),
+                customer_level=customer_level_val,
                 sales_contact=_cv(ri, '销售对接人*'),
                 project_manager=_cv(ri, '项目负责人*'),
                 has_contract=_cv(ri, '有无合同') or '无',
                 contract_date=_normalize_date(
                     _cv(ri, '签订日期') or _cv(ri, '签订日期(YYYY-MM-DD)')
                 ) or None,
-                reconciliation_days=int(_cv(ri, '合同对账期(天)') or 0),
-                invoice_wait_days=int(_cv(ri, '开票等待期(天)') or 0),
-                settlement_wait_days=int(_cv(ri, '结算等待期(天)') or 0),
-                invoice_mode=_cv(ri, '开票模式(全额/差额)') or '全额',
-                invoice_type=_cv(ri, '专票/普票/不开票') or _cv(ri, '专票/普票'),
+                reconciliation_days=int_days('合同对账期(天)'),
+                invoice_wait_days=int_days('开票等待期(天)'),
+                settlement_wait_days=int_days('结算等待期(天)'),
+                invoice_mode=invoice_mode_val,
+                invoice_type=invoice_type_val,
                 tax_rate=_dec(tax_raw),
                 notes=_cv(ri, '备注'),
-                created_by=user,
             )
-            p.save()
-            created += 1
+            # Upsert: update existing project rather than creating a duplicate.
+            # Business key: (contract_name, delivery_dept).
+            existing = ARProject.objects.filter(
+                contract_name=contract_name, delivery_dept=dept).first()
+            if existing:
+                for k, v in field_vals.items():
+                    setattr(existing, k, v)
+                existing.delivery_dept = dept
+                existing.save()  # triggers ARProject.post_save signal → updates ARRecord due_dates
+                updated += 1
+            else:
+                p = ARProject(contract_name=contract_name, delivery_dept=dept,
+                              created_by=user, **field_vals)
+                p.save()
+                created += 1
         except Exception as e:
             errors.append(f'第{ri}行: {e}')
             skipped += 1
 
-    return ok({'created': created, 'skipped': skipped, 'errors': errors})
+    return ok({'created': created, 'updated': updated, 'skipped': skipped, 'errors': errors})
 
 
 @csrf_exempt
@@ -827,16 +875,33 @@ def ar_record_template(request):
     headers = ['项目简称*', '运作年*', '运作月*', '预估上账金额', '实际开票金额',
                '税额(差额模式手填)', '开票日期', '账实差额调整', '回款金额', '回款时间', '备注']
     _header_row(ws, headers, color='1B6E35')
-    ws.append([EXAMPLE_ROW_MARKER, 2026, 1, 100000, 100000, '', '2026-01-15', 0, 30000, '2026-01-20', '示例'])
-    # Tip row about accepted date formats
-    tip_row_idx = ws.max_row + 1
-    ws.cell(row=tip_row_idx, column=1,
-            value='提示：日期支持 2026-01-15、2026/1/15、2026.1.15、2026年1月15日 等格式；'
-                  '项目简称匹配现有项目主表；本行可保留为示例，导入时自动跳过')
-    ws.cell(row=tip_row_idx, column=1).font = Font(italic=True, color='888888')
-    ws.merge_cells(start_row=tip_row_idx, start_column=1, end_row=tip_row_idx, end_column=len(headers))
+    tip_vals = [
+        '★必填：填写项目台账中的"项目简称"，系统按此自动关联对应项目',
+        '★必填：4位整数，如 2026',
+        '★必填：1-12 的整数',
+        '选填：当月预计上账金额（元）；未回款 = 上账金额 + 账实差额 - 已回款',
+        '选填：实际开票金额（元）；全额模式下税额自动计算',
+        '选填：差额模式时手动填写税额；全额模式税额 = 开票金额/(1+税率)×税率，自动算',
+        '选填：格式 2026-01-15 / 2026/1/15 / 2026年1月15日 均可',
+        '选填：账实差额调整金额，影响未回款：未回款 = 上账金额 + 此值 - 已回款',
+        '选填：本次回款金额（元）；可多次导入追加回款记录',
+        '选填：回款日期，格式同上',
+        '选填备注',
+    ]
+    ws.append(tip_vals)
+    tip_row = ws.max_row
+    tip_fill = PatternFill('solid', fgColor='E8F5E9')
+    tip_font = Font(italic=True, color='1B5E20', size=9)
+    for c in range(1, len(headers) + 1):
+        cell = ws.cell(tip_row, c)
+        cell.fill = tip_fill
+        cell.font = tip_font
+        cell.alignment = Alignment(wrap_text=True)
+    ws.row_dimensions[tip_row].height = 60
+    ws.append([EXAMPLE_ROW_MARKER, 2026, 1, 100000, 100000, '', '2026-01-15', 0, 30000, '2026-01-20',
+               '示例（此行含"示例"标记，导入时自动跳过）'])
     for col in range(1, len(headers) + 1):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 20
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 22
     return _export_response(wb, '应收账款明细导入模板.xlsx')
 
 
@@ -901,7 +966,7 @@ def ar_record_import(request):
 
     for ri in range(2, ws.max_row + 1):
         short_name = _cv(ri, '项目简称*')
-        if not short_name or EXAMPLE_ROW_MARKER in short_name:
+        if not short_name or EXAMPLE_ROW_MARKER in short_name or short_name.startswith('★'):
             skipped += 1
             continue
         proj = _match_project_by_short_name(short_name)
