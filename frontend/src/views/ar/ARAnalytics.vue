@@ -30,18 +30,18 @@ function fmtWan(v) {
 
 async function loadAll() {
   const params = { dept: selectedDept.value }
-  const [a, c, t, s, p] = await Promise.all([
+  const [a, c, t, s, p] = await Promise.allSettled([
     ar.aging(params),
     ar.collectionRate({ year: selectedYear.value, ...params }),
     ar.outstandingTop({ ...params, n: 10 }),
     ar.statusDist(params),
     ar.analyticsByPm({ year: selectedYear.value, ...params }),
   ])
-  agingData.value = a.data
-  collRateData.value = c.data
-  topData.value = t.data
-  statusData.value = s.data
-  pmData.value = p.data
+  if (a.status === 'fulfilled') agingData.value = a.value.data
+  if (c.status === 'fulfilled') collRateData.value = c.value.data
+  if (t.status === 'fulfilled') topData.value = t.value.data
+  if (s.status === 'fulfilled') statusData.value = s.value.data
+  if (p.status === 'fulfilled') pmData.value = p.value.data
 }
 
 // ── ECharts options ───────────────────────────────────────────────────────────
