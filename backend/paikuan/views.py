@@ -566,6 +566,9 @@ def _list_payments(request):
             qs = qs.filter(paid__gte=F('total_amount'))
         elif status_q == 'partial':
             qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'))
+        elif status_q == 'overdue':
+            today_val = datetime.date.today()
+            qs = qs.filter(paid__lt=F('total_amount'), planned_date__lt=today_val)
 
     total = qs.count()
 

@@ -380,17 +380,39 @@ def project_template(request):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '项目信息'
-    headers = ['合同名称*', '项目简称', '交付部门*', '二级部门', '业务模式',
+    headers = ['合同名称*', '项目简称*', '交付部门*', '二级部门', '业务模式',
                '客户等级', '销售对接人*', '项目负责人*', '有无合同',
-               '签订日期(YYYY-MM-DD)', '合同对账期(天)', '开票等待期(天)', '结算等待期(天)',
-               '开票模式(全额/差额)', '专票/普票', '税率(如0.06)', '备注']
+               '签订日期', '合同对账期(天)', '开票等待期(天)', '结算等待期(天)',
+               '开票模式(全额/差额)', '专票/普票/不开票', '税率(如0.06)', '备注']
     _header_row(ws, headers)
+    tip_vals = [
+        '★必填：合同全称', '★必填：简称用于明细显示',
+        f'★必填：可选值：{chr(10).join(VALID_DEPARTMENTS)}',
+        '选填：可空', '选填：自由填写',
+        '选填：S级/A级/B级/C级/D级，默认A级',
+        '★必填：销售对接人姓名', '★必填：项目负责人姓名',
+        '有 或 无，默认无',
+        '选填：如 2026-01-15 或 2026/1/15',
+        '整数天数，默认0', '整数天数，默认0', '整数天数，默认0',
+        '全额 或 差额', '专票、普票 或 不开票', '选填：如 0.06 表示6%', '选填备注',
+    ]
+    ws.append(tip_vals)
+    tip_row = ws.max_row
+    tip_fill = PatternFill('solid', fgColor='FFF9E6')
+    tip_font = Font(italic=True, color='8B6914', size=9)
+    for c in range(1, len(headers) + 1):
+        cell = ws.cell(tip_row, c)
+        cell.fill = tip_fill
+        cell.font = tip_font
+        cell.alignment = Alignment(wrap_text=True)
     example = [EXAMPLE_ROW_MARKER, '物流外包A', '劳务事业部', '华南区', '劳务外包',
                'A级', '张三', '李四', '有', '2026-01-01', 30, 0, 60,
                '全额', '专票', 0.06, '示例备注']
     ws.append(example)
-    for col in range(1, len(headers) + 1):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 18
+    col_widths = [28, 16, 16, 14, 14, 12, 12, 12, 10, 16, 14, 14, 14, 16, 16, 12, 20]
+    for col, w in enumerate(col_widths, start=1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = w
+    ws.row_dimensions[tip_row].height = 48
     return _export_response(wb, '项目信息导入模板.xlsx')
 
 
@@ -457,12 +479,14 @@ def project_import(request):
                 sales_contact=_cv(ri, '销售对接人*'),
                 project_manager=_cv(ri, '项目负责人*'),
                 has_contract=_cv(ri, '有无合同') or '无',
-                contract_date=_normalize_date(_cv(ri, '签订日期(YYYY-MM-DD)')) or None,
+                contract_date=_normalize_date(
+                    _cv(ri, '签订日期') or _cv(ri, '签订日期(YYYY-MM-DD)')
+                ) or None,
                 reconciliation_days=int(_cv(ri, '合同对账期(天)') or 0),
                 invoice_wait_days=int(_cv(ri, '开票等待期(天)') or 0),
                 settlement_wait_days=int(_cv(ri, '结算等待期(天)') or 0),
                 invoice_mode=_cv(ri, '开票模式(全额/差额)') or '全额',
-                invoice_type=_cv(ri, '专票/普票'),
+                invoice_type=_cv(ri, '专票/普票/不开票') or _cv(ri, '专票/普票'),
                 tax_rate=_dec(tax_raw),
                 notes=_cv(ri, '备注'),
                 created_by=user,

@@ -237,6 +237,7 @@ function setPage(p) { filters.page = p; load() }
           <option value="pending">⏳ 待付款</option>
           <option value="partial">⚡ 部分付款</option>
           <option value="settled">✅ 已付清</option>
+          <option value="overdue">⚠ 已逾期</option>
         </select>
         <input v-model="filters.start_date" type="date" style="min-width:130px" @change="search" />
         <input v-model="filters.end_date" type="date" style="min-width:130px" @change="search" />
@@ -246,12 +247,8 @@ function setPage(p) { filters.page = p; load() }
 
       <div class="list-meta">
         <div class="list-count">共 <b>{{ total }}</b> 条记录</div>
-        <div v-if="showAmount" class="outstanding-card" :class="{ 'has-data': outstandingCount > 0 }">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-          </svg>
-          <span>已计划未结清：<b>{{ fmt(outstandingTotal) }}</b></span>
-          <span class="outstanding-sub">（{{ outstandingCount }} 笔）</span>
+        <div v-if="showRemaining" class="outstanding-card" :class="{ 'has-data': outstandingCount > 0 }">
+          已计划未结清共计：<b>{{ fmt(outstandingTotal) }}</b> 元（{{ outstandingCount }} 笔）
         </div>
       </div>
 
@@ -437,14 +434,12 @@ function setPage(p) { filters.page = p; load() }
 }
 .list-count { font-size: 13px; color: var(--muted); }
 .outstanding-card {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 12.5px; padding: 6px 12px; border-radius: 10px;
+  font-size: 12px; color: var(--muted);
   background: rgba(201,99,66,0.06); border: 1px solid rgba(201,99,66,0.18);
-  color: var(--muted);
+  border-radius: 10px; padding: 6px 10px; white-space: nowrap;
 }
-.outstanding-card.has-data { color: #8a4d2f; background: rgba(201,99,66,0.10); border-color: rgba(201,99,66,0.3); }
+.outstanding-card.has-data { color: #8a4d2f; background: rgba(201,99,66,0.08); border-color: rgba(201,99,66,0.25); }
 .outstanding-card b { color: #c96342; font-weight: 700; }
-.outstanding-sub { color: var(--muted); font-size: 11.5px; }
 
 /* Overdue column tag */
 .overdue-tag {

@@ -13,7 +13,7 @@ const page = ref(1)
 const size = 50
 
 const filters = reactive({ q: '', dept: '', customer_level: '', invoice_mode: '', is_shared: '' })
-const CUSTOMER_LEVELS = ['S级', 'A级', 'B级', 'C级']
+const CUSTOMER_LEVELS = ['S级', 'A级', 'B级', 'C级', 'D级']
 const showModal = ref(false)
 const editItem = ref(null)
 const saving = ref(false)
@@ -97,14 +97,13 @@ function openEdit(item) {
   showModal.value = true
 }
 
-// All substantive fields required (notes optional)
+// Required fields — sub_dept / contract_date / tax_rate are optional
 const REQUIRED = [
   ['contract_name', '合同名称'], ['short_name', '项目简称'],
-  ['delivery_dept', '交付部门'], ['sub_dept', '二级部门'],
-  ['business_mode', '业务模式'], ['customer_level', '客户等级'],
-  ['sales_contact', '销售对接人'], ['project_manager', '项目负责人'],
-  ['has_contract', '有无合同'], ['contract_date', '签订日期'],
-  ['invoice_mode', '开票模式'], ['invoice_type', '专票/普票'], ['tax_rate', '税率'],
+  ['delivery_dept', '交付部门'], ['business_mode', '业务模式'],
+  ['customer_level', '客户等级'], ['sales_contact', '销售对接人'],
+  ['project_manager', '项目负责人'], ['has_contract', '有无合同'],
+  ['invoice_mode', '开票模式'], ['invoice_type', '专票/普票'],
 ]
 
 async function save() {
@@ -321,7 +320,7 @@ onMounted(() => { load(); loadStats() })
           <div class="modal-header">
             <div>
               <h3>{{ editItem ? '编辑项目' : '新增项目' }}</h3>
-              <div class="modal-subtitle">{{ editItem ? editItem.project_no : '编号将自动生成 · 全部字段必填' }}</div>
+              <div class="modal-subtitle">{{ editItem ? editItem.project_no : '编号将自动生成 · 标 * 为必填' }}</div>
             </div>
             <button class="modal-close" @click="showModal = false">✕</button>
           </div>
@@ -353,8 +352,8 @@ onMounted(() => { load(); loadStats() })
                 </select>
               </label>
               <label class="form-field">
-                <span>二级部门 <em>*</em></span>
-                <input v-model="form.sub_dept" />
+                <span>二级部门</span>
+                <input v-model="form.sub_dept" placeholder="可选" />
               </label>
               <label class="form-field">
                 <span>业务模式 <em>*</em></span>
@@ -379,7 +378,7 @@ onMounted(() => { load(); loadStats() })
                 <select v-model="form.has_contract"><option>有</option><option>无</option></select>
               </label>
               <label class="form-field">
-                <span>签订日期 <em>*</em></span>
+                <span>签订日期</span>
                 <input v-model="form.contract_date" type="date" />
               </label>
               <label class="form-field">
@@ -400,11 +399,11 @@ onMounted(() => { load(); loadStats() })
               </label>
               <label class="form-field">
                 <span>专票 / 普票 <em>*</em></span>
-                <select v-model="form.invoice_type"><option>专票</option><option>普票</option></select>
+                <select v-model="form.invoice_type"><option>专票</option><option>普票</option><option>不开票</option></select>
               </label>
               <label class="form-field">
-                <span>税率（如 0.06 = 6%） <em>*</em></span>
-                <input v-model="form.tax_rate" placeholder="0.06" />
+                <span>税率（如 0.06 = 6%）</span>
+                <input v-model="form.tax_rate" placeholder="0.06，不开票可留空" />
               </label>
               <label class="form-field span2">
                 <span>备注</span>
@@ -450,13 +449,17 @@ onMounted(() => { load(); loadStats() })
 .act-btn:hover { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.07); }
 .act-btn:disabled { opacity: 0.45; cursor: default; }
 
-/* Table */
-.proj-table { width: 100%; }
-.proj-table th { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 9px 11px; background: rgba(0,0,0,0.02); white-space: nowrap; }
-.proj-table td { padding: 10px 11px; vertical-align: middle; }
+/* Table — compact density */
+.proj-table { width: 100%; font-size: 12.5px; table-layout: auto; }
+.proj-table th {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); padding: 7px 9px; background: rgba(0,0,0,0.025);
+  border-bottom: 1px solid rgba(0,0,0,0.06); white-space: nowrap;
+}
+.proj-table td { padding: 7px 9px; vertical-align: middle; }
 .proj-table .data-row { transition: background 0.12s; }
 .proj-table .data-row:hover { background: rgba(201,99,66,0.04); }
-.proj-table .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.04); }
+.proj-table .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.035); }
 
 .empty-cell { padding: 48px !important; text-align: center; }
 .empty-inner { color: var(--muted); font-size: 14px; }
@@ -473,6 +476,7 @@ onMounted(() => { load(); loadStats() })
 .level-chip.lv-A级 { background: rgba(21,101,192,0.12); color: #1565c0; }
 .level-chip.lv-B级 { background: rgba(46,125,50,0.1); color: #2e7d32; }
 .level-chip.lv-C级 { background: rgba(155,128,112,0.15); color: var(--muted); }
+.level-chip.lv-D级 { background: rgba(100,100,100,0.1); color: #888; }
 .yn-yes { color: #2e7d32; font-weight: 600; }
 .yn-no { color: var(--muted); }
 .days-chip { font-size: 12px; padding: 2px 8px; border-radius: 8px; background: rgba(21,101,192,0.08); color: #1565c0; font-weight: 600; white-space: nowrap; }
