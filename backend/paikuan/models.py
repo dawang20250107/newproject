@@ -90,6 +90,17 @@ class Payment(models.Model):
         db_table = 'paikuan_payments'
         verbose_name = '排款记录'
         ordering = ['-planned_date', '-created_at']
+        constraints = [
+            # 业务唯一键：相同审批单号 + 部门 + 收款方 + 计划日期 + 计划金额
+            # 视为重复排款。仅在 approval_number 非空时生效（占位 21 位 0 不算重复）。
+            # 配合 _find_duplicate_payment 提供并发安全（DB 拒绝并发的同键插入）。
+            models.UniqueConstraint(
+                fields=['department', 'approval_number', 'payee',
+                        'planned_date', 'total_amount'],
+                condition=~models.Q(approval_number=''),
+                name='uniq_payment_business_key',
+            ),
+        ]
 
     @property
     def total_paid(self):

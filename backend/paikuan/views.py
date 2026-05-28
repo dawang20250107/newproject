@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.db.models import F, Q, Sum, Count, Case, When, ExpressionWrapper
 from django.db.models import DecimalField as DjDecimalField
 from django.conf import settings
@@ -58,6 +58,16 @@ PAGE_KEYS = [
     'dashboard', 'payments', 'approval_records', 'stats',
     'ar_projects', 'ar_records', 'ar_analytics', 'ar_cashflow', 'ar_budget',
 ]
+
+# 仅允许这些职务对审批单直接置为 approved/rejected；其余职务（操作员/出纳/结算会计等）
+# 只能创建 pending、或取消自己的申请。super_admin 永远豁免此限制。
+APPROVER_JOBS = {'finance_director', 'finance_bp', 'general_manager', 'gm_assistant'}
+
+
+def is_approver(request):
+    if getattr(request, 'pk_role', None) == 'super_admin':
+        return True
+    return getattr(request, 'pk_job', None) in APPROVER_JOBS
 
 # ── AR field-level permission defs ───────────────────────────────────────────
 # Per-field show/hide control for the AR module. Keys are namespaced (p_ for
@@ -188,11 +198,11 @@ def default_job_config(job):
                 'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
                 'can_create': True, 'can_delete': False}
     if job == 'settlement_accountant':
-        # 结算会计：聚焦应收/对账/开票，付款条数据只读
+        # 结算会计：聚焦应收/对账/开票，付款条数据只读（与 edit 一致禁止新增/删除）
         edit = {k: False for k in FIELD_KEYS}
         return {'pages': pages_all, 'view': _all_fields(True),
                 'edit': edit, 'ar_view': _all_ar_fields(True),
-                'can_create': True, 'can_delete': False}
+                'can_create': False, 'can_delete': False}
     # Unknown / no job title → read-only minimum.
     return {'pages': pages_all, 'view': _all_fields(True),
             'edit': _all_fields(False), 'ar_view': _all_ar_fields(True),
@@ -811,10 +821,19 @@ def _create_payment(request):
             f'重复排款：已有相同审批单号({fields["approval_number"]})/收款方/计划日期/计划金额的排款记录 #{dup.id}',
             409, 409,
         )
-    with transaction.atomic():
-        p = Payment(created_by_id=request.pk_uid, updated_by_id=request.pk_uid, **fields)
-        p.save()
-        _record_payment_changes(p, {}, {}, request, action='create')
+    try:
+        with transaction.atomic():
+            p = Payment(created_by_id=request.pk_uid, updated_by_id=request.pk_uid, **fields)
+            p.save()
+            _record_payment_changes(p, {}, {}, request, action='create')
+    except IntegrityError:
+        # 并发提交命中 uniq_payment_business_key — DB 层兜底，再查一次返回友好提示
+        dup = _find_duplicate_payment(fields)
+        ref = f' #{dup.id}' if dup else ''
+        return err(
+            f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录{ref}',
+            409, 409,
+        )
     return ok(p.to_dict())
 
 
@@ -929,6 +948,8 @@ def approval_records(request):
         items = [o.to_dict() for o in qs[(page - 1) * size: page * size]]
         return ok({'items': items, 'total': total, 'page': page, 'size': size, 'total_amount': str(total_amount)})
     if request.method == 'POST':
+        if perms is not None and not perms.get('can_create'):
+            return err('无新增权限', 403, 403)
         data = parse_body(request)
         applicant = (data.get('applicant') or '').strip()
         department = (data.get('department') or '').strip()
@@ -952,6 +973,9 @@ def approval_records(request):
             return err('审批状态无效')
         if not can_write_dept(request, department):
             return err('无权操作该部门', 403, 403)
+        # 仅有审批权限职务可直接登记 approved/rejected；其它人新建只能为 pending
+        if status != 'pending' and not is_approver(request):
+            return err('当前职务无权直接登记非待审批状态，请先创建为"待审批"', 403, 403)
         rec = ApprovalRecord.objects.create(
             applicant=applicant, department=department, approval_number=approval_number,
             summary=summary, amount=amount, payee=payee, status=status, created_by_id=request.pk_uid
@@ -963,6 +987,9 @@ def approval_records(request):
 @csrf_exempt
 @pk_required()
 def approval_record_detail(request, pk):
+    perms = get_request_perms(request)
+    if perms is not None and not perms['pages'].get('approval_records', True):
+        return err('无访问权限', 403, 403)
     try:
         rec = ApprovalRecord.objects.get(pk=pk)
     except ApprovalRecord.DoesNotExist:
@@ -975,13 +1002,21 @@ def approval_record_detail(request, pk):
             if k in data:
                 setattr(rec, k, (data.get(k) or '').strip())
         if 'department' in data and data['department'] in VALID_DEPARTMENTS:
+            if not can_write_dept(request, data['department']):
+                return err('无权操作目标事业部', 403, 403)
             rec.department = data['department']
         if 'approval_number' in data and re.fullmatch(r'\d{21}', str(data['approval_number'])):
             rec.approval_number = str(data['approval_number'])
         if 'amount' in data:
             rec.amount = Decimal(str(data['amount'] or '0'))
         if 'status' in data and data['status'] in {'pending', 'approved', 'rejected', 'canceled'}:
-            rec.status = data['status']
+            new_status = data['status']
+            # 仅审批权限职务可设置 approved/rejected；任何登记人均可取消自己的申请
+            if new_status in {'approved', 'rejected'} and not is_approver(request):
+                return err('当前职务无权审批/拒绝该记录', 403, 403)
+            if new_status == 'canceled' and not is_approver(request) and rec.created_by_id != request.pk_uid:
+                return err('仅原申请人或审批人可撤销', 403, 403)
+            rec.status = new_status
             if rec.status in {'rejected', 'canceled'}:
                 rec.archived = True
         rec.save()
@@ -992,10 +1027,23 @@ def approval_record_detail(request, pk):
 @csrf_exempt
 @pk_required()
 def approval_record_schedule(request, pk):
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    # 须同时具备审批页与排款页权限 + 新增权限
+    perms = get_request_perms(request)
+    if perms is not None:
+        if not perms['pages'].get('approval_records', True):
+            return err('无审批记录访问权限', 403, 403)
+        if not perms['pages'].get('payments', True):
+            return err('无排款台账访问权限', 403, 403)
+        if not perms.get('can_create'):
+            return err('无新增排款权限', 403, 403)
     try:
         rec = ApprovalRecord.objects.get(pk=pk, archived=False)
     except ApprovalRecord.DoesNotExist:
         return err('记录不存在', 404)
+    if not can_write_dept(request, rec.department):
+        return err('无权操作该部门', 403, 403)
     if rec.status != 'approved':
         return err('仅审批通过记录可排款')
     data = parse_body(request)
@@ -1003,17 +1051,51 @@ def approval_record_schedule(request, pk):
     total_amount = Decimal(str(data.get('total_amount') or '0'))
     if not planned_date or total_amount <= 0:
         return err('计划日期和计划金额必填')
-    p = Payment.objects.create(
-        created_by_id=request.pk_uid,
-        department=rec.department,
-        approval_number=rec.approval_number,
-        project_desc=rec.summary,
-        payee=rec.payee,
-        total_amount=total_amount,
-        planned_date=planned_date,
-    )
-    rec.archived = True
-    rec.save(update_fields=['archived', 'updated_at'])
+    fields = {
+        'department': rec.department,
+        'approval_number': rec.approval_number,
+        'payee': rec.payee,
+        'planned_date': planned_date,
+        'total_amount': total_amount,
+    }
+    dup = _find_duplicate_payment(fields)
+    if dup:
+        return err(
+            f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录 #{dup.id}',
+            409, 409,
+        )
+    try:
+        with transaction.atomic():
+            # 二次检查 + 原子创建+归档（避免并发下两个请求同时通过 dup 检查）
+            rec_locked = ApprovalRecord.objects.select_for_update().get(pk=pk)
+            if rec_locked.archived:
+                return err('记录已归档', 409, 409)
+            dup2 = _find_duplicate_payment(fields)
+            if dup2:
+                return err(
+                    f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录 #{dup2.id}',
+                    409, 409,
+                )
+            p = Payment.objects.create(
+                created_by_id=request.pk_uid,
+                updated_by_id=request.pk_uid,
+                department=rec.department,
+                approval_number=rec.approval_number,
+                project_desc=rec.summary,
+                payee=rec.payee,
+                total_amount=total_amount,
+                planned_date=planned_date,
+            )
+            _record_payment_changes(p, {}, {}, request, action='create')
+            rec_locked.archived = True
+            rec_locked.save(update_fields=['archived', 'updated_at'])
+    except IntegrityError:
+        dup = _find_duplicate_payment(fields)
+        ref = f' #{dup.id}' if dup else ''
+        return err(
+            f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录{ref}',
+            409, 409,
+        )
     return ok({'payment': p.to_dict(), 'archived': rec.id})
 
 
@@ -1044,6 +1126,12 @@ def approval_template(request):
 def approval_import(request):
     if request.method != 'POST':
         return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    if perms is not None:
+        if not perms['pages'].get('approval_records', True):
+            return err('无访问权限', 403, 403)
+        if not perms.get('can_create'):
+            return err('无新增权限', 403, 403)
     f = request.FILES.get('file')
     if not f:
         return err('请上传文件')
@@ -1071,6 +1159,8 @@ def approval_import(request):
             skipped += 1; errors.append(f'第{r}行: 仅允许导入待审批状态'); continue
         if dept not in VALID_DEPARTMENTS:
             skipped += 1; errors.append(f'第{r}行: 所属事业部无效'); continue
+        if not can_write_dept(request, dept):
+            skipped += 1; errors.append(f'第{r}行: 无权操作事业部 {dept}'); continue
         try:
             amount = Decimal(str(amount_raw))
             if amount <= 0:
@@ -1683,6 +1773,9 @@ def payment_export(request):
             qs = qs.filter(paid__gte=F('total_amount'))
         elif status_q == 'partial':
             qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'))
+        elif status_q == 'overdue':
+            today_val = datetime.date.today()
+            qs = qs.filter(paid__lt=F('total_amount'), planned_date__lt=today_val)
 
     # Reject rather than silently truncate: a truncated export is worse than no export.
     EXPORT_CAP = 5000
