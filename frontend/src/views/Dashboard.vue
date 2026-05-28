@@ -112,25 +112,25 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
           <div class="icon">🎉</div>今日暂无计划付款
         </div>
         <div v-else class="table-wrap">
-          <table>
+          <table class="today-table">
             <thead>
               <tr>
-                <th v-if="auth.canView('department')">部门</th>
-                <th v-if="auth.canView('project_desc')">付款事项</th>
-                <th v-if="auth.canView('payee')">收款方</th>
-                <th v-if="showAmount">计划金额</th>
-                <th v-if="showPaid">已付</th>
-                <th>状态</th>
+                <th v-if="auth.canView('department')" class="col-dept">部门</th>
+                <th v-if="auth.canView('project_desc')" class="col-desc">付款事项</th>
+                <th v-if="auth.canView('payee')" class="col-payee">收款方</th>
+                <th v-if="showAmount" class="col-amt">计划金额</th>
+                <th v-if="showPaid" class="col-amt">已付</th>
+                <th class="col-status">状态</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="p in data.today_payments" :key="p.id">
-                <td v-if="auth.canView('department')">{{ p.department }}</td>
-                <td v-if="auth.canView('project_desc')" style="max-width:240px;white-space:normal">{{ p.project_desc }}</td>
-                <td v-if="auth.canView('payee')">{{ p.payee }}</td>
-                <td v-if="showAmount" class="amt">{{ fmt(p.total_amount) }}</td>
-                <td v-if="showPaid" class="amt">{{ fmt(p.total_paid) }}</td>
-                <td><StatusBadge :status="p.status" /></td>
+                <td v-if="auth.canView('department')" class="col-dept">{{ p.department }}</td>
+                <td v-if="auth.canView('project_desc')" class="col-desc" :title="p.project_desc">{{ p.project_desc }}</td>
+                <td v-if="auth.canView('payee')" class="col-payee" :title="p.payee">{{ p.payee }}</td>
+                <td v-if="showAmount" class="col-amt amt">{{ fmt(p.total_amount) }}</td>
+                <td v-if="showPaid" class="col-amt amt">{{ fmt(p.total_paid) }}</td>
+                <td class="col-status"><StatusBadge :status="p.status" /></td>
               </tr>
             </tbody>
           </table>
@@ -186,7 +186,37 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
   margin-bottom: 16px;
   color: #b71c1c;
   font-size: 13.5px;
-  animation: overdue-breathe 2.8s ease-in-out infinite;
+  /* GPU-composited opacity-only pulse; avoid border/background animations
+     which repaint inside backdrop-filter parents and cause whole-page flicker. */
+  animation: overdue-fade 3s ease-in-out infinite;
+  will-change: opacity;
 }
+@keyframes overdue-fade { 0%, 100% { opacity: 1; } 50% { opacity: 0.78; } }
 .overdue-alert svg { flex-shrink: 0; color: #c62828; }
+
+/* Today's payment plan — compact, tidy row/column density */
+.today-table { width: 100%; font-size: 13px; table-layout: fixed; }
+.today-table thead th {
+  padding: 8px 10px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.04em;
+  color: var(--muted); text-transform: uppercase;
+  background: rgba(0,0,0,0.025);
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+.today-table tbody td {
+  padding: 9px 10px;
+  vertical-align: middle;
+  border-bottom: 1px solid rgba(0,0,0,0.04);
+}
+.today-table tbody tr:last-child td { border-bottom: none; }
+.today-table tbody tr:hover { background: rgba(201,99,66,0.03); }
+.today-table .col-dept   { width: 12%; }
+.today-table .col-desc   { width: auto; }
+.today-table .col-payee  { width: 18%; }
+.today-table .col-amt    { width: 12%; }
+.today-table .col-status { width: 90px; text-align: center; }
+.today-table .col-desc, .today-table .col-payee {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.today-table .amt { text-align: right; font-variant-numeric: tabular-nums; }
 </style>

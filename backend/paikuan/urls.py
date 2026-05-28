@@ -12,6 +12,7 @@ urlpatterns = [
     path('payments/import', views.payment_import),
     path('payments/export', views.payment_export),
     path('payments/<int:pk>', views.payment_detail),
+    path('payments/<int:pk>/logs', views.payment_change_logs),
     path('approvals', views.approval_records),
     path('approvals/template', views.approval_template),
     path('approvals/import', views.approval_import),

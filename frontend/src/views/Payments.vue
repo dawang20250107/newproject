@@ -14,6 +14,8 @@ const showRemaining = computed(() => auth.canView('total_amount') && showPaid.va
 function dash(v) { return v === null || v === undefined ? '—' : fmt(v) }
 const items = ref([])
 const total = ref(0)
+const outstandingTotal = ref('0')
+const outstandingCount = ref(0)
 const loading = ref(false)
 const departments = ref([])
 const showModal = ref(false)
@@ -51,6 +53,13 @@ function hideTip() { tip.show = false }
 function fmt(n) {
   const v = parseFloat(n || 0)
   return v >= 10000 ? (v / 10000).toFixed(2) + ' 万' : v.toFixed(2)
+}
+
+function daysOverdue(plannedDate) {
+  if (!plannedDate) return 0
+  const a = new Date(today + 'T00:00:00')
+  const b = new Date(plannedDate + 'T00:00:00')
+  return Math.max(0, Math.round((a - b) / 86400000))
 }
 
 // ── Excel import / export / template ──────────────────────────────────────────
@@ -126,6 +135,8 @@ async function load() {
     const res = await api.get('/payments', { params })
     items.value = res.data.items
     total.value = res.data.total
+    outstandingTotal.value = res.data.outstanding_total ?? '0'
+    outstandingCount.value = res.data.outstanding_count ?? 0
   } catch (e) {
     loadErr.value = e?.error || '加载失败，请刷新重试'
   } finally {
@@ -144,6 +155,27 @@ onMounted(() => { load(); loadDepts() })
 
 function openAdd() { editItem.value = null; showModal.value = true }
 function openEdit(p) { editItem.value = p; showModal.value = true }
+
+// ── change-log drawer ─────────────────────────────────────────────────────────
+const logsOpen = ref(false)
+const logsTarget = ref(null)
+const logs = ref([])
+const logsLoading = ref(false)
+async function openLogs(p) {
+  logsTarget.value = p; logsOpen.value = true; logsLoading.value = true; logs.value = []
+  try {
+    const res = await api.get(`/payments/${p.id}/logs`)
+    logs.value = res.data.items || []
+  } catch (e) {
+    logs.value = []
+  } finally { logsLoading.value = false }
+}
+function actionLabel(a) { return { create: '新建', update: '修改', delete: '删除' }[a] || a }
+function fmtTime(s) {
+  if (!s) return ''
+  const d = new Date(s)
+  return d.toLocaleString('zh-CN', { hour12: false })
+}
 
 function onSaved(p) {
   showModal.value = false
@@ -212,7 +244,16 @@ function setPage(p) { filters.page = p; load() }
         <button class="btn btn-sm" style="background:var(--bg2);border:none" @click="resetFilters">重置</button>
       </div>
 
-      <div style="font-size:13px;color:var(--muted);margin-bottom:8px">共 {{ total }} 条记录</div>
+      <div class="list-meta">
+        <div class="list-count">共 <b>{{ total }}</b> 条记录</div>
+        <div v-if="showAmount" class="outstanding-card" :class="{ 'has-data': outstandingCount > 0 }">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+          </svg>
+          <span>已计划未结清：<b>{{ fmt(outstandingTotal) }}</b></span>
+          <span class="outstanding-sub">（{{ outstandingCount }} 笔）</span>
+        </div>
+      </div>
 
       <div v-if="loading" class="empty"><div class="icon">⏳</div>加载中…</div>
       <div v-else-if="loadErr" class="empty" style="color:#c62828"><div class="icon">⚠️</div>{{ loadErr }}</div>
@@ -234,6 +275,7 @@ function setPage(p) { filters.page = p; load() }
               <th v-if="showPaid">已付 (元)</th>
               <th v-if="showRemaining">剩余 (元)</th>
               <th>状态</th>
+              <th>逾期</th>
               <th v-if="auth.canWrite || auth.canDelete">操作</th>
             </tr>
           </thead>
@@ -255,9 +297,17 @@ function setPage(p) { filters.page = p; load() }
               <td v-if="showPaid" class="amt amt-green">{{ dash(p.total_paid) }}</td>
               <td v-if="showRemaining" class="amt" :class="parseFloat(p.remaining) > 0 ? 'amt-red' : ''">{{ dash(p.remaining) }}</td>
               <td><StatusBadge :status="p.status" /></td>
+              <td>
+                <span v-if="p.status === 'settled'" class="overdue-tag overdue-ok">—</span>
+                <span v-else-if="p.planned_date && p.planned_date < today"
+                      class="overdue-tag overdue-bad">逾期 {{ daysOverdue(p.planned_date) }} 天</span>
+                <span v-else-if="p.planned_date === today" class="overdue-tag overdue-today">今日到期</span>
+                <span v-else class="overdue-tag overdue-ok">未到期</span>
+              </td>
               <td v-if="auth.canWrite || auth.canDelete">
                 <div style="display:flex;gap:6px">
                   <button v-if="auth.canWrite" class="btn btn-ghost btn-sm" @click="openEdit(p)">编辑</button>
+                  <button class="btn btn-ghost btn-sm" @click="openLogs(p)">日志</button>
                   <button v-if="auth.canDelete" class="btn btn-danger btn-sm" @click="onDelete(p)">删除</button>
                 </div>
               </td>
@@ -335,6 +385,41 @@ function setPage(p) { filters.page = p; load() }
       </div>
     </div>
 
+    <!-- Change log drawer -->
+    <Teleport to="body">
+      <div v-if="logsOpen" class="logs-overlay" @click.self="logsOpen = false">
+        <div class="logs-panel">
+          <div class="logs-header">
+            <div>
+              <h3>变更日志</h3>
+              <div class="logs-sub" v-if="logsTarget">排款 #{{ logsTarget.id }} · {{ logsTarget.project_desc }}</div>
+            </div>
+            <button class="modal-close" @click="logsOpen = false">×</button>
+          </div>
+          <div class="logs-body">
+            <div v-if="logsLoading" class="empty">加载中…</div>
+            <div v-else-if="!logs.length" class="empty">暂无变更记录</div>
+            <ul v-else class="logs-list">
+              <li v-for="l in logs" :key="l.id" class="logs-item" :class="`logs-${l.action}`">
+                <div class="logs-meta">
+                  <span class="logs-action">{{ actionLabel(l.action) }}</span>
+                  <span class="logs-field">{{ l.field_label || '—' }}</span>
+                  <span class="logs-by">{{ l.operator_name || '系统' }}</span>
+                  <span class="logs-time">{{ fmtTime(l.at) }}</span>
+                </div>
+                <div v-if="l.action === 'update'" class="logs-diff">
+                  <span class="logs-old">{{ l.old_value || '空' }}</span>
+                  <span class="logs-arrow">→</span>
+                  <span class="logs-new">{{ l.new_value || '空' }}</span>
+                </div>
+                <div v-else class="logs-summary">{{ l.new_value || l.old_value }}</div>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <!-- hover tooltip card for long cells -->
     <Transition name="tip-fade">
       <div v-if="tip.show" class="cell-tooltip" :style="{ left: tip.x + 'px', top: tip.y + 'px' }">
@@ -345,6 +430,31 @@ function setPage(p) { filters.page = p; load() }
 </template>
 
 <style scoped>
+/* List meta row: count + outstanding summary card */
+.list-meta {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 10px; flex-wrap: wrap;
+}
+.list-count { font-size: 13px; color: var(--muted); }
+.outstanding-card {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; padding: 6px 12px; border-radius: 10px;
+  background: rgba(201,99,66,0.06); border: 1px solid rgba(201,99,66,0.18);
+  color: var(--muted);
+}
+.outstanding-card.has-data { color: #8a4d2f; background: rgba(201,99,66,0.10); border-color: rgba(201,99,66,0.3); }
+.outstanding-card b { color: #c96342; font-weight: 700; }
+.outstanding-sub { color: var(--muted); font-size: 11.5px; }
+
+/* Overdue column tag */
+.overdue-tag {
+  display: inline-block; font-size: 11.5px; padding: 2px 8px;
+  border-radius: 9px; white-space: nowrap;
+}
+.overdue-ok    { color: var(--muted); background: transparent; }
+.overdue-today { color: #b35309; background: rgba(245,127,23,0.12); font-weight: 600; }
+.overdue-bad   { color: #c62828; background: rgba(198,40,40,0.10); font-weight: 700; }
+
 /* truncated long cells + hover tooltip card */
 .cell-clip {
   max-width: 220px;
@@ -424,4 +534,56 @@ function setPage(p) { filters.page = p; load() }
   vertical-align: middle;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Change-log drawer ── */
+.logs-overlay {
+  position: fixed; inset: 0; z-index: 9100;
+  background: rgba(20,10,5,0.42);
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.logs-panel {
+  width: min(720px, 96vw); max-height: 80vh; background: #fffaf3;
+  border-radius: 16px 16px 0 0; overflow: hidden;
+  display: flex; flex-direction: column;
+  box-shadow: 0 -10px 40px rgba(20,10,5,0.25);
+  animation: logsUp 0.26s cubic-bezier(0.34,1.5,0.64,1);
+}
+@keyframes logsUp { from { transform: translateY(40px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+.logs-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  padding: 16px 22px 12px; border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+.logs-header h3 { font-size: 16px; font-weight: 700; margin: 0; }
+.logs-sub { font-size: 12px; color: var(--muted); margin-top: 3px; max-width: 540px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-body { padding: 12px 22px 22px; overflow-y: auto; }
+.logs-list { list-style: none; padding: 0; margin: 0; }
+.logs-item {
+  padding: 10px 12px; border-radius: 9px; margin-bottom: 6px;
+  background: rgba(0,0,0,0.02); border-left: 3px solid var(--border);
+}
+.logs-create { border-left-color: #2e7d32; }
+.logs-update { border-left-color: #1565c0; }
+.logs-delete { border-left-color: #c62828; }
+.logs-meta {
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  font-size: 12px; color: var(--muted); margin-bottom: 4px;
+}
+.logs-action {
+  font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 8px;
+  color: #fff;
+}
+.logs-create .logs-action { background: #2e7d32; }
+.logs-update .logs-action { background: #1565c0; }
+.logs-delete .logs-action { background: #c62828; }
+.logs-field { font-weight: 600; color: var(--text); }
+.logs-by { margin-left: auto; }
+.logs-time { font-variant-numeric: tabular-nums; }
+.logs-diff { font-size: 13px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.logs-old { color: #c62828; text-decoration: line-through; opacity: 0.75; max-width: 280px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-new { color: #2e7d32; font-weight: 600; max-width: 280px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-arrow { color: var(--muted); }
+.logs-summary { font-size: 13px; color: var(--text); }
 </style>

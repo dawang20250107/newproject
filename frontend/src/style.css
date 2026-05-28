@@ -42,11 +42,14 @@ body {
   overflow: hidden;
   pointer-events: none;
   background: linear-gradient(145deg, #e8e2d8 0%, #ddd0c2 40%, #e4d8cc 100%);
+  /* Isolate the orb compositor so animated blurs don't trigger whole-page repaints. */
+  contain: layout paint;
+  transform: translateZ(0);
 }
 .bg-orb {
   position: absolute;
   border-radius: 50%;
-  filter: blur(72px);
+  filter: blur(60px);
   opacity: 0.22;
   will-change: transform;
 }
@@ -112,7 +115,11 @@ body {
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow);
   padding: 22px;
-  transition: box-shadow 0.25s ease, transform 0.25s ease;
+  transition: box-shadow 0.25s ease;
+  /* Promote each card to its own compositor layer so the blurred background
+     orbs underneath don't cause whole-page re-paints (avoids occasional flicker). */
+  transform: translateZ(0);
+  contain: paint;
 }
 .card:hover {
   box-shadow: 0 12px 40px rgba(100,60,30,0.18), 0 1px 0 rgba(255,255,255,0.7) inset;

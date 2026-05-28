@@ -10,13 +10,14 @@ from urllib.parse import quote
 
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+from django.db import transaction
 from django.db.models import F, Q, Sum, Count, Case, When, ExpressionWrapper
 from django.db.models import DecimalField as DjDecimalField
 from django.conf import settings
 from django.utils import timezone
 import jwt
 
-from paikuan.models import PaikuanUser, Payment, JobPermission, ApprovalRecord
+from paikuan.models import PaikuanUser, Payment, JobPermission, ApprovalRecord, PaymentChangeLog
 
 logger = logging.getLogger('paikuan')
 
@@ -567,9 +568,27 @@ def _list_payments(request):
             qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'))
 
     total = qs.count()
+
+    # Aggregate: 已计划未结清总金额 (sum of remaining for non-settled rows, in scope of filter)
+    paid_expr = _paid_expr()
+    summary = qs.annotate(_paid=paid_expr).aggregate(
+        outstanding=Sum(
+            ExpressionWrapper(F('total_amount') - F('_paid'),
+                              output_field=DjDecimalField(max_digits=18, decimal_places=2)),
+            filter=Q(_paid__lt=F('total_amount')),
+        ),
+        outstanding_count=Count('id', filter=Q(_paid__lt=F('total_amount'))),
+    )
+    outstanding_total = summary['outstanding'] or Decimal('0')
+    outstanding_count = summary['outstanding_count'] or 0
+
     perms = get_request_perms(request)
     items = [apply_view_mask(p.to_dict(), perms) for p in qs[(page - 1) * size: page * size]]
-    return ok({'items': items, 'total': total, 'page': page, 'size': size})
+    return ok({
+        'items': items, 'total': total, 'page': page, 'size': size,
+        'outstanding_total': str(outstanding_total),
+        'outstanding_count': outstanding_count,
+    })
 
 
 def _parse_payment_fields(data, payment=None):
@@ -671,6 +690,76 @@ def _parse_payment_fields(data, payment=None):
     return fields, None
 
 
+# Field-name → Chinese-label map for change-log records.
+_PAYMENT_FIELD_LABELS = {
+    'department': '部门', 'approval_number': '审批单号',
+    'project_desc': '付款事项', 'payee': '收款方',
+    'total_amount': '计划总金额', 'planned_date': '计划付款日期',
+    'pay1_date': '第1次付款日期', 'pay1_amount': '第1次付款金额',
+    'pay2_date': '第2次付款日期', 'pay2_amount': '第2次付款金额',
+    'pay3_date': '第3次付款日期', 'pay3_amount': '第3次付款金额',
+    'notes': '备注',
+}
+
+
+def _find_duplicate_payment(fields, exclude_id=None):
+    """Detect duplicate planned payments on same business key.
+
+    Business key: department + approval_number + payee + planned_date + total_amount.
+    Skip the rule when approval_number is blank (low confidence).
+    """
+    if not fields.get('approval_number'):
+        return None
+    qs = Payment.objects.filter(
+        department=fields['department'],
+        approval_number=fields['approval_number'],
+        payee=fields['payee'],
+        planned_date=fields['planned_date'],
+        total_amount=fields['total_amount'],
+    )
+    if exclude_id:
+        qs = qs.exclude(id=exclude_id)
+    return qs.first()
+
+
+def _record_payment_changes(payment, before_dict, after_dict, request, action='update'):
+    """Persist field-level diffs into PaymentChangeLog."""
+    user = PaikuanUser.objects.filter(id=request.pk_uid).only('id', 'name').first() \
+        if getattr(request, 'pk_uid', None) else None
+    operator_name = user.name if user else ''
+    if action == 'create':
+        PaymentChangeLog.objects.create(
+            payment=payment, payment_id_snapshot=payment.id,
+            action='create', operator=user, operator_name=operator_name,
+            field_name='', field_label='整条记录',
+            old_value='', new_value=f'新建排款 #{payment.id}',
+        )
+        return
+    if action == 'delete':
+        PaymentChangeLog.objects.create(
+            payment=None, payment_id_snapshot=payment.id,
+            action='delete', operator=user, operator_name=operator_name,
+            field_name='', field_label='整条记录',
+            old_value=f'排款 #{payment.id}', new_value='',
+        )
+        return
+    # update: diff each tracked field
+    logs = []
+    for fname, label in _PAYMENT_FIELD_LABELS.items():
+        old_v = before_dict.get(fname)
+        new_v = after_dict.get(fname)
+        if str(old_v if old_v is not None else '') != str(new_v if new_v is not None else ''):
+            logs.append(PaymentChangeLog(
+                payment=payment, payment_id_snapshot=payment.id,
+                action='update', operator=user, operator_name=operator_name,
+                field_name=fname, field_label=label,
+                old_value=str(old_v if old_v is not None else ''),
+                new_value=str(new_v if new_v is not None else ''),
+            ))
+    if logs:
+        PaymentChangeLog.objects.bulk_create(logs)
+
+
 def _create_payment(request):
     perms = get_request_perms(request)
     if perms is not None and not perms['can_create']:
@@ -681,8 +770,17 @@ def _create_payment(request):
         return err(error)
     if not can_write_dept(request, fields['department']):
         return err('无权操作该部门', 403, 403)
-    p = Payment(created_by_id=request.pk_uid, **fields)
-    p.save()
+    # Idempotency: block duplicate submissions on the same business key.
+    dup = _find_duplicate_payment(fields)
+    if dup:
+        return err(
+            f'重复排款：已有相同审批单号({fields["approval_number"]})/收款方/计划日期/计划金额的排款记录 #{dup.id}',
+            409, 409,
+        )
+    with transaction.atomic():
+        p = Payment(created_by_id=request.pk_uid, updated_by_id=request.pk_uid, **fields)
+        p.save()
+        _record_payment_changes(p, {}, {}, request, action='create')
     return ok(p.to_dict())
 
 
@@ -727,9 +825,14 @@ def payment_detail(request, pk):
         new_dept = fields['department']
         if new_dept != p.department and not can_write_dept(request, new_dept):
             return err('无权操作目标部门', 403, 403)
-        for k, v in fields.items():
-            setattr(p, k, v)
-        p.save()
+        before_snapshot = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
+        with transaction.atomic():
+            for k, v in fields.items():
+                setattr(p, k, v)
+            p.updated_by_id = request.pk_uid
+            p.save()
+            after_snapshot = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
+            _record_payment_changes(p, before_snapshot, after_snapshot, request, action='update')
         return ok(apply_view_mask(p.to_dict(), perms))
 
     if request.method == 'DELETE':
@@ -738,10 +841,34 @@ def payment_detail(request, pk):
                 return err('无删除权限', 403, 403)
             if not can_write_dept(request, p.department):
                 return err('无权删除此记录', 403, 403)
-        p.delete()
+        with transaction.atomic():
+            _record_payment_changes(p, {}, {}, request, action='delete')
+            p.delete()
         return ok({'deleted': pk})
 
     return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def payment_change_logs(request, pk):
+    """Return the change-log timeline for a single payment."""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    # Permission: viewer must have access to this row (same dept or super_admin).
+    try:
+        p = Payment.objects.get(id=pk)
+    except Payment.DoesNotExist:
+        # If the payment was deleted, still allow viewing logs (via snapshot id)
+        # but only for super_admin to avoid leaking history.
+        if request.pk_role != 'super_admin':
+            return err('记录不存在', 404)
+        logs = PaymentChangeLog.objects.filter(payment_id_snapshot=pk).order_by('-at')[:200]
+        return ok({'items': [l.to_dict() for l in logs], 'payment_id': pk, 'deleted': True})
+    if not dept_filter(Payment.objects.filter(id=pk), request).exists():
+        return err('无权访问', 403, 403)
+    logs = PaymentChangeLog.objects.filter(payment_id_snapshot=pk).order_by('-at')[:200]
+    return ok({'items': [l.to_dict() for l in logs], 'payment_id': pk, 'deleted': False})
 
 
 @csrf_exempt
@@ -1322,7 +1449,7 @@ def payment_template(request):
     # so import skips this row even if the user forgets to delete it.
     example = {
         '部门': EXAMPLE_ROW_MARKER,
-        '审批单号': '如 PK202601001',
+        '审批单号': '123456789012345678901',
         '付款事项': '如：工程款结算',
         '收款方': '如：某某公司',
         '计划总金额(元)': 100000,
@@ -1445,8 +1572,18 @@ def payment_import(request):
             results['skipped'] += 1
             continue
 
+        # Idempotency: skip rows that match an existing record on business key.
+        dup = _find_duplicate_payment(fields)
+        if dup:
+            results['errors'].append(
+                f'第{row_num}行: 跳过重复（已存在排款 #{dup.id}，相同审批单号+收款方+计划日期+金额）')
+            results['skipped'] += 1
+            continue
         try:
-            Payment.objects.create(created_by_id=request.pk_uid, **fields)
+            with transaction.atomic():
+                p = Payment.objects.create(
+                    created_by_id=request.pk_uid, updated_by_id=request.pk_uid, **fields)
+                _record_payment_changes(p, {}, {}, request, action='create')
             results['created'] += 1
         except Exception as e:
             results['errors'].append(f'第{row_num}行: 保存失败 ({e})')

@@ -63,8 +63,12 @@ class Payment(models.Model):
         PaikuanUser, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='payments'
     )
+    updated_by = models.ForeignKey(
+        PaikuanUser, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='updated_payments'
+    )
     department = models.CharField('部门', max_length=100, db_index=True)
-    approval_number = models.CharField('审批单号', max_length=100, blank=True, default='')
+    approval_number = models.CharField('审批单号', max_length=100, blank=True, default='', db_index=True)
     project_desc = models.TextField('付款事项描述')
     payee = models.CharField('收款方', max_length=200)
     total_amount = models.DecimalField('计划总金额', max_digits=15, decimal_places=2)
@@ -188,3 +192,50 @@ class JobPermission(models.Model):
     class Meta:
         db_table = 'paikuan_job_permissions'
         verbose_name = '职务权限'
+
+
+class PaymentChangeLog(models.Model):
+    """Audit trail for Payment field changes (who/when/what changed)."""
+    ACTION_CHOICES = [
+        ('create', '新建'),
+        ('update', '修改'),
+        ('delete', '删除'),
+    ]
+    payment = models.ForeignKey(
+        Payment, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='change_logs'
+    )
+    payment_id_snapshot = models.IntegerField('排款ID快照', db_index=True)
+    action = models.CharField('操作类型', max_length=10, choices=ACTION_CHOICES)
+    operator = models.ForeignKey(
+        PaikuanUser, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='payment_changes'
+    )
+    operator_name = models.CharField('操作人姓名', max_length=100, blank=True, default='')
+    field_name = models.CharField('字段名', max_length=50, blank=True, default='')
+    field_label = models.CharField('字段中文名', max_length=50, blank=True, default='')
+    old_value = models.TextField('修改前', blank=True, default='')
+    new_value = models.TextField('修改后', blank=True, default='')
+    at = models.DateTimeField('操作时间', auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = 'paikuan_payment_change_logs'
+        verbose_name = '排款变更日志'
+        ordering = ['-at']
+        indexes = [
+            models.Index(fields=['payment', 'at']),
+        ]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'payment_id': self.payment_id_snapshot,
+            'action': self.action,
+            'operator_id': self.operator_id,
+            'operator_name': self.operator_name,
+            'field_name': self.field_name,
+            'field_label': self.field_label,
+            'old_value': self.old_value,
+            'new_value': self.new_value,
+            'at': self.at.isoformat() if self.at else None,
+        }

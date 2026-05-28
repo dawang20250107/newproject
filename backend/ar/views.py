@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import datetime
 import calendar
 from collections import defaultdict
@@ -46,15 +47,47 @@ def _match_project_by_short_name(short_name, dept=''):
 
 
 def _normalize_date(s):
-    s = (str(s) or '').strip()
-    if not s or s == 'None':
+    """Best-effort normalize a user-typed date string to ISO YYYY-MM-DD.
+
+    Accepts: 2026-01-15, 2026/1/15, 2026.1.15, 2026年1月15日, 26/1/15,
+    20260115, datetime/date objects, Excel serial numbers.
+    """
+    import datetime as _dt
+    if s is None:
         return None
-    s = s.replace('/', '-').replace('.', '-').replace('年', '-').replace('月', '-').replace('日', '')
-    parts = [p for p in s.split('-') if p]
+    # datetime / date objects (openpyxl can return these)
+    if isinstance(s, (_dt.datetime, _dt.date)):
+        return s.strftime('%Y-%m-%d')
+    # Excel serial date (number of days since 1899-12-30)
+    if isinstance(s, (int, float)) and not isinstance(s, bool):
+        try:
+            base = _dt.date(1899, 12, 30)
+            return (base + _dt.timedelta(days=int(s))).strftime('%Y-%m-%d')
+        except (OverflowError, ValueError):
+            return None
+    s = str(s).strip()
+    if not s or s.lower() == 'none':
+        return None
+    # 20260115 → 2026-01-15
+    if re.fullmatch(r'\d{8}', s):
+        try:
+            return f'{s[:4]}-{s[4:6]}-{s[6:]}'
+        except ValueError:
+            pass
+    # Drop chinese unit suffixes / unify separators
+    cleaned = (s.replace('/', '-').replace('.', '-')
+                .replace('年', '-').replace('月', '-').replace('日', '')
+                .replace(' ', '').strip('-'))
+    parts = [p for p in cleaned.split('-') if p]
     try:
         if len(parts) >= 3:
-            return f'{int(parts[0]):04d}-{int(parts[1]):02d}-{int(parts[2]):02d}'
-    except ValueError:
+            y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+            # 2-digit year → 20xx
+            if y < 100:
+                y += 2000
+            _dt.date(y, m, d)  # validate
+            return f'{y:04d}-{m:02d}-{d:02d}'
+    except (ValueError, TypeError):
         pass
     return None
 
@@ -757,9 +790,16 @@ def ar_record_template(request):
     ws = wb.active
     ws.title = '应收账款明细'
     headers = ['项目简称*', '运作年*', '运作月*', '预估上账金额', '实际开票金额',
-               '税额(差额模式手填)', '开票日期(YYYY-MM-DD)', '回款金额', '回款时间(YYYY-MM-DD)', '备注']
+               '税额(差额模式手填)', '开票日期', '账实差额调整', '回款金额', '回款时间', '备注']
     _header_row(ws, headers, color='1B6E35')
-    ws.append([EXAMPLE_ROW_MARKER, 2026, 1, 100000, 100000, '', '2026-01-15', 30000, '2026-01-20', '示例'])
+    ws.append([EXAMPLE_ROW_MARKER, 2026, 1, 100000, 100000, '', '2026-01-15', 0, 30000, '2026-01-20', '示例'])
+    # Tip row about accepted date formats
+    tip_row_idx = ws.max_row + 1
+    ws.cell(row=tip_row_idx, column=1,
+            value='提示：日期支持 2026-01-15、2026/1/15、2026.1.15、2026年1月15日 等格式；'
+                  '项目简称匹配现有项目主表；本行可保留为示例，导入时自动跳过')
+    ws.cell(row=tip_row_idx, column=1).font = Font(italic=True, color='888888')
+    ws.merge_cells(start_row=tip_row_idx, start_column=1, end_row=tip_row_idx, end_column=len(headers))
     for col in range(1, len(headers) + 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 20
     return _export_response(wb, '应收账款明细导入模板.xlsx')
@@ -788,11 +828,35 @@ def ar_record_import(request):
     headers = [str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1)]
     col_map = {h: i + 1 for i, h in enumerate(headers)}
 
-    def _cv(row, name):
-        idx = col_map.get(name)
+    # Header aliases for backward compatibility / user-friendly variants
+    _ALIASES = {
+        '开票日期': ['开票日期', '开票日期(YYYY-MM-DD)', '开票日期*'],
+        '回款时间': ['回款时间', '回款时间(YYYY-MM-DD)', '回款日期'],
+        '税额(差额模式手填)': ['税额(差额模式手填)', '税额'],
+        '预估上账金额': ['预估上账金额', '预估金额', '上账金额'],
+        '实际开票金额': ['实际开票金额', '开票金额'],
+        '账实差额调整': ['账实差额调整', '账实差额'],
+        '回款金额': ['回款金额'],
+        '项目简称*': ['项目简称*', '项目简称'],
+        '运作年*': ['运作年*', '运作年'],
+        '运作月*': ['运作月*', '运作月'],
+        '备注': ['备注'],
+    }
+
+    def _resolve_idx(name):
+        for h in _ALIASES.get(name, [name]):
+            if h in col_map:
+                return col_map[h]
+        return None
+
+    def _cv_raw(row, name):
+        idx = _resolve_idx(name)
         if idx is None:
-            return ''
-        v = ws.cell(row, idx).value
+            return None
+        return ws.cell(row, idx).value
+
+    def _cv(row, name):
+        v = _cv_raw(row, name)
         return str(v).strip() if v is not None else ''
 
     from paikuan.models import PaikuanUser
@@ -836,27 +900,33 @@ def ar_record_import(request):
             tax_raw = _cv(ri, '税额(差额模式手填)')
             if _can_ar_view(request, 'r_tax_amount'):
                 rec.tax_amount = _dec(tax_raw) if tax_raw else None
-            inv_date = _normalize_date(_cv(ri, '开票日期(YYYY-MM-DD)'))
+            inv_date = _normalize_date(_cv_raw(ri, '开票日期'))
             if _can_ar_view(request, 'r_invoice_date'):
                 rec.invoice_date = inv_date or None
+            diff_adj = _cv(ri, '账实差额调整')
+            if diff_adj and _can_ar_view(request, 'r_account_diff'):
+                rec.account_diff_adjustment = _dec(diff_adj)
             notes = _cv(ri, '备注')
             if _can_ar_view(request, 'r_notes'):
                 rec.notes = notes
             rec.save()
             pay_amount = _cv(ri, '回款金额')
-            pay_date = _normalize_date(_cv(ri, '回款时间(YYYY-MM-DD)'))
+            pay_date = _normalize_date(_cv_raw(ri, '回款时间'))
             if pay_amount and pay_date:
                 amt = _dec(pay_amount)
                 if amt > 0:
-                    max_no = rec.payments.aggregate(m=Max('payment_no')).get('m') or 0
-                    ARPayment.objects.create(
-                        ar_record=rec,
-                        payment_no=max_no + 1,
-                        amount=amt,
-                        payment_date=pay_date,
-                        notes='导入回款'
-                    )
-                    rec.recompute_derived()
+                    # Idempotency: skip if a payment with same date+amount already exists
+                    dup = rec.payments.filter(payment_date=pay_date, amount=amt).exists()
+                    if not dup:
+                        max_no = rec.payments.aggregate(m=Max('payment_no')).get('m') or 0
+                        ARPayment.objects.create(
+                            ar_record=rec,
+                            payment_no=max_no + 1,
+                            amount=amt,
+                            payment_date=pay_date,
+                            notes='导入回款'
+                        )
+                        rec.recompute_derived()
             if created_new:
                 created += 1
             else:
