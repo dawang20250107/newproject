@@ -312,7 +312,6 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <h1>预算管理</h1>
         <div style="font-size:13px;color:var(--muted);margin-top:2px">
           收款预算 · 付款预算 · 执行对比
-          <span v-if="summary?.has_alert" style="color:#c62828;font-weight:700;margin-left:8px">⚠ 强提醒：实际付款超出实际收款</span>
         </div>
       </div>
     </div>

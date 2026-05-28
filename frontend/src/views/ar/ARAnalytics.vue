@@ -19,6 +19,7 @@ const agingData = ref(null)
 const collRateData = ref(null)
 const topData = ref(null)
 const statusData = ref(null)
+const pmData = ref(null)
 
 function fmtWan(v) {
   const n = Math.abs(parseFloat(v) || 0)
@@ -29,16 +30,18 @@ function fmtWan(v) {
 
 async function loadAll() {
   const params = { dept: selectedDept.value }
-  const [a, c, t, s] = await Promise.all([
+  const [a, c, t, s, p] = await Promise.all([
     ar.aging(params),
     ar.collectionRate({ year: selectedYear.value, ...params }),
     ar.outstandingTop({ ...params, n: 10 }),
     ar.statusDist(params),
+    ar.analyticsByPm({ year: selectedYear.value, ...params }),
   ])
   agingData.value = a.data
   collRateData.value = c.data
   topData.value = t.data
   statusData.value = s.data
+  pmData.value = p.data
 }
 
 // ── ECharts options ───────────────────────────────────────────────────────────
@@ -154,6 +157,46 @@ async function openDetail(status, title) {
 // 重点催收 = 未收 Top 项目（取前 3）
 const keyCollection = computed(() => (topData.value || []).slice(0, 3))
 
+const pmOption = computed(() => {
+  const data = pmData.value
+  if (!data || !data.length) return null
+  const sorted = [...data].sort((a, b) => b.outstanding - a.outstanding).slice(0, 15)
+  const names = sorted.map(d => d.pm).reverse()
+  return {
+    tooltip: {
+      trigger: 'axis', axisPointer: { type: 'shadow' },
+      backgroundColor: 'rgba(255,255,255,0.97)', borderColor: 'rgba(0,0,0,0.08)', textStyle: { fontSize: 12 },
+      formatter: params => {
+        const idx = sorted.length - 1 - params[0].dataIndex
+        const d = sorted[idx]
+        return `<b>${d.pm}</b><br/>
+          已收: <b>${fmtWan(d.collected)}</b><br/>
+          未收: <b style="color:#e65100">${fmtWan(d.outstanding)}</b><br/>
+          上账: ${fmtWan(d.estimated)}<br/>
+          回款率: <b>${d.rate.toFixed(1)}%</b>  项目数: ${d.project_count}`
+      },
+    },
+    grid: { top: 8, right: 100, bottom: 8, left: 16, containLabel: true },
+    xAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), fontSize: 11, color: '#888' } },
+    yAxis: { type: 'category', data: names, axisLabel: { fontSize: 11, color: '#555', width: 90, overflow: 'truncate' } },
+    series: [
+      { name: '已收', type: 'bar', stack: 'total', barMaxWidth: 20,
+        data: sorted.map(d => d.collected).reverse(),
+        itemStyle: { color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
+          colorStops: [{ offset: 0, color: '#2e7d32' }, { offset: 1, color: '#66bb6a' }] },
+          borderRadius: [0, 0, 0, 0] } },
+      { name: '未收', type: 'bar', stack: 'total', barMaxWidth: 20,
+        data: sorted.map(d => d.outstanding).reverse(),
+        itemStyle: { color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
+          colorStops: [{ offset: 0, color: '#e65100' }, { offset: 1, color: '#ffa726' }] },
+          borderRadius: [0, 4, 4, 0] },
+        label: { show: true, position: 'right',
+          formatter: p => { const d = sorted[sorted.length - 1 - p.dataIndex]; return `${d.rate.toFixed(0)}%` },
+          fontSize: 11, color: '#555' } },
+    ],
+  }
+})
+
 watch([selectedDept, selectedYear], loadAll)
 const onScopeChange = () => {
   if (selectedDept.value && !accessibleDepts.value.includes(selectedDept.value)) selectedDept.value = ''
@@ -246,6 +289,41 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <BaseChart v-if="topOption" :option="topOption" height="280px" @click="onTopClick" />
         <div v-else class="empty"><div class="icon">📊</div>暂无数据</div>
       </div>
+      <!-- PM Dimension -->
+      <div class="card" style="grid-column:span 2">
+        <div class="section-title">项目负责人维度分析（{{ selectedYear }}年）<span class="tip">已收/未收堆叠 · 右侧显示回款率</span></div>
+        <BaseChart v-if="pmOption" :option="pmOption" height="320px" />
+        <div v-else class="empty"><div class="icon">📊</div>暂无数据</div>
+        <!-- PM table -->
+        <div v-if="pmData && pmData.length" class="pm-table-wrap">
+          <table class="pm-table">
+            <thead>
+              <tr>
+                <th>项目负责人</th>
+                <th class="ctr">项目数</th>
+                <th class="amt">上账金额</th>
+                <th class="amt">已收</th>
+                <th class="amt warn">未收</th>
+                <th class="ctr">回款率</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="d in pmData" :key="d.pm">
+                <td class="fw">{{ d.pm }}</td>
+                <td class="ctr text-muted">{{ d.project_count }}</td>
+                <td class="amt">{{ fmtWan(d.estimated) }}</td>
+                <td class="amt ok">{{ fmtWan(d.collected) }}</td>
+                <td class="amt warn">{{ fmtWan(d.outstanding) }}</td>
+                <td class="ctr">
+                  <span class="rate-pill" :class="d.rate >= 80 ? 'rate-ok' : d.rate >= 50 ? 'rate-mid' : 'rate-low'">
+                    {{ d.rate.toFixed(1) }}%
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
     <!-- Drill-down detail modal -->
@@ -333,6 +411,23 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: filter .14s;
 }
 .urge-btn:hover { filter: brightness(1.08); }
+
+/* PM table */
+.pm-table-wrap { margin-top: 16px; border-top: 1px solid rgba(0,0,0,0.06); padding-top: 12px; }
+.pm-table { width: 100%; font-size: 12.5px; }
+.pm-table th { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 7px 10px; background: rgba(0,0,0,0.02); }
+.pm-table td { padding: 8px 10px; border-bottom: 1px solid rgba(0,0,0,0.04); vertical-align: middle; }
+.pm-table tr:last-child td { border-bottom: none; }
+.pm-table .ctr { text-align: center; }
+.pm-table .amt { text-align: right; font-variant-numeric: tabular-nums; }
+.pm-table .fw { font-weight: 600; }
+.pm-table .text-muted { color: var(--muted); }
+.pm-table .ok { color: #2e7d32; font-weight: 600; }
+.pm-table .warn { color: #e65100; font-weight: 600; }
+.rate-pill { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11.5px; font-weight: 700; }
+.rate-ok  { background: rgba(46,125,50,0.1); color: #2e7d32; }
+.rate-mid { background: rgba(245,127,23,0.1); color: #e65100; }
+.rate-low { background: rgba(198,40,40,0.1); color: #c62828; }
 
 /* detail modal table */
 .detail-table { width: 100%; }

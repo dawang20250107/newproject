@@ -28,8 +28,6 @@ const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMEN
 const cfData = ref(null)
 const loading = ref(false)
 
-const overdue = ref(null)
-const keyCollection = ref([])
 
 function fmtWan(v) {
   const n = parseFloat(v) || 0
@@ -61,21 +59,11 @@ async function load() {
   } finally { loading.value = false }
 }
 
-async function loadReminder() {
-  try {
-    const [sd, top] = await Promise.all([ar.statusDist({}), ar.outstandingTop({ n: 5 })])
-    overdue.value = sd.data.overdue
-    keyCollection.value = top.data
-  } catch (e) {
-    overdue.value = null; keyCollection.value = []
-  }
-}
-
 const onScopeChange = () => {
   if (filters.dept && !accessibleDepts.value.includes(filters.dept)) filters.dept = ''
-  load(); loadReminder()
+  load()
 }
-onMounted(() => { load(); loadReminder(); window.addEventListener('pk:depts-changed', onScopeChange) })
+onMounted(() => { load(); window.addEventListener('pk:depts-changed', onScopeChange) })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 
 // ── KPI roll-ups (reactive — recompute whenever cfData changes after load()) ────
@@ -253,7 +241,7 @@ const deptCompareOption = computed(() => {
   <div>
     <div class="topbar">
       <div>
-        <h1>现金流分析</h1>
+        <h1>现金流分析<span v-if="hasAlert" class="cf-title-alert">⚠ 造血功能不足！请立即采取措施！</span></h1>
         <div style="font-size:13px;color:var(--muted);margin-top:2px">财务驾驶舱 · 预算达成 · 净现金流 · 累计走势</div>
       </div>
     </div>
@@ -283,24 +271,29 @@ const deptCompareOption = computed(() => {
       </div>
     </div>
 
-    <div v-if="hasAlert || (overdue && overdue.count)" class="section-title" style="margin:6px 0 10px;color:#c62828">
-      ⚠ 强提醒：{{ hasAlert ? `付款超出收款（${alertMonths.join('、')}）` : '' }}
-      {{ overdue && overdue.count ? `；逾期${overdue.count}笔（${fmtWan(overdue.amount)}元）` : '' }}
-    </div>
-
-    <!-- KPI cards (4-column grid) -->
+    <!-- KPI cards: 收款预算 → 实收 → 付款预算 → 实付 → 净现金流(highlight) → 累计净现金流(highlight) -->
     <div class="cockpit-kpis">
-      <div class="ck-card ck-coll">
+      <div class="ck-card ck-neutral">
+        <div class="ck-label">区间收款预算</div>
+        <div class="ck-value">{{ fmtWan(sumBudgetColl) }}</div>
+        <div class="ck-sub">收款目标</div>
+      </div>
+      <div class="ck-card ck-neutral">
         <div class="ck-label">区间实收</div>
-        <div class="ck-value ck-v-coll">{{ fmtWan(sumColl) }}</div>
+        <div class="ck-value">{{ fmtWan(sumColl) }}</div>
         <div class="ck-sub" v-if="collAchieve !== null">
           <span :class="collAchieve >= 100 ? 'ach-ok' : 'ach-off'">预算达成 {{ collAchieve.toFixed(1) }}%</span>
         </div>
         <div class="ck-sub ach-off" v-else>无预算基准</div>
       </div>
-      <div class="ck-card ck-pay">
+      <div class="ck-card ck-neutral">
+        <div class="ck-label">区间付款预算</div>
+        <div class="ck-value">{{ fmtWan(sumBudgetPaid) }}</div>
+        <div class="ck-sub">付款目标</div>
+      </div>
+      <div class="ck-card ck-neutral">
         <div class="ck-label">区间实付</div>
-        <div class="ck-value ck-v-pay">{{ fmtWan(sumPaid) }}</div>
+        <div class="ck-value">{{ fmtWan(sumPaid) }}</div>
         <div class="ck-sub" v-if="payAchieve !== null">
           <span :class="payAchieve >= 100 ? 'ach-ok' : 'ach-off'">预算达成 {{ payAchieve.toFixed(1) }}%</span>
         </div>
@@ -455,21 +448,27 @@ const deptCompareOption = computed(() => {
 .alert-title { font-weight: 700; color: #e65100; font-size: 13.5px; }
 .alert-months { font-size: 12px; color: #e65100; margin-top: 3px; opacity: .9; }
 
+/* ── Title inline alert ── */
+.cf-title-alert {
+  font-size: 13px; font-weight: 700; color: #c62828;
+  margin-left: 14px; vertical-align: middle;
+  animation: cfAlertPulse 1.8s ease-in-out infinite; will-change: opacity;
+}
+@keyframes cfAlertPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+
 /* ── KPI cards ── */
-.cockpit-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 16px; }
-@media (max-width: 820px) { .cockpit-kpis { grid-template-columns: repeat(2, 1fr); } }
+.cockpit-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-bottom: 16px; }
+@media (max-width: 1100px) { .cockpit-kpis { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 700px)  { .cockpit-kpis { grid-template-columns: repeat(2, 1fr); } }
 .ck-card {
   background: rgba(255,255,255,0.78); border: 1px solid rgba(255,255,255,0.9); border-radius: 16px;
   padding: 18px 20px; box-shadow: 0 2px 18px rgba(0,0,0,0.06); border-left: 3px solid var(--border);
 }
-.ck-coll     { border-left-color: #2e7d32; }
-.ck-pay      { border-left-color: #e65100; }
+.ck-neutral  { border-left-color: var(--muted); }
 .ck-net-pos  { border-left-color: #2e7d32; }
 .ck-net-neg  { border-left-color: #c62828; }
 .ck-label    { font-size: 11px; color: var(--muted); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
-.ck-value    { font-size: 26px; font-weight: 800; color: var(--text); line-height: 1.15; margin: 6px 0 4px; }
-.ck-v-coll   { color: #2e7d32; }
-.ck-v-pay    { color: #e65100; }
+.ck-value    { font-size: 24px; font-weight: 800; color: var(--text); line-height: 1.15; margin: 6px 0 4px; }
 .v-pos       { color: #2e7d32 !important; }
 .v-neg       { color: #c62828 !important; }
 .ck-sub      { font-size: 11.5px; }

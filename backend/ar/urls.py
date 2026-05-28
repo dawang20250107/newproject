@@ -26,6 +26,7 @@ urlpatterns = [
     path('analytics/collection-rate', views.analytics_collection_rate),
     path('analytics/outstanding-top', views.analytics_outstanding_top),
     path('analytics/status-dist', views.analytics_status_dist),
+    path('analytics/by-pm', views.analytics_by_pm),
 
     # Cashflow comparison
     path('cashflow', views.cashflow),

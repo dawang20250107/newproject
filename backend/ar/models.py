@@ -81,6 +81,8 @@ class ARProject(models.Model):
         self.is_shared = (self.sales_contact != self.project_manager)
         self.total_days = (self.reconciliation_days + self.invoice_wait_days
                            + self.settlement_wait_days)
+        if self.invoice_type == '不开票':
+            self.tax_rate = Decimal('0')
         super().save(*args, **kwargs)
 
     def to_dict(self):

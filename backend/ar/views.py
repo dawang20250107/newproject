@@ -399,22 +399,22 @@ def project_template(request):
                '开票模式(全额/差额)', '专票/普票/不开票', '税率(如0.06)', '备注']
     _header_row(ws, headers)
     tip_vals = [
-        '★必填：合同/项目全称，与应收明细无关联',
-        '★必填：简称须唯一，应收账款明细导入时用此简称匹配项目',
-        f'★必填：可选值：{"、".join(VALID_DEPARTMENTS)}',
+        '★必填：合同/项目全称（唯一标识，再次导入同名合同+同一事业部时自动更新，不新增）',
+        f'★必填：项目简称，须在事业部内唯一！应收明细、收款预算导入时均以此简称匹配项目，简称为关键桥梁',
+        f'★必填：可选值：{"、".join(VALID_DEPARTMENTS)}（每个事业部每天新增客户，每位客户可有多个不同项目）',
         '选填：华南区/华北区等，可空',
         '选填：劳务外包/运输/供应链等，自由填写',
         f'选填：{"/".join(VALID_CUSTOMER_LEVELS)}，默认可空',
         '★必填：销售对接人姓名（与项目负责人不同时自动标记为共享业务）',
-        '★必填：项目负责人姓名',
+        '★必填：项目负责人姓名（应收分析可按项目负责人维度聚合）',
         '"有"或"无"，默认无',
         '选填：格式 2026-01-15 / 2026/1/15 / 2026年1月15日 均可',
-        '整数天数，默认0（计算逻辑：总账期 = 合同对账期 + 开票等待期 + 结算等待期）',
+        '整数天数，默认0（总账期 = 合同对账期 + 开票等待期 + 结算等待期）',
         '整数天数，默认0（同上，三项之和即为应收日期的延迟天数）',
-        '整数天数，默认0（应收日期 = 运作月月末 + 总账期天数）',
-        '"全额"或"差额"（全额模式下税额自动计算：税额=开票金额/(1+税率)×税率）',
-        f'{"/".join(VALID_INVOICE_TYPES)}，选填',
-        '选填：如 0.06 表示6%，范围 0~1（全额模式有效，差额模式请手填税额）',
+        '整数天数，默认0（应收日期 = 运作月月末 + 总账期天数；修改后自动更新已有明细）',
+        '"全额"或"差额"（全额：税额自动计算=开票金额/(1+税率)×税率；差额：手填税额）',
+        f'{"/".join(VALID_INVOICE_TYPES)}；选"不开票"时税率自动置0',
+        '选填：如 0.06 表示6%，范围 0~1；选"不开票"时留空或填0',
         '选填备注',
     ]
     ws.append(tip_vals)
@@ -876,16 +876,16 @@ def ar_record_template(request):
                '税额(差额模式手填)', '开票日期', '账实差额调整', '回款金额', '回款时间', '备注']
     _header_row(ws, headers, color='1B6E35')
     tip_vals = [
-        '★必填：填写项目台账中的"项目简称"，系统按此自动关联对应项目',
-        '★必填：4位整数，如 2026',
-        '★必填：1-12 的整数',
-        '选填：当月预计上账金额（元）；未回款 = 上账金额 + 账实差额 - 已回款',
-        '选填：实际开票金额（元）；全额模式下税额自动计算',
-        '选填：差额模式时手动填写税额；全额模式税额 = 开票金额/(1+税率)×税率，自动算',
+        '★必填：填写项目台账中的"项目简称"（精确匹配，简称是应收明细与项目台账的唯一桥梁，必须先在项目台账建档）',
+        '★必填：4位整数，如 2026（每个项目每个月每天都可有多条开票/回款记录，多次导入即追加新行）',
+        '★必填：1-12 的整数（同一项目同一年月可存在多行，代表当月多批次上账）',
+        '选填：当月预计上账金额（元）；计算公式：未回款 = 上账金额 + 账实差额调整 - 全部回款之和',
+        '选填：实际开票金额（元）；全额模式下税额自动计算；对账时以此确认是否已对账',
+        '选填：差额模式时手动填写税额（元）；全额模式：税额=开票金额÷(1+税率)×税率，自动算，无需填',
         '选填：格式 2026-01-15 / 2026/1/15 / 2026年1月15日 均可',
-        '选填：账实差额调整金额，影响未回款：未回款 = 上账金额 + 此值 - 已回款',
-        '选填：本次回款金额（元）；可多次导入追加回款记录',
-        '选填：回款日期，格式同上',
+        '选填：账实差额调整（元，可正可负）；未回款 = 上账金额 + 此值 - 已回款；用于修正账面差异',
+        '选填：本次回款金额（元）；同一明细行可有多次回款，每次导入新回款均追加，不覆盖历史',
+        '选填：回款日期，格式同上（月度回款率按回款日期所在月份计算）',
         '选填备注',
     ]
     ws.append(tip_vals)
@@ -1373,26 +1373,37 @@ def analytics_collection_rate(request):
     if dept:
         qs = qs.filter(delivery_dept=dept)
 
-    by_month = {}
-    for rec in qs.annotate(total_paid=Sum('payments__amount')):
-        m = rec.operation_month
-        # 应收基础口径固定为上账金额（预估上账）
-        base = float(rec.estimated_amount or 0)
-        paid = float(rec.total_paid or 0)
-        if m not in by_month:
-            by_month[m] = {'receivable': 0.0, 'collected': 0.0}
-        by_month[m]['receivable'] += base
-        by_month[m]['collected'] += paid
+    # Estimated amounts by operation_month (billed amount entering that month)
+    estimated_by_month = {}
+    rec_ids = []
+    for row in qs.values('id', 'operation_month', 'estimated_amount'):
+        m = row['operation_month']
+        estimated_by_month[m] = estimated_by_month.get(m, 0) + float(row['estimated_amount'] or 0)
+        rec_ids.append(row['id'])
 
+    # Payments by payment_date month (actual cash received in that month)
+    payment_by_month = {}
+    if rec_ids:
+        for pay in (ARPayment.objects
+                    .filter(ar_record__in=rec_ids, payment_date__year=year)
+                    .values('payment_date', 'amount')):
+            m = pay['payment_date'].month
+            payment_by_month[m] = payment_by_month.get(m, 0) + float(pay['amount'] or 0)
+
+    # Build monthly stats: AR base = outstanding carried from prior months + new billing
     months = []
+    cumulative_outstanding = 0.0
     for m in range(1, 13):
-        entry = by_month.get(m, {'receivable': 0.0, 'collected': 0.0})
-        rate = (entry['collected'] / entry['receivable'] * 100) if entry['receivable'] else 0
+        billed_this_month = estimated_by_month.get(m, 0.0)
+        collected_this_month = payment_by_month.get(m, 0.0)
+        ar_base = cumulative_outstanding + billed_this_month
+        rate = (collected_this_month / ar_base * 100) if ar_base > 0 else 0.0
+        cumulative_outstanding = max(0.0, ar_base - collected_this_month)
         months.append({
             'month': m,
-            'receivable': round(entry['receivable'], 2),
-            'collected': round(entry['collected'], 2),
-            'rate': round(rate, 2),
+            'receivable': round(ar_base, 2),
+            'collected': round(collected_this_month, 2),
+            'rate': round(min(rate, 999.99), 2),
         })
 
     return ok({'year': year, 'months': months})
@@ -1469,6 +1480,46 @@ def analytics_status_dist(request):
                     'amount': _sum(qs.filter(outstanding_amount__gt=0, due_date__gt=eomonth_today))},
         'uninvoiced': {'count': uninvoiced},
     })
+
+
+@csrf_exempt
+@pk_required()
+def analytics_by_pm(request):
+    denied = _page_denied(request, 'ar_analytics')
+    if denied:
+        return denied
+
+    year = int(request.GET.get('year', datetime.date.today().year))
+    qs = _ar_dept_filter(ARRecord.objects.filter(operation_year=year), request)
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+
+    rows = (qs.values('project__project_manager')
+              .annotate(
+                  estimated=Sum('estimated_amount'),
+                  outstanding=Sum('outstanding_amount'),
+                  total_paid=Sum('payments__amount'),
+                  project_count=Count('project_id', distinct=True),
+              )
+              .order_by('-outstanding'))
+
+    result = []
+    for r in rows:
+        pm = r['project__project_manager'] or '（未填写）'
+        estimated = float(r['estimated'] or 0)
+        outstanding = float(r['outstanding'] or 0)
+        total_paid = float(r['total_paid'] or 0)
+        rate = (total_paid / estimated * 100) if estimated > 0 else 0.0
+        result.append({
+            'pm': pm,
+            'project_count': r['project_count'],
+            'estimated': round(estimated, 2),
+            'outstanding': round(outstanding, 2),
+            'collected': round(total_paid, 2),
+            'rate': round(min(max(rate, 0), 999.99), 2),
+        })
+    return ok(result)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

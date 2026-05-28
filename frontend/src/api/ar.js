@@ -34,6 +34,7 @@ const ar = {
   collectionRate: p => api.get('/ar/analytics/collection-rate', { params: p }),
   outstandingTop: p => api.get('/ar/analytics/outstanding-top', { params: p }),
   statusDist: p => api.get('/ar/analytics/status-dist', { params: p }),
+  analyticsByPm: p => api.get('/ar/analytics/by-pm', { params: p }),
 
   // Cashflow
   cashflow: p => api.get('/ar/cashflow', { params: p }),

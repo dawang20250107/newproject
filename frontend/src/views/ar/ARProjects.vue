@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS } from '../../constants.js'
 import ar from '../../api/ar.js'
@@ -37,6 +37,8 @@ const totalDays = computed(() =>
 const isShared = computed(() =>
   form.sales_contact && form.project_manager &&
   form.sales_contact !== form.project_manager)
+
+watch(() => form.invoice_type, val => { if (val === '不开票') form.tax_rate = '0' })
 
 // Scoped to the user's currently-active department selection (set from
 // the global picker in the sidebar footer). Falls back to all allowed.
