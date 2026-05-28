@@ -7,9 +7,13 @@ from django.dispatch import receiver
 
 @receiver([post_save, post_delete], sender='ar.ARPayment')
 def update_ar_record_on_payment_change(sender, instance, **kwargs):
+    from django.core.exceptions import ValidationError
     try:
         record = instance.ar_record
         record.recompute_derived(save=True)
+    except ValidationError:
+        # Re-raise so callers inside transaction.atomic() get a rollback
+        raise
     except Exception:
         pass
 

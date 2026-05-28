@@ -7,6 +7,7 @@ from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
 
+from django.core.exceptions import ValidationError
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction
@@ -31,13 +32,22 @@ VALID_CUSTOMER_LEVELS = ['S级', 'A级', 'B级', 'C级', 'D级']
 VALID_INVOICE_TYPES = ['专票', '普票', '不开票']
 
 
-def _match_project_by_short_name(short_name, dept=''):
+def _match_project_by_short_name(short_name, dept='', allowed_depts=None):
+    """Match an ARProject by short_name.
+
+    dept: exact delivery_dept filter (highest priority).
+    allowed_depts: list of departments to restrict search (used by import to avoid
+                   cross-dept confusion for non-super_admin users).
+    Falls back to case-insensitive contains match when exact match yields nothing.
+    """
     name = (short_name or '').strip()
     if not name:
         return None
     qs = ARProject.objects.filter(short_name=name)
     if dept:
         qs = qs.filter(delivery_dept=dept)
+    elif allowed_depts is not None:
+        qs = qs.filter(delivery_dept__in=allowed_depts)
     proj = qs.order_by('-id').first()
     if proj:
         return proj
@@ -45,6 +55,8 @@ def _match_project_by_short_name(short_name, dept=''):
     qs = ARProject.objects.filter(short_name__icontains=name)
     if dept:
         qs = qs.filter(delivery_dept=dept)
+    elif allowed_depts is not None:
+        qs = qs.filter(delivery_dept__in=allowed_depts)
     return qs.order_by('-id').first()
 
 
@@ -969,7 +981,8 @@ def ar_record_import(request):
         if not short_name or EXAMPLE_ROW_MARKER in short_name or short_name.startswith('★'):
             skipped += 1
             continue
-        proj = _match_project_by_short_name(short_name)
+        search_depts = None if request.pk_role == 'super_admin' else request.pk_depts
+        proj = _match_project_by_short_name(short_name, allowed_depts=search_depts)
         if not proj:
             errors.append(f'第{ri}行: 项目简称"{short_name}"未匹配到项目')
             skipped += 1
@@ -1218,16 +1231,19 @@ def ar_payments(request, pk):
         pay_date = _normalize_date(data.get('payment_date'))
         if not pay_date:
             return err('回款日期无效')
-        with transaction.atomic():
-            last = rec.payments.order_by('-payment_no').first()
-            next_no = (last.payment_no + 1) if last else 1
-            pay = ARPayment.objects.create(
-                ar_record=rec,
-                payment_no=next_no,
-                amount=amount,
-                payment_date=pay_date,
-                notes=data.get('notes', '').strip(),
-            )
+        try:
+            with transaction.atomic():
+                last = rec.payments.select_for_update().order_by('-payment_no').first()
+                next_no = (last.payment_no + 1) if last else 1
+                pay = ARPayment.objects.create(
+                    ar_record=rec,
+                    payment_no=next_no,
+                    amount=amount,
+                    payment_date=pay_date,
+                    notes=data.get('notes', '').strip(),
+                )
+        except ValidationError as e:
+            return err(str(e.message if hasattr(e, 'message') else e), 400)
         return ok(pay.to_dict())
 
     return err('Method not allowed', 405)
@@ -1266,7 +1282,10 @@ def ar_payment_detail(request, pk, ppk):
             pay.payment_date = _normalize_date(data['payment_date']) or pay.payment_date
         if 'notes' in data:
             pay.notes = data['notes'].strip()
-        pay.save()
+        try:
+            pay.save()
+        except ValidationError as e:
+            return err(str(e.message if hasattr(e, 'message') else e), 400)
         return ok(pay.to_dict())
 
     if request.method == 'DELETE':
@@ -1732,6 +1751,13 @@ def _budget_list_create(request, Model, page_key):
             return denied
         data = _parse_body(request)
         dept = data.get('delivery_dept', '').strip()
+        short_name = data.get('short_name', '').strip()
+        # Auto-derive dept from matched project when caller omits delivery_dept
+        if not dept and short_name:
+            search_depts = None if request.pk_role == 'super_admin' else request.pk_depts
+            _pre_proj = _match_project_by_short_name(short_name, allowed_depts=search_depts)
+            if _pre_proj:
+                dept = _pre_proj.delivery_dept
         if dept and dept not in VALID_DEPARTMENTS:
             return err(f'无效交付部门: {dept}')
         denied = _dept_denied(request, dept, '无权操作此部门')
@@ -1745,7 +1771,6 @@ def _budget_list_create(request, Model, page_key):
             return err('金额必须大于0')
         from paikuan.models import PaikuanUser
         user = PaikuanUser.objects.filter(id=request.pk_uid).first()
-        short_name = data.get('short_name', '').strip()
         proj = _match_project_by_short_name(short_name, dept)
         auto_project_no = proj.project_no if proj else data.get('project_no', '').strip()
         auto_sub_dept = proj.sub_dept if proj else data.get('sub_dept', '').strip()
@@ -1906,6 +1931,12 @@ def _budget_import(request, Model, kind):
             skipped += 1
             continue
         dept = _cv(ri, '交付部门')
+        # Auto-derive dept from project when the column is left blank
+        if not dept and short_name:
+            search_depts = None if request.pk_role == 'super_admin' else request.pk_depts
+            _pre = _match_project_by_short_name(short_name, allowed_depts=search_depts)
+            if _pre:
+                dept = _pre.delivery_dept
         if dept and dept not in VALID_DEPARTMENTS:
             errors.append(f'第{ri}行: 无效交付部门"{dept}"')
             skipped += 1
@@ -2020,9 +2051,20 @@ def budget_summary(request):
     end_date = datetime.date(year, month, calendar.monthrange(year, month)[1])
 
     if request.pk_role == 'super_admin':
-        depts = DEPARTMENTS
+        depts = list(DEPARTMENTS)
     else:
-        depts = request.pk_depts
+        depts = list(request.pk_depts)
+
+    # Consume global active-depts scope (injected by axios interceptor as ?depts=A,B,C)
+    raw_depts = request.GET.get('depts', '').strip()
+    if raw_depts:
+        requested = [d for d in raw_depts.split(',') if d.strip()]
+        allowed_set = set(depts)
+        active = [d for d in requested if d in allowed_set]
+        if active:
+            depts = active
+
+    # Single-dept page-level filter
     dept_param = request.GET.get('dept', '').strip()
     if dept_param and dept_param in depts:
         depts = [dept_param]

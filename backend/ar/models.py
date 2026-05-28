@@ -66,7 +66,7 @@ class ARProject(models.Model):
         prefix = f'{dept_code}-{datetime.date.today().strftime("%Y%m%d")}-'
         with transaction.atomic():
             last = (ARProject.objects.filter(project_no__startswith=prefix)
-                    .order_by('-project_no').first())
+                    .select_for_update().order_by('-project_no').first())
             seq = 0
             if last:
                 try:
