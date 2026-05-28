@@ -93,7 +93,10 @@ class Payment(models.Model):
         constraints = [
             # 业务唯一键：相同审批单号 + 部门 + 收款方 + 计划日期 + 计划金额
             # 视为重复排款。仅在 approval_number 非空时生效（占位 21 位 0 不算重复）。
-            # 配合 _find_duplicate_payment 提供并发安全（DB 拒绝并发的同键插入）。
+            # 注意：MySQL 不支持条件唯一约束（partial unique index），Django 在
+            # MySQL 上会静默跳过该约束（已用 SILENCED_SYSTEM_CHECKS=['models.W039']
+            # 抑制 warning）。MySQL 生产下并发去重依赖应用层
+            # _find_duplicate_payment + select_for_update；SQLite/PostgreSQL 走 DB 兜底。
             models.UniqueConstraint(
                 fields=['department', 'approval_number', 'payee',
                         'planned_date', 'total_amount'],

@@ -108,6 +108,12 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
+# W039: MySQL 不支持条件唯一约束 (UniqueConstraint(condition=...))。
+# 我们已知 paikuan.Payment.uniq_payment_business_key 在 MySQL 上不会真正建出，
+# 业务唯一性由应用层 _find_duplicate_payment + select_for_update 兜底；
+# SQLite/PostgreSQL 仍按条件唯一索引正常工作。
+SILENCED_SYSTEM_CHECKS = ['models.W039']
+
 PASSWORD_HASHERS = [
     'django.contrib.auth.hashers.PBKDF2PasswordHasher',
 ]
