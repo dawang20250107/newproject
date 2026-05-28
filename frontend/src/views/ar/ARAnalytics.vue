@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST } from '../../constants.js'
@@ -12,8 +12,7 @@ const router = useRouter()
 const selectedDept = ref('')
 const selectedYear = ref(yearCST())
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
-const accessibleDepts = computed(() =>
-  auth.isSuperAdmin ? DEPARTMENTS : (auth.user?.departments || []).filter(d => DEPARTMENTS.includes(d)))
+const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 
 // ── Chart data ────────────────────────────────────────────────────────────────
 const agingData = ref(null)
@@ -156,7 +155,12 @@ async function openDetail(status, title) {
 const keyCollection = computed(() => (topData.value || []).slice(0, 3))
 
 watch([selectedDept, selectedYear], loadAll)
-onMounted(loadAll)
+const onScopeChange = () => {
+  if (selectedDept.value && !accessibleDepts.value.includes(selectedDept.value)) selectedDept.value = ''
+  loadAll()
+}
+onMounted(() => { loadAll(); window.addEventListener('pk:depts-changed', onScopeChange) })
+onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 </script>
 
 <template>

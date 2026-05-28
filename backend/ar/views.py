@@ -107,13 +107,24 @@ def _parse_body(request):
 
 
 def _ar_dept_filter(qs, request, dept_field='delivery_dept'):
-    """Filter queryset by the requesting user's allowed departments."""
+    """Filter queryset by the requesting user's allowed departments.
+    Optional ?depts=A,B,C further narrows the set (intersected with pk_depts)."""
+    raw = request.GET.get('depts', '').strip()
+    requested = [d for d in raw.split(',') if d.strip()] if raw else []
+
     if request.pk_role == 'super_admin':
+        if requested:
+            return qs.filter(**{f'{dept_field}__in': requested})
         return qs
-    depts = request.pk_depts
-    if not depts:
+
+    allowed = set(request.pk_depts or [])
+    if not allowed:
         return qs.none()
-    return qs.filter(**{f'{dept_field}__in': depts})
+    if requested:
+        active = [d for d in requested if d in allowed]
+        if active:
+            return qs.filter(**{f'{dept_field}__in': active})
+    return qs.filter(**{f'{dept_field}__in': request.pk_depts})
 
 
 def _page_denied(request, page_key):

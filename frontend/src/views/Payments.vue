@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, reactive, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, reactive, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { todayCST } from '../constants.js'
@@ -28,11 +28,11 @@ const filters = reactive({
   page: 1, size: 50,
 })
 
-// Non-admins may only filter by departments they are assigned to.
+// Show only departments within the user's currently-active scope.
 const deptChoices = computed(() => {
-  if (auth.isAdmin) return departments.value
-  const mine = auth.user?.departments || []
-  return departments.value.filter(d => mine.includes(d))
+  const scope = auth.effectiveDepts
+  if (auth.isAdmin && !auth.activeDepts.length) return departments.value
+  return departments.value.filter(d => scope.includes(d))
 })
 
 // Hover tooltip card for truncated long cells (付款事项 / 收款方).
@@ -151,7 +151,17 @@ async function loadDepts() {
   } catch {}
 }
 
-onMounted(() => { load(); loadDepts() })
+// Reload list when the global active-dept scope changes.
+const onScopeChange = () => {
+  if (filters.dept && !auth.effectiveDepts.includes(filters.dept)) filters.dept = ''
+  filters.page = 1
+  load()
+}
+onMounted(() => {
+  load(); loadDepts()
+  window.addEventListener('pk:depts-changed', onScopeChange)
+})
+onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 
 function openAdd() { editItem.value = null; showModal.value = true }
 function openEdit(p) { editItem.value = p; showModal.value = true }

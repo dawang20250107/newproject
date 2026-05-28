@@ -8,6 +8,19 @@ const api = axios.create({
 api.interceptors.request.use(cfg => {
   const token = localStorage.getItem('pk_token')
   if (token) cfg.headers.Authorization = `Bearer ${token}`
+
+  // Auto-inject active-department scope (skip when caller already set dept or depts)
+  try {
+    const raw = JSON.parse(localStorage.getItem('pk_active_depts') || '[]')
+    if (Array.isArray(raw) && raw.length > 0) {
+      cfg.params = cfg.params || {}
+      const hasDepts = cfg.params.depts !== undefined && cfg.params.depts !== ''
+      const hasDept = cfg.params.dept !== undefined && cfg.params.dept !== ''
+      if (!hasDepts && !hasDept) {
+        cfg.params.depts = raw.join(',')
+      }
+    }
+  } catch {}
   return cfg
 })
 

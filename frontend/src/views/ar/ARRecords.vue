@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
@@ -46,8 +46,7 @@ const importing = ref(false)
 const exporting = ref(false)
 const fileInput = ref(null)
 
-const accessibleDepts = computed(() =>
-  auth.isSuperAdmin ? DEPARTMENTS : (auth.user?.departments || []).filter(d => DEPARTMENTS.includes(d)))
+const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
@@ -192,13 +191,19 @@ async function exportData() {
   } finally { exporting.value = false }
 }
 
+const onScopeChange = () => {
+  if (filters.dept && !accessibleDepts.value.includes(filters.dept)) filters.dept = ''
+  load(true)
+}
 onMounted(() => {
   // Pick up query params from router navigation (e.g., from Cashflow or Analytics)
   if (route.query.status) filters.status = route.query.status
   if (route.query.project_id) filters.project_id = route.query.project_id
   if (route.query.dept) filters.dept = route.query.dept
   load(); loadProjects()
+  window.addEventListener('pk:depts-changed', onScopeChange)
 })
+onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 function clearFilters() {
   Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', q: '', project_id: '', due_start: '', due_end: '', manager: '', is_shared: '' })
   load(true)

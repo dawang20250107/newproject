@@ -361,9 +361,21 @@ def _payments_page_denied(request, perms=None):
 
 
 def dept_filter(qs, request):
-    """Row visibility: super_admin sees all; everyone else sees assigned departments."""
+    """Row visibility: super_admin sees all; everyone else sees assigned departments.
+    Optional ?depts=A,B,C further narrows the set (intersected with pk_depts)."""
+    raw = request.GET.get('depts', '').strip()
+    requested = [d for d in raw.split(',') if d.strip()] if raw else []
+
     if request.pk_role == 'super_admin':
+        if requested:
+            return qs.filter(department__in=requested)
         return qs
+
+    allowed = set(request.pk_depts or [])
+    if requested:
+        active = [d for d in requested if d in allowed]
+        if active:
+            return qs.filter(department__in=active)
     return qs.filter(department__in=request.pk_depts)
 
 

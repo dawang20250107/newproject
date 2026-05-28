@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 
@@ -22,7 +22,11 @@ const filters = reactive({ applicant:'', approval_number:'', dept:'', page:1, si
 const statusUpdating = ref({})
 const pendingAmountTotal = computed(() => parseFloat(totalAmount.value || 0))
 
-const deptChoices = computed(() => auth.isAdmin ? depts.value : depts.value.filter(d => (auth.user?.departments||[]).includes(d)))
+const deptChoices = computed(() => {
+  const scope = auth.effectiveDepts
+  if (auth.isAdmin && !auth.activeDepts.length) return depts.value
+  return depts.value.filter(d => scope.includes(d))
+})
 
 async function load(){ loading.value=true; try{ const r=await api.get('/approvals',{params:filters}); items.value=r.data.items; total.value=r.data.total; totalAmount.value=r.data.total_amount || 0 }finally{loading.value=false}}
 async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
@@ -49,7 +53,13 @@ function triggerImport(){ fileRef.value.click() }
 async function onImport(e){ const f=e.target.files?.[0]; if(!f) return; importing.value=true; const fd=new FormData(); fd.append('file',f); try{ const r=await api.post('/approvals/import',fd,{headers:{'Content-Type':'multipart/form-data'}}); alert(`导入完成：新增${r.data.created}，跳过${r.data.skipped}`); load() }catch(err){ alert(err?.error||'导入失败')} finally{ importing.value=false; e.target.value='' } }
 async function doExport(){ exporting.value=true; try{ const b=await api.get('/approvals/export',{params:filters,responseType:'blob'}); dl(b,'审批记录.xlsx') } finally{ exporting.value=false } }
 
-onMounted(()=>{load();loadDepts()})
+const onScopeChange = () => {
+  if (filters.dept && !auth.effectiveDepts.includes(filters.dept)) filters.dept = ''
+  filters.page = 1
+  load()
+}
+onMounted(()=>{ load(); loadDepts(); window.addEventListener('pk:depts-changed', onScopeChange) })
+onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange))
 </script>
 
 <template><div>

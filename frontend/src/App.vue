@@ -55,6 +55,11 @@ watch(() => auth.isLoggedIn, (v) => {
 // Close the mobile drawer whenever the route changes.
 watch(() => route.path, () => { mobileNavOpen.value = false })
 
+// Notify all open views to refetch when global dept scope changes.
+watch(() => auth.activeDepts, () => {
+  window.dispatchEvent(new CustomEvent('pk:depts-changed'))
+}, { deep: true })
+
 function onNavCollapse(v) {
   // Manual toggle → remember the preference and disable auto behaviour.
   navCollapsed.value = v

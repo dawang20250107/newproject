@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS } from '../../constants.js'
 import ar from '../../api/ar.js'
@@ -38,8 +38,9 @@ const isShared = computed(() =>
   form.sales_contact && form.project_manager &&
   form.sales_contact !== form.project_manager)
 
-const accessibleDepts = computed(() =>
-  auth.isSuperAdmin ? DEPARTMENTS : (auth.user?.departments || []).filter(d => DEPARTMENTS.includes(d)))
+// Scoped to the user's currently-active department selection (set from
+// the global picker in the sidebar footer). Falls back to all allowed.
+const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 
 // Field-permission column visibility
 const show = k => auth.canArView(k)
@@ -159,7 +160,13 @@ async function exportData() {
   } finally { exporting.value = false }
 }
 
-onMounted(() => { load(); loadStats() })
+const onScopeChange = () => {
+  if (filters.dept && !accessibleDepts.value.includes(filters.dept)) filters.dept = ''
+  page.value = 1
+  reloadAll()
+}
+onMounted(() => { load(); loadStats(); window.addEventListener('pk:depts-changed', onScopeChange) })
+onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 </script>
 
 <template>

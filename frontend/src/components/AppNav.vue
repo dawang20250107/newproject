@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth.js'
 import { ROLE_LABELS, JOB_LABELS } from '../constants.js'
@@ -32,6 +32,47 @@ function onNavClick() {
   emit('close-mobile')
 }
 
+// ── Active-department picker ──────────────────────────────────────────────
+const deptPopOpen = ref(false)
+// Local draft state — only committed on "应用". Init from current activeDepts;
+// empty activeDepts means "all" → pre-check everything for clearer affordance.
+const draftDepts = ref([])
+
+const hasDeptChoice = computed(() => auth.allowedDepts.length > 1)
+const scopeLabel = computed(() =>
+  `管辖 ${auth.effectiveDepts.length} / ${auth.allowedDepts.length} 部门`)
+
+function openDeptPop() {
+  if (!hasDeptChoice.value) return
+  // Pre-fill draft from current effective selection (all if unscoped)
+  draftDepts.value = [...auth.effectiveDepts]
+  deptPopOpen.value = true
+}
+function closeDeptPop() { deptPopOpen.value = false }
+function toggleDraft(d) {
+  const i = draftDepts.value.indexOf(d)
+  if (i >= 0) draftDepts.value.splice(i, 1)
+  else draftDepts.value.push(d)
+}
+function selectAll() { draftDepts.value = [...auth.allowedDepts] }
+function clearAll() { draftDepts.value = [] }
+function applyDepts() {
+  // setActiveDepts collapses "all" → [] internally
+  auth.setActiveDepts(draftDepts.value)
+  deptPopOpen.value = false
+}
+
+// Click outside to close
+function onDocClick(e) {
+  if (!deptPopOpen.value) return
+  const root = document.querySelector('.dept-pop-anchor')
+  if (root && !root.contains(e.target)) deptPopOpen.value = false
+}
+watch(deptPopOpen, (v) => {
+  if (v) setTimeout(() => document.addEventListener('mousedown', onDocClick), 0)
+  else document.removeEventListener('mousedown', onDocClick)
+})
+onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 </script>
 
 <template>
@@ -207,9 +248,10 @@ function onNavClick() {
     </div>
 
     <!-- Footer -->
-    <div class="sidebar-footer">
+    <div class="sidebar-footer dept-pop-anchor">
       <template v-if="!effectiveCollapsed">
-        <div class="user-info">
+        <div class="user-info" :class="{ 'user-info-clickable': hasDeptChoice, 'is-scoped': auth.isDeptScoped }"
+             @click="openDeptPop" :title="hasDeptChoice ? '点击切换管辖部门范围' : ''">
           <div class="user-avatar">{{ auth.user?.name?.[0] || '?' }}</div>
           <div class="user-meta">
             <div class="user-name">{{ auth.user?.name }}</div>
@@ -225,6 +267,13 @@ function onNavClick() {
                 </span>
               </template>
             </div>
+            <div v-if="hasDeptChoice" class="dept-scope-line" :class="{ 'is-scoped': auth.isDeptScoped }">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4"/>
+              </svg>
+              <span>{{ scopeLabel }}</span>
+              <svg class="dept-caret" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
           </div>
         </div>
         <button class="logout-btn" @click="logout">
@@ -235,13 +284,46 @@ function onNavClick() {
         </button>
       </template>
       <template v-else>
-        <div class="user-avatar-sm">{{ auth.user?.name?.[0] || '?' }}</div>
+        <div class="user-avatar-sm" :class="{ 'is-scoped': auth.isDeptScoped, 'clickable': hasDeptChoice }"
+             :title="hasDeptChoice ? scopeLabel + '（点击切换）' : ''" @click="openDeptPop">
+          {{ auth.user?.name?.[0] || '?' }}
+          <span v-if="auth.isDeptScoped" class="scope-dot"></span>
+        </div>
         <button class="logout-btn icon-only" @click="logout" title="退出登录">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>
           </svg>
         </button>
       </template>
+
+      <!-- Department picker popover -->
+      <Transition name="deptpop-fade">
+        <div v-if="deptPopOpen" class="dept-pop" :class="{ 'pop-collapsed': effectiveCollapsed }">
+          <div class="dept-pop-head">
+            <div class="dept-pop-title">管辖部门</div>
+            <div class="dept-pop-tools">
+              <button class="dept-mini-btn" @click="selectAll">全选</button>
+              <button class="dept-mini-btn" @click="clearAll">清空</button>
+            </div>
+          </div>
+          <div class="dept-pop-hint">勾选本次会话关心的部门，整个系统数据将按此范围联动过滤</div>
+          <ul class="dept-pop-list">
+            <li v-for="d in auth.allowedDepts" :key="d" class="dept-pop-item" :class="{ checked: draftDepts.includes(d) }" @click="toggleDraft(d)">
+              <span class="dept-check">
+                <svg v-if="draftDepts.includes(d)" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              </span>
+              <span class="dept-name">{{ d }}</span>
+            </li>
+          </ul>
+          <div class="dept-pop-foot">
+            <span class="dept-pop-count">已选 <b>{{ draftDepts.length }}</b> / {{ auth.allowedDepts.length }}</span>
+            <div style="display:flex;gap:6px">
+              <button class="dept-mini-btn ghost" @click="closeDeptPop">取消</button>
+              <button class="dept-mini-btn primary" @click="applyDepts">应用</button>
+            </div>
+          </div>
+        </div>
+      </Transition>
     </div>
 
     <!-- Collapse toggle -->
@@ -366,6 +448,95 @@ function onNavClick() {
 }
 .logout-btn:hover { background: rgba(231, 76, 60, 0.18); color: #ff8a7a; border-color: rgba(231,76,60,0.28); }
 .logout-btn.icon-only { width: 36px; margin: 0 auto; padding: 9px; }
+
+/* ── Active-department picker ── */
+.sidebar-footer { position: relative; }
+.user-info.user-info-clickable {
+  cursor: pointer; border-radius: 10px; padding: 4px 6px; margin: -4px -6px;
+  transition: background 0.18s;
+}
+.user-info.user-info-clickable:hover { background: rgba(255,255,255,0.05); }
+.user-info.is-scoped .user-avatar { box-shadow: 0 0 0 2px rgba(245,127,23,0.55), 0 2px 10px rgba(201,99,66,0.3); }
+.dept-scope-line {
+  display: flex; align-items: center; gap: 4px;
+  margin-top: 4px; font-size: 11px; color: rgba(196,168,152,0.7);
+  letter-spacing: 0.02em; white-space: nowrap;
+}
+.dept-scope-line.is-scoped { color: #f5b977; font-weight: 600; }
+.dept-scope-line .dept-caret { opacity: 0.55; }
+
+.user-avatar-sm.clickable { cursor: pointer; position: relative; }
+.user-avatar-sm.is-scoped { box-shadow: 0 0 0 2px rgba(245,127,23,0.55); }
+.user-avatar-sm .scope-dot {
+  position: absolute; top: -2px; right: -2px; width: 8px; height: 8px;
+  border-radius: 50%; background: #f57f17; border: 1.5px solid #2a140a;
+}
+
+.dept-pop {
+  position: absolute; left: 11px; right: 11px; bottom: calc(100% - 8px);
+  background: rgba(36, 18, 10, 0.96);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px;
+  padding: 12px 12px 10px;
+  box-shadow: 0 -8px 28px rgba(20,8,4,0.45);
+  backdrop-filter: blur(20px);
+  z-index: 200;
+}
+.dept-pop.pop-collapsed {
+  left: calc(100% + 8px); right: auto; bottom: 14px;
+  width: 240px;
+}
+.dept-pop-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 4px;
+}
+.dept-pop-title { font-size: 13px; font-weight: 700; color: #fff; }
+.dept-pop-tools { display: flex; gap: 4px; }
+.dept-pop-hint {
+  font-size: 11px; color: rgba(196,168,152,0.6); line-height: 1.5;
+  margin-bottom: 8px;
+}
+.dept-pop-list {
+  list-style: none; margin: 0; padding: 0;
+  max-height: 250px; overflow-y: auto;
+}
+.dept-pop-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; border-radius: 8px;
+  font-size: 12.5px; color: #e8d4c4; cursor: pointer;
+  transition: background 0.14s;
+}
+.dept-pop-item:hover { background: rgba(255,255,255,0.05); }
+.dept-pop-item.checked { background: rgba(245,127,23,0.12); color: #fff; }
+.dept-check {
+  width: 16px; height: 16px; border-radius: 4px;
+  border: 1.5px solid rgba(196,168,152,0.4);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.dept-pop-item.checked .dept-check {
+  background: #c96342; border-color: #c96342; color: #fff;
+}
+.dept-pop-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding-top: 8px; margin-top: 6px;
+  border-top: 1px solid rgba(255,255,255,0.07);
+}
+.dept-pop-count { font-size: 11.5px; color: rgba(196,168,152,0.65); }
+.dept-pop-count b { color: #f5b977; font-weight: 700; }
+.dept-mini-btn {
+  padding: 4px 10px; border-radius: 7px;
+  background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+  color: rgba(196,168,152,0.85); font-size: 11.5px; cursor: pointer;
+  transition: all 0.14s;
+}
+.dept-mini-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+.dept-mini-btn.primary { background: #c96342; color: #fff; border-color: #c96342; }
+.dept-mini-btn.primary:hover { background: #d77252; }
+.dept-mini-btn.ghost { background: transparent; }
+
+.deptpop-fade-enter-active, .deptpop-fade-leave-active { transition: opacity 0.16s, transform 0.16s; }
+.deptpop-fade-enter-from, .deptpop-fade-leave-to { opacity: 0; transform: translateY(4px); }
 
 .collapse-btn {
   position: absolute; top: 50%; right: -11px;

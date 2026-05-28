@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, reactive, onMounted } from 'vue'
+import { ref, computed, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
@@ -21,8 +21,7 @@ const filters = reactive({
   dept: '',   // '' = all accessible depts; specific name = one dept
 })
 
-const accessibleDepts = computed(() =>
-  auth.isSuperAdmin ? DEPARTMENTS : (auth.user?.departments || []).filter(d => DEPARTMENTS.includes(d)))
+const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 
 const years = Array.from({ length: 5 }, (_, i) => CY - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
@@ -72,7 +71,12 @@ async function loadReminder() {
   }
 }
 
-onMounted(() => { load(); loadReminder() })
+const onScopeChange = () => {
+  if (filters.dept && !accessibleDepts.value.includes(filters.dept)) filters.dept = ''
+  load(); loadReminder()
+}
+onMounted(() => { load(); loadReminder(); window.addEventListener('pk:depts-changed', onScopeChange) })
+onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 
 // ── KPI roll-ups (reactive — recompute whenever cfData changes after load()) ────
 const totals = computed(() => cfData.value?.totals)

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
@@ -13,8 +13,7 @@ const selectedDept = ref('')
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
-const accessibleDepts = computed(() =>
-  auth.isSuperAdmin ? DEPARTMENTS : (auth.user?.departments || []).filter(d => DEPARTMENTS.includes(d)))
+const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 
 const summary = ref(null)
 const collItems = ref([])
@@ -297,6 +296,13 @@ async function exportData(type) {
 
 onMounted(loadAll)
 onMounted(loadProjects)
+
+const onScopeChange = () => {
+  if (selectedDept.value && !accessibleDepts.value.includes(selectedDept.value)) selectedDept.value = ''
+  loadAll(); loadProjects()
+}
+onMounted(() => window.addEventListener('pk:depts-changed', onScopeChange))
+onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 </script>
 
 <template>

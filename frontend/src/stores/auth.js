@@ -1,15 +1,21 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '../api/index.js'
+import { DEPARTMENTS } from '../constants.js'
 
 function loadPerms() {
   try { return JSON.parse(localStorage.getItem('pk_perms') || 'null') } catch { return null }
+}
+
+function loadActiveDepts() {
+  try { return JSON.parse(localStorage.getItem('pk_active_depts') || '[]') } catch { return [] }
 }
 
 export const useAuthStore = defineStore('auth', () => {
   const token = ref(localStorage.getItem('pk_token') || '')
   const user = ref(JSON.parse(localStorage.getItem('pk_user') || 'null'))
   const perms = ref(loadPerms())
+  const activeDepts = ref(loadActiveDepts())
 
   const isLoggedIn = computed(() => !!token.value)
   const role = computed(() => user.value?.role || '')
@@ -40,6 +46,27 @@ export const useAuthStore = defineStore('auth', () => {
   const canWrite = computed(() => isAdmin.value || perms.value?.can_create === true ||
     Object.values(perms.value?.edit || {}).some(Boolean))
 
+  // ── active-department scope (global filter at sidebar footer) ──
+  // allowed = the user's full permission set (immutable per login)
+  const allowedDepts = computed(() =>
+    isSuperAdmin.value ? DEPARTMENTS : (user.value?.departments || []))
+  // effective = currently active subset; empty selection means "all allowed"
+  const effectiveDepts = computed(() => {
+    if (!activeDepts.value.length) return allowedDepts.value
+    return activeDepts.value.filter(d => allowedDepts.value.includes(d))
+  })
+  // true when activeDepts is a proper non-empty subset of allowed
+  const isDeptScoped = computed(() =>
+    activeDepts.value.length > 0 && activeDepts.value.length < allowedDepts.value.length)
+
+  function setActiveDepts(list) {
+    const allowed = allowedDepts.value
+    const clean = Array.isArray(list) ? list.filter(d => allowed.includes(d)) : []
+    // 全选等同于未选——按"无作用域"处理，避免在 URL 上拖一长串无意义参数
+    activeDepts.value = (clean.length === allowed.length) ? [] : clean
+    localStorage.setItem('pk_active_depts', JSON.stringify(activeDepts.value))
+  }
+
   function setPerms(p) {
     perms.value = p
     if (p) localStorage.setItem('pk_perms', JSON.stringify(p))
@@ -58,9 +85,11 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = ''
     user.value = null
     perms.value = null
+    activeDepts.value = []
     localStorage.removeItem('pk_token')
     localStorage.removeItem('pk_user')
     localStorage.removeItem('pk_perms')
+    localStorage.removeItem('pk_active_depts')
   }
 
   async function login(phone, password) {
@@ -93,6 +122,7 @@ export const useAuthStore = defineStore('auth', () => {
   return {
     token, user, perms, isLoggedIn, role, isSuperAdmin, isAdmin,
     canView, canEdit, canPage, canArView, canCreate, canDelete, canWrite,
+    activeDepts, allowedDepts, effectiveDepts, isDeptScoped, setActiveDepts,
     login, register, logout, setAuth, setPerms, refresh,
   }
 })
