@@ -1142,6 +1142,38 @@ def _apply_record_state_filters(qs, request, today=None):
     elif recon_status == '未对账':
         qs = qs.filter(reconciliation_date__isnull=True, actual_invoice_amount__isnull=True)
 
+    # 责任状态（responsibility phase）— 按责任归属阶段过滤，与明细列的
+    # post_invoice_status 责任链一致。逾期/等待中的细分依赖日期运算，这里只过滤到
+    # 责任方所属阶段（settled / 对账阶段 / 开票阶段 / 票后回款阶段），可纯 DB 表达。
+    responsibility = request.GET.get('responsibility', '').strip()
+    if responsibility:
+        no_inv = Q(project__invoice_type='不开票')
+        if responsibility == 'settled':
+            qs = qs.filter(outstanding_amount__lte=0)
+        elif responsibility == 'post':
+            # 票后/回款阶段（销售对接人责任）
+            qs = qs.filter(
+                Q(outstanding_amount__gt=0) & (
+                    (no_inv & Q(reconciliation_date__isnull=False)) |
+                    (~no_inv & Q(invoice_date__isnull=False))
+                )
+            )
+        elif responsibility == 'invoice':
+            # 待开票阶段（开票人责任）
+            qs = qs.filter(
+                Q(outstanding_amount__gt=0) & ~no_inv & Q(invoice_date__isnull=True) &
+                (Q(reconciliation_date__isnull=False) | Q(actual_invoice_amount__isnull=False))
+            )
+        elif responsibility == 'recon':
+            # 对账阶段（非销售责任）
+            qs = qs.filter(
+                Q(outstanding_amount__gt=0) & (
+                    (no_inv & Q(reconciliation_date__isnull=True)) |
+                    (~no_inv & Q(invoice_date__isnull=True) &
+                     Q(reconciliation_date__isnull=True) & Q(actual_invoice_amount__isnull=True))
+                )
+            )
+
     due_start = request.GET.get('due_start', '').strip()
     due_end = request.GET.get('due_end', '').strip()
     if due_start:

@@ -17,7 +17,7 @@ const size = 50
 const activeTab = ref('all')   // all | reconciliation | invoice | collection
 const filters = reactive({
   dept: '', year: '', month: '', status: '',
-  reconciliation_status: '', invoice_status: '', q: '', project_id: '',
+  reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '',
   due_start: '', due_end: '', manager: '', is_shared: '',
 })
 
@@ -81,12 +81,13 @@ const FILTER_CHIP_LABELS = {
   status: v => ({ overdue: '逾期', current: '当期', not_due: '未到期', settled: '已结清', outstanding: '未结清' }[v] || v),
   reconciliation_status: v => `对账:${v}`,
   invoice_status: v => `开票:${v}`,
+  responsibility: v => `责任:${({ settled: '已结清', recon: '对账阶段', invoice: '待开票', post: '票后回款' }[v] || v)}`,
   is_shared: v => (v === '1' ? '共享' : '非共享'),
   manager: v => `负责人:${v}`,
   due_start: v => `到期≥${v}`,
   due_end: v => `到期≤${v}`,
 }
-const ADVANCED_FILTER_KEYS = ['month', 'due_start', 'due_end', 'status', 'reconciliation_status', 'invoice_status', 'is_shared', 'manager']
+const ADVANCED_FILTER_KEYS = ['month', 'due_start', 'due_end', 'status', 'reconciliation_status', 'invoice_status', 'responsibility', 'is_shared', 'manager']
 const activeFilterChips = computed(() =>
   ADVANCED_FILTER_KEYS
     .filter(k => filters[k] !== '' && filters[k] != null)
@@ -333,7 +334,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 function clearFilters() {
-  Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', q: '', project_id: '', due_start: '', due_end: '', manager: '', is_shared: '' })
+  Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '', due_start: '', due_end: '', manager: '', is_shared: '' })
   onFilterChange()
 }
 </script>
@@ -412,6 +413,13 @@ function clearFilters() {
           <option value="未开票">未开票</option>
           <option value="已开票">已开票</option>
           <option value="已结清">已结清</option>
+        </select>
+        <select v-model="filters.responsibility" class="sel-mo" @change="onFilterChange" title="按责任归属阶段筛选">
+          <option value="">责任(全部)</option>
+          <option value="recon">对账阶段</option>
+          <option value="invoice">待开票</option>
+          <option value="post">票后回款</option>
+          <option value="settled">已结清</option>
         </select>
         <select v-model="filters.is_shared" class="sel-mo" @change="onFilterChange">
           <option value="">共享(全部)</option>
