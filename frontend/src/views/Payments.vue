@@ -247,6 +247,7 @@ function setPage(p) { filters.page = p; load() }
           <option value="pending">⏳ 待付款</option>
           <option value="partial">⚡ 部分付款</option>
           <option value="settled">✅ 已付清</option>
+          <option value="adjusted">📋 计划调整</option>
           <option value="overdue">⚠ 已逾期</option>
         </select>
         <input v-model="filters.start_date" type="date" style="min-width:130px" @change="search" />
@@ -283,6 +284,7 @@ function setPage(p) { filters.page = p; load() }
               <th v-if="showRemaining">剩余 (元)</th>
               <th>状态</th>
               <th>逾期</th>
+              <th v-if="auth.canView('notes')">计划调整</th>
               <th v-if="auth.canWrite || auth.canDelete">操作</th>
             </tr>
           </thead>
@@ -310,6 +312,13 @@ function setPage(p) { filters.page = p; load() }
                       class="overdue-tag overdue-bad">逾期 {{ daysOverdue(p.planned_date) }} 天</span>
                 <span v-else-if="p.planned_date === today" class="overdue-tag overdue-today">今日到期</span>
                 <span v-else class="overdue-tag overdue-ok">未到期</span>
+              </td>
+              <td v-if="auth.canView('notes')" class="cell-clip" style="max-width:160px"
+                  :title="p.plan_adjustment || ''"
+                  @mouseenter="p.plan_adjustment && showTip($event, p.plan_adjustment)"
+                  @mousemove="moveTip" @mouseleave="hideTip">
+                <span v-if="p.plan_adjustment" style="color:#1565c0;font-size:12px">{{ p.plan_adjustment }}</span>
+                <span v-else style="color:var(--muted)">—</span>
               </td>
               <td v-if="auth.canWrite || auth.canDelete">
                 <div style="display:flex;gap:6px">

@@ -26,7 +26,7 @@ class ARProject(models.Model):
     contract_date = models.DateField('签订日期', null=True, blank=True)
     reconciliation_days = models.IntegerField('合同对账期(天)', default=0)
     invoice_wait_days = models.IntegerField('开票等待期(天)', default=0)
-    settlement_wait_days = models.IntegerField('结算等待期(天)', default=0)
+    post_invoice_days = models.IntegerField('票后等待期(天)', default=0)
     total_days = models.IntegerField('总账期(天)', default=0)
     invoice_mode = models.CharField('开票模式', max_length=4,
                                     choices=[('全额', '全额'), ('差额', '差额')], default='全额')
@@ -80,7 +80,7 @@ class ARProject(models.Model):
             self.project_no = self._gen_project_no()
         self.is_shared = (self.sales_contact != self.project_manager)
         self.total_days = (self.reconciliation_days + self.invoice_wait_days
-                           + self.settlement_wait_days)
+                           + self.post_invoice_days)
         if self.invoice_type == '不开票':
             self.tax_rate = Decimal('0')
         super().save(*args, **kwargs)
@@ -102,7 +102,7 @@ class ARProject(models.Model):
             'contract_date': str(self.contract_date) if self.contract_date else None,
             'reconciliation_days': self.reconciliation_days,
             'invoice_wait_days': self.invoice_wait_days,
-            'settlement_wait_days': self.settlement_wait_days,
+            'post_invoice_days': self.post_invoice_days,
             'total_days': self.total_days,
             'invoice_mode': self.invoice_mode,
             'invoice_type': self.invoice_type,
@@ -204,6 +204,56 @@ class ARRecord(models.Model):
         super().save(*args, **kwargs)
 
     # ── read-only properties (not stored) ──────────────────────────────────────
+    def post_invoice_status(self, today=None):
+        """
+        Lifecycle status for responsibility tracking across the full AR cycle.
+        Returns dict: {code, label, style}  — style in {ok, blue, warn, danger, muted}
+        """
+        today = today or datetime.date.today()
+        outstanding = self.outstanding_amount or Decimal('0')
+
+        # Phase 0: Fully collected
+        if outstanding <= 0:
+            return {'code': 'settled', 'label': '已结清', 'style': 'ok'}
+
+        # Phase 1: Invoice issued — track post-invoice collection period
+        if self.invoice_date:
+            due = self.invoice_date + datetime.timedelta(days=self.project.post_invoice_days)
+            if today <= due:
+                remaining = (due - today).days
+                return {'code': 'post_invoice_waiting', 'label': f'票后等待中 ({remaining}天)',
+                        'style': 'blue'}
+            else:
+                overdue = (today - due).days
+                return {'code': 'post_invoice_overdue', 'label': f'票后逾期{overdue}天',
+                        'style': 'danger'}
+
+        # Phase 2: Reconciled but not yet invoiced — invoice person responsibility
+        is_reconciled = (self.reconciliation_date is not None
+                         or self.actual_invoice_amount is not None)
+        if is_reconciled:
+            wait = self.project.invoice_wait_days
+            if self.reconciliation_date and wait > 0:
+                invoice_due = self.reconciliation_date + datetime.timedelta(days=wait)
+                if today > invoice_due:
+                    overdue = (today - invoice_due).days
+                    return {'code': 'invoice_overdue', 'label': f'开票逾期{overdue}天',
+                            'style': 'warn'}
+            return {'code': 'pending_invoice', 'label': '待开票', 'style': 'blue'}
+
+        # Phase 3: Not yet reconciled — check reconciliation deadline
+        try:
+            recon_days = self.project.reconciliation_days
+            eom = _eomonth(self.operation_year, self.operation_month)
+            recon_due = eom + datetime.timedelta(days=recon_days)
+            if recon_days > 0 and today > recon_due:
+                overdue = (today - recon_due).days
+                return {'code': 'recon_overdue', 'label': f'对账逾期{overdue}天',
+                        'style': 'warn'}
+        except Exception:
+            pass
+        return {'code': 'in_recon_period', 'label': '对账期内', 'style': 'muted'}
+
     @property
     def reconciliation_status(self):
         # 业务规则：已开票默认视作已对账
@@ -265,6 +315,7 @@ class ARRecord(models.Model):
             'reconciliation_date': str(self.reconciliation_date) if self.reconciliation_date else None,
             'reconciliation_status': self.reconciliation_status,
             'invoice_status': self.invoice_status,
+            'post_invoice_status': self.post_invoice_status(today),
             'notes': self.notes,
             **st,
             'created_at': self.created_at.isoformat() if self.created_at else None,

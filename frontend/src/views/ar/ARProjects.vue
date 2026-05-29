@@ -25,14 +25,14 @@ const form = reactive({
   contract_name: '', short_name: '', delivery_dept: '', sub_dept: '',
   business_mode: '', customer_level: 'A级', sales_contact: '', project_manager: '',
   has_contract: '有', contract_date: '', reconciliation_days: 0,
-  invoice_wait_days: 0, settlement_wait_days: 0, invoice_mode: '全额',
+  invoice_wait_days: 0, post_invoice_days: 0, invoice_mode: '全额',
   invoice_type: '专票', tax_rate: '0.06', notes: '',
 })
 
 const totalDays = computed(() =>
   (parseInt(form.reconciliation_days) || 0) +
   (parseInt(form.invoice_wait_days) || 0) +
-  (parseInt(form.settlement_wait_days) || 0))
+  (parseInt(form.post_invoice_days) || 0))
 
 const isShared = computed(() =>
   form.sales_contact && form.project_manager &&
@@ -77,7 +77,7 @@ function openCreate() {
     contract_name: '', short_name: '', delivery_dept: accessibleDepts.value[0] || '',
     sub_dept: '', business_mode: '', customer_level: 'A级',
     sales_contact: '', project_manager: '', has_contract: '有', contract_date: '',
-    reconciliation_days: 0, invoice_wait_days: 0, settlement_wait_days: 0,
+    reconciliation_days: 0, invoice_wait_days: 0, post_invoice_days: 0,
     invoice_mode: '全额', invoice_type: '专票', tax_rate: '0.06', notes: '',
   })
   showModal.value = true
@@ -93,7 +93,7 @@ function openEdit(item) {
     has_contract: item.has_contract, contract_date: item.contract_date || '',
     reconciliation_days: item.reconciliation_days,
     invoice_wait_days: item.invoice_wait_days,
-    settlement_wait_days: item.settlement_wait_days,
+    post_invoice_days: item.post_invoice_days,
     invoice_mode: item.invoice_mode, invoice_type: item.invoice_type,
     tax_rate: item.tax_rate, notes: item.notes,
   })
@@ -402,8 +402,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <input v-model.number="form.invoice_wait_days" type="number" min="0" />
               </label>
               <label class="form-field">
-                <span>结算等待期（天） <em>*</em></span>
-                <input v-model.number="form.settlement_wait_days" type="number" min="0" />
+                <span>票后等待期（天） <em>*</em></span>
+                <input v-model.number="form.post_invoice_days" type="number" min="0" />
               </label>
               <label class="form-field">
                 <span>开票模式 <em>*</em></span>

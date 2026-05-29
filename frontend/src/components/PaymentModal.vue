@@ -37,6 +37,7 @@ const FIELD_COLS = {
   pay2: ['pay2_date', 'pay2_amount'],
   pay3: ['pay3_date', 'pay3_amount'],
   notes: ['notes'],
+  plan_adjustment: ['plan_adjustment'],
 }
 
 function _autoDefaultDept() {
@@ -62,6 +63,7 @@ function resetForm() {
     pay3_date: p?.pay3_date || '',
     pay3_amount: p?.pay3_amount && p.pay3_amount !== '0' ? p.pay3_amount : '',
     notes: p?.notes || '',
+    plan_adjustment: p?.plan_adjustment || '',
   }
   // Non-admin users only see their own departments; admin sees all.
   const myDepts = auth.isAdmin ? null : (auth.user?.departments || [])
@@ -210,6 +212,13 @@ async function submit() {
         <div v-if="vis('notes')" class="form-group">
           <label>备注</label>
           <input v-model="form.notes" placeholder="可选" :disabled="!editable('notes')" />
+        </div>
+      </div>
+
+      <div v-if="vis('plan_adjustment')" class="form-row full">
+        <div class="form-group">
+          <label>计划调整 <span class="hint-text">填写后状态变为「计划调整」，表示此付款计划已提前终止</span></label>
+          <input v-model="form.plan_adjustment" placeholder="如：已协商，余款转下期" :disabled="!editable('plan_adjustment')" />
         </div>
       </div>
 

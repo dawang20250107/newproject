@@ -83,6 +83,7 @@ class Payment(models.Model):
     pay3_date = models.DateField('第3次付款日期', null=True, blank=True)
     pay3_amount = models.DecimalField('第3次付款金额', max_digits=15, decimal_places=2, default=0)
     notes = models.TextField('备注', blank=True, default='')
+    plan_adjustment = models.TextField('计划调整', blank=True, default='')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -122,6 +123,8 @@ class Payment(models.Model):
         paid = self.total_paid
         if paid >= self.total_amount:
             return 'settled'
+        elif self.plan_adjustment:
+            return 'adjusted'
         elif paid > 0:
             return 'partial'
         return 'pending'
@@ -142,6 +145,7 @@ class Payment(models.Model):
             'pay3_date': str(self.pay3_date) if self.pay3_date else None,
             'pay3_amount': str(self.pay3_amount),
             'notes': self.notes,
+            'plan_adjustment': self.plan_adjustment,
             'total_paid': str(self.total_paid),
             'remaining': str(self.remaining),
             'status': self.status,

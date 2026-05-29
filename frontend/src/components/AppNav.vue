@@ -93,7 +93,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         </svg>
       </div>
       <Transition name="label-fade">
-        <span v-if="!effectiveCollapsed" class="brand-name">排款系统</span>
+        <span v-if="!effectiveCollapsed" class="brand-name">应收应付系统</span>
       </Transition>
     </div>
 

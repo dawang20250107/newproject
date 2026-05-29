@@ -319,7 +319,7 @@ def projects(request):
                 contract_date=_normalize_date(data.get('contract_date')) or None,
                 reconciliation_days=int(data.get('reconciliation_days', 0) or 0),
                 invoice_wait_days=int(data.get('invoice_wait_days', 0) or 0),
-                settlement_wait_days=int(data.get('settlement_wait_days', 0) or 0),
+                post_invoice_days=int(data.get('post_invoice_days', 0) or 0),
                 invoice_mode=data.get('invoice_mode', '全额'),
                 invoice_type=data.get('invoice_type', ''),
                 tax_rate=_dec(data.get('tax_rate', '0')),
@@ -370,7 +370,7 @@ def project_detail(request, pk):
                 setattr(proj, field, data[field])
         if 'contract_date' in data:
             proj.contract_date = _normalize_date(data['contract_date']) or None
-        for field in ('reconciliation_days', 'invoice_wait_days', 'settlement_wait_days'):
+        for field in ('reconciliation_days', 'invoice_wait_days', 'post_invoice_days'):
             if field in data:
                 setattr(proj, field, int(data[field] or 0))
         if 'tax_rate' in data:
@@ -407,7 +407,7 @@ def project_template(request):
     ws.title = '项目信息'
     headers = ['合同名称*', '项目简称*', '交付部门*', '二级部门', '业务模式',
                '客户等级', '销售对接人*', '项目负责人*', '有无合同',
-               '签订日期', '合同对账期(天)', '开票等待期(天)', '结算等待期(天)',
+               '签订日期', '合同对账期(天)', '开票等待期(天)', '票后等待期(天)',
                '开票模式(全额/差额)', '专票/普票/不开票', '税率(如0.06)', '备注']
     _header_row(ws, headers)
     tip_vals = [
@@ -421,9 +421,9 @@ def project_template(request):
         '★必填：项目负责人姓名（应收分析可按项目负责人维度聚合）',
         '"有"或"无"，默认无',
         '选填：格式 2026-01-15 / 2026/1/15 / 2026年1月15日 均可',
-        '整数天数，默认0（总账期 = 合同对账期 + 开票等待期 + 结算等待期）',
+        '整数天数，默认0（总账期 = 合同对账期 + 开票等待期 + 票后等待期）',
         '整数天数，默认0（同上，三项之和即为应收日期的延迟天数）',
-        '整数天数，默认0（应收日期 = 运作月月末 + 总账期天数；修改后自动更新已有明细）',
+        '整数天数，默认0（票后等待期：开票后多少天内完成回款；应收日期 = 运作月月末 + 总账期天数；修改后自动更新已有明细）',
         '"全额"或"差额"（全额：税额自动计算=开票金额/(1+税率)×税率；差额：手填税额）',
         f'{"/".join(VALID_INVOICE_TYPES)}；选"不开票"时税率自动置0',
         '选填：如 0.06 表示6%，范围 0~1；选"不开票"时留空或填0',
@@ -543,7 +543,7 @@ def project_import(request):
                 ) or None,
                 reconciliation_days=int_days('合同对账期(天)'),
                 invoice_wait_days=int_days('开票等待期(天)'),
-                settlement_wait_days=int_days('结算等待期(天)'),
+                post_invoice_days=int_days('票后等待期(天)'),
                 invoice_mode=invoice_mode_val,
                 invoice_type=invoice_type_val,
                 tax_rate=_dec(tax_raw),
@@ -608,7 +608,7 @@ def project_export(request):
         ('p_contract_date', '签订日期', lambda p: str(p.contract_date) if p.contract_date else ''),
         ('p_account_period', '合同对账期(天)', lambda p: p.reconciliation_days),
         ('p_account_period', '开票等待期(天)', lambda p: p.invoice_wait_days),
-        ('p_account_period', '结算等待期(天)', lambda p: p.settlement_wait_days),
+        ('p_account_period', '票后等待期(天)', lambda p: p.post_invoice_days),
         ('p_account_period', '总账期(天)', lambda p: p.total_days),
         ('p_invoice_config', '开票模式', lambda p: p.invoice_mode),
         ('p_invoice_config', '专票/普票', lambda p: p.invoice_type),

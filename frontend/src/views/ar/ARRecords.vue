@@ -490,6 +490,8 @@ function clearFilters() {
                 <th v-if="show('r_reconciliation')" class="ctr">对账</th>
                 <th v-if="show('r_payments')" class="ctr">回款</th>
                 <th class="ctr">状态</th>
+                <th class="ctr">票后状态</th>
+                <th v-if="show('r_notes')" class="notes-col">备注</th>
               </template>
               <!-- reconciliation -->
               <template v-else-if="activeTab === 'reconciliation'">
@@ -531,6 +533,7 @@ function clearFilters() {
               <tr :class="['data-row', rec.is_overdue ? 'row-overdue' : '']">
                 <td>
                   <div class="proj-name">{{ rec.short_name || rec.contract_name }}</div>
+                  <div v-if="rec.short_name && rec.short_name !== rec.contract_name" class="proj-sub">{{ rec.contract_name }}</div>
                   <div class="proj-no">{{ rec.project_no }}</div>
                 </td>
                 <td class="ctr">
@@ -557,6 +560,11 @@ function clearFilters() {
                     <span v-else-if="rec.invoice_status === '已结清'" class="status-pill pill-ok">已结清</span>
                     <span v-else class="status-pill pill-muted">未到期</span>
                   </td>
+                  <td class="ctr">
+                    <span v-if="rec.post_invoice_status" :class="['status-pill', `pill-${rec.post_invoice_status.style}`]">{{ rec.post_invoice_status.label }}</span>
+                    <span v-else class="status-pill pill-muted">—</span>
+                  </td>
+                  <td v-if="show('r_notes')" class="notes-col text-sm-muted" :title="rec.notes">{{ rec.notes || '—' }}</td>
                 </template>
 
                 <!-- reconciliation -->
@@ -940,7 +948,9 @@ function clearFilters() {
 
 .empty-cell { text-align: center; padding: 48px !important; color: var(--muted); font-size: 14px; }
 .proj-name { font-weight: 600; font-size: 13.5px; }
+.proj-sub { font-size: 11.5px; color: var(--muted); margin-top: 1px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-no { font-family: monospace; font-size: 11px; color: var(--muted); margin-top: 2px; }
+.notes-col { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .ym-chip { font-size: 12px; font-weight: 600; color: var(--muted); background: rgba(0,0,0,0.05); padding: 2px 8px; border-radius: 6px; white-space: nowrap; }
 .ctr { text-align: center; }
 .amt { text-align: right; }

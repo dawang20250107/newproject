@@ -51,7 +51,8 @@ PAYMENT_FIELD_DEFS = [
     {'key': 'pay1',            'label': '第1次付款',     'cols': ['pay1_date', 'pay1_amount']},
     {'key': 'pay2',            'label': '第2次付款',     'cols': ['pay2_date', 'pay2_amount']},
     {'key': 'pay3',            'label': '第3次付款',     'cols': ['pay3_date', 'pay3_amount']},
-    {'key': 'notes',           'label': '备注',          'cols': ['notes']},
+    {'key': 'notes',            'label': '备注',          'cols': ['notes']},
+    {'key': 'plan_adjustment', 'label': '计划调整',      'cols': ['plan_adjustment']},
 ]
 FIELD_KEYS = [f['key'] for f in PAYMENT_FIELD_DEFS]
 PAGE_KEYS = [
@@ -602,14 +603,16 @@ def _list_payments(request):
     if status_q:
         qs = qs.annotate(paid=_paid_expr())
         if status_q == 'pending':
-            qs = qs.filter(paid=Decimal('0'))
+            qs = qs.filter(paid=Decimal('0'), plan_adjustment='')
         elif status_q == 'settled':
             qs = qs.filter(paid__gte=F('total_amount'))
         elif status_q == 'partial':
-            qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'))
+            qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'), plan_adjustment='')
         elif status_q == 'overdue':
             today_val = datetime.date.today()
             qs = qs.filter(paid__lt=F('total_amount'), planned_date__lt=today_val)
+        elif status_q == 'adjusted':
+            qs = qs.filter(paid__lt=F('total_amount')).exclude(plan_adjustment='')
 
     total = qs.count()
 
@@ -646,6 +649,7 @@ def _parse_payment_fields(data, payment=None):
     fields['project_desc'] = (get('project_desc') or '').strip()
     fields['payee'] = (get('payee') or '').strip()
     fields['notes'] = (get('notes') or '').strip()
+    fields['plan_adjustment'] = (get('plan_adjustment') or '').strip()
 
     def _num(key):
         raw = get(key, 0)
@@ -743,6 +747,7 @@ _PAYMENT_FIELD_LABELS = {
     'pay2_date': '第2次付款日期', 'pay2_amount': '第2次付款金额',
     'pay3_date': '第3次付款日期', 'pay3_amount': '第3次付款金额',
     'notes': '备注',
+    'plan_adjustment': '计划调整',
 }
 
 

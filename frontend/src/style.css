@@ -248,6 +248,7 @@ tr:last-child td { border-bottom: none; }
 .badge-settled   { background: rgba(46,125,50,0.12); color: #2e7d32; }
 .badge-partial   { background: rgba(245,127,23,0.12); color: #e65100; }
 .badge-pending   { background: rgba(198,40,40,0.1); color: #c62828; }
+.badge-adjusted  { background: rgba(21,101,192,0.1); color: #1565c0; }
 .badge-super_admin { background: rgba(201,99,66,0.15); color: var(--primary); }
 .badge-manager   { background: rgba(21,101,192,0.1); color: #1565c0; }
 .badge-operator  { background: rgba(46,125,50,0.1); color: #2e7d32; }
