@@ -156,6 +156,12 @@ class ARRecord(models.Model):
             models.Index(fields=['invoice_date']),
             models.Index(fields=['reconciliation_date']),
         ]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(outstanding_amount__gte=0),
+                name='ar_record_outstanding_non_negative',
+            ),
+        ]
 
     def _compute_due_date(self):
         try:

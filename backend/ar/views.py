@@ -700,11 +700,13 @@ def ar_records(request):
 
         total = qs_agg.count()
         # 当前筛选全集的金额合计（不止当前页）——支撑"筛选即合计"
+        # Only sum outstanding_amount where > 0: matches the table which renders
+        # non-positive rows as "—" (settled/overpaid treated identically as 0).
         agg = qs_agg.aggregate(
             est=Sum('estimated_amount'),
             inv=Sum('actual_invoice_amount'),
             tax=Sum('tax_amount'),
-            out=Sum('outstanding_amount'),
+            out=Sum('outstanding_amount', filter=Q(outstanding_amount__gt=0)),
         )
         summary = {
             'count': total,
@@ -1356,7 +1358,9 @@ def ar_records_group_summary(request):
             count=Count('id'),
             estimated=Sum('estimated_amount'),
             invoiced=Sum('actual_invoice_amount'),
-            outstanding=Sum('outstanding_amount'),
+            # Only sum positive outstanding — matches table rendering where
+            # non-positive rows display "—" (treated as 0).
+            outstanding=Sum('outstanding_amount', filter=Q(outstanding_amount__gt=0)),
         )
         collected = sub_qs.aggregate(s=Sum('payments__amount'))['s'] or 0
         return {
@@ -1380,12 +1384,14 @@ def ar_records_group_summary(request):
             rows.append(row)
     elif group_by in _SUMMARY_GROUP_FIELDS:
         field, _ = _SUMMARY_GROUP_FIELDS[group_by]
-        # Base record-level sums (no payments join → no fanout)
+        # Base record-level sums (no payments join → no fanout).
+        # Filter outstanding to > 0 to match the table's "—" treatment of
+        # non-positive values and avoid a negative group total.
         base = (qs.values(field).annotate(
             count=Count('id'),
             estimated=Sum('estimated_amount'),
             invoiced=Sum('actual_invoice_amount'),
-            outstanding=Sum('outstanding_amount'),
+            outstanding=Sum('outstanding_amount', filter=Q(outstanding_amount__gt=0)),
         ).order_by('-outstanding'))
         # Collected sums computed separately, keyed by the same group field
         collected_map = {
