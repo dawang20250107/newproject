@@ -202,10 +202,18 @@ class ARRecord(models.Model):
         total_paid = Decimal('0')
         if self.pk:
             total_paid = (self.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0'))
-        adjusted_base = base + (self.account_diff_adjustment or Decimal('0'))
+        adj = self.account_diff_adjustment or Decimal('0')
+        adjusted_base = base + adj
         outstanding = adjusted_base - total_paid
         if outstanding < Decimal('0'):
-            raise ValidationError('未收回金额不能为负，请调整账实差额或回款金额')
+            # 带出真实算式，便于核对究竟是哪个值导致为负（预估/调整/累计回款）
+            def _f(v):
+                return f'{v:,.2f}'
+            raise ValidationError(
+                f'未收回金额不能为负：预估上账 {_f(base)} + 账实差额 {_f(adj)} '
+                f'− 累计回款 {_f(total_paid)} = {_f(outstanding)}。'
+                f'请核对预估上账金额或账实差额调整。'
+            )
         self.outstanding_amount = outstanding
         self.tax_amount = self._compute_tax()
         if save:
