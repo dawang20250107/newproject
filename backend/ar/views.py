@@ -1632,6 +1632,120 @@ def ar_record_recompute(request, pk):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Data health — detect inconsistent records left by legacy-template imports
+# ══════════════════════════════════════════════════════════════════════════════
+
+@csrf_exempt
+@pk_required()
+def ar_data_health(request):
+    """扫描应收明细，找出口径异常的记录（多为旧模板导入产生的废数据）。
+
+    分两类：
+    - negative：预估上账 + 账实差额 − 累计回款 < 0（累计回款超过上账口径），
+      不能自动修复，需人工核对预估金额/账实差额/回款明细。
+    - stale：存储的未收金额与按现规则重算的结果不一致，但重算结果 ≥ 0，
+      可一键重算修复。
+    """
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('GET only', 405)
+
+    qs = _ar_dept_filter(ARRecord.objects.select_related('project'), request,
+                         shared_field='project__is_shared')
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+    qs = qs.annotate(_paid=Sum('payments__amount'))
+
+    LIMIT = 300
+    negative, stale = [], []
+    neg_count = stale_count = 0
+    for rec in qs.iterator():
+        base = rec.estimated_amount or Decimal('0')
+        adj = rec.account_diff_adjustment or Decimal('0')
+        paid = rec._paid or Decimal('0')
+        recomputed = base + adj - paid
+        stored = rec.outstanding_amount
+        if recomputed < Decimal('0'):
+            neg_count += 1
+            if len(negative) < LIMIT:
+                negative.append({
+                    'id': rec.id,
+                    'project_no': rec.project.project_no,
+                    'short_name': rec.project.short_name or rec.project.contract_name,
+                    'delivery_dept': rec.delivery_dept,
+                    'operation_year': rec.operation_year,
+                    'operation_month': rec.operation_month,
+                    'estimated_amount': str(base),
+                    'account_diff_adjustment': str(adj),
+                    'total_paid': str(paid),
+                    'stored_outstanding': str(stored) if stored is not None else None,
+                    'deficit': str(-recomputed),
+                })
+        elif stored is None or stored != recomputed:
+            stale_count += 1
+            if len(stale) < LIMIT:
+                stale.append({
+                    'id': rec.id,
+                    'project_no': rec.project.project_no,
+                    'short_name': rec.project.short_name or rec.project.contract_name,
+                    'delivery_dept': rec.delivery_dept,
+                    'operation_year': rec.operation_year,
+                    'operation_month': rec.operation_month,
+                    'estimated_amount': str(base),
+                    'account_diff_adjustment': str(adj),
+                    'total_paid': str(paid),
+                    'stored_outstanding': str(stored) if stored is not None else None,
+                    'recomputed_outstanding': str(recomputed),
+                })
+    return ok({
+        'negative_count': neg_count, 'stale_count': stale_count,
+        'negative': negative, 'stale': stale, 'limit': LIMIT,
+        'has_issues': bool(neg_count or stale_count),
+    })
+
+
+@csrf_exempt
+@pk_required()
+def ar_records_recompute_bulk(request):
+    """按现规则批量重算指定记录的未收金额/税额，用于一键修复 stale 记录。
+    会跳过重算后未收为负的记录（这类需人工处理）。Body: {ids: [int, ...]}。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    body = _parse_body(request)
+    ids = body.get('ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请提供要重算的记录 ids')
+    try:
+        ids = [int(i) for i in ids][:1000]
+    except (ValueError, TypeError):
+        return err('ids 必须为整数列表')
+
+    qs = _ar_dept_filter(ARRecord.objects.select_related('project').filter(pk__in=ids),
+                         request, shared_field='project__is_shared')
+    fixed, failed = 0, []
+    for rec in qs:
+        if request.pk_role != 'super_admin' and rec.delivery_dept not in (request.pk_depts or []):
+            failed.append({'id': rec.id, 'msg': '无权操作此部门'})
+            continue
+        try:
+            rec.recompute_derived(save=True)
+            fixed += 1
+        except ValidationError as e:
+            failed.append({'id': rec.id,
+                           'msg': str(e.message if hasattr(e, 'message') else e)})
+    return ok({'fixed': fixed, 'failed': failed})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Analytics
 # ══════════════════════════════════════════════════════════════════════════════
 

@@ -11,6 +11,9 @@ const auth = useAuthStore()
 const items = ref([])
 const total = ref(0)
 const kpiData = ref(null)
+const healthData = ref(null)
+const showHealthModal = ref(false)
+const healthFixing = ref(false)
 const loading = ref(false)
 const page = ref(1)
 const size = 50
@@ -139,6 +142,30 @@ async function load(reset = false) {
     summaryData.value = recs.data.summary
     kpiData.value = kpi.data
   } finally { loading.value = false }
+  loadHealth()
+}
+
+async function loadHealth() {
+  try {
+    const res = await ar.dataHealth({ dept: filters.dept })
+    healthData.value = res.data
+  } catch { healthData.value = null }
+}
+
+async function fixStaleRecords() {
+  const ids = (healthData.value?.stale || []).map(r => r.id)
+  if (!ids.length) return
+  if (!confirm(`将按现规则重算 ${ids.length} 条未收金额不一致的记录，确定继续？`)) return
+  healthFixing.value = true
+  try {
+    const res = await ar.recomputeRecords(ids)
+    const failed = res.data.failed || []
+    let msg = `已重算修复 ${res.data.fixed} 条`
+    if (failed.length) msg += `\n${failed.length} 条仍需人工处理（累计回款超过上账口径）`
+    alert(msg)
+    await loadHealth(); await load()
+  } catch (e) { alert(e?.msg || '重算失败') }
+  finally { healthFixing.value = false }
 }
 
 async function loadPayments(reset = false) {
@@ -433,6 +460,18 @@ function clearFilters() {
         <input v-model="filters.manager" placeholder="负责人" class="search-input" @input="onFilterChange" />
         <button class="act-btn" @click="Object.assign(filters, { status: 'outstanding' }); onFilterChange()">未结清</button>
       </div>
+    </div>
+
+    <!-- 数据体检提示：检测到旧模板导入等造成的口径异常记录 -->
+    <div v-if="healthData?.has_issues" class="health-alert">
+      <span class="health-icon">⚠</span>
+      <span class="health-text">
+        检测到 <strong>{{ (healthData.negative_count || 0) + (healthData.stale_count || 0) }}</strong> 条数据口径异常（多为旧模板导入产生）：
+        <template v-if="healthData.stale_count">未收金额需重算 <strong>{{ healthData.stale_count }}</strong> 条</template>
+        <template v-if="healthData.stale_count && healthData.negative_count"> · </template>
+        <template v-if="healthData.negative_count">累计回款超过上账口径 <strong>{{ healthData.negative_count }}</strong> 条需人工核对</template>
+      </span>
+      <button class="health-btn" @click="showHealthModal = true">查看并修正</button>
     </div>
 
     <!-- Tab + table card -->
@@ -882,10 +921,101 @@ function clearFilters() {
         </div>
       </div>
     </Teleport>
+
+    <!-- 数据体检明细 -->
+    <Teleport to="body">
+      <div v-if="showHealthModal" class="modal-overlay" @click.self="showHealthModal = false">
+        <div class="modal-box" style="max-width:880px">
+          <div class="modal-header">
+            <div>
+              <h3>数据体检 · 异常记录</h3>
+              <div style="font-size:12px;color:var(--muted);margin-top:2px">口径：预估上账 + 账实差额 − 累计回款 = 未收金额</div>
+            </div>
+            <button class="modal-close" @click="showHealthModal = false">✕</button>
+          </div>
+          <div class="modal-body" style="max-height:60vh;overflow:auto">
+            <!-- 可一键重算 -->
+            <div v-if="healthData?.stale_count" class="health-section">
+              <div class="health-sec-head">
+                <span>未收金额与现规则不一致（可一键重算）· {{ healthData.stale_count }} 条<span v-if="healthData.stale_count > (healthData.stale?.length||0)">（仅展示前 {{ healthData.stale.length }} 条）</span></span>
+                <button v-if="auth.canCreate" class="btn btn-primary btn-sm" :disabled="healthFixing" @click="fixStaleRecords">
+                  {{ healthFixing ? '重算中…' : '一键重算修复' }}
+                </button>
+              </div>
+              <table class="health-table">
+                <thead><tr><th>项目编号</th><th>项目简称</th><th>年月</th><th class="r">预估上账</th><th class="r">累计回款</th><th class="r">现存未收</th><th class="r">重算未收</th></tr></thead>
+                <tbody>
+                  <tr v-for="r in healthData.stale" :key="r.id">
+                    <td>{{ r.project_no }}</td><td>{{ r.short_name }}</td>
+                    <td>{{ r.operation_year }}-{{ r.operation_month }}</td>
+                    <td class="r">{{ fmtAmt(r.estimated_amount) }}</td>
+                    <td class="r">{{ fmtAmt(r.total_paid) }}</td>
+                    <td class="r muted">{{ r.stored_outstanding == null ? '—' : fmtAmt(r.stored_outstanding) }}</td>
+                    <td class="r ok">{{ fmtAmt(r.recomputed_outstanding) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <!-- 需人工核对 -->
+            <div v-if="healthData?.negative_count" class="health-section">
+              <div class="health-sec-head">
+                <span class="danger-text">累计回款超过上账口径（需人工核对）· {{ healthData.negative_count }} 条<span v-if="healthData.negative_count > (healthData.negative?.length||0)">（仅展示前 {{ healthData.negative.length }} 条）</span></span>
+              </div>
+              <div class="health-hint">这类记录通常是旧模板把"未收金额"直接导入、或重复导入回款造成。请核对该明细的「预估上账金额」是否偏小、或删除多余的回款记录。点项目编号可在新标签查看明细。</div>
+              <table class="health-table">
+                <thead><tr><th>项目编号</th><th>项目简称</th><th>年月</th><th class="r">预估上账</th><th class="r">账实差额</th><th class="r">累计回款</th><th class="r">超出</th></tr></thead>
+                <tbody>
+                  <tr v-for="r in healthData.negative" :key="r.id">
+                    <td>{{ r.project_no }}</td><td>{{ r.short_name }}</td>
+                    <td>{{ r.operation_year }}-{{ r.operation_month }}</td>
+                    <td class="r">{{ fmtAmt(r.estimated_amount) }}</td>
+                    <td class="r">{{ fmtAmt(r.account_diff_adjustment) }}</td>
+                    <td class="r">{{ fmtAmt(r.total_paid) }}</td>
+                    <td class="r danger-text">{{ fmtAmt(r.deficit) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-if="!healthData?.has_issues" class="health-hint">未发现异常记录 ✓</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" @click="showHealthModal = false">关闭</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
+.health-alert {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+  padding: 10px 14px; border-radius: 10px;
+  background: rgba(255,167,38,0.10); border: 1px solid rgba(255,167,38,0.35); color: #b45309;
+}
+.health-icon { font-size: 16px; }
+.health-text { flex: 1; font-size: 13px; line-height: 1.5; }
+.health-text strong { color: #92400e; }
+.health-btn {
+  flex-shrink: 0; padding: 6px 14px; border-radius: 8px; font-size: 12.5px; font-weight: 600;
+  border: 1px solid rgba(180,83,9,0.4); background: #fff; color: #b45309; cursor: pointer;
+  transition: all 0.14s;
+}
+.health-btn:hover { background: #b45309; color: #fff; }
+.health-section { margin-bottom: 20px; }
+.health-sec-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  font-size: 13px; font-weight: 600; margin-bottom: 8px;
+}
+.health-hint { font-size: 12px; color: var(--muted); margin-bottom: 8px; line-height: 1.6; }
+.danger-text { color: #c62828; }
+.health-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.health-table th, .health-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+.health-table th { color: var(--muted); font-weight: 600; }
+.health-table td.r, .health-table th.r { text-align: right; font-variant-numeric: tabular-nums; }
+.health-table td.muted { color: var(--muted); }
+.health-table td.ok { color: #2e7d32; font-weight: 600; }
+.btn-sm { padding: 5px 12px; font-size: 12px; }
 .act-btn {
   padding: 6px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 500;
   border: 1px solid var(--border); background: rgba(255,252,250,0.8); color: var(--muted);

@@ -226,3 +226,51 @@ class ARPermissionRegressionTests(TestCase):
         record.refresh_from_db()
         self.assertEqual(record.tax_amount, Decimal('60.00'))
         self.assertEqual(record.outstanding_amount, Decimal('840.00'))
+
+    def test_data_health_flags_stale_and_negative_records(self):
+        admin = self.make_user('13900000099', 'finance_director', role='super_admin')
+        project = self.create_project()
+
+        # healthy record — should not be flagged
+        healthy = self.create_record(project)
+        ARPayment.objects.create(ar_record=healthy, payment_no=1,
+                                 amount=Decimal('300.00'), payment_date=date(2026, 6, 1))
+
+        # stale record — tamper stored outstanding directly (bypassing recompute)
+        stale = ARRecord.objects.create(project=project, operation_year=2026,
+                                        operation_month=6, estimated_amount=Decimal('770000.00'))
+        ARPayment.objects.create(ar_record=stale, payment_no=1,
+                                 amount=Decimal('100000.00'), payment_date=date(2026, 6, 2))
+        ARRecord.objects.filter(pk=stale.pk).update(outstanding_amount=Decimal('999999.00'))
+
+        # negative record — payments exceed estimated (raw insert to bypass validation)
+        neg = ARRecord.objects.create(project=project, operation_year=2026,
+                                      operation_month=7, estimated_amount=Decimal('270000.00'))
+        ARPayment.objects.bulk_create([
+            ARPayment(ar_record=neg, payment_no=1, amount=Decimal('100000.00'),
+                      payment_date=date(2026, 6, 3)),
+            ARPayment(ar_record=neg, payment_no=2, amount=Decimal('200000.00'),
+                      payment_date=date(2026, 6, 4)),
+        ])
+
+        resp = self.client.get('/api/pk/ar/records/health', **self.auth(admin))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()['data']
+        self.assertTrue(data['has_issues'])
+        self.assertEqual(data['stale_count'], 1)
+        self.assertEqual(data['negative_count'], 1)
+        self.assertEqual(data['stale'][0]['id'], stale.id)
+        self.assertEqual(data['negative'][0]['id'], neg.id)
+        self.assertEqual(data['negative'][0]['deficit'], '30000.00')
+
+        # bulk recompute fixes the stale one and reports the negative one as failed
+        resp = self.json_post('/api/pk/ar/records/recompute',
+                              {'ids': [stale.id, neg.id]}, admin)
+        self.assertEqual(resp.status_code, 200)
+        result = resp.json()['data']
+        self.assertEqual(result['fixed'], 1)
+        self.assertEqual(len(result['failed']), 1)
+        self.assertEqual(result['failed'][0]['id'], neg.id)
+
+        stale.refresh_from_db()
+        self.assertEqual(stale.outstanding_amount, Decimal('670000.00'))

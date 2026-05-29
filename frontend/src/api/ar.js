@@ -25,6 +25,8 @@ const ar = {
   recordTemplate: () => api.get('/ar/records/template', { responseType: 'blob' }),
   importRecords: fd => api.post('/ar/records/import', fd),
   exportRecords: p => api.get('/ar/records/export', { params: p, responseType: 'blob' }),
+  dataHealth: p => api.get('/ar/records/health', { params: p }),
+  recomputeRecords: ids => api.post('/ar/records/recompute', { ids }),
 
   // Payments
   listPayments: id => api.get(`/ar/records/${id}/payments`),
