@@ -19,6 +19,7 @@ export const JOB_LABELS = {
   general_manager: '总经理',
   gm_assistant: '总经理助理',
   settlement_accountant: '结算会计',
+  sales_bp: '销售BP',
 }
 
 export const JOB_OPTIONS = [
@@ -29,6 +30,7 @@ export const JOB_OPTIONS = [
   { v: 'general_manager', label: '总经理' },
   { v: 'gm_assistant', label: '总经理助理' },
   { v: 'settlement_accountant', label: '结算会计' },
+  { v: 'sales_bp', label: '销售BP' },
 ]
 
 // ── UTC+8 时间工具 ────────────────────────────────────────────────────────────
