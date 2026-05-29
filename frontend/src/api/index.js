@@ -39,6 +39,15 @@ api.interceptors.response.use(
     if (errData instanceof Blob && errData.type?.includes('json')) {
       try { errData = JSON.parse(await errData.text()) } catch {}
     }
+    // Backend error payloads use {code, error}. Normalize to expose `.msg`
+    // so callers can uniformly read `e?.msg` for the human-readable reason.
+    if (errData && typeof errData === 'object') {
+      if (errData.msg === undefined && errData.error !== undefined) {
+        errData.msg = errData.error
+      }
+    } else if (!errData) {
+      errData = { msg: err.message || '网络错误' }
+    }
     return Promise.reject(errData || err)
   }
 )
