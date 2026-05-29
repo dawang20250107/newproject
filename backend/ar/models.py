@@ -297,6 +297,8 @@ class ARRecord(models.Model):
 
     @property
     def reconciliation_status(self):
+        if (self.outstanding_amount or Decimal('0')) <= 0:
+            return '已结清'
         # 业务规则：已开票默认视作已对账
         if self.actual_invoice_amount is not None:
             return '已对账'
@@ -304,10 +306,10 @@ class ARRecord(models.Model):
 
     @property
     def invoice_status(self):
+        if (self.outstanding_amount or Decimal('0')) <= 0:
+            return '已结清'
         if not self.actual_invoice_amount:
             return '未开票'
-        if self.outstanding_amount <= 0:
-            return '已结清'
         total_paid = self.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0')
         if total_paid > 0:
             return '部分回款'
