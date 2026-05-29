@@ -148,11 +148,11 @@ function toggleDept(d) {
             </defs>
           </svg>
         </div>
-        <h1 class="brand-title">排款管理系统</h1>
+        <h1 class="brand-title">应收应付管理系统</h1>
         <p class="brand-sub">精准 · 高效 · 安全</p>
         <div class="brand-features">
           <div class="feature">
-            <span class="f-dot"></span>实时资金排款追踪
+            <span class="f-dot"></span>应收应付全流程追踪
           </div>
           <div class="feature">
             <span class="f-dot"></span>多部门协同管理
