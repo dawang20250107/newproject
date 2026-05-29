@@ -13,6 +13,9 @@ urlpatterns = [
     # AR Records
     path('records', views.ar_records),
     path('records/kpi', views.ar_records_kpi),
+    path('records/summary', views.ar_records_group_summary),
+    path('records/payments', views.ar_payment_ledger),
+    path('records/payments/export', views.ar_payment_ledger_export),
     path('records/template', views.ar_record_template),
     path('records/import', views.ar_record_import),
     path('records/export', views.ar_record_export),

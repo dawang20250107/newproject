@@ -683,73 +683,27 @@ def ar_records(request):
     if request.method == 'GET':
         today = datetime.date.today()
         qs = _ar_dept_filter(ARRecord.objects.select_related('project', 'created_by'), request)
-
-        project_id = request.GET.get('project_id', '').strip()
-        if project_id:
-            qs = qs.filter(project_id=int(project_id))
-        dept = request.GET.get('dept', '').strip()
-        if dept:
-            qs = qs.filter(delivery_dept=dept)
-        year = request.GET.get('year', '').strip()
-        if year:
-            qs = qs.filter(operation_year=int(year))
-        month = request.GET.get('month', '').strip()
-        if month:
-            qs = qs.filter(operation_month=int(month))
-        manager = request.GET.get('manager', '').strip()
-        if manager:
-            qs = qs.filter(project__project_manager__icontains=manager)
-        q = request.GET.get('q', '').strip()
-        if q:
-            qs = qs.filter(
-                Q(project__short_name__icontains=q) |
-                Q(project__contract_name__icontains=q) |
-                Q(project__project_no__icontains=q))
-
-        # Status filter
-        status = request.GET.get('status', '').strip()
-        eomonth_today = datetime.date(today.year, today.month,
-                                      calendar.monthrange(today.year, today.month)[1])
-        if status == 'overdue':
-            qs = qs.filter(outstanding_amount__gt=0, due_date__lt=today)
-        elif status == 'current':
-            qs = qs.filter(outstanding_amount__gt=0, due_date__gte=today,
-                           due_date__lte=eomonth_today)
-        elif status == 'not_due':
-            qs = qs.filter(outstanding_amount__gt=0, due_date__gt=eomonth_today)
-        elif status == 'settled':
-            qs = qs.filter(outstanding_amount__lte=0)
-        elif status == 'outstanding':
-            qs = qs.filter(outstanding_amount__gt=0)
-
-        # Invoice status
-        inv_status = request.GET.get('invoice_status', '').strip()
-        if inv_status == '未开票':
-            qs = qs.filter(actual_invoice_amount__isnull=True)
-        elif inv_status == '已结清':
-            qs = qs.filter(outstanding_amount__lte=0, actual_invoice_amount__isnull=False)
-        elif inv_status == '已开票':
-            qs = qs.filter(actual_invoice_amount__isnull=False, outstanding_amount__gt=0)
-
-        # Reconciliation status
-        recon_status = request.GET.get('reconciliation_status', '').strip()
-        if recon_status == '已对账':
-            qs = qs.filter(Q(reconciliation_date__isnull=False) | Q(actual_invoice_amount__isnull=False))
-        elif recon_status == '未对账':
-            qs = qs.filter(reconciliation_date__isnull=True, actual_invoice_amount__isnull=True)
-
-        # Date range on due_date
-        due_start = request.GET.get('due_start', '').strip()
-        due_end = request.GET.get('due_end', '').strip()
-        if due_start:
-            qs = qs.filter(due_date__gte=due_start)
-        if due_end:
-            qs = qs.filter(due_date__lte=due_end)
+        qs = _apply_record_filters(qs, request)
+        qs = _apply_record_state_filters(qs, request, today)
 
         include_payments = request.GET.get('include_payments', '') in ('1', 'true')
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
         total = qs.count()
+        # 当前筛选全集的金额合计（不止当前页）——支撑"筛选即合计"
+        agg = qs.aggregate(
+            est=Sum('estimated_amount'),
+            inv=Sum('actual_invoice_amount'),
+            tax=Sum('tax_amount'),
+            out=Sum('outstanding_amount'),
+        )
+        summary = {
+            'count': total,
+            'estimated': str(agg['est'] or 0),
+            'invoiced': str(agg['inv'] or 0),
+            'tax': str(agg['tax'] or 0),
+            'outstanding': str(agg['out'] or 0),
+        }
         items = list(qs[(page - 1) * size: page * size])
 
         perms = get_request_perms(request)
@@ -768,7 +722,8 @@ def ar_records(request):
         else:
             rows = [apply_ar_view_mask(r.to_dict(today=today), perms, 'record') for r in items]
 
-        return ok({'items': rows, 'total': total, 'page': page, 'size': size})
+        return ok({'items': rows, 'total': total, 'page': page, 'size': size,
+                   'summary': summary})
 
     if request.method == 'POST':
         denied = _write_denied(request)
@@ -1137,6 +1092,54 @@ def _apply_record_filters(qs, request):
     return qs
 
 
+def _apply_record_state_filters(qs, request, today=None):
+    """Status / invoice / reconciliation / due-date filters for AR records.
+
+    Used by the list view, the export view and the group-summary view so the
+    same filter semantics apply everywhere. NOT used by the KPI endpoint, which
+    computes its own status breakdown from the unfiltered (by-state) set.
+    """
+    if today is None:
+        today = datetime.date.today()
+    eomonth_today = datetime.date(today.year, today.month,
+                                  calendar.monthrange(today.year, today.month)[1])
+
+    status = request.GET.get('status', '').strip()
+    if status == 'overdue':
+        qs = qs.filter(outstanding_amount__gt=0, due_date__lt=today)
+    elif status == 'current':
+        qs = qs.filter(outstanding_amount__gt=0, due_date__gte=today,
+                       due_date__lte=eomonth_today)
+    elif status == 'not_due':
+        qs = qs.filter(outstanding_amount__gt=0, due_date__gt=eomonth_today)
+    elif status == 'settled':
+        qs = qs.filter(outstanding_amount__lte=0)
+    elif status == 'outstanding':
+        qs = qs.filter(outstanding_amount__gt=0)
+
+    inv_status = request.GET.get('invoice_status', '').strip()
+    if inv_status == '未开票':
+        qs = qs.filter(actual_invoice_amount__isnull=True)
+    elif inv_status == '已结清':
+        qs = qs.filter(outstanding_amount__lte=0, actual_invoice_amount__isnull=False)
+    elif inv_status == '已开票':
+        qs = qs.filter(actual_invoice_amount__isnull=False, outstanding_amount__gt=0)
+
+    recon_status = request.GET.get('reconciliation_status', '').strip()
+    if recon_status == '已对账':
+        qs = qs.filter(Q(reconciliation_date__isnull=False) | Q(actual_invoice_amount__isnull=False))
+    elif recon_status == '未对账':
+        qs = qs.filter(reconciliation_date__isnull=True, actual_invoice_amount__isnull=True)
+
+    due_start = request.GET.get('due_start', '').strip()
+    due_end = request.GET.get('due_end', '').strip()
+    if due_start:
+        qs = qs.filter(due_date__gte=due_start)
+    if due_end:
+        qs = qs.filter(due_date__lte=due_end)
+    return qs
+
+
 @csrf_exempt
 @pk_required()
 def ar_records_kpi(request):
@@ -1154,15 +1157,23 @@ def ar_records_kpi(request):
     recon_done = qs.filter(Q(reconciliation_date__isnull=False) | Q(actual_invoice_amount__isnull=False)).count()
     recon_pending = total - recon_done
 
-    # Invoice: 已开票 vs 未开票
-    inv_done = qs.filter(actual_invoice_amount__isnull=False).count()
+    # Invoice: 已开票 vs 未开票（含金额）
+    inv_done_qs = qs.filter(actual_invoice_amount__isnull=False)
+    inv_done = inv_done_qs.count()
     inv_pending = total - inv_done
+    # 未开票预估金额：尚未开票记录的预估上账金额合计
+    inv_pending_amount = (qs.filter(actual_invoice_amount__isnull=True)
+                          .aggregate(s=Sum('estimated_amount'))['s'] or 0)
+    inv_done_amount = inv_done_qs.aggregate(s=Sum('actual_invoice_amount'))['s'] or 0
 
     # Collection: 已结清 vs 未收
     settled = qs.filter(outstanding_amount__lte=0).count()
     outstanding_qs = qs.filter(outstanding_amount__gt=0)
     outstanding_count = outstanding_qs.count()
     outstanding_amount = outstanding_qs.aggregate(s=Sum('outstanding_amount'))['s'] or 0
+    # 已收总额（当前筛选集所有回款之和）
+    collected_amount = qs.aggregate(s=Sum('payments__amount'))['s'] or 0
+    estimated_total = qs.aggregate(s=Sum('estimated_amount'))['s'] or 0
 
     # Overdue (within current filter)
     overdue_qs = qs.filter(outstanding_amount__gt=0, due_date__lt=today)
@@ -1174,6 +1185,7 @@ def ar_records_kpi(request):
 
     return ok({
         'total': total,
+        'estimated_total': str(estimated_total),
         'reconciliation': {
             'done': recon_done, 'pending': recon_pending,
             'rate': _rate(recon_done, total),
@@ -1183,15 +1195,210 @@ def ar_records_kpi(request):
         'invoice': {
             'done': inv_done, 'pending': inv_pending,
             'rate': _rate(inv_done, total),
+            'pending_amount': str(inv_pending_amount),
+            'done_amount': str(inv_done_amount),
         },
         'collection': {
             'settled': settled,
             'outstanding_count': outstanding_count,
             'outstanding_amount': str(outstanding_amount),
+            'collected_amount': str(collected_amount),
             'rate': _rate(settled, total),
         },
         'overdue': {'count': overdue_count, 'amount': str(overdue_amount)},
     })
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 回款流水 (payment ledger) — cross-record payments filtered by date range
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _payment_ledger_qs(request):
+    """Build the filtered ARPayment queryset for the ledger (shared by list+export)."""
+    qs = (ARPayment.objects.select_related('ar_record', 'ar_record__project')
+          .order_by('-payment_date', '-id'))
+    qs = _ar_dept_filter(qs, request, dept_field='ar_record__delivery_dept')
+    pay_start = request.GET.get('pay_start', '').strip()
+    pay_end = request.GET.get('pay_end', '').strip()
+    if pay_start:
+        qs = qs.filter(payment_date__gte=pay_start)
+    if pay_end:
+        qs = qs.filter(payment_date__lte=pay_end)
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(ar_record__delivery_dept=dept)
+    project_id = request.GET.get('project_id', '').strip()
+    if project_id:
+        qs = qs.filter(ar_record__project_id=int(project_id))
+    q = request.GET.get('q', '').strip()
+    if q:
+        qs = qs.filter(
+            Q(ar_record__project__short_name__icontains=q) |
+            Q(ar_record__project__contract_name__icontains=q) |
+            Q(ar_record__project__project_no__icontains=q))
+    return qs
+
+
+def _payment_ledger_row(p):
+    rec = p.ar_record
+    proj = rec.project
+    return {
+        'id': p.id,
+        'ar_record_id': rec.id,
+        'payment_no': p.payment_no,
+        'payment_date': str(p.payment_date) if p.payment_date else None,
+        'amount': str(p.amount),
+        'notes': p.notes,
+        'project_no': proj.project_no,
+        'short_name': proj.short_name,
+        'delivery_dept': rec.delivery_dept,
+        'operation_year': rec.operation_year,
+        'operation_month': rec.operation_month,
+    }
+
+
+@csrf_exempt
+@pk_required()
+def ar_payment_ledger(request):
+    """跨记录回款流水：按回款日期区间 / 部门 / 项目 / 关键词筛选，并返回合计。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    denied = _ar_field_denied(request, 'r_payments')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+
+    qs = _payment_ledger_qs(request)
+    total = qs.count()
+    total_amount = qs.aggregate(s=Sum('amount'))['s'] or 0
+    page = max(1, int(request.GET.get('page', 1) or 1))
+    size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
+    rows = [_payment_ledger_row(p) for p in qs[(page - 1) * size: page * size]]
+    return ok({
+        'items': rows, 'total': total, 'page': page, 'size': size,
+        'summary': {'count': total, 'total_amount': str(total_amount)},
+    })
+
+
+@csrf_exempt
+@pk_required()
+def ar_payment_ledger_export(request):
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    denied = _ar_field_denied(request, 'r_payments')
+    if denied:
+        return denied
+    qs = _payment_ledger_qs(request)
+    if qs.count() > 5000:
+        return err('导出超过5000行，请缩小筛选范围')
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '回款流水'
+    headers = ['回款日期', '回款金额', '项目编号', '项目简称', '交付部门',
+               '运作年', '运作月', '回款序号', '备注']
+    _header_row(ws, headers, color='1B6E35')
+    for p in qs:
+        r = _payment_ledger_row(p)
+        ws.append([r['payment_date'], float(p.amount), r['project_no'], r['short_name'],
+                   r['delivery_dept'], r['operation_year'], r['operation_month'],
+                   r['payment_no'], r['notes']])
+    return _export_response(wb, '回款流水.xlsx')
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 多维汇总 (group-by pivot) — count + amount sums grouped by a chosen dimension
+# ──────────────────────────────────────────────────────────────────────────────
+
+_SUMMARY_GROUP_FIELDS = {
+    'dept': ('delivery_dept', '交付部门'),
+    'customer_level': ('project__customer_level', '客户等级'),
+    'business_mode': ('project__business_mode', '业务模式'),
+    'manager': ('project__project_manager', '项目负责人'),
+    'month': ('operation_month', '运作月'),
+}
+
+
+@csrf_exempt
+@pk_required()
+def ar_records_group_summary(request):
+    """按指定维度对应收记录做计数 + 金额聚合（透视表）。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+
+    today = datetime.date.today()
+    qs = _ar_dept_filter(ARRecord.objects.all(), request)
+    qs = _apply_record_filters(qs, request)
+    qs = _apply_record_state_filters(qs, request, today)
+
+    group_by = request.GET.get('group_by', 'dept').strip() or 'dept'
+
+    # NOTE: record-level sums (estimated/invoiced/outstanding/count) must NOT be
+    # computed in the same query as Sum('payments__amount') — the payments JOIN
+    # causes row fanout that multiplies record-level values. We always compute the
+    # 回款 (collected) sum in a SEPARATE aggregate to keep both sides correct.
+    def _amounts(sub_qs):
+        base = sub_qs.aggregate(
+            count=Count('id'),
+            estimated=Sum('estimated_amount'),
+            invoiced=Sum('actual_invoice_amount'),
+            outstanding=Sum('outstanding_amount'),
+        )
+        collected = sub_qs.aggregate(s=Sum('payments__amount'))['s'] or 0
+        return {
+            'count': base['count'] or 0,
+            'estimated': str(base['estimated'] or 0),
+            'invoiced': str(base['invoiced'] or 0),
+            'outstanding': str(base['outstanding'] or 0),
+            'collected': str(collected),
+        }
+
+    rows = []
+    if group_by == 'invoice_status':
+        buckets = [
+            ('未开票', qs.filter(actual_invoice_amount__isnull=True)),
+            ('已结清', qs.filter(outstanding_amount__lte=0, actual_invoice_amount__isnull=False)),
+            ('已开票', qs.filter(actual_invoice_amount__isnull=False, outstanding_amount__gt=0)),
+        ]
+        for label, sub in buckets:
+            row = {'key': label, 'label': label}
+            row.update(_amounts(sub))
+            rows.append(row)
+    elif group_by in _SUMMARY_GROUP_FIELDS:
+        field, _ = _SUMMARY_GROUP_FIELDS[group_by]
+        # Base record-level sums (no payments join → no fanout)
+        base = (qs.values(field).annotate(
+            count=Count('id'),
+            estimated=Sum('estimated_amount'),
+            invoiced=Sum('actual_invoice_amount'),
+            outstanding=Sum('outstanding_amount'),
+        ).order_by('-outstanding'))
+        # Collected sums computed separately, keyed by the same group field
+        collected_map = {
+            g[field]: (g['collected'] or 0)
+            for g in qs.values(field).annotate(collected=Sum('payments__amount'))
+        }
+        for g in base:
+            raw_key = g[field]
+            key = raw_key if raw_key not in (None, '') else '（未填写）'
+            rows.append({
+                'key': key,
+                'label': str(key),
+                'count': g['count'] or 0,
+                'estimated': str(g['estimated'] or 0),
+                'invoiced': str(g['invoiced'] or 0),
+                'outstanding': str(g['outstanding'] or 0),
+                'collected': str(collected_map.get(raw_key, 0)),
+            })
+    else:
+        return err(f'不支持的分组维度: {group_by}')
+
+    return ok({'group_by': group_by, 'rows': rows})
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -15,6 +15,9 @@ const ar = {
   // AR Records
   listRecords: p => api.get('/ar/records', { params: p }),
   recordsKpi: p => api.get('/ar/records/kpi', { params: p }),
+  recordsSummary: p => api.get('/ar/records/summary', { params: p }),
+  listPaymentLedger: p => api.get('/ar/records/payments', { params: p }),
+  exportPaymentLedger: p => api.get('/ar/records/payments/export', { params: p, responseType: 'blob' }),
   createRecord: d => api.post('/ar/records', d),
   getRecord: id => api.get(`/ar/records/${id}`),
   updateRecord: (id, d) => api.put(`/ar/records/${id}`, d),

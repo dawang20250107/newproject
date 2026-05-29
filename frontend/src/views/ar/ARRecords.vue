@@ -67,7 +67,35 @@ const TABS = [
   { key: 'reconciliation', label: '对账跟踪' },
   { key: 'invoice', label: '开票跟踪' },
   { key: 'collection', label: '回款跟踪' },
+  { key: 'payments', label: '回款流水' },
+  { key: 'summary', label: '汇总' },
 ]
+const DATA_TABS = ['all', 'reconciliation', 'invoice', 'collection']
+const isDataTab = computed(() => DATA_TABS.includes(activeTab.value))
+const summaryData = ref(null)
+
+// ── 回款流水 (payment ledger) ───────────────────────────────────────────────
+const payFilters = reactive({ pay_start: '', pay_end: '', dept: '', q: '' })
+const payItems = ref([])
+const paySummary = ref(null)
+const payTotal = ref(0)
+const payPage = ref(1)
+const payLoading = ref(false)
+const payExporting = ref(false)
+
+// ── 多维汇总 (group-by pivot) ────────────────────────────────────────────────
+const GROUP_DIMS = [
+  { key: 'dept', label: '交付部门' },
+  { key: 'invoice_status', label: '开票状态' },
+  { key: 'customer_level', label: '客户等级' },
+  { key: 'business_mode', label: '业务模式' },
+  { key: 'month', label: '运作月' },
+  { key: 'manager', label: '项目负责人' },
+]
+const DRILLABLE_DIMS = ['dept', 'invoice_status', 'month', 'manager']
+const summaryGroupBy = ref('dept')
+const groupRows = ref([])
+const groupLoading = ref(false)
 
 function fmtAmt(v) {
   const n = parseFloat(v) || 0
@@ -86,8 +114,78 @@ async function load(reset = false) {
     ])
     items.value = recs.data.items
     total.value = recs.data.total
+    summaryData.value = recs.data.summary
     kpiData.value = kpi.data
   } finally { loading.value = false }
+}
+
+async function loadPayments(reset = false) {
+  if (reset) payPage.value = 1
+  payLoading.value = true
+  try {
+    const res = await ar.listPaymentLedger({ ...payFilters, page: payPage.value, size })
+    payItems.value = res.data.items
+    payTotal.value = res.data.total
+    paySummary.value = res.data.summary
+  } finally { payLoading.value = false }
+}
+
+async function exportPayments() {
+  payExporting.value = true
+  try {
+    const res = await ar.exportPaymentLedger(payFilters)
+    const url = URL.createObjectURL(res)
+    const a = document.createElement('a'); a.href = url; a.download = '回款流水.xlsx'; a.click()
+    URL.revokeObjectURL(url)
+  } catch (e) { alert(e?.response?.data?.msg || '导出失败')
+  } finally { payExporting.value = false }
+}
+
+async function loadGroupSummary() {
+  groupLoading.value = true
+  try {
+    const res = await ar.recordsSummary({ ...filters, group_by: summaryGroupBy.value })
+    groupRows.value = res.data.rows
+  } finally { groupLoading.value = false }
+}
+
+const groupTotals = computed(() => {
+  const acc = { count: 0, estimated: 0, invoiced: 0, outstanding: 0, collected: 0 }
+  for (const r of groupRows.value) {
+    acc.count += r.count
+    acc.estimated += parseFloat(r.estimated) || 0
+    acc.invoiced += parseFloat(r.invoiced) || 0
+    acc.outstanding += parseFloat(r.outstanding) || 0
+    acc.collected += parseFloat(r.collected) || 0
+  }
+  return acc
+})
+
+// Switch tab + lazily load the data backing that tab.
+function switchTab(key) {
+  const prev = activeTab.value
+  if (key === prev) return
+  activeTab.value = key
+  if (key === 'payments') loadPayments(true)
+  else if (key === 'summary') loadGroupSummary()
+  else if (!DATA_TABS.includes(prev)) load()  // returning from a non-data tab
+}
+
+// Shared-filter change → refresh whichever tab consumes those filters.
+function onFilterChange() {
+  if (activeTab.value === 'summary') loadGroupSummary()
+  else load(true)
+}
+
+function drillIntoGroup(row) {
+  if (!DRILLABLE_DIMS.includes(summaryGroupBy.value)) return
+  const gb = summaryGroupBy.value
+  if (gb === 'dept') filters.dept = row.key
+  else if (gb === 'invoice_status') filters.invoice_status = row.key
+  else if (gb === 'month') filters.month = row.key
+  else if (gb === 'manager') filters.manager = row.key
+  switchTab('all')
+  load(true)
 }
 
 function openCreate() {
@@ -199,7 +297,10 @@ async function exportData() {
 
 const onScopeChange = () => {
   if (filters.dept && !accessibleDepts.value.includes(filters.dept)) filters.dept = ''
-  load(true)
+  if (payFilters.dept && !accessibleDepts.value.includes(payFilters.dept)) payFilters.dept = ''
+  if (activeTab.value === 'payments') loadPayments(true)
+  else if (activeTab.value === 'summary') loadGroupSummary()
+  else load(true)
 }
 onMounted(() => {
   // Pick up query params from router navigation (e.g., from Cashflow or Analytics)
@@ -212,7 +313,7 @@ onMounted(() => {
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 function clearFilters() {
   Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', q: '', project_id: '', due_start: '', due_end: '', manager: '', is_shared: '' })
-  load(true)
+  onFilterChange()
 }
 </script>
 
@@ -234,48 +335,48 @@ function clearFilters() {
       </div>
     </div>
 
-    <!-- Filter strip -->
-    <div class="filter-strip">
-      <select v-model="filters.dept" class="sel-bu" @change="load(true)">
+    <!-- Filter strip (shared by data tabs + 汇总; 回款流水 has its own filters) -->
+    <div v-if="activeTab !== 'payments'" class="filter-strip">
+      <select v-model="filters.dept" class="sel-bu" @change="onFilterChange">
         <option value="">全部事业部</option>
         <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
       </select>
-      <select v-model="filters.year" class="sel-yr" @change="load(true)">
+      <select v-model="filters.year" class="sel-yr" @change="onFilterChange">
         <option value="">全部年份</option>
         <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
       </select>
-      <select v-model="filters.month" class="sel-mo" @change="load(true)">
+      <select v-model="filters.month" class="sel-mo" @change="onFilterChange">
         <option value="">全月</option>
         <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
       </select>
-      <input v-model="filters.due_start" type="date" class="sel-mo" @change="load(true)" />
-      <input v-model="filters.due_end" type="date" class="sel-mo" @change="load(true)" />
-      <select v-model="filters.status" class="sel-mo" @change="load(true)">
+      <input v-model="filters.due_start" type="date" class="sel-mo" @change="onFilterChange" />
+      <input v-model="filters.due_end" type="date" class="sel-mo" @change="onFilterChange" />
+      <select v-model="filters.status" class="sel-mo" @change="onFilterChange">
         <option value="">全部状态</option>
         <option value="overdue">逾期</option>
         <option value="current">当期</option>
         <option value="not_due">未到期</option>
         <option value="settled">已结清</option>
       </select>
-      <select v-model="filters.reconciliation_status" class="sel-mo" @change="load(true)">
+      <select v-model="filters.reconciliation_status" class="sel-mo" @change="onFilterChange">
         <option value="">对账(全部)</option>
         <option value="已对账">已对账</option>
         <option value="未对账">未对账</option>
       </select>
-      <select v-model="filters.invoice_status" class="sel-mo" @change="load(true)">
+      <select v-model="filters.invoice_status" class="sel-mo" @change="onFilterChange">
         <option value="">开票(全部)</option>
         <option value="未开票">未开票</option>
         <option value="已开票">已开票</option>
         <option value="已结清">已结清</option>
       </select>
-      <select v-model="filters.is_shared" class="sel-mo" @change="load(true)">
+      <select v-model="filters.is_shared" class="sel-mo" @change="onFilterChange">
         <option value="">共享(全部)</option>
         <option value="1">共享</option>
         <option value="0">非共享</option>
       </select>
-      <input v-model="filters.manager" placeholder="负责人" class="search-input" @input="load(true)" />
-      <input v-model="filters.q" placeholder="搜索项目" class="search-input" @input="load(true)" />
-      <button class="act-btn" @click="Object.assign(filters, { status: 'outstanding' }); load(true)">未结清</button>
+      <input v-model="filters.manager" placeholder="负责人" class="search-input" @input="onFilterChange" />
+      <input v-model="filters.q" placeholder="搜索项目" class="search-input" @input="onFilterChange" />
+      <button class="act-btn" @click="Object.assign(filters, { status: 'outstanding' }); onFilterChange()">未结清</button>
       <button class="act-btn" @click="clearFilters">清空筛选</button>
     </div>
 
@@ -284,13 +385,13 @@ function clearFilters() {
       <!-- Segment tab control -->
       <div class="segment-ctrl">
         <button v-for="t in TABS" :key="t.key"
-          :class="['seg-btn', activeTab === t.key ? 'active' : '']" @click="activeTab = t.key">
+          :class="['seg-btn', activeTab === t.key ? 'active' : '']" @click="switchTab(t.key)">
           <span class="seg-dot"></span>{{ t.label }}
         </button>
       </div>
 
       <!-- Per-tab completion KPI bar -->
-      <div v-if="kpiData" class="kpi-bar">
+      <div v-if="kpiData && isDataTab" class="kpi-bar">
         <template v-if="activeTab === 'all'">
           <div class="kpi-item"><span class="kpi-k">总记录</span><span class="kpi-v">{{ kpiData.total }}</span></div>
           <div class="kpi-item danger"><span class="kpi-k">逾期</span><span class="kpi-v">{{ kpiData.overdue.count }} 笔 / {{ fmtAmt(kpiData.overdue.amount) }}</span></div>
@@ -311,8 +412,8 @@ function clearFilters() {
             <div class="kpi-track"><div class="kpi-fill fill-amber" :style="`width:${kpiData.invoice.rate}%`"></div></div>
             <div class="kpi-pct">{{ kpiData.invoice.rate }}%</div>
           </div>
-          <div class="kpi-item ok"><span class="kpi-k">已开票</span><span class="kpi-v">{{ kpiData.invoice.done }}</span></div>
-          <div class="kpi-item warn"><span class="kpi-k">待开票</span><span class="kpi-v">{{ kpiData.invoice.pending }} 笔</span></div>
+          <div class="kpi-item ok"><span class="kpi-k">已开票</span><span class="kpi-v">{{ kpiData.invoice.done }} 笔 / {{ fmtAmt(kpiData.invoice.done_amount) }}</span></div>
+          <div class="kpi-item warn"><span class="kpi-k">待开票</span><span class="kpi-v">{{ kpiData.invoice.pending }} 笔 / {{ fmtAmt(kpiData.invoice.pending_amount) }}</span></div>
         </template>
         <template v-else>
           <div class="kpi-progress">
@@ -320,13 +421,24 @@ function clearFilters() {
             <div class="kpi-track"><div class="kpi-fill fill-green" :style="`width:${kpiData.collection.rate}%`"></div></div>
             <div class="kpi-pct">{{ kpiData.collection.rate }}%</div>
           </div>
-          <div class="kpi-item ok"><span class="kpi-k">已结清</span><span class="kpi-v">{{ kpiData.collection.settled }}</span></div>
+          <div class="kpi-item ok"><span class="kpi-k">已收</span><span class="kpi-v">{{ fmtAmt(kpiData.collection.collected_amount) }}</span></div>
           <div class="kpi-item warn"><span class="kpi-k">未收</span><span class="kpi-v">{{ kpiData.collection.outstanding_count }} 笔 / {{ fmtAmt(kpiData.collection.outstanding_amount) }}</span></div>
           <div class="kpi-item danger"><span class="kpi-k">其中逾期</span><span class="kpi-v">{{ kpiData.overdue.count }} 笔</span></div>
         </template>
       </div>
 
-      <div class="table-wrap" style="margin-top:12px">
+      <!-- 筛选即合计：当前筛选全集的金额合计（不止当前页） -->
+      <div v-if="isDataTab && summaryData" class="totals-strip">
+        <span class="tot-label">筛选合计</span>
+        <span class="tot-item"><i>记录</i>{{ summaryData.count }}</span>
+        <span class="tot-item"><i>预估总额</i>{{ fmtAmt(summaryData.estimated) }}</span>
+        <span class="tot-item"><i>开票总额</i>{{ fmtAmt(summaryData.invoiced) }}</span>
+        <span class="tot-item"><i>税额</i>{{ fmtAmt(summaryData.tax) }}</span>
+        <span class="tot-item tot-warn"><i>未收总额</i>{{ fmtAmt(summaryData.outstanding) }}</span>
+      </div>
+
+      <!-- ══ 数据明细表（全部/对账/开票/回款 跟踪）══ -->
+      <div v-if="isDataTab" class="table-wrap" style="margin-top:12px">
         <table class="rec-table">
           <thead>
             <tr>
@@ -493,10 +605,121 @@ function clearFilters() {
         </table>
       </div>
 
-      <div v-if="total > size" class="pagination">
+      <div v-if="isDataTab && total > size" class="pagination">
         <button :disabled="page <= 1" class="page-btn" @click="page--; load()">‹ 上一页</button>
         <span class="page-info">{{ page }} / {{ Math.ceil(total / size) }} 页 · 共 {{ total }} 条</span>
         <button :disabled="page * size >= total" class="page-btn" @click="page++; load()">下一页 ›</button>
+      </div>
+
+      <!-- ══ 回款流水 ══ -->
+      <div v-if="activeTab === 'payments'">
+        <div class="filter-strip" style="margin-top:4px">
+          <label class="pay-range-lbl">回款日期</label>
+          <input v-model="payFilters.pay_start" type="date" class="sel-mo" @change="loadPayments(true)" />
+          <span style="color:var(--muted)">~</span>
+          <input v-model="payFilters.pay_end" type="date" class="sel-mo" @change="loadPayments(true)" />
+          <select v-model="payFilters.dept" class="sel-bu" @change="loadPayments(true)">
+            <option value="">全部事业部</option>
+            <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+          </select>
+          <input v-model="payFilters.q" placeholder="搜索项目" class="search-input" @input="loadPayments(true)" />
+          <button class="act-btn" :disabled="payExporting" @click="exportPayments">↓ 导出</button>
+        </div>
+
+        <div v-if="paySummary" class="totals-strip">
+          <span class="tot-label">区间合计</span>
+          <span class="tot-item"><i>笔数</i>{{ paySummary.count }}</span>
+          <span class="tot-item tot-green"><i>回款总额</i>{{ fmtAmt(paySummary.total_amount) }}</span>
+        </div>
+
+        <div class="table-wrap" style="margin-top:12px">
+          <table class="rec-table">
+            <thead>
+              <tr>
+                <th class="ctr">回款日期</th>
+                <th class="amt">回款金额</th>
+                <th>项目</th>
+                <th class="ctr">交付部门</th>
+                <th class="ctr">运作年月</th>
+                <th class="ctr">序号</th>
+                <th>备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="payLoading && !payItems.length"><td colspan="7" class="empty-cell">⏳ 加载中…</td></tr>
+              <tr v-else-if="!payItems.length"><td colspan="7" class="empty-cell">暂无回款记录</td></tr>
+              <tr v-for="p in payItems" :key="p.id" class="data-row">
+                <td class="ctr text-sm-muted">{{ p.payment_date }}</td>
+                <td class="amt fw" style="color:#2e7d32">{{ fmtAmt(p.amount) }}</td>
+                <td>
+                  <div class="proj-name">{{ p.short_name || '—' }}</div>
+                  <div class="proj-no">{{ p.project_no }}</div>
+                </td>
+                <td class="ctr text-sm-muted">{{ p.delivery_dept }}</td>
+                <td class="ctr"><span class="ym-chip">{{ p.operation_year }}/{{ String(p.operation_month).padStart(2,'0') }}</span></td>
+                <td class="ctr text-sm-muted">第{{ p.payment_no }}次</td>
+                <td class="text-sm-muted">{{ p.notes || '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div v-if="payTotal > size" class="pagination">
+          <button :disabled="payPage <= 1" class="page-btn" @click="payPage--; loadPayments()">‹ 上一页</button>
+          <span class="page-info">{{ payPage }} / {{ Math.ceil(payTotal / size) }} 页 · 共 {{ payTotal }} 条</span>
+          <button :disabled="payPage * size >= payTotal" class="page-btn" @click="payPage++; loadPayments()">下一页 ›</button>
+        </div>
+      </div>
+
+      <!-- ══ 多维汇总（透视）══ -->
+      <div v-if="activeTab === 'summary'">
+        <div class="filter-strip" style="margin-top:4px">
+          <label class="pay-range-lbl">分组维度</label>
+          <select v-model="summaryGroupBy" class="sel-bu" @change="loadGroupSummary">
+            <option v-for="d in GROUP_DIMS" :key="d.key" :value="d.key">{{ d.label }}</option>
+          </select>
+          <span class="text-sm-muted">（沿用上方筛选条件；可点击行下钻到全部明细）</span>
+        </div>
+
+        <div class="table-wrap" style="margin-top:12px">
+          <table class="rec-table">
+            <thead>
+              <tr>
+                <th>{{ GROUP_DIMS.find(d => d.key === summaryGroupBy)?.label }}</th>
+                <th class="ctr">记录数</th>
+                <th class="amt">预估总额</th>
+                <th class="amt">开票总额</th>
+                <th class="amt">已收总额</th>
+                <th class="amt">未收总额</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="groupLoading && !groupRows.length"><td colspan="6" class="empty-cell">⏳ 加载中…</td></tr>
+              <tr v-else-if="!groupRows.length"><td colspan="6" class="empty-cell">暂无数据</td></tr>
+              <tr v-for="r in groupRows" :key="r.key"
+                  class="data-row"
+                  :class="{ 'row-drill': DRILLABLE_DIMS.includes(summaryGroupBy) }"
+                  @click="drillIntoGroup(r)">
+                <td class="fw">{{ r.label }}</td>
+                <td class="ctr text-sm-muted">{{ r.count }}</td>
+                <td class="amt">{{ fmtAmt(r.estimated) }}</td>
+                <td class="amt">{{ fmtAmt(r.invoiced) }}</td>
+                <td class="amt" style="color:#2e7d32">{{ fmtAmt(r.collected) }}</td>
+                <td class="amt" :class="parseFloat(r.outstanding) > 0 ? 'amt-warn' : 'amt-zero'">{{ fmtAmt(r.outstanding) }}</td>
+              </tr>
+            </tbody>
+            <tfoot v-if="groupRows.length">
+              <tr class="group-total-row">
+                <td class="fw">合计</td>
+                <td class="ctr">{{ groupTotals.count }}</td>
+                <td class="amt fw">{{ fmtAmt(groupTotals.estimated) }}</td>
+                <td class="amt fw">{{ fmtAmt(groupTotals.invoiced) }}</td>
+                <td class="amt fw" style="color:#2e7d32">{{ fmtAmt(groupTotals.collected) }}</td>
+                <td class="amt fw" :class="groupTotals.outstanding > 0 ? 'amt-warn' : 'amt-zero'">{{ fmtAmt(groupTotals.outstanding) }}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -639,6 +862,19 @@ function clearFilters() {
 .fill-amber { background: linear-gradient(90deg, #e65100, #ffa726); }
 .fill-green { background: linear-gradient(90deg, #2e7d32, #66bb6a); }
 .kpi-pct { font-size: 15px; font-weight: 800; color: var(--text); min-width: 44px; text-align: right; }
+
+/* 筛选合计 / 区间合计 strip */
+.totals-strip { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; margin-top: 12px; padding: 10px 16px; background: linear-gradient(90deg, rgba(201,99,66,0.05), rgba(0,0,0,0.015)); border: 1px solid rgba(201,99,66,0.12); border-radius: 10px; }
+.tot-label { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--primary); text-transform: uppercase; }
+.tot-item { display: inline-flex; align-items: baseline; gap: 5px; font-size: 15px; font-weight: 700; color: var(--text); }
+.tot-item i { font-style: normal; font-size: 12px; font-weight: 400; color: var(--muted); }
+.tot-item.tot-warn { color: #e65100; }
+.tot-item.tot-green { color: #2e7d32; }
+.pay-range-lbl { font-size: 12px; color: var(--muted); white-space: nowrap; }
+/* 汇总下钻行 + 合计行 */
+.row-drill { cursor: pointer; }
+.row-drill:hover { background: rgba(201,99,66,0.07); }
+.group-total-row td { border-top: 2px solid rgba(0,0,0,0.1); padding: 11px 12px; background: rgba(0,0,0,0.02); }
 
 /* Table */
 .rec-table { width: 100%; }
