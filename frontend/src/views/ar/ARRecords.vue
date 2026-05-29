@@ -330,12 +330,14 @@ onMounted(() => {
   if (route.query.status) filters.status = route.query.status
   if (route.query.project_id) filters.project_id = route.query.project_id
   if (route.query.dept) filters.dept = route.query.dept
+  if (auth.perms?.ar_shared_only) filters.is_shared = '1'
   load()
   window.addEventListener('pk:depts-changed', onScopeChange)
 })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 function clearFilters() {
-  Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '', due_start: '', due_end: '', manager: '', is_shared: '' })
+  Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '', due_start: '', due_end: '', manager: '',
+    is_shared: auth.perms?.ar_shared_only ? '1' : '' })
   onFilterChange()
 }
 </script>
@@ -422,7 +424,8 @@ function clearFilters() {
           <option value="post">票后回款</option>
           <option value="settled">已结清</option>
         </select>
-        <select v-model="filters.is_shared" class="sel-mo" @change="onFilterChange">
+        <select v-model="filters.is_shared" class="sel-mo" @change="onFilterChange"
+                :disabled="auth.perms?.ar_shared_only">
           <option value="">共享(全部)</option>
           <option value="1">共享</option>
           <option value="0">非共享</option>

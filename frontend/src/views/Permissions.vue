@@ -134,6 +134,10 @@ async function save() {
             <input type="checkbox" v-model="current.config.can_delete" />
             <span class="dot"></span>可删除记录
           </label>
+          <label class="perm-chip" :class="{ on: current.config.ar_shared_only }">
+            <input type="checkbox" v-model="current.config.ar_shared_only" />
+            <span class="dot"></span>仅可见共享业务
+          </label>
         </div>
 
         <!-- field matrix -->

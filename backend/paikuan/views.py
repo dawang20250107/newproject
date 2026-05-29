@@ -36,6 +36,7 @@ JOB_TITLES = {
     'general_manager': '总经理',
     'gm_assistant': '总经理助理',
     'settlement_accountant': '结算会计',
+    'sales_bp': '销售BP',
 }
 
 # ── permission model ────────────────────────────────────────────────────────────
@@ -168,11 +169,11 @@ def default_job_config(job):
     if job == 'finance_director':
         return {'pages': pages_all, 'view': _all_fields(True),
                 'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
-                'can_create': True, 'can_delete': True}
+                'can_create': True, 'can_delete': True, 'ar_shared_only': False}
     if job == 'finance_bp':
         return {'pages': pages_all, 'view': _all_fields(True),
                 'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
-                'can_create': True, 'can_delete': False}
+                'can_create': True, 'can_delete': False, 'ar_shared_only': False}
     if job == 'chief_cashier':
         edit = {k: (k in ('pay1', 'pay2', 'pay3')) for k in FIELD_KEYS}
         pages = {**pages_all, **ar_pages_all}
@@ -180,7 +181,7 @@ def default_job_config(job):
         ar_view = {**_all_ar_fields(True), 'r_tax_amount': False}
         return {'pages': pages, 'view': _all_fields(True),
                 'edit': edit, 'ar_view': ar_view,
-                'can_create': True, 'can_delete': False}
+                'can_create': True, 'can_delete': False, 'ar_shared_only': False}
     if job == 'cashier':
         edit = {k: (k in ('pay1', 'pay2', 'pay3')) for k in FIELD_KEYS}
         base_pages = {'dashboard': True, 'payments': True, 'approval_records': True, 'stats': False}
@@ -188,27 +189,34 @@ def default_job_config(job):
         ar_view = {**_all_ar_fields(True), 'r_tax_amount': False, 'r_account_diff': False}
         return {'pages': {**base_pages, **ar_pages_cashier},
                 'view': _all_fields(True), 'edit': edit, 'ar_view': ar_view,
-                'can_create': False, 'can_delete': False}
+                'can_create': False, 'can_delete': False, 'ar_shared_only': False}
     if job == 'general_manager':
         # 总经理：全量查看，无编辑/创建（看驾驶舱用，不参与日常落单）
         return {'pages': pages_all, 'view': _all_fields(True),
                 'edit': _all_fields(False), 'ar_view': _all_ar_fields(True),
-                'can_create': False, 'can_delete': False}
+                'can_create': False, 'can_delete': False, 'ar_shared_only': False}
     if job == 'gm_assistant':
         # 总经理助理：全量查看 + 可新增（协助登记），不可删除
         return {'pages': pages_all, 'view': _all_fields(True),
                 'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
-                'can_create': True, 'can_delete': False}
+                'can_create': True, 'can_delete': False, 'ar_shared_only': False}
     if job == 'settlement_accountant':
         # 结算会计：聚焦应收/对账/开票，付款条数据只读（与 edit 一致禁止新增/删除）
         edit = {k: False for k in FIELD_KEYS}
         return {'pages': pages_all, 'view': _all_fields(True),
                 'edit': edit, 'ar_view': _all_ar_fields(True),
-                'can_create': False, 'can_delete': False}
+                'can_create': False, 'can_delete': False, 'ar_shared_only': False}
+    if job == 'sales_bp':
+        # 销售BP：仅可见共享业务，AR 只读，无付款操作
+        ar_pages = {k: (k in ('ar_projects', 'ar_records')) for k in pages_all}
+        pages = {**{k: False for k in pages_all}, **ar_pages, 'dashboard': True}
+        return {'pages': pages, 'view': _all_fields(False),
+                'edit': _all_fields(False), 'ar_view': _all_ar_fields(True),
+                'can_create': False, 'can_delete': False, 'ar_shared_only': True}
     # Unknown / no job title → read-only minimum.
     return {'pages': pages_all, 'view': _all_fields(True),
             'edit': _all_fields(False), 'ar_view': _all_ar_fields(True),
-            'can_create': False, 'can_delete': False}
+            'can_create': False, 'can_delete': False, 'ar_shared_only': False}
 
 
 _perm_cache: dict = {}
@@ -249,6 +257,7 @@ def get_job_perms(job):
             'pages': pages, 'view': view, 'edit': edit, 'ar_view': ar_view,
             'can_create': bool(cfg.get('can_create', base['can_create'])),
             'can_delete': bool(cfg.get('can_delete', base['can_delete'])),
+            'ar_shared_only': bool(cfg.get('ar_shared_only', base.get('ar_shared_only', False))),
         }
     with _perm_cache_lock:
         _perm_cache[job] = result
@@ -258,7 +267,7 @@ def get_job_perms(job):
 def full_perms():
     return {'pages': {k: True for k in PAGE_KEYS}, 'view': _all_fields(True),
             'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
-            'can_create': True, 'can_delete': True}
+            'can_create': True, 'can_delete': True, 'ar_shared_only': False}
 
 
 def effective_perms(user):
@@ -1541,6 +1550,7 @@ def permission_detail(request, job):
         'ar_view': {k: bool(cfg.get('ar_view', {}).get(k, True)) for k in AR_FIELD_KEYS},
         'can_create': bool(cfg.get('can_create', False)),
         'can_delete': bool(cfg.get('can_delete', False)),
+        'ar_shared_only': bool(cfg.get('ar_shared_only', False)),
     }
     obj, _ = JobPermission.objects.get_or_create(job_title=job)
     obj.config = clean

@@ -171,7 +171,10 @@ const onScopeChange = () => {
   page.value = 1
   reloadAll()
 }
-onMounted(() => { load(); loadStats(); window.addEventListener('pk:depts-changed', onScopeChange) })
+onMounted(() => {
+  if (auth.perms?.ar_shared_only) filters.is_shared = '1'
+  load(); loadStats(); window.addEventListener('pk:depts-changed', onScopeChange)
+})
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 </script>
 
@@ -240,7 +243,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <option value="全额">全额</option>
         <option value="差额">差额</option>
       </select>
-      <select v-model="filters.is_shared" class="sel-mo" @change="load(true)">
+      <select v-model="filters.is_shared" class="sel-mo" @change="load(true)"
+              :disabled="auth.perms?.ar_shared_only">
         <option value="">全部业务</option>
         <option value="true">共享业务</option>
         <option value="false">非共享</option>

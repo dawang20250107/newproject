@@ -120,15 +120,17 @@ def _parse_body(request):
         return {}
 
 
-def _ar_dept_filter(qs, request, dept_field='delivery_dept'):
+def _ar_dept_filter(qs, request, dept_field='delivery_dept', shared_field=None):
     """Filter queryset by the requesting user's allowed departments.
-    Optional ?depts=A,B,C further narrows the set (intersected with pk_depts)."""
+    Optional ?depts=A,B,C further narrows the set (intersected with pk_depts).
+    When shared_field is provided and the user has ar_shared_only, restricts to
+    shared projects only (shared_field=True)."""
     raw = request.GET.get('depts', '').strip()
     requested = [d for d in raw.split(',') if d.strip()] if raw else []
 
     if request.pk_role == 'super_admin':
         if requested:
-            return qs.filter(**{f'{dept_field}__in': requested})
+            qs = qs.filter(**{f'{dept_field}__in': requested})
         return qs
 
     allowed = set(request.pk_depts or [])
@@ -137,8 +139,18 @@ def _ar_dept_filter(qs, request, dept_field='delivery_dept'):
     if requested:
         active = [d for d in requested if d in allowed]
         if active:
-            return qs.filter(**{f'{dept_field}__in': active})
-    return qs.filter(**{f'{dept_field}__in': request.pk_depts})
+            qs = qs.filter(**{f'{dept_field}__in': active})
+        else:
+            qs = qs.filter(**{f'{dept_field}__in': request.pk_depts})
+    else:
+        qs = qs.filter(**{f'{dept_field}__in': request.pk_depts})
+
+    if shared_field:
+        from paikuan.views import get_request_perms
+        perms = get_request_perms(request)
+        if perms and perms.get('ar_shared_only'):
+            qs = qs.filter(**{shared_field: True})
+    return qs
 
 
 def _page_denied(request, page_key):
@@ -251,7 +263,7 @@ def projects(request):
         return denied
 
     if request.method == 'GET':
-        qs = _ar_dept_filter(ARProject.objects.all(), request)
+        qs = _ar_dept_filter(ARProject.objects.all(), request, shared_field='is_shared')
         q = request.GET.get('q', '').strip()
         if q:
             qs = qs.filter(
@@ -577,7 +589,7 @@ def project_export(request):
     denied = _page_denied(request, 'ar_projects')
     if denied:
         return denied
-    qs = _ar_dept_filter(ARProject.objects.all(), request)
+    qs = _ar_dept_filter(ARProject.objects.all(), request, shared_field='is_shared')
     dept = request.GET.get('dept', '').strip()
     if dept:
         qs = qs.filter(delivery_dept=dept)
@@ -628,7 +640,7 @@ def project_stats(request):
     denied = _page_denied(request, 'ar_projects')
     if denied:
         return denied
-    qs = _ar_dept_filter(ARProject.objects.all(), request)
+    qs = _ar_dept_filter(ARProject.objects.all(), request, shared_field='is_shared')
     dept = request.GET.get('dept', '').strip()
     if dept:
         qs = qs.filter(delivery_dept=dept)
@@ -683,7 +695,8 @@ def ar_records(request):
     if request.method == 'GET':
         today = datetime.date.today()
         # Listing queryset — select_related for efficient to_dict() rendering
-        qs = _ar_dept_filter(ARRecord.objects.select_related('project', 'created_by'), request)
+        qs = _ar_dept_filter(ARRecord.objects.select_related('project', 'created_by'), request,
+                             shared_field='project__is_shared')
         qs = _apply_record_filters(qs, request)
         qs = _apply_record_state_filters(qs, request, today)
 
@@ -694,7 +707,8 @@ def ar_records(request):
         # Aggregate queryset — plain queryset (no select_related) avoids any
         # accidental extra JOINs and keeps results consistent with the group-summary
         # endpoint which also uses ARRecord.objects.all() as its base.
-        qs_agg = _ar_dept_filter(ARRecord.objects.all(), request)
+        qs_agg = _ar_dept_filter(ARRecord.objects.all(), request,
+                                 shared_field='project__is_shared')
         qs_agg = _apply_record_filters(qs_agg, request)
         qs_agg = _apply_record_state_filters(qs_agg, request, today)
 
@@ -1027,7 +1041,8 @@ def ar_record_export(request):
     if denied:
         return denied
     today = datetime.date.today()
-    qs = _ar_dept_filter(ARRecord.objects.select_related('project'), request)
+    qs = _ar_dept_filter(ARRecord.objects.select_related('project'), request,
+                         shared_field='project__is_shared')
     dept = request.GET.get('dept', '').strip()
     if dept:
         qs = qs.filter(delivery_dept=dept)
@@ -1094,6 +1109,11 @@ def _apply_record_filters(qs, request):
     manager = request.GET.get('manager', '').strip()
     if manager:
         qs = qs.filter(project__project_manager__icontains=manager)
+    is_shared = request.GET.get('is_shared', '').strip()
+    if is_shared in ('1', 'true'):
+        qs = qs.filter(project__is_shared=True)
+    elif is_shared in ('0', 'false'):
+        qs = qs.filter(project__is_shared=False)
     q = request.GET.get('q', '').strip()
     if q:
         qs = qs.filter(
@@ -1192,7 +1212,7 @@ def ar_records_kpi(request):
         return denied
     today = datetime.date.today()
     qs = _apply_record_filters(
-        _ar_dept_filter(ARRecord.objects.all(), request), request)
+        _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared'), request)
 
     total = qs.count()
 
@@ -1260,7 +1280,8 @@ def _payment_ledger_qs(request):
     """Build the filtered ARPayment queryset for the ledger (shared by list+export)."""
     qs = (ARPayment.objects.select_related('ar_record', 'ar_record__project')
           .order_by('-payment_date', '-id'))
-    qs = _ar_dept_filter(qs, request, dept_field='ar_record__delivery_dept')
+    qs = _ar_dept_filter(qs, request, dept_field='ar_record__delivery_dept',
+                         shared_field='ar_record__project__is_shared')
     pay_start = request.GET.get('pay_start', '').strip()
     pay_end = request.GET.get('pay_end', '').strip()
     if pay_start:
@@ -1378,7 +1399,7 @@ def ar_records_group_summary(request):
         return err('Method not allowed', 405)
 
     today = datetime.date.today()
-    qs = _ar_dept_filter(ARRecord.objects.all(), request)
+    qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
     qs = _apply_record_filters(qs, request)
     qs = _apply_record_state_filters(qs, request, today)
 
@@ -1626,7 +1647,8 @@ def analytics_aging(request):
                                   calendar.monthrange(today.year, today.month)[1])
 
     qs = _ar_dept_filter(
-        ARRecord.objects.filter(outstanding_amount__gt=0), request)
+        ARRecord.objects.filter(outstanding_amount__gt=0), request,
+        shared_field='project__is_shared')
     dept = request.GET.get('dept', '').strip()
     if dept:
         qs = qs.filter(delivery_dept=dept)
@@ -1676,7 +1698,8 @@ def analytics_collection_rate(request):
         return denied
 
     year = int(request.GET.get('year', datetime.date.today().year))
-    qs = _ar_dept_filter(ARRecord.objects.filter(operation_year=year), request)
+    qs = _ar_dept_filter(ARRecord.objects.filter(operation_year=year), request,
+                         shared_field='project__is_shared')
     dept = request.GET.get('dept', '').strip()
     if dept:
         qs = qs.filter(delivery_dept=dept)
@@ -1726,7 +1749,8 @@ def analytics_outstanding_top(request):
 
     n = min(20, int(request.GET.get('n', 10)))
     qs = _ar_dept_filter(
-        ARRecord.objects.filter(outstanding_amount__gt=0), request)
+        ARRecord.objects.filter(outstanding_amount__gt=0), request,
+        shared_field='project__is_shared')
     dept = request.GET.get('dept', '').strip()
     if dept:
         qs = qs.filter(delivery_dept=dept)
@@ -1758,7 +1782,7 @@ def analytics_status_dist(request):
     today = datetime.date.today()
     eomonth_today = datetime.date(today.year, today.month,
                                   calendar.monthrange(today.year, today.month)[1])
-    qs = _ar_dept_filter(ARRecord.objects.all(), request)
+    qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
     dept = request.GET.get('dept', '').strip()
     if dept:
         qs = qs.filter(delivery_dept=dept)
@@ -1798,7 +1822,8 @@ def analytics_by_pm(request):
         return denied
 
     year = int(request.GET.get('year', datetime.date.today().year))
-    qs = _ar_dept_filter(ARRecord.objects.filter(operation_year=year), request)
+    qs = _ar_dept_filter(ARRecord.objects.filter(operation_year=year), request,
+                         shared_field='project__is_shared')
     dept = request.GET.get('dept', '').strip()
     if dept:
         qs = qs.filter(delivery_dept=dept)
