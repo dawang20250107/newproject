@@ -110,7 +110,7 @@ const GROUP_DIMS = [
   { key: 'invoice_status', label: '开票状态' },
   { key: 'customer_level', label: '客户等级' },
   { key: 'business_mode', label: '业务模式' },
-  { key: 'month', label: '运作月' },
+  { key: 'month', label: '运作年月' },
   { key: 'manager', label: '项目负责人' },
 ]
 const DRILLABLE_DIMS = ['dept', 'invoice_status', 'month', 'manager']
@@ -203,7 +203,7 @@ function drillIntoGroup(row) {
   const gb = summaryGroupBy.value
   if (gb === 'dept') filters.dept = row.key
   else if (gb === 'invoice_status') filters.invoice_status = row.key
-  else if (gb === 'month') filters.month = row.key
+  else if (gb === 'month') { filters.year = row.year; filters.month = row.month }
   else if (gb === 'manager') filters.manager = row.key
   switchTab('all')
   load(true)
@@ -490,7 +490,7 @@ function clearFilters() {
                 <th v-if="show('r_reconciliation')" class="ctr">对账</th>
                 <th v-if="show('r_payments')" class="ctr">回款</th>
                 <th class="ctr">状态</th>
-                <th class="ctr">票后状态</th>
+                <th class="ctr">责任状态</th>
                 <th v-if="show('r_notes')" class="notes-col">备注</th>
               </template>
               <!-- reconciliation -->

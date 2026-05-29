@@ -768,7 +768,7 @@ def ar_records(request):
                 actual_invoice_amount=_dec(data['actual_invoice_amount']) if data.get('actual_invoice_amount') not in (None, '') else None,
                 tax_amount=_dec(data['tax_amount']) if data.get('tax_amount') not in (None, '') else None,
                 invoice_date=_normalize_date(data.get('invoice_date')) or None,
-                reconciliation_date=data.get('reconciliation_date') or None,
+                reconciliation_date=_normalize_date(data.get('reconciliation_date')) or None,
                 notes=data.get('notes', '').strip(),
                 created_by=user,
             )
@@ -820,7 +820,7 @@ def ar_record_detail(request, pk):
         if 'invoice_date' in data:
             rec.invoice_date = _normalize_date(data['invoice_date']) or None
         if 'reconciliation_date' in data:
-            rec.reconciliation_date = data['reconciliation_date'] or None
+            rec.reconciliation_date = _normalize_date(data['reconciliation_date']) or None
         if 'notes' in data:
             rec.notes = data['notes'].strip()
         try:
@@ -1328,8 +1328,11 @@ _SUMMARY_GROUP_FIELDS = {
     'customer_level': ('project__customer_level', '客户等级'),
     'business_mode': ('project__business_mode', '业务模式'),
     'manager': ('project__project_manager', '项目负责人'),
-    'month': ('operation_month', '运作月'),
+    'month': ('operation_month', '运作年月'),
 }
+
+# 客户等级固定展示顺序：S → A → B → C → D，其余/未填写置后
+_CUSTOMER_LEVEL_ORDER = {'S级': 0, 'A级': 1, 'B级': 2, 'C级': 3, 'D级': 4}
 
 
 @csrf_exempt
@@ -1382,6 +1385,35 @@ def ar_records_group_summary(request):
             row = {'key': label, 'label': label}
             row.update(_amounts(sub))
             rows.append(row)
+    elif group_by == 'month':
+        # 运作年月：按 (年, 月) 分组，年月从高到低排序，下钻需带回年+月。
+        agg_fields = ('operation_year', 'operation_month')
+        base = qs.values(*agg_fields).annotate(
+            count=Count('id'),
+            estimated=Sum('estimated_amount'),
+            invoiced=Sum('actual_invoice_amount'),
+            outstanding=Sum('outstanding_amount', filter=Q(outstanding_amount__gt=0)),
+        )
+        collected_map = {
+            (g['operation_year'], g['operation_month']): (g['collected'] or 0)
+            for g in qs.values(*agg_fields).annotate(collected=Sum('payments__amount'))
+        }
+        ym_rows = []
+        for g in base:
+            y, m = g['operation_year'], g['operation_month']
+            ym_rows.append({
+                'key': f'{y}-{m}',
+                'label': f'{y}年{m}月',
+                'year': y, 'month': m,
+                'count': g['count'] or 0,
+                'estimated': str(g['estimated'] or 0),
+                'invoiced': str(g['invoiced'] or 0),
+                'outstanding': str(g['outstanding'] or 0),
+                'collected': str(collected_map.get((y, m), 0)),
+            })
+        # 年月从高到低
+        ym_rows.sort(key=lambda r: (r['year'], r['month']), reverse=True)
+        rows = ym_rows
     elif group_by in _SUMMARY_GROUP_FIELDS:
         field, _ = _SUMMARY_GROUP_FIELDS[group_by]
         # Base record-level sums (no payments join → no fanout).
@@ -1410,6 +1442,9 @@ def ar_records_group_summary(request):
                 'outstanding': str(g['outstanding'] or 0),
                 'collected': str(collected_map.get(raw_key, 0)),
             })
+        # 客户等级固定按 S→A→B→C→D 排序（其余置后）
+        if group_by == 'customer_level':
+            rows.sort(key=lambda r: _CUSTOMER_LEVEL_ORDER.get(r['key'], 99))
     else:
         return err(f'不支持的分组维度: {group_by}')
 

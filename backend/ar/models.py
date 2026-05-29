@@ -120,6 +120,24 @@ def _eomonth(year, month):
     return datetime.date(year, month, calendar.monthrange(year, month)[1])
 
 
+def _as_date(v):
+    """Coerce a value (date / datetime / ISO string / None) to a date, or None.
+
+    The update/create views assign raw or normalized date *strings* to model
+    instances before serialising, so date arithmetic must tolerate strings.
+    """
+    if v is None:
+        return None
+    if isinstance(v, datetime.datetime):
+        return v.date()
+    if isinstance(v, datetime.date):
+        return v
+    try:
+        return datetime.date.fromisoformat(str(v)[:10])
+    except (ValueError, TypeError):
+        return None
+
+
 class ARRecord(models.Model):
     """应收账款明细 — 每项目每月一条"""
     project = models.ForeignKey(ARProject, on_delete=models.CASCADE,
@@ -204,44 +222,8 @@ class ARRecord(models.Model):
         super().save(*args, **kwargs)
 
     # ── read-only properties (not stored) ──────────────────────────────────────
-    def post_invoice_status(self, today=None):
-        """
-        Lifecycle status for responsibility tracking across the full AR cycle.
-        Returns dict: {code, label, style}  — style in {ok, blue, warn, danger, muted}
-        """
-        today = today or datetime.date.today()
-        outstanding = self.outstanding_amount or Decimal('0')
-
-        # Phase 0: Fully collected
-        if outstanding <= 0:
-            return {'code': 'settled', 'label': '已结清', 'style': 'ok'}
-
-        # Phase 1: Invoice issued — track post-invoice collection period
-        if self.invoice_date:
-            due = self.invoice_date + datetime.timedelta(days=self.project.post_invoice_days)
-            if today <= due:
-                remaining = (due - today).days
-                return {'code': 'post_invoice_waiting', 'label': f'票后等待中 ({remaining}天)',
-                        'style': 'blue'}
-            else:
-                overdue = (today - due).days
-                return {'code': 'post_invoice_overdue', 'label': f'票后逾期{overdue}天',
-                        'style': 'danger'}
-
-        # Phase 2: Reconciled but not yet invoiced — invoice person responsibility
-        is_reconciled = (self.reconciliation_date is not None
-                         or self.actual_invoice_amount is not None)
-        if is_reconciled:
-            wait = self.project.invoice_wait_days
-            if self.reconciliation_date and wait > 0:
-                invoice_due = self.reconciliation_date + datetime.timedelta(days=wait)
-                if today > invoice_due:
-                    overdue = (today - invoice_due).days
-                    return {'code': 'invoice_overdue', 'label': f'开票逾期{overdue}天',
-                            'style': 'warn'}
-            return {'code': 'pending_invoice', 'label': '待开票', 'style': 'blue'}
-
-        # Phase 3: Not yet reconciled — check reconciliation deadline
+    def _recon_phase_status(self, today):
+        """Reconciliation phase: 对账期内 vs 对账逾期（非销售/开票责任）。"""
         try:
             recon_days = self.project.reconciliation_days
             eom = _eomonth(self.operation_year, self.operation_month)
@@ -253,6 +235,65 @@ class ARRecord(models.Model):
         except Exception:
             pass
         return {'code': 'in_recon_period', 'label': '对账期内', 'style': 'muted'}
+
+    def post_invoice_status(self, today=None):
+        """
+        责任状态 — 跨应收全流程的责任归属判定。
+        Returns dict: {code, label, style}  — style in {ok, blue, warn, danger, muted}
+
+        责任链：对账逾期(非销售责任) → 开票逾期(开票人责任) → 票后/回款逾期(销售对接人责任)。
+        不开票项目跳过开票环节，对账后直接进入回款责任。
+        """
+        today = today or datetime.date.today()
+        outstanding = self.outstanding_amount or Decimal('0')
+        inv_date = _as_date(self.invoice_date)
+        recon_date = _as_date(self.reconciliation_date)
+        post_days = self.project.post_invoice_days
+        no_invoice = (self.project.invoice_type == '不开票')
+
+        # Phase 0: Fully collected
+        if outstanding <= 0:
+            return {'code': 'settled', 'label': '已结清', 'style': 'ok'}
+
+        # 不开票项目：无开票环节，对账后直接进入回款（销售对接人）责任
+        if no_invoice:
+            if recon_date:
+                due = recon_date + datetime.timedelta(days=post_days)
+                if today <= due:
+                    remaining = (due - today).days
+                    return {'code': 'collection_waiting', 'label': f'回款等待中 ({remaining}天)',
+                            'style': 'blue'}
+                overdue = (today - due).days
+                return {'code': 'collection_overdue', 'label': f'回款逾期{overdue}天',
+                        'style': 'danger'}
+            return self._recon_phase_status(today)
+
+        # Phase 1: Invoice issued — track post-invoice collection period（销售对接人责任）
+        if inv_date:
+            due = inv_date + datetime.timedelta(days=post_days)
+            if today <= due:
+                remaining = (due - today).days
+                return {'code': 'post_invoice_waiting', 'label': f'票后等待中 ({remaining}天)',
+                        'style': 'blue'}
+            overdue = (today - due).days
+            return {'code': 'post_invoice_overdue', 'label': f'票后逾期{overdue}天',
+                    'style': 'danger'}
+
+        # Phase 2: Reconciled but not yet invoiced — 开票人责任
+        is_reconciled = (recon_date is not None
+                         or self.actual_invoice_amount is not None)
+        if is_reconciled:
+            wait = self.project.invoice_wait_days
+            if recon_date and wait > 0:
+                invoice_due = recon_date + datetime.timedelta(days=wait)
+                if today > invoice_due:
+                    overdue = (today - invoice_due).days
+                    return {'code': 'invoice_overdue', 'label': f'开票逾期{overdue}天',
+                            'style': 'warn'}
+            return {'code': 'pending_invoice', 'label': '待开票', 'style': 'blue'}
+
+        # Phase 3: Not yet reconciled — check reconciliation deadline
+        return self._recon_phase_status(today)
 
     @property
     def reconciliation_status(self):

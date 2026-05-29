@@ -1,1 +1,0 @@
-import{E as e,H as t,P as n,V as r,W as i}from"./index-DuRBy-No.js";var a={__name:`StatusBadge`,props:{status:String},setup(a){let[o,s]={settled:[`✅ 已付清`,`badge-settled`],partial:[`⚡ 部分付款`,`badge-partial`],pending:[`⏳ 待付款`,`badge-pending`]}[a.status]||[`—`,``];return(a,c)=>(n(),e(`span`,{class:t([`badge`,r(s)])},i(r(o)),3))}};export{a as t};
