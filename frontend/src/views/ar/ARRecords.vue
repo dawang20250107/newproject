@@ -460,13 +460,14 @@ function clearFilters() {
 
         <span v-if="kpiData && summaryData" class="metrics-div"></span>
 
-        <!-- 筛选合计（当前筛选全集，不止当前页） -->
+        <!-- 筛选全集合计（不止当前页） -->
         <template v-if="summaryData">
-          <div class="kpi-item"><span class="kpi-k">记录</span><span class="kpi-v">{{ summaryData.count }}</span></div>
+          <span class="sum-section-lbl" :title="`以下为全部 ${summaryData.count} 条筛选记录的汇总（跨所有分页）`">全集合计</span>
+          <div class="kpi-item"><span class="kpi-k">记录</span><span class="kpi-v">{{ summaryData.count }} 条</span></div>
           <div class="kpi-item"><span class="kpi-k">预估</span><span class="kpi-v">{{ fmtAmt(summaryData.estimated) }}</span></div>
           <div class="kpi-item"><span class="kpi-k">开票</span><span class="kpi-v">{{ fmtAmt(summaryData.invoiced) }}</span></div>
           <div class="kpi-item"><span class="kpi-k">税额</span><span class="kpi-v">{{ fmtAmt(summaryData.tax) }}</span></div>
-          <div class="kpi-item warn"><span class="kpi-k">未收</span><span class="kpi-v">{{ fmtAmt(summaryData.outstanding) }}</span></div>
+          <div class="kpi-item warn"><span class="kpi-k">未收合计</span><span class="kpi-v">{{ fmtAmt(summaryData.outstanding) }}</span></div>
         </template>
       </div>
 
@@ -900,6 +901,7 @@ function clearFilters() {
 /* KPI bar */
 .metrics-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; padding: 9px 16px; background: rgba(0,0,0,0.02); border-radius: 12px; }
 .metrics-div { width: 1px; align-self: stretch; min-height: 20px; background: rgba(0,0,0,0.1); margin: 0 2px; }
+.sum-section-lbl { font-size: 11px; color: var(--muted); letter-spacing: 0.5px; white-space: nowrap; cursor: default; }
 .kpi-item { display: flex; align-items: baseline; gap: 6px; }
 .kpi-k { font-size: 12px; color: var(--muted); }
 .kpi-v { font-size: 15px; font-weight: 700; color: var(--text); }

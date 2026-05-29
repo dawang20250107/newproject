@@ -682,6 +682,7 @@ def ar_records(request):
 
     if request.method == 'GET':
         today = datetime.date.today()
+        # Listing queryset — select_related for efficient to_dict() rendering
         qs = _ar_dept_filter(ARRecord.objects.select_related('project', 'created_by'), request)
         qs = _apply_record_filters(qs, request)
         qs = _apply_record_state_filters(qs, request, today)
@@ -689,9 +690,17 @@ def ar_records(request):
         include_payments = request.GET.get('include_payments', '') in ('1', 'true')
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
-        total = qs.count()
+
+        # Aggregate queryset — plain queryset (no select_related) avoids any
+        # accidental extra JOINs and keeps results consistent with the group-summary
+        # endpoint which also uses ARRecord.objects.all() as its base.
+        qs_agg = _ar_dept_filter(ARRecord.objects.all(), request)
+        qs_agg = _apply_record_filters(qs_agg, request)
+        qs_agg = _apply_record_state_filters(qs_agg, request, today)
+
+        total = qs_agg.count()
         # 当前筛选全集的金额合计（不止当前页）——支撑"筛选即合计"
-        agg = qs.aggregate(
+        agg = qs_agg.aggregate(
             est=Sum('estimated_amount'),
             inv=Sum('actual_invoice_amount'),
             tax=Sum('tax_amount'),
