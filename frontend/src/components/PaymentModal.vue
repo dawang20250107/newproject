@@ -63,7 +63,7 @@ function resetForm() {
     pay3_date: p?.pay3_date || '',
     pay3_amount: p?.pay3_amount && p.pay3_amount !== '0' ? p.pay3_amount : '',
     notes: p?.notes || '',
-    plan_adjustment: p?.plan_adjustment || '',
+    plan_adjustment: p?.plan_adjustment != null ? p.plan_adjustment : '',
   }
   // Non-admin users only see their own departments; admin sees all.
   const myDepts = auth.isAdmin ? null : (auth.user?.departments || [])
@@ -94,7 +94,7 @@ async function autosave() {
     setTimeout(() => { if (saveStatus.value === 'saved') saveStatus.value = '' }, 2200)
   } catch (e) {
     saveStatus.value = 'error'
-    autoSaveErr.value = e?.error || '自动保存失败'
+    autoSaveErr.value = e?.msg || '自动保存失败'
   }
 }
 
@@ -105,8 +105,12 @@ const paidSoFar = computed(() =>
   (parseFloat(form.value.pay3_amount) || 0)
 )
 const plannedTotal = computed(() => parseFloat(form.value.total_amount) || 0)
+const adjustedTarget = computed(() => {
+  const adj = parseFloat(form.value.plan_adjustment)
+  return (!isNaN(adj) && adj > 0) ? adj : plannedTotal.value
+})
 const overpaid = computed(() => plannedTotal.value > 0 && paidSoFar.value > plannedTotal.value)
-const remaining = computed(() => plannedTotal.value - paidSoFar.value)
+const remaining = computed(() => Math.max(0, adjustedTarget.value - paidSoFar.value))
 
 function buildPayload() {
   const payload = {}
@@ -118,6 +122,10 @@ function buildPayload() {
   }
   for (const k of ['pay1_date', 'pay2_date', 'pay3_date', 'pay1_amount', 'pay2_amount', 'pay3_amount']) {
     if (k in payload && (payload[k] === '' || payload[k] === null)) payload[k] = null
+  }
+  if ('plan_adjustment' in payload) {
+    payload.plan_adjustment = (payload.plan_adjustment === '' || payload.plan_adjustment === null)
+      ? null : payload.plan_adjustment
   }
   return payload
 }
@@ -136,7 +144,7 @@ async function submit() {
     }
     emit('saved', res.data)
   } catch (e) {
-    error.value = e?.error || '保存失败，请重试'
+    error.value = e?.msg || '保存失败，请重试'
   } finally {
     loading.value = false
   }
@@ -217,8 +225,19 @@ async function submit() {
 
       <div v-if="vis('plan_adjustment')" class="form-row full">
         <div class="form-group">
-          <label>计划调整 <span class="hint-text">填写后状态变为「计划调整」，表示此付款计划已提前终止</span></label>
-          <input v-model="form.plan_adjustment" placeholder="如：已协商，余款转下期" :disabled="!editable('plan_adjustment')" />
+          <label>计划调整金额 (元)
+            <span class="hint-text">
+              填写后以此金额为实付目标：已付 ≥ 调整金额则自动结清；留空表示仍以计划总额为目标
+            </span>
+          </label>
+          <input v-model="form.plan_adjustment" type="number" min="0" step="0.01"
+                 placeholder="如：20000（实际只需付2万，填写后达到即结清）"
+                 :disabled="!editable('plan_adjustment')" />
+          <span v-if="form.plan_adjustment && parseFloat(form.plan_adjustment) > 0"
+                class="field-hint">
+            调整后目标：{{ parseFloat(form.plan_adjustment).toFixed(2) }} 元 ／
+            剩余 {{ Math.max(0, parseFloat(form.plan_adjustment) - paidSoFar).toFixed(2) }} 元
+          </span>
         </div>
       </div>
 
@@ -320,4 +339,5 @@ async function submit() {
 .pay-ok { color: #2e7d32; opacity: 0.75; margin-left: 6px; }
 .input-warn { border-color: #f57f17 !important; background: rgba(245,127,23,0.04) !important; }
 .field-err { font-size: 11px; color: #f57f17; margin-top: 3px; display: block; }
+.field-hint { font-size: 11px; color: #1565c0; margin-top: 3px; display: block; }
 </style>

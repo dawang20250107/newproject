@@ -543,7 +543,7 @@ def project_import(request):
                 ) or None,
                 reconciliation_days=int_days('合同对账期(天)'),
                 invoice_wait_days=int_days('开票等待期(天)'),
-                post_invoice_days=int_days('票后等待期(天)'),
+                post_invoice_days=int_days('票后等待期(天)') or int_days('结算等待期(天)'),
                 invoice_mode=invoice_mode_val,
                 invoice_type=invoice_type_val,
                 tax_rate=_dec(tax_raw),

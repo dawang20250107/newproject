@@ -159,7 +159,7 @@ async function exportPayments() {
     const url = URL.createObjectURL(res)
     const a = document.createElement('a'); a.href = url; a.download = '回款流水.xlsx'; a.click()
     URL.revokeObjectURL(url)
-  } catch (e) { alert(e?.response?.data?.msg || '导出失败')
+  } catch (e) { alert(e?.msg || '导出失败')
   } finally { payExporting.value = false }
 }
 
@@ -250,7 +250,7 @@ async function saveRec() {
     if (editRec.value) await ar.updateRecord(editRec.value.id, payload)
     else await ar.createRecord(payload)
     showModal.value = false; await load()
-  } catch (e) { alert(e?.response?.data?.msg || '保存失败')
+  } catch (e) { alert(e?.msg || '保存失败')
   } finally { saving.value = false }
 }
 
@@ -258,7 +258,7 @@ async function deleteRec(rec) {
   const amt = parseFloat(rec.estimated_amount || 0).toFixed(2)
   if (!confirm(`确定删除「${rec.short_name || rec.contract_name}」${rec.operation_year}年${rec.operation_month}月的应收记录（${amt} 元）？同月可能存在多条记录，请确认。`)) return
   try { await ar.deleteRecord(rec.id); await load() }
-  catch (e) { alert(e?.response?.data?.msg || '删除失败') }
+  catch (e) { alert(e?.msg || '删除失败') }
 }
 
 function togglePayments(id) { expandedPayments.value[id] = !expandedPayments.value[id] }
@@ -275,14 +275,14 @@ async function savePayment() {
   try {
     await ar.addPayment(payRec.value.id, payForm)
     showPayModal.value = false; await load()
-  } catch (e) { alert(e?.response?.data?.msg || '保存失败')
+  } catch (e) { alert(e?.msg || '保存失败')
   } finally { paySaving.value = false }
 }
 
 async function deletePayment(rec, pay) {
   if (!confirm(`确定删除第${pay.payment_no}次回款 ${pay.amount} 元？`)) return
   try { await ar.deletePayment(rec.id, pay.id); await load() }
-  catch (e) { alert(e?.response?.data?.msg || '删除失败') }
+  catch (e) { alert(e?.msg || '删除失败') }
 }
 
 async function downloadTemplate() {
@@ -298,11 +298,12 @@ async function handleImport(e) {
   try {
     const fd = new FormData(); fd.append('file', f)
     const res = await ar.importRecords(fd); const d = res.data
-    let msg = `导入完成：创建 ${d.created}，更新 ${d.updated}，跳过 ${d.skipped}`
-    if (d.tip) msg += `\n${d.tip}`
-    alert(msg)
+    let parts = [`导入完成：创建 ${d.created}，更新 ${d.updated ?? 0}，跳过 ${d.skipped}`]
+    if (d.tip) parts.push(d.tip)
+    if (d.errors?.length) parts.push(`\n以下行未通过校验：\n` + d.errors.join('\n'))
+    alert(parts.join('\n'))
     await load()
-  } catch (e) { alert(e?.response?.data?.msg || '导入失败')
+  } catch (e) { alert(e?.msg || '导入失败')
   } finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
 }
 
@@ -313,7 +314,7 @@ async function exportData() {
     const url = URL.createObjectURL(res)
     const a = document.createElement('a'); a.href = url; a.download = '应收账款明细.xlsx'; a.click()
     URL.revokeObjectURL(url)
-  } catch (e) { alert(e?.response?.data?.msg || '导出失败')
+  } catch (e) { alert(e?.msg || '导出失败')
   } finally { exporting.value = false }
 }
 

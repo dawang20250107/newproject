@@ -122,14 +122,14 @@ async function save() {
     showModal.value = false
     reloadAll()
   } catch (e) {
-    alert(e?.response?.data?.msg || '保存失败')
+    alert(e?.msg || '保存失败')
   } finally { saving.value = false }
 }
 
 async function remove(item) {
   if (!confirm(`确定删除项目「${item.short_name || item.contract_name}」？`)) return
   try { await ar.deleteProject(item.id); reloadAll() }
-  catch (e) { alert(e?.response?.data?.msg || '删除失败') }
+  catch (e) { alert(e?.msg || '删除失败') }
 }
 
 async function downloadTemplate() {
@@ -145,12 +145,13 @@ async function handleImport(e) {
   try {
     const fd = new FormData(); fd.append('file', f)
     const res = await ar.importProjects(fd); const d = res.data
-    const parts = [`新增 ${d.created} 条`]
+    const parts = [`导入完成：新增 ${d.created} 条`]
     if (d.updated) parts.push(`更新 ${d.updated} 条`)
-    if (d.errors?.length) parts.push(`错误 ${d.errors.length} 条：${d.errors.slice(0, 3).join('；')}`)
-    alert(`导入完成：${parts.join('，')}`)
+    if (d.skipped) parts.push(`跳过 ${d.skipped} 条`)
+    if (d.errors?.length) parts.push(`\n\n以下行未通过校验：\n` + d.errors.join('\n'))
+    alert(parts.join('，'))
     reloadAll()
-  } catch (e) { alert(e?.response?.data?.msg || '导入失败')
+  } catch (e) { alert(e?.msg || '导入失败')
   } finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
 }
 
@@ -161,7 +162,7 @@ async function exportData() {
     const url = URL.createObjectURL(res)
     const a = document.createElement('a'); a.href = url; a.download = '项目信息.xlsx'; a.click()
     URL.revokeObjectURL(url)
-  } catch (e) { alert(e?.response?.data?.msg || '导出失败')
+  } catch (e) { alert(e?.msg || '导出失败')
   } finally { exporting.value = false }
 }
 

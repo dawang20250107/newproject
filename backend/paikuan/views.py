@@ -52,7 +52,7 @@ PAYMENT_FIELD_DEFS = [
     {'key': 'pay2',            'label': '第2次付款',     'cols': ['pay2_date', 'pay2_amount']},
     {'key': 'pay3',            'label': '第3次付款',     'cols': ['pay3_date', 'pay3_amount']},
     {'key': 'notes',            'label': '备注',          'cols': ['notes']},
-    {'key': 'plan_adjustment', 'label': '计划调整',      'cols': ['plan_adjustment']},
+    {'key': 'plan_adjustment', 'label': '计划调整金额',   'cols': ['plan_adjustment']},
 ]
 FIELD_KEYS = [f['key'] for f in PAYMENT_FIELD_DEFS]
 PAGE_KEYS = [
@@ -127,6 +127,7 @@ EXCEL_COLUMN_MAP = [
     ('pay3',            '第3次付款日期',        'pay3_date'),
     ('pay3',            '第3次付款金额(元)',    'pay3_amount'),
     ('notes',           '备注',                'notes'),
+    ('plan_adjustment', '计划调整金额(元)',     'plan_adjustment'),
 ]
 _EXCEL_HEADER_TO_COL = {h: c for _, h, c in EXCEL_COLUMN_MAP}
 _EXCEL_DATE_COLS = {'planned_date', 'pay1_date', 'pay2_date', 'pay3_date'}
@@ -603,28 +604,43 @@ def _list_payments(request):
     if status_q:
         qs = qs.annotate(paid=_paid_expr())
         if status_q == 'pending':
-            qs = qs.filter(paid=Decimal('0'), plan_adjustment='')
+            qs = qs.filter(paid=Decimal('0'), plan_adjustment__isnull=True)
         elif status_q == 'settled':
-            qs = qs.filter(paid__gte=F('total_amount'))
+            qs = qs.filter(
+                Q(paid__gte=F('total_amount')) |
+                Q(plan_adjustment__isnull=False, paid__gte=F('plan_adjustment'))
+            )
         elif status_q == 'partial':
-            qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'), plan_adjustment='')
+            qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'),
+                           plan_adjustment__isnull=True)
         elif status_q == 'overdue':
             today_val = datetime.date.today()
-            qs = qs.filter(paid__lt=F('total_amount'), planned_date__lt=today_val)
+            qs = qs.filter(planned_date__lt=today_val).filter(
+                Q(plan_adjustment__isnull=True, paid__lt=F('total_amount')) |
+                Q(plan_adjustment__isnull=False, paid__lt=F('plan_adjustment'))
+            )
         elif status_q == 'adjusted':
-            qs = qs.filter(paid__lt=F('total_amount')).exclude(plan_adjustment='')
+            qs = qs.filter(plan_adjustment__isnull=False, paid__lt=F('plan_adjustment'))
 
     total = qs.count()
 
-    # Aggregate: 已计划未结清总金额 (sum of remaining for non-settled rows, in scope of filter)
+    # 未结清合计：plan_adjustment 设置时以调整后金额计算剩余，否则用 total_amount
     paid_expr = _paid_expr()
+    not_settled = (
+        Q(plan_adjustment__isnull=True, _paid__lt=F('total_amount')) |
+        Q(plan_adjustment__isnull=False, _paid__lt=F('plan_adjustment'))
+    )
+    effective_remaining = Case(
+        When(plan_adjustment__isnull=False,
+             then=ExpressionWrapper(F('plan_adjustment') - F('_paid'),
+                                    output_field=DjDecimalField(max_digits=18, decimal_places=2))),
+        default=ExpressionWrapper(F('total_amount') - F('_paid'),
+                                  output_field=DjDecimalField(max_digits=18, decimal_places=2)),
+        output_field=DjDecimalField(max_digits=18, decimal_places=2),
+    )
     summary = qs.annotate(_paid=paid_expr).aggregate(
-        outstanding=Sum(
-            ExpressionWrapper(F('total_amount') - F('_paid'),
-                              output_field=DjDecimalField(max_digits=18, decimal_places=2)),
-            filter=Q(_paid__lt=F('total_amount')),
-        ),
-        outstanding_count=Count('id', filter=Q(_paid__lt=F('total_amount'))),
+        outstanding=Sum(effective_remaining, filter=not_settled),
+        outstanding_count=Count('id', filter=not_settled),
     )
     outstanding_total = summary['outstanding'] or Decimal('0')
     outstanding_count = summary['outstanding_count'] or 0
@@ -649,7 +665,20 @@ def _parse_payment_fields(data, payment=None):
     fields['project_desc'] = (get('project_desc') or '').strip()
     fields['payee'] = (get('payee') or '').strip()
     fields['notes'] = (get('notes') or '').strip()
-    fields['plan_adjustment'] = (get('plan_adjustment') or '').strip()
+
+    # plan_adjustment: nullable decimal — None means "no adjustment"
+    pa_raw = get('plan_adjustment')
+    if pa_raw not in (None, '', 0):
+        pa_str = str(pa_raw).replace(',', '').replace('，', '').replace('¥', '').replace('￥', '').strip()
+        try:
+            pa_val = Decimal(pa_str or '0')
+            if pa_val < Decimal('0'):
+                return None, '计划调整金额不能为负数'
+            fields['plan_adjustment'] = pa_val
+        except (InvalidOperation, TypeError):
+            return None, f'计划调整金额"{pa_raw}"格式有误，请填写纯数字金额（如 20000）'
+    else:
+        fields['plan_adjustment'] = None
 
     def _num(key):
         raw = get(key, 0)
@@ -747,7 +776,7 @@ _PAYMENT_FIELD_LABELS = {
     'pay2_date': '第2次付款日期', 'pay2_amount': '第2次付款金额',
     'pay3_date': '第3次付款日期', 'pay3_amount': '第3次付款金额',
     'notes': '备注',
-    'plan_adjustment': '计划调整',
+    'plan_adjustment': '计划调整金额',
 }
 
 
@@ -1597,6 +1626,7 @@ def payment_template(request):
         '第3次付款日期': '',
         '第3次付款金额(元)': 0,
         '备注': '本行为格式示例，导入前可删除',
+        '计划调整金额(元)': '',
     }
     for col_idx, (header, _) in enumerate(cols, 1):
         cell = ws.cell(row=2, column=col_idx, value=example.get(header, ''))
@@ -1610,7 +1640,7 @@ def payment_template(request):
         '第1次付款日期': 14, '第1次付款金额(元)': 16,
         '第2次付款日期': 14, '第2次付款金额(元)': 16,
         '第3次付款日期': 14, '第3次付款金额(元)': 16,
-        '备注': 24,
+        '备注': 24, '计划调整金额(元)': 18,
     }
     for col_idx, (header, _) in enumerate(cols, 1):
         ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = widths.get(header, 14)
@@ -1773,14 +1803,23 @@ def payment_export(request):
     if status_q:
         qs = qs.annotate(paid=_paid_expr())
         if status_q == 'pending':
-            qs = qs.filter(paid=Decimal('0'))
+            qs = qs.filter(paid=Decimal('0'), plan_adjustment__isnull=True)
         elif status_q == 'settled':
-            qs = qs.filter(paid__gte=F('total_amount'))
+            qs = qs.filter(
+                Q(paid__gte=F('total_amount')) |
+                Q(plan_adjustment__isnull=False, paid__gte=F('plan_adjustment'))
+            )
         elif status_q == 'partial':
-            qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'))
+            qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'),
+                           plan_adjustment__isnull=True)
+        elif status_q == 'adjusted':
+            qs = qs.filter(plan_adjustment__isnull=False, paid__lt=F('plan_adjustment'))
         elif status_q == 'overdue':
             today_val = datetime.date.today()
-            qs = qs.filter(paid__lt=F('total_amount'), planned_date__lt=today_val)
+            qs = qs.filter(planned_date__lt=today_val).filter(
+                Q(plan_adjustment__isnull=True, paid__lt=F('total_amount')) |
+                Q(plan_adjustment__isnull=False, paid__lt=F('plan_adjustment'))
+            )
 
     # Reject rather than silently truncate: a truncated export is worse than no export.
     EXPORT_CAP = 5000
@@ -1825,7 +1864,7 @@ def payment_export(request):
                 val = ''
             # Convert Decimal strings to float for Excel numeric cells
             if db_col in ('total_amount', 'pay1_amount', 'pay2_amount', 'pay3_amount',
-                          'total_paid', 'remaining'):
+                          'total_paid', 'remaining', 'plan_adjustment'):
                 try:
                     val = float(val) if val != '' else 0.0
                 except (ValueError, TypeError):

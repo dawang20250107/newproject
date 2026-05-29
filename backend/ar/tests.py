@@ -15,8 +15,8 @@ class ARPermissionRegressionTests(TestCase):
     def setUp(self):
         _invalidate_perm_cache()
         self.client = Client()
-        self.dept = DEPARTMENTS[0]
-        self.other_dept = DEPARTMENTS[1]
+        self.dept = '劳务事业部'
+        self.other_dept = '运输事业部'
 
     def tearDown(self):
         _invalidate_perm_cache()
@@ -62,7 +62,7 @@ class ARPermissionRegressionTests(TestCase):
             contract_date=date(2026, 1, 1),
             reconciliation_days=10,
             invoice_wait_days=5,
-            settlement_wait_days=15,
+            post_invoice_days=15,
             invoice_mode='全额',
             invoice_type='专票',
             tax_rate=Decimal('0.0600'),
@@ -92,7 +92,7 @@ class ARPermissionRegressionTests(TestCase):
             'contract_date': '2026-02-01',
             'reconciliation_days': 10,
             'invoice_wait_days': 5,
-            'settlement_wait_days': 15,
+            'post_invoice_days': 15,
             'invoice_mode': '全额',
             'invoice_type': '专票',
             'tax_rate': '0.06',
@@ -213,7 +213,8 @@ class ARPermissionRegressionTests(TestCase):
         record = self.create_record()
 
         self.assertEqual(record.tax_amount, Decimal('60.00'))
-        self.assertEqual(record.outstanding_amount, Decimal('1060.00'))
+        # outstanding is based on estimated_amount (1000), not invoice amount
+        self.assertEqual(record.outstanding_amount, Decimal('1000.00'))
 
         ARPayment.objects.create(
             ar_record=record,
@@ -224,4 +225,4 @@ class ARPermissionRegressionTests(TestCase):
 
         record.refresh_from_db()
         self.assertEqual(record.tax_amount, Decimal('60.00'))
-        self.assertEqual(record.outstanding_amount, Decimal('900.00'))
+        self.assertEqual(record.outstanding_amount, Decimal('840.00'))

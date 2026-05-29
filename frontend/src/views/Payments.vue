@@ -96,7 +96,7 @@ async function onImportFile(e) {
     importResult.value = res.data
     if (res.data.created > 0) load()
   } catch (ex) {
-    importResult.value = { error: ex?.error || '导入失败，请检查文件格式' }
+    importResult.value = { error: ex?.msg || '导入失败，请检查文件格式' }
   } finally {
     importing.value = false
     e.target.value = ''
@@ -112,7 +112,7 @@ async function exportExcel() {
     const blob = await api.get('/payments/export', { params, responseType: 'blob', timeout: 60000 })
     const date = new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '月') + '日'
     triggerDownload(blob, `排款记录_${date}.xlsx`)
-  } catch (e) { alert(e?.error || '导出失败，请稍后重试') }
+  } catch (e) { alert(e?.msg || '导出失败，请稍后重试') }
   finally { exportingXlsx.value = false }
 }
 
@@ -138,7 +138,7 @@ async function load() {
     outstandingTotal.value = res.data.outstanding_total ?? '0'
     outstandingCount.value = res.data.outstanding_count ?? 0
   } catch (e) {
-    loadErr.value = e?.error || '加载失败，请刷新重试'
+    loadErr.value = e?.msg || '加载失败，请刷新重试'
   } finally {
     loading.value = false
   }
@@ -199,7 +199,7 @@ async function onDelete(p) {
     await api.delete(`/payments/${p.id}`)
     load()
   } catch (e) {
-    alert(e?.error || '删除失败')
+    alert(e?.msg || '删除失败')
   }
 }
 
@@ -284,7 +284,7 @@ function setPage(p) { filters.page = p; load() }
               <th v-if="showRemaining">剩余 (元)</th>
               <th>状态</th>
               <th>逾期</th>
-              <th v-if="auth.canView('notes')">计划调整</th>
+              <th v-if="auth.canView('plan_adjustment')">计划调整金额</th>
               <th v-if="auth.canWrite || auth.canDelete">操作</th>
             </tr>
           </thead>
@@ -313,11 +313,10 @@ function setPage(p) { filters.page = p; load() }
                 <span v-else-if="p.planned_date === today" class="overdue-tag overdue-today">今日到期</span>
                 <span v-else class="overdue-tag overdue-ok">未到期</span>
               </td>
-              <td v-if="auth.canView('notes')" class="cell-clip" style="max-width:160px"
-                  :title="p.plan_adjustment || ''"
-                  @mouseenter="p.plan_adjustment && showTip($event, p.plan_adjustment)"
-                  @mousemove="moveTip" @mouseleave="hideTip">
-                <span v-if="p.plan_adjustment" style="color:#1565c0;font-size:12px">{{ p.plan_adjustment }}</span>
+              <td v-if="auth.canView('plan_adjustment')" class="amt">
+                <span v-if="p.plan_adjustment != null" style="color:#1565c0;font-weight:600">
+                  调整→{{ fmt(p.plan_adjustment) }}
+                </span>
                 <span v-else style="color:var(--muted)">—</span>
               </td>
               <td v-if="auth.canWrite || auth.canDelete">
