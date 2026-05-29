@@ -74,6 +74,27 @@ const DATA_TABS = ['all', 'reconciliation', 'invoice', 'collection']
 const isDataTab = computed(() => DATA_TABS.includes(activeTab.value))
 const summaryData = ref(null)
 
+// ── Collapsible filter bar ──────────────────────────────────────────────────
+const showMoreFilters = ref(false)
+const FILTER_CHIP_LABELS = {
+  month: v => `${v}月`,
+  status: v => ({ overdue: '逾期', current: '当期', not_due: '未到期', settled: '已结清', outstanding: '未结清' }[v] || v),
+  reconciliation_status: v => `对账:${v}`,
+  invoice_status: v => `开票:${v}`,
+  is_shared: v => (v === '1' ? '共享' : '非共享'),
+  manager: v => `负责人:${v}`,
+  due_start: v => `到期≥${v}`,
+  due_end: v => `到期≤${v}`,
+}
+const ADVANCED_FILTER_KEYS = ['month', 'due_start', 'due_end', 'status', 'reconciliation_status', 'invoice_status', 'is_shared', 'manager']
+const activeFilterChips = computed(() =>
+  ADVANCED_FILTER_KEYS
+    .filter(k => filters[k] !== '' && filters[k] != null)
+    .map(k => ({ key: k, text: FILTER_CHIP_LABELS[k](filters[k]) })))
+const hasAnyFilter = computed(() =>
+  !!(filters.dept || filters.year || filters.q) || activeFilterChips.value.length > 0)
+function removeFilter(key) { filters[key] = ''; onFilterChange() }
+
 // ── 回款流水 (payment ledger) ───────────────────────────────────────────────
 const payFilters = reactive({ pay_start: '', pay_end: '', dept: '', q: '' })
 const payItems = ref([])
@@ -320,9 +341,14 @@ function clearFilters() {
 <template>
   <div>
     <div class="topbar">
-      <div>
+      <div class="topbar-left">
         <h1>应收明细</h1>
-        <div style="font-size:13px;color:var(--muted);margin-top:2px">全部明细 · 对账 / 开票 / 回款 跟踪</div>
+        <div class="segment-ctrl">
+          <button v-for="t in TABS" :key="t.key"
+            :class="['seg-btn', activeTab === t.key ? 'active' : '']" @click="switchTab(t.key)">
+            <span class="seg-dot"></span>{{ t.label }}
+          </button>
+        </div>
       </div>
       <div class="ctrl-row">
         <button class="act-btn" @click="downloadTemplate">↓ 模板</button>
@@ -335,106 +361,113 @@ function clearFilters() {
       </div>
     </div>
 
-    <!-- Filter strip (shared by data tabs + 汇总; 回款流水 has its own filters) -->
-    <div v-if="activeTab !== 'payments'" class="filter-strip">
-      <select v-model="filters.dept" class="sel-bu" @change="onFilterChange">
-        <option value="">全部事业部</option>
-        <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
-      </select>
-      <select v-model="filters.year" class="sel-yr" @change="onFilterChange">
-        <option value="">全部年份</option>
-        <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
-      </select>
-      <select v-model="filters.month" class="sel-mo" @change="onFilterChange">
-        <option value="">全月</option>
-        <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
-      </select>
-      <input v-model="filters.due_start" type="date" class="sel-mo" @change="onFilterChange" />
-      <input v-model="filters.due_end" type="date" class="sel-mo" @change="onFilterChange" />
-      <select v-model="filters.status" class="sel-mo" @change="onFilterChange">
-        <option value="">全部状态</option>
-        <option value="overdue">逾期</option>
-        <option value="current">当期</option>
-        <option value="not_due">未到期</option>
-        <option value="settled">已结清</option>
-      </select>
-      <select v-model="filters.reconciliation_status" class="sel-mo" @change="onFilterChange">
-        <option value="">对账(全部)</option>
-        <option value="已对账">已对账</option>
-        <option value="未对账">未对账</option>
-      </select>
-      <select v-model="filters.invoice_status" class="sel-mo" @change="onFilterChange">
-        <option value="">开票(全部)</option>
-        <option value="未开票">未开票</option>
-        <option value="已开票">已开票</option>
-        <option value="已结清">已结清</option>
-      </select>
-      <select v-model="filters.is_shared" class="sel-mo" @change="onFilterChange">
-        <option value="">共享(全部)</option>
-        <option value="1">共享</option>
-        <option value="0">非共享</option>
-      </select>
-      <input v-model="filters.manager" placeholder="负责人" class="search-input" @input="onFilterChange" />
-      <input v-model="filters.q" placeholder="搜索项目" class="search-input" @input="onFilterChange" />
-      <button class="act-btn" @click="Object.assign(filters, { status: 'outstanding' }); onFilterChange()">未结清</button>
-      <button class="act-btn" @click="clearFilters">清空筛选</button>
+    <!-- Filter bar (compact + collapsible; 回款流水 has its own filters) -->
+    <div v-if="activeTab !== 'payments'" class="filter-bar">
+      <div class="filter-main">
+        <select v-model="filters.dept" class="sel-bu" @change="onFilterChange">
+          <option value="">全部事业部</option>
+          <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+        </select>
+        <select v-model="filters.year" class="sel-yr" @change="onFilterChange">
+          <option value="">全部年份</option>
+          <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
+        </select>
+        <input v-model="filters.q" placeholder="搜索项目" class="search-input" @input="onFilterChange" />
+        <button class="filter-toggle" :class="{ active: showMoreFilters }" @click="showMoreFilters = !showMoreFilters">
+          更多筛选<span v-if="activeFilterChips.length" class="ft-badge">{{ activeFilterChips.length }}</span>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" :style="showMoreFilters ? 'transform:rotate(180deg)' : ''"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <!-- active advanced-filter chips (shown when collapsed) -->
+        <template v-if="!showMoreFilters">
+          <span v-for="c in activeFilterChips" :key="c.key" class="filter-chip">
+            {{ c.text }}
+            <button @click="removeFilter(c.key)" title="移除">✕</button>
+          </span>
+        </template>
+        <button v-if="hasAnyFilter" class="clear-mini" @click="clearFilters">清空</button>
+      </div>
+
+      <!-- expanded advanced filters -->
+      <div v-if="showMoreFilters" class="filter-more">
+        <select v-model="filters.month" class="sel-mo" @change="onFilterChange">
+          <option value="">全月</option>
+          <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
+        </select>
+        <input v-model="filters.due_start" type="date" class="sel-mo" @change="onFilterChange" />
+        <input v-model="filters.due_end" type="date" class="sel-mo" @change="onFilterChange" />
+        <select v-model="filters.status" class="sel-mo" @change="onFilterChange">
+          <option value="">全部状态</option>
+          <option value="overdue">逾期</option>
+          <option value="current">当期</option>
+          <option value="not_due">未到期</option>
+          <option value="settled">已结清</option>
+        </select>
+        <select v-model="filters.reconciliation_status" class="sel-mo" @change="onFilterChange">
+          <option value="">对账(全部)</option>
+          <option value="已对账">已对账</option>
+          <option value="未对账">未对账</option>
+        </select>
+        <select v-model="filters.invoice_status" class="sel-mo" @change="onFilterChange">
+          <option value="">开票(全部)</option>
+          <option value="未开票">未开票</option>
+          <option value="已开票">已开票</option>
+          <option value="已结清">已结清</option>
+        </select>
+        <select v-model="filters.is_shared" class="sel-mo" @change="onFilterChange">
+          <option value="">共享(全部)</option>
+          <option value="1">共享</option>
+          <option value="0">非共享</option>
+        </select>
+        <input v-model="filters.manager" placeholder="负责人" class="search-input" @input="onFilterChange" />
+        <button class="act-btn" @click="Object.assign(filters, { status: 'outstanding' }); onFilterChange()">未结清</button>
+      </div>
     </div>
 
     <!-- Tab + table card -->
     <div class="card" :class="{ 'data-reloading': loading && items.length }">
-      <!-- Segment tab control -->
-      <div class="segment-ctrl">
-        <button v-for="t in TABS" :key="t.key"
-          :class="['seg-btn', activeTab === t.key ? 'active' : '']" @click="switchTab(t.key)">
-          <span class="seg-dot"></span>{{ t.label }}
-        </button>
-      </div>
+      <!-- 合并指标条：左侧=本Tab进度/重点；右侧=当前筛选全集合计 -->
+      <div v-if="isDataTab && (kpiData || summaryData)" class="metrics-bar">
+        <template v-if="kpiData">
+          <template v-if="activeTab === 'all'">
+            <div class="kpi-item danger"><span class="kpi-k">逾期</span><span class="kpi-v">{{ kpiData.overdue.count }} 笔 / {{ fmtAmt(kpiData.overdue.amount) }}</span></div>
+          </template>
+          <template v-else-if="activeTab === 'reconciliation'">
+            <div class="kpi-progress">
+              <div class="kpi-k">对账完成度</div>
+              <div class="kpi-track"><div class="kpi-fill fill-blue" :style="`width:${kpiData.reconciliation.rate}%`"></div></div>
+              <div class="kpi-pct">{{ kpiData.reconciliation.rate }}%</div>
+            </div>
+            <div class="kpi-item warn"><span class="kpi-k">待对账</span><span class="kpi-v">{{ kpiData.reconciliation.pending }} 笔 / {{ fmtAmt(kpiData.reconciliation.pending_amount) }}</span></div>
+          </template>
+          <template v-else-if="activeTab === 'invoice'">
+            <div class="kpi-progress">
+              <div class="kpi-k">开票完成度</div>
+              <div class="kpi-track"><div class="kpi-fill fill-amber" :style="`width:${kpiData.invoice.rate}%`"></div></div>
+              <div class="kpi-pct">{{ kpiData.invoice.rate }}%</div>
+            </div>
+            <div class="kpi-item warn"><span class="kpi-k">待开票</span><span class="kpi-v">{{ kpiData.invoice.pending }} 笔 / {{ fmtAmt(kpiData.invoice.pending_amount) }}</span></div>
+          </template>
+          <template v-else>
+            <div class="kpi-progress">
+              <div class="kpi-k">回款结清率</div>
+              <div class="kpi-track"><div class="kpi-fill fill-green" :style="`width:${kpiData.collection.rate}%`"></div></div>
+              <div class="kpi-pct">{{ kpiData.collection.rate }}%</div>
+            </div>
+            <div class="kpi-item ok"><span class="kpi-k">已收</span><span class="kpi-v">{{ fmtAmt(kpiData.collection.collected_amount) }}</span></div>
+            <div class="kpi-item danger"><span class="kpi-k">其中逾期</span><span class="kpi-v">{{ kpiData.overdue.count }} 笔</span></div>
+          </template>
+        </template>
 
-      <!-- Per-tab completion KPI bar -->
-      <div v-if="kpiData && isDataTab" class="kpi-bar">
-        <template v-if="activeTab === 'all'">
-          <div class="kpi-item"><span class="kpi-k">总记录</span><span class="kpi-v">{{ kpiData.total }}</span></div>
-          <div class="kpi-item danger"><span class="kpi-k">逾期</span><span class="kpi-v">{{ kpiData.overdue.count }} 笔 / {{ fmtAmt(kpiData.overdue.amount) }}</span></div>
-          <div class="kpi-item warn"><span class="kpi-k">未结清</span><span class="kpi-v">{{ kpiData.collection.outstanding_count }} 笔 / {{ fmtAmt(kpiData.collection.outstanding_amount) }}</span></div>
-        </template>
-        <template v-else-if="activeTab === 'reconciliation'">
-          <div class="kpi-progress">
-            <div class="kpi-k">对账完成度</div>
-            <div class="kpi-track"><div class="kpi-fill fill-blue" :style="`width:${kpiData.reconciliation.rate}%`"></div></div>
-            <div class="kpi-pct">{{ kpiData.reconciliation.rate }}%</div>
-          </div>
-          <div class="kpi-item ok"><span class="kpi-k">已对账</span><span class="kpi-v">{{ kpiData.reconciliation.done }}</span></div>
-          <div class="kpi-item warn"><span class="kpi-k">待对账</span><span class="kpi-v">{{ kpiData.reconciliation.pending }} 笔 / {{ fmtAmt(kpiData.reconciliation.pending_amount) }}</span></div>
-        </template>
-        <template v-else-if="activeTab === 'invoice'">
-          <div class="kpi-progress">
-            <div class="kpi-k">开票完成度</div>
-            <div class="kpi-track"><div class="kpi-fill fill-amber" :style="`width:${kpiData.invoice.rate}%`"></div></div>
-            <div class="kpi-pct">{{ kpiData.invoice.rate }}%</div>
-          </div>
-          <div class="kpi-item ok"><span class="kpi-k">已开票</span><span class="kpi-v">{{ kpiData.invoice.done }} 笔 / {{ fmtAmt(kpiData.invoice.done_amount) }}</span></div>
-          <div class="kpi-item warn"><span class="kpi-k">待开票</span><span class="kpi-v">{{ kpiData.invoice.pending }} 笔 / {{ fmtAmt(kpiData.invoice.pending_amount) }}</span></div>
-        </template>
-        <template v-else>
-          <div class="kpi-progress">
-            <div class="kpi-k">回款结清率</div>
-            <div class="kpi-track"><div class="kpi-fill fill-green" :style="`width:${kpiData.collection.rate}%`"></div></div>
-            <div class="kpi-pct">{{ kpiData.collection.rate }}%</div>
-          </div>
-          <div class="kpi-item ok"><span class="kpi-k">已收</span><span class="kpi-v">{{ fmtAmt(kpiData.collection.collected_amount) }}</span></div>
-          <div class="kpi-item warn"><span class="kpi-k">未收</span><span class="kpi-v">{{ kpiData.collection.outstanding_count }} 笔 / {{ fmtAmt(kpiData.collection.outstanding_amount) }}</span></div>
-          <div class="kpi-item danger"><span class="kpi-k">其中逾期</span><span class="kpi-v">{{ kpiData.overdue.count }} 笔</span></div>
-        </template>
-      </div>
+        <span v-if="kpiData && summaryData" class="metrics-div"></span>
 
-      <!-- 筛选即合计：当前筛选全集的金额合计（不止当前页） -->
-      <div v-if="isDataTab && summaryData" class="totals-strip">
-        <span class="tot-label">筛选合计</span>
-        <span class="tot-item"><i>记录</i>{{ summaryData.count }}</span>
-        <span class="tot-item"><i>预估总额</i>{{ fmtAmt(summaryData.estimated) }}</span>
-        <span class="tot-item"><i>开票总额</i>{{ fmtAmt(summaryData.invoiced) }}</span>
-        <span class="tot-item"><i>税额</i>{{ fmtAmt(summaryData.tax) }}</span>
-        <span class="tot-item tot-warn"><i>未收总额</i>{{ fmtAmt(summaryData.outstanding) }}</span>
+        <!-- 筛选合计（当前筛选全集，不止当前页） -->
+        <template v-if="summaryData">
+          <div class="kpi-item"><span class="kpi-k">记录</span><span class="kpi-v">{{ summaryData.count }}</span></div>
+          <div class="kpi-item"><span class="kpi-k">预估</span><span class="kpi-v">{{ fmtAmt(summaryData.estimated) }}</span></div>
+          <div class="kpi-item"><span class="kpi-k">开票</span><span class="kpi-v">{{ fmtAmt(summaryData.invoiced) }}</span></div>
+          <div class="kpi-item"><span class="kpi-k">税额</span><span class="kpi-v">{{ fmtAmt(summaryData.tax) }}</span></div>
+          <div class="kpi-item warn"><span class="kpi-k">未收</span><span class="kpi-v">{{ fmtAmt(summaryData.outstanding) }}</span></div>
+        </template>
       </div>
 
       <!-- ══ 数据明细表（全部/对账/开票/回款 跟踪）══ -->
@@ -840,15 +873,33 @@ function clearFilters() {
 .act-btn:hover { border-color: var(--primary); color: var(--primary); }
 .act-btn:disabled { opacity: 0.4; cursor: default; }
 
+/* Topbar: title + inline tabs */
+.topbar-left { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+
 /* Segment control */
-.segment-ctrl { display: inline-flex; gap: 0; padding: 4px; background: rgba(0,0,0,0.04); border-radius: 12px; }
-.seg-btn { display: flex; align-items: center; gap: 6px; padding: 7px 18px; border-radius: 9px; border: none; font-size: 13px; font-weight: 500; color: var(--muted); background: transparent; cursor: pointer; transition: all 0.18s; }
+.segment-ctrl { display: inline-flex; gap: 0; padding: 3px; background: rgba(0,0,0,0.04); border-radius: 11px; flex-wrap: wrap; }
+.seg-btn { display: flex; align-items: center; gap: 5px; padding: 6px 14px; border-radius: 9px; border: none; font-size: 12.5px; font-weight: 500; color: var(--muted); background: transparent; cursor: pointer; transition: all 0.18s; }
 .seg-btn .seg-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(155,128,112,0.3); transition: all 0.18s; }
 .seg-btn.active { background: white; color: var(--primary); font-weight: 700; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
 .seg-btn.active .seg-dot { background: var(--primary); box-shadow: 0 0 6px rgba(201,99,66,0.5); }
 
+/* Collapsible filter bar */
+.filter-bar { margin: 12px 0; }
+.filter-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.filter-more { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.filter-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 500; border: 1px solid var(--border); background: rgba(255,252,250,0.8); color: var(--muted); cursor: pointer; transition: all 0.14s; white-space: nowrap; }
+.filter-toggle:hover, .filter-toggle.active { border-color: var(--primary); color: var(--primary); }
+.filter-toggle svg { transition: transform 0.18s; }
+.ft-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--primary); color: #fff; font-size: 10.5px; font-weight: 700; }
+.filter-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; padding: 3px 5px 3px 10px; border-radius: 14px; background: rgba(201,99,66,0.1); color: var(--primary); }
+.filter-chip button { display: flex; align-items: center; border: none; background: none; padding: 0; cursor: pointer; color: inherit; opacity: 0.7; font-size: 11px; }
+.filter-chip button:hover { opacity: 1; }
+.clear-mini { border: none; background: none; color: var(--muted); font-size: 12.5px; cursor: pointer; padding: 4px 6px; text-decoration: underline; text-underline-offset: 2px; }
+.clear-mini:hover { color: var(--primary); }
+
 /* KPI bar */
-.kpi-bar { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-top: 14px; padding: 12px 16px; background: rgba(0,0,0,0.02); border-radius: 12px; }
+.metrics-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; padding: 9px 16px; background: rgba(0,0,0,0.02); border-radius: 12px; }
+.metrics-div { width: 1px; align-self: stretch; min-height: 20px; background: rgba(0,0,0,0.1); margin: 0 2px; }
 .kpi-item { display: flex; align-items: baseline; gap: 6px; }
 .kpi-k { font-size: 12px; color: var(--muted); }
 .kpi-v { font-size: 15px; font-weight: 700; color: var(--text); }
