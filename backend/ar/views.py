@@ -713,7 +713,7 @@ def ar_records(request):
         qs_agg = _apply_record_state_filters(qs_agg, request, today)
 
         # 当前筛选全集的金额合计（不止当前页）——支撑"筛选即合计"。
-        # 重要：筛选含 payments 关联（回款日期/含未回款）时 qs_agg 带 JOIN，直接
+        # 重要：筛选含 payments 关联（回款日期/含未结清）时 qs_agg 带 JOIN，直接
         # aggregate 会把每条记录的金额按其回款笔数重复累加。先取去重后的记录 id，
         # 再在无 JOIN 的基表上聚合金额；回款金额单独在 ARPayment 上聚合，避免互相放大。
         record_ids = list(qs_agg.order_by().values_list('id', flat=True).distinct())
@@ -1206,7 +1206,7 @@ def _apply_record_state_filters(qs, request, today=None):
             )
 
     # 回款筛选：pay_status='unpaid' 纯无回款；pay_include_unpaid=1 与日期区间做 OR
-    # （"3月回款 + 未回款"→传 pay_start/pay_end + pay_include_unpaid=1）
+    # （"3月回款 + 含未结清"→传 pay_start/pay_end + pay_include_unpaid=1）
     pay_status = request.GET.get('pay_status', '').strip()
     pay_include_unpaid = request.GET.get('pay_include_unpaid', '') in ('1', 'true')
     pay_start = request.GET.get('pay_start', '').strip()
@@ -1220,12 +1220,14 @@ def _apply_record_state_filters(qs, request, today=None):
         if pay_end:
             date_q &= Q(payments__payment_date__lte=pay_end)
         if pay_include_unpaid:
-            qs = qs.filter(date_q | Q(payments__isnull=True))
+            qs = qs.filter(date_q | Q(outstanding_amount__gt=0))
         else:
             qs = qs.filter(date_q)
         qs = qs.distinct()
-    elif pay_status == 'unpaid' or pay_include_unpaid:
+    elif pay_status == 'unpaid':
         qs = qs.filter(payments__isnull=True)
+    elif pay_include_unpaid:
+        qs = qs.filter(outstanding_amount__gt=0)
     elif pay_status == 'paid':
         qs = qs.filter(payments__isnull=False).distinct()
     return qs
@@ -1430,7 +1432,7 @@ def ar_records_group_summary(request):
     qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
     qs = _apply_record_filters(qs, request)
     qs = _apply_record_state_filters(qs, request, today)
-    # 回款日期/含未回款筛选会让 qs 带 payments JOIN，导致后续按维度分组时 Count/Sum
+    # 回款日期/含未结清筛选会让 qs 带 payments JOIN，导致后续按维度分组时 Count/Sum
     # 因行扇出而翻倍。先取去重记录 id 落到无 JOIN 的基表，再分组聚合。
     record_ids = list(qs.order_by().values_list('id', flat=True).distinct())
     qs = ARRecord.objects.filter(id__in=record_ids)

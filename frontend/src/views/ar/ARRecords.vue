@@ -27,7 +27,7 @@ const filters = reactive({
 // 回款日期筛选粒度（UI-only）：'' 全部 | day 按日 | month 按月 | year 按年 | range 区间
 const payMode = ref('')
 const payInput = reactive({ day: '', month: '', year: '', start: '', end: '' })
-const payIncludeUnpaid = ref(false)   // "含未回款" 复选框状态
+const payIncludeUnpaid = ref(false)   // "含未结清" 按钮状态
 
 // 把粒度 + 复选框折算成 filters 字段下发后端
 function applyPayMode() {
@@ -48,7 +48,7 @@ function applyPayMode() {
   }
   const hasDate = !!(filters.pay_start || filters.pay_end)
   if (payIncludeUnpaid.value) {
-    // 有日期区间：OR 逻辑（含未回款）；无日期：纯"未回款"
+    // 有日期区间：OR 逻辑（含未结清）；无日期：纯"未结清"
     if (hasDate) filters.pay_include_unpaid = '1'
     else filters.pay_status = 'unpaid'
   }
@@ -126,7 +126,7 @@ const FILTER_CHIP_LABELS = {
   pay_status: v => (v === 'unpaid' ? '未回款' : '已回款'),
   pay_start: v => `回款≥${v}`,
   pay_end: v => `回款≤${v}`,
-  pay_include_unpaid: () => '含未回款',
+  pay_include_unpaid: () => '含未结清',
 }
 const ADVANCED_FILTER_KEYS = ['month', 'pay_status', 'pay_start', 'pay_end', 'pay_include_unpaid', 'status', 'reconciliation_status', 'invoice_status', 'responsibility', 'is_shared', 'manager']
 const activeFilterChips = computed(() =>
@@ -484,8 +484,8 @@ function clearFilters() {
           <input v-model="payInput.end" type="date" class="sel-mo" title="回款日期止" @change="applyPayMode" />
         </template>
         <button class="act-btn" :class="{ 'act-btn--on': payIncludeUnpaid }"
-          title="同时显示从未回款的记录（与回款日期取并集）"
-          @click="payIncludeUnpaid = !payIncludeUnpaid; applyPayMode()">含未回款</button>
+          title="同时显示未结清的记录（与回款日期取并集）"
+          @click="payIncludeUnpaid = !payIncludeUnpaid; applyPayMode()">含未结清</button>
         <select v-model="filters.status" class="sel-mo" @change="onFilterChange">
           <option value="">全部状态</option>
           <option value="overdue">逾期</option>

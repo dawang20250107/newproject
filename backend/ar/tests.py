@@ -357,10 +357,10 @@ class ARPermissionRegressionTests(TestCase):
         self.assertIn(unpaid.id, unpaid_only)
         self.assertNotIn(paid.id, unpaid_only)
 
-        # date range + pay_include_unpaid=1 → OR: June-paid OR no-payments-ever
+        # date range + pay_include_unpaid=1 → OR: June-paid OR outstanding_amount>0
         combined = ids({'pay_start': '2026-06-01', 'pay_end': '2026-06-30', 'pay_include_unpaid': '1'})
-        self.assertIn(paid.id, combined)
-        self.assertIn(unpaid.id, combined)
+        self.assertIn(paid.id, combined)    # has June payment
+        self.assertIn(unpaid.id, combined)  # outstanding > 0
 
     def test_summary_not_inflated_by_multiple_payments(self):
         admin = self.make_user('13900000055', 'finance_director', role='super_admin')
