@@ -217,12 +217,12 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         </div>
       </div>
       <div class="stat-actions">
-        <button class="act-btn" @click="downloadTemplate" title="下载模板">↓ 模板</button>
-        <label class="act-btn" style="cursor:pointer">
+        <button class="btn btn-ghost btn-sm" @click="downloadTemplate" title="下载模板">↓ 模板</button>
+        <label class="btn btn-ghost btn-sm" style="cursor:pointer">
           {{ importing ? '导入中…' : '↑ 导入' }}
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" :disabled="importing" />
         </label>
-        <button class="act-btn" :disabled="exporting" @click="exportData">↓ 导出</button>
+        <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">↓ 导出</button>
         <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增项目</button>
       </div>
     </div>
@@ -458,22 +458,14 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .mom-down { color: #c62828; }
 .mom-flat { color: var(--muted); font-weight: 500; }
 .stat-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; flex-wrap: wrap; }
-.act-btn {
-  padding: 7px 13px; border-radius: 8px; font-size: 12.5px; font-weight: 500;
-  border: 1px solid var(--border); background: rgba(255,252,250,0.8); color: var(--muted);
-  cursor: pointer; transition: all 0.15s; white-space: nowrap;
-}
-.act-btn:hover { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.07); }
-.act-btn:disabled { opacity: 0.45; cursor: default; }
-
 /* Table — compact density */
 .proj-table { width: 100%; font-size: 12.5px; table-layout: auto; }
 .proj-table th {
   font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
-  color: var(--muted); padding: 7px 9px; background: rgba(0,0,0,0.025);
+  color: var(--muted); padding: 9px 12px; background: rgba(0,0,0,0.025);
   border-bottom: 1px solid rgba(0,0,0,0.06); white-space: nowrap;
 }
-.proj-table td { padding: 7px 9px; vertical-align: middle; }
+.proj-table td { padding: 9px 12px; vertical-align: middle; }
 .proj-table .data-row { transition: background 0.12s; }
 .proj-table .data-row:hover { background: rgba(201,99,66,0.04); }
 .proj-table .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.035); }

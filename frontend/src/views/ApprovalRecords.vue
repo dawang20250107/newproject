@@ -80,7 +80,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     </div>
     <div class="pending-card">已申请待处理共计：<b>{{ pendingAmountTotal.toFixed(2) }}</b> 元</div>
   </div>
-  <div v-if="loading" class="empty">加载中…</div>
+  <div v-if="loading" class="empty">⏳ 加载中…</div>
+  <div v-else-if="!items.length" class="empty">暂无审批记录</div>
   <table v-else class="approval-table"><thead><tr><th>申请人</th><th>所属事业部</th><th>审批编号</th><th>摘要</th><th>申请金额</th><th>收款主体</th><th>审批状态</th><th>操作</th></tr></thead>
     <tbody><tr v-for="i in items" :key="i.id"><td>{{i.applicant}}</td><td>{{i.department}}</td><td class="mono">{{i.approval_number}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}</td><td class="payee">{{i.payee}}</td>
       <td>
@@ -112,19 +113,20 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-card { padding: 12px; }
 .filter-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
 .pending-card { font-size: 12px; color: #8a4d2f; background: rgba(201,99,66,0.08); border: 1px solid rgba(201,99,66,0.25); border-radius: 10px; padding: 6px 10px; white-space: nowrap; }
-.approval-table { width: 100%; table-layout: fixed; font-size: 12px; }
-.approval-table th, .approval-table td { padding: 6px 8px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.approval-table { width: 100%; table-layout: fixed; }
+/* 行高/内边距对齐全局表格（付款台账），保证两个页面观感一致 */
+.approval-table th, .approval-table td { padding: 11px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .approval-table th:nth-child(1), .approval-table td:nth-child(1) { width: 8%; }
 .approval-table th:nth-child(2), .approval-table td:nth-child(2) { width: 11%; }
-.approval-table th:nth-child(3), .approval-table td:nth-child(3) { width: 17%; }
-.approval-table th:nth-child(4), .approval-table td:nth-child(4) { width: 18%; }
+.approval-table th:nth-child(3), .approval-table td:nth-child(3) { width: 16%; }
+.approval-table th:nth-child(4), .approval-table td:nth-child(4) { width: 17%; }
 .approval-table th:nth-child(5), .approval-table td:nth-child(5) { width: 10%; }
 .approval-table th:nth-child(6), .approval-table td:nth-child(6) { width: 14%; }
 .approval-table th:nth-child(7), .approval-table td:nth-child(7) { width: 14%; }
-.approval-table th:nth-child(8), .approval-table td:nth-child(8) { width: 8%; }
+.approval-table th:nth-child(8), .approval-table td:nth-child(8) { width: 10%; }
 .approval-table th:nth-child(7), .approval-table td:nth-child(7) { overflow: visible; text-overflow: clip; white-space: normal; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .summary, .payee { max-width: 100%; }
-.approval-table select { width: 100%; min-width: 130px; height: 30px; font-size: 12px; padding: 0 24px 0 8px; background-position: right 6px center; }
+.approval-table select { width: 100%; min-width: 130px; height: 32px; font-size: 13px; padding: 0 24px 0 8px; background-position: right 6px center; }
 </style>

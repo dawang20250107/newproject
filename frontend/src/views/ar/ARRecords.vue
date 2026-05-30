@@ -437,12 +437,12 @@ function clearFilters() {
         </div>
       </div>
       <div class="ctrl-row">
-        <button class="act-btn" @click="downloadTemplate">↓ 模板</button>
-        <label class="act-btn" style="cursor:pointer">
+        <button class="btn btn-ghost btn-sm" @click="downloadTemplate">↓ 模板</button>
+        <label class="btn btn-ghost btn-sm" style="cursor:pointer">
           {{ importing ? '导入中…' : '↑ 导入' }}
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />
         </label>
-        <button class="act-btn" :disabled="exporting" @click="exportData">↓ 导出</button>
+        <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">↓ 导出</button>
         <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增应收</button>
       </div>
     </div>
@@ -835,7 +835,7 @@ function clearFilters() {
             <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
           </select>
           <input v-model="payFilters.q" placeholder="搜索项目" class="search-input" @input="loadPayments(true)" />
-          <button class="act-btn" :disabled="payExporting" @click="exportPayments">↓ 导出</button>
+          <button class="btn btn-ghost btn-sm" :disabled="payExporting" @click="exportPayments">↓ 导出</button>
         </div>
 
         <div v-if="paySummary" class="totals-strip">
