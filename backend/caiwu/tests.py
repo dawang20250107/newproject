@@ -78,7 +78,8 @@ CURRENT_AMOUNTS = {
 
 @override_settings(ALLOWED_HOSTS=['testserver', 'localhost', '127.0.0.1'])
 class CaiwuCalculationLogicTests(TestCase):
-    databases = {'default', 'caiwu'}
+    # caiwu 已并入 default 库（平台整合阶段1），测试不再需要独立的 caiwu alias。
+    databases = {'default'}
 
     @classmethod
     def setUpTestData(cls):
