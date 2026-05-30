@@ -280,10 +280,12 @@ async function handleImport(type, ev) {
       ? await ar.importCollectionBudget(fd) : await ar.importPaymentBudget(fd)
     const d = res.data
     let msg = `导入完成：新增 ${d.created} 条，跳过 ${d.skipped} 条`
-    if (d.errors?.length) msg += `\n\n错误：\n${d.errors.slice(0, 10).join('\n')}`
+    if (d.corrected) msg += `，按项目台账自动更正 ${d.corrected} 条`
+    if (d.warnings?.length) msg += `\n\n已更正：\n${d.warnings.slice(0, 15).join('\n')}`
+    if (d.errors?.length) msg += `\n\n错误：\n${d.errors.slice(0, 15).join('\n')}`
     alert(msg)
     await loadAll()
-  } catch (e) { alert(e?.response?.data?.msg || '导入失败')
+  } catch (e) { alert(e?.msg || '导入失败')
   } finally { importing.value = false; ev.target.value = '' }
 }
 

@@ -296,3 +296,33 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(cb.sub_dept, '新二级部门')
         self.assertEqual(pb.delivery_dept, '运输事业部')
         self.assertEqual(pb.sub_dept, '新二级部门')
+
+    def test_budget_import_corrects_wrong_fields_from_project(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        admin = self.make_user('13900000088', 'finance_director', role='super_admin')
+        project = self.create_project()  # short_name 'Project A', dept 劳务事业部, sub 'Sub A'
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['项目编号(可选)', '项目简称/摘要*', '预计收款日期(YYYY-MM-DD)*',
+                   '二级部门', '交付部门', '金额*', '备注'])
+        # correct short_name, but WRONG project_no / sub_dept / delivery_dept
+        ws.append(['WRONG-001', 'Project A', '2026-06-15',
+                   '错误二级部门', '运输事业部', 100000, '测试'])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        upload = SimpleUploadedFile(
+            'b.xlsx', buf.read(),
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+        resp = self.client.post('/api/pk/ar/budget/collection/import',
+                                data={'file': upload}, **self.auth(admin))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()['data']
+        self.assertEqual(data['created'], 1)
+        self.assertEqual(data['corrected'], 1)
+
+        cb = CollectionBudget.objects.get(short_name='Project A')
+        # All three wrong fields overridden with the project's authoritative values
+        self.assertEqual(cb.delivery_dept, project.delivery_dept)
+        self.assertEqual(cb.sub_dept, project.sub_dept)
+        self.assertEqual(cb.project_no, project.project_no)

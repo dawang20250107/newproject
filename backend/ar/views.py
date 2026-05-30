@@ -2309,9 +2309,9 @@ def _budget_template(request, kind):
     color = '1B6E35' if kind == 'collection' else 'B25600'
     _header_row(ws, headers, color=color)
     ws.append([EXAMPLE_ROW_MARKER, '示例项目A', '2026-06-15', '华南区',
-               '劳务事业部', 100000, '示例备注'])
+               '劳务事业部', 100000, '填对项目简称即可，编号/交付部门/二级部门会自动按台账带入或更正'])
     for col in range(1, len(headers) + 1):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 20
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 22
     return _export_response(wb, f'{lbl}预算导入模板.xlsx')
 
 
@@ -2346,8 +2346,10 @@ def _budget_import(request, Model, kind):
 
     from paikuan.models import PaikuanUser
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
-    created = skipped = 0
+    search_depts = None if request.pk_role == 'super_admin' else request.pk_depts
+    created = skipped = corrected = 0
     errors = []
+    warnings = []
     for ri in range(2, ws.max_row + 1):
         short_name = _cv(ri, '项目简称/摘要*')
         if not short_name or EXAMPLE_ROW_MARKER in short_name:
@@ -2358,13 +2360,53 @@ def _budget_import(request, Model, kind):
             errors.append(f'第{ri}行: 预计日期无效')
             skipped += 1
             continue
-        dept = _cv(ri, '交付部门')
-        # Auto-derive dept from project when the column is left blank
-        if not dept and short_name:
-            search_depts = None if request.pk_role == 'super_admin' else request.pk_depts
-            _pre = _match_project_by_short_name(short_name, allowed_depts=search_depts)
-            if _pre:
-                dept = _pre.delivery_dept
+        filled_dept = _cv(ri, '交付部门')
+
+        # 项目简称是权威来源：先只按简称匹配项目（忽略可能填错的部门列）。
+        # 简称对应多个部门时，用填写的交付部门消歧。
+        name_matches = list(ARProject.objects.filter(short_name=short_name.strip()))
+        if search_depts is not None:
+            name_matches = [m for m in name_matches if m.delivery_dept in search_depts]
+        proj = None
+        if len(name_matches) == 1:
+            proj = name_matches[0]
+        elif len(name_matches) > 1:
+            cands = [m for m in name_matches if m.delivery_dept == filled_dept] if filled_dept else []
+            if len(cands) == 1:
+                proj = cands[0]
+            else:
+                depts_hint = '、'.join(sorted({m.delivery_dept for m in name_matches}))
+                errors.append(f'第{ri}行: 项目简称"{short_name}"对应多个部门（{depts_hint}），'
+                              f'请在"交付部门"列填写正确部门以区分')
+                skipped += 1
+                continue
+        else:
+            # 简称无精确匹配，回退到模糊匹配（容许用户填部分简称）
+            proj = _match_project_by_short_name(short_name, filled_dept, search_depts)
+
+        if proj:
+            # 以台账为准：用项目的编号/部门/二级部门覆盖填写值
+            dept = proj.delivery_dept
+            project_no = proj.project_no
+            sub_dept = proj.sub_dept
+            mismatches = []
+            if filled_dept and filled_dept != dept:
+                mismatches.append(f'交付部门"{filled_dept}"→"{dept}"')
+            filled_no = _cv(ri, '项目编号(可选)')
+            if filled_no and filled_no != project_no:
+                mismatches.append(f'项目编号"{filled_no}"→"{project_no}"')
+            filled_sub = _cv(ri, '二级部门')
+            if filled_sub and filled_sub != sub_dept:
+                mismatches.append(f'二级部门"{filled_sub}"→"{sub_dept}"')
+            if mismatches:
+                corrected += 1
+                warnings.append(f'第{ri}行: 已按项目台账自动更正（{"，".join(mismatches)}）')
+        else:
+            # 自由文本摘要（非台账项目）：采用填写值
+            dept = filled_dept
+            project_no = _cv(ri, '项目编号(可选)')
+            sub_dept = _cv(ri, '二级部门')
+
         if dept and dept not in VALID_DEPARTMENTS:
             errors.append(f'第{ri}行: 无效交付部门"{dept}"')
             skipped += 1
@@ -2379,12 +2421,11 @@ def _budget_import(request, Model, kind):
             skipped += 1
             continue
         try:
-            proj = _match_project_by_short_name(short_name, dept)
             Model.objects.create(
-                project_no=(proj.project_no if proj else _cv(ri, '项目编号(可选)')),
+                project_no=project_no,
                 short_name=short_name,
                 expected_date=date_str,
-                sub_dept=(proj.sub_dept if proj else _cv(ri, '二级部门')),
+                sub_dept=sub_dept,
                 delivery_dept=dept,
                 amount=amount,
                 notes=_cv(ri, '备注'),
@@ -2394,7 +2435,8 @@ def _budget_import(request, Model, kind):
         except Exception as e:
             errors.append(f'第{ri}行: {e}')
             skipped += 1
-    return ok({'created': created, 'skipped': skipped, 'errors': errors})
+    return ok({'created': created, 'skipped': skipped, 'corrected': corrected,
+               'errors': errors, 'warnings': warnings})
 
 
 def _budget_export(request, Model, kind):
