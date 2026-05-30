@@ -731,7 +731,7 @@ def ar_records(request):
         collected = (ARPayment.objects.filter(ar_record_id__in=all_record_ids)
                      .aggregate(s=Sum('amount'))['s'] or 0)
 
-        # ── 时段合计：本月应收 / 本周应收 / 本周已收 ──────────────────────────
+        # ── 时段合计：本月应收/已收 + 本周应收/已收 ─────────────────────────
         # 基准日期 = 所有日期筛选里最晚的一天（都没选则用今天）
         ref_candidates = [today]
         year_f = request.GET.get('year', '').strip()
@@ -760,13 +760,18 @@ def ar_records(request):
         wk_start = ref_date - datetime.timedelta(days=ref_date.weekday())
         wk_end = wk_start + datetime.timedelta(days=6)
 
+        # 应收：按 due_date 落在窗口内的记录预估金额求和（null due_date 自动排除）
         month_est = (base.filter(due_date__gte=mo_start, due_date__lte=mo_end)
                      .aggregate(s=Sum('estimated_amount'))['s'] or 0)
         week_est = (base.filter(due_date__gte=wk_start, due_date__lte=wk_end)
                     .aggregate(s=Sum('estimated_amount'))['s'] or 0)
-        week_collected = (ARPayment.objects
-                          .filter(ar_record_id__in=all_record_ids,
-                                  payment_date__gte=wk_start, payment_date__lte=wk_end)
+        # 已收：按 payment_date 落在窗口内的回款金额求和，限当前筛选记录集
+        pay_in_set = ARPayment.objects.filter(ar_record_id__in=all_record_ids)
+        month_collected = (pay_in_set
+                           .filter(payment_date__gte=mo_start, payment_date__lte=mo_end)
+                           .aggregate(s=Sum('amount'))['s'] or 0)
+        week_collected = (pay_in_set
+                          .filter(payment_date__gte=wk_start, payment_date__lte=wk_end)
                           .aggregate(s=Sum('amount'))['s'] or 0)
 
         summary = {
@@ -778,6 +783,7 @@ def ar_records(request):
             'adj': str(agg['adj'] or 0),
             'collected': str(collected),
             'month_est': str(month_est),
+            'month_collected': str(month_collected),
             'week_est': str(week_est),
             'week_collected': str(week_collected),
             'ref_month': f'{ref_date.year}年{ref_date.month}月',

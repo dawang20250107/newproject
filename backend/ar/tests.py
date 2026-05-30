@@ -401,9 +401,12 @@ class ARPermissionRegressionTests(TestCase):
             estimated_amount=Decimal('2000.00'))
         ARRecord.objects.filter(pk=rec_july.pk).update(due_date=date(2026, 7, 15))
 
-        # Payment in the week of 2026-06-29 (Mon) ~ 2026-07-05 (Sun)
+        # Payment on 2026-07-01 → inside the week (6/29~7/5) but NOT in June month
         ARPayment.objects.create(ar_record=rec_june, payment_no=1,
                                  amount=Decimal('400.00'), payment_date=date(2026, 7, 1))
+        # Payment on 2026-06-15 → inside June month but NOT in the week
+        ARPayment.objects.create(ar_record=rec_june, payment_no=2,
+                                 amount=Decimal('250.00'), payment_date=date(2026, 6, 15))
 
         # Request with year=2026 month=6 → ref_date=2026-06-30 (month end)
         resp = self.client.get('/api/pk/ar/records', {'year': 2026, 'month': 6},
@@ -414,12 +417,13 @@ class ARPermissionRegressionTests(TestCase):
         # month_est: due_date in June (only rec_june qualifies)
         self.assertEqual(Decimal(s['month_est']), Decimal('1000.00'))
         self.assertEqual(s['ref_month'], '2026年6月')
+        # month_collected: payment_date in June → only the 06-15 payment (250)
+        self.assertEqual(Decimal(s['month_collected']), Decimal('250.00'))
 
         # week window for 2026-06-30 (Tuesday): Mon=2026-06-29, Sun=2026-07-05
         # rec_june has due_date=2026-06-30 (in that week) → week_est includes it
         self.assertEqual(Decimal(s['week_est']), Decimal('1000.00'))
-
-        # week_collected: payment on 2026-07-01 is in the same week
+        # week_collected: payment on 2026-07-01 is in the week → 400 (not the 06-15 one)
         self.assertEqual(Decimal(s['week_collected']), Decimal('400.00'))
 
     def test_records_search_matches_project_manager(self):

@@ -582,20 +582,29 @@ function clearFilters() {
           <div class="kpi-item ok"><span class="kpi-k">已收合计</span><span class="kpi-v">{{ fmtAmt(summaryData.collected) }}</span></div>
           <div class="kpi-item"><span class="kpi-k">差额调整</span><span class="kpi-v">{{ fmtAmt(summaryData.adj) }}</span></div>
           <div class="kpi-item warn"><span class="kpi-k">未收合计</span><span class="kpi-v">{{ fmtAmt(summaryData.outstanding) }}</span></div>
-          <span class="metrics-div"></span>
+        </template>
+
+        <!-- 时段合计单独成行：本月应收/已收 + 本周应收/已收 -->
+        <div v-if="summaryData" class="metrics-period-row">
+          <span class="sum-section-lbl" title="按应收到期日(due_date)与回款日期(payment_date)归入对应月/周区间统计">时段合计</span>
           <div class="kpi-item" :title="`应收到期在 ${summaryData.ref_month} 内的预估金额`">
             <span class="kpi-k">{{ summaryData.ref_month }}应收</span>
             <span class="kpi-v">{{ fmtAmt(summaryData.month_est) }}</span>
           </div>
+          <div class="kpi-item ok" :title="`回款日期在 ${summaryData.ref_month} 内的实际回款额`">
+            <span class="kpi-k">{{ summaryData.ref_month }}已收</span>
+            <span class="kpi-v">{{ fmtAmt(summaryData.month_collected) }}</span>
+          </div>
+          <span class="metrics-div"></span>
           <div class="kpi-item" :title="`应收到期在 ${summaryData.ref_week} 周内的预估金额`">
             <span class="kpi-k">本周应收<span class="kpi-sub">{{ summaryData.ref_week }}</span></span>
             <span class="kpi-v">{{ fmtAmt(summaryData.week_est) }}</span>
           </div>
-          <div class="kpi-item ok" :title="`${summaryData.ref_week} 内实际回款额`">
+          <div class="kpi-item ok" :title="`回款日期在 ${summaryData.ref_week} 周内的实际回款额`">
             <span class="kpi-k">本周已收<span class="kpi-sub">{{ summaryData.ref_week }}</span></span>
             <span class="kpi-v">{{ fmtAmt(summaryData.week_collected) }}</span>
           </div>
-        </template>
+        </div>
       </div>
 
       <!-- ══ 数据明细表（全部/对账/开票/回款 跟踪）══ -->
@@ -1131,6 +1140,7 @@ function clearFilters() {
 /* KPI bar */
 .metrics-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; padding: 9px 16px; background: rgba(0,0,0,0.02); border-radius: 12px; }
 .metrics-div { width: 1px; align-self: stretch; min-height: 20px; background: rgba(0,0,0,0.1); margin: 0 2px; }
+.metrics-period-row { flex-basis: 100%; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding-top: 8px; margin-top: 4px; border-top: 1px dashed rgba(0,0,0,0.1); }
 .sum-section-lbl { font-size: 11px; color: var(--muted); letter-spacing: 0.5px; white-space: nowrap; cursor: default; }
 .kpi-item { display: flex; align-items: baseline; gap: 6px; }
 .kpi-k { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 1px; }
