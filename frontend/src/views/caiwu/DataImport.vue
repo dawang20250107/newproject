@@ -262,10 +262,8 @@ onMounted(() => {
         </div>
       </div>
 
-      <div v-if="statusLoading" class="empty" style="padding:16px"><div class="icon">⏳</div>加载中…</div>
-      <div v-else-if="!submissionStatus || !submissionStatus.bus?.length" class="empty" style="padding:16px">
-        <div class="icon">📋</div>暂无提交数据
-      </div>
+      <EmptyState v-if="statusLoading" loading style="padding:16px" />
+      <EmptyState v-else-if="!submissionStatus || !submissionStatus.bus?.length" icon="📋" text="暂无提交数据" style="padding:16px" />
       <template v-else>
         <!-- Dynamic strong reminder: unsubmitted / incomplete BUs -->
         <div v-if="reminderItems.length" class="submit-alert">
@@ -329,8 +327,8 @@ onMounted(() => {
       </template>
     </div>
 
-    <div v-if="loading" class="empty"><div class="icon">⏳</div>加载中…</div>
-    <div v-else-if="loadErr" class="empty" style="color:var(--danger)"><div class="icon">⚠️</div>{{ loadErr }}</div>
+    <EmptyState v-if="loading" loading />
+    <EmptyState v-else-if="loadErr" :error="loadErr" />
 
     <!-- Batch list -->
     <div v-else class="card">
