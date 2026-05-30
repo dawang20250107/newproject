@@ -326,3 +326,42 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(cb.delivery_dept, project.delivery_dept)
         self.assertEqual(cb.sub_dept, project.sub_dept)
         self.assertEqual(cb.project_no, project.project_no)
+
+    def test_records_filter_by_payment_date_and_unpaid(self):
+        admin = self.make_user('13900000077', 'finance_director', role='super_admin')
+        project = self.create_project()
+
+        paid = self.create_record(project)
+        ARPayment.objects.create(ar_record=paid, payment_no=1,
+                                 amount=Decimal('200.00'), payment_date=date(2026, 6, 10))
+        # second record with no payments at all
+        unpaid = ARRecord.objects.create(project=project, operation_year=2026,
+                                         operation_month=7, estimated_amount=Decimal('500.00'))
+
+        def ids(params):
+            resp = self.client.get('/api/pk/ar/records', params, **self.auth(admin))
+            self.assertEqual(resp.status_code, 200)
+            return {r['id'] for r in resp.json()['data']['items']}
+
+        # pay date range covering the payment → only the paid record
+        in_range = ids({'pay_start': '2026-06-01', 'pay_end': '2026-06-30'})
+        self.assertIn(paid.id, in_range)
+        self.assertNotIn(unpaid.id, in_range)
+
+        # pay date range outside the payment → neither record
+        out_range = ids({'pay_start': '2026-08-01', 'pay_end': '2026-08-31'})
+        self.assertNotIn(paid.id, out_range)
+
+        # unpaid filter → only the record with no payments
+        unpaid_only = ids({'pay_status': 'unpaid'})
+        self.assertIn(unpaid.id, unpaid_only)
+        self.assertNotIn(paid.id, unpaid_only)
+
+    def test_records_search_matches_project_manager(self):
+        admin = self.make_user('13900000066', 'finance_director', role='super_admin')
+        project = self.create_project()  # project_manager 'PM A'
+        rec = self.create_record(project)
+
+        resp = self.client.get('/api/pk/ar/records', {'q': 'PM A'}, **self.auth(admin))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(rec.id, {r['id'] for r in resp.json()['data']['items']})

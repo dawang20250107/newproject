@@ -21,8 +21,38 @@ const activeTab = ref('all')   // all | reconciliation | invoice | collection
 const filters = reactive({
   dept: '', year: '', month: '', status: '',
   reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '',
-  pay_start: '', pay_end: '', manager: '', is_shared: '',
+  pay_status: '', pay_start: '', pay_end: '', manager: '', is_shared: '',
 })
+
+// 回款日期筛选粒度（UI-only）：'' 全部 | unpaid 未回款 | day 按日 | month 按月 | year 按年 | range 区间
+const payMode = ref('')
+const payInput = reactive({ day: '', month: '', year: '', start: '', end: '' })
+// 把所选粒度折算成 pay_status / pay_start / pay_end 下发给后端
+function applyPayMode() {
+  filters.pay_status = ''; filters.pay_start = ''; filters.pay_end = ''
+  const m = payMode.value
+  if (m === 'unpaid') {
+    filters.pay_status = 'unpaid'
+  } else if (m === 'day' && payInput.day) {
+    filters.pay_start = payInput.day; filters.pay_end = payInput.day
+  } else if (m === 'month' && payInput.month) {
+    const [y, mo] = payInput.month.split('-').map(Number)
+    const last = new Date(y, mo, 0).getDate()
+    filters.pay_start = `${payInput.month}-01`
+    filters.pay_end = `${payInput.month}-${String(last).padStart(2, '0')}`
+  } else if (m === 'year' && payInput.year) {
+    filters.pay_start = `${payInput.year}-01-01`
+    filters.pay_end = `${payInput.year}-12-31`
+  } else if (m === 'range') {
+    filters.pay_start = payInput.start; filters.pay_end = payInput.end
+  }
+  onFilterChange()
+}
+function resetPayMode() {
+  payMode.value = ''
+  filters.pay_status = ''; filters.pay_start = ''; filters.pay_end = ''
+  Object.assign(payInput, { day: '', month: '', year: '', start: '', end: '' })
+}
 
 const showModal = ref(false)
 const editRec = ref(null)
@@ -87,17 +117,21 @@ const FILTER_CHIP_LABELS = {
   responsibility: v => `责任:${({ settled: '已结清', recon: '对账阶段', invoice: '待开票', post: '票后回款' }[v] || v)}`,
   is_shared: v => (v === '1' ? '共享' : '非共享'),
   manager: v => `负责人:${v}`,
+  pay_status: v => (v === 'unpaid' ? '未回款' : '已回款'),
   pay_start: v => `回款≥${v}`,
   pay_end: v => `回款≤${v}`,
 }
-const ADVANCED_FILTER_KEYS = ['month', 'pay_start', 'pay_end', 'status', 'reconciliation_status', 'invoice_status', 'responsibility', 'is_shared', 'manager']
+const ADVANCED_FILTER_KEYS = ['month', 'pay_status', 'pay_start', 'pay_end', 'status', 'reconciliation_status', 'invoice_status', 'responsibility', 'is_shared', 'manager']
 const activeFilterChips = computed(() =>
   ADVANCED_FILTER_KEYS
     .filter(k => filters[k] !== '' && filters[k] != null)
     .map(k => ({ key: k, text: FILTER_CHIP_LABELS[k](filters[k]) })))
 const hasAnyFilter = computed(() =>
   !!(filters.dept || filters.year || filters.q) || activeFilterChips.value.length > 0)
-function removeFilter(key) { filters[key] = ''; onFilterChange() }
+function removeFilter(key) {
+  if (key === 'pay_status' || key === 'pay_start' || key === 'pay_end') { resetPayMode(); onFilterChange(); return }
+  filters[key] = ''; onFilterChange()
+}
 
 // ── 回款流水 (payment ledger) ───────────────────────────────────────────────
 const payFilters = reactive({ pay_start: '', pay_end: '', dept: '', q: '' })
@@ -363,7 +397,8 @@ onMounted(() => {
 })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 function clearFilters() {
-  Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '', pay_start: '', pay_end: '', manager: '',
+  resetPayMode()
+  Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '', pay_status: '', pay_start: '', pay_end: '', manager: '',
     is_shared: auth.perms?.ar_shared_only ? '1' : '' })
   onFilterChange()
 }
@@ -424,8 +459,24 @@ function clearFilters() {
           <option value="">全月</option>
           <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
         </select>
-        <input v-model="filters.pay_start" type="date" class="sel-mo" title="回款日期起" @change="onFilterChange" />
-        <input v-model="filters.pay_end" type="date" class="sel-mo" title="回款日期止" @change="onFilterChange" />
+        <select v-model="payMode" class="sel-mo" title="回款日期筛选" @change="applyPayMode">
+          <option value="">回款(全部)</option>
+          <option value="unpaid">未回款</option>
+          <option value="day">回款按日</option>
+          <option value="month">回款按月</option>
+          <option value="year">回款按年</option>
+          <option value="range">回款区间</option>
+        </select>
+        <input v-if="payMode === 'day'" v-model="payInput.day" type="date" class="sel-mo" @change="applyPayMode" />
+        <input v-if="payMode === 'month'" v-model="payInput.month" type="month" class="sel-mo" @change="applyPayMode" />
+        <select v-if="payMode === 'year'" v-model="payInput.year" class="sel-mo" @change="applyPayMode">
+          <option value="">选择年份</option>
+          <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
+        </select>
+        <template v-if="payMode === 'range'">
+          <input v-model="payInput.start" type="date" class="sel-mo" title="回款日期起" @change="applyPayMode" />
+          <input v-model="payInput.end" type="date" class="sel-mo" title="回款日期止" @change="applyPayMode" />
+        </template>
         <select v-model="filters.status" class="sel-mo" @change="onFilterChange">
           <option value="">全部状态</option>
           <option value="overdue">逾期</option>
