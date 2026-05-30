@@ -502,12 +502,12 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             </div>
           </div>
           <div class="hdr-acts">
-            <button class="act-btn" @click="downloadTemplate('collection')">↓ 模板</button>
-            <label class="act-btn" style="cursor:pointer">
+            <button class="btn btn-ghost btn-sm" @click="downloadTemplate('collection')">↓ 模板</button>
+            <label class="btn btn-ghost btn-sm" style="cursor:pointer">
               {{ importing ? '导入中…' : '↑ 导入' }}
               <input ref="collFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport('collection', $event)" />
             </label>
-            <button class="act-btn" :disabled="exporting" @click="exportData('collection')">↓ 导出</button>
+            <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData('collection')">↓ 导出</button>
             <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate('collection')">+ 新增收款预算</button>
           </div>
         </div>
@@ -561,12 +561,12 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             </div>
           </div>
           <div class="hdr-acts">
-            <button class="act-btn" @click="downloadTemplate('payment')">↓ 模板</button>
-            <label class="act-btn" style="cursor:pointer">
+            <button class="btn btn-ghost btn-sm" @click="downloadTemplate('payment')">↓ 模板</button>
+            <label class="btn btn-ghost btn-sm" style="cursor:pointer">
               {{ importing ? '导入中…' : '↑ 导入' }}
               <input ref="payFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport('payment', $event)" />
             </label>
-            <button class="act-btn" :disabled="exporting" @click="exportData('payment')">↓ 导出</button>
+            <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData('payment')">↓ 导出</button>
             <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate('payment')">+ 新增付款预算</button>
           </div>
         </div>
