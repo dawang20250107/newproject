@@ -7,10 +7,22 @@ User=ubuntu
 WorkingDirectory=/opt/paikuan/backend
 EnvironmentFile=/opt/paikuan/backend/.env
 ExecStartPre=/opt/paikuan/venv/bin/python manage.py migrate --noinput
+# gevent 异步：4 个 worker 进程（=核数，吃满多核），每进程靠协程并发处理
+# 大量连接，远超同步模型的「1 请求占 1 worker」。100 人同时在线 + 偶发慢请求
+# （导出/上传 Excel）也不会互相排队阻塞。
+#   --worker-connections 1000：单进程并发连接上限（4×1000，足够冗余）
+#   --timeout 120：导出大表 / AI 分析等慢请求留足时间，避免被 worker 超时杀掉
+# ⚠️ 本项目数据库驱动是纯 Python 的 PyMySQL，天然兼容 gevent 猴子补丁，
+#    gunicorn 的 gevent worker 会自动 patch，无需改业务代码。
+# ⚠️ 并发上来后留意 MySQL max_connections（默认 151）。CONN_MAX_AGE=60 会复用
+#    连接；若高峰报 "Too many connections"，把 my.cnf 的 max_connections 调到 300。
 ExecStart=/opt/paikuan/venv/bin/gunicorn \
-    -w 3 \
+    -w 4 \
+    -k gevent \
+    --worker-connections 1000 \
     -b 127.0.0.1:8081 \
-    --timeout 60 \
+    --timeout 120 \
+    --graceful-timeout 30 \
     --access-logfile /var/log/paikuan/access.log \
     --error-logfile  /var/log/paikuan/error.log \
     wxcloudrun.wsgi:application

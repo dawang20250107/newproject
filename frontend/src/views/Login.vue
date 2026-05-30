@@ -80,13 +80,30 @@ async function submit() {
   }
 }
 
-// ── real-time approval polling ──
+// ── approval polling（人工审批是分钟级操作，无需 3s 实时轮询）──
+// 自适应退避：5s 起，每次 ×1.5 封顶 30s；标签页不可见时暂停，避免大量
+// 待审批用户挂在登录页对后端造成持续无效请求压力（100 人时尤为明显）。
+const POLL_MIN = 5000
+const POLL_MAX = 30000
+let pollDelay = POLL_MIN
 function startPolling() {
   stopPolling()
-  pollTimer = setInterval(checkStatus, 3000)
+  pollDelay = POLL_MIN
+  pollTimer = setTimeout(pollTick, pollDelay)
 }
 function stopPolling() {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null }
+}
+async function pollTick() {
+  if (typeof document !== 'undefined' && document.hidden) {
+    // 后台标签不发请求，下个周期再看
+    pollTimer = setTimeout(pollTick, pollDelay)
+    return
+  }
+  const done = await checkStatus()
+  if (done) return            // approved / rejected：checkStatus 已停轮询
+  pollDelay = Math.min(Math.round(pollDelay * 1.5), POLL_MAX)
+  pollTimer = setTimeout(pollTick, pollDelay)
 }
 async function checkStatus() {
   try {
@@ -96,11 +113,14 @@ async function checkStatus() {
       stopPolling()
       pendingState.value = 'approved'
       approvalTimer = setTimeout(enterAfterApproval, 1800)
+      return true
     } else if (s === 'rejected' || s === 'none') {
       stopPolling()
       pendingState.value = 'rejected'
+      return true
     }
   } catch { /* keep polling */ }
+  return false
 }
 async function enterAfterApproval() {
   try {
