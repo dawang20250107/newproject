@@ -479,7 +479,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <div class="card" style="padding:20px">
           <div class="section-title">预算 vs 实际对比</div>
           <BaseChart v-if="comparisonChartOption" :option="comparisonChartOption" height="180px" />
-          <div v-else class="empty"><div class="icon">📊</div>暂无预算数据</div>
+          <EmptyState v-else icon="📊" text="暂无预算数据" />
         </div>
       </div>
 

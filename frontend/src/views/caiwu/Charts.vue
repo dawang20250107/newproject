@@ -204,8 +204,8 @@ onMounted(() => {
         >{{ cat.name }}</button>
       </div>
 
-      <div v-if="trendLoading && !trendData" class="empty"><div class="icon">⏳</div>加载中…</div>
-      <div v-else-if="!trendLoading && trendErr" class="empty" style="color:var(--danger)">{{ trendErr }}</div>
+      <EmptyState v-if="trendLoading && !trendData" loading />
+      <EmptyState v-else-if="!trendLoading && trendErr" :error="trendErr" />
       <TrendLineChart
         v-else-if="trendData"
         :class="{ 'data-reloading': trendLoading }"
@@ -214,7 +214,7 @@ onMounted(() => {
         :selected-l1-ids="selectedL1Ids"
         height="340px"
       />
-      <div v-else class="empty"><div class="icon">📊</div>请选择事业部查看</div>
+      <EmptyState v-else icon="📊" text="请选择事业部查看" />
     </div>
 
     <!-- ── Waterfall Chart ───────────────────────────────── -->
@@ -249,8 +249,8 @@ onMounted(() => {
         </div>
       </div>
 
-      <div v-if="wfLoading && !wfData" class="empty"><div class="icon">⏳</div>加载中…</div>
-      <div v-else-if="!wfLoading && wfErr" class="empty" style="color:var(--danger)">{{ wfErr }}</div>
+      <EmptyState v-if="wfLoading && !wfData" loading />
+      <EmptyState v-else-if="!wfLoading && wfErr" :error="wfErr" />
       <div v-else-if="wfData" :class="{ 'data-reloading': wfLoading }">
         <div v-if="!wfData.factors?.length" class="empty" style="padding:16px">
           <div class="icon">💡</div>
@@ -279,7 +279,7 @@ onMounted(() => {
           </div>
         </template>
       </div>
-      <div v-else class="empty"><div class="icon">📈</div>请选择事业部查看</div>
+      <EmptyState v-else icon="📈" text="请选择事业部查看" />
     </div>
 
     <!-- ── AI analysis modals ─────────────────────────────────────────────────── -->

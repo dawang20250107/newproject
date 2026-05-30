@@ -116,8 +116,8 @@ async function save() {
       </div>
     </div>
 
-    <div v-if="loading" class="empty"><div class="icon">⏳</div>加载中…</div>
-    <div v-else-if="error && !jobs.length" class="empty" style="color:#c62828"><div class="icon">⚠️</div>{{ error }}</div>
+    <EmptyState v-if="loading" loading />
+    <EmptyState v-else-if="error && !jobs.length" :error="error" />
 
     <template v-else>
       <!-- job-title tabs -->

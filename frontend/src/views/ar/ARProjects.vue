@@ -3,6 +3,7 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS } from '../../constants.js'
 import ar from '../../api/ar.js'
+import { fmtMoney } from '../../utils/format.js'
 
 const auth = useAuthStore()
 const items = ref([])

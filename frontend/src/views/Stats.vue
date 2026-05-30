@@ -25,12 +25,8 @@ function toggleDept(d) {
   load()
 }
 
-function fmt(n) {
-  const v = parseFloat(n || 0)
-  if (v >= 100000000) return (v / 100000000).toFixed(2) + ' 亿'
-  if (v >= 10000) return (v / 10000).toFixed(2) + ' 万'
-  return v.toFixed(2) + ' 元'
-}
+// 亿/万/元 三级单位，单位前带空格；空值显示 0.00 元（保持原表现）
+const fmt = (n) => fmtCompact(n, { space: true, yuan: true, dash: '0.00 元' })
 
 async function load() {
   loading.value = true
@@ -121,9 +117,7 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
       <!-- by dept -->
       <div class="card">
         <div class="section-title">各部门明细</div>
-        <div v-if="!data.by_dept.length" class="empty">
-          <div class="icon">📭</div>本月暂无数据
-        </div>
+        <EmptyState v-if="!data.by_dept.length" empty text="本月暂无数据" />
         <div v-else class="table-wrap">
           <table>
             <thead>
