@@ -2250,12 +2250,9 @@ def _budget_list_create(request, Model, page_key):
         dept = request.GET.get('dept', '').strip()
         if dept:
             qs = qs.filter(delivery_dept=dept)
-        year = request.GET.get('year', '').strip()
-        if year:
-            qs = qs.filter(expected_date__year=int(year))
-        month = request.GET.get('month', '').strip()
-        if month:
-            qs = qs.filter(expected_date__month=int(month))
+        _today = datetime.date.today()
+        _ds, _de = _parse_budget_date_range(request, _today)
+        qs = qs.filter(expected_date__gte=_ds, expected_date__lte=_de)
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
         total = qs.count()
@@ -2381,6 +2378,31 @@ def budget_payment(request):
 @pk_required()
 def budget_payment_detail(request, pk):
     return _budget_detail(request, pk, PaymentBudget, 'ar_budget')
+
+
+def _parse_budget_date_range(request, today):
+    """Return (start_date, end_date) from date_start/date_end GET params.
+    Defaults to the current month when neither param is supplied."""
+    ds = request.GET.get('date_start', '').strip()
+    de = request.GET.get('date_end', '').strip()
+    try:
+        start = datetime.date.fromisoformat(ds) if ds else None
+    except ValueError:
+        start = None
+    try:
+        end = datetime.date.fromisoformat(de) if de else None
+    except ValueError:
+        end = None
+    if not start and not end:
+        start = datetime.date(today.year, today.month, 1)
+        end = datetime.date(today.year, today.month,
+                            calendar.monthrange(today.year, today.month)[1])
+    elif not start:
+        start = datetime.date(end.year, end.month, 1)
+    elif not end:
+        end = datetime.date(start.year, start.month,
+                            calendar.monthrange(start.year, start.month)[1])
+    return start, end
 
 
 def _budget_label(kind):
@@ -2586,12 +2608,9 @@ def _budget_export(request, Model, kind):
     dept = request.GET.get('dept', '').strip()
     if dept:
         qs = qs.filter(delivery_dept=dept)
-    year = request.GET.get('year', '').strip()
-    if year:
-        qs = qs.filter(expected_date__year=int(year))
-    month = request.GET.get('month', '').strip()
-    if month:
-        qs = qs.filter(expected_date__month=int(month))
+    _today = datetime.date.today()
+    _ds, _de = _parse_budget_date_range(request, _today)
+    qs = qs.filter(expected_date__gte=_ds, expected_date__lte=_de)
     if qs.count() > 5000:
         return err('导出超过5000行，请缩小筛选范围')
     lbl = _budget_label(kind)
@@ -2654,10 +2673,7 @@ def budget_summary(request):
         return denied
 
     today = datetime.date.today()
-    year = int(request.GET.get('year', today.year))
-    month = int(request.GET.get('month', today.month))
-    start_date = datetime.date(year, month, 1)
-    end_date = datetime.date(year, month, calendar.monthrange(year, month)[1])
+    start_date, end_date = _parse_budget_date_range(request, today)
 
     if request.pk_role == 'super_admin':
         depts = list(DEPARTMENTS)
@@ -2734,7 +2750,7 @@ def budget_summary(request):
             })
 
     return ok({
-        'year': year, 'month': month, 'depts': depts,
+        'start_date': str(start_date), 'end_date': str(end_date), 'depts': depts,
         'budget_collection': str(budget_coll),
         'budget_payment': str(budget_paid),
         'actual_collection': str(actual_coll),

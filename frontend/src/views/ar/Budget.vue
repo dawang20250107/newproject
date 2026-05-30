@@ -7,11 +7,18 @@ import BaseChart from '../../components/ar/BaseChart.vue'
 
 const auth = useAuthStore()
 const activeTab = ref('summary')
-const year = ref(yearCST())
-const month = ref(monthCST())
 const selectedDept = ref('')
-const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
-const months = Array.from({ length: 12 }, (_, i) => i + 1)
+
+// 日期区间筛选，默认本月
+function _monthStart(y, m) {
+  return `${y}-${String(m).padStart(2, '0')}-01`
+}
+function _monthEnd(y, m) {
+  const last = new Date(y, m, 0).getDate()
+  return `${y}-${String(m).padStart(2, '0')}-${String(last).padStart(2, '0')}`
+}
+const dateStart = ref(_monthStart(yearCST(), monthCST()))
+const dateEnd = ref(_monthEnd(yearCST(), monthCST()))
 
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 
@@ -52,19 +59,28 @@ watch(() => form.short_name, name => {
 
 // ── Computed ──────────────────────────────────────────────────────────────────
 
+// 从 dateStart 派生参考年月（用于时间进度条和标题）
+const refYear = computed(() => dateStart.value ? parseInt(dateStart.value.slice(0, 4)) : yearCST())
+const refMonth = computed(() => dateStart.value ? parseInt(dateStart.value.slice(5, 7)) : monthCST())
+
 const monthProgress = computed(() => {
-  const daysInMonth = new Date(year.value, month.value, 0).getDate()
+  const y = refYear.value, m = refMonth.value
+  const daysInMonth = new Date(y, m, 0).getDate()
   const today = new Date()
-  const isCurrentMonth = today.getFullYear() === year.value && today.getMonth() + 1 === month.value
-  const isPast = new Date(year.value, month.value - 1) < new Date(today.getFullYear(), today.getMonth())
+  const isCurrentMonth = today.getFullYear() === y && today.getMonth() + 1 === m
+  const isPast = new Date(y, m - 1) < new Date(today.getFullYear(), today.getMonth())
   const daysPassed = isCurrentMonth ? today.getDate() : (isPast ? daysInMonth : 0)
-  return {
-    daysPassed,
-    daysInMonth,
-    pct: Math.round(daysPassed / daysInMonth * 100),
-    isCurrentMonth,
-    isPast,
-  }
+  return { daysPassed, daysInMonth, pct: Math.round(daysPassed / daysInMonth * 100), isCurrentMonth, isPast }
+})
+
+// 期间标签：同年月显示"YYYY年M月"，跨月显示区间
+const periodLabel = computed(() => {
+  if (!dateStart.value || !dateEnd.value) return '—'
+  const s = new Date(dateStart.value + 'T00:00:00')
+  const e = new Date(dateEnd.value + 'T00:00:00')
+  if (s.getFullYear() === e.getFullYear() && s.getMonth() === e.getMonth())
+    return `${s.getFullYear()}年${s.getMonth() + 1}月`
+  return `${dateStart.value} ~ ${dateEnd.value}`
 })
 
 const collAchievement = computed(() => {
@@ -187,7 +203,7 @@ function fmtAmt(v) {
 async function loadSummary() {
   summLoading.value = true
   try {
-    const res = await ar.budgetSummary({ year: year.value, month: month.value, dept: selectedDept.value })
+    const res = await ar.budgetSummary({ date_start: dateStart.value, date_end: dateEnd.value, dept: selectedDept.value })
     summary.value = res.data
   } finally { summLoading.value = false }
 }
@@ -195,7 +211,7 @@ async function loadSummary() {
 async function loadLists() {
   listLoading.value = true
   try {
-    const params = { year: year.value, month: month.value, dept: selectedDept.value, size: 200 }
+    const params = { date_start: dateStart.value, date_end: dateEnd.value, dept: selectedDept.value, size: 200 }
     const [c, p] = await Promise.all([ar.listCollectionBudget(params), ar.listPaymentBudget(params)])
     collItems.value = c.data.items; collTotal.value = c.data.total_amount
     payItems.value = p.data.items; payTotal.value = p.data.total_amount
@@ -212,7 +228,7 @@ async function loadAll() { await Promise.all([loadSummary(), loadLists()]) }
 
 function openCreate(type) {
   modalType.value = type; editItem.value = null
-  const d = `${year.value}-${String(month.value).padStart(2, '0')}-01`
+  const d = dateStart.value
   Object.assign(form, { project_no: '', short_name: '', expected_date: d, sub_dept: '', delivery_dept: selectedDept.value || (accessibleDepts.value[0] || ''), amount: '', notes: '' })
   showModal.value = true
 }
@@ -292,7 +308,7 @@ async function handleImport(type, ev) {
 async function exportData(type) {
   exporting.value = true
   try {
-    const params = { year: year.value, month: month.value, dept: selectedDept.value }
+    const params = { date_start: dateStart.value, date_end: dateEnd.value, dept: selectedDept.value }
     const res = type === 'collection'
       ? await ar.exportCollectionBudget(params) : await ar.exportPaymentBudget(params)
     saveBlob(res, `${type === 'collection' ? '收款' : '付款'}预算.xlsx`)
@@ -326,13 +342,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     <div class="bgt-filterbar">
       <div class="fbg">
         <svg class="fb-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-        <span class="fb-label">年月</span>
-        <select v-model="year" class="fb-sel" @change="loadAll">
-          <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
-        </select>
-        <select v-model="month" class="fb-sel fb-sel-mo" @change="loadAll">
-          <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
-        </select>
+        <span class="fb-label">日期</span>
+        <input type="date" v-model="dateStart" class="fb-sel fb-date" @change="loadAll" />
+        <span class="fb-sep">~</span>
+        <input type="date" v-model="dateEnd" class="fb-sel fb-date" @change="loadAll" />
       </div>
       <div class="fb-divider"></div>
       <div class="fbg">
@@ -363,7 +376,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <div class="progress-header">
           <div class="progress-label">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            本月时间进度
+            {{ periodLabel }}时间进度
           </div>
           <div class="progress-meta">
             {{ monthProgress.daysPassed }} / {{ monthProgress.daysInMonth }} 天
@@ -374,7 +387,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           <div class="progress-fill progress-fill-time" :style="`width:${monthProgress.pct}%`"></div>
         </div>
         <div class="progress-sublabel">
-          <span v-if="monthProgress.isCurrentMonth">今天是本月第 {{ monthProgress.daysPassed }} 天，预算执行应与时间进度匹配</span>
+          <span v-if="monthProgress.isCurrentMonth">今天是 {{ periodLabel }} 第 {{ monthProgress.daysPassed }} 天，预算执行应与时间进度匹配</span>
           <span v-else-if="monthProgress.isPast">该月已结束</span>
           <span v-else>该月尚未开始</span>
         </div>
@@ -463,7 +476,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           <div class="net-value" :class="netCashflow >= 0 ? 'net-pos' : 'net-neg'">
             {{ netCashflow >= 0 ? '+' : '' }}{{ fmtAmt(netCashflow) }}
           </div>
-          <div class="net-sub">{{ year }}年{{ month }}月 · {{ selectedDept || '全部事业部' }}</div>
+          <div class="net-sub">{{ periodLabel }} · {{ selectedDept || '全部事业部' }}</div>
           <div class="net-breakdown">
             <div class="nb-item"><span class="nb-dot nb-coll"></span>实际收款 {{ fmtAmt(summary?.actual_collection || 0) }}</div>
             <div class="nb-item"><span class="nb-dot nb-pay"></span>实际付款 {{ fmtAmt(summary?.actual_payment || 0) }}</div>
@@ -688,6 +701,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .fb-sel:hover, .fb-sel:focus { background: rgba(201,99,66,0.09); color: var(--primary); }
 .fb-sel-mo   { width: 60px; }
 .fb-sel-dept { min-width: 110px; }
+.fb-date     { width: 126px; padding: 0 7px; }
+.fb-sep      { font-size: 12px; color: var(--muted); margin: 0 2px; }
 .fb-loading  { margin-left: auto; padding-left: 12px; font-size: 12px; color: var(--primary); display: flex; align-items: center; gap: 5px; }
 .fb-spin { display: inline-block; animation: fbSpin 0.9s linear infinite; }
 @keyframes fbSpin { to { transform: rotate(360deg); } }
