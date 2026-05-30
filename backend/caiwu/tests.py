@@ -265,3 +265,84 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(by_name[REV], Decimal('1000'))
         self.assertEqual(by_name[COST], Decimal('600'))
         self.assertEqual(len(parsed), 2)
+
+
+@override_settings(ALLOWED_HOSTS=['testserver', 'localhost', '127.0.0.1'])
+class CaiwuUnifiedPermissionTests(TestCase):
+    """Stage 2-4: caiwu auth/permissions are driven by the paikuan platform.
+    These lock in the cross-module behaviour (page gating + shared cache)."""
+    databases = {'default'}
+
+    @classmethod
+    def setUpTestData(cls):
+        for name, sort_order, is_calculated, sign, is_profit_driver in L1_SEEDS:
+            L1Category.objects.update_or_create(
+                name=name,
+                defaults={'sort_order': sort_order, 'is_calculated': is_calculated,
+                          'sign': sign, 'is_profit_driver': is_profit_driver},
+            )
+        cls.bu = BUSINESS_UNITS[0]
+        # super_admin (paikuan) — manages permissions
+        cls.admin = PaikuanUser(phone='13700000000', name='Admin', role='super_admin',
+                                job_title='', departments=[], is_active=True, is_approved=True)
+        cls.admin.set_password('Test123456'); cls.admin.save()
+        # finance_director — should get full 财务分析 access by default
+        cls.fin = PaikuanUser(phone='13700000001', name='Finance', role='viewer',
+                              job_title='finance_director', departments=[cls.bu],
+                              is_active=True, is_approved=True)
+        cls.fin.set_password('Test123456'); cls.fin.save()
+        # cashier — should have NO 财务分析 access by default
+        cls.cashier = PaikuanUser(phone='13700000002', name='Cashier', role='viewer',
+                                  job_title='cashier', departments=[cls.bu],
+                                  is_active=True, is_approved=True)
+        cls.cashier.set_password('Test123456'); cls.cashier.save()
+
+    def setUp(self):
+        self.client = Client()
+        # Clear caches so a prior test's stored JobPermission doesn't leak.
+        from paikuan.views import _invalidate_perm_cache as pk_inv
+        from caiwu.views import _invalidate_perm_cache as cw_inv
+        pk_inv(); cw_inv()
+
+    def hdr(self, user):
+        return {'HTTP_AUTHORIZATION': f'Bearer {_make_token(user)}'}
+
+    def jj(self, resp):
+        return json.loads(resp.content.decode('utf-8'))
+
+    def test_finance_director_can_access_report(self):
+        resp = self.client.get('/api/cw/report',
+                               {'year': 2026, 'month': 5, 'bu': self.bu, 'level': 1},
+                               **self.hdr(self.fin))
+        self.assertEqual(resp.status_code, 200, self.jj(resp))
+
+    def test_cashier_denied_report_and_upload(self):
+        r1 = self.client.get('/api/cw/report',
+                             {'year': 2026, 'month': 5, 'bu': self.bu, 'level': 1},
+                             **self.hdr(self.cashier))
+        self.assertEqual(r1.status_code, 403, self.jj(r1))
+        r2 = self.client.post('/api/cw/batches/upload', {'bu': self.bu, 'year': 2026, 'month': 5},
+                              **self.hdr(self.cashier))
+        self.assertEqual(r2.status_code, 403, self.jj(r2))
+
+    def test_paikuan_permission_edit_invalidates_caiwu_cache(self):
+        # finance_director starts with caiwu_report access
+        before = self.client.get('/api/cw/report',
+                                 {'year': 2026, 'month': 5, 'bu': self.bu, 'level': 1},
+                                 **self.hdr(self.fin))
+        self.assertEqual(before.status_code, 200, self.jj(before))
+
+        # super_admin disables 财务分析·报表 for finance_director via the paikuan UI path
+        perms = self.jj(self.client.get('/api/pk/permissions', **self.hdr(self.admin)))
+        cfg = next(j['config'] for j in perms['data']['jobs'] if j['job_title'] == 'finance_director')
+        cfg['pages']['caiwu_report'] = False
+        put = self.client.put('/api/pk/permissions/finance_director',
+                              data=json.dumps({'config': cfg}),
+                              content_type='application/json', **self.hdr(self.admin))
+        self.assertEqual(put.status_code, 200, self.jj(put))
+
+        # Change must take effect immediately (caiwu cache invalidated)
+        after = self.client.get('/api/cw/report',
+                                {'year': 2026, 'month': 5, 'bu': self.bu, 'level': 1},
+                                **self.hdr(self.fin))
+        self.assertEqual(after.status_code, 403, self.jj(after))

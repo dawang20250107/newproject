@@ -1616,6 +1616,9 @@ def permission_detail(request, job):
     obj.config = clean
     obj.save()
     _invalidate_perm_cache(job)
+    # caiwu reads its 财务分析 perms straight from this JobPermission via paikuan's
+    # cached get_job_perms (it keeps no cache of its own), so clearing this cache
+    # is enough for the change to take effect everywhere immediately.
     return ok({'job_title': job, 'config': get_job_perms(job)})
 
 

@@ -4,7 +4,6 @@ import json
 import logging
 import datetime
 import functools
-import threading
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
 
@@ -398,6 +397,12 @@ def permission_detail(request, job):
     obj.config = existing
     obj.save()
     _invalidate_perm_cache(job)
+    # The record is shared with paikuan, which keeps its own perm cache.
+    try:
+        from paikuan.views import _invalidate_perm_cache as _pk_invalidate
+        _pk_invalidate(job)
+    except Exception:
+        pass
     return ok({'job_title': job, 'config': get_job_perms(job)})
 
 
