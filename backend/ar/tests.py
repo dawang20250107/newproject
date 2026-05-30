@@ -48,11 +48,11 @@ class ARPermissionRegressionTests(TestCase):
             url, data=json.dumps(payload), content_type='application/json',
             **self.auth(user))
 
-    def create_project(self, dept=None):
+    def create_project(self, dept=None, short_name='Project A', delivery_dept=None):
         return ARProject.objects.create(
             contract_name='Contract A',
-            short_name='Project A',
-            delivery_dept=dept or self.dept,
+            short_name=short_name,
+            delivery_dept=delivery_dept or dept or self.dept,
             sub_dept='Sub A',
             business_mode='Mode A',
             customer_level='A级',
@@ -326,6 +326,72 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(cb.delivery_dept, project.delivery_dept)
         self.assertEqual(cb.sub_dept, project.sub_dept)
         self.assertEqual(cb.project_no, project.project_no)
+
+    def test_budget_import_accepts_excel_date_cell(self):
+        """回归：Excel 把日期列识别为日期类型时（openpyxl 返回 datetime），
+        导入不应再报"预计日期无效"。这是"按模板填都报错"的根因。"""
+        import datetime as dt
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        admin = self.make_user('13900000201', 'finance_director', role='super_admin')
+        self.create_project(short_name='日期格式项目', delivery_dept='劳务事业部')
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['项目编号(可选)', '项目简称/摘要*', '预计收款日期*',
+                   '二级部门', '交付部门', '金额*', '备注'])
+        # 关键：日期作为真正的 datetime 单元格写入（模拟 Excel 自动日期识别）
+        ws.append(['', '日期格式项目', dt.datetime(2026, 6, 15), '', '劳务事业部', 50000, ''])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        resp = self.client.post('/api/pk/ar/budget/collection/import',
+                                {'file': SimpleUploadedFile('b.xlsx', buf.read())},
+                                **self.auth(admin))
+        self.assertEqual(resp.status_code, 200)
+        d = resp.json()['data']
+        self.assertEqual(d['created'], 1, d.get('errors'))
+        self.assertEqual(d['errors'], [])
+        self.assertEqual(str(CollectionBudget.objects.get().expected_date), '2026-06-15')
+
+    def test_budget_import_accepts_multiple_date_formats(self):
+        """回归：模板支持的多种日期格式（斜杠/中文/紧凑/2位年）导入均应通过。"""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        admin = self.make_user('13900000203', 'finance_director', role='super_admin')
+        self.create_project(short_name='多格式项目', delivery_dept='劳务事业部')
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['项目编号(可选)', '项目简称/摘要*', '预计收款日期*',
+                   '二级部门', '交付部门', '金额*', '备注'])
+        for d in ['2026/6/15', '2026年6月15日', '20260615', '26-6-15']:
+            ws.append(['', '多格式项目', d, '', '劳务事业部', 1000, ''])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        resp = self.client.post('/api/pk/ar/budget/collection/import',
+                                {'file': SimpleUploadedFile('b.xlsx', buf.read())},
+                                **self.auth(admin))
+        self.assertEqual(resp.status_code, 200)
+        d = resp.json()['data']
+        self.assertEqual(d['created'], 4, d.get('errors'))
+        self.assertEqual(d['errors'], [])
+        dates = sorted(str(b.expected_date) for b in CollectionBudget.objects.all())
+        self.assertEqual(dates, ['2026-06-15'] * 4)
+
+    def test_budget_import_skips_template_tip_and_example_rows(self):
+        """回归：模板自带的"说明行"(★开头)与"示例行"(含示例标记)应被跳过，
+        不会被当作真实数据导入或产生日期错误。"""
+        from ar.views import _budget_template
+        from django.test import RequestFactory
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        admin = self.make_user('13900000202', 'finance_director', role='super_admin')
+        # 直接下载模板，原样回传导入——应零创建、零错误
+        rf = RequestFactory()
+        req = rf.get('/api/pk/ar/budget/collection/template')
+        req.pk_uid = admin.id; req.pk_role = 'super_admin'; req.pk_depts = []
+        tmpl_resp = _budget_template(req, 'collection')
+        buf = io.BytesIO(tmpl_resp.content); buf.seek(0)
+        resp = self.client.post('/api/pk/ar/budget/collection/import',
+                                {'file': SimpleUploadedFile('t.xlsx', buf.read())},
+                                **self.auth(admin))
+        self.assertEqual(resp.status_code, 200)
+        d = resp.json()['data']
+        self.assertEqual(d['created'], 0)
+        self.assertEqual(d['errors'], [])
 
     def test_records_filter_by_payment_date_and_unpaid(self):
         admin = self.make_user('13900000077', 'finance_director', role='super_admin')
