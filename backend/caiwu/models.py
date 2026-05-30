@@ -158,8 +158,11 @@ class ImportBatch(models.Model):
     month = models.IntegerField('月份')
     batch_type = models.CharField('表类型', max_length=30, default=TYPE_DEPT)
     status = models.CharField('状态', max_length=20, default=STATUS_DRAFT)
+    # Uploader is a unified platform account (Stage 2+3). The legacy CaiwuUser
+    # table is retained for history but no longer referenced by live records.
     uploaded_by = models.ForeignKey(
-        CaiwuUser, null=True, on_delete=models.SET_NULL, related_name='batches',
+        'paikuan.PaikuanUser', null=True, on_delete=models.SET_NULL,
+        related_name='caiwu_batches',
     )
     uploaded_at = models.DateTimeField('上传时间', auto_now_add=True)
     published_at = models.DateTimeField('发布时间', null=True, blank=True)

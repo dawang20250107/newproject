@@ -98,6 +98,11 @@ class Command(BaseCommand):
                 continue
             # Preserve original pk and raw FK ids by copying attname values.
             data = {f.attname: getattr(obj, f.attname) for f in fields}
+            # ImportBatch.uploaded_by now targets PaikuanUser; the legacy
+            # CaiwuUser ids carried in the source rows don't map across, so
+            # drop them rather than create dangling references.
+            if Model is ImportBatch:
+                data['uploaded_by_id'] = None
             Model.objects.using(TARGET).update_or_create(
                 pk=obj.pk, defaults=data)
 

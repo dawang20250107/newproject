@@ -6,7 +6,6 @@ from openpyxl import Workbook
 
 from caiwu.models import (
     BUSINESS_UNITS,
-    CaiwuUser,
     FinancialEntry,
     ImportBatch,
     L1Category,
@@ -94,7 +93,8 @@ class CaiwuCalculationLogicTests(TestCase):
                     'is_profit_driver': is_profit_driver,
                 },
             )
-        cls.admin = CaiwuUser(
+        # Unified platform account (Stage 2+3): auth + uploaded_by both use it.
+        cls.admin = PaikuanUser(
             phone='13900000000',
             name='Finance Admin',
             role='super_admin',
@@ -105,18 +105,6 @@ class CaiwuCalculationLogicTests(TestCase):
         )
         cls.admin.set_password('Test123456')
         cls.admin.save()
-        # PaikuanUser required for cw_required auth (Stage 2+3 unified accounts)
-        cls.pk_admin = PaikuanUser(
-            phone='13900000001',
-            name='Finance Admin PK',
-            role='super_admin',
-            job_title='finance_director',
-            departments=[],
-            is_active=True,
-            is_approved=True,
-        )
-        cls.pk_admin.set_password('Test123456')
-        cls.pk_admin.save()
 
     def setUp(self):
         self.client = Client()
@@ -124,7 +112,7 @@ class CaiwuCalculationLogicTests(TestCase):
         self.l1 = {c.name: c for c in L1Category.objects.order_by('sort_order', 'id')}
 
     def auth(self):
-        return {'HTTP_AUTHORIZATION': f'Bearer {_make_token(self.pk_admin)}'}
+        return {'HTTP_AUTHORIZATION': f'Bearer {_make_token(self.admin)}'}
 
     def create_batch(
         self,
@@ -155,6 +143,13 @@ class CaiwuCalculationLogicTests(TestCase):
 
     def response_json(self, resp):
         return json.loads(resp.content.decode('utf-8'))
+
+    def test_batch_uploader_is_unified_account(self):
+        # Regression: after the platform merge the uploader FK targets
+        # PaikuanUser; to_dict() must surface that account's name, not None.
+        batch = self.create_batch(amounts={REV: '1.00'})
+        self.assertEqual(batch.uploaded_by_id, self.admin.id)
+        self.assertEqual(batch.to_dict()['uploaded_by'], self.admin.name)
 
     def test_l1_formula_chain_computes_bottom_line(self):
         l1_cats = list(L1Category.objects.order_by('sort_order', 'id'))

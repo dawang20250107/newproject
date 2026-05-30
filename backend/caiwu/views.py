@@ -16,7 +16,7 @@ from django.utils import timezone
 import jwt
 
 from caiwu.models import (
-    CaiwuUser, L1Category, L2Category, L3Category,
+    L1Category, L2Category, L3Category,
     ImportBatch, FinancialEntry,
     BUSINESS_UNITS, VALID_BUSINESS_UNITS, JOB_TITLES,
 )
@@ -243,6 +243,7 @@ def cw_required(roles=None):
                 return err('账号已停用', 401, 401)
             if not user.is_approved:
                 return err('账号待审批，请联系管理员', 403, 403)
+            request.pk_user = user
             request.pk_uid = user.id
             request.pk_role = user.role
             request.pk_job = user.job_title
@@ -1355,7 +1356,7 @@ def batch_upload(request):
             business_unit=bu, year=year, month=month,
             batch_type=batch_type,
             status=ImportBatch.STATUS_DRAFT,
-            uploaded_by=None,  # uploader FK was CaiwuUser; unified auth no longer reads it
+            uploaded_by=request.pk_user,  # unified platform account (PaikuanUser)
             row_count=len(parsed_rows),
             file_name=f.name,
         )
