@@ -21,7 +21,7 @@ const activeTab = ref('all')   // all | reconciliation | invoice | collection
 const filters = reactive({
   dept: '', year: '', month: '', status: '',
   reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '',
-  due_start: '', due_end: '', manager: '', is_shared: '',
+  pay_start: '', pay_end: '', manager: '', is_shared: '',
 })
 
 const showModal = ref(false)
@@ -87,10 +87,10 @@ const FILTER_CHIP_LABELS = {
   responsibility: v => `责任:${({ settled: '已结清', recon: '对账阶段', invoice: '待开票', post: '票后回款' }[v] || v)}`,
   is_shared: v => (v === '1' ? '共享' : '非共享'),
   manager: v => `负责人:${v}`,
-  due_start: v => `到期≥${v}`,
-  due_end: v => `到期≤${v}`,
+  pay_start: v => `回款≥${v}`,
+  pay_end: v => `回款≤${v}`,
 }
-const ADVANCED_FILTER_KEYS = ['month', 'due_start', 'due_end', 'status', 'reconciliation_status', 'invoice_status', 'responsibility', 'is_shared', 'manager']
+const ADVANCED_FILTER_KEYS = ['month', 'pay_start', 'pay_end', 'status', 'reconciliation_status', 'invoice_status', 'responsibility', 'is_shared', 'manager']
 const activeFilterChips = computed(() =>
   ADVANCED_FILTER_KEYS
     .filter(k => filters[k] !== '' && filters[k] != null)
@@ -363,7 +363,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 function clearFilters() {
-  Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '', due_start: '', due_end: '', manager: '',
+  Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '', pay_start: '', pay_end: '', manager: '',
     is_shared: auth.perms?.ar_shared_only ? '1' : '' })
   onFilterChange()
 }
@@ -403,7 +403,7 @@ function clearFilters() {
           <option value="">全部年份</option>
           <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
         </select>
-        <input v-model="filters.q" placeholder="搜索项目" class="search-input" @input="onFilterChange" />
+        <input v-model="filters.q" placeholder="搜索项目/负责人" class="search-input" @input="onFilterChange" />
         <button class="filter-toggle" :class="{ active: showMoreFilters }" @click="showMoreFilters = !showMoreFilters">
           更多筛选<span v-if="activeFilterChips.length" class="ft-badge">{{ activeFilterChips.length }}</span>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" :style="showMoreFilters ? 'transform:rotate(180deg)' : ''"><path d="M6 9l6 6 6-6"/></svg>
@@ -424,8 +424,8 @@ function clearFilters() {
           <option value="">全月</option>
           <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
         </select>
-        <input v-model="filters.due_start" type="date" class="sel-mo" @change="onFilterChange" />
-        <input v-model="filters.due_end" type="date" class="sel-mo" @change="onFilterChange" />
+        <input v-model="filters.pay_start" type="date" class="sel-mo" title="回款日期起" @change="onFilterChange" />
+        <input v-model="filters.pay_end" type="date" class="sel-mo" title="回款日期止" @change="onFilterChange" />
         <select v-model="filters.status" class="sel-mo" @change="onFilterChange">
           <option value="">全部状态</option>
           <option value="overdue">逾期</option>
@@ -518,6 +518,8 @@ function clearFilters() {
           <div class="kpi-item"><span class="kpi-k">预估</span><span class="kpi-v">{{ fmtAmt(summaryData.estimated) }}</span></div>
           <div class="kpi-item"><span class="kpi-k">开票</span><span class="kpi-v">{{ fmtAmt(summaryData.invoiced) }}</span></div>
           <div class="kpi-item"><span class="kpi-k">税额</span><span class="kpi-v">{{ fmtAmt(summaryData.tax) }}</span></div>
+          <div class="kpi-item ok"><span class="kpi-k">已收合计</span><span class="kpi-v">{{ fmtAmt(summaryData.collected) }}</span></div>
+          <div class="kpi-item"><span class="kpi-k">差额调整</span><span class="kpi-v">{{ fmtAmt(summaryData.adj) }}</span></div>
           <div class="kpi-item warn"><span class="kpi-k">未收合计</span><span class="kpi-v">{{ fmtAmt(summaryData.outstanding) }}</span></div>
         </template>
       </div>

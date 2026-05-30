@@ -721,6 +721,8 @@ def ar_records(request):
             inv=Sum('actual_invoice_amount'),
             tax=Sum('tax_amount'),
             out=Sum('outstanding_amount', filter=Q(outstanding_amount__gt=0)),
+            adj=Sum('account_diff_adjustment'),
+            collected=Sum('payments__amount'),
         )
         summary = {
             'count': total,
@@ -728,6 +730,8 @@ def ar_records(request):
             'invoiced': str(agg['inv'] or 0),
             'tax': str(agg['tax'] or 0),
             'outstanding': str(agg['out'] or 0),
+            'adj': str(agg['adj'] or 0),
+            'collected': str(agg['collected'] or 0),
         }
         items = list(qs[(page - 1) * size: page * size])
 
@@ -1119,7 +1123,8 @@ def _apply_record_filters(qs, request):
         qs = qs.filter(
             Q(project__short_name__icontains=q) |
             Q(project__contract_name__icontains=q) |
-            Q(project__project_no__icontains=q))
+            Q(project__project_no__icontains=q) |
+            Q(project__project_manager__icontains=q))
     return qs
 
 
@@ -1194,12 +1199,12 @@ def _apply_record_state_filters(qs, request, today=None):
                 )
             )
 
-    due_start = request.GET.get('due_start', '').strip()
-    due_end = request.GET.get('due_end', '').strip()
-    if due_start:
-        qs = qs.filter(due_date__gte=due_start)
-    if due_end:
-        qs = qs.filter(due_date__lte=due_end)
+    pay_start = request.GET.get('pay_start', '').strip()
+    pay_end = request.GET.get('pay_end', '').strip()
+    if pay_start:
+        qs = qs.filter(payments__payment_date__gte=pay_start).distinct()
+    if pay_end:
+        qs = qs.filter(payments__payment_date__lte=pay_end).distinct()
     return qs
 
 
