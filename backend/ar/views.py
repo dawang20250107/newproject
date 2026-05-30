@@ -2284,7 +2284,7 @@ def _budget_list_create(request, Model, page_key):
             return denied
         date_str = _normalize_date(data.get('expected_date'))
         if not date_str:
-            return err('预计日期无效')
+            return err('预计日期无效，请填 2026-06-15 这样的格式（也支持 2026/6/15、2026年6月15日）')
         amount = _dec(data.get('amount', 0))
         if amount <= 0:
             return err('金额必须大于0')
@@ -2395,11 +2395,35 @@ def _budget_template(request, kind):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = f'{lbl}预算'
-    headers = ['项目编号(可选)', '项目简称/摘要*', f'预计{lbl}日期(YYYY-MM-DD)*',
+    headers = ['项目编号(可选)', '项目简称/摘要*', f'预计{lbl}日期*',
                '二级部门', '交付部门', '金额*', '备注']
     color = '1B6E35' if kind == 'collection' else 'B25600'
     _header_row(ws, headers, color=color)
-    ws.append([EXAMPLE_ROW_MARKER, '示例项目A', '2026-06-15', '华南区',
+
+    # 第2行：填写说明（导入时自动跳过——简称列以 ★ 开头）
+    tips = [
+        '选填：项目编号；留空会按简称自动从台账带入',
+        f'★必填：项目台账中的"项目简称"（精确匹配；同名多项目时用"交付部门"列消歧）',
+        f'★必填：预计{lbl}日期，格式 2026-06-15 / 2026/6/15 / 2026年6月15日 均可；'
+        '若单元格被Excel识别为日期格式也可直接选日期',
+        '选填：二级部门；留空或填错会按台账自动更正',
+        '选填：交付部门；留空会按台账带入，仅在简称重名时用于区分',
+        '★必填：金额（元），须大于 0',
+        '选填：备注',
+    ]
+    ws.append(tips)
+    tip_row = ws.max_row
+    tip_fill = PatternFill('solid', fgColor='FFF8E1' if kind == 'collection' else 'FFF3E0')
+    tip_font = Font(italic=True, color='6D4C00', size=9)
+    for c in range(1, len(headers) + 1):
+        cell = ws.cell(tip_row, c)
+        cell.fill = tip_fill
+        cell.font = tip_font
+        cell.alignment = Alignment(wrap_text=True, vertical='top')
+    ws.row_dimensions[tip_row].height = 56
+
+    # 第3行：示例（简称列含"示例"标记，导入时自动跳过）
+    ws.append(['', f'{EXAMPLE_ROW_MARKER}示例项目A', '2026-06-15', '华南区',
                '劳务事业部', 100000, '填对项目简称即可，编号/交付部门/二级部门会自动按台账带入或更正'])
     for col in range(1, len(headers) + 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 22
@@ -2435,6 +2459,28 @@ def _budget_import(request, Model, kind):
         v = ws.cell(row, idx).value
         return str(v).strip() if v is not None else ''
 
+    # 日期列名：新模板用"预计X日期*"，旧模板用"预计X日期(YYYY-MM-DD)*"，两者都兼容。
+    date_col_names = [f'预计{lbl}日期*', f'预计{lbl}日期(YYYY-MM-DD)*',
+                      f'预计{lbl}日期']
+
+    def _raw_first(row, names):
+        # Return the first matching cell's RAW value (not stringified) so that
+        # openpyxl-typed dates reach _normalize_date intact. Excel-recognised date
+        # cells come back as datetime objects; str() would yield
+        # '2026-06-15 00:00:00', which _normalize_date cannot parse — that was the
+        # "预计日期无效" failure on template-filled rows.
+        for n in names:
+            if n in col_map:
+                return ws.cell(row, col_map[n]).value
+        return None
+
+    def _cv_first(row, names):
+        for n in names:
+            if n in col_map:
+                v = ws.cell(row, col_map[n]).value
+                return str(v).strip() if v is not None else ''
+        return ''
+
     from paikuan.models import PaikuanUser
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
     search_depts = None if request.pk_role == 'super_admin' else request.pk_depts
@@ -2443,12 +2489,14 @@ def _budget_import(request, Model, kind):
     warnings = []
     for ri in range(2, ws.max_row + 1):
         short_name = _cv(ri, '项目简称/摘要*')
-        if not short_name or EXAMPLE_ROW_MARKER in short_name:
+        if not short_name or EXAMPLE_ROW_MARKER in short_name or short_name.startswith('★'):
             skipped += 1
             continue
-        date_str = _normalize_date(_cv(ri, f'预计{lbl}日期(YYYY-MM-DD)*'))
+        date_str = _normalize_date(_raw_first(ri, date_col_names))
         if not date_str:
-            errors.append(f'第{ri}行: 预计日期无效')
+            raw_date = _cv_first(ri, date_col_names)
+            hint = f'（读到"{raw_date}"）' if raw_date else '（该格为空）'
+            errors.append(f'第{ri}行: 预计{lbl}日期无效{hint}，请填 2026-06-15 这样的格式')
             skipped += 1
             continue
         filled_dept = _cv(ri, '交付部门')
