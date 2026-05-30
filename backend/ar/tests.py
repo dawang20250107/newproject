@@ -6,7 +6,7 @@ from decimal import Decimal
 import openpyxl
 from django.test import Client, TestCase
 
-from ar.models import ARPayment, ARProject, ARRecord, CollectionBudget
+from ar.models import ARPayment, ARProject, ARRecord, CollectionBudget, PaymentBudget
 from paikuan.models import JobPermission, PaikuanUser
 from paikuan.views import DEPARTMENTS, default_job_config, make_token, _invalidate_perm_cache
 
@@ -274,3 +274,25 @@ class ARPermissionRegressionTests(TestCase):
 
         stale.refresh_from_db()
         self.assertEqual(stale.outstanding_amount, Decimal('670000.00'))
+
+    def test_project_update_syncs_budget_dept_fields(self):
+        project = self.create_project()
+        cb = CollectionBudget.objects.create(
+            project_no=project.project_no, short_name=project.short_name,
+            expected_date=date(2026, 6, 1), delivery_dept=project.delivery_dept,
+            sub_dept=project.sub_dept or '', amount=Decimal('100000'))
+        pb = PaymentBudget.objects.create(
+            project_no=project.project_no, short_name=project.short_name,
+            expected_date=date(2026, 6, 1), delivery_dept=project.delivery_dept,
+            sub_dept=project.sub_dept or '', amount=Decimal('50000'))
+
+        # Change delivery_dept and sub_dept on the project — signal should propagate
+        project.delivery_dept = '运输事业部'
+        project.sub_dept = '新二级部门'
+        project.save()
+
+        cb.refresh_from_db(); pb.refresh_from_db()
+        self.assertEqual(cb.delivery_dept, '运输事业部')
+        self.assertEqual(cb.sub_dept, '新二级部门')
+        self.assertEqual(pb.delivery_dept, '运输事业部')
+        self.assertEqual(pb.sub_dept, '新二级部门')

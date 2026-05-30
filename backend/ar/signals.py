@@ -35,3 +35,18 @@ def update_ar_record_due_dates_on_project_change(sender, instance, **kwargs):
             pass
     for pk, due in updates:
         ARRecord.objects.filter(pk=pk).update(due_date=due)
+
+    # Sync denormalised dept fields on budget records when project info changes.
+    # Budget models link via project_no (a stable natural key), not FK.
+    if not instance.project_no:
+        return
+    from ar.models import CollectionBudget, PaymentBudget
+    dept_update = {
+        'delivery_dept': instance.delivery_dept,
+        'sub_dept': instance.sub_dept,
+    }
+    try:
+        CollectionBudget.objects.filter(project_no=instance.project_no).update(**dept_update)
+        PaymentBudget.objects.filter(project_no=instance.project_no).update(**dept_update)
+    except Exception:
+        pass

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
@@ -38,6 +38,16 @@ const shortNameOptions = computed(() => {
       seen.add(p.short_name)
       return true
     })
+})
+
+// 选项目简称时实时带出项目编号/交付部门/二级部门
+watch(() => form.short_name, name => {
+  const matched = projects.value.find(p => p.short_name === name)
+  if (matched) {
+    form.project_no = matched.project_no || form.project_no
+    form.delivery_dept = matched.delivery_dept || form.delivery_dept
+    form.sub_dept = matched.sub_dept || form.sub_dept
+  }
 })
 
 // ── Computed ──────────────────────────────────────────────────────────────────
@@ -219,12 +229,6 @@ async function save() {
   }
   saving.value = true
   try {
-    const matched = projects.value.find(p => p.short_name === form.short_name)
-    if (matched) {
-      form.project_no = matched.project_no
-      if (!form.delivery_dept) form.delivery_dept = matched.delivery_dept || form.delivery_dept
-      if (!form.sub_dept) form.sub_dept = matched.sub_dept || form.sub_dept
-    }
     if (modalType.value === 'collection') {
       if (editItem.value) await ar.updateCollectionBudget(editItem.value.id, form)
       else await ar.createCollectionBudget(form)
@@ -233,7 +237,7 @@ async function save() {
       else await ar.createPaymentBudget(form)
     }
     showModal.value = false; await loadAll()
-  } catch (e) { alert(e?.response?.data?.msg || '保存失败')
+  } catch (e) { alert(e?.msg || '保存失败')
   } finally { saving.value = false }
 }
 
@@ -243,7 +247,7 @@ async function remove(type, item) {
     if (type === 'collection') await ar.deleteCollectionBudget(item.id)
     else await ar.deletePaymentBudget(item.id)
     await loadAll()
-  } catch (e) { alert(e?.response?.data?.msg || '删除失败') }
+  } catch (e) { alert(e?.msg || '删除失败') }
 }
 
 // ── Template / Import / Export ─────────────────────────────────────────────────
