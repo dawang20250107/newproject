@@ -361,6 +361,9 @@ def project_detail(request, pk):
         allowed = request.pk_depts
         if proj.delivery_dept not in allowed:
             return err('无权访问', 403)
+        perms = get_request_perms(request)
+        if perms and perms.get('ar_shared_only') and not proj.is_shared:
+            return err('无权访问', 403)
 
     if request.method == 'GET':
         d = proj.to_dict()
@@ -926,6 +929,9 @@ def ar_record_detail(request, pk):
     if request.pk_role != 'super_admin':
         allowed = request.pk_depts
         if rec.delivery_dept not in allowed:
+            return err('无权访问', 403)
+        perms = get_request_perms(request)
+        if perms and perms.get('ar_shared_only') and not rec.project.is_shared:
             return err('无权访问', 403)
 
     today = datetime.date.today()
@@ -1714,6 +1720,9 @@ def ar_payment_detail(request, pk, ppk):
     if request.pk_role != 'super_admin':
         allowed = request.pk_depts
         if pay.ar_record.delivery_dept not in allowed:
+            return err('无权访问', 403)
+        perms = get_request_perms(request)
+        if perms and perms.get('ar_shared_only') and not pay.ar_record.project.is_shared:
             return err('无权访问', 403)
     denied = _ar_field_denied(request, 'r_payments')
     if denied:
