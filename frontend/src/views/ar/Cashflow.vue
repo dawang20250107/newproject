@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
+import { fmtCompact } from '../../utils/format.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
 
 const auth = useAuthStore()

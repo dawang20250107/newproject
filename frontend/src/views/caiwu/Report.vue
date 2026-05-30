@@ -6,6 +6,9 @@ import ReportTable from '../../components/caiwu/report/ReportTable.vue'
 import LevelToggle from '../../components/caiwu/report/LevelToggle.vue'
 import AiAnalysisModal from '../../components/caiwu/AiAnalysisModal.vue'
 import api from '../../api/caiwu.js'
+import { fmtCompact } from '../../utils/format.js'
+import { downloadBlob } from '../../utils/download.js'
+import EmptyState from '../../components/EmptyState.vue'
 
 const auth = useCaiwuAuth()
 const year = ref(yearCST())

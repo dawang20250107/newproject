@@ -3,6 +3,8 @@ import { ref, onMounted, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { DEPARTMENTS as ALL_DEPTS_LIST, yearCST, monthCST } from '../constants.js'
+import { fmtCompact } from '../utils/format.js'
+import EmptyState from '../components/EmptyState.vue'
 
 const auth = useAuthStore()
 const year = ref(yearCST())

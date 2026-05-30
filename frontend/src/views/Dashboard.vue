@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
+import { fmtCompact } from '../utils/format.js'
 import StatusBadge from '../components/StatusBadge.vue'
 import EmptyState from '../components/EmptyState.vue'
 
