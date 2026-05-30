@@ -3,6 +3,7 @@ import { ref, reactive, onMounted, onBeforeUnmount, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { todayCST } from '../constants.js'
+import { downloadBlob } from '../utils/download.js'
 
 const auth = useAuthStore()
 const items = ref([])
@@ -49,7 +50,7 @@ async function updateStatus(it, status){
 function openSchedule(it){ current.value=it; Object.assign(scheduleForm,{ planned_date: todayCST(), total_amount:it.amount }); showSchedule.value=true }
 async function doSchedule(){ try{ await api.post(`/approvals/${current.value.id}/schedule`, scheduleForm); showSchedule.value=false; load(); alert('排款成功并已归档') } catch(e){ alert(e?.error||'排款失败') } }
 async function downloadTemplate(){ const b=await api.get('/approvals/template',{responseType:'blob'}); dl(b,'审批记录导入模板.xlsx') }
-function dl(blob,name){ const u=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=u;a.download=name;a.click();URL.revokeObjectURL(u) }
+const dl = downloadBlob
 function triggerImport(){ fileRef.value.click() }
 async function onImport(e){ const f=e.target.files?.[0]; if(!f) return; importing.value=true; const fd=new FormData(); fd.append('file',f); try{ const r=await api.post('/approvals/import',fd,{headers:{'Content-Type':'multipart/form-data'}}); alert(`导入完成：新增${r.data.created}，跳过${r.data.skipped}`); load() }catch(err){ alert(err?.error||'导入失败')} finally{ importing.value=false; e.target.value='' } }
 async function doExport(){ exporting.value=true; try{ const b=await api.get('/approvals/export',{params:filters,responseType:'blob'}); dl(b,'审批记录.xlsx') } finally{ exporting.value=false } }

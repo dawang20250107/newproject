@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed } from 'vue'
+import { fmtCompact } from '../../../utils/format.js'
 
 const props = defineProps({
   rows: { type: Array, default: () => [] },
@@ -24,12 +25,8 @@ function toggle(id) {
   else collapsed.value.add(id)
 }
 
-function fmt(n) {
-  const v = parseFloat(n || 0)
-  if (Math.abs(v) >= 100000000) return (v / 100000000).toFixed(2) + ' 亿'
-  if (Math.abs(v) >= 10000) return (v / 10000).toFixed(2) + ' 万'
-  return v.toFixed(2)
-}
+// 亿/万 两级单位（单位前带空格），万元以下两位小数；空值显示 0.00（保持原表现）
+const fmt = (n) => fmtCompact(n, { space: true, dash: '0.00' })
 </script>
 
 <template>

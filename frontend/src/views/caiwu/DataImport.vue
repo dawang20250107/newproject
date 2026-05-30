@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, monthCST } from '../../constants.js'
 import api from '../../api/caiwu.js'
+import { fmtCompact, fmtDateTime } from '../../utils/format.js'
 
 const auth = useCaiwuAuth()
 const batches = ref([])

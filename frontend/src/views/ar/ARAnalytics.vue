@@ -21,12 +21,8 @@ const topData = ref(null)
 const statusData = ref(null)
 const pmData = ref(null)
 
-function fmtWan(v) {
-  const n = Math.abs(parseFloat(v) || 0)
-  if (n >= 1e8) return (v / 1e8).toFixed(1) + '亿'
-  if (n >= 1e4) return (v / 1e4).toFixed(1) + '万'
-  return String(Math.round(v))
-}
+// 亿/万 两级单位（无空格，一位小数），万元以下取整；空值显示「0」
+const fmtWan = (v) => fmtCompact(v, { decimals: 1, smallRound: true, dash: '0' })
 
 async function loadAll() {
   const params = { dept: selectedDept.value }

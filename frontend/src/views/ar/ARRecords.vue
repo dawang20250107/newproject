@@ -174,12 +174,8 @@ const summaryGroupBy = ref('dept')
 const groupRows = ref([])
 const groupLoading = ref(false)
 
-function fmtAmt(v) {
-  const n = parseFloat(v) || 0
-  if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(2) + '亿'
-  if (Math.abs(n) >= 1e4) return (n / 1e4).toFixed(2) + '万'
-  return n.toFixed(2)
-}
+// 亿/万 两级单位（无空格），万元以下两位小数；空值显示 0.00（保持原表现）
+const fmtAmt = (v) => fmtCompact(v, { dash: '0.00' })
 
 async function load(reset = false) {
   if (reset) page.value = 1

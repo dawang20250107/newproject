@@ -191,12 +191,8 @@ const deptCompareOption = computed(() => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function fmtAmt(v) {
-  const n = parseFloat(v) || 0
-  if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(2) + '亿'
-  if (Math.abs(n) >= 1e4) return (n / 1e4).toFixed(2) + '万'
-  return n.toFixed(2)
-}
+// 亿/万 两级单位（无空格），万元以下两位小数；空值显示 0.00（保持原表现）
+const fmtAmt = (v) => fmtCompact(v, { dash: '0.00' })
 
 // ── Data loading ──────────────────────────────────────────────────────────────
 
@@ -272,11 +268,7 @@ const exporting = ref(false)
 const collFileInput = ref(null)
 const payFileInput = ref(null)
 
-function saveBlob(blob, name) {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a'); a.href = url; a.download = name; a.click()
-  URL.revokeObjectURL(url)
-}
+const saveBlob = downloadBlob
 
 async function downloadTemplate(type) {
   try {

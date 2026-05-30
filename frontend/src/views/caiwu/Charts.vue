@@ -6,6 +6,7 @@ import TrendLineChart from '../../components/caiwu/charts/TrendLineChart.vue'
 import WaterfallChart from '../../components/caiwu/charts/WaterfallChart.vue'
 import AiAnalysisModal from '../../components/caiwu/AiAnalysisModal.vue'
 import api from '../../api/caiwu.js'
+import { fmtCompact } from '../../utils/format.js'
 
 const auth = useCaiwuAuth()
 
@@ -137,11 +138,8 @@ async function analyzeWaterfall() {
   }
 }
 
-function fmtAmt(v) {
-  if (Math.abs(v) >= 100000000) return (v / 100000000).toFixed(2) + ' 亿'
-  if (Math.abs(v) >= 10000) return (v / 10000).toFixed(2) + ' 万'
-  return v.toFixed(2)
-}
+// 亿/万 两级单位（单位前带空格），万元以下两位小数
+const fmtAmt = (v) => fmtCompact(v, { space: true })
 
 // ── Watch globalBu / trendYear to reload ────────────────
 watch(globalBu, () => {

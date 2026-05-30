@@ -29,13 +29,8 @@ const cfData = ref(null)
 const loading = ref(false)
 
 
-function fmtWan(v) {
-  const n = parseFloat(v) || 0
-  const abs = Math.abs(n)
-  if (abs >= 1e8) return (n / 1e8).toFixed(2) + '亿'
-  if (abs >= 1e4) return (n / 1e4).toFixed(2) + '万'
-  return String(Math.round(n))
-}
+// 亿/万 两级单位（无空格，两位小数），万元以下取整；空值显示「0」
+const fmtWan = (v) => fmtCompact(v, { smallRound: true, dash: '0' })
 
 async function load() {
   if (!filters.start_date || !filters.end_date) return

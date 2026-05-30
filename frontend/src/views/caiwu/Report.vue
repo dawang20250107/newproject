@@ -75,13 +75,8 @@ const kpis = computed(() => {
 
 const noData = computed(() => !(data.value?.rows?.length))
 
-function fmtKpi(v) {
-  if (v === null || v === undefined) return '—'
-  const abs = Math.abs(v)
-  if (abs >= 100000000) return (v / 100000000).toFixed(2) + ' 亿'
-  if (abs >= 10000) return (v / 10000).toFixed(2) + ' 万'
-  return v.toFixed(2)
-}
+// 亿/万 两级单位（单位前带空格），万元以下两位小数；空值显示「—」
+const fmtKpi = (v) => fmtCompact(v, { space: true })
 
 function momLabel(pct) {
   if (pct === null) return ''
