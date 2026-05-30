@@ -1199,22 +1199,29 @@ def _apply_record_state_filters(qs, request, today=None):
                 )
             )
 
-    # 回款筛选：pay_status 控制"有无回款"，pay_start/pay_end 控制回款日期区间
-    # （前端的"按日/按月/按年"都折算成区间下发；"未回款"则与区间互斥）。
+    # 回款筛选：pay_status='unpaid' 纯无回款；pay_include_unpaid=1 与日期区间做 OR
+    # （"3月回款 + 未回款"→传 pay_start/pay_end + pay_include_unpaid=1）
     pay_status = request.GET.get('pay_status', '').strip()
-    if pay_status == 'unpaid':
-        return qs.filter(payments__isnull=True)
-    if pay_status == 'paid':
-        qs = qs.filter(payments__isnull=False)
-
+    pay_include_unpaid = request.GET.get('pay_include_unpaid', '') in ('1', 'true')
     pay_start = request.GET.get('pay_start', '').strip()
     pay_end = request.GET.get('pay_end', '').strip()
-    if pay_start:
-        qs = qs.filter(payments__payment_date__gte=pay_start)
-    if pay_end:
-        qs = qs.filter(payments__payment_date__lte=pay_end)
-    if pay_status == 'paid' or pay_start or pay_end:
+    has_date = bool(pay_start or pay_end)
+
+    if has_date:
+        date_q = Q()
+        if pay_start:
+            date_q &= Q(payments__payment_date__gte=pay_start)
+        if pay_end:
+            date_q &= Q(payments__payment_date__lte=pay_end)
+        if pay_include_unpaid:
+            qs = qs.filter(date_q | Q(payments__isnull=True))
+        else:
+            qs = qs.filter(date_q)
         qs = qs.distinct()
+    elif pay_status == 'unpaid' or pay_include_unpaid:
+        qs = qs.filter(payments__isnull=True)
+    elif pay_status == 'paid':
+        qs = qs.filter(payments__isnull=False).distinct()
     return qs
 
 

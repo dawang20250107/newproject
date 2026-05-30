@@ -21,19 +21,19 @@ const activeTab = ref('all')   // all | reconciliation | invoice | collection
 const filters = reactive({
   dept: '', year: '', month: '', status: '',
   reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '',
-  pay_status: '', pay_start: '', pay_end: '', manager: '', is_shared: '',
+  pay_status: '', pay_start: '', pay_end: '', pay_include_unpaid: '', manager: '', is_shared: '',
 })
 
-// 回款日期筛选粒度（UI-only）：'' 全部 | unpaid 未回款 | day 按日 | month 按月 | year 按年 | range 区间
+// 回款日期筛选粒度（UI-only）：'' 全部 | day 按日 | month 按月 | year 按年 | range 区间
 const payMode = ref('')
 const payInput = reactive({ day: '', month: '', year: '', start: '', end: '' })
-// 把所选粒度折算成 pay_status / pay_start / pay_end 下发给后端
+const payIncludeUnpaid = ref(false)   // "含未回款" 复选框状态
+
+// 把粒度 + 复选框折算成 filters 字段下发后端
 function applyPayMode() {
-  filters.pay_status = ''; filters.pay_start = ''; filters.pay_end = ''
+  filters.pay_status = ''; filters.pay_start = ''; filters.pay_end = ''; filters.pay_include_unpaid = ''
   const m = payMode.value
-  if (m === 'unpaid') {
-    filters.pay_status = 'unpaid'
-  } else if (m === 'day' && payInput.day) {
+  if (m === 'day' && payInput.day) {
     filters.pay_start = payInput.day; filters.pay_end = payInput.day
   } else if (m === 'month' && payInput.month) {
     const [y, mo] = payInput.month.split('-').map(Number)
@@ -46,11 +46,17 @@ function applyPayMode() {
   } else if (m === 'range') {
     filters.pay_start = payInput.start; filters.pay_end = payInput.end
   }
+  const hasDate = !!(filters.pay_start || filters.pay_end)
+  if (payIncludeUnpaid.value) {
+    // 有日期区间：OR 逻辑（含未回款）；无日期：纯"未回款"
+    if (hasDate) filters.pay_include_unpaid = '1'
+    else filters.pay_status = 'unpaid'
+  }
   onFilterChange()
 }
 function resetPayMode() {
-  payMode.value = ''
-  filters.pay_status = ''; filters.pay_start = ''; filters.pay_end = ''
+  payMode.value = ''; payIncludeUnpaid.value = false
+  filters.pay_status = ''; filters.pay_start = ''; filters.pay_end = ''; filters.pay_include_unpaid = ''
   Object.assign(payInput, { day: '', month: '', year: '', start: '', end: '' })
 }
 
@@ -120,8 +126,9 @@ const FILTER_CHIP_LABELS = {
   pay_status: v => (v === 'unpaid' ? '未回款' : '已回款'),
   pay_start: v => `回款≥${v}`,
   pay_end: v => `回款≤${v}`,
+  pay_include_unpaid: () => '含未回款',
 }
-const ADVANCED_FILTER_KEYS = ['month', 'pay_status', 'pay_start', 'pay_end', 'status', 'reconciliation_status', 'invoice_status', 'responsibility', 'is_shared', 'manager']
+const ADVANCED_FILTER_KEYS = ['month', 'pay_status', 'pay_start', 'pay_end', 'pay_include_unpaid', 'status', 'reconciliation_status', 'invoice_status', 'responsibility', 'is_shared', 'manager']
 const activeFilterChips = computed(() =>
   ADVANCED_FILTER_KEYS
     .filter(k => filters[k] !== '' && filters[k] != null)
@@ -129,7 +136,7 @@ const activeFilterChips = computed(() =>
 const hasAnyFilter = computed(() =>
   !!(filters.dept || filters.year || filters.q) || activeFilterChips.value.length > 0)
 function removeFilter(key) {
-  if (key === 'pay_status' || key === 'pay_start' || key === 'pay_end') { resetPayMode(); onFilterChange(); return }
+  if (['pay_status', 'pay_start', 'pay_end', 'pay_include_unpaid'].includes(key)) { resetPayMode(); onFilterChange(); return }
   filters[key] = ''; onFilterChange()
 }
 
@@ -398,7 +405,7 @@ onMounted(() => {
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 function clearFilters() {
   resetPayMode()
-  Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '', pay_status: '', pay_start: '', pay_end: '', manager: '',
+  Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '', pay_status: '', pay_start: '', pay_end: '', pay_include_unpaid: '', manager: '',
     is_shared: auth.perms?.ar_shared_only ? '1' : '' })
   onFilterChange()
 }
@@ -461,7 +468,6 @@ function clearFilters() {
         </select>
         <select v-model="payMode" class="sel-mo" title="回款日期筛选" @change="applyPayMode">
           <option value="">回款(全部)</option>
-          <option value="unpaid">未回款</option>
           <option value="day">回款按日</option>
           <option value="month">回款按月</option>
           <option value="year">回款按年</option>
@@ -477,6 +483,10 @@ function clearFilters() {
           <input v-model="payInput.start" type="date" class="sel-mo" title="回款日期起" @change="applyPayMode" />
           <input v-model="payInput.end" type="date" class="sel-mo" title="回款日期止" @change="applyPayMode" />
         </template>
+        <label class="pay-unpaid-chk" title="同时显示从未回款的记录">
+          <input type="checkbox" v-model="payIncludeUnpaid" @change="applyPayMode" />
+          <span>含未回款</span>
+        </label>
         <select v-model="filters.status" class="sel-mo" @change="onFilterChange">
           <option value="">全部状态</option>
           <option value="overdue">逾期</option>
@@ -509,7 +519,8 @@ function clearFilters() {
           <option value="0">非共享</option>
         </select>
         <input v-model="filters.manager" placeholder="负责人" class="search-input" @input="onFilterChange" />
-        <button class="act-btn" @click="Object.assign(filters, { status: 'outstanding' }); onFilterChange()">未结清</button>
+        <button class="act-btn" :class="{ 'act-btn--on': filters.status === 'outstanding' }"
+          @click="filters.status = filters.status === 'outstanding' ? '' : 'outstanding'; onFilterChange()">未结清</button>
       </div>
     </div>
 
@@ -1076,6 +1087,9 @@ function clearFilters() {
 }
 .act-btn:hover { border-color: var(--primary); color: var(--primary); }
 .act-btn:disabled { opacity: 0.4; cursor: default; }
+.act-btn--on { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.08); font-weight: 600; }
+.pay-unpaid-chk { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.pay-unpaid-chk input { cursor: pointer; accent-color: var(--primary); }
 
 /* Topbar: title + inline tabs */
 .topbar-left { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
