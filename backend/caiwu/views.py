@@ -95,69 +95,45 @@ def _all_fields(value):
     return {k: value for k in FIELD_KEYS}
 
 
-def default_job_config(job):
-    """Derives caiwu perm subset from paikuan's unified job config."""
-    from paikuan.views import default_job_config as pk_default, CAIWU_FIELD_KEYS
-    pk = pk_default(job)
+def _caiwu_perms_from_pk(pk):
+    """Project paikuan's unified perms dict onto the caiwu-shaped subset."""
+    from paikuan.views import CAIWU_FIELD_KEYS
     pk_pages = pk.get('pages', {})
     return {
         'pages': {
-            'report': pk_pages.get('caiwu_report', False),
-            'data':   pk_pages.get('caiwu_data',   False),
-            'charts': pk_pages.get('caiwu_charts',  False),
+            'report': bool(pk_pages.get('caiwu_report', False)),
+            'data':   bool(pk_pages.get('caiwu_data',   False)),
+            'charts': bool(pk_pages.get('caiwu_charts',  False)),
         },
-        'view':       pk.get('caiwu_view', {k: True for k in CAIWU_FIELD_KEYS}),
-        'can_upload':  pk.get('caiwu_upload',  False),
-        'can_publish': pk.get('caiwu_publish', False),
-        'can_delete':  pk.get('caiwu_delete',  False),
+        'view':        dict(pk.get('caiwu_view', {k: True for k in CAIWU_FIELD_KEYS})),
+        'can_upload':  bool(pk.get('caiwu_upload',  False)),
+        'can_publish': bool(pk.get('caiwu_publish', False)),
+        'can_delete':  bool(pk.get('caiwu_delete',  False)),
     }
 
 
-_perm_cache = {}
-_perm_cache_lock = threading.Lock()
+def default_job_config(job):
+    """caiwu perm subset of paikuan's default job config (no stored overrides)."""
+    from paikuan.views import default_job_config as pk_default
+    return _caiwu_perms_from_pk(pk_default(job))
 
 
 def _invalidate_perm_cache(job=None):
-    with _perm_cache_lock:
-        if job:
-            _perm_cache.pop(job, None)
-        else:
-            _perm_cache.clear()
+    """Caiwu keeps no perm cache of its own — it derives perms on demand from
+    paikuan's cached get_job_perms. Kept as a no-op so cross-module callers and
+    the standalone permission_detail endpoint don't break."""
+    return None
 
 
 def get_job_perms(job):
-    """Effective caiwu config for a job title, sourced from paikuan's JobPermission."""
-    with _perm_cache_lock:
-        if job in _perm_cache:
-            return _perm_cache[job]
-    base = default_job_config(job)
-    try:
-        rp = PaikuanJobPermission.objects.filter(job_title=job).first()
-    except Exception:
-        logger.warning('get_job_perms: DB unavailable for %s, using defaults', job)
-        return base
-    if not (rp and rp.config):
-        result = base
-    else:
-        cfg = rp.config
-        from paikuan.views import CAIWU_FIELD_KEYS
-        # Merge caiwu-specific overrides from paikuan's config
-        view = dict(base['view']); view.update(cfg.get('caiwu_view', {}))
-        pk_pages = cfg.get('pages', {})
-        pages = {
-            'report': bool(pk_pages.get('caiwu_report', base['pages']['report'])),
-            'data':   bool(pk_pages.get('caiwu_data',   base['pages']['data'])),
-            'charts': bool(pk_pages.get('caiwu_charts',  base['pages']['charts'])),
-        }
-        result = {
-            'pages': pages, 'view': view,
-            'can_upload':  bool(cfg.get('caiwu_upload',  base['can_upload'])),
-            'can_publish': bool(cfg.get('caiwu_publish', base['can_publish'])),
-            'can_delete':  bool(cfg.get('caiwu_delete',  base['can_delete'])),
-        }
-    with _perm_cache_lock:
-        _perm_cache[job] = result
-    return result
+    """Effective caiwu config for a job title.
+
+    Derived on demand from paikuan's get_job_perms (itself cached and
+    invalidated whenever a JobPermission is edited). A single cache in paikuan
+    avoids a second, separately-invalidated cache drifting out of sync.
+    """
+    from paikuan.views import get_job_perms as pk_get_job_perms
+    return _caiwu_perms_from_pk(pk_get_job_perms(job))
 
 
 def full_perms():
@@ -396,13 +372,9 @@ def permission_detail(request, job):
     existing['caiwu_delete']  = bool(cfg.get('can_delete', False))
     obj.config = existing
     obj.save()
-    _invalidate_perm_cache(job)
-    # The record is shared with paikuan, which keeps its own perm cache.
-    try:
-        from paikuan.views import _invalidate_perm_cache as _pk_invalidate
-        _pk_invalidate(job)
-    except Exception:
-        pass
+    # Perms live in paikuan's JobPermission + cache (single source of truth).
+    from paikuan.views import _invalidate_perm_cache as _pk_invalidate
+    _pk_invalidate(job)
     return ok({'job_title': job, 'config': get_job_perms(job)})
 
 
