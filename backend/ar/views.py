@@ -712,18 +712,24 @@ def ar_records(request):
         qs_agg = _apply_record_filters(qs_agg, request)
         qs_agg = _apply_record_state_filters(qs_agg, request, today)
 
-        total = qs_agg.count()
-        # 当前筛选全集的金额合计（不止当前页）——支撑"筛选即合计"
+        # 当前筛选全集的金额合计（不止当前页）——支撑"筛选即合计"。
+        # 重要：筛选含 payments 关联（回款日期/含未回款）时 qs_agg 带 JOIN，直接
+        # aggregate 会把每条记录的金额按其回款笔数重复累加。先取去重后的记录 id，
+        # 再在无 JOIN 的基表上聚合金额；回款金额单独在 ARPayment 上聚合，避免互相放大。
+        record_ids = list(qs_agg.order_by().values_list('id', flat=True).distinct())
+        total = len(record_ids)
+        base = ARRecord.objects.filter(id__in=record_ids)
         # Only sum outstanding_amount where > 0: matches the table which renders
         # non-positive rows as "—" (settled/overpaid treated identically as 0).
-        agg = qs_agg.aggregate(
+        agg = base.aggregate(
             est=Sum('estimated_amount'),
             inv=Sum('actual_invoice_amount'),
             tax=Sum('tax_amount'),
             out=Sum('outstanding_amount', filter=Q(outstanding_amount__gt=0)),
             adj=Sum('account_diff_adjustment'),
-            collected=Sum('payments__amount'),
         )
+        collected = (ARPayment.objects.filter(ar_record_id__in=record_ids)
+                     .aggregate(s=Sum('amount'))['s'] or 0)
         summary = {
             'count': total,
             'estimated': str(agg['est'] or 0),
@@ -731,7 +737,7 @@ def ar_records(request):
             'tax': str(agg['tax'] or 0),
             'outstanding': str(agg['out'] or 0),
             'adj': str(agg['adj'] or 0),
-            'collected': str(agg['collected'] or 0),
+            'collected': str(collected),
         }
         items = list(qs[(page - 1) * size: page * size])
 
@@ -1424,6 +1430,10 @@ def ar_records_group_summary(request):
     qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
     qs = _apply_record_filters(qs, request)
     qs = _apply_record_state_filters(qs, request, today)
+    # 回款日期/含未回款筛选会让 qs 带 payments JOIN，导致后续按维度分组时 Count/Sum
+    # 因行扇出而翻倍。先取去重记录 id 落到无 JOIN 的基表，再分组聚合。
+    record_ids = list(qs.order_by().values_list('id', flat=True).distinct())
+    qs = ARRecord.objects.filter(id__in=record_ids)
 
     group_by = request.GET.get('group_by', 'dept').strip() or 'dept'
 

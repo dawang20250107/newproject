@@ -483,10 +483,9 @@ function clearFilters() {
           <input v-model="payInput.start" type="date" class="sel-mo" title="回款日期起" @change="applyPayMode" />
           <input v-model="payInput.end" type="date" class="sel-mo" title="回款日期止" @change="applyPayMode" />
         </template>
-        <label class="pay-unpaid-chk" title="同时显示从未回款的记录">
-          <input type="checkbox" v-model="payIncludeUnpaid" @change="applyPayMode" />
-          <span>含未回款</span>
-        </label>
+        <button class="act-btn" :class="{ 'act-btn--on': payIncludeUnpaid }"
+          title="同时显示从未回款的记录（与回款日期取并集）"
+          @click="payIncludeUnpaid = !payIncludeUnpaid; applyPayMode()">含未回款</button>
         <select v-model="filters.status" class="sel-mo" @change="onFilterChange">
           <option value="">全部状态</option>
           <option value="overdue">逾期</option>
@@ -1088,8 +1087,6 @@ function clearFilters() {
 .act-btn:hover { border-color: var(--primary); color: var(--primary); }
 .act-btn:disabled { opacity: 0.4; cursor: default; }
 .act-btn--on { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.08); font-weight: 600; }
-.pay-unpaid-chk { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--muted); cursor: pointer; white-space: nowrap; }
-.pay-unpaid-chk input { cursor: pointer; accent-color: var(--primary); }
 
 /* Topbar: title + inline tabs */
 .topbar-left { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
@@ -1104,7 +1101,10 @@ function clearFilters() {
 /* Collapsible filter bar */
 .filter-bar { margin: 12px 0; }
 .filter-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.filter-more { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.filter-more { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; overflow-x: auto; margin-top: 8px; padding-top: 10px; padding-bottom: 4px; border-top: 1px dashed var(--border); scrollbar-width: thin; }
+.filter-more > * { flex: 0 0 auto; }
+.filter-more::-webkit-scrollbar { height: 6px; }
+.filter-more::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .filter-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 500; border: 1px solid var(--border); background: rgba(255,252,250,0.8); color: var(--muted); cursor: pointer; transition: all 0.14s; white-space: nowrap; }
 .filter-toggle:hover, .filter-toggle.active { border-color: var(--primary); color: var(--primary); }
 .filter-toggle svg { transition: transform 0.18s; }

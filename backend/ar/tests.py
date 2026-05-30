@@ -362,6 +362,27 @@ class ARPermissionRegressionTests(TestCase):
         self.assertIn(paid.id, combined)
         self.assertIn(unpaid.id, combined)
 
+    def test_summary_not_inflated_by_multiple_payments(self):
+        admin = self.make_user('13900000055', 'finance_director', role='super_admin')
+        project = self.create_project()
+        rec = ARRecord.objects.create(project=project, operation_year=2026,
+                                      operation_month=8, estimated_amount=Decimal('1000.00'))
+        # two payments on the same record — must not multiply estimated/count
+        ARPayment.objects.create(ar_record=rec, payment_no=1,
+                                 amount=Decimal('300.00'), payment_date=date(2026, 9, 1))
+        ARPayment.objects.create(ar_record=rec, payment_no=2,
+                                 amount=Decimal('200.00'), payment_date=date(2026, 9, 5))
+
+        # filter by pay date range that matches both payments (JOIN fanout risk)
+        resp = self.client.get('/api/pk/ar/records',
+                               {'pay_start': '2026-09-01', 'pay_end': '2026-09-30'},
+                               **self.auth(admin))
+        self.assertEqual(resp.status_code, 200)
+        s = resp.json()['data']['summary']
+        self.assertEqual(s['count'], 1)
+        self.assertEqual(Decimal(s['estimated']), Decimal('1000.00'))   # not 2000
+        self.assertEqual(Decimal(s['collected']), Decimal('500.00'))    # 300 + 200
+
     def test_records_search_matches_project_manager(self):
         admin = self.make_user('13900000066', 'finance_director', role='super_admin')
         project = self.create_project()  # project_manager 'PM A'
