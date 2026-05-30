@@ -687,6 +687,42 @@ def project_stats(request):
 
 @csrf_exempt
 @pk_required()
+def ar_records_date_bounds(request):
+    """Return min/max payment_date across all accessible AR records.
+
+    Used by the frontend to constrain the pay-date range picker so users
+    don't see decades of empty calendar space.
+    """
+    if request.method != 'GET':
+        return err('GET only', 405)
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    qs = _ar_dept_filter(ARRecord.objects.all(), request,
+                         shared_field='project__is_shared')
+    pay_qs = ARPayment.objects.filter(ar_record__in=qs)
+    bounds = pay_qs.aggregate(mn=Min('payment_date'), mx=Max('payment_date'))
+    mn = bounds['mn']
+    mx = bounds['mx']
+    # Fallback: derive from operation_year/month when no payments exist
+    if mn is None:
+        rec_b = qs.aggregate(miny=Min('operation_year'), minm=Min('operation_month'),
+                              maxy=Max('operation_year'), maxm=Max('operation_month'))
+        if rec_b['miny']:
+            mn = datetime.date(rec_b['miny'], rec_b['minm'] or 1, 1)
+        if rec_b['maxy']:
+            import calendar as _cal
+            m = rec_b['maxm'] or 12
+            mn = mn or datetime.date(rec_b['miny'] or rec_b['maxy'], 1, 1)
+            mx = datetime.date(rec_b['maxy'], m, _cal.monthrange(rec_b['maxy'], m)[1])
+    return ok({
+        'min': str(mn) if mn else None,
+        'max': str(mx) if mx else None,
+    })
+
+
+@csrf_exempt
+@pk_required()
 def ar_records(request):
     denied = _page_denied(request, 'ar_records')
     if denied:
@@ -766,15 +802,27 @@ def ar_records(request):
         week_label = '本周' if wk_start == today_wk_start else '该周'
 
         # 应收：按 due_date 落在窗口内的记录预估金额求和（null due_date 自动排除）
-        month_est = (base.filter(due_date__gte=mo_start, due_date__lte=mo_end)
-                     .aggregate(s=Sum('estimated_amount'))['s'] or 0)
+        # 当期应收：due_date 落在基准月内
+        month_curr_est = (base.filter(due_date__gte=mo_start, due_date__lte=mo_end)
+                          .aggregate(s=Sum('estimated_amount'))['s'] or 0)
+        # 逾期应收：due_date 早于基准月且仍有未收余额，取 outstanding_amount 之和
+        month_overdue_est = (base.filter(due_date__lt=mo_start, outstanding_amount__gt=0)
+                             .aggregate(s=Sum('outstanding_amount'))['s'] or 0)
         week_est = (base.filter(due_date__gte=wk_start, due_date__lte=wk_end)
                     .aggregate(s=Sum('estimated_amount'))['s'] or 0)
-        # 已收：按 payment_date 落在窗口内的回款金额求和，限当前筛选记录集
+
+        # 已收：按 payment_date 落在窗口内，限当前筛选记录集
+        # 当期已收：回款记录所属的 AR 明细到期日 >= 基准月首日（当期或未来到期）
+        # 逾期已收：回款记录所属的 AR 明细到期日 <  基准月首日（逾期后补收）
+        # 两者之和 = 旧的 month_collected（本月全部实收）
         pay_in_set = ARPayment.objects.filter(ar_record_id__in=all_record_ids)
-        month_collected = (pay_in_set
-                           .filter(payment_date__gte=mo_start, payment_date__lte=mo_end)
-                           .aggregate(s=Sum('amount'))['s'] or 0)
+        pay_in_month = pay_in_set.filter(payment_date__gte=mo_start, payment_date__lte=mo_end)
+        month_curr_collected = (pay_in_month
+                                .filter(ar_record__due_date__gte=mo_start)
+                                .aggregate(s=Sum('amount'))['s'] or 0)
+        month_overdue_collected = (pay_in_month
+                                   .filter(ar_record__due_date__lt=mo_start)
+                                   .aggregate(s=Sum('amount'))['s'] or 0)
         week_collected = (pay_in_set
                           .filter(payment_date__gte=wk_start, payment_date__lte=wk_end)
                           .aggregate(s=Sum('amount'))['s'] or 0)
@@ -787,8 +835,10 @@ def ar_records(request):
             'outstanding': str(agg['out'] or 0),
             'adj': str(agg['adj'] or 0),
             'collected': str(collected),
-            'month_est': str(month_est),
-            'month_collected': str(month_collected),
+            'month_curr_est': str(month_curr_est),
+            'month_curr_collected': str(month_curr_collected),
+            'month_overdue_est': str(month_overdue_est),
+            'month_overdue_collected': str(month_overdue_collected),
             'week_est': str(week_est),
             'week_collected': str(week_collected),
             'ref_date': ref_date.isoformat(),

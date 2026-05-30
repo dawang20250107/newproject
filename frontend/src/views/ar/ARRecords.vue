@@ -97,6 +97,14 @@ const fileInput = ref(null)
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
+// 回款按年筛选的年份列表：从 bounds 中派生，fallback 为近5年
+const payYears = computed(() => {
+  const mn = payDateBounds.value.min ? parseInt(payDateBounds.value.min.slice(0, 4)) : yearCST() - 2
+  const mx = payDateBounds.value.max ? parseInt(payDateBounds.value.max.slice(0, 4)) : yearCST()
+  const result = []
+  for (let y = mn; y <= mx; y++) result.push(y)
+  return result
+})
 
 // Field-permission column visibility
 const show = k => auth.canArView(k)
@@ -112,6 +120,8 @@ const TABS = [
 const DATA_TABS = ['all', 'reconciliation', 'invoice', 'collection']
 const isDataTab = computed(() => DATA_TABS.includes(activeTab.value))
 const summaryData = ref(null)
+// 回款日期选择器的全局可选范围（基于系统中最早/最晚回款记录，避免几十年空区间）
+const payDateBounds = ref({ min: null, max: null })
 
 // ── Collapsible filter bar ──────────────────────────────────────────────────
 const showMoreFilters = ref(false)
@@ -401,6 +411,8 @@ onMounted(() => {
   if (route.query.dept) filters.dept = route.query.dept
   if (auth.perms?.ar_shared_only) filters.is_shared = '1'
   load()
+  // 加载回款日期选择器的全局范围（一次性，不受筛选联动）
+  ar.recordsDateBounds().then(r => { payDateBounds.value = r.data }).catch(() => {})
   window.addEventListener('pk:depts-changed', onScopeChange)
 })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
@@ -474,15 +486,24 @@ function clearFilters() {
           <option value="year">回款按年</option>
           <option value="range">回款区间</option>
         </select>
-        <input v-if="payMode === 'day'" v-model="payInput.day" type="date" class="sel-mo" @change="applyPayMode" />
-        <input v-if="payMode === 'month'" v-model="payInput.month" type="month" class="sel-mo" @change="applyPayMode" />
+        <input v-if="payMode === 'day'" v-model="payInput.day" type="date" class="sel-mo"
+          :min="payDateBounds.min || undefined" :max="payDateBounds.max || undefined"
+          @change="applyPayMode" />
+        <input v-if="payMode === 'month'" v-model="payInput.month" type="month" class="sel-mo"
+          :min="payDateBounds.min ? payDateBounds.min.slice(0,7) : undefined"
+          :max="payDateBounds.max ? payDateBounds.max.slice(0,7) : undefined"
+          @change="applyPayMode" />
         <select v-if="payMode === 'year'" v-model="payInput.year" class="sel-mo" @change="applyPayMode">
           <option value="">选择年份</option>
-          <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
+          <option v-for="y in payYears" :key="y" :value="y">{{ y }}年</option>
         </select>
         <template v-if="payMode === 'range'">
-          <input v-model="payInput.start" type="date" class="sel-mo" title="回款日期起" @change="applyPayMode" />
-          <input v-model="payInput.end" type="date" class="sel-mo" title="回款日期止" @change="applyPayMode" />
+          <input v-model="payInput.start" type="date" class="sel-mo" title="回款日期起"
+            :min="payDateBounds.min || undefined" :max="payDateBounds.max || undefined"
+            @change="applyPayMode" />
+          <input v-model="payInput.end" type="date" class="sel-mo" title="回款日期止"
+            :min="payDateBounds.min || undefined" :max="payDateBounds.max || undefined"
+            @change="applyPayMode" />
         </template>
         <button class="act-btn" :class="{ 'act-btn--on': payIncludeUnpaid }"
           title="同时显示未结清的记录（与回款日期取并集）"
@@ -589,13 +610,23 @@ function clearFilters() {
           <!-- 第二行：时段合计——月/周应收已收，文案随基准日期联动 -->
           <div class="metrics-sum-row">
             <span class="sum-section-lbl alt" :title="`基准日 ${summaryData.ref_date}（取筛选中最晚日期，无筛选则今天）；按应收到期日/回款日期归入对应月、周区间`">时段合计</span>
-            <div class="kpi-item" :title="`应收到期在 ${summaryData.ref_month} 内的预估金额`">
-              <span class="kpi-k">{{ summaryData.ref_month }}应收</span>
-              <span class="kpi-v">{{ fmtAmt(summaryData.month_est) }}</span>
+            <!-- 当期：due_date 落在基准月内 -->
+            <div class="kpi-item" :title="`${summaryData.ref_month}内 due_date 到期的预估应收`">
+              <span class="kpi-k">{{ summaryData.ref_month }}当期应收</span>
+              <span class="kpi-v">{{ fmtAmt(summaryData.month_curr_est) }}</span>
             </div>
-            <div class="kpi-item ok" :title="`回款日期在 ${summaryData.ref_month} 内的实际回款额`">
-              <span class="kpi-k">{{ summaryData.ref_month }}已收</span>
-              <span class="kpi-v">{{ fmtAmt(summaryData.month_collected) }}</span>
+            <div class="kpi-item ok" :title="`${summaryData.ref_month}内 payment_date，且到期日在本月及以后的回款`">
+              <span class="kpi-k">{{ summaryData.ref_month }}当期已收</span>
+              <span class="kpi-v">{{ fmtAmt(summaryData.month_curr_collected) }}</span>
+            </div>
+            <!-- 逾期：due_date 早于基准月且仍有未收余额 / 回款中对应逾期记录的部分 -->
+            <div class="kpi-item warn" :title="`due_date 早于 ${summaryData.ref_month} 且仍有未收余额的记录，outstanding_amount 之和`">
+              <span class="kpi-k">{{ summaryData.ref_month }}逾期应收</span>
+              <span class="kpi-v">{{ fmtAmt(summaryData.month_overdue_est) }}</span>
+            </div>
+            <div class="kpi-item ok" :title="`${summaryData.ref_month}内 payment_date，且到期日早于本月（逾期后补收）的回款`">
+              <span class="kpi-k">{{ summaryData.ref_month }}逾期已收</span>
+              <span class="kpi-v">{{ fmtAmt(summaryData.month_overdue_collected) }}</span>
             </div>
             <span class="metrics-div"></span>
             <div class="kpi-item" :title="`应收到期在 ${summaryData.ref_week} 这一周内的预估金额`">

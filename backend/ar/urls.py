@@ -11,6 +11,7 @@ urlpatterns = [
     path('projects/<int:pk>', views.project_detail),
 
     # AR Records
+    path('records/date-bounds', views.ar_records_date_bounds),
     path('records', views.ar_records),
     path('records/kpi', views.ar_records_kpi),
     path('records/summary', views.ar_records_group_summary),

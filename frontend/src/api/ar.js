@@ -13,6 +13,7 @@ const ar = {
   exportProjects: p => api.get('/ar/projects/export', { params: p, responseType: 'blob' }),
 
   // AR Records
+  recordsDateBounds: () => api.get('/ar/records/date-bounds'),
   listRecords: p => api.get('/ar/records', { params: p }),
   recordsKpi: p => api.get('/ar/records/kpi', { params: p }),
   recordsSummary: p => api.get('/ar/records/summary', { params: p }),

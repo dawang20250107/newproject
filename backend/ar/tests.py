@@ -480,11 +480,15 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         s = resp.json()['data']['summary']
 
-        # month_est: due_date in June (only rec_june qualifies)
-        self.assertEqual(Decimal(s['month_est']), Decimal('1000.00'))
+        # 当期应收：due_date=2026-06-30 落在6月 → rec_june 的 estimated_amount=1000
+        self.assertEqual(Decimal(s['month_curr_est']), Decimal('1000.00'))
         self.assertEqual(s['ref_month'], '2026年6月')
-        # month_collected: payment_date in June → only the 06-15 payment (250)
-        self.assertEqual(Decimal(s['month_collected']), Decimal('250.00'))
+        # 当期已收：payment_date 在6月(06-15) 且 ar_record.due_date>=mo_start(06-30>=06-01) → 250
+        self.assertEqual(Decimal(s['month_curr_collected']), Decimal('250.00'))
+        # 逾期应收：rec_june due_date=06-30 不早于mo_start(06-01) → 0（无逾期记录）
+        self.assertEqual(Decimal(s['month_overdue_est']), Decimal('0'))
+        # 逾期已收：payment_date 在6月(06-15) 且 ar_record.due_date<mo_start(06-30<06-01? No) → 0
+        self.assertEqual(Decimal(s['month_overdue_collected']), Decimal('0'))
 
         # week window for 2026-06-30 (Tuesday): Mon=2026-06-29, Sun=2026-07-05
         # rec_june has due_date=2026-06-30 (in that week) → week_est includes it
