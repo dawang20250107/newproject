@@ -132,8 +132,8 @@ onMounted(() => { loadL1() })
         <button class="btn btn-primary btn-sm" @click="openL1Form()">新增科目</button>
       </div>
       <div v-if="l1Err" class="error-banner">{{ l1Err }}</div>
-      <div v-if="l1Loading" class="empty"><div class="icon">⏳</div>加载中…</div>
-      <div v-else-if="!l1List.length" class="empty"><div class="icon">📭</div>暂无一级科目，请先添加</div>
+      <EmptyState v-if="l1Loading" loading />
+      <EmptyState v-else-if="!l1List.length" empty text="暂无一级科目，请先添加" />
       <div v-else class="table-wrap">
         <table>
           <thead><tr><th>排序</th><th>科目名称</th><th>类型</th><th>利润方向</th><th>瀑布图驱动</th><th>操作</th></tr></thead>
@@ -174,7 +174,7 @@ onMounted(() => { loadL1() })
         <button class="btn btn-primary btn-sm" @click="showL2Form = true; l2Form = {id:null,name:'',sort_order:0}; l2Err=''">新增</button>
       </div>
       <div v-if="l2Err" class="error-banner">{{ l2Err }}</div>
-      <div v-if="!l2List.length" class="empty"><div class="icon">📭</div>暂无项目部</div>
+      <EmptyState v-if="!l2List.length" empty text="暂无项目部" />
       <div v-else class="table-wrap">
         <table>
           <thead><tr><th>排序</th><th>项目部名称</th><th>操作</th></tr></thead>
@@ -206,7 +206,7 @@ onMounted(() => { loadL1() })
         <button class="btn btn-primary btn-sm" @click="l3Form={id:null,name:'',sort_order:0,l1_category_id:null};l3Err='';showL3Form=true">新增</button>
       </div>
       <div v-if="l3Err" class="error-banner">{{ l3Err }}</div>
-      <div v-if="!l3List.length" class="empty"><div class="icon">📭</div>暂无三级科目明细</div>
+      <EmptyState v-if="!l3List.length" empty text="暂无三级科目明细" />
       <div v-else class="table-wrap">
         <table>
           <thead><tr><th>排序</th><th>科目明细</th><th>所属一级</th><th>金蝶编码</th><th>操作</th></tr></thead>

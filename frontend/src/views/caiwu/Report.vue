@@ -135,14 +135,9 @@ async function exportReport() {
     const params = { year: year.value, month: month.value, level: level.value }
     if (selectedBu.value) params.bu = selectedBu.value
     const res = await api.get('/report/export', { params, responseType: 'blob' })
-    const url = URL.createObjectURL(res)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `财务报表_${year.value}年${month.value}月.xlsx`
-    a.click()
-    URL.revokeObjectURL(url)
+    downloadBlob(res, `财务报表_${year.value}年${month.value}月.xlsx`)
   } catch (e) {
-    alert(e?.error || '导出失败')
+    alert(e?.msg || e?.error || '导出失败')
   } finally {
     exporting.value = false
   }
@@ -174,8 +169,8 @@ onMounted(load)
       </div>
     </div>
 
-    <div v-if="loading && !data" class="empty"><div class="icon">⏳</div>加载中…</div>
-    <div v-else-if="loadErr" class="empty" style="color:var(--danger)"><div class="icon">⚠️</div>{{ loadErr }}</div>
+    <EmptyState v-if="loading && !data" loading />
+    <EmptyState v-else-if="loadErr" :error="loadErr" />
     <template v-else-if="data">
       <div :class="{ 'data-reloading': loading }">
 

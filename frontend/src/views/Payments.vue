@@ -5,6 +5,7 @@ import { useAuthStore } from '../stores/auth.js'
 import { todayCST } from '../constants.js'
 import StatusBadge from '../components/StatusBadge.vue'
 import PaymentModal from '../components/PaymentModal.vue'
+import EmptyState from '../components/EmptyState.vue'
 
 const auth = useAuthStore()
 
@@ -50,10 +51,8 @@ function positionTip(e) {
 function moveTip(e) { if (tip.show) positionTip(e) }
 function hideTip() { tip.show = false }
 
-function fmt(n) {
-  const v = parseFloat(n || 0)
-  return v >= 10000 ? (v / 10000).toFixed(2) + ' 万' : v.toFixed(2)
-}
+// 万级单位（不启用「亿」），单位前带空格；空值显示 0.00（保持原表现）
+const fmt = (n) => fmtCompact(n, { space: true, yi: false, dash: '0.00' })
 
 function daysOverdue(plannedDate) {
   if (!plannedDate) return 0
@@ -116,16 +115,7 @@ async function exportExcel() {
   finally { exportingXlsx.value = false }
 }
 
-function triggerDownload(blob, filename) {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
+const triggerDownload = downloadBlob
 
 async function load() {
   loading.value = true
@@ -181,12 +171,6 @@ async function openLogs(p) {
   } finally { logsLoading.value = false }
 }
 function actionLabel(a) { return { create: '新建', update: '修改', delete: '删除' }[a] || a }
-function fmtTime(s) {
-  if (!s) return ''
-  const d = new Date(s)
-  return d.toLocaleString('zh-CN', { hour12: false })
-}
-
 function onSaved(p) {
   showModal.value = false
   load()
@@ -263,12 +247,9 @@ function setPage(p) { filters.page = p; load() }
         </div>
       </div>
 
-      <div v-if="loading" class="empty"><div class="icon">⏳</div>加载中…</div>
-      <div v-else-if="loadErr" class="empty" style="color:#c62828"><div class="icon">⚠️</div>{{ loadErr }}</div>
-
-      <div v-else-if="!items.length" class="empty">
-        <div class="icon">📭</div>暂无数据
-      </div>
+      <EmptyState v-if="loading" loading />
+      <EmptyState v-else-if="loadErr" :error="loadErr" />
+      <EmptyState v-else-if="!items.length" empty />
 
       <div v-else class="table-wrap">
         <table>
@@ -412,8 +393,8 @@ function setPage(p) { filters.page = p; load() }
             <button class="modal-close" @click="logsOpen = false">×</button>
           </div>
           <div class="logs-body">
-            <div v-if="logsLoading" class="empty">加载中…</div>
-            <div v-else-if="!logs.length" class="empty">暂无变更记录</div>
+            <EmptyState v-if="logsLoading" loading />
+            <EmptyState v-else-if="!logs.length" empty text="暂无变更记录" />
             <ul v-else class="logs-list">
               <li v-for="l in logs" :key="l.id" class="logs-item" :class="`logs-${l.action}`">
                 <div class="logs-meta">

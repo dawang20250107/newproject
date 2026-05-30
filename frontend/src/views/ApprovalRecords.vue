@@ -4,6 +4,7 @@ import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { todayCST } from '../constants.js'
 import { downloadBlob } from '../utils/download.js'
+import EmptyState from '../components/EmptyState.vue'
 
 const auth = useAuthStore()
 const items = ref([])
@@ -81,8 +82,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     </div>
     <div class="pending-card">已申请待处理共计：<b>{{ pendingAmountTotal.toFixed(2) }}</b> 元</div>
   </div>
-  <div v-if="loading" class="empty">⏳ 加载中…</div>
-  <div v-else-if="!items.length" class="empty">暂无审批记录</div>
+  <EmptyState v-if="loading" loading />
+  <EmptyState v-else-if="!items.length" empty text="暂无审批记录" />
   <table v-else class="approval-table"><thead><tr><th>申请人</th><th>所属事业部</th><th>审批编号</th><th>摘要</th><th>申请金额</th><th>收款主体</th><th>审批状态</th><th>操作</th></tr></thead>
     <tbody><tr v-for="i in items" :key="i.id"><td>{{i.applicant}}</td><td>{{i.department}}</td><td class="mono">{{i.approval_number}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}</td><td class="payee">{{i.payee}}</td>
       <td>

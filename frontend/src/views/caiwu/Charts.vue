@@ -7,6 +7,7 @@ import WaterfallChart from '../../components/caiwu/charts/WaterfallChart.vue'
 import AiAnalysisModal from '../../components/caiwu/AiAnalysisModal.vue'
 import api from '../../api/caiwu.js'
 import { fmtCompact } from '../../utils/format.js'
+import EmptyState from '../../components/EmptyState.vue'
 
 const auth = useCaiwuAuth()
 

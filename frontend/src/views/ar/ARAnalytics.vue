@@ -268,28 +268,28 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
       <div class="card">
         <div class="section-title">应收账龄分析 <span class="tip">点击下钻</span></div>
         <BaseChart v-if="agingOption" :option="agingOption" height="280px" @click="onAgingClick" />
-        <div v-else class="empty"><div class="icon">📊</div>暂无数据</div>
+        <EmptyState v-else icon="📊" text="暂无数据" />
       </div>
       <div class="card">
         <div class="section-title">应收状态分布</div>
         <BaseChart v-if="statusOption" :option="statusOption" height="280px" />
-        <div v-else class="empty"><div class="icon">📊</div>暂无数据</div>
+        <EmptyState v-else icon="📊" text="暂无数据" />
       </div>
       <div class="card" style="grid-column:span 2">
         <div class="section-title">月度回款率（{{ selectedYear }}年）</div>
         <BaseChart v-if="collRateOption" :option="collRateOption" height="300px" />
-        <div v-else class="empty"><div class="icon">📈</div>暂无数据</div>
+        <EmptyState v-else icon="📈" text="暂无数据" />
       </div>
       <div class="card" style="grid-column:span 2">
         <div class="section-title">未收 Top 10 项目 <span class="tip">点击跳转</span></div>
         <BaseChart v-if="topOption" :option="topOption" height="280px" @click="onTopClick" />
-        <div v-else class="empty"><div class="icon">📊</div>暂无数据</div>
+        <EmptyState v-else icon="📊" text="暂无数据" />
       </div>
       <!-- PM Dimension -->
       <div class="card" style="grid-column:span 2">
         <div class="section-title">项目负责人维度分析（{{ selectedYear }}年）<span class="tip">已收/未收堆叠 · 右侧显示回款率</span></div>
         <BaseChart v-if="pmOption" :option="pmOption" height="320px" />
-        <div v-else class="empty"><div class="icon">📊</div>暂无数据</div>
+        <EmptyState v-else icon="📊" text="暂无数据" />
         <!-- PM table -->
         <div v-if="pmData && pmData.length" class="pm-table-wrap">
           <table class="pm-table">
@@ -334,8 +334,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             <button class="modal-close" @click="detail.open = false">✕</button>
           </div>
           <div class="modal-body">
-            <div v-if="detail.loading" class="empty"><div class="icon">⏳</div>加载中…</div>
-            <div v-else-if="!detail.items.length" class="empty"><div class="icon">📭</div>暂无明细</div>
+            <EmptyState v-if="detail.loading" loading />
+            <EmptyState v-else-if="!detail.items.length" empty text="暂无明细" />
             <div v-else class="table-wrap">
               <table class="detail-table">
                 <thead>

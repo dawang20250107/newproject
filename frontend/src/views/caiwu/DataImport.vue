@@ -4,6 +4,7 @@ import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, monthCST } from '../../constants.js'
 import api from '../../api/caiwu.js'
 import { fmtCompact, fmtDateTime } from '../../utils/format.js'
+import EmptyState from '../../components/EmptyState.vue'
 
 const auth = useCaiwuAuth()
 const batches = ref([])
@@ -63,13 +64,8 @@ const KPI_COLORS = {
   '经营净利':    '#e65100',
 }
 
-function fmtAmt(v) {
-  if (v === null || v === undefined) return '—'
-  const abs = Math.abs(v)
-  if (abs >= 100000000) return (v / 100000000).toFixed(2) + ' 亿'
-  if (abs >= 10000) return (v / 10000).toFixed(2) + ' 万'
-  return v.toFixed(2)
-}
+// 亿/万 两级单位（单位前带空格），万元以下两位小数；空值显示「—」
+const fmtAmt = (v) => fmtCompact(v, { space: true })
 
 // ── Batch list ────────────────────────────────────────────────────────────────
 async function loadBatches() {
@@ -83,9 +79,8 @@ async function loadBatches() {
   } finally { loading.value = false }
 }
 
-function fmtDt(s) {
-  return s ? new Date(s).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'
-}
+// 紧凑日期时间（月日 时:分）
+const fmtDt = (s) => fmtDateTime(s)
 
 async function doDelete(batch) {
   const msg = batch.status === 'published'

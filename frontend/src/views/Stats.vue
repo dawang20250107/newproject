@@ -79,8 +79,8 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
       </div>
     </div>
 
-    <div v-if="loading" class="empty"><div class="icon">⏳</div>加载中…</div>
-    <div v-else-if="loadErr" class="empty" style="color:#c62828"><div class="icon">⚠️</div>{{ loadErr }}</div>
+    <EmptyState v-if="loading" loading />
+    <EmptyState v-else-if="loadErr" :error="loadErr" />
 
     <template v-else-if="data">
       <!-- KPI -->

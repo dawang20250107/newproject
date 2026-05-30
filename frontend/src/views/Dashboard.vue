@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import StatusBadge from '../components/StatusBadge.vue'
+import EmptyState from '../components/EmptyState.vue'
 
 const auth = useAuthStore()
 const data = ref(null)
@@ -13,11 +14,8 @@ const welcomeName = ref('')
 const showAmount = computed(() => auth.canView('total_amount'))
 const showPaid = computed(() => auth.canView('pay1') || auth.canView('pay2') || auth.canView('pay3'))
 
-function fmt(n) {
-  if (n === null || n === undefined) return '—'
-  const v = parseFloat(n || 0)
-  return v >= 10000 ? (v / 10000).toFixed(2) + ' 万' : v.toFixed(2) + ' 元'
-}
+// 万/元 两级单位（不启用「亿」），单位前带空格；空值显示「—」
+const fmt = (n) => fmtCompact(n, { space: true, yuan: true, yi: false })
 
 async function load() {
   loading.value = true
@@ -64,8 +62,8 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
       <button class="btn btn-ghost btn-sm" @click="load">刷新</button>
     </div>
 
-    <div v-if="loading" class="empty"><div class="icon">⏳</div>加载中…</div>
-    <div v-else-if="loadErr" class="empty" style="color:#c62828"><div class="icon">⚠️</div>{{ loadErr }}</div>
+    <EmptyState v-if="loading" loading />
+    <EmptyState v-else-if="loadErr" :error="loadErr" />
 
     <template v-else-if="data">
       <div class="kpi-grid">
@@ -108,9 +106,7 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
 
       <div class="card">
         <div class="section-title">今日计划付款 ({{ data.today_count }} 笔)</div>
-        <div v-if="!data.today_payments.length" class="empty">
-          <div class="icon">🎉</div>今日暂无计划付款
-        </div>
+        <EmptyState v-if="!data.today_payments.length" icon="🎉" text="今日暂无计划付款" />
         <div v-else class="table-wrap">
           <table class="today-table">
             <thead>

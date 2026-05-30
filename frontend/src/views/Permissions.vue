@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import api from '../api/index.js'
+import EmptyState from '../components/EmptyState.vue'
 
 const loading = ref(true)
 const saving = ref(false)

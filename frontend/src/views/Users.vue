@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import api from '../api/index.js'
 import { DEPARTMENTS, ROLE_LABELS, JOB_LABELS, JOB_OPTIONS } from '../constants.js'
+import EmptyState from '../components/EmptyState.vue'
 
 const users = ref([])
 const loading = ref(false)
@@ -156,13 +157,11 @@ async function reject(u) {
     </div>
 
     <div class="card">
-      <div v-if="loading" class="empty"><div class="icon">⏳</div>加载中…</div>
+      <EmptyState v-if="loading" loading />
 
       <!-- PENDING TAB -->
       <template v-else-if="tab === 'pending'">
-        <div v-if="!pendingUsers.length" class="empty">
-          <div class="icon">✅</div>暂无待审批申请
-        </div>
+        <EmptyState v-if="!pendingUsers.length" icon="✅" text="暂无待审批申请" />
         <div v-else class="pending-list">
           <div v-for="u in pendingUsers" :key="u.id" class="pending-card">
             <div class="pending-info">
@@ -218,7 +217,7 @@ async function reject(u) {
 
       <!-- ALL APPROVED TAB -->
       <template v-else>
-        <div v-if="!activeUsers.length" class="empty"><div class="icon">👤</div>暂无用户</div>
+        <EmptyState v-if="!activeUsers.length" icon="👤" text="暂无用户" />
         <div v-else class="table-wrap">
           <table>
             <thead>
