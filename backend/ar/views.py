@@ -761,6 +761,9 @@ def ar_records(request):
         # 周窗口（周一 ~ 周日）
         wk_start = ref_date - datetime.timedelta(days=ref_date.weekday())
         wk_end = wk_start + datetime.timedelta(days=6)
+        # 周标签随基准日联动：基准周==今天所在周时叫"本周"，否则叫"该周"
+        today_wk_start = today - datetime.timedelta(days=today.weekday())
+        week_label = '本周' if wk_start == today_wk_start else '该周'
 
         # 应收：按 due_date 落在窗口内的记录预估金额求和（null due_date 自动排除）
         month_est = (base.filter(due_date__gte=mo_start, due_date__lte=mo_end)
@@ -788,8 +791,10 @@ def ar_records(request):
             'month_collected': str(month_collected),
             'week_est': str(week_est),
             'week_collected': str(week_collected),
+            'ref_date': ref_date.isoformat(),
             'ref_month': f'{ref_date.year}年{ref_date.month}月',
             'ref_week': f'{wk_start.month}/{wk_start.day}~{wk_end.month}/{wk_end.day}',
+            'ref_week_label': week_label,
         }
         items = list(qs[(page - 1) * size: page * size])
 

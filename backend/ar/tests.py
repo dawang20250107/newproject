@@ -435,8 +435,17 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(resp2.status_code, 200)
         s2 = resp2.json()['data']['summary']
         # ref_date must be 2026-03-31 (March), not today (May)
+        self.assertEqual(s2['ref_date'], '2026-03-31')
         self.assertEqual(s2['ref_month'], '2026年3月')
         self.assertEqual(s2['ref_week'], '3/30~4/5')  # week of 2026-03-31 (Mon3/30~Sun4/5)
+        # 基准周非今天所在周 → 标签为"该周"
+        self.assertEqual(s2['ref_week_label'], '该周')
+
+        # 无任何日期筛选 → ref_date=today，周标签为"本周"
+        resp3 = self.client.get('/api/pk/ar/records', **self.auth(admin))
+        s3 = resp3.json()['data']['summary']
+        self.assertEqual(s3['ref_date'], date.today().isoformat())
+        self.assertEqual(s3['ref_week_label'], '本周')
 
     def test_records_search_matches_project_manager(self):
         admin = self.make_user('13900000066', 'finance_director', role='super_admin')

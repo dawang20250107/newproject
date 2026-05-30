@@ -128,13 +128,14 @@ const FILTER_CHIP_LABELS = {
   pay_end: v => `回款≤${v}`,
   pay_include_unpaid: () => '含未结清',
 }
-const ADVANCED_FILTER_KEYS = ['month', 'pay_status', 'pay_start', 'pay_end', 'pay_include_unpaid', 'status', 'reconciliation_status', 'invoice_status', 'responsibility', 'is_shared', 'manager']
+// month 已常驻主筛选行（紧邻年份），不再列入折叠区的 advanced chips
+const ADVANCED_FILTER_KEYS = ['pay_status', 'pay_start', 'pay_end', 'pay_include_unpaid', 'status', 'reconciliation_status', 'invoice_status', 'responsibility', 'is_shared', 'manager']
 const activeFilterChips = computed(() =>
   ADVANCED_FILTER_KEYS
     .filter(k => filters[k] !== '' && filters[k] != null)
     .map(k => ({ key: k, text: FILTER_CHIP_LABELS[k](filters[k]) })))
 const hasAnyFilter = computed(() =>
-  !!(filters.dept || filters.year || filters.q) || activeFilterChips.value.length > 0)
+  !!(filters.dept || filters.year || filters.month || filters.q) || activeFilterChips.value.length > 0)
 function removeFilter(key) {
   if (['pay_status', 'pay_start', 'pay_end', 'pay_include_unpaid'].includes(key)) { resetPayMode(); onFilterChange(); return }
   filters[key] = ''; onFilterChange()
@@ -445,6 +446,10 @@ function clearFilters() {
           <option value="">全部年份</option>
           <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
         </select>
+        <select v-model="filters.month" class="sel-mo" @change="onFilterChange">
+          <option value="">全月</option>
+          <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
+        </select>
         <input v-model="filters.q" placeholder="搜索项目/负责人" class="search-input" @input="onFilterChange" />
         <button class="filter-toggle" :class="{ active: showMoreFilters }" @click="showMoreFilters = !showMoreFilters">
           更多筛选<span v-if="activeFilterChips.length" class="ft-badge">{{ activeFilterChips.length }}</span>
@@ -462,10 +467,6 @@ function clearFilters() {
 
       <!-- expanded advanced filters -->
       <div v-if="showMoreFilters" class="filter-more">
-        <select v-model="filters.month" class="sel-mo" @change="onFilterChange">
-          <option value="">全月</option>
-          <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
-        </select>
         <select v-model="payMode" class="sel-mo" title="回款日期筛选" @change="applyPayMode">
           <option value="">回款(全部)</option>
           <option value="day">回款按日</option>
@@ -572,37 +573,39 @@ function clearFilters() {
 
         <span v-if="kpiData && summaryData" class="metrics-div"></span>
 
-        <!-- 筛选全集合计（不止当前页） -->
-        <template v-if="summaryData">
-          <span class="sum-section-lbl" :title="`以下为全部 ${summaryData.count} 条筛选记录的汇总（跨所有分页）`">全集合计</span>
-          <div class="kpi-item"><span class="kpi-k">记录</span><span class="kpi-v">{{ summaryData.count }} 条</span></div>
-          <div class="kpi-item"><span class="kpi-k">预估</span><span class="kpi-v">{{ fmtAmt(summaryData.estimated) }}</span></div>
-          <div class="kpi-item"><span class="kpi-k">开票</span><span class="kpi-v">{{ fmtAmt(summaryData.invoiced) }}</span></div>
-          <div class="kpi-item"><span class="kpi-k">税额</span><span class="kpi-v">{{ fmtAmt(summaryData.tax) }}</span></div>
-          <div class="kpi-item ok"><span class="kpi-k">已收合计</span><span class="kpi-v">{{ fmtAmt(summaryData.collected) }}</span></div>
-          <div class="kpi-item"><span class="kpi-k">差额调整</span><span class="kpi-v">{{ fmtAmt(summaryData.adj) }}</span></div>
-          <div class="kpi-item warn"><span class="kpi-k">未收合计</span><span class="kpi-v">{{ fmtAmt(summaryData.outstanding) }}</span></div>
-        </template>
-
-        <!-- 时段合计单独成行：本月应收/已收 + 本周应收/已收 -->
-        <div v-if="summaryData" class="metrics-period-row">
-          <span class="sum-section-lbl" title="按应收到期日(due_date)与回款日期(payment_date)归入对应月/周区间统计">时段合计</span>
-          <div class="kpi-item" :title="`应收到期在 ${summaryData.ref_month} 内的预估金额`">
-            <span class="kpi-k">{{ summaryData.ref_month }}应收</span>
-            <span class="kpi-v">{{ fmtAmt(summaryData.month_est) }}</span>
+        <!-- 汇总区：全集合计 + 时段合计 上下两行，section 标签等宽，数据项纵向对齐 -->
+        <div v-if="summaryData" class="metrics-summary">
+          <!-- 第一行：筛选全集合计（不止当前页） -->
+          <div class="metrics-sum-row">
+            <span class="sum-section-lbl" :title="`以下为全部 ${summaryData.count} 条筛选记录的汇总（跨所有分页）`">全集合计</span>
+            <div class="kpi-item"><span class="kpi-k">记录</span><span class="kpi-v">{{ summaryData.count }} 条</span></div>
+            <div class="kpi-item"><span class="kpi-k">预估</span><span class="kpi-v">{{ fmtAmt(summaryData.estimated) }}</span></div>
+            <div class="kpi-item"><span class="kpi-k">开票</span><span class="kpi-v">{{ fmtAmt(summaryData.invoiced) }}</span></div>
+            <div class="kpi-item"><span class="kpi-k">税额</span><span class="kpi-v">{{ fmtAmt(summaryData.tax) }}</span></div>
+            <div class="kpi-item ok"><span class="kpi-k">已收合计</span><span class="kpi-v">{{ fmtAmt(summaryData.collected) }}</span></div>
+            <div class="kpi-item"><span class="kpi-k">差额调整</span><span class="kpi-v">{{ fmtAmt(summaryData.adj) }}</span></div>
+            <div class="kpi-item warn"><span class="kpi-k">未收合计</span><span class="kpi-v">{{ fmtAmt(summaryData.outstanding) }}</span></div>
           </div>
-          <div class="kpi-item ok" :title="`回款日期在 ${summaryData.ref_month} 内的实际回款额`">
-            <span class="kpi-k">{{ summaryData.ref_month }}已收</span>
-            <span class="kpi-v">{{ fmtAmt(summaryData.month_collected) }}</span>
-          </div>
-          <span class="metrics-div"></span>
-          <div class="kpi-item" :title="`应收到期在 ${summaryData.ref_week} 周内的预估金额`">
-            <span class="kpi-k">本周应收<span class="kpi-sub">{{ summaryData.ref_week }}</span></span>
-            <span class="kpi-v">{{ fmtAmt(summaryData.week_est) }}</span>
-          </div>
-          <div class="kpi-item ok" :title="`回款日期在 ${summaryData.ref_week} 周内的实际回款额`">
-            <span class="kpi-k">本周已收<span class="kpi-sub">{{ summaryData.ref_week }}</span></span>
-            <span class="kpi-v">{{ fmtAmt(summaryData.week_collected) }}</span>
+          <!-- 第二行：时段合计——月/周应收已收，文案随基准日期联动 -->
+          <div class="metrics-sum-row">
+            <span class="sum-section-lbl alt" :title="`基准日 ${summaryData.ref_date}（取筛选中最晚日期，无筛选则今天）；按应收到期日/回款日期归入对应月、周区间`">时段合计</span>
+            <div class="kpi-item" :title="`应收到期在 ${summaryData.ref_month} 内的预估金额`">
+              <span class="kpi-k">{{ summaryData.ref_month }}应收</span>
+              <span class="kpi-v">{{ fmtAmt(summaryData.month_est) }}</span>
+            </div>
+            <div class="kpi-item ok" :title="`回款日期在 ${summaryData.ref_month} 内的实际回款额`">
+              <span class="kpi-k">{{ summaryData.ref_month }}已收</span>
+              <span class="kpi-v">{{ fmtAmt(summaryData.month_collected) }}</span>
+            </div>
+            <span class="metrics-div"></span>
+            <div class="kpi-item" :title="`应收到期在 ${summaryData.ref_week} 这一周内的预估金额`">
+              <span class="kpi-k">{{ summaryData.ref_week_label }}应收<span class="kpi-sub">{{ summaryData.ref_week }}</span></span>
+              <span class="kpi-v">{{ fmtAmt(summaryData.week_est) }}</span>
+            </div>
+            <div class="kpi-item ok" :title="`回款日期在 ${summaryData.ref_week} 这一周内的实际回款额`">
+              <span class="kpi-k">{{ summaryData.ref_week_label }}已收<span class="kpi-sub">{{ summaryData.ref_week }}</span></span>
+              <span class="kpi-v">{{ fmtAmt(summaryData.week_collected) }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -1140,8 +1143,12 @@ function clearFilters() {
 /* KPI bar */
 .metrics-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; padding: 9px 16px; background: rgba(0,0,0,0.02); border-radius: 12px; }
 .metrics-div { width: 1px; align-self: stretch; min-height: 20px; background: rgba(0,0,0,0.1); margin: 0 2px; }
-.metrics-period-row { flex-basis: 100%; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding-top: 8px; margin-top: 4px; border-top: 1px dashed rgba(0,0,0,0.1); }
-.sum-section-lbl { font-size: 11px; color: var(--muted); letter-spacing: 0.5px; white-space: nowrap; cursor: default; }
+/* 汇总区：全集合计 / 时段合计 两行纵向堆叠，标签等宽使两行数据项左对齐 */
+.metrics-summary { display: flex; flex-direction: column; gap: 7px; }
+.metrics-sum-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.metrics-sum-row + .metrics-sum-row { padding-top: 7px; border-top: 1px dashed rgba(0,0,0,0.1); }
+.sum-section-lbl { flex: 0 0 auto; width: 60px; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: 0.5px; white-space: nowrap; cursor: default; padding: 2px 7px; border-radius: 6px; background: rgba(0,0,0,0.04); text-align: center; }
+.sum-section-lbl.alt { background: rgba(46,125,50,0.08); color: #2e7d32; }
 .kpi-item { display: flex; align-items: baseline; gap: 6px; }
 .kpi-k { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 1px; }
 .kpi-sub { font-size: 10px; color: var(--muted); opacity: 0.75; font-weight: 400; }
