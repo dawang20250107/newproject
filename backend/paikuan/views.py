@@ -59,6 +59,13 @@ FIELD_KEYS = [f['key'] for f in PAYMENT_FIELD_DEFS]
 PAGE_KEYS = [
     'dashboard', 'payments', 'approval_records', 'stats',
     'ar_projects', 'ar_records', 'ar_analytics', 'ar_cashflow', 'ar_budget',
+    'caiwu_report', 'caiwu_data', 'caiwu_charts',
+]
+
+# Caiwu report/chart element permission keys (mirrored from caiwu.views.PERM_FIELD_DEFS)
+CAIWU_FIELD_KEYS = [
+    'report_l1', 'report_l2', 'report_l3',
+    'amount', 'chart_trend', 'chart_waterfall', 'export',
 ]
 
 # 仅允许这些职务对审批单直接置为 approved/rejected；其余职务（操作员/出纳/结算会计等）
@@ -161,27 +168,50 @@ def _all_ar_fields(value):
     return {k: value for k in AR_FIELD_KEYS}
 
 
+def _all_caiwu_fields(value):
+    return {k: value for k in CAIWU_FIELD_KEYS}
+
+
 def default_job_config(job):
     """Sensible starting permissions for each job title; super_admin can override."""
-    pages_all = {k: True for k in PAGE_KEYS}
+    # Non-caiwu pages True for most roles; caiwu pages default to off
+    _non_cw_pages = {k: True for k in PAGE_KEYS if not k.startswith('caiwu_')}
+    pages_all = {**_non_cw_pages, 'caiwu_report': False, 'caiwu_data': False, 'caiwu_charts': False}
     ar_pages_all = {k: True for k in ('ar_projects', 'ar_records', 'ar_analytics', 'ar_cashflow', 'ar_budget')}
     ar_pages_cashier = {k: (k in ('ar_records', 'ar_cashflow', 'ar_budget')) for k in ar_pages_all}
+    # Reusable caiwu capability blocks
+    _cw_full = {
+        'caiwu_view': _all_caiwu_fields(True),
+        'caiwu_upload': True, 'caiwu_publish': True, 'caiwu_delete': True,
+    }
+    _cw_upload_no_del = {
+        'caiwu_view': _all_caiwu_fields(True),
+        'caiwu_upload': True, 'caiwu_publish': True, 'caiwu_delete': False,
+    }
+    _cw_readonly = {
+        'caiwu_view': _all_caiwu_fields(True),
+        'caiwu_upload': False, 'caiwu_publish': False, 'caiwu_delete': False,
+    }
     if job == 'finance_director':
-        return {'pages': pages_all, 'view': _all_fields(True),
+        pages = {**pages_all, 'caiwu_report': True, 'caiwu_data': True, 'caiwu_charts': True}
+        return {'pages': pages, 'view': _all_fields(True),
                 'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
-                'can_create': True, 'can_delete': True, 'ar_shared_only': False}
+                'can_create': True, 'can_delete': True, 'ar_shared_only': False,
+                **_cw_full}
     if job == 'finance_bp':
-        return {'pages': pages_all, 'view': _all_fields(True),
+        pages = {**pages_all, 'caiwu_report': True, 'caiwu_data': True, 'caiwu_charts': True}
+        return {'pages': pages, 'view': _all_fields(True),
                 'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
-                'can_create': True, 'can_delete': False, 'ar_shared_only': False}
+                'can_create': True, 'can_delete': False, 'ar_shared_only': False,
+                **_cw_upload_no_del}
     if job == 'chief_cashier':
         edit = {k: (k in ('pay1', 'pay2', 'pay3')) for k in FIELD_KEYS}
-        pages = {**pages_all, **ar_pages_all}
         # 总出纳默认看不到税额
         ar_view = {**_all_ar_fields(True), 'r_tax_amount': False}
-        return {'pages': pages, 'view': _all_fields(True),
+        return {'pages': {**pages_all, **ar_pages_all}, 'view': _all_fields(True),
                 'edit': edit, 'ar_view': ar_view,
-                'can_create': True, 'can_delete': False, 'ar_shared_only': False}
+                'can_create': True, 'can_delete': False, 'ar_shared_only': False,
+                **_cw_readonly}
     if job == 'cashier':
         edit = {k: (k in ('pay1', 'pay2', 'pay3')) for k in FIELD_KEYS}
         base_pages = {'dashboard': True, 'payments': True, 'approval_records': True, 'stats': False}
@@ -189,34 +219,42 @@ def default_job_config(job):
         ar_view = {**_all_ar_fields(True), 'r_tax_amount': False, 'r_account_diff': False}
         return {'pages': {**base_pages, **ar_pages_cashier},
                 'view': _all_fields(True), 'edit': edit, 'ar_view': ar_view,
-                'can_create': False, 'can_delete': False, 'ar_shared_only': False}
+                'can_create': False, 'can_delete': False, 'ar_shared_only': False,
+                **_cw_readonly}
     if job == 'general_manager':
-        # 总经理：全量查看，无编辑/创建（看驾驶舱用，不参与日常落单）
-        return {'pages': pages_all, 'view': _all_fields(True),
+        # 总经理：全量查看，无编辑/创建；财务分析只读
+        pages = {**pages_all, 'caiwu_report': True, 'caiwu_data': False, 'caiwu_charts': True}
+        return {'pages': pages, 'view': _all_fields(True),
                 'edit': _all_fields(False), 'ar_view': _all_ar_fields(True),
-                'can_create': False, 'can_delete': False, 'ar_shared_only': False}
+                'can_create': False, 'can_delete': False, 'ar_shared_only': False,
+                **_cw_readonly}
     if job == 'gm_assistant':
         # 总经理助理：全量查看 + 可新增（协助登记），不可删除
         return {'pages': pages_all, 'view': _all_fields(True),
                 'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
-                'can_create': True, 'can_delete': False, 'ar_shared_only': False}
+                'can_create': True, 'can_delete': False, 'ar_shared_only': False,
+                **_cw_readonly}
     if job == 'settlement_accountant':
-        # 结算会计：聚焦应收/对账/开票，付款条数据只读（与 edit 一致禁止新增/删除）
+        # 结算会计：聚焦应收/对账/开票，付款条数据只读
         edit = {k: False for k in FIELD_KEYS}
         return {'pages': pages_all, 'view': _all_fields(True),
                 'edit': edit, 'ar_view': _all_ar_fields(True),
-                'can_create': False, 'can_delete': False, 'ar_shared_only': False}
+                'can_create': False, 'can_delete': False, 'ar_shared_only': False,
+                **_cw_readonly}
     if job == 'sales_bp':
         # 销售BP：仅可见共享业务，AR 只读，无付款操作
-        ar_pages = {k: (k in ('ar_projects', 'ar_records')) for k in pages_all}
-        pages = {**{k: False for k in pages_all}, **ar_pages, 'dashboard': True}
+        ar_pages = {k: (k in ('ar_projects', 'ar_records')) for k in _non_cw_pages}
+        pages = {**{k: False for k in _non_cw_pages}, **ar_pages,
+                 'dashboard': True, 'caiwu_report': False, 'caiwu_data': False, 'caiwu_charts': False}
         return {'pages': pages, 'view': _all_fields(False),
                 'edit': _all_fields(False), 'ar_view': _all_ar_fields(True),
-                'can_create': False, 'can_delete': False, 'ar_shared_only': True}
-    # Unknown / no job title → read-only minimum.
+                'can_create': False, 'can_delete': False, 'ar_shared_only': True,
+                **_cw_readonly}
+    # Unknown / no job title → read-only minimum, no caiwu access.
     return {'pages': pages_all, 'view': _all_fields(True),
             'edit': _all_fields(False), 'ar_view': _all_ar_fields(True),
-            'can_create': False, 'can_delete': False, 'ar_shared_only': False}
+            'can_create': False, 'can_delete': False, 'ar_shared_only': False,
+            **_cw_readonly}
 
 
 _perm_cache: dict = {}
@@ -253,11 +291,17 @@ def get_job_perms(job):
         pages = dict(base['pages']); pages.update(cfg.get('pages', {}))
         ar_view = dict(base.get('ar_view', _all_ar_fields(True)))
         ar_view.update(cfg.get('ar_view', {}))
+        caiwu_view = dict(base.get('caiwu_view', _all_caiwu_fields(True)))
+        caiwu_view.update(cfg.get('caiwu_view', {}))
         result = {
             'pages': pages, 'view': view, 'edit': edit, 'ar_view': ar_view,
             'can_create': bool(cfg.get('can_create', base['can_create'])),
             'can_delete': bool(cfg.get('can_delete', base['can_delete'])),
             'ar_shared_only': bool(cfg.get('ar_shared_only', base.get('ar_shared_only', False))),
+            'caiwu_view': caiwu_view,
+            'caiwu_upload':  bool(cfg.get('caiwu_upload',  base.get('caiwu_upload', False))),
+            'caiwu_publish': bool(cfg.get('caiwu_publish', base.get('caiwu_publish', False))),
+            'caiwu_delete':  bool(cfg.get('caiwu_delete',  base.get('caiwu_delete', False))),
         }
     with _perm_cache_lock:
         _perm_cache[job] = result
@@ -267,7 +311,9 @@ def get_job_perms(job):
 def full_perms():
     return {'pages': {k: True for k in PAGE_KEYS}, 'view': _all_fields(True),
             'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
-            'can_create': True, 'can_delete': True, 'ar_shared_only': False}
+            'can_create': True, 'can_delete': True, 'ar_shared_only': False,
+            'caiwu_view': _all_caiwu_fields(True),
+            'caiwu_upload': True, 'caiwu_publish': True, 'caiwu_delete': True}
 
 
 def effective_perms(user):
@@ -1517,15 +1563,18 @@ def permissions(request):
         'fields': PAYMENT_FIELD_DEFS,
         'ar_fields': AR_FIELD_DEFS,
         'pages': [
-            {'key': 'dashboard',    'label': '今日工作台'},
-            {'key': 'payments',     'label': '付款台账'},
-            {'key': 'approval_records', 'label': '审批记录'},
-            {'key': 'stats',        'label': '月度统计'},
-            {'key': 'ar_projects',  'label': '项目台账'},
-            {'key': 'ar_records',   'label': '应收明细'},
-            {'key': 'ar_analytics', 'label': '应收分析'},
-            {'key': 'ar_cashflow',  'label': '现金流分析'},
-            {'key': 'ar_budget',    'label': '预算管理'},
+            {'key': 'dashboard',         'label': '今日工作台'},
+            {'key': 'payments',          'label': '付款台账'},
+            {'key': 'approval_records',  'label': '审批记录'},
+            {'key': 'stats',             'label': '月度统计'},
+            {'key': 'ar_projects',       'label': '项目台账'},
+            {'key': 'ar_records',        'label': '应收明细'},
+            {'key': 'ar_analytics',      'label': '应收分析'},
+            {'key': 'ar_cashflow',       'label': '现金流分析'},
+            {'key': 'ar_budget',         'label': '预算管理'},
+            {'key': 'caiwu_report',      'label': '财务分析·报表'},
+            {'key': 'caiwu_data',        'label': '财务分析·数据加工'},
+            {'key': 'caiwu_charts',      'label': '财务分析·图表'},
         ],
         'jobs': jobs,
     })
@@ -1551,6 +1600,10 @@ def permission_detail(request, job):
         'can_create': bool(cfg.get('can_create', False)),
         'can_delete': bool(cfg.get('can_delete', False)),
         'ar_shared_only': bool(cfg.get('ar_shared_only', False)),
+        'caiwu_view': {k: bool(cfg.get('caiwu_view', {}).get(k, True)) for k in CAIWU_FIELD_KEYS},
+        'caiwu_upload':  bool(cfg.get('caiwu_upload', False)),
+        'caiwu_publish': bool(cfg.get('caiwu_publish', False)),
+        'caiwu_delete':  bool(cfg.get('caiwu_delete', False)),
     }
     obj, _ = JobPermission.objects.get_or_create(job_title=job)
     obj.config = clean

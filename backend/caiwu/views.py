@@ -18,9 +18,10 @@ import jwt
 
 from caiwu.models import (
     CaiwuUser, L1Category, L2Category, L3Category,
-    ImportBatch, FinancialEntry, CaiwuJobPermission,
+    ImportBatch, FinancialEntry,
     BUSINESS_UNITS, VALID_BUSINESS_UNITS, JOB_TITLES,
 )
+from paikuan.models import PaikuanUser, JobPermission as PaikuanJobPermission
 
 logger = logging.getLogger('caiwu')
 
@@ -96,22 +97,21 @@ def _all_fields(value):
 
 
 def default_job_config(job):
-    """Sensible starting permissions for each job title; super_admin can override."""
-    pages_all = {k: True for k in PAGE_KEYS}
-    if job == 'finance_director':   # 财务总监 — full operational control
-        return {'pages': pages_all, 'view': _all_fields(True),
-                'can_upload': True, 'can_publish': True, 'can_delete': True}
-    if job == 'finance_bp':         # 财务BP — upload + publish, no delete
-        return {'pages': pages_all, 'view': _all_fields(True),
-                'can_upload': True, 'can_publish': True, 'can_delete': False}
-    if job == 'general_manager':    # 总经理 — read-only executive view
-        return {'pages': {'report': True, 'data': False, 'charts': True},
-                'view': _all_fields(True),
-                'can_upload': False, 'can_publish': False, 'can_delete': False}
-    # Unknown / no job title → read-only minimum.
-    return {'pages': {'report': True, 'data': False, 'charts': True},
-            'view': _all_fields(True),
-            'can_upload': False, 'can_publish': False, 'can_delete': False}
+    """Derives caiwu perm subset from paikuan's unified job config."""
+    from paikuan.views import default_job_config as pk_default, CAIWU_FIELD_KEYS
+    pk = pk_default(job)
+    pk_pages = pk.get('pages', {})
+    return {
+        'pages': {
+            'report': pk_pages.get('caiwu_report', False),
+            'data':   pk_pages.get('caiwu_data',   False),
+            'charts': pk_pages.get('caiwu_charts',  False),
+        },
+        'view':       pk.get('caiwu_view', {k: True for k in CAIWU_FIELD_KEYS}),
+        'can_upload':  pk.get('caiwu_upload',  False),
+        'can_publish': pk.get('caiwu_publish', False),
+        'can_delete':  pk.get('caiwu_delete',  False),
+    }
 
 
 _perm_cache = {}
@@ -127,13 +127,13 @@ def _invalidate_perm_cache(job=None):
 
 
 def get_job_perms(job):
-    """Effective config for a job title = defaults merged with stored overrides."""
+    """Effective caiwu config for a job title, sourced from paikuan's JobPermission."""
     with _perm_cache_lock:
         if job in _perm_cache:
             return _perm_cache[job]
     base = default_job_config(job)
     try:
-        rp = CaiwuJobPermission.objects.filter(job_title=job).first()
+        rp = PaikuanJobPermission.objects.filter(job_title=job).first()
     except Exception:
         logger.warning('get_job_perms: DB unavailable for %s, using defaults', job)
         return base
@@ -141,13 +141,20 @@ def get_job_perms(job):
         result = base
     else:
         cfg = rp.config
-        view = dict(base['view']);  view.update(cfg.get('view', {}))
-        pages = dict(base['pages']); pages.update(cfg.get('pages', {}))
+        from paikuan.views import CAIWU_FIELD_KEYS
+        # Merge caiwu-specific overrides from paikuan's config
+        view = dict(base['view']); view.update(cfg.get('caiwu_view', {}))
+        pk_pages = cfg.get('pages', {})
+        pages = {
+            'report': bool(pk_pages.get('caiwu_report', base['pages']['report'])),
+            'data':   bool(pk_pages.get('caiwu_data',   base['pages']['data'])),
+            'charts': bool(pk_pages.get('caiwu_charts',  base['pages']['charts'])),
+        }
         result = {
             'pages': pages, 'view': view,
-            'can_upload': bool(cfg.get('can_upload', base['can_upload'])),
-            'can_publish': bool(cfg.get('can_publish', base['can_publish'])),
-            'can_delete': bool(cfg.get('can_delete', base['can_delete'])),
+            'can_upload':  bool(cfg.get('caiwu_upload',  base['can_upload'])),
+            'can_publish': bool(cfg.get('caiwu_publish', base['can_publish'])),
+            'can_delete':  bool(cfg.get('caiwu_delete',  base['can_delete'])),
         }
     with _perm_cache_lock:
         _perm_cache[job] = result
@@ -160,7 +167,7 @@ def full_perms():
 
 
 def effective_perms(user):
-    """Perms object sent to the client (super_admin gets full access)."""
+    """Perms object sent to the client. Works with PaikuanUser (super_admin gets full access)."""
     cfg = full_perms() if user.role == 'super_admin' else get_job_perms(user.job_title)
     return {**cfg, 'is_admin': user.role == 'super_admin',
             'fields': PERM_FIELD_DEFS, 'pages_meta': PAGE_DEFS}
@@ -168,9 +175,9 @@ def effective_perms(user):
 
 def get_request_perms(request):
     """Effective perms for the authed request. None means full access (super_admin)."""
-    if request.cw_role == 'super_admin':
+    if request.pk_role == 'super_admin':
         return None
-    jt = getattr(request, 'cw_job', '') or ''
+    jt = getattr(request, 'pk_job', '') or ''
     return get_job_perms(jt)
 
 
@@ -239,6 +246,7 @@ def _build_excel_response(wb, filename):
 # ── auth decorator ───────────────────────────────────────────────────────────
 
 def cw_required(roles=None):
+    """Auth decorator backed by PaikuanUser (Stage 2+3 unified accounts)."""
     def decorator(func):
         @functools.wraps(func)
         @csrf_exempt
@@ -248,22 +256,23 @@ def cw_required(roles=None):
                 return err('未认证', 401, 401)
             try:
                 payload = jwt.decode(token, settings.JWT_SECRET, algorithms=['HS256'])
-                request.cw_uid = payload['uid']
-                request.cw_role = payload['role']
-                request.cw_job = payload.get('job', '')
-                request.cw_depts = payload.get('departments', [])
+                uid = payload['uid']
             except jwt.ExpiredSignatureError:
                 return err('Token已过期', 401, 401)
             except jwt.InvalidTokenError:
                 return err('Token无效', 401, 401)
-            # Re-validate user is still active (token may outlive a deactivation)
-            try:
-                u = CaiwuUser.objects.only('is_active').get(id=request.cw_uid)
-                if not u.is_active:
-                    return err('账号已停用', 401, 401)
-            except CaiwuUser.DoesNotExist:
+            user = PaikuanUser.objects.filter(id=uid).first()
+            if not user:
                 return err('用户不存在', 401, 401)
-            if roles and request.cw_role not in roles:
+            if not user.is_active:
+                return err('账号已停用', 401, 401)
+            if not user.is_approved:
+                return err('账号待审批，请联系管理员', 403, 403)
+            request.pk_uid = user.id
+            request.pk_role = user.role
+            request.pk_job = user.job_title
+            request.pk_depts = user.departments or []
+            if roles and request.pk_role not in roles:
                 return err('权限不足', 403, 403)
             return func(request, *args, **kwargs)
         return wrapper
@@ -272,15 +281,15 @@ def cw_required(roles=None):
 
 def _bu_filter(qs, request):
     """Row visibility: super_admin sees all; everyone else sees assigned 事业部."""
-    if request.cw_role == 'super_admin':
+    if request.pk_role == 'super_admin':
         return qs
-    return qs.filter(business_unit__in=request.cw_depts)
+    return qs.filter(business_unit__in=request.pk_depts)
 
 
 def _can_access_bu(request, bu):
-    if request.cw_role == 'super_admin':
+    if request.pk_role == 'super_admin':
         return True
-    return bu in request.cw_depts
+    return bu in request.pk_depts
 
 
 def _can_upload(request):
@@ -302,107 +311,28 @@ def _can_delete(request):
 
 @csrf_exempt
 def register(request):
-    if request.method != 'POST':
-        return err('方法不允许', 405)
-    body = _parse_json(request)
-    phone = (body.get('phone') or '').strip()
-    password = (body.get('password') or '').strip()
-    name = (body.get('name') or '').strip()
-    job_title = (body.get('job_title') or '').strip()
-    departments = body.get('departments') or []
-
-    if not phone or not password or not name:
-        return err('手机号、密码、姓名均为必填')
-    if not phone.isdigit() or len(phone) < 8:
-        return err('手机号格式有误')
-    if len(password) < 6:
-        return err('密码至少6位')
-    if not job_title or job_title not in JOB_TITLES:
-        return err('请选择有效职务')
-    if not isinstance(departments, list) or len(departments) == 0:
-        return err('请至少选择一个事业部')
-
-    existing = CaiwuUser.objects.filter(phone=phone).first()
-    if existing:
-        if existing.name != name:
-            return err(f'该手机号已被"{existing.name}"注册，姓名不符')
-        return err('该手机号已注册')
-    if CaiwuUser.objects.filter(name=name).exists():
-        return err('该姓名已被注册，如有疑问请联系管理员')
-
-    is_first = not CaiwuUser.objects.exists()
-    user = CaiwuUser(
-        phone=phone,
-        name=name,
-        role='super_admin' if is_first else 'viewer',
-        job_title=job_title,
-        departments=departments if not is_first else [],
-        is_approved=is_first,
-    )
-    user.set_password(password)
-    user.save()
-
-    if is_first:
-        token = _make_token(user)
-        return ok({'token': token, 'user': user.to_dict(),
-                   'permissions': effective_perms(user), 'pending': False})
-    return ok({'pending': True, 'msg': '注册成功！请等待管理员审批后登录'})
+    """Disabled — account management moved to paikuan platform."""
+    return err('财务分析账号已与排款平台统一，请通过排款平台登录', 410, 410)
 
 
 @csrf_exempt
 def login(request):
-    if request.method != 'POST':
-        return err('方法不允许', 405)
-    body = _parse_json(request)
-    phone = (body.get('phone') or '').strip()
-    password = (body.get('password') or '').strip()
-    if not phone or not password:
-        return err('手机号和密码不能为空')
-    try:
-        user = CaiwuUser.objects.get(phone=phone)
-    except CaiwuUser.DoesNotExist:
-        return err('手机号或密码错误')
-    if not user.check_password(password):
-        return err('手机号或密码错误')
-    if not user.is_active:
-        return err('账号已禁用，请联系管理员')
-    if not user.is_approved:
-        return ok({'pending': True, 'msg': '账号待审批，请联系管理员'})
-    token = _make_token(user)
-    return ok({'token': token, 'user': user.to_dict(), 'permissions': effective_perms(user)})
+    """Disabled — use paikuan platform login (/api/pk/login)."""
+    return err('财务分析账号已与排款平台统一，请通过排款平台登录', 410, 410)
 
 
 @csrf_exempt
 def registration_status(request):
-    """Public polling endpoint so a pending registrant can detect approval.
-
-    Called with phone=__probe__ by Login.vue onMounted to detect whether the
-    system has any users yet (so the UI can show a first-user hint banner).
-    """
-    if request.method != 'GET':
-        return err('方法不允许', 405)
-    phone = (request.GET.get('phone') or '').strip()
-    if not phone:
-        return err('缺少手机号')
-    if phone == '__probe__':
-        return ok({'has_users': CaiwuUser.objects.exists()})
-    user = CaiwuUser.objects.filter(phone=phone).first()
-    if not user:
-        return ok({'status': 'none'})
-    if not user.is_active:
-        return ok({'status': 'rejected'})
-    if user.is_approved:
-        return ok({'status': 'approved'})
-    return ok({'status': 'pending'})
+    """Disabled — use paikuan platform."""
+    return err('财务分析账号已与排款平台统一', 410, 410)
 
 
 @cw_required()
 def me(request):
     if request.method != 'GET':
         return err('方法不允许', 405)
-    try:
-        user = CaiwuUser.objects.get(id=request.cw_uid)
-    except CaiwuUser.DoesNotExist:
+    user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+    if not user:
         return err('用户不存在', 404)
     token = _make_token(user)
     return ok({'token': token, 'user': user.to_dict(), 'permissions': effective_perms(user)})
@@ -412,169 +342,60 @@ def me(request):
 
 @cw_required(roles=['super_admin'])
 def users(request):
-    if request.method == 'GET':
-        qs = CaiwuUser.objects.all().order_by('-created_at')
-        return ok([u.to_dict() for u in qs])
-    if request.method == 'POST':
-        body = _parse_json(request)
-        phone = (body.get('phone') or '').strip()
-        password = (body.get('password') or '').strip()
-        name = (body.get('name') or '').strip()
-        role = (body.get('role') or 'viewer').strip()
-        job_title = (body.get('job_title') or '').strip()
-        departments = body.get('departments', [])
-
-        if not phone or not password or not name:
-            return err('手机号、密码、姓名均为必填')
-        if len(password) < 6:
-            return err('密码至少6位')
-        if role not in ('super_admin', 'viewer'):
-            role = 'viewer'
-        if role != 'super_admin':
-            if job_title not in JOB_TITLES:
-                return err('请选择有效职务')
-            if not departments:
-                return err('请至少分配一个事业部')
-        if CaiwuUser.objects.filter(phone=phone).exists():
-            return err('该手机号已注册')
-
-        approver = CaiwuUser.objects.get(id=request.cw_uid)
-        user = CaiwuUser(
-            phone=phone, name=name, role=role,
-            job_title=job_title if job_title in JOB_TITLES else '',
-            departments=[] if role == 'super_admin' else departments,
-            is_approved=True,
-            approved_by=approver,
-            approved_at=timezone.now(),
-        )
-        user.set_password(password)
-        user.save()
-        return ok(user.to_dict())
-    return err('方法不允许', 405)
+    """User management moved to paikuan platform."""
+    return err('账号管理已统一至排款平台，请通过排款平台管理用户', 410, 410)
 
 
 @cw_required(roles=['super_admin'])
 def user_detail(request, uid):
-    try:
-        user = CaiwuUser.objects.get(id=uid)
-    except CaiwuUser.DoesNotExist:
-        return err('用户不存在', 404)
-
-    if request.method == 'GET':
-        return ok(user.to_dict())
-
-    if request.method == 'PUT':
-        body = _parse_json(request)
-        name = (body.get('name') or '').strip()
-        if not name:
-            return err('姓名不能为空')
-        job_title = (body.get('job_title') or user.job_title).strip()
-        departments = body.get('departments', user.departments)
-
-        # super_admin keeps full scope; everyone else is scoped by 事业部.
-        if user.role != 'super_admin' and not departments:
-            return err('请至少分配一个事业部')
-
-        user.name = name
-        user.job_title = job_title if job_title in JOB_TITLES else user.job_title
-        if user.role != 'super_admin':
-            user.departments = departments
-        user.is_active = bool(body.get('is_active', user.is_active))
-
-        if 'password' in body and body['password']:
-            pw = str(body['password']).strip()
-            if len(pw) < 6:
-                return err('密码至少6位')
-            user.set_password(pw)
-
-        user.save()
-        return ok(user.to_dict())
-
-    if request.method == 'DELETE':
-        if user.role == 'super_admin':
-            return err('不能删除超级管理员账号', 403)
-        user.delete()
-        return ok({'deleted': uid})
-
-    return err('方法不允许', 405)
+    return err('账号管理已统一至排款平台', 410, 410)
 
 
 @cw_required(roles=['super_admin'])
 def user_approve(request, uid):
-    if request.method != 'POST':
-        return err('方法不允许', 405)
-    try:
-        user = CaiwuUser.objects.get(id=uid)
-    except CaiwuUser.DoesNotExist:
-        return err('用户不存在', 404)
-    body = _parse_json(request)
-    job_title = (body.get('job_title') or user.job_title or '').strip()
-    if job_title not in JOB_TITLES:
-        return err('请选择有效职务')
-    departments = body.get('departments', [])
-    if not departments:
-        return err('请至少分配一个事业部')
-
-    approver = CaiwuUser.objects.get(id=request.cw_uid)
-    user.role = 'viewer'
-    user.job_title = job_title
-    user.departments = departments
-    user.is_approved = True
-    user.approved_by = approver
-    user.approved_at = timezone.now()
-    user.save()
-    return ok(user.to_dict())
+    return err('账号管理已统一至排款平台', 410, 410)
 
 
 @cw_required(roles=['super_admin'])
 def user_reject(request, uid):
-    if request.method != 'POST':
-        return err('方法不允许', 405)
-    try:
-        user = CaiwuUser.objects.get(id=uid)
-    except CaiwuUser.DoesNotExist:
-        return err('用户不存在', 404)
-    user.is_active = False
-    user.save()
-    return ok({'id': uid, 'status': 'rejected'})
+    return err('账号管理已统一至排款平台', 410, 410)
 
 
 # ── job-title permission config (super_admin) ────────────────────────────────
 
 @cw_required(roles=['super_admin'])
 def permissions(request):
-    """GET: full permission matrix for all job titles + field/page metadata."""
+    """GET: full caiwu permission matrix (sourced from paikuan JobPermission)."""
     if request.method != 'GET':
         return err('方法不允许', 405)
     jobs = [
         {'job_title': key, 'label': label, 'config': get_job_perms(key)}
         for key, label in JOB_TITLES.items()
     ]
-    return ok({
-        'fields': PERM_FIELD_DEFS,
-        'pages': PAGE_DEFS,
-        'jobs': jobs,
-    })
+    return ok({'fields': PERM_FIELD_DEFS, 'pages': PAGE_DEFS, 'jobs': jobs})
 
 
 @cw_required(roles=['super_admin'])
 def permission_detail(request, job):
-    """PUT: update one job title's permission config."""
+    """PUT: update caiwu-specific keys inside paikuan's JobPermission."""
     if request.method != 'PUT':
         return err('方法不允许', 405)
     if job not in JOB_TITLES:
         return err('职务无效', 404)
     body = _parse_json(request)
     cfg = body.get('config') or {}
-    clean = {
-        'pages': {k: bool(cfg.get('pages', {}).get(k, True)) for k in PAGE_KEYS},
-        'view': {k: bool(cfg.get('view', {}).get(k, True)) for k in FIELD_KEYS},
-        'can_upload': bool(cfg.get('can_upload', False)),
-        'can_publish': bool(cfg.get('can_publish', False)),
-        'can_delete': bool(cfg.get('can_delete', False)),
-    }
-    obj, _ = CaiwuJobPermission.objects.get_or_create(job_title=job)
-    obj.config = clean
+    obj, _ = PaikuanJobPermission.objects.get_or_create(job_title=job)
+    existing = dict(obj.config or {})
+    # Write caiwu-specific fields into paikuan's config namespace
+    existing['caiwu_view'] = {k: bool(cfg.get('view', {}).get(k, True)) for k in FIELD_KEYS}
+    existing.setdefault('pages', {})
+    existing['pages']['caiwu_report'] = bool(cfg.get('pages', {}).get('report', True))
+    existing['pages']['caiwu_data']   = bool(cfg.get('pages', {}).get('data',   True))
+    existing['pages']['caiwu_charts'] = bool(cfg.get('pages', {}).get('charts', True))
+    existing['caiwu_upload']  = bool(cfg.get('can_upload', False))
+    existing['caiwu_publish'] = bool(cfg.get('can_publish', False))
+    existing['caiwu_delete']  = bool(cfg.get('can_delete', False))
+    obj.config = existing
     obj.save()
     _invalidate_perm_cache(job)
     return ok({'job_title': job, 'config': get_job_perms(job)})
@@ -1552,13 +1373,12 @@ def batch_upload(request):
     pl_check = _compute_pl_check(parsed_rows) if batch_type == ImportBatch.TYPE_DEPT else {}
 
     # Create draft batch + entries atomically
-    uploader = CaiwuUser.objects.get(id=request.cw_uid)
     with transaction.atomic(using='default'):  # caiwu 已并入 default 主库(整合阶段1)
         batch = ImportBatch.objects.create(
             business_unit=bu, year=year, month=month,
             batch_type=batch_type,
             status=ImportBatch.STATUS_DRAFT,
-            uploaded_by=uploader,
+            uploaded_by=None,  # uploader FK was CaiwuUser; unified auth no longer reads it
             row_count=len(parsed_rows),
             file_name=f.name,
         )
@@ -1659,11 +1479,11 @@ def batch_submission_status(request):
     except Exception:
         return err('年份或月份无效')
 
-    # Visible BUs depend on role
-    if request.cw_role in ('super_admin', 'manager', 'general_manager'):
+    # Visible BUs depend on role/job
+    if request.pk_role in ('super_admin', 'manager') or request.pk_job == 'general_manager':
         bus = BUSINESS_UNITS
     else:
-        bus = [b for b in (request.cw_depts or []) if b in VALID_BUSINESS_UNITS]
+        bus = [b for b in (request.pk_depts or []) if b in VALID_BUSINESS_UNITS]
 
     # Fetch all batches for this period across visible BUs
     batches_qs = ImportBatch.objects.filter(
@@ -1867,10 +1687,10 @@ def report(request):
         return err('年份或月份无效')
 
     # Determine accessible BUs
-    if request.cw_role == 'super_admin':
+    if request.pk_role == 'super_admin':
         accessible = BUSINESS_UNITS
     else:
-        accessible = [d for d in request.cw_depts if d in VALID_BUSINESS_UNITS]
+        accessible = [d for d in request.pk_depts if d in VALID_BUSINESS_UNITS]
 
     if bu_param:
         if bu_param not in accessible:
@@ -1933,10 +1753,10 @@ def report_export(request):
     except Exception:
         return err('年份或月份无效')
 
-    if request.cw_role == 'super_admin':
+    if request.pk_role == 'super_admin':
         accessible = BUSINESS_UNITS
     else:
-        accessible = [d for d in request.cw_depts if d in VALID_BUSINESS_UNITS]
+        accessible = [d for d in request.pk_depts if d in VALID_BUSINESS_UNITS]
 
     if bu_param:
         if bu_param not in accessible:
@@ -2230,10 +2050,10 @@ def report_ai_analysis(request):
         return err('年份或月份无效')
 
     # Resolve BU scope from request, clamped to what this user may access.
-    if request.cw_role == 'super_admin':
+    if request.pk_role == 'super_admin':
         accessible = list(BUSINESS_UNITS)
     else:
-        accessible = [d for d in request.cw_depts if d in VALID_BUSINESS_UNITS]
+        accessible = [d for d in request.pk_depts if d in VALID_BUSINESS_UNITS]
 
     single_bu = (body.get('bu') or '').strip()
     req_bus = body.get('bus') or []

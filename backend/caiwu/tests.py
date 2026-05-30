@@ -21,6 +21,7 @@ from caiwu.views import (
     _make_token,
     _parse_dept_ledger_rows,
 )
+from paikuan.models import PaikuanUser
 
 
 REV = '\u4e3b\u8425\u4e1a\u52a1\u6536\u5165'
@@ -104,6 +105,18 @@ class CaiwuCalculationLogicTests(TestCase):
         )
         cls.admin.set_password('Test123456')
         cls.admin.save()
+        # PaikuanUser required for cw_required auth (Stage 2+3 unified accounts)
+        cls.pk_admin = PaikuanUser(
+            phone='13900000001',
+            name='Finance Admin PK',
+            role='super_admin',
+            job_title='finance_director',
+            departments=[],
+            is_active=True,
+            is_approved=True,
+        )
+        cls.pk_admin.set_password('Test123456')
+        cls.pk_admin.save()
 
     def setUp(self):
         self.client = Client()
@@ -111,7 +124,7 @@ class CaiwuCalculationLogicTests(TestCase):
         self.l1 = {c.name: c for c in L1Category.objects.order_by('sort_order', 'id')}
 
     def auth(self):
-        return {'HTTP_AUTHORIZATION': f'Bearer {_make_token(self.admin)}'}
+        return {'HTTP_AUTHORIZATION': f'Bearer {_make_token(self.pk_admin)}'}
 
     def create_batch(
         self,
