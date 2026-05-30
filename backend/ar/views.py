@@ -733,7 +733,9 @@ def ar_records(request):
 
         # ── 时段合计：本月应收/已收 + 本周应收/已收 ─────────────────────────
         # 基准日期 = 所有日期筛选里最晚的一天（都没选则用今天）
-        ref_candidates = [today]
+        # 注意：today 不加入候选集，只在没有任何筛选时作为兜底；
+        # 否则历史月份筛选（如 2024年3月）会被今天覆盖，导致窗口不联动。
+        ref_candidates = []
         year_f = request.GET.get('year', '').strip()
         month_f = request.GET.get('month', '').strip()
         pay_end_f = request.GET.get('pay_end', '').strip()
@@ -750,7 +752,7 @@ def ar_records(request):
                 ref_candidates.append(datetime.date.fromisoformat(pay_end_f))
             except ValueError:
                 pass
-        ref_date = max(ref_candidates)
+        ref_date = max(ref_candidates) if ref_candidates else today
 
         # 自然月窗口
         mo_start = datetime.date(ref_date.year, ref_date.month, 1)

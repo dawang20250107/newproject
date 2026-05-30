@@ -426,6 +426,18 @@ class ARPermissionRegressionTests(TestCase):
         # week_collected: payment on 2026-07-01 is in the week → 400 (not the 06-15 one)
         self.assertEqual(Decimal(s['week_collected']), Decimal('400.00'))
 
+        # ── 关键回归：历史月份筛选（早于今天）时 ref_date 不应被 today 覆盖 ──
+        # year=2026 month=6 is before today (2026-05-30... actually June is after May, let's use a past year)
+        # Use July record filtered by pay_end=2026-03-31 (before today=2026-05-30)
+        # ref_candidates should be [2026-03-31], ref_date=2026-03-31 (not today=May)
+        resp2 = self.client.get('/api/pk/ar/records', {'pay_end': '2026-03-31'},
+                                **self.auth(admin))
+        self.assertEqual(resp2.status_code, 200)
+        s2 = resp2.json()['data']['summary']
+        # ref_date must be 2026-03-31 (March), not today (May)
+        self.assertEqual(s2['ref_month'], '2026年3月')
+        self.assertEqual(s2['ref_week'], '3/30~4/5')  # week of 2026-03-31 (Mon3/30~Sun4/5)
+
     def test_records_search_matches_project_manager(self):
         admin = self.make_user('13900000066', 'finance_director', role='super_admin')
         project = self.create_project()  # project_manager 'PM A'
