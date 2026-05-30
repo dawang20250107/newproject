@@ -211,6 +211,52 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
       </router-link>
 
+      <!-- ── 财务分析 section ───────────────────── -->
+      <div v-if="auth.canPage('caiwu_report') || auth.canPage('caiwu_data') || auth.canPage('caiwu_charts') || auth.isSuperAdmin"
+           class="nav-section-label">
+        <span style="display:block;width:100%;height:1px;background:rgba(255,255,255,0.1);margin:4px 0"></span>
+      </div>
+
+      <router-link v-if="auth.canPage('caiwu_report')" to="/caiwu/report" class="nav-item" :class="{ active: route.path === '/caiwu/report' }" @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M9 13l2 2 4-4"/>
+          </svg>
+        </span>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">财务报表</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
+      </router-link>
+
+      <router-link v-if="auth.canPage('caiwu_charts')" to="/caiwu/charts" class="nav-item" :class="{ active: route.path === '/caiwu/charts' }" @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-4"/>
+          </svg>
+        </span>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">图表分析</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
+      </router-link>
+
+      <router-link v-if="auth.canPage('caiwu_data')" to="/caiwu/data" class="nav-item" :class="{ active: route.path === '/caiwu/data' }" @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4 3 9 3s9-1.34 9-3V5M3 11v6c0 1.66 4 3 9 3s9-1.34 9-3v-6"/>
+          </svg>
+        </span>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">数据加工</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
+      </router-link>
+
+      <router-link v-if="auth.isSuperAdmin" to="/caiwu/settings" class="nav-item" :class="{ active: route.path === '/caiwu/settings' }" @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+          </svg>
+        </span>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">科目设置</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
+      </router-link>
+
       <router-link v-if="auth.isSuperAdmin" to="/users" class="nav-item" :class="{ active: route.path === '/users' }" @click="onNavClick">
         <span class="nav-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

@@ -3,6 +3,8 @@ export const DEPARTMENTS = [
   '集团总部', '劳务事业部', '运输事业部', '自营事业部',
   '阔展事业部', '多式联运事业部', '供应链事业部',
 ]
+// Financial-analysis (caiwu) module uses the same org units under this name.
+export const BUSINESS_UNITS = DEPARTMENTS
 
 export const ROLE_LABELS = {
   super_admin: '超级管理员',

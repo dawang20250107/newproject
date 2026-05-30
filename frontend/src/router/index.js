@@ -14,6 +14,11 @@ const routes = [
   { path: '/ar/analytics', component: () => import('../views/ar/ARAnalytics.vue'), meta: { page: 'ar_analytics' } },
   { path: '/ar/cashflow', component: () => import('../views/ar/Cashflow.vue'), meta: { page: 'ar_cashflow' } },
   { path: '/ar/budget', component: () => import('../views/ar/Budget.vue'), meta: { page: 'ar_budget' } },
+  // 财务分析 (caiwu) module
+  { path: '/caiwu/report', component: () => import('../views/caiwu/Report.vue'), meta: { page: 'caiwu_report' } },
+  { path: '/caiwu/data', component: () => import('../views/caiwu/DataImport.vue'), meta: { page: 'caiwu_data' } },
+  { path: '/caiwu/charts', component: () => import('../views/caiwu/Charts.vue'), meta: { page: 'caiwu_charts' } },
+  { path: '/caiwu/settings', component: () => import('../views/caiwu/Settings.vue'), meta: { role: 'super_admin' } },
   // Admin
   { path: '/users', component: () => import('../views/Users.vue'), meta: { role: 'super_admin' } },
   { path: '/permissions', component: () => import('../views/Permissions.vue'), meta: { role: 'super_admin' } },

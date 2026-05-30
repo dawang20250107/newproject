@@ -8,6 +8,7 @@ const saved = ref(false)
 const error = ref('')
 const fields = ref([])
 const arFields = ref([])
+const caiwuFields = ref([])
 const pages = ref([])
 const jobs = ref([])          // [{job_title, label, config}]
 const activeJob = ref('')
@@ -15,6 +16,9 @@ const activeJob = ref('')
 const current = computed(() => jobs.value.find(j => j.job_title === activeJob.value))
 const arProjectFields = computed(() => arFields.value.filter(f => f.group === 'project'))
 const arRecordFields = computed(() => arFields.value.filter(f => f.group === 'record'))
+// Pages split: 应收应付 (paikuan + ar) vs 财务分析 (caiwu_*)
+const pkPages = computed(() => pages.value.filter(p => !p.key.startsWith('caiwu_')))
+const caiwuPages = computed(() => pages.value.filter(p => p.key.startsWith('caiwu_')))
 
 async function load() {
   loading.value = true
@@ -23,14 +27,22 @@ async function load() {
     const res = await api.get('/permissions')
     fields.value = res.data.fields
     arFields.value = res.data.ar_fields || []
+    caiwuFields.value = res.data.caiwu_fields || []
     pages.value = res.data.pages
     jobs.value = res.data.jobs
-    // Ensure ar_view object exists on each job config (older stored configs may lack it)
+    // Ensure nested config objects exist on each job (older stored configs may lack them)
     for (const j of jobs.value) {
       if (!j.config.ar_view) j.config.ar_view = {}
       for (const f of arFields.value) {
         if (j.config.ar_view[f.key] === undefined) j.config.ar_view[f.key] = true
       }
+      if (!j.config.caiwu_view) j.config.caiwu_view = {}
+      for (const f of caiwuFields.value) {
+        if (j.config.caiwu_view[f.key] === undefined) j.config.caiwu_view[f.key] = true
+      }
+      if (j.config.caiwu_upload === undefined) j.config.caiwu_upload = false
+      if (j.config.caiwu_publish === undefined) j.config.caiwu_publish = false
+      if (j.config.caiwu_delete === undefined) j.config.caiwu_delete = false
     }
     if (!activeJob.value && jobs.value.length) activeJob.value = jobs.value[0].job_title
   } catch (e) {
@@ -40,6 +52,11 @@ async function load() {
   }
 }
 onMounted(load)
+
+function toggleCaiwuViewAll(val) {
+  const c = current.value.config
+  for (const f of caiwuFields.value) c.caiwu_view[f.key] = val
+}
 
 function toggleArViewAll(group, val) {
   const c = current.value.config
@@ -115,9 +132,17 @@ async function save() {
         <div v-if="error" class="alert alert-err">{{ error }}</div>
 
         <!-- pages -->
-        <div class="section-title">页面访问权限</div>
+        <div class="section-title">页面访问权限 · 应收应付</div>
         <div class="chip-row">
-          <label v-for="p in pages" :key="p.key" class="perm-chip" :class="{ on: current.config.pages[p.key] }">
+          <label v-for="p in pkPages" :key="p.key" class="perm-chip" :class="{ on: current.config.pages[p.key] }">
+            <input type="checkbox" v-model="current.config.pages[p.key]" />
+            <span class="dot"></span>{{ p.label }}
+          </label>
+        </div>
+
+        <div class="section-title" style="margin-top:20px">页面访问权限 · 财务分析</div>
+        <div class="chip-row">
+          <label v-for="p in caiwuPages" :key="p.key" class="perm-chip alt" :class="{ on: current.config.pages[p.key] }">
             <input type="checkbox" v-model="current.config.pages[p.key]" />
             <span class="dot"></span>{{ p.label }}
           </label>
@@ -208,6 +233,38 @@ async function save() {
           </div>
         </template>
 
+        <!-- 财务分析 capabilities + field visibility -->
+        <template v-if="caiwuFields.length">
+          <div class="section-title" style="margin-top:24px">财务分析操作权限</div>
+          <div class="chip-row">
+            <label class="perm-chip alt" :class="{ on: current.config.caiwu_upload }">
+              <input type="checkbox" v-model="current.config.caiwu_upload" />
+              <span class="dot"></span>可上传数据
+            </label>
+            <label class="perm-chip alt" :class="{ on: current.config.caiwu_publish }">
+              <input type="checkbox" v-model="current.config.caiwu_publish" />
+              <span class="dot"></span>可发布批次
+            </label>
+            <label class="perm-chip danger" :class="{ on: current.config.caiwu_delete }">
+              <input type="checkbox" v-model="current.config.caiwu_delete" />
+              <span class="dot"></span>可删除批次
+            </label>
+          </div>
+
+          <div class="section-title" style="margin-top:20px">财务分析字段（显示 / 隐藏）
+            <span class="all-inline">
+              <button class="mini" @click="toggleCaiwuViewAll(true)">全显示</button>
+              <button class="mini" @click="toggleCaiwuViewAll(false)">全隐藏</button>
+            </span>
+          </div>
+          <div class="chip-row">
+            <label v-for="f in caiwuFields" :key="f.key" class="perm-chip alt" :class="{ on: current.config.caiwu_view[f.key] }">
+              <input type="checkbox" v-model="current.config.caiwu_view[f.key]" />
+              <span class="dot"></span>{{ f.label }}
+            </label>
+          </div>
+        </template>
+
         <div class="modal-footer" style="border:none;padding-top:18px">
           <Transition name="status-fade">
             <span v-if="saved" class="saved-tag">✓ 已保存</span>
@@ -248,6 +305,8 @@ async function save() {
 .perm-chip.on .dot { background: var(--primary); box-shadow: 0 0 8px rgba(201,99,66,0.5); }
 .perm-chip.danger.on { border-color: #c62828; background: rgba(198,40,40,0.08); color: #c62828; }
 .perm-chip.danger.on .dot { background: #c62828; box-shadow: 0 0 8px rgba(198,40,40,0.5); }
+.perm-chip.alt.on { border-color: #1565c0; background: rgba(21,101,192,0.08); color: #1565c0; }
+.perm-chip.alt.on .dot { background: #1565c0; box-shadow: 0 0 8px rgba(21,101,192,0.5); }
 
 .perm-table { width: 100%; }
 .perm-table th.ctr, .perm-table td.ctr { text-align: center; width: 130px; }

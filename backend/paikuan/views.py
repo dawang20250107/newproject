@@ -63,10 +63,16 @@ PAGE_KEYS = [
 ]
 
 # Caiwu report/chart element permission keys (mirrored from caiwu.views.PERM_FIELD_DEFS)
-CAIWU_FIELD_KEYS = [
-    'report_l1', 'report_l2', 'report_l3',
-    'amount', 'chart_trend', 'chart_waterfall', 'export',
+CAIWU_FIELD_DEFS = [
+    {'key': 'report_l1',       'label': '一级科目报表'},
+    {'key': 'report_l2',       'label': '二级项目部明细'},
+    {'key': 'report_l3',       'label': '三级科目明细'},
+    {'key': 'amount',          'label': '金额数据'},
+    {'key': 'chart_trend',     'label': '走势折线图'},
+    {'key': 'chart_waterfall', 'label': '因素瀑布图'},
+    {'key': 'export',          'label': '导出 Excel'},
 ]
+CAIWU_FIELD_KEYS = [f['key'] for f in CAIWU_FIELD_DEFS]
 
 # 仅允许这些职务对审批单直接置为 approved/rejected；其余职务（操作员/出纳/结算会计等）
 # 只能创建 pending、或取消自己的申请。super_admin 永远豁免此限制。
@@ -1562,6 +1568,7 @@ def permissions(request):
     return ok({
         'fields': PAYMENT_FIELD_DEFS,
         'ar_fields': AR_FIELD_DEFS,
+        'caiwu_fields': CAIWU_FIELD_DEFS,
         'pages': [
             {'key': 'dashboard',         'label': '今日工作台'},
             {'key': 'payments',          'label': '付款台账'},
