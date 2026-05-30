@@ -1553,7 +1553,7 @@ def batch_upload(request):
 
     # Create draft batch + entries atomically
     uploader = CaiwuUser.objects.get(id=request.cw_uid)
-    with transaction.atomic(using='caiwu'):
+    with transaction.atomic(using='default'):  # caiwu 已并入 default 主库(整合阶段1)
         batch = ImportBatch.objects.create(
             business_unit=bu, year=year, month=month,
             batch_type=batch_type,
@@ -1593,7 +1593,7 @@ def batch_publish(request, bid):
 
     # Use a transaction + row-level lock so concurrent publish requests for
     # the same BU+month don't both delete each other's data.
-    with transaction.atomic(using='caiwu'):
+    with transaction.atomic(using='default'):  # caiwu 已并入 default 主库(整合阶段1)
         # Re-fetch with lock to guard against concurrent publish
         try:
             batch = ImportBatch.objects.select_for_update().get(id=bid)
