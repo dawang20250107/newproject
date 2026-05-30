@@ -97,7 +97,10 @@ else:
         },
     }
 
-DATABASE_ROUTERS = ['caiwu.db_router.CaiwuRouter']
+# ── caiwu 已并入 default 库（平台整合阶段1）。保留 'caiwu' 连接仅作为历史
+# 数据搬运源（manage.py migrate_caiwu_to_default 使用），不再通过 router 路由。
+# 待数据确认无误、生产搬运完成后，可移除 'caiwu' 连接与旧库文件。
+DATABASE_ROUTERS = []
 
 LANGUAGE_CODE = 'zh-hans'
 TIME_ZONE = 'Asia/Shanghai'
