@@ -582,6 +582,19 @@ function clearFilters() {
           <div class="kpi-item ok"><span class="kpi-k">已收合计</span><span class="kpi-v">{{ fmtAmt(summaryData.collected) }}</span></div>
           <div class="kpi-item"><span class="kpi-k">差额调整</span><span class="kpi-v">{{ fmtAmt(summaryData.adj) }}</span></div>
           <div class="kpi-item warn"><span class="kpi-k">未收合计</span><span class="kpi-v">{{ fmtAmt(summaryData.outstanding) }}</span></div>
+          <span class="metrics-div"></span>
+          <div class="kpi-item" :title="`应收到期在 ${summaryData.ref_month} 内的预估金额`">
+            <span class="kpi-k">{{ summaryData.ref_month }}应收</span>
+            <span class="kpi-v">{{ fmtAmt(summaryData.month_est) }}</span>
+          </div>
+          <div class="kpi-item" :title="`应收到期在 ${summaryData.ref_week} 周内的预估金额`">
+            <span class="kpi-k">本周应收<span class="kpi-sub">{{ summaryData.ref_week }}</span></span>
+            <span class="kpi-v">{{ fmtAmt(summaryData.week_est) }}</span>
+          </div>
+          <div class="kpi-item ok" :title="`${summaryData.ref_week} 内实际回款额`">
+            <span class="kpi-k">本周已收<span class="kpi-sub">{{ summaryData.ref_week }}</span></span>
+            <span class="kpi-v">{{ fmtAmt(summaryData.week_collected) }}</span>
+          </div>
         </template>
       </div>
 
@@ -1120,7 +1133,8 @@ function clearFilters() {
 .metrics-div { width: 1px; align-self: stretch; min-height: 20px; background: rgba(0,0,0,0.1); margin: 0 2px; }
 .sum-section-lbl { font-size: 11px; color: var(--muted); letter-spacing: 0.5px; white-space: nowrap; cursor: default; }
 .kpi-item { display: flex; align-items: baseline; gap: 6px; }
-.kpi-k { font-size: 12px; color: var(--muted); }
+.kpi-k { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 1px; }
+.kpi-sub { font-size: 10px; color: var(--muted); opacity: 0.75; font-weight: 400; }
 .kpi-v { font-size: 15px; font-weight: 700; color: var(--text); }
 .kpi-item.ok .kpi-v { color: #2e7d32; }
 .kpi-item.warn .kpi-v { color: #e65100; }

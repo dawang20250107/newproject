@@ -383,6 +383,45 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(Decimal(s['estimated']), Decimal('1000.00'))   # not 2000
         self.assertEqual(Decimal(s['collected']), Decimal('500.00'))    # 300 + 200
 
+    def test_summary_period_fields_month_and_week(self):
+        import calendar as cal
+        admin = self.make_user('13900000044', 'finance_director', role='super_admin')
+        project = self.create_project()
+
+        # Record whose due_date is the last day of 2026-06
+        last_june = date(2026, 6, 30)
+        rec_june = ARRecord.objects.create(
+            project=project, operation_year=2026, operation_month=6,
+            estimated_amount=Decimal('1000.00'))
+        ARRecord.objects.filter(pk=rec_june.pk).update(due_date=last_june)
+
+        # Record whose due_date is in a different month (July)
+        rec_july = ARRecord.objects.create(
+            project=project, operation_year=2026, operation_month=7,
+            estimated_amount=Decimal('2000.00'))
+        ARRecord.objects.filter(pk=rec_july.pk).update(due_date=date(2026, 7, 15))
+
+        # Payment in the week of 2026-06-29 (Mon) ~ 2026-07-05 (Sun)
+        ARPayment.objects.create(ar_record=rec_june, payment_no=1,
+                                 amount=Decimal('400.00'), payment_date=date(2026, 7, 1))
+
+        # Request with year=2026 month=6 → ref_date=2026-06-30 (month end)
+        resp = self.client.get('/api/pk/ar/records', {'year': 2026, 'month': 6},
+                               **self.auth(admin))
+        self.assertEqual(resp.status_code, 200)
+        s = resp.json()['data']['summary']
+
+        # month_est: due_date in June (only rec_june qualifies)
+        self.assertEqual(Decimal(s['month_est']), Decimal('1000.00'))
+        self.assertEqual(s['ref_month'], '2026年6月')
+
+        # week window for 2026-06-30 (Tuesday): Mon=2026-06-29, Sun=2026-07-05
+        # rec_june has due_date=2026-06-30 (in that week) → week_est includes it
+        self.assertEqual(Decimal(s['week_est']), Decimal('1000.00'))
+
+        # week_collected: payment on 2026-07-01 is in the same week
+        self.assertEqual(Decimal(s['week_collected']), Decimal('400.00'))
+
     def test_records_search_matches_project_manager(self):
         admin = self.make_user('13900000066', 'finance_director', role='super_admin')
         project = self.create_project()  # project_manager 'PM A'

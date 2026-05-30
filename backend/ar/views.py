@@ -716,9 +716,9 @@ def ar_records(request):
         # 重要：筛选含 payments 关联（回款日期/含未结清）时 qs_agg 带 JOIN，直接
         # aggregate 会把每条记录的金额按其回款笔数重复累加。先取去重后的记录 id，
         # 再在无 JOIN 的基表上聚合金额；回款金额单独在 ARPayment 上聚合，避免互相放大。
-        record_ids = list(qs_agg.order_by().values_list('id', flat=True).distinct())
-        total = len(record_ids)
-        base = ARRecord.objects.filter(id__in=record_ids)
+        all_record_ids = list(qs_agg.order_by().values_list('id', flat=True).distinct())
+        total = len(all_record_ids)
+        base = ARRecord.objects.filter(id__in=all_record_ids)
         # Only sum outstanding_amount where > 0: matches the table which renders
         # non-positive rows as "—" (settled/overpaid treated identically as 0).
         agg = base.aggregate(
@@ -728,8 +728,47 @@ def ar_records(request):
             out=Sum('outstanding_amount', filter=Q(outstanding_amount__gt=0)),
             adj=Sum('account_diff_adjustment'),
         )
-        collected = (ARPayment.objects.filter(ar_record_id__in=record_ids)
+        collected = (ARPayment.objects.filter(ar_record_id__in=all_record_ids)
                      .aggregate(s=Sum('amount'))['s'] or 0)
+
+        # ── 时段合计：本月应收 / 本周应收 / 本周已收 ──────────────────────────
+        # 基准日期 = 所有日期筛选里最晚的一天（都没选则用今天）
+        ref_candidates = [today]
+        year_f = request.GET.get('year', '').strip()
+        month_f = request.GET.get('month', '').strip()
+        pay_end_f = request.GET.get('pay_end', '').strip()
+        if year_f:
+            try:
+                y_i = int(year_f)
+                m_i = int(month_f) if month_f else 12
+                ref_candidates.append(
+                    datetime.date(y_i, m_i, calendar.monthrange(y_i, m_i)[1]))
+            except (ValueError, OverflowError):
+                pass
+        if pay_end_f:
+            try:
+                ref_candidates.append(datetime.date.fromisoformat(pay_end_f))
+            except ValueError:
+                pass
+        ref_date = max(ref_candidates)
+
+        # 自然月窗口
+        mo_start = datetime.date(ref_date.year, ref_date.month, 1)
+        mo_end = datetime.date(ref_date.year, ref_date.month,
+                               calendar.monthrange(ref_date.year, ref_date.month)[1])
+        # 周窗口（周一 ~ 周日）
+        wk_start = ref_date - datetime.timedelta(days=ref_date.weekday())
+        wk_end = wk_start + datetime.timedelta(days=6)
+
+        month_est = (base.filter(due_date__gte=mo_start, due_date__lte=mo_end)
+                     .aggregate(s=Sum('estimated_amount'))['s'] or 0)
+        week_est = (base.filter(due_date__gte=wk_start, due_date__lte=wk_end)
+                    .aggregate(s=Sum('estimated_amount'))['s'] or 0)
+        week_collected = (ARPayment.objects
+                          .filter(ar_record_id__in=all_record_ids,
+                                  payment_date__gte=wk_start, payment_date__lte=wk_end)
+                          .aggregate(s=Sum('amount'))['s'] or 0)
+
         summary = {
             'count': total,
             'estimated': str(agg['est'] or 0),
@@ -738,6 +777,11 @@ def ar_records(request):
             'outstanding': str(agg['out'] or 0),
             'adj': str(agg['adj'] or 0),
             'collected': str(collected),
+            'month_est': str(month_est),
+            'week_est': str(week_est),
+            'week_collected': str(week_collected),
+            'ref_month': f'{ref_date.year}年{ref_date.month}月',
+            'ref_week': f'{wk_start.month}/{wk_start.day}~{wk_end.month}/{wk_end.day}',
         }
         items = list(qs[(page - 1) * size: page * size])
 
