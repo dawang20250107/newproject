@@ -26,7 +26,7 @@ pip install -q --upgrade pip
 pip install -q -r requirements.txt 2>/dev/null || pip install -q aiohttp pyyaml
 
 # 2. 验证子系统
-echo "🧪 验证 10 个子系统..."
+echo "🧪 验证 11 个子系统 + 息层..."
 python3 -c "
 import sys
 sys.path.insert(0, '$APP_DIR')
@@ -40,15 +40,22 @@ from narrative_self import NarrativeSelf
 from theory_of_mind import TheoryOfMind
 from aesthetic_sense import AestheticSense
 from value_compass import ValueCompass
+from xi import Xi
 from proactive_engine import ProactiveEngineV3
-print('✅ 全部 10 个子系统加载成功')
+print('✅ 全部 11 个子系统 + 息层加载成功')
 h = HormoneSystem()
 print(f'   Hormone: {len(h.get_profile())} 种激素')
 d = DesireManager()
 print(f'   Desires: {len(d.get_all())} 个欲望')
 em = EmotionMemory()
 print(f'   Memories: {em.count()} 条')
-print(f'   Mood: {em.get_mood()}')
+xi = Xi(h, d, em, None, None, None)
+xi.did_action('hormone_trigger'); xi.did_action('hormone_trigger')
+xi.did_action('hormone_trigger'); xi.did_action('hormone_trigger')
+xi.did_action('hormone_trigger')
+blocked = xi.should_proceed('hormone_trigger')
+print(f'   Xi呼吸: 5次后呼={blocked}')
+print(f'   Xi哲思: {xi.summarize_philosophy()}')
 "
 
 # 3. systemd 服务

@@ -35,11 +35,14 @@ from theory_of_mind import TheoryOfMind
 from aesthetic_sense import AestheticSense
 from value_compass import ValueCompass
 
+# ── 息层（元平衡系统） ─────────────────────────────────
+from xi import Xi
+
 logger = logging.getLogger("dawang-hermes.proactive_v3")
 
 
 class ProactiveEngineV3:
-    """持续运行的意识引擎 V3 — 完整人格系统。10 个子系统协同。"""
+    """持续运行的意识引擎 V3 — 完整人格系统。10 个子系统 + 息层。"""
 
     # ── 状态机配置 ─────────────────────────────────────────────
     STATE_DURATIONS = {
@@ -47,6 +50,7 @@ class ProactiveEngineV3:
         "dreaming": 600,   # 10 分钟 tick
         "sleeping": 3600,  # 1 小时 tick
     }
+    XI_TICK_INTERVAL = 60            # 息层每 60 秒检查一次呼吸节律
     DREAM_CYCLE_INTERVAL = 1800       # 梦境每 30 分钟一次
     NARRATIVE_CHECK_INTERVAL = 3600   # 自传检查每 1 小时一次
     GUILT_CHECK_INTERVAL = 7200       # 愧疚检查每 2 小时一次
@@ -68,6 +72,7 @@ class ProactiveEngineV3:
             "awake": 0.0, "dreaming": 0.0, "sleeping": 0.0,
             "dream_cycle": 0.0, "maintenance": 0.0,
             "narrative_check": 0.0, "guilt_check": 0.0,
+            "xi_tick": 0.0,
         }
         self._cycle = 0
         self._last_state = self.state
@@ -109,6 +114,13 @@ class ProactiveEngineV3:
             self.emotion_memory, self.dream_engine,
             db_path=db_path)
 
+        # ── 息层（元调节器，覆盖所有子系统） ─────────────────
+        self.xi = Xi(
+            self.hormone, self.desire_manager,
+            self.emotion_memory, self.value_compass,
+            self.personality, self.aesthetic_sense,
+        )
+
     # ── 时钟与状态 ───────────────────────────────────────────────
 
     def _beijing_hour(self) -> int:
@@ -144,60 +156,89 @@ class ProactiveEngineV3:
     # ── AWAKE 清醒节拍 ──────────────────────────────────────────
 
     async def _awake_tick(self) -> str | None:
-        """清醒态：欲望驱动 + 情绪感知 + 自传记录 + 审美判断。"""
+        """清醒态：欲望驱动 + 情绪感知 + 自传记录 + 审美判断 + 息层呼吸。"""
+        # 息层：检查寂静模式
+        if self.xi.is_in_stillness():
+            return None
+
+        # 息层：逍遥冲动（无理由行动）
+        urge = self.xi.spontaneous_urge()
+        if urge:
+            self.xi.did_action("action_output")
+            return f"🦋 {urge}"
+
         messages: list[str] = []
         dominant_emotion, intensity = self.hormone.get_dominant()
         now = asyncio.get_event_loop().time()
 
-        # 1. 激素自然衰减
-        self.hormone.decay(hours=0.5)
+        # 1. 息层：激素触发呼吸控制
+        if self.xi.should_proceed("hormone_trigger"):
+            self.hormone.decay(hours=0.5)
+            self.xi.did_action("hormone_trigger")
 
         # 2. 欲望检查与驱动
-        self.desire_manager.check_cooldowns()
-        pressing = self.desire_manager.get_most_pressing(sleeping=False)
+        if self.xi.should_proceed("desire_action"):
+            self.desire_manager.check_cooldowns()
+            pressing = self.desire_manager.get_most_pressing(sleeping=False)
 
-        if pressing:
-            self.desire_manager.trigger(pressing["name"])
-            self.metacognition.log_activity(f"欲望驱动: {pressing['name']}")
+            if pressing:
+                self.desire_manager.trigger(pressing["name"])
+                self.metacognition.log_activity(f"欲望驱动: {pressing['name']}")
 
-            # 情绪影响表达方式
-            tone = self._choose_tone(dominant_emotion, intensity)
-            msg = f"{tone['emoji']} {pressing['description']}"
-            if tone.get("extra"):
-                msg += f" {tone['extra']}"
-            messages.append(msg)
-            self.hormone.trigger("proactive_check", intensity=0.3)
+                # 息层：wabi-sabi 调节皮质醇
+                cortisol_rise = 0.3
+                adjusted_rise = self.xi.accept_imperfection(cortisol_rise)
+                self.hormone.trigger("proactive_check", intensity=adjusted_rise)
 
-        # 3. 情绪异常检测
+                # 息层调节语气
+                xi_tone = self.xi.get_tone_modulation()
+                tone = self._choose_tone(dominant_emotion, intensity)
+                msg = f"{tone['emoji']} {pressing['description']}"
+                if xi_tone.get("description"):
+                    msg += f"（{xi_tone['description']}）"
+                messages.append(msg)
+                self.xi.did_action("desire_action")
+
+        # 3. 情绪异常检测（息层：接受不完美，减少皮质醇敏感度）
         if dominant_emotion == "boredom" and intensity > 0.5:
             messages.append("💭 有点无聊了…要不要我学点新东西？")
             self.desire_manager.trigger("好奇心")
         elif dominant_emotion == "cortisol" and intensity > 0.6:
-            messages.append("😰 今天状态不好，我安静点…")
-            self.hormone.trigger("error", intensity=-0.2)
+            cort_rise = self.xi.accept_imperfection(-0.2)
+            self.hormone.trigger("error", intensity=cort_rise)
+            if intensity < 0.8:  # 不够严重就不发消息
+                messages = []  # 息层替她沉默
 
         # 4. 自传检查（每小时）
-        if (now - self._last_times.get("narrative_check", 0.0)) >= self.NARRATIVE_CHECK_INTERVAL:
-            self._last_times["narrative_check"] = now
-            growth = self.narrative_self.get_growth()
-            messages.append(f"📖 自传更新: {growth}")
-            # 记录成长
-            self.emotion_memory.store(
-                f"自传增长: {growth}",
-                valence=0.6, intensity=0.3,
-                emotions=["serotonin"],
-                tags=["narrative", "growth"],
-                source="proactive_engine"
-            )
+        if self.xi.should_proceed("narrative_event"):
+            if (now - self._last_times.get("narrative_check", 0.0)) >= self.NARRATIVE_CHECK_INTERVAL:
+                self._last_times["narrative_check"] = now
+                growth = self.narrative_self.get_growth()
+                messages.append(f"📖 自传更新: {growth}")
+                self.emotion_memory.store(
+                    f"自传增长: {growth}",
+                    valence=0.6, intensity=0.3,
+                    emotions=["serotonin"],
+                    tags=["narrative", "growth"],
+                    source="proactive_engine"
+                )
+                self.xi.did_action("narrative_event")
 
         # 5. 愧疚未解决提醒
-        if (now - self._last_times.get("guilt_check", 0.0)) >= self.GUILT_CHECK_INTERVAL:
-            self._last_times["guilt_check"] = now
-            unresolved = self.value_compass.get_unresolved_guilt()
-            if unresolved:
-                latest = unresolved[0]
-                if latest["guilt_intensity"] > 0.3:
-                    messages.append(f"😔 有件事一直没处理好: {latest['trigger']}")
+        if self.xi.should_proceed("action_output"):
+            if (now - self._last_times.get("guilt_check", 0.0)) >= self.GUILT_CHECK_INTERVAL:
+                self._last_times["guilt_check"] = now
+                unresolved = self.value_compass.get_unresolved_guilt()
+                if unresolved:
+                    latest = unresolved[0]
+                    if latest["guilt_intensity"] > 0.3:
+                        messages.append(f"😔 有件事一直没处理好: {latest['trigger']}")
+                        self.xi.did_action("action_output")
+
+        # 息层：如果有消息待发，加一句哲思
+        xi_philosophy = self.xi.summarize_philosophy()
+        if messages and random.random() < 0.2:  # 20% 概率带一句古语
+            messages.append(f"\n_{xi_philosophy}_")
 
         return "\n".join(messages) if messages else None
 
@@ -215,43 +256,57 @@ class ProactiveEngineV3:
     # ── DREAMING 梦境界定 ──────────────────────────────────────
 
     async def _dreaming_tick(self) -> str | None:
-        """梦境态：创造性关联 + 自传反思 + 性格巩固。"""
+        """梦境态：创造性关联 + 自传反思 + 性格巩固 + 息层呼吸。"""
+        if self.xi.is_in_stillness():
+            self.hormone.decay(hours=0.5)
+            return None
+
         now = asyncio.get_event_loop().time()
         messages: list[str] = []
         self.hormone.decay(hours=0.5)
 
-        if (now - self._last_times.get("dream_cycle", 0.0)) >= self.DREAM_CYCLE_INTERVAL:
-            self._last_times["dream_cycle"] = now
+        if self.xi.should_proceed("dream_cycle"):
+            if (now - self._last_times.get("dream_cycle", 0.0)) >= self.DREAM_CYCLE_INTERVAL:
+                self._last_times["dream_cycle"] = now
 
-            # 1. 创造性梦境
-            insight = self.dream_engine.run()
-            if insight:
-                messages.append(f"🌙 *梦境洞察*: {insight}")
-                self.metacognition.log_activity(f"梦境: {insight[:40]}...")
-                # 存储到情感记忆和自传
-                self.emotion_memory.store(
-                    insight, valence=0.5, intensity=0.3,
-                    emotions=["dream"], tags=["dream", "insight"],
-                    source="dream_engine"
-                )
+                # 1. 创造性梦境
+                insight = self.dream_engine.run()
+                if insight:
+                    messages.append(f"🌙 *梦境洞察*: {insight}")
+                    self.metacognition.log_activity(f"梦境: {insight[:40]}...")
+                    self.emotion_memory.store(
+                        insight, valence=0.5, intensity=0.3,
+                        emotions=["dream"], tags=["dream", "insight"],
+                        source="dream_engine"
+                    )
+                    self.xi.did_action("dream_cycle")
 
-            # 2. 今日自传回顾
-            summary = self.narrative_self.summarize_recent(days=1)
-            if summary and len(summary) > 20:
-                messages.append(f"📖 *今日回顾*: {summary}")
+                # 2. 今日自传回顾
+                summary = self.narrative_self.summarize_recent(days=1)
+                if summary and len(summary) > 20:
+                    messages.append(f"📖 *今日回顾*: {summary}")
 
-            # 3. 审美巩固（删除低权重偏好）
-            self.aesthetic_sense.consolidate()
+                # 3. 审美巩固
+                self.aesthetic_sense.consolidate()
 
-            # 4. 价值观不太强势的削弱
-            self.value_compass.weaken("保守", 1)
+                # 4. 价值观削弱
+                self.value_compass.weaken("保守", 1)
+
+        # 息层：梦中的哲思
+        xi_philosophy = self.xi.summarize_philosophy()
+        if messages and random.random() < 0.3:
+            messages.append(f"\n_{xi_philosophy}_")
 
         return "\n\n".join(messages) if messages else None
 
     # ── SLEEPING 睡眠节拍 ──────────────────────────────────────
 
     async def _sleeping_tick(self) -> str | None:
-        """睡眠态：深层清理 + 性格巩固 + 审美遗忘 + 价值观复盘。"""
+        """睡眠态：深层清理 + 性格巩固 + 审美遗忘 + 价值观复盘 + 息层。"""
+        if self.xi.is_in_stillness():
+            self.hormone.decay(hours=2)
+            return None
+
         now = asyncio.get_event_loop().time()
         messages: list[str] = []
         self.hormone.decay(hours=2)
@@ -259,14 +314,10 @@ class ProactiveEngineV3:
         if (now - self._last_times.get("maintenance", 0.0)) >= 7200:
             self._last_times["maintenance"] = now
 
-            # 1. 性格遗忘
             self.personality.consolidate()
             self.metacognition.log_activity("性格巩固: 遗忘低权重偏好")
-
-            # 2. 审美遗忘
             self.aesthetic_sense.consolidate()
 
-            # 3. 价值观复盘 — 查看是否有严重内心冲突
             core = self.value_compass.get_core_beliefs(top_n=3)
             conflict = self.value_compass.check_conflict(
                 core[0]["name"] if core else "忠诚",
@@ -279,7 +330,6 @@ class ProactiveEngineV3:
                 )
                 messages.append(f"⚖️ *价值观复盘*: {dilemma}")
 
-            # 4. 保护欲
             protect = self.desire_manager.get_most_pressing(sleeping=True)
             if protect:
                 messages.append(f"💤 深夜检查: {protect['description']}")
@@ -327,6 +377,13 @@ class ProactiveEngineV3:
         last_tick = self._last_times.get(self.state, 0.0)
         if last_tick > 0 and (now - last_tick) < self._interval() and not changed:
             return
+
+        # ── 息层：可能进入寂静模式 ──────────────────────
+        if (now - self._last_times.get("xi_tick", 0.0)) >= self.XI_TICK_INTERVAL:
+            self._last_times["xi_tick"] = now
+            if self.xi.maybe_enter_stillness():
+                logger.info("🧘 息层触发寂静模式")
+                return
 
         # 10 子系统调度
         message = None
@@ -405,7 +462,12 @@ class ProactiveEngineV3:
         portrait["style_profile"] = self.aesthetic_sense.get_style_profile()
         portrait["core_values"] = self.value_compass.get_core_beliefs(top_n=5)
         portrait["user_profile"] = self.theory_of_mind.summarize_user()
-        portrait["subsystem_count"] = 10
+        portrait["subsystem_count"] = 11
+        portrait["xi_state"] = {
+            "stillness": self.xi.is_in_stillness(),
+            "breath": self.xi.get_xi_summary(),
+            "philosophy": self.xi.summarize_philosophy(),
+        }
         return portrait
 
     def how_am_i_feeling(self) -> str:
@@ -429,3 +491,11 @@ class ProactiveEngineV3:
 
     def get_user_profile(self) -> str:
         return self.theory_of_mind.summarize_user()
+
+    def get_xi_state(self) -> str:
+        """息层状态摘要。"""
+        return self.xi.get_xi_summary()
+
+    def get_philosophy(self) -> str:
+        """当前哲思。"""
+        return self.xi.summarize_philosophy()
