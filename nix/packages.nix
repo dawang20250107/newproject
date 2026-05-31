@@ -15,12 +15,8 @@
     {
       packages = {
         default = hermesAgent;
-        tui = hermesAgent.hermesTui;
-        web = hermesAgent.hermesWeb;
-
-        fix-lockfiles = hermesAgent.hermesNpmLib.mkFixLockfiles {
-          packages = [ hermesAgent.hermesTui hermesAgent.hermesWeb ];
-        };
+        # 本 fork 已移除 web / ui-tui 子包，故不再暴露 tui / web 包，
+        # 也不再需要 npm lockfile 修复入口 fix-lockfiles。
       };
     };
 }
