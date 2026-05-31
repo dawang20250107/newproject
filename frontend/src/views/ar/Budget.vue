@@ -168,10 +168,10 @@ const deptCompareOption = computed(() => {
     legend: { bottom: 4, icon: 'roundRect', itemWidth: 14, itemHeight: 8,
               textStyle: { fontSize: 11, color: '#555' },
               data: ['实收', '实付', '收款预算', '付款预算'] },
-    grid: { top: 14, right: 14, bottom: 48, left: 14, containLabel: true },
+    grid: { top: 14, right: 14, bottom: deptNames.length > 5 ? 64 : 48, left: 14, containLabel: true },
     xAxis: { type: 'category', data: deptNames,
              axisLine: { show: false }, axisTick: { show: false },
-             axisLabel: { fontSize: 11, color: '#888', rotate: deptNames.length > 5 ? 15 : 0 } },
+             axisLabel: { fontSize: 11, color: '#888', interval: 0, rotate: deptNames.length > 5 ? 22 : 0 } },
     yAxis: { type: 'value', axisLabel: { formatter: v => fmtAmt(v), fontSize: 11, color: '#888' },
              splitLine: { lineStyle: SL } },
     series: [

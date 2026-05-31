@@ -5,6 +5,7 @@ import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
+import { valueAxis, catAxis, gridFor, bottomLegend } from '../../utils/chartTheme.js'
 import EmptyState from '../../components/EmptyState.vue'
 import BaseChart from '../../components/ar/BaseChart.vue'
 
@@ -54,9 +55,9 @@ const agingOption = computed(() => {
   return {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
       formatter: p => `${p[0].name}<br/>${fmtWan(p[0].value)} 元 (${p[0].data?.extra || ''}笔)` },
-    grid: { top: 16, right: 80, bottom: 8, left: 16, containLabel: true },
-    xAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v) } },
-    yAxis: { type: 'category', data: labels, axisLabel: { width: 80, overflow: 'truncate' } },
+    grid: { top: 16, right: 84, bottom: 8, left: 16, containLabel: true },
+    xAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => fmtWan(v) } },
+    yAxis: { type: 'category', data: labels, axisLabel: { color: '#9b8070', width: 96, overflow: 'truncate' } },
     series: [{ name: '未收金额', type: 'bar', data: amounts,
       label: { show: true, position: 'right', formatter: p => fmtWan(p.value) } }],
   }
@@ -68,12 +69,12 @@ const collRateOption = computed(() => {
   const mLabels = months.map(m => `${m.month}月`)
   return {
     tooltip: { trigger: 'axis' },
-    legend: { bottom: 0, data: ['应收基础', '已收', '回款率'] },
-    grid: { top: 20, right: 60, bottom: 40, left: 16, containLabel: true },
-    xAxis: { type: 'category', data: mLabels },
+    legend: bottomLegend({ data: ['应收基础', '已收', '回款率'] }),
+    grid: gridFor(mLabels, { nameTop: true, threshold: 12, right: 52 }),
+    xAxis: catAxis(mLabels, { threshold: 12 }),
     yAxis: [
-      { type: 'value', axisLabel: { formatter: v => fmtWan(v) } },
-      { type: 'value', name: '回款率%', min: 0, max: 100, axisLabel: { formatter: v => v + '%' } },
+      valueAxis({ formatter: v => fmtWan(v) }),
+      valueAxis({ name: '回款率%', position: 'right', min: 0, max: 100, formatter: v => v + '%' }),
     ],
     series: [
       { name: '应收基础', type: 'bar', yAxisIndex: 0,
@@ -94,9 +95,9 @@ const topOption = computed(() => {
   return {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
       formatter: p => `${topData.value[topData.value.length - 1 - p[0].dataIndex].short_name}<br/>未收：${fmtWan(p[0].value)} 元` },
-    grid: { top: 8, right: 80, bottom: 8, left: 16, containLabel: true },
-    xAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v) } },
-    yAxis: { type: 'category', data: names, axisLabel: { width: 100, overflow: 'truncate' } },
+    grid: { top: 8, right: 84, bottom: 8, left: 16, containLabel: true },
+    xAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => fmtWan(v) } },
+    yAxis: { type: 'category', data: names, axisLabel: { color: '#9b8070', width: 128, overflow: 'truncate' } },
     series: [{ type: 'bar', data: vals, barMaxWidth: 22,
       itemStyle: { color: '#c96342', borderRadius: [0, 4, 4, 0] },
       label: { show: true, position: 'right', formatter: p => fmtWan(p.value) } }],
@@ -174,9 +175,9 @@ const pmOption = computed(() => {
           回款率: <b>${d.rate.toFixed(1)}%</b>  项目数: ${d.project_count}`
       },
     },
-    grid: { top: 8, right: 100, bottom: 8, left: 16, containLabel: true },
-    xAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), fontSize: 11, color: '#888' } },
-    yAxis: { type: 'category', data: names, axisLabel: { fontSize: 11, color: '#555', width: 90, overflow: 'truncate' } },
+    grid: { top: 8, right: 104, bottom: 8, left: 16, containLabel: true },
+    xAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), fontSize: 11, color: '#9b8070' } },
+    yAxis: { type: 'category', data: names, axisLabel: { fontSize: 11, color: '#6b5a4a', width: 120, overflow: 'truncate' } },
     series: [
       { name: '已收', type: 'bar', stack: 'total', barMaxWidth: 20,
         data: sorted.map(d => d.collected).reverse(),

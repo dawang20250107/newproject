@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import BaseChart from './BaseChart.vue'
+import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney } from '../../../utils/chartTheme.js'
 
 const props = defineProps({
   months: { type: Array, default: () => [] },       // array of { month, has_data, by_l1 }
@@ -45,17 +46,10 @@ const option = computed(() => {
         return str
       },
     },
-    legend: { bottom: 0, type: 'scroll', itemGap: 16 },
-    grid: { top: 20, right: 20, bottom: 48, left: 20, containLabel: true },
-    xAxis: { type: 'category', data: xLabels, axisLine: { lineStyle: { color: '#d4c4b4' } }, axisLabel: { color: '#9b8070', fontSize: 11 } },
-    yAxis: {
-      type: 'value',
-      axisLabel: {
-        color: '#9b8070', fontSize: 10,
-        formatter: v => Math.abs(v) >= 10000 ? (v / 10000).toFixed(0) + '万' : v,
-      },
-      splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } },
-    },
+    legend: bottomLegend(),
+    grid: gridFor(xLabels, { threshold: 12 }),
+    xAxis: catAxis(xLabels, { threshold: 12 }),
+    yAxis: valueAxis({ formatter: axisMoney }),
     series,
   }
 })

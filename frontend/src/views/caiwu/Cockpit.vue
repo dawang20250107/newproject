@@ -5,6 +5,7 @@ import { BUSINESS_UNITS, yearCST, monthCST } from '../../constants.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 import api from '../../api/caiwu.js'
 import { fmtCompact } from '../../utils/format.js'
+import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney } from '../../utils/chartTheme.js'
 import EmptyState from '../../components/EmptyState.vue'
 
 const auth = useCaiwuAuth()
@@ -89,14 +90,10 @@ function trendOption(actualKey, targetKey, label, color) {
         return s
       },
     },
-    legend: { bottom: 0, itemGap: 18 },
-    grid: { top: 24, right: 20, bottom: 40, left: 20, containLabel: true },
-    xAxis: { type: 'category', data: x, axisLine: { lineStyle: { color: '#d4c4b4' } }, axisLabel: { color: '#9b8070', fontSize: 11 } },
-    yAxis: {
-      type: 'value',
-      axisLabel: { color: '#9b8070', fontSize: 10, formatter: v => Math.abs(v) >= 10000 ? (v / 10000).toFixed(0) + '万' : v },
-      splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } },
-    },
+    legend: bottomLegend(),
+    grid: gridFor(x, { threshold: 12 }),
+    xAxis: catAxis(x, { threshold: 12 }),
+    yAxis: valueAxis({ formatter: axisMoney }),
     series: [
       { name: '实际' + label, type: 'bar', data: t.map(m => m[actualKey]), itemStyle: { color, borderRadius: [4, 4, 0, 0] }, barMaxWidth: 30 },
       { name: '目标' + label, type: 'line', data: t.map(m => m[targetKey]), smooth: true, symbol: 'circle', symbolSize: 6, color: '#c96342', lineStyle: { type: 'dashed', width: 2 } },
@@ -122,10 +119,10 @@ const buActualOption = computed(() => {
         return s
       },
     },
-    legend: { bottom: 0, itemGap: 18 },
-    grid: { top: 24, right: 20, bottom: 48, left: 20, containLabel: true },
-    xAxis: { type: 'category', data: names, axisLine: { lineStyle: { color: '#d4c4b4' } }, axisLabel: { color: '#9b8070', fontSize: 11, interval: 0, rotate: names.length > 4 ? 20 : 0 } },
-    yAxis: { type: 'value', axisLabel: { color: '#9b8070', fontSize: 10, formatter: v => Math.abs(v) >= 10000 ? (v / 10000).toFixed(0) + '万' : v }, splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } } },
+    legend: bottomLegend(),
+    grid: gridFor(names),
+    xAxis: catAxis(names),
+    yAxis: valueAxis({ formatter: axisMoney }),
     series: [
       { name: '收入', type: 'bar', data: bus.map(b => b.month.actual_revenue), itemStyle: { color: '#2e7d32', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26 },
       { name: '利润', type: 'bar', data: bus.map(b => b.month.actual_profit), itemStyle: { color: '#1565c0', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26 },
@@ -146,10 +143,10 @@ const buRateOption = computed(() => {
         return s
       },
     },
-    legend: { bottom: 0, itemGap: 18 },
-    grid: { top: 24, right: 20, bottom: 48, left: 20, containLabel: true },
-    xAxis: { type: 'category', data: names, axisLine: { lineStyle: { color: '#d4c4b4' } }, axisLabel: { color: '#9b8070', fontSize: 11, interval: 0, rotate: names.length > 4 ? 20 : 0 } },
-    yAxis: { type: 'value', name: '达成率%', axisLabel: { color: '#9b8070', fontSize: 10, formatter: '{value}%' }, splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } } },
+    legend: bottomLegend(),
+    grid: gridFor(names, { nameTop: true }),
+    xAxis: catAxis(names),
+    yAxis: valueAxis({ name: '达成率%', formatter: '{value}%' }),
     series: [
       { name: 'YTD收入达成', type: 'bar', data: bus.map(b => b.ytd.revenue_rate), itemStyle: { color: '#66bb6a', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
         markLine: { silent: true, symbol: 'none', lineStyle: { color: '#c96342', type: 'dashed' }, data: [{ yAxis: 100, label: { formatter: '100%', color: '#c96342', fontSize: 10 } }] } },

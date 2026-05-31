@@ -5,6 +5,7 @@ import { BUSINESS_UNITS, yearCST, monthCST } from '../../constants.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 import api from '../../api/caiwu.js'
 import { fmtCompact, fmtPct } from '../../utils/format.js'
+import { valueAxis, catAxis, gridFor, bottomLegend } from '../../utils/chartTheme.js'
 import EmptyState from '../../components/EmptyState.vue'
 
 const auth = useCaiwuAuth()
@@ -192,18 +193,10 @@ const chartOption = computed(() => {
         return s
       },
     },
-    legend: { bottom: 0, itemGap: 18 },
-    grid: { top: 24, right: 20, bottom: 40, left: 20, containLabel: true },
-    xAxis: {
-      type: 'category', data: names,
-      axisLine: { lineStyle: { color: '#d4c4b4' } },
-      axisLabel: { color: '#9b8070', fontSize: 11, interval: 0, rotate: names.length > 4 ? 20 : 0 },
-    },
-    yAxis: {
-      type: 'value', name: '达成率%',
-      axisLabel: { color: '#9b8070', fontSize: 10, formatter: '{value}%' },
-      splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } },
-    },
+    legend: bottomLegend(),
+    grid: gridFor(names, { nameTop: true }),
+    xAxis: catAxis(names),
+    yAxis: valueAxis({ name: '达成率%', formatter: '{value}%' }),
     series: [
       { name: '收入达成率', type: 'bar', data: bus.map(b => b.month.revenue_rate),
         itemStyle: { color: '#2e7d32', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,

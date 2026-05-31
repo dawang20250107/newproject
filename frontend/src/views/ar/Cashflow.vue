@@ -209,10 +209,10 @@ const deptCompareOption = computed(() => {
     legend: { bottom: 4, icon: 'roundRect', itemWidth: 14, itemHeight: 8,
               textStyle: { fontSize: 11, color: '#555' },
               data: ['实收', '实付', '收款预算', '付款预算'] },
-    grid: { ...GRID },
+    grid: { ...GRID, bottom: deptNames.length > 5 ? 64 : 48 },
     xAxis: { type: 'category', data: deptNames,
              axisLine: { lineStyle: SLINE }, axisTick: OLINE,
-             axisLabel: { ...AXLBL, rotate: deptNames.length > 5 ? 15 : 0 } },
+             axisLabel: { ...AXLBL, interval: 0, rotate: deptNames.length > 5 ? 22 : 0 } },
     yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), ...AXLBL }, splitLine: { lineStyle: SLINE } },
     series: [
       { name: '实收', type: 'bar', barGap: '12%', barMaxWidth: 26,
