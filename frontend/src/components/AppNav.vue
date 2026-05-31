@@ -233,7 +233,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
             <path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-4"/>
           </svg>
         </span>
-        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">图表分析</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">报表分析</span></Transition>
         <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
       </router-link>
 

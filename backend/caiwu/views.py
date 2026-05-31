@@ -86,7 +86,7 @@ FIELD_KEYS = [f['key'] for f in PERM_FIELD_DEFS]
 PAGE_DEFS = [
     {'key': 'report', 'label': '财务报表'},
     {'key': 'data',   'label': '数据加工'},
-    {'key': 'charts', 'label': '图表分析'},
+    {'key': 'charts', 'label': '报表分析'},
 ]
 PAGE_KEYS = [p['key'] for p in PAGE_DEFS]
 

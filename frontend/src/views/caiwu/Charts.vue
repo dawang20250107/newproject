@@ -163,7 +163,7 @@ onMounted(() => {
 <template>
   <div>
     <div class="topbar">
-      <h1>图表分析</h1>
+      <h1>报表分析</h1>
       <!-- Global BU + Year filter -->
       <div class="ctrl-row">
         <select v-model="globalBu" class="sel-bu">
