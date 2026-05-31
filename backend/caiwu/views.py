@@ -2718,12 +2718,14 @@ def _report_ai_prepare(request):
     return messages, None
 
 
-@csrf_exempt
 @cw_required()
 def report_ai_analysis(request):
     """POST /report/ai-analysis — 单期财务分析（一次性返回）。"""
     if request.method != 'POST':
         return err('方法不允许', 405)
+    denied = _page_denied(request, 'report')
+    if denied:
+        return denied
     messages, e = _report_ai_prepare(request)
     if e:
         return e
@@ -2735,12 +2737,14 @@ def report_ai_analysis(request):
         return err(f'AI分析服务暂时不可用，请稍后重试（{str(ex)[:80]}）', 503)
 
 
-@csrf_exempt
 @cw_required()
 def report_ai_analysis_stream(request):
     """POST /report/ai-analysis/stream — 单期财务分析，SSE 流式逐字推送。"""
     if request.method != 'POST':
         return err('方法不允许', 405)
+    denied = _page_denied(request, 'report')
+    if denied:
+        return denied
     messages, e = _report_ai_prepare(request)
     if e:
         return e
@@ -2761,7 +2765,6 @@ def report_ai_analysis_stream(request):
     return resp
 
 
-@csrf_exempt
 @cw_required()
 def chart_ai_analysis(request):
     """POST /charts/ai-analysis
@@ -2769,6 +2772,9 @@ def chart_ai_analysis(request):
     """
     if request.method != 'POST':
         return err('方法不允许', 405)
+    denied = _page_denied(request, 'charts')
+    if denied:
+        return denied
     if not settings.DEEPSEEK_API_KEY:
         return err('AI 分析未配置（缺少 DEEPSEEK_API_KEY）', 503)
 
