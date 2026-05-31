@@ -14,23 +14,27 @@ const chartData = computed(() => {
   const processed = []
 
   for (const item of items) {
-    let lo, hi
+    let lo, hi, after
     if (item.type === 'base') {
       lo = Math.min(0, item.value)
       hi = Math.max(0, item.value)
       running = item.value
+      after = running            // level the first connector leaves from
     } else if (item.type === 'total') {
       lo = Math.min(0, item.value)
       hi = Math.max(0, item.value)
+      after = item.value
     } else {
       lo = Math.min(running, running + item.value)
       hi = Math.max(running, running + item.value)
       running += item.value
+      after = running            // cumulative level this factor lands on
     }
     processed.push({
       ...item,
       lo,
       hi,
+      after,
       barType: item.type === 'base' || item.type === 'total'
         ? 'anchor'
         : item.value >= 0 ? 'increase' : 'decrease',
@@ -46,16 +50,26 @@ const chartData = computed(() => {
   const yRange = yMax - yMin || 1
   const pct = v => (v - yMin) / yRange * 100
 
+  const baseBar = processed[0]
+  const totalBar = processed[processed.length - 1]
+
   return {
-    bars: processed.map(b => ({
+    bars: processed.map((b, i) => ({
       ...b,
       bottomPct: pct(b.lo),
       heightPct: Math.max(pct(b.hi) - pct(b.lo), 0.8),
       topPct: pct(b.hi),
+      // staircase connector: every bar except the terminal links to the next
+      // at the cumulative level it lands on, so the flow reads continuously
+      connectorPct: i < processed.length - 1 ? pct(b.after) : null,
       // min 0.28 so even the smallest factor retains some visible colour
       intensity: b.barType === 'anchor' ? 1 : Math.max(0.28, Math.abs(b.value) / maxAbsDelta),
     })),
     zeroLinePct: pct(0),
+    baseRefPct: pct(baseBar.value),
+    baseRefValue: baseBar.value,
+    totalRefPct: pct(totalBar.value),
+    totalRefValue: totalBar.value,
   }
 })
 
@@ -91,9 +105,20 @@ function fmtAmt(v) {
       <!-- Zero axis line -->
       <div class="wf-zero-line" :style="`bottom:${chartData.zeroLinePct}%`"></div>
 
+      <!-- Start / end reference lines (the anchor columns are the T-stems) -->
+      <div class="wf-ref wf-ref-base" :style="`bottom:${chartData.baseRefPct}%`">
+        <span class="wf-ref-tag">起点 {{ fmtAmt(chartData.baseRefValue) }}</span>
+      </div>
+      <div class="wf-ref wf-ref-total" :style="`bottom:${chartData.totalRefPct}%`">
+        <span class="wf-ref-tag">终点 {{ fmtAmt(chartData.totalRefValue) }}</span>
+      </div>
+
       <!-- Bar columns -->
       <div class="wf-grid">
         <div v-for="(bar, i) in chartData.bars" :key="i" class="wf-col">
+
+          <!-- Staircase connector to the next column (tucks behind the bars) -->
+          <div v-if="bar.connectorPct != null" class="wf-connector" :style="`bottom:${bar.connectorPct}%`"></div>
 
           <!-- Bar body — intensity-tinted background overrides the CSS class background -->
           <div
@@ -320,6 +345,44 @@ function fmtAmt(v) {
   height: 1.5px;
   background: rgba(158,140,126,0.42);
   z-index: 2;
+  pointer-events: none;
+}
+
+/* ── Start / end reference lines ──────────────────────── */
+.wf-ref {
+  position: absolute;
+  left: 0; right: 0;
+  height: 0;
+  border-top: 1.5px dashed;
+  z-index: 4;          /* drawn above the bars so the guide reads across */
+  pointer-events: none;
+}
+.wf-ref-base  { border-color: rgba(96,125,170,0.6); }
+.wf-ref-total { border-color: rgba(176,98,98,0.62); }
+.wf-ref-tag {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 1px 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+  background: rgba(255,255,255,0.85);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+.wf-ref-base  .wf-ref-tag { color: #3f5a86; }
+.wf-ref-total .wf-ref-tag { color: #9c4242; }
+
+/* ── Staircase connectors (behind bars, span into next col) ── */
+.wf-connector {
+  position: absolute;
+  left: 88%;
+  width: calc(24% + 6px);  /* bar-right (88%) → gap (6px) → next bar-left (12%) */
+  height: 0;
+  border-top: 1px solid rgba(150,140,130,0.5);
   pointer-events: none;
 }
 
