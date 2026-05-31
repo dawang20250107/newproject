@@ -1810,30 +1810,58 @@ REVENUE_L1 = '主营业务收入'
 PROFIT_L1 = '经营净利'
 
 
-def _published_batches_range(bu_list, year, m_from, m_to, batch_type=ImportBatch.TYPE_DEPT):
-    """Published 部门明细表 batches for a contiguous month range (inclusive)."""
-    qs = ImportBatch.objects.filter(
-        business_unit__in=bu_list, year=year,
-        month__gte=m_from, month__lte=m_to,
-        status=ImportBatch.STATUS_PUBLISHED,
+def _collect_actuals(bu_list, years):
+    """Pull all published 部门明细表 actuals in ONE grouped query.
+
+    Returns {(business_unit, year, month): name_map}, where name_map maps each L1
+    category name → float (calculated rows like 经营净利 included). Periods/BUs with
+    no published entries are simply absent. This replaces the per-BU/per-period
+    _aggregate_report fan-out (dozens of round-trips) with a single query plus one
+    L1Category fetch, so metrics/cockpit run in ~3 queries instead of ~50-90.
+    """
+    from collections import defaultdict
+    agg = (
+        FinancialEntry.objects
+        .filter(
+            batch__status=ImportBatch.STATUS_PUBLISHED,
+            batch__batch_type=ImportBatch.TYPE_DEPT,
+            batch__business_unit__in=bu_list,
+            batch__year__in=list(years),
+        )
+        .values('batch__business_unit', 'batch__year', 'batch__month', 'l1_id')
+        .annotate(amount=Sum('amount'))
     )
-    if batch_type:
-        qs = qs.filter(batch_type=batch_type)
-    return qs
+    raw = defaultdict(dict)
+    for r in agg:
+        key = (r['batch__business_unit'], r['batch__year'], r['batch__month'])
+        raw[key][r['l1_id']] = float(r['amount'])
+
+    l1_cats = list(L1Category.objects.order_by('sort_order', 'id'))
+    out = {}
+    for key, raw_by_id in raw.items():
+        name_map, _ = _compute_l1_name_map(l1_cats, raw_by_id)
+        out[key] = name_map
+    return out
 
 
-def _actuals_from_batches(batches_qs):
-    """Aggregate a batch queryset → (revenue, profit) floats, or (None, None)."""
-    rows = _aggregate_report(batches_qs, 1)
-    if not rows:
+def _rp(actuals, bu, year, month):
+    """(revenue, profit) for one BU/period from a collected actuals map."""
+    nm = actuals.get((bu, year, month))
+    if not nm:
         return None, None
-    by_name = {r['l1_name']: r['amount'] for r in rows}
-    return by_name.get(REVENUE_L1), by_name.get(PROFIT_L1)
+    return nm.get(REVENUE_L1), nm.get(PROFIT_L1)
 
 
-def _period_actuals(bu_list, year, month):
-    """Single-month (revenue, profit) actuals for the given BUs."""
-    return _actuals_from_batches(_get_published_batches(bu_list, year, month))
+def _period_group(actuals, bus, year, month):
+    """(revenue, profit) summed across BUs for one period (both additive)."""
+    rev = _sum_opt([_rp(actuals, bu, year, month)[0] for bu in bus])
+    prof = _sum_opt([_rp(actuals, bu, year, month)[1] for bu in bus])
+    return rev, prof
+
+
+def _prev_period(year, month):
+    """Calendar month before (year, month)."""
+    return (year, month - 1) if month > 1 else (year - 1, 12)
 
 
 def _rate(actual, target):
@@ -1874,8 +1902,10 @@ def _parse_year_month(request):
 
 
 def _metric_block(target_rev, actual_rev, target_prof, actual_prof,
-                  rev_prev=None, prof_prev=None, rev_yoy=None, prof_yoy=None):
-    """Assemble one revenue/profit metric block with rates and optional MoM/YoY."""
+                  rev_prev=None, prof_prev=None, rev_yoy=None, prof_yoy=None,
+                  with_chg=False):
+    """Assemble one revenue/profit metric block: target, actual, rate, and
+    (when with_chg) MoM/YoY change keys — always present for a uniform shape."""
     block = {
         'target_revenue': float(target_rev) if target_rev is not None else 0.0,
         'actual_revenue': actual_rev,
@@ -1884,7 +1914,7 @@ def _metric_block(target_rev, actual_rev, target_prof, actual_prof,
         'actual_profit': actual_prof,
         'profit_rate': _rate(actual_prof, target_prof),
     }
-    if rev_prev is not None or prof_prev is not None or rev_yoy is not None or prof_yoy is not None:
+    if with_chg:
         block['revenue_mom'] = _chg(actual_rev, rev_prev)
         block['profit_mom'] = _chg(actual_prof, prof_prev)
         block['revenue_yoy'] = _chg(actual_rev, rev_yoy)
@@ -1892,16 +1922,17 @@ def _metric_block(target_rev, actual_rev, target_prof, actual_prof,
     return block
 
 
-def _bu_metrics(bu, year, month, tgt_index):
-    """Full metric bundle (month block + YTD block) for one business unit."""
-    prev_month = month - 1 if month > 1 else 12
-    prev_year = year if month > 1 else year - 1
+def _bu_metrics(bu, year, month, tgt_index, actuals):
+    """Full metric bundle (month block + YTD block) for one BU, from the
+    pre-collected actuals map (no per-BU DB round-trips)."""
+    prev_year, prev_month = _prev_period(year, month)
 
-    rev_m, prof_m = _period_actuals([bu], year, month)
-    rev_pm, prof_pm = _period_actuals([bu], prev_year, prev_month)
-    rev_ym, prof_ym = _period_actuals([bu], year - 1, month)
-    rev_ytd, prof_ytd = _actuals_from_batches(
-        _published_batches_range([bu], year, 1, month))
+    rev_m, prof_m = _rp(actuals, bu, year, month)
+    rev_pm, prof_pm = _rp(actuals, bu, prev_year, prev_month)
+    rev_ym, prof_ym = _rp(actuals, bu, year - 1, month)
+    # YTD = sum of monthly actuals Jan..month (revenue & profit both additive).
+    rev_ytd = _sum_opt([_rp(actuals, bu, year, m)[0] for m in range(1, month + 1)])
+    prof_ytd = _sum_opt([_rp(actuals, bu, year, m)[1] for m in range(1, month + 1)])
 
     m_tgt = tgt_index.get((bu, month), {})
     a_tgt = tgt_index.get((bu, FinancialTarget.MONTH_ANNUAL), {})
@@ -1910,7 +1941,8 @@ def _bu_metrics(bu, year, month, tgt_index):
         'business_unit': bu,
         'month': _metric_block(
             m_tgt.get('target_revenue'), rev_m, m_tgt.get('target_profit'), prof_m,
-            rev_prev=rev_pm, prof_prev=prof_pm, rev_yoy=rev_ym, prof_yoy=prof_ym),
+            rev_prev=rev_pm, prof_prev=prof_pm, rev_yoy=rev_ym, prof_yoy=prof_ym,
+            with_chg=True),
         'ytd': _metric_block(
             a_tgt.get('target_revenue'), rev_ytd, a_tgt.get('target_profit'), prof_ytd),
     }
@@ -1928,17 +1960,26 @@ def _aggregate_total(bu_blocks, key):
     rev_a = _sum_opt([b[key]['actual_revenue'] for b in bu_blocks])
     prof_t = _sum_opt([b[key]['target_profit'] for b in bu_blocks])
     prof_a = _sum_opt([b[key]['actual_profit'] for b in bu_blocks])
-    out = {
+    return {
         'target_revenue': rev_t or 0.0, 'actual_revenue': rev_a,
         'revenue_rate': _rate(rev_a, rev_t),
         'target_profit': prof_t or 0.0, 'actual_profit': prof_a,
         'profit_rate': _rate(prof_a, prof_t),
     }
-    if key == 'month':
-        # MoM/YoY of the consolidated total can't be summed from rates; recompute
-        # would need group-level prior actuals, so leave them off the total block.
-        pass
-    return out
+
+
+def _attach_group_chg(block, bus, year, month, actuals):
+    """Add group-level MoM/YoY to a month total block (rates can't be summed, so
+    recompute from consolidated actuals)."""
+    prev_year, prev_month = _prev_period(year, month)
+    rev_m, prof_m = _period_group(actuals, bus, year, month)
+    rev_pm, prof_pm = _period_group(actuals, bus, prev_year, prev_month)
+    rev_ym, prof_ym = _period_group(actuals, bus, year - 1, month)
+    block['revenue_mom'] = _chg(rev_m, rev_pm)
+    block['profit_mom'] = _chg(prof_m, prof_pm)
+    block['revenue_yoy'] = _chg(rev_m, rev_ym)
+    block['profit_yoy'] = _chg(prof_m, prof_ym)
+    return block
 
 
 def _load_target_index(bus, year):
@@ -2009,35 +2050,31 @@ def targets(request):
             parsed.append((bu, mo, rev, prof))
 
         # ── month-sum == annual validation ────────────────────────────────────
-        # Group by BU. A BU that has both month=0 AND all 12 monthly targets must
-        # have sum(1..12) == month=0, with 1-yuan tolerance for floating-point.
+        # Enforce against the RESULTING state (existing DB rows overlaid with this
+        # payload), not just the payload, so the invariant holds even for partial
+        # submissions. A BU with an annual target (month=0) AND all 12 monthly
+        # targets must have sum(1..12) == annual, within 1-yuan tolerance.
         TOLERANCE = Decimal('1.00')
         from collections import defaultdict
-        by_bu_rev = defaultdict(dict)
-        by_bu_prof = defaultdict(dict)
+        affected = {bu for bu, _, _, _ in parsed}
+        merged = defaultdict(dict)  # bu -> {month: (rev, prof)}
+        for t in FinancialTarget.objects.filter(year=year, business_unit__in=affected):
+            merged[t.business_unit][t.month] = (t.target_revenue, t.target_profit)
         for bu, mo, rev, prof in parsed:
-            by_bu_rev[bu][mo] = rev
-            by_bu_prof[bu][mo] = prof
-        for bu in by_bu_rev:
-            rev_map = by_bu_rev[bu]
-            prof_map = by_bu_prof[bu]
-            has_annual = 0 in rev_map
-            monthly_keys = [m for m in rev_map if m != 0]
-            if has_annual and len(monthly_keys) == 12:
-                sum_rev = sum(rev_map[m] for m in range(1, 13))
-                if abs(sum_rev - rev_map[0]) > TOLERANCE:
-                    delta = float(sum_rev - rev_map[0]) / 10000
-                    return err(
-                        f'{bu}：月度收入目标合计与年度目标不符'
-                        f'（差额 {delta:+.2f} 万元），请修正后保存'
-                    )
-                sum_prof = sum(prof_map[m] for m in range(1, 13))
-                if abs(sum_prof - prof_map[0]) > TOLERANCE:
-                    delta = float(sum_prof - prof_map[0]) / 10000
-                    return err(
-                        f'{bu}：月度利润目标合计与年度目标不符'
-                        f'（差额 {delta:+.2f} 万元），请修正后保存'
-                    )
+            merged[bu][mo] = (rev, prof)
+        for bu, mp in merged.items():
+            if 0 not in mp or any(m not in mp for m in range(1, 13)):
+                continue  # incomplete plan — can't validate the sum yet
+            sum_rev = sum(mp[m][0] for m in range(1, 13))
+            if abs(sum_rev - mp[0][0]) > TOLERANCE:
+                delta = float(sum_rev - mp[0][0]) / 10000
+                return err(f'{bu}：月度收入目标合计与年度目标不符'
+                           f'（差额 {delta:+.2f} 万元），请修正后保存')
+            sum_prof = sum(mp[m][1] for m in range(1, 13))
+            if abs(sum_prof - mp[0][1]) > TOLERANCE:
+                delta = float(sum_prof - mp[0][1]) / 10000
+                return err(f'{bu}：月度利润目标合计与年度目标不符'
+                           f'（差额 {delta:+.2f} 万元），请修正后保存')
 
         with transaction.atomic():
             for bu, mo, rev, prof in parsed:
@@ -2071,10 +2108,11 @@ def metrics(request):
         return e
 
     tgt_index = _load_target_index(bus, year)
-    bu_rows = [_bu_metrics(bu, year, month, tgt_index) for bu in bus]
+    actuals = _collect_actuals(bus, {year, year - 1})
+    bu_rows = [_bu_metrics(bu, year, month, tgt_index, actuals) for bu in bus]
     total = {
         'business_unit': '全集团',
-        'month': _aggregate_total(bu_rows, 'month'),
+        'month': _attach_group_chg(_aggregate_total(bu_rows, 'month'), bus, year, month, actuals),
         'ytd': _aggregate_total(bu_rows, 'ytd'),
     }
     return ok({'year': year, 'month': month, 'bus': bu_rows, 'total': total})
@@ -2098,27 +2136,19 @@ def cockpit(request):
         return e
 
     tgt_index = _load_target_index(bus, year)
-    bu_rows = [_bu_metrics(bu, year, month, tgt_index) for bu in bus]
+    actuals = _collect_actuals(bus, {year, year - 1})
+    bu_rows = [_bu_metrics(bu, year, month, tgt_index, actuals) for bu in bus]
 
     overview = {
-        'month': _aggregate_total(bu_rows, 'month'),
+        # Headline cards: consolidated targets/actuals/rates + group MoM/YoY.
+        'month': _attach_group_chg(_aggregate_total(bu_rows, 'month'), bus, year, month, actuals),
         'ytd': _aggregate_total(bu_rows, 'ytd'),
     }
-    # Group-level MoM/YoY for the headline cards (recomputed from consolidated actuals).
-    prev_month = month - 1 if month > 1 else 12
-    prev_year = year if month > 1 else year - 1
-    rev_m, prof_m = _period_actuals(bus, year, month)
-    rev_pm, prof_pm = _period_actuals(bus, prev_year, prev_month)
-    rev_ym, prof_ym = _period_actuals(bus, year - 1, month)
-    overview['month']['revenue_mom'] = _chg(rev_m, rev_pm)
-    overview['month']['profit_mom'] = _chg(prof_m, prof_pm)
-    overview['month']['revenue_yoy'] = _chg(rev_m, rev_ym)
-    overview['month']['profit_yoy'] = _chg(prof_m, prof_ym)
 
     # 12-month trend: group actual revenue/profit + group target lines per month.
     trend = []
     for mo in range(1, 13):
-        rev_a, prof_a = _period_actuals(bus, year, mo)
+        rev_a, prof_a = _period_group(actuals, bus, year, mo)
         rev_t = _sum_opt([tgt_index.get((bu, mo), {}).get('target_revenue') for bu in bus])
         prof_t = _sum_opt([tgt_index.get((bu, mo), {}).get('target_profit') for bu in bus])
         trend.append({

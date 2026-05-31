@@ -7,6 +7,7 @@ from openpyxl import Workbook
 from caiwu.models import (
     BUSINESS_UNITS,
     FinancialEntry,
+    FinancialTarget,
     ImportBatch,
     L1Category,
     L2Category,
@@ -374,3 +375,120 @@ class CaiwuUnifiedPermissionTests(TestCase):
                                 {'year': 2026, 'month': 5, 'bu': self.bu, 'level': 1},
                                 **self.hdr(self.fin))
         self.assertEqual(after.status_code, 403, self.jj(after))
+
+
+@override_settings(ALLOWED_HOSTS=['testserver', 'localhost', '127.0.0.1'])
+class CaiwuMetricsAndTargetsTests(TestCase):
+    """指标管理 / 财务驾驶舱：目标录入校验 + 完成情况取数（达成率/环比/同比/YTD）。"""
+    databases = {'default'}
+
+    @classmethod
+    def setUpTestData(cls):
+        for name, sort_order, is_calculated, sign, is_profit_driver in L1_SEEDS:
+            L1Category.objects.update_or_create(
+                name=name,
+                defaults={'sort_order': sort_order, 'is_calculated': is_calculated,
+                          'sign': sign, 'is_profit_driver': is_profit_driver},
+            )
+        cls.admin = PaikuanUser(phone='13900000009', name='Metrics Admin',
+                                role='super_admin', job_title='finance_director',
+                                departments=[], is_active=True, is_approved=True)
+        cls.admin.set_password('Test123456')
+        cls.admin.save()
+
+    def setUp(self):
+        self.client = Client()
+        self.bu = BUSINESS_UNITS[1]   # 一个真实事业部（非集团总部）
+        self.l1 = {c.name: c for c in L1Category.objects.all()}
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {_make_token(self.admin)}'}
+
+    def jj(self, resp):
+        return json.loads(resp.content.decode('utf-8'))
+
+    def mk(self, year, month, rev, cost):
+        b = ImportBatch.objects.create(
+            business_unit=self.bu, year=year, month=month,
+            batch_type=ImportBatch.TYPE_DEPT, status=ImportBatch.STATUS_PUBLISHED,
+            uploaded_by=self.admin, row_count=2, file_name='m.xlsx')
+        FinancialEntry.objects.create(batch=b, l1=self.l1[REV], amount=Decimal(str(rev)))
+        FinancialEntry.objects.create(batch=b, l1=self.l1[COST], amount=Decimal(str(cost)))
+        return b
+
+    def post_targets(self, items, year=2026):
+        return self.client.post('/api/cw/targets',
+                                data=json.dumps({'year': year, 'items': items}),
+                                content_type='application/json', **self.auth())
+
+    # ── 目标录入校验 ──────────────────────────────────────────────────────────
+    def _full_year_items(self, monthly_rev, monthly_prof, annual_rev, annual_prof):
+        items = [{'business_unit': self.bu, 'month': m,
+                  'target_revenue': monthly_rev, 'target_profit': monthly_prof}
+                 for m in range(1, 13)]
+        items.append({'business_unit': self.bu, 'month': 0,
+                      'target_revenue': annual_rev, 'target_profit': annual_prof})
+        return items
+
+    def test_month_sum_must_equal_annual(self):
+        # 12×100 = 1200 收入；年度填 1300 → 拒绝
+        bad = self.post_targets(self._full_year_items(100, 10, 1300, 120))
+        self.assertEqual(bad.status_code, 400, self.jj(bad))
+        self.assertIn('收入', self.jj(bad)['error'])
+        # 年度填 1200 收入 / 120 利润（=12×10）→ 通过
+        good = self.post_targets(self._full_year_items(100, 10, 1200, 120))
+        self.assertEqual(good.status_code, 200, self.jj(good))
+        self.assertEqual(self.jj(good)['data']['saved'], 13)
+
+    def test_validation_merges_with_existing_db(self):
+        # 数据库已存 12 个月（合计 1200 收入）
+        for m in range(1, 13):
+            FinancialTarget.objects.create(business_unit=self.bu, year=2026, month=m,
+                                           target_revenue=Decimal('100'), target_profit=Decimal('10'))
+        # 仅提交一个与库内 12 月不符的年度目标 → 应被拒绝（基于合并后的状态）
+        bad = self.post_targets([{'business_unit': self.bu, 'month': 0,
+                                  'target_revenue': 2000, 'target_profit': 120}])
+        self.assertEqual(bad.status_code, 400, self.jj(bad))
+        # 提交相符的年度目标 → 通过
+        good = self.post_targets([{'business_unit': self.bu, 'month': 0,
+                                   'target_revenue': 1200, 'target_profit': 120}])
+        self.assertEqual(good.status_code, 200, self.jj(good))
+
+    # ── 完成情况取数 ──────────────────────────────────────────────────────────
+    def test_metrics_rate_mom_yoy_ytd(self):
+        self.mk(2026, 4, 150, 100)   # 上月：利润 50
+        self.mk(2026, 5, 200, 130)   # 本月：利润 70
+        self.mk(2025, 5, 180, 120)   # 去年同月：利润 60
+        FinancialTarget.objects.create(business_unit=self.bu, year=2026, month=5,
+                                       target_revenue=Decimal('250'), target_profit=Decimal('60'))
+        FinancialTarget.objects.create(business_unit=self.bu, year=2026, month=0,
+                                       target_revenue=Decimal('3000'), target_profit=Decimal('700'))
+        resp = self.client.get('/api/cw/metrics',
+                               {'year': 2026, 'month': 5, 'bu': self.bu}, **self.auth())
+        self.assertEqual(resp.status_code, 200, self.jj(resp))
+        m = next(b for b in self.jj(resp)['data']['bus'] if b['business_unit'] == self.bu)
+        self.assertAlmostEqual(m['month']['actual_revenue'], 200)
+        self.assertAlmostEqual(m['month']['actual_profit'], 70)
+        self.assertAlmostEqual(m['month']['revenue_rate'], 80.0)        # 200/250
+        self.assertAlmostEqual(m['month']['profit_rate'], 116.7, places=1)  # 70/60
+        self.assertAlmostEqual(m['month']['revenue_mom'], 33.3, places=1)   # (200-150)/150
+        self.assertAlmostEqual(m['month']['profit_mom'], 40.0, places=1)    # (70-50)/50
+        self.assertAlmostEqual(m['month']['revenue_yoy'], 11.1, places=1)   # (200-180)/180
+        self.assertAlmostEqual(m['ytd']['actual_revenue'], 350)            # 150+200
+        self.assertAlmostEqual(m['ytd']['actual_profit'], 120)            # 50+70
+
+    def test_cockpit_overview_and_12_month_trend(self):
+        self.mk(2026, 5, 200, 130)
+        FinancialTarget.objects.create(business_unit=self.bu, year=2026, month=5,
+                                       target_revenue=Decimal('250'), target_profit=Decimal('60'))
+        resp = self.client.get('/api/cw/cockpit',
+                               {'year': 2026, 'month': 5, 'bu': self.bu}, **self.auth())
+        self.assertEqual(resp.status_code, 200, self.jj(resp))
+        data = self.jj(resp)['data']
+        self.assertEqual(len(data['trend']), 12)
+        m5 = next(t for t in data['trend'] if t['month'] == 5)
+        self.assertAlmostEqual(m5['actual_revenue'], 200)
+        self.assertAlmostEqual(m5['target_revenue'], 250)
+        self.assertAlmostEqual(data['overview']['month']['revenue_rate'], 80.0)
+        # MoM/YoY 键应始终存在（无对比期时为 None）
+        self.assertIn('revenue_mom', data['overview']['month'])
