@@ -34,6 +34,11 @@ urlpatterns = [
     path('batches/<int:bid>/publish', views.batch_publish),
     path('batches/<int:bid>', views.batch_detail),
 
+    # 指标管理 & 财务驾驶舱
+    path('targets', views.targets),
+    path('metrics', views.metrics),
+    path('cockpit', views.cockpit),
+
     # report
     path('report', views.report),
     path('report/export', views.report_export),

@@ -212,10 +212,30 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
       </router-link>
 
       <!-- ── 财务分析 section ───────────────────── -->
-      <div v-if="auth.canPage('caiwu_report') || auth.canPage('caiwu_data') || auth.canPage('caiwu_charts') || auth.isSuperAdmin"
+      <div v-if="auth.canPage('caiwu_report') || auth.canPage('caiwu_data') || auth.canPage('caiwu_charts') || auth.canPage('caiwu_metrics') || auth.canPage('caiwu_cockpit') || auth.isSuperAdmin"
            class="nav-section-label">
         <span style="display:block;width:100%;height:1px;background:rgba(255,255,255,0.1);margin:4px 0"></span>
       </div>
+
+      <router-link v-if="auth.canPage('caiwu_cockpit')" to="/caiwu/cockpit" class="nav-item" :class="{ active: route.path === '/caiwu/cockpit' }" @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>
+          </svg>
+        </span>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">财务驾驶舱</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
+      </router-link>
+
+      <router-link v-if="auth.canPage('caiwu_metrics')" to="/caiwu/metrics" class="nav-item" :class="{ active: route.path === '/caiwu/metrics' }" @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+          </svg>
+        </span>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">指标管理</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
+      </router-link>
 
       <router-link v-if="auth.canPage('caiwu_report')" to="/caiwu/report" class="nav-item" :class="{ active: route.path === '/caiwu/report' }" @click="onNavClick">
         <span class="nav-icon">

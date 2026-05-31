@@ -17,7 +17,7 @@ import jwt
 
 from caiwu.models import (
     L1Category, L2Category, L3Category,
-    ImportBatch, FinancialEntry,
+    ImportBatch, FinancialEntry, FinancialTarget,
     BUSINESS_UNITS, VALID_BUSINESS_UNITS, JOB_TITLES,
 )
 from paikuan.models import PaikuanUser, JobPermission as PaikuanJobPermission
@@ -84,9 +84,11 @@ PERM_FIELD_DEFS = [
 ]
 FIELD_KEYS = [f['key'] for f in PERM_FIELD_DEFS]
 PAGE_DEFS = [
-    {'key': 'report', 'label': '财务报表'},
-    {'key': 'data',   'label': '数据加工'},
-    {'key': 'charts', 'label': '报表分析'},
+    {'key': 'report',  'label': '财务报表'},
+    {'key': 'data',    'label': '数据加工'},
+    {'key': 'charts',  'label': '报表分析'},
+    {'key': 'metrics', 'label': '指标管理'},
+    {'key': 'cockpit', 'label': '财务驾驶舱'},
 ]
 PAGE_KEYS = [p['key'] for p in PAGE_DEFS]
 
@@ -101,9 +103,11 @@ def _caiwu_perms_from_pk(pk):
     pk_pages = pk.get('pages', {})
     return {
         'pages': {
-            'report': bool(pk_pages.get('caiwu_report', False)),
-            'data':   bool(pk_pages.get('caiwu_data',   False)),
-            'charts': bool(pk_pages.get('caiwu_charts',  False)),
+            'report':  bool(pk_pages.get('caiwu_report',  False)),
+            'data':    bool(pk_pages.get('caiwu_data',    False)),
+            'charts':  bool(pk_pages.get('caiwu_charts',  False)),
+            'metrics': bool(pk_pages.get('caiwu_metrics', False)),
+            'cockpit': bool(pk_pages.get('caiwu_cockpit', False)),
         },
         'view':        dict(pk.get('caiwu_view', {k: True for k in CAIWU_FIELD_KEYS})),
         'can_upload':  bool(pk.get('caiwu_upload',  False)),
@@ -1794,6 +1798,307 @@ def report_export(request):
     bu_label = bu_param or '全部事业部'
     filename = f'财务报表_{bu_label}_{year}年{month}月_{level_label}.xlsx'
     return _build_excel_response(wb, filename)
+
+
+# ── 指标管理 & 财务驾驶舱 ──────────────────────────────────────────────────────
+#
+# Headline metrics are revenue (主营业务收入) and profit (经营净利). Targets are
+# entered manually (FinancialTarget); actuals come from the aggregated, published
+# 部门明细表. month=0 holds the annual target; 1-12 hold monthly targets.
+
+REVENUE_L1 = '主营业务收入'
+PROFIT_L1 = '经营净利'
+
+
+def _published_batches_range(bu_list, year, m_from, m_to, batch_type=ImportBatch.TYPE_DEPT):
+    """Published 部门明细表 batches for a contiguous month range (inclusive)."""
+    qs = ImportBatch.objects.filter(
+        business_unit__in=bu_list, year=year,
+        month__gte=m_from, month__lte=m_to,
+        status=ImportBatch.STATUS_PUBLISHED,
+    )
+    if batch_type:
+        qs = qs.filter(batch_type=batch_type)
+    return qs
+
+
+def _actuals_from_batches(batches_qs):
+    """Aggregate a batch queryset → (revenue, profit) floats, or (None, None)."""
+    rows = _aggregate_report(batches_qs, 1)
+    if not rows:
+        return None, None
+    by_name = {r['l1_name']: r['amount'] for r in rows}
+    return by_name.get(REVENUE_L1), by_name.get(PROFIT_L1)
+
+
+def _period_actuals(bu_list, year, month):
+    """Single-month (revenue, profit) actuals for the given BUs."""
+    return _actuals_from_batches(_get_published_batches(bu_list, year, month))
+
+
+def _rate(actual, target):
+    """Achievement rate (%) = actual / target * 100, rounded; None if not computable."""
+    if target in (None, 0) or actual is None:
+        return None
+    return round(actual / float(target) * 100, 1)
+
+
+def _chg(cur, prev):
+    """Percent change cur vs prev; None when prev is missing or zero."""
+    if cur is None or prev is None or prev == 0:
+        return None
+    return round((cur - prev) / abs(prev) * 100, 1)
+
+
+def _accessible_bus(request):
+    if request.pk_role == 'super_admin':
+        return list(BUSINESS_UNITS)
+    return [d for d in request.pk_depts if d in VALID_BUSINESS_UNITS]
+
+
+def _resolve_bu_list(request, bu_param):
+    """(bu_list, error_response). bu_param empty → all accessible BUs."""
+    accessible = _accessible_bus(request)
+    if bu_param:
+        if bu_param not in accessible:
+            return None, err('无权访问该事业部', 403)
+        return [bu_param], None
+    return accessible, None
+
+
+def _parse_year_month(request):
+    year = int(request.GET.get('year', ''))
+    month = int(request.GET.get('month', ''))
+    assert 2000 <= year <= 2100 and 1 <= month <= 12
+    return year, month
+
+
+def _metric_block(target_rev, actual_rev, target_prof, actual_prof,
+                  rev_prev=None, prof_prev=None, rev_yoy=None, prof_yoy=None):
+    """Assemble one revenue/profit metric block with rates and optional MoM/YoY."""
+    block = {
+        'target_revenue': float(target_rev) if target_rev is not None else 0.0,
+        'actual_revenue': actual_rev,
+        'revenue_rate': _rate(actual_rev, target_rev),
+        'target_profit': float(target_prof) if target_prof is not None else 0.0,
+        'actual_profit': actual_prof,
+        'profit_rate': _rate(actual_prof, target_prof),
+    }
+    if rev_prev is not None or prof_prev is not None or rev_yoy is not None or prof_yoy is not None:
+        block['revenue_mom'] = _chg(actual_rev, rev_prev)
+        block['profit_mom'] = _chg(actual_prof, prof_prev)
+        block['revenue_yoy'] = _chg(actual_rev, rev_yoy)
+        block['profit_yoy'] = _chg(actual_prof, prof_yoy)
+    return block
+
+
+def _bu_metrics(bu, year, month, tgt_index):
+    """Full metric bundle (month block + YTD block) for one business unit."""
+    prev_month = month - 1 if month > 1 else 12
+    prev_year = year if month > 1 else year - 1
+
+    rev_m, prof_m = _period_actuals([bu], year, month)
+    rev_pm, prof_pm = _period_actuals([bu], prev_year, prev_month)
+    rev_ym, prof_ym = _period_actuals([bu], year - 1, month)
+    rev_ytd, prof_ytd = _actuals_from_batches(
+        _published_batches_range([bu], year, 1, month))
+
+    m_tgt = tgt_index.get((bu, month), {})
+    a_tgt = tgt_index.get((bu, FinancialTarget.MONTH_ANNUAL), {})
+
+    return {
+        'business_unit': bu,
+        'month': _metric_block(
+            m_tgt.get('target_revenue'), rev_m, m_tgt.get('target_profit'), prof_m,
+            rev_prev=rev_pm, prof_prev=prof_pm, rev_yoy=rev_ym, prof_yoy=prof_ym),
+        'ytd': _metric_block(
+            a_tgt.get('target_revenue'), rev_ytd, a_tgt.get('target_profit'), prof_ytd),
+    }
+
+
+def _sum_opt(values):
+    """Sum treating None as 0; return None only if every value is None."""
+    present = [v for v in values if v is not None]
+    return sum(present) if present else None
+
+
+def _aggregate_total(bu_blocks, key):
+    """Build a group-total block by summing per-BU blocks for 'month' or 'ytd'."""
+    rev_t = _sum_opt([b[key]['target_revenue'] for b in bu_blocks])
+    rev_a = _sum_opt([b[key]['actual_revenue'] for b in bu_blocks])
+    prof_t = _sum_opt([b[key]['target_profit'] for b in bu_blocks])
+    prof_a = _sum_opt([b[key]['actual_profit'] for b in bu_blocks])
+    out = {
+        'target_revenue': rev_t or 0.0, 'actual_revenue': rev_a,
+        'revenue_rate': _rate(rev_a, rev_t),
+        'target_profit': prof_t or 0.0, 'actual_profit': prof_a,
+        'profit_rate': _rate(prof_a, prof_t),
+    }
+    if key == 'month':
+        # MoM/YoY of the consolidated total can't be summed from rates; recompute
+        # would need group-level prior actuals, so leave them off the total block.
+        pass
+    return out
+
+
+def _load_target_index(bus, year):
+    """{(bu, month): {target_revenue, target_profit}} for the year."""
+    idx = {}
+    for t in FinancialTarget.objects.filter(business_unit__in=bus, year=year):
+        idx[(t.business_unit, t.month)] = {
+            'target_revenue': float(t.target_revenue),
+            'target_profit': float(t.target_profit),
+        }
+    return idx
+
+
+@cw_required()
+def targets(request):
+    """GET ?year=&bu= → editable target rows; POST upsert a batch of targets."""
+    denied = _page_denied(request, 'metrics')
+    if denied:
+        return denied
+
+    if request.method == 'GET':
+        try:
+            year = int(request.GET.get('year', ''))
+            assert 2000 <= year <= 2100
+        except Exception:
+            return err('年份无效')
+        bus, e = _resolve_bu_list(request, request.GET.get('bu', ''))
+        if e:
+            return e
+        rows = list(
+            FinancialTarget.objects.filter(business_unit__in=bus, year=year)
+            .order_by('business_unit', 'month')
+        )
+        return ok({'year': year, 'targets': [r.to_dict() for r in rows]})
+
+    if request.method == 'POST':
+        if not (request.pk_role == 'super_admin' or _can_upload(request)):
+            return err('无录入权限', 403, 403)
+        body = _parse_json(request)
+        try:
+            year = int(body.get('year'))
+            assert 2000 <= year <= 2100
+        except Exception:
+            return err('年份无效')
+        items = body.get('items') or []
+        if not isinstance(items, list):
+            return err('items 格式错误')
+
+        accessible = _accessible_bus(request)
+        uid = getattr(request, 'pk_uid', None)
+        saved = 0
+        with transaction.atomic():
+            for it in items:
+                bu = it.get('business_unit')
+                if bu not in accessible:
+                    return err(f'无权编辑事业部：{bu}', 403)
+                try:
+                    mo = int(it.get('month', 0))
+                    assert 0 <= mo <= 12
+                except Exception:
+                    return err('月份无效')
+                try:
+                    rev = Decimal(str(it.get('target_revenue', 0) or 0))
+                    prof = Decimal(str(it.get('target_profit', 0) or 0))
+                except (InvalidOperation, ValueError):
+                    return err('目标金额无效')
+                FinancialTarget.objects.update_or_create(
+                    business_unit=bu, year=year, month=mo,
+                    defaults={
+                        'target_revenue': rev, 'target_profit': prof,
+                        'updated_by_id': uid,
+                    },
+                )
+                saved += 1
+        return ok({'saved': saved})
+
+    return err('方法不允许', 405)
+
+
+@cw_required()
+def metrics(request):
+    """Per-BU revenue/profit targets vs actuals with achievement, MoM and YoY."""
+    if request.method != 'GET':
+        return err('方法不允许', 405)
+    denied = _page_denied(request, 'metrics')
+    if denied:
+        return denied
+    try:
+        year, month = _parse_year_month(request)
+    except Exception:
+        return err('年份或月份无效')
+
+    bus, e = _resolve_bu_list(request, request.GET.get('bu', ''))
+    if e:
+        return e
+
+    tgt_index = _load_target_index(bus, year)
+    bu_rows = [_bu_metrics(bu, year, month, tgt_index) for bu in bus]
+    total = {
+        'business_unit': '全集团',
+        'month': _aggregate_total(bu_rows, 'month'),
+        'ytd': _aggregate_total(bu_rows, 'ytd'),
+    }
+    return ok({'year': year, 'month': month, 'bus': bu_rows, 'total': total})
+
+
+@cw_required()
+def cockpit(request):
+    """Group-level KPI overview + per-BU bars + 12-month trend (actual vs target)."""
+    if request.method != 'GET':
+        return err('方法不允许', 405)
+    denied = _page_denied(request, 'cockpit')
+    if denied:
+        return denied
+    try:
+        year, month = _parse_year_month(request)
+    except Exception:
+        return err('年份或月份无效')
+
+    bus, e = _resolve_bu_list(request, request.GET.get('bu', ''))
+    if e:
+        return e
+
+    tgt_index = _load_target_index(bus, year)
+    bu_rows = [_bu_metrics(bu, year, month, tgt_index) for bu in bus]
+
+    overview = {
+        'month': _aggregate_total(bu_rows, 'month'),
+        'ytd': _aggregate_total(bu_rows, 'ytd'),
+    }
+    # Group-level MoM/YoY for the headline cards (recomputed from consolidated actuals).
+    prev_month = month - 1 if month > 1 else 12
+    prev_year = year if month > 1 else year - 1
+    rev_m, prof_m = _period_actuals(bus, year, month)
+    rev_pm, prof_pm = _period_actuals(bus, prev_year, prev_month)
+    rev_ym, prof_ym = _period_actuals(bus, year - 1, month)
+    overview['month']['revenue_mom'] = _chg(rev_m, rev_pm)
+    overview['month']['profit_mom'] = _chg(prof_m, prof_pm)
+    overview['month']['revenue_yoy'] = _chg(rev_m, rev_ym)
+    overview['month']['profit_yoy'] = _chg(prof_m, prof_ym)
+
+    # 12-month trend: group actual revenue/profit + group target lines per month.
+    trend = []
+    for mo in range(1, 13):
+        rev_a, prof_a = _period_actuals(bus, year, mo)
+        rev_t = _sum_opt([tgt_index.get((bu, mo), {}).get('target_revenue') for bu in bus])
+        prof_t = _sum_opt([tgt_index.get((bu, mo), {}).get('target_profit') for bu in bus])
+        trend.append({
+            'month': mo,
+            'actual_revenue': rev_a, 'actual_profit': prof_a,
+            'target_revenue': rev_t, 'target_profit': prof_t,
+            'has_data': rev_a is not None or prof_a is not None,
+        })
+
+    return ok({
+        'year': year, 'month': month,
+        'overview': overview,
+        'bus': bu_rows,
+        'trend': trend,
+    })
 
 
 # ── charts ───────────────────────────────────────────────────────────────────

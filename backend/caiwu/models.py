@@ -214,6 +214,51 @@ class FinancialEntry(models.Model):
         ]
 
 
+class FinancialTarget(models.Model):
+    """Manually-entered revenue/profit targets per business unit per period.
+
+    `month == 0` is the annual target for the year; `month` 1–12 are monthly
+    targets. Achievement is computed by the views against the aggregated,
+    published 部门明细表 actuals (主营业务收入 → revenue, 经营净利 → profit), so the
+    target table only stores the manual planning figures.
+    """
+    MONTH_ANNUAL = 0
+
+    business_unit = models.CharField('事业部', max_length=50, db_index=True)
+    year = models.IntegerField('年份')
+    month = models.IntegerField('月份', default=MONTH_ANNUAL, help_text='0=年度目标，1-12=当月目标')
+    target_revenue = models.DecimalField('目标收入', max_digits=15, decimal_places=2, default=0)
+    target_profit = models.DecimalField('目标利润', max_digits=15, decimal_places=2, default=0)
+    # Cross-db reference to the unified platform account (mirrors ImportBatch.uploaded_by).
+    updated_by = models.ForeignKey(
+        'paikuan.PaikuanUser', null=True, on_delete=models.SET_NULL,
+        related_name='caiwu_targets',
+    )
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        app_label = 'caiwu'
+        db_table = 'caiwu_financial_target'
+        ordering = ['business_unit', 'year', 'month']
+        unique_together = [('business_unit', 'year', 'month')]
+        indexes = [
+            models.Index(fields=['year', 'month']),
+        ]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'business_unit': self.business_unit,
+            'year': self.year,
+            'month': self.month,
+            'target_revenue': float(self.target_revenue),
+            'target_profit': float(self.target_profit),
+            'updated_by': self.updated_by.name if self.updated_by_id else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class CaiwuJobPermission(models.Model):
     """Per-job-title granular permission config, managed by super_admin.
 
