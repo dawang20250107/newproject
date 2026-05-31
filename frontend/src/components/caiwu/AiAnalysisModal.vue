@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch, onUnmounted } from 'vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -8,9 +8,28 @@ const props = defineProps({
   error: { type: String, default: '' },
   title: { type: String, default: 'AI 智能分析' },
   subtitle: { type: String, default: '' },
+  // 加载文案与耗时预期：慢分析（驾驶舱推理模型）用来安抚等待，避免误以为卡死。
+  loadingHint: { type: String, default: 'DeepSeek 正在分析财务数据…' },
+  estimateSeconds: { type: Number, default: 0 },
 })
 
 const emit = defineEmits(['close', 'reanalyze'])
+
+// ── 已用时计时器：loading 期间每秒自增，给等待者明确的进度感 ──
+const elapsed = ref(0)
+let timer = null
+watch(() => props.loading, (on) => {
+  clearInterval(timer)
+  if (on) {
+    elapsed.value = 0
+    timer = setInterval(() => { elapsed.value += 1 }, 1000)
+  }
+}, { immediate: true })
+onUnmounted(() => clearInterval(timer))
+
+// 超过预期耗时后给一句额外安抚，避免焦虑。
+const overEstimate = computed(() =>
+  props.estimateSeconds > 0 && elapsed.value >= props.estimateSeconds)
 
 const paragraphs = computed(() => {
   if (!props.text) return []
@@ -46,7 +65,11 @@ const paragraphs = computed(() => {
             <div class="ai-scanner">
               <div class="ai-scan-line"></div>
             </div>
-            <div class="ai-loading-text">DeepSeek 正在分析财务数据…</div>
+            <div class="ai-loading-text">{{ loadingHint }}</div>
+            <div class="ai-timer">
+              已用时 <b>{{ elapsed }}</b> 秒<template v-if="estimateSeconds"> · 预计约 {{ estimateSeconds }} 秒</template>
+            </div>
+            <div v-if="overEstimate" class="ai-timer-note">模型仍在深度推理，请再稍候，马上就好…</div>
             <div class="ai-dots"><span></span><span></span><span></span></div>
           </div>
 
@@ -161,7 +184,11 @@ const paragraphs = computed(() => {
   0% { top: -30%; }
   100% { top: 100%; }
 }
-.ai-loading-text { font-size: 13px; color: var(--muted); }
+.ai-loading-text { font-size: 13px; color: var(--muted); text-align: center; max-width: 320px; line-height: 1.6; }
+.ai-timer { font-size: 12px; color: var(--muted); }
+.ai-timer b { color: var(--primary); font-variant-numeric: tabular-nums; font-size: 14px; }
+.ai-timer-note { font-size: 12px; color: var(--primary); opacity: .85; animation: aiFadeIn .4s ease; }
+@keyframes aiFadeIn { from { opacity: 0; } to { opacity: .85; } }
 .ai-dots { display: flex; gap: 6px; }
 .ai-dots span {
   width: 7px; height: 7px; border-radius: 50%;

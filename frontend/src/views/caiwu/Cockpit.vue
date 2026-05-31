@@ -239,7 +239,7 @@ onMounted(load)
           <span class="ai-bar-orb">🧭</span>
           <div>
             <div class="ai-bar-title">AI 全局经营分析 <span class="ai-pro-tag">PRO</span></div>
-            <div class="ai-bar-scope">站在全集团高度的综合诊断 · {{ aiScopeLabel }}</div>
+            <div class="ai-bar-scope">站在全集团高度的综合诊断 · {{ aiScopeLabel }} · <span class="ai-time-hint">约需 1–2 分钟</span></div>
           </div>
         </div>
         <div class="ai-bar-actions">
@@ -283,6 +283,8 @@ onMounted(load)
       :error="aiErr"
       title="AI 全局经营分析"
       :subtitle="aiScopeLabel"
+      loading-hint="正在做全集团综合分析，调用更强推理模型，通常需要 1–2 分钟，请稍候…"
+      :estimate-seconds="90"
       @close="aiVisible = false"
       @reanalyze="runAiAnalysis"
     />
@@ -338,5 +340,6 @@ onMounted(load)
   background: linear-gradient(135deg, #c96342, #e8855a);
 }
 .ai-bar-scope { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.ai-time-hint { color: var(--primary); font-weight: 600; }
 .ai-bar-actions { display: flex; gap: 8px; }
 </style>
