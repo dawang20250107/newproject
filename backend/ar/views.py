@@ -11,7 +11,7 @@ from django.core.exceptions import ValidationError
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction
-from django.db.models import Sum, Count, Q, F, Value, Case, When, IntegerField, CharField, Max
+from django.db.models import Sum, Count, Q, F, Value, Case, When, IntegerField, CharField, Max, Min
 from django.db.models.functions import TruncMonth
 from django.utils import timezone
 
