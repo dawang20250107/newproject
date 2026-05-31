@@ -530,3 +530,50 @@ class CaiwuMetricsAndTargetsTests(TestCase):
                 content_type='application/json', **self.auth())
         self.assertEqual(resp.status_code, 400, self.jj(resp))
         m.assert_not_called()   # 无数据时不应调用外部模型
+
+    def test_cockpit_ai_stream_emits_sse_frames(self):
+        from unittest import mock
+        from django.conf import settings
+        self.mk(2026, 5, 200, 130)
+        captured = {}
+
+        def fake_stream(messages, model=None, max_tokens=1800, timeout=300):
+            captured['model'] = model
+            captured['max_tokens'] = max_tokens
+            yield ('reasoning', '先看全集团达成')
+            yield ('answer', '## 总览\n')
+            yield ('answer', '集团收入500万。')
+
+        with mock.patch('caiwu.views._deepseek_stream', fake_stream):
+            resp = self.client.post(
+                '/api/cw/cockpit/ai-analysis/stream',
+                data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu}),
+                content_type='application/json', **self.auth())
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp['Content-Type'], 'text/event-stream')
+            self.assertEqual(resp['X-Accel-Buffering'], 'no')
+            # 必须在 patch 生效期间消费惰性生成器，否则会落到真实的流式调用。
+            body = b''.join(resp.streaming_content).decode('utf-8')
+        events = [json.loads(fr[5:].strip())
+                  for fr in body.split('\n\n') if fr.strip().startswith('data:')]
+        types = [e['type'] for e in events]
+        self.assertEqual(types[0], 'meta')
+        self.assertEqual(types[-1], 'done')
+        self.assertIn('reasoning', types)
+        self.assertIn('answer', types)
+        answer = ''.join(e['delta'] for e in events if e['type'] == 'answer')
+        self.assertEqual(answer, '## 总览\n集团收入500万。')
+        self.assertEqual(captured['model'], settings.DEEPSEEK_PRO_MODEL)
+        self.assertGreaterEqual(captured['max_tokens'], 3000)
+
+    def test_cockpit_ai_stream_no_data_is_json_error(self):
+        # 无数据时应在开流前以普通 JSON 错误返回，而非 event-stream
+        from unittest import mock
+        with mock.patch('caiwu.views._deepseek_stream') as m:
+            resp = self.client.post(
+                '/api/cw/cockpit/ai-analysis/stream',
+                data=json.dumps({'year': 2024, 'month': 3}),
+                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400)
+        self.assertNotEqual(resp['Content-Type'], 'text/event-stream')
+        m.assert_not_called()

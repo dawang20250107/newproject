@@ -11,9 +11,19 @@ const props = defineProps({
   // 加载文案与耗时预期：慢分析（驾驶舱推理模型）用来安抚等待，避免误以为卡死。
   loadingHint: { type: String, default: 'DeepSeek 正在分析财务数据…' },
   estimateSeconds: { type: Number, default: 0 },
+  // 流式：推理过程（reasoner 模型先吐的思考链），实时填充。
+  reasoning: { type: String, default: '' },
 })
 
 const emit = defineEmits(['close', 'reanalyze'])
+
+const showReasoning = ref(true)
+// 出现正文后，自动折叠推理过程，聚焦结论（用户仍可手动展开）。
+watch(() => props.text, (t, old) => {
+  if (t && !old) showReasoning.value = false
+})
+// 是否已经开始流式输出（推理或正文任一有内容）。
+const streaming = computed(() => props.loading && (!!props.reasoning || !!props.text))
 
 // ── 已用时计时器：loading 期间每秒自增，给等待者明确的进度感 ──
 const elapsed = ref(0)
@@ -60,8 +70,8 @@ const paragraphs = computed(() => {
         </div>
 
         <div class="ai-body">
-          <!-- Loading -->
-          <div v-if="loading" class="ai-loading">
+          <!-- 初始等待：尚未开始流式输出 -->
+          <div v-if="loading && !streaming && !error" class="ai-loading">
             <div class="ai-scanner">
               <div class="ai-scan-line"></div>
             </div>
@@ -73,16 +83,33 @@ const paragraphs = computed(() => {
             <div class="ai-dots"><span></span><span></span><span></span></div>
           </div>
 
-          <!-- Error -->
-          <div v-else-if="error" class="ai-err">
-            <div style="font-size:26px;margin-bottom:8px">⚠️</div>
-            {{ error }}
-          </div>
+          <template v-else>
+            <!-- 推理过程（reasoner 思考链，可折叠） -->
+            <div v-if="reasoning" class="ai-reasoning">
+              <button class="ai-reasoning-head" @click="showReasoning = !showReasoning">
+                <span class="ai-reasoning-dot" :class="{ live: streaming && !text }"></span>
+                <span>AI 推理过程{{ streaming && !text ? '（进行中…）' : '' }}</span>
+                <span class="ai-reasoning-toggle">{{ showReasoning ? '收起 ▲' : '展开 ▼' }}</span>
+              </button>
+              <div v-show="showReasoning" class="ai-reasoning-body">{{ reasoning }}</div>
+            </div>
 
-          <!-- Result -->
-          <div v-else-if="text" class="ai-content">
-            <p v-for="(p, i) in paragraphs" :key="i" v-html="p"></p>
-          </div>
+            <!-- 正文（流式逐字渲染） -->
+            <div v-if="text" class="ai-content">
+              <p v-for="(p, i) in paragraphs" :key="i" v-html="p"></p>
+              <span v-if="streaming" class="ai-caret"></span>
+            </div>
+
+            <!-- 流式状态行 -->
+            <div v-if="streaming" class="ai-stream-status">
+              ⚡ 正在生成…已用时 {{ elapsed }} 秒
+            </div>
+
+            <!-- 错误（可能带部分已生成内容） -->
+            <div v-if="error" class="ai-err" :class="{ 'ai-err-inline': reasoning || text }">
+              <div style="font-size:22px;margin-bottom:6px">⚠️</div>{{ error }}
+            </div>
+          </template>
         </div>
 
         <div class="ai-foot">
@@ -202,12 +229,49 @@ const paragraphs = computed(() => {
   50% { opacity: 1; transform: translateY(-4px); }
 }
 
-.ai-err { text-align: center; color: var(--danger); font-size: 13px; padding: 30px 10px; }
+.ai-err { text-align: center; color: #c62828; font-size: 13px; padding: 30px 10px; }
+.ai-err-inline { padding: 14px 10px 4px; text-align: left; opacity: .9; }
 
 .ai-content { font-size: 13.5px; line-height: 1.85; color: var(--text); }
 .ai-content p { margin: 0 0 10px; }
 .ai-content p:last-child { margin-bottom: 0; }
 .ai-content :deep(strong) { color: var(--primary); font-weight: 700; }
+
+/* ── streaming reasoning (collapsible) ───────────────────────────────────── */
+.ai-reasoning {
+  margin-bottom: 12px; border: 1px solid rgba(122,159,212,0.22);
+  border-radius: 12px; background: rgba(122,159,212,0.05); overflow: hidden;
+}
+.ai-reasoning-head {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; background: none; border: none; cursor: pointer;
+  font-size: 12px; font-weight: 700; color: #5a6f8c; text-align: left;
+}
+.ai-reasoning-toggle { margin-left: auto; font-weight: 500; opacity: .8; }
+.ai-reasoning-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: #7a9fd4; flex: none;
+}
+.ai-reasoning-dot.live { animation: aiPulse 1.1s ease-in-out infinite; }
+@keyframes aiPulse {
+  0%, 100% { opacity: .35; transform: scale(.85); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+.ai-reasoning-body {
+  padding: 4px 12px 12px; font-size: 12px; line-height: 1.7; color: #6b7a8c;
+  white-space: pre-wrap; max-height: 200px; overflow-y: auto;
+}
+
+/* streaming caret + status */
+.ai-caret {
+  display: inline-block; width: 7px; height: 15px; vertical-align: text-bottom;
+  background: var(--primary); margin-left: 2px; border-radius: 1px;
+  animation: aiBlink 1s step-end infinite;
+}
+@keyframes aiBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.ai-stream-status {
+  margin-top: 10px; font-size: 12px; color: var(--primary); font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
 
 .ai-foot {
   display: flex; justify-content: flex-end; gap: 10px;

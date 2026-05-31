@@ -7,7 +7,7 @@ import functools
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
 
-from django.http import HttpResponse, JsonResponse
+from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction
 from django.db.models import Sum, Q
@@ -2234,17 +2234,18 @@ def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
 要求：专业、有数据支撑、有洞察，避免空话套话；分点清晰，适合集团领导决策参考，篇幅 800-1200 字。"""
 
 
-@csrf_exempt
-@cw_required()
-def cockpit_ai_analysis(request):
-    """POST /cockpit/ai-analysis — 全集团高度的综合经营分析（使用更强的 PRO 模型）。"""
-    if request.method != 'POST':
-        return err('方法不允许', 405)
-    denied = _page_denied(request, 'cockpit')
-    if denied:
-        return denied
+_COCKPIT_AI_SYSTEM = (
+    '你是集团CFO级别的资深财务与经营分析专家，擅长从全集团高度做综合诊断、'
+    '事业部横向对比与战略建议，用中文专业作答。'
+)
+
+
+def _cockpit_ai_prepare(request):
+    """Shared validation + prompt build for both cockpit AI endpoints.
+
+    Returns ((messages, scope), None) on success, or (None, err_response)."""
     if not settings.DEEPSEEK_API_KEY:
-        return err('AI 分析未配置（缺少 DEEPSEEK_API_KEY）', 503)
+        return None, err('AI 分析未配置（缺少 DEEPSEEK_API_KEY）', 503)
 
     body = _parse_json(request)
     try:
@@ -2252,38 +2253,83 @@ def cockpit_ai_analysis(request):
         month = int(body.get('month'))
         assert 2000 <= year <= 2100 and 1 <= month <= 12
     except Exception:
-        return err('年份或月份无效')
+        return None, err('年份或月份无效')
 
     bus, e = _resolve_bu_list(request, (body.get('bu') or '').strip())
     if e:
-        return e
+        return None, e
 
     tgt_index = _load_target_index(bus, year)
     actuals = _collect_actuals(bus, {year, year - 1})
     bu_rows = [_bu_metrics(bu, year, month, tgt_index, actuals) for bu in bus]
     if not any(b['month']['actual_revenue'] is not None or b['ytd']['actual_revenue'] is not None
                for b in bu_rows):
-        return err(f'{year}年{month}月该范围内暂无已发布数据，无法进行AI分析')
+        return None, err(f'{year}年{month}月该范围内暂无已发布数据，无法进行AI分析')
 
     ov_m = _attach_group_chg(_aggregate_total(bu_rows, 'month'), bus, year, month, actuals)
     ov_y = _aggregate_total(bu_rows, 'ytd')
     prompt = _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals)
+    messages = [
+        {'role': 'system', 'content': _COCKPIT_AI_SYSTEM},
+        {'role': 'user', 'content': prompt},
+    ]
+    scope = '全集团' if len(bus) > 1 else (bus[0] if bus else '全集团')
+    return (messages, scope), None
 
+
+@cw_required()
+def cockpit_ai_analysis(request):
+    """POST /cockpit/ai-analysis — 全集团综合分析（一次性返回，用 PRO 模型）。"""
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    denied = _page_denied(request, 'cockpit')
+    if denied:
+        return denied
+    prep, e = _cockpit_ai_prepare(request)
+    if e:
+        return e
+    messages, scope = prep
     try:
-        text = _deepseek_chat(
-            [
-                {'role': 'system', 'content':
-                    '你是集团CFO级别的资深财务与经营分析专家，擅长从全集团高度做综合诊断、'
-                    '事业部横向对比与战略建议，用中文专业作答。'},
-                {'role': 'user', 'content': prompt},
-            ],
-            timeout=180, model=settings.DEEPSEEK_PRO_MODEL, max_tokens=3200,
-        )
-        scope = '全集团' if len(bus) > 1 else (bus[0] if bus else '全集团')
+        text = _deepseek_chat(messages, timeout=180,
+                              model=settings.DEEPSEEK_PRO_MODEL, max_tokens=3200)
         return ok({'analysis': text, 'model': settings.DEEPSEEK_PRO_MODEL, 'scope': scope})
     except Exception as ex:
         logger.error(f'Cockpit AI error: {ex}')
         return err(f'AI分析服务暂时不可用，请稍后重试（{str(ex)[:80]}）', 503)
+
+
+@cw_required()
+def cockpit_ai_analysis_stream(request):
+    """POST /cockpit/ai-analysis/stream — 全集团综合分析，SSE 流式逐字推送。
+
+    先流推理过程(reasoning)、再流正文(answer)，让领导秒级看到进度，不再干等。
+    数据校验/无权限/无数据/无APIKey 仍在开流前以普通 JSON 错误返回。"""
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    denied = _page_denied(request, 'cockpit')
+    if denied:
+        return denied
+    prep, e = _cockpit_ai_prepare(request)
+    if e:
+        return e
+    messages, scope = prep
+    model = settings.DEEPSEEK_PRO_MODEL
+
+    def gen():
+        yield _sse_event({'type': 'meta', 'scope': scope, 'model': model})
+        try:
+            for kind, delta in _deepseek_stream(messages, model=model,
+                                                max_tokens=3200, timeout=300):
+                yield _sse_event({'type': kind, 'delta': delta})
+            yield _sse_event({'type': 'done'})
+        except Exception as ex:
+            logger.error(f'Cockpit AI stream error: {ex}')
+            yield _sse_event({'type': 'error', 'error': f'AI分析服务暂时不可用（{str(ex)[:80]}）'})
+
+    resp = StreamingHttpResponse(gen(), content_type='text/event-stream')
+    resp['Cache-Control'] = 'no-cache'
+    resp['X-Accel-Buffering'] = 'no'   # 关掉 nginx 缓冲，确保逐块下推
+    return resp
 
 
 # ── charts ───────────────────────────────────────────────────────────────────
@@ -2497,6 +2543,58 @@ def _deepseek_chat(messages, timeout=90, model=None, max_tokens=1800):
     )
     resp.raise_for_status()
     return resp.json()['choices'][0]['message']['content']
+
+
+def _deepseek_stream(messages, model=None, max_tokens=1800, timeout=300):
+    """Yield (kind, delta) from a streaming DeepSeek completion.
+
+    kind ∈ {'reasoning', 'answer'}: reasoner models emit reasoning_content first
+    (the chain-of-thought) then content (the final answer). Streaming both lets the
+    UI show activity within seconds instead of waiting for the whole response.
+    """
+    import requests as req_lib
+    resp = req_lib.post(
+        f'{settings.DEEPSEEK_BASE_URL}/chat/completions',
+        headers={
+            'Authorization': f'Bearer {settings.DEEPSEEK_API_KEY}',
+            'Content-Type': 'application/json',
+        },
+        json={
+            'model': model or settings.DEEPSEEK_MODEL,
+            'messages': messages,
+            'temperature': 0.3,
+            'max_tokens': max_tokens,
+            'stream': True,
+        },
+        timeout=timeout,
+        stream=True,
+    )
+    resp.raise_for_status()
+    # Parse SSE lines as raw bytes → utf-8 (line boundaries never split multibyte chars).
+    for raw in resp.iter_lines(decode_unicode=False):
+        if not raw:
+            continue
+        line = raw.decode('utf-8', 'ignore')
+        if not line.startswith('data:'):
+            continue
+        payload = line[5:].strip()
+        if payload == '[DONE]':
+            break
+        try:
+            delta = json.loads(payload)['choices'][0]['delta']
+        except (ValueError, KeyError, IndexError):
+            continue
+        rc = delta.get('reasoning_content')
+        if rc:
+            yield ('reasoning', rc)
+        c = delta.get('content')
+        if c:
+            yield ('answer', c)
+
+
+def _sse_event(obj):
+    """Encode one Server-Sent-Events frame."""
+    return f'data: {json.dumps(obj, ensure_ascii=False)}\n\n'
 
 
 def _fmt_wan(v):

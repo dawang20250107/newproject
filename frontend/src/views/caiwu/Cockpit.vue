@@ -21,6 +21,7 @@ const data = ref(null)
 
 // ── AI 全局分析 ───────────────────────────────────────────
 const aiText = ref('')
+const aiReasoning = ref('')
 const aiLoading = ref(false)
 const aiErr = ref('')
 const aiVisible = ref(false)
@@ -40,6 +41,7 @@ async function load() {
   loading.value = true
   loadErr.value = ''
   aiText.value = ''
+  aiReasoning.value = ''
   aiVisible.value = false
   try {
     const params = { year: year.value, month: month.value }
@@ -63,15 +65,47 @@ function viewAnalysis() { aiVisible.value = true }
 async function runAiAnalysis() {
   aiLoading.value = true
   aiErr.value = ''
+  aiText.value = ''
+  aiReasoning.value = ''
   aiVisible.value = true
   try {
     const body = { year: year.value, month: month.value }
     if (selectedBu.value) body.bu = selectedBu.value
-    // 全集团综合分析使用更强的推理模型，耗时较长 —— 放宽超时到 3 分钟。
-    const res = await api.post('/cockpit/ai-analysis', body, { timeout: 180000 })
-    aiText.value = res.data?.analysis || res.analysis || ''
+    const token = localStorage.getItem('pk_token')
+    // SSE 流式：推理与正文逐字推送，秒级看到进度。用 fetch 读 ReadableStream。
+    const resp = await fetch('/api/cw/cockpit/ai-analysis/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify(body),
+    })
+    if (!resp.ok || !resp.body) {
+      let msg = `AI 分析失败（${resp.status}）`
+      try { const j = await resp.json(); msg = j.error || j.msg || msg } catch { /* not json */ }
+      throw new Error(msg)
+    }
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let nl
+      while ((nl = buf.indexOf('\n\n')) >= 0) {
+        const frame = buf.slice(0, nl).trim()
+        buf = buf.slice(nl + 2)
+        if (!frame.startsWith('data:')) continue
+        const payload = frame.slice(5).trim()
+        if (!payload) continue
+        let evt
+        try { evt = JSON.parse(payload) } catch { continue }
+        if (evt.type === 'reasoning') aiReasoning.value += evt.delta
+        else if (evt.type === 'answer') aiText.value += evt.delta
+        else if (evt.type === 'error') aiErr.value = evt.error || 'AI 分析失败'
+      }
+    }
   } catch (e) {
-    aiErr.value = e?.error || e?.msg || 'AI 分析失败'
+    if (!aiErr.value) aiErr.value = e?.message || 'AI 分析失败'
   } finally {
     aiLoading.value = false
   }
@@ -280,10 +314,11 @@ onMounted(load)
       :visible="aiVisible"
       :loading="aiLoading"
       :text="aiText"
+      :reasoning="aiReasoning"
       :error="aiErr"
       title="AI 全局经营分析"
       :subtitle="aiScopeLabel"
-      loading-hint="正在做全集团综合分析，调用更强推理模型，通常需要 1–2 分钟，请稍候…"
+      loading-hint="正在连接更强推理模型，马上开始逐字生成…"
       :estimate-seconds="90"
       @close="aiVisible = false"
       @reanalyze="runAiAnalysis"
