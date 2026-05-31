@@ -155,11 +155,13 @@ function fmtAmt(v) {
             </div>
           </div>
 
-          <!-- Value label — 10px above bar/cap top -->
+          <!-- Value label — factor bars only; anchors show their value in the
+               reference-line tag, so a separate label here would overlap it -->
           <div
+            v-if="bar.barType !== 'anchor'"
             class="wf-label"
             :class="`wf-label-${bar.barType}`"
-            :style="`bottom:calc(${bar.barType === 'anchor' ? bar.capPct : bar.topPct}% + 10px);animation-delay:${i * 0.07 + 0.2}s`"
+            :style="`bottom:calc(${bar.topPct}% + 10px);animation-delay:${i * 0.07 + 0.2}s`"
           >
             <svg v-if="bar.barType === 'increase'" class="wf-arr" viewBox="0 0 7 10" fill="none" width="7" height="10">
               <path d="M3.5 9V2.5M1 5L3.5 2.5L6 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
