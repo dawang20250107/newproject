@@ -1989,22 +1989,58 @@ def targets(request):
 
         accessible = _accessible_bus(request)
         uid = getattr(request, 'pk_uid', None)
-        saved = 0
+
+        # ── parse all items first, then validate before touching the DB ────────
+        parsed = []  # (bu, month, rev_dec, prof_dec)
+        for it in items:
+            bu = it.get('business_unit')
+            if bu not in accessible:
+                return err(f'无权编辑事业部：{bu}', 403)
+            try:
+                mo = int(it.get('month', 0))
+                assert 0 <= mo <= 12
+            except Exception:
+                return err('月份无效')
+            try:
+                rev = Decimal(str(it.get('target_revenue', 0) or 0))
+                prof = Decimal(str(it.get('target_profit', 0) or 0))
+            except (InvalidOperation, ValueError):
+                return err('目标金额无效')
+            parsed.append((bu, mo, rev, prof))
+
+        # ── month-sum == annual validation ────────────────────────────────────
+        # Group by BU. A BU that has both month=0 AND all 12 monthly targets must
+        # have sum(1..12) == month=0, with 1-yuan tolerance for floating-point.
+        TOLERANCE = Decimal('1.00')
+        from collections import defaultdict
+        by_bu_rev = defaultdict(dict)
+        by_bu_prof = defaultdict(dict)
+        for bu, mo, rev, prof in parsed:
+            by_bu_rev[bu][mo] = rev
+            by_bu_prof[bu][mo] = prof
+        for bu in by_bu_rev:
+            rev_map = by_bu_rev[bu]
+            prof_map = by_bu_prof[bu]
+            has_annual = 0 in rev_map
+            monthly_keys = [m for m in rev_map if m != 0]
+            if has_annual and len(monthly_keys) == 12:
+                sum_rev = sum(rev_map[m] for m in range(1, 13))
+                if abs(sum_rev - rev_map[0]) > TOLERANCE:
+                    delta = float(sum_rev - rev_map[0]) / 10000
+                    return err(
+                        f'{bu}：月度收入目标合计与年度目标不符'
+                        f'（差额 {delta:+.2f} 万元），请修正后保存'
+                    )
+                sum_prof = sum(prof_map[m] for m in range(1, 13))
+                if abs(sum_prof - prof_map[0]) > TOLERANCE:
+                    delta = float(sum_prof - prof_map[0]) / 10000
+                    return err(
+                        f'{bu}：月度利润目标合计与年度目标不符'
+                        f'（差额 {delta:+.2f} 万元），请修正后保存'
+                    )
+
         with transaction.atomic():
-            for it in items:
-                bu = it.get('business_unit')
-                if bu not in accessible:
-                    return err(f'无权编辑事业部：{bu}', 403)
-                try:
-                    mo = int(it.get('month', 0))
-                    assert 0 <= mo <= 12
-                except Exception:
-                    return err('月份无效')
-                try:
-                    rev = Decimal(str(it.get('target_revenue', 0) or 0))
-                    prof = Decimal(str(it.get('target_profit', 0) or 0))
-                except (InvalidOperation, ValueError):
-                    return err('目标金额无效')
+            for bu, mo, rev, prof in parsed:
                 FinancialTarget.objects.update_or_create(
                     business_unit=bu, year=year, month=mo,
                     defaults={
@@ -2012,8 +2048,7 @@ def targets(request):
                         'updated_by_id': uid,
                     },
                 )
-                saved += 1
-        return ok({'saved': saved})
+        return ok({'saved': len(parsed)})
 
     return err('方法不允许', 405)
 
