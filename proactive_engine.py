@@ -403,15 +403,21 @@ class ProactiveEngineV3:
         self._last_times[self.state] = now
         self._cycle += 1
 
-        # 持久化
-        try:
-            self.emotion_memory._conn.commit()
-            self.hormone.save()
-            self.desire_manager._conn.commit()
-            self.personality._conn.commit()
-            self.aesthetic_sense._conn.commit()
-        except Exception as e:
-            logger.error("Persist error: %s", e)
+        # 持久化 —— 每个子系统独立提交，单个失败不连累其余。
+        # 注：emotion_memory / hormone / dream / narrative / metacognition 用瞬时连接，
+        #     操作内已自提交自关闭，这里只需提交持有长连接的子系统。
+        for label, persist in (
+            ("hormone", self.hormone.save),
+            ("desire_manager", self.desire_manager._conn.commit),
+            ("personality", self.personality._conn.commit),
+            ("aesthetic_sense", self.aesthetic_sense._conn.commit),
+            ("value_compass", self.value_compass._conn.commit),
+            ("theory_of_mind", self.theory_of_mind._conn.commit),
+        ):
+            try:
+                persist()
+            except Exception as e:
+                logger.error("Persist error (%s): %s", label, e)
 
         if message:
             await self._send(message)
@@ -437,11 +443,19 @@ class ProactiveEngineV3:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        # 关闭所有连接
-        self.emotion_memory._conn.close()
-        self.desire_manager._conn.close()
-        self.personality._conn.close()
-        self.aesthetic_sense._conn.close()
+        # 关闭持有长连接的子系统。
+        # （emotion_memory / hormone / dream / narrative / metacognition 用瞬时连接，无需关闭）
+        for label, sub in (
+            ("desire_manager", self.desire_manager),
+            ("personality", self.personality),
+            ("aesthetic_sense", self.aesthetic_sense),
+            ("value_compass", self.value_compass),
+            ("theory_of_mind", self.theory_of_mind),
+        ):
+            try:
+                sub._conn.close()
+            except Exception as e:
+                logger.error("Close error (%s): %s", label, e)
         logger.info("ProactiveEngine V3 stopped — all subsystems closed")
 
     async def _loop(self) -> None:
