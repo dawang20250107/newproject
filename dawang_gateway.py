@@ -34,7 +34,7 @@ from gateway.run import GatewayRunner, GatewayConfig, start_gateway as original_
 from gateway.run import MessageEvent, MessageType
 
 # ── 导入我们的改造模块 ─────────────────────────────────────────────
-from proactive_engine import ProactiveEngine
+from proactive_engine import ProactiveEngineV2
 
 
 # ── 注入 ProactiveEngine ──────────────────────────────────────────
@@ -45,10 +45,10 @@ async def _patched_runner_start(self) -> bool:
     """在 GatewayRunner.start() 完成后附加 ProactiveEngine"""
     result = await _original_runner_start(self)
     if result:
-        engine = ProactiveEngine(self)
+        engine = ProactiveEngineV2(self)
         self._proactive_engine = engine
         await engine.start()
-        logger.info("🔥 ProactiveEngine injected into GatewayRunner")
+        logger.info("🔥 ProactiveEngine V2 injected into GatewayRunner (6 subsystems)")
     return result
 
 GatewayRunner.start = _patched_runner_start

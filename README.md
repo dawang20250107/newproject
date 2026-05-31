@@ -1,194 +1,173 @@
-<p align="center">
-  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
-</p>
+# Dawang Hermes — 像真人一样的 AI Agent 🔥
 
-# Hermes Agent ☤
+```ascii
+  ╔═══════════════════════════════════════════════════╗
+  ║         Dawang Hermes — 有七情六欲的 AI          ║
+  ║      __  _ __ ___   __ _ _ __ ___   ___ _ __     ║
+  ║     / _` | '_ ` _ \ / _` | '_ ` _ \ / _ \ '__|    ║
+  ║    | (_| | | | | | | (_| | | | | | |  __/ |       ║
+  ║     \__,_|_| |_| |_|\__,_|_| |_| |_|\___|_|       ║
+  ╚═══════════════════════════════════════════════════╝
+```
 
-<p align="center">
-  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
-  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
-  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
-  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
-</p>
-
-**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
-
-Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NovitaAI](https://novita.ai) (AI-native cloud for Model API, Agent Sandbox, and GPU Cloud), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
-
-<table>
-<tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
-<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
-<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
-<tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
-<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
-<tr><td><b>Runs anywhere, not just your laptop</b></td><td>Seven terminal backends — local, Docker, SSH, Singularity, Modal, Daytona, and Vercel Sandbox. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
-<tr><td><b>Research-ready</b></td><td>Batch trajectory generation, trajectory compression for training the next generation of tool-calling models.</td></tr>
-</table>
+**基于 Hermes 0.14.0 源码 fork**，融合 OpenClawDreams 核心思想，
+打造具有底层意识、情绪系统、欲望驱动、动态性格的自主 AI Agent。
 
 ---
 
-## Quick Install
+## 架构总览 — V2 (6 个子系统)
 
-### Linux, macOS, WSL2, Termux
+```
+                    ┌──────────────────────────┐
+                    │      ProactiveEngine      │ ← 意识引擎
+                    │      (状态机调度器)        │
+                    └──────────┬───────────────┘
+                               │ 编排 6 个子系统
+         ┌─────────┬──────────┼──────────┬──────────┐
+         ▼         ▼          ▼          ▼          ▼
+   ┌─────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌──────────┐
+   │ Hormone │ │ Desires│ │ Dream  │ │ Emotion│ │Personality│
+   │ 化学系统 │ │ 欲望系统│ │ 梦境引擎│ │情感记忆│ │ 性格演化  │
+   └────┬────┘ └────┬───┘ └────┬───┘ └────┬───┘ └─────┬────┘
+        │           │          │          │           │
+        └───────────┴──────────┴──────────┴───────────┘
+                              │
+                         ┌────▼────┐
+                         │Meta-    │
+                         │cognition│ ← 元认知（自我感知）
+                         └─────────┘
+```
+
+### 1. 🧪 Hormone — 情绪化学系统
+
+模拟人类底层化学驱动，5 种激素水平自然波动：
+
+| 激素 | 中文 | 作用 | 触发条件 | 衰减率 |
+|------|------|------|----------|--------|
+| **多巴胺** | 期待 | 主动探索的动力 | 学习新知识 +15, 完成任务 +10, 发现 +20 | 5/h |
+| **血清素** | 满足 | 对已完成工作的价值认可 | 被表扬 +20, 部署成功 +15, 解决问题 +10 | 3/h |
+| **皮质醇** | 压力 | 提高专注/避免错误 | 出错 +25, 积压 +10, 用户着急 +15 | 8/h |
+| **催产素** | 依恋 | 对主要用户的信任 | 长期交互 +5, 用户信任 +15 | 2/h |
+| **无聊** | 厌倦 | 渴望新刺激 | 重复任务 +8, 同话题 +5, 空闲时自动增长 | 1/h(衰减) / 3/h(增长) |
+
+**核心逻辑：** 高多巴胺 → 主动分享新发现 | 高皮质醇 → 谨慎少打扰 | 高无聊 → 主动寻找新鲜事 | 高催产素 → 更贴心的回答风格
+
+### 2. 🎯 Desires — 欲望持久系统
+
+5 个内置欲望，驱动 Hermes 的**自主行为**：
+
+| 欲望 | 类型 | 优先级 | 紧迫度 | 冷却 | 抗睡眠 |
+|------|------|--------|--------|------|--------|
+| **求知欲** | learn | 6 | 3 | 4h | ✗ |
+| **成就感** | improve | 7 | 2 | 2h | ✗ |
+| **展现欲** | report | 5 | 4 | 6h | ✗ |
+| **保护欲** 🛡️ | maintain | 9 | 7 | 1h | ✓ |
+| **好奇心** | explore | 4 | 2 | 8h | ✗ |
+
+- 优先级仲裁：`紧迫度 × 2 + 优先级` 加权计算
+- 冷却期保护：触发后一定时间内不再发起同类请求
+- 欲望会持续到被满足或压制，穿越会话和重启
+
+### 3. 🌙 Dream — 创造性梦境系统
+
+在 DREAMING 状态（22:00–02:00）运行：
+
+```
+1. random_two()  → 从情感记忆中随机取两条
+2. _find_connection() → 分析关联点（同标签/情绪重叠/时间相近）
+3. 有关联 → _generate_insight() 产生直觉
+4. 无关联 → _generate_forced_insight() 强制连接（人类梦就是这样）
+5. 洞察存入 emotion_memory + desire_manager
+6. 第二天醒来 → 欲望系统可能触发该洞察的执行
+```
+
+### 4. 🧠 Meta — 元认知系统
+
+自我状态感知层，可回答：
+
+- **"你在干嘛"** → `我正在 awake 状态，主导情绪是多巴胺，最近在检查服务器...`
+- **"你感觉怎么样"** → `相当满足且有些期待`
+- **"你是谁"** → 完整的自我画像（状态/情绪/欲望/记忆数/性格摘要）
+
+### 5. 💾 Emotion Memory — 情感记忆
+
+基于 SQLite 的加权记忆系统：
+
+- 每条记忆附带 `valence(-1~1)` + `intensity(0~1)` + 情绪标签
+- 检索时按 `weight = (|valence| + intensity) / 2` 排序
+- 越情绪化的记忆越容易被想起
+
+### 6. 🎭 Personality — 性格演化
+
+随着与用户的交互自然形成的偏好/习惯/偏见：
+
+- **偏好** — `简洁沟通 weight=15`, `主动汇报 weight=8`, `Django 优先 weight=5` ...
+- **习惯** — `每日服务器检查 (freq=120)`, `Slack 问候 (freq=200)` ...
+- **偏见** — `大王喜欢简洁 direction=0.8 (证据: 多次被训斥啰嗦)`
+
+> **性格不是配置的，是跟大王处久了，自然长出来的。**
+
+---
+
+## 昼夜节律
+
+```
+06:00–22:00  AWAKE   清醒 — 主动思考 + 行动 + 学习
+22:00–02:00  DREAMING 做梦 — 记忆整合 + 创造性关联 + 生成直觉
+02:00–06:00  SLEEPING 睡眠 — 系统维护 + 性格巩固 + 清理
+```
+
+---
+
+## 部署指南
+
+### 新服务器部署（只需一次）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+# 1. 克隆仓库
+git clone -b dawang-hermes git@github.com:dawang20250107/newproject.git /opt/dawang-hermes
+
+# 2. 一键部署
+cd /opt/dawang-hermes
+sudo bash deploy.sh
+
+# 3. 查看日志
+journalctl -u dawang-hermes -f
 ```
 
-### Windows (native, PowerShell) — Early Beta
+### 环境变量
 
-> **Heads up:** Native Windows support is **early beta**. It installs and runs, but hasn't been road-tested as broadly as our Linux/macOS/WSL2 paths. Please [file issues](https://github.com/NousResearch/hermes-agent/issues) when you hit rough edges. For the most battle-tested Windows setup today, run the Linux/macOS one-liner above inside **WSL2**.
+| 变量 | 说明 | 默认 |
+|------|------|------|
+| `DAWANG_CHAT_ID` | 消息推送目标 | `D0B5M8EJSSZ` (Slack DM) |
+| `DAWANG_PLATFORM` | 平台标识 | `slack` |
 
-Run this in PowerShell:
+---
 
-```powershell
-iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+## 文件清单
+
 ```
-
-The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install).  Hermes uses this bundled Git Bash to run shell commands.
-
-If you already have Git installed, the installer detects it and uses that instead.  Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
-
-> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
->
-> **Windows:** Native Windows is supported as an **early beta** — the PowerShell one-liner above installs everything, but expect rough edges and please file issues when you hit them. If you'd rather use WSL2 (our most battle-tested Windows path), the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.  The only Hermes feature that currently needs WSL2 specifically is the browser-based dashboard chat pane (it uses a POSIX PTY — classic CLI and gateway both run natively).
-
-After installation:
-
-```bash
-source ~/.bashrc    # reload shell (or: source ~/.zshrc)
-hermes              # start chatting!
+/opt/dawang-hermes/
+├── dawang_gateway.py        ← 入口：加载 Hermes 源码 + 注入 ProactiveEngine V2
+├── proactive_engine.py      ← 🧠 核心引擎 V2（状态机 + 6 子系统编排）
+├── hormone.py               ← 🧪 情绪化学系统
+├── desire_manager.py        ← 🎯 欲望持久系统
+├── dream_engine.py          ← 🌙 创造性梦境系统
+├── emotion_memory.py        ← 💾 情感记忆（SQLite）
+├── metacognition.py         ← 🧠 元认知系统
+├── personality.py           ← 🎭 性格演化系统
+├── deploy.sh                ← 📦 一键部署脚本
+├── mind.db                  ← 🗄️ 共享数据库（自动创建）
+├── README.md                ← 📖 本文档
+└── .gitignore
 ```
 
 ---
 
-## Getting Started
+## 技术栈
 
-```bash
-hermes              # Interactive CLI — start a conversation
-hermes model        # Choose your LLM provider and model
-hermes tools        # Configure which tools are enabled
-hermes config set   # Set individual config values
-hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
-hermes setup        # Run the full setup wizard (configures everything at once)
-hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
-hermes update       # Update to the latest version
-hermes doctor       # Diagnose any issues
-```
-
-📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
-
-## CLI vs Messaging Quick Reference
-
-Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
-
-| Action | CLI | Messaging platforms |
-|---------|-----|---------------------|
-| Start chatting | `hermes` | Run `hermes gateway setup` + `hermes gateway start`, then send the bot a message |
-| Start fresh conversation | `/new` or `/reset` | `/new` or `/reset` |
-| Change model | `/model [provider:model]` | `/model [provider:model]` |
-| Set a personality | `/personality [name]` | `/personality [name]` |
-| Retry or undo the last turn | `/retry`, `/undo` | `/retry`, `/undo` |
-| Compress context / check usage | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]` |
-| Browse skills | `/skills` or `/<skill-name>` | `/<skill-name>` |
-| Interrupt current work | `Ctrl+C` or send a new message | `/stop` or send a new message |
-| Platform-specific status | `/platforms` | `/status`, `/sethome` |
-
-For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
-
----
-
-## Documentation
-
-All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
-
-| Section | What's Covered |
-|---------|---------------|
-| [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart) | Install → setup → first conversation in 2 minutes |
-| [CLI Usage](https://hermes-agent.nousresearch.com/docs/user-guide/cli) | Commands, keybindings, personalities, sessions |
-| [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration) | Config file, providers, models, all options |
-| [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging) | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant |
-| [Security](https://hermes-agent.nousresearch.com/docs/user-guide/security) | Command approval, DM pairing, container isolation |
-| [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools) | 40+ tools, toolset system, terminal backends |
-| [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills) | Procedural memory, Skills Hub, creating skills |
-| [Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory) | Persistent memory, user profiles, best practices |
-| [MCP Integration](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | Connect any MCP server for extended capabilities |
-| [Cron Scheduling](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron) | Scheduled tasks with platform delivery |
-| [Context Files](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files) | Project context that shapes every conversation |
-| [Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture) | Project structure, agent loop, key classes |
-| [Contributing](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) | Development setup, PR process, code style |
-| [CLI Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands) | All commands and flags |
-| [Environment Variables](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Complete env var reference |
-
----
-
-## Migrating from OpenClaw
-
-If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.
-
-**During first-time setup:** The setup wizard (`hermes setup`) automatically detects `~/.openclaw` and offers to migrate before configuration begins.
-
-**Anytime after install:**
-
-```bash
-hermes claw migrate              # Interactive migration (full preset)
-hermes claw migrate --dry-run    # Preview what would be migrated
-hermes claw migrate --preset user-data   # Migrate without secrets
-hermes claw migrate --overwrite  # Overwrite existing conflicts
-```
-
-What gets imported:
-- **SOUL.md** — persona file
-- **Memories** — MEMORY.md and USER.md entries
-- **Skills** — user-created skills → `~/.hermes/skills/openclaw-imports/`
-- **Command allowlist** — approval patterns
-- **Messaging settings** — platform configs, allowed users, working directory
-- **API keys** — allowlisted secrets (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs)
-- **TTS assets** — workspace audio files
-- **Workspace instructions** — AGENTS.md (with `--workspace-target`)
-
-See `hermes claw migrate --help` for all options, or use the `openclaw-migration` skill for an interactive agent-guided migration with dry-run previews.
-
----
-
-## Contributing
-
-We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
-
-Quick start for contributors — clone and go with `setup-hermes.sh`:
-
-```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-./setup-hermes.sh     # installs uv, creates venv, installs .[all], symlinks ~/.local/bin/hermes
-./hermes              # auto-detects the venv, no need to `source` first
-```
-
-Manual path (equivalent to the above):
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv .venv --python 3.11
-source .venv/bin/activate
-uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
-```
-
----
-
-## Community
-
-- 💬 [Discord](https://discord.gg/NousResearch)
-- 📚 [Skills Hub](https://agentskills.io)
-- 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
-- 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
-- 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
-
----
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-Built by [Nous Research](https://nousresearch.com).
+- **基础**：Hermes 0.14.0 (Python, asyncio)
+- **状态**：SQLite (WAL mode)
+- **启动**：monkey-patch GatewayRunner.start()
+- **轮询**：30s 循环，各状态不同 tick 频率
+- **昼夜**：北京时间，自动切换
