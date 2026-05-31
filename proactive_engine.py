@@ -102,10 +102,12 @@ class ProactiveEngineV3:
 
         # ── 第三层：高层自我 ────────────────────────────────
         self.narrative_self = NarrativeSelf(            # 自传自我
-            self.emotion_memory, self.personality, None)
+            self.emotion_memory, self.personality, None,
+            db_path=db_path)
         self.metacognition = Metacognition(             # 元认知
             self.hormone, self.desire_manager,
-            self.emotion_memory, self.dream_engine)
+            self.emotion_memory, self.dream_engine,
+            db_path=db_path)
 
     # ── 时钟与状态 ───────────────────────────────────────────────
 

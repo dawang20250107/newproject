@@ -15,12 +15,9 @@ from datetime import datetime, timezone
 from typing import Optional
 
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dawang_state.db")
-
-
-def _get_connection() -> sqlite3.Connection:
+def _get_connection(db_path: str) -> sqlite3.Connection:
     """获取 SQLite 连接，并确保 meta_state 表存在。"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """
@@ -42,14 +39,16 @@ class Metacognition:
     # 初始化
     # ──────────────────────────────────────────
 
-    def __init__(self, hormone_system, desire_manager, emotion_memory, dream_engine):
+    def __init__(self, hormone_system, desire_manager, emotion_memory, dream_engine, db_path: str = None):
         """
         Args:
             hormone_system:   激素/情绪系统实例（需提供 get_mood_description() 方法）
             desire_manager:   欲望管理器实例
             emotion_memory:   情绪记忆实例
             dream_engine:     梦境引擎实例
+            db_path:          SQLite 数据库路径（默认：mind.db 在同一目录）
         """
+        self.db_path = db_path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "mind.db")
         self._hormone = hormone_system
         self._desire = desire_manager
         self._emotion_memory = emotion_memory
@@ -72,7 +71,7 @@ class Metacognition:
 
     def _save(self, key: str, value: str) -> None:
         """将 key-value 写入 meta_state 表。"""
-        conn = _get_connection()
+        conn = _get_connection(self.db_path)
         try:
             conn.execute(
                 """
@@ -90,7 +89,7 @@ class Metacognition:
 
     def _load(self, key: str) -> Optional[str]:
         """从 meta_state 表读取指定 key 的值，不存在时返回 None。"""
-        conn = _get_connection()
+        conn = _get_connection(self.db_path)
         try:
             row = conn.execute(
                 "SELECT value FROM meta_state WHERE key = ?", (key,)

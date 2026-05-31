@@ -21,16 +21,13 @@ from datetime import datetime, timedelta, date
 from typing import Optional, List, Tuple, Dict, Any
 
 
-# ─── 数据库路径 ───────────────────────────────────────────────────────────────
-DB_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(DB_DIR, "narrative_self.db")
-
-
 # ─── 数据库初始化 ─────────────────────────────────────────────────────────────
 
-def _get_connection() -> sqlite3.Connection:
+def _get_connection(db_path: str = None) -> sqlite3.Connection:
     """获取数据库连接（每次调用新建，线程安全）"""
-    conn = sqlite3.connect(DB_PATH)
+    if db_path is None:
+        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mind.db")
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -109,7 +106,7 @@ class NarrativeSelf:
     - 每周生成成长洞察
     """
 
-    def __init__(self, emotion_memory=None, personality=None, metacognition=None):
+    def __init__(self, emotion_memory=None, personality=None, metacognition=None, db_path: str = None):
         """
         初始化叙事自我系统。
 
@@ -117,17 +114,18 @@ class NarrativeSelf:
             emotion_memory: 情感记忆系统实例（可选）
             personality: 人格系统实例（可选）
             metacognition: 元认知系统实例（可选）
+            db_path: 数据库路径（可选，默认使用 mind.db）
         """
+        self.db_path = db_path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "mind.db")
         self._emotion_memory = emotion_memory
         self._personality = personality
         self._metacognition = metacognition
 
         # 确保数据库已初始化
-        init_db()
-
-        # 如果没有章节，创建第一个章节
-        conn = _get_connection()
+        conn = _get_connection(self.db_path)
         try:
+            init_db(conn)
+            # 如果没有章节，创建第一个章节
             count = conn.execute("SELECT COUNT(*) FROM chapters").fetchone()[0]
             if count == 0:
                 now = datetime.utcnow()
@@ -143,7 +141,7 @@ class NarrativeSelf:
 
     def _get_conn(self) -> sqlite3.Connection:
         """获取新连接"""
-        conn = _get_connection()
+        conn = _get_connection(self.db_path)
         # 确保表存在
         init_db(conn)
         return conn

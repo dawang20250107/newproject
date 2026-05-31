@@ -21,9 +21,10 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aesthetic_se
 class AestheticSense:
     """审美感知系统——品味从反馈中长出来。"""
 
-    def __init__(self, personality: str = "default"):
-        self.personality = personality
-        self._conn = sqlite3.connect(DB_PATH)
+    def __init__(self, personality=None, db_path: str = None):
+        self.personality = personality or "default"
+        db = db_path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "mind.db")
+        self._conn = sqlite3.connect(db)
         self._conn.row_factory = sqlite3.Row
         self._init_db()
         self._seed_defaults()
