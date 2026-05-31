@@ -8,6 +8,7 @@ import AiAnalysisModal from '../../components/caiwu/AiAnalysisModal.vue'
 import api from '../../api/caiwu.js'
 import { fmtCompact } from '../../utils/format.js'
 import { downloadBlob } from '../../utils/download.js'
+import { streamAiAnalysis } from '../../utils/aiStream.js'
 import EmptyState from '../../components/EmptyState.vue'
 
 const auth = useCaiwuAuth()
@@ -100,16 +101,18 @@ function viewAnalysis() {
 async function runAiAnalysis() {
   aiLoading.value = true
   aiErr.value = ''
+  aiText.value = ''
   aiVisible.value = true
   try {
-    const res = await api.post('/report/ai-analysis', {
-      year: year.value,
-      month: month.value,
-      bus: aiScope.value,
-    })
-    aiText.value = res.data?.analysis || res.analysis || ''
+    // 流式逐字返回（报表用快模型，基本秒开逐字）。
+    await streamAiAnalysis('/report/ai-analysis/stream',
+      { year: year.value, month: month.value, bus: aiScope.value },
+      {
+        onAnswer: d => { aiText.value += d },
+        onError: m => { aiErr.value = m },
+      })
   } catch (e) {
-    aiErr.value = e?.error || 'AI 分析失败'
+    if (!aiErr.value) aiErr.value = e?.message || 'AI 分析失败'
   } finally {
     aiLoading.value = false
   }

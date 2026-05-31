@@ -7,6 +7,7 @@ import AiAnalysisModal from '../../components/caiwu/AiAnalysisModal.vue'
 import api from '../../api/caiwu.js'
 import { fmtCompact } from '../../utils/format.js'
 import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney } from '../../utils/chartTheme.js'
+import { streamAiAnalysis } from '../../utils/aiStream.js'
 import EmptyState from '../../components/EmptyState.vue'
 
 const auth = useCaiwuAuth()
@@ -71,39 +72,11 @@ async function runAiAnalysis() {
   try {
     const body = { year: year.value, month: month.value }
     if (selectedBu.value) body.bu = selectedBu.value
-    const token = localStorage.getItem('pk_token')
-    // SSE 流式：推理与正文逐字推送，秒级看到进度。用 fetch 读 ReadableStream。
-    const resp = await fetch('/api/cw/cockpit/ai-analysis/stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify(body),
+    await streamAiAnalysis('/cockpit/ai-analysis/stream', body, {
+      onReasoning: d => { aiReasoning.value += d },
+      onAnswer: d => { aiText.value += d },
+      onError: m => { aiErr.value = m },
     })
-    if (!resp.ok || !resp.body) {
-      let msg = `AI 分析失败（${resp.status}）`
-      try { const j = await resp.json(); msg = j.error || j.msg || msg } catch { /* not json */ }
-      throw new Error(msg)
-    }
-    const reader = resp.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      let nl
-      while ((nl = buf.indexOf('\n\n')) >= 0) {
-        const frame = buf.slice(0, nl).trim()
-        buf = buf.slice(nl + 2)
-        if (!frame.startsWith('data:')) continue
-        const payload = frame.slice(5).trim()
-        if (!payload) continue
-        let evt
-        try { evt = JSON.parse(payload) } catch { continue }
-        if (evt.type === 'reasoning') aiReasoning.value += evt.delta
-        else if (evt.type === 'answer') aiText.value += evt.delta
-        else if (evt.type === 'error') aiErr.value = evt.error || 'AI 分析失败'
-      }
-    }
   } catch (e) {
     if (!aiErr.value) aiErr.value = e?.message || 'AI 分析失败'
   } finally {

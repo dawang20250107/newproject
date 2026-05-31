@@ -2613,17 +2613,16 @@ def _fmt_wan(v):
     return f'{sign}{abs_v:.2f}元'
 
 
-@csrf_exempt
-@cw_required()
-def report_ai_analysis(request):
-    """POST /report/ai-analysis
-    Body: {year, month, bu?, rows: [{l1_name, amount}], prev_kpis: {}}
-    Returns AI financial analysis text.
-    """
-    if request.method != 'POST':
-        return err('方法不允许', 405)
+_REPORT_AI_SYSTEM = '你是一位专业的企业财务分析师，擅长财务报表解读和经营决策分析，用中文回答。'
+
+
+def _report_ai_prepare(request):
+    """Shared validation + prompt build for the report AI endpoints.
+    Returns (messages, None) on success or (None, err_response).
+
+    Body: {year, month, bu? | bus?}"""
     if not settings.DEEPSEEK_API_KEY:
-        return err('AI 分析未配置（缺少 DEEPSEEK_API_KEY）', 503)
+        return None, err('AI 分析未配置（缺少 DEEPSEEK_API_KEY）', 503)
 
     body = _parse_json(request)
     try:
@@ -2631,7 +2630,7 @@ def report_ai_analysis(request):
         month = int(body.get('month'))
         assert 2000 <= year <= 2100 and 1 <= month <= 12
     except Exception:
-        return err('年份或月份无效')
+        return None, err('年份或月份无效')
 
     # Resolve BU scope from request, clamped to what this user may access.
     if request.pk_role == 'super_admin':
@@ -2643,14 +2642,14 @@ def report_ai_analysis(request):
     req_bus = body.get('bus') or []
     if single_bu:
         if single_bu not in accessible:
-            return err('无权访问该事业部', 403)
+            return None, err('无权访问该事业部', 403)
         bu_list = [single_bu]
         bu = single_bu
         bu_scope = ''
     elif req_bus:
         bu_list = [b for b in req_bus if b in accessible]
         if not bu_list:
-            return err('无权访问所选事业部', 403)
+            return None, err('无权访问所选事业部', 403)
         bu = '全集团' if len(bu_list) > 1 else bu_list[0]
         bu_scope = 'all' if len(bu_list) > 1 else ''
     else:
@@ -2661,7 +2660,7 @@ def report_ai_analysis(request):
     # Aggregate report data server-side (single source of truth).
     rows = _aggregate_report(_get_published_batches(bu_list, year, month), 1)
     if not rows:
-        return err(f'{year}年{month}月该范围内暂无已发布数据，无法进行AI分析')
+        return None, err(f'{year}年{month}月该范围内暂无已发布数据，无法进行AI分析')
 
     prev_month = month - 1 if month > 1 else 12
     prev_year = year if month > 1 else year - 1
@@ -2712,15 +2711,54 @@ def report_ai_analysis(request):
 
 要求：语言简明专业，适合集团领导决策参考，不超过600字。"""
 
+    messages = [
+        {'role': 'system', 'content': _REPORT_AI_SYSTEM},
+        {'role': 'user', 'content': prompt},
+    ]
+    return messages, None
+
+
+@csrf_exempt
+@cw_required()
+def report_ai_analysis(request):
+    """POST /report/ai-analysis — 单期财务分析（一次性返回）。"""
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    messages, e = _report_ai_prepare(request)
+    if e:
+        return e
     try:
-        text = _deepseek_chat([
-            {'role': 'system', 'content': '你是一位专业的企业财务分析师，擅长财务报表解读和经营决策分析，用中文回答。'},
-            {'role': 'user', 'content': prompt},
-        ])
+        text = _deepseek_chat(messages)
         return ok({'analysis': text})
-    except Exception as e:
-        logger.error(f'DeepSeek AI error: {e}')
-        return err(f'AI分析服务暂时不可用，请稍后重试（{str(e)[:80]}）', 503)
+    except Exception as ex:
+        logger.error(f'DeepSeek AI error: {ex}')
+        return err(f'AI分析服务暂时不可用，请稍后重试（{str(ex)[:80]}）', 503)
+
+
+@csrf_exempt
+@cw_required()
+def report_ai_analysis_stream(request):
+    """POST /report/ai-analysis/stream — 单期财务分析，SSE 流式逐字推送。"""
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    messages, e = _report_ai_prepare(request)
+    if e:
+        return e
+
+    def gen():
+        yield _sse_event({'type': 'meta'})
+        try:
+            for kind, delta in _deepseek_stream(messages):
+                yield _sse_event({'type': kind, 'delta': delta})
+            yield _sse_event({'type': 'done'})
+        except Exception as ex:
+            logger.error(f'DeepSeek AI stream error: {ex}')
+            yield _sse_event({'type': 'error', 'error': f'AI分析服务暂时不可用（{str(ex)[:80]}）'})
+
+    resp = StreamingHttpResponse(gen(), content_type='text/event-stream')
+    resp['Cache-Control'] = 'no-cache'
+    resp['X-Accel-Buffering'] = 'no'
+    return resp
 
 
 @csrf_exempt
