@@ -2166,6 +2166,126 @@ def cockpit(request):
     })
 
 
+def _fmt_rate(v):
+    return '—' if v is None else f'{v:.1f}%'
+
+
+def _fmt_signed_pct(v):
+    return '—' if v is None else f'{"+" if v >= 0 else ""}{v:.1f}%'
+
+
+def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
+    """Compose the group-level cockpit analysis prompt from consolidated +
+    per-BU metrics and the 12-month group trend."""
+    L = []
+    L.append('【全集团合并概览】')
+    L.append(f'  当月收入：{_fmt_wan(ov_m["actual_revenue"])}'
+             f'（达成率{_fmt_rate(ov_m["revenue_rate"])}，环比{_fmt_signed_pct(ov_m.get("revenue_mom"))}，'
+             f'同比{_fmt_signed_pct(ov_m.get("revenue_yoy"))}）')
+    L.append(f'  当月利润：{_fmt_wan(ov_m["actual_profit"])}'
+             f'（达成率{_fmt_rate(ov_m["profit_rate"])}，环比{_fmt_signed_pct(ov_m.get("profit_mom"))}，'
+             f'同比{_fmt_signed_pct(ov_m.get("profit_yoy"))}）')
+    L.append(f'  年度累计收入：{_fmt_wan(ov_y["actual_revenue"])}（年度目标达成率{_fmt_rate(ov_y["revenue_rate"])}）')
+    L.append(f'  年度累计利润：{_fmt_wan(ov_y["actual_profit"])}（年度目标达成率{_fmt_rate(ov_y["profit_rate"])}）')
+
+    L.append('')
+    L.append('【各事业部表现（当月 / 年度累计）】')
+    shown = 0
+    for r in bu_rows:
+        m, y = r['month'], r['ytd']
+        # Skip BUs with no published actuals at all — keeps the prompt focused.
+        if m['actual_revenue'] is None and m['actual_profit'] is None \
+                and y['actual_revenue'] is None and y['actual_profit'] is None:
+            continue
+        shown += 1
+        L.append(
+            f'  {r["business_unit"]}：'
+            f'当月收入{_fmt_wan(m["actual_revenue"])}(达成{_fmt_rate(m["revenue_rate"])}，'
+            f'环比{_fmt_signed_pct(m.get("revenue_mom"))}，同比{_fmt_signed_pct(m.get("revenue_yoy"))})；'
+            f'当月利润{_fmt_wan(m["actual_profit"])}(达成{_fmt_rate(m["profit_rate"])})；'
+            f'YTD收入{_fmt_wan(y["actual_revenue"])}(达成{_fmt_rate(y["revenue_rate"])})，'
+            f'YTD利润{_fmt_wan(y["actual_profit"])}(达成{_fmt_rate(y["profit_rate"])})'
+        )
+    if shown == 0:
+        L.append('  （所选范围内各事业部均无已发布数据）')
+
+    L.append('')
+    L.append('【近12个月全集团趋势（实际收入/实际利润）】')
+    tr = []
+    for mo in range(1, 13):
+        rev_a, prof_a = _period_group(actuals, bus, year, mo)
+        if rev_a is None and prof_a is None:
+            continue
+        tr.append(f'{mo}月:收入{_fmt_wan(rev_a)}/利润{_fmt_wan(prof_a)}')
+    L.append('  ' + ('；'.join(tr) if tr else '无'))
+
+    return f"""你正在为集团管理层解读 {year}年{month}月 的「财务驾驶舱」。以下是全集团及各事业部的经营数据（口径：已发布部门明细表，收入=主营业务收入，利润=经营净利；集团总部为成本中心，本身无收入）。
+
+{chr(10).join(L)}
+
+请站在全集团高度，输出一份综合、全面的经营分析报告，包含：
+
+1. **集团经营总览**：本月与年度累计的整体经营态势——收入/利润规模、目标达成进度、环比同比趋势的综合研判。
+2. **事业部横向对比**：识别领跑与掉队的事业部，分析达成率分化与利润贡献结构，指出谁是增长引擎、谁在拖累集团。
+3. **目标达成与缺口**：结合当前节奏研判全年能否达标，量化关键缺口与达成压力最大的事业部。
+4. **风险预警**：亏损或利润大幅下滑的事业部、异常波动、成本/费用异常、过度依赖单一事业部等系统性风险。
+5. **战略与资源配置建议**：3-5条面向集团决策的具体建议（资源倾斜、整改重点、目标校准等）。
+
+要求：专业、有数据支撑、有洞察，避免空话套话；分点清晰，适合集团领导决策参考，篇幅 800-1200 字。"""
+
+
+@csrf_exempt
+@cw_required()
+def cockpit_ai_analysis(request):
+    """POST /cockpit/ai-analysis — 全集团高度的综合经营分析（使用更强的 PRO 模型）。"""
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    denied = _page_denied(request, 'cockpit')
+    if denied:
+        return denied
+    if not settings.DEEPSEEK_API_KEY:
+        return err('AI 分析未配置（缺少 DEEPSEEK_API_KEY）', 503)
+
+    body = _parse_json(request)
+    try:
+        year = int(body.get('year'))
+        month = int(body.get('month'))
+        assert 2000 <= year <= 2100 and 1 <= month <= 12
+    except Exception:
+        return err('年份或月份无效')
+
+    bus, e = _resolve_bu_list(request, (body.get('bu') or '').strip())
+    if e:
+        return e
+
+    tgt_index = _load_target_index(bus, year)
+    actuals = _collect_actuals(bus, {year, year - 1})
+    bu_rows = [_bu_metrics(bu, year, month, tgt_index, actuals) for bu in bus]
+    if not any(b['month']['actual_revenue'] is not None or b['ytd']['actual_revenue'] is not None
+               for b in bu_rows):
+        return err(f'{year}年{month}月该范围内暂无已发布数据，无法进行AI分析')
+
+    ov_m = _attach_group_chg(_aggregate_total(bu_rows, 'month'), bus, year, month, actuals)
+    ov_y = _aggregate_total(bu_rows, 'ytd')
+    prompt = _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals)
+
+    try:
+        text = _deepseek_chat(
+            [
+                {'role': 'system', 'content':
+                    '你是集团CFO级别的资深财务与经营分析专家，擅长从全集团高度做综合诊断、'
+                    '事业部横向对比与战略建议，用中文专业作答。'},
+                {'role': 'user', 'content': prompt},
+            ],
+            timeout=180, model=settings.DEEPSEEK_PRO_MODEL, max_tokens=3200,
+        )
+        scope = '全集团' if len(bus) > 1 else (bus[0] if bus else '全集团')
+        return ok({'analysis': text, 'model': settings.DEEPSEEK_PRO_MODEL, 'scope': scope})
+    except Exception as ex:
+        logger.error(f'Cockpit AI error: {ex}')
+        return err(f'AI分析服务暂时不可用，请稍后重试（{str(ex)[:80]}）', 503)
+
+
 # ── charts ───────────────────────────────────────────────────────────────────
 
 @cw_required()
@@ -2354,8 +2474,12 @@ def chart_waterfall(request):
 
 # ── AI analysis (DeepSeek) ───────────────────────────────────────────────────
 
-def _deepseek_chat(messages, timeout=90):
-    """Call DeepSeek chat completion API. Returns response text or raises."""
+def _deepseek_chat(messages, timeout=90, model=None, max_tokens=1800):
+    """Call DeepSeek chat completion API. Returns response text or raises.
+
+    `model` overrides settings.DEEPSEEK_MODEL — used by the cockpit's group-level
+    analysis to invoke the stronger DEEPSEEK_PRO_MODEL with a larger token budget.
+    """
     import requests as req_lib
     resp = req_lib.post(
         f'{settings.DEEPSEEK_BASE_URL}/chat/completions',
@@ -2364,10 +2488,10 @@ def _deepseek_chat(messages, timeout=90):
             'Content-Type': 'application/json',
         },
         json={
-            'model': settings.DEEPSEEK_MODEL,
+            'model': model or settings.DEEPSEEK_MODEL,
             'messages': messages,
             'temperature': 0.3,
-            'max_tokens': 1800,
+            'max_tokens': max_tokens,
         },
         timeout=timeout,
     )

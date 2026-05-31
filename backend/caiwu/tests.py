@@ -492,3 +492,41 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.assertAlmostEqual(data['overview']['month']['revenue_rate'], 80.0)
         # MoM/YoY 键应始终存在（无对比期时为 None）
         self.assertIn('revenue_mom', data['overview']['month'])
+
+    # ── 驾驶舱全局 AI 分析（mock 掉外部模型调用）─────────────────────────────
+    def test_cockpit_ai_uses_pro_model_and_group_scope(self):
+        from unittest import mock
+        from django.conf import settings
+        self.mk(2026, 5, 200, 130)
+        captured = {}
+
+        def fake_chat(messages, timeout=90, model=None, max_tokens=1800):
+            captured['model'] = model
+            captured['max_tokens'] = max_tokens
+            captured['prompt'] = messages[-1]['content']
+            return '【模拟分析】全集团经营稳健。'
+
+        with mock.patch('caiwu.views._deepseek_chat', fake_chat):
+            resp = self.client.post(
+                '/api/cw/cockpit/ai-analysis',
+                data=json.dumps({'year': 2026, 'month': 5}),
+                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, self.jj(resp))
+        data = self.jj(resp)['data']
+        self.assertEqual(data['model'], settings.DEEPSEEK_PRO_MODEL)
+        self.assertEqual(data['scope'], '全集团')
+        self.assertIn('analysis', data)
+        # 用更强模型 + 更大 token 预算，提示词带全集团口径
+        self.assertEqual(captured['model'], settings.DEEPSEEK_PRO_MODEL)
+        self.assertGreaterEqual(captured['max_tokens'], 3000)
+        self.assertIn('全集团', captured['prompt'])
+
+    def test_cockpit_ai_no_data_returns_error(self):
+        from unittest import mock
+        with mock.patch('caiwu.views._deepseek_chat') as m:
+            resp = self.client.post(
+                '/api/cw/cockpit/ai-analysis',
+                data=json.dumps({'year': 2026, 'month': 7}),
+                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400, self.jj(resp))
+        m.assert_not_called()   # 无数据时不应调用外部模型

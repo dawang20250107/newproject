@@ -13,6 +13,9 @@ JWT_SECRET = os.environ.get('JWT_SECRET', _DEV_JWT_SECRET)
 # DeepSeek AI API (stored via env var; fallback for dev only)
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', 'sk-d7721aa1a60b4a7c9b93181e9cfe7cfc')
 DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
+# 更强的模型，用于「财务驾驶舱」全集团高度的综合分析（推理量更大）。
+# 生产可经环境变量切到 V4 Pro 等更强模型，如 DEEPSEEK_PRO_MODEL=deepseek-reasoner。
+DEEPSEEK_PRO_MODEL = os.environ.get('DEEPSEEK_PRO_MODEL', 'deepseek-reasoner')
 DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1'
 
 if SECRET_KEY == _DEV_SECRET_KEY or JWT_SECRET == _DEV_JWT_SECRET:

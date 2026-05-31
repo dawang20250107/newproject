@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, monthCST } from '../../constants.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
+import AiAnalysisModal from '../../components/caiwu/AiAnalysisModal.vue'
 import api from '../../api/caiwu.js'
 import { fmtCompact } from '../../utils/format.js'
 import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney } from '../../utils/chartTheme.js'
@@ -18,6 +19,12 @@ const loading = ref(false)
 const loadErr = ref('')
 const data = ref(null)
 
+// ── AI 全局分析 ───────────────────────────────────────────
+const aiText = ref('')
+const aiLoading = ref(false)
+const aiErr = ref('')
+const aiVisible = ref(false)
+
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
@@ -32,6 +39,8 @@ const wan = (v) => (v == null ? '—' : (v / 10000).toFixed(0) + '万')
 async function load() {
   loading.value = true
   loadErr.value = ''
+  aiText.value = ''
+  aiVisible.value = false
   try {
     const params = { year: year.value, month: month.value }
     if (selectedBu.value) params.bu = selectedBu.value
@@ -41,6 +50,30 @@ async function load() {
     loadErr.value = e?.error || '加载失败'
   } finally {
     loading.value = false
+  }
+}
+
+const aiScopeLabel = computed(() =>
+  `${selectedBu.value || '全集团'} · ${year.value}年${month.value}月`
+)
+const hasAnalysis = computed(() => !!aiText.value && !aiErr.value)
+
+function viewAnalysis() { aiVisible.value = true }
+
+async function runAiAnalysis() {
+  aiLoading.value = true
+  aiErr.value = ''
+  aiVisible.value = true
+  try {
+    const body = { year: year.value, month: month.value }
+    if (selectedBu.value) body.bu = selectedBu.value
+    // 全集团综合分析使用更强的推理模型，耗时较长 —— 放宽超时到 3 分钟。
+    const res = await api.post('/cockpit/ai-analysis', body, { timeout: 180000 })
+    aiText.value = res.data?.analysis || res.analysis || ''
+  } catch (e) {
+    aiErr.value = e?.error || e?.msg || 'AI 分析失败'
+  } finally {
+    aiLoading.value = false
   }
 }
 
@@ -200,6 +233,23 @@ onMounted(load)
         </div>
       </div>
 
+      <!-- ── AI 全局分析 ─────────────────────────────────────────────────────── -->
+      <div class="card ai-bar">
+        <div class="ai-bar-left">
+          <span class="ai-bar-orb">🧭</span>
+          <div>
+            <div class="ai-bar-title">AI 全局经营分析 <span class="ai-pro-tag">PRO</span></div>
+            <div class="ai-bar-scope">站在全集团高度的综合诊断 · {{ aiScopeLabel }}</div>
+          </div>
+        </div>
+        <div class="ai-bar-actions">
+          <button v-if="hasAnalysis" class="btn btn-ghost btn-sm" @click="viewAnalysis">📄 查看分析</button>
+          <button class="btn btn-primary btn-sm" :disabled="aiLoading || !hasData" @click="runAiAnalysis">
+            {{ aiLoading ? '深度分析中…' : (hasAnalysis ? '↻ 重新分析' : '✨ 生成全局分析') }}
+          </button>
+        </div>
+      </div>
+
       <!-- ── trend charts ───────────────────────────────────────────────────── -->
       <div class="chart-grid">
         <div class="card">
@@ -225,6 +275,17 @@ onMounted(load)
       </div>
       </div>
     </template>
+
+    <AiAnalysisModal
+      :visible="aiVisible"
+      :loading="aiLoading"
+      :text="aiText"
+      :error="aiErr"
+      title="AI 全局经营分析"
+      :subtitle="aiScopeLabel"
+      @close="aiVisible = false"
+      @reanalyze="runAiAnalysis"
+    />
   </div>
 </template>
 
@@ -253,4 +314,29 @@ onMounted(load)
   display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px;
 }
 @media (max-width: 900px) { .chart-grid { grid-template-columns: 1fr; } }
+
+/* ── AI bar ───────────────────────────────────────────────────────────────── */
+.ai-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px; padding: 14px 18px; margin-top: 16px;
+  background: linear-gradient(120deg, rgba(201,99,66,0.06), rgba(122,159,212,0.06));
+  border: 1px solid rgba(201,99,66,0.16);
+}
+.ai-bar-left { display: flex; align-items: center; gap: 12px; }
+.ai-bar-orb {
+  font-size: 22px; filter: drop-shadow(0 0 6px rgba(201,99,66,0.45));
+  animation: aiOrbPulse 3s ease-in-out infinite;
+}
+@keyframes aiOrbPulse {
+  0%, 100% { transform: scale(1) rotate(0deg); }
+  50% { transform: scale(1.12) rotate(-8deg); }
+}
+.ai-bar-title { font-size: 14px; font-weight: 800; color: var(--text); display: flex; align-items: center; gap: 6px; }
+.ai-pro-tag {
+  font-size: 10px; font-weight: 800; letter-spacing: .05em;
+  padding: 1px 6px; border-radius: 6px; color: #fff;
+  background: linear-gradient(135deg, #c96342, #e8855a);
+}
+.ai-bar-scope { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.ai-bar-actions { display: flex; gap: 8px; }
 </style>

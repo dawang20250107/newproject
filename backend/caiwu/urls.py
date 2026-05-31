@@ -38,6 +38,7 @@ urlpatterns = [
     path('targets', views.targets),
     path('metrics', views.metrics),
     path('cockpit', views.cockpit),
+    path('cockpit/ai-analysis', views.cockpit_ai_analysis),
 
     # report
     path('report', views.report),
