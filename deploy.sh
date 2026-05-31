@@ -26,7 +26,7 @@ pip install -q --upgrade pip
 pip install -q -r requirements.txt 2>/dev/null || pip install -q aiohttp pyyaml
 
 # 2. 验证子系统
-echo "🧪 验证 6 个子系统..."
+echo "🧪 验证 10 个子系统..."
 python3 -c "
 import sys
 sys.path.insert(0, '$APP_DIR')
@@ -36,14 +36,18 @@ from dream_engine import DreamEngine
 from metacognition import Metacognition
 from emotion_memory import EmotionMemory
 from personality import Personality
-print('✅ 6 个子系统全部加载成功')
+from narrative_self import NarrativeSelf
+from theory_of_mind import TheoryOfMind
+from aesthetic_sense import AestheticSense
+from value_compass import ValueCompass
+from proactive_engine import ProactiveEngineV3
+print('✅ 全部 10 个子系统加载成功')
 h = HormoneSystem()
 print(f'   Hormone: {len(h.get_profile())} 种激素')
 d = DesireManager()
 print(f'   Desires: {len(d.get_all())} 个欲望')
-dm = DesireManager()
 em = EmotionMemory()
-print(f'   Memories: {em.count()} 条记忆')
+print(f'   Memories: {em.count()} 条')
 print(f'   Mood: {em.get_mood()}')
 "
 
