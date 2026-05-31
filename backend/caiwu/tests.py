@@ -225,6 +225,39 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(factor_delta, current_total - base_total)
         self.assertEqual(waterfall_delta, current_total - base_total)
 
+    def test_waterfall_bridge_closes_when_current_period_is_a_loss(self):
+        # Regression: loss period (negative terminal). The terminal bar is drawn
+        # 0→value (below the axis); the last decrease factor must land exactly on
+        # it, i.e. base + Σ(waterfall factor bars) == current total — no floating gap.
+        self.create_batch(year=2026, month=4, amounts=BASE_AMOUNTS)
+        loss_amounts = dict(BASE_AMOUNTS, **{REV: '100.00', COST: '900.00'})
+        self.create_batch(year=2026, month=5, amounts=loss_amounts)
+
+        resp = self.client.get(
+            '/api/cw/charts/waterfall',
+            {'bu': self.bu, 'year': 2026, 'month': 5,
+             'compare_year': 2026, 'compare_month': 4},
+            **self.auth(),
+        )
+        payload = self.response_json(resp)
+        self.assertEqual(resp.status_code, 200, payload)
+        data = payload['data']
+
+        base_total = Decimal(str(data['base_period']['total']))
+        current_total = Decimal(str(data['current_period']['total']))
+        self.assertLess(current_total, 0)  # genuine loss
+
+        bars = data['waterfall']
+        self.assertEqual(bars[0]['type'], 'base')
+        self.assertEqual(bars[-1]['type'], 'total')
+        factor_sum = sum(
+            Decimal(str(b['value'])) for b in bars
+            if b['type'] in ('increase', 'decrease')
+        )
+        # Bridge closes: terminal value is reached exactly by the cumulative.
+        self.assertEqual(base_total + factor_sum, current_total)
+        self.assertEqual(Decimal(str(bars[-1]['value'])), current_total)
+
     def test_closed_period_ledger_parser_excludes_carry_forward_and_summary_rows(self):
         wb = Workbook()
         ws = wb.active

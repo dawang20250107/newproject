@@ -1918,7 +1918,9 @@ def chart_waterfall(request):
     curr_name_map, curr_id_map = _get_l1_totals(year, month)
 
     def _safe_sum(id_map, cats):
-        return sum(id_map.get(l1.id, 0) or 0 for l1 in cats if not l1.is_calculated)
+        # Signed sum of raw rows == 经营净利 by construction (revenue +1, cost -1).
+        # Must apply sign, else costs would add to (instead of subtract from) profit.
+        return sum((id_map.get(l1.id, 0) or 0) * l1.sign for l1 in cats if not l1.is_calculated)
 
     # Headline profit = 经营净利 if available; otherwise sum raw entries
     base_total = base_name_map.get('经营净利') if '经营净利' in base_name_map else _safe_sum(base_id_map, l1_cats)
@@ -1957,6 +1959,18 @@ def chart_waterfall(request):
                 'value': f['delta'],
                 'type': 'increase' if f['delta'] >= 0 else 'decrease',
             })
+    # Close the bridge: the headline total (经营净利) is a calculated row, while the
+    # factor bars are signed deltas of the raw rows. With the standard taxonomy these
+    # reconcile exactly, but stray raw categories outside 经营净利's formula leave a
+    # residual — surface it as an explicit factor so base + Σfactors == current and the
+    # last bar always lands on the terminal column instead of floating short of it.
+    residual = round((curr_total - base_total) - sum(f['delta'] for f in factors), 2)
+    if abs(residual) >= 0.01:
+        waterfall.append({
+            'name': '其他',
+            'value': residual,
+            'type': 'increase' if residual >= 0 else 'decrease',
+        })
     waterfall.append({'name': f'{year}年{month}月', 'value': round(curr_total, 2), 'type': 'total'})
 
     return ok({
