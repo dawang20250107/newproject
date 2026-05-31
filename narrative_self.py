@@ -27,7 +27,7 @@ def _get_connection(db_path: str = None) -> sqlite3.Connection:
     """获取数据库连接（每次调用新建，线程安全）"""
     if db_path is None:
         db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mind.db")
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

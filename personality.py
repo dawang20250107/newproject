@@ -71,7 +71,7 @@ class Personality:
         :param db_path: SQLite 数据库文件路径
         """
         self.db_path = db_path
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_db()
 

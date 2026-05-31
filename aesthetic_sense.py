@@ -24,7 +24,7 @@ class AestheticSense:
     def __init__(self, personality=None, db_path: str = None):
         self.personality = personality or "default"
         db = db_path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "mind.db")
-        self._conn = sqlite3.connect(db)
+        self._conn = sqlite3.connect(db, timeout=30)
         self._conn.row_factory = sqlite3.Row
         self._init_db()
         self._seed_defaults()

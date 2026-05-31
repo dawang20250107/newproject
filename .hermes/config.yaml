@@ -1,0 +1,2 @@
+provider: deepseek
+default_model: deepseek-v4-flash
