@@ -94,7 +94,10 @@ async function loadTargets() {
   loadingTargets.value = true; loadErr.value = ''
   try {
     const res = await api.get('/targets', { params: { year: targetYear.value } })
-    for (const bu of editBus.value) initBuGrid(bu)
+    // 重置当前可编辑事业部的网格，避免切换年份后残留上一年的数据
+    for (const bu of editBus.value) {
+      editGrid[bu] = { rev: Array(13).fill(''), prof: Array(13).fill(''), gross: Array(13).fill('') }
+    }
     for (const t of (res.data?.targets || [])) {
       const bu = t.business_unit
       if (!editGrid[bu]) initBuGrid(bu)
