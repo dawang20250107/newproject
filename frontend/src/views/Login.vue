@@ -157,34 +157,52 @@ function toggleDept(d) {
       <!-- Branding side (desktop) -->
       <div class="login-brand">
         <div class="brand-icon-lg">
-          <svg width="52" height="52" viewBox="0 0 60 60" fill="none">
-            <circle cx="30" cy="30" r="28" fill="url(#lg1)" opacity="0.92"/>
-            <path d="M20 30h20M30 20v20" stroke="white" stroke-width="4" stroke-linecap="round"/>
+          <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
+            <rect x="3" y="3" width="58" height="58" rx="17" fill="url(#lgK)"/>
+            <rect x="3.5" y="3.5" width="57" height="57" rx="16.5" stroke="#fff" stroke-opacity="0.18"/>
+            <path d="M25 19v26" stroke="#fff" stroke-width="3.8" stroke-linecap="round"/>
+            <path d="M41 19 25 32l16.5 13" stroke="#fff" stroke-width="3.8" stroke-linecap="round" stroke-linejoin="round"/>
             <defs>
-              <linearGradient id="lg1" x1="0" y1="0" x2="60" y2="60">
+              <linearGradient id="lgK" x1="3" y1="3" x2="61" y2="61" gradientUnits="userSpaceOnUse">
                 <stop offset="0%" stop-color="#e8855a"/>
                 <stop offset="100%" stop-color="#c96342"/>
               </linearGradient>
             </defs>
           </svg>
         </div>
-        <h1 class="brand-title">应收应付管理系统</h1>
+        <h1 class="brand-title">KXT 财务系统</h1>
         <p class="brand-sub">精准 · 高效 · 安全</p>
         <div class="brand-features">
           <div class="feature">
             <span class="f-dot"></span>应收应付全流程追踪
           </div>
           <div class="feature">
-            <span class="f-dot"></span>多部门协同管理
+            <span class="f-dot"></span>财务分析与经营驾驶舱
           </div>
           <div class="feature">
-            <span class="f-dot"></span>逾期预警与统计
+            <span class="f-dot"></span>多部门协同 · 权限管控
           </div>
         </div>
       </div>
 
       <!-- Card -->
       <div class="login-card">
+        <!-- mobile-only brand header (brand panel is hidden on small screens) -->
+        <div class="mobile-brand">
+          <svg width="34" height="34" viewBox="0 0 36 36" fill="none">
+            <rect x="1.5" y="1.5" width="33" height="33" rx="10" fill="url(#mbK)"/>
+            <path d="M14 10.5v15" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>
+            <path d="M23 10.5 14 18l9.3 7.5" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+            <defs>
+              <linearGradient id="mbK" x1="1.5" y1="1.5" x2="34.5" y2="34.5" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#e8855a"/>
+                <stop offset="100%" stop-color="#c96342"/>
+              </linearGradient>
+            </defs>
+          </svg>
+          <span class="mobile-brand-name">KXT 财务系统</span>
+        </div>
+
         <!-- pending state (real-time) -->
         <template v-if="mode === 'pending'">
           <!-- waiting for approval -->
@@ -374,16 +392,15 @@ function toggleDept(d) {
   color: #e8d4c4;
 }
 .brand-icon-lg {
-  width: 72px; height: 72px; border-radius: 20px;
-  background: rgba(201,99,66,0.18);
+  width: 64px; height: 64px; border-radius: 17px;
   display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 0 28px rgba(201,99,66,0.25);
+  box-shadow: 0 8px 28px rgba(201,99,66,0.38);
   margin-bottom: 4px;
   animation: iconBreathe 3.4s ease-in-out infinite;
 }
 @keyframes iconBreathe {
-  0%, 100% { box-shadow: 0 0 26px rgba(201,99,66,0.25); transform: scale(1); }
-  50%      { box-shadow: 0 0 40px rgba(232,133,90,0.55); transform: scale(1.05); }
+  0%, 100% { box-shadow: 0 8px 26px rgba(201,99,66,0.35); transform: scale(1); }
+  50%      { box-shadow: 0 10px 44px rgba(232,133,90,0.6); transform: scale(1.05); }
 }
 .brand-title { font-size: 31px; font-weight: 800; color: #fff; line-height: 1.2; white-space: nowrap; letter-spacing: 0.01em; }
 .brand-sub { font-size: 13px; color: rgba(201,99,66,0.9); letter-spacing: 0.2em; font-weight: 600; }
@@ -557,10 +574,20 @@ function toggleDept(d) {
   }
 }
 
-/* responsive: hide brand panel on mobile */
+/* mobile-only brand header inside the card */
+.mobile-brand {
+  display: none;
+  align-items: center; justify-content: center; gap: 10px;
+  margin-bottom: 22px;
+}
+.mobile-brand svg { box-shadow: 0 4px 14px rgba(201,99,66,0.35); border-radius: 10px; }
+.mobile-brand-name { font-size: 18px; font-weight: 800; color: var(--text, #2a2118); letter-spacing: 0.01em; }
+
+/* responsive: hide brand panel on mobile, show compact card brand instead */
 @media (max-width: 640px) {
   .login-brand { display: none; }
-  .login-card { padding: 36px 28px; }
+  .mobile-brand { display: flex; }
+  .login-card { padding: 32px 28px; }
   .login-wrap { max-width: 400px; }
   .lf-row { grid-template-columns: 1fr; }
 }

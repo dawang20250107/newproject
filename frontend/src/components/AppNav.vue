@@ -81,11 +81,13 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
     <!-- Brand -->
     <div class="sidebar-brand">
       <div class="brand-mark">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="12" r="10" fill="url(#navgrad)" opacity="0.9"/>
-          <path d="M8 12h8M12 8v8" stroke="white" stroke-width="2.2" stroke-linecap="round"/>
+        <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+          <rect x="1.5" y="1.5" width="33" height="33" rx="10" fill="url(#navgrad)"/>
+          <rect x="2" y="2" width="32" height="32" rx="9.5" stroke="#fff" stroke-opacity="0.18"/>
+          <path d="M14 10.5v15" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>
+          <path d="M23 10.5 14 18l9.3 7.5" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
           <defs>
-            <linearGradient id="navgrad" x1="0" y1="0" x2="24" y2="24">
+            <linearGradient id="navgrad" x1="1.5" y1="1.5" x2="34.5" y2="34.5" gradientUnits="userSpaceOnUse">
               <stop offset="0%" stop-color="#e8855a"/>
               <stop offset="100%" stop-color="#c96342"/>
             </linearGradient>
@@ -93,7 +95,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         </svg>
       </div>
       <Transition name="label-fade">
-        <span v-if="!effectiveCollapsed" class="brand-name">应收应付系统</span>
+        <span v-if="!effectiveCollapsed" class="brand-name">KXT 财务系统</span>
       </Transition>
     </div>
 
@@ -430,10 +432,9 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 }
 .brand-mark {
   width: 36px; height: 36px; border-radius: 10px;
-  background: rgba(201, 99, 66, 0.18);
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
-  box-shadow: 0 0 18px rgba(201, 99, 66, 0.22);
+  box-shadow: 0 4px 16px rgba(201, 99, 66, 0.35);
 }
 .brand-name { font-size: 15px; font-weight: 700; color: #fff; white-space: nowrap; }
 
