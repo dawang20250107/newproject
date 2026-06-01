@@ -428,6 +428,36 @@ class ARPermissionRegressionTests(TestCase):
         self.assertIn(paid.id, combined)    # has June payment
         self.assertIn(unpaid.id, combined)  # outstanding > 0
 
+    def test_invoice_status_unbilled_filter_excludes_settled(self):
+        # 开票跟踪「未开票」筛选不得包含已结清（已全额回款）的记录，与
+        # ARRecord.invoice_status 属性一致（已结清优先级高于未开票）。
+        admin = self.make_user('13900000078', 'finance_director', role='super_admin')
+        project = self.create_project()
+
+        # 未开票且仍有未收余额 → 应出现在「未开票」结果中
+        unbilled = ARRecord.objects.create(project=project, operation_year=2026,
+                                           operation_month=7, estimated_amount=Decimal('500.00'))
+
+        # 未开票但已全额回款 → invoice_status 计为「已结清」，不应出现在「未开票」
+        settled = ARRecord.objects.create(project=project, operation_year=2026,
+                                          operation_month=8, estimated_amount=Decimal('300.00'))
+        ARPayment.objects.create(ar_record=settled, payment_no=1,
+                                 amount=Decimal('300.00'), payment_date=date(2026, 8, 15))
+        settled.refresh_from_db()
+        self.assertLessEqual(settled.outstanding_amount, Decimal('0'))
+        self.assertEqual(settled.invoice_status, '已结清')
+
+        resp = self.client.get('/api/pk/ar/records', {'invoice_status': '未开票'}, **self.auth(admin))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        result_ids = {r['id'] for r in resp.json()['data']['items']}
+        self.assertIn(unbilled.id, result_ids)
+        self.assertNotIn(settled.id, result_ids)
+
+        # KPI「待开票」笔数同样应排除已结清记录
+        kpi = self.client.get('/api/pk/ar/records/kpi', **self.auth(admin))
+        self.assertEqual(kpi.status_code, 200, kpi.content)
+        self.assertEqual(kpi.json()['data']['invoice']['pending'], 1)
+
     def test_summary_not_inflated_by_multiple_payments(self):
         admin = self.make_user('13900000055', 'finance_director', role='super_admin')
         project = self.create_project()

@@ -1273,10 +1273,12 @@ def _apply_record_state_filters(qs, request, today=None):
         qs = qs.filter(outstanding_amount__gt=0)
 
     inv_status = request.GET.get('invoice_status', '').strip()
+    # 与 ARRecord.invoice_status 属性保持一致：已结清（outstanding<=0）优先级最高，
+    # 因此「未开票」必须排除已结清记录（未开票 = 未开票 且 仍有未收余额）。
     if inv_status == '未开票':
-        qs = qs.filter(actual_invoice_amount__isnull=True)
+        qs = qs.filter(actual_invoice_amount__isnull=True, outstanding_amount__gt=0)
     elif inv_status == '已结清':
-        qs = qs.filter(outstanding_amount__lte=0, actual_invoice_amount__isnull=False)
+        qs = qs.filter(outstanding_amount__lte=0)
     elif inv_status == '已开票':
         qs = qs.filter(actual_invoice_amount__isnull=False, outstanding_amount__gt=0)
 
@@ -1363,13 +1365,14 @@ def ar_records_kpi(request):
     recon_done = qs.filter(Q(reconciliation_date__isnull=False) | Q(actual_invoice_amount__isnull=False)).count()
     recon_pending = total - recon_done
 
-    # Invoice: 已开票 vs 未开票（含金额）
+    # Invoice: 已开票 vs 未开票（含金额）。已结清记录不计入「待开票」，与
+    # invoice_status 属性及列表筛选保持一致（已结清优先级高于未开票）。
     inv_done_qs = qs.filter(actual_invoice_amount__isnull=False)
     inv_done = inv_done_qs.count()
-    inv_pending = total - inv_done
-    # 未开票预估金额：尚未开票记录的预估上账金额合计
-    inv_pending_amount = (qs.filter(actual_invoice_amount__isnull=True)
-                          .aggregate(s=Sum('estimated_amount'))['s'] or 0)
+    inv_pending_qs = qs.filter(actual_invoice_amount__isnull=True, outstanding_amount__gt=0)
+    inv_pending = inv_pending_qs.count()
+    # 未开票预估金额：尚未开票且仍有未收余额记录的预估上账金额合计
+    inv_pending_amount = inv_pending_qs.aggregate(s=Sum('estimated_amount'))['s'] or 0
     inv_done_amount = inv_done_qs.aggregate(s=Sum('actual_invoice_amount'))['s'] or 0
 
     # Collection: 已结清 vs 未收
