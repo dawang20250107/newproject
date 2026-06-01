@@ -1808,6 +1808,7 @@ def report_export(request):
 
 REVENUE_L1 = '主营业务收入'
 PROFIT_L1 = '经营净利'
+GROSS_PROFIT_L1 = '经营毛利'
 
 
 def _collect_actuals(bu_list, years):
@@ -1845,18 +1846,20 @@ def _collect_actuals(bu_list, years):
 
 
 def _rp(actuals, bu, year, month):
-    """(revenue, profit) for one BU/period from a collected actuals map."""
+    """(revenue, profit, gross_profit) for one BU/period from the actuals map."""
     nm = actuals.get((bu, year, month))
     if not nm:
-        return None, None
-    return nm.get(REVENUE_L1), nm.get(PROFIT_L1)
+        return None, None, None
+    return nm.get(REVENUE_L1), nm.get(PROFIT_L1), nm.get(GROSS_PROFIT_L1)
 
 
 def _period_group(actuals, bus, year, month):
-    """(revenue, profit) summed across BUs for one period (both additive)."""
-    rev = _sum_opt([_rp(actuals, bu, year, month)[0] for bu in bus])
-    prof = _sum_opt([_rp(actuals, bu, year, month)[1] for bu in bus])
-    return rev, prof
+    """(revenue, profit, gross_profit) summed across BUs for one period."""
+    tuples = [_rp(actuals, bu, year, month) for bu in bus]
+    rev   = _sum_opt([t[0] for t in tuples])
+    prof  = _sum_opt([t[1] for t in tuples])
+    gross = _sum_opt([t[2] for t in tuples])
+    return rev, prof, gross
 
 
 def _prev_period(year, month):
@@ -1902,7 +1905,9 @@ def _parse_year_month(request):
 
 
 def _metric_block(target_rev, actual_rev, target_prof, actual_prof,
-                  rev_prev=None, prof_prev=None, rev_yoy=None, prof_yoy=None,
+                  target_gross=None, actual_gross=None,
+                  rev_prev=None, prof_prev=None, gross_prev=None,
+                  rev_yoy=None, prof_yoy=None, gross_yoy=None,
                   with_chg=False):
     """Assemble one revenue/profit metric block: target, actual, rate, and
     (when with_chg) MoM/YoY change keys — always present for a uniform shape."""
@@ -1913,12 +1918,17 @@ def _metric_block(target_rev, actual_rev, target_prof, actual_prof,
         'target_profit': float(target_prof) if target_prof is not None else 0.0,
         'actual_profit': actual_prof,
         'profit_rate': _rate(actual_prof, target_prof),
+        'target_gross_profit': float(target_gross) if target_gross is not None else 0.0,
+        'actual_gross_profit': actual_gross,
+        'gross_profit_rate': _rate(actual_gross, target_gross),
     }
     if with_chg:
         block['revenue_mom'] = _chg(actual_rev, rev_prev)
         block['profit_mom'] = _chg(actual_prof, prof_prev)
+        block['gross_profit_mom'] = _chg(actual_gross, gross_prev)
         block['revenue_yoy'] = _chg(actual_rev, rev_yoy)
         block['profit_yoy'] = _chg(actual_prof, prof_yoy)
+        block['gross_profit_yoy'] = _chg(actual_gross, gross_yoy)
     return block
 
 
@@ -1927,12 +1937,13 @@ def _bu_metrics(bu, year, month, tgt_index, actuals):
     pre-collected actuals map (no per-BU DB round-trips)."""
     prev_year, prev_month = _prev_period(year, month)
 
-    rev_m, prof_m = _rp(actuals, bu, year, month)
-    rev_pm, prof_pm = _rp(actuals, bu, prev_year, prev_month)
-    rev_ym, prof_ym = _rp(actuals, bu, year - 1, month)
-    # YTD = sum of monthly actuals Jan..month (revenue & profit both additive).
-    rev_ytd = _sum_opt([_rp(actuals, bu, year, m)[0] for m in range(1, month + 1)])
-    prof_ytd = _sum_opt([_rp(actuals, bu, year, m)[1] for m in range(1, month + 1)])
+    rev_m,  prof_m,  gross_m  = _rp(actuals, bu, year, month)
+    rev_pm, prof_pm, gross_pm = _rp(actuals, bu, prev_year, prev_month)
+    rev_ym, prof_ym, gross_ym = _rp(actuals, bu, year - 1, month)
+    # YTD = sum of monthly actuals Jan..month (revenue/profit/gross all additive).
+    rev_ytd   = _sum_opt([_rp(actuals, bu, year, m)[0] for m in range(1, month + 1)])
+    prof_ytd  = _sum_opt([_rp(actuals, bu, year, m)[1] for m in range(1, month + 1)])
+    gross_ytd = _sum_opt([_rp(actuals, bu, year, m)[2] for m in range(1, month + 1)])
 
     m_tgt = tgt_index.get((bu, month), {})
     a_tgt = tgt_index.get((bu, FinancialTarget.MONTH_ANNUAL), {})
@@ -1940,11 +1951,16 @@ def _bu_metrics(bu, year, month, tgt_index, actuals):
     return {
         'business_unit': bu,
         'month': _metric_block(
-            m_tgt.get('target_revenue'), rev_m, m_tgt.get('target_profit'), prof_m,
-            rev_prev=rev_pm, prof_prev=prof_pm, rev_yoy=rev_ym, prof_yoy=prof_ym,
+            m_tgt.get('target_revenue'), rev_m,
+            m_tgt.get('target_profit'), prof_m,
+            target_gross=m_tgt.get('target_gross_profit'), actual_gross=gross_m,
+            rev_prev=rev_pm, prof_prev=prof_pm, gross_prev=gross_pm,
+            rev_yoy=rev_ym, prof_yoy=prof_ym, gross_yoy=gross_ym,
             with_chg=True),
         'ytd': _metric_block(
-            a_tgt.get('target_revenue'), rev_ytd, a_tgt.get('target_profit'), prof_ytd),
+            a_tgt.get('target_revenue'), rev_ytd,
+            a_tgt.get('target_profit'), prof_ytd,
+            target_gross=a_tgt.get('target_gross_profit'), actual_gross=gross_ytd),
     }
 
 
@@ -1956,15 +1972,19 @@ def _sum_opt(values):
 
 def _aggregate_total(bu_blocks, key):
     """Build a group-total block by summing per-BU blocks for 'month' or 'ytd'."""
-    rev_t = _sum_opt([b[key]['target_revenue'] for b in bu_blocks])
-    rev_a = _sum_opt([b[key]['actual_revenue'] for b in bu_blocks])
-    prof_t = _sum_opt([b[key]['target_profit'] for b in bu_blocks])
-    prof_a = _sum_opt([b[key]['actual_profit'] for b in bu_blocks])
+    rev_t   = _sum_opt([b[key]['target_revenue'] for b in bu_blocks])
+    rev_a   = _sum_opt([b[key]['actual_revenue'] for b in bu_blocks])
+    prof_t  = _sum_opt([b[key]['target_profit'] for b in bu_blocks])
+    prof_a  = _sum_opt([b[key]['actual_profit'] for b in bu_blocks])
+    gross_t = _sum_opt([b[key]['target_gross_profit'] for b in bu_blocks])
+    gross_a = _sum_opt([b[key]['actual_gross_profit'] for b in bu_blocks])
     return {
         'target_revenue': rev_t or 0.0, 'actual_revenue': rev_a,
         'revenue_rate': _rate(rev_a, rev_t),
         'target_profit': prof_t or 0.0, 'actual_profit': prof_a,
         'profit_rate': _rate(prof_a, prof_t),
+        'target_gross_profit': gross_t or 0.0, 'actual_gross_profit': gross_a,
+        'gross_profit_rate': _rate(gross_a, gross_t),
     }
 
 
@@ -1972,23 +1992,26 @@ def _attach_group_chg(block, bus, year, month, actuals):
     """Add group-level MoM/YoY to a month total block (rates can't be summed, so
     recompute from consolidated actuals)."""
     prev_year, prev_month = _prev_period(year, month)
-    rev_m, prof_m = _period_group(actuals, bus, year, month)
-    rev_pm, prof_pm = _period_group(actuals, bus, prev_year, prev_month)
-    rev_ym, prof_ym = _period_group(actuals, bus, year - 1, month)
+    rev_m,  prof_m,  gross_m  = _period_group(actuals, bus, year, month)
+    rev_pm, prof_pm, gross_pm = _period_group(actuals, bus, prev_year, prev_month)
+    rev_ym, prof_ym, gross_ym = _period_group(actuals, bus, year - 1, month)
     block['revenue_mom'] = _chg(rev_m, rev_pm)
     block['profit_mom'] = _chg(prof_m, prof_pm)
+    block['gross_profit_mom'] = _chg(gross_m, gross_pm)
     block['revenue_yoy'] = _chg(rev_m, rev_ym)
     block['profit_yoy'] = _chg(prof_m, prof_ym)
+    block['gross_profit_yoy'] = _chg(gross_m, gross_ym)
     return block
 
 
 def _load_target_index(bus, year):
-    """{(bu, month): {target_revenue, target_profit}} for the year."""
+    """{(bu, month): {target_revenue, target_profit, target_gross_profit}} for the year."""
     idx = {}
     for t in FinancialTarget.objects.filter(business_unit__in=bus, year=year):
         idx[(t.business_unit, t.month)] = {
             'target_revenue': float(t.target_revenue),
             'target_profit': float(t.target_profit),
+            'target_gross_profit': float(t.target_gross_profit),
         }
     return idx
 
@@ -2043,51 +2066,319 @@ def targets(request):
             except Exception:
                 return err('月份无效')
             try:
-                rev = Decimal(str(it.get('target_revenue', 0) or 0))
-                prof = Decimal(str(it.get('target_profit', 0) or 0))
+                rev   = Decimal(str(it.get('target_revenue', 0) or 0))
+                prof  = Decimal(str(it.get('target_profit', 0) or 0))
+                gross = Decimal(str(it.get('target_gross_profit', 0) or 0))
             except (InvalidOperation, ValueError):
                 return err('目标金额无效')
-            parsed.append((bu, mo, rev, prof))
+            parsed.append((bu, mo, rev, prof, gross))
 
         # ── month-sum == annual validation ────────────────────────────────────
-        # Enforce against the RESULTING state (existing DB rows overlaid with this
-        # payload), not just the payload, so the invariant holds even for partial
-        # submissions. A BU with an annual target (month=0) AND all 12 monthly
-        # targets must have sum(1..12) == annual, within 1-yuan tolerance.
         TOLERANCE = Decimal('1.00')
         from collections import defaultdict
-        affected = {bu for bu, _, _, _ in parsed}
-        merged = defaultdict(dict)  # bu -> {month: (rev, prof)}
+        affected = {bu for bu, *_ in parsed}
+        merged = defaultdict(dict)  # bu -> {month: (rev, prof, gross)}
         for t in FinancialTarget.objects.filter(year=year, business_unit__in=affected):
-            merged[t.business_unit][t.month] = (t.target_revenue, t.target_profit)
-        for bu, mo, rev, prof in parsed:
-            merged[bu][mo] = (rev, prof)
+            merged[t.business_unit][t.month] = (
+                t.target_revenue, t.target_profit, t.target_gross_profit)
+        for bu, mo, rev, prof, gross in parsed:
+            merged[bu][mo] = (rev, prof, gross)
         for bu, mp in merged.items():
             if 0 not in mp or any(m not in mp for m in range(1, 13)):
-                continue  # incomplete plan — can't validate the sum yet
-            sum_rev = sum(mp[m][0] for m in range(1, 13))
-            if abs(sum_rev - mp[0][0]) > TOLERANCE:
-                delta = float(sum_rev - mp[0][0]) / 10000
-                return err(f'{bu}：月度收入目标合计与年度目标不符'
-                           f'（差额 {delta:+.2f} 万元），请修正后保存')
-            sum_prof = sum(mp[m][1] for m in range(1, 13))
-            if abs(sum_prof - mp[0][1]) > TOLERANCE:
-                delta = float(sum_prof - mp[0][1]) / 10000
-                return err(f'{bu}：月度利润目标合计与年度目标不符'
-                           f'（差额 {delta:+.2f} 万元），请修正后保存')
+                continue
+            for col, label in ((0, '收入'), (1, '经营净利'), (2, '经营毛利')):
+                s = sum(mp[m][col] for m in range(1, 13))
+                if abs(s - mp[0][col]) > TOLERANCE:
+                    delta = float(s - mp[0][col]) / 10000
+                    return err(f'{bu}：月度{label}目标合计与年度目标不符'
+                               f'（差额 {delta:+.2f} 万元），请修正后保存')
 
         with transaction.atomic():
-            for bu, mo, rev, prof in parsed:
+            for bu, mo, rev, prof, gross in parsed:
                 FinancialTarget.objects.update_or_create(
                     business_unit=bu, year=year, month=mo,
                     defaults={
                         'target_revenue': rev, 'target_profit': prof,
+                        'target_gross_profit': gross,
                         'updated_by_id': uid,
                     },
                 )
         return ok({'saved': len(parsed)})
 
     return err('方法不允许', 405)
+
+
+# ── Target template / upload / export ────────────────────────────────────────
+
+_TGT_SECTIONS = [
+    ('收入目标（万元）',    'target_revenue',      '收入'),
+    ('经营净利目标（万元）', 'target_profit',       '经营净利'),
+    ('经营毛利目标（万元）', 'target_gross_profit', '经营毛利'),
+]
+_MONTH_LABELS = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月']
+
+
+def _build_target_wb(bus, year, existing_map):
+    """Build an openpyxl workbook with 3 stacked sections (收入/净利/毛利).
+    existing_map = {(bu, month): {target_revenue, target_profit, target_gross_profit}}
+    For a blank template pass {} as existing_map.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '指标模板'
+
+    hdr_font  = Font(bold=True, color='FFFFFF', size=11)
+    hdr_fill  = PatternFill('solid', fgColor='C96342')
+    sub_font  = Font(bold=True, size=10)
+    sub_fill  = PatternFill('solid', fgColor='F3E8E0')
+    col_font  = Font(bold=True, size=9, color='555555')
+    col_fill  = PatternFill('solid', fgColor='FAF3EF')
+    thin      = Side(style='thin', color='DDDDDD')
+    thin_bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center    = Alignment(horizontal='center', vertical='center')
+    right_al  = Alignment(horizontal='right', vertical='center')
+
+    row = 1
+    # Year banner
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=15)
+    c = ws.cell(row=row, column=1, value=f'{year} 年度经营指标（万元）')
+    c.font = Font(bold=True, size=13); c.alignment = center
+    row += 1
+
+    for sect_label, _field, _short in _TGT_SECTIONS:
+        # Section header
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=15)
+        c = ws.cell(row=row, column=1, value=sect_label)
+        c.font = sub_font; c.fill = sub_fill; c.alignment = center
+        row += 1
+
+        # Column header
+        ws.cell(row=row, column=1, value='事业部').font = col_font
+        ws.cell(row=row, column=1).fill = col_fill
+        ws.cell(row=row, column=1).alignment = center
+        for mi, lbl in enumerate(_MONTH_LABELS, 2):
+            c = ws.cell(row=row, column=mi, value=lbl)
+            c.font = col_font; c.fill = col_fill; c.alignment = center
+        c = ws.cell(row=row, column=14, value='年度目标')
+        c.font = col_font; c.fill = col_fill; c.alignment = center
+        c = ws.cell(row=row, column=15, value='月合计')
+        c.font = col_font; c.fill = col_fill; c.alignment = center
+        row += 1
+
+        # BU data rows
+        for bu in bus:
+            ws.cell(row=row, column=1, value=bu).font = Font(bold=True, size=10)
+            ws.cell(row=row, column=1).alignment = Alignment(vertical='center')
+            for mi in range(1, 13):
+                val = existing_map.get((bu, mi), {}).get(_field)
+                c = ws.cell(row=row, column=mi + 1,
+                            value=round(val / 10000, 2) if val is not None else None)
+                c.number_format = '#,##0.00'
+                c.alignment = right_al
+            annual_val = existing_map.get((bu, 0), {}).get(_field)
+            c = ws.cell(row=row, column=14,
+                        value=round(annual_val / 10000, 2) if annual_val is not None else None)
+            c.number_format = '#,##0.00'; c.alignment = right_al
+            # Month-sum formula
+            col_start = get_column_letter(2)
+            col_end   = get_column_letter(13)
+            ws.cell(row=row, column=15,
+                    value=f'=SUM({col_start}{row}:{col_end}{row})').number_format = '#,##0.00'
+            ws.cell(row=row, column=15).alignment = right_al
+            # Apply border to all cells in row
+            for col in range(1, 16):
+                ws.cell(row=row, column=col).border = thin_bdr
+            row += 1
+
+        row += 1  # blank separator
+
+    # Column widths
+    ws.column_dimensions['A'].width = 16
+    for col in range(2, 14):
+        ws.column_dimensions[get_column_letter(col)].width = 9
+    ws.column_dimensions['N'].width = 10
+    ws.column_dimensions['O'].width = 10
+
+    return wb
+
+
+@cw_required()
+def targets_template(request):
+    """GET ?year= → download blank Excel template for target entry."""
+    if request.method != 'GET':
+        return err('方法不允许', 405)
+    denied = _page_denied(request, 'metrics')
+    if denied:
+        return denied
+    try:
+        year = int(request.GET.get('year', yearCST()))
+        assert 2000 <= year <= 2100
+    except Exception:
+        return err('年份无效')
+    bus, e = _resolve_bu_list(request, '')
+    if e:
+        return e
+    wb = _build_target_wb(bus, year, {})
+    return _build_excel_response(wb, f'{year}年指标模板.xlsx')
+
+
+@cw_required()
+def targets_export(request):
+    """GET ?year= → export current targets as filled Excel."""
+    if request.method != 'GET':
+        return err('方法不允许', 405)
+    denied = _page_denied(request, 'metrics')
+    if denied:
+        return denied
+    try:
+        year = int(request.GET.get('year', yearCST()))
+        assert 2000 <= year <= 2100
+    except Exception:
+        return err('年份无效')
+    bus, e = _resolve_bu_list(request, '')
+    if e:
+        return e
+    rows = FinancialTarget.objects.filter(business_unit__in=bus, year=year)
+    existing_map = {}
+    for t in rows:
+        existing_map[(t.business_unit, t.month)] = {
+            'target_revenue': float(t.target_revenue),
+            'target_profit': float(t.target_profit),
+            'target_gross_profit': float(t.target_gross_profit),
+        }
+    wb = _build_target_wb(bus, year, existing_map)
+    return _build_excel_response(wb, f'{year}年指标导出.xlsx')
+
+
+@cw_required()
+def targets_upload(request):
+    """POST multipart/form-data: file=<xlsx> year=<int> → bulk upsert targets."""
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    denied = _page_denied(request, 'metrics')
+    if denied:
+        return denied
+    if not (request.pk_role == 'super_admin' or _can_upload(request)):
+        return err('无录入权限', 403, 403)
+
+    try:
+        year = int(request.POST.get('year', ''))
+        assert 2000 <= year <= 2100
+    except Exception:
+        return err('年份无效')
+
+    f = request.FILES.get('file')
+    if not f:
+        return err('缺少文件')
+    if f.size > IMPORT_SIZE_LIMIT:
+        return err('文件过大（超过 5 MB）')
+
+    accessible = _accessible_bus(request)
+    uid = getattr(request, 'pk_uid', None)
+
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(f, data_only=True)
+        ws = wb.active
+    except Exception as ex:
+        return err(f'文件解析失败：{ex}')
+
+    # Detect section boundaries: column A contains the section header keyword.
+    section_map = {s[0]: s[1] for s in _TGT_SECTIONS}
+    valid_bus = set(accessible)
+    current_field = None
+    parsed = {}  # {(bu, month): {field: Decimal}}
+
+    for row in ws.iter_rows():
+        a_val = str(row[0].value or '').strip()
+        if a_val in section_map:
+            current_field = section_map[a_val]
+            continue
+        if current_field is None or not a_val:
+            continue
+        bu = a_val
+        if bu not in valid_bus or a_val in ('事业部', '月合计', '年合计'):
+            continue
+        if bu not in valid_bus:
+            continue
+        # Columns B-M = months 1-12, N = annual (month=0)
+        slots = [(i + 1, row[i + 1]) for i in range(12)]  # (month 1-12, cell)
+        slots.append((0, row[13] if len(row) > 13 else None))  # annual
+        for month_no, cell in slots:
+            if cell is None:
+                continue
+            try:
+                wan_val = cell.value
+                if wan_val is None:
+                    amount = Decimal('0')
+                else:
+                    amount = Decimal(str(float(wan_val))) * 10000
+            except (InvalidOperation, ValueError, TypeError):
+                continue
+            key = (bu, month_no)
+            if key not in parsed:
+                parsed[key] = {}
+            parsed[key][current_field] = amount
+
+    if not parsed:
+        return err('未从文件中解析到任何有效数据，请确认使用正确的指标模板')
+
+    # Validate sum == annual for each BU × metric
+    TOLERANCE = Decimal('1.00')
+    from collections import defaultdict
+    merged = defaultdict(lambda: defaultdict(dict))  # {bu: {month: {field: val}}}
+    existing_qs = FinancialTarget.objects.filter(
+        year=year, business_unit__in=accessible)
+    for t in existing_qs:
+        merged[t.business_unit][t.month] = {
+            'target_revenue': t.target_revenue,
+            'target_profit': t.target_profit,
+            'target_gross_profit': t.target_gross_profit,
+        }
+    for (bu, mo), fields in parsed.items():
+        for field, val in fields.items():
+            if bu not in merged or mo not in merged[bu]:
+                merged[bu][mo] = {}
+            merged[bu][mo][field] = val
+
+    for bu, mp in merged.items():
+        if 0 not in mp or any(m not in mp for m in range(1, 13)):
+            continue
+        for col_field, label in (
+            ('target_revenue', '收入'),
+            ('target_profit', '经营净利'),
+            ('target_gross_profit', '经营毛利'),
+        ):
+            annual = mp[0].get(col_field, Decimal('0'))
+            s = sum(mp[m].get(col_field, Decimal('0')) for m in range(1, 13))
+            if annual != 0 and abs(s - annual) > TOLERANCE:
+                delta = float(s - annual) / 10000
+                return err(f'{bu}：月度{label}合计与年度目标不符（差额 {delta:+.2f} 万元）')
+
+    # Upsert
+    saved = 0
+    with transaction.atomic():
+        for (bu, mo), fields in parsed.items():
+            if not fields:
+                continue
+            FinancialTarget.objects.update_or_create(
+                business_unit=bu, year=year, month=mo,
+                defaults={**fields, 'updated_by_id': uid},
+            )
+            saved += 1
+
+    return ok({'saved': saved})
+
+
+def yearCST():
+    from django.utils import timezone
+    import datetime
+    now = timezone.now().astimezone(datetime.timezone(datetime.timedelta(hours=8)))
+    return now.year
 
 
 @cw_required()
@@ -2148,13 +2439,14 @@ def cockpit(request):
     # 12-month trend: group actual revenue/profit + group target lines per month.
     trend = []
     for mo in range(1, 13):
-        rev_a, prof_a = _period_group(actuals, bus, year, mo)
-        rev_t = _sum_opt([tgt_index.get((bu, mo), {}).get('target_revenue') for bu in bus])
-        prof_t = _sum_opt([tgt_index.get((bu, mo), {}).get('target_profit') for bu in bus])
+        rev_a, prof_a, gross_a = _period_group(actuals, bus, year, mo)
+        rev_t   = _sum_opt([tgt_index.get((bu, mo), {}).get('target_revenue') for bu in bus])
+        prof_t  = _sum_opt([tgt_index.get((bu, mo), {}).get('target_profit') for bu in bus])
+        gross_t = _sum_opt([tgt_index.get((bu, mo), {}).get('target_gross_profit') for bu in bus])
         trend.append({
             'month': mo,
-            'actual_revenue': rev_a, 'actual_profit': prof_a,
-            'target_revenue': rev_t, 'target_profit': prof_t,
+            'actual_revenue': rev_a, 'actual_profit': prof_a, 'actual_gross_profit': gross_a,
+            'target_revenue': rev_t, 'target_profit': prof_t, 'target_gross_profit': gross_t,
             'has_data': rev_a is not None or prof_a is not None,
         })
 
@@ -2213,7 +2505,7 @@ def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
     L.append('【近12个月全集团趋势（实际收入/实际利润）】')
     tr = []
     for mo in range(1, 13):
-        rev_a, prof_a = _period_group(actuals, bus, year, mo)
+        rev_a, prof_a, _gross_a = _period_group(actuals, bus, year, mo)
         if rev_a is None and prof_a is None:
             continue
         tr.append(f'{mo}月:收入{_fmt_wan(rev_a)}/利润{_fmt_wan(prof_a)}')

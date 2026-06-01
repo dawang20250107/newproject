@@ -219,8 +219,10 @@ class FinancialTarget(models.Model):
 
     `month == 0` is the annual target for the year; `month` 1–12 are monthly
     targets. Achievement is computed by the views against the aggregated,
-    published 部门明细表 actuals (主营业务收入 → revenue, 经营净利 → profit), so the
-    target table only stores the manual planning figures.
+    published 部门明细表 actuals:
+      target_revenue     ↔ 主营业务收入
+      target_profit      ↔ 经营净利   (DB column keeps original name for compat)
+      target_gross_profit↔ 经营毛利
     """
     MONTH_ANNUAL = 0
 
@@ -228,7 +230,8 @@ class FinancialTarget(models.Model):
     year = models.IntegerField('年份')
     month = models.IntegerField('月份', default=MONTH_ANNUAL, help_text='0=年度目标，1-12=当月目标')
     target_revenue = models.DecimalField('目标收入', max_digits=15, decimal_places=2, default=0)
-    target_profit = models.DecimalField('目标利润', max_digits=15, decimal_places=2, default=0)
+    target_profit = models.DecimalField('经营净利目标', max_digits=15, decimal_places=2, default=0)
+    target_gross_profit = models.DecimalField('经营毛利目标', max_digits=15, decimal_places=2, default=0)
     # Cross-db reference to the unified platform account (mirrors ImportBatch.uploaded_by).
     updated_by = models.ForeignKey(
         'paikuan.PaikuanUser', null=True, on_delete=models.SET_NULL,
@@ -254,6 +257,7 @@ class FinancialTarget(models.Model):
             'month': self.month,
             'target_revenue': float(self.target_revenue),
             'target_profit': float(self.target_profit),
+            'target_gross_profit': float(self.target_gross_profit),
             'updated_by': self.updated_by.name if self.updated_by_id else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }

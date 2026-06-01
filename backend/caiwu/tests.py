@@ -422,21 +422,32 @@ class CaiwuMetricsAndTargetsTests(TestCase):
                                 content_type='application/json', **self.auth())
 
     # ── 目标录入校验 ──────────────────────────────────────────────────────────
-    def _full_year_items(self, monthly_rev, monthly_prof, annual_rev, annual_prof):
+    def _full_year_items(self, monthly_rev, monthly_prof, annual_rev, annual_prof,
+                         monthly_gross=0, annual_gross=0):
         items = [{'business_unit': self.bu, 'month': m,
-                  'target_revenue': monthly_rev, 'target_profit': monthly_prof}
+                  'target_revenue': monthly_rev, 'target_profit': monthly_prof,
+                  'target_gross_profit': monthly_gross}
                  for m in range(1, 13)]
         items.append({'business_unit': self.bu, 'month': 0,
-                      'target_revenue': annual_rev, 'target_profit': annual_prof})
+                      'target_revenue': annual_rev, 'target_profit': annual_prof,
+                      'target_gross_profit': annual_gross})
         return items
 
     def test_month_sum_must_equal_annual(self):
         # 12×100 = 1200 收入；年度填 1300 → 拒绝
-        bad = self.post_targets(self._full_year_items(100, 10, 1300, 120))
+        bad = self.post_targets(self._full_year_items(100, 10, 1300, 120, 8, 96))
         self.assertEqual(bad.status_code, 400, self.jj(bad))
         self.assertIn('收入', self.jj(bad)['error'])
-        # 年度填 1200 收入 / 120 利润（=12×10）→ 通过
-        good = self.post_targets(self._full_year_items(100, 10, 1200, 120))
+        # 经营净利不符 → 拒绝
+        bad2 = self.post_targets(self._full_year_items(100, 10, 1200, 999, 8, 96))
+        self.assertEqual(bad2.status_code, 400, self.jj(bad2))
+        self.assertIn('经营净利', self.jj(bad2)['error'])
+        # 经营毛利不符 → 拒绝
+        bad3 = self.post_targets(self._full_year_items(100, 10, 1200, 120, 8, 999))
+        self.assertEqual(bad3.status_code, 400, self.jj(bad3))
+        self.assertIn('经营毛利', self.jj(bad3)['error'])
+        # 全部一致 → 通过
+        good = self.post_targets(self._full_year_items(100, 10, 1200, 120, 8, 96))
         self.assertEqual(good.status_code, 200, self.jj(good))
         self.assertEqual(self.jj(good)['data']['saved'], 13)
 

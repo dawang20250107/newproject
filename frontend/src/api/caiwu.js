@@ -48,4 +48,18 @@ api.interceptors.response.use(
   },
 )
 
+// ── targets helper methods ────────────────────────────────────────────────────
+api.downloadTargetsTemplate = (year) =>
+  api.get('/targets/template', { params: { year }, responseType: 'blob' })
+
+api.uploadTargets = (year, file) => {
+  const fd = new FormData()
+  fd.append('year', year)
+  fd.append('file', file)
+  return api.post('/targets/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+}
+
+api.exportTargets = (year) =>
+  api.get('/targets/export', { params: { year }, responseType: 'blob' })
+
 export default api

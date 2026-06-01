@@ -36,6 +36,9 @@ urlpatterns = [
 
     # 指标管理 & 财务驾驶舱
     path('targets', views.targets),
+    path('targets/template', views.targets_template),
+    path('targets/upload', views.targets_upload),
+    path('targets/export', views.targets_export),
     path('metrics', views.metrics),
     path('cockpit', views.cockpit),
     path('cockpit/ai-analysis', views.cockpit_ai_analysis),
