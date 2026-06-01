@@ -377,7 +377,7 @@ onMounted(load)
                     <td>{{ fmtWan(r.month[t.tKey]) }}</td>
                     <td class="num-strong">{{ fmtWan(r.month[t.aKey]) }}</td>
                     <td>
-                      <span v-if="!r.month[t.tKey]" class="rate-pill rate-unset">未设目标</span>
+                      <span v-if="!r.month[t.tKey]" class="rate-pill rate-unset">目标为0</span>
                       <span v-else class="rate-pill" :class="rateClass(r.month[t.rKey])">{{ fmtRate(r.month[t.rKey]) }}</span>
                     </td>
                     <td :class="chgClass(r.month[t.momKey])">{{ r.month[t.momKey] == null ? '—' : fmtPct(r.month[t.momKey]) }}</td>
@@ -385,7 +385,7 @@ onMounted(load)
                     <td>{{ fmtWan(r.ytd[t.ytTKey]) }}</td>
                     <td class="num-strong">{{ fmtWan(r.ytd[t.ytAKey]) }}</td>
                     <td>
-                      <span v-if="!r.ytd[t.ytTKey]" class="rate-pill rate-unset">未设目标</span>
+                      <span v-if="!r.ytd[t.ytTKey]" class="rate-pill rate-unset">目标为0</span>
                       <span v-else class="rate-pill" :class="rateClass(r.ytd[t.ytRKey])">{{ fmtRate(r.ytd[t.ytRKey]) }}</span>
                     </td>
                   </tr>
