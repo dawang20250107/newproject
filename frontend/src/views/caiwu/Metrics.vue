@@ -206,6 +206,16 @@ function rateClass(rate) {
   return 'rate-bad'
 }
 const fmtRate = (r) => (r == null ? '—' : r.toFixed(1) + '%')
+
+// 达成率单元格：目标>0 走常规百分比；目标=0 时「有正产出即达标」，
+// 实际>0→达成，实际<0(亏损)→未达成，实际=0→—。
+function rateCell(target, actual, rate) {
+  if (target) return { text: fmtRate(rate), cls: rateClass(rate) }
+  const a = actual ?? 0
+  if (a > 0) return { text: '达成', cls: 'rate-good' }
+  if (a < 0) return { text: '未达成', cls: 'rate-bad' }
+  return { text: '—', cls: 'rate-na' }
+}
 function chgClass(v) {
   if (v == null) return 'chg-na'
   return v >= 0 ? 'chg-up' : 'chg-down'
@@ -377,16 +387,14 @@ onMounted(load)
                     <td>{{ fmtWan(r.month[t.tKey]) }}</td>
                     <td class="num-strong">{{ fmtWan(r.month[t.aKey]) }}</td>
                     <td>
-                      <span v-if="!r.month[t.tKey]" class="rate-pill rate-unset">目标为0</span>
-                      <span v-else class="rate-pill" :class="rateClass(r.month[t.rKey])">{{ fmtRate(r.month[t.rKey]) }}</span>
+                      <span class="rate-pill" :class="rateCell(r.month[t.tKey], r.month[t.aKey], r.month[t.rKey]).cls">{{ rateCell(r.month[t.tKey], r.month[t.aKey], r.month[t.rKey]).text }}</span>
                     </td>
                     <td :class="chgClass(r.month[t.momKey])">{{ r.month[t.momKey] == null ? '—' : fmtPct(r.month[t.momKey]) }}</td>
                     <td :class="chgClass(r.month[t.yoyKey])">{{ r.month[t.yoyKey] == null ? '—' : fmtPct(r.month[t.yoyKey]) }}</td>
                     <td>{{ fmtWan(r.ytd[t.ytTKey]) }}</td>
                     <td class="num-strong">{{ fmtWan(r.ytd[t.ytAKey]) }}</td>
                     <td>
-                      <span v-if="!r.ytd[t.ytTKey]" class="rate-pill rate-unset">目标为0</span>
-                      <span v-else class="rate-pill" :class="rateClass(r.ytd[t.ytRKey])">{{ fmtRate(r.ytd[t.ytRKey]) }}</span>
+                      <span class="rate-pill" :class="rateCell(r.ytd[t.ytTKey], r.ytd[t.ytAKey], r.ytd[t.ytRKey]).cls">{{ rateCell(r.ytd[t.ytTKey], r.ytd[t.ytAKey], r.ytd[t.ytRKey]).text }}</span>
                     </td>
                   </tr>
                 </tbody>
@@ -473,7 +481,6 @@ onMounted(load)
 .rate-warn { background: rgba(245,127,23,.14); color: #e65100; }
 .rate-bad  { background: rgba(198,40,40,.12); color: #c62828; }
 .rate-na   { background: rgba(120,120,120,.08); color: var(--muted); font-weight: 500; }
-.rate-unset { background: rgba(120,120,120,.06); color: var(--muted); font-weight: 400; font-size: 11px; letter-spacing: .02em; }
 .chg-up   { color: #2e7d32; font-weight: 600; }
 .chg-down { color: #c62828; font-weight: 600; }
 .chg-na   { color: var(--muted); }
