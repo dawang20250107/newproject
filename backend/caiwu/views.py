@@ -2112,8 +2112,8 @@ def targets(request):
 
 _TGT_SECTIONS = [
     ('收入目标（万元）',    'target_revenue',      '收入'),
-    ('经营净利目标（万元）', 'target_profit',       '经营净利'),
     ('经营毛利目标（万元）', 'target_gross_profit', '经营毛利'),
+    ('经营净利目标（万元）', 'target_profit',       '经营净利'),
 ]
 _MONTH_LABELS = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月']
 

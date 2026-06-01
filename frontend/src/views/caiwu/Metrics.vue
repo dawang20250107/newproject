@@ -36,27 +36,27 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 const MONTH_LABELS = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月']
 
-// Three target-grid sections
+// Three target-grid sections（毛利在前，净利在后）
 const GRIDS = [
   { key: 'rev',   label: '收入目标（万元）' },
-  { key: 'prof',  label: '经营净利目标（万元）' },
   { key: 'gross', label: '经营毛利目标（万元）' },
+  { key: 'prof',  label: '经营净利目标（万元）' },
 ]
 
-// Three completion-table sections
+// Three completion-table sections（毛利在前，净利在后）
 const TABLES = [
   { title: '收入完成情况',
     tKey: 'target_revenue', aKey: 'actual_revenue', rKey: 'revenue_rate',
     momKey: 'revenue_mom', yoyKey: 'revenue_yoy',
     ytTKey: 'target_revenue', ytAKey: 'actual_revenue', ytRKey: 'revenue_rate' },
-  { title: '经营净利完成情况',
-    tKey: 'target_profit', aKey: 'actual_profit', rKey: 'profit_rate',
-    momKey: 'profit_mom', yoyKey: 'profit_yoy',
-    ytTKey: 'target_profit', ytAKey: 'actual_profit', ytRKey: 'profit_rate' },
   { title: '经营毛利完成情况',
     tKey: 'target_gross_profit', aKey: 'actual_gross_profit', rKey: 'gross_profit_rate',
     momKey: 'gross_profit_mom', yoyKey: 'gross_profit_yoy',
     ytTKey: 'target_gross_profit', ytAKey: 'actual_gross_profit', ytRKey: 'gross_profit_rate' },
+  { title: '经营净利完成情况',
+    tKey: 'target_profit', aKey: 'actual_profit', rKey: 'profit_rate',
+    momKey: 'profit_mom', yoyKey: 'profit_yoy',
+    ytTKey: 'target_profit', ytAKey: 'actual_profit', ytRKey: 'profit_rate' },
 ]
 
 const accessibleBus = computed(() => {
@@ -234,10 +234,10 @@ const chartOption = computed(() => {
         itemStyle: { color: '#2e7d32', borderRadius: [4,4,0,0] }, barMaxWidth: 22,
         markLine: { silent: true, symbol: 'none', lineStyle: { color: '#c96342', type: 'dashed' },
           data: [{ yAxis: 100, label: { formatter: '100%', color: '#c96342', fontSize: 10 } }] } },
-      { name: '经营净利达成率', type: 'bar', data: bus.map(b => b.month.profit_rate),
-        itemStyle: { color: '#1565c0', borderRadius: [4,4,0,0] }, barMaxWidth: 22 },
       { name: '经营毛利达成率', type: 'bar', data: bus.map(b => b.month.gross_profit_rate),
         itemStyle: { color: '#6a1b9a', borderRadius: [4,4,0,0] }, barMaxWidth: 22 },
+      { name: '经营净利达成率', type: 'bar', data: bus.map(b => b.month.profit_rate),
+        itemStyle: { color: '#1565c0', borderRadius: [4,4,0,0] }, barMaxWidth: 22 },
     ],
   }
 })
