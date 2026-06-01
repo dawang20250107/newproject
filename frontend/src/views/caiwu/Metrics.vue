@@ -376,12 +376,18 @@ onMounted(load)
                     <td class="col-bu">{{ r.business_unit }}</td>
                     <td>{{ fmtWan(r.month[t.tKey]) }}</td>
                     <td class="num-strong">{{ fmtWan(r.month[t.aKey]) }}</td>
-                    <td><span class="rate-pill" :class="rateClass(r.month[t.rKey])">{{ fmtRate(r.month[t.rKey]) }}</span></td>
+                    <td>
+                      <span v-if="!r.month[t.tKey]" class="rate-pill rate-unset">未设目标</span>
+                      <span v-else class="rate-pill" :class="rateClass(r.month[t.rKey])">{{ fmtRate(r.month[t.rKey]) }}</span>
+                    </td>
                     <td :class="chgClass(r.month[t.momKey])">{{ r.month[t.momKey] == null ? '—' : fmtPct(r.month[t.momKey]) }}</td>
                     <td :class="chgClass(r.month[t.yoyKey])">{{ r.month[t.yoyKey] == null ? '—' : fmtPct(r.month[t.yoyKey]) }}</td>
                     <td>{{ fmtWan(r.ytd[t.ytTKey]) }}</td>
                     <td class="num-strong">{{ fmtWan(r.ytd[t.ytAKey]) }}</td>
-                    <td><span class="rate-pill" :class="rateClass(r.ytd[t.ytRKey])">{{ fmtRate(r.ytd[t.ytRKey]) }}</span></td>
+                    <td>
+                      <span v-if="!r.ytd[t.ytTKey]" class="rate-pill rate-unset">未设目标</span>
+                      <span v-else class="rate-pill" :class="rateClass(r.ytd[t.ytRKey])">{{ fmtRate(r.ytd[t.ytRKey]) }}</span>
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -467,6 +473,7 @@ onMounted(load)
 .rate-warn { background: rgba(245,127,23,.14); color: #e65100; }
 .rate-bad  { background: rgba(198,40,40,.12); color: #c62828; }
 .rate-na   { background: rgba(120,120,120,.08); color: var(--muted); font-weight: 500; }
+.rate-unset { background: rgba(120,120,120,.06); color: var(--muted); font-weight: 400; font-size: 11px; letter-spacing: .02em; }
 .chg-up   { color: #2e7d32; font-weight: 600; }
 .chg-down { color: #c62828; font-weight: 600; }
 .chg-na   { color: var(--muted); }

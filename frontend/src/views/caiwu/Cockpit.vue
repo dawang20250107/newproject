@@ -110,7 +110,7 @@ function rateColor(r) {
 }
 function chgLabel(v) {
   if (v == null) return '— '
-  return (v >= 0 ? '▲ ' : '▼ ') + Math.abs(v).toFixed(1) + '%'
+  return (v >= 0 ? '▲ +' : '▼ ') + v.toFixed(1) + '%'
 }
 function chgClass(v) { return v == null ? 'mom-neutral' : (v >= 0 ? 'mom-up' : 'mom-down') }
 
