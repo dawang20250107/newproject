@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
@@ -20,7 +20,14 @@ const size = 50
 
 const filters = reactive({ dept: '', year: '', month: '', writeoff_status: '', q: '' })
 
-const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
+// 部门下拉数据源：优先用与系统常量匹配的事业部；若用户真实部门名不在常量内
+// （历史命名/二级部门等），回退到其真实可见部门，避免下拉为空导致无法选择部门。
+const accessibleDepts = computed(() => {
+  const eff = auth.effectiveDepts || []
+  const matched = eff.filter(d => DEPARTMENTS.includes(d))
+  if (matched.length) return matched
+  return eff.length ? eff : (auth.allowedDepts || [])
+})
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 const fmtAmt = (v) => fmtCompact(v, { dash: '0.00' })
@@ -287,9 +294,20 @@ function onSupplierQInput() {
 }
 
 async function searchSupplierProjects(kw) {
-  const res = await ar.listProjects({ size: 100, q: kw || undefined })
-  supplierProjects.value = res.data.items
+  try {
+    const res = await ar.listProjects({ size: 100, q: kw || undefined })
+    supplierProjects.value = res.data.items
+  } catch (e) {
+    supplierProjects.value = []
+  }
 }
+
+// 切到「私有」时确保项目列表已加载（覆盖打开弹窗时异步竞态/失败的情况）
+watch(() => supplierForm.supplier_type, (t) => {
+  if (t === 'private' && !supplierProjects.value.length) {
+    searchSupplierProjects(supplierProjKeyword.value.trim())
+  }
+})
 function onSupplierProjKeywordInput() {
   showSupplierProjList.value = true
   if (!supplierProjKeyword.value.trim()) supplierForm.project_id = ''
