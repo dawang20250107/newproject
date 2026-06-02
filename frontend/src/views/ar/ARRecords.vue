@@ -346,6 +346,7 @@ function openAddPayment(rec) {
   payRec.value = rec
   Object.assign(payForm, { amount: '', payment_date: todayCST(), notes: '' })
   payAdvance.value = null
+  advWoSel.value = null
   showPayModal.value = true
   loadPayAdvance(rec)
 }
@@ -357,6 +358,35 @@ async function loadPayAdvance(rec) {
     const res = await ar.advancesAvailable({ project_id: rec.project_id, direction: '预收' })
     if (res.data?.count > 0) payAdvance.value = res.data
   } catch (_) { /* 无预收预付权限时静默 */ }
+}
+
+// ── 用预收直接给本笔应收下账（核销预收 + 生成预收抵扣回款，一步完成）──────────
+const advWoSel = ref(null)              // 选中的预收
+const advWoForm = reactive({ amount: '' })
+const advWoSaving = ref(false)
+
+function selectAdvForWriteoff(a) {
+  advWoSel.value = a
+  // 默认抵扣额 = min(预收余额, 应收未收)
+  const bal = parseFloat(a.balance_amount) || 0
+  const out = parseFloat(payRec.value?.outstanding_amount) || 0
+  advWoForm.amount = Math.min(bal, out).toFixed(2)
+}
+
+async function applyAdvanceWriteoff() {
+  const amt = parseFloat(advWoForm.amount)
+  if (!(amt > 0)) { alert('下账金额必须大于0'); return }
+  advWoSaving.value = true
+  try {
+    await ar.addWriteoff(advWoSel.value.id, {
+      amount: amt,
+      writeoff_date: payForm.payment_date || todayCST(),
+      ar_record_id: payRec.value.id,
+    })
+    showPayModal.value = false
+    await load()
+  } catch (e) { alert(e?.msg || '预收下账失败')
+  } finally { advWoSaving.value = false }
 }
 
 // 跳转到预收预付页，预筛该项目的预收，便于在那里做核销冲抵。
@@ -1042,16 +1072,28 @@ function clearFilters() {
                 <span class="adv-hint-tag">可用预收</span>
                 <span>该项目尚有 <b>{{ payAdvance.count }}</b> 笔预收，余额合计
                   <b>{{ fmtAmt(payAdvance.total_balance) }}</b></span>
-                <button class="adv-hint-link" type="button" @click="gotoAdvance">去核销冲抵 →</button>
+                <button class="adv-hint-link" type="button" @click="gotoAdvance">在预收页管理 →</button>
               </div>
               <ul class="adv-hint-list">
-                <li v-for="a in payAdvance.items.slice(0, 4)" :key="a.id">
+                <li v-for="a in payAdvance.items.slice(0, 4)" :key="a.id" :class="{ on: advWoSel?.id === a.id }">
                   <span class="adv-cp">{{ a.counterparty || '—' }}</span>
                   <span class="adv-bal">{{ fmtAmt(a.balance_amount) }}</span>
                   <span v-if="a.is_overdue" class="adv-od">逾期{{ a.overdue_days }}天</span>
+                  <button v-if="auth.canCreate" type="button" class="adv-use-btn" @click="selectAdvForWriteoff(a)">用此预收下账</button>
                 </li>
               </ul>
-              <div class="adv-hint-note">提示：如以预收冲抵本笔应收，请在「预收预付」页对预收做核销，避免现金流重复计收。</div>
+              <div v-if="advWoSel" class="adv-wo-form">
+                <div class="adv-wo-row">
+                  <span>用预收 <b>{{ advWoSel.counterparty || '—' }}</b>（余额 {{ fmtAmt(advWoSel.balance_amount) }}）抵扣本笔应收，未收 {{ fmtAmt(payRec?.outstanding_amount) }}：</span>
+                </div>
+                <div class="adv-wo-row">
+                  <input v-model="advWoForm.amount" type="number" step="0.01" class="adv-wo-amt" />
+                  <button class="btn btn-primary btn-xs" :disabled="advWoSaving" @click="applyAdvanceWriteoff">{{ advWoSaving ? '下账中…' : '确认用预收下账' }}</button>
+                  <button class="btn btn-ghost btn-xs" @click="advWoSel = null">取消</button>
+                </div>
+                <div class="adv-wo-tip">将核销该预收并生成「预收抵扣」回款，自动冲减未收余额（不计现金，避免重复）。</div>
+              </div>
+              <div v-else class="adv-hint-note">提示：可直接「用此预收下账」抵扣本笔应收（生成预收抵扣、不计现金）；或在预收页统一管理核销。下方录入则为正常现金回款。</div>
             </div>
             <div class="form-grid">
               <label class="form-field span2">
@@ -1319,4 +1361,14 @@ function clearFilters() {
 .adv-hint-list .adv-bal { font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; }
 .adv-hint-list .adv-od { color: #c62828; font-size: 11px; }
 .adv-hint-note { margin-top: 8px; font-size: 11px; color: var(--muted); line-height: 1.5; }
+.adv-hint-list li.on { background: rgba(76,175,80,0.12); border-radius: 6px; }
+.adv-use-btn { margin-left: auto; border: 1px solid #2e7d32; background: none; color: #2e7d32; border-radius: 6px; font-size: 11px; padding: 1px 8px; cursor: pointer; white-space: nowrap; }
+.adv-use-btn:hover { background: rgba(46,125,50,0.1); }
+.adv-wo-form { margin-top: 10px; padding: 9px 10px; border: 1px solid rgba(46,125,50,0.35); background: rgba(76,175,80,0.06); border-radius: 9px; }
+.adv-wo-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); margin-bottom: 6px; flex-wrap: wrap; }
+.adv-wo-row:last-of-type { margin-bottom: 0; }
+.adv-wo-row b { color: #2e7d32; }
+.adv-wo-amt { width: 130px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; font-size: 13px; }
+.btn-xs { padding: 4px 10px; font-size: 12px; }
+.adv-wo-tip { margin-top: 7px; font-size: 11px; color: var(--muted); line-height: 1.5; }
 </style>
