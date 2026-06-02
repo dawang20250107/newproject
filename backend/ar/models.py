@@ -350,6 +350,7 @@ class ARRecord(models.Model):
             'project_no': self.project.project_no,
             'short_name': self.project.short_name,
             'contract_name': self.project.contract_name,
+            'customer_name': self.project.customer_name,
             'delivery_dept': self.delivery_dept,
             'project_manager': self.project.project_manager,
             'sales_contact': self.project.sales_contact,

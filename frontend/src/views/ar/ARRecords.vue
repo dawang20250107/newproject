@@ -351,11 +351,15 @@ function openAddPayment(rec) {
   loadPayAdvance(rec)
 }
 
-// 拉取该项目的可用预收余额；无权限或无数据时静默隐藏提示。
+// 拉取可用预收：本项目的预收 ∪ 未挂项目但客户名匹配的散单预收。
+// 无权限或无数据时静默隐藏提示。
 async function loadPayAdvance(rec) {
-  if (!rec?.project_id) return
+  if (!rec?.project_id && !rec?.customer_name) return
   try {
-    const res = await ar.advancesAvailable({ project_id: rec.project_id, direction: '预收' })
+    const params = { direction: '预收' }
+    if (rec.project_id) params.project_id = rec.project_id
+    if (rec.customer_name) params.customer = rec.customer_name
+    const res = await ar.advancesAvailable(params)
     if (res.data?.count > 0) payAdvance.value = res.data
   } catch (_) { /* 无预收预付权限时静默 */ }
 }
@@ -1058,7 +1062,7 @@ function clearFilters() {
 
       <!-- Payment Modal -->
       <div v-if="showPayModal" class="modal-overlay" @click.self="showPayModal = false">
-        <div class="modal-box" style="max-width:400px">
+        <div class="modal-box" style="max-width:460px">
           <div class="modal-header">
             <div>
               <h3>录入回款</h3>
@@ -1075,7 +1079,8 @@ function clearFilters() {
                 <button class="adv-hint-link" type="button" @click="gotoAdvance">在预收页管理 →</button>
               </div>
               <ul class="adv-hint-list">
-                <li v-for="a in payAdvance.items.slice(0, 4)" :key="a.id" :class="{ on: advWoSel?.id === a.id }">
+                <li v-for="a in payAdvance.items.slice(0, 5)" :key="a.id" :class="{ on: advWoSel?.id === a.id }">
+                  <span class="adv-mt" :class="a.match_type === 'project' ? 'mt-proj' : 'mt-cust'">{{ a.match_type === 'project' ? '本项目' : '客户' }}</span>
                   <span class="adv-cp">{{ a.counterparty || '—' }}</span>
                   <span class="adv-bal">{{ fmtAmt(a.balance_amount) }}</span>
                   <span v-if="a.is_overdue" class="adv-od">逾期{{ a.overdue_days }}天</span>
@@ -1362,6 +1367,9 @@ function clearFilters() {
 .adv-hint-list .adv-od { color: #c62828; font-size: 11px; }
 .adv-hint-note { margin-top: 8px; font-size: 11px; color: var(--muted); line-height: 1.5; }
 .adv-hint-list li.on { background: rgba(76,175,80,0.12); border-radius: 6px; }
+.adv-mt { flex: none; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px; }
+.adv-mt.mt-proj { background: rgba(56,142,60,0.14); color: #2e7d32; }
+.adv-mt.mt-cust { background: rgba(21,101,192,0.14); color: #1565c0; }
 .adv-use-btn { margin-left: auto; border: 1px solid #2e7d32; background: none; color: #2e7d32; border-radius: 6px; font-size: 11px; padding: 1px 8px; cursor: pointer; white-space: nowrap; }
 .adv-use-btn:hover { background: rgba(46,125,50,0.1); }
 .adv-wo-form { margin-top: 10px; padding: 9px 10px; border: 1px solid rgba(46,125,50,0.35); background: rgba(76,175,80,0.06); border-radius: 9px; }

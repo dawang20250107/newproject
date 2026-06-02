@@ -858,6 +858,89 @@ class AdvanceModuleTests(TestCase):
         d = self.client.delete(f'/api/pk/ar/records/{ar.id}/payments/{pid}', **self.auth(admin))
         self.assertEqual(d.status_code, 400, d.content)  # 须经核销删除
 
+    # ── 可用预收：本项目 ∪ 散单客户匹配 ────────────────────────────────────────
+    def test_available_union_project_and_customer(self):
+        admin = self.make_user('13911100014', 'finance_director', role='super_admin')
+        proj = ARProject.objects.create(
+            contract_name='合同P', short_name='项目P', delivery_dept=self.dept,
+            customer_name='ACME物流', sales_contact='S', project_manager='M')
+        other = ARProject.objects.create(
+            contract_name='合同Q', short_name='项目Q', delivery_dept=self.dept,
+            customer_name='ACME物流', sales_contact='S', project_manager='M')
+        # A1：挂本项目
+        a1 = AdvanceRecord.objects.create(
+            direction='预收', project=proj, delivery_dept=self.dept, counterparty='ACME物流',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 1),
+            advance_amount=Decimal('50000'))
+        # A2：散单（无项目），往来单位 == 客户名（精确匹配）
+        a2 = AdvanceRecord.objects.create(
+            direction='预收', delivery_dept=self.dept, counterparty='ACME物流',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 2),
+            advance_amount=Decimal('30000'))
+        # A2b：散单但往来单位仅部分包含客户名 → 精确匹配下排除
+        AdvanceRecord.objects.create(
+            direction='预收', delivery_dept=self.dept, counterparty='ACME物流有限公司',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 5),
+            advance_amount=Decimal('11111'))
+        # A3：散单但别的客户 → 排除
+        AdvanceRecord.objects.create(
+            direction='预收', delivery_dept=self.dept, counterparty='别的客户',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 3),
+            advance_amount=Decimal('99999'))
+        # A4：挂另一项目（同客户名）→ 排除（不能冲抵本项目应收）
+        AdvanceRecord.objects.create(
+            direction='预收', project=other, delivery_dept=self.dept, counterparty='ACME物流',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 4),
+            advance_amount=Decimal('77777'))
+        resp = self.client.get('/api/pk/ar/advances/available',
+                               {'project_id': proj.id, 'customer': 'ACME物流',
+                                'direction': '预收'}, **self.auth(admin))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['count'], 2)
+        self.assertEqual(d['total_balance'], '80000.00')
+        ids = {it['id'] for it in d['items']}
+        self.assertEqual(ids, {a1.id, a2.id})
+        mt = {it['id']: it['match_type'] for it in d['items']}
+        self.assertEqual(mt[a1.id], 'project')
+        self.assertEqual(mt[a2.id], 'customer')
+
+    def test_offset_with_standalone_advance(self):
+        admin = self.make_user('13911100015', 'finance_director', role='super_admin')
+        proj = ARProject.objects.create(
+            contract_name='合同R', short_name='项目R', delivery_dept=self.dept,
+            customer_name='ACME', sales_contact='S', project_manager='M')
+        ar = self._ar_record(proj, 100000)
+        adv = AdvanceRecord.objects.create(   # 散单预收，无项目
+            direction='预收', delivery_dept=self.dept, counterparty='ACME',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 1),
+            advance_amount=Decimal('60000'))
+        w = self.post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
+                      {'amount': 60000, 'writeoff_date': '2026-03-20',
+                       'ar_record_id': ar.id}, admin)
+        self.assertEqual(w.status_code, 200, w.content)
+        adv.refresh_from_db(); ar.refresh_from_db()
+        self.assertEqual(adv.balance_amount, Decimal('0.00'))
+        self.assertEqual(ar.outstanding_amount, Decimal('40000.00'))
+        pay = ARPayment.objects.get(pk=w.json()['data']['ar_payment_id'])
+        self.assertEqual(pay.source, '预收抵扣')
+
+    def test_offsettable_records_by_customer(self):
+        admin = self.make_user('13911100016', 'finance_director', role='super_admin')
+        proj = ARProject.objects.create(
+            contract_name='合同S', short_name='项目S', delivery_dept=self.dept,
+            customer_name='ACME物流', sales_contact='S', project_manager='M')
+        other = ARProject.objects.create(
+            contract_name='合同T', short_name='项目T', delivery_dept=self.dept,
+            customer_name='别的客户', sales_contact='S', project_manager='M')
+        r1 = self._ar_record(proj, 50000)
+        self._ar_record(other, 70000)  # 别的客户 → 不应出现
+        resp = self.client.get('/api/pk/ar/advances/offsettable',
+                               {'customer': 'ACME物流'}, **self.auth(admin))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        items = resp.json()['data']['items']
+        self.assertEqual([it['id'] for it in items], [r1.id])
+
     def test_available_lookup_respects_field_permission(self):
         cfg = default_job_config('operator')
         cfg['ar_view']['adv_amount'] = False

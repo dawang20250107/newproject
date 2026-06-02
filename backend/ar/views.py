@@ -2451,9 +2451,15 @@ def advances_summary(request):
 def advances_available(request):
     """可用预收/预付查询 — 供应收回款 / 排款界面联动弹出。
 
-    返回指定方向(默认预收)下、按项目/部门/往来单位过滤后仍有未核销余额
-    (balance_amount > 0) 的明细及合计，便于在录入回款（预收）或排款（预付）
-    时一眼看到「该客户/项目还有多少预收/预付可冲抵」。只读，不改动任何账务。
+    返回指定方向(默认预收)下仍有未核销余额(balance_amount > 0)的明细及合计。
+
+    匹配口径（可组合，按 OR 取并集）：
+    - project_id：挂在该项目下的预收/预付；
+    - customer：未挂项目、且往来单位 = 该客户名（忽略大小写/首尾空格的精确匹配）
+      的「散单」预收/预付，用于"未挂项目、只记了客户名"的预收也能在回款界面弹出。
+      采用精确匹配以保证与「应收明细→可冲抵预收」双向一致、口径严谨。
+    另有 dept / counterparty 作为附加的 AND 过滤（部门精确、往来单位包含）。
+    只读，不改动任何账务。
     """
     denied = _page_denied(request, 'ar_advance')
     if denied:
@@ -2470,9 +2476,21 @@ def advances_available(request):
     qs = _advance_dept_filter(
         AdvanceRecord.objects.select_related('project'), request)
     qs = qs.filter(direction=direction, balance_amount__gt=0)
+
+    # 并集匹配：本项目 ∪ 散单(无项目)且客户名匹配
+    match_clauses = []
     project_id = request.GET.get('project_id', '').strip()
     if project_id:
-        qs = qs.filter(project_id=int(project_id))
+        match_clauses.append(Q(project_id=int(project_id)))
+    customer = request.GET.get('customer', '').strip()
+    if customer:
+        match_clauses.append(Q(project__isnull=True, counterparty__iexact=customer))
+    if match_clauses:
+        combined = match_clauses[0]
+        for c in match_clauses[1:]:
+            combined |= c
+        qs = qs.filter(combined)
+
     dept = request.GET.get('dept', '').strip()
     if dept:
         qs = qs.filter(delivery_dept=dept)
@@ -2483,8 +2501,10 @@ def advances_available(request):
     total_balance = (agg['total'] or Decimal('0')).quantize(Decimal('0.01'))
     items = [{
         'id': r.id,
+        'project_id': r.project_id,
         'project_no': r.project.project_no if r.project_id else None,
         'short_name': r.project.short_name if r.project_id else None,
+        'match_type': 'project' if r.project_id else 'customer',
         'counterparty': r.counterparty,
         'delivery_dept': r.delivery_dept,
         'occur_date': str(r.occur_date) if r.occur_date else None,
@@ -2505,27 +2525,41 @@ def advances_available(request):
 @csrf_exempt
 @pk_required()
 def advance_offsettable_records(request):
-    """列出可被预收冲抵的应收明细（同项目、未收余额 > 0），供预收核销弹窗选择。"""
+    """列出可被预收冲抵的应收明细（未收余额 > 0），供预收核销弹窗选择。
+
+    入参二选一：
+    - project_id：该项目下的应收明细（预收挂了项目时）；
+    - customer：按项目客户名匹配的应收明细（散单预收，未挂项目时）。
+    """
     denied = _page_denied(request, 'ar_advance')
     if denied:
         return denied
     if request.method != 'GET':
         return err('Method not allowed', 405)
     project_id = request.GET.get('project_id', '').strip()
-    if not project_id:
-        return err('缺少 project_id')
-    qs = ARRecord.objects.select_related('project').filter(
-        project_id=int(project_id), outstanding_amount__gt=0)
+    customer = request.GET.get('customer', '').strip()
+    qs = ARRecord.objects.select_related('project').filter(outstanding_amount__gt=0)
+    if project_id:
+        qs = qs.filter(project_id=int(project_id))
+    elif customer:
+        # 与 advances_available 对称：散单预收的往来单位 == 项目客户名（精确匹配）
+        qs = qs.filter(project__customer_name__iexact=customer)
+    else:
+        return err('缺少 project_id 或 customer')
     if request.pk_role != 'super_admin':
         qs = qs.filter(delivery_dept__in=request.pk_depts)
-    qs = qs.order_by('operation_year', 'operation_month')
+    qs = qs.order_by('project__short_name', 'operation_year', 'operation_month')
+    by_customer = bool(customer) and not project_id
     items = [{
         'id': r.id,
+        'project_id': r.project_id,
+        'short_name': r.project.short_name,
         'operation_year': r.operation_year,
         'operation_month': r.operation_month,
         'estimated_amount': str(r.estimated_amount),
         'outstanding_amount': str(r.outstanding_amount),
-        'label': (f'{r.operation_year}-{r.operation_month:02d} · 未收 '
+        'label': ((f'{r.project.short_name} · ' if by_customer else '')
+                  + f'{r.operation_year}-{r.operation_month:02d} · 未收 '
                   f'{r.outstanding_amount:,.2f}'),
     } for r in qs[:100]]
     return ok({'items': items})

@@ -162,7 +162,9 @@ const woSaving = ref(false)
 // 预收核销可选「冲抵某条应收明细」→ 自动生成预收抵扣回款
 const woOffsetRecords = ref([])
 const canOffset = computed(() =>
-  woRec.value?.direction === '预收' && !!woRec.value?.project_id && woOffsetRecords.value.length > 0)
+  woRec.value?.direction === '预收' &&
+  (!!woRec.value?.project_id || !!woRec.value?.counterparty) &&
+  woOffsetRecords.value.length > 0)
 
 async function openWriteoffs(rec) {
   woRec.value = rec
@@ -172,9 +174,13 @@ async function openWriteoffs(rec) {
   await Promise.all([refreshWriteoffs(), loadOffsetRecords(rec)])
 }
 async function loadOffsetRecords(rec) {
-  if (rec.direction !== '预收' || !rec.project_id) return
+  if (rec.direction !== '预收') return
+  // 挂项目→按项目；散单→按客户名匹配应收明细
+  const params = rec.project_id ? { project_id: rec.project_id }
+    : (rec.counterparty ? { customer: rec.counterparty } : null)
+  if (!params) return
   try {
-    const res = await ar.advanceOffsettable({ project_id: rec.project_id })
+    const res = await ar.advanceOffsettable(params)
     woOffsetRecords.value = res.data.items || []
   } catch (_) { woOffsetRecords.value = [] }
 }
