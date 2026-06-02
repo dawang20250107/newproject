@@ -714,3 +714,54 @@ class AdvanceModuleTests(TestCase):
         row = resp.json()['data']['items'][0]
         self.assertIsNone(row['advance_amount'])      # masked
         self.assertEqual(row['counterparty'], '客户甲')  # still visible
+
+    # ── 可用预收/预付联动查询（供回款/排款页弹出）─────────────────────────────
+    def test_available_lookup_by_project(self):
+        admin = self.make_user('13911100007', 'finance_director', role='super_admin')
+        proj = self.create_project()
+        # 一笔部分核销的预收（余额 70000）+ 一笔已核销的预收（余额 0，应排除）
+        a1 = AdvanceRecord.objects.create(
+            direction='预收', project=proj, delivery_dept=self.dept, counterparty='客户甲',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 10),
+            advance_amount=Decimal('100000'))
+        AdvanceWriteoff.objects.create(advance_record=a1, writeoff_no=1,
+                                       amount=Decimal('30000'), writeoff_date=date(2026, 4, 1))
+        a1.recompute_derived()
+        a2 = AdvanceRecord.objects.create(
+            direction='预收', project=proj, delivery_dept=self.dept, counterparty='客户甲',
+            occur_year=2026, occur_month=2, occur_date=date(2026, 2, 1),
+            advance_amount=Decimal('20000'))
+        AdvanceWriteoff.objects.create(advance_record=a2, writeoff_no=1,
+                                       amount=Decimal('20000'), writeoff_date=date(2026, 3, 1))
+        a2.recompute_derived()
+        # 一笔预付（方向不同，预收查询应排除）
+        AdvanceRecord.objects.create(
+            direction='预付', project=proj, delivery_dept=self.dept, counterparty='供应商乙',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 12),
+            advance_amount=Decimal('50000'))
+        resp = self.client.get('/api/pk/ar/advances/available',
+                               {'project_id': proj.id, 'direction': '预收'}, **self.auth(admin))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['count'], 1)                 # 仅 a1 仍有余额
+        self.assertEqual(d['total_balance'], '70000.00')
+        self.assertEqual(d['items'][0]['id'], a1.id)
+        # 预付方向
+        resp_p = self.client.get('/api/pk/ar/advances/available',
+                                 {'project_id': proj.id, 'direction': '预付'}, **self.auth(admin))
+        self.assertEqual(resp_p.json()['data']['total_balance'], '50000.00')
+
+    def test_available_lookup_respects_field_permission(self):
+        cfg = default_job_config('operator')
+        cfg['ar_view']['adv_amount'] = False
+        JobPermission.objects.update_or_create(job_title='operator', defaults={'config': cfg})
+        _invalidate_perm_cache()
+        user = self.make_user('13911100008', 'operator', role='operator')
+        proj = self.create_project()
+        AdvanceRecord.objects.create(
+            direction='预收', project=proj, delivery_dept=self.dept, counterparty='客户甲',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 10),
+            advance_amount=Decimal('100000'))
+        resp = self.client.get('/api/pk/ar/advances/available',
+                               {'project_id': proj.id}, **self.auth(user))
+        self.assertEqual(resp.status_code, 403)         # 金额字段被遮蔽 → 拒绝

@@ -31,6 +31,7 @@ urlpatterns = [
     path('advances', views.advances),
     path('advances/kpi', views.advances_kpi),
     path('advances/summary', views.advances_summary),
+    path('advances/available', views.advances_available),
     path('advances/template', views.advance_template),
     path('advances/import', views.advance_import),
     path('advances/export', views.advance_export),

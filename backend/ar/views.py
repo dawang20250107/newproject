@@ -2439,6 +2439,62 @@ def advances_summary(request):
 
 @csrf_exempt
 @pk_required()
+def advances_available(request):
+    """可用预收/预付查询 — 供应收回款 / 排款界面联动弹出。
+
+    返回指定方向(默认预收)下、按项目/部门/往来单位过滤后仍有未核销余额
+    (balance_amount > 0) 的明细及合计，便于在录入回款（预收）或排款（预付）
+    时一眼看到「该客户/项目还有多少预收/预付可冲抵」。只读，不改动任何账务。
+    """
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    denied = _ar_field_denied(request, 'adv_amount')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    direction = (request.GET.get('direction', '预收').strip() or '预收')
+    if direction not in ADVANCE_DIRECTIONS:
+        return err('方向无效，应为 预收 或 预付')
+    today = datetime.date.today()
+    qs = _advance_dept_filter(
+        AdvanceRecord.objects.select_related('project'), request)
+    qs = qs.filter(direction=direction, balance_amount__gt=0)
+    project_id = request.GET.get('project_id', '').strip()
+    if project_id:
+        qs = qs.filter(project_id=int(project_id))
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+    counterparty = request.GET.get('counterparty', '').strip()
+    if counterparty:
+        qs = qs.filter(counterparty__icontains=counterparty)
+    agg = qs.aggregate(total=Sum('balance_amount'), cnt=Count('id'))
+    total_balance = (agg['total'] or Decimal('0')).quantize(Decimal('0.01'))
+    items = [{
+        'id': r.id,
+        'project_no': r.project.project_no if r.project_id else None,
+        'short_name': r.project.short_name if r.project_id else None,
+        'counterparty': r.counterparty,
+        'delivery_dept': r.delivery_dept,
+        'occur_date': str(r.occur_date) if r.occur_date else None,
+        'advance_amount': str(r.advance_amount),
+        'balance_amount': str(r.balance_amount),
+        'expected_writeoff_date': (str(r.expected_writeoff_date)
+                                   if r.expected_writeoff_date else None),
+        **r.aging_dict(today),
+    } for r in qs.order_by('-balance_amount')[:50]]
+    return ok({
+        'direction': direction,
+        'count': agg['cnt'] or 0,
+        'total_balance': str(total_balance),
+        'items': items,
+    })
+
+
+@csrf_exempt
+@pk_required()
 def advance_template(request):
     denied = _page_denied(request, 'ar_advance')
     if denied:

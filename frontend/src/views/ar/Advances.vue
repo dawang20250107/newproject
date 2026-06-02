@@ -1,13 +1,17 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
 
 const auth = useAuthStore()
+const route = useRoute()
 
 const direction = ref('预收')          // 预收 / 预付
+// 来自应收回款页的联动跳转：?project_id=&direction= → 预筛某项目的预收/预付
+const projectFilter = ref(null)        // { id, label } or null
 const items = ref([])
 const total = ref(0)
 const kpi = ref(null)
@@ -39,6 +43,7 @@ async function load(reset = false) {
   loading.value = true
   try {
     const params = { direction: direction.value, ...filters, page: page.value, size }
+    if (projectFilter.value) params.project_id = projectFilter.value.id
     const [res, k] = await Promise.all([
       ar.listAdvances(params),
       ar.advancesKpi({ direction: direction.value, ...filters }),
@@ -215,7 +220,16 @@ function woStatusClass(s) {
   return s === '已核销' ? 'pill-ok' : s === '部分核销' ? 'pill-blue' : 'pill-muted'
 }
 
-onMounted(() => load())
+function clearProjectFilter() { projectFilter.value = null; load(true) }
+
+onMounted(() => {
+  const q = route.query || {}
+  if (q.direction === '预收' || q.direction === '预付') direction.value = q.direction
+  if (q.project_id) {
+    projectFilter.value = { id: Number(q.project_id), label: q.project_no || `项目#${q.project_id}` }
+  }
+  load()
+})
 </script>
 
 <template>
@@ -266,6 +280,9 @@ onMounted(() => load())
           <option value="已核销">已核销</option>
         </select>
         <input v-model="filters.q" class="inp sm" placeholder="🔍 搜索往来单位 / 项目 / 备注" @input="onQInput" />
+        <button v-if="projectFilter" class="proj-chip" @click="clearProjectFilter">
+          项目：{{ projectFilter.label }} ✕
+        </button>
         <div class="spacer"></div>
         <button class="btn btn-ghost btn-sm" @click="downloadTemplate">下载模板</button>
         <label v-if="canCreate" class="btn btn-ghost btn-sm" :class="{ disabled: importing }">
@@ -432,6 +449,8 @@ onMounted(() => load())
 
 .filter-row { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
 .spacer { flex: 1; min-width: 8px; }
+.proj-chip { padding: 5px 10px; border: 1px solid var(--primary); border-radius: 999px; background: rgba(var(--primary-rgb,255,138,76),0.1); color: var(--primary); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.proj-chip:hover { background: rgba(var(--primary-rgb,255,138,76),0.18); }
 .sel, .inp { padding: 6px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); font-size: 13px; }
 /* override global `input,select{width:100%}` so filters are small boxes, not full-width bars */
 .filter-row .sel, .filter-row .inp { width: auto; font-size: 12.5px; }

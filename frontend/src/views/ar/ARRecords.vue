@@ -1,12 +1,13 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
 
 const route = useRoute()
+const router = useRouter()
 
 const auth = useAuthStore()
 const items = ref([])
@@ -90,6 +91,8 @@ const showPayModal = ref(false)
 const payRec = ref(null)
 const payForm = reactive({ amount: '', payment_date: '', notes: '' })
 const paySaving = ref(false)
+// 录入回款时联动：该项目可用预收（只读提示，便于判断是否以预收冲抵应收）
+const payAdvance = ref(null)
 const expandedPayments = ref({})
 const importing = ref(false)
 const exporting = ref(false)
@@ -342,7 +345,25 @@ function togglePayments(id) { expandedPayments.value[id] = !expandedPayments.val
 function openAddPayment(rec) {
   payRec.value = rec
   Object.assign(payForm, { amount: '', payment_date: todayCST(), notes: '' })
+  payAdvance.value = null
   showPayModal.value = true
+  loadPayAdvance(rec)
+}
+
+// 拉取该项目的可用预收余额；无权限或无数据时静默隐藏提示。
+async function loadPayAdvance(rec) {
+  if (!rec?.project_id) return
+  try {
+    const res = await ar.advancesAvailable({ project_id: rec.project_id, direction: '预收' })
+    if (res.data?.count > 0) payAdvance.value = res.data
+  } catch (_) { /* 无预收预付权限时静默 */ }
+}
+
+// 跳转到预收预付页，预筛该项目的预收，便于在那里做核销冲抵。
+function gotoAdvance() {
+  const pid = payRec.value?.project_id
+  showPayModal.value = false
+  router.push({ path: '/ar/advances', query: { project_id: pid, direction: '预收' } })
 }
 
 async function savePayment() {
@@ -1015,6 +1036,22 @@ function clearFilters() {
             <button class="modal-close" @click="showPayModal = false">✕</button>
           </div>
           <div class="modal-body">
+            <div v-if="payAdvance" class="adv-hint">
+              <div class="adv-hint-head">
+                <span class="adv-hint-tag">可用预收</span>
+                <span>该项目尚有 <b>{{ payAdvance.count }}</b> 笔预收，余额合计
+                  <b>{{ fmtAmt(payAdvance.total_balance) }}</b></span>
+                <button class="adv-hint-link" type="button" @click="gotoAdvance">去核销冲抵 →</button>
+              </div>
+              <ul class="adv-hint-list">
+                <li v-for="a in payAdvance.items.slice(0, 4)" :key="a.id">
+                  <span class="adv-cp">{{ a.counterparty || '—' }}</span>
+                  <span class="adv-bal">{{ fmtAmt(a.balance_amount) }}</span>
+                  <span v-if="a.is_overdue" class="adv-od">逾期{{ a.overdue_days }}天</span>
+                </li>
+              </ul>
+              <div class="adv-hint-note">提示：如以预收冲抵本笔应收，请在「预收预付」页对预收做核销，避免现金流重复计收。</div>
+            </div>
             <div class="form-grid">
               <label class="form-field span2">
                 <span>回款金额 <em>*</em></span>
@@ -1265,4 +1302,19 @@ function clearFilters() {
 .page-btn:hover { border-color: var(--primary); color: var(--primary); }
 .page-btn:disabled { opacity: 0.35; cursor: default; }
 .page-info { font-size: 13px; color: var(--muted); }
+
+/* 录入回款 · 可用预收提示 */
+.adv-hint { margin-bottom: 14px; padding: 10px 12px; border: 1px solid rgba(56,142,60,0.28);
+  background: rgba(76,175,80,0.08); border-radius: 12px; }
+.adv-hint-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text); flex-wrap: wrap; }
+.adv-hint-tag { padding: 1px 8px; border-radius: 999px; background: #2e7d32; color: #fff; font-size: 11px; font-weight: 600; }
+.adv-hint-head b { color: #2e7d32; }
+.adv-hint-link { margin-left: auto; border: none; background: none; color: var(--primary); cursor: pointer; font-size: 12px; padding: 0; }
+.adv-hint-link:hover { text-decoration: underline; }
+.adv-hint-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.adv-hint-list li { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+.adv-hint-list .adv-cp { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adv-hint-list .adv-bal { font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; }
+.adv-hint-list .adv-od { color: #c62828; font-size: 11px; }
+.adv-hint-note { margin-top: 8px; font-size: 11px; color: var(--muted); line-height: 1.5; }
 </style>
