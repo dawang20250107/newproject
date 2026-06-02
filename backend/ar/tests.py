@@ -751,6 +751,95 @@ class AdvanceModuleTests(TestCase):
                                  {'project_id': proj.id, 'direction': '预付'}, **self.auth(admin))
         self.assertEqual(resp_p.json()['data']['total_balance'], '50000.00')
 
+    # ── 预收核销自动转回款（冲减应收）+ 现金流不重复计 ─────────────────────────
+    def _ar_record(self, proj, est, year=2026, month=2):
+        return ARRecord.objects.create(
+            project=proj, operation_year=year, operation_month=month,
+            estimated_amount=Decimal(str(est)))
+
+    def test_writeoff_offsets_ar_record_and_reverses_on_delete(self):
+        admin = self.make_user('13911100010', 'finance_director', role='super_admin')
+        proj = self.create_project()
+        ar = self._ar_record(proj, 100000)
+        adv = AdvanceRecord.objects.create(
+            direction='预收', project=proj, delivery_dept=self.dept, counterparty='客户甲',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 10),
+            advance_amount=Decimal('100000'))
+        # 核销 40000 并冲抵该应收明细
+        w = self.post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
+                      {'amount': 40000, 'writeoff_date': '2026-03-20',
+                       'ar_record_id': ar.id}, admin)
+        self.assertEqual(w.status_code, 200, w.content)
+        wj = w.json()['data']
+        self.assertEqual(wj['ar_record_id'], ar.id)
+        self.assertIsNotNone(wj['ar_payment_id'])
+        adv.refresh_from_db(); ar.refresh_from_db()
+        self.assertEqual(adv.balance_amount, Decimal('60000.00'))   # 预收余额减少
+        self.assertEqual(ar.outstanding_amount, Decimal('60000.00'))  # 应收 outstanding 减少
+        pay = ARPayment.objects.get(pk=wj['ar_payment_id'])
+        self.assertEqual(pay.source, '预收抵扣')
+        self.assertEqual(pay.amount, Decimal('40000.00'))
+        # 现金流：预收 100000 计入流入；预收抵扣 40000 不重复计现金（collected 排除）
+        resp = self.client.get('/api/pk/ar/cashflow',
+                               {'start_date': '2026-03-01', 'end_date': '2026-03-31',
+                                'depts': self.dept}, **self.auth(admin))
+        t = resp.json()['data']['totals']
+        self.assertEqual(t['advance_received'][0], 100000.0)
+        self.assertEqual(t['collected'][0], 0.0)       # 预收抵扣不计入现金回款
+        self.assertEqual(t['inflow'][0], 100000.0)     # 不重复计
+        # 删除核销 → 应收 outstanding 与预收余额均恢复，预收抵扣回款被删除
+        d = self.client.delete(
+            f'/api/pk/ar/advances/{adv.id}/writeoffs/{wj["id"]}', **self.auth(admin))
+        self.assertEqual(d.status_code, 200, d.content)
+        adv.refresh_from_db(); ar.refresh_from_db()
+        self.assertEqual(adv.balance_amount, Decimal('100000.00'))
+        self.assertEqual(ar.outstanding_amount, Decimal('100000.00'))
+        self.assertFalse(ARPayment.objects.filter(pk=wj['ar_payment_id']).exists())
+
+    def test_offset_amount_cannot_exceed_outstanding(self):
+        admin = self.make_user('13911100011', 'finance_director', role='super_admin')
+        proj = self.create_project()
+        ar = self._ar_record(proj, 30000)
+        adv = AdvanceRecord.objects.create(
+            direction='预收', project=proj, delivery_dept=self.dept, counterparty='客户甲',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 10),
+            advance_amount=Decimal('100000'))
+        w = self.post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
+                      {'amount': 40000, 'writeoff_date': '2026-03-20',
+                       'ar_record_id': ar.id}, admin)
+        self.assertEqual(w.status_code, 400, w.content)
+        ar.refresh_from_db(); adv.refresh_from_db()
+        self.assertEqual(ar.outstanding_amount, Decimal('30000.00'))  # 未变
+        self.assertEqual(adv.balance_amount, Decimal('100000.00'))    # 未生成核销
+
+    def test_offset_only_for_receivable_direction(self):
+        admin = self.make_user('13911100012', 'finance_director', role='super_admin')
+        proj = self.create_project()
+        ar = self._ar_record(proj, 100000)
+        adv = AdvanceRecord.objects.create(
+            direction='预付', project=proj, delivery_dept=self.dept, counterparty='供应商乙',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 10),
+            advance_amount=Decimal('100000'))
+        w = self.post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
+                      {'amount': 10000, 'writeoff_date': '2026-03-20',
+                       'ar_record_id': ar.id}, admin)
+        self.assertEqual(w.status_code, 400, w.content)
+
+    def test_offset_payment_cannot_be_deleted_directly(self):
+        admin = self.make_user('13911100013', 'finance_director', role='super_admin')
+        proj = self.create_project()
+        ar = self._ar_record(proj, 100000)
+        adv = AdvanceRecord.objects.create(
+            direction='预收', project=proj, delivery_dept=self.dept, counterparty='客户甲',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 10),
+            advance_amount=Decimal('100000'))
+        w = self.post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
+                      {'amount': 40000, 'writeoff_date': '2026-03-20',
+                       'ar_record_id': ar.id}, admin)
+        pid = w.json()['data']['ar_payment_id']
+        d = self.client.delete(f'/api/pk/ar/records/{ar.id}/payments/{pid}', **self.auth(admin))
+        self.assertEqual(d.status_code, 400, d.content)  # 须经核销删除
+
     def test_available_lookup_respects_field_permission(self):
         cfg = default_job_config('operator')
         cfg['ar_view']['adv_amount'] = False

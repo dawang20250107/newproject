@@ -278,7 +278,7 @@ function setPage(p) { filters.page = p; load() }
               <td v-if="auth.canView('approval_number')">{{ p.approval_number || '—' }}</td>
               <td v-if="auth.canView('project_desc')" class="cell-clip cell-desc"
                 @mouseenter="showTip($event, p.project_desc)" @mousemove="moveTip" @mouseleave="hideTip">
-                {{ p.project_desc }}
+                <span v-if="p.project_no" class="proj-no">{{ p.project_no }}</span>{{ p.project_desc }}
               </td>
               <td v-if="auth.canView('payee')" class="cell-clip cell-payee"
                 @mouseenter="showTip($event, p.payee)" @mousemove="moveTip" @mouseleave="hideTip">
@@ -460,6 +460,7 @@ function setPage(p) { filters.page = p; load() }
   cursor: default;
 }
 .cell-desc { max-width: 160px; }
+.proj-no { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 5px; background: rgba(201,99,66,0.1); color: var(--primary); font-size: 11px; font-weight: 600; }
 .cell-payee { max-width: 110px; }
 .cell-tooltip {
   position: fixed;

@@ -1741,6 +1741,11 @@ def ar_payment_detail(request, pk, ppk):
     if denied:
         return denied
 
+    # 「预收抵扣」回款由预收核销自动生成，须在预收预付页改/删对应核销，
+    # 不能在此直接编辑或删除（否则两侧台账会失衡）。
+    if pay.source == '预收抵扣' and request.method in ('PUT', 'DELETE'):
+        return err('该回款由预收核销生成，请在「预收预付」页修改或删除对应核销', 400)
+
     if request.method == 'PUT':
         denied = _write_denied(request)
         if denied:
@@ -2495,6 +2500,35 @@ def advances_available(request):
 
 @csrf_exempt
 @pk_required()
+def advance_offsettable_records(request):
+    """列出可被预收冲抵的应收明细（同项目、未收余额 > 0），供预收核销弹窗选择。"""
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    project_id = request.GET.get('project_id', '').strip()
+    if not project_id:
+        return err('缺少 project_id')
+    qs = ARRecord.objects.select_related('project').filter(
+        project_id=int(project_id), outstanding_amount__gt=0)
+    if request.pk_role != 'super_admin':
+        qs = qs.filter(delivery_dept__in=request.pk_depts)
+    qs = qs.order_by('operation_year', 'operation_month')
+    items = [{
+        'id': r.id,
+        'operation_year': r.operation_year,
+        'operation_month': r.operation_month,
+        'estimated_amount': str(r.estimated_amount),
+        'outstanding_amount': str(r.outstanding_amount),
+        'label': (f'{r.operation_year}-{r.operation_month:02d} · 未收 '
+                  f'{r.outstanding_amount:,.2f}'),
+    } for r in qs[:100]]
+    return ok({'items': items})
+
+
+@csrf_exempt
+@pk_required()
 def advance_template(request):
     denied = _page_denied(request, 'ar_advance')
     if denied:
@@ -2730,6 +2764,10 @@ def advance_writeoffs(request, pk):
         wo_date = _normalize_date(data.get('writeoff_date'))
         if not wo_date:
             return err('核销日期无效')
+        ar_rec, offset_err = _resolve_offset_ar_record(
+            request, rec, data.get('ar_record_id'), amount)
+        if offset_err:
+            return offset_err
         try:
             with transaction.atomic():
                 last = rec.writeoffs.select_for_update().order_by('-writeoff_no').first()
@@ -2737,11 +2775,49 @@ def advance_writeoffs(request, pk):
                 wo = AdvanceWriteoff.objects.create(
                     advance_record=rec, writeoff_no=next_no, amount=amount,
                     writeoff_date=wo_date, notes=(data.get('notes') or '').strip())
+                if ar_rec is not None:
+                    pay = _create_offset_payment(rec, ar_rec, amount, wo_date)
+                    AdvanceWriteoff.objects.filter(pk=wo.pk).update(
+                        ar_record=ar_rec, ar_payment=pay)
+                    wo.ar_record = ar_rec
+                    wo.ar_payment = pay
         except ValidationError as e:
             return err(str(e.message if hasattr(e, 'message') else e), 400)
         return ok(wo.to_dict())
 
     return err('Method not allowed', 405)
+
+
+def _resolve_offset_ar_record(request, advance, ar_record_id, amount):
+    """校验预收核销冲抵的应收明细。返回 (ARRecord|None, err_response|None)。"""
+    if not ar_record_id:
+        return None, None
+    if advance.direction != '预收':
+        return None, err('仅「预收」可冲抵应收账款（应收回款）')
+    try:
+        ar = ARRecord.objects.select_related('project').get(pk=int(ar_record_id))
+    except (ARRecord.DoesNotExist, ValueError, TypeError):
+        return None, err('所选应收明细不存在', 404)
+    if request.pk_role != 'super_admin' and ar.delivery_dept not in request.pk_depts:
+        return None, err('无权操作该应收明细所属部门', 403)
+    if advance.project_id and ar.project_id != advance.project_id:
+        return None, err('所选应收明细与预收所属项目不一致，无法冲抵')
+    outstanding = ar.outstanding_amount or Decimal('0')
+    if amount > outstanding:
+        return None, err(f'冲抵金额 {amount:,.2f} 超过该应收未收余额 {outstanding:,.2f}')
+    return ar, None
+
+
+def _create_offset_payment(advance, ar_record, amount, pay_date):
+    """为预收核销生成一笔「预收抵扣」回款，冲减应收 outstanding。"""
+    last = ar_record.payments.select_for_update().order_by('-payment_no').first()
+    next_no = (last.payment_no + 1) if last else 1
+    note = f'预收核销冲抵 · 预收#{advance.id}'
+    if advance.counterparty:
+        note += f'（{advance.counterparty}）'
+    return ARPayment.objects.create(
+        ar_record=ar_record, payment_no=next_no, amount=amount,
+        payment_date=pay_date, source='预收抵扣', notes=note)
 
 
 @csrf_exempt
@@ -2766,17 +2842,32 @@ def advance_writeoff_detail(request, pk, wid):
         if denied:
             return denied
         data = _parse_body(request)
+        new_amount = None
         if 'amount' in data:
-            amount = _dec(data['amount'])
-            if amount <= 0:
+            new_amount = _dec(data['amount'])
+            if new_amount <= 0:
                 return err('核销金额必须大于0')
-            wo.amount = amount
+            # 若该核销已生成「预收抵扣」回款，新金额不得超过应收可冲抵额
+            # （当前未收余额 + 本笔已冲抵额）。
+            if wo.ar_payment_id:
+                ar = wo.ar_payment.ar_record
+                available = (ar.outstanding_amount or Decimal('0')) + (wo.ar_payment.amount or Decimal('0'))
+                if new_amount > available:
+                    return err(f'冲抵金额 {new_amount:,.2f} 超过该应收可冲抵额 {available:,.2f}')
+            wo.amount = new_amount
         if 'writeoff_date' in data:
             wo.writeoff_date = _normalize_date(data['writeoff_date']) or wo.writeoff_date
         if 'notes' in data:
             wo.notes = (data['notes'] or '').strip()
         try:
-            wo.save()
+            with transaction.atomic():
+                if wo.ar_payment_id and (new_amount is not None or 'writeoff_date' in data):
+                    pay = wo.ar_payment
+                    if new_amount is not None:
+                        pay.amount = new_amount
+                    pay.payment_date = wo.writeoff_date
+                    pay.save()  # 触发应收 outstanding 重算
+                wo.save()
         except ValidationError as e:
             return err(str(e.message if hasattr(e, 'message') else e), 400)
         return ok(wo.to_dict())
@@ -2848,10 +2939,12 @@ def cashflow(request):
             y += 1
     month_keys = [f'{y}-{m:02d}' for y, m in months]
 
-    # AR collections by month across all requested depts
+    # AR collections by month across all requested depts.
+    # 排除「预收抵扣」：其现金已在预收发生时计入流入，重复计会虚增现金。
     ar_coll = (ARPayment.objects
                .filter(payment_date__gte=start_date, payment_date__lte=end_date,
                        ar_record__delivery_dept__in=depts)
+               .exclude(source='预收抵扣')
                .annotate(ym=TruncMonth('payment_date'))
                .values('ym', 'ar_record__delivery_dept')
                .annotate(collected=Sum('amount')))

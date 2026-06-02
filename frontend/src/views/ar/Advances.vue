@@ -148,14 +148,26 @@ async function removeRec(rec) {
 const showWoModal = ref(false)
 const woRec = ref(null)
 const woList = ref([])
-const woForm = reactive({ amount: '', writeoff_date: todayCST(), notes: '' })
+const woForm = reactive({ amount: '', writeoff_date: todayCST(), notes: '', ar_record_id: '' })
 const woSaving = ref(false)
+// 预收核销可选「冲抵某条应收明细」→ 自动生成预收抵扣回款
+const woOffsetRecords = ref([])
+const canOffset = computed(() =>
+  woRec.value?.direction === '预收' && !!woRec.value?.project_id && woOffsetRecords.value.length > 0)
 
 async function openWriteoffs(rec) {
   woRec.value = rec
-  Object.assign(woForm, { amount: '', writeoff_date: todayCST(), notes: '' })
+  Object.assign(woForm, { amount: '', writeoff_date: todayCST(), notes: '', ar_record_id: '' })
+  woOffsetRecords.value = []
   showWoModal.value = true
-  await refreshWriteoffs()
+  await Promise.all([refreshWriteoffs(), loadOffsetRecords(rec)])
+}
+async function loadOffsetRecords(rec) {
+  if (rec.direction !== '预收' || !rec.project_id) return
+  try {
+    const res = await ar.advanceOffsettable({ project_id: rec.project_id })
+    woOffsetRecords.value = res.data.items || []
+  } catch (_) { woOffsetRecords.value = [] }
 }
 async function refreshWriteoffs() {
   const res = await ar.listWriteoffs(woRec.value.id)
@@ -165,8 +177,11 @@ async function addWriteoff() {
   if (!(parseFloat(woForm.amount) > 0)) { alert('核销金额必须大于0'); return }
   woSaving.value = true
   try {
-    await ar.addWriteoff(woRec.value.id, { ...woForm })
-    Object.assign(woForm, { amount: '', writeoff_date: todayCST(), notes: '' })
+    const payload = { ...woForm }
+    if (!payload.ar_record_id) delete payload.ar_record_id
+    await ar.addWriteoff(woRec.value.id, payload)
+    Object.assign(woForm, { amount: '', writeoff_date: todayCST(), notes: '', ar_record_id: '' })
+    await loadOffsetRecords(woRec.value)
     await refreshWriteoffs()
     await load()
     // refresh the in-modal record balance
@@ -403,13 +418,14 @@ onMounted(() => {
           <span class="hl">未核销余额 <b>{{ fmtAmt(woRec.balance_amount) }}</b></span>
         </div>
         <table class="data-table compact">
-          <thead><tr><th>#</th><th class="amt">核销金额</th><th>核销日期</th><th>备注</th><th v-if="canDelete"></th></tr></thead>
+          <thead><tr><th>#</th><th class="amt">核销金额</th><th>核销日期</th><th>冲抵应收</th><th>备注</th><th v-if="canDelete"></th></tr></thead>
           <tbody>
-            <tr v-if="!woList.length"><td :colspan="canDelete ? 5 : 4" class="empty">暂无核销记录</td></tr>
+            <tr v-if="!woList.length"><td :colspan="canDelete ? 6 : 5" class="empty">暂无核销记录</td></tr>
             <tr v-for="w in woList" :key="w.id">
               <td>{{ w.writeoff_no }}</td>
               <td class="amt">{{ fmtAmt(w.amount) }}</td>
               <td>{{ w.writeoff_date }}</td>
+              <td><span v-if="w.ar_record_id" class="offset-badge" :title="`已生成预收抵扣回款 · ${w.ar_project_no || ''}`">↳ 转回款</span><span v-else>—</span></td>
               <td>{{ w.notes || '—' }}</td>
               <td v-if="canDelete"><button class="lnk danger" @click="delWriteoff(w)">删除</button></td>
             </tr>
@@ -420,6 +436,13 @@ onMounted(() => {
           <input v-model="woForm.writeoff_date" type="date" class="inp" />
           <input v-model="woForm.notes" class="inp" placeholder="备注" />
           <button class="btn btn-primary btn-sm" :disabled="woSaving" @click="addWriteoff">{{ woSaving ? '…' : '新增核销' }}</button>
+        </div>
+        <div v-if="canCreate && canOffset" class="wo-offset">
+          <label class="wo-offset-lbl">以本次核销冲抵应收（生成「预收抵扣」回款，自动冲减未收）：</label>
+          <select v-model="woForm.ar_record_id" class="inp">
+            <option value="">不冲抵（仅登记核销）</option>
+            <option v-for="o in woOffsetRecords" :key="o.id" :value="o.id">{{ o.label }}</option>
+          </select>
         </div>
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="showWoModal = false">关闭</button>
@@ -519,4 +542,8 @@ onMounted(() => {
 .wo-summary b { color: var(--text); }
 .wo-summary .hl b { color: var(--primary); }
 .wo-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.wo-offset { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
+.wo-offset-lbl { font-size: 12px; color: var(--muted); }
+.wo-offset .inp { width: 100%; }
+.offset-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; background: rgba(27,110,53,0.1); color: #1b6e35; font-size: 11px; font-weight: 600; }
 </style>

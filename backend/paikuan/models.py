@@ -72,6 +72,9 @@ class Payment(models.Model):
     )
     department = models.CharField('部门', max_length=100, db_index=True)
     approval_number = models.CharField('审批单号', max_length=100, blank=True, default='', db_index=True)
+    # 关联项目台账编号（可选，自由填写不做强 FK）：用于排款时弹出该项目的预付余额，
+    # 并按项目汇总已排/待付。历史存量行为空字符串。
+    project_no = models.CharField('项目编号', max_length=20, blank=True, default='', db_index=True)
     project_desc = models.TextField('付款事项描述')
     payee = models.CharField('收款方', max_length=200)
     total_amount = models.DecimalField('计划总金额', max_digits=15, decimal_places=2)
@@ -137,6 +140,7 @@ class Payment(models.Model):
             'id': self.id,
             'department': self.department,
             'approval_number': self.approval_number,
+            'project_no': self.project_no,
             'project_desc': self.project_desc,
             'payee': self.payee,
             'total_amount': str(self.total_amount),

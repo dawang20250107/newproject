@@ -32,6 +32,18 @@ def update_advance_on_writeoff_change(sender, instance, **kwargs):
         pass
 
 
+@receiver(post_delete, sender='ar.AdvanceWriteoff')
+def delete_linked_offset_payment(sender, instance, **kwargs):
+    """删除预收核销时，连带删除其生成的「预收抵扣」回款，恢复应收 outstanding。"""
+    if not instance.ar_payment_id:
+        return
+    from ar.models import ARPayment
+    try:
+        ARPayment.objects.filter(pk=instance.ar_payment_id).delete()
+    except Exception:
+        pass
+
+
 @receiver(post_save, sender='ar.ARProject')
 def update_ar_record_due_dates_on_project_change(sender, instance, **kwargs):
     """When a project's total_days changes, recompute due_date for all linked ARRecords."""

@@ -824,8 +824,9 @@ function clearFilters() {
                       <span class="pay-no">第{{ pay.payment_no }}次</span>
                       <span class="pay-amt">{{ fmtAmt(pay.amount) }}</span>
                       <span class="pay-date">{{ pay.payment_date }}</span>
+                      <span v-if="pay.source === '预收抵扣'" class="pay-src" title="由预收核销生成，须在预收预付页删除对应核销">预收抵扣</span>
                       <span v-if="pay.notes" class="pay-notes">{{ pay.notes }}</span>
-                      <button v-if="auth.canDelete" class="pay-del" @click="deletePayment(rec, pay)">删除</button>
+                      <button v-if="auth.canDelete && pay.source !== '预收抵扣'" class="pay-del" @click="deletePayment(rec, pay)">删除</button>
                     </div>
                   </td>
                 </tr>
@@ -1288,6 +1289,7 @@ function clearFilters() {
 .pay-no { font-size: 11px; color: var(--muted); }
 .pay-amt { font-weight: 700; color: #2e7d32; }
 .pay-date { font-size: 12px; color: var(--muted); }
+.pay-src { font-size: 11px; font-weight: 600; color: #1b6e35; background: rgba(27,110,53,0.1); padding: 1px 7px; border-radius: 999px; }
 .pay-notes { font-size: 12px; color: var(--muted); font-style: italic; }
 .pay-del { margin-left: auto; font-size: 11.5px; color: #c62828; background: none; border: none; cursor: pointer; }
 .pay-del:hover { text-decoration: underline; }

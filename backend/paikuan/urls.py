@@ -8,6 +8,7 @@ urlpatterns = [
     path('registration-status', views.registration_status),
     path('me', views.me),
     path('payments', views.payments),
+    path('payments/prepaid-balance', views.prepaid_balance),
     path('payments/template', views.payment_template),
     path('payments/import', views.payment_import),
     path('payments/export', views.payment_export),

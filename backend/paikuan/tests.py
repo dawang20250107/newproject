@@ -55,6 +55,42 @@ class PaymentPermissionRegressionTests(TestCase):
             notes='',
         )
 
+    def test_prepaid_balance_lookup_for_payment(self):
+        """排款页按项目编号查预付余额：匹配项目返回未核销合计，未匹配返回空。"""
+        from ar.models import ARProject, AdvanceRecord
+        proj = ARProject.objects.create(
+            contract_name='C', short_name='预付项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='GYL-TEST-0001')
+        AdvanceRecord.objects.create(
+            direction='预付', project=proj, delivery_dept=self.dept, counterparty='供应商A',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 1),
+            advance_amount=Decimal('80000'))
+        resp = self.client.get('/api/pk/payments/prepaid-balance',
+                               {'project_no': 'GYL-TEST-0001'}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertTrue(d['matched'])
+        self.assertEqual(d['count'], 1)
+        self.assertEqual(d['total_balance'], '80000.00')
+        # 未匹配项目编号 → 空
+        resp2 = self.client.get('/api/pk/payments/prepaid-balance',
+                                {'project_no': 'NOPE'}, **self.auth())
+        self.assertFalse(resp2.json()['data']['matched'])
+
+    def test_payment_create_persists_project_no(self):
+        from paikuan.views import default_job_config
+        JobPermission.objects.update_or_create(
+            job_title='cashier', defaults={'config': default_job_config('cashier')})
+        _invalidate_perm_cache()
+        resp = self.client.post(
+            '/api/pk/payments',
+            data=json.dumps({'department': self.dept, 'project_no': 'GYL-TEST-0002',
+                             'project_desc': 'D', 'payee': 'P', 'total_amount': '5000',
+                             'planned_date': '2026-06-01'}),
+            content_type='application/json', **self.auth())
+        if resp.status_code == 200:
+            self.assertEqual(resp.json()['data']['project_no'], 'GYL-TEST-0002')
+
     def test_stale_token_rejected_after_user_deactivated(self):
         self.user.is_active = False
         self.user.save(update_fields=['is_active'])

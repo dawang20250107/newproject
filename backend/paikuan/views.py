@@ -140,6 +140,7 @@ AR_FIELD_KEYS = [f['key'] for f in AR_FIELD_DEFS]
 EXCEL_COLUMN_MAP = [
     ('department',      '部门',               'department'),
     ('approval_number', '审批单号',            'approval_number'),
+    ('project_desc',    '项目编号',            'project_no'),
     ('project_desc',    '付款事项',            'project_desc'),
     ('payee',           '收款方',              'payee'),
     ('total_amount',    '计划总金额(元)',       'total_amount'),
@@ -654,6 +655,50 @@ def payments(request):
     return err('Method not allowed', 405)
 
 
+@csrf_exempt
+@pk_required()
+def prepaid_balance(request):
+    """排款页联动：按项目编号查该项目的「预付」未核销余额，提示是否先核销再付款。
+
+    只读；按用户可见部门作用域过滤。未匹配到项目台账则返回空。
+    """
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    project_no = (request.GET.get('project_no') or '').strip()
+    empty = {'project_no': project_no, 'matched': False, 'count': 0,
+             'total_balance': '0.00', 'items': []}
+    if not project_no:
+        return ok(empty)
+    from ar.models import AdvanceRecord, ARProject
+    proj = ARProject.objects.filter(project_no=project_no).first()
+    if not proj:
+        return ok(empty)
+    qs = AdvanceRecord.objects.filter(direction='预付', balance_amount__gt=0, project=proj)
+    if request.pk_role != 'super_admin':
+        qs = qs.filter(delivery_dept__in=request.pk_depts)
+    agg = qs.aggregate(total=Sum('balance_amount'), cnt=Count('id'))
+    total = (agg['total'] or Decimal('0')).quantize(Decimal('0.01'))
+    items = [{
+        'id': r.id,
+        'counterparty': r.counterparty,
+        'occur_date': str(r.occur_date) if r.occur_date else None,
+        'advance_amount': str(r.advance_amount),
+        'balance_amount': str(r.balance_amount),
+    } for r in qs.order_by('-balance_amount')[:20]]
+    return ok({
+        'project_no': project_no,
+        'matched': True,
+        'short_name': proj.short_name,
+        'count': agg['cnt'] or 0,
+        'total_balance': str(total),
+        'items': items,
+    })
+
+
 def _list_payments(request):
     qs = Payment.objects.select_related('created_by').all()
     qs = dept_filter(qs, request)
@@ -744,6 +789,7 @@ def _parse_payment_fields(data, payment=None):
 
     fields['department'] = (get('department') or '').strip()
     fields['approval_number'] = (get('approval_number') or '').strip()
+    fields['project_no'] = (get('project_no') or '').strip()[:20]
     fields['project_desc'] = (get('project_desc') or '').strip()
     fields['payee'] = (get('payee') or '').strip()
     fields['notes'] = (get('notes') or '').strip()

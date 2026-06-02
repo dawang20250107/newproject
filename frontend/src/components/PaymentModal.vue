@@ -3,6 +3,7 @@ import { ref, watch, nextTick, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { DEPARTMENTS as DEPT_CONST } from '../constants.js'
+import { fmtMoney } from '../utils/format.js'
 
 const props = defineProps({
   payment: { type: Object, default: null },
@@ -29,7 +30,7 @@ const form = ref({})
 const FIELD_COLS = {
   department: ['department'],
   approval_number: ['approval_number'],
-  project_desc: ['project_desc'],
+  project_desc: ['project_desc', 'project_no'],
   payee: ['payee'],
   total_amount: ['total_amount'],
   planned_date: ['planned_date'],
@@ -52,6 +53,7 @@ function resetForm() {
   form.value = {
     department: p?.department || (isNew ? _autoDefaultDept() : ''),
     approval_number: p?.approval_number || '',
+    project_no: p?.project_no || '',
     project_desc: p?.project_desc || '',
     payee: p?.payee || '',
     total_amount: p?.total_amount || '',
@@ -111,6 +113,22 @@ const adjustedTarget = computed(() => {
 })
 const overpaid = computed(() => plannedTotal.value > 0 && paidSoFar.value > plannedTotal.value)
 const remaining = computed(() => Math.max(0, adjustedTarget.value - paidSoFar.value))
+
+// 排款联动：按项目编号查该项目的「预付」未核销余额（只读提示）
+const prepaid = ref(null)
+let prepaidTimer = null
+watch(() => form.value.project_no, (no) => {
+  clearTimeout(prepaidTimer)
+  prepaid.value = null
+  const v = (no || '').trim()
+  if (!v) return
+  prepaidTimer = setTimeout(async () => {
+    try {
+      const res = await api.get('/payments/prepaid-balance', { params: { project_no: v } })
+      if (res.data?.matched && res.data.count > 0) prepaid.value = res.data
+    } catch (_) { /* 静默 */ }
+  }, 400)
+})
 
 function buildPayload() {
   const payload = {}
@@ -191,6 +209,18 @@ async function submit() {
           <span v-if="form.approval_number && !/^\d{21}$/.test(form.approval_number)" class="field-err">
             已输入 {{ form.approval_number.replace(/\D/g, '').length }} 位数字，需满21位
           </span>
+        </div>
+      </div>
+
+      <div v-if="vis('project_desc')" class="form-row full">
+        <div class="form-group">
+          <label>项目编号 <span class="lbl-tip">（选填，关联项目台账以弹出预付余额）</span></label>
+          <input v-model="form.project_no" placeholder="如 GYL-20260301-0001，可手工填写" :disabled="!editable('project_desc')" maxlength="20" />
+          <div v-if="prepaid" class="prepaid-hint">
+            <span class="prepaid-tag">预付余额</span>
+            该项目「{{ prepaid.short_name }}」尚有 <b>{{ prepaid.count }}</b> 笔预付未核销，余额合计
+            <b>{{ fmtMoney(prepaid.total_balance) }}</b>，付款前请确认是否应先以预付核销冲抵。
+          </div>
         </div>
       </div>
 
@@ -340,4 +370,10 @@ async function submit() {
 .input-warn { border-color: #f57f17 !important; background: rgba(245,127,23,0.04) !important; }
 .field-err { font-size: 11px; color: #f57f17; margin-top: 3px; display: block; }
 .field-hint { font-size: 11px; color: #1565c0; margin-top: 3px; display: block; }
+.lbl-tip { font-size: 11px; color: var(--muted); font-weight: 400; }
+.prepaid-hint { margin-top: 7px; padding: 8px 10px; border: 1px solid rgba(201,99,66,0.3);
+  background: rgba(201,99,66,0.07); border-radius: 9px; font-size: 12px; color: var(--text); line-height: 1.5; }
+.prepaid-hint b { color: var(--primary); }
+.prepaid-tag { display: inline-block; padding: 1px 7px; border-radius: 999px; background: var(--primary);
+  color: #fff; font-size: 11px; font-weight: 600; margin-right: 6px; }
 </style>

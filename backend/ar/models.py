@@ -378,12 +378,21 @@ class ARRecord(models.Model):
 
 
 class ARPayment(models.Model):
-    """回款子表 — 每次回款一行，不限次数"""
+    """回款子表 — 每次回款一行，不限次数。
+
+    source 区分现金回款与「预收抵扣」：预收抵扣是以客户预收款冲减应收，
+    会冲减 outstanding（应收口径已收回），但**不是新的现金事件**（现金已在预收
+    发生时计入流入），故现金流统计需将其排除，避免重复计现金。
+    """
+    SOURCE_CHOICES = [('回款', '回款'), ('预收抵扣', '预收抵扣')]
+
     ar_record = models.ForeignKey(ARRecord, on_delete=models.CASCADE,
                                   related_name='payments', db_index=True)
     payment_no = models.IntegerField('回款序号')
     amount = models.DecimalField('回款金额', max_digits=15, decimal_places=2)
     payment_date = models.DateField('回款日期', db_index=True)
+    source = models.CharField('回款来源', max_length=8, choices=SOURCE_CHOICES,
+                              default='回款', db_index=True)
     notes = models.TextField('备注', blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -403,6 +412,7 @@ class ARPayment(models.Model):
             'payment_no': self.payment_no,
             'amount': str(self.amount),
             'payment_date': str(self.payment_date),
+            'source': self.source,
             'notes': self.notes,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
@@ -570,12 +580,21 @@ class AdvanceRecord(models.Model):
 
 
 class AdvanceWriteoff(models.Model):
-    """核销子表 — 每次核销一行，不限次数"""
+    """核销子表 — 每次核销一行，不限次数。
+
+    预收核销可绑定一条应收明细 (ar_record) 并自动生成一笔「预收抵扣」回款
+    (ar_payment) 冲减其 outstanding；删除本核销时该回款一并删除（应收余额恢复）。
+    """
     advance_record = models.ForeignKey(AdvanceRecord, on_delete=models.CASCADE,
                                        related_name='writeoffs', db_index=True)
     writeoff_no = models.IntegerField('核销序号')
     amount = models.DecimalField('核销金额', max_digits=15, decimal_places=2)
     writeoff_date = models.DateField('核销日期', db_index=True)
+    # 预收核销冲抵的应收明细及其生成的「预收抵扣」回款（仅预收方向、可选）
+    ar_record = models.ForeignKey('ARRecord', on_delete=models.SET_NULL,
+                                  null=True, blank=True, related_name='advance_offsets')
+    ar_payment = models.OneToOneField('ARPayment', on_delete=models.SET_NULL,
+                                      null=True, blank=True, related_name='advance_writeoff')
     notes = models.TextField('备注', blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -595,6 +614,10 @@ class AdvanceWriteoff(models.Model):
             'writeoff_no': self.writeoff_no,
             'amount': str(self.amount),
             'writeoff_date': str(self.writeoff_date),
+            'ar_record_id': self.ar_record_id,
+            'ar_payment_id': self.ar_payment_id,
+            'ar_project_no': (self.ar_record.project.project_no
+                              if self.ar_record_id and self.ar_record.project_id else None),
             'notes': self.notes,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }

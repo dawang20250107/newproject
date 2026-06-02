@@ -40,6 +40,7 @@ const ar = {
   advancesKpi: p => api.get('/ar/advances/kpi', { params: p }),
   advancesSummary: p => api.get('/ar/advances/summary', { params: p }),
   advancesAvailable: p => api.get('/ar/advances/available', { params: p }),
+  advanceOffsettable: p => api.get('/ar/advances/offsettable', { params: p }),
   createAdvance: d => api.post('/ar/advances', d),
   getAdvance: id => api.get(`/ar/advances/${id}`),
   updateAdvance: (id, d) => api.put(`/ar/advances/${id}`, d),
