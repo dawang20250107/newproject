@@ -27,6 +27,17 @@ urlpatterns = [
     path('records/<int:pk>/payments', views.ar_payments),
     path('records/<int:pk>/payments/<int:ppk>', views.ar_payment_detail),
 
+    # 预收预付 (advances)
+    path('advances', views.advances),
+    path('advances/kpi', views.advances_kpi),
+    path('advances/summary', views.advances_summary),
+    path('advances/template', views.advance_template),
+    path('advances/import', views.advance_import),
+    path('advances/export', views.advance_export),
+    path('advances/<int:pk>', views.advance_detail),
+    path('advances/<int:pk>/writeoffs', views.advance_writeoffs),
+    path('advances/<int:pk>/writeoffs/<int:wid>', views.advance_writeoff_detail),
+
     # Analytics
     path('analytics/aging', views.analytics_aging),
     path('analytics/collection-rate', views.analytics_collection_rate),

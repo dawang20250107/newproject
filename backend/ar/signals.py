@@ -18,6 +18,20 @@ def update_ar_record_on_payment_change(sender, instance, **kwargs):
         pass
 
 
+@receiver([post_save, post_delete], sender='ar.AdvanceWriteoff')
+def update_advance_on_writeoff_change(sender, instance, **kwargs):
+    """核销变动 → 重算所属预收/预付的已核销与未核销余额。"""
+    from django.core.exceptions import ValidationError
+    try:
+        record = instance.advance_record
+        record.recompute_derived(save=True)
+    except ValidationError:
+        # Re-raise so callers inside transaction.atomic() get a rollback
+        raise
+    except Exception:
+        pass
+
+
 @receiver(post_save, sender='ar.ARProject')
 def update_ar_record_due_dates_on_project_change(sender, instance, **kwargs):
     """When a project's total_days changes, recompute due_date for all linked ARRecords."""

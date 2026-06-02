@@ -64,9 +64,14 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
 // ── KPI roll-ups (reactive — recompute whenever cfData changes after load()) ────
 const totals = computed(() => cfData.value?.totals)
-const sumColl = computed(() => (totals.value?.collected || []).reduce((a, b) => a + b, 0))
-const sumPaid = computed(() => (totals.value?.paid || []).reduce((a, b) => a + b, 0))
-const netTotal = computed(() => sumColl.value - sumPaid.value)
+const _sum = arr => (arr || []).reduce((a, b) => a + b, 0)
+const sumColl = computed(() => _sum(totals.value?.collected))
+const sumPaid = computed(() => _sum(totals.value?.paid))
+const sumAdvRecv = computed(() => _sum(totals.value?.advance_received))
+const sumAdvPaid = computed(() => _sum(totals.value?.advance_paid))
+const sumInflow = computed(() => _sum(totals.value?.inflow))
+const sumOutflow = computed(() => _sum(totals.value?.outflow))
+const netTotal = computed(() => sumInflow.value - sumOutflow.value)
 const endCumulative = computed(() => {
   const c = totals.value?.cumulative_net
   return c?.length ? c[c.length - 1] : 0
@@ -117,19 +122,20 @@ const budgetOption = computed(() => {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TT_STYLE, formatter: ttFmt },
     legend: { bottom: 4, icon: 'roundRect', itemWidth: 14, itemHeight: 8,
               textStyle: { fontSize: 11, color: '#555' },
-              data: ['实收', '实付', '收款预算', '付款预算'] },
+              data: ['实收', '预收', '实付', '预付', '收款预算', '付款预算'] },
     grid: GRID,
     xAxis: { type: 'category', data: lbls, axisLine: { lineStyle: SLINE }, axisTick: OLINE, axisLabel: AXLBL },
     yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), ...AXLBL }, splitLine: { lineStyle: SLINE } },
     series: [
-      { name: '实收', type: 'bar', barGap: '10%', barMaxWidth: 24, data: t.collected,
-        itemStyle: { color: gradBar('#66bb6a', '#2e7d32'), borderRadius: [4, 4, 0, 0] } },
-      { name: '实付', type: 'bar', barMaxWidth: 24,
-        data: t.paid.map((v, i) => ({ value: v,
-          itemStyle: { borderRadius: [4, 4, 0, 0],
-            color: v > 0 && v > t.collected[i]
-              ? gradBar('#ef5350', '#c62828')
-              : gradBar('#ffa726', '#e65100') } })) },
+      // 流入 = 实收 + 预收（堆叠）；流出 = 实付 + 预付（堆叠）
+      { name: '实收', type: 'bar', stack: 'in', barGap: '10%', barMaxWidth: 24, data: t.collected,
+        itemStyle: { color: gradBar('#66bb6a', '#2e7d32') } },
+      { name: '预收', type: 'bar', stack: 'in', barMaxWidth: 24, data: t.advance_received || [],
+        itemStyle: { color: gradBar('#a5d6a7', '#66bb6a'), borderRadius: [4, 4, 0, 0] } },
+      { name: '实付', type: 'bar', stack: 'out', barMaxWidth: 24, data: t.paid,
+        itemStyle: { color: gradBar('#ffa726', '#e65100') } },
+      { name: '预付', type: 'bar', stack: 'out', barMaxWidth: 24, data: t.advance_paid || [],
+        itemStyle: { color: gradBar('#ffcc80', '#ffa726'), borderRadius: [4, 4, 0, 0] } },
       { name: '收款预算', type: 'line', data: t.budget_collection, smooth: true,
         symbol: 'circle', symbolSize: 4,
         lineStyle: { type: 'dashed', color: '#2e7d32', width: 1.5, opacity: 0.65 },
@@ -288,6 +294,11 @@ const deptCompareOption = computed(() => {
         <div class="ck-sub">付款目标</div>
       </div>
       <div class="ck-card ck-neutral">
+        <div class="ck-label">区间预收</div>
+        <div class="ck-value">{{ fmtWan(sumAdvRecv) }}</div>
+        <div class="ck-sub">客户预付款（流入）</div>
+      </div>
+      <div class="ck-card ck-neutral">
         <div class="ck-label">区间实付</div>
         <div class="ck-value">{{ fmtWan(sumPaid) }}</div>
         <div class="ck-sub" v-if="payAchieve !== null">
@@ -295,12 +306,17 @@ const deptCompareOption = computed(() => {
         </div>
         <div class="ck-sub ach-off" v-else>无预算基准</div>
       </div>
+      <div class="ck-card ck-neutral">
+        <div class="ck-label">区间预付</div>
+        <div class="ck-value">{{ fmtWan(sumAdvPaid) }}</div>
+        <div class="ck-sub">付供应商（流出）</div>
+      </div>
       <div class="ck-card" :class="netTotal >= 0 ? 'ck-net-pos' : 'ck-net-neg'">
         <div class="ck-label">区间净现金流</div>
         <div class="ck-value" :class="netTotal >= 0 ? 'v-pos' : 'v-neg'">
           {{ netTotal >= 0 ? '+' : '' }}{{ fmtWan(netTotal) }}
         </div>
-        <div class="ck-sub">实收 − 实付</div>
+        <div class="ck-sub">流入(实收+预收) − 流出(实付+预付)</div>
       </div>
       <div class="ck-card" :class="endCumulative >= 0 ? 'ck-net-pos' : 'ck-net-neg'">
         <div class="ck-label">期末累计净现金流</div>
@@ -357,10 +373,10 @@ const deptCompareOption = computed(() => {
           </thead>
           <tbody>
             <tr v-for="(ym, i) in cfData.months" :key="ym"
-                :class="{ 'row-alert': cfData.totals.paid[i] > cfData.totals.collected[i] && cfData.totals.collected[i] > 0 }">
+                :class="{ 'row-alert': cfData.totals.outflow[i] > cfData.totals.inflow[i] && cfData.totals.inflow[i] > 0 }">
               <td class="fw">{{ ym }}</td>
               <td class="amt text-coll">{{ fmtWan(cfData.totals.collected[i]) }}</td>
-              <td class="amt" :class="cfData.totals.paid[i] > cfData.totals.collected[i] ? 'text-danger' : 'text-pay'">
+              <td class="amt" :class="cfData.totals.outflow[i] > cfData.totals.inflow[i] ? 'text-danger' : 'text-pay'">
                 {{ fmtWan(cfData.totals.paid[i]) }}
               </td>
               <td class="amt muted">{{ fmtWan(cfData.totals.budget_collection[i]) }}</td>

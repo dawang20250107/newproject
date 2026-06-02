@@ -447,6 +447,159 @@ class CollectionBudget(models.Model):
         }
 
 
+class AdvanceRecord(models.Model):
+    """预收/预付台账明细 — 每笔预收或预付一条，direction 区分方向。
+
+    预收：客户先付款给我们 → 现金流入；预付：我们先付供应商 → 现金流出。
+    现金事件发生在 occur_date / advance_amount；后续随交付/收货通过
+    AdvanceWriteoff 逐笔核销（冲减），核销为账务重分类、非现金事件。
+    """
+    DIRECTION_CHOICES = [('预收', '预收'), ('预付', '预付')]
+
+    project = models.ForeignKey(ARProject, on_delete=models.SET_NULL, null=True, blank=True,
+                                related_name='advance_records', db_index=True)
+    # Denormalised: synced from project when linked; otherwise hand-entered.
+    delivery_dept = models.CharField('交付部门', max_length=50, db_index=True, blank=True, default='')
+    direction = models.CharField('方向', max_length=4, choices=DIRECTION_CHOICES, db_index=True)
+    counterparty = models.CharField('往来单位', max_length=200, blank=True, default='')
+    occur_year = models.IntegerField('发生年', db_index=True)
+    occur_month = models.IntegerField('发生月', db_index=True)
+    occur_date = models.DateField('款项日期', db_index=True, null=True, blank=True)
+    advance_amount = models.DecimalField('预收/预付金额', max_digits=15, decimal_places=2, default=0)
+    expected_writeoff_date = models.DateField('预计核销日期', null=True, blank=True, db_index=True)
+    written_off_amount = models.DecimalField('已核销金额', max_digits=15, decimal_places=2, default=0)
+    balance_amount = models.DecimalField('未核销余额', max_digits=15, decimal_places=2, default=0)
+    notes = models.TextField('备注', blank=True, default='')
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='created_advance_records')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ar_advance_records'
+        ordering = ['-occur_year', '-occur_month', '-occur_date']
+        indexes = [
+            models.Index(fields=['direction', 'delivery_dept']),
+            models.Index(fields=['delivery_dept', 'occur_year', 'occur_month']),
+            models.Index(fields=['occur_date']),
+            models.Index(fields=['balance_amount']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(balance_amount__gte=0),
+                name='advance_balance_non_negative',
+            ),
+        ]
+
+    def recompute_derived(self, save=True):
+        """未核销余额口径：预收/预付金额 − 累计核销。"""
+        base = self.advance_amount or Decimal('0')
+        total_wo = Decimal('0')
+        if self.pk:
+            total_wo = self.writeoffs.aggregate(s=Sum('amount'))['s'] or Decimal('0')
+        balance = base - total_wo
+        if balance < Decimal('0'):
+            def _f(v):
+                return f'{v:,.2f}'
+            raise ValidationError(
+                f'未核销余额不能为负：预收/预付金额 {_f(base)} − 累计核销 {_f(total_wo)} '
+                f'= {_f(balance)}。请核对金额或核销记录。'
+            )
+        q = Decimal('0.01')
+        self.written_off_amount = total_wo.quantize(q, rounding=ROUND_HALF_UP)
+        self.balance_amount = balance.quantize(q, rounding=ROUND_HALF_UP)
+        if save:
+            AdvanceRecord.objects.filter(pk=self.pk).update(
+                written_off_amount=self.written_off_amount,
+                balance_amount=self.balance_amount,
+            )
+
+    def save(self, *args, **kwargs):
+        if self.project_id:
+            self.delivery_dept = self.project.delivery_dept
+        self.recompute_derived(save=False)
+        super().save(*args, **kwargs)
+
+    @property
+    def writeoff_status(self):
+        if (self.balance_amount or Decimal('0')) <= 0:
+            return '已核销'
+        if (self.written_off_amount or Decimal('0')) > 0:
+            return '部分核销'
+        return '未核销'
+
+    def aging_dict(self, today=None):
+        """挂账账龄：未核销余额从款项日期起的挂账天数；超预计核销日期则逾期。"""
+        today = today or datetime.date.today()
+        if (self.balance_amount or Decimal('0')) <= 0:
+            return {'pending_days': 0, 'is_overdue': False, 'overdue_days': 0}
+        base_date = _as_date(self.occur_date)
+        pending_days = (today - base_date).days if base_date else 0
+        exp = _as_date(self.expected_writeoff_date)
+        is_overdue = bool(exp and today > exp)
+        overdue_days = (today - exp).days if is_overdue else 0
+        return {'pending_days': pending_days, 'is_overdue': is_overdue,
+                'overdue_days': overdue_days}
+
+    def to_dict(self, today=None, include_writeoffs=False):
+        ag = self.aging_dict(today)
+        d = {
+            'id': self.id,
+            'project_id': self.project_id,
+            'project_no': self.project.project_no if self.project_id else None,
+            'short_name': self.project.short_name if self.project_id else None,
+            'direction': self.direction,
+            'counterparty': self.counterparty,
+            'delivery_dept': self.delivery_dept,
+            'occur_year': self.occur_year,
+            'occur_month': self.occur_month,
+            'occur_date': str(self.occur_date) if self.occur_date else None,
+            'advance_amount': str(self.advance_amount),
+            'expected_writeoff_date': str(self.expected_writeoff_date) if self.expected_writeoff_date else None,
+            'written_off_amount': str(self.written_off_amount),
+            'balance_amount': str(self.balance_amount),
+            'writeoff_status': self.writeoff_status,
+            'notes': self.notes,
+            **ag,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+        if include_writeoffs:
+            d['writeoffs'] = [w.to_dict() for w in self.writeoffs.order_by('writeoff_no')]
+        return d
+
+
+class AdvanceWriteoff(models.Model):
+    """核销子表 — 每次核销一行，不限次数"""
+    advance_record = models.ForeignKey(AdvanceRecord, on_delete=models.CASCADE,
+                                       related_name='writeoffs', db_index=True)
+    writeoff_no = models.IntegerField('核销序号')
+    amount = models.DecimalField('核销金额', max_digits=15, decimal_places=2)
+    writeoff_date = models.DateField('核销日期', db_index=True)
+    notes = models.TextField('备注', blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'ar_advance_writeoffs'
+        unique_together = [('advance_record', 'writeoff_no')]
+        ordering = ['advance_record', 'writeoff_no']
+        indexes = [
+            models.Index(fields=['advance_record', 'writeoff_date']),
+            models.Index(fields=['writeoff_date']),
+        ]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'advance_record_id': self.advance_record_id,
+            'writeoff_no': self.writeoff_no,
+            'amount': str(self.amount),
+            'writeoff_date': str(self.writeoff_date),
+            'notes': self.notes,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class PaymentBudget(models.Model):
     """付款预算"""
     project_no = models.CharField('项目编号', max_length=20, blank=True, default='', db_index=True)

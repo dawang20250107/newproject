@@ -6,7 +6,8 @@ from decimal import Decimal
 import openpyxl
 from django.test import Client, TestCase
 
-from ar.models import ARPayment, ARProject, ARRecord, CollectionBudget, PaymentBudget
+from ar.models import (ARPayment, ARProject, ARRecord, CollectionBudget, PaymentBudget,
+                       AdvanceRecord, AdvanceWriteoff)
 from paikuan.models import JobPermission, PaikuanUser
 from paikuan.views import DEPARTMENTS, default_job_config, make_token, _invalidate_perm_cache
 
@@ -555,3 +556,161 @@ class ARPermissionRegressionTests(TestCase):
         resp = self.client.get('/api/pk/ar/records', {'q': 'PM A'}, **self.auth(admin))
         self.assertEqual(resp.status_code, 200)
         self.assertIn(rec.id, {r['id'] for r in resp.json()['data']['items']})
+
+
+class AdvanceModuleTests(TestCase):
+    """预收预付：CRUD、核销重算、导入、现金流打通、KPI、权限遮蔽。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = '劳务事业部'
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def make_user(self, phone, job_title, departments=None, role='operator'):
+        u = PaikuanUser(phone=phone, name=f'{job_title} u', role=role, job_title=job_title,
+                        departments=departments or [self.dept], is_active=True, is_approved=True)
+        u.set_password('Test123456'); u.save()
+        return u
+
+    def auth(self, user):
+        return {'HTTP_AUTHORIZATION': f'Bearer {make_token(user)}'}
+
+    def create_project(self, short_name='预收项目A'):
+        return ARProject.objects.create(
+            contract_name='合同A', short_name=short_name, delivery_dept=self.dept,
+            sales_contact='Sales A', project_manager='PM A', has_contract='有',
+            contract_date=date(2026, 1, 1))
+
+    def post(self, url, payload, user):
+        return self.client.post(url, data=json.dumps(payload),
+                                content_type='application/json', **self.auth(user))
+
+    # ── 创建（挂项目 / 独立往来单位）────────────────────────────────────────────
+    def test_create_with_and_without_project(self):
+        admin = self.make_user('13911100001', 'finance_director', role='super_admin')
+        proj = self.create_project()
+        # 挂项目：交付部门自动取项目部门
+        r1 = self.post('/api/pk/ar/advances', {
+            'direction': '预收', 'project_id': proj.id, 'counterparty': '客户甲',
+            'occur_year': 2026, 'occur_month': 3, 'occur_date': '2026-03-10',
+            'advance_amount': 100000}, admin)
+        self.assertEqual(r1.status_code, 200, r1.content)
+        self.assertEqual(r1.json()['data']['delivery_dept'], self.dept)
+        self.assertEqual(r1.json()['data']['balance_amount'], '100000.00')
+        # 独立（预付供应商，无项目，手填部门）
+        r2 = self.post('/api/pk/ar/advances', {
+            'direction': '预付', 'delivery_dept': self.dept, 'counterparty': '供应商乙',
+            'occur_year': 2026, 'occur_month': 3, 'occur_date': '2026-03-12',
+            'advance_amount': 50000}, admin)
+        self.assertEqual(r2.status_code, 200, r2.content)
+        self.assertIsNone(r2.json()['data']['project_id'])
+        # 方向校验
+        bad = self.post('/api/pk/ar/advances', {
+            'direction': 'X', 'delivery_dept': self.dept, 'occur_year': 2026,
+            'occur_month': 3, 'advance_amount': 1}, admin)
+        self.assertEqual(bad.status_code, 400)
+
+    # ── 核销重算 + 余额非负 ────────────────────────────────────────────────────
+    def test_writeoff_recompute_and_non_negative(self):
+        admin = self.make_user('13911100002', 'finance_director', role='super_admin')
+        rec = AdvanceRecord.objects.create(
+            direction='预收', delivery_dept=self.dept, counterparty='客户甲',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 10),
+            advance_amount=Decimal('100000'))
+        # 核销 30000 → 余额 70000，部分核销
+        w = self.post(f'/api/pk/ar/advances/{rec.id}/writeoffs',
+                      {'amount': 30000, 'writeoff_date': '2026-04-01'}, admin)
+        self.assertEqual(w.status_code, 200, w.content)
+        rec.refresh_from_db()
+        self.assertEqual(rec.balance_amount, Decimal('70000.00'))
+        self.assertEqual(rec.written_off_amount, Decimal('30000.00'))
+        self.assertEqual(rec.writeoff_status, '部分核销')
+        # 超额核销 → 拒绝（余额不能为负）
+        over = self.post(f'/api/pk/ar/advances/{rec.id}/writeoffs',
+                         {'amount': 999999, 'writeoff_date': '2026-04-02'}, admin)
+        self.assertEqual(over.status_code, 400, over.content)
+        rec.refresh_from_db()
+        self.assertEqual(rec.balance_amount, Decimal('70000.00'))  # unchanged
+        # 删除核销 → 余额恢复
+        wid = w.json()['data']['id']
+        d = self.client.delete(f'/api/pk/ar/advances/{rec.id}/writeoffs/{wid}', **self.auth(admin))
+        self.assertEqual(d.status_code, 200)
+        rec.refresh_from_db()
+        self.assertEqual(rec.balance_amount, Decimal('100000.00'))
+        self.assertEqual(rec.writeoff_status, '未核销')
+
+    # ── 导入（含核销）+ 模板可解析 ─────────────────────────────────────────────
+    def test_import_creates_advances_and_writeoff(self):
+        admin = self.make_user('13911100003', 'finance_director', role='super_admin')
+        self.create_project(short_name='预收项目A')
+        wb = openpyxl.Workbook(); ws = wb.active
+        ws.append(['方向(预收/预付)*', '项目简称', '交付部门', '往来单位*', '发生年*', '发生月*',
+                   '款项日期', '预收/预付金额', '预计核销日期', '核销金额', '核销日期', '备注'])
+        ws.append(['预收', '预收项目A', '', '客户甲', 2026, 3, '2026-03-10',
+                   100000, '2026-06-30', 40000, '2026-04-01', ''])
+        ws.append(['预付', '', self.dept, '供应商乙', 2026, 3, '2026-03-12', 50000, '', '', '', ''])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        buf.name = 'adv.xlsx'
+        resp = self.client.post('/api/pk/ar/advances/import', {'file': buf}, **self.auth(admin))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data']['created'], 2)
+        recv = AdvanceRecord.objects.get(direction='预收', counterparty='客户甲')
+        self.assertEqual(recv.balance_amount, Decimal('60000.00'))  # 100000 - 40000
+        self.assertEqual(recv.delivery_dept, self.dept)
+
+    # ── 现金流打通：净额含预收(流入)与预付(流出) ───────────────────────────────
+    def test_cashflow_includes_advances(self):
+        admin = self.make_user('13911100004', 'finance_director', role='super_admin')
+        AdvanceRecord.objects.create(direction='预收', delivery_dept=self.dept,
+                                     counterparty='客户甲', occur_year=2026, occur_month=3,
+                                     occur_date=date(2026, 3, 10), advance_amount=Decimal('100000'))
+        AdvanceRecord.objects.create(direction='预付', delivery_dept=self.dept,
+                                     counterparty='供应商乙', occur_year=2026, occur_month=3,
+                                     occur_date=date(2026, 3, 12), advance_amount=Decimal('30000'))
+        resp = self.client.get('/api/pk/ar/cashflow',
+                               {'start_date': '2026-03-01', 'end_date': '2026-03-31',
+                                'depts': self.dept}, **self.auth(admin))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        t = resp.json()['data']['totals']
+        self.assertEqual(t['advance_received'][0], 100000.0)
+        self.assertEqual(t['advance_paid'][0], 30000.0)
+        self.assertEqual(t['inflow'][0], 100000.0)
+        self.assertEqual(t['outflow'][0], 30000.0)
+        self.assertEqual(t['net'][0], 70000.0)
+
+    # ── KPI 分预收/预付 ────────────────────────────────────────────────────────
+    def test_kpi_blocks(self):
+        admin = self.make_user('13911100005', 'finance_director', role='super_admin')
+        rec = AdvanceRecord.objects.create(direction='预收', delivery_dept=self.dept,
+                                           counterparty='客户甲', occur_year=2026, occur_month=3,
+                                           occur_date=date(2026, 3, 10), advance_amount=Decimal('100000'))
+        AdvanceWriteoff.objects.create(advance_record=rec, writeoff_no=1,
+                                       amount=Decimal('25000'), writeoff_date=date(2026, 4, 1))
+        rec.recompute_derived()
+        resp = self.client.get('/api/pk/ar/advances/kpi', **self.auth(admin))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        b = resp.json()['data']['预收']
+        self.assertEqual(b['advance_amount'], 100000.0)
+        self.assertEqual(b['written_off'], 25000.0)
+        self.assertEqual(b['balance'], 75000.0)
+        self.assertEqual(b['writeoff_rate'], 25.0)
+
+    # ── 字段级权限遮蔽：隐藏金额 ───────────────────────────────────────────────
+    def test_field_permission_masks_amount(self):
+        # 自定义职务：隐藏 adv_amount
+        cfg = default_job_config('operator')
+        cfg['ar_view']['adv_amount'] = False
+        JobPermission.objects.update_or_create(job_title='operator', defaults={'config': cfg})
+        _invalidate_perm_cache()
+        user = self.make_user('13911100006', 'operator', role='operator')
+        AdvanceRecord.objects.create(direction='预收', delivery_dept=self.dept,
+                                     counterparty='客户甲', occur_year=2026, occur_month=3,
+                                     occur_date=date(2026, 3, 10), advance_amount=Decimal('100000'))
+        resp = self.client.get('/api/pk/ar/advances', **self.auth(user))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        row = resp.json()['data']['items'][0]
+        self.assertIsNone(row['advance_amount'])      # masked
+        self.assertEqual(row['counterparty'], '客户甲')  # still visible

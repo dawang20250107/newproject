@@ -20,12 +20,15 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 from paikuan.views import (pk_required, ok, err, DEPARTMENTS, VALID_DEPARTMENTS,
                            get_request_perms, apply_ar_view_mask, AR_PROJECT_FIELD_DEFS,
-                           AR_RECORD_FIELD_DEFS)
-from ar.models import ARProject, ARRecord, ARPayment, CollectionBudget, PaymentBudget
+                           AR_RECORD_FIELD_DEFS, AR_ADVANCE_FIELD_DEFS)
+from ar.models import (ARProject, ARRecord, ARPayment, CollectionBudget, PaymentBudget,
+                       AdvanceRecord, AdvanceWriteoff)
 from paikuan.models import Payment
 
 # ── AR page keys (must match PAGE_KEYS in paikuan/views.py) ───────────────────
-AR_PAGE_KEYS = ['ar_projects', 'ar_records', 'ar_analytics', 'ar_cashflow', 'ar_budget']
+AR_PAGE_KEYS = ['ar_projects', 'ar_records', 'ar_advance', 'ar_analytics', 'ar_cashflow', 'ar_budget']
+
+ADVANCE_DIRECTIONS = ['预收', '预付']
 
 EXAMPLE_ROW_MARKER = '示例-导入前请删除此行'
 VALID_CUSTOMER_LEVELS = ['S级', 'A级', 'B级', 'C级', 'D级']
@@ -208,11 +211,18 @@ def _ar_field_denied(request, field_key):
     return None
 
 
+_AR_PAYLOAD_DEFS_BY_GROUP = {
+    'project': AR_PROJECT_FIELD_DEFS,
+    'record': AR_RECORD_FIELD_DEFS,
+    'advance': AR_ADVANCE_FIELD_DEFS,
+}
+
+
 def _ar_visible_payload(request, data, group, extra=()):
     perms = get_request_perms(request)
     if perms is None:
         return data
-    defs = AR_PROJECT_FIELD_DEFS if group == 'project' else AR_RECORD_FIELD_DEFS
+    defs = _AR_PAYLOAD_DEFS_BY_GROUP.get(group, AR_RECORD_FIELD_DEFS)
     ar_view = perms.get('ar_view') or {}
     cols = set(extra)
     for f in defs:
@@ -2123,6 +2133,609 @@ def analytics_by_pm(request):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 预收预付 (Advance receipts / prepayments) — 单表 + direction 判别，挂项目台账
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _advance_dept_filter(qs, request):
+    """Dept-scope advances. Project-linked rows use project.is_shared for the
+    shared-only rule; standalone rows are matched on delivery_dept only."""
+    return _ar_dept_filter(qs, request, shared_field='project__is_shared')
+
+
+def _apply_advance_filters(qs, request):
+    """Shared dimension filters for advance list + kpi + summary."""
+    direction = request.GET.get('direction', '').strip()
+    if direction in ADVANCE_DIRECTIONS:
+        qs = qs.filter(direction=direction)
+    project_id = request.GET.get('project_id', '').strip()
+    if project_id:
+        qs = qs.filter(project_id=int(project_id))
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+    year = request.GET.get('year', '').strip()
+    if year:
+        qs = qs.filter(occur_year=int(year))
+    month = request.GET.get('month', '').strip()
+    if month:
+        qs = qs.filter(occur_month=int(month))
+    counterparty = request.GET.get('counterparty', '').strip()
+    if counterparty:
+        qs = qs.filter(counterparty__icontains=counterparty)
+    status = request.GET.get('writeoff_status', '').strip()
+    if status == '未核销':
+        qs = qs.filter(balance_amount__gt=0, written_off_amount__lte=0)
+    elif status == '部分核销':
+        qs = qs.filter(balance_amount__gt=0, written_off_amount__gt=0)
+    elif status == '已核销':
+        qs = qs.filter(balance_amount__lte=0)
+    q = request.GET.get('q', '').strip()
+    if q:
+        qs = qs.filter(Q(counterparty__icontains=q) |
+                       Q(project__short_name__icontains=q) |
+                       Q(project__project_no__icontains=q) |
+                       Q(notes__icontains=q))
+    return qs
+
+
+@csrf_exempt
+@pk_required()
+def advances(request):
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+
+    if request.method == 'GET':
+        today = datetime.date.today()
+        qs = _advance_dept_filter(
+            AdvanceRecord.objects.select_related('project', 'created_by'), request)
+        qs = _apply_advance_filters(qs, request)
+        page = max(1, int(request.GET.get('page', 1) or 1))
+        size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
+
+        qs_agg = _apply_advance_filters(
+            _advance_dept_filter(AdvanceRecord.objects.all(), request), request)
+        ids = list(qs_agg.order_by().values_list('id', flat=True))
+        total = len(ids)
+        base = AdvanceRecord.objects.filter(id__in=ids)
+
+        def _dir_summary(direction):
+            d_qs = base.filter(direction=direction)
+            agg = d_qs.aggregate(
+                amt=Sum('advance_amount'),
+                wo=Sum('written_off_amount'),
+                bal=Sum('balance_amount', filter=Q(balance_amount__gt=0)),
+            )
+            overdue = (d_qs.filter(balance_amount__gt=0,
+                                   expected_writeoff_date__lt=today)
+                       .aggregate(s=Sum('balance_amount'))['s'] or 0)
+            return {
+                'count': d_qs.count(),
+                'advance_amount': str(agg['amt'] or 0),
+                'written_off': str(agg['wo'] or 0),
+                'balance': str(agg['bal'] or 0),
+                'overdue_balance': str(overdue),
+            }
+
+        summary = {
+            'count': total,
+            '预收': _dir_summary('预收'),
+            '预付': _dir_summary('预付'),
+        }
+
+        perms = get_request_perms(request)
+        include_wo = request.GET.get('include_writeoffs', '') in ('1', 'true')
+        items = list(qs[(page - 1) * size: page * size])
+        rows = [apply_ar_view_mask(r.to_dict(today=today, include_writeoffs=include_wo),
+                                   perms, 'advance') for r in items]
+        return ok({'items': rows, 'total': total, 'page': page, 'size': size,
+                   'summary': summary})
+
+    if request.method == 'POST':
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        data = _ar_visible_payload(
+            request, _parse_body(request), 'advance',
+            extra=('project_id', 'direction', 'occur_year', 'occur_month',
+                   'occur_date', 'expected_writeoff_date', 'delivery_dept'))
+        return _advance_create(request, data)
+
+    return err('Method not allowed', 405)
+
+
+def _advance_create(request, data):
+    direction = (data.get('direction') or '').strip()
+    if direction not in ADVANCE_DIRECTIONS:
+        return err('方向无效，应为 预收 或 预付')
+    year = int(data.get('occur_year', 0) or 0)
+    month = int(data.get('occur_month', 0) or 0)
+    if not (year and 1 <= month <= 12):
+        return err('发生年月无效')
+
+    proj = None
+    project_id = data.get('project_id')
+    dept = (data.get('delivery_dept') or '').strip()
+    if project_id:
+        try:
+            proj = ARProject.objects.get(pk=int(project_id))
+        except ARProject.DoesNotExist:
+            return err('项目不存在', 404)
+        dept = proj.delivery_dept
+    if not dept:
+        return err('请选择项目或填写交付部门')
+    denied = _dept_denied(request, dept, '无权操作此部门')
+    if denied:
+        return denied
+
+    from paikuan.models import PaikuanUser
+    user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+    try:
+        rec = AdvanceRecord(
+            project=proj,
+            delivery_dept=dept,
+            direction=direction,
+            counterparty=(data.get('counterparty') or '').strip(),
+            occur_year=year,
+            occur_month=month,
+            occur_date=_normalize_date(data.get('occur_date')) or None,
+            advance_amount=_dec(data.get('advance_amount', 0)),
+            expected_writeoff_date=_normalize_date(data.get('expected_writeoff_date')) or None,
+            notes=(data.get('notes') or '').strip(),
+            created_by=user,
+        )
+        rec.save()
+    except Exception as e:
+        return err(str(e))
+    return ok(apply_ar_view_mask(
+        rec.to_dict(today=datetime.date.today(), include_writeoffs=True),
+        get_request_perms(request), 'advance'))
+
+
+@csrf_exempt
+@pk_required()
+def advance_detail(request, pk):
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    try:
+        rec = AdvanceRecord.objects.select_related('project', 'created_by').get(pk=pk)
+    except AdvanceRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    if request.pk_role != 'super_admin':
+        if rec.delivery_dept not in request.pk_depts:
+            return err('无权访问', 403)
+        perms = get_request_perms(request)
+        if perms and perms.get('ar_shared_only') and not (rec.project and rec.project.is_shared):
+            return err('无权访问', 403)
+    today = datetime.date.today()
+
+    if request.method == 'GET':
+        return ok(apply_ar_view_mask(rec.to_dict(today=today, include_writeoffs=True),
+                                     get_request_perms(request), 'advance'))
+
+    if request.method == 'PUT':
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        data = _ar_visible_payload(request, _parse_body(request), 'advance',
+                                   extra=('direction', 'occur_year', 'occur_month',
+                                          'occur_date', 'expected_writeoff_date'))
+        if 'direction' in data and data['direction'] in ADVANCE_DIRECTIONS:
+            rec.direction = data['direction']
+        if 'counterparty' in data:
+            rec.counterparty = (data['counterparty'] or '').strip()
+        if 'occur_year' in data and data['occur_year']:
+            rec.occur_year = int(data['occur_year'])
+        if 'occur_month' in data and data['occur_month']:
+            rec.occur_month = int(data['occur_month'])
+        if 'occur_date' in data:
+            rec.occur_date = _normalize_date(data['occur_date']) or None
+        if 'advance_amount' in data:
+            rec.advance_amount = _dec(data['advance_amount'])
+        if 'expected_writeoff_date' in data:
+            rec.expected_writeoff_date = _normalize_date(data['expected_writeoff_date']) or None
+        if 'notes' in data:
+            rec.notes = (data['notes'] or '').strip()
+        try:
+            rec.save()
+        except Exception as e:
+            return err(str(e))
+        return ok(apply_ar_view_mask(rec.to_dict(today=today, include_writeoffs=True),
+                                     get_request_perms(request), 'advance'))
+
+    if request.method == 'DELETE':
+        denied = _delete_denied(request)
+        if denied:
+            return denied
+        rec.delete()
+        return ok({'deleted': pk})
+
+    return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def advances_kpi(request):
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    today = datetime.date.today()
+    qs = _apply_advance_filters(
+        _advance_dept_filter(AdvanceRecord.objects.all(), request), request)
+
+    def _block(direction):
+        d_qs = qs.filter(direction=direction)
+        agg = d_qs.aggregate(amt=Sum('advance_amount'), wo=Sum('written_off_amount'),
+                             bal=Sum('balance_amount', filter=Q(balance_amount__gt=0)))
+        total_amt = float(agg['amt'] or 0)
+        wo = float(agg['wo'] or 0)
+        bal = float(agg['bal'] or 0)
+        pending = d_qs.filter(balance_amount__gt=0).count()
+        overdue_qs = d_qs.filter(balance_amount__gt=0, expected_writeoff_date__lt=today)
+        overdue_amt = float(overdue_qs.aggregate(s=Sum('balance_amount'))['s'] or 0)
+        return {
+            'count': d_qs.count(),
+            'advance_amount': total_amt,
+            'written_off': wo,
+            'balance': bal,
+            'writeoff_rate': round(wo / total_amt * 100, 1) if total_amt else 100.0,
+            'pending_count': pending,
+            'overdue_count': overdue_qs.count(),
+            'overdue_balance': overdue_amt,
+        }
+
+    return ok({'预收': _block('预收'), '预付': _block('预付')})
+
+
+@csrf_exempt
+@pk_required()
+def advances_summary(request):
+    """Group-by pivot over advances. group_by ∈ {dept, direction, counterparty, month}."""
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    qs = _apply_advance_filters(
+        _advance_dept_filter(AdvanceRecord.objects.all(), request), request)
+    group_by = request.GET.get('group_by', 'dept').strip()
+    field_map = {
+        'dept': 'delivery_dept',
+        'direction': 'direction',
+        'counterparty': 'counterparty',
+    }
+    rows = []
+    if group_by == 'month':
+        agg = (qs.values('occur_year', 'occur_month')
+               .annotate(count=Count('id'), advance_amount=Sum('advance_amount'),
+                         written_off=Sum('written_off_amount'),
+                         balance=Sum('balance_amount'))
+               .order_by('occur_year', 'occur_month'))
+        for r in agg:
+            rows.append({
+                'key': f"{r['occur_year']}-{r['occur_month']:02d}",
+                'year': r['occur_year'], 'month': r['occur_month'],
+                'count': r['count'],
+                'advance_amount': str(r['advance_amount'] or 0),
+                'written_off': str(r['written_off'] or 0),
+                'balance': str(r['balance'] or 0),
+            })
+    else:
+        field = field_map.get(group_by, 'delivery_dept')
+        agg = (qs.values(field)
+               .annotate(count=Count('id'), advance_amount=Sum('advance_amount'),
+                         written_off=Sum('written_off_amount'),
+                         balance=Sum('balance_amount'))
+               .order_by('-advance_amount'))
+        for r in agg:
+            rows.append({
+                'key': r[field] or '(未填)',
+                'count': r['count'],
+                'advance_amount': str(r['advance_amount'] or 0),
+                'written_off': str(r['written_off'] or 0),
+                'balance': str(r['balance'] or 0),
+            })
+    return ok({'group_by': group_by, 'rows': rows})
+
+
+@csrf_exempt
+@pk_required()
+def advance_template(request):
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '预收预付明细'
+    headers = ['方向(预收/预付)*', '项目简称', '交付部门', '往来单位*', '发生年*', '发生月*',
+               '款项日期', '预收/预付金额', '预计核销日期', '核销金额', '核销日期', '备注']
+    _header_row(ws, headers, color='6A1B9A')
+    tip_vals = [
+        '★必填：预收=客户预付给我们(现金流入)，预付=我们预付供应商(现金流出)',
+        '选填：填项目台账中的"项目简称"（精确匹配）；无对应项目可留空，仅填往来单位',
+        '选填：未填项目简称时必填本列（交付部门）；填了项目则自动取项目部门',
+        '★必填：往来单位（预收填客户、预付填供应商）',
+        '★必填：4位整数，如 2026',
+        '★必填：1-12 的整数',
+        '选填：款项实际收/付日期（驱动现金流），格式 2026-01-15 / 2026年1月15日 均可',
+        '选填：本笔预收/预付金额（元）；未核销余额 = 金额 − 累计核销',
+        '选填：预计核销日期，超期未核销将预警；格式同上',
+        '选填：本次核销(冲减)金额（元）；同一笔可多次核销，多次导入追加不覆盖',
+        '选填：核销日期，格式同上',
+        '选填备注',
+    ]
+    ws.append(tip_vals)
+    tip_row = ws.max_row
+    tip_fill = PatternFill('solid', fgColor='F3E5F5')
+    tip_font = Font(italic=True, color='4A148C', size=9)
+    for c in range(1, len(headers) + 1):
+        cell = ws.cell(tip_row, c)
+        cell.fill = tip_fill
+        cell.font = tip_font
+        cell.alignment = Alignment(wrap_text=True)
+    ws.row_dimensions[tip_row].height = 60
+    ws.append(['预收', EXAMPLE_ROW_MARKER, '', '示例客户', 2026, 1, '2026-01-15',
+               100000, '2026-06-30', 30000, '2026-03-10',
+               '示例（此行含"示例"标记，导入时自动跳过）'])
+    for col in range(1, len(headers) + 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 18
+    return _export_response(wb, '预收预付导入模板.xlsx')
+
+
+@csrf_exempt
+@pk_required()
+def advance_import(request):
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    f = request.FILES.get('file')
+    if not f:
+        return err('请上传文件')
+    try:
+        wb = openpyxl.load_workbook(f, data_only=True)
+        ws = wb.active
+    except Exception as e:
+        return err(f'无法读取Excel: {e}')
+
+    headers = [str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1)]
+    col_map = {h: i + 1 for i, h in enumerate(headers)}
+    _ALIASES = {
+        '方向(预收/预付)*': ['方向(预收/预付)*', '方向(预收/预付)', '方向'],
+        '项目简称': ['项目简称', '项目简称*'],
+        '交付部门': ['交付部门'],
+        '往来单位*': ['往来单位*', '往来单位'],
+        '发生年*': ['发生年*', '发生年'],
+        '发生月*': ['发生月*', '发生月'],
+        '款项日期': ['款项日期', '款项日期(YYYY-MM-DD)'],
+        '预收/预付金额': ['预收/预付金额', '金额'],
+        '预计核销日期': ['预计核销日期'],
+        '核销金额': ['核销金额'],
+        '核销日期': ['核销日期'],
+        '备注': ['备注'],
+    }
+
+    def _resolve_idx(name):
+        for h in _ALIASES.get(name, [name]):
+            if h in col_map:
+                return col_map[h]
+        return None
+
+    def _cv_raw(row, name):
+        idx = _resolve_idx(name)
+        return ws.cell(row, idx).value if idx else None
+
+    def _cv(row, name):
+        v = _cv_raw(row, name)
+        return str(v).strip() if v is not None else ''
+
+    from paikuan.models import PaikuanUser
+    user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+    search_depts = None if request.pk_role == 'super_admin' else request.pk_depts
+    created = skipped = updated = 0
+    errors = []
+
+    for ri in range(2, ws.max_row + 1):
+        direction = _cv(ri, '方向(预收/预付)*')
+        short_name = _cv(ri, '项目简称')
+        counterparty = _cv(ri, '往来单位*')
+        if EXAMPLE_ROW_MARKER in short_name or direction.startswith('★'):
+            skipped += 1
+            continue
+        if direction not in ADVANCE_DIRECTIONS:
+            if not direction and not counterparty and not short_name:
+                skipped += 1
+                continue
+            errors.append(f'第{ri}行: 方向无效（应为 预收/预付）')
+            skipped += 1
+            continue
+        proj = None
+        dept = _cv(ri, '交付部门')
+        if short_name:
+            proj = _match_project_by_short_name(short_name, allowed_depts=search_depts)
+            if not proj:
+                errors.append(f'第{ri}行: 项目简称"{short_name}"未匹配到项目')
+                skipped += 1
+                continue
+            dept = proj.delivery_dept
+        if not dept:
+            errors.append(f'第{ri}行: 未填项目简称时必须填写交付部门')
+            skipped += 1
+            continue
+        if request.pk_role != 'super_admin' and dept not in request.pk_depts:
+            errors.append(f'第{ri}行: 无权操作部门"{dept}"')
+            skipped += 1
+            continue
+        year = int(_cv(ri, '发生年*') or 0)
+        month = int(_cv(ri, '发生月*') or 0)
+        if not (year and 1 <= month <= 12):
+            errors.append(f'第{ri}行: 发生年月无效')
+            skipped += 1
+            continue
+        try:
+            rec = AdvanceRecord(
+                project=proj, delivery_dept=dept, direction=direction,
+                counterparty=counterparty, occur_year=year, occur_month=month,
+                occur_date=_normalize_date(_cv_raw(ri, '款项日期')) or None,
+                advance_amount=_dec(_cv(ri, '预收/预付金额') or 0),
+                expected_writeoff_date=_normalize_date(_cv_raw(ri, '预计核销日期')) or None,
+                notes=_cv(ri, '备注'),
+                created_by=user,
+            )
+            rec.save()
+            wo_amount = _cv(ri, '核销金额')
+            wo_date = _normalize_date(_cv_raw(ri, '核销日期'))
+            if wo_amount and wo_date:
+                amt = _dec(wo_amount)
+                if amt > 0 and not rec.writeoffs.filter(writeoff_date=wo_date, amount=amt).exists():
+                    max_no = rec.writeoffs.aggregate(m=Max('writeoff_no')).get('m') or 0
+                    AdvanceWriteoff.objects.create(
+                        advance_record=rec, writeoff_no=max_no + 1,
+                        amount=amt, writeoff_date=wo_date, notes='导入核销')
+                    rec.recompute_derived()
+            created += 1
+        except Exception as e:
+            errors.append(f'第{ri}行: {e}')
+            skipped += 1
+
+    return ok({'created': created, 'updated': updated, 'skipped': skipped, 'errors': errors})
+
+
+@csrf_exempt
+@pk_required()
+def advance_export(request):
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    today = datetime.date.today()
+    qs = _apply_advance_filters(
+        _advance_dept_filter(AdvanceRecord.objects.select_related('project'), request), request)
+    if qs.count() > 5000:
+        return err('导出超过5000行，请缩小筛选范围')
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '预收预付明细'
+    columns = _visible_ar_export_cols(request, [
+        (None, '方向', lambda rec, st: rec.direction),
+        (None, '项目编号', lambda rec, st: rec.project.project_no if rec.project_id else ''),
+        ('p_short_name', '项目简称', lambda rec, st: rec.project.short_name if rec.project_id else ''),
+        (None, '交付部门', lambda rec, st: rec.delivery_dept),
+        ('adv_counterparty', '往来单位', lambda rec, st: rec.counterparty),
+        (None, '发生年', lambda rec, st: rec.occur_year),
+        (None, '发生月', lambda rec, st: rec.occur_month),
+        (None, '款项日期', lambda rec, st: str(rec.occur_date) if rec.occur_date else ''),
+        ('adv_amount', '预收/预付金额', lambda rec, st: float(rec.advance_amount)),
+        ('adv_writeoff', '已核销金额', lambda rec, st: float(rec.written_off_amount)),
+        ('adv_writeoff', '未核销余额', lambda rec, st: float(rec.balance_amount)),
+        ('adv_writeoff', '核销状态', lambda rec, st: rec.writeoff_status),
+        ('adv_expected_date', '预计核销日期', lambda rec, st: str(rec.expected_writeoff_date) if rec.expected_writeoff_date else ''),
+        ('adv_expected_date', '挂账天数', lambda rec, st: st['pending_days']),
+        ('adv_expected_date', '是否逾期', lambda rec, st: '是' if st['is_overdue'] else ''),
+        ('adv_notes', '备注', lambda rec, st: rec.notes),
+    ])
+    _header_row(ws, [h for _, h, _ in columns], color='6A1B9A')
+    for rec in qs:
+        st = rec.aging_dict(today)
+        ws.append([getter(rec, st) for _, _, getter in columns])
+    return _export_response(wb, '预收预付明细.xlsx')
+
+
+@csrf_exempt
+@pk_required()
+def advance_writeoffs(request, pk):
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    try:
+        rec = AdvanceRecord.objects.select_related('project').get(pk=pk)
+    except AdvanceRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    if request.pk_role != 'super_admin' and rec.delivery_dept not in request.pk_depts:
+        return err('无权访问', 403)
+    denied = _ar_field_denied(request, 'adv_writeoff')
+    if denied:
+        return denied
+
+    if request.method == 'GET':
+        return ok([w.to_dict() for w in rec.writeoffs.order_by('writeoff_no')])
+
+    if request.method == 'POST':
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        data = _parse_body(request)
+        amount = _dec(data.get('amount', 0))
+        if amount <= 0:
+            return err('核销金额必须大于0')
+        wo_date = _normalize_date(data.get('writeoff_date'))
+        if not wo_date:
+            return err('核销日期无效')
+        try:
+            with transaction.atomic():
+                last = rec.writeoffs.select_for_update().order_by('-writeoff_no').first()
+                next_no = (last.writeoff_no + 1) if last else 1
+                wo = AdvanceWriteoff.objects.create(
+                    advance_record=rec, writeoff_no=next_no, amount=amount,
+                    writeoff_date=wo_date, notes=(data.get('notes') or '').strip())
+        except ValidationError as e:
+            return err(str(e.message if hasattr(e, 'message') else e), 400)
+        return ok(wo.to_dict())
+
+    return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def advance_writeoff_detail(request, pk, wid):
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    try:
+        wo = AdvanceWriteoff.objects.select_related('advance_record__project').get(
+            pk=wid, advance_record_id=pk)
+    except AdvanceWriteoff.DoesNotExist:
+        return err('核销记录不存在', 404)
+    if request.pk_role != 'super_admin' and wo.advance_record.delivery_dept not in request.pk_depts:
+        return err('无权访问', 403)
+    denied = _ar_field_denied(request, 'adv_writeoff')
+    if denied:
+        return denied
+
+    if request.method == 'PUT':
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        data = _parse_body(request)
+        if 'amount' in data:
+            amount = _dec(data['amount'])
+            if amount <= 0:
+                return err('核销金额必须大于0')
+            wo.amount = amount
+        if 'writeoff_date' in data:
+            wo.writeoff_date = _normalize_date(data['writeoff_date']) or wo.writeoff_date
+        if 'notes' in data:
+            wo.notes = (data['notes'] or '').strip()
+        try:
+            wo.save()
+        except ValidationError as e:
+            return err(str(e.message if hasattr(e, 'message') else e), 400)
+        return ok(wo.to_dict())
+
+    if request.method == 'DELETE':
+        denied = _delete_denied(request)
+        if denied:
+            return denied
+        wo.delete()
+        return ok({'deleted': wid})
+
+    return err('Method not allowed', 405)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Cashflow comparison (AR collected vs AP paid)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -2210,6 +2823,20 @@ def cashflow(request):
             dept = row['department']
             paid_map[dept][ym] += row['paid'] or Decimal('0')
 
+    # 预收(流入) / 预付(流出) by occur_date month — advances move cash on occur_date
+    adv_recv_map = defaultdict(lambda: defaultdict(Decimal))
+    adv_paid_map = defaultdict(lambda: defaultdict(Decimal))
+    adv_qs = (AdvanceRecord.objects
+              .filter(occur_date__gte=start_date, occur_date__lte=end_date,
+                      delivery_dept__in=depts)
+              .annotate(ym=TruncMonth('occur_date'))
+              .values('ym', 'delivery_dept', 'direction')
+              .annotate(amt=Sum('advance_amount')))
+    for row in adv_qs:
+        ym = row['ym'].strftime('%Y-%m')
+        target = adv_recv_map if row['direction'] == '预收' else adv_paid_map
+        target[row['delivery_dept']][ym] += row['amt'] or Decimal('0')
+
     # Also include budget data for comparison
     budget_coll_map = defaultdict(lambda: defaultdict(Decimal))
     bc_qs = (CollectionBudget.objects
@@ -2237,6 +2864,8 @@ def cashflow(request):
     by_dept = []
     total_coll = defaultdict(Decimal)
     total_paid = defaultdict(Decimal)
+    total_adv_recv = defaultdict(Decimal)
+    total_adv_paid = defaultdict(Decimal)
     total_bcoll = defaultdict(Decimal)
     total_bpaid = defaultdict(Decimal)
     has_alert = False
@@ -2244,16 +2873,23 @@ def cashflow(request):
     for dept in depts:
         series_coll = [float(coll_map[dept].get(ym, 0)) for ym in month_keys]
         series_paid = [float(paid_map[dept].get(ym, 0)) for ym in month_keys]
+        series_arecv = [float(adv_recv_map[dept].get(ym, 0)) for ym in month_keys]
+        series_apaid = [float(adv_paid_map[dept].get(ym, 0)) for ym in month_keys]
         series_bcoll = [float(budget_coll_map[dept].get(ym, 0)) for ym in month_keys]
         series_bpaid = [float(budget_paid_map[dept].get(ym, 0)) for ym in month_keys]
+        # 流入 = 回款 + 预收；流出 = 付款 + 预付
+        inflow = [series_coll[i] + series_arecv[i] for i in range(len(month_keys))]
+        outflow = [series_paid[i] + series_apaid[i] for i in range(len(month_keys))]
         alert_months = [month_keys[i] for i in range(len(month_keys))
-                        if series_paid[i] > series_coll[i] > 0]
+                        if outflow[i] > inflow[i] > 0]
         if alert_months:
             has_alert = True
         by_dept.append({
             'dept': dept,
             'collected': series_coll,
             'paid': series_paid,
+            'advance_received': series_arecv,
+            'advance_paid': series_apaid,
             'budget_collection': series_bcoll,
             'budget_payment': series_bpaid,
             'alert_months': alert_months,
@@ -2261,17 +2897,24 @@ def cashflow(request):
         for i, ym in enumerate(month_keys):
             total_coll[ym] += coll_map[dept].get(ym, Decimal('0'))
             total_paid[ym] += paid_map[dept].get(ym, Decimal('0'))
+            total_adv_recv[ym] += adv_recv_map[dept].get(ym, Decimal('0'))
+            total_adv_paid[ym] += adv_paid_map[dept].get(ym, Decimal('0'))
             total_bcoll[ym] += budget_coll_map[dept].get(ym, Decimal('0'))
             total_bpaid[ym] += budget_paid_map[dept].get(ym, Decimal('0'))
 
-    total_alert = [ym for ym in month_keys
-                   if float(total_paid.get(ym, 0)) > float(total_coll.get(ym, 0)) > 0]
+    collected_arr = [float(total_coll.get(ym, 0)) for ym in month_keys]
+    paid_arr = [float(total_paid.get(ym, 0)) for ym in month_keys]
+    adv_recv_arr = [float(total_adv_recv.get(ym, 0)) for ym in month_keys]
+    adv_paid_arr = [float(total_adv_paid.get(ym, 0)) for ym in month_keys]
+    inflow_arr = [round(collected_arr[i] + adv_recv_arr[i], 2) for i in range(len(month_keys))]
+    outflow_arr = [round(paid_arr[i] + adv_paid_arr[i], 2) for i in range(len(month_keys))]
+    net_arr = [round(inflow_arr[i] - outflow_arr[i], 2) for i in range(len(month_keys))]
+
+    total_alert = [month_keys[i] for i in range(len(month_keys))
+                   if outflow_arr[i] > inflow_arr[i] > 0]
     if total_alert:
         has_alert = True
 
-    collected_arr = [float(total_coll.get(ym, 0)) for ym in month_keys]
-    paid_arr = [float(total_paid.get(ym, 0)) for ym in month_keys]
-    net_arr = [round(collected_arr[i] - paid_arr[i], 2) for i in range(len(month_keys))]
     cumulative = []
     running = 0.0
     for v in net_arr:
@@ -2285,6 +2928,10 @@ def cashflow(request):
         'totals': {
             'collected': collected_arr,
             'paid': paid_arr,
+            'advance_received': adv_recv_arr,
+            'advance_paid': adv_paid_arr,
+            'inflow': inflow_arr,
+            'outflow': outflow_arr,
             'net': net_arr,
             'cumulative_net': cumulative,
             'budget_collection': [float(total_bcoll.get(ym, 0)) for ym in month_keys],

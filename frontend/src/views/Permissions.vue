@@ -17,6 +17,7 @@ const activeJob = ref('')
 const current = computed(() => jobs.value.find(j => j.job_title === activeJob.value))
 const arProjectFields = computed(() => arFields.value.filter(f => f.group === 'project'))
 const arRecordFields = computed(() => arFields.value.filter(f => f.group === 'record'))
+const arAdvanceFields = computed(() => arFields.value.filter(f => f.group === 'advance'))
 // Pages split: 应收应付 (paikuan + ar) vs 财务分析 (caiwu_*)
 const pkPages = computed(() => pages.value.filter(p => !p.key.startsWith('caiwu_')))
 const caiwuPages = computed(() => pages.value.filter(p => p.key.startsWith('caiwu_')))
@@ -61,7 +62,8 @@ function toggleCaiwuViewAll(val) {
 
 function toggleArViewAll(group, val) {
   const c = current.value.config
-  const list = group === 'project' ? arProjectFields.value : arRecordFields.value
+  const list = group === 'project' ? arProjectFields.value
+    : group === 'advance' ? arAdvanceFields.value : arRecordFields.value
   for (const f of list) c.ar_view[f.key] = val
 }
 
@@ -228,6 +230,19 @@ async function save() {
           </div>
           <div class="chip-row">
             <label v-for="f in arRecordFields" :key="f.key" class="perm-chip" :class="{ on: current.config.ar_view[f.key] }">
+              <input type="checkbox" v-model="current.config.ar_view[f.key]" />
+              <span class="dot"></span>{{ f.label }}
+            </label>
+          </div>
+
+          <div v-if="arAdvanceFields.length" class="section-title" style="margin-top:20px">预收预付字段（显示 / 隐藏）
+            <span class="all-inline">
+              <button class="mini" @click="toggleArViewAll('advance', true)">全显示</button>
+              <button class="mini" @click="toggleArViewAll('advance', false)">全隐藏</button>
+            </span>
+          </div>
+          <div v-if="arAdvanceFields.length" class="chip-row">
+            <label v-for="f in arAdvanceFields" :key="f.key" class="perm-chip" :class="{ on: current.config.ar_view[f.key] }">
               <input type="checkbox" v-model="current.config.ar_view[f.key]" />
               <span class="dot"></span>{{ f.label }}
             </label>

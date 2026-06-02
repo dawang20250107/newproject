@@ -58,7 +58,7 @@ PAYMENT_FIELD_DEFS = [
 FIELD_KEYS = [f['key'] for f in PAYMENT_FIELD_DEFS]
 PAGE_KEYS = [
     'dashboard', 'payments', 'approval_records', 'stats',
-    'ar_projects', 'ar_records', 'ar_analytics', 'ar_cashflow', 'ar_budget',
+    'ar_projects', 'ar_records', 'ar_advance', 'ar_analytics', 'ar_cashflow', 'ar_budget',
     'caiwu_report', 'caiwu_data', 'caiwu_charts', 'caiwu_metrics', 'caiwu_cockpit',
 ]
 
@@ -122,7 +122,17 @@ AR_RECORD_FIELD_DEFS = [
     {'key': 'r_payments',              'label': '回款记录',     'group': 'record', 'cols': ['payments']},
     {'key': 'r_notes',                 'label': '明细备注',     'group': 'record', 'cols': ['notes']},
 ]
-AR_FIELD_DEFS = AR_PROJECT_FIELD_DEFS + AR_RECORD_FIELD_DEFS
+# 预收预付字段级权限（adv_ 前缀）。cols 为隐藏时遮蔽的序列化 key。
+AR_ADVANCE_FIELD_DEFS = [
+    {'key': 'adv_counterparty',  'label': '往来单位',     'group': 'advance', 'cols': ['counterparty']},
+    {'key': 'adv_amount',        'label': '预收/预付金额', 'group': 'advance', 'cols': ['advance_amount']},
+    {'key': 'adv_writeoff',      'label': '核销信息',     'group': 'advance',
+        'cols': ['written_off_amount', 'balance_amount', 'writeoff_status', 'writeoffs']},
+    {'key': 'adv_expected_date', 'label': '预计核销/账龄', 'group': 'advance',
+        'cols': ['expected_writeoff_date', 'pending_days', 'is_overdue', 'overdue_days']},
+    {'key': 'adv_notes',         'label': '预收预付备注',  'group': 'advance', 'cols': ['notes']},
+]
+AR_FIELD_DEFS = AR_PROJECT_FIELD_DEFS + AR_RECORD_FIELD_DEFS + AR_ADVANCE_FIELD_DEFS
 AR_FIELD_KEYS = [f['key'] for f in AR_FIELD_DEFS]
 
 # Ordered columns for Excel template / import / export.
@@ -184,8 +194,8 @@ def default_job_config(job):
     _non_cw_pages = {k: True for k in PAGE_KEYS if not k.startswith('caiwu_')}
     pages_all = {**_non_cw_pages, 'caiwu_report': False, 'caiwu_data': False, 'caiwu_charts': False,
                  'caiwu_metrics': False, 'caiwu_cockpit': False}
-    ar_pages_all = {k: True for k in ('ar_projects', 'ar_records', 'ar_analytics', 'ar_cashflow', 'ar_budget')}
-    ar_pages_cashier = {k: (k in ('ar_records', 'ar_cashflow', 'ar_budget')) for k in ar_pages_all}
+    ar_pages_all = {k: True for k in ('ar_projects', 'ar_records', 'ar_advance', 'ar_analytics', 'ar_cashflow', 'ar_budget')}
+    ar_pages_cashier = {k: (k in ('ar_records', 'ar_advance', 'ar_cashflow', 'ar_budget')) for k in ar_pages_all}
     # Reusable caiwu capability blocks
     _cw_full = {
         'caiwu_view': _all_caiwu_fields(True),
@@ -333,13 +343,20 @@ def effective_perms(user):
             'fields': PAYMENT_FIELD_DEFS, 'ar_fields': AR_FIELD_DEFS}
 
 
+_AR_DEFS_BY_GROUP = {
+    'project': AR_PROJECT_FIELD_DEFS,
+    'record': AR_RECORD_FIELD_DEFS,
+    'advance': AR_ADVANCE_FIELD_DEFS,
+}
+
+
 def apply_ar_view_mask(d, perms, group):
-    """Null out AR dict fields the role cannot view. `group` is 'project' or
-    'record'. perms None (super_admin) → unchanged."""
+    """Null out AR dict fields the role cannot view. `group` is 'project',
+    'record' or 'advance'. perms None (super_admin) → unchanged."""
     if perms is None:
         return d
     ar_view = perms.get('ar_view') or {}
-    defs = AR_PROJECT_FIELD_DEFS if group == 'project' else AR_RECORD_FIELD_DEFS
+    defs = _AR_DEFS_BY_GROUP.get(group, AR_RECORD_FIELD_DEFS)
     for f in defs:
         if not ar_view.get(f['key'], True):
             for c in f['cols']:
@@ -1580,6 +1597,7 @@ def permissions(request):
             {'key': 'stats',             'label': '月度统计'},
             {'key': 'ar_projects',       'label': '项目台账'},
             {'key': 'ar_records',        'label': '应收明细'},
+            {'key': 'ar_advance',        'label': '预收预付'},
             {'key': 'ar_analytics',      'label': '应收分析'},
             {'key': 'ar_cashflow',       'label': '现金流分析'},
             {'key': 'ar_budget',         'label': '预算管理'},

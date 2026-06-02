@@ -35,6 +35,22 @@ const ar = {
   updatePayment: (rid, pid, d) => api.put(`/ar/records/${rid}/payments/${pid}`, d),
   deletePayment: (rid, pid) => api.delete(`/ar/records/${rid}/payments/${pid}`),
 
+  // 预收预付 (advances)
+  listAdvances: p => api.get('/ar/advances', { params: p }),
+  advancesKpi: p => api.get('/ar/advances/kpi', { params: p }),
+  advancesSummary: p => api.get('/ar/advances/summary', { params: p }),
+  createAdvance: d => api.post('/ar/advances', d),
+  getAdvance: id => api.get(`/ar/advances/${id}`),
+  updateAdvance: (id, d) => api.put(`/ar/advances/${id}`, d),
+  deleteAdvance: id => api.delete(`/ar/advances/${id}`),
+  advanceTemplate: () => api.get('/ar/advances/template', { responseType: 'blob' }),
+  importAdvances: fd => api.post('/ar/advances/import', fd),
+  exportAdvances: p => api.get('/ar/advances/export', { params: p, responseType: 'blob' }),
+  listWriteoffs: id => api.get(`/ar/advances/${id}/writeoffs`),
+  addWriteoff: (id, d) => api.post(`/ar/advances/${id}/writeoffs`, d),
+  updateWriteoff: (rid, wid, d) => api.put(`/ar/advances/${rid}/writeoffs/${wid}`, d),
+  deleteWriteoff: (rid, wid) => api.delete(`/ar/advances/${rid}/writeoffs/${wid}`),
+
   // Analytics
   aging: p => api.get('/ar/analytics/aging', { params: p }),
   collectionRate: p => api.get('/ar/analytics/collection-rate', { params: p }),

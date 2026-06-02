@@ -11,6 +11,7 @@ const routes = [
   // AR module
   { path: '/ar/projects', component: () => import('../views/ar/ARProjects.vue'), meta: { page: 'ar_projects' } },
   { path: '/ar/records', component: () => import('../views/ar/ARRecords.vue'), meta: { page: 'ar_records' } },
+  { path: '/ar/advances', component: () => import('../views/ar/Advances.vue'), meta: { page: 'ar_advance' } },
   { path: '/ar/analytics', component: () => import('../views/ar/ARAnalytics.vue'), meta: { page: 'ar_analytics' } },
   { path: '/ar/cashflow', component: () => import('../views/ar/Cashflow.vue'), meta: { page: 'ar_cashflow' } },
   { path: '/ar/budget', component: () => import('../views/ar/Budget.vue'), meta: { page: 'ar_budget' } },
