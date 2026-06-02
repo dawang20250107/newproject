@@ -103,6 +103,24 @@ class ARPermissionRegressionTests(TestCase):
         wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=True)
         return [cell.value for cell in wb.active[1]]
 
+    def test_project_customer_name_roundtrips(self):
+        admin = self.make_user('13900000310', 'finance_director', role='super_admin')
+        payload = {**self.project_payload(), 'customer_name': '某某物流有限公司'}
+        resp = self.json_post('/api/pk/ar/projects', payload, admin)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        pid = resp.json()['data']['id']
+        self.assertEqual(resp.json()['data']['customer_name'], '某某物流有限公司')
+        # 编辑可更新
+        put = self.client.put(
+            f'/api/pk/ar/projects/{pid}',
+            data=json.dumps({'customer_name': '新客户名'}),
+            content_type='application/json', **self.auth(admin))
+        self.assertEqual(put.status_code, 200, put.content)
+        self.assertEqual(put.json()['data']['customer_name'], '新客户名')
+        # 导出含客户名称列
+        exp = self.client.get('/api/pk/ar/projects/export', **self.auth(admin))
+        self.assertIn('客户名称', self.headers_from_xlsx(exp))
+
     def test_cashier_page_access_cannot_write_ar_records(self):
         cfg = default_job_config('cashier')
         cfg['pages']['ar_projects'] = True

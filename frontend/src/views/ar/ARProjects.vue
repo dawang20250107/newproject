@@ -22,7 +22,7 @@ const exporting = ref(false)
 const fileInput = ref(null)
 
 const form = reactive({
-  contract_name: '', short_name: '', delivery_dept: '', sub_dept: '',
+  contract_name: '', customer_name: '', short_name: '', delivery_dept: '', sub_dept: '',
   business_mode: '', customer_level: 'A级', sales_contact: '', project_manager: '',
   has_contract: '有', contract_date: '', reconciliation_days: 0,
   invoice_wait_days: 0, post_invoice_days: 0, invoice_mode: '全额',
@@ -74,7 +74,7 @@ function reloadAll() { load(true); loadStats() }
 function openCreate() {
   editItem.value = null
   Object.assign(form, {
-    contract_name: '', short_name: '', delivery_dept: accessibleDepts.value[0] || '',
+    contract_name: '', customer_name: '', short_name: '', delivery_dept: accessibleDepts.value[0] || '',
     sub_dept: '', business_mode: '', customer_level: 'A级',
     sales_contact: '', project_manager: '', has_contract: '有', contract_date: '',
     reconciliation_days: 0, invoice_wait_days: 0, post_invoice_days: 0,
@@ -86,7 +86,8 @@ function openCreate() {
 function openEdit(item) {
   editItem.value = item
   Object.assign(form, {
-    contract_name: item.contract_name, short_name: item.short_name,
+    contract_name: item.contract_name, customer_name: item.customer_name || '',
+    short_name: item.short_name,
     delivery_dept: item.delivery_dept, sub_dept: item.sub_dept,
     business_mode: item.business_mode, customer_level: item.customer_level || 'A级',
     sales_contact: item.sales_contact, project_manager: item.project_manager,
@@ -285,6 +286,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <td v-if="show('p_contract_name') || show('p_short_name')">
                 <div class="contract-name">{{ item.contract_name }}</div>
                 <div v-if="item.short_name" class="short-name">{{ item.short_name }}</div>
+                <div v-if="item.customer_name" class="cust-name">客户：{{ item.customer_name }}</div>
               </td>
               <td v-if="show('p_delivery_dept')"><span class="dept-chip">{{ item.delivery_dept }}</span></td>
               <td v-if="show('p_sub_dept')" class="text-muted">{{ item.sub_dept || '—' }}</td>
@@ -357,6 +359,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <label class="form-field span2">
                 <span>合同名称 <em>*</em></span>
                 <input v-model="form.contract_name" placeholder="请输入合同全称" />
+              </label>
+              <label class="form-field span2">
+                <span>客户名称</span>
+                <input v-model="form.customer_name" placeholder="客户/往来单位全称，预收录入时自动带出" />
               </label>
               <label class="form-field">
                 <span>项目简称 <em>*</em></span>
@@ -476,6 +482,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .proj-no-tag { font-family: monospace; font-size: 11.5px; color: var(--muted); background: rgba(0,0,0,0.04); padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
 .contract-name { font-weight: 600; font-size: 13px; color: var(--text); }
 .short-name { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.cust-name { font-size: 11.5px; color: var(--primary); margin-top: 2px; }
 .dept-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; background: rgba(201,99,66,0.1); color: var(--primary); font-weight: 600; white-space: nowrap; }
 .person { font-size: 12.5px; color: var(--text); white-space: nowrap; }
 .badge-shared { font-size: 10px; padding: 1px 7px; border-radius: 8px; background: rgba(106,27,154,0.1); color: #6a1b9a; font-weight: 600; margin-left: 5px; }

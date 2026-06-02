@@ -92,6 +92,7 @@ def is_approver(request):
 # on the ar app, avoiding a circular import (ar imports paikuan, not vice versa).
 AR_PROJECT_FIELD_DEFS = [
     {'key': 'p_contract_name',  'label': '合同名称',   'group': 'project', 'cols': ['contract_name']},
+    {'key': 'p_customer_name',  'label': '客户名称',   'group': 'project', 'cols': ['customer_name']},
     {'key': 'p_short_name',     'label': '项目简称',   'group': 'project', 'cols': ['short_name']},
     {'key': 'p_delivery_dept',  'label': '交付部门',   'group': 'project', 'cols': ['delivery_dept']},
     {'key': 'p_sub_dept',       'label': '二级部门',   'group': 'project', 'cols': ['sub_dept']},

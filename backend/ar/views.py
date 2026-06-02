@@ -330,6 +330,7 @@ def projects(request):
         try:
             p = ARProject(
                 contract_name=data.get('contract_name', '').strip(),
+                customer_name=data.get('customer_name', '').strip(),
                 short_name=data.get('short_name', '').strip(),
                 delivery_dept=dept,
                 sub_dept=data.get('sub_dept', '').strip(),
@@ -388,8 +389,8 @@ def project_detail(request, pk):
         if denied:
             return denied
         data = _ar_visible_payload(request, _parse_body(request), 'project')
-        for field in ('contract_name', 'short_name', 'sub_dept', 'business_mode',
-                      'customer_level', 'sales_contact', 'project_manager',
+        for field in ('contract_name', 'customer_name', 'short_name', 'sub_dept',
+                      'business_mode', 'customer_level', 'sales_contact', 'project_manager',
                       'has_contract', 'invoice_mode', 'invoice_type', 'notes'):
             if field in data:
                 setattr(proj, field, data[field])
@@ -430,13 +431,14 @@ def project_template(request):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '项目信息'
-    headers = ['合同名称*', '项目简称*', '交付部门*', '二级部门', '业务模式',
+    headers = ['合同名称*', '客户名称', '项目简称*', '交付部门*', '二级部门', '业务模式',
                '客户等级', '销售对接人*', '项目负责人*', '有无合同',
                '签订日期', '合同对账期(天)', '开票等待期(天)', '票后等待期(天)',
                '开票模式(全额/差额)', '专票/普票/不开票', '税率(如0.06)', '备注']
     _header_row(ws, headers)
     tip_vals = [
         '★必填：合同/项目全称（唯一标识，再次导入同名合同+同一事业部时自动更新，不新增）',
+        '选填：客户/往来单位全称；预收录入选此项目时自动带出为往来单位',
         f'★必填：项目简称，须在事业部内唯一！应收明细、收款预算导入时均以此简称匹配项目，简称为关键桥梁',
         f'★必填：可选值：{"、".join(VALID_DEPARTMENTS)}（每个事业部每天新增客户，每位客户可有多个不同项目）',
         '选填：华南区/华北区等，可空',
@@ -463,11 +465,11 @@ def project_template(request):
         cell.fill = tip_fill
         cell.font = tip_font
         cell.alignment = Alignment(wrap_text=True)
-    example = [EXAMPLE_ROW_MARKER, '物流外包A', '劳务事业部', '华南区', '劳务外包',
+    example = [EXAMPLE_ROW_MARKER, '某某物流有限公司', '物流外包A', '劳务事业部', '华南区', '劳务外包',
                'A级', '张三', '李四', '有', '2026-01-01', 30, 0, 60,
                '全额', '专票', 0.06, '示例备注（此行含"示例"标记，导入时自动跳过）']
     ws.append(example)
-    col_widths = [28, 18, 16, 14, 14, 12, 16, 16, 10, 18, 20, 20, 20, 18, 18, 14, 24]
+    col_widths = [28, 22, 18, 16, 14, 14, 12, 16, 16, 10, 18, 20, 20, 20, 18, 18, 14, 24]
     for col, w in enumerate(col_widths, start=1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = w
     ws.row_dimensions[tip_row].height = 60
@@ -556,6 +558,7 @@ def project_import(request):
         try:
             int_days = lambda col: int(_cv(ri, col) or 0)
             field_vals = dict(
+                customer_name=_cv(ri, '客户名称'),
                 short_name=_cv(ri, '项目简称*') or _cv(ri, '项目简称'),
                 sub_dept=_cv(ri, '二级部门'),
                 business_mode=_cv(ri, '业务模式'),
@@ -621,6 +624,7 @@ def project_export(request):
     columns = _visible_ar_export_cols(request, [
         (None, '项目编号', lambda p: p.project_no),
         ('p_contract_name', '合同名称', lambda p: p.contract_name),
+        ('p_customer_name', '客户名称', lambda p: p.customer_name),
         ('p_short_name', '项目简称', lambda p: p.short_name),
         ('p_delivery_dept', '交付部门', lambda p: p.delivery_dept),
         ('p_sub_dept', '二级部门', lambda p: p.sub_dept),

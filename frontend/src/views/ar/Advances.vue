@@ -89,11 +89,18 @@ function onProjectKeywordInput() {
   clearTimeout(projectTimer)
   projectTimer = setTimeout(() => searchProjects(projectKeyword.value.trim()), 220)
 }
+let autoCounterparty = ''   // 上次按项目自动带出的客户名，用于判断可否覆盖
 function pickProject(p) {
   if (p) {
     form.project_id = p.id
     form.delivery_dept = p.delivery_dept
     projectKeyword.value = `${p.short_name}（${p.delivery_dept}）`
+    // 预收：往来单位 = 客户，自动带出项目客户名（未手填或仍是上次自动值时才覆盖）
+    if (isReceive.value && p.customer_name &&
+        (!form.counterparty || form.counterparty === autoCounterparty)) {
+      form.counterparty = p.customer_name
+      autoCounterparty = p.customer_name
+    }
   } else {
     form.project_id = ''
     projectKeyword.value = ''
@@ -110,6 +117,7 @@ function openCreate() {
     advance_amount: '', expected_writeoff_date: '', notes: '',
   })
   projectKeyword.value = ''
+  autoCounterparty = ''
   searchProjects('')
   showModal.value = true
 }
@@ -123,6 +131,7 @@ function openEdit(rec) {
     notes: rec.notes || '',
   })
   projectKeyword.value = rec.short_name || ''
+  autoCounterparty = ''
   searchProjects(rec.short_name || '')
   showModal.value = true
 }

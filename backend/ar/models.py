@@ -13,6 +13,7 @@ class ARProject(models.Model):
     """项目主表 — 每个合同/项目一行"""
     project_no = models.CharField('项目编号', max_length=20, unique=True, db_index=True)
     contract_name = models.CharField('合同名称', max_length=200)
+    customer_name = models.CharField('客户名称', max_length=200, blank=True, default='')
     short_name = models.CharField('项目简称', max_length=100, blank=True, default='')
     delivery_dept = models.CharField('交付部门', max_length=50, db_index=True)
     sub_dept = models.CharField('二级部门', max_length=100, blank=True, default='')
@@ -90,6 +91,7 @@ class ARProject(models.Model):
             'id': self.id,
             'project_no': self.project_no,
             'contract_name': self.contract_name,
+            'customer_name': self.customer_name,
             'short_name': self.short_name,
             'delivery_dept': self.delivery_dept,
             'sub_dept': self.sub_dept,
