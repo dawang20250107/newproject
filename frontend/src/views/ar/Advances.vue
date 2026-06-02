@@ -15,7 +15,7 @@ const loading = ref(false)
 const page = ref(1)
 const size = 50
 
-const filters = reactive({ dept: '', year: '', month: '', writeoff_status: '', counterparty: '', q: '' })
+const filters = reactive({ dept: '', year: '', month: '', writeoff_status: '', q: '' })
 
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
@@ -55,6 +55,8 @@ function switchDir(d) {
   load(true)
 }
 function onFilterChange() { load(true) }
+let qTimer = null
+function onQInput() { clearTimeout(qTimer); qTimer = setTimeout(() => load(true), 300) }
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size)))
 function go(p) { if (p < 1 || p > totalPages.value) return; page.value = p; load() }
 
@@ -249,23 +251,21 @@ onMounted(() => load())
     <!-- filters + toolbar -->
     <div class="card">
       <div class="filter-row">
-        <select v-model="filters.year" class="sel" @change="onFilterChange">
-          <option value="">全部年份</option>
-          <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+        <select v-model="filters.year" class="sel sm" @change="onFilterChange">
+          <option value="">年</option>
+          <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
         </select>
-        <select v-model="filters.month" class="sel" @change="onFilterChange">
-          <option value="">全部月份</option>
-          <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
+        <select v-model="filters.month" class="sel sm" @change="onFilterChange">
+          <option value="">月</option>
+          <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
         </select>
-        <select v-model="filters.writeoff_status" class="sel" @change="onFilterChange">
-          <option value="">全部核销状态</option>
+        <select v-model="filters.writeoff_status" class="sel sm" @change="onFilterChange">
+          <option value="">核销状态</option>
           <option value="未核销">未核销</option>
           <option value="部分核销">部分核销</option>
           <option value="已核销">已核销</option>
         </select>
-        <input v-model="filters.counterparty" class="inp" :placeholder="`${partyLabel}名称`" @keyup.enter="onFilterChange" />
-        <input v-model="filters.q" class="inp" placeholder="搜索 往来/项目/备注" @keyup.enter="onFilterChange" />
-        <button class="btn btn-ghost btn-sm" @click="onFilterChange">查询</button>
+        <input v-model="filters.q" class="inp sm" placeholder="🔍 搜索往来单位 / 项目 / 备注" @input="onQInput" />
         <div class="spacer"></div>
         <button class="btn btn-ghost btn-sm" @click="downloadTemplate">下载模板</button>
         <label v-if="canCreate" class="btn btn-ghost btn-sm" :class="{ disabled: importing }">
@@ -433,8 +433,10 @@ onMounted(() => load())
 .filter-row { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
 .spacer { flex: 1; min-width: 8px; }
 .sel, .inp { padding: 6px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); font-size: 13px; }
-.filter-row .sel, .filter-row .inp { font-size: 12.5px; }
-.inp { min-width: 120px; }
+/* override global `input,select{width:100%}` so filters are small boxes, not full-width bars */
+.filter-row .sel, .filter-row .inp { width: auto; font-size: 12.5px; }
+.sel.sm { padding: 5px 8px; font-size: 12.5px; }
+.inp.sm { padding: 5px 9px; font-size: 12.5px; width: 240px; max-width: 100%; }
 .btn.disabled { opacity: .6; pointer-events: none; }
 
 .table-scroll { overflow-x: auto; }
