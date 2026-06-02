@@ -27,6 +27,11 @@ urlpatterns = [
     path('records/<int:pk>/payments', views.ar_payments),
     path('records/<int:pk>/payments/<int:ppk>', views.ar_payment_detail),
 
+    # 供应商池 (suppliers)
+    path('suppliers', views.suppliers),
+    path('suppliers/search', views.supplier_search),
+    path('suppliers/<int:pk>', views.supplier_detail),
+
     # 预收预付 (advances)
     path('advances', views.advances),
     path('advances/kpi', views.advances_kpi),

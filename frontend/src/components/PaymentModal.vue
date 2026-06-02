@@ -114,7 +114,7 @@ const adjustedTarget = computed(() => {
 const overpaid = computed(() => plannedTotal.value > 0 && paidSoFar.value > plannedTotal.value)
 const remaining = computed(() => Math.max(0, adjustedTarget.value - paidSoFar.value))
 
-// 排款联动：按项目编号查该项目的「预付」未核销余额（只读提示）
+// 排款联动1：按项目编号查该项目的「预付」未核销余额（只读提示）
 const prepaid = ref(null)
 let prepaidTimer = null
 watch(() => form.value.project_no, (no) => {
@@ -129,6 +129,65 @@ watch(() => form.value.project_no, (no) => {
     } catch (_) { /* 静默 */ }
   }, 400)
 })
+
+// 排款联动2：按收款方名称模糊匹配供应商池，弹出预付余额并可直接核销
+const matchedSupplier = ref(null)
+const supplierWoAdv = ref(null)       // selected advance for writeoff
+const supplierWoAmt = ref('')
+const supplierWoDate = ref('')
+const supplierWoNotes = ref('')
+const supplierWoSaving = ref(false)
+const supplierWoResult = ref('')      // success flash
+let supplierTimer = null
+
+watch(() => form.value.payee, (payee) => {
+  clearTimeout(supplierTimer)
+  matchedSupplier.value = null
+  supplierWoAdv.value = null
+  const q = (payee || '').trim()
+  if (q.length < 2) return
+  supplierTimer = setTimeout(async () => {
+    try {
+      const res = await api.get('/ar/suppliers/search', {
+        params: { q, dept: form.value.department || undefined }
+      })
+      const items = res.data?.items || []
+      if (items.length > 0) matchedSupplier.value = items[0]
+    } catch (_) { /* 静默 */ }
+  }, 450)
+})
+
+function selectSupplierAdv(adv) {
+  supplierWoAdv.value = adv
+  supplierWoAmt.value = adv.balance_amount
+  if (!supplierWoDate.value) supplierWoDate.value = new Date().toISOString().slice(0, 10)
+}
+function cancelSupplierWo() {
+  supplierWoAdv.value = null; supplierWoAmt.value = ''; supplierWoNotes.value = ''
+}
+async function doSupplierWriteoff() {
+  if (!(parseFloat(supplierWoAmt.value) > 0)) { alert('核销金额必须大于0'); return }
+  if (!supplierWoDate.value) { alert('请填写核销日期'); return }
+  supplierWoSaving.value = true
+  try {
+    await api.post(`/ar/advances/${supplierWoAdv.value.id}/writeoffs`, {
+      amount: supplierWoAmt.value,
+      writeoff_date: supplierWoDate.value,
+      notes: supplierWoNotes.value || '',
+      payment_id: props.payment?.id,
+    })
+    supplierWoResult.value = `已用预付 ¥${parseFloat(supplierWoAmt.value).toFixed(2)} 核销，预付余额已更新`
+    cancelSupplierWo()
+    // refresh supplier balance
+    const res = await api.get('/ar/suppliers/search', {
+      params: { q: form.value.payee, dept: form.value.department || undefined }
+    })
+    const items = res.data?.items || []
+    matchedSupplier.value = items.length > 0 ? items[0] : null
+    setTimeout(() => { supplierWoResult.value = '' }, 4000)
+  } catch (e) { alert(e?.msg || '核销失败') }
+  finally { supplierWoSaving.value = false }
+}
 
 function buildPayload() {
   const payload = {}
@@ -235,6 +294,42 @@ async function submit() {
         <div v-if="vis('payee')" class="form-group">
           <label>收款方 *</label>
           <input v-model="form.payee" placeholder="收款单位/个人" :disabled="!editable('payee')" />
+          <!-- 供应商匹配：收款方模糊匹配到供应商池时显示预付余额 -->
+          <div v-if="matchedSupplier" class="supplier-match">
+            <div class="supplier-match-header">
+              <span class="supplier-tag">{{ matchedSupplier.supplier_type === 'private' ? '私有' : '公共' }}供应商</span>
+              <b>{{ matchedSupplier.name }}</b>
+              <span class="supplier-dept">{{ matchedSupplier.delivery_dept }}</span>
+              <span v-if="parseFloat(matchedSupplier.prepaid_balance) > 0" class="prepaid-bal">
+                预付余额 ¥{{ parseFloat(matchedSupplier.prepaid_balance).toLocaleString('zh-CN', {minimumFractionDigits: 2}) }}
+              </span>
+              <span v-else class="no-bal">暂无未核销预付</span>
+            </div>
+            <div v-if="supplierWoResult" class="wo-success">{{ supplierWoResult }}</div>
+            <div v-if="matchedSupplier.prepaid_advances?.length">
+              <div class="adv-list-label">可冲抵预付明细：</div>
+              <div v-for="adv in matchedSupplier.prepaid_advances" :key="adv.id" class="adv-row">
+                <span class="adv-date">{{ adv.occur_date || '—' }}</span>
+                <span class="adv-bal">¥{{ parseFloat(adv.balance_amount).toLocaleString('zh-CN', {minimumFractionDigits: 2}) }}</span>
+                <span class="adv-notes">{{ adv.notes || '' }}</span>
+                <button v-if="payment?.id && supplierWoAdv?.id !== adv.id"
+                        class="btn-xs btn-offset" @click="selectSupplierAdv(adv)">用此预付核销</button>
+                <span v-else-if="!payment?.id" class="adv-hint">（保存排款后可核销）</span>
+              </div>
+              <!-- Writeoff inline form -->
+              <div v-if="supplierWoAdv" class="wo-inline">
+                <span class="wo-inline-label">核销金额（元）</span>
+                <input v-model="supplierWoAmt" type="number" step="0.01" class="wo-inp" />
+                <span class="wo-inline-label">核销日期</span>
+                <input v-model="supplierWoDate" type="date" class="wo-inp" />
+                <input v-model="supplierWoNotes" class="wo-inp-wide" placeholder="备注（选填）" />
+                <button class="btn-xs btn-primary-xs" :disabled="supplierWoSaving" @click="doSupplierWriteoff">
+                  {{ supplierWoSaving ? '核销中…' : '确认核销' }}
+                </button>
+                <button class="btn-xs" @click="cancelSupplierWo">取消</button>
+              </div>
+            </div>
+          </div>
         </div>
         <div v-if="vis('total_amount')" class="form-group">
           <label>计划总金额 (元) *</label>
@@ -376,4 +471,38 @@ async function submit() {
 .prepaid-hint b { color: var(--primary); }
 .prepaid-tag { display: inline-block; padding: 1px 7px; border-radius: 999px; background: var(--primary);
   color: #fff; font-size: 11px; font-weight: 600; margin-right: 6px; }
+
+/* supplier match section */
+.supplier-match { margin-top: 8px; padding: 10px 12px; border: 1px solid rgba(21,101,192,0.25);
+  background: rgba(21,101,192,0.04); border-radius: 10px; font-size: 12px; }
+.supplier-match-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.supplier-tag { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700;
+  background: rgba(21,101,192,0.12); color: #1565c0; }
+.supplier-dept { color: var(--muted); font-size: 11px; }
+.prepaid-bal { color: #1565c0; font-weight: 700; }
+.no-bal { color: var(--muted); font-size: 11px; }
+.adv-list-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.adv-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 5px 0;
+  border-top: 1px dashed rgba(21,101,192,0.12); font-size: 12px; }
+.adv-date { color: var(--muted); min-width: 80px; }
+.adv-bal { font-weight: 700; color: #1565c0; }
+.adv-notes { color: var(--muted); flex: 1; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+.adv-hint { color: var(--muted); font-size: 11px; }
+.wo-success { padding: 5px 8px; border-radius: 7px; background: rgba(46,125,50,0.1); color: #2e7d32;
+  font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+.wo-inline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px;
+  padding: 8px 10px; background: rgba(21,101,192,0.06); border-radius: 8px; }
+.wo-inline-label { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.wo-inp { width: 110px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 12px; background: var(--card); color: var(--text); }
+.wo-inp-wide { flex: 1; min-width: 100px; padding: 4px 7px; border: 1px solid var(--border);
+  border-radius: 6px; font-size: 12px; background: var(--card); color: var(--text); }
+.btn-xs { padding: 3px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;
+  border: 1px solid var(--border); background: var(--card); color: var(--text); }
+.btn-xs:hover { background: rgba(120,120,120,0.1); }
+.btn-offset { border-color: #1565c0; color: #1565c0; background: rgba(21,101,192,0.06); }
+.btn-offset:hover { background: rgba(21,101,192,0.12); }
+.btn-primary-xs { border-color: var(--primary); background: var(--primary); color: #fff; }
+.btn-primary-xs:hover { opacity: 0.88; }
+.btn-primary-xs:disabled { opacity: 0.6; cursor: not-allowed; }
 </style>

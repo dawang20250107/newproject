@@ -35,6 +35,14 @@ const ar = {
   updatePayment: (rid, pid, d) => api.put(`/ar/records/${rid}/payments/${pid}`, d),
   deletePayment: (rid, pid) => api.delete(`/ar/records/${rid}/payments/${pid}`),
 
+  // 供应商池 (suppliers)
+  listSuppliers: p => api.get('/ar/suppliers', { params: p }),
+  searchSuppliers: p => api.get('/ar/suppliers/search', { params: p }),
+  createSupplier: d => api.post('/ar/suppliers', d),
+  getSupplierDetail: id => api.get(`/ar/suppliers/${id}`),
+  updateSupplier: (id, d) => api.put(`/ar/suppliers/${id}`, d),
+  deleteSupplier: id => api.delete(`/ar/suppliers/${id}`),
+
   // 预收预付 (advances)
   listAdvances: p => api.get('/ar/advances', { params: p }),
   advancesKpi: p => api.get('/ar/advances/kpi', { params: p }),

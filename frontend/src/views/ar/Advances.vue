@@ -9,8 +9,7 @@ import { fmtCompact } from '../../utils/format.js'
 const auth = useAuthStore()
 const route = useRoute()
 
-const direction = ref('预收')          // 预收 / 预付
-// 来自应收回款页的联动跳转：?project_id=&direction= → 预筛某项目的预收/预付
+const direction = ref('预收')          // '预收' | '预付' | 'suppliers'
 const projectFilter = ref(null)        // { id, label } or null
 const items = ref([])
 const total = ref(0)
@@ -31,14 +30,16 @@ const canCreate = computed(() => auth.canCreate)
 const canDelete = computed(() => auth.canDelete)
 
 const isReceive = computed(() => direction.value === '预收')
-const dirLabel = computed(() => isReceive.value ? '预收' : '预付')
-const partyLabel = computed(() => isReceive.value ? '客户' : '供应商')
+const isAdvanceMode = computed(() => direction.value !== 'suppliers')
+const dirLabel = computed(() => direction.value === '预收' ? '预收' : '预付')
+const partyLabel = computed(() => direction.value === '预收' ? '客户' : '供应商')
 
 const importing = ref(false)
 const exporting = ref(false)
 const fileInput = ref(null)
 
 async function load(reset = false) {
+  if (!isAdvanceMode.value) return
   if (reset) page.value = 1
   loading.value = true
   try {
@@ -57,7 +58,11 @@ async function load(reset = false) {
 function switchDir(d) {
   if (d === direction.value) return
   direction.value = d
-  load(true)
+  if (d === 'suppliers') {
+    loadSuppliers()
+  } else {
+    load(true)
+  }
 }
 function onFilterChange() { load(true) }
 let qTimer = null
@@ -85,18 +90,17 @@ async function searchProjects(kw) {
 }
 function onProjectKeywordInput() {
   showProjList.value = true
-  if (!projectKeyword.value.trim()) form.project_id = ''  // cleared text → unlink
+  if (!projectKeyword.value.trim()) form.project_id = ''
   clearTimeout(projectTimer)
   projectTimer = setTimeout(() => searchProjects(projectKeyword.value.trim()), 220)
 }
-let autoCounterparty = ''   // 上次按项目自动带出的客户名，用于判断可否覆盖
+let autoCounterparty = ''
 function pickProject(p) {
   if (p) {
     form.project_id = p.id
     form.delivery_dept = p.delivery_dept
     projectKeyword.value = `${p.short_name}（${p.delivery_dept}）`
-    // 预收：往来单位 = 客户，自动带出项目客户名（未手填或仍是上次自动值时才覆盖）
-    if (isReceive.value && p.customer_name &&
+    if (direction.value === '预收' && p.customer_name &&
         (!form.counterparty || form.counterparty === autoCounterparty)) {
       form.counterparty = p.customer_name
       autoCounterparty = p.customer_name
@@ -159,7 +163,6 @@ const woRec = ref(null)
 const woList = ref([])
 const woForm = reactive({ amount: '', writeoff_date: todayCST(), notes: '', ar_record_id: '' })
 const woSaving = ref(false)
-// 预收核销可选「冲抵某条应收明细」→ 自动生成预收抵扣回款
 const woOffsetRecords = ref([])
 const canOffset = computed(() =>
   woRec.value?.direction === '预收' &&
@@ -175,7 +178,6 @@ async function openWriteoffs(rec) {
 }
 async function loadOffsetRecords(rec) {
   if (rec.direction !== '预收') return
-  // 挂项目→按项目；散单→按客户名匹配应收明细
   const params = rec.project_id ? { project_id: rec.project_id }
     : (rec.counterparty ? { customer: rec.counterparty } : null)
   if (!params) return
@@ -199,7 +201,6 @@ async function addWriteoff() {
     await loadOffsetRecords(woRec.value)
     await refreshWriteoffs()
     await load()
-    // refresh the in-modal record balance
     const fresh = items.value.find(r => r.id === woRec.value.id)
     if (fresh) woRec.value = fresh
   } catch (e) { alert(e?.msg || '核销失败') }
@@ -252,6 +253,103 @@ function woStatusClass(s) {
 
 function clearProjectFilter() { projectFilter.value = null; load(true) }
 
+// ── Supplier management ───────────────────────────────────────────────────────
+const supplierItems = ref([])
+const supplierTotal = ref(0)
+const supplierLoading = ref(false)
+const supplierFilters = reactive({ type: '', dept: '', q: '' })
+
+const showSupplierModal = ref(false)
+const editSupplier = ref(null)
+const supplierSaving = ref(false)
+const supplierForm = reactive({
+  name: '', supplier_type: 'public', project_id: '', delivery_dept: '',
+  contact: '', notes: '',
+})
+const supplierProjKeyword = ref('')
+const supplierProjects = ref([])
+const showSupplierProjList = ref(false)
+let supplierProjTimer = null
+
+async function loadSuppliers() {
+  supplierLoading.value = true
+  try {
+    const res = await ar.listSuppliers({ ...supplierFilters })
+    supplierItems.value = res.data.items
+    supplierTotal.value = res.data.total
+  } finally { supplierLoading.value = false }
+}
+
+let supplierQTimer = null
+function onSupplierQInput() {
+  clearTimeout(supplierQTimer)
+  supplierQTimer = setTimeout(loadSuppliers, 300)
+}
+
+async function searchSupplierProjects(kw) {
+  const res = await ar.listProjects({ size: 100, q: kw || undefined })
+  supplierProjects.value = res.data.items
+}
+function onSupplierProjKeywordInput() {
+  showSupplierProjList.value = true
+  if (!supplierProjKeyword.value.trim()) supplierForm.project_id = ''
+  clearTimeout(supplierProjTimer)
+  supplierProjTimer = setTimeout(() => searchSupplierProjects(supplierProjKeyword.value.trim()), 220)
+}
+function pickSupplierProject(p) {
+  if (p) {
+    supplierForm.project_id = p.id
+    supplierForm.delivery_dept = p.delivery_dept
+    supplierProjKeyword.value = `${p.short_name}（${p.delivery_dept}）`
+  } else {
+    supplierForm.project_id = ''
+    supplierProjKeyword.value = ''
+  }
+  showSupplierProjList.value = false
+}
+function onSupplierProjBlur() { setTimeout(() => { showSupplierProjList.value = false }, 160) }
+
+function openCreateSupplier() {
+  editSupplier.value = null
+  Object.assign(supplierForm, {
+    name: '', supplier_type: 'public', project_id: '',
+    delivery_dept: accessibleDepts.value[0] || '',
+    contact: '', notes: '',
+  })
+  supplierProjKeyword.value = ''
+  searchSupplierProjects('')
+  showSupplierModal.value = true
+}
+function openEditSupplier(s) {
+  editSupplier.value = s
+  Object.assign(supplierForm, {
+    name: s.name, supplier_type: s.supplier_type,
+    project_id: s.project_id || '', delivery_dept: s.delivery_dept || '',
+    contact: s.contact || '', notes: s.notes || '',
+  })
+  supplierProjKeyword.value = s.project_short_name
+    ? `${s.project_short_name}（${s.delivery_dept}）` : ''
+  if (s.project_short_name) searchSupplierProjects(s.project_short_name)
+  showSupplierModal.value = true
+}
+async function saveSupplier() {
+  supplierSaving.value = true
+  try {
+    const payload = { ...supplierForm }
+    if (!payload.project_id) delete payload.project_id
+    if (editSupplier.value) await ar.updateSupplier(editSupplier.value.id, payload)
+    else await ar.createSupplier(payload)
+    showSupplierModal.value = false
+    await loadSuppliers()
+  } catch (e) { alert(e?.msg || '保存失败') }
+  finally { supplierSaving.value = false }
+}
+async function removeSupplier(s) {
+  if (!confirm(`确认删除供应商「${s.name}」？`)) return
+  try { await ar.deleteSupplier(s.id); await loadSuppliers() }
+  catch (e) { alert(e?.msg || '删除失败') }
+}
+
 onMounted(() => {
   const q = route.query || {}
   if (q.direction === '预收' || q.direction === '预付') direction.value = q.direction
@@ -271,20 +369,22 @@ onMounted(() => {
           围绕项目台账登记预收/预付款，跟踪核销进度与挂账账龄，并打通现金流
         </div>
       </div>
-      <select v-if="accessibleDepts.length > 1" v-model="filters.dept" class="sel" @change="onFilterChange">
+      <select v-if="isAdvanceMode && accessibleDepts.length > 1" v-model="filters.dept" class="sel" @change="onFilterChange">
         <option value="">全部部门</option>
         <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
       </select>
     </div>
 
-    <!-- direction tabs -->
+    <!-- direction / mode tabs -->
     <div class="dir-tabs">
       <button :class="['dir-tab', { active: direction === '预收' }]" @click="switchDir('预收')">预收（客户预付款）</button>
       <button :class="['dir-tab', { active: direction === '预付' }]" @click="switchDir('预付')">预付（付供应商）</button>
+      <div class="dir-tab-sep"></div>
+      <button :class="['dir-tab', { active: direction === 'suppliers' }]" @click="switchDir('suppliers')">供应商池</button>
     </div>
 
-    <!-- KPI -->
-    <div v-if="kpi" class="kpi-row">
+    <!-- KPI (advances only) -->
+    <div v-if="isAdvanceMode && kpi" class="kpi-row">
       <div class="kpi"><div class="kpi-k">{{ dirLabel }}笔数</div><div class="kpi-v">{{ kpi.count }} 笔</div></div>
       <div v-if="show('adv_amount')" class="kpi"><div class="kpi-k">{{ dirLabel }}金额</div><div class="kpi-v">{{ fmtAmt(kpi.advance_amount) }}</div></div>
       <div v-if="show('adv_writeoff')" class="kpi"><div class="kpi-k">已核销</div><div class="kpi-v">{{ fmtAmt(kpi.written_off) }}<span class="kpi-sub">{{ kpi.writeoff_rate }}%</span></div></div>
@@ -292,92 +392,158 @@ onMounted(() => {
       <div v-if="show('adv_writeoff')" class="kpi warn"><div class="kpi-k">逾期挂账</div><div class="kpi-v">{{ fmtAmt(kpi.overdue_balance) }}<span class="kpi-sub">{{ kpi.overdue_count }} 笔</span></div></div>
     </div>
 
-    <!-- filters + toolbar -->
-    <div class="card">
-      <div class="filter-row">
-        <select v-model="filters.year" class="sel sm" @change="onFilterChange">
-          <option value="">年</option>
-          <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
-        </select>
-        <select v-model="filters.month" class="sel sm" @change="onFilterChange">
-          <option value="">月</option>
-          <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
-        </select>
-        <select v-model="filters.writeoff_status" class="sel sm" @change="onFilterChange">
-          <option value="">核销状态</option>
-          <option value="未核销">未核销</option>
-          <option value="部分核销">部分核销</option>
-          <option value="已核销">已核销</option>
-        </select>
-        <input v-model="filters.q" class="inp sm" placeholder="🔍 搜索往来单位 / 项目 / 备注" @input="onQInput" />
-        <button v-if="projectFilter" class="proj-chip" @click="clearProjectFilter">
-          项目：{{ projectFilter.label }} ✕
-        </button>
-        <div class="spacer"></div>
-        <button class="btn btn-ghost btn-sm" @click="downloadTemplate">下载模板</button>
-        <label v-if="canCreate" class="btn btn-ghost btn-sm" :class="{ disabled: importing }">
-          {{ importing ? '导入中…' : '导入' }}
-          <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />
-        </label>
-        <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">{{ exporting ? '导出中…' : '导出' }}</button>
-        <button v-if="canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增{{ dirLabel }}</button>
-      </div>
+    <!-- ── Advance list (预收/预付) ── -->
+    <template v-if="isAdvanceMode">
+      <div class="card">
+        <div class="filter-row">
+          <select v-model="filters.year" class="sel sm" @change="onFilterChange">
+            <option value="">年</option>
+            <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
+          </select>
+          <select v-model="filters.month" class="sel sm" @change="onFilterChange">
+            <option value="">月</option>
+            <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
+          </select>
+          <select v-model="filters.writeoff_status" class="sel sm" @change="onFilterChange">
+            <option value="">核销状态</option>
+            <option value="未核销">未核销</option>
+            <option value="部分核销">部分核销</option>
+            <option value="已核销">已核销</option>
+          </select>
+          <input v-model="filters.q" class="inp sm" placeholder="🔍 搜索往来单位 / 项目 / 备注" @input="onQInput" />
+          <button v-if="projectFilter" class="proj-chip" @click="clearProjectFilter">
+            项目：{{ projectFilter.label }} ✕
+          </button>
+          <div class="spacer"></div>
+          <button class="btn btn-ghost btn-sm" @click="downloadTemplate">下载模板</button>
+          <label v-if="canCreate" class="btn btn-ghost btn-sm" :class="{ disabled: importing }">
+            {{ importing ? '导入中…' : '导入' }}
+            <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />
+          </label>
+          <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">{{ exporting ? '导出中…' : '导出' }}</button>
+          <button v-if="canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增{{ dirLabel }}</button>
+        </div>
 
-      <div class="table-scroll">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th v-if="show('adv_counterparty')">往来单位</th>
-              <th>项目/部门</th>
-              <th>发生年月</th>
-              <th>款项日期</th>
-              <th v-if="show('adv_amount')" class="amt">{{ dirLabel }}金额</th>
-              <th v-if="show('adv_writeoff')" class="amt">已核销</th>
-              <th v-if="show('adv_writeoff')" class="amt">未核销余额</th>
-              <th v-if="show('adv_writeoff')" class="ctr">核销状态</th>
-              <th v-if="show('adv_expected_date')" class="ctr">挂账账龄</th>
-              <th class="ctr">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="!loading && !items.length"><td colspan="10" class="empty">暂无{{ dirLabel }}记录</td></tr>
-            <tr v-for="r in items" :key="r.id">
-              <td v-if="show('adv_counterparty')">{{ r.counterparty || '—' }}</td>
-              <td>
-                <div v-if="r.short_name" class="proj-name">{{ r.short_name }}</div>
-                <div class="dept-tag">{{ r.delivery_dept }}</div>
-              </td>
-              <td>{{ r.occur_year }}-{{ String(r.occur_month).padStart(2, '0') }}</td>
-              <td>{{ r.occur_date || '—' }}</td>
-              <td v-if="show('adv_amount')" class="amt num-strong">{{ fmtAmt(r.advance_amount) }}</td>
-              <td v-if="show('adv_writeoff')" class="amt">{{ fmtAmt(r.written_off_amount) }}</td>
-              <td v-if="show('adv_writeoff')" class="amt num-strong">{{ fmtAmt(r.balance_amount) }}</td>
-              <td v-if="show('adv_writeoff')" class="ctr">
-                <span class="status-pill" :class="woStatusClass(r.writeoff_status)">{{ r.writeoff_status }}</span>
-              </td>
-              <td v-if="show('adv_expected_date')" class="ctr">
-                <span v-if="r.is_overdue" class="status-pill pill-danger">逾期{{ r.overdue_days }}天</span>
-                <span v-else-if="r.balance_amount > 0" class="status-pill pill-muted">挂账{{ r.pending_days }}天</span>
-                <span v-else>—</span>
-              </td>
-              <td class="ctr nowrap">
-                <button v-if="show('adv_writeoff') && canCreate" class="lnk" @click="openWriteoffs(r)">核销</button>
-                <button v-if="canCreate" class="lnk" @click="openEdit(r)">编辑</button>
-                <button v-if="canDelete" class="lnk danger" @click="removeRec(r)">删除</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th v-if="show('adv_counterparty')">往来单位</th>
+                <th>项目/部门</th>
+                <th>发生年月</th>
+                <th>款项日期</th>
+                <th v-if="show('adv_amount')" class="amt">{{ dirLabel }}金额</th>
+                <th v-if="show('adv_writeoff')" class="amt">已核销</th>
+                <th v-if="show('adv_writeoff')" class="amt">未核销余额</th>
+                <th v-if="show('adv_writeoff')" class="ctr">核销状态</th>
+                <th v-if="show('adv_expected_date')" class="ctr">挂账账龄</th>
+                <th class="ctr">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!loading && !items.length"><td colspan="10" class="empty">暂无{{ dirLabel }}记录</td></tr>
+              <tr v-for="r in items" :key="r.id">
+                <td v-if="show('adv_counterparty')">{{ r.counterparty || '—' }}</td>
+                <td>
+                  <div v-if="r.short_name" class="proj-name">{{ r.short_name }}</div>
+                  <div class="dept-tag">{{ r.delivery_dept }}</div>
+                </td>
+                <td>{{ r.occur_year }}-{{ String(r.occur_month).padStart(2, '0') }}</td>
+                <td>{{ r.occur_date || '—' }}</td>
+                <td v-if="show('adv_amount')" class="amt num-strong">{{ fmtAmt(r.advance_amount) }}</td>
+                <td v-if="show('adv_writeoff')" class="amt">{{ fmtAmt(r.written_off_amount) }}</td>
+                <td v-if="show('adv_writeoff')" class="amt num-strong">{{ fmtAmt(r.balance_amount) }}</td>
+                <td v-if="show('adv_writeoff')" class="ctr">
+                  <span class="status-pill" :class="woStatusClass(r.writeoff_status)">{{ r.writeoff_status }}</span>
+                </td>
+                <td v-if="show('adv_expected_date')" class="ctr">
+                  <span v-if="r.is_overdue" class="status-pill pill-danger">逾期{{ r.overdue_days }}天</span>
+                  <span v-else-if="r.balance_amount > 0" class="status-pill pill-muted">挂账{{ r.pending_days }}天</span>
+                  <span v-else>—</span>
+                </td>
+                <td class="ctr nowrap">
+                  <button v-if="show('adv_writeoff') && canCreate" class="lnk" @click="openWriteoffs(r)">核销</button>
+                  <button v-if="canCreate" class="lnk" @click="openEdit(r)">编辑</button>
+                  <button v-if="canDelete" class="lnk danger" @click="removeRec(r)">删除</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
 
-      <div class="pager" v-if="totalPages > 1">
-        <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="go(page - 1)">上一页</button>
-        <span>{{ page }} / {{ totalPages }}（共 {{ total }} 条）</span>
-        <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="go(page + 1)">下一页</button>
+        <div class="pager" v-if="totalPages > 1">
+          <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="go(page - 1)">上一页</button>
+          <span>{{ page }} / {{ totalPages }}（共 {{ total }} 条）</span>
+          <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="go(page + 1)">下一页</button>
+        </div>
       </div>
-    </div>
+    </template>
 
-    <!-- create / edit modal -->
+    <!-- ── Supplier pool ── -->
+    <template v-else>
+      <div class="card">
+        <div class="filter-row">
+          <select v-model="supplierFilters.type" class="sel sm" @change="loadSuppliers">
+            <option value="">全部类型</option>
+            <option value="private">私有（绑项目）</option>
+            <option value="public">公共（绑事业部）</option>
+          </select>
+          <select v-if="accessibleDepts.length > 1" v-model="supplierFilters.dept" class="sel sm" @change="loadSuppliers">
+            <option value="">全部部门</option>
+            <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+          </select>
+          <input v-model="supplierFilters.q" class="inp sm" placeholder="🔍 搜索供应商名称 / 联系人" @input="onSupplierQInput" />
+          <div class="spacer"></div>
+          <button v-if="canCreate" class="btn btn-primary btn-sm" @click="openCreateSupplier">+ 新增供应商</button>
+        </div>
+
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>供应商名称</th>
+                <th class="ctr">类型</th>
+                <th>关联项目 / 部门</th>
+                <th>联系人</th>
+                <th class="amt">预付余额</th>
+                <th class="ctr">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!supplierLoading && !supplierItems.length">
+                <td colspan="6" class="empty">暂无供应商，点击「新增供应商」添加</td>
+              </tr>
+              <tr v-for="s in supplierItems" :key="s.id">
+                <td><b>{{ s.name }}</b><div v-if="s.notes" class="dept-tag">{{ s.notes }}</div></td>
+                <td class="ctr">
+                  <span class="status-pill" :class="s.supplier_type === 'private' ? 'pill-blue' : 'pill-muted'">
+                    {{ s.supplier_type === 'private' ? '私有' : '公共' }}
+                  </span>
+                </td>
+                <td>
+                  <div v-if="s.project_short_name" class="proj-name">{{ s.project_short_name }}</div>
+                  <div class="dept-tag">{{ s.delivery_dept }}</div>
+                </td>
+                <td>{{ s.contact || '—' }}</td>
+                <td class="amt">
+                  <span :class="{ 'num-strong': parseFloat(s.prepaid_balance) > 0, 'bal-positive': parseFloat(s.prepaid_balance) > 0 }">
+                    {{ parseFloat(s.prepaid_balance) > 0 ? fmtAmt(s.prepaid_balance) : '—' }}
+                  </span>
+                  <span v-if="s.prepaid_count > 0" class="kpi-sub"> {{ s.prepaid_count }}笔</span>
+                </td>
+                <td class="ctr nowrap">
+                  <button v-if="canCreate" class="lnk" @click="openEditSupplier(s)">编辑</button>
+                  <button v-if="canDelete" class="lnk danger" @click="removeSupplier(s)">删除</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-if="supplierLoading" style="text-align:center;padding:20px;color:var(--muted)">加载中…</div>
+      </div>
+    </template>
+
+    <!-- ── create / edit advance modal ── -->
     <div v-if="showModal" class="modal-mask" @click.self="showModal = false">
       <div class="modal">
         <h3>{{ editRec ? '编辑' : '新增' }}{{ dirLabel }}</h3>
@@ -423,7 +589,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- writeoff modal -->
+    <!-- ── writeoff modal ── -->
     <div v-if="showWoModal" class="modal-mask" @click.self="showWoModal = false">
       <div class="modal">
         <h3>核销 · {{ woRec.counterparty }}</h3>
@@ -433,14 +599,23 @@ onMounted(() => {
           <span class="hl">未核销余额 <b>{{ fmtAmt(woRec.balance_amount) }}</b></span>
         </div>
         <table class="data-table compact">
-          <thead><tr><th>#</th><th class="amt">核销金额</th><th>核销日期</th><th>冲抵应收</th><th>备注</th><th v-if="canDelete"></th></tr></thead>
+          <thead>
+            <tr>
+              <th>#</th><th class="amt">核销金额</th><th>核销日期</th>
+              <th>冲抵明细</th><th>备注</th><th v-if="canDelete"></th>
+            </tr>
+          </thead>
           <tbody>
             <tr v-if="!woList.length"><td :colspan="canDelete ? 6 : 5" class="empty">暂无核销记录</td></tr>
             <tr v-for="w in woList" :key="w.id">
               <td>{{ w.writeoff_no }}</td>
               <td class="amt">{{ fmtAmt(w.amount) }}</td>
               <td>{{ w.writeoff_date }}</td>
-              <td><span v-if="w.ar_record_id" class="offset-badge" :title="`已生成预收抵扣回款 · ${w.ar_project_no || ''}`">↳ 转回款</span><span v-else>—</span></td>
+              <td>
+                <span v-if="w.ar_record_id" class="offset-badge" :title="`已生成预收抵扣回款 · ${w.ar_project_no || ''}`">↳ 转回款</span>
+                <span v-else-if="w.payment_id" class="offset-badge pay-badge" :title="`关联排款: ${w.payment_payee || ''}`">↳ 排款#{{ w.payment_id }}</span>
+                <span v-else>—</span>
+              </td>
               <td>{{ w.notes || '—' }}</td>
               <td v-if="canDelete"><button class="lnk danger" @click="delWriteoff(w)">删除</button></td>
             </tr>
@@ -464,12 +639,78 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- ── create / edit supplier modal ── -->
+    <div v-if="showSupplierModal" class="modal-mask" @click.self="showSupplierModal = false">
+      <div class="modal">
+        <h3>{{ editSupplier ? '编辑' : '新增' }}供应商</h3>
+        <div class="form-grid">
+          <label class="fld full">
+            <span>供应商名称 <em>*</em>（应与预付往来单位名称完全一致，系统按此精确匹配预付余额）</span>
+            <input v-model="supplierForm.name" class="inp" placeholder="供应商全称" />
+          </label>
+          <label class="fld full">
+            <span>类型 <em>*</em></span>
+            <div class="type-radio-group">
+              <label class="type-radio">
+                <input type="radio" v-model="supplierForm.supplier_type" value="public" />
+                <span><b>公共供应商</b> — 归属某事业部，可服务该部门所有项目</span>
+              </label>
+              <label class="type-radio">
+                <input type="radio" v-model="supplierForm.supplier_type" value="private" />
+                <span><b>私有供应商</b> — 绑定特定项目，仅该项目的预付可关联</span>
+              </label>
+            </div>
+          </label>
+
+          <!-- Private: pick project -->
+          <label v-if="supplierForm.supplier_type === 'private'" class="fld full">
+            <span>关联项目 <em>*</em></span>
+            <div class="combo">
+              <input v-model="supplierProjKeyword" class="inp" placeholder="搜索项目简称 / 编号…"
+                     @focus="showSupplierProjList = true"
+                     @input="onSupplierProjKeywordInput" @blur="onSupplierProjBlur" />
+              <button v-if="supplierForm.project_id || supplierProjKeyword" type="button" class="combo-clear"
+                      @mousedown.prevent="pickSupplierProject(null)">×</button>
+              <ul v-if="showSupplierProjList" class="combo-list">
+                <li v-for="p in supplierProjects" :key="p.id" class="combo-opt"
+                    :class="{ on: supplierForm.project_id === p.id }"
+                    @mousedown.prevent="pickSupplierProject(p)">
+                  <span>{{ p.short_name }}</span><span class="combo-dept">{{ p.delivery_dept }}</span>
+                </li>
+                <li v-if="!supplierProjects.length" class="combo-opt muted">无匹配项目</li>
+              </ul>
+            </div>
+          </label>
+
+          <!-- Public: pick dept -->
+          <label v-else class="fld">
+            <span>归属事业部 <em>*</em></span>
+            <select v-model="supplierForm.delivery_dept" class="sel">
+              <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+            </select>
+          </label>
+
+          <label class="fld"><span>联系人</span>
+            <input v-model="supplierForm.contact" class="inp" placeholder="选填" /></label>
+          <label class="fld full"><span>备注</span>
+            <input v-model="supplierForm.notes" class="inp" placeholder="选填" /></label>
+        </div>
+        <div class="modal-foot">
+          <button class="btn btn-ghost" @click="showSupplierModal = false">取消</button>
+          <button class="btn btn-primary" :disabled="supplierSaving" @click="saveSupplier">
+            {{ supplierSaving ? '保存中…' : '保存' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .topbar { display: flex; justify-content: space-between; margin-bottom: 10px; }
-.dir-tabs { display: flex; gap: 8px; margin-bottom: 10px; }
+.dir-tabs { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
+.dir-tab-sep { width: 1px; height: 24px; background: var(--border); margin: 0 4px; }
 .dir-tab {
   padding: 7px 16px; border-radius: 8px; border: 1px solid var(--border);
   background: var(--card); color: var(--muted); font-weight: 600; cursor: pointer; font-size: 13.5px;
@@ -490,7 +731,6 @@ onMounted(() => {
 .proj-chip { padding: 5px 10px; border: 1px solid var(--primary); border-radius: 999px; background: rgba(var(--primary-rgb,255,138,76),0.1); color: var(--primary); font-size: 12px; cursor: pointer; white-space: nowrap; }
 .proj-chip:hover { background: rgba(var(--primary-rgb,255,138,76),0.18); }
 .sel, .inp { padding: 6px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); font-size: 13px; }
-/* override global `input,select{width:100%}` so filters are small boxes, not full-width bars */
 .filter-row .sel, .filter-row .inp { width: auto; font-size: 12.5px; }
 .sel.sm { padding: 5px 8px; font-size: 12.5px; }
 .inp.sm { padding: 5px 9px; font-size: 12.5px; width: 240px; max-width: 100%; }
@@ -504,6 +744,7 @@ onMounted(() => {
 .data-table th.amt, .data-table td.amt { text-align: right; }
 .data-table th.ctr, .data-table td.ctr { text-align: center; }
 .num-strong { font-weight: 700; }
+.bal-positive { color: var(--primary); }
 .proj-name { font-weight: 600; }
 .dept-tag { font-size: 11px; color: var(--muted); }
 .empty { text-align: center; color: var(--muted); padding: 28px 0; }
@@ -561,4 +802,12 @@ onMounted(() => {
 .wo-offset-lbl { font-size: 12px; color: var(--muted); }
 .wo-offset .inp { width: 100%; }
 .offset-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; background: rgba(27,110,53,0.1); color: #1b6e35; font-size: 11px; font-weight: 600; }
+.offset-badge.pay-badge { background: rgba(21,101,192,0.1); color: #1565c0; }
+
+/* supplier type radio */
+.type-radio-group { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.type-radio { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: 13px; }
+.type-radio input[type=radio] { margin-top: 2px; flex-shrink: 0; }
+.type-radio:has(input:checked) { border-color: var(--primary); background: rgba(201,99,66,0.05); }
 </style>

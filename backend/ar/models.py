@@ -587,6 +587,7 @@ class AdvanceWriteoff(models.Model):
 
     预收核销可绑定一条应收明细 (ar_record) 并自动生成一笔「预收抵扣」回款
     (ar_payment) 冲减其 outstanding；删除本核销时该回款一并删除（应收余额恢复）。
+    预付核销可绑定一条排款记录 (payment)，记录"哪笔排款用了此预付"。
     """
     advance_record = models.ForeignKey(AdvanceRecord, on_delete=models.CASCADE,
                                        related_name='writeoffs', db_index=True)
@@ -598,6 +599,9 @@ class AdvanceWriteoff(models.Model):
                                   null=True, blank=True, related_name='advance_offsets')
     ar_payment = models.OneToOneField('ARPayment', on_delete=models.SET_NULL,
                                       null=True, blank=True, related_name='advance_writeoff')
+    # 预付核销关联的排款记录（仅预付方向、可选）
+    payment = models.ForeignKey('paikuan.Payment', on_delete=models.SET_NULL,
+                                null=True, blank=True, related_name='prepaid_offsets')
     notes = models.TextField('备注', blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -621,8 +625,64 @@ class AdvanceWriteoff(models.Model):
             'ar_payment_id': self.ar_payment_id,
             'ar_project_no': (self.ar_record.project.project_no
                               if self.ar_record_id and self.ar_record.project_id else None),
+            'payment_id': self.payment_id,
+            'payment_payee': (self.payment.payee[:60] if self.payment_id and self.payment else None),
             'notes': self.notes,
             'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class Supplier(models.Model):
+    """供应商池 — 私有（绑项目）或公共（绑事业部）。
+
+    排款录入时，收款方名称可模糊匹配到供应商，进而查询该供应商对应的预付未核销余额，
+    并可在 PaymentModal 中直接发起核销（AdvanceWriteoff.payment 关联排款记录）实现闭环。
+    """
+    TYPE_CHOICES = [('private', '私有'), ('public', '公共')]
+
+    name = models.CharField('供应商名称', max_length=200, db_index=True)
+    supplier_type = models.CharField('类型', max_length=8, choices=TYPE_CHOICES,
+                                     default='public', db_index=True)
+    project = models.ForeignKey(ARProject, on_delete=models.SET_NULL,
+                                null=True, blank=True, related_name='suppliers',
+                                db_index=True)
+    delivery_dept = models.CharField('交付部门', max_length=50, blank=True,
+                                     default='', db_index=True)
+    contact = models.CharField('联系人', max_length=100, blank=True, default='')
+    notes = models.TextField('备注', blank=True, default='')
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True,
+                                   related_name='created_suppliers')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ar_suppliers'
+        ordering = ['name']
+        indexes = [
+            models.Index(fields=['supplier_type', 'delivery_dept']),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.project_id and self.supplier_type == 'private':
+            self.delivery_dept = self.project.delivery_dept
+        super().save(*args, **kwargs)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'supplier_type': self.supplier_type,
+            'project_id': self.project_id,
+            'project_no': self.project.project_no if self.project_id else None,
+            'project_short_name': self.project.short_name if self.project_id else None,
+            'delivery_dept': self.delivery_dept,
+            'contact': self.contact,
+            'notes': self.notes,
+            'created_by_id': self.created_by_id,
+            'created_by_name': self.created_by.name if self.created_by else '',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
 
 
