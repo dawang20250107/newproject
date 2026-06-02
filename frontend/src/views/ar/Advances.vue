@@ -70,15 +70,30 @@ const form = reactive({
 
 const projects = ref([])
 const projectKeyword = ref('')
+const showProjList = ref(false)
 let projectTimer = null
 async function searchProjects(kw) {
   const res = await ar.listProjects({ size: 100, q: kw || undefined })
   projects.value = res.data.items
 }
 function onProjectKeywordInput() {
+  showProjList.value = true
+  if (!projectKeyword.value.trim()) form.project_id = ''  // cleared text → unlink
   clearTimeout(projectTimer)
   projectTimer = setTimeout(() => searchProjects(projectKeyword.value.trim()), 220)
 }
+function pickProject(p) {
+  if (p) {
+    form.project_id = p.id
+    form.delivery_dept = p.delivery_dept
+    projectKeyword.value = `${p.short_name}（${p.delivery_dept}）`
+  } else {
+    form.project_id = ''
+    projectKeyword.value = ''
+  }
+  showProjList.value = false
+}
+function onProjBlur() { setTimeout(() => { showProjList.value = false }, 160) }
 
 function openCreate() {
   editRec.value = null
@@ -320,13 +335,22 @@ onMounted(() => load())
       <div class="modal">
         <h3>{{ editRec ? '编辑' : '新增' }}{{ dirLabel }}</h3>
         <div class="form-grid">
-          <label class="fld">
-            <span>关联项目（可选）</span>
-            <input v-model="projectKeyword" class="inp" placeholder="按项目简称/编号搜索，可留空" @input="onProjectKeywordInput" />
-            <select v-model="form.project_id" class="sel">
-              <option value="">不关联项目（仅填往来单位）</option>
-              <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.short_name }}（{{ p.delivery_dept }}）</option>
-            </select>
+          <label class="fld full">
+            <span>关联项目（可选，搜索选择；留空则仅填往来单位）</span>
+            <div class="combo">
+              <input v-model="projectKeyword" class="inp" placeholder="搜索项目简称 / 编号…"
+                     @focus="showProjList = true" @input="onProjectKeywordInput" @blur="onProjBlur" />
+              <button v-if="form.project_id || projectKeyword" type="button" class="combo-clear"
+                      @mousedown.prevent="pickProject(null)">×</button>
+              <ul v-if="showProjList" class="combo-list">
+                <li class="combo-opt muted" @mousedown.prevent="pickProject(null)">不关联项目（仅填往来单位）</li>
+                <li v-for="p in projects" :key="p.id" class="combo-opt"
+                    :class="{ on: form.project_id === p.id }" @mousedown.prevent="pickProject(p)">
+                  <span>{{ p.short_name }}</span><span class="combo-dept">{{ p.delivery_dept }}</span>
+                </li>
+                <li v-if="!projects.length" class="combo-opt muted">无匹配项目</li>
+              </ul>
+            </div>
           </label>
           <label class="fld" v-if="!form.project_id">
             <span>交付部门 <em>*</em></span>
@@ -389,27 +413,28 @@ onMounted(() => load())
 </template>
 
 <style scoped>
-.topbar { display: flex; justify-content: space-between; margin-bottom: 14px; }
-.dir-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+.topbar { display: flex; justify-content: space-between; margin-bottom: 10px; }
+.dir-tabs { display: flex; gap: 8px; margin-bottom: 10px; }
 .dir-tab {
-  padding: 9px 18px; border-radius: 9px; border: 1px solid var(--border);
-  background: var(--card); color: var(--muted); font-weight: 600; cursor: pointer; font-size: 14px;
+  padding: 7px 16px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--card); color: var(--muted); font-weight: 600; cursor: pointer; font-size: 13.5px;
 }
 .dir-tab.active { background: var(--primary); color: #fff; border-color: var(--primary); }
 
-.kpi-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
-.kpi { flex: 1; min-width: 140px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
-.kpi-k { font-size: 12px; color: var(--muted); }
-.kpi-v { font-size: 20px; font-weight: 800; color: var(--text); margin-top: 4px; }
-.kpi-sub { font-size: 12px; font-weight: 600; color: var(--muted); margin-left: 6px; }
+.kpi-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.kpi { flex: 1; min-width: 108px; background: var(--card); border: 1px solid var(--border); border-radius: 9px; padding: 8px 11px; }
+.kpi-k { font-size: 11px; color: var(--muted); }
+.kpi-v { font-size: 16px; font-weight: 800; color: var(--text); margin-top: 2px; line-height: 1.2; }
+.kpi-sub { font-size: 11px; font-weight: 600; color: var(--muted); margin-left: 5px; }
 .kpi.accent { background: rgba(201,99,66,.06); }
 .kpi.accent .kpi-v { color: var(--primary); }
 .kpi.warn .kpi-v { color: #c62828; }
 
-.filter-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
-.spacer { flex: 1; }
-.sel, .inp { padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); font-size: 13px; }
-.inp { min-width: 130px; }
+.filter-row { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.spacer { flex: 1; min-width: 8px; }
+.sel, .inp { padding: 6px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); font-size: 13px; }
+.filter-row .sel, .filter-row .inp { font-size: 12.5px; }
+.inp { min-width: 120px; }
 .btn.disabled { opacity: .6; pointer-events: none; }
 
 .table-scroll { overflow-x: auto; }
@@ -436,8 +461,13 @@ onMounted(() => load())
 
 .pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; font-size: 13px; color: var(--muted); }
 
-.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 20px; }
-.modal { background: var(--card); border-radius: 14px; padding: 22px; width: 100%; max-width: 640px; max-height: 90vh; overflow-y: auto; }
+.modal-mask { position: fixed; inset: 0; background: rgba(20,10,5,0.42); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; z-index: 200; padding: 20px; }
+.modal {
+  background: rgba(255,252,248,0.97);
+  border: 1px solid var(--glass-border);
+  border-radius: 18px; padding: 22px 24px; width: 100%; max-width: 640px; max-height: 90vh; overflow-y: auto;
+  box-shadow: 0 24px 80px rgba(100,60,30,0.28), 0 1px 0 rgba(255,255,255,0.8) inset;
+}
 .modal h3 { margin: 0 0 16px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .fld { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
@@ -445,6 +475,24 @@ onMounted(() => load())
 .fld span { color: var(--muted); }
 .fld em { color: #c62828; font-style: normal; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+
+/* project combobox */
+.combo { position: relative; }
+.combo .inp { width: 100%; padding-right: 28px; }
+.combo-clear { position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  border: none; background: none; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.combo-list {
+  position: absolute; z-index: 10; top: calc(100% + 4px); left: 0; right: 0;
+  background: #fff; border: 1px solid var(--border); border-radius: 9px;
+  box-shadow: 0 10px 30px rgba(100,60,30,0.18); max-height: 220px; overflow-y: auto;
+  list-style: none; margin: 0; padding: 4px;
+}
+.combo-opt { display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 7px 9px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.combo-opt:hover { background: rgba(201,99,66,.08); }
+.combo-opt.on { background: rgba(201,99,66,.12); font-weight: 600; }
+.combo-opt.muted { color: var(--muted); }
+.combo-dept { font-size: 11px; color: var(--muted); }
 
 .wo-summary { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin-bottom: 12px; }
 .wo-summary b { color: var(--text); }
