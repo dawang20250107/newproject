@@ -2916,7 +2916,6 @@ def advance_import(request):
                     AdvanceWriteoff.objects.create(
                         advance_record=rec, writeoff_no=max_no + 1,
                         amount=amt, writeoff_date=wo_date, notes='导入核销')
-                    rec.recompute_derived()
             created += 1
         except Exception as e:
             errors.append(f'第{ri}行: {e}')
@@ -3216,6 +3215,25 @@ def cashflow(request):
             ym = row['ym'].strftime('%Y-%m')
             dept = row['department']
             paid_map[dept][ym] += row['paid'] or Decimal('0')
+
+    # 扣除预付核销冲抵：防止 advance_paid + paid 双重计同一笔现金流出
+    # 按首个实付日期（pay1 > pay2 > pay3，否则 planned_date）归入对应月份
+    po_qs = (Payment.objects
+             .filter(department__in=depts, prepaid_offset_amount__gt=0)
+             .annotate(attr_ym=TruncMonth(Case(
+                 When(pay1_date__isnull=False, then=F('pay1_date')),
+                 When(pay2_date__isnull=False, then=F('pay2_date')),
+                 When(pay3_date__isnull=False, then=F('pay3_date')),
+                 default=F('planned_date'),
+             )))
+             .filter(attr_ym__gte=start_date, attr_ym__lte=end_date)
+             .values('attr_ym', 'department')
+             .annotate(offset=Sum('prepaid_offset_amount')))
+    for row in po_qs:
+        ym = row['attr_ym'].strftime('%Y-%m')
+        dept = row['department']
+        paid_map[dept][ym] = max(Decimal('0'),
+                                 paid_map[dept].get(ym, Decimal('0')) - (row['offset'] or Decimal('0')))
 
     # 预收(流入) / 预付(流出) by occur_date month — advances move cash on occur_date
     adv_recv_map = defaultdict(lambda: defaultdict(Decimal))

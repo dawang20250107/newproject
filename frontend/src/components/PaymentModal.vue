@@ -407,6 +407,12 @@ async function submit() {
         <span v-if="overpaid" class="pay-warn">⚠️ 超出计划总额</span>
         <span v-else-if="paidSoFar > 0" class="pay-ok">剩余 {{ remaining.toFixed(2) }} 元</span>
       </div>
+      <!-- 预付核销冲抵提示：当该排款已关联预付核销时，提示现金流视图已扣除重复计算 -->
+      <div v-if="payment?.prepaid_offset_amount && parseFloat(payment.prepaid_offset_amount) > 0"
+           class="prepaid-offset-tip">
+        <span class="offset-icon">⚖️</span>
+        已关联预付核销 <strong>¥{{ parseFloat(payment.prepaid_offset_amount).toLocaleString('zh-CN', {minimumFractionDigits: 2}) }}</strong>，现金流已扣除此金额防双重计
+      </div>
 
       <div class="modal-footer">
         <button class="btn btn-ghost" @click="emit('close')">取消</button>
@@ -428,6 +434,17 @@ async function submit() {
 .saving  { background: rgba(21,101,192,0.1); color: #1565c0; }
 .saved   { background: rgba(46,125,50,0.1); color: #2e7d32; }
 .save-err { background: rgba(198,40,40,0.1); color: #c62828; }
+
+.prepaid-offset-tip {
+  margin: 6px 0 2px;
+  padding: 6px 10px;
+  background: rgba(245,124,0,0.08);
+  border-left: 3px solid #f57c00;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #e65100;
+}
+.offset-icon { margin-right: 4px; }
 
 .save-spin {
   width: 10px; height: 10px; border-radius: 50%;

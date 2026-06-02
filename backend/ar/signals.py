@@ -32,6 +32,24 @@ def update_advance_on_writeoff_change(sender, instance, **kwargs):
         pass
 
 
+@receiver([post_save, post_delete], sender='ar.AdvanceWriteoff')
+def update_payment_prepaid_offset(sender, instance, **kwargs):
+    """预付核销变动时重算关联排款的预付冲抵金额，现金流视图从 paid 扣除，防双重计。"""
+    from decimal import Decimal as _D
+    from django.db.models import Sum as _Sum
+    payment_id = instance.payment_id
+    if not payment_id:
+        return
+    try:
+        from ar.models import AdvanceWriteoff as _AW
+        from paikuan.models import Payment as _Payment
+        total = (_AW.objects.filter(payment_id=payment_id)
+                 .aggregate(s=_Sum('amount'))['s'] or _D('0'))
+        _Payment.objects.filter(pk=payment_id).update(prepaid_offset_amount=total)
+    except Exception:
+        pass
+
+
 @receiver(post_delete, sender='ar.AdvanceWriteoff')
 def delete_linked_offset_payment(sender, instance, **kwargs):
     """删除预收核销时，连带删除其生成的「预收抵扣」回款，恢复应收 outstanding。"""

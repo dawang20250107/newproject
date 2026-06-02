@@ -87,6 +87,8 @@ class Payment(models.Model):
     pay3_amount = models.DecimalField('第3次付款金额', max_digits=15, decimal_places=2, default=0)
     notes = models.TextField('备注', blank=True, default='')
     plan_adjustment = models.DecimalField('计划调整金额', max_digits=15, decimal_places=2, null=True, blank=True)
+    # 系统自动维护：等于所有关联 AdvanceWriteoff.amount 之和，现金流视图从 paid 中扣除此金额防双重计
+    prepaid_offset_amount = models.DecimalField('预付核销冲抵金额', max_digits=15, decimal_places=2, default=Decimal('0'))
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -153,6 +155,7 @@ class Payment(models.Model):
             'pay3_amount': str(self.pay3_amount),
             'notes': self.notes,
             'plan_adjustment': str(self.plan_adjustment) if self.plan_adjustment is not None else None,
+            'prepaid_offset_amount': str(self.prepaid_offset_amount),
             'total_paid': str(self.total_paid),
             'remaining': str(self.remaining),
             'status': self.status,
