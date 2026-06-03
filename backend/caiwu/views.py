@@ -1868,10 +1868,17 @@ def _prev_period(year, month):
 
 
 def _rate(actual, target):
-    """Achievement rate (%) = actual / target * 100, rounded; None if not computable."""
+    """Achievement rate (%), rounded; None if not computable.
+
+    使用 (1 + (actual - target)/|target|) * 100：
+    - 目标为正时与 actual/target*100 完全等价（向后兼容）；
+    - 目标为负（计划性亏损）时方向正确——实际亏损更小/转盈 → 达成率更高，
+      实际亏损更大 → 达成率更低，不再出现 actual/target 因负负得正导致的反向；
+    - 实际为负而目标为正时得到负达成率，如实反映"不仅没达标还亏损"。
+    """
     if target in (None, 0) or actual is None:
         return None
-    return round(actual / float(target) * 100, 1)
+    return round((1 + (actual - target) / abs(float(target))) * 100, 1)
 
 
 def _chg(cur, prev):
