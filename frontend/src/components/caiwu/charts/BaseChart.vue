@@ -26,13 +26,14 @@ let resizeObserver = null
 function initChart() {
   if (!chartEl.value) return
   instance = echarts.init(chartEl.value, null, { renderer: 'canvas' })
-  instance.setOption(props.option)
+  // 关闭入场动画：低配设备上图表渲染更轻快（非侵入，不改传入 option）
+  instance.setOption({ ...props.option, animation: false })
   resizeObserver = new ResizeObserver(() => instance?.resize())
   resizeObserver.observe(chartEl.value)
 }
 
 watch(() => props.option, (val) => {
-  if (instance) instance.setOption(val, { notMerge: true })
+  if (instance) instance.setOption({ ...val, animation: false }, { notMerge: true })
 }, { deep: true })
 
 onMounted(initChart)

@@ -335,11 +335,6 @@ onMounted(load)
 .ai-bar-left { display: flex; align-items: center; gap: 12px; }
 .ai-bar-orb {
   font-size: 22px; filter: drop-shadow(0 0 6px rgba(201,99,66,0.45));
-  animation: aiOrbPulse 3s ease-in-out infinite;
-}
-@keyframes aiOrbPulse {
-  0%, 100% { transform: scale(1) rotate(0deg); }
-  50% { transform: scale(1.12) rotate(-8deg); }
 }
 .ai-bar-title { font-size: 14px; font-weight: 800; color: var(--text); display: flex; align-items: center; gap: 6px; }
 .ai-pro-tag {

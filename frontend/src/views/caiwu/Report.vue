@@ -282,27 +282,19 @@ onMounted(load)
 .kpi-empty { opacity: .72; }
 .value-empty { color: var(--muted) !important; opacity: .55; }
 
-/* negative calc KPI: red border + breathing glow */
+/* negative calc KPI: red border + static red glow */
 .kpi-negative {
   border-left: 3px solid var(--danger) !important;
-  animation: negBreathe 2.2s ease-in-out infinite;
-}
-@keyframes negBreathe {
-  0%, 100% { box-shadow: 0 2px 8px rgba(198,40,40,.10); }
-  50%       { box-shadow: 0 4px 18px rgba(198,40,40,.30); background: rgba(198,40,40,.04); }
+  box-shadow: 0 3px 14px rgba(198,40,40,.22);
+  background: rgba(198,40,40,.04);
 }
 
 /* MoM down (non-calc): subtle red tint */
 .kpi-mom-down { border-left: 3px solid rgba(198,40,40,.5); }
 
-/* negative value pulsing text */
+/* negative value: static red emphasis */
 .value-neg {
   color: var(--danger) !important;
-  animation: valuePulse 2.2s ease-in-out infinite;
-}
-@keyframes valuePulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: .65; }
 }
 
 /* MoM badge */
@@ -324,11 +316,6 @@ onMounted(load)
 .ai-bar-left { display: flex; align-items: center; gap: 12px; }
 .ai-bar-orb {
   font-size: 22px; filter: drop-shadow(0 0 6px rgba(201,99,66,0.45));
-  animation: aiOrbPulse 3s ease-in-out infinite;
-}
-@keyframes aiOrbPulse {
-  0%, 100% { transform: scale(1) rotate(0deg); }
-  50% { transform: scale(1.14) rotate(8deg); }
 }
 .ai-bar-title { font-size: 14px; font-weight: 800; color: var(--text); }
 .ai-bar-scope { font-size: 12px; color: var(--muted); margin-top: 1px; }

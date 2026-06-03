@@ -110,12 +110,7 @@ const fmt = (n) => fmtCompact(n, { space: true, dash: '0.00' })
 
 .l1-row td { font-weight: 600; background: rgba(201,99,66,.03); }
 .l1-calc td { background: rgba(201,99,66,.07); font-style: italic; }
-.l1-calc-neg td { background: rgba(198,40,40,.06) !important; }
-.l1-calc-neg { animation: rowBreathe 2.4s ease-in-out infinite; }
-@keyframes rowBreathe {
-  0%, 100% { box-shadow: inset 3px 0 0 rgba(198,40,40,.25); }
-  50%       { box-shadow: inset 3px 0 0 rgba(198,40,40,.70); background: rgba(198,40,40,.10); }
-}
+.l1-calc-neg td { background: rgba(198,40,40,.08) !important; box-shadow: inset 3px 0 0 rgba(198,40,40,.55); }
 .l1-name { font-weight: 700; }
 
 /* bottom-line row (经营净利) doubles as the report total */

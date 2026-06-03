@@ -183,12 +183,7 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
   margin-bottom: 16px;
   color: #b71c1c;
   font-size: 13.5px;
-  /* GPU-composited opacity-only pulse; avoid border/background animations
-     which repaint inside backdrop-filter parents and cause whole-page flicker. */
-  animation: overdue-fade 3s ease-in-out infinite;
-  will-change: opacity;
 }
-@keyframes overdue-fade { 0%, 100% { opacity: 1; } 50% { opacity: 0.78; } }
 .overdue-alert svg { flex-shrink: 0; color: #c62828; }
 
 /* Today's payment plan — compact, tidy row/column density */

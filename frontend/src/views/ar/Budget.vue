@@ -710,9 +710,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   background: rgba(198,40,40,.05);
   border-left: 3.5px solid #c62828;
   border-radius: 0 10px 10px 0;
-  animation: alertPulse 1.8s ease-in-out infinite; will-change: opacity;
 }
-@keyframes alertPulse { 0%,100% { opacity: 1; } 50% { opacity: .72; } }
 .ast-pulse {
   position: absolute; inset: 0;
   background: linear-gradient(90deg, rgba(198,40,40,.06) 0%, transparent 60%);

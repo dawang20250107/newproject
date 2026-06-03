@@ -266,44 +266,8 @@ function fmtAmt(v) {
   -webkit-backdrop-filter: blur(8px);
 }
 
-/* ── Shimmer overlay ──────────────────────────────────── */
-.wf-shim {
-  position: absolute;
-  left: 0; right: 0;
-  height: 50%;
-  pointer-events: none;
-}
-.wf-bar-increase .wf-shim {
-  background: linear-gradient(
-    to bottom,
-    transparent 0%,
-    rgba(255, 210, 200, 0.22) 50%,
-    transparent 100%
-  );
-  animation: wfShimUp 3.2s ease-in-out infinite;
-}
-.wf-bar-decrease .wf-shim {
-  background: linear-gradient(
-    to bottom,
-    transparent 0%,
-    rgba(200, 255, 220, 0.18) 50%,
-    transparent 100%
-  );
-  animation: wfShimDown 3.2s ease-in-out infinite;
-}
-
-@keyframes wfShimUp {
-  0%   { transform: translateY(200%); opacity: 0; }
-  18%  { opacity: 1; }
-  82%  { opacity: 1; }
-  100% { transform: translateY(-130%); opacity: 0; }
-}
-@keyframes wfShimDown {
-  0%   { transform: translateY(-130%); opacity: 0; }
-  18%  { opacity: 1; }
-  82%  { opacity: 1; }
-  100% { transform: translateY(200%); opacity: 0; }
-}
+/* ── Shimmer overlay (装饰性微光，已禁用以省性能) ──────────── */
+.wf-shim { display: none; }
 
 /* ── T-shaped anchor marker ───────────────────────────── */
 .wf-t-stem {

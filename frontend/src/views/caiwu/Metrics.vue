@@ -453,8 +453,7 @@ onMounted(load)
 .col-sum-val { font-weight: 700; color: var(--text); font-size: 12px; }
 .col-diff-val { font-size: 12px; font-weight: 700; }
 .diff-ok { color: #2e7d32; }
-.diff-err { color: #c62828; animation: errPulse 1.5s ease-in-out infinite; }
-@keyframes errPulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+.diff-err { color: #c62828; font-weight: 800; }
 .auto-fill-row {
   display: flex; align-items: center; justify-content: space-between;
   flex-wrap: wrap; gap: 8px; margin-top: 14px;

@@ -388,9 +388,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   padding: 14px 20px; margin-bottom: 16px; border-radius: 14px;
   background: rgba(198,40,40,.07); border: 1.5px solid rgba(198,40,40,.35);
   box-shadow: 0 2px 14px rgba(198,40,40,.12);
-  animation: urgePulse 1.7s ease-in-out infinite; will-change: opacity;
 }
-@keyframes urgePulse { 0%,100% { opacity: 1; } 50% { opacity: .72; } }
 .urge-left { display: flex; align-items: center; gap: 12px; }
 .urge-icon { font-size: 24px; }
 .urge-title { font-weight: 700; color: #c62828; font-size: 14px; }

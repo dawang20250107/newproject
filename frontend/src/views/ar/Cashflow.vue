@@ -436,9 +436,7 @@ const deptCompareOption = computed(() => {
   padding: 14px 20px; margin-bottom: 16px; border-radius: 14px;
   background: rgba(198,40,40,.06); border: 1.5px solid rgba(198,40,40,.3);
   box-shadow: 0 2px 14px rgba(198,40,40,.10);
-  animation: urgePulse 1.8s ease-in-out infinite; will-change: opacity;
 }
-@keyframes urgePulse { 0%,100% { opacity: 1; } 50% { opacity: .72; } }
 .urge-left  { display: flex; align-items: center; gap: 12px; }
 .urge-icon  { font-size: 24px; }
 .urge-title { font-weight: 700; color: #c62828; font-size: 14px; }
@@ -454,7 +452,6 @@ const deptCompareOption = computed(() => {
 .cashflow-alert {
   display: flex; align-items: flex-start; gap: 14px; padding: 14px 20px; margin: 0 0 16px;
   background: rgba(245,127,23,.08); border: 1.5px solid rgba(245,127,23,.3); border-radius: 12px;
-  animation: urgePulse 1.8s ease-in-out infinite; will-change: opacity;
 }
 .alert-icon  { font-size: 20px; flex-shrink: 0; }
 .alert-title { font-weight: 700; color: #e65100; font-size: 13.5px; }
@@ -464,9 +461,7 @@ const deptCompareOption = computed(() => {
 .cf-title-alert {
   font-size: 13px; font-weight: 700; color: #c62828;
   margin-left: 14px; vertical-align: middle;
-  animation: cfAlertPulse 1.8s ease-in-out infinite; will-change: opacity;
 }
-@keyframes cfAlertPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
 
 /* ── KPI cards ── */
 .cockpit-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-bottom: 16px; }
