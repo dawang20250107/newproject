@@ -75,10 +75,18 @@ const chartData = computed(() => {
     zeroLinePct: pct(0),
     baseRefPct:   pct(baseBar.value),
     baseRefValue: baseBar.value,
+    baseRefName:  baseBar.name,
     totalRefPct:   pct(totalBar.value),
     totalRefValue: totalBar.value,
+    totalRefName:  totalBar.name,
   }
 })
+
+// 从 "2026年3月" 提取 "3月"；取不到则回退原文
+function shortPeriod(name) {
+  const m = String(name || '').match(/(\d+)月/)
+  return m ? `${m[1]}月` : (name || '')
+}
 
 function barColorStyle(barType, intensity) {
   if (barType === 'anchor') return {}
@@ -111,10 +119,10 @@ function fmtAmt(v) {
 
       <!-- Start / end reference lines -->
       <div class="wf-ref wf-ref-base" :style="`bottom:${chartData.baseRefPct}%`">
-        <span class="wf-ref-tag">起点 {{ fmtAmt(chartData.baseRefValue) }}</span>
+        <span class="wf-ref-tag">起点（{{ shortPeriod(chartData.baseRefName) }}）{{ fmtAmt(chartData.baseRefValue) }}</span>
       </div>
       <div class="wf-ref wf-ref-total" :style="`bottom:${chartData.totalRefPct}%`">
-        <span class="wf-ref-tag">终点 {{ fmtAmt(chartData.totalRefValue) }}</span>
+        <span class="wf-ref-tag">终点（{{ shortPeriod(chartData.totalRefName) }}）{{ fmtAmt(chartData.totalRefValue) }}</span>
       </div>
 
       <!-- Bar columns -->
