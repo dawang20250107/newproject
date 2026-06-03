@@ -667,19 +667,19 @@ onMounted(() => {
             <span>供应商名称 <em>*</em>（应与预付往来单位名称完全一致，系统按此精确匹配预付余额）</span>
             <input v-model="supplierForm.name" class="inp" placeholder="供应商全称" />
           </label>
-          <label class="fld full">
+          <div class="fld full">
             <span>类型 <em>*</em></span>
             <div class="type-radio-group">
               <label class="type-radio">
                 <input type="radio" v-model="supplierForm.supplier_type" value="public" />
-                <span><b>公共供应商</b> — 归属某事业部，可服务该部门所有项目</span>
+                <span><b>公共供应商</b> — 归属某事业部</span>
               </label>
               <label class="type-radio">
                 <input type="radio" v-model="supplierForm.supplier_type" value="private" />
-                <span><b>私有供应商</b> — 绑定特定项目，仅该项目的预付可关联</span>
+                <span><b>私有供应商</b> — 绑定特定项目</span>
               </label>
             </div>
-          </label>
+          </div>
 
           <!-- Private: pick project -->
           <label v-if="supplierForm.supplier_type === 'private'" class="fld full">
