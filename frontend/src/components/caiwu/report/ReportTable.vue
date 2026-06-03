@@ -57,7 +57,7 @@ const fmt = (n) => fmtCompact(n, { space: true, dash: '0.00' })
             <td v-if="level >= 2" class="toggle-cell">
               <span class="toggle-icon">{{ collapsed.has(row.l1_id) ? '›' : '⌄' }}</span>
             </td>
-            <td class="l1-name" :colspan="level >= 3 ? 2 : 1">{{ row.l1_name }}</td>
+            <td class="l1-name" :colspan="level >= 3 ? 3 : 1">{{ row.l1_name }}</td>
             <td v-if="level >= 2 && level < 3"></td>
             <td class="amt l1-amt" :class="row.amount < 0 ? 'amt-red' : ''">{{ fmt(row.amount) }}</td>
           </tr>
@@ -103,6 +103,10 @@ const fmt = (n) => fmtCompact(n, { space: true, dash: '0.00' })
 </template>
 
 <style scoped>
+/* 财务报表专用紧凑排版：比全局表格更密，便于一屏看更多科目 */
+.table-wrap :is(th, td) { padding: 6px 12px; font-size: 13px; }
+.table-wrap th { font-size: 11px; }
+
 .clickable { cursor: pointer; }
 .clickable:hover td { background: rgba(201,99,66,.04); }
 .toggle-cell { width: 32px; color: var(--muted); font-size: 14px; text-align: center; }
@@ -117,20 +121,20 @@ const fmt = (n) => fmtCompact(n, { space: true, dash: '0.00' })
 .l1-bottomline td {
   border-top: 2px solid var(--border) !important;
   background: rgba(201,99,66,.08) !important;
-  font-size: 14px; font-style: normal !important;
+  font-size: 13px; font-style: normal !important;
 }
 .l1-bottomline .l1-name { font-weight: 800; }
-.l1-bottomline .l1-amt { font-size: 16px; color: var(--primary); }
+.l1-bottomline .l1-amt { font-size: 14px; color: var(--primary); }
 .l1-bottomline.l1-calc-neg .l1-amt { color: var(--danger); }
-.l1-amt { font-weight: 700; font-size: 14px; }
+.l1-amt { font-weight: 700; font-size: 13px; }
 .l2-row td { background: transparent; }
-.l2-name { color: var(--text); padding-left: 24px !important; }
+.l2-name { color: var(--text); padding-left: 20px !important; }
 .l3-row td { background: rgba(200,185,170,.05); }
-.l3-name { color: var(--muted); padding-left: 44px !important; font-size: 12px; }
+.l3-name { color: var(--muted); padding-left: 36px !important; font-size: 12px; }
 
 .total-row td {
   font-weight: 800; border-top: 2px solid var(--border);
-  background: rgba(201,99,66,.06); font-size: 14px;
+  background: rgba(201,99,66,.06); font-size: 13px;
 }
-.total-amt { font-size: 16px; color: var(--primary); }
+.total-amt { font-size: 14px; color: var(--primary); }
 </style>
