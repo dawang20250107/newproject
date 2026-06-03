@@ -1638,6 +1638,36 @@ def _aggregate_report(batches_qs, level):
     return []
 
 
+def _l1_trend(bu_list, year, month, n=6):
+    """每个一级科目最近 n 个月的金额序列（含计算行），用于报表行内迷你趋势线。
+
+    返回 (trend_map, mom_map)：
+      trend_map[l1_name] = [oldest … newest]，长度 n，缺失月补 0.0；
+      mom_map[l1_name]   = 最新月对上月的环比百分比（上月为 0 或缺失时 None）。
+    """
+    from collections import defaultdict
+    seq = []
+    yy, mm = year, month
+    for _ in range(n):
+        seq.append((yy, mm))
+        mm -= 1
+        if mm == 0:
+            mm, yy = 12, yy - 1
+    seq.reverse()  # oldest → newest
+
+    trend = defaultdict(lambda: [0.0] * n)
+    for idx, (yy, mm) in enumerate(seq):
+        rws = _aggregate_report(_get_published_batches(bu_list, yy, mm), 1)
+        for r in rws:
+            trend[r['l1_name']][idx] = float(r['amount'])
+
+    mom = {}
+    for name, series in trend.items():
+        prev = series[-2] if len(series) >= 2 else 0.0
+        mom[name] = round((series[-1] - prev) / abs(prev) * 100, 1) if prev else None
+    return trend, mom
+
+
 @cw_required()
 def report(request):
     if request.method != 'GET':
@@ -1696,6 +1726,12 @@ def report(request):
     prev_batches = _get_published_batches(bu_list, prev_year, prev_month)
     prev_rows_l1 = _aggregate_report(prev_batches, 1)
     prev_kpis = {r['l1_name']: float(r['amount']) for r in prev_rows_l1}
+
+    # 行内环比 + 迷你趋势线：为每个顶层（一级科目）行附 mom/trend（含计算行）
+    trend_map, mom_map = _l1_trend(bu_list, year, month, 6)
+    for r in rows:
+        r['mom'] = mom_map.get(r['l1_name'])
+        r['trend'] = trend_map.get(r['l1_name'])
 
     return ok({
         'rows': rows, 'total': float(total), 'total_label': total_label,

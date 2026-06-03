@@ -212,35 +212,20 @@ onMounted(load)
         </div>
       </div>
 
-      <!-- ── AI analysis bar ────────────────────────────────────────────────── -->
-      <div class="card ai-bar">
-        <div class="ai-bar-left">
-          <span class="ai-bar-orb">✨</span>
-          <div>
-            <div class="ai-bar-title">AI 财务分析</div>
-            <div class="ai-bar-scope">{{ aiScopeLabel }}</div>
-          </div>
-        </div>
-        <div class="ai-bar-actions">
-          <button
-            v-if="hasAnalysis"
-            class="btn btn-ghost btn-sm"
-            @click="viewAnalysis"
-          >📄 查看分析</button>
-          <button
-            class="btn btn-primary btn-sm"
-            :disabled="aiLoading || noData"
-            @click="runAiAnalysis"
-          >{{ aiLoading ? '分析中…' : (hasAnalysis ? '↻ 重新分析' : '✨ AI 分析') }}</button>
-        </div>
-      </div>
-
-      <!-- ── Report table ───────────────────────────────────────────────────── -->
+      <!-- ── Report table（AI 分析并入表头，节省竖向空间）────────────────────── -->
       <div class="card">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <div class="report-head">
           <div class="section-title" style="margin:0">
             {{ data.bu || '全部事业部' }} · {{ data.year }}年{{ data.month }}月
             <span class="badge badge-primary" style="margin-left:8px">{{ ['一级', '二级', '三级'][level-1] }}明细</span>
+          </div>
+          <div class="ai-inline">
+            <span class="ai-inline-orb">✨</span>
+            <span class="ai-inline-label">AI 财务分析</span>
+            <button v-if="hasAnalysis" class="btn btn-ghost btn-sm" @click="viewAnalysis">📄 查看分析</button>
+            <button class="btn btn-primary btn-sm" :disabled="aiLoading || noData" @click="runAiAnalysis">
+              {{ aiLoading ? '分析中…' : (hasAnalysis ? '↻ 重新分析' : '✨ AI 分析') }}
+            </button>
           </div>
         </div>
         <ReportTable :rows="data.rows || []" :level="level" :total="data.total || 0" :total-label="data.total_label || '合计'" />
@@ -271,10 +256,14 @@ onMounted(load)
   border-radius: 12px; font-size: 13px; color: var(--muted);
 }
 
-/* ── KPI grid ─────────────────────────────────────────────────────────────── */
-.kpi-5 { grid-template-columns: repeat(5, 1fr) !important; }
+/* ── KPI grid（紧凑：缩小卡片为表格让出空间）──────────────────────────────── */
+.kpi-5 { grid-template-columns: repeat(5, 1fr) !important; gap: 12px; margin-bottom: 16px; }
 @media (max-width: 900px) { .kpi-5 { grid-template-columns: repeat(3, 1fr) !important; } }
 @media (max-width: 560px) { .kpi-5 { grid-template-columns: repeat(2, 1fr) !important; } }
+.kpi-5 :deep(.kpi-card) { padding: 12px 14px; }
+.kpi-5 :deep(.kpi-card .label) { margin-bottom: 4px; }
+.kpi-5 :deep(.kpi-card .value) { font-size: 21px; }
+.kpi-5 :deep(.kpi-card .sub) { margin-top: 3px; font-size: 11px; }
 
 .kpi-calc { border-left: 3px solid rgba(201,99,66,.3); }
 
@@ -306,18 +295,15 @@ onMounted(load)
 .mom-down    { background: rgba(198,40,40,.10); color: var(--danger); }
 .mom-neutral { background: rgba(120,120,120,.08); color: var(--muted); font-weight: 400; }
 
-/* ── AI bar ───────────────────────────────────────────────────────────────── */
-.ai-bar {
+/* ── 表头（标题 + 行内 AI 分析，合二为一省空间）─────────────────────────────── */
+.report-head {
   display: flex; align-items: center; justify-content: space-between;
-  flex-wrap: wrap; gap: 12px; padding: 14px 18px;
-  background: linear-gradient(120deg, rgba(201,99,66,0.05), rgba(122,159,212,0.05));
-  border: 1px solid rgba(201,99,66,0.14);
+  flex-wrap: wrap; gap: 10px; margin-bottom: 12px;
 }
-.ai-bar-left { display: flex; align-items: center; gap: 12px; }
-.ai-bar-orb {
-  font-size: 22px; filter: drop-shadow(0 0 6px rgba(201,99,66,0.45));
+.ai-inline { display: flex; align-items: center; gap: 8px; }
+.ai-inline-orb { font-size: 16px; filter: drop-shadow(0 0 5px rgba(201,99,66,0.45)); }
+.ai-inline-label { font-size: 12px; font-weight: 700; color: var(--muted); margin-right: 2px; }
+@media (max-width: 560px) {
+  .ai-inline-label { display: none; }
 }
-.ai-bar-title { font-size: 14px; font-weight: 800; color: var(--text); }
-.ai-bar-scope { font-size: 12px; color: var(--muted); margin-top: 1px; }
-.ai-bar-actions { display: flex; gap: 8px; }
 </style>
