@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { fmtCompact } from '../../../utils/format.js'
+import TrendCell from './TrendCell.vue'
 
 const props = defineProps({
   rows: { type: Array, default: () => [] },
@@ -27,41 +28,6 @@ function toggle(id) {
 
 // 亿/万 两级单位（单位前带空格），万元以下两位小数；空值显示 0.00（保持原表现）
 const fmt = (n) => fmtCompact(n, { space: true, dash: '0.00' })
-
-// ── 环比 ─────────────────────────────────────────────────────────────────────
-function momTxt(mom) {
-  if (mom == null) return '—'
-  return (mom >= 0 ? '▲' : '▼') + Math.abs(mom).toFixed(1) + '%'
-}
-function momCls(mom) {
-  if (mom == null) return 'mom-na'
-  return mom >= 0 ? 'mom-up' : 'mom-down'
-}
-
-// ── 迷你趋势线（近 6 个月）──────────────────────────────────────────────────
-const SPARK_W = 56, SPARK_H = 16, SPARK_PAD = 2
-function spark(trend) {
-  if (!trend || trend.length < 2) return null
-  const min = Math.min(...trend), max = Math.max(...trend)
-  const span = max - min || 1
-  const n = trend.length
-  const iw = SPARK_W - SPARK_PAD * 2, ih = SPARK_H - SPARK_PAD * 2
-  const pts = trend.map((v, i) => [
-    SPARK_PAD + (i / (n - 1)) * iw,
-    SPARK_PAD + ih - ((v - min) / span) * ih,
-  ])
-  const last = pts[pts.length - 1]
-  return {
-    points: pts.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' '),
-    cx: last[0].toFixed(1), cy: last[1].toFixed(1),
-  }
-}
-// 预算好每行的 sparkline，避免模板内重复计算
-const sparkById = computed(() => {
-  const m = {}
-  for (const r of props.rows) m[r.l1_id] = spark(r.trend)
-  return m
-})
 </script>
 
 <template>
@@ -97,18 +63,7 @@ const sparkById = computed(() => {
             <td class="l1-name" :colspan="level >= 3 ? 3 : 1">{{ row.l1_name }}</td>
             <td v-if="level >= 2 && level < 3"></td>
             <td class="amt l1-amt" :class="row.amount < 0 ? 'amt-red' : ''">{{ fmt(row.amount) }}</td>
-            <td class="col-mom mom-pill" :class="momCls(row.mom)">{{ momTxt(row.mom) }}</td>
-            <td class="col-trend">
-              <svg
-                v-if="sparkById[row.l1_id]" class="spark" :class="momCls(row.mom)"
-                :width="SPARK_W" :height="SPARK_H" :viewBox="`0 0 ${SPARK_W} ${SPARK_H}`"
-              >
-                <polyline :points="sparkById[row.l1_id].points" fill="none" stroke-width="1.4"
-                          stroke-linejoin="round" stroke-linecap="round" />
-                <circle :cx="sparkById[row.l1_id].cx" :cy="sparkById[row.l1_id].cy" r="1.7" />
-              </svg>
-              <span v-else class="spark-na">—</span>
-            </td>
+            <TrendCell :mom="row.mom" :trend="row.trend" :level="1" />
           </tr>
 
           <!-- L2 rows -->
@@ -120,8 +75,7 @@ const sparkById = computed(() => {
                 <td class="l2-name">{{ l2.l2_name }}</td>
                 <td v-if="level >= 3"></td>
                 <td class="amt" :class="l2.amount < 0 ? 'amt-red' : ''">{{ fmt(l2.amount) }}</td>
-                <td class="col-mom"></td>
-                <td class="col-trend"></td>
+                <TrendCell :mom="l2.mom" :trend="l2.trend" :level="2" />
               </tr>
 
               <!-- L3 rows -->
@@ -132,8 +86,7 @@ const sparkById = computed(() => {
                   <td></td>
                   <td class="l3-name">{{ l3.l3_name }}</td>
                   <td class="amt" :class="l3.amount < 0 ? 'amt-red' : ''">{{ fmt(l3.amount) }}</td>
-                  <td class="col-mom"></td>
-                  <td class="col-trend"></td>
+                  <TrendCell :mom="l3.mom" :trend="l3.trend" :level="3" />
                 </tr>
               </template>
             </template>
@@ -193,16 +146,7 @@ const sparkById = computed(() => {
 }
 .total-amt { font-size: 14px; color: var(--primary); }
 
-/* ── 环比 / 趋势列 ─────────────────────────────────────────────────────────── */
-.col-mom { width: 64px; text-align: right; white-space: nowrap; }
+/* 环比/趋势列宽（表头与合计行空单元格用；数据行单元格由 TrendCell 自带） */
+.col-mom { width: 64px; text-align: right; }
 .col-trend { width: 64px; text-align: center; }
-.mom-pill { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.mom-up   { color: #2e7d32; }
-.mom-down { color: var(--danger); }
-.mom-na   { color: var(--muted); font-weight: 400; }
-.spark { vertical-align: middle; }
-.spark polyline { stroke: currentColor; }
-.spark circle { fill: currentColor; }
-.spark.mom-na { color: var(--muted); opacity: .6; }
-.spark-na { color: var(--muted); opacity: .5; }
 </style>

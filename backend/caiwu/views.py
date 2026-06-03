@@ -1638,12 +1638,14 @@ def _aggregate_report(batches_qs, level):
     return []
 
 
-def _l1_trend(bu_list, year, month, n=6):
-    """每个一级科目最近 n 个月的金额序列（含计算行），用于报表行内迷你趋势线。
+def _report_trend(bu_list, year, month, level, n=6):
+    """报表各层级最近 n 个月金额序列 + 环比，用于行内迷你趋势线 / 环比。
 
-    返回 (trend_map, mom_map)：
-      trend_map[l1_name] = [oldest … newest]，长度 n，缺失月补 0.0；
-      mom_map[l1_name]   = 最新月对上月的环比百分比（上月为 0 或缺失时 None）。
+    在所查看的 level 上逐月聚合并按节点身份归集（id 跨月稳定）：
+      返回 {'l1': {l1_id: (trend, mom)},
+            'l2': {(l1_id, l2_id): (trend, mom)},          # level>=2
+            'l3': {(l1_id, l2_id, l3_id): (trend, mom)}}   # level>=3
+    trend 为 [oldest…newest] 长度 n，缺失月补 0.0；上月为 0/缺失时 mom=None。
     """
     from collections import defaultdict
     seq = []
@@ -1655,17 +1657,30 @@ def _l1_trend(bu_list, year, month, n=6):
             mm, yy = 12, yy - 1
     seq.reverse()  # oldest → newest
 
-    trend = defaultdict(lambda: [0.0] * n)
+    s1 = defaultdict(lambda: [0.0] * n)
+    s2 = defaultdict(lambda: [0.0] * n)
+    s3 = defaultdict(lambda: [0.0] * n)
     for idx, (yy, mm) in enumerate(seq):
-        rws = _aggregate_report(_get_published_batches(bu_list, yy, mm), 1)
-        for r in rws:
-            trend[r['l1_name']][idx] = float(r['amount'])
+        rows = _aggregate_report(_get_published_batches(bu_list, yy, mm), level)
+        for r in rows:
+            s1[r['l1_id']][idx] = float(r['amount'])
+            if level >= 2:
+                for l2 in r.get('children', []):
+                    s2[(r['l1_id'], l2['l2_id'])][idx] = float(l2['amount'])
+                    if level >= 3:
+                        for l3 in l2.get('children', []):
+                            s3[(r['l1_id'], l2['l2_id'], l3['l3_id'])][idx] = float(l3['amount'])
 
-    mom = {}
-    for name, series in trend.items():
+    def _mom(series):
         prev = series[-2] if len(series) >= 2 else 0.0
-        mom[name] = round((series[-1] - prev) / abs(prev) * 100, 1) if prev else None
-    return trend, mom
+        return round((series[-1] - prev) / abs(prev) * 100, 1) if prev else None
+
+    out = {'l1': {k: (v, _mom(v)) for k, v in s1.items()}}
+    if level >= 2:
+        out['l2'] = {k: (v, _mom(v)) for k, v in s2.items()}
+    if level >= 3:
+        out['l3'] = {k: (v, _mom(v)) for k, v in s3.items()}
+    return out
 
 
 @cw_required()
@@ -1727,11 +1742,17 @@ def report(request):
     prev_rows_l1 = _aggregate_report(prev_batches, 1)
     prev_kpis = {r['l1_name']: float(r['amount']) for r in prev_rows_l1}
 
-    # 行内环比 + 迷你趋势线：为每个顶层（一级科目）行附 mom/trend（含计算行）
-    trend_map, mom_map = _l1_trend(bu_list, year, month, 6)
+    # 行内环比 + 迷你趋势线：按所查看层级，为 L1/L2/L3 各节点附 mom/trend
+    tr = _report_trend(bu_list, year, month, level, 6)
     for r in rows:
-        r['mom'] = mom_map.get(r['l1_name'])
-        r['trend'] = trend_map.get(r['l1_name'])
+        t1 = tr['l1'].get(r['l1_id'])
+        r['trend'], r['mom'] = t1 if t1 else (None, None)
+        for l2 in r.get('children', []):
+            t2 = tr.get('l2', {}).get((r['l1_id'], l2['l2_id']))
+            l2['trend'], l2['mom'] = t2 if t2 else (None, None)
+            for l3 in l2.get('children', []):
+                t3 = tr.get('l3', {}).get((r['l1_id'], l2['l2_id'], l3['l3_id']))
+                l3['trend'], l3['mom'] = t3 if t3 else (None, None)
 
     return ok({
         'rows': rows, 'total': float(total), 'total_label': total_label,
