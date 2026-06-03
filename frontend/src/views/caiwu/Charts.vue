@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
-import { BUSINESS_UNITS, yearCST, monthCST } from '../../constants.js'
+import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import TrendLineChart from '../../components/caiwu/charts/TrendLineChart.vue'
 import WaterfallChart from '../../components/caiwu/charts/WaterfallChart.vue'
 import AiAnalysisModal from '../../components/caiwu/AiAnalysisModal.vue'
@@ -13,7 +13,8 @@ const auth = useCaiwuAuth()
 
 // ── Global BU + year filter ─────────────────────────────
 const globalBu = ref('')
-const trendYear = ref(yearCST())
+// 默认上月所在年度（1 月时即去年），趋势图展示含最新完整数据的年份
+const trendYear = ref(lastMonthCST().year)
 
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 
@@ -83,10 +84,13 @@ async function analyzeTrend() {
 }
 
 // ── Waterfall chart state ───────────────────────────────
-const wfYear = ref(yearCST())
-const wfMonth = ref(monthCST())
-const wfCmpYear = ref(yearCST())
-const wfCmpMonth = ref(monthCST() === 1 ? 12 : monthCST() - 1)
+// 默认终点=上月、起点=上上月，开箱即看最近一次环比因素分析
+const _wfTo = lastMonthCST()
+const _wfFrom = _wfTo.month === 1 ? { year: _wfTo.year - 1, month: 12 } : { year: _wfTo.year, month: _wfTo.month - 1 }
+const wfYear = ref(_wfTo.year)
+const wfMonth = ref(_wfTo.month)
+const wfCmpYear = ref(_wfFrom.year)
+const wfCmpMonth = ref(_wfFrom.month)
 const wfData = ref(null)
 const wfLoading = ref(false)
 const wfErr = ref('')

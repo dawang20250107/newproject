@@ -8,6 +8,7 @@ const props = defineProps({
   level: { type: Number, default: 1 },
   total: { type: Number, default: 0 },
   totalLabel: { type: String, default: '合计' },
+  showTrend: { type: Boolean, default: true },
 })
 
 const collapsed = ref(new Set())
@@ -41,7 +42,7 @@ const fmt = (n) => fmtCompact(n, { space: true, dash: '0.00' })
           <th v-if="level >= 3">三级科目明细</th>
           <th class="amt">金额</th>
           <th class="col-mom">环比</th>
-          <th class="col-trend">趋势</th>
+          <th v-if="showTrend" class="col-trend">趋势</th>
         </tr>
       </thead>
       <tbody>
@@ -63,7 +64,7 @@ const fmt = (n) => fmtCompact(n, { space: true, dash: '0.00' })
             <td class="l1-name" :colspan="level >= 3 ? 3 : 1">{{ row.l1_name }}</td>
             <td v-if="level >= 2 && level < 3"></td>
             <td class="amt l1-amt" :class="row.amount < 0 ? 'amt-red' : ''">{{ fmt(row.amount) }}</td>
-            <TrendCell :mom="row.mom" :trend="row.trend" :level="1" />
+            <TrendCell :mom="row.mom" :trend="row.trend" :level="1" :show-trend="showTrend" />
           </tr>
 
           <!-- L2 rows -->
@@ -75,7 +76,7 @@ const fmt = (n) => fmtCompact(n, { space: true, dash: '0.00' })
                 <td class="l2-name">{{ l2.l2_name }}</td>
                 <td v-if="level >= 3"></td>
                 <td class="amt" :class="l2.amount < 0 ? 'amt-red' : ''">{{ fmt(l2.amount) }}</td>
-                <TrendCell :mom="l2.mom" :trend="l2.trend" :level="2" />
+                <TrendCell :mom="l2.mom" :trend="l2.trend" :level="2" :show-trend="showTrend" />
               </tr>
 
               <!-- L3 rows -->
@@ -86,7 +87,7 @@ const fmt = (n) => fmtCompact(n, { space: true, dash: '0.00' })
                   <td></td>
                   <td class="l3-name">{{ l3.l3_name }}</td>
                   <td class="amt" :class="l3.amount < 0 ? 'amt-red' : ''">{{ fmt(l3.amount) }}</td>
-                  <TrendCell :mom="l3.mom" :trend="l3.trend" :level="3" />
+                  <TrendCell :mom="l3.mom" :trend="l3.trend" :level="3" :show-trend="showTrend" />
                 </tr>
               </template>
             </template>
@@ -99,7 +100,7 @@ const fmt = (n) => fmtCompact(n, { space: true, dash: '0.00' })
           <td :colspan="level >= 3 ? 3 : (level >= 2 ? 2 : 1)" style="font-weight:700">{{ totalLabel }}</td>
           <td class="amt total-amt" :class="total < 0 ? 'amt-red' : ''">{{ fmt(total) }}</td>
           <td class="col-mom"></td>
-          <td class="col-trend"></td>
+          <td v-if="showTrend" class="col-trend"></td>
         </tr>
       </tbody>
     </table>

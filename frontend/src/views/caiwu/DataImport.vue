@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
-import { BUSINESS_UNITS, yearCST, monthCST } from '../../constants.js'
+import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import api from '../../api/caiwu.js'
 import { fmtCompact, fmtDateTime } from '../../utils/format.js'
 import EmptyState from '../../components/EmptyState.vue'
@@ -14,8 +14,9 @@ const loadErr = ref('')
 // Upload wizard state
 const showUpload = ref(false)
 const upBu = ref('')
-const upYear = ref(yearCST())
-const upMonth = ref(monthCST())
+// 默认上月：通常导入的是刚结账的上一个月
+const upYear = ref(lastMonthCST().year)
+const upMonth = ref(lastMonthCST().month)
 const upFile = ref(null)
 const uploading = ref(false)
 const uploadErr = ref('')
@@ -32,8 +33,8 @@ const accessibleBus = computed(() => {
 })
 
 // ── Submission status state (Opt 8) ──────────────────────────────────────────
-const statusYear = ref(yearCST())
-const statusMonth = ref(monthCST())
+const statusYear = ref(lastMonthCST().year)
+const statusMonth = ref(lastMonthCST().month)
 const submissionStatus = ref(null)
 const statusLoading = ref(false)
 

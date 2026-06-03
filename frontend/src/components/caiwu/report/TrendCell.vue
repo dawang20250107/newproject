@@ -7,6 +7,7 @@ const props = defineProps({
   mom: { type: Number, default: null },
   trend: { type: Array, default: null },
   level: { type: Number, default: 1 },  // 1/2/3
+  showTrend: { type: Boolean, default: true },
 })
 
 function momTxt(mom) {
@@ -40,7 +41,7 @@ const spark = computed(() => {
 
 <template>
   <td class="col-mom mom-pill" :class="[momCls(mom), `lv${level}`]">{{ momTxt(mom) }}</td>
-  <td class="col-trend">
+  <td v-if="showTrend" class="col-trend">
     <svg
       v-if="spark" class="spark" :class="[momCls(mom), `lv${level}`]"
       :width="SPARK_W" :height="SPARK_H" :viewBox="`0 0 ${SPARK_W} ${SPARK_H}`"

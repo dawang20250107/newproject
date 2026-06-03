@@ -1,7 +1,7 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
-import { BUSINESS_UNITS, yearCST, monthCST } from '../../constants.js'
+import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import ReportTable from '../../components/caiwu/report/ReportTable.vue'
 import LevelToggle from '../../components/caiwu/report/LevelToggle.vue'
 import AiAnalysisModal from '../../components/caiwu/AiAnalysisModal.vue'
@@ -12,10 +12,14 @@ import { streamAiAnalysis } from '../../utils/aiStream.js'
 import EmptyState from '../../components/EmptyState.vue'
 
 const auth = useCaiwuAuth()
-const year = ref(yearCST())
-const month = ref(monthCST())
+// 默认展示上月：当月财务数据通常尚未导入/发布
+const year = ref(lastMonthCST().year)
+const month = ref(lastMonthCST().month)
 const selectedBu = ref('')
 const level = ref(1)
+// 趋势线列开关（记忆用户偏好）：行多时可一键收起，仅看环比数字，保持清爽
+const showTrend = ref(localStorage.getItem('report_show_trend') !== '0')
+watch(showTrend, v => localStorage.setItem('report_show_trend', v ? '1' : '0'))
 const data = ref(null)
 const loading = ref(false)
 const loadErr = ref('')
@@ -215,9 +219,19 @@ onMounted(load)
       <!-- ── Report table（AI 分析并入表头，节省竖向空间）────────────────────── -->
       <div class="card">
         <div class="report-head">
-          <div class="section-title" style="margin:0">
-            {{ data.bu || '全部事业部' }} · {{ data.year }}年{{ data.month }}月
-            <span class="badge badge-primary" style="margin-left:8px">{{ ['一级', '二级', '三级'][level-1] }}明细</span>
+          <div class="rh-left">
+            <div class="section-title" style="margin:0">
+              {{ data.bu || '全部事业部' }} · {{ data.year }}年{{ data.month }}月
+              <span class="badge badge-primary" style="margin-left:8px">{{ ['一级', '二级', '三级'][level-1] }}明细</span>
+            </div>
+            <button
+              class="trend-toggle" :class="{ on: showTrend }" role="switch" :aria-checked="showTrend"
+              :title="showTrend ? '点击隐藏趋势线列' : '点击显示趋势线列'"
+              @click="showTrend = !showTrend"
+            >
+              <span class="tt-track"><span class="tt-dot"></span></span>
+              <span class="tt-label">趋势线</span>
+            </button>
           </div>
           <div class="ai-inline">
             <span class="ai-inline-orb">✨</span>
@@ -228,7 +242,7 @@ onMounted(load)
             </button>
           </div>
         </div>
-        <ReportTable :rows="data.rows || []" :level="level" :total="data.total || 0" :total-label="data.total_label || '合计'" />
+        <ReportTable :rows="data.rows || []" :level="level" :total="data.total || 0" :total-label="data.total_label || '合计'" :show-trend="showTrend" />
       </div>
       </div>
     </template>
@@ -300,6 +314,27 @@ onMounted(load)
   display: flex; align-items: center; justify-content: space-between;
   flex-wrap: wrap; gap: 10px; margin-bottom: 12px;
 }
+.rh-left { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+
+/* 趋势线开关：迷你圆点滑块 */
+.trend-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: none; background: transparent; cursor: pointer;
+  font-size: 12px; color: var(--muted); padding: 2px 2px; line-height: 1;
+}
+.tt-track {
+  position: relative; width: 30px; height: 16px; border-radius: 10px;
+  background: rgba(120,110,100,.28); transition: background .18s;
+}
+.tt-dot {
+  position: absolute; top: 2px; left: 2px; width: 12px; height: 12px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.28);
+  transition: transform .18s;
+}
+.trend-toggle.on .tt-track { background: var(--primary); }
+.trend-toggle.on .tt-dot { transform: translateX(14px); }
+.tt-label { font-weight: 600; }
+.trend-toggle.on .tt-label { color: var(--primary); font-weight: 700; }
 .ai-inline { display: flex; align-items: center; gap: 8px; }
 .ai-inline-orb { font-size: 16px; filter: drop-shadow(0 0 5px rgba(201,99,66,0.45)); }
 .ai-inline-label { font-size: 12px; font-weight: 700; color: var(--muted); margin-right: 2px; }

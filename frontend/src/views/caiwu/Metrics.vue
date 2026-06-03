@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, reactive, onMounted, watch } from 'vue'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
-import { BUSINESS_UNITS, yearCST, monthCST } from '../../constants.js'
+import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 import api from '../../api/caiwu.js'
 import { fmtCompact, fmtPct } from '../../utils/format.js'
@@ -12,8 +12,9 @@ import EmptyState from '../../components/EmptyState.vue'
 const auth = useCaiwuAuth()
 
 const targetYear = ref(yearCST())
-const reportYear = ref(yearCST())
-const reportMonth = ref(monthCST())
+// 完成情况默认展示上月：当月数据通常尚未导入/发布
+const reportYear = ref(lastMonthCST().year)
+const reportMonth = ref(lastMonthCST().month)
 const selectedBu = ref('')
 
 const loadingTargets = ref(false)

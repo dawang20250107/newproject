@@ -57,3 +57,12 @@ export function yearCST() {
 export function monthCST() {
   return new Date(Date.now() + 8 * 3600 * 1000).getUTCMonth() + 1
 }
+
+/**
+ * 返回 UTC+8 上一个月的 { year, month }，自动处理跨年（1 月 → 去年 12 月）。
+ * 财务类页面默认展示上月：当月数据通常尚未导入/发布。
+ */
+export function lastMonthCST() {
+  const y = yearCST(), m = monthCST()
+  return m === 1 ? { year: y - 1, month: 12 } : { year: y, month: m - 1 }
+}
