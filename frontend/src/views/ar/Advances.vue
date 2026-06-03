@@ -660,30 +660,39 @@ onMounted(() => {
 
     <!-- ── create / edit supplier modal ── -->
     <div v-if="showSupplierModal" class="modal-mask" @click.self="showSupplierModal = false">
-      <div class="modal">
+      <div class="modal sup-modal">
         <h3>{{ editSupplier ? '编辑' : '新增' }}供应商</h3>
-        <div class="form-grid">
-          <label class="fld full">
-            <span>供应商名称 <em>*</em>（应与预付往来单位名称完全一致，系统按此精确匹配预付余额）</span>
-            <input v-model="supplierForm.name" class="inp" placeholder="供应商全称" />
-          </label>
-          <div class="fld full">
-            <span>类型 <em>*</em></span>
-            <div class="type-radio-group">
-              <label class="type-radio">
-                <input type="radio" v-model="supplierForm.supplier_type" value="public" />
-                <span><b>公共供应商</b> — 归属某事业部</span>
-              </label>
-              <label class="type-radio">
-                <input type="radio" v-model="supplierForm.supplier_type" value="private" />
-                <span><b>私有供应商</b> — 绑定特定项目</span>
-              </label>
-            </div>
-          </div>
 
-          <!-- Private: pick project -->
-          <label v-if="supplierForm.supplier_type === 'private'" class="fld full">
-            <span>关联项目 <em>*</em></span>
+        <!-- 名称 -->
+        <div class="sf-row">
+          <label class="sf-fld">
+            <span class="sf-lbl">供应商名称 <em>*</em></span>
+            <input v-model="supplierForm.name" class="inp" placeholder="应与预付往来单位名称完全一致" />
+            <span class="sf-hint">系统按此名称精确匹配预付余额，请确保与账单一致</span>
+          </label>
+        </div>
+
+        <!-- 类型 -->
+        <div class="sf-row">
+          <span class="sf-lbl">类型 <em>*</em></span>
+          <div class="sup-type-row">
+            <label class="sup-type-btn" :class="{ active: supplierForm.supplier_type === 'public' }">
+              <input type="radio" v-model="supplierForm.supplier_type" value="public" />
+              公共供应商
+              <span class="sup-type-desc">归属某事业部</span>
+            </label>
+            <label class="sup-type-btn" :class="{ active: supplierForm.supplier_type === 'private' }">
+              <input type="radio" v-model="supplierForm.supplier_type" value="private" />
+              私有供应商
+              <span class="sup-type-desc">绑定特定项目</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- 归属（私有选项目，公共选事业部）+ 联系人 两列 -->
+        <div class="sf-row sf-two">
+          <label v-if="supplierForm.supplier_type === 'private'" class="sf-fld">
+            <span class="sf-lbl">关联项目 <em>*</em></span>
             <div class="combo">
               <input v-model="supplierProjKeyword" class="inp" placeholder="搜索项目简称 / 编号…"
                      @focus="showSupplierProjList = true"
@@ -700,20 +709,26 @@ onMounted(() => {
               </ul>
             </div>
           </label>
-
-          <!-- Public: pick dept -->
-          <label v-else class="fld">
-            <span>归属事业部 <em>*</em></span>
+          <label v-else class="sf-fld">
+            <span class="sf-lbl">归属事业部 <em>*</em></span>
             <select v-model="supplierForm.delivery_dept" class="sel">
               <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
             </select>
           </label>
-
-          <label class="fld"><span>联系人</span>
-            <input v-model="supplierForm.contact" class="inp" placeholder="选填" /></label>
-          <label class="fld full"><span>备注</span>
-            <input v-model="supplierForm.notes" class="inp" placeholder="选填" /></label>
+          <label class="sf-fld">
+            <span class="sf-lbl">联系人</span>
+            <input v-model="supplierForm.contact" class="inp" placeholder="选填" />
+          </label>
         </div>
+
+        <!-- 备注 -->
+        <div class="sf-row">
+          <label class="sf-fld">
+            <span class="sf-lbl">备注</span>
+            <input v-model="supplierForm.notes" class="inp" placeholder="选填" />
+          </label>
+        </div>
+
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="showSupplierModal = false">取消</button>
           <button class="btn btn-primary" :disabled="supplierSaving" @click="saveSupplier">
@@ -822,10 +837,23 @@ onMounted(() => {
 .offset-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; background: rgba(27,110,53,0.1); color: #1b6e35; font-size: 11px; font-weight: 600; }
 .offset-badge.pay-badge { background: rgba(21,101,192,0.1); color: #1565c0; }
 
-/* supplier type radio */
-.type-radio-group { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
-.type-radio { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px;
-  border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: 13px; }
-.type-radio input[type=radio] { margin-top: 2px; flex-shrink: 0; }
-.type-radio:has(input:checked) { border-color: var(--primary); background: rgba(201,99,66,0.05); }
+/* supplier modal */
+.sup-modal { max-width: 460px; }
+.sf-row { margin-bottom: 14px; }
+.sf-two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.sf-fld { display: flex; flex-direction: column; gap: 4px; }
+.sf-lbl { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.sf-lbl em { color: #c62828; font-style: normal; }
+.sf-hint { font-size: 11px; color: var(--muted); }
+.sup-type-row { display: flex; gap: 10px; margin-top: 6px; }
+.sup-type-btn {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 10px 8px; border: 1.5px solid var(--border); border-radius: 10px;
+  cursor: pointer; font-size: 13px; font-weight: 600; text-align: center;
+  transition: border-color 0.15s, background 0.15s;
+}
+.sup-type-btn input[type=radio] { display: none; }
+.sup-type-btn.active { border-color: var(--primary); background: rgba(201,99,66,0.06); color: var(--primary); }
+.sup-type-desc { font-size: 11px; font-weight: 400; color: var(--muted); }
+.sup-type-btn.active .sup-type-desc { color: var(--primary); opacity: 0.75; }
 </style>
