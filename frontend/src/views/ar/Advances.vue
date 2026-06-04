@@ -640,17 +640,20 @@ onMounted(() => {
           </tbody>
         </table>
         <div v-if="canCreate" class="wo-add">
-          <input v-model="woForm.amount" type="number" step="0.01" class="inp" placeholder="核销金额(元)" />
-          <input v-model="woForm.writeoff_date" type="date" class="inp" />
-          <input v-model="woForm.notes" class="inp" placeholder="备注" />
-          <button class="btn btn-primary btn-sm" :disabled="woSaving" @click="addWriteoff">{{ woSaving ? '…' : '新增核销' }}</button>
-        </div>
-        <div v-if="canCreate && canOffset" class="wo-offset">
-          <label class="wo-offset-lbl">以本次核销冲抵应收（生成「预收抵扣」回款，自动冲减未收）：</label>
-          <select v-model="woForm.ar_record_id" class="inp">
-            <option value="">不冲抵（仅登记核销）</option>
-            <option v-for="o in woOffsetRecords" :key="o.id" :value="o.id">{{ o.label }}</option>
-          </select>
+          <div v-if="canOffset" class="wo-offset-row">
+            <span class="wo-offset-lbl">冲抵应收：</span>
+            <select v-model="woForm.ar_record_id" class="inp wo-offset-sel">
+              <option value="">不冲抵（仅登记核销）</option>
+              <option v-for="o in woOffsetRecords" :key="o.id" :value="o.id">{{ o.label }}</option>
+            </select>
+            <span v-if="woForm.ar_record_id" class="wo-offset-tip">↳ 核销后自动生成「预收抵扣」回款，冲减应收未收余额（不计现金）</span>
+          </div>
+          <div class="wo-inputs">
+            <input v-model="woForm.amount" type="number" step="0.01" class="inp" placeholder="核销金额(元)" />
+            <input v-model="woForm.writeoff_date" type="date" class="inp" />
+            <input v-model="woForm.notes" class="inp" placeholder="备注" />
+            <button class="btn btn-primary btn-sm" :disabled="woSaving" @click="addWriteoff">{{ woSaving ? '…' : '新增核销' }}</button>
+          </div>
         </div>
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="showWoModal = false">关闭</button>
@@ -830,10 +833,12 @@ onMounted(() => {
 .wo-summary { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin-bottom: 12px; }
 .wo-summary b { color: var(--text); }
 .wo-summary .hl b { color: var(--primary); }
-.wo-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
-.wo-offset { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
-.wo-offset-lbl { font-size: 12px; color: var(--muted); }
-.wo-offset .inp { width: 100%; }
+.wo-add { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.wo-offset-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: rgba(201,99,66,0.05); border: 1px solid rgba(201,99,66,0.2); border-radius: 8px; padding: 7px 10px; }
+.wo-offset-lbl { font-size: 12px; font-weight: 700; color: var(--primary); white-space: nowrap; }
+.wo-offset-sel { flex: 1; min-width: 220px; }
+.wo-offset-tip { font-size: 11px; color: var(--primary); opacity: 0.8; width: 100%; padding-left: 2px; }
+.wo-inputs { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .offset-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; background: rgba(27,110,53,0.1); color: #1b6e35; font-size: 11px; font-weight: 600; }
 .offset-badge.pay-badge { background: rgba(21,101,192,0.1); color: #1565c0; }
 
