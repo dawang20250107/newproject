@@ -1264,8 +1264,10 @@ function clearFilters() {
 .fb-backdrop { position: fixed; inset: 0; z-index: 50; }
 .fb-pop {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 51;
+  width: 540px; max-width: 94vw;            /* 容器自身定宽，不依赖内部组件 */
   background: #fff; border: 1px solid var(--border); border-radius: 12px;
-  box-shadow: 0 16px 44px rgba(0,0,0,0.18); overflow: hidden;
+  box-shadow: 0 16px 44px rgba(0,0,0,0.18);
+  /* 不可 overflow:hidden，否则会裁掉「添加条件」弹出的菜单 */
 }
 .fb-match { font-size: 12px; font-weight: 800; color: var(--primary); padding: 2px 8px; border-radius: 7px; background: rgba(201,99,66,0.08); }
 .fb-hint { font-size: 12.5px; color: var(--muted); }

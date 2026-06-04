@@ -133,7 +133,7 @@ const fieldLabel = (list, field) => (list.find(f => f.field === field) || {}).la
 </template>
 
 <style scoped>
-.fp { width: 520px; max-width: 94vw; display: flex; flex-direction: column; max-height: 70vh; }
+.fp { width: 100%; display: flex; flex-direction: column; max-height: 72vh; }
 .fp-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 14px; border-bottom: 1px solid var(--border);
@@ -187,8 +187,8 @@ const fieldLabel = (list, field) => (list.find(f => f.field === field) || {}).la
 .fp-clear:hover { color: #c62828; }
 .fp-backdrop { position: fixed; inset: 0; z-index: 60; }
 .fp-menu {
-  position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 61;
-  min-width: 220px; max-height: 360px; overflow-y: auto; padding: 8px;
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 61;   /* 向下展开，永不被裁 */
+  min-width: 240px; max-height: 320px; overflow-y: auto; padding: 8px;
   border-radius: 12px; background: #fff; border: 1px solid var(--border); box-shadow: 0 12px 32px rgba(0,0,0,0.16);
   display: grid; grid-template-columns: 1fr 1fr; gap: 2px 6px;
 }
