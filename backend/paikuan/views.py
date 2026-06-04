@@ -103,7 +103,7 @@ AR_PROJECT_FIELD_DEFS = [
     {'key': 'p_has_contract',   'label': '有无合同',   'group': 'project', 'cols': ['has_contract']},
     {'key': 'p_contract_date',  'label': '签订日期',   'group': 'project', 'cols': ['contract_date']},
     {'key': 'p_account_period', 'label': '账期配置',   'group': 'project',
-        'cols': ['reconciliation_days', 'invoice_wait_days', 'settlement_wait_days', 'total_days']},
+        'cols': ['reconciliation_days', 'invoice_wait_days', 'post_invoice_days', 'total_days']},
     {'key': 'p_invoice_config', 'label': '开票配置(模式/类型/税率)', 'group': 'project',
         'cols': ['invoice_mode', 'invoice_type', 'tax_rate']},
     {'key': 'p_notes',          'label': '项目备注',   'group': 'project', 'cols': ['notes']},

@@ -121,6 +121,20 @@ class ARPermissionRegressionTests(TestCase):
         exp = self.client.get('/api/pk/ar/projects/export', **self.auth(admin))
         self.assertIn('客户名称', self.headers_from_xlsx(exp))
 
+    def test_project_post_invoice_days_update_persists(self):
+        """票后等待期(post_invoice_days)编辑后应真正落库——回归 settlement_wait_days
+        旧列名残留导致 _ar_visible_payload 把该字段从 PUT 载荷里剥掉的问题。"""
+        admin = self.make_user('13900000311', 'finance_director', role='super_admin')
+        resp = self.json_post('/api/pk/ar/projects', self.project_payload(), admin)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        pid = resp.json()['data']['id']
+        put = self.json_put(f'/api/pk/ar/projects/{pid}', {'post_invoice_days': 30}, admin)
+        self.assertEqual(put.status_code, 200, put.content)
+        self.assertEqual(put.json()['data']['post_invoice_days'], 30)
+        # 重新拉取确认落库（而非仅响应回显）
+        got = self.client.get(f'/api/pk/ar/projects/{pid}', **self.auth(admin))
+        self.assertEqual(got.json()['data']['post_invoice_days'], 30)
+
     def test_cashier_page_access_cannot_write_ar_records(self):
         cfg = default_job_config('cashier')
         cfg['pages']['ar_projects'] = True
