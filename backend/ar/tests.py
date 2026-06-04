@@ -487,6 +487,34 @@ class ARPermissionRegressionTests(TestCase):
         # 非法 sort 键安全忽略（仍返回三条，不报错）
         self.assertEqual(len(order({'sort': 'drop_table'})), 3)
 
+    def test_conditions_match_any_or_logic(self):
+        """统一条件 + match=all(且)/any(或)：维度/金额条件组合。"""
+        import json as _json
+        admin = self.make_user('13900000082', 'finance_director', role='super_admin')
+        project = self.create_project()
+        # a: 未开票(无开票额、有未收余额)，预估 100
+        a = ARRecord.objects.create(project=project, operation_year=2026, operation_month=5,
+                                    estimated_amount=Decimal('100.00'))
+        # b: 已开票，预估 200
+        b = ARRecord.objects.create(project=project, operation_year=2026, operation_month=6,
+                                    estimated_amount=Decimal('200.00'),
+                                    actual_invoice_amount=Decimal('200.00'))
+
+        def ids(conditions, match=None):
+            p = {'conditions': _json.dumps(conditions)}
+            if match:
+                p['match'] = match
+            resp = self.client.get('/api/pk/ar/records', p, **self.auth(admin))
+            self.assertEqual(resp.status_code, 200, resp.content)
+            return {r['id'] for r in resp.json()['data']['items']}
+
+        conds = [{'t': 'dim', 'field': 'invoice_status', 'value': '未开票'},
+                 {'t': 'amt', 'field': 'estimated_amount', 'op': 'gt', 'value': 150}]
+        # 且：未开票 且 预估>150 → 空（a未开票但=100，b预估200但已开票）
+        self.assertEqual(ids(conds, 'all'), set())
+        # 或：未开票 或 预估>150 → a(未开票) + b(预估200) = 两条
+        self.assertEqual(ids(conds, 'any'), {a.id, b.id})
+
     def test_conditions_builder_date_and_amount(self):
         """条件构建器：金额运算符(≠0) + 回款日期相对区间(含/不含本月)。"""
         import json as _json

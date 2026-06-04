@@ -1435,8 +1435,160 @@ def _dec_or_none(v):
         return None
 
 
+def _condition_q(c, today, eomonth_today):
+    """把单个条件构建成「标量安全」的 Q（关联字段一律转 id IN 子查询），
+    便于在 且/或 任意组合下安全参与布尔运算。非法条目返回 None。"""
+    if not isinstance(c, dict):
+        return None
+    ctype = c.get('t')
+
+    # ── 维度类 ─────────────────────────────────────────────────────────────
+    if ctype == 'dim':
+        field = c.get('field')
+        v = c.get('value')
+        if v in (None, ''):
+            return None
+        if field == 'dept':
+            return Q(delivery_dept=v)
+        if field == 'project_id':
+            try:
+                return Q(project_id=int(v))
+            except (TypeError, ValueError):
+                return None
+        if field == 'manager':
+            return Q(project__project_manager__icontains=v)
+        if field == 'is_shared':
+            return Q(project__is_shared=(str(v) in ('1', 'true', 'True')))
+        if field == 'operation_year':
+            try:
+                return Q(operation_year=int(v))
+            except (TypeError, ValueError):
+                return None
+        if field == 'operation_month':
+            try:
+                return Q(operation_month=int(v))
+            except (TypeError, ValueError):
+                return None
+        if field == 'q':
+            return (Q(project__short_name__icontains=v) | Q(project__contract_name__icontains=v) |
+                    Q(project__project_no__icontains=v) | Q(project__project_manager__icontains=v))
+        if field == 'status':
+            if v == 'overdue':
+                return Q(outstanding_amount__gt=0, due_date__lt=today)
+            if v == 'current':
+                return Q(outstanding_amount__gt=0, due_date__gte=today, due_date__lte=eomonth_today)
+            if v == 'not_due':
+                return Q(outstanding_amount__gt=0, due_date__gt=eomonth_today)
+            if v == 'settled':
+                return Q(outstanding_amount__lte=0)
+            if v == 'outstanding':
+                return Q(outstanding_amount__gt=0)
+            return None
+        if field == 'reconciliation_status':
+            if v == '已对账':
+                return Q(reconciliation_date__isnull=False) | Q(actual_invoice_amount__isnull=False)
+            if v == '未对账':
+                return Q(reconciliation_date__isnull=True, actual_invoice_amount__isnull=True)
+            return None
+        if field == 'invoice_status':
+            if v == '未开票':
+                return Q(actual_invoice_amount__isnull=True, outstanding_amount__gt=0)
+            if v == '已结清':
+                return Q(outstanding_amount__lte=0)
+            if v == '已开票':
+                return Q(actual_invoice_amount__isnull=False, outstanding_amount__gt=0)
+            return None
+        if field == 'responsibility':
+            no_inv = Q(project__invoice_type='不开票')
+            if v == 'settled':
+                return Q(outstanding_amount__lte=0)
+            if v == 'post':
+                return Q(outstanding_amount__gt=0) & (
+                    (no_inv & Q(reconciliation_date__isnull=False)) |
+                    (~no_inv & Q(invoice_date__isnull=False)))
+            if v == 'invoice':
+                return (Q(outstanding_amount__gt=0) & ~no_inv & Q(invoice_date__isnull=True) &
+                        (Q(reconciliation_date__isnull=False) | Q(actual_invoice_amount__isnull=False)))
+            if v == 'recon':
+                return Q(outstanding_amount__gt=0) & (
+                    (no_inv & Q(reconciliation_date__isnull=True)) |
+                    (~no_inv & Q(invoice_date__isnull=True) &
+                     Q(reconciliation_date__isnull=True) & Q(actual_invoice_amount__isnull=True)))
+            return None
+        return None
+
+    # ── 日期类 ─────────────────────────────────────────────────────────────
+    if ctype == 'date':
+        field = c.get('field')
+        if field not in _COND_DATE_FIELDS:
+            return None
+        rng = c.get('range')
+        if rng == 'custom':
+            start = _normalize_date(c.get('start')) or None
+            end = _normalize_date(c.get('end')) or None
+            if not (start or end):
+                return None
+        else:
+            r = _relative_date_range(rng, today)
+            if not r:
+                return None
+            start, end = r
+        exclude = bool(c.get('exclude'))
+        if field == 'payment_date':
+            # 关联回款集 → 转 id IN 子查询，标量安全；不含=无该区间回款
+            sub = ARPayment.objects.all()
+            if start:
+                sub = sub.filter(payment_date__gte=start)
+            if end:
+                sub = sub.filter(payment_date__lte=end)
+            q = Q(id__in=sub.values('ar_record_id'))
+        else:
+            q = Q()
+            if start:
+                q &= Q(**{f'{field}__gte': start})
+            if end:
+                q &= Q(**{f'{field}__lte': end})
+        return ~q if exclude else q
+
+    # ── 金额类 ─────────────────────────────────────────────────────────────
+    if ctype == 'amt':
+        field = c.get('field')
+        if field not in _COND_AMT_FIELDS:
+            return None
+        op = c.get('op')
+        if op == 'gt0':
+            return Q(**{f'{field}__gt': 0})
+        if op == 'lt0':
+            return Q(**{f'{field}__lt': 0})
+        if op == 'eq0':
+            return Q(**{field: 0})
+        if op == 'ne0':
+            return Q(**{f'{field}__gt': 0}) | Q(**{f'{field}__lt': 0})
+        if op in ('gt', 'lt', 'eq'):
+            v = _dec_or_none(c.get('value'))
+            if v is None:
+                return None
+            return Q(**{{'gt': f'{field}__gt', 'lt': f'{field}__lt', 'eq': field}[op]: v})
+        if op == 'between':
+            lo = _dec_or_none(c.get('min'))
+            hi = _dec_or_none(c.get('max'))
+            q = Q()
+            if lo is not None:
+                q &= Q(**{f'{field}__gte': lo})
+            if hi is not None:
+                q &= Q(**{f'{field}__lte': hi})
+            return q if q else None
+        return None
+
+    return None
+
+
 def _apply_conditions(qs, request, today=None):
-    """应用 conditions(JSON) 里的日期/金额条件。非法条目静默跳过，保证健壮与安全。"""
+    """统一条件评估：conditions(JSON 数组) 经 match(all=且/any=或) 组合为单个 Q 后应用。
+
+    所有条件均为标量安全 Q（关联字段已转 id IN 子查询），可在且/或下自由组合，
+    无需 distinct。非法条目静默跳过，保证健壮与安全。
+    """
     raw = (request.GET.get('conditions') or '').strip()
     if not raw:
         return qs
@@ -1447,70 +1599,21 @@ def _apply_conditions(qs, request, today=None):
         return qs
     if today is None:
         today = datetime.date.today()
+    eomonth_today = datetime.date(today.year, today.month,
+                                  calendar.monthrange(today.year, today.month)[1])
+    match_any = (request.GET.get('match') or 'all').strip() == 'any'
 
+    combined = None
     for c in conds:
-        if not isinstance(c, dict):
+        q = _condition_q(c, today, eomonth_today)
+        if q is None:
             continue
-        ctype = c.get('t')
-
-        if ctype == 'date':
-            field = c.get('field')
-            if field not in _COND_DATE_FIELDS:
-                continue
-            rng = c.get('range')
-            if rng == 'custom':
-                start = _normalize_date(c.get('start')) or None
-                end = _normalize_date(c.get('end')) or None
-                if not (start or end):
-                    continue
-            else:
-                r = _relative_date_range(rng, today)
-                if not r:
-                    continue
-                start, end = r
-            exclude = bool(c.get('exclude'))
-            if field == 'payment_date':
-                # 回款日期落在关联回款集：含=有该区间回款；不含=无该区间回款
-                cond = Q()
-                if start:
-                    cond &= Q(payments__payment_date__gte=start)
-                if end:
-                    cond &= Q(payments__payment_date__lte=end)
-                qs = qs.exclude(cond) if exclude else qs.filter(cond).distinct()
-            else:
-                cond = Q()
-                if start:
-                    cond &= Q(**{f'{field}__gte': start})
-                if end:
-                    cond &= Q(**{f'{field}__lte': end})
-                qs = qs.exclude(cond) if exclude else qs.filter(cond)
-
-        elif ctype == 'amt':
-            field = c.get('field')
-            if field not in _COND_AMT_FIELDS:
-                continue
-            op = c.get('op')
-            if op == 'gt0':
-                qs = qs.filter(**{f'{field}__gt': 0})
-            elif op == 'lt0':
-                qs = qs.filter(**{f'{field}__lt': 0})
-            elif op == 'eq0':
-                qs = qs.filter(**{field: 0})
-            elif op == 'ne0':
-                qs = qs.filter(Q(**{f'{field}__gt': 0}) | Q(**{f'{field}__lt': 0}))
-            elif op in ('gt', 'lt', 'eq'):
-                v = _dec_or_none(c.get('value'))
-                if v is None:
-                    continue
-                lookup = {'gt': f'{field}__gt', 'lt': f'{field}__lt', 'eq': field}[op]
-                qs = qs.filter(**{lookup: v})
-            elif op == 'between':
-                lo = _dec_or_none(c.get('min'))
-                hi = _dec_or_none(c.get('max'))
-                if lo is not None:
-                    qs = qs.filter(**{f'{field}__gte': lo})
-                if hi is not None:
-                    qs = qs.filter(**{f'{field}__lte': hi})
+        if combined is None:
+            combined = q
+        else:
+            combined = (combined | q) if match_any else (combined & q)
+    if combined is not None:
+        qs = qs.filter(combined)
     return qs
 
 
@@ -1524,6 +1627,7 @@ def ar_records_kpi(request):
     today = datetime.date.today()
     qs = _apply_record_filters(
         _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared'), request)
+    qs = _apply_conditions(qs, request, today)
 
     total = qs.count()
 
@@ -1714,10 +1818,10 @@ def ar_records_group_summary(request):
     qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
     qs = _apply_record_filters(qs, request)
     qs = _apply_record_state_filters(qs, request, today)
-    # 回款日期/含未结清筛选会让 qs 带 payments JOIN，导致后续按维度分组时 Count/Sum
-    # 因行扇出而翻倍。先取去重记录 id 落到无 JOIN 的基表，再分组聚合。
-    record_ids = list(qs.order_by().values_list('id', flat=True).distinct())
-    qs = ARRecord.objects.filter(id__in=record_ids)
+    qs = _apply_conditions(qs, request, today)
+    # 若 flat 筛选带 payments JOIN（旧参数），落到无 JOIN 基表避免分组聚合行扇出翻倍；
+    # 用 id IN 子查询代替全量拉 id（大数据量友好）。条件构建器条件已是标量安全，无需此步但无害。
+    qs = ARRecord.objects.filter(id__in=qs.order_by().values('id'))
 
     group_by = request.GET.get('group_by', 'dept').strip() or 'dept'
 
