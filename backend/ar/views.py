@@ -752,6 +752,7 @@ def ar_records(request):
                              shared_field='project__is_shared')
         qs = _apply_record_filters(qs, request)
         qs = _apply_record_state_filters(qs, request, today)
+        qs = _apply_conditions(qs, request, today)
         qs = _apply_record_sort(qs, request)
 
         include_payments = request.GET.get('include_payments', '') in ('1', 'true')
@@ -765,6 +766,7 @@ def ar_records(request):
                                  shared_field='project__is_shared')
         qs_agg = _apply_record_filters(qs_agg, request)
         qs_agg = _apply_record_state_filters(qs_agg, request, today)
+        qs_agg = _apply_conditions(qs_agg, request, today)
 
         # 当前筛选全集的金额合计（不止当前页）——支撑"筛选即合计"。
         # 重要：筛选含 payments 关联（回款日期/含未结清）时 qs_agg 带 JOIN，直接
@@ -1179,17 +1181,13 @@ def ar_record_export(request):
     if denied:
         return denied
     today = datetime.date.today()
+    # 导出与列表口径一致：复用同一套筛选 + 条件构建器（含日期相对区间/金额运算符）
     qs = _ar_dept_filter(ARRecord.objects.select_related('project'), request,
                          shared_field='project__is_shared')
-    dept = request.GET.get('dept', '').strip()
-    if dept:
-        qs = qs.filter(delivery_dept=dept)
-    year = request.GET.get('year', '').strip()
-    if year:
-        qs = qs.filter(operation_year=int(year))
-    month = request.GET.get('month', '').strip()
-    if month:
-        qs = qs.filter(operation_month=int(month))
+    qs = _apply_record_filters(qs, request)
+    qs = _apply_record_state_filters(qs, request, today)
+    qs = _apply_conditions(qs, request, today)
+    qs = _apply_record_sort(qs, request)
     if qs.count() > 5000:
         return err('导出超过5000行，请缩小筛选范围')
 
@@ -1397,6 +1395,123 @@ def _apply_record_sort(qs, request):
     terms = [F(f).desc(nulls_last=True) if desc else F(f).asc(nulls_last=True) for f in fields]
     terms.append(F('id').desc() if desc else F('id').asc())  # 唯一键兜底，分页稳定
     return qs.order_by(*terms)
+
+
+# ── 条件构建器（BI 式多条件筛选）─────────────────────────────────────────────
+# 维度类条件仍走既有 flat 参数（dept/status/...，语义单一源）；这里只处理两类"新能力"：
+#   date：任选日期字段 + 相对区间(本周/本月/上月/下月/本年/去年/自定义) + 含/不含
+#   amt ：数值字段 + 运算符(=0/≠0/>0/<0/>/</区间)
+# 前端把这两类条件序列化进 conditions(JSON 数组)下发；多条件 AND，可任意叠加。
+_COND_DATE_FIELDS = {'due_date', 'payment_date', 'invoice_date', 'reconciliation_date'}
+_COND_AMT_FIELDS = {'estimated_amount', 'outstanding_amount', 'tax_amount',
+                    'actual_invoice_amount', 'account_diff_adjustment'}
+
+
+def _relative_date_range(token, today):
+    """相对区间 token → (start, end)（含端点）；未知 token 返回 None。服务端按 today 计算。"""
+    y, m = today.year, today.month
+    if token == 'this_week':
+        start = today - datetime.timedelta(days=today.weekday())
+        return start, start + datetime.timedelta(days=6)
+    if token == 'this_month':
+        return datetime.date(y, m, 1), datetime.date(y, m, calendar.monthrange(y, m)[1])
+    if token == 'last_month':
+        py, pm = (y - 1, 12) if m == 1 else (y, m - 1)
+        return datetime.date(py, pm, 1), datetime.date(py, pm, calendar.monthrange(py, pm)[1])
+    if token == 'next_month':
+        ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+        return datetime.date(ny, nm, 1), datetime.date(ny, nm, calendar.monthrange(ny, nm)[1])
+    if token == 'this_year':
+        return datetime.date(y, 1, 1), datetime.date(y, 12, 31)
+    if token == 'last_year':
+        return datetime.date(y - 1, 1, 1), datetime.date(y - 1, 12, 31)
+    return None
+
+
+def _dec_or_none(v):
+    try:
+        return Decimal(str(v))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _apply_conditions(qs, request, today=None):
+    """应用 conditions(JSON) 里的日期/金额条件。非法条目静默跳过，保证健壮与安全。"""
+    raw = (request.GET.get('conditions') or '').strip()
+    if not raw:
+        return qs
+    try:
+        conds = json.loads(raw)
+        assert isinstance(conds, list)
+    except (ValueError, AssertionError):
+        return qs
+    if today is None:
+        today = datetime.date.today()
+
+    for c in conds:
+        if not isinstance(c, dict):
+            continue
+        ctype = c.get('t')
+
+        if ctype == 'date':
+            field = c.get('field')
+            if field not in _COND_DATE_FIELDS:
+                continue
+            rng = c.get('range')
+            if rng == 'custom':
+                start = _normalize_date(c.get('start')) or None
+                end = _normalize_date(c.get('end')) or None
+                if not (start or end):
+                    continue
+            else:
+                r = _relative_date_range(rng, today)
+                if not r:
+                    continue
+                start, end = r
+            exclude = bool(c.get('exclude'))
+            if field == 'payment_date':
+                # 回款日期落在关联回款集：含=有该区间回款；不含=无该区间回款
+                cond = Q()
+                if start:
+                    cond &= Q(payments__payment_date__gte=start)
+                if end:
+                    cond &= Q(payments__payment_date__lte=end)
+                qs = qs.exclude(cond) if exclude else qs.filter(cond).distinct()
+            else:
+                cond = Q()
+                if start:
+                    cond &= Q(**{f'{field}__gte': start})
+                if end:
+                    cond &= Q(**{f'{field}__lte': end})
+                qs = qs.exclude(cond) if exclude else qs.filter(cond)
+
+        elif ctype == 'amt':
+            field = c.get('field')
+            if field not in _COND_AMT_FIELDS:
+                continue
+            op = c.get('op')
+            if op == 'gt0':
+                qs = qs.filter(**{f'{field}__gt': 0})
+            elif op == 'lt0':
+                qs = qs.filter(**{f'{field}__lt': 0})
+            elif op == 'eq0':
+                qs = qs.filter(**{field: 0})
+            elif op == 'ne0':
+                qs = qs.filter(Q(**{f'{field}__gt': 0}) | Q(**{f'{field}__lt': 0}))
+            elif op in ('gt', 'lt', 'eq'):
+                v = _dec_or_none(c.get('value'))
+                if v is None:
+                    continue
+                lookup = {'gt': f'{field}__gt', 'lt': f'{field}__lt', 'eq': field}[op]
+                qs = qs.filter(**{lookup: v})
+            elif op == 'between':
+                lo = _dec_or_none(c.get('min'))
+                hi = _dec_or_none(c.get('max'))
+                if lo is not None:
+                    qs = qs.filter(**{f'{field}__gte': lo})
+                if hi is not None:
+                    qs = qs.filter(**{f'{field}__lte': hi})
+    return qs
 
 
 @csrf_exempt

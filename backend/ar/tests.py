@@ -487,6 +487,47 @@ class ARPermissionRegressionTests(TestCase):
         # 非法 sort 键安全忽略（仍返回三条，不报错）
         self.assertEqual(len(order({'sort': 'drop_table'})), 3)
 
+    def test_conditions_builder_date_and_amount(self):
+        """条件构建器：金额运算符(≠0) + 回款日期相对区间(含/不含本月)。"""
+        import json as _json
+        admin = self.make_user('13900000081', 'finance_director', role='super_admin')
+        project = self.create_project()
+        today = date.today()
+        this_m = date(today.year, today.month, 15)
+        last_m = (date(today.year - 1, 12, 15) if today.month == 1
+                  else date(today.year, today.month - 1, 15))
+
+        # r1: 有未收余额(outstanding>0)，本月回款
+        r1 = ARRecord.objects.create(project=project, operation_year=2026, operation_month=5,
+                                     estimated_amount=Decimal('500.00'))
+        ARPayment.objects.create(ar_record=r1, payment_no=1, amount=Decimal('100.00'), payment_date=this_m)
+        # r2: 上月回款，无未收（全额回款）
+        r2 = ARRecord.objects.create(project=project, operation_year=2026, operation_month=6,
+                                     estimated_amount=Decimal('200.00'))
+        ARPayment.objects.create(ar_record=r2, payment_no=1, amount=Decimal('200.00'), payment_date=last_m)
+
+        def ids(conditions):
+            resp = self.client.get('/api/pk/ar/records',
+                                   {'conditions': _json.dumps(conditions)}, **self.auth(admin))
+            self.assertEqual(resp.status_code, 200, resp.content)
+            return {r['id'] for r in resp.json()['data']['items']}
+
+        # 未收金额≠0 → 仅 r1
+        ne0 = ids([{'t': 'amt', 'field': 'outstanding_amount', 'op': 'ne0'}])
+        self.assertEqual(ne0, {r1.id})
+        # 回款日期含本月 → 仅 r1
+        in_m = ids([{'t': 'date', 'field': 'payment_date', 'range': 'this_month'}])
+        self.assertEqual(in_m, {r1.id})
+        # 回款日期不含本月 → 排除有本月回款的 r1 → 仅 r2
+        not_m = ids([{'t': 'date', 'field': 'payment_date', 'range': 'this_month', 'exclude': True}])
+        self.assertEqual(not_m, {r2.id})
+        # 组合：回款不含本月 + 未收≠0 → 空（r2 无未收，r1 被日期排除）
+        combo = ids([{'t': 'date', 'field': 'payment_date', 'range': 'this_month', 'exclude': True},
+                     {'t': 'amt', 'field': 'outstanding_amount', 'op': 'ne0'}])
+        self.assertEqual(combo, set())
+        # 非法 conditions 安全忽略（返回全部 2 条）
+        self.assertEqual(len(ids('not-a-list' and [{'t': 'bogus'}])), 2)
+
     def test_invoice_status_unbilled_filter_excludes_settled(self):
         # 开票跟踪「未开票」筛选不得包含已结清（已全额回款）的记录，与
         # ARRecord.invoice_status 属性一致（已结清优先级高于未开票）。
