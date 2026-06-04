@@ -519,6 +519,23 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(resp.json()['data']['deleted'], 2)
         self.assertEqual(ARRecord.objects.filter(pk__in=[r2.id, r3.id]).count(), 0)
 
+    def test_bulk_delete_allowed_with_can_delete(self):
+        """非超管但 can_delete=true 应被允许批量删除（验证授权链路正确）。"""
+        import json as _json
+        cfg = default_job_config('cashier')
+        cfg['pages']['ar_records'] = True
+        cfg['can_delete'] = True
+        JobPermission.objects.create(job_title='cashier', config=cfg)
+        _invalidate_perm_cache('cashier')
+        user = self.make_user('13910000098', 'cashier')
+        rec = self.create_record(self.create_project())
+        resp = self.client.post('/api/pk/ar/records/bulk-delete',
+                                data=_json.dumps({'ids': [rec.id]}),
+                                content_type='application/json', **self.auth(user))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data']['deleted'], 1)
+        self.assertFalse(ARRecord.objects.filter(pk=rec.id).exists())
+
     def test_bulk_delete_requires_permission(self):
         """无删除权限不得批量删除。"""
         import json as _json

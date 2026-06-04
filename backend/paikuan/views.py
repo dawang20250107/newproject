@@ -5,6 +5,7 @@ import datetime
 import functools
 import re
 import threading
+import time
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
 
@@ -281,6 +282,10 @@ def default_job_config(job):
 
 _perm_cache: dict = {}
 _perm_cache_lock = threading.Lock()
+# 进程内缓存带短 TTL：权限修改在多 worker 部署下，未命中保存请求的 worker 也能在
+# 数秒内自愈（_invalidate_perm_cache 只清当前进程，跨进程靠 TTL 兜底），避免"刚授权
+# 仍提示无权限"。读多写少，TTL 期内仍走缓存不增加 DB 压力。
+_PERM_CACHE_TTL = 5.0  # seconds
 
 
 def _invalidate_perm_cache(job=None):
@@ -294,9 +299,11 @@ def _invalidate_perm_cache(job=None):
 def get_job_perms(job):
     """Effective config for a job title = defaults merged with stored overrides.
     Results are cached per-process to avoid repeated DB lookups."""
+    now = time.monotonic()
     with _perm_cache_lock:
-        if job in _perm_cache:
-            return _perm_cache[job]
+        ent = _perm_cache.get(job)
+        if ent and ent[0] > now:
+            return ent[1]
     base = default_job_config(job)
     try:
         rp = JobPermission.objects.filter(job_title=job).first()
@@ -326,7 +333,7 @@ def get_job_perms(job):
             'caiwu_delete':  bool(cfg.get('caiwu_delete',  base.get('caiwu_delete', False))),
         }
     with _perm_cache_lock:
-        _perm_cache[job] = result
+        _perm_cache[job] = (time.monotonic() + _PERM_CACHE_TTL, result)
     return result
 
 
