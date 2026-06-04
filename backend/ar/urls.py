@@ -22,6 +22,7 @@ urlpatterns = [
     path('records/export', views.ar_record_export),
     path('records/health', views.ar_data_health),
     path('records/recompute', views.ar_records_recompute_bulk),
+    path('records/bulk-delete', views.ar_records_bulk_delete),
     path('records/<int:pk>', views.ar_record_detail),
     path('records/<int:pk>/recompute', views.ar_record_recompute),
     path('records/<int:pk>/payments', views.ar_payments),

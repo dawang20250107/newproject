@@ -40,6 +40,40 @@ const deptOfConditions = () => {
   return c ? c.value : ''
 }
 
+// ── 多选 + 批量删除 ─────────────────────────────────────────────────────────
+const selectedIds = ref(new Set())          // 跨页按 id 记忆选择
+const selectAllMatching = ref(false)        // 勾选整个筛选集（跨所有分页）
+const bulkDeleting = ref(false)
+const pageAllSelected = computed(() =>
+  items.value.length > 0 && items.value.every(r => selectedIds.value.has(r.id)))
+const selectedCount = computed(() => selectAllMatching.value ? total.value : selectedIds.value.size)
+const hasSelection = computed(() => selectAllMatching.value || selectedIds.value.size > 0)
+function toggleRow(id) {
+  const s = new Set(selectedIds.value)
+  if (s.has(id)) { s.delete(id); selectAllMatching.value = false } else s.add(id)
+  selectedIds.value = s
+}
+function toggleSelectPage() {
+  const s = new Set(selectedIds.value)
+  if (pageAllSelected.value) { items.value.forEach(r => s.delete(r.id)); selectAllMatching.value = false }
+  else items.value.forEach(r => s.add(r.id))
+  selectedIds.value = s
+}
+function clearSelection() { selectedIds.value = new Set(); selectAllMatching.value = false }
+async function bulkDelete() {
+  const n = selectedCount.value
+  if (!n) return
+  if (!confirm(`确定删除选中的 ${n} 条应收明细？关联回款一并删除，且不可恢复。`)) return
+  bulkDeleting.value = true
+  try {
+    if (selectAllMatching.value) await ar.bulkDeleteRecords({ all: true }, reqParams())
+    else await ar.bulkDeleteRecords({ ids: [...selectedIds.value] })
+    clearSelection()
+    await load(true)
+  } catch (e) { alert(e?.msg || '删除失败') }
+  finally { bulkDeleting.value = false }
+}
+
 // 服务端排序（点表头）——状态机经 provide 下放给各 <SortTh>，变化即回首页重拉
 const sorter = useServerSort(() => load(true))
 provide('arSort', sorter)
@@ -228,6 +262,7 @@ function switchTab(key) {
 
 // Shared-filter change → refresh whichever tab consumes those filters.
 function onFilterChange() {
+  clearSelection()
   if (activeTab.value === 'summary') loadGroupSummary()
   else load(true)
 }
@@ -576,10 +611,27 @@ function clearFilters() {
       </div>
 
       <!-- ══ 数据明细表（全部/对账/开票/回款 跟踪）══ -->
+      <!-- 选择 + 批量删除工具条（选中后出现） -->
+      <div v-if="isDataTab && auth.canDelete && hasSelection" class="bulk-bar">
+        <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
+        <button v-if="pageAllSelected && !selectAllMatching && total > items.length"
+          class="bulk-all" @click="selectAllMatching = true">选择全部 {{ total }} 条</button>
+        <span v-if="selectAllMatching" class="bulk-all-on">已选中整个筛选集</span>
+        <button class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">
+          {{ bulkDeleting ? '删除中…' : `删除选中(${selectedCount})` }}
+        </button>
+        <button class="bulk-cancel" @click="clearSelection">取消</button>
+      </div>
+
       <div v-if="isDataTab" class="table-wrap" style="margin-top:12px">
         <table class="rec-table">
           <thead>
             <tr>
+              <th v-if="auth.canDelete" class="sel-col">
+                <input type="checkbox" :checked="pageAllSelected"
+                  :indeterminate.prop="hasSelection && !pageAllSelected"
+                  title="全选本页" @change="toggleSelectPage" />
+              </th>
               <SortTh col="short_name" label="项目" />
               <SortTh col="operation" label="年月" class="ctr" />
 
@@ -628,13 +680,16 @@ function clearFilters() {
           </thead>
           <tbody>
             <tr v-if="loading && !items.length">
-              <td colspan="12" class="empty-cell">⏳ 加载中…</td>
+              <td colspan="16" class="empty-cell">⏳ 加载中…</td>
             </tr>
             <tr v-else-if="!items.length">
-              <td colspan="12" class="empty-cell">暂无数据</td>
+              <td colspan="16" class="empty-cell">暂无数据</td>
             </tr>
             <template v-for="rec in items" :key="rec.id">
-              <tr :class="['data-row', rec.is_overdue ? 'row-overdue' : '']">
+              <tr :class="['data-row', rec.is_overdue ? 'row-overdue' : '', (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']">
+                <td v-if="auth.canDelete" class="sel-col">
+                  <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @change="toggleRow(rec.id)" />
+                </td>
                 <td>
                   <div class="proj-name">{{ rec.short_name || rec.contract_name }}</div>
                   <div v-if="rec.short_name && rec.short_name !== rec.contract_name" class="proj-sub">{{ rec.contract_name }}</div>
@@ -753,6 +808,7 @@ function clearFilters() {
           <!-- 列合计页脚：吸底，正对齐在数值列下方；随筛选/条件实时更新 -->
           <tfoot v-if="summaryData && items.length">
             <tr class="sum-foot">
+              <td v-if="auth.canDelete" class="sel-col"></td>
               <td class="sum-foot-lbl">合计 · {{ summaryData.count }} 条</td>
               <td class="ctr"></td>
 
@@ -1246,12 +1302,25 @@ function clearFilters() {
 .row-drill:hover { background: rgba(201,99,66,0.07); }
 .group-total-row td { border-top: 2px solid rgba(0,0,0,0.1); padding: 11px 12px; background: rgba(0,0,0,0.02); }
 
-/* Table */
+/* Table — 紧凑：数据量大，尽量一屏多看 */
 .rec-table { width: 100%; }
-.rec-table th { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); padding: 9px 12px; background: rgba(0,0,0,0.02); white-space: nowrap; }
-.rec-table td { padding: 10px 12px; vertical-align: middle; }
+.rec-table th { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 6px 10px; background: rgba(0,0,0,0.02); white-space: nowrap; }
+.rec-table td { padding: 5px 10px; vertical-align: middle; font-size: 12.5px; }
+/* 选择列 */
+.sel-col { width: 30px; text-align: center; padding-left: 8px !important; padding-right: 4px !important; }
+.sel-col input { cursor: pointer; }
 .data-row { transition: background 0.12s; }
 .data-row:hover { background: rgba(201,99,66,0.03); }
+.row-sel, .row-sel:hover { background: rgba(201,99,66,0.09) !important; }
+/* 批量删除工具条 */
+.bulk-bar { display: flex; align-items: center; gap: 12px; margin: 10px 0 0; padding: 8px 14px;
+  border-radius: 10px; background: rgba(198,40,40,0.06); border: 1px solid rgba(198,40,40,0.25); }
+.bulk-n { font-size: 13px; color: var(--text); }
+.bulk-all { border: none; background: none; color: var(--primary); font-size: 12.5px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.bulk-all-on { font-size: 12.5px; color: var(--primary); font-weight: 700; }
+.bulk-del { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
+.bulk-del:disabled { opacity: .6; cursor: default; }
+.bulk-cancel { border: none; background: none; color: var(--muted); font-size: 12.5px; cursor: pointer; }
 .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.04); }
 .row-overdue { background: rgba(198,40,40,0.04); }
 
@@ -1268,7 +1337,7 @@ function clearFilters() {
 .rec-table tfoot .amt-muted { color: var(--muted); font-weight: 600; }
 
 .empty-cell { text-align: center; padding: 48px !important; color: var(--muted); font-size: 14px; }
-.proj-name { font-weight: 600; font-size: 13.5px; }
+.proj-name { font-weight: 600; font-size: 12.5px; }
 .proj-sub { font-size: 11.5px; color: var(--muted); margin-top: 1px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-no { font-family: monospace; font-size: 11px; color: var(--muted); margin-top: 2px; }
 .notes-col { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }

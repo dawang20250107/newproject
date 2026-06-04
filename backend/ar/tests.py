@@ -487,6 +487,54 @@ class ARPermissionRegressionTests(TestCase):
         # 非法 sort 键安全忽略（仍返回三条，不报错）
         self.assertEqual(len(order({'sort': 'drop_table'})), 3)
 
+    def test_bulk_delete_by_ids_and_by_filter(self):
+        """批量删除：显式 ids + 选择全部筛选集(all+conditions)，级联回款、受权限约束。"""
+        import json as _json
+        admin = self.make_user('13900000083', 'finance_director', role='super_admin')
+        project = self.create_project()
+        r1 = ARRecord.objects.create(project=project, operation_year=2026, operation_month=5,
+                                     estimated_amount=Decimal('100.00'))
+        ARPayment.objects.create(ar_record=r1, payment_no=1, amount=Decimal('10.00'),
+                                 payment_date=date(2026, 5, 9))
+        r2 = ARRecord.objects.create(project=project, operation_year=2026, operation_month=6,
+                                     estimated_amount=Decimal('200.00'))
+        r3 = ARRecord.objects.create(project=project, operation_year=2026, operation_month=7,
+                                     estimated_amount=Decimal('300.00'))
+
+        # 显式 ids 删除 r1（级联其回款）
+        resp = self.client.post('/api/pk/ar/records/bulk-delete',
+                                data=_json.dumps({'ids': [r1.id]}),
+                                content_type='application/json', **self.auth(admin))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data']['deleted'], 1)
+        self.assertFalse(ARRecord.objects.filter(pk=r1.id).exists())
+        self.assertEqual(ARPayment.objects.filter(ar_record_id=r1.id).count(), 0)
+
+        # all + 条件：删除 预估>150 的全部（r2/r3），r 不在条件外
+        conds = _json.dumps([{'t': 'amt', 'field': 'estimated_amount', 'op': 'gt', 'value': 150}])
+        resp = self.client.post(f'/api/pk/ar/records/bulk-delete?conditions={conds}',
+                                data=_json.dumps({'all': True}),
+                                content_type='application/json', **self.auth(admin))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data']['deleted'], 2)
+        self.assertEqual(ARRecord.objects.filter(pk__in=[r2.id, r3.id]).count(), 0)
+
+    def test_bulk_delete_requires_permission(self):
+        """无删除权限不得批量删除。"""
+        import json as _json
+        cfg = default_job_config('cashier')
+        cfg['pages']['ar_records'] = True
+        cfg['can_delete'] = False
+        JobPermission.objects.create(job_title='cashier', config=cfg)
+        _invalidate_perm_cache('cashier')
+        user = self.make_user('13910000099', 'cashier')
+        rec = self.create_record(self.create_project())
+        resp = self.client.post('/api/pk/ar/records/bulk-delete',
+                                data=_json.dumps({'ids': [rec.id]}),
+                                content_type='application/json', **self.auth(user))
+        self.assertEqual(resp.status_code, 403, resp.content)
+        self.assertTrue(ARRecord.objects.filter(pk=rec.id).exists())
+
     def test_conditions_match_any_or_logic(self):
         """统一条件 + match=all(且)/any(或)：维度/金额条件组合。"""
         import json as _json

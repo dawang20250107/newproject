@@ -23,6 +23,8 @@ const ar = {
   getRecord: id => api.get(`/ar/records/${id}`),
   updateRecord: (id, d) => api.put(`/ar/records/${id}`, d),
   deleteRecord: id => api.delete(`/ar/records/${id}`),
+  // 批量删除：显式 ids，或 {all:true} + 当前筛选(conditions/match 走 params)
+  bulkDeleteRecords: (body, params) => api.post('/ar/records/bulk-delete', body, { params }),
   recordTemplate: () => api.get('/ar/records/template', { responseType: 'blob' }),
   importRecords: fd => api.post('/ar/records/import', fd),
   exportRecords: p => api.get('/ar/records/export', { params: p, responseType: 'blob' }),

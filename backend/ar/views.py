@@ -2173,6 +2173,57 @@ def ar_records_recompute_bulk(request):
     return ok({'fixed': fixed, 'failed': failed})
 
 
+@csrf_exempt
+@pk_required()
+def ar_records_bulk_delete(request):
+    """批量删除应收明细（级联回款）。两种模式：
+      - 显式选择：body {ids:[int,...]}
+      - 选择全部筛选集：body {all:true} + 查询串里的 conditions/match（与列表同口径）
+    始终受部门作用域与删除权限约束；单次上限 5000 条，防误删全库。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _delete_denied(request)
+    if denied:
+        return denied
+
+    body = _parse_body(request)
+    today = datetime.date.today()
+    base = _ar_dept_filter(ARRecord.objects.select_related('project'), request,
+                           shared_field='project__is_shared')
+
+    if body.get('all'):
+        # 与列表完全相同的筛选口径（conditions/match 走查询串）
+        qs = _apply_record_filters(base, request)
+        qs = _apply_record_state_filters(qs, request, today)
+        qs = _apply_conditions(qs, request, today)
+    else:
+        ids = body.get('ids') or []
+        if not isinstance(ids, list) or not ids:
+            return err('请提供要删除的记录 ids')
+        try:
+            ids = [int(i) for i in ids]
+        except (ValueError, TypeError):
+            return err('ids 必须为整数列表')
+        qs = base.filter(pk__in=ids)
+
+    # 非超管：再次按可操作部门收紧，杜绝越权删除
+    if request.pk_role != 'super_admin':
+        qs = qs.filter(delivery_dept__in=(request.pk_depts or []))
+
+    count = qs.count()
+    if count == 0:
+        return ok({'deleted': 0})
+    if count > 5000:
+        return err('单次删除上限 5000 条，请先缩小筛选范围')
+    # 取 id 后用主键集删除：避免子查询/JOIN 在 delete 级联时的边界问题
+    del_ids = list(qs.values_list('id', flat=True))
+    ARRecord.objects.filter(pk__in=del_ids).delete()  # 级联删除关联回款
+    return ok({'deleted': len(del_ids)})
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Analytics
 # ══════════════════════════════════════════════════════════════════════════════
