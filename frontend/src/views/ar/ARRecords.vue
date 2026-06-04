@@ -44,6 +44,11 @@ const deptOfConditions = () => {
 const selectedIds = ref(new Set())          // 跨页按 id 记忆选择
 const selectAllMatching = ref(false)        // 勾选整个筛选集（跨所有分页）
 const bulkDeleting = ref(false)
+// 二次输入确认：需手动输入待删条数才放行（删除规模越大摩擦越大，防误删）
+const showDelConfirm = ref(false)
+const delConfirmText = ref('')
+const delConfirmCount = ref(0)
+const delConfirmOk = computed(() => delConfirmText.value.trim() === String(delConfirmCount.value))
 const pageAllSelected = computed(() =>
   items.value.length > 0 && items.value.every(r => selectedIds.value.has(r.id)))
 const selectedCount = computed(() => selectAllMatching.value ? total.value : selectedIds.value.size)
@@ -60,14 +65,20 @@ function toggleSelectPage() {
   selectedIds.value = s
 }
 function clearSelection() { selectedIds.value = new Set(); selectAllMatching.value = false }
-async function bulkDelete() {
+function bulkDelete() {
   const n = selectedCount.value
   if (!n) return
-  if (!confirm(`确定删除选中的 ${n} 条应收明细？关联回款一并删除，且不可恢复。`)) return
+  delConfirmCount.value = n
+  delConfirmText.value = ''
+  showDelConfirm.value = true
+}
+async function confirmBulkDelete() {
+  if (!delConfirmOk.value) return
   bulkDeleting.value = true
   try {
     if (selectAllMatching.value) await ar.bulkDeleteRecords({ all: true }, reqParams())
     else await ar.bulkDeleteRecords({ ids: [...selectedIds.value] })
+    showDelConfirm.value = false
     clearSelection()
     await load(true)
   } catch (e) { alert(e?.msg || '删除失败') }
@@ -1172,6 +1183,28 @@ function clearFilters() {
           </div>
         </div>
       </div>
+
+      <!-- 批量删除二次输入确认 -->
+      <div v-if="showDelConfirm" class="modal-overlay" @click.self="showDelConfirm = false">
+        <div class="modal-box" style="max-width:420px">
+          <div class="modal-header">
+            <div><h3>确认删除 {{ delConfirmCount }} 条应收明细</h3></div>
+            <button class="modal-close" @click="showDelConfirm = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <p class="del-warn">⚠ 关联回款将一并删除，<strong>不可恢复</strong>。<span v-if="selectAllMatching">（当前为整个筛选集，跨所有分页）</span></p>
+            <p class="del-tip">请输入待删条数 <strong>{{ delConfirmCount }}</strong> 以确认：</p>
+            <input v-model="delConfirmText" class="del-input" :placeholder="`输入 ${delConfirmCount}`"
+              @keyup.enter="confirmBulkDelete" />
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" @click="showDelConfirm = false">取消</button>
+            <button class="btn-danger-solid" :disabled="!delConfirmOk || bulkDeleting" @click="confirmBulkDelete">
+              {{ bulkDeleting ? '删除中…' : '确认删除' }}
+            </button>
+          </div>
+        </div>
+      </div>
     </Teleport>
   </div>
 </template>
@@ -1321,6 +1354,13 @@ function clearFilters() {
 .bulk-del { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
 .bulk-del:disabled { opacity: .6; cursor: default; }
 .bulk-cancel { border: none; background: none; color: var(--muted); font-size: 12.5px; cursor: pointer; }
+/* 删除二次确认 */
+.del-warn { font-size: 13px; color: var(--danger); margin: 0 0 12px; line-height: 1.6; }
+.del-tip { font-size: 13px; color: var(--text); margin: 0 0 8px; }
+.del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; }
+.del-input:focus { border-color: var(--danger); outline: none; }
+.btn-danger-solid { border: none; border-radius: 8px; padding: 8px 18px; font-size: 14px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
+.btn-danger-solid:disabled { opacity: .5; cursor: default; }
 .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.04); }
 .row-overdue { background: rgba(198,40,40,0.04); }
 
