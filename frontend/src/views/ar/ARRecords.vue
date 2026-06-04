@@ -652,20 +652,9 @@ function clearFilters() {
 
         <span v-if="kpiData && summaryData" class="metrics-div"></span>
 
-        <!-- 汇总区：全集合计 + 时段合计 上下两行，section 标签等宽，数据项纵向对齐 -->
+        <!-- 汇总区：默认只显示「时段合计」（本月+本周），全集合计已下沉为表格底部列合计 -->
         <div v-if="summaryData" class="metrics-summary">
-          <!-- 第一行：筛选全集合计（不止当前页） -->
-          <div class="metrics-sum-row">
-            <span class="sum-section-lbl" :title="`以下为全部 ${summaryData.count} 条筛选记录的汇总（跨所有分页）`">全集合计</span>
-            <div class="kpi-item"><span class="kpi-k">记录</span><span class="kpi-v">{{ summaryData.count }} 条</span></div>
-            <div class="kpi-item"><span class="kpi-k">预估</span><span class="kpi-v">{{ fmtAmt(summaryData.estimated) }}</span></div>
-            <div class="kpi-item"><span class="kpi-k">开票</span><span class="kpi-v">{{ fmtAmt(summaryData.invoiced) }}</span></div>
-            <div class="kpi-item"><span class="kpi-k">税额</span><span class="kpi-v">{{ fmtAmt(summaryData.tax) }}</span></div>
-            <div class="kpi-item ok"><span class="kpi-k">已收合计</span><span class="kpi-v">{{ fmtAmt(summaryData.collected) }}</span></div>
-            <div class="kpi-item"><span class="kpi-k">差额调整</span><span class="kpi-v">{{ fmtAmt(summaryData.adj) }}</span></div>
-            <div class="kpi-item warn"><span class="kpi-k">未收合计</span><span class="kpi-v">{{ fmtAmt(summaryData.outstanding) }}</span></div>
-          </div>
-          <!-- 第二行：时段合计——月/周应收已收，文案随基准日期联动 -->
+          <!-- 时段合计——月/周应收已收，文案随基准日期联动 -->
           <div class="metrics-sum-row">
             <span class="sum-section-lbl alt" :title="`基准日 ${summaryData.ref_date}（取筛选中最晚日期，无筛选则今天）；按应收到期日/回款日期归入对应月、周区间`">时段合计</span>
             <!-- 当期：due_date 落在基准月内 -->
@@ -873,6 +862,56 @@ function clearFilters() {
               </template>
             </template>
           </tbody>
+
+          <!-- 列合计页脚：吸底，正对齐在数值列下方；随筛选/条件实时更新 -->
+          <tfoot v-if="summaryData && items.length">
+            <tr class="sum-foot">
+              <td class="sum-foot-lbl">合计 · {{ summaryData.count }} 条</td>
+              <td class="ctr"></td>
+
+              <!-- all -->
+              <template v-if="activeTab === 'all'">
+                <td v-if="show('r_estimated_amount')" class="amt">{{ fmtAmt(summaryData.estimated) }}</td>
+                <td v-if="show('r_actual_invoice_amount')" class="amt">{{ fmtAmt(summaryData.invoiced) }}</td>
+                <td v-if="show('r_tax_amount')" class="amt">{{ fmtAmt(summaryData.tax) }}</td>
+                <td v-if="show('r_account_diff')" class="amt">{{ fmtAmt(summaryData.adj) }}</td>
+                <td v-if="show('r_outstanding')" class="amt amt-warn">{{ fmtAmt(summaryData.outstanding) }}</td>
+                <td v-if="show('r_due_date')"></td>
+                <td v-if="show('r_reconciliation')"></td>
+                <td v-if="show('r_payments')"></td>
+                <td></td>
+                <td></td>
+                <td v-if="show('r_notes')"></td>
+              </template>
+              <!-- reconciliation -->
+              <template v-else-if="activeTab === 'reconciliation'">
+                <td v-if="show('r_estimated_amount')" class="amt">{{ fmtAmt(summaryData.estimated) }}</td>
+                <td v-if="show('r_reconciliation')"></td>
+                <td v-if="show('r_reconciliation')"></td>
+                <td v-if="show('r_due_date')"></td>
+                <td></td>
+                <td v-if="show('r_outstanding')" class="amt amt-warn">{{ fmtAmt(summaryData.outstanding) }}</td>
+              </template>
+              <!-- invoice -->
+              <template v-else-if="activeTab === 'invoice'">
+                <td v-if="show('r_estimated_amount')" class="amt">{{ fmtAmt(summaryData.estimated) }}</td>
+                <td v-if="show('r_actual_invoice_amount')" class="amt">{{ fmtAmt(summaryData.invoiced) }}</td>
+                <td v-if="show('r_tax_amount')" class="amt">{{ fmtAmt(summaryData.tax) }}</td>
+                <td v-if="show('r_invoice_date')"></td>
+                <td v-if="show('r_account_diff')" class="amt">{{ fmtAmt(summaryData.adj) }}</td>
+                <td v-if="show('r_invoice_status')"></td>
+              </template>
+              <!-- collection -->
+              <template v-else>
+                <td class="amt amt-muted" title="应收基础为每行开票额/预估的取大，暂不汇总">·</td>
+                <td v-if="show('r_payments')" class="text-sm-muted">已收 {{ fmtAmt(summaryData.collected) }}</td>
+                <td v-if="show('r_outstanding')" class="amt amt-warn">{{ fmtAmt(summaryData.outstanding) }}</td>
+                <td v-if="show('r_invoice_status')"></td>
+              </template>
+
+              <td class="ctr"></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
 
@@ -1304,6 +1343,18 @@ function clearFilters() {
 .data-row:hover { background: rgba(201,99,66,0.03); }
 .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.04); }
 .row-overdue { background: rgba(198,40,40,0.04); }
+
+/* 列合计页脚：吸底 + 上分隔线，金额加粗，与列对齐 */
+.rec-table tfoot .sum-foot td {
+  position: sticky; bottom: 0; z-index: 3;
+  background: rgba(201,99,66,0.07);
+  border-top: 2px solid rgba(201,99,66,0.28);
+  padding: 9px 12px; font-weight: 800; font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.sum-foot-lbl { white-space: nowrap; color: var(--primary); }
+.rec-table tfoot .amt-warn { color: #e65100; }
+.rec-table tfoot .amt-muted { color: var(--muted); font-weight: 600; }
 
 .empty-cell { text-align: center; padding: 48px !important; color: var(--muted); font-size: 14px; }
 .proj-name { font-weight: 600; font-size: 13.5px; }
