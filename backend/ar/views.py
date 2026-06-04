@@ -752,6 +752,7 @@ def ar_records(request):
                              shared_field='project__is_shared')
         qs = _apply_record_filters(qs, request)
         qs = _apply_record_state_filters(qs, request, today)
+        qs = _apply_record_sort(qs, request)
 
         include_payments = request.GET.get('include_payments', '') in ('1', 'true')
         page = max(1, int(request.GET.get('page', 1) or 1))
@@ -767,11 +768,11 @@ def ar_records(request):
 
         # 当前筛选全集的金额合计（不止当前页）——支撑"筛选即合计"。
         # 重要：筛选含 payments 关联（回款日期/含未结清）时 qs_agg 带 JOIN，直接
-        # aggregate 会把每条记录的金额按其回款笔数重复累加。先取去重后的记录 id，
-        # 再在无 JOIN 的基表上聚合金额；回款金额单独在 ARPayment 上聚合，避免互相放大。
-        all_record_ids = list(qs_agg.order_by().values_list('id', flat=True).distinct())
-        total = len(all_record_ids)
-        base = ARRecord.objects.filter(id__in=all_record_ids)
+        # aggregate 会把每条记录的金额按其回款笔数重复累加。改用「无 JOIN 基表 +
+        # id IN (子查询)」：DB 端去重，避免把全量 id 拉进内存（大数据量下的热点）。
+        matched_ids = qs_agg.order_by().values('id')
+        base = ARRecord.objects.filter(id__in=matched_ids)
+        total = base.count()
         # Only sum outstanding_amount where > 0: matches the table which renders
         # non-positive rows as "—" (settled/overpaid treated identically as 0).
         agg = base.aggregate(
@@ -781,7 +782,7 @@ def ar_records(request):
             out=Sum('outstanding_amount', filter=Q(outstanding_amount__gt=0)),
             adj=Sum('account_diff_adjustment'),
         )
-        collected = (ARPayment.objects.filter(ar_record_id__in=all_record_ids)
+        collected = (ARPayment.objects.filter(ar_record_id__in=matched_ids)
                      .aggregate(s=Sum('amount'))['s'] or 0)
 
         # ── 时段合计：本月应收/已收 + 本周应收/已收 ─────────────────────────
@@ -832,7 +833,7 @@ def ar_records(request):
         # 当期已收：回款记录所属的 AR 明细到期日 >= 基准月首日（当期或未来到期）
         # 逾期已收：回款记录所属的 AR 明细到期日 <  基准月首日（逾期后补收）
         # 两者之和 = 旧的 month_collected（本月全部实收）
-        pay_in_set = ARPayment.objects.filter(ar_record_id__in=all_record_ids)
+        pay_in_set = ARPayment.objects.filter(ar_record_id__in=matched_ids)
         pay_in_month = pay_in_set.filter(payment_date__gte=mo_start, payment_date__lte=mo_end)
         month_curr_collected = (pay_in_month
                                 .filter(ar_record__due_date__gte=mo_start)
@@ -1360,6 +1361,42 @@ def _apply_record_state_filters(qs, request, today=None):
     elif pay_status == 'paid':
         qs = qs.filter(payments__isnull=False).distinct()
     return qs
+
+
+# 应收明细可排序字段白名单：仅暴露已建索引/安全的列，映射到 ORM 字段（值为元组以支持
+# 复合排序，如运作年+月）。前端传 sort=key（升序）或 sort=-key（降序）。
+_AR_SORT_FIELDS = {
+    'operation': ('operation_year', 'operation_month'),
+    'due_date': ('due_date',),
+    'outstanding': ('outstanding_amount',),
+    'estimated': ('estimated_amount',),
+    'invoiced': ('actual_invoice_amount',),
+    'invoice_date': ('invoice_date',),
+    'reconciliation_date': ('reconciliation_date',),
+    'created': ('created_at',),
+    'dept': ('delivery_dept',),
+    'project_no': ('project__project_no',),
+    'short_name': ('project__short_name',),
+    'manager': ('project__project_manager',),
+}
+
+
+def _apply_record_sort(qs, request):
+    """按白名单字段做服务端排序；空值统一排末尾，并追加 id 作为稳定次序保证分页确定。
+
+    仅作用于列表查询集（不影响合计/聚合）。非法 sort 键安全忽略，回退模型默认排序。
+    """
+    raw = (request.GET.get('sort') or '').strip()
+    if not raw:
+        return qs
+    desc = raw.startswith('-')
+    key = raw[1:] if desc else raw
+    fields = _AR_SORT_FIELDS.get(key)
+    if not fields:
+        return qs
+    terms = [F(f).desc(nulls_last=True) if desc else F(f).asc(nulls_last=True) for f in fields]
+    terms.append(F('id').desc() if desc else F('id').asc())  # 唯一键兜底，分页稳定
+    return qs.order_by(*terms)
 
 
 @csrf_exempt

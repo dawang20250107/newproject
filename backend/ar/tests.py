@@ -461,6 +461,32 @@ class ARPermissionRegressionTests(TestCase):
         self.assertIn(paid.id, combined)    # has June payment
         self.assertIn(unpaid.id, combined)  # outstanding > 0
 
+    def test_records_server_side_sort(self):
+        """服务端排序：白名单字段升/降序、空值排末尾、非法 sort 安全回退。"""
+        admin = self.make_user('13900000079', 'finance_director', role='super_admin')
+        project = self.create_project()
+        # actual_invoice_amount 可空且非派生，用于验证升降序 + 空值排末尾
+        a = ARRecord.objects.create(project=project, operation_year=2026, operation_month=5,
+                                    estimated_amount=Decimal('300.00'), actual_invoice_amount=Decimal('30.00'))
+        b = ARRecord.objects.create(project=project, operation_year=2026, operation_month=5,
+                                    estimated_amount=Decimal('100.00'), actual_invoice_amount=Decimal('10.00'))
+        c = ARRecord.objects.create(project=project, operation_year=2026, operation_month=5,
+                                    estimated_amount=Decimal('200.00'))  # actual_invoice 为空
+
+        def order(params):
+            resp = self.client.get('/api/pk/ar/records', params, **self.auth(admin))
+            self.assertEqual(resp.status_code, 200, resp.content)
+            return [r['id'] for r in resp.json()['data']['items']]
+
+        self.assertEqual(order({'sort': 'estimated'}), [b.id, c.id, a.id])      # 升序
+        self.assertEqual(order({'sort': '-estimated'}), [a.id, c.id, b.id])     # 降序
+        # 空值排末尾：invoiced 升序时非空在前(b=10,a=30)、空值 c 殿后
+        asc_inv = order({'sort': 'invoiced'})
+        self.assertEqual(asc_inv, [b.id, a.id, c.id])
+        self.assertEqual(asc_inv[-1], c.id)
+        # 非法 sort 键安全忽略（仍返回三条，不报错）
+        self.assertEqual(len(order({'sort': 'drop_table'})), 3)
+
     def test_invoice_status_unbilled_filter_excludes_settled(self):
         # 开票跟踪「未开票」筛选不得包含已结清（已全额回款）的记录，与
         # ARRecord.invoice_status 属性一致（已结清优先级高于未开票）。

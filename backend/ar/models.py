@@ -171,10 +171,15 @@ class ARRecord(models.Model):
         indexes = [
             models.Index(fields=['delivery_dept', 'due_date']),
             models.Index(fields=['delivery_dept', 'operation_year', 'operation_month']),
+            models.Index(fields=['operation_year', 'operation_month']),
             models.Index(fields=['due_date']),
             models.Index(fields=['outstanding_amount']),
             models.Index(fields=['invoice_date']),
             models.Index(fields=['reconciliation_date']),
+            # 服务端排序新增列（大数据量下点表头排序走索引）
+            models.Index(fields=['estimated_amount']),
+            models.Index(fields=['actual_invoice_amount']),
+            models.Index(fields=['created_at']),
         ]
         constraints = [
             models.CheckConstraint(
