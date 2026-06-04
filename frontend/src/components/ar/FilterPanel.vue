@@ -133,7 +133,7 @@ const fieldLabel = (list, field) => (list.find(f => f.field === field) || {}).la
 </template>
 
 <style scoped>
-.fp { width: 460px; max-width: 92vw; display: flex; flex-direction: column; max-height: 70vh; }
+.fp { width: 520px; max-width: 94vw; display: flex; flex-direction: column; max-height: 70vh; }
 .fp-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 14px; border-bottom: 1px solid var(--border);
@@ -159,9 +159,11 @@ const fieldLabel = (list, field) => (list.find(f => f.field === field) || {}).la
 .fp-conn.ghost { color: transparent; }
 .fp-field { font-weight: 700; font-size: 13px; }
 .fp-sel, .fp-date, .fp-num, .fp-inp {
-  border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; font-size: 12px; background: #fff;
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 13px; background: #fff;
 }
-.fp-num { width: 78px; } .fp-inp { width: 140px; } .fp-dash { color: var(--muted); }
+.fp-sel { min-width: 104px; }                /* 加宽下拉，长选项(部门/责任阶段)不挤 */
+.fp-date { min-width: 130px; }
+.fp-num { width: 90px; } .fp-inp { min-width: 160px; flex: 1; } .fp-dash { color: var(--muted); }
 .fp-neg {
   border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-size: 11px;
   font-weight: 700; cursor: pointer; background: #fff; color: var(--muted);

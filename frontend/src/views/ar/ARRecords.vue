@@ -493,6 +493,30 @@ function clearFilters() {
             <span class="seg-dot"></span>{{ t.label }}
           </button>
         </div>
+        <!-- 筛选 chip 栏紧跟 Tab 之后，省去独立一行 -->
+        <div v-if="activeTab !== 'payments'" class="filter-chipbar">
+          <div class="fb-trigger-wrap">
+            <button class="fb-trigger" :class="{ on: showFilterPanel }" @click="showFilterPanel = !showFilterPanel">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54z"/></svg>
+              筛选<span v-if="conditions.length" class="fb-badge">{{ conditions.length }}</span>
+            </button>
+            <div v-if="showFilterPanel" class="fb-backdrop" @click="showFilterPanel = false"></div>
+            <div v-if="showFilterPanel" class="fb-pop">
+              <FilterPanel
+                v-model="conditions" v-model:match="matchMode"
+                :accessible-depts="accessibleDepts" :years="years"
+                @change="onFilterChange" @close="showFilterPanel = false" />
+            </div>
+          </div>
+          <span v-if="conditions.length > 1" class="fb-match" :title="matchMode === 'any' ? '满足任一条件' : '满足全部条件'">
+            {{ matchMode === 'any' ? '或' : '且' }}
+          </span>
+          <span v-for="(c, i) in conditions" :key="i" class="filter-chip" :class="c.t" @click="showFilterPanel = true">
+            {{ chipText(c) }}
+            <button title="移除" @click.stop="removeCondition(i)">✕</button>
+          </span>
+          <button v-if="hasAnyFilter" class="clear-mini" @click="clearFilters">清空</button>
+        </div>
       </div>
       <div class="ctrl-row">
         <button class="btn btn-ghost btn-sm" @click="downloadTemplate">↓ 模板</button>
@@ -502,37 +526,6 @@ function clearFilters() {
         </label>
         <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">↓ 导出</button>
         <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增应收</button>
-      </div>
-    </div>
-
-    <!-- 极简筛选 chip 栏：筛选按钮 + 且/或 + 已生效条件 chip + 清空（回款流水 Tab 自带筛选） -->
-    <div v-if="activeTab !== 'payments'" class="filter-bar">
-      <div class="filter-chipbar">
-        <div class="fb-trigger-wrap">
-          <button class="fb-trigger" :class="{ on: showFilterPanel }" @click="showFilterPanel = !showFilterPanel">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54z"/></svg>
-            筛选<span v-if="conditions.length" class="fb-badge">{{ conditions.length }}</span>
-          </button>
-          <div v-if="showFilterPanel" class="fb-backdrop" @click="showFilterPanel = false"></div>
-          <div v-if="showFilterPanel" class="fb-pop">
-            <FilterPanel
-              v-model="conditions" v-model:match="matchMode"
-              :accessible-depts="accessibleDepts" :years="years"
-              @change="onFilterChange" @close="showFilterPanel = false" />
-          </div>
-        </div>
-
-        <span v-if="conditions.length > 1" class="fb-match" :title="matchMode === 'any' ? '满足任一条件' : '满足全部条件'">
-          {{ matchMode === 'any' ? '或' : '且' }}
-        </span>
-
-        <span v-for="(c, i) in conditions" :key="i" class="filter-chip" :class="c.t" @click="showFilterPanel = true">
-          {{ chipText(c) }}
-          <button title="移除" @click.stop="removeCondition(i)">✕</button>
-        </span>
-
-        <span v-if="!conditions.length" class="fb-hint">未设筛选 · 显示全部</span>
-        <button v-if="hasAnyFilter" class="clear-mini" @click="clearFilters">清空</button>
       </div>
     </div>
 
@@ -585,8 +578,16 @@ function clearFilters() {
 
         <span v-if="kpiData && summaryData" class="metrics-div"></span>
 
-        <!-- 汇总区：默认只显示「时段合计」（本月+本周），全集合计已下沉为表格底部列合计 -->
+        <!-- 汇总区：筛选合计（关键四项）+ 时段合计（本月+本周）；列级合计另见表格底部 -->
         <div v-if="summaryData" class="metrics-summary">
+          <!-- 筛选合计：当前筛选集的应收/已开票/已收/未收 -->
+          <div class="metrics-sum-row">
+            <span class="sum-section-lbl" :title="`当前筛选全部 ${summaryData.count} 条记录的合计（跨所有分页）`">筛选合计</span>
+            <div class="kpi-item" title="预估上账金额合计"><span class="kpi-k">应收(估)</span><span class="kpi-v">{{ fmtAmt(summaryData.estimated) }}</span></div>
+            <div class="kpi-item" title="实际开票金额合计"><span class="kpi-k">已开票</span><span class="kpi-v">{{ fmtAmt(summaryData.invoiced) }}</span></div>
+            <div class="kpi-item ok" title="实际回款金额合计"><span class="kpi-k">已收</span><span class="kpi-v">{{ fmtAmt(summaryData.collected) }}</span></div>
+            <div class="kpi-item warn" title="未回款金额合计"><span class="kpi-k">未收</span><span class="kpi-v">{{ fmtAmt(summaryData.outstanding) }}</span></div>
+          </div>
           <!-- 时段合计——月/周应收已收，文案随基准日期联动 -->
           <div class="metrics-sum-row">
             <span class="sum-section-lbl alt" :title="`基准日 ${summaryData.ref_date}（取筛选中最晚日期，无筛选则今天）；按应收到期日/回款日期归入对应月、周区间`">时段合计</span>
