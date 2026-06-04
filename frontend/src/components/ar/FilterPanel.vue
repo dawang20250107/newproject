@@ -157,13 +157,14 @@ const fieldLabel = (list, field) => (list.find(f => f.field === field) || {}).la
 .fp-row.amt  { background: rgba(201,99,66,0.06); border-color: rgba(201,99,66,0.4); }
 .fp-conn { font-size: 11px; font-weight: 800; color: var(--primary); width: 18px; text-align: center; }
 .fp-conn.ghost { color: transparent; }
-.fp-field { font-weight: 700; font-size: 13px; }
+.fp-field { font-weight: 700; font-size: 13px; min-width: 56px; }
 .fp-sel, .fp-date, .fp-num, .fp-inp {
-  border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 13px; background: #fff;
+  border: 1px solid var(--border); border-radius: 7px; padding: 6px 10px; font-size: 13.5px; background: #fff;
+  height: 34px; box-sizing: border-box;
 }
-.fp-sel { min-width: 104px; }                /* 加宽下拉，长选项(部门/责任阶段)不挤 */
-.fp-date { min-width: 130px; }
-.fp-num { width: 90px; } .fp-inp { min-width: 160px; flex: 1; } .fp-dash { color: var(--muted); }
+.fp-sel { min-width: 128px; }                /* 加大下拉，长选项(部门/责任阶段)从容 */
+.fp-date { min-width: 140px; }
+.fp-num { width: 96px; } .fp-inp { min-width: 170px; flex: 1; } .fp-dash { color: var(--muted); }
 .fp-neg {
   border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-size: 11px;
   font-weight: 700; cursor: pointer; background: #fff; color: var(--muted);
@@ -187,13 +188,14 @@ const fieldLabel = (list, field) => (list.find(f => f.field === field) || {}).la
 .fp-backdrop { position: fixed; inset: 0; z-index: 60; }
 .fp-menu {
   position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 61;
-  min-width: 150px; max-height: 320px; overflow-y: auto; padding: 6px;
-  border-radius: 10px; background: #fff; border: 1px solid var(--border); box-shadow: 0 12px 32px rgba(0,0,0,0.16);
+  min-width: 220px; max-height: 360px; overflow-y: auto; padding: 8px;
+  border-radius: 12px; background: #fff; border: 1px solid var(--border); box-shadow: 0 12px 32px rgba(0,0,0,0.16);
+  display: grid; grid-template-columns: 1fr 1fr; gap: 2px 6px;
 }
-.fp-menu-grp { font-size: 11px; color: var(--muted); font-weight: 700; padding: 6px 8px 2px; }
+.fp-menu-grp { grid-column: 1 / -1; font-size: 11px; color: var(--muted); font-weight: 700; padding: 7px 8px 3px; }
 .fp-menu-item {
   display: block; width: 100%; text-align: left; border: none; background: transparent;
-  padding: 6px 8px; border-radius: 6px; font-size: 13px; cursor: pointer; color: var(--text);
+  padding: 8px 10px; border-radius: 7px; font-size: 13.5px; cursor: pointer; color: var(--text); white-space: nowrap;
 }
 .fp-menu-item:hover { background: rgba(201,99,66,0.08); color: var(--primary); }
 </style>

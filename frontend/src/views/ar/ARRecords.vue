@@ -578,16 +578,8 @@ function clearFilters() {
 
         <span v-if="kpiData && summaryData" class="metrics-div"></span>
 
-        <!-- 汇总区：筛选合计（关键四项）+ 时段合计（本月+本周）；列级合计另见表格底部 -->
+        <!-- 汇总区：时段合计（本月+本周）；筛选集列合计见表格底部吸底合计行 -->
         <div v-if="summaryData" class="metrics-summary">
-          <!-- 筛选合计：当前筛选集的应收/已开票/已收/未收 -->
-          <div class="metrics-sum-row">
-            <span class="sum-section-lbl" :title="`当前筛选全部 ${summaryData.count} 条记录的合计（跨所有分页）`">筛选合计</span>
-            <div class="kpi-item" title="预估上账金额合计"><span class="kpi-k">应收(估)</span><span class="kpi-v">{{ fmtAmt(summaryData.estimated) }}</span></div>
-            <div class="kpi-item" title="实际开票金额合计"><span class="kpi-k">已开票</span><span class="kpi-v">{{ fmtAmt(summaryData.invoiced) }}</span></div>
-            <div class="kpi-item ok" title="实际回款金额合计"><span class="kpi-k">已收</span><span class="kpi-v">{{ fmtAmt(summaryData.collected) }}</span></div>
-            <div class="kpi-item warn" title="未回款金额合计"><span class="kpi-k">未收</span><span class="kpi-v">{{ fmtAmt(summaryData.outstanding) }}</span></div>
-          </div>
           <!-- 时段合计——月/周应收已收，文案随基准日期联动 -->
           <div class="metrics-sum-row">
             <span class="sum-section-lbl alt" :title="`基准日 ${summaryData.ref_date}（取筛选中最晚日期，无筛选则今天）；按应收到期日/回款日期归入对应月、周区间`">时段合计</span>
@@ -635,7 +627,7 @@ function clearFilters() {
         <button class="bulk-cancel" @click="clearSelection">取消</button>
       </div>
 
-      <div v-if="isDataTab" class="table-wrap" style="margin-top:12px">
+      <div v-if="isDataTab" class="table-wrap dt-scroll" style="margin-top:12px">
         <table class="rec-table">
           <thead>
             <tr>
@@ -1340,6 +1332,11 @@ function clearFilters() {
 .rec-table { width: 100%; }
 .rec-table th { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 6px 10px; background: rgba(0,0,0,0.02); white-space: nowrap; }
 .rec-table td { padding: 5px 10px; vertical-align: middle; font-size: 12.5px; }
+/* 数据表内部滚动：表头吸顶 + 合计行吸底，行在中间滚动，合计始终停在表区底部
+   （无需把整页拉到最底就能看到汇总）。max-height 留给上方筛选/指标条，可按需微调。 */
+.dt-scroll { max-height: calc(100vh - 250px); overflow: auto; }
+.dt-scroll .rec-table thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.dt-scroll .rec-table thead .sel-col { z-index: 6; }
 /* 选择列 */
 .sel-col { width: 30px; text-align: center; padding-left: 8px !important; padding-right: 4px !important; }
 .sel-col input { cursor: pointer; }
@@ -1367,9 +1364,9 @@ function clearFilters() {
 
 /* 列合计页脚：吸底 + 上分隔线，金额加粗，与列对齐 */
 .rec-table tfoot .sum-foot td {
-  position: sticky; bottom: 0; z-index: 3;
-  background: rgba(201,99,66,0.07);
-  border-top: 2px solid rgba(201,99,66,0.28);
+  position: sticky; bottom: 0; z-index: 5;
+  background: #f8efeb;   /* 不透明，滚动行不透色 */
+  border-top: 2px solid rgba(201,99,66,0.32);
   padding: 9px 12px; font-weight: 800; font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
