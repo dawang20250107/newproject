@@ -1309,34 +1309,60 @@ def approval_import(request):
     wb = load_workbook(f, data_only=True)
     ws = wb.active
     headers = [str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1)]
-    col = {h: i + 1 for i, h in enumerate(headers)}
-    def cv(r, h): return str(ws.cell(r, col.get(h, 0)).value or '').strip() if col.get(h) else ''
+
+    # 表头健壮匹配：去掉 *、＊、空格后建索引，并支持别名——这样模板(带*)、导出文件
+    # (不带*)、以及用户轻微改动表头都能正确识别，避免"按要求填了却整表跳过"。
+    def _norm(h):
+        return str(h or '').strip().replace('*', '').replace('＊', '').replace(' ', '').replace('　', '')
+    norm_col = {}
+    for i, h in enumerate(headers, 1):
+        key = _norm(h)
+        if key and key not in norm_col:
+            norm_col[key] = i
+
+    def cv(r, *names):
+        for n in names:
+            ci = norm_col.get(_norm(n))
+            if ci:
+                return str(ws.cell(r, ci).value or '').strip()
+        return ''
+
+    # 必要列缺失（多为表头被删/改名/选错文件）→ 明确报错，而不是静默全跳过
+    if not (norm_col.get('申请人') and (norm_col.get('申请金额') or norm_col.get('金额'))):
+        return err('未识别到必要表头（申请人 / 申请金额）。请使用最新模板，或确认首行表头与列内容未被删改、且未选错文件。')
+
     created = skipped = 0
     errors = []
     for r in range(2, ws.max_row + 1):
-        applicant = cv(r, '申请人*')
-        dept = cv(r, '所属事业部*')
-        no = cv(r, '审批编号*')
-        status_cn = cv(r, '审批状态*') or '待审批'
-        amount_raw = cv(r, '申请金额*')
+        applicant = cv(r, '申请人')
+        dept = cv(r, '所属事业部', '事业部', '部门')
+        no = cv(r, '审批编号', '审批单号')
+        status_cn = cv(r, '审批状态', '状态') or '待审批'
+        amount_raw = cv(r, '申请金额', '金额')
+        # 整行空白：直接略过，不计入跳过/报错（容忍模板尾部空行）
+        if not any([applicant, dept, no, amount_raw, cv(r, '摘要'), cv(r, '收款主体')]):
+            continue
+        # 模板自带的示例行：静默跳过，避免误导入为真实数据
+        if applicant.startswith('示例') or cv(r, '摘要').startswith('示例'):
+            continue
         if not applicant or not amount_raw:
             skipped += 1; errors.append(f'第{r}行: 申请人和金额不能为空'); continue
         if not no:
             no = '0' * 21
         elif not re.fullmatch(r'\d{21}', no):
-            skipped += 1; errors.append(f'第{r}行: 审批编号必须为21位数字'); continue
+            skipped += 1; errors.append(f'第{r}行: 审批编号必须为21位数字（当前“{no}”），不填可留空'); continue
         if status_cn not in {'待审批', 'pending'}:
-            skipped += 1; errors.append(f'第{r}行: 仅允许导入待审批状态'); continue
+            skipped += 1; errors.append(f'第{r}行: 仅允许导入“待审批”状态（当前“{status_cn}”）'); continue
         if dept not in VALID_DEPARTMENTS:
-            skipped += 1; errors.append(f'第{r}行: 所属事业部无效'); continue
+            skipped += 1; errors.append(f'第{r}行: 所属事业部无效（当前“{dept or "空"}”）'); continue
         if not can_write_dept(request, dept):
             skipped += 1; errors.append(f'第{r}行: 无权操作事业部 {dept}'); continue
         try:
-            amount = Decimal(str(amount_raw))
+            amount = Decimal(str(amount_raw).replace(',', '').replace('，', '').replace('¥', '').strip())
             if amount <= 0:
                 raise ValueError()
         except Exception:
-            skipped += 1; errors.append(f'第{r}行: 申请金额无效'); continue
+            skipped += 1; errors.append(f'第{r}行: 申请金额无效（当前“{amount_raw}”）'); continue
         ApprovalRecord.objects.create(
             applicant=applicant, department=dept, approval_number=no,
             summary=cv(r, '摘要'), amount=amount, payee=cv(r, '收款主体'),

@@ -164,3 +164,66 @@ class PaymentPermissionRegressionTests(TestCase):
         ]
 
         self.assertTrue(all(resp.status_code == 403 for resp in checks))
+
+
+class ApprovalImportTests(TestCase):
+    """审批记录导入：表头健壮匹配（兼容导出文件/无星号）、缺列明确报错、跳过原因返回。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = DEPARTMENTS[0]
+        u = PaikuanUser(phone='13900000200', name='Admin', role='super_admin',
+                        job_title='finance_director', departments=[self.dept],
+                        is_active=True, is_approved=True)
+        u.set_password('Test123456'); u.save()
+        self.token = make_token(u)
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _xlsx(self, headers, rows):
+        import io
+        from openpyxl import Workbook
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        wb = Workbook(); ws = wb.active
+        ws.append(headers)
+        for row in rows:
+            ws.append(row)
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        return SimpleUploadedFile('approvals.xlsx', buf.read(),
+                                  content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+    def test_import_accepts_export_style_headers_without_asterisk(self):
+        # 导出文件表头不带 * —— 之前会整表跳过；现在应能正常导入
+        headers = ['申请人', '所属事业部', '审批编号', '摘要', '申请金额', '收款主体', '审批状态']
+        rows = [['张三', self.dept, '1' * 21, '摘要A', 12000, '某供应商', '待审批']]
+        resp = self.client.post('/api/pk/approvals/import',
+                                {'file': self._xlsx(headers, rows)}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['created'], 1, d)
+        self.assertEqual(d['skipped'], 0, d)
+
+    def test_import_missing_required_header_errors_clearly(self):
+        headers = ['姓名', '事业部X', '金额X']  # 无 申请人/申请金额
+        resp = self.client.post('/api/pk/approvals/import',
+                                {'file': self._xlsx(headers, [['x', 'y', 1]])}, **self.auth())
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn('表头', resp.json().get('error', ''))
+
+    def test_import_returns_skip_reasons(self):
+        headers = ['申请人*', '所属事业部*', '审批编号*', '摘要', '申请金额*', '收款主体', '审批状态*']
+        rows = [
+            ['李四', self.dept, '2' * 21, '', 5000, '', '待审批'],       # ok
+            ['王五', self.dept, '123', '', 6000, '', '待审批'],          # 审批编号非21位
+            ['赵六', '不存在事业部', '3' * 21, '', 7000, '', '待审批'],   # 部门无效
+            ['示例张三', self.dept, '4' * 21, '示例摘要', 9, '', '待审批'],  # 示例行静默跳过
+        ]
+        resp = self.client.post('/api/pk/approvals/import',
+                                {'file': self._xlsx(headers, rows)}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['created'], 1, d)
+        self.assertEqual(d['skipped'], 2, d)          # 示例行不计入跳过
+        self.assertEqual(len(d['errors']), 2, d)

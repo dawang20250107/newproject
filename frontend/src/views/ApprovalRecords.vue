@@ -53,7 +53,22 @@ async function doSchedule(){ try{ await api.post(`/approvals/${current.value.id}
 async function downloadTemplate(){ const b=await api.get('/approvals/template',{responseType:'blob'}); dl(b,'审批记录导入模板.xlsx') }
 const dl = downloadBlob
 function triggerImport(){ fileRef.value.click() }
-async function onImport(e){ const f=e.target.files?.[0]; if(!f) return; importing.value=true; const fd=new FormData(); fd.append('file',f); try{ const r=await api.post('/approvals/import',fd,{headers:{'Content-Type':'multipart/form-data'}}); alert(`导入完成：新增${r.data.created}，跳过${r.data.skipped}`); load() }catch(err){ alert(err?.error||'导入失败')} finally{ importing.value=false; e.target.value='' } }
+async function onImport(e){
+  const f=e.target.files?.[0]; if(!f) return
+  importing.value=true; const fd=new FormData(); fd.append('file',f)
+  try{
+    const r=await api.post('/approvals/import',fd,{headers:{'Content-Type':'multipart/form-data'}})
+    const d=r.data||{}; const errs=d.errors||[]
+    let msg=`导入完成：新增 ${d.created||0} 条，跳过 ${d.skipped||0} 条`
+    if(errs.length){
+      const show=errs.slice(0,15)
+      msg+='\n\n未导入明细（含原因）：\n'+show.join('\n')
+      if(errs.length>show.length) msg+=`\n…等共 ${errs.length} 条`
+    }
+    alert(msg); load()
+  }catch(err){ alert(err?.error||'导入失败，请检查文件格式或表头') }
+  finally{ importing.value=false; e.target.value='' }
+}
 async function doExport(){ exporting.value=true; try{ const b=await api.get('/approvals/export',{params:filters,responseType:'blob'}); dl(b,'审批记录.xlsx') } finally{ exporting.value=false } }
 
 const onScopeChange = () => {
