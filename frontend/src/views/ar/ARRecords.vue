@@ -1,10 +1,12 @@
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, provide } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
+import { useServerSort } from '../../composables/useServerSort.js'
+import SortTh from '../../components/ar/SortTh.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -25,6 +27,10 @@ const filters = reactive({
   reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '',
   pay_status: '', pay_start: '', pay_end: '', pay_include_unpaid: '', manager: '', is_shared: '',
 })
+
+// 服务端排序（点表头）——状态机经 provide 下放给各 <SortTh>，变化即回首页重拉
+const sorter = useServerSort(() => load(true))
+provide('arSort', sorter)
 
 // 回款日期筛选粒度（UI-only）：'' 全部 | day 按日 | month 按月 | year 按年 | range 区间
 const payMode = ref('')
@@ -186,7 +192,7 @@ async function load(reset = false) {
   loading.value = true
   try {
     const [recs, kpi] = await Promise.all([
-      ar.listRecords({ ...filters, include_payments: 1, page: page.value, size }),
+      ar.listRecords({ ...filters, sort: sorter.sort.value || undefined, include_payments: 1, page: page.value, size }),
       ar.recordsKpi(filters),
     ])
     items.value = recs.data.items
@@ -698,17 +704,17 @@ function clearFilters() {
         <table class="rec-table">
           <thead>
             <tr>
-              <th>项目</th>
-              <th class="ctr">年月</th>
+              <SortTh col="short_name" label="项目" />
+              <SortTh col="operation" label="年月" class="ctr" />
 
               <!-- all -->
               <template v-if="activeTab === 'all'">
-                <th v-if="show('r_estimated_amount')" class="amt">预估金额</th>
-                <th v-if="show('r_actual_invoice_amount')" class="amt">实际开票</th>
+                <SortTh v-if="show('r_estimated_amount')" col="estimated" label="预估金额" class="amt" />
+                <SortTh v-if="show('r_actual_invoice_amount')" col="invoiced" label="实际开票" class="amt" />
                 <th v-if="show('r_tax_amount')" class="amt">税额</th>
                 <th v-if="show('r_account_diff')" class="amt">账实差额</th>
-                <th v-if="show('r_outstanding')" class="amt">未收金额</th>
-                <th v-if="show('r_due_date')" class="ctr">应收到期</th>
+                <SortTh v-if="show('r_outstanding')" col="outstanding" label="未收金额" class="amt" />
+                <SortTh v-if="show('r_due_date')" col="due_date" label="应收到期" class="ctr" />
                 <th v-if="show('r_reconciliation')" class="ctr">对账</th>
                 <th v-if="show('r_payments')" class="ctr">回款</th>
                 <th class="ctr">状态</th>
@@ -717,19 +723,19 @@ function clearFilters() {
               </template>
               <!-- reconciliation -->
               <template v-else-if="activeTab === 'reconciliation'">
-                <th v-if="show('r_estimated_amount')" class="amt">预估金额</th>
+                <SortTh v-if="show('r_estimated_amount')" col="estimated" label="预估金额" class="amt" />
                 <th v-if="show('r_reconciliation')" class="ctr">对账状态</th>
-                <th v-if="show('r_reconciliation')" class="ctr">对账日期</th>
-                <th v-if="show('r_due_date')" class="ctr">应收到期</th>
+                <SortTh v-if="show('r_reconciliation')" col="reconciliation_date" label="对账日期" class="ctr" />
+                <SortTh v-if="show('r_due_date')" col="due_date" label="应收到期" class="ctr" />
                 <th class="ctr">状态</th>
-                <th v-if="show('r_outstanding')" class="amt">未收金额</th>
+                <SortTh v-if="show('r_outstanding')" col="outstanding" label="未收金额" class="amt" />
               </template>
               <!-- invoice -->
               <template v-else-if="activeTab === 'invoice'">
-                <th v-if="show('r_estimated_amount')" class="amt">预估金额</th>
-                <th v-if="show('r_actual_invoice_amount')" class="amt">实际开票额</th>
+                <SortTh v-if="show('r_estimated_amount')" col="estimated" label="预估金额" class="amt" />
+                <SortTh v-if="show('r_actual_invoice_amount')" col="invoiced" label="实际开票额" class="amt" />
                 <th v-if="show('r_tax_amount')" class="amt">税额</th>
-                <th v-if="show('r_invoice_date')" class="ctr">开票日期</th>
+                <SortTh v-if="show('r_invoice_date')" col="invoice_date" label="开票日期" class="ctr" />
                 <th v-if="show('r_account_diff')" class="amt">账实差额</th>
                 <th v-if="show('r_invoice_status')" class="ctr">开票状态</th>
               </template>
@@ -737,7 +743,7 @@ function clearFilters() {
               <template v-else>
                 <th class="amt">应收基础</th>
                 <th v-if="show('r_payments')">回款记录</th>
-                <th v-if="show('r_outstanding')" class="amt">未收金额</th>
+                <SortTh v-if="show('r_outstanding')" col="outstanding" label="未收金额" class="amt" />
                 <th v-if="show('r_invoice_status')" class="ctr">回款状态</th>
               </template>
 
