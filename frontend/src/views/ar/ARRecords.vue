@@ -7,7 +7,8 @@ import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
 import { useServerSort } from '../../composables/useServerSort.js'
 import SortTh from '../../components/ar/SortTh.vue'
-import ConditionBuilder from '../../components/ar/ConditionBuilder.vue'
+import FilterPanel from '../../components/ar/FilterPanel.vue'
+import { describeCondition } from '../../composables/arConditions.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -23,19 +24,25 @@ const loading = ref(false)
 const page = ref(1)
 const size = 50
 const activeTab = ref('all')   // all | reconciliation | invoice | collection
-const filters = reactive({
-  dept: '', year: '', month: '', status: '',
-  reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '',
-  pay_status: '', pay_start: '', pay_end: '', pay_include_unpaid: '', manager: '', is_shared: '',
-})
+
+// 统一筛选：所有维度/日期/金额都是 conditions 里的一条；matchMode 决定 且/或。
+// 直接序列化为后端 conditions(JSON) + match 参数，前端不再有零散 flat 筛选。
+const conditions = ref([])
+const matchMode = ref('all')   // 'all'(且) | 'any'(或)
+const showFilterPanel = ref(false)
+// 请求参数：仅在有条件时下发 conditions/match（后端无条件时返回全集）
+const reqParams = () => (conditions.value.length
+  ? { conditions: JSON.stringify(conditions.value), match: matchMode.value }
+  : {})
+// 体检接口需要部门维度：从条件里取第一个 dept 维度（没有则不限部门）
+const deptOfConditions = () => {
+  const c = conditions.value.find(x => x.t === 'dim' && x.field === 'dept')
+  return c ? c.value : ''
+}
 
 // 服务端排序（点表头）——状态机经 provide 下放给各 <SortTh>，变化即回首页重拉
 const sorter = useServerSort(() => load(true))
 provide('arSort', sorter)
-
-// BI 式条件构建器的条件数组（日期相对区间/含不含 + 金额运算符）；序列化为后端
-// conditions(JSON)。回款日期等灵活筛选统一走这里，替代旧的回款粒度下拉簇。
-const conditions = ref([])
 
 const showModal = ref(false)
 const editRec = ref(null)
@@ -92,28 +99,13 @@ const DATA_TABS = ['all', 'reconciliation', 'invoice', 'collection']
 const isDataTab = computed(() => DATA_TABS.includes(activeTab.value))
 const summaryData = ref(null)
 
-// ── Collapsible filter bar ──────────────────────────────────────────────────
-const showMoreFilters = ref(false)
-const FILTER_CHIP_LABELS = {
-  month: v => `${v}月`,
-  status: v => ({ overdue: '逾期', current: '当期', not_due: '未到期', settled: '已结清', outstanding: '未结清' }[v] || v),
-  reconciliation_status: v => `对账:${v}`,
-  invoice_status: v => `开票:${v}`,
-  responsibility: v => `责任:${({ settled: '已结清', recon: '对账阶段', invoice: '待开票', post: '票后回款' }[v] || v)}`,
-  is_shared: v => (v === '1' ? '共享' : '非共享'),
-  manager: v => `负责人:${v}`,
-}
-// month 已常驻主筛选行（紧邻年份），不再列入折叠区的 advanced chips
-const ADVANCED_FILTER_KEYS = ['status', 'reconciliation_status', 'invoice_status', 'responsibility', 'is_shared', 'manager']
-const activeFilterChips = computed(() =>
-  ADVANCED_FILTER_KEYS
-    .filter(k => filters[k] !== '' && filters[k] != null)
-    .map(k => ({ key: k, text: FILTER_CHIP_LABELS[k](filters[k]) })))
-const hasAnyFilter = computed(() =>
-  !!(filters.dept || filters.year || filters.month || filters.q)
-  || activeFilterChips.value.length > 0 || conditions.value.length > 0)
-function removeFilter(key) {
-  filters[key] = ''; onFilterChange()
+// ── 筛选 chip 栏 ─────────────────────────────────────────────────────────────
+const hasAnyFilter = computed(() => conditions.value.length > 0)
+// chip 文案统一由 describeCondition 生成（与面板单一来源）
+const chipText = describeCondition
+function removeCondition(i) {
+  const l = conditions.value.slice(); l.splice(i, 1)
+  conditions.value = l; onFilterChange()
 }
 
 // ── 回款流水 (payment ledger) ───────────────────────────────────────────────
@@ -147,10 +139,9 @@ async function load(reset = false) {
   loading.value = true
   try {
     const [recs, kpi] = await Promise.all([
-      ar.listRecords({ ...filters, sort: sorter.sort.value || undefined,
-        conditions: conditions.value.length ? JSON.stringify(conditions.value) : undefined,
+      ar.listRecords({ ...reqParams(), sort: sorter.sort.value || undefined,
         include_payments: 1, page: page.value, size }),
-      ar.recordsKpi(filters),
+      ar.recordsKpi(reqParams()),
     ])
     items.value = recs.data.items
     total.value = recs.data.total
@@ -162,7 +153,7 @@ async function load(reset = false) {
 
 async function loadHealth() {
   try {
-    const res = await ar.dataHealth({ dept: filters.dept })
+    const res = await ar.dataHealth({ dept: deptOfConditions() })
     healthData.value = res.data
   } catch { healthData.value = null }
 }
@@ -208,7 +199,7 @@ async function exportPayments() {
 async function loadGroupSummary() {
   groupLoading.value = true
   try {
-    const res = await ar.recordsSummary({ ...filters, group_by: summaryGroupBy.value })
+    const res = await ar.recordsSummary({ ...reqParams(), group_by: summaryGroupBy.value })
     groupRows.value = res.data.rows
   } finally { groupLoading.value = false }
 }
@@ -241,13 +232,19 @@ function onFilterChange() {
   else load(true)
 }
 
+// 汇总行下钻：把该维度作为条件追加（替换同字段旧条件），切到全部明细
+function upsertDim(field, value) {
+  const list = conditions.value.filter(c => !(c.t === 'dim' && c.field === field))
+  list.push({ t: 'dim', field, value })
+  conditions.value = list
+}
 function drillIntoGroup(row) {
   if (!DRILLABLE_DIMS.includes(summaryGroupBy.value)) return
   const gb = summaryGroupBy.value
-  if (gb === 'dept') filters.dept = row.key
-  else if (gb === 'invoice_status') filters.invoice_status = row.key
-  else if (gb === 'month') { filters.year = row.year; filters.month = row.month }
-  else if (gb === 'manager') filters.manager = row.key
+  if (gb === 'dept') upsertDim('dept', row.key)
+  else if (gb === 'invoice_status') upsertDim('invoice_status', row.key)
+  else if (gb === 'month') { upsertDim('operation_year', row.year); upsertDim('operation_month', row.month) }
+  else if (gb === 'manager') upsertDim('manager', row.key)
   switchTab('all')
   load(true)
 }
@@ -404,7 +401,7 @@ async function handleImport(e) {
 async function exportData() {
   exporting.value = true
   try {
-    const res = await ar.exportRecords(filters)
+    const res = await ar.exportRecords(reqParams())
     const url = URL.createObjectURL(res)
     const a = document.createElement('a'); a.href = url; a.download = '应收账款明细.xlsx'; a.click()
     URL.revokeObjectURL(url)
@@ -413,26 +410,28 @@ async function exportData() {
 }
 
 const onScopeChange = () => {
-  if (filters.dept && !accessibleDepts.value.includes(filters.dept)) filters.dept = ''
+  // 部门范围变化：移除不再可访问的 dept 条件
+  const before = conditions.value.length
+  conditions.value = conditions.value.filter(
+    c => !(c.t === 'dim' && c.field === 'dept' && !accessibleDepts.value.includes(c.value)))
   if (payFilters.dept && !accessibleDepts.value.includes(payFilters.dept)) payFilters.dept = ''
   if (activeTab.value === 'payments') loadPayments(true)
   else if (activeTab.value === 'summary') loadGroupSummary()
   else load(true)
+  void before
 }
 onMounted(() => {
-  // Pick up query params from router navigation (e.g., from Cashflow or Analytics)
-  if (route.query.status) filters.status = route.query.status
-  if (route.query.project_id) filters.project_id = route.query.project_id
-  if (route.query.dept) filters.dept = route.query.dept
-  if (auth.perms?.ar_shared_only) filters.is_shared = '1'
+  // 路由跳转带入的筛选（来自现金流/分析/项目台账等）→ 转成条件
+  if (route.query.status) conditions.value.push({ t: 'dim', field: 'status', value: route.query.status })
+  if (route.query.project_id) conditions.value.push({ t: 'dim', field: 'project_id', value: route.query.project_id })
+  if (route.query.dept) conditions.value.push({ t: 'dim', field: 'dept', value: route.query.dept })
   load()
   window.addEventListener('pk:depts-changed', onScopeChange)
 })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 function clearFilters() {
   conditions.value = []
-  Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '', pay_status: '', pay_start: '', pay_end: '', pay_include_unpaid: '', manager: '',
-    is_shared: auth.perms?.ar_shared_only ? '1' : '' })
+  matchMode.value = 'all'
   onFilterChange()
 }
 </script>
@@ -460,78 +459,34 @@ function clearFilters() {
       </div>
     </div>
 
-    <!-- Filter bar (compact + collapsible; 回款流水 has its own filters) -->
+    <!-- 极简筛选 chip 栏：筛选按钮 + 且/或 + 已生效条件 chip + 清空（回款流水 Tab 自带筛选） -->
     <div v-if="activeTab !== 'payments'" class="filter-bar">
-      <div class="filter-main">
-        <select v-model="filters.dept" class="sel-bu" @change="onFilterChange">
-          <option value="">全部事业部</option>
-          <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
-        </select>
-        <select v-model="filters.year" class="sel-yr" @change="onFilterChange">
-          <option value="">全部年份</option>
-          <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
-        </select>
-        <select v-model="filters.month" class="sel-mo" @change="onFilterChange">
-          <option value="">全月</option>
-          <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
-        </select>
-        <input v-model="filters.q" placeholder="搜索项目/负责人" class="search-input" @input="onFilterChange" />
-        <button class="filter-toggle" :class="{ active: showMoreFilters }" @click="showMoreFilters = !showMoreFilters">
-          更多筛选<span v-if="activeFilterChips.length" class="ft-badge">{{ activeFilterChips.length }}</span>
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" :style="showMoreFilters ? 'transform:rotate(180deg)' : ''"><path d="M6 9l6 6 6-6"/></svg>
-        </button>
-        <!-- active advanced-filter chips (shown when collapsed) -->
-        <template v-if="!showMoreFilters">
-          <span v-for="c in activeFilterChips" :key="c.key" class="filter-chip">
-            {{ c.text }}
-            <button @click="removeFilter(c.key)" title="移除">✕</button>
-          </span>
-        </template>
+      <div class="filter-chipbar">
+        <div class="fb-trigger-wrap">
+          <button class="fb-trigger" :class="{ on: showFilterPanel }" @click="showFilterPanel = !showFilterPanel">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54z"/></svg>
+            筛选<span v-if="conditions.length" class="fb-badge">{{ conditions.length }}</span>
+          </button>
+          <div v-if="showFilterPanel" class="fb-backdrop" @click="showFilterPanel = false"></div>
+          <div v-if="showFilterPanel" class="fb-pop">
+            <FilterPanel
+              v-model="conditions" v-model:match="matchMode"
+              :accessible-depts="accessibleDepts" :years="years"
+              @change="onFilterChange" @close="showFilterPanel = false" />
+          </div>
+        </div>
+
+        <span v-if="conditions.length > 1" class="fb-match" :title="matchMode === 'any' ? '满足任一条件' : '满足全部条件'">
+          {{ matchMode === 'any' ? '或' : '且' }}
+        </span>
+
+        <span v-for="(c, i) in conditions" :key="i" class="filter-chip" :class="c.t" @click="showFilterPanel = true">
+          {{ chipText(c) }}
+          <button title="移除" @click.stop="removeCondition(i)">✕</button>
+        </span>
+
+        <span v-if="!conditions.length" class="fb-hint">未设筛选 · 显示全部</span>
         <button v-if="hasAnyFilter" class="clear-mini" @click="clearFilters">清空</button>
-      </div>
-
-      <!-- expanded advanced filters -->
-      <div v-if="showMoreFilters" class="filter-more">
-        <select v-model="filters.status" class="sel-mo" @change="onFilterChange">
-          <option value="">全部状态</option>
-          <option value="overdue">逾期</option>
-          <option value="current">当期</option>
-          <option value="not_due">未到期</option>
-          <option value="settled">已结清</option>
-        </select>
-        <select v-model="filters.reconciliation_status" class="sel-mo" @change="onFilterChange">
-          <option value="">对账(全部)</option>
-          <option value="已对账">已对账</option>
-          <option value="未对账">未对账</option>
-        </select>
-        <select v-model="filters.invoice_status" class="sel-mo" @change="onFilterChange">
-          <option value="">开票(全部)</option>
-          <option value="未开票">未开票</option>
-          <option value="已开票">已开票</option>
-          <option value="已结清">已结清</option>
-        </select>
-        <select v-model="filters.responsibility" class="sel-mo" @change="onFilterChange" title="按责任归属阶段筛选">
-          <option value="">责任(全部)</option>
-          <option value="recon">对账阶段</option>
-          <option value="invoice">待开票</option>
-          <option value="post">票后回款</option>
-          <option value="settled">已结清</option>
-        </select>
-        <select v-model="filters.is_shared" class="sel-mo" @change="onFilterChange"
-                :disabled="auth.perms?.ar_shared_only">
-          <option value="">共享(全部)</option>
-          <option value="1">共享</option>
-          <option value="0">非共享</option>
-        </select>
-        <input v-model="filters.manager" placeholder="负责人" class="search-input" @input="onFilterChange" />
-        <button class="act-btn" :class="{ 'act-btn--on': filters.status === 'outstanding' }"
-          @click="filters.status = filters.status === 'outstanding' ? '' : 'outstanding'; onFilterChange()">未结清</button>
-      </div>
-
-      <!-- BI 式条件构建器：日期相对区间(含/不含) + 金额运算符，可任意叠加（独立成行可换行） -->
-      <div v-if="showMoreFilters" class="filter-conditions">
-        <span class="fc-label">组合条件</span>
-        <ConditionBuilder v-model="conditions" @change="onFilterChange" />
       </div>
     </div>
 
@@ -1213,8 +1168,30 @@ function clearFilters() {
 .seg-btn.active { background: white; color: var(--primary); font-weight: 700; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
 .seg-btn.active .seg-dot { background: var(--primary); box-shadow: 0 0 6px rgba(201,99,66,0.5); }
 
-/* Collapsible filter bar */
+/* ── 极简筛选 chip 栏 ─────────────────────────────────────────── */
 .filter-bar { margin: 12px 0; }
+.filter-chipbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fb-trigger-wrap { position: relative; }
+.fb-trigger {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 9px;
+  font-size: 13px; font-weight: 700; border: 1px solid var(--border);
+  background: rgba(255,252,250,0.9); color: var(--text); cursor: pointer; transition: all .14s;
+}
+.fb-trigger:hover, .fb-trigger.on { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.06); }
+.fb-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--primary); color: #fff; font-size: 10.5px; font-weight: 700; }
+.fb-backdrop { position: fixed; inset: 0; z-index: 50; }
+.fb-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 51;
+  background: #fff; border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 16px 44px rgba(0,0,0,0.18); overflow: hidden;
+}
+.fb-match { font-size: 12px; font-weight: 800; color: var(--primary); padding: 2px 8px; border-radius: 7px; background: rgba(201,99,66,0.08); }
+.fb-hint { font-size: 12.5px; color: var(--muted); }
+.filter-chip.date { background: rgba(122,159,212,0.14); color: #3f5a86; }
+.filter-chip.amt  { background: rgba(201,99,66,0.12); color: var(--primary); }
+.filter-chip.dim  { background: rgba(120,120,120,0.1); color: var(--text); }
+.filter-chip { cursor: pointer; }
+
 .filter-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .filter-more { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; overflow-x: auto; margin-top: 8px; padding-top: 10px; padding-bottom: 4px; border-top: 1px dashed var(--border); scrollbar-width: thin; }
 .filter-more > * { flex: 0 0 auto; }
