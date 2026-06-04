@@ -7,6 +7,7 @@ import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
 import { useServerSort } from '../../composables/useServerSort.js'
 import SortTh from '../../components/ar/SortTh.vue'
+import ConditionBuilder from '../../components/ar/ConditionBuilder.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -32,41 +33,9 @@ const filters = reactive({
 const sorter = useServerSort(() => load(true))
 provide('arSort', sorter)
 
-// 回款日期筛选粒度（UI-only）：'' 全部 | day 按日 | month 按月 | year 按年 | range 区间
-const payMode = ref('')
-const payInput = reactive({ day: '', month: '', year: '', start: '', end: '' })
-const payIncludeUnpaid = ref(false)   // "含未结清" 按钮状态
-
-// 把粒度 + 复选框折算成 filters 字段下发后端
-function applyPayMode() {
-  filters.pay_status = ''; filters.pay_start = ''; filters.pay_end = ''; filters.pay_include_unpaid = ''
-  const m = payMode.value
-  if (m === 'day' && payInput.day) {
-    filters.pay_start = payInput.day; filters.pay_end = payInput.day
-  } else if (m === 'month' && payInput.month) {
-    const [y, mo] = payInput.month.split('-').map(Number)
-    const last = new Date(y, mo, 0).getDate()
-    filters.pay_start = `${payInput.month}-01`
-    filters.pay_end = `${payInput.month}-${String(last).padStart(2, '0')}`
-  } else if (m === 'year' && payInput.year) {
-    filters.pay_start = `${payInput.year}-01-01`
-    filters.pay_end = `${payInput.year}-12-31`
-  } else if (m === 'range') {
-    filters.pay_start = payInput.start; filters.pay_end = payInput.end
-  }
-  const hasDate = !!(filters.pay_start || filters.pay_end)
-  if (payIncludeUnpaid.value) {
-    // 有日期区间：OR 逻辑（含未结清）；无日期：纯"未结清"
-    if (hasDate) filters.pay_include_unpaid = '1'
-    else filters.pay_status = 'unpaid'
-  }
-  onFilterChange()
-}
-function resetPayMode() {
-  payMode.value = ''; payIncludeUnpaid.value = false
-  filters.pay_status = ''; filters.pay_start = ''; filters.pay_end = ''; filters.pay_include_unpaid = ''
-  Object.assign(payInput, { day: '', month: '', year: '', start: '', end: '' })
-}
+// BI 式条件构建器的条件数组（日期相对区间/含不含 + 金额运算符）；序列化为后端
+// conditions(JSON)。回款日期等灵活筛选统一走这里，替代旧的回款粒度下拉簇。
+const conditions = ref([])
 
 const showModal = ref(false)
 const editRec = ref(null)
@@ -107,14 +76,6 @@ const fileInput = ref(null)
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
-// 回款按年筛选的年份列表：从 bounds 中派生，fallback 为近5年
-const payYears = computed(() => {
-  const mn = payDateBounds.value.min ? parseInt(payDateBounds.value.min.slice(0, 4)) : yearCST() - 2
-  const mx = payDateBounds.value.max ? parseInt(payDateBounds.value.max.slice(0, 4)) : yearCST()
-  const result = []
-  for (let y = mn; y <= mx; y++) result.push(y)
-  return result
-})
 
 // Field-permission column visibility
 const show = k => auth.canArView(k)
@@ -130,8 +91,6 @@ const TABS = [
 const DATA_TABS = ['all', 'reconciliation', 'invoice', 'collection']
 const isDataTab = computed(() => DATA_TABS.includes(activeTab.value))
 const summaryData = ref(null)
-// 回款日期选择器的全局可选范围（基于系统中最早/最晚回款记录，避免几十年空区间）
-const payDateBounds = ref({ min: null, max: null })
 
 // ── Collapsible filter bar ──────────────────────────────────────────────────
 const showMoreFilters = ref(false)
@@ -143,21 +102,17 @@ const FILTER_CHIP_LABELS = {
   responsibility: v => `责任:${({ settled: '已结清', recon: '对账阶段', invoice: '待开票', post: '票后回款' }[v] || v)}`,
   is_shared: v => (v === '1' ? '共享' : '非共享'),
   manager: v => `负责人:${v}`,
-  pay_status: v => (v === 'unpaid' ? '未回款' : '已回款'),
-  pay_start: v => `回款≥${v}`,
-  pay_end: v => `回款≤${v}`,
-  pay_include_unpaid: () => '含未结清',
 }
 // month 已常驻主筛选行（紧邻年份），不再列入折叠区的 advanced chips
-const ADVANCED_FILTER_KEYS = ['pay_status', 'pay_start', 'pay_end', 'pay_include_unpaid', 'status', 'reconciliation_status', 'invoice_status', 'responsibility', 'is_shared', 'manager']
+const ADVANCED_FILTER_KEYS = ['status', 'reconciliation_status', 'invoice_status', 'responsibility', 'is_shared', 'manager']
 const activeFilterChips = computed(() =>
   ADVANCED_FILTER_KEYS
     .filter(k => filters[k] !== '' && filters[k] != null)
     .map(k => ({ key: k, text: FILTER_CHIP_LABELS[k](filters[k]) })))
 const hasAnyFilter = computed(() =>
-  !!(filters.dept || filters.year || filters.month || filters.q) || activeFilterChips.value.length > 0)
+  !!(filters.dept || filters.year || filters.month || filters.q)
+  || activeFilterChips.value.length > 0 || conditions.value.length > 0)
 function removeFilter(key) {
-  if (['pay_status', 'pay_start', 'pay_end', 'pay_include_unpaid'].includes(key)) { resetPayMode(); onFilterChange(); return }
   filters[key] = ''; onFilterChange()
 }
 
@@ -192,7 +147,9 @@ async function load(reset = false) {
   loading.value = true
   try {
     const [recs, kpi] = await Promise.all([
-      ar.listRecords({ ...filters, sort: sorter.sort.value || undefined, include_payments: 1, page: page.value, size }),
+      ar.listRecords({ ...filters, sort: sorter.sort.value || undefined,
+        conditions: conditions.value.length ? JSON.stringify(conditions.value) : undefined,
+        include_payments: 1, page: page.value, size }),
       ar.recordsKpi(filters),
     ])
     items.value = recs.data.items
@@ -469,13 +426,11 @@ onMounted(() => {
   if (route.query.dept) filters.dept = route.query.dept
   if (auth.perms?.ar_shared_only) filters.is_shared = '1'
   load()
-  // 加载回款日期选择器的全局范围（一次性，不受筛选联动）
-  ar.recordsDateBounds().then(r => { payDateBounds.value = r.data }).catch(() => {})
   window.addEventListener('pk:depts-changed', onScopeChange)
 })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 function clearFilters() {
-  resetPayMode()
+  conditions.value = []
   Object.assign(filters, { dept: '', year: '', month: '', status: '', reconciliation_status: '', invoice_status: '', responsibility: '', q: '', project_id: '', pay_status: '', pay_start: '', pay_end: '', pay_include_unpaid: '', manager: '',
     is_shared: auth.perms?.ar_shared_only ? '1' : '' })
   onFilterChange()
@@ -537,35 +492,6 @@ function clearFilters() {
 
       <!-- expanded advanced filters -->
       <div v-if="showMoreFilters" class="filter-more">
-        <select v-model="payMode" class="sel-mo" title="回款日期筛选" @change="applyPayMode">
-          <option value="">回款(全部)</option>
-          <option value="day">回款按日</option>
-          <option value="month">回款按月</option>
-          <option value="year">回款按年</option>
-          <option value="range">回款区间</option>
-        </select>
-        <input v-if="payMode === 'day'" v-model="payInput.day" type="date" class="sel-mo"
-          :min="payDateBounds.min || undefined" :max="payDateBounds.max || undefined"
-          @change="applyPayMode" />
-        <input v-if="payMode === 'month'" v-model="payInput.month" type="month" class="sel-mo"
-          :min="payDateBounds.min ? payDateBounds.min.slice(0,7) : undefined"
-          :max="payDateBounds.max ? payDateBounds.max.slice(0,7) : undefined"
-          @change="applyPayMode" />
-        <select v-if="payMode === 'year'" v-model="payInput.year" class="sel-mo" @change="applyPayMode">
-          <option value="">选择年份</option>
-          <option v-for="y in payYears" :key="y" :value="y">{{ y }}年</option>
-        </select>
-        <template v-if="payMode === 'range'">
-          <input v-model="payInput.start" type="date" class="sel-mo" title="回款日期起"
-            :min="payDateBounds.min || undefined" :max="payDateBounds.max || undefined"
-            @change="applyPayMode" />
-          <input v-model="payInput.end" type="date" class="sel-mo" title="回款日期止"
-            :min="payDateBounds.min || undefined" :max="payDateBounds.max || undefined"
-            @change="applyPayMode" />
-        </template>
-        <button class="act-btn" :class="{ 'act-btn--on': payIncludeUnpaid }"
-          title="同时显示未结清的记录（与回款日期取并集）"
-          @click="payIncludeUnpaid = !payIncludeUnpaid; applyPayMode()">含未结清</button>
         <select v-model="filters.status" class="sel-mo" @change="onFilterChange">
           <option value="">全部状态</option>
           <option value="overdue">逾期</option>
@@ -600,6 +526,12 @@ function clearFilters() {
         <input v-model="filters.manager" placeholder="负责人" class="search-input" @input="onFilterChange" />
         <button class="act-btn" :class="{ 'act-btn--on': filters.status === 'outstanding' }"
           @click="filters.status = filters.status === 'outstanding' ? '' : 'outstanding'; onFilterChange()">未结清</button>
+      </div>
+
+      <!-- BI 式条件构建器：日期相对区间(含/不含) + 金额运算符，可任意叠加（独立成行可换行） -->
+      <div v-if="showMoreFilters" class="filter-conditions">
+        <span class="fc-label">组合条件</span>
+        <ConditionBuilder v-model="conditions" @change="onFilterChange" />
       </div>
     </div>
 
@@ -1288,6 +1220,8 @@ function clearFilters() {
 .filter-more > * { flex: 0 0 auto; }
 .filter-more::-webkit-scrollbar { height: 6px; }
 .filter-more::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.filter-conditions { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.fc-label { font-size: 12px; font-weight: 700; color: var(--muted); padding-top: 6px; white-space: nowrap; }
 .filter-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 500; border: 1px solid var(--border); background: rgba(255,252,250,0.8); color: var(--muted); cursor: pointer; transition: all 0.14s; white-space: nowrap; }
 .filter-toggle:hover, .filter-toggle.active { border-color: var(--primary); color: var(--primary); }
 .filter-toggle svg { transition: transform 0.18s; }
