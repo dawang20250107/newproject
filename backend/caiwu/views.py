@@ -1,5 +1,4 @@
 import io
-import re
 import json
 import logging
 import datetime
@@ -27,7 +26,6 @@ logger = logging.getLogger('caiwu')
 BUILD_VERSION = '2026-05-24.2'
 
 EXCEL_HEADERS = ['一级科目', '二级项目部', '三级科目明细', '借方(元)', '贷方(元)']
-PL_HEADERS = ['科目名称', '本期金额']  # 利润表模板格式
 IMPORT_SIZE_LIMIT = 5 * 1024 * 1024  # 5 MB
 
 # Hardcoded KXT P&L calculation formulas.
@@ -651,21 +649,6 @@ def batch_template(request):
     ws2.column_dimensions['B'].width = 40
     ws2.column_dimensions['C'].width = 10
 
-    # Profit & Loss template sheet
-    ws3 = wb.create_sheet('利润表模板')
-    pl_fill = PatternFill(start_color='1565C0', end_color='1565C0', fill_type='solid')
-    for col, h in enumerate(PL_HEADERS, 1):
-        cell = ws3.cell(row=1, column=col, value=h)
-        cell.fill = pl_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal='center')
-    l1_cats = list(L1Category.objects.order_by('sort_order', 'id').all())
-    for ri, cat in enumerate(l1_cats, 2):
-        ws3.cell(row=ri, column=1, value=cat.name)
-        ws3.cell(row=ri, column=2, value=0)
-    ws3.column_dimensions['A'].width = 22
-    ws3.column_dimensions['B'].width = 16
-
     return _build_excel_response(wb, '财务数据导入模板.xlsx')
 
 
@@ -702,18 +685,6 @@ _KD_NAME_L1 = {
 # 金蝶挂在 6602 管理费用下，KXT 体系需单列以正确推算经营净利。
 _KD_CODE_L1_SPECIFIC = {
     '6602.99': '集团管理费用',
-}
-# ── 利润表行项目 → KXT 一级科目映射（金蝶 SpreadJS JSON 导出）──────────────────
-# key 为去除「一、其中：加：减：」等前缀后的标准行名
-_PL_ITEM_L1 = {
-    '营业收入': '主营业务收入',
-    '营业成本': '主营业务成本',
-    '税金及附加': '税金成本',
-    '销售费用': '销售费用',
-    '管理费用': '管理费用',
-    '财务费用': '财务费用',
-    '营业外收入': '营业外收入',
-    '营业外支出': '营业外支出',
 }
 
 
@@ -951,67 +922,6 @@ def _parse_dept_ledger_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map):
     return parsed, errors
 
 
-# ── 金蝶 利润表 SpreadJS JSON 解析 ───────────────────────────────────────────
-
-def _strip_pl_prefix(name):
-    """Strip 一、二、…/（一）/其中：/加：/减： prefixes from a P&L line label."""
-    s = str(name).strip()
-    s = re.sub(r'^[一二三四五六七八九十]+、', '', s)
-    s = re.sub(r'^（[一二三四五六七八九十]+）', '', s)
-    for p in ('其中：', '加：', '减：', '其中:', '加:', '减:'):
-        if s.startswith(p):
-            s = s[len(p):]
-    return s.strip()
-
-
-def _parse_kingdee_pl_json(data_str, l1_map):
-    """Parse a Kingdee/SpreadJS workbook JSON and extract the 利润表 sheet.
-    Returns (pl_data {l1_name: Decimal}, errors).
-    """
-    try:
-        wb = json.loads(data_str)
-    except json.JSONDecodeError as e:
-        return {}, [f'JSON 解析失败：{e}']
-    sheets = wb.get('sheets') if isinstance(wb, dict) else None
-    if not isinstance(sheets, dict):
-        return {}, ['未识别的 JSON 结构（缺少 sheets 节点）']
-
-    pl_sheet = next((sh for nm, sh in sheets.items() if '利润' in nm), None)
-    if pl_sheet is None:
-        return {}, ['JSON 中未找到「利润表」工作表']
-
-    dt = (pl_sheet.get('data') or {}).get('dataTable') or {}
-
-    pl_data = {}
-    rev_total = cost_total = None
-    for r_key in sorted(dt, key=lambda k: int(k) if str(k).isdigit() else 0):
-        row = dt[r_key]
-        c0 = (row.get('0') or {}).get('value')
-        c1 = (row.get('1') or {}).get('value')
-        if c0 is None:
-            continue
-        label = _strip_pl_prefix(c0)
-        try:
-            amt = Decimal(str(c1))
-        except (InvalidOperation, TypeError, ValueError):
-            continue
-        if label == '营业总收入':
-            rev_total = amt
-        elif label == '营业总成本':
-            cost_total = amt
-        l1name = _PL_ITEM_L1.get(label)
-        if l1name and l1name in l1_map:
-            pl_data.setdefault(l1name, amt)
-
-    # Fall back to 营业总收入/成本 if the 「其中」 detail lines are absent
-    if '主营业务收入' not in pl_data and rev_total is not None:
-        pl_data['主营业务收入'] = rev_total
-    if '主营业务成本' not in pl_data and cost_total is not None:
-        pl_data['主营业务成本'] = cost_total
-
-    return pl_data, []
-
-
 def _parse_template_rows(ws, bu, l1_map, l2_map, l3_map):
     """Parse the KXT 5-column template format (L1 / L2 / L3 / 借方 / 贷方).
     Also accepts the legacy 4-column format (L1 / L2 / L3 / 金额) for backward compatibility.
@@ -1117,75 +1027,6 @@ def _parse_template_rows(ws, bu, l1_map, l2_map, l3_map):
         })
 
     return parsed, errors
-
-
-_PL_NAME_COL_KW = ('项目名称', '科目名称', '项目', '科目')
-_PL_AMT_COL_KW = ('本期金额', '本期数', '本期发生额', '金额', '本期')
-
-
-def _parse_pl_excel_sheet(ws, l1_map):
-    """解析单个 Excel 工作表为利润表 → {l1_name: Decimal}。兼容两种来源：
-    ① 金蝶标准利润表（项目名称/本期金额，行名如「一、营业总收入」「其中：营业收入」
-       「管理费用」），按 _PL_ITEM_L1 映射；
-    ② 本系统两列模板（科目名称/本期金额，行名即一级科目名），按 l1 名精确匹配。
-    找不到表头或无任何可映射科目则返回 {}。
-    注意：金蝶利润表「管理费用」含集团管理费，这里照原值归入「管理费用」，
-    集团管理费的拆分核对在 _compute_pl_dept_consistency 里处理。
-    """
-    # 1. 定位表头行 + 名称列/金额列（扫描前 8 行）
-    name_col = amt_col = header_row = None
-    for ri in range(1, min(ws.max_row, 8) + 1):
-        for ci in range(1, min(ws.max_column, 14) + 1):
-            v = str(ws.cell(row=ri, column=ci).value or '').strip()
-            if not v:
-                continue
-            if name_col is None and v in _PL_NAME_COL_KW:
-                name_col, header_row = ci, ri
-            elif amt_col is None and v in _PL_AMT_COL_KW:
-                amt_col = ci
-        if name_col and amt_col:
-            break
-    if not name_col or not amt_col:
-        return {}
-
-    pl_data = {}
-    rev_total = cost_total = None
-    for ri in range(header_row + 1, ws.max_row + 1):
-        c0 = str(ws.cell(row=ri, column=name_col).value or '').strip()
-        if not c0:
-            continue
-        try:
-            amt = Decimal(str(ws.cell(row=ri, column=amt_col).value))
-        except (InvalidOperation, TypeError, ValueError):
-            continue
-        label = _strip_pl_prefix(c0)
-        if label == '营业总收入':
-            rev_total = amt
-        elif label == '营业总成本':
-            cost_total = amt
-        # 金蝶标准利润表行名 → L1；否则两列模板里行名即 L1 科目名（精确匹配，
-        # 避免「管理费用」被「集团管理费用」等部分包含误配）
-        l1name = _PL_ITEM_L1.get(label) or (label if label in l1_map else None)
-        if l1name and l1name in l1_map and not l1_map[l1name].is_calculated:
-            pl_data.setdefault(l1name, amt)
-
-    # 缺「其中：营业收入/成本」明细时，回退用营业总收入/总成本
-    if '主营业务收入' not in pl_data and rev_total is not None:
-        pl_data['主营业务收入'] = rev_total
-    if '主营业务成本' not in pl_data and cost_total is not None:
-        pl_data['主营业务成本'] = cost_total
-    return pl_data
-
-
-def _find_pl_sheet(wb, l1_map):
-    """在工作簿里查找利润表工作表（金蝶三表里的「利润分配表/利润表」页，或两列模板页），
-    要求能解析出至少一个非零科目金额（区分用户已填写 vs 全 0 空表/其它报表页）。
-    返回 (worksheet, pl_data)；找不到返回 (None, {})。"""
-    for ws in wb.worksheets:
-        pl_data = _parse_pl_excel_sheet(ws, l1_map)
-        if pl_data and any(v != 0 for v in pl_data.values()):
-            return ws, pl_data
-    return None, {}
 
 
 def _parse_json_rows(data_str, bu, l1_map, l2_map, l3_map):
@@ -1304,84 +1145,6 @@ def _compute_pl_check(parsed_rows):
     return {'kpis': kpis, 'l1_summary': l1_summary, 'l2_summary': l2_summary}
 
 
-# 利润表 vs 部门明细一致性核对的科目（一级科目名）。利润表「管理费用」含集团管理费，
-# 故部门侧把「集团管理费用」并入「管理费用」后再逐项比对。
-_CONSISTENCY_KEYS = [
-    '主营业务收入', '主营业务成本', '税金成本',
-    '销售费用', '管理费用', '财务费用',
-    '营业外收入', '营业外支出',
-]
-
-
-def _l1_totals_from_parsed(parsed_rows):
-    from collections import defaultdict
-    raw = defaultdict(Decimal)
-    for r in parsed_rows:
-        raw[r['l1_name']] += r['amount']
-    return raw
-
-
-def _l1_totals_from_batch(batch):
-    from collections import defaultdict
-    raw = defaultdict(Decimal)
-    for e in FinancialEntry.objects.filter(batch=batch).select_related('l1'):
-        raw[e.l1.name] += e.amount
-    return raw
-
-
-def _compute_pl_dept_consistency(pl_totals, dept_totals):
-    """逐项比对利润表(pl_totals) 与 部门明细(dept_totals) 的一级科目合计。
-    部门侧「集团管理费用」并入「管理费用」（利润表口径含集团管理费）。
-    返回 {all_match, max_diff, rows:[{name, pl, dept, diff, match}]}。"""
-    dept = dict(dept_totals)
-    if '集团管理费用' in dept:
-        dept['管理费用'] = dept.get('管理费用', Decimal('0')) + dept.pop('集团管理费用')
-    rows = []
-    all_match = True
-    max_diff = Decimal('0')
-    eps = Decimal('0.01')
-    for k in _CONSISTENCY_KEYS:
-        pv = (pl_totals.get(k) or Decimal('0')).quantize(eps)
-        dv = (dept.get(k) or Decimal('0')).quantize(eps)
-        if pv == 0 and dv == 0:
-            continue
-        diff = (pv - dv).quantize(eps)
-        match = abs(diff) <= eps
-        if not match:
-            all_match = False
-        if abs(diff) > max_diff:
-            max_diff = abs(diff)
-        rows.append({'name': k, 'pl': float(pv), 'dept': float(dv),
-                     'diff': float(diff), 'match': match})
-    return {'all_match': all_match, 'max_diff': float(max_diff), 'rows': rows}
-
-
-def _consistency_for_upload(bu, year, month, batch_type, parsed_rows):
-    """上传一类表时，若另一类表（同事业部+年月）已存在，则返回与之的一致性核对；
-    优先比对已发布批次，否则比对最近的草稿。无对方表则返回 None（不分先后）。"""
-    other_type = (ImportBatch.TYPE_DEPT if batch_type == ImportBatch.TYPE_PL
-                  else ImportBatch.TYPE_PL)
-    base = ImportBatch.objects.filter(
-        business_unit=bu, year=year, month=month, batch_type=other_type)
-    other = (base.filter(status=ImportBatch.STATUS_PUBLISHED).order_by('-uploaded_at').first()
-             or base.order_by('-uploaded_at').first())
-    if other is None:
-        return None
-    this_totals = _l1_totals_from_parsed(parsed_rows)
-    other_totals = _l1_totals_from_batch(other)
-    if batch_type == ImportBatch.TYPE_PL:
-        pl_totals, dept_totals = this_totals, other_totals
-    else:
-        pl_totals, dept_totals = other_totals, this_totals
-    result = _compute_pl_dept_consistency(pl_totals, dept_totals)
-    result['other'] = {
-        'batch_type': other_type,
-        'status': other.status,
-        'uploaded_at': other.uploaded_at.isoformat() if other.uploaded_at else None,
-    }
-    return result
-
-
 @cw_required()
 def batch_upload(request):
     if request.method != 'POST':
@@ -1421,28 +1184,14 @@ def batch_upload(request):
     l2_map = {c.name: c for c in L2Category.objects.filter(business_unit=bu)}
     l3_map = {(c.l1_category_id, c.name): c for c in L3Category.objects.filter(business_unit=bu)}
 
-    # ── JSON：金蝶利润表（SpreadJS）= 利润表；旧版数组 = 部门明细 ─────────────────
+    # ── JSON：部门明细（数组格式）──────────────────────────────────────────────
     if fname.endswith('.json'):
         data_str = f.read().decode('utf-8', errors='replace')
-        if data_str.lstrip().startswith('{'):
-            # SpreadJS workbook → 利润表
-            pl_data, errors = _parse_kingdee_pl_json(data_str, l1_map)
-            if not pl_data:
-                hint = '；'.join(errors[:2]) if errors else '未能从利润表JSON中读取到有效科目金额'
-                return err(hint)
-            parsed_rows = [
-                {'l1': l1_map[n], 'l2': None, 'l3': None, 'amount': a,
-                 'l1_name': n, 'l2_name': '', 'l3_name': ''}
-                for n, a in pl_data.items() if n in l1_map and not l1_map[n].is_calculated
-            ]
-            batch_type = ImportBatch.TYPE_PL
-            fmt = 'kingdee_pl_json'
-        else:
-            parsed_rows, errors = _parse_json_rows(data_str, bu, l1_map, l2_map, l3_map)
-            batch_type = ImportBatch.TYPE_DEPT
-            fmt = 'json'
+        parsed_rows, errors = _parse_json_rows(data_str, bu, l1_map, l2_map, l3_map)
+        batch_type = ImportBatch.TYPE_DEPT
+        fmt = 'json'
 
-    # ── Excel：金蝶核算维度明细账 / KXT模板 / 旧版利润表 = 部门明细 ─────────────────
+    # ── Excel：金蝶核算维度明细账 / KXT模板 = 部门明细 ─────────────────────────────
     else:
         try:
             import openpyxl
@@ -1451,42 +1200,27 @@ def batch_upload(request):
         except Exception:
             return err('文件格式错误，请使用Excel(.xlsx)格式')
 
-        # ── 利润表 Excel——金蝶三表里的「利润分配表/利润表」页，或本系统两列模板页 ──
-        pl_ws, pl_data = _find_pl_sheet(wb, l1_map)
-        if pl_ws is not None:
-            parsed_rows = [
-                {'l1': l1_map[n], 'l2': None, 'l3': None, 'amount': a,
-                 'l1_name': n, 'l2_name': '', 'l3_name': ''}
-                for n, a in pl_data.items() if n in l1_map and not l1_map[n].is_calculated
-            ]
-            if not parsed_rows:
-                return err('利润表中未读取到有效科目金额（需含「项目名称/科目名称」+「本期金额」两列，且科目能匹配一级科目）')
-            errors = []
-            batch_type = ImportBatch.TYPE_PL
-            fmt = 'pl_excel'
-        else:
-            batch_type = ImportBatch.TYPE_DEPT
-            ledger_start, ledger_cm = _detect_dept_ledger(ws)
-            row1_vals = [str(ws.cell(row=1, column=c).value or '').strip() for c in range(1, 6)]
-            is_kxt = (row1_vals[:5] == EXCEL_HEADERS or row1_vals[:4] == ['一级科目', '二级项目部', '三级科目明细', '金额(元)'])
+        batch_type = ImportBatch.TYPE_DEPT
+        ledger_start, ledger_cm = _detect_dept_ledger(ws)
+        row1_vals = [str(ws.cell(row=1, column=c).value or '').strip() for c in range(1, 6)]
+        is_kxt = (row1_vals[:5] == EXCEL_HEADERS or row1_vals[:4] == ['一级科目', '二级项目部', '三级科目明细', '金额(元)'])
 
-            if ledger_start is not None:
-                parsed_rows, errors = _parse_dept_ledger_rows(ws, ledger_start, ledger_cm, bu, l1_map, l2_map, l3_map)
-                fmt = 'kingdee_ledger'
-            elif is_kxt:
-                parsed_rows, errors = _parse_template_rows(ws, bu, l1_map, l2_map, l3_map)
-                fmt = 'template'
-            else:
-                data_start, cm = _detect_kingdee_format(ws)
-                if data_start is None:
-                    return err(
-                        '无法识别文件格式。支持：\n'
-                        '① 金蝶核算维度明细账（部门明细表，含"部门名称""科目编码""借方""贷方"列）\n'
-                        '② KXT模板（借方/贷方两列）\n'
-                        '③ 金蝶利润表（.json 文件，或「科目名称+本期金额」两列 .xlsx）'
-                    )
-                parsed_rows, errors = _parse_kingdee_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map)
-                fmt = 'kingdee'
+        if ledger_start is not None:
+            parsed_rows, errors = _parse_dept_ledger_rows(ws, ledger_start, ledger_cm, bu, l1_map, l2_map, l3_map)
+            fmt = 'kingdee_ledger'
+        elif is_kxt:
+            parsed_rows, errors = _parse_template_rows(ws, bu, l1_map, l2_map, l3_map)
+            fmt = 'template'
+        else:
+            data_start, cm = _detect_kingdee_format(ws)
+            if data_start is None:
+                return err(
+                    '无法识别文件格式。支持：\n'
+                    '① 金蝶核算维度明细账（部门明细表，含"部门名称""科目编码""借方""贷方"列）\n'
+                    '② KXT模板（借方/贷方两列）'
+                )
+            parsed_rows, errors = _parse_kingdee_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map)
+            fmt = 'kingdee'
 
     # Non-fatal warnings: show first 10 but don't block import
     warnings = errors[:10] if errors else []
@@ -1495,11 +1229,8 @@ def batch_upload(request):
         hint = '；'.join(errors[:3]) if errors else '文件中没有有效数据行'
         return err(hint)
 
-    # Compute P&L reconciliation preview (only meaningful for dept_detail uploads)
+    # Compute P&L reconciliation preview (推算利润指标，仅展示部门明细推算的利润指标)
     pl_check = _compute_pl_check(parsed_rows) if batch_type == ImportBatch.TYPE_DEPT else {}
-
-    # 利润表 ↔ 部门明细一致性核对（两类表都已导入时，不分先后；非阻断，仅提示）
-    consistency = _consistency_for_upload(bu, year, month, batch_type, parsed_rows)
 
     # Create draft batch + entries atomically
     with transaction.atomic(using='default'):  # caiwu 已并入 default 主库(整合阶段1)
@@ -1522,7 +1253,6 @@ def batch_upload(request):
         'fmt': fmt,
         'warnings': warnings,
         'pl_check': pl_check,
-        'consistency': consistency,
     })
 
 
@@ -1596,7 +1326,7 @@ def batch_detail(request, bid):
 @cw_required()
 def batch_submission_status(request):
     """GET /batches/submission-status?year=&month=
-    Returns per-BU completion status: which of (部门明细表, 利润表) have been submitted/published.
+    Returns per-BU completion status: 部门明细表 是否已提交/发布。
     """
     if request.method != 'GET':
         return err('方法不允许', 405)
@@ -1639,15 +1369,10 @@ def batch_submission_status(request):
     for bu in bus:
         types = lookup[bu]
         dept_info = types.get(ImportBatch.TYPE_DEPT)
-        pl_info = types.get(ImportBatch.TYPE_PL)
-        complete = (
-            dept_info is not None and dept_info['status'] == 'published' and
-            pl_info is not None and pl_info['status'] == 'published'
-        )
+        complete = dept_info is not None and dept_info['status'] == 'published'
         result.append({
             'bu': bu,
             'department_detail': dept_info,
-            'profit_loss': pl_info,
             'complete': complete,
         })
 

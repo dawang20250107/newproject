@@ -55,8 +55,6 @@ async function loadSubmissionStatus() {
 const l1Rows = computed(() => uploadResult.value?.pl_check?.l1_summary || [])
 const l2Rows = computed(() => uploadResult.value?.pl_check?.l2_summary || [])
 const kpis   = computed(() => uploadResult.value?.pl_check?.kpis || [])
-// 利润表 ↔ 部门明细 一致性核对（两类表都已导入时由后端返回；null 表示对方表尚未导入）
-const consistency = computed(() => uploadResult.value?.consistency || null)
 
 const KPI_KEYS = new Set(['主营业务收入', '主营业务成本', '运营毛利', '经营毛利', '经营净利'])
 const KPI_COLORS = {
@@ -87,7 +85,7 @@ const fmtDt = (s) => fmtDateTime(s)
 
 async function doDelete(batch) {
   const msg = batch.status === 'published'
-    ? `确认删除已发布批次「${batch.business_unit} ${batch.year}年${batch.month}月 ${batch.batch_type === 'profit_loss' ? '利润表' : '部门明细表'}」？\n删除后报表和图表将不再包含这部分数据。`
+    ? `确认删除已发布批次「${batch.business_unit} ${batch.year}年${batch.month}月 部门明细表」？\n删除后报表和图表将不再包含这部分数据。`
     : '确认删除此草稿批次？'
   if (!confirm(msg)) return
   try {
@@ -123,8 +121,7 @@ function openUpload() {
 // Derive the detected table type from the chosen file name for inline hinting
 const detectedType = computed(() => {
   const n = upFile.value?.name?.toLowerCase() || ''
-  if (n.endsWith('.json')) return { label: '利润表', cls: 'pl' }
-  if (n.endsWith('.xlsx')) return { label: '部门明细表', cls: 'dept' }
+  if (n.endsWith('.xlsx') || n.endsWith('.json')) return { label: '部门明细表', cls: 'dept' }
   return null
 })
 
@@ -187,9 +184,8 @@ function completenessLabel(row) {
   if (!row) return '—'
   if (row.complete) return '完整'
   const dept = row.department_detail?.status
-  const pl = row.profit_loss?.status
-  if (dept === 'draft' || pl === 'draft') return '草稿中'
-  if (dept || pl) return '未完整'
+  if (dept === 'draft') return '草稿中'
+  if (dept) return '未完整'
   return '未提交'
 }
 
@@ -201,7 +197,7 @@ const reminderItems = computed(() =>
     .filter(r => !r.complete)
     .map(r => ({
       bu: r.bu,
-      kind: (r.department_detail || r.profit_loss) ? 'partial' : 'missing',
+      kind: r.department_detail ? 'partial' : 'missing',
       label: completenessLabel(r),
     }))
 )
@@ -209,7 +205,7 @@ const allComplete = computed(() => statusRows.value.length > 0 && reminderItems.
 
 function rowAlertClass(row) {
   if (row.complete) return ''
-  return (row.department_detail || row.profit_loss) ? 'row-partial' : 'row-missing'
+  return row.department_detail ? 'row-partial' : 'row-missing'
 }
 
 // info is the per-type dict {status,...} or null
@@ -239,7 +235,7 @@ onMounted(() => {
       <div>
         <h1>数据加工</h1>
         <div style="font-size:13px;color:var(--muted);margin-top:2px">
-          上传金蝶部门明细表 / 利润表 · 核对利润指标 · 发布到报表
+          上传金蝶部门明细表 · 核对利润指标 · 发布到报表
         </div>
       </div>
       <div style="display:flex;gap:8px">
@@ -298,7 +294,6 @@ onMounted(() => {
             <tr>
               <th>事业部</th>
               <th>部门明细表</th>
-              <th>利润表</th>
               <th>完整度</th>
             </tr>
           </thead>
@@ -308,11 +303,6 @@ onMounted(() => {
               <td>
                 <span :class="statusBadgeClass(row.department_detail)">
                   {{ statusLabel(row.department_detail) }}
-                </span>
-              </td>
-              <td>
-                <span :class="statusBadgeClass(row.profit_loss)">
-                  {{ statusLabel(row.profit_loss) }}
                 </span>
               </td>
               <td>
@@ -398,20 +388,13 @@ onMounted(() => {
 
             <div v-if="uploadErr" class="alert alert-err" style="margin-bottom:16px">{{ uploadErr }}</div>
 
-            <!-- Format guide: file type auto-determines the table type -->
+            <!-- Format guide -->
             <div class="fmt-guide">
-              <div class="fg-card">
-                <div class="fg-ico fg-json">JSON</div>
-                <div>
-                  <div class="fg-title">利润表</div>
-                  <div class="fg-desc">金蝶利润表 .json，或「科目名称+本期金额」两列 .xlsx</div>
-                </div>
-              </div>
               <div class="fg-card">
                 <div class="fg-ico fg-xlsx">XLSX</div>
                 <div>
                   <div class="fg-title">部门明细表</div>
-                  <div class="fg-desc">金蝶核算维度明细账 .xlsx 文件</div>
+                  <div class="fg-desc">金蝶核算维度明细账 .xlsx，或 KXT 模板（借/贷两列）</div>
                 </div>
               </div>
             </div>
@@ -448,7 +431,7 @@ onMounted(() => {
               </template>
               <template v-else>
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                <span>点击选择文件（.xlsx 部门明细 / 利润表 · .json 利润表）</span>
+                <span>点击选择部门明细表文件（.xlsx，或 .json 数组格式）</span>
               </template>
             </label>
 
@@ -470,8 +453,6 @@ onMounted(() => {
                   {{ uploadResult.batch?.business_unit }} · {{ uploadResult.batch?.year }}年{{ uploadResult.batch?.month }}月 ·
                   共 {{ uploadResult.row_count }} 行
                   <span v-if="uploadResult.fmt === 'kingdee_ledger'" class="badge badge-primary" style="margin-left:6px;font-size:10px">金蝶部门明细账</span>
-                  <span v-else-if="uploadResult.fmt === 'kingdee_pl_json'" class="badge badge-info" style="margin-left:6px;font-size:10px">金蝶利润表</span>
-                  <span v-else-if="uploadResult.fmt === 'pl_excel'" class="badge badge-info" style="margin-left:6px;font-size:10px">利润表(Excel)</span>
                   <span v-else-if="uploadResult.fmt === 'kingdee'" class="badge badge-primary" style="margin-left:6px;font-size:10px">金蝶格式</span>
                   <span v-else-if="uploadResult.fmt === 'json'" class="badge badge-primary" style="margin-left:6px;font-size:10px">JSON格式</span>
                   <span v-else class="badge badge-muted" style="margin-left:6px;font-size:10px">KXT模板</span>
@@ -489,41 +470,10 @@ onMounted(() => {
               </div>
             </div>
 
-            <!-- ── 利润表 ↔ 部门明细 一致性核对（两类表都已导入时）── -->
-            <div v-if="consistency" class="cons-box" :class="consistency.all_match ? 'cons-ok' : 'cons-bad'">
-              <div class="cons-head">
-                <strong>{{ consistency.all_match ? '✓ 利润表与部门明细一致' : '⚠ 利润表与部门明细存在差异' }}</strong>
-                <span class="cons-sub">
-                  已与{{ consistency.other?.batch_type === 'profit_loss' ? '利润表' : '部门明细表' }}（{{ consistency.other?.status === 'published' ? '已发布' : '草稿' }}）核对，管理费用按「含集团管理费」口径合并比对
-                </span>
-              </div>
-              <table v-if="consistency.rows?.length" class="cons-table">
-                <thead><tr><th>科目</th><th class="r">利润表</th><th class="r">部门明细</th><th class="r">差额</th></tr></thead>
-                <tbody>
-                  <tr v-for="row in consistency.rows" :key="row.name" :class="{ 'cons-row-bad': !row.match }">
-                    <td>{{ row.name }}</td>
-                    <td class="r">{{ fmtAmt(row.pl) }}</td>
-                    <td class="r">{{ fmtAmt(row.dept) }}</td>
-                    <td class="r" :style="row.match ? '' : 'color:var(--danger);font-weight:700'">{{ fmtAmt(row.diff) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-              <div v-if="!consistency.all_match" class="cons-note">差异不影响发布，可继续发布或核对后重新上传。报表仍以部门明细为准。</div>
-            </div>
-
-            <!-- ── Profit loss simplified view (Opt 8 accessibility) ── -->
-            <template v-if="uploadResult.batch?.batch_type === 'profit_loss'">
-              <div class="pl-simple-confirm">
-                <div style="font-size:20px;margin-bottom:8px">✅</div>
-                <div style="font-weight:700;font-size:15px;margin-bottom:4px">利润表已上传</div>
-                <div style="color:var(--muted);font-size:13px">共 {{ uploadResult.row_count }} 行数据，请确认后发布。</div>
-              </div>
-            </template>
-
-            <!-- ── Department detail: P&L check + preview ── -->
-            <template v-else>
-              <!-- ── P&L 利润表核对 ── -->
-              <div class="section-title" style="margin-bottom:10px">利润表核对</div>
+            <!-- ── 部门明细：推算利润指标 + 预览 ── -->
+            <template>
+              <!-- ── 推算利润指标（由部门明细推算）── -->
+              <div class="section-title" style="margin-bottom:10px">利润指标核对</div>
               <div class="pl-grid">
                 <div v-for="kpi in kpis" :key="kpi.name" class="pl-card" :class="{'pl-calc': kpi.is_calculated}">
                   <div class="pl-label">{{ kpi.name }}</div>
@@ -631,7 +581,6 @@ onMounted(() => {
 @media (max-width: 560px) { .fmt-guide { grid-template-columns: 1fr; } }
 .fg-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 12px; background: rgba(255,253,250,0.7); border: 1px solid var(--border); }
 .fg-ico { flex-shrink: 0; width: 46px; height: 46px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; letter-spacing: 0.02em; color: #fff; }
-.fg-json { background: linear-gradient(135deg, #1565c0, #42a5f5); }
 .fg-xlsx { background: linear-gradient(135deg, #c96342, #e8855a); }
 .fg-title { font-size: 14px; font-weight: 700; color: var(--text); }
 .fg-desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
@@ -657,20 +606,6 @@ onMounted(() => {
 /* Warning banner */
 .warn-banner { display: flex; align-items: flex-start; gap: 8px; padding: 10px 14px; border-radius: 8px; background: rgba(245,127,23,0.08); border: 1px solid rgba(245,127,23,0.2); color: #b45309; font-size: 13px; margin-bottom: 16px; }
 
-/* 利润表 ↔ 部门明细 一致性核对 */
-.cons-box { border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; border: 1px solid; }
-.cons-ok  { background: rgba(46,125,50,0.06); border-color: rgba(46,125,50,0.28); }
-.cons-bad { background: rgba(198,40,40,0.06); border-color: rgba(198,40,40,0.28); }
-.cons-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
-.cons-head strong { font-size: 13.5px; }
-.cons-sub { font-size: 11.5px; color: var(--muted); }
-.cons-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.cons-table th, .cons-table td { padding: 5px 8px; border-bottom: 1px solid rgba(0,0,0,0.05); }
-.cons-table th { color: var(--muted); font-weight: 600; text-align: left; }
-.cons-table .r { text-align: right; font-variant-numeric: tabular-nums; }
-.cons-row-bad { background: rgba(198,40,40,0.05); }
-.cons-note { font-size: 11.5px; color: var(--muted); margin-top: 8px; }
-
 /* P&L check grid */
 .pl-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 8px; }
 @media (max-width: 700px) { .pl-grid { grid-template-columns: repeat(3, 1fr); } }
@@ -685,12 +620,6 @@ onMounted(() => {
 .pl-note { font-size: 11px; color: rgba(155,128,112,0.7); margin-bottom: 4px; padding-left: 4px; }
 
 /* Profit loss simple confirmation */
-.pl-simple-confirm {
-  text-align: center; padding: 28px 20px;
-  background: rgba(46,125,50,0.05); border: 1px solid rgba(46,125,50,0.2);
-  border-radius: 12px; margin-bottom: 16px;
-}
-
 /* Preview table */
 .preview-scroll { max-height: 220px; overflow-y: auto; border-radius: 8px; border: 1px solid var(--border); }
 .preview-scroll table { width: 100%; border-collapse: collapse; }
