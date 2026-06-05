@@ -6,3 +6,6 @@ gevent==24.2.1
 PyMySQL==1.1.1
 openpyxl==3.1.5
 requests>=2.31
+# 知识库文件导入（PDF / Word）；未安装时接口会优雅提示，文本/Excel 不依赖它们
+pypdf>=4.2
+python-docx>=1.1

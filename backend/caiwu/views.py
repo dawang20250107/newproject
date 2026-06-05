@@ -3054,6 +3054,134 @@ def cockpit_knowledge_detail(request, kid):
     return err('方法不允许', 405)
 
 
+def _extract_file_text(f):
+    """从上传文件提取纯文本，尽量支持多格式。返回 (text, error)。
+    原生支持：txt/md/csv/tsv/json/log/html 等文本类、xlsx/xls；
+    pdf/docx 需服务器装 pypdf / python-docx（已列入 requirements，未装时给出提示）。"""
+    name = (f.name or '').lower()
+    raw = f.read()
+
+    def _decode(b):
+        for enc in ('utf-8', 'gb18030', 'latin-1'):
+            try:
+                return b.decode(enc)
+            except Exception:
+                continue
+        return b.decode('utf-8', 'ignore')
+
+    if name.endswith(('.xlsx', '.xlsm', '.xls')):
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True, read_only=True)
+            out = []
+            for ws in wb.worksheets:
+                out.append(f'# {ws.title}')
+                for row in ws.iter_rows(values_only=True):
+                    cells = [str(c) for c in row if c not in (None, '')]
+                    if cells:
+                        out.append('\t'.join(cells))
+                    if len(out) > 6000:
+                        break
+            return '\n'.join(out), None
+        except Exception as e:
+            return '', f'Excel 解析失败：{e}'
+    if name.endswith('.pdf'):
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(raw))
+            return '\n'.join((p.extract_text() or '') for p in reader.pages), None
+        except ImportError:
+            return '', 'PDF 解析需服务器安装 pypdf（已列入 requirements，部署后可用）'
+        except Exception as e:
+            return '', f'PDF 解析失败：{e}'
+    if name.endswith(('.docx',)):
+        try:
+            import docx
+            d = docx.Document(io.BytesIO(raw))
+            return '\n'.join(p.text for p in d.paragraphs), None
+        except ImportError:
+            return '', 'Word 解析需服务器安装 python-docx（已列入 requirements，部署后可用）'
+        except Exception as e:
+            return '', f'Word 解析失败：{e}'
+    # 其余按文本解码（txt/md/markdown/csv/tsv/json/log/html/yaml/…）
+    return _decode(raw), None
+
+
+@cw_required()
+def cockpit_knowledge_import(request):
+    """上传文件 → 提取文本 → （默认）AI 提炼为多条经营知识入库；支持大量格式。
+    入参（multipart）：file、scope、mode(distill|raw)。"""
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    denied = _page_denied(request, 'cockpit')
+    if denied:
+        return denied
+    f = request.FILES.get('file')
+    if not f:
+        return err('请上传文件')
+    if f.size > 12 * 1024 * 1024:
+        return err('文件过大（上限12MB）')
+    scope = (request.POST.get('scope') or '全集团').strip() or '全集团'
+    if scope != '全集团' and scope not in VALID_BUSINESS_UNITS:
+        scope = '全集团'
+    if scope != '全集团' and not _can_access_bu(request, scope):
+        return err('无权写入该事业部知识', 403)
+    mode = request.POST.get('mode', 'distill')
+
+    text, e = _extract_file_text(f)
+    if e:
+        return err(e)
+    text = (text or '').strip()
+    if not text:
+        return err('未能从文件中提取到文本内容')
+    text = text[:24000]
+
+    entries = []
+    if mode == 'distill' and settings.DEEPSEEK_API_KEY:
+        sys = ('你是经营分析助手。从用户提供的文档内容中提炼出若干条（最多10条）'
+               '可长期复用的经营知识/背景/口径。只输出 JSON 数组：'
+               '[{"title":"≤16字小标题","content":"≤140字要点，保留关键数字与结论"}…]，只输出JSON。')
+        try:
+            raw_out = _deepseek_chat([{'role': 'system', 'content': sys},
+                                      {'role': 'user', 'content': text}],
+                                     timeout=120, max_tokens=2000)
+            s = raw_out.strip()
+            arr = json.loads(s[s.find('['): s.rfind(']') + 1])
+            for it in arr[:10]:
+                c = (it.get('content') or '').strip()
+                if c:
+                    entries.append((( it.get('title') or '')[:120], c[:2000]))
+        except Exception as ex:
+            logger.error(f'knowledge import distill error: {ex}')
+            entries = []  # 回退到原文切块
+
+    if not entries:
+        # 原文切块（每块≤1500字），标题用文件名
+        base = (f.name or '导入').rsplit('.', 1)[0][:80]
+        chunk, n = [], 0
+        cur = ''
+        for para in text.split('\n'):
+            if len(cur) + len(para) > 1500:
+                if cur.strip():
+                    n += 1
+                    entries.append((f'{base} #{n}', cur.strip()[:2000]))
+                cur = ''
+            cur += para + '\n'
+        if cur.strip():
+            n += 1
+            entries.append((f'{base} #{n}', cur.strip()[:2000]))
+        entries = entries[:30]
+
+    if not entries:
+        return err('未能从文件生成知识条目')
+
+    src = 'ai' if (mode == 'distill' and settings.DEEPSEEK_API_KEY) else 'user'
+    objs = [CockpitKnowledge(scope=scope, kind='background', title=t, content=c,
+                             source=src, created_by=request.pk_user) for t, c in entries]
+    CockpitKnowledge.objects.bulk_create(objs)
+    return ok({'created': len(objs), 'mode': mode, 'scope': scope, 'file': f.name})
+
+
 @cw_required()
 def cockpit_knowledge_distill(request):
     """把一段 AI 分析自我提炼为一条可长期复用的经营知识并入库（Agent 自我总结、积累）。"""

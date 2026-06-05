@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import api from '../../api/caiwu.js'
@@ -7,6 +8,7 @@ import { fmtCompact } from '../../utils/format.js'
 import EmptyState from '../../components/EmptyState.vue'
 
 const auth = useCaiwuAuth()
+const route = useRoute()
 
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
@@ -75,7 +77,14 @@ async function onPickFile(e) {
   } finally { uploading.value = false; e.target.value = '' }
 }
 
-onMounted(load)
+onMounted(() => {
+  // 支持从驾驶舱对话「下钻」带入事业部 / 期间
+  const qb = route.query.bu, qy = +route.query.year, qm = +route.query.month
+  if (qb && accessibleBus.value.includes(qb)) bu.value = qb
+  if (qy >= 2000 && qy <= 2100) year.value = qy
+  if (qm >= 1 && qm <= 12) month.value = qm
+  load()
+})
 </script>
 
 <template>

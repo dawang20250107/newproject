@@ -791,6 +791,33 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.assertEqual(r.json()['data']['title'], '应收风险')
         self.assertEqual(r.json()['data']['source'], 'ai')
 
+    def test_knowledge_import_text_raw(self):
+        """文件导入（原文切块）：文本文件 → 知识条目。"""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        f = SimpleUploadedFile('notes.txt', '第一条经营背景说明\n第二条口径说明'.encode('utf-8'),
+                               content_type='text/plain')
+        r = self.client.post('/api/cw/cockpit/knowledge/import',
+                             {'file': f, 'scope': '全集团', 'mode': 'raw'}, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertGreaterEqual(r.json()['data']['created'], 1)
+
+    def test_knowledge_import_distill(self):
+        """文件导入（AI 提炼）：文档 → 多条知识。"""
+        from unittest import mock
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        def fake_chat(messages, timeout=90, model=None, max_tokens=1800):
+            return '[{"title":"背景A","content":"要点A"},{"title":"背景B","content":"要点B"}]'
+
+        f = SimpleUploadedFile('doc.md', '# 标题\n这里是一些经营文档内容'.encode('utf-8'))
+        with mock.patch('caiwu.views._deepseek_chat', fake_chat):
+            r = self.client.post('/api/cw/cockpit/knowledge/import',
+                                 {'file': f, 'scope': '全集团', 'mode': 'distill'}, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['data']['created'], 2)
+        items = self.client.get('/api/cw/cockpit/knowledge', **self.auth()).json()['data']['items']
+        self.assertTrue(any(k['source'] == 'ai' and k['title'] == '背景A' for k in items))
+
     def test_report_ai_stream_emits_answer_frames(self):
         from unittest import mock
         self.mk(2026, 5, 200, 130)

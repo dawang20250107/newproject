@@ -135,6 +135,9 @@ async function sendChat(text) {
     chatStreaming.value = false
     if (!asst.content) asst.content = chatErr.value ? `⚠ ${chatErr.value}` : '（未返回内容）'
     scrollChatSoon()
+    if (autoDistill.value && !chatErr.value && asst.content && asst.content.length > 40) {
+      silentDistill(asst.content)
+    }
   }
 }
 
@@ -195,9 +198,28 @@ async function distillToKb(content, idx) {
 }
 function openKb() { panelTab.value = 'kb'; loadKb() }
 
-// ── 下钻导航（从对话跳到明细页）──────────────────────────────────────────────
-function drillTo(path) { chatOpen.value = false; router.push(path) }
+// ── 下钻导航（从对话跳到明细页，带上当前事业部+期间）────────────────────────
+function drillTo(path) {
+  chatOpen.value = false
+  const query = {}
+  if (path.startsWith('/ar/')) {
+    if (selectedBu.value) query.dept = selectedBu.value
+  } else {
+    query.year = year.value; query.month = month.value
+    if (selectedBu.value) query.bu = selectedBu.value
+  }
+  router.push({ path, query })
+}
 const KIND_LABEL = { insight: '洞察', background: '背景', rule: '口径' }
+
+// ── 自动沉淀：每轮回答完自动提炼要点入库（开关，默认关）──────────────────────
+const autoDistill = ref(false)
+async function silentDistill(content) {
+  try {
+    await api.post('/cockpit/knowledge/distill', { text: content, scope: selectedBu.value || '全集团' })
+    showToast('💡 已自动沉淀要点入库')
+  } catch (e) { /* silent */ }
+}
 
 // ── headline KPI cards ───────────────────────────────────────────────────────
 const cards = computed(() => {
@@ -513,6 +535,10 @@ onMounted(load)
             </div>
           </div>
 
+          <label v-show="panelTab === 'chat'" class="cfa-auto">
+            <input type="checkbox" v-model="autoDistill" />
+            <span>自动把回答要点沉淀进知识库（越用越聪明）</span>
+          </label>
           <div v-show="panelTab === 'chat'" class="cfa-input-row">
             <textarea v-model="chatInput" class="cfa-input" rows="1"
               placeholder="问问经营情况…（Enter 发送，Shift+Enter 换行）"
@@ -658,7 +684,9 @@ onMounted(load)
 .cfa-md :deep(code) { background: rgba(201,99,66,0.1); color: #a8442a; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 .cfa-md :deep(hr) { border: none; border-top: 1px solid rgba(0,0,0,0.08); margin: 10px 0; }
 
-.cfa-input-row { display: flex; gap: 8px; align-items: flex-end; padding: 12px 16px 16px; border-top: 1px solid rgba(201,99,66,0.12); }
+.cfa-auto { display: flex; align-items: center; gap: 6px; padding: 8px 16px 0; font-size: 11.5px; color: var(--muted); cursor: pointer; }
+.cfa-auto input { cursor: pointer; }
+.cfa-input-row { display: flex; gap: 8px; align-items: flex-end; padding: 8px 16px 16px; border-top: 1px solid rgba(201,99,66,0.12); }
 .cfa-input {
   flex: 1; resize: none; max-height: 120px; min-height: 38px;
   border: 1px solid rgba(0,0,0,0.12); border-radius: 11px; padding: 9px 12px;

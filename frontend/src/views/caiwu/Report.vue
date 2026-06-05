@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import ReportTable from '../../components/caiwu/report/ReportTable.vue'
@@ -153,7 +154,15 @@ async function exportReport() {
   }
 }
 
-onMounted(load)
+const route = useRoute()
+onMounted(() => {
+  // 支持从驾驶舱对话「下钻」带入事业部 / 期间
+  const qb = route.query.bu, qy = +route.query.year, qm = +route.query.month
+  if (qb && BUSINESS_UNITS.includes(qb)) selectedBu.value = qb
+  if (qy >= 2000 && qy <= 2100) year.value = qy
+  if (qm >= 1 && qm <= 12) month.value = qm
+  load()
+})
 </script>
 
 <template>
