@@ -17,7 +17,7 @@ function editable(key) { return auth.canEdit(key) }
 
 const loading = ref(false)
 const error = ref('')
-const saveStatus = ref('')  // '' | 'saving' | 'saved' | 'error'
+const saveStatus = ref('')
 const autoSaveErr = ref('')
 let saveTimer = null
 let isResetting = false
@@ -27,6 +27,9 @@ const DEPT_LIST = DEPT_CONST
 const deptOptions = ref([])
 const form = ref({})
 
+// installments: array of {seq, pay_date, pay_amount, notes, id?}
+const installments = ref([])
+
 const FIELD_COLS = {
   department: ['department'],
   applicant: ['applicant'],
@@ -35,15 +38,12 @@ const FIELD_COLS = {
   payee: ['payee'],
   total_amount: ['total_amount'],
   planned_date: ['planned_date'],
-  pay1: ['pay1_date', 'pay1_amount'],
-  pay2: ['pay2_date', 'pay2_amount'],
-  pay3: ['pay3_date', 'pay3_amount'],
+  installments: ['installments'],
   notes: ['notes'],
   plan_adjustment: ['plan_adjustment'],
 }
 
 function _autoDefaultDept() {
-  // Always empty on new records — user must explicitly choose a department.
   return ''
 }
 
@@ -60,21 +60,22 @@ function resetForm() {
     payee: p?.payee || '',
     total_amount: p?.total_amount || '',
     planned_date: p?.planned_date || '',
-    pay1_date: p?.pay1_date || '',
-    pay1_amount: p?.pay1_amount && p.pay1_amount !== '0' ? p.pay1_amount : '',
-    pay2_date: p?.pay2_date || '',
-    pay2_amount: p?.pay2_amount && p.pay2_amount !== '0' ? p.pay2_amount : '',
-    pay3_date: p?.pay3_date || '',
-    pay3_amount: p?.pay3_amount && p.pay3_amount !== '0' ? p.pay3_amount : '',
     notes: p?.notes || '',
     plan_adjustment: p?.plan_adjustment != null ? p.plan_adjustment : '',
   }
-  // Non-admin users only see their own departments; admin sees all.
+  // Restore installments from payment
+  installments.value = (p?.installments || []).map((inst, i) => ({
+    id: inst.id,
+    seq: inst.seq || (i + 1),
+    pay_date: inst.pay_date || '',
+    pay_amount: inst.pay_amount && inst.pay_amount !== '0' ? inst.pay_amount : '',
+    notes: inst.notes || '',
+  }))
+
   const myDepts = auth.isAdmin ? null : (auth.user?.departments || [])
   const extra = props.departments.filter(d => !DEPT_LIST.includes(d))
   const allDepts = [...DEPT_LIST, ...extra]
   let opts = myDepts ? allDepts.filter(d => myDepts.includes(d)) : allDepts
-  // When editing, never drop the record's existing department from the choices.
   if (!isNew && p?.department && !opts.includes(p.department)) opts = [p.department, ...opts]
   deptOptions.value = opts
   nextTick(() => { isResetting = false })
@@ -82,8 +83,7 @@ function resetForm() {
 
 watch(() => props.payment, resetForm, { immediate: true })
 
-// Autosave — only for editing existing records
-watch(form, async () => {
+watch([form, installments], async () => {
   if (!props.payment?.id || isResetting) return
   clearTimeout(saveTimer)
   saveStatus.value = 'saving'
@@ -104,9 +104,7 @@ async function autosave() {
 
 // Real-time installment tracker
 const paidSoFar = computed(() =>
-  (parseFloat(form.value.pay1_amount) || 0) +
-  (parseFloat(form.value.pay2_amount) || 0) +
-  (parseFloat(form.value.pay3_amount) || 0)
+  installments.value.reduce((s, i) => s + (parseFloat(i.pay_amount) || 0), 0)
 )
 const plannedTotal = computed(() => parseFloat(form.value.total_amount) || 0)
 const adjustedTarget = computed(() => {
@@ -115,6 +113,19 @@ const adjustedTarget = computed(() => {
 })
 const overpaid = computed(() => plannedTotal.value > 0 && paidSoFar.value > plannedTotal.value)
 const remaining = computed(() => Math.max(0, adjustedTarget.value - paidSoFar.value))
+
+// Installment helpers
+function addInstallment() {
+  const nextSeq = installments.value.length > 0
+    ? Math.max(...installments.value.map(i => i.seq)) + 1
+    : 1
+  installments.value.push({ seq: nextSeq, pay_date: '', pay_amount: '', notes: '' })
+}
+function removeInstallment(idx) {
+  installments.value.splice(idx, 1)
+  // Re-assign seq
+  installments.value.forEach((inst, i) => { inst.seq = i + 1 })
+}
 
 // 排款联动1：按项目编号查该项目的「预付」未核销余额（只读提示）
 const prepaid = ref(null)
@@ -134,12 +145,12 @@ watch(() => form.value.project_no, (no) => {
 
 // 排款联动2：按收款方名称模糊匹配供应商池，弹出预付余额并可直接核销
 const matchedSupplier = ref(null)
-const supplierWoAdv = ref(null)       // selected advance for writeoff
+const supplierWoAdv = ref(null)
 const supplierWoAmt = ref('')
 const supplierWoDate = ref('')
 const supplierWoNotes = ref('')
 const supplierWoSaving = ref(false)
-const supplierWoResult = ref('')      // success flash
+const supplierWoResult = ref('')
 let supplierTimer = null
 
 watch(() => form.value.payee, (payee) => {
@@ -180,7 +191,6 @@ async function doSupplierWriteoff() {
     })
     supplierWoResult.value = `已用预付 ¥${parseFloat(supplierWoAmt.value).toFixed(2)} 核销，预付余额已更新`
     cancelSupplierWo()
-    // refresh supplier balance
     const res = await api.get('/ar/suppliers/search', {
       params: { q: form.value.payee, dept: form.value.department || undefined }
     })
@@ -195,16 +205,26 @@ function buildPayload() {
   const payload = {}
   const includeAll = !props.payment?.id
   for (const [field, cols] of Object.entries(FIELD_COLS)) {
+    if (field === 'installments') continue  // handled separately below
     if (includeAll || editable(field)) {
       for (const col of cols) payload[col] = form.value[col]
     }
   }
-  for (const k of ['pay1_date', 'pay2_date', 'pay3_date', 'pay1_amount', 'pay2_amount', 'pay3_amount']) {
-    if (k in payload && (payload[k] === '' || payload[k] === null)) payload[k] = null
-  }
   if ('plan_adjustment' in payload) {
     payload.plan_adjustment = (payload.plan_adjustment === '' || payload.plan_adjustment === null)
       ? null : payload.plan_adjustment
+  }
+  // Include installments if user can edit them or if creating new
+  if (includeAll || editable('installments')) {
+    payload.installments = installments.value
+      .filter(i => i.pay_date && parseFloat(i.pay_amount) > 0)
+      .map((i, idx) => ({
+        id: i.id || undefined,
+        seq: idx + 1,
+        pay_date: i.pay_date,
+        pay_amount: i.pay_amount,
+        notes: i.notes || '',
+      }))
   }
   return payload
 }
@@ -304,7 +324,7 @@ async function submit() {
         <div v-if="vis('payee')" class="form-group">
           <label>收款方 *</label>
           <input v-model="form.payee" placeholder="收款单位/个人" :disabled="!editable('payee')" />
-          <!-- 供应商匹配：收款方模糊匹配到供应商池时显示预付余额 -->
+          <!-- 供应商匹配 -->
           <div v-if="matchedSupplier" class="supplier-match">
             <div class="supplier-match-header">
               <span class="supplier-tag">{{ matchedSupplier.supplier_type === 'private' ? '私有' : '公共' }}供应商</span>
@@ -326,7 +346,6 @@ async function submit() {
                         class="btn-xs btn-offset" @click="selectSupplierAdv(adv)">用此预付核销</button>
                 <span v-else-if="!payment?.id" class="adv-hint">（保存排款后可核销）</span>
               </div>
-              <!-- Writeoff inline form -->
               <div v-if="supplierWoAdv" class="wo-inline">
                 <span class="wo-inline-label">核销金额（元）</span>
                 <input v-model="supplierWoAmt" type="number" step="0.01" class="wo-inp" />
@@ -376,40 +395,41 @@ async function submit() {
         </div>
       </div>
 
-      <div v-if="vis('pay1') || vis('pay2') || vis('pay3')" class="section-title" style="font-size:13px;margin-top:4px">实际付款记录</div>
-      <div v-if="vis('pay1')" class="inst-row">
-        <div class="form-group">
-          <label>第1次日期</label>
-          <input v-model="form.pay1_date" type="date" :disabled="!editable('pay1')" />
-        </div>
-        <div class="form-group">
-          <label>第1次金额 (元)</label>
-          <input v-model="form.pay1_amount" type="number" min="0" step="0.01" placeholder="0.00" :disabled="!editable('pay1')" />
-        </div>
-      </div>
-      <div v-if="vis('pay2')" class="inst-row">
-        <div class="form-group">
-          <label>第2次日期</label>
-          <input v-model="form.pay2_date" type="date" :disabled="!editable('pay2')" />
-        </div>
-        <div class="form-group">
-          <label>第2次金额 (元)</label>
-          <input v-model="form.pay2_amount" type="number" min="0" step="0.01" placeholder="0.00" :disabled="!editable('pay2')" />
-        </div>
-      </div>
-      <div v-if="vis('pay3')" class="inst-row">
-        <div class="form-group">
-          <label>第3次日期</label>
-          <input v-model="form.pay3_date" type="date" :disabled="!editable('pay3')" />
-        </div>
-        <div class="form-group">
-          <label>第3次金额 (元)</label>
-          <input v-model="form.pay3_amount" type="number" min="0" step="0.01" placeholder="0.00" :disabled="!editable('pay3')" />
-        </div>
+      <!-- Installments section -->
+      <div v-if="vis('installments')" class="section-title" style="font-size:13px;margin-top:4px">
+        实际付款记录
+        <span class="inst-count" v-if="installments.length > 0">（已录入 {{ installments.length }} 次）</span>
       </div>
 
-      <!-- Real-time paid-so-far vs total indicator (only when pay fields and total are visible) -->
-      <div v-if="(vis('pay1') || vis('pay2') || vis('pay3')) && vis('total_amount') && plannedTotal > 0"
+      <div v-if="vis('installments')" class="inst-list">
+        <div v-for="(inst, idx) in installments" :key="idx" class="inst-row">
+          <span class="inst-seq">第{{ idx + 1 }}次</span>
+          <div class="form-group inst-date-grp">
+            <label>付款日期</label>
+            <input v-model="inst.pay_date" type="date" :disabled="!editable('installments')" />
+          </div>
+          <div class="form-group inst-amt-grp">
+            <label>付款金额 (元)</label>
+            <input v-model="inst.pay_amount" type="number" min="0" step="0.01" placeholder="0.00"
+                   :disabled="!editable('installments')" />
+          </div>
+          <div class="form-group inst-notes-grp">
+            <label>备注</label>
+            <input v-model="inst.notes" placeholder="选填" maxlength="200"
+                   :disabled="!editable('installments')" />
+          </div>
+          <button v-if="editable('installments')" class="btn-xs btn-danger-xs inst-del"
+                  @click="removeInstallment(idx)" title="删除此次付款">×</button>
+        </div>
+
+        <div v-if="installments.length === 0" class="inst-empty">暂无付款记录</div>
+
+        <button v-if="editable('installments')" class="btn btn-ghost btn-sm inst-add-btn"
+                @click="addInstallment">+ 添加付款</button>
+      </div>
+
+      <!-- Real-time paid-so-far summary -->
+      <div v-if="vis('installments') && vis('total_amount') && plannedTotal > 0"
            class="pay-summary" :class="{ 'pay-over': overpaid }">
         <span>已录入：<strong>{{ paidSoFar.toFixed(2) }}</strong> 元</span>
         <span class="pay-sep">／</span>
@@ -417,7 +437,7 @@ async function submit() {
         <span v-if="overpaid" class="pay-warn">⚠️ 超出计划总额</span>
         <span v-else-if="paidSoFar > 0" class="pay-ok">剩余 {{ remaining.toFixed(2) }} 元</span>
       </div>
-      <!-- 预付核销冲抵提示：当该排款已关联预付核销时，提示现金流视图已扣除重复计算 -->
+
       <div v-if="payment?.prepaid_offset_amount && parseFloat(payment.prepaid_offset_amount) > 0"
            class="prepaid-offset-tip">
         <span class="offset-icon">⚖️</span>
@@ -472,6 +492,30 @@ async function submit() {
 .status-fade-leave-to   { opacity:0; transform:translateY(-4px); }
 
 .hint-text { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 4px; }
+
+/* Installment section */
+.inst-count { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 4px; }
+.inst-list { margin-bottom: 10px; }
+.inst-row {
+  display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px; border-radius: 8px; margin-bottom: 6px;
+  background: rgba(21,101,192,0.03); border: 1px solid rgba(21,101,192,0.1);
+}
+.inst-seq {
+  font-size: 12px; font-weight: 700; color: var(--primary);
+  min-width: 36px; padding-bottom: 6px; white-space: nowrap;
+}
+.inst-date-grp { flex: 0 0 140px; }
+.inst-amt-grp  { flex: 0 0 140px; }
+.inst-notes-grp { flex: 1; min-width: 100px; }
+.inst-del {
+  padding: 4px 10px; margin-bottom: 0; align-self: flex-end;
+  border-color: rgba(198,40,40,0.4); color: #c62828;
+  background: rgba(198,40,40,0.04);
+}
+.inst-del:hover { background: rgba(198,40,40,0.1); }
+.inst-empty { font-size: 12px; color: var(--muted); padding: 8px 0; }
+.inst-add-btn { margin-top: 4px; font-size: 12px; }
 
 .pay-summary {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
@@ -532,4 +576,5 @@ async function submit() {
 .btn-primary-xs { border-color: var(--primary); background: var(--primary); color: #fff; }
 .btn-primary-xs:hover { opacity: 0.88; }
 .btn-primary-xs:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn-danger-xs { }
 </style>

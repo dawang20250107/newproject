@@ -12,7 +12,7 @@ import EmptyState from '../components/EmptyState.vue'
 const auth = useAuthStore()
 
 // Column visibility from field-level view permissions.
-const showPaid = computed(() => auth.canView('pay1') || auth.canView('pay2') || auth.canView('pay3'))
+const showPaid = computed(() => auth.canView('installments'))
 const showRemaining = computed(() => auth.canView('total_amount') && showPaid.value)
 function dash(v) { return v === null || v === undefined ? '—' : fmt(v) }
 const items = ref([])

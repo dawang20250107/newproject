@@ -13,7 +13,7 @@ const loadErr = ref('')
 const welcomeName = ref('')
 
 const showAmount = computed(() => auth.canView('total_amount'))
-const showPaid = computed(() => auth.canView('pay1') || auth.canView('pay2') || auth.canView('pay3'))
+const showPaid = computed(() => auth.canView('installments'))
 
 // 万/元 两级单位（不启用「亿」），单位前带空格；空值显示「—」
 const fmt = (n) => fmtCompact(n, { space: true, yuan: true, yi: false })

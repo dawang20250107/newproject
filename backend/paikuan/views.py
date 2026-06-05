@@ -12,13 +12,14 @@ from urllib.parse import quote
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction, IntegrityError
-from django.db.models import F, Q, Sum, Count, Case, When, ExpressionWrapper
+from django.db.models import F, Q, Sum, Count, Case, When, ExpressionWrapper, Value, OuterRef, Subquery
 from django.db.models import DecimalField as DjDecimalField
+from django.db.models.functions import Coalesce
 from django.conf import settings
 from django.utils import timezone
 import jwt
 
-from paikuan.models import PaikuanUser, Payment, JobPermission, ApprovalRecord, PaymentChangeLog
+from paikuan.models import PaikuanUser, Payment, PaymentInstallment, JobPermission, ApprovalRecord, PaymentChangeLog
 
 logger = logging.getLogger('paikuan')
 
@@ -51,9 +52,7 @@ PAYMENT_FIELD_DEFS = [
     {'key': 'payee',           'label': '收款方',        'cols': ['payee']},
     {'key': 'total_amount',    'label': '计划总金额',    'cols': ['total_amount']},
     {'key': 'planned_date',    'label': '计划付款日期',  'cols': ['planned_date']},
-    {'key': 'pay1',            'label': '第1次付款',     'cols': ['pay1_date', 'pay1_amount']},
-    {'key': 'pay2',            'label': '第2次付款',     'cols': ['pay2_date', 'pay2_amount']},
-    {'key': 'pay3',            'label': '第3次付款',     'cols': ['pay3_date', 'pay3_amount']},
+    {'key': 'installments',    'label': '付款明细',     'cols': ['installments', 'total_paid', 'remaining', 'status']},
     {'key': 'notes',            'label': '备注',          'cols': ['notes']},
     {'key': 'plan_adjustment', 'label': '计划调整金额',   'cols': ['plan_adjustment']},
 ]
@@ -149,17 +148,14 @@ EXCEL_COLUMN_MAP = [
     ('payee',           '收款方',              'payee'),
     ('total_amount',    '计划总金额(元)',       'total_amount'),
     ('planned_date',    '计划付款日期',         'planned_date'),
-    ('pay1',            '第1次付款日期',        'pay1_date'),
-    ('pay1',            '第1次付款金额(元)',    'pay1_amount'),
-    ('pay2',            '第2次付款日期',        'pay2_date'),
-    ('pay2',            '第2次付款金额(元)',    'pay2_amount'),
-    ('pay3',            '第3次付款日期',        'pay3_date'),
-    ('pay3',            '第3次付款金额(元)',    'pay3_amount'),
+    # installment columns are generated dynamically (see _visible_excel_cols)
     ('notes',           '备注',                'notes'),
     ('plan_adjustment', '计划调整金额(元)',     'plan_adjustment'),
 ]
 _EXCEL_HEADER_TO_COL = {h: c for _, h, c in EXCEL_COLUMN_MAP}
-_EXCEL_DATE_COLS = {'planned_date', 'pay1_date', 'pay2_date', 'pay3_date'}
+_EXCEL_DATE_COLS = {'planned_date'}
+# Default number of installment slots in the import template.
+TEMPLATE_INSTALLMENT_SLOTS = 6
 
 # Example row in the template carries this marker in 部门 so import skips it
 # even when the user forgets to delete it.
@@ -229,7 +225,7 @@ def default_job_config(job):
                 'can_create': True, 'can_delete': False, 'ar_shared_only': False,
                 **_cw_upload_no_del}
     if job == 'chief_cashier':
-        edit = {k: (k in ('pay1', 'pay2', 'pay3')) for k in FIELD_KEYS}
+        edit = {k: (k in ('installments',)) for k in FIELD_KEYS}
         # 总出纳默认看不到税额
         ar_view = {**_all_ar_fields(True), 'r_tax_amount': False}
         return {'pages': {**pages_all, **ar_pages_all}, 'view': _all_fields(True),
@@ -237,7 +233,7 @@ def default_job_config(job):
                 'can_create': True, 'can_delete': False, 'ar_shared_only': False,
                 **_cw_readonly}
     if job == 'cashier':
-        edit = {k: (k in ('pay1', 'pay2', 'pay3')) for k in FIELD_KEYS}
+        edit = {k: (k in ('installments',)) for k in FIELD_KEYS}
         base_pages = {'dashboard': True, 'payments': True, 'approval_records': True, 'stats': False}
         # 出纳默认看不到税额与账实差额
         ar_view = {**_all_ar_fields(True), 'r_tax_amount': False, 'r_account_diff': False}
@@ -399,10 +395,10 @@ def apply_view_mask(d, perms):
     for c in hide_cols:
         if c in d:
             d[c] = None
-    pay_hidden = any(not view.get(k, True) for k in ('pay1', 'pay2', 'pay3'))
-    if pay_hidden:
+    inst_hidden = not view.get('installments', True)
+    if inst_hidden:
         d['total_paid'] = None
-    if pay_hidden or not view.get('total_amount', True):
+    if inst_hidden or not view.get('total_amount', True):
         d['remaining'] = None
     return d
 
@@ -512,19 +508,30 @@ def can_write_dept(request, dept):
 _DEC = DjDecimalField(max_digits=15, decimal_places=2)
 
 
-def _paid_expr():
-    """SQL expression for total paid = pay1+pay2+pay3."""
-    return ExpressionWrapper(
-        F('pay1_amount') + F('pay2_amount') + F('pay3_amount'), output_field=_DEC
+def _paid_subq():
+    """Correlated subquery: sum of installment amounts for each Payment row."""
+    return Coalesce(
+        Subquery(
+            PaymentInstallment.objects
+                .filter(payment_id=OuterRef('pk'))
+                .values('payment_id')
+                .annotate(s=Sum('pay_amount'))
+                .values('s'),
+            output_field=_DEC,
+        ),
+        Value(Decimal('0')),
+        output_field=_DEC,
     )
+
+
+def _paid_expr():
+    """Annotation expression for total paid amount (from installments subtable)."""
+    return _paid_subq()
 
 
 def _remaining_expr():
-    """SQL expression for remaining = total_amount - paid."""
-    return ExpressionWrapper(
-        F('total_amount') - F('pay1_amount') - F('pay2_amount') - F('pay3_amount'),
-        output_field=_DEC,
-    )
+    """SQL expression for remaining = total_amount - paid (requires 'paid' annotation)."""
+    return ExpressionWrapper(F('total_amount') - F('paid'), output_field=_DEC)
 
 
 # 求和字段位宽放宽，避免跨多月结转累加时溢出 _DEC 的 15 位上限。
@@ -732,7 +739,7 @@ def prepaid_balance(request):
 
 
 def _list_payments(request):
-    qs = Payment.objects.select_related('created_by').all()
+    qs = Payment.objects.select_related('created_by').prefetch_related('installments').all()
     qs = dept_filter(qs, request)
 
     dept = request.GET.get('dept', '').strip()
@@ -842,72 +849,69 @@ def _parse_payment_fields(data, payment=None):
     else:
         fields['plan_adjustment'] = None
 
-    def _num(key):
-        raw = get(key, 0)
+    def _num(raw):
         s = str(raw if raw not in (None, '') else 0)
-        # Tolerate thousands separators / full-width commas / currency symbol.
         s = s.replace(',', '').replace('，', '').replace('¥', '').replace('￥', '').strip()
         return Decimal(s or '0')
 
     try:
-        fields['total_amount'] = _num('total_amount')
-        fields['pay1_amount'] = _num('pay1_amount')
-        fields['pay2_amount'] = _num('pay2_amount')
-        fields['pay3_amount'] = _num('pay3_amount')
+        fields['total_amount'] = _num(get('total_amount', 0))
     except (InvalidOperation, TypeError) as e:
-        return None, f'金额格式有误: {e}'
-
-    _AMT_LABELS = {
-        'total_amount': '计划总金额',
-        'pay1_amount': '第1次付款金额',
-        'pay2_amount': '第2次付款金额',
-        'pay3_amount': '第3次付款金额',
-    }
-    # Reject negative amounts
-    for amt_key, label in _AMT_LABELS.items():
-        if fields[amt_key] < Decimal('0'):
-            return None, f'{label}不能为负数'
+        return None, f'计划总金额格式有误: {e}'
+    if fields['total_amount'] < Decimal('0'):
+        return None, '计划总金额不能为负数'
     if fields['total_amount'] <= Decimal('0'):
         return None, '计划总金额必须大于0'
 
-    # Hard-reject overpayment: installment sum must not exceed total
-    total_paid = fields['pay1_amount'] + fields['pay2_amount'] + fields['pay3_amount']
-    if total_paid > fields['total_amount']:
-        _ta = fields['total_amount']
-        return None, (
-            f'实付总额（{total_paid}元）超出计划总金额（{_ta}元），'
-            '请核实金额后再提交'
-        )
+    # Parse planned_date
+    pd_val = data.get('planned_date') if 'planned_date' in data else getattr(payment, 'planned_date', None)
+    fields['planned_date'] = pd_val or None
+    if fields['planned_date']:
+        try:
+            datetime.date.fromisoformat(str(fields['planned_date']))
+        except ValueError:
+            return None, f'计划付款日期无效（{fields["planned_date"]}），请使用 YYYY-MM-DD 格式'
 
-    for key in ('planned_date', 'pay1_date', 'pay2_date', 'pay3_date'):
-        val = data.get(key) if key in data else getattr(payment, key, None)
-        fields[key] = val or None
-
-    # D1: Validate that date strings represent actual calendar dates.
-    # Rejects impossible dates like 2026-02-30 or 2026-13-01 before they reach the ORM.
-    _DATE_LABELS = {
-        'planned_date': '计划付款', 'pay1_date': '第1次付款',
-        'pay2_date': '第2次付款', 'pay3_date': '第3次付款',
-    }
-    for key, label in _DATE_LABELS.items():
-        if fields[key]:
+    # Parse installments list
+    raw_insts = data.get('installments')
+    if raw_insts is None and payment:
+        # Keep existing installments when not provided on edit (handled separately)
+        raw_insts = None
+        fields['installments'] = None  # sentinel: do not update
+    else:
+        raw_insts = raw_insts or []
+        parsed_insts = []
+        total_paid = Decimal('0')
+        for idx, item in enumerate(raw_insts, 1):
             try:
-                datetime.date.fromisoformat(str(fields[key]))
+                amt = _num(item.get('pay_amount', 0))
+            except (InvalidOperation, TypeError):
+                return None, f'第{idx}次付款金额格式有误'
+            if amt < Decimal('0'):
+                return None, f'第{idx}次付款金额不能为负数'
+            if amt <= Decimal('0'):
+                return None, f'第{idx}次付款金额必须大于0'
+            pay_date = (item.get('pay_date') or '').strip() or None
+            if not pay_date:
+                return None, f'第{idx}次付款日期必填'
+            try:
+                datetime.date.fromisoformat(str(pay_date))
             except ValueError:
-                return None, f'{label}日期无效（{fields[key]}），请使用 YYYY-MM-DD 格式'
-
-    # Paired installment validation: date↔amount must both be present or both absent
-    for n, date_key, amt_key in (
-        (1, 'pay1_date', 'pay1_amount'),
-        (2, 'pay2_date', 'pay2_amount'),
-        (3, 'pay3_date', 'pay3_amount'),
-    ):
-        has_date = bool(fields[date_key])
-        has_amt = fields[amt_key] > Decimal('0')
-        if has_amt and not has_date:
-            return None, f'第{n}次付款填写了金额，但缺少日期'
-        if has_date and not has_amt:
-            return None, f'第{n}次付款填写了日期，但金额为0'
+                return None, f'第{idx}次付款日期无效（{pay_date}），请使用 YYYY-MM-DD 格式'
+            total_paid += amt
+            parsed_insts.append({
+                'seq': idx,
+                'pay_date': pay_date,
+                'pay_amount': amt,
+                'notes': (item.get('notes') or '').strip()[:200],
+                'id': item.get('id'),  # for update — may be None for new rows
+            })
+        if total_paid > fields['total_amount']:
+            return None, (
+                f'实付总额（{total_paid}元）超出计划总金额（{fields["total_amount"]}元），'
+                '请核实金额后再提交'
+            )
+        fields['installments'] = parsed_insts
 
     if not fields['department']:
         return None, '部门必填'
@@ -934,9 +938,6 @@ _PAYMENT_FIELD_LABELS = {
     'department': '部门', 'applicant': '申请人', 'approval_number': '审批单号',
     'project_desc': '付款事项', 'payee': '收款方',
     'total_amount': '计划总金额', 'planned_date': '计划付款日期',
-    'pay1_date': '第1次付款日期', 'pay1_amount': '第1次付款金额',
-    'pay2_date': '第2次付款日期', 'pay2_amount': '第2次付款金额',
-    'pay3_date': '第3次付款日期', 'pay3_amount': '第3次付款金额',
     'notes': '备注',
     'plan_adjustment': '计划调整金额',
 }
@@ -996,8 +997,42 @@ def _record_payment_changes(payment, before_dict, after_dict, request, action='u
                 old_value=str(old_v if old_v is not None else ''),
                 new_value=str(new_v if new_v is not None else ''),
             ))
+    # diff installments as a whole
+    old_insts = before_dict.get('installments_summary', '')
+    new_insts = after_dict.get('installments_summary', '')
+    if old_insts != new_insts:
+        logs.append(PaymentChangeLog(
+            payment=payment, payment_id_snapshot=payment.id,
+            action='update', operator=user, operator_name=operator_name,
+            field_name='installments', field_label='付款明细',
+            old_value=old_insts, new_value=new_insts,
+        ))
     if logs:
         PaymentChangeLog.objects.bulk_create(logs)
+
+
+def _save_installments(payment, parsed_insts):
+    """Replace all installments for a payment with the provided list."""
+    payment.installments.all().delete()
+    if parsed_insts:
+        PaymentInstallment.objects.bulk_create([
+            PaymentInstallment(
+                payment=payment,
+                seq=inst['seq'],
+                pay_date=inst['pay_date'],
+                pay_amount=inst['pay_amount'],
+                notes=inst['notes'],
+            )
+            for inst in parsed_insts
+        ])
+
+
+def _installments_summary(insts_qs):
+    """Human-readable summary of installments for change-log."""
+    rows = list(insts_qs.order_by('seq', 'pay_date'))
+    if not rows:
+        return '无'
+    return '；'.join(f'{i.pay_date} ¥{i.pay_amount}' for i in rows)
 
 
 def _create_payment(request):
@@ -1010,6 +1045,7 @@ def _create_payment(request):
         return err(error)
     if not can_write_dept(request, fields['department']):
         return err('无权操作该部门', 403, 403)
+    parsed_insts = fields.pop('installments') or []
     # Idempotency: block duplicate submissions on the same business key.
     dup = _find_duplicate_payment(fields)
     if dup:
@@ -1021,16 +1057,17 @@ def _create_payment(request):
         with transaction.atomic():
             p = Payment(created_by_id=request.pk_uid, updated_by_id=request.pk_uid, **fields)
             p.save()
+            _save_installments(p, parsed_insts)
             _record_payment_changes(p, {}, {}, request, action='create')
     except IntegrityError:
-        # 并发提交命中 uniq_payment_business_key — DB 层兜底，再查一次返回友好提示
         dup = _find_duplicate_payment(fields)
         ref = f' #{dup.id}' if dup else ''
         return err(
             f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录{ref}',
             409, 409,
         )
-    return ok(p.to_dict())
+    p_fresh = Payment.objects.prefetch_related('installments').select_related('created_by').get(id=p.id)
+    return ok(p_fresh.to_dict())
 
 
 def _editable_payment_payload(data, perms):
@@ -1041,14 +1078,17 @@ def _editable_payment_payload(data, perms):
     for f in PAYMENT_FIELD_DEFS:
         if perms['edit'].get(f['key'], False):
             editable_cols.update(f['cols'])
-    return {k: v for k, v in data.items() if k in editable_cols}
+    # 'installments' is a virtual key — always include it when its permission is granted
+    if 'installments' in editable_cols and 'installments' in data:
+        editable_cols.add('installments')
+    return {k: v for k, v in data.items() if k in editable_cols or k == 'installments'}
 
 
 @csrf_exempt
 @pk_required()
 def payment_detail(request, pk):
     try:
-        p = Payment.objects.select_related('created_by').get(id=pk)
+        p = Payment.objects.select_related('created_by').prefetch_related('installments').get(id=pk)
     except Payment.DoesNotExist:
         return err('记录不存在', 404)
 
@@ -1074,15 +1114,21 @@ def payment_detail(request, pk):
         new_dept = fields['department']
         if new_dept != p.department and not can_write_dept(request, new_dept):
             return err('无权操作目标部门', 403, 403)
+        parsed_insts = fields.pop('installments')  # None means "keep existing"
         before_snapshot = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
+        before_snapshot['installments_summary'] = _installments_summary(p.installments)
         with transaction.atomic():
             for k, v in fields.items():
                 setattr(p, k, v)
             p.updated_by_id = request.pk_uid
             p.save()
+            if parsed_insts is not None:
+                _save_installments(p, parsed_insts)
             after_snapshot = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
+            after_snapshot['installments_summary'] = _installments_summary(p.installments)
             _record_payment_changes(p, before_snapshot, after_snapshot, request, action='update')
-        return ok(apply_view_mask(p.to_dict(), perms))
+        p_fresh = Payment.objects.prefetch_related('installments').select_related('created_by').get(id=p.id)
+        return ok(apply_view_mask(p_fresh.to_dict(), perms))
 
     if request.method == 'DELETE':
         if perms is not None:
@@ -1452,7 +1498,7 @@ def dashboard(request):
 
     today_payments = [
         apply_view_mask(p.to_dict(), perms)
-        for p in today_qs.select_related('created_by')[:50]
+        for p in today_qs.select_related('created_by').prefetch_related('installments')[:50]
     ]
 
     return ok({
@@ -1785,12 +1831,22 @@ def permission_detail(request, job):
 
 # ── Excel template / import / export ─────────────────────────────────────────
 
-def _visible_excel_cols(perms):
-    """Return [(excel_header, db_col)] for columns the user can view."""
-    return [
-        (h, c) for (fk, h, c) in EXCEL_COLUMN_MAP
-        if perms is None or perms['view'].get(fk, True)
-    ]
+def _visible_excel_cols(perms, n_installments=TEMPLATE_INSTALLMENT_SLOTS):
+    """Return [(excel_header, db_col)] for columns the user can view.
+    Installment columns are generated dynamically for n_installments slots.
+    db_col for installment date/amount uses the slot index as 'inst_date_{n}' / 'inst_amount_{n}'.
+    """
+    can_view_insts = perms is None or perms['view'].get('installments', True)
+    cols = []
+    for (fk, h, c) in EXCEL_COLUMN_MAP:
+        if perms is None or perms['view'].get(fk, True):
+            cols.append((h, c))
+        # Insert installment columns right after planned_date
+        if fk == 'planned_date' and can_view_insts:
+            for i in range(1, n_installments + 1):
+                cols.append((f'第{i}次付款日期', f'inst_date_{i}'))
+                cols.append((f'第{i}次付款金额(元)', f'inst_amount_{i}'))
+    return cols
 
 
 def _build_excel_response(wb, filename):
@@ -1856,10 +1912,6 @@ def payment_template(request):
         '计划付款日期': '2026-06-01',
         '第1次付款日期': '',
         '第1次付款金额(元)': 0,
-        '第2次付款日期': '',
-        '第2次付款金额(元)': 0,
-        '第3次付款日期': '',
-        '第3次付款金额(元)': 0,
         '备注': '本行为格式示例，导入前可删除',
         '计划调整金额(元)': '',
     }
@@ -1869,16 +1921,26 @@ def payment_template(request):
         cell.alignment = Alignment(horizontal='left', vertical='center')
 
     # Column widths
-    widths = {
-        '部门': 14, '申请人': 12, '审批单号': 16, '付款事项': 28, '收款方': 22,
-        '计划总金额(元)': 16, '计划付款日期': 14,
-        '第1次付款日期': 14, '第1次付款金额(元)': 16,
-        '第2次付款日期': 14, '第2次付款金额(元)': 16,
-        '第3次付款日期': 14, '第3次付款金额(元)': 16,
-        '备注': 24, '计划调整金额(元)': 18,
-    }
     for col_idx, (header, _) in enumerate(cols, 1):
-        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = widths.get(header, 14)
+        if '日期' in header:
+            w = 14
+        elif '金额' in header:
+            w = 16
+        elif header in ('部门',):
+            w = 14
+        elif header in ('审批单号',):
+            w = 16
+        elif header in ('付款事项',):
+            w = 28
+        elif header in ('收款方',):
+            w = 22
+        elif header in ('备注',):
+            w = 24
+        elif header in ('申请人',):
+            w = 12
+        else:
+            w = 14
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = w
 
     ws.row_dimensions[1].height = 22
 
@@ -1923,12 +1985,24 @@ def payment_import(request):
     if not rows:
         return err('文件为空')
 
-    # Map header position → db column name
+    # Map header position → db column name (base fields)
     header_row = [str(v).strip() if v is not None else '' for v in rows[0]]
     col_pos = {}
     for i, h in enumerate(header_row):
         if h in _EXCEL_HEADER_TO_COL:
             col_pos[_EXCEL_HEADER_TO_COL[h]] = i
+
+    # Detect dynamic installment columns: 第N次付款日期 / 第N次付款金额(元)
+    import re as _re
+    inst_date_cols = {}  # seq_no → column index
+    inst_amt_cols = {}
+    for i, h in enumerate(header_row):
+        m = _re.fullmatch(r'第(\d+)次付款日期', h)
+        if m:
+            inst_date_cols[int(m.group(1))] = i
+        m2 = _re.fullmatch(r'第(\d+)次付款金额\(元\)', h)
+        if m2:
+            inst_amt_cols[int(m2.group(1))] = i
 
     # Match the fields _parse_payment_fields actually validates as required.
     required_headers = {'department', 'project_desc', 'payee', 'planned_date'}
@@ -1944,23 +2018,47 @@ def payment_import(request):
         if idx is None or idx >= len(row):
             return None
         v = row[idx]
-        # Date/datetime objects → ISO string.
         if hasattr(v, 'strftime'):
             return v.strftime('%Y-%m-%d')
-        # Text dates (e.g. 2026/6/1) → normalize to ISO.
         if col_name in _EXCEL_DATE_COLS and isinstance(v, str) and v.strip():
             return _normalize_date(v)
         return v
 
+    def cell_at(row, idx):
+        if idx is None or idx >= len(row):
+            return None
+        v = row[idx]
+        if hasattr(v, 'strftime'):
+            return v.strftime('%Y-%m-%d')
+        return v
+
     for row_num, row in enumerate(rows[1:], start=2):
         if all(v is None or v == '' for v in row):
-            continue  # skip blank rows
+            continue
 
         dept_raw = cell_val(row, 'department')
         if dept_raw and str(dept_raw).strip().startswith('示例'):
-            continue  # template example row — skip silently
+            continue
 
         data = {col: cell_val(row, col) for col in col_pos}
+
+        # Build installments list from dynamic columns
+        inst_seqs = sorted(set(inst_date_cols) | set(inst_amt_cols))
+        installments_raw = []
+        for n in inst_seqs:
+            raw_date = cell_at(row, inst_date_cols.get(n))
+            raw_amt = cell_at(row, inst_amt_cols.get(n))
+            if raw_date:
+                raw_date = _normalize_date(str(raw_date)) if isinstance(raw_date, str) else raw_date
+            amt_str = str(raw_amt or '0').replace(',', '').replace('，', '').replace('¥', '').strip()
+            try:
+                amt = Decimal(amt_str or '0')
+            except InvalidOperation:
+                amt = Decimal('0')
+            if raw_date and amt > Decimal('0'):
+                installments_raw.append({'seq': n, 'pay_date': str(raw_date), 'pay_amount': str(amt), 'notes': ''})
+
+        data['installments'] = installments_raw
 
         fields, error = _parse_payment_fields(data)
         if error:
@@ -1973,7 +2071,7 @@ def payment_import(request):
             results['skipped'] += 1
             continue
 
-        # Idempotency: skip rows that match an existing record on business key.
+        parsed_insts = fields.pop('installments') or []
         dup = _find_duplicate_payment(fields)
         if dup:
             results['errors'].append(
@@ -1984,6 +2082,7 @@ def payment_import(request):
             with transaction.atomic():
                 p = Payment.objects.create(
                     created_by_id=request.pk_uid, updated_by_id=request.pk_uid, **fields)
+                _save_installments(p, parsed_insts)
                 _record_payment_changes(p, {}, {}, request, action='create')
             results['created'] += 1
         except Exception as e:
@@ -2017,6 +2116,7 @@ def payment_export(request):
 
     qs = Payment.objects.select_related('created_by').all()
     qs = dept_filter(qs, request)
+    qs = qs.prefetch_related('installments')
 
     dept = request.GET.get('dept', '').strip()
     status_q = request.GET.get('status', '').strip()
@@ -2066,7 +2166,14 @@ def payment_export(request):
             '请缩小日期范围或添加其他筛选条件后重试。'
         )
 
-    cols = _visible_excel_cols(perms)
+    # Determine max installment count across the filtered set for dynamic columns.
+    can_view_insts = perms is None or perms['view'].get('installments', True)
+    all_payments = list(qs.prefetch_related('installments').select_related('created_by'))
+    if can_view_insts and all_payments:
+        max_slots = max((p.installments.count() for p in all_payments), default=0)
+    else:
+        max_slots = 0
+    cols = _visible_excel_cols(perms, n_installments=max_slots)
 
     wb = Workbook()
     ws = wb.active
@@ -2082,31 +2189,38 @@ def payment_export(request):
         cell.fill = header_fill
         cell.alignment = center
 
-    status_label = {'pending': '⏳待付款', 'partial': '⚡部分付款', 'settled': '✅已付清'}
+    status_label = {'pending': '⏳待付款', 'partial': '⚡部分付款', 'settled': '✅已付清', 'adjusted': '📋计划调整'}
 
     _FORMULA_CHARS = ('=', '+', '-', '@', '\t', '\r')
 
     def _safe_text(v):
-        """Prefix text cells starting with formula chars with a single-quote prefix."""
         if isinstance(v, str) and v and v[0] in _FORMULA_CHARS:
             return "'" + v
         return v
 
-    for row_idx, p in enumerate(qs, start=2):
+    for row_idx, p in enumerate(all_payments, start=2):
         d = apply_view_mask(p.to_dict(), perms)
+        # Build installment slot map: seq → {date, amount}
+        insts = d.get('installments') or []
+        inst_by_seq = {inst['seq']: inst for inst in insts}
         for col_idx, (_, db_col) in enumerate(cols, 1):
-            val = d.get(db_col)
-            if val is None:
-                val = ''
-            # Convert Decimal strings to float for Excel numeric cells
-            if db_col in ('total_amount', 'pay1_amount', 'pay2_amount', 'pay3_amount',
-                          'total_paid', 'remaining', 'plan_adjustment'):
-                try:
-                    val = float(val) if val != '' else 0.0
-                except (ValueError, TypeError):
-                    pass
+            if db_col.startswith('inst_date_'):
+                n = int(db_col.split('_')[-1])
+                val = inst_by_seq[n]['pay_date'] if n in inst_by_seq else ''
+            elif db_col.startswith('inst_amount_'):
+                n = int(db_col.split('_')[-1])
+                val = float(inst_by_seq[n]['pay_amount']) if n in inst_by_seq else 0.0
             else:
-                val = _safe_text(val)
+                val = d.get(db_col)
+                if val is None:
+                    val = ''
+                if db_col in ('total_amount', 'total_paid', 'remaining', 'plan_adjustment'):
+                    try:
+                        val = float(val) if val != '' else 0.0
+                    except (ValueError, TypeError):
+                        pass
+                else:
+                    val = _safe_text(val)
             ws.cell(row=row_idx, column=col_idx, value=val)
 
         # Append status column after visible cols

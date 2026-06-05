@@ -250,12 +250,15 @@ class StatsCarryoverTests(TestCase):
         return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
 
     def _pay(self, planned, total, pay1='0', dept=None):
-        return Payment.objects.create(
+        p = Payment.objects.create(
             created_by=self.user, department=dept or self.dept,
             approval_number='', project_desc='P', payee='Payee',
-            total_amount=Decimal(total), planned_date=planned,
-            pay1_amount=Decimal(pay1), pay2_amount=Decimal('0'),
-            pay3_amount=Decimal('0'), notes='')
+            total_amount=Decimal(total), planned_date=planned, notes='')
+        if Decimal(pay1) > 0:
+            from paikuan.models import PaymentInstallment
+            PaymentInstallment.objects.create(
+                payment=p, seq=1, pay_date=planned, pay_amount=Decimal(pay1))
+        return p
 
     def test_prior_unpaid_carries_into_current_period(self):
         # 本期(2026-06)：计划 1000，已付 400
@@ -350,8 +353,9 @@ class PaymentApplicantTests(TestCase):
         self.assertIn('申请人', headers)
         # 导出
         Payment.objects.create(created_by=self.user, department=self.dept,
-                               applicant='王五', approval_number='', project_desc='P',
-                               payee='X', total_amount=Decimal('100'),
+                               applicant='王五', approval_number='',
+                               project_desc='P', payee='X',
+                               total_amount=Decimal('100'),
                                planned_date=date(2026, 6, 1))
         exp = self.client.get('/api/pk/payments/export', **self.auth())
         self.assertEqual(exp.status_code, 200, exp.content)

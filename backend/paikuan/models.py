@@ -80,12 +80,6 @@ class Payment(models.Model):
     payee = models.CharField('收款方', max_length=200)
     total_amount = models.DecimalField('计划总金额', max_digits=15, decimal_places=2)
     planned_date = models.DateField('计划付款日期', db_index=True)
-    pay1_date = models.DateField('第1次付款日期', null=True, blank=True)
-    pay1_amount = models.DecimalField('第1次付款金额', max_digits=15, decimal_places=2, default=0)
-    pay2_date = models.DateField('第2次付款日期', null=True, blank=True)
-    pay2_amount = models.DecimalField('第2次付款金额', max_digits=15, decimal_places=2, default=0)
-    pay3_date = models.DateField('第3次付款日期', null=True, blank=True)
-    pay3_amount = models.DecimalField('第3次付款金额', max_digits=15, decimal_places=2, default=0)
     notes = models.TextField('备注', blank=True, default='')
     plan_adjustment = models.DecimalField('计划调整金额', max_digits=15, decimal_places=2, null=True, blank=True)
     # 系统自动维护：等于所有关联 AdvanceWriteoff.amount 之和，现金流视图从 paid 中扣除此金额防双重计
@@ -114,11 +108,10 @@ class Payment(models.Model):
 
     @property
     def total_paid(self):
-        return (
-            (self.pay1_amount or Decimal('0')) +
-            (self.pay2_amount or Decimal('0')) +
-            (self.pay3_amount or Decimal('0'))
-        )
+        try:
+            return sum(i.pay_amount for i in self.installments.all())
+        except Exception:
+            return Decimal('0')
 
     @property
     def remaining(self):
@@ -139,6 +132,22 @@ class Payment(models.Model):
         return 'pending'
 
     def to_dict(self):
+        insts = list(self.installments.all())
+        total_paid_val = sum(i.pay_amount for i in insts)
+        if self.plan_adjustment is not None:
+            remaining_val = max(Decimal('0'), self.plan_adjustment - total_paid_val)
+            if total_paid_val >= self.plan_adjustment:
+                status_val = 'settled'
+            else:
+                status_val = 'adjusted'
+        else:
+            remaining_val = max(Decimal('0'), self.total_amount - total_paid_val)
+            if total_paid_val >= self.total_amount:
+                status_val = 'settled'
+            elif total_paid_val > 0:
+                status_val = 'partial'
+            else:
+                status_val = 'pending'
         return {
             'id': self.id,
             'department': self.department,
@@ -149,23 +158,42 @@ class Payment(models.Model):
             'payee': self.payee,
             'total_amount': str(self.total_amount),
             'planned_date': str(self.planned_date) if self.planned_date else None,
-            'pay1_date': str(self.pay1_date) if self.pay1_date else None,
-            'pay1_amount': str(self.pay1_amount),
-            'pay2_date': str(self.pay2_date) if self.pay2_date else None,
-            'pay2_amount': str(self.pay2_amount),
-            'pay3_date': str(self.pay3_date) if self.pay3_date else None,
-            'pay3_amount': str(self.pay3_amount),
+            'installments': [
+                {
+                    'id': i.id,
+                    'seq': i.seq,
+                    'pay_date': str(i.pay_date),
+                    'pay_amount': str(i.pay_amount),
+                    'notes': i.notes,
+                }
+                for i in insts
+            ],
             'notes': self.notes,
             'plan_adjustment': str(self.plan_adjustment) if self.plan_adjustment is not None else None,
             'prepaid_offset_amount': str(self.prepaid_offset_amount),
-            'total_paid': str(self.total_paid),
-            'remaining': str(self.remaining),
-            'status': self.status,
+            'total_paid': str(total_paid_val),
+            'remaining': str(remaining_val),
+            'status': status_val,
             'created_by_id': self.created_by_id,
             'created_by_name': self.created_by.name if self.created_by else '',
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+class PaymentInstallment(models.Model):
+    """付款明细子表：一条 Payment 可对应多次实际付款。"""
+    payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name='installments')
+    seq = models.PositiveSmallIntegerField('序号', default=0, db_index=True)
+    pay_date = models.DateField('付款日期', db_index=True)
+    pay_amount = models.DecimalField('付款金额', max_digits=15, decimal_places=2)
+    notes = models.CharField('备注', max_length=200, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'paikuan_payment_installments'
+        verbose_name = '付款明细'
+        ordering = ['seq', 'pay_date']
 
 
 class ApprovalRecord(models.Model):

@@ -12,7 +12,7 @@ from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction
 from django.db.models import Sum, Count, Q, F, Value, Case, When, IntegerField, CharField, Max, Min
-from django.db.models.functions import TruncMonth
+from django.db.models.functions import TruncMonth, Coalesce
 from django.utils import timezone
 
 import openpyxl
@@ -23,7 +23,7 @@ from paikuan.views import (pk_required, ok, err, DEPARTMENTS, VALID_DEPARTMENTS,
                            AR_RECORD_FIELD_DEFS, AR_ADVANCE_FIELD_DEFS)
 from ar.models import (ARProject, ARRecord, ARPayment, CollectionBudget, PaymentBudget,
                        AdvanceRecord, AdvanceWriteoff, Supplier)
-from paikuan.models import Payment
+from paikuan.models import Payment, PaymentInstallment
 
 # ── AR page keys (must match PAGE_KEYS in paikuan/views.py) ───────────────────
 AR_PAGE_KEYS = ['ar_projects', 'ar_records', 'ar_advance', 'ar_analytics', 'ar_cashflow', 'ar_budget']
@@ -3536,34 +3536,29 @@ def cashflow(request):
         dept = row['ar_record__delivery_dept']
         coll_map[dept][ym] += row['collected'] or Decimal('0')
 
-    # AP payments (3 slots) by month
+    # AP payments from installments subtable, grouped by month + department
     paid_map = defaultdict(lambda: defaultdict(Decimal))
-    for slot in ['pay1', 'pay2', 'pay3']:
-        date_field = f'{slot}_date'
-        amount_field = f'{slot}_amount'
-        qs_slot = (Payment.objects
-                   .filter(**{f'{date_field}__isnull': False,
-                               f'{date_field}__gte': start_date,
-                               f'{date_field}__lte': end_date,
-                               'department__in': depts})
-                   .annotate(ym=TruncMonth(date_field))
-                   .values('ym', 'department')
-                   .annotate(paid=Sum(amount_field)))
-        for row in qs_slot:
-            ym = row['ym'].strftime('%Y-%m')
-            dept = row['department']
-            paid_map[dept][ym] += row['paid'] or Decimal('0')
+    inst_qs = (PaymentInstallment.objects
+               .filter(pay_date__gte=start_date, pay_date__lte=end_date,
+                       payment__department__in=depts)
+               .annotate(ym=TruncMonth('pay_date'))
+               .values('ym', 'payment__department')
+               .annotate(paid=Sum('pay_amount')))
+    for row in inst_qs:
+        ym = row['ym'].strftime('%Y-%m')
+        dept = row['payment__department']
+        paid_map[dept][ym] += row['paid'] or Decimal('0')
 
-    # 扣除预付核销冲抵：防止 advance_paid + paid 双重计同一笔现金流出
-    # 按首个实付日期（pay1 > pay2 > pay3，否则 planned_date）归入对应月份
+    # 扣除预付核销冲抵：按最早实付日期（首个 installment 付款日期，否则 planned_date）归月
+    from django.db.models import OuterRef, Subquery
+    earliest_inst_date = Subquery(
+        PaymentInstallment.objects.filter(payment_id=OuterRef('pk'))
+            .order_by('pay_date').values('pay_date')[:1]
+    )
     po_qs = (Payment.objects
              .filter(department__in=depts, prepaid_offset_amount__gt=0)
-             .annotate(attr_ym=TruncMonth(Case(
-                 When(pay1_date__isnull=False, then=F('pay1_date')),
-                 When(pay2_date__isnull=False, then=F('pay2_date')),
-                 When(pay3_date__isnull=False, then=F('pay3_date')),
-                 default=F('planned_date'),
-             )))
+             .annotate(first_pay_date=earliest_inst_date)
+             .annotate(attr_ym=TruncMonth(Coalesce('first_pay_date', 'planned_date')))
              .filter(attr_ym__gte=start_date, attr_ym__lte=end_date)
              .values('attr_ym', 'department')
              .annotate(offset=Sum('prepaid_offset_amount')))
@@ -4166,15 +4161,11 @@ def budget_summary(request):
         payment_date__range=(start_date, end_date),
         ar_record__delivery_dept__in=depts).aggregate(total=Sum('amount'))
 
-    # Actual AP payments
-    ap_total = Decimal('0')
-    for slot in ['pay1', 'pay2', 'pay3']:
-        df = f'{slot}_date'
-        af = f'{slot}_amount'
-        r = Payment.objects.filter(
-            **{f'{df}__range': (start_date, end_date), 'department__in': depts}
-        ).aggregate(total=Sum(af))
-        ap_total += r['total'] or Decimal('0')
+    # Actual AP payments (from installments subtable)
+    ap_total = (PaymentInstallment.objects
+                .filter(pay_date__range=(start_date, end_date),
+                        payment__department__in=depts)
+                .aggregate(total=Sum('pay_amount'))['total'] or Decimal('0'))
 
     budget_coll = bc['total'] or Decimal('0')
     budget_paid = bp['total'] or Decimal('0')
@@ -4194,12 +4185,9 @@ def budget_summary(request):
             ac_d = ARPayment.objects.filter(
                 payment_date__range=(start_date, end_date), ar_record__delivery_dept=d
             ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
-            ap_d = Decimal('0')
-            for slot in ['pay1', 'pay2', 'pay3']:
-                r = Payment.objects.filter(
-                    **{f'{slot}_date__range': (start_date, end_date), 'department': d}
-                ).aggregate(total=Sum(f'{slot}_amount'))
-                ap_d += r['total'] or Decimal('0')
+            ap_d = (PaymentInstallment.objects
+                    .filter(pay_date__range=(start_date, end_date), payment__department=d)
+                    .aggregate(total=Sum('pay_amount'))['total'] or Decimal('0'))
             by_dept_result.append({
                 'dept': d,
                 'budget_collection': float(bc_d),
