@@ -273,58 +273,76 @@ const deptCompareOption = computed(() => {
       </div>
     </div>
 
-    <!-- KPI cards: 收款预算 → 实收 → 付款预算 → 实付 → 净现金流(highlight) → 累计净现金流(highlight) -->
-    <div class="cockpit-kpis">
-      <div class="ck-card ck-neutral">
-        <div class="ck-label">区间收款预算</div>
-        <div class="ck-value">{{ fmtWan(sumBudgetColl) }}</div>
-        <div class="ck-sub">收款目标</div>
-      </div>
-      <div class="ck-card ck-neutral">
-        <div class="ck-label">区间实收</div>
-        <div class="ck-value">{{ fmtWan(sumColl) }}</div>
-        <div class="ck-sub" v-if="collAchieve !== null">
-          <span :class="collAchieve >= 100 ? 'ach-ok' : 'ach-off'">预算达成 {{ collAchieve.toFixed(1) }}%</span>
+    <!-- KPI cards: 三组（收款 / 付款 / 现金流），每组 预算 → 预收/预付 → 实收/实付 -->
+    <div class="cf-kpi-groups">
+      <!-- 收款组 -->
+      <section class="kpi-group kg-coll">
+        <div class="kpi-group-head kgh-coll">收款</div>
+        <div class="kpi-group-cards">
+          <div class="ck-card ck-coll-soft">
+            <div class="ck-label">收款预算</div>
+            <div class="ck-value">{{ fmtWan(sumBudgetColl) }}</div>
+            <div class="ck-sub">收款目标</div>
+          </div>
+          <div class="ck-card ck-coll-soft">
+            <div class="ck-label">预收</div>
+            <div class="ck-value">{{ fmtWan(sumAdvRecv) }}</div>
+            <div class="ck-sub">客户预付款</div>
+          </div>
+          <div class="ck-card ck-coll">
+            <div class="ck-label">实收</div>
+            <div class="ck-value">{{ fmtWan(sumColl) }}</div>
+            <div class="ck-sub" v-if="collAchieve !== null">
+              <span :class="collAchieve >= 100 ? 'ach-ok' : 'ach-off'">达成 {{ collAchieve.toFixed(1) }}%</span>
+            </div>
+            <div class="ck-sub ach-off" v-else>无预算基准</div>
+          </div>
         </div>
-        <div class="ck-sub ach-off" v-else>无预算基准</div>
-      </div>
-      <div class="ck-card ck-neutral">
-        <div class="ck-label">区间付款预算</div>
-        <div class="ck-value">{{ fmtWan(sumBudgetPaid) }}</div>
-        <div class="ck-sub">付款目标</div>
-      </div>
-      <div class="ck-card ck-neutral">
-        <div class="ck-label">区间预收</div>
-        <div class="ck-value">{{ fmtWan(sumAdvRecv) }}</div>
-        <div class="ck-sub">客户预付款（流入）</div>
-      </div>
-      <div class="ck-card ck-neutral">
-        <div class="ck-label">区间实付</div>
-        <div class="ck-value">{{ fmtWan(sumPaid) }}</div>
-        <div class="ck-sub" v-if="payAchieve !== null">
-          <span :class="payAchieve >= 100 ? 'ach-ok' : 'ach-off'">预算达成 {{ payAchieve.toFixed(1) }}%</span>
+      </section>
+      <!-- 付款组 -->
+      <section class="kpi-group kg-pay">
+        <div class="kpi-group-head kgh-pay">付款</div>
+        <div class="kpi-group-cards">
+          <div class="ck-card ck-pay-soft">
+            <div class="ck-label">付款预算</div>
+            <div class="ck-value">{{ fmtWan(sumBudgetPaid) }}</div>
+            <div class="ck-sub">付款目标</div>
+          </div>
+          <div class="ck-card ck-pay-soft">
+            <div class="ck-label">预付</div>
+            <div class="ck-value">{{ fmtWan(sumAdvPaid) }}</div>
+            <div class="ck-sub">付供应商</div>
+          </div>
+          <div class="ck-card ck-pay">
+            <div class="ck-label">实付</div>
+            <div class="ck-value">{{ fmtWan(sumPaid) }}</div>
+            <div class="ck-sub" v-if="payAchieve !== null">
+              <span :class="payAchieve >= 100 ? 'ach-ok' : 'ach-off'">达成 {{ payAchieve.toFixed(1) }}%</span>
+            </div>
+            <div class="ck-sub ach-off" v-else>无预算基准</div>
+          </div>
         </div>
-        <div class="ck-sub ach-off" v-else>无预算基准</div>
-      </div>
-      <div class="ck-card ck-neutral">
-        <div class="ck-label">区间预付</div>
-        <div class="ck-value">{{ fmtWan(sumAdvPaid) }}</div>
-        <div class="ck-sub">付供应商（流出）</div>
-      </div>
-      <div class="ck-card" :class="netTotal >= 0 ? 'ck-net-pos' : 'ck-net-neg'">
-        <div class="ck-label">区间净现金流</div>
-        <div class="ck-value" :class="netTotal >= 0 ? 'v-pos' : 'v-neg'">
-          {{ netTotal >= 0 ? '+' : '' }}{{ fmtWan(netTotal) }}
+      </section>
+      <!-- 现金流组 -->
+      <section class="kpi-group kg-cash">
+        <div class="kpi-group-head kgh-cash">现金流</div>
+        <div class="kpi-group-cards">
+          <div class="ck-card" :class="netTotal >= 0 ? 'ck-net-pos' : 'ck-net-neg'">
+            <div class="ck-label">净现金流</div>
+            <div class="ck-value" :class="netTotal >= 0 ? 'v-pos' : 'v-neg'">
+              {{ netTotal >= 0 ? '+' : '' }}{{ fmtWan(netTotal) }}
+            </div>
+            <div class="ck-sub">流入 − 流出</div>
+          </div>
+          <div class="ck-card" :class="endCumulative >= 0 ? 'ck-net-pos' : 'ck-net-neg'">
+            <div class="ck-label">期末累计</div>
+            <div class="ck-value" :class="endCumulative >= 0 ? 'v-pos' : 'v-neg'">
+              {{ endCumulative >= 0 ? '+' : '' }}{{ fmtWan(endCumulative) }}
+            </div>
+            <div class="ck-sub">资金池终值</div>
+          </div>
         </div>
-        <div class="ck-sub">流入(实收+预收) − 流出(实付+预付)</div>
-      </div>
-      <div class="ck-card" :class="endCumulative >= 0 ? 'ck-net-pos' : 'ck-net-neg'">
-        <div class="ck-label">期末累计净现金流</div>
-        <div class="ck-value" :class="endCumulative >= 0 ? 'v-pos' : 'v-neg'">
-          {{ endCumulative >= 0 ? '+' : '' }}{{ fmtWan(endCumulative) }}
-        </div>
-        <div class="ck-sub">资金池走势终值</div>
-      </div>
+      </section>
     </div>
 
     <!-- Chart grid (2-col layout) -->
@@ -463,24 +481,48 @@ const deptCompareOption = computed(() => {
   margin-left: 14px; vertical-align: middle;
 }
 
-/* ── KPI cards ── */
-.cockpit-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-bottom: 16px; }
-@media (max-width: 1100px) { .cockpit-kpis { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 700px)  { .cockpit-kpis { grid-template-columns: repeat(2, 1fr); } }
-.ck-card {
-  background: rgba(255,255,255,0.78); border: 1px solid rgba(255,255,255,0.9); border-radius: 16px;
-  padding: 18px 20px; box-shadow: 0 2px 18px rgba(0,0,0,0.06); border-left: 3px solid var(--border);
+/* ── KPI cards: 三组一排（收款 / 付款 / 现金流） ── */
+.cf-kpi-groups { display: flex; gap: 16px; margin-bottom: 16px; align-items: stretch; }
+.kpi-group { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.kg-coll, .kg-pay { flex: 3; }   /* 各 3 张卡 */
+.kg-cash { flex: 2; }            /* 2 张卡 */
+.kpi-group-head {
+  font-size: 12px; font-weight: 800; letter-spacing: .1em;
+  padding-left: 9px; border-left: 3px solid; line-height: 1.1;
 }
-.ck-neutral  { border-left-color: var(--muted); }
-.ck-net-pos  { border-left-color: #2e7d32; }
-.ck-net-neg  { border-left-color: #c62828; }
-.ck-label    { font-size: 11px; color: var(--muted); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
-.ck-value    { font-size: 24px; font-weight: 800; color: var(--text); line-height: 1.15; margin: 6px 0 4px; }
+.kgh-coll { color: #2e7d32; border-color: #2e7d32; }
+.kgh-pay  { color: #e65100; border-color: #e65100; }
+.kgh-cash { color: #1565c0; border-color: #1565c0; }
+.kpi-group-cards { display: flex; gap: 10px; min-width: 0; }
+.kpi-group-cards .ck-card { flex: 1; min-width: 0; }
+
+.ck-card {
+  background: rgba(255,255,255,0.78); border: 1px solid rgba(255,255,255,0.9); border-radius: 14px;
+  padding: 12px 14px; box-shadow: 0 2px 14px rgba(0,0,0,0.05); border-left: 3px solid var(--border);
+}
+.ck-coll       { border-left-color: #2e7d32; }
+.ck-coll-soft  { border-left-color: rgba(46,125,50,0.38); }
+.ck-pay        { border-left-color: #e65100; }
+.ck-pay-soft   { border-left-color: rgba(230,81,0,0.38); }
+.ck-net-pos    { border-left-color: #2e7d32; }
+.ck-net-neg    { border-left-color: #c62828; }
+.ck-label    { font-size: 10.5px; color: var(--muted); font-weight: 700; letter-spacing: .03em; white-space: nowrap; }
+.ck-value    { font-size: 19px; font-weight: 800; color: var(--text); line-height: 1.2; margin: 5px 0 3px; white-space: nowrap; }
 .v-pos       { color: #2e7d32 !important; }
 .v-neg       { color: #c62828 !important; }
-.ck-sub      { font-size: 11.5px; }
+.ck-sub      { font-size: 11px; white-space: nowrap; }
 .ach-ok      { color: #2e7d32; font-weight: 600; }
 .ach-off     { color: var(--muted); }
+
+/* 窄屏：三组换行堆叠，组内卡片仍并排；超窄时卡片再换行 */
+@media (max-width: 1100px) {
+  .cf-kpi-groups { flex-wrap: wrap; }
+  .kpi-group { flex: 1 1 100%; }
+}
+@media (max-width: 560px) {
+  .kpi-group-cards { flex-wrap: wrap; }
+  .kpi-group-cards .ck-card { flex: 1 1 calc(50% - 5px); }
+}
 
 /* ── Chart grid ── */
 .cockpit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
