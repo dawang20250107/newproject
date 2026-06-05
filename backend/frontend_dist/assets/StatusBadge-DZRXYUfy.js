@@ -1,1 +1,0 @@
-import{A as e,J as t,Y as n,Z as r,z as i}from"./index-D1tAJCxi.js";var a={__name:`StatusBadge`,props:{status:String},setup(a){let[o,s]={settled:[`✅ 已付清`,`badge-settled`],partial:[`⚡ 部分付款`,`badge-partial`],pending:[`⏳ 待付款`,`badge-pending`],adjusted:[`📋 计划调整`,`badge-adjusted`]}[a.status]||[`—`,``];return(a,c)=>(i(),e(`span`,{class:n([`badge`,t(s)])},r(t(o)),3))}};export{a as t};

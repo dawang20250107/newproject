@@ -582,6 +582,11 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.modal-mask {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(20,10,5,0.42); backdrop-filter: blur(8px);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
 .upload-modal {
   background: rgba(255,252,248,0.96);
   backdrop-filter: blur(24px);
