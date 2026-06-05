@@ -2662,6 +2662,34 @@ def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
 要求：专业、有数据支撑、有洞察，避免空话套话；分点清晰，适合集团领导决策参考，篇幅 800-1200 字。"""
 
 
+def _build_report_messages(year, month, bus, period):
+    """生成集团 月度/年度 经营分析报告的 messages（供 generate_report 技能用）。"""
+    tgt_index = _load_target_index(bus, year)
+    actuals = _collect_actuals(bus, {year, year - 1})
+    bu_rows = [_bu_metrics(bu, year, month, tgt_index, actuals) for bu in bus]
+    ov_m = _attach_group_chg(_aggregate_total(bu_rows, 'month'), bus, year, month, actuals)
+    ov_y = _aggregate_total(bu_rows, 'ytd')
+    data = _cockpit_data_lines(year, month, bus, bu_rows, ov_m, ov_y, actuals)
+    if period == 'year':
+        head = f'你正在为集团管理层撰写 {year}年度 经营分析报告（截至{month}月的累计即年度口径）。'
+        focus = ('请输出年度经营分析报告：1)年度经营总览（累计收入/利润/目标达成）；'
+                 '2)各事业部年度贡献与分化；3)全年目标完成研判与关键缺口；4)结构性/系统性风险；'
+                 '5)面向来年的战略与资源配置建议。篇幅 1000-1500 字。')
+    else:
+        head = f'你正在为集团管理层撰写 {year}年{month}月 月度经营分析报告。'
+        focus = ('请输出月度经营分析报告：1)当月经营总览；2)事业部横向对比；3)目标达成与缺口；'
+                 '4)风险预警；5)下月行动建议。篇幅 800-1200 字。')
+    prompt = (f'{head}\n口径：已发布部门明细表，收入=主营业务收入，利润=经营净利；集团总部为成本中心。\n\n'
+              f'{data}\n\n{focus}\n要求：专业、有数据支撑、有洞察、分点清晰，避免空话套话。')
+    return [{'role': 'system', 'content': _COCKPIT_AI_SYSTEM}, {'role': 'user', 'content': prompt}]
+
+
+def _chunk_text(s, n=48):
+    s = s or ''
+    for i in range(0, len(s), n):
+        yield s[i:i + n]
+
+
 _COCKPIT_AI_SYSTEM = (
     '你是集团CFO级别的资深财务与经营分析专家，擅长从全集团高度做综合诊断、'
     '事业部横向对比与战略建议，用中文专业作答。'
@@ -2923,6 +2951,8 @@ def _cockpit_chat_prepare(request):
     bus, e = _resolve_bu_list(request, (body.get('bu') or '').strip())
     if e:
         return None, e
+    # 供技能（如生成报告）默认取用当前对话的期间/范围
+    request.chat_year, request.chat_month, request.chat_bus = year, month, bus
 
     # 清洗对话历史：仅保留 user/assistant，限制条数与单条长度，末条必须是用户提问
     history = []
@@ -2952,7 +2982,9 @@ def _cockpit_chat_prepare(request):
     brief = agent_skills.skills_brief()
     if brief:
         messages.append({'role': 'system', 'content':
-                         f'你具备以下技能（可在需要时建议用户使用，相关操作也可在页面完成）：{brief}。'})
+                         f'你具备以下可调用技能（function-calling）：{brief}。'
+                         '当用户的意图明确对应某个技能时（如"生成/出一份月度或年度经营分析报告""把这条记进知识库"），'
+                         '请调用相应技能完成，而不是仅用文字描述；其余经营问答正常作答即可。'})
     messages += history
     scope = '全集团' if len(bus) > 1 else (bus[0] if bus else '全集团')
     return (messages, scope), None
@@ -2971,14 +3003,51 @@ def cockpit_ai_chat_stream(request):
     if e:
         return e
     messages, scope = prep
-    model = settings.DEEPSEEK_PRO_MODEL
+    from caiwu import agent_skills
+    tool_model = settings.DEEPSEEK_MODEL   # function-calling 走支持 tools 的对话模型
 
     def gen():
-        yield _sse_event({'type': 'meta', 'scope': scope, 'model': model})
+        yield _sse_event({'type': 'meta', 'scope': scope, 'model': tool_model})
         try:
-            for kind, delta in _deepseek_stream(messages, model=model,
-                                                max_tokens=3200, timeout=300):
-                yield _sse_event({'type': kind, 'delta': delta})
+            tools = agent_skills.agent_tools()
+            convo = list(messages)
+            for _step in range(4):  # 工具调用循环上限，防止无限调用
+                msg = _deepseek_chat_raw(convo, tools=tools, model=tool_model,
+                                         timeout=120, max_tokens=2000)
+                tool_calls = msg.get('tool_calls')
+                if not tool_calls:
+                    for chunk in _chunk_text(msg.get('content') or '（未返回内容）'):
+                        yield _sse_event({'type': 'answer', 'delta': chunk})
+                    yield _sse_event({'type': 'done'})
+                    return
+                convo.append({'role': 'assistant', 'content': msg.get('content') or '',
+                              'tool_calls': tool_calls})
+                terminal_done = False
+                for tc in tool_calls:
+                    fn = tc.get('function') or {}
+                    name = fn.get('name')
+                    try:
+                        a = json.loads(fn.get('arguments') or '{}')
+                    except Exception:
+                        a = {}
+                    sk = agent_skills.get_skill(name)
+                    yield _sse_event({'type': 'tool', 'name': name,
+                                      'label': sk['label'] if sk else (name or '技能')})
+                    if sk and sk.get('terminal') and sk.get('stream_handler'):
+                        for kind, delta in sk['stream_handler'](request, a):
+                            yield _sse_event({'type': kind, 'delta': delta})
+                        terminal_done = True
+                        break
+                    try:
+                        res = sk['handler'](request, a) if sk else {'ok': False, 'error': '未知技能'}
+                    except Exception as ex:
+                        res = {'ok': False, 'error': str(ex)[:120]}
+                    convo.append({'role': 'tool', 'tool_call_id': tc.get('id'),
+                                  'content': json.dumps(res, ensure_ascii=False)})
+                if terminal_done:
+                    yield _sse_event({'type': 'done'})
+                    return
+            yield _sse_event({'type': 'answer', 'delta': '（处理步骤过多，请把问题说得更具体些）'})
             yield _sse_event({'type': 'done'})
         except Exception as ex:
             logger.error(f'Cockpit chat stream error: {ex}')
@@ -3246,8 +3315,9 @@ from caiwu import agent_skills  # noqa: E402
 
 
 @agent_skills.register_skill(
-    'save_knowledge', '记入知识库', '把一条经营知识/背景/口径存入知识库',
-    {'content': '知识内容(必填)', 'scope': '范围(事业部或全集团,可选)', 'kind': 'insight|background|rule(可选)'})
+    'save_knowledge', '记入知识库', '把一条经营知识/背景/口径存入知识库（长期记忆）',
+    {'content': '知识内容(必填)', 'scope': '范围(事业部或全集团,可选)', 'kind': 'insight|background|rule(可选)'},
+    tool=True)
 def _skill_save_knowledge(request, args):
     content = (args.get('content') or '').strip()
     if not content:
@@ -3262,7 +3332,8 @@ def _skill_save_knowledge(request, args):
 
 
 @agent_skills.register_skill(
-    'search_knowledge', '检索知识库', '按关键词检索已积累的经营知识', {'query': '关键词'})
+    'search_knowledge', '检索知识库', '按关键词检索已积累的经营知识', {'query': '关键词'},
+    tool=True)
 def _skill_search_knowledge(request, args):
     q = (args.get('query') or '').strip()
     qs = CockpitKnowledge.objects.filter(scope__in=_knowledge_visible_scopes(request, ''))
@@ -3284,6 +3355,51 @@ def _skill_forget_knowledge(request, args):
     ids = list(qs.values_list('id', flat=True))
     qs.delete()
     return {'ok': True, 'data': {'deleted': len(ids), 'ids': ids}}
+
+
+def _resolve_report_args(request, args):
+    import datetime as _dt
+    today = _dt.date.today()
+    try:
+        year = int(args.get('year') or getattr(request, 'chat_year', 0) or 0)
+    except Exception:
+        year = 0
+    try:
+        month = int(args.get('month') or getattr(request, 'chat_month', 0) or 0)
+    except Exception:
+        month = 0
+    bus = list(getattr(request, 'chat_bus', None) or [])
+    if not bus:
+        bus, _e = _resolve_bu_list(request, '')
+    bu_arg = (args.get('bu') or '').strip()
+    if bu_arg and bu_arg in VALID_BUSINESS_UNITS and _can_access_bu(request, bu_arg):
+        bus = [bu_arg]
+    period = 'year' if (args.get('period') or '').strip() in ('year', '年', '全年', '年度', 'annual') else 'month'
+    if not (2000 <= year <= 2100):
+        year = today.year
+    if not (1 <= month <= 12):
+        month = today.month
+    return year, month, bus, period
+
+
+def _skill_generate_report_stream(request, args):
+    year, month, bus, period = _resolve_report_args(request, args)
+    label = '年度' if period == 'year' else f'{month}月'
+    yield ('answer', f'### 集团 {year}年{label} 经营分析报告\n\n')
+    for kind, delta in _deepseek_stream(_build_report_messages(year, month, bus, period),
+                                        model=settings.DEEPSEEK_PRO_MODEL, max_tokens=3500, timeout=300):
+        yield (kind, delta)
+
+
+@agent_skills.register_skill(
+    'generate_report', '生成经营分析报告', '生成集团全年或某月的经营分析报告（数据驱动，含目标达成、事业部对比、风险与建议）',
+    {'period': 'year 或 month（必填，年度填year）', 'year': '年份(可选)', 'month': '月份(可选)', 'bu': '事业部(可选,默认全集团)'},
+    tool=True, terminal=True, stream_handler=_skill_generate_report_stream)
+def _skill_generate_report(request, args):
+    year, month, bus, period = _resolve_report_args(request, args)
+    text = _deepseek_chat(_build_report_messages(year, month, bus, period),
+                          timeout=180, model=settings.DEEPSEEK_PRO_MODEL, max_tokens=3500)
+    return {'ok': True, 'data': {'report': text, 'year': year, 'month': month, 'period': period}}
 
 
 @cw_required()
@@ -3528,6 +3644,27 @@ def _deepseek_chat(messages, timeout=90, model=None, max_tokens=1800):
     )
     resp.raise_for_status()
     return resp.json()['choices'][0]['message']['content']
+
+
+def _deepseek_chat_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800):
+    """调用 DeepSeek（支持 function-calling），返回完整 message dict（含可能的 tool_calls）。"""
+    import requests as req_lib
+    payload = {
+        'model': model or settings.DEEPSEEK_MODEL,
+        'messages': messages,
+        'temperature': 0.3,
+        'max_tokens': max_tokens,
+    }
+    if tools:
+        payload['tools'] = tools
+        payload['tool_choice'] = 'auto'
+    resp = req_lib.post(
+        f'{settings.DEEPSEEK_BASE_URL}/chat/completions',
+        headers={'Authorization': f'Bearer {settings.DEEPSEEK_API_KEY}',
+                 'Content-Type': 'application/json'},
+        json=payload, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()['choices'][0]['message']
 
 
 def _deepseek_stream(messages, model=None, max_tokens=1800, timeout=300):

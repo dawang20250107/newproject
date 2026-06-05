@@ -96,10 +96,10 @@ const chatStreaming = ref(false)
 const chatErr = ref('')
 const chatBodyRef = ref(null)
 const SUGGESTIONS = [
+  '生成本月集团经营分析报告',
+  '生成今年的年度经营分析报告',
   '哪个事业部在拖累集团利润？为什么？',
   '本月回款和收入是否匹配？应收风险在哪？',
-  '按当前节奏，全年目标能否达成？缺口多大？',
-  '给出下月经营改善的 3 条具体建议',
 ]
 
 function scrollChatSoon() {
@@ -112,7 +112,7 @@ async function sendChat(text) {
   chatInput.value = ''
   chatErr.value = ''
   chatMessages.value.push({ role: 'user', content: q })
-  chatMessages.value.push({ role: 'assistant', content: '', reasoning: '' })
+  chatMessages.value.push({ role: 'assistant', content: '', reasoning: '', tool: '' })
   const asst = chatMessages.value[chatMessages.value.length - 1]   // reactive proxy
   chatStreaming.value = true
   scrollChatSoon()
@@ -126,7 +126,8 @@ async function sendChat(text) {
     if (selectedBu.value) body.bu = selectedBu.value
     await streamAiAnalysis('/cockpit/ai-chat/stream', body, {
       onReasoning: d => { asst.reasoning += d; scrollChatSoon() },
-      onAnswer: d => { asst.content += d; scrollChatSoon() },
+      onAnswer: d => { asst.content += d; asst.tool = ''; scrollChatSoon() },
+      onTool: e => { asst.tool = `🛠 正在${e.label || '调用技能'}…`; scrollChatSoon() },
       onError: m => { chatErr.value = m },
     })
   } catch (e) {
@@ -480,9 +481,10 @@ onMounted(load)
                 <div v-if="m.role === 'user'" class="cfa-bubble cfa-user">{{ m.content }}</div>
                 <div v-else class="cfa-asst-wrap">
                   <div class="cfa-bubble cfa-asst">
+                    <div v-if="m.tool && !m.content" class="cfa-tool">{{ m.tool }}</div>
                     <div v-if="m.reasoning && !m.content" class="cfa-reasoning">💭 {{ m.reasoning }}</div>
                     <div v-if="m.content" class="cfa-md" v-html="renderMarkdown(m.content)"></div>
-                    <span v-else-if="chatStreaming && i === chatMessages.length - 1 && !m.reasoning" class="cfa-typing">思考中<i>.</i><i>.</i><i>.</i></span>
+                    <span v-else-if="chatStreaming && i === chatMessages.length - 1 && !m.reasoning && !m.tool" class="cfa-typing">思考中<i>.</i><i>.</i><i>.</i></span>
                   </div>
                   <!-- 答案动作：提炼入库 + 下钻 -->
                   <div v-if="m.content && !(chatStreaming && i === chatMessages.length - 1)" class="cfa-actions">
@@ -666,6 +668,7 @@ onMounted(load)
 .cfa-bubble { max-width: 88%; border-radius: 14px; padding: 10px 13px; font-size: 13px; line-height: 1.7; }
 .cfa-user { background: linear-gradient(135deg, #c96342, #e8855a); color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
 .cfa-asst { background: rgba(255,255,255,0.92); border: 1px solid rgba(0,0,0,0.06); color: var(--text); border-bottom-left-radius: 4px; }
+.cfa-tool { font-size: 12px; color: var(--primary); font-weight: 600; background: rgba(201,99,66,0.08); border-radius: 8px; padding: 5px 9px; }
 .cfa-reasoning { font-size: 12px; color: #6b7a8c; line-height: 1.6; white-space: pre-wrap; }
 .cfa-typing i { animation: cfaBlink 1.2s infinite; opacity: .3; }
 .cfa-typing i:nth-child(2) { animation-delay: .2s; }

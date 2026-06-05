@@ -7,7 +7,7 @@
 //     onAnswer:    d => text.value += d,
 //     onError:     m => err.value = m,
 //   })
-export async function streamAiAnalysis(path, body, { onReasoning, onAnswer, onError } = {}) {
+export async function streamAiAnalysis(path, body, { onReasoning, onAnswer, onError, onTool } = {}) {
   const token = localStorage.getItem('pk_token')
   const resp = await fetch(`/api/cw${path}`, {
     method: 'POST',
@@ -41,6 +41,7 @@ export async function streamAiAnalysis(path, body, { onReasoning, onAnswer, onEr
       try { evt = JSON.parse(payload) } catch { continue }
       if (evt.type === 'reasoning') onReasoning && onReasoning(evt.delta)
       else if (evt.type === 'answer') onAnswer && onAnswer(evt.delta)
+      else if (evt.type === 'tool') onTool && onTool(evt)
       else if (evt.type === 'error') onError && onError(evt.error || 'AI 分析失败')
     }
   }

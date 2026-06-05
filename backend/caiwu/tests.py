@@ -697,13 +697,12 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.mk(2026, 5, 200, 130)
         captured = {}
 
-        def fake_stream(messages, model=None, max_tokens=1800, timeout=300):
+        def fake_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800):
             captured['model'] = model
             captured['messages'] = messages
-            yield ('answer', '根据数据，')
-            yield ('answer', '本月利润达标。')
+            return {'content': '根据数据，本月利润达标。'}
 
-        with mock.patch('caiwu.views._deepseek_stream', fake_stream):
+        with mock.patch('caiwu.views._deepseek_chat_raw', fake_raw):
             resp = self.client.post(
                 '/api/cw/cockpit/ai-chat/stream',
                 data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu, 'messages': [
@@ -723,7 +722,6 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.assertEqual(types[-1], 'done')
         answer = ''.join(e['delta'] for e in events if e['type'] == 'answer')
         self.assertEqual(answer, '根据数据，本月利润达标。')
-        self.assertEqual(captured['model'], settings.DEEPSEEK_PRO_MODEL)
         # 含 system 人设 + 数据上下文 + 完整对话历史（末条为用户提问）
         msgs = captured['messages']
         self.assertEqual(msgs[0]['role'], 'system')
@@ -757,11 +755,11 @@ class CaiwuMetricsAndTargetsTests(TestCase):
 
         captured = {}
 
-        def fake_stream(messages, model=None, max_tokens=1800, timeout=300):
+        def fake_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800):
             captured['messages'] = messages
-            yield ('answer', 'ok')
+            return {'content': 'ok'}
 
-        with mock.patch('caiwu.views._deepseek_stream', fake_stream):
+        with mock.patch('caiwu.views._deepseek_chat_raw', fake_raw):
             resp = self.client.post(
                 '/api/cw/cockpit/ai-chat/stream',
                 data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu,
@@ -817,6 +815,60 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.assertEqual(r.json()['data']['created'], 2)
         items = self.client.get('/api/cw/cockpit/knowledge', **self.auth()).json()['data']['items']
         self.assertTrue(any(k['source'] == 'ai' and k['title'] == '背景A' for k in items))
+
+    def test_chat_function_calling_tool_then_answer(self):
+        """function-calling：模型先调用 save_knowledge 工具，再给出最终回答。"""
+        from unittest import mock
+        self.mk(2026, 5, 200, 130)
+        calls = {'n': 0}
+
+        def fake_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                return {'content': '', 'tool_calls': [{'id': 'c1', 'function': {
+                    'name': 'save_knowledge',
+                    'arguments': '{"content":"工具写入的知识Z","scope":"全集团"}'}}]}
+            return {'content': '已记录并回答。'}
+
+        with mock.patch('caiwu.views._deepseek_chat_raw', fake_raw):
+            resp = self.client.post(
+                '/api/cw/cockpit/ai-chat/stream',
+                data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu,
+                                 'messages': [{'role': 'user', 'content': '把这条记下来'}]}),
+                content_type='application/json', **self.auth())
+            body = b''.join(resp.streaming_content).decode('utf-8')
+        events = [json.loads(fr[5:].strip()) for fr in body.split('\n\n') if fr.strip().startswith('data:')]
+        self.assertIn('tool', [e['type'] for e in events])
+        answer = ''.join(e['delta'] for e in events if e['type'] == 'answer')
+        self.assertIn('已记录并回答', answer)
+        items = self.client.get('/api/cw/cockpit/knowledge', **self.auth()).json()['data']['items']
+        self.assertTrue(any(k['content'] == '工具写入的知识Z' for k in items))
+
+    def test_chat_function_calling_generate_report(self):
+        """function-calling：模型调用 generate_report（终止型技能），直接流式产出报告。"""
+        from unittest import mock
+        self.mk(2026, 5, 200, 130)
+
+        def fake_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800):
+            return {'content': '', 'tool_calls': [{'id': 'r1', 'function': {
+                'name': 'generate_report', 'arguments': '{"period":"month"}'}}]}
+
+        def fake_stream(messages, model=None, max_tokens=1800, timeout=300):
+            yield ('answer', '【正文】本月经营稳健。')
+
+        with mock.patch('caiwu.views._deepseek_chat_raw', fake_raw), \
+                mock.patch('caiwu.views._deepseek_stream', fake_stream):
+            resp = self.client.post(
+                '/api/cw/cockpit/ai-chat/stream',
+                data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu,
+                                 'messages': [{'role': 'user', 'content': '生成本月经营分析报告'}]}),
+                content_type='application/json', **self.auth())
+            body = b''.join(resp.streaming_content).decode('utf-8')
+        events = [json.loads(fr[5:].strip()) for fr in body.split('\n\n') if fr.strip().startswith('data:')]
+        answer = ''.join(e['delta'] for e in events if e['type'] == 'answer')
+        self.assertIn('经营分析报告', answer)   # 技能注入的标题
+        self.assertIn('本月经营稳健', answer)
+        self.assertEqual(events[-1]['type'], 'done')
 
     def test_agent_skills_list_and_run(self):
         """Agent 技能：列表含基础技能，且可执行 写入/检索/清理 知识库。"""
