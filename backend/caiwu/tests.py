@@ -741,6 +741,56 @@ class CaiwuMetricsAndTargetsTests(TestCase):
             content_type='application/json', **self.auth())
         self.assertEqual(resp.status_code, 400)
 
+    def test_cockpit_knowledge_crud_and_injection(self):
+        """知识库：增/查/删，且被注入对话上下文（让助手越用越聪明）。"""
+        from unittest import mock
+        self.mk(2026, 5, 200, 130)
+        r = self.client.post(
+            '/api/cw/cockpit/knowledge',
+            data=json.dumps({'content': '阔展大客户Q2流失，收入下滑属预期', 'scope': '全集团', 'kind': 'background'}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        kid = r.json()['data']['id']
+
+        lst = self.client.get('/api/cw/cockpit/knowledge', **self.auth())
+        self.assertTrue(any(k['id'] == kid for k in lst.json()['data']['items']))
+
+        captured = {}
+
+        def fake_stream(messages, model=None, max_tokens=1800, timeout=300):
+            captured['messages'] = messages
+            yield ('answer', 'ok')
+
+        with mock.patch('caiwu.views._deepseek_stream', fake_stream):
+            resp = self.client.post(
+                '/api/cw/cockpit/ai-chat/stream',
+                data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu,
+                                 'messages': [{'role': 'user', 'content': '背景如何'}]}),
+                content_type='application/json', **self.auth())
+            b''.join(resp.streaming_content)
+        joined = '\n'.join(m['content'] for m in captured['messages'])
+        self.assertIn('知识库', joined)
+        self.assertIn('大客户Q2流失', joined)
+
+        d = self.client.delete(f'/api/cw/cockpit/knowledge/{kid}', **self.auth())
+        self.assertEqual(d.status_code, 200)
+
+    def test_cockpit_knowledge_distill(self):
+        """AI 自我提炼：把一段分析提炼成知识入库（来源标记 ai）。"""
+        from unittest import mock
+
+        def fake_chat(messages, timeout=90, model=None, max_tokens=1800):
+            return '{"title":"应收风险","content":"逾期集中在大东，需加强催收。"}'
+
+        with mock.patch('caiwu.views._deepseek_chat', fake_chat):
+            r = self.client.post(
+                '/api/cw/cockpit/knowledge/distill',
+                data=json.dumps({'text': '大东逾期20万，账龄拉长……', 'scope': '全集团'}),
+                content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['data']['title'], '应收风险')
+        self.assertEqual(r.json()['data']['source'], 'ai')
+
     def test_report_ai_stream_emits_answer_frames(self):
         from unittest import mock
         self.mk(2026, 5, 200, 130)

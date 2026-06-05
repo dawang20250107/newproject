@@ -16,7 +16,7 @@ import jwt
 
 from caiwu.models import (
     L1Category, L2Category, L3Category,
-    ImportBatch, FinancialEntry, FinancialTarget, ProjectMargin,
+    ImportBatch, FinancialEntry, FinancialTarget, ProjectMargin, CockpitKnowledge,
     BUSINESS_UNITS, VALID_BUSINESS_UNITS, JOB_TITLES,
 )
 from paikuan.models import PaikuanUser, JobPermission as PaikuanJobPermission
@@ -2775,7 +2775,8 @@ _COCKPIT_CHAT_SYSTEM = (
 
 
 def _build_ar_business_summary(bus, year, month):
-    """业财融合「业」侧：应收未收 / 逾期 / 本期回款（按交付部门）。最佳努力，异常或无数据返回空串。"""
+    """业财融合「业」侧：应收未收 / 逾期账龄 / 本期回款（按交付部门）+ 逾期 Top 项目。
+    最佳努力，异常或无数据返回空串。"""
     try:
         import datetime as _dt
         from ar.models import ARRecord, ARPayment
@@ -2798,6 +2799,32 @@ def _build_ar_business_summary(bus, year, month):
             if not (o or od or p):
                 continue
             lines.append(f'  {bu}：未收余额{_fmt_wan(o)}（其中逾期{_fmt_wan(od)}）；{month}月回款{_fmt_wan(p)}')
+        # 逾期账龄分布（全范围）
+        od_qs = ARRecord.objects.filter(delivery_dept__in=bus, outstanding_amount__gt=0,
+                                        due_date__lt=today).only('outstanding_amount', 'due_date')
+        buckets = {'30天内': 0, '30-90天': 0, '90天以上': 0}
+        for r in od_qs.iterator():
+            days = (today - r.due_date).days if r.due_date else 0
+            amt = float(r.outstanding_amount or 0)
+            if days <= 30:
+                buckets['30天内'] += amt
+            elif days <= 90:
+                buckets['30-90天'] += amt
+            else:
+                buckets['90天以上'] += amt
+        if any(buckets.values()):
+            lines.append('  逾期账龄：' + '；'.join(
+                f'{k} {_fmt_wan(v)}' for k, v in buckets.items() if v))
+        # 逾期 Top5 项目
+        top = (ARRecord.objects.filter(delivery_dept__in=bus, outstanding_amount__gt=0,
+                                       due_date__lt=today)
+               .select_related('project').order_by('-outstanding_amount')[:5])
+        names = []
+        for r in top:
+            nm = (r.project.short_name if r.project_id else None) or '—'
+            names.append(f'{nm}({r.delivery_dept}) 逾期{_fmt_wan(r.outstanding_amount)}')
+        if names:
+            lines.append('  逾期最大项目：' + '；'.join(names))
         return '\n'.join(lines) if len(lines) > 1 else ''
     except Exception:
         return ''
@@ -2823,11 +2850,44 @@ def _build_project_margin_summary(bus, year, month):
             if not ms:
                 continue
             ms.sort(key=lambda x: float(x.revenue) - float(x.cost), reverse=True)
-            top = '；'.join(
-                f'{x.project_name} 毛利{_fmt_wan(float(x.revenue) - float(x.cost))}'
-                f'(收入{_fmt_wan(x.revenue)})' for x in ms[:3])
-            lines.append(f'  {bu}：共{len(ms)}个项目，毛利Top：{top}')
+            def _fmt(x):
+                mg = float(x.revenue) - float(x.cost)
+                rev = float(x.revenue)
+                rate = f'，毛利率{mg / rev * 100:.0f}%' if rev else ''
+                return f'{x.project_name} 毛利{_fmt_wan(mg)}(收入{_fmt_wan(rev)}{rate})'
+            top = '；'.join(_fmt(x) for x in ms[:3])
+            line = f'  {bu}：共{len(ms)}个项目，毛利Top：{top}'
+            # 亏损项目（毛利<0）
+            losers = [x for x in ms if float(x.revenue) - float(x.cost) < 0]
+            if losers:
+                losers.sort(key=lambda x: float(x.revenue) - float(x.cost))
+                line += '；亏损项目：' + '、'.join(
+                    f'{x.project_name}({_fmt_wan(float(x.revenue) - float(x.cost))})'
+                    for x in losers[:3])
+            lines.append(line)
         return '\n'.join(lines) if len(lines) > 1 else ''
+    except Exception:
+        return ''
+
+
+_KNOWLEDGE_KIND_LABEL = {'insight': '洞察', 'background': '背景', 'rule': '口径'}
+
+
+def _build_knowledge_context(bus):
+    """注入已积累的经营知识库（长期记忆），让助手延续历史判断、越用越懂业务。"""
+    try:
+        scopes = set(bus) | {'全集团'}
+        rows = list(CockpitKnowledge.objects.filter(scope__in=scopes)
+                    .order_by('-pinned', '-created_at')[:40])
+        if not rows:
+            return ''
+        lines = ['【已积累的经营知识库（历史沉淀，供延续判断与背景参考；若与最新数据冲突，以数据为准）】']
+        for k in rows:
+            tag = _KNOWLEDGE_KIND_LABEL.get(k.kind, k.kind)
+            sc = '' if k.scope == '全集团' else f'[{k.scope}]'
+            ttl = (k.title + '：') if k.title else ''
+            lines.append(f'  ·（{tag}）{sc}{ttl}{k.content}')
+        return '\n'.join(lines)
     except Exception:
         return ''
 
@@ -2884,8 +2944,11 @@ def _cockpit_chat_prepare(request):
     messages = [
         {'role': 'system', 'content': _COCKPIT_CHAT_SYSTEM},
         {'role': 'system', 'content': f'【经营数据上下文】\n{data_pack}'},
-        *history,
     ]
+    knowledge = _build_knowledge_context(bus)
+    if knowledge:
+        messages.append({'role': 'system', 'content': knowledge})
+    messages += history
     scope = '全集团' if len(bus) > 1 else (bus[0] if bus else '全集团')
     return (messages, scope), None
 
@@ -2920,6 +2983,119 @@ def cockpit_ai_chat_stream(request):
     resp['Cache-Control'] = 'no-cache'
     resp['X-Accel-Buffering'] = 'no'
     return resp
+
+
+# ── 经营知识库（让 Agent 越用越聪明：长期记忆 + 自我提炼）─────────────────────────
+
+def _knowledge_visible_scopes(request, bu):
+    if bu and bu in VALID_BUSINESS_UNITS:
+        return ['全集团', bu]
+    if request.pk_role in ('super_admin', 'manager', 'general_manager'):
+        visible = list(BUSINESS_UNITS)
+    else:
+        visible = [b for b in (request.pk_depts or []) if b in VALID_BUSINESS_UNITS]
+    return ['全集团'] + visible
+
+
+@cw_required()
+def cockpit_knowledge(request):
+    """GET 列出（按范围）/ POST 新增 一条经营知识。"""
+    denied = _page_denied(request, 'cockpit')
+    if denied:
+        return denied
+    if request.method == 'GET':
+        scopes = _knowledge_visible_scopes(request, (request.GET.get('bu') or '').strip())
+        rows = CockpitKnowledge.objects.filter(scope__in=scopes).order_by('-pinned', '-created_at')[:200]
+        return ok({'items': [k.to_dict() for k in rows]})
+    if request.method == 'POST':
+        body = _parse_json(request)
+        content = (body.get('content') or '').strip()
+        if not content:
+            return err('内容不能为空')
+        scope = (body.get('scope') or '全集团').strip() or '全集团'
+        if scope != '全集团' and scope not in VALID_BUSINESS_UNITS:
+            scope = '全集团'
+        if scope != '全集团' and not _can_access_bu(request, scope):
+            return err('无权写入该事业部知识', 403)
+        kind = body.get('kind') if body.get('kind') in ('insight', 'background', 'rule') else 'insight'
+        k = CockpitKnowledge.objects.create(
+            scope=scope, kind=kind, title=(body.get('title') or '')[:120].strip(),
+            content=content[:2000], source=(body.get('source') or 'user'),
+            pinned=bool(body.get('pinned')), created_by=request.pk_user)
+        return ok(k.to_dict())
+    return err('方法不允许', 405)
+
+
+@cw_required()
+def cockpit_knowledge_detail(request, kid):
+    """PUT 置顶/编辑 / DELETE 删除 一条知识。"""
+    denied = _page_denied(request, 'cockpit')
+    if denied:
+        return denied
+    try:
+        k = CockpitKnowledge.objects.get(id=kid)
+    except CockpitKnowledge.DoesNotExist:
+        return err('知识不存在', 404)
+    if request.method == 'DELETE':
+        if request.pk_role != 'super_admin' and k.created_by_id != request.pk_uid:
+            return err('仅创建者或管理员可删除', 403)
+        k.delete()
+        return ok({'deleted': kid})
+    if request.method == 'PUT':
+        body = _parse_json(request)
+        if 'pinned' in body:
+            k.pinned = bool(body['pinned'])
+        if (body.get('content') or '').strip():
+            k.content = body['content'].strip()[:2000]
+        if 'title' in body:
+            k.title = (body['title'] or '')[:120].strip()
+        k.save()
+        return ok(k.to_dict())
+    return err('方法不允许', 405)
+
+
+@cw_required()
+def cockpit_knowledge_distill(request):
+    """把一段 AI 分析自我提炼为一条可长期复用的经营知识并入库（Agent 自我总结、积累）。"""
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    denied = _page_denied(request, 'cockpit')
+    if denied:
+        return denied
+    if not settings.DEEPSEEK_API_KEY:
+        return err('AI 未配置', 503)
+    body = _parse_json(request)
+    text = (body.get('text') or '').strip()
+    if not text:
+        return err('缺少待提炼内容')
+    scope = (body.get('scope') or '全集团').strip() or '全集团'
+    if scope != '全集团' and scope not in VALID_BUSINESS_UNITS:
+        scope = '全集团'
+    if scope != '全集团' and not _can_access_bu(request, scope):
+        return err('无权写入该事业部知识', 403)
+    sys = ('你是经营分析助手。把用户给的一段分析提炼为一条简洁、可长期复用的经营知识。'
+           '只输出 JSON：{"title":"≤16字小标题","content":"≤140字要点，保留关键数字与结论，不要套话"}。')
+    try:
+        raw = _deepseek_chat([{'role': 'system', 'content': sys},
+                              {'role': 'user', 'content': text[:4000]}],
+                             timeout=60, max_tokens=400)
+    except Exception as ex:
+        logger.error(f'knowledge distill error: {ex}')
+        return err('提炼失败，请稍后重试', 503)
+    title, content = '', ''
+    try:
+        s = raw.strip()
+        obj = json.loads(s[s.find('{'): s.rfind('}') + 1])
+        title = (obj.get('title') or '')[:120]
+        content = (obj.get('content') or '').strip()
+    except Exception:
+        content = text[:280]
+    if not content:
+        content = text[:280]
+    k = CockpitKnowledge.objects.create(scope=scope, kind='insight', title=title,
+                                        content=content[:2000], source='ai',
+                                        created_by=request.pk_user)
+    return ok(k.to_dict())
 
 
 # ── charts ───────────────────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
@@ -12,6 +13,7 @@ import { renderMarkdown } from '../../utils/markdown.js'
 import EmptyState from '../../components/EmptyState.vue'
 
 const auth = useCaiwuAuth()
+const router = useRouter()
 
 // 默认展示上月：当月财务数据通常尚未导入/发布
 const year = ref(lastMonthCST().year)
@@ -137,6 +139,65 @@ async function sendChat(text) {
 }
 
 function resetChat() { chatMessages.value = []; chatErr.value = '' }
+
+// ── 经营知识库（越用越聪明：长期记忆 + 自我提炼）──────────────────────────────
+const panelTab = ref('chat')          // 'chat' | 'kb'
+const kbItems = ref([])
+const kbLoading = ref(false)
+const kbInput = ref('')
+const kbScope = ref('')                // '' = 全集团
+const kbKind = ref('background')
+const toast = ref('')
+let toastTimer = null
+function showToast(msg) {
+  toast.value = msg
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => { toast.value = '' }, 2200)
+}
+
+async function loadKb() {
+  kbLoading.value = true
+  try {
+    const res = await api.get('/cockpit/knowledge', { params: selectedBu.value ? { bu: selectedBu.value } : {} })
+    kbItems.value = res.data.items
+  } catch (e) { /* silent */ } finally { kbLoading.value = false }
+}
+async function addKb() {
+  const content = kbInput.value.trim()
+  if (!content) return
+  try {
+    await api.post('/cockpit/knowledge', {
+      content, scope: kbScope.value || '全集团', kind: kbKind.value, source: 'user',
+    })
+    kbInput.value = ''
+    await loadKb()
+    showToast('已加入知识库')
+  } catch (e) { showToast(e?.msg || '添加失败') }
+}
+async function delKb(id) {
+  try { await api.delete(`/cockpit/knowledge/${id}`); kbItems.value = kbItems.value.filter(k => k.id !== id) }
+  catch (e) { showToast(e?.msg || '删除失败') }
+}
+async function togglePin(k) {
+  try { const res = await api.put(`/cockpit/knowledge/${k.id}`, { pinned: !k.pinned }); Object.assign(k, res.data); await loadKb() }
+  catch (e) { showToast(e?.msg || '操作失败') }
+}
+const distillingIdx = ref(-1)
+async function distillToKb(content, idx) {
+  if (distillingIdx.value >= 0) return
+  distillingIdx.value = idx
+  try {
+    await api.post('/cockpit/knowledge/distill', { text: content, scope: selectedBu.value || '全集团' })
+    showToast('✓ 已提炼并存入知识库')
+    if (panelTab.value === 'kb') await loadKb()
+  } catch (e) { showToast(e?.msg || '提炼失败') }
+  finally { distillingIdx.value = -1 }
+}
+function openKb() { panelTab.value = 'kb'; loadKb() }
+
+// ── 下钻导航（从对话跳到明细页）──────────────────────────────────────────────
+function drillTo(path) { chatOpen.value = false; router.push(path) }
+const KIND_LABEL = { insight: '洞察', background: '背景', rule: '口径' }
 
 // ── headline KPI cards ───────────────────────────────────────────────────────
 const cards = computed(() => {
@@ -370,16 +431,24 @@ onMounted(load)
               </div>
             </div>
             <div class="cfa-head-acts">
-              <button v-if="chatMessages.length" class="cfa-mini" title="清空对话" @click="resetChat">清空</button>
+              <button v-if="panelTab === 'chat' && chatMessages.length" class="cfa-mini" title="清空对话" @click="resetChat">清空</button>
               <button class="cfa-x" title="收起" @click="chatOpen = false">×</button>
             </div>
           </div>
 
-          <div ref="chatBodyRef" class="cfa-body">
+          <!-- 对话 / 知识库 切换 -->
+          <div class="cfa-tabs">
+            <button :class="['cfa-tab', panelTab === 'chat' ? 'on' : '']" @click="panelTab = 'chat'">💬 对话</button>
+            <button :class="['cfa-tab', panelTab === 'kb' ? 'on' : '']" @click="openKb">📚 知识库</button>
+            <span class="cfa-tab-hint">{{ panelTab === 'kb' ? '助手会记住这些、越用越懂业务' : '答案可一键提炼入库' }}</span>
+          </div>
+
+          <!-- ══ 对话 ══ -->
+          <div v-show="panelTab === 'chat'" ref="chatBodyRef" class="cfa-body">
             <div v-if="!chatMessages.length" class="cfa-empty">
               <div class="cfa-empty-orb">🤖</div>
               <div class="cfa-empty-title">我是你的业财融合经营助手</div>
-              <div class="cfa-empty-sub">已掌握全集团各事业部的财务与业务数据，问我任何经营问题：</div>
+              <div class="cfa-empty-sub">已掌握全集团各事业部的财务与业务数据，并会延续知识库里的历史判断。问我任何经营问题：</div>
               <div class="cfa-sugs">
                 <button v-for="s in SUGGESTIONS" :key="s" class="cfa-sug" @click="sendChat(s)">{{ s }}</button>
               </div>
@@ -387,16 +456,64 @@ onMounted(load)
             <template v-else>
               <div v-for="(m, i) in chatMessages" :key="i" :class="['cfa-msg', m.role]">
                 <div v-if="m.role === 'user'" class="cfa-bubble cfa-user">{{ m.content }}</div>
-                <div v-else class="cfa-bubble cfa-asst">
-                  <div v-if="m.reasoning && !m.content" class="cfa-reasoning">💭 {{ m.reasoning }}</div>
-                  <div v-if="m.content" class="cfa-md" v-html="renderMarkdown(m.content)"></div>
-                  <span v-else-if="chatStreaming && i === chatMessages.length - 1 && !m.reasoning" class="cfa-typing">思考中<i>.</i><i>.</i><i>.</i></span>
+                <div v-else class="cfa-asst-wrap">
+                  <div class="cfa-bubble cfa-asst">
+                    <div v-if="m.reasoning && !m.content" class="cfa-reasoning">💭 {{ m.reasoning }}</div>
+                    <div v-if="m.content" class="cfa-md" v-html="renderMarkdown(m.content)"></div>
+                    <span v-else-if="chatStreaming && i === chatMessages.length - 1 && !m.reasoning" class="cfa-typing">思考中<i>.</i><i>.</i><i>.</i></span>
+                  </div>
+                  <!-- 答案动作：提炼入库 + 下钻 -->
+                  <div v-if="m.content && !(chatStreaming && i === chatMessages.length - 1)" class="cfa-actions">
+                    <button class="cfa-act" :disabled="distillingIdx === i" @click="distillToKb(m.content, i)">
+                      {{ distillingIdx === i ? '提炼中…' : '📌 提炼入库' }}
+                    </button>
+                    <span class="cfa-drill-lbl">下钻 →</span>
+                    <button class="cfa-drill" @click="drillTo('/caiwu/report')">报表</button>
+                    <button class="cfa-drill" @click="drillTo('/caiwu/project-margin')">项目毛利</button>
+                    <button class="cfa-drill" @click="drillTo('/ar/records')">应收明细</button>
+                  </div>
                 </div>
               </div>
             </template>
           </div>
 
-          <div class="cfa-input-row">
+          <!-- ══ 知识库 ══ -->
+          <div v-show="panelTab === 'kb'" class="cfa-body">
+            <div class="cfa-kb-add">
+              <textarea v-model="kbInput" class="cfa-input" rows="2"
+                placeholder="补充一条经营背景/口径/规则（如：阔展事业部Q2大客户流失，收入下滑属预期）…"></textarea>
+              <div class="cfa-kb-add-row">
+                <select v-model="kbScope" class="cfa-kb-sel">
+                  <option value="">全集团</option>
+                  <option v-for="b in accessibleBus" :key="b" :value="b">{{ b }}</option>
+                </select>
+                <select v-model="kbKind" class="cfa-kb-sel">
+                  <option value="background">背景</option>
+                  <option value="rule">口径/规则</option>
+                  <option value="insight">洞察</option>
+                </select>
+                <button class="cfa-send" :disabled="!kbInput.trim()" @click="addKb">添加</button>
+              </div>
+            </div>
+            <div v-if="kbLoading" class="cfa-kb-empty">加载中…</div>
+            <div v-else-if="!kbItems.length" class="cfa-kb-empty">
+              知识库还是空的。在对话里点「📌 提炼入库」，或在上方手动补充经营背景，<br>助手就会记住、越用越懂你的业务。
+            </div>
+            <div v-for="k in kbItems" :key="k.id" class="cfa-kb-item" :class="{ pinned: k.pinned }">
+              <div class="cfa-kb-meta">
+                <span class="cfa-kb-kind" :class="k.kind">{{ KIND_LABEL[k.kind] || k.kind }}</span>
+                <span class="cfa-kb-scope">{{ k.scope }}</span>
+                <span v-if="k.source === 'ai'" class="cfa-kb-ai">AI提炼</span>
+                <span class="cfa-kb-spacer"></span>
+                <button class="cfa-kb-btn" :title="k.pinned ? '取消置顶' : '置顶'" @click="togglePin(k)">{{ k.pinned ? '📌' : '📍' }}</button>
+                <button class="cfa-kb-btn" title="删除" @click="delKb(k.id)">🗑</button>
+              </div>
+              <div v-if="k.title" class="cfa-kb-title">{{ k.title }}</div>
+              <div class="cfa-kb-content">{{ k.content }}</div>
+            </div>
+          </div>
+
+          <div v-show="panelTab === 'chat'" class="cfa-input-row">
             <textarea v-model="chatInput" class="cfa-input" rows="1"
               placeholder="问问经营情况…（Enter 发送，Shift+Enter 换行）"
               :disabled="chatStreaming"
@@ -405,6 +522,10 @@ onMounted(load)
               {{ chatStreaming ? '…' : '发送' }}
             </button>
           </div>
+
+          <Transition name="cfa-toast">
+            <div v-if="toast" class="cfa-toast">{{ toast }}</div>
+          </Transition>
         </div>
       </Transition>
     </Teleport>
@@ -552,4 +673,44 @@ onMounted(load)
 
 .cfa-slide-enter-active, .cfa-slide-leave-active { transition: transform .28s cubic-bezier(0.2,0.8,0.3,1); }
 .cfa-slide-enter-from, .cfa-slide-leave-to { transform: translateX(100%); }
+
+/* tabs */
+.cfa-tabs { display: flex; align-items: center; gap: 6px; padding: 8px 16px 0; }
+.cfa-tab { border: none; background: rgba(0,0,0,0.05); border-radius: 8px 8px 0 0; padding: 6px 14px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.cfa-tab.on { background: rgba(201,99,66,0.1); color: var(--primary); font-weight: 700; }
+.cfa-tab-hint { font-size: 10.5px; color: var(--muted); margin-left: auto; }
+
+/* assistant answer actions */
+.cfa-asst-wrap { width: 100%; }
+.cfa-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0 0 2px; }
+.cfa-act { border: 1px solid rgba(201,99,66,0.3); background: rgba(201,99,66,0.06); color: var(--primary); border-radius: 7px; font-size: 11.5px; padding: 3px 9px; cursor: pointer; font-weight: 600; }
+.cfa-act:disabled { opacity: .5; cursor: default; }
+.cfa-drill-lbl { font-size: 11px; color: var(--muted); margin-left: 4px; }
+.cfa-drill { border: 1px solid rgba(0,0,0,0.12); background: #fff; color: var(--muted); border-radius: 7px; font-size: 11.5px; padding: 3px 9px; cursor: pointer; }
+.cfa-drill:hover { color: var(--primary); border-color: var(--primary); }
+
+/* knowledge base */
+.cfa-kb-add { background: rgba(255,255,255,0.7); border: 1px solid rgba(0,0,0,0.08); border-radius: 12px; padding: 10px; margin-bottom: 14px; }
+.cfa-kb-add-row { display: flex; gap: 6px; margin-top: 8px; }
+.cfa-kb-sel { height: 34px; border: 1px solid rgba(0,0,0,0.12); border-radius: 9px; background: #fff; font-size: 12px; color: var(--text); padding: 0 8px; }
+.cfa-kb-add-row .cfa-send { flex: 1; }
+.cfa-kb-empty { text-align: center; color: var(--muted); font-size: 12.5px; line-height: 1.7; padding: 24px 8px; }
+.cfa-kb-item { background: rgba(255,255,255,0.85); border: 1px solid rgba(0,0,0,0.07); border-radius: 11px; padding: 10px 12px; margin-bottom: 10px; }
+.cfa-kb-item.pinned { border-color: rgba(201,99,66,0.35); background: rgba(201,99,66,0.04); }
+.cfa-kb-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+.cfa-kb-kind { font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 6px; color: #fff; background: #7a9fd4; }
+.cfa-kb-kind.insight { background: #2e7d32; }
+.cfa-kb-kind.rule { background: #8a4b34; }
+.cfa-kb-scope { font-size: 11px; color: var(--muted); }
+.cfa-kb-ai { font-size: 10px; color: var(--primary); border: 1px solid rgba(201,99,66,0.3); border-radius: 5px; padding: 0 5px; }
+.cfa-kb-spacer { flex: 1; }
+.cfa-kb-btn { background: none; border: none; cursor: pointer; font-size: 13px; padding: 0 2px; opacity: .75; }
+.cfa-kb-btn:hover { opacity: 1; }
+.cfa-kb-title { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 2px; }
+.cfa-kb-content { font-size: 12.5px; color: var(--text); line-height: 1.6; }
+
+/* toast */
+.cfa-toast { position: absolute; left: 50%; bottom: 80px; transform: translateX(-50%); background: rgba(30,18,10,0.9); color: #fff; font-size: 12.5px; padding: 8px 16px; border-radius: 20px; white-space: nowrap; z-index: 5; }
+.cfa-toast-enter-active, .cfa-toast-leave-active { transition: opacity .2s, transform .2s; }
+.cfa-toast-enter-from, .cfa-toast-leave-to { opacity: 0; transform: translateX(-50%) translateY(6px); }
 </style>

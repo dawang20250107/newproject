@@ -323,3 +323,37 @@ class ProjectMargin(models.Model):
             'margin': margin,
             'margin_rate': round(margin / rev * 100, 1) if rev else None,
         }
+
+
+class CockpitKnowledge(models.Model):
+    """业财融合 Agent 的经营知识库：用户沉淀或 AI 提炼的经营洞察 / 背景 / 口径规则，
+    作为后续对话的长期记忆，让助手越用越懂业务、判断可延续、可积累。"""
+    KIND_CHOICES = [('insight', '洞察'), ('background', '背景'), ('rule', '口径/规则')]
+    scope = models.CharField('范围', max_length=50, default='全集团', db_index=True)  # 事业部名 或 '全集团'
+    kind = models.CharField('类型', max_length=20, default='insight')
+    title = models.CharField('标题', max_length=120, blank=True, default='')
+    content = models.TextField('内容')
+    source = models.CharField('来源', max_length=10, default='user')  # user | ai
+    pinned = models.BooleanField('置顶', default=False)
+    created_by = models.ForeignKey('paikuan.PaikuanUser', on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='cockpit_knowledge')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        app_label = 'caiwu'
+        db_table = 'caiwu_cockpit_knowledge'
+        ordering = ['-pinned', '-created_at']
+        indexes = [models.Index(fields=['scope'])]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'scope': self.scope,
+            'kind': self.kind,
+            'title': self.title,
+            'content': self.content,
+            'source': self.source,
+            'pinned': self.pinned,
+            'created_by': self.created_by.name if self.created_by_id else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
