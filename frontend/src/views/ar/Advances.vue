@@ -387,10 +387,6 @@ onMounted(() => {
           围绕项目台账登记预收/预付款，跟踪核销进度与挂账账龄，并打通现金流
         </div>
       </div>
-      <select v-if="isAdvanceMode && accessibleDepts.length > 1" v-model="filters.dept" class="sel" @change="onFilterChange">
-        <option value="">全部部门</option>
-        <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
-      </select>
     </div>
 
     <!-- direction / mode tabs -->
@@ -414,6 +410,10 @@ onMounted(() => {
     <template v-if="isAdvanceMode">
       <div class="card">
         <div class="filter-row">
+          <select v-if="accessibleDepts.length > 1" v-model="filters.dept" class="sel sm" @change="onFilterChange">
+            <option value="">全部部门</option>
+            <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+          </select>
           <select v-model="filters.year" class="sel sm" @change="onFilterChange">
             <option value="">年</option>
             <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
