@@ -227,3 +227,68 @@ class ApprovalImportTests(TestCase):
         self.assertEqual(d['created'], 1, d)
         self.assertEqual(d['skipped'], 2, d)          # 示例行不计入跳过
         self.assertEqual(len(d['errors']), 2, d)
+
+
+class StatsCarryoverTests(TestCase):
+    """月度统计：前期未付的排款结转到本期展示。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = DEPARTMENTS[0]
+        u = PaikuanUser(phone='13900000300', name='Admin', role='super_admin',
+                        job_title='finance_director', departments=[self.dept],
+                        is_active=True, is_approved=True)
+        u.set_password('Test123456'); u.save()
+        self.user = u
+        self.token = make_token(u)
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _pay(self, planned, total, pay1='0', dept=None):
+        return Payment.objects.create(
+            created_by=self.user, department=dept or self.dept,
+            approval_number='', project_desc='P', payee='Payee',
+            total_amount=Decimal(total), planned_date=planned,
+            pay1_amount=Decimal(pay1), pay2_amount=Decimal('0'),
+            pay3_amount=Decimal('0'), notes='')
+
+    def test_prior_unpaid_carries_into_current_period(self):
+        # 本期(2026-06)：计划 1000，已付 400
+        self._pay(date(2026, 6, 10), '1000', pay1='400')
+        # 前期(2026-05)：计划 800，已付 300 → 剩余 500 应结转
+        self._pay(date(2026, 5, 10), '800', pay1='300')
+        # 前期(2026-04)：计划 600，已付清 → 不结转
+        self._pay(date(2026, 4, 10), '600', pay1='600')
+        resp = self.client.get('/api/pk/stats',
+                               {'year': 2026, 'month': 6}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        # 本期口径不变：仅含 6 月
+        self.assertEqual(Decimal(d['total_amount']), Decimal('1000'))
+        self.assertEqual(Decimal(d['total_remaining']), Decimal('600'))
+        # 前期结转：仅 5 月那笔剩余 500（4 月已付清排除）
+        self.assertEqual(Decimal(d['carryover_remaining']), Decimal('500'))
+        self.assertEqual(d['carryover_count'], 1)
+        # 累计应付未付 = 600 + 500
+        self.assertEqual(Decimal(d['total_outstanding']), Decimal('1100'))
+        # 部门行带结转
+        row = next(r for r in d['by_dept'] if r['dept'] == self.dept)
+        self.assertEqual(Decimal(row['carry']), Decimal('500'))
+        self.assertEqual(Decimal(row['outstanding']), Decimal('1100'))
+
+    def test_dept_with_only_carryover_appears(self):
+        # 某部门本期无计划，但有前期未付 → 仍应出现在 by_dept
+        other = DEPARTMENTS[1]
+        self._pay(date(2026, 5, 1), '700', pay1='0', dept=other)
+        resp = self.client.get('/api/pk/stats',
+                               {'year': 2026, 'month': 6}, **self.auth())
+        d = resp.json()['data']
+        row = next(r for r in d['by_dept'] if r['dept'] == other)
+        self.assertEqual(Decimal(row['total']), Decimal('0'))
+        self.assertEqual(Decimal(row['carry']), Decimal('700'))
+        self.assertEqual(row['carry_count'], 1)

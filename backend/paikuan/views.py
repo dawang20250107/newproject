@@ -525,6 +525,28 @@ def _remaining_expr():
     )
 
 
+# 求和字段位宽放宽，避免跨多月结转累加时溢出 _DEC 的 15 位上限。
+_DEC18 = DjDecimalField(max_digits=18, decimal_places=2)
+
+
+def _not_settled_q(paid_field='_paid'):
+    """未结清：有调整额时比调整额，否则比计划总额（与付款台账口径一致）。"""
+    return (
+        Q(plan_adjustment__isnull=True, **{f'{paid_field}__lt': F('total_amount')}) |
+        Q(plan_adjustment__isnull=False, **{f'{paid_field}__lt': F('plan_adjustment')})
+    )
+
+
+def _effective_remaining_expr(paid_field='_paid'):
+    """剩余应付：调整额优先，否则计划总额，减去已付。"""
+    return Case(
+        When(plan_adjustment__isnull=False,
+             then=ExpressionWrapper(F('plan_adjustment') - F(paid_field), output_field=_DEC18)),
+        default=ExpressionWrapper(F('total_amount') - F(paid_field), output_field=_DEC18),
+        output_field=_DEC18,
+    )
+
+
 # ── version / deploy check ──────────────────────────────────────────────────────
 # Bump BUILD_VERSION whenever backend behaviour changes so a deploy can be verified
 # by opening /api/pk/version in a browser (no auth required).
@@ -1463,19 +1485,23 @@ def stats(request):
     except ValueError:
         year, month = today.year, today.month
 
-    qs = Payment.objects.filter(
-        planned_date__year=year, planned_date__month=month
-    )
-    qs = dept_filter(qs, request)
-
-    # Optional per-department filter (user-selected; restricted by dept_filter above).
+    # 部门作用域 + 可选部门筛选先建基集，本期与前期结转共用同一过滤口径。
+    base = dept_filter(Payment.objects.all(), request)
     depts_param = request.GET.get('depts', '').strip()
     if depts_param:
         selected = [d.strip() for d in depts_param.split(',') if d.strip()]
         if selected:
-            qs = qs.filter(department__in=selected)
+            base = base.filter(department__in=selected)
 
-    qs = qs.annotate(paid=_paid_expr())
+    qs = base.filter(
+        planned_date__year=year, planned_date__month=month
+    ).annotate(paid=_paid_expr())
+
+    # 前期结转：计划日期早于本月、且仍未付清的排款，其剩余应付额结转到本期展示。
+    month_start = datetime.date(year, month, 1)
+    not_settled = _not_settled_q()
+    eff_remaining = _effective_remaining_expr()
+    carry_qs = base.filter(planned_date__lt=month_start).annotate(_paid=_paid_expr())
 
     D = Decimal
 
@@ -1493,31 +1519,57 @@ def stats(request):
     total_remaining = total_amount - total_paid
     completion_rate = round(float(total_paid / total_amount * 100), 1) if total_amount else 0.0
 
-    # Per-department rollup grouped in SQL.
-    dept_rows = qs.values('department').annotate(
-        total=Sum('total_amount'),
-        paid_sum=Sum('paid'),
-        count=Count('id'),
-    ).order_by('-total')
+    # 前期结转合计（仅未付清部分的剩余应付额）。
+    carry_agg = carry_qs.aggregate(
+        carry=Sum(eff_remaining, filter=not_settled),
+        carry_count=Count('id', filter=not_settled),
+    )
+    carryover_remaining = carry_agg['carry'] or D(0)
+    carryover_count = carry_agg['carry_count'] or 0
+    # 累计应付未付 = 本期未付 + 前期结转未付。
+    total_outstanding = total_remaining + carryover_remaining
+
+    # Per-department rollup grouped in SQL（本期 + 前期结转分别分组后合并）。
+    dept_map = {}
+    for r in qs.values('department').annotate(
+            total=Sum('total_amount'), paid_sum=Sum('paid'), count=Count('id')):
+        dept_map[r['department']] = {
+            'total': r['total'] or D(0), 'paid': r['paid_sum'] or D(0),
+            'count': r['count'], 'carry': D(0), 'carry_count': 0,
+        }
+    for r in carry_qs.values('department').annotate(
+            carry=Sum(eff_remaining, filter=not_settled),
+            carry_count=Count('id', filter=not_settled)):
+        row = dept_map.setdefault(r['department'], {
+            'total': D(0), 'paid': D(0), 'count': 0, 'carry': D(0), 'carry_count': 0})
+        row['carry'] = r['carry'] or D(0)
+        row['carry_count'] = r['carry_count'] or 0
 
     by_dept = []
-    for r in dept_rows:
-        t = r['total'] or D(0)
-        pd = r['paid_sum'] or D(0)
+    for dept, v in dept_map.items():
+        t, pd, carry = v['total'], v['paid'], v['carry']
         by_dept.append({
-            'dept': r['department'],
+            'dept': dept,
             'total': str(t),
             'paid': str(pd),
             'remaining': str(t - pd),
-            'count': r['count'],
+            'count': v['count'],
+            'carry': str(carry),               # 前期结转未付
+            'carry_count': v['carry_count'],
+            'outstanding': str((t - pd) + carry),  # 本期未付 + 前期结转
             'completion_rate': round(float(pd / t * 100), 1) if t else 0.0,
         })
+    # 按「应付合计（本期计划 + 前期结转）」降序，结转大的部门优先呈现。
+    by_dept.sort(key=lambda x: Decimal(x['total']) + Decimal(x['carry']), reverse=True)
 
     return ok({
         'year': year, 'month': month,
         'total_amount': str(total_amount),
         'total_paid': str(total_paid),
         'total_remaining': str(total_remaining),
+        'carryover_remaining': str(carryover_remaining),
+        'carryover_count': carryover_count,
+        'total_outstanding': str(total_outstanding),
         'completion_rate': completion_rate,
         'total_records': agg['cnt'],
         'by_dept': by_dept,

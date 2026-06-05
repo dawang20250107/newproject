@@ -94,8 +94,14 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
           <div class="sub">完成率 {{ data.completion_rate }}%</div>
         </div>
         <div class="kpi-card">
-          <div class="label">剩余未付</div>
+          <div class="label">本期未付</div>
           <div class="value" :style="parseFloat(data.total_remaining)>0?'color:#c62828':''">{{ fmt(data.total_remaining) }}</div>
+          <div class="sub">累计应付未付 {{ fmt(data.total_outstanding) }}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="label">前期结转（未付）</div>
+          <div class="value" :style="parseFloat(data.carryover_remaining)>0?'color:#b26a00':''">{{ fmt(data.carryover_remaining) }}</div>
+          <div class="sub">结转 {{ data.carryover_count }} 笔（往期未付清）</div>
         </div>
         <div class="kpi-card">
           <div class="label">付款状态分布</div>
@@ -128,7 +134,9 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
                 <th>笔数</th>
                 <th>计划总额</th>
                 <th>已付金额</th>
-                <th>剩余金额</th>
+                <th>本期未付</th>
+                <th>前期结转</th>
+                <th>累计未付</th>
                 <th>完成率</th>
               </tr>
             </thead>
@@ -139,6 +147,11 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
                 <td class="amt">{{ fmt(d.total) }}</td>
                 <td class="amt amt-green">{{ fmt(d.paid) }}</td>
                 <td class="amt" :class="parseFloat(d.remaining)>0?'amt-red':''">{{ fmt(d.remaining) }}</td>
+                <td class="amt" :class="parseFloat(d.carry)>0?'amt-carry':''">
+                  {{ parseFloat(d.carry)>0 ? fmt(d.carry) : '—' }}
+                  <span v-if="d.carry_count>0" class="carry-badge">{{ d.carry_count }}笔</span>
+                </td>
+                <td class="amt" :class="parseFloat(d.outstanding)>0?'amt-red':''"><b>{{ fmt(d.outstanding) }}</b></td>
                 <td>
                   <div style="display:flex;align-items:center;gap:8px">
                     <div style="flex:1;background:var(--bg2);border-radius:4px;height:8px;overflow:hidden;min-width:80px">
@@ -199,4 +212,15 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
   transition: all 0.16s;
 }
 .dept-chip-clear:hover { border-color: #c62828; color: #c62828; }
+.amt-carry { color: #b26a00; font-weight: 600; }
+.carry-badge {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 0 6px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #b26a00;
+  background: rgba(178, 106, 0, 0.1);
+}
 </style>
