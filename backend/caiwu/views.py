@@ -1453,6 +1453,9 @@ def project_margin_upload(request):
     同 (事业部+年月) 重复上传时整体替换。"""
     if request.method != 'POST':
         return err('方法不允许', 405)
+    denied = _page_denied(request, 'charts')
+    if denied:
+        return denied
     if not _can_upload(request):
         return err('权限不足', 403)
     bu = request.POST.get('bu', '').strip()
@@ -1525,6 +1528,9 @@ def project_margin(request):
     direct：未挂项目「无」单列为未分摊池；allocated：未挂成本按收入比例分摊到各项目。"""
     if request.method != 'GET':
         return err('方法不允许', 405)
+    denied = _page_denied(request, 'charts')
+    if denied:
+        return denied
     bu = request.GET.get('bu', '').strip()
     if not bu or bu not in VALID_BUSINESS_UNITS:
         return err('请选择有效的事业部')
@@ -3190,6 +3196,8 @@ def cockpit_knowledge_import(request):
     denied = _page_denied(request, 'cockpit')
     if denied:
         return denied
+    if not _can_upload(request):
+        return err('无导入权限（需上传权限）', 403)
     f = request.FILES.get('file')
     if not f:
         return err('请上传文件')

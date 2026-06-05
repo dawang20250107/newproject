@@ -126,7 +126,7 @@ onMounted(load)
 
     <!-- 导入 + 新增 -->
     <div class="kp-tools">
-      <div class="kp-tool-card">
+      <div v-if="auth.canUpload" class="kp-tool-card">
         <div class="kp-tool-title">📥 导入文件</div>
         <div class="kp-tool-sub">支持 txt / md / csv / json / Excel（PDF / Word 部署后支持）</div>
         <div class="kp-import-row">

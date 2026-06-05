@@ -97,7 +97,7 @@ onMounted(() => {
         </div>
       </div>
       <div style="display:flex;gap:8px">
-        <label class="btn btn-ghost btn-sm" :class="{ disabled: uploading }" style="cursor:pointer">
+        <label v-if="auth.canUpload" class="btn btn-ghost btn-sm" :class="{ disabled: uploading }" style="cursor:pointer">
           {{ uploading ? '导入中…' : '↑ 导入项目核算账' }}
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="onPickFile" />
         </label>
@@ -134,7 +134,7 @@ onMounted(() => {
       <div class="pm-empty-ico">📊</div>
       <div class="pm-empty-title">{{ bu }} · {{ year }}年{{ month }}月 暂无项目核算数据</div>
       <div class="pm-empty-sub">导入金蝶「核算维度明细账（按项目）」后，即可查看项目级收入 / 成本 / 毛利</div>
-      <label class="btn btn-primary btn-sm" :class="{ disabled: uploading }" style="cursor:pointer;margin-top:14px">
+      <label v-if="auth.canUpload" class="btn btn-primary btn-sm" :class="{ disabled: uploading }" style="cursor:pointer;margin-top:14px">
         {{ uploading ? '导入中…' : '↑ 导入项目核算账' }}
         <input type="file" accept=".xlsx,.xls" style="display:none" @change="onPickFile" />
       </label>

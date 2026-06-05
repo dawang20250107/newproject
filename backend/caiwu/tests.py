@@ -467,6 +467,19 @@ class CaiwuUnifiedPermissionTests(TestCase):
                               **self.hdr(self.cashier))
         self.assertEqual(r2.status_code, 403, self.jj(r2))
 
+    def test_cashier_denied_new_ai_and_project_endpoints(self):
+        """无财务分析权限者不能访问 项目毛利 / 驾驶舱知识库 / 技能（回归权限是否跟上新功能）。"""
+        r = self.client.get('/api/cw/project-margin',
+                            {'bu': self.bu, 'year': 2026, 'month': 5}, **self.hdr(self.cashier))
+        self.assertEqual(r.status_code, 403, self.jj(r))
+        for url in ('/api/cw/cockpit/knowledge', '/api/cw/cockpit/skills'):
+            self.assertEqual(self.client.get(url, **self.hdr(self.cashier)).status_code, 403)
+        chat = self.client.post('/api/cw/cockpit/ai-chat/stream',
+                                data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu,
+                                                 'messages': [{'role': 'user', 'content': 'hi'}]}),
+                                content_type='application/json', **self.hdr(self.cashier))
+        self.assertEqual(chat.status_code, 403, self.jj(chat))
+
     def test_paikuan_permission_edit_invalidates_caiwu_cache(self):
         # finance_director starts with caiwu_report access
         before = self.client.get('/api/cw/report',
