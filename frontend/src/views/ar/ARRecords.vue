@@ -1407,10 +1407,9 @@ function clearFilters() {
 .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.04); }
 .row-overdue { background: rgba(198,40,40,0.04); }
 
-/* 列合计页脚：吸底 + 上分隔线，金额加粗，与列对齐 */
+/* 列合计页脚：置于表格最底部（随表滚动），上分隔线，金额加粗，与列对齐 */
 .rec-table tfoot .sum-foot td {
-  position: sticky; bottom: 0; z-index: 5;
-  background: #f8efeb;   /* 不透明，滚动行不透色 */
+  background: #f8efeb;
   border-top: 2px solid rgba(201,99,66,0.32);
   padding: 9px 12px; font-weight: 800; font-size: 13px;
   font-variant-numeric: tabular-nums;
