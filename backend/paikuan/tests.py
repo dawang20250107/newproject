@@ -292,3 +292,71 @@ class StatsCarryoverTests(TestCase):
         self.assertEqual(Decimal(row['total']), Decimal('0'))
         self.assertEqual(Decimal(row['carry']), Decimal('700'))
         self.assertEqual(row['carry_count'], 1)
+
+
+class PaymentApplicantTests(TestCase):
+    """排款记录的申请人字段：创建/编辑、一键排款带出、模板与导出含申请人列。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = DEPARTMENTS[0]
+        u = PaikuanUser(phone='13900000400', name='Admin', role='super_admin',
+                        job_title='finance_director', departments=[self.dept],
+                        is_active=True, is_approved=True)
+        u.set_password('Test123456'); u.save()
+        self.user = u
+        self.token = make_token(u)
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_create_payment_persists_applicant(self):
+        payload = {
+            'department': self.dept, 'applicant': '张三',
+            'project_desc': '工程款', 'payee': '某公司',
+            'total_amount': '1000', 'planned_date': '2026-06-01',
+        }
+        resp = self.client.post('/api/pk/payments', data=json.dumps(payload),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data']['applicant'], '张三')
+        self.assertEqual(Payment.objects.get(id=resp.json()['data']['id']).applicant, '张三')
+
+    def test_schedule_carries_applicant_from_approval(self):
+        from paikuan.models import ApprovalRecord
+        rec = ApprovalRecord.objects.create(
+            applicant='李四', department=self.dept, approval_number='1' * 21,
+            summary='付款摘要', amount=Decimal('5000'), payee='供应商A',
+            status='approved')
+        resp = self.client.post(f'/api/pk/approvals/{rec.id}/schedule',
+                                data=json.dumps({'planned_date': '2026-06-10',
+                                                 'total_amount': '5000'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data']['payment']['applicant'], '李四')
+
+    def test_template_and_export_include_applicant_header(self):
+        from openpyxl import load_workbook
+        import io
+        # 模板
+        tpl = self.client.get('/api/pk/payments/template', **self.auth())
+        self.assertEqual(tpl.status_code, 200, tpl.content)
+        ws = load_workbook(io.BytesIO(tpl.content)).active
+        headers = [c.value for c in ws[1]]
+        self.assertIn('申请人', headers)
+        # 导出
+        Payment.objects.create(created_by=self.user, department=self.dept,
+                               applicant='王五', approval_number='', project_desc='P',
+                               payee='X', total_amount=Decimal('100'),
+                               planned_date=date(2026, 6, 1))
+        exp = self.client.get('/api/pk/payments/export', **self.auth())
+        self.assertEqual(exp.status_code, 200, exp.content)
+        ws2 = load_workbook(io.BytesIO(exp.content)).active
+        headers2 = [c.value for c in ws2[1]]
+        self.assertIn('申请人', headers2)
+        col = headers2.index('申请人')
+        self.assertEqual(ws2[2][col].value, '王五')

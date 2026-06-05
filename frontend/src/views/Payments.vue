@@ -223,7 +223,7 @@ function setPage(p) { filters.page = p; load() }
 
     <div class="card" style="margin-bottom:16px">
       <div class="filter-bar">
-        <input v-model="filters.q" placeholder="搜索事项/收款方/单号…" style="min-width:200px" @keyup.enter="search" />
+        <input v-model="filters.q" placeholder="搜索事项/收款方/单号/申请人…" style="min-width:200px" @keyup.enter="search" />
         <select v-model="filters.dept" @change="search">
           <option value="">全部部门</option>
           <option v-for="d in deptChoices" :key="d" :value="d">{{ d }}</option>
@@ -258,6 +258,7 @@ function setPage(p) { filters.page = p; load() }
           <thead>
             <tr>
               <th v-if="auth.canView('department')">部门</th>
+              <th v-if="auth.canView('applicant')">申请人</th>
               <th v-if="auth.canView('approval_number')">审批单号</th>
               <th v-if="auth.canView('project_desc')">付款事项</th>
               <th v-if="auth.canView('payee')">收款方</th>
@@ -275,6 +276,7 @@ function setPage(p) { filters.page = p; load() }
             <tr v-for="p in items" :key="p.id"
               :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today }">
               <td v-if="auth.canView('department')">{{ p.department }}</td>
+              <td v-if="auth.canView('applicant')">{{ p.applicant || '—' }}</td>
               <td v-if="auth.canView('approval_number')">{{ p.approval_number || '—' }}</td>
               <td v-if="auth.canView('project_desc')" class="cell-clip cell-desc"
                 @mouseenter="showTip($event, p.project_desc)" @mousemove="moveTip" @mouseleave="hideTip">

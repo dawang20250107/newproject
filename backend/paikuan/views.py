@@ -45,6 +45,7 @@ JOB_TITLES = {
 # field maps to one or more columns in the serialized payment dict.
 PAYMENT_FIELD_DEFS = [
     {'key': 'department',      'label': '部门',         'cols': ['department']},
+    {'key': 'applicant',       'label': '申请人',        'cols': ['applicant']},
     {'key': 'approval_number', 'label': '审批单号',      'cols': ['approval_number']},
     {'key': 'project_desc',    'label': '付款事项',      'cols': ['project_desc']},
     {'key': 'payee',           'label': '收款方',        'cols': ['payee']},
@@ -141,6 +142,7 @@ AR_FIELD_KEYS = [f['key'] for f in AR_FIELD_DEFS]
 # (perm_field_key, excel_header, db_column)
 EXCEL_COLUMN_MAP = [
     ('department',      '部门',               'department'),
+    ('applicant',       '申请人',             'applicant'),
     ('approval_number', '审批单号',            'approval_number'),
     ('project_desc',    '项目编号',            'project_no'),
     ('project_desc',    '付款事项',            'project_desc'),
@@ -748,7 +750,8 @@ def _list_payments(request):
     if q:
         qs = qs.filter(
             Q(project_desc__icontains=q) | Q(payee__icontains=q) |
-            Q(approval_number__icontains=q) | Q(department__icontains=q)
+            Q(approval_number__icontains=q) | Q(department__icontains=q) |
+            Q(applicant__icontains=q)
         )
 
     try:
@@ -818,6 +821,7 @@ def _parse_payment_fields(data, payment=None):
         return data.get(key, getattr(payment, key, default) if payment else default)
 
     fields['department'] = (get('department') or '').strip()
+    fields['applicant'] = (get('applicant') or '').strip()[:100]
     fields['approval_number'] = (get('approval_number') or '').strip()
     fields['project_no'] = (get('project_no') or '').strip()[:20]
     fields['project_desc'] = (get('project_desc') or '').strip()
@@ -927,7 +931,7 @@ def _parse_payment_fields(data, payment=None):
 
 # Field-name → Chinese-label map for change-log records.
 _PAYMENT_FIELD_LABELS = {
-    'department': '部门', 'approval_number': '审批单号',
+    'department': '部门', 'applicant': '申请人', 'approval_number': '审批单号',
     'project_desc': '付款事项', 'payee': '收款方',
     'total_amount': '计划总金额', 'planned_date': '计划付款日期',
     'pay1_date': '第1次付款日期', 'pay1_amount': '第1次付款金额',
@@ -1272,6 +1276,7 @@ def approval_record_schedule(request, pk):
                 created_by_id=request.pk_uid,
                 updated_by_id=request.pk_uid,
                 department=rec.department,
+                applicant=rec.applicant,
                 approval_number=rec.approval_number,
                 project_desc=rec.summary,
                 payee=rec.payee,
@@ -1843,6 +1848,7 @@ def payment_template(request):
     # so import skips this row even if the user forgets to delete it.
     example = {
         '部门': EXAMPLE_ROW_MARKER,
+        '申请人': '如：张三',
         '审批单号': '123456789012345678901',
         '付款事项': '如：工程款结算',
         '收款方': '如：某某公司',
@@ -1864,7 +1870,7 @@ def payment_template(request):
 
     # Column widths
     widths = {
-        '部门': 14, '审批单号': 16, '付款事项': 28, '收款方': 22,
+        '部门': 14, '申请人': 12, '审批单号': 16, '付款事项': 28, '收款方': 22,
         '计划总金额(元)': 16, '计划付款日期': 14,
         '第1次付款日期': 14, '第1次付款金额(元)': 16,
         '第2次付款日期': 14, '第2次付款金额(元)': 16,
@@ -2027,7 +2033,8 @@ def payment_export(request):
     if q_str:
         qs = qs.filter(
             Q(project_desc__icontains=q_str) | Q(payee__icontains=q_str) |
-            Q(approval_number__icontains=q_str) | Q(department__icontains=q_str)
+            Q(approval_number__icontains=q_str) | Q(department__icontains=q_str) |
+            Q(applicant__icontains=q_str)
         )
     if status_q:
         qs = qs.annotate(paid=_paid_expr())

@@ -29,6 +29,7 @@ const form = ref({})
 
 const FIELD_COLS = {
   department: ['department'],
+  applicant: ['applicant'],
   approval_number: ['approval_number'],
   project_desc: ['project_desc', 'project_no'],
   payee: ['payee'],
@@ -52,6 +53,7 @@ function resetForm() {
   const isNew = !p?.id
   form.value = {
     department: p?.department || (isNew ? _autoDefaultDept() : ''),
+    applicant: p?.applicant || '',
     approval_number: p?.approval_number || '',
     project_no: p?.project_no || '',
     project_desc: p?.project_desc || '',
@@ -260,6 +262,14 @@ async function submit() {
             <option v-for="d in deptOptions" :key="d" :value="d">{{ d }}</option>
           </select>
         </div>
+        <div v-if="vis('applicant')" class="form-group">
+          <label>申请人 <span class="hint-text">选填</span></label>
+          <input v-model="form.applicant" placeholder="如：张三" maxlength="100"
+            :disabled="!editable('applicant')" />
+        </div>
+      </div>
+
+      <div class="form-row">
         <div v-if="vis('approval_number')" class="form-group">
           <label>审批单号 <span class="hint-text">21位数字，可选</span></label>
           <input v-model="form.approval_number" placeholder="填写则需为21位数字" maxlength="21"
