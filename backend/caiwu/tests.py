@@ -295,6 +295,41 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(by_name[COST], Decimal('600'))
         self.assertEqual(len(parsed), 2)
 
+    def test_6602_99_code_maps_to_group_management_fee(self):
+        """6602.99 及其子明细属集团管理费——即使科目名称不含「集团管理费用」，
+        也应按编码归入集团管理费用（影响经营净利），而非 6602 管理费用。"""
+        wb = Workbook()
+        ws = wb.active
+        ws.append([
+            '部门名称',   # 部门名称
+            '科目编码',   # 科目编码
+            '科目名称',   # 科目名称
+            '摘要',               # 摘要
+            '借方',               # 借方
+            '贷方',               # 贷方
+        ])
+        # 6602.01 普通管理费 → 管理费用
+        ws.append([self.bu, '6602.01', '办公费', '凭证001', 100, 0])
+        # 6602.99 名称不含「集团管理费用」→ 仍按编码归集团管理费用
+        ws.append([self.bu, '6602.99', '分摊费用', '凭证002', 200, 0])
+        # 6602.99.01 子明细 → 集团管理费用
+        ws.append([self.bu, '6602.99.01', '分摊费用', '凭证003', 50, 0])
+
+        data_start, col_map = _detect_dept_ledger(ws)
+        parsed, errors = _parse_dept_ledger_rows(
+            ws, data_start, col_map, self.bu, self.l1,
+            {c.name: c for c in L2Category.objects.filter(business_unit=self.bu)},
+            {(c.l1_category_id, c.name): c for c in L3Category.objects.filter(business_unit=self.bu)},
+        )
+        by_name = {}
+        for row in parsed:
+            by_name[row['l1_name']] = by_name.get(row['l1_name'], Decimal('0')) + row['amount']
+
+        self.assertEqual(errors, [])
+        # 管理费用 sign=-1 → 借方100 计为 100；集团管理费用 = 200 + 50 = 250
+        self.assertEqual(by_name[MGMT_EXP], Decimal('100'))
+        self.assertEqual(by_name[GROUP_MGMT], Decimal('250'))
+
 
 @override_settings(ALLOWED_HOSTS=['testserver', 'localhost', '127.0.0.1'])
 class CaiwuUnifiedPermissionTests(TestCase):

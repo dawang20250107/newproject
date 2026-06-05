@@ -698,6 +698,11 @@ _KD_CODE_L1 = {
 _KD_NAME_L1 = {
     '集团管理费用': '集团管理费用',
 }
+# 多段科目编码覆盖（优先于单段编码前缀）——6602.99 及其子明细属集团管理费，
+# 金蝶挂在 6602 管理费用下，KXT 体系需单列以正确推算经营净利。
+_KD_CODE_L1_SPECIFIC = {
+    '6602.99': '集团管理费用',
+}
 # ── 利润表行项目 → KXT 一级科目映射（金蝶 SpreadJS JSON 导出）──────────────────
 # key 为去除「一、其中：加：减：」等前缀后的标准行名
 _PL_ITEM_L1 = {
@@ -860,7 +865,12 @@ def _map_dept_ledger_l1(code, name, l1_map):
     for kw, l1name in _KD_NAME_L1.items():
         if kw in name:
             return l1_map.get(l1name), l1name
-    prefix = str(code).split('.')[0].strip()
+    code_s = str(code).strip()
+    # 多段编码精确/前缀匹配优先（如 6602.99 集团管理费用及其子明细 6602.99.xx）
+    for spec, l1name in _KD_CODE_L1_SPECIFIC.items():
+        if code_s == spec or code_s.startswith(spec + '.'):
+            return l1_map.get(l1name), l1name
+    prefix = code_s.split('.')[0]
     l1name = _KD_CODE_L1.get(prefix)
     if l1name:
         return l1_map.get(l1name), l1name
