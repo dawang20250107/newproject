@@ -103,24 +103,6 @@ class ARPermissionRegressionTests(TestCase):
         wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=True)
         return [cell.value for cell in wb.active[1]]
 
-    def test_project_customer_name_roundtrips(self):
-        admin = self.make_user('13900000310', 'finance_director', role='super_admin')
-        payload = {**self.project_payload(), 'customer_name': '某某物流有限公司'}
-        resp = self.json_post('/api/pk/ar/projects', payload, admin)
-        self.assertEqual(resp.status_code, 200, resp.content)
-        pid = resp.json()['data']['id']
-        self.assertEqual(resp.json()['data']['customer_name'], '某某物流有限公司')
-        # 编辑可更新
-        put = self.client.put(
-            f'/api/pk/ar/projects/{pid}',
-            data=json.dumps({'customer_name': '新客户名'}),
-            content_type='application/json', **self.auth(admin))
-        self.assertEqual(put.status_code, 200, put.content)
-        self.assertEqual(put.json()['data']['customer_name'], '新客户名')
-        # 导出含客户名称列
-        exp = self.client.get('/api/pk/ar/projects/export', **self.auth(admin))
-        self.assertIn('客户名称', self.headers_from_xlsx(exp))
-
     def test_project_post_invoice_days_update_persists(self):
         """票后等待期(post_invoice_days)编辑后应真正落库——回归 settlement_wait_days
         旧列名残留导致 _ar_visible_payload 把该字段从 PUT 载荷里剥掉的问题。"""
@@ -1037,10 +1019,10 @@ class AdvanceModuleTests(TestCase):
         admin = self.make_user('13911100014', 'finance_director', role='super_admin')
         proj = ARProject.objects.create(
             contract_name='合同P', short_name='项目P', delivery_dept=self.dept,
-            customer_name='ACME物流', sales_contact='S', project_manager='M')
+            sales_contact='S', project_manager='M')
         other = ARProject.objects.create(
             contract_name='合同Q', short_name='项目Q', delivery_dept=self.dept,
-            customer_name='ACME物流', sales_contact='S', project_manager='M')
+            sales_contact='S', project_manager='M')
         # A1：挂本项目
         a1 = AdvanceRecord.objects.create(
             direction='预收', project=proj, delivery_dept=self.dept, counterparty='ACME物流',
@@ -1083,7 +1065,7 @@ class AdvanceModuleTests(TestCase):
         admin = self.make_user('13911100015', 'finance_director', role='super_admin')
         proj = ARProject.objects.create(
             contract_name='合同R', short_name='项目R', delivery_dept=self.dept,
-            customer_name='ACME', sales_contact='S', project_manager='M')
+            sales_contact='S', project_manager='M')
         ar = self._ar_record(proj, 100000)
         adv = AdvanceRecord.objects.create(   # 散单预收，无项目
             direction='预收', delivery_dept=self.dept, counterparty='ACME',
@@ -1102,11 +1084,11 @@ class AdvanceModuleTests(TestCase):
     def test_offsettable_records_by_customer(self):
         admin = self.make_user('13911100016', 'finance_director', role='super_admin')
         proj = ARProject.objects.create(
-            contract_name='合同S', short_name='项目S', delivery_dept=self.dept,
-            customer_name='ACME物流', sales_contact='S', project_manager='M')
+            contract_name='ACME物流', short_name='项目S', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M')
         other = ARProject.objects.create(
-            contract_name='合同T', short_name='项目T', delivery_dept=self.dept,
-            customer_name='别的客户', sales_contact='S', project_manager='M')
+            contract_name='别的客户', short_name='项目T', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M')
         r1 = self._ar_record(proj, 50000)
         self._ar_record(other, 70000)  # 别的客户 → 不应出现
         resp = self.client.get('/api/pk/ar/advances/offsettable',

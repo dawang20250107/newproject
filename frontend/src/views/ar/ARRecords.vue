@@ -379,11 +379,11 @@ function openAddPayment(rec) {
 // 拉取可用预收：本项目的预收 ∪ 未挂项目但客户名匹配的散单预收。
 // 无权限或无数据时静默隐藏提示。
 async function loadPayAdvance(rec) {
-  if (!rec?.project_id && !rec?.customer_name) return
+  if (!rec?.project_id && !rec?.contract_name) return
   try {
     const params = { direction: '预收' }
     if (rec.project_id) params.project_id = rec.project_id
-    if (rec.customer_name) params.customer = rec.customer_name
+    if (rec.contract_name) params.customer = rec.contract_name
     const res = await ar.advancesAvailable(params)
     if (res.data?.count > 0) payAdvance.value = res.data
   } catch (_) { /* 无预收预付权限时静默 */ }

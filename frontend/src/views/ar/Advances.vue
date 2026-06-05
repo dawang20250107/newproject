@@ -107,10 +107,10 @@ function pickProject(p) {
     form.project_id = p.id
     form.delivery_dept = p.delivery_dept
     projectKeyword.value = `${p.short_name}（${p.delivery_dept}）`
-    if (direction.value === '预收' && p.customer_name &&
+    if (direction.value === '预收' && p.contract_name &&
         (!form.counterparty || form.counterparty === autoCounterparty)) {
-      form.counterparty = p.customer_name
-      autoCounterparty = p.customer_name
+      form.counterparty = p.contract_name
+      autoCounterparty = p.contract_name
     }
   } else {
     form.project_id = ''
