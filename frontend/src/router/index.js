@@ -19,6 +19,7 @@ const routes = [
   { path: '/caiwu/report', component: () => import('../views/caiwu/Report.vue'), meta: { page: 'caiwu_report' } },
   { path: '/caiwu/data', component: () => import('../views/caiwu/DataImport.vue'), meta: { page: 'caiwu_data' } },
   { path: '/caiwu/charts', component: () => import('../views/caiwu/Charts.vue'), meta: { page: 'caiwu_charts' } },
+  { path: '/caiwu/project-margin', component: () => import('../views/caiwu/ProjectMargin.vue'), meta: { page: 'caiwu_charts' } },
   { path: '/caiwu/cockpit', component: () => import('../views/caiwu/Cockpit.vue'), meta: { page: 'caiwu_cockpit' } },
   { path: '/caiwu/metrics', component: () => import('../views/caiwu/Metrics.vue'), meta: { page: 'caiwu_metrics' } },
   { path: '/caiwu/settings', component: () => import('../views/caiwu/Settings.vue'), meta: { role: 'super_admin' } },

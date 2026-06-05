@@ -34,6 +34,10 @@ urlpatterns = [
     path('batches/<int:bid>/publish', views.batch_publish),
     path('batches/<int:bid>', views.batch_detail),
 
+    # 项目毛利（业财融合）
+    path('project-margin', views.project_margin),
+    path('project-margin/upload', views.project_margin_upload),
+
     # 指标管理 & 财务驾驶舱
     path('targets', views.targets),
     path('targets/template', views.targets_template),

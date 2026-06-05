@@ -16,7 +16,7 @@ import jwt
 
 from caiwu.models import (
     L1Category, L2Category, L3Category,
-    ImportBatch, FinancialEntry, FinancialTarget,
+    ImportBatch, FinancialEntry, FinancialTarget, ProjectMargin,
     BUSINESS_UNITS, VALID_BUSINESS_UNITS, JOB_TITLES,
 )
 from paikuan.models import PaikuanUser, JobPermission as PaikuanJobPermission
@@ -829,6 +829,72 @@ def _detect_dept_ledger(ws):
     return None, {}
 
 
+# ── 项目核算明细账（按项目维度）→ 项目毛利 ─────────────────────────────────────
+# 金蝶科目编码前缀 → 项目毛利分类。收入类按 (贷-借)，成本/费用类按 (借-贷)。
+_PM_CAT_BY_PREFIX = {
+    '6001': 'revenue', '6051': 'revenue',
+    '6401': 'cost', '6402': 'cost',
+    '6601': 'sales_exp',
+    '6602': 'mgmt_exp',
+}
+# 未挂项目池：金蝶里项目维度为「无」或空
+_PM_UNALLOCATED = {'无', '', '（无）', '(无)', '未指定'}
+
+
+def _detect_project_ledger(ws):
+    """识别金蝶「核算维度明细账（按项目）」：维度列为「项目名称」。
+    返回 (data_start, col_map{project,code,name,summary,debit,credit}) 或 (None, {})。"""
+    for ri in range(1, min(8, ws.max_row + 1)):
+        cm = {}
+        for ci in range(1, min(ws.max_column + 1, 20)):
+            v = str(ws.cell(row=ri, column=ci).value or '').strip()
+            if v == '项目名称':
+                cm['project'] = ci
+            elif v == '科目编码':
+                cm['code'] = ci
+            elif v == '科目名称':
+                cm['name'] = ci
+            elif v == '摘要':
+                cm['summary'] = ci
+            elif v == '借方':
+                cm['debit'] = ci
+            elif v == '贷方':
+                cm['credit'] = ci
+        if all(k in cm for k in ('project', 'code', 'debit', 'credit', 'summary')):
+            return ri + 1, cm
+    return None, {}
+
+
+def _parse_project_ledger(ws, data_start, cm):
+    """汇总项目核算明细账 → {project_name: {revenue, cost, sales_exp, mgmt_exp}}。
+    跳过 期初/合计/累计 等小计行与「结转损益」；按科目前缀归类、按方向取净额。"""
+    def _dec(ri, col):
+        try:
+            return Decimal(str(ws.cell(row=ri, column=col).value or 0))
+        except (InvalidOperation, TypeError):
+            return Decimal(0)
+
+    agg = {}
+    for ri in range(data_start, ws.max_row + 1):
+        summ = str(ws.cell(row=ri, column=cm['summary']).value or '').strip()
+        if summ in _LEDGER_SUMMARY_ROWS or '结转损益' in summ:
+            continue
+        code = str(ws.cell(row=ri, column=cm['code']).value or '').strip()
+        if not code:
+            continue
+        cat = _PM_CAT_BY_PREFIX.get(code.split('.')[0])
+        if not cat:
+            continue
+        project = str(ws.cell(row=ri, column=cm['project']).value or '').strip()
+        debit = _dec(ri, cm['debit'])
+        credit = _dec(ri, cm['credit'])
+        net = (credit - debit) if cat == 'revenue' else (debit - credit)
+        bucket = agg.setdefault(project, {'revenue': Decimal('0'), 'cost': Decimal('0'),
+                                          'sales_exp': Decimal('0'), 'mgmt_exp': Decimal('0')})
+        bucket[cat] += net
+    return agg
+
+
 def _map_dept_ledger_l1(code, name, l1_map):
     """Map a 部门明细账 row to an L1 category. 科目名称 override → 编码前缀。
     Returns (L1Category|None, matched_name|None).
@@ -1377,6 +1443,135 @@ def batch_submission_status(request):
         })
 
     return ok({'year': year, 'month': month, 'bus': result})
+
+
+# ── 项目毛利（业财融合）──────────────────────────────────────────────────────────
+
+@cw_required()
+def project_margin_upload(request):
+    """上传金蝶「核算维度明细账（按项目）」→ 按项目汇总收入/成本/费用。
+    同 (事业部+年月) 重复上传时整体替换。"""
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    if not _can_upload(request):
+        return err('权限不足', 403)
+    bu = request.POST.get('bu', '').strip()
+    if not bu or bu not in VALID_BUSINESS_UNITS:
+        return err('请选择有效的事业部')
+    if not _can_access_bu(request, bu):
+        return err('您无权为该事业部上传数据', 403)
+    try:
+        year = int(request.POST.get('year', ''))
+        month = int(request.POST.get('month', ''))
+        assert 2000 <= year <= 2100 and 1 <= month <= 12
+    except Exception:
+        return err('年份或月份无效')
+    f = request.FILES.get('file')
+    if not f:
+        return err('请上传文件')
+    if f.size > IMPORT_SIZE_LIMIT:
+        return err('文件过大（上限5MB）')
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(f, data_only=True)
+        ws = wb.active
+    except Exception:
+        return err('文件格式错误，请使用Excel(.xlsx)格式')
+
+    data_start, cm = _detect_project_ledger(ws)
+    if data_start is None:
+        return err('无法识别为「核算维度明细账（按项目）」：需含「项目名称」「科目编码」「借方」「贷方」「摘要」列')
+
+    agg = _parse_project_ledger(ws, data_start, cm)
+    rows = []
+    for project, b in agg.items():
+        if all(v == 0 for v in b.values()):
+            continue
+        rows.append(ProjectMargin(
+            business_unit=bu, year=year, month=month, project_name=project or '无',
+            revenue=b['revenue'], cost=b['cost'],
+            sales_exp=b['sales_exp'], mgmt_exp=b['mgmt_exp'],
+            uploaded_by=request.pk_user,
+        ))
+    if not rows:
+        return err('未解析到任何项目的收入/成本数据（请确认导出含 6001/6401 等科目）')
+
+    with transaction.atomic(using='default'):
+        ProjectMargin.objects.filter(business_unit=bu, year=year, month=month).delete()
+        ProjectMargin.objects.bulk_create(rows)
+
+    return ok({'business_unit': bu, 'year': year, 'month': month, 'project_count': len(rows)})
+
+
+def _allocate_unalloc(rows, unalloc):
+    """把未挂项目池(unalloc) 的成本/费用按各项目收入比例分摊；收入为正者参与分摊。
+    返回新的 rows（每项目 cost/sales_exp/mgmt_exp 已加分摊额）。"""
+    total_rev = sum(r['revenue'] for r in rows if r['revenue'] > 0)
+    if total_rev <= 0:
+        return rows  # 无收入可依据，不分摊（未挂池仍单列在 summary）
+    for r in rows:
+        share = (r['revenue'] / total_rev) if r['revenue'] > 0 else 0
+        r['cost'] = round(r['cost'] + unalloc['cost'] * share, 2)
+        r['sales_exp'] = round(r['sales_exp'] + unalloc['sales_exp'] * share, 2)
+        r['mgmt_exp'] = round(r['mgmt_exp'] + unalloc['mgmt_exp'] * share, 2)
+        r['margin'] = round(r['revenue'] - r['cost'], 2)
+        r['margin_rate'] = round(r['margin'] / r['revenue'] * 100, 1) if r['revenue'] else None
+    return rows
+
+
+@cw_required()
+def project_margin(request):
+    """项目毛利透视。GET ?bu=&year=&month=&mode=direct|allocated。
+    direct：未挂项目「无」单列为未分摊池；allocated：未挂成本按收入比例分摊到各项目。"""
+    if request.method != 'GET':
+        return err('方法不允许', 405)
+    bu = request.GET.get('bu', '').strip()
+    if not bu or bu not in VALID_BUSINESS_UNITS:
+        return err('请选择有效的事业部')
+    if not _can_access_bu(request, bu):
+        return err('无权访问', 403)
+    try:
+        year = int(request.GET.get('year', ''))
+        month = int(request.GET.get('month', ''))
+    except Exception:
+        return err('年份或月份无效')
+    mode = request.GET.get('mode', 'direct').strip() or 'direct'
+
+    qs = ProjectMargin.objects.filter(business_unit=bu, year=year, month=month)
+    rows, unalloc = [], {'revenue': 0.0, 'cost': 0.0, 'sales_exp': 0.0, 'mgmt_exp': 0.0}
+    for m in qs:
+        d = m.to_dict()
+        if (m.project_name or '').strip() in _PM_UNALLOCATED:
+            unalloc['revenue'] += d['revenue']; unalloc['cost'] += d['cost']
+            unalloc['sales_exp'] += d['sales_exp']; unalloc['mgmt_exp'] += d['mgmt_exp']
+        else:
+            rows.append(d)
+
+    if mode == 'allocated':
+        rows = _allocate_unalloc(rows, unalloc)
+
+    rows.sort(key=lambda r: r['margin'], reverse=True)
+    total_rev = sum(r['revenue'] for r in rows)
+    total_cost = sum(r['cost'] for r in rows)
+    # 收入是否按项目核算：若各项目收入几乎为 0、收入全在未挂池 → 本事业部不适用项目毛利
+    revenue_by_project = total_rev > 0
+    # direct 口径下，未挂池成本不进各项目，但计入整体合计的"未分摊成本"
+    grand_cost = total_cost + (unalloc['cost'] if mode == 'direct' else 0)
+    grand_rev = total_rev + (unalloc['revenue'] if mode == 'direct' else 0)
+    grand_margin = grand_rev - grand_cost
+    summary = {
+        'project_count': len(rows),
+        'total_revenue': round(grand_rev, 2),
+        'total_cost': round(grand_cost, 2),
+        'total_margin': round(grand_margin, 2),
+        'margin_rate': round(grand_margin / grand_rev * 100, 1) if grand_rev else None,
+        'unalloc_cost': round(unalloc['cost'], 2),
+        'unalloc_revenue': round(unalloc['revenue'], 2),
+        'has_data': qs.exists(),
+        'revenue_by_project': revenue_by_project,
+    }
+    return ok({'mode': mode, 'business_unit': bu, 'year': year, 'month': month,
+               'rows': rows, 'summary': summary})
 
 
 # ── report ───────────────────────────────────────────────────────────────────

@@ -283,3 +283,43 @@ class CaiwuJobPermission(models.Model):
         app_label = 'caiwu'
         db_table = 'caiwu_job_permissions'
         verbose_name = '职务权限'
+
+
+class ProjectMargin(models.Model):
+    """项目毛利：金蝶「核算维度明细账（按项目）」按项目汇总的收入/成本/费用。
+    每个 (事业部, 年, 月, 项目名称) 一行，导入同期间时整体替换。
+    收入 = 6001/6051 主营/其他业务收入(贷-借)；成本 = 6401/6402 主营业务成本(借-贷)；
+    销售费用 = 6601(借-贷)；管理费用 = 6602(借-贷)。「无/空」项目名为未挂项目池。"""
+    business_unit = models.CharField('事业部', max_length=50, db_index=True)
+    year = models.IntegerField('年', db_index=True)
+    month = models.IntegerField('月', db_index=True)
+    project_name = models.CharField('项目名称', max_length=200, db_index=True)
+    revenue = models.DecimalField('收入', max_digits=16, decimal_places=2, default=0)
+    cost = models.DecimalField('主营成本', max_digits=16, decimal_places=2, default=0)
+    sales_exp = models.DecimalField('销售费用', max_digits=16, decimal_places=2, default=0)
+    mgmt_exp = models.DecimalField('管理费用', max_digits=16, decimal_places=2, default=0)
+    uploaded_by = models.ForeignKey('paikuan.PaikuanUser', on_delete=models.SET_NULL,
+                                    null=True, blank=True, related_name='uploaded_project_margins')
+    uploaded_at = models.DateTimeField('上传时间', auto_now_add=True)
+
+    class Meta:
+        app_label = 'caiwu'
+        db_table = 'caiwu_project_margin'
+        ordering = ['business_unit', 'year', 'month', 'project_name']
+        indexes = [
+            models.Index(fields=['business_unit', 'year', 'month']),
+        ]
+
+    def to_dict(self):
+        rev, cost = float(self.revenue), float(self.cost)
+        margin = rev - cost
+        return {
+            'id': self.id,
+            'project_name': self.project_name,
+            'revenue': rev,
+            'cost': cost,
+            'sales_exp': float(self.sales_exp),
+            'mgmt_exp': float(self.mgmt_exp),
+            'margin': margin,
+            'margin_rate': round(margin / rev * 100, 1) if rev else None,
+        }

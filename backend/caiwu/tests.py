@@ -15,12 +15,15 @@ from caiwu.models import (
 )
 from caiwu.views import (
     _aggregate_report,
+    _allocate_unalloc,
     _compute_l1_name_map,
     _compute_pl_check,
     _detect_dept_ledger,
+    _detect_project_ledger,
     _get_published_batches,
     _make_token,
     _parse_dept_ledger_rows,
+    _parse_project_ledger,
 )
 from paikuan.models import PaikuanUser
 
@@ -354,6 +357,47 @@ class CaiwuCalculationLogicTests(TestCase):
         for r in pl['l1_summary']:
             self.assertAlmostEqual(r['amount'], report.get(r['name'], 0), places=2,
                                    msg=f"{r['name']} 预览={r['amount']} 报表={report.get(r['name'])}")
+
+    def test_project_ledger_parse_and_allocate(self):
+        """项目核算明细账（维度=项目名称）解析：6001→收入(贷-借)、6401→成本(借-贷)，
+        跳过小计/结转损益行；以及未挂成本按收入比例分摊。"""
+        wb = Workbook()
+        ws = wb.active
+        ws.append(['核算维度明细账'])
+        ws.append(['账簿信息'])
+        ws.append(['序号', '项目名称', '科目编码', '科目名称', '会计期间',
+                   '记账日期', '业务日期', '凭证字号', '摘要', '币种', '借方', '贷方'])
+        # 甲项目：收入1000(贷)、成本300(借)
+        ws.append([1, '甲', '6001.01', '主营收入', '2026年5期', '2026-05-10', None, '记1', '直客收入', '人民币', 0, 1000])
+        ws.append([2, '甲', '6401.01', '运输成本', '2026年5期', '2026-05-11', None, '记2', '成本', '人民币', 300, 0])
+        # 乙项目：收入500(贷)
+        ws.append([3, '乙', '6001.01', '主营收入', '2026年5期', '2026-05-12', None, '记3', '直客收入', '人民币', 0, 500])
+        # 未挂项目「无」：成本600（待分摊）
+        ws.append([4, '无', '6401.01', '分摊成本', '2026年5期', '2026-05-20', None, '记4', '公共成本', '人民币', 600, 0])
+        # 小计 & 结转损益行：应跳过
+        ws.append([5, '甲', '6001.01', '主营收入', '2026年5期', '2026-05-31', None, None, '本期合计', '人民币', 0, 1000])
+        ws.append([6, '甲', '6001.01', '主营收入', '2026年5期', '2026-05-31', None, '记9', '结转损益', '人民币', 1000, 0])
+
+        ds, cm = _detect_project_ledger(ws)
+        self.assertIsNotNone(ds)
+        agg = _parse_project_ledger(ws, ds, cm)
+        self.assertEqual(agg['甲']['revenue'], Decimal('1000'))
+        self.assertEqual(agg['甲']['cost'], Decimal('300'))
+        self.assertEqual(agg['乙']['revenue'], Decimal('500'))
+        self.assertEqual(agg['无']['cost'], Decimal('600'))
+
+        # 分摊：未挂成本600 按收入(甲1000:乙500=2:1)分摊 → 甲+400、乙+200
+        rows = [
+            {'project_name': '甲', 'revenue': 1000.0, 'cost': 300.0, 'sales_exp': 0.0, 'mgmt_exp': 0.0, 'margin': 700.0, 'margin_rate': 70.0},
+            {'project_name': '乙', 'revenue': 500.0, 'cost': 0.0, 'sales_exp': 0.0, 'mgmt_exp': 0.0, 'margin': 500.0, 'margin_rate': 100.0},
+        ]
+        unalloc = {'revenue': 0.0, 'cost': 600.0, 'sales_exp': 0.0, 'mgmt_exp': 0.0}
+        out = _allocate_unalloc(rows, unalloc)
+        by = {r['project_name']: r for r in out}
+        self.assertEqual(by['甲']['cost'], 700.0)   # 300 + 400
+        self.assertEqual(by['甲']['margin'], 300.0)  # 1000 - 700
+        self.assertEqual(by['乙']['cost'], 200.0)    # 0 + 200
+        self.assertEqual(by['乙']['margin'], 300.0)  # 500 - 200
 
     def test_template_has_no_profit_loss_sheet(self):
         """利润表已下线：下载模板不应再含「利润表模板」页（仅部门明细相关页）。"""
