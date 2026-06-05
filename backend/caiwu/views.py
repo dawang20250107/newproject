@@ -1146,6 +1146,25 @@ def _parse_profit_loss_rows(ws, l1_map):
     return result
 
 
+def _find_pl_sheet(wb):
+    """在工作簿里查找利润表两列格式（科目名称 + 本期金额）的工作表，
+    且至少有一个非零金额（区分用户已填写 vs 模板里全 0 的「利润表模板」空页）。
+    支持金蝶利润表另存的 .xlsx，或本系统模板里附带的「利润表模板」页。
+    返回 worksheet 或 None。"""
+    for ws in wb.worksheets:
+        r1c1 = str(ws.cell(row=1, column=1).value or '').strip()
+        r1c2 = str(ws.cell(row=1, column=2).value or '').strip()
+        if r1c1 != PL_HEADERS[0] or r1c2 != PL_HEADERS[1]:
+            continue
+        for ri in range(2, ws.max_row + 1):
+            try:
+                if Decimal(str(ws.cell(row=ri, column=2).value or 0)) != 0:
+                    return ws
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+    return None
+
+
 def _parse_json_rows(data_str, bu, l1_map, l2_map, l3_map):
     """Parse JSON array import. Each element: {l1, l2?, l3?, debit?, credit?, amount?}.
     Returns (parsed_rows, errors).
@@ -1331,28 +1350,44 @@ def batch_upload(request):
         except Exception:
             return err('文件格式错误，请使用Excel(.xlsx)格式')
 
-        batch_type = ImportBatch.TYPE_DEPT
-        ledger_start, ledger_cm = _detect_dept_ledger(ws)
-        row1_vals = [str(ws.cell(row=1, column=c).value or '').strip() for c in range(1, 6)]
-        is_kxt = (row1_vals[:5] == EXCEL_HEADERS or row1_vals[:4] == ['一级科目', '二级项目部', '三级科目明细', '金额(元)'])
-
-        if ledger_start is not None:
-            parsed_rows, errors = _parse_dept_ledger_rows(ws, ledger_start, ledger_cm, bu, l1_map, l2_map, l3_map)
-            fmt = 'kingdee_ledger'
-        elif is_kxt:
-            parsed_rows, errors = _parse_template_rows(ws, bu, l1_map, l2_map, l3_map)
-            fmt = 'template'
+        # ── 利润表（两列：科目名称 + 本期金额）——可为金蝶利润表另存的 xlsx，
+        #    或本系统模板里附带的「利润表模板」页（已填写非零金额）──────────────
+        pl_ws = _find_pl_sheet(wb)
+        if pl_ws is not None:
+            pl_data = _parse_profit_loss_rows(pl_ws, l1_map)
+            parsed_rows = [
+                {'l1': l1_map[n], 'l2': None, 'l3': None, 'amount': a,
+                 'l1_name': n, 'l2_name': '', 'l3_name': ''}
+                for n, a in pl_data.items() if n in l1_map and not l1_map[n].is_calculated
+            ]
+            if not parsed_rows:
+                return err('利润表中未读取到有效科目金额（需「科目名称」+「本期金额」两列，且科目名称能匹配一级科目）')
+            errors = []
+            batch_type = ImportBatch.TYPE_PL
+            fmt = 'pl_excel'
         else:
-            data_start, cm = _detect_kingdee_format(ws)
-            if data_start is None:
-                return err(
-                    '无法识别文件格式。支持：\n'
-                    '① 金蝶核算维度明细账（部门明细表，含"部门名称""科目编码""借方""贷方"列）\n'
-                    '② KXT模板（借方/贷方两列）\n'
-                    '③ 金蝶利润表 JSON（.json 文件）'
-                )
-            parsed_rows, errors = _parse_kingdee_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map)
-            fmt = 'kingdee'
+            batch_type = ImportBatch.TYPE_DEPT
+            ledger_start, ledger_cm = _detect_dept_ledger(ws)
+            row1_vals = [str(ws.cell(row=1, column=c).value or '').strip() for c in range(1, 6)]
+            is_kxt = (row1_vals[:5] == EXCEL_HEADERS or row1_vals[:4] == ['一级科目', '二级项目部', '三级科目明细', '金额(元)'])
+
+            if ledger_start is not None:
+                parsed_rows, errors = _parse_dept_ledger_rows(ws, ledger_start, ledger_cm, bu, l1_map, l2_map, l3_map)
+                fmt = 'kingdee_ledger'
+            elif is_kxt:
+                parsed_rows, errors = _parse_template_rows(ws, bu, l1_map, l2_map, l3_map)
+                fmt = 'template'
+            else:
+                data_start, cm = _detect_kingdee_format(ws)
+                if data_start is None:
+                    return err(
+                        '无法识别文件格式。支持：\n'
+                        '① 金蝶核算维度明细账（部门明细表，含"部门名称""科目编码""借方""贷方"列）\n'
+                        '② KXT模板（借方/贷方两列）\n'
+                        '③ 金蝶利润表（.json 文件，或「科目名称+本期金额」两列 .xlsx）'
+                    )
+                parsed_rows, errors = _parse_kingdee_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map)
+                fmt = 'kingdee'
 
     # Non-fatal warnings: show first 10 but don't block import
     warnings = errors[:10] if errors else []

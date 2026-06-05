@@ -17,9 +17,11 @@ from caiwu.views import (
     _aggregate_report,
     _compute_l1_name_map,
     _detect_dept_ledger,
+    _find_pl_sheet,
     _get_published_batches,
     _make_token,
     _parse_dept_ledger_rows,
+    _parse_profit_loss_rows,
 )
 from paikuan.models import PaikuanUser
 
@@ -329,6 +331,39 @@ class CaiwuCalculationLogicTests(TestCase):
         # 管理费用 sign=-1 → 借方100 计为 100；集团管理费用 = 200 + 50 = 250
         self.assertEqual(by_name[MGMT_EXP], Decimal('100'))
         self.assertEqual(by_name[GROUP_MGMT], Decimal('250'))
+
+    def test_profit_loss_excel_two_column_import(self):
+        """利润表支持「科目名称 + 本期金额」两列 Excel 导入：
+        _find_pl_sheet 能在多 sheet 工作簿里定位已填写的利润表页，
+        _parse_profit_loss_rows 按科目名称匹配一级科目取金额。"""
+        wb = Workbook()
+        # 第一页模拟其它内容（非利润表），利润表放在第二页
+        wb.active.title = '其它'
+        ws = wb.create_sheet('利润表模板')
+        ws.append(['科目名称', '本期金额'])
+        ws.append([REV, 1000])
+        ws.append([COST, 600])
+        ws.append([GROUP_MGMT, 25])
+        ws.append([OPERATING_GROSS, 0])   # 计算值/零值不应影响匹配
+
+        found = _find_pl_sheet(wb)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.title, '利润表模板')
+
+        pl = _parse_profit_loss_rows(found, self.l1)
+        self.assertEqual(pl[REV], Decimal('1000'))
+        self.assertEqual(pl[COST], Decimal('600'))
+        self.assertEqual(pl[GROUP_MGMT], Decimal('25'))
+
+    def test_find_pl_sheet_ignores_all_zero_template(self):
+        """全 0 的「利润表模板」空页（用户未填写）不应被当成利润表，
+        避免误把附带空利润表页的部门明细模板识别成利润表。"""
+        wb = Workbook()
+        ws = wb.active
+        ws.append(['科目名称', '本期金额'])
+        ws.append([REV, 0])
+        ws.append([COST, 0])
+        self.assertIsNone(_find_pl_sheet(wb))
 
 
 @override_settings(ALLOWED_HOSTS=['testserver', 'localhost', '127.0.0.1'])

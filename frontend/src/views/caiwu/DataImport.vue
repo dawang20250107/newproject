@@ -402,7 +402,7 @@ onMounted(() => {
                 <div class="fg-ico fg-json">JSON</div>
                 <div>
                   <div class="fg-title">利润表</div>
-                  <div class="fg-desc">金蝶导出的利润表 .json 文件</div>
+                  <div class="fg-desc">金蝶利润表 .json，或「科目名称+本期金额」两列 .xlsx</div>
                 </div>
               </div>
               <div class="fg-card">
@@ -446,7 +446,7 @@ onMounted(() => {
               </template>
               <template v-else>
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                <span>点击选择文件（.xlsx 利润明细 / .json 利润表）</span>
+                <span>点击选择文件（.xlsx 部门明细 / 利润表 · .json 利润表）</span>
               </template>
             </label>
 
@@ -469,6 +469,7 @@ onMounted(() => {
                   共 {{ uploadResult.row_count }} 行
                   <span v-if="uploadResult.fmt === 'kingdee_ledger'" class="badge badge-primary" style="margin-left:6px;font-size:10px">金蝶部门明细账</span>
                   <span v-else-if="uploadResult.fmt === 'kingdee_pl_json'" class="badge badge-info" style="margin-left:6px;font-size:10px">金蝶利润表</span>
+                  <span v-else-if="uploadResult.fmt === 'pl_excel'" class="badge badge-info" style="margin-left:6px;font-size:10px">利润表(Excel)</span>
                   <span v-else-if="uploadResult.fmt === 'kingdee'" class="badge badge-primary" style="margin-left:6px;font-size:10px">金蝶格式</span>
                   <span v-else-if="uploadResult.fmt === 'json'" class="badge badge-primary" style="margin-left:6px;font-size:10px">JSON格式</span>
                   <span v-else class="badge badge-muted" style="margin-left:6px;font-size:10px">KXT模板</span>
