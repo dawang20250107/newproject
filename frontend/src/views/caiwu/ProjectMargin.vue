@@ -30,6 +30,11 @@ const rows = computed(() => data.value?.rows || [])
 const summary = computed(() => data.value?.summary || null)
 const noProjectRevenue = computed(() =>
   summary.value && summary.value.has_data && !summary.value.revenue_by_project)
+const noData = computed(() => summary.value && !summary.value.has_data)
+// 直接口径下把「未挂项目」作为一行加入表格，使各列与合计对得上
+const showPool = computed(() =>
+  data.value?.mode === 'direct' && summary.value &&
+  (summary.value.unalloc_cost || summary.value.unalloc_revenue))
 
 async function load() {
   if (!bu.value) return
@@ -52,6 +57,7 @@ const uploading = ref(false)
 async function onPickFile(e) {
   const file = e.target.files?.[0]
   if (!file) return
+  if (uploading.value) { e.target.value = ''; return }
   if (!bu.value) { alert('请先选择事业部'); e.target.value = ''; return }
   uploading.value = true
   try {
@@ -114,6 +120,17 @@ onMounted(load)
     <EmptyState v-if="loading && !data" loading />
     <EmptyState v-else-if="loadErr" :error="loadErr" />
 
+    <!-- 本期从未导入项目核算账 -->
+    <div v-else-if="noData" class="pm-emptybox">
+      <div class="pm-empty-ico">📊</div>
+      <div class="pm-empty-title">{{ bu }} · {{ year }}年{{ month }}月 暂无项目核算数据</div>
+      <div class="pm-empty-sub">导入金蝶「核算维度明细账（按项目）」后，即可查看项目级收入 / 成本 / 毛利</div>
+      <label class="btn btn-primary btn-sm" :class="{ disabled: uploading }" style="cursor:pointer;margin-top:14px">
+        {{ uploading ? '导入中…' : '↑ 导入项目核算账' }}
+        <input type="file" accept=".xlsx,.xls" style="display:none" @change="onPickFile" />
+      </label>
+    </div>
+
     <template v-else-if="summary">
       <!-- 收入未按项目核算的提示 -->
       <div v-if="noProjectRevenue" class="pm-warn">
@@ -137,9 +154,7 @@ onMounted(load)
         </div>
         <div class="pm-kpi">
           <div class="pm-k">毛利合计</div>
-          <div class="pm-v" :class="summary.total_margin >= 0 ? 'v-pos' : 'v-neg'">
-            {{ summary.total_margin >= 0 ? '' : '' }}{{ fmt(summary.total_margin) }}
-          </div>
+          <div class="pm-v" :class="summary.total_margin >= 0 ? 'v-pos' : 'v-neg'">{{ fmt(summary.total_margin) }}</div>
         </div>
         <div class="pm-kpi">
           <div class="pm-k">毛利率</div>
@@ -170,16 +185,25 @@ onMounted(load)
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!rows.length"><td colspan="6" class="empty-cell">暂无数据，请先导入「按项目核算明细账」</td></tr>
+              <tr v-if="!rows.length && !showPool"><td colspan="6" class="empty-cell">本事业部本期无已挂项目的数据</td></tr>
               <tr v-for="(r, i) in rows" :key="r.project_name">
                 <td class="ctr text-muted">{{ i + 1 }}</td>
-                <td class="fw">{{ r.project_name }}</td>
+                <td class="fw pm-name" :title="r.project_name">{{ r.project_name }}</td>
                 <td class="amt">{{ fmt(r.revenue) }}</td>
                 <td class="amt">{{ fmt(r.cost) }}</td>
                 <td class="amt" :class="r.margin >= 0 ? 'text-ok' : 'text-danger'">{{ fmt(r.margin) }}</td>
                 <td class="amt" :class="r.margin_rate !== null && r.margin_rate < 0 ? 'text-danger' : ''">
                   {{ r.margin_rate === null ? '—' : r.margin_rate + '%' }}
                 </td>
+              </tr>
+              <!-- 直接口径：未挂项目池单列一行，使各列与合计对齐 -->
+              <tr v-if="showPool" class="pm-pool-row">
+                <td class="ctr text-muted">—</td>
+                <td class="fw">（未挂项目 · 未分摊池）</td>
+                <td class="amt">{{ fmt(summary.unalloc_revenue) }}</td>
+                <td class="amt">{{ fmt(summary.unalloc_cost) }}</td>
+                <td class="amt text-muted">{{ fmt(summary.unalloc_revenue - summary.unalloc_cost) }}</td>
+                <td class="amt text-muted">—</td>
               </tr>
             </tbody>
             <tfoot v-if="rows.length">
@@ -234,7 +258,19 @@ onMounted(load)
 .v-pos { color: #2e7d32; }
 .v-neg { color: #c62828; }
 
+.pm-emptybox {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: 56px 20px;
+  background: rgba(255,255,255,0.6); border: 1px dashed rgba(0,0,0,0.12); border-radius: 16px;
+}
+.pm-empty-ico { font-size: 40px; margin-bottom: 10px; opacity: .85; }
+.pm-empty-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.pm-empty-sub { font-size: 12.5px; color: var(--muted); margin-top: 6px; max-width: 420px; line-height: 1.6; }
+
 .pm-table { width: 100%; font-size: 13px; }
+.pm-table th.ctr, .pm-table td.ctr { width: 44px; }
+.pm-name { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-pool-row td { background: rgba(230,81,0,0.04); color: var(--muted); }
 .pm-table thead th { padding: 9px 12px; font-size: 11.5px; color: var(--muted); font-weight: 700; border-bottom: 1px solid rgba(0,0,0,0.08); }
 .pm-table tbody td { padding: 9px 12px; border-bottom: 1px solid rgba(0,0,0,0.04); }
 .pm-table tbody tr:hover { background: rgba(201,99,66,0.03); }

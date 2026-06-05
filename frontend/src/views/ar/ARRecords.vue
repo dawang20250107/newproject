@@ -722,8 +722,8 @@ function clearFilters() {
                   <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @change="toggleRow(rec.id)" />
                 </td>
                 <td>
-                  <div class="proj-name">{{ rec.short_name || rec.contract_name }}</div>
-                  <div v-if="rec.short_name && rec.short_name !== rec.contract_name" class="proj-sub">{{ rec.contract_name }}</div>
+                  <div class="proj-name" :title="rec.short_name || rec.contract_name">{{ rec.short_name || rec.contract_name }}</div>
+                  <div v-if="rec.short_name && rec.short_name !== rec.contract_name" class="proj-sub" :title="rec.contract_name">{{ rec.contract_name }}</div>
                   <div class="proj-no">{{ rec.project_no }}</div>
                 </td>
                 <td class="ctr">
@@ -1419,7 +1419,7 @@ function clearFilters() {
 .rec-table tfoot .amt-muted { color: var(--muted); font-weight: 600; }
 
 .empty-cell { text-align: center; padding: 48px !important; color: var(--muted); font-size: 14px; }
-.proj-name { font-weight: 600; font-size: 12.5px; }
+.proj-name { font-weight: 600; font-size: 12.5px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-sub { font-size: 11.5px; color: var(--muted); margin-top: 1px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-no { font-family: monospace; font-size: 11px; color: var(--muted); margin-top: 2px; }
 .notes-col { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }

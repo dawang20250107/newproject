@@ -51,7 +51,7 @@ async function load() {
     const res = await ar.cashflow(params)
     cfData.value = res.data
   } catch (e) {
-    console.error(e)
+    cfData.value = null
   } finally { loading.value = false }
 }
 
