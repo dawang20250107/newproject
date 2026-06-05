@@ -49,9 +49,6 @@ class PaymentPermissionRegressionTests(TestCase):
             payee='Regression payee',
             total_amount=Decimal(total),
             planned_date=date(2026, 6, 1),
-            pay1_amount=Decimal('0'),
-            pay2_amount=Decimal('0'),
-            pay3_amount=Decimal('0'),
             notes='',
         )
 
@@ -105,7 +102,11 @@ class PaymentPermissionRegressionTests(TestCase):
         self.user.departments = []
         self.user.save(update_fields=['departments'])
 
-        resp = self.put_payment(payment.id, {'pay1_date': '2026-06-02', 'pay1_amount': '100.00'}, stale_token)
+        resp = self.put_payment(
+            payment.id,
+            {'installments': [{'pay_date': '2026-06-02', 'pay_amount': '100.00'}]},
+            stale_token,
+        )
 
         self.assertEqual(resp.status_code, 403)
 
@@ -116,14 +117,14 @@ class PaymentPermissionRegressionTests(TestCase):
             payment.id,
             {
                 'total_amount': '5000.00',
-                'pay1_date': '2026-06-02',
-                'pay1_amount': '2000.00',
+                'installments': [{'pay_date': '2026-06-02', 'pay_amount': '2000.00'}],
             },
         )
 
         self.assertEqual(resp.status_code, 400)
         payment.refresh_from_db()
-        self.assertEqual(payment.pay1_amount, Decimal('0.00'))
+        self.assertEqual(payment.total_amount, Decimal('1000.00'))
+        self.assertEqual(payment.installments.count(), 0)
 
     def test_blank_non_editable_fields_are_ignored_on_partial_edit(self):
         payment = self.create_payment(total='1000.00')
@@ -137,8 +138,7 @@ class PaymentPermissionRegressionTests(TestCase):
                 'payee': '',
                 'total_amount': '',
                 'planned_date': '',
-                'pay1_date': '2026-06-03',
-                'pay1_amount': '100.00',
+                'installments': [{'pay_date': '2026-06-03', 'pay_amount': '100.00'}],
             },
         )
 
@@ -147,7 +147,9 @@ class PaymentPermissionRegressionTests(TestCase):
         self.assertEqual(payment.project_desc, 'Regression project')
         self.assertEqual(payment.payee, 'Regression payee')
         self.assertEqual(payment.total_amount, Decimal('1000.00'))
-        self.assertEqual(payment.pay1_amount, Decimal('100.00'))
+        inst = payment.installments.first()
+        self.assertIsNotNone(inst)
+        self.assertEqual(inst.pay_amount, Decimal('100.00'))
 
     def test_payments_page_permission_blocks_related_endpoints(self):
         cfg = default_job_config('cashier')
