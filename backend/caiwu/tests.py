@@ -16,12 +16,13 @@ from caiwu.models import (
 from caiwu.views import (
     _aggregate_report,
     _compute_l1_name_map,
+    _compute_pl_dept_consistency,
     _detect_dept_ledger,
     _find_pl_sheet,
     _get_published_batches,
     _make_token,
     _parse_dept_ledger_rows,
-    _parse_profit_loss_rows,
+    _parse_pl_excel_sheet,
 )
 from paikuan.models import PaikuanUser
 
@@ -332,38 +333,96 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(by_name[MGMT_EXP], Decimal('100'))
         self.assertEqual(by_name[GROUP_MGMT], Decimal('250'))
 
-    def test_profit_loss_excel_two_column_import(self):
-        """利润表支持「科目名称 + 本期金额」两列 Excel 导入：
-        _find_pl_sheet 能在多 sheet 工作簿里定位已填写的利润表页，
-        _parse_profit_loss_rows 按科目名称匹配一级科目取金额。"""
+    def test_profit_loss_excel_two_column_template_import(self):
+        """利润表两列模板（科目名称 + 本期金额，行名即一级科目名）Excel 导入：
+        _find_pl_sheet 在多 sheet 工作簿里定位已填写的利润表页并返回解析结果。"""
         wb = Workbook()
-        # 第一页模拟其它内容（非利润表），利润表放在第二页
-        wb.active.title = '其它'
+        wb.active.title = '其它'   # 第一页非利润表
         ws = wb.create_sheet('利润表模板')
         ws.append(['科目名称', '本期金额'])
         ws.append([REV, 1000])
         ws.append([COST, 600])
         ws.append([GROUP_MGMT, 25])
-        ws.append([OPERATING_GROSS, 0])   # 计算值/零值不应影响匹配
+        ws.append([OPERATING_GROSS, 0])   # 计算值不应进入结果
 
-        found = _find_pl_sheet(wb)
+        found, pl = _find_pl_sheet(wb, self.l1)
         self.assertIsNotNone(found)
         self.assertEqual(found.title, '利润表模板')
-
-        pl = _parse_profit_loss_rows(found, self.l1)
         self.assertEqual(pl[REV], Decimal('1000'))
         self.assertEqual(pl[COST], Decimal('600'))
         self.assertEqual(pl[GROUP_MGMT], Decimal('25'))
+        self.assertNotIn(OPERATING_GROSS, pl)   # 运营毛利是计算值，不取数
 
-    def test_find_pl_sheet_ignores_all_zero_template(self):
-        """全 0 的「利润表模板」空页（用户未填写）不应被当成利润表，
-        避免误把附带空利润表页的部门明细模板识别成利润表。"""
+    def test_profit_loss_kingdee_three_statement_excel(self):
+        """金蝶标准三表 Excel：利润表在「利润分配表」页（A1=利润表，表头 项目名称/本期金额，
+        行名如「一、营业总收入」「其中：营业收入」「管理费用」）。_find_pl_sheet 应跳过
+        资产负债表/现金流量表页，按 _PL_ITEM_L1 映射利润表行。"""
         wb = Workbook()
-        ws = wb.active
-        ws.append(['科目名称', '本期金额'])
-        ws.append([REV, 0])
-        ws.append([COST, 0])
-        self.assertIsNone(_find_pl_sheet(wb))
+        bs = wb.active; bs.title = '资产负债表'
+        bs.append(['资产负债表'])
+        bs.append([]); bs.append([])
+        bs.append(['资产', '期末余额', '年初余额'])
+        bs.append(['货币资金', 123, 456])
+
+        pl = wb.create_sheet('利润分配表')
+        pl.append(['利润表'])
+        pl.append([]); pl.append([])
+        pl.append(['项目名称', '本期金额', '本年金额'])
+        pl.append(['一、营业总收入', 1000, 5000])
+        pl.append(['其中：营业收入', 1000, 5000])
+        pl.append(['二、营业总成本', 700, 3500])
+        pl.append(['其中：营业成本', 600, 3000])
+        pl.append(['税金及附加', 50, 250])
+        pl.append(['销售费用', 30, 150])
+        pl.append(['管理费用', 40, 200])   # 含集团管理费
+        pl.append(['财务费用', 10, 50])
+
+        cf = wb.create_sheet('现金流量表')
+        cf.append(['现金流量表']); cf.append([]); cf.append([])
+        cf.append(['项目名称', '本期金额', '本年金额'])
+        cf.append(['销售商品、提供劳务收到的现金', 999, 0])
+
+        found, data = _find_pl_sheet(wb, self.l1)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.title, '利润分配表')
+        self.assertEqual(data[REV], Decimal('1000'))
+        self.assertEqual(data[COST], Decimal('600'))
+        self.assertEqual(data[TAX], Decimal('50'))
+        self.assertEqual(data[SALES_EXP], Decimal('30'))
+        self.assertEqual(data[MGMT_EXP], Decimal('40'))
+        self.assertEqual(data[FIN_EXP], Decimal('10'))
+
+    def test_find_pl_sheet_ignores_all_zero_statement(self):
+        """全 0 的利润表（用户上传的空模板/样表）不应被识别为利润表，
+        避免误判（无非零金额即视为未填写）。"""
+        wb = Workbook()
+        ws = wb.active; ws.title = '利润分配表'
+        ws.append(['利润表']); ws.append([]); ws.append([])
+        ws.append(['项目名称', '本期金额', '本年金额'])
+        ws.append(['其中：营业收入', 0, 0])
+        ws.append(['管理费用', 0, 0])
+        found, data = _find_pl_sheet(wb, self.l1)
+        self.assertIsNone(found)
+        self.assertEqual(data, {})
+
+    def test_pl_dept_consistency_merges_group_mgmt_into_mgmt(self):
+        """一致性核对：利润表「管理费用」含集团管理费，部门侧应把集团管理费用并入
+        管理费用后逐项比对。两边等价时 all_match=True。"""
+        pl = {REV: Decimal('1000'), COST: Decimal('600'),
+              MGMT_EXP: Decimal('40')}                       # 利润表管理费用含集团 25
+        dept = {REV: Decimal('1000'), COST: Decimal('600'),
+                MGMT_EXP: Decimal('15'), GROUP_MGMT: Decimal('25')}  # 部门拆分 15 + 25
+        res = _compute_pl_dept_consistency(pl, dept)
+        self.assertTrue(res['all_match'], res)
+        mgmt_row = next(r for r in res['rows'] if r['name'] == MGMT_EXP)
+        self.assertEqual(mgmt_row['pl'], 40.0)
+        self.assertEqual(mgmt_row['dept'], 40.0)   # 15 + 25 合并
+
+        # 制造差异：部门侧管理费用少 10
+        dept2 = {**dept, MGMT_EXP: Decimal('5')}
+        res2 = _compute_pl_dept_consistency(pl, dept2)
+        self.assertFalse(res2['all_match'])
+        self.assertEqual(res2['max_diff'], 10.0)
 
 
 @override_settings(ALLOWED_HOSTS=['testserver', 'localhost', '127.0.0.1'])

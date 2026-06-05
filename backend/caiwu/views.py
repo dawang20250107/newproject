@@ -1119,50 +1119,73 @@ def _parse_template_rows(ws, bu, l1_map, l2_map, l3_map):
     return parsed, errors
 
 
-def _parse_profit_loss_rows(ws, l1_map):
-    """Parse 利润表 (P&L statement) in standard 2-column format: 科目名称 + 本期金额.
-    Returns dict {l1_name: Decimal(amount)}.
+_PL_NAME_COL_KW = ('项目名称', '科目名称', '项目', '科目')
+_PL_AMT_COL_KW = ('本期金额', '本期数', '本期发生额', '金额', '本期')
+
+
+def _parse_pl_excel_sheet(ws, l1_map):
+    """解析单个 Excel 工作表为利润表 → {l1_name: Decimal}。兼容两种来源：
+    ① 金蝶标准利润表（项目名称/本期金额，行名如「一、营业总收入」「其中：营业收入」
+       「管理费用」），按 _PL_ITEM_L1 映射；
+    ② 本系统两列模板（科目名称/本期金额，行名即一级科目名），按 l1 名精确匹配。
+    找不到表头或无任何可映射科目则返回 {}。
+    注意：金蝶利润表「管理费用」含集团管理费，这里照原值归入「管理费用」，
+    集团管理费的拆分核对在 _compute_pl_dept_consistency 里处理。
     """
-    result = {}
-    for ri in range(2, ws.max_row + 1):
-        name = str(ws.cell(row=ri, column=1).value or '').strip()
-        amt_raw = ws.cell(row=ri, column=2).value
-        if not name:
-            continue
-        # Flexible name matching against L1 categories
-        matched = l1_map.get(name)
-        if not matched:
-            for k in l1_map:
-                if k in name or name in k:
-                    matched = l1_map[k]
-                    name = k
-                    break
-        if not matched:
+    # 1. 定位表头行 + 名称列/金额列（扫描前 8 行）
+    name_col = amt_col = header_row = None
+    for ri in range(1, min(ws.max_row, 8) + 1):
+        for ci in range(1, min(ws.max_column, 14) + 1):
+            v = str(ws.cell(row=ri, column=ci).value or '').strip()
+            if not v:
+                continue
+            if name_col is None and v in _PL_NAME_COL_KW:
+                name_col, header_row = ci, ri
+            elif amt_col is None and v in _PL_AMT_COL_KW:
+                amt_col = ci
+        if name_col and amt_col:
+            break
+    if not name_col or not amt_col:
+        return {}
+
+    pl_data = {}
+    rev_total = cost_total = None
+    for ri in range(header_row + 1, ws.max_row + 1):
+        c0 = str(ws.cell(row=ri, column=name_col).value or '').strip()
+        if not c0:
             continue
         try:
-            result[name] = Decimal(str(amt_raw))
-        except (InvalidOperation, TypeError):
-            pass
-    return result
-
-
-def _find_pl_sheet(wb):
-    """在工作簿里查找利润表两列格式（科目名称 + 本期金额）的工作表，
-    且至少有一个非零金额（区分用户已填写 vs 模板里全 0 的「利润表模板」空页）。
-    支持金蝶利润表另存的 .xlsx，或本系统模板里附带的「利润表模板」页。
-    返回 worksheet 或 None。"""
-    for ws in wb.worksheets:
-        r1c1 = str(ws.cell(row=1, column=1).value or '').strip()
-        r1c2 = str(ws.cell(row=1, column=2).value or '').strip()
-        if r1c1 != PL_HEADERS[0] or r1c2 != PL_HEADERS[1]:
+            amt = Decimal(str(ws.cell(row=ri, column=amt_col).value))
+        except (InvalidOperation, TypeError, ValueError):
             continue
-        for ri in range(2, ws.max_row + 1):
-            try:
-                if Decimal(str(ws.cell(row=ri, column=2).value or 0)) != 0:
-                    return ws
-            except (InvalidOperation, TypeError, ValueError):
-                continue
-    return None
+        label = _strip_pl_prefix(c0)
+        if label == '营业总收入':
+            rev_total = amt
+        elif label == '营业总成本':
+            cost_total = amt
+        # 金蝶标准利润表行名 → L1；否则两列模板里行名即 L1 科目名（精确匹配，
+        # 避免「管理费用」被「集团管理费用」等部分包含误配）
+        l1name = _PL_ITEM_L1.get(label) or (label if label in l1_map else None)
+        if l1name and l1name in l1_map and not l1_map[l1name].is_calculated:
+            pl_data.setdefault(l1name, amt)
+
+    # 缺「其中：营业收入/成本」明细时，回退用营业总收入/总成本
+    if '主营业务收入' not in pl_data and rev_total is not None:
+        pl_data['主营业务收入'] = rev_total
+    if '主营业务成本' not in pl_data and cost_total is not None:
+        pl_data['主营业务成本'] = cost_total
+    return pl_data
+
+
+def _find_pl_sheet(wb, l1_map):
+    """在工作簿里查找利润表工作表（金蝶三表里的「利润分配表/利润表」页，或两列模板页），
+    要求能解析出至少一个非零科目金额（区分用户已填写 vs 全 0 空表/其它报表页）。
+    返回 (worksheet, pl_data)；找不到返回 (None, {})。"""
+    for ws in wb.worksheets:
+        pl_data = _parse_pl_excel_sheet(ws, l1_map)
+        if pl_data and any(v != 0 for v in pl_data.values()):
+            return ws, pl_data
+    return None, {}
 
 
 def _parse_json_rows(data_str, bu, l1_map, l2_map, l3_map):
@@ -1281,6 +1304,84 @@ def _compute_pl_check(parsed_rows):
     return {'kpis': kpis, 'l1_summary': l1_summary, 'l2_summary': l2_summary}
 
 
+# 利润表 vs 部门明细一致性核对的科目（一级科目名）。利润表「管理费用」含集团管理费，
+# 故部门侧把「集团管理费用」并入「管理费用」后再逐项比对。
+_CONSISTENCY_KEYS = [
+    '主营业务收入', '主营业务成本', '税金成本',
+    '销售费用', '管理费用', '财务费用',
+    '营业外收入', '营业外支出',
+]
+
+
+def _l1_totals_from_parsed(parsed_rows):
+    from collections import defaultdict
+    raw = defaultdict(Decimal)
+    for r in parsed_rows:
+        raw[r['l1_name']] += r['amount']
+    return raw
+
+
+def _l1_totals_from_batch(batch):
+    from collections import defaultdict
+    raw = defaultdict(Decimal)
+    for e in FinancialEntry.objects.filter(batch=batch).select_related('l1'):
+        raw[e.l1.name] += e.amount
+    return raw
+
+
+def _compute_pl_dept_consistency(pl_totals, dept_totals):
+    """逐项比对利润表(pl_totals) 与 部门明细(dept_totals) 的一级科目合计。
+    部门侧「集团管理费用」并入「管理费用」（利润表口径含集团管理费）。
+    返回 {all_match, max_diff, rows:[{name, pl, dept, diff, match}]}。"""
+    dept = dict(dept_totals)
+    if '集团管理费用' in dept:
+        dept['管理费用'] = dept.get('管理费用', Decimal('0')) + dept.pop('集团管理费用')
+    rows = []
+    all_match = True
+    max_diff = Decimal('0')
+    eps = Decimal('0.01')
+    for k in _CONSISTENCY_KEYS:
+        pv = (pl_totals.get(k) or Decimal('0')).quantize(eps)
+        dv = (dept.get(k) or Decimal('0')).quantize(eps)
+        if pv == 0 and dv == 0:
+            continue
+        diff = (pv - dv).quantize(eps)
+        match = abs(diff) <= eps
+        if not match:
+            all_match = False
+        if abs(diff) > max_diff:
+            max_diff = abs(diff)
+        rows.append({'name': k, 'pl': float(pv), 'dept': float(dv),
+                     'diff': float(diff), 'match': match})
+    return {'all_match': all_match, 'max_diff': float(max_diff), 'rows': rows}
+
+
+def _consistency_for_upload(bu, year, month, batch_type, parsed_rows):
+    """上传一类表时，若另一类表（同事业部+年月）已存在，则返回与之的一致性核对；
+    优先比对已发布批次，否则比对最近的草稿。无对方表则返回 None（不分先后）。"""
+    other_type = (ImportBatch.TYPE_DEPT if batch_type == ImportBatch.TYPE_PL
+                  else ImportBatch.TYPE_PL)
+    base = ImportBatch.objects.filter(
+        business_unit=bu, year=year, month=month, batch_type=other_type)
+    other = (base.filter(status=ImportBatch.STATUS_PUBLISHED).order_by('-uploaded_at').first()
+             or base.order_by('-uploaded_at').first())
+    if other is None:
+        return None
+    this_totals = _l1_totals_from_parsed(parsed_rows)
+    other_totals = _l1_totals_from_batch(other)
+    if batch_type == ImportBatch.TYPE_PL:
+        pl_totals, dept_totals = this_totals, other_totals
+    else:
+        pl_totals, dept_totals = other_totals, this_totals
+    result = _compute_pl_dept_consistency(pl_totals, dept_totals)
+    result['other'] = {
+        'batch_type': other_type,
+        'status': other.status,
+        'uploaded_at': other.uploaded_at.isoformat() if other.uploaded_at else None,
+    }
+    return result
+
+
 @cw_required()
 def batch_upload(request):
     if request.method != 'POST':
@@ -1350,18 +1451,16 @@ def batch_upload(request):
         except Exception:
             return err('文件格式错误，请使用Excel(.xlsx)格式')
 
-        # ── 利润表（两列：科目名称 + 本期金额）——可为金蝶利润表另存的 xlsx，
-        #    或本系统模板里附带的「利润表模板」页（已填写非零金额）──────────────
-        pl_ws = _find_pl_sheet(wb)
+        # ── 利润表 Excel——金蝶三表里的「利润分配表/利润表」页，或本系统两列模板页 ──
+        pl_ws, pl_data = _find_pl_sheet(wb, l1_map)
         if pl_ws is not None:
-            pl_data = _parse_profit_loss_rows(pl_ws, l1_map)
             parsed_rows = [
                 {'l1': l1_map[n], 'l2': None, 'l3': None, 'amount': a,
                  'l1_name': n, 'l2_name': '', 'l3_name': ''}
                 for n, a in pl_data.items() if n in l1_map and not l1_map[n].is_calculated
             ]
             if not parsed_rows:
-                return err('利润表中未读取到有效科目金额（需「科目名称」+「本期金额」两列，且科目名称能匹配一级科目）')
+                return err('利润表中未读取到有效科目金额（需含「项目名称/科目名称」+「本期金额」两列，且科目能匹配一级科目）')
             errors = []
             batch_type = ImportBatch.TYPE_PL
             fmt = 'pl_excel'
@@ -1399,6 +1498,9 @@ def batch_upload(request):
     # Compute P&L reconciliation preview (only meaningful for dept_detail uploads)
     pl_check = _compute_pl_check(parsed_rows) if batch_type == ImportBatch.TYPE_DEPT else {}
 
+    # 利润表 ↔ 部门明细一致性核对（两类表都已导入时，不分先后；非阻断，仅提示）
+    consistency = _consistency_for_upload(bu, year, month, batch_type, parsed_rows)
+
     # Create draft batch + entries atomically
     with transaction.atomic(using='default'):  # caiwu 已并入 default 主库(整合阶段1)
         batch = ImportBatch.objects.create(
@@ -1420,6 +1522,7 @@ def batch_upload(request):
         'fmt': fmt,
         'warnings': warnings,
         'pl_check': pl_check,
+        'consistency': consistency,
     })
 
 

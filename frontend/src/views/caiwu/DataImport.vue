@@ -55,6 +55,8 @@ async function loadSubmissionStatus() {
 const l1Rows = computed(() => uploadResult.value?.pl_check?.l1_summary || [])
 const l2Rows = computed(() => uploadResult.value?.pl_check?.l2_summary || [])
 const kpis   = computed(() => uploadResult.value?.pl_check?.kpis || [])
+// 利润表 ↔ 部门明细 一致性核对（两类表都已导入时由后端返回；null 表示对方表尚未导入）
+const consistency = computed(() => uploadResult.value?.consistency || null)
 
 const KPI_KEYS = new Set(['主营业务收入', '主营业务成本', '运营毛利', '经营毛利', '经营净利'])
 const KPI_COLORS = {
@@ -487,6 +489,28 @@ onMounted(() => {
               </div>
             </div>
 
+            <!-- ── 利润表 ↔ 部门明细 一致性核对（两类表都已导入时）── -->
+            <div v-if="consistency" class="cons-box" :class="consistency.all_match ? 'cons-ok' : 'cons-bad'">
+              <div class="cons-head">
+                <strong>{{ consistency.all_match ? '✓ 利润表与部门明细一致' : '⚠ 利润表与部门明细存在差异' }}</strong>
+                <span class="cons-sub">
+                  已与{{ consistency.other?.batch_type === 'profit_loss' ? '利润表' : '部门明细表' }}（{{ consistency.other?.status === 'published' ? '已发布' : '草稿' }}）核对，管理费用按「含集团管理费」口径合并比对
+                </span>
+              </div>
+              <table v-if="consistency.rows?.length" class="cons-table">
+                <thead><tr><th>科目</th><th class="r">利润表</th><th class="r">部门明细</th><th class="r">差额</th></tr></thead>
+                <tbody>
+                  <tr v-for="row in consistency.rows" :key="row.name" :class="{ 'cons-row-bad': !row.match }">
+                    <td>{{ row.name }}</td>
+                    <td class="r">{{ fmtAmt(row.pl) }}</td>
+                    <td class="r">{{ fmtAmt(row.dept) }}</td>
+                    <td class="r" :style="row.match ? '' : 'color:var(--danger);font-weight:700'">{{ fmtAmt(row.diff) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div v-if="!consistency.all_match" class="cons-note">差异不影响发布，可继续发布或核对后重新上传。报表仍以部门明细为准。</div>
+            </div>
+
             <!-- ── Profit loss simplified view (Opt 8 accessibility) ── -->
             <template v-if="uploadResult.batch?.batch_type === 'profit_loss'">
               <div class="pl-simple-confirm">
@@ -632,6 +656,20 @@ onMounted(() => {
 
 /* Warning banner */
 .warn-banner { display: flex; align-items: flex-start; gap: 8px; padding: 10px 14px; border-radius: 8px; background: rgba(245,127,23,0.08); border: 1px solid rgba(245,127,23,0.2); color: #b45309; font-size: 13px; margin-bottom: 16px; }
+
+/* 利润表 ↔ 部门明细 一致性核对 */
+.cons-box { border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; border: 1px solid; }
+.cons-ok  { background: rgba(46,125,50,0.06); border-color: rgba(46,125,50,0.28); }
+.cons-bad { background: rgba(198,40,40,0.06); border-color: rgba(198,40,40,0.28); }
+.cons-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.cons-head strong { font-size: 13.5px; }
+.cons-sub { font-size: 11.5px; color: var(--muted); }
+.cons-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.cons-table th, .cons-table td { padding: 5px 8px; border-bottom: 1px solid rgba(0,0,0,0.05); }
+.cons-table th { color: var(--muted); font-weight: 600; text-align: left; }
+.cons-table .r { text-align: right; font-variant-numeric: tabular-nums; }
+.cons-row-bad { background: rgba(198,40,40,0.05); }
+.cons-note { font-size: 11.5px; color: var(--muted); margin-top: 8px; }
 
 /* P&L check grid */
 .pl-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 8px; }
