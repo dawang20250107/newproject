@@ -71,6 +71,27 @@ async function loadStats() {
 
 function reloadAll() { load(true); loadStats() }
 
+// 搜索防抖：输入停顿 280ms 再查，避免每次按键都打接口、页码反复重置
+let searchTimer = null
+function onSearchInput() {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => load(true), 280)
+}
+function clearSearch() { filters.q = ''; load(true) }
+
+const hasActiveFilters = computed(() =>
+  !!(filters.q || filters.dept || filters.customer_level || filters.invoice_mode ||
+     (filters.is_shared && !auth.perms?.ar_shared_only)))
+
+function resetFilters() {
+  filters.q = ''
+  filters.dept = ''
+  filters.customer_level = ''
+  filters.invoice_mode = ''
+  if (!auth.perms?.ar_shared_only) filters.is_shared = ''
+  reloadAll()
+}
+
 function openCreate() {
   editItem.value = null
   Object.assign(form, {
@@ -118,12 +139,20 @@ async function save() {
   }
   saving.value = true
   try {
-    if (editItem.value) await ar.updateProject(editItem.value.id, form)
-    else await ar.createProject(form)
+    if (editItem.value) {
+      await ar.updateProject(editItem.value.id, form)
+    } else {
+      const saved = await ar.createProject(form)
+      // 新建后确保立即可见：清空搜索、按新项目部门筛选、回到首页
+      filters.q = ''
+      const newDept = saved?.data?.delivery_dept || form.delivery_dept
+      if (newDept && accessibleDepts.value.includes(newDept)) filters.dept = newDept
+      page.value = 1
+    }
     showModal.value = false
     reloadAll()
   } catch (e) {
-    alert(e?.msg || '保存失败')
+    alert(e?.msg || '保存失败，请检查必填项与部门权限')
   } finally { saving.value = false }
 }
 
@@ -230,7 +259,13 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
     <!-- Filter strip -->
     <div class="filter-strip">
-      <input v-model="filters.q" placeholder="搜索编号 / 合同 / 负责人 / 销售" class="search-input" @input="load(true)" />
+      <div class="search-box">
+        <svg class="search-ico" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input v-model="filters.q" class="search-input"
+               placeholder="搜索项目编号 / 合同名称 / 项目简称 / 负责人 / 销售对接人"
+               @input="onSearchInput" @keyup.enter="load(true)" />
+        <button v-if="filters.q" class="search-clear" title="清除" @click="clearSearch">✕</button>
+      </div>
       <select v-model="filters.dept" class="sel-bu" @change="reloadAll">
         <option value="">全部事业部</option>
         <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
@@ -250,6 +285,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <option value="true">共享业务</option>
         <option value="false">非共享</option>
       </select>
+      <button v-if="hasActiveFilters" class="filter-reset" @click="resetFilters">重置筛选</button>
     </div>
 
     <!-- Table card -->
@@ -528,5 +564,27 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .derived-item { display: flex; align-items: baseline; gap: 5px; }
 .derived-label { font-size: 11px; color: var(--muted); font-weight: 500; }
 .derived-value { font-size: 16px; font-weight: 700; color: var(--primary); }
-.search-input { min-width: 220px; }
+.filter-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.search-box {
+  position: relative; display: flex; align-items: center; flex: 1; min-width: 280px; max-width: 460px;
+}
+.search-ico { position: absolute; left: 11px; color: var(--muted); pointer-events: none; }
+.search-input {
+  width: 100%; padding: 9px 30px 9px 34px; border: 1px solid var(--border); border-radius: 10px;
+  background: rgba(255,255,255,0.8); font-size: 13px; color: var(--text); transition: border-color .14s, box-shadow .14s;
+}
+.search-input:focus {
+  outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(201,99,66,0.12);
+}
+.search-clear {
+  position: absolute; right: 8px; width: 18px; height: 18px; border: none; border-radius: 50%;
+  background: rgba(0,0,0,0.08); color: var(--muted); font-size: 10px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; line-height: 1;
+}
+.search-clear:hover { background: rgba(198,40,40,0.12); color: #c62828; }
+.filter-reset {
+  padding: 8px 14px; border: 1px dashed var(--primary); border-radius: 10px; background: transparent;
+  color: var(--primary); font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.filter-reset:hover { background: rgba(201,99,66,0.08); }
 </style>

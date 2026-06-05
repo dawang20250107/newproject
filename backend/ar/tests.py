@@ -1129,3 +1129,67 @@ class AdvanceModuleTests(TestCase):
         resp = self.client.get('/api/pk/ar/advances/available',
                                {'project_id': proj.id}, **self.auth(user))
         self.assertEqual(resp.status_code, 403)         # 金额字段被遮蔽 → 拒绝
+
+
+class ProjectImportRoundtripTests(TestCase):
+    """项目台账导入：导出表头(不带*)应能再次导入；缺合同名时回退项目简称。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = '供应链事业部'
+        u = PaikuanUser(phone='13922200001', name='Admin', role='super_admin',
+                        job_title='finance_director', departments=[self.dept],
+                        is_active=True, is_approved=True)
+        u.set_password('Test123456'); u.save()
+        self.token = make_token(u)
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _upload(self, ws_rows):
+        wb = openpyxl.Workbook(); ws = wb.active
+        for r in ws_rows:
+            ws.append(r)
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0); buf.name = 'proj.xlsx'
+        return self.client.post('/api/pk/ar/projects/import', {'file': buf}, **self.auth())
+
+    def test_export_style_headers_without_asterisk_import(self):
+        # 导出文件表头：无 *、开票模式/专票普票为短名 —— 之前会整表静默跳过
+        headers = ['项目编号', '合同名称', '客户名称', '项目简称', '交付部门', '二级部门',
+                   '业务模式', '客户等级', '销售对接人', '项目负责人', '共享业务', '有无合同',
+                   '签订日期', '合同对账期(天)', '开票等待期(天)', '票后等待期(天)', '总账期(天)',
+                   '开票模式', '专票/普票', '税率', '备注']
+        row = ['GYL-X', '南京福佑物流合同', '南京福佑', '南京福佑', self.dept, '',
+               '整车', 'A级', '张三', '李四', '是', '有',
+               '2026-01-01', 30, 0, 60, 90, '全额', '专票', '0.06', '']
+        resp = self._upload([headers, row])
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['created'], 1, d)
+        self.assertEqual(d['skipped'], 0, d)
+        p = ARProject.objects.get(short_name='南京福佑')
+        self.assertEqual(p.contract_name, '南京福佑物流合同')
+        self.assertEqual(p.invoice_type, '专票')
+
+    def test_missing_contract_name_falls_back_to_short_name(self):
+        headers = ['合同名称*', '项目简称*', '交付部门*', '销售对接人*', '项目负责人*']
+        row = ['', '南京福佑', self.dept, '张三', '李四']
+        resp = self._upload([headers, row])
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['created'], 1, d)
+        p = ARProject.objects.get(short_name='南京福佑')
+        self.assertEqual(p.contract_name, '南京福佑')   # 回退用项目简称
+
+    def test_row_with_data_but_no_name_reports_error(self):
+        headers = ['合同名称*', '项目简称*', '交付部门*', '销售对接人*', '项目负责人*']
+        row = ['', '', self.dept, '张三', '李四']   # 有数据但无名称
+        resp = self._upload([headers, row])
+        d = resp.json()['data']
+        self.assertEqual(d['created'], 0, d)
+        self.assertEqual(len(d['errors']), 1, d)
+        self.assertIn('合同名称', d['errors'][0])

@@ -66,25 +66,38 @@ class ARProject(models.Model):
             raise ValueError('当前部门不生成项目编号')
         prefix = f'{dept_code}-{datetime.date.today().strftime("%Y%m%d")}-'
         with transaction.atomic():
-            last = (ARProject.objects.filter(project_no__startswith=prefix)
-                    .select_for_update().order_by('-project_no').first())
-            seq = 0
-            if last:
+            # 取当天该部门已有编号的最大序号 +1。用解析后的整数求最大值（而非字符串
+            # 排序），对历史遗留的非定长编号也稳健。
+            existing = (ARProject.objects.filter(project_no__startswith=prefix)
+                        .select_for_update().values_list('project_no', flat=True))
+            max_seq = -1
+            for no in existing:
                 try:
-                    seq = int(last.project_no.rsplit('-', 1)[-1]) + 1
-                except ValueError:
-                    seq = 0
-            return f'{prefix}{seq:04d}'
+                    max_seq = max(max_seq, int(no.rsplit('-', 1)[-1]))
+                except (ValueError, IndexError):
+                    continue
+            return f'{prefix}{max_seq + 1:04d}'
 
     def save(self, *args, **kwargs):
-        if not self.project_no:
-            self.project_no = self._gen_project_no()
         self.is_shared = (self.sales_contact != self.project_manager)
         self.total_days = (self.reconciliation_days + self.invoice_wait_days
                            + self.post_invoice_days)
         if self.invoice_type == '不开票':
             self.tax_rate = Decimal('0')
-        super().save(*args, **kwargs)
+        if self.project_no:
+            return super().save(*args, **kwargs)
+        # 自动生成编号：极少数并发下可能撞 unique，重试几次再放弃。
+        from django.db import IntegrityError
+        last_err = None
+        for _ in range(5):
+            self.project_no = self._gen_project_no()
+            try:
+                with transaction.atomic():
+                    return super().save(*args, **kwargs)
+            except IntegrityError as e:
+                last_err = e
+                self.project_no = ''
+        raise last_err
 
     def to_dict(self):
         return {

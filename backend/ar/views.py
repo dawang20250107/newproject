@@ -35,6 +35,16 @@ VALID_CUSTOMER_LEVELS = ['S级', 'A级', 'B级', 'C级', 'D级']
 VALID_INVOICE_TYPES = ['专票', '普票', '不开票']
 
 
+def _norm_header(h):
+    """规范化 Excel 表头：去空格、去必填星号、去括号注释，使模板(带*)与
+    导出(不带*)的表头可双向匹配。例：'合同名称*'、'开票模式(全额/差额)' →
+    '合同名称'、'开票模式'。"""
+    s = str(h or '').strip().replace('＊', '').replace('*', '')
+    s = s.replace('（', '(').replace('）', ')')
+    s = re.sub(r'\([^)]*\)', '', s)   # 去掉括号及其中的注释
+    return s.strip()
+
+
 def _match_project_by_short_name(short_name, dept='', allowed_depts=None):
     """Match an ARProject by short_name.
 
@@ -497,14 +507,20 @@ def project_import(request):
         return err(f'无法读取Excel: {e}')
 
     headers = [str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1)]
-    col_map = {h: i + 1 for i, h in enumerate(headers)}
+    # 表头规范化：去掉 *、括号注释与空格，使「模板表头(带*)」与「导出表头(不带*)」
+    # 双向匹配——否则导出→编辑→再导入会因表头不一致而整表静默跳过。
+    col_map = {_norm_header(h): i + 1 for i, h in enumerate(headers)}
 
-    def _cv(row, name):
-        idx = col_map.get(name)
-        if idx is None:
-            return ''
-        v = ws.cell(row, idx).value
-        return str(v).strip() if v is not None else ''
+    def _cv(row, *names):
+        """按规范化表头取值，支持传多个候选别名（任一命中即返回）。"""
+        for name in names:
+            idx = col_map.get(_norm_header(name))
+            if idx is None:
+                continue
+            v = ws.cell(row, idx).value
+            if v is not None and str(v).strip():
+                return str(v).strip()
+        return ''
 
     from paikuan.models import PaikuanUser
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
@@ -512,11 +528,26 @@ def project_import(request):
     errors = []
 
     for ri in range(2, ws.max_row + 1):
-        contract_name = _cv(ri, '合同名称*')
-        if not contract_name or EXAMPLE_ROW_MARKER in contract_name or contract_name.startswith('★'):
+        contract_name = _cv(ri, '合同名称', '合同名称*')
+        short_name_val = _cv(ri, '项目简称', '项目简称*')
+        dept = _cv(ri, '交付部门', '交付部门*')
+        # 提示行/示例行：静默跳过
+        if (EXAMPLE_ROW_MARKER in contract_name or contract_name.startswith('★')
+                or EXAMPLE_ROW_MARKER in short_name_val or short_name_val.startswith('★')):
             skipped += 1
             continue
-        dept = _cv(ri, '交付部门*')
+        # 合同名称缺失时回退用项目简称（很多用户只填项目简称）；二者皆空才算空行
+        if not contract_name:
+            contract_name = short_name_val
+        if not contract_name:
+            # 整行为空 → 静默跳过；否则明确报错，避免「无声跳过」
+            if not any(_cv(ri, h) for h in (
+                    '交付部门', '客户名称', '销售对接人', '项目负责人', '业务模式')):
+                skipped += 1
+                continue
+            errors.append(f'第{ri}行: 缺少「合同名称」或「项目简称」，无法识别项目')
+            skipped += 1
+            continue
         if dept not in VALID_DEPARTMENTS:
             errors.append(f'第{ri}行: 交付部门"{dept}"无效，可选值为：{"/".join(VALID_DEPARTMENTS)}')
             skipped += 1
@@ -533,7 +564,7 @@ def project_import(request):
             errors.append(f'第{ri}行: 客户等级"{customer_level_val}"无效，应为：{"/".join(VALID_CUSTOMER_LEVELS)}')
             skipped += 1
             continue
-        invoice_type_val = _cv(ri, '专票/普票/不开票') or _cv(ri, '专票/普票')
+        invoice_type_val = _cv(ri, '专票/普票/不开票', '专票/普票', '发票类型')
         if invoice_type_val and invoice_type_val not in VALID_INVOICE_TYPES:
             errors.append(f'第{ri}行: 发票类型"{invoice_type_val}"无效，应为：{"/".join(VALID_INVOICE_TYPES)}')
             skipped += 1
@@ -559,12 +590,12 @@ def project_import(request):
             int_days = lambda col: int(_cv(ri, col) or 0)
             field_vals = dict(
                 customer_name=_cv(ri, '客户名称'),
-                short_name=_cv(ri, '项目简称*') or _cv(ri, '项目简称'),
+                short_name=short_name_val,
                 sub_dept=_cv(ri, '二级部门'),
                 business_mode=_cv(ri, '业务模式'),
                 customer_level=customer_level_val,
-                sales_contact=_cv(ri, '销售对接人*'),
-                project_manager=_cv(ri, '项目负责人*'),
+                sales_contact=_cv(ri, '销售对接人', '销售对接人*'),
+                project_manager=_cv(ri, '项目负责人', '项目负责人*'),
                 has_contract=_cv(ri, '有无合同') or '无',
                 contract_date=_normalize_date(
                     _cv(ri, '签订日期') or _cv(ri, '签订日期(YYYY-MM-DD)')
