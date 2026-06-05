@@ -15,6 +15,13 @@ const jobs = ref([])          // [{job_title, label, config}]
 const activeJob = ref('')
 
 const current = computed(() => jobs.value.find(j => j.job_title === activeJob.value))
+// 正向呈现「业务可见范围」：勾选=可见全部业务（ar_shared_only=false）。
+// 之前的「仅可见共享业务」是反向限制，和旁边的授权勾选语义相反，管理员
+// 「全部勾上=全给权限」时会误开启限制，导致只能看共享业务。
+const seeAllBusiness = computed({
+  get: () => !(current.value?.config?.ar_shared_only),
+  set: (v) => { if (current.value) current.value.config.ar_shared_only = !v },
+})
 const arProjectFields = computed(() => arFields.value.filter(f => f.group === 'project'))
 const arRecordFields = computed(() => arFields.value.filter(f => f.group === 'record'))
 const arAdvanceFields = computed(() => arFields.value.filter(f => f.group === 'advance'))
@@ -162,9 +169,10 @@ async function save() {
             <input type="checkbox" v-model="current.config.can_delete" />
             <span class="dot"></span>可删除记录
           </label>
-          <label class="perm-chip" :class="{ on: current.config.ar_shared_only }">
-            <input type="checkbox" v-model="current.config.ar_shared_only" />
-            <span class="dot"></span>仅可见共享业务
+          <label class="perm-chip" :class="{ on: seeAllBusiness }"
+                 title="勾选=可见本部门全部业务（含自营/非共享）；取消勾选=仅可见共享业务">
+            <input type="checkbox" v-model="seeAllBusiness" />
+            <span class="dot"></span>可见全部业务（含自营/非共享）
           </label>
         </div>
 
