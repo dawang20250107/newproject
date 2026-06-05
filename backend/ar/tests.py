@@ -117,6 +117,22 @@ class ARPermissionRegressionTests(TestCase):
         got = self.client.get(f'/api/pk/ar/projects/{pid}', **self.auth(admin))
         self.assertEqual(got.json()['data']['post_invoice_days'], 30)
 
+    def test_projects_list_exposes_contract_name_for_advance_autofill(self):
+        """预收新增的关联项目下拉用 /ar/projects，选中后以 contract_name 自动带出
+        往来单位。回归：删除 customer_name 后该字段须仍随列表返回且非空，否则
+        前端 pickProject 拿不到值、客户名不自动弹出。"""
+        cfg = default_job_config('cashier')
+        cfg['pages']['ar_projects'] = True
+        JobPermission.objects.create(job_title='cashier', config=cfg)
+        _invalidate_perm_cache('cashier')
+        user = self.make_user('13910000099', 'cashier')
+        self.create_project(short_name='福佑物流')
+        resp = self.client.get('/api/pk/ar/projects', {'q': '福佑物流'}, **self.auth(user))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        item = resp.json()['data']['items'][0]
+        self.assertEqual(item['contract_name'], 'Contract A')
+        self.assertNotIn('customer_name', item)
+
     def test_cashier_page_access_cannot_write_ar_records(self):
         cfg = default_job_config('cashier')
         cfg['pages']['ar_projects'] = True
