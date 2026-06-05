@@ -538,16 +538,17 @@ function setPage(p) { filters.page = p; load() }
 .logs-overlay {
   position: fixed; inset: 0; z-index: 9100;
   background: rgba(20,10,5,0.42);
-  display: flex; align-items: flex-end; justify-content: center;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
 }
 .logs-panel {
   width: min(720px, 96vw); max-height: 80vh; background: #fffaf3;
-  border-radius: 16px 16px 0 0; overflow: hidden;
+  border-radius: 16px; overflow: hidden;
   display: flex; flex-direction: column;
-  box-shadow: 0 -10px 40px rgba(20,10,5,0.25);
+  box-shadow: 0 16px 48px rgba(20,10,5,0.28);
   animation: logsUp 0.26s cubic-bezier(0.34,1.5,0.64,1);
 }
-@keyframes logsUp { from { transform: translateY(40px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes logsUp { from { transform: translateY(16px) scale(0.97); opacity: 0; } to { transform: translateY(0) scale(1); opacity: 1; } }
 .logs-header {
   display: flex; align-items: flex-start; justify-content: space-between;
   padding: 16px 22px 12px; border-bottom: 1px solid rgba(0,0,0,0.06);
