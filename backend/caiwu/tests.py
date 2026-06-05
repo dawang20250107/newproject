@@ -16,6 +16,7 @@ from caiwu.models import (
 from caiwu.views import (
     _aggregate_report,
     _compute_l1_name_map,
+    _compute_pl_check,
     _detect_dept_ledger,
     _get_published_batches,
     _make_token,
@@ -329,6 +330,30 @@ class CaiwuCalculationLogicTests(TestCase):
         # 管理费用 sign=-1 → 借方100 计为 100；集团管理费用 = 200 + 50 = 250
         self.assertEqual(by_name[MGMT_EXP], Decimal('100'))
         self.assertEqual(by_name[GROUP_MGMT], Decimal('250'))
+
+    def test_pl_check_matches_report_kpis(self):
+        """导入预览的「数据核对」KPI（_compute_pl_check）应与发布后的财务报表
+        （_aggregate_report）逐项一致——回归用户反馈的「导入核对显示异常但报表正常」。"""
+        parsed_rows = []
+        for name, amt in BASE_AMOUNTS.items():
+            parsed_rows.append({
+                'l1': self.l1[name], 'l2': None, 'l3': None,
+                'amount': Decimal(amt),
+                'l1_name': name, 'l2_name': '', 'l3_name': '',
+            })
+        pl = _compute_pl_check(parsed_rows)
+        kpi = {r['name']: r['amount'] for r in pl['kpis']}
+        self.assertEqual(kpi[OPERATING_GROSS], 350.0)
+        self.assertEqual(kpi[OPERATING_PROFIT], 285.0)
+        self.assertEqual(kpi[NET_PROFIT], 260.0)
+
+        # 与发布后报表逐项一致
+        self.create_batch(amounts=BASE_AMOUNTS, batch_type=ImportBatch.TYPE_DEPT)
+        report = {r['l1_name']: r['amount']
+                  for r in _aggregate_report(_get_published_batches([self.bu], 2026, 5), 1)}
+        for r in pl['l1_summary']:
+            self.assertAlmostEqual(r['amount'], report.get(r['name'], 0), places=2,
+                                   msg=f"{r['name']} 预览={r['amount']} 报表={report.get(r['name'])}")
 
     def test_template_has_no_profit_loss_sheet(self):
         """利润表已下线：下载模板不应再含「利润表模板」页（仅部门明细相关页）。"""
