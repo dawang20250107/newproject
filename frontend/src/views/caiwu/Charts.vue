@@ -43,9 +43,14 @@ async function loadTrend() {
   try {
     const res = await api.get('/charts/trend', { params: { bu: globalBu.value, year: trendYear.value } })
     trendData.value = res.data
-    // default: select first 3 L1 categories
+    // 默认选中：主营业务收入 / 主营业务成本 / 经营毛利；缺失则回退取前 3 项
     if (selectedL1Ids.value.length === 0 && res.data.l1_categories?.length) {
-      selectedL1Ids.value = res.data.l1_categories.slice(0, 3).map(c => c.id)
+      const cats = res.data.l1_categories
+      const want = ['主营业务收入', '主营业务成本', '经营毛利']
+      const picked = want
+        .map(n => cats.find(c => c.name === n)?.id)
+        .filter(id => id != null)
+      selectedL1Ids.value = picked.length ? picked : cats.slice(0, 3).map(c => c.id)
     }
   } catch (e) {
     trendErr.value = e?.error || '加载失败'
