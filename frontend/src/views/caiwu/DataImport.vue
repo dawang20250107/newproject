@@ -471,9 +471,8 @@ onMounted(() => {
             </div>
 
             <!-- ── 部门明细：推算利润指标 + 预览 ── -->
-            <template>
-              <!-- ── 推算利润指标（由部门明细推算）── -->
-              <div class="section-title" style="margin-bottom:10px">利润指标核对</div>
+            <!-- ── 推算利润指标（由部门明细推算）── -->
+            <div class="section-title" style="margin-bottom:10px">利润指标核对</div>
               <div class="pl-grid">
                 <div v-for="kpi in kpis" :key="kpi.name" class="pl-card" :class="{'pl-calc': kpi.is_calculated}">
                   <div class="pl-label">{{ kpi.name }}</div>
@@ -539,7 +538,6 @@ onMounted(() => {
                   </tbody>
                 </table>
               </div>
-            </template>
 
             <div class="modal-actions">
               <button class="btn btn-ghost" @click="resetUpload">重新上传</button>

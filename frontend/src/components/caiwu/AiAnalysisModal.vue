@@ -41,13 +41,49 @@ onUnmounted(() => clearInterval(timer))
 const overEstimate = computed(() =>
   props.estimateSeconds > 0 && elapsed.value >= props.estimateSeconds)
 
-const paragraphs = computed(() => {
-  if (!props.text) return []
-  return props.text.split(/\n\n+/).map(para =>
-    para
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\n/g, '<br>')
-  )
+// 轻量 Markdown 渲染：标题(#~####)、有序/无序列表、粗体、行内代码、分隔线、段落。
+// 内容来自我们自己的 AI（非用户输入），仍先转义 HTML 再套用样式，避免注入。
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+function inlineMd(s) {
+  return escapeHtml(s)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+?)`/g, '<code>$1</code>')
+}
+const renderedHtml = computed(() => {
+  if (!props.text) return ''
+  const out = []
+  let listType = null
+  let para = []
+  const flushPara = () => { if (para.length) { out.push(`<p>${para.join('<br>')}</p>`); para = [] } }
+  const closeList = () => { if (listType) { out.push(`</${listType}>`); listType = null } }
+  const flushAll = () => { flushPara(); closeList() }
+  for (const raw of props.text.split('\n')) {
+    const line = raw.replace(/\s+$/, '')
+    if (!line.trim()) { flushAll(); continue }
+    let m
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) {
+      flushAll(); out.push('<hr>')
+    } else if ((m = line.match(/^(#{1,4})\s+(.*)$/))) {
+      flushAll()
+      const lvl = m[1].length
+      out.push(`<h${lvl} class="md-h md-h${lvl}">${inlineMd(m[2])}</h${lvl}>`)
+    } else if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) {
+      flushPara()
+      if (listType !== 'ul') { closeList(); out.push('<ul class="md-list">'); listType = 'ul' }
+      out.push(`<li>${inlineMd(m[1])}</li>`)
+    } else if ((m = line.match(/^\s*\d+[.、]\s*(.*)$/))) {
+      flushPara()
+      if (listType !== 'ol') { closeList(); out.push('<ol class="md-list">'); listType = 'ol' }
+      out.push(`<li>${inlineMd(m[1])}</li>`)
+    } else {
+      closeList()
+      para.push(inlineMd(line))
+    }
+  }
+  flushAll()
+  return out.join('')
 })
 </script>
 
@@ -94,9 +130,9 @@ const paragraphs = computed(() => {
               <div v-show="showReasoning" class="ai-reasoning-body">{{ reasoning }}</div>
             </div>
 
-            <!-- 正文（流式逐字渲染） -->
+            <!-- 正文（流式逐字渲染，Markdown 美化） -->
             <div v-if="text" class="ai-content">
-              <p v-for="(p, i) in paragraphs" :key="i" v-html="p"></p>
+              <div class="ai-md" v-html="renderedHtml"></div>
               <span v-if="streaming" class="ai-caret"></span>
             </div>
 
@@ -233,9 +269,29 @@ const paragraphs = computed(() => {
 .ai-err-inline { padding: 14px 10px 4px; text-align: left; opacity: .9; }
 
 .ai-content { font-size: 13.5px; line-height: 1.85; color: var(--text); }
-.ai-content p { margin: 0 0 10px; }
-.ai-content p:last-child { margin-bottom: 0; }
+.ai-content :deep(p) { margin: 0 0 10px; }
+.ai-content :deep(p:last-child) { margin-bottom: 0; }
 .ai-content :deep(strong) { color: var(--primary); font-weight: 700; }
+/* Markdown 美化 */
+.ai-content :deep(.md-h) { font-weight: 800; color: var(--text); line-height: 1.4; margin: 16px 0 8px; }
+.ai-content :deep(.md-h:first-child) { margin-top: 0; }
+.ai-content :deep(.md-h1) { font-size: 16.5px; }
+.ai-content :deep(.md-h2) {
+  font-size: 15px; color: var(--primary);
+  padding-left: 9px; border-left: 3px solid var(--primary);
+}
+.ai-content :deep(.md-h3) { font-size: 14px; color: #8a4b34; }
+.ai-content :deep(.md-h4) { font-size: 13.5px; color: var(--muted); }
+.ai-content :deep(.md-list) { margin: 6px 0 12px; padding-left: 22px; }
+.ai-content :deep(.md-list li) { margin: 4px 0; }
+.ai-content :deep(ul.md-list li::marker) { color: var(--primary); }
+.ai-content :deep(ol.md-list li::marker) { color: var(--primary); font-weight: 700; }
+.ai-content :deep(code) {
+  background: rgba(201,99,66,0.1); color: #a8442a;
+  padding: 1px 5px; border-radius: 4px; font-size: 12.5px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+.ai-content :deep(hr) { border: none; border-top: 1px solid rgba(201,99,66,0.18); margin: 14px 0; }
 
 /* ── streaming reasoning (collapsible) ───────────────────────────────────── */
 .ai-reasoning {
