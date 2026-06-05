@@ -153,6 +153,25 @@ function removeCondition(i) {
   conditions.value = l; onFilterChange()
 }
 
+// ── 快捷模糊搜索（项目 / 负责人 / 编号）──────────────────────────────────────
+// 独立常驻搜索框，驱动统一条件引擎里的 q 维度；带防抖、不整页闪烁。
+// chip 栏隐藏 q 维度（由搜索框承载），避免重复展示。
+const quickQ = ref('')
+let quickTimer = null
+const chipConditions = computed(() =>
+  conditions.value.map((c, i) => ({ c, i })).filter(x => !(x.c.t === 'dim' && x.c.field === 'q')))
+function applyQuickQ() {
+  const v = quickQ.value.trim()
+  const rest = conditions.value.filter(c => !(c.t === 'dim' && c.field === 'q'))
+  conditions.value = v ? [...rest, { t: 'dim', field: 'q', value: v }] : rest
+  onFilterChange()
+}
+function onQuickSearch() {
+  clearTimeout(quickTimer)
+  quickTimer = setTimeout(applyQuickQ, 300)   // 停顿 300ms 才查，避免逐键闪频
+}
+function clearQuickQ() { quickQ.value = ''; clearTimeout(quickTimer); applyQuickQ() }
+
 // ── 回款流水 (payment ledger) ───────────────────────────────────────────────
 const payFilters = reactive({ pay_start: '', pay_end: '', dept: '', q: '' })
 const payItems = ref([])
@@ -478,6 +497,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 function clearFilters() {
   conditions.value = []
   matchMode.value = 'all'
+  quickQ.value = ''
   onFilterChange()
 }
 </script>
@@ -495,6 +515,13 @@ function clearFilters() {
         </div>
         <!-- 筛选 chip 栏紧跟 Tab 之后，省去独立一行 -->
         <div v-if="activeTab !== 'payments'" class="filter-chipbar">
+          <!-- 常驻快捷搜索：项目 / 负责人 / 编号，模糊匹配，防抖不闪 -->
+          <div class="quick-search">
+            <svg class="qs-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            <input v-model="quickQ" class="qs-input" placeholder="搜项目 / 负责人 / 编号"
+                   @input="onQuickSearch" @keyup.enter="applyQuickQ" />
+            <button v-if="quickQ" class="qs-clear" title="清除" @click="clearQuickQ">✕</button>
+          </div>
           <div class="fb-trigger-wrap">
             <button class="fb-trigger" :class="{ on: showFilterPanel }" @click="showFilterPanel = !showFilterPanel">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54z"/></svg>
@@ -508,10 +535,10 @@ function clearFilters() {
                 @change="onFilterChange" @close="showFilterPanel = false" />
             </div>
           </div>
-          <span v-if="conditions.length > 1" class="fb-match" :title="matchMode === 'any' ? '满足任一条件' : '满足全部条件'">
+          <span v-if="chipConditions.length > 1" class="fb-match" :title="matchMode === 'any' ? '满足任一条件' : '满足全部条件'">
             {{ matchMode === 'any' ? '或' : '且' }}
           </span>
-          <span v-for="(c, i) in conditions" :key="i" class="filter-chip" :class="c.t" @click="showFilterPanel = true">
+          <span v-for="{ c, i } in chipConditions" :key="i" class="filter-chip" :class="c.t" @click="showFilterPanel = true">
             {{ chipText(c) }}
             <button title="移除" @click.stop="removeCondition(i)">✕</button>
           </span>
@@ -981,8 +1008,9 @@ function clearFilters() {
     </div>
 
     <!-- AR Record Modal -->
+    <!-- 编辑/新增态：点遮罩不关闭，避免填一半误点丢失；仅「保存/取消/✕」可退出 -->
     <Teleport to="body">
-      <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
+      <div v-if="showModal" class="modal-overlay">
         <div class="modal-box" style="max-width:560px">
           <div class="modal-header">
             <h3>{{ editRec ? '编辑应收记录' : '新增应收' }}</h3>
@@ -1052,8 +1080,8 @@ function clearFilters() {
         </div>
       </div>
 
-      <!-- Payment Modal -->
-      <div v-if="showPayModal" class="modal-overlay" @click.self="showPayModal = false">
+      <!-- Payment Modal — 录入态：点遮罩不关闭，仅按钮可退出 -->
+      <div v-if="showPayModal" class="modal-overlay">
         <div class="modal-box" style="max-width:460px">
           <div class="modal-header">
             <div>
@@ -1253,6 +1281,21 @@ function clearFilters() {
 /* ── 极简筛选 chip 栏 ─────────────────────────────────────────── */
 .filter-bar { margin: 12px 0; }
 .filter-chipbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.quick-search { position: relative; display: inline-flex; align-items: center; }
+.qs-ico { position: absolute; left: 9px; color: var(--muted); pointer-events: none; }
+.qs-input {
+  width: 200px; padding: 6px 26px 6px 30px; border: 1px solid var(--border); border-radius: 9px;
+  background: rgba(255,252,250,0.9); font-size: 13px; color: var(--text);
+  transition: border-color .14s, box-shadow .14s, width .18s;
+}
+.qs-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(201,99,66,0.12); width: 240px; }
+.qs-input::placeholder { color: var(--muted); }
+.qs-clear {
+  position: absolute; right: 7px; width: 16px; height: 16px; border: none; border-radius: 50%;
+  background: rgba(0,0,0,0.08); color: var(--muted); font-size: 9px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; line-height: 1;
+}
+.qs-clear:hover { background: rgba(198,40,40,0.12); color: #c62828; }
 .fb-trigger-wrap { position: relative; }
 .fb-trigger {
   display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 9px;

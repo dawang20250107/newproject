@@ -26,7 +26,7 @@ export const DIM_FIELDS = [
   { field: 'responsibility', label: '责任阶段', kind: 'select', opts: RESP_OPTS },
   { field: 'is_shared', label: '共享', kind: 'select', opts: SHARED_OPTS },
   { field: 'manager', label: '负责人', kind: 'text' },
-  { field: 'q', label: '关键词', kind: 'text' },
+  // 'q'（项目/负责人/编号 模糊）由页面常驻快捷搜索框承载，不在面板内重复提供
 ]
 export const DATE_FIELDS = [
   { field: 'due_date', label: '应收到期' },
