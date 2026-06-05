@@ -818,6 +818,43 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         items = self.client.get('/api/cw/cockpit/knowledge', **self.auth()).json()['data']['items']
         self.assertTrue(any(k['source'] == 'ai' and k['title'] == '背景A' for k in items))
 
+    def test_agent_skills_list_and_run(self):
+        """Agent 技能：列表含基础技能，且可执行 写入/检索/清理 知识库。"""
+        r = self.client.get('/api/cw/cockpit/skills', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        names = [s['name'] for s in r.json()['data']['skills']]
+        for n in ('save_knowledge', 'search_knowledge', 'forget_knowledge'):
+            self.assertIn(n, names)
+
+        run = self.client.post(
+            '/api/cw/cockpit/skills/run',
+            data=json.dumps({'name': 'save_knowledge', 'args': {'content': '技能写入的知识X', 'scope': '全集团'}}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(run.status_code, 200, run.content)
+
+        s = self.client.post(
+            '/api/cw/cockpit/skills/run',
+            data=json.dumps({'name': 'search_knowledge', 'args': {'query': '技能写入'}}),
+            content_type='application/json', **self.auth())
+        self.assertTrue(any('技能写入' in x['content'] for x in s.json()['data']))
+
+        f = self.client.post(
+            '/api/cw/cockpit/skills/run',
+            data=json.dumps({'name': 'forget_knowledge', 'args': {'query': '技能写入'}}),
+            content_type='application/json', **self.auth())
+        self.assertGreaterEqual(f.json()['data']['deleted'], 1)
+
+    def test_knowledge_import_dedup(self):
+        """同范围内内容完全相同的导入不重复入库。"""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        payload = '同一条经营背景内容用于去重测试'
+        for _ in range(2):
+            f = SimpleUploadedFile('n.txt', payload.encode('utf-8'))
+            self.client.post('/api/cw/cockpit/knowledge/import',
+                             {'file': f, 'scope': '全集团', 'mode': 'raw'}, **self.auth())
+        items = self.client.get('/api/cw/cockpit/knowledge', **self.auth()).json()['data']['items']
+        self.assertEqual(sum(1 for k in items if k['content'] == payload), 1)
+
     def test_report_ai_stream_emits_answer_frames(self):
         from unittest import mock
         self.mk(2026, 5, 200, 130)

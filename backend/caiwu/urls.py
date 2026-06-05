@@ -52,6 +52,8 @@ urlpatterns = [
     path('cockpit/knowledge/distill', views.cockpit_knowledge_distill),
     path('cockpit/knowledge/import', views.cockpit_knowledge_import),
     path('cockpit/knowledge/<int:kid>', views.cockpit_knowledge_detail),
+    path('cockpit/skills', views.cockpit_skills),
+    path('cockpit/skills/run', views.cockpit_skill_run),
 
     # report
     path('report', views.report),

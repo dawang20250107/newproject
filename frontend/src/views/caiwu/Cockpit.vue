@@ -340,7 +340,12 @@ onMounted(load)
 <template>
   <div>
     <div class="topbar" style="align-items:flex-start">
-      <h1>财务驾驶舱</h1>
+      <div class="cockpit-title-wrap">
+        <h1>财务驾驶舱</h1>
+        <button class="cfa-title-btn" :class="{ on: chatOpen }" @click="chatOpen = true" title="业财融合 AI 助手">
+          <span class="cfa-title-orb">🤖</span> 业财 AI 助手 <span class="ai-pro-tag">PRO</span>
+        </button>
+      </div>
       <div class="ctrl-row" style="justify-content:flex-end">
         <select v-model="year" class="sel-yr" @change="load">
           <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
@@ -434,13 +439,8 @@ onMounted(load)
       @reanalyze="runAiAnalysis"
     />
 
-    <!-- ── 业财融合 经营问答 Agent（浮窗对话）────────────────────────────────── -->
+    <!-- ── 业财融合 经营问答 Agent（标题旁入口 + 滑出对话）─────────────────────── -->
     <Teleport to="body">
-      <button v-if="!chatOpen" class="cfa-launcher" @click="chatOpen = true" title="业财融合 AI 助手">
-        <span class="cfa-orb">🤖</span>
-        <span class="cfa-launch-text">业财 AI</span>
-      </button>
-
       <Transition name="cfa-slide">
         <div v-if="chatOpen" class="cfa-panel">
           <div class="cfa-glow"></div>
@@ -606,18 +606,19 @@ onMounted(load)
 .ai-bar-actions { display: flex; gap: 8px; }
 
 /* ── 业财融合 经营问答 Agent ───────────────────────────────────────────────── */
-.cfa-launcher {
-  position: fixed; right: 24px; bottom: 24px; z-index: 1200;
-  display: flex; align-items: center; gap: 8px;
-  padding: 12px 18px; border: none; border-radius: 30px; cursor: pointer;
+.cockpit-title-wrap { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.cfa-title-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border: none; border-radius: 22px; cursor: pointer;
   background: linear-gradient(135deg, #c96342, #e8855a 60%, #e8a84a);
-  color: #fff; font-size: 14px; font-weight: 700;
-  box-shadow: 0 8px 26px rgba(201,99,66,0.45);
-  transition: transform .16s, box-shadow .16s;
+  color: #fff; font-size: 13px; font-weight: 700;
+  box-shadow: 0 4px 16px rgba(201,99,66,0.4);
+  transition: transform .15s, box-shadow .15s, filter .15s;
 }
-.cfa-launcher:hover { transform: translateY(-2px); box-shadow: 0 12px 32px rgba(201,99,66,0.55); }
-.cfa-orb { font-size: 18px; }
-.cfa-launch-text { letter-spacing: .02em; }
+.cfa-title-btn:hover { transform: translateY(-1px); filter: brightness(1.05); box-shadow: 0 6px 20px rgba(201,99,66,0.5); }
+.cfa-title-btn.on { opacity: .6; }
+.cfa-title-btn .ai-pro-tag { background: rgba(255,255,255,0.25); }
+.cfa-title-orb { font-size: 15px; }
 
 .cfa-panel {
   position: fixed; top: 0; right: 0; bottom: 0; z-index: 1201;

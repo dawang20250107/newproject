@@ -32,6 +32,18 @@ const filtered = computed(() => {
     (!kw || (k.content + (k.title || '')).toLowerCase().includes(kw)))
 })
 
+const grouped = ref(true)
+const groups = computed(() => {
+  const map = {}
+  for (const k of filtered.value) (map[k.scope] = map[k.scope] || []).push(k)
+  const order = ['全集团', ...accessibleBus.value]
+  return Object.keys(map)
+    .sort((a, b) => ((order.indexOf(a) + 1) || 99) - ((order.indexOf(b) + 1) || 99))
+    .map(scope => ({ scope, items: map[scope] }))
+})
+const displayGroups = computed(() =>
+  grouped.value ? groups.value : [{ scope: null, items: filtered.value }])
+
 async function load() {
   loading.value = true; loadErr.value = ''
   try {
@@ -173,6 +185,7 @@ onMounted(load)
         <option value="user">人工</option>
         <option value="ai">AI提炼</option>
       </select>
+      <label class="kp-group-toggle"><input type="checkbox" v-model="grouped" /> 按事业部分组</label>
       <span class="kp-count">{{ filtered.length }} / {{ items.length }} 条</span>
     </div>
 
@@ -186,8 +199,13 @@ onMounted(load)
       </div>
     </div>
 
-    <div v-else class="kp-list">
-      <div v-for="k in filtered" :key="k.id" class="kp-item" :class="{ pinned: k.pinned }">
+    <div v-else>
+      <div v-for="g in displayGroups" :key="g.scope || 'all'" class="kp-group">
+        <div v-if="g.scope" class="kp-group-head">
+          {{ g.scope }}<span class="kp-group-n">{{ g.items.length }}</span>
+        </div>
+        <div class="kp-list">
+          <div v-for="k in g.items" :key="k.id" class="kp-item" :class="{ pinned: k.pinned }">
         <div class="kp-meta">
           <span class="kp-kind" :class="k.kind">{{ KIND_LABEL[k.kind] || k.kind }}</span>
           <span class="kp-scope">{{ k.scope }}</span>
@@ -207,6 +225,8 @@ onMounted(load)
           </div>
         </template>
         <div v-else class="kp-content">{{ k.content }}</div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -228,7 +248,11 @@ onMounted(load)
 .kp-search:focus { border-color: var(--primary); }
 .kp-count { font-size: 12px; color: var(--muted); margin-left: auto; }
 
+.kp-group-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); cursor: pointer; }
 .kp-empty { text-align: center; padding: 60px 20px; }
+.kp-group { margin-bottom: 16px; }
+.kp-group-head { font-size: 13px; font-weight: 800; color: var(--primary); padding: 4px 0 8px; border-bottom: 1px solid rgba(201,99,66,0.15); margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.kp-group-n { font-size: 11px; font-weight: 600; color: #fff; background: var(--primary); border-radius: 10px; padding: 1px 8px; }
 .kp-list { display: flex; flex-direction: column; gap: 10px; }
 .kp-item { background: rgba(255,255,255,0.85); border: 1px solid rgba(0,0,0,0.07); border-radius: 12px; padding: 12px 14px; }
 .kp-item.pinned { border-color: rgba(201,99,66,0.35); background: rgba(201,99,66,0.04); }

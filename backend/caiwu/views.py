@@ -2948,6 +2948,11 @@ def _cockpit_chat_prepare(request):
     knowledge = _build_knowledge_context(bus)
     if knowledge:
         messages.append({'role': 'system', 'content': knowledge})
+    from caiwu import agent_skills
+    brief = agent_skills.skills_brief()
+    if brief:
+        messages.append({'role': 'system', 'content':
+                         f'你具备以下技能（可在需要时建议用户使用，相关操作也可在页面完成）：{brief}。'})
     messages += history
     scope = '全集团' if len(bus) > 1 else (bus[0] if bus else '全集团')
     return (messages, scope), None
@@ -3175,11 +3180,21 @@ def cockpit_knowledge_import(request):
     if not entries:
         return err('未能从文件生成知识条目')
 
+    # 去重：同范围内内容完全一致的不重复入库
+    existing = set(CockpitKnowledge.objects.filter(scope=scope).values_list('content', flat=True))
     src = 'ai' if (mode == 'distill' and settings.DEEPSEEK_API_KEY) else 'user'
-    objs = [CockpitKnowledge(scope=scope, kind='background', title=t, content=c,
-                             source=src, created_by=request.pk_user) for t, c in entries]
+    objs, seen = [], set(existing)
+    for t, c in entries:
+        if c in seen:
+            continue
+        seen.add(c)
+        objs.append(CockpitKnowledge(scope=scope, kind='background', title=t, content=c,
+                                     source=src, created_by=request.pk_user))
+    if not objs:
+        return err('文件内容均已在知识库中（已去重）')
     CockpitKnowledge.objects.bulk_create(objs)
-    return ok({'created': len(objs), 'mode': mode, 'scope': scope, 'file': f.name})
+    return ok({'created': len(objs), 'skipped': len(entries) - len(objs),
+               'mode': mode, 'scope': scope, 'file': f.name})
 
 
 @cw_required()
@@ -3224,6 +3239,82 @@ def cockpit_knowledge_distill(request):
                                         content=content[:2000], source='ai',
                                         created_by=request.pk_user)
     return ok(k.to_dict())
+
+
+# ── Agent 技能（为后续可调用技能/工具预留的注册表 + 列表/执行接口）──────────────
+from caiwu import agent_skills  # noqa: E402
+
+
+@agent_skills.register_skill(
+    'save_knowledge', '记入知识库', '把一条经营知识/背景/口径存入知识库',
+    {'content': '知识内容(必填)', 'scope': '范围(事业部或全集团,可选)', 'kind': 'insight|background|rule(可选)'})
+def _skill_save_knowledge(request, args):
+    content = (args.get('content') or '').strip()
+    if not content:
+        return {'ok': False, 'error': '内容为空'}
+    scope = (args.get('scope') or '全集团').strip() or '全集团'
+    if scope != '全集团' and (scope not in VALID_BUSINESS_UNITS or not _can_access_bu(request, scope)):
+        scope = '全集团'
+    kind = args.get('kind') if args.get('kind') in ('insight', 'background', 'rule') else 'insight'
+    k = CockpitKnowledge.objects.create(scope=scope, kind=kind, title=(args.get('title') or '')[:120],
+                                        content=content[:2000], source='ai', created_by=request.pk_user)
+    return {'ok': True, 'data': k.to_dict()}
+
+
+@agent_skills.register_skill(
+    'search_knowledge', '检索知识库', '按关键词检索已积累的经营知识', {'query': '关键词'})
+def _skill_search_knowledge(request, args):
+    q = (args.get('query') or '').strip()
+    qs = CockpitKnowledge.objects.filter(scope__in=_knowledge_visible_scopes(request, ''))
+    if q:
+        qs = qs.filter(Q(content__icontains=q) | Q(title__icontains=q))
+    return {'ok': True, 'data': [k.to_dict() for k in qs[:20]]}
+
+
+@agent_skills.register_skill(
+    'forget_knowledge', '清理知识库', '按关键词删除知识条目（用于对话式清理）', {'query': '关键词'})
+def _skill_forget_knowledge(request, args):
+    q = (args.get('query') or '').strip()
+    if not q:
+        return {'ok': False, 'error': '需提供关键词'}
+    qs = CockpitKnowledge.objects.filter(scope__in=_knowledge_visible_scopes(request, '')).filter(
+        Q(content__icontains=q) | Q(title__icontains=q))
+    if request.pk_role != 'super_admin':
+        qs = qs.filter(created_by_id=request.pk_uid)
+    ids = list(qs.values_list('id', flat=True))
+    qs.delete()
+    return {'ok': True, 'data': {'deleted': len(ids), 'ids': ids}}
+
+
+@cw_required()
+def cockpit_skills(request):
+    """GET 列出 Agent 可用技能（供 UI 展示 / 后续 function-calling）。"""
+    denied = _page_denied(request, 'cockpit')
+    if denied:
+        return denied
+    return ok({'skills': agent_skills.list_skills()})
+
+
+@cw_required()
+def cockpit_skill_run(request):
+    """POST {name, args} 执行一个技能（为对话即操作预留的统一入口）。"""
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    denied = _page_denied(request, 'cockpit')
+    if denied:
+        return denied
+    body = _parse_json(request)
+    skill = agent_skills.get_skill(body.get('name'))
+    if not skill:
+        return err('技能不存在', 404)
+    try:
+        res = skill['handler'](request, body.get('args') or {})
+    except Exception as ex:
+        logger.error(f'skill run error: {ex}')
+        return err(f'技能执行失败（{str(ex)[:80]}）')
+    if not res.get('ok'):
+        return err(res.get('error') or '执行失败')
+    return ok(res.get('data'))
 
 
 # ── charts ───────────────────────────────────────────────────────────────────
