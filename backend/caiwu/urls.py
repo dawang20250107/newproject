@@ -47,6 +47,7 @@ urlpatterns = [
     path('cockpit', views.cockpit),
     path('cockpit/ai-analysis', views.cockpit_ai_analysis),
     path('cockpit/ai-analysis/stream', views.cockpit_ai_analysis_stream),
+    path('cockpit/ai-chat/stream', views.cockpit_ai_chat_stream),
 
     # report
     path('report', views.report),

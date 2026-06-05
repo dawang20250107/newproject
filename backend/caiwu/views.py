@@ -2598,9 +2598,8 @@ def _fmt_signed_pct(v):
     return '—' if v is None else f'{"+" if v >= 0 else ""}{v:.1f}%'
 
 
-def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
-    """Compose the group-level cockpit analysis prompt from consolidated +
-    per-BU metrics and the 12-month group trend."""
+def _cockpit_data_lines(year, month, bus, bu_rows, ov_m, ov_y, actuals):
+    """全集团 + 各事业部 + 12个月趋势的数据明细行（财务侧），供报告 prompt 与对话上下文复用。"""
     L = []
     L.append('【全集团合并概览】')
     L.append(f'  当月收入：{_fmt_wan(ov_m["actual_revenue"])}'
@@ -2617,7 +2616,6 @@ def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
     shown = 0
     for r in bu_rows:
         m, y = r['month'], r['ytd']
-        # Skip BUs with no published actuals at all — keeps the prompt focused.
         if m['actual_revenue'] is None and m['actual_profit'] is None \
                 and y['actual_revenue'] is None and y['actual_profit'] is None:
             continue
@@ -2642,10 +2640,16 @@ def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
             continue
         tr.append(f'{mo}月:收入{_fmt_wan(rev_a)}/利润{_fmt_wan(prof_a)}')
     L.append('  ' + ('；'.join(tr) if tr else '无'))
+    return '\n'.join(L)
 
+
+def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
+    """Compose the group-level cockpit analysis prompt from consolidated +
+    per-BU metrics and the 12-month group trend."""
+    data = _cockpit_data_lines(year, month, bus, bu_rows, ov_m, ov_y, actuals)
     return f"""你正在为集团管理层解读 {year}年{month}月 的「财务驾驶舱」。以下是全集团及各事业部的经营数据（口径：已发布部门明细表，收入=主营业务收入，利润=经营净利；集团总部为成本中心，本身无收入）。
 
-{chr(10).join(L)}
+{data}
 
 请站在全集团高度，输出一份综合、全面的经营分析报告，包含：
 
@@ -2753,6 +2757,168 @@ def cockpit_ai_analysis_stream(request):
     resp = StreamingHttpResponse(gen(), content_type='text/event-stream')
     resp['Cache-Control'] = 'no-cache'
     resp['X-Accel-Buffering'] = 'no'   # 关掉 nginx 缓冲，确保逐块下推
+    return resp
+
+
+# ── 业财融合 经营问答 Agent（财务驾驶舱内置对话）─────────────────────────────────
+
+_COCKPIT_CHAT_SYSTEM = (
+    '你是集团CFO级的「业财融合」经营分析智能助手，为集团管理层的经营决策赋能。'
+    '你掌握全集团各事业部的财务数据（收入/成本/利润、目标达成、同比环比、12个月趋势）'
+    '与业务数据（应收未收/回款/逾期、项目毛利等），擅长把"业务动因"与"财务结果"打通，'
+    '做归因分析、风险预警与可执行建议。回答要求：'
+    '①只依据【经营数据上下文】中的数据作答，数据缺失就如实说明、绝不编造数字；'
+    '②中文、专业、简洁，有数据支撑、有洞察、给可执行建议；'
+    '③用 Markdown（标题/列表/加粗）组织答案，避免空话套话；'
+    '④口径：财务=已发布部门明细表（收入=主营业务收入，利润=经营净利，集团总部为成本中心）。'
+)
+
+
+def _build_ar_business_summary(bus, year, month):
+    """业财融合「业」侧：应收未收 / 逾期 / 本期回款（按交付部门）。最佳努力，异常或无数据返回空串。"""
+    try:
+        import datetime as _dt
+        from ar.models import ARRecord, ARPayment
+        today = _dt.date.today()
+        out_map = {r['delivery_dept']: r['s'] for r in ARRecord.objects
+                   .filter(delivery_dept__in=bus, outstanding_amount__gt=0)
+                   .values('delivery_dept').annotate(s=Sum('outstanding_amount'))}
+        od_map = {r['delivery_dept']: r['s'] for r in ARRecord.objects
+                  .filter(delivery_dept__in=bus, outstanding_amount__gt=0, due_date__lt=today)
+                  .values('delivery_dept').annotate(s=Sum('outstanding_amount'))}
+        pay_map = {r['ar_record__delivery_dept']: r['s'] for r in ARPayment.objects
+                   .filter(ar_record__delivery_dept__in=bus,
+                           payment_date__year=year, payment_date__month=month)
+                   .values('ar_record__delivery_dept').annotate(s=Sum('amount'))}
+        if not (out_map or od_map or pay_map):
+            return ''
+        lines = ['【应收 / 回款（业务侧，交付部门口径，未收为当前快照）】']
+        for bu in bus:
+            o, od, p = out_map.get(bu), od_map.get(bu), pay_map.get(bu)
+            if not (o or od or p):
+                continue
+            lines.append(f'  {bu}：未收余额{_fmt_wan(o)}（其中逾期{_fmt_wan(od)}）；{month}月回款{_fmt_wan(p)}')
+        return '\n'.join(lines) if len(lines) > 1 else ''
+    except Exception:
+        return ''
+
+
+def _build_project_margin_summary(bus, year, month):
+    """业财融合补充：项目毛利（若已导入金蝶按项目核算账）。列各事业部毛利 Top3。"""
+    try:
+        from collections import defaultdict
+        rows = list(ProjectMargin.objects.filter(business_unit__in=bus, year=year, month=month))
+        if not rows:
+            return ''
+        by_bu = defaultdict(list)
+        for m in rows:
+            if (m.project_name or '').strip() in _PM_UNALLOCATED:
+                continue
+            by_bu[m.business_unit].append(m)
+        if not by_bu:
+            return ''
+        lines = [f'【项目毛利（{year}年{month}月，收入−主营成本，直接口径）】']
+        for bu in bus:
+            ms = by_bu.get(bu)
+            if not ms:
+                continue
+            ms.sort(key=lambda x: float(x.revenue) - float(x.cost), reverse=True)
+            top = '；'.join(
+                f'{x.project_name} 毛利{_fmt_wan(float(x.revenue) - float(x.cost))}'
+                f'(收入{_fmt_wan(x.revenue)})' for x in ms[:3])
+            lines.append(f'  {bu}：共{len(ms)}个项目，毛利Top：{top}')
+        return '\n'.join(lines) if len(lines) > 1 else ''
+    except Exception:
+        return ''
+
+
+def _build_cockpit_data_pack(year, month, bus, bu_rows, ov_m, ov_y, actuals):
+    """汇集"财+业"全口径经营数据，作为对话 Agent 的事实上下文。"""
+    scope = '全集团' if len(bus) > 1 else (bus[0] if bus else '全集团')
+    parts = [
+        f'数据期间：{year}年{month}月　|　分析范围：{scope}　|　事业部清单：{"、".join(bus)}',
+        '',
+        _cockpit_data_lines(year, month, bus, bu_rows, ov_m, ov_y, actuals),
+    ]
+    ar = _build_ar_business_summary(bus, year, month)
+    if ar:
+        parts += ['', ar]
+    pm = _build_project_margin_summary(bus, year, month)
+    if pm:
+        parts += ['', pm]
+    return '\n'.join(parts)
+
+
+def _cockpit_chat_prepare(request):
+    """校验 + 组装对话 messages（system + 数据上下文 + 历史）。返回 ((messages, scope), None) 或 (None, err)。"""
+    if not settings.DEEPSEEK_API_KEY:
+        return None, err('AI 助手未配置（缺少 DEEPSEEK_API_KEY）', 503)
+    body = _parse_json(request)
+    try:
+        year = int(body.get('year'))
+        month = int(body.get('month'))
+        assert 2000 <= year <= 2100 and 1 <= month <= 12
+    except Exception:
+        return None, err('年份或月份无效')
+    bus, e = _resolve_bu_list(request, (body.get('bu') or '').strip())
+    if e:
+        return None, e
+
+    # 清洗对话历史：仅保留 user/assistant，限制条数与单条长度，末条必须是用户提问
+    history = []
+    for m in (body.get('messages') or [])[-16:]:
+        role = m.get('role')
+        content = (m.get('content') or '').strip()
+        if role in ('user', 'assistant') and content:
+            history.append({'role': role, 'content': content[:4000]})
+    if not history or history[-1]['role'] != 'user':
+        return None, err('缺少用户提问')
+
+    tgt_index = _load_target_index(bus, year)
+    actuals = _collect_actuals(bus, {year, year - 1})
+    bu_rows = [_bu_metrics(bu, year, month, tgt_index, actuals) for bu in bus]
+    ov_m = _attach_group_chg(_aggregate_total(bu_rows, 'month'), bus, year, month, actuals)
+    ov_y = _aggregate_total(bu_rows, 'ytd')
+    data_pack = _build_cockpit_data_pack(year, month, bus, bu_rows, ov_m, ov_y, actuals)
+
+    messages = [
+        {'role': 'system', 'content': _COCKPIT_CHAT_SYSTEM},
+        {'role': 'system', 'content': f'【经营数据上下文】\n{data_pack}'},
+        *history,
+    ]
+    scope = '全集团' if len(bus) > 1 else (bus[0] if bus else '全集团')
+    return (messages, scope), None
+
+
+@cw_required()
+def cockpit_ai_chat_stream(request):
+    """POST /cockpit/ai-chat/stream — 业财融合经营问答（多轮对话，SSE 流式，PRO 模型）。
+    入参：{year, month, bu, messages:[{role,content}...]}（末条为用户提问）。"""
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    denied = _page_denied(request, 'cockpit')
+    if denied:
+        return denied
+    prep, e = _cockpit_chat_prepare(request)
+    if e:
+        return e
+    messages, scope = prep
+    model = settings.DEEPSEEK_PRO_MODEL
+
+    def gen():
+        yield _sse_event({'type': 'meta', 'scope': scope, 'model': model})
+        try:
+            for kind, delta in _deepseek_stream(messages, model=model,
+                                                max_tokens=3200, timeout=300):
+                yield _sse_event({'type': kind, 'delta': delta})
+            yield _sse_event({'type': 'done'})
+        except Exception as ex:
+            logger.error(f'Cockpit chat stream error: {ex}')
+            yield _sse_event({'type': 'error', 'error': f'AI助手暂时不可用（{str(ex)[:80]}）'})
+
+    resp = StreamingHttpResponse(gen(), content_type='text/event-stream')
+    resp['Cache-Control'] = 'no-cache'
+    resp['X-Accel-Buffering'] = 'no'
     return resp
 
 

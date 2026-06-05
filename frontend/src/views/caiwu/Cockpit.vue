@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
@@ -8,6 +8,7 @@ import api from '../../api/caiwu.js'
 import { fmtCompact } from '../../utils/format.js'
 import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney } from '../../utils/chartTheme.js'
 import { streamAiAnalysis } from '../../utils/aiStream.js'
+import { renderMarkdown } from '../../utils/markdown.js'
 import EmptyState from '../../components/EmptyState.vue'
 
 const auth = useCaiwuAuth()
@@ -84,6 +85,58 @@ async function runAiAnalysis() {
     aiLoading.value = false
   }
 }
+
+// ── 业财融合 经营问答 Agent（驾驶舱内置对话）──────────────────────────────────
+const chatOpen = ref(false)
+const chatInput = ref('')
+const chatMessages = ref([])      // {role:'user'|'assistant', content, reasoning?}
+const chatStreaming = ref(false)
+const chatErr = ref('')
+const chatBodyRef = ref(null)
+const SUGGESTIONS = [
+  '哪个事业部在拖累集团利润？为什么？',
+  '本月回款和收入是否匹配？应收风险在哪？',
+  '按当前节奏，全年目标能否达成？缺口多大？',
+  '给出下月经营改善的 3 条具体建议',
+]
+
+function scrollChatSoon() {
+  nextTick(() => { const el = chatBodyRef.value; if (el) el.scrollTop = el.scrollHeight })
+}
+
+async function sendChat(text) {
+  const q = (text ?? chatInput.value).trim()
+  if (!q || chatStreaming.value) return
+  chatInput.value = ''
+  chatErr.value = ''
+  chatMessages.value.push({ role: 'user', content: q })
+  chatMessages.value.push({ role: 'assistant', content: '', reasoning: '' })
+  const asst = chatMessages.value[chatMessages.value.length - 1]   // reactive proxy
+  chatStreaming.value = true
+  scrollChatSoon()
+  try {
+    const body = {
+      year: year.value, month: month.value,
+      messages: chatMessages.value
+        .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
+        .map(m => ({ role: m.role, content: m.content })),
+    }
+    if (selectedBu.value) body.bu = selectedBu.value
+    await streamAiAnalysis('/cockpit/ai-chat/stream', body, {
+      onReasoning: d => { asst.reasoning += d; scrollChatSoon() },
+      onAnswer: d => { asst.content += d; scrollChatSoon() },
+      onError: m => { chatErr.value = m },
+    })
+  } catch (e) {
+    if (!chatErr.value) chatErr.value = e?.message || 'AI 助手暂时不可用'
+  } finally {
+    chatStreaming.value = false
+    if (!asst.content) asst.content = chatErr.value ? `⚠ ${chatErr.value}` : '（未返回内容）'
+    scrollChatSoon()
+  }
+}
+
+function resetChat() { chatMessages.value = []; chatErr.value = '' }
 
 // ── headline KPI cards ───────────────────────────────────────────────────────
 const cards = computed(() => {
@@ -297,6 +350,64 @@ onMounted(load)
       @close="aiVisible = false"
       @reanalyze="runAiAnalysis"
     />
+
+    <!-- ── 业财融合 经营问答 Agent（浮窗对话）────────────────────────────────── -->
+    <Teleport to="body">
+      <button v-if="!chatOpen" class="cfa-launcher" @click="chatOpen = true" title="业财融合 AI 助手">
+        <span class="cfa-orb">🤖</span>
+        <span class="cfa-launch-text">业财 AI</span>
+      </button>
+
+      <Transition name="cfa-slide">
+        <div v-if="chatOpen" class="cfa-panel">
+          <div class="cfa-glow"></div>
+          <div class="cfa-head">
+            <div class="cfa-head-l">
+              <span class="cfa-head-orb">🤖</span>
+              <div>
+                <div class="cfa-title">业财融合 · 经营问答<span class="ai-pro-tag">PRO</span></div>
+                <div class="cfa-scope">{{ aiScopeLabel }} · 全事业部财务+业务数据</div>
+              </div>
+            </div>
+            <div class="cfa-head-acts">
+              <button v-if="chatMessages.length" class="cfa-mini" title="清空对话" @click="resetChat">清空</button>
+              <button class="cfa-x" title="收起" @click="chatOpen = false">×</button>
+            </div>
+          </div>
+
+          <div ref="chatBodyRef" class="cfa-body">
+            <div v-if="!chatMessages.length" class="cfa-empty">
+              <div class="cfa-empty-orb">🤖</div>
+              <div class="cfa-empty-title">我是你的业财融合经营助手</div>
+              <div class="cfa-empty-sub">已掌握全集团各事业部的财务与业务数据，问我任何经营问题：</div>
+              <div class="cfa-sugs">
+                <button v-for="s in SUGGESTIONS" :key="s" class="cfa-sug" @click="sendChat(s)">{{ s }}</button>
+              </div>
+            </div>
+            <template v-else>
+              <div v-for="(m, i) in chatMessages" :key="i" :class="['cfa-msg', m.role]">
+                <div v-if="m.role === 'user'" class="cfa-bubble cfa-user">{{ m.content }}</div>
+                <div v-else class="cfa-bubble cfa-asst">
+                  <div v-if="m.reasoning && !m.content" class="cfa-reasoning">💭 {{ m.reasoning }}</div>
+                  <div v-if="m.content" class="cfa-md" v-html="renderMarkdown(m.content)"></div>
+                  <span v-else-if="chatStreaming && i === chatMessages.length - 1 && !m.reasoning" class="cfa-typing">思考中<i>.</i><i>.</i><i>.</i></span>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <div class="cfa-input-row">
+            <textarea v-model="chatInput" class="cfa-input" rows="1"
+              placeholder="问问经营情况…（Enter 发送，Shift+Enter 换行）"
+              :disabled="chatStreaming"
+              @keydown.enter.exact.prevent="sendChat()"></textarea>
+            <button class="cfa-send" :disabled="chatStreaming || !chatInput.trim()" @click="sendChat()">
+              {{ chatStreaming ? '…' : '发送' }}
+            </button>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -346,4 +457,99 @@ onMounted(load)
 .ai-bar-scope { font-size: 12px; color: var(--muted); margin-top: 1px; }
 .ai-time-hint { color: var(--primary); font-weight: 600; }
 .ai-bar-actions { display: flex; gap: 8px; }
+
+/* ── 业财融合 经营问答 Agent ───────────────────────────────────────────────── */
+.cfa-launcher {
+  position: fixed; right: 24px; bottom: 24px; z-index: 1200;
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 18px; border: none; border-radius: 30px; cursor: pointer;
+  background: linear-gradient(135deg, #c96342, #e8855a 60%, #e8a84a);
+  color: #fff; font-size: 14px; font-weight: 700;
+  box-shadow: 0 8px 26px rgba(201,99,66,0.45);
+  transition: transform .16s, box-shadow .16s;
+}
+.cfa-launcher:hover { transform: translateY(-2px); box-shadow: 0 12px 32px rgba(201,99,66,0.55); }
+.cfa-orb { font-size: 18px; }
+.cfa-launch-text { letter-spacing: .02em; }
+
+.cfa-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 1201;
+  width: min(440px, 96vw); display: flex; flex-direction: column;
+  background: linear-gradient(180deg, #fffaf3, #fdf4ec);
+  box-shadow: -12px 0 40px rgba(80,40,20,0.22);
+  border-left: 1px solid rgba(201,99,66,0.18);
+}
+.cfa-glow {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: linear-gradient(180deg, #c96342, #e8a05a, #7a9fd4);
+  background-size: 100% 300%; animation: cfaGlow 6s ease infinite;
+}
+@keyframes cfaGlow { 0%,100% { background-position: 0 0; } 50% { background-position: 0 100%; } }
+
+.cfa-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 18px 13px; border-bottom: 1px solid rgba(201,99,66,0.12);
+}
+.cfa-head-l { display: flex; align-items: center; gap: 11px; }
+.cfa-head-orb { font-size: 24px; filter: drop-shadow(0 0 6px rgba(201,99,66,0.45)); }
+.cfa-title { font-size: 15px; font-weight: 800; color: var(--text); display: flex; align-items: center; gap: 6px; }
+.cfa-scope { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.cfa-head-acts { display: flex; align-items: center; gap: 6px; }
+.cfa-mini { background: none; border: 1px solid rgba(0,0,0,0.12); border-radius: 7px; font-size: 12px; color: var(--muted); padding: 3px 9px; cursor: pointer; }
+.cfa-mini:hover { color: var(--primary); border-color: var(--primary); }
+.cfa-x { background: none; border: none; font-size: 24px; line-height: 1; color: var(--muted); cursor: pointer; padding: 0 4px; }
+
+.cfa-body { flex: 1; overflow-y: auto; padding: 16px 16px 8px; }
+
+.cfa-empty { text-align: center; padding: 24px 8px; }
+.cfa-empty-orb { font-size: 40px; margin-bottom: 8px; }
+.cfa-empty-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.cfa-empty-sub { font-size: 12.5px; color: var(--muted); margin: 6px 0 16px; line-height: 1.6; }
+.cfa-sugs { display: flex; flex-direction: column; gap: 8px; }
+.cfa-sug {
+  text-align: left; padding: 10px 13px; border-radius: 11px; cursor: pointer;
+  border: 1px solid rgba(201,99,66,0.2); background: rgba(255,255,255,0.7);
+  font-size: 12.5px; color: var(--text); transition: all .14s;
+}
+.cfa-sug:hover { border-color: var(--primary); background: rgba(201,99,66,0.07); color: var(--primary); }
+
+.cfa-msg { margin-bottom: 14px; display: flex; }
+.cfa-msg.user { justify-content: flex-end; }
+.cfa-bubble { max-width: 88%; border-radius: 14px; padding: 10px 13px; font-size: 13px; line-height: 1.7; }
+.cfa-user { background: linear-gradient(135deg, #c96342, #e8855a); color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
+.cfa-asst { background: rgba(255,255,255,0.92); border: 1px solid rgba(0,0,0,0.06); color: var(--text); border-bottom-left-radius: 4px; }
+.cfa-reasoning { font-size: 12px; color: #6b7a8c; line-height: 1.6; white-space: pre-wrap; }
+.cfa-typing i { animation: cfaBlink 1.2s infinite; opacity: .3; }
+.cfa-typing i:nth-child(2) { animation-delay: .2s; }
+.cfa-typing i:nth-child(3) { animation-delay: .4s; }
+@keyframes cfaBlink { 0%,100% { opacity: .3; } 50% { opacity: 1; } }
+
+/* markdown inside assistant bubble */
+.cfa-md :deep(p) { margin: 0 0 8px; }
+.cfa-md :deep(p:last-child) { margin-bottom: 0; }
+.cfa-md :deep(strong) { color: var(--primary); font-weight: 700; }
+.cfa-md :deep(.md-h) { font-weight: 800; margin: 10px 0 6px; }
+.cfa-md :deep(.md-h1) { font-size: 15px; }
+.cfa-md :deep(.md-h2) { font-size: 14px; color: var(--primary); }
+.cfa-md :deep(.md-h3), .cfa-md :deep(.md-h4) { font-size: 13px; color: #8a4b34; }
+.cfa-md :deep(.md-list) { margin: 4px 0 8px; padding-left: 19px; }
+.cfa-md :deep(.md-list li) { margin: 3px 0; }
+.cfa-md :deep(code) { background: rgba(201,99,66,0.1); color: #a8442a; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.cfa-md :deep(hr) { border: none; border-top: 1px solid rgba(0,0,0,0.08); margin: 10px 0; }
+
+.cfa-input-row { display: flex; gap: 8px; align-items: flex-end; padding: 12px 16px 16px; border-top: 1px solid rgba(201,99,66,0.12); }
+.cfa-input {
+  flex: 1; resize: none; max-height: 120px; min-height: 38px;
+  border: 1px solid rgba(0,0,0,0.12); border-radius: 11px; padding: 9px 12px;
+  font-size: 13px; font-family: inherit; line-height: 1.5; outline: none; background: #fff;
+}
+.cfa-input:focus { border-color: var(--primary); }
+.cfa-send {
+  flex-shrink: 0; height: 38px; padding: 0 18px; border: none; border-radius: 11px; cursor: pointer;
+  background: var(--primary); color: #fff; font-size: 13px; font-weight: 700;
+}
+.cfa-send:disabled { opacity: .5; cursor: not-allowed; }
+
+.cfa-slide-enter-active, .cfa-slide-leave-active { transition: transform .28s cubic-bezier(0.2,0.8,0.3,1); }
+.cfa-slide-enter-from, .cfa-slide-leave-to { transform: translateX(100%); }
 </style>

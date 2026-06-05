@@ -690,6 +690,57 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.assertEqual(captured['model'], settings.DEEPSEEK_PRO_MODEL)
         self.assertGreaterEqual(captured['max_tokens'], 3000)
 
+    def test_cockpit_ai_chat_stream(self):
+        """业财融合对话：带历史的多轮提问，SSE 流式返回，且用 PRO 模型 + 数据上下文。"""
+        from unittest import mock
+        from django.conf import settings
+        self.mk(2026, 5, 200, 130)
+        captured = {}
+
+        def fake_stream(messages, model=None, max_tokens=1800, timeout=300):
+            captured['model'] = model
+            captured['messages'] = messages
+            yield ('answer', '根据数据，')
+            yield ('answer', '本月利润达标。')
+
+        with mock.patch('caiwu.views._deepseek_stream', fake_stream):
+            resp = self.client.post(
+                '/api/cw/cockpit/ai-chat/stream',
+                data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu, 'messages': [
+                    {'role': 'user', 'content': '本月经营如何？'},
+                    {'role': 'assistant', 'content': '收入200万。'},
+                    {'role': 'user', 'content': '利润达标吗？'},
+                ]}),
+                content_type='application/json', **self.auth())
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp['Content-Type'], 'text/event-stream')
+            body = b''.join(resp.streaming_content).decode('utf-8')
+
+        events = [json.loads(fr[5:].strip())
+                  for fr in body.split('\n\n') if fr.strip().startswith('data:')]
+        types = [e['type'] for e in events]
+        self.assertEqual(types[0], 'meta')
+        self.assertEqual(types[-1], 'done')
+        answer = ''.join(e['delta'] for e in events if e['type'] == 'answer')
+        self.assertEqual(answer, '根据数据，本月利润达标。')
+        self.assertEqual(captured['model'], settings.DEEPSEEK_PRO_MODEL)
+        # 含 system 人设 + 数据上下文 + 完整对话历史（末条为用户提问）
+        msgs = captured['messages']
+        self.assertEqual(msgs[0]['role'], 'system')
+        self.assertIn('经营数据上下文', msgs[1]['content'])
+        self.assertEqual(msgs[-1]['role'], 'user')
+        self.assertEqual(msgs[-1]['content'], '利润达标吗？')
+
+    def test_cockpit_ai_chat_requires_user_question(self):
+        self.mk(2026, 5, 200, 130)
+        resp = self.client.post(
+            '/api/cw/cockpit/ai-chat/stream',
+            data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu, 'messages': [
+                {'role': 'assistant', 'content': '历史回答'},
+            ]}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400)
+
     def test_report_ai_stream_emits_answer_frames(self):
         from unittest import mock
         self.mk(2026, 5, 200, 130)
