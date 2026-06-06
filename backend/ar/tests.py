@@ -403,6 +403,41 @@ class ARPermissionRegressionTests(TestCase):
         dates = sorted(str(b.expected_date) for b in CollectionBudget.objects.all())
         self.assertEqual(dates, ['2026-06-15'] * 4)
 
+    def test_ar_record_import_rejects_whole_file_on_error(self):
+        """应收明细导入：任一行有问题 → 整表拒绝、零写入、列出全部问题；
+        全部合法 → 整表写入。"""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        admin = self.make_user('13900000301', 'finance_director', role='super_admin')
+        self.create_project(short_name='应收导入项目', delivery_dept='劳务事业部')
+        HEAD = ['项目简称*', '运作年*', '运作月*', '预估上账金额', '实际开票金额',
+                '税额(差额模式手填)', '开票日期', '账实差额调整', '回款金额', '回款时间', '备注']
+
+        # ① 含错误：第2行金额非法、第3行项目不存在 → 拒绝
+        wb = openpyxl.Workbook(); ws = wb.active; ws.append(HEAD)
+        ws.append(['应收导入项目', 2026, 1, 'abc', '', '', '', '', '', '', ''])   # 金额非法
+        ws.append(['不存在的项目', 2026, 1, 1000, '', '', '', '', '', '', ''])    # 项目缺失
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        resp = self.client.post('/api/pk/ar/records/import',
+                                {'file': SimpleUploadedFile('r.xlsx', buf.read())}, **self.auth(admin))
+        self.assertEqual(resp.status_code, 200)
+        d = resp.json()['data']
+        self.assertTrue(d['rejected'])
+        self.assertEqual(d['created'], 0)
+        self.assertEqual(len(d['errors']), 2, d['errors'])
+        self.assertEqual(ARRecord.objects.count(), 0)   # 零写入
+
+        # ② 全部合法 → 写入
+        wb2 = openpyxl.Workbook(); ws2 = wb2.active; ws2.append(HEAD)
+        ws2.append(['应收导入项目', 2026, 1, 100000, 100000, '', '2026-01-15', 0, 30000, '2026-01-20', ''])
+        ws2.append(['应收导入项目', 2026, 2, 80000, '', '', '', '', '', '', '同月可多条'])
+        buf2 = io.BytesIO(); wb2.save(buf2); buf2.seek(0)
+        resp2 = self.client.post('/api/pk/ar/records/import',
+                                 {'file': SimpleUploadedFile('r2.xlsx', buf2.read())}, **self.auth(admin))
+        d2 = resp2.json()['data']
+        self.assertFalse(d2.get('rejected'))
+        self.assertEqual(d2['created'], 2, d2.get('errors'))
+        self.assertEqual(ARRecord.objects.count(), 2)
+
     def test_budget_import_skips_template_tip_and_example_rows(self):
         """回归：模板自带的"说明行"(★开头)与"示例行"(含示例标记)应被跳过，
         不会被当作真实数据导入或产生日期错误。"""

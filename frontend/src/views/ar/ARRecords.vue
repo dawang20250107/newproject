@@ -454,11 +454,16 @@ async function handleImport(e) {
   try {
     const fd = new FormData(); fd.append('file', f)
     const res = await ar.importRecords(fd); const d = res.data
-    let parts = [`导入完成：创建 ${d.created}，更新 ${d.updated ?? 0}，跳过 ${d.skipped}`]
-    if (d.tip) parts.push(d.tip)
-    if (d.errors?.length) parts.push(`\n以下行未通过校验：\n` + d.errors.join('\n'))
-    alert(parts.join('\n'))
-    await load()
+    if (d.rejected) {
+      // 整表校验未通过：拒绝导入，列出全部问题
+      const head = `❌ ${d.message || '导入未执行，请修正后重新导入'}`
+      alert(head + '\n\n' + (d.errors || []).join('\n'))
+    } else {
+      let parts = [`✅ 导入完成：创建 ${d.created}，更新 ${d.updated ?? 0}，跳过空行/示例 ${d.skipped}`]
+      if (d.tip) parts.push(d.tip)
+      alert(parts.join('\n'))
+      await load()
+    }
   } catch (e) { alert(e?.msg || '导入失败')
   } finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
 }

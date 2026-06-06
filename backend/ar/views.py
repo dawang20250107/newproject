@@ -1120,85 +1120,144 @@ def ar_record_import(request):
 
     from paikuan.models import PaikuanUser
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
-    created = skipped = updated = 0
     errors = []
+    skipped = 0          # 真正的空行 / 示例行（非错误）
+    plan = []            # 校验通过的待写入计划
 
+    DATA_COLS = ('项目简称*', '运作年*', '运作月*', '预估上账金额', '实际开票金额',
+                 '税额(差额模式手填)', '开票日期', '账实差额调整', '回款金额', '回款时间', '备注')
+
+    def _num_or_err(raw, label, ri):
+        """严格解析金额：空→None；非法→错误文案。返回 (Decimal|None, err|None)。"""
+        if raw is None or str(raw).strip() == '':
+            return None, None
+        s = str(raw).strip().replace(',', '').replace('，', '')
+        try:
+            return Decimal(s), None
+        except (InvalidOperation, TypeError):
+            return None, (f'第{ri}行：「{label}」填的是“{raw}”，不是有效数字。'
+                          f'请填纯数字（如 12000，不要带逗号、空格、“元”“万”等单位）')
+
+    # ── 阶段一：整表校验（不写库），任何错误都会阻止本次导入 ───────────────────
     for ri in range(2, ws.max_row + 1):
-        short_name = _cv(ri, '项目简称*')
-        if not short_name or EXAMPLE_ROW_MARKER in short_name or short_name.startswith('★'):
+        row_vals = {h: _cv(ri, h) for h in DATA_COLS}
+        short_name = row_vals['项目简称*']
+        has_any = any(v for v in row_vals.values())
+        # 示例行 / 整行空白 → 跳过（不算错误）
+        if EXAMPLE_ROW_MARKER in short_name or short_name.startswith('★'):
             skipped += 1
             continue
+        if not has_any:
+            skipped += 1
+            continue
+        if not short_name:
+            errors.append(f'第{ri}行：缺少「项目简称」。项目简称是匹配项目的关键字段，请补填，'
+                          f'且需与『项目台账』里的简称完全一致')
+            continue
+
         search_depts = None if request.pk_role == 'super_admin' else request.pk_depts
         proj = _match_project_by_short_name(short_name, allowed_depts=search_depts)
         if not proj:
-            errors.append(f'第{ri}行: 项目简称"{short_name}"未匹配到项目')
-            skipped += 1
+            errors.append(f'第{ri}行：项目简称“{short_name}”在系统中找不到对应项目。'
+                          f'请先到『项目台账』新增该项目，或核对简称是否与台账一致'
+                          f'（注意空格、全/半角、繁简差异）')
             continue
-        if request.pk_role != 'super_admin':
-            allowed = request.pk_depts
-            if proj.delivery_dept not in allowed:
-                errors.append(f'第{ri}行: 无权操作部门"{proj.delivery_dept}"')
-                skipped += 1
-                continue
-        year = int(_cv(ri, '运作年*') or 0)
-        month = int(_cv(ri, '运作月*') or 0)
-        if not (year and 1 <= month <= 12):
-            errors.append(f'第{ri}行: 运作年月无效')
-            skipped += 1
+        if request.pk_role != 'super_admin' and proj.delivery_dept not in request.pk_depts:
+            errors.append(f'第{ri}行：您无权操作该项目所属部门“{proj.delivery_dept}”。'
+                          f'请改用有该部门权限的账号，或联系管理员授权')
             continue
-        try:
-            # 同一项目同月可有多条记录；每行导入一律新建，避免合并不同业务批次
-            rec = ARRecord(project=proj, operation_year=year, operation_month=month,
-                           created_by=user)
-            created_new = True
-            est = _cv(ri, '预估上账金额')
-            if est and _can_ar_view(request, 'r_estimated_amount'):
-                rec.estimated_amount = _dec(est)
-            actual = _cv(ri, '实际开票金额')
-            if _can_ar_view(request, 'r_actual_invoice_amount'):
-                rec.actual_invoice_amount = _dec(actual) if actual else None
-            tax_raw = _cv(ri, '税额(差额模式手填)')
-            if _can_ar_view(request, 'r_tax_amount'):
-                rec.tax_amount = _dec(tax_raw) if tax_raw else None
-            inv_date = _normalize_date(_cv_raw(ri, '开票日期'))
-            if _can_ar_view(request, 'r_invoice_date'):
-                rec.invoice_date = inv_date or None
-            diff_adj = _cv(ri, '账实差额调整')
-            if diff_adj and _can_ar_view(request, 'r_account_diff'):
-                rec.account_diff_adjustment = _dec(diff_adj)
-            notes = _cv(ri, '备注')
-            if _can_ar_view(request, 'r_notes'):
-                rec.notes = notes
-            rec.save()
-            pay_amount = _cv(ri, '回款金额')
-            pay_date = _normalize_date(_cv_raw(ri, '回款时间'))
-            if pay_amount and pay_date:
-                amt = _dec(pay_amount)
-                if amt > 0:
-                    # Idempotency: skip if a payment with same date+amount already exists
-                    dup = rec.payments.filter(payment_date=pay_date, amount=amt).exists()
-                    if not dup:
-                        max_no = rec.payments.aggregate(m=Max('payment_no')).get('m') or 0
-                        ARPayment.objects.create(
-                            ar_record=rec,
-                            payment_no=max_no + 1,
-                            amount=amt,
-                            payment_date=pay_date,
-                            notes='导入回款'
-                        )
-                        rec.recompute_derived()
-            if created_new:
-                created += 1
-            else:
-                updated += 1
-        except Exception as e:
-            errors.append(f'第{ri}行: {e}')
-            skipped += 1
 
-    recomputed = created + updated
+        y_raw, m_raw = row_vals['运作年*'], row_vals['运作月*']
+        try:
+            year, month = int(float(y_raw or 0)), int(float(m_raw or 0))
+        except (ValueError, TypeError):
+            errors.append(f'第{ri}行：运作年/月必须是数字（当前 年=“{y_raw}” 月=“{m_raw}”）')
+            continue
+        if not (2000 <= year <= 2100 and 1 <= month <= 12):
+            errors.append(f'第{ri}行：运作年/月无效（年=“{y_raw}” 月=“{m_raw}”）。'
+                          f'运作年需为四位年份（如 2026），运作月需为 1-12')
+            continue
+
+        est, e = _num_or_err(row_vals['预估上账金额'], '预估上账金额', ri)
+        if e:
+            errors.append(e); continue
+        actual, e = _num_or_err(row_vals['实际开票金额'], '实际开票金额', ri)
+        if e:
+            errors.append(e); continue
+        tax, e = _num_or_err(row_vals['税额(差额模式手填)'], '税额', ri)
+        if e:
+            errors.append(e); continue
+        diff, e = _num_or_err(row_vals['账实差额调整'], '账实差额调整', ri)
+        if e:
+            errors.append(e); continue
+        pay_amount, e = _num_or_err(row_vals['回款金额'], '回款金额', ri)
+        if e:
+            errors.append(e); continue
+
+        inv_raw = _cv_raw(ri, '开票日期')
+        inv_date = _normalize_date(inv_raw)
+        if inv_raw not in (None, '') and inv_date is None:
+            errors.append(f'第{ri}行：「开票日期」“{inv_raw}”格式无效。'
+                          f'请用 2026-01-15 / 2026/1/15 / 2026年1月15日 这类格式')
+            continue
+        pay_raw = _cv_raw(ri, '回款时间')
+        pay_date = _normalize_date(pay_raw)
+        if pay_raw not in (None, '') and pay_date is None:
+            errors.append(f'第{ri}行：「回款时间」“{pay_raw}”格式无效。'
+                          f'请用 2026-01-20 / 2026/1/20 / 2026年1月20日 这类格式')
+            continue
+        if pay_amount and pay_amount > 0 and not pay_date:
+            errors.append(f'第{ri}行：填了「回款金额」却没填「回款时间」，请补回款时间，或清空回款金额')
+            continue
+        if pay_date and not (pay_amount and pay_amount > 0):
+            errors.append(f'第{ri}行：填了「回款时间」却没填有效「回款金额」，请补回款金额，或清空回款时间')
+            continue
+
+        plan.append({
+            'ri': ri, 'proj': proj, 'year': year, 'month': month,
+            'est': est, 'actual': actual, 'tax': tax, 'inv_date': inv_date,
+            'diff': diff, 'notes': row_vals['备注'],
+            'pay_amount': pay_amount, 'pay_date': pay_date,
+        })
+
+    # ── 任何错误 → 直接拒绝，整表不写入 ───────────────────────────────────────
+    if errors:
+        return ok({
+            'rejected': True, 'created': 0, 'updated': 0, 'skipped': skipped,
+            'errors': errors,
+            'message': f'导入未执行：发现 {len(errors)} 处问题，已全部列出。'
+                       f'请按提示修正后重新导入（整表全部通过校验才会写入，不会部分导入）。',
+        })
+
+    # ── 阶段二：整表写入（事务，要么全成功要么全回滚）──────────────────────────
+    created = 0
+    with transaction.atomic():
+        for p in plan:
+            rec = ARRecord(project=p['proj'], operation_year=p['year'],
+                           operation_month=p['month'], created_by=user)
+            if p['est'] is not None and _can_ar_view(request, 'r_estimated_amount'):
+                rec.estimated_amount = p['est']
+            if _can_ar_view(request, 'r_actual_invoice_amount'):
+                rec.actual_invoice_amount = p['actual']
+            if _can_ar_view(request, 'r_tax_amount'):
+                rec.tax_amount = p['tax']
+            if _can_ar_view(request, 'r_invoice_date'):
+                rec.invoice_date = p['inv_date']
+            if p['diff'] is not None and _can_ar_view(request, 'r_account_diff'):
+                rec.account_diff_adjustment = p['diff']
+            if _can_ar_view(request, 'r_notes'):
+                rec.notes = p['notes']
+            rec.save()
+            if p['pay_amount'] and p['pay_date']:
+                ARPayment.objects.create(ar_record=rec, payment_no=1,
+                                         amount=p['pay_amount'], payment_date=p['pay_date'],
+                                         notes='导入回款')
+                rec.recompute_derived()
+            created += 1
+
     tip = '导入后系统已按现规则自动重算未收回金额（不沿用历史手工未收回金额）。'
-    return ok({'created': created, 'updated': updated, 'skipped': skipped, 'errors': errors,
-               'recomputed': recomputed, 'tip': tip})
+    return ok({'created': created, 'updated': 0, 'skipped': skipped, 'errors': [],
+               'recomputed': created, 'tip': tip})
 
 
 @csrf_exempt
