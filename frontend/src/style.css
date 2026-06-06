@@ -80,6 +80,11 @@ body {
 .main-content {
   flex: 1; overflow-y: auto; padding: 28px 28px 48px;
   margin-left: var(--nav-w);
+  /* Bounded height makes THIS element the scroll viewport (not the window),
+     so descendant `position: sticky; bottom: 0` bars pin to the viewport
+     bottom instead of sitting after the last row. The sidebar is
+     position:fixed, so a full 100vh here is safe. */
+  height: 100vh;
   transition: margin-left 0.46s cubic-bezier(0.45, 0, 0.15, 1);
 }
 .main-content.nav-collapsed { margin-left: var(--nav-w-collapsed); }
