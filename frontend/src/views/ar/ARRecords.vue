@@ -914,22 +914,24 @@ function clearFilters() {
         </table>
       </div>
 
-      <!-- 吸底合计 + 翻页：固定在视口最底部，不占内容空间；金额为精确数值 -->
-      <div v-if="isDataTab && (summaryData || total > size)" class="bottom-bar">
-        <div v-if="summaryData" class="bb-summary">
-          <span class="bb-item"><i>合计</i><b>{{ summaryData.count }}</b> 条</span>
-          <span v-if="show('r_estimated_amount')" class="bb-item"><i>预估</i><b>{{ fmtCell(summaryData.estimated) }}</b></span>
-          <span v-if="show('r_actual_invoice_amount')" class="bb-item"><i>开票</i><b>{{ fmtCell(summaryData.invoiced) }}</b></span>
-          <span v-if="show('r_tax_amount')" class="bb-item"><i>税额</i><b>{{ fmtCell(summaryData.tax) }}</b></span>
-          <span v-if="show('r_payments')" class="bb-item ok"><i>已收</i><b>{{ fmtCell(summaryData.collected) }}</b></span>
-          <span v-if="show('r_outstanding')" class="bb-item warn"><i>未收</i><b>{{ fmtCell(summaryData.outstanding) }}</b></span>
+      <!-- 吸底合计 + 翻页：Teleport 到 body 以逃脱 .card transform 产生的 fixed 包含块 -->
+      <Teleport to="body">
+        <div v-if="isDataTab && (summaryData || total > size)" class="bottom-bar">
+          <div v-if="summaryData" class="bb-summary">
+            <span class="bb-item"><i>合计</i><b>{{ summaryData.count }}</b> 条</span>
+            <span v-if="show('r_estimated_amount')" class="bb-item"><i>预估</i><b>{{ fmtCell(summaryData.estimated) }}</b></span>
+            <span v-if="show('r_actual_invoice_amount')" class="bb-item"><i>开票</i><b>{{ fmtCell(summaryData.invoiced) }}</b></span>
+            <span v-if="show('r_tax_amount')" class="bb-item"><i>税额</i><b>{{ fmtCell(summaryData.tax) }}</b></span>
+            <span v-if="show('r_payments')" class="bb-item ok"><i>已收</i><b>{{ fmtCell(summaryData.collected) }}</b></span>
+            <span v-if="show('r_outstanding')" class="bb-item warn"><i>未收</i><b>{{ fmtCell(summaryData.outstanding) }}</b></span>
+          </div>
+          <div v-if="total > size" class="bb-pager">
+            <button :disabled="page <= 1" class="page-btn" @click="page--; load()">‹ 上一页</button>
+            <span class="page-info">{{ page }} / {{ Math.ceil(total / size) }} 页 · 共 {{ total }} 条</span>
+            <button :disabled="page * size >= total" class="page-btn" @click="page++; load()">下一页 ›</button>
+          </div>
         </div>
-        <div v-if="total > size" class="bb-pager">
-          <button :disabled="page <= 1" class="page-btn" @click="page--; load()">‹ 上一页</button>
-          <span class="page-info">{{ page }} / {{ Math.ceil(total / size) }} 页 · 共 {{ total }} 条</span>
-          <button :disabled="page * size >= total" class="page-btn" @click="page++; load()">下一页 ›</button>
-        </div>
-      </div>
+      </Teleport>
 
       <!-- ══ 回款流水 ══ -->
       <div v-if="activeTab === 'payments'">

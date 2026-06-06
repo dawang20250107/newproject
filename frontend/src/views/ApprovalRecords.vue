@@ -110,18 +110,20 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <td><button class="btn btn-ghost btn-sm" :disabled="i.status!=='approved'" @click="openSchedule(i)">一键排款</button></td></tr></tbody>
   </table>
 
-  <!-- 吸底合计 + 翻页：固定在底部 -->
-  <div v-if="!loading && items.length" class="bottom-bar">
-    <div class="bb-summary">
-      <span class="bb-item"><i>合计</i><b>{{ total }}</b> 条</span>
-      <span class="bb-item warn"><i>申请金额合计</i><b>{{ pendingAmountTotal.toFixed(2) }}</b> 元</span>
+  <!-- 吸底合计 + 翻页：Teleport 到 body 以逃脱 .card transform 产生的 fixed 包含块 -->
+  <Teleport to="body">
+    <div v-if="!loading && items.length" class="bottom-bar">
+      <div class="bb-summary">
+        <span class="bb-item"><i>合计</i><b>{{ total }}</b> 条</span>
+        <span class="bb-item warn"><i>申请金额合计</i><b>{{ pendingAmountTotal.toFixed(2) }}</b> 元</span>
+      </div>
+      <div v-if="total > filters.size" class="bb-pager">
+        <button :disabled="filters.page <= 1" class="page-btn" @click="setPage(filters.page - 1)">‹ 上一页</button>
+        <span class="page-info">{{ filters.page }} / {{ Math.ceil(total / filters.size) || 1 }} 页 · 共 {{ total }} 条</span>
+        <button :disabled="filters.page * filters.size >= total" class="page-btn" @click="setPage(filters.page + 1)">下一页 ›</button>
+      </div>
     </div>
-    <div v-if="total > filters.size" class="bb-pager">
-      <button :disabled="filters.page <= 1" class="page-btn" @click="setPage(filters.page - 1)">‹ 上一页</button>
-      <span class="page-info">{{ filters.page }} / {{ Math.ceil(total / filters.size) || 1 }} 页 · 共 {{ total }} 条</span>
-      <button :disabled="filters.page * filters.size >= total" class="page-btn" @click="setPage(filters.page + 1)">下一页 ›</button>
-    </div>
-  </div>
+  </Teleport>
   </div>
 
   <Teleport to="body"><div v-if="showCreate" class="modal-overlay" @click.self="showCreate=false"><div class="modal-box"><div class="modal-header"><h3>新增审批记录</h3></div><div class="modal-body"><div class="form-grid">

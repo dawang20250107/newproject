@@ -60,6 +60,12 @@ watch(() => auth.activeDepts, () => {
   window.dispatchEvent(new CustomEvent('pk:depts-changed'))
 }, { deep: true })
 
+// Sync nav-collapsed state to body class so teleported .bottom-bar elements
+// can respond to nav width changes via CSS (body.nav-collapsed .bottom-bar).
+watch(navCollapsed, (v) => {
+  document.body.classList.toggle('nav-collapsed', v)
+}, { immediate: true })
+
 function onNavCollapse(v) {
   // Manual toggle → remember the preference and disable auto behaviour.
   navCollapsed.value = v

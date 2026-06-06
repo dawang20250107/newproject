@@ -493,39 +493,39 @@ tr.overdue-row td:first-child { border-left: 3px solid #c62828; }
 }
 
 /* ── Fixed summary + pagination bar (bottom of table views) ──────────────── */
-/* Always anchored to the viewport bottom edge — like a desktop app status bar.
-   Matches the sidebar's dark warm aesthetic; transitions with nav collapse. */
+/* Teleported to <body> to escape .card { transform: translateZ(0) } containing
+   block. Uses body.nav-collapsed (synced from App.vue watch) to shift left. */
 .bottom-bar {
   position: fixed; bottom: 0; left: var(--nav-w); right: 0; z-index: 90;
   height: 52px; display: flex; align-items: center; justify-content: space-between;
   gap: 16px; padding: 0 28px; flex-wrap: nowrap;
-  background: rgba(22, 12, 6, 0.90);
-  backdrop-filter: blur(22px) saturate(180%);
-  -webkit-backdrop-filter: blur(22px) saturate(180%);
-  border-top: 1px solid rgba(255,255,255,0.09);
-  box-shadow: 0 -4px 22px rgba(0,0,0,0.28);
+  background: rgba(232, 220, 210, 0.94);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border-top: 1.5px solid rgba(180, 140, 110, 0.22);
+  box-shadow: 0 -4px 20px rgba(100, 60, 30, 0.10);
   transition: left 0.46s cubic-bezier(0.45, 0, 0.15, 1);
 }
-.main-content.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
+body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
 @media (max-width: 768px) { .bottom-bar { left: 0; } }
 
 .bb-summary { display: flex; align-items: center; gap: 20px; min-width: 0; overflow: hidden; }
 .bb-item { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; font-size: 13px; flex-shrink: 0; }
-.bb-item i { font-style: normal; font-size: 11px; color: rgba(195,155,125,0.5); letter-spacing: 0.02em; }
-.bb-item b { font-variant-numeric: tabular-nums; font-weight: 700; color: rgba(240,220,200,0.92); font-size: 13.5px; }
-.bb-item.warn b { color: #f87050; }
-.bb-item.ok b   { color: #60cc7a; }
+.bb-item i { font-style: normal; font-size: 11px; color: var(--muted); letter-spacing: 0.02em; }
+.bb-item b { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text); font-size: 13.5px; }
+.bb-item.warn b { color: #c0392b; }
+.bb-item.ok b   { color: #2e7d32; }
 .bb-pager { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .bottom-bar .page-btn {
-  padding: 4px 14px; border: 1px solid rgba(255,255,255,0.12); border-radius: 7px;
-  background: rgba(255,255,255,0.07); color: rgba(220,185,155,0.85);
+  padding: 4px 14px; border: 1px solid var(--border); border-radius: 7px;
+  background: rgba(255, 252, 250, 0.7); color: var(--text);
   font-size: 12.5px; font-family: inherit; cursor: pointer; transition: all 0.14s;
 }
 .bottom-bar .page-btn:hover:not(:disabled) {
-  border-color: rgba(201,99,66,0.55); color: #e8855a; background: rgba(201,99,66,0.14);
+  border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.08);
 }
-.bottom-bar .page-btn:disabled { opacity: 0.28; cursor: default; }
-.bottom-bar .page-info { font-size: 12px; color: rgba(195,155,125,0.6); white-space: nowrap; }
+.bottom-bar .page-btn:disabled { opacity: 0.36; cursor: default; }
+.bottom-bar .page-info { font-size: 12px; color: var(--muted); white-space: nowrap; }
 
 /* In-card pagination (payment ledger tab, etc.) — light theme */
 .pagination .page-btn {
