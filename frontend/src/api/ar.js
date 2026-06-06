@@ -40,6 +40,16 @@ const ar = {
   updatePayment: (rid, pid, d) => api.put(`/ar/records/${rid}/payments/${pid}`, d),
   deletePayment: (rid, pid) => api.delete(`/ar/records/${rid}/payments/${pid}`),
 
+  // 客户 (customers)
+  listCustomers: p => api.get('/ar/customers', { params: p }),
+  createCustomer: d => api.post('/ar/customers', d),
+  getCustomer: id => api.get(`/ar/customers/${id}`),
+  updateCustomer: (id, d) => api.put(`/ar/customers/${id}`, d),
+  deleteCustomer: id => api.delete(`/ar/customers/${id}`),
+
+  // 草稿项目
+  listDraftProjects: p => api.get('/ar/projects/drafts', { params: p }),
+
   // 供应商池 (suppliers)
   listSuppliers: p => api.get('/ar/suppliers', { params: p }),
   searchSuppliers: p => api.get('/ar/suppliers/search', { params: p }),

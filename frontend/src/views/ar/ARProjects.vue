@@ -12,7 +12,7 @@ const loading = ref(false)
 const page = ref(1)
 const size = 50
 
-const filters = reactive({ q: '', dept: '', customer_level: '', invoice_mode: '', is_shared: '' })
+const filters = reactive({ q: '', dept: '', customer_level: '', invoice_mode: '', is_shared: '', is_draft: '' })
 const CUSTOMER_LEVELS = ['S级', 'A级', 'B级', 'C级', 'D级']
 const showModal = ref(false)
 const editItem = ref(null)
@@ -81,7 +81,7 @@ function clearSearch() { filters.q = ''; load(true) }
 
 const hasActiveFilters = computed(() =>
   !!(filters.q || filters.dept || filters.customer_level || filters.invoice_mode ||
-     (filters.is_shared && !auth.perms?.ar_shared_only)))
+     filters.is_draft || (filters.is_shared && !auth.perms?.ar_shared_only)))
 
 function resetFilters() {
   filters.q = ''
@@ -89,6 +89,7 @@ function resetFilters() {
   filters.customer_level = ''
   filters.invoice_mode = ''
   if (!auth.perms?.ar_shared_only) filters.is_shared = ''
+  filters.is_draft = ''
   reloadAll()
 }
 
@@ -140,7 +141,10 @@ async function save() {
   saving.value = true
   try {
     if (editItem.value) {
-      await ar.updateProject(editItem.value.id, form)
+      const payload = { ...form }
+      if (editItem.value.is_draft) payload.is_draft = false
+      delete payload._complete_draft
+      await ar.updateProject(editItem.value.id, payload)
     } else {
       const saved = await ar.createProject(form)
       // 新建后确保立即可见：清空搜索、按新项目部门筛选、回到首页
@@ -161,6 +165,27 @@ async function remove(item) {
   try { await ar.deleteProject(item.id); reloadAll() }
   catch (e) { alert(e?.msg || '删除失败') }
 }
+
+async function completeDraft(item) {
+  editItem.value = item
+  Object.assign(form, {
+    contract_name: item.contract_name || item.short_name,
+    short_name: item.short_name,
+    delivery_dept: item.delivery_dept, sub_dept: item.sub_dept || '',
+    business_mode: item.business_mode || '', customer_level: item.customer_level || 'A级',
+    sales_contact: item.sales_contact || '', project_manager: item.project_manager || '',
+    has_contract: item.has_contract || '无', contract_date: item.contract_date || '',
+    reconciliation_days: item.reconciliation_days || 0,
+    invoice_wait_days: item.invoice_wait_days || 0,
+    post_invoice_days: item.post_invoice_days || 0,
+    invoice_mode: item.invoice_mode || '全额', invoice_type: item.invoice_type || '专票',
+    tax_rate: item.tax_rate || '0.06', notes: item.notes || '',
+    _complete_draft: true,
+  })
+  showModal.value = true
+}
+
+const isDraftEdit = computed(() => !!(editItem.value?.is_draft))
 
 async function downloadTemplate() {
   const res = await ar.projectTemplate()
@@ -236,6 +261,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <div class="stat-label">共享业务</div>
         <div class="stat-value">{{ stats?.shared ?? 0 }}</div>
       </div>
+      <div v-if="stats?.draft_count" class="stat-pill stat-pill-draft" style="cursor:pointer" @click="filters.is_draft='true'; load(true)" title="点击筛选草稿项目">
+        <div class="stat-label">待完善草稿</div>
+        <div class="stat-value" style="color:#c0392b">{{ stats.draft_count }}</div>
+      </div>
       <div class="stat-pill stat-pill-mom">
         <div class="stat-label">本月新签（环比）</div>
         <div class="stat-value">
@@ -285,6 +314,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <option value="true">共享业务</option>
         <option value="false">非共享</option>
       </select>
+      <select v-model="filters.is_draft" class="sel-mo" @change="load(true)">
+        <option value="">全部项目</option>
+        <option value="true">待完善草稿</option>
+        <option value="false">已完善项目</option>
+      </select>
       <button v-if="hasActiveFilters" class="filter-reset" @click="resetFilters">重置筛选</button>
     </div>
 
@@ -318,7 +352,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <td colspan="14" class="empty-cell"><div class="empty-inner">暂无项目数据，点击「新增项目」开始</div></td>
             </tr>
             <tr v-for="item in items" :key="item.id" class="data-row">
-              <td><span class="proj-no-tag">{{ item.project_no }}</span></td>
+              <td>
+                <span class="proj-no-tag">{{ item.project_no }}</span>
+                <span v-if="item.is_draft" class="badge-draft" title="导入自动创建，请补充完善">待完善</span>
+              </td>
               <td v-if="show('p_contract_name') || show('p_short_name')">
                 <div class="contract-name">{{ item.contract_name }}</div>
                 <div v-if="item.short_name" class="short-name">{{ item.short_name }}</div>
@@ -348,6 +385,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <td v-if="show('p_notes')" class="text-muted text-sm">{{ item.notes || '—' }}</td>
               <td class="ctr">
                 <div class="row-actions">
+                  <button v-if="item.is_draft && auth.canCreate" class="icon-btn icon-btn-complete" @click="completeDraft(item)" title="补充完善草稿项目">完善</button>
                   <button class="icon-btn" @click="openEdit(item)" title="编辑">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                   </button>
@@ -373,8 +411,12 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <div class="modal-box" style="max-width:720px">
           <div class="modal-header">
             <div>
-              <h3>{{ editItem ? '编辑项目' : '新增项目' }}</h3>
-              <div class="modal-subtitle">{{ editItem ? editItem.project_no : '编号将自动生成 · 标 * 为必填' }}</div>
+              <h3>{{ isDraftEdit ? '完善草稿项目' : (editItem ? '编辑项目' : '新增项目') }}</h3>
+              <div class="modal-subtitle">
+                <span v-if="isDraftEdit" class="badge-draft" style="margin-right:6px">待完善</span>
+                {{ editItem ? editItem.project_no : '编号将自动生成 · 标 * 为必填' }}
+                <span v-if="isDraftEdit" style="margin-left:6px;color:#c0392b"> — 请补充完整后保存，将自动移出草稿</span>
+              </div>
             </div>
             <button class="modal-close" @click="showModal = false">✕</button>
           </div>
@@ -516,6 +558,9 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .dept-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; background: rgba(201,99,66,0.1); color: var(--primary); font-weight: 600; white-space: nowrap; }
 .person { font-size: 12.5px; color: var(--text); white-space: nowrap; }
 .badge-shared { font-size: 10px; padding: 1px 7px; border-radius: 8px; background: rgba(106,27,154,0.1); color: #6a1b9a; font-weight: 600; margin-left: 5px; }
+.badge-draft { font-size: 10px; padding: 1px 7px; border-radius: 8px; background: rgba(192,57,43,0.12); color: #c0392b; font-weight: 600; margin-left: 5px; white-space: nowrap; }
+.icon-btn-complete { font-size: 11px; font-weight: 600; color: #1565c0; border-color: rgba(21,101,192,0.3); background: rgba(21,101,192,0.06); width: auto; padding: 0 8px; }
+.icon-btn-complete:hover { border-color: #1565c0; background: rgba(21,101,192,0.12); color: #1565c0; }
 .badge-self { font-size: 12px; padding: 2px 10px; border-radius: 8px; background: rgba(46,125,50,0.1); color: #2e7d32; font-weight: 600; }
 .level-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; font-weight: 700; background: rgba(0,0,0,0.05); color: var(--muted); }
 .level-chip.lv-S级 { background: rgba(201,162,39,0.15); color: #a8851c; }

@@ -487,13 +487,42 @@ async function handleImport(e) {
     const fd = new FormData(); fd.append('file', f)
     const res = await ar.importRecords(fd); const d = res.data
     if (d.rejected) {
-      // 整表校验未通过：拒绝导入，列出全部问题
       const head = `❌ ${d.message || '导入未执行，请修正后重新导入'}`
       alert(head + '\n\n' + (d.errors || []).join('\n'))
     } else {
-      let parts = [`✅ 导入完成：创建 ${d.created}，更新 ${d.updated ?? 0}，跳过空行/示例 ${d.skipped}`]
-      if (d.tip) parts.push(d.tip)
-      alert(parts.join('\n'))
+      const lines = []
+      lines.push(`✅ 导入完成：创建 ${d.created} 条，跳过空行/示例 ${d.skipped} 行`)
+
+      const md = d.match_detail || {}
+
+      if (md.exact?.length) {
+        lines.push(`\n── 精确匹配项目（${md.exact.length} 个）`)
+        md.exact.forEach(x => lines.push(`  · ${x.short_name}（${x.count} 条）`))
+      }
+      if (md.exact_multi?.length) {
+        lines.push(`\n── ⚠️ 精确匹配但同名多个（${md.exact_multi.length} 个，已取最新，请核查）`)
+        md.exact_multi.forEach(x => lines.push(`  · ${x.short_name} → 匹配到「${x.matched_to}」（${x.count} 条）${x.warn ? '  ' + x.warn : ''}`))
+      }
+      if (md.fuzzy?.length) {
+        lines.push(`\n── 模糊匹配项目（${md.fuzzy.length} 个，请核查）`)
+        md.fuzzy.forEach(x => lines.push(`  · "${x.short_name}" → 匹配到「${x.matched_to}」（${x.count} 条）`))
+      }
+      if (md.fuzzy_multi?.length) {
+        lines.push(`\n── ⚠️ 模糊匹配且多候选（${md.fuzzy_multi.length} 个，请核查）`)
+        md.fuzzy_multi.forEach(x => lines.push(`  · "${x.short_name}" → 匹配到「${x.matched_to}」（${x.count} 条）${x.warn ? '  ' + x.warn : ''}`))
+      }
+      if (md.created?.length) {
+        lines.push(`\n── 🆕 自动创建草稿项目（${md.created.length} 个，请到项目台账补充完善）`)
+        md.created.forEach(x => lines.push(`  · ${x.short_name}（${x.count} 条记录已关联）`))
+      }
+
+      if (d.warnings?.length) {
+        lines.push(`\n── 导入提示（${d.warnings.length} 条）`)
+        d.warnings.slice(0, 10).forEach(w => lines.push(`  · ${w}`))
+        if (d.warnings.length > 10) lines.push(`  …（共 ${d.warnings.length} 条，已省略）`)
+      }
+
+      alert(lines.join('\n'))
       await load()
     }
   } catch (e) { alert(e?.msg || '导入失败')

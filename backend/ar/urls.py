@@ -5,10 +5,15 @@ urlpatterns = [
     # Projects
     path('projects', views.projects),
     path('projects/stats', views.project_stats),
+    path('projects/drafts', views.project_drafts),
     path('projects/template', views.project_template),
     path('projects/import', views.project_import),
     path('projects/export', views.project_export),
     path('projects/<int:pk>', views.project_detail),
+
+    # Customers
+    path('customers', views.customers),
+    path('customers/<int:pk>', views.customer_detail),
 
     # AR Records
     path('records/date-bounds', views.ar_records_date_bounds),

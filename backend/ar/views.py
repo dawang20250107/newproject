@@ -22,7 +22,7 @@ from paikuan.views import (pk_required, ok, err, DEPARTMENTS, VALID_DEPARTMENTS,
                            get_request_perms, apply_ar_view_mask, AR_PROJECT_FIELD_DEFS,
                            AR_RECORD_FIELD_DEFS, AR_ADVANCE_FIELD_DEFS)
 from ar.models import (ARProject, ARRecord, ARPayment, CollectionBudget, PaymentBudget,
-                       AdvanceRecord, AdvanceWriteoff, Supplier)
+                       AdvanceRecord, AdvanceWriteoff, Supplier, Customer)
 from paikuan.models import Payment, PaymentInstallment
 
 # ── AR page keys (must match PAGE_KEYS in paikuan/views.py) ───────────────────
@@ -46,13 +46,7 @@ def _norm_header(h):
 
 
 def _match_project_by_short_name(short_name, dept='', allowed_depts=None):
-    """Match an ARProject by short_name.
-
-    dept: exact delivery_dept filter (highest priority).
-    allowed_depts: list of departments to restrict search (used by import to avoid
-                   cross-dept confusion for non-super_admin users).
-    Falls back to case-insensitive contains match when exact match yields nothing.
-    """
+    """Simple lookup used by non-import paths (project search, etc.)."""
     name = (short_name or '').strip()
     if not name:
         return None
@@ -64,13 +58,95 @@ def _match_project_by_short_name(short_name, dept='', allowed_depts=None):
     proj = qs.order_by('-id').first()
     if proj:
         return proj
-    # fallback: contains match when users type partially
     qs = ARProject.objects.filter(short_name__icontains=name)
     if dept:
         qs = qs.filter(delivery_dept=dept)
     elif allowed_depts is not None:
         qs = qs.filter(delivery_dept__in=allowed_depts)
     return qs.order_by('-id').first()
+
+
+def _resolve_project_for_import(short_name, customer_hint, dept, allowed_depts, user, proj_cache):
+    """3-stage project resolution for bulk import.
+
+    Returns (proj, match_type, warning_str | None).
+    match_type: 'exact' | 'exact_multi' | 'fuzzy' | 'fuzzy_multi' | 'created'
+
+    Uses proj_cache {(short_name, dept) -> result} to avoid creating duplicate
+    draft projects when multiple rows share the same project name.
+    """
+    name = (short_name or '').strip()
+    if not name:
+        return None, None, None
+    cache_key = (name, dept or '')
+    if cache_key in proj_cache:
+        return proj_cache[cache_key]
+
+    # ── Stage 1: 精确匹配 ──────────────────────────────────────────────────
+    qs = ARProject.objects.filter(short_name=name)
+    if allowed_depts is not None:
+        qs = qs.filter(delivery_dept__in=allowed_depts)
+    elif dept:
+        qs = qs.filter(delivery_dept=dept)
+
+    # Customer hint可进一步缩小范围（同名项目不同客户时）
+    if customer_hint:
+        qs_cust = qs.filter(contract_name__icontains=customer_hint)
+        if qs_cust.exists():
+            cnt = qs_cust.count()
+            proj = qs_cust.order_by('-id').first()
+            warn = (f'找到 {cnt} 个同名同客户项目，已取最新的「{proj.contract_name}」，请核查'
+                    if cnt > 1 else None)
+            result = (proj, 'exact' if cnt == 1 else 'exact_multi', warn)
+            proj_cache[cache_key] = result
+            return result
+
+    if qs.exists():
+        cnt = qs.count()
+        proj = qs.order_by('-id').first()
+        warn = (f'找到 {cnt} 个同名项目，已取最新的「{proj.contract_name}」，请核查'
+                if cnt > 1 else None)
+        result = (proj, 'exact' if cnt == 1 else 'exact_multi', warn)
+        proj_cache[cache_key] = result
+        return result
+
+    # ── Stage 2: 模糊匹配（contains）──────────────────────────────────────
+    qs2 = ARProject.objects.filter(short_name__icontains=name)
+    if allowed_depts is not None:
+        qs2 = qs2.filter(delivery_dept__in=allowed_depts)
+    elif dept:
+        qs2 = qs2.filter(delivery_dept=dept)
+    matches = list(qs2.order_by('-id')[:5])
+    if matches:
+        proj = matches[0]
+        if len(matches) > 1:
+            candidates = '、'.join(f'「{m.short_name}」' for m in matches[:3])
+            warn = f'"{name}"模糊匹配到多个项目（{candidates}），已取最新的「{proj.short_name}」，建议核查'
+            match_type = 'fuzzy_multi'
+        else:
+            warn = f'"{name}"未精确匹配，模糊命中「{proj.short_name}」，建议核查'
+            match_type = 'fuzzy'
+        result = (proj, match_type, warn)
+        proj_cache[cache_key] = result
+        return result
+
+    # ── Stage 3: 自动创建草稿项目 ─────────────────────────────────────────
+    proj_dept = dept or (list(allowed_depts)[0] if allowed_depts else '')
+    creator_name = user.name if user else '待填'
+    proj = ARProject(
+        short_name=name,
+        contract_name=customer_hint or name,
+        delivery_dept=proj_dept,
+        is_draft=True,
+        sales_contact=creator_name,
+        project_manager=creator_name,
+        has_contract='无',
+    )
+    proj.save()
+    warn = f'项目台账中未找到「{name}」，已自动创建草稿项目，请到项目台账补充完善'
+    result = (proj, 'created', warn)
+    proj_cache[cache_key] = result
+    return result
 
 
 def _normalize_date(s):
@@ -305,6 +381,12 @@ def projects(request):
         elif is_shared in ('false', '0'):
             qs = qs.filter(is_shared=False)
 
+        is_draft = request.GET.get('is_draft', '').strip()
+        if is_draft in ('true', '1'):
+            qs = qs.filter(is_draft=True)
+        elif is_draft in ('false', '0'):
+            qs = qs.filter(is_draft=False)
+
         # Customer-level filter (S/A/...)
         level = request.GET.get('customer_level', '').strip()
         if level:
@@ -418,6 +500,17 @@ def project_detail(request, pk):
             if denied:
                 return denied
             proj.delivery_dept = dept
+        if 'is_draft' in data:
+            proj.is_draft = bool(data['is_draft'])
+        if 'customer_id' in data:
+            cid = data.get('customer_id')
+            if cid:
+                try:
+                    proj.customer = Customer.objects.get(pk=int(cid))
+                except (Customer.DoesNotExist, ValueError, TypeError):
+                    pass
+            else:
+                proj.customer = None
         proj.save()
         return ok(apply_ar_view_mask(proj.to_dict(), get_request_perms(request), 'project'))
 
@@ -691,6 +784,7 @@ def project_stats(request):
 
     total = qs.count()
     shared = qs.filter(is_shared=True).count()
+    draft_count = qs.filter(is_draft=True).count()
 
     # Customer level breakdown
     level_rows = qs.values('customer_level').annotate(c=Count('id'))
@@ -716,6 +810,7 @@ def project_stats(request):
     return ok({
         'total': total,
         'shared': shared,
+        'draft_count': draft_count,
         's_count': s_count,
         'a_count': a_count,
         'level_map': level_map,
@@ -1069,6 +1164,14 @@ def ar_record_template(request):
 @csrf_exempt
 @pk_required()
 def ar_record_import(request):
+    """应收明细批量导入。
+
+    设计原则：
+    - 格式错误（年月/金额/日期非法）→ 整表拒绝，列出全部问题
+    - 项目找不到 → 自动创建草稿项目（不阻断导入）
+    - 模糊匹配 / 多候选 → 取最新项目并在返回摘要里说明，请人工核查
+    - 成功后返回三段式摘要：精确匹配 / 模糊匹配 / 自动新建
+    """
     denied = _page_denied(request, 'ar_records')
     if denied:
         return denied
@@ -1089,19 +1192,19 @@ def ar_record_import(request):
     headers = [str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1)]
     col_map = {h: i + 1 for i, h in enumerate(headers)}
 
-    # Header aliases for backward compatibility / user-friendly variants
     _ALIASES = {
-        '开票日期': ['开票日期', '开票日期(YYYY-MM-DD)', '开票日期*'],
-        '回款时间': ['回款时间', '回款时间(YYYY-MM-DD)', '回款日期'],
-        '税额(差额模式手填)': ['税额(差额模式手填)', '税额'],
-        '预估上账金额': ['预估上账金额', '预估金额', '上账金额'],
-        '实际开票金额': ['实际开票金额', '开票金额'],
-        '账实差额调整': ['账实差额调整', '账实差额'],
-        '回款金额': ['回款金额'],
-        '项目简称*': ['项目简称*', '项目简称'],
-        '运作年*': ['运作年*', '运作年'],
-        '运作月*': ['运作月*', '运作月'],
-        '备注': ['备注'],
+        '项目简称*':         ['项目简称*', '项目简称'],
+        '客户名称':          ['客户名称', '客户', '合同名称'],
+        '运作年*':           ['运作年*', '运作年'],
+        '运作月*':           ['运作月*', '运作月'],
+        '预估上账金额':      ['预估上账金额', '预估金额', '上账金额'],
+        '实际开票金额':      ['实际开票金额', '开票金额'],
+        '税额(差额模式手填)':['税额(差额模式手填)', '税额'],
+        '开票日期':          ['开票日期', '开票日期(YYYY-MM-DD)', '开票日期*'],
+        '账实差额调整':      ['账实差额调整', '账实差额'],
+        '回款金额':          ['回款金额'],
+        '回款时间':          ['回款时间', '回款时间(YYYY-MM-DD)', '回款日期'],
+        '备注':              ['备注'],
     }
 
     def _resolve_idx(name):
@@ -1112,130 +1215,153 @@ def ar_record_import(request):
 
     def _cv_raw(row, name):
         idx = _resolve_idx(name)
-        if idx is None:
-            return None
-        return ws.cell(row, idx).value
+        return ws.cell(row, idx).value if idx else None
 
     def _cv(row, name):
         v = _cv_raw(row, name)
         return str(v).strip() if v is not None else ''
 
-    from paikuan.models import PaikuanUser
-    user = PaikuanUser.objects.filter(id=request.pk_uid).first()
-    errors = []
-    skipped = 0          # 真正的空行 / 示例行（非错误）
-    plan = []            # 校验通过的待写入计划
-
-    DATA_COLS = ('项目简称*', '运作年*', '运作月*', '预估上账金额', '实际开票金额',
-                 '税额(差额模式手填)', '开票日期', '账实差额调整', '回款金额', '回款时间', '备注')
-
     def _num_or_err(raw, label, ri):
-        """严格解析金额：空→None；非法→错误文案。返回 (Decimal|None, err|None)。"""
         if raw is None or str(raw).strip() == '':
             return None, None
         s = str(raw).strip().replace(',', '').replace('，', '')
         try:
             return Decimal(s), None
         except (InvalidOperation, TypeError):
-            return None, (f'第{ri}行：「{label}」填的是“{raw}”，不是有效数字。'
-                          f'请填纯数字（如 12000，不要带逗号、空格、“元”“万”等单位）')
+            return None, (f'第{ri}行：「{label}」填的是"{raw}"，不是有效数字。'
+                          f'请填纯数字（如 12000，不要带逗号、空格、"元""万"等单位）')
 
-    # ── 阶段一：整表校验（不写库），任何错误都会阻止本次导入 ───────────────────
+    from paikuan.models import PaikuanUser
+    user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+    allowed_depts = None if request.pk_role == 'super_admin' else request.pk_depts
+
+    DATA_COLS = ('项目简称*', '客户名称', '运作年*', '运作月*', '预估上账金额',
+                 '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
+                 '回款金额', '回款时间', '备注')
+
+    errors = []      # 格式错误：会导致整表拒绝
+    skipped = 0      # 空行 / 示例行
+    plan = []        # 通过格式校验的行，待写入
+
+    # ══ 阶段一：格式校验（不写库，不查项目）══════════════════════════════════
     for ri in range(2, ws.max_row + 1):
         row_vals = {h: _cv(ri, h) for h in DATA_COLS}
         short_name = row_vals['项目简称*']
         has_any = any(v for v in row_vals.values())
-        # 示例行 / 整行空白 → 跳过（不算错误）
-        if EXAMPLE_ROW_MARKER in short_name or short_name.startswith('★'):
-            skipped += 1
-            continue
-        if not has_any:
-            skipped += 1
-            continue
-        if not short_name:
-            errors.append(f'第{ri}行：缺少「项目简称」。项目简称是匹配项目的关键字段，请补填，'
-                          f'且需与『项目台账』里的简称完全一致')
-            continue
 
-        search_depts = None if request.pk_role == 'super_admin' else request.pk_depts
-        proj = _match_project_by_short_name(short_name, allowed_depts=search_depts)
-        if not proj:
-            errors.append(f'第{ri}行：项目简称“{short_name}”在系统中找不到对应项目。'
-                          f'请先到『项目台账』新增该项目，或核对简称是否与台账一致'
-                          f'（注意空格、全/半角、繁简差异）')
-            continue
-        if request.pk_role != 'super_admin' and proj.delivery_dept not in request.pk_depts:
-            errors.append(f'第{ri}行：您无权操作该项目所属部门“{proj.delivery_dept}”。'
-                          f'请改用有该部门权限的账号，或联系管理员授权')
+        if EXAMPLE_ROW_MARKER in short_name or short_name.startswith('★'):
+            skipped += 1; continue
+        if not has_any:
+            skipped += 1; continue
+        if not short_name:
+            errors.append(f'第{ri}行：缺少「项目简称」，请补填（项目简称是关联应收记录与项目的唯一桥梁）')
             continue
 
         y_raw, m_raw = row_vals['运作年*'], row_vals['运作月*']
         try:
             year, month = int(float(y_raw or 0)), int(float(m_raw or 0))
         except (ValueError, TypeError):
-            errors.append(f'第{ri}行：运作年/月必须是数字（当前 年=“{y_raw}” 月=“{m_raw}”）')
+            errors.append(f'第{ri}行：运作年/月必须是数字（当前 年="{y_raw}" 月="{m_raw}"）')
             continue
         if not (2000 <= year <= 2100 and 1 <= month <= 12):
-            errors.append(f'第{ri}行：运作年/月无效（年=“{y_raw}” 月=“{m_raw}”）。'
+            errors.append(f'第{ri}行：运作年/月无效（年="{y_raw}" 月="{m_raw}"）。'
                           f'运作年需为四位年份（如 2026），运作月需为 1-12')
             continue
 
         est, e = _num_or_err(row_vals['预估上账金额'], '预估上账金额', ri)
-        if e:
-            errors.append(e); continue
+        if e: errors.append(e); continue
         actual, e = _num_or_err(row_vals['实际开票金额'], '实际开票金额', ri)
-        if e:
-            errors.append(e); continue
+        if e: errors.append(e); continue
         tax, e = _num_or_err(row_vals['税额(差额模式手填)'], '税额', ri)
-        if e:
-            errors.append(e); continue
+        if e: errors.append(e); continue
         diff, e = _num_or_err(row_vals['账实差额调整'], '账实差额调整', ri)
-        if e:
-            errors.append(e); continue
+        if e: errors.append(e); continue
         pay_amount, e = _num_or_err(row_vals['回款金额'], '回款金额', ri)
-        if e:
-            errors.append(e); continue
+        if e: errors.append(e); continue
 
         inv_raw = _cv_raw(ri, '开票日期')
         inv_date = _normalize_date(inv_raw)
         if inv_raw not in (None, '') and inv_date is None:
-            errors.append(f'第{ri}行：「开票日期」“{inv_raw}”格式无效。'
-                          f'请用 2026-01-15 / 2026/1/15 / 2026年1月15日 这类格式')
+            errors.append(f'第{ri}行：「开票日期」"{inv_raw}"格式无效，请用 2026-01-15 格式')
             continue
         pay_raw = _cv_raw(ri, '回款时间')
         pay_date = _normalize_date(pay_raw)
         if pay_raw not in (None, '') and pay_date is None:
-            errors.append(f'第{ri}行：「回款时间」“{pay_raw}”格式无效。'
-                          f'请用 2026-01-20 / 2026/1/20 / 2026年1月20日 这类格式')
+            errors.append(f'第{ri}行：「回款时间」"{pay_raw}"格式无效，请用 2026-01-20 格式')
             continue
         if pay_amount and pay_amount > 0 and not pay_date:
-            errors.append(f'第{ri}行：填了「回款金额」却没填「回款时间」，请补回款时间，或清空回款金额')
+            errors.append(f'第{ri}行：填了「回款金额」却没填「回款时间」，请补填或清空回款金额')
             continue
         if pay_date and not (pay_amount and pay_amount > 0):
-            errors.append(f'第{ri}行：填了「回款时间」却没填有效「回款金额」，请补回款金额，或清空回款时间')
+            errors.append(f'第{ri}行：填了「回款时间」却没填有效「回款金额」，请补填或清空回款时间')
             continue
 
         plan.append({
-            'ri': ri, 'proj': proj, 'year': year, 'month': month,
+            'ri': ri, 'short_name': short_name,
+            'customer_hint': row_vals['客户名称'],
+            'year': year, 'month': month,
             'est': est, 'actual': actual, 'tax': tax, 'inv_date': inv_date,
             'diff': diff, 'notes': row_vals['备注'],
             'pay_amount': pay_amount, 'pay_date': pay_date,
         })
 
-    # ── 任何错误 → 直接拒绝，整表不写入 ───────────────────────────────────────
+    # ── 任何格式错误 → 整表拒绝 ──────────────────────────────────────────────
     if errors:
         return ok({
-            'rejected': True, 'created': 0, 'updated': 0, 'skipped': skipped,
-            'errors': errors,
-            'message': f'导入未执行：发现 {len(errors)} 处问题，已全部列出。'
-                       f'请按提示修正后重新导入（整表全部通过校验才会写入，不会部分导入）。',
+            'rejected': True, 'created': 0, 'skipped': skipped, 'errors': errors,
+            'message': (f'导入未执行：发现 {len(errors)} 处格式问题，已全部列出。'
+                        f'请按提示修正后重新导入（整表全部通过才会写入）。'),
         })
 
-    # ── 阶段二：整表写入（事务，要么全成功要么全回滚）──────────────────────────
+    # ══ 阶段二：项目匹配 + 写入（事务）══════════════════════════════════════
+    # proj_cache 防止同一批次重复创建同名草稿
+    proj_cache = {}
+    # 按 match_type 收集摘要
+    match_buckets = {'exact': {}, 'exact_multi': {}, 'fuzzy': {}, 'fuzzy_multi': {}, 'created': {}}
+
     created = 0
     with transaction.atomic():
         for p in plan:
-            rec = ARRecord(project=p['proj'], operation_year=p['year'],
+            proj, match_type, warn = _resolve_project_for_import(
+                p['short_name'], p['customer_hint'], '', allowed_depts, user, proj_cache)
+
+            # 权限兜底：只允许操作自己有权的部门（自动创建的草稿项目部门已在函数内限制）
+            if (request.pk_role != 'super_admin'
+                    and proj and proj.delivery_dept not in request.pk_depts):
+                # 找到了但越权 → 退化为自动创建（归入当前用户首个部门）
+                proj_cache_key = (p['short_name'], '')
+                proj = ARProject(
+                    short_name=p['short_name'],
+                    contract_name=p['customer_hint'] or p['short_name'],
+                    delivery_dept=list(request.pk_depts)[0],
+                    is_draft=True,
+                    sales_contact=user.name if user else '待填',
+                    project_manager=user.name if user else '待填',
+                    has_contract='无',
+                )
+                proj.save()
+                match_type = 'created'
+                warn = (f'「{p["short_name"]}」原项目不在您的权限范围内，'
+                        f'已为您在本部门自动创建草稿项目，请核查')
+                proj_cache[proj_cache_key] = (proj, match_type, warn)
+
+            # 记录到摘要 bucket
+            key = proj.short_name
+            bucket = match_buckets.setdefault(match_type, {})
+            if key not in bucket:
+                bucket[key] = {
+                    'short_name': proj.short_name,
+                    'contract_name': proj.contract_name,
+                    'project_id': proj.id,
+                    'is_draft': proj.is_draft,
+                    'matched_to': proj.short_name,
+                    'input': p['short_name'],
+                    'count': 0,
+                    'warn': warn,
+                }
+            bucket[key]['count'] += 1
+
+            rec = ARRecord(project=proj, operation_year=p['year'],
                            operation_month=p['month'], created_by=user)
             if p['est'] is not None and _can_ar_view(request, 'r_estimated_amount'):
                 rec.estimated_amount = p['est']
@@ -1257,9 +1383,36 @@ def ar_record_import(request):
                 rec.recompute_derived()
             created += 1
 
-    tip = '导入后系统已按现规则自动重算未收回金额（不沿用历史手工未收回金额）。'
-    return ok({'created': created, 'updated': 0, 'skipped': skipped, 'errors': [],
-               'recomputed': created, 'tip': tip})
+    # ── 汇总输出 ──────────────────────────────────────────────────────────────
+    def _bucket_list(btype):
+        return list(match_buckets.get(btype, {}).values())
+
+    draft_count = len(_bucket_list('created'))
+    match_detail = {
+        'exact':       _bucket_list('exact'),
+        'exact_multi': _bucket_list('exact_multi'),
+        'fuzzy':       _bucket_list('fuzzy'),
+        'fuzzy_multi': _bucket_list('fuzzy_multi'),
+        'created':     _bucket_list('created'),
+    }
+    warnings = []
+    for btype in ('exact_multi', 'fuzzy', 'fuzzy_multi', 'created'):
+        for item in match_detail[btype]:
+            if item.get('warn'):
+                warnings.append(f'第{item["input"]}：{item["warn"]}')
+
+    tip = '导入后系统已按现规则自动重算未收回金额。'
+    if draft_count:
+        tip += f' 有 {draft_count} 个草稿项目需到「项目台账」补充完善。'
+
+    return ok({
+        'created': created, 'skipped': skipped, 'errors': [],
+        'match_detail': match_detail,
+        'warnings': warnings,
+        'has_draft_projects': draft_count > 0,
+        'draft_count': draft_count,
+        'tip': tip,
+    })
 
 
 @csrf_exempt
@@ -4375,3 +4528,123 @@ def ar_records_batch_assign(request):
     action = f'设置批次号为「{batch_no}」' if batch_no else '清空批次号'
     return ok({'updated': updated, 'invoice_batch_no': batch_no,
                'message': f'{action}，共更新 {updated} 条记录'})
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 客户管理 (customers)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@csrf_exempt
+@pk_required()
+def customers(request):
+    """GET  /ar/customers   — 分页列表
+    POST /ar/customers   — 新增客户
+    """
+    if request.pk_role not in ('super_admin', 'dept_admin', 'user'):
+        return err('无权访问', 403)
+
+    if request.method == 'GET':
+        qs = Customer.objects.all()
+        q = request.GET.get('q', '').strip()
+        if q:
+            qs = qs.filter(Q(name__icontains=q) | Q(contact__icontains=q) | Q(notes__icontains=q))
+        level = request.GET.get('level', '').strip()
+        if level:
+            qs = qs.filter(level=level)
+        page = max(1, int(request.GET.get('page', 1) or 1))
+        size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
+        total = qs.count()
+        rows = [c.to_dict() for c in qs[(page - 1) * size: page * size]]
+        return ok({'items': rows, 'total': total, 'page': page, 'size': size})
+
+    if request.method == 'POST':
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        data = _parse_body(request)
+        name = (data.get('name') or '').strip()
+        if not name:
+            return err('客户名称不能为空')
+        if Customer.objects.filter(name=name).exists():
+            return err(f'客户「{name}」已存在')
+        c = Customer(
+            name=name,
+            level=(data.get('level') or '').strip(),
+            contact=(data.get('contact') or '').strip(),
+            notes=(data.get('notes') or '').strip(),
+        )
+        c.save()
+        return ok(c.to_dict())
+
+    return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def customer_detail(request, pk):
+    """GET /PUT /DELETE  /ar/customers/<pk>"""
+    try:
+        c = Customer.objects.get(pk=pk)
+    except Customer.DoesNotExist:
+        return err('客户不存在', 404)
+
+    if request.method == 'GET':
+        return ok(c.to_dict())
+
+    if request.method == 'PUT':
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        data = _parse_body(request)
+        if 'name' in data:
+            name = (data['name'] or '').strip()
+            if not name:
+                return err('客户名称不能为空')
+            if Customer.objects.filter(name=name).exclude(pk=pk).exists():
+                return err(f'客户名称「{name}」已被其他客户使用')
+            c.name = name
+        for field in ('level', 'contact', 'notes'):
+            if field in data:
+                setattr(c, field, (data[field] or '').strip())
+        c.save()
+        return ok(c.to_dict())
+
+    if request.method == 'DELETE':
+        denied = _delete_denied(request)
+        if denied:
+            return denied
+        c.delete()
+        return ok({'deleted': pk})
+
+    return err('Method not allowed', 405)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 草稿项目（待完善）
+# ──────────────────────────────────────────────────────────────────────────────
+
+@csrf_exempt
+@pk_required()
+def project_drafts(request):
+    """GET /ar/projects/drafts  —  列出所有 is_draft=True 的项目，供人工完善。"""
+    denied = _page_denied(request, 'ar_projects')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+
+    qs = _ar_dept_filter(ARProject.objects.filter(is_draft=True), request)
+    q = request.GET.get('q', '').strip()
+    if q:
+        qs = qs.filter(Q(short_name__icontains=q) | Q(contract_name__icontains=q))
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+
+    page = max(1, int(request.GET.get('page', 1) or 1))
+    size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
+    total = qs.count()
+    perms = get_request_perms(request)
+    rows = [apply_ar_view_mask(p.to_dict(), perms, 'project')
+            for p in qs.order_by('-id')[(page - 1) * size: page * size]]
+    return ok({'items': rows, 'total': total, 'page': page, 'size': size})

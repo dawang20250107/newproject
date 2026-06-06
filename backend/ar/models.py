@@ -9,6 +9,32 @@ from django.core.exceptions import ValidationError
 from paikuan.models import PaikuanUser
 
 
+class Customer(models.Model):
+    """客户主表 — 独立客户实体，可关联多个项目。"""
+    name = models.CharField('客户名称', max_length=200, unique=True, db_index=True)
+    level = models.CharField('客户等级', max_length=50, blank=True, default='')
+    contact = models.CharField('联系人', max_length=200, blank=True, default='')
+    notes = models.TextField('备注', blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ar_customers'
+        ordering = ['name']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'level': self.level,
+            'contact': self.contact,
+            'notes': self.notes,
+            'project_count': self.projects.count(),
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class ARProject(models.Model):
     """项目主表 — 每个合同/项目一行"""
     project_no = models.CharField('项目编号', max_length=20, unique=True, db_index=True)
@@ -35,6 +61,12 @@ class ARProject(models.Model):
                                     blank=True, default='')
     tax_rate = models.DecimalField('税率', max_digits=6, decimal_places=4, default=Decimal('0'))
     notes = models.TextField('备注', blank=True, default='')
+    # ── 智能导入扩展字段 ──────────────────────────────────────────────────────
+    is_draft = models.BooleanField('草稿/待完善', default=False, db_index=True,
+                                   help_text='导入时自动创建的未完善项目；补齐信息后置为 False')
+    customer = models.ForeignKey(Customer, on_delete=models.SET_NULL,
+                                 null=True, blank=True, related_name='projects',
+                                 verbose_name='关联客户')
     created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
                                    null=True, blank=True, related_name='created_projects')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -121,6 +153,9 @@ class ARProject(models.Model):
             'invoice_type': self.invoice_type,
             'tax_rate': str(self.tax_rate),
             'notes': self.notes,
+            'is_draft': self.is_draft,
+            'customer_id': self.customer_id,
+            'customer_name': self.customer.name if self.customer_id else None,
             'created_by_id': self.created_by_id,
             'created_by_name': self.created_by.name if self.created_by else '',
             'created_at': self.created_at.isoformat() if self.created_at else None,
