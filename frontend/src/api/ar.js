@@ -25,6 +25,9 @@ const ar = {
   deleteRecord: id => api.delete(`/ar/records/${id}`),
   // 批量删除：显式 ids，或 {all:true} + 当前筛选(conditions/match 走 params)
   bulkDeleteRecords: (body, params) => api.post('/ar/records/bulk-delete', body, { params }),
+  // 合并开票批次
+  listInvoiceBatches: p => api.get('/ar/records/invoice-batches', { params: p }),
+  batchAssignBatchNo: (d, params) => api.post('/ar/records/batch-assign', d, { params }),
   recordTemplate: () => api.get('/ar/records/template', { responseType: 'blob' }),
   importRecords: fd => api.post('/ar/records/import', fd),
   exportRecords: p => api.get('/ar/records/export', { params: p, responseType: 'blob' }),

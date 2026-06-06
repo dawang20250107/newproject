@@ -170,6 +170,9 @@ class ARRecord(models.Model):
     outstanding_amount = models.DecimalField('未回款金额', max_digits=15, decimal_places=2, default=0)
     due_date = models.DateField('应收日期', db_index=True, null=True, blank=True)
     reconciliation_date = models.DateField('对账日期', null=True, blank=True, db_index=True)
+    invoice_batch_no = models.CharField('开票批次号', max_length=50, blank=True, default='',
+                                        db_index=True,
+                                        help_text='合并开票批次号；相同批次号的记录将合并为一张发票')
     notes = models.TextField('备注', blank=True, default='')
     created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
                                    null=True, blank=True, related_name='created_ar_records')
@@ -385,6 +388,7 @@ class ARRecord(models.Model):
             'reconciliation_status': self.reconciliation_status,
             'invoice_status': self.invoice_status,
             'post_invoice_status': self.post_invoice_status(today),
+            'invoice_batch_no': self.invoice_batch_no,
             'notes': self.notes,
             **st,
             'created_at': self.created_at.isoformat() if self.created_at else None,

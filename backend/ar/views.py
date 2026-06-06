@@ -1002,6 +1002,8 @@ def ar_record_detail(request, pk):
             rec.invoice_date = _normalize_date(data['invoice_date']) or None
         if 'reconciliation_date' in data:
             rec.reconciliation_date = _normalize_date(data['reconciliation_date']) or None
+        if 'invoice_batch_no' in data:
+            rec.invoice_batch_no = (data['invoice_batch_no'] or '').strip()
         if 'notes' in data:
             rec.notes = data['notes'].strip()
         try:
@@ -4264,3 +4266,112 @@ def budget_summary(request):
         'has_alert': actual_paid > actual_coll,
         'by_dept': by_dept_result,
     })
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 合并开票批次 — 按 invoice_batch_no 分组汇总 + 批量打标
+# ──────────────────────────────────────────────────────────────────────────────
+
+@csrf_exempt
+@pk_required()
+def ar_invoice_batches(request):
+    """GET /records/invoice-batches  —  列出所有已标记开票批次及其汇总。
+
+    每个 invoice_batch_no 非空的批次返回：
+      batch_no, count, estimated, invoiced, outstanding, record_ids, dept_names
+    支持 dept / year / month 维度筛选，以及 q（简称/合同名/编号模糊匹配）。
+    """
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+
+    today = datetime.date.today()
+    qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
+    qs = _apply_record_filters(qs, request)
+    qs = _apply_conditions(qs, request, today)
+    # 只看有批次号的记录
+    qs = qs.exclude(invoice_batch_no='')
+
+    # 分组聚合（避免 payments JOIN 行扇出：先算记录级，再单独算已收）
+    base = (qs.values('invoice_batch_no').annotate(
+        count=Count('id'),
+        estimated=Sum('estimated_amount'),
+        invoiced=Sum('actual_invoice_amount'),
+        outstanding=Sum('outstanding_amount', filter=Q(outstanding_amount__gt=0)),
+    ).order_by('invoice_batch_no'))
+
+    collected_map = {
+        g['invoice_batch_no']: (g['s'] or 0)
+        for g in qs.values('invoice_batch_no').annotate(s=Sum('payments__amount'))
+    }
+
+    # 每批次的明细 record_ids 及部门列表（小数据量下内存聚合比子查询清晰）
+    id_dept_map = defaultdict(lambda: {'ids': [], 'depts': set()})
+    for r in qs.values('id', 'invoice_batch_no', 'delivery_dept'):
+        id_dept_map[r['invoice_batch_no']]['ids'].append(r['id'])
+        id_dept_map[r['invoice_batch_no']]['depts'].add(r['delivery_dept'])
+
+    rows = []
+    for g in base:
+        bn = g['invoice_batch_no']
+        meta = id_dept_map[bn]
+        rows.append({
+            'batch_no': bn,
+            'count': g['count'] or 0,
+            'estimated': str(g['estimated'] or 0),
+            'invoiced': str(g['invoiced'] or 0),
+            'outstanding': str(g['outstanding'] or 0),
+            'collected': str(collected_map.get(bn, 0)),
+            'record_ids': sorted(meta['ids']),
+            'dept_names': sorted(meta['depts']),
+        })
+
+    return ok({'batches': rows, 'total': len(rows)})
+
+
+@csrf_exempt
+@pk_required()
+def ar_records_batch_assign(request):
+    """POST /records/batch-assign  —  批量设置 invoice_batch_no。
+
+    Body: { "ids": [1,2,3], "invoice_batch_no": "PF-2026-001" }
+    ids 为空 + all=true 时：对当前筛选全集打标（与 bulk-delete 对齐，但限 5000 条）。
+    invoice_batch_no 传空字符串则清空批次（取消合并）。
+    """
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+
+    data = _parse_body(request)
+    batch_no = (data.get('invoice_batch_no') or '').strip()[:50]
+    all_flag = data.get('all') in (True, 'true', '1')
+    ids = data.get('ids')
+
+    if all_flag:
+        today = datetime.date.today()
+        qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
+        qs = _apply_record_filters(qs, request)
+        qs = _apply_record_state_filters(qs, request, today)
+        qs = _apply_conditions(qs, request, today)
+        if qs.count() > 5000:
+            return err('选中记录超过5000条，请缩小筛选范围后再批量操作')
+        updated = qs.update(invoice_batch_no=batch_no)
+    else:
+        if not ids or not isinstance(ids, list):
+            return err('请传入 ids 数组或 all=true')
+        # 权限：只允许操作自己部门的记录
+        qs = ARRecord.objects.filter(pk__in=[int(i) for i in ids])
+        if request.pk_role != 'super_admin':
+            qs = qs.filter(delivery_dept__in=request.pk_depts)
+        updated = qs.update(invoice_batch_no=batch_no)
+
+    action = f'设置批次号为「{batch_no}」' if batch_no else '清空批次号'
+    return ok({'updated': updated, 'invoice_batch_no': batch_no,
+               'message': f'{action}，共更新 {updated} 条记录'})

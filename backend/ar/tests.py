@@ -1226,3 +1226,81 @@ class ProjectImportRoundtripTests(TestCase):
         self.assertEqual(d['created'], 0, d)
         self.assertEqual(len(d['errors']), 1, d)
         self.assertIn('合同名称', d['errors'][0])
+
+
+class InvoiceBatchTests(TestCase):
+    """合并开票批次号：批量设置、按批次查询汇总、单条编辑。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = '供应链事业部'
+        u = PaikuanUser(phone='13933300001', name='Admin', role='super_admin',
+                        job_title='finance_director', departments=[self.dept],
+                        is_active=True, is_approved=True)
+        u.set_password('Test123456'); u.save()
+        self.token = make_token(u)
+        self.proj = ARProject.objects.create(
+            contract_name='合并开票测试合同', short_name='批次测试项目',
+            delivery_dept=self.dept, sales_contact='S', project_manager='M')
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _rec(self, month, estimated=100000):
+        r = ARRecord(project=self.proj, operation_year=2026, operation_month=month,
+                     estimated_amount=Decimal(str(estimated)))
+        r.save()
+        return r
+
+    def _put(self, url, payload):
+        return self.client.put(url, data=json.dumps(payload),
+                               content_type='application/json', **self.auth())
+
+    def _post(self, url, payload):
+        return self.client.post(url, data=json.dumps(payload),
+                                content_type='application/json', **self.auth())
+
+    def test_batch_assign_by_ids(self):
+        r1 = self._rec(1); r2 = self._rec(2)
+        resp = self._post('/api/pk/ar/records/batch-assign',
+                          {'ids': [r1.id, r2.id], 'invoice_batch_no': 'PF-2026-001'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['updated'], 2)
+        r1.refresh_from_db(); r2.refresh_from_db()
+        self.assertEqual(r1.invoice_batch_no, 'PF-2026-001')
+        self.assertEqual(r2.invoice_batch_no, 'PF-2026-001')
+
+    def test_batch_assign_clear(self):
+        r1 = self._rec(3)
+        r1.invoice_batch_no = 'PF-2026-001'; r1.save()
+        resp = self._post('/api/pk/ar/records/batch-assign',
+                          {'ids': [r1.id], 'invoice_batch_no': ''})
+        self.assertEqual(resp.status_code, 200)
+        r1.refresh_from_db()
+        self.assertEqual(r1.invoice_batch_no, '')
+
+    def test_invoice_batches_endpoint(self):
+        r1 = self._rec(4); r2 = self._rec(5)
+        r1.invoice_batch_no = 'PF-2026-002'; r1.save()
+        r2.invoice_batch_no = 'PF-2026-002'; r2.save()
+        resp = self.client.get('/api/pk/ar/records/invoice-batches', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        batches = resp.json()['data']['batches']
+        self.assertEqual(len(batches), 1)
+        b = batches[0]
+        self.assertEqual(b['batch_no'], 'PF-2026-002')
+        self.assertEqual(b['count'], 2)
+        self.assertAlmostEqual(float(b['estimated']), 200000.0, places=2)
+
+    def test_put_record_sets_batch_no(self):
+        r1 = self._rec(6)
+        resp = self._put(f'/api/pk/ar/records/{r1.id}',
+                         {'invoice_batch_no': 'PF-2026-003'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        r1.refresh_from_db()
+        self.assertEqual(r1.invoice_batch_no, 'PF-2026-003')

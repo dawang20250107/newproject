@@ -95,8 +95,14 @@ const saving = ref(false)
 const recForm = reactive({
   project_id: '', operation_year: yearCST(), operation_month: monthCST(),
   estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
-  invoice_date: '', reconciliation_date: '', account_diff_adjustment: '', notes: '',
+  invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
+  invoice_batch_no: '', notes: '',
 })
+
+// ── 开票批次号批量设置 ──────────────────────────────────────────────────────────
+const showBatchModal = ref(false)
+const batchNoInput = ref('')
+const batchAssigning = ref(false)
 
 const projects = ref([])
 const projectKeyword = ref('')
@@ -320,7 +326,8 @@ function openCreate() {
     project_id: '',
     operation_year: yearCST(), operation_month: monthCST(),
     estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
-    invoice_date: '', reconciliation_date: '', account_diff_adjustment: '', notes: '',
+    invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
+    invoice_batch_no: '', notes: '',
   })
   showModal.value = true
   projectKeyword.value = ''
@@ -335,9 +342,32 @@ function openEdit(rec) {
     tax_amount: rec.tax_amount || '', invoice_date: rec.invoice_date || '',
     reconciliation_date: rec.reconciliation_date || '',
     account_diff_adjustment: rec.account_diff_adjustment || '',
+    invoice_batch_no: rec.invoice_batch_no || '',
     notes: rec.notes,
   })
   showModal.value = true
+}
+
+function openBatchAssign() {
+  batchNoInput.value = ''
+  showBatchModal.value = true
+}
+
+async function confirmBatchAssign() {
+  batchAssigning.value = true
+  try {
+    if (selectAllMatching.value) {
+      await ar.batchAssignBatchNo({ all: true, invoice_batch_no: batchNoInput.value }, reqParams())
+    } else {
+      await ar.batchAssignBatchNo({ ids: [...selectedIds.value], invoice_batch_no: batchNoInput.value })
+    }
+    const action = batchNoInput.value ? `批次号「${batchNoInput.value}」` : '（清空批次）'
+    alert(`已为 ${selectedCount.value} 条记录设置${action}`)
+    showBatchModal.value = false
+    clearSelection()
+    await load()
+  } catch (e) { alert(e?.msg || '设置批次号失败')
+  } finally { batchAssigning.value = false }
 }
 
 async function saveRec() {
@@ -349,7 +379,9 @@ async function saveRec() {
       operation_month: recForm.operation_month, estimated_amount: recForm.estimated_amount || 0,
       actual_invoice_amount: recForm.actual_invoice_amount || null,
       tax_amount: recForm.tax_amount || null, invoice_date: recForm.invoice_date || null,
-      reconciliation_date: recForm.reconciliation_date || null, account_diff_adjustment: recForm.account_diff_adjustment || 0, notes: recForm.notes,
+      reconciliation_date: recForm.reconciliation_date || null, account_diff_adjustment: recForm.account_diff_adjustment || 0,
+      invoice_batch_no: recForm.invoice_batch_no || '',
+      notes: recForm.notes,
     }
     if (editRec.value) await ar.updateRecord(editRec.value.id, payload)
     else await ar.createRecord(payload)
@@ -647,13 +679,16 @@ function clearFilters() {
       </div>
 
       <!-- ══ 数据明细表（全部/对账/开票/回款 跟踪）══ -->
-      <!-- 选择 + 批量删除工具条（选中后出现） -->
-      <div v-if="isDataTab && auth.canDelete && hasSelection" class="bulk-bar">
+      <!-- 选择 + 批量操作工具条（选中后出现） -->
+      <div v-if="isDataTab && hasSelection && (auth.canDelete || auth.canCreate)" class="bulk-bar">
         <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
         <button v-if="pageAllSelected && !selectAllMatching && total > items.length"
           class="bulk-all" @click="selectAllMatching = true">选择全部 {{ total }} 条</button>
         <span v-if="selectAllMatching" class="bulk-all-on">已选中整个筛选集</span>
-        <button class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">
+        <button v-if="auth.canCreate" class="btn btn-ghost btn-sm" style="margin-left:4px" @click="openBatchAssign">
+          设置批次号
+        </button>
+        <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">
           {{ bulkDeleting ? '删除中…' : `删除选中(${selectedCount})` }}
         </button>
         <button class="bulk-cancel" @click="clearSelection">取消</button>
@@ -696,6 +731,7 @@ function clearFilters() {
               </template>
               <!-- invoice -->
               <template v-else-if="activeTab === 'invoice'">
+                <th class="ctr">批次号</th>
                 <SortTh v-if="show('r_estimated_amount')" col="estimated" label="预估金额" class="amt" />
                 <SortTh v-if="show('r_actual_invoice_amount')" col="invoiced" label="实际开票额" class="amt" />
                 <th v-if="show('r_tax_amount')" class="amt">税额</th>
@@ -781,6 +817,10 @@ function clearFilters() {
 
                 <!-- invoice -->
                 <template v-else-if="activeTab === 'invoice'">
+                  <td class="ctr">
+                    <span v-if="rec.invoice_batch_no" class="batch-badge" :title="`合并开票批次：${rec.invoice_batch_no}`">{{ rec.invoice_batch_no }}</span>
+                    <span v-else class="text-sm-muted">—</span>
+                  </td>
                   <td v-if="show('r_estimated_amount')" class="amt text-muted">{{ fmtAmt(rec.estimated_amount) }}</td>
                   <td v-if="show('r_actual_invoice_amount')" class="amt fw">{{ rec.actual_invoice_amount ? fmtAmt(rec.actual_invoice_amount) : '—' }}</td>
                   <td v-if="show('r_tax_amount')" class="amt text-muted">{{ rec.tax_amount ? fmtAmt(rec.tax_amount) : '—' }}</td>
@@ -873,6 +913,7 @@ function clearFilters() {
               </template>
               <!-- invoice -->
               <template v-else-if="activeTab === 'invoice'">
+                <td></td><!-- batch_no -->
                 <td v-if="show('r_estimated_amount')" class="amt">{{ fmtAmt(summaryData.estimated) }}</td>
                 <td v-if="show('r_actual_invoice_amount')" class="amt">{{ fmtAmt(summaryData.invoiced) }}</td>
                 <td v-if="show('r_tax_amount')" class="amt">{{ fmtAmt(summaryData.tax) }}</td>
@@ -1073,6 +1114,10 @@ function clearFilters() {
                 <input v-model="recForm.account_diff_adjustment" type="number" step="0.01" />
               </label>
               <label class="form-field span2">
+                <span>开票批次号<span style="color:var(--muted);font-size:11px;margin-left:4px">合并开票时多条填同一批次号，留空=单独开票</span></span>
+                <input v-model="recForm.invoice_batch_no" placeholder="如 PF-2026-001" />
+              </label>
+              <label class="form-field span2">
                 <span>备注</span>
                 <input v-model="recForm.notes" />
               </label>
@@ -1081,6 +1126,32 @@ function clearFilters() {
           <div class="modal-footer">
             <button class="btn btn-ghost" @click="showModal = false">取消</button>
             <button class="btn btn-primary" :disabled="saving" @click="saveRec">{{ saving ? '保存中…' : '保存' }}</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Batch-Assign Modal — 批量设置开票批次号 -->
+      <div v-if="showBatchModal" class="modal-overlay" @click.self="showBatchModal = false">
+        <div class="modal-box" style="max-width:400px">
+          <div class="modal-header">
+            <h3>设置开票批次号</h3>
+            <button class="modal-close" @click="showBatchModal = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
+              为 <strong>{{ selectedCount }}</strong> 条记录设置同一开票批次号，相同批次号的记录将合并开具一张发票。
+              留空则清除批次号（取消合并）。
+            </p>
+            <label class="form-field span2">
+              <span>批次号</span>
+              <input v-model="batchNoInput" placeholder="如 PF-2026-001（留空=清除批次）" autofocus />
+            </label>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" @click="showBatchModal = false">取消</button>
+            <button class="btn btn-primary" :disabled="batchAssigning" @click="confirmBatchAssign">
+              {{ batchAssigning ? '设置中…' : '确认设置' }}
+            </button>
           </div>
         </div>
       </div>
@@ -1445,6 +1516,9 @@ function clearFilters() {
 .pill-danger { background: rgba(198,40,40,0.1);  color: #c62828; }
 .pill-blue   { background: rgba(21,101,192,0.1); color: #1565c0; }
 .pill-muted  { background: rgba(0,0,0,0.06);     color: var(--muted); }
+
+/* 开票批次号 badge */
+.batch-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px; background: rgba(33,150,243,0.12); color: #1565c0; border: 1px solid rgba(33,150,243,0.2); white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
 
 /* Payment rows */
 .pay-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 7px; border: 1px solid var(--border); background: rgba(255,252,250,0.8); cursor: pointer; transition: all 0.14s; font-size: 12.5px; }
