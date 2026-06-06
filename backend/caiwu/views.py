@@ -2004,9 +2004,9 @@ def _write_matrix_sheet(ws, scope_label, year, level, months, rows):
     calc_fill = PatternFill('solid', fgColor='FBEEE8')   # 计算行底色
     total_fill = PatternFill('solid', fgColor='FFF6EF')  # 合计列底色
     pct_fill = PatternFill('solid', fgColor='F4F7F4')    # 费销比行底色
-    pct_font = Font(size=9, color='5B7763', italic=True)
+    pct_font = Font(size=9, color='5B7763')
     title_font = Font(bold=True, size=14, color='8A3B22')
-    sub_font = Font(size=10, color='9A8170', italic=True)
+    sub_font = Font(size=10, color='9A8170')
     money_fmt = '#,##0;[Red]-#,##0'
     pct_fmt = '0.0%'
 
