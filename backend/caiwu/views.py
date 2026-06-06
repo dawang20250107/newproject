@@ -1721,6 +1721,32 @@ def _last_published_month(bu_list, year):
     return m or 0
 
 
+def _is_expense_ratio_row(name):
+    """成本 / 费用 / 集团管理费 行需展示费销比（当期金额 / 当期总收入）。
+    名称含「成本」或「费用」即覆盖：主营业务成本、税金成本、销售/管理/财务费用、集团管理费用。"""
+    return ('成本' in name) or ('费用' in name)
+
+
+def _attach_expense_ratio(months, rows):
+    """为成本/费用/集团管理费的一级科目行附加费销比：
+      pct        —— 各月 金额/当月总收入（百分数，如 32.5），无收入则 None
+      total_pct  —— 合计金额/合计总收入
+    总收入取「主营业务收入」一级行。原地修改 rows。"""
+    rev = next((r for r in rows if r['l1_name'] == '主营业务收入'), None)
+    if not rev:
+        return
+    rev_vals, rev_total = rev['values'], rev['total']
+    for r in rows:
+        if r.get('is_calculated') or not _is_expense_ratio_row(r['l1_name']):
+            continue
+        pct = []
+        for i in range(len(months)):
+            base = rev_vals[i] if i < len(rev_vals) else 0
+            pct.append(round(r['values'][i] / base * 100, 1) if base else None)
+        r['pct'] = pct
+        r['total_pct'] = round(r['total'] / rev_total * 100, 1) if rev_total else None
+
+
 def _aggregate_matrix(bu_list, year, level):
     """构建「科目 × 月度」矩阵：从1月到已发布的最后一个月，每个节点带各月金额与合计。
     返回 (months, rows)。calculated 行的合计=各月之和（线性，等于年度口径）。"""
@@ -1772,6 +1798,7 @@ def _aggregate_matrix(bu_list, year, level):
                                      for x in l2['l3'].values()]
                 r['children'].append(c)
         rows.append(r)
+    _attach_expense_ratio(months, rows)
     return months, rows
 
 
@@ -1969,9 +1996,12 @@ def _write_matrix_sheet(ws, scope_label, year, level, months, rows):
     head_font = Font(color='FFFFFF', bold=True, size=10.5)
     calc_fill = PatternFill('solid', fgColor='FBEEE8')   # 计算行底色
     total_fill = PatternFill('solid', fgColor='FFF6EF')  # 合计列底色
+    pct_fill = PatternFill('solid', fgColor='F4F7F4')    # 费销比行底色
+    pct_font = Font(size=9, color='5B7763', italic=True)
     title_font = Font(bold=True, size=14, color='8A3B22')
     sub_font = Font(size=10, color='9A8170', italic=True)
     money_fmt = '#,##0;[Red]-#,##0'
+    pct_fmt = '0.0%'
 
     last_lbl = f'{months[-1]}月' if months else '—'
     # 标题行（合并）
@@ -2019,11 +2049,42 @@ def _write_matrix_sheet(ws, scope_label, year, level, months, rows):
         tc.font = Font(bold=True, color='8A3B22', size=10.5)
         tc.fill = total_fill
 
+    def _put_pct(r, pcts, total_pct):
+        """费销比子行：占总收入百分比，紧贴在成本/费用一级行下方。"""
+        cell = ws.cell(r, 1, '↳ 占总收入(费销比)')
+        cell.border = border
+        cell.alignment = Alignment(horizontal='left', vertical='center', indent=0)
+        cell.font = pct_font
+        cell.fill = pct_fill
+        for i in range(1, name_cols):
+            c = ws.cell(r, i + 1, '')
+            c.border = border
+            c.fill = pct_fill
+        for j, p in enumerate(pcts):
+            c = ws.cell(r, name_cols + 1 + j, (p / 100.0) if p is not None else None)
+            if p is not None:
+                c.number_format = pct_fmt
+            c.border = border
+            c.alignment = Alignment(horizontal='right')
+            c.font = pct_font
+            c.fill = pct_fill
+        tc = ws.cell(r, name_cols + 1 + n_periods,
+                     (total_pct / 100.0) if total_pct is not None else None)
+        if total_pct is not None:
+            tc.number_format = pct_fmt
+        tc.border = border
+        tc.alignment = Alignment(horizontal='right')
+        tc.font = pct_font
+        tc.fill = pct_fill
+
     r = hr + 1
     for row in rows:
         _put(r, [row['l1_name']], row['values'], row['total'],
              calc=row.get('is_calculated'), bold=not row.get('is_calculated'))
         r += 1
+        if row.get('pct') is not None:
+            _put_pct(r, row['pct'], row.get('total_pct'))
+            r += 1
         if level >= 2:
             for l2 in row.get('children', []):
                 _put(r, ['', l2['l2_name']], l2['values'], l2['total'])

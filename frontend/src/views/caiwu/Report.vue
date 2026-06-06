@@ -55,7 +55,8 @@ const flatRows = computed(() => {
   const out = []
   for (const l1 of rowsTree.value) {
     out.push({ key: 'l1-' + l1.l1_id, depth: 0, name: l1.l1_name,
-      values: l1.values, total: l1.total, calc: l1.is_calculated })
+      values: l1.values, total: l1.total, calc: l1.is_calculated,
+      pct: l1.pct || null, totalPct: l1.total_pct ?? null })
     for (const l2 of (l1.children || [])) {
       out.push({ key: `l2-${l1.l1_id}-${l2.l2_id}`, depth: 1, name: l2.l2_name,
         values: l2.values, total: l2.total })
@@ -218,10 +219,19 @@ onMounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="r in flatRows" :key="r.key" :class="['mx-row', `d${r.depth}`, { calc: r.calc }]">
-                <td class="mx-name" :style="`padding-left:${10 + r.depth * 16}px`">{{ r.name }}</td>
-                <td v-for="(v, i) in r.values" :key="i" class="mx-num" :class="{ neg: v < 0 }">{{ fmt(v) }}</td>
-                <td class="mx-num mx-total" :class="{ neg: r.total < 0 }">{{ fmt(r.total) }}</td>
+              <tr v-for="r in flatRows" :key="r.key" :class="['mx-row', `d${r.depth}`, { calc: r.calc, 'has-pct': r.pct }]">
+                <td class="mx-name" :style="`padding-left:${10 + r.depth * 16}px`">
+                  {{ r.name }}
+                  <span v-if="r.pct" class="pct-tag">占总收入</span>
+                </td>
+                <td v-for="(v, i) in r.values" :key="i" class="mx-num" :class="{ neg: v < 0 }">
+                  <div class="mx-amt">{{ fmt(v) }}</div>
+                  <div v-if="r.pct" class="mx-pct">{{ r.pct[i] != null ? r.pct[i].toFixed(1) + '%' : '—' }}</div>
+                </td>
+                <td class="mx-num mx-total" :class="{ neg: r.total < 0 }">
+                  <div class="mx-amt">{{ fmt(r.total) }}</div>
+                  <div v-if="r.pct" class="mx-pct">{{ r.totalPct != null ? r.totalPct.toFixed(1) + '%' : '—' }}</div>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -288,4 +298,14 @@ onMounted(() => {
 .mx-row:hover .mx-name { background: #fbf1ec; }
 .mx-num.neg { color: var(--danger); }
 .mx-total { font-weight: 700; }
+
+/* 费销比：成本/费用/集团管理费 行在金额下方加一行占总收入百分比 */
+.mx-pct { font-size: 10px; line-height: 1.2; color: #5b7763; font-weight: 600; margin-top: 1px; }
+.mx-row.has-pct .mx-num { vertical-align: top; }
+.mx-row.has-pct .mx-amt { line-height: 1.3; }
+.pct-tag {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px;
+  font-size: 10px; font-weight: 600; color: #5b7763; background: rgba(91,119,99,0.12);
+  vertical-align: middle;
+}
 </style>
