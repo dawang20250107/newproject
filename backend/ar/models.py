@@ -92,9 +92,9 @@ class ARProject(models.Model):
     }
 
     def _gen_project_no(self):
-        dept_code = self.DEPT_PROJECT_PREFIX.get(self.delivery_dept, '')
-        if not dept_code:
-            raise ValueError('当前部门不生成项目编号')
+        # 部门无对应简码（如导入时无法确定部门的草稿项目）回退用 'XX'，
+        # 保证项目编号始终能生成、不致 500；草稿完善时改对部门会换正式编号前缀。
+        dept_code = self.DEPT_PROJECT_PREFIX.get(self.delivery_dept, '') or 'XX'
         prefix = f'{dept_code}-{datetime.date.today().strftime("%Y%m%d")}-'
         with transaction.atomic():
             # 取当天该部门已有编号的最大序号 +1。用解析后的整数求最大值（而非字符串

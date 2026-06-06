@@ -1220,6 +1220,33 @@ class ProjectImportRoundtripTests(TestCase):
         p = ARProject.objects.get(short_name='南京福佑')
         self.assertEqual(p.contract_name, '南京福佑')   # 回退用项目简称
 
+    def test_same_contract_name_different_short_names_not_merged(self):
+        """1合同多项目：同一合同名下不同项目简称必须各自建档，不能被合并去重
+        （回归：去重主键须为项目简称+部门，而非合同名+部门）。"""
+        headers = ['合同名称*', '项目简称*', '交付部门*', '销售对接人*', '项目负责人*']
+        rows = [
+            ['南京福佑在线电子商务有限公司', '南京福佑', self.dept, '张三', '李四'],
+            ['南京福佑在线电子商务有限公司', '福佑顺心', self.dept, '张三', '李四'],
+        ]
+        resp = self._upload([headers] + rows)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['created'], 2, d)      # 两个项目都应创建
+        self.assertEqual(d['updated'], 0, d)
+        names = set(ARProject.objects.filter(
+            contract_name='南京福佑在线电子商务有限公司').values_list('short_name', flat=True))
+        self.assertEqual(names, {'南京福佑', '福佑顺心'})
+
+    def test_reimport_same_short_name_updates_not_duplicates(self):
+        """同项目简称+部门重复导入应更新而非重复建档。"""
+        headers = ['合同名称*', '项目简称*', '交付部门*', '销售对接人*', '项目负责人*', '业务模式']
+        self._upload([headers, ['合同A', '项目X', self.dept, '张三', '李四', '整车']])
+        resp = self._upload([headers, ['合同A改名', '项目X', self.dept, '王五', '赵六', '零担']])
+        d = resp.json()['data']
+        self.assertEqual(d['created'], 0, d)
+        self.assertEqual(d['updated'], 1, d)
+        self.assertEqual(ARProject.objects.filter(short_name='项目X', delivery_dept=self.dept).count(), 1)
+
     def test_row_with_data_but_no_name_reports_error(self):
         headers = ['合同名称*', '项目简称*', '交付部门*', '销售对接人*', '项目负责人*']
         row = ['', '', self.dept, '张三', '李四']   # 有数据但无名称

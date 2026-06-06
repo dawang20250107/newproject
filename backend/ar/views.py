@@ -820,9 +820,15 @@ def project_import(request):
                 notes=_cv(ri, '备注'),
             )
             # Upsert: update existing project rather than creating a duplicate.
-            # Business key: (contract_name, delivery_dept).
-            existing = ARProject.objects.filter(
-                contract_name=contract_name, delivery_dept=dept).first()
+            # 业务主键以「项目简称 + 交付部门」为准——项目简称是与应收明细对接的唯一桥梁，
+            # 且一个合同可对应多个项目（1合同多项目），故不能用合同名做主键，否则同合同名
+            # 的不同项目会被错误合并、丢失。简称为空时才回退用合同名。
+            if short_name_val:
+                existing = ARProject.objects.filter(
+                    short_name=short_name_val, delivery_dept=dept).first()
+            else:
+                existing = ARProject.objects.filter(
+                    contract_name=contract_name, delivery_dept=dept).first()
             if existing:
                 for k, v in field_vals.items():
                     setattr(existing, k, v)
