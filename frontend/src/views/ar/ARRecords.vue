@@ -503,9 +503,10 @@ async function handleImport(e) {
       if (md.fuzzy?.length) sections.push({ label: `模糊匹配项目（${md.fuzzy.length} 个，请核查）`, warn: true, items: md.fuzzy.map(x => `"${x.short_name}" → 匹配到「${x.matched_to}」（${x.count} 条）`) })
       if (md.fuzzy_multi?.length) sections.push({ label: `⚠ 模糊匹配且多候选（${md.fuzzy_multi.length} 个，请核查）`, warn: true, items: md.fuzzy_multi.map(x => `"${x.short_name}" → 匹配到「${x.matched_to}」（${x.count} 条）${x.warn ? '  ' + x.warn : ''}`) })
       if (md.created?.length) sections.push({ label: `新建草稿项目（${md.created.length} 个，请到项目台账补充完善）`, items: md.created.map(x => `${x.short_name}（${x.count} 条记录已关联）`) })
-      if (d.warnings?.length) sections.push({ label: `导入提示（${d.warnings.length} 条）`, warn: true, items: d.warnings.slice(0, 20), more: d.warnings.length > 20 ? `…共 ${d.warnings.length} 条，已截断` : '' })
+      if (d.warnings?.length) sections.push({ label: `导入提示（${d.warnings.length} 条）`, warn: true, items: d.warnings.slice(0, 50), more: d.warnings.length > 50 ? `…共 ${d.warnings.length} 条，已截断` : '' })
+      if (d.errors?.length) sections.push({ label: `⚠ 部分行写入失败（${d.errors.length} 行，其余已成功）`, warn: true, items: d.errors })
       importResult.value = {
-        ok: true,
+        ok: !d.errors?.length,
         title: `导入完成：创建 ${d.created} 条，跳过空行/示例 ${d.skipped} 行`,
         sections,
       }

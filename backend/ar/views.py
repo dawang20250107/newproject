@@ -1543,6 +1543,7 @@ def ar_record_import(request):
 
     created = 0
     pay_warnings = []          # 回款金额超出预估 → 强制置 0，不阻断导入
+    row_errors = []            # 行级写入异常（已隔离，不影响其他行）
     with transaction.atomic():
         for p in plan:
             proj, match_type, warn = _resolve_project_for_import(
@@ -1585,40 +1586,47 @@ def ar_record_import(request):
                 }
             bucket[key]['count'] += 1
 
-            rec = ARRecord(project=proj, operation_year=p['year'],
-                           operation_month=p['month'], created_by=user)
-            if p['est'] is not None and _can_ar_view(request, 'r_estimated_amount'):
-                rec.estimated_amount = p['est']
-            if _can_ar_view(request, 'r_actual_invoice_amount'):
-                rec.actual_invoice_amount = p['actual']
-            if _can_ar_view(request, 'r_tax_amount'):
-                rec.tax_amount = p['tax']
-            if _can_ar_view(request, 'r_invoice_date'):
-                rec.invoice_date = p['inv_date']
-            if p['diff'] is not None and _can_ar_view(request, 'r_account_diff'):
-                rec.account_diff_adjustment = p['diff']
-            if _can_ar_view(request, 'r_notes'):
-                rec.notes = p['notes']
-            rec.save()
-            if p['pay_amount'] and p['pay_date']:
-                ARPayment.objects.create(ar_record=rec, payment_no=1,
-                                         amount=p['pay_amount'], payment_date=p['pay_date'],
-                                         notes='导入回款')
-                try:
-                    rec.recompute_derived()
-                except ValidationError as ve:
-                    # 回款金额超出预估上账金额 → outstanding 不能为负，强制置 0 并记录警告
-                    ARRecord.objects.filter(pk=rec.pk).update(outstanding_amount=Decimal('0'))
-                    vmsg = (ve.messages[0] if getattr(ve, 'messages', None) else str(ve))
-                    pay_warnings.append(
-                        f'第{p["ri"]}行（{p["short_name"]}）：回款金额超出预估上账金额，'
-                        f'未收回金额已自动置 0，请核查。详情：{vmsg}'
-                    )
-            created += 1
+            # 每行独立保存点：单行写入异常只回滚该行，不会污染/中断整批事务
+            try:
+                with transaction.atomic():
+                    rec = ARRecord(project=proj, operation_year=p['year'],
+                                   operation_month=p['month'], created_by=user)
+                    if p['est'] is not None and _can_ar_view(request, 'r_estimated_amount'):
+                        rec.estimated_amount = p['est']
+                    if _can_ar_view(request, 'r_actual_invoice_amount'):
+                        rec.actual_invoice_amount = p['actual']
+                    if _can_ar_view(request, 'r_tax_amount'):
+                        rec.tax_amount = p['tax']
+                    if _can_ar_view(request, 'r_invoice_date'):
+                        rec.invoice_date = p['inv_date']
+                    if p['diff'] is not None and _can_ar_view(request, 'r_account_diff'):
+                        rec.account_diff_adjustment = p['diff']
+                    if _can_ar_view(request, 'r_notes'):
+                        rec.notes = p['notes']
+                    # 导入态：允许回款超过预估时把未收金额夹到 0（信号链也读此标记），
+                    # 避免「超收」这一正常业务把整表导入回滚成 500。
+                    rec._import_clamp = True
+                    rec.save()
+                    if p['pay_amount'] and p['pay_date']:
+                        base = (rec.estimated_amount or Decimal('0')) + (rec.account_diff_adjustment or Decimal('0'))
+                        over = p['pay_amount'] > base
+                        ARPayment.objects.create(ar_record=rec, payment_no=1,
+                                                 amount=p['pay_amount'], payment_date=p['pay_date'],
+                                                 notes='导入回款')
+                        if over:
+                            pay_warnings.append(
+                                f'【{p["short_name"]}】第{p["ri"]}行：回款 {p["pay_amount"]} '
+                                f'超过预估上账+账实差额 {base}，未收金额已自动置 0，请核查。'
+                            )
+                created += 1
+            except Exception as ex:  # noqa: BLE001 — 行级兜底，避免单行异常中断整批
+                bucket[key]['count'] -= 1
+                row_errors.append(f'第{p["ri"]}行（{p["short_name"]}）：写入失败 — {ex}')
 
     # ── 汇总输出 ──────────────────────────────────────────────────────────────
     def _bucket_list(btype):
-        return list(match_buckets.get(btype, {}).values())
+        # 行级写入失败会把 count 减回，过滤掉 count<=0 的空壳，避免摘要里出现 0 条项
+        return [v for v in match_buckets.get(btype, {}).values() if v['count'] > 0]
 
     draft_count = len(_bucket_list('created'))
     match_detail = {
@@ -1640,7 +1648,7 @@ def ar_record_import(request):
         tip += f' 有 {draft_count} 个草稿项目需到「项目台账」补充完善。'
 
     return ok({
-        'created': created, 'skipped': skipped, 'errors': [],
+        'created': created, 'skipped': skipped, 'errors': row_errors,
         'match_detail': match_detail,
         'warnings': warnings,
         'has_draft_projects': draft_count > 0,

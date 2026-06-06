@@ -369,14 +369,19 @@ class ARRecord(models.Model):
         adjusted_base = base + adj
         outstanding = adjusted_base - total_paid
         if outstanding < Decimal('0'):
-            # 带出真实算式，便于核对究竟是哪个值导致为负（预估/调整/累计回款）
-            def _f(v):
-                return f'{v:,.2f}'
-            raise ValidationError(
-                f'未收回金额不能为负：预估上账 {_f(base)} + 账实差额 {_f(adj)} '
-                f'− 累计回款 {_f(total_paid)} = {_f(outstanding)}。'
-                f'请核对预估上账金额或账实差额调整。'
-            )
+            # 批量导入场景（_import_clamp）：回款超过预估属正常业务（超收/预估未更新），
+            # 夹到 0 而非抛错，避免整表导入被单行回滚（信号链也走这条分支）。
+            if getattr(self, '_import_clamp', False):
+                outstanding = Decimal('0')
+            else:
+                # 带出真实算式，便于核对究竟是哪个值导致为负（预估/调整/累计回款）
+                def _f(v):
+                    return f'{v:,.2f}'
+                raise ValidationError(
+                    f'未收回金额不能为负：预估上账 {_f(base)} + 账实差额 {_f(adj)} '
+                    f'− 累计回款 {_f(total_paid)} = {_f(outstanding)}。'
+                    f'请核对预估上账金额或账实差额调整。'
+                )
         self.outstanding_amount = outstanding
         self.tax_amount = self._compute_tax()
         if save:
