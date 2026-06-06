@@ -3,6 +3,7 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS } from '../../constants.js'
 import ar from '../../api/ar.js'
+import { downloadBlob } from '../../utils/download.js'
 
 const auth = useAuthStore()
 const items = ref([])
@@ -258,7 +259,7 @@ async function save() {
 }
 
 async function remove(item) {
-  if (!confirm(`确定删除项目「${item.short_name || item.contract_name}」？`)) return
+  if (!confirm(`确定删除项目「${item.short_name || item.contract_name}」？\n⚠ 该项目下的应收明细和回款记录将一并永久删除，不可恢复。`)) return
   try { await ar.deleteProject(item.id); reloadAll() }
   catch (e) { alert(e?.msg || '删除失败') }
 }
@@ -285,10 +286,10 @@ async function completeDraft(item) {
 const isDraftEdit = computed(() => !!(editItem.value?.is_draft))
 
 async function downloadTemplate() {
-  const res = await ar.projectTemplate()
-  const url = URL.createObjectURL(res)
-  const a = document.createElement('a'); a.href = url; a.download = '项目信息导入模板.xlsx'; a.click()
-  URL.revokeObjectURL(url)
+  try {
+    const res = await ar.projectTemplate()
+    downloadBlob(res, '项目信息导入模板.xlsx')
+  } catch (e) { alert(e?.msg || '模板下载失败') }
 }
 
 async function handleImport(e) {
@@ -313,9 +314,7 @@ async function exportData() {
   exporting.value = true
   try {
     const res = await ar.exportProjects(filters)
-    const url = URL.createObjectURL(res)
-    const a = document.createElement('a'); a.href = url; a.download = '项目信息.xlsx'; a.click()
-    URL.revokeObjectURL(url)
+    downloadBlob(res, '项目信息.xlsx')
   } catch (e) { alert(e?.msg || '导出失败')
   } finally { exporting.value = false }
 }

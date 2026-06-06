@@ -5,6 +5,7 @@ import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact, fmtMoney } from '../../utils/format.js'
+import { downloadBlob } from '../../utils/download.js'
 import { useServerSort } from '../../composables/useServerSort.js'
 import SortTh from '../../components/ar/SortTh.vue'
 import FilterPanel from '../../components/ar/FilterPanel.vue'
@@ -262,9 +263,7 @@ async function exportPayments() {
   payExporting.value = true
   try {
     const res = await ar.exportPaymentLedger(payFilters)
-    const url = URL.createObjectURL(res)
-    const a = document.createElement('a'); a.href = url; a.download = '回款流水.xlsx'; a.click()
-    URL.revokeObjectURL(url)
+    downloadBlob(res, '回款流水.xlsx')
   } catch (e) { alert(e?.msg || '导出失败')
   } finally { payExporting.value = false }
 }
@@ -477,10 +476,10 @@ async function deletePayment(rec, pay) {
 }
 
 async function downloadTemplate() {
-  const res = await ar.recordTemplate()
-  const url = URL.createObjectURL(res)
-  const a = document.createElement('a'); a.href = url; a.download = '应收账款明细导入模板.xlsx'; a.click()
-  URL.revokeObjectURL(url)
+  try {
+    const res = await ar.recordTemplate()
+    downloadBlob(res, '应收账款明细导入模板.xlsx')
+  } catch (e) { alert(e?.msg || '模板下载失败') }
 }
 
 async function handleImport(e) {
@@ -520,9 +519,7 @@ async function exportData() {
   exporting.value = true
   try {
     const res = await ar.exportRecords(reqParams())
-    const url = URL.createObjectURL(res)
-    const a = document.createElement('a'); a.href = url; a.download = '应收账款明细.xlsx'; a.click()
-    URL.revokeObjectURL(url)
+    downloadBlob(res, '应收账款明细.xlsx')
   } catch (e) { alert(e?.msg || '导出失败')
   } finally { exporting.value = false }
 }

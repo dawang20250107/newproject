@@ -619,7 +619,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           <div class="modal-header">
             <div>
               <h3>{{ editItem ? '编辑' : '新增' }}{{ modalType === 'collection' ? '收款' : '付款' }}预算</h3>
-              <div style="font-size:12px;color:var(--muted);margin-top:2px">{{ year }}年{{ month }}月</div>
+              <div style="font-size:12px;color:var(--muted);margin-top:2px">{{ periodLabel }}</div>
             </div>
             <button class="modal-close" @click="showModal = false">✕</button>
           </div>

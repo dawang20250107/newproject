@@ -5,6 +5,7 @@ import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
+import { downloadBlob } from '../../utils/download.js'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -225,10 +226,10 @@ async function delWriteoff(w) {
 
 // ── template / import / export ────────────────────────────────────────────────
 async function downloadTemplate() {
-  const res = await ar.advanceTemplate()
-  const url = URL.createObjectURL(res)
-  const a = document.createElement('a'); a.href = url; a.download = '预收预付导入模板.xlsx'; a.click()
-  URL.revokeObjectURL(url)
+  try {
+    const res = await ar.advanceTemplate()
+    downloadBlob(res, '预收预付导入模板.xlsx')
+  } catch (e) { alert(e?.msg || '模板下载失败') }
 }
 async function handleImport(e) {
   const f = e.target.files?.[0]; if (!f) return
@@ -247,9 +248,7 @@ async function exportData() {
   exporting.value = true
   try {
     const res = await ar.exportAdvances({ direction: direction.value, ...filters })
-    const url = URL.createObjectURL(res)
-    const a = document.createElement('a'); a.href = url; a.download = `${dirLabel.value}明细.xlsx`; a.click()
-    URL.revokeObjectURL(url)
+    downloadBlob(res, `${dirLabel.value}明细.xlsx`)
   } catch (e) { alert(e?.msg || '导出失败') }
   finally { exporting.value = false }
 }
