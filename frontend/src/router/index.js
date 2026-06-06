@@ -10,6 +10,7 @@ const routes = [
   { path: '/stats', component: () => import('../views/Stats.vue'), meta: { page: 'stats' } },
   // AR module
   { path: '/ar/projects', component: () => import('../views/ar/ARProjects.vue'), meta: { page: 'ar_projects' } },
+  { path: '/ar/contracts', component: () => import('../views/ar/ARContracts.vue'), meta: { page: 'ar_projects' } },
   { path: '/ar/records', component: () => import('../views/ar/ARRecords.vue'), meta: { page: 'ar_records' } },
   { path: '/ar/advances', component: () => import('../views/ar/Advances.vue'), meta: { page: 'ar_advance' } },
   { path: '/ar/analytics', component: () => import('../views/ar/ARAnalytics.vue'), meta: { page: 'ar_analytics' } },

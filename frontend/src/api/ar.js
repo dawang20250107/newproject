@@ -47,6 +47,13 @@ const ar = {
   updateCustomer: (id, d) => api.put(`/ar/customers/${id}`, d),
   deleteCustomer: id => api.delete(`/ar/customers/${id}`),
 
+  // 合同 (contracts)
+  listContracts: p => api.get('/ar/contracts', { params: p }),
+  createContract: d => api.post('/ar/contracts', d),
+  getContract: id => api.get(`/ar/contracts/${id}`),
+  updateContract: (id, d) => api.put(`/ar/contracts/${id}`, d),
+  deleteContract: id => api.delete(`/ar/contracts/${id}`),
+
   // 草稿项目
   listDraftProjects: p => api.get('/ar/projects/drafts', { params: p }),
 

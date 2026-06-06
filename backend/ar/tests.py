@@ -1427,3 +1427,65 @@ class ContractAndImportAmbiguityTests(TestCase):
         self.assertFalse(d.get('rejected'), d)
         self.assertEqual(d['created'], 2)
         self.assertEqual(ARRecord.objects.filter(project=p, operation_month=1).count(), 2)
+
+    # ── 合同 CRUD API（含 parties / projects 关联同步）─────────────────────────
+    def _cpost(self, url, payload):
+        return self.client.post(url, data=json.dumps(payload),
+                                content_type='application/json', **self.auth())
+
+    def _cput(self, url, payload):
+        return self.client.put(url, data=json.dumps(payload),
+                               content_type='application/json', **self.auth())
+
+    def test_contract_api_create_with_links(self):
+        c1 = Customer.objects.create(name='API客户甲')
+        c2 = Customer.objects.create(name='API客户乙')
+        p1 = self._proj('API项目A'); p2 = self._proj('API项目B')
+        resp = self._cpost('/api/pk/ar/contracts', {
+            'name': 'API合同', 'delivery_dept': self.dept, 'amount': '500000',
+            'parties': [{'customer_id': c1.id, 'role': 'main', 'share': '70'},
+                        {'customer_id': c2.id, 'role': 'sub', 'share': '30'}],
+            'projects': [{'project_id': p1.id, 'is_primary': True},
+                         {'project_id': p2.id, 'is_primary': False}],
+        })
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(len(d['parties']), 2)
+        self.assertEqual(len(d['projects']), 2)
+        ct = Contract.objects.get(pk=d['id'])
+        self.assertEqual(ct.customers.count(), 2)
+        self.assertEqual(ct.projects.count(), 2)
+
+    def test_contract_api_update_replaces_parties(self):
+        c1 = Customer.objects.create(name='U客户甲')
+        c2 = Customer.objects.create(name='U客户乙')
+        ct = Contract.objects.create(name='U合同', delivery_dept=self.dept)
+        ContractParty.objects.create(contract=ct, customer=c1, role='main')
+        resp = self._cput(f'/api/pk/ar/contracts/{ct.id}', {
+            'parties': [{'customer_id': c2.id, 'role': 'main'}],
+        })
+        self.assertEqual(resp.status_code, 200, resp.content)
+        ct.refresh_from_db()
+        self.assertEqual(list(ct.customers.values_list('name', flat=True)), ['U客户乙'])
+
+    def test_contract_api_partial_update_keeps_links(self):
+        c1 = Customer.objects.create(name='K客户')
+        ct = Contract.objects.create(name='K合同', delivery_dept=self.dept)
+        ContractParty.objects.create(contract=ct, customer=c1, role='main')
+        # 不传 parties/projects → 关联不应被清空
+        resp = self._cput(f'/api/pk/ar/contracts/{ct.id}', {'notes': '仅改备注'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        ct.refresh_from_db()
+        self.assertEqual(ct.customers.count(), 1)
+        self.assertEqual(ct.notes, '仅改备注')
+
+    def test_contract_api_list_and_delete(self):
+        ct = Contract.objects.create(name='L合同', delivery_dept=self.dept)
+        Customer.objects.create(name='L客户')
+        resp = self.client.get('/api/pk/ar/contracts', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(any(x['name'] == 'L合同' for x in resp.json()['data']['items']))
+        # delete
+        resp2 = self.client.delete(f'/api/pk/ar/contracts/{ct.id}', **self.auth())
+        self.assertEqual(resp2.status_code, 200, resp2.content)
+        self.assertFalse(Contract.objects.filter(pk=ct.id).exists())

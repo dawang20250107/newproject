@@ -15,6 +15,10 @@ urlpatterns = [
     path('customers', views.customers),
     path('customers/<int:pk>', views.customer_detail),
 
+    # Contracts
+    path('contracts', views.contracts),
+    path('contracts/<int:pk>', views.contract_detail),
+
     # AR Records
     path('records/date-bounds', views.ar_records_date_bounds),
     path('records', views.ar_records),
