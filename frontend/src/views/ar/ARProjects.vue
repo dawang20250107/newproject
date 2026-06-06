@@ -672,7 +672,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     <!-- 导入结果弹窗 -->
     <Teleport to="body">
       <div v-if="importResult" class="modal-overlay" @click.self="importResult = null">
-        <div class="modal-box" style="max-width:600px">
+        <div class="modal-box" style="max-width:800px">
           <div class="modal-header">
             <h3 :class="importResult.ok ? 'imp-ok' : 'imp-fail'">{{ importResult.ok ? '✓ ' : '✕ ' }}{{ importResult.title }}</h3>
             <button class="modal-close" @click="importResult = null">✕</button>
@@ -893,11 +893,14 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 /* 导入结果弹窗 */
 .imp-ok { color: #2e7d32; }
 .imp-fail { color: #c62828; }
-.imp-body { max-height: 60vh; overflow-y: auto; }
-.imp-section { margin-bottom: 14px; }
-.imp-sec-label { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 5px; padding: 3px 8px; border-radius: 6px; background: rgba(0,0,0,0.04); }
+.imp-body { max-height: calc(82vh - 130px); overflow-y: auto; padding-right: 4px; scrollbar-width: thin; }
+.imp-body::-webkit-scrollbar { width: 6px; }
+.imp-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.imp-section { margin-bottom: 16px; }
+.imp-sec-label { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 6px; padding: 4px 10px; border-radius: 6px; background: rgba(0,0,0,0.04); }
 .imp-sec-label.imp-sec-warn { background: rgba(230,81,0,0.08); color: #e65100; }
-.imp-sec-list { list-style: none; margin: 0; padding: 0 0 0 12px; display: flex; flex-direction: column; gap: 3px; }
-.imp-sec-list li { font-size: 12.5px; color: var(--text); line-height: 1.5; word-break: break-all; }
+.imp-sec-list { list-style: none; margin: 0; padding: 0 0 0 10px; display: flex; flex-direction: column; gap: 4px; }
+.imp-sec-list li { font-size: 12.5px; color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-all; border-bottom: 1px dashed rgba(0,0,0,0.06); padding-bottom: 4px; }
+.imp-sec-list li:last-child { border-bottom: none; }
 .imp-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 12px 0; }
 </style>

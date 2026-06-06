@@ -1481,6 +1481,22 @@ def ar_record_import(request):
             errors.append(f'第{ri}行：填了「回款时间」却没填有效「回款金额」，请补填或清空回款时间')
             continue
 
+        # 超收检查：回款金额 > 预估上账+账实差额 → 未收余额将为负，整表拒绝并给出指引
+        if pay_amount and pay_amount > Decimal('0'):
+            pay_base = (est or Decimal('0')) + (diff or Decimal('0'))
+            if pay_amount > pay_base:
+                outstanding_after = pay_base - pay_amount
+                errors.append(
+                    f'第{ri}行（{short_name}）：回款金额 {pay_amount} 元'
+                    f' > 预估上账{(" + 账实差额调整" if diff else "")} {pay_base} 元，'
+                    f'未收余额将为 {outstanding_after:.2f} 元（负数），导入被拒绝。\n'
+                    f'    ① 核查金额是否有误，修正后重新导入\n'
+                    f'    ② 先不填回款列，导入明细后再在「录入回款」里手动补录\n'
+                    f'    ③ 如有账实差额，在「账实差额调整」列填 {(pay_amount - pay_base):.2f}'
+                    f'，使未收归零'
+                )
+                continue
+
         plan.append({
             'ri': ri, 'short_name': short_name,
             'project_no': row_vals['项目编号'],
@@ -1542,8 +1558,7 @@ def ar_record_import(request):
     match_buckets = {'exact': {}, 'exact_multi': {}, 'fuzzy': {}, 'fuzzy_multi': {}, 'created': {}}
 
     created = 0
-    pay_warnings = []          # 回款金额超出预估 → 强制置 0，不阻断导入
-    row_errors = []            # 行级写入异常（已隔离，不影响其他行）
+    pay_warnings = []          # 回款超额行（阶段一已拦截，此处仅作双重保险记录）
     with transaction.atomic():
         for p in plan:
             proj, match_type, warn = _resolve_project_for_import(
@@ -1586,42 +1601,26 @@ def ar_record_import(request):
                 }
             bucket[key]['count'] += 1
 
-            # 每行独立保存点：单行写入异常只回滚该行，不会污染/中断整批事务
-            try:
-                with transaction.atomic():
-                    rec = ARRecord(project=proj, operation_year=p['year'],
-                                   operation_month=p['month'], created_by=user)
-                    if p['est'] is not None and _can_ar_view(request, 'r_estimated_amount'):
-                        rec.estimated_amount = p['est']
-                    if _can_ar_view(request, 'r_actual_invoice_amount'):
-                        rec.actual_invoice_amount = p['actual']
-                    if _can_ar_view(request, 'r_tax_amount'):
-                        rec.tax_amount = p['tax']
-                    if _can_ar_view(request, 'r_invoice_date'):
-                        rec.invoice_date = p['inv_date']
-                    if p['diff'] is not None and _can_ar_view(request, 'r_account_diff'):
-                        rec.account_diff_adjustment = p['diff']
-                    if _can_ar_view(request, 'r_notes'):
-                        rec.notes = p['notes']
-                    # 导入态：允许回款超过预估时把未收金额夹到 0（信号链也读此标记），
-                    # 避免「超收」这一正常业务把整表导入回滚成 500。
-                    rec._import_clamp = True
-                    rec.save()
-                    if p['pay_amount'] and p['pay_date']:
-                        base = (rec.estimated_amount or Decimal('0')) + (rec.account_diff_adjustment or Decimal('0'))
-                        over = p['pay_amount'] > base
-                        ARPayment.objects.create(ar_record=rec, payment_no=1,
-                                                 amount=p['pay_amount'], payment_date=p['pay_date'],
-                                                 notes='导入回款')
-                        if over:
-                            pay_warnings.append(
-                                f'【{p["short_name"]}】第{p["ri"]}行：回款 {p["pay_amount"]} '
-                                f'超过预估上账+账实差额 {base}，未收金额已自动置 0，请核查。'
-                            )
-                created += 1
-            except Exception as ex:  # noqa: BLE001 — 行级兜底，避免单行异常中断整批
-                bucket[key]['count'] -= 1
-                row_errors.append(f'第{p["ri"]}行（{p["short_name"]}）：写入失败 — {ex}')
+            rec = ARRecord(project=proj, operation_year=p['year'],
+                           operation_month=p['month'], created_by=user)
+            if p['est'] is not None and _can_ar_view(request, 'r_estimated_amount'):
+                rec.estimated_amount = p['est']
+            if _can_ar_view(request, 'r_actual_invoice_amount'):
+                rec.actual_invoice_amount = p['actual']
+            if _can_ar_view(request, 'r_tax_amount'):
+                rec.tax_amount = p['tax']
+            if _can_ar_view(request, 'r_invoice_date'):
+                rec.invoice_date = p['inv_date']
+            if p['diff'] is not None and _can_ar_view(request, 'r_account_diff'):
+                rec.account_diff_adjustment = p['diff']
+            if _can_ar_view(request, 'r_notes'):
+                rec.notes = p['notes']
+            rec.save()
+            if p['pay_amount'] and p['pay_date']:
+                ARPayment.objects.create(ar_record=rec, payment_no=1,
+                                         amount=p['pay_amount'], payment_date=p['pay_date'],
+                                         notes='导入回款')
+            created += 1
 
     # ── 汇总输出 ──────────────────────────────────────────────────────────────
     def _bucket_list(btype):
@@ -1648,7 +1647,7 @@ def ar_record_import(request):
         tip += f' 有 {draft_count} 个草稿项目需到「项目台账」补充完善。'
 
     return ok({
-        'created': created, 'skipped': skipped, 'errors': row_errors,
+        'created': created, 'skipped': skipped, 'errors': [],
         'match_detail': match_detail,
         'warnings': warnings,
         'has_draft_projects': draft_count > 0,

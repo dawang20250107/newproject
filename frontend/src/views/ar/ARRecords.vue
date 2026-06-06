@@ -503,10 +503,9 @@ async function handleImport(e) {
       if (md.fuzzy?.length) sections.push({ label: `模糊匹配项目（${md.fuzzy.length} 个，请核查）`, warn: true, items: md.fuzzy.map(x => `"${x.short_name}" → 匹配到「${x.matched_to}」（${x.count} 条）`) })
       if (md.fuzzy_multi?.length) sections.push({ label: `⚠ 模糊匹配且多候选（${md.fuzzy_multi.length} 个，请核查）`, warn: true, items: md.fuzzy_multi.map(x => `"${x.short_name}" → 匹配到「${x.matched_to}」（${x.count} 条）${x.warn ? '  ' + x.warn : ''}`) })
       if (md.created?.length) sections.push({ label: `新建草稿项目（${md.created.length} 个，请到项目台账补充完善）`, items: md.created.map(x => `${x.short_name}（${x.count} 条记录已关联）`) })
-      if (d.warnings?.length) sections.push({ label: `导入提示（${d.warnings.length} 条）`, warn: true, items: d.warnings.slice(0, 50), more: d.warnings.length > 50 ? `…共 ${d.warnings.length} 条，已截断` : '' })
-      if (d.errors?.length) sections.push({ label: `⚠ 部分行写入失败（${d.errors.length} 行，其余已成功）`, warn: true, items: d.errors })
+      if (d.warnings?.length) sections.push({ label: `导入提示（${d.warnings.length} 条）`, warn: true, items: d.warnings.slice(0, 80), more: d.warnings.length > 80 ? `…共 ${d.warnings.length} 条，已截断` : '' })
       importResult.value = {
-        ok: !d.errors?.length,
+        ok: true,
         title: `导入完成：创建 ${d.created} 条，跳过空行/示例 ${d.skipped} 行`,
         sections,
       }
@@ -1261,7 +1260,7 @@ function clearFilters() {
 
       <!-- 导入结果弹窗 -->
       <div v-if="importResult" class="modal-overlay" @click.self="importResult = null">
-        <div class="modal-box" style="max-width:600px">
+        <div class="modal-box" style="max-width:800px">
           <div class="modal-header">
             <h3 :class="importResult.ok ? 'imp-ok' : 'imp-fail'">{{ importResult.ok ? '✓ ' : '✕ ' }}{{ importResult.title }}</h3>
             <button class="modal-close" @click="importResult = null">✕</button>
@@ -1579,12 +1578,15 @@ function clearFilters() {
 /* 导入结果弹窗 */
 .imp-ok { color: #2e7d32; }
 .imp-fail { color: #c62828; }
-.imp-body { max-height: 60vh; overflow-y: auto; }
-.imp-section { margin-bottom: 14px; }
-.imp-sec-label { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 5px; padding: 3px 8px; border-radius: 6px; background: rgba(0,0,0,0.04); }
+.imp-body { max-height: calc(82vh - 130px); overflow-y: auto; padding-right: 4px; scrollbar-width: thin; }
+.imp-body::-webkit-scrollbar { width: 6px; }
+.imp-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.imp-section { margin-bottom: 16px; }
+.imp-sec-label { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 6px; padding: 4px 10px; border-radius: 6px; background: rgba(0,0,0,0.04); }
 .imp-sec-label.imp-sec-warn { background: rgba(230,81,0,0.08); color: #e65100; }
-.imp-sec-list { list-style: none; margin: 0; padding: 0 0 0 12px; display: flex; flex-direction: column; gap: 3px; }
-.imp-sec-list li { font-size: 12.5px; color: var(--text); line-height: 1.5; word-break: break-all; }
+.imp-sec-list { list-style: none; margin: 0; padding: 0 0 0 10px; display: flex; flex-direction: column; gap: 4px; }
+.imp-sec-list li { font-size: 12.5px; color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-all; border-bottom: 1px dashed rgba(0,0,0,0.06); padding-bottom: 4px; }
+.imp-sec-list li:last-child { border-bottom: none; }
 .imp-more { color: var(--muted); font-style: italic; }
 .imp-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 12px 0; }
 </style>
