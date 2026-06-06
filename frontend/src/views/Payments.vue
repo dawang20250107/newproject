@@ -33,6 +33,55 @@ const filters = reactive({
   page: 1, size: 50,
 })
 
+// ── date preset selector ──────────────────────────────────────────────────────
+const datePreset = ref('')
+
+function _d(y, m, d) {
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+}
+function _addDays(ymd, n) {
+  const [y, mo, d] = ymd.split('-').map(Number)
+  const dt = new Date(y, mo - 1, d + n)
+  return _d(dt.getFullYear(), dt.getMonth() + 1, dt.getDate())
+}
+function _monthEnd(y, m) { return new Date(y, m, 0).getDate() }  // m is 1-indexed
+
+function dateRangeFor(key) {
+  const [y, mo, d] = today.split('-').map(Number)
+  const dow = new Date(y, mo - 1, d).getDay()          // 0=Sun
+  const monday = _addDays(today, dow === 0 ? -6 : 1 - dow)
+  const q = Math.floor((mo - 1) / 3)                   // 0-indexed quarter
+  switch (key) {
+    case 'today':        return [today, today]
+    case 'this_week':    return [monday, _addDays(monday, 6)]
+    case 'this_month':   return [_d(y, mo, 1), _d(y, mo, _monthEnd(y, mo))]
+    case 'this_quarter': { const qs = q * 3 + 1; return [_d(y, qs, 1), _d(y, qs + 2, _monthEnd(y, qs + 2))] }
+    case 'this_year':    return [_d(y, 1, 1), _d(y, 12, 31)]
+    case 'last_week':    return [_addDays(monday, -7), _addDays(monday, -1)]
+    case 'last_month':   { const lm = mo === 1 ? 12 : mo - 1, ly = mo === 1 ? y - 1 : y; return [_d(ly, lm, 1), _d(ly, lm, _monthEnd(ly, lm))] }
+    case 'last_quarter': { const lq = q === 0 ? 3 : q - 1, ly = q === 0 ? y - 1 : y, lqs = lq * 3 + 1; return [_d(ly, lqs, 1), _d(ly, lqs + 2, _monthEnd(ly, lqs + 2))] }
+    case 'last_year':    return [_d(y - 1, 1, 1), _d(y - 1, 12, 31)]
+    case 'next_week':    return [_addDays(monday, 7), _addDays(monday, 13)]
+    case 'next_month':   { const nm = mo === 12 ? 1 : mo + 1, ny = mo === 12 ? y + 1 : y; return [_d(ny, nm, 1), _d(ny, nm, _monthEnd(ny, nm))] }
+    case 'next_quarter': { const nq = (q + 1) % 4, ny = q === 3 ? y + 1 : y, nqs = nq * 3 + 1; return [_d(ny, nqs, 1), _d(ny, nqs + 2, _monthEnd(ny, nqs + 2))] }
+    case 'next_year':    return [_d(y + 1, 1, 1), _d(y + 1, 12, 31)]
+    case 'last7':        return [_addDays(today, -6), today]
+    case 'last30':       return [_addDays(today, -29), today]
+    case 'last90':       return [_addDays(today, -89), today]
+    default:             return ['', '']
+  }
+}
+
+function applyDatePreset() {
+  if (datePreset.value === '' || datePreset.value === 'custom') {
+    if (datePreset.value === '') { filters.start_date = ''; filters.end_date = '' }
+  } else {
+    const [s, e] = dateRangeFor(datePreset.value)
+    filters.start_date = s; filters.end_date = e
+  }
+  filters.page = 1; load()
+}
+
 // Show only departments within the user's currently-active scope.
 const deptChoices = computed(() => {
   const scope = auth.effectiveDepts
@@ -196,6 +245,7 @@ async function onDelete(p) {
 function search() { filters.page = 1; load() }
 function resetFilters() {
   Object.assign(filters, { q: '', dept: '', status: '', start_date: '', end_date: '', page: 1 })
+  datePreset.value = ''
   load()
 }
 
@@ -240,8 +290,42 @@ function setPage(p) { filters.page = p; load() }
           <option value="adjusted">📋 计划调整</option>
           <option value="overdue">⚠ 已逾期</option>
         </select>
-        <input v-model="filters.start_date" type="date" style="min-width:130px" @change="search" />
-        <input v-model="filters.end_date" type="date" style="min-width:130px" @change="search" />
+        <select v-model="datePreset" @change="applyDatePreset" style="min-width:100px">
+          <option value="">全部日期</option>
+          <optgroup label="本期">
+            <option value="today">今天</option>
+            <option value="this_week">本周</option>
+            <option value="this_month">本月</option>
+            <option value="this_quarter">本季度</option>
+            <option value="this_year">本年</option>
+          </optgroup>
+          <optgroup label="上期">
+            <option value="last_week">上周</option>
+            <option value="last_month">上月</option>
+            <option value="last_quarter">上季度</option>
+            <option value="last_year">上年</option>
+          </optgroup>
+          <optgroup label="下期">
+            <option value="next_week">下周</option>
+            <option value="next_month">下月</option>
+            <option value="next_quarter">下季度</option>
+            <option value="next_year">下年</option>
+          </optgroup>
+          <optgroup label="近期">
+            <option value="last7">近 7 天</option>
+            <option value="last30">近 30 天</option>
+            <option value="last90">近 90 天</option>
+          </optgroup>
+          <option value="custom">自定义…</option>
+        </select>
+        <template v-if="datePreset === 'custom'">
+          <input v-model="filters.start_date" type="date" style="min-width:120px" @change="search" />
+          <span style="color:var(--muted);font-size:12px;flex-shrink:0">~</span>
+          <input v-model="filters.end_date" type="date" style="min-width:120px" @change="search" />
+        </template>
+        <span v-else-if="datePreset && filters.start_date" class="date-range-hint">
+          {{ filters.start_date }} ~ {{ filters.end_date }}
+        </span>
         <button class="btn btn-ghost btn-sm" @click="search">筛选</button>
         <button class="btn btn-sm" style="background:var(--bg2);border:none" @click="resetFilters">重置</button>
       </div>
@@ -437,6 +521,12 @@ function setPage(p) { filters.page = p; load() }
 </template>
 
 <style scoped>
+.date-range-hint {
+  font-size: 11.5px; color: var(--muted); white-space: nowrap; flex-shrink: 0;
+  padding: 4px 8px; background: rgba(201,99,66,0.06); border-radius: 7px;
+  border: 1px solid rgba(201,99,66,0.18);
+}
+
 /* 付款台账：固定布局，不超出卡片宽度（table-layout:fixed 已防横向溢出，无需 overflow-x:hidden） */
 .pk-pay-tbl table { table-layout: fixed; }
 .pk-pay-tbl th, .pk-pay-tbl td { padding: 9px 7px; font-size: 12.5px; }
