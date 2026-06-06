@@ -163,6 +163,90 @@ class ARProject(models.Model):
         }
 
 
+class Contract(models.Model):
+    """合同主表 — 一个合同可关联多个客户(ContractParty) 与多个项目(ContractProject)。
+
+    现阶段与 ARProject.contract_name 文本字段【双轨并行】：历史数据由回填迁移按
+    (合同名, 交付部门) 去重生成，旧字段保留不动，确保现有查询/导入/导出零影响。
+    """
+    contract_no = models.CharField('合同编号', max_length=50, blank=True, default='', db_index=True)
+    name = models.CharField('合同名称', max_length=200, db_index=True)
+    delivery_dept = models.CharField('交付部门', max_length=50, blank=True, default='', db_index=True)
+    sign_date = models.DateField('签订日期', null=True, blank=True)
+    amount = models.DecimalField('合同金额', max_digits=15, decimal_places=2, null=True, blank=True)
+    notes = models.TextField('备注', blank=True, default='')
+    customers = models.ManyToManyField(Customer, through='ContractParty', related_name='contracts')
+    projects = models.ManyToManyField(ARProject, through='ContractProject', related_name='contracts')
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='created_contracts')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ar_contracts'
+        ordering = ['name']
+        indexes = [
+            models.Index(fields=['name', 'delivery_dept']),
+        ]
+
+    def to_dict(self, with_links=False):
+        d = {
+            'id': self.id,
+            'contract_no': self.contract_no,
+            'name': self.name,
+            'delivery_dept': self.delivery_dept,
+            'sign_date': str(self.sign_date) if self.sign_date else None,
+            'amount': str(self.amount) if self.amount is not None else None,
+            'notes': self.notes,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+        if with_links:
+            d['parties'] = [
+                {'customer_id': pt.customer_id, 'customer_name': pt.customer.name,
+                 'role': pt.role, 'share': str(pt.share) if pt.share is not None else None}
+                for pt in self.parties.select_related('customer').all()
+            ]
+            d['projects'] = [
+                {'project_id': cp.project_id, 'project_no': cp.project.project_no,
+                 'short_name': cp.project.short_name, 'is_primary': cp.is_primary}
+                for cp in self.project_links.select_related('project').all()
+            ]
+        else:
+            d['party_count'] = self.parties.count()
+            d['project_count'] = self.project_links.count()
+        return d
+
+
+class ContractParty(models.Model):
+    """合同—客户 关联（多对多中间表）：一个合同可挂多个客户，可记主/次与分成比例。"""
+    ROLE_CHOICES = [('main', '主客户'), ('sub', '次客户')]
+    contract = models.ForeignKey(Contract, on_delete=models.CASCADE, related_name='parties')
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='contract_links')
+    role = models.CharField('角色', max_length=8, choices=ROLE_CHOICES, default='main')
+    share = models.DecimalField('分成比例(%)', max_digits=5, decimal_places=2, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'ar_contract_parties'
+        unique_together = [('contract', 'customer')]
+        ordering = ['contract', 'id']
+
+
+class ContractProject(models.Model):
+    """合同—项目 关联（多对多中间表）：一个合同对多个项目；一个项目也可挂多个合同。"""
+    contract = models.ForeignKey(Contract, on_delete=models.CASCADE, related_name='project_links')
+    project = models.ForeignKey(ARProject, on_delete=models.CASCADE, related_name='contract_links')
+    is_primary = models.BooleanField('主合同', default=True,
+                                     help_text='项目挂多个合同时，标记其主合同')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'ar_contract_projects'
+        unique_together = [('contract', 'project')]
+        ordering = ['contract', 'id']
+
+
 def _eomonth(year, month):
     """Return the last day of the given month as a date."""
     return datetime.date(year, month, calendar.monthrange(year, month)[1])

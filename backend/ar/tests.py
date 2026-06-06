@@ -7,7 +7,8 @@ import openpyxl
 from django.test import Client, TestCase
 
 from ar.models import (ARPayment, ARProject, ARRecord, CollectionBudget, PaymentBudget,
-                       AdvanceRecord, AdvanceWriteoff)
+                       AdvanceRecord, AdvanceWriteoff, Customer,
+                       Contract, ContractParty, ContractProject)
 from paikuan.models import JobPermission, PaikuanUser
 from paikuan.views import DEPARTMENTS, default_job_config, make_token, _invalidate_perm_cache
 
@@ -119,8 +120,8 @@ class ARPermissionRegressionTests(TestCase):
 
     def test_projects_list_exposes_contract_name_for_advance_autofill(self):
         """预收新增的关联项目下拉用 /ar/projects，选中后以 contract_name 自动带出
-        往来单位。回归：删除 customer_name 后该字段须仍随列表返回且非空，否则
-        前端 pickProject 拿不到值、客户名不自动弹出。"""
+        往来单位。该字段须随列表返回且非空，否则前端 pickProject 拿不到值。
+        客户实体上线后列表同时返回 customer_id/customer_name（未关联客户时为 None）。"""
         cfg = default_job_config('cashier')
         cfg['pages']['ar_projects'] = True
         JobPermission.objects.create(job_title='cashier', config=cfg)
@@ -131,7 +132,8 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         item = resp.json()['data']['items'][0]
         self.assertEqual(item['contract_name'], 'Contract A')
-        self.assertNotIn('customer_name', item)
+        self.assertIsNone(item['customer_id'])      # 未关联客户
+        self.assertIsNone(item['customer_name'])
 
     def test_cashier_page_access_cannot_write_ar_records(self):
         cfg = default_job_config('cashier')
@@ -404,18 +406,18 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(dates, ['2026-06-15'] * 4)
 
     def test_ar_record_import_rejects_whole_file_on_error(self):
-        """应收明细导入：任一行有问题 → 整表拒绝、零写入、列出全部问题；
-        全部合法 → 整表写入。"""
+        """应收明细导入：任一行【格式错误】→ 整表拒绝、零写入、列出全部问题；
+        全部合法 → 整表写入。（找不到的项目不算错误，写入阶段自动建草稿）"""
         from django.core.files.uploadedfile import SimpleUploadedFile
         admin = self.make_user('13900000301', 'finance_director', role='super_admin')
         self.create_project(short_name='应收导入项目', delivery_dept='劳务事业部')
         HEAD = ['项目简称*', '运作年*', '运作月*', '预估上账金额', '实际开票金额',
                 '税额(差额模式手填)', '开票日期', '账实差额调整', '回款金额', '回款时间', '备注']
 
-        # ① 含错误：第2行金额非法、第3行项目不存在 → 拒绝
+        # ① 含格式错误：第2行金额非法 → 整表拒绝（第3行项目不存在不算错误）
         wb = openpyxl.Workbook(); ws = wb.active; ws.append(HEAD)
         ws.append(['应收导入项目', 2026, 1, 'abc', '', '', '', '', '', '', ''])   # 金额非法
-        ws.append(['不存在的项目', 2026, 1, 1000, '', '', '', '', '', '', ''])    # 项目缺失
+        ws.append(['不存在的项目', 2026, 1, 1000, '', '', '', '', '', '', ''])    # 项目缺失(自动建草稿)
         buf = io.BytesIO(); wb.save(buf); buf.seek(0)
         resp = self.client.post('/api/pk/ar/records/import',
                                 {'file': SimpleUploadedFile('r.xlsx', buf.read())}, **self.auth(admin))
@@ -423,7 +425,7 @@ class ARPermissionRegressionTests(TestCase):
         d = resp.json()['data']
         self.assertTrue(d['rejected'])
         self.assertEqual(d['created'], 0)
-        self.assertEqual(len(d['errors']), 2, d['errors'])
+        self.assertEqual(len(d['errors']), 1, d['errors'])   # 仅金额格式 1 处
         self.assertEqual(ARRecord.objects.count(), 0)   # 零写入
 
         # ② 全部合法 → 写入
@@ -1304,3 +1306,124 @@ class InvoiceBatchTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         r1.refresh_from_db()
         self.assertEqual(r1.invoice_batch_no, 'PF-2026-003')
+
+class ContractAndImportAmbiguityTests(TestCase):
+    """合同实体（1合同多客户多项目 / 1项目多合同）+ 应收导入歧义处理。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = '供应链事业部'
+        u = PaikuanUser(phone='13944400001', name='Admin', role='super_admin',
+                        job_title='finance_director', departments=[self.dept],
+                        is_active=True, is_approved=True)
+        u.set_password('Test123456'); u.save()
+        self.token = make_token(u)
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _proj(self, short_name, contract_name='合同X'):
+        return ARProject.objects.create(
+            contract_name=contract_name, short_name=short_name,
+            delivery_dept=self.dept, sales_contact='S', project_manager='M')
+
+    def _upload_records(self, head, rows):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        wb = openpyxl.Workbook(); ws = wb.active; ws.append(head)
+        for r in rows:
+            ws.append(r)
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        return self.client.post('/api/pk/ar/records/import',
+                                {'file': SimpleUploadedFile('r.xlsx', buf.read())}, **self.auth())
+
+    # ── 合同多对多 ────────────────────────────────────────────────────────────
+    def test_contract_many_customers_and_projects(self):
+        c1 = Customer.objects.create(name='客户甲')
+        c2 = Customer.objects.create(name='客户乙')
+        p1 = self._proj('项目A'); p2 = self._proj('项目B')
+        ct = Contract.objects.create(name='联合服务合同', delivery_dept=self.dept)
+        ContractParty.objects.create(contract=ct, customer=c1, role='main')
+        ContractParty.objects.create(contract=ct, customer=c2, role='sub')
+        ContractProject.objects.create(contract=ct, project=p1)
+        ContractProject.objects.create(contract=ct, project=p2)
+        self.assertEqual(ct.customers.count(), 2)
+        self.assertEqual(ct.projects.count(), 2)
+        # 1项目多合同
+        ct2 = Contract.objects.create(name='补充协议', delivery_dept=self.dept)
+        ContractProject.objects.create(contract=ct2, project=p1)
+        self.assertEqual(p1.contracts.count(), 2)
+
+    # ── 导入歧义：多个同名项目且未消歧 → 整表拒绝 + 候选项 ─────────────────────
+    def test_import_ambiguous_same_name_rejects_with_candidates(self):
+        self._proj('同名项目', contract_name='合同甲')
+        self._proj('同名项目', contract_name='合同乙')
+        HEAD = ['项目编号', '项目简称*', '客户名称', '运作年*', '运作月*', '预估上账金额',
+                '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
+                '回款金额', '回款时间', '备注']
+        d = self._upload_records(HEAD, [
+            ['', '同名项目', '', 2026, 1, 100000, '', '', '', '', '', '', ''],
+        ]).json()['data']
+        self.assertTrue(d['rejected'])
+        self.assertEqual(d['created'], 0)
+        self.assertEqual(len(d['ambiguities']), 1)
+        self.assertEqual(len(d['ambiguities'][0]['candidates']), 2)
+        self.assertEqual(ARRecord.objects.count(), 0)
+
+    # ── 项目编号精确指定 → 消除歧义、正常写入 ─────────────────────────────────
+    def test_import_project_no_disambiguates(self):
+        p1 = self._proj('同名项目', contract_name='合同甲')
+        self._proj('同名项目', contract_name='合同乙')
+        HEAD = ['项目编号', '项目简称*', '客户名称', '运作年*', '运作月*', '预估上账金额',
+                '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
+                '回款金额', '回款时间', '备注']
+        d = self._upload_records(HEAD, [
+            [p1.project_no, '同名项目', '', 2026, 1, 100000, '', '', '', '', '', '', ''],
+        ]).json()['data']
+        self.assertFalse(d.get('rejected'), d)
+        self.assertEqual(d['created'], 1)
+        self.assertEqual(ARRecord.objects.filter(project=p1).count(), 1)
+
+    # ── 客户名称消歧 → 正常写入 ──────────────────────────────────────────────
+    def test_import_customer_hint_disambiguates(self):
+        self._proj('同名项目', contract_name='合同甲')
+        p2 = self._proj('同名项目', contract_name='合同乙')
+        HEAD = ['项目编号', '项目简称*', '客户名称', '运作年*', '运作月*', '预估上账金额',
+                '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
+                '回款金额', '回款时间', '备注']
+        d = self._upload_records(HEAD, [
+            ['', '同名项目', '合同乙', 2026, 1, 100000, '', '', '', '', '', '', ''],
+        ]).json()['data']
+        self.assertFalse(d.get('rejected'), d)
+        self.assertEqual(d['created'], 1)
+        self.assertEqual(ARRecord.objects.filter(project=p2).count(), 1)
+
+    # ── 项目编号填了但不存在 → 拒绝 + 指导 ───────────────────────────────────
+    def test_import_bad_project_no_rejects(self):
+        self._proj('唯一项目')
+        HEAD = ['项目编号', '项目简称*', '客户名称', '运作年*', '运作月*', '预估上账金额',
+                '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
+                '回款金额', '回款时间', '备注']
+        d = self._upload_records(HEAD, [
+            ['YS-99999999-9999', '唯一项目', '', 2026, 1, 100000, '', '', '', '', '', '', ''],
+        ]).json()['data']
+        self.assertTrue(d['rejected'])
+        self.assertEqual(len(d['bad_nos']), 1)
+        self.assertEqual(ARRecord.objects.count(), 0)
+
+    # ── 纯增量：同项目同月多行不合并 ─────────────────────────────────────────
+    def test_import_is_additive_no_merge(self):
+        p = self._proj('增量项目')
+        HEAD = ['项目编号', '项目简称*', '客户名称', '运作年*', '运作月*', '预估上账金额',
+                '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
+                '回款金额', '回款时间', '备注']
+        d = self._upload_records(HEAD, [
+            ['', '增量项目', '', 2026, 1, 100000, '', '', '', '', '', '', '第一笔'],
+            ['', '增量项目', '', 2026, 1, 80000, '', '', '', '', '', '', '同月第二笔'],
+        ]).json()['data']
+        self.assertFalse(d.get('rejected'), d)
+        self.assertEqual(d['created'], 2)
+        self.assertEqual(ARRecord.objects.filter(project=p, operation_month=1).count(), 2)
