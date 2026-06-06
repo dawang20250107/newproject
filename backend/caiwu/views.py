@@ -689,6 +689,17 @@ _KD_CODE_L1_SPECIFIC = {
     '6602.99.03': '集团管理费用',
 }
 
+# 集团总部导入口径：财务金融（供应链金融）属独立业务条线，不并入集团总部园区经营报表。
+# 导入「集团总部」部门明细账时，整段剔除这些内部部门（收入/成本/费用全部不计）。
+_BU_EXCLUDE_DEPTS = {
+    '集团总部': {'财务金融'},
+}
+
+
+def _is_excluded_dept(bu, dept):
+    """该事业部导入时是否应整段剔除此部门（如集团总部剔除财务金融）。"""
+    return dept in _BU_EXCLUDE_DEPTS.get(bu, ())
+
 
 def _detect_kingdee_format(ws):
     """Scan first 12 rows for Kingdee-style headers.
@@ -743,6 +754,9 @@ def _parse_kingdee_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map):
         if not acct and not dept:
             continue
         if not acct or any(k in acct for k in _KD_SKIP_KW):
+            continue
+        # 集团总部口径：剔除财务金融等独立业务部门（整段不计入报表）
+        if _is_excluded_dept(bu, dept):
             continue
 
         # Accounting direction: revenue (sign=+1) grows on credit; cost (sign=-1) grows on debit.
@@ -945,6 +959,9 @@ def _parse_dept_ledger_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map):
         if not code and not name:
             continue
         dept = str(ws.cell(row=ri, column=cm['dept']).value or '').strip()
+        # 集团总部口径：剔除财务金融等独立业务部门（整段不计入报表）
+        if _is_excluded_dept(bu, dept):
+            continue
         key = (dept, code, name)
         if key not in agg:
             agg[key] = Decimal(0)

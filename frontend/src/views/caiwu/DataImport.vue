@@ -422,6 +422,12 @@ onMounted(() => {
               </div>
             </div>
 
+            <!-- 集团总部特殊口径提示：自动剔除财务金融部门 -->
+            <div v-if="upBu === '集团总部'" class="hq-note">
+              <span class="hq-note-icon">ℹ️</span>
+              <span>集团总部口径：将<strong>自动剔除「财务金融」部门</strong>（供应链金融属独立业务条线，其收入/成本/费用均不计入集团总部报表）。</span>
+            </div>
+
             <!-- File drop zone -->
             <label class="up-drop" :class="{ filled: upFile }">
               <input type="file" accept=".xlsx,.json" @change="e => upFile = e.target.files[0]" hidden />
@@ -596,6 +602,14 @@ onMounted(() => {
 }
 .up-drop:hover { border-color: var(--primary); background: rgba(201,99,66,0.06); color: var(--primary); }
 .up-drop.filled { border-style: solid; border-color: var(--primary); background: rgba(201,99,66,0.06); color: var(--text); }
+.hq-note {
+  display: flex; align-items: flex-start; gap: 7px;
+  margin: 4px 0 12px; padding: 9px 12px; border-radius: 9px;
+  background: rgba(21,101,192,0.07); border: 1px solid rgba(21,101,192,0.2);
+  font-size: 12.5px; line-height: 1.55; color: #1257a8;
+}
+.hq-note-icon { flex-shrink: 0; }
+.hq-note strong { color: #0d4789; }
 .up-file-name { font-weight: 600; word-break: break-all; }
 .up-type-tag { flex-shrink: 0; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 10px; color: #fff; }
 .up-type-tag.pl { background: #1565c0; }

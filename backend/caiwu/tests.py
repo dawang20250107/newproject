@@ -335,6 +335,41 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(by_name[MGMT_EXP], Decimal('150'))
         self.assertEqual(by_name[GROUP_MGMT], Decimal('200'))
 
+    def test_hq_import_excludes_finance_dept(self):
+        """集团总部导入时整段剔除「财务金融」部门（供应链金融独立条线），
+        其收入/成本/费用均不计入集团总部报表；其他部门正常计入。"""
+        self.assertEqual(self.bu, '集团总部')   # BUSINESS_UNITS[0]
+        wb = Workbook()
+        ws = wb.active
+        ws.append(['部门名称', '科目编码', '科目名称', '摘要', '借方', '贷方'])
+        # 财务金融：收入80 / 成本30 / 财务费用5 —— 应被整段剔除
+        ws.append([self.bu, '6001', '服务费收入', '凭证001', 0, 80])
+        ws.append([self.bu, '6401', '主营业务成本', '凭证002', 30, 0])
+        ws.append([self.bu, '6603', '利息支出', '凭证003', 5, 0])
+        # 行政园区：园区收入100 —— 应正常计入
+        ws.append(['行政园区', '6001', '仓库租赁收入', '凭证004', 0, 100])
+
+        # 重新读 dept 列：第一行表头里「部门名称」需要对上财务金融
+        for ri, dept in [(2, '财务金融'), (3, '财务金融'), (4, '财务金融'), (5, '行政园区')]:
+            ws.cell(ri, 1, dept)
+
+        data_start, col_map = _detect_dept_ledger(ws)
+        parsed, errors = _parse_dept_ledger_rows(
+            ws, data_start, col_map, self.bu, self.l1,
+            {c.name: c for c in L2Category.objects.filter(business_unit=self.bu)},
+            {(c.l1_category_id, c.name): c for c in L3Category.objects.filter(business_unit=self.bu)},
+        )
+        by_name = {}
+        for row in parsed:
+            by_name[row['l1_name']] = by_name.get(row['l1_name'], Decimal('0')) + row['amount']
+
+        self.assertEqual(errors, [])
+        # 仅行政园区的园区收入100计入；财务金融全部剔除
+        self.assertEqual(by_name.get(REV), Decimal('100'))
+        self.assertNotIn(COST, by_name)
+        # 剔除的部门不应创建二级项目部
+        self.assertFalse(L2Category.objects.filter(business_unit=self.bu, name='财务金融').exists())
+
     def test_pl_check_matches_report_kpis(self):
         """导入预览的「数据核对」KPI（_compute_pl_check）应与发布后的财务报表
         （_aggregate_report）逐项一致——回归用户反馈的「导入核对显示异常但报表正常」。"""
