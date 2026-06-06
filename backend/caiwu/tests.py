@@ -299,9 +299,10 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(by_name[COST], Decimal('600'))
         self.assertEqual(len(parsed), 2)
 
-    def test_6602_99_code_maps_to_group_management_fee(self):
-        """6602.99 及其子明细属集团管理费——即使科目名称不含「集团管理费用」，
-        也应按编码归入集团管理费用（影响经营净利），而非 6602 管理费用。"""
+    def test_6602_99_03_maps_to_group_management_fee(self):
+        """集团管理费用仅取 6602.99.03 本科目（集团管理费分摊/收回）；其同级的
+        6602.99.01 培训费、6602.99.02 会议费等属普通管理费用，按 6602 前缀归入
+        管理费用，不计入集团管理费。科目名称含「集团管理费用」者另由名称兜底覆盖。"""
         wb = Workbook()
         ws = wb.active
         ws.append([
@@ -314,10 +315,10 @@ class CaiwuCalculationLogicTests(TestCase):
         ])
         # 6602.01 普通管理费 → 管理费用
         ws.append([self.bu, '6602.01', '办公费', '凭证001', 100, 0])
-        # 6602.99 名称不含「集团管理费用」→ 仍按编码归集团管理费用
-        ws.append([self.bu, '6602.99', '分摊费用', '凭证002', 200, 0])
-        # 6602.99.01 子明细 → 集团管理费用
-        ws.append([self.bu, '6602.99.01', '分摊费用', '凭证003', 50, 0])
+        # 6602.99.03 集团管理费用本科目 → 集团管理费用（即使名称不含也按编码归集）
+        ws.append([self.bu, '6602.99.03', '分摊费用', '凭证002', 200, 0])
+        # 6602.99.01 培训费等同级子目 → 回落 6602 前缀 → 管理费用（不计集团管理费）
+        ws.append([self.bu, '6602.99.01', '外部咨询培训费', '凭证003', 50, 0])
 
         data_start, col_map = _detect_dept_ledger(ws)
         parsed, errors = _parse_dept_ledger_rows(
@@ -330,9 +331,9 @@ class CaiwuCalculationLogicTests(TestCase):
             by_name[row['l1_name']] = by_name.get(row['l1_name'], Decimal('0')) + row['amount']
 
         self.assertEqual(errors, [])
-        # 管理费用 sign=-1 → 借方100 计为 100；集团管理费用 = 200 + 50 = 250
-        self.assertEqual(by_name[MGMT_EXP], Decimal('100'))
-        self.assertEqual(by_name[GROUP_MGMT], Decimal('250'))
+        # 管理费用 sign=-1 → 办公费100 + 培训费50 = 150；集团管理费用 = 仅 6602.99.03 的 200
+        self.assertEqual(by_name[MGMT_EXP], Decimal('150'))
+        self.assertEqual(by_name[GROUP_MGMT], Decimal('200'))
 
     def test_pl_check_matches_report_kpis(self):
         """导入预览的「数据核对」KPI（_compute_pl_check）应与发布后的财务报表
