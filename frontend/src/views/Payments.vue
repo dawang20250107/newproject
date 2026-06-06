@@ -301,8 +301,8 @@ function setPage(p) { filters.page = p; load() }
                 </span>
                 <span v-else style="color:var(--muted)">—</span>
               </td>
-              <td v-if="auth.canWrite || auth.canDelete">
-                <div style="display:flex;gap:6px">
+              <td v-if="auth.canWrite || auth.canDelete" class="ops-cell">
+                <div style="display:flex;gap:4px;justify-content:center">
                   <button v-if="auth.canWrite" class="btn btn-ghost btn-sm" @click="openEdit(p)">编辑</button>
                   <button class="btn btn-ghost btn-sm" @click="openLogs(p)">日志</button>
                   <button v-if="auth.canDelete" class="btn btn-danger btn-sm" @click="onDelete(p)">删除</button>
@@ -435,17 +435,18 @@ function setPage(p) { filters.page = p; load() }
 </template>
 
 <style scoped>
-/* 付款台账：固定布局，不超出卡片宽度 */
-.pk-pay-tbl { overflow-x: hidden; }
+/* 付款台账：固定布局，不超出卡片宽度（table-layout:fixed 已防横向溢出，无需 overflow-x:hidden） */
 .pk-pay-tbl table { table-layout: fixed; }
 .pk-pay-tbl th, .pk-pay-tbl td { padding: 9px 7px; font-size: 12.5px; }
-.pk-pay-tbl td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+.pk-pay-tbl td:not(.ops-cell) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+/* 操作列：不裁剪，按钮正常显示 */
+.pk-pay-tbl .ops-cell { white-space: nowrap; text-align: center; }
 
-/* 吸底合计+翻页条：粘在卡片底部，长列表滚动时常驻可见 */
+/* 吸底合计+翻页条：粘在视口底部 */
 .bottom-bar {
   position: sticky; bottom: 0; z-index: 20;
   display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
-  margin: 8px -16px -16px; padding: 9px 18px;
+  margin: 8px -22px -22px; padding: 9px 22px;
   background: rgba(255,252,250,0.96); backdrop-filter: blur(8px);
   border-top: 1px solid rgba(0,0,0,0.08); box-shadow: 0 -4px 14px rgba(0,0,0,0.05);
 }

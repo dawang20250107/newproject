@@ -1539,7 +1539,7 @@ function clearFilters() {
 .bottom-bar {
   position: sticky; bottom: 0; z-index: 20;
   display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
-  margin: 8px -16px -16px; padding: 9px 18px;
+  margin: 8px -22px -22px; padding: 9px 22px;
   background: rgba(255,252,250,0.96); backdrop-filter: blur(8px);
   border-top: 1px solid rgba(0,0,0,0.08); box-shadow: 0 -4px 14px rgba(0,0,0,0.05);
 }

@@ -97,10 +97,8 @@ body {
   box-shadow: var(--glass-shadow);
   padding: 22px;
   transition: box-shadow 0.25s ease;
-  /* Promote each card to its own compositor layer so the blurred background
-     orbs underneath don't cause whole-page re-paints (avoids occasional flicker). */
+  /* GPU layer promotion — keeps animated orbs from triggering card repaints. */
   transform: translateZ(0);
-  contain: paint;
 }
 .card:hover {
   box-shadow: 0 12px 40px rgba(100,60,30,0.18), 0 1px 0 rgba(255,255,255,0.7) inset;

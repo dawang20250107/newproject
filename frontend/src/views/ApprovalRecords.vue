@@ -145,7 +145,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-card { padding: 12px; }
 .filter-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
 
-/* 吸底合计+翻页条：粘在卡片底部 */
+/* 吸底合计+翻页条：粘在视口底部 */
 .bottom-bar {
   position: sticky; bottom: 0; z-index: 20;
   display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
