@@ -145,24 +145,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-card { padding: 12px; }
 .filter-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
 
-/* 吸底合计+翻页条：粘在视口底部 */
-.bottom-bar {
-  position: sticky; bottom: 0; z-index: 20;
-  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
-  margin: 10px -12px -12px; padding: 9px 16px;
-  background: rgba(255,252,250,0.96); backdrop-filter: blur(8px);
-  border-top: 1px solid rgba(0,0,0,0.08); box-shadow: 0 -4px 14px rgba(0,0,0,0.05);
-}
-.bb-summary { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; font-size: 13px; }
-.bb-item { color: var(--muted); display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; }
-.bb-item i { font-style: normal; font-size: 11.5px; color: var(--muted); }
-.bb-item b { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text); font-size: 13.5px; }
-.bb-item.warn b { color: #c0392b; }
-.bb-pager { display: flex; align-items: center; gap: 12px; margin-left: auto; }
-.page-btn { padding: 5px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,252,250,0.7); color: var(--text); font-size: 13px; cursor: pointer; transition: all 0.14s; }
-.page-btn:hover { border-color: var(--primary); color: var(--primary); }
-.page-btn:disabled { opacity: 0.35; cursor: default; }
-.page-info { font-size: 13px; color: var(--muted); }
+/* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
 .approval-table { width: 100%; table-layout: fixed; }
 /* 行高/内边距对齐全局表格（付款台账），保证两个页面观感一致 */
 .approval-table th, .approval-table td { padding: 11px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
