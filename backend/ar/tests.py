@@ -1600,3 +1600,23 @@ class ContractAndImportAmbiguityTests(TestCase):
         # summary 合计也只统计该月
         self.assertEqual(d['summary']['count'], 1)
         self.assertAlmostEqual(float(d['summary']['estimated']), 1000.0, places=2)
+
+    def test_same_month_same_project_multiple_rows_kept_distinct(self):
+        """同项目同年同月多条不同金额：各自独立入库，绝不合并、不取第一条覆盖。"""
+        p = self._proj('同月多笔项目')
+        HEAD = ['项目编号', '项目简称*', '客户名称', '运作年*', '运作月*', '预估上账金额',
+                '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
+                '回款金额', '回款时间', '备注']
+        d = self._upload_records(HEAD, [
+            ['', '同月多笔项目', '', 2026, 4, 59545.44, '', '', '', '', '', '', '第一笔'],
+            ['', '同月多笔项目', '', 2026, 4, 251264.44, '', '', '', '', '', '', '第二笔'],
+            ['', '同月多笔项目', '', 2026, 4, 107377.24, '', '', '', '', '', '', '第三笔'],
+        ]).json()['data']
+        self.assertFalse(d.get('rejected'), d)
+        self.assertEqual(d['created'], 3, d)
+        recs = ARRecord.objects.filter(project=p, operation_year=2026, operation_month=4)
+        self.assertEqual(recs.count(), 3)
+        amounts = sorted(float(r.estimated_amount) for r in recs)
+        self.assertEqual(amounts, [59545.44, 107377.24, 251264.44])   # 三个金额都在，未被覆盖
+        total = sum(float(r.estimated_amount) for r in recs)
+        self.assertAlmostEqual(total, 418187.12, places=2)
