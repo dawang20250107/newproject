@@ -1030,6 +1030,10 @@ def _parse_template_rows(ws, bu, l1_map, l2_map, l3_map):
         l2_name = str(ws.cell(row=ri, column=2).value or '').strip()
         l3_name = str(ws.cell(row=ri, column=3).value or '').strip()
 
+        # 集团总部口径：剔除财务金融等独立业务部门（整段不计入报表）
+        if _is_excluded_dept(bu, l2_name):
+            continue
+
         if five_col:
             debit_raw = ws.cell(row=ri, column=4).value
             credit_raw = ws.cell(row=ri, column=5).value
@@ -1137,6 +1141,10 @@ def _parse_json_rows(data_str, bu, l1_map, l2_map, l3_map):
         l1_name = str(row.get('l1', '')).strip()
         l2_name = str(row.get('l2', '')).strip()
         l3_name = str(row.get('l3', '')).strip()
+
+        # 集团总部口径：剔除财务金融等独立业务部门（整段不计入报表）
+        if _is_excluded_dept(bu, l2_name):
+            continue
 
         if not l1_name:
             errors.append(f'第{i}项：缺少 l1 字段')
