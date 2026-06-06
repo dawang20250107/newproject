@@ -32,6 +32,8 @@ const deptChoices = computed(() => {
 })
 
 async function load(){ loading.value=true; try{ const r=await api.get('/approvals',{params:filters}); items.value=r.data.items; total.value=r.data.total; totalAmount.value=r.data.total_amount || 0 }finally{loading.value=false}}
+function search(){ filters.page=1; load() }
+function setPage(p){ filters.page=p; load() }
 async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
 function openCreate(){ Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', approval_number:'', summary:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
 async function create(){ saving.value=true; try{ await api.post('/approvals', form); showCreate.value=false; load() } catch(e){ alert(e?.error||'保存失败') } finally{ saving.value=false } }
@@ -90,12 +92,11 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <input ref="fileRef" type="file" accept=".xlsx,.xls" style="display:none" @change="onImport" />
   <div class="card approval-card"><div class="filter-row">
     <div class="filter-bar">
-    <input v-model="filters.applicant" placeholder="申请人(模糊)" @keyup.enter="load"/>
-    <input v-model="filters.approval_number" placeholder="审批编号(模糊)" @keyup.enter="load"/>
-    <select v-model="filters.dept" @change="load"><option value="">全部事业部</option><option v-for="d in deptChoices" :key="d" :value="d">{{d}}</option></select>
-    <button class="btn btn-ghost btn-sm" @click="load">筛选</button>
+    <input v-model="filters.applicant" placeholder="申请人(模糊)" @keyup.enter="search"/>
+    <input v-model="filters.approval_number" placeholder="审批编号(模糊)" @keyup.enter="search"/>
+    <select v-model="filters.dept" @change="search"><option value="">全部事业部</option><option v-for="d in deptChoices" :key="d" :value="d">{{d}}</option></select>
+    <button class="btn btn-ghost btn-sm" @click="search">筛选</button>
     </div>
-    <div class="pending-card">已申请待处理共计：<b>{{ pendingAmountTotal.toFixed(2) }}</b> 元</div>
   </div>
   <EmptyState v-if="loading" loading />
   <EmptyState v-else-if="!items.length" empty text="暂无审批记录" />
@@ -107,7 +108,21 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         </select>
       </td>
       <td><button class="btn btn-ghost btn-sm" :disabled="i.status!=='approved'" @click="openSchedule(i)">一键排款</button></td></tr></tbody>
-  </table></div>
+  </table>
+
+  <!-- 吸底合计 + 翻页：固定在底部 -->
+  <div v-if="!loading && items.length" class="bottom-bar">
+    <div class="bb-summary">
+      <span class="bb-item"><i>合计</i><b>{{ total }}</b> 条</span>
+      <span class="bb-item warn"><i>申请金额合计</i><b>{{ pendingAmountTotal.toFixed(2) }}</b> 元</span>
+    </div>
+    <div v-if="total > filters.size" class="bb-pager">
+      <button :disabled="filters.page <= 1" class="page-btn" @click="setPage(filters.page - 1)">‹ 上一页</button>
+      <span class="page-info">{{ filters.page }} / {{ Math.ceil(total / filters.size) || 1 }} 页 · 共 {{ total }} 条</span>
+      <button :disabled="filters.page * filters.size >= total" class="page-btn" @click="setPage(filters.page + 1)">下一页 ›</button>
+    </div>
+  </div>
+  </div>
 
   <Teleport to="body"><div v-if="showCreate" class="modal-overlay" @click.self="showCreate=false"><div class="modal-box"><div class="modal-header"><h3>新增审批记录</h3></div><div class="modal-body"><div class="form-grid">
     <label class="form-field"><span>申请人*</span><input v-model="form.applicant"/></label>
@@ -129,7 +144,25 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 <style scoped>
 .approval-card { padding: 12px; }
 .filter-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
-.pending-card { font-size: 12px; color: #8a4d2f; background: rgba(201,99,66,0.08); border: 1px solid rgba(201,99,66,0.25); border-radius: 10px; padding: 6px 10px; white-space: nowrap; }
+
+/* 吸底合计+翻页条：粘在卡片底部 */
+.bottom-bar {
+  position: sticky; bottom: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  margin: 10px -12px -12px; padding: 9px 16px;
+  background: rgba(255,252,250,0.96); backdrop-filter: blur(8px);
+  border-top: 1px solid rgba(0,0,0,0.08); box-shadow: 0 -4px 14px rgba(0,0,0,0.05);
+}
+.bb-summary { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; font-size: 13px; }
+.bb-item { color: var(--muted); display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; }
+.bb-item i { font-style: normal; font-size: 11.5px; color: var(--muted); }
+.bb-item b { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text); font-size: 13.5px; }
+.bb-item.warn b { color: #c0392b; }
+.bb-pager { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.page-btn { padding: 5px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,252,250,0.7); color: var(--text); font-size: 13px; cursor: pointer; transition: all 0.14s; }
+.page-btn:hover { border-color: var(--primary); color: var(--primary); }
+.page-btn:disabled { opacity: 0.35; cursor: default; }
+.page-info { font-size: 13px; color: var(--muted); }
 .approval-table { width: 100%; table-layout: fixed; }
 /* 行高/内边距对齐全局表格（付款台账），保证两个页面观感一致 */
 .approval-table th, .approval-table td { padding: 11px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

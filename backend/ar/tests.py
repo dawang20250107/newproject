@@ -1601,6 +1601,62 @@ class ContractAndImportAmbiguityTests(TestCase):
         self.assertEqual(d['summary']['count'], 1)
         self.assertAlmostEqual(float(d['summary']['estimated']), 1000.0, places=2)
 
+    def test_operation_ym_range_and_exclude(self):
+        """运作年月支持区间(start~end)与含/不含反选。"""
+        p = self._proj('年月区间项目')
+        for ym in [(2025, 12), (2026, 1), (2026, 3), (2026, 6)]:
+            ARRecord.objects.create(project=p, operation_year=ym[0], operation_month=ym[1],
+                                    estimated_amount=Decimal('100'))
+
+        def months(cond):
+            conds = json.dumps([cond])
+            resp = self.client.get('/api/pk/ar/records', {'conditions': conds}, **self.auth())
+            self.assertEqual(resp.status_code, 200, resp.content)
+            return sorted((r['operation_year'], r['operation_month'])
+                          for r in resp.json()['data']['items'])
+
+        # 区间 2026-01 ~ 2026-03 → 含 1月、3月
+        self.assertEqual(months({'t': 'dim', 'field': 'operation_ym',
+                                  'value': '2026-01', 'end': '2026-03'}),
+                         [(2026, 1), (2026, 3)])
+        # 跨年区间 2025-12 ~ 2026-01
+        self.assertEqual(months({'t': 'dim', 'field': 'operation_ym',
+                                  'value': '2025-12', 'end': '2026-01'}),
+                         [(2025, 12), (2026, 1)])
+        # 不含 2026-01 ~ 2026-03 → 排除区间内，留 2025-12 与 2026-06
+        self.assertEqual(months({'t': 'dim', 'field': 'operation_ym',
+                                  'value': '2026-01', 'end': '2026-03', 'exclude': True}),
+                         [(2025, 12), (2026, 6)])
+        # 仅 start（无 end）退化为单月
+        self.assertEqual(months({'t': 'dim', 'field': 'operation_ym', 'value': '2026-06'}),
+                         [(2026, 6)])
+
+    def test_condition_group_parentheses(self):
+        """条件组（括号）：(A 且 B) 或 C 复合筛选。"""
+        p = self._proj('括号筛选项目')
+        # a: 2026-01 预估 100；b: 2026-01 预估 500；c: 2026-09 预估 500
+        a = ARRecord.objects.create(project=p, operation_year=2026, operation_month=1,
+                                    estimated_amount=Decimal('100'))
+        b = ARRecord.objects.create(project=p, operation_year=2026, operation_month=1,
+                                    estimated_amount=Decimal('500'))
+        c = ARRecord.objects.create(project=p, operation_year=2026, operation_month=9,
+                                    estimated_amount=Decimal('500'))
+
+        # (运作=2026-01 且 预估>200) 或 (运作=2026-09)
+        conds = json.dumps([
+            {'t': 'group', 'match': 'all', 'conditions': [
+                {'t': 'dim', 'field': 'operation_ym', 'value': '2026-01'},
+                {'t': 'amt', 'field': 'estimated_amount', 'op': 'gt', 'value': 200},
+            ]},
+            {'t': 'dim', 'field': 'operation_ym', 'value': '2026-09'},
+        ])
+        resp = self.client.get('/api/pk/ar/records', {'conditions': conds, 'match': 'any'},
+                               **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        got = {r['id'] for r in resp.json()['data']['items']}
+        self.assertEqual(got, {b.id, c.id})   # a 被组内 预估>200 排除
+        self.assertNotIn(a.id, got)
+
     def test_same_month_same_project_multiple_rows_kept_distinct(self):
         """同项目同年同月多条不同金额：各自独立入库，绝不合并、不取第一条覆盖。"""
         p = self._proj('同月多笔项目')

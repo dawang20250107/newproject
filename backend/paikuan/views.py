@@ -807,6 +807,8 @@ def _list_payments(request):
     summary = qs.annotate(_paid=paid_expr).aggregate(
         outstanding=Sum(effective_remaining, filter=not_settled),
         outstanding_count=Count('id', filter=not_settled),
+        planned_total=Sum('total_amount'),
+        paid_total=Sum('_paid'),
     )
     outstanding_total = summary['outstanding'] or Decimal('0')
     outstanding_count = summary['outstanding_count'] or 0
@@ -817,6 +819,8 @@ def _list_payments(request):
         'items': items, 'total': total, 'page': page, 'size': size,
         'outstanding_total': str(outstanding_total),
         'outstanding_count': outstanding_count,
+        'planned_total': str(summary['planned_total'] or Decimal('0')),
+        'paid_total': str(summary['paid_total'] or Decimal('0')),
     })
 
 

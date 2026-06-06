@@ -57,13 +57,23 @@ const _lbl = (opts, v) => (opts.find(o => o.v === v) || {}).l || v
 // 一句话描述某条件，用于 chip 展示
 export function describeCondition(c) {
   if (!c || !c.t) return ''
+  // 条件组（括号）：内部以 且/或 连接，整体加括号展示，如「(预估>0 且 未开票)」
+  if (c.t === 'group') {
+    const conn = c.match === 'any' ? ' 或 ' : ' 且 '
+    const inner = (c.conditions || []).map(describeCondition).filter(Boolean).join(conn)
+    return `(${inner})`
+  }
   if (c.t === 'dim') {
     if (c.field === 'project_id') return '指定项目'   // 仅经深链创建，不在菜单
     const f = _find(DIM_FIELDS, c.field)
     let val = c.value
     if (f.kind === 'select') val = _lbl(f.opts || [], c.value)
     else if (c.field === 'operation_month') val = `${c.value}月`
-    else if (c.field === 'operation_ym') val = c.value   // 形如 2026-01
+    else if (c.field === 'operation_ym') {
+      // 区间(start~end) + 含/不含；end 为空时退化为单月
+      const rng = (c.end && c.end !== c.value) ? `${c.value}~${c.end}` : c.value
+      return `运作年月 ${c.exclude ? '不含 ' : ''}${rng}`
+    }
     return `${f.label || c.field}: ${val}`
   }
   if (c.t === 'date') {

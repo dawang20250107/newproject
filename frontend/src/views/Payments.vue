@@ -19,6 +19,8 @@ const items = ref([])
 const total = ref(0)
 const outstandingTotal = ref('0')
 const outstandingCount = ref(0)
+const plannedTotal = ref('0')
+const paidTotal = ref('0')
 const loading = ref(false)
 const departments = ref([])
 const showModal = ref(false)
@@ -129,6 +131,8 @@ async function load() {
     total.value = res.data.total
     outstandingTotal.value = res.data.outstanding_total ?? '0'
     outstandingCount.value = res.data.outstanding_count ?? 0
+    plannedTotal.value = res.data.planned_total ?? '0'
+    paidTotal.value = res.data.paid_total ?? '0'
   } catch (e) {
     loadErr.value = e?.msg || '加载失败，请刷新重试'
   } finally {
@@ -242,13 +246,6 @@ function setPage(p) { filters.page = p; load() }
         <button class="btn btn-sm" style="background:var(--bg2);border:none" @click="resetFilters">重置</button>
       </div>
 
-      <div class="list-meta">
-        <div class="list-count">共 <b>{{ total }}</b> 条记录</div>
-        <div v-if="showRemaining" class="outstanding-card" :class="{ 'has-data': outstandingCount > 0 }">
-          已计划未结清共计：<b>{{ fmt(outstandingTotal) }}</b> 元（{{ outstandingCount }} 笔）
-        </div>
-      </div>
-
       <EmptyState v-if="loading" loading />
       <EmptyState v-else-if="loadErr" :error="loadErr" />
       <EmptyState v-else-if="!items.length" empty />
@@ -316,11 +313,19 @@ function setPage(p) { filters.page = p; load() }
         </table>
       </div>
 
-      <!-- pagination -->
-      <div class="pagination">
-        <span>第 {{ filters.page }} 页，共 {{ Math.ceil(total / filters.size) || 1 }} 页</span>
-        <button :disabled="filters.page <= 1" @click="setPage(filters.page - 1)">上一页</button>
-        <button :disabled="filters.page * filters.size >= total" @click="setPage(filters.page + 1)">下一页</button>
+      <!-- 吸底合计 + 翻页：固定在底部，金额为精确数值 -->
+      <div v-if="!loading && items.length" class="bottom-bar">
+        <div class="bb-summary">
+          <span class="bb-item"><i>合计</i><b>{{ total }}</b> 条</span>
+          <span v-if="auth.canView('total_amount')" class="bb-item"><i>计划总额</i><b>{{ fmt(plannedTotal) }}</b></span>
+          <span v-if="showPaid" class="bb-item ok"><i>已付</i><b>{{ fmt(paidTotal) }}</b></span>
+          <span v-if="showRemaining" class="bb-item warn"><i>未结清</i><b>{{ fmt(outstandingTotal) }}</b>（{{ outstandingCount }} 笔）</span>
+        </div>
+        <div v-if="total > filters.size" class="bb-pager">
+          <button :disabled="filters.page <= 1" class="page-btn" @click="setPage(filters.page - 1)">‹ 上一页</button>
+          <span class="page-info">{{ filters.page }} / {{ Math.ceil(total / filters.size) || 1 }} 页 · 共 {{ total }} 条</span>
+          <button :disabled="filters.page * filters.size >= total" class="page-btn" @click="setPage(filters.page + 1)">下一页 ›</button>
+        </div>
       </div>
     </div>
 
@@ -430,19 +435,25 @@ function setPage(p) { filters.page = p; load() }
 </template>
 
 <style scoped>
-/* List meta row: count + outstanding summary card */
-.list-meta {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; margin-bottom: 10px; flex-wrap: wrap;
+/* 吸底合计+翻页条：粘在卡片底部，长列表滚动时常驻可见 */
+.bottom-bar {
+  position: sticky; bottom: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  margin: 8px -16px -16px; padding: 9px 18px;
+  background: rgba(255,252,250,0.96); backdrop-filter: blur(8px);
+  border-top: 1px solid rgba(0,0,0,0.08); box-shadow: 0 -4px 14px rgba(0,0,0,0.05);
 }
-.list-count { font-size: 13px; color: var(--muted); }
-.outstanding-card {
-  font-size: 12px; color: var(--muted);
-  background: rgba(201,99,66,0.06); border: 1px solid rgba(201,99,66,0.18);
-  border-radius: 10px; padding: 6px 10px; white-space: nowrap;
-}
-.outstanding-card.has-data { color: #8a4d2f; background: rgba(201,99,66,0.08); border-color: rgba(201,99,66,0.25); }
-.outstanding-card b { color: #c96342; font-weight: 700; }
+.bb-summary { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; font-size: 13px; }
+.bb-item { color: var(--muted); display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; }
+.bb-item i { font-style: normal; font-size: 11.5px; color: var(--muted); }
+.bb-item b { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text); font-size: 13.5px; }
+.bb-item.warn b { color: #c0392b; }
+.bb-item.ok b { color: #1b8a4b; }
+.bb-pager { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.page-btn { padding: 5px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,252,250,0.7); color: var(--text); font-size: 13px; cursor: pointer; transition: all 0.14s; }
+.page-btn:hover { border-color: var(--primary); color: var(--primary); }
+.page-btn:disabled { opacity: 0.35; cursor: default; }
+.page-info { font-size: 13px; color: var(--muted); }
 
 /* Overdue column tag */
 .overdue-tag {

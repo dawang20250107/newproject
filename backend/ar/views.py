@@ -1859,6 +1859,37 @@ def _dec_or_none(v):
         return None
 
 
+def _parse_ym(s):
+    """解析 'YYYY-MM' → (year, month)；非法返回 None。"""
+    try:
+        ys, ms = str(s).split('-')[:2]
+        return int(ys), int(ms)
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _ym_range_q(start_ym, end_ym):
+    """运作年月区间 → 标量安全 Q（operation_year/month 双列比较）。
+    仅给 start 时退化为单月；start/end 任意顺序都按从小到大归一。"""
+    s = _parse_ym(start_ym) if start_ym else None
+    e = _parse_ym(end_ym) if end_ym else None
+    if s and not e:
+        e = s
+    if e and not s:
+        s = e
+    if not (s and e):
+        return None
+    if s > e:
+        s, e = e, s
+    (y1, m1), (y2, m2) = s, e
+    if y1 == y2:
+        return Q(operation_year=y1, operation_month__gte=m1, operation_month__lte=m2)
+    q = Q(operation_year=y1, operation_month__gte=m1) | Q(operation_year=y2, operation_month__lte=m2)
+    if y2 - y1 >= 2:
+        q |= Q(operation_year__gt=y1, operation_year__lt=y2)
+    return q
+
+
 def _condition_q(c, today, eomonth_today):
     """把单个条件构建成「标量安全」的 Q（关联字段一律转 id IN 子查询），
     便于在 且/或 任意组合下安全参与布尔运算。非法条目返回 None。"""
@@ -1866,9 +1897,30 @@ def _condition_q(c, today, eomonth_today):
         return None
     ctype = c.get('t')
 
+    # ── 条件组（括号）：内部按 group.match(且/或) 组合，整体作为一个标量安全 Q ──
+    # 支持「(A 且 B) 或 C」这类带括号的复合筛选，可与顶层条件任意嵌套一层。
+    if ctype == 'group':
+        inner = c.get('conditions')
+        if not isinstance(inner, list):
+            return None
+        inner_any = (c.get('match') or 'all') == 'any'
+        combined = None
+        for sub in inner:
+            q = _condition_q(sub, today, eomonth_today)
+            if q is None:
+                continue
+            combined = q if combined is None else ((combined | q) if inner_any else (combined & q))
+        return combined
+
     # ── 维度类 ─────────────────────────────────────────────────────────────
     if ctype == 'dim':
         field = c.get('field')
+        # 运作年月：支持区间(value~end) + 含/不含(exclude)；在空值守卫之前处理
+        if field == 'operation_ym':
+            q = _ym_range_q(c.get('value'), c.get('end'))
+            if q is None:
+                return None
+            return ~q if c.get('exclude') else q
         v = c.get('value')
         if v in (None, ''):
             return None
@@ -1891,13 +1943,6 @@ def _condition_q(c, today, eomonth_today):
         if field == 'operation_month':
             try:
                 return Q(operation_month=int(v))
-            except (TypeError, ValueError):
-                return None
-        if field == 'operation_ym':
-            # 合并年月：value 形如 "2026-01"
-            try:
-                ys, ms = str(v).split('-')[:2]
-                return Q(operation_year=int(ys), operation_month=int(ms))
             except (TypeError, ValueError):
                 return None
         if field == 'q':
