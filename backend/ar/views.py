@@ -1593,6 +1593,17 @@ def ar_record_export(request):
     qs = _apply_record_sort(qs, request)
     if qs.count() > 5000:
         return err('导出超过5000行，请缩小筛选范围')
+    qs = qs.prefetch_related('payments')
+
+    def _pay_dates(rec):
+        return ' / '.join(str(p.payment_date) for p in rec.payments.all())
+
+    def _pay_amounts(rec):
+        return ' / '.join(f'{float(p.amount):.2f}' for p in rec.payments.all())
+
+    def _pay_total(rec):
+        s = sum((p.amount for p in rec.payments.all()), Decimal('0'))
+        return float(s) if s else 0.0
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1615,6 +1626,10 @@ def ar_record_export(request):
         ('p_invoice_config', '开票模式', lambda rec, st: rec.project.invoice_mode),
         ('r_account_diff', '账实差额调整', lambda rec, st: float(rec.account_diff_adjustment)),
         ('r_outstanding', '未回款金额', lambda rec, st: float(rec.outstanding_amount)),
+        # 回款明细：同一明细可有多笔回款，日期/金额按 " / " 并列，另给已回款合计
+        ('r_payments', '回款日期', lambda rec, st: _pay_dates(rec)),
+        ('r_payments', '回款金额', lambda rec, st: _pay_amounts(rec)),
+        ('r_payments', '已回款合计', lambda rec, st: _pay_total(rec)),
         ('r_due_date', '应收日期', lambda rec, st: str(rec.due_date) if rec.due_date else ''),
         ('r_reconciliation', '对账状态', lambda rec, st: rec.reconciliation_status),
         ('r_reconciliation', '对账日期',
@@ -1870,6 +1885,13 @@ def _condition_q(c, today, eomonth_today):
         if field == 'operation_month':
             try:
                 return Q(operation_month=int(v))
+            except (TypeError, ValueError):
+                return None
+        if field == 'operation_ym':
+            # 合并年月：value 形如 "2026-01"
+            try:
+                ys, ms = str(v).split('-')[:2]
+                return Q(operation_year=int(ys), operation_month=int(ms))
             except (TypeError, ValueError):
                 return None
         if field == 'q':

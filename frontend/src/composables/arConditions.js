@@ -15,11 +15,11 @@ export const RESP_OPTS = [
 ]
 export const SHARED_OPTS = [{ v: '1', l: '共享' }, { v: '0', l: '非共享' }]
 
-// 维度字段：kind 决定值编辑器（select 固定选项 / dept / year / month / text）
+// 维度字段：kind 决定值编辑器（select 固定选项 / dept / year / ym / text）
 export const DIM_FIELDS = [
   { field: 'dept', label: '事业部', kind: 'dept' },
   { field: 'operation_year', label: '运作年', kind: 'year' },
-  { field: 'operation_month', label: '运作月', kind: 'month' },
+  { field: 'operation_ym', label: '运作年月', kind: 'ym' },
   { field: 'status', label: '状态', kind: 'select', opts: STATUS_OPTS },
   { field: 'reconciliation_status', label: '对账状态', kind: 'select', opts: RECON_OPTS },
   { field: 'invoice_status', label: '开票状态', kind: 'select', opts: INVOICE_OPTS },
@@ -63,6 +63,7 @@ export function describeCondition(c) {
     let val = c.value
     if (f.kind === 'select') val = _lbl(f.opts || [], c.value)
     else if (c.field === 'operation_month') val = `${c.value}月`
+    else if (c.field === 'operation_ym') val = c.value   // 形如 2026-01
     return `${f.label || c.field}: ${val}`
   }
   if (c.t === 'date') {

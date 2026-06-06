@@ -27,6 +27,10 @@ function addDim(field) {
   if (f.kind === 'dept') value = props.accessibleDepts[0] || ''
   else if (f.kind === 'year') value = props.years[0] || ''
   else if (f.kind === 'month') value = 1
+  else if (f.kind === 'ym') {
+    const d = new Date()
+    value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  }
   else if (f.kind === 'select') value = f.opts[0].v
   commit([...props.modelValue, { t: 'dim', field, value }]); addMenu.value = false
 }
@@ -75,6 +79,7 @@ const fieldLabel = (list, field) => (list.find(f => f.field === field) || {}).la
           <select v-else-if="dimKind(c.field) === 'month'" v-model.number="c.value" class="fp-sel" @change="patch()">
             <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
           </select>
+          <input v-else-if="dimKind(c.field) === 'ym'" v-model="c.value" type="month" class="fp-date" @change="patch()" />
           <select v-else-if="dimKind(c.field) === 'select'" v-model="c.value" class="fp-sel" @change="patch()">
             <option v-for="o in dimOpts(c.field)" :key="o.v" :value="o.v">{{ o.l }}</option>
           </select>

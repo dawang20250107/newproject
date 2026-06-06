@@ -1529,3 +1529,47 @@ class ContractAndImportAmbiguityTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         p.refresh_from_db()
         self.assertEqual(p.contracts.count(), 0)
+
+    # ── 导出带回款日期/金额 + 合并年月筛选 ────────────────────────────────────
+    def test_export_includes_payment_date_amount(self):
+        from openpyxl import load_workbook
+        p = self._proj('导出回款项目')
+        r = ARRecord.objects.create(project=p, operation_year=2026, operation_month=3,
+                                    estimated_amount=Decimal('100000'))
+        ARPayment.objects.create(ar_record=r, payment_no=1, amount=Decimal('30000'),
+                                 payment_date=date(2026, 3, 20))
+        ARPayment.objects.create(ar_record=r, payment_no=2, amount=Decimal('20000'),
+                                 payment_date=date(2026, 4, 10))
+        resp = self.client.get('/api/pk/ar/records/export', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        wb = load_workbook(io.BytesIO(resp.content))
+        ws = wb.active
+        headers = [c.value for c in ws[1]]
+        self.assertIn('回款日期', headers)
+        self.assertIn('回款金额', headers)
+        self.assertIn('已回款合计', headers)
+        # 找到数据行，校验两笔回款并列 + 合计
+        di, dl = headers.index('回款日期'), headers.index('回款金额')
+        ti = headers.index('已回款合计')
+        row = [c.value for c in ws[2]]
+        self.assertIn('2026-03-20', str(row[di]))
+        self.assertIn('2026-04-10', str(row[di]))
+        self.assertIn('30000', str(row[dl]))
+        self.assertEqual(float(row[ti]), 50000.0)
+
+    def test_combined_year_month_condition(self):
+        p = self._proj('年月筛选项目')
+        ARRecord.objects.create(project=p, operation_year=2026, operation_month=1,
+                                estimated_amount=Decimal('1000'))
+        ARRecord.objects.create(project=p, operation_year=2026, operation_month=2,
+                                estimated_amount=Decimal('2000'))
+        conds = json.dumps([{'t': 'dim', 'field': 'operation_ym', 'value': '2026-01'}])
+        resp = self.client.get('/api/pk/ar/records', {'conditions': conds, 'match': 'all'},
+                               **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['total'], 1)
+        self.assertEqual(d['items'][0]['operation_month'], 1)
+        # summary 合计也只统计该月
+        self.assertEqual(d['summary']['count'], 1)
+        self.assertAlmostEqual(float(d['summary']['estimated']), 1000.0, places=2)

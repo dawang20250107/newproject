@@ -3,7 +3,7 @@ import { ref, onMounted, onBeforeUnmount, reactive, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { todayCST } from '../constants.js'
-import { fmtCompact, fmtTime } from '../utils/format.js'
+import { fmtMoney, fmtTime } from '../utils/format.js'
 import { downloadBlob } from '../utils/download.js'
 import StatusBadge from '../components/StatusBadge.vue'
 import PaymentModal from '../components/PaymentModal.vue'
@@ -53,8 +53,8 @@ function positionTip(e) {
 function moveTip(e) { if (tip.show) positionTip(e) }
 function hideTip() { tip.show = false }
 
-// 万级单位（不启用「亿」），单位前带空格；空值显示 0.00（保持原表现）
-const fmt = (n) => fmtCompact(n, { space: true, yi: false, dash: '0.00' })
+// 精确数值：千分位、两位小数、不带单位（工作中确切金额更常用；KPI 卡片才用单位）
+const fmt = (n) => fmtMoney(n, '0.00')
 
 function daysOverdue(plannedDate) {
   if (!plannedDate) return 0

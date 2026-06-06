@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
-import { fmtCompact } from '../../utils/format.js'
+import { fmtCompact, fmtMoney } from '../../utils/format.js'
 import { useServerSort } from '../../composables/useServerSort.js'
 import SortTh from '../../components/ar/SortTh.vue'
 import FilterPanel from '../../components/ar/FilterPanel.vue'
@@ -203,6 +203,8 @@ const groupLoading = ref(false)
 
 // 亿/万 两级单位（无空格），万元以下两位小数；空值显示 0.00（保持原表现）
 const fmtAmt = (v) => fmtCompact(v, { dash: '0.00' })
+// 表格内金额：精确数值、千分位、不带单位（KPI 指标条仍用 fmtAmt 带单位）
+const fmtCell = (v) => fmtMoney(v, '—')
 
 async function load(reset = false) {
   if (reset) page.value = 1
@@ -314,7 +316,7 @@ function drillIntoGroup(row) {
   const gb = summaryGroupBy.value
   if (gb === 'dept') upsertDim('dept', row.key)
   else if (gb === 'invoice_status') upsertDim('invoice_status', row.key)
-  else if (gb === 'month') { upsertDim('operation_year', row.year); upsertDim('operation_month', row.month) }
+  else if (gb === 'month') upsertDim('operation_ym', `${row.year}-${String(row.month).padStart(2, '0')}`)
   else if (gb === 'manager') upsertDim('manager', row.key)
   switchTab('all')
   load(true)
@@ -802,11 +804,11 @@ function clearFilters() {
 
                 <!-- all -->
                 <template v-if="activeTab === 'all'">
-                  <td v-if="show('r_estimated_amount')" class="amt fw">{{ fmtAmt(rec.estimated_amount) }}</td>
-                  <td v-if="show('r_actual_invoice_amount')" class="amt">{{ rec.actual_invoice_amount ? fmtAmt(rec.actual_invoice_amount) : '—' }}</td>
-                  <td v-if="show('r_tax_amount')" class="amt text-muted">{{ rec.tax_amount ? fmtAmt(rec.tax_amount) : '—' }}</td>
-                  <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtAmt(rec.account_diff_adjustment) : '—' }}</td>
-                  <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtAmt(rec.outstanding_amount) : '—' }}</td>
+                  <td v-if="show('r_estimated_amount')" class="amt fw">{{ fmtCell(rec.estimated_amount) }}</td>
+                  <td v-if="show('r_actual_invoice_amount')" class="amt">{{ rec.actual_invoice_amount ? fmtCell(rec.actual_invoice_amount) : '—' }}</td>
+                  <td v-if="show('r_tax_amount')" class="amt text-muted">{{ rec.tax_amount ? fmtCell(rec.tax_amount) : '—' }}</td>
+                  <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtCell(rec.account_diff_adjustment) : '—' }}</td>
+                  <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
                   <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.due_date || '—' }}</td>
                   <td v-if="show('r_reconciliation')" class="ctr">
                     <span :class="['status-pill', rec.reconciliation_status === '已对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status }}</span>
@@ -829,7 +831,7 @@ function clearFilters() {
 
                 <!-- reconciliation -->
                 <template v-else-if="activeTab === 'reconciliation'">
-                  <td v-if="show('r_estimated_amount')" class="amt fw">{{ fmtAmt(rec.estimated_amount) }}</td>
+                  <td v-if="show('r_estimated_amount')" class="amt fw">{{ fmtCell(rec.estimated_amount) }}</td>
                   <td v-if="show('r_reconciliation')" class="ctr">
                     <span :class="['status-pill', rec.reconciliation_status === '已对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status }}</span>
                   </td>
@@ -841,7 +843,7 @@ function clearFilters() {
                     <span v-else-if="rec.invoice_status === '已结清'" class="status-pill pill-ok">已结清</span>
                     <span v-else class="status-pill pill-muted">未到期</span>
                   </td>
-                  <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtAmt(rec.outstanding_amount) : '—' }}</td>
+                  <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
                 </template>
 
                 <!-- invoice -->
@@ -850,11 +852,11 @@ function clearFilters() {
                     <span v-if="rec.invoice_batch_no" class="batch-badge" :title="`合并开票批次：${rec.invoice_batch_no}`">{{ rec.invoice_batch_no }}</span>
                     <span v-else class="text-sm-muted">—</span>
                   </td>
-                  <td v-if="show('r_estimated_amount')" class="amt text-muted">{{ fmtAmt(rec.estimated_amount) }}</td>
-                  <td v-if="show('r_actual_invoice_amount')" class="amt fw">{{ rec.actual_invoice_amount ? fmtAmt(rec.actual_invoice_amount) : '—' }}</td>
-                  <td v-if="show('r_tax_amount')" class="amt text-muted">{{ rec.tax_amount ? fmtAmt(rec.tax_amount) : '—' }}</td>
+                  <td v-if="show('r_estimated_amount')" class="amt text-muted">{{ fmtCell(rec.estimated_amount) }}</td>
+                  <td v-if="show('r_actual_invoice_amount')" class="amt fw">{{ rec.actual_invoice_amount ? fmtCell(rec.actual_invoice_amount) : '—' }}</td>
+                  <td v-if="show('r_tax_amount')" class="amt text-muted">{{ rec.tax_amount ? fmtCell(rec.tax_amount) : '—' }}</td>
                   <td v-if="show('r_invoice_date')" class="ctr text-sm-muted">{{ rec.invoice_date || '—' }}</td>
-                  <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtAmt(rec.account_diff_adjustment) : '—' }}</td>
+                  <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtCell(rec.account_diff_adjustment) : '—' }}</td>
                   <td v-if="show('r_invoice_status')" class="ctr">
                     <span :class="['status-pill', rec.invoice_status === '已结清' ? 'pill-ok' : rec.invoice_status === '部分回款' ? 'pill-blue' : rec.invoice_status === '已开票' ? 'pill-warn' : 'pill-muted']">{{ rec.invoice_status }}</span>
                   </td>
@@ -862,7 +864,7 @@ function clearFilters() {
 
                 <!-- collection -->
                 <template v-else>
-                  <td class="amt fw">{{ fmtAmt(rec.actual_invoice_amount || rec.estimated_amount) }}</td>
+                  <td class="amt fw">{{ fmtCell(rec.actual_invoice_amount || rec.estimated_amount) }}</td>
                   <td v-if="show('r_payments')">
                     <button class="pay-toggle" @click="togglePayments(rec.id)">
                       <span class="pay-count" :class="rec.payments?.length ? 'count-has' : 'count-none'">{{ rec.payments?.length || 0 }}</span>
@@ -871,7 +873,7 @@ function clearFilters() {
                     </button>
                     <button v-if="auth.canCreate" class="add-pay-btn" @click="openAddPayment(rec)">+ 回款</button>
                   </td>
-                  <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtAmt(rec.outstanding_amount) : '—' }}</td>
+                  <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
                   <td v-if="show('r_invoice_status')" class="ctr">
                     <span :class="['status-pill', rec.invoice_status === '已结清' ? 'pill-ok' : rec.invoice_status === '部分回款' ? 'pill-blue' : rec.invoice_status === '已开票' ? 'pill-warn' : 'pill-muted']">{{ rec.invoice_status }}</span>
                   </td>
@@ -898,7 +900,7 @@ function clearFilters() {
                   <td :colspan="99">
                     <div class="pay-detail">
                       <span class="pay-no">第{{ pay.payment_no }}次</span>
-                      <span class="pay-amt">{{ fmtAmt(pay.amount) }}</span>
+                      <span class="pay-amt">{{ fmtCell(pay.amount) }}</span>
                       <span class="pay-date">{{ pay.payment_date }}</span>
                       <span v-if="pay.source === '预收抵扣'" class="pay-src" title="由预收核销生成，须在预收预付页删除对应核销">预收抵扣</span>
                       <span v-if="pay.notes" class="pay-notes">{{ pay.notes }}</span>
@@ -909,65 +911,24 @@ function clearFilters() {
               </template>
             </template>
           </tbody>
-
-          <!-- 列合计页脚：吸底，正对齐在数值列下方；随筛选/条件实时更新 -->
-          <tfoot v-if="summaryData && items.length">
-            <tr class="sum-foot">
-              <td v-if="auth.canDelete" class="sel-col"></td>
-              <td class="sum-foot-lbl">合计 · {{ summaryData.count }} 条</td>
-              <td class="ctr"></td>
-
-              <!-- all -->
-              <template v-if="activeTab === 'all'">
-                <td v-if="show('r_estimated_amount')" class="amt">{{ fmtAmt(summaryData.estimated) }}</td>
-                <td v-if="show('r_actual_invoice_amount')" class="amt">{{ fmtAmt(summaryData.invoiced) }}</td>
-                <td v-if="show('r_tax_amount')" class="amt">{{ fmtAmt(summaryData.tax) }}</td>
-                <td v-if="show('r_account_diff')" class="amt">{{ fmtAmt(summaryData.adj) }}</td>
-                <td v-if="show('r_outstanding')" class="amt amt-warn">{{ fmtAmt(summaryData.outstanding) }}</td>
-                <td v-if="show('r_due_date')"></td>
-                <td v-if="show('r_reconciliation')"></td>
-                <td v-if="show('r_payments')"></td>
-                <td></td>
-                <td></td>
-                <td v-if="show('r_notes')"></td>
-              </template>
-              <!-- reconciliation -->
-              <template v-else-if="activeTab === 'reconciliation'">
-                <td v-if="show('r_estimated_amount')" class="amt">{{ fmtAmt(summaryData.estimated) }}</td>
-                <td v-if="show('r_reconciliation')"></td>
-                <td v-if="show('r_reconciliation')"></td>
-                <td v-if="show('r_due_date')"></td>
-                <td></td>
-                <td v-if="show('r_outstanding')" class="amt amt-warn">{{ fmtAmt(summaryData.outstanding) }}</td>
-              </template>
-              <!-- invoice -->
-              <template v-else-if="activeTab === 'invoice'">
-                <td></td><!-- batch_no -->
-                <td v-if="show('r_estimated_amount')" class="amt">{{ fmtAmt(summaryData.estimated) }}</td>
-                <td v-if="show('r_actual_invoice_amount')" class="amt">{{ fmtAmt(summaryData.invoiced) }}</td>
-                <td v-if="show('r_tax_amount')" class="amt">{{ fmtAmt(summaryData.tax) }}</td>
-                <td v-if="show('r_invoice_date')"></td>
-                <td v-if="show('r_account_diff')" class="amt">{{ fmtAmt(summaryData.adj) }}</td>
-                <td v-if="show('r_invoice_status')"></td>
-              </template>
-              <!-- collection -->
-              <template v-else>
-                <td class="amt amt-muted" title="应收基础为每行开票额/预估的取大，暂不汇总">·</td>
-                <td v-if="show('r_payments')" class="text-sm-muted">已收 {{ fmtAmt(summaryData.collected) }}</td>
-                <td v-if="show('r_outstanding')" class="amt amt-warn">{{ fmtAmt(summaryData.outstanding) }}</td>
-                <td v-if="show('r_invoice_status')"></td>
-              </template>
-
-              <td class="ctr"></td>
-            </tr>
-          </tfoot>
         </table>
       </div>
 
-      <div v-if="isDataTab && total > size" class="pagination">
-        <button :disabled="page <= 1" class="page-btn" @click="page--; load()">‹ 上一页</button>
-        <span class="page-info">{{ page }} / {{ Math.ceil(total / size) }} 页 · 共 {{ total }} 条</span>
-        <button :disabled="page * size >= total" class="page-btn" @click="page++; load()">下一页 ›</button>
+      <!-- 吸底合计 + 翻页：固定在视口最底部，不占内容空间；金额为精确数值 -->
+      <div v-if="isDataTab && (summaryData || total > size)" class="bottom-bar">
+        <div v-if="summaryData" class="bb-summary">
+          <span class="bb-item"><i>合计</i><b>{{ summaryData.count }}</b> 条</span>
+          <span v-if="show('r_estimated_amount')" class="bb-item"><i>预估</i><b>{{ fmtCell(summaryData.estimated) }}</b></span>
+          <span v-if="show('r_actual_invoice_amount')" class="bb-item"><i>开票</i><b>{{ fmtCell(summaryData.invoiced) }}</b></span>
+          <span v-if="show('r_tax_amount')" class="bb-item"><i>税额</i><b>{{ fmtCell(summaryData.tax) }}</b></span>
+          <span v-if="show('r_payments')" class="bb-item ok"><i>已收</i><b>{{ fmtCell(summaryData.collected) }}</b></span>
+          <span v-if="show('r_outstanding')" class="bb-item warn"><i>未收</i><b>{{ fmtCell(summaryData.outstanding) }}</b></span>
+        </div>
+        <div v-if="total > size" class="bb-pager">
+          <button :disabled="page <= 1" class="page-btn" @click="page--; load()">‹ 上一页</button>
+          <span class="page-info">{{ page }} / {{ Math.ceil(total / size) }} 页 · 共 {{ total }} 条</span>
+          <button :disabled="page * size >= total" class="page-btn" @click="page++; load()">下一页 ›</button>
+        </div>
       </div>
 
       <!-- ══ 回款流水 ══ -->
@@ -1574,6 +1535,21 @@ function clearFilters() {
 .icon-btn-del:hover { border-color: #c62828; color: #c62828; background: rgba(198,40,40,0.07); }
 
 .pagination { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 16px 0 4px; }
+/* 吸底合计+翻页条：粘在视口底部，长列表滚动时常驻可见 */
+.bottom-bar {
+  position: sticky; bottom: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  margin: 8px -16px -16px; padding: 9px 18px;
+  background: rgba(255,252,250,0.96); backdrop-filter: blur(8px);
+  border-top: 1px solid rgba(0,0,0,0.08); box-shadow: 0 -4px 14px rgba(0,0,0,0.05);
+}
+.bb-summary { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; font-size: 13px; }
+.bb-item { color: var(--muted); display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; }
+.bb-item i { font-style: normal; font-size: 11.5px; color: var(--muted); }
+.bb-item b { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text); font-size: 13.5px; }
+.bb-item.warn b { color: #c0392b; }
+.bb-item.ok b { color: #1b8a4b; }
+.bb-pager { display: flex; align-items: center; gap: 12px; margin-left: auto; }
 .page-btn { padding: 5px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,252,250,0.7); color: var(--text); font-size: 13px; cursor: pointer; transition: all 0.14s; }
 .page-btn:hover { border-color: var(--primary); color: var(--primary); }
 .page-btn:disabled { opacity: 0.35; cursor: default; }
