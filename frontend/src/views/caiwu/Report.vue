@@ -222,10 +222,7 @@ onMounted(() => {
             </thead>
             <tbody>
               <tr v-for="r in flatRows" :key="r.key" :class="['mx-row', `d${r.depth}`, { calc: r.calc, 'has-pct': r.pct }]">
-                <td class="mx-name" :style="`padding-left:${10 + r.depth * 16}px`">
-                  {{ r.name }}
-                  <span v-if="r.pct && r.depth === 0" class="pct-tag">占总收入</span>
-                </td>
+                <td class="mx-name" :style="`padding-left:${10 + r.depth * 16}px`">{{ r.name }}</td>
                 <td v-for="(v, i) in r.values" :key="i" class="mx-num" :class="{ neg: v < 0 }">
                   <div class="mx-amt">{{ fmt(v) }}</div>
                   <div v-if="r.pct" class="mx-pct">{{ r.pct[i] != null ? r.pct[i].toFixed(1) + '%' : '—' }}</div>
@@ -305,9 +302,4 @@ onMounted(() => {
 .mx-pct { font-size: 10px; line-height: 1.2; color: #5b7763; font-weight: 600; margin-top: 1px; }
 .mx-row.has-pct .mx-num { vertical-align: top; }
 .mx-row.has-pct .mx-amt { line-height: 1.3; }
-.pct-tag {
-  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px;
-  font-size: 10px; font-weight: 600; color: #5b7763; background: rgba(91,119,99,0.12);
-  vertical-align: middle;
-}
 </style>
