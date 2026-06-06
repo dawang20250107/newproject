@@ -1538,6 +1538,7 @@ def ar_record_import(request):
     match_buckets = {'exact': {}, 'exact_multi': {}, 'fuzzy': {}, 'fuzzy_multi': {}, 'created': {}}
 
     created = 0
+    pay_warnings = []          # 回款金额超出预估 → 强制置 0，不阻断导入
     with transaction.atomic():
         for p in plan:
             proj, match_type, warn = _resolve_project_for_import(
@@ -1599,7 +1600,16 @@ def ar_record_import(request):
                 ARPayment.objects.create(ar_record=rec, payment_no=1,
                                          amount=p['pay_amount'], payment_date=p['pay_date'],
                                          notes='导入回款')
-                rec.recompute_derived()
+                try:
+                    rec.recompute_derived()
+                except ValidationError as ve:
+                    # 回款金额超出预估上账金额 → outstanding 不能为负，强制置 0 并记录警告
+                    ARRecord.objects.filter(pk=rec.pk).update(outstanding_amount=Decimal('0'))
+                    vmsg = (ve.messages[0] if getattr(ve, 'messages', None) else str(ve))
+                    pay_warnings.append(
+                        f'第{p["ri"]}行（{p["short_name"]}）：回款金额超出预估上账金额，'
+                        f'未收回金额已自动置 0，请核查。详情：{vmsg}'
+                    )
             created += 1
 
     # ── 汇总输出 ──────────────────────────────────────────────────────────────
@@ -1619,6 +1629,7 @@ def ar_record_import(request):
         for item in match_detail[btype]:
             if item.get('warn'):
                 warnings.append(f'第{item["input"]}：{item["warn"]}')
+    warnings.extend(pay_warnings)   # 回款超额警告优先展示
 
     tip = '导入后系统已按现规则自动重算未收回金额。'
     if draft_count:

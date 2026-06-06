@@ -130,6 +130,7 @@ const expandedPayments = ref({})
 const importing = ref(false)
 const exporting = ref(false)
 const fileInput = ref(null)
+const importResult = ref(null)   // { ok: bool, title, lines: [] }
 
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
@@ -489,45 +490,29 @@ async function handleImport(e) {
     const fd = new FormData(); fd.append('file', f)
     const res = await ar.importRecords(fd); const d = res.data
     if (d.rejected) {
-      const head = `❌ ${d.message || '导入未执行，请修正后重新导入'}`
-      alert(head + '\n\n' + (d.errors || []).join('\n'))
+      importResult.value = {
+        ok: false,
+        title: d.message || '导入未执行，请修正后重新导入',
+        sections: [{ label: '错误明细', items: d.errors || [] }],
+      }
     } else {
-      const lines = []
-      lines.push(`✅ 导入完成：创建 ${d.created} 条，跳过空行/示例 ${d.skipped} 行`)
-
+      const sections = []
       const md = d.match_detail || {}
-
-      if (md.exact?.length) {
-        lines.push(`\n── 精确匹配项目（${md.exact.length} 个）`)
-        md.exact.forEach(x => lines.push(`  · ${x.short_name}（${x.count} 条）`))
+      if (md.exact?.length) sections.push({ label: `精确匹配项目（${md.exact.length} 个）`, items: md.exact.map(x => `${x.short_name}（${x.count} 条）`) })
+      if (md.exact_multi?.length) sections.push({ label: `⚠ 精确匹配但同名多个（${md.exact_multi.length} 个，已取最新，请核查）`, warn: true, items: md.exact_multi.map(x => `${x.short_name} → 匹配到「${x.matched_to}」（${x.count} 条）${x.warn ? '  ' + x.warn : ''}`) })
+      if (md.fuzzy?.length) sections.push({ label: `模糊匹配项目（${md.fuzzy.length} 个，请核查）`, warn: true, items: md.fuzzy.map(x => `"${x.short_name}" → 匹配到「${x.matched_to}」（${x.count} 条）`) })
+      if (md.fuzzy_multi?.length) sections.push({ label: `⚠ 模糊匹配且多候选（${md.fuzzy_multi.length} 个，请核查）`, warn: true, items: md.fuzzy_multi.map(x => `"${x.short_name}" → 匹配到「${x.matched_to}」（${x.count} 条）${x.warn ? '  ' + x.warn : ''}`) })
+      if (md.created?.length) sections.push({ label: `新建草稿项目（${md.created.length} 个，请到项目台账补充完善）`, items: md.created.map(x => `${x.short_name}（${x.count} 条记录已关联）`) })
+      if (d.warnings?.length) sections.push({ label: `导入提示（${d.warnings.length} 条）`, warn: true, items: d.warnings.slice(0, 20), more: d.warnings.length > 20 ? `…共 ${d.warnings.length} 条，已截断` : '' })
+      importResult.value = {
+        ok: true,
+        title: `导入完成：创建 ${d.created} 条，跳过空行/示例 ${d.skipped} 行`,
+        sections,
       }
-      if (md.exact_multi?.length) {
-        lines.push(`\n── ⚠️ 精确匹配但同名多个（${md.exact_multi.length} 个，已取最新，请核查）`)
-        md.exact_multi.forEach(x => lines.push(`  · ${x.short_name} → 匹配到「${x.matched_to}」（${x.count} 条）${x.warn ? '  ' + x.warn : ''}`))
-      }
-      if (md.fuzzy?.length) {
-        lines.push(`\n── 模糊匹配项目（${md.fuzzy.length} 个，请核查）`)
-        md.fuzzy.forEach(x => lines.push(`  · "${x.short_name}" → 匹配到「${x.matched_to}」（${x.count} 条）`))
-      }
-      if (md.fuzzy_multi?.length) {
-        lines.push(`\n── ⚠️ 模糊匹配且多候选（${md.fuzzy_multi.length} 个，请核查）`)
-        md.fuzzy_multi.forEach(x => lines.push(`  · "${x.short_name}" → 匹配到「${x.matched_to}」（${x.count} 条）${x.warn ? '  ' + x.warn : ''}`))
-      }
-      if (md.created?.length) {
-        lines.push(`\n── 🆕 自动创建草稿项目（${md.created.length} 个，请到项目台账补充完善）`)
-        md.created.forEach(x => lines.push(`  · ${x.short_name}（${x.count} 条记录已关联）`))
-      }
-
-      if (d.warnings?.length) {
-        lines.push(`\n── 导入提示（${d.warnings.length} 条）`)
-        d.warnings.slice(0, 10).forEach(w => lines.push(`  · ${w}`))
-        if (d.warnings.length > 10) lines.push(`  …（共 ${d.warnings.length} 条，已省略）`)
-      }
-
-      alert(lines.join('\n'))
       await load()
     }
-  } catch (e) { alert(e?.msg || '导入失败')
+  } catch (err) {
+    importResult.value = { ok: false, title: '导入失败', sections: [{ label: '错误信息', items: [err?.msg || err?.error || err?.message || '服务器错误，请联系管理员'] }] }
   } finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
 }
 
@@ -1273,6 +1258,29 @@ function clearFilters() {
         </div>
       </div>
 
+      <!-- 导入结果弹窗 -->
+      <div v-if="importResult" class="modal-overlay" @click.self="importResult = null">
+        <div class="modal-box" style="max-width:600px">
+          <div class="modal-header">
+            <h3 :class="importResult.ok ? 'imp-ok' : 'imp-fail'">{{ importResult.ok ? '✓ ' : '✕ ' }}{{ importResult.title }}</h3>
+            <button class="modal-close" @click="importResult = null">✕</button>
+          </div>
+          <div class="modal-body imp-body">
+            <div v-for="sec in importResult.sections" :key="sec.label" class="imp-section">
+              <div class="imp-sec-label" :class="{ 'imp-sec-warn': sec.warn }">{{ sec.label }}</div>
+              <ul class="imp-sec-list">
+                <li v-for="item in sec.items" :key="item">{{ item }}</li>
+                <li v-if="sec.more" class="imp-more">{{ sec.more }}</li>
+              </ul>
+            </div>
+            <div v-if="!importResult.sections?.length" class="imp-empty">无附加信息</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-primary" @click="importResult = null">知道了</button>
+          </div>
+        </div>
+      </div>
+
       <!-- 批量删除二次输入确认 -->
       <div v-if="showDelConfirm" class="modal-overlay" @click.self="showDelConfirm = false">
         <div class="modal-box" style="max-width:420px">
@@ -1566,4 +1574,16 @@ function clearFilters() {
 .adv-wo-amt { width: 130px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; font-size: 13px; }
 .btn-xs { padding: 4px 10px; font-size: 12px; }
 .adv-wo-tip { margin-top: 7px; font-size: 11px; color: var(--muted); line-height: 1.5; }
+
+/* 导入结果弹窗 */
+.imp-ok { color: #2e7d32; }
+.imp-fail { color: #c62828; }
+.imp-body { max-height: 60vh; overflow-y: auto; }
+.imp-section { margin-bottom: 14px; }
+.imp-sec-label { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 5px; padding: 3px 8px; border-radius: 6px; background: rgba(0,0,0,0.04); }
+.imp-sec-label.imp-sec-warn { background: rgba(230,81,0,0.08); color: #e65100; }
+.imp-sec-list { list-style: none; margin: 0; padding: 0 0 0 12px; display: flex; flex-direction: column; gap: 3px; }
+.imp-sec-list li { font-size: 12.5px; color: var(--text); line-height: 1.5; word-break: break-all; }
+.imp-more { color: var(--muted); font-style: italic; }
+.imp-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 12px 0; }
 </style>
