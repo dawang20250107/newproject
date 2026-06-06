@@ -189,6 +189,29 @@ class Contract(models.Model):
             models.Index(fields=['name', 'delivery_dept']),
         ]
 
+    def _gen_contract_no(self):
+        """生成合同编号：P-部门-日期-序号（如 P-YS-20260606-0001）。
+        部门取项目编号同款部门简码；无对应简码时省略部门段（P-日期-序号）。"""
+        dept_code = ARProject.DEPT_PROJECT_PREFIX.get(self.delivery_dept, '')
+        mid = f'{dept_code}-' if dept_code else ''
+        prefix = f'P-{mid}{datetime.date.today().strftime("%Y%m%d")}-'
+        with transaction.atomic():
+            existing = (Contract.objects.filter(contract_no__startswith=prefix)
+                        .select_for_update().values_list('contract_no', flat=True))
+            max_seq = -1
+            for no in existing:
+                try:
+                    max_seq = max(max_seq, int(no.rsplit('-', 1)[-1]))
+                except (ValueError, IndexError):
+                    continue
+            return f'{prefix}{max_seq + 1:04d}'
+
+    def save(self, *args, **kwargs):
+        # 未指定合同编号时自动生成 P-部门-日期-序号
+        if not (self.contract_no or '').strip():
+            self.contract_no = self._gen_contract_no()
+        return super().save(*args, **kwargs)
+
     def to_dict(self, with_links=False):
         d = {
             'id': self.id,

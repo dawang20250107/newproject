@@ -360,6 +360,35 @@ def _dept_denied(request, dept, msg='无权操作此部门'):
     return None
 
 
+def _sync_project_contracts(proj, contract_ids, request):
+    """替换某项目挂靠的合同（项目侧维护多对多）。只挂用户有权部门的合同。"""
+    proj.contract_links.all().delete()
+    seen = set()
+    for cid in (contract_ids or []):
+        try:
+            cid = int(cid)
+        except (ValueError, TypeError):
+            continue
+        if cid in seen:
+            continue
+        ct = Contract.objects.filter(pk=cid).first()
+        if not ct:
+            continue
+        if (request.pk_role != 'super_admin' and ct.delivery_dept
+                and ct.delivery_dept not in request.pk_depts):
+            continue
+        seen.add(cid)
+        ContractProject.objects.create(contract=ct, project=proj, is_primary=True)
+
+
+def _project_contracts_list(proj):
+    return [
+        {'contract_id': cp.contract_id, 'name': cp.contract.name,
+         'contract_no': cp.contract.contract_no, 'is_primary': cp.is_primary}
+        for cp in proj.contract_links.select_related('contract').all()
+    ]
+
+
 def _object_dept_denied(request, obj, dept_field='delivery_dept'):
     return _dept_denied(request, getattr(obj, dept_field, ''), '无权访问')
 
@@ -488,7 +517,8 @@ def projects(request):
         denied = _write_denied(request)
         if denied:
             return denied
-        data = _ar_visible_payload(request, _parse_body(request), 'project')
+        data = _ar_visible_payload(request, _parse_body(request), 'project',
+                                   extra=('customer_id', 'contract_ids'))
         dept = data.get('delivery_dept', '')
         if dept not in VALID_DEPARTMENTS:
             return err(f'无效交付部门: {dept}')
@@ -520,7 +550,12 @@ def projects(request):
                 notes=data.get('notes', '').strip(),
                 created_by=user,
             )
+            cid = data.get('customer_id')
+            if cid:
+                p.customer = Customer.objects.filter(pk=cid).first()
             p.save()
+            if 'contract_ids' in data:
+                _sync_project_contracts(p, data['contract_ids'], request)
         except Exception as e:
             return err(str(e))
         return ok(apply_ar_view_mask(p.to_dict(), get_request_perms(request), 'project'))
@@ -553,13 +588,15 @@ def project_detail(request, pk):
             record_count=Count('id'), total_outstanding=Sum('outstanding_amount'))
         d['record_count'] = agg['record_count'] or 0
         d['total_outstanding'] = str(agg['total_outstanding'] or 0)
+        d['contracts'] = _project_contracts_list(proj)
         return ok(apply_ar_view_mask(d, get_request_perms(request), 'project'))
 
     if request.method == 'PUT':
         denied = _write_denied(request)
         if denied:
             return denied
-        data = _ar_visible_payload(request, _parse_body(request), 'project')
+        data = _ar_visible_payload(request, _parse_body(request), 'project',
+                                   extra=('customer_id', 'contract_ids'))
         for field in ('contract_name', 'short_name', 'sub_dept',
                       'business_mode', 'customer_level', 'sales_contact', 'project_manager',
                       'has_contract', 'invoice_mode', 'invoice_type', 'notes'):
@@ -592,7 +629,11 @@ def project_detail(request, pk):
             else:
                 proj.customer = None
         proj.save()
-        return ok(apply_ar_view_mask(proj.to_dict(), get_request_perms(request), 'project'))
+        if 'contract_ids' in data:
+            _sync_project_contracts(proj, data['contract_ids'], request)
+        out = proj.to_dict()
+        out['contracts'] = _project_contracts_list(proj)
+        return ok(apply_ar_view_mask(out, get_request_perms(request), 'project'))
 
     if request.method == 'DELETE':
         denied = _delete_denied(request)

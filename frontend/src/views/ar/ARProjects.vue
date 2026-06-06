@@ -27,7 +27,15 @@ const form = reactive({
   has_contract: '有', contract_date: '', reconciliation_days: 0,
   invoice_wait_days: 0, post_invoice_days: 0, invoice_mode: '全额',
   invoice_type: '专票', tax_rate: '0.06', notes: '',
+  customer_id: '',
 })
+
+// 客户池（一次性加载）+ 当前项目挂靠的合同
+const customers = ref([])
+const linkedContracts = ref([])    // [{contract_id, name, contract_no, is_primary}]
+const ctQuery = ref('')
+const ctResults = ref([])
+let ctTimer = null
 
 const totalDays = computed(() =>
   (parseInt(form.reconciliation_days) || 0) +
@@ -93,6 +101,35 @@ function resetFilters() {
   reloadAll()
 }
 
+async function loadCustomers() {
+  try { customers.value = (await ar.listCustomers({ size: 200 })).data.items }
+  catch { customers.value = [] }
+}
+
+// 合同搜索添加（项目侧挂靠）
+function onCtSearch() {
+  clearTimeout(ctTimer)
+  ctTimer = setTimeout(doCtSearch, 280)
+}
+async function doCtSearch() {
+  const q = ctQuery.value.trim()
+  if (!q) { ctResults.value = []; return }
+  try {
+    const params = { q, size: 10 }
+    if (form.delivery_dept) params.dept = form.delivery_dept
+    const res = await ar.listContracts(params)
+    const used = new Set(linkedContracts.value.map(c => c.contract_id))
+    ctResults.value = res.data.items.filter(c => !used.has(c.id))
+  } catch { ctResults.value = [] }
+}
+function addContract(c) {
+  linkedContracts.value.push({ contract_id: c.id, name: c.name,
+    contract_no: c.contract_no, is_primary: true })
+  ctResults.value = ctResults.value.filter(x => x.id !== c.id)
+  ctQuery.value = ''
+}
+function removeContract(i) { linkedContracts.value.splice(i, 1) }
+
 function openCreate() {
   editItem.value = null
   Object.assign(form, {
@@ -101,11 +138,14 @@ function openCreate() {
     sales_contact: '', project_manager: '', has_contract: '有', contract_date: '',
     reconciliation_days: 0, invoice_wait_days: 0, post_invoice_days: 0,
     invoice_mode: '全额', invoice_type: '专票', tax_rate: '0.06', notes: '',
+    customer_id: '',
   })
+  linkedContracts.value = []
+  ctQuery.value = ''; ctResults.value = []
   showModal.value = true
 }
 
-function openEdit(item) {
+async function openEdit(item) {
   editItem.value = item
   Object.assign(form, {
     contract_name: item.contract_name,
@@ -119,8 +159,19 @@ function openEdit(item) {
     post_invoice_days: item.post_invoice_days,
     invoice_mode: item.invoice_mode, invoice_type: item.invoice_type,
     tax_rate: item.tax_rate, notes: item.notes,
+    customer_id: item.customer_id || '',
   })
+  linkedContracts.value = []
+  ctQuery.value = ''; ctResults.value = []
   showModal.value = true
+  // 拉详情带出当前挂靠合同
+  try {
+    const d = (await ar.getProject(item.id)).data
+    linkedContracts.value = (d.contracts || []).map(c => ({
+      contract_id: c.contract_id, name: c.name,
+      contract_no: c.contract_no, is_primary: c.is_primary }))
+    if (d.customer_id) form.customer_id = d.customer_id
+  } catch { /* 保持空 */ }
 }
 
 // Required fields — sub_dept / contract_date / tax_rate are optional
@@ -139,14 +190,15 @@ async function save() {
     return
   }
   saving.value = true
+  const contractIds = linkedContracts.value.map(c => c.contract_id)
   try {
     if (editItem.value) {
-      const payload = { ...form }
+      const payload = { ...form, customer_id: form.customer_id || null, contract_ids: contractIds }
       if (editItem.value.is_draft) payload.is_draft = false
       delete payload._complete_draft
       await ar.updateProject(editItem.value.id, payload)
     } else {
-      const saved = await ar.createProject(form)
+      const saved = await ar.createProject({ ...form, customer_id: form.customer_id || null, contract_ids: contractIds })
       // 新建后确保立即可见：清空搜索、按新项目部门筛选、回到首页
       filters.q = ''
       const newDept = saved?.data?.delivery_dept || form.delivery_dept
@@ -228,7 +280,7 @@ const onScopeChange = () => {
 }
 onMounted(() => {
   if (auth.perms?.ar_shared_only) filters.is_shared = '1'
-  load(); loadStats(); window.addEventListener('pk:depts-changed', onScopeChange)
+  load(); loadStats(); loadCustomers(); window.addEventListener('pk:depts-changed', onScopeChange)
 })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 </script>
@@ -506,6 +558,40 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <input v-model="form.notes" placeholder="可选" />
               </label>
             </div>
+
+            <!-- 关联客户 + 合同 -->
+            <div class="link-section">
+              <div class="link-head">
+                <span class="link-title">关联客户 / 合同</span>
+                <span class="link-sub">直接挂客户主体与所属合同（一个项目可挂多个合同）</span>
+              </div>
+              <div class="form-grid" style="margin-bottom:10px">
+                <label class="form-field span2">
+                  <span>关联客户</span>
+                  <select v-model="form.customer_id">
+                    <option value="">（不关联客户）</option>
+                    <option v-for="c in customers" :key="c.id" :value="c.id">{{ c.name }}</option>
+                  </select>
+                </label>
+              </div>
+              <div class="add-row">
+                <input v-model="ctQuery" class="add-sel" placeholder="搜索合同名称/编号挂靠…" @input="onCtSearch" />
+              </div>
+              <div v-if="ctResults.length" class="ct-results">
+                <div v-for="c in ctResults" :key="c.id" class="ct-result" @click="addContract(c)">
+                  <span class="mono">{{ c.contract_no || '—' }}</span> · {{ c.name }}
+                  <span class="text-muted">（{{ c.delivery_dept || '不限' }}）</span>
+                  <span class="add-hint">+ 挂靠</span>
+                </div>
+              </div>
+              <div v-if="!linkedContracts.length" class="link-empty">尚未挂靠合同</div>
+              <div v-for="(c, i) in linkedContracts" :key="c.contract_id" class="link-chip">
+                <span class="mono">{{ c.contract_no || '—' }}</span>
+                <span class="chip-name">{{ c.name }}</span>
+                <label class="chip-primary"><input type="checkbox" v-model="c.is_primary" /> 主合同</label>
+                <button class="chip-x" @click="removeContract(i)">✕</button>
+              </div>
+            </div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-ghost" @click="showModal = false">取消</button>
@@ -626,4 +712,23 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   color: var(--primary); font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
 }
 .filter-reset:hover { background: rgba(201,99,66,0.08); }
+
+/* 关联客户 / 合同 */
+.link-section { margin-top: 16px; padding: 14px 28px 4px; border-top: 1px dashed var(--border); }
+.link-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.link-title { font-weight: 700; font-size: 13px; color: var(--text); }
+.link-sub { font-size: 11.5px; color: var(--muted); }
+.add-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.add-sel { flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; background: #fff; }
+.link-empty { font-size: 12px; color: var(--muted); padding: 4px 0 8px; }
+.link-chip { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; background: rgba(255,255,255,0.6); flex-wrap: wrap; }
+.chip-name { font-weight: 600; font-size: 12.5px; }
+.chip-primary { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 3px; }
+.chip-x { margin-left: auto; width: 20px; height: 20px; border: none; border-radius: 50%; background: rgba(0,0,0,0.06); color: var(--muted); cursor: pointer; font-size: 11px; }
+.chip-x:hover { background: rgba(198,40,40,0.12); color: #c62828; }
+.ct-results { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; max-height: 180px; overflow: auto; }
+.ct-result { padding: 7px 10px; font-size: 12.5px; cursor: pointer; border-bottom: 1px solid rgba(0,0,0,0.04); }
+.ct-result:hover { background: rgba(201,99,66,0.06); }
+.add-hint { float: right; color: var(--primary); font-weight: 600; font-size: 11.5px; }
+.mono { font-family: monospace; font-size: 11.5px; }
 </style>

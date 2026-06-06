@@ -1489,3 +1489,43 @@ class ContractAndImportAmbiguityTests(TestCase):
         resp2 = self.client.delete(f'/api/pk/ar/contracts/{ct.id}', **self.auth())
         self.assertEqual(resp2.status_code, 200, resp2.content)
         self.assertFalse(Contract.objects.filter(pk=ct.id).exists())
+
+    def test_contract_no_auto_generated(self):
+        ct = Contract.objects.create(name='自动编号合同', delivery_dept='运输事业部')
+        self.assertTrue(ct.contract_no.startswith('P-YS-'), ct.contract_no)
+        ct2 = Contract.objects.create(name='自动编号合同2', delivery_dept='运输事业部')
+        # 同部门同日序号自增
+        self.assertNotEqual(ct.contract_no, ct2.contract_no)
+        # 显式指定则不覆盖
+        ct3 = Contract.objects.create(name='手填编号', delivery_dept='运输事业部', contract_no='MY-001')
+        self.assertEqual(ct3.contract_no, 'MY-001')
+
+    def test_contract_no_auto_without_dept(self):
+        ct = Contract.objects.create(name='无部门合同')
+        self.assertTrue(ct.contract_no.startswith('P-'), ct.contract_no)
+        self.assertNotIn('--', ct.contract_no)  # 无部门段不应出现空段
+
+    def test_project_put_attaches_contracts_and_customer(self):
+        cust = Customer.objects.create(name='挂靠客户')
+        ct = Contract.objects.create(name='挂靠合同', delivery_dept=self.dept)
+        p = self._proj('挂靠项目')
+        resp = self._cput(f'/api/pk/ar/projects/{p.id}', {
+            'customer_id': cust.id, 'contract_ids': [ct.id],
+        })
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['customer_id'], cust.id)
+        self.assertEqual(len(d['contracts']), 1)
+        self.assertEqual(d['contracts'][0]['contract_id'], ct.id)
+        # GET 详情也带 contracts
+        g = self.client.get(f'/api/pk/ar/projects/{p.id}', **self.auth()).json()['data']
+        self.assertEqual(len(g['contracts']), 1)
+
+    def test_project_put_clearing_contracts(self):
+        ct = Contract.objects.create(name='待清合同', delivery_dept=self.dept)
+        p = self._proj('待清项目')
+        ContractProject.objects.create(contract=ct, project=p)
+        resp = self._cput(f'/api/pk/ar/projects/{p.id}', {'contract_ids': []})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        p.refresh_from_db()
+        self.assertEqual(p.contracts.count(), 0)
