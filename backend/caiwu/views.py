@@ -905,7 +905,7 @@ def _map_dept_ledger_l1(code, name, l1_map):
         if kw in name:
             return l1_map.get(l1name), l1name
     code_s = str(code).strip()
-    # 多段编码精确/前缀匹配优先（如 6602.99 集团管理费用及其子明细 6602.99.xx）
+    # 多段编码精确/前缀匹配优先（如 6602.99.03 集团管理费用本科目及其子明细 6602.99.03.xx）
     for spec, l1name in _KD_CODE_L1_SPECIFIC.items():
         if code_s == spec or code_s.startswith(spec + '.'):
             return l1_map.get(l1name), l1name
