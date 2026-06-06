@@ -59,10 +59,12 @@ const flatRows = computed(() => {
       pct: l1.pct || null, totalPct: l1.total_pct ?? null })
     for (const l2 of (l1.children || [])) {
       out.push({ key: `l2-${l1.l1_id}-${l2.l2_id}`, depth: 1, name: l2.l2_name,
-        values: l2.values, total: l2.total })
+        values: l2.values, total: l2.total,
+        pct: l2.pct || null, totalPct: l2.total_pct ?? null })
       for (const l3 of (l2.children || [])) {
         out.push({ key: `l3-${l1.l1_id}-${l2.l2_id}-${l3.l3_id}`, depth: 2, name: l3.l3_name,
-          values: l3.values, total: l3.total })
+          values: l3.values, total: l3.total,
+          pct: l3.pct || null, totalPct: l3.total_pct ?? null })
       }
     }
   }
@@ -222,7 +224,7 @@ onMounted(() => {
               <tr v-for="r in flatRows" :key="r.key" :class="['mx-row', `d${r.depth}`, { calc: r.calc, 'has-pct': r.pct }]">
                 <td class="mx-name" :style="`padding-left:${10 + r.depth * 16}px`">
                   {{ r.name }}
-                  <span v-if="r.pct" class="pct-tag">占总收入</span>
+                  <span v-if="r.pct && r.depth === 0" class="pct-tag">占总收入</span>
                 </td>
                 <td v-for="(v, i) in r.values" :key="i" class="mx-num" :class="{ neg: v < 0 }">
                   <div class="mx-amt">{{ fmt(v) }}</div>

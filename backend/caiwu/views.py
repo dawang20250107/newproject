@@ -1728,23 +1728,30 @@ def _is_expense_ratio_row(name):
 
 
 def _attach_expense_ratio(months, rows):
-    """为成本/费用/集团管理费的一级科目行附加费销比：
+    """为成本/费用/集团管理费科目行附加费销比，逐级贯通到二级/三级：
       pct        —— 各月 金额/当月总收入（百分数，如 32.5），无收入则 None
       total_pct  —— 合计金额/合计总收入
-    总收入取「主营业务收入」一级行。原地修改 rows。"""
+    总收入统一取「主营业务收入」一级行；命中的一级行下所有子孙行同样按该口径
+    各自计算占总收入比例。原地修改 rows。"""
     rev = next((r for r in rows if r['l1_name'] == '主营业务收入'), None)
     if not rev:
         return
     rev_vals, rev_total = rev['values'], rev['total']
-    for r in rows:
-        if r.get('is_calculated') or not _is_expense_ratio_row(r['l1_name']):
-            continue
+
+    def _attach(node):
         pct = []
         for i in range(len(months)):
             base = rev_vals[i] if i < len(rev_vals) else 0
-            pct.append(round(r['values'][i] / base * 100, 1) if base else None)
-        r['pct'] = pct
-        r['total_pct'] = round(r['total'] / rev_total * 100, 1) if rev_total else None
+            pct.append(round(node['values'][i] / base * 100, 1) if base else None)
+        node['pct'] = pct
+        node['total_pct'] = round(node['total'] / rev_total * 100, 1) if rev_total else None
+        for child in node.get('children', []):
+            _attach(child)
+
+    for r in rows:
+        if r.get('is_calculated') or not _is_expense_ratio_row(r['l1_name']):
+            continue
+        _attach(r)
 
 
 def _aggregate_matrix(bu_list, year, level):
@@ -2049,17 +2056,17 @@ def _write_matrix_sheet(ws, scope_label, year, level, months, rows):
         tc.font = Font(bold=True, color='8A3B22', size=10.5)
         tc.fill = total_fill
 
-    def _put_pct(r, pcts, total_pct):
-        """费销比子行：占总收入百分比，紧贴在成本/费用一级行下方。"""
-        cell = ws.cell(r, 1, '↳ 占总收入(费销比)')
-        cell.border = border
-        cell.alignment = Alignment(horizontal='left', vertical='center', indent=0)
-        cell.font = pct_font
-        cell.fill = pct_fill
-        for i in range(1, name_cols):
-            c = ws.cell(r, i + 1, '')
+    def _put_pct(r, pcts, total_pct, label_col=1):
+        """费销比子行：占总收入百分比，紧贴在成本/费用行下方。
+        label_col 决定「↳ 占总收入」写在第几个科目列，对齐其所属层级。"""
+        for i in range(name_cols):
+            is_label = (i + 1) == label_col
+            c = ws.cell(r, i + 1, '↳ 占总收入(费销比)' if is_label else '')
             c.border = border
             c.fill = pct_fill
+            if is_label:
+                c.alignment = Alignment(horizontal='left', vertical='center', indent=i)
+                c.font = pct_font
         for j, p in enumerate(pcts):
             c = ws.cell(r, name_cols + 1 + j, (p / 100.0) if p is not None else None)
             if p is not None:
@@ -2083,16 +2090,22 @@ def _write_matrix_sheet(ws, scope_label, year, level, months, rows):
              calc=row.get('is_calculated'), bold=not row.get('is_calculated'))
         r += 1
         if row.get('pct') is not None:
-            _put_pct(r, row['pct'], row.get('total_pct'))
+            _put_pct(r, row['pct'], row.get('total_pct'), label_col=1)
             r += 1
         if level >= 2:
             for l2 in row.get('children', []):
                 _put(r, ['', l2['l2_name']], l2['values'], l2['total'])
                 r += 1
+                if l2.get('pct') is not None:
+                    _put_pct(r, l2['pct'], l2.get('total_pct'), label_col=2)
+                    r += 1
                 if level >= 3:
                     for l3 in l2.get('children', []):
                         _put(r, ['', '', l3['l3_name']], l3['values'], l3['total'])
                         r += 1
+                        if l3.get('pct') is not None:
+                            _put_pct(r, l3['pct'], l3.get('total_pct'), label_col=3)
+                            r += 1
 
     # 冻结表头 + 科目列；列宽
     ws.freeze_panes = ws.cell(hr + 1, name_cols + 1).coordinate
