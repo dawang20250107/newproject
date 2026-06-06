@@ -916,7 +916,7 @@ function clearFilters() {
 
       <!-- 吸底合计 + 翻页：Teleport 到 body 以逃脱 .card transform 产生的 fixed 包含块 -->
       <Teleport to="body">
-        <div v-if="isDataTab && (summaryData || total > size)" class="bottom-bar">
+        <div v-if="isDataTab && !showModal && (summaryData || total > size)" class="bottom-bar">
           <div v-if="summaryData" class="bb-summary">
             <span class="bb-item"><i>合计</i><b>{{ summaryData.count }}</b> 条</span>
             <span v-if="show('r_estimated_amount')" class="bb-item"><i>预估</i><b>{{ fmtCell(summaryData.estimated) }}</b></span>

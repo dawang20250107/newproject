@@ -254,19 +254,19 @@ function setPage(p) { filters.page = p; load() }
         <table>
           <thead>
             <tr>
-              <th v-if="auth.canView('department')" style="width:5.5%">部门</th>
-              <th v-if="auth.canView('applicant')" style="width:5%">申请人</th>
-              <th v-if="auth.canView('approval_number')" style="width:9%">审批单号</th>
+              <th v-if="auth.canView('department')" style="width:5%">部门</th>
+              <th v-if="auth.canView('applicant')" style="width:4%">申请人</th>
+              <th v-if="auth.canView('approval_number')" style="width:8%">审批单号</th>
               <th v-if="auth.canView('project_desc')">付款事项</th>
-              <th v-if="auth.canView('payee')" style="width:9%">收款方</th>
-              <th v-if="auth.canView('planned_date')" style="width:7%">计划日期</th>
+              <th v-if="auth.canView('payee')" style="width:8%">收款方</th>
+              <th v-if="auth.canView('planned_date')" style="width:6%">计划日期</th>
               <th v-if="auth.canView('total_amount')" style="width:8%">计划额</th>
-              <th v-if="showPaid" style="width:7.5%">已付</th>
-              <th v-if="showRemaining" style="width:7%">剩余</th>
-              <th style="width:6%">状态</th>
-              <th style="width:7%">逾期</th>
-              <th v-if="auth.canView('plan_adjustment')" style="width:7%">计划调整</th>
-              <th v-if="auth.canWrite || auth.canDelete" style="width:9%">操作</th>
+              <th v-if="showPaid" style="width:7%">已付</th>
+              <th v-if="showRemaining" style="width:6%">剩余</th>
+              <th style="width:9%">状态</th>
+              <th style="width:6%">逾期</th>
+              <th v-if="auth.canView('plan_adjustment')" style="width:6%">计划调整</th>
+              <th v-if="auth.canWrite || auth.canDelete" style="width:12%">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -315,7 +315,7 @@ function setPage(p) { filters.page = p; load() }
 
       <!-- 吸底合计 + 翻页：Teleport 到 body 以逃脱 .card transform 产生的 fixed 包含块 -->
       <Teleport to="body">
-        <div v-if="!loading && items.length" class="bottom-bar">
+        <div v-if="!loading && items.length && !showModal" class="bottom-bar">
           <div class="bb-summary">
             <span class="bb-item"><i>合计</i><b>{{ total }}</b> 条</span>
             <span v-if="auth.canView('total_amount')" class="bb-item"><i>计划总额</i><b>{{ fmt(plannedTotal) }}</b></span>
@@ -441,8 +441,10 @@ function setPage(p) { filters.page = p; load() }
 .pk-pay-tbl table { table-layout: fixed; }
 .pk-pay-tbl th, .pk-pay-tbl td { padding: 9px 7px; font-size: 12.5px; }
 .pk-pay-tbl td:not(.ops-cell) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
-/* 操作列：不裁剪，按钮正常显示 */
+/* 操作列：不裁剪，按钮正常显示，更紧凑 */
 .pk-pay-tbl .ops-cell { white-space: nowrap; text-align: center; }
+.pk-pay-tbl .ops-cell .btn-sm { padding: 3px 7px; font-size: 11px; border-radius: 6px; }
+.pk-pay-tbl .badge { font-size: 10.5px; padding: 2px 7px; }
 
 /* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
 

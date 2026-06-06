@@ -112,7 +112,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 
   <!-- 吸底合计 + 翻页：Teleport 到 body 以逃脱 .card transform 产生的 fixed 包含块 -->
   <Teleport to="body">
-    <div v-if="!loading && items.length" class="bottom-bar">
+    <div v-if="!loading && items.length && !showCreate && !showSchedule" class="bottom-bar">
       <div class="bb-summary">
         <span class="bb-item"><i>合计</i><b>{{ total }}</b> 条</span>
         <span class="bb-item warn"><i>申请金额合计</i><b>{{ pendingAmountTotal.toFixed(2) }}</b> 元</span>
@@ -126,7 +126,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   </Teleport>
   </div>
 
-  <Teleport to="body"><div v-if="showCreate" class="modal-overlay" @click.self="showCreate=false"><div class="modal-box"><div class="modal-header"><h3>新增审批记录</h3></div><div class="modal-body"><div class="form-grid">
+  <Teleport to="body"><div v-if="showCreate" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>新增审批记录</h3></div><div class="modal-body"><div class="form-grid">
     <label class="form-field"><span>申请人*</span><input v-model="form.applicant"/></label>
     <label class="form-field"><span>所属事业部*</span><select v-model="form.department"><option v-for="d in deptChoices" :key="d" :value="d">{{d}}</option></select></label>
     <label class="form-field"><span>审批编号</span><input v-model="form.approval_number" placeholder="21位数字；留空自动填21个0占位"/></label>
@@ -136,7 +136,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <label class="form-field"><span>审批状态</span><select v-model="form.status"><option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option></select></label>
   </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showCreate=false">取消</button><button class="btn btn-primary" :disabled="saving" @click="create">保存</button></div></div></div></Teleport>
 
-  <Teleport to="body"><div v-if="showSchedule" class="modal-overlay" @click.self="showSchedule=false"><div class="modal-box"><div class="modal-header"><h3>一键排款</h3></div><div class="modal-body"><div class="form-grid">
+  <Teleport to="body"><div v-if="showSchedule" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>一键排款</h3></div><div class="modal-body"><div class="form-grid">
     <label class="form-field"><span>计划日期*</span><input v-model="scheduleForm.planned_date" type="date"/></label>
     <label class="form-field"><span>计划金额*</span><input v-model="scheduleForm.total_amount" type="number" step="0.01"/></label>
   </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showSchedule=false">取消</button><button class="btn btn-primary" @click="doSchedule">保存并排款</button></div></div></div></Teleport>

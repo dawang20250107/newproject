@@ -251,7 +251,7 @@ async function submit() {
 </script>
 
 <template>
-  <div class="overlay" @click.self="emit('close')">
+  <div class="overlay">
     <div class="modal">
       <div class="modal-header">
         <h3>{{ payment ? '编辑排款记录' : '新增排款记录' }}</h3>

@@ -19,6 +19,7 @@ const emit = defineEmits(['update:modelValue', 'update:match', 'change', 'close'
 // 添加菜单：addTarget = 'top'（追加到顶层）或某个 group 对象（追加到组内）
 const addMenuOpen = ref(false)
 const addTarget = ref('top')
+const addMenuPos = ref({ top: 0, left: 0 })
 
 function commit(list) { emit('update:modelValue', list); emit('change') }
 function setMatch(m) { emit('update:match', m); emit('change') }
@@ -57,7 +58,17 @@ function makeLeaf(kind, field) {
   return { t: 'amt', field, op: 'ne0', value: '', min: '', max: '' }
 }
 
-function openAddMenu(target) { addTarget.value = target; addMenuOpen.value = true }
+function openAddMenu(target, event) {
+  addTarget.value = target; addMenuOpen.value = true
+  if (event?.currentTarget) {
+    const r = event.currentTarget.getBoundingClientRect()
+    const menuH = 320
+    const y = window.innerHeight - r.bottom >= menuH
+      ? r.bottom + 6
+      : Math.max(8, r.top - menuH - 6)
+    addMenuPos.value = { top: y, left: Math.min(r.left, window.innerWidth - 260) }
+  }
+}
 function addLeaf(kind, field) {
   const leaf = makeLeaf(kind, field)
   if (addTarget.value === 'top') {
@@ -112,7 +123,7 @@ function addGroup() {
                 <FilterLeaf :cond="sub" :accessible-depts="accessibleDepts" :years="years"
                   @change="patch()" @remove="removeFromGroup(c, j)" />
               </div>
-              <button class="fp-add-sm" @click="openAddMenu(c)">＋ 组内条件</button>
+              <button class="fp-add-sm" @click="openAddMenu(c, $event)">＋ 组内条件</button>
             </div>
             <span class="fp-paren close">)</span>
           </div>
@@ -128,10 +139,10 @@ function addGroup() {
 
     <div class="fp-foot">
       <div class="fp-add-wrap">
-        <button class="fp-add" :class="{ on: addMenuOpen && addTarget === 'top' }" @click="openAddMenu('top')">＋ 添加条件</button>
+        <button class="fp-add" :class="{ on: addMenuOpen && addTarget === 'top' }" @click="openAddMenu('top', $event)">＋ 添加条件</button>
         <button class="fp-add ghost" @click="addGroup">＋ 条件组</button>
         <div v-if="addMenuOpen" class="fp-backdrop" @click="addMenuOpen = false"></div>
-        <div v-if="addMenuOpen" class="fp-menu">
+        <div v-if="addMenuOpen" class="fp-menu" :style="{ top: addMenuPos.top + 'px', left: addMenuPos.left + 'px' }">
           <div class="fp-menu-grp">维度</div>
           <button v-for="f in DIM_FIELDS" :key="f.field" class="fp-menu-item" @click="addLeaf('dim', f.field)">{{ f.label }}</button>
           <div class="fp-menu-grp">日期</div>
@@ -214,7 +225,7 @@ function addGroup() {
 .fp-clear:hover { color: #c62828; }
 .fp-backdrop { position: fixed; inset: 0; z-index: 60; }
 .fp-menu {
-  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 61;
+  position: fixed; z-index: 61;
   min-width: 240px; max-height: 320px; overflow-y: auto; padding: 8px;
   border-radius: 12px; background: #fff; border: 1px solid var(--border); box-shadow: 0 12px 32px rgba(0,0,0,0.16);
   display: grid; grid-template-columns: 1fr 1fr; gap: 2px 6px;
