@@ -88,11 +88,13 @@ const kpis = computed(() => {
     const row = l1ByName.value[d.key]
     const amount = row && li >= 0 ? row.values[li] : null
     const prev = row && li >= 1 ? row.values[li - 1] : null
+    const ytd = row ? row.total : null   // 全年累计（1月~最新月合计）
     let momPct = null
     if (amount !== null && prev !== null && prev !== 0) momPct = ((amount - prev) / Math.abs(prev)) * 100
     const isNeg = amount !== null && d.calc && amount < 0
+    const ytdNeg = ytd !== null && d.calc && ytd < 0
     const momDown = momPct !== null && momPct < 0
-    return { ...d, amount, momPct, isNeg, momDown }
+    return { ...d, amount, ytd, momPct, isNeg, ytdNeg, momDown }
   })
 })
 const fmtKpi = (v) => fmtCompact(v, { space: true })
@@ -178,19 +180,35 @@ onMounted(() => {
         📭 {{ data.year }}年 · {{ data.bu || '全部事业部' }} 暂无已发布数据
       </div>
 
-      <!-- KPI（最新月度快照）-->
+      <!-- KPI（当月快照 + 全年累计）-->
       <div v-else class="kpi-grid kpi-5">
         <div v-for="kpi in kpis" :key="kpi.key" class="kpi-card"
           :class="{ 'kpi-calc': kpi.calc, 'kpi-negative': kpi.isNeg,
                     'kpi-mom-down': !kpi.isNeg && kpi.momDown, 'kpi-empty': kpi.amount === null }">
-          <div class="label">{{ kpi.key }}</div>
-          <div class="value" :class="{ 'value-neg': kpi.isNeg, 'value-empty': kpi.amount === null }"
-            :style="kpi.amount === null || kpi.isNeg ? '' : `color:${kpi.momDown ? 'var(--danger)' : kpi.color}`">
-            {{ fmtKpi(kpi.amount) }}
+          <div class="kpi-head">
+            <span class="label">{{ kpi.key }}</span>
+            <span v-if="kpi.momPct !== null" class="mom-badge" :class="kpi.momDown ? 'mom-down' : 'mom-up'">{{ momLabel(kpi.momPct) }}</span>
+            <span v-else class="mom-badge mom-neutral">—</span>
           </div>
-          <div v-if="kpi.momPct !== null" class="mom-badge" :class="kpi.momDown ? 'mom-down' : 'mom-up'">{{ momLabel(kpi.momPct) }}</div>
-          <div v-else class="mom-badge mom-neutral">— 环比</div>
-          <div class="sub">{{ data.year }}年{{ lastMonth }}月{{ data.bu ? ' · ' + data.bu : '' }}</div>
+
+          <!-- 当月 -->
+          <div class="kpi-row">
+            <span class="kpi-tag">当月</span>
+            <span class="value" :class="{ 'value-neg': kpi.isNeg, 'value-empty': kpi.amount === null }"
+              :style="kpi.amount === null || kpi.isNeg ? '' : `color:${kpi.momDown ? 'var(--danger)' : kpi.color}`">
+              {{ fmtKpi(kpi.amount) }}
+            </span>
+          </div>
+
+          <!-- 全年累计 -->
+          <div class="kpi-row kpi-row-year">
+            <span class="kpi-tag kpi-tag-year">全年</span>
+            <span class="value-year" :class="{ 'value-neg': kpi.ytdNeg, 'value-empty': kpi.ytd === null }">
+              {{ fmtKpi(kpi.ytd) }}
+            </span>
+          </div>
+
+          <div class="sub">{{ data.year }}年 · 当月{{ lastMonth }}月 / 累计1~{{ lastMonth }}月{{ data.bu ? ' · ' + data.bu : '' }}</div>
         </div>
       </div>
 
@@ -255,15 +273,32 @@ onMounted(() => {
 .kpi-5 { grid-template-columns: repeat(5, 1fr) !important; gap: 12px; margin-bottom: 16px; }
 @media (max-width: 900px) { .kpi-5 { grid-template-columns: repeat(3, 1fr) !important; } }
 @media (max-width: 560px) { .kpi-5 { grid-template-columns: repeat(2, 1fr) !important; } }
-.kpi-5 :deep(.kpi-card) { padding: 12px 14px; }
-.kpi-5 :deep(.kpi-card .value) { font-size: 21px; }
+.kpi-5 :deep(.kpi-card) { padding: 12px 14px; display: flex; flex-direction: column; }
 .kpi-calc { border-left: 3px solid rgba(201,99,66,.3); }
 .kpi-empty { opacity: .72; }
+
+/* 卡头：科目名 + 环比徽标 */
+.kpi-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
+.kpi-head .label { font-size: 12.5px; font-weight: 600; color: var(--muted); margin-bottom: 0; text-transform: none; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 当月 / 全年 两行：标签 + 数值 */
+.kpi-row { display: flex; align-items: baseline; gap: 7px; }
+.kpi-tag {
+  flex-shrink: 0; font-size: 10px; font-weight: 700; line-height: 1.6;
+  padding: 0 6px; border-radius: 6px; letter-spacing: .05em;
+  background: rgba(201,99,66,.12); color: var(--primary);
+}
+.kpi-tag-year { background: rgba(100,116,139,.14); color: #64748b; }
+.kpi-5 :deep(.value) { font-size: 21px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.value-year { font-size: 15.5px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; color: #475569; }
+.kpi-row-year { margin-top: 6px; padding-top: 6px; border-top: 1px dashed rgba(0,0,0,.08); }
+
 .value-empty { color: var(--muted) !important; opacity: .55; }
 .kpi-negative { border-left: 3px solid var(--danger) !important; box-shadow: 0 3px 14px rgba(198,40,40,.22); background: rgba(198,40,40,.04); }
 .kpi-mom-down { border-left: 3px solid rgba(198,40,40,.5); }
 .value-neg { color: var(--danger) !important; }
-.mom-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 10px; margin-top: 4px; }
+.sub { font-size: 10.5px; color: var(--muted); margin-top: 7px; line-height: 1.4; }
+.mom-badge { flex-shrink: 0; display: inline-block; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px; }
 .mom-up { background: rgba(46,125,50,.10); color: #2e7d32; }
 .mom-down { background: rgba(198,40,40,.10); color: var(--danger); }
 .mom-neutral { background: rgba(120,120,120,.08); color: var(--muted); font-weight: 400; }
