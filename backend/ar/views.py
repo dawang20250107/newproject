@@ -867,9 +867,11 @@ def project_import(request):
                 post_invoice_days=int_days('票后等待期(天)') or int_days('结算等待期(天)'),
                 invoice_mode=invoice_mode_val,
                 invoice_type=invoice_type_val,
-                tax_rate=_dec(tax_raw),
                 notes=_cv(ri, '备注'),
             )
+            # 仅在明确填写税率时才写入，避免留空时把现有项目的税率清零
+            if tax_raw:
+                field_vals['tax_rate'] = _dec(tax_raw)
             # Upsert: update existing project rather than creating a duplicate.
             # 业务主键以「项目简称 + 交付部门」为准——项目简称是与应收明细对接的唯一桥梁，
             # 且一个合同可对应多个项目（1合同多项目），故不能用合同名做主键，否则同合同名
@@ -880,17 +882,18 @@ def project_import(request):
             else:
                 existing = ARProject.objects.filter(
                     contract_name=contract_name, delivery_dept=dept).first()
-            if existing:
-                for k, v in field_vals.items():
-                    setattr(existing, k, v)
-                existing.delivery_dept = dept
-                existing.save()  # triggers ARProject.post_save signal → updates ARRecord due_dates
-                updated += 1
-            else:
-                p = ARProject(contract_name=contract_name, delivery_dept=dept,
-                              created_by=user, **field_vals)
-                p.save()
-                created += 1
+            with transaction.atomic():  # 每行独立保存点，单行失败不影响其他行
+                if existing:
+                    for k, v in field_vals.items():
+                        setattr(existing, k, v)
+                    existing.delivery_dept = dept
+                    existing.save()  # triggers ARProject.post_save signal → updates ARRecord due_dates
+                    updated += 1
+                else:
+                    p = ARProject(contract_name=contract_name, delivery_dept=dept,
+                                  created_by=user, **field_vals)
+                    p.save()
+                    created += 1
         except Exception as e:
             errors.append(f'第{ri}行: {e}')
             skipped += 1
@@ -1370,7 +1373,8 @@ def ar_record_import(request):
         return err(f'无法读取Excel: {e}')
 
     headers = [str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1)]
-    col_map = {h: i + 1 for i, h in enumerate(headers)}
+    # 规范化表头（去 *、括号注释），与 project_import 保持一致，使带备注的表头也能匹配
+    col_map = {_norm_header(h): i + 1 for i, h in enumerate(headers)}
 
     _ALIASES = {
         '项目编号':          ['项目编号', '项目编号(可选,精确指定)', '项目编号*'],
@@ -1390,8 +1394,8 @@ def ar_record_import(request):
 
     def _resolve_idx(name):
         for h in _ALIASES.get(name, [name]):
-            if h in col_map:
-                return col_map[h]
+            if _norm_header(h) in col_map:
+                return col_map[_norm_header(h)]
         return None
 
     def _cv_raw(row, name):
@@ -1628,7 +1632,7 @@ def ar_record_import(request):
     for btype in ('exact_multi', 'fuzzy', 'fuzzy_multi', 'created'):
         for item in match_detail[btype]:
             if item.get('warn'):
-                warnings.append(f'第{item["input"]}：{item["warn"]}')
+                warnings.append(f'【{item["short_name"]}】{item["warn"]}')
     warnings.extend(pay_warnings)   # 回款超额警告优先展示
 
     tip = '导入后系统已按现规则自动重算未收回金额。'

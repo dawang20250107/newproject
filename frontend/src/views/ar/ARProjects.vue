@@ -20,6 +20,7 @@ const saving = ref(false)
 const importing = ref(false)
 const exporting = ref(false)
 const fileInput = ref(null)
+const importResult = ref(null)   // { ok, title, sections: [{label, items, warn?}] }
 
 // ── 多选 + 批量删除 ─────────────────────────────────────────────────────────
 const selectedIds = ref(new Set())          // 按 id 记忆选择（本页）
@@ -296,13 +297,15 @@ async function handleImport(e) {
   try {
     const fd = new FormData(); fd.append('file', f)
     const res = await ar.importProjects(fd); const d = res.data
-    const parts = [`导入完成：新增 ${d.created} 条`]
-    if (d.updated) parts.push(`更新 ${d.updated} 条`)
-    if (d.skipped) parts.push(`跳过 ${d.skipped} 条`)
-    if (d.errors?.length) parts.push(`\n\n以下行未通过校验：\n` + d.errors.join('\n'))
-    alert(parts.join('，'))
+    const sections = []
+    const counts = [`新增 ${d.created} 条`]
+    if (d.updated) counts.push(`更新 ${d.updated} 条`)
+    if (d.skipped) counts.push(`跳过 ${d.skipped} 条`)
+    if (d.errors?.length) sections.push({ label: `以下 ${d.errors.length} 行未通过校验`, warn: true, items: d.errors })
+    importResult.value = { ok: !d.errors?.length, title: `导入完成：${counts.join('，')}`, sections }
     reloadAll()
-  } catch (e) { alert(e?.msg || '导入失败')
+  } catch (err) {
+    importResult.value = { ok: false, title: '导入失败', sections: [{ label: '错误信息', warn: true, items: [err?.msg || err?.error || err?.message || '服务器错误，请联系管理员'] }] }
   } finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
 }
 
@@ -666,6 +669,30 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
       </div>
     </Teleport>
 
+    <!-- 导入结果弹窗 -->
+    <Teleport to="body">
+      <div v-if="importResult" class="modal-overlay" @click.self="importResult = null">
+        <div class="modal-box" style="max-width:600px">
+          <div class="modal-header">
+            <h3 :class="importResult.ok ? 'imp-ok' : 'imp-fail'">{{ importResult.ok ? '✓ ' : '✕ ' }}{{ importResult.title }}</h3>
+            <button class="modal-close" @click="importResult = null">✕</button>
+          </div>
+          <div class="modal-body imp-body">
+            <div v-for="sec in importResult.sections" :key="sec.label" class="imp-section">
+              <div class="imp-sec-label" :class="{ 'imp-sec-warn': sec.warn }">{{ sec.label }}</div>
+              <ul class="imp-sec-list">
+                <li v-for="item in sec.items" :key="item">{{ item }}</li>
+              </ul>
+            </div>
+            <div v-if="!importResult.sections?.length" class="imp-empty">无附加信息</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-primary" @click="importResult = null">知道了</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <!-- 批量删除确认：列出待删项目 + 二次输入条数 -->
     <Teleport to="body">
       <div v-if="showDelConfirm" class="modal-overlay" @click.self="showDelConfirm = false">
@@ -862,4 +889,15 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .ct-result:hover { background: rgba(201,99,66,0.06); }
 .add-hint { float: right; color: var(--primary); font-weight: 600; font-size: 11.5px; }
 .mono { font-family: monospace; font-size: 11.5px; }
+
+/* 导入结果弹窗 */
+.imp-ok { color: #2e7d32; }
+.imp-fail { color: #c62828; }
+.imp-body { max-height: 60vh; overflow-y: auto; }
+.imp-section { margin-bottom: 14px; }
+.imp-sec-label { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 5px; padding: 3px 8px; border-radius: 6px; background: rgba(0,0,0,0.04); }
+.imp-sec-label.imp-sec-warn { background: rgba(230,81,0,0.08); color: #e65100; }
+.imp-sec-list { list-style: none; margin: 0; padding: 0 0 0 12px; display: flex; flex-direction: column; gap: 3px; }
+.imp-sec-list li { font-size: 12.5px; color: var(--text); line-height: 1.5; word-break: break-all; }
+.imp-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 12px 0; }
 </style>
