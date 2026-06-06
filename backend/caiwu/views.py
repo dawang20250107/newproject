@@ -2885,14 +2885,27 @@ def _cockpit_data_lines(year, month, bus, bu_rows, ov_m, ov_y, actuals):
 
 
 def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
-    """Compose the group-level cockpit analysis prompt from consolidated +
-    per-BU metrics and the 12-month group trend."""
+    """Compose cockpit analysis prompt; adapts angle to single-BU vs group scope."""
     data = _cockpit_data_lines(year, month, bus, bu_rows, ov_m, ov_y, actuals)
-    return f"""你正在为集团管理层解读 {year}年{month}月 的「财务驾驶舱」。以下是全集团及各事业部的经营数据（口径：已发布部门明细表，收入=主营业务收入，利润=经营净利；集团总部为成本中心，本身无收入）。
+    single_bu = len(bus) == 1
+    if single_bu:
+        bu_name = bus[0]
+        header = (f'你正在为「{bu_name}」事业部管理层解读 {year}年{month}月 的经营数据。'
+                  f'口径：已发布部门明细表，收入=主营业务收入，利润=经营净利。')
+        body = f"""请站在「{bu_name}」事业部管理视角，输出一份综合经营分析报告，包含：
 
-{data}
+1. **事业部经营总览**：本月与年度累计的收入/利润规模、目标达成进度、环比同比趋势综合研判。
+2. **目标达成与缺口**：量化当前达成缺口，研判全年是否能达标，哪些指标是关键制约因素。
+3. **成本与利润结构**：成本率/毛利率走势，费用管控是否到位，盈利质量如何。
+4. **风险预警**：负利润/异常波动/成本偏高等需要警示的情况。
+5. **行动建议**：3-5条针对该事业部的具体经营改善与目标达成建议。
 
-请站在全集团高度，输出一份综合、全面的经营分析报告，包含：
+要求：专业、有数据支撑、有洞察，避免空话套话；分点清晰，适合事业部管理层决策参考，篇幅 600-1000 字。"""
+    else:
+        header = (f'你正在为集团管理层解读 {year}年{month}月 的「财务驾驶舱」。'
+                  f'以下是全集团及各事业部的经营数据（口径：已发布部门明细表，'
+                  f'收入=主营业务收入，利润=经营净利；集团总部为成本中心，本身无收入）。')
+        body = """请站在全集团高度，输出一份综合、全面的经营分析报告，包含：
 
 1. **集团经营总览**：本月与年度累计的整体经营态势——收入/利润规模、目标达成进度、环比同比趋势的综合研判。
 2. **事业部横向对比**：识别领跑与掉队的事业部，分析达成率分化与利润贡献结构，指出谁是增长引擎、谁在拖累集团。
@@ -2901,6 +2914,7 @@ def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
 5. **战略与资源配置建议**：3-5条面向集团决策的具体建议（资源倾斜、整改重点、目标校准等）。
 
 要求：专业、有数据支撑、有洞察，避免空话套话；分点清晰，适合集团领导决策参考，篇幅 800-1200 字。"""
+    return f"{header}\n\n{data}\n\n{body}"
 
 
 def _build_report_messages(year, month, bus, period):
@@ -2932,8 +2946,8 @@ def _chunk_text(s, n=48):
 
 
 _COCKPIT_AI_SYSTEM = (
-    '你是集团CFO级别的资深财务与经营分析专家，擅长从全集团高度做综合诊断、'
-    '事业部横向对比与战略建议，用中文专业作答。'
+    '你是集团CFO级别的资深财务与经营分析专家，既能从全集团高度做综合诊断与事业部横向对比，'
+    '也能深入剖析单一事业部的经营状况并给出针对性建议，用中文专业作答。'
 )
 
 
@@ -2968,8 +2982,11 @@ def _cockpit_ai_prepare(request):
     prompt = _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals)
     messages = [
         {'role': 'system', 'content': _COCKPIT_AI_SYSTEM},
-        {'role': 'user', 'content': prompt},
     ]
+    knowledge = _build_knowledge_context(bus)
+    if knowledge:
+        messages.append({'role': 'system', 'content': knowledge})
+    messages.append({'role': 'user', 'content': prompt})
     scope = '全集团' if len(bus) > 1 else (bus[0] if bus else '全集团')
     return (messages, scope), None
 
@@ -4055,9 +4072,28 @@ def _report_ai_prepare(request):
         if r['l1_name'] not in KPI_NAMES and not r.get('is_calculated'):
             other_lines.append(f'  {r["l1_name"]}：{_fmt_wan(r.get("amount"))}')
 
-    scope_note = ''
+    is_single_bu = bool(single_bu) or (len(bu_list) == 1)
     if bu_scope == 'all':
         scope_note = '（以下为全集团合并口径，已排除集团总部内部往来，代表5个核心事业部合并情况）'
+    else:
+        scope_note = ''
+
+    if is_single_bu:
+        angle = f'请站在「{bu}」事业部视角，从以下维度进行财务分析：'
+        items = """1. **财务状况综合评价**（2-3句话，突出本事业部核心亮点或问题）
+2. **关键指标分析**（重点分析盈利能力、成本管控，如有环比数据请分析变动趋势）
+3. **风险提示**（负利润/成本异常/目标偏离等需警示的情况，如无风险可简要说明）
+4. **改善建议**（2-3条针对该事业部的具体可操作财务管理建议）
+
+要求：语言简明专业，适合事业部管理层决策参考，不超过600字。"""
+    else:
+        angle = f'请从集团整体财务视角，对以下全集团合并数据进行分析：'
+        items = """1. **集团财务状况综合评价**（2-3句话，突出整体核心亮点或问题）
+2. **关键指标分析**（重点分析盈利能力、成本管控，如有环比数据请分析变动趋势）
+3. **风险提示**（亏损事业部/成本异常/整体目标偏离等系统性风险，如无风险可简要说明）
+4. **决策建议**（2-3条面向集团层面的具体可操作财务管理建议）
+
+要求：语言简明专业，适合集团领导决策参考，不超过600字。"""
 
     prompt = f"""你是一位资深企业财务分析师，请对以下 {year}年{month}月 {bu} 的财务数据进行专业分析。{scope_note}
 
@@ -4067,14 +4103,9 @@ def _report_ai_prepare(request):
 【其他科目明细】
 {chr(10).join(other_lines) if other_lines else '  （无其他科目数据）'}
 
-请从纯财务角度（业财融合分析将在后续版本中加入）进行以下分析：
+{angle}
 
-1. **财务状况综合评价**（2-3句话，突出核心亮点或问题）
-2. **关键指标分析**（重点分析盈利能力、成本管控，如有环比数据请分析变动趋势）
-3. **风险提示**（负利润/异常波动/成本偏高等需警示的情况，如无风险可简要说明）
-4. **决策建议**（2-3条具体可操作的财务管理建议）
-
-要求：语言简明专业，适合集团领导决策参考，不超过600字。"""
+{items}"""
 
     messages = [
         {'role': 'system', 'content': _REPORT_AI_SYSTEM},

@@ -4,7 +4,6 @@ import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import TrendLineChart from '../../components/caiwu/charts/TrendLineChart.vue'
 import WaterfallChart from '../../components/caiwu/charts/WaterfallChart.vue'
-import AiAnalysisModal from '../../components/caiwu/AiAnalysisModal.vue'
 import api from '../../api/caiwu.js'
 import { fmtCompact } from '../../utils/format.js'
 import EmptyState from '../../components/EmptyState.vue'
@@ -31,10 +30,6 @@ const trendData = ref(null)
 const trendLoading = ref(false)
 const trendErr = ref('')
 const selectedL1Ids = ref([])
-const trendAiText = ref('')
-const trendAiLoading = ref(false)
-const trendAiErr = ref('')
-const trendAiVisible = ref(false)
 
 async function loadTrend() {
   if (!globalBu.value) return
@@ -65,29 +60,6 @@ function toggleL1(id) {
   else if (selectedL1Ids.value.length > 1) selectedL1Ids.value.splice(i, 1)
 }
 
-const trendHasAi = computed(() => !!trendAiText.value && !trendAiErr.value)
-
-async function analyzeTrend() {
-  if (!trendData.value) return
-  trendAiLoading.value = true
-  trendAiErr.value = ''
-  trendAiVisible.value = true
-  try {
-    const res = await api.post('/charts/ai-analysis', {
-      chart_type: 'trend',
-      bu: globalBu.value,
-      year: trendYear.value,
-      data: trendData.value,
-      selected_l1_ids: selectedL1Ids.value,
-    })
-    trendAiText.value = res.data?.analysis || res.data || ''
-  } catch (e) {
-    trendAiErr.value = e?.error || 'AI 分析失败'
-  } finally {
-    trendAiLoading.value = false
-  }
-}
-
 // ── Waterfall chart state ───────────────────────────────
 // 默认终点=上月、起点=上上月，开箱即看最近一次环比因素分析
 const _wfTo = lastMonthCST()
@@ -99,10 +71,6 @@ const wfCmpMonth = ref(_wfFrom.month)
 const wfData = ref(null)
 const wfLoading = ref(false)
 const wfErr = ref('')
-const wfAiText = ref('')
-const wfAiLoading = ref(false)
-const wfAiErr = ref('')
-const wfAiVisible = ref(false)
 
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
@@ -122,31 +90,7 @@ async function loadWaterfall() {
   }
 }
 
-const wfHasAi = computed(() => !!wfAiText.value && !wfAiErr.value)
 const changedFactors = computed(() => (wfData.value?.factors || []).filter(f => f.delta !== 0))
-const trendScopeLabel = computed(() => `${globalBu.value} · ${trendYear.value}年`)
-const wfScopeLabel = computed(() => `${globalBu.value} · ${wfCmpYear.value}年${wfCmpMonth.value}月 → ${wfYear.value}年${wfMonth.value}月`)
-
-async function analyzeWaterfall() {
-  if (!wfData.value) return
-  wfAiLoading.value = true
-  wfAiErr.value = ''
-  wfAiVisible.value = true
-  try {
-    const res = await api.post('/charts/ai-analysis', {
-      chart_type: 'waterfall',
-      bu: globalBu.value,
-      year: wfYear.value,
-      month: wfMonth.value,
-      data: wfData.value,
-    })
-    wfAiText.value = res.data?.analysis || res.data || ''
-  } catch (e) {
-    wfAiErr.value = e?.error || 'AI 分析失败'
-  } finally {
-    wfAiLoading.value = false
-  }
-}
 
 // 亿/万 两级单位（单位前带空格），万元以下两位小数
 const fmtAmt = (v) => fmtCompact(v, { space: true })
@@ -187,20 +131,8 @@ onMounted(() => {
 
     <!-- ── Trend Line Chart ──────────────────────────────── -->
     <div v-if="canTrend" class="card">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+      <div style="margin-bottom:16px">
         <div class="section-title" style="margin:0">收入 / 利润走势（折线图）</div>
-        <div style="display:flex;gap:8px">
-          <button
-            v-if="trendHasAi"
-            class="btn btn-ghost btn-sm"
-            @click="trendAiVisible = true"
-          >📄 查看分析</button>
-          <button
-            class="btn btn-primary btn-sm"
-            :disabled="trendAiLoading || !trendData"
-            @click="analyzeTrend"
-          >{{ trendAiLoading ? '分析中…' : (trendHasAi ? '↻ 重新分析' : '✨ AI分析') }}</button>
-        </div>
       </div>
 
       <!-- L1 category selector -->
@@ -231,16 +163,6 @@ onMounted(() => {
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
         <div class="section-title" style="margin:0">因素分析（瀑布图）</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <button
-            v-if="wfHasAi"
-            class="btn btn-ghost btn-sm"
-            @click="wfAiVisible = true"
-          >📄 查看分析</button>
-          <button
-            class="btn btn-primary btn-sm"
-            :disabled="wfAiLoading || !wfData"
-            @click="analyzeWaterfall"
-          >{{ wfAiLoading ? '分析中…' : (wfHasAi ? '↻ 重新分析' : '✨ AI分析') }}</button>
           <span style="font-size:12px;color:var(--muted)">对比</span>
           <select v-model="wfCmpYear" class="sel-yr" @change="loadWaterfall">
             <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
@@ -291,27 +213,6 @@ onMounted(() => {
       <EmptyState v-else icon="📈" text="请选择事业部查看" />
     </div>
 
-    <!-- ── AI analysis modals ─────────────────────────────────────────────────── -->
-    <AiAnalysisModal
-      :visible="trendAiVisible"
-      :loading="trendAiLoading"
-      :text="trendAiText"
-      :error="trendAiErr"
-      title="AI 走势分析"
-      :subtitle="trendScopeLabel"
-      @close="trendAiVisible = false"
-      @reanalyze="analyzeTrend"
-    />
-    <AiAnalysisModal
-      :visible="wfAiVisible"
-      :loading="wfAiLoading"
-      :text="wfAiText"
-      :error="wfAiErr"
-      title="AI 因素分析"
-      :subtitle="wfScopeLabel"
-      @close="wfAiVisible = false"
-      @reanalyze="analyzeWaterfall"
-    />
   </div>
 </template>
 

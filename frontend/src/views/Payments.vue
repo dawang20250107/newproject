@@ -250,23 +250,23 @@ function setPage(p) { filters.page = p; load() }
       <EmptyState v-else-if="loadErr" :error="loadErr" />
       <EmptyState v-else-if="!items.length" empty />
 
-      <div v-else class="table-wrap">
+      <div v-else class="table-wrap pk-pay-tbl">
         <table>
           <thead>
             <tr>
-              <th v-if="auth.canView('department')">部门</th>
-              <th v-if="auth.canView('applicant')">申请人</th>
-              <th v-if="auth.canView('approval_number')">审批单号</th>
+              <th v-if="auth.canView('department')" style="width:5.5%">部门</th>
+              <th v-if="auth.canView('applicant')" style="width:5%">申请人</th>
+              <th v-if="auth.canView('approval_number')" style="width:9%">审批单号</th>
               <th v-if="auth.canView('project_desc')">付款事项</th>
-              <th v-if="auth.canView('payee')">收款方</th>
-              <th v-if="auth.canView('planned_date')">计划日期</th>
-              <th v-if="auth.canView('total_amount')">计划总额 (元)</th>
-              <th v-if="showPaid">已付 (元)</th>
-              <th v-if="showRemaining">剩余 (元)</th>
-              <th>状态</th>
-              <th>逾期</th>
-              <th v-if="auth.canView('plan_adjustment')">计划调整金额</th>
-              <th v-if="auth.canWrite || auth.canDelete">操作</th>
+              <th v-if="auth.canView('payee')" style="width:9%">收款方</th>
+              <th v-if="auth.canView('planned_date')" style="width:7%">计划日期</th>
+              <th v-if="auth.canView('total_amount')" style="width:8%">计划额</th>
+              <th v-if="showPaid" style="width:7.5%">已付</th>
+              <th v-if="showRemaining" style="width:7%">剩余</th>
+              <th style="width:6%">状态</th>
+              <th style="width:7%">逾期</th>
+              <th v-if="auth.canView('plan_adjustment')" style="width:7%">计划调整</th>
+              <th v-if="auth.canWrite || auth.canDelete" style="width:9%">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -435,6 +435,12 @@ function setPage(p) { filters.page = p; load() }
 </template>
 
 <style scoped>
+/* 付款台账：固定布局，不超出卡片宽度 */
+.pk-pay-tbl { overflow-x: hidden; }
+.pk-pay-tbl table { table-layout: fixed; }
+.pk-pay-tbl th, .pk-pay-tbl td { padding: 9px 7px; font-size: 12.5px; }
+.pk-pay-tbl td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+
 /* 吸底合计+翻页条：粘在卡片底部，长列表滚动时常驻可见 */
 .bottom-bar {
   position: sticky; bottom: 0; z-index: 20;
@@ -465,16 +471,8 @@ function setPage(p) { filters.page = p; load() }
 .overdue-bad   { color: #c62828; background: rgba(198,40,40,0.10); font-weight: 700; }
 
 /* truncated long cells + hover tooltip card */
-.cell-clip {
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: default;
-}
-.cell-desc { max-width: 160px; }
+.cell-clip { cursor: default; }
 .proj-no { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 5px; background: rgba(201,99,66,0.1); color: var(--primary); font-size: 11px; font-weight: 600; }
-.cell-payee { max-width: 110px; }
 .cell-tooltip {
   position: fixed;
   z-index: 9000;
