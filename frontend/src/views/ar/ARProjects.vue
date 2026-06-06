@@ -21,6 +21,50 @@ const importing = ref(false)
 const exporting = ref(false)
 const fileInput = ref(null)
 
+// ── 多选 + 批量删除 ─────────────────────────────────────────────────────────
+const selectedIds = ref(new Set())          // 按 id 记忆选择（本页）
+const selectAllMatching = ref(false)        // 勾选整个筛选集（跨所有分页）
+const bulkDeleting = ref(false)
+const showDelConfirm = ref(false)
+const delConfirmText = ref('')              // 二次输入待删条数，防误删
+const pageAllSelected = computed(() =>
+  items.value.length > 0 && items.value.every(r => selectedIds.value.has(r.id)))
+const selectedCount = computed(() => selectAllMatching.value ? total.value : selectedIds.value.size)
+const hasSelection = computed(() => selectAllMatching.value || selectedIds.value.size > 0)
+const delConfirmOk = computed(() => delConfirmText.value.trim() === String(selectedCount.value))
+// 待删项目预览（确认时列出，让用户核对到底删哪些）
+const selectedPreview = computed(() =>
+  selectAllMatching.value ? [] : items.value.filter(r => selectedIds.value.has(r.id)))
+function toggleRow(id) {
+  const s = new Set(selectedIds.value)
+  if (s.has(id)) { s.delete(id); selectAllMatching.value = false } else s.add(id)
+  selectedIds.value = s
+}
+function toggleSelectPage() {
+  const s = new Set(selectedIds.value)
+  if (pageAllSelected.value) { items.value.forEach(r => s.delete(r.id)); selectAllMatching.value = false }
+  else items.value.forEach(r => s.add(r.id))
+  selectedIds.value = s
+}
+function clearSelection() { selectedIds.value = new Set(); selectAllMatching.value = false }
+function bulkDelete() {
+  if (!selectedCount.value) return
+  delConfirmText.value = ''
+  showDelConfirm.value = true
+}
+async function confirmBulkDelete() {
+  if (!delConfirmOk.value) return
+  bulkDeleting.value = true
+  try {
+    if (selectAllMatching.value) await ar.bulkDeleteProjects({ all: true }, { ...filters })
+    else await ar.bulkDeleteProjects({ ids: [...selectedIds.value] })
+    showDelConfirm.value = false
+    clearSelection()
+    reloadAll()
+  } catch (e) { alert(e?.msg || '删除失败') }
+  finally { bulkDeleting.value = false }
+}
+
 const form = reactive({
   contract_name: '', short_name: '', delivery_dept: '', sub_dept: '',
   business_mode: '', customer_level: 'A级', sales_contact: '', project_manager: '',
@@ -61,7 +105,7 @@ function fmtNum(v) {
 }
 
 async function load(reset = false) {
-  if (reset) page.value = 1
+  if (reset) { page.value = 1; clearSelection() }  // 改筛选/搜索即清空选择，避免误删旧筛选项
   loading.value = true
   try {
     const res = await ar.listProjects({ ...filters, page: page.value, size })
@@ -374,12 +418,28 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
       <button v-if="hasActiveFilters" class="filter-reset" @click="resetFilters">重置筛选</button>
     </div>
 
+    <!-- 选择 + 批量删除工具条（选中后出现） -->
+    <div v-if="hasSelection && auth.canDelete" class="bulk-bar">
+      <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 个项目</span>
+      <button v-if="pageAllSelected && !selectAllMatching && total > items.length"
+        class="bulk-all" @click="selectAllMatching = true">选择全部 {{ total }} 个</button>
+      <span v-if="selectAllMatching" class="bulk-all-on">已选中整个筛选集（跨所有分页）</span>
+      <button class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">
+        {{ bulkDeleting ? '删除中…' : `删除选中(${selectedCount})` }}
+      </button>
+      <button class="bulk-cancel" @click="clearSelection">取消</button>
+    </div>
+
     <!-- Table card -->
     <div class="card" :class="{ 'data-reloading': loading && items.length }">
       <div class="table-wrap">
         <table class="proj-table">
           <thead>
             <tr>
+              <th v-if="auth.canDelete" class="ctr sel-col">
+                <input type="checkbox" :checked="pageAllSelected" :disabled="!items.length"
+                  title="全选本页" @change="toggleSelectPage" />
+              </th>
               <th>项目编号</th>
               <th v-if="show('p_contract_name') || show('p_short_name')">合同 / 简称</th>
               <th v-if="show('p_delivery_dept')">交付部门</th>
@@ -398,12 +458,17 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           </thead>
           <tbody>
             <tr v-if="loading && !items.length">
-              <td colspan="14" class="empty-cell"><div class="empty-inner">⏳ 加载中…</div></td>
+              <td colspan="15" class="empty-cell"><div class="empty-inner">⏳ 加载中…</div></td>
             </tr>
             <tr v-else-if="!items.length">
-              <td colspan="14" class="empty-cell"><div class="empty-inner">暂无项目数据，点击「新增项目」开始</div></td>
+              <td colspan="15" class="empty-cell"><div class="empty-inner">暂无项目数据，点击「新增项目」开始</div></td>
             </tr>
-            <tr v-for="item in items" :key="item.id" class="data-row">
+            <tr v-for="item in items" :key="item.id" class="data-row"
+              :class="{ 'row-sel': selectAllMatching || selectedIds.has(item.id) }">
+              <td v-if="auth.canDelete" class="ctr sel-col">
+                <input type="checkbox" :checked="selectAllMatching || selectedIds.has(item.id)"
+                  @change="toggleRow(item.id)" />
+              </td>
               <td>
                 <span class="proj-no-tag">{{ item.project_no }}</span>
                 <span v-if="item.is_draft" class="badge-draft" title="导入自动创建，请补充完善">待完善</span>
@@ -457,9 +522,9 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
       </div>
     </div>
 
-    <!-- Modal -->
+    <!-- Modal：编辑/新增卡片——点击遮罩不关闭，必须显式「取消」或「保存」，防误触退出 -->
     <Teleport to="body">
-      <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
+      <div v-if="showModal" class="modal-overlay">
         <div class="modal-box" style="max-width:720px">
           <div class="modal-header">
             <div>
@@ -600,6 +665,43 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         </div>
       </div>
     </Teleport>
+
+    <!-- 批量删除确认：列出待删项目 + 二次输入条数 -->
+    <Teleport to="body">
+      <div v-if="showDelConfirm" class="modal-overlay" @click.self="showDelConfirm = false">
+        <div class="modal-box" style="max-width:460px">
+          <div class="modal-header">
+            <div><h3>确认删除 {{ selectedCount }} 个项目</h3></div>
+            <button class="modal-close" @click="showDelConfirm = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <p class="del-warn">⚠ 项目下的应收明细、回款将一并删除，<strong>不可恢复</strong>。</p>
+
+            <!-- 待删清单（核对）。整个筛选集模式仅显示计数 -->
+            <div v-if="selectAllMatching" class="del-allnote">
+              当前为<strong>整个筛选集</strong>（跨所有分页，共 {{ total }} 个），按当前筛选条件删除。
+            </div>
+            <ul v-else class="del-list">
+              <li v-for="p in selectedPreview" :key="p.id">
+                <span class="proj-no-tag">{{ p.project_no }}</span>
+                <span class="del-name">{{ p.short_name || p.contract_name }}</span>
+                <span class="dept-chip">{{ p.delivery_dept }}</span>
+              </li>
+            </ul>
+
+            <p class="del-tip">请输入待删数量 <strong>{{ selectedCount }}</strong> 以确认：</p>
+            <input v-model="delConfirmText" class="del-input" :placeholder="`输入 ${selectedCount}`"
+              @keyup.enter="confirmBulkDelete" />
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" @click="showDelConfirm = false">取消</button>
+            <button class="btn-danger-solid" :disabled="!delConfirmOk || bulkDeleting" @click="confirmBulkDelete">
+              {{ bulkDeleting ? '删除中…' : '确认删除' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -663,6 +765,35 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .text-muted { color: var(--muted); }
 .text-sm { font-size: 12px; }
 .ctr { text-align: center; }
+
+/* 多选列 + 批量删除工具条 */
+.sel-col { width: 36px; padding-left: 10px !important; padding-right: 4px !important; }
+.sel-col input { cursor: pointer; width: 15px; height: 15px; accent-color: var(--primary); }
+.proj-table .data-row.row-sel { background: rgba(198,40,40,0.05); }
+.proj-table .data-row.row-sel:hover { background: rgba(198,40,40,0.08); }
+.bulk-bar {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 12px; padding: 9px 16px;
+  border-radius: 10px; background: rgba(198,40,40,0.06); border: 1px solid rgba(198,40,40,0.25);
+}
+.bulk-n { font-size: 13px; color: var(--text); }
+.bulk-all { border: none; background: none; color: var(--primary); font-size: 12.5px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.bulk-all-on { font-size: 12.5px; color: var(--primary); font-weight: 700; }
+.bulk-del { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
+.bulk-del:disabled { opacity: .6; cursor: default; }
+.bulk-cancel { border: none; background: none; color: var(--muted); font-size: 12.5px; cursor: pointer; }
+
+/* 批量删除确认弹窗 */
+.del-warn { font-size: 13px; color: var(--danger); margin: 0 0 12px; line-height: 1.6; }
+.del-allnote { font-size: 12.5px; color: var(--text); background: rgba(198,40,40,0.06); border: 1px solid rgba(198,40,40,0.2); border-radius: 8px; padding: 9px 12px; margin-bottom: 12px; line-height: 1.6; }
+.del-list { list-style: none; padding: 0; margin: 0 0 12px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+.del-list li { display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 12.5px; border-bottom: 1px solid rgba(0,0,0,0.04); }
+.del-list li:last-child { border-bottom: none; }
+.del-name { font-weight: 600; color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.del-tip { font-size: 13px; color: var(--text); margin: 0 0 8px; }
+.del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; box-sizing: border-box; }
+.del-input:focus { border-color: var(--danger); outline: none; }
+.btn-danger-solid { border: none; border-radius: 8px; padding: 8px 18px; font-size: 14px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
+.btn-danger-solid:disabled { opacity: .5; cursor: default; }
 
 .row-actions { display: flex; gap: 4px; justify-content: center; }
 .icon-btn {

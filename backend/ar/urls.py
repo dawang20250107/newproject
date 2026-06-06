@@ -4,6 +4,7 @@ from ar import views
 urlpatterns = [
     # Projects
     path('projects', views.projects),
+    path('projects/bulk-delete', views.projects_bulk_delete),
     path('projects/stats', views.project_stats),
     path('projects/drafts', views.project_drafts),
     path('projects/template', views.project_template),

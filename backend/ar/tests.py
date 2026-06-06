@@ -554,6 +554,50 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(resp.json()['data']['deleted'], 2)
         self.assertEqual(ARRecord.objects.filter(pk__in=[r2.id, r3.id]).count(), 0)
 
+    def test_project_bulk_delete_by_ids_and_filter(self):
+        """项目批量删除：显式 ids + 选择全部筛选集(all+dept)，级联应收明细、受权限约束。"""
+        import json as _json
+        admin = self.make_user('13900000084', 'finance_director', role='super_admin')
+        p1 = self.create_project(short_name='P1')
+        p2 = self.create_project(short_name='P2')
+        p3 = self.create_project(short_name='P3', delivery_dept=self.other_dept)
+        ARRecord.objects.create(project=p1, operation_year=2026, operation_month=5,
+                                estimated_amount=Decimal('100.00'))
+
+        # 显式 ids 删除 p1（级联其应收明细）
+        resp = self.client.post('/api/pk/ar/projects/bulk-delete',
+                                data=_json.dumps({'ids': [p1.id]}),
+                                content_type='application/json', **self.auth(admin))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data']['deleted'], 1)
+        self.assertFalse(ARProject.objects.filter(pk=p1.id).exists())
+        self.assertEqual(ARRecord.objects.filter(project_id=p1.id).count(), 0)
+
+        # all + dept 筛选：仅删本部门(p2)，p3 在其他部门不受影响
+        resp = self.client.post(f'/api/pk/ar/projects/bulk-delete?dept={self.dept}',
+                                data=_json.dumps({'all': True}),
+                                content_type='application/json', **self.auth(admin))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data']['deleted'], 1)
+        self.assertFalse(ARProject.objects.filter(pk=p2.id).exists())
+        self.assertTrue(ARProject.objects.filter(pk=p3.id).exists())
+
+    def test_project_bulk_delete_requires_permission(self):
+        """无删除权限不得批量删除项目。"""
+        import json as _json
+        cfg = default_job_config('cashier')
+        cfg['pages']['ar_projects'] = True
+        cfg['can_delete'] = False
+        JobPermission.objects.create(job_title='cashier', config=cfg)
+        _invalidate_perm_cache('cashier')
+        user = self.make_user('13910000097', 'cashier')
+        p = self.create_project()
+        resp = self.client.post('/api/pk/ar/projects/bulk-delete',
+                                data=_json.dumps({'ids': [p.id]}),
+                                content_type='application/json', **self.auth(user))
+        self.assertEqual(resp.status_code, 403, resp.content)
+        self.assertTrue(ARProject.objects.filter(pk=p.id).exists())
+
     def test_bulk_delete_allowed_with_can_delete(self):
         """非超管但 can_delete=true 应被允许批量删除（验证授权链路正确）。"""
         import json as _json

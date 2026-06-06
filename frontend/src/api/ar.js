@@ -8,6 +8,7 @@ const ar = {
   getProject: id => api.get(`/ar/projects/${id}`),
   updateProject: (id, d) => api.put(`/ar/projects/${id}`, d),
   deleteProject: id => api.delete(`/ar/projects/${id}`),
+  bulkDeleteProjects: (body, params) => api.post('/ar/projects/bulk-delete', body, { params }),
   projectTemplate: () => api.get('/ar/projects/template', { responseType: 'blob' }),
   importProjects: fd => api.post('/ar/projects/import', fd),
   exportProjects: p => api.get('/ar/projects/export', { params: p, responseType: 'blob' }),

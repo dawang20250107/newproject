@@ -460,6 +460,43 @@ def _header_row(ws, headers, color='1565C0'):
 # Projects
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _apply_project_list_filters(qs, request):
+    """项目台账列表筛选（q/dept/manager/is_shared/is_draft/customer_level/invoice_mode）。
+    列表 GET 与批量删除「全选筛选集」共用，保证删除范围与所见列表一致。"""
+    q = request.GET.get('q', '').strip()
+    if q:
+        qs = qs.filter(
+            Q(contract_name__icontains=q) |
+            Q(short_name__icontains=q) |
+            Q(project_no__icontains=q) |
+            Q(project_manager__icontains=q) |
+            Q(sales_contact__icontains=q)
+        )
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+    manager = request.GET.get('manager', '').strip()
+    if manager:
+        qs = qs.filter(project_manager__icontains=manager)
+    is_shared = request.GET.get('is_shared', '').strip()
+    if is_shared in ('true', '1'):
+        qs = qs.filter(is_shared=True)
+    elif is_shared in ('false', '0'):
+        qs = qs.filter(is_shared=False)
+    is_draft = request.GET.get('is_draft', '').strip()
+    if is_draft in ('true', '1'):
+        qs = qs.filter(is_draft=True)
+    elif is_draft in ('false', '0'):
+        qs = qs.filter(is_draft=False)
+    level = request.GET.get('customer_level', '').strip()
+    if level:
+        qs = qs.filter(customer_level=level)
+    mode = request.GET.get('invoice_mode', '').strip()
+    if mode:
+        qs = qs.filter(invoice_mode=mode)
+    return qs
+
+
 @csrf_exempt
 @pk_required()
 def projects(request):
@@ -468,41 +505,9 @@ def projects(request):
         return denied
 
     if request.method == 'GET':
-        qs = _ar_dept_filter(ARProject.objects.all(), request, shared_field='is_shared')
-        q = request.GET.get('q', '').strip()
-        if q:
-            qs = qs.filter(
-                Q(contract_name__icontains=q) |
-                Q(short_name__icontains=q) |
-                Q(project_no__icontains=q) |
-                Q(project_manager__icontains=q) |
-                Q(sales_contact__icontains=q)
-            )
-        dept = request.GET.get('dept', '').strip()
-        if dept:
-            qs = qs.filter(delivery_dept=dept)
-        manager = request.GET.get('manager', '').strip()
-        if manager:
-            qs = qs.filter(project_manager__icontains=manager)
-        is_shared = request.GET.get('is_shared', '').strip()
-        if is_shared in ('true', '1'):
-            qs = qs.filter(is_shared=True)
-        elif is_shared in ('false', '0'):
-            qs = qs.filter(is_shared=False)
-
-        is_draft = request.GET.get('is_draft', '').strip()
-        if is_draft in ('true', '1'):
-            qs = qs.filter(is_draft=True)
-        elif is_draft in ('false', '0'):
-            qs = qs.filter(is_draft=False)
-
-        # Customer-level filter (S/A/...)
-        level = request.GET.get('customer_level', '').strip()
-        if level:
-            qs = qs.filter(customer_level=level)
-        mode = request.GET.get('invoice_mode', '').strip()
-        if mode:
-            qs = qs.filter(invoice_mode=mode)
+        qs = _apply_project_list_filters(
+            _ar_dept_filter(ARProject.objects.all(), request, shared_field='is_shared'),
+            request)
 
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(100, max(1, int(request.GET.get('size', 50) or 50)))
@@ -643,6 +648,52 @@ def project_detail(request, pk):
         return ok({'deleted': pk})
 
     return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def projects_bulk_delete(request):
+    """批量删除项目（级联其应收明细/回款）。两种模式：
+      - 显式选择：body {ids:[int,...]}
+      - 选择全部筛选集：body {all:true} + 查询串里的 q/dept/customer_level/... 与列表同口径
+    始终受部门作用域与删除权限约束；单次上限 5000 条，防误删全库。"""
+    denied = _page_denied(request, 'ar_projects')
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _delete_denied(request)
+    if denied:
+        return denied
+
+    body = _parse_body(request)
+    base = _ar_dept_filter(ARProject.objects.all(), request, shared_field='is_shared')
+
+    if body.get('all'):
+        # 与列表 GET 完全相同的筛选口径（走查询串）
+        qs = _apply_project_list_filters(base, request)
+    else:
+        ids = body.get('ids') or []
+        if not isinstance(ids, list) or not ids:
+            return err('请提供要删除的项目 ids')
+        try:
+            ids = [int(i) for i in ids]
+        except (ValueError, TypeError):
+            return err('ids 必须为整数列表')
+        qs = base.filter(pk__in=ids)
+
+    # 非超管：再次按可操作部门收紧，杜绝越权删除
+    if request.pk_role != 'super_admin':
+        qs = qs.filter(delivery_dept__in=(request.pk_depts or []))
+
+    count = qs.count()
+    if count == 0:
+        return ok({'deleted': 0})
+    if count > 5000:
+        return err('单次删除上限 5000 条，请先缩小筛选范围')
+    del_ids = list(qs.values_list('id', flat=True))
+    ARProject.objects.filter(pk__in=del_ids).delete()  # 级联删除应收明细/回款
+    return ok({'deleted': len(del_ids)})
 
 
 @csrf_exempt
