@@ -701,6 +701,25 @@ def _is_excluded_dept(bu, dept):
     return dept in _BU_EXCLUDE_DEPTS.get(bu, ())
 
 
+def _report_exclude_q():
+    """报表聚合层的部门剔除 Q（FinancialEntry 维度）：按 (事业部, 二级部门名) 对
+    剔除内部独立业务部门（如集团总部的财务金融）。这样即使历史已发布批次里仍含
+    该部门，报表/图表也不会计入——无需重新导入即对旧数据生效。返回 None 表示无需剔除。"""
+    q = None
+    for bu, depts in _BU_EXCLUDE_DEPTS.items():
+        for d in depts:
+            cond = Q(batch__business_unit=bu, l2__name=d)
+            q = cond if q is None else (q | cond)
+    return q
+
+
+def _exclude_internal_depts(qs):
+    """对 FinancialEntry 查询集应用口径部门剔除（集团总部财务金融等）。
+    报表/驾驶舱/图表所有聚合统一走此函数，保证口径一致。"""
+    q = _report_exclude_q()
+    return qs.exclude(q) if q is not None else qs
+
+
 def _detect_kingdee_format(ws):
     """Scan first 12 rows for Kingdee-style headers.
     Returns (data_start_row, col_map) or (None, {}).
@@ -1636,10 +1655,13 @@ def _aggregate_report(batches_qs, level):
 
     l1_cats = list(L1Category.objects.order_by('sort_order', 'id').all())
 
+    # 口径剔除：集团总部的财务金融等部门即使在历史已发布批次里，也不计入报表
+    def _entries():
+        return _exclude_internal_depts(FinancialEntry.objects.filter(batch_id__in=batch_ids))
+
     # Raw aggregation by l1_id
     raw_agg = (
-        FinancialEntry.objects
-        .filter(batch_id__in=batch_ids)
+        _entries()
         .values('l1_id')
         .annotate(amount=Sum('amount'))
     )
@@ -1663,8 +1685,7 @@ def _aggregate_report(batches_qs, level):
     # For levels 2/3: fetch raw l2/l3 breakdown; calculated rows have no children
     if level == 2:
         l2_agg = (
-            FinancialEntry.objects
-            .filter(batch_id__in=batch_ids)
+            _entries()
             .values('l1_id', 'l2_id', 'l2__name')
             .annotate(amount=Sum('amount'))
         )
@@ -1692,8 +1713,7 @@ def _aggregate_report(batches_qs, level):
 
     if level == 3:
         l3_agg = (
-            FinancialEntry.objects
-            .filter(batch_id__in=batch_ids)
+            _entries()
             .values('l1_id', 'l2_id', 'l2__name', 'l3_id', 'l3__name')
             .annotate(amount=Sum('amount'))
         )
@@ -2215,13 +2235,12 @@ def _collect_actuals(bu_list, years):
     """
     from collections import defaultdict
     agg = (
-        FinancialEntry.objects
-        .filter(
+        _exclude_internal_depts(FinancialEntry.objects.filter(
             batch__status=ImportBatch.STATUS_PUBLISHED,
             batch__batch_type=ImportBatch.TYPE_DEPT,
             batch__business_unit__in=bu_list,
             batch__year__in=list(years),
-        )
+        ))
         .values('batch__business_unit', 'batch__year', 'batch__month', 'l1_id')
         .annotate(amount=Sum('amount'))
     )
@@ -3761,8 +3780,7 @@ def chart_trend(request):
         batch_ids = list(batches_qs.values_list('id', flat=True))
         if batch_ids:
             agg = (
-                FinancialEntry.objects
-                .filter(batch_id__in=batch_ids)
+                _exclude_internal_depts(FinancialEntry.objects.filter(batch_id__in=batch_ids))
                 .values('l1_id')
                 .annotate(amount=Sum('amount'))
             )
@@ -3829,8 +3847,7 @@ def chart_waterfall(request):
         if not batch_ids:
             return {}, {}
         agg = (
-            FinancialEntry.objects
-            .filter(batch_id__in=batch_ids)
+            _exclude_internal_depts(FinancialEntry.objects.filter(batch_id__in=batch_ids))
             .values('l1_id')
             .annotate(amount=Sum('amount'))
         )

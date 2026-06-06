@@ -370,6 +370,32 @@ class CaiwuCalculationLogicTests(TestCase):
         # 剔除的部门不应创建二级项目部
         self.assertFalse(L2Category.objects.filter(business_unit=self.bu, name='财务金融').exists())
 
+    def test_report_excludes_finance_dept_retroactively(self):
+        """报表聚合层剔除集团总部的财务金融——即使历史已发布批次里仍含该部门，
+        报表也不计入（无需重新导入即对旧数据生效）。"""
+        self.assertEqual(self.bu, '集团总部')
+        batch = ImportBatch.objects.create(
+            business_unit=self.bu, year=2026, month=5,
+            batch_type=ImportBatch.TYPE_DEPT, status=ImportBatch.STATUS_PUBLISHED,
+            uploaded_by=self.admin, row_count=2, file_name='hq.xlsx',
+        )
+        fin = L2Category.objects.create(business_unit=self.bu, name='财务金融')
+        park = L2Category.objects.create(business_unit=self.bu, name='行政园区')
+        # 财务金融收入80（应剔除）+ 行政园区收入100（应保留）
+        FinancialEntry.objects.create(batch=batch, l1=self.l1[REV], l2=fin, amount=Decimal('80'))
+        FinancialEntry.objects.create(batch=batch, l1=self.l1[REV], l2=park, amount=Decimal('100'))
+
+        rows = _aggregate_report(_get_published_batches([self.bu], 2026, 5), 1)
+        rev = next((r['amount'] for r in rows if r['l1_name'] == REV), None)
+        self.assertEqual(rev, 100.0)   # 仅行政园区100，财务金融80被剔除
+
+        # 二级明细里也不应出现财务金融
+        rows2 = _aggregate_report(_get_published_batches([self.bu], 2026, 5), 2)
+        rev_row = next(r for r in rows2 if r['l1_name'] == REV)
+        l2names = {c['l2_name'] for c in rev_row['children']}
+        self.assertIn('行政园区', l2names)
+        self.assertNotIn('财务金融', l2names)
+
     def test_pl_check_matches_report_kpis(self):
         """导入预览的「数据核对」KPI（_compute_pl_check）应与发布后的财务报表
         （_aggregate_report）逐项一致——回归用户反馈的「导入核对显示异常但报表正常」。"""
