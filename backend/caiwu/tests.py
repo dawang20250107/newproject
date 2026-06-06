@@ -920,6 +920,28 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         items = self.client.get('/api/cw/cockpit/knowledge', **self.auth()).json()['data']['items']
         self.assertEqual(sum(1 for k in items if k['content'] == payload), 1)
 
+    def test_report_matrix_and_export(self):
+        """月度矩阵报表：1月→最后已发布月，各月金额+合计；导出返回美化 xlsx。"""
+        self.mk(2026, 1, 100, 60)
+        self.mk(2026, 2, 200, 130)
+        r = self.client.get('/api/cw/report/matrix',
+                            {'year': 2026, 'bu': self.bu, 'level': 1}, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()['data']
+        self.assertEqual(d['months'], [1, 2])
+        self.assertEqual(d['last_month'], 2)
+        rev = next(x for x in d['rows'] if x['l1_name'] == REV)
+        self.assertEqual(rev['values'], [100.0, 200.0])
+        self.assertEqual(rev['total'], 300.0)
+        # 计算行（经营净利）各月之和=合计
+        net = next(x for x in d['rows'] if x['l1_name'] == NET_PROFIT)
+        self.assertAlmostEqual(net['total'], net['values'][0] + net['values'][1], places=2)
+        # 导出
+        ex = self.client.get('/api/cw/report/export',
+                             {'year': 2026, 'bu': self.bu, 'level': 1}, **self.auth())
+        self.assertEqual(ex.status_code, 200, ex.content)
+        self.assertIn('spreadsheet', ex['Content-Type'])
+
     def test_report_ai_stream_emits_answer_frames(self):
         from unittest import mock
         self.mk(2026, 5, 200, 130)

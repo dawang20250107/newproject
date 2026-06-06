@@ -1712,6 +1712,69 @@ def _aggregate_report(batches_qs, level):
     return []
 
 
+def _last_published_month(bu_list, year):
+    from django.db.models import Max
+    m = (ImportBatch.objects.filter(business_unit__in=bu_list, year=year,
+                                    status=ImportBatch.STATUS_PUBLISHED,
+                                    batch_type=ImportBatch.TYPE_DEPT)
+         .aggregate(mx=Max('month'))['mx'])
+    return m or 0
+
+
+def _aggregate_matrix(bu_list, year, level):
+    """构建「科目 × 月度」矩阵：从1月到已发布的最后一个月，每个节点带各月金额与合计。
+    返回 (months, rows)。calculated 行的合计=各月之和（线性，等于年度口径）。"""
+    from collections import OrderedDict
+    last = _last_published_month(bu_list, year)
+    months = list(range(1, last + 1)) if last else []
+    l1map = OrderedDict()
+    for m in months:
+        for r in _aggregate_report(_get_published_batches(bu_list, year, m), level):
+            l1 = l1map.get(r['l1_id'])
+            if not l1:
+                l1 = {'l1_id': r['l1_id'], 'l1_name': r['l1_name'],
+                      'is_calculated': r.get('is_calculated', False),
+                      'values': {}, 'l2': OrderedDict()}
+                l1map[r['l1_id']] = l1
+            l1['values'][m] = r['amount']
+            for c in r.get('children', []):
+                l2 = l1['l2'].get(c['l2_id'])
+                if not l2:
+                    l2 = {'l2_id': c['l2_id'], 'l2_name': c['l2_name'], 'values': {}, 'l3': OrderedDict()}
+                    l1['l2'][c['l2_id']] = l2
+                l2['values'][m] = c['amount']
+                for c3 in c.get('children', []):
+                    l3 = l2['l3'].get(c3['l3_id'])
+                    if not l3:
+                        l3 = {'l3_id': c3['l3_id'], 'l3_name': c3['l3_name'], 'values': {}}
+                        l2['l3'][c3['l3_id']] = l3
+                    l3['values'][m] = c3['amount']
+
+    order = {c.id: i for i, c in enumerate(L1Category.objects.order_by('sort_order', 'id'))}
+    l1_rows = sorted(l1map.values(), key=lambda x: order.get(x['l1_id'], 999))
+
+    def vlist(d):
+        return [round(d.get(m, 0.0), 2) for m in months]
+
+    rows = []
+    for l1 in l1_rows:
+        r = {'l1_id': l1['l1_id'], 'l1_name': l1['l1_name'],
+             'is_calculated': l1['is_calculated'],
+             'values': vlist(l1['values']), 'total': round(sum(l1['values'].values()), 2)}
+        if level >= 2:
+            r['children'] = []
+            for l2 in l1['l2'].values():
+                c = {'l2_id': l2['l2_id'], 'l2_name': l2['l2_name'],
+                     'values': vlist(l2['values']), 'total': round(sum(l2['values'].values()), 2)}
+                if level >= 3:
+                    c['children'] = [{'l3_id': x['l3_id'], 'l3_name': x['l3_name'],
+                                      'values': vlist(x['values']), 'total': round(sum(x['values'].values()), 2)}
+                                     for x in l2['l3'].values()]
+                r['children'].append(c)
+        rows.append(r)
+    return months, rows
+
+
 def _report_trend(bu_list, year, month, level, n=6):
     """报表各层级最近 n 个月金额序列 + 环比，用于行内迷你趋势线 / 环比。
 
@@ -1755,6 +1818,60 @@ def _report_trend(bu_list, year, month, level, n=6):
     if level >= 3:
         out['l3'] = {k: (v, _mom(v)) for k, v in s3.items()}
     return out
+
+
+def _report_scope(request):
+    """解析 报表 的 (bu_list, bu_param, level)，含页面权限/层级钳制/部门作用域。
+    返回 (ctx, None) 或 (None, err_response)。ctx = (bu_list, bu_param, level)。"""
+    denied = _page_denied(request, 'report')
+    if denied:
+        return None, denied
+    try:
+        level = int(request.GET.get('level', '1'))
+        assert level in (1, 2, 3)
+    except Exception:
+        level = 1
+    if level >= 3 and not _can_view(request, 'report_l3'):
+        level = 2
+    if level >= 2 and not _can_view(request, 'report_l2'):
+        level = 1
+    if request.pk_role == 'super_admin':
+        accessible = BUSINESS_UNITS
+    else:
+        accessible = [d for d in request.pk_depts if d in VALID_BUSINESS_UNITS]
+    bu_param = request.GET.get('bu', '')
+    if bu_param:
+        if bu_param not in accessible:
+            return None, err('无权访问该事业部', 403)
+        bu_list = [bu_param]
+    else:
+        bu_list = accessible
+    return (bu_list, bu_param, level), None
+
+
+@cw_required()
+def report_matrix(request):
+    """月度矩阵报表：科目 × 月（1月→已发布最后一月）+ 合计。Report.vue 主表数据源。"""
+    if request.method != 'GET':
+        return err('方法不允许', 405)
+    ctx, e = _report_scope(request)
+    if e:
+        return e
+    bu_list, bu_param, level = ctx
+    try:
+        year = int(request.GET.get('year', ''))
+        assert 2000 <= year <= 2100
+    except Exception:
+        return err('年份无效')
+    months, rows = _aggregate_matrix(bu_list, year, level)
+    profit_row = next((r for r in rows if r['l1_name'] == '经营净利'), None)
+    total = profit_row['total'] if profit_row else 0.0
+    return ok({
+        'year': year, 'months': months, 'level': level,
+        'rows': rows, 'bu': bu_param or None,
+        'total': total, 'total_label': '经营净利' if profit_row else '合计',
+        'last_month': months[-1] if months else 0,
+    })
 
 
 @cw_required()
@@ -1835,100 +1952,144 @@ def report(request):
     })
 
 
+def _write_matrix_sheet(ws, scope_label, year, level, months, rows):
+    """把月度矩阵写入一个美化的工作表（领导可读）：标题、表头冻结、千分位、
+    计算行/合计加底色、负数标红、边框、列宽。"""
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    name_cols = level                       # 科目列数（1/2/3级）
+    n_periods = len(months)
+    total_cols = name_cols + n_periods + 1  # + 合计
+
+    BRAND = 'C96342'
+    thin = Side(style='thin', color='E3D5CC')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    head_fill = PatternFill('solid', fgColor=BRAND)
+    head_font = Font(color='FFFFFF', bold=True, size=10.5)
+    calc_fill = PatternFill('solid', fgColor='FBEEE8')   # 计算行底色
+    total_fill = PatternFill('solid', fgColor='FFF6EF')  # 合计列底色
+    title_font = Font(bold=True, size=14, color='8A3B22')
+    sub_font = Font(size=10, color='9A8170', italic=True)
+    money_fmt = '#,##0;[Red]-#,##0'
+
+    last_lbl = f'{months[-1]}月' if months else '—'
+    # 标题行（合并）
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+    t = ws.cell(1, 1, f'财务报表 · {scope_label}')
+    t.font = title_font
+    t.alignment = Alignment(horizontal='left', vertical='center')
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=total_cols)
+    s = ws.cell(2, 1, f'{year}年 1月~{last_lbl}　|　{ {1:"一级", 2:"二级", 3:"三级"}[level] }科目　|　单位：元')
+    s.font = sub_font
+    ws.row_dimensions[1].height = 24
+
+    # 表头
+    hr = 3
+    name_headers = ['一级科目', '二级项目部', '三级科目明细'][:name_cols]
+    headers = name_headers + [f'{m}月' for m in months] + ['合计']
+    for c, h in enumerate(headers, 1):
+        cell = ws.cell(hr, c, h)
+        cell.fill = head_fill
+        cell.font = head_font
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.border = border
+
+    def _put(r, name_vals, values, total, *, calc=False, bold=False):
+        for i in range(name_cols):
+            cell = ws.cell(r, i + 1, name_vals[i] if i < len(name_vals) else '')
+            cell.border = border
+            cell.alignment = Alignment(horizontal='left', vertical='center', indent=i)
+            if calc or bold:
+                cell.font = Font(bold=True, color='8A3B22' if calc else '333333', size=10.5)
+            if calc:
+                cell.fill = calc_fill
+        for j, v in enumerate(values):
+            cell = ws.cell(r, name_cols + 1 + j, v)
+            cell.number_format = money_fmt
+            cell.border = border
+            cell.alignment = Alignment(horizontal='right')
+            if calc:
+                cell.font = Font(bold=True, size=10.5)
+                cell.fill = calc_fill
+        tc = ws.cell(r, name_cols + 1 + n_periods, total)
+        tc.number_format = money_fmt
+        tc.border = border
+        tc.alignment = Alignment(horizontal='right')
+        tc.font = Font(bold=True, color='8A3B22', size=10.5)
+        tc.fill = total_fill
+
+    r = hr + 1
+    for row in rows:
+        _put(r, [row['l1_name']], row['values'], row['total'],
+             calc=row.get('is_calculated'), bold=not row.get('is_calculated'))
+        r += 1
+        if level >= 2:
+            for l2 in row.get('children', []):
+                _put(r, ['', l2['l2_name']], l2['values'], l2['total'])
+                r += 1
+                if level >= 3:
+                    for l3 in l2.get('children', []):
+                        _put(r, ['', '', l3['l3_name']], l3['values'], l3['total'])
+                        r += 1
+
+    # 冻结表头 + 科目列；列宽
+    ws.freeze_panes = ws.cell(hr + 1, name_cols + 1).coordinate
+    widths = [22, 18, 22][:name_cols] + [13] * n_periods + [15]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.sheet_view.showGridLines = False
+
+
 @cw_required()
 def report_export(request):
     if request.method != 'GET':
         return err('方法不允许', 405)
-    denied = _page_denied(request, 'report')
-    if denied:
-        return denied
+    ctx, e = _report_scope(request)
+    if e:
+        return e
+    bu_list, bu_param, level = ctx
     if not _can_view(request, 'export'):
         return err('无导出权限', 403, 403)
-
-    year_s = request.GET.get('year', '')
-    month_s = request.GET.get('month', '')
-    bu_param = request.GET.get('bu', '')
     try:
-        level = int(request.GET.get('level', '1'))
-        assert level in (1, 2, 3)
+        year = int(request.GET.get('year', ''))
+        assert 2000 <= year <= 2100
     except Exception:
-        level = 1
-
-    if level >= 3 and not _can_view(request, 'report_l3'):
-        level = 2
-    if level >= 2 and not _can_view(request, 'report_l2'):
-        level = 1
-
-    try:
-        year = int(year_s)
-        month = int(month_s)
-        assert 2000 <= year <= 2100 and 1 <= month <= 12
-    except Exception:
-        return err('年份或月份无效')
-
-    if request.pk_role == 'super_admin':
-        accessible = BUSINESS_UNITS
-    else:
-        accessible = [d for d in request.pk_depts if d in VALID_BUSINESS_UNITS]
-
-    if bu_param:
-        if bu_param not in accessible:
-            return err('无权访问该事业部', 403)
-        bu_list = [bu_param]
-    else:
-        bu_list = accessible
-
-    batches_qs = _get_published_batches(bu_list, year, month)
-    rows = _aggregate_report(batches_qs, level)
+        return err('年份无效')
 
     try:
         import openpyxl
-        from openpyxl.styles import Font, PatternFill, Alignment
     except ImportError:
         return err('服务器缺少 openpyxl 依赖')
 
     wb = openpyxl.Workbook()
-    ws = wb.active
-    level_label = {1: '一级', 2: '二级', 3: '三级'}[level]
-    ws.title = f'{year}年{month}月{level_label}报表'
+    wb.remove(wb.active)
 
-    header_fill = PatternFill(start_color='C96342', end_color='C96342', fill_type='solid')
-    header_font = Font(color='FFFFFF', bold=True)
-
-    if level == 1:
-        headers = ['一级科目', '金额(元)']
-        for c, h in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=c, value=h)
-            cell.fill = header_fill
-            cell.font = header_font
-        for row in rows:
-            ws.append([row['l1_name'], float(row['amount'])])
-    elif level == 2:
-        headers = ['一级科目', '二级项目部', '金额(元)']
-        for c, h in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=c, value=h)
-            cell.fill = header_fill
-            cell.font = header_font
-        for row in rows:
-            ws.append([row['l1_name'], '', float(row['amount'])])
-            for child in row.get('children', []):
-                ws.append(['', child['l2_name'], float(child['amount'])])
+    # 多部门权限且未指定单个事业部 → 先合计 sheet，再每事业部一个 sheet
+    sheets = []
+    if not bu_param and len(bu_list) > 1:
+        sheets.append(('全部事业部', bu_list))
+        for bu in bu_list:
+            sheets.append((bu, [bu]))
     else:
-        headers = ['一级科目', '二级项目部', '三级科目明细', '金额(元)']
-        for c, h in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=c, value=h)
-            cell.fill = header_fill
-            cell.font = header_font
-        for row in rows:
-            ws.append([row['l1_name'], '', '', float(row['amount'])])
-            for l2 in row.get('children', []):
-                ws.append(['', l2['l2_name'], '', float(l2['amount'])])
-                for l3 in l2.get('children', []):
-                    ws.append(['', '', l3['l3_name'], float(l3['amount'])])
+        label = bu_param or (bu_list[0] if bu_list else '全部事业部')
+        sheets.append((label, bu_list))
+
+    def _safe_title(s):
+        for ch in '[]:*?/\\':
+            s = s.replace(ch, '·')
+        return s[:31] or '报表'
+
+    for label, bl in sheets:
+        months, rows = _aggregate_matrix(bl, year, level)
+        ws = wb.create_sheet(_safe_title(label))
+        _write_matrix_sheet(ws, label, year, level, months, rows)
+
+    if not wb.worksheets:
+        wb.create_sheet('报表')
 
     bu_label = bu_param or '全部事业部'
-    filename = f'财务报表_{bu_label}_{year}年{month}月_{level_label}.xlsx'
-    return _build_excel_response(wb, filename)
+    return _build_excel_response(wb, f'财务报表_{bu_label}_{year}年.xlsx')
 
 
 # ── 指标管理 & 财务驾驶舱 ──────────────────────────────────────────────────────
