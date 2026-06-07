@@ -90,6 +90,7 @@ const ar = {
   outstandingTop: p => api.get('/ar/analytics/outstanding-top', { params: p }),
   statusDist: p => api.get('/ar/analytics/status-dist', { params: p }),
   analyticsByPm: p => api.get('/ar/analytics/by-pm', { params: p }),
+  analyticsByDept: p => api.get('/ar/analytics/by-dept', { params: p }),
   unitEconomics: p => api.get('/ar/analytics/unit-economics', { params: p }),
 
   // Cashflow

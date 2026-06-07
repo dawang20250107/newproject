@@ -3142,6 +3142,85 @@ def analytics_unit_economics(request):
                'rows': rows, 'summary': summary})
 
 
+@csrf_exempt
+@pk_required()
+def analytics_by_dept(request):
+    """事业部应收全景：各事业部 上账/开票/已收/未收/逾期/回款率/本月到期目标。
+
+    口径：开放 AR 快照（不按年筛，反映当前应收健康）。本月到期目标 = 当期(本月到期
+    且未结清) + 逾期(已过期且未结清) 的上账金额，对应"该月各事业部当期+逾期上账"。
+    全集团口径下返回全部可访问事业部（含零值），逐一体现 6 事业部维度。
+    """
+    denied = _page_denied(request, 'ar_analytics')
+    if denied:
+        return denied
+    today = datetime.date.today()
+    month_start = today.replace(day=1)
+    month_end = today.replace(day=calendar.monthrange(today.year, today.month)[1])
+
+    base = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
+    dept = (request.GET.get('dept') or '').strip()
+    if dept:
+        base = base.filter(delivery_dept=dept)
+
+    # 展示用事业部清单（即使无数据也列出，体现全部事业部维度）
+    if dept:
+        dept_list = [dept]
+    elif request.pk_role == 'super_admin':
+        dept_list = list(DEPARTMENTS)
+    else:
+        dept_list = list(request.pk_depts or [])
+
+    def _bydept(qs, **ann):
+        return {r['delivery_dept']: r for r in qs.values('delivery_dept').annotate(**ann)}
+
+    overall = _bydept(base, estimated=Sum('estimated_amount'), invoiced=Sum('actual_invoice_amount'),
+                      outstanding=Sum('outstanding_amount'), collected=Sum('payments__amount'),
+                      cnt=Count('id', distinct=True))
+    overdue = _bydept(base.filter(outstanding_amount__gt=0, due_date__lt=today),
+                      od_amt=Sum('outstanding_amount'), od_est=Sum('estimated_amount'), od_cnt=Count('id'))
+    current = _bydept(base.filter(outstanding_amount__gt=0, due_date__gte=month_start, due_date__lte=month_end),
+                      cur_est=Sum('estimated_amount'), cur_cnt=Count('id'))
+
+    rows = []
+    for d in dept_list:
+        o = overall.get(d, {})
+        od = overdue.get(d, {})
+        cu = current.get(d, {})
+        est = float(o.get('estimated') or 0)
+        collected = float(o.get('collected') or 0)
+        od_est = float(od.get('od_est') or 0)
+        cur_est = float(cu.get('cur_est') or 0)
+        rate = round(min(collected / est * 100, 999.99), 1) if est > 0 else None
+        rows.append({
+            'dept': d,
+            'estimated': round(est, 2),
+            'invoiced': round(float(o.get('invoiced') or 0), 2),
+            'outstanding': round(float(o.get('outstanding') or 0), 2),
+            'collected': round(collected, 2),
+            'overdue_amount': round(float(od.get('od_amt') or 0), 2),
+            'overdue_count': int(od.get('od_cnt') or 0),
+            'record_count': int(o.get('cnt') or 0),
+            'rate': rate,
+            'current_due_est': round(cur_est, 2),
+            'overdue_est': round(od_est, 2),
+            'month_target': round(cur_est + od_est, 2),   # 本月到期目标 = 当期 + 逾期 上账
+        })
+    rows.sort(key=lambda r: r['outstanding'], reverse=True)
+
+    totals = {
+        'estimated': round(sum(r['estimated'] for r in rows), 2),
+        'invoiced': round(sum(r['invoiced'] for r in rows), 2),
+        'outstanding': round(sum(r['outstanding'] for r in rows), 2),
+        'collected': round(sum(r['collected'] for r in rows), 2),
+        'overdue_amount': round(sum(r['overdue_amount'] for r in rows), 2),
+        'overdue_count': sum(r['overdue_count'] for r in rows),
+        'month_target': round(sum(r['month_target'] for r in rows), 2),
+    }
+    totals['rate'] = round(min(totals['collected'] / totals['estimated'] * 100, 999.99), 1) if totals['estimated'] > 0 else None
+    return ok({'ref_month': f'{today.year}年{today.month}月', 'rows': rows, 'totals': totals})
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 预收预付 (Advance receipts / prepayments) — 单表 + direction 判别，挂项目台账
 # ══════════════════════════════════════════════════════════════════════════════
