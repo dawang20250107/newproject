@@ -17,6 +17,7 @@ import EmptyState from '../../components/EmptyState.vue'
 const ChartsPanel = defineAsyncComponent(() => import('./Charts.vue'))
 const ARAnalyticsPanel = defineAsyncComponent(() => import('../ar/ARAnalytics.vue'))
 const CashflowPanel = defineAsyncComponent(() => import('../ar/Cashflow.vue'))
+const BusinessFinancePanel = defineAsyncComponent(() => import('./BusinessFinance.vue'))
 
 const auth = useCaiwuAuth()
 const pkAuth = useAuthStore()
@@ -27,11 +28,12 @@ const mainTab = ref('overview')
 const MAIN_TABS = computed(() => {
   const t = [{ key: 'overview', label: '经营总览' }]
   if (pkAuth.canPage('caiwu_charts')) t.push({ key: 'charts', label: '报表分析' })
+  if (pkAuth.canPage('ar_analytics')) t.push({ key: 'bf', label: '业财损益' })
   if (pkAuth.canPage('ar_analytics')) t.push({ key: 'ar', label: '应收分析' })
   if (pkAuth.canPage('ar_cashflow')) t.push({ key: 'cashflow', label: '现金流分析' })
   return t
 })
-const panelComp = computed(() => ({ charts: ChartsPanel, ar: ARAnalyticsPanel, cashflow: CashflowPanel }[mainTab.value] || null))
+const panelComp = computed(() => ({ charts: ChartsPanel, bf: BusinessFinancePanel, ar: ARAnalyticsPanel, cashflow: CashflowPanel }[mainTab.value] || null))
 
 // 默认展示上月：当月财务数据通常尚未导入/发布
 const year = ref(lastMonthCST().year)

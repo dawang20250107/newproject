@@ -2,14 +2,14 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import * as echarts from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { LineChart, BarChart, CustomChart, PieChart } from 'echarts/charts'
+import { LineChart, BarChart, CustomChart, PieChart, ScatterChart } from 'echarts/charts'
 import {
   GridComponent, TooltipComponent, LegendComponent,
   TitleComponent, DataZoomComponent, MarkLineComponent, MarkAreaComponent, MarkPointComponent,
 } from 'echarts/components'
 
 echarts.use([
-  CanvasRenderer, LineChart, BarChart, CustomChart, PieChart,
+  CanvasRenderer, LineChart, BarChart, CustomChart, PieChart, ScatterChart,
   GridComponent, TooltipComponent, LegendComponent,
   TitleComponent, DataZoomComponent, MarkLineComponent, MarkAreaComponent, MarkPointComponent,
 ])
