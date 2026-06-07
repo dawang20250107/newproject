@@ -93,6 +93,7 @@ const ar = {
   analyticsByDept: p => api.get('/ar/analytics/by-dept', { params: p }),
   unitEconomics: p => api.get('/ar/analytics/unit-economics', { params: p }),
   businessFinance: p => api.get('/ar/analytics/business-finance', { params: p }),
+  projectPnl: p => api.get('/ar/analytics/project-pnl', { params: p }),
 
   // Cashflow
   cashflow: p => api.get('/ar/cashflow', { params: p }),

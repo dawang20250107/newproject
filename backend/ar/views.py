@@ -3354,6 +3354,127 @@ def analytics_business_finance(request):
 
 @csrf_exempt
 @pk_required()
+def analytics_project_pnl(request):
+    """单项目业财损益卡：一个项目从「合同→开票→回款→毛利」的全链路。
+    盈利侧逐月取自 ProjectMargin，应收侧逐月取自 ARRecord/ARPayment。
+    入参：name(项目名,必填) year(必填)。返回 project/monthly/payments/totals。
+    """
+    denied = _page_denied(request, 'ar_analytics')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    name = (request.GET.get('name') or '').strip()
+    if not name:
+        return err('缺少项目名')
+    try:
+        year = int(request.GET.get('year') or datetime.date.today().year)
+    except (TypeError, ValueError):
+        return err('年份无效')
+    today = datetime.date.today()
+
+    # ── 盈利侧：ProjectMargin 按月 ──────────────────────────────────────────────
+    from caiwu.models import ProjectMargin
+    pm = _ar_dept_filter(ProjectMargin.objects.filter(year=year, project_name=name),
+                         request, dept_field='business_unit')
+    fin_by_m = {}
+    for r in pm.values('month').annotate(revenue=Sum('revenue'), cost=Sum('cost'),
+                                         sales_exp=Sum('sales_exp'), mgmt_exp=Sum('mgmt_exp')):
+        fin_by_m[r['month']] = {'revenue': float(r['revenue'] or 0), 'cost': float(r['cost'] or 0),
+                                'sales_exp': float(r['sales_exp'] or 0), 'mgmt_exp': float(r['mgmt_exp'] or 0)}
+
+    # ── 项目身份：name → ARProject（短名或合同名匹配）──────────────────────────
+    aqs = ARProject.objects.select_related('customer')
+    if request.pk_role != 'super_admin':
+        aqs = aqs.filter(delivery_dept__in=(request.pk_depts or []))
+    projs = list(aqs.filter(Q(short_name=name) | Q(contract_name=name)))
+    proj = projs[0] if projs else None
+    pids = [p.id for p in projs]
+
+    # ── 应收侧：ARRecord 按月（回款单独从 ARPayment 取，规避扇出）────────────────
+    ar_by_m = {}
+    arq = ARRecord.objects.none()
+    if pids:
+        arq = ARRecord.objects.filter(project_id__in=pids, operation_year=year)
+        for r in arq.values('operation_month').annotate(
+                estimated=Sum('estimated_amount'), invoiced=Sum('actual_invoice_amount'),
+                outstanding=Sum('outstanding_amount'), tax=Sum('tax_amount')):
+            ar_by_m[r['operation_month']] = {
+                'estimated': float(r['estimated'] or 0), 'invoiced': float(r['invoiced'] or 0),
+                'outstanding': float(r['outstanding'] or 0), 'tax': float(r['tax'] or 0),
+                'collected': 0.0, 'overdue': 0.0}
+        for r in arq.filter(due_date__lt=today, outstanding_amount__gt=0).values(
+                'operation_month').annotate(overdue=Sum('outstanding_amount')):
+            if r['operation_month'] in ar_by_m:
+                ar_by_m[r['operation_month']]['overdue'] = float(r['overdue'] or 0)
+        for r in ARPayment.objects.filter(ar_record__in=arq).values(
+                'ar_record__operation_month').annotate(c=Sum('amount')):
+            m = r['ar_record__operation_month']
+            if m in ar_by_m:
+                ar_by_m[m]['collected'] = float(r['c'] or 0)
+
+    # ── 逐月融合 ────────────────────────────────────────────────────────────────
+    def _rate(num, den):
+        return round(num / den * 100, 1) if den else None
+    monthly = []
+    for m in sorted(set(fin_by_m) | set(ar_by_m)):
+        f = fin_by_m.get(m, {})
+        a = ar_by_m.get(m, {})
+        rev, cost = f.get('revenue', 0.0), f.get('cost', 0.0)
+        monthly.append({
+            'month': m, 'revenue': round(rev, 2), 'cost': round(cost, 2),
+            'margin': round(rev - cost, 2), 'margin_rate': _rate(rev - cost, rev),
+            'invoiced': round(a.get('invoiced', 0.0), 2), 'outstanding': round(a.get('outstanding', 0.0), 2),
+            'collected': round(a.get('collected', 0.0), 2), 'overdue': round(a.get('overdue', 0.0), 2),
+        })
+
+    # ── 回款流水（时间线）──────────────────────────────────────────────────────
+    payments = []
+    if pids:
+        for pay in (ARPayment.objects.filter(ar_record__in=arq)
+                    .select_related('ar_record').order_by('payment_date', 'id')[:200]):
+            payments.append({
+                'date': str(pay.payment_date) if pay.payment_date else None,
+                'amount': float(pay.amount or 0), 'source': pay.source or '回款',
+                'operation_month': pay.ar_record.operation_month})
+
+    # ── 汇总 + 标签 ────────────────────────────────────────────────────────────
+    t_rev = round(sum(x['revenue'] for x in monthly), 2)
+    t_cost = round(sum(x['cost'] for x in monthly), 2)
+    t_margin = round(t_rev - t_cost, 2)
+    t_inv = round(sum(x['invoiced'] for x in monthly), 2)
+    t_out = round(sum(x['outstanding'] for x in monthly), 2)
+    t_col = round(sum(x['collected'] for x in monthly), 2)
+    t_ovd = round(sum(x['overdue'] for x in monthly), 2)
+    mr = _rate(t_margin, t_rev)
+    cr = _rate(t_col, t_inv)
+    ovr = _rate(t_ovd, t_out)
+    tag, tag_label = _bf_tag(mr, cr, ovr, t_rev)
+    totals = {'revenue': t_rev, 'cost': t_cost, 'margin': t_margin, 'margin_rate': mr,
+              'invoiced': t_inv, 'outstanding': t_out, 'collected': t_col, 'collect_rate': cr,
+              'overdue': t_ovd, 'overdue_rate': ovr, 'tag': tag, 'tag_label': tag_label}
+
+    project = {
+        'name': name,
+        'project_no': (proj.project_no if proj else None),
+        'short_name': (proj.short_name if proj else name),
+        'contract_name': (proj.contract_name if proj else None),
+        'customer': (proj.customer.name if (proj and proj.customer_id) else None),
+        'customer_level': (proj.customer_level if proj else ''),
+        'delivery_dept': (proj.delivery_dept if proj else ''),
+        'project_manager': (proj.project_manager if proj else ''),
+        'sales_contact': (proj.sales_contact if proj else ''),
+        'has_contract': (proj.has_contract if proj else ''),
+        'contract_date': (str(proj.contract_date) if (proj and proj.contract_date) else None),
+        'total_days': (proj.total_days if proj else None),
+        'linked': bool(pids),
+    }
+    return ok({'year': year, 'project': project, 'monthly': monthly,
+               'payments': payments, 'totals': totals})
+
+
+@csrf_exempt
+@pk_required()
 def analytics_by_dept(request):
     """事业部应收全景：各事业部 上账/开票/已收/未收/逾期/回款率/本月到期目标。
 
