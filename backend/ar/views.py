@@ -5603,6 +5603,60 @@ def customers(request):
 
 @csrf_exempt
 @pk_required()
+def customers_bulk_tag_level(request):
+    """POST /customers/bulk-tag-level  —  批量为客户打/改等级。
+
+    Body: { "ids": [1,2,3], "level": "A级" }
+    或   : { "all": true, "level": "A级", "q": "...", "level_filter": "..." }
+      all=true 时对当前筛选全集（搜索 q + 当前等级 level_filter）打标，限 5000 条。
+    level 传空字符串 = 清空等级（取消分级）。
+    """
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    if request.pk_role not in ('super_admin', 'dept_admin', 'user'):
+        return err('无权访问', 403)
+
+    data = _parse_body(request)
+    level = (data.get('level') or '').strip()
+    if level and level not in VALID_CUSTOMER_LEVELS:
+        return err(f'无效客户等级「{level}」，可选：{"、".join(VALID_CUSTOMER_LEVELS)}')
+
+    all_flag = data.get('all') in (True, 'true', '1')
+    ids = data.get('ids')
+
+    if all_flag:
+        qs = Customer.objects.all()
+        q = (data.get('q') or '').strip()
+        if q:
+            qs = qs.filter(Q(name__icontains=q) | Q(contact__icontains=q) | Q(notes__icontains=q))
+        level_filter = (data.get('level_filter') or '').strip()
+        if level_filter:
+            qs = qs.filter(level=level_filter)
+        cnt = qs.count()
+        if cnt == 0:
+            return err('当前筛选没有匹配的客户')
+        if cnt > 5000:
+            return err('选中客户超过5000个，请缩小筛选范围后再批量操作')
+        updated = qs.update(level=level)
+    else:
+        if not ids or not isinstance(ids, list):
+            return err('请传入 ids 数组或 all=true')
+        try:
+            id_list = [int(i) for i in ids]
+        except (TypeError, ValueError):
+            return err('ids 必须为整数数组')
+        updated = Customer.objects.filter(pk__in=id_list).update(level=level)
+
+    action = f'设置等级为「{level}」' if level else '清空等级'
+    return ok({'updated': updated, 'level': level,
+               'message': f'{action}，共更新 {updated} 个客户'})
+
+
+@csrf_exempt
+@pk_required()
 def customer_detail(request, pk):
     """GET /PUT /DELETE  /ar/customers/<pk>"""
     try:

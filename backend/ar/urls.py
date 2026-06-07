@@ -14,6 +14,7 @@ urlpatterns = [
 
     # Customers
     path('customers', views.customers),
+    path('customers/bulk-tag-level', views.customers_bulk_tag_level),
     path('customers/<int:pk>', views.customer_detail),
 
     # Contracts

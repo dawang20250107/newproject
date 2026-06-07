@@ -39,7 +39,38 @@ let toastTimer = null
 function showToast(m) { toast.value = m; clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.value = '', 2200) }
 
 const wan = v => (v == null || v === '') ? '—' : (Number(v) / 1e4).toFixed(1) + '万'
-const LEVELS = ['A', 'B', 'C', 'D']
+const LEVELS = ['S级', 'A级', 'B级', 'C级', 'D级']
+const levelClass = l => 'lvl-' + (l || '').replace('级', '')
+
+// 批量打等级
+const selected = ref(new Set())
+const bulkLevel = ref('')
+const bulkSaving = ref(false)
+function toggleSel(id) {
+  const s = new Set(selected.value)
+  s.has(id) ? s.delete(id) : s.add(id)
+  selected.value = s
+}
+const allOnPageSelected = computed(() =>
+  items.value.length > 0 && items.value.every(c => selected.value.has(c.id)))
+function toggleSelAll() {
+  const s = new Set(selected.value)
+  if (allOnPageSelected.value) items.value.forEach(c => s.delete(c.id))
+  else items.value.forEach(c => s.add(c.id))
+  selected.value = s
+}
+function clearSel() { selected.value = new Set() }
+async function applyBulkLevel() {
+  if (!selected.value.size) return showToast('请先勾选客户')
+  bulkSaving.value = true
+  try {
+    const res = await ar.bulkTagCustomerLevel({ ids: [...selected.value], level: bulkLevel.value })
+    showToast(res.data?.message || '✓ 已更新')
+    clearSel()
+    await load()
+  } catch (e) { showToast(e?.error || '批量打标失败') }
+  finally { bulkSaving.value = false }
+}
 
 async function load(reset = false) {
   if (reset) page.value = 1
@@ -133,11 +164,23 @@ onMounted(() => load(true))
       </div>
       <select v-model="filters.level" class="sel-bu" @change="load(true)">
         <option value="">全部等级</option>
-        <option v-for="l in LEVELS" :key="l" :value="l">{{ l }} 级</option>
+        <option v-for="l in LEVELS" :key="l" :value="l">{{ l }}</option>
       </select>
       <button v-if="hasActiveFilters" class="filter-reset" @click="resetFilters">重置筛选</button>
       <div class="spacer"></div>
       <div class="count-tip">共 {{ total }} 个客户</div>
+    </div>
+
+    <!-- 批量打等级工具条（勾选客户后出现）-->
+    <div v-if="selected.size" class="bulk-bar">
+      <span class="bb-count">已选 <b>{{ selected.size }}</b> 个客户</span>
+      <span class="bb-label">批量设为</span>
+      <select v-model="bulkLevel" class="bb-sel">
+        <option value="">未分级（清空）</option>
+        <option v-for="l in LEVELS" :key="l" :value="l">{{ l }}</option>
+      </select>
+      <button class="btn btn-primary btn-sm" :disabled="bulkSaving" @click="applyBulkLevel">{{ bulkSaving ? '应用中…' : '应用' }}</button>
+      <button class="btn btn-sm" @click="clearSel">取消选择</button>
     </div>
 
     <!-- 客户列表 -->
@@ -146,6 +189,7 @@ onMounted(() => load(true))
         <table class="cu-table">
           <thead>
             <tr>
+              <th class="ctr chk-col"><input type="checkbox" :checked="allOnPageSelected" @change="toggleSelAll" title="全选本页" /></th>
               <th class="l">客户名称</th>
               <th class="ctr">等级</th>
               <th class="ctr clk" @click="setSort('project_count')">项目数{{ sortArrow('project_count') }}</th>
@@ -156,10 +200,11 @@ onMounted(() => load(true))
             </tr>
           </thead>
           <tbody>
-            <tr v-if="!loading && !items.length"><td colspan="7" class="empty">暂无客户数据</td></tr>
-            <tr v-for="c in sortedItems" :key="c.id" class="row" @click="openDetail(c)">
+            <tr v-if="!loading && !items.length"><td colspan="8" class="empty">暂无客户数据</td></tr>
+            <tr v-for="c in sortedItems" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)">
+              <td class="ctr chk-col" @click.stop><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
               <td class="l name">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
-              <td class="ctr"><span v-if="c.level" class="lvl" :class="`lvl-${c.level}`">{{ c.level }}</span><span v-else class="muted">—</span></td>
+              <td class="ctr"><span v-if="c.level" class="lvl" :class="levelClass(c.level)">{{ c.level }}</span><span v-else class="muted">—</span></td>
               <td class="ctr">{{ c.project_count ?? 0 }}</td>
               <td class="rgt">{{ wan(c.invoiced) }}</td>
               <td class="rgt strong">{{ wan(c.outstanding) }}</td>
@@ -179,7 +224,7 @@ onMounted(() => load(true))
             <div class="dw-head">
               <div>
                 <div class="dw-title">{{ detail?.name || '加载中…' }}
-                  <span v-if="detail?.level" class="lvl" :class="`lvl-${detail.level}`">{{ detail.level }} 级</span>
+                  <span v-if="detail?.level" class="lvl" :class="levelClass(detail.level)">{{ detail.level }}</span>
                 </div>
                 <div v-if="detail?.contact || detail?.notes" class="dw-sub">
                   <span v-if="detail.contact">联系人：{{ detail.contact }}</span>
@@ -241,7 +286,7 @@ onMounted(() => load(true))
               <label class="em-label">等级</label>
               <select v-model="editForm.level" class="em-input">
                 <option value="">未分级</option>
-                <option v-for="l in LEVELS" :key="l" :value="l">{{ l }} 级</option>
+                <option v-for="l in LEVELS" :key="l" :value="l">{{ l }}</option>
               </select>
             </div>
             <div style="flex:2">
@@ -271,6 +316,18 @@ onMounted(() => load(true))
 .spacer { flex: 1; }
 .count-tip { font-size: 12px; color: var(--muted); }
 
+/* 批量打标工具条 */
+.bulk-bar { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; padding: 10px 14px;
+  background: linear-gradient(120deg, rgba(21,101,192,.08), rgba(46,125,50,.06));
+  border: 1px solid rgba(21,101,192,.22); border-radius: 10px; }
+.bb-count { font-size: 13px; color: #3a2c1d; }
+.bb-count b { color: #1565c0; }
+.bb-label { font-size: 12px; color: #9b8070; margin-left: 4px; }
+.bb-sel { padding: 5px 10px; border: 1px solid #d4b896; border-radius: 7px; background: #fff; font-size: 13px; }
+.chk-col { width: 36px; }
+.chk-col input { cursor: pointer; }
+.row.sel td { background: rgba(21,101,192,.06); }
+
 .cu-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .cu-table th { background: #f3ede6; color: #6b5a4a; padding: 9px 14px; font-weight: 600; white-space: nowrap; text-align: right; }
 .cu-table th.l { text-align: left; }
@@ -291,7 +348,7 @@ onMounted(() => load(true))
 .btn-link { background: none; border: none; color: var(--primary); cursor: pointer; font-size: 12.5px; }
 
 .lvl { display: inline-block; min-width: 18px; padding: 1px 7px; border-radius: 9px; font-size: 11px; font-weight: 700; color: #fff; }
-.lvl-A { background: #2e7d32; } .lvl-B { background: #1565c0; } .lvl-C { background: #e65100; } .lvl-D { background: #9e9e9e; }
+.lvl-S { background: #6a1b9a; } .lvl-A { background: #2e7d32; } .lvl-B { background: #1565c0; } .lvl-C { background: #e65100; } .lvl-D { background: #9e9e9e; }
 
 /* 抽屉 */
 .drawer-mask { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 3000; display: flex; justify-content: flex-end; }
