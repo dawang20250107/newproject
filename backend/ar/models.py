@@ -109,12 +109,27 @@ class ARProject(models.Model):
                     continue
             return f'{prefix}{max_seq + 1:04d}'
 
+    def _autolink_customer(self):
+        """合同名即客户：未显式挂客户时，按「合同名称」(实为客户公司名)自动建/挂客户。
+        让正式导入/新建项目也落实"客户正名"，不必依赖一次性回填。失败不阻断项目保存。"""
+        name = (self.contract_name or '').strip()
+        if not name:
+            return
+        try:
+            cust, _ = Customer.objects.get_or_create(
+                name=name, defaults={'level': self.customer_level or ''})
+            self.customer = cust
+        except Exception:
+            pass
+
     def save(self, *args, **kwargs):
         self.is_shared = (self.sales_contact != self.project_manager)
         self.total_days = (self.reconciliation_days + self.invoice_wait_days
                            + self.post_invoice_days)
         if self.invoice_type == '不开票':
             self.tax_rate = Decimal('0')
+        if self.customer_id is None:
+            self._autolink_customer()
         if self.project_no:
             return super().save(*args, **kwargs)
         # 自动生成编号：极少数并发下可能撞 unique，重试几次再放弃。
