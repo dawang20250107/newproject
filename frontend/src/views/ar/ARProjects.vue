@@ -1,9 +1,12 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
-import { DEPARTMENTS } from '../../constants.js'
+import { DEPARTMENTS, yearCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { downloadBlob } from '../../utils/download.js'
+import { fmtCompact, fmtMoney } from '../../utils/format.js'
+import { TOOLTIP } from '../../utils/chartTheme.js'
+import BaseChart from '../../components/ar/BaseChart.vue'
 
 const auth = useAuthStore()
 const items = ref([])
@@ -324,6 +327,90 @@ const onScopeChange = () => {
   page.value = 1
   reloadAll()
 }
+// ── 客户/项目分析 Tab（单位经济学：客单价/客单成本/边际贡献）──────────────────
+const projTab = ref('list')
+const econ = reactive({ year: yearCST(), month: '', dept: '', dim: 'project' })
+const econData = ref(null)
+const econLoading = ref(false)
+const econYears = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
+const ueMoney = (v) => fmtCompact(v, { space: true, dash: '—' })
+
+async function loadEcon() {
+  econLoading.value = true
+  try {
+    const p = { year: econ.year, group_by: econ.dim }
+    if (econ.month) p.month = econ.month
+    if (econ.dept) p.dept = econ.dept
+    const res = await ar.unitEconomics(p)
+    econData.value = res.data
+  } catch (e) { econData.value = null }
+  finally { econLoading.value = false }
+}
+function switchProjTab(t) {
+  projTab.value = t
+  if (t === 'econ' && !econData.value) loadEcon()
+}
+const econKpis = computed(() => {
+  const s = econData.value?.summary
+  if (!s) return []
+  return [
+    { label: '总收入', value: ueMoney(s.revenue), color: '#2e7d32' },
+    { label: '总成本', value: ueMoney(s.cost), color: '#8a4b34' },
+    { label: '边际贡献', value: ueMoney(s.margin), color: '#1565c0',
+      sub: s.margin_rate == null ? '' : `边际率 ${s.margin_rate}%` },
+    { label: '客单价', value: ueMoney(s.arpu), color: '#00897b', hint: '可识别客户收入 ÷ 客户数' },
+    { label: '客单成本', value: ueMoney(s.acpu), color: '#e65100', hint: '可识别客户成本 ÷ 客户数' },
+    { label: '客均边际贡献', value: ueMoney(s.margin_per_customer), color: '#6a1b9a' },
+    { label: '客户数 / 项目数', value: `${s.customer_count} / ${s.project_count}`, color: '#5c6bc0',
+      sub: s.linked_coverage == null ? '' : `客户覆盖 ${s.linked_coverage}%` },
+  ]
+})
+const econRows = computed(() => econData.value?.rows || [])
+const LEVEL_COLORS = { 'S级': '#6a1b9a', 'A级': '#2e7d32', 'B级': '#1565c0', 'C级': '#f57f17', 'D级': '#9e9e9e' }
+// 顶尖分析图：盈利地图（X=收入 Y=边际贡献率 气泡=边际贡献 颜色=客户等级/未关联）
+const econScatterOption = computed(() => {
+  const rows = econRows.value.filter(r => (r.revenue || 0) > 0)
+  if (!rows.length) return null
+  const maxMargin = Math.max(...rows.map(r => Math.abs(r.margin) || 0), 1)
+  const data = rows.map(r => ({
+    value: [r.revenue, r.margin_rate == null ? 0 : r.margin_rate, Math.abs(r.margin), r.label, r.margin],
+    itemStyle: {
+      color: r.unlinked ? '#b0a89e' : (LEVEL_COLORS[r.customer_level] || '#c96342'),
+      opacity: 0.82, borderColor: '#fff', borderWidth: 1,
+    },
+  }))
+  return {
+    tooltip: {
+      ...TOOLTIP,
+      formatter: p => {
+        const [rev, rate, , name, margin] = p.value
+        return `<b>${name}</b><br/>收入：${ueMoney(rev)}<br/>边际贡献：${ueMoney(margin)}<br/>边际贡献率：${rate}%`
+      },
+    },
+    grid: { top: 24, right: 28, bottom: 48, left: 16, containLabel: true },
+    xAxis: {
+      type: 'value', name: '收入', nameLocation: 'middle', nameGap: 30,
+      nameTextStyle: { color: '#9b8070', fontSize: 11 },
+      axisLabel: { color: '#9b8070', formatter: v => fmtCompact(v, { dash: '0' }) },
+      splitLine: { lineStyle: { color: 'rgba(180,140,110,.12)' } },
+    },
+    yAxis: {
+      type: 'value', name: '边际贡献率 %', nameTextStyle: { color: '#9b8070', fontSize: 11 },
+      axisLabel: { color: '#9b8070', formatter: '{value}%' },
+      splitLine: { lineStyle: { color: 'rgba(180,140,110,.12)' } },
+    },
+    series: [{
+      type: 'scatter', data,
+      symbolSize: v => 12 + (v[2] / maxMargin) * 44,
+      markLine: {
+        silent: true, symbol: 'none', lineStyle: { color: 'rgba(120,90,70,.35)', type: 'dashed' },
+        data: [{ yAxis: 0 }],
+        label: { formatter: '盈亏线', color: '#9b8070', fontSize: 10 },
+      },
+    }],
+  }
+})
+
 onMounted(() => {
   if (auth.perms?.ar_shared_only) filters.is_shared = '1'
   load(); loadStats(); loadCustomers(); window.addEventListener('pk:depts-changed', onScopeChange)
@@ -341,6 +428,13 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
       </div>
     </div>
 
+    <!-- 主 Tab：项目台账 / 客户·项目分析 -->
+    <div class="proj-tabs">
+      <button :class="['pt-tab', projTab === 'list' ? 'on' : '']" @click="switchProjTab('list')">项目台账</button>
+      <button :class="['pt-tab', projTab === 'econ' ? 'on' : '']" @click="switchProjTab('econ')">客户 · 项目分析</button>
+    </div>
+
+    <div v-show="projTab === 'list'">
     <!-- Stats strip -->
     <div class="stats-strip">
       <div class="stat-pill">
@@ -521,6 +615,79 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <button :disabled="page <= 1" class="page-btn" @click="page--; load()">‹ 上一页</button>
         <span class="page-info">第 {{ page }} 页 · 共 {{ total }} 条</span>
         <button :disabled="page * size >= total" class="page-btn" @click="page++; load()">下一页 ›</button>
+      </div>
+    </div>
+    </div><!-- /projTab list -->
+
+    <!-- ════ 客户 · 项目分析（单位经济学）════════════════════════════════════════ -->
+    <div v-if="projTab === 'econ'" class="econ-wrap">
+      <!-- 控制条 -->
+      <div class="econ-bar">
+        <div class="econ-dim">
+          <button :class="['ed-btn', econ.dim === 'project' ? 'on' : '']" @click="econ.dim = 'project'; loadEcon()">按项目</button>
+          <button :class="['ed-btn', econ.dim === 'customer' ? 'on' : '']" @click="econ.dim = 'customer'; loadEcon()">按客户</button>
+        </div>
+        <select v-model="econ.year" class="sel-yr" @change="loadEcon">
+          <option v-for="y in econYears" :key="y" :value="y">{{ y }} 年</option>
+        </select>
+        <select v-model="econ.month" class="sel-mo" @change="loadEcon">
+          <option value="">全年累计</option>
+          <option v-for="m in 12" :key="m" :value="m">{{ m }} 月</option>
+        </select>
+        <select v-model="econ.dept" class="sel-bu" @change="loadEcon">
+          <option value="">全部事业部</option>
+          <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+        </select>
+        <span class="econ-hint">口径：收入/成本取自项目毛利表 · 边际贡献 = 收入 − 主营成本</span>
+      </div>
+
+      <!-- KPI 带 -->
+      <div class="econ-kpis">
+        <div v-for="k in econKpis" :key="k.label" class="econ-kpi">
+          <div class="ek-label">{{ k.label }}<span v-if="k.hint" class="ek-hint" :title="k.hint">ⓘ</span></div>
+          <div class="ek-value" :style="`color:${k.color}`">{{ k.value }}</div>
+          <div v-if="k.sub" class="ek-sub">{{ k.sub }}</div>
+        </div>
+      </div>
+
+      <!-- 盈利地图 + 排行表 -->
+      <div class="econ-grid">
+        <div class="card">
+          <div class="section-title" style="margin-bottom:6px">
+            盈利地图 · {{ econ.dim === 'customer' ? '客户' : '项目' }}（X=收入　Y=边际贡献率　气泡=边际贡献额）
+          </div>
+          <BaseChart v-if="econScatterOption" :option="econScatterOption" height="360px" />
+          <div v-else class="econ-empty">{{ econLoading ? '加载中…' : '暂无可分析数据（需已上传项目毛利表）' }}</div>
+        </div>
+        <div class="card">
+          <div class="section-title" style="margin-bottom:6px">{{ econ.dim === 'customer' ? '客户' : '项目' }}边际贡献排行</div>
+          <div class="econ-table-wrap">
+            <table class="econ-table">
+              <thead>
+                <tr>
+                  <th class="l">{{ econ.dim === 'customer' ? '客户' : '项目' }}</th>
+                  <th>收入</th><th>成本</th><th>边际贡献</th><th>边际率</th>
+                  <th v-if="econ.dim === 'customer'">项目数</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="!econRows.length"><td :colspan="econ.dim === 'customer' ? 6 : 5" class="econ-td-empty">{{ econLoading ? '加载中…' : '暂无数据' }}</td></tr>
+                <tr v-for="r in econRows" :key="r.key" :class="{ 'econ-row-unlinked': r.unlinked, 'econ-row-loss': (r.margin || 0) < 0 }">
+                  <td class="l">
+                    <span class="econ-name">{{ r.label }}</span>
+                    <span v-if="r.customer_level" class="econ-lvl" :style="`background:${LEVEL_COLORS[r.customer_level] || '#9e9e9e'}`">{{ r.customer_level }}</span>
+                    <span v-if="r.business_unit" class="econ-bu">{{ r.business_unit }}</span>
+                  </td>
+                  <td>{{ ueMoney(r.revenue) }}</td>
+                  <td class="muted">{{ ueMoney(r.cost) }}</td>
+                  <td class="strong" :class="{ neg: (r.margin || 0) < 0 }">{{ ueMoney(r.margin) }}</td>
+                  <td :style="`color:${(r.margin_rate ?? 0) >= 0 ? '#2e7d32' : '#c62828'}`">{{ r.margin_rate == null ? '—' : r.margin_rate + '%' }}</td>
+                  <td v-if="econ.dim === 'customer'" class="muted">{{ r.project_count }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -732,6 +899,50 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 </template>
 
 <style scoped>
+/* ── 主 Tab ─────────────────────────────────────────────────────────────────── */
+.proj-tabs { display: flex; gap: 4px; margin: 2px 0 16px; border-bottom: 1px solid rgba(180,140,110,.2); }
+.pt-tab {
+  position: relative; border: none; background: none; cursor: pointer;
+  padding: 9px 18px; font-size: 14px; font-weight: 600; color: var(--muted);
+  border-radius: 9px 9px 0 0; transition: color .15s, background .15s;
+}
+.pt-tab:hover { color: var(--primary); background: rgba(201,99,66,.05); }
+.pt-tab.on { color: var(--primary); font-weight: 800; }
+.pt-tab.on::after { content: ''; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 3px; border-radius: 3px 3px 0 0; background: linear-gradient(90deg, #c96342, #e8a05a); }
+
+/* ── 客户/项目分析 ──────────────────────────────────────────────────────────── */
+.econ-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.econ-dim { display: inline-flex; border: 1px solid rgba(180,140,110,.3); border-radius: 9px; overflow: hidden; }
+.ed-btn { border: none; background: #fff; cursor: pointer; padding: 7px 16px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.ed-btn.on { background: var(--primary); color: #fff; }
+.econ-hint { font-size: 12px; color: var(--muted); margin-left: auto; }
+.econ-kpis { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; margin-bottom: 16px; }
+@media (max-width: 1200px) { .econ-kpis { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 640px) { .econ-kpis { grid-template-columns: repeat(2, 1fr); } }
+.econ-kpi { background: rgba(255,255,255,0.65); border: 1px solid rgba(180,140,110,.16); border-radius: 12px; padding: 11px 14px; }
+.ek-label { font-size: 11.5px; color: var(--muted); }
+.ek-hint { margin-left: 3px; cursor: help; opacity: .6; }
+.ek-value { font-size: 20px; font-weight: 800; line-height: 1.25; margin-top: 2px; }
+.ek-sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+.econ-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px; }
+@media (max-width: 1000px) { .econ-grid { grid-template-columns: 1fr; } }
+.econ-empty, .econ-td-empty { display: flex; align-items: center; justify-content: center; height: 320px; color: var(--muted); font-size: 13px; }
+.econ-td-empty { height: auto; padding: 30px; }
+.econ-table-wrap { overflow: auto; max-height: 360px; }
+.econ-table { width: 100%; border-collapse: collapse; font-size: 12.5px; white-space: nowrap; }
+.econ-table th { position: sticky; top: 0; background: rgba(0,0,0,.025); text-align: right; font-size: 11px; font-weight: 700; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid rgba(0,0,0,.07); }
+.econ-table th.l, .econ-table td.l { text-align: left; }
+.econ-table td { text-align: right; padding: 8px 10px; border-bottom: 1px solid rgba(0,0,0,.04); }
+.econ-table tbody tr:hover { background: rgba(201,99,66,.04); }
+.econ-table .muted { color: var(--muted); }
+.econ-table .strong { font-weight: 700; }
+.econ-table .neg { color: #c62828; }
+.econ-row-loss { background: rgba(198,40,40,.04); }
+.econ-row-unlinked { color: var(--muted); }
+.econ-name { font-weight: 600; color: var(--text); }
+.econ-lvl { display: inline-block; color: #fff; font-size: 10px; font-weight: 700; padding: 0 5px; border-radius: 5px; margin-left: 6px; vertical-align: middle; }
+.econ-bu { font-size: 11px; color: var(--muted); margin-left: 6px; }
+
 /* Stats strip */
 .stats-strip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
 .stat-pill {

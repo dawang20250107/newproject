@@ -2997,6 +2997,151 @@ def analytics_by_pm(request):
     return ok(result)
 
 
+_UE_UNLINKED = '未关联客户'
+
+
+@csrf_exempt
+@pk_required()
+def analytics_unit_economics(request):
+    """客户/项目 单位经济学：客单价 / 客单成本 / 边际贡献。
+
+    口径：收入与成本均取自 caiwu「项目毛利表」(ProjectMargin，金蝶核算维度)，
+    边际贡献 = 收入 − 主营成本；客户归属经 ARProject(短名/合同名) 映射。
+    入参：year(必填) month(可选,缺省=全年累计) dept(可选) group_by=project|customer
+    """
+    denied = _page_denied(request, 'ar_projects')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    try:
+        year = int(request.GET.get('year') or datetime.date.today().year)
+    except (TypeError, ValueError):
+        return err('年份无效')
+    month = None
+    month_raw = (request.GET.get('month') or '').strip()
+    if month_raw:
+        try:
+            month = int(month_raw)
+            assert 1 <= month <= 12
+        except Exception:
+            return err('月份无效')
+    group_by = (request.GET.get('group_by') or 'project').strip()
+    if group_by not in ('project', 'customer'):
+        group_by = 'project'
+    dept = (request.GET.get('dept') or '').strip()
+
+    from caiwu.models import ProjectMargin
+    pm = ProjectMargin.objects.filter(year=year)
+    if month:
+        pm = pm.filter(month=month)
+    if dept:
+        pm = pm.filter(business_unit=dept)
+    pm = _ar_dept_filter(pm, request, dept_field='business_unit')
+
+    # 聚合到项目（跨月/跨录入求和），business_unit 取贡献最大者
+    proj_agg = {}
+    for r in pm.values('project_name', 'business_unit').annotate(
+            revenue=Sum('revenue'), cost=Sum('cost'),
+            sales_exp=Sum('sales_exp'), mgmt_exp=Sum('mgmt_exp')):
+        name = (r['project_name'] or '').strip() or '（未命名项目）'
+        rev = float(r['revenue'] or 0)
+        a = proj_agg.get(name)
+        if a is None:
+            a = proj_agg[name] = {'project_name': name, 'business_unit': r['business_unit'],
+                                  'revenue': 0.0, 'cost': 0.0, 'sales_exp': 0.0, 'mgmt_exp': 0.0,
+                                  '_bu_rev': 0.0}
+        if rev > a['_bu_rev']:
+            a['business_unit'] = r['business_unit']
+            a['_bu_rev'] = rev
+        a['revenue'] += rev
+        a['cost'] += float(r['cost'] or 0)
+        a['sales_exp'] += float(r['sales_exp'] or 0)
+        a['mgmt_exp'] += float(r['mgmt_exp'] or 0)
+
+    # 客户映射：ProjectMargin.project_name ←→ ARProject.short_name / contract_name
+    aqs = ARProject.objects.all()
+    if request.pk_role != 'super_admin':
+        aqs = aqs.filter(delivery_dept__in=(request.pk_depts or []))
+    name_to_cust = {}
+    for p in aqs.select_related('customer').only(
+            'short_name', 'contract_name', 'customer_level', 'delivery_dept', 'customer'):
+        info = {'customer': (p.customer.name if p.customer_id else None),
+                'level': p.customer_level or '', 'dept': p.delivery_dept or ''}
+        for k in (p.short_name, p.contract_name):
+            k = (k or '').strip()
+            if k and k not in name_to_cust:
+                name_to_cust[k] = info
+
+    projects = []
+    for a in proj_agg.values():
+        info = name_to_cust.get(a['project_name'])
+        cust = (info['customer'] if info else None) or _UE_UNLINKED
+        rev, cost = a['revenue'], a['cost']
+        margin = rev - cost
+        projects.append({
+            'key': a['project_name'], 'label': a['project_name'],
+            'project_name': a['project_name'], 'business_unit': a['business_unit'],
+            'customer': cust, 'customer_level': (info['level'] if info else ''),
+            'revenue': round(rev, 2), 'cost': round(cost, 2),
+            'sales_exp': round(a['sales_exp'], 2), 'mgmt_exp': round(a['mgmt_exp'], 2),
+            'margin': round(margin, 2),
+            'margin_rate': round(margin / rev * 100, 2) if rev else None,
+        })
+
+    # 客户聚合
+    cust_agg = {}
+    for p in projects:
+        c = p['customer']
+        d = cust_agg.get(c)
+        if d is None:
+            d = cust_agg[c] = {'customer': c, 'level': p['customer_level'],
+                               'revenue': 0.0, 'cost': 0.0, 'margin': 0.0, 'project_count': 0}
+        d['revenue'] += p['revenue']
+        d['cost'] += p['cost']
+        d['margin'] += p['margin']
+        d['project_count'] += 1
+        if not d['level'] and p['customer_level']:
+            d['level'] = p['customer_level']
+
+    tot_rev = round(sum(p['revenue'] for p in projects), 2)
+    tot_cost = round(sum(p['cost'] for p in projects), 2)
+    tot_margin = round(tot_rev - tot_cost, 2)
+    real = [d for c, d in cust_agg.items() if c != _UE_UNLINKED]
+    cc = len(real)
+    linked_rev = sum(d['revenue'] for d in real)
+    linked_cost = sum(d['cost'] for d in real)
+    linked_margin = sum(d['margin'] for d in real)
+
+    summary = {
+        'revenue': tot_rev, 'cost': tot_cost, 'margin': tot_margin,
+        'margin_rate': round(tot_margin / tot_rev * 100, 2) if tot_rev else None,
+        'project_count': len(projects),
+        'customer_count': cc,
+        'arpu': round(linked_rev / cc, 2) if cc else None,           # 客单价
+        'acpu': round(linked_cost / cc, 2) if cc else None,          # 客单成本
+        'margin_per_customer': round(linked_margin / cc, 2) if cc else None,  # 客均边际贡献
+        'linked_coverage': round(linked_rev / tot_rev * 100, 1) if tot_rev else None,
+    }
+
+    if group_by == 'customer':
+        rows = []
+        for d in cust_agg.values():
+            rev, margin = d['revenue'], d['margin']
+            rows.append({
+                'key': d['customer'], 'label': d['customer'], 'customer_level': d['level'],
+                'revenue': round(rev, 2), 'cost': round(d['cost'], 2), 'margin': round(margin, 2),
+                'margin_rate': round(margin / rev * 100, 2) if rev else None,
+                'project_count': d['project_count'], 'unlinked': d['customer'] == _UE_UNLINKED,
+            })
+        rows.sort(key=lambda x: x['margin'], reverse=True)
+    else:
+        rows = sorted(projects, key=lambda x: x['margin'], reverse=True)
+
+    return ok({'year': year, 'month': month, 'group_by': group_by,
+               'rows': rows, 'summary': summary})
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 预收预付 (Advance receipts / prepayments) — 单表 + direction 判别，挂项目台账
 # ══════════════════════════════════════════════════════════════════════════════
