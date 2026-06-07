@@ -42,7 +42,7 @@ async function loadTrend() {
     // 默认选中：主营业务收入 / 主营业务成本 / 经营毛利；缺失则回退取前 3 项
     if (selectedL1Ids.value.length === 0 && res.data.l1_categories?.length) {
       const cats = res.data.l1_categories
-      const want = ['主营业务收入', '主营业务成本', '经营毛利']
+      const want = ['主营业务收入', '经营毛利']
       const picked = want
         .map(n => cats.find(c => c.name === n)?.id)
         .filter(id => id != null)

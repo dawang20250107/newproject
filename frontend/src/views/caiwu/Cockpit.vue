@@ -256,43 +256,98 @@ function chgClass(v) { return v == null ? 'mom-neutral' : (v >= 0 ? 'mom-up' : '
 const grad = (c1, c2, horiz = false) => ({ type: 'linear', x: 0, y: 0, x2: horiz ? 1 : 0, y2: horiz ? 0 : 1,
   colorStops: [{ offset: 0, color: c1 }, { offset: 1, color: c2 }] })
 
-// ── 经营趋势全景：收入柱 + 目标收入线 + 毛利率/净利率双线（一图看规模与盈利质量）─
+// ── 经营趋势全景：收入规模柱 + 目标线 + 毛利率/净利率双色区域线
+// 正值段绿/蓝渐变填充，负值段红色区域 + 警告标记 + 盈亏平衡参考线
 const panoramaOption = computed(() => {
   const t = data.value?.trend || []
   if (!t.length) return null
   const x = t.map(m => `${m.month}月`)
-  const gm = t.map(m => (m.actual_revenue ? +(m.actual_gross_profit / m.actual_revenue * 100).toFixed(1) : null))
-  const nm = t.map(m => (m.actual_revenue ? +(m.actual_profit / m.actual_revenue * 100).toFixed(1) : null))
+  const rev = t.map(m => m.actual_revenue)
+  const tgt = t.map(m => m.target_revenue)
+  const gm  = t.map(m => m.actual_revenue ? +(m.actual_gross_profit / m.actual_revenue * 100).toFixed(1) : null)
+  const nm  = t.map(m => m.actual_revenue ? +(m.actual_profit    / m.actual_revenue * 100).toFixed(1) : null)
+
+  // Split at zero: positive keeps area fill, negative gets red alarm treatment
+  const gmPos = gm.map(v => (v != null && v >= 0) ? v : null)
+  const gmNeg = gm.map(v => (v != null && v  < 0) ? v : null)
+  const nmPos = nm.map(v => (v != null && v >= 0) ? v : null)
+  const nmNeg = nm.map(v => (v != null && v  < 0) ? v : null)
+
+  const allM = [...gm, ...nm].filter(v => v != null)
+  const hasNeg = allM.some(v => v < 0)
+  const minY = allM.length ? (hasNeg ? Math.min(...allM) - 6 : -4) : -10
+  const maxY = allM.length ? Math.max(14, ...allM) + 6 : 20
+
+  const lineBase = { type: 'line', yAxisIndex: 1, smooth: true, symbolSize: 5, connectNulls: false }
+
   return {
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, ...TOOLTIP,
-      formatter(ps) {
-        let s = `<b>${ps[0]?.axisValue}</b><br/>`
-        ps.forEach(p => {
+      formatter(params) {
+        let s = `<b>${params[0]?.axisValue}</b><br/>`
+        const seen = new Map()
+        params.forEach(p => {
           if (p.value == null) return
-          const isPct = p.seriesName.includes('率')
-          s += `${p.marker}${p.seriesName}：<b>${isPct ? p.value + '%' : axisMoney(p.value)}</b><br/>`
+          // strip trailing "−" to merge pos+neg into one tooltip row
+          const base = p.seriesName.endsWith('−') ? p.seriesName.slice(0, -1) : p.seriesName
+          if (!seen.has(base)) seen.set(base, { marker: p.marker, value: p.value })
+        })
+        seen.forEach(({ marker, value }, name) => {
+          const isPct = name.includes('率')
+          s += `${marker}${name}：<b>${isPct ? value.toFixed(1) + '%' : axisMoney(value)}</b><br/>`
         })
         return s
       } },
-    legend: bottomLegend({ data: ['实际收入', '目标收入', '毛利率', '净利率'] }),
-    grid: { ...gridFor(x, { nameTop: true, threshold: 12, right: 52 }) },
+    legend: bottomLegend({ data: ['实际收入', '目标收入', '经营毛利率', '经营净利率'] }),
+    grid: { ...gridFor(x, { threshold: 12, right: 64 }), top: 36 },
     xAxis: catAxis(x, { threshold: 12 }),
     yAxis: [
       valueAxis({ formatter: axisMoney }),
-      valueAxis({ name: '利润率%', position: 'right', formatter: '{value}%' }),
+      { type: 'value', name: '利润率%', position: 'right', min: minY, max: maxY,
+        axisLabel: { color: '#9b8070', formatter: '{value}%' },
+        splitLine: { show: false },
+        axisLine: { show: true, lineStyle: { color: '#ddc9b6' } } },
     ],
     series: [
-      { name: '实际收入', type: 'bar', yAxisIndex: 0, data: t.map(m => m.actual_revenue), barMaxWidth: 28,
-        itemStyle: { color: grad('#a5d6a7', '#2e7d32'), borderRadius: [4, 4, 0, 0] },
+      // ── 收入规模 ──────────────────────────────────────────────
+      { name: '实际收入', type: 'bar', yAxisIndex: 0, data: rev, barMaxWidth: 28,
+        itemStyle: { color: grad('#c8e6c9', '#388e3c'), borderRadius: [4, 4, 0, 0] },
         label: topLabel(p => axisMoney(p.value)), labelLayout: HIDE_OVERLAP },
-      { name: '目标收入', type: 'line', yAxisIndex: 0, data: t.map(m => m.target_revenue), smooth: true,
+      { name: '目标收入', type: 'line', yAxisIndex: 0, data: tgt, smooth: true,
         symbol: 'none', lineStyle: { type: 'dashed', width: 2, color: '#9b8070' } },
-      { name: '毛利率', type: 'line', yAxisIndex: 1, smooth: true, data: gm, symbol: 'circle', symbolSize: 5,
+
+      // ── 经营毛利率：正段（青绿渐变区域） ─────────────────────
+      { ...lineBase, name: '经营毛利率', data: gmPos, symbol: 'circle',
         lineStyle: { color: '#00897b', width: 2.5 }, itemStyle: { color: '#00897b' },
-        endLabel: endLabel(p => p.value == null ? '' : p.value + '%', { color: '#00897b' }), labelLayout: HIDE_OVERLAP },
-      { name: '净利率', type: 'line', yAxisIndex: 1, smooth: true, data: nm, symbol: 'circle', symbolSize: 5,
+        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [{ offset: 0, color: 'rgba(0,137,123,.28)' }, { offset: 1, color: 'rgba(0,137,123,.03)' }] } },
+        endLabel: endLabel(p => p.value != null ? p.value.toFixed(1) + '%' : '', { color: '#00897b' }),
+        labelLayout: HIDE_OVERLAP },
+      // ── 经营毛利率：负段（红色区域 + 下三角警告标记） ────────
+      { ...lineBase, name: '经营毛利率−', data: gmNeg, symbol: 'triangle', symbolSize: 8, symbolRotate: 180,
+        lineStyle: { color: '#e53935', width: 2.5 }, itemStyle: { color: '#e53935' },
+        areaStyle: { color: 'rgba(229,57,53,.20)' },
+        endLabel: endLabel(p => p.value != null ? `▼ ${p.value.toFixed(1)}%` : '', { color: '#e53935', fontWeight: 'bold' }),
+        labelLayout: HIDE_OVERLAP },
+
+      // ── 经营净利率：正段（蓝色渐变区域） ─────────────────────
+      { ...lineBase, name: '经营净利率', data: nmPos, symbol: 'circle',
         lineStyle: { color: '#1565c0', width: 2.5 }, itemStyle: { color: '#1565c0' },
-        endLabel: endLabel(p => p.value == null ? '' : p.value + '%', { color: '#1565c0' }), labelLayout: HIDE_OVERLAP },
+        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [{ offset: 0, color: 'rgba(21,101,192,.24)' }, { offset: 1, color: 'rgba(21,101,192,.03)' }] } },
+        endLabel: endLabel(p => p.value != null ? p.value.toFixed(1) + '%' : '', { color: '#1565c0' }),
+        labelLayout: HIDE_OVERLAP },
+      // ── 经营净利率：负段（深红 + 危险区底色 + 盈亏平衡线） ──
+      { ...lineBase, name: '经营净利率−', data: nmNeg, symbol: 'triangle', symbolSize: 10, symbolRotate: 180,
+        lineStyle: { color: '#b71c1c', width: 3 }, itemStyle: { color: '#b71c1c' },
+        areaStyle: { color: 'rgba(183,28,28,.24)' },
+        markArea: { silent: true, z: 0,
+          data: [[{ yAxis: minY, itemStyle: { color: 'rgba(229,57,53,.06)' } }, { yAxis: 0 }]] },
+        markLine: { silent: true, symbol: 'none', data: [{
+          yAxis: 0,
+          lineStyle: { color: 'rgba(198,40,40,.55)', width: 1.5, type: 'solid' },
+          label: { formatter: '盈亏平衡', position: 'insideStartTop', color: '#c62828', fontSize: 9, padding: [2, 4] } }] },
+        endLabel: endLabel(p => p.value != null ? `⚠ ${p.value.toFixed(1)}%` : '', { color: '#b71c1c', fontWeight: 'bold' }),
+        labelLayout: HIDE_OVERLAP },
     ],
   }
 })
@@ -446,7 +501,6 @@ const ratioPills = computed(() => {
     { label: '毛利率', value: fmtPctVal(d.grossMargin) },
     { label: '净利率', value: fmtPctVal(d.netMargin) },
     { label: '成本率', value: fmtPctVal(d.costRatio) },
-    { label: '期间费用', value: wan(d.expense) },
     { label: '费用率', value: fmtPctVal(d.expenseRatio) },
     { label: 'YTD收入', value: wan(y?.actual_revenue) },
     { label: 'YTD净利', value: wan(y?.actual_profit) },
@@ -661,7 +715,7 @@ onMounted(load)
       <div class="zone-2col zone-pano">
         <div class="card">
           <div class="section-title" style="margin-bottom:8px">经营趋势全景（{{ data.year }}年）
-            <span class="tip">收入柱 + 目标线 + 毛利率/净利率双线</span>
+            <span class="tip">收入柱 · 正值绿/蓝渐变 · 负值红区预警</span>
           </div>
           <BaseChart v-if="panoramaOption" :option="panoramaOption" height="320px" />
           <div v-else class="mini-empty">暂无趋势数据</div>
@@ -933,7 +987,6 @@ onMounted(load)
 @media (max-width: 720px) { .kpi-3 { grid-template-columns: 1fr !important; } }
 .zone-pano { grid-template-columns: 1.35fr 1fr; }
 @media (max-width: 900px) { .zone-pano { grid-template-columns: 1fr; } }
-.ratio-strip { grid-template-columns: repeat(7, 1fr); }
 
 /* 一键全局经营分析（AI 助手内醒目入口） */
 .cfa-global {
