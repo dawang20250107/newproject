@@ -46,22 +46,32 @@ async function loadAll() {
 }
 
 // ── ECharts options ───────────────────────────────────────────────────────────
-const agingColors = ['#2e7d32', '#f57f17', '#e65100', '#c62828', '#6a1b9a']
+const agingColors = ['#2e7d32', '#f9a825', '#fb8c00', '#e53935', '#8e24aa']
+const grad = (c1, c2, horiz = false) => ({ type: 'linear', x: 0, y: 0, x2: horiz ? 1 : 0, y2: horiz ? 0 : 1,
+  colorStops: [{ offset: 0, color: c1 }, { offset: 1, color: c2 }] })
+
+// 1) 账龄漏斗：未到期(宽,绿) → 逾期越久越窄越红，漏斗"鼓肚"即风险信号
 const agingOption = computed(() => {
   if (!agingData.value) return null
-  const labels = agingData.value.map(b => b.label)
-  const amounts = agingData.value.map((b, i) => ({
-    value: parseFloat(b.amount),
-    itemStyle: { color: agingColors[i], borderRadius: [0, 4, 4, 0] },
+  const total = agingData.value.reduce((s, b) => s + parseFloat(b.amount || 0), 0)
+  const data = agingData.value.map((b, i) => ({
+    name: b.label, value: parseFloat(b.amount || 0), _count: b.count,
+    itemStyle: { color: agingColors[i % agingColors.length] },
   }))
   return {
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
-      formatter: p => `${p[0].name}<br/>${fmtWan(p[0].value)} 元 (${p[0].data?.extra || ''}笔)` },
-    grid: { top: 16, right: 84, bottom: 8, left: 16, containLabel: true },
-    xAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => fmtWan(v) } },
-    yAxis: { type: 'category', data: labels, axisLabel: { color: '#9b8070', width: 96, overflow: 'truncate' } },
-    series: [{ name: '未收金额', type: 'bar', data: amounts,
-      label: rightLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP }],
+    tooltip: { trigger: 'item', ...TOOLTIP,
+      formatter: p => `${p.name}<br/>${fmtWan(p.value)} 元 · ${p.data._count || 0} 笔` +
+        (total ? `<br/>占比 ${(p.value / total * 100).toFixed(1)}%` : '') },
+    series: [{
+      type: 'funnel', sort: 'none', top: 12, bottom: 12, left: '6%', right: '6%',
+      minSize: '16%', gap: 3, funnelAlign: 'center',
+      itemStyle: { borderColor: '#fff', borderWidth: 2 },
+      label: { position: 'inside', color: '#fff', fontWeight: 700, fontSize: 11,
+        formatter: p => `${p.name}  ${fmtWan(p.value)}` },
+      labelLine: { show: false },
+      emphasis: { label: { fontSize: 12 } },
+      data,
+    }],
   }
 })
 
@@ -79,16 +89,26 @@ const collRateOption = computed(() => {
       valueAxis({ name: '回款率%', position: 'right', min: 0, max: 100, formatter: v => v + '%' }),
     ],
     series: [
-      { name: '应收基础', type: 'bar', yAxisIndex: 0,
-        data: months.map(m => m.receivable), itemStyle: { color: '#1565c0', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 24,
-        label: topLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
-      { name: '已收', type: 'bar', yAxisIndex: 0,
-        data: months.map(m => m.collected), itemStyle: { color: '#2e7d32', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 24,
+      // 已收"填充"在应收基础内 → 一眼看出每月回款进度（浅蓝=目标，绿填充=已收）
+      { name: '应收基础', type: 'bar', yAxisIndex: 0, barMaxWidth: 30, z: 1,
+        data: months.map(m => m.receivable),
+        itemStyle: { color: 'rgba(21,101,192,0.14)', borderRadius: [6, 6, 0, 0],
+          borderColor: 'rgba(21,101,192,0.45)', borderWidth: 1 } },
+      { name: '已收', type: 'bar', yAxisIndex: 0, barGap: '-100%', barMaxWidth: 30, z: 2,
+        data: months.map(m => m.collected),
+        itemStyle: { color: grad('#81c784', '#2e7d32'), borderRadius: [6, 6, 0, 0] },
         label: topLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
       { name: '回款率', type: 'line', yAxisIndex: 1, smooth: true,
         data: months.map(m => m.rate),
-        lineStyle: { color: '#c96342', width: 2.5 }, symbol: 'circle', symbolSize: 5, itemStyle: { color: '#c96342' },
-        endLabel: endLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%', { color: '#c96342' }), labelLayout: HIDE_OVERLAP },
+        lineStyle: { color: '#c96342', width: 3 }, symbol: 'circle', symbolSize: 6,
+        itemStyle: { color: '#fff', borderColor: '#c96342', borderWidth: 2.5 },
+        label: { show: true, position: 'top', fontSize: 10, fontWeight: 700, color: '#c96342',
+          textBorderColor: '#fff', textBorderWidth: 3, formatter: p => p.value == null ? '' : p.value.toFixed(0) + '%' },
+        labelLayout: HIDE_OVERLAP,
+        markLine: { silent: true, symbol: 'none', yAxisIndex: 1,
+          lineStyle: { color: 'rgba(46,125,50,0.5)', type: 'dashed' },
+          label: { formatter: '达标线 90%', color: '#2e7d32', fontSize: 10, position: 'insideEndTop' },
+          data: [{ yAxis: 90 }] } },
     ],
   }
 })
@@ -120,15 +140,16 @@ const statusOption = computed(() => {
   ].filter(d => d.value > 0)
   return {
     tooltip: { trigger: 'item', ...TOOLTIP, formatter: p => `${p.name}<br/>${fmtWan(p.value)} 元 (${p.percent.toFixed(1)}%)` },
-    legend: { bottom: 0, type: 'scroll' },
+    legend: { bottom: 0, type: 'scroll', textStyle: { fontSize: 11, color: '#6b5a4a' } },
     series: [{
-      type: 'pie', radius: ['40%', '66%'], center: ['50%', '44%'],
+      type: 'pie', roseType: 'area', radius: ['22%', '72%'], center: ['50%', '46%'],
       data: pieData,
+      itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
       label: { formatter: p => `${p.name}\n${fmtWan(p.value)} · ${p.percent.toFixed(0)}%`,
-        fontSize: 11, lineHeight: 15, color: '#5f4d3d' },
-      labelLine: { length: 10, length2: 10 },
+        fontSize: 11, lineHeight: 14, color: '#5f4d3d' },
+      labelLine: { length: 8, length2: 8 },
       labelLayout: HIDE_OVERLAP,
-      emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.3)' } },
+      emphasis: { itemStyle: { shadowBlur: 12, shadowColor: 'rgba(0,0,0,0.3)' } },
     }],
   }
 })
@@ -164,43 +185,47 @@ async function openDetail(status, title) {
 // 重点催收 = 未收 Top 项目（取前 3）
 const keyCollection = computed(() => (topData.value || []).slice(0, 3))
 
+// 催收优先级气泡：X=未收金额 Y=回款率 气泡=应收规模；右下(大额+低回款)=优先催收
+const PM_RATE_BASE = 80
 const pmOption = computed(() => {
   const data = pmData.value
   if (!data || !data.length) return null
-  const sorted = [...data].sort((a, b) => b.outstanding - a.outstanding).slice(0, 15)
-  const names = sorted.map(d => d.pm).reverse()
+  const rows = data.filter(d => (d.outstanding || 0) > 0 || (d.collected || 0) > 0)
+  if (!rows.length) return null
+  const maxEst = Math.max(...rows.map(d => d.estimated || 0), 1)
+  const xMax = Math.max(...rows.map(d => d.outstanding || 0), 1) * 1.12
+  const outsSorted = rows.map(d => d.outstanding || 0).sort((a, b) => a - b)
+  const medOut = outsSorted[Math.floor(outsSorted.length / 2)] || 0
   return {
-    tooltip: {
-      trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
-      formatter: params => {
-        const idx = sorted.length - 1 - params[0].dataIndex
-        const d = sorted[idx]
-        return `<b>${d.pm}</b><br/>
-          已收: <b>${fmtWan(d.collected)}</b><br/>
-          未收: <b style="color:#e65100">${fmtWan(d.outstanding)}</b><br/>
-          上账: ${fmtWan(d.estimated)}<br/>
-          回款率: <b>${d.rate.toFixed(1)}%</b>  项目数: ${d.project_count}`
-      },
-    },
-    grid: { top: 8, right: 104, bottom: 8, left: 16, containLabel: true },
-    xAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), fontSize: 11, color: '#9b8070' } },
-    yAxis: { type: 'category', data: names, axisLabel: { fontSize: 11, color: '#6b5a4a', width: 120, overflow: 'truncate' } },
-    series: [
-      { name: '已收', type: 'bar', stack: 'total', barMaxWidth: 20,
-        data: sorted.map(d => d.collected).reverse(),
-        itemStyle: { color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
-          colorStops: [{ offset: 0, color: '#2e7d32' }, { offset: 1, color: '#66bb6a' }] },
-          borderRadius: [0, 0, 0, 0] } },
-      { name: '未收', type: 'bar', stack: 'total', barMaxWidth: 20,
-        data: sorted.map(d => d.outstanding).reverse(),
-        itemStyle: { color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
-          colorStops: [{ offset: 0, color: '#e65100' }, { offset: 1, color: '#ffa726' }] },
-          borderRadius: [0, 4, 4, 0] },
-        label: rightLabel(
-          p => { const d = sorted[sorted.length - 1 - p.dataIndex]; return `${fmtWan(d.outstanding)} · ${d.rate.toFixed(0)}%` },
-          { color: '#6b5a4a' }),
-        labelLayout: HIDE_OVERLAP },
-    ],
+    tooltip: { ...TOOLTIP, formatter: p => {
+      const [o, r, , nm, est, coll] = p.value
+      return `<b>${nm}</b><br/>未收：<b style="color:#e65100">${fmtWan(o)}</b><br/>回款率：<b>${r.toFixed(1)}%</b><br/>上账：${fmtWan(est)}　已收：${fmtWan(coll)}`
+    } },
+    grid: { top: 30, right: 30, bottom: 46, left: 16, containLabel: true },
+    xAxis: { type: 'value', name: '未收金额', nameLocation: 'middle', nameGap: 28, max: xMax,
+      nameTextStyle: { color: '#9b8070', fontSize: 11 },
+      axisLabel: { color: '#9b8070', formatter: v => fmtWan(v) },
+      splitLine: { lineStyle: { color: 'rgba(180,140,110,.12)' } } },
+    yAxis: { type: 'value', name: '回款率%', min: 0, max: 100, nameTextStyle: { color: '#9b8070', fontSize: 11 },
+      axisLabel: { color: '#9b8070', formatter: '{value}%' },
+      splitLine: { lineStyle: { color: 'rgba(180,140,110,.12)' } } },
+    series: [{
+      type: 'scatter',
+      symbolSize: v => 14 + (v[4] / maxEst) * 42,
+      data: rows.map(d => ({
+        value: [d.outstanding || 0, d.rate || 0, Math.abs(d.outstanding || 0), d.pm, d.estimated || 0, d.collected || 0],
+        itemStyle: { color: (d.rate || 0) < PM_RATE_BASE ? 'rgba(229,57,53,0.78)' : 'rgba(46,125,50,0.72)',
+          borderColor: '#fff', borderWidth: 1.5 },
+      })),
+      label: { show: true, formatter: p => p.value[3], position: 'top', fontSize: 10.5, color: '#5f4d3d' },
+      labelLayout: HIDE_OVERLAP,
+      markLine: { silent: true, symbol: 'none', lineStyle: { color: 'rgba(120,90,70,.4)', type: 'dashed' },
+        label: { fontSize: 10, color: '#9b8070' },
+        data: [
+          { yAxis: PM_RATE_BASE, label: { formatter: `回款基准 ${PM_RATE_BASE}%`, position: 'insideEndTop' } },
+          { xAxis: medOut, label: { formatter: '规模中位' } },
+        ] },
+    }],
   }
 })
 
@@ -277,17 +302,17 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     <!-- Charts grid -->
     <div class="charts-grid">
       <div class="card">
-        <div class="section-title">应收账龄分析 <span class="tip">点击下钻</span></div>
+        <div class="section-title">应收账龄漏斗 <span class="tip">点击下钻 · 越往下越该催</span></div>
         <BaseChart v-if="agingOption" :option="agingOption" height="280px" @click="onAgingClick" />
         <EmptyState v-else icon="📊" text="暂无数据" />
       </div>
       <div class="card">
-        <div class="section-title">应收状态分布</div>
+        <div class="section-title">应收状态分布 <span class="tip">南丁格尔玫瑰</span></div>
         <BaseChart v-if="statusOption" :option="statusOption" height="280px" />
         <EmptyState v-else icon="📊" text="暂无数据" />
       </div>
       <div class="card" style="grid-column:span 2">
-        <div class="section-title">月度回款率（{{ selectedYear }}年）</div>
+        <div class="section-title">月度回款进度（{{ selectedYear }}年）<span class="tip">绿填充=已收，浅蓝=应收基础，橙线=回款率</span></div>
         <BaseChart v-if="collRateOption" :option="collRateOption" height="300px" />
         <EmptyState v-else icon="📈" text="暂无数据" />
       </div>
@@ -298,8 +323,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
       </div>
       <!-- PM Dimension -->
       <div class="card" style="grid-column:span 2">
-        <div class="section-title">项目负责人维度分析（{{ selectedYear }}年）<span class="tip">已收/未收堆叠 · 右侧显示回款率</span></div>
-        <BaseChart v-if="pmOption" :option="pmOption" height="320px" />
+        <div class="section-title">催收优先级 · 项目负责人（{{ selectedYear }}年）<span class="tip">X=未收 Y=回款率 气泡=应收规模 · 右下方=大额且回款差，优先催收</span></div>
+        <BaseChart v-if="pmOption" :option="pmOption" height="340px" />
         <EmptyState v-else icon="📊" text="暂无数据" />
         <!-- PM table -->
         <div v-if="pmData && pmData.length" class="pm-table-wrap">

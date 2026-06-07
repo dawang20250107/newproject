@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import * as echarts from 'echarts/core'
-import { BarChart, LineChart, PieChart, ScatterChart } from 'echarts/charts'
+import { BarChart, LineChart, PieChart, ScatterChart, FunnelChart } from 'echarts/charts'
 import {
   GridComponent, TooltipComponent, LegendComponent,
   MarkLineComponent, MarkAreaComponent, MarkPointComponent,
@@ -9,7 +9,7 @@ import {
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 
-echarts.use([BarChart, LineChart, PieChart, ScatterChart,
+echarts.use([BarChart, LineChart, PieChart, ScatterChart, FunnelChart,
   GridComponent, TooltipComponent, LegendComponent,
   MarkLineComponent, MarkAreaComponent, MarkPointComponent,
   DataZoomComponent, VisualMapComponent, GraphicComponent,
