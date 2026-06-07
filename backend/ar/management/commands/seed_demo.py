@@ -71,6 +71,9 @@ class Command(BaseCommand):
         if do_fin:
             self._seed_fin(data_dir / 'financials_2026.xlsx', clear=not opts['no_clear'])
             self._seed_targets(clear=not opts['no_clear'])
+        # 项目毛利依赖应收(取项目名/开票额)+财务(取BU毛利率)，两侧都灌完再点亮业财融合
+        if do_ar and do_fin:
+            self._seed_project_margin(clear=not opts['no_clear'])
         self.stdout.write(self.style.SUCCESS('演示数据载入完成。'))
 
     # ── 应收明细 ────────────────────────────────────────────────────────────────
@@ -247,3 +250,50 @@ class Command(BaseCommand):
                                   target_gross_profit=round(ann_gross / 12),
                                   target_profit=round(ann_profit / 12)))
         self.stdout.write(self.style.SUCCESS(f'目标：{made} 个事业部（年度 + 1-5 月）'))
+
+    # ── 项目毛利（业财融合原料）：应收侧项目×月开票额作收入，BU 当月毛利率反推成本 ──
+    def _seed_project_margin(self, clear):
+        """点亮「业财损益全景」：财务侧原本只有 BU 级数据，项目级毛利表(ProjectMargin)
+        来自金蝶按项目核算、需单独上传。演示库里据应收项目逐月开票额(无则预估额)作收入，
+        按所属事业部当月真实毛利率(来自已发布财务报表)反推成本，项目名取应收项目简称，
+        使项目级业财融合在演示数据上即可端到端点亮。仅演示数据、可逆。"""
+        from ar.models import ARProject, ARRecord
+        from caiwu.models import ProjectMargin
+        from caiwu import views as V
+        if clear:
+            ProjectMargin.objects.filter(year=FIN_YEAR).delete()
+        actuals = V._collect_actuals(BUS, {FIN_YEAR})
+
+        def cost_ratio(bu, m):
+            rev, _prof, gross = V._rp(actuals, bu, FIN_YEAR, m)
+            if rev and gross is not None:
+                return max(0.0, 1 - gross / rev)   # 成本占比 = 1 − 毛利率
+            return 0.94                              # 缺财务数据时按 6% 毛利兜底
+
+        # 应收侧：每个项目逐月的收入近似（开票额优先，缺失用预估额）
+        proj_name = {p.id: (p.short_name or p.contract_name or p.project_no)
+                     for p in ARProject.objects.only('id', 'short_name', 'contract_name', 'project_no')}
+        agg = {}  # (project_id, dept, month) -> revenue
+        for r in (ARRecord.objects.filter(operation_year=FIN_YEAR)
+                  .values('project_id', 'delivery_dept', 'operation_month',
+                          'actual_invoice_amount', 'estimated_amount')):
+            rev = r['actual_invoice_amount'] or r['estimated_amount'] or 0
+            if not rev or rev <= 0:
+                continue
+            key = (r['project_id'], r['delivery_dept'], r['operation_month'])
+            agg[key] = agg.get(key, Decimal('0')) + Decimal(str(rev))
+
+        rows, made = [], 0
+        for (pid, dept, m), rev in agg.items():
+            name = (proj_name.get(pid) or '').strip()
+            if not name or not (1 <= (m or 0) <= 12):
+                continue
+            cost = (rev * Decimal(str(cost_ratio(dept, m)))).quantize(Decimal('0.01'))
+            rows.append(ProjectMargin(
+                business_unit=dept, year=FIN_YEAR, month=m, project_name=name,
+                revenue=rev.quantize(Decimal('0.01')), cost=cost,
+                sales_exp=Decimal('0'), mgmt_exp=Decimal('0')))
+            made += 1
+        with transaction.atomic():
+            ProjectMargin.objects.bulk_create(rows, batch_size=500)
+        self.stdout.write(self.style.SUCCESS(f'项目毛利：{made} 条（{FIN_YEAR} 年项目×月）'))

@@ -3142,6 +3142,216 @@ def analytics_unit_economics(request):
                'rows': rows, 'summary': summary})
 
 
+# ── 业财损益全景：财务侧毛利 × 应收侧回款，融合在同一项目/客户维度 ──────────────
+def _bf_tag(margin_rate, collect_rate, overdue_rate, revenue):
+    """给每个项目/客户打一个"业财融合"标签，一眼看穿盈利与回款的错配。
+    口径阈值：毛利率<5% 视为薄利；逾期占比>30% 或 回款率<60% 视为回款承压。"""
+    thin_margin = margin_rate is not None and margin_rate < 5
+    weak_cash = (overdue_rate is not None and overdue_rate > 30) or \
+                (collect_rate is not None and collect_rate < 60)
+    if revenue is not None and revenue <= 0:
+        return ('idle', '无收入')
+    if thin_margin and weak_cash:
+        return ('critical', '又薄又难收')          # 红牌：低毛利 + 回款差
+    if thin_margin:
+        return ('low_margin', '赚收入不赚钱')        # 黄牌：规模大但薄利
+    if weak_cash:
+        return ('cash_risk', '赚利润收不回钱')        # 黄牌：有毛利但回款承压
+    return ('healthy', '优质')                       # 绿牌：双优
+
+
+@csrf_exempt
+@pk_required()
+def analytics_business_finance(request):
+    """业财损益全景：把财务侧「项目毛利」(ProjectMargin) 与应收侧「回款/账期」
+    (ARRecord/ARPayment) 嫁接在同一项目/客户维度，一眼识别两类隐性风险——
+    「赚收入不赚钱」(薄利) 与「赚利润收不回钱」(回款承压)。
+
+    入参：year(必填) month(可选,缺省=全年累计) dept(可选) group_by=project|customer
+    返回 rows：每行含 盈利侧(revenue/cost/margin/margin_rate) +
+              应收侧(estimated/invoiced/outstanding/collected/collect_rate/overdue/overdue_rate)
+              + 融合标签(tag/tag_label)；外加 summary。
+    """
+    denied = _page_denied(request, 'ar_analytics')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    try:
+        year = int(request.GET.get('year') or datetime.date.today().year)
+    except (TypeError, ValueError):
+        return err('年份无效')
+    month = None
+    month_raw = (request.GET.get('month') or '').strip()
+    if month_raw:
+        try:
+            month = int(month_raw)
+            assert 1 <= month <= 12
+        except Exception:
+            return err('月份无效')
+    group_by = (request.GET.get('group_by') or 'project').strip()
+    if group_by not in ('project', 'customer'):
+        group_by = 'project'
+    dept = (request.GET.get('dept') or '').strip()
+    today = datetime.date.today()
+
+    # ── 盈利侧：ProjectMargin 按项目聚合（沿用 unit-economics 口径）──────────────
+    from caiwu.models import ProjectMargin
+    pm = ProjectMargin.objects.filter(year=year)
+    if month:
+        pm = pm.filter(month=month)
+    if dept:
+        pm = pm.filter(business_unit=dept)
+    pm = _ar_dept_filter(pm, request, dept_field='business_unit')
+    proj_fin = {}
+    for r in pm.values('project_name').annotate(revenue=Sum('revenue'), cost=Sum('cost')):
+        name = (r['project_name'] or '').strip() or '（未命名项目）'
+        a = proj_fin.setdefault(name, {'revenue': 0.0, 'cost': 0.0})
+        a['revenue'] += float(r['revenue'] or 0)
+        a['cost'] += float(r['cost'] or 0)
+
+    # ── 项目名 → ARProject(身份+客户) 映射，并保留 project_id 反查应收 ────────────
+    aqs = ARProject.objects.all()
+    if request.pk_role != 'super_admin':
+        aqs = aqs.filter(delivery_dept__in=(request.pk_depts or []))
+    name_to_proj = {}
+    for p in aqs.select_related('customer').only(
+            'id', 'short_name', 'contract_name', 'customer_level', 'delivery_dept', 'customer'):
+        info = {'pid': p.id, 'customer': (p.customer.name if p.customer_id else None),
+                'level': p.customer_level or '', 'dept': p.delivery_dept or ''}
+        for k in (p.short_name, p.contract_name):
+            k = (k or '').strip()
+            if k and k not in name_to_proj:
+                name_to_proj[k] = info
+
+    # ── 应收侧：ARRecord 按项目聚合（避免 payments JOIN 扇出，回款单独查）──────────
+    ar_qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
+    ar_qs = ar_qs.filter(operation_year=year)
+    if month:
+        ar_qs = ar_qs.filter(operation_month=month)
+    if dept:
+        ar_qs = ar_qs.filter(delivery_dept=dept)
+    ar_by_pid = {}
+    for r in ar_qs.values('project_id').annotate(
+            estimated=Sum('estimated_amount'), invoiced=Sum('actual_invoice_amount'),
+            outstanding=Sum('outstanding_amount')):
+        ar_by_pid[r['project_id']] = {
+            'estimated': float(r['estimated'] or 0), 'invoiced': float(r['invoiced'] or 0),
+            'outstanding': float(r['outstanding'] or 0), 'collected': 0.0, 'overdue': 0.0}
+    # 逾期未收：已过应收日且仍有余额
+    for r in ar_qs.filter(due_date__lt=today, outstanding_amount__gt=0).values(
+            'project_id').annotate(overdue=Sum('outstanding_amount')):
+        if r['project_id'] in ar_by_pid:
+            ar_by_pid[r['project_id']]['overdue'] = float(r['overdue'] or 0)
+    # 已回款：单独从 ARPayment 聚合，规避反向 JOIN 重复求和
+    for r in ARPayment.objects.filter(ar_record__in=ar_qs).values(
+            'ar_record__project_id').annotate(collected=Sum('amount')):
+        pid = r['ar_record__project_id']
+        if pid in ar_by_pid:
+            ar_by_pid[pid]['collected'] = float(r['collected'] or 0)
+
+    # ── 融合：以盈利侧项目为主线，并接应收侧 ──────────────────────────────────────
+    def _rate(num, den):
+        return round(num / den * 100, 1) if den else None
+
+    projects = []
+    for name, fin in proj_fin.items():
+        info = name_to_proj.get(name)
+        ar = ar_by_pid.get(info['pid']) if info else None
+        rev, cost = fin['revenue'], fin['cost']
+        margin = rev - cost
+        mr = _rate(margin, rev)
+        est = ar['estimated'] if ar else 0.0
+        inv = ar['invoiced'] if ar else 0.0
+        out = ar['outstanding'] if ar else 0.0
+        col = ar['collected'] if ar else 0.0
+        ovd = ar['overdue'] if ar else 0.0
+        cr = _rate(col, inv) if inv else None          # 回款率 = 已收/已开票
+        ovr = _rate(ovd, out) if out else None          # 逾期占比 = 逾期/未收
+        tag, tag_label = _bf_tag(mr, cr, ovr, rev)
+        projects.append({
+            'key': name, 'label': name, 'project_name': name,
+            'business_unit': (info['dept'] if info else ''),
+            'customer': (info['customer'] if info else None) or _UE_UNLINKED,
+            'customer_level': (info['level'] if info else ''),
+            'linked': bool(ar),
+            'revenue': round(rev, 2), 'cost': round(cost, 2),
+            'margin': round(margin, 2), 'margin_rate': mr,
+            'estimated': round(est, 2), 'invoiced': round(inv, 2),
+            'outstanding': round(out, 2), 'collected': round(col, 2),
+            'collect_rate': cr, 'overdue': round(ovd, 2), 'overdue_rate': ovr,
+            'tag': tag, 'tag_label': tag_label,
+        })
+
+    # ── 客户聚合 ────────────────────────────────────────────────────────────────
+    cust_agg = {}
+    for p in projects:
+        c = p['customer']
+        d = cust_agg.get(c)
+        if d is None:
+            d = cust_agg[c] = {'customer': c, 'level': p['customer_level'], 'project_count': 0,
+                               'revenue': 0.0, 'cost': 0.0, 'margin': 0.0,
+                               'invoiced': 0.0, 'outstanding': 0.0, 'collected': 0.0, 'overdue': 0.0}
+        for k in ('revenue', 'cost', 'margin', 'invoiced', 'outstanding', 'collected', 'overdue'):
+            d[k] += p[k]
+        d['project_count'] += 1
+        if not d['level'] and p['customer_level']:
+            d['level'] = p['customer_level']
+
+    def _pack_customer(d):
+        rev, margin = d['revenue'], d['margin']
+        mr = _rate(margin, rev)
+        cr = _rate(d['collected'], d['invoiced']) if d['invoiced'] else None
+        ovr = _rate(d['overdue'], d['outstanding']) if d['outstanding'] else None
+        tag, tag_label = _bf_tag(mr, cr, ovr, rev)
+        return {
+            'key': d['customer'], 'label': d['customer'], 'customer_level': d['level'],
+            'project_count': d['project_count'], 'unlinked': d['customer'] == _UE_UNLINKED,
+            'revenue': round(rev, 2), 'cost': round(d['cost'], 2),
+            'margin': round(margin, 2), 'margin_rate': mr,
+            'invoiced': round(d['invoiced'], 2), 'outstanding': round(d['outstanding'], 2),
+            'collected': round(d['collected'], 2), 'collect_rate': cr,
+            'overdue': round(d['overdue'], 2), 'overdue_rate': ovr,
+            'tag': tag, 'tag_label': tag_label,
+        }
+
+    # ── 汇总 ────────────────────────────────────────────────────────────────────
+    tot_rev = round(sum(p['revenue'] for p in projects), 2)
+    tot_cost = round(sum(p['cost'] for p in projects), 2)
+    tot_margin = round(tot_rev - tot_cost, 2)
+    tot_inv = round(sum(p['invoiced'] for p in projects), 2)
+    tot_out = round(sum(p['outstanding'] for p in projects), 2)
+    tot_col = round(sum(p['collected'] for p in projects), 2)
+    tot_ovd = round(sum(p['overdue'] for p in projects), 2)
+    by_tag = {}
+    for p in projects:
+        t = by_tag.setdefault(p['tag'], {'count': 0, 'revenue': 0.0, 'margin': 0.0, 'overdue': 0.0})
+        t['count'] += 1
+        t['revenue'] += p['revenue']
+        t['margin'] += p['margin']
+        t['overdue'] += p['overdue']
+    summary = {
+        'revenue': tot_rev, 'cost': tot_cost, 'margin': tot_margin,
+        'margin_rate': _rate(tot_margin, tot_rev),
+        'invoiced': tot_inv, 'outstanding': tot_out, 'collected': tot_col, 'overdue': tot_ovd,
+        'collect_rate': _rate(tot_col, tot_inv), 'overdue_rate': _rate(tot_ovd, tot_out),
+        'project_count': len(projects),
+        'linked_count': sum(1 for p in projects if p['linked']),
+        'by_tag': {k: {'count': v['count'], 'revenue': round(v['revenue'], 2),
+                       'margin': round(v['margin'], 2), 'overdue': round(v['overdue'], 2)}
+                   for k, v in by_tag.items()},
+    }
+
+    if group_by == 'customer':
+        rows = [_pack_customer(d) for d in cust_agg.values()]
+        rows.sort(key=lambda x: x['margin'], reverse=True)
+    else:
+        rows = sorted(projects, key=lambda x: x['revenue'], reverse=True)
+
+    return ok({'year': year, 'month': month, 'group_by': group_by,
+               'rows': rows, 'summary': summary})
+
+
 @csrf_exempt
 @pk_required()
 def analytics_by_dept(request):
