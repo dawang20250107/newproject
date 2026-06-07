@@ -18,6 +18,8 @@ const ChartsPanel = defineAsyncComponent(() => import('./Charts.vue'))
 const ARAnalyticsPanel = defineAsyncComponent(() => import('../ar/ARAnalytics.vue'))
 const CashflowPanel = defineAsyncComponent(() => import('../ar/Cashflow.vue'))
 const BusinessFinancePanel = defineAsyncComponent(() => import('./BusinessFinance.vue'))
+const BuDrilldown = defineAsyncComponent(() => import('./BuDrilldown.vue'))
+const ProjectPnlCard = defineAsyncComponent(() => import('./ProjectPnlCard.vue'))
 
 const auth = useCaiwuAuth()
 const pkAuth = useAuthStore()
@@ -525,6 +527,12 @@ const progressBars = computed(() => {
   ]
 })
 
+// ── 三级下钻：集团 → 事业部(科目+项目) → 项目(损益卡)──────────────────────────
+const drillBu = ref('')          // 当前下钻的事业部
+const drillProjectName = ref('') // 从下钻打开的项目损益卡
+function openDrill(bu) { if (bu) drillBu.value = bu }
+function onDrillProject(row) { drillProjectName.value = row.project_name }
+
 // 事业部经营矩阵（核心大表）
 const buMatrix = computed(() => {
   const bus = data.value?.bus || []
@@ -747,8 +755,8 @@ onMounted(load)
             </thead>
             <tbody>
               <tr v-if="!buMatrix.length"><td colspan="11" class="mtx-empty">暂无已发布的事业部数据</td></tr>
-              <tr v-for="r in buMatrix" :key="r.bu" :class="{ 'row-loss': r.loss }">
-                <td class="l bu">{{ r.bu }}</td>
+              <tr v-for="r in buMatrix" :key="r.bu" :class="{ 'row-loss': r.loss }" class="drillable" @click="openDrill(r.bu)">
+                <td class="l bu">{{ r.bu }}<span class="drill-hint">下钻 ›</span></td>
                 <td class="strong">{{ wan(r.rev) }}</td>
                 <td><span :style="`color:${rateColor(r.revRate)}`">{{ fmtRate(r.revRate) }}</span></td>
                 <td :class="chgClass(r.revMom)">{{ chgLabel(r.revMom) }}</td>
@@ -803,6 +811,12 @@ onMounted(load)
     <KeepAlive>
       <component v-if="mainTab !== 'overview' && panelComp" :is="panelComp" embedded :key="mainTab" />
     </KeepAlive>
+
+    <!-- 三级下钻：事业部科目+项目 → 项目损益卡 -->
+    <BuDrilldown v-if="drillBu" :bu="drillBu" :year="year" :month="month"
+      @close="drillBu = ''" @open-project="onDrillProject" />
+    <ProjectPnlCard v-if="drillProjectName" :name="drillProjectName" :year="year"
+      @close="drillProjectName = ''" />
 
     <AiAnalysisModal
       :visible="aiVisible"
@@ -1096,6 +1110,10 @@ onMounted(load)
 .row-loss { background: rgba(198,40,40,0.045); }
 .row-loss:hover { background: rgba(198,40,40,0.075) !important; }
 .mtx-empty { text-align: center !important; color: var(--muted); padding: 24px !important; }
+.drillable { cursor: pointer; }
+.drillable:hover { background: rgba(201,99,66,0.06); }
+.drill-hint { font-size: 10px; color: var(--muted); margin-left: 6px; opacity: 0; transition: opacity .15s; }
+.drillable:hover .drill-hint { opacity: 1; }
 .share-th { min-width: 110px; }
 .share-cell { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
 .share-bar { height: 8px; border-radius: 4px; background: linear-gradient(90deg, #c96342, #e8a05a); min-width: 2px; }
