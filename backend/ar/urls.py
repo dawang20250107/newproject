@@ -7,6 +7,7 @@ urlpatterns = [
     path('projects/bulk-delete', views.projects_bulk_delete),
     path('projects/stats', views.project_stats),
     path('projects/drafts', views.project_drafts),
+    path('projects/drafts/clear', views.project_drafts_clear),
     path('projects/template', views.project_template),
     path('projects/import', views.project_import),
     path('projects/export', views.project_export),

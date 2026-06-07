@@ -1,20 +1,21 @@
 <script setup>
 import { ref, reactive, computed, onMounted, defineAsyncComponent } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
-import { yearCST, todayCST } from '../../constants.js'
+import { yearCST, todayCST, DEPARTMENTS } from '../../constants.js'
 import ar from '../../api/ar.js'
 
 // 项目损益卡（复用 P1 组件）— 点客户项目即下钻全链路损益
 const ProjectPnlCard = defineAsyncComponent(() => import('../caiwu/ProjectPnlCard.vue'))
 
 const auth = useAuthStore()
+const accessibleDepts = computed(() => (auth.effectiveDepts || []).filter(d => DEPARTMENTS.includes(d)))
 
 const items = ref([])
 const total = ref(0)
 const loading = ref(false)
 const page = ref(1)
 const size = 50
-const filters = reactive({ q: '', level: '' })
+const filters = reactive({ q: '', level: '', dept: '' })
 
 // 排序（当前页客户端排序：未收/逾期最常用）
 const sortKey = ref('outstanding')
@@ -99,8 +100,8 @@ async function load(reset = false) {
 
 let searchTimer = null
 function onSearchInput() { clearTimeout(searchTimer); searchTimer = setTimeout(() => load(true), 280) }
-const hasActiveFilters = computed(() => !!(filters.q || filters.level))
-function resetFilters() { filters.q = ''; filters.level = ''; load(true) }
+const hasActiveFilters = computed(() => !!(filters.q || filters.level || filters.dept))
+function resetFilters() { filters.q = ''; filters.level = ''; filters.dept = ''; load(true) }
 
 const sortedItems = computed(() => {
   const arr = [...items.value]
@@ -183,6 +184,10 @@ onMounted(() => load(true))
                @input="onSearchInput" @keyup.enter="load(true)" />
         <button v-if="filters.q" class="search-clear" @click="filters.q=''; load(true)">✕</button>
       </div>
+      <select v-model="filters.dept" class="sel-bu" @change="load(true)">
+        <option value="">全部事业部</option>
+        <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+      </select>
       <select v-model="filters.level" class="sel-bu" @change="load(true)">
         <option value="">全部等级</option>
         <option v-for="l in LEVELS" :key="l" :value="l">{{ l }}</option>
@@ -213,6 +218,7 @@ onMounted(() => load(true))
               <th class="ctr chk-col"><input type="checkbox" :checked="allOnPageSelected" @change="toggleSelAll" title="全选本页" /></th>
               <th class="l">客户名称</th>
               <th class="ctr">等级</th>
+              <th class="l">事业部</th>
               <th class="ctr clk" @click="setSort('project_count')">项目数{{ sortArrow('project_count') }}</th>
               <th class="rgt clk" @click="setSort('invoiced')">累计开票{{ sortArrow('invoiced') }}</th>
               <th class="rgt clk" @click="setSort('outstanding')">未收金额{{ sortArrow('outstanding') }}</th>
@@ -222,11 +228,12 @@ onMounted(() => load(true))
             </tr>
           </thead>
           <tbody>
-            <tr v-if="!loading && !items.length"><td colspan="9" class="empty">暂无客户数据</td></tr>
+            <tr v-if="!loading && !items.length"><td colspan="10" class="empty">暂无客户数据</td></tr>
             <tr v-for="c in sortedItems" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)">
               <td class="ctr chk-col" @click.stop><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
               <td class="l name">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
               <td class="ctr"><span v-if="c.level" class="lvl" :class="levelClass(c.level)">{{ c.level }}</span><span v-else class="muted">—</span></td>
+              <td class="l dept-cell">{{ (c.depts && c.depts.length) ? c.depts.join('、') : '—' }}</td>
               <td class="ctr">{{ c.project_count ?? 0 }}</td>
               <td class="rgt">{{ wan(c.invoiced) }}</td>
               <td class="rgt strong">{{ wan(c.outstanding) }}</td>
@@ -340,6 +347,7 @@ onMounted(() => load(true))
 .topbar { display: flex; justify-content: space-between; align-items: flex-start; }
 .topbar-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
 .cu-table td.date { color: #9b8070; font-size: 12px; white-space: nowrap; }
+.cu-table td.dept-cell { font-size: 12px; color: #6b5a4a; }
 .sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
 
 .filter-strip { display: flex; align-items: center; gap: 10px; margin: 14px 0; }

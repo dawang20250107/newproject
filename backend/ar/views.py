@@ -1524,11 +1524,12 @@ def ar_record_import(request):
                         f'请按提示修正后重新导入（整表全部通过才会写入）。'),
         })
 
-    # ══ 阶段一·补：项目归属歧义检查（只读，不写库）══════════════════════════
-    # 多个同名项目无法区分、或项目编号填了却查不到 → 整表拒绝并给出可选项/指导。
-    # 找不到的项目不算问题（写入阶段自动建草稿）。
+    # ══ 阶段一·补：项目归属检查（只读，不写库）══════════════════════════════
+    # 多个同名项目无法区分、项目编号填了却查不到、或项目在台账中不存在 → 整表拒绝
+    # 并给出可选项/指导。（已停用「自动建草稿」：找不到的项目要求先在台账建好。）
     ambiguities = []   # [{ri, input, candidates}]
     bad_nos = []       # [{ri, input, project_no}]
+    not_founds = []    # [{ri, input}] 台账中不存在的项目
     for p in plan:
         status, payload = _classify_project_for_import(
             p['short_name'], p['customer_hint'], p['project_no'], allowed_depts)
@@ -1536,26 +1537,36 @@ def ar_record_import(request):
             ambiguities.append({'ri': p['ri'], 'input': p['short_name'], 'candidates': payload})
         elif status == 'bad_no':
             bad_nos.append({'ri': p['ri'], 'input': p['short_name'], 'project_no': payload})
+        elif status == 'not_found':
+            not_founds.append({'ri': p['ri'], 'input': p['short_name']})
 
-    if ambiguities or bad_nos:
+    if ambiguities or bad_nos or not_founds:
         guide = []
         for b in bad_nos:
             guide.append(f'第{b["ri"]}行：填写的「项目编号」{b["project_no"]} 不存在或不在您的权限范围内，'
                          f'请核对编号，或清空编号改用「项目简称」匹配。')
+        for nf in not_founds:
+            guide.append(f'第{nf["ri"]}行：项目「{nf["input"]}」在项目台账中不存在（或不在您的权限部门内）。'
+                         f'请先到「项目台账」新建该项目，再导入其应收明细。')
         for a in ambiguities:
             lines = [f'第{a["ri"]}行：「{a["input"]}」匹配到 {len(a["candidates"])} 个项目，无法确定是哪一个。'
                      f'请在导入表新增「项目编号」列填写下列其一精确指定，或在「客户名称」列填写以区分：']
             for c in a['candidates']:
                 lines.append(f'    · 编号 {c["project_no"]}｜简称 {c["short_name"]}'
-                             f'｜部门 {c["delivery_dept"]}｜合同 {c["customer_name"] or "—"}'
-                             f'｜客户 {c["customer_name"] or "—"}')
+                             f'｜部门 {c["delivery_dept"]}｜客户 {c["customer_name"] or "—"}')
             guide.append('\n'.join(lines))
+        parts = []
+        if not_founds:
+            parts.append(f'{len(not_founds)} 处项目不存在')
+        if ambiguities:
+            parts.append(f'{len(ambiguities)} 处项目无法唯一确定')
+        if bad_nos:
+            parts.append(f'{len(bad_nos)} 处项目编号无效')
         return ok({
             'rejected': True, 'created': 0, 'skipped': skipped,
-            'errors': guide, 'ambiguities': ambiguities, 'bad_nos': bad_nos,
-            'message': (f'导入未执行：{len(ambiguities)} 处项目无法唯一确定'
-                        f'{("、" + str(len(bad_nos)) + " 处项目编号无效") if bad_nos else ""}。'
-                        f'请按下方指引补「项目编号」或「客户名称」后重新导入。'),
+            'errors': guide, 'ambiguities': ambiguities, 'bad_nos': bad_nos, 'not_founds': not_founds,
+            'message': (f'导入未执行：{"、".join(parts)}。'
+                        f'请按下方指引先在项目台账补建项目 / 补「项目编号」「客户名称」后重新导入。'),
         })
 
     # ══ 阶段二：项目匹配 + 写入（事务）══════════════════════════════════════
@@ -1568,31 +1579,21 @@ def ar_record_import(request):
 
     created = 0
     pay_warnings = []          # 回款超额行（阶段一已拦截，此处仅作双重保险记录）
+    reject_errors = []         # 阶段二兜底：项目不存在/越权（停用草稿后整表回滚）
     with transaction.atomic():
         for p in plan:
             proj, match_type, warn = _resolve_project_for_import(
                 p['short_name'], p['customer_hint'], '', allowed_depts, user, proj_cache,
                 project_no=p['project_no'])
 
-            # 权限兜底：只允许操作自己有权的部门（自动创建的草稿项目部门已在函数内限制）
-            if (request.pk_role != 'super_admin'
-                    and proj and proj.delivery_dept not in request.pk_depts):
-                # 找到了但越权 → 退化为自动创建（归入当前用户首个部门）
-                proj_cache_key = (p['short_name'], '')
-                proj = ARProject(
-                    short_name=p['short_name'],
-                    customer_name=p['customer_hint'] or p['short_name'],
-                    delivery_dept=list(request.pk_depts)[0],
-                    is_draft=True,
-                    sales_contact=user.name if user else '待填',
-                    project_manager=user.name if user else '待填',
-                    has_contract='无',
-                )
-                proj.save()
-                match_type = 'created'
-                warn = (f'「{p["short_name"]}」原项目不在您的权限范围内，'
-                        f'已为您在本部门自动创建草稿项目，请核查')
-                proj_cache[proj_cache_key] = (proj, match_type, warn)
+            # 已停用「自动建草稿」：项目不存在 / 解析为新建 / 越权 → 收集错误，整表回滚
+            if (proj is None or match_type == 'created'
+                    or (request.pk_role != 'super_admin'
+                        and proj.delivery_dept not in request.pk_depts)):
+                reject_errors.append(
+                    f'第{p["ri"]}行：项目「{p["short_name"]}」在项目台账中不存在或不在您的权限部门内，'
+                    f'请先到「项目台账」新建该项目后再导入应收。')
+                continue
 
             # 记录到摘要 bucket
             key = proj.short_name
@@ -1630,6 +1631,15 @@ def ar_record_import(request):
                                          amount=p['pay_amount'], payment_date=p['pay_date'],
                                          notes='导入回款')
             created += 1
+        if reject_errors:
+            transaction.set_rollback(True)
+
+    if reject_errors:
+        return ok({
+            'rejected': True, 'created': 0, 'skipped': skipped, 'errors': reject_errors,
+            'message': ('导入未执行：存在项目台账中不存在的项目，'
+                        '请先在「项目台账」建好项目再重导（系统已停用导入自动建草稿）。'),
+        })
 
     # ── 汇总输出 ──────────────────────────────────────────────────────────────
     def _bucket_list(btype):
@@ -5560,7 +5570,7 @@ def _customer_ar_stats(customer_ids, request, today):
     反范式的 delivery_dept 为准（与其它应收接口一致），逾期=未收>0 且 已过应收日。
     返回 {customer_id: {project_count, invoiced, outstanding, overdue}}。
     """
-    out = {cid: {'project_count': 0, 'invoiced': 0.0, 'outstanding': 0.0, 'overdue': 0.0}
+    out = {cid: {'project_count': 0, 'invoiced': 0.0, 'outstanding': 0.0, 'overdue': 0.0, 'depts': []}
            for cid in customer_ids}
     if not customer_ids:
         return out
@@ -5570,6 +5580,12 @@ def _customer_ar_stats(customer_ids, request, today):
         ARProject.objects.filter(customer_id__in=customer_ids), request)
     for r in proj_qs.values('customer_id').annotate(c=Count('id')):
         out[r['customer_id']]['project_count'] = r['c']
+    # 客户涉及的事业部（去重，来自其项目的交付部门）
+    dept_map = {}
+    for r in proj_qs.exclude(delivery_dept='').values('customer_id', 'delivery_dept').distinct():
+        dept_map.setdefault(r['customer_id'], []).append(r['delivery_dept'])
+    for cid, depts in dept_map.items():
+        out[cid]['depts'] = sorted(set(depts))
 
     # 应收聚合（部门作用域走 ARRecord.delivery_dept）
     rec_qs = _ar_dept_filter(
@@ -5603,6 +5619,11 @@ def customers(request):
         level = request.GET.get('level', '').strip()
         if level:
             qs = qs.filter(level=level)
+        # 事业部筛选：客户名下有项目落在该交付部门（受部门权限作用域）
+        dept = request.GET.get('dept', '').strip()
+        if dept:
+            scoped = _ar_dept_filter(ARProject.objects.filter(delivery_dept=dept), request)
+            qs = qs.filter(id__in=scoped.values_list('customer_id', flat=True))
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
         total = qs.count()
@@ -5888,6 +5909,30 @@ def project_drafts(request):
     rows = [apply_ar_view_mask(p.to_dict(), perms, 'project')
             for p in qs.order_by('-id')[(page - 1) * size: page * size]]
     return ok({'items': rows, 'total': total, 'page': page, 'size': size})
+
+
+@csrf_exempt
+@pk_required()
+def project_drafts_clear(request):
+    """POST /ar/projects/drafts/clear  —  一键清理（删除）所有待完善草稿项目。
+
+    草稿是早期应收导入「找不到项目时自动新建」遗留的占位项目；新版导入已停用自动建草稿。
+    仅删 is_draft=True，且会连带其下应收/回款（草稿一般无真实业务数据）。部门权限内操作。
+    """
+    denied = _page_denied(request, 'ar_projects')
+    if denied:
+        return denied
+    denied = _delete_denied(request)
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+
+    qs = _ar_dept_filter(ARProject.objects.filter(is_draft=True), request)
+    n = qs.count()
+    qs.delete()   # 级联删除草稿下的应收/回款
+    return ok({'deleted': n,
+               'message': f'已清理 {n} 个待完善草稿项目' if n else '没有待完善草稿，无需清理'})
 
 
 # ──────────────────────────────────────────────────────────────────────────────
