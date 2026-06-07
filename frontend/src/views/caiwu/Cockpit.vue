@@ -737,7 +737,12 @@ onMounted(load)
         </div>
 
         <div class="card alert-card">
-          <div class="section-title">📡 今日信号 <span class="tip">主动洞察 · 点击可下钻</span></div>
+          <div class="section-title signal-title">
+            <span>📡 今日信号 <span class="tip">主动洞察 · 点击可下钻</span></span>
+            <button class="signal-ai-btn" :disabled="aiLoading" @click="runAiAnalysis">
+              🤖 {{ aiLoading ? '解读中…' : 'AI 解读' }}
+            </button>
+          </div>
           <ul class="alert-list">
             <li v-for="(a, i) in alerts" :key="i" class="alert-item" :class="[`al-${a.level}`, { actionable: a.bu || a.tab }]" @click="onSignal(a)">
               <span class="al-dot"></span><span>{{ a.text }}</span>
@@ -1103,6 +1108,14 @@ onMounted(load)
   border-bottom: 1px dashed rgba(0,0,0,0.05);
 }
 .alert-item:last-child { border-bottom: none; }
+.signal-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.signal-ai-btn {
+  border: 1px solid rgba(201,99,66,.3); background: linear-gradient(120deg, rgba(201,99,66,.1), rgba(122,159,212,.1));
+  color: #b5532f; font-size: 12px; font-weight: 700; padding: 4px 12px; border-radius: 14px; cursor: pointer;
+  white-space: nowrap; transition: filter .15s;
+}
+.signal-ai-btn:hover:not(:disabled) { filter: brightness(1.06); }
+.signal-ai-btn:disabled { opacity: .6; cursor: default; }
 .alert-item.actionable { cursor: pointer; border-radius: 7px; padding-left: 6px; margin-left: -6px; transition: background .15s; }
 .alert-item.actionable:hover { background: rgba(201,99,66,.07); }
 .al-go { margin-left: auto; color: var(--muted); font-weight: 700; opacity: 0; transition: opacity .15s; }

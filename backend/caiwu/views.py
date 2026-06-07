@@ -2930,9 +2930,20 @@ def _cockpit_data_lines(year, month, bus, bu_rows, ov_m, ov_y, actuals):
     return '\n'.join(L)
 
 
+def _build_business_side_context(bus, year, month):
+    """汇集业财融合「业」侧上下文：应收/回款 + 项目毛利 + 业财融合分类。供分析/简报复用。"""
+    biz = '\n\n'.join(x for x in (
+        _build_ar_business_summary(bus, year, month),
+        _build_project_margin_summary(bus, year, month),
+        _build_bf_fusion_summary(bus, year, month),
+    ) if x)
+    return ('\n\n' + biz) if biz else ''
+
+
 def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
     """Compose cockpit analysis prompt; adapts angle to single-BU vs group scope."""
     data = _cockpit_data_lines(year, month, bus, bu_rows, ov_m, ov_y, actuals)
+    data += _build_business_side_context(bus, year, month)
     single_bu = len(bus) == 1
     if single_bu:
         bu_name = bus[0]
@@ -2943,8 +2954,9 @@ def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
 1. **事业部经营总览**：本月与年度累计的收入/利润规模、目标达成进度、环比同比趋势综合研判。
 2. **目标达成与缺口**：量化当前达成缺口，研判全年是否能达标，哪些指标是关键制约因素。
 3. **成本与利润结构**：成本率/毛利率走势，费用管控是否到位，盈利质量如何。
-4. **风险预警**：负利润/异常波动/成本偏高等需要警示的情况。
-5. **行动建议**：3-5条针对该事业部的具体经营改善与目标达成建议。
+4. **业财融合研判**：结合应收未收/逾期与项目盈利分类，指出「赚收入不赚钱」「赚利润收不回钱」的项目，分析业务动因如何传导到财务结果。
+5. **风险预警**：负利润/异常波动/成本偏高/回款承压等需要警示的情况。
+6. **行动建议**：3-5条针对该事业部的具体经营改善与目标达成建议。
 
 要求：专业、有数据支撑、有洞察，避免空话套话；分点清晰，适合事业部管理层决策参考，篇幅 600-1000 字。"""
     else:
@@ -2956,8 +2968,9 @@ def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
 1. **集团经营总览**：本月与年度累计的整体经营态势——收入/利润规模、目标达成进度、环比同比趋势的综合研判。
 2. **事业部横向对比**：识别领跑与掉队的事业部，分析达成率分化与利润贡献结构，指出谁是增长引擎、谁在拖累集团。
 3. **目标达成与缺口**：结合当前节奏研判全年能否达标，量化关键缺口与达成压力最大的事业部。
-4. **风险预警**：亏损或利润大幅下滑的事业部、异常波动、成本/费用异常、过度依赖单一事业部等系统性风险。
-5. **战略与资源配置建议**：3-5条面向集团决策的具体建议（资源倾斜、整改重点、目标校准等）。
+4. **业财融合研判**：结合应收未收/逾期与项目盈利分类，识别「赚收入不赚钱」「赚利润收不回钱」的项目/客户，打通"业务动因→财务结果"的归因。
+5. **风险预警**：亏损或利润大幅下滑的事业部、异常波动、成本/费用异常、回款承压、过度依赖单一事业部等系统性风险。
+6. **战略与资源配置建议**：3-5条面向集团决策的具体建议（资源倾斜、整改重点、目标校准等）。
 
 要求：专业、有数据支撑、有洞察，避免空话套话；分点清晰，适合集团领导决策参考，篇幅 800-1200 字。"""
     return f"{header}\n\n{data}\n\n{body}"
@@ -2971,6 +2984,7 @@ def _build_report_messages(year, month, bus, period):
     ov_m = _attach_group_chg(_aggregate_total(bu_rows, 'month'), bus, year, month, actuals)
     ov_y = _aggregate_total(bu_rows, 'ytd')
     data = _cockpit_data_lines(year, month, bus, bu_rows, ov_m, ov_y, actuals)
+    data += _build_business_side_context(bus, year, month)
     if period == 'year':
         head = f'你正在为集团管理层撰写 {year}年度 经营分析报告（截至{month}月的累计即年度口径）。'
         focus = ('请输出年度经营分析报告：1)年度经营总览（累计收入/利润/目标达成）；'
@@ -3202,6 +3216,81 @@ def _build_project_margin_summary(bus, year, month):
         return ''
 
 
+def _build_bf_fusion_summary(bus, year, month):
+    """业财融合分类（与驾驶舱「业财损益」同口径）：把项目按 盈利×回款 打标签
+    （又薄又难收/赚收入不赚钱/赚利润收不回钱/优质），供 AI 用同一套经营语言归因。
+    盈利取当月项目毛利，回款/逾期取应收当前快照。最佳努力，无数据返回空串。"""
+    try:
+        import datetime as _dt
+        from collections import defaultdict
+        from ar.models import ARProject, ARRecord, ARPayment
+        from ar.views import _bf_tag
+        today = _dt.date.today()
+        # 盈利侧：当月项目毛利
+        fin = {}
+        for r in (ProjectMargin.objects.filter(business_unit__in=bus, year=year, month=month)
+                  .values('project_name').annotate(rev=Sum('revenue'), cost=Sum('cost'))):
+            name = (r['project_name'] or '').strip()
+            if not name or name in _PM_UNALLOCATED:
+                continue
+            a = fin.setdefault(name, {'rev': 0.0, 'cost': 0.0})
+            a['rev'] += float(r['rev'] or 0)
+            a['cost'] += float(r['cost'] or 0)
+        if not fin:
+            return ''
+        # 项目名 → ARProject（客户/部门/应收主键）
+        name2p = {}
+        for p in (ARProject.objects.filter(delivery_dept__in=bus).select_related('customer')
+                  .only('id', 'short_name', 'contract_name', 'customer', 'delivery_dept')):
+            for k in (p.short_name, p.contract_name):
+                k = (k or '').strip()
+                if k and k not in name2p:
+                    name2p[k] = p
+        pids = [name2p[n].id for n in fin if n in name2p]
+        ar_amt = {r['project_id']: r for r in ARRecord.objects.filter(project_id__in=pids)
+                  .values('project_id').annotate(inv=Sum('actual_invoice_amount'),
+                                                 out=Sum('outstanding_amount'))}
+        ar_ovd = {r['project_id']: r['o'] for r in ARRecord.objects.filter(
+            project_id__in=pids, outstanding_amount__gt=0, due_date__lt=today)
+            .values('project_id').annotate(o=Sum('outstanding_amount'))}
+        ar_col = {r['ar_record__project_id']: r['c'] for r in ARPayment.objects.filter(
+            ar_record__project_id__in=pids).values('ar_record__project_id').annotate(c=Sum('amount'))}
+
+        def _rate(a, b):
+            return (a / b * 100) if b else None
+        tag_count, tag_rev, worst = defaultdict(int), defaultdict(float), []
+        for name, f in fin.items():
+            p = name2p.get(name)
+            amt = ar_amt.get(p.id) if p else None
+            inv = float((amt or {}).get('inv') or 0)
+            out = float((amt or {}).get('out') or 0)
+            ovd = float(ar_ovd.get(p.id) or 0) if p else 0
+            col = float(ar_col.get(p.id) or 0) if p else 0
+            rev, cost = f['rev'], f['cost']
+            mr, cr, ovr = _rate(rev - cost, rev), _rate(col, inv), _rate(ovd, out)
+            tag, label = _bf_tag(mr, cr, ovr, rev)
+            tag_count[label] += 1
+            tag_rev[label] += rev
+            if tag in ('critical', 'cash_risk'):
+                cust = (p.customer.name if (p and p.customer_id) else '—')
+                worst.append((name, cust, label, rev, ovd, mr))
+        lines = [f'【业财融合分类（{year}年{month}月，盈利×回款，与驾驶舱「业财损益」同口径）】']
+        order = ['又薄又难收', '赚收入不赚钱', '赚利润收不回钱', '优质']
+        dist = '；'.join(f'{k} {tag_count[k]}个(收入{_fmt_wan(tag_rev[k])})'
+                        for k in order if tag_count.get(k))
+        if dist:
+            lines.append('  分类分布：' + dist)
+        worst.sort(key=lambda x: x[4], reverse=True)
+        if worst:
+            lines.append('  最需关注（薄利/逾期）：' + '；'.join(
+                f'{n}[{c}] {lbl}(收入{_fmt_wan(rev)}，逾期{_fmt_wan(ovd)}'
+                + (f'，毛利率{mr:.0f}%' if mr is not None else '') + ')'
+                for n, c, lbl, rev, ovd, mr in worst[:5]))
+        return '\n'.join(lines) if len(lines) > 1 else ''
+    except Exception:
+        return ''
+
+
 _KNOWLEDGE_KIND_LABEL = {'insight': '洞察', 'background': '背景', 'rule': '口径'}
 
 
@@ -3238,6 +3327,9 @@ def _build_cockpit_data_pack(year, month, bus, bu_rows, ov_m, ov_y, actuals):
     pm = _build_project_margin_summary(bus, year, month)
     if pm:
         parts += ['', pm]
+    bf = _build_bf_fusion_summary(bus, year, month)
+    if bf:
+        parts += ['', bf]
     return '\n'.join(parts)
 
 
