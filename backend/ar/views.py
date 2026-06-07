@@ -5632,6 +5632,7 @@ def customers(request):
             name=name,
             level=(data.get('level') or '').strip(),
             contact=(data.get('contact') or '').strip(),
+            customer_date=_normalize_date(data.get('customer_date')) or None,
             notes=(data.get('notes') or '').strip(),
         )
         c.save()
@@ -5797,6 +5798,8 @@ def customer_detail(request, pk):
         for field in ('level', 'contact', 'notes'):
             if field in data:
                 setattr(c, field, (data[field] or '').strip())
+        if 'customer_date' in data:
+            c.customer_date = _normalize_date(data['customer_date']) or None
         c.save()
         return ok(c.to_dict())
 

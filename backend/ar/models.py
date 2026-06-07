@@ -14,6 +14,8 @@ class Customer(models.Model):
     name = models.CharField('客户名称', max_length=200, unique=True, db_index=True)
     level = models.CharField('客户等级', max_length=50, blank=True, default='')
     contact = models.CharField('联系人', max_length=200, blank=True, default='')
+    customer_date = models.DateField('建档日期', null=True, blank=True,
+                                     help_text='可手工指定的客户日期（如 2026-01-01），区别于系统记录的创建时间')
     notes = models.TextField('备注', blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -28,6 +30,7 @@ class Customer(models.Model):
             'name': self.name,
             'level': self.level,
             'contact': self.contact,
+            'customer_date': str(self.customer_date) if self.customer_date else None,
             'notes': self.notes,
             'project_count': self.projects.count(),
             'created_at': self.created_at.isoformat() if self.created_at else None,

@@ -1,7 +1,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, defineAsyncComponent } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
-import { yearCST } from '../../constants.js'
+import { yearCST, todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 
 // 项目损益卡（复用 P1 组件）— 点客户项目即下钻全链路损益
@@ -27,7 +27,7 @@ const drawerOpen = ref(false)
 
 // 编辑/新建
 const showEdit = ref(false)
-const editForm = reactive({ id: null, name: '', level: '', contact: '', notes: '' })
+const editForm = reactive({ id: null, name: '', level: '', contact: '', customer_date: '', notes: '' })
 const saving = ref(false)
 
 // 项目损益卡
@@ -131,12 +131,12 @@ async function openDetail(c) {
 function closeDrawer() { drawerOpen.value = false; detail.value = null }
 
 function openCreate() {
-  Object.assign(editForm, { id: null, name: '', level: '', contact: '', notes: '' })
+  Object.assign(editForm, { id: null, name: '', level: '', contact: '', customer_date: todayCST(), notes: '' })
   showEdit.value = true
 }
 function openEditFromDetail() {
   const d = detail.value
-  Object.assign(editForm, { id: d.id, name: d.name, level: d.level || '', contact: d.contact || '', notes: d.notes || '' })
+  Object.assign(editForm, { id: d.id, name: d.name, level: d.level || '', contact: d.contact || '', customer_date: d.customer_date || '', notes: d.notes || '' })
   showEdit.value = true
 }
 async function saveCustomer() {
@@ -145,7 +145,7 @@ async function saveCustomer() {
   try {
     if (editForm.id) {
       await ar.updateCustomer(editForm.id, editForm)
-      if (detail.value && detail.value.id === editForm.id) Object.assign(detail.value, { name: editForm.name, level: editForm.level, contact: editForm.contact, notes: editForm.notes })
+      if (detail.value && detail.value.id === editForm.id) Object.assign(detail.value, { name: editForm.name, level: editForm.level, contact: editForm.contact, customer_date: editForm.customer_date, notes: editForm.notes })
       showToast('✓ 已保存')
     } else {
       await ar.createCustomer(editForm)
@@ -217,7 +217,7 @@ onMounted(() => load(true))
               <th class="rgt clk" @click="setSort('invoiced')">累计开票{{ sortArrow('invoiced') }}</th>
               <th class="rgt clk" @click="setSort('outstanding')">未收金额{{ sortArrow('outstanding') }}</th>
               <th class="rgt clk" @click="setSort('overdue')">逾期金额{{ sortArrow('overdue') }}</th>
-              <th class="ctr clk" @click="setSort('created_at')">创建时间{{ sortArrow('created_at') }}</th>
+              <th class="ctr clk" @click="setSort('customer_date')">建档日期{{ sortArrow('customer_date') }}</th>
               <th class="ctr">操作</th>
             </tr>
           </thead>
@@ -231,7 +231,7 @@ onMounted(() => load(true))
               <td class="rgt">{{ wan(c.invoiced) }}</td>
               <td class="rgt strong">{{ wan(c.outstanding) }}</td>
               <td class="rgt"><span :class="{ overdue: (c.overdue||0) > 0 }">{{ wan(c.overdue) }}</span></td>
-              <td class="ctr date">{{ fmtDate(c.created_at) }}</td>
+              <td class="ctr date">{{ fmtDate(c.customer_date || c.created_at) }}</td>
               <td class="ctr"><button class="btn-link" @click.stop="openDetail(c)">查看 ›</button></td>
             </tr>
           </tbody>
@@ -249,9 +249,9 @@ onMounted(() => load(true))
                 <div class="dw-title">{{ detail?.name || '加载中…' }}
                   <span v-if="detail?.level" class="lvl" :class="levelClass(detail.level)">{{ detail.level }}</span>
                 </div>
-                <div v-if="detail?.contact || detail?.notes || detail?.created_at" class="dw-sub">
+                <div v-if="detail?.contact || detail?.notes || detail?.customer_date || detail?.created_at" class="dw-sub">
                   <span v-if="detail.contact">联系人：{{ detail.contact }}</span>
-                  <span v-if="detail.created_at">创建时间：{{ fmtDate(detail.created_at) }}</span>
+                  <span>建档日期：{{ fmtDate(detail.customer_date || detail.created_at) }}</span>
                   <span v-if="detail.notes" class="dw-notes">{{ detail.notes }}</span>
                 </div>
               </div>
@@ -313,7 +313,11 @@ onMounted(() => load(true))
                 <option v-for="l in LEVELS" :key="l" :value="l">{{ l }}</option>
               </select>
             </div>
-            <div style="flex:2">
+            <div style="flex:1">
+              <label class="em-label">建档日期</label>
+              <input v-model="editForm.customer_date" type="date" class="em-input" />
+            </div>
+            <div style="flex:1">
               <label class="em-label">联系人</label>
               <input v-model="editForm.contact" class="em-input" placeholder="联系人 / 电话" />
             </div>
