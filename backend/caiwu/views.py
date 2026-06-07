@@ -2936,6 +2936,7 @@ def _build_business_side_context(bus, year, month):
         _build_ar_business_summary(bus, year, month),
         _build_project_margin_summary(bus, year, month),
         _build_bf_fusion_summary(bus, year, month),
+        _build_forecast_summary(bus, year, month),
     ) if x)
     return ('\n\n' + biz) if biz else ''
 
@@ -3286,6 +3287,44 @@ def _build_bf_fusion_summary(bus, year, month):
                 f'{n}[{c}] {lbl}(收入{_fmt_wan(rev)}，逾期{_fmt_wan(ovd)}'
                 + (f'，毛利率{mr:.0f}%' if mr is not None else '') + ')'
                 for n, c, lbl, rev, ovd, mr in worst[:5]))
+        return '\n'.join(lines) if len(lines) > 1 else ''
+    except Exception:
+        return ''
+
+
+def _build_forecast_summary(bus, year, month):
+    """判未来：YTD 年化推全年 vs 年度目标 + 坏账风险，供 AI 研判全年落地。最佳努力。"""
+    try:
+        actuals = _collect_actuals(bus, {year})
+        mdata = [m for m in range(1, 13) if _period_group(actuals, bus, year, m)[0] is not None]
+        if not mdata:
+            return ''
+        elapsed = len(mdata)
+
+        def _ann(idx):
+            ytd = _sum_opt([_period_group(actuals, bus, year, m)[idx] for m in mdata]) or 0
+            return ytd, ytd / elapsed * 12
+        _, rev_p = _ann(0)
+        _, pf_p = _ann(1)
+        tgt = _load_target_index(bus, year)
+        t_rev = sum(tgt.get((b, 0), {}).get('target_revenue', 0) for b in bus)
+        t_pf = sum(tgt.get((b, 0), {}).get('target_profit', 0) for b in bus)
+
+        def _r(p, t):
+            return f'{p / t * 100:.0f}%' if t else '—'
+        lines = [f'【判未来·全年落地预测（已发布{elapsed}个月，YTD 年化推全年）】',
+                 f'  收入：全年预测{_fmt_wan(rev_p)}（目标{_fmt_wan(t_rev)}，预测达成{_r(rev_p, t_rev)}）',
+                 f'  经营净利：全年预测{_fmt_wan(pf_p)}（目标{_fmt_wan(t_pf)}，预测达成{_r(pf_p, t_pf)}，缺口{_fmt_wan(pf_p - t_pf)}）']
+        try:
+            import datetime as _dt
+            from ar.models import ARRecord
+            cut = _dt.date.today() - _dt.timedelta(days=90)
+            bad = (ARRecord.objects.filter(delivery_dept__in=bus, outstanding_amount__gt=0,
+                                           due_date__lt=cut).aggregate(s=Sum('outstanding_amount'))['s'])
+            if bad:
+                lines.append(f'  坏账风险（逾期90天+未收）：{_fmt_wan(float(bad))}')
+        except Exception:
+            pass
         return '\n'.join(lines) if len(lines) > 1 else ''
     except Exception:
         return ''

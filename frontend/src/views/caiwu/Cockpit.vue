@@ -19,6 +19,7 @@ const ChartsPanel = defineAsyncComponent(() => import('./Charts.vue'))
 const ARAnalyticsPanel = defineAsyncComponent(() => import('../ar/ARAnalytics.vue'))
 const CashflowPanel = defineAsyncComponent(() => import('../ar/Cashflow.vue'))
 const BusinessFinancePanel = defineAsyncComponent(() => import('./BusinessFinance.vue'))
+const ForecastPanel = defineAsyncComponent(() => import('./Forecast.vue'))
 const BuDrilldown = defineAsyncComponent(() => import('./BuDrilldown.vue'))
 const ProjectPnlCard = defineAsyncComponent(() => import('./ProjectPnlCard.vue'))
 
@@ -32,11 +33,12 @@ const MAIN_TABS = computed(() => {
   const t = [{ key: 'overview', label: '经营总览' }]
   if (pkAuth.canPage('caiwu_charts')) t.push({ key: 'charts', label: '报表分析' })
   if (pkAuth.canPage('ar_analytics')) t.push({ key: 'bf', label: '业财损益' })
+  if (pkAuth.canPage('ar_analytics')) t.push({ key: 'forecast', label: '判未来' })
   if (pkAuth.canPage('ar_analytics')) t.push({ key: 'ar', label: '应收分析' })
   if (pkAuth.canPage('ar_cashflow')) t.push({ key: 'cashflow', label: '现金流分析' })
   return t
 })
-const panelComp = computed(() => ({ charts: ChartsPanel, bf: BusinessFinancePanel, ar: ARAnalyticsPanel, cashflow: CashflowPanel }[mainTab.value] || null))
+const panelComp = computed(() => ({ charts: ChartsPanel, bf: BusinessFinancePanel, forecast: ForecastPanel, ar: ARAnalyticsPanel, cashflow: CashflowPanel }[mainTab.value] || null))
 
 // 默认展示上月：当月财务数据通常尚未导入/发布
 const year = ref(lastMonthCST().year)
@@ -76,14 +78,18 @@ async function load() {
     if (selectedBu.value) params.bu = selectedBu.value
     const bfParams = { year: year.value, month: month.value, group_by: 'project' }
     if (selectedBu.value) bfParams.dept = selectedBu.value
-    // 主看板与业财融合摘要并行拉取；业财摘要失败不影响主看板
-    const [res, bf] = await Promise.allSettled([
+    const fcParams = { year: year.value }
+    if (selectedBu.value) fcParams.dept = selectedBu.value
+    // 主看板与业财融合/预测摘要并行拉取；摘要失败不影响主看板
+    const [res, bf, fc] = await Promise.allSettled([
       api.get('/cockpit', { params }),
       ar.businessFinance(bfParams),
+      ar.forecast(fcParams),
     ])
     if (res.status === 'fulfilled') data.value = res.value.data
     else throw (res.reason || new Error('加载失败'))
     bfSummary.value = bf.status === 'fulfilled' ? (bf.value.data?.summary || null) : null
+    fcSummary.value = fc.status === 'fulfilled' ? (fc.value.data?.summary || null) : null
   } catch (e) {
     loadErr.value = e?.error || '加载失败'
   } finally {
@@ -91,6 +97,7 @@ async function load() {
   }
 }
 const bfSummary = ref(null)   // 业财融合摘要（驱动今日信号）
+const fcSummary = ref(null)   // 预测摘要（驱动今日信号）
 
 const aiScopeLabel = computed(() =>
   `${selectedBu.value || '全集团'} · ${year.value}年${month.value}月`
@@ -642,6 +649,14 @@ const alerts = computed(() => {
       text: `逾期未收 ${wan(bf.overdue)}，逾期率 ${bf.overdue_rate.toFixed(0)}%，回款承压` })
     if (lowM > 0) list.push({ level: 'mid', tab: 'bf',
       text: `${lowM} 个项目「赚收入不赚钱」，规模大但毛利薄` })
+  }
+  // ── 判未来：全年落地预测 / 坏账（来自预测摘要）──────────────
+  const fc = fcSummary.value
+  if (fc) {
+    if (fc.profit_gap != null && fc.profit_gap < 0) list.push({ level: 'high', tab: 'forecast',
+      text: `按当前节奏，全年净利预测 ${wan(fc.proj_profit)}，缺口 ${wan(fc.profit_gap)}（预测达成 ${fc.profit_rate != null ? fc.profit_rate.toFixed(0) + '%' : '—'}）` })
+    if (fc.baddebt_risk > 0) list.push({ level: 'mid', tab: 'forecast',
+      text: `坏账风险 ${wan(fc.baddebt_risk)}（逾期90天+未收），需重点催收` })
   }
   // ── 事业部级（可点击下钻）────────────────────────────────
   rows.filter(r => r.loss).forEach(r => list.push({ level: 'high', bu: r.bu, text: `${r.bu} 当月经营净利为负（${wan(r.prof)}）` }))
