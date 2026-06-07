@@ -505,7 +505,7 @@ async function handleImport(e) {
       if (d.warnings?.length) sections.push({ label: `导入提示（${d.warnings.length} 条）`, warn: true, items: d.warnings.slice(0, 80), more: d.warnings.length > 80 ? `…共 ${d.warnings.length} 条，已截断` : '' })
       importResult.value = {
         ok: true,
-        title: `导入完成：创建 ${d.created} 条，跳过空行/示例 ${d.skipped} 行`,
+        title: `导入完成：创建 ${d.created} 条`,
         sections,
       }
       await load()

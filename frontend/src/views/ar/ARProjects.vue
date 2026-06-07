@@ -301,12 +301,15 @@ async function handleImport(e) {
   try {
     const fd = new FormData(); fd.append('file', f)
     const res = await ar.importProjects(fd); const d = res.data
-    const sections = []
-    const counts = [`新增 ${d.created} 条`]
-    if (d.updated) counts.push(`更新 ${d.updated} 条`)
-    if (d.skipped) counts.push(`跳过 ${d.skipped} 条`)
-    if (d.errors?.length) sections.push({ label: `以下 ${d.errors.length} 行未通过校验`, warn: true, items: d.errors })
-    importResult.value = { ok: !d.errors?.length, title: `导入完成：${counts.join('，')}`, sections }
+    if (d.rejected) {
+      // 整表未执行：列出全部需修正项，按提示改后重导（不会半截写入、不会漏导）
+      importResult.value = { ok: false, title: d.message || '导入未执行，请按提示修正后重新导入',
+        sections: [{ label: `以下 ${d.errors?.length || 0} 处需在表格中修正`, warn: true, items: d.errors || [] }] }
+    } else {
+      const counts = [`新增 ${d.created} 条`]
+      if (d.updated) counts.push(`更新 ${d.updated} 条`)
+      importResult.value = { ok: true, title: `导入完成：${counts.join('，')}`, sections: [] }
+    }
     reloadAll()
   } catch (err) {
     importResult.value = { ok: false, title: '导入失败', sections: [{ label: '错误信息', warn: true, items: [err?.msg || err?.error || err?.message || '服务器错误，请联系管理员'] }] }

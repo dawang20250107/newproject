@@ -295,11 +295,17 @@ async function handleImport(type, ev) {
     const res = type === 'collection'
       ? await ar.importCollectionBudget(fd) : await ar.importPaymentBudget(fd)
     const d = res.data
-    let msg = `导入完成：新增 ${d.created} 条，跳过 ${d.skipped} 条`
-    if (d.corrected) msg += `，按项目台账自动更正 ${d.corrected} 条`
-    if (d.warnings?.length) msg += `\n\n已更正：\n${d.warnings.slice(0, 15).join('\n')}`
-    if (d.errors?.length) msg += `\n\n错误：\n${d.errors.slice(0, 15).join('\n')}`
-    alert(msg)
+    if (d.rejected) {
+      // 整表未执行：列出全部需修正项，改后重导（不会半截写入、不会漏导）
+      let msg = d.message || '导入未执行，请按提示修正后重新导入'
+      if (d.errors?.length) msg += `\n\n需修正：\n${d.errors.slice(0, 20).join('\n')}`
+      alert(msg)
+    } else {
+      let msg = `导入完成：新增 ${d.created} 条`
+      if (d.corrected) msg += `，按项目台账自动更正 ${d.corrected} 条`
+      if (d.warnings?.length) msg += `\n\n已更正：\n${d.warnings.slice(0, 15).join('\n')}`
+      alert(msg)
+    }
     await loadAll()
   } catch (e) { alert(e?.msg || '导入失败')
   } finally { importing.value = false; ev.target.value = '' }

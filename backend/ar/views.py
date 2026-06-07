@@ -787,55 +787,48 @@ def project_import(request):
 
     from paikuan.models import PaikuanUser
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
-    created = updated = skipped = 0
     errors = []
+    plan = []   # 通过校验、待写入的行：{ri, contract_name, dept, short_name_val, field_vals}
 
+    # ══ 阶段一：逐行校验（不写库）。示例/提示/空行静默忽略，问题行收集错误 ══════════
     for ri in range(2, ws.max_row + 1):
         contract_name = _cv(ri, '合同名称', '合同名称*')
         short_name_val = _cv(ri, '项目简称', '项目简称*')
         dept = _cv(ri, '交付部门', '交付部门*')
-        # 提示行/示例行：静默跳过
+        # 提示行/示例行：静默忽略（不计入、不报错）
         if (EXAMPLE_ROW_MARKER in contract_name or contract_name.startswith('★')
                 or EXAMPLE_ROW_MARKER in short_name_val or short_name_val.startswith('★')):
-            skipped += 1
             continue
         # 合同名称缺失时回退用项目简称（很多用户只填项目简称）；二者皆空才算空行
         if not contract_name:
             contract_name = short_name_val
         if not contract_name:
-            # 整行为空 → 静默跳过；否则明确报错，避免「无声跳过」
+            # 整行为空 → 静默忽略；否则明确报错，避免「无声跳过」
             if not any(_cv(ri, h) for h in (
                     '交付部门', '销售对接人', '项目负责人', '业务模式')):
-                skipped += 1
                 continue
-            errors.append(f'第{ri}行: 缺少「合同名称」或「项目简称」，无法识别项目')
-            skipped += 1
+            errors.append(f'第{ri}行: 缺少「合同名称」或「项目简称」，无法识别项目，请补填后重新导入')
             continue
         if dept not in VALID_DEPARTMENTS:
             errors.append(f'第{ri}行: 交付部门"{dept}"无效，可选值为：{"/".join(VALID_DEPARTMENTS)}')
-            skipped += 1
             continue
         if request.pk_role != 'super_admin':
             allowed = request.pk_depts
             if dept not in allowed:
                 errors.append(f'第{ri}行: 无权操作部门"{dept}"，您的授权部门为：{"/".join(allowed)}')
-                skipped += 1
                 continue
         # ── field-level validation ────────────────────────────────────────────
         customer_level_val = _cv(ri, '客户等级')
         if customer_level_val and customer_level_val not in VALID_CUSTOMER_LEVELS:
             errors.append(f'第{ri}行: 客户等级"{customer_level_val}"无效，应为：{"/".join(VALID_CUSTOMER_LEVELS)}')
-            skipped += 1
             continue
         invoice_type_val = _cv(ri, '专票/普票/不开票', '专票/普票', '发票类型')
         if invoice_type_val and invoice_type_val not in VALID_INVOICE_TYPES:
             errors.append(f'第{ri}行: 发票类型"{invoice_type_val}"无效，应为：{"/".join(VALID_INVOICE_TYPES)}')
-            skipped += 1
             continue
         invoice_mode_val = _cv(ri, '开票模式(全额/差额)') or '全额'
         if invoice_mode_val not in ('全额', '差额'):
             errors.append(f'第{ri}行: 开票模式"{invoice_mode_val}"无效，应为"全额"或"差额"')
-            skipped += 1
             continue
         tax_raw = _cv(ri, '税率(如0.06)')
         if tax_raw:
@@ -843,62 +836,78 @@ def project_import(request):
                 tax_val = float(tax_raw)
                 if not (0 <= tax_val <= 1):
                     errors.append(f'第{ri}行: 税率"{tax_raw}"超出范围，应在0到1之间（如 0.06 表示6%）')
-                    skipped += 1
                     continue
             except (ValueError, TypeError):
                 errors.append(f'第{ri}行: 税率"{tax_raw}"格式错误，应填数字（如 0.06）')
-                skipped += 1
                 continue
         try:
             int_days = lambda col: int(_cv(ri, col) or 0)
-            field_vals = dict(
-                short_name=short_name_val,
-                sub_dept=_cv(ri, '二级部门'),
-                business_mode=_cv(ri, '业务模式'),
-                customer_level=customer_level_val,
-                sales_contact=_cv(ri, '销售对接人', '销售对接人*'),
-                project_manager=_cv(ri, '项目负责人', '项目负责人*'),
-                has_contract=_cv(ri, '有无合同') or '无',
-                contract_date=_normalize_date(
-                    _cv(ri, '签订日期') or _cv(ri, '签订日期(YYYY-MM-DD)')
-                ) or None,
-                reconciliation_days=int_days('合同对账期(天)'),
-                invoice_wait_days=int_days('开票等待期(天)'),
-                post_invoice_days=int_days('票后等待期(天)') or int_days('结算等待期(天)'),
-                invoice_mode=invoice_mode_val,
-                invoice_type=invoice_type_val,
-                notes=_cv(ri, '备注'),
-            )
-            # 仅在明确填写税率时才写入，避免留空时把现有项目的税率清零
-            if tax_raw:
-                field_vals['tax_rate'] = _dec(tax_raw)
-            # Upsert: update existing project rather than creating a duplicate.
-            # 业务主键以「项目简称 + 交付部门」为准——项目简称是与应收明细对接的唯一桥梁，
-            # 且一个合同可对应多个项目（1合同多项目），故不能用合同名做主键，否则同合同名
-            # 的不同项目会被错误合并、丢失。简称为空时才回退用合同名。
-            if short_name_val:
-                existing = ARProject.objects.filter(
-                    short_name=short_name_val, delivery_dept=dept).first()
-            else:
-                existing = ARProject.objects.filter(
-                    contract_name=contract_name, delivery_dept=dept).first()
-            with transaction.atomic():  # 每行独立保存点，单行失败不影响其他行
+        except (ValueError, TypeError):
+            errors.append(f'第{ri}行: 账期天数应为整数（合同对账期/开票等待期/票后等待期）')
+            continue
+        field_vals = dict(
+            short_name=short_name_val,
+            sub_dept=_cv(ri, '二级部门'),
+            business_mode=_cv(ri, '业务模式'),
+            customer_level=customer_level_val,
+            sales_contact=_cv(ri, '销售对接人', '销售对接人*'),
+            project_manager=_cv(ri, '项目负责人', '项目负责人*'),
+            has_contract=_cv(ri, '有无合同') or '无',
+            contract_date=_normalize_date(
+                _cv(ri, '签订日期') or _cv(ri, '签订日期(YYYY-MM-DD)')
+            ) or None,
+            reconciliation_days=int_days('合同对账期(天)'),
+            invoice_wait_days=int_days('开票等待期(天)'),
+            post_invoice_days=int_days('票后等待期(天)') or int_days('结算等待期(天)'),
+            invoice_mode=invoice_mode_val,
+            invoice_type=invoice_type_val,
+            notes=_cv(ri, '备注'),
+        )
+        # 仅在明确填写税率时才写入，避免留空时把现有项目的税率清零
+        if tax_raw:
+            field_vals['tax_rate'] = _dec(tax_raw)
+        plan.append({'ri': ri, 'contract_name': contract_name, 'dept': dept,
+                     'short_name_val': short_name_val, 'field_vals': field_vals})
+
+    # ══ 有任何问题 → 整表拒绝，不写入（要么修正后重导，要么照提示逐条改）═══════════
+    if errors:
+        return ok({
+            'rejected': True, 'created': 0, 'updated': 0, 'errors': errors,
+            'message': (f'导入未执行：发现 {len(errors)} 处问题，已全部列出。'
+                        f'请在表格中按提示修正后重新导入（整表全部通过才会写入，不会漏导）。'),
+        })
+
+    # ══ 阶段二：全部通过 → 一次性写入（整体事务，任一失败回滚）═══════════════════════
+    created = updated = 0
+    try:
+        with transaction.atomic():
+            for p in plan:
+                # Upsert: 业务主键「项目简称 + 交付部门」（简称为空才回退合同名）
+                if p['short_name_val']:
+                    existing = ARProject.objects.filter(
+                        short_name=p['short_name_val'], delivery_dept=p['dept']).first()
+                else:
+                    existing = ARProject.objects.filter(
+                        contract_name=p['contract_name'], delivery_dept=p['dept']).first()
                 if existing:
-                    for k, v in field_vals.items():
+                    for k, v in p['field_vals'].items():
                         setattr(existing, k, v)
-                    existing.delivery_dept = dept
-                    existing.save()  # triggers ARProject.post_save signal → updates ARRecord due_dates
+                    existing.delivery_dept = p['dept']
+                    existing.save()  # triggers post_save signal → updates ARRecord due_dates
                     updated += 1
                 else:
-                    p = ARProject(contract_name=contract_name, delivery_dept=dept,
-                                  created_by=user, **field_vals)
-                    p.save()
+                    pr = ARProject(contract_name=p['contract_name'], delivery_dept=p['dept'],
+                                   created_by=user, **p['field_vals'])
+                    pr.save()
                     created += 1
-        except Exception as e:
-            errors.append(f'第{ri}行: {e}')
-            skipped += 1
+    except Exception as e:
+        return ok({
+            'rejected': True, 'created': 0, 'updated': 0,
+            'errors': [f'写入阶段发生错误并已回滚：{e}。请检查数据后重试。'],
+            'message': '导入未执行（写入阶段出错，已整体回滚，不会出现半截数据）。',
+        })
 
-    return ok({'created': created, 'updated': updated, 'skipped': skipped, 'errors': errors})
+    return ok({'created': created, 'updated': updated, 'skipped': 0, 'errors': []})
 
 
 @csrf_exempt
@@ -1425,7 +1434,7 @@ def ar_record_import(request):
                  '回款金额', '回款时间', '备注')
 
     errors = []      # 格式错误：会导致整表拒绝
-    skipped = 0      # 空行 / 示例行
+    skipped = 0      # 仅保留字段兼容（恒为0）：示例/空行静默忽略，不计入
     plan = []        # 通过格式校验的行，待写入
 
     # ══ 阶段一：格式校验（不写库，不查项目）══════════════════════════════════
@@ -1434,10 +1443,11 @@ def ar_record_import(request):
         short_name = row_vals['项目简称*']
         has_any = any(v for v in row_vals.values())
 
+        # 示例/提示行、整行空白：静默忽略（不计入、不报错）
         if EXAMPLE_ROW_MARKER in short_name or short_name.startswith('★'):
-            skipped += 1; continue
+            continue
         if not has_any:
-            skipped += 1; continue
+            continue
         if not short_name:
             errors.append(f'第{ri}行：缺少「项目简称」，请补填（项目简称是关联应收记录与项目的唯一桥梁）')
             continue
@@ -4384,72 +4394,88 @@ def advance_import(request):
     from paikuan.models import PaikuanUser
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
     search_depts = None if request.pk_role == 'super_admin' else request.pk_depts
-    created = skipped = updated = 0
     errors = []
+    plan = []   # 通过校验、待写入的行
 
+    # ══ 阶段一：逐行校验（不写库）。示例/提示/空行静默忽略，问题行收集错误 ══════════
     for ri in range(2, ws.max_row + 1):
         direction = _cv(ri, '方向(预收/预付)*')
         short_name = _cv(ri, '项目简称')
         counterparty = _cv(ri, '往来单位*')
         if EXAMPLE_ROW_MARKER in short_name or direction.startswith('★'):
-            skipped += 1
             continue
         if direction not in ADVANCE_DIRECTIONS:
             if not direction and not counterparty and not short_name:
-                skipped += 1
-                continue
-            errors.append(f'第{ri}行: 方向无效（应为 预收/预付）')
-            skipped += 1
+                continue   # 整行空白：静默忽略
+            errors.append(f'第{ri}行: 方向"{direction}"无效，应为 预收/预付')
             continue
         proj = None
         dept = _cv(ri, '交付部门')
         if short_name:
             proj = _match_project_by_short_name(short_name, allowed_depts=search_depts)
             if not proj:
-                errors.append(f'第{ri}行: 项目简称"{short_name}"未匹配到项目')
-                skipped += 1
+                errors.append(f'第{ri}行: 项目简称"{short_name}"未匹配到项目，请核对简称或先在项目台账建项目')
                 continue
             dept = proj.delivery_dept
         if not dept:
             errors.append(f'第{ri}行: 未填项目简称时必须填写交付部门')
-            skipped += 1
             continue
         if request.pk_role != 'super_admin' and dept not in request.pk_depts:
             errors.append(f'第{ri}行: 无权操作部门"{dept}"')
-            skipped += 1
             continue
         year = int(_cv(ri, '发生年*') or 0)
         month = int(_cv(ri, '发生月*') or 0)
         if not (year and 1 <= month <= 12):
-            errors.append(f'第{ri}行: 发生年月无效')
-            skipped += 1
+            errors.append(f'第{ri}行: 发生年月无效（年={_cv(ri, "发生年*") or "空"} 月={_cv(ri, "发生月*") or "空"}），运作月需 1-12')
             continue
-        try:
-            rec = AdvanceRecord(
-                project=proj, delivery_dept=dept, direction=direction,
-                counterparty=counterparty, occur_year=year, occur_month=month,
-                occur_date=_normalize_date(_cv_raw(ri, '款项日期')) or None,
-                advance_amount=_dec(_cv(ri, '预收/预付金额') or 0),
-                expected_writeoff_date=_normalize_date(_cv_raw(ri, '预计核销日期')) or None,
-                notes=_cv(ri, '备注'),
-                created_by=user,
-            )
-            rec.save()
-            wo_amount = _cv(ri, '核销金额')
-            wo_date = _normalize_date(_cv_raw(ri, '核销日期'))
-            if wo_amount and wo_date:
-                amt = _dec(wo_amount)
-                if amt > 0 and not rec.writeoffs.filter(writeoff_date=wo_date, amount=amt).exists():
-                    max_no = rec.writeoffs.aggregate(m=Max('writeoff_no')).get('m') or 0
-                    AdvanceWriteoff.objects.create(
-                        advance_record=rec, writeoff_no=max_no + 1,
-                        amount=amt, writeoff_date=wo_date, notes='导入核销')
-            created += 1
-        except Exception as e:
-            errors.append(f'第{ri}行: {e}')
-            skipped += 1
+        wo_amount = _cv(ri, '核销金额')
+        wo_date = _normalize_date(_cv_raw(ri, '核销日期'))
+        if wo_amount and not wo_date:
+            errors.append(f'第{ri}行: 填了「核销金额」却没填有效「核销日期」，请补填或清空核销金额')
+            continue
+        plan.append({'ri': ri, 'proj': proj, 'dept': dept, 'direction': direction,
+                     'counterparty': counterparty, 'year': year, 'month': month,
+                     'occur_date': _normalize_date(_cv_raw(ri, '款项日期')) or None,
+                     'advance_amount': _dec(_cv(ri, '预收/预付金额') or 0),
+                     'expected_writeoff_date': _normalize_date(_cv_raw(ri, '预计核销日期')) or None,
+                     'notes': _cv(ri, '备注'), 'wo_amount': wo_amount, 'wo_date': wo_date})
 
-    return ok({'created': created, 'updated': updated, 'skipped': skipped, 'errors': errors})
+    if errors:
+        return ok({
+            'rejected': True, 'created': 0, 'updated': 0, 'errors': errors,
+            'message': (f'导入未执行：发现 {len(errors)} 处问题，已全部列出。'
+                        f'请在表格中按提示修正后重新导入（整表全部通过才会写入，不会漏导）。'),
+        })
+
+    # ══ 阶段二：全部通过 → 一次性写入（整体事务，任一失败回滚）═══════════════════════
+    created = 0
+    try:
+        with transaction.atomic():
+            for p in plan:
+                rec = AdvanceRecord(
+                    project=p['proj'], delivery_dept=p['dept'], direction=p['direction'],
+                    counterparty=p['counterparty'], occur_year=p['year'], occur_month=p['month'],
+                    occur_date=p['occur_date'], advance_amount=p['advance_amount'],
+                    expected_writeoff_date=p['expected_writeoff_date'],
+                    notes=p['notes'], created_by=user,
+                )
+                rec.save()
+                if p['wo_amount'] and p['wo_date']:
+                    amt = _dec(p['wo_amount'])
+                    if amt > 0 and not rec.writeoffs.filter(writeoff_date=p['wo_date'], amount=amt).exists():
+                        max_no = rec.writeoffs.aggregate(m=Max('writeoff_no')).get('m') or 0
+                        AdvanceWriteoff.objects.create(
+                            advance_record=rec, writeoff_no=max_no + 1,
+                            amount=amt, writeoff_date=p['wo_date'], notes='导入核销')
+                created += 1
+    except Exception as e:
+        return ok({
+            'rejected': True, 'created': 0, 'updated': 0,
+            'errors': [f'写入阶段发生错误并已回滚：{e}。请检查数据后重试。'],
+            'message': '导入未执行（写入阶段出错，已整体回滚，不会出现半截数据）。',
+        })
+
+    return ok({'created': created, 'updated': 0, 'skipped': 0, 'errors': []})
 
 
 @csrf_exempt
@@ -5150,20 +5176,22 @@ def _budget_import(request, Model, kind):
     from paikuan.models import PaikuanUser
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
     search_depts = None if request.pk_role == 'super_admin' else request.pk_depts
-    created = skipped = corrected = 0
+    corrected = 0
     errors = []
     warnings = []
+    plan = []   # 通过校验、待写入的行
+
+    # ══ 阶段一：逐行校验 + 按台账自动更正（不写库）。示例/空行静默忽略 ══════════════
     for ri in range(2, ws.max_row + 1):
         short_name = _cv(ri, '项目简称/摘要*')
+        # 示例/提示行、必填摘要为空：静默忽略（不计入、不报错）
         if not short_name or EXAMPLE_ROW_MARKER in short_name or short_name.startswith('★'):
-            skipped += 1
             continue
         date_str = _normalize_date(_raw_first(ri, date_col_names))
         if not date_str:
             raw_date = _cv_first(ri, date_col_names)
             hint = f'（读到"{raw_date}"）' if raw_date else '（该格为空）'
             errors.append(f'第{ri}行: 预计{lbl}日期无效{hint}，请填 2026-06-15 这样的格式')
-            skipped += 1
             continue
         filled_dept = _cv(ri, '交付部门')
 
@@ -5183,14 +5211,13 @@ def _budget_import(request, Model, kind):
                 depts_hint = '、'.join(sorted({m.delivery_dept for m in name_matches}))
                 errors.append(f'第{ri}行: 项目简称"{short_name}"对应多个部门（{depts_hint}），'
                               f'请在"交付部门"列填写正确部门以区分')
-                skipped += 1
                 continue
         else:
             # 简称无精确匹配，回退到模糊匹配（容许用户填部分简称）
             proj = _match_project_by_short_name(short_name, filled_dept, search_depts)
 
         if proj:
-            # 以台账为准：用项目的编号/部门/二级部门覆盖填写值
+            # 以台账为准：用项目的编号/部门/二级部门覆盖填写值（自动更正，不算跳过）
             dept = proj.delivery_dept
             project_no = proj.project_no
             sub_dept = proj.sub_dept
@@ -5213,35 +5240,48 @@ def _budget_import(request, Model, kind):
             sub_dept = _cv(ri, '二级部门')
 
         if dept and dept not in VALID_DEPARTMENTS:
-            errors.append(f'第{ri}行: 无效交付部门"{dept}"')
-            skipped += 1
+            errors.append(f'第{ri}行: 无效交付部门"{dept}"，可选值为：{"/".join(VALID_DEPARTMENTS)}')
             continue
         if request.pk_role != 'super_admin' and dept not in request.pk_depts:
             errors.append(f'第{ri}行: 无权操作部门"{dept}"')
-            skipped += 1
             continue
         amount = _dec(_cv(ri, '金额*'))
         if amount <= 0:
-            errors.append(f'第{ri}行: 金额必须大于0')
-            skipped += 1
+            errors.append(f'第{ri}行: 金额必须大于0（当前读到"{_cv(ri, "金额*") or "空"}"）')
             continue
-        try:
-            Model.objects.create(
-                project_no=project_no,
-                short_name=short_name,
-                expected_date=date_str,
-                sub_dept=sub_dept,
-                delivery_dept=dept,
-                amount=amount,
-                notes=_cv(ri, '备注'),
-                created_by=user,
-            )
-            created += 1
-        except Exception as e:
-            errors.append(f'第{ri}行: {e}')
-            skipped += 1
-    return ok({'created': created, 'skipped': skipped, 'corrected': corrected,
-               'errors': errors, 'warnings': warnings})
+        plan.append({'ri': ri, 'project_no': project_no, 'short_name': short_name,
+                     'expected_date': date_str, 'sub_dept': sub_dept, 'dept': dept,
+                     'amount': amount, 'notes': _cv(ri, '备注')})
+
+    # ══ 有任何问题 → 整表拒绝（自动更正项仍随成功导入一并提示，不阻断）══════════════
+    if errors:
+        return ok({
+            'rejected': True, 'created': 0, 'corrected': 0, 'errors': errors, 'warnings': warnings,
+            'message': (f'导入未执行：发现 {len(errors)} 处问题，已全部列出。'
+                        f'请在表格中按提示修正后重新导入（整表全部通过才会写入，不会漏导）。'),
+        })
+
+    # ══ 阶段二：全部通过 → 一次性写入（整体事务，任一失败回滚）═══════════════════════
+    created = 0
+    try:
+        with transaction.atomic():
+            for p in plan:
+                Model.objects.create(
+                    project_no=p['project_no'], short_name=p['short_name'],
+                    expected_date=p['expected_date'], sub_dept=p['sub_dept'],
+                    delivery_dept=p['dept'], amount=p['amount'],
+                    notes=p['notes'], created_by=user,
+                )
+                created += 1
+    except Exception as e:
+        return ok({
+            'rejected': True, 'created': 0, 'corrected': 0,
+            'errors': [f'写入阶段发生错误并已回滚：{e}。请检查数据后重试。'], 'warnings': warnings,
+            'message': '导入未执行（写入阶段出错，已整体回滚，不会出现半截数据）。',
+        })
+
+    return ok({'created': created, 'skipped': 0, 'corrected': corrected,
+               'errors': [], 'warnings': warnings})
 
 
 def _budget_export(request, Model, kind):

@@ -237,9 +237,12 @@ async function handleImport(e) {
   try {
     const fd = new FormData(); fd.append('file', f)
     const res = await ar.importAdvances(fd); const d = res.data
-    let parts = [`导入完成：创建 ${d.created}，跳过 ${d.skipped}`]
-    if (d.errors?.length) parts.push(`\n以下行未通过校验：\n` + d.errors.join('\n'))
-    alert(parts.join('\n'))
+    if (d.rejected) {
+      // 整表未执行：列出全部需修正项，改后重导（不会半截写入、不会漏导）
+      alert((d.message || '导入未执行，请按提示修正后重新导入') + '\n\n' + (d.errors || []).join('\n'))
+    } else {
+      alert(`导入完成：创建 ${d.created} 条`)
+    }
     await load()
   } catch (e) { alert(e?.msg || '导入失败') }
   finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
