@@ -5,13 +5,13 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart, BarChart, CustomChart, PieChart } from 'echarts/charts'
 import {
   GridComponent, TooltipComponent, LegendComponent,
-  TitleComponent, DataZoomComponent, MarkLineComponent, MarkAreaComponent,
+  TitleComponent, DataZoomComponent, MarkLineComponent, MarkAreaComponent, MarkPointComponent,
 } from 'echarts/components'
 
 echarts.use([
   CanvasRenderer, LineChart, BarChart, CustomChart, PieChart,
   GridComponent, TooltipComponent, LegendComponent,
-  TitleComponent, DataZoomComponent, MarkLineComponent, MarkAreaComponent,
+  TitleComponent, DataZoomComponent, MarkLineComponent, MarkAreaComponent, MarkPointComponent,
 ])
 
 const props = defineProps({
