@@ -121,7 +121,8 @@ class ARPermissionRegressionTests(TestCase):
     def test_projects_list_exposes_contract_name_for_advance_autofill(self):
         """预收新增的关联项目下拉用 /ar/projects，选中后以 contract_name 自动带出
         往来单位。该字段须随列表返回且非空，否则前端 pickProject 拿不到值。
-        客户实体上线后列表同时返回 customer_id/customer_name（未关联客户时为 None）。"""
+        「合同名正名为客户」上线后：新建项目按合同名自动建/挂客户（_autolink_customer），
+        列表返回的 customer_id/customer_name 应非空且客户名=合同名。"""
         cfg = default_job_config('cashier')
         cfg['pages']['ar_projects'] = True
         JobPermission.objects.create(job_title='cashier', config=cfg)
@@ -132,8 +133,9 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         item = resp.json()['data']['items'][0]
         self.assertEqual(item['contract_name'], 'Contract A')
-        self.assertIsNone(item['customer_id'])      # 未关联客户
-        self.assertIsNone(item['customer_name'])
+        # 合同名自动正名为客户：customer 非空且名称=合同名
+        self.assertIsNotNone(item['customer_id'])
+        self.assertEqual(item['customer_name'], 'Contract A')
 
     def test_cashier_page_access_cannot_write_ar_records(self):
         cfg = default_job_config('cashier')
