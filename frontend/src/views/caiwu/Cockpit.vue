@@ -222,23 +222,6 @@ async function silentDistill(content) {
   } catch (e) { /* silent */ }
 }
 
-// ── headline KPI cards ───────────────────────────────────────────────────────
-const cards = computed(() => {
-  const o = data.value?.overview
-  if (!o) return []
-  const m = o.month, y = o.ytd
-  return [
-    { label: '本月收入', value: fmtMoney(m.actual_revenue), color: '#2e7d32',
-      mom: m.revenue_mom, yoy: m.revenue_yoy },
-    { label: '本月利润', value: fmtMoney(m.actual_profit), color: '#e65100',
-      mom: m.profit_mom, yoy: m.profit_yoy, neg: (m.actual_profit ?? 0) < 0 },
-    { label: '本月收入达成', value: fmtRate(m.revenue_rate), rate: m.revenue_rate, isRate: true },
-    { label: '本月利润达成', value: fmtRate(m.profit_rate), rate: m.profit_rate, isRate: true },
-    { label: 'YTD收入达成', value: fmtRate(y.revenue_rate), rate: y.revenue_rate, isRate: true },
-    { label: 'YTD利润达成', value: fmtRate(y.profit_rate), rate: y.profit_rate, isRate: true },
-  ]
-})
-
 function fmtRate(r) { return r == null ? '—' : r.toFixed(1) + '%' }
 function rateColor(r) {
   if (r == null) return 'var(--muted)'
@@ -341,6 +324,189 @@ const buRateOption = computed(() => {
 
 const hasData = computed(() => (data.value?.bus || []).some(b => b.month.actual_revenue != null || b.month.actual_profit != null))
 
+// ── 经营命脉派生指标（全部源自 /cockpit 已返回字段，无需后端改动）─────────────
+const pct = (a, b) => (a == null || !b ? null : (a / b) * 100)
+const fmtPctVal = (v) => (v == null ? '—' : v.toFixed(1) + '%')
+
+const groupMonth = computed(() => data.value?.overview?.month || null)
+const groupYtd = computed(() => data.value?.overview?.ytd || null)
+
+// 当月集团：成本=收入−经营毛利；期间费用≈经营毛利−经营净利；各项利润率
+const derived = computed(() => {
+  const m = groupMonth.value
+  if (!m) return null
+  const rev = m.actual_revenue, gross = m.actual_gross_profit, prof = m.actual_profit
+  const cost = (rev != null && gross != null) ? rev - gross : null
+  const expense = (gross != null && prof != null) ? gross - prof : null
+  return {
+    revenue: rev, gross, profit: prof, cost, expense,
+    grossMargin: pct(gross, rev), netMargin: pct(prof, rev),
+    costRatio: pct(cost, rev), expenseRatio: pct(expense, rev),
+  }
+})
+
+// 核心指标带：收入 / 经营毛利 / 经营净利 / 期间费用
+const heroCards = computed(() => {
+  const m = groupMonth.value
+  if (!m) return []
+  const d = derived.value
+  return [
+    { key: 'rev', label: '本月收入', value: m.actual_revenue, color: '#2e7d32',
+      rate: m.revenue_rate, mom: m.revenue_mom, yoy: m.revenue_yoy },
+    { key: 'gross', label: '本月经营毛利', value: m.actual_gross_profit, color: '#00897b',
+      rate: m.gross_profit_rate, mom: m.gross_profit_mom, yoy: m.gross_profit_yoy,
+      sub: `毛利率 ${fmtPctVal(d?.grossMargin)}` },
+    { key: 'prof', label: '本月经营净利', value: m.actual_profit, color: '#1565c0',
+      rate: m.profit_rate, mom: m.profit_mom, yoy: m.profit_yoy, neg: (m.actual_profit ?? 0) < 0,
+      sub: `净利率 ${fmtPctVal(d?.netMargin)}` },
+    { key: 'exp', label: '本月期间费用', value: d?.expense, color: '#8a4b34',
+      sub: `费用率 ${fmtPctVal(d?.expenseRatio)}`, hint: '经营毛利 − 经营净利', muted: true },
+  ]
+})
+
+// 次级比率药丸条（当月集团）
+const ratioPills = computed(() => {
+  const d = derived.value, y = groupYtd.value
+  if (!d) return []
+  return [
+    { label: '毛利率', value: fmtPctVal(d.grossMargin) },
+    { label: '净利率', value: fmtPctVal(d.netMargin) },
+    { label: '成本率', value: fmtPctVal(d.costRatio) },
+    { label: '营业成本', value: wan(d.cost) },
+    { label: 'YTD收入', value: wan(y?.actual_revenue) },
+    { label: 'YTD净利', value: wan(y?.actual_profit) },
+  ]
+})
+
+// 年度目标进度（YTD 达成 vs 时间进度）
+const timeProgressPct = computed(() => (data.value ? (data.value.month / 12) * 100 : 0))
+const progressBars = computed(() => {
+  const y = groupYtd.value
+  if (!y) return []
+  const mk = (label, actual, target, rate, color) => ({
+    label, actual, target, rate, color,
+    fillPct: target ? Math.max(0, Math.min(115, (actual / target) * 100)) : null,
+  })
+  return [
+    mk('收入', y.actual_revenue, y.target_revenue, y.revenue_rate, '#2e7d32'),
+    mk('经营毛利', y.actual_gross_profit, y.target_gross_profit, y.gross_profit_rate, '#00897b'),
+    mk('经营净利', y.actual_profit, y.target_profit, y.profit_rate, '#1565c0'),
+  ]
+})
+
+// 事业部经营矩阵（核心大表）
+const buMatrix = computed(() => {
+  const bus = data.value?.bus || []
+  const groupRev = (bus.reduce((s, b) => s + (b.month.actual_revenue || 0), 0)) || 0
+  const rows = bus.map(b => {
+    const m = b.month, y = b.ytd
+    const rev = m.actual_revenue, gross = m.actual_gross_profit, prof = m.actual_profit
+    return {
+      bu: b.business_unit, rev, gross, prof,
+      grossMargin: pct(gross, rev), netMargin: pct(prof, rev),
+      revRate: m.revenue_rate, profRate: m.profit_rate,
+      revMom: m.revenue_mom, revYoy: m.revenue_yoy,
+      ytdRev: y.actual_revenue, ytdRate: y.revenue_rate, ytdProf: y.actual_profit,
+      share: groupRev ? pct(rev, groupRev) : null,
+      loss: (prof ?? 0) < 0,
+      hasData: rev != null || prof != null,
+    }
+  }).filter(r => r.hasData)
+  rows.sort((a, b) => (b.rev ?? -Infinity) - (a.rev ?? -Infinity))
+  return rows
+})
+
+const COMP_COLORS = ['#2e7d32', '#1565c0', '#00897b', '#f57f17', '#6a1b9a', '#c96342', '#5c6bc0', '#26a69a']
+
+// 收入构成（环形）
+const revStructOption = computed(() => {
+  const rows = buMatrix.value.filter(r => (r.rev ?? 0) > 0)
+  if (!rows.length) return null
+  const pie = rows.map((r, i) => ({ name: r.bu, value: r.rev, itemStyle: { color: COMP_COLORS[i % COMP_COLORS.length] } }))
+  return {
+    tooltip: { trigger: 'item', ...TOOLTIP, formatter: p => `${p.name}<br/>${wan(p.value)} 元 (${p.percent.toFixed(1)}%)` },
+    legend: { bottom: 0, type: 'scroll', textStyle: { fontSize: 11, color: '#6b5a4a' } },
+    series: [{
+      type: 'pie', radius: ['42%', '68%'], center: ['50%', '44%'], data: pie,
+      label: { formatter: p => `${p.name}\n${p.percent.toFixed(0)}%`, fontSize: 11, lineHeight: 14, color: '#5f4d3d' },
+      labelLine: { length: 8, length2: 8 }, labelLayout: HIDE_OVERLAP,
+      emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.25)' } },
+    }],
+  }
+})
+
+// 利润贡献（横向分歧条：正绿负红，直观看谁在拖累）
+const profitContribOption = computed(() => {
+  const rows = [...buMatrix.value].filter(r => r.prof != null).sort((a, b) => a.prof - b.prof)
+  if (!rows.length) return null
+  const names = rows.map(r => r.bu)
+  return {
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
+      formatter: p => `${p[0].name}<br/>经营净利：${wan(p[0].value)} 元` },
+    grid: { top: 8, right: 64, bottom: 8, left: 16, containLabel: true },
+    xAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => axisMoney(v) },
+      splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } } },
+    yAxis: { type: 'category', data: names, axisLabel: { color: '#6b5a4a', width: 96, overflow: 'truncate' } },
+    series: [{
+      type: 'bar', barMaxWidth: 22,
+      data: rows.map(r => ({ value: r.prof,
+        itemStyle: { color: r.prof >= 0 ? '#2e7d32' : '#c62828', borderRadius: r.prof >= 0 ? [0, 4, 4, 0] : [4, 0, 0, 4] },
+        label: { position: r.prof >= 0 ? 'right' : 'left' } })),
+      label: { show: true, fontSize: 10.5, fontWeight: 600, color: '#6b5a4a', formatter: p => axisMoney(p.value) },
+      labelLayout: HIDE_OVERLAP,
+    }],
+  }
+})
+
+// 利润率走势（毛利率 / 净利率 12 月双线）
+const marginTrendOption = computed(() => {
+  const t = data.value?.trend || []
+  const x = t.map(m => `${m.month}月`)
+  const gm = t.map(m => (m.actual_revenue ? +(m.actual_gross_profit / m.actual_revenue * 100).toFixed(1) : null))
+  const nm = t.map(m => (m.actual_revenue ? +(m.actual_profit / m.actual_revenue * 100).toFixed(1) : null))
+  return {
+    tooltip: { trigger: 'axis', ...TOOLTIP,
+      formatter: ps => `<b>${ps[0]?.axisValue}</b><br/>` + ps.map(p => `${p.marker}${p.seriesName}：${p.value == null ? '—' : p.value + '%'}`).join('<br/>') },
+    legend: bottomLegend({ data: ['毛利率', '净利率'] }),
+    grid: { ...gridFor(x, { threshold: 12 }), right: 52 },
+    xAxis: catAxis(x, { threshold: 12 }),
+    yAxis: valueAxis({ name: '%', formatter: '{value}%' }),
+    series: [
+      { name: '毛利率', type: 'line', smooth: true, data: gm, symbol: 'circle', symbolSize: 5,
+        lineStyle: { color: '#00897b', width: 2.5 }, itemStyle: { color: '#00897b' },
+        endLabel: endLabel(p => p.value == null ? '' : p.value + '%', { color: '#00897b' }), labelLayout: HIDE_OVERLAP },
+      { name: '净利率', type: 'line', smooth: true, data: nm, symbol: 'circle', symbolSize: 5,
+        lineStyle: { color: '#1565c0', width: 2.5 }, itemStyle: { color: '#1565c0' },
+        endLabel: endLabel(p => p.value == null ? '' : p.value + '%', { color: '#1565c0' }), labelLayout: HIDE_OVERLAP },
+    ],
+  }
+})
+
+// 自动风险预警（源自当月各事业部数据）
+const alerts = computed(() => {
+  const rows = buMatrix.value
+  if (!rows.length) return []
+  const list = []
+  rows.filter(r => r.loss).forEach(r => list.push({ level: 'high', text: `${r.bu} 当月经营净利为负（${wan(r.prof)}）` }))
+  const d = derived.value
+  if (d?.netMargin != null && d.netMargin < 0) list.push({ level: 'high', text: `集团整体净利率为负（${d.netMargin.toFixed(1)}%）` })
+  rows.filter(r => !r.loss && r.profRate != null && r.profRate < 80).forEach(r => list.push({ level: 'mid', text: `${r.bu} 净利达成偏低（${r.profRate.toFixed(0)}%）` }))
+  rows.filter(r => r.revMom != null && r.revMom <= -10).forEach(r => list.push({ level: 'mid', text: `${r.bu} 收入环比下滑 ${Math.abs(r.revMom).toFixed(0)}%` }))
+  const top = rows[0]
+  if (top && top.share != null && top.share > 50) list.push({ level: 'mid', text: `收入高度集中：${top.bu} 占集团 ${top.share.toFixed(0)}%，依赖单一事业部` })
+  if (!list.length) list.push({ level: 'ok', text: '未发现显著经营风险，各事业部运行平稳' })
+  return list.slice(0, 8)
+})
+
+// 增长引擎 / 主要拖累（用于结论提示）
+const engineLine = computed(() => {
+  const rows = buMatrix.value.filter(r => r.prof != null)
+  if (!rows.length) return null
+  const eng = [...rows].sort((a, b) => (b.prof) - (a.prof))[0]
+  const drag = [...rows].sort((a, b) => (a.prof) - (b.prof))[0]
+  return { eng, drag, sameOne: eng === drag }
+})
+
 onMounted(load)
 </script>
 
@@ -376,16 +542,59 @@ onMounted(load)
         📭 {{ data.year }}年{{ data.month }}月 · {{ selectedBu || '全集团' }} 暂无已发布数据
       </div>
 
-      <!-- ── headline KPI cards ─────────────────────────────────────────────── -->
-      <div class="kpi-grid kpi-6">
-        <div v-for="c in cards" :key="c.label" class="kpi-card">
-          <div class="label">{{ c.label }}</div>
-          <div class="value" :style="`color:${c.isRate ? rateColor(c.rate) : (c.neg ? '#c62828' : c.color)}`">{{ c.value }}</div>
-          <div v-if="!c.isRate" class="mom-line">
+      <!-- ════ ZONE 1 · 核心指标带（收入→毛利→净利→费用）════════════════════════ -->
+      <div class="kpi-grid kpi-4">
+        <div v-for="c in heroCards" :key="c.key" class="kpi-card" :class="{ 'kpi-muted': c.muted }">
+          <div class="label">{{ c.label }}<span v-if="c.hint" class="lbl-hint" :title="c.hint">ⓘ</span></div>
+          <div class="value" :style="`color:${c.neg ? '#c62828' : c.color}`">{{ fmtMoney(c.value) }}</div>
+          <div class="kpi-meta">
+            <span v-if="c.rate != null" class="rate-chip" :style="`color:${rateColor(c.rate)};border-color:${rateColor(c.rate)}55`">达成 {{ fmtRate(c.rate) }}</span>
+            <span v-if="c.sub" class="kpi-sub-tag">{{ c.sub }}</span>
+          </div>
+          <div v-if="c.mom != null || c.yoy != null" class="mom-line">
             <span class="mom-badge" :class="chgClass(c.mom)">{{ chgLabel(c.mom) }} 环比</span>
             <span class="mom-badge" :class="chgClass(c.yoy)">{{ chgLabel(c.yoy) }} 同比</span>
           </div>
-          <div v-else class="sub">{{ data.year }}年{{ data.month }}月</div>
+        </div>
+      </div>
+
+      <!-- 次级比率条 -->
+      <div class="ratio-strip">
+        <div v-for="p in ratioPills" :key="p.label" class="ratio-pill">
+          <span class="rp-label">{{ p.label }}</span>
+          <span class="rp-value">{{ p.value }}</span>
+        </div>
+      </div>
+
+      <!-- ════ ZONE 2 · 年度目标进度 + 风险预警 ═══════════════════════════════════ -->
+      <div class="zone-2col">
+        <div class="card progress-card">
+          <div class="section-title">年度目标进度 · 截至 {{ data.month }} 月</div>
+          <div v-for="b in progressBars" :key="b.label" class="prog-row">
+            <div class="prog-head">
+              <span class="prog-name">{{ b.label }}</span>
+              <span class="prog-nums">{{ wan(b.actual) }} / 目标 {{ wan(b.target) }}</span>
+              <span class="prog-rate" :style="`color:${rateColor(b.rate)}`">{{ fmtRate(b.rate) }}</span>
+            </div>
+            <div class="prog-track">
+              <div class="prog-fill" :style="`width:${b.fillPct == null ? 0 : Math.min(100, b.fillPct)}%;background:${b.color}`"></div>
+              <div class="prog-time" :style="`left:${timeProgressPct}%`"></div>
+            </div>
+          </div>
+          <div class="prog-legend">实线=达成进度，竖虚线=时间进度（{{ timeProgressPct.toFixed(0) }}%）；条超过虚线即「跑赢时间」</div>
+        </div>
+
+        <div class="card alert-card">
+          <div class="section-title">⚠ 经营风险预警</div>
+          <ul class="alert-list">
+            <li v-for="(a, i) in alerts" :key="i" class="alert-item" :class="`al-${a.level}`">
+              <span class="al-dot"></span><span>{{ a.text }}</span>
+            </li>
+          </ul>
+          <div v-if="engineLine" class="engine-line">
+            🚀 增长引擎 <b>{{ engineLine.eng.bu }}</b>（净利 {{ wan(engineLine.eng.prof) }}）
+            <template v-if="!engineLine.sameOne">　🪨 主要拖累 <b>{{ engineLine.drag.bu }}</b>（净利 {{ wan(engineLine.drag.prof) }}）</template>
+          </div>
         </div>
       </div>
 
@@ -406,27 +615,84 @@ onMounted(load)
         </div>
       </div>
 
-      <!-- ── trend charts ───────────────────────────────────────────────────── -->
-      <div class="chart-grid">
+      <!-- ════ ZONE 3 · 12 个月趋势（收入 / 利润 / 利润率）════════════════════════ -->
+      <div class="chart-grid chart-grid-3">
         <div class="card">
           <div class="section-title" style="margin-bottom:8px">收入 · 目标 vs 实际（{{ data.year }}年）</div>
-          <BaseChart :option="revenueTrend" height="300px" />
+          <BaseChart :option="revenueTrend" height="260px" />
         </div>
         <div class="card">
           <div class="section-title" style="margin-bottom:8px">利润 · 目标 vs 实际（{{ data.year }}年）</div>
-          <BaseChart :option="profitTrend" height="300px" />
+          <BaseChart :option="profitTrend" height="260px" />
+        </div>
+        <div class="card">
+          <div class="section-title" style="margin-bottom:8px">利润率走势 · 毛利率 / 净利率</div>
+          <BaseChart :option="marginTrendOption" height="260px" />
         </div>
       </div>
 
-      <!-- ── per-BU charts ──────────────────────────────────────────────────── -->
+      <!-- ════ ZONE 4 · 事业部经营矩阵（核心大表）════════════════════════════════ -->
+      <div class="card matrix-card">
+        <div class="section-title">事业部经营矩阵 · {{ data.year }}年{{ data.month }}月（按当月收入排序）</div>
+        <div class="matrix-wrap">
+          <table class="matrix-table">
+            <thead>
+              <tr>
+                <th class="l">事业部</th>
+                <th>当月收入</th><th>收入达成</th><th>环比</th>
+                <th>经营毛利</th><th>毛利率</th>
+                <th>经营净利</th><th>净利率</th><th>净利达成</th>
+                <th>YTD收入</th><th class="share-th">收入占比</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!buMatrix.length"><td colspan="11" class="mtx-empty">暂无已发布的事业部数据</td></tr>
+              <tr v-for="r in buMatrix" :key="r.bu" :class="{ 'row-loss': r.loss }">
+                <td class="l bu">{{ r.bu }}</td>
+                <td class="strong">{{ wan(r.rev) }}</td>
+                <td><span :style="`color:${rateColor(r.revRate)}`">{{ fmtRate(r.revRate) }}</span></td>
+                <td :class="chgClass(r.revMom)">{{ chgLabel(r.revMom) }}</td>
+                <td>{{ wan(r.gross) }}</td>
+                <td class="muted">{{ fmtPctVal(r.grossMargin) }}</td>
+                <td class="strong" :class="{ neg: r.loss }">{{ wan(r.prof) }}</td>
+                <td class="muted">{{ fmtPctVal(r.netMargin) }}</td>
+                <td><span :style="`color:${rateColor(r.profRate)}`">{{ fmtRate(r.profRate) }}</span></td>
+                <td>{{ wan(r.ytdRev) }}</td>
+                <td class="share-td">
+                  <div class="share-cell">
+                    <span class="share-bar" :style="`width:${r.share || 0}%`"></span>
+                    <span class="share-num">{{ r.share == null ? '—' : r.share.toFixed(0) + '%' }}</span>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ════ ZONE 5 · 收入构成 + 利润贡献 ══════════════════════════════════════ -->
+      <div class="chart-grid">
+        <div class="card">
+          <div class="section-title" style="margin-bottom:8px">收入构成 · 各事业部占比</div>
+          <BaseChart v-if="revStructOption" :option="revStructOption" height="300px" />
+          <div v-else class="mini-empty">暂无收入数据</div>
+        </div>
+        <div class="card">
+          <div class="section-title" style="margin-bottom:8px">利润贡献 · 谁在贡献 / 拖累</div>
+          <BaseChart v-if="profitContribOption" :option="profitContribOption" height="300px" />
+          <div v-else class="mini-empty">暂无利润数据</div>
+        </div>
+      </div>
+
+      <!-- ════ ZONE 6 · 各事业部当月收入利润 + YTD 达成率 ════════════════════════ -->
       <div class="chart-grid">
         <div class="card">
           <div class="section-title" style="margin-bottom:8px">各事业部当月收入 / 利润</div>
-          <BaseChart :option="buActualOption" height="320px" />
+          <BaseChart :option="buActualOption" height="300px" />
         </div>
         <div class="card">
           <div class="section-title" style="margin-bottom:8px">各事业部 YTD 达成率</div>
-          <BaseChart :option="buRateOption" height="320px" />
+          <BaseChart :option="buRateOption" height="300px" />
         </div>
       </div>
       </div>
@@ -577,6 +843,101 @@ onMounted(load)
   background: rgba(180,140,110,.08); border: 1px dashed var(--border);
   border-radius: 12px; font-size: 13px; color: var(--muted);
 }
+
+/* ── ZONE 1 · hero KPIs + ratio strip ───────────────────────────────────────── */
+.kpi-4 { grid-template-columns: repeat(4, 1fr) !important; }
+@media (max-width: 960px) { .kpi-4 { grid-template-columns: repeat(2, 1fr) !important; } }
+@media (max-width: 520px) { .kpi-4 { grid-template-columns: 1fr !important; } }
+.kpi-card.kpi-muted { background: rgba(138,75,52,0.04); }
+.lbl-hint { font-size: 10px; color: var(--muted); margin-left: 4px; cursor: help; }
+.kpi-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 5px; }
+.rate-chip { font-size: 11px; font-weight: 700; padding: 1px 8px; border: 1px solid; border-radius: 10px; }
+.kpi-sub-tag { font-size: 11.5px; color: var(--muted); font-weight: 600; }
+
+.ratio-strip {
+  display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-top: 12px;
+}
+@media (max-width: 960px) { .ratio-strip { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 520px) { .ratio-strip { grid-template-columns: repeat(2, 1fr); } }
+.ratio-pill {
+  display: flex; flex-direction: column; gap: 2px; padding: 9px 12px;
+  background: rgba(255,255,255,0.6); border: 1px solid rgba(180,140,110,.16);
+  border-radius: 10px;
+}
+.rp-label { font-size: 11px; color: var(--muted); }
+.rp-value { font-size: 16px; font-weight: 700; color: var(--text); }
+
+/* ── ZONE 2 · progress + alerts ─────────────────────────────────────────────── */
+.zone-2col { display: grid; grid-template-columns: 1.25fr 1fr; gap: 16px; margin-top: 16px; }
+@media (max-width: 900px) { .zone-2col { grid-template-columns: 1fr; } }
+
+.prog-row { margin: 12px 0; }
+.prog-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+.prog-name { font-size: 13px; font-weight: 700; color: var(--text); min-width: 56px; }
+.prog-nums { font-size: 12px; color: var(--muted); flex: 1; }
+.prog-rate { font-size: 14px; font-weight: 800; }
+.prog-track {
+  position: relative; height: 14px; border-radius: 8px;
+  background: rgba(120,90,70,.10); overflow: visible;
+}
+.prog-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 8px; transition: width .5s ease; }
+.prog-time {
+  position: absolute; top: -3px; bottom: -3px; width: 0;
+  border-left: 2px dashed rgba(60,45,35,.55);
+}
+.prog-legend { font-size: 11px; color: var(--muted); margin-top: 10px; line-height: 1.5; }
+
+.alert-card { display: flex; flex-direction: column; }
+.alert-list { list-style: none; margin: 8px 0 0; padding: 0; flex: 1; }
+.alert-item {
+  display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px;
+  color: var(--text); padding: 6px 0; line-height: 1.5;
+  border-bottom: 1px dashed rgba(0,0,0,0.05);
+}
+.alert-item:last-child { border-bottom: none; }
+.al-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+.al-high .al-dot { background: #c62828; box-shadow: 0 0 0 3px rgba(198,40,40,.14); }
+.al-mid .al-dot { background: #e65100; box-shadow: 0 0 0 3px rgba(230,81,0,.12); }
+.al-ok .al-dot { background: #2e7d32; box-shadow: 0 0 0 3px rgba(46,125,50,.12); }
+.al-high { color: #b71c1c; font-weight: 600; }
+.engine-line {
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(0,0,0,0.06);
+  font-size: 12.5px; color: var(--text);
+}
+.engine-line b { color: var(--primary); }
+
+/* ── ZONE 3 · 3-up chart grid ───────────────────────────────────────────────── */
+.chart-grid-3 { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 1100px) { .chart-grid-3 { grid-template-columns: 1fr; } }
+
+/* ── ZONE 4 · BU matrix table ───────────────────────────────────────────────── */
+.matrix-card { margin-top: 16px; }
+.matrix-wrap { overflow-x: auto; margin-top: 6px; }
+.matrix-table { width: 100%; border-collapse: collapse; font-size: 12.5px; white-space: nowrap; }
+.matrix-table th {
+  font-size: 11px; font-weight: 700; color: var(--muted); text-align: right;
+  padding: 9px 12px; background: rgba(0,0,0,0.025); border-bottom: 1px solid rgba(0,0,0,0.07);
+  position: sticky; top: 0;
+}
+.matrix-table th.l, .matrix-table td.l { text-align: left; }
+.matrix-table td { text-align: right; padding: 9px 12px; border-bottom: 1px solid rgba(0,0,0,0.045); color: var(--text); }
+.matrix-table tbody tr:hover { background: rgba(201,99,66,0.04); }
+.matrix-table .bu { font-weight: 700; color: var(--text); }
+.matrix-table .strong { font-weight: 700; }
+.matrix-table .muted { color: var(--muted); }
+.matrix-table .neg { color: #c62828; }
+.matrix-table .mom-up { color: #2e7d32; }
+.matrix-table .mom-down { color: #c62828; }
+.matrix-table .mom-neutral { color: var(--muted); }
+.row-loss { background: rgba(198,40,40,0.045); }
+.row-loss:hover { background: rgba(198,40,40,0.075) !important; }
+.mtx-empty { text-align: center !important; color: var(--muted); padding: 24px !important; }
+.share-th { min-width: 110px; }
+.share-cell { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.share-bar { height: 8px; border-radius: 4px; background: linear-gradient(90deg, #c96342, #e8a05a); min-width: 2px; }
+.share-num { min-width: 32px; text-align: right; color: var(--muted); font-weight: 600; }
+
+.mini-empty { display: flex; align-items: center; justify-content: center; height: 280px; color: var(--muted); font-size: 13px; }
 
 .mom-line { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .mom-badge {
