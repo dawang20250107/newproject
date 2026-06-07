@@ -5514,10 +5514,43 @@ def ar_records_batch_assign(request):
 # 客户管理 (customers)
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _customer_ar_stats(customer_ids, request, today):
+    """对一批客户聚合「项目数 / 累计开票 / 未收 / 逾期」，受部门权限作用域约束。
+
+    链路：ARRecord → project(ARProject) → customer。回款明细的部门以 ARRecord 上
+    反范式的 delivery_dept 为准（与其它应收接口一致），逾期=未收>0 且 已过应收日。
+    返回 {customer_id: {project_count, invoiced, outstanding, overdue}}。
+    """
+    out = {cid: {'project_count': 0, 'invoiced': 0.0, 'outstanding': 0.0, 'overdue': 0.0}
+           for cid in customer_ids}
+    if not customer_ids:
+        return out
+
+    # 项目数（部门作用域）
+    proj_qs = _ar_dept_filter(
+        ARProject.objects.filter(customer_id__in=customer_ids), request)
+    for r in proj_qs.values('customer_id').annotate(c=Count('id')):
+        out[r['customer_id']]['project_count'] = r['c']
+
+    # 应收聚合（部门作用域走 ARRecord.delivery_dept）
+    rec_qs = _ar_dept_filter(
+        ARRecord.objects.filter(project__customer_id__in=customer_ids), request)
+    for r in rec_qs.values('project__customer_id').annotate(
+            inv=Sum('actual_invoice_amount'), out_amt=Sum('outstanding_amount')):
+        d = out[r['project__customer_id']]
+        d['invoiced'] = float(r['inv'] or 0)
+        d['outstanding'] = float(r['out_amt'] or 0)
+    for r in (rec_qs.filter(due_date__lt=today, outstanding_amount__gt=0)
+              .values('project__customer_id').annotate(ov=Sum('outstanding_amount'))):
+        out[r['project__customer_id']]['overdue'] = float(r['ov'] or 0)
+
+    return out
+
+
 @csrf_exempt
 @pk_required()
 def customers(request):
-    """GET  /ar/customers   — 分页列表
+    """GET  /ar/customers   — 分页列表（with_stats=1 附带应收聚合）
     POST /ar/customers   — 新增客户
     """
     if request.pk_role not in ('super_admin', 'dept_admin', 'user'):
@@ -5534,7 +5567,16 @@ def customers(request):
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
         total = qs.count()
-        rows = [c.to_dict() for c in qs[(page - 1) * size: page * size]]
+        page_customers = list(qs[(page - 1) * size: page * size])
+        rows = [c.to_dict() for c in page_customers]
+        # 默认附带应收聚合（列表即看板：谁欠钱一目了然）
+        if request.GET.get('with_stats', '1') != '0':
+            today = datetime.date.today()
+            stats = _customer_ar_stats([c.id for c in page_customers], request, today)
+            for row in rows:
+                s = stats.get(row['id'])
+                if s:
+                    row.update(s)
         return ok({'items': rows, 'total': total, 'page': page, 'size': size})
 
     if request.method == 'POST':
@@ -5569,7 +5611,45 @@ def customer_detail(request, pk):
         return err('客户不存在', 404)
 
     if request.method == 'GET':
-        return ok(c.to_dict())
+        d = c.to_dict()
+        today = datetime.date.today()
+        # 该客户的项目 + 每个项目的应收聚合（部门作用域）
+        proj_qs = _ar_dept_filter(
+            ARProject.objects.filter(customer_id=pk), request).order_by('short_name')
+        proj_ids = [p.id for p in proj_qs]
+        rec_qs = _ar_dept_filter(
+            ARRecord.objects.filter(project_id__in=proj_ids), request)
+        per_proj = {pid: {'invoiced': 0.0, 'outstanding': 0.0, 'overdue': 0.0, 'records': 0}
+                    for pid in proj_ids}
+        for r in rec_qs.values('project_id').annotate(
+                inv=Sum('actual_invoice_amount'), out_amt=Sum('outstanding_amount'),
+                cnt=Count('id')):
+            pp = per_proj[r['project_id']]
+            pp['invoiced'] = float(r['inv'] or 0)
+            pp['outstanding'] = float(r['out_amt'] or 0)
+            pp['records'] = r['cnt']
+        for r in (rec_qs.filter(due_date__lt=today, outstanding_amount__gt=0)
+                  .values('project_id').annotate(ov=Sum('outstanding_amount'))):
+            per_proj[r['project_id']]['overdue'] = float(r['ov'] or 0)
+        projects = []
+        for p in proj_qs:
+            pp = per_proj.get(p.id, {})
+            projects.append({
+                'id': p.id, 'project_no': p.project_no,
+                'short_name': p.short_name, 'contract_name': p.contract_name,
+                'delivery_dept': p.delivery_dept, 'business_mode': p.business_mode,
+                'invoiced': pp.get('invoiced', 0.0), 'outstanding': pp.get('outstanding', 0.0),
+                'overdue': pp.get('overdue', 0.0), 'records': pp.get('records', 0),
+            })
+        d['projects'] = projects
+        d['stats'] = {
+            'project_count': len(projects),
+            'invoiced': round(sum(p['invoiced'] for p in projects), 2),
+            'outstanding': round(sum(p['outstanding'] for p in projects), 2),
+            'overdue': round(sum(p['overdue'] for p in projects), 2),
+        }
+        d['stats']['collected'] = round(d['stats']['invoiced'] - d['stats']['outstanding'], 2)
+        return ok(d)
 
     if request.method == 'PUT':
         denied = _write_denied(request)

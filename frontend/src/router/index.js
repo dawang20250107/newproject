@@ -10,6 +10,8 @@ const routes = [
   { path: '/stats', component: () => import('../views/Stats.vue'), meta: { page: 'stats' } },
   // AR module
   { path: '/ar/projects', component: () => import('../views/ar/ARProjects.vue'), meta: { page: 'ar_projects' } },
+  { path: '/ar/customers', component: () => import('../views/ar/CustomerList.vue'), meta: { page: 'ar_projects' } },
+  // 旧合同管理路由保留（导航入口已下线，直链仍可访问）
   { path: '/ar/contracts', component: () => import('../views/ar/ARContracts.vue'), meta: { page: 'ar_projects' } },
   { path: '/ar/records', component: () => import('../views/ar/ARRecords.vue'), meta: { page: 'ar_records' } },
   { path: '/ar/advances', component: () => import('../views/ar/Advances.vue'), meta: { page: 'ar_advance' } },
