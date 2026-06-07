@@ -113,7 +113,7 @@ class ARProject(models.Model):
             return f'{prefix}{max_seq + 1:04d}'
 
     def _autolink_customer(self):
-        """合同名即客户：未显式挂客户时，按「合同名称」(实为客户公司名)自动建/挂客户。
+        """客户名即客户：未显式挂客户时，按「客户名称」自动建/挂客户。
         让正式导入/新建项目也落实"客户正名"，不必依赖一次性回填。失败不阻断项目保存。"""
         name = (self.customer_name or '').strip()
         if not name:
@@ -125,6 +125,27 @@ class ARProject(models.Model):
         except Exception:
             pass
 
+    def _sync_level_with_customer(self):
+        """客户等级以客户为准（单一真相源）：
+        - 项目若显式填了等级且与客户不同 → 上推更新客户主等级，并同步该客户其余项目；
+        - 最终项目等级镜像客户等级 → 同一客户所有项目等级永远一致。
+        失败不阻断项目保存。"""
+        if not self.customer_id:
+            return
+        try:
+            cust = self.customer
+            plv = (self.customer_level or '').strip()
+            clv = (cust.level or '').strip()
+            if plv and plv != clv:
+                cust.level = plv
+                cust.save(update_fields=['level', 'updated_at'])
+                # 该客户的其它项目镜像跟上（本项目下面统一镜像）
+                ARProject.objects.filter(customer_id=cust.id).exclude(pk=self.pk).update(customer_level=plv)
+                clv = plv
+            self.customer_level = clv
+        except Exception:
+            pass
+
     def save(self, *args, **kwargs):
         self.is_shared = (self.sales_contact != self.project_manager)
         self.total_days = (self.reconciliation_days + self.invoice_wait_days
@@ -133,6 +154,8 @@ class ARProject(models.Model):
             self.tax_rate = Decimal('0')
         if self.customer_id is None:
             self._autolink_customer()
+        # 客户等级以客户为准：拿到 customer 后做等级镜像/上推
+        self._sync_level_with_customer()
         if self.project_no:
             return super().save(*args, **kwargs)
         # 自动生成编号：极少数并发下可能撞 unique，重试几次再放弃。

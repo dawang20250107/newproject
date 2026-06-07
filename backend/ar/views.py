@@ -5680,6 +5680,7 @@ def customers_bulk_tag_level(request):
             return err('当前筛选没有匹配的客户')
         if cnt > 5000:
             return err('选中客户超过5000个，请缩小筛选范围后再批量操作')
+        id_list = list(qs.values_list('id', flat=True))
         updated = qs.update(level=level)
     else:
         if not ids or not isinstance(ids, list):
@@ -5689,20 +5690,51 @@ def customers_bulk_tag_level(request):
         except (TypeError, ValueError):
             return err('ids 必须为整数数组')
         updated = Customer.objects.filter(pk__in=id_list).update(level=level)
+    # 以客户为准：客户等级变更后，同步镜像到其名下所有项目
+    ARProject.objects.filter(customer_id__in=id_list).update(customer_level=level)
 
     action = f'设置等级为「{level}」' if level else '清空等级'
     return ok({'updated': updated, 'level': level,
                'message': f'{action}，共更新 {updated} 个客户'})
 
 
+def _reconcile_customer_levels(customer_ids):
+    """以客户为准对齐「客户等级 ↔ 项目等级」。
+    每个客户取规范等级 = 客户已有等级；客户为空则取其项目中出现最多的非空等级；
+    再把规范等级回写客户、镜像到该客户全部项目。返回（对齐的客户数）。"""
+    from collections import Counter
+    aligned = 0
+    for c in Customer.objects.filter(id__in=list(customer_ids)).iterator():
+        proj_levels = [(pl or '').strip() for pl in
+                       ARProject.objects.filter(customer_id=c.id).values_list('customer_level', flat=True)]
+        canonical = (c.level or '').strip()
+        if not canonical:
+            nonempty = [pl for pl in proj_levels if pl]
+            if nonempty:
+                canonical = Counter(nonempty).most_common(1)[0][0]
+        if not canonical:
+            continue
+        touched = False
+        if (c.level or '').strip() != canonical:
+            c.level = canonical
+            c.save(update_fields=['level', 'updated_at'])
+            touched = True
+        n = (ARProject.objects.filter(customer_id=c.id)
+             .exclude(customer_level=canonical).update(customer_level=canonical))
+        if touched or n:
+            aligned += 1
+    return aligned
+
+
 @csrf_exempt
 @pk_required()
 def customers_sync_from_projects(request):
-    """POST /customers/sync-from-projects — 从项目台账回填客户名单。
+    """POST /customers/sync-from-projects — 从项目台账回填客户名单 + 对齐等级。
 
     历史项目（在「客户正名」之前导入的）可能有客户名称但未挂客户实体。
-    本接口扫描有客户名称却未挂客户的项目，按唯一客户名 get_or_create 客户并挂接，
-    一个客户对应多个项目（不合并金额、不动应收）。幂等：重复点击不会重复建。
+    本接口：①扫描有客户名称却未挂客户的项目，按唯一客户名 get_or_create 客户并挂接；
+    ②以客户为准对齐「客户等级↔项目等级」（同一客户所有项目等级统一）。
+    一个客户对应多个项目（不合并金额、不动应收）。幂等：重复点击安全。
     部门权限：仅同步当前用户有权部门的项目。
     """
     denied = _write_denied(request)
@@ -5728,9 +5760,19 @@ def customers_sync_from_projects(request):
         ARProject.objects.filter(pk=p.pk).update(customer=cust)
         linked += 1
 
+    # 对齐等级：本用户有权部门项目所涉及的全部客户
+    scoped_proj = _ar_dept_filter(ARProject.objects.filter(customer__isnull=False), request)
+    cust_ids = set(scoped_proj.values_list('customer_id', flat=True))
+    aligned = _reconcile_customer_levels(cust_ids)
+
+    parts = []
+    if created or linked:
+        parts.append(f'新建 {created} 个客户、挂接 {linked} 个项目')
+    if aligned:
+        parts.append(f'对齐 {aligned} 个客户的等级')
+    msg = ('同步完成：' + '；'.join(parts)) if parts else '客户名单与等级已是最新，无需处理'
     return ok({'created_customers': created, 'linked_projects': linked,
-               'message': (f'同步完成：新建 {created} 个客户，挂接 {linked} 个项目'
-                           if linked else '客户名单已是最新，无需回填')})
+               'aligned_levels': aligned, 'message': msg})
 
 
 @csrf_exempt
@@ -5795,12 +5837,16 @@ def customer_detail(request, pk):
             if Customer.objects.filter(name=name).exclude(pk=pk).exists():
                 return err(f'客户名称「{name}」已被其他客户使用')
             c.name = name
+        level_changed = 'level' in data
         for field in ('level', 'contact', 'notes'):
             if field in data:
                 setattr(c, field, (data[field] or '').strip())
         if 'customer_date' in data:
             c.customer_date = _normalize_date(data['customer_date']) or None
         c.save()
+        # 以客户为准：等级变更同步镜像到该客户名下所有项目
+        if level_changed:
+            ARProject.objects.filter(customer_id=c.id).update(customer_level=c.level)
         return ok(c.to_dict())
 
     if request.method == 'DELETE':

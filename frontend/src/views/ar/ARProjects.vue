@@ -749,7 +749,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <input v-model="form.business_mode" />
               </label>
               <label class="form-field">
-                <span>客户等级 <em>*</em></span>
+                <span>客户等级 <em>*</em> <span class="lvl-hint" title="客户等级以客户为准：在此设置会同步到该客户及其名下所有项目">ⓘ 同步到客户</span></span>
                 <select v-model="form.customer_level">
                   <option v-for="l in CUSTOMER_LEVELS" :key="l" :value="l">{{ l }}</option>
                 </select>
@@ -1120,4 +1120,5 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .imp-sec-list li { font-size: 12.5px; color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-all; border-bottom: 1px dashed rgba(0,0,0,0.06); padding-bottom: 4px; }
 .imp-sec-list li:last-child { border-bottom: none; }
 .imp-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 12px 0; }
+.lvl-hint { font-size: 10.5px; font-weight: 600; color: #7a9fd4; cursor: help; margin-left: 4px; }
 </style>
