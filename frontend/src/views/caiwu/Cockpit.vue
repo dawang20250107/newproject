@@ -308,7 +308,9 @@ const bulletOption = computed(() => {
     { name: '经营净利', a: y.actual_profit, t: y.target_profit },
   ].map(r => ({ ...r, ach: r.t ? +(r.a / r.t * 100).toFixed(1) : null }))
   const cats = rows.map(r => r.name).reverse()
-  const maxX = Math.max(120, ...rows.map(r => r.ach || 0)) * 1.05
+  // 目标缺失/极端时夹紧轴范围，避免达成率爆表把基准线挤到角落
+  const maxX = Math.min(Math.max(120, ...rows.map(r => r.ach || 0)) * 1.05, 200)
+  const minX = Math.min(0, ...rows.map(r => r.ach || 0))
   const barColor = ach => (ach == null ? '#bdbdbd' : ach >= 100 ? '#2e7d32' : ach >= tp ? '#f9a825' : '#e53935')
   return {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
@@ -317,7 +319,7 @@ const bulletOption = computed(() => {
         return `<b>${r.name}</b><br/>YTD实际：${axisMoney(r.a)}<br/>年度目标：${axisMoney(r.t)}<br/>达成率：<b>${r.ach == null ? '—' : r.ach + '%'}</b><br/>时间进度：${tp.toFixed(0)}%`
       } },
     grid: { top: 30, right: 24, bottom: 16, left: 16, containLabel: true },
-    xAxis: { type: 'value', max: maxX, axisLabel: { color: '#9b8070', formatter: '{value}%' },
+    xAxis: { type: 'value', max: maxX, min: minX, axisLabel: { color: '#9b8070', formatter: '{value}%' },
       splitLine: { lineStyle: { color: 'rgba(180,140,110,.12)' } } },
     yAxis: { type: 'category', data: cats, axisLabel: { color: '#5f4d3d', fontSize: 12, fontWeight: 600 } },
     series: [{

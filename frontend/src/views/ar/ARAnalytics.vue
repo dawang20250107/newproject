@@ -164,22 +164,23 @@ const topOption = computed(() => {
   if (!topData.value?.length) return null
   const arr = [...topData.value].reverse()
   const names = arr.map(p => p.short_name.length > 10 ? p.short_name.slice(0, 10) + '…' : p.short_name)
-  // 全集团口径下按事业部着色，单事业部时统一主题色
-  const bars = arr.map(p => ({ value: parseFloat(p.total_outstanding),
-    itemStyle: { color: isGroupScope.value ? deptColor(p.delivery_dept) : '#c96342', borderRadius: [0, 4, 4, 0] } }))
+  const depts = [...new Set(arr.map(p => p.delivery_dept))]
   return {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
       formatter: p => { const d = arr[p[0].dataIndex]; return `${d.short_name}<br/><span style="color:${deptColor(d.delivery_dept)}">●</span>${d.delivery_dept}<br/>未收：${fmtWan(p[0].value)} 元` } },
     grid: { top: 8, right: 84, bottom: isGroupScope.value ? 34 : 8, left: 16, containLabel: true },
-    legend: isGroupScope.value ? bottomLegend({ data: [...new Set(arr.map(p => p.delivery_dept))], selectedMode: false }) : undefined,
+    legend: isGroupScope.value ? bottomLegend({ data: depts, selectedMode: false }) : undefined,
     xAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => fmtWan(v) } },
     yAxis: { type: 'category', data: names, axisLabel: { color: '#9b8070', width: 128, overflow: 'truncate' } },
     series: isGroupScope.value
-      ? [...new Set(arr.map(p => p.delivery_dept))].map(dept => ({
+      // 全集团：每事业部一个系列，系列色=部门色（图例与柱色一致）
+      ? depts.map(dept => ({
           name: dept, type: 'bar', stack: 'x', barMaxWidth: 22,
-          data: bars.map((b, i) => arr[i].delivery_dept === dept ? b : { value: '-' }),
+          itemStyle: { color: deptColor(dept), borderRadius: [0, 4, 4, 0] },
+          data: arr.map(p => p.delivery_dept === dept ? parseFloat(p.total_outstanding) : '-'),
           label: rightLabel(p => p.value === '-' ? '' : fmtWan(p.value)), labelLayout: HIDE_OVERLAP }))
-      : [{ type: 'bar', data: bars, barMaxWidth: 22,
+      : [{ type: 'bar', barMaxWidth: 22, itemStyle: { color: '#c96342', borderRadius: [0, 4, 4, 0] },
+          data: arr.map(p => parseFloat(p.total_outstanding)),
           label: rightLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP }],
   }
 })

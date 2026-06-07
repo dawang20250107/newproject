@@ -70,6 +70,7 @@ class Command(BaseCommand):
             self._seed_ar(data_dir / 'ar_records.xlsx', clear=not opts['no_clear'])
         if do_fin:
             self._seed_fin(data_dir / 'financials_2026.xlsx', clear=not opts['no_clear'])
+            self._seed_targets(clear=not opts['no_clear'])
         self.stdout.write(self.style.SUCCESS('演示数据载入完成。'))
 
     # ── 应收明细 ────────────────────────────────────────────────────────────────
@@ -215,3 +216,34 @@ class Command(BaseCommand):
                         ne += 1
         wb.close()
         self.stdout.write(self.style.SUCCESS(f'财务：批次 {nb} · 科目分录 {ne}'))
+
+    # ── 经营目标（按已发布实际的运行率推导，使达成率口径合理）──────────────────────
+    def _seed_targets(self, clear):
+        """收入目标取 1-5 月实际的年化（≈与时间进度对齐）；毛利/净利目标取理想正向
+        (收入×6% / 收入×3%)，从而真实呈现"收入达标、盈利远未达标"的经营故事。"""
+        from caiwu.models import FinancialTarget
+        from caiwu import views as V
+        if clear:
+            FinancialTarget.objects.filter(year=FIN_YEAR).delete()
+        actuals = V._collect_actuals(BUS, {FIN_YEAR})
+        elapsed = len(MONTH_COLS)  # 已发布月数
+        made = 0
+        for bu in BUS:
+            ytd_rev = sum((V._rp(actuals, bu, FIN_YEAR, m)[0] or 0) for m in MONTH_COLS)
+            if ytd_rev <= 0:
+                continue
+            ann_rev = round(ytd_rev / elapsed * 12)
+            ann_gross = round(ann_rev * 0.06)
+            ann_profit = round(ann_rev * 0.03)
+            FinancialTarget.objects.update_or_create(
+                business_unit=bu, year=FIN_YEAR, month=FinancialTarget.MONTH_ANNUAL,
+                defaults=dict(target_revenue=ann_rev, target_gross_profit=ann_gross,
+                              target_profit=ann_profit))
+            made += 1
+            for m in MONTH_COLS:
+                FinancialTarget.objects.update_or_create(
+                    business_unit=bu, year=FIN_YEAR, month=m,
+                    defaults=dict(target_revenue=round(ann_rev / 12),
+                                  target_gross_profit=round(ann_gross / 12),
+                                  target_profit=round(ann_profit / 12)))
+        self.stdout.write(self.style.SUCCESS(f'目标：{made} 个事业部（年度 + 1-5 月）'))
