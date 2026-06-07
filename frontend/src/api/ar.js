@@ -59,7 +59,7 @@ const ar = {
 
   // 草稿项目
   listDraftProjects: p => api.get('/ar/projects/drafts', { params: p }),
-  clearDraftProjects: () => api.post('/ar/projects/drafts/clear', {}),
+  clearDraftProjects: (body) => api.post('/ar/projects/drafts/clear', body || {}),
 
   // 供应商池 (suppliers)
   listSuppliers: p => api.get('/ar/suppliers', { params: p }),

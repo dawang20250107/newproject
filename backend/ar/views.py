@@ -5914,25 +5914,54 @@ def project_drafts(request):
 @csrf_exempt
 @pk_required()
 def project_drafts_clear(request):
-    """POST /ar/projects/drafts/clear  —  一键清理（删除）所有待完善草稿项目。
+    """POST /ar/projects/drafts/clear  —  清理待完善草稿项目。
 
     草稿是早期应收导入「找不到项目时自动新建」遗留的占位项目；新版导入已停用自动建草稿。
-    仅删 is_draft=True，且会连带其下应收/回款（草稿一般无真实业务数据）。部门权限内操作。
+    安全策略：
+      - preview=1：只返回数量分布（不删）：total / with_ar（挂了应收）/ empty（空壳）。
+      - mode=empty（默认）：只删【空壳】草稿（无任何应收），保护挂了应收的草稿不被误删。
+      - mode=all：连同挂应收的草稿一起删（级联删其下应收，不可恢复）——需显式传入。
+    部门权限内操作。
     """
     denied = _page_denied(request, 'ar_projects')
-    if denied:
-        return denied
-    denied = _delete_denied(request)
     if denied:
         return denied
     if request.method != 'POST':
         return err('POST only', 405)
 
-    qs = _ar_dept_filter(ARProject.objects.filter(is_draft=True), request)
-    n = qs.count()
-    qs.delete()   # 级联删除草稿下的应收/回款
-    return ok({'deleted': n,
-               'message': f'已清理 {n} 个待完善草稿项目' if n else '没有待完善草稿，无需清理'})
+    base = _ar_dept_filter(ARProject.objects.filter(is_draft=True), request)
+    with_ar_ids = list(base.annotate(_n=Count('ar_records')).filter(_n__gt=0)
+                       .values_list('id', flat=True))
+    total = base.count()
+    with_ar = len(with_ar_ids)
+    empty = total - with_ar
+
+    data = _parse_body(request)
+    if request.GET.get('preview') or data.get('preview'):
+        return ok({'total': total, 'with_ar': with_ar, 'empty': empty})
+
+    denied = _delete_denied(request)
+    if denied:
+        return denied
+    mode = (data.get('mode') or request.GET.get('mode') or 'empty').strip()
+
+    if mode == 'all':
+        deleted = total
+        base.delete()   # 级联删除草稿下的应收/回款
+        msg = f'已清理全部 {deleted} 个草稿' + (f'（含 {with_ar} 个挂应收的，应收已一并删除）' if with_ar else '')
+        return ok({'deleted': deleted, 'kept_with_ar': 0, 'mode': 'all', 'message': msg})
+
+    # 默认 empty：只删空壳，保留挂应收的
+    empty_qs = base.exclude(id__in=with_ar_ids)
+    deleted = empty_qs.count()
+    empty_qs.delete()
+    if not total:
+        msg = '没有待完善草稿，无需清理'
+    else:
+        msg = f'已清理 {deleted} 个空壳草稿'
+        if with_ar:
+            msg += f'；另有 {with_ar} 个草稿挂了真实应收已保留，请到台账补全为正式项目（如确需连应收删除可选「全部删除」）'
+    return ok({'deleted': deleted, 'kept_with_ar': with_ar, 'mode': 'empty', 'message': msg})
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -331,13 +331,27 @@ const onScopeChange = () => {
   reloadAll()
 }
 
-// 一键清理待完善草稿（早期应收导入遗留的占位项目；新版导入已停用自动建草稿）
+// 清理待完善草稿（早期应收导入遗留的占位项目；新版导入已停用自动建草稿）
+// 安全：默认只删空壳草稿；挂了真实应收的需用户显式确认才连应收一起删
 const clearingDrafts = ref(false)
 async function clearDrafts() {
-  if (!confirm('确认清理所有「待完善草稿」项目？\n草稿是早期导入自动创建的占位项目，将连同其下应收一并删除（不可恢复）。')) return
   clearingDrafts.value = true
   try {
-    const res = await ar.clearDraftProjects()
+    const pv = (await ar.clearDraftProjects({ preview: 1 })).data
+    if (!pv.total) { alert('没有待完善草稿，无需清理'); return }
+    let mode = 'empty'
+    if (pv.with_ar > 0) {
+      // 有草稿挂了真实应收：默认只删空壳，保护应收
+      const all = confirm(
+        `共 ${pv.total} 个草稿：\n· 空壳草稿 ${pv.empty} 个（可安全删）\n· 挂了真实应收 ${pv.with_ar} 个\n\n` +
+        `【确定】= 仅删 ${pv.empty} 个空壳（保留挂应收的，推荐）\n` +
+        `【取消】= 连挂应收的 ${pv.with_ar} 个一起删（应收也会被删，不可恢复）`)
+      mode = all ? 'empty' : 'all'
+      if (mode === 'all' && !confirm(`再次确认：将删除全部 ${pv.total} 个草稿，其中 ${pv.with_ar} 个的应收数据也会一并永久删除，确定？`)) return
+    } else {
+      if (!confirm(`确认删除 ${pv.empty} 个空壳草稿项目？`)) return
+    }
+    const res = await ar.clearDraftProjects({ mode })
     alert(res.data?.message || '已清理')
     if (filters.is_draft) filters.is_draft = ''
     reloadAll()
