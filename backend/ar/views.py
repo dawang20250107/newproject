@@ -5696,6 +5696,44 @@ def customers_bulk_tag_level(request):
 
 @csrf_exempt
 @pk_required()
+def customers_sync_from_projects(request):
+    """POST /customers/sync-from-projects — 从项目台账回填客户名单。
+
+    历史项目（在「客户正名」之前导入的）可能有客户名称但未挂客户实体。
+    本接口扫描有客户名称却未挂客户的项目，按唯一客户名 get_or_create 客户并挂接，
+    一个客户对应多个项目（不合并金额、不动应收）。幂等：重复点击不会重复建。
+    部门权限：仅同步当前用户有权部门的项目。
+    """
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    if request.pk_role not in ('super_admin', 'dept_admin', 'user'):
+        return err('无权访问', 403)
+
+    qs = _ar_dept_filter(
+        ARProject.objects.filter(customer__isnull=True).exclude(customer_name=''), request)
+    created = linked = 0
+    for p in qs.iterator():
+        name = (p.customer_name or '').strip()
+        if not name:
+            continue
+        cust, was_created = Customer.objects.get_or_create(
+            name=name, defaults={'level': p.customer_level or ''})
+        if was_created:
+            created += 1
+        # 直接 update 挂接，避开 save 的派生重算副作用
+        ARProject.objects.filter(pk=p.pk).update(customer=cust)
+        linked += 1
+
+    return ok({'created_customers': created, 'linked_projects': linked,
+               'message': (f'同步完成：新建 {created} 个客户，挂接 {linked} 个项目'
+                           if linked else '客户名单已是最新，无需回填')})
+
+
+@csrf_exempt
+@pk_required()
 def customer_detail(request, pk):
     """GET /PUT /DELETE  /ar/customers/<pk>"""
     try:

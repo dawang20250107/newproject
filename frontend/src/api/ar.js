@@ -48,6 +48,7 @@ const ar = {
   updateCustomer: (id, d) => api.put(`/ar/customers/${id}`, d),
   deleteCustomer: id => api.delete(`/ar/customers/${id}`),
   bulkTagCustomerLevel: d => api.post('/ar/customers/bulk-tag-level', d),
+  syncCustomersFromProjects: () => api.post('/ar/customers/sync-from-projects', {}),
 
   // 合同 (contracts)
   listContracts: p => api.get('/ar/contracts', { params: p }),

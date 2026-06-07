@@ -60,6 +60,21 @@ function toggleSelAll() {
   selected.value = s
 }
 function clearSel() { selected.value = new Set() }
+
+// 从项目台账回填客户（存量项目未建客户时一键补齐）
+const syncing = ref(false)
+async function syncFromProjects() {
+  syncing.value = true
+  try {
+    const res = await ar.syncCustomersFromProjects()
+    showToast(res.data?.message || '✓ 已同步')
+    await load(true)
+  } catch (e) { showToast(e?.error || '同步失败') }
+  finally { syncing.value = false }
+}
+
+// 创建时间显示（只显示日期）
+const fmtDate = v => v ? String(v).slice(0, 10) : '—'
 async function applyBulkLevel() {
   if (!selected.value.size) return showToast('请先勾选客户')
   bulkSaving.value = true
@@ -152,7 +167,13 @@ onMounted(() => load(true))
         <h1>客户管理</h1>
         <div class="sub">客户 · 绑定项目与应收 — 列表即看板，未收 / 逾期一目了然；点客户看其全部项目损益与回款</div>
       </div>
-      <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增客户</button>
+      <div class="topbar-actions">
+        <button v-if="auth.canCreate" class="btn btn-sm" :disabled="syncing" @click="syncFromProjects"
+                title="把项目台账里有客户名称、但还没建客户的项目，自动补建客户并挂接">
+          {{ syncing ? '同步中…' : '⟳ 同步项目客户' }}
+        </button>
+        <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增客户</button>
+      </div>
     </div>
 
     <!-- 筛选 -->
@@ -196,11 +217,12 @@ onMounted(() => load(true))
               <th class="rgt clk" @click="setSort('invoiced')">累计开票{{ sortArrow('invoiced') }}</th>
               <th class="rgt clk" @click="setSort('outstanding')">未收金额{{ sortArrow('outstanding') }}</th>
               <th class="rgt clk" @click="setSort('overdue')">逾期金额{{ sortArrow('overdue') }}</th>
+              <th class="ctr clk" @click="setSort('created_at')">创建时间{{ sortArrow('created_at') }}</th>
               <th class="ctr">操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-if="!loading && !items.length"><td colspan="8" class="empty">暂无客户数据</td></tr>
+            <tr v-if="!loading && !items.length"><td colspan="9" class="empty">暂无客户数据</td></tr>
             <tr v-for="c in sortedItems" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)">
               <td class="ctr chk-col" @click.stop><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
               <td class="l name">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
@@ -209,6 +231,7 @@ onMounted(() => load(true))
               <td class="rgt">{{ wan(c.invoiced) }}</td>
               <td class="rgt strong">{{ wan(c.outstanding) }}</td>
               <td class="rgt"><span :class="{ overdue: (c.overdue||0) > 0 }">{{ wan(c.overdue) }}</span></td>
+              <td class="ctr date">{{ fmtDate(c.created_at) }}</td>
               <td class="ctr"><button class="btn-link" @click.stop="openDetail(c)">查看 ›</button></td>
             </tr>
           </tbody>
@@ -226,8 +249,9 @@ onMounted(() => load(true))
                 <div class="dw-title">{{ detail?.name || '加载中…' }}
                   <span v-if="detail?.level" class="lvl" :class="levelClass(detail.level)">{{ detail.level }}</span>
                 </div>
-                <div v-if="detail?.contact || detail?.notes" class="dw-sub">
+                <div v-if="detail?.contact || detail?.notes || detail?.created_at" class="dw-sub">
                   <span v-if="detail.contact">联系人：{{ detail.contact }}</span>
+                  <span v-if="detail.created_at">创建时间：{{ fmtDate(detail.created_at) }}</span>
                   <span v-if="detail.notes" class="dw-notes">{{ detail.notes }}</span>
                 </div>
               </div>
@@ -310,6 +334,8 @@ onMounted(() => load(true))
 
 <style scoped>
 .topbar { display: flex; justify-content: space-between; align-items: flex-start; }
+.topbar-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+.cu-table td.date { color: #9b8070; font-size: 12px; white-space: nowrap; }
 .sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
 
 .filter-strip { display: flex; align-items: center; gap: 10px; margin: 14px 0; }
