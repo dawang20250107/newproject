@@ -5,7 +5,7 @@ import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 import api from '../../api/caiwu.js'
 import { fmtCompact, fmtPct } from '../../utils/format.js'
-import { valueAxis, catAxis, gridFor, bottomLegend } from '../../utils/chartTheme.js'
+import { valueAxis, catAxis, gridFor, bottomLegend, topLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
 import { downloadBlob } from '../../utils/download.js'
 import EmptyState from '../../components/EmptyState.vue'
 
@@ -230,7 +230,7 @@ const chartOption = computed(() => {
   const names = bus.map(b => b.business_unit)
   return {
     tooltip: {
-      trigger: 'axis', axisPointer: { type: 'shadow' },
+      trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
       formatter(params) {
         let s = `<b>${params[0]?.axisValue}</b><br/>`
         params.forEach(p => {
@@ -246,12 +246,15 @@ const chartOption = computed(() => {
     series: [
       { name: '收入达成率', type: 'bar', data: bus.map(b => b.month.revenue_rate),
         itemStyle: { color: '#2e7d32', borderRadius: [4,4,0,0] }, barMaxWidth: 22,
+        label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP,
         markLine: { silent: true, symbol: 'none', lineStyle: { color: '#c96342', type: 'dashed' },
           data: [{ yAxis: 100, label: { formatter: '100%', color: '#c96342', fontSize: 10 } }] } },
       { name: '经营毛利达成率', type: 'bar', data: bus.map(b => b.month.gross_profit_rate),
-        itemStyle: { color: '#6a1b9a', borderRadius: [4,4,0,0] }, barMaxWidth: 22 },
+        itemStyle: { color: '#6a1b9a', borderRadius: [4,4,0,0] }, barMaxWidth: 22,
+        label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP },
       { name: '经营净利达成率', type: 'bar', data: bus.map(b => b.month.profit_rate),
-        itemStyle: { color: '#1565c0', borderRadius: [4,4,0,0] }, barMaxWidth: 22 },
+        itemStyle: { color: '#1565c0', borderRadius: [4,4,0,0] }, barMaxWidth: 22,
+        label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP },
     ],
   }
 })

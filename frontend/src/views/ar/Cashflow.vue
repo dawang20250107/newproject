@@ -5,6 +5,7 @@ import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
+import { topLabel, insideLabel, endLabel, HIDE_OVERLAP } from '../../utils/chartTheme.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
 
 const auth = useAuthStore()
@@ -129,13 +130,17 @@ const budgetOption = computed(() => {
     series: [
       // 流入 = 实收 + 预收（堆叠）；流出 = 实付 + 预付（堆叠）
       { name: '实收', type: 'bar', stack: 'in', barGap: '10%', barMaxWidth: 24, data: t.collected,
-        itemStyle: { color: gradBar('#66bb6a', '#2e7d32') } },
+        itemStyle: { color: gradBar('#66bb6a', '#2e7d32') },
+        label: insideLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
       { name: '预收', type: 'bar', stack: 'in', barMaxWidth: 24, data: t.advance_received || [],
-        itemStyle: { color: gradBar('#a5d6a7', '#66bb6a'), borderRadius: [4, 4, 0, 0] } },
+        itemStyle: { color: gradBar('#a5d6a7', '#66bb6a'), borderRadius: [4, 4, 0, 0] },
+        label: insideLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
       { name: '实付', type: 'bar', stack: 'out', barMaxWidth: 24, data: t.paid,
-        itemStyle: { color: gradBar('#ffa726', '#e65100') } },
+        itemStyle: { color: gradBar('#ffa726', '#e65100') },
+        label: insideLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
       { name: '预付', type: 'bar', stack: 'out', barMaxWidth: 24, data: t.advance_paid || [],
-        itemStyle: { color: gradBar('#ffcc80', '#ffa726'), borderRadius: [4, 4, 0, 0] } },
+        itemStyle: { color: gradBar('#ffcc80', '#ffa726'), borderRadius: [4, 4, 0, 0] },
+        label: insideLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
       { name: '收款预算', type: 'line', data: t.budget_collection, smooth: true,
         symbol: 'circle', symbolSize: 4,
         lineStyle: { type: 'dashed', color: '#2e7d32', width: 1.5, opacity: 0.65 },
@@ -161,7 +166,10 @@ const netOption = computed(() => {
     yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), ...AXLBL }, splitLine: { lineStyle: SLINE } },
     series: [{
       type: 'bar', barMaxWidth: 32,
+      label: topLabel(p => fmtWan(p.value)),
+      labelLayout: HIDE_OVERLAP,
       data: (t.net || []).map(v => ({ value: v,
+        label: { position: v >= 0 ? 'top' : 'bottom', color: v >= 0 ? '#2e7d32' : '#c62828' },
         itemStyle: {
           borderRadius: v >= 0 ? [4, 4, 0, 0] : [0, 0, 4, 4],
           color: v >= 0 ? gradBar('#66bb6a', '#2e7d32') : gradBar('#ef5350', '#c62828'),
@@ -188,6 +196,8 @@ const cumulativeOption = computed(() => {
     series: [{
       type: 'line', smooth: true, data: t.cumulative_net || [],
       symbol: 'circle', symbolSize: 7,
+      label: topLabel(p => fmtWan(p.value), { color: '#1565c0', textBorderColor: '#fff', textBorderWidth: 3 }),
+      labelLayout: HIDE_OVERLAP,
       lineStyle: { color: '#1565c0', width: 2.5 },
       itemStyle: { color: '#fff', borderColor: '#1565c0', borderWidth: 2.5 },
       areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
@@ -223,11 +233,13 @@ const deptCompareOption = computed(() => {
     series: [
       { name: '实收', type: 'bar', barGap: '12%', barMaxWidth: 26,
         data: sums.map(d => d.coll),
-        itemStyle: { color: gradBar('#66bb6a', '#2e7d32'), borderRadius: [4, 4, 0, 0] } },
+        itemStyle: { color: gradBar('#66bb6a', '#2e7d32'), borderRadius: [4, 4, 0, 0] },
+        label: topLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
       { name: '实付', type: 'bar', barMaxWidth: 26,
         data: sums.map(d => ({ value: d.paid,
           itemStyle: { borderRadius: [4, 4, 0, 0],
-            color: d.paid > d.coll ? gradBar('#ef5350', '#c62828') : gradBar('#ffa726', '#e65100') } })) },
+            color: d.paid > d.coll ? gradBar('#ef5350', '#c62828') : gradBar('#ffa726', '#e65100') } })),
+        label: topLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
       { name: '收款预算', type: 'bar', barGap: '40%', barMaxWidth: 14,
         data: sums.map(d => d.bcoll),
         itemStyle: { color: 'rgba(46,125,50,0.25)', borderColor: '#2e7d32', borderWidth: 1.5, borderRadius: [4, 4, 0, 0] } },

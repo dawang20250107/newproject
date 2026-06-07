@@ -4,6 +4,7 @@ import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
+import { topLabel, rightLabel, HIDE_OVERLAP } from '../../utils/chartTheme.js'
 import { downloadBlob } from '../../utils/download.js'
 import EmptyState from '../../components/EmptyState.vue'
 import BaseChart from '../../components/ar/BaseChart.vue'
@@ -136,6 +137,7 @@ const comparisonChartOption = computed(() => {
         data: [bp, bc],
         itemStyle: { color: 'rgba(155,128,112,0.18)', borderRadius: [0, 4, 4, 0],
           borderColor: 'rgba(155,128,112,0.45)', borderWidth: 1.5 },
+        label: rightLabel(p => fmtAmt(p.value)), labelLayout: HIDE_OVERLAP,
       },
       {
         name: '实际', type: 'bar', barMaxWidth: 26,
@@ -146,6 +148,7 @@ const comparisonChartOption = computed(() => {
           { value: ac, itemStyle: { borderRadius: [0, 4, 4, 0],
             color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0, colorStops: [{ offset: 0, color: '#2e7d32' }, { offset: 1, color: '#66bb6a' }] } } },
         ],
+        label: rightLabel(p => fmtAmt(p.value)), labelLayout: HIDE_OVERLAP,
       },
     ],
   }
@@ -177,11 +180,13 @@ const deptCompareOption = computed(() => {
     series: [
       { name: '实收', type: 'bar', barGap: '12%', barMaxWidth: 26,
         data: byDept.map(d => d.actual_collection),
-        itemStyle: { color: grad('#66bb6a', '#2e7d32'), borderRadius: [4, 4, 0, 0] } },
+        itemStyle: { color: grad('#66bb6a', '#2e7d32'), borderRadius: [4, 4, 0, 0] },
+        label: topLabel(p => fmtAmt(p.value)), labelLayout: HIDE_OVERLAP },
       { name: '实付', type: 'bar', barMaxWidth: 26,
         data: byDept.map(d => ({ value: d.actual_payment,
           itemStyle: { borderRadius: [4, 4, 0, 0],
-            color: d.actual_payment > d.actual_collection ? grad('#ef5350', '#c62828') : grad('#ffa726', '#e65100') } })) },
+            color: d.actual_payment > d.actual_collection ? grad('#ef5350', '#c62828') : grad('#ffa726', '#e65100') } })),
+        label: topLabel(p => fmtAmt(p.value)), labelLayout: HIDE_OVERLAP },
       { name: '收款预算', type: 'bar', barGap: '40%', barMaxWidth: 14,
         data: byDept.map(d => d.budget_collection),
         itemStyle: { color: 'rgba(46,125,50,0.22)', borderColor: '#2e7d32', borderWidth: 1.5, borderRadius: [4, 4, 0, 0] } },

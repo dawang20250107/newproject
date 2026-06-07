@@ -7,7 +7,7 @@ import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 import AiAnalysisModal from '../../components/caiwu/AiAnalysisModal.vue'
 import api from '../../api/caiwu.js'
 import { fmtCompact } from '../../utils/format.js'
-import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney } from '../../utils/chartTheme.js'
+import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney, topLabel, endLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
 import { streamAiAnalysis } from '../../utils/aiStream.js'
 import { renderMarkdown } from '../../utils/markdown.js'
 import EmptyState from '../../components/EmptyState.vue'
@@ -258,7 +258,7 @@ function trendOption(actualKey, targetKey, label, color) {
   const x = t.map(m => `${m.month}月`)
   return {
     tooltip: {
-      trigger: 'axis',
+      trigger: 'axis', ...TOOLTIP,
       formatter(params) {
         let s = `<b>${params[0]?.axisValue}</b><br/>`
         params.forEach(p => {
@@ -269,12 +269,14 @@ function trendOption(actualKey, targetKey, label, color) {
       },
     },
     legend: bottomLegend(),
-    grid: gridFor(x, { threshold: 12 }),
+    grid: { ...gridFor(x, { threshold: 12 }), right: 56 },
     xAxis: catAxis(x, { threshold: 12 }),
     yAxis: valueAxis({ formatter: axisMoney }),
     series: [
-      { name: '实际' + label, type: 'bar', data: t.map(m => m[actualKey]), itemStyle: { color, borderRadius: [4, 4, 0, 0] }, barMaxWidth: 30 },
-      { name: '目标' + label, type: 'line', data: t.map(m => m[targetKey]), smooth: true, symbol: 'circle', symbolSize: 6, color: '#c96342', lineStyle: { type: 'dashed', width: 2 } },
+      { name: '实际' + label, type: 'bar', data: t.map(m => m[actualKey]), itemStyle: { color, borderRadius: [4, 4, 0, 0] }, barMaxWidth: 30,
+        label: topLabel(p => axisMoney(p.value)), labelLayout: HIDE_OVERLAP },
+      { name: '目标' + label, type: 'line', data: t.map(m => m[targetKey]), smooth: true, symbol: 'circle', symbolSize: 6, color: '#c96342', lineStyle: { type: 'dashed', width: 2 },
+        endLabel: endLabel(p => p.value == null ? '' : '目标 ' + axisMoney(p.value), { color: '#c96342' }), labelLayout: HIDE_OVERLAP },
     ],
   }
 }
@@ -287,7 +289,7 @@ const buActualOption = computed(() => {
   const names = bus.map(b => b.business_unit)
   return {
     tooltip: {
-      trigger: 'axis', axisPointer: { type: 'shadow' },
+      trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
       formatter(params) {
         let s = `<b>${params[0]?.axisValue}</b><br/>`
         params.forEach(p => {
@@ -302,8 +304,10 @@ const buActualOption = computed(() => {
     xAxis: catAxis(names),
     yAxis: valueAxis({ formatter: axisMoney }),
     series: [
-      { name: '收入', type: 'bar', data: bus.map(b => b.month.actual_revenue), itemStyle: { color: '#2e7d32', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26 },
-      { name: '利润', type: 'bar', data: bus.map(b => b.month.actual_profit), itemStyle: { color: '#1565c0', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26 },
+      { name: '收入', type: 'bar', data: bus.map(b => b.month.actual_revenue), itemStyle: { color: '#2e7d32', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
+        label: topLabel(p => axisMoney(p.value)), labelLayout: HIDE_OVERLAP },
+      { name: '利润', type: 'bar', data: bus.map(b => b.month.actual_profit), itemStyle: { color: '#1565c0', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
+        label: topLabel(p => axisMoney(p.value)), labelLayout: HIDE_OVERLAP },
     ],
   }
 })
@@ -314,7 +318,7 @@ const buRateOption = computed(() => {
   const names = bus.map(b => b.business_unit)
   return {
     tooltip: {
-      trigger: 'axis', axisPointer: { type: 'shadow' },
+      trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
       formatter(params) {
         let s = `<b>${params[0]?.axisValue}</b><br/>`
         params.forEach(p => { s += `${p.marker}${p.seriesName}：${p.value == null ? '—' : p.value.toFixed(1) + '%'}<br/>` })
@@ -327,8 +331,10 @@ const buRateOption = computed(() => {
     yAxis: valueAxis({ name: '达成率%', formatter: '{value}%' }),
     series: [
       { name: 'YTD收入达成', type: 'bar', data: bus.map(b => b.ytd.revenue_rate), itemStyle: { color: '#66bb6a', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
+        label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP,
         markLine: { silent: true, symbol: 'none', lineStyle: { color: '#c96342', type: 'dashed' }, data: [{ yAxis: 100, label: { formatter: '100%', color: '#c96342', fontSize: 10 } }] } },
-      { name: 'YTD利润达成', type: 'bar', data: bus.map(b => b.ytd.profit_rate), itemStyle: { color: '#42a5f5', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26 },
+      { name: 'YTD利润达成', type: 'bar', data: bus.map(b => b.ytd.profit_rate), itemStyle: { color: '#42a5f5', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
+        label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP },
     ],
   }
 })

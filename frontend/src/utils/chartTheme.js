@@ -97,3 +97,61 @@ export function gridFor(names = [], o = {}) {
 export function bottomLegend(extra = {}) {
   return { bottom: 0, type: 'scroll', itemGap: 16, textStyle: { fontSize: 11, color: '#6b5a4a' }, ...extra }
 }
+
+// ── 麦肯锡式数值标签 ──────────────────────────────────────────────────────────
+// 咨询级图表的核心：让读者直接读数，而非靠悬浮或坐标轴反推。所有带标签的系列都配
+// hideOverlap，密集图表（如 12 个月 × 多系列）自动隐藏会重叠的标签，保持清爽。
+
+export const LABEL_COLOR = '#5f4d3d'
+const LABEL_FONT = 10.5
+
+/** 防重叠布局：挂到任何带数值标签的系列上，拥挤时自动取舍、必要时纵向微移。 */
+export const HIDE_OVERLAP = { hideOverlap: true, moveOverlap: 'shiftY' }
+
+/** 纵向柱：标签居柱顶。 */
+export function topLabel(formatter, extra = {}) {
+  return {
+    show: true, position: 'top', distance: 3,
+    fontSize: LABEL_FONT, fontWeight: 600, color: LABEL_COLOR,
+    formatter, ...extra,
+  }
+}
+
+/** 横向条：标签在右端。 */
+export function rightLabel(formatter, extra = {}) {
+  return {
+    show: true, position: 'right', distance: 5,
+    fontSize: LABEL_FONT, fontWeight: 600, color: LABEL_COLOR,
+    formatter, ...extra,
+  }
+}
+
+/** 堆叠段内：白字居中，小段靠 hideOverlap 自动隐藏，避免压字。 */
+export function insideLabel(formatter, extra = {}) {
+  return {
+    show: true, position: 'inside',
+    fontSize: 10, fontWeight: 600, color: '#fff',
+    textBorderColor: 'rgba(0,0,0,0.18)', textBorderWidth: 2,
+    formatter, ...extra,
+  }
+}
+
+/** 折线末端直接标注（咨询式 direct labeling）：在最后一个点右侧标值，
+ *  比逐点标签更干净；多线时配 grid 右留白避免裁切。带白描边保证压线可读。 */
+export function endLabel(formatter, extra = {}) {
+  return {
+    show: true, distance: 6,
+    fontSize: LABEL_FONT, fontWeight: 700,
+    textBorderColor: '#fff', textBorderWidth: 3,
+    formatter, ...extra,
+  }
+}
+
+/** 统一 tooltip 外观：白底、细边、柔和投影、圆角，全站一致。 */
+export const TOOLTIP = {
+  backgroundColor: 'rgba(255,255,255,0.97)',
+  borderColor: 'rgba(0,0,0,0.08)', borderWidth: 1,
+  textStyle: { fontSize: 12, color: '#3a2f28' },
+  padding: [8, 12],
+  extraCssText: 'box-shadow:0 4px 16px rgba(0,0,0,0.10);border-radius:8px;',
+}

@@ -5,7 +5,7 @@ import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
-import { valueAxis, catAxis, gridFor, bottomLegend } from '../../utils/chartTheme.js'
+import { valueAxis, catAxis, gridFor, bottomLegend, topLabel, rightLabel, endLabel, insideLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
 import EmptyState from '../../components/EmptyState.vue'
 import BaseChart from '../../components/ar/BaseChart.vue'
 
@@ -53,13 +53,13 @@ const agingOption = computed(() => {
     itemStyle: { color: agingColors[i], borderRadius: [0, 4, 4, 0] },
   }))
   return {
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
       formatter: p => `${p[0].name}<br/>${fmtWan(p[0].value)} 元 (${p[0].data?.extra || ''}笔)` },
     grid: { top: 16, right: 84, bottom: 8, left: 16, containLabel: true },
     xAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => fmtWan(v) } },
     yAxis: { type: 'category', data: labels, axisLabel: { color: '#9b8070', width: 96, overflow: 'truncate' } },
     series: [{ name: '未收金额', type: 'bar', data: amounts,
-      label: { show: true, position: 'right', formatter: p => fmtWan(p.value) } }],
+      label: rightLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP }],
   }
 })
 
@@ -68,7 +68,7 @@ const collRateOption = computed(() => {
   const { months } = collRateData.value
   const mLabels = months.map(m => `${m.month}月`)
   return {
-    tooltip: { trigger: 'axis' },
+    tooltip: { trigger: 'axis', ...TOOLTIP },
     legend: bottomLegend({ data: ['应收基础', '已收', '回款率'] }),
     grid: gridFor(mLabels, { nameTop: true, threshold: 12, right: 52 }),
     xAxis: catAxis(mLabels, { threshold: 12 }),
@@ -78,12 +78,15 @@ const collRateOption = computed(() => {
     ],
     series: [
       { name: '应收基础', type: 'bar', yAxisIndex: 0,
-        data: months.map(m => m.receivable), itemStyle: { color: '#1565c0', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 24 },
+        data: months.map(m => m.receivable), itemStyle: { color: '#1565c0', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 24,
+        label: topLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
       { name: '已收', type: 'bar', yAxisIndex: 0,
-        data: months.map(m => m.collected), itemStyle: { color: '#2e7d32', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 24 },
+        data: months.map(m => m.collected), itemStyle: { color: '#2e7d32', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 24,
+        label: topLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
       { name: '回款率', type: 'line', yAxisIndex: 1, smooth: true,
         data: months.map(m => m.rate),
-        lineStyle: { color: '#c96342', width: 2.5 }, symbol: 'circle', symbolSize: 5, itemStyle: { color: '#c96342' } },
+        lineStyle: { color: '#c96342', width: 2.5 }, symbol: 'circle', symbolSize: 5, itemStyle: { color: '#c96342' },
+        endLabel: endLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%', { color: '#c96342' }), labelLayout: HIDE_OVERLAP },
     ],
   }
 })
@@ -93,14 +96,14 @@ const topOption = computed(() => {
   const names = topData.value.map(p => p.short_name.length > 10 ? p.short_name.slice(0, 10) + '…' : p.short_name).reverse()
   const vals = topData.value.map(p => parseFloat(p.total_outstanding)).reverse()
   return {
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
       formatter: p => `${topData.value[topData.value.length - 1 - p[0].dataIndex].short_name}<br/>未收：${fmtWan(p[0].value)} 元` },
     grid: { top: 8, right: 84, bottom: 8, left: 16, containLabel: true },
     xAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => fmtWan(v) } },
     yAxis: { type: 'category', data: names, axisLabel: { color: '#9b8070', width: 128, overflow: 'truncate' } },
     series: [{ type: 'bar', data: vals, barMaxWidth: 22,
       itemStyle: { color: '#c96342', borderRadius: [0, 4, 4, 0] },
-      label: { show: true, position: 'right', formatter: p => fmtWan(p.value) } }],
+      label: rightLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP }],
   }
 })
 
@@ -114,12 +117,15 @@ const statusOption = computed(() => {
     { name: '已结清', value: parseFloat(s.settled?.amount || 0), itemStyle: { color: '#9e9e9e' } },
   ].filter(d => d.value > 0)
   return {
-    tooltip: { trigger: 'item', formatter: p => `${p.name}<br/>${fmtWan(p.value)} 元 (${p.percent.toFixed(1)}%)` },
+    tooltip: { trigger: 'item', ...TOOLTIP, formatter: p => `${p.name}<br/>${fmtWan(p.value)} 元 (${p.percent.toFixed(1)}%)` },
     legend: { bottom: 0, type: 'scroll' },
     series: [{
       type: 'pie', radius: ['40%', '66%'], center: ['50%', '44%'],
       data: pieData,
-      label: { formatter: '{b}\n{d}%', fontSize: 11 },
+      label: { formatter: p => `${p.name}\n${fmtWan(p.value)} · ${p.percent.toFixed(0)}%`,
+        fontSize: 11, lineHeight: 15, color: '#5f4d3d' },
+      labelLine: { length: 10, length2: 10 },
+      labelLayout: HIDE_OVERLAP,
       emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.3)' } },
     }],
   }
@@ -163,8 +169,7 @@ const pmOption = computed(() => {
   const names = sorted.map(d => d.pm).reverse()
   return {
     tooltip: {
-      trigger: 'axis', axisPointer: { type: 'shadow' },
-      backgroundColor: 'rgba(255,255,255,0.97)', borderColor: 'rgba(0,0,0,0.08)', textStyle: { fontSize: 12 },
+      trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
       formatter: params => {
         const idx = sorted.length - 1 - params[0].dataIndex
         const d = sorted[idx]
@@ -189,9 +194,10 @@ const pmOption = computed(() => {
         itemStyle: { color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
           colorStops: [{ offset: 0, color: '#e65100' }, { offset: 1, color: '#ffa726' }] },
           borderRadius: [0, 4, 4, 0] },
-        label: { show: true, position: 'right',
-          formatter: p => { const d = sorted[sorted.length - 1 - p.dataIndex]; return `${d.rate.toFixed(0)}%` },
-          fontSize: 11, color: '#555' } },
+        label: rightLabel(
+          p => { const d = sorted[sorted.length - 1 - p.dataIndex]; return `${fmtWan(d.outstanding)} · ${d.rate.toFixed(0)}%` },
+          { color: '#6b5a4a' }),
+        labelLayout: HIDE_OVERLAP },
     ],
   }
 })

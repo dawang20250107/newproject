@@ -1,7 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import BaseChart from './BaseChart.vue'
-import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney } from '../../../utils/chartTheme.js'
+import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney, endLabel, HIDE_OVERLAP, TOOLTIP } from '../../../utils/chartTheme.js'
 
 const props = defineProps({
   months: { type: Array, default: () => [] },       // array of { month, has_data, by_l1 }
@@ -27,12 +27,15 @@ const option = computed(() => {
         return m.by_l1[l1Id] ?? 0
       }),
       connectNulls: false,
+      endLabel: endLabel(p => p.value == null ? '' : axisMoney(p.value),
+        { color: COLORS[idx % COLORS.length] }),
+      labelLayout: HIDE_OVERLAP,
     }
   })
 
   return {
     tooltip: {
-      trigger: 'axis',
+      trigger: 'axis', ...TOOLTIP,
       formatter(params) {
         let str = `<b>${params[0]?.axisValue}</b><br/>`
         params.forEach(p => {
@@ -47,7 +50,7 @@ const option = computed(() => {
       },
     },
     legend: bottomLegend(),
-    grid: gridFor(xLabels, { threshold: 12 }),
+    grid: { ...gridFor(xLabels, { threshold: 12 }), right: 56 },
     xAxis: catAxis(xLabels, { threshold: 12 }),
     yAxis: valueAxis({ formatter: axisMoney }),
     series,
