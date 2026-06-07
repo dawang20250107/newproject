@@ -68,6 +68,7 @@ urlpatterns = [
     path('analytics/unit-economics', views.analytics_unit_economics),
     path('analytics/business-finance', views.analytics_business_finance),
     path('analytics/project-pnl', views.analytics_project_pnl),
+    path('analytics/forecast', views.analytics_forecast),
 
     # Cashflow comparison
     path('cashflow', views.cashflow),

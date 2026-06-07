@@ -3475,6 +3475,123 @@ def analytics_project_pnl(request):
 
 @csrf_exempt
 @pk_required()
+def analytics_forecast(request):
+    """判未来：①现金流入预测（应收账龄 + 历史回款滞后）②全年落地预测（YTD 年化 vs
+    年度目标）③What-if 沙盘基线。入参：year(必填) dept(可选) horizon(默认6,3~12)。"""
+    denied = _page_denied(request, 'ar_analytics')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    try:
+        year = int(request.GET.get('year') or datetime.date.today().year)
+    except (TypeError, ValueError):
+        return err('年份无效')
+    dept = (request.GET.get('dept') or '').strip()
+    try:
+        horizon = min(max(int(request.GET.get('horizon') or 6), 3), 12)
+    except (TypeError, ValueError):
+        horizon = 6
+    today = datetime.date.today()
+
+    base = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
+    if dept:
+        base = base.filter(delivery_dept=dept)
+
+    # ── 历史回款滞后：实付日 − 应收日 的中位天数（仅用真实回款样本）──────────────
+    lag_samples = []
+    for p in (ARPayment.objects.filter(source='回款', ar_record__in=base,
+                                       ar_record__due_date__isnull=False, payment_date__isnull=False)
+              .values('payment_date', 'ar_record__due_date')[:5000]):
+        lag_samples.append((p['payment_date'] - p['ar_record__due_date']).days)
+    lag_samples.sort()
+    avg_lag = lag_samples[len(lag_samples) // 2] if lag_samples else 30
+    avg_lag = max(0, min(avg_lag, 120))
+
+    # ── 现金流入预测：未收记录按"应收日+滞后"的预计回款月归集 ────────────────────
+    cur = datetime.date(today.year, today.month, 1)
+    months, y, m = [], today.year, today.month
+    for _ in range(horizon):
+        months.append(f'{y:04d}-{m:02d}')
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+    bucket = {k: 0.0 for k in months}
+    opening = beyond = baddebt = 0.0
+    for r in base.filter(outstanding_amount__gt=0, due_date__isnull=False).values('due_date', 'outstanding_amount'):
+        amt = float(r['outstanding_amount'] or 0)
+        opening += amt
+        due = r['due_date']
+        if due < today and (today - due).days > 90:
+            baddebt += amt
+        exp = due + datetime.timedelta(days=avg_lag)
+        key = f'{exp.year:04d}-{exp.month:02d}'
+        if exp < cur:
+            bucket[months[0]] += amt        # 预计回款日已过 → 计入首月回收
+        elif key in bucket:
+            bucket[key] += amt
+        else:
+            beyond += amt                    # 超出预测窗口（远期）
+    cum, cash_rows = 0.0, []
+    for k in months:
+        cum += bucket[k]
+        cash_rows.append({'month': k, 'expected': round(bucket[k], 2), 'cumulative': round(cum, 2)})
+
+    # ── 全年落地预测：YTD 年化 vs 年度目标（财务口径）────────────────────────────
+    from caiwu import views as V
+    if dept:
+        fin_bus = [dept]
+    elif request.pk_role == 'super_admin':
+        fin_bus = list(DEPARTMENTS)
+    else:
+        fin_bus = list(request.pk_depts or [])
+    actuals = V._collect_actuals(fin_bus, {year})
+    mdata = [mm for mm in range(1, 13) if V._period_group(actuals, fin_bus, year, mm)[0] is not None]
+    elapsed = len(mdata)
+    ytd_rev = V._sum_opt([V._period_group(actuals, fin_bus, year, mm)[0] for mm in mdata]) or 0
+    ytd_prof = V._sum_opt([V._period_group(actuals, fin_bus, year, mm)[1] for mm in mdata]) or 0
+    ytd_gross = V._sum_opt([V._period_group(actuals, fin_bus, year, mm)[2] for mm in mdata]) or 0
+    tgt = V._load_target_index(fin_bus, year)
+    ann_t = {k: sum(tgt.get((b, 0), {}).get(k, 0) for b in fin_bus)
+             for k in ('target_revenue', 'target_profit', 'target_gross_profit')}
+
+    def _pace(ytd, target):
+        proj = (ytd / elapsed * 12) if elapsed else 0
+        return {'ytd': round(ytd, 2), 'projected': round(proj, 2), 'target': round(target, 2),
+                'rate': round(proj / target * 100, 1) if target else None,
+                'gap': round(proj - target, 2)}
+    landing = {'elapsed': elapsed,
+               'revenue': _pace(ytd_rev, ann_t['target_revenue']),
+               'gross': _pace(ytd_gross, ann_t['target_gross_profit']),
+               'profit': _pace(ytd_prof, ann_t['target_profit'])}
+
+    proj_rev = (ytd_rev / elapsed * 12) if elapsed else 0
+    proj_prof = (ytd_prof / elapsed * 12) if elapsed else 0
+    baseline = {
+        'proj_revenue': round(proj_rev, 2),
+        'gross_margin': round(ytd_gross / ytd_rev * 100, 2) if ytd_rev else None,
+        'net_margin': round(ytd_prof / ytd_rev * 100, 2) if ytd_rev else None,
+        'outstanding': round(opening, 2), 'avg_lag_days': avg_lag,
+        'window_total': round(cum, 2), 'horizon': horizon,
+    }
+    summary = {
+        'proj_profit': round(proj_prof, 2), 'profit_target': round(ann_t['target_profit'], 2),
+        'profit_gap': round(proj_prof - ann_t['target_profit'], 2),
+        'profit_rate': landing['profit']['rate'],
+        'revenue_rate': landing['revenue']['rate'],
+        'cash_next3': round(sum(x['expected'] for x in cash_rows[:3]), 2),
+        'opening_outstanding': round(opening, 2), 'baddebt_risk': round(baddebt, 2),
+        'avg_lag_days': avg_lag,
+    }
+    return ok({'year': year, 'dept': dept or None, 'horizon': horizon, 'avg_lag_days': avg_lag,
+               'cash': {'opening_outstanding': round(opening, 2), 'months': cash_rows,
+                        'expected_window_total': round(cum, 2), 'beyond_window': round(beyond, 2),
+                        'baddebt_risk': round(baddebt, 2)},
+               'landing': landing, 'baseline': baseline, 'summary': summary})
+
+
+@csrf_exempt
+@pk_required()
 def analytics_by_dept(request):
     """事业部应收全景：各事业部 上账/开票/已收/未收/逾期/回款率/本月到期目标。
 
