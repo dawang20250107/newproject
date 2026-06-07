@@ -23,7 +23,7 @@ from paikuan.views import (pk_required, ok, err, DEPARTMENTS, VALID_DEPARTMENTS,
                            AR_RECORD_FIELD_DEFS, AR_ADVANCE_FIELD_DEFS)
 from ar.models import (ARProject, ARRecord, ARPayment, CollectionBudget, PaymentBudget,
                        AdvanceRecord, AdvanceWriteoff, Supplier, Customer,
-                       Contract, ContractParty, ContractProject)
+                       Contract, ContractParty, ContractProject, ActionItem)
 from paikuan.models import Payment, PaymentInstallment
 
 # ── AR page keys (must match PAGE_KEYS in paikuan/views.py) ───────────────────
@@ -5791,3 +5791,260 @@ def contract_detail(request, pk):
         return ok({'deleted': pk})
 
     return err('Method not allowed', 405)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P4 决策闭环 — 行动项 (Action Items)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@csrf_exempt
+@pk_required()
+def ar_actions(request):
+    """GET: list action items with counts; POST: create one."""
+    # dept-scope filter helper
+    def _scope_qs(qs):
+        if request.pk_role != 'super_admin' and request.pk_depts:
+            return qs.filter(Q(bu='') | Q(bu__in=request.pk_depts))
+        return qs
+
+    if request.method == 'GET':
+        qs = _scope_qs(ActionItem.objects.all())
+        status_f = request.GET.get('status')
+        bu_f = request.GET.get('bu')
+        priority_f = request.GET.get('priority')
+        if status_f:
+            qs = qs.filter(status=status_f)
+        if bu_f:
+            qs = qs.filter(bu=bu_f)
+        if priority_f:
+            qs = qs.filter(priority=priority_f)
+
+        items = [i.to_dict() for i in qs.select_related('created_by', 'resolved_by')[:300]]
+
+        all_qs = _scope_qs(ActionItem.objects.all())
+        counts = {s: all_qs.filter(status=s).count()
+                  for s in ('open', 'in_progress', 'done', 'dismissed')}
+        return ok({'items': items, 'counts': counts})
+
+    if request.method == 'POST':
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        data = _parse_body(request)
+        title = (data.get('title') or '').strip()
+        if not title:
+            return err('标题不能为空')
+        item = ActionItem(
+            title=title,
+            description=(data.get('description') or '').strip(),
+            bu=(data.get('bu') or '').strip(),
+            category=(data.get('category') or '').strip(),
+            priority=data.get('priority', 'medium'),
+            assignee=(data.get('assignee') or '').strip(),
+            source_signal=data.get('source_signal') or {},
+        )
+        if data.get('due_date'):
+            item.due_date = _normalize_date(data['due_date'])
+        if hasattr(request, 'pk_user') and request.pk_user:
+            item.created_by = request.pk_user
+        item.save()
+        return ok(item.to_dict())
+
+    return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def ar_action_detail(request, pk):
+    """GET/PUT/DELETE single action item."""
+    try:
+        item = ActionItem.objects.select_related('created_by', 'resolved_by').get(pk=pk)
+    except ActionItem.DoesNotExist:
+        return err('行动项不存在', 404)
+
+    if request.method == 'GET':
+        return ok(item.to_dict())
+
+    if request.method == 'PUT':
+        data = _parse_body(request)
+        if 'title' in data:
+            t = (data['title'] or '').strip()
+            if t:
+                item.title = t
+        if 'description' in data:
+            item.description = (data['description'] or '').strip()
+        if 'bu' in data:
+            item.bu = (data['bu'] or '').strip()
+        if 'priority' in data and data['priority'] in ('high', 'medium', 'low'):
+            item.priority = data['priority']
+        if 'assignee' in data:
+            item.assignee = (data['assignee'] or '').strip()
+        if 'due_date' in data:
+            item.due_date = _normalize_date(data['due_date']) if data['due_date'] else None
+        if 'status' in data:
+            new_st = data['status']
+            if new_st in ('open', 'in_progress', 'done', 'dismissed'):
+                old_st = item.status
+                item.status = new_st
+                if new_st == 'done' and old_st != 'done':
+                    item.resolved_at = datetime.datetime.now(datetime.timezone.utc)
+                    if hasattr(request, 'pk_user') and request.pk_user:
+                        item.resolved_by = request.pk_user
+                elif new_st != 'done':
+                    item.resolved_at = None
+                    item.resolved_by = None
+        item.save()
+        return ok(item.to_dict())
+
+    if request.method == 'DELETE':
+        item.delete()
+        return ok({'deleted': pk})
+
+    return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def ar_actions_from_signal(request):
+    """POST: auto-create an action item from a today-signal dict.
+    Deduplicates: if open/in_progress item exists with same category+bu, returns it.
+    """
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    denied = _write_denied(request)
+    if denied:
+        return denied
+
+    data = _parse_body(request)
+    signal = data.get('signal') or {}
+    category = (signal.get('type') or signal.get('category') or 'general').strip()
+    bu = (signal.get('bu') or '').strip()
+
+    # Deduplicate
+    existing = ActionItem.objects.filter(
+        category=category, bu=bu, status__in=['open', 'in_progress']
+    ).first()
+    if existing:
+        return ok({'item': existing.to_dict(), 'created': False, 'msg': '已有同类待处理行动项'})
+
+    priority_map = {
+        'critical': 'high', 'overdue': 'high', 'cash_risk': 'high',
+        'low_margin': 'medium', 'forecast': 'medium', 'baddebt': 'high',
+    }
+    level = signal.get('level') or signal.get('type') or ''
+    priority = priority_map.get(level, 'medium')
+    title = (signal.get('title') or signal.get('label') or '待处理事项').strip()
+
+    item = ActionItem(
+        title=title,
+        description=(signal.get('desc') or signal.get('description') or '').strip(),
+        bu=bu,
+        category=category,
+        priority=priority,
+        source_signal=signal,
+    )
+    if hasattr(request, 'pk_user') and request.pk_user:
+        item.created_by = request.pk_user
+    item.save()
+    return ok({'item': item.to_dict(), 'created': True})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P4 目标分解 — 年度目标自上而下分解到事业部 + 月度进度
+# ─────────────────────────────────────────────────────────────────────────────
+
+@csrf_exempt
+@pk_required()
+def analytics_target_decomp(request):
+    """年度目标 → 各事业部分解 → 各月目标/实际/完成率。"""
+    year = int(request.GET.get('year', datetime.date.today().year))
+
+    from caiwu.models import FinancialTarget, FinancialEntry, ImportBatch, L1Category
+    from django.db.models import Sum as _Sum
+
+    def _scope_bu(qs, field='business_unit'):
+        if request.pk_role != 'super_admin' and request.pk_depts:
+            return qs.filter(**{field + '__in': request.pk_depts})
+        return qs
+
+    # Annual targets (month=0)
+    annual_qs = _scope_bu(FinancialTarget.objects.filter(year=year, month=0))
+    annual_by_bu = {t.business_unit: t for t in annual_qs}
+
+    # Monthly targets (month 1-12)
+    monthly_qs = _scope_bu(FinancialTarget.objects.filter(year=year, month__gt=0))
+    monthly_by_bu = {}
+    for t in monthly_qs:
+        monthly_by_bu.setdefault(t.business_unit, {})[t.month] = t
+
+    # Actuals from published 部门明细表 (FinancialEntry), aggregated by BU+month for 主营业务收入
+    rev_l1_ids = list(L1Category.objects.filter(name='主营业务收入').values_list('id', flat=True))
+    agg_qs = _scope_bu(FinancialEntry.objects.filter(
+        batch__status=ImportBatch.STATUS_PUBLISHED,
+        batch__batch_type=ImportBatch.TYPE_DEPT,
+        batch__year=year,
+        l1_id__in=rev_l1_ids,
+    ), field='batch__business_unit').values('batch__business_unit', 'batch__month').annotate(amount=_Sum('amount'))
+    actuals = {}
+    for r in agg_qs:
+        actuals.setdefault(r['batch__business_unit'], {})[r['batch__month']] = float(r['amount'] or 0)
+
+    today = datetime.date.today()
+    elapsed = today.month if today.year == year else (12 if today.year > year else 0)
+
+    all_bus = sorted(set(annual_by_bu) | set(monthly_by_bu) | set(actuals))
+
+    rows = []
+    for bu in all_bus:
+        annual_t = annual_by_bu.get(bu)
+        annual_rev = float(annual_t.target_revenue) if annual_t else 0
+        annual_profit = float(annual_t.target_profit) if annual_t else 0
+        annual_gross = float(annual_t.target_gross_profit) if annual_t else 0
+
+        bu_actuals = actuals.get(bu, {})
+        ytd_rev = sum(bu_actuals.get(m, 0) for m in range(1, elapsed + 1))
+        projected = round(ytd_rev / elapsed * 12, 2) if elapsed else None
+
+        months = []
+        for m in range(1, 13):
+            mt = monthly_by_bu.get(bu, {}).get(m)
+            actual = bu_actuals.get(m, 0)
+            t_rev = float(mt.target_revenue) if mt else None
+            achieved = round(actual / t_rev * 100, 1) if t_rev else None
+            months.append({
+                'month': m,
+                'target_revenue': t_rev,
+                'actual_revenue': actual,
+                'achieved': achieved,
+                'is_past': m <= elapsed,
+            })
+
+        rows.append({
+            'bu': bu,
+            'annual_target_revenue': annual_rev,
+            'annual_target_profit': annual_profit,
+            'annual_target_gross': annual_gross,
+            'ytd_actual_revenue': ytd_rev,
+            'ytd_achieved': round(ytd_rev / annual_rev * 100, 1) if annual_rev else None,
+            'projected': projected,
+            'gap': round(annual_rev - projected, 2) if projected is not None and annual_rev else None,
+            'months': months,
+        })
+
+    # Group-level summary
+    total_annual = sum(r['annual_target_revenue'] for r in rows)
+    total_ytd = sum(r['ytd_actual_revenue'] for r in rows)
+    total_projected = round(total_ytd / elapsed * 12, 2) if elapsed and total_ytd else None
+
+    return ok({
+        'year': year,
+        'elapsed': elapsed,
+        'rows': rows,
+        'summary': {
+            'total_annual_target': total_annual,
+            'total_ytd_actual': total_ytd,
+            'total_ytd_achieved': round(total_ytd / total_annual * 100, 1) if total_annual else None,
+            'total_projected': total_projected,
+            'total_gap': round(total_annual - total_projected, 2) if total_projected is not None else None,
+        },
+    })

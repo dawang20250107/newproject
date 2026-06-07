@@ -20,6 +20,8 @@ const ARAnalyticsPanel = defineAsyncComponent(() => import('../ar/ARAnalytics.vu
 const CashflowPanel = defineAsyncComponent(() => import('../ar/Cashflow.vue'))
 const BusinessFinancePanel = defineAsyncComponent(() => import('./BusinessFinance.vue'))
 const ForecastPanel = defineAsyncComponent(() => import('./Forecast.vue'))
+const ActionPanel = defineAsyncComponent(() => import('./ActionPanel.vue'))
+const TargetDecompPanel = defineAsyncComponent(() => import('./TargetDecomp.vue'))
 const BuDrilldown = defineAsyncComponent(() => import('./BuDrilldown.vue'))
 const ProjectPnlCard = defineAsyncComponent(() => import('./ProjectPnlCard.vue'))
 
@@ -27,7 +29,7 @@ const auth = useCaiwuAuth()
 const pkAuth = useAuthStore()
 const router = useRouter()
 
-// ── 顶部主 Tab：经营总览 / 报表分析 / 应收分析 / 现金流 ───────────────────────
+// ── 顶部主 Tab ───────────────────────────────────────────────────────────────
 const mainTab = ref('overview')
 const MAIN_TABS = computed(() => {
   const t = [{ key: 'overview', label: '经营总览' }]
@@ -36,9 +38,46 @@ const MAIN_TABS = computed(() => {
   if (pkAuth.canPage('ar_analytics')) t.push({ key: 'forecast', label: '判未来' })
   if (pkAuth.canPage('ar_analytics')) t.push({ key: 'ar', label: '应收分析' })
   if (pkAuth.canPage('ar_cashflow')) t.push({ key: 'cashflow', label: '现金流分析' })
+  t.push({ key: 'target', label: '目标分解' })
+  t.push({ key: 'actions', label: '决策行动' + (actionCounts.value.open ? ` (${actionCounts.value.open})` : '') })
   return t
 })
-const panelComp = computed(() => ({ charts: ChartsPanel, bf: BusinessFinancePanel, forecast: ForecastPanel, ar: ARAnalyticsPanel, cashflow: CashflowPanel }[mainTab.value] || null))
+const panelComp = computed(() => ({
+  charts: ChartsPanel, bf: BusinessFinancePanel, forecast: ForecastPanel,
+  ar: ARAnalyticsPanel, cashflow: CashflowPanel,
+  target: TargetDecompPanel, actions: ActionPanel,
+}[mainTab.value] || null))
+
+// ── P4 行动项计数（驱动 Tab 角标）────────────────────────────────────────────
+const actionCounts = ref({ open: 0, in_progress: 0, done: 0, dismissed: 0 })
+
+// ── P4 复盘大屏模式 ─────────────────────────────────────────────────────────
+const presentMode = ref(false)
+const presentPage = ref(0)
+const PRESENT_PAGES = ['规模', '盈利', '业财', '预测', '目标', '行动']
+function nextPresentPage() { presentPage.value = (presentPage.value + 1) % PRESENT_PAGES.length }
+function prevPresentPage() { presentPage.value = (presentPage.value - 1 + PRESENT_PAGES.length) % PRESENT_PAGES.length }
+function openPresent() { presentPage.value = 0; presentMode.value = true }
+
+// ── P4 信号转行动项 ──────────────────────────────────────────────────────────
+const alertToast = ref('')
+let alertToastTimer = null
+function showAlertToast(msg) {
+  alertToast.value = msg
+  clearTimeout(alertToastTimer)
+  alertToastTimer = setTimeout(() => { alertToast.value = '' }, 2200)
+}
+async function createActionFromSignal(a) {
+  try {
+    const signal = { type: a.level === 'high' ? 'critical' : (a.level === 'mid' ? 'warning' : 'info'),
+      bu: a.bu || '', title: a.text, desc: a.text, level: a.level }
+    const res = await ar.actionFromSignal({ signal })
+    if (res.data?.created) showAlertToast('✓ 已创建行动项')
+    else showAlertToast('提示：' + (res.data?.msg || '已有同类行动项'))
+    const cnt = actionCounts.value
+    cnt.open = (cnt.open || 0) + (res.data?.created ? 1 : 0)
+  } catch (e) { showAlertToast(e?.error || '创建失败') }
+}
 
 // 默认展示上月：当月财务数据通常尚未导入/发布
 const year = ref(lastMonthCST().year)
@@ -693,6 +732,7 @@ onMounted(load)
         <button class="cfa-title-btn" :class="{ on: chatOpen }" @click="chatOpen = true" title="业财融合 AI 助手">
           <span class="cfa-title-orb">🤖</span> 业财 AI 助手 <span class="ai-pro-tag">PRO</span>
         </button>
+        <button class="present-btn" @click="openPresent" title="大屏复盘模式">🖥 大屏复盘</button>
       </div>
       <div v-show="mainTab === 'overview'" class="ctrl-row" style="justify-content:flex-end">
         <select v-model="year" class="sel-yr" @change="load">
@@ -779,6 +819,7 @@ onMounted(load)
               <span class="al-dot"></span>
               <span class="al-text">{{ a.text }}</span>
               <button v-if="a.level !== 'ok'" class="al-ask" title="问 AI 这条信号" @click.stop="askAboutSignal(a)">🤖问</button>
+              <button v-if="a.level !== 'ok'" class="al-action" title="转为行动项" @click.stop="createActionFromSignal(a)">→行动</button>
               <span v-if="a.bu || a.tab" class="al-go">›</span>
             </li>
           </ul>
@@ -875,9 +916,12 @@ onMounted(load)
     </template>
     </template>
 
-    <!-- ════ 内嵌分析面板（报表分析 / 应收分析 / 现金流）懒加载 + 缓存 ════════════ -->
+    <!-- ════ 内嵌分析面板（报表分析 / 应收分析 / 现金流 / P4）懒加载 + 缓存 ════════ -->
     <KeepAlive>
-      <component v-if="mainTab !== 'overview' && panelComp" :is="panelComp" embedded :key="mainTab" @ask-ai="onAskProject" />
+      <component v-if="mainTab !== 'overview' && panelComp" :is="panelComp" embedded :key="mainTab"
+        :selected-bu="selectedBu"
+        @ask-ai="onAskProject"
+        @count-change="c => { actionCounts.value = c }" />
     </KeepAlive>
 
     <!-- 三级下钻：事业部科目+项目 → 项目损益卡 -->
@@ -1034,6 +1078,121 @@ onMounted(load)
         </div>
       </Transition>
     </Teleport>
+
+    <!-- ── P4 大屏复盘模式 ─────────────────────────────────────────────────────── -->
+    <Teleport to="body">
+      <Transition name="present-fade">
+        <div v-if="presentMode" class="present-overlay" @keydown.esc="presentMode = false" tabindex="0">
+          <div class="present-header">
+            <div class="present-logo">📊 财务驾驶舱 · 经营复盘</div>
+            <div class="present-scope">{{ selectedBu || '全集团' }} · {{ year }}年{{ month }}月</div>
+            <div class="present-pages">
+              <span v-for="(p, i) in PRESENT_PAGES" :key="p"
+                :class="['pp', presentPage === i ? 'active' : '']"
+                @click="presentPage = i">{{ p }}</span>
+            </div>
+            <button class="present-close" @click="presentMode = false">✕ 退出</button>
+          </div>
+          <div class="present-body">
+            <!-- 规模 -->
+            <template v-if="presentPage === 0">
+              <div class="pp-title">📈 规模 — 收入全景</div>
+              <div class="pp-kpis">
+                <div v-for="c in heroCards" :key="c.key" class="pp-kpi">
+                  <div class="pp-kpi-label">{{ c.label }}</div>
+                  <div class="pp-kpi-val" :style="`color:${c.neg?'#ff7043':c.color}`">{{ fmtMoney(c.value) }}</div>
+                  <div class="pp-kpi-rate" :style="`color:${rateColor(c.rate)}`">{{ fmtRate(c.rate) }}</div>
+                </div>
+              </div>
+              <div class="pp-chart-wrap">
+                <BaseChart v-if="panoramaOption" :option="panoramaOption" height="340px" />
+              </div>
+            </template>
+            <!-- 盈利 -->
+            <template v-else-if="presentPage === 1">
+              <div class="pp-title">💰 盈利 — 事业部贡献</div>
+              <div class="pp-chart-grid">
+                <BaseChart v-if="profitContribOption" :option="profitContribOption" height="380px" />
+                <BaseChart v-if="revStructOption" :option="revStructOption" height="380px" />
+              </div>
+            </template>
+            <!-- 业财 -->
+            <template v-else-if="presentPage === 2">
+              <div class="pp-title">🔗 业财融合 — 项目质量分布</div>
+              <div v-if="bfSummary" class="pp-bf">
+                <div v-for="(t, key) in (bfSummary.by_tag || {})" :key="key" class="pp-bf-tag">
+                  <div class="ppbt-count">{{ t.count }}</div>
+                  <div class="ppbt-label">{{ t.label }}</div>
+                  <div class="ppbt-amt">{{ wan(t.outstanding) }}</div>
+                </div>
+              </div>
+              <div v-else class="pp-empty">暂无业财融合数据</div>
+            </template>
+            <!-- 预测 -->
+            <template v-else-if="presentPage === 3">
+              <div class="pp-title">🔭 判未来 — 全年落地预测</div>
+              <div v-if="fcSummary" class="pp-fc-rows">
+                <div class="pp-fc-row">
+                  <span class="ppfr-label">全年收入预测</span>
+                  <span class="ppfr-val">{{ wan(fcSummary.proj_revenue) }}</span>
+                  <span class="ppfr-rate" :style="`color:${rateColor(fcSummary.revenue_rate)}`">{{ fmtRate(fcSummary.revenue_rate) }}</span>
+                </div>
+                <div class="pp-fc-row">
+                  <span class="ppfr-label">全年净利预测</span>
+                  <span class="ppfr-val">{{ wan(fcSummary.proj_profit) }}</span>
+                  <span class="ppfr-rate" :style="`color:${rateColor(fcSummary.profit_rate)}`">{{ fmtRate(fcSummary.profit_rate) }}</span>
+                </div>
+                <div class="pp-fc-row" v-if="fcSummary.baddebt_risk > 0">
+                  <span class="ppfr-label" style="color:#ff7043">⚠ 坏账风险</span>
+                  <span class="ppfr-val" style="color:#ff7043">{{ wan(fcSummary.baddebt_risk) }}</span>
+                </div>
+              </div>
+              <div v-else class="pp-empty">暂无预测数据</div>
+            </template>
+            <!-- 目标 -->
+            <template v-else-if="presentPage === 4">
+              <div class="pp-title">🎯 目标达成 — 年度进度</div>
+              <div class="pp-progress">
+                <div v-for="b in progressBars" :key="b.label" class="pp-prog-row">
+                  <span class="ppr-label">{{ b.label }}</span>
+                  <div class="ppr-track">
+                    <div class="ppr-fill" :style="`width:${Math.min(100,b.fillPct||0)}%;background:${b.color}`"></div>
+                  </div>
+                  <span class="ppr-rate" :style="`color:${rateColor(b.rate)}`">{{ fmtRate(b.rate) }}</span>
+                </div>
+              </div>
+              <div v-if="engineLine" class="pp-engine">
+                🚀 增长引擎：{{ engineLine.eng.bu }}（净利 {{ wan(engineLine.eng.prof) }}）
+                <template v-if="!engineLine.sameOne">　🪨 主要拖累：{{ engineLine.drag.bu }}（净利 {{ wan(engineLine.drag.prof) }}）</template>
+              </div>
+            </template>
+            <!-- 行动 -->
+            <template v-else-if="presentPage === 5">
+              <div class="pp-title">📋 行动项 — 决策待办</div>
+              <div class="pp-alerts">
+                <div v-for="(a, i) in alerts.filter(a => a.level !== 'ok')" :key="i" class="pp-alert" :class="`pp-al-${a.level}`">
+                  <span class="pp-al-dot"></span>
+                  <span>{{ a.text }}</span>
+                </div>
+                <div v-if="actionCounts.open" class="pp-action-count">
+                  ⬥ 待处理行动项 <b>{{ actionCounts.open }}</b> 条 · 处理中 <b>{{ actionCounts.in_progress }}</b> 条
+                </div>
+              </div>
+            </template>
+          </div>
+          <div class="present-nav">
+            <button class="pnav-btn" :disabled="presentPage === 0" @click="prevPresentPage">← 上一页</button>
+            <span class="pnav-cur">{{ presentPage + 1 }} / {{ PRESENT_PAGES.length }}</span>
+            <button class="pnav-btn" :disabled="presentPage === PRESENT_PAGES.length - 1" @click="nextPresentPage">下一页 →</button>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- P4 信号转行动提示 toast -->
+    <Transition name="cfa-toast">
+      <div v-if="alertToast" class="p4-toast">{{ alertToast }}</div>
+    </Transition>
   </div>
 </template>
 
@@ -1159,6 +1318,13 @@ onMounted(load)
 }
 .alert-item:hover .al-ask { opacity: 1; }
 .al-ask:hover { background: rgba(122,159,212,.18); }
+.al-action {
+  flex-shrink: 0; border: 1px solid rgba(46,125,50,.35); background: rgba(46,125,50,.08);
+  color: #2e7d32; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px;
+  cursor: pointer; opacity: 0; transition: opacity .15s; white-space: nowrap;
+}
+.alert-item:hover .al-action { opacity: 1; }
+.al-action:hover { background: rgba(46,125,50,.18); }
 .al-go { color: var(--muted); font-weight: 700; opacity: 0; transition: opacity .15s; flex-shrink: 0; }
 .alert-item.actionable:hover .al-go { opacity: 1; }
 .al-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
@@ -1382,4 +1548,85 @@ onMounted(load)
 .cfa-toast { position: absolute; left: 50%; bottom: 80px; transform: translateX(-50%); background: rgba(30,18,10,0.9); color: #fff; font-size: 12.5px; padding: 8px 16px; border-radius: 20px; white-space: nowrap; z-index: 5; }
 .cfa-toast-enter-active, .cfa-toast-leave-active { transition: opacity .2s, transform .2s; }
 .cfa-toast-enter-from, .cfa-toast-leave-to { opacity: 0; transform: translateX(-50%) translateY(6px); }
+
+/* ── P4 大屏复盘 ─────────────────────────────────────────────────────────────── */
+.present-btn {
+  border: 1px solid rgba(21,101,192,.35); background: rgba(21,101,192,.06);
+  color: #1565c0; font-size: 12px; font-weight: 700; padding: 5px 12px;
+  border-radius: 8px; cursor: pointer; margin-left: 8px;
+}
+.present-btn:hover { background: rgba(21,101,192,.14); }
+
+.present-overlay {
+  position: fixed; inset: 0; background: #0d1117; z-index: 9999;
+  display: flex; flex-direction: column; color: #e6edf3; outline: none;
+}
+.present-header {
+  display: flex; align-items: center; gap: 16px; padding: 14px 24px;
+  background: #161b22; border-bottom: 1px solid #30363d;
+}
+.present-logo { font-size: 17px; font-weight: 800; color: #58a6ff; }
+.present-scope { font-size: 13px; color: #8b949e; }
+.present-pages { display: flex; gap: 6px; margin-left: auto; }
+.pp { font-size: 13px; padding: 4px 12px; border-radius: 16px; cursor: pointer; color: #8b949e; transition: all .15s; }
+.pp.active { background: #1f6feb; color: #fff; font-weight: 700; }
+.pp:hover:not(.active) { background: #21262d; color: #e6edf3; }
+.present-close { border: 1px solid #30363d; background: none; color: #8b949e; padding: 5px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+.present-close:hover { color: #ff7b72; border-color: #ff7b72; }
+
+.present-body { flex: 1; overflow-y: auto; padding: 32px 48px; }
+.pp-title { font-size: 28px; font-weight: 800; color: #e6edf3; margin-bottom: 28px; letter-spacing: .5px; }
+
+.pp-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 28px; }
+.pp-kpi { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px 24px; }
+.pp-kpi-label { font-size: 13px; color: #8b949e; margin-bottom: 6px; }
+.pp-kpi-val { font-size: 32px; font-weight: 800; }
+.pp-kpi-rate { font-size: 15px; font-weight: 700; margin-top: 4px; }
+.pp-chart-wrap { background: #161b22; border-radius: 12px; padding: 16px; }
+.pp-chart-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+
+.pp-bf { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; }
+.pp-bf-tag { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 24px; text-align: center; }
+.ppbt-count { font-size: 48px; font-weight: 900; color: #58a6ff; line-height: 1; }
+.ppbt-label { font-size: 15px; color: #8b949e; margin: 8px 0 4px; }
+.ppbt-amt { font-size: 20px; font-weight: 700; color: #e6edf3; }
+
+.pp-fc-rows { display: flex; flex-direction: column; gap: 20px; }
+.pp-fc-row { display: flex; align-items: center; gap: 24px; background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px 28px; }
+.ppfr-label { font-size: 18px; color: #8b949e; flex: 1; }
+.ppfr-val { font-size: 36px; font-weight: 800; color: #e6edf3; }
+.ppfr-rate { font-size: 20px; font-weight: 800; }
+
+.pp-progress { display: flex; flex-direction: column; gap: 20px; }
+.pp-prog-row { display: flex; align-items: center; gap: 16px; }
+.ppr-label { font-size: 16px; color: #8b949e; width: 80px; flex-shrink: 0; }
+.ppr-track { flex: 1; height: 18px; background: #21262d; border-radius: 9px; overflow: hidden; }
+.ppr-fill { height: 100%; border-radius: 9px; transition: width .5s; }
+.ppr-rate { font-size: 20px; font-weight: 800; width: 70px; text-align: right; }
+.pp-engine { margin-top: 28px; font-size: 18px; color: #8b949e; }
+
+.pp-alerts { display: flex; flex-direction: column; gap: 12px; }
+.pp-alert { display: flex; align-items: flex-start; gap: 12px; padding: 16px 20px; border-radius: 10px; font-size: 16px; font-weight: 500; }
+.pp-al-high { background: rgba(248,81,73,.12); border: 1px solid rgba(248,81,73,.3); color: #ff7b72; }
+.pp-al-mid { background: rgba(210,153,34,.12); border: 1px solid rgba(210,153,34,.3); color: #e3b341; }
+.pp-al-dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; margin-top: 5px; flex-shrink: 0; }
+.pp-action-count { margin-top: 16px; font-size: 18px; color: #8b949e; }
+.pp-action-count b { color: #e6edf3; }
+
+.pp-empty { font-size: 18px; color: #8b949e; text-align: center; padding: 60px; }
+
+.present-nav {
+  display: flex; align-items: center; justify-content: center; gap: 24px;
+  padding: 16px; background: #161b22; border-top: 1px solid #30363d;
+}
+.pnav-btn { border: 1px solid #30363d; background: none; color: #8b949e; padding: 8px 24px; border-radius: 8px; cursor: pointer; font-size: 15px; font-weight: 600; transition: all .15s; }
+.pnav-btn:disabled { opacity: .35; cursor: default; }
+.pnav-btn:not(:disabled):hover { background: #21262d; color: #e6edf3; }
+.pnav-cur { font-size: 14px; color: #8b949e; min-width: 60px; text-align: center; }
+
+.present-fade-enter-active, .present-fade-leave-active { transition: opacity .25s; }
+.present-fade-enter-from, .present-fade-leave-to { opacity: 0; }
+
+/* P4 alert toast */
+.p4-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #2e7d32; color: #fff; padding: 8px 20px; border-radius: 20px; font-size: 13px; z-index: 8000; pointer-events: none; }
 </style>

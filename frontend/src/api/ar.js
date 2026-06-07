@@ -96,6 +96,16 @@ const ar = {
   projectPnl: p => api.get('/ar/analytics/project-pnl', { params: p }),
   forecast: p => api.get('/ar/analytics/forecast', { params: p }),
 
+  // P4 行动项
+  listActions: p => api.get('/ar/actions', { params: p }),
+  createAction: d => api.post('/ar/actions', d),
+  updateAction: (id, d) => api.put(`/ar/actions/${id}`, d),
+  deleteAction: id => api.delete(`/ar/actions/${id}`),
+  actionFromSignal: d => api.post('/ar/actions/from-signal', d),
+
+  // P4 目标分解
+  targetDecomp: p => api.get('/ar/analytics/target-decomp', { params: p }),
+
   // Cashflow
   cashflow: p => api.get('/ar/cashflow', { params: p }),
 

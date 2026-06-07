@@ -897,3 +897,61 @@ class PaymentBudget(models.Model):
             'created_by_name': self.created_by.name if self.created_by else '',
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class ActionItem(models.Model):
+    """P4 决策闭环 — 行动项，从今日信号自动生成，人工跟踪至关闭。"""
+    STATUS_CHOICES = [
+        ('open', '待处理'),
+        ('in_progress', '处理中'),
+        ('done', '已完成'),
+        ('dismissed', '已忽略'),
+    ]
+    PRIORITY_CHOICES = [
+        ('high', '高'),
+        ('medium', '中'),
+        ('low', '低'),
+    ]
+
+    title = models.CharField('标题', max_length=300)
+    description = models.TextField('描述', blank=True, default='')
+    bu = models.CharField('事业部', max_length=50, blank=True, default='', db_index=True)
+    category = models.CharField('类型', max_length=50, blank=True, default='')
+    priority = models.CharField('优先级', max_length=20, choices=PRIORITY_CHOICES, default='medium')
+    status = models.CharField('状态', max_length=20, choices=STATUS_CHOICES, default='open', db_index=True)
+    assignee = models.CharField('负责人', max_length=100, blank=True, default='')
+    due_date = models.DateField('截止日期', null=True, blank=True)
+    resolved_at = models.DateTimeField('完成时间', null=True, blank=True)
+    source_signal = models.JSONField('来源信号', default=dict, blank=True)
+    created_by = models.ForeignKey(PaikuanUser, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name='created_action_items')
+    resolved_by = models.ForeignKey(PaikuanUser, null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name='resolved_action_items')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ar_action_items'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['status', 'bu']),
+        ]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'title': self.title,
+            'description': self.description,
+            'bu': self.bu,
+            'category': self.category,
+            'priority': self.priority,
+            'status': self.status,
+            'assignee': self.assignee,
+            'due_date': self.due_date.isoformat() if self.due_date else None,
+            'resolved_at': self.resolved_at.isoformat() if self.resolved_at else None,
+            'source_signal': self.source_signal,
+            'created_by': self.created_by.name if self.created_by_id else None,
+            'resolved_by': self.resolved_by.name if self.resolved_by_id else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }

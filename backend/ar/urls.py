@@ -69,6 +69,12 @@ urlpatterns = [
     path('analytics/business-finance', views.analytics_business_finance),
     path('analytics/project-pnl', views.analytics_project_pnl),
     path('analytics/forecast', views.analytics_forecast),
+    path('analytics/target-decomp', views.analytics_target_decomp),
+
+    # P4 行动项
+    path('actions', views.ar_actions),
+    path('actions/from-signal', views.ar_actions_from_signal),
+    path('actions/<int:pk>', views.ar_action_detail),
 
     # Cashflow comparison
     path('cashflow', views.cashflow),
