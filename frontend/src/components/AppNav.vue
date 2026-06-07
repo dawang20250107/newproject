@@ -204,26 +204,6 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
       </router-link>
 
-      <router-link v-if="auth.canPage('ar_analytics')" to="/ar/analytics" class="nav-item" :class="{ active: route.path === '/ar/analytics' }" @click="onNavClick">
-        <span class="nav-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 21H4.6A2.6 2.6 0 012 18.4V3"/><path d="M7 16l4-8 4 5 3-4"/>
-          </svg>
-        </span>
-        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">应收分析</span></Transition>
-        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
-      </router-link>
-
-      <router-link v-if="auth.canPage('ar_cashflow')" to="/ar/cashflow" class="nav-item" :class="{ active: route.path === '/ar/cashflow' }" @click="onNavClick">
-        <span class="nav-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/>
-          </svg>
-        </span>
-        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">现金流分析</span></Transition>
-        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
-      </router-link>
-
       <router-link v-if="auth.canPage('ar_budget')" to="/ar/budget" class="nav-item" :class="{ active: route.path === '/ar/budget' }" @click="onNavClick">
         <span class="nav-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -277,16 +257,6 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
           </svg>
         </span>
         <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">财务报表</span></Transition>
-        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
-      </router-link>
-
-      <router-link v-if="auth.canPage('caiwu_charts')" to="/caiwu/charts" class="nav-item" :class="{ active: route.path === '/caiwu/charts' }" @click="onNavClick">
-        <span class="nav-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-4"/>
-          </svg>
-        </span>
-        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">报表分析</span></Transition>
         <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
       </router-link>
 

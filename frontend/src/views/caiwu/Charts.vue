@@ -8,6 +8,8 @@ import api from '../../api/caiwu.js'
 import { fmtCompact } from '../../utils/format.js'
 import EmptyState from '../../components/EmptyState.vue'
 
+defineProps({ embedded: { type: Boolean, default: false } })
+
 const auth = useCaiwuAuth()
 
 // ── Global BU + year filter ─────────────────────────────
@@ -116,7 +118,7 @@ onMounted(() => {
 <template>
   <div>
     <div class="topbar">
-      <h1>报表分析</h1>
+      <h1 v-if="!embedded">报表分析</h1>
       <!-- Global BU + Year filter -->
       <div class="ctrl-row">
         <select v-model="globalBu" class="sel-bu">

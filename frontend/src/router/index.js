@@ -13,13 +13,14 @@ const routes = [
   { path: '/ar/contracts', component: () => import('../views/ar/ARContracts.vue'), meta: { page: 'ar_projects' } },
   { path: '/ar/records', component: () => import('../views/ar/ARRecords.vue'), meta: { page: 'ar_records' } },
   { path: '/ar/advances', component: () => import('../views/ar/Advances.vue'), meta: { page: 'ar_advance' } },
-  { path: '/ar/analytics', component: () => import('../views/ar/ARAnalytics.vue'), meta: { page: 'ar_analytics' } },
-  { path: '/ar/cashflow', component: () => import('../views/ar/Cashflow.vue'), meta: { page: 'ar_cashflow' } },
   { path: '/ar/budget', component: () => import('../views/ar/Budget.vue'), meta: { page: 'ar_budget' } },
+  // 应收分析 / 现金流分析 / 报表分析 已并入财务驾驶舱（/caiwu/cockpit）的 Tab，旧独立路由下线
+  { path: '/ar/analytics', redirect: '/caiwu/cockpit' },
+  { path: '/ar/cashflow', redirect: '/caiwu/cockpit' },
+  { path: '/caiwu/charts', redirect: '/caiwu/cockpit' },
   // 财务分析 (caiwu) module
   { path: '/caiwu/report', component: () => import('../views/caiwu/Report.vue'), meta: { page: 'caiwu_report' } },
   { path: '/caiwu/data', component: () => import('../views/caiwu/DataImport.vue'), meta: { page: 'caiwu_data' } },
-  { path: '/caiwu/charts', component: () => import('../views/caiwu/Charts.vue'), meta: { page: 'caiwu_charts' } },
   { path: '/caiwu/project-margin', component: () => import('../views/caiwu/ProjectMargin.vue'), meta: { page: 'caiwu_charts' } },
   { path: '/caiwu/cockpit', component: () => import('../views/caiwu/Cockpit.vue'), meta: { page: 'caiwu_cockpit' } },
   { path: '/caiwu/knowledge', component: () => import('../views/caiwu/KnowledgeBase.vue'), meta: { page: 'caiwu_cockpit' } },

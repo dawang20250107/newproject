@@ -1,7 +1,8 @@
 <script setup>
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick, defineAsyncComponent } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
+import { useAuthStore } from '../../stores/auth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 import AiAnalysisModal from '../../components/caiwu/AiAnalysisModal.vue'
@@ -12,8 +13,25 @@ import { streamAiAnalysis } from '../../utils/aiStream.js'
 import { renderMarkdown } from '../../utils/markdown.js'
 import EmptyState from '../../components/EmptyState.vue'
 
+// 驾驶舱内嵌分析面板（懒加载，首次切到对应 Tab 才载入）
+const ChartsPanel = defineAsyncComponent(() => import('./Charts.vue'))
+const ARAnalyticsPanel = defineAsyncComponent(() => import('../ar/ARAnalytics.vue'))
+const CashflowPanel = defineAsyncComponent(() => import('../ar/Cashflow.vue'))
+
 const auth = useCaiwuAuth()
+const pkAuth = useAuthStore()
 const router = useRouter()
+
+// ── 顶部主 Tab：经营总览 / 报表分析 / 应收分析 / 现金流 ───────────────────────
+const mainTab = ref('overview')
+const MAIN_TABS = computed(() => {
+  const t = [{ key: 'overview', label: '经营总览' }]
+  if (pkAuth.canPage('caiwu_charts')) t.push({ key: 'charts', label: '报表分析' })
+  if (pkAuth.canPage('ar_analytics')) t.push({ key: 'ar', label: '应收分析' })
+  if (pkAuth.canPage('ar_cashflow')) t.push({ key: 'cashflow', label: '现金流分析' })
+  return t
+})
+const panelComp = computed(() => ({ charts: ChartsPanel, ar: ARAnalyticsPanel, cashflow: CashflowPanel }[mainTab.value] || null))
 
 // 默认展示上月：当月财务数据通常尚未导入/发布
 const year = ref(lastMonthCST().year)
@@ -519,7 +537,7 @@ onMounted(load)
           <span class="cfa-title-orb">🤖</span> 业财 AI 助手 <span class="ai-pro-tag">PRO</span>
         </button>
       </div>
-      <div class="ctrl-row" style="justify-content:flex-end">
+      <div v-show="mainTab === 'overview'" class="ctrl-row" style="justify-content:flex-end">
         <select v-model="year" class="sel-yr" @change="load">
           <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
         </select>
@@ -533,6 +551,14 @@ onMounted(load)
       </div>
     </div>
 
+    <!-- ── 主 Tab 切换 ─────────────────────────────────────────────────────────── -->
+    <div class="cockpit-tabs">
+      <button v-for="t in MAIN_TABS" :key="t.key"
+        :class="['ck-tab', mainTab === t.key ? 'on' : '']" @click="mainTab = t.key">{{ t.label }}</button>
+    </div>
+
+    <!-- ════ 经营总览 ════════════════════════════════════════════════════════════ -->
+    <template v-if="mainTab === 'overview'">
     <EmptyState v-if="loading && !data" loading />
     <EmptyState v-else-if="loadErr" :error="loadErr" />
     <template v-else-if="data">
@@ -697,6 +723,12 @@ onMounted(load)
       </div>
       </div>
     </template>
+    </template>
+
+    <!-- ════ 内嵌分析面板（报表分析 / 应收分析 / 现金流）懒加载 + 缓存 ════════════ -->
+    <KeepAlive>
+      <component v-if="mainTab !== 'overview' && panelComp" :is="panelComp" embedded :key="mainTab" />
+    </KeepAlive>
 
     <AiAnalysisModal
       :visible="aiVisible"
@@ -842,6 +874,23 @@ onMounted(load)
   padding: 12px 16px; margin-bottom: 16px;
   background: rgba(180,140,110,.08); border: 1px dashed var(--border);
   border-radius: 12px; font-size: 13px; color: var(--muted);
+}
+
+/* ── 主 Tab 切换条 ──────────────────────────────────────────────────────────── */
+.cockpit-tabs {
+  display: flex; gap: 4px; margin: 4px 0 18px;
+  border-bottom: 1px solid rgba(180,140,110,.2);
+}
+.ck-tab {
+  position: relative; border: none; background: none; cursor: pointer;
+  padding: 10px 20px; font-size: 14px; font-weight: 600; color: var(--muted);
+  border-radius: 10px 10px 0 0; transition: color .15s, background .15s;
+}
+.ck-tab:hover { color: var(--primary); background: rgba(201,99,66,.05); }
+.ck-tab.on { color: var(--primary); font-weight: 800; }
+.ck-tab.on::after {
+  content: ''; position: absolute; left: 14px; right: 14px; bottom: -1px; height: 3px;
+  border-radius: 3px 3px 0 0; background: linear-gradient(90deg, #c96342, #e8a05a);
 }
 
 /* ── ZONE 1 · hero KPIs + ratio strip ───────────────────────────────────────── */

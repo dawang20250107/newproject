@@ -9,6 +9,8 @@ import { valueAxis, catAxis, gridFor, bottomLegend, topLabel, rightLabel, endLab
 import EmptyState from '../../components/EmptyState.vue'
 import BaseChart from '../../components/ar/BaseChart.vue'
 
+defineProps({ embedded: { type: Boolean, default: false } })
+
 const auth = useAuthStore()
 const router = useRouter()
 
@@ -213,8 +215,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
 <template>
   <div>
-    <div class="topbar">
-      <h1>应收分析</h1>
+    <div class="topbar" :class="{ 'topbar-embedded': embedded }">
+      <h1 v-if="!embedded">应收分析</h1>
       <div class="ctrl-row">
         <select v-model="selectedDept" class="sel-bu" @change="loadAll">
           <option value="">全部事业部</option>

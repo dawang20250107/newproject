@@ -8,6 +8,8 @@ import { fmtCompact } from '../../utils/format.js'
 import { topLabel, insideLabel, endLabel, HIDE_OVERLAP } from '../../utils/chartTheme.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
 
+defineProps({ embedded: { type: Boolean, default: false } })
+
 const auth = useAuthStore()
 const router = useRouter()
 
@@ -253,12 +255,13 @@ const deptCompareOption = computed(() => {
 
 <template>
   <div>
-    <div class="topbar">
+    <div v-if="!embedded" class="topbar">
       <div>
         <h1>现金流分析<span v-if="hasAlert" class="cf-title-alert">⚠ 造血功能不足！请立即采取措施！</span></h1>
         <div style="font-size:13px;color:var(--muted);margin-top:2px">财务驾驶舱 · 预算达成 · 净现金流 · 累计走势</div>
       </div>
     </div>
+    <div v-else-if="hasAlert" class="cf-embed-alert">⚠ 造血功能不足！请立即采取措施！</div>
 
     <!-- Polished filter bar: dept | date range on one line -->
     <div class="cf-filterbar">
@@ -491,6 +494,11 @@ const deptCompareOption = computed(() => {
 .cf-title-alert {
   font-size: 13px; font-weight: 700; color: #c62828;
   margin-left: 14px; vertical-align: middle;
+}
+.cf-embed-alert {
+  font-size: 13px; font-weight: 700; color: #c62828;
+  background: rgba(198,40,40,.07); border: 1px solid rgba(198,40,40,.2);
+  border-radius: 10px; padding: 8px 14px; margin-bottom: 14px;
 }
 
 /* ── KPI cards: 三组一排（收款 / 付款 / 现金流） ── */
