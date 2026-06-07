@@ -34,7 +34,6 @@ const trendErr = ref('')
 const selectedL1Ids = ref([])
 
 async function loadTrend() {
-  if (!globalBu.value) return
   trendLoading.value = true
   trendErr.value = ''
   try {
@@ -77,7 +76,6 @@ const wfErr = ref('')
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
 async function loadWaterfall() {
-  if (!globalBu.value) return
   wfLoading.value = true
   wfErr.value = ''
   try {
@@ -108,10 +106,9 @@ watch(trendYear, () => {
 })
 
 onMounted(() => {
-  if (accessibleBus.value.length) {
-    globalBu.value = accessibleBus.value[0]
-    // watchers above will fire loadTrend / loadWaterfall
-  }
+  globalBu.value = ''   // 默认全集团
+  if (canTrend.value) loadTrend()
+  if (canWaterfall.value) loadWaterfall()
 })
 </script>
 
@@ -122,6 +119,7 @@ onMounted(() => {
       <!-- Global BU + Year filter -->
       <div class="ctrl-row">
         <select v-model="globalBu" class="sel-bu">
+          <option value="">全集团</option>
           <option v-for="bu in accessibleBus" :key="bu" :value="bu">{{ bu }}</option>
         </select>
         <div class="ctrl-sep"></div>

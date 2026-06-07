@@ -3766,17 +3766,22 @@ def chart_trend(request):
     except Exception:
         return err('年份无效')
 
+    # bu 为空 = 全集团（聚合所有可访问事业部）
     if not bu:
-        return err('请指定事业部')
-    if not _can_access_bu(request, bu):
-        return err('无权访问该事业部', 403)
+        bus = _accessible_bus(request)
+        if not bus:
+            return err('无可访问的事业部', 403)
+    else:
+        if not _can_access_bu(request, bu):
+            return err('无权访问该事业部', 403)
+        bus = [bu]
 
     l1_cats = list(L1Category.objects.order_by('sort_order', 'id'))
 
     # For each month, get published batch and aggregate by L1 (including calculated rows)
     result = []
     for month in range(1, 13):
-        batches_qs = _get_published_batches([bu], year, month)
+        batches_qs = _get_published_batches(bus, year, month)
         batch_ids = list(batches_qs.values_list('id', flat=True))
         if batch_ids:
             agg = (
@@ -3824,10 +3829,15 @@ def chart_waterfall(request):
     cmp_year_s = request.GET.get('compare_year', year_s)
     cmp_month_s = request.GET.get('compare_month', '')
 
+    # bu 为空 = 全集团（聚合所有可访问事业部）
     if not bu:
-        return err('请指定事业部')
-    if not _can_access_bu(request, bu):
-        return err('无权访问该事业部', 403)
+        bus = _accessible_bus(request)
+        if not bus:
+            return err('无可访问的事业部', 403)
+    else:
+        if not _can_access_bu(request, bu):
+            return err('无权访问该事业部', 403)
+        bus = [bu]
 
     try:
         year = int(year_s)
@@ -3842,7 +3852,7 @@ def chart_waterfall(request):
     l1_cats = list(L1Category.objects.order_by('sort_order', 'id'))
 
     def _get_l1_totals(yr, mo):
-        batches_qs = _get_published_batches([bu], yr, mo)
+        batches_qs = _get_published_batches(bus, yr, mo)
         batch_ids = list(batches_qs.values_list('id', flat=True))
         if not batch_ids:
             return {}, {}
