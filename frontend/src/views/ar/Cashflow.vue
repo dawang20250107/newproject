@@ -5,7 +5,7 @@ import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
-import { topLabel, insideLabel, endLabel, HIDE_OVERLAP } from '../../utils/chartTheme.js'
+import { HIDE_OVERLAP } from '../../utils/chartTheme.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
 
 defineProps({ embedded: { type: Boolean, default: false } })
@@ -116,138 +116,197 @@ function gradBar(c1, c2) {
     colorStops: [{ offset: 0, color: c1 }, { offset: 1, color: c2 }] }
 }
 
-// 1. 收付与预算达成对比
-const budgetOption = computed(() => {
+const signWan = (v) => (v >= 0 ? '+' : '−') + fmtWan(Math.abs(v))
+const mLabels = () => (cfData.value?.months || []).map(ym => ym.slice(5) + '月')
+
+// ── 1) 现金流量桥（瀑布）：实收 + 预收 − 实付 − 预付 = 期末净现金 ────────────────
+// 一眼看清整段期间「现金从哪来、到哪去、最后剩多少」——现金流分析的招牌图。
+const bridgeOption = computed(() => {
   if (!cfData.value) return null
   const t = cfData.value.totals
-  const lbls = cfData.value.months.map(ym => ym.slice(5) + '月')
+  const inflowC = _sum(t.collected), inflowA = _sum(t.advance_received)
+  const outflowP = _sum(t.paid), outflowA = _sum(t.advance_paid)
+  const steps = [
+    { name: '实收回款', d: inflowC }, { name: '预收款', d: inflowA },
+    { name: '实付付款', d: -outflowP }, { name: '预付款', d: -outflowA },
+  ]
+  const cats = steps.map(s => s.name).concat('期末净现金')
+  const base = [], delta = []
+  let run = 0
+  for (const s of steps) {
+    const start = run; run += s.d
+    base.push(Math.min(start, run))
+    const up = s.d >= 0
+    delta.push({
+      value: Math.abs(s.d), _signed: s.d,
+      itemStyle: { color: up ? gradBar('#66bb6a', '#2e7d32') : gradBar('#ef5350', '#c62828'),
+                   borderRadius: 4 },
+    })
+  }
+  const total = run
+  base.push(Math.min(0, total))
+  delta.push({
+    value: Math.abs(total), _signed: total, _anchor: true,
+    itemStyle: { color: total >= 0 ? gradBar('#42a5f5', '#1565c0') : gradBar('#ef5350', '#b71c1c'),
+                 borderRadius: 4 },
+  })
   return {
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TT_STYLE, formatter: ttFmt },
-    legend: { bottom: 4, icon: 'roundRect', itemWidth: 14, itemHeight: 8,
-              textStyle: { fontSize: 11, color: '#555' },
-              data: ['实收', '预收', '实付', '预付', '收款预算', '付款预算'] },
-    grid: GRID,
-    xAxis: { type: 'category', data: lbls, axisLine: { lineStyle: SLINE }, axisTick: OLINE, axisLabel: AXLBL },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TT_STYLE,
+      formatter: ps => {
+        const p = ps.find(x => x.seriesName === '净额') || ps[ps.length - 1]
+        const dd = p?.data
+        if (!dd) return ''
+        const lbl = dd._anchor ? '期末净现金' : (dd._signed >= 0 ? '现金流入' : '现金流出')
+        return `<b>${p.axisValueLabel}</b><br/>${lbl}：<b>${dd._anchor ? signWan(dd._signed) : signWan(dd._signed)}</b>`
+      } },
+    grid: { ...GRID, bottom: 28 },
+    xAxis: { type: 'category', data: cats, axisLine: { lineStyle: SLINE }, axisTick: OLINE,
+             axisLabel: { ...AXLBL, interval: 0 } },
     yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), ...AXLBL }, splitLine: { lineStyle: SLINE } },
     series: [
-      // 流入 = 实收 + 预收（堆叠）；流出 = 实付 + 预付（堆叠）
-      { name: '实收', type: 'bar', stack: 'in', barGap: '10%', barMaxWidth: 24, data: t.collected,
-        itemStyle: { color: gradBar('#66bb6a', '#2e7d32') },
-        label: insideLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
-      { name: '预收', type: 'bar', stack: 'in', barMaxWidth: 24, data: t.advance_received || [],
-        itemStyle: { color: gradBar('#a5d6a7', '#66bb6a'), borderRadius: [4, 4, 0, 0] },
-        label: insideLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
-      { name: '实付', type: 'bar', stack: 'out', barMaxWidth: 24, data: t.paid,
-        itemStyle: { color: gradBar('#ffa726', '#e65100') },
-        label: insideLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
-      { name: '预付', type: 'bar', stack: 'out', barMaxWidth: 24, data: t.advance_paid || [],
-        itemStyle: { color: gradBar('#ffcc80', '#ffa726'), borderRadius: [4, 4, 0, 0] },
-        label: insideLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
-      { name: '收款预算', type: 'line', data: t.budget_collection, smooth: true,
-        symbol: 'circle', symbolSize: 4,
-        lineStyle: { type: 'dashed', color: '#2e7d32', width: 1.5, opacity: 0.65 },
-        itemStyle: { color: '#2e7d32' } },
-      { name: '付款预算', type: 'line', data: t.budget_payment, smooth: true,
-        symbol: 'circle', symbolSize: 4,
-        lineStyle: { type: 'dashed', color: '#e65100', width: 1.5, opacity: 0.65 },
-        itemStyle: { color: '#e65100' } },
+      { name: '_base', type: 'bar', stack: 'wf', barMaxWidth: 48, silent: true,
+        itemStyle: { color: 'transparent' }, emphasis: { itemStyle: { color: 'transparent' } }, data: base },
+      { name: '净额', type: 'bar', stack: 'wf', barMaxWidth: 48, data: delta,
+        label: { show: true, position: 'top', fontSize: 11, fontWeight: 700, color: '#5f4d3d',
+          formatter: p => (p.data._anchor ? '' : (p.data._signed >= 0 ? '+' : '−')) + fmtWan(Math.abs(p.data._signed)) },
+        labelLayout: HIDE_OVERLAP },
     ],
   }
 })
 
-// 2. 净现金流趋势
-const netOption = computed(() => {
+// ── 2) 现金呼吸图：流入↑ / 流出↓ 镜像 + 净额线 + 预算参考 + 缺口预警带 ───────────
+// 把「收付对比 + 净现金流」合为一张会呼吸的图：上方吸入、下方呼出、蓝线即净额。
+const breathOption = computed(() => {
   if (!cfData.value) return null
   const t = cfData.value.totals
-  const lbls = cfData.value.months.map(ym => ym.slice(5) + '月')
+  const lbls = mLabels()
+  const neg = arr => (arr || []).map(v => -v)
+  const alertSet = new Set(t.alert_months || [])
+  const alertBands = (cfData.value.months || [])
+    .map((ym, i) => (alertSet.has(ym) ? lbls[i] : null)).filter(Boolean)
+    .map(l => [{ xAxis: l, itemStyle: { color: 'rgba(198,40,40,0.08)' } }, { xAxis: l }])
   return {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TT_STYLE,
-      formatter: p => `<b>${p[0].axisValueLabel}</b><br/>净现金流：<b>${fmtWan(p[0].value)}</b>` },
-    grid: GRIDL,
+      formatter: ps => {
+        let h = `<div style="font-weight:700;margin-bottom:5px">${ps[0].axisValueLabel}</div>`
+        ps.forEach(p => {
+          if (p.value == null || p.value === '-') return
+          const isNet = p.seriesName === '净现金流'
+          const c = p.color?.colorStops ? p.color.colorStops[0].color : p.color
+          const val = isNet ? signWan(p.value) : fmtWan(Math.abs(p.value))
+          h += `<div style="display:flex;gap:8px;align-items:center;margin:2px 0"><span style="color:${c}">●</span><span style="flex:1;color:#555">${p.seriesName}</span><b>${val}</b></div>`
+        })
+        return h
+      } },
+    legend: { bottom: 4, icon: 'roundRect', itemWidth: 14, itemHeight: 8, textStyle: { fontSize: 11, color: '#555' },
+              data: ['实收', '预收', '实付', '预付', '净现金流', '收款预算', '付款预算'] },
+    grid: GRID,
     xAxis: { type: 'category', data: lbls, axisLine: { lineStyle: SLINE }, axisTick: OLINE, axisLabel: AXLBL },
-    yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), ...AXLBL }, splitLine: { lineStyle: SLINE } },
-    series: [{
-      type: 'bar', barMaxWidth: 32,
-      label: topLabel(p => fmtWan(p.value)),
-      labelLayout: HIDE_OVERLAP,
-      data: (t.net || []).map(v => ({ value: v,
-        label: { position: v >= 0 ? 'top' : 'bottom', color: v >= 0 ? '#2e7d32' : '#c62828' },
-        itemStyle: {
-          borderRadius: v >= 0 ? [4, 4, 0, 0] : [0, 0, 4, 4],
-          color: v >= 0 ? gradBar('#66bb6a', '#2e7d32') : gradBar('#ef5350', '#c62828'),
-        }
-      })),
-      markLine: { silent: true, symbol: 'none',
-        lineStyle: { color: 'rgba(0,0,0,0.2)', type: 'dashed' }, data: [{ yAxis: 0 }] },
-    }],
+    yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(Math.abs(v)), ...AXLBL }, splitLine: { lineStyle: SLINE } },
+    series: [
+      { name: '实收', type: 'bar', stack: 'in', barMaxWidth: 26, data: t.collected,
+        itemStyle: { color: gradBar('#81c784', '#2e7d32') },
+        markArea: alertBands.length ? { silent: true, data: alertBands } : undefined },
+      { name: '预收', type: 'bar', stack: 'in', barMaxWidth: 26, data: t.advance_received || [],
+        itemStyle: { color: gradBar('#c8e6c9', '#81c784'), borderRadius: [4, 4, 0, 0] } },
+      { name: '实付', type: 'bar', stack: 'out', barMaxWidth: 26, data: neg(t.paid),
+        itemStyle: { color: gradBar('#e65100', '#ffa726') } },
+      { name: '预付', type: 'bar', stack: 'out', barMaxWidth: 26, data: neg(t.advance_paid),
+        itemStyle: { color: gradBar('#ffa726', '#ffe0b2'), borderRadius: [0, 0, 4, 4] } },
+      { name: '净现金流', type: 'line', smooth: true, z: 10, data: t.net,
+        symbol: 'circle', symbolSize: 7, lineStyle: { color: '#1565c0', width: 3 },
+        itemStyle: { color: '#fff', borderColor: '#1565c0', borderWidth: 2.5 },
+        label: { show: true, position: 'top', fontSize: 10.5, fontWeight: 700, color: '#1565c0',
+                 textBorderColor: '#fff', textBorderWidth: 3, formatter: p => signWan(p.value) },
+        labelLayout: HIDE_OVERLAP,
+        markLine: { silent: true, symbol: 'none', lineStyle: { color: 'rgba(0,0,0,0.25)' }, data: [{ yAxis: 0 }] } },
+      { name: '收款预算', type: 'line', smooth: true, data: t.budget_collection, symbol: 'none',
+        lineStyle: { type: 'dashed', color: '#2e7d32', width: 1.5, opacity: 0.6 } },
+      { name: '付款预算', type: 'line', smooth: true, data: neg(t.budget_payment), symbol: 'none',
+        lineStyle: { type: 'dashed', color: '#e65100', width: 1.5, opacity: 0.6 } },
+    ],
   }
 })
 
-// 3. 累计现金流曲线
-const cumulativeOption = computed(() => {
+// ── 3) 现金跑道与谷底：累计资金池 + 危险区(<0 转红) + 谷底/峰值标注 + 生死线 ──────
+const runwayOption = computed(() => {
   if (!cfData.value) return null
   const t = cfData.value.totals
-  const lbls = cfData.value.months.map(ym => ym.slice(5) + '月')
+  const lbls = mLabels()
+  const data = t.cumulative_net || []
+  const hasNeg = data.some(v => v < 0)
+  // 水下段（<0）单独红线高亮：危险区一眼可见，且规避 visualMap 在类目轴上的兼容问题
+  const danger = data.map(v => (v < 0 ? v : null))
   return {
     tooltip: { trigger: 'axis', ...TT_STYLE,
-      formatter: p => `<b>${p[0].axisValueLabel}</b><br/>累计净现金流：<b>${fmtWan(p[0].value)}</b>` },
-    grid: GRIDL,
+      formatter: p => `<b>${p[0].axisValueLabel}</b><br/>累计资金池：<b>${signWan(p[0].value)}</b>` },
+    grid: { ...GRIDL, top: 28 },
     xAxis: { type: 'category', boundaryGap: false, data: lbls,
              axisLine: { lineStyle: SLINE }, axisTick: OLINE, axisLabel: AXLBL },
     yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), ...AXLBL }, splitLine: { lineStyle: SLINE } },
-    series: [{
-      type: 'line', smooth: true, data: t.cumulative_net || [],
-      symbol: 'circle', symbolSize: 7,
-      label: topLabel(p => fmtWan(p.value), { color: '#1565c0', textBorderColor: '#fff', textBorderWidth: 3 }),
-      labelLayout: HIDE_OVERLAP,
-      lineStyle: { color: '#1565c0', width: 2.5 },
-      itemStyle: { color: '#fff', borderColor: '#1565c0', borderWidth: 2.5 },
-      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-        colorStops: [{ offset: 0, color: 'rgba(21,101,192,0.28)' }, { offset: 1, color: 'rgba(21,101,192,0.02)' }] } },
-      markLine: { silent: true, symbol: 'none',
-        lineStyle: { color: 'rgba(0,0,0,0.2)', type: 'dashed' }, data: [{ yAxis: 0 }] },
-    }],
+    series: [
+      { name: '累计资金池', type: 'line', smooth: true, data, symbol: 'circle', symbolSize: 6,
+        lineStyle: { width: 3, color: '#1565c0' }, itemStyle: { color: '#1565c0' },
+        label: { show: true, position: 'top', fontSize: 10, fontWeight: 700, color: '#1565c0',
+                 textBorderColor: '#fff', textBorderWidth: 3, formatter: p => fmtWan(p.value) },
+        labelLayout: HIDE_OVERLAP,
+        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
+          { offset: 0, color: 'rgba(21,101,192,0.30)' },
+          { offset: 0.72, color: 'rgba(21,101,192,0.03)' },
+          { offset: 0.86, color: 'rgba(198,40,40,0.10)' },
+          { offset: 1, color: 'rgba(198,40,40,0.30)' }] } },
+        markLine: { silent: true, symbol: 'none',
+          lineStyle: { color: 'rgba(120,30,30,0.5)', type: 'dashed', width: 1.5 },
+          label: { formatter: '资金生死线', color: '#c62828', fontSize: 10, position: 'insideEndTop' },
+          data: [{ yAxis: 0 }] },
+        markPoint: {
+          symbolSize: 52, symbol: 'pin',
+          label: { fontSize: 10, fontWeight: 700, color: '#fff', formatter: p => fmtWan(p.value) },
+          data: [
+            { type: 'min', name: '现金谷底', itemStyle: { color: hasNeg ? '#c62828' : '#e65100' } },
+            { type: 'max', name: '资金峰值', itemStyle: { color: '#2e7d32' } },
+          ],
+        } },
+      { name: '水下(<0)', type: 'line', smooth: true, data: danger, symbol: 'none', z: 5,
+        connectNulls: false, lineStyle: { width: 4, color: '#c62828' },
+        areaStyle: { color: 'rgba(198,40,40,0.16)' } },
+    ],
   }
 })
 
-// 4. 各事业部对比 (shown only when dept='' AND multiple depts exist)
-const deptCompareOption = computed(() => {
+// ── 4) 事业部现金收支平衡气泡：X=流入 Y=流出，45°平衡线上方=失血 下方=造血 ─────────
+const deptBalanceOption = computed(() => {
   if (!showDeptComparison.value) return null
-  const byDept = cfData.value.by_dept
-  const sums = byDept.map(d => ({
-    dept: d.dept,
-    coll:  d.collected.reduce((a, b) => a + b, 0),
-    paid:  d.paid.reduce((a, b) => a + b, 0),
-    bcoll: d.budget_collection.reduce((a, b) => a + b, 0),
-    bpaid: d.budget_payment.reduce((a, b) => a + b, 0),
-  }))
-  const deptNames = sums.map(d => d.dept)
+  const rows = cfData.value.by_dept.map(d => {
+    const inflow = _sum(d.collected) + _sum(d.advance_received)
+    const outflow = _sum(d.paid) + _sum(d.advance_paid)
+    return { dept: d.dept, inflow, outflow, net: inflow - outflow }
+  }).filter(r => r.inflow > 0 || r.outflow > 0)
+  if (!rows.length) return null
+  const maxNet = Math.max(...rows.map(r => Math.abs(r.net)), 1)
+  const lim = Math.max(...rows.map(r => Math.max(r.inflow, r.outflow)), 1) * 1.08
   return {
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TT_STYLE, formatter: ttFmt },
-    legend: { bottom: 4, icon: 'roundRect', itemWidth: 14, itemHeight: 8,
-              textStyle: { fontSize: 11, color: '#555' },
-              data: ['实收', '实付', '收款预算', '付款预算'] },
-    grid: { ...GRID, bottom: deptNames.length > 5 ? 64 : 48 },
-    xAxis: { type: 'category', data: deptNames,
-             axisLine: { lineStyle: SLINE }, axisTick: OLINE,
-             axisLabel: { ...AXLBL, interval: 0, rotate: deptNames.length > 5 ? 22 : 0 } },
-    yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(v), ...AXLBL }, splitLine: { lineStyle: SLINE } },
+    tooltip: { ...TT_STYLE, formatter: p => {
+      const [inf, outf, , dept, net] = p.value
+      return `<b>${dept}</b><br/>流入：${fmtWan(inf)}<br/>流出：${fmtWan(outf)}<br/>净现金：<b style="color:${net >= 0 ? '#2e7d32' : '#c62828'}">${signWan(net)}</b>`
+    } },
+    grid: { top: 24, right: 26, bottom: 44, left: 16, containLabel: true },
+    xAxis: { type: 'value', name: '现金流入', nameLocation: 'middle', nameGap: 28, max: lim,
+             nameTextStyle: { color: '#9b8070', fontSize: 11 },
+             axisLabel: { formatter: v => fmtWan(v), ...AXLBL }, splitLine: { lineStyle: SLINE } },
+    yAxis: { type: 'value', name: '现金流出', max: lim, nameTextStyle: { color: '#9b8070', fontSize: 11 },
+             axisLabel: { formatter: v => fmtWan(v), ...AXLBL }, splitLine: { lineStyle: SLINE } },
     series: [
-      { name: '实收', type: 'bar', barGap: '12%', barMaxWidth: 26,
-        data: sums.map(d => d.coll),
-        itemStyle: { color: gradBar('#66bb6a', '#2e7d32'), borderRadius: [4, 4, 0, 0] },
-        label: topLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
-      { name: '实付', type: 'bar', barMaxWidth: 26,
-        data: sums.map(d => ({ value: d.paid,
-          itemStyle: { borderRadius: [4, 4, 0, 0],
-            color: d.paid > d.coll ? gradBar('#ef5350', '#c62828') : gradBar('#ffa726', '#e65100') } })),
-        label: topLabel(p => fmtWan(p.value)), labelLayout: HIDE_OVERLAP },
-      { name: '收款预算', type: 'bar', barGap: '40%', barMaxWidth: 14,
-        data: sums.map(d => d.bcoll),
-        itemStyle: { color: 'rgba(46,125,50,0.25)', borderColor: '#2e7d32', borderWidth: 1.5, borderRadius: [4, 4, 0, 0] } },
-      { name: '付款预算', type: 'bar', barMaxWidth: 14,
-        data: sums.map(d => d.bpaid),
-        itemStyle: { color: 'rgba(230,81,0,0.25)', borderColor: '#e65100', borderWidth: 1.5, borderRadius: [4, 4, 0, 0] } },
+      { name: '平衡线', type: 'line', data: [[0, 0], [lim, lim]], symbol: 'none', silent: true,
+        lineStyle: { color: 'rgba(120,90,70,.5)', type: 'dashed' },
+        endLabel: { show: true, formatter: '收支平衡线', color: '#9b8070', fontSize: 10 } },
+      { name: '事业部', type: 'scatter',
+        symbolSize: r => 16 + (Math.abs(r[4]) / maxNet) * 40,
+        data: rows.map(r => ({ value: [r.inflow, r.outflow, Math.abs(r.net), r.dept, r.net],
+          itemStyle: { color: r.net >= 0 ? 'rgba(46,125,50,0.78)' : 'rgba(198,40,40,0.78)',
+                       borderColor: '#fff', borderWidth: 1.5 } })),
+        label: { show: true, formatter: p => p.value[3], position: 'right', fontSize: 11, color: '#5f4d3d' },
+        labelLayout: HIDE_OVERLAP },
     ],
   }
 })
@@ -360,32 +419,42 @@ const deptCompareOption = computed(() => {
       </section>
     </div>
 
-    <!-- Chart grid (2-col layout) -->
+    <!-- Chart grid (creative cash-flow viz suite) -->
     <div class="cockpit-grid">
+      <!-- 招牌图：现金流量桥 -->
       <div class="card span2">
-        <div class="section-title">收付与预算达成对比</div>
-        <BaseChart v-if="budgetOption" :option="budgetOption" height="320px" />
-        <div v-else-if="!loading" class="chart-empty">暂无数据</div>
-        <div v-else class="chart-empty">加载中…</div>
+        <div class="section-title">现金流量桥
+          <span class="section-sub">实收 + 预收 − 实付 − 预付 = 期末净现金</span>
+        </div>
+        <BaseChart v-if="bridgeOption" :option="bridgeOption" height="300px" />
+        <div v-else class="chart-empty">{{ loading ? '加载中…' : '暂无数据' }}</div>
       </div>
-      <div class="card">
-        <div class="section-title">净现金流趋势</div>
-        <BaseChart v-if="netOption" :option="netOption" height="260px" />
-        <div v-else class="chart-empty">暂无数据</div>
+
+      <!-- 现金呼吸图（流入↑/流出↓ + 净额线）-->
+      <div class="card span2">
+        <div class="section-title">现金呼吸图
+          <span class="section-sub">上方流入 · 下方流出 · 蓝线为月净额 · 红带=当月入不敷出</span>
+        </div>
+        <BaseChart v-if="breathOption" :option="breathOption" height="340px" />
+        <div v-else class="chart-empty">{{ loading ? '加载中…' : '暂无数据' }}</div>
       </div>
-      <div class="card">
-        <div class="section-title">累计现金流曲线</div>
-        <BaseChart v-if="cumulativeOption" :option="cumulativeOption" height="260px" />
-        <div v-else class="chart-empty">暂无数据</div>
+
+      <!-- 现金跑道与谷底 -->
+      <div class="card span2">
+        <div class="section-title">现金跑道与谷底
+          <span class="section-sub">累计资金池 · 跌破 0 转红 · 标注现金谷底与资金峰值</span>
+        </div>
+        <BaseChart v-if="runwayOption" :option="runwayOption" height="280px" />
+        <div v-else class="chart-empty">{{ loading ? '加载中…' : '暂无数据' }}</div>
       </div>
     </div>
 
-    <!-- Per-dept comparison (multi-dept users, shown only when "全部" selected) -->
+    <!-- 事业部现金收支平衡气泡 (multi-dept) -->
     <div v-if="showDeptComparison" class="card" style="margin-top:16px">
-      <div class="section-title">各事业部对比
-        <span class="section-sub">{{ filters.start_date }} 至 {{ filters.end_date }}</span>
+      <div class="section-title">事业部现金收支平衡
+        <span class="section-sub">X=流入　Y=流出　气泡=净现金额　虚线上方=失血 / 下方=造血 · {{ filters.start_date }} 至 {{ filters.end_date }}</span>
       </div>
-      <BaseChart v-if="deptCompareOption" :option="deptCompareOption" height="280px" />
+      <BaseChart v-if="deptBalanceOption" :option="deptBalanceOption" height="380px" />
     </div>
 
     <!-- Monthly detail table -->

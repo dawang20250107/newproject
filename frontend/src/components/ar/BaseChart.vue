@@ -4,13 +4,15 @@ import * as echarts from 'echarts/core'
 import { BarChart, LineChart, PieChart, ScatterChart } from 'echarts/charts'
 import {
   GridComponent, TooltipComponent, LegendComponent,
-  MarkLineComponent, MarkAreaComponent, DataZoomComponent,
+  MarkLineComponent, MarkAreaComponent, MarkPointComponent,
+  DataZoomComponent, VisualMapComponent, GraphicComponent,
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 
 echarts.use([BarChart, LineChart, PieChart, ScatterChart,
   GridComponent, TooltipComponent, LegendComponent,
-  MarkLineComponent, MarkAreaComponent, DataZoomComponent,
+  MarkLineComponent, MarkAreaComponent, MarkPointComponent,
+  DataZoomComponent, VisualMapComponent, GraphicComponent,
   CanvasRenderer])
 
 const props = defineProps({
