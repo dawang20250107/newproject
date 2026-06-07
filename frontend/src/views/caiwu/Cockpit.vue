@@ -176,6 +176,22 @@ async function sendChat(text) {
 
 function resetChat() { chatMessages.value = []; chatErr.value = '' }
 
+// ── 主动洞察闭环：信号/项目 一键带上下文追问 AI ──────────────────────────────
+async function askAi(question) {
+  if (chatStreaming.value) return
+  chatOpen.value = true
+  panelTab.value = 'chat'
+  await nextTick()
+  sendChat(question)
+}
+function askAboutSignal(a) {
+  askAi(`针对这条经营信号，请结合业财融合数据做归因分析并给出可执行建议：「${a.text}」`)
+}
+function onAskProject(p) {
+  const tag = p.tag_label ? `（当前评级：${p.tag_label}）` : ''
+  askAi(`请分析「${p.name}」这个项目${tag}：盈利质量与回款状况如何、问题根因是什么、有哪些改善建议？`)
+}
+
 // ── 经营知识库（越用越聪明：长期记忆 + 自我提炼）──────────────────────────────
 const panelTab = ref('chat')          // 'chat' | 'kb'
 const kbItems = ref([])
@@ -745,7 +761,9 @@ onMounted(load)
           </div>
           <ul class="alert-list">
             <li v-for="(a, i) in alerts" :key="i" class="alert-item" :class="[`al-${a.level}`, { actionable: a.bu || a.tab }]" @click="onSignal(a)">
-              <span class="al-dot"></span><span>{{ a.text }}</span>
+              <span class="al-dot"></span>
+              <span class="al-text">{{ a.text }}</span>
+              <button v-if="a.level !== 'ok'" class="al-ask" title="问 AI 这条信号" @click.stop="askAboutSignal(a)">🤖问</button>
               <span v-if="a.bu || a.tab" class="al-go">›</span>
             </li>
           </ul>
@@ -844,14 +862,14 @@ onMounted(load)
 
     <!-- ════ 内嵌分析面板（报表分析 / 应收分析 / 现金流）懒加载 + 缓存 ════════════ -->
     <KeepAlive>
-      <component v-if="mainTab !== 'overview' && panelComp" :is="panelComp" embedded :key="mainTab" />
+      <component v-if="mainTab !== 'overview' && panelComp" :is="panelComp" embedded :key="mainTab" @ask-ai="onAskProject" />
     </KeepAlive>
 
     <!-- 三级下钻：事业部科目+项目 → 项目损益卡 -->
     <BuDrilldown v-if="drillBu" :bu="drillBu" :year="year" :month="month"
       @close="drillBu = ''" @open-project="onDrillProject" />
-    <ProjectPnlCard v-if="drillProjectName" :name="drillProjectName" :year="year"
-      @close="drillProjectName = ''" />
+    <ProjectPnlCard v-if="drillProjectName" :name="drillProjectName" :year="year" askable
+      @close="drillProjectName = ''" @ask="p => { drillProjectName = ''; drillBu = ''; onAskProject(p) }" />
 
     <AiAnalysisModal
       :visible="aiVisible"
@@ -1118,7 +1136,15 @@ onMounted(load)
 .signal-ai-btn:disabled { opacity: .6; cursor: default; }
 .alert-item.actionable { cursor: pointer; border-radius: 7px; padding-left: 6px; margin-left: -6px; transition: background .15s; }
 .alert-item.actionable:hover { background: rgba(201,99,66,.07); }
-.al-go { margin-left: auto; color: var(--muted); font-weight: 700; opacity: 0; transition: opacity .15s; }
+.al-text { flex: 1; }
+.al-ask {
+  flex-shrink: 0; border: 1px solid rgba(122,159,212,.35); background: rgba(122,159,212,.08);
+  color: #4a6fa5; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px;
+  cursor: pointer; opacity: 0; transition: opacity .15s; white-space: nowrap;
+}
+.alert-item:hover .al-ask { opacity: 1; }
+.al-ask:hover { background: rgba(122,159,212,.18); }
+.al-go { color: var(--muted); font-weight: 700; opacity: 0; transition: opacity .15s; flex-shrink: 0; }
 .alert-item.actionable:hover .al-go { opacity: 1; }
 .al-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
 .al-high .al-dot { background: #c62828; box-shadow: 0 0 0 3px rgba(198,40,40,.14); }

@@ -9,8 +9,9 @@ import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 const props = defineProps({
   name: { type: String, required: true },
   year: { type: Number, required: true },
+  askable: { type: Boolean, default: false },   // 显示「问AI」入口（仅在有 AI 助手的上下文）
 })
-const emit = defineEmits(['close'])
+const emit = defineEmits(['close', 'ask'])
 
 const data = ref(null)
 const loading = ref(true)
@@ -87,7 +88,11 @@ const monthlyOption = computed(() => {
             <span class="pill" :style="{ color: tagOf(data.totals.tag).color, borderColor: tagOf(data.totals.tag).color + '55' }">{{ data.totals.tag_label }}</span>
           </div>
         </div>
-        <button class="pnl-x" @click="emit('close')">✕</button>
+        <div class="pnl-head-acts">
+          <button v-if="askable && data?.totals" class="pnl-ask"
+            @click="emit('ask', { name: data.project?.name || name, tag_label: data.totals.tag_label })">🤖 问AI</button>
+          <button class="pnl-x" @click="emit('close')">✕</button>
+        </div>
       </div>
 
       <EmptyState v-if="loading" loading />
@@ -143,6 +148,12 @@ const monthlyOption = computed(() => {
 .pnl-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .pnl-title { font-size: 18px; font-weight: 800; color: #5f4d3d; }
 .pnl-sub { font-size: 12.5px; color: #8a7665; margin-top: 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pnl-head-acts { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.pnl-ask {
+  border: 1px solid rgba(122,159,212,.4); background: rgba(122,159,212,.1); color: #4a6fa5;
+  font-size: 12px; font-weight: 700; padding: 4px 11px; border-radius: 13px; cursor: pointer; white-space: nowrap;
+}
+.pnl-ask:hover { background: rgba(122,159,212,.2); }
 .pnl-x { border: none; background: none; font-size: 18px; color: #b3a08f; cursor: pointer; line-height: 1; }
 .pnl-x:hover { color: #5f4d3d; }
 .pnl-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }

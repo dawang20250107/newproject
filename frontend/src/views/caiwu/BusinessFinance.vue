@@ -10,6 +10,7 @@ import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 import ProjectPnlCard from './ProjectPnlCard.vue'
 
 defineProps({ embedded: { type: Boolean, default: false } })
+const emit = defineEmits(['ask-ai'])
 
 const auth = useAuthStore()
 
@@ -274,7 +275,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     <EmptyState v-else empty text="暂无业财融合数据" />
 
     <!-- 项目损益卡（全链路）— 共享组件 -->
-    <ProjectPnlCard v-if="pnlName" :name="pnlName" :year="selectedYear" @close="pnlName = ''" />
+    <ProjectPnlCard v-if="pnlName" :name="pnlName" :year="selectedYear" askable
+      @close="pnlName = ''" @ask="p => { pnlName = ''; emit('ask-ai', p) }" />
   </div>
 </template>
 
