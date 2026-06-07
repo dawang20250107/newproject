@@ -109,7 +109,7 @@ const projects = ref([])
 const projectKeyword = ref('')
 const projectSearching = ref(false)
 let projectSearchTimer = null
-// Server-side search by project_no / short_name / contract_name (debounced).
+// Server-side search by project_no / short_name / customer_name (debounced).
 async function searchProjects(kw) {
   projectSearching.value = true
   try {
@@ -394,7 +394,7 @@ async function saveRec() {
 
 async function deleteRec(rec) {
   const amt = parseFloat(rec.estimated_amount || 0).toFixed(2)
-  if (!confirm(`确定删除「${rec.short_name || rec.contract_name}」${rec.operation_year}年${rec.operation_month}月的应收记录（${amt} 元）？同月可能存在多条记录，请确认。`)) return
+  if (!confirm(`确定删除「${rec.short_name || rec.customer_name}」${rec.operation_year}年${rec.operation_month}月的应收记录（${amt} 元）？同月可能存在多条记录，请确认。`)) return
   try { await ar.deleteRecord(rec.id); await load() }
   catch (e) { alert(e?.msg || '删除失败') }
 }
@@ -413,11 +413,11 @@ function openAddPayment(rec) {
 // 拉取可用预收：本项目的预收 ∪ 未挂项目但客户名匹配的散单预收。
 // 无权限或无数据时静默隐藏提示。
 async function loadPayAdvance(rec) {
-  if (!rec?.project_id && !rec?.contract_name) return
+  if (!rec?.project_id && !rec?.customer_name) return
   try {
     const params = { direction: '预收' }
     if (rec.project_id) params.project_id = rec.project_id
-    if (rec.contract_name) params.customer = rec.contract_name
+    if (rec.customer_name) params.customer = rec.customer_name
     const res = await ar.advancesAvailable(params)
     if (res.data?.count > 0) payAdvance.value = res.data
   } catch (_) { /* 无预收预付权限时静默 */ }
@@ -776,8 +776,8 @@ function clearFilters() {
                   <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @change="toggleRow(rec.id)" />
                 </td>
                 <td>
-                  <div class="proj-name" :title="rec.short_name || rec.contract_name">{{ rec.short_name || rec.contract_name }}</div>
-                  <div v-if="rec.short_name && rec.short_name !== rec.contract_name" class="proj-sub" :title="rec.contract_name">{{ rec.contract_name }}</div>
+                  <div class="proj-name" :title="rec.short_name || rec.customer_name">{{ rec.short_name || rec.customer_name }}</div>
+                  <div v-if="rec.short_name && rec.short_name !== rec.customer_name" class="proj-sub" :title="rec.customer_name">{{ rec.customer_name }}</div>
                   <div class="proj-no">{{ rec.project_no }}</div>
                 </td>
                 <td class="ctr">
@@ -1041,13 +1041,13 @@ function clearFilters() {
               <label class="form-field span2">
                 <span>关联项目 <em>*</em></span>
                 <input v-model="projectKeyword"
-                       placeholder="输入项目编号 / 简称 / 合同名称 / 负责人 模糊搜索"
+                       placeholder="输入项目编号 / 简称 / 客户名称 / 负责人 模糊搜索"
                        :disabled="!!editRec"
                        @input="onProjectKeywordInput" />
                 <select v-model="recForm.project_id" :disabled="!!editRec">
                   <option value="" disabled>{{ projectSearching ? '搜索中…' : (projects.length ? '请选择项目' : '无匹配项目') }}</option>
                   <option v-for="p in projects" :key="p.id" :value="p.id">
-                    {{ p.project_no }} · {{ p.short_name || p.contract_name }}
+                    {{ p.project_no }} · {{ p.short_name || p.customer_name }}
                   </option>
                 </select>
               </label>
@@ -1136,7 +1136,7 @@ function clearFilters() {
           <div class="modal-header">
             <div>
               <h3>录入回款</h3>
-              <div style="font-size:12px;color:var(--muted);margin-top:2px">{{ payRec?.short_name || payRec?.contract_name }}</div>
+              <div style="font-size:12px;color:var(--muted);margin-top:2px">{{ payRec?.short_name || payRec?.customer_name }}</div>
             </div>
             <button class="modal-close" @click="showPayModal = false">✕</button>
           </div>

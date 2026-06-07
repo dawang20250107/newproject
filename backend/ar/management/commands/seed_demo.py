@@ -133,7 +133,7 @@ class Command(BaseCommand):
                 if proj is None:
                     proj = ARProject.objects.create(
                         project_no=(pno or f'AUTO-{len(cache) + 1:04d}'),
-                        contract_name=contract, short_name=short or contract,
+                        customer_name=contract, short_name=short or contract,
                         delivery_dept=dept, sales_contact=sales, project_manager=mgr,
                         reconciliation_days=total_days, invoice_wait_days=0,
                         post_invoice_days=0, invoice_mode=inv_mode)
@@ -186,8 +186,8 @@ class Command(BaseCommand):
             ARProject.objects.exclude(customer__isnull=True).update(customer=None)
             Customer.objects.all().delete()
         cache, made, linked = {}, 0, 0
-        for p in ARProject.objects.all().only('id', 'contract_name', 'customer_level'):
-            name = (p.contract_name or '').strip()
+        for p in ARProject.objects.all().only('id', 'customer_name', 'customer_level'):
+            name = (p.customer_name or '').strip()
             if not name:
                 continue
             cust = cache.get(name)
@@ -297,8 +297,8 @@ class Command(BaseCommand):
             return 0.94                              # 缺财务数据时按 6% 毛利兜底
 
         # 应收侧：每个项目逐月的收入近似（开票额优先，缺失用预估额）
-        proj_name = {p.id: (p.short_name or p.contract_name or p.project_no)
-                     for p in ARProject.objects.only('id', 'short_name', 'contract_name', 'project_no')}
+        proj_name = {p.id: (p.short_name or p.customer_name or p.project_no)
+                     for p in ARProject.objects.only('id', 'short_name', 'customer_name', 'project_no')}
         agg = {}  # (project_id, dept, month) -> revenue
         for r in (ARRecord.objects.filter(operation_year=FIN_YEAR)
                   .values('project_id', 'delivery_dept', 'operation_month',

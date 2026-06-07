@@ -3242,8 +3242,8 @@ def _build_bf_fusion_summary(bus, year, month):
         # 项目名 → ARProject（客户/部门/应收主键）
         name2p = {}
         for p in (ARProject.objects.filter(delivery_dept__in=bus).select_related('customer')
-                  .only('id', 'short_name', 'contract_name', 'customer', 'delivery_dept')):
-            for k in (p.short_name, p.contract_name):
+                  .only('id', 'short_name', 'customer_name', 'customer', 'delivery_dept')):
+            for k in (p.short_name, p.customer_name):
                 k = (k or '').strip()
                 if k and k not in name2p:
                     name2p[k] = p

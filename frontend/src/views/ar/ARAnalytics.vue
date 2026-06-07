@@ -499,7 +499,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 </thead>
                 <tbody>
                   <tr v-for="r in detail.items" :key="r.id">
-                    <td><div class="dt-name">{{ r.short_name || r.contract_name }}</div><div class="dt-no">{{ r.project_no }}</div></td>
+                    <td><div class="dt-name">{{ r.short_name || r.customer_name }}</div><div class="dt-no">{{ r.project_no }}</div></td>
                     <td class="ctr">{{ r.operation_year }}/{{ String(r.operation_month).padStart(2,'0') }}</td>
                     <td class="amt" :class="parseFloat(r.outstanding_amount) > 0 ? 'dt-warn' : 'dt-zero'">{{ fmtWan(r.outstanding_amount) }}</td>
                     <td class="ctr dt-muted">{{ r.due_date || '—' }}</td>

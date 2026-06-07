@@ -52,7 +52,7 @@ class ARPermissionRegressionTests(TestCase):
 
     def create_project(self, dept=None, short_name='Project A', delivery_dept=None):
         return ARProject.objects.create(
-            contract_name='Contract A',
+            customer_name='Contract A',
             short_name=short_name,
             delivery_dept=delivery_dept or dept or self.dept,
             sub_dept='Sub A',
@@ -82,7 +82,7 @@ class ARPermissionRegressionTests(TestCase):
 
     def project_payload(self):
         return {
-            'contract_name': 'Contract B',
+            'customer_name': 'Contract B',
             'short_name': 'Project B',
             'delivery_dept': self.dept,
             'sub_dept': 'Sub B',
@@ -118,8 +118,8 @@ class ARPermissionRegressionTests(TestCase):
         got = self.client.get(f'/api/pk/ar/projects/{pid}', **self.auth(admin))
         self.assertEqual(got.json()['data']['post_invoice_days'], 30)
 
-    def test_projects_list_exposes_contract_name_for_advance_autofill(self):
-        """预收新增的关联项目下拉用 /ar/projects，选中后以 contract_name 自动带出
+    def test_projects_list_exposes_customer_name_for_advance_autofill(self):
+        """预收新增的关联项目下拉用 /ar/projects，选中后以 customer_name 自动带出
         往来单位。该字段须随列表返回且非空，否则前端 pickProject 拿不到值。
         「合同名正名为客户」上线后：新建项目按合同名自动建/挂客户（_autolink_customer），
         列表返回的 customer_id/customer_name 应非空且客户名=合同名。"""
@@ -132,7 +132,7 @@ class ARPermissionRegressionTests(TestCase):
         resp = self.client.get('/api/pk/ar/projects', {'q': '福佑物流'}, **self.auth(user))
         self.assertEqual(resp.status_code, 200, resp.content)
         item = resp.json()['data']['items'][0]
-        self.assertEqual(item['contract_name'], 'Contract A')
+        self.assertEqual(item['customer_name'], 'Contract A')
         # 合同名自动正名为客户：customer 非空且名称=合同名
         self.assertIsNotNone(item['customer_id'])
         self.assertEqual(item['customer_name'], 'Contract A')
@@ -210,7 +210,7 @@ class ARPermissionRegressionTests(TestCase):
     def test_ar_exports_respect_hidden_field_permissions(self):
         cfg = default_job_config('cashier')
         cfg['pages']['ar_projects'] = True
-        cfg['ar_view']['p_contract_name'] = False
+        cfg['ar_view']['p_customer_name'] = False
         JobPermission.objects.create(job_title='cashier', config=cfg)
         _invalidate_perm_cache('cashier')
         user = self.make_user('13910000003', 'cashier')
@@ -853,7 +853,7 @@ class AdvanceModuleTests(TestCase):
 
     def create_project(self, short_name='预收项目A'):
         return ARProject.objects.create(
-            contract_name='合同A', short_name=short_name, delivery_dept=self.dept,
+            customer_name='合同A', short_name=short_name, delivery_dept=self.dept,
             sales_contact='Sales A', project_manager='PM A', has_contract='有',
             contract_date=date(2026, 1, 1))
 
@@ -1117,10 +1117,10 @@ class AdvanceModuleTests(TestCase):
     def test_available_union_project_and_customer(self):
         admin = self.make_user('13911100014', 'finance_director', role='super_admin')
         proj = ARProject.objects.create(
-            contract_name='合同P', short_name='项目P', delivery_dept=self.dept,
+            customer_name='合同P', short_name='项目P', delivery_dept=self.dept,
             sales_contact='S', project_manager='M')
         other = ARProject.objects.create(
-            contract_name='合同Q', short_name='项目Q', delivery_dept=self.dept,
+            customer_name='合同Q', short_name='项目Q', delivery_dept=self.dept,
             sales_contact='S', project_manager='M')
         # A1：挂本项目
         a1 = AdvanceRecord.objects.create(
@@ -1163,7 +1163,7 @@ class AdvanceModuleTests(TestCase):
     def test_offset_with_standalone_advance(self):
         admin = self.make_user('13911100015', 'finance_director', role='super_admin')
         proj = ARProject.objects.create(
-            contract_name='合同R', short_name='项目R', delivery_dept=self.dept,
+            customer_name='合同R', short_name='项目R', delivery_dept=self.dept,
             sales_contact='S', project_manager='M')
         ar = self._ar_record(proj, 100000)
         adv = AdvanceRecord.objects.create(   # 散单预收，无项目
@@ -1183,10 +1183,10 @@ class AdvanceModuleTests(TestCase):
     def test_offsettable_records_by_customer(self):
         admin = self.make_user('13911100016', 'finance_director', role='super_admin')
         proj = ARProject.objects.create(
-            contract_name='ACME物流', short_name='项目S', delivery_dept=self.dept,
+            customer_name='ACME物流', short_name='项目S', delivery_dept=self.dept,
             sales_contact='S', project_manager='M')
         other = ARProject.objects.create(
-            contract_name='别的客户', short_name='项目T', delivery_dept=self.dept,
+            customer_name='别的客户', short_name='项目T', delivery_dept=self.dept,
             sales_contact='S', project_manager='M')
         r1 = self._ar_record(proj, 50000)
         self._ar_record(other, 70000)  # 别的客户 → 不应出现
@@ -1240,11 +1240,11 @@ class ProjectImportRoundtripTests(TestCase):
 
     def test_export_style_headers_without_asterisk_import(self):
         # 导出文件表头：无 *、开票模式/专票普票为短名 —— 之前会整表静默跳过
-        headers = ['项目编号', '合同名称', '客户名称', '项目简称', '交付部门', '二级部门',
+        headers = ['项目编号', '客户名称', '项目简称', '交付部门', '二级部门',
                    '业务模式', '客户等级', '销售对接人', '项目负责人', '共享业务', '有无合同',
                    '签订日期', '合同对账期(天)', '开票等待期(天)', '票后等待期(天)', '总账期(天)',
                    '开票模式', '专票/普票', '税率', '备注']
-        row = ['GYL-X', '南京福佑物流合同', '南京福佑', '南京福佑', self.dept, '',
+        row = ['GYL-X', '南京福佑物流合同', '南京福佑', self.dept, '',
                '整车', 'A级', '张三', '李四', '是', '有',
                '2026-01-01', 30, 0, 60, 90, '全额', '专票', '0.06', '']
         resp = self._upload([headers, row])
@@ -1253,10 +1253,10 @@ class ProjectImportRoundtripTests(TestCase):
         self.assertEqual(d['created'], 1, d)
         self.assertEqual(d['skipped'], 0, d)
         p = ARProject.objects.get(short_name='南京福佑')
-        self.assertEqual(p.contract_name, '南京福佑物流合同')
+        self.assertEqual(p.customer_name, '南京福佑物流合同')
         self.assertEqual(p.invoice_type, '专票')
 
-    def test_missing_contract_name_falls_back_to_short_name(self):
+    def test_missing_customer_name_falls_back_to_short_name(self):
         headers = ['合同名称*', '项目简称*', '交付部门*', '销售对接人*', '项目负责人*']
         row = ['', '南京福佑', self.dept, '张三', '李四']
         resp = self._upload([headers, row])
@@ -1264,9 +1264,9 @@ class ProjectImportRoundtripTests(TestCase):
         d = resp.json()['data']
         self.assertEqual(d['created'], 1, d)
         p = ARProject.objects.get(short_name='南京福佑')
-        self.assertEqual(p.contract_name, '南京福佑')   # 回退用项目简称
+        self.assertEqual(p.customer_name, '南京福佑')   # 回退用项目简称
 
-    def test_same_contract_name_different_short_names_not_merged(self):
+    def test_same_customer_name_different_short_names_not_merged(self):
         """1合同多项目：同一合同名下不同项目简称必须各自建档，不能被合并去重
         （回归：去重主键须为项目简称+部门，而非合同名+部门）。"""
         headers = ['合同名称*', '项目简称*', '交付部门*', '销售对接人*', '项目负责人*']
@@ -1280,7 +1280,7 @@ class ProjectImportRoundtripTests(TestCase):
         self.assertEqual(d['created'], 2, d)      # 两个项目都应创建
         self.assertEqual(d['updated'], 0, d)
         names = set(ARProject.objects.filter(
-            contract_name='南京福佑在线电子商务有限公司').values_list('short_name', flat=True))
+            customer_name='南京福佑在线电子商务有限公司').values_list('short_name', flat=True))
         self.assertEqual(names, {'南京福佑', '福佑顺心'})
 
     def test_reimport_same_short_name_updates_not_duplicates(self):
@@ -1300,7 +1300,7 @@ class ProjectImportRoundtripTests(TestCase):
         d = resp.json()['data']
         self.assertEqual(d['created'], 0, d)
         self.assertEqual(len(d['errors']), 1, d)
-        self.assertIn('合同名称', d['errors'][0])
+        self.assertIn('客户名称', d['errors'][0])
 
 
 class InvoiceBatchTests(TestCase):
@@ -1316,7 +1316,7 @@ class InvoiceBatchTests(TestCase):
         u.set_password('Test123456'); u.save()
         self.token = make_token(u)
         self.proj = ARProject.objects.create(
-            contract_name='合并开票测试合同', short_name='批次测试项目',
+            customer_name='合并开票测试合同', short_name='批次测试项目',
             delivery_dept=self.dept, sales_contact='S', project_manager='M')
 
     def tearDown(self):
@@ -1399,9 +1399,9 @@ class ContractAndImportAmbiguityTests(TestCase):
     def auth(self):
         return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
 
-    def _proj(self, short_name, contract_name='合同X'):
+    def _proj(self, short_name, customer_name='合同X'):
         return ARProject.objects.create(
-            contract_name=contract_name, short_name=short_name,
+            customer_name=customer_name, short_name=short_name,
             delivery_dept=self.dept, sales_contact='S', project_manager='M')
 
     def _upload_records(self, head, rows):
@@ -1432,8 +1432,8 @@ class ContractAndImportAmbiguityTests(TestCase):
 
     # ── 导入歧义：多个同名项目且未消歧 → 整表拒绝 + 候选项 ─────────────────────
     def test_import_ambiguous_same_name_rejects_with_candidates(self):
-        self._proj('同名项目', contract_name='合同甲')
-        self._proj('同名项目', contract_name='合同乙')
+        self._proj('同名项目', customer_name='合同甲')
+        self._proj('同名项目', customer_name='合同乙')
         HEAD = ['项目编号', '项目简称*', '客户名称', '运作年*', '运作月*', '预估上账金额',
                 '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
                 '回款金额', '回款时间', '备注']
@@ -1448,8 +1448,8 @@ class ContractAndImportAmbiguityTests(TestCase):
 
     # ── 项目编号精确指定 → 消除歧义、正常写入 ─────────────────────────────────
     def test_import_project_no_disambiguates(self):
-        p1 = self._proj('同名项目', contract_name='合同甲')
-        self._proj('同名项目', contract_name='合同乙')
+        p1 = self._proj('同名项目', customer_name='合同甲')
+        self._proj('同名项目', customer_name='合同乙')
         HEAD = ['项目编号', '项目简称*', '客户名称', '运作年*', '运作月*', '预估上账金额',
                 '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
                 '回款金额', '回款时间', '备注']
@@ -1462,8 +1462,8 @@ class ContractAndImportAmbiguityTests(TestCase):
 
     # ── 客户名称消歧 → 正常写入 ──────────────────────────────────────────────
     def test_import_customer_hint_disambiguates(self):
-        self._proj('同名项目', contract_name='合同甲')
-        p2 = self._proj('同名项目', contract_name='合同乙')
+        self._proj('同名项目', customer_name='合同甲')
+        p2 = self._proj('同名项目', customer_name='合同乙')
         HEAD = ['项目编号', '项目简称*', '客户名称', '运作年*', '运作月*', '预估上账金额',
                 '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
                 '回款金额', '回款时间', '备注']

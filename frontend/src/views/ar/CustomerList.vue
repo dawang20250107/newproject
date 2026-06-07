@@ -256,8 +256,8 @@ onMounted(() => load(true))
                   <tr><th class="l">项目</th><th>部门</th><th class="rgt">开票</th><th class="rgt">未收</th><th class="rgt">逾期</th></tr>
                 </thead>
                 <tbody>
-                  <tr v-for="p in detail.projects" :key="p.id" class="proj-row" @click="pnlName = p.short_name || p.contract_name">
-                    <td class="l">{{ p.short_name || p.contract_name }}<span class="drill">损益 ›</span></td>
+                  <tr v-for="p in detail.projects" :key="p.id" class="proj-row" @click="pnlName = p.short_name || p.customer_name">
+                    <td class="l">{{ p.short_name || p.customer_name }}<span class="drill">损益 ›</span></td>
                     <td class="dept">{{ p.delivery_dept }}</td>
                     <td class="rgt">{{ wan(p.invoiced) }}</td>
                     <td class="rgt strong">{{ wan(p.outstanding) }}</td>

@@ -38,7 +38,7 @@ class Customer(models.Model):
 class ARProject(models.Model):
     """项目主表 — 每个合同/项目一行"""
     project_no = models.CharField('项目编号', max_length=20, unique=True, db_index=True)
-    contract_name = models.CharField('合同名称', max_length=200)
+    customer_name = models.CharField('客户名称', max_length=200)
     short_name = models.CharField('项目简称', max_length=100, blank=True, default='')
     delivery_dept = models.CharField('交付部门', max_length=50, db_index=True)
     sub_dept = models.CharField('二级部门', max_length=100, blank=True, default='')
@@ -112,7 +112,7 @@ class ARProject(models.Model):
     def _autolink_customer(self):
         """合同名即客户：未显式挂客户时，按「合同名称」(实为客户公司名)自动建/挂客户。
         让正式导入/新建项目也落实"客户正名"，不必依赖一次性回填。失败不阻断项目保存。"""
-        name = (self.contract_name or '').strip()
+        name = (self.customer_name or '').strip()
         if not name:
             return
         try:
@@ -149,7 +149,7 @@ class ARProject(models.Model):
         return {
             'id': self.id,
             'project_no': self.project_no,
-            'contract_name': self.contract_name,
+            'customer_name': self.customer_name,
             'short_name': self.short_name,
             'delivery_dept': self.delivery_dept,
             'sub_dept': self.sub_dept,
@@ -170,7 +170,6 @@ class ARProject(models.Model):
             'notes': self.notes,
             'is_draft': self.is_draft,
             'customer_id': self.customer_id,
-            'customer_name': self.customer.name if self.customer_id else None,
             'created_by_id': self.created_by_id,
             'created_by_name': self.created_by.name if self.created_by else '',
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -181,7 +180,7 @@ class ARProject(models.Model):
 class Contract(models.Model):
     """合同主表 — 一个合同可关联多个客户(ContractParty) 与多个项目(ContractProject)。
 
-    现阶段与 ARProject.contract_name 文本字段【双轨并行】：历史数据由回填迁移按
+    现阶段与 ARProject.customer_name 文本字段【双轨并行】：历史数据由回填迁移按
     (合同名, 交付部门) 去重生成，旧字段保留不动，确保现有查询/导入/导出零影响。
     """
     contract_no = models.CharField('合同编号', max_length=50, blank=True, default='', db_index=True)
@@ -525,7 +524,7 @@ class ARRecord(models.Model):
             'project_id': self.project_id,
             'project_no': self.project.project_no,
             'short_name': self.project.short_name,
-            'contract_name': self.project.contract_name,
+            'customer_name': self.project.customer_name,
             'delivery_dept': self.delivery_dept,
             'project_manager': self.project.project_manager,
             'sales_contact': self.project.sales_contact,

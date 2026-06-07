@@ -71,7 +71,7 @@ async function confirmBulkDelete() {
 }
 
 const form = reactive({
-  contract_name: '', short_name: '', delivery_dept: '', sub_dept: '',
+  customer_name: '', short_name: '', delivery_dept: '', sub_dept: '',
   business_mode: '', customer_level: 'A级', sales_contact: '', project_manager: '',
   has_contract: '有', contract_date: '', reconciliation_days: 0,
   invoice_wait_days: 0, post_invoice_days: 0, invoice_mode: '全额',
@@ -182,7 +182,7 @@ function removeContract(i) { linkedContracts.value.splice(i, 1) }
 function openCreate() {
   editItem.value = null
   Object.assign(form, {
-    contract_name: '', short_name: '', delivery_dept: accessibleDepts.value[0] || '',
+    customer_name: '', short_name: '', delivery_dept: accessibleDepts.value[0] || '',
     sub_dept: '', business_mode: '', customer_level: 'A级',
     sales_contact: '', project_manager: '', has_contract: '有', contract_date: '',
     reconciliation_days: 0, invoice_wait_days: 0, post_invoice_days: 0,
@@ -197,7 +197,7 @@ function openCreate() {
 async function openEdit(item) {
   editItem.value = item
   Object.assign(form, {
-    contract_name: item.contract_name,
+    customer_name: item.customer_name,
     short_name: item.short_name,
     delivery_dept: item.delivery_dept, sub_dept: item.sub_dept,
     business_mode: item.business_mode, customer_level: item.customer_level || 'A级',
@@ -225,7 +225,7 @@ async function openEdit(item) {
 
 // Required fields — sub_dept / contract_date / tax_rate are optional
 const REQUIRED = [
-  ['contract_name', '合同名称'], ['short_name', '项目简称'],
+  ['customer_name', '客户名称'], ['short_name', '项目简称'],
   ['delivery_dept', '交付部门'], ['business_mode', '业务模式'],
   ['customer_level', '客户等级'], ['sales_contact', '销售对接人'],
   ['project_manager', '项目负责人'], ['has_contract', '有无合同'],
@@ -262,7 +262,7 @@ async function save() {
 }
 
 async function remove(item) {
-  if (!confirm(`确定删除项目「${item.short_name || item.contract_name}」？\n⚠ 该项目下的应收明细和回款记录将一并永久删除，不可恢复。`)) return
+  if (!confirm(`确定删除项目「${item.short_name || item.customer_name}」？\n⚠ 该项目下的应收明细和回款记录将一并永久删除，不可恢复。`)) return
   try { await ar.deleteProject(item.id); reloadAll() }
   catch (e) { alert(e?.msg || '删除失败') }
 }
@@ -270,7 +270,7 @@ async function remove(item) {
 async function completeDraft(item) {
   editItem.value = item
   Object.assign(form, {
-    contract_name: item.contract_name || item.short_name,
+    customer_name: item.customer_name || item.short_name,
     short_name: item.short_name,
     delivery_dept: item.delivery_dept, sub_dept: item.sub_dept || '',
     business_mode: item.business_mode || '', customer_level: item.customer_level || 'A级',
@@ -486,7 +486,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
       <div class="search-box">
         <svg class="search-ico" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
         <input v-model="filters.q" class="search-input"
-               placeholder="搜索项目编号 / 合同名称 / 项目简称 / 负责人 / 销售对接人"
+               placeholder="搜索项目编号 / 客户名称 / 项目简称 / 负责人 / 销售对接人"
                @input="onSearchInput" @keyup.enter="load(true)" />
         <button v-if="filters.q" class="search-clear" title="清除" @click="clearSearch">✕</button>
       </div>
@@ -540,7 +540,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   title="全选本页" @change="toggleSelectPage" />
               </th>
               <th>项目编号</th>
-              <th v-if="show('p_contract_name') || show('p_short_name')">合同 / 简称</th>
+              <th v-if="show('p_contract_name') || show('p_short_name')">客户 / 简称</th>
               <th v-if="show('p_delivery_dept')">交付部门</th>
               <th v-if="show('p_sub_dept')">二级部门</th>
               <th v-if="show('p_business_mode')">业务模式</th>
@@ -573,7 +573,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <span v-if="item.is_draft" class="badge-draft" title="导入自动创建，请补充完善">待完善</span>
               </td>
               <td v-if="show('p_contract_name') || show('p_short_name')">
-                <div class="contract-name">{{ item.contract_name }}</div>
+                <div class="contract-name">{{ item.customer_name }}</div>
                 <div v-if="item.short_name" class="short-name">{{ item.short_name }}</div>
               </td>
               <td v-if="show('p_delivery_dept')"><span class="dept-chip">{{ item.delivery_dept }}</span></td>
@@ -723,8 +723,12 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           <div class="modal-body">
             <div class="form-grid">
               <label class="form-field span2">
-                <span>合同名称 <em>*</em></span>
-                <input v-model="form.contract_name" placeholder="合同/客户全称（即客户/往来单位名称，预收录入时自动带出）" />
+                <span>客户名称 <em>*</em></span>
+                <input v-model="form.customer_name" list="customer-suggest"
+                       placeholder="客户公司全称（即客户/往来单位名称，自动汇入客户名单；预收录入时自动带出）" />
+                <datalist id="customer-suggest">
+                  <option v-for="c in customers" :key="c.id" :value="c.name" />
+                </datalist>
               </label>
               <label class="form-field">
                 <span>项目简称 <em>*</em></span>
@@ -796,8 +800,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               </label>
             </div>
 
-            <!-- 关联客户 + 合同 -->
-            <div class="link-section">
+            <!-- 关联客户 + 合同（已隐藏：客户关系统一走「客户名称」字段自动挂接，避免重复冲突）-->
+            <div class="link-section" v-if="false">
               <div class="link-head">
                 <span class="link-title">关联客户 / 合同</span>
                 <span class="link-sub">直接挂客户主体与所属合同（一个项目可挂多个合同）</span>
@@ -880,7 +884,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             <ul v-else class="del-list">
               <li v-for="p in selectedPreview" :key="p.id">
                 <span class="proj-no-tag">{{ p.project_no }}</span>
-                <span class="del-name">{{ p.short_name || p.contract_name }}</span>
+                <span class="del-name">{{ p.short_name || p.customer_name }}</span>
                 <span class="dept-chip">{{ p.delivery_dept }}</span>
               </li>
             </ul>

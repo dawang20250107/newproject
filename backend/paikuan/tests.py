@@ -56,7 +56,7 @@ class PaymentPermissionRegressionTests(TestCase):
         """排款页按项目编号查预付余额：匹配项目返回未核销合计，未匹配返回空。"""
         from ar.models import ARProject, AdvanceRecord
         proj = ARProject.objects.create(
-            contract_name='C', short_name='预付项目', delivery_dept=self.dept,
+            customer_name='C', short_name='预付项目', delivery_dept=self.dept,
             sales_contact='S', project_manager='M', project_no='GYL-TEST-0001')
         AdvanceRecord.objects.create(
             direction='预付', project=proj, delivery_dept=self.dept, counterparty='供应商A',

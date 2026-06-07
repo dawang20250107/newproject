@@ -72,9 +72,8 @@ def _proj_candidate_dict(p):
     return {
         'project_no': p.project_no,
         'short_name': p.short_name,
-        'contract_name': p.contract_name,
+        'customer_name': p.customer_name,
         'delivery_dept': p.delivery_dept,
-        'customer_name': p.customer.name if p.customer_id else '',
     }
 
 
@@ -102,7 +101,7 @@ def _classify_project_for_import(short_name, customer_hint, project_no, allowed_
 
     def _narrow(qs):
         if customer_hint:
-            n = qs.filter(contract_name__icontains=customer_hint)
+            n = qs.filter(customer_name__icontains=customer_hint)
             if n.exists():
                 return n
         return qs
@@ -171,11 +170,11 @@ def _resolve_project_for_import(short_name, customer_hint, dept, allowed_depts, 
 
     # Customer hint可进一步缩小范围（同名项目不同客户时）
     if customer_hint:
-        qs_cust = qs.filter(contract_name__icontains=customer_hint)
+        qs_cust = qs.filter(customer_name__icontains=customer_hint)
         if qs_cust.exists():
             cnt = qs_cust.count()
             proj = qs_cust.order_by('-id').first()
-            warn = (f'找到 {cnt} 个同名同客户项目，已取最新的「{proj.contract_name}」，请核查'
+            warn = (f'找到 {cnt} 个同名同客户项目，已取最新的「{proj.customer_name}」，请核查'
                     if cnt > 1 else None)
             result = (proj, 'exact' if cnt == 1 else 'exact_multi', warn)
             proj_cache[cache_key] = result
@@ -184,7 +183,7 @@ def _resolve_project_for_import(short_name, customer_hint, dept, allowed_depts, 
     if qs.exists():
         cnt = qs.count()
         proj = qs.order_by('-id').first()
-        warn = (f'找到 {cnt} 个同名项目，已取最新的「{proj.contract_name}」，请核查'
+        warn = (f'找到 {cnt} 个同名项目，已取最新的「{proj.customer_name}」，请核查'
                 if cnt > 1 else None)
         result = (proj, 'exact' if cnt == 1 else 'exact_multi', warn)
         proj_cache[cache_key] = result
@@ -215,7 +214,7 @@ def _resolve_project_for_import(short_name, customer_hint, dept, allowed_depts, 
     creator_name = user.name if user else '待填'
     proj = ARProject(
         short_name=name,
-        contract_name=customer_hint or name,
+        customer_name=customer_hint or name,
         delivery_dept=proj_dept,
         is_draft=True,
         sales_contact=creator_name,
@@ -466,7 +465,7 @@ def _apply_project_list_filters(qs, request):
     q = request.GET.get('q', '').strip()
     if q:
         qs = qs.filter(
-            Q(contract_name__icontains=q) |
+            Q(customer_name__icontains=q) |
             Q(short_name__icontains=q) |
             Q(project_no__icontains=q) |
             Q(project_manager__icontains=q) |
@@ -536,7 +535,7 @@ def projects(request):
         user = PaikuanUser.objects.filter(id=request.pk_uid).first()
         try:
             p = ARProject(
-                contract_name=data.get('contract_name', '').strip(),
+                customer_name=data.get('customer_name', '').strip(),
                 short_name=data.get('short_name', '').strip(),
                 delivery_dept=dept,
                 sub_dept=data.get('sub_dept', '').strip(),
@@ -602,7 +601,7 @@ def project_detail(request, pk):
             return denied
         data = _ar_visible_payload(request, _parse_body(request), 'project',
                                    extra=('customer_id', 'contract_ids'))
-        for field in ('contract_name', 'short_name', 'sub_dept',
+        for field in ('customer_name', 'short_name', 'sub_dept',
                       'business_mode', 'customer_level', 'sales_contact', 'project_manager',
                       'has_contract', 'invoice_mode', 'invoice_type', 'notes'):
             if field in data:
@@ -705,13 +704,13 @@ def project_template(request):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '项目信息'
-    headers = ['合同名称*', '项目简称*', '交付部门*', '二级部门', '业务模式',
+    headers = ['客户名称*', '项目简称*', '交付部门*', '二级部门', '业务模式',
                '客户等级', '销售对接人*', '项目负责人*', '有无合同',
                '签订日期', '合同对账期(天)', '开票等待期(天)', '票后等待期(天)',
                '开票模式(全额/差额)', '专票/普票/不开票', '税率(如0.06)', '备注']
     _header_row(ws, headers)
     tip_vals = [
-        '★必填：合同/项目全称（唯一标识，即客户/往来单位名称；再次导入同名合同+同一事业部时自动更新，不新增；预收录入选此项目时自动带出为往来单位）',
+        '★必填：客户名称/往来单位全称（即客户公司名；再次导入同名客户+同一事业部时自动更新，不新增；预收录入选此项目时自动带出为往来单位）',
         f'★必填：项目简称，须在事业部内唯一！应收明细、收款预算导入时均以此简称匹配项目，简称为关键桥梁',
         f'★必填：可选值：{"、".join(VALID_DEPARTMENTS)}（每个事业部每天新增客户，每位客户可有多个不同项目）',
         '选填：华南区/华北区等，可空',
@@ -788,26 +787,26 @@ def project_import(request):
     from paikuan.models import PaikuanUser
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
     errors = []
-    plan = []   # 通过校验、待写入的行：{ri, contract_name, dept, short_name_val, field_vals}
+    plan = []   # 通过校验、待写入的行：{ri, customer_name, dept, short_name_val, field_vals}
 
     # ══ 阶段一：逐行校验（不写库）。示例/提示/空行静默忽略，问题行收集错误 ══════════
     for ri in range(2, ws.max_row + 1):
-        contract_name = _cv(ri, '合同名称', '合同名称*')
+        customer_name = _cv(ri, '客户名称', '客户名称*', '合同名称', '合同名称*')
         short_name_val = _cv(ri, '项目简称', '项目简称*')
         dept = _cv(ri, '交付部门', '交付部门*')
         # 提示行/示例行：静默忽略（不计入、不报错）
-        if (EXAMPLE_ROW_MARKER in contract_name or contract_name.startswith('★')
+        if (EXAMPLE_ROW_MARKER in customer_name or customer_name.startswith('★')
                 or EXAMPLE_ROW_MARKER in short_name_val or short_name_val.startswith('★')):
             continue
-        # 合同名称缺失时回退用项目简称（很多用户只填项目简称）；二者皆空才算空行
-        if not contract_name:
-            contract_name = short_name_val
-        if not contract_name:
+        # 客户名称缺失时回退用项目简称（很多用户只填项目简称）；二者皆空才算空行
+        if not customer_name:
+            customer_name = short_name_val
+        if not customer_name:
             # 整行为空 → 静默忽略；否则明确报错，避免「无声跳过」
             if not any(_cv(ri, h) for h in (
                     '交付部门', '销售对接人', '项目负责人', '业务模式')):
                 continue
-            errors.append(f'第{ri}行: 缺少「合同名称」或「项目简称」，无法识别项目，请补填后重新导入')
+            errors.append(f'第{ri}行: 缺少「客户名称」或「项目简称」，无法识别项目，请补填后重新导入')
             continue
         if dept not in VALID_DEPARTMENTS:
             errors.append(f'第{ri}行: 交付部门"{dept}"无效，可选值为：{"/".join(VALID_DEPARTMENTS)}')
@@ -866,7 +865,7 @@ def project_import(request):
         # 仅在明确填写税率时才写入，避免留空时把现有项目的税率清零
         if tax_raw:
             field_vals['tax_rate'] = _dec(tax_raw)
-        plan.append({'ri': ri, 'contract_name': contract_name, 'dept': dept,
+        plan.append({'ri': ri, 'customer_name': customer_name, 'dept': dept,
                      'short_name_val': short_name_val, 'field_vals': field_vals})
 
     # ══ 有任何问题 → 整表拒绝，不写入（要么修正后重导，要么照提示逐条改）═══════════
@@ -888,7 +887,7 @@ def project_import(request):
                         short_name=p['short_name_val'], delivery_dept=p['dept']).first()
                 else:
                     existing = ARProject.objects.filter(
-                        contract_name=p['contract_name'], delivery_dept=p['dept']).first()
+                        customer_name=p['customer_name'], delivery_dept=p['dept']).first()
                 if existing:
                     for k, v in p['field_vals'].items():
                         setattr(existing, k, v)
@@ -896,7 +895,7 @@ def project_import(request):
                     existing.save()  # triggers post_save signal → updates ARRecord due_dates
                     updated += 1
                 else:
-                    pr = ARProject(contract_name=p['contract_name'], delivery_dept=p['dept'],
+                    pr = ARProject(customer_name=p['customer_name'], delivery_dept=p['dept'],
                                    created_by=user, **p['field_vals'])
                     pr.save()
                     created += 1
@@ -923,7 +922,7 @@ def project_export(request):
     q = request.GET.get('q', '').strip()
     if q:
         qs = qs.filter(
-            Q(contract_name__icontains=q) | Q(short_name__icontains=q) |
+            Q(customer_name__icontains=q) | Q(short_name__icontains=q) |
             Q(project_no__icontains=q))
 
     if qs.count() > 5000:
@@ -934,7 +933,7 @@ def project_export(request):
     ws.title = '项目信息'
     columns = _visible_ar_export_cols(request, [
         (None, '项目编号', lambda p: p.project_no),
-        ('p_contract_name', '合同名称', lambda p: p.contract_name),
+        ('p_contract_name', '客户名称', lambda p: p.customer_name),
         ('p_short_name', '项目简称', lambda p: p.short_name),
         ('p_delivery_dept', '交付部门', lambda p: p.delivery_dept),
         ('p_sub_dept', '二级部门', lambda p: p.sub_dept),
@@ -1548,7 +1547,7 @@ def ar_record_import(request):
                      f'请在导入表新增「项目编号」列填写下列其一精确指定，或在「客户名称」列填写以区分：']
             for c in a['candidates']:
                 lines.append(f'    · 编号 {c["project_no"]}｜简称 {c["short_name"]}'
-                             f'｜部门 {c["delivery_dept"]}｜合同 {c["contract_name"] or "—"}'
+                             f'｜部门 {c["delivery_dept"]}｜合同 {c["customer_name"] or "—"}'
                              f'｜客户 {c["customer_name"] or "—"}')
             guide.append('\n'.join(lines))
         return ok({
@@ -1582,7 +1581,7 @@ def ar_record_import(request):
                 proj_cache_key = (p['short_name'], '')
                 proj = ARProject(
                     short_name=p['short_name'],
-                    contract_name=p['customer_hint'] or p['short_name'],
+                    customer_name=p['customer_hint'] or p['short_name'],
                     delivery_dept=list(request.pk_depts)[0],
                     is_draft=True,
                     sales_contact=user.name if user else '待填',
@@ -1601,7 +1600,7 @@ def ar_record_import(request):
             if key not in bucket:
                 bucket[key] = {
                     'short_name': proj.short_name,
-                    'contract_name': proj.contract_name,
+                    'customer_name': proj.customer_name,
                     'project_id': proj.id,
                     'is_draft': proj.is_draft,
                     'matched_to': proj.short_name,
@@ -1700,7 +1699,7 @@ def ar_record_export(request):
     columns = _visible_ar_export_cols(request, [
         (None, '项目编号', lambda rec, st: rec.project.project_no),
         ('p_short_name', '项目简称', lambda rec, st: rec.project.short_name),
-        ('p_contract_name', '合同名称', lambda rec, st: rec.project.contract_name),
+        ('p_contract_name', '客户名称', lambda rec, st: rec.project.customer_name),
         ('p_delivery_dept', '交付部门', lambda rec, st: rec.delivery_dept),
         ('p_project_manager', '项目负责人', lambda rec, st: rec.project.project_manager),
         ('p_sales_contact', '销售对接人', lambda rec, st: rec.project.sales_contact),
@@ -1761,7 +1760,7 @@ def _apply_record_filters(qs, request):
     if q:
         qs = qs.filter(
             Q(project__short_name__icontains=q) |
-            Q(project__contract_name__icontains=q) |
+            Q(project__customer_name__icontains=q) |
             Q(project__project_no__icontains=q) |
             Q(project__project_manager__icontains=q))
     return qs
@@ -2029,7 +2028,7 @@ def _condition_q(c, today, eomonth_today):
             except (TypeError, ValueError):
                 return None
         if field == 'q':
-            return (Q(project__short_name__icontains=v) | Q(project__contract_name__icontains=v) |
+            return (Q(project__short_name__icontains=v) | Q(project__customer_name__icontains=v) |
                     Q(project__project_no__icontains=v) | Q(project__project_manager__icontains=v))
         if field == 'status':
             if v == 'overdue':
@@ -2273,7 +2272,7 @@ def _payment_ledger_qs(request):
     if q:
         qs = qs.filter(
             Q(ar_record__project__short_name__icontains=q) |
-            Q(ar_record__project__contract_name__icontains=q) |
+            Q(ar_record__project__customer_name__icontains=q) |
             Q(ar_record__project__project_no__icontains=q))
     return qs
 
@@ -2661,7 +2660,7 @@ def ar_data_health(request):
                 negative.append({
                     'id': rec.id,
                     'project_no': rec.project.project_no,
-                    'short_name': rec.project.short_name or rec.project.contract_name,
+                    'short_name': rec.project.short_name or rec.project.customer_name,
                     'delivery_dept': rec.delivery_dept,
                     'operation_year': rec.operation_year,
                     'operation_month': rec.operation_month,
@@ -2677,7 +2676,7 @@ def ar_data_health(request):
                 stale.append({
                     'id': rec.id,
                     'project_no': rec.project.project_no,
-                    'short_name': rec.project.short_name or rec.project.contract_name,
+                    'short_name': rec.project.short_name or rec.project.customer_name,
                     'delivery_dept': rec.delivery_dept,
                     'operation_year': rec.operation_year,
                     'operation_month': rec.operation_month,
@@ -2908,7 +2907,7 @@ def analytics_outstanding_top(request):
         qs = qs.filter(delivery_dept=dept)
 
     by_project = (qs.values('project_id', 'project__project_no', 'project__short_name',
-                             'project__contract_name', 'delivery_dept')
+                             'project__customer_name', 'delivery_dept')
                   .annotate(total_outstanding=Sum('outstanding_amount'))
                   .order_by('-total_outstanding')[:n])
 
@@ -2917,7 +2916,7 @@ def analytics_outstanding_top(request):
         result.append({
             'project_id': r['project_id'],
             'project_no': r['project__project_no'],
-            'short_name': r['project__short_name'] or r['project__contract_name'],
+            'short_name': r['project__short_name'] or r['project__customer_name'],
             'delivery_dept': r['delivery_dept'],
             'total_outstanding': str(r['total_outstanding']),
         })
@@ -3069,16 +3068,16 @@ def analytics_unit_economics(request):
         a['sales_exp'] += float(r['sales_exp'] or 0)
         a['mgmt_exp'] += float(r['mgmt_exp'] or 0)
 
-    # 客户映射：ProjectMargin.project_name ←→ ARProject.short_name / contract_name
+    # 客户映射：ProjectMargin.project_name ←→ ARProject.short_name / customer_name
     aqs = ARProject.objects.all()
     if request.pk_role != 'super_admin':
         aqs = aqs.filter(delivery_dept__in=(request.pk_depts or []))
     name_to_cust = {}
     for p in aqs.select_related('customer').only(
-            'short_name', 'contract_name', 'customer_level', 'delivery_dept', 'customer'):
+            'short_name', 'customer_name', 'customer_level', 'delivery_dept', 'customer'):
         info = {'customer': (p.customer.name if p.customer_id else None),
                 'level': p.customer_level or '', 'dept': p.delivery_dept or ''}
-        for k in (p.short_name, p.contract_name):
+        for k in (p.short_name, p.customer_name):
             k = (k or '').strip()
             if k and k not in name_to_cust:
                 name_to_cust[k] = info
@@ -3226,10 +3225,10 @@ def analytics_business_finance(request):
         aqs = aqs.filter(delivery_dept__in=(request.pk_depts or []))
     name_to_proj = {}
     for p in aqs.select_related('customer').only(
-            'id', 'short_name', 'contract_name', 'customer_level', 'delivery_dept', 'customer'):
+            'id', 'short_name', 'customer_name', 'customer_level', 'delivery_dept', 'customer'):
         info = {'pid': p.id, 'customer': (p.customer.name if p.customer_id else None),
                 'level': p.customer_level or '', 'dept': p.delivery_dept or ''}
-        for k in (p.short_name, p.contract_name):
+        for k in (p.short_name, p.customer_name):
             k = (k or '').strip()
             if k and k not in name_to_proj:
                 name_to_proj[k] = info
@@ -3397,7 +3396,7 @@ def analytics_project_pnl(request):
     aqs = ARProject.objects.select_related('customer')
     if request.pk_role != 'super_admin':
         aqs = aqs.filter(delivery_dept__in=(request.pk_depts or []))
-    projs = list(aqs.filter(Q(short_name=name) | Q(contract_name=name)))
+    projs = list(aqs.filter(Q(short_name=name) | Q(customer_name=name)))
     proj = projs[0] if projs else None
     pids = [p.id for p in projs]
 
@@ -3468,7 +3467,7 @@ def analytics_project_pnl(request):
         'name': name,
         'project_no': (proj.project_no if proj else None),
         'short_name': (proj.short_name if proj else name),
-        'contract_name': (proj.contract_name if proj else None),
+        'customer_name': (proj.customer_name if proj else None),
         'customer': (proj.customer.name if (proj and proj.customer_id) else None),
         'customer_level': (proj.customer_level if proj else ''),
         'delivery_dept': (proj.delivery_dept if proj else ''),
@@ -4274,7 +4273,7 @@ def advance_offsettable_records(request):
         qs = qs.filter(project_id=int(project_id))
     elif customer:
         # 与 advances_available 对称：散单预收的往来单位 == 项目合同名（即客户名，精确匹配）
-        qs = qs.filter(project__contract_name__iexact=customer)
+        qs = qs.filter(project__customer_name__iexact=customer)
     else:
         return err('缺少 project_id 或 customer')
     if request.pk_role != 'super_admin':
@@ -5730,7 +5729,7 @@ def customer_detail(request, pk):
             pp = per_proj.get(p.id, {})
             projects.append({
                 'id': p.id, 'project_no': p.project_no,
-                'short_name': p.short_name, 'contract_name': p.contract_name,
+                'short_name': p.short_name, 'customer_name': p.customer_name,
                 'delivery_dept': p.delivery_dept, 'business_mode': p.business_mode,
                 'invoiced': pp.get('invoiced', 0.0), 'outstanding': pp.get('outstanding', 0.0),
                 'overdue': pp.get('overdue', 0.0), 'records': pp.get('records', 0),
@@ -5790,7 +5789,7 @@ def project_drafts(request):
     qs = _ar_dept_filter(ARProject.objects.filter(is_draft=True), request)
     q = request.GET.get('q', '').strip()
     if q:
-        qs = qs.filter(Q(short_name__icontains=q) | Q(contract_name__icontains=q))
+        qs = qs.filter(Q(short_name__icontains=q) | Q(customer_name__icontains=q))
     dept = request.GET.get('dept', '').strip()
     if dept:
         qs = qs.filter(delivery_dept=dept)
