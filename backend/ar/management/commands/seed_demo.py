@@ -68,6 +68,7 @@ class Command(BaseCommand):
         do_fin = not opts['ar_only']
         if do_ar:
             self._seed_ar(data_dir / 'ar_records.xlsx', clear=not opts['no_clear'])
+            self._seed_customers(clear=not opts['no_clear'])
         if do_fin:
             self._seed_fin(data_dir / 'financials_2026.xlsx', clear=not opts['no_clear'])
             self._seed_targets(clear=not opts['no_clear'])
@@ -174,6 +175,31 @@ class Command(BaseCommand):
                 skip += 1
         self.stdout.write(self.style.SUCCESS(
             f'应收：项目 {cp} · 记录 {cr} · 回款 {cpay} · 跳过 {skip}'))
+
+    # ── 客户正名（合同名称 → 客户）：点亮客商画像 ────────────────────────────────
+    def _seed_customers(self, clear):
+        """把"合同名称"字段(实为客户公司全称)正名为客户实体并回填 ARProject.customer。
+        每个不同合同名 = 一个客户；客户等级取项目上的 customer_level。源数据无独立客户
+        列，公司名本就装在合同名字段里，故此为"正名"而非"造数据"。"""
+        from ar.models import ARProject, Customer
+        if clear:
+            ARProject.objects.exclude(customer__isnull=True).update(customer=None)
+            Customer.objects.all().delete()
+        cache, made, linked = {}, 0, 0
+        for p in ARProject.objects.all().only('id', 'contract_name', 'customer_level'):
+            name = (p.contract_name or '').strip()
+            if not name:
+                continue
+            cust = cache.get(name)
+            if cust is None:
+                cust, created = Customer.objects.get_or_create(
+                    name=name, defaults={'level': p.customer_level or ''})
+                cache[name] = cust
+                made += int(created)
+            # 用 update 绕开 ARProject.save 的派生逻辑，仅落 customer 外键
+            ARProject.objects.filter(pk=p.pk).update(customer=cust)
+            linked += 1
+        self.stdout.write(self.style.SUCCESS(f'客户正名：客户 {made} 个 · 回填项目 {linked} 个'))
 
     # ── 财务报表 ────────────────────────────────────────────────────────────────
     def _seed_fin(self, path, clear):
