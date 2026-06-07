@@ -7,6 +7,7 @@ import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 import AiAnalysisModal from '../../components/caiwu/AiAnalysisModal.vue'
 import api from '../../api/caiwu.js'
+import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
 import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney, topLabel, endLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
 import { streamAiAnalysis } from '../../utils/aiStream.js'
@@ -73,14 +74,23 @@ async function load() {
   try {
     const params = { year: year.value, month: month.value }
     if (selectedBu.value) params.bu = selectedBu.value
-    const res = await api.get('/cockpit', { params })
-    data.value = res.data
+    const bfParams = { year: year.value, month: month.value, group_by: 'project' }
+    if (selectedBu.value) bfParams.dept = selectedBu.value
+    // 主看板与业财融合摘要并行拉取；业财摘要失败不影响主看板
+    const [res, bf] = await Promise.allSettled([
+      api.get('/cockpit', { params }),
+      ar.businessFinance(bfParams),
+    ])
+    if (res.status === 'fulfilled') data.value = res.value.data
+    else throw (res.reason || new Error('加载失败'))
+    bfSummary.value = bf.status === 'fulfilled' ? (bf.value.data?.summary || null) : null
   } catch (e) {
     loadErr.value = e?.error || '加载失败'
   } finally {
     loading.value = false
   }
 }
+const bfSummary = ref(null)   // 业财融合摘要（驱动今日信号）
 
 const aiScopeLabel = computed(() =>
   `${selectedBu.value || '全集团'} · ${year.value}年${month.value}月`
@@ -597,21 +607,40 @@ const profitContribOption = computed(() => {
   }
 })
 
-// 自动风险预警（源自当月各事业部数据）
+// 今日信号（主动洞察）：融合 BU 经营风险 + 业财融合洞察，带可下钻动作
 const alerts = computed(() => {
   const rows = buMatrix.value
-  if (!rows.length) return []
   const list = []
-  rows.filter(r => r.loss).forEach(r => list.push({ level: 'high', text: `${r.bu} 当月经营净利为负（${wan(r.prof)}）` }))
   const d = derived.value
-  if (d?.netMargin != null && d.netMargin < 0) list.push({ level: 'high', text: `集团整体净利率为负（${d.netMargin.toFixed(1)}%）` })
-  rows.filter(r => !r.loss && r.profRate != null && r.profRate < 80).forEach(r => list.push({ level: 'mid', text: `${r.bu} 净利达成偏低（${r.profRate.toFixed(0)}%）` }))
-  rows.filter(r => r.revMom != null && r.revMom <= -10).forEach(r => list.push({ level: 'mid', text: `${r.bu} 收入环比下滑 ${Math.abs(r.revMom).toFixed(0)}%` }))
+  // ── 集团级 ────────────────────────────────────────────────
+  if (d?.netMargin != null && d.netMargin < 0) list.push({ level: 'high', text: `集团整体净利率为负（${d.netMargin.toFixed(1)}%），盈利承压` })
+  // ── 业财融合：薄利 / 回款风险（来自业财损益摘要）──────────
+  const bf = bfSummary.value
+  if (bf) {
+    const t = bf.by_tag || {}
+    const critical = t.critical?.count || 0
+    const lowM = t.low_margin?.count || 0
+    if (critical > 0) list.push({ level: 'high', tab: 'bf',
+      text: `${critical} 个项目「又薄又难收」（低毛利+回款差），吞噬利润` })
+    if (bf.overdue > 0 && bf.overdue_rate != null && bf.overdue_rate >= 20) list.push({ level: 'high', tab: 'bf',
+      text: `逾期未收 ${wan(bf.overdue)}，逾期率 ${bf.overdue_rate.toFixed(0)}%，回款承压` })
+    if (lowM > 0) list.push({ level: 'mid', tab: 'bf',
+      text: `${lowM} 个项目「赚收入不赚钱」，规模大但毛利薄` })
+  }
+  // ── 事业部级（可点击下钻）────────────────────────────────
+  rows.filter(r => r.loss).forEach(r => list.push({ level: 'high', bu: r.bu, text: `${r.bu} 当月经营净利为负（${wan(r.prof)}）` }))
+  rows.filter(r => !r.loss && r.profRate != null && r.profRate < 80).forEach(r => list.push({ level: 'mid', bu: r.bu, text: `${r.bu} 净利达成偏低（${r.profRate.toFixed(0)}%）` }))
+  rows.filter(r => r.revMom != null && r.revMom <= -10).forEach(r => list.push({ level: 'mid', bu: r.bu, text: `${r.bu} 收入环比下滑 ${Math.abs(r.revMom).toFixed(0)}%` }))
   const top = rows[0]
-  if (top && top.share != null && top.share > 50) list.push({ level: 'mid', text: `收入高度集中：${top.bu} 占集团 ${top.share.toFixed(0)}%，依赖单一事业部` })
+  if (top && top.share != null && top.share > 50) list.push({ level: 'mid', bu: top.bu, text: `收入高度集中：${top.bu} 占集团 ${top.share.toFixed(0)}%，依赖单一事业部` })
   if (!list.length) list.push({ level: 'ok', text: '未发现显著经营风险，各事业部运行平稳' })
-  return list.slice(0, 8)
+  return list.slice(0, 9)
 })
+// 信号点击：BU 信号→下钻该事业部；业财信号→切到业财损益 Tab
+function onSignal(a) {
+  if (a.bu) openDrill(a.bu)
+  else if (a.tab) mainTab.value = a.tab
+}
 
 // 增长引擎 / 主要拖累（用于结论提示）
 const engineLine = computed(() => {
@@ -708,10 +737,11 @@ onMounted(load)
         </div>
 
         <div class="card alert-card">
-          <div class="section-title">⚠ 经营风险预警</div>
+          <div class="section-title">📡 今日信号 <span class="tip">主动洞察 · 点击可下钻</span></div>
           <ul class="alert-list">
-            <li v-for="(a, i) in alerts" :key="i" class="alert-item" :class="`al-${a.level}`">
+            <li v-for="(a, i) in alerts" :key="i" class="alert-item" :class="[`al-${a.level}`, { actionable: a.bu || a.tab }]" @click="onSignal(a)">
               <span class="al-dot"></span><span>{{ a.text }}</span>
+              <span v-if="a.bu || a.tab" class="al-go">›</span>
             </li>
           </ul>
           <div v-if="engineLine" class="engine-line">
@@ -1073,6 +1103,10 @@ onMounted(load)
   border-bottom: 1px dashed rgba(0,0,0,0.05);
 }
 .alert-item:last-child { border-bottom: none; }
+.alert-item.actionable { cursor: pointer; border-radius: 7px; padding-left: 6px; margin-left: -6px; transition: background .15s; }
+.alert-item.actionable:hover { background: rgba(201,99,66,.07); }
+.al-go { margin-left: auto; color: var(--muted); font-weight: 700; opacity: 0; transition: opacity .15s; }
+.alert-item.actionable:hover .al-go { opacity: 1; }
 .al-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
 .al-high .al-dot { background: #c62828; box-shadow: 0 0 0 3px rgba(198,40,40,.14); }
 .al-mid .al-dot { background: #e65100; box-shadow: 0 0 0 3px rgba(230,81,0,.12); }
