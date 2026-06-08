@@ -5604,7 +5604,7 @@ def customers(request):
         qs = Customer.objects.all()
         # 客户按事业部隔离：非超管只看自己有权部门的客户（含无部门的历史孤儿）
         if request.pk_role != 'super_admin' and request.pk_depts:
-            qs = qs.filter(Q(delivery_dept__in=request.pk_depts) | Q(delivery_dept=''))
+            qs = qs.filter(delivery_dept__in=request.pk_depts)
         q = request.GET.get('q', '').strip()
         if q:
             qs = qs.filter(Q(name__icontains=q) | Q(contact__icontains=q) | Q(notes__icontains=q))
@@ -5719,7 +5719,7 @@ def customers_bulk_tag_level(request):
         qs = Customer.objects.all()
         # 部门隔离：非超管只能批量操作自己有权部门的客户
         if request.pk_role != 'super_admin' and request.pk_depts:
-            qs = qs.filter(Q(delivery_dept__in=request.pk_depts) | Q(delivery_dept=''))
+            qs = qs.filter(delivery_dept__in=request.pk_depts)
         q = (data.get('q') or '').strip()
         if q:
             qs = qs.filter(Q(name__icontains=q) | Q(contact__icontains=q) | Q(notes__icontains=q))
@@ -5745,7 +5745,7 @@ def customers_bulk_tag_level(request):
             return err('ids 必须为整数数组')
         cqs = Customer.objects.filter(pk__in=id_list)
         if request.pk_role != 'super_admin' and request.pk_depts:
-            cqs = cqs.filter(Q(delivery_dept__in=request.pk_depts) | Q(delivery_dept=''))
+            cqs = cqs.filter(delivery_dept__in=request.pk_depts)
         id_list = list(cqs.values_list('id', flat=True))
         updated = cqs.update(level=level)
     # 以客户为准：客户等级变更后，同步镜像到其名下所有项目
