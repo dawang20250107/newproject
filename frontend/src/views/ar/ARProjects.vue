@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST } from '../../constants.js'
 import ar from '../../api/ar.js'
@@ -331,6 +331,10 @@ const onScopeChange = () => {
   reloadAll()
 }
 
+// 同名跨部门项目排查 + 改挂
+const DuplicateNameFixer = defineAsyncComponent(() => import('./DuplicateNameFixer.vue'))
+const showDupFixer = ref(false)
+
 // 清理待完善草稿（早期应收导入遗留的占位项目；新版导入已停用自动建草稿）
 // 安全：默认只删空壳草稿；挂了真实应收的需用户显式确认才连应收一起删
 const clearingDrafts = ref(false)
@@ -419,6 +423,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" :disabled="importing" />
         </label>
         <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">↓ 导出</button>
+        <button class="btn btn-ghost btn-sm" @click="showDupFixer = true" title="排查同名跨部门项目、把挂错的应收一键改挂">🔍 同名排查</button>
         <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增项目</button>
       </div>
     </div>
@@ -773,6 +778,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         </div>
       </div>
     </Teleport>
+
+    <DuplicateNameFixer v-if="showDupFixer" @close="showDupFixer = false" @fixed="reloadAll" />
   </div>
 </template>
 

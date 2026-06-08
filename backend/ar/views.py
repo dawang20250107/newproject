@@ -5582,6 +5582,90 @@ def ar_records_batch_assign(request):
                'message': f'{action}，共更新 {updated} 条记录'})
 
 
+@csrf_exempt
+@pk_required()
+def analytics_duplicate_names(request):
+    """GET /ar/analytics/duplicate-names — 排查同名跨部门项目（同名导入挂错的源头）。
+
+    列出「同一项目简称分布在 ≥2 个交付部门」的组，每个项目带应收条数/上账/未收，
+    一眼看出哪个项目被堆了过多记录（疑似挂错）。部门权限内。
+    """
+    denied = _page_denied(request, 'ar_projects')
+    if denied:
+        return denied
+    qs = _ar_dept_filter(ARProject.objects.exclude(short_name=''), request)
+    dupes = (qs.values('short_name')
+             .annotate(dept_count=Count('delivery_dept', distinct=True))
+             .filter(dept_count__gte=2).order_by('-dept_count', 'short_name'))
+    groups = []
+    for d in dupes[:200]:
+        sn = d['short_name']
+        projs = []
+        for p in qs.filter(short_name=sn).select_related('customer').order_by('delivery_dept'):
+            agg = ARRecord.objects.filter(project=p).aggregate(
+                cnt=Count('id'), est=Sum('estimated_amount'), out=Sum('outstanding_amount'))
+            projs.append({
+                'id': p.id, 'project_no': p.project_no, 'short_name': p.short_name,
+                'delivery_dept': p.delivery_dept, 'customer_name': p.customer_name,
+                'is_draft': p.is_draft,
+                'record_count': agg['cnt'] or 0,
+                'estimated': float(agg['est'] or 0),
+                'outstanding': float(agg['out'] or 0),
+            })
+        groups.append({'short_name': sn, 'dept_count': d['dept_count'], 'projects': projs})
+    return ok({'groups': groups, 'total_groups': len(groups)})
+
+
+@csrf_exempt
+@pk_required()
+def ar_records_reassign(request):
+    """POST /ar/records/reassign — 把应收记录改挂到另一个项目（修复同名跨部门挂错）。
+
+    Body: { "ids": [1,2,3], "target_project_id": 123 }
+    权限：需对【目标项目】部门有权；源记录限本人有权部门。
+    改挂后自动按新项目重算交付部门 + 应收账期（due_date）+ 派生字段，不必删了重导。
+    """
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+
+    data = _parse_body(request)
+    ids = data.get('ids')
+    if not ids or not isinstance(ids, list):
+        return err('请选择要改挂的应收记录')
+    try:
+        id_list = [int(i) for i in ids]
+        tgt_id = int(data.get('target_project_id'))
+    except (TypeError, ValueError):
+        return err('参数无效')
+    target = ARProject.objects.filter(pk=tgt_id).first()
+    if not target:
+        return err('目标项目不存在')
+    if request.pk_role != 'super_admin' and target.delivery_dept not in request.pk_depts:
+        return err(f'无权改挂到目标部门「{target.delivery_dept}」')
+
+    qs = ARRecord.objects.filter(pk__in=id_list).select_related('project')
+    if request.pk_role != 'super_admin':
+        qs = qs.filter(delivery_dept__in=request.pk_depts)
+    moved = 0
+    with transaction.atomic():
+        for rec in qs:
+            if rec.project_id == target.id:
+                continue
+            rec.project = target
+            rec.due_date = None     # 强制按新项目账期重算
+            rec.save()              # save() 内重算 delivery_dept + due_date + 派生
+            moved += 1
+    return ok({'moved': moved, 'target_project': target.short_name,
+               'target_dept': target.delivery_dept,
+               'message': f'已将 {moved} 条应收改挂到「{target.short_name}（{target.delivery_dept}）」'})
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 客户管理 (customers)
 # ──────────────────────────────────────────────────────────────────────────────
