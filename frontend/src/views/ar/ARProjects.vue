@@ -331,36 +331,24 @@ const onScopeChange = () => {
   reloadAll()
 }
 
-// 同名跨部门项目排查 + 改挂
-const DuplicateNameFixer = defineAsyncComponent(() => import('./DuplicateNameFixer.vue'))
-const showDupFixer = ref(false)
-
-// 清理待完善草稿（早期应收导入遗留的占位项目；新版导入已停用自动建草稿）
-// 安全：默认只删空壳草稿；挂了真实应收的需用户显式确认才连应收一起删
-const clearingDrafts = ref(false)
-async function clearDrafts() {
-  clearingDrafts.value = true
+// 待完善草稿「转正」：把信息齐全(有交付部门)的草稿转为正式项目并同步客户，保留应收数据
+const promotingDrafts = ref(false)
+async function promoteDrafts() {
+  promotingDrafts.value = true
   try {
-    const pv = (await ar.clearDraftProjects({ preview: 1 })).data
-    if (!pv.total) { alert('没有待完善草稿，无需清理'); return }
-    let mode = 'empty'
-    if (pv.with_ar > 0) {
-      // 有草稿挂了真实应收：默认只删空壳，保护应收
-      const all = confirm(
-        `共 ${pv.total} 个草稿：\n· 空壳草稿 ${pv.empty} 个（可安全删）\n· 挂了真实应收 ${pv.with_ar} 个\n\n` +
-        `【确定】= 仅删 ${pv.empty} 个空壳（保留挂应收的，推荐）\n` +
-        `【取消】= 连挂应收的 ${pv.with_ar} 个一起删（应收也会被删，不可恢复）`)
-      mode = all ? 'empty' : 'all'
-      if (mode === 'all' && !confirm(`再次确认：将删除全部 ${pv.total} 个草稿，其中 ${pv.with_ar} 个的应收数据也会一并永久删除，确定？`)) return
-    } else {
-      if (!confirm(`确认删除 ${pv.empty} 个空壳草稿项目？`)) return
-    }
-    const res = await ar.clearDraftProjects({ mode })
-    alert(res.data?.message || '已清理')
+    const pv = (await ar.promoteDraftProjects({ preview: 1 })).data
+    if (!pv.total) { alert('没有待完善草稿'); return }
+    let tip = `共 ${pv.total} 个草稿：\n· 可直接转正（有交付部门）${pv.ready} 个 → 转为正式项目并同步客户\n`
+    if (pv.need_dept > 0) tip += `· 缺交付部门 ${pv.need_dept} 个 → 无法自动转，需到台账补部门后再转\n`
+    tip += `\n确认转正这 ${pv.ready} 个？（应收数据保留，不会丢）`
+    if (pv.ready === 0) { alert(tip.replace(/\n确认.*/, '\n\n暂无可直接转正的草稿，请先补交付部门。')); return }
+    if (!confirm(tip)) return
+    const res = await ar.promoteDraftProjects({})
+    alert(res.data?.message || '已转正')
     if (filters.is_draft) filters.is_draft = ''
     reloadAll()
-  } catch (e) { alert(e?.msg || e?.error || '清理失败') }
-  finally { clearingDrafts.value = false }
+  } catch (e) { alert(e?.msg || e?.error || '转正失败') }
+  finally { promotingDrafts.value = false }
 }
 
 onMounted(() => {
@@ -403,7 +391,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <div class="stat-label" style="cursor:pointer" @click="filters.is_draft='true'; load(true)" title="点击筛选草稿项目">待完善草稿</div>
         <div class="stat-draft-row">
           <span class="stat-value" style="color:#c0392b">{{ stats.draft_count }}</span>
-          <button v-if="auth.canDelete" class="draft-clear-btn" :disabled="clearingDrafts" @click.stop="clearDrafts">{{ clearingDrafts ? '清理中…' : '一键清理' }}</button>
+          <button v-if="auth.canCreate" class="draft-clear-btn" :disabled="promotingDrafts" @click.stop="promoteDrafts" title="把有交付部门的草稿转为正式项目并同步客户（保留应收）">{{ promotingDrafts ? '转正中…' : '草稿转正' }}</button>
         </div>
       </div>
       <div class="stat-pill stat-pill-mom">
@@ -423,7 +411,6 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" :disabled="importing" />
         </label>
         <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">↓ 导出</button>
-        <button class="btn btn-ghost btn-sm" @click="showDupFixer = true" title="排查同名跨部门项目、把挂错的应收一键改挂">🔍 同名排查</button>
         <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增项目</button>
       </div>
     </div>
@@ -779,7 +766,6 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
       </div>
     </Teleport>
 
-    <DuplicateNameFixer v-if="showDupFixer" @close="showDupFixer = false" @fixed="reloadAll" />
   </div>
 </template>
 
@@ -1000,7 +986,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .imp-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 12px 0; }
 .lvl-hint { font-size: 10.5px; font-weight: 600; color: #7a9fd4; cursor: help; margin-left: 4px; }
 .stat-draft-row { display: flex; align-items: center; gap: 8px; }
-.draft-clear-btn { font-size: 10.5px; padding: 1px 8px; border: 1px solid rgba(192,57,43,.4); background: rgba(192,57,43,.06); color: #c0392b; border-radius: 9px; cursor: pointer; white-space: nowrap; }
-.draft-clear-btn:hover:not(:disabled) { background: rgba(192,57,43,.14); }
+.draft-clear-btn { font-size: 10.5px; padding: 1px 8px; border: 1px solid rgba(46,125,50,.4); background: rgba(46,125,50,.06); color: #2e7d32; border-radius: 9px; cursor: pointer; white-space: nowrap; }
+.draft-clear-btn:hover:not(:disabled) { background: rgba(46,125,50,.14); }
 .draft-clear-btn:disabled { opacity: .5; cursor: default; }
 </style>

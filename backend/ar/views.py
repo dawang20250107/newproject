@@ -5585,90 +5585,6 @@ def ar_records_batch_assign(request):
                'message': f'{action}，共更新 {updated} 条记录'})
 
 
-@csrf_exempt
-@pk_required()
-def analytics_duplicate_names(request):
-    """GET /ar/analytics/duplicate-names — 排查同名跨部门项目（同名导入挂错的源头）。
-
-    列出「同一项目简称分布在 ≥2 个交付部门」的组，每个项目带应收条数/上账/未收，
-    一眼看出哪个项目被堆了过多记录（疑似挂错）。部门权限内。
-    """
-    denied = _page_denied(request, 'ar_projects')
-    if denied:
-        return denied
-    qs = _ar_dept_filter(ARProject.objects.exclude(short_name=''), request)
-    dupes = (qs.values('short_name')
-             .annotate(dept_count=Count('delivery_dept', distinct=True))
-             .filter(dept_count__gte=2).order_by('-dept_count', 'short_name'))
-    groups = []
-    for d in dupes[:200]:
-        sn = d['short_name']
-        projs = []
-        for p in qs.filter(short_name=sn).select_related('customer').order_by('delivery_dept'):
-            agg = ARRecord.objects.filter(project=p).aggregate(
-                cnt=Count('id'), est=Sum('estimated_amount'), out=Sum('outstanding_amount'))
-            projs.append({
-                'id': p.id, 'project_no': p.project_no, 'short_name': p.short_name,
-                'delivery_dept': p.delivery_dept, 'customer_name': p.customer_name,
-                'is_draft': p.is_draft,
-                'record_count': agg['cnt'] or 0,
-                'estimated': float(agg['est'] or 0),
-                'outstanding': float(agg['out'] or 0),
-            })
-        groups.append({'short_name': sn, 'dept_count': d['dept_count'], 'projects': projs})
-    return ok({'groups': groups, 'total_groups': len(groups)})
-
-
-@csrf_exempt
-@pk_required()
-def ar_records_reassign(request):
-    """POST /ar/records/reassign — 把应收记录改挂到另一个项目（修复同名跨部门挂错）。
-
-    Body: { "ids": [1,2,3], "target_project_id": 123 }
-    权限：需对【目标项目】部门有权；源记录限本人有权部门。
-    改挂后自动按新项目重算交付部门 + 应收账期（due_date）+ 派生字段，不必删了重导。
-    """
-    denied = _page_denied(request, 'ar_records')
-    if denied:
-        return denied
-    denied = _write_denied(request)
-    if denied:
-        return denied
-    if request.method != 'POST':
-        return err('POST only', 405)
-
-    data = _parse_body(request)
-    ids = data.get('ids')
-    if not ids or not isinstance(ids, list):
-        return err('请选择要改挂的应收记录')
-    try:
-        id_list = [int(i) for i in ids]
-        tgt_id = int(data.get('target_project_id'))
-    except (TypeError, ValueError):
-        return err('参数无效')
-    target = ARProject.objects.filter(pk=tgt_id).first()
-    if not target:
-        return err('目标项目不存在')
-    if request.pk_role != 'super_admin' and target.delivery_dept not in request.pk_depts:
-        return err(f'无权改挂到目标部门「{target.delivery_dept}」')
-
-    qs = ARRecord.objects.filter(pk__in=id_list).select_related('project')
-    if request.pk_role != 'super_admin':
-        qs = qs.filter(delivery_dept__in=request.pk_depts)
-    moved = 0
-    with transaction.atomic():
-        for rec in qs:
-            if rec.project_id == target.id:
-                continue
-            rec.project = target
-            rec.due_date = None     # 强制按新项目账期重算
-            rec.save()              # save() 内重算 delivery_dept + due_date + 派生
-            moved += 1
-    return ok({'moved': moved, 'target_project': target.short_name,
-               'target_dept': target.delivery_dept,
-               'message': f'已将 {moved} 条应收改挂到「{target.short_name}（{target.delivery_dept}）」'})
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # 客户管理 (customers)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -5754,9 +5670,12 @@ def customers(request):
         if not name:
             return err('客户名称不能为空')
         dept = (data.get('delivery_dept') or '').strip()
-        if dept and dept not in VALID_DEPARTMENTS:
+        # 客户按事业部隔离 → 新建必须指定事业部，杜绝再产生无部门孤儿客户
+        if not dept:
+            return err('请选择客户所属事业部（客户按事业部隔离）')
+        if dept not in VALID_DEPARTMENTS:
             return err(f'无效交付部门「{dept}」')
-        if dept and request.pk_role != 'super_admin' and dept not in request.pk_depts:
+        if request.pk_role != 'super_admin' and dept not in request.pk_depts:
             return err(f'无权在事业部「{dept}」下新建客户')
         # 客户按 (名称 + 事业部) 隔离：同名客户在不同部门可各建一个
         if Customer.objects.filter(name=name, delivery_dept=dept).exists():
@@ -5910,14 +5829,24 @@ def customers_sync_from_projects(request):
     cust_ids = set(scoped_proj.values_list('customer_id', flat=True))
     aligned = _reconcile_customer_levels(cust_ids)
 
+    # 清理无效客户：无交付部门 且 名下 0 项目（历史草稿/已删项目遗留的孤儿）
+    orphan_qs = Customer.objects.filter(delivery_dept='').annotate(
+        _n=Count('projects')).filter(_n=0)
+    if request.pk_role != 'super_admin':
+        orphan_qs = orphan_qs.none()   # 仅超管清理全局孤儿，避免误删他人数据
+    purged = orphan_qs.count()
+    orphan_qs.delete()
+
     parts = []
     if created or linked:
         parts.append(f'新建 {created} 个客户、挂接 {linked} 个项目')
     if aligned:
         parts.append(f'对齐 {aligned} 个客户的等级')
+    if purged:
+        parts.append(f'清理 {purged} 个无部门无项目的孤儿客户')
     msg = ('同步完成：' + '；'.join(parts)) if parts else '客户名单与等级已是最新，无需处理'
     return ok({'created_customers': created, 'linked_projects': linked,
-               'aligned_levels': aligned, 'message': msg})
+               'aligned_levels': aligned, 'purged_orphans': purged, 'message': msg})
 
 
 @csrf_exempt
@@ -6046,55 +5975,46 @@ def project_drafts(request):
 
 @csrf_exempt
 @pk_required()
-def project_drafts_clear(request):
-    """POST /ar/projects/drafts/clear  —  清理待完善草稿项目。
+def project_drafts_promote(request):
+    """POST /ar/projects/drafts/promote  —  把待完善草稿「转正」为正式项目并同步客户。
 
-    草稿是早期应收导入「找不到项目时自动新建」遗留的占位项目；新版导入已停用自动建草稿。
-    安全策略：
-      - preview=1：只返回数量分布（不删）：total / with_ar（挂了应收）/ empty（空壳）。
-      - mode=empty（默认）：只删【空壳】草稿（无任何应收），保护挂了应收的草稿不被误删。
-      - mode=all：连同挂应收的草稿一起删（级联删其下应收，不可恢复）——需显式传入。
-    部门权限内操作。
+    草稿是早期应收导入「找不到项目时自动新建」遗留的占位项目（新版已停用自动建草稿）。
+    转正：把信息齐全（有交付部门）的草稿 is_draft 置 False，保存即按 (客户名+部门)
+    自动挂接/正名客户——既保留应收数据、又把无部门客户收编进正式客户名单。
+    交付部门为空的草稿无法自动判定归属，列出供人工到台账补全部门后再转。
+    preview=1 只返回数量分布，不改动。
     """
     denied = _page_denied(request, 'ar_projects')
+    if denied:
+        return denied
+    denied = _write_denied(request)
     if denied:
         return denied
     if request.method != 'POST':
         return err('POST only', 405)
 
     base = _ar_dept_filter(ARProject.objects.filter(is_draft=True), request)
-    with_ar_ids = list(base.annotate(_n=Count('ar_records')).filter(_n__gt=0)
-                       .values_list('id', flat=True))
     total = base.count()
-    with_ar = len(with_ar_ids)
-    empty = total - with_ar
+    ready = base.exclude(delivery_dept='')          # 有部门 → 可转正
+    need_dept = list(base.filter(delivery_dept='')   # 无部门 → 需人工补
+                     .values_list('short_name', flat=True)[:50])
 
     data = _parse_body(request)
     if request.GET.get('preview') or data.get('preview'):
-        return ok({'total': total, 'with_ar': with_ar, 'empty': empty})
+        return ok({'total': total, 'ready': ready.count(), 'need_dept': len(need_dept)})
 
-    denied = _delete_denied(request)
-    if denied:
-        return denied
-    mode = (data.get('mode') or request.GET.get('mode') or 'empty').strip()
+    promoted = 0
+    with transaction.atomic():
+        for p in ready:
+            p.is_draft = False
+            p.save()     # 触发 _autolink_customer：按 (客户名+部门) 挂客户
+            promoted += 1
 
-    if mode == 'all':
-        deleted = total
-        base.delete()   # 级联删除草稿下的应收/回款
-        msg = f'已清理全部 {deleted} 个草稿' + (f'（含 {with_ar} 个挂应收的，应收已一并删除）' if with_ar else '')
-        return ok({'deleted': deleted, 'kept_with_ar': 0, 'mode': 'all', 'message': msg})
-
-    # 默认 empty：只删空壳，保留挂应收的
-    empty_qs = base.exclude(id__in=with_ar_ids)
-    deleted = empty_qs.count()
-    empty_qs.delete()
-    if not total:
-        msg = '没有待完善草稿，无需清理'
-    else:
-        msg = f'已清理 {deleted} 个空壳草稿'
-        if with_ar:
-            msg += f'；另有 {with_ar} 个草稿挂了真实应收已保留，请到台账补全为正式项目（如确需连应收删除可选「全部删除」）'
-    return ok({'deleted': deleted, 'kept_with_ar': with_ar, 'mode': 'empty', 'message': msg})
+    msg = f'已转正 {promoted} 个草稿为正式项目并同步客户' if promoted else '没有可直接转正的草稿'
+    if need_dept:
+        msg += f'；另有 {len(need_dept)} 个草稿缺「交付部门」无法自动转正，请到项目台账补部门后再转（或删除）'
+    return ok({'promoted': promoted, 'need_dept_count': len(need_dept),
+               'need_dept_samples': need_dept[:10], 'message': msg})
 
 
 # ──────────────────────────────────────────────────────────────────────────────

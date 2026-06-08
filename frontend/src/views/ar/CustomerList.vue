@@ -142,6 +142,7 @@ function openEditFromDetail() {
 }
 async function saveCustomer() {
   if (!editForm.name.trim()) return showToast('客户名称不能为空')
+  if (!editForm.id && !editForm.delivery_dept) return showToast('请选择客户所属事业部（客户按事业部隔离）')
   saving.value = true
   try {
     if (editForm.id) {

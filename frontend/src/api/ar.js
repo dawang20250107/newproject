@@ -59,7 +59,7 @@ const ar = {
 
   // 草稿项目
   listDraftProjects: p => api.get('/ar/projects/drafts', { params: p }),
-  clearDraftProjects: (body) => api.post('/ar/projects/drafts/clear', body || {}),
+  promoteDraftProjects: (body) => api.post('/ar/projects/drafts/promote', body || {}),
 
   // 供应商池 (suppliers)
   listSuppliers: p => api.get('/ar/suppliers', { params: p }),
@@ -95,8 +95,6 @@ const ar = {
   analyticsByPm: p => api.get('/ar/analytics/by-pm', { params: p }),
   analyticsByDept: p => api.get('/ar/analytics/by-dept', { params: p }),
   unitEconomics: p => api.get('/ar/analytics/unit-economics', { params: p }),
-  duplicateNames: () => api.get('/ar/analytics/duplicate-names'),
-  reassignRecords: d => api.post('/ar/records/reassign', d),
   businessFinance: p => api.get('/ar/analytics/business-finance', { params: p }),
   projectPnl: p => api.get('/ar/analytics/project-pnl', { params: p }),
   forecast: p => api.get('/ar/analytics/forecast', { params: p }),
