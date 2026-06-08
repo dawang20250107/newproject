@@ -1706,7 +1706,7 @@ def _aggregate_report(batches_qs, level):
                 'l1_id': l1.id, 'l1_name': l1.name,
                 'amount': amt, 'is_calculated': l1.is_calculated,
                 'children': [] if l1.is_calculated else sorted(
-                    l1_children.get(l1.id, []), key=lambda x: x['l2_name'],
+                    l1_children.get(l1.id, []), key=lambda x: -x['amount'],
                 ),
             })
         return rows
@@ -1747,8 +1747,11 @@ def _aggregate_report(batches_qs, level):
                         'l2_id': l2_id,
                         'l2_name': l2_meta.get(key) or '（无项目部）',
                         'amount': float(tot),
-                        'children': l3_rows[key],
+                        # 三级明细也按金额从大到小
+                        'children': sorted(l3_rows[key], key=lambda d: -d['amount']),
                     })
+                # 二级科目按金额从大到小统一排序
+                children.sort(key=lambda d: -d['amount'])
             rows.append({
                 'l1_id': l1.id, 'l1_name': l1.name,
                 'amount': amt, 'is_calculated': l1.is_calculated,
@@ -1846,13 +1849,16 @@ def _aggregate_matrix(bu_list, year, level):
              'values': vlist(l1['values']), 'total': round(sum(l1['values'].values()), 2)}
         if level >= 2:
             r['children'] = []
-            for l2 in l1['l2'].values():
+            # 二级科目(项目部)按合计金额从大到小统一排序（各事业部规则一致，大的在前）
+            for l2 in sorted(l1['l2'].values(), key=lambda x: -sum(x['values'].values())):
                 c = {'l2_id': l2['l2_id'], 'l2_name': l2['l2_name'],
                      'values': vlist(l2['values']), 'total': round(sum(l2['values'].values()), 2)}
                 if level >= 3:
-                    c['children'] = [{'l3_id': x['l3_id'], 'l3_name': x['l3_name'],
-                                      'values': vlist(x['values']), 'total': round(sum(x['values'].values()), 2)}
-                                     for x in l2['l3'].values()]
+                    c['children'] = sorted(
+                        [{'l3_id': x['l3_id'], 'l3_name': x['l3_name'],
+                          'values': vlist(x['values']), 'total': round(sum(x['values'].values()), 2)}
+                         for x in l2['l3'].values()],
+                        key=lambda d: -d['total'])
                 r['children'].append(c)
         rows.append(r)
     _attach_expense_ratio(months, rows)
