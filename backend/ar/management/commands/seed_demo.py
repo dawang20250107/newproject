@@ -190,11 +190,14 @@ class Command(BaseCommand):
             name = (p.customer_name or '').strip()
             if not name:
                 continue
-            cust = cache.get(name)
+            # 客户按 (名称 + 交付部门) 隔离
+            key = (name, p.delivery_dept or '')
+            cust = cache.get(key)
             if cust is None:
                 cust, created = Customer.objects.get_or_create(
-                    name=name, defaults={'level': p.customer_level or ''})
-                cache[name] = cust
+                    name=name, delivery_dept=p.delivery_dept or '',
+                    defaults={'level': p.customer_level or ''})
+                cache[key] = cust
                 made += int(created)
             # 用 update 绕开 ARProject.save 的派生逻辑，仅落 customer 外键
             ARProject.objects.filter(pk=p.pk).update(customer=cust)

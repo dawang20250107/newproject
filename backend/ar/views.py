@@ -5680,7 +5680,7 @@ def _customer_ar_stats(customer_ids, request, today):
     反范式的 delivery_dept 为准（与其它应收接口一致），逾期=未收>0 且 已过应收日。
     返回 {customer_id: {project_count, invoiced, outstanding, overdue}}。
     """
-    out = {cid: {'project_count': 0, 'invoiced': 0.0, 'outstanding': 0.0, 'overdue': 0.0, 'depts': []}
+    out = {cid: {'project_count': 0, 'invoiced': 0.0, 'outstanding': 0.0, 'overdue': 0.0}
            for cid in customer_ids}
     if not customer_ids:
         return out
@@ -5690,12 +5690,6 @@ def _customer_ar_stats(customer_ids, request, today):
         ARProject.objects.filter(customer_id__in=customer_ids), request)
     for r in proj_qs.values('customer_id').annotate(c=Count('id')):
         out[r['customer_id']]['project_count'] = r['c']
-    # 客户涉及的事业部（去重，来自其项目的交付部门）
-    dept_map = {}
-    for r in proj_qs.exclude(delivery_dept='').values('customer_id', 'delivery_dept').distinct():
-        dept_map.setdefault(r['customer_id'], []).append(r['delivery_dept'])
-    for cid, depts in dept_map.items():
-        out[cid]['depts'] = sorted(set(depts))
 
     # 应收聚合（部门作用域走 ARRecord.delivery_dept）
     rec_qs = _ar_dept_filter(
@@ -5723,17 +5717,19 @@ def customers(request):
 
     if request.method == 'GET':
         qs = Customer.objects.all()
+        # 客户按事业部隔离：非超管只看自己有权部门的客户（含无部门的历史孤儿）
+        if request.pk_role != 'super_admin' and request.pk_depts:
+            qs = qs.filter(Q(delivery_dept__in=request.pk_depts) | Q(delivery_dept=''))
         q = request.GET.get('q', '').strip()
         if q:
             qs = qs.filter(Q(name__icontains=q) | Q(contact__icontains=q) | Q(notes__icontains=q))
         level = request.GET.get('level', '').strip()
         if level:
             qs = qs.filter(level=level)
-        # 事业部筛选：客户名下有项目落在该交付部门（受部门权限作用域）
+        # 事业部筛选：直接按客户自身的交付部门
         dept = request.GET.get('dept', '').strip()
         if dept:
-            scoped = _ar_dept_filter(ARProject.objects.filter(delivery_dept=dept), request)
-            qs = qs.filter(id__in=scoped.values_list('customer_id', flat=True))
+            qs = qs.filter(delivery_dept=dept)
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
         total = qs.count()
@@ -5757,10 +5753,17 @@ def customers(request):
         name = (data.get('name') or '').strip()
         if not name:
             return err('客户名称不能为空')
-        if Customer.objects.filter(name=name).exists():
-            return err(f'客户「{name}」已存在')
+        dept = (data.get('delivery_dept') or '').strip()
+        if dept and dept not in VALID_DEPARTMENTS:
+            return err(f'无效交付部门「{dept}」')
+        if dept and request.pk_role != 'super_admin' and dept not in request.pk_depts:
+            return err(f'无权在事业部「{dept}」下新建客户')
+        # 客户按 (名称 + 事业部) 隔离：同名客户在不同部门可各建一个
+        if Customer.objects.filter(name=name, delivery_dept=dept).exists():
+            return err(f'客户「{name}」在「{dept or "未指定部门"}」已存在')
         c = Customer(
             name=name,
+            delivery_dept=dept,
             level=(data.get('level') or '').strip(),
             contact=(data.get('contact') or '').strip(),
             customer_date=_normalize_date(data.get('customer_date')) or None,
@@ -5800,12 +5803,18 @@ def customers_bulk_tag_level(request):
 
     if all_flag:
         qs = Customer.objects.all()
+        # 部门隔离：非超管只能批量操作自己有权部门的客户
+        if request.pk_role != 'super_admin' and request.pk_depts:
+            qs = qs.filter(Q(delivery_dept__in=request.pk_depts) | Q(delivery_dept=''))
         q = (data.get('q') or '').strip()
         if q:
             qs = qs.filter(Q(name__icontains=q) | Q(contact__icontains=q) | Q(notes__icontains=q))
         level_filter = (data.get('level_filter') or '').strip()
         if level_filter:
             qs = qs.filter(level=level_filter)
+        dept_filter = (data.get('dept') or '').strip()
+        if dept_filter:
+            qs = qs.filter(delivery_dept=dept_filter)
         cnt = qs.count()
         if cnt == 0:
             return err('当前筛选没有匹配的客户')
@@ -5820,7 +5829,11 @@ def customers_bulk_tag_level(request):
             id_list = [int(i) for i in ids]
         except (TypeError, ValueError):
             return err('ids 必须为整数数组')
-        updated = Customer.objects.filter(pk__in=id_list).update(level=level)
+        cqs = Customer.objects.filter(pk__in=id_list)
+        if request.pk_role != 'super_admin' and request.pk_depts:
+            cqs = cqs.filter(Q(delivery_dept__in=request.pk_depts) | Q(delivery_dept=''))
+        id_list = list(cqs.values_list('id', flat=True))
+        updated = cqs.update(level=level)
     # 以客户为准：客户等级变更后，同步镜像到其名下所有项目
     ARProject.objects.filter(customer_id__in=id_list).update(customer_level=level)
 
@@ -5884,7 +5897,8 @@ def customers_sync_from_projects(request):
         if not name:
             continue
         cust, was_created = Customer.objects.get_or_create(
-            name=name, defaults={'level': p.customer_level or ''})
+            name=name, delivery_dept=p.delivery_dept or '',
+            defaults={'level': p.customer_level or ''})
         if was_created:
             created += 1
         # 直接 update 挂接，避开 save 的派生重算副作用
@@ -5914,6 +5928,10 @@ def customer_detail(request, pk):
         c = Customer.objects.get(pk=pk)
     except Customer.DoesNotExist:
         return err('客户不存在', 404)
+    # 客户按事业部隔离：非超管只能操作自己有权部门的客户（无部门孤儿放行）
+    if (request.pk_role != 'super_admin' and c.delivery_dept
+            and c.delivery_dept not in request.pk_depts):
+        return err('无权访问该客户', 403)
 
     if request.method == 'GET':
         d = c.to_dict()
@@ -5966,8 +5984,8 @@ def customer_detail(request, pk):
             name = (data['name'] or '').strip()
             if not name:
                 return err('客户名称不能为空')
-            if Customer.objects.filter(name=name).exclude(pk=pk).exists():
-                return err(f'客户名称「{name}」已被其他客户使用')
+            if Customer.objects.filter(name=name, delivery_dept=c.delivery_dept).exclude(pk=pk).exists():
+                return err(f'客户名称「{name}」在「{c.delivery_dept or "未指定部门"}」已被占用')
             name_changed = (c.name != name)
             c.name = name
         level_changed = 'level' in data

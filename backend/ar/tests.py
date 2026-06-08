@@ -1579,7 +1579,8 @@ class ContractAndImportAmbiguityTests(TestCase):
         self.assertNotIn('--', ct.contract_no)  # 无部门段不应出现空段
 
     def test_project_put_attaches_contracts_and_customer(self):
-        cust = Customer.objects.create(name='挂靠客户')
+        # 客户按事业部隔离：显式挂的客户需与项目同部门
+        cust = Customer.objects.create(name='挂靠客户', delivery_dept=self.dept)
         ct = Contract.objects.create(name='挂靠合同', delivery_dept=self.dept)
         p = self._proj('挂靠项目')
         resp = self._cput(f'/api/pk/ar/projects/{p.id}', {

@@ -10,8 +10,9 @@ from paikuan.models import PaikuanUser
 
 
 class Customer(models.Model):
-    """客户主表 — 独立客户实体，可关联多个项目。"""
-    name = models.CharField('客户名称', max_length=200, unique=True, db_index=True)
+    """客户主表 — 按事业部隔离的客户实体（同名客户在不同事业部是相互独立的两个客户）。"""
+    name = models.CharField('客户名称', max_length=200, db_index=True)
+    delivery_dept = models.CharField('交付部门', max_length=50, blank=True, default='', db_index=True)
     level = models.CharField('客户等级', max_length=50, blank=True, default='')
     contact = models.CharField('联系人', max_length=200, blank=True, default='')
     customer_date = models.DateField('建档日期', null=True, blank=True,
@@ -23,11 +24,13 @@ class Customer(models.Model):
     class Meta:
         db_table = 'ar_customers'
         ordering = ['name']
+        unique_together = [('name', 'delivery_dept')]
 
     def to_dict(self):
         return {
             'id': self.id,
             'name': self.name,
+            'delivery_dept': self.delivery_dept,
             'level': self.level,
             'contact': self.contact,
             'customer_date': str(self.customer_date) if self.customer_date else None,
@@ -113,18 +116,20 @@ class ARProject(models.Model):
             return f'{prefix}{max_seq + 1:04d}'
 
     def _autolink_customer(self):
-        """客户名即客户（文本字段为准）：确保项目挂到与 customer_name 一致的客户实体。
-        未挂客户、或所挂客户名与 customer_name 不一致（改了客户名）时，重新挂到
-        get_or_create(customer_name)。失败不阻断项目保存。"""
+        """客户按事业部隔离：项目挂到 (客户名 + 交付部门) 对应的客户实体。
+        同名客户在不同事业部是两个独立客户。未挂 / 客户名或部门不一致时重新挂到
+        get_or_create(name, delivery_dept)。失败不阻断项目保存。"""
         name = (self.customer_name or '').strip()
         if not name:
             return
+        dept = self.delivery_dept or ''
         try:
-            # 已挂且名字一致 → 无需重挂
-            if self.customer_id and (self.customer.name or '').strip() == name:
+            # 已挂且 名字+部门 都一致 → 无需重挂
+            if (self.customer_id and (self.customer.name or '').strip() == name
+                    and (self.customer.delivery_dept or '') == dept):
                 return
             cust, _ = Customer.objects.get_or_create(
-                name=name, defaults={'level': self.customer_level or ''})
+                name=name, delivery_dept=dept, defaults={'level': self.customer_level or ''})
             self.customer = cust
         except Exception:
             pass

@@ -28,7 +28,7 @@ const drawerOpen = ref(false)
 
 // 编辑/新建
 const showEdit = ref(false)
-const editForm = reactive({ id: null, name: '', level: '', contact: '', customer_date: '', notes: '' })
+const editForm = reactive({ id: null, name: '', delivery_dept: '', level: '', contact: '', customer_date: '', notes: '' })
 const saving = ref(false)
 
 // 项目损益卡
@@ -132,12 +132,12 @@ async function openDetail(c) {
 function closeDrawer() { drawerOpen.value = false; detail.value = null }
 
 function openCreate() {
-  Object.assign(editForm, { id: null, name: '', level: '', contact: '', customer_date: todayCST(), notes: '' })
+  Object.assign(editForm, { id: null, name: '', delivery_dept: filters.dept || accessibleDepts.value[0] || '', level: '', contact: '', customer_date: todayCST(), notes: '' })
   showEdit.value = true
 }
 function openEditFromDetail() {
   const d = detail.value
-  Object.assign(editForm, { id: d.id, name: d.name, level: d.level || '', contact: d.contact || '', customer_date: d.customer_date || '', notes: d.notes || '' })
+  Object.assign(editForm, { id: d.id, name: d.name, delivery_dept: d.delivery_dept || '', level: d.level || '', contact: d.contact || '', customer_date: d.customer_date || '', notes: d.notes || '' })
   showEdit.value = true
 }
 async function saveCustomer() {
@@ -233,7 +233,7 @@ onMounted(() => load(true))
               <td class="ctr chk-col" @click.stop><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
               <td class="l name">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
               <td class="ctr"><span v-if="c.level" class="lvl" :class="levelClass(c.level)">{{ c.level }}</span><span v-else class="muted">—</span></td>
-              <td class="l dept-cell">{{ (c.depts && c.depts.length) ? c.depts.join('、') : '—' }}</td>
+              <td class="l dept-cell">{{ c.delivery_dept || '—' }}</td>
               <td class="ctr">{{ c.project_count ?? 0 }}</td>
               <td class="rgt">{{ wan(c.invoiced) }}</td>
               <td class="rgt strong">{{ wan(c.outstanding) }}</td>
@@ -312,6 +312,11 @@ onMounted(() => load(true))
           <div class="em-title">{{ editForm.id ? '编辑客户' : '新增客户' }}</div>
           <label class="em-label">客户名称</label>
           <input v-model="editForm.name" class="em-input" placeholder="客户公司名称" />
+          <label class="em-label">所属事业部 <span style="color:#c0392b">*</span><span style="font-weight:400;color:#9b8070">（客户按事业部隔离，同名客户在不同部门相互独立）</span></label>
+          <select v-model="editForm.delivery_dept" class="em-input" :disabled="!!editForm.id">
+            <option value="">未指定</option>
+            <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+          </select>
           <div class="em-row">
             <div style="flex:1">
               <label class="em-label">等级</label>
