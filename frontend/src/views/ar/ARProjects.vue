@@ -16,8 +16,10 @@ const loading = ref(false)
 const page = ref(1)
 const size = 50
 
-const filters = reactive({ q: '', dept: '', customer_level: '', invoice_mode: '', is_shared: '', is_draft: '' })
+const filters = reactive({ q: '', dept: '', customer_level: '', invoice_mode: '', is_shared: '', is_draft: '', status: '' })
 const CUSTOMER_LEVELS = ['S级', 'A级', 'B级', 'C级', 'D级']
+const STATUSES = ['运作中', '中断', '结束']
+const statusClass = s => ({ '运作中': 'st-on', '中断': 'st-pause', '结束': 'st-end' }[s] || 'st-on')
 const showModal = ref(false)
 const editItem = ref(null)
 const saving = ref(false)
@@ -72,12 +74,17 @@ async function confirmBulkDelete() {
 
 const form = reactive({
   customer_name: '', short_name: '', delivery_dept: '', sub_dept: '',
-  business_mode: '', customer_level: 'A级', sales_contact: '', project_manager: '',
+  business_mode: '', customer_level: 'A级', status: '运作中', sales_contact: '', project_manager: '',
   has_contract: '有', contract_date: '', reconciliation_days: 0,
   invoice_wait_days: 0, post_invoice_days: 0, invoice_mode: '全额',
   invoice_type: '专票', tax_rate: '0.06', notes: '',
   customer_id: '',
 })
+// 项目台账内联改状态（与客户详情两边改同一字段，自动同步）
+async function changeStatus(item) {
+  try { await ar.updateProject(item.id, { status: item.status }) }
+  catch (e) { alert(e?.msg || e?.error || '改状态失败') }
+}
 
 // 客户池（一次性加载）+ 当前项目挂靠的合同
 const customers = ref([])
@@ -138,7 +145,7 @@ function clearSearch() { filters.q = ''; load(true) }
 
 const hasActiveFilters = computed(() =>
   !!(filters.q || filters.dept || filters.customer_level || filters.invoice_mode ||
-     filters.is_draft || (filters.is_shared && !auth.perms?.ar_shared_only)))
+     filters.is_draft || filters.status || (filters.is_shared && !auth.perms?.ar_shared_only)))
 
 function resetFilters() {
   filters.q = ''
@@ -147,6 +154,7 @@ function resetFilters() {
   filters.invoice_mode = ''
   if (!auth.perms?.ar_shared_only) filters.is_shared = ''
   filters.is_draft = ''
+  filters.status = ''
   reloadAll()
 }
 
@@ -183,7 +191,7 @@ function openCreate() {
   editItem.value = null
   Object.assign(form, {
     customer_name: '', short_name: '', delivery_dept: accessibleDepts.value[0] || '',
-    sub_dept: '', business_mode: '', customer_level: 'A级',
+    sub_dept: '', business_mode: '', customer_level: 'A级', status: '运作中',
     sales_contact: '', project_manager: '', has_contract: '有', contract_date: '',
     reconciliation_days: 0, invoice_wait_days: 0, post_invoice_days: 0,
     invoice_mode: '全额', invoice_type: '专票', tax_rate: '0.06', notes: '',
@@ -200,7 +208,7 @@ async function openEdit(item) {
     customer_name: item.customer_name,
     short_name: item.short_name,
     delivery_dept: item.delivery_dept, sub_dept: item.sub_dept,
-    business_mode: item.business_mode, customer_level: item.customer_level || 'A级',
+    business_mode: item.business_mode, customer_level: item.customer_level || 'A级', status: item.status || '运作中',
     sales_contact: item.sales_contact, project_manager: item.project_manager,
     has_contract: item.has_contract, contract_date: item.contract_date || '',
     reconciliation_days: item.reconciliation_days,
@@ -273,7 +281,7 @@ async function completeDraft(item) {
     customer_name: item.customer_name || item.short_name,
     short_name: item.short_name,
     delivery_dept: item.delivery_dept, sub_dept: item.sub_dept || '',
-    business_mode: item.business_mode || '', customer_level: item.customer_level || 'A级',
+    business_mode: item.business_mode || '', customer_level: item.customer_level || 'A级', status: item.status || '运作中',
     sales_contact: item.sales_contact || '', project_manager: item.project_manager || '',
     has_contract: item.has_contract || '无', contract_date: item.contract_date || '',
     reconciliation_days: item.reconciliation_days || 0,
@@ -432,6 +440,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <option value="">全部等级</option>
         <option v-for="l in CUSTOMER_LEVELS" :key="l" :value="l">{{ l }}</option>
       </select>
+      <select v-model="filters.status" class="sel-mo" @change="load(true)">
+        <option value="">全部状态</option>
+        <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
+      </select>
       <select v-model="filters.invoice_mode" class="sel-mo" @change="load(true)">
         <option value="">全部开票</option>
         <option value="全额">全额</option>
@@ -475,6 +487,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               </th>
               <th>项目编号</th>
               <th v-if="show('p_contract_name') || show('p_short_name')">客户 / 简称</th>
+              <th class="ctr">状态</th>
               <th v-if="show('p_delivery_dept')">交付部门</th>
               <th v-if="show('p_sub_dept')">二级部门</th>
               <th v-if="show('p_business_mode')">业务模式</th>
@@ -491,10 +504,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           </thead>
           <tbody>
             <tr v-if="loading && !items.length">
-              <td colspan="15" class="empty-cell"><div class="empty-inner">⏳ 加载中…</div></td>
+              <td colspan="16" class="empty-cell"><div class="empty-inner">⏳ 加载中…</div></td>
             </tr>
             <tr v-else-if="!items.length">
-              <td colspan="15" class="empty-cell"><div class="empty-inner">暂无项目数据，点击「新增项目」开始</div></td>
+              <td colspan="16" class="empty-cell"><div class="empty-inner">暂无项目数据，点击「新增项目」开始</div></td>
             </tr>
             <tr v-for="item in items" :key="item.id" class="data-row"
               :class="{ 'row-sel': selectAllMatching || selectedIds.has(item.id) }">
@@ -509,6 +522,12 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <td v-if="show('p_contract_name') || show('p_short_name')">
                 <div class="contract-name">{{ item.customer_name }}</div>
                 <div v-if="item.short_name" class="short-name">{{ item.short_name }}</div>
+              </td>
+              <td class="ctr">
+                <select v-if="auth.canCreate" v-model="item.status" class="proj-st-sel" :class="statusClass(item.status)" @change="changeStatus(item)">
+                  <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
+                </select>
+                <span v-else class="st-pill" :class="statusClass(item.status)">{{ item.status }}</span>
               </td>
               <td v-if="show('p_delivery_dept')"><span class="dept-chip">{{ item.delivery_dept }}</span></td>
               <td v-if="show('p_sub_dept')" class="text-muted">{{ item.sub_dept || '—' }}</td>
@@ -615,6 +634,12 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <span>客户等级 <em>*</em> <span class="lvl-hint" title="客户等级以客户为准：在此设置会同步到该客户及其名下所有项目">ⓘ 同步到客户</span></span>
                 <select v-model="form.customer_level">
                   <option v-for="l in CUSTOMER_LEVELS" :key="l" :value="l">{{ l }}</option>
+                </select>
+              </label>
+              <label class="form-field">
+                <span>状态</span>
+                <select v-model="form.status">
+                  <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
                 </select>
               </label>
               <label class="form-field">
@@ -985,6 +1010,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .imp-sec-list li:last-child { border-bottom: none; }
 .imp-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 12px 0; }
 .lvl-hint { font-size: 10.5px; font-weight: 600; color: #7a9fd4; cursor: help; margin-left: 4px; }
+.proj-st-sel { font-size: 11px; border: 1px solid rgba(180,140,110,.4); border-radius: 7px; padding: 1px 4px; cursor: pointer; background: #fff; }
+.proj-st-sel.st-on { color: #2e7d32; } .proj-st-sel.st-pause { color: #e65100; } .proj-st-sel.st-end { color: #9e9e9e; }
+.st-pill { display: inline-block; padding: 1px 8px; border-radius: 9px; font-size: 11px; font-weight: 600; }
+.st-on { background: #e8f5e9; color: #2e7d32; } .st-pause { background: #fff3e0; color: #e65100; } .st-end { background: #f3f3f3; color: #9e9e9e; }
 .stat-draft-row { display: flex; align-items: center; gap: 8px; }
 .draft-clear-btn { font-size: 10.5px; padding: 1px 8px; border: 1px solid rgba(46,125,50,.4); background: rgba(46,125,50,.06); color: #2e7d32; border-radius: 9px; cursor: pointer; white-space: nowrap; }
 .draft-clear-btn:hover:not(:disabled) { background: rgba(46,125,50,.14); }

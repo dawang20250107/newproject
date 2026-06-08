@@ -15,7 +15,9 @@ const total = ref(0)
 const loading = ref(false)
 const page = ref(1)
 const size = 50
-const filters = reactive({ q: '', level: '', dept: '' })
+const filters = reactive({ q: '', level: '', dept: '', status: '' })
+const STATUSES = ['运作中', '中断', '结束']
+const statusClass = s => ({ '运作中': 'st-on', '中断': 'st-pause', '结束': 'st-end' }[s] || 'st-on')
 
 // 排序（当前页客户端排序：未收/逾期最常用）
 const sortKey = ref('outstanding')
@@ -28,7 +30,7 @@ const drawerOpen = ref(false)
 
 // 编辑/新建
 const showEdit = ref(false)
-const editForm = reactive({ id: null, name: '', delivery_dept: '', level: '', contact: '', customer_date: '', notes: '' })
+const editForm = reactive({ id: null, name: '', delivery_dept: '', level: '', status: '运作中', contact: '', customer_date: '', notes: '', push_status: false })
 const saving = ref(false)
 
 // 项目损益卡
@@ -102,8 +104,8 @@ function go(p) { if (p < 1 || p > totalPages.value) return; page.value = p; load
 
 let searchTimer = null
 function onSearchInput() { clearTimeout(searchTimer); searchTimer = setTimeout(() => load(true), 280) }
-const hasActiveFilters = computed(() => !!(filters.q || filters.level || filters.dept))
-function resetFilters() { filters.q = ''; filters.level = ''; filters.dept = ''; load(true) }
+const hasActiveFilters = computed(() => !!(filters.q || filters.level || filters.dept || filters.status))
+function resetFilters() { filters.q = ''; filters.level = ''; filters.dept = ''; filters.status = ''; load(true) }
 
 // 服务端排序：跨所有分页生效（点表头切换字段/方向并回到第1页重新取数）
 function setSort(k) {
@@ -126,13 +128,20 @@ async function openDetail(c) {
 function closeDrawer() { drawerOpen.value = false; detail.value = null }
 
 function openCreate() {
-  Object.assign(editForm, { id: null, name: '', delivery_dept: filters.dept || accessibleDepts.value[0] || '', level: '', contact: '', customer_date: todayCST(), notes: '' })
+  Object.assign(editForm, { id: null, name: '', delivery_dept: filters.dept || accessibleDepts.value[0] || '', level: '', status: '运作中', contact: '', customer_date: todayCST(), notes: '', push_status: false })
   showEdit.value = true
 }
 function openEditFromDetail() {
   const d = detail.value
-  Object.assign(editForm, { id: d.id, name: d.name, delivery_dept: d.delivery_dept || '', level: d.level || '', contact: d.contact || '', customer_date: d.customer_date || '', notes: d.notes || '' })
+  Object.assign(editForm, { id: d.id, name: d.name, delivery_dept: d.delivery_dept || '', level: d.level || '', status: d.status || '运作中', contact: d.contact || '', customer_date: d.customer_date || '', notes: d.notes || '', push_status: false })
   showEdit.value = true
+}
+// 从客户详情直接改某个项目的状态（项目状态各自独立，两边同步同一字段）
+async function changeProjStatus(p) {
+  try {
+    await ar.updateProject(p.id, { status: p.status })
+    showToast(`✓ 项目「${p.short_name}」状态改为${p.status}`)
+  } catch (e) { showToast(e?.error || '改状态失败') }
 }
 async function saveCustomer() {
   if (!editForm.name.trim()) return showToast('客户名称不能为空')
@@ -141,8 +150,8 @@ async function saveCustomer() {
   try {
     if (editForm.id) {
       await ar.updateCustomer(editForm.id, editForm)
-      if (detail.value && detail.value.id === editForm.id) Object.assign(detail.value, { name: editForm.name, level: editForm.level, contact: editForm.contact, customer_date: editForm.customer_date, notes: editForm.notes })
-      showToast('✓ 已保存')
+      if (detail.value && detail.value.id === editForm.id) Object.assign(detail.value, { name: editForm.name, level: editForm.level, status: editForm.status, contact: editForm.contact, customer_date: editForm.customer_date, notes: editForm.notes })
+      showToast(editForm.push_status ? '✓ 已保存并下发状态到名下项目' : '✓ 已保存')
     } else {
       await ar.createCustomer(editForm)
       showToast('✓ 已创建')
@@ -187,6 +196,10 @@ onMounted(() => load(true))
         <option value="">全部等级</option>
         <option v-for="l in LEVELS" :key="l" :value="l">{{ l }}</option>
       </select>
+      <select v-model="filters.status" class="sel-bu" @change="load(true)">
+        <option value="">全部状态</option>
+        <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
+      </select>
       <button v-if="hasActiveFilters" class="filter-reset" @click="resetFilters">重置筛选</button>
       <div class="spacer"></div>
       <div class="count-tip">共 {{ total }} 个客户</div>
@@ -212,13 +225,13 @@ onMounted(() => load(true))
             <tr>
               <th class="ctr chk-col"><input type="checkbox" :checked="allOnPageSelected" @change="toggleSelAll" title="全选本页" /></th>
               <th class="l">客户名称</th>
+              <th class="ctr">状态</th>
               <th class="ctr">等级</th>
               <th class="l">事业部</th>
               <th class="ctr clk" @click="setSort('project_count')">项目数{{ sortArrow('project_count') }}</th>
               <th class="rgt clk" @click="setSort('invoiced')">累计开票{{ sortArrow('invoiced') }}</th>
               <th class="rgt clk" @click="setSort('outstanding')">未收金额{{ sortArrow('outstanding') }}</th>
               <th class="rgt clk" @click="setSort('overdue')">逾期金额{{ sortArrow('overdue') }}</th>
-              <th class="ctr clk" @click="setSort('customer_date')">建档日期{{ sortArrow('customer_date') }}</th>
               <th class="ctr">操作</th>
             </tr>
           </thead>
@@ -227,13 +240,13 @@ onMounted(() => load(true))
             <tr v-for="c in items" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)">
               <td class="ctr chk-col" @click.stop><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
               <td class="l name">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
+              <td class="ctr"><span class="st-pill" :class="statusClass(c.status)">{{ c.status || '运作中' }}</span></td>
               <td class="ctr"><span v-if="c.level" class="lvl" :class="levelClass(c.level)">{{ c.level }}</span><span v-else class="muted">—</span></td>
               <td class="l dept-cell">{{ c.delivery_dept || '—' }}</td>
               <td class="ctr">{{ c.project_count ?? 0 }}</td>
               <td class="rgt">{{ wan(c.invoiced) }}</td>
               <td class="rgt strong">{{ wan(c.outstanding) }}</td>
               <td class="rgt"><span :class="{ overdue: (c.overdue||0) > 0 }">{{ wan(c.overdue) }}</span></td>
-              <td class="ctr date">{{ fmtDate(c.customer_date || c.created_at) }}</td>
               <td class="ctr"><button class="btn-link" @click.stop="openDetail(c)">查看 ›</button></td>
             </tr>
           </tbody>
@@ -284,15 +297,20 @@ onMounted(() => load(true))
               <div v-if="!detail.projects.length" class="dw-empty">该客户暂无关联项目</div>
               <table v-else class="dw-proj-table">
                 <thead>
-                  <tr><th class="l">项目</th><th>部门</th><th class="rgt">开票</th><th class="rgt">未收</th><th class="rgt">逾期</th></tr>
+                  <tr><th class="l">项目</th><th class="ctr">状态</th><th class="rgt">开票</th><th class="rgt">未收</th><th class="rgt">逾期</th></tr>
                 </thead>
                 <tbody>
-                  <tr v-for="p in detail.projects" :key="p.id" class="proj-row" @click="pnlName = p.short_name || p.customer_name">
-                    <td class="l">{{ p.short_name || p.customer_name }}<span class="drill">损益 ›</span></td>
-                    <td class="dept">{{ p.delivery_dept }}</td>
-                    <td class="rgt">{{ wan(p.invoiced) }}</td>
-                    <td class="rgt strong">{{ wan(p.outstanding) }}</td>
-                    <td class="rgt"><span :class="{ overdue: p.overdue > 0 }">{{ wan(p.overdue) }}</span></td>
+                  <tr v-for="p in detail.projects" :key="p.id" class="proj-row">
+                    <td class="l" @click="pnlName = p.short_name || p.customer_name">{{ p.short_name || p.customer_name }}<span class="drill">损益 ›</span></td>
+                    <td class="ctr" @click.stop>
+                      <select v-if="auth.canCreate" v-model="p.status" class="proj-st-sel" :class="statusClass(p.status)" @change="changeProjStatus(p)">
+                        <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
+                      </select>
+                      <span v-else class="st-pill" :class="statusClass(p.status)">{{ p.status }}</span>
+                    </td>
+                    <td class="rgt" @click="pnlName = p.short_name || p.customer_name">{{ wan(p.invoiced) }}</td>
+                    <td class="rgt strong" @click="pnlName = p.short_name || p.customer_name">{{ wan(p.outstanding) }}</td>
+                    <td class="rgt" @click="pnlName = p.short_name || p.customer_name"><span :class="{ overdue: p.overdue > 0 }">{{ wan(p.overdue) }}</span></td>
                   </tr>
                 </tbody>
               </table>
@@ -319,6 +337,12 @@ onMounted(() => load(true))
           </select>
           <div class="em-row">
             <div style="flex:1">
+              <label class="em-label">状态</label>
+              <select v-model="editForm.status" class="em-input">
+                <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
+              </select>
+            </div>
+            <div style="flex:1">
               <label class="em-label">等级</label>
               <select v-model="editForm.level" class="em-input">
                 <option value="">未分级</option>
@@ -334,6 +358,10 @@ onMounted(() => load(true))
               <input v-model="editForm.contact" class="em-input" placeholder="联系人 / 电话" />
             </div>
           </div>
+          <label v-if="editForm.id" class="em-push">
+            <input type="checkbox" v-model="editForm.push_status" />
+            <span>保存时把「{{ editForm.status }}」状态一键下发到该客户名下所有项目（项目状态各自独立，不勾选则只改客户）</span>
+          </label>
           <label class="em-label">备注</label>
           <textarea v-model="editForm.notes" class="em-textarea" rows="2" placeholder="备注（可选）" />
           <div class="em-actions">
@@ -395,6 +423,14 @@ onMounted(() => load(true))
 .empty { text-align: center; color: #9e9e9e; padding: 40px; }
 .btn-link { background: none; border: none; color: var(--primary); cursor: pointer; font-size: 12.5px; }
 
+.st-pill { display: inline-block; padding: 1px 8px; border-radius: 9px; font-size: 11px; font-weight: 600; }
+.st-on { background: #e8f5e9; color: #2e7d32; }
+.st-pause { background: #fff3e0; color: #e65100; }
+.st-end { background: #f3f3f3; color: #9e9e9e; }
+.proj-st-sel { font-size: 11px; border: 1px solid #d4b896; border-radius: 7px; padding: 1px 4px; cursor: pointer; background: #fff; }
+.proj-st-sel.st-on { color: #2e7d32; } .proj-st-sel.st-pause { color: #e65100; } .proj-st-sel.st-end { color: #9e9e9e; }
+.em-push { display: flex; align-items: flex-start; gap: 6px; font-size: 11.5px; color: #6b5a4a; margin: 10px 0 4px; line-height: 1.4; cursor: pointer; }
+.em-push input { margin-top: 2px; }
 .lvl { display: inline-block; min-width: 18px; padding: 1px 7px; border-radius: 9px; font-size: 11px; font-weight: 700; color: #fff; }
 .lvl-S { background: #6a1b9a; } .lvl-A { background: #2e7d32; } .lvl-B { background: #1565c0; } .lvl-C { background: #e65100; } .lvl-D { background: #9e9e9e; }
 

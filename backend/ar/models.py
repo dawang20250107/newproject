@@ -11,9 +11,11 @@ from paikuan.models import PaikuanUser
 
 class Customer(models.Model):
     """客户主表 — 按事业部隔离的客户实体（同名客户在不同事业部是相互独立的两个客户）。"""
+    STATUS_CHOICES = [('运作中', '运作中'), ('中断', '中断'), ('结束', '结束')]
     name = models.CharField('客户名称', max_length=200, db_index=True)
     delivery_dept = models.CharField('交付部门', max_length=50, blank=True, default='', db_index=True)
     level = models.CharField('客户等级', max_length=50, blank=True, default='')
+    status = models.CharField('状态', max_length=10, choices=STATUS_CHOICES, default='运作中', db_index=True)
     contact = models.CharField('联系人', max_length=200, blank=True, default='')
     customer_date = models.DateField('建档日期', null=True, blank=True,
                                      help_text='可手工指定的客户日期（如 2026-01-01），区别于系统记录的创建时间')
@@ -32,6 +34,7 @@ class Customer(models.Model):
             'name': self.name,
             'delivery_dept': self.delivery_dept,
             'level': self.level,
+            'status': self.status,
             'contact': self.contact,
             'customer_date': str(self.customer_date) if self.customer_date else None,
             'notes': self.notes,
@@ -43,10 +46,12 @@ class Customer(models.Model):
 
 class ARProject(models.Model):
     """项目主表 — 每个合同/项目一行"""
+    STATUS_CHOICES = [('运作中', '运作中'), ('中断', '中断'), ('结束', '结束')]
     project_no = models.CharField('项目编号', max_length=20, unique=True, db_index=True)
     customer_name = models.CharField('客户名称', max_length=200)
     short_name = models.CharField('项目简称', max_length=100, blank=True, default='')
     delivery_dept = models.CharField('交付部门', max_length=50, db_index=True)
+    status = models.CharField('状态', max_length=10, choices=STATUS_CHOICES, default='运作中', db_index=True)
     sub_dept = models.CharField('二级部门', max_length=100, blank=True, default='')
     business_mode = models.CharField('业务模式', max_length=100, blank=True, default='')
     customer_level = models.CharField('客户等级', max_length=50, blank=True, default='')
@@ -187,6 +192,7 @@ class ARProject(models.Model):
             'customer_name': self.customer_name,
             'short_name': self.short_name,
             'delivery_dept': self.delivery_dept,
+            'status': self.status,
             'sub_dept': self.sub_dept,
             'business_mode': self.business_mode,
             'customer_level': self.customer_level,

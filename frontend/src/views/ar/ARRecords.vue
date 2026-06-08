@@ -540,6 +540,10 @@ onMounted(() => {
   if (route.query.status) conditions.value.push({ t: 'dim', field: 'status', value: route.query.status })
   if (route.query.project_id) conditions.value.push({ t: 'dim', field: 'project_id', value: route.query.project_id })
   if (route.query.dept) conditions.value.push({ t: 'dim', field: 'dept', value: route.query.dept })
+  // 默认只看「未结清」（应收明细/对账/开票/回款都先聚焦没收完的）；可点掉该条件看全部
+  if (!conditions.value.some(c => c.t === 'dim' && c.field === 'status')) {
+    conditions.value.push({ t: 'dim', field: 'status', value: 'outstanding' })
+  }
   load()
   window.addEventListener('pk:depts-changed', onScopeChange)
 })

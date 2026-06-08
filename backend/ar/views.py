@@ -504,6 +504,9 @@ def _apply_project_list_filters(qs, request):
     mode = request.GET.get('invoice_mode', '').strip()
     if mode:
         qs = qs.filter(invoice_mode=mode)
+    status = request.GET.get('status', '').strip()
+    if status:
+        qs = qs.filter(status=status)
     return qs
 
 
@@ -611,12 +614,17 @@ def project_detail(request, pk):
         if denied:
             return denied
         data = _ar_visible_payload(request, _parse_body(request), 'project',
-                                   extra=('customer_id', 'contract_ids', 'is_draft'))
+                                   extra=('customer_id', 'contract_ids', 'is_draft', 'status'))
         for field in ('customer_name', 'short_name', 'sub_dept',
                       'business_mode', 'customer_level', 'sales_contact', 'project_manager',
                       'has_contract', 'invoice_mode', 'invoice_type', 'notes'):
             if field in data:
                 setattr(proj, field, data[field])
+        if 'status' in data:
+            st = (data['status'] or '').strip()
+            if st not in dict(ARProject.STATUS_CHOICES):
+                return err(f'无效项目状态「{st}」，可选：运作中/中断/结束')
+            proj.status = st
         if 'contract_date' in data:
             proj.contract_date = _normalize_date(data['contract_date']) or None
         for field in ('reconciliation_days', 'invoice_wait_days', 'post_invoice_days'):
@@ -5611,6 +5619,9 @@ def customers(request):
         level = request.GET.get('level', '').strip()
         if level:
             qs = qs.filter(level=level)
+        status_f = request.GET.get('status', '').strip()
+        if status_f:
+            qs = qs.filter(status=status_f)
         # 事业部筛选：直接按客户自身的交付部门
         dept = request.GET.get('dept', '').strip()
         if dept:
@@ -5644,7 +5655,7 @@ def customers(request):
         page_customers = list(qs[(page - 1) * size: page * size])
         rows = [{
             'id': c.id, 'name': c.name, 'delivery_dept': c.delivery_dept,
-            'level': c.level, 'contact': c.contact,
+            'level': c.level, 'status': c.status, 'contact': c.contact,
             'customer_date': str(c.customer_date) if c.customer_date else None,
             'notes': c.notes,
             'created_at': c.created_at.isoformat() if c.created_at else None,
@@ -5675,10 +5686,14 @@ def customers(request):
         # 客户按 (名称 + 事业部) 隔离：同名客户在不同部门可各建一个
         if Customer.objects.filter(name=name, delivery_dept=dept).exists():
             return err(f'客户「{name}」在「{dept or "未指定部门"}」已存在')
+        st = (data.get('status') or '运作中').strip()
+        if st not in dict(Customer.STATUS_CHOICES):
+            st = '运作中'
         c = Customer(
             name=name,
             delivery_dept=dept,
             level=(data.get('level') or '').strip(),
+            status=st,
             contact=(data.get('contact') or '').strip(),
             customer_date=_normalize_date(data.get('customer_date')) or None,
             notes=(data.get('notes') or '').strip(),
@@ -5885,6 +5900,7 @@ def customer_detail(request, pk):
                 'id': p.id, 'project_no': p.project_no,
                 'short_name': p.short_name, 'customer_name': p.customer_name,
                 'delivery_dept': p.delivery_dept, 'business_mode': p.business_mode,
+                'status': p.status,
                 'invoiced': pp.get('invoiced', 0.0), 'outstanding': pp.get('outstanding', 0.0),
                 'overdue': pp.get('overdue', 0.0), 'records': pp.get('records', 0),
             })
@@ -5916,6 +5932,11 @@ def customer_detail(request, pk):
         for field in ('level', 'contact', 'notes'):
             if field in data:
                 setattr(c, field, (data[field] or '').strip())
+        if 'status' in data:
+            st = (data['status'] or '').strip()
+            if st not in dict(Customer.STATUS_CHOICES):
+                return err(f'无效客户状态「{st}」，可选：运作中/中断/结束')
+            c.status = st
         if 'customer_date' in data:
             c.customer_date = _normalize_date(data['customer_date']) or None
         c.save()
@@ -5925,6 +5946,9 @@ def customer_detail(request, pk):
         # 客户改名 → 同步名下项目的 customer_name 文本字段，保持两边一致
         if name_changed:
             ARProject.objects.filter(customer_id=c.id).update(customer_name=c.name)
+        # 一键下发：把客户状态应用到名下所有项目（项目独立状态，仅在显式请求时下发）
+        if data.get('push_status'):
+            ARProject.objects.filter(customer_id=c.id).update(status=c.status)
         return ok(c.to_dict())
 
     if request.method == 'DELETE':
