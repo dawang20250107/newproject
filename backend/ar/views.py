@@ -77,7 +77,7 @@ def _proj_candidate_dict(p):
     }
 
 
-def _classify_project_for_import(short_name, customer_hint, project_no, allowed_depts):
+def _classify_project_for_import(short_name, customer_hint, project_no, allowed_depts, dept_hint=''):
     """只读判定项目归属（不建库、不创建草稿），用于导入前的歧义检查。
 
     返回 (status, payload)：
@@ -90,6 +90,7 @@ def _classify_project_for_import(short_name, customer_hint, project_no, allowed_
     """
     name = (short_name or '').strip()
     pno = (project_no or '').strip()
+    dh = (dept_hint or '').strip()
 
     # ── 0) 项目编号：最高优先级、确定性指定 ────────────────────────────────
     if pno:
@@ -100,6 +101,11 @@ def _classify_project_for_import(short_name, customer_hint, project_no, allowed_
         return ('resolved', proj) if proj else ('bad_no', pno)
 
     def _narrow(qs):
+        # 交付部门是业务主键的一部分（短名+部门），优先用它区分同名跨部门项目
+        if dh:
+            nd = qs.filter(delivery_dept=dh)
+            if nd.exists():
+                qs = nd
         if customer_hint:
             n = qs.filter(customer_name__icontains=customer_hint)
             if n.exists():
@@ -165,8 +171,11 @@ def _resolve_project_for_import(short_name, customer_hint, dept, allowed_depts, 
     qs = ARProject.objects.filter(short_name=name)
     if allowed_depts is not None:
         qs = qs.filter(delivery_dept__in=allowed_depts)
-    elif dept:
-        qs = qs.filter(delivery_dept=dept)
+    # 交付部门是业务主键的一部分：用它区分同名跨部门项目（在权限范围内进一步缩小）
+    if dept:
+        qs_dept = qs.filter(delivery_dept=dept)
+        if qs_dept.exists():
+            qs = qs_dept
 
     # Customer hint可进一步缩小范围（同名项目不同客户时）
     if customer_hint:
@@ -193,8 +202,10 @@ def _resolve_project_for_import(short_name, customer_hint, dept, allowed_depts, 
     qs2 = ARProject.objects.filter(short_name__icontains=name)
     if allowed_depts is not None:
         qs2 = qs2.filter(delivery_dept__in=allowed_depts)
-    elif dept:
-        qs2 = qs2.filter(delivery_dept=dept)
+    if dept:
+        qs2_dept = qs2.filter(delivery_dept=dept)
+        if qs2_dept.exists():
+            qs2 = qs2_dept
     matches = list(qs2.order_by('-id')[:5])
     if matches:
         proj = matches[0]
@@ -600,7 +611,7 @@ def project_detail(request, pk):
         if denied:
             return denied
         data = _ar_visible_payload(request, _parse_body(request), 'project',
-                                   extra=('customer_id', 'contract_ids'))
+                                   extra=('customer_id', 'contract_ids', 'is_draft'))
         for field in ('customer_name', 'short_name', 'sub_dept',
                       'business_mode', 'customer_level', 'sales_contact', 'project_manager',
                       'has_contract', 'invoice_mode', 'invoice_type', 'notes'):
@@ -1317,13 +1328,14 @@ def ar_record_template(request):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '应收账款明细'
-    headers = ['项目编号', '项目简称*', '客户名称', '运作年*', '运作月*', '预估上账金额', '实际开票金额',
+    headers = ['项目编号', '项目简称*', '交付部门', '客户名称', '运作年*', '运作月*', '预估上账金额', '实际开票金额',
                '税额(差额模式手填)', '开票日期', '账实差额调整', '回款金额', '回款时间', '备注']
     _header_row(ws, headers, color='1B6E35')
     tip_vals = [
         '选填：项目编号（如 YS-20260101-0001）。当同名项目有多个时，填此列可精确指定，避免歧义',
-        '★必填：填写项目台账中的"项目简称"（找不到会自动建草稿项目；多个同名且未填编号/客户将拒绝导入并提示）',
-        '选填：客户/合同名称，用于区分同名项目（与项目编号二选一即可消除歧义）',
+        '★必填：填写项目台账中的"项目简称"（找不到将拒绝导入并提示先建项目；同名多个时需填交付部门/编号区分）',
+        '选填：交付部门/事业部。当不同事业部存在同名项目时，填此列即可精确区分（推荐）',
+        '选填：客户名称，用于区分同名项目（同部门同名时再用此列）',
         '★必填：4位整数，如 2026（每个项目每个月每天都可有多条开票/回款记录，多次导入即追加新行）',
         '★必填：1-12 的整数（同一项目同一年月可存在多行，代表当月多批次上账）',
         '选填：当月预计上账金额（元）；计算公式：未回款 = 上账金额 + 账实差额调整 - 全部回款之和',
@@ -1345,7 +1357,7 @@ def ar_record_template(request):
         cell.font = tip_font
         cell.alignment = Alignment(wrap_text=True)
     ws.row_dimensions[tip_row].height = 60
-    ws.append(['', EXAMPLE_ROW_MARKER, '', 2026, 1, 100000, 100000, '', '2026-01-15', 0, 30000,
+    ws.append(['', EXAMPLE_ROW_MARKER, '运输事业部', '', 2026, 1, 100000, 100000, '', '2026-01-15', 0, 30000,
                '2026-01-20', '示例（此行含"示例"标记，导入时自动跳过）'])
     for col in range(1, len(headers) + 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 22
@@ -1387,6 +1399,7 @@ def ar_record_import(request):
     _ALIASES = {
         '项目编号':          ['项目编号', '项目编号(可选,精确指定)', '项目编号*'],
         '项目简称*':         ['项目简称*', '项目简称'],
+        '交付部门':          ['交付部门', '事业部', '部门'],
         '客户名称':          ['客户名称', '客户', '合同名称'],
         '运作年*':           ['运作年*', '运作年'],
         '运作月*':           ['运作月*', '运作月'],
@@ -1428,7 +1441,7 @@ def ar_record_import(request):
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
     allowed_depts = None if request.pk_role == 'super_admin' else request.pk_depts
 
-    DATA_COLS = ('项目编号', '项目简称*', '客户名称', '运作年*', '运作月*', '预估上账金额',
+    DATA_COLS = ('项目编号', '项目简称*', '交付部门', '客户名称', '运作年*', '运作月*', '预估上账金额',
                  '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
                  '回款金额', '回款时间', '备注')
 
@@ -1449,6 +1462,11 @@ def ar_record_import(request):
             continue
         if not short_name:
             errors.append(f'第{ri}行：缺少「项目简称」，请补填（项目简称是关联应收记录与项目的唯一桥梁）')
+            continue
+
+        dept_hint = row_vals['交付部门']
+        if dept_hint and dept_hint not in VALID_DEPARTMENTS:
+            errors.append(f'第{ri}行：交付部门"{dept_hint}"无效，可选值为：{"/".join(VALID_DEPARTMENTS)}（留空则按项目简称匹配）')
             continue
 
         y_raw, m_raw = row_vals['运作年*'], row_vals['运作月*']
@@ -1509,6 +1527,7 @@ def ar_record_import(request):
         plan.append({
             'ri': ri, 'short_name': short_name,
             'project_no': row_vals['项目编号'],
+            'dept_hint': dept_hint,
             'customer_hint': row_vals['客户名称'],
             'year': year, 'month': month,
             'est': est, 'actual': actual, 'tax': tax, 'inv_date': inv_date,
@@ -1532,7 +1551,8 @@ def ar_record_import(request):
     not_founds = []    # [{ri, input}] 台账中不存在的项目
     for p in plan:
         status, payload = _classify_project_for_import(
-            p['short_name'], p['customer_hint'], p['project_no'], allowed_depts)
+            p['short_name'], p['customer_hint'], p['project_no'], allowed_depts,
+            dept_hint=p['dept_hint'])
         if status == 'ambiguous':
             ambiguities.append({'ri': p['ri'], 'input': p['short_name'], 'candidates': payload})
         elif status == 'bad_no':
@@ -1549,8 +1569,11 @@ def ar_record_import(request):
             guide.append(f'第{nf["ri"]}行：项目「{nf["input"]}」在项目台账中不存在（或不在您的权限部门内）。'
                          f'请先到「项目台账」新建该项目，再导入其应收明细。')
         for a in ambiguities:
+            depts = sorted({c['delivery_dept'] for c in a['candidates'] if c.get('delivery_dept')})
+            tip = ('（这几个项目同名但分属不同事业部，填「交付部门」即可区分）'
+                   if len(depts) > 1 else '')
             lines = [f'第{a["ri"]}行：「{a["input"]}」匹配到 {len(a["candidates"])} 个项目，无法确定是哪一个。'
-                     f'请在导入表新增「项目编号」列填写下列其一精确指定，或在「客户名称」列填写以区分：']
+                     f'请在导入表填「交付部门」列区分{tip}，或填「项目编号」精确指定；同名同部门时再用「客户名称」区分：']
             for c in a['candidates']:
                 lines.append(f'    · 编号 {c["project_no"]}｜简称 {c["short_name"]}'
                              f'｜部门 {c["delivery_dept"]}｜客户 {c["customer_name"] or "—"}')
@@ -1583,7 +1606,7 @@ def ar_record_import(request):
     with transaction.atomic():
         for p in plan:
             proj, match_type, warn = _resolve_project_for_import(
-                p['short_name'], p['customer_hint'], '', allowed_depts, user, proj_cache,
+                p['short_name'], p['customer_hint'], p['dept_hint'], allowed_depts, user, proj_cache,
                 project_no=p['project_no'])
 
             # 已停用「自动建草稿」：项目不存在 / 解析为新建 / 越权 → 收集错误，整表回滚
