@@ -89,7 +89,7 @@ async function applyBulkLevel() {
 }
 
 async function load(reset = false) {
-  if (reset) page.value = 1
+  if (reset) { page.value = 1; clearSel() }
   loading.value = true
   try {
     const res = await ar.listCustomers({ ...filters, page: page.value, size })
@@ -97,6 +97,8 @@ async function load(reset = false) {
     total.value = res.data.total
   } finally { loading.value = false }
 }
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size)))
+function go(p) { if (p < 1 || p > totalPages.value) return; page.value = p; load() }
 
 let searchTimer = null
 function onSearchInput() { clearTimeout(searchTimer); searchTimer = setTimeout(() => load(true), 280) }
@@ -245,6 +247,11 @@ onMounted(() => load(true))
           </tbody>
         </table>
       </div>
+      <div v-if="total > size" class="cu-pager">
+        <button :disabled="page <= 1" class="page-btn" @click="go(page - 1)">‹ 上一页</button>
+        <span class="page-info">第 {{ page }} / {{ totalPages }} 页 · 共 {{ total }} 个客户</span>
+        <button :disabled="page >= totalPages" class="page-btn" @click="go(page + 1)">下一页 ›</button>
+      </div>
     </div>
 
     <!-- 客户详情抽屉 -->
@@ -354,6 +361,11 @@ onMounted(() => load(true))
 .topbar-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
 .cu-table td.date { color: #9b8070; font-size: 12px; white-space: nowrap; }
 .cu-table td.dept-cell { font-size: 12px; color: #6b5a4a; }
+.cu-pager { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 14px 0 4px; }
+.cu-pager .page-btn { padding: 5px 14px; border: 1px solid #d4b896; border-radius: 8px; background: #fff; color: #4a3728; font-size: 13px; cursor: pointer; }
+.cu-pager .page-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+.cu-pager .page-btn:disabled { opacity: .4; cursor: default; }
+.cu-pager .page-info { font-size: 12.5px; color: #9b8070; }
 .sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
 
 .filter-strip { display: flex; align-items: center; gap: 10px; margin: 14px 0; }
