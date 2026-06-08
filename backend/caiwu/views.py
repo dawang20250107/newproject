@@ -1799,6 +1799,9 @@ def _attach_expense_ratio(months, rows):
         if r.get('is_calculated') or not _is_expense_ratio_row(r['l1_name']):
             continue
         _attach(r)
+    # 收入的二级/三级也展示「占总收入比例」（一级主营业务收入本身=100%，仅给其子级算占比）
+    for child in rev.get('children', []):
+        _attach(child)
 
 
 def _aggregate_matrix(bu_list, year, level):
