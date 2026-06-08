@@ -113,12 +113,16 @@ class ARProject(models.Model):
             return f'{prefix}{max_seq + 1:04d}'
 
     def _autolink_customer(self):
-        """客户名即客户：未显式挂客户时，按「客户名称」自动建/挂客户。
-        让正式导入/新建项目也落实"客户正名"，不必依赖一次性回填。失败不阻断项目保存。"""
+        """客户名即客户（文本字段为准）：确保项目挂到与 customer_name 一致的客户实体。
+        未挂客户、或所挂客户名与 customer_name 不一致（改了客户名）时，重新挂到
+        get_or_create(customer_name)。失败不阻断项目保存。"""
         name = (self.customer_name or '').strip()
         if not name:
             return
         try:
+            # 已挂且名字一致 → 无需重挂
+            if self.customer_id and (self.customer.name or '').strip() == name:
+                return
             cust, _ = Customer.objects.get_or_create(
                 name=name, defaults={'level': self.customer_level or ''})
             self.customer = cust
@@ -152,8 +156,8 @@ class ARProject(models.Model):
                            + self.post_invoice_days)
         if self.invoice_type == '不开票':
             self.tax_rate = Decimal('0')
-        if self.customer_id is None:
-            self._autolink_customer()
+        # 客户名为准：未挂 / 改了客户名 → 重新挂到对应客户实体
+        self._autolink_customer()
         # 客户等级以客户为准：拿到 customer 后做等级镜像/上推
         self._sync_level_with_customer()
         if self.project_no:

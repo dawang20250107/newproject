@@ -80,6 +80,14 @@ def update_ar_record_due_dates_on_project_change(sender, instance, **kwargs):
     for pk, due in updates:
         ARRecord.objects.filter(pk=pk).update(due_date=due)
 
+    # 项目交付部门变更 → 同步其全部应收的反范式 delivery_dept（否则应收仍挂旧部门，
+    # 影响部门筛选/权限/聚合）。仅更新不一致的行。
+    try:
+        ARRecord.objects.filter(project=instance).exclude(
+            delivery_dept=instance.delivery_dept).update(delivery_dept=instance.delivery_dept)
+    except Exception:
+        pass
+
     # Sync denormalised dept fields on budget records when project info changes.
     # Budget models link via project_no (a stable natural key), not FK.
     if not instance.project_no:

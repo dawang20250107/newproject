@@ -638,7 +638,10 @@ def project_detail(request, pk):
             cid = data.get('customer_id')
             if cid:
                 try:
-                    proj.customer = Customer.objects.get(pk=int(cid))
+                    cust = Customer.objects.get(pk=int(cid))
+                    proj.customer = cust
+                    # 显式挂客户 → 文本字段跟随该客户名，保持文本=实体一致
+                    proj.customer_name = cust.name
                 except (Customer.DoesNotExist, ValueError, TypeError):
                     pass
             else:
@@ -5958,12 +5961,14 @@ def customer_detail(request, pk):
         if denied:
             return denied
         data = _parse_body(request)
+        name_changed = False
         if 'name' in data:
             name = (data['name'] or '').strip()
             if not name:
                 return err('客户名称不能为空')
             if Customer.objects.filter(name=name).exclude(pk=pk).exists():
                 return err(f'客户名称「{name}」已被其他客户使用')
+            name_changed = (c.name != name)
             c.name = name
         level_changed = 'level' in data
         for field in ('level', 'contact', 'notes'):
@@ -5975,6 +5980,9 @@ def customer_detail(request, pk):
         # 以客户为准：等级变更同步镜像到该客户名下所有项目
         if level_changed:
             ARProject.objects.filter(customer_id=c.id).update(customer_level=c.level)
+        # 客户改名 → 同步名下项目的 customer_name 文本字段，保持两边一致
+        if name_changed:
+            ARProject.objects.filter(customer_id=c.id).update(customer_name=c.name)
         return ok(c.to_dict())
 
     if request.method == 'DELETE':
