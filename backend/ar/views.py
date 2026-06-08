@@ -11,7 +11,7 @@ from django.core.exceptions import ValidationError
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction
-from django.db.models import Sum, Count, Q, F, Value, Case, When, IntegerField, CharField, Max, Min
+from django.db.models import Sum, Count, Q, F, Value, Case, When, IntegerField, CharField, DecimalField, Max, Min
 from django.db.models.functions import TruncMonth, Coalesce
 from django.utils import timezone
 
@@ -5589,39 +5589,6 @@ def ar_records_batch_assign(request):
 # 客户管理 (customers)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _customer_ar_stats(customer_ids, request, today):
-    """对一批客户聚合「项目数 / 累计开票 / 未收 / 逾期」，受部门权限作用域约束。
-
-    链路：ARRecord → project(ARProject) → customer。回款明细的部门以 ARRecord 上
-    反范式的 delivery_dept 为准（与其它应收接口一致），逾期=未收>0 且 已过应收日。
-    返回 {customer_id: {project_count, invoiced, outstanding, overdue}}。
-    """
-    out = {cid: {'project_count': 0, 'invoiced': 0.0, 'outstanding': 0.0, 'overdue': 0.0}
-           for cid in customer_ids}
-    if not customer_ids:
-        return out
-
-    # 项目数（部门作用域）
-    proj_qs = _ar_dept_filter(
-        ARProject.objects.filter(customer_id__in=customer_ids), request)
-    for r in proj_qs.values('customer_id').annotate(c=Count('id')):
-        out[r['customer_id']]['project_count'] = r['c']
-
-    # 应收聚合（部门作用域走 ARRecord.delivery_dept）
-    rec_qs = _ar_dept_filter(
-        ARRecord.objects.filter(project__customer_id__in=customer_ids), request)
-    for r in rec_qs.values('project__customer_id').annotate(
-            inv=Sum('actual_invoice_amount'), out_amt=Sum('outstanding_amount')):
-        d = out[r['project__customer_id']]
-        d['invoiced'] = float(r['inv'] or 0)
-        d['outstanding'] = float(r['out_amt'] or 0)
-    for r in (rec_qs.filter(due_date__lt=today, outstanding_amount__gt=0)
-              .values('project__customer_id').annotate(ov=Sum('outstanding_amount'))):
-        out[r['project__customer_id']]['overdue'] = float(r['ov'] or 0)
-
-    return out
-
-
 @csrf_exempt
 @pk_required()
 def customers(request):
@@ -5632,6 +5599,8 @@ def customers(request):
         return err('无权访问', 403)
 
     if request.method == 'GET':
+        from django.db.models.functions import Coalesce
+        today = datetime.date.today()
         qs = Customer.objects.all()
         # 客户按事业部隔离：非超管只看自己有权部门的客户（含无部门的历史孤儿）
         if request.pk_role != 'super_admin' and request.pk_depts:
@@ -5646,19 +5615,45 @@ def customers(request):
         dept = request.GET.get('dept', '').strip()
         if dept:
             qs = qs.filter(delivery_dept=dept)
+
+        # 数据库级聚合应收（客户已按事业部隔离 → 其全部应收即本部门，无需逐条过滤部门）
+        _money = lambda **kw: Coalesce(Sum('projects__ar_records__outstanding_amount', **kw),
+                                       Value(0), output_field=DecimalField())
+        qs = qs.annotate(
+            s_project_count=Count('projects', distinct=True),
+            s_invoiced=Coalesce(Sum('projects__ar_records__actual_invoice_amount'),
+                                Value(0), output_field=DecimalField()),
+            s_outstanding=_money(),
+            s_overdue=_money(filter=Q(projects__ar_records__due_date__lt=today,
+                                      projects__ar_records__outstanding_amount__gt=0)),
+        )
+
+        # 数据库级排序：跨所有分页生效，不再分页时临时算
+        SORT_MAP = {
+            'outstanding': 's_outstanding', 'overdue': 's_overdue', 'invoiced': 's_invoiced',
+            'project_count': 's_project_count', 'name': 'name', 'level': 'level',
+            'customer_date': 'customer_date', 'created_at': 'created_at',
+        }
+        sort = SORT_MAP.get(request.GET.get('sort', 'outstanding'), 's_outstanding')
+        direction = '' if request.GET.get('dir', 'desc') == 'asc' else '-'
+        qs = qs.order_by(direction + sort, 'name')
+
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
         total = qs.count()
         page_customers = list(qs[(page - 1) * size: page * size])
-        rows = [c.to_dict() for c in page_customers]
-        # 默认附带应收聚合（列表即看板：谁欠钱一目了然）
-        if request.GET.get('with_stats', '1') != '0':
-            today = datetime.date.today()
-            stats = _customer_ar_stats([c.id for c in page_customers], request, today)
-            for row in rows:
-                s = stats.get(row['id'])
-                if s:
-                    row.update(s)
+        rows = [{
+            'id': c.id, 'name': c.name, 'delivery_dept': c.delivery_dept,
+            'level': c.level, 'contact': c.contact,
+            'customer_date': str(c.customer_date) if c.customer_date else None,
+            'notes': c.notes,
+            'created_at': c.created_at.isoformat() if c.created_at else None,
+            'updated_at': c.updated_at.isoformat() if c.updated_at else None,
+            'project_count': c.s_project_count,
+            'invoiced': float(c.s_invoiced),
+            'outstanding': float(c.s_outstanding),
+            'overdue': float(c.s_overdue),
+        } for c in page_customers]
         return ok({'items': rows, 'total': total, 'page': page, 'size': size})
 
     if request.method == 'POST':

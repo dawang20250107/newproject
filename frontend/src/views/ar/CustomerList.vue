@@ -92,7 +92,7 @@ async function load(reset = false) {
   if (reset) { page.value = 1; clearSel() }
   loading.value = true
   try {
-    const res = await ar.listCustomers({ ...filters, page: page.value, size })
+    const res = await ar.listCustomers({ ...filters, page: page.value, size, sort: sortKey.value, dir: sortDir.value })
     items.value = res.data.items
     total.value = res.data.total
   } finally { loading.value = false }
@@ -105,19 +105,11 @@ function onSearchInput() { clearTimeout(searchTimer); searchTimer = setTimeout((
 const hasActiveFilters = computed(() => !!(filters.q || filters.level || filters.dept))
 function resetFilters() { filters.q = ''; filters.level = ''; filters.dept = ''; load(true) }
 
-const sortedItems = computed(() => {
-  const arr = [...items.value]
-  const k = sortKey.value, dir = sortDir.value === 'desc' ? -1 : 1
-  arr.sort((a, b) => {
-    const av = a[k] ?? -Infinity, bv = b[k] ?? -Infinity
-    if (typeof av === 'string') return av.localeCompare(bv) * dir
-    return (av - bv) * dir
-  })
-  return arr
-})
+// 服务端排序：跨所有分页生效（点表头切换字段/方向并回到第1页重新取数）
 function setSort(k) {
   if (sortKey.value === k) sortDir.value = sortDir.value === 'desc' ? 'asc' : 'desc'
   else { sortKey.value = k; sortDir.value = 'desc' }
+  load(true)
 }
 function sortArrow(k) { return sortKey.value === k ? (sortDir.value === 'desc' ? ' ↓' : ' ↑') : '' }
 
@@ -232,7 +224,7 @@ onMounted(() => load(true))
           </thead>
           <tbody>
             <tr v-if="!loading && !items.length"><td colspan="10" class="empty">暂无客户数据</td></tr>
-            <tr v-for="c in sortedItems" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)">
+            <tr v-for="c in items" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)">
               <td class="ctr chk-col" @click.stop><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
               <td class="l name">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
               <td class="ctr"><span v-if="c.level" class="lvl" :class="levelClass(c.level)">{{ c.level }}</span><span v-else class="muted">—</span></td>
