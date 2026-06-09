@@ -5625,10 +5625,9 @@ def customers(request):
         from django.db.models.functions import Coalesce
         from django.db.models import Exists, OuterRef
         today = datetime.date.today()
-        qs = Customer.objects.all()
-        # 客户按事业部隔离：非超管只看自己有权部门的客户（含无部门的历史孤儿）
-        if request.pk_role != 'super_admin' and request.pk_depts:
-            qs = qs.filter(delivery_dept__in=request.pk_depts)
+        # 客户按事业部隔离 + 顶部全局范围（?depts）一并生效，与项目/应收口径一致；
+        # _ar_dept_filter 对无授权部门的用户返回空集（杜绝「无部门=看全部」漏洞）。
+        qs = _ar_dept_filter(Customer.objects.all(), request, dept_field='delivery_dept')
         # 共享业务岗位（ar_shared_only，如销售BP）：仅纳入有共享项目的客户，
         # 且其应收聚合仅统计共享项目，避免经客户视图泄露自营业务财务。
         shared_only = False
@@ -5764,10 +5763,8 @@ def customers_bulk_tag_level(request):
     ids = data.get('ids')
 
     if all_flag:
-        qs = Customer.objects.all()
-        # 部门隔离：非超管只能批量操作自己有权部门的客户
-        if request.pk_role != 'super_admin' and request.pk_depts:
-            qs = qs.filter(delivery_dept__in=request.pk_depts)
+        # 部门隔离：非超管只能批量操作自己有权部门的客户（无授权部门→空集）
+        qs = _ar_dept_filter(Customer.objects.all(), request, dept_field='delivery_dept')
         q = (data.get('q') or '').strip()
         if q:
             qs = qs.filter(Q(name__icontains=q) | Q(contact__icontains=q) | Q(notes__icontains=q))
@@ -5791,9 +5788,9 @@ def customers_bulk_tag_level(request):
             id_list = [int(i) for i in ids]
         except (TypeError, ValueError):
             return err('ids 必须为整数数组')
-        cqs = Customer.objects.filter(pk__in=id_list)
-        if request.pk_role != 'super_admin' and request.pk_depts:
-            cqs = cqs.filter(delivery_dept__in=request.pk_depts)
+        # 部门隔离：仅保留用户有权部门的客户（无授权部门→空集，杜绝按 id 跨部门越权）
+        cqs = _ar_dept_filter(
+            Customer.objects.filter(pk__in=id_list), request, dept_field='delivery_dept')
         id_list = list(cqs.values_list('id', flat=True))
         updated = cqs.update(level=level)
     # 以客户为准：客户等级变更后，同步镜像到其名下所有项目
