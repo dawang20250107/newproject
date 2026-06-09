@@ -5604,8 +5604,8 @@ def customers(request):
     """GET  /ar/customers   — 分页列表（with_stats=1 附带应收聚合）
     POST /ar/customers   — 新增客户
     """
-    if request.pk_role not in ('super_admin', 'dept_admin', 'user'):
-        return err('无权访问', 403)
+    # 认证已由 @pk_required() 保证；部门隔离由下方 dept 过滤 / _write_denied 处理。
+    # （历史遗留的 'dept_admin'/'user' 并非真实角色，会误伤所有非超管用户）
 
     if request.method == 'GET':
         from django.db.models.functions import Coalesce
@@ -5720,8 +5720,8 @@ def customers_bulk_tag_level(request):
         return denied
     if request.method != 'POST':
         return err('POST only', 405)
-    if request.pk_role not in ('super_admin', 'dept_admin', 'user'):
-        return err('无权访问', 403)
+    # 认证已由 @pk_required() 保证；部门隔离由下方 dept 过滤 / _write_denied 处理。
+    # （历史遗留的 'dept_admin'/'user' 并非真实角色，会误伤所有非超管用户）
 
     data = _parse_body(request)
     level = (data.get('level') or '').strip()
@@ -5816,8 +5816,8 @@ def customers_sync_from_projects(request):
         return denied
     if request.method != 'POST':
         return err('POST only', 405)
-    if request.pk_role not in ('super_admin', 'dept_admin', 'user'):
-        return err('无权访问', 403)
+    # 认证已由 @pk_required() 保证；部门隔离由下方 dept 过滤 / _write_denied 处理。
+    # （历史遗留的 'dept_admin'/'user' 并非真实角色，会误伤所有非超管用户）
 
     qs = _ar_dept_filter(
         ARProject.objects.filter(customer__isnull=True).exclude(customer_name=''), request)
