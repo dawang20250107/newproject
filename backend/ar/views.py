@@ -6241,11 +6241,12 @@ def contract_detail(request, pk):
 @pk_required()
 def ar_actions(request):
     """GET: list action items with counts; POST: create one."""
-    # dept-scope filter helper
+    # dept-scope filter helper（bu='' 为全局事项，对所有人可见；
+    # 无授权部门的非超管只看全局事项，杜绝「空部门=看全部」越权）
     def _scope_qs(qs):
-        if request.pk_role != 'super_admin' and request.pk_depts:
-            return qs.filter(Q(bu='') | Q(bu__in=request.pk_depts))
-        return qs
+        if request.pk_role == 'super_admin':
+            return qs
+        return qs.filter(Q(bu='') | Q(bu__in=request.pk_depts or []))
 
     if request.method == 'GET':
         qs = _scope_qs(ActionItem.objects.all())
@@ -6403,9 +6404,10 @@ def analytics_target_decomp(request):
     from django.db.models import Sum as _Sum
 
     def _scope_bu(qs, field='business_unit'):
-        if request.pk_role != 'super_admin' and request.pk_depts:
-            return qs.filter(**{field + '__in': request.pk_depts})
-        return qs
+        if request.pk_role == 'super_admin':
+            return qs
+        # 无授权部门 → 空集（不再短路跳过过滤，杜绝越权看全部事业部目标）
+        return qs.filter(**{field + '__in': request.pk_depts or []})
 
     # Annual targets (month=0)
     annual_qs = _scope_bu(FinancialTarget.objects.filter(year=year, month=0))
