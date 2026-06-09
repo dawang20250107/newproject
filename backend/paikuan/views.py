@@ -310,7 +310,10 @@ def get_job_perms(job):
         logger.warning('get_job_perms: DB unavailable for %s, using defaults', job)
         return base
     if not (rp and rp.config):
-        result = base
+        result = dict(base)
+        # 能力位规范化：保证返回值始终带 ar_can_create（多数职务基线无此键 → False），
+        # 让权限配置页统一可读可改，避免 undefined 造成误判。
+        result.setdefault('ar_can_create', base.get('ar_can_create', False))
     else:
         cfg = rp.config
         view = dict(base['view']);  view.update(cfg.get('view', {}))
@@ -324,6 +327,9 @@ def get_job_perms(job):
             'pages': pages, 'view': view, 'edit': edit, 'ar_view': ar_view,
             'can_create': bool(cfg.get('can_create', base['can_create'])),
             'can_delete': bool(cfg.get('can_delete', base['can_delete'])),
+            # 应收专属写权限（结算会计等）：必须在合并时保留，否则一旦超管在权限
+            # 配置页对该职务做任何自定义覆盖，ar_can_create 会丢失 → 写入再次被拒。
+            'ar_can_create': bool(cfg.get('ar_can_create', base.get('ar_can_create', False))),
             'ar_shared_only': bool(cfg.get('ar_shared_only', base.get('ar_shared_only', False))),
             'caiwu_view': caiwu_view,
             'caiwu_upload':  bool(cfg.get('caiwu_upload',  base.get('caiwu_upload', False))),
@@ -338,7 +344,8 @@ def get_job_perms(job):
 def full_perms():
     return {'pages': {k: True for k in PAGE_KEYS}, 'view': _all_fields(True),
             'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
-            'can_create': True, 'can_delete': True, 'ar_shared_only': False,
+            'can_create': True, 'can_delete': True, 'ar_can_create': True,
+            'ar_shared_only': False,
             'caiwu_view': _all_caiwu_fields(True),
             'caiwu_upload': True, 'caiwu_publish': True, 'caiwu_delete': True}
 
@@ -1808,6 +1815,7 @@ def permission_detail(request, job):
         return err('职务无效', 404)
     body = parse_body(request)
     cfg = body.get('config') or {}
+    _base = default_job_config(job)   # 用于补齐前端未显式传入的能力位默认值
 
     # Sanitize against known keys to avoid storing junk.
     clean = {
@@ -1817,6 +1825,9 @@ def permission_detail(request, job):
         'ar_view': {k: bool(cfg.get('ar_view', {}).get(k, True)) for k in AR_FIELD_KEYS},
         'can_create': bool(cfg.get('can_create', False)),
         'can_delete': bool(cfg.get('can_delete', False)),
+        # 应收专属写权限：前端未传时回退到该职务的基线默认（结算会计=True），
+        # 避免老前端保存时把该能力清掉；前端传了则以传入为准（可自由搭配）。
+        'ar_can_create': bool(cfg.get('ar_can_create', _base.get('ar_can_create', False))),
         'ar_shared_only': bool(cfg.get('ar_shared_only', False)),
         'caiwu_view': {k: bool(cfg.get('caiwu_view', {}).get(k, True)) for k in CAIWU_FIELD_KEYS},
         'caiwu_upload':  bool(cfg.get('caiwu_upload', False)),
