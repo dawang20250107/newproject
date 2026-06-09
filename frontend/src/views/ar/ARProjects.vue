@@ -399,7 +399,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <div class="stat-label" style="cursor:pointer" @click="filters.is_draft='true'; load(true)" title="点击筛选草稿项目">待完善草稿</div>
         <div class="stat-draft-row">
           <span class="stat-value" style="color:#c0392b">{{ stats.draft_count }}</span>
-          <button v-if="auth.canCreate" class="draft-clear-btn" :disabled="promotingDrafts" @click.stop="promoteDrafts" title="把有交付部门的草稿转为正式项目并同步客户（保留应收）">{{ promotingDrafts ? '转正中…' : '草稿转正' }}</button>
+          <button v-if="auth.canArWrite" class="draft-clear-btn" :disabled="promotingDrafts" @click.stop="promoteDrafts" title="把有交付部门的草稿转为正式项目并同步客户（保留应收）">{{ promotingDrafts ? '转正中…' : '草稿转正' }}</button>
         </div>
       </div>
       <div class="stat-pill stat-pill-mom">
@@ -419,7 +419,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" :disabled="importing" />
         </label>
         <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">↓ 导出</button>
-        <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增项目</button>
+        <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate">+ 新增项目</button>
       </div>
     </div>
 
@@ -524,7 +524,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <div v-if="item.short_name" class="short-name">{{ item.short_name }}</div>
               </td>
               <td class="ctr">
-                <select v-if="auth.canCreate" v-model="item.status" class="proj-st-sel" :class="statusClass(item.status)" @change="changeStatus(item)">
+                <select v-if="auth.canArWrite" v-model="item.status" class="proj-st-sel" :class="statusClass(item.status)" @change="changeStatus(item)">
                   <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
                 </select>
                 <span v-else class="st-pill" :class="statusClass(item.status)">{{ item.status }}</span>
@@ -554,7 +554,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <td v-if="show('p_notes')" class="text-muted text-sm">{{ item.notes || '—' }}</td>
               <td class="ctr">
                 <div class="row-actions">
-                  <button v-if="item.is_draft && auth.canCreate" class="icon-btn icon-btn-complete" @click="completeDraft(item)" title="补充完善草稿项目">完善</button>
+                  <button v-if="item.is_draft && auth.canArWrite" class="icon-btn icon-btn-complete" @click="completeDraft(item)" title="补充完善草稿项目">完善</button>
                   <button class="icon-btn" @click="openEdit(item)" title="编辑">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                   </button>

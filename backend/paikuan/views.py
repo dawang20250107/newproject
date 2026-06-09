@@ -255,11 +255,12 @@ def default_job_config(job):
                 'can_create': True, 'can_delete': False, 'ar_shared_only': False,
                 **_cw_readonly}
     if job == 'settlement_accountant':
-        # 结算会计：聚焦应收/对账/开票，付款条数据只读
+        # 结算会计：聚焦应收/对账/开票，可编辑应收主数据；付款条数据只读
         edit = {k: False for k in FIELD_KEYS}
         return {'pages': pages_all, 'view': _all_fields(True),
                 'edit': edit, 'ar_view': _all_ar_fields(True),
-                'can_create': False, 'can_delete': False, 'ar_shared_only': False,
+                'can_create': False, 'can_delete': False, 'ar_can_create': True,
+                'ar_shared_only': False,
                 **_cw_readonly}
     if job == 'sales_bp':
         # 销售BP：仅可见共享业务，AR 只读，无付款操作

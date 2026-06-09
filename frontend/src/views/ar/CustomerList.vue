@@ -173,11 +173,11 @@ onMounted(() => load(true))
         <div class="sub">客户 · 绑定项目与应收 — 列表即看板，未收 / 逾期一目了然；点客户看其全部项目损益与回款</div>
       </div>
       <div class="topbar-actions">
-        <button v-if="auth.canCreate" class="btn btn-sm" :disabled="syncing" @click="syncFromProjects"
+        <button v-if="auth.canArWrite" class="btn btn-sm" :disabled="syncing" @click="syncFromProjects"
                 title="把项目台账里有客户名称、但还没建客户的项目，自动补建客户并挂接">
           {{ syncing ? '同步中…' : '⟳ 同步项目客户' }}
         </button>
-        <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增客户</button>
+        <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate">+ 新增客户</button>
       </div>
     </div>
 
@@ -276,7 +276,7 @@ onMounted(() => load(true))
                 </div>
               </div>
               <div class="dw-head-actions">
-                <button v-if="auth.canCreate && detail" class="btn btn-sm" @click="openEditFromDetail">编辑</button>
+                <button v-if="auth.canArWrite && detail" class="btn btn-sm" @click="openEditFromDetail">编辑</button>
                 <button class="dw-close" @click="closeDrawer">✕</button>
               </div>
             </div>
@@ -303,7 +303,7 @@ onMounted(() => load(true))
                   <tr v-for="p in detail.projects" :key="p.id" class="proj-row">
                     <td class="l" @click="pnlName = p.short_name || p.customer_name">{{ p.short_name || p.customer_name }}<span class="drill">损益 ›</span></td>
                     <td class="ctr" @click.stop>
-                      <select v-if="auth.canCreate" v-model="p.status" class="proj-st-sel" :class="statusClass(p.status)" @change="changeProjStatus(p)">
+                      <select v-if="auth.canArWrite" v-model="p.status" class="proj-st-sel" :class="statusClass(p.status)" @change="changeProjStatus(p)">
                         <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
                       </select>
                       <span v-else class="st-pill" :class="statusClass(p.status)">{{ p.status }}</span>

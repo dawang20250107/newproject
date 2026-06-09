@@ -350,7 +350,8 @@ def _page_denied(request, page_key):
 
 def _write_denied(request):
     perms = get_request_perms(request)
-    if perms is not None and not perms.get('can_create', False):
+    # AR 写入：优先看 ar_can_create（结算会计等聚焦应收的岗位），回退到通用 can_create。
+    if perms is not None and not (perms.get('ar_can_create') or perms.get('can_create', False)):
         return err('无写入权限', 403, 403)
     return None
 

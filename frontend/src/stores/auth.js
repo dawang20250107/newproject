@@ -41,6 +41,9 @@ export const useAuthStore = defineStore('auth', () => {
     return perms.value?.ar_view?.[fieldKey] !== false
   }
   const canCreate = computed(() => isAdmin.value || perms.value?.can_create === true)
+  // AR (应收) 写入能力：含 ar_can_create（结算会计等），回退通用 can_create
+  const canArWrite = computed(() => isAdmin.value ||
+    perms.value?.ar_can_create === true || perms.value?.can_create === true)
   const canDelete = computed(() => isAdmin.value || perms.value?.can_delete === true)
   // any write capability (used to show the edit button at all)
   const canWrite = computed(() => isAdmin.value || perms.value?.can_create === true ||
@@ -121,7 +124,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     token, user, perms, isLoggedIn, role, isSuperAdmin, isAdmin,
-    canView, canEdit, canPage, canArView, canCreate, canDelete, canWrite,
+    canView, canEdit, canPage, canArView, canCreate, canArWrite, canDelete, canWrite,
     activeDepts, allowedDepts, effectiveDepts, isDeptScoped, setActiveDepts,
     login, register, logout, setAuth, setPerms, refresh,
   }
