@@ -5615,16 +5615,29 @@ def customers(request):
     """GET  /ar/customers   — 分页列表（with_stats=1 附带应收聚合）
     POST /ar/customers   — 新增客户
     """
-    # 认证已由 @pk_required() 保证；部门隔离由下方 dept 过滤 / _write_denied 处理。
-    # （历史遗留的 'dept_admin'/'user' 并非真实角色，会误伤所有非超管用户）
+    # 客户管理隶属「项目台账」模块，与合同接口一致按 ar_projects 页面权限把关。
+    # 认证由 @pk_required() 保证；部门隔离由下方 dept 过滤 / 写入由 _write_denied 处理。
+    denied = _page_denied(request, 'ar_projects')
+    if denied:
+        return denied
 
     if request.method == 'GET':
         from django.db.models.functions import Coalesce
+        from django.db.models import Exists, OuterRef
         today = datetime.date.today()
         qs = Customer.objects.all()
         # 客户按事业部隔离：非超管只看自己有权部门的客户（含无部门的历史孤儿）
         if request.pk_role != 'super_admin' and request.pk_depts:
             qs = qs.filter(delivery_dept__in=request.pk_depts)
+        # 共享业务岗位（ar_shared_only，如销售BP）：仅纳入有共享项目的客户，
+        # 且其应收聚合仅统计共享项目，避免经客户视图泄露自营业务财务。
+        shared_only = False
+        if request.pk_role != 'super_admin':
+            _perms = get_request_perms(request)
+            shared_only = bool(_perms and _perms.get('ar_shared_only'))
+        if shared_only:
+            qs = qs.filter(Exists(
+                ARProject.objects.filter(customer_id=OuterRef('pk'), is_shared=True)))
         q = request.GET.get('q', '').strip()
         if q:
             qs = qs.filter(Q(name__icontains=q) | Q(contact__icontains=q) | Q(notes__icontains=q))
@@ -5640,15 +5653,23 @@ def customers(request):
             qs = qs.filter(delivery_dept=dept)
 
         # 数据库级聚合应收（客户已按事业部隔离 → 其全部应收即本部门，无需逐条过滤部门）
-        _money = lambda **kw: Coalesce(Sum('projects__ar_records__outstanding_amount', **kw),
-                                       Value(0), output_field=DecimalField())
+        # shared_only 岗位：所有计数/求和叠加「项目为共享业务」过滤。
+        _base = Q(projects__is_shared=True) if shared_only else None
+        def _money(extra=None):
+            f = _base
+            if extra is not None:
+                f = (f & extra) if f is not None else extra
+            kw = {'filter': f} if f is not None else {}
+            return Coalesce(Sum('projects__ar_records__outstanding_amount', **kw),
+                            Value(0), output_field=DecimalField())
+        _inv_kw = {'filter': _base} if _base is not None else {}
         qs = qs.annotate(
-            s_project_count=Count('projects', distinct=True),
-            s_invoiced=Coalesce(Sum('projects__ar_records__actual_invoice_amount'),
+            s_project_count=Count('projects', filter=_base, distinct=True),
+            s_invoiced=Coalesce(Sum('projects__ar_records__actual_invoice_amount', **_inv_kw),
                                 Value(0), output_field=DecimalField()),
             s_outstanding=_money(),
-            s_overdue=_money(filter=Q(projects__ar_records__due_date__lt=today,
-                                      projects__ar_records__outstanding_amount__gt=0)),
+            s_overdue=_money(Q(projects__ar_records__due_date__lt=today,
+                              projects__ar_records__outstanding_amount__gt=0)),
         )
 
         # 数据库级排序：跨所有分页生效，不再分页时临时算
@@ -5726,12 +5747,12 @@ def customers_bulk_tag_level(request):
       all=true 时对当前筛选全集（搜索 q + 当前等级 level_filter）打标，限 5000 条。
     level 传空字符串 = 清空等级（取消分级）。
     """
-    denied = _write_denied(request)
+    denied = _page_denied(request, 'ar_projects') or _write_denied(request)
     if denied:
         return denied
     if request.method != 'POST':
         return err('POST only', 405)
-    # 认证已由 @pk_required() 保证；部门隔离由下方 dept 过滤 / _write_denied 处理。
+    # 部门隔离由下方 dept 过滤处理。
     # （历史遗留的 'dept_admin'/'user' 并非真实角色，会误伤所有非超管用户）
 
     data = _parse_body(request)
@@ -5822,12 +5843,12 @@ def customers_sync_from_projects(request):
     一个客户对应多个项目（不合并金额、不动应收）。幂等：重复点击安全。
     部门权限：仅同步当前用户有权部门的项目。
     """
-    denied = _write_denied(request)
+    denied = _page_denied(request, 'ar_projects') or _write_denied(request)
     if denied:
         return denied
     if request.method != 'POST':
         return err('POST only', 405)
-    # 认证已由 @pk_required() 保证；部门隔离由下方 dept 过滤 / _write_denied 处理。
+    # 部门隔离由下方 dept 过滤处理。
     # （历史遗留的 'dept_admin'/'user' 并非真实角色，会误伤所有非超管用户）
 
     qs = _ar_dept_filter(
@@ -5875,6 +5896,9 @@ def customers_sync_from_projects(request):
 @pk_required()
 def customer_detail(request, pk):
     """GET /PUT /DELETE  /ar/customers/<pk>"""
+    denied = _page_denied(request, 'ar_projects')
+    if denied:
+        return denied
     try:
         c = Customer.objects.get(pk=pk)
     except Customer.DoesNotExist:
@@ -5887,9 +5911,10 @@ def customer_detail(request, pk):
     if request.method == 'GET':
         d = c.to_dict()
         today = datetime.date.today()
-        # 该客户的项目 + 每个项目的应收聚合（部门作用域）
+        # 该客户的项目 + 每个项目的应收聚合（部门作用域；ar_shared_only 仅见共享业务）
         proj_qs = _ar_dept_filter(
-            ARProject.objects.filter(customer_id=pk), request).order_by('short_name')
+            ARProject.objects.filter(customer_id=pk), request,
+            shared_field='is_shared').order_by('short_name')
         proj_ids = [p.id for p in proj_qs]
         rec_qs = _ar_dept_filter(
             ARRecord.objects.filter(project_id__in=proj_ids), request)
