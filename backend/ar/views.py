@@ -645,12 +645,23 @@ def project_detail(request, pk):
             proj.is_draft = bool(data['is_draft'])
         if 'customer_id' in data:
             cid = data.get('customer_id')
+            orig_cid = proj.customer_id   # 进入本分支前尚未改动，即数据库原值
+            typed = (data.get('customer_name') or '').strip() if 'customer_name' in data else None
             if cid:
                 try:
-                    cust = Customer.objects.get(pk=int(cid))
-                    proj.customer = cust
-                    # 显式挂客户 → 文本字段跟随该客户名，保持文本=实体一致
-                    proj.customer_name = cust.name
+                    new_cid = int(cid)
+                    cust = Customer.objects.get(pk=new_cid)
+                    if new_cid != orig_cid:
+                        # 用户在「关联客户」里改选了不同的客户实体 → 以实体为准
+                        proj.customer = cust
+                        proj.customer_name = cust.name
+                    elif typed and typed != cust.name:
+                        # 关联客户未变但修改了客户名称文本 → 以文本为准，
+                        # 置空实体由 save() 的 _autolink_customer 按新名称(+部门)重新挂接
+                        proj.customer = None
+                    else:
+                        proj.customer = cust
+                        proj.customer_name = cust.name
                 except (Customer.DoesNotExist, ValueError, TypeError):
                     pass
             else:
