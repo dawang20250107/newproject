@@ -12,8 +12,10 @@ const transfers = ref([])
 const expandedDept = ref('')
 const cardRefs = {}
 
-// 悲观口径开关：已批待排的管道支出按30天内全部变刚性计入预判
+// 审慎口径开关：已批待排的在途支出与待批调拨出款，按30天内全部付出计入预测
 const pessimistic = ref(false)
+// 余额构成与预测的口径说明
+const showMethodology = ref(false)
 
 const wan = v => {
   const n = parseFloat(v)
@@ -37,7 +39,7 @@ const pools = computed(() => data.value?.pools || [])
 const configured = computed(() => pools.value.filter(p => p.configured))
 const unconfigured = computed(() => pools.value.filter(p => !p.configured))
 
-// ── 连通水域：各池水柱高度按最大水位归一 ────────────────────────────────────
+// ── 余额对比条：各池柱高按最大余额归一 ──────────────────────────────────────
 const maxBalance = computed(() =>
   Math.max(1, ...configured.value.map(p => parseFloat(p.balance) || 0)))
 const colHeight = p => Math.max(6, Math.min(90, (parseFloat(p.balance) || 0) / maxBalance.value * 90))
@@ -46,8 +48,8 @@ const warnTick = p => {
   return w > 0 ? Math.min(100, w / maxBalance.value * 100) : null
 }
 
-// ── 水箱填充：以「警戒线×3」为满箱基准，警戒线天然落在 1/3 高度；
-//    封顶 88% 留出水面波浪的呼吸空间 ──────────────────────────────────────────
+// ── 余额刻度图填充：以「资金预警线×3」为满格基准，预警线天然落在 1/3 高度；
+//    封顶 88% 留出顶部呼吸空间 ──────────────────────────────────────────────
 function fillPct(p) {
   const bal = parseFloat(p.balance)
   const warn = parseFloat(p.warning.amount)
@@ -63,7 +65,7 @@ function projVal(p, key) {
 const projColor = v => (parseFloat(v) < 0 ? '#ff8a80' : '#69f0ae')
 const projColorDark = v => (parseFloat(v) < 0 ? '#c62828' : '#2e7d32')
 
-// ── 预测水位迷你曲线（现在→+30→+60→+90）────────────────────────────────────
+// ── 余额预测迷你曲线（现在→+30→+60→+90）────────────────────────────────────
 function spark(p) {
   const vals = [parseFloat(p.balance), parseFloat(projVal(p, 'd30')),
                 parseFloat(projVal(p, 'd60')), parseFloat(projVal(p, 'd90'))]
@@ -84,23 +86,54 @@ function focusPool(dept) {
   nextTick(() => cardRefs[dept]?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
 }
 
-// ── 池间调拨（超管）────────────────────────────────────────────────────────
+// ── 池间调拨：超管直接生效；事业部用户提交申请，由调出方审批 ────────────────
 const showTransfer = ref(false)
 const trForm = reactive({ from_dept: '', to_dept: '', amount: '', transfer_date: todayCST(), expected_return_date: '', notes: '' })
 const trSaving = ref(false)
+// 事业部用户具备应收写入能力即可发起申请（与后端 _write_denied 口径一致）
+const canRequestTransfer = computed(() => auth.canArWrite && !auth.isSuperAdmin)
+const myDepts = computed(() => auth.user?.departments || [])
+const trStatusLabel = { pending: '待审批', approved: '已生效', rejected: '已拒绝' }
+
 async function saveTransfer() {
   if (!trForm.from_dept || !trForm.to_dept || !(parseFloat(trForm.amount) > 0)) { alert('调出/调入/金额必填'); return }
   trSaving.value = true
   try {
-    await ar.createPoolTransfer({ ...trForm })
+    const res = await ar.createPoolTransfer({ ...trForm })
     showTransfer.value = false
     Object.assign(trForm, { from_dept: '', to_dept: '', amount: '', transfer_date: todayCST(), expected_return_date: '', notes: '' })
+    if (res.data?.status === 'pending') alert('调拨申请已提交，待调出方事业部（或超管）审批后生效')
     await load()
   } catch (e) { alert(e?.msg || '调拨失败') }
   finally { trSaving.value = false }
 }
+
+// 审批权限：超管；或调出方事业部成员（有写入权限）且不是申请发起人本人
+function canReview(t) {
+  if (t.status !== 'pending') return false
+  if (auth.isSuperAdmin) return true
+  return auth.canArWrite && myDepts.value.includes(t.from_dept)
+    && t.created_by_id !== auth.user?.id
+}
+const canCancel = t => t.status === 'pending'
+  && (auth.isSuperAdmin || t.created_by_id === auth.user?.id)
+
+async function approveTransfer(t) {
+  if (!confirm(`批准调拨：${t.from_dept} → ${t.to_dept} ¥${t.amount}？批准后立即生效（生效日=今天），两池余额随之变动。`)) return
+  try { await ar.reviewPoolTransfer(t.id, { action: 'approve' }); await load() }
+  catch (e) { alert(e?.msg || '审批失败') }
+}
+async function rejectTransfer(t) {
+  const notes = prompt(`拒绝调拨申请：${t.from_dept} → ${t.to_dept} ¥${t.amount}\n请填写拒绝原因（将反馈给申请人）：`)
+  if (notes === null) return
+  try { await ar.reviewPoolTransfer(t.id, { action: 'reject', review_notes: notes }); await load() }
+  catch (e) { alert(e?.msg || '审批失败') }
+}
 async function removeTransfer(t) {
-  if (!confirm(`删除调拨记录：${t.from_dept} → ${t.to_dept} ¥${t.amount}？两池水位将回退。`)) return
+  const tip = t.status === 'pending'
+    ? `撤回调拨申请：${t.from_dept} → ${t.to_dept} ¥${t.amount}？`
+    : `删除已生效的调拨记录：${t.from_dept} → ${t.to_dept} ¥${t.amount}？两池账面余额将回退。`
+  if (!confirm(tip)) return
   try { await ar.deletePoolTransfer(t.id); await load() }
   catch (e) { alert(e?.msg || '删除失败') }
 }
@@ -117,19 +150,30 @@ async function openConfig() {
     initial_date: existing[d]?.initial_date || '',
     initial_amount: existing[d]?.initial_amount || '',
     warning_days: existing[d]?.warning_days || 30,
+    warning_amount: existing[d]?.warning_amount || '',
     saved: !!existing[d],
+    origDate: existing[d]?.initial_date || '',
+    origAmount: existing[d]?.initial_amount || '',
   }))
   showConfig.value = true
 }
 async function saveCfgRow(row) {
   if (!row.initial_date) { alert('期初基准日必填'); return }
+  // 修改已生效的期初基准会重算该池自基准日以来的全部历史余额（含历史调拨校验口径）
+  if (row.saved && (row.initial_date !== row.origDate
+      || String(row.initial_amount || 0) !== String(row.origAmount || 0))) {
+    if (!confirm(`「${row.delivery_dept}」已有期初基准（${row.origDate} / ¥${row.origAmount}）。\n修改期初基准日或期初金额将重算该池全部历史余额，历史调拨与预警状态也会随之变化。确认修改？`)) return
+  }
   cfgSaving.value = true
   try {
     await ar.savePoolConfig({
       delivery_dept: row.delivery_dept, initial_date: row.initial_date,
       initial_amount: row.initial_amount || 0, warning_days: row.warning_days,
+      warning_amount: row.warning_amount === '' ? null : row.warning_amount,
     })
     row.saved = true
+    row.origDate = row.initial_date
+    row.origAmount = row.initial_amount
     await load()
   } catch (e) { alert(e?.msg || '保存失败') }
   finally { cfgSaving.value = false }
@@ -146,45 +190,47 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     <div v-else-if="err" class="cp-empty err">{{ err }}</div>
     <template v-else-if="data">
 
-      <!-- ══ 深水总览横幅 ══ -->
+      <!-- ══ 集团资金总览横幅 ══ -->
       <div class="cp-hero">
         <div class="hero-waves"><i class="hw hw1"></i><i class="hw hw2"></i></div>
         <div class="hero-main">
-          <div class="hero-title">💧 资金池<span class="hero-sub">事业部水位调度 · {{ data.today }}</span></div>
+          <div class="hero-title">资金池<span class="hero-sub">事业部资金调度 · {{ data.today }}</span></div>
           <template v-if="data.group">
             <div class="hero-balance">
               <div class="hb-num">{{ wan(data.group.balance) }}</div>
-              <div class="hb-label">集团总水位</div>
+              <div class="hb-label">集团资金余额</div>
             </div>
             <div class="hero-flow">
               <div v-for="(k, i) in ['d30','d60','d90']" :key="k" class="hf-step">
                 <div class="hf-val" :style="`color:${projColor(data.group['projection_' + k])}`">{{ wan(data.group['projection_' + k]) }}</div>
-                <div class="hf-k">+{{ [30,60,90][i] }}天</div>
+                <div class="hf-k">+{{ [30,60,90][i] }}天预测余额</div>
               </div>
               <div class="hf-step pipe">
                 <div class="hf-val">{{ wan(data.group.pipeline_approved) }}<em> / {{ wan(data.group.pipeline_pending) }}</em></div>
-                <div class="hf-k">管道：已批 / 审批中</div>
+                <div class="hf-k">在途支出：已批 / 审批中</div>
               </div>
             </div>
           </template>
-          <div v-else class="hero-balance"><div class="hb-label">尚未配置任何池子</div></div>
+          <div v-else class="hero-balance"><div class="hb-label">尚未配置任何资金池</div></div>
           <div class="hero-actions">
             <span v-if="data.group && (data.group.danger_count || data.group.warn_count)" class="hero-alert">
               <i v-if="data.group.danger_count" class="ha-danger">🚨 {{ data.group.danger_count }}池告急</i>
               <i v-if="data.group.warn_count" class="ha-warn">⚠ {{ data.group.warn_count }}池预警</i>
             </span>
-            <label class="hero-pess" title="勾选后：30天预判按「已批待排的审批在30天内全部付款」的悲观口径计算">
-              <input type="checkbox" v-model="pessimistic" />悲观口径
+            <label class="hero-pess" title="勾选后：30天预测余额按「已批待排的在途支出与待批调拨出款，30天内全部付出」的审慎口径计算">
+              <input type="checkbox" v-model="pessimistic" />审慎口径
             </label>
+            <button class="hero-btn" @click="showMethodology = !showMethodology">ⓘ 口径说明</button>
             <button v-if="auth.isSuperAdmin" class="hero-btn" @click="showTransfer = !showTransfer">⇄ 调拨</button>
+            <button v-else-if="canRequestTransfer" class="hero-btn" @click="showTransfer = !showTransfer">⇄ 申请调拨</button>
             <button v-if="auth.isSuperAdmin" class="hero-btn" @click="openConfig">⚙ 池配置</button>
           </div>
         </div>
 
-        <!-- 连通水域：各池水柱同一水平基准 -->
+        <!-- 余额对比：各池柱形同一基准 -->
         <div v-if="configured.length" class="reservoir">
           <div v-for="p in configured" :key="p.dept" class="rsv-col" @click="focusPool(p.dept)"
-               :title="`${p.dept}：${wan(p.balance)}（点击查看明细）`">
+               :title="`${p.dept}：账面余额 ${wan(p.balance)}（点击查看明细）`">
             <div class="rsv-amt">{{ wan(p.balance) }}</div>
             <div class="rsv-tube">
               <div class="rsv-water" :class="`w-${p.warning.status}`" :style="`height:${colHeight(p)}%`">
@@ -197,6 +243,20 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         </div>
       </div>
 
+      <!-- ══ 口径说明 ══ -->
+      <div v-if="showMethodology" class="cp-method card">
+        <div class="section-title" style="margin-bottom:6px">口径说明（与现金流分析一致）</div>
+        <ul>
+          <li><b>账面余额</b> ＝ 期初金额 ＋ 现金流入 − 现金流出 ± 池间调拨（仅已生效的调拨计入）。</li>
+          <li><b>现金流入</b> ＝ 应收回款 ＋ 预收款。其中<b>预收冲抵</b>（用客户预收款核销应收）不计现金流入——现金在预收入账当天已经计入，冲抵只是账务确认，再计就重复了。</li>
+          <li><b>现金流出</b> ＝ 实付分期 ＋ 预付款 − <b>预付冲抵</b>（用预付余额抵减正式付款）。现金在预付发生当天已经流出，核销冲抵当天没有新的现金事件，不再重复计。</li>
+          <li><b>刚性待付</b> ＝ 付款台账中已审批待付的余额（计划金额 − 已付 − 预付冲抵），按计划付款日分 30/60/90 天窗口。</li>
+          <li><b>在途支出</b> ＝ 审批记录中「已批待排 / 审批中」的金额 ＋ 待审批的调拨出款申请。尚未排款，金额与时点存在不确定性。</li>
+          <li><b>资金预警线</b> ＝ 超管手动设定的最低安全余额；未设定时按「未来 N 天刚性待付（含逾期未付）」动态推算。余额低于预警线即「告急」。</li>
+          <li><b>预测余额</b> ＝ 当前余额 ＋ 预期回款（按到期日分窗）− 刚性待付。审慎口径再扣除在途支出与待批调拨出款。</li>
+        </ul>
+      </div>
+
       <!-- ══ 池子卡片 ══ -->
       <div class="cp-grid">
         <div v-for="p in configured" :key="p.dept" class="cp-card" :class="`st-${p.warning.status}`"
@@ -207,19 +267,23 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           </div>
 
           <div class="cpc-body">
-            <!-- 玻璃水箱 -->
-            <div class="tank" :title="`警戒线 ${wan(p.warning.amount)}（未来${p.config.warning_days}天刚性流出）`">
+            <!-- 余额刻度图 -->
+            <div class="tank" :title="p.warning.mode === 'fixed'
+                   ? `资金预警线 ${wan(p.warning.amount)}（手动设定的最低安全余额）`
+                   : `资金预警线 ${wan(p.warning.amount)}（未来${p.config.warning_days}天刚性待付推算）`">
               <div class="tank-glass"></div>
               <div class="tank-water" :class="`w-${p.warning.status}`" :style="`height:${fillPct(p)}%`">
                 <i class="tank-wave"></i><i class="tank-wave wave2"></i>
               </div>
-              <i v-if="parseFloat(p.warning.amount) > 0" class="tank-warnline"><b>警戒</b></i>
+              <i v-if="parseFloat(p.warning.amount) > 0" class="tank-warnline"><b>预警</b></i>
             </div>
 
             <div class="cpc-nums">
-              <div class="cpc-balance">{{ wan(p.balance) }}</div>
-              <div class="cpc-warn">警戒线 {{ wan(p.warning.amount) }} <em>· {{ p.config.warning_days }}天刚性</em></div>
-              <!-- 预测水位走势 -->
+              <div class="cpc-balance" :class="{ neg: parseFloat(p.balance) < 0 }">{{ wan(p.balance) }}</div>
+              <div v-if="parseFloat(p.balance) < 0" class="cpc-negtip">账面余额为负——请核对期初基准与收支流水是否完整</div>
+              <div class="cpc-warn">资金预警线 {{ wan(p.warning.amount) }}
+                <em>· {{ p.warning.mode === 'fixed' ? '手动设定' : p.config.warning_days + '天刚性待付' }}</em></div>
+              <!-- 余额预测走势 -->
               <svg class="cpc-spark" :viewBox="`0 0 ${spark(p).W} ${spark(p).H}`" :style="`width:${spark(p).W}px;height:${spark(p).H}px`">
                 <line v-if="spark(p).zero != null" x1="6" :y1="spark(p).zero" :x2="spark(p).W - 4" :y2="spark(p).zero"
                       stroke="#c62828" stroke-width="1" stroke-dasharray="3,3" opacity=".6" />
@@ -228,83 +292,95 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <circle v-for="(pt, i) in spark(p).pts" :key="i" :cx="pt[0]" :cy="pt[1]" r="2.6"
                         :fill="spark(p).danger ? '#c62828' : '#1565c0'" />
               </svg>
-              <div class="cpc-spark-labels"><i>现在</i><i>+30</i><i>+60</i><i :title="pessimistic ? '30天含管道悲观口径' : ''">+90</i></div>
+              <div class="cpc-spark-labels"><i>现在</i><i>+30</i><i>+60</i><i :title="pessimistic ? '30天为审慎口径（含在途支出）' : ''">+90</i></div>
             </div>
           </div>
 
           <!-- 健康指标条（固定三格，缺数据显示 — 保持排版稳定） -->
           <div class="cpc-vitals">
-            <div class="vital" title="按近90天日均流出，现水位可支撑的天数（近90天无流出时为 ∞）">
-              <b>{{ p.health.runway_days != null ? p.health.runway_days + '天' : '∞' }}</b><i>水位支撑</i>
+            <div class="vital" title="按近90天日均流出，现有余额可支撑的天数（近90天无流出时为 ∞）">
+              <b>{{ p.health.runway_days != null ? p.health.runway_days + '天' : '∞' }}</b><i>余额支撑</i>
             </div>
-            <div class="vital" title="近90天 流入/流出（>100% 为造血池）"
+            <div class="vital" title="近90天 流入/流出（>100% 为净流入部门）"
                  :class="p.health.self_rate == null ? '' : (p.health.self_rate >= 100 ? 'good' : 'bad')">
               <b>{{ p.health.self_rate != null ? p.health.self_rate + '%' : '—' }}</b><i>自给率</i>
             </div>
-            <div class="vital" :title="`+30天预测水位${pessimistic ? '（悲观口径）' : ''}`"
+            <div class="vital" :title="`+30天预测余额${pessimistic ? '（审慎口径）' : ''}`"
                  :class="parseFloat(projVal(p, 'd30')) >= 0 ? 'good' : 'bad'">
-              <b>{{ wan(projVal(p, 'd30')) }}</b><i>+30天水位</i>
+              <b>{{ wan(projVal(p, 'd30')) }}</b><i>+30天余额</i>
             </div>
           </div>
 
           <button class="cpc-expand" @click="expandedDept = expandedDept === p.dept ? '' : p.dept">
-            {{ expandedDept === p.dept ? '收起明细 ▲' : '进出水明细 ▼' }}
+            {{ expandedDept === p.dept ? '收起明细 ▲' : '收支构成明细 ▼' }}
           </button>
           <Transition name="cpd">
             <div v-if="expandedDept === p.dept" class="cpc-detail">
               <div class="cpd-row"><i>期初（{{ p.config.initial_date }}）</i><b>{{ wan(p.parts.initial) }}</b></div>
               <div class="cpd-row in"><i>＋ 回款</i><b>{{ wan(p.parts.collected) }}</b></div>
-              <div class="cpd-row in"><i>＋ 预收</i><b>{{ wan(p.parts.advance_received) }}</b></div>
-              <div class="cpd-row out"><i>− 实付（已扣预付核销）</i><b>{{ wan(p.parts.paid) }}</b></div>
-              <div class="cpd-row out"><i>− 预付</i><b>{{ wan(p.parts.advance_paid) }}</b></div>
+              <div class="cpd-row in"><i>＋ 预收款</i><b>{{ wan(p.parts.advance_received) }}</b></div>
+              <div class="cpd-row out"><i>− 实付（已扣预付冲抵）</i><b>{{ wan(p.parts.paid) }}</b></div>
+              <div class="cpd-row out"><i>− 预付款</i><b>{{ wan(p.parts.advance_paid) }}</b></div>
               <div class="cpd-row" v-if="parseFloat(p.parts.transfer_in) || parseFloat(p.parts.transfer_out)">
-                <i>± 调拨</i><b>+{{ wan(p.parts.transfer_in) }} / −{{ wan(p.parts.transfer_out) }}</b></div>
+                <i>± 调拨（已生效）</i><b>+{{ wan(p.parts.transfer_in) }} / −{{ wan(p.parts.transfer_out) }}</b></div>
               <div class="cpd-sep"></div>
               <div class="cpd-row out"><i>刚性待付：已到期</i><b style="color:#c62828">{{ wan(p.committed.overdue) }}</b></div>
               <div class="cpd-row out"><i>刚性待付：30/60/90天</i><b>{{ wan(p.committed.d30) }} / {{ wan(p.committed.d60) }} / {{ wan(p.committed.d90) }}</b></div>
-              <div class="cpd-row"><i>管道：已批待排 / 审批中</i><b>{{ wan(p.pipeline.approved) }} / {{ wan(p.pipeline.pending) }}</b></div>
+              <div class="cpd-row"><i>在途支出：已批待排 / 审批中</i><b>{{ wan(p.pipeline.approved) }} / {{ wan(p.pipeline.pending) }}</b></div>
+              <div class="cpd-row out" v-if="parseFloat(p.pipeline.transfer_out_pending)">
+                <i>待批调拨出款申请</i><b style="color:#e65100">{{ wan(p.pipeline.transfer_out_pending) }}</b></div>
               <div class="cpd-row in"><i>预期回款：30/60/90天</i><b>{{ wan(p.expected_in.d30) }} / {{ wan(p.expected_in.d60) }} / {{ wan(p.expected_in.d90) }}</b></div>
-              <div class="cpd-row"><i>逾期在外（催回即进水）</i><b style="color:#e65100">{{ wan(p.expected_in.overdue_outstanding) }}</b></div>
+              <div class="cpd-row"><i>逾期应收在外（催回即流入）</i><b style="color:#e65100">{{ wan(p.expected_in.overdue_outstanding) }}</b></div>
             </div>
           </Transition>
         </div>
 
-        <!-- 未配置的池：干涸池 -->
+        <!-- 未配置的池 -->
         <div v-for="p in unconfigured" :key="p.dept" class="cp-card st-none">
           <div class="cpc-dept">{{ p.dept }}</div>
           <div class="cpc-unconfigured">
-            <div class="dry">🏜</div>未配置期初基准
-            <button v-if="auth.isSuperAdmin" class="cp-btn" style="margin-top:8px" @click="openConfig">注水（去配置）</button>
+            未配置期初基准，暂无法核算余额
+            <button v-if="auth.isSuperAdmin" class="cp-btn" style="margin-top:8px" @click="openConfig">配置期初基准</button>
           </div>
         </div>
       </div>
 
-      <!-- ══ 调拨表单 + 流水 ══ -->
-      <div v-if="showTransfer && auth.isSuperAdmin" class="cp-transfer-form">
-        <select v-model="trForm.from_dept" class="cp-sel"><option value="">调出池</option>
+      <!-- ══ 调拨表单 + 台账 ══ -->
+      <div v-if="showTransfer && (auth.isSuperAdmin || canRequestTransfer)" class="cp-transfer-form">
+        <select v-model="trForm.from_dept" class="cp-sel"><option value="">调出方</option>
           <option v-for="p in configured" :key="p.dept" :value="p.dept">{{ p.dept }}（{{ wan(p.balance) }}）</option></select>
         <span class="tr-arrow">→</span>
-        <select v-model="trForm.to_dept" class="cp-sel"><option value="">调入池</option>
+        <select v-model="trForm.to_dept" class="cp-sel"><option value="">调入方</option>
           <option v-for="p in configured" :key="p.dept" :value="p.dept">{{ p.dept }}</option></select>
-        <input v-model="trForm.amount" type="number" min="0" placeholder="金额" class="cp-inp" style="width:120px" />
-        <input v-model="trForm.transfer_date" type="date" class="cp-inp" />
+        <input v-model="trForm.amount" type="number" min="0" placeholder="金额(元)" class="cp-inp" style="width:120px" />
+        <input v-if="auth.isSuperAdmin" v-model="trForm.transfer_date" type="date" class="cp-inp" title="调拨日期（实际发生日）" />
         <input v-model="trForm.expected_return_date" type="date" class="cp-inp" title="约定归还日（可选）" />
         <input v-model="trForm.notes" placeholder="备注（如：拆借月息0.3%）" class="cp-inp" style="flex:1" />
-        <button class="cp-btn primary" :disabled="trSaving" @click="saveTransfer">{{ trSaving ? '调拨中…' : '确认调拨' }}</button>
+        <button class="cp-btn primary" :disabled="trSaving" @click="saveTransfer">
+          {{ trSaving ? '提交中…' : (auth.isSuperAdmin ? '确认调拨' : '提交申请') }}</button>
+        <div v-if="!auth.isSuperAdmin" class="tr-hint">申请须经调出方事业部（或超管）审批后生效；生效日以审批日为准</div>
       </div>
 
       <div v-if="transfers.length" class="card cp-tr-card">
-        <div class="section-title" style="margin-bottom:8px">⇄ 池间调拨流水（内部拆借台账）</div>
+        <div class="section-title" style="margin-bottom:8px">⇄ 池间调拨台账（内部拆借）</div>
         <div class="tr-list">
-          <div v-for="t in transfers" :key="t.id" class="tr-item">
+          <div v-for="t in transfers" :key="t.id" class="tr-item" :class="`trs-${t.status}`">
             <span class="tr-date">{{ t.transfer_date }}</span>
+            <span class="tr-status" :class="`ts-${t.status}`">{{ trStatusLabel[t.status] || t.status }}</span>
             <span class="tr-route"><b>{{ t.from_dept.replace('事业部','') }}</b><i class="tr-pipe">— {{ wan(t.amount) }} →</i><b>{{ t.to_dept.replace('事业部','') }}</b></span>
             <span class="tr-meta">
               <em v-if="t.expected_return_date">约定归还 {{ t.expected_return_date }}</em>
               <em v-if="t.notes">{{ t.notes }}</em>
-              <em v-if="t.created_by_name">经办 {{ t.created_by_name }}</em>
+              <em v-if="t.created_by_name">申请 {{ t.created_by_name }}</em>
+              <em v-if="t.reviewed_by_name">审批 {{ t.reviewed_by_name }}</em>
+              <em v-if="t.status === 'rejected' && t.review_notes" class="tr-reject">拒因：{{ t.review_notes }}</em>
             </span>
-            <button v-if="auth.isSuperAdmin" class="cp-del" @click="removeTransfer(t)">删</button>
+            <template v-if="canReview(t)">
+              <button class="cp-ok" @click="approveTransfer(t)">批准</button>
+              <button class="cp-del" @click="rejectTransfer(t)">拒绝</button>
+            </template>
+            <button v-if="canCancel(t) && !canReview(t)" class="cp-del" @click="removeTransfer(t)">撤回</button>
+            <button v-else-if="auth.isSuperAdmin && t.status !== 'pending'" class="cp-del" @click="removeTransfer(t)">删</button>
           </div>
         </div>
       </div>
@@ -313,19 +389,23 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     <!-- 池配置弹窗（超管） -->
     <div v-if="showConfig" class="cp-modal-mask" @click.self="showConfig = false">
       <div class="cp-modal">
-        <div class="cp-modal-title">池配置 — 期初基准（该日终账面资金；之后流水推算水位）</div>
+        <div class="cp-modal-title">池配置 — 期初基准（该日终账面资金；之后按收支流水推算余额）</div>
         <table class="cp-table">
-          <thead><tr><th>事业部</th><th>期初基准日</th><th>期初金额(元)</th><th>警戒窗口(天)</th><th></th></tr></thead>
+          <thead><tr><th>事业部</th><th>期初基准日</th><th>期初金额(元)</th>
+            <th title="手动设定的最低安全余额；留空则按预警窗口天数的刚性待付动态推算">资金预警线(元,可选)</th>
+            <th title="未设固定预警线时：预警线 = 未来N天刚性待付">预警窗口(天)</th><th></th></tr></thead>
           <tbody>
             <tr v-for="row in cfgRows" :key="row.delivery_dept">
               <td><b>{{ row.delivery_dept }}</b> <span v-if="row.saved" style="color:#2e7d32">✓</span></td>
               <td><input v-model="row.initial_date" type="date" class="cp-inp" /></td>
-              <td><input v-model="row.initial_amount" type="number" class="cp-inp" style="width:140px" /></td>
-              <td><input v-model.number="row.warning_days" type="number" min="7" max="120" class="cp-inp" style="width:70px" /></td>
+              <td><input v-model="row.initial_amount" type="number" class="cp-inp" style="width:120px" /></td>
+              <td><input v-model="row.warning_amount" type="number" min="0" placeholder="留空=按天数推算" class="cp-inp" style="width:130px" /></td>
+              <td><input v-model.number="row.warning_days" type="number" min="7" max="120" class="cp-inp" style="width:64px" /></td>
               <td><button class="cp-btn primary" :disabled="cfgSaving" @click="saveCfgRow(row)">保存</button></td>
             </tr>
           </tbody>
         </table>
+        <div class="cp-cfg-note">修改已有池子的期初基准日/期初金额，会重算该池自基准日以来的全部历史余额。</div>
         <div style="text-align:right;margin-top:10px"><button class="cp-btn" @click="showConfig = false">关闭</button></div>
       </div>
     </div>
@@ -423,6 +503,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
 .cpc-nums { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 3px; min-width: 0; }
 .cpc-balance { font-size: 26px; font-weight: 800; color: #2d2010; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.cpc-balance.neg { color: #c62828; }
+.cpc-negtip { font-size: 10.5px; color: #c62828; background: rgba(198,40,40,.07); border-radius: 6px; padding: 2px 7px; }
 .cpc-warn { font-size: 11px; color: #e65100; }
 .cpc-warn em { font-style: normal; color: #9b8070; }
 .cpc-spark { margin-top: 6px; display: block; }
@@ -462,7 +544,21 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .tr-pipe { font-style: normal; font-weight: 600; font-size: 12px; color: #1565c0; background: rgba(21,101,192,.08); padding: 2px 10px; border-radius: 10px; }
 .tr-meta { display: flex; gap: 12px; color: #9b8070; flex: 1; min-width: 0; flex-wrap: wrap; }
 .tr-meta em { font-style: normal; }
+.tr-meta .tr-reject { color: #c62828; }
+.tr-status { font-style: normal; font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 9px; flex-shrink: 0; }
+.ts-pending { background: rgba(230,81,0,.12); color: #e65100; }
+.ts-approved { background: rgba(46,125,50,.12); color: #2e7d32; }
+.ts-rejected { background: rgba(120,120,120,.13); color: #757575; }
+.tr-item.trs-rejected .tr-route, .tr-item.trs-rejected .tr-pipe { opacity: .55; }
+.tr-item.trs-pending { background: #fff8f0; border: 1px dashed rgba(230,81,0,.35); }
+.tr-hint { width: 100%; font-size: 11px; color: #9b8070; }
+.cp-ok { border: 1px solid rgba(46,125,50,.45); color: #2e7d32; background: none; border-radius: 6px; padding: 2px 8px; font-size: 11px; cursor: pointer; }
 .cp-del { border: 1px solid rgba(198,40,40,.4); color: #c62828; background: none; border-radius: 6px; padding: 2px 8px; font-size: 11px; cursor: pointer; }
+.cp-method { margin-bottom: 14px; padding: 12px 16px; }
+.cp-method ul { margin: 0; padding-left: 18px; }
+.cp-method li { font-size: 12px; color: #6b5a4a; line-height: 1.9; }
+.cp-method li b { color: #4a3728; }
+.cp-cfg-note { margin-top: 8px; font-size: 11px; color: #e65100; }
 
 .cp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .cp-table th { background: #f3ede6; color: #6b5a4a; padding: 7px 10px; font-weight: 600; text-align: left; white-space: nowrap; }

@@ -6744,7 +6744,7 @@ def analytics_target_decomp(request):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 资金池 (cash pool) — 每事业部一池：期初 + 流水推算水位，刚性/管道流出做预判
+# 资金池 (cash pool) — 每事业部一池：期初 + 收支流水推算账面余额，刚性/在途流出做预判
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _pool_visible_depts(request):
@@ -6780,25 +6780,34 @@ def _pool_actual_flows(dept, start, end):
     prepaid_offset = _dec(AdvanceWriteoff.objects.filter(
         payment__department=dept,
         writeoff_date__gt=start, writeoff_date__lte=end).aggregate(s=Sum('amount'))['s'])
+    # 调拨：只有已生效（approved）的才是真实现金事件；待审批/已拒绝不动余额
     t_in = _dec(CashPoolTransfer.objects.filter(
-        to_dept=dept, transfer_date__gt=start, transfer_date__lte=end)
+        to_dept=dept, status='approved',
+        transfer_date__gt=start, transfer_date__lte=end)
         .aggregate(s=Sum('amount'))['s'])
     t_out = _dec(CashPoolTransfer.objects.filter(
-        from_dept=dept, transfer_date__gt=start, transfer_date__lte=end)
+        from_dept=dept, status='approved',
+        transfer_date__gt=start, transfer_date__lte=end)
         .aggregate(s=Sum('amount'))['s'])
     return (collected, adv_map.get('预收', Decimal('0')), paid, prepaid_offset,
             adv_map.get('预付', Decimal('0')), t_in, t_out)
 
 
+def _pool_balance(dept, cfg, today):
+    """池子当前账面余额 = 期初 + (期初日, 今天] 的净现金流。"""
+    c, ar_, p, po, ap, ti, to_ = _pool_actual_flows(dept, cfg.initial_date, today)
+    return cfg.initial_amount + c + ar_ - (p - po) - ap + ti - to_
+
+
 def _pool_metrics(dept, cfg, today):
-    """单个池子的全部指标：水位、警戒线、刚性/管道流出、预期流入、未来水位预判。"""
+    """单个池子的全部指标：账面余额、资金预警线、刚性/在途流出、预期流入、余额预测。"""
     start = cfg.initial_date
 
     c, ar_, p, po, ap, ti, to_ = _pool_actual_flows(dept, start, today)
     balance = (cfg.initial_amount + c + ar_ - (p - po) - ap + ti - to_)
 
     # ── 刚性流出：付款台账已审批待付（remaining>0），按计划日期分窗。
-    #    已用预付核销冲抵的部分不再需要现金，故一并扣除（与水位口径对称）─────────
+    #    已用预付核销冲抵的部分不再需要现金，故一并扣除（与余额口径对称）─────────
     pay_qs = (Payment.objects.filter(department=dept)
               .annotate(paid_sum=Coalesce(Sum('installments__pay_amount'),
                                           Value(0), output_field=DecimalField()))
@@ -6817,12 +6826,15 @@ def _pool_metrics(dept, cfg, today):
     }
     committed['total'] = sum(committed.values())
 
-    # ── 管道流出：审批记录（未排款）。已批待排=大概率近期变刚性；审批中=不确定 ──
+    # ── 在途流出：审批记录（未排款）。已批待排=大概率近期变刚性；审批中=不确定。
+    #    另含待审批的调拨出款申请——批准即出账，不计会高估可用余额 ─────────────
     pipe = (ApprovalRecord.objects.filter(department=dept, archived=False)
             .values('status').annotate(s=Sum('amount')))
     pipe_map = {r['status']: _dec(r['s']) for r in pipe}
     pipeline = {'approved': pipe_map.get('approved', Decimal('0')),
-                'pending': pipe_map.get('pending', Decimal('0'))}
+                'pending': pipe_map.get('pending', Decimal('0')),
+                'transfer_out_pending': _dec(CashPoolTransfer.objects.filter(
+                    from_dept=dept, status='pending').aggregate(s=Sum('amount'))['s'])}
 
     # ── 预期流入：未结清应收按到期日分窗；已逾期的单列（不计入预判，视作上行空间）──
     ar_qs = ARRecord.objects.filter(delivery_dept=dept, outstanding_amount__gt=0)
@@ -6838,21 +6850,28 @@ def _pool_metrics(dept, cfg, today):
                                     .aggregate(s=Sum('outstanding_amount'))['s']),
     }
 
-    # ── 水位预判：现水位 + 预期流入 − 刚性流出（逾期刚性视作立即要付）────────────
+    # ── 余额预测：现余额 + 预期流入 − 刚性流出（逾期刚性视作立即要付）────────────
     level30 = balance + expected_in['d30'] - committed['overdue'] - committed['d30']
     level60 = level30 + expected_in['d60'] - committed['d60']
     level90 = level60 + expected_in['d90'] - committed['d90']
+    # 审慎口径：已批待排的在途支出与待批调拨出款，按30天内全部付出计算
+    d30_pess = level30 - pipeline['approved'] - pipeline['transfer_out_pending']
     projection = {'d30': str(level30), 'd60': str(level60), 'd90': str(level90),
-                  # 悲观口径：已批待排的管道在30天内全部变成刚性支出
-                  'd30_with_pipeline': str(level30 - pipeline['approved'])}
+                  'd30_with_pipeline': str(d30_pess)}
 
-    # ── 警戒线：未来 warning_days 天刚性流出（含逾期未付）──────────────────────
-    wd = today + datetime.timedelta(days=cfg.warning_days or 30)
-    warn_amount = committed['overdue'] + _win(
-        pay_qs.filter(planned_date__gt=today, planned_date__lte=wd))
+    # ── 资金预警线：超管手设固定额度优先；未设则按未来 warning_days 天
+    #    刚性流出（含逾期未付）动态推算 ────────────────────────────────────────
+    if cfg.warning_amount is not None:
+        warn_amount = cfg.warning_amount
+        warn_mode = 'fixed'
+    else:
+        wd = today + datetime.timedelta(days=cfg.warning_days or 30)
+        warn_amount = committed['overdue'] + _win(
+            pay_qs.filter(planned_date__gt=today, planned_date__lte=wd))
+        warn_mode = 'dynamic'
     if balance < warn_amount:
         status = 'danger'
-    elif level60 < 0 or (level30 - pipeline['approved']) < 0:
+    elif level60 < 0 or d30_pess < 0:
         status = 'warn'
     else:
         status = 'ok'
@@ -6882,7 +6901,7 @@ def _pool_metrics(dept, cfg, today):
             'paid': str(p - po), 'advance_paid': str(ap),
             'transfer_in': str(ti), 'transfer_out': str(to_),
         },
-        'warning': {'amount': str(warn_amount), 'status': status},
+        'warning': {'amount': str(warn_amount), 'status': status, 'mode': warn_mode},
         'committed': {k: str(v) for k, v in committed.items()},
         'pipeline': {k: str(v) for k, v in pipeline.items()},
         'expected_in': {k: str(v) for k, v in expected_in.items()},
@@ -6894,7 +6913,7 @@ def _pool_metrics(dept, cfg, today):
 @csrf_exempt
 @pk_required()
 def cash_pool(request):
-    """资金池总览：可见事业部各一池（水位/警戒线/刚性+管道流出/预期流入/预判）。"""
+    """资金池总览：可见事业部各一池（账面余额/资金预警线/刚性+在途流出/预期流入/余额预测）。"""
     denied = _page_denied(request, 'ar_cashflow')
     if denied:
         return denied
@@ -6949,6 +6968,12 @@ def cash_pool_config(request):
         if not initial_date:
             return err('期初基准日必填（YYYY-MM-DD）')
         try:
+            init_d = datetime.date.fromisoformat(str(initial_date)[:10])
+        except (ValueError, TypeError):
+            return err('期初基准日格式错误')
+        if init_d > datetime.date.today():
+            return err('期初基准日不能晚于今天（期初是已发生的账面事实）')
+        try:
             initial_amount = Decimal(str(data.get('initial_amount', 0) or 0))
         except (InvalidOperation, ValueError):
             return err('期初金额格式错误')
@@ -6956,20 +6981,80 @@ def cash_pool_config(request):
             warning_days = max(7, min(120, int(data.get('warning_days', 30) or 30)))
         except (ValueError, TypeError):
             warning_days = 30
+        warning_amount = None
+        raw_warn = data.get('warning_amount')
+        if raw_warn not in (None, ''):
+            try:
+                warning_amount = Decimal(str(raw_warn))
+            except (InvalidOperation, ValueError):
+                return err('资金预警线金额格式错误')
+            if warning_amount < 0:
+                return err('资金预警线不能为负数')
         cfg, _ = CashPoolConfig.objects.update_or_create(
             delivery_dept=dept,
             defaults={'initial_date': initial_date, 'initial_amount': initial_amount,
-                      'warning_days': warning_days,
+                      'warning_days': warning_days, 'warning_amount': warning_amount,
                       'notes': (data.get('notes') or '').strip(),
                       'updated_by': request.pk_user})
         return ok(cfg.to_dict())
     return err('Method not allowed', 405)
 
 
+def _validate_transfer_payload(data):
+    """调拨公共校验。返回 (from_dept, to_dept, amount, tr_date, err_response)。"""
+    f, t = (data.get('from_dept') or '').strip(), (data.get('to_dept') or '').strip()
+    if f not in VALID_DEPARTMENTS or t not in VALID_DEPARTMENTS:
+        return None, None, None, None, err('无效的事业部')
+    if f == t:
+        return None, None, None, None, err('调出与调入不能是同一个池子')
+    try:
+        amount = Decimal(str(data.get('amount') or 0))
+    except (InvalidOperation, ValueError):
+        return None, None, None, None, err('金额格式错误')
+    if amount <= 0:
+        return None, None, None, None, err('调拨金额必须大于0')
+    tr_date = _normalize_date(data.get('transfer_date')) or str(datetime.date.today())
+    try:
+        tr_date_d = datetime.date.fromisoformat(str(tr_date)[:10])
+    except (ValueError, TypeError):
+        return None, None, None, None, err('调拨日期格式错误')
+    if tr_date_d > datetime.date.today():
+        return None, None, None, None, err('调拨日期不能晚于今天（调拨以实际发生日入账）')
+    return f, t, amount, tr_date_d, None
+
+
+def _transfer_guards(f, t, tr_date_d, lock=False):
+    """期初配置与日期守恒校验。lock=True 时锁定两侧配置行（须在事务内），
+    串行化并发的余额检查，防止两笔同时通过校验后合计透支。
+    返回 (cfg_f, cfg_t, err_response)。"""
+    qs = CashPoolConfig.objects.select_for_update() if lock else CashPoolConfig.objects
+    cfgs = {c.delivery_dept: c for c in qs.filter(delivery_dept__in=[f, t])}
+    cfg_f, cfg_t = cfgs.get(f), cfgs.get(t)
+    # 两池都须已配置期初，且调拨日期不得早于任一侧期初基准日——
+    # 否则一侧计入一侧忽略，集团合计≠各池之和（台账不守恒）
+    if not cfg_f or not cfg_t:
+        return None, None, err('调出/调入池需先在「池配置」中设置期初基准')
+    if tr_date_d < cfg_f.initial_date or tr_date_d < cfg_t.initial_date:
+        return None, None, err('调拨日期不能早于两侧池子的期初基准日（会造成台账不守恒）')
+    return cfg_f, cfg_t, None
+
+
+def _transfer_overdraft_err(f, cfg_f, amount):
+    """不允许透支调拨：调出额不得超过调出池当前账面余额。"""
+    balance = _pool_balance(f, cfg_f, datetime.date.today())
+    if amount > balance:
+        return err(f'调出池「{f}」当前可用余额 {balance:,.2f} 元，'
+                   f'不足以调出 {amount:,.2f} 元（不允许透支调拨）')
+    return None
+
+
 @csrf_exempt
 @pk_required()
 def cash_pool_transfers(request):
-    """池间调拨：GET 列表（非超管只看与自己部门相关的）；POST 新建（仅超管，集团统筹）。"""
+    """池间资金调拨。
+    GET：列表（非超管只看与自己部门相关的）。
+    POST：超管直接调拨即时生效；事业部用户提交「调拨申请」（status=pending），
+          须经调出方事业部（或超管）审批后生效，且发起人须与调出/调入一侧同部门。"""
     if request.method == 'GET':
         denied = _page_denied(request, 'ar_cashflow')
         if denied:
@@ -6980,56 +7065,114 @@ def cash_pool_transfers(request):
             qs = qs.filter(Q(from_dept__in=mine) | Q(to_dept__in=mine))
         return ok({'items': [t.to_dict() for t in qs[:200]]})
     if request.method == 'POST':
-        if request.pk_role != 'super_admin':
-            return err('池间调拨为集团资金动作，仅超管可操作', 403, 403)
         data = _parse_body(request)
-        f, t = (data.get('from_dept') or '').strip(), (data.get('to_dept') or '').strip()
-        if f not in VALID_DEPARTMENTS or t not in VALID_DEPARTMENTS:
-            return err('无效的事业部')
-        if f == t:
-            return err('调出与调入不能是同一个池子')
-        try:
-            amount = Decimal(str(data.get('amount') or 0))
-        except (InvalidOperation, ValueError):
-            return err('金额格式错误')
-        if amount <= 0:
-            return err('调拨金额必须大于0')
-        tr_date = _normalize_date(data.get('transfer_date')) or datetime.date.today()
-        # 两池都须已配置期初，且调拨日期不得早于任一侧期初基准日——
-        # 否则一侧计入一侧忽略，集团总池≠各池之和（台账不守恒）
-        cfg_f = CashPoolConfig.objects.filter(delivery_dept=f).first()
-        cfg_t = CashPoolConfig.objects.filter(delivery_dept=t).first()
-        if not cfg_f or not cfg_t:
-            return err('调出/调入池需先在「池配置」中设置期初基准')
-        try:
-            tr_date_d = datetime.date.fromisoformat(str(tr_date)[:10])
-        except (ValueError, TypeError):
-            return err('调拨日期格式错误')
-        if tr_date_d < cfg_f.initial_date or tr_date_d < cfg_t.initial_date:
-            return err('调拨日期不能早于两侧池子的期初基准日（会造成台账不守恒）')
-        # 不允许透支调拨：调出额不得超过调出池当前水位
-        today = datetime.date.today()
-        c_, ar_, p_, po_, ap_, ti_, to_ = _pool_actual_flows(f, cfg_f.initial_date, today)
-        balance = cfg_f.initial_amount + c_ + ar_ - (p_ - po_) - ap_ + ti_ - to_
-        if amount > balance:
-            return err(f'调出池「{f}」当前水位 {balance:,.2f} 元，'
-                       f'不足以调出 {amount:,.2f} 元（不允许透支调拨）')
+        f, t, amount, tr_date_d, bad = _validate_transfer_payload(data)
+        if bad:
+            return bad
+        common = {'expected_return_date': _normalize_date(data.get('expected_return_date')),
+                  'notes': (data.get('notes') or '').strip(), 'created_by': request.pk_user}
+
+        if request.pk_role == 'super_admin':
+            # 集团统筹：直接生效。锁配置行串行化余额检查，防并发合计透支
+            with transaction.atomic():
+                cfg_f, cfg_t, bad = _transfer_guards(f, t, tr_date_d, lock=True)
+                if bad:
+                    return bad
+                bad = _transfer_overdraft_err(f, cfg_f, amount)
+                if bad:
+                    return bad
+                tr = CashPoolTransfer.objects.create(
+                    from_dept=f, to_dept=t, amount=amount, transfer_date=tr_date_d,
+                    status='approved', reviewed_by=request.pk_user,
+                    reviewed_at=timezone.now(), **common)
+            return ok(tr.to_dict())
+
+        # 事业部用户：提交调拨申请，待调出方审批
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        mine = request.pk_depts or []
+        if f not in mine and t not in mine:
+            return err('只能发起与本部门相关的调拨申请（调出或调入一侧须为本部门）', 403, 403)
+        cfg_f, cfg_t, bad = _transfer_guards(f, t, tr_date_d)
+        if bad:
+            return bad
+        # 申请阶段不冻结资金、不动余额；透支在审批生效时校验
         tr = CashPoolTransfer.objects.create(
-            from_dept=f, to_dept=t, amount=amount, transfer_date=tr_date,
-            expected_return_date=_normalize_date(data.get('expected_return_date')),
-            notes=(data.get('notes') or '').strip(), created_by=request.pk_user)
+            from_dept=f, to_dept=t, amount=amount, transfer_date=tr_date_d,
+            status='pending', **common)
         return ok(tr.to_dict())
     return err('Method not allowed', 405)
 
 
 @csrf_exempt
-@pk_required(roles=['super_admin'])
+@pk_required()
+def cash_pool_transfer_review(request, pk):
+    """调拨申请审批：批准/拒绝。仅超管或调出方事业部（有写入权限）可审；
+    不能审批自己发起的申请。批准时以审批日为实际生效日并校验余额充足。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    try:
+        tr = CashPoolTransfer.objects.get(pk=pk)
+    except CashPoolTransfer.DoesNotExist:
+        return err('调拨申请不存在', 404)
+    if tr.status != 'pending':
+        return err('该申请已处理（只有待审批的申请可以审批）')
+
+    if request.pk_role != 'super_admin':
+        if tr.from_dept not in (request.pk_depts or []):
+            return err('只有调出方事业部（或超管）可以审批此申请', 403, 403)
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        if tr.created_by_id and tr.created_by_id == request.pk_user.id:
+            return err('不能审批自己发起的调拨申请', 403, 403)
+
+    data = _parse_body(request)
+    action = (data.get('action') or '').strip()
+    review_notes = (data.get('review_notes') or '').strip()
+    if action == 'reject':
+        tr.status = 'rejected'
+        tr.reviewed_by = request.pk_user
+        tr.reviewed_at = timezone.now()
+        tr.review_notes = review_notes
+        tr.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'review_notes'])
+        return ok(tr.to_dict())
+    if action != 'approve':
+        return err("action 须为 'approve' 或 'reject'")
+
+    today = datetime.date.today()
+    with transaction.atomic():
+        cfg_f, cfg_t, bad = _transfer_guards(tr.from_dept, tr.to_dept, today, lock=True)
+        if bad:
+            return bad
+        bad = _transfer_overdraft_err(tr.from_dept, cfg_f, tr.amount)
+        if bad:
+            return bad
+        # 生效日以审批日为准：现金事件记在它实际发生的那天
+        tr.status = 'approved'
+        tr.transfer_date = today
+        tr.reviewed_by = request.pk_user
+        tr.reviewed_at = timezone.now()
+        tr.review_notes = review_notes
+        tr.save(update_fields=['status', 'transfer_date', 'reviewed_by',
+                               'reviewed_at', 'review_notes'])
+    return ok(tr.to_dict())
+
+
+@csrf_exempt
+@pk_required()
 def cash_pool_transfer_detail(request, pk):
+    """删除调拨：待审批的申请发起人可撤回；已生效/已拒绝的仅超管可删（余额回退）。"""
     if request.method != 'DELETE':
         return err('Method not allowed', 405)
     try:
         tr = CashPoolTransfer.objects.get(pk=pk)
     except CashPoolTransfer.DoesNotExist:
         return err('调拨记录不存在', 404)
+    if request.pk_role != 'super_admin':
+        if not (tr.status == 'pending' and tr.created_by_id
+                and tr.created_by_id == request.pk_user.id):
+            return err('只能撤回自己发起且尚未审批的调拨申请', 403, 403)
     tr.delete()
     return ok({'deleted': pk})

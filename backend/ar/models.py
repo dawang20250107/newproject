@@ -1000,18 +1000,21 @@ class ActionItem(models.Model):
 # ── 资金池 (cash pool) ─────────────────────────────────────────────────────────
 
 class CashPoolConfig(models.Model):
-    """事业部资金池配置 — 超管手填期初基准；之后水位全部由流水推算（不存余额）。
+    """事业部资金池配置 — 超管手填期初基准；之后账面余额全部由收支流水推算（不存余额）。
 
-    水位口径与现金流分析完全一致：
+    余额口径与现金流分析完全一致：
       流入 = 应收回款(剔除预收抵扣) + 预收款；
       流出 = 实付分期 − 预付核销冲抵 + 预付款；
-      另加池间调拨（CashPoolTransfer）。
+      另加池间调拨（CashPoolTransfer，仅已生效的）。
     """
     delivery_dept = models.CharField('事业部', max_length=50, unique=True)
-    initial_date = models.DateField('期初基准日', help_text='该日终的账面资金为期初值；之后的流水才计入水位')
+    initial_date = models.DateField('期初基准日', help_text='该日终的账面资金为期初值；之后的收支流水才计入余额')
     initial_amount = models.DecimalField('期初金额', max_digits=15, decimal_places=2, default=0)
-    warning_days = models.IntegerField('警戒窗口(天)', default=30,
-                                       help_text='警戒线 = 未来N天刚性流出（已审批待付）')
+    warning_days = models.IntegerField('预警窗口(天)', default=30,
+                                       help_text='未设固定预警线时：资金预警线 = 未来N天刚性流出（已审批待付）')
+    warning_amount = models.DecimalField('资金预警线(元)', max_digits=15, decimal_places=2,
+                                         null=True, blank=True,
+                                         help_text='手动设定的最低安全余额；设置后优先于按天数推算')
     notes = models.TextField('备注', blank=True, default='')
     updated_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
                                    null=True, blank=True, related_name='updated_pool_configs')
@@ -1029,6 +1032,7 @@ class CashPoolConfig(models.Model):
             'initial_date': str(self.initial_date),
             'initial_amount': str(self.initial_amount),
             'warning_days': self.warning_days,
+            'warning_amount': str(self.warning_amount) if self.warning_amount is not None else None,
             'notes': self.notes,
             'updated_by_name': self.updated_by.name if self.updated_by else '',
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
@@ -1036,15 +1040,28 @@ class CashPoolConfig(models.Model):
 
 
 class CashPoolTransfer(models.Model):
-    """池间调拨（内部拆借）— A池调水给B池，只挪不灭：集团总池恒等于各池之和。"""
+    """池间资金调拨（内部拆借）— 只挪不灭：集团合计余额恒等于各池之和。
+
+    两阶段流程：事业部用户发起的调拨为「待审批」(pending)，须由调出方所在
+    事业部（或超管）批准后才生效计入余额；超管直接调拨即时生效。
+    余额推算只统计 status='approved' 的记录。
+    """
+    STATUS_CHOICES = [('pending', '待审批'), ('approved', '已生效'), ('rejected', '已拒绝')]
+
     from_dept = models.CharField('调出事业部', max_length=50, db_index=True)
     to_dept = models.CharField('调入事业部', max_length=50, db_index=True)
     amount = models.DecimalField('调拨金额', max_digits=15, decimal_places=2)
     transfer_date = models.DateField('调拨日期', db_index=True)
     expected_return_date = models.DateField('约定归还日', null=True, blank=True)
     notes = models.TextField('备注', blank=True, default='')
+    status = models.CharField('状态', max_length=10, choices=STATUS_CHOICES,
+                              default='approved', db_index=True)
     created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
                                    null=True, blank=True, related_name='created_pool_transfers')
+    reviewed_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                    null=True, blank=True, related_name='reviewed_pool_transfers')
+    reviewed_at = models.DateTimeField('审批时间', null=True, blank=True)
+    review_notes = models.TextField('审批意见', blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -1060,6 +1077,11 @@ class CashPoolTransfer(models.Model):
             'transfer_date': str(self.transfer_date),
             'expected_return_date': str(self.expected_return_date) if self.expected_return_date else None,
             'notes': self.notes,
+            'status': self.status,
+            'created_by_id': self.created_by_id,
             'created_by_name': self.created_by.name if self.created_by else '',
+            'reviewed_by_name': self.reviewed_by.name if self.reviewed_by else '',
+            'reviewed_at': self.reviewed_at.isoformat() if self.reviewed_at else None,
+            'review_notes': self.review_notes,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }

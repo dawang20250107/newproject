@@ -89,6 +89,7 @@ urlpatterns = [
     path('pool/config', views.cash_pool_config),
     path('pool/transfers', views.cash_pool_transfers),
     path('pool/transfers/<int:pk>', views.cash_pool_transfer_detail),
+    path('pool/transfers/<int:pk>/review', views.cash_pool_transfer_review),
 
     # Budget
     path('budget/collection', views.budget_collection),

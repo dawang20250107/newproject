@@ -138,6 +138,7 @@ const ar = {
   listPoolTransfers: () => api.get('/ar/pool/transfers'),
   createPoolTransfer: d => api.post('/ar/pool/transfers', d),
   deletePoolTransfer: id => api.delete(`/ar/pool/transfers/${id}`),
+  reviewPoolTransfer: (id, d) => api.post(`/ar/pool/transfers/${id}/review`, d),
 }
 
 export default ar

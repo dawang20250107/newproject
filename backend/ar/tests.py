@@ -1908,7 +1908,7 @@ class AuditLogTests(TestCase):
 
 
 class CashPoolTests(TestCase):
-    """资金池：水位口径 / 刚性+管道分窗 / 预判 / 配置与调拨权限。"""
+    """资金池：余额口径 / 刚性+在途分窗 / 预测 / 配置与调拨权限。"""
 
     def setUp(self):
         _invalidate_perm_cache()
@@ -2264,7 +2264,7 @@ class CashPoolTransferGuardTests(TestCase):
                                 HTTP_AUTHORIZATION=f'Bearer {make_token(self.admin)}')
 
     def test_overdraft_rejected(self):
-        # 池里 10 万，要调出 15 万 → 拒绝并报当前水位
+        # 池里 10 万，要调出 15 万 → 拒绝并报当前可用余额
         res = self._post({'from_dept': '运输事业部', 'to_dept': '劳务事业部',
                           'amount': '150000', 'transfer_date': str(self.today)})
         self.assertEqual(res.status_code, 400)
@@ -2290,3 +2290,172 @@ class CashPoolTransferGuardTests(TestCase):
                           'amount': '1000', 'transfer_date': str(self.today)})
         self.assertEqual(res.status_code, 400)
         self.assertIn('池配置', res.json()['error'])
+
+    def test_future_transfer_date_rejected(self):
+        res = self._post({'from_dept': '运输事业部', 'to_dept': '劳务事业部',
+                          'amount': '1000',
+                          'transfer_date': str(self.today + self.td(days=3))})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('不能晚于今天', res.json()['error'])
+
+
+class CashPoolTransferWorkflowTests(TestCase):
+    """调拨申请两阶段审批：发起 / 调出方审批 / 拒绝 / 防自批 / 撤回 / 生效校验。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.today = date.today()
+        from datetime import timedelta
+        self.td = timedelta
+        self.admin = PaikuanUser(phone='13800000051', name='超管', role='super_admin',
+                                 job_title='', departments=[], is_active=True, is_approved=True)
+        self.admin.set_password('Test1234x'); self.admin.save()
+        # 劳务侧申请人（gm_assistant 默认 can_create=True）
+        self.laowu = PaikuanUser(phone='13800000052', name='劳务申请人', role='operator',
+                                 job_title='gm_assistant', departments=['劳务事业部'],
+                                 is_active=True, is_approved=True)
+        self.laowu.set_password('Test1234x'); self.laowu.save()
+        # 运输侧审批人
+        self.yunshu = PaikuanUser(phone='13800000053', name='运输审批人', role='operator',
+                                  job_title='gm_assistant', departments=['运输事业部'],
+                                  is_active=True, is_approved=True)
+        self.yunshu.set_password('Test1234x'); self.yunshu.save()
+        # 运输侧只读岗（cashier can_create=False）
+        self.cashier = PaikuanUser(phone='13800000054', name='运输出纳', role='operator',
+                                   job_title='cashier', departments=['运输事业部'],
+                                   is_active=True, is_approved=True)
+        self.cashier.set_password('Test1234x'); self.cashier.save()
+        from ar.models import CashPoolConfig
+        CashPoolConfig.objects.create(delivery_dept='运输事业部',
+                                      initial_date=self.today - self.td(days=30),
+                                      initial_amount=Decimal('100000'))
+        CashPoolConfig.objects.create(delivery_dept='劳务事业部',
+                                      initial_date=self.today - self.td(days=30),
+                                      initial_amount=Decimal('50000'))
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self, user):
+        return {'HTTP_AUTHORIZATION': f'Bearer {make_token(user)}'}
+
+    def _request_transfer(self, user, amount='20000', f='运输事业部', t='劳务事业部'):
+        return self.client.post('/api/pk/ar/pool/transfers',
+                                data=json.dumps({'from_dept': f, 'to_dept': t,
+                                                 'amount': amount,
+                                                 'transfer_date': str(self.today)}),
+                                content_type='application/json', **self.auth(user))
+
+    def _review(self, user, tid, action, notes=''):
+        return self.client.post(f'/api/pk/ar/pool/transfers/{tid}/review',
+                                data=json.dumps({'action': action, 'review_notes': notes}),
+                                content_type='application/json', **self.auth(user))
+
+    def _balance(self, dept):
+        res = self.client.get('/api/pk/ar/pool', **self.auth(self.admin))
+        pool = next(p for p in res.json()['data']['pools'] if p['dept'] == dept)
+        return Decimal(pool['balance']), pool
+
+    def test_dept_request_pending_no_balance_impact(self):
+        # 劳务向运输申请调拨2万 → 待审批，不动两侧余额；计入运输的待批调拨出款
+        res = self._request_transfer(self.laowu)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['data']['status'], 'pending')
+        bal_y, pool_y = self._balance('运输事业部')
+        self.assertEqual(bal_y, Decimal('100000'))
+        self.assertEqual(Decimal(pool_y['pipeline']['transfer_out_pending']),
+                         Decimal('20000'))
+        bal_l, _ = self._balance('劳务事业部')
+        self.assertEqual(bal_l, Decimal('50000'))
+
+    def test_from_dept_approve_moves_balance(self):
+        tid = self._request_transfer(self.laowu).json()['data']['id']
+        res = self._review(self.yunshu, tid, 'approve', '同意拆借')
+        self.assertEqual(res.status_code, 200)
+        d = res.json()['data']
+        self.assertEqual(d['status'], 'approved')
+        self.assertEqual(d['transfer_date'], str(self.today))  # 生效日=审批日
+        self.assertEqual(d['reviewed_by_name'], '运输审批人')
+        self.assertEqual(self._balance('运输事业部')[0], Decimal('80000'))
+        self.assertEqual(self._balance('劳务事业部')[0], Decimal('70000'))
+
+    def test_from_dept_reject_keeps_balance(self):
+        tid = self._request_transfer(self.laowu).json()['data']['id']
+        res = self._review(self.yunshu, tid, 'reject', '本月资金紧张，暂不同意')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['data']['status'], 'rejected')
+        self.assertEqual(self._balance('运输事业部')[0], Decimal('100000'))
+        self.assertEqual(self._balance('劳务事业部')[0], Decimal('50000'))
+        # 已处理的申请不能再审
+        self.assertEqual(self._review(self.yunshu, tid, 'approve').status_code, 400)
+
+    def test_review_permission_isolation(self):
+        tid = self._request_transfer(self.laowu).json()['data']['id']
+        # 调入方（劳务）不能审批；只读岗（运输出纳）无写入权限不能审批
+        self.assertEqual(self._review(self.laowu, tid, 'approve').status_code, 403)
+        self.assertEqual(self._review(self.cashier, tid, 'approve').status_code, 403)
+        # 超管可以审
+        self.assertEqual(self._review(self.admin, tid, 'approve').status_code, 200)
+
+    def test_self_review_forbidden(self):
+        # 运输审批人自己发起的调出申请，不能自批；超管可代批
+        tid = self._request_transfer(self.yunshu).json()['data']['id']
+        self.assertEqual(self._review(self.yunshu, tid, 'approve').status_code, 403)
+        self.assertEqual(self._review(self.admin, tid, 'approve').status_code, 200)
+
+    def test_request_must_relate_to_own_dept(self):
+        # 劳务用户不能发起与劳务无关的调拨（运输→阔展）
+        res = self._request_transfer(self.laowu, f='运输事业部', t='阔展事业部')
+        self.assertEqual(res.status_code, 403)
+        # 只读岗位（无写入权限）不能发起申请
+        res2 = self._request_transfer(self.cashier)
+        self.assertEqual(res2.status_code, 403)
+
+    def test_approve_overdraft_rejected(self):
+        # 申请15万 > 运输余额10万：申请可以提，批准时拦截
+        tid = self._request_transfer(self.laowu, amount='150000').json()['data']['id']
+        res = self._review(self.yunshu, tid, 'approve')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('不足以调出', res.json()['error'])
+        from ar.models import CashPoolTransfer
+        self.assertEqual(CashPoolTransfer.objects.get(pk=tid).status, 'pending')
+
+    def test_requester_cancel_pending_only(self):
+        tid = self._request_transfer(self.laowu).json()['data']['id']
+        # 他人不能撤回
+        self.assertEqual(self.client.delete(f'/api/pk/ar/pool/transfers/{tid}',
+                                            **self.auth(self.yunshu)).status_code, 403)
+        # 发起人可撤回
+        self.assertEqual(self.client.delete(f'/api/pk/ar/pool/transfers/{tid}',
+                                            **self.auth(self.laowu)).status_code, 200)
+        # 已生效的只有超管能删
+        tid2 = self._request_transfer(self.laowu).json()['data']['id']
+        self._review(self.yunshu, tid2, 'approve')
+        self.assertEqual(self.client.delete(f'/api/pk/ar/pool/transfers/{tid2}',
+                                            **self.auth(self.laowu)).status_code, 403)
+        self.assertEqual(self.client.delete(f'/api/pk/ar/pool/transfers/{tid2}',
+                                            **self.auth(self.admin)).status_code, 200)
+
+    def test_fixed_warning_amount_mode(self):
+        # 手设资金预警线优先于按天数推算；余额低于预警线 → danger
+        res = self.client.post('/api/pk/ar/pool/config',
+                               data=json.dumps({'delivery_dept': '运输事业部',
+                                                'initial_date': str(self.today - self.td(days=30)),
+                                                'initial_amount': '100000',
+                                                'warning_amount': '200000'}),
+                               content_type='application/json', **self.auth(self.admin))
+        self.assertEqual(res.status_code, 200)
+        _, pool = self._balance('运输事业部')
+        self.assertEqual(pool['warning']['mode'], 'fixed')
+        self.assertEqual(Decimal(pool['warning']['amount']), Decimal('200000'))
+        self.assertEqual(pool['warning']['status'], 'danger')
+
+    def test_config_future_initial_date_rejected(self):
+        res = self.client.post('/api/pk/ar/pool/config',
+                               data=json.dumps({'delivery_dept': '运输事业部',
+                                                'initial_date': str(self.today + self.td(days=1)),
+                                                'initial_amount': '1'}),
+                               content_type='application/json', **self.auth(self.admin))
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('不能晚于今天', res.json()['error'])
