@@ -2539,6 +2539,222 @@ def ar_records_group_summary(request):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 催款工作台 (collection workbench) — 逾期分桶 + 责任人聚合 + 一键生成催款行动项
+# ══════════════════════════════════════════════════════════════════════════════
+
+_DUNNING_BUCKETS = [
+    ('d7',   '1-7天',    1,  7),
+    ('d30',  '8-30天',   8,  30),
+    ('d60',  '31-60天',  31, 60),
+    ('d90',  '61-90天',  61, 90),
+    ('d90p', '90天以上', 91, None),
+]
+
+
+def _overdue_qs(request, today):
+    """当前用户可见范围内、仍有未收余额且已过应收日期的记录。"""
+    qs = _ar_dept_filter(ARRecord.objects.select_related('project'), request,
+                         shared_field='project__is_shared')
+    return qs.filter(outstanding_amount__gt=0, due_date__isnull=False, due_date__lt=today)
+
+
+def _bucket_cond(today, lo, hi):
+    """逾期天数 ∈ [lo, hi] 对应的 due_date 区间条件（hi=None 表示不封顶）。"""
+    cond = Q(due_date__lte=today - datetime.timedelta(days=lo))
+    if hi:
+        cond &= Q(due_date__gte=today - datetime.timedelta(days=hi))
+    return cond
+
+
+def _open_dunning_actions(record_ids=None):
+    """record_id → 未关闭催款行动项 id。通过 source_signal.ar_record_id 关联，
+    用于工作台标记「已有催款任务」并在批量生成时去重。"""
+    qs = (ActionItem.objects.filter(category='collection',
+                                    status__in=['open', 'in_progress'])
+          .only('id', 'source_signal'))
+    out = {}
+    for item in qs:
+        rid = (item.source_signal or {}).get('ar_record_id')
+        if rid is None:
+            continue
+        if record_ids is not None and rid not in record_ids:
+            continue
+        out[rid] = item.id
+    return out
+
+
+@csrf_exempt
+@pk_required()
+def ar_collection_workbench(request):
+    """催款工作台：逾期应收按账龄分桶 + 责任人（销售对接人）聚合 + 明细列表。
+    明细带「已有催款任务」标记，与决策行动（ActionItem）打通。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    denied = _ar_field_denied(request, 'r_outstanding')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+
+    today = datetime.date.today()
+    qs = _overdue_qs(request, today)
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+    q = request.GET.get('q', '').strip()
+    if q:
+        qs = qs.filter(
+            Q(project__short_name__icontains=q) |
+            Q(project__customer_name__icontains=q) |
+            Q(project__project_no__icontains=q) |
+            Q(project__sales_contact__icontains=q))
+
+    # 分桶统计（基于 dept/q 筛选后的全量逾期集，不随 bucket/contact 细分变化）
+    buckets = []
+    for key, label, lo, hi in _DUNNING_BUCKETS:
+        agg = qs.filter(_bucket_cond(today, lo, hi)).aggregate(
+            count=Count('id'), amount=Sum('outstanding_amount'))
+        buckets.append({'key': key, 'label': label,
+                        'count': agg['count'] or 0, 'amount': str(agg['amount'] or 0)})
+
+    # 责任人聚合：销售对接人（回款责任人）维度，按未收金额降序
+    by_contact = []
+    contact_agg = (qs.values('project__sales_contact')
+                   .annotate(count=Count('id'), amount=Sum('outstanding_amount'),
+                             oldest_due=Min('due_date'))
+                   .order_by('-amount'))
+    for g in contact_agg:
+        by_contact.append({
+            'sales_contact': g['project__sales_contact'] or '（未填写）',
+            'count': g['count'],
+            'amount': str(g['amount'] or 0),
+            'max_overdue_days': (today - g['oldest_due']).days if g['oldest_due'] else 0,
+        })
+
+    # 明细：可再按 bucket / 责任人 细分
+    items_qs = qs
+    bucket = request.GET.get('bucket', '').strip()
+    if bucket:
+        spec = next((b for b in _DUNNING_BUCKETS if b[0] == bucket), None)
+        if spec:
+            items_qs = items_qs.filter(_bucket_cond(today, spec[2], spec[3]))
+    contact = request.GET.get('contact', '').strip()
+    if contact:
+        if contact == '（未填写）':
+            items_qs = items_qs.filter(project__sales_contact='')
+        else:
+            items_qs = items_qs.filter(project__sales_contact=contact)
+
+    sum_agg = items_qs.aggregate(count=Count('id'), amount=Sum('outstanding_amount'))
+    page = max(1, int(request.GET.get('page', 1) or 1))
+    size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
+    page_qs = (items_qs.annotate(last_pay=Max('payments__payment_date'))
+               .order_by('due_date', 'id')[(page - 1) * size: page * size])
+    rows = list(page_qs)
+    open_actions = _open_dunning_actions({r.id for r in rows})
+
+    items = []
+    for rec in rows:
+        proj = rec.project
+        items.append({
+            'id': rec.id,
+            'project_id': rec.project_id,
+            'project_no': proj.project_no,
+            'short_name': proj.short_name,
+            'customer_name': proj.customer_name,
+            'delivery_dept': rec.delivery_dept,
+            'sales_contact': proj.sales_contact,
+            'project_manager': proj.project_manager,
+            'operation_year': rec.operation_year,
+            'operation_month': rec.operation_month,
+            'estimated_amount': str(rec.estimated_amount),
+            'outstanding_amount': str(rec.outstanding_amount),
+            'due_date': str(rec.due_date),
+            'overdue_days': (today - rec.due_date).days,
+            'invoice_status': rec.invoice_status,
+            'last_payment_date': str(rec.last_pay) if rec.last_pay else None,
+            'open_action_id': open_actions.get(rec.id),
+        })
+
+    return ok({
+        'buckets': buckets,
+        'by_contact': by_contact,
+        'items': items,
+        'total': sum_agg['count'] or 0,
+        'page': page, 'size': size,
+        'summary': {'count': sum_agg['count'] or 0, 'amount': str(sum_agg['amount'] or 0)},
+    })
+
+
+@csrf_exempt
+@pk_required()
+def ar_collection_dunning(request):
+    """批量生成催款行动项：每条逾期应收一条；已有未关闭催款任务的记录自动跳过。
+    生成的行动项出现在财务驾驶舱「决策行动」Tab（category=collection）。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    denied = _write_denied(request)
+    if denied:
+        return denied
+
+    data = _parse_body(request)
+    try:
+        id_list = [int(i) for i in (data.get('ids') or [])]
+    except (ValueError, TypeError):
+        return err('ids 参数格式错误')
+    if not id_list:
+        return err('请先选择要催款的记录')
+    if len(id_list) > 200:
+        return err('单次最多生成200条催款任务')
+
+    today = datetime.date.today()
+    # 走 _overdue_qs 复核：只允许对可见范围内、确实逾期未收的记录生成任务
+    recs = list(_overdue_qs(request, today).filter(pk__in=id_list))
+    existing = _open_dunning_actions({r.id for r in recs})
+    assignee_override = (data.get('assignee') or '').strip()
+    follow_days = 7
+    try:
+        follow_days = max(1, min(90, int(data.get('follow_days', 7))))
+    except (ValueError, TypeError):
+        pass
+
+    created = []
+    skipped = 0
+    for rec in recs:
+        if rec.id in existing:
+            skipped += 1
+            continue
+        proj = rec.project
+        days = (today - rec.due_date).days
+        item = ActionItem(
+            title=(f'催款：{proj.short_name or proj.customer_name} '
+                   f'{rec.operation_year}/{rec.operation_month:02d} '
+                   f'逾期{days}天 ¥{rec.outstanding_amount:,.2f}'),
+            description=(f'项目 {proj.project_no} · 客户 {proj.customer_name} · '
+                         f'应收日期 {rec.due_date} · 未收 {rec.outstanding_amount:,.2f} 元 · '
+                         f'销售对接人 {proj.sales_contact or "未填写"}'),
+            bu=rec.delivery_dept,
+            category='collection',
+            priority='high' if days > 30 else 'medium',
+            assignee=assignee_override or proj.sales_contact or '',
+            due_date=today + datetime.timedelta(days=follow_days),
+            source_signal={'ar_record_id': rec.id, 'project_no': proj.project_no,
+                           'outstanding': str(rec.outstanding_amount),
+                           'overdue_days': days},
+            created_by=request.pk_user,
+        )
+        item.save()
+        created.append(item.id)
+
+    return ok({'created': len(created), 'skipped': skipped, 'action_ids': created,
+               'missing': len(id_list) - len(recs)})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Payments sub-resource
 # ══════════════════════════════════════════════════════════════════════════════
 

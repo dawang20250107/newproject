@@ -145,6 +145,7 @@ const TABS = [
   { key: 'reconciliation', label: '对账跟踪' },
   { key: 'invoice', label: '开票跟踪' },
   { key: 'collection', label: '回款跟踪' },
+  { key: 'dunning', label: '催款' },
   { key: 'payments', label: '回款流水' },
   { key: 'summary', label: '汇总' },
 ]
@@ -188,6 +189,76 @@ const payTotal = ref(0)
 const payPage = ref(1)
 const payLoading = ref(false)
 const payExporting = ref(false)
+
+// ── 催款工作台 (collection workbench) ───────────────────────────────────────
+const dunFilters = reactive({ dept: '', q: '', bucket: '', contact: '' })
+const dunBuckets = ref([])
+const dunContacts = ref([])
+const dunItems = ref([])
+const dunSummary = ref(null)
+const dunTotal = ref(0)
+const dunPage = ref(1)
+const dunLoading = ref(false)
+const dunSelected = ref(new Set())
+const dunCreating = ref(false)
+let dunQTimer = null
+
+async function loadDunning(reset = false) {
+  if (reset) { dunPage.value = 1; dunSelected.value = new Set() }
+  dunLoading.value = true
+  try {
+    const res = await ar.collectionWorkbench({ ...dunFilters, page: dunPage.value, size })
+    dunBuckets.value = res.data.buckets
+    dunContacts.value = res.data.by_contact
+    dunItems.value = res.data.items
+    dunTotal.value = res.data.total
+    dunSummary.value = res.data.summary
+  } finally { dunLoading.value = false }
+}
+function onDunSearch() {
+  clearTimeout(dunQTimer)
+  dunQTimer = setTimeout(() => loadDunning(true), 300)
+}
+function toggleDunBucket(key) {
+  dunFilters.bucket = dunFilters.bucket === key ? '' : key
+  loadDunning(true)
+}
+function toggleDunContact(name) {
+  dunFilters.contact = dunFilters.contact === name ? '' : name
+  loadDunning(true)
+}
+function toggleDunRow(id) {
+  const s = new Set(dunSelected.value)
+  if (s.has(id)) s.delete(id); else s.add(id)
+  dunSelected.value = s
+}
+// 已有未关闭催款任务的记录不可再选（生成时也会被后端跳过）
+const dunSelectable = computed(() => dunItems.value.filter(r => !r.open_action_id))
+const dunPageAllSelected = computed(() =>
+  dunSelectable.value.length > 0 && dunSelectable.value.every(r => dunSelected.value.has(r.id)))
+function toggleDunSelectPage() {
+  const s = new Set(dunSelected.value)
+  if (dunPageAllSelected.value) dunSelectable.value.forEach(r => s.delete(r.id))
+  else dunSelectable.value.forEach(r => s.add(r.id))
+  dunSelected.value = s
+}
+async function createDunningTasks() {
+  const ids = [...dunSelected.value]
+  if (!ids.length) return
+  if (!confirm(`将为 ${ids.length} 条逾期应收生成催款任务（出现在财务驾驶舱·决策行动），确定？`)) return
+  dunCreating.value = true
+  try {
+    const res = await ar.createDunning({ ids })
+    const d = res.data
+    let msg = `已生成 ${d.created} 条催款任务`
+    if (d.skipped) msg += `，${d.skipped} 条已有未关闭任务（跳过）`
+    alert(msg)
+    await loadDunning(true)
+  } catch (e) { alert(e?.msg || '生成失败') }
+  finally { dunCreating.value = false }
+}
+// 逾期天数着色：≤30 橙、>30 红
+const overdueClass = d => (d > 30 ? 'od-danger' : 'od-warn')
 
 // ── 多维汇总 (group-by pivot) ────────────────────────────────────────────────
 const GROUP_DIMS = [
@@ -295,6 +366,7 @@ function switchTab(key) {
   activeTab.value = key
   if (key === 'payments') loadPayments(true)
   else if (key === 'summary') loadGroupSummary()
+  else if (key === 'dunning') loadDunning(true)
   else if (!DATA_TABS.includes(prev)) load()  // returning from a non-data tab
 }
 
@@ -530,8 +602,10 @@ const onScopeChange = () => {
   conditions.value = conditions.value.filter(
     c => !(c.t === 'dim' && c.field === 'dept' && !accessibleDepts.value.includes(c.value)))
   if (payFilters.dept && !accessibleDepts.value.includes(payFilters.dept)) payFilters.dept = ''
+  if (dunFilters.dept && !accessibleDepts.value.includes(dunFilters.dept)) dunFilters.dept = ''
   if (activeTab.value === 'payments') loadPayments(true)
   else if (activeTab.value === 'summary') loadGroupSummary()
+  else if (activeTab.value === 'dunning') loadDunning(true)
   else load(true)
   void before
 }
@@ -568,7 +642,7 @@ function clearFilters() {
           </button>
         </div>
         <!-- 筛选 chip 栏紧跟 Tab 之后，省去独立一行 -->
-        <div v-if="activeTab !== 'payments'" class="filter-chipbar">
+        <div v-if="activeTab !== 'payments' && activeTab !== 'dunning'" class="filter-chipbar">
           <!-- 常驻快捷搜索：项目 / 负责人 / 编号，模糊匹配，防抖不闪 -->
           <div class="quick-search">
             <svg class="qs-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -606,7 +680,7 @@ function clearFilters() {
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />
         </label>
         <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">↓ 导出</button>
-        <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增应收</button>
+        <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate">+ 新增应收</button>
       </div>
     </div>
 
@@ -697,12 +771,12 @@ function clearFilters() {
 
       <!-- ══ 数据明细表（全部/对账/开票/回款 跟踪）══ -->
       <!-- 选择 + 批量操作工具条（选中后出现） -->
-      <div v-if="isDataTab && hasSelection && (auth.canDelete || auth.canCreate)" class="bulk-bar">
+      <div v-if="isDataTab && hasSelection && (auth.canDelete || auth.canArWrite)" class="bulk-bar">
         <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
         <button v-if="pageAllSelected && !selectAllMatching && total > items.length"
           class="bulk-all" @click="selectAllMatching = true">选择全部 {{ total }} 条</button>
         <span v-if="selectAllMatching" class="bulk-all-on">已选中整个筛选集</span>
-        <button v-if="auth.canCreate" class="btn btn-ghost btn-sm" style="margin-left:4px" @click="openBatchAssign">
+        <button v-if="auth.canArWrite" class="btn btn-ghost btn-sm" style="margin-left:4px" @click="openBatchAssign">
           设置批次号
         </button>
         <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">
@@ -857,7 +931,7 @@ function clearFilters() {
                       <span style="font-size:12px;color:var(--muted)">{{ rec.payments?.length ? '笔回款' : '无回款' }}</span>
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="margin-left:3px;color:var(--muted)" :style="expandedPayments[rec.id] ? 'transform:rotate(180deg)' : ''"><path d="M6 9l6 6 6-6"/></svg>
                     </button>
-                    <button v-if="auth.canCreate" class="add-pay-btn" @click="openAddPayment(rec)">+ 回款</button>
+                    <button v-if="auth.canArWrite" class="add-pay-btn" @click="openAddPayment(rec)">+ 回款</button>
                   </td>
                   <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
                   <td v-if="show('r_invoice_status')" class="ctr">
@@ -918,6 +992,103 @@ function clearFilters() {
           </div>
         </div>
       </Teleport>
+
+      <!-- ══ 催款工作台 ══ -->
+      <div v-if="activeTab === 'dunning'">
+        <div class="filter-strip" style="margin-top:4px">
+          <select v-model="dunFilters.dept" class="sel-bu" @change="loadDunning(true)">
+            <option value="">全部事业部</option>
+            <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+          </select>
+          <input v-model="dunFilters.q" placeholder="搜项目 / 客户 / 对接人" class="search-input" @input="onDunSearch" />
+          <span v-if="dunSummary" class="text-sm-muted" style="margin-left:auto">
+            当前范围逾期 <strong>{{ dunSummary.count }}</strong> 笔 / <strong style="color:#c62828">{{ fmtAmt(dunSummary.amount) }}</strong>
+          </span>
+        </div>
+
+        <!-- 账龄分桶卡片（点击筛选） -->
+        <div class="dun-buckets">
+          <button v-for="b in dunBuckets" :key="b.key"
+            class="dun-bucket" :class="{ on: dunFilters.bucket === b.key, empty: !b.count }"
+            @click="toggleDunBucket(b.key)">
+            <div class="db-label">逾期{{ b.label }}</div>
+            <div class="db-count">{{ b.count }} 笔</div>
+            <div class="db-amt">{{ fmtAmt(b.amount) }}</div>
+          </button>
+        </div>
+
+        <!-- 责任人聚合 chips（点击筛选） -->
+        <div v-if="dunContacts.length" class="dun-contacts">
+          <span class="dc-label">按销售对接人：</span>
+          <button v-for="c in dunContacts.slice(0, 12)" :key="c.sales_contact"
+            class="dc-chip" :class="{ on: dunFilters.contact === c.sales_contact }"
+            :title="`最长逾期 ${c.max_overdue_days} 天`"
+            @click="toggleDunContact(c.sales_contact)">
+            {{ c.sales_contact }} · {{ c.count }}笔 · {{ fmtAmt(c.amount) }}
+          </button>
+        </div>
+
+        <!-- 批量生成催款任务工具条 -->
+        <div v-if="auth.canArWrite && dunSelected.size" class="bulk-bar">
+          <span class="bulk-n">已选 <strong>{{ dunSelected.size }}</strong> 条</span>
+          <button class="btn btn-primary btn-sm" :disabled="dunCreating" @click="createDunningTasks">
+            {{ dunCreating ? '生成中…' : '⚡ 生成催款任务' }}
+          </button>
+          <span class="text-sm-muted">生成后出现在 财务驾驶舱 → 决策行动，负责人默认为销售对接人</span>
+        </div>
+
+        <div class="table-wrap" style="margin-top:12px">
+          <table class="rec-table">
+            <thead>
+              <tr>
+                <th v-if="auth.canArWrite" class="sel-col">
+                  <input type="checkbox" :checked="dunPageAllSelected" @change="toggleDunSelectPage" />
+                </th>
+                <th>项目 / 客户</th>
+                <th class="ctr">交付部门</th>
+                <th class="ctr">运作年月</th>
+                <th class="ctr">应收日期</th>
+                <th class="ctr">逾期天数</th>
+                <th class="amt">未收金额</th>
+                <th class="ctr">销售对接人</th>
+                <th class="ctr">最近回款</th>
+                <th class="ctr">催款任务</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="dunLoading && !dunItems.length"><td colspan="10" class="empty-cell">⏳ 加载中…</td></tr>
+              <tr v-else-if="!dunItems.length"><td colspan="10" class="empty-cell">🎉 当前范围内没有逾期应收</td></tr>
+              <tr v-for="r in dunItems" :key="r.id" class="data-row">
+                <td v-if="auth.canArWrite" class="sel-col">
+                  <input type="checkbox" :disabled="!!r.open_action_id"
+                         :checked="dunSelected.has(r.id)" @change="toggleDunRow(r.id)" />
+                </td>
+                <td>
+                  <div class="proj-name">{{ r.short_name || r.customer_name }}</div>
+                  <div class="proj-no">{{ r.project_no }} · {{ r.customer_name }}</div>
+                </td>
+                <td class="ctr text-sm-muted">{{ r.delivery_dept }}</td>
+                <td class="ctr"><span class="ym-chip">{{ r.operation_year }}/{{ String(r.operation_month).padStart(2,'0') }}</span></td>
+                <td class="ctr text-sm-muted">{{ r.due_date }}</td>
+                <td class="ctr"><span class="od-badge" :class="overdueClass(r.overdue_days)">{{ r.overdue_days }}天</span></td>
+                <td class="amt fw" style="color:#c62828">{{ fmtAmt(r.outstanding_amount) }}</td>
+                <td class="ctr text-sm-muted">{{ r.sales_contact || '—' }}</td>
+                <td class="ctr text-sm-muted">{{ r.last_payment_date || '—' }}</td>
+                <td class="ctr">
+                  <span v-if="r.open_action_id" class="dun-has-action" title="已有未关闭的催款行动项">✓ 已建</span>
+                  <span v-else class="text-sm-muted">—</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div v-if="dunTotal > size" class="pagination">
+          <button :disabled="dunPage <= 1" class="page-btn" @click="dunPage--; loadDunning()">‹ 上一页</button>
+          <span class="page-info">{{ dunPage }} / {{ Math.ceil(dunTotal / size) }} 页 · 共 {{ dunTotal }} 条</span>
+          <button :disabled="dunPage * size >= dunTotal" class="page-btn" @click="dunPage++; loadDunning()">下一页 ›</button>
+        </div>
+      </div>
 
       <!-- ══ 回款流水 ══ -->
       <div v-if="activeTab === 'payments'">
@@ -1158,7 +1329,7 @@ function clearFilters() {
                   <span class="adv-cp">{{ a.counterparty || '—' }}</span>
                   <span class="adv-bal">{{ fmtAmt(a.balance_amount) }}</span>
                   <span v-if="a.is_overdue" class="adv-od">逾期{{ a.overdue_days }}天</span>
-                  <button v-if="auth.canCreate" type="button" class="adv-use-btn" @click="selectAdvForWriteoff(a)">用此预收下账</button>
+                  <button v-if="auth.canArWrite" type="button" class="adv-use-btn" @click="selectAdvForWriteoff(a)">用此预收下账</button>
                 </li>
               </ul>
               <div v-if="advWoSel" class="adv-wo-form">
@@ -1213,7 +1384,7 @@ function clearFilters() {
             <div v-if="healthData?.stale_count" class="health-section">
               <div class="health-sec-head">
                 <span>未收金额与现规则不一致（可一键重算）· {{ healthData.stale_count }} 条<span v-if="healthData.stale_count > (healthData.stale?.length||0)">（仅展示前 {{ healthData.stale.length }} 条）</span></span>
-                <button v-if="auth.canCreate" class="btn btn-primary btn-sm" :disabled="healthFixing" @click="fixStaleRecords">
+                <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" :disabled="healthFixing" @click="fixStaleRecords">
                   {{ healthFixing ? '重算中…' : '一键重算修复' }}
                 </button>
               </div>
@@ -1590,4 +1761,23 @@ function clearFilters() {
 .imp-sec-list li:last-child { border-bottom: none; }
 .imp-more { color: var(--muted); font-style: italic; }
 .imp-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 12px 0; }
+
+/* 催款工作台 */
+.dun-buckets { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.dun-bucket { flex: 1; min-width: 130px; text-align: left; padding: 10px 14px; border: 1.5px solid var(--border); border-radius: 10px; background: #fff; cursor: pointer; transition: all .15s; }
+.dun-bucket:hover { border-color: #e65100; }
+.dun-bucket.on { border-color: #e65100; background: rgba(230,81,0,0.06); box-shadow: 0 0 0 2px rgba(230,81,0,0.12); }
+.dun-bucket.empty { opacity: .55; }
+.db-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.db-count { font-size: 15px; font-weight: 700; color: var(--text); }
+.db-amt { font-size: 13px; font-weight: 600; color: #c62828; margin-top: 2px; }
+.dun-contacts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.dc-label { font-size: 12px; color: var(--muted); flex-shrink: 0; }
+.dc-chip { padding: 4px 10px; border: 1px solid var(--border); border-radius: 14px; background: #fff; font-size: 12px; color: var(--text); cursor: pointer; transition: all .15s; }
+.dc-chip:hover { border-color: #e65100; }
+.dc-chip.on { border-color: #e65100; background: rgba(230,81,0,0.08); color: #e65100; font-weight: 600; }
+.od-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; }
+.od-badge.od-warn { background: rgba(230,81,0,0.1); color: #e65100; }
+.od-badge.od-danger { background: rgba(198,40,40,0.1); color: #c62828; }
+.dun-has-action { font-size: 12px; color: #2e7d32; font-weight: 600; }
 </style>

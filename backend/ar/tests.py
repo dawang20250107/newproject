@@ -8,7 +8,7 @@ from django.test import Client, TestCase
 
 from ar.models import (ARPayment, ARProject, ARRecord, CollectionBudget, PaymentBudget,
                        AdvanceRecord, AdvanceWriteoff, Customer,
-                       Contract, ContractParty, ContractProject)
+                       Contract, ContractParty, ContractProject, ActionItem)
 from paikuan.models import JobPermission, PaikuanUser
 from paikuan.views import DEPARTMENTS, default_job_config, make_token, _invalidate_perm_cache
 
@@ -1723,3 +1723,160 @@ class ContractAndImportAmbiguityTests(TestCase):
         self.assertEqual(amounts, [59545.44, 107377.24, 251264.44])   # 三个金额都在，未被覆盖
         total = sum(float(r.estimated_amount) for r in recs)
         self.assertAlmostEqual(total, 418187.12, places=2)
+
+
+class CollectionWorkbenchTests(TestCase):
+    """催款工作台：分桶/部门隔离/生成催款任务（去重 + 权限）。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.admin = PaikuanUser(phone='13800000001', name='超管', role='super_admin',
+                                 job_title='', departments=[], is_active=True, is_approved=True)
+        self.admin.set_password('Test123456'); self.admin.save()
+        self.acct = PaikuanUser(phone='13800000002', name='结算会计', role='operator',
+                                job_title='settlement_accountant',
+                                departments=['运输事业部'], is_active=True, is_approved=True)
+        self.acct.set_password('Test123456'); self.acct.save()
+        self.viewer = PaikuanUser(phone='13800000003', name='出纳', role='operator',
+                                  job_title='cashier', departments=['运输事业部'],
+                                  is_active=True, is_approved=True)
+        self.viewer.set_password('Test123456'); self.viewer.save()
+
+        def proj(dept, name):
+            return ARProject.objects.create(
+                customer_name=f'{name}客户', short_name=name, delivery_dept=dept,
+                sales_contact='销售甲', project_manager='经理乙')
+        p_ys = proj('运输事业部', '运输项目')
+        p_lw = proj('劳务事业部', '劳务项目')
+        # 逾期 10 天（d30 桶）与逾期 100 天（d90p 桶）各一条 + 他部门一条
+        from datetime import timedelta
+        today = date.today()
+        self.r1 = ARRecord.objects.create(project=p_ys, operation_year=2026, operation_month=1,
+                                          estimated_amount=Decimal('1000'),
+                                          due_date=today - timedelta(days=10))
+        self.r2 = ARRecord.objects.create(project=p_ys, operation_year=2026, operation_month=2,
+                                          estimated_amount=Decimal('2000'),
+                                          due_date=today - timedelta(days=100))
+        self.r3 = ARRecord.objects.create(project=p_lw, operation_year=2026, operation_month=1,
+                                          estimated_amount=Decimal('3000'),
+                                          due_date=today - timedelta(days=50))
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self, user):
+        return {'HTTP_AUTHORIZATION': f'Bearer {make_token(user)}'}
+
+    def test_buckets_and_total(self):
+        res = self.client.get('/api/pk/ar/records/collection', **self.auth(self.admin))
+        self.assertEqual(res.status_code, 200)
+        d = res.json()['data']
+        buckets = {b['key']: b['count'] for b in d['buckets']}
+        self.assertEqual(buckets['d30'], 1)
+        self.assertEqual(buckets['d60'], 1)
+        self.assertEqual(buckets['d90p'], 1)
+        self.assertEqual(d['total'], 3)
+
+    def test_bucket_filter_narrows_items(self):
+        res = self.client.get('/api/pk/ar/records/collection?bucket=d90p', **self.auth(self.admin))
+        d = res.json()['data']
+        self.assertEqual(d['total'], 1)
+        self.assertEqual(d['items'][0]['id'], self.r2.id)
+        # 分桶统计仍是全量口径
+        self.assertEqual(sum(b['count'] for b in d['buckets']), 3)
+
+    def test_dept_isolation(self):
+        res = self.client.get('/api/pk/ar/records/collection', **self.auth(self.acct))
+        d = res.json()['data']
+        self.assertEqual(d['total'], 2)
+        self.assertEqual({i['delivery_dept'] for i in d['items']}, {'运输事业部'})
+
+    def test_dunning_create_dedupe_and_scope(self):
+        # 结算会计（ar_can_create）可生成；跨部门 id 被静默过滤
+        res = self.client.post(
+            '/api/pk/ar/records/collection/dunning',
+            data=json.dumps({'ids': [self.r1.id, self.r3.id]}),
+            content_type='application/json', **self.auth(self.acct))
+        self.assertEqual(res.status_code, 200)
+        d = res.json()['data']
+        self.assertEqual(d['created'], 1)        # 只有本部门的 r1
+        self.assertEqual(d['missing'], 1)        # r3 不在可见范围
+        item = ActionItem.objects.get(pk=d['action_ids'][0])
+        self.assertEqual(item.category, 'collection')
+        self.assertEqual(item.bu, '运输事业部')
+        self.assertEqual(item.assignee, '销售甲')
+        self.assertEqual(item.source_signal.get('ar_record_id'), self.r1.id)
+        # 重复生成被跳过
+        res2 = self.client.post(
+            '/api/pk/ar/records/collection/dunning',
+            data=json.dumps({'ids': [self.r1.id]}),
+            content_type='application/json', **self.auth(self.acct))
+        self.assertEqual(res2.json()['data']['skipped'], 1)
+        # 工作台明细带已建标记
+        res3 = self.client.get('/api/pk/ar/records/collection', **self.auth(self.acct))
+        marked = {i['id']: i['open_action_id'] for i in res3.json()['data']['items']}
+        self.assertEqual(marked[self.r1.id], item.id)
+
+    def test_dunning_requires_write_permission(self):
+        res = self.client.post(
+            '/api/pk/ar/records/collection/dunning',
+            data=json.dumps({'ids': [self.r1.id]}),
+            content_type='application/json', **self.auth(self.viewer))
+        self.assertEqual(res.status_code, 403)
+
+
+class AuditLogTests(TestCase):
+    """审计中间件 + 查询接口：写操作留痕、敏感字段脱敏、仅超管可查。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.admin = PaikuanUser(phone='13800000011', name='超管', role='super_admin',
+                                 job_title='', departments=[], is_active=True, is_approved=True)
+        self.admin.set_password('Test123456'); self.admin.save()
+        self.op = PaikuanUser(phone='13800000012', name='普通用户', role='operator',
+                              job_title='settlement_accountant', departments=['运输事业部'],
+                              is_active=True, is_approved=True)
+        self.op.set_password('Test123456'); self.op.save()
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self, user):
+        return {'HTTP_AUTHORIZATION': f'Bearer {make_token(user)}'}
+
+    def test_write_operations_are_logged_with_user(self):
+        from paikuan.models import AuditLog
+        self.client.post('/api/pk/ar/projects', data=json.dumps({
+            'customer_name': '客户A', 'short_name': '项目A', 'delivery_dept': '运输事业部',
+            'sales_contact': '甲', 'project_manager': '乙'}),
+            content_type='application/json', **self.auth(self.op))
+        log = AuditLog.objects.order_by('-id').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.method, 'POST')
+        self.assertEqual(log.path, '/api/pk/ar/projects')
+        self.assertEqual(log.module, 'ar')
+        self.assertEqual(log.user_name, '普通用户')
+        self.assertEqual(log.payload.get('short_name'), '项目A')
+
+    def test_login_password_masked(self):
+        from paikuan.models import AuditLog
+        self.client.post('/api/pk/login', data=json.dumps(
+            {'phone': '13800000011', 'password': 'Test123456'}),
+            content_type='application/json')
+        log = AuditLog.objects.filter(path='/api/pk/login').order_by('-id').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.payload.get('password'), '***')
+
+    def test_get_requests_not_logged(self):
+        from paikuan.models import AuditLog
+        before = AuditLog.objects.count()
+        self.client.get('/api/pk/ar/projects', **self.auth(self.op))
+        self.assertEqual(AuditLog.objects.count(), before)
+
+    def test_audit_api_super_admin_only(self):
+        res = self.client.get('/api/pk/audit-logs', **self.auth(self.op))
+        self.assertEqual(res.status_code, 403)
+        res2 = self.client.get('/api/pk/audit-logs', **self.auth(self.admin))
+        self.assertEqual(res2.status_code, 200)
