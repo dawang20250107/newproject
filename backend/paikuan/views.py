@@ -551,19 +551,26 @@ _DEC18 = DjDecimalField(max_digits=18, decimal_places=2)
 
 
 def _not_settled_q(paid_field='_paid'):
-    """未结清：有调整额时比调整额，否则比计划总额（与付款台账口径一致）。"""
+    """未结清：已付 + 预付冲抵 仍小于有效计划（调整额优先）。
+    预付冲抵的现金在预付时已流出，剩余应付须扣除——与资金池「刚性待付」口径一致。"""
     return (
-        Q(plan_adjustment__isnull=True, **{f'{paid_field}__lt': F('total_amount')}) |
-        Q(plan_adjustment__isnull=False, **{f'{paid_field}__lt': F('plan_adjustment')})
+        Q(plan_adjustment__isnull=True,
+          **{f'{paid_field}__lt': F('total_amount') - F('prepaid_offset_amount')}) |
+        Q(plan_adjustment__isnull=False,
+          **{f'{paid_field}__lt': F('plan_adjustment') - F('prepaid_offset_amount')})
     )
 
 
 def _effective_remaining_expr(paid_field='_paid'):
-    """剩余应付：调整额优先，否则计划总额，减去已付。"""
+    """剩余应付：有效计划（调整额优先）− 已付 − 预付冲抵（与资金池口径一致）。"""
     return Case(
         When(plan_adjustment__isnull=False,
-             then=ExpressionWrapper(F('plan_adjustment') - F(paid_field), output_field=_DEC18)),
-        default=ExpressionWrapper(F('total_amount') - F(paid_field), output_field=_DEC18),
+             then=ExpressionWrapper(
+                 F('plan_adjustment') - F(paid_field) - F('prepaid_offset_amount'),
+                 output_field=_DEC18)),
+        default=ExpressionWrapper(
+            F('total_amount') - F(paid_field) - F('prepaid_offset_amount'),
+            output_field=_DEC18),
         output_field=_DEC18,
     )
 
@@ -571,7 +578,7 @@ def _effective_remaining_expr(paid_field='_paid'):
 # ── version / deploy check ──────────────────────────────────────────────────────
 # Bump BUILD_VERSION whenever backend behaviour changes so a deploy can be verified
 # by opening /api/pk/version in a browser (no auth required).
-BUILD_VERSION = '2026-05-23.6'
+BUILD_VERSION = '2026-06-10.1'
 
 
 @csrf_exempt
@@ -791,43 +798,35 @@ def _list_payments(request):
         page, size = 1, 50
 
     # Status filter via SQL annotation — avoids fetching all rows into Python.
+    # 口径与 _not_settled_q 一致：已付 + 预付冲抵 对比有效计划（调整额优先）。
     if status_q:
         qs = qs.annotate(paid=_paid_expr())
         if status_q == 'pending':
-            qs = qs.filter(paid=Decimal('0'), plan_adjustment__isnull=True)
+            qs = qs.filter(paid=Decimal('0'), plan_adjustment__isnull=True,
+                           prepaid_offset_amount=Decimal('0'))
         elif status_q == 'settled':
             qs = qs.filter(
-                Q(paid__gte=F('total_amount')) |
-                Q(plan_adjustment__isnull=False, paid__gte=F('plan_adjustment'))
+                Q(paid__gte=F('total_amount') - F('prepaid_offset_amount')) |
+                Q(plan_adjustment__isnull=False,
+                  paid__gte=F('plan_adjustment') - F('prepaid_offset_amount'))
             )
         elif status_q == 'partial':
-            qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'),
+            qs = qs.filter(paid__gt=Decimal('0'),
+                           paid__lt=F('total_amount') - F('prepaid_offset_amount'),
                            plan_adjustment__isnull=True)
         elif status_q == 'overdue':
             today_val = datetime.date.today()
-            qs = qs.filter(planned_date__lt=today_val).filter(
-                Q(plan_adjustment__isnull=True, paid__lt=F('total_amount')) |
-                Q(plan_adjustment__isnull=False, paid__lt=F('plan_adjustment'))
-            )
+            qs = qs.filter(planned_date__lt=today_val).filter(_not_settled_q('paid'))
         elif status_q == 'adjusted':
-            qs = qs.filter(plan_adjustment__isnull=False, paid__lt=F('plan_adjustment'))
+            qs = qs.filter(plan_adjustment__isnull=False,
+                           paid__lt=F('plan_adjustment') - F('prepaid_offset_amount'))
 
     total = qs.count()
 
-    # 未结清合计：plan_adjustment 设置时以调整后金额计算剩余，否则用 total_amount
+    # 未结清合计：与 stats/资金池共用同一口径 helper（扣预付冲抵）
     paid_expr = _paid_expr()
-    not_settled = (
-        Q(plan_adjustment__isnull=True, _paid__lt=F('total_amount')) |
-        Q(plan_adjustment__isnull=False, _paid__lt=F('plan_adjustment'))
-    )
-    effective_remaining = Case(
-        When(plan_adjustment__isnull=False,
-             then=ExpressionWrapper(F('plan_adjustment') - F('_paid'),
-                                    output_field=DjDecimalField(max_digits=18, decimal_places=2))),
-        default=ExpressionWrapper(F('total_amount') - F('_paid'),
-                                  output_field=DjDecimalField(max_digits=18, decimal_places=2)),
-        output_field=DjDecimalField(max_digits=18, decimal_places=2),
-    )
+    not_settled = _not_settled_q('_paid')
+    effective_remaining = _effective_remaining_expr('_paid')
     summary = qs.annotate(_paid=paid_expr).aggregate(
         outstanding=Sum(effective_remaining, filter=not_settled),
         outstanding_count=Count('id', filter=not_settled),
@@ -922,9 +921,13 @@ def _parse_payment_fields(data, payment=None):
             if not pay_date:
                 return None, f'第{idx}次付款日期必填'
             try:
-                datetime.date.fromisoformat(str(pay_date))
+                pay_date_d = datetime.date.fromisoformat(str(pay_date))
             except ValueError:
                 return None, f'第{idx}次付款日期无效（{pay_date}），请使用 YYYY-MM-DD 格式'
+            # 付款明细是已发生的现金事件：未来日期会让这笔钱既不算已付现金流、
+            # 又被从刚性待付中扣掉，资金池两头都看不见
+            if pay_date_d > datetime.date.today():
+                return None, f'第{idx}次付款日期（{pay_date}）不能晚于今天——实际付款以发生日入账；计划性付款请用「计划付款日期」'
             total_paid += amt
             parsed_insts.append({
                 'seq': idx,
@@ -933,12 +936,24 @@ def _parse_payment_fields(data, payment=None):
                 'notes': (item.get('notes') or '').strip()[:200],
                 'id': item.get('id'),  # for update — may be None for new rows
             })
-        if total_paid > fields['total_amount']:
-            return None, (
-                f'实付总额（{total_paid}元）超出计划总金额（{fields["total_amount"]}元），'
-                '请核实金额后再提交'
-            )
         fields['installments'] = parsed_insts
+
+    # ── 有效计划（调整额优先）与实付/冲抵的关系校验 ──────────────────────────
+    # 覆盖：实付超出有效计划；把计划/调整额改到低于已付（会让剩余被截到0、状态假结清）
+    effective_plan = (fields['plan_adjustment'] if fields['plan_adjustment'] is not None
+                      else fields['total_amount'])
+    if fields['installments'] is not None:
+        paid_check = sum((i['pay_amount'] for i in fields['installments']), Decimal('0'))
+    elif payment is not None:
+        paid_check = payment.total_paid
+    else:
+        paid_check = Decimal('0')
+    if paid_check > effective_plan:
+        label = '计划调整金额' if fields['plan_adjustment'] is not None else '计划总金额'
+        return None, (
+            f'实付总额（{paid_check}元）超出{label}（{effective_plan}元），'
+            '请核实金额后再提交'
+        )
 
     if not fields['department']:
         return None, '部门必填'
@@ -1163,6 +1178,11 @@ def payment_detail(request, pk):
                 return err('无删除权限', 403, 403)
             if not can_write_dept(request, p.department):
                 return err('无权删除此记录', 403, 403)
+        # 已关联预付核销的排款不可直接删：FK 置空后核销悬空、
+        # 预付台账与资金池的冲抵口径会失去对应关系
+        if p.prepaid_offsets.exists():
+            return err('该排款已关联预付核销，不能直接删除；'
+                       '请先到「预收预付」删除对应核销记录后再删本排款', 409, 409)
         with transaction.atomic():
             _record_payment_changes(p, {}, {}, request, action='delete')
             p.delete()
@@ -1266,6 +1286,14 @@ def approval_record_detail(request, pk):
     if not can_write_dept(request, rec.department):
         return err('无权操作该部门', 403, 403)
     if request.method == 'PUT':
+        # 归档即终态（已排款 / 已拒绝 / 已撤销）：不可再改——
+        # 已排款的审批改金额会让排款与审批对不上；已拒绝/撤销复活会产生
+        # 列表与资金池在途都看不见的幽灵记录（archived 永远为 True）
+        if rec.archived:
+            return err('该审批记录已归档（已排款或已拒绝/已撤销），不可修改；如需变更请新建记录', 409, 409)
+        # 写入能力闸口：与新建一致（防止只读岗位改写审批台账）
+        if perms is not None and not (perms.get('can_create') or is_approver(request)):
+            return err('无编辑权限', 403, 403)
         data = parse_body(request)
         for k in ('applicant', 'summary', 'payee'):
             if k in data:
@@ -1277,7 +1305,17 @@ def approval_record_detail(request, pk):
         if 'approval_number' in data and re.fullmatch(r'\d{21}', str(data['approval_number'])):
             rec.approval_number = str(data['approval_number'])
         if 'amount' in data:
-            rec.amount = Decimal(str(data['amount'] or '0'))
+            try:
+                new_amount = Decimal(str(data['amount'] or '0'))
+            except (InvalidOperation, ValueError, TypeError):
+                return err('申请金额格式错误')
+            if new_amount <= 0:
+                return err('申请金额必须大于0')
+            # 金额是审批的标的：已审批通过的记录改金额会让资金池「在途支出」
+            # 被悄悄改写，须先退回待审批再改
+            if new_amount != rec.amount and rec.status != 'pending':
+                return err('仅「待审批」状态可修改金额；已审批的记录请先退回待审批再修改')
+            rec.amount = new_amount
         if 'status' in data and data['status'] in {'pending', 'approved', 'rejected', 'canceled'}:
             new_status = data['status']
             # 仅审批权限职务可设置 approved/rejected；任何登记人均可取消自己的申请
@@ -1599,17 +1637,23 @@ def stats(request):
     D = Decimal
 
     # Overall totals + status breakdown in a single aggregate query.
+    # 待付口径 = 计划 − 已付 − 预付冲抵（与付款台账列表/资金池一致）
     agg = qs.aggregate(
         total=Sum('total_amount'),
         paid_sum=Sum('paid'),
+        offset_sum=Sum('prepaid_offset_amount'),
         cnt=Count('id'),
-        settled=Count(Case(When(paid__gte=F('total_amount'), then=1))),
-        partial=Count(Case(When(paid__gt=Decimal('0'), paid__lt=F('total_amount'), then=1))),
-        pending=Count(Case(When(paid=Decimal('0'), then=1))),
+        settled=Count(Case(When(
+            paid__gte=F('total_amount') - F('prepaid_offset_amount'), then=1))),
+        partial=Count(Case(When(
+            paid__gt=Decimal('0'),
+            paid__lt=F('total_amount') - F('prepaid_offset_amount'), then=1))),
+        pending=Count(Case(When(paid=Decimal('0'),
+                                prepaid_offset_amount=Decimal('0'), then=1))),
     )
     total_amount = agg['total'] or D(0)
     total_paid = agg['paid_sum'] or D(0)
-    total_remaining = total_amount - total_paid
+    total_remaining = total_amount - total_paid - (agg['offset_sum'] or D(0))
     completion_rate = round(float(total_paid / total_amount * 100), 1) if total_amount else 0.0
 
     # 前期结转合计（仅未付清部分的剩余应付额）。
@@ -1625,16 +1669,19 @@ def stats(request):
     # Per-department rollup grouped in SQL（本期 + 前期结转分别分组后合并）。
     dept_map = {}
     for r in qs.values('department').annotate(
-            total=Sum('total_amount'), paid_sum=Sum('paid'), count=Count('id')):
+            total=Sum('total_amount'), paid_sum=Sum('paid'),
+            offset_sum=Sum('prepaid_offset_amount'), count=Count('id')):
         dept_map[r['department']] = {
             'total': r['total'] or D(0), 'paid': r['paid_sum'] or D(0),
+            'offset': r['offset_sum'] or D(0),
             'count': r['count'], 'carry': D(0), 'carry_count': 0,
         }
     for r in carry_qs.values('department').annotate(
             carry=Sum(eff_remaining, filter=not_settled),
             carry_count=Count('id', filter=not_settled)):
         row = dept_map.setdefault(r['department'], {
-            'total': D(0), 'paid': D(0), 'count': 0, 'carry': D(0), 'carry_count': 0})
+            'total': D(0), 'paid': D(0), 'offset': D(0),
+            'count': 0, 'carry': D(0), 'carry_count': 0})
         row['carry'] = r['carry'] or D(0)
         row['carry_count'] = r['carry_count'] or 0
 
@@ -1645,7 +1692,7 @@ def stats(request):
             'dept': dept,
             'total': str(t),
             'paid': str(pd),
-            'remaining': str(t - pd),
+            'remaining': str(t - pd - v.get('offset', D(0))),
             'count': v['count'],
             'carry': str(carry),               # 前期结转未付
             'carry_count': v['carry_count'],

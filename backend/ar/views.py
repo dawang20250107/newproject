@@ -4878,6 +4878,11 @@ def advance_writeoffs(request, pk):
                 return err('排款记录不存在', 404)
             if request.pk_role != 'super_admin' and payment_obj.department not in request.pk_depts:
                 return err('无权操作该排款记录', 403)
+            # 跨部门核销会让资金池错位：预付流出记在预付方部门，
+            # 冲抵却从排款方部门扣——单池余额双向失真（集团合计反而看不出来）
+            if payment_obj.department != rec.delivery_dept:
+                return err(f'排款所属部门「{payment_obj.department}」与预付所属部门'
+                           f'「{rec.delivery_dept}」不一致，不能关联核销')
         try:
             with transaction.atomic():
                 last = rec.writeoffs.select_for_update().order_by('-writeoff_no').first()

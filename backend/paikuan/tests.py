@@ -366,3 +366,166 @@ class PaymentApplicantTests(TestCase):
         self.assertIn('申请人', headers2)
         col = headers2.index('申请人')
         self.assertEqual(ws2[2][col].value, '王五')
+
+
+class PaymentChainIntegrityTests(TestCase):
+    """排款链路完整性：归档保护、预付冲抵删除拦截、未来日期拒绝、跨部门核销拦截、口径对齐。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = DEPARTMENTS[0]
+        self.dept2 = DEPARTMENTS[1] if len(DEPARTMENTS) > 1 else DEPARTMENTS[0]
+        admin = PaikuanUser(phone='13900000500', name='ChainAdmin', role='super_admin',
+                            job_title='finance_director', departments=DEPARTMENTS,
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.user = admin
+        self.token = make_token(admin)
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _pay(self, total='5000', dept=None, planned='2026-06-01'):
+        return Payment.objects.create(
+            created_by=self.user, department=dept or self.dept,
+            approval_number='', project_desc='P', payee='Payee',
+            total_amount=Decimal(total), planned_date=date.fromisoformat(planned))
+
+    def _approval(self, status='pending', archived=False):
+        from paikuan.models import ApprovalRecord
+        return ApprovalRecord.objects.create(
+            applicant='申请人', department=self.dept,
+            approval_number='1' * 21, summary='摘要',
+            amount=Decimal('3000'), payee='供应商',
+            status=status, archived=archived)
+
+    # ── 1. 归档审批记录不可编辑 ──────────────────────────────────────────
+    def test_archived_approval_cannot_be_edited(self):
+        rec = self._approval(status='rejected', archived=True)
+        resp = self.client.put(
+            f'/api/pk/approvals/{rec.id}',
+            data=json.dumps({'summary': '新摘要'}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 409, resp.content)
+        self.assertIn('归档', resp.json().get('error', ''))
+
+    # ── 2. 已审批的记录改金额被拒绝（须先退回 pending）──────────────────
+    def test_amount_change_blocked_when_already_approved(self):
+        rec = self._approval(status='approved', archived=False)
+        resp = self.client.put(
+            f'/api/pk/approvals/{rec.id}',
+            data=json.dumps({'amount': '9999'}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn('待审批', resp.json().get('error', ''))
+        rec.refresh_from_db()
+        self.assertEqual(rec.amount, Decimal('3000'))
+
+    # ── 3. 金额 pending 状态下可修改 ────────────────────────────────────
+    def test_amount_change_allowed_when_pending(self):
+        rec = self._approval(status='pending', archived=False)
+        resp = self.client.put(
+            f'/api/pk/approvals/{rec.id}',
+            data=json.dumps({'amount': '8888'}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(Decimal(resp.json()['data']['amount']), Decimal('8888'))
+
+    # ── 4. 已关联预付核销的排款不可删除 ─────────────────────────────────
+    def test_payment_delete_blocked_when_has_prepaid_writeoff(self):
+        from ar.models import ARProject, AdvanceRecord, AdvanceWriteoff
+        p = self._pay(total='10000')
+        proj = ARProject.objects.create(
+            customer_name='C', short_name='P', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='GYL-CHAIN-001')
+        adv = AdvanceRecord.objects.create(
+            direction='预付', project=proj, delivery_dept=self.dept,
+            counterparty='供应商', occur_year=2026, occur_month=6,
+            occur_date=date(2026, 6, 1), advance_amount=Decimal('10000'))
+        AdvanceWriteoff.objects.create(
+            advance_record=adv, writeoff_no=1, amount=Decimal('3000'),
+            writeoff_date=date(2026, 6, 5), payment=p)
+        resp = self.client.delete(f'/api/pk/payments/{p.id}', **self.auth())
+        self.assertEqual(resp.status_code, 409, resp.content)
+        self.assertIn('预付核销', resp.json().get('error', ''))
+
+    # ── 5. 付款分期不允许未来日期 ────────────────────────────────────────
+    def test_future_installment_date_rejected(self):
+        import datetime as dt
+        p = self._pay(total='5000')
+        future = (dt.date.today() + dt.timedelta(days=10)).isoformat()
+        resp = self.client.put(
+            f'/api/pk/payments/{p.id}',
+            data=json.dumps({'installments': [{'pay_date': future, 'pay_amount': '1000'}]}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn('今天', resp.json().get('error', ''))
+
+    # ── 6. 今天日期的分期允许写入 ────────────────────────────────────────
+    def test_today_installment_date_accepted(self):
+        import datetime as dt
+        p = self._pay(total='5000')
+        today = dt.date.today().isoformat()
+        resp = self.client.put(
+            f'/api/pk/payments/{p.id}',
+            data=json.dumps({'installments': [{'pay_date': today, 'pay_amount': '1000'}]}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    # ── 7. stats total_remaining 包含 prepaid_offset 扣减 ──────────────
+    def test_stats_remaining_subtracts_prepaid_offset(self):
+        from ar.models import ARProject, AdvanceRecord, AdvanceWriteoff
+        p = self._pay(total='10000', planned='2026-06-01')
+        # 人工设置 prepaid_offset_amount (模拟信号已触发)
+        Payment.objects.filter(pk=p.pk).update(prepaid_offset_amount=Decimal('2000'))
+        resp = self.client.get('/api/pk/stats',
+                               {'year': 2026, 'month': 6}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        # total_remaining = 10000 - 0 paid - 2000 offset = 8000
+        self.assertEqual(Decimal(d['total_remaining']), Decimal('8000'))
+
+    # ── 8. 超付校验：已付 + 分期超 plan_adjustment 被拒绝 ───────────────
+    def test_overpayment_against_plan_adjustment_rejected(self):
+        from paikuan.models import PaymentInstallment
+        p = self._pay(total='10000')
+        # 先设定 plan_adjustment = 6000
+        Payment.objects.filter(pk=p.pk).update(plan_adjustment=Decimal('6000'))
+        p.refresh_from_db()
+        # 加一笔超过 plan_adjustment 的分期
+        resp = self.client.put(
+            f'/api/pk/payments/{p.id}',
+            data=json.dumps({'installments': [{'pay_date': '2026-06-01', 'pay_amount': '7000'}]}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400, resp.content)
+
+    # ── 9. 跨部门预付核销被拒绝 ─────────────────────────────────────────
+    def test_cross_dept_prepaid_writeoff_blocked(self):
+        from ar.models import ARProject, AdvanceRecord
+        # 排款属于 dept2，预付预收记录属于 dept（不同）
+        p = self._pay(total='10000', dept=self.dept2)
+        proj = ARProject.objects.create(
+            customer_name='C2', short_name='P2', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='GYL-CHAIN-002')
+        adv = AdvanceRecord.objects.create(
+            direction='预付', project=proj, delivery_dept=self.dept,
+            counterparty='供应商B', occur_year=2026, occur_month=6,
+            occur_date=date(2026, 6, 1), advance_amount=Decimal('10000'))
+        # 通过 AR API 创建核销（AR URLs 挂载在 /api/pk/ar/）
+        resp = self.client.post(
+            f'/api/pk/ar/advances/{adv.id}/writeoffs',
+            data=json.dumps({'amount': '3000', 'writeoff_date': '2026-06-05',
+                             'payment_id': p.id}),
+            content_type='application/json', **self.auth())
+        # 若 dept != dept2，应被拒绝
+        if self.dept != self.dept2:
+            self.assertIn(resp.status_code, [400, 403, 409], resp.content)
+            self.assertIn('不一致', resp.json().get('error', ''))
+        else:
+            # 单部门环境跳过跨部门场景
+            pass

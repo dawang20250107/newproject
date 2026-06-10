@@ -115,41 +115,42 @@ class Payment(models.Model):
         except Exception:
             return Decimal('0')
 
+    def _effective_plan(self):
+        return self.plan_adjustment if self.plan_adjustment is not None else self.total_amount
+
     @property
     def remaining(self):
-        paid = self.total_paid
-        if self.plan_adjustment is not None:
-            return max(Decimal('0'), self.plan_adjustment - paid)
-        return max(Decimal('0'), self.total_amount - paid)
+        # 剩余应付 = 有效计划（调整额优先）− 已付 − 预付冲抵。
+        # 预付冲抵的现金在预付时已流出，这里不再需要付现——与资金池刚性待付口径一致。
+        covered = self.total_paid + (self.prepaid_offset_amount or Decimal('0'))
+        return max(Decimal('0'), self._effective_plan() - covered)
 
     @property
     def status(self):
-        paid = self.total_paid
-        if paid >= self.total_amount:
+        covered = self.total_paid + (self.prepaid_offset_amount or Decimal('0'))
+        plan = self._effective_plan()
+        if covered >= plan:
             return 'settled'
         if self.plan_adjustment is not None:
-            return 'settled' if paid >= self.plan_adjustment else 'adjusted'
-        if paid > 0:
+            return 'adjusted'
+        if covered > 0:
             return 'partial'
         return 'pending'
 
     def to_dict(self):
         insts = list(self.installments.all())
         total_paid_val = sum(i.pay_amount for i in insts)
-        if self.plan_adjustment is not None:
-            remaining_val = max(Decimal('0'), self.plan_adjustment - total_paid_val)
-            if total_paid_val >= self.plan_adjustment:
-                status_val = 'settled'
-            else:
-                status_val = 'adjusted'
+        covered = total_paid_val + (self.prepaid_offset_amount or Decimal('0'))
+        plan = self.plan_adjustment if self.plan_adjustment is not None else self.total_amount
+        remaining_val = max(Decimal('0'), plan - covered)
+        if covered >= plan:
+            status_val = 'settled'
+        elif self.plan_adjustment is not None:
+            status_val = 'adjusted'
+        elif covered > 0:
+            status_val = 'partial'
         else:
-            remaining_val = max(Decimal('0'), self.total_amount - total_paid_val)
-            if total_paid_val >= self.total_amount:
-                status_val = 'settled'
-            elif total_paid_val > 0:
-                status_val = 'partial'
-            else:
-                status_val = 'pending'
+            status_val = 'pending'
         return {
             'id': self.id,
             'department': self.department,
@@ -196,6 +197,10 @@ class PaymentInstallment(models.Model):
         db_table = 'paikuan_payment_installments'
         verbose_name = '付款明细'
         ordering = ['seq', 'pay_date']
+        constraints = [
+            models.UniqueConstraint(fields=['payment', 'seq'],
+                                    name='uniq_installment_seq_per_payment'),
+        ]
 
 
 class ApprovalRecord(models.Model):
