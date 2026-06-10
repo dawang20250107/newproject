@@ -300,3 +300,45 @@ class PaymentChangeLog(models.Model):
             'new_value': self.new_value,
             'at': self.at.isoformat() if self.at else None,
         }
+
+
+class AuditLog(models.Model):
+    """全系统操作审计 — 由 AuditLogMiddleware 自动记录所有 API 写操作。
+
+    与 PaymentChangeLog（排款字段级变更）互补：这里是请求级轨迹（谁、何时、
+    对哪个接口做了什么写操作、参数是什么、结果如何），覆盖应收/客户/预收/
+    财务/权限等全部模块，用于审计追溯与异常排查。
+    """
+    user = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                             null=True, blank=True, related_name='audit_logs')
+    user_name = models.CharField('操作人', max_length=100, blank=True, default='', db_index=True)
+    method = models.CharField('方法', max_length=8)
+    path = models.CharField('接口路径', max_length=300, db_index=True)
+    module = models.CharField('模块', max_length=20, blank=True, default='', db_index=True)
+    status_code = models.IntegerField('响应状态码', default=0)
+    payload = models.JSONField('请求参数（已脱敏）', default=dict, blank=True)
+    ip = models.CharField('来源IP', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = 'paikuan_audit_logs'
+        verbose_name = '操作审计日志'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user_name', 'created_at']),
+            models.Index(fields=['module', 'created_at']),
+        ]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'user_name': self.user_name,
+            'method': self.method,
+            'path': self.path,
+            'module': self.module,
+            'status_code': self.status_code,
+            'payload': self.payload,
+            'ip': self.ip,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }

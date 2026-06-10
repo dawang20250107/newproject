@@ -2275,3 +2275,58 @@ def departments(request):
         allowed = set(request.pk_depts or [])
         merged = [d for d in merged if d in allowed]
     return ok(merged)
+
+
+# ── 操作审计日志（仅超管）───────────────────────────────────────────────────────
+
+@csrf_exempt
+@pk_required(roles=['super_admin'])
+def audit_logs(request):
+    """全系统操作审计查询：按操作人/模块/方法/结果/路径关键词/日期过滤，分页。"""
+    from paikuan.models import AuditLog
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    qs = AuditLog.objects.all()
+    q = request.GET.get('q', '').strip()
+    if q:
+        qs = qs.filter(Q(path__icontains=q) | Q(user_name__icontains=q))
+    module = request.GET.get('module', '').strip()
+    if module:
+        qs = qs.filter(module=module)
+    method = request.GET.get('method', '').strip().upper()
+    if method:
+        qs = qs.filter(method=method)
+    result = request.GET.get('result', '').strip()   # ok | fail
+    if result == 'ok':
+        qs = qs.filter(status_code__lt=400)
+    elif result == 'fail':
+        qs = qs.filter(status_code__gte=400)
+    date_start = request.GET.get('date_start', '').strip()
+    if date_start:
+        qs = qs.filter(created_at__date__gte=date_start)
+    date_end = request.GET.get('date_end', '').strip()
+    if date_end:
+        qs = qs.filter(created_at__date__lte=date_end)
+
+    total = qs.count()
+    page = max(1, int(request.GET.get('page', 1) or 1))
+    size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
+    items = [l.to_dict() for l in qs[(page - 1) * size: page * size]]
+    return ok({'items': items, 'total': total, 'page': page, 'size': size})
+
+
+@csrf_exempt
+@pk_required(roles=['super_admin'])
+def audit_logs_prune(request):
+    """清理 N 天前的审计日志（默认保留180天），防止无限增长。"""
+    from paikuan.models import AuditLog
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    data = parse_body(request)
+    try:
+        keep_days = max(30, min(3650, int(data.get('keep_days', 180))))
+    except (ValueError, TypeError):
+        keep_days = 180
+    cutoff = timezone.now() - datetime.timedelta(days=keep_days)
+    deleted, _ = AuditLog.objects.filter(created_at__lt=cutoff).delete()
+    return ok({'deleted': deleted, 'keep_days': keep_days})

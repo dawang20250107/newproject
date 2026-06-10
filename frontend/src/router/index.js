@@ -31,6 +31,7 @@ const routes = [
   // Admin
   { path: '/users', component: () => import('../views/Users.vue'), meta: { role: 'super_admin' } },
   { path: '/permissions', component: () => import('../views/Permissions.vue'), meta: { role: 'super_admin' } },
+  { path: '/audit', component: () => import('../views/AuditLogs.vue'), meta: { role: 'super_admin' } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 

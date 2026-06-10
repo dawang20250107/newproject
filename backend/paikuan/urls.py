@@ -29,4 +29,6 @@ urlpatterns = [
     path('permissions', views.permissions),
     path('permissions/<str:job>', views.permission_detail),
     path('departments', views.departments),
+    path('audit-logs', views.audit_logs),
+    path('audit-logs/prune', views.audit_logs_prune),
 ]

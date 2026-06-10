@@ -44,6 +44,8 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.middleware.common.CommonMiddleware',
+    # 全系统操作审计：自动记录所有 API 写操作（谁/何时/何接口/何参数/结果）
+    'paikuan.middleware.AuditLogMiddleware',
 ]
 
 CORS_ALLOW_ALL_ORIGINS = False
