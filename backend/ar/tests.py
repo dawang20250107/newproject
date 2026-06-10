@@ -1970,7 +1970,7 @@ class CashPoolTests(TestCase):
     def auth(self, user):
         return {'HTTP_AUTHORIZATION': f'Bearer {make_token(user)}'}
 
-    def _config(self, user=None, dept='运输事业部', amount='10000'):
+    def _config(self, user=None, dept='运输事业部', amount='10000'):  # noqa: D401
         return self.client.post(
             '/api/pk/ar/pool/config',
             data=json.dumps({'delivery_dept': dept,
@@ -1990,6 +1990,7 @@ class CashPoolTests(TestCase):
 
     def test_pool_balance_and_projection(self):
         self._config()
+        self._config(dept='劳务事业部', amount='1000')   # 调拨两侧池子都须已配置
         # 调拨：劳务→运输 10，运输→劳务 5
         for f, t, amt in (('劳务事业部', '运输事业部', '10'), ('运输事业部', '劳务事业部', '5')):
             res = self.client.post('/api/pk/ar/pool/transfers',
@@ -2232,3 +2233,60 @@ class AuditHardeningTests(TestCase):
         res2 = self.client.get('/api/pk/ar/pool?depts=运输事业部', **self.auth(self.admin))
         pool = res2.json()['data']['pools'][0]
         self.assertEqual(Decimal(pool['committed']['d30']), Decimal('380'))
+
+
+class CashPoolTransferGuardTests(TestCase):
+    """池间调拨防呆：禁透支 / 禁早于期初 / 两侧须已配置。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.today = date.today()
+        from datetime import timedelta
+        self.td = timedelta
+        self.admin = PaikuanUser(phone='13800000041', name='超管', role='super_admin',
+                                 job_title='', departments=[], is_active=True, is_approved=True)
+        self.admin.set_password('Test1234x'); self.admin.save()
+        from ar.models import CashPoolConfig
+        CashPoolConfig.objects.create(delivery_dept='运输事业部',
+                                      initial_date=self.today - self.td(days=30),
+                                      initial_amount=Decimal('100000'))
+        CashPoolConfig.objects.create(delivery_dept='劳务事业部',
+                                      initial_date=self.today - self.td(days=20),
+                                      initial_amount=Decimal('50000'))
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def _post(self, body):
+        return self.client.post('/api/pk/ar/pool/transfers', data=json.dumps(body),
+                                content_type='application/json',
+                                HTTP_AUTHORIZATION=f'Bearer {make_token(self.admin)}')
+
+    def test_overdraft_rejected(self):
+        # 池里 10 万，要调出 15 万 → 拒绝并报当前水位
+        res = self._post({'from_dept': '运输事业部', 'to_dept': '劳务事业部',
+                          'amount': '150000', 'transfer_date': str(self.today)})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('不足以调出', res.json()['error'])
+        # 10 万以内放行
+        res2 = self._post({'from_dept': '运输事业部', 'to_dept': '劳务事业部',
+                           'amount': '60000', 'transfer_date': str(self.today)})
+        self.assertEqual(res2.status_code, 200)
+        # 再调 5 万：剩 4 万，不够 → 拒
+        res3 = self._post({'from_dept': '运输事业部', 'to_dept': '劳务事业部',
+                           'amount': '50000', 'transfer_date': str(self.today)})
+        self.assertEqual(res3.status_code, 400)
+
+    def test_date_before_initial_rejected(self):
+        res = self._post({'from_dept': '运输事业部', 'to_dept': '劳务事业部',
+                          'amount': '1000',
+                          'transfer_date': str(self.today - self.td(days=25))})  # 晚于运输期初但早于劳务期初
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('期初基准日', res.json()['error'])
+
+    def test_unconfigured_dept_rejected(self):
+        res = self._post({'from_dept': '运输事业部', 'to_dept': '阔展事业部',
+                          'amount': '1000', 'transfer_date': str(self.today)})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('池配置', res.json()['error'])

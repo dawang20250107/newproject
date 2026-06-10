@@ -6995,6 +6995,25 @@ def cash_pool_transfers(request):
         if amount <= 0:
             return err('调拨金额必须大于0')
         tr_date = _normalize_date(data.get('transfer_date')) or datetime.date.today()
+        # 两池都须已配置期初，且调拨日期不得早于任一侧期初基准日——
+        # 否则一侧计入一侧忽略，集团总池≠各池之和（台账不守恒）
+        cfg_f = CashPoolConfig.objects.filter(delivery_dept=f).first()
+        cfg_t = CashPoolConfig.objects.filter(delivery_dept=t).first()
+        if not cfg_f or not cfg_t:
+            return err('调出/调入池需先在「池配置」中设置期初基准')
+        try:
+            tr_date_d = datetime.date.fromisoformat(str(tr_date)[:10])
+        except (ValueError, TypeError):
+            return err('调拨日期格式错误')
+        if tr_date_d < cfg_f.initial_date or tr_date_d < cfg_t.initial_date:
+            return err('调拨日期不能早于两侧池子的期初基准日（会造成台账不守恒）')
+        # 不允许透支调拨：调出额不得超过调出池当前水位
+        today = datetime.date.today()
+        c_, ar_, p_, po_, ap_, ti_, to_ = _pool_actual_flows(f, cfg_f.initial_date, today)
+        balance = cfg_f.initial_amount + c_ + ar_ - (p_ - po_) - ap_ + ti_ - to_
+        if amount > balance:
+            return err(f'调出池「{f}」当前水位 {balance:,.2f} 元，'
+                       f'不足以调出 {amount:,.2f} 元（不允许透支调拨）')
         tr = CashPoolTransfer.objects.create(
             from_dept=f, to_dept=t, amount=amount, transfer_date=tr_date,
             expected_return_date=_normalize_date(data.get('expected_return_date')),
