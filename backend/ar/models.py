@@ -133,8 +133,13 @@ class ARProject(models.Model):
             if (self.customer_id and (self.customer.name or '').strip() == name
                     and (self.customer.delivery_dept or '') == dept):
                 return
-            cust, _ = Customer.objects.get_or_create(
+            cust, created = Customer.objects.get_or_create(
                 name=name, delivery_dept=dept, defaults={'level': self.customer_level or ''})
+            # 换挂到已存在的客户实体：等级以该客户为准（单一真相源）。
+            # 否则项目带着旧客户的等级进来，会被 _sync_level_with_customer 上推、
+            # 冲掉新客户及其名下全部项目的等级。
+            if not created and cust.id != self.customer_id and (cust.level or '').strip():
+                self.customer_level = cust.level
             self.customer = cust
         except Exception:
             pass
@@ -828,6 +833,14 @@ class AdvanceWriteoff(models.Model):
         indexes = [
             models.Index(fields=['advance_record', 'writeoff_date']),
             models.Index(fields=['writeoff_date']),
+        ]
+        constraints = [
+            # 预付核销挂排款(payment) / 预收核销挂回款(ar_payment)，二者互斥；
+            # 若同时存在，同一笔现金会在资金池里被重复计为流出
+            models.CheckConstraint(
+                name='writeoff_payment_xor_ar_payment',
+                check=~(models.Q(payment__isnull=False) & models.Q(ar_payment__isnull=False)),
+            ),
         ]
 
     def to_dict(self):

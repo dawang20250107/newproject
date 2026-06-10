@@ -2459,3 +2459,127 @@ class CashPoolTransferWorkflowTests(TestCase):
                                content_type='application/json', **self.auth(self.admin))
         self.assertEqual(res.status_code, 400)
         self.assertIn('不能晚于今天', res.json()['error'])
+
+
+class ChainIntegrityTests(TestCase):
+    """全链路体检回归：客户删除守卫 / 换挂等级方向 / 预收预付方向锁 /
+    开票金额配日期 / 导出公式转义。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.today = date.today()
+        from datetime import timedelta
+        self.td = timedelta
+        self.admin = PaikuanUser(phone='13800000061', name='超管', role='super_admin',
+                                 job_title='', departments=[], is_active=True, is_approved=True)
+        self.admin.set_password('Test1234x'); self.admin.save()
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {make_token(self.admin)}'}
+
+    # ── 客户名下有项目时禁删 ────────────────────────────────────────────────
+    def test_customer_delete_blocked_when_projects_linked(self):
+        proj = ARProject.objects.create(
+            customer_name='守卫客户', short_name='守卫项目', delivery_dept='运输事业部',
+            sales_contact='甲', project_manager='乙')
+        proj.refresh_from_db()
+        cid = proj.customer_id
+        self.assertIsNotNone(cid)
+        res = self.client.delete(f'/api/pk/ar/customers/{cid}', **self.auth())
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('名下还有', res.json()['error'])
+        # 删掉项目后客户可删
+        proj.delete()
+        res2 = self.client.delete(f'/api/pk/ar/customers/{cid}', **self.auth())
+        self.assertEqual(res2.status_code, 200)
+
+    # ── 换挂客户：等级以目标客户为准，不被旧等级冲掉 ────────────────────────
+    def test_relink_mirrors_target_customer_level(self):
+        from ar.models import Customer
+        a = ARProject.objects.create(customer_name='客户A', short_name='项目A',
+                                     delivery_dept='运输事业部', customer_level='C级',
+                                     sales_contact='甲', project_manager='乙')
+        b1 = ARProject.objects.create(customer_name='客户B', short_name='项目B1',
+                                      delivery_dept='运输事业部', customer_level='S级',
+                                      sales_contact='甲', project_manager='乙')
+        cust_b = Customer.objects.get(name='客户B', delivery_dept='运输事业部')
+        self.assertEqual(cust_b.level, 'S级')
+        # 项目A 改名挂到 客户B：等级应镜像 B 的 S级，而不是把 C级 推给 B
+        a.customer_name = '客户B'
+        a.save()
+        a.refresh_from_db(); cust_b.refresh_from_db(); b1.refresh_from_db()
+        self.assertEqual(a.customer_id, cust_b.id)
+        self.assertEqual(a.customer_level, 'S级')
+        self.assertEqual(cust_b.level, 'S级')
+        self.assertEqual(b1.customer_level, 'S级')
+
+    # ── 预收/预付：已有核销不可翻方向 ───────────────────────────────────────
+    def test_advance_direction_locked_after_writeoff(self):
+        adv = AdvanceRecord.objects.create(delivery_dept='运输事业部', direction='预付',
+                                           occur_year=2026, occur_month=1,
+                                           occur_date=self.today - self.td(days=10),
+                                           advance_amount=Decimal('100'))
+        AdvanceWriteoff.objects.create(advance_record=adv, writeoff_no=1,
+                                       amount=Decimal('40'), writeoff_date=self.today)
+        res = self.client.put(f'/api/pk/ar/advances/{adv.id}',
+                              data=json.dumps({'direction': '预收'}),
+                              content_type='application/json', **self.auth())
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('不能修改预收/预付方向', res.json()['error'])
+        # 金额改到低于已核销额也被拦（余额不能为负）
+        res2 = self.client.put(f'/api/pk/ar/advances/{adv.id}',
+                               data=json.dumps({'advance_amount': '30'}),
+                               content_type='application/json', **self.auth())
+        self.assertEqual(res2.status_code, 400)
+
+    # ── 开票金额必须配开票日期（创建与编辑两个入口）─────────────────────────
+    def test_invoice_amount_requires_invoice_date(self):
+        proj = ARProject.objects.create(customer_name='开票客户', short_name='开票项目',
+                                        delivery_dept='运输事业部',
+                                        sales_contact='甲', project_manager='乙')
+        res = self.client.post('/api/pk/ar/records',
+                               data=json.dumps({'project_id': proj.id,
+                                                'operation_year': 2026, 'operation_month': 3,
+                                                'estimated_amount': '100',
+                                                'actual_invoice_amount': '100'}),
+                               content_type='application/json', **self.auth())
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('开票日期', res.json()['error'])
+        res2 = self.client.post('/api/pk/ar/records',
+                                data=json.dumps({'project_id': proj.id,
+                                                 'operation_year': 2026, 'operation_month': 3,
+                                                 'estimated_amount': '100',
+                                                 'actual_invoice_amount': '100',
+                                                 'invoice_date': str(self.today)}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(res2.status_code, 200)
+        rid = res2.json()['data']['id']
+        # 清空日期但留着金额 → 拦截；只改备注不追溯 → 放行
+        res3 = self.client.put(f'/api/pk/ar/records/{rid}',
+                               data=json.dumps({'invoice_date': ''}),
+                               content_type='application/json', **self.auth())
+        self.assertEqual(res3.status_code, 400)
+        res4 = self.client.put(f'/api/pk/ar/records/{rid}',
+                               data=json.dumps({'notes': '只改备注'}),
+                               content_type='application/json', **self.auth())
+        self.assertEqual(res4.status_code, 200)
+
+    # ── 导出公式注入转义（集中出口覆盖所有 AR 导出）─────────────────────────
+    def test_export_escapes_formula_cells(self):
+        import openpyxl as _xl
+        ARProject.objects.create(customer_name='=HYPERLINK("http://evil")',
+                                 short_name='=1+1', delivery_dept='运输事业部',
+                                 sales_contact='甲', project_manager='乙')
+        res = self.client.get('/api/pk/ar/projects/export', **self.auth())
+        self.assertEqual(res.status_code, 200)
+        wb = _xl.load_workbook(io.BytesIO(res.content))
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    if isinstance(cell.value, str):
+                        self.assertFalse(cell.value.startswith('='),
+                                         f'未转义公式单元格: {cell.value!r}')

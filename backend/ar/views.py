@@ -454,7 +454,18 @@ def _visible_ar_export_cols(request, columns):
     return [col for col in columns if col[0] is None or ar_view.get(col[0], True)]
 
 
+_XL_FORMULA_CHARS = ('=', '+', '-', '@', '\t', '\r')
+
+
 def _export_response(wb, filename):
+    # Excel 公式注入防护（与排款导出口径一致）：全部工作表的文本单元格，
+    # 以 =+-@ 等开头的前置单引号转义。集中在导出总出口做，覆盖所有 AR 导出。
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                v = cell.value
+                if isinstance(v, str) and v and v[0] in _XL_FORMULA_CHARS:
+                    cell.value = "'" + v
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -1277,6 +1288,10 @@ def ar_records(request):
                 notes=data.get('notes', '').strip(),
                 created_by=user,
             )
+            # 已填开票金额必须有开票日期：开票状态/到期推算都依赖日期，缺日期会出现
+            # 「已开票却无法算账期」的悬空状态
+            if rec.actual_invoice_amount is not None and not rec.invoice_date:
+                return err('已填实际开票金额，请同时填写开票日期')
             rec.save()
         except Exception as e:
             return err(str(e))
@@ -1333,6 +1348,10 @@ def ar_record_detail(request, pk):
             rec.invoice_batch_no = (data['invoice_batch_no'] or '').strip()
         if 'notes' in data:
             rec.notes = data['notes'].strip()
+        # 触碰了开票字段时校验配套关系（不触碰则不追溯存量数据，避免改备注也被拦）
+        if (('actual_invoice_amount' in data or 'invoice_date' in data)
+                and rec.actual_invoice_amount is not None and not rec.invoice_date):
+            return err('已填实际开票金额，请同时填写开票日期')
         try:
             rec.save()
         except Exception as e:
@@ -4350,7 +4369,12 @@ def advance_detail(request, pk):
         data = _ar_visible_payload(request, _parse_body(request), 'advance',
                                    extra=('direction', 'occur_year', 'occur_month',
                                           'occur_date', 'expected_writeoff_date'))
-        if 'direction' in data and data['direction'] in ADVANCE_DIRECTIONS:
+        if 'direction' in data and data['direction'] in ADVANCE_DIRECTIONS \
+                and data['direction'] != rec.direction:
+            # 方向决定核销语义（预收核销挂应收回款 / 预付核销挂排款）与资金池口径，
+            # 已有核销时翻转会让两侧台账互相矛盾
+            if rec.writeoffs.exists():
+                return err('该记录已有核销，不能修改预收/预付方向；请先删除其全部核销记录')
             rec.direction = data['direction']
         if 'counterparty' in data:
             rec.counterparty = (data['counterparty'] or '').strip()
@@ -6229,6 +6253,12 @@ def customer_detail(request, pk):
         denied = _delete_denied(request)
         if denied:
             return denied
+        # 名下还有项目时禁删：否则项目 customer_id 置空、客户名文本悬空，
+        # 下次保存项目会按同名重建客户，等级真相源断链
+        linked = ARProject.objects.filter(customer_id=c.pk).count()
+        if linked:
+            return err(f'客户「{c.name}」名下还有 {linked} 个项目，不能删除；'
+                       f'请先删除或改挂这些项目（项目台账中修改客户名称即可改挂）')
         c.delete()
         return ok({'deleted': pk})
 
