@@ -522,7 +522,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <input ref="collFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport('collection', $event)" />
             </label>
             <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData('collection')">↓ 导出</button>
-            <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate('collection')">+ 新增收款预算</button>
+            <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate('collection')">+ 新增收款预算</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -581,7 +581,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <input ref="payFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport('payment', $event)" />
             </label>
             <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData('payment')">↓ 导出</button>
-            <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate('payment')">+ 新增付款预算</button>
+            <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate('payment')">+ 新增付款预算</button>
           </div>
         </div>
         <div class="table-wrap">

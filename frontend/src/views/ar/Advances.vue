@@ -34,7 +34,7 @@ const months = Array.from({ length: 12 }, (_, i) => i + 1)
 const fmtAmt = (v) => fmtCompact(v, { dash: '0.00' })
 
 const show = k => auth.canArView(k)
-const canCreate = computed(() => auth.canCreate)
+const canCreate = computed(() => auth.canArWrite)
 const canDelete = computed(() => auth.canDelete)
 
 const isReceive = computed(() => direction.value === '预收')

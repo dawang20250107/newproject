@@ -191,7 +191,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           合同 · 多客户（主/次 + 分成）· 多项目关联 — 支持一个合同多客户多项目、一个项目挂多个合同
         </div>
       </div>
-      <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增合同</button>
+      <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate">+ 新增合同</button>
     </div>
 
     <!-- Filter strip -->

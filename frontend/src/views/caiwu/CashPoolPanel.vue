@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import ar from '../../api/ar.js'
 import { useAuthStore } from '../../stores/auth.js'
 import { todayCST } from '../../constants.js'
@@ -135,7 +135,9 @@ async function saveCfgRow(row) {
   finally { cfgSaving.value = false }
 }
 
-onMounted(load)
+const onScopeChange = () => load()
+onMounted(() => { load(); window.addEventListener('pk:depts-changed', onScopeChange) })
+onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 </script>
 
 <template>

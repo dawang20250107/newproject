@@ -726,7 +726,7 @@ function clearFilters() {
               <div class="kpi-track"><div class="kpi-fill fill-green" :style="`width:${kpiData.collection.rate}%`"></div></div>
               <div class="kpi-pct">{{ kpiData.collection.rate }}%</div>
             </div>
-            <div class="kpi-item ok"><span class="kpi-k">已收</span><span class="kpi-v">{{ fmtAmt(kpiData.collection.collected_amount) }}</span></div>
+            <div class="kpi-item ok" title="应收口径：含预收抵扣（以预收冲减应收也算已收）；纯现金口径见 现金流分析 / 资金池"><span class="kpi-k">已收</span><span class="kpi-v">{{ fmtAmt(kpiData.collection.collected_amount) }}</span></div>
             <div class="kpi-item danger"><span class="kpi-k">其中逾期</span><span class="kpi-v">{{ kpiData.overdue.count }} 笔</span></div>
           </template>
         </template>
@@ -1168,7 +1168,7 @@ function clearFilters() {
                 <th class="ctr">记录数</th>
                 <th class="amt">预估总额</th>
                 <th class="amt">开票总额</th>
-                <th class="amt">已收总额</th>
+                <th class="amt" title="应收口径：含预收抵扣；纯现金口径见 现金流分析 / 资金池">已收总额</th>
                 <th class="amt">未收总额</th>
               </tr>
             </thead>
