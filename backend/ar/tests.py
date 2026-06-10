@@ -1905,3 +1905,128 @@ class AuditLogTests(TestCase):
         log = AuditLog.objects.order_by('-id').first()
         self.assertEqual(log.status_code, 404)
         self.assertEqual(log.user_name, '普通用户')
+
+
+class CashPoolTests(TestCase):
+    """资金池：水位口径 / 刚性+管道分窗 / 预判 / 配置与调拨权限。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.today = date.today()
+        from datetime import timedelta
+        self.td = timedelta
+        self.admin = PaikuanUser(phone='13800000021', name='超管', role='super_admin',
+                                 job_title='', departments=[], is_active=True, is_approved=True)
+        self.admin.set_password('Test123456'); self.admin.save()
+        self.cashier = PaikuanUser(phone='13800000022', name='出纳', role='operator',
+                                   job_title='cashier', departments=['运输事业部'],
+                                   is_active=True, is_approved=True)
+        self.cashier.set_password('Test123456'); self.cashier.save()
+
+        proj = ARProject.objects.create(
+            customer_name='池客户', short_name='池项目', delivery_dept='运输事业部',
+            sales_contact='甲', project_manager='乙')
+        # 记录A：1000，逾期20天；回款200 + 预收抵扣100 → 未收700（逾期在外余额）
+        self.rec_a = ARRecord.objects.create(project=proj, operation_year=2026, operation_month=1,
+                                             estimated_amount=Decimal('1000'),
+                                             due_date=self.today - self.td(days=20))
+        ARPayment.objects.create(ar_record=self.rec_a, payment_no=1, amount=Decimal('200'),
+                                 payment_date=self.today - self.td(days=10), source='回款')
+        ARPayment.objects.create(ar_record=self.rec_a, payment_no=2, amount=Decimal('100'),
+                                 payment_date=self.today - self.td(days=9), source='预收抵扣')
+        # 记录B：300，15天后到期 → 30天窗预期流入
+        ARRecord.objects.create(project=proj, operation_year=2026, operation_month=2,
+                                estimated_amount=Decimal('300'),
+                                due_date=self.today + self.td(days=15))
+        # 预收50 / 预付30
+        AdvanceRecord.objects.create(delivery_dept='运输事业部', direction='预收',
+                                     occur_year=2026, occur_month=5,
+                                     occur_date=self.today - self.td(days=5),
+                                     advance_amount=Decimal('50'))
+        AdvanceRecord.objects.create(delivery_dept='运输事业部', direction='预付',
+                                     occur_year=2026, occur_month=5,
+                                     occur_date=self.today - self.td(days=3),
+                                     advance_amount=Decimal('30'))
+        # 排款500，已付80（实际流出），余420计划10天后付（30天窗刚性流出）
+        from paikuan.models import Payment as PkPayment, PaymentInstallment, ApprovalRecord
+        pay = PkPayment.objects.create(department='运输事业部', project_desc='池支出',
+                                       payee='供应商', total_amount=Decimal('500'),
+                                       planned_date=self.today + self.td(days=10))
+        PaymentInstallment.objects.create(payment=pay, seq=1,
+                                          pay_date=self.today - self.td(days=2),
+                                          pay_amount=Decimal('80'))
+        # 管道：已批待排700 + 审批中600
+        ApprovalRecord.objects.create(applicant='甲', department='运输事业部',
+                                      approval_number='A' * 21, summary='已批待排',
+                                      amount=Decimal('700'), payee='供应商', status='approved')
+        ApprovalRecord.objects.create(applicant='甲', department='运输事业部',
+                                      approval_number='B' * 21, summary='审批中',
+                                      amount=Decimal('600'), payee='供应商', status='pending')
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self, user):
+        return {'HTTP_AUTHORIZATION': f'Bearer {make_token(user)}'}
+
+    def _config(self, user=None, dept='运输事业部', amount='10000'):
+        return self.client.post(
+            '/api/pk/ar/pool/config',
+            data=json.dumps({'delivery_dept': dept,
+                             'initial_date': str(self.today - self.td(days=100)),
+                             'initial_amount': amount}),
+            content_type='application/json', **self.auth(user or self.admin))
+
+    def test_config_super_admin_only(self):
+        self.assertEqual(self._config(user=self.cashier).status_code, 403)
+        res = self._config()
+        self.assertEqual(res.status_code, 200)
+        # upsert 覆盖
+        res2 = self._config(amount='20000')
+        self.assertEqual(res2.json()['data']['initial_amount'], '20000')
+        from ar.models import CashPoolConfig
+        self.assertEqual(CashPoolConfig.objects.count(), 1)
+
+    def test_pool_balance_and_projection(self):
+        self._config()
+        # 调拨：劳务→运输 10，运输→劳务 5
+        for f, t, amt in (('劳务事业部', '运输事业部', '10'), ('运输事业部', '劳务事业部', '5')):
+            res = self.client.post('/api/pk/ar/pool/transfers',
+                                   data=json.dumps({'from_dept': f, 'to_dept': t, 'amount': amt,
+                                                    'transfer_date': str(self.today - self.td(days=1))}),
+                                   content_type='application/json', **self.auth(self.admin))
+            self.assertEqual(res.status_code, 200)
+
+        res = self.client.get('/api/pk/ar/pool', **self.auth(self.admin))
+        self.assertEqual(res.status_code, 200)
+        pool = next(p for p in res.json()['data']['pools'] if p['dept'] == '运输事业部')
+        # 10000期初 +200回款(预收抵扣100不算现金) +50预收 −80实付 −30预付 +10调入 −5调出
+        self.assertEqual(Decimal(pool['balance']), Decimal('10145'))
+        self.assertEqual(Decimal(pool['committed']['d30']), Decimal('420'))   # 500−80
+        self.assertEqual(Decimal(pool['pipeline']['approved']), Decimal('700'))
+        self.assertEqual(Decimal(pool['pipeline']['pending']), Decimal('600'))
+        self.assertEqual(Decimal(pool['expected_in']['d30']), Decimal('300'))
+        self.assertEqual(Decimal(pool['expected_in']['overdue_outstanding']), Decimal('700'))
+        # 预判30天 = 10145 + 300 − 420；悲观口径再减管道700
+        self.assertEqual(Decimal(pool['projection']['d30']), Decimal('10025'))
+        self.assertEqual(Decimal(pool['projection']['d30_with_pipeline']), Decimal('9325'))
+        self.assertEqual(pool['warning']['status'], 'ok')
+
+    def test_dept_scoping_and_transfer_permission(self):
+        self._config()
+        res = self.client.get('/api/pk/ar/pool', **self.auth(self.cashier))
+        self.assertEqual(res.status_code, 200)
+        depts = [p['dept'] for p in res.json()['data']['pools']]
+        self.assertEqual(depts, ['运输事业部'])
+        # 非超管不可调拨
+        res2 = self.client.post('/api/pk/ar/pool/transfers',
+                                data=json.dumps({'from_dept': '运输事业部', 'to_dept': '劳务事业部',
+                                                 'amount': '1'}),
+                                content_type='application/json', **self.auth(self.cashier))
+        self.assertEqual(res2.status_code, 403)
+
+    def test_unconfigured_pool_flagged(self):
+        res = self.client.get('/api/pk/ar/pool', **self.auth(self.admin))
+        pool = next(p for p in res.json()['data']['pools'] if p['dept'] == '运输事业部')
+        self.assertFalse(pool['configured'])

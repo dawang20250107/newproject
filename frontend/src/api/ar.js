@@ -130,6 +130,14 @@ const ar = {
   importPaymentBudget: fd => api.post('/ar/budget/payment/import', fd),
   exportPaymentBudget: p => api.get('/ar/budget/payment/export', { params: p, responseType: 'blob' }),
   budgetSummary: p => api.get('/ar/budget/summary', { params: p }),
+
+  // 资金池 (cash pool)
+  cashPool: p => api.get('/ar/pool', { params: p }),
+  poolConfigs: () => api.get('/ar/pool/config'),
+  savePoolConfig: d => api.post('/ar/pool/config', d),
+  listPoolTransfers: () => api.get('/ar/pool/transfers'),
+  createPoolTransfer: d => api.post('/ar/pool/transfers', d),
+  deletePoolTransfer: id => api.delete(`/ar/pool/transfers/${id}`),
 }
 
 export default ar

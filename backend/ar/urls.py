@@ -84,6 +84,12 @@ urlpatterns = [
     # Cashflow comparison
     path('cashflow', views.cashflow),
 
+    # 资金池 (cash pool)
+    path('pool', views.cash_pool),
+    path('pool/config', views.cash_pool_config),
+    path('pool/transfers', views.cash_pool_transfers),
+    path('pool/transfers/<int:pk>', views.cash_pool_transfer_detail),
+
     # Budget
     path('budget/collection', views.budget_collection),
     path('budget/collection/template', views.budget_collection_template),

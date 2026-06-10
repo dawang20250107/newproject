@@ -23,8 +23,9 @@ from paikuan.views import (pk_required, ok, err, DEPARTMENTS, VALID_DEPARTMENTS,
                            AR_RECORD_FIELD_DEFS, AR_ADVANCE_FIELD_DEFS)
 from ar.models import (ARProject, ARRecord, ARPayment, CollectionBudget, PaymentBudget,
                        AdvanceRecord, AdvanceWriteoff, Supplier, Customer,
-                       Contract, ContractParty, ContractProject, ActionItem)
-from paikuan.models import Payment, PaymentInstallment
+                       Contract, ContractParty, ContractProject, ActionItem,
+                       CashPoolConfig, CashPoolTransfer)
+from paikuan.models import Payment, PaymentInstallment, ApprovalRecord
 
 # ── AR page keys (must match PAGE_KEYS in paikuan/views.py) ───────────────────
 AR_PAGE_KEYS = ['ar_projects', 'ar_records', 'ar_advance', 'ar_analytics', 'ar_cashflow', 'ar_budget']
@@ -6706,3 +6707,266 @@ def analytics_target_decomp(request):
             'total_gap': round(total_annual - total_projected, 2) if total_projected is not None else None,
         },
     })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 资金池 (cash pool) — 每事业部一池：期初 + 流水推算水位，刚性/管道流出做预判
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _pool_visible_depts(request):
+    if request.pk_role == 'super_admin':
+        return list(DEPARTMENTS)
+    return [d for d in (request.pk_depts or []) if d in VALID_DEPARTMENTS]
+
+
+def _pool_actual_flows(dept, start, end):
+    """(start, end] 区间的实际现金流（口径与现金流分析一致）。
+    返回 (collected, adv_recv, paid, prepaid_offset, adv_paid, t_in, t_out)。"""
+    collected = _dec(ARPayment.objects.filter(
+        ar_record__delivery_dept=dept,
+        payment_date__gt=start, payment_date__lte=end)
+        .exclude(source='预收抵扣').aggregate(s=Sum('amount'))['s'])
+    adv = (AdvanceRecord.objects.filter(
+        delivery_dept=dept, occur_date__gt=start, occur_date__lte=end)
+        .values('direction').annotate(s=Sum('advance_amount')))
+    adv_map = {r['direction']: _dec(r['s']) for r in adv}
+    paid = _dec(PaymentInstallment.objects.filter(
+        payment__department=dept,
+        pay_date__gt=start, pay_date__lte=end).aggregate(s=Sum('pay_amount'))['s'])
+    # 预付核销冲抵：现金已在预付发生时流出，核销时不再是现金事件 → 从实付中扣除
+    prepaid_offset = _dec(AdvanceWriteoff.objects.filter(
+        payment__department=dept,
+        writeoff_date__gt=start, writeoff_date__lte=end).aggregate(s=Sum('amount'))['s'])
+    t_in = _dec(CashPoolTransfer.objects.filter(
+        to_dept=dept, transfer_date__gt=start, transfer_date__lte=end)
+        .aggregate(s=Sum('amount'))['s'])
+    t_out = _dec(CashPoolTransfer.objects.filter(
+        from_dept=dept, transfer_date__gt=start, transfer_date__lte=end)
+        .aggregate(s=Sum('amount'))['s'])
+    return (collected, adv_map.get('预收', Decimal('0')), paid, prepaid_offset,
+            adv_map.get('预付', Decimal('0')), t_in, t_out)
+
+
+def _pool_metrics(dept, cfg, today):
+    """单个池子的全部指标：水位、警戒线、刚性/管道流出、预期流入、未来水位预判。"""
+    start = cfg.initial_date
+
+    c, ar_, p, po, ap, ti, to_ = _pool_actual_flows(dept, start, today)
+    balance = (cfg.initial_amount + c + ar_ - (p - po) - ap + ti - to_)
+
+    # ── 刚性流出：付款台账已审批待付（remaining>0），按计划日期分窗 ─────────────
+    pay_qs = (Payment.objects.filter(department=dept)
+              .annotate(paid_sum=Coalesce(Sum('installments__pay_amount'),
+                                          Value(0), output_field=DecimalField()))
+              .annotate(plan=Coalesce('plan_adjustment', 'total_amount'))
+              .annotate(rem=F('plan') - F('paid_sum'))
+              .filter(rem__gt=0))
+
+    def _win(qs):
+        return _dec(qs.aggregate(s=Sum('rem'))['s'])
+    d30, d60, d90 = (today + datetime.timedelta(days=n) for n in (30, 60, 90))
+    committed = {
+        'overdue': _win(pay_qs.filter(planned_date__lte=today)),
+        'd30': _win(pay_qs.filter(planned_date__gt=today, planned_date__lte=d30)),
+        'd60': _win(pay_qs.filter(planned_date__gt=d30, planned_date__lte=d60)),
+        'd90': _win(pay_qs.filter(planned_date__gt=d60, planned_date__lte=d90)),
+    }
+    committed['total'] = sum(committed.values())
+
+    # ── 管道流出：审批记录（未排款）。已批待排=大概率近期变刚性；审批中=不确定 ──
+    pipe = (ApprovalRecord.objects.filter(department=dept, archived=False)
+            .values('status').annotate(s=Sum('amount')))
+    pipe_map = {r['status']: _dec(r['s']) for r in pipe}
+    pipeline = {'approved': pipe_map.get('approved', Decimal('0')),
+                'pending': pipe_map.get('pending', Decimal('0'))}
+
+    # ── 预期流入：未结清应收按到期日分窗；已逾期的单列（不计入预判，视作上行空间）──
+    ar_qs = ARRecord.objects.filter(delivery_dept=dept, outstanding_amount__gt=0)
+
+    def _ein(lo, hi):
+        return _dec(ar_qs.filter(due_date__gt=lo, due_date__lte=hi)
+                    .aggregate(s=Sum('outstanding_amount'))['s'])
+    expected_in = {
+        'd30': _ein(today, d30),
+        'd60': _ein(d30, d60),
+        'd90': _ein(d60, d90),
+        'overdue_outstanding': _dec(ar_qs.filter(due_date__lte=today)
+                                    .aggregate(s=Sum('outstanding_amount'))['s']),
+    }
+
+    # ── 水位预判：现水位 + 预期流入 − 刚性流出（逾期刚性视作立即要付）────────────
+    level30 = balance + expected_in['d30'] - committed['overdue'] - committed['d30']
+    level60 = level30 + expected_in['d60'] - committed['d60']
+    level90 = level60 + expected_in['d90'] - committed['d90']
+    projection = {'d30': str(level30), 'd60': str(level60), 'd90': str(level90),
+                  # 悲观口径：已批待排的管道在30天内全部变成刚性支出
+                  'd30_with_pipeline': str(level30 - pipeline['approved'])}
+
+    # ── 警戒线：未来 warning_days 天刚性流出（含逾期未付）──────────────────────
+    wd = today + datetime.timedelta(days=cfg.warning_days or 30)
+    warn_amount = committed['overdue'] + _win(
+        pay_qs.filter(planned_date__gt=today, planned_date__lte=wd))
+    if balance < warn_amount:
+        status = 'danger'
+    elif level60 < 0 or (level30 - pipeline['approved']) < 0:
+        status = 'warn'
+    else:
+        status = 'ok'
+
+    # ── 健康指标：近90天口径 ─────────────────────────────────────────────────
+    t90 = today - datetime.timedelta(days=90)
+    s90 = max(start, t90)
+    c9, ar9, p9, po9, ap9, ti9, to9 = _pool_actual_flows(dept, s90, today)
+    span = max(1, (today - s90).days)
+    in90 = c9 + ar9
+    out90 = (p9 - po9) + ap9
+    runway = float(balance) / (float(out90) / span) if out90 > 0 and balance > 0 else None
+    health = {
+        'runway_days': round(runway) if runway is not None else None,
+        'self_rate': round(float(in90) / float(out90) * 100, 1) if out90 > 0 else None,
+        'net90': str(in90 - out90),
+    }
+
+    return {
+        'dept': dept,
+        'configured': True,
+        'config': cfg.to_dict(),
+        'balance': str(balance),
+        'parts': {
+            'initial': str(cfg.initial_amount),
+            'collected': str(c), 'advance_received': str(ar_),
+            'paid': str(p - po), 'advance_paid': str(ap),
+            'transfer_in': str(ti), 'transfer_out': str(to_),
+        },
+        'warning': {'amount': str(warn_amount), 'status': status},
+        'committed': {k: str(v) for k, v in committed.items()},
+        'pipeline': {k: str(v) for k, v in pipeline.items()},
+        'expected_in': {k: str(v) for k, v in expected_in.items()},
+        'projection': projection,
+        'health': health,
+    }
+
+
+@csrf_exempt
+@pk_required()
+def cash_pool(request):
+    """资金池总览：可见事业部各一池（水位/警戒线/刚性+管道流出/预期流入/预判）。"""
+    denied = _page_denied(request, 'ar_cashflow')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+
+    today = datetime.date.today()
+    depts = _pool_visible_depts(request)
+    cfgs = {c.delivery_dept: c for c in CashPoolConfig.objects.filter(delivery_dept__in=depts)}
+
+    pools = []
+    for dept in depts:
+        cfg = cfgs.get(dept)
+        if cfg is None:
+            pools.append({'dept': dept, 'configured': False})
+            continue
+        pools.append(_pool_metrics(dept, cfg, today))
+
+    configured = [p for p in pools if p.get('configured')]
+    group = None
+    if configured:
+        def _sumf(getter):
+            return str(sum(Decimal(getter(p)) for p in configured))
+        group = {
+            'balance': _sumf(lambda p: p['balance']),
+            'warning_amount': _sumf(lambda p: p['warning']['amount']),
+            'committed_total': _sumf(lambda p: p['committed']['total']),
+            'pipeline_approved': _sumf(lambda p: p['pipeline']['approved']),
+            'pipeline_pending': _sumf(lambda p: p['pipeline']['pending']),
+            'projection_d30': _sumf(lambda p: p['projection']['d30']),
+            'projection_d60': _sumf(lambda p: p['projection']['d60']),
+            'projection_d90': _sumf(lambda p: p['projection']['d90']),
+            'danger_count': sum(1 for p in configured if p['warning']['status'] == 'danger'),
+            'warn_count': sum(1 for p in configured if p['warning']['status'] == 'warn'),
+        }
+    return ok({'pools': pools, 'group': group, 'today': str(today)})
+
+
+@csrf_exempt
+@pk_required(roles=['super_admin'])
+def cash_pool_config(request):
+    """池配置（仅超管）：GET 列表 / POST 按事业部 upsert 期初基准。"""
+    if request.method == 'GET':
+        return ok({'items': [c.to_dict() for c in CashPoolConfig.objects.all()],
+                   'departments': DEPARTMENTS})
+    if request.method == 'POST':
+        data = _parse_body(request)
+        dept = (data.get('delivery_dept') or '').strip()
+        if dept not in VALID_DEPARTMENTS:
+            return err('无效的事业部')
+        initial_date = _normalize_date(data.get('initial_date'))
+        if not initial_date:
+            return err('期初基准日必填（YYYY-MM-DD）')
+        try:
+            initial_amount = Decimal(str(data.get('initial_amount', 0) or 0))
+        except (InvalidOperation, ValueError):
+            return err('期初金额格式错误')
+        try:
+            warning_days = max(7, min(120, int(data.get('warning_days', 30) or 30)))
+        except (ValueError, TypeError):
+            warning_days = 30
+        cfg, _ = CashPoolConfig.objects.update_or_create(
+            delivery_dept=dept,
+            defaults={'initial_date': initial_date, 'initial_amount': initial_amount,
+                      'warning_days': warning_days,
+                      'notes': (data.get('notes') or '').strip(),
+                      'updated_by': request.pk_user})
+        return ok(cfg.to_dict())
+    return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def cash_pool_transfers(request):
+    """池间调拨：GET 列表（非超管只看与自己部门相关的）；POST 新建（仅超管，集团统筹）。"""
+    if request.method == 'GET':
+        denied = _page_denied(request, 'ar_cashflow')
+        if denied:
+            return denied
+        qs = CashPoolTransfer.objects.all()
+        if request.pk_role != 'super_admin':
+            mine = request.pk_depts or []
+            qs = qs.filter(Q(from_dept__in=mine) | Q(to_dept__in=mine))
+        return ok({'items': [t.to_dict() for t in qs[:200]]})
+    if request.method == 'POST':
+        if request.pk_role != 'super_admin':
+            return err('池间调拨为集团资金动作，仅超管可操作', 403, 403)
+        data = _parse_body(request)
+        f, t = (data.get('from_dept') or '').strip(), (data.get('to_dept') or '').strip()
+        if f not in VALID_DEPARTMENTS or t not in VALID_DEPARTMENTS:
+            return err('无效的事业部')
+        if f == t:
+            return err('调出与调入不能是同一个池子')
+        try:
+            amount = Decimal(str(data.get('amount') or 0))
+        except (InvalidOperation, ValueError):
+            return err('金额格式错误')
+        if amount <= 0:
+            return err('调拨金额必须大于0')
+        tr_date = _normalize_date(data.get('transfer_date')) or datetime.date.today()
+        tr = CashPoolTransfer.objects.create(
+            from_dept=f, to_dept=t, amount=amount, transfer_date=tr_date,
+            expected_return_date=_normalize_date(data.get('expected_return_date')),
+            notes=(data.get('notes') or '').strip(), created_by=request.pk_user)
+        return ok(tr.to_dict())
+    return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required(roles=['super_admin'])
+def cash_pool_transfer_detail(request, pk):
+    if request.method != 'DELETE':
+        return err('Method not allowed', 405)
+    try:
+        tr = CashPoolTransfer.objects.get(pk=pk)
+    except CashPoolTransfer.DoesNotExist:
+        return err('调拨记录不存在', 404)
+    tr.delete()
+    return ok({'deleted': pk})

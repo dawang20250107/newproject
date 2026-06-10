@@ -995,3 +995,71 @@ class ActionItem(models.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+# ── 资金池 (cash pool) ─────────────────────────────────────────────────────────
+
+class CashPoolConfig(models.Model):
+    """事业部资金池配置 — 超管手填期初基准；之后水位全部由流水推算（不存余额）。
+
+    水位口径与现金流分析完全一致：
+      流入 = 应收回款(剔除预收抵扣) + 预收款；
+      流出 = 实付分期 − 预付核销冲抵 + 预付款；
+      另加池间调拨（CashPoolTransfer）。
+    """
+    delivery_dept = models.CharField('事业部', max_length=50, unique=True)
+    initial_date = models.DateField('期初基准日', help_text='该日终的账面资金为期初值；之后的流水才计入水位')
+    initial_amount = models.DecimalField('期初金额', max_digits=15, decimal_places=2, default=0)
+    warning_days = models.IntegerField('警戒窗口(天)', default=30,
+                                       help_text='警戒线 = 未来N天刚性流出（已审批待付）')
+    notes = models.TextField('备注', blank=True, default='')
+    updated_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='updated_pool_configs')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ar_cash_pool_configs'
+        ordering = ['delivery_dept']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'delivery_dept': self.delivery_dept,
+            'initial_date': str(self.initial_date),
+            'initial_amount': str(self.initial_amount),
+            'warning_days': self.warning_days,
+            'notes': self.notes,
+            'updated_by_name': self.updated_by.name if self.updated_by else '',
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class CashPoolTransfer(models.Model):
+    """池间调拨（内部拆借）— A池调水给B池，只挪不灭：集团总池恒等于各池之和。"""
+    from_dept = models.CharField('调出事业部', max_length=50, db_index=True)
+    to_dept = models.CharField('调入事业部', max_length=50, db_index=True)
+    amount = models.DecimalField('调拨金额', max_digits=15, decimal_places=2)
+    transfer_date = models.DateField('调拨日期', db_index=True)
+    expected_return_date = models.DateField('约定归还日', null=True, blank=True)
+    notes = models.TextField('备注', blank=True, default='')
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='created_pool_transfers')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'ar_cash_pool_transfers'
+        ordering = ['-transfer_date', '-id']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'from_dept': self.from_dept,
+            'to_dept': self.to_dept,
+            'amount': str(self.amount),
+            'transfer_date': str(self.transfer_date),
+            'expected_return_date': str(self.expected_return_date) if self.expected_return_date else None,
+            'notes': self.notes,
+            'created_by_name': self.created_by.name if self.created_by else '',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }

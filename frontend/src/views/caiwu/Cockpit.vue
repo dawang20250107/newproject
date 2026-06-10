@@ -22,6 +22,7 @@ const BusinessFinancePanel = defineAsyncComponent(() => import('./BusinessFinanc
 const ForecastPanel = defineAsyncComponent(() => import('./Forecast.vue'))
 const ActionPanel = defineAsyncComponent(() => import('./ActionPanel.vue'))
 const TargetDecompPanel = defineAsyncComponent(() => import('./TargetDecomp.vue'))
+const CashPoolPanel = defineAsyncComponent(() => import('./CashPoolPanel.vue'))
 const BuDrilldown = defineAsyncComponent(() => import('./BuDrilldown.vue'))
 const ProjectPnlCard = defineAsyncComponent(() => import('./ProjectPnlCard.vue'))
 
@@ -38,6 +39,7 @@ const MAIN_TABS = computed(() => {
   if (pkAuth.canPage('ar_analytics')) t.push({ key: 'forecast', label: '判未来' })
   if (pkAuth.canPage('ar_analytics')) t.push({ key: 'ar', label: '应收分析' })
   if (pkAuth.canPage('ar_cashflow')) t.push({ key: 'cashflow', label: '现金流分析' })
+  if (pkAuth.canPage('ar_cashflow')) t.push({ key: 'pool', label: '资金池' })
   t.push({ key: 'target', label: '目标分解' })
   t.push({ key: 'actions', label: '决策行动' + (actionCounts.value.open ? ` (${actionCounts.value.open})` : '') })
   return t
@@ -45,7 +47,7 @@ const MAIN_TABS = computed(() => {
 const panelComp = computed(() => ({
   charts: ChartsPanel, bf: BusinessFinancePanel, forecast: ForecastPanel,
   ar: ARAnalyticsPanel, cashflow: CashflowPanel,
-  target: TargetDecompPanel, actions: ActionPanel,
+  target: TargetDecompPanel, actions: ActionPanel, pool: CashPoolPanel,
 }[mainTab.value] || null))
 
 // ── P4 行动项计数（驱动 Tab 角标）────────────────────────────────────────────
