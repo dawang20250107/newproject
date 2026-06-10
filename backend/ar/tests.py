@@ -2030,3 +2030,205 @@ class CashPoolTests(TestCase):
         res = self.client.get('/api/pk/ar/pool', **self.auth(self.admin))
         pool = next(p for p in res.json()['data']['pools'] if p['dept'] == '运输事业部')
         self.assertFalse(pool['configured'])
+
+
+class AuditHardeningTests(TestCase):
+    """体检修复回归：行动项隔离 / 分析扇出 / 导出闸口 / 登录限速 / 改密踢token / 催款闭环。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.today = date.today()
+        from datetime import timedelta
+        self.td = timedelta
+        self.admin = PaikuanUser(phone='13800000031', name='超管', role='super_admin',
+                                 job_title='', departments=[], is_active=True, is_approved=True)
+        self.admin.set_password('Test1234x'); self.admin.save()
+        self.acct = PaikuanUser(phone='13800000032', name='运输会计', role='operator',
+                                job_title='settlement_accountant', departments=['运输事业部'],
+                                is_active=True, is_approved=True)
+        self.acct.set_password('Test1234x'); self.acct.save()
+        self.cashier = PaikuanUser(phone='13800000033', name='出纳', role='operator',
+                                   job_title='cashier', departments=['运输事业部'],
+                                   is_active=True, is_approved=True)
+        self.cashier.set_password('Test1234x'); self.cashier.save()
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self, user):
+        return {'HTTP_AUTHORIZATION': f'Bearer {make_token(user)}'}
+
+    # ── 1. 行动项详情隔离 ────────────────────────────────────────────────────
+    def test_action_detail_dept_isolated_and_write_gated(self):
+        other = ActionItem.objects.create(title='他部门事项', bu='劳务事业部')
+        mine = ActionItem.objects.create(title='本部门事项', bu='运输事业部')
+        glob = ActionItem.objects.create(title='全局事项', bu='')
+        # 跨部门：读/改/删全部 403
+        self.assertEqual(self.client.get(f'/api/pk/ar/actions/{other.id}',
+                                         **self.auth(self.acct)).status_code, 403)
+        self.assertEqual(self.client.put(f'/api/pk/ar/actions/{other.id}',
+                                         data=json.dumps({'status': 'done'}),
+                                         content_type='application/json',
+                                         **self.auth(self.acct)).status_code, 403)
+        self.assertEqual(self.client.delete(f'/api/pk/ar/actions/{other.id}',
+                                            **self.auth(self.acct)).status_code, 403)
+        # 本部门/全局：可读；有 ar_can_create 的结算会计可改
+        self.assertEqual(self.client.get(f'/api/pk/ar/actions/{mine.id}',
+                                         **self.auth(self.acct)).status_code, 200)
+        self.assertEqual(self.client.get(f'/api/pk/ar/actions/{glob.id}',
+                                         **self.auth(self.acct)).status_code, 200)
+        self.assertEqual(self.client.put(f'/api/pk/ar/actions/{mine.id}',
+                                         data=json.dumps({'status': 'in_progress'}),
+                                         content_type='application/json',
+                                         **self.auth(self.acct)).status_code, 200)
+        # 只读岗位（出纳 can_create=False 且无 ar_can_create）改不动
+        self.assertEqual(self.client.put(f'/api/pk/ar/actions/{mine.id}',
+                                         data=json.dumps({'status': 'done'}),
+                                         content_type='application/json',
+                                         **self.auth(self.cashier)).status_code, 403)
+        # 无删除权限删不动
+        self.assertEqual(self.client.delete(f'/api/pk/ar/actions/{mine.id}',
+                                            **self.auth(self.acct)).status_code, 403)
+
+    # ── 2. 分析聚合扇出 ──────────────────────────────────────────────────────
+    def test_analytics_no_payment_join_fanout(self):
+        proj = ARProject.objects.create(customer_name='扇出客户', short_name='扇出项目',
+                                        delivery_dept='运输事业部',
+                                        sales_contact='甲', project_manager='扇出负责人')
+        rec = ARRecord.objects.create(project=proj, operation_year=self.today.year,
+                                      operation_month=1, estimated_amount=Decimal('1000'))
+        # 同一条记录两笔回款：扇出 BUG 会把 estimated 算成 2000
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('100'),
+                                 payment_date=self.today)
+        ARPayment.objects.create(ar_record=rec, payment_no=2, amount=Decimal('200'),
+                                 payment_date=self.today)
+        res = self.client.get(f'/api/pk/ar/analytics/by-pm?year={self.today.year}',
+                              **self.auth(self.admin))
+        row = next(r for r in res.json()['data'] if r['pm'] == '扇出负责人')
+        self.assertEqual(row['estimated'], 1000.0)
+        self.assertEqual(row['collected'], 300.0)
+
+        res2 = self.client.get('/api/pk/ar/analytics/by-dept', **self.auth(self.admin))
+        d = next(r for r in res2.json()['data']['rows'] if r['dept'] == '运输事业部')
+        self.assertEqual(d['estimated'], 1000.0)
+        self.assertEqual(d['collected'], 300.0)
+
+    # ── 3. approval_export 三连：页面闸口 / 行数上限存在性由代码保证，测闸口 ──
+    def test_approval_export_requires_page_permission(self):
+        JobPermission.objects.create(job_title='cashier',
+                                     config={'pages': {'approval_records': False}})
+        _invalidate_perm_cache()
+        res = self.client.get('/api/pk/approvals/export', **self.auth(self.cashier))
+        self.assertEqual(res.status_code, 403)
+        res2 = self.client.get('/api/pk/approvals/export', **self.auth(self.admin))
+        self.assertEqual(res2.status_code, 200)
+
+    # ── 4. 登录限速 ─────────────────────────────────────────────────────────
+    def test_login_lockout_after_failures(self):
+        for _ in range(5):
+            r = self.client.post('/api/pk/login', data=json.dumps(
+                {'phone': '13800000032', 'password': 'wrong'}),
+                content_type='application/json')
+            self.assertEqual(r.status_code, 401)
+        # 第6次即使密码正确也被锁
+        r6 = self.client.post('/api/pk/login', data=json.dumps(
+            {'phone': '13800000032', 'password': 'Test1234x'}),
+            content_type='application/json')
+        self.assertEqual(r6.status_code, 429)
+        # 其他账号不受影响
+        r7 = self.client.post('/api/pk/login', data=json.dumps(
+            {'phone': '13800000033', 'password': 'Test1234x'}),
+            content_type='application/json')
+        self.assertEqual(r7.status_code, 200)
+
+    # ── 5. 改密码踢旧 token ──────────────────────────────────────────────────
+    def test_password_change_invalidates_old_token(self):
+        from django.utils import timezone as _tz
+        old_headers = self.auth(self.acct)
+        # 管理员重置密码会写 pwd_changed_at
+        res = self.client.put(f'/api/pk/users/{self.acct.id}',
+                              data=json.dumps({'password': 'Newpass123'}),
+                              content_type='application/json', **self.auth(self.admin))
+        self.assertEqual(res.status_code, 200)
+        self.acct.refresh_from_db()
+        self.assertIsNotNone(self.acct.pwd_changed_at)
+        # 把改密时间推后2秒，规避同秒签发的边界，断言旧 token 失效逻辑生效
+        self.acct.pwd_changed_at = _tz.now() + self.td(seconds=2)
+        self.acct.save(update_fields=['pwd_changed_at'])
+        r = self.client.get('/api/pk/me', **old_headers)
+        self.assertEqual(r.status_code, 401)
+        # 弱密码被拒
+        res2 = self.client.put(f'/api/pk/users/{self.acct.id}',
+                               data=json.dumps({'password': 'short1'}),
+                               content_type='application/json', **self.auth(self.admin))
+        self.assertEqual(res2.status_code, 400)
+
+    # ── 6. 应收结清 → 催款任务自动完成；记录删除 → 自动忽略 ────────────────────
+    def test_dunning_auto_close_on_settle_and_delete(self):
+        proj = ARProject.objects.create(customer_name='闭环客户', short_name='闭环项目',
+                                        delivery_dept='运输事业部',
+                                        sales_contact='甲', project_manager='乙')
+        rec = ARRecord.objects.create(project=proj, operation_year=2026, operation_month=1,
+                                      estimated_amount=Decimal('100'),
+                                      due_date=self.today - self.td(days=10))
+        act = ActionItem.objects.create(title='催款A', category='collection', status='open',
+                                        bu='运输事业部', source_signal={'ar_record_id': rec.id})
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('100'),
+                                 payment_date=self.today)   # 结清
+        act.refresh_from_db()
+        self.assertEqual(act.status, 'done')
+        self.assertIn('已结清', act.description)
+
+        rec2 = ARRecord.objects.create(project=proj, operation_year=2026, operation_month=2,
+                                       estimated_amount=Decimal('50'),
+                                       due_date=self.today - self.td(days=5))
+        act2 = ActionItem.objects.create(title='催款B', category='collection', status='open',
+                                         bu='运输事业部', source_signal={'ar_record_id': rec2.id})
+        rec2.delete()
+        act2.refresh_from_db()
+        self.assertEqual(act2.status, 'dismissed')
+
+    # ── 7. 级联删除恢复预收余额 ──────────────────────────────────────────────
+    def test_record_cascade_restores_advance_balance(self):
+        proj = ARProject.objects.create(customer_name='级联客户', short_name='级联项目',
+                                        delivery_dept='运输事业部',
+                                        sales_contact='甲', project_manager='乙')
+        rec = ARRecord.objects.create(project=proj, operation_year=2026, operation_month=3,
+                                      estimated_amount=Decimal('200'))
+        adv = AdvanceRecord.objects.create(delivery_dept='运输事业部', direction='预收',
+                                           occur_year=2026, occur_month=1,
+                                           occur_date=self.today - self.td(days=30),
+                                           advance_amount=Decimal('150'))
+        pay = ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('80'),
+                                       payment_date=self.today, source='预收抵扣')
+        AdvanceWriteoff.objects.create(advance_record=adv, writeoff_no=1,
+                                       amount=Decimal('80'), writeoff_date=self.today,
+                                       ar_record=rec, ar_payment=pay)
+        adv.refresh_from_db()
+        self.assertEqual(adv.balance_amount, Decimal('70.00'))
+        # 删除应收记录 → 级联删回款 → 反向删核销 → 预收余额恢复
+        rec.delete()
+        adv.refresh_from_db()
+        self.assertEqual(AdvanceWriteoff.objects.filter(advance_record=adv).count(), 0)
+        self.assertEqual(adv.balance_amount, Decimal('150.00'))
+
+    # ── 8. 资金池：?depts 范围 + 刚性待付扣预付冲抵 ─────────────────────────
+    def test_pool_depts_scope_and_committed_offset(self):
+        from ar.models import CashPoolConfig
+        from paikuan.models import Payment as PkPayment
+        for d in ('运输事业部', '劳务事业部'):
+            CashPoolConfig.objects.create(delivery_dept=d,
+                                          initial_date=self.today - self.td(days=30),
+                                          initial_amount=Decimal('1000'))
+        res = self.client.get('/api/pk/ar/pool?depts=运输事业部', **self.auth(self.admin))
+        depts = [p['dept'] for p in res.json()['data']['pools']]
+        self.assertEqual(depts, ['运输事业部'])
+        # 排款 500，已付 0，预付冲抵 120 → 刚性待付 380
+        PkPayment.objects.create(department='运输事业部', project_desc='x', payee='y',
+                                 total_amount=Decimal('500'),
+                                 planned_date=self.today + self.td(days=10),
+                                 prepaid_offset_amount=Decimal('120'))
+        res2 = self.client.get('/api/pk/ar/pool?depts=运输事业部', **self.auth(self.admin))
+        pool = res2.json()['data']['pools'][0]
+        self.assertEqual(Decimal(pool['committed']['d30']), Decimal('380'))

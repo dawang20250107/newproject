@@ -102,3 +102,56 @@ def update_ar_record_due_dates_on_project_change(sender, instance, **kwargs):
         PaymentBudget.objects.filter(project_no=instance.project_no).update(**dept_update)
     except Exception:
         pass
+
+
+def _close_dunning_actions(record_id, reason, status='done'):
+    """关闭与某条应收记录关联的未完成催款行动项（软关联 source_signal.ar_record_id）。"""
+    from django.utils import timezone as _tz
+    from ar.models import ActionItem
+    try:
+        qs = ActionItem.objects.filter(category='collection',
+                                       status__in=['open', 'in_progress'])
+        for item in qs.only('id', 'source_signal', 'description', 'status'):
+            if (item.source_signal or {}).get('ar_record_id') != record_id:
+                continue
+            item.status = status
+            item.resolved_at = _tz.now()
+            item.description = ((item.description + '\n') if item.description else '') + reason
+            item.save(update_fields=['status', 'resolved_at', 'description', 'updated_at'])
+    except Exception:
+        pass
+
+
+@receiver([post_save, post_delete], sender='ar.ARPayment')
+def auto_close_dunning_on_settle(sender, instance, **kwargs):
+    """回款使应收结清 → 自动完成其催款任务（催款闭环收口）。
+    在 update_ar_record_on_payment_change 重算之后触发（receiver 按注册顺序执行）。"""
+    try:
+        record = instance.ar_record
+        if (record.outstanding_amount or 0) <= 0:
+            _close_dunning_actions(record.id, '系统自动完成：该笔应收已结清')
+    except Exception:
+        pass
+
+
+@receiver(post_delete, sender='ar.ARRecord')
+def auto_dismiss_dunning_on_record_delete(sender, instance, **kwargs):
+    """应收记录删除 → 其催款任务自动置为已忽略，避免残留死任务。"""
+    _close_dunning_actions(instance.pk, '系统自动忽略：关联应收记录已删除', status='dismissed')
+
+
+from django.db.models.signals import pre_delete  # noqa: E402
+
+
+@receiver(pre_delete, sender='ar.ARPayment')
+def delete_orphan_writeoff_on_offset_payment_delete(sender, instance, **kwargs):
+    """「预收抵扣」回款被级联删除（删记录/删项目）时，反向删除其预收核销，
+    恢复预收余额——否则核销悬空、预收余额永远少一块。
+    正向删除（删核销→信号删回款）时核销已不存在，filter 落空天然防递归。"""
+    if instance.source != '预收抵扣':
+        return
+    from ar.models import AdvanceWriteoff
+    try:
+        AdvanceWriteoff.objects.filter(ar_payment_id=instance.pk).delete()
+    except Exception:
+        pass
