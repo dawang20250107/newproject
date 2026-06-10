@@ -1880,3 +1880,28 @@ class AuditLogTests(TestCase):
         self.assertEqual(res.status_code, 403)
         res2 = self.client.get('/api/pk/audit-logs', **self.auth(self.admin))
         self.assertEqual(res2.status_code, 200)
+
+    def test_login_attributed_by_phone(self):
+        from paikuan.models import AuditLog
+        # 登录成功与失败都应归因到对应账号（异常登录可审计）
+        self.client.post('/api/pk/login', data=json.dumps(
+            {'phone': '13800000012', 'password': 'Test123456'}),
+            content_type='application/json')
+        log = AuditLog.objects.filter(path='/api/pk/login').order_by('-id').first()
+        self.assertEqual(log.user_name, '普通用户')
+        self.assertEqual(log.status_code, 200)
+        self.client.post('/api/pk/login', data=json.dumps(
+            {'phone': '13800000012', 'password': 'wrong'}),
+            content_type='application/json')
+        log2 = AuditLog.objects.filter(path='/api/pk/login').order_by('-id').first()
+        self.assertEqual(log2.user_name, '普通用户')
+        self.assertGreaterEqual(log2.status_code, 400)
+
+    def test_jwt_fallback_attribution_without_view(self):
+        from paikuan.models import AuditLog
+        # 404（无视图执行 → request.pk_user 不存在）也应通过 JWT 兜底归因
+        self.client.post('/api/pk/ar/nonexist', data='{}',
+                         content_type='application/json', **self.auth(self.op))
+        log = AuditLog.objects.order_by('-id').first()
+        self.assertEqual(log.status_code, 404)
+        self.assertEqual(log.user_name, '普通用户')

@@ -85,6 +85,32 @@ def _client_ip(request):
     return (request.META.get('REMOTE_ADDR') or '')[:64]
 
 
+def _resolve_user(request, payload):
+    """操作人归因（按可靠度递降三层兜底）：
+    1) 视图装饰器挂的 request.pk_user（pk_required / cw_required）；
+    2) 自行解析 Authorization JWT —— 覆盖 404/405、视图早退、未走标准装饰器的请求；
+    3) 登录接口按请求体手机号归因（成功失败都记到对应账号，便于审计异常登录）。
+    """
+    user = getattr(request, 'pk_user', None)
+    if user is not None:
+        return user
+    from paikuan.models import PaikuanUser
+    token = (request.headers.get('Authorization', '') or '').replace('Bearer ', '').strip()
+    if token:
+        try:
+            import jwt
+            from django.conf import settings
+            data = jwt.decode(token, settings.JWT_SECRET, algorithms=['HS256'])
+            return PaikuanUser.objects.only('id', 'name').filter(id=data.get('uid')).first()
+        except Exception:
+            pass
+    if request.path.endswith('/login') and isinstance(payload, dict):
+        phone = str(payload.get('phone') or '').strip()
+        if phone:
+            return PaikuanUser.objects.only('id', 'name').filter(phone=phone).first()
+    return None
+
+
 class AuditLogMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
@@ -101,7 +127,7 @@ class AuditLogMiddleware:
         if capture:
             try:
                 from paikuan.models import AuditLog
-                user = getattr(request, 'pk_user', None)
+                user = _resolve_user(request, payload)
                 AuditLog.objects.create(
                     user=user,
                     user_name=(user.name if user else ''),
