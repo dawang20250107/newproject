@@ -39,6 +39,42 @@ async function load() {
 
 watch(() => props.selectedBu, load)
 
+// ── 完成率矩阵（行=事业部 × 列=月/季，OKR 式红绿看板）────────────────────────
+const matrixGran = ref('month')   // 'month' | 'quarter'
+const matrixCols = computed(() => matrixGran.value === 'month'
+  ? Array.from({ length: 12 }, (_, i) => ({ key: 'm' + (i + 1), label: `${i + 1}月` }))
+  : [1, 2, 3, 4].map(q => ({ key: 'q' + q, label: `Q${q}` })))
+
+function cellOf(row, col) {
+  if (col.key[0] === 'm') {
+    const m = row.months[Number(col.key.slice(1)) - 1]
+    return { target: m.target_revenue, actual: m.actual_revenue, rate: m.achieved, past: m.is_past }
+  }
+  const q = Number(col.key.slice(1))
+  const ms = row.months.slice((q - 1) * 3, q * 3)
+  const hasTarget = ms.some(m => m.target_revenue != null)
+  const target = hasTarget ? ms.reduce((s, m) => s + (m.target_revenue || 0), 0) : null
+  const actual = ms.reduce((s, m) => s + (m.actual_revenue || 0), 0)
+  const past = ms.some(m => m.is_past)
+  const rate = (target && past) ? +(actual / target * 100).toFixed(1) : null
+  return { target, actual, rate, past }
+}
+const matrixRows = computed(() => (data.value?.rows || []).map(row => ({
+  bu: row.bu, ytd: row.ytd_achieved,
+  cells: matrixCols.value.map(c => cellOf(row, c)),
+})))
+function cellBg(c) {
+  if (!c.past || c.rate == null) return 'transparent'
+  if (c.rate >= 100) return 'rgba(46,125,50,0.16)'
+  if (c.rate >= 80) return 'rgba(230,81,0,0.13)'
+  return 'rgba(198,40,40,0.13)'
+}
+function cellTitle(c, label) {
+  if (!c.past) return `${label}：未到期`
+  const t = c.target != null ? wan(c.target) : '未设目标'
+  return `${label}：目标 ${t} / 实际 ${wan(c.actual)}${c.rate != null ? ` / 达成 ${c.rate}%` : ''}`
+}
+
 // Overview bar chart: each BU's annual target vs YTD actual vs projected
 const overviewOption = computed(() => {
   const rows = data.value?.rows || []
@@ -148,6 +184,48 @@ onMounted(load)
         </div>
       </div>
 
+      <!-- 完成率矩阵 -->
+      <div class="card td-chart-card">
+        <div class="td-matrix-head">
+          <div class="section-title">完成率矩阵
+            <span class="tdm-legend"><i class="lg lg-g"></i>≥100% <i class="lg lg-o"></i>80~100% <i class="lg lg-r"></i>&lt;80% <i class="lg lg-n"></i>未到期/无目标</span>
+          </div>
+          <div class="td-gran">
+            <button :class="['tdg-btn', matrixGran === 'month' ? 'on' : '']" @click="matrixGran = 'month'">月度</button>
+            <button :class="['tdg-btn', matrixGran === 'quarter' ? 'on' : '']" @click="matrixGran = 'quarter'">季度</button>
+          </div>
+        </div>
+        <div v-if="matrixRows.length" class="td-matrix-wrap">
+          <table class="td-matrix">
+            <thead>
+              <tr>
+                <th class="l">事业部</th>
+                <th v-for="c in matrixCols" :key="c.key">{{ c.label }}</th>
+                <th class="ytd-col">YTD</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in matrixRows" :key="row.bu">
+                <td class="l bu" @click="expandedBu = expandedBu === row.bu ? '' : row.bu" style="cursor:pointer">{{ row.bu }}</td>
+                <td v-for="(c, i) in row.cells" :key="i"
+                    :style="`background:${cellBg(c)}`"
+                    :title="cellTitle(c, matrixCols[i].label)">
+                  <template v-if="c.past">
+                    <div class="tdmx-rate" :style="`color:${rateColor(c.rate)}`">{{ c.rate != null ? c.rate.toFixed(0) + '%' : '—' }}</div>
+                    <div class="tdmx-amt">{{ wan(c.actual) }}</div>
+                  </template>
+                  <span v-else class="tdmx-future">·</span>
+                </td>
+                <td class="ytd-col">
+                  <span :style="`color:${rateColor(row.ytd)};font-weight:700`">{{ fmtRate(row.ytd) }}</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="td-empty">暂无目标数据</div>
+      </div>
+
       <!-- Overview chart -->
       <div class="card td-chart-card">
         <div class="section-title" style="margin-bottom:8px">各事业部年度目标 vs YTD实际（点击行查看月度进度）</div>
@@ -245,6 +323,28 @@ onMounted(load)
 .tdm-rate { font-size: 11px; font-weight: 700; width: 40px; text-align: right; }
 .drillable { cursor: pointer; }
 .drillable:hover td { background: #faf5ef; }
+
+/* 完成率矩阵 */
+.td-matrix-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.tdm-legend { font-size: 11px; font-weight: 400; color: #9b8070; margin-left: 10px; }
+.lg { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 3px 0 8px; vertical-align: -1px; }
+.lg-g { background: rgba(46,125,50,0.5); }
+.lg-o { background: rgba(230,81,0,0.45); }
+.lg-r { background: rgba(198,40,40,0.45); }
+.lg-n { background: #e8ddd0; }
+.td-gran { display: flex; gap: 0; border: 1px solid #d4b896; border-radius: 6px; overflow: hidden; }
+.tdg-btn { padding: 3px 12px; border: none; background: #faf8f5; font-size: 12px; color: #6b5a4a; cursor: pointer; }
+.tdg-btn.on { background: #4a3728; color: #fff; }
+.td-matrix-wrap { overflow-x: auto; }
+.td-matrix { width: 100%; border-collapse: collapse; font-size: 12px; }
+.td-matrix th { background: #f3ede6; color: #6b5a4a; padding: 6px 8px; font-weight: 600; text-align: center; white-space: nowrap; }
+.td-matrix th.l { text-align: left; }
+.td-matrix td { padding: 5px 6px; border: 1px solid #f0e8de; text-align: center; min-width: 56px; }
+.td-matrix td.l { text-align: left; white-space: nowrap; }
+.tdmx-rate { font-weight: 700; font-size: 12px; }
+.tdmx-amt { font-size: 10px; color: #9b8070; margin-top: 1px; }
+.tdmx-future { color: #d4c4b0; }
+.ytd-col { background: #faf5ef; }
 @media (max-width: 768px) {
   .td-monthly { grid-template-columns: 1fr; }
   .td-summary { flex-wrap: wrap; }
