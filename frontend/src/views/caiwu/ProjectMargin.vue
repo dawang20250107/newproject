@@ -37,6 +37,12 @@ const noData = computed(() => summary.value && !summary.value.has_data)
 const showPool = computed(() =>
   data.value?.mode === 'direct' && summary.value &&
   (summary.value.unalloc_cost || summary.value.unalloc_revenue))
+// 对账提示：项目台账收入与同期已发布报表主营业务收入偏差超过 1 元时提示
+const reconDiff = computed(() => {
+  const s = summary.value
+  if (!s || s.report_revenue === null || s.report_revenue === undefined) return null
+  return Math.abs(s.revenue_diff || 0) > 1 ? s.revenue_diff : null
+})
 
 async function load() {
   if (!bu.value) return
@@ -145,6 +151,14 @@ onMounted(() => {
       <div v-if="noProjectRevenue" class="pm-warn">
         ⚠ 本事业部 {{ year }}年{{ month }}月 <strong>收入未按项目核算</strong>（6001 全挂在「无」），
         无法做项目毛利分析。可忽略本事业部，或在金蝶让主营收入带上项目核算维度后重新导入。
+      </div>
+
+      <!-- 项目台账 ↔ 报表收入对账提示 -->
+      <div v-if="reconDiff !== null" class="pm-warn">
+        ⚠ 项目台账收入合计与同期已发布报表的主营业务收入
+        <strong>相差 {{ fmt(reconDiff) }}</strong>
+        （报表 {{ fmt(summary.report_revenue) }}）。两边取数账簿不同允许有差，
+        但持续偏大通常意味着部分收入未挂项目维度或导入期间不一致，请核对。
       </div>
 
       <!-- KPI -->

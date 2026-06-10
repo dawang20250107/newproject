@@ -1040,3 +1040,154 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertNotEqual(resp['Content-Type'], 'text/event-stream')
         m.assert_not_called()
+
+
+@override_settings(ALLOWED_HOSTS=['testserver', 'localhost', '127.0.0.1'])
+class CaiwuControlIntegrityTests(TestCase):
+    """财务分析与控制链路加固回归：发布批次删除保护、目标部分上传校验、
+    导出公式转义、AI JSON 提取、项目毛利对账透出。"""
+    databases = {'default'}
+
+    @classmethod
+    def setUpTestData(cls):
+        for name, sort_order, is_calculated, sign, is_profit_driver in L1_SEEDS:
+            L1Category.objects.update_or_create(
+                name=name,
+                defaults={'sort_order': sort_order, 'is_calculated': is_calculated,
+                          'sign': sign, 'is_profit_driver': is_profit_driver})
+        cls.admin = PaikuanUser(
+            phone='13900000600', name='CW Admin', role='super_admin',
+            job_title='finance_director', departments=[],
+            is_active=True, is_approved=True)
+        cls.admin.set_password('Test123456')
+        cls.admin.save()
+        # 非超管但默认职务配置带 caiwu_delete=True 的财务总监
+        cls.fd = PaikuanUser(
+            phone='13900000601', name='FD User', role='operator',
+            job_title='finance_director', departments=[BUSINESS_UNITS[1]],
+            is_active=True, is_approved=True)
+        cls.fd.set_password('Test123456')
+        cls.fd.save()
+
+    def setUp(self):
+        from paikuan.views import _invalidate_perm_cache
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.bu = BUSINESS_UNITS[1]
+        self.l1 = {c.name: c for c in L1Category.objects.order_by('sort_order', 'id')}
+
+    def auth(self, user=None):
+        return {'HTTP_AUTHORIZATION': f'Bearer {_make_token(user or self.admin)}'}
+
+    def mk_batch(self, status, bu=None, year=2026, month=5, amounts=None):
+        b = ImportBatch.objects.create(
+            business_unit=bu or self.bu, year=year, month=month,
+            batch_type=ImportBatch.TYPE_DEPT, status=status,
+            uploaded_by=self.admin, row_count=len(amounts or {}),
+            file_name='ctl.xlsx')
+        for name, amount in (amounts or {}).items():
+            FinancialEntry.objects.create(batch=b, l1=self.l1[name],
+                                          amount=Decimal(str(amount)))
+        return b
+
+    # ── 发布批次删除保护 ─────────────────────────────────────────────────────
+    def test_published_batch_delete_blocked_for_non_admin(self):
+        b = self.mk_batch(ImportBatch.STATUS_PUBLISHED, amounts={REV: '100'})
+        resp = self.client.delete(f'/api/cw/batches/{b.id}', **self.auth(self.fd))
+        self.assertEqual(resp.status_code, 409, resp.content)
+        self.assertIn('已发布批次不可删除', resp.json().get('error', ''))
+        self.assertTrue(ImportBatch.objects.filter(id=b.id).exists())
+        self.assertEqual(b.entries.count(), 1)
+
+    def test_published_batch_delete_allowed_for_super_admin(self):
+        b = self.mk_batch(ImportBatch.STATUS_PUBLISHED, amounts={REV: '100'})
+        resp = self.client.delete(f'/api/cw/batches/{b.id}', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertFalse(ImportBatch.objects.filter(id=b.id).exists())
+
+    def test_draft_batch_delete_allowed_for_can_delete_user(self):
+        b = self.mk_batch(ImportBatch.STATUS_DRAFT, amounts={REV: '100'})
+        resp = self.client.delete(f'/api/cw/batches/{b.id}', **self.auth(self.fd))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertFalse(ImportBatch.objects.filter(id=b.id).exists())
+
+    # ── 目标部分上传：月度合计超年度被拦截 ───────────────────────────────────
+    def post_targets(self, items, year=2026):
+        return self.client.post('/api/cw/targets',
+                                data=json.dumps({'year': year, 'items': items}),
+                                content_type='application/json', **self.auth())
+
+    def test_partial_months_over_annual_rejected(self):
+        # 年度收入 1200，仅填 1-3 月各 500（合计 1500 > 1200）→ 应拦截
+        items = [{'business_unit': self.bu, 'month': 0, 'target_revenue': '12000000'}]
+        items += [{'business_unit': self.bu, 'month': m, 'target_revenue': '5000000'}
+                  for m in (1, 2, 3)]
+        resp = self.post_targets(items)
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn('超过年度目标', resp.json().get('error', ''))
+
+    def test_partial_months_under_annual_allowed(self):
+        # 年度 1200，仅填 1-3 月各 100（合计 300 < 1200）→ 逐月录入中，放行
+        items = [{'business_unit': self.bu, 'month': 0, 'target_revenue': '12000000'}]
+        items += [{'business_unit': self.bu, 'month': m, 'target_revenue': '1000000'}
+                  for m in (1, 2, 3)]
+        resp = self.post_targets(items)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(FinancialTarget.objects.filter(
+            business_unit=self.bu, year=2026).count(), 4)
+
+    # ── 导出公式注入转义（中央出口 _build_excel_response）────────────────────
+    def test_excel_export_escapes_formula_cells(self):
+        import io
+        from openpyxl import load_workbook
+        from caiwu.views import _build_excel_response
+        wb = Workbook()
+        ws = wb.active
+        ws.append(['=cmd|calc!A0', '+SUM(A1)', '安全文本', 123])
+        resp = _build_excel_response(wb, 'x.xlsx')
+        out = load_workbook(io.BytesIO(resp.content)).active
+        self.assertEqual(out['A1'].value, "'=cmd|calc!A0")
+        self.assertEqual(out['B1'].value, "'+SUM(A1)")
+        self.assertEqual(out['C1'].value, '安全文本')
+        self.assertEqual(out['D1'].value, 123)
+
+    # ── AI 回复 JSON 提取：边界与兜底 ────────────────────────────────────────
+    def test_extract_json_block(self):
+        from caiwu.views import _extract_json_block
+        self.assertEqual(
+            _extract_json_block('以下是结果：[{"a": 1}] 完毕', kind='array'),
+            [{'a': 1}])
+        self.assertEqual(
+            _extract_json_block('```json\n{"title": "T", "content": "C"}\n```'),
+            {'title': 'T', 'content': 'C'})
+        self.assertIsNone(_extract_json_block('没有任何JSON', kind='array'))
+        self.assertIsNone(_extract_json_block('{broken json]'))
+        self.assertIsNone(_extract_json_block('', kind='array'))
+
+    # ── 项目毛利 ↔ 报表收入对账透出 ─────────────────────────────────────────
+    def test_project_margin_recon_against_report_revenue(self):
+        from caiwu.models import ProjectMargin
+        self.mk_batch(ImportBatch.STATUS_PUBLISHED, amounts={REV: '1000', COST: '600'})
+        ProjectMargin.objects.create(
+            business_unit=self.bu, year=2026, month=5, project_name='项目A',
+            revenue=Decimal('800'), cost=Decimal('500'))
+        resp = self.client.get('/api/cw/project-margin',
+                               {'bu': self.bu, 'year': 2026, 'month': 5},
+                               **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        s = resp.json()['data']['summary']
+        self.assertEqual(s['report_revenue'], 1000.0)
+        self.assertEqual(s['revenue_diff'], -200.0)  # 项目台账 800 - 报表 1000
+
+    def test_project_margin_recon_none_when_no_published_report(self):
+        from caiwu.models import ProjectMargin
+        ProjectMargin.objects.create(
+            business_unit=self.bu, year=2026, month=5, project_name='项目B',
+            revenue=Decimal('300'), cost=Decimal('100'))
+        resp = self.client.get('/api/cw/project-margin',
+                               {'bu': self.bu, 'year': 2026, 'month': 5},
+                               **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        s = resp.json()['data']['summary']
+        self.assertIsNone(s['report_revenue'])
+        self.assertIsNone(s['revenue_diff'])

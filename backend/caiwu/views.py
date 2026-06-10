@@ -204,7 +204,33 @@ def _make_token(user):
     return jwt.encode(payload, settings.JWT_SECRET, algorithm='HS256')
 
 
+def _extract_json_block(text, kind='object'):
+    """从 AI 回复文本中提取首个 JSON 对象/数组（kind='object'|'array'）。
+    模型偶尔会在 JSON 前后包散文或代码栅栏；找不到合法边界或解析失败时返回 None，
+    由调用方走兜底逻辑，不让裸切片 s[-1:0] 之类的边界错误悄悄吞掉真实问题。"""
+    s = (text or '').strip()
+    open_ch, close_ch = ('[', ']') if kind == 'array' else ('{', '}')
+    start, end = s.find(open_ch), s.rfind(close_ch)
+    if start == -1 or end <= start:
+        return None
+    try:
+        return json.loads(s[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+_XL_FORMULA_CHARS = ('=', '+', '-', '@', '\t', '\r')
+
+
 def _build_excel_response(wb, filename):
+    # 公式注入防护：科目/项目等文本若以 = + - @ 开头，Excel 会当公式执行；
+    # 出口统一加单引号前缀（与 AR 模块 _export_response 同一策略）
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                v = cell.value
+                if isinstance(v, str) and v and v[0] in _XL_FORMULA_CHARS:
+                    cell.value = "'" + v
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -1428,6 +1454,12 @@ def batch_detail(request, bid):
     if request.method == 'DELETE':
         if not _can_delete(request):
             return err('权限不足', 403)
+        # 已发布批次是报表/驾驶舱/图表的数据源，直接删会让当期报表静默清零；
+        # 正确的替换路径是上传新批次发布（同期间自动整体替换）。仅超管可强删。
+        if batch.status == ImportBatch.STATUS_PUBLISHED and request.pk_role != 'super_admin':
+            return err('已发布批次不可删除——报表正在引用其数据；'
+                       '如需更正请上传新批次并发布（同期间自动整体替换），'
+                       '确需下架请联系超级管理员', 409)
         batch.entries.all().delete()
         batch.delete()
         return ok({'deleted': bid})
@@ -1622,6 +1654,19 @@ def project_margin(request):
         'has_data': qs.exists(),
         'revenue_by_project': revenue_by_project,
     }
+    # 对账透出：项目台账收入合计 vs 同期已发布部门明细报表的主营业务收入。
+    # 两边取数来源不同（项目核算明细账 / 部门明细账），偏差正常存在但应可见；
+    # 不拦截，只把差额交给前端提示，避免两套口径长期静默背离。
+    ledger_rev = total_rev + unalloc['revenue']
+    report_rev = None
+    batch_ids = list(_get_published_batches([bu], year, month).values_list('id', flat=True))
+    if batch_ids:
+        agg = _exclude_internal_depts(FinancialEntry.objects.filter(
+            batch_id__in=batch_ids, l1__name='主营业务收入')).aggregate(s=Sum('amount'))
+        report_rev = float(agg['s'] or 0)
+    summary['report_revenue'] = round(report_rev, 2) if report_rev is not None else None
+    summary['revenue_diff'] = (round(ledger_rev - report_rev, 2)
+                               if report_rev is not None else None)
     return ok({'mode': mode, 'business_unit': bu, 'year': year, 'month': month,
                'rows': rows, 'summary': summary})
 
@@ -2502,26 +2547,38 @@ def targets(request):
             parsed.append((bu, mo, rev, prof, gross))
 
         # ── month-sum == annual validation ────────────────────────────────────
+        # 读取-校验-写入收进同一事务并锁定既有行：否则校验通过后、写入前
+        # 另一请求可改动同年同部门目标，让"年度=月度合计"失效
         TOLERANCE = Decimal('1.00')
         from collections import defaultdict
         affected = {bu for bu, *_ in parsed}
-        merged = defaultdict(dict)  # bu -> {month: (rev, prof, gross)}
-        for t in FinancialTarget.objects.filter(year=year, business_unit__in=affected):
-            merged[t.business_unit][t.month] = (
-                t.target_revenue, t.target_profit, t.target_gross_profit)
-        for bu, mo, rev, prof, gross in parsed:
-            merged[bu][mo] = (rev, prof, gross)
-        for bu, mp in merged.items():
-            if 0 not in mp or any(m not in mp for m in range(1, 13)):
-                continue
-            for col, label in ((0, '收入'), (1, '经营净利'), (2, '经营毛利')):
-                s = sum(mp[m][col] for m in range(1, 13))
-                if abs(s - mp[0][col]) > TOLERANCE:
-                    delta = float(s - mp[0][col]) / 10000
-                    return err(f'{bu}：月度{label}目标合计与年度目标不符'
-                               f'（差额 {delta:+.2f} 万元），请修正后保存')
-
         with transaction.atomic():
+            merged = defaultdict(dict)  # bu -> {month: (rev, prof, gross)}
+            locked = FinancialTarget.objects.select_for_update().filter(
+                year=year, business_unit__in=affected)
+            for t in locked:
+                merged[t.business_unit][t.month] = (
+                    t.target_revenue, t.target_profit, t.target_gross_profit)
+            for bu, mo, rev, prof, gross in parsed:
+                merged[bu][mo] = (rev, prof, gross)
+            for bu, mp in merged.items():
+                if 0 not in mp:
+                    continue
+                months_present = [m for m in range(1, 13) if m in mp]
+                full = len(months_present) == 12
+                for col, label in ((0, '收入'), (1, '经营净利'), (2, '经营毛利')):
+                    s = sum(mp[m][col] for m in months_present)
+                    diff = s - mp[0][col]
+                    if full:
+                        if abs(diff) > TOLERANCE:
+                            return err(f'{bu}：月度{label}目标合计与年度目标不符'
+                                       f'（差额 {float(diff) / 10000:+.2f} 万元），请修正后保存')
+                    # 月度未填齐时合计可以小于年度（逐月录入中），但不能超过——
+                    # 超出即已违背"年度=月度合计"，再填只会更糟
+                    elif diff > TOLERANCE:
+                        return err(f'{bu}：已填月度{label}目标合计已超过年度目标'
+                                   f'（超出 {float(diff) / 10000:+.2f} 万元），请修正后保存')
+
             for bu, mo, rev, prof, gross in parsed:
                 FinancialTarget.objects.update_or_create(
                     business_unit=bu, year=year, month=mo,
@@ -2755,41 +2812,52 @@ def targets_upload(request):
     if not parsed:
         return err('未从文件中解析到任何有效数据，请确认使用正确的指标模板')
 
-    # Validate sum == annual for each BU × metric
+    # Validate sum == annual for each BU × metric.
+    # 与 targets POST 同策略：读取-校验-写入同一事务并锁行，防并发改写；
+    # 月度未填齐时也拦截"月度合计已超年度"的部分上传。
     TOLERANCE = Decimal('1.00')
     from collections import defaultdict
-    merged = defaultdict(lambda: defaultdict(dict))  # {bu: {month: {field: val}}}
-    existing_qs = FinancialTarget.objects.filter(
-        year=year, business_unit__in=accessible)
-    for t in existing_qs:
-        merged[t.business_unit][t.month] = {
-            'target_revenue': t.target_revenue,
-            'target_profit': t.target_profit,
-            'target_gross_profit': t.target_gross_profit,
-        }
-    for (bu, mo), fields in parsed.items():
-        for field, val in fields.items():
-            if bu not in merged or mo not in merged[bu]:
-                merged[bu][mo] = {}
-            merged[bu][mo][field] = val
-
-    for bu, mp in merged.items():
-        if 0 not in mp or any(m not in mp for m in range(1, 13)):
-            continue
-        for col_field, label in (
-            ('target_revenue', '收入'),
-            ('target_profit', '经营净利'),
-            ('target_gross_profit', '经营毛利'),
-        ):
-            annual = mp[0].get(col_field, Decimal('0'))
-            s = sum(mp[m].get(col_field, Decimal('0')) for m in range(1, 13))
-            if annual != 0 and abs(s - annual) > TOLERANCE:
-                delta = float(s - annual) / 10000
-                return err(f'{bu}：月度{label}合计与年度目标不符（差额 {delta:+.2f} 万元）')
-
-    # Upsert
     saved = 0
     with transaction.atomic():
+        merged = defaultdict(lambda: defaultdict(dict))  # {bu: {month: {field: val}}}
+        existing_qs = FinancialTarget.objects.select_for_update().filter(
+            year=year, business_unit__in=accessible)
+        for t in existing_qs:
+            merged[t.business_unit][t.month] = {
+                'target_revenue': t.target_revenue,
+                'target_profit': t.target_profit,
+                'target_gross_profit': t.target_gross_profit,
+            }
+        for (bu, mo), fields in parsed.items():
+            for field, val in fields.items():
+                if bu not in merged or mo not in merged[bu]:
+                    merged[bu][mo] = {}
+                merged[bu][mo][field] = val
+
+        for bu, mp in merged.items():
+            if 0 not in mp:
+                continue
+            months_present = [m for m in range(1, 13) if m in mp]
+            full = len(months_present) == 12
+            for col_field, label in (
+                ('target_revenue', '收入'),
+                ('target_profit', '经营净利'),
+                ('target_gross_profit', '经营毛利'),
+            ):
+                annual = mp[0].get(col_field, Decimal('0'))
+                if annual == 0:
+                    continue
+                s = sum(mp[m].get(col_field, Decimal('0')) for m in months_present)
+                diff = s - annual
+                if full:
+                    if abs(diff) > TOLERANCE:
+                        return err(f'{bu}：月度{label}合计与年度目标不符'
+                                   f'（差额 {float(diff) / 10000:+.2f} 万元）')
+                elif diff > TOLERANCE:
+                    return err(f'{bu}：已填月度{label}合计已超过年度目标'
+                               f'（超出 {float(diff) / 10000:+.2f} 万元）')
+
+        # Upsert
         for (bu, mo), fields in parsed.items():
             if not fields:
                 continue
@@ -3665,8 +3733,9 @@ def cockpit_knowledge_import(request):
             raw_out = _deepseek_chat([{'role': 'system', 'content': sys},
                                       {'role': 'user', 'content': text}],
                                      timeout=120, max_tokens=2000)
-            s = raw_out.strip()
-            arr = json.loads(s[s.find('['): s.rfind(']') + 1])
+            arr = _extract_json_block(raw_out, kind='array')
+            if arr is None:
+                raise ValueError('AI 回复中未找到合法 JSON 数组')
             for it in arr[:10]:
                 c = (it.get('content') or '').strip()
                 if c:
@@ -3741,12 +3810,11 @@ def cockpit_knowledge_distill(request):
         logger.error(f'knowledge distill error: {ex}')
         return err('提炼失败，请稍后重试', 503)
     title, content = '', ''
-    try:
-        s = raw.strip()
-        obj = json.loads(s[s.find('{'): s.rfind('}') + 1])
+    obj = _extract_json_block(raw, kind='object')
+    if obj:
         title = (obj.get('title') or '')[:120]
         content = (obj.get('content') or '').strip()
-    except Exception:
+    else:
         content = text[:280]
     if not content:
         content = text[:280]
