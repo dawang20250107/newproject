@@ -293,6 +293,14 @@ def _dec(v, default=Decimal('0')):
         return default
 
 
+def _int_param(request, key, default):
+    """GET 参数安全转 int：非法值回退默认值（避免 ?year=abc 之类把接口打成500）。"""
+    try:
+        return int(request.GET.get(key, default) or default)
+    except (ValueError, TypeError):
+        return int(default)
+
+
 def _parse_body(request):
     try:
         return json.loads(request.body)
@@ -3121,7 +3129,7 @@ def analytics_collection_rate(request):
     if denied:
         return denied
 
-    year = int(request.GET.get('year', datetime.date.today().year))
+    year = _int_param(request, 'year', datetime.date.today().year)
     qs = _ar_dept_filter(ARRecord.objects.filter(operation_year=year), request,
                          shared_field='project__is_shared')
     dept = request.GET.get('dept', '').strip()
@@ -3245,28 +3253,33 @@ def analytics_by_pm(request):
     if denied:
         return denied
 
-    year = int(request.GET.get('year', datetime.date.today().year))
+    year = _int_param(request, 'year', datetime.date.today().year)
     qs = _ar_dept_filter(ARRecord.objects.filter(operation_year=year), request,
                          shared_field='project__is_shared')
     dept = request.GET.get('dept', '').strip()
     if dept:
         qs = qs.filter(delivery_dept=dept)
 
+    # 记录级金额与回款合计必须分两次聚合：payments JOIN 会让多笔回款的记录
+    # 在 estimated/outstanding 求和中被乘倍（与 ar_records_group_summary 同坑同解）。
     rows = (qs.values('project__project_manager')
               .annotate(
                   estimated=Sum('estimated_amount'),
                   outstanding=Sum('outstanding_amount'),
-                  total_paid=Sum('payments__amount'),
                   project_count=Count('project_id', distinct=True),
               )
               .order_by('-outstanding'))
+    paid_map = {
+        g['project__project_manager']: (g['s'] or 0)
+        for g in qs.values('project__project_manager').annotate(s=Sum('payments__amount'))
+    }
 
     result = []
     for r in rows:
         pm = r['project__project_manager'] or '（未填写）'
         estimated = float(r['estimated'] or 0)
         outstanding = float(r['outstanding'] or 0)
-        total_paid = float(r['total_paid'] or 0)
+        total_paid = float(paid_map.get(r['project__project_manager']) or 0)
         rate = (total_paid / estimated * 100) if estimated > 0 else 0.0
         result.append({
             'pm': pm,
@@ -3904,9 +3917,13 @@ def analytics_by_dept(request):
     def _bydept(qs, **ann):
         return {r['delivery_dept']: r for r in qs.values('delivery_dept').annotate(**ann)}
 
+    # collected 单独聚合：与记录级 Sum 同窗会因 payments JOIN 行扇出乘倍记录级金额
     overall = _bydept(base, estimated=Sum('estimated_amount'), invoiced=Sum('actual_invoice_amount'),
-                      outstanding=Sum('outstanding_amount'), collected=Sum('payments__amount'),
+                      outstanding=Sum('outstanding_amount'),
                       cnt=Count('id', distinct=True))
+    collected_by_dept = _bydept(base, collected=Sum('payments__amount'))
+    for d, row in overall.items():
+        row['collected'] = (collected_by_dept.get(d) or {}).get('collected') or 0
     overdue = _bydept(base.filter(outstanding_amount__gt=0, due_date__lt=today),
                       od_amt=Sum('outstanding_amount'), od_est=Sum('estimated_amount'), od_cnt=Count('id'))
     current = _bydept(base.filter(outstanding_amount__gt=0, due_date__gte=month_start, due_date__lte=month_end),
@@ -4946,7 +4963,13 @@ def advance_writeoff_detail(request, pk, wid):
         denied = _delete_denied(request)
         if denied:
             return denied
-        wo.delete()
+        # 显式事务：核销删除会级联删「预收抵扣」回款并重算应收/预收，
+        # 任一环失败需整体回滚，避免核销没了但回款还在的半套状态。
+        try:
+            with transaction.atomic():
+                wo.delete()
+        except ValidationError as e:
+            return err(str(e.message if hasattr(e, 'message') else e), 400)
         return ok({'deleted': wid})
 
     return err('Method not allowed', 405)
@@ -4978,10 +5001,10 @@ def cashflow(request):
         start_year, start_month = start_date.year, start_date.month
         end_year, end_month = end_date.year, end_date.month
     else:
-        start_year = int(request.GET.get('start_year', today.year))
-        start_month = int(request.GET.get('start_month', 1))
-        end_year = int(request.GET.get('end_year', today.year))
-        end_month = int(request.GET.get('end_month', today.month))
+        start_year = _int_param(request, 'start_year', today.year)
+        start_month = _int_param(request, 'start_month', 1)
+        end_year = _int_param(request, 'end_year', today.year)
+        end_month = _int_param(request, 'end_month', today.month)
         start_date = datetime.date(start_year, start_month, 1)
         end_date = datetime.date(end_year, end_month,
                                  calendar.monthrange(end_year, end_month)[1])
@@ -6520,10 +6543,18 @@ def ar_action_detail(request, pk):
     except ActionItem.DoesNotExist:
         return err('行动项不存在', 404)
 
+    # 与列表口径一致：bu='' 为全局事项；指定 bu 的事项仅本部门（或超管）可见可改
+    if (request.pk_role != 'super_admin' and item.bu
+            and item.bu not in (request.pk_depts or [])):
+        return err('无权访问', 403, 403)
+
     if request.method == 'GET':
         return ok(item.to_dict())
 
     if request.method == 'PUT':
+        denied = _write_denied(request)
+        if denied:
+            return denied
         data = _parse_body(request)
         if 'title' in data:
             t = (data['title'] or '').strip()
@@ -6555,6 +6586,9 @@ def ar_action_detail(request, pk):
         return ok(item.to_dict())
 
     if request.method == 'DELETE':
+        denied = _delete_denied(request)
+        if denied:
+            return denied
         item.delete()
         return ok({'deleted': pk})
 
@@ -6615,7 +6649,7 @@ def ar_actions_from_signal(request):
 @pk_required()
 def analytics_target_decomp(request):
     """年度目标 → 各事业部分解 → 各月目标/实际/完成率。"""
-    year = int(request.GET.get('year', datetime.date.today().year))
+    year = _int_param(request, 'year', datetime.date.today().year)
 
     from caiwu.models import FinancialTarget, FinancialEntry, ImportBatch, L1Category
     from django.db.models import Sum as _Sum
@@ -6714,9 +6748,18 @@ def analytics_target_decomp(request):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _pool_visible_depts(request):
+    """可见池子 = 授权部门 ∩ 全局激活范围（?depts），与其他模块的范围口径一致。"""
     if request.pk_role == 'super_admin':
-        return list(DEPARTMENTS)
-    return [d for d in (request.pk_depts or []) if d in VALID_DEPARTMENTS]
+        allowed = list(DEPARTMENTS)
+    else:
+        allowed = [d for d in (request.pk_depts or []) if d in VALID_DEPARTMENTS]
+    raw = (request.GET.get('depts') or '').strip()
+    if raw:
+        requested = [d for d in raw.split(',') if d.strip()]
+        active = [d for d in allowed if d in requested]
+        if active:
+            return active
+    return allowed
 
 
 def _pool_actual_flows(dept, start, end):
@@ -6754,12 +6797,13 @@ def _pool_metrics(dept, cfg, today):
     c, ar_, p, po, ap, ti, to_ = _pool_actual_flows(dept, start, today)
     balance = (cfg.initial_amount + c + ar_ - (p - po) - ap + ti - to_)
 
-    # ── 刚性流出：付款台账已审批待付（remaining>0），按计划日期分窗 ─────────────
+    # ── 刚性流出：付款台账已审批待付（remaining>0），按计划日期分窗。
+    #    已用预付核销冲抵的部分不再需要现金，故一并扣除（与水位口径对称）─────────
     pay_qs = (Payment.objects.filter(department=dept)
               .annotate(paid_sum=Coalesce(Sum('installments__pay_amount'),
                                           Value(0), output_field=DecimalField()))
               .annotate(plan=Coalesce('plan_adjustment', 'total_amount'))
-              .annotate(rem=F('plan') - F('paid_sum'))
+              .annotate(rem=F('plan') - F('paid_sum') - F('prepaid_offset_amount'))
               .filter(rem__gt=0))
 
     def _win(qs):

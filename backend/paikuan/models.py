@@ -31,6 +31,8 @@ class PaikuanUser(models.Model):
         'self', null=True, blank=True, on_delete=models.SET_NULL, related_name='approved_users'
     )
     approved_at = models.DateTimeField('审批时间', null=True, blank=True)
+    # 改密时间戳：早于它签发的 JWT 一律拒绝（改密码即踢掉旧会话）
+    pwd_changed_at = models.DateTimeField('密码修改时间', null=True, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 

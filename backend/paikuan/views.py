@@ -468,6 +468,11 @@ def pk_required(roles=None):
                 return err('账号已停用，请重新登录', 401, 401)
             if not user.is_approved:
                 return err('账号待审批，请联系管理员', 403, -2)
+            # 改密码即踢旧会话：token 签发时间早于最近一次改密 → 失效
+            if user.pwd_changed_at:
+                iat = payload.get('iat')
+                if iat and int(iat) < int(user.pwd_changed_at.timestamp()):
+                    return err('密码已修改，请重新登录', 401, 401)
             request.pk_user = user
             request.pk_uid = user.id
             request.pk_role = user.role
@@ -598,8 +603,8 @@ def register(request):
         return err('手机号、密码和姓名均必填')
     if not phone.isdigit() or len(phone) < 8:
         return err('手机号格式有误')
-    if len(password) < 6:
-        return err('密码至少6位')
+    if len(password) < 8:
+        return err('密码至少8位（建议包含字母和数字）')
     if not job_title or job_title not in JOB_TITLES:
         return err('请选择有效职务')
     if not isinstance(depts, list) or len(depts) == 0:
@@ -642,6 +647,17 @@ def login(request):
     password = (data.get('password') or '').strip()
     if not phone or not password:
         return err('手机号和密码均必填')
+    # 防暴力破解：同账号15分钟内失败≥5次 → 临时锁定（基于审计日志，多进程安全）
+    try:
+        from paikuan.models import AuditLog
+        _cutoff = timezone.now() - datetime.timedelta(minutes=15)
+        _failed = AuditLog.objects.filter(
+            path__endswith='/login', status_code__gte=400,
+            created_at__gte=_cutoff, user__phone=phone).count()
+        if _failed >= 5:
+            return err('失败次数过多，账号已临时锁定，请15分钟后再试', 429, 429)
+    except Exception:
+        pass
     try:
         user = PaikuanUser.objects.get(phone=phone)
     except PaikuanUser.DoesNotExist:
@@ -1460,7 +1476,20 @@ def approval_import(request):
 def approval_export(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    if perms is not None and not perms['pages'].get('approval_records', True):
+        return err('无访问权限', 403, 403)
     qs = dept_filter(ApprovalRecord.objects.filter(archived=False), request)
+    if qs.count() > 5000:
+        return err('导出超过5000行，请缩小筛选范围')
+
+    # Excel 公式注入防护：以 =+-@ 等开头的文本前置单引号转义
+    _formula_chars = ('=', '+', '-', '@', '\t', '\r')
+
+    def _safe(v):
+        if isinstance(v, str) and v and v[0] in _formula_chars:
+            return "'" + v
+        return v
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
     wb = Workbook()
@@ -1474,7 +1503,9 @@ def approval_export(request):
         c = ws.cell(row=1, column=i, value=h); c.fill = header_fill; c.font = header_font; c.alignment = center
     cn = {'pending': '待审批', 'approved': '审批通过', 'rejected': '已拒绝', 'canceled': '已撤销'}
     for o in qs:
-        ws.append([o.applicant, o.department, o.approval_number, o.summary, float(o.amount), o.payee, cn.get(o.status, o.status)])
+        ws.append([_safe(o.applicant), o.department, _safe(o.approval_number),
+                   _safe(o.summary), float(o.amount), _safe(o.payee),
+                   cn.get(o.status, o.status)])
     return _build_excel_response(wb, '审批记录.xlsx')
 
 
@@ -1693,9 +1724,10 @@ def user_detail(request, pk):
         if 'is_active' in data:
             user.is_active = bool(data['is_active'])
         if data.get('password'):
-            if len(data['password']) < 6:
-                return err('新密码至少6位')
+            if len(data['password']) < 8:
+                return err('新密码至少8位（建议包含字母和数字）')
             user.set_password(data['password'])
+            user.pwd_changed_at = timezone.now()
         user.save()
         return ok(user.to_dict())
 
