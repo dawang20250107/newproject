@@ -189,6 +189,28 @@ async function saveCfgRow(row) {
   finally { cfgSaving.value = false }
 }
 
+// ── 项目维度：按需懒加载各池的项目现金流明细 ──────────────────────────────
+const projDimDept = ref('')       // 当前展开项目维度的池（一次只展开一个）
+const projDimData = ref({})       // keyed by dept
+const projDimLoading = ref({})    // keyed by dept
+
+async function toggleProjDim(dept) {
+  if (projDimDept.value === dept) { projDimDept.value = ''; return }
+  projDimDept.value = dept
+  if (projDimData.value[dept]) return  // cached
+  projDimLoading.value = { ...projDimLoading.value, [dept]: true }
+  try {
+    const today = new Date()
+    const year = today.getFullYear()
+    const res = await ar.projectCashflow({ dept, year })
+    projDimData.value = { ...projDimData.value, [dept]: res.data }
+  } catch (_) {
+    projDimData.value = { ...projDimData.value, [dept]: null }
+  } finally {
+    projDimLoading.value = { ...projDimLoading.value, [dept]: false }
+  }
+}
+
 const onScopeChange = () => load()
 onMounted(() => { load(); window.addEventListener('pk:depts-changed', onScopeChange) })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
@@ -325,9 +347,14 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             </div>
           </div>
 
-          <button v-if="!p.error" class="cpc-expand" @click="expandedDept = expandedDept === p.dept ? '' : p.dept">
-            {{ expandedDept === p.dept ? '收起明细 ▲' : '收支构成明细 ▼' }}
-          </button>
+          <div v-if="!p.error" class="cpc-expands">
+            <button class="cpc-expand" @click="expandedDept = expandedDept === p.dept ? '' : p.dept">
+              {{ expandedDept === p.dept ? '收起明细 ▲' : '收支构成 ▼' }}
+            </button>
+            <button class="cpc-expand proj" @click="toggleProjDim(p.dept)">
+              {{ projDimDept === p.dept ? '收起项目 ▲' : '项目维度 ▼' }}
+            </button>
+          </div>
           <Transition v-if="!p.error" name="cpd">
             <div v-if="expandedDept === p.dept" class="cpc-detail">
               <div class="cpd-row"><i>期初（{{ p.config.initial_date }}）</i><b>{{ wan(p.parts.initial) }}</b></div>
@@ -345,6 +372,31 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <i>待批调拨出款申请</i><b style="color:#e65100">{{ wan(p.pipeline.transfer_out_pending) }}</b></div>
               <div class="cpd-row in"><i>预期回款：30/60/90天</i><b>{{ wan(p.expected_in.d30) }} / {{ wan(p.expected_in.d60) }} / {{ wan(p.expected_in.d90) }}</b></div>
               <div class="cpd-row"><i>逾期应收在外（催回即流入）</i><b style="color:#e65100">{{ wan(p.expected_in.overdue_outstanding) }}</b></div>
+            </div>
+          </Transition>
+          <!-- 项目维度明细 -->
+          <Transition v-if="!p.error" name="cpd">
+            <div v-if="projDimDept === p.dept" class="cpc-proj-dim">
+              <div v-if="projDimLoading[p.dept]" class="cpd-loading">加载中…</div>
+              <template v-else-if="projDimData[p.dept]">
+                <div class="cpd-proj-head">
+                  <span>{{ projDimData[p.dept].year }}年项目现金流</span>
+                  <span class="cpd-proj-sum">{{ projDimData[p.dept].summary?.count || 0 }} 个项目 · 净现金 <b :style="{ color: parseFloat(projDimData[p.dept].summary?.net) >= 0 ? '#2e7d32' : '#c62828' }">{{ wan(projDimData[p.dept].summary?.net) }}</b></span>
+                </div>
+                <div class="cpd-proj-table" v-if="projDimData[p.dept].rows?.length">
+                  <div v-for="r in projDimData[p.dept].rows.slice(0, 10)" :key="r.project" class="cpd-proj-row">
+                    <span class="cpr-name" :title="r.customer">{{ r.project }}</span>
+                    <span class="cpr-in" title="年内回款流入">↑{{ wan(r.inflow) }}</span>
+                    <span class="cpr-out" title="年内付款流出">↓{{ wan(r.outflow) }}</span>
+                    <span class="cpr-net" :style="{ color: r.net >= 0 ? '#2e7d32' : '#c62828' }" title="净现金">{{ wan(r.net) }}</span>
+                  </div>
+                  <div v-if="projDimData[p.dept].rows.length > 10" class="cpd-proj-more">
+                    ...还有 {{ projDimData[p.dept].rows.length - 10 }} 个项目，<router-link :to="`/caiwu/project-cashflow?dept=${encodeURIComponent(p.dept)}`">查看全部</router-link>
+                  </div>
+                </div>
+                <div v-else class="cpd-loading">暂无项目数据（当年无关联项目简称的回款或付款）</div>
+              </template>
+              <div v-else class="cpd-loading">加载失败，请稍后重试</div>
             </div>
           </Transition>
         </div>
@@ -534,8 +586,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .vital i { font-style: normal; font-size: 10px; color: #9b8070; }
 .vital.good b { color: #2e7d32; } .vital.bad b { color: #c62828; }
 
-.cpc-expand { margin-top: 10px; width: 100%; padding: 4px; border: none; background: none; font-size: 11.5px; color: #9b8070; cursor: pointer; }
+.cpc-expands { display: flex; gap: 0; margin-top: 10px; border-top: 1px dashed rgba(180,140,110,.18); }
+.cpc-expand { flex: 1; padding: 5px 2px; border: none; background: none; font-size: 11px; color: #9b8070; cursor: pointer; }
 .cpc-expand:hover { color: #4a3728; }
+.cpc-expand.proj { border-left: 1px dashed rgba(180,140,110,.22); color: #6b7fa0; }
+.cpc-expand.proj:hover { color: #1565c0; }
 .cpc-detail { margin-top: 6px; border-top: 1px dashed #e8ddd0; padding-top: 8px; overflow: hidden; }
 .cpd-enter-active { transition: all .25s ease; } .cpd-enter-from { opacity: 0; transform: translateY(-6px); }
 .cpd-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2.5px 0; color: #6b5a4a; }
@@ -578,6 +633,25 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .cp-method li { font-size: 12px; color: #6b5a4a; line-height: 1.9; }
 .cp-method li b { color: #4a3728; }
 .cp-cfg-note { margin-top: 8px; font-size: 11px; color: #e65100; }
+
+/* 项目维度 */
+.cpc-proj-dim { margin-top: 6px; border-top: 1px dashed #d8c9b8; padding-top: 8px; overflow: hidden; }
+.cpd-proj-head { display: flex; justify-content: space-between; align-items: center;
+  font-size: 11px; color: #6b5a4a; font-weight: 700; margin-bottom: 6px; }
+.cpd-proj-sum b { font-variant-numeric: tabular-nums; }
+.cpd-loading { font-size: 11.5px; color: #9b8070; padding: 6px 0; text-align: center; }
+.cpd-proj-table { display: flex; flex-direction: column; gap: 0; }
+.cpd-proj-row {
+  display: flex; align-items: center; gap: 6px; padding: 4px 0;
+  font-size: 11.5px; border-bottom: 1px solid rgba(180,140,110,.08);
+}
+.cpr-name { flex: 1; color: #4a3728; font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
+.cpr-in { color: #2e7d32; font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 54px; text-align: right; }
+.cpr-out { color: #c62828; font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 54px; text-align: right; }
+.cpr-net { font-weight: 700; font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 54px; text-align: right; }
+.cpd-proj-more { font-size: 11px; color: #9b8070; padding: 4px 0; text-align: center; }
+.cpd-proj-more a { color: var(--primary, #c96342); text-decoration: none; }
+.cpd-proj-more a:hover { text-decoration: underline; }
 
 /* 配置表格：包一层横向滚动容器，列内容超出弹窗宽度时滚动而不溢出 */
 .cp-table-wrap { overflow-x: auto; border-radius: 10px; }

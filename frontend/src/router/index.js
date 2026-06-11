@@ -24,6 +24,7 @@ const routes = [
   { path: '/caiwu/report', component: () => import('../views/caiwu/Report.vue'), meta: { page: 'caiwu_report' } },
   { path: '/caiwu/data', component: () => import('../views/caiwu/DataImport.vue'), meta: { page: 'caiwu_data' } },
   { path: '/caiwu/project-margin', component: () => import('../views/caiwu/ProjectMargin.vue'), meta: { page: 'caiwu_charts' } },
+  { path: '/caiwu/project-cashflow', component: () => import('../views/caiwu/ProjectCashflow.vue'), meta: { page: 'ar_analytics' } },
   { path: '/caiwu/cockpit', component: () => import('../views/caiwu/Cockpit.vue'), meta: { page: 'caiwu_cockpit' } },
   { path: '/caiwu/knowledge', component: () => import('../views/caiwu/KnowledgeBase.vue'), meta: { page: 'caiwu_cockpit' } },
   { path: '/caiwu/metrics', component: () => import('../views/caiwu/Metrics.vue'), meta: { page: 'caiwu_metrics' } },

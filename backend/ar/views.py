@@ -2030,7 +2030,7 @@ def _apply_record_sort(qs, request):
 #   date：任选日期字段 + 相对区间(本周/本月/上月/下月/本年/去年/自定义) + 含/不含
 #   amt ：数值字段 + 运算符(=0/≠0/>0/<0/>/</区间)
 # 前端把这两类条件序列化进 conditions(JSON 数组)下发；多条件 AND，可任意叠加。
-_COND_DATE_FIELDS = {'due_date', 'payment_date', 'invoice_date', 'reconciliation_date'}
+_COND_DATE_FIELDS = {'due_date', 'payment_date', 'invoice_date', 'reconciliation_date', 'operation_date'}
 _COND_AMT_FIELDS = {'estimated_amount', 'outstanding_amount', 'tax_amount',
                     'actual_invoice_amount', 'account_diff_adjustment'}
 
@@ -2053,6 +2053,20 @@ def _relative_date_range(token, today):
         return datetime.date(y, 1, 1), datetime.date(y, 12, 31)
     if token == 'last_year':
         return datetime.date(y - 1, 1, 1), datetime.date(y - 1, 12, 31)
+    if token == 'last_week':
+        start = today - datetime.timedelta(days=today.weekday() + 7)
+        return start, start + datetime.timedelta(days=6)
+    if token == 'this_quarter':
+        q = (m - 1) // 3
+        qs, qe = q * 3 + 1, q * 3 + 3
+        return datetime.date(y, qs, 1), datetime.date(y, qe, calendar.monthrange(y, qe)[1])
+    if token == 'last_quarter':
+        q = (m - 1) // 3
+        if q == 0:
+            py, lqs, lqe = y - 1, 10, 12
+        else:
+            py, lqs, lqe = y, (q - 1) * 3 + 1, (q - 1) * 3 + 3
+        return datetime.date(py, lqs, 1), datetime.date(py, lqe, calendar.monthrange(py, lqe)[1])
     return None
 
 
@@ -3852,6 +3866,126 @@ def analytics_project_pnl(request):
     }
     return ok({'year': year, 'project': project, 'monthly': monthly,
                'payments': payments, 'totals': totals, 'payment_side': payment_side})
+
+
+@csrf_exempt
+@pk_required()
+def analytics_project_cashflow(request):
+    """项目现金流汇总：按项目简称聚合年内回款（流入）、排款付款（流出）、应收敞口（未收）。
+    入参：dept(可选), year(默认今年), date_start/date_end(可选，优先级高于year)
+    返回：按净现金降序排列的项目列表 + 汇总。"""
+    denied = _page_denied(request, 'ar_analytics')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    dept = (request.GET.get('dept') or '').strip()
+    try:
+        year = int(request.GET.get('year') or datetime.date.today().year)
+    except (TypeError, ValueError):
+        year = datetime.date.today().year
+
+    # Date range: explicit start/end overrides year-based default
+    _ds_raw = _normalize_date(request.GET.get('date_start'))
+    _de_raw = _normalize_date(request.GET.get('date_end'))
+    try:
+        date_start = datetime.date.fromisoformat(_ds_raw) if _ds_raw else datetime.date(year, 1, 1)
+        date_end = datetime.date.fromisoformat(_de_raw) if _de_raw else datetime.date(year, 12, 31)
+    except (ValueError, AttributeError):
+        date_start, date_end = datetime.date(year, 1, 1), datetime.date(year, 12, 31)
+
+    # ── 应收侧 base queryset ──────────────────────────────────────────────────
+    ar_base = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
+    if dept:
+        ar_base = ar_base.filter(delivery_dept=dept)
+
+    # 当前应收敞口（全周期，当前余额；按项目简称聚合）
+    outstanding_by_proj = {}
+    for r in (ar_base
+              .filter(project__short_name__isnull=False)
+              .exclude(project__short_name='')
+              .values('project__short_name', 'delivery_dept')
+              .annotate(outstanding=Sum('outstanding_amount'), estimated=Sum('estimated_amount'))):
+        key = r['project__short_name']
+        if key not in outstanding_by_proj:
+            outstanding_by_proj[key] = {'outstanding': 0.0, 'estimated': 0.0, 'dept': r['delivery_dept'] or ''}
+        outstanding_by_proj[key]['outstanding'] += float(r['outstanding'] or 0)
+        outstanding_by_proj[key]['estimated'] += float(r['estimated'] or 0)
+
+    # 区间内回款（流入）：按项目简称聚合
+    inflow_by_proj = {}
+    for r in (ARPayment.objects
+              .filter(ar_record__in=ar_base,
+                      payment_date__gte=date_start,
+                      payment_date__lte=date_end)
+              .filter(ar_record__project__short_name__isnull=False)
+              .exclude(ar_record__project__short_name='')
+              .values('ar_record__project__short_name')
+              .annotate(total=Sum('amount'))):
+        inflow_by_proj[r['ar_record__project__short_name']] = float(r['total'] or 0)
+
+    # 区间内付款（流出）：PaymentInstallment by project_short_name
+    outflow_by_proj = {}
+    pi_base = PaymentInstallment.objects.filter(pay_date__gte=date_start, pay_date__lte=date_end)
+    if request.pk_role != 'super_admin':
+        pi_base = pi_base.filter(payment__department__in=(request.pk_depts or []))
+    if dept:
+        pi_base = pi_base.filter(payment__department=dept)
+    pi_base = pi_base.exclude(payment__project_short_name='')
+    for r in pi_base.values('payment__project_short_name').annotate(total=Sum('pay_amount')):
+        outflow_by_proj[r['payment__project_short_name']] = float(r['total'] or 0)
+
+    # ── 合并所有涉及项目 ──────────────────────────────────────────────────────
+    all_names = set(outstanding_by_proj) | set(inflow_by_proj) | set(outflow_by_proj)
+    proj_meta = {}
+    if all_names:
+        for p in ARProject.objects.filter(short_name__in=list(all_names)):
+            proj_meta[p.short_name] = {
+                'dept': p.delivery_dept or '',
+                'project_no': p.project_no or '',
+                'customer': p.customer_name or '',
+                'manager': p.project_manager or '',
+            }
+
+    rows = []
+    for name in all_names:
+        meta = proj_meta.get(name, {})
+        proj_dept = meta.get('dept') or outstanding_by_proj.get(name, {}).get('dept', '')
+        # If dept filter active and this project doesn't match, skip
+        if dept and proj_dept and proj_dept != dept:
+            continue
+        inflow = inflow_by_proj.get(name, 0.0)
+        outflow = outflow_by_proj.get(name, 0.0)
+        out_info = outstanding_by_proj.get(name, {})
+        rows.append({
+            'project': name,
+            'dept': proj_dept,
+            'project_no': meta.get('project_no', ''),
+            'customer': meta.get('customer', ''),
+            'manager': meta.get('manager', ''),
+            'inflow': round(inflow, 2),
+            'outflow': round(outflow, 2),
+            'net': round(inflow - outflow, 2),
+            'outstanding': round(out_info.get('outstanding', 0.0), 2),
+            'estimated': round(out_info.get('estimated', 0.0), 2),
+        })
+
+    rows.sort(key=lambda x: x['net'], reverse=True)
+    total_in = round(sum(r['inflow'] for r in rows), 2)
+    total_out = round(sum(r['outflow'] for r in rows), 2)
+    return ok({
+        'rows': rows,
+        'year': year,
+        'date_start': str(date_start),
+        'date_end': str(date_end),
+        'summary': {
+            'inflow': total_in,
+            'outflow': total_out,
+            'net': round(total_in - total_out, 2),
+            'outstanding': round(sum(r['outstanding'] for r in rows), 2),
+            'count': len(rows),
+        },
+    })
 
 
 @csrf_exempt

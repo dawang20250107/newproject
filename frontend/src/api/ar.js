@@ -99,6 +99,7 @@ const ar = {
   unitEconomics: p => api.get('/ar/analytics/unit-economics', { params: p }),
   businessFinance: p => api.get('/ar/analytics/business-finance', { params: p }),
   projectPnl: p => api.get('/ar/analytics/project-pnl', { params: p }),
+  projectCashflow: p => api.get('/ar/analytics/project-cashflow', { params: p }),
   forecast: p => api.get('/ar/analytics/forecast', { params: p }),
 
   // P4 行动项

@@ -29,6 +29,7 @@ export const DIM_FIELDS = [
   // 'q'（项目/负责人/编号 模糊）由页面常驻快捷搜索框承载，不在面板内重复提供
 ]
 export const DATE_FIELDS = [
+  { field: 'operation_date', label: '运作日期' },
   { field: 'due_date', label: '应收到期' },
   { field: 'payment_date', label: '回款日期' },
   { field: 'invoice_date', label: '开票日期' },
@@ -42,9 +43,11 @@ export const AMT_FIELDS = [
   { field: 'account_diff_adjustment', label: '账实差额' },
 ]
 export const DATE_RANGES = [
-  { v: 'this_week', l: '本周' }, { v: 'this_month', l: '本月' }, { v: 'last_month', l: '上月' },
-  { v: 'next_month', l: '下月' }, { v: 'this_year', l: '本年' }, { v: 'last_year', l: '去年' },
-  { v: 'custom', l: '自定义' },
+  { v: 'this_week', l: '本周' }, { v: 'last_week', l: '上周' },
+  { v: 'this_month', l: '本月' }, { v: 'last_month', l: '上月' },
+  { v: 'this_quarter', l: '本季度' }, { v: 'last_quarter', l: '上季度' },
+  { v: 'this_year', l: '本年' }, { v: 'last_year', l: '去年' },
+  { v: 'next_month', l: '下月' }, { v: 'custom', l: '自定义' },
 ]
 export const AMT_OPS = [
   { v: 'ne0', l: '≠0' }, { v: 'eq0', l: '=0' }, { v: 'gt0', l: '>0' }, { v: 'lt0', l: '<0' },
