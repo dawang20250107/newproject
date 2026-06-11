@@ -2760,3 +2760,30 @@ class CustomerProjectSyncTests(TestCase):
         self.assertEqual(resp.json()['data'].get('purged_orphans'), 1)
         self.assertFalse(Customer.objects.filter(name='历史孤儿E').exists())
         self.assertTrue(Customer.objects.filter(pk=cust_live.pk).exists())
+
+    # 批量删除客户：孤儿删除；有项目/合同关联的保护跳过并说明原因
+    def test_customers_bulk_delete_with_protection(self):
+        orphan = Customer.objects.create(name='可删客户G', delivery_dept=self.dept)
+        busy = Customer.objects.create(name='有项目客户H', delivery_dept=self.dept)
+        self._mk_proj('在用项目H', busy, 'SYNC-0009')
+        contracted = Customer.objects.create(name='有合同客户I', delivery_dept=self.dept)
+        contract = Contract.objects.create(name='合同I', delivery_dept=self.dept)
+        ContractParty.objects.create(contract=contract, customer=contracted)
+        resp = self.client.post('/api/pk/ar/customers/bulk-delete',
+                                data=json.dumps({'ids': [orphan.id, busy.id, contracted.id]}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['deleted'], 1)
+        self.assertEqual(d['skipped'], 2)
+        self.assertTrue(any('项目' in r for r in d['skipped_reasons']), d)
+        self.assertTrue(any('合同' in r for r in d['skipped_reasons']), d)
+        self.assertFalse(Customer.objects.filter(pk=orphan.pk).exists())
+        self.assertTrue(Customer.objects.filter(pk=busy.pk).exists())
+        self.assertTrue(Customer.objects.filter(pk=contracted.pk).exists())
+
+    def test_customers_bulk_delete_requires_ids(self):
+        resp = self.client.post('/api/pk/ar/customers/bulk-delete',
+                                data=json.dumps({}), content_type='application/json',
+                                **self.auth())
+        self.assertEqual(resp.status_code, 400)

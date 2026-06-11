@@ -90,6 +90,26 @@ async function applyBulkLevel() {
   finally { bulkSaving.value = false }
 }
 
+// 批量删除：名下有项目/合同关联的客户由后端保护跳过并说明原因
+const bulkDeleting = ref(false)
+async function bulkDeleteCustomers() {
+  const n = selected.value.size
+  if (!n) return showToast('请先勾选客户')
+  if (!confirm(`确定删除选中的 ${n} 个客户？\n名下仍有项目或合同关联的客户会被自动跳过（不会误删）。`)) return
+  bulkDeleting.value = true
+  try {
+    const res = await ar.bulkDeleteCustomers({ ids: [...selected.value] })
+    const d = res.data
+    showToast(d?.message || `已删除 ${d?.deleted ?? 0} 个客户`)
+    if (d?.skipped_reasons?.length) {
+      alert(`以下客户被保护跳过：\n\n${d.skipped_reasons.join('\n')}`)
+    }
+    clearSel()
+    await load(true)
+  } catch (e) { showToast(e?.error || e?.msg || '批量删除失败') }
+  finally { bulkDeleting.value = false }
+}
+
 async function load(reset = false) {
   if (reset) { page.value = 1; clearSel() }
   loading.value = true
@@ -214,6 +234,9 @@ onMounted(() => load(true))
         <option v-for="l in LEVELS" :key="l" :value="l">{{ l }}</option>
       </select>
       <button class="btn btn-primary btn-sm" :disabled="bulkSaving" @click="applyBulkLevel">{{ bulkSaving ? '应用中…' : '应用' }}</button>
+      <button v-if="auth.canDelete" class="bb-del" :disabled="bulkDeleting" @click="bulkDeleteCustomers">
+        {{ bulkDeleting ? '删除中…' : `删除选中(${selected.size})` }}
+      </button>
       <button class="btn btn-sm" @click="clearSel">取消选择</button>
     </div>
 
@@ -400,6 +423,10 @@ onMounted(() => load(true))
 .bb-count b { color: #1565c0; }
 .bb-label { font-size: 12px; color: #9b8070; margin-left: 4px; }
 .bb-sel { padding: 5px 10px; border: 1px solid #d4b896; border-radius: 7px; background: #fff; font-size: 13px; }
+.bb-del { margin-left: auto; padding: 5px 12px; border: 1px solid rgba(198,40,40,.45); border-radius: 7px;
+  background: rgba(198,40,40,.06); color: #c62828; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.bb-del:hover:not(:disabled) { background: rgba(198,40,40,.13); }
+.bb-del:disabled { opacity: .5; cursor: not-allowed; }
 .chk-col { width: 36px; }
 .chk-col input { cursor: pointer; }
 .row.sel td { background: rgba(21,101,192,.06); }

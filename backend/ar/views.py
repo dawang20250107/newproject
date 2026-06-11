@@ -6523,6 +6523,53 @@ def customer_detail(request, pk):
     return err('Method not allowed', 405)
 
 
+@csrf_exempt
+@pk_required()
+def customers_bulk_delete(request):
+    """POST /ar/customers/bulk-delete  body {ids:[int,...]}
+    批量删除客户。与单删同口径的保护：名下仍有项目或有合同关联的客户跳过不删，
+    并在返回中逐个说明原因；部门作用域与删除权限约束同列表。单次上限 1000。"""
+    denied = _page_denied(request, 'ar_projects')
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _delete_denied(request)
+    if denied:
+        return denied
+
+    body = _parse_body(request)
+    ids = body.get('ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请提供要删除的客户 ids')
+    try:
+        ids = [int(i) for i in ids]
+    except (ValueError, TypeError):
+        return err('ids 必须为整数列表')
+    if len(ids) > 1000:
+        return err('单次删除上限 1000 个，请分批操作')
+
+    qs = _ar_dept_filter(Customer.objects.filter(pk__in=ids), request,
+                         dept_field='delivery_dept')
+    qs = qs.annotate(_np=Count('projects', distinct=True),
+                     _nc=Count('contract_links', distinct=True))
+    deletable, skipped = [], []
+    for c in qs:
+        if c._np:
+            skipped.append(f'「{c.name}」名下还有 {c._np} 个项目，未删除')
+        elif c._nc:
+            skipped.append(f'「{c.name}」有 {c._nc} 个合同关联，未删除')
+        else:
+            deletable.append(c.pk)
+    if deletable:
+        Customer.objects.filter(pk__in=deletable).delete()
+    msg = f'已删除 {len(deletable)} 个客户'
+    if skipped:
+        msg += f'，{len(skipped)} 个被保护跳过'
+    return ok({'deleted': len(deletable), 'skipped': len(skipped),
+               'skipped_reasons': skipped[:50], 'message': msg})
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 草稿项目（待完善）
 # ──────────────────────────────────────────────────────────────────────────────
