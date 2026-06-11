@@ -6527,6 +6527,141 @@ def budget_summary(request):
     })
 
 
+@csrf_exempt
+@pk_required()
+def budget_project_compare(request):
+    """项目维度预算对照 — 预算（收/付，按项目简称）与实际（应收回款/排款实付，
+    按项目简称）同窗对齐，逐项目展示「计划 vs 实际」全貌。
+
+    入参：date_start/date_end（默认本月）、dept（可选）。
+    返回 rows：每个涉及项目一行（收款预算/实际收款/达成率/付款预算/实际付款/
+    执行率/净现金计划与实际/状态标签）+ summary 汇总。
+    """
+    denied = _page_denied(request, 'ar_budget')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+
+    today = datetime.date.today()
+    start_date, end_date = _parse_budget_date_range(request, today)
+
+    if request.pk_role == 'super_admin':
+        depts = list(DEPARTMENTS)
+    else:
+        depts = list(request.pk_depts)
+    raw_depts = request.GET.get('depts', '').strip()
+    if raw_depts:
+        active = [d for d in raw_depts.split(',') if d.strip() and d in set(depts)]
+        if active:
+            depts = active
+    dept_param = request.GET.get('dept', '').strip()
+    if dept_param and dept_param in depts:
+        depts = [dept_param]
+
+    rows = {}
+
+    def _row(name):
+        return rows.setdefault(name, {
+            'project': name, 'dept': '', 'customer': '', 'manager': '',
+            'budget_in': Decimal('0'), 'actual_in': Decimal('0'),
+            'budget_out': Decimal('0'), 'actual_out': Decimal('0'),
+        })
+
+    # 收款预算（按简称）
+    for g in (CollectionBudget.objects
+              .filter(expected_date__range=(start_date, end_date),
+                      delivery_dept__in=depts)
+              .exclude(short_name='')
+              .values('short_name').annotate(s=Sum('amount'))):
+        _row(g['short_name'])['budget_in'] += g['s'] or Decimal('0')
+
+    # 付款预算（按简称）
+    for g in (PaymentBudget.objects
+              .filter(expected_date__range=(start_date, end_date),
+                      delivery_dept__in=depts)
+              .exclude(short_name='')
+              .values('short_name').annotate(s=Sum('amount'))):
+        _row(g['short_name'])['budget_out'] += g['s'] or Decimal('0')
+
+    # 实际收款：应收回款经 项目简称（含预收抵扣——预算达成按应收口径）
+    for g in (ARPayment.objects
+              .filter(payment_date__range=(start_date, end_date),
+                      ar_record__delivery_dept__in=depts,
+                      ar_record__project__short_name__isnull=False)
+              .exclude(ar_record__project__short_name='')
+              .values('ar_record__project__short_name').annotate(s=Sum('amount'))):
+        _row(g['ar_record__project__short_name'])['actual_in'] += g['s'] or Decimal('0')
+
+    # 实际付款：排款实付分期经 项目简称
+    for g in (PaymentInstallment.objects
+              .filter(pay_date__range=(start_date, end_date),
+                      payment__department__in=depts)
+              .exclude(payment__project_short_name='')
+              .values('payment__project_short_name').annotate(s=Sum('pay_amount'))):
+        _row(g['payment__project_short_name'])['actual_out'] += g['s'] or Decimal('0')
+
+    if rows:
+        for p in ARProject.objects.filter(short_name__in=list(rows.keys())):
+            r = rows.get(p.short_name)
+            if r is not None and not r['dept']:
+                r['dept'] = p.delivery_dept or ''
+                r['customer'] = p.customer_name or ''
+                r['manager'] = p.project_manager or ''
+
+    def _rate(actual, budget):
+        return round(float(actual / budget * 100), 1) if budget else None
+
+    out_rows = []
+    for r in rows.values():
+        bi, ai, bo, ao = r['budget_in'], r['actual_in'], r['budget_out'], r['actual_out']
+        tags = []
+        if bi > 0 and ai >= bi:
+            tags.append('收款达成')
+        elif bi > 0 and ai < bi:
+            tags.append('收款滞后')
+        elif bi == 0 and ai > 0:
+            tags.append('计划外收款')
+        if bo > 0 and ao > bo:
+            tags.append('付款超预算')
+        elif bo == 0 and ao > 0:
+            tags.append('计划外付款')
+        out_rows.append({
+            **{k: str(v) if isinstance(v, Decimal) else v for k, v in r.items()},
+            'in_rate': _rate(ai, bi),
+            'out_rate': _rate(ao, bo),
+            'in_gap': str(bi - ai),
+            'out_gap': str(bo - ao),
+            'budget_net': str(bi - bo),
+            'actual_net': str(ai - ao),
+            'tags': tags,
+        })
+    # 体量大的排前面（预算+实际合计）
+    out_rows.sort(key=lambda x: (Decimal(x['budget_in']) + Decimal(x['budget_out'])
+                                 + Decimal(x['actual_in']) + Decimal(x['actual_out'])),
+                  reverse=True)
+
+    t_bi = sum(Decimal(x['budget_in']) for x in out_rows)
+    t_ai = sum(Decimal(x['actual_in']) for x in out_rows)
+    t_bo = sum(Decimal(x['budget_out']) for x in out_rows)
+    t_ao = sum(Decimal(x['actual_out']) for x in out_rows)
+    return ok({
+        'start_date': str(start_date), 'end_date': str(end_date),
+        'rows': out_rows,
+        'summary': {
+            'count': len(out_rows),
+            'budget_in': str(t_bi), 'actual_in': str(t_ai), 'in_rate': _rate(t_ai, t_bi),
+            'budget_out': str(t_bo), 'actual_out': str(t_ao), 'out_rate': _rate(t_ao, t_bo),
+            'budget_net': str(t_bi - t_bo), 'actual_net': str(t_ai - t_ao),
+            'achieved': sum(1 for x in out_rows if '收款达成' in x['tags']),
+            'lagging': sum(1 for x in out_rows if '收款滞后' in x['tags']),
+            'over_budget': sum(1 for x in out_rows if '付款超预算' in x['tags']),
+            'unplanned': sum(1 for x in out_rows
+                             if '计划外收款' in x['tags'] or '计划外付款' in x['tags']),
+        },
+    })
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 合并开票批次 — 按 invoice_batch_no 分组汇总 + 批量打标
 # ──────────────────────────────────────────────────────────────────────────────

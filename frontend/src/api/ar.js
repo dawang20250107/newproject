@@ -147,6 +147,7 @@ const ar = {
   importPaymentBudget: fd => api.post('/ar/budget/payment/import', fd),
   exportPaymentBudget: p => api.get('/ar/budget/payment/export', { params: p, responseType: 'blob' }),
   budgetSummary: p => api.get('/ar/budget/summary', { params: p }),
+  budgetProjectCompare: p => api.get('/ar/budget/project-compare', { params: p }),
 
   // 资金池 (cash pool)
   cashPool: p => api.get('/ar/pool', { params: p }),

@@ -8,6 +8,7 @@ import { topLabel, rightLabel, HIDE_OVERLAP } from '../../utils/chartTheme.js'
 import { downloadBlob } from '../../utils/download.js'
 import EmptyState from '../../components/EmptyState.vue'
 import BaseChart from '../../components/ar/BaseChart.vue'
+import ProjectPnlCard from '../caiwu/ProjectPnlCard.vue'
 
 const auth = useAuthStore()
 const activeTab = ref('summary')
@@ -226,7 +227,48 @@ async function loadProjects() {
   projects.value = res.data.items || []
 }
 
-async function loadAll() { await Promise.all([loadSummary(), loadLists()]) }
+// ── 项目对照（预算 vs 实际，按项目简称打通）──────────────────────────────────
+const compareData = ref(null)
+const compareLoading = ref(false)
+const compareQ = ref('')
+const pnlTarget = ref(null)   // 点击项目行 → 业财损益卡
+
+async function loadCompare() {
+  compareLoading.value = true
+  try {
+    const res = await ar.budgetProjectCompare({
+      date_start: dateStart.value, date_end: dateEnd.value, dept: selectedDept.value })
+    compareData.value = res.data
+  } catch (_) { compareData.value = null }
+  finally { compareLoading.value = false }
+}
+const compareRows = computed(() => {
+  const rows = compareData.value?.rows || []
+  const q = compareQ.value.trim().toLowerCase()
+  if (!q) return rows
+  return rows.filter(r => r.project.toLowerCase().includes(q)
+    || (r.customer || '').toLowerCase().includes(q)
+    || (r.dept || '').toLowerCase().includes(q))
+})
+const TAG_STYLE = {
+  '收款达成': { bg: 'rgba(46,125,50,.12)', c: '#2e7d32' },
+  '收款滞后': { bg: 'rgba(230,81,0,.12)', c: '#e65100' },
+  '付款超预算': { bg: 'rgba(198,40,40,.12)', c: '#c62828' },
+  '计划外收款': { bg: 'rgba(21,101,192,.1)', c: '#1565c0' },
+  '计划外付款': { bg: 'rgba(123,31,162,.1)', c: '#7b1fa2' },
+}
+const barPct = (actual, budget) => {
+  const b = parseFloat(budget) || 0
+  if (!b) return 0
+  return Math.min(100, (parseFloat(actual) || 0) / b * 100)
+}
+function openPnl(r) {
+  pnlTarget.value = { name: r.project, year: refYear.value }
+}
+
+async function loadAll() {
+  await Promise.all([loadSummary(), loadLists(), loadCompare()])
+}
 
 // ── CRUD ──────────────────────────────────────────────────────────────────────
 
@@ -370,8 +412,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     <!-- Tab bar -->
     <div class="segment-ctrl" style="margin-bottom:20px">
       <button :class="['seg-btn', activeTab === 'summary' ? 'active' : '']" @click="activeTab = 'summary'">执行概览</button>
+      <button :class="['seg-btn', activeTab === 'compare' ? 'active' : '']" @click="activeTab = 'compare'">项目对照</button>
       <button :class="['seg-btn', activeTab === 'collection' ? 'active' : '']" @click="activeTab = 'collection'">收款预算</button>
       <button :class="['seg-btn', activeTab === 'payment' ? 'active' : '']" @click="activeTab = 'payment'">付款预算</button>
+      <button :class="['seg-btn', activeTab === 'data' ? 'active' : '']" @click="activeTab = 'data'">数据加工</button>
     </div>
 
     <!-- ── Summary Tab ── -->
@@ -505,6 +549,104 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
     </template>
 
+    <!-- ── 项目对照 Tab：预算 vs 实际，按项目简称打通 ── -->
+    <template v-else-if="activeTab === 'compare'">
+      <!-- 汇总条 -->
+      <div v-if="compareData?.summary" class="cmp-kpi-bar">
+        <div class="cmp-kpi">
+          <span class="k">收款预算 → 实际</span>
+          <span class="v"><i class="muted">{{ fmtAmt(compareData.summary.budget_in) }}</i> → <b class="ok">{{ fmtAmt(compareData.summary.actual_in) }}</b></span>
+          <span class="r" :class="(compareData.summary.in_rate ?? 0) >= 100 ? 'ok' : 'warn'">{{ compareData.summary.in_rate != null ? compareData.summary.in_rate + '%' : '—' }}</span>
+        </div>
+        <div class="cmp-kpi-sep"></div>
+        <div class="cmp-kpi">
+          <span class="k">付款预算 → 实际</span>
+          <span class="v"><i class="muted">{{ fmtAmt(compareData.summary.budget_out) }}</i> → <b class="bad">{{ fmtAmt(compareData.summary.actual_out) }}</b></span>
+          <span class="r" :class="(compareData.summary.out_rate ?? 0) > 100 ? 'bad' : ''">{{ compareData.summary.out_rate != null ? compareData.summary.out_rate + '%' : '—' }}</span>
+        </div>
+        <div class="cmp-kpi-sep"></div>
+        <div class="cmp-kpi">
+          <span class="k">净现金 计划 vs 实际</span>
+          <span class="v">
+            <i class="muted">{{ fmtAmt(compareData.summary.budget_net) }}</i> vs
+            <b :style="{ color: parseFloat(compareData.summary.actual_net) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(compareData.summary.actual_net) }}</b>
+          </span>
+        </div>
+        <div class="cmp-kpi-sep"></div>
+        <div class="cmp-chips">
+          <span class="cmp-chip ok">达成 {{ compareData.summary.achieved }}</span>
+          <span class="cmp-chip warn">滞后 {{ compareData.summary.lagging }}</span>
+          <span class="cmp-chip bad">超支 {{ compareData.summary.over_budget }}</span>
+          <span class="cmp-chip blue">计划外 {{ compareData.summary.unplanned }}</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="list-header">
+          <div>
+            <div class="section-title" style="margin:0">项目维度对照<span style="font-size:12px;font-weight:400;color:var(--muted);margin-left:8px">{{ periodLabel }} · 预算与实际收付经「项目简称」对齐 · 点击行查看业财损益卡</span></div>
+          </div>
+          <div class="hdr-acts">
+            <input v-model="compareQ" class="cmp-search" placeholder="搜项目 / 客户 / 部门" />
+          </div>
+        </div>
+        <EmptyState v-if="compareLoading" loading />
+        <div v-else-if="!compareRows.length" class="empty-cell" style="padding:36px;text-align:center">
+          {{ compareQ ? '无匹配项目' : '该时段内没有关联项目简称的预算或实际收付——预算录入和回款/排款都填了项目简称才能对上' }}
+        </div>
+        <div v-else class="table-wrap">
+          <table class="cmp-table">
+            <thead>
+              <tr>
+                <th style="min-width:150px">项目</th>
+                <th class="amt">收款预算</th>
+                <th style="min-width:150px">实际收款 / 达成</th>
+                <th class="amt">付款预算</th>
+                <th style="min-width:150px">实际付款 / 执行</th>
+                <th class="amt">净现金(实际)</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in compareRows" :key="r.project" class="cmp-row" @click="openPnl(r)">
+                <td>
+                  <div class="fw">{{ r.project }}</div>
+                  <div class="cmp-sub">{{ r.dept || '—' }}<template v-if="r.manager"> · {{ r.manager }}</template></div>
+                </td>
+                <td class="amt muted">{{ parseFloat(r.budget_in) ? fmtAmt(r.budget_in) : '—' }}</td>
+                <td>
+                  <div class="cmp-bar-line">
+                    <b class="ok">{{ parseFloat(r.actual_in) ? fmtAmt(r.actual_in) : '—' }}</b>
+                    <span v-if="r.in_rate != null" class="cmp-rate" :class="r.in_rate >= 100 ? 'ok' : (r.in_rate >= monthProgress.pct ? '' : 'warn')">{{ r.in_rate }}%</span>
+                  </div>
+                  <div v-if="parseFloat(r.budget_in)" class="cmp-track">
+                    <div class="cmp-fill in" :style="`width:${barPct(r.actual_in, r.budget_in)}%`"></div>
+                    <i class="cmp-tick" :style="`left:${monthProgress.pct}%`" title="时间进度"></i>
+                  </div>
+                </td>
+                <td class="amt muted">{{ parseFloat(r.budget_out) ? fmtAmt(r.budget_out) : '—' }}</td>
+                <td>
+                  <div class="cmp-bar-line">
+                    <b class="bad">{{ parseFloat(r.actual_out) ? fmtAmt(r.actual_out) : '—' }}</b>
+                    <span v-if="r.out_rate != null" class="cmp-rate" :class="r.out_rate > 100 ? 'bad' : ''">{{ r.out_rate }}%</span>
+                  </div>
+                  <div v-if="parseFloat(r.budget_out)" class="cmp-track">
+                    <div class="cmp-fill out" :class="{ over: r.out_rate > 100 }" :style="`width:${barPct(r.actual_out, r.budget_out)}%`"></div>
+                  </div>
+                </td>
+                <td class="amt fw" :style="{ color: parseFloat(r.actual_net) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(r.actual_net) }}</td>
+                <td>
+                  <span v-for="t in r.tags" :key="t" class="cmp-tag"
+                    :style="{ background: TAG_STYLE[t]?.bg, color: TAG_STYLE[t]?.c }">{{ t }}</span>
+                  <span v-if="!r.tags.length" class="muted" style="font-size:11px">—</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
+
     <!-- ── Collection Budget Tab ── -->
     <template v-else-if="activeTab === 'collection'">
       <div class="card">
@@ -516,12 +658,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             </div>
           </div>
           <div class="hdr-acts">
-            <button class="btn btn-ghost btn-sm" @click="downloadTemplate('collection')">↓ 模板</button>
-            <label class="btn btn-ghost btn-sm" style="cursor:pointer">
-              {{ importing ? '导入中…' : '↑ 导入' }}
-              <input ref="collFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport('collection', $event)" />
-            </label>
-            <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData('collection')">↓ 导出</button>
+            <button class="btn btn-ghost btn-sm" @click="activeTab = 'data'">⇅ 模板/导入/导出</button>
             <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate('collection')">+ 新增收款预算</button>
           </div>
         </div>
@@ -565,7 +702,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     </template>
 
     <!-- ── Payment Budget Tab ── -->
-    <template v-else>
+    <template v-else-if="activeTab === 'payment'">
       <div class="card">
         <div class="list-header">
           <div>
@@ -575,12 +712,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             </div>
           </div>
           <div class="hdr-acts">
-            <button class="btn btn-ghost btn-sm" @click="downloadTemplate('payment')">↓ 模板</button>
-            <label class="btn btn-ghost btn-sm" style="cursor:pointer">
-              {{ importing ? '导入中…' : '↑ 导入' }}
-              <input ref="payFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport('payment', $event)" />
-            </label>
-            <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData('payment')">↓ 导出</button>
+            <button class="btn btn-ghost btn-sm" @click="activeTab = 'data'">⇅ 模板/导入/导出</button>
             <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate('payment')">+ 新增付款预算</button>
           </div>
         </div>
@@ -622,6 +754,59 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         </div>
       </div>
     </template>
+
+    <!-- ── 数据加工 Tab：模板 / 导入 / 导出 集中处理 ── -->
+    <template v-else-if="activeTab === 'data'">
+      <div class="data-grid">
+        <div class="data-card">
+          <div class="dc-head">
+            <span class="dc-icon coll">↓</span>
+            <div>
+              <div class="dc-title">收款预算</div>
+              <div class="dc-sub">按「项目简称」关联台账；导入时自动校正项目编号/部门</div>
+            </div>
+          </div>
+          <div class="dc-acts">
+            <button class="btn btn-ghost" @click="downloadTemplate('collection')">↓ 下载模板</button>
+            <label class="btn btn-ghost" style="cursor:pointer">
+              {{ importing ? '导入中…' : '↑ 导入数据' }}
+              <input type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport('collection', $event)" />
+            </label>
+            <button class="btn btn-ghost" :disabled="exporting" @click="exportData('collection')">↓ 导出（当前筛选）</button>
+          </div>
+          <ul class="dc-tips">
+            <li>模板含填写说明行与示例行（导入时自动跳过）</li>
+            <li>整表校验：任一行有问题全表拒绝并列出原因，不会半截写入</li>
+            <li>导出范围 = 顶部日期区间 + 事业部筛选（{{ periodLabel }}）</li>
+          </ul>
+        </div>
+        <div class="data-card">
+          <div class="dc-head">
+            <span class="dc-icon pay">↑</span>
+            <div>
+              <div class="dc-title">付款预算</div>
+              <div class="dc-sub">同收款预算；项目简称对齐后可在「项目对照」追踪执行</div>
+            </div>
+          </div>
+          <div class="dc-acts">
+            <button class="btn btn-ghost" @click="downloadTemplate('payment')">↓ 下载模板</button>
+            <label class="btn btn-ghost" style="cursor:pointer">
+              {{ importing ? '导入中…' : '↑ 导入数据' }}
+              <input type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport('payment', $event)" />
+            </label>
+            <button class="btn btn-ghost" :disabled="exporting" @click="exportData('payment')">↓ 导出（当前筛选）</button>
+          </div>
+          <ul class="dc-tips">
+            <li>预算填了项目简称，实际收付也填了，项目对照才能对上账</li>
+            <li>非项目类预算（如房租水电）简称可手填摘要，不参与项目对照</li>
+          </ul>
+        </div>
+      </div>
+    </template>
+
+    <!-- 业财损益卡（项目对照点击行） -->
+    <ProjectPnlCard v-if="pnlTarget" :name="pnlTarget.name" :year="pnlTarget.year"
+      :askable="false" @close="pnlTarget = null" />
 
     <!-- Modal -->
     <Teleport to="body">
@@ -858,4 +1043,63 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .icon-btn { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255,252,250,0.7); display: flex; align-items: center; justify-content: center; color: var(--muted); cursor: pointer; transition: all 0.13s; }
 .icon-btn:hover { border-color: var(--primary); color: var(--primary); }
 .icon-btn-del:hover { border-color: var(--danger); color: var(--danger); background: rgba(198,40,40,0.07); }
+
+/* ══ 项目对照 ══ */
+.cmp-kpi-bar { display: flex; align-items: center; gap: 0; flex-wrap: wrap; margin-bottom: 16px;
+  background: rgba(255,255,255,.7); border: 1px solid rgba(180,140,110,.18); border-radius: 12px;
+  padding: 12px 18px; box-shadow: 0 2px 8px rgba(100,60,30,.07); }
+.cmp-kpi { display: flex; flex-direction: column; gap: 3px; padding: 0 16px; }
+.cmp-kpi .k { font-size: 11px; color: var(--muted); }
+.cmp-kpi .v { font-size: 14.5px; font-variant-numeric: tabular-nums; color: var(--text); }
+.cmp-kpi .v i { font-style: normal; }
+.cmp-kpi .v .muted, .cmp-kpi .muted { color: var(--muted); }
+.cmp-kpi .ok { color: #2e7d32; } .cmp-kpi .bad { color: #c62828; } .cmp-kpi .warn { color: #e65100; }
+.cmp-kpi .r { font-size: 12px; font-weight: 800; }
+.cmp-kpi-sep { width: 1px; height: 34px; background: rgba(180,140,110,.2); flex-shrink: 0; }
+.cmp-chips { display: flex; gap: 8px; padding: 0 16px; flex-wrap: wrap; }
+.cmp-chip { font-size: 11.5px; font-weight: 700; padding: 3px 11px; border-radius: 11px; }
+.cmp-chip.ok { background: rgba(46,125,50,.1); color: #2e7d32; }
+.cmp-chip.warn { background: rgba(230,81,0,.1); color: #e65100; }
+.cmp-chip.bad { background: rgba(198,40,40,.1); color: #c62828; }
+.cmp-chip.blue { background: rgba(21,101,192,.08); color: #1565c0; }
+
+.cmp-search { border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; width: 210px; background: rgba(255,255,255,.8); }
+.cmp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cmp-table th { padding: 9px 12px; text-align: left; font-size: 11.5px; font-weight: 700; color: var(--muted);
+  background: rgba(201,99,66,.05); border-bottom: 1px solid rgba(180,140,110,.15); white-space: nowrap; }
+.cmp-table th.amt { text-align: right; }
+.cmp-table td { padding: 9px 12px; border-bottom: 1px solid rgba(180,140,110,.08); vertical-align: middle; }
+.cmp-table td.amt { text-align: right; font-variant-numeric: tabular-nums; }
+.cmp-row { cursor: pointer; transition: background .14s; }
+.cmp-row:hover td { background: rgba(201,99,66,.04); }
+.cmp-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.cmp-bar-line { display: flex; align-items: center; gap: 8px; }
+.cmp-bar-line b { font-variant-numeric: tabular-nums; }
+.cmp-bar-line .ok { color: #2e7d32; } .cmp-bar-line .bad { color: #c62828; }
+.cmp-rate { font-size: 11px; font-weight: 800; color: var(--muted); }
+.cmp-rate.ok { color: #2e7d32; } .cmp-rate.warn { color: #e65100; } .cmp-rate.bad { color: #c62828; }
+.cmp-track { position: relative; height: 5px; border-radius: 3px; background: rgba(120,120,120,.12); margin-top: 5px; overflow: visible; }
+.cmp-fill { height: 100%; border-radius: 3px; transition: width .4s ease; }
+.cmp-fill.in { background: linear-gradient(90deg, #66bb6a, #2e7d32); }
+.cmp-fill.out { background: linear-gradient(90deg, #ffb74d, #ef6c00); }
+.cmp-fill.out.over { background: linear-gradient(90deg, #ef5350, #c62828); }
+.cmp-tick { position: absolute; top: -3px; bottom: -3px; width: 2px; background: rgba(60,60,60,.45); border-radius: 1px; }
+.cmp-tag { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 9px; margin: 1px 3px 1px 0; white-space: nowrap; }
+.muted { color: var(--muted); }
+
+/* ══ 数据加工 ══ */
+.data-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 860px) { .data-grid { grid-template-columns: 1fr; } }
+.data-card { background: rgba(255,255,255,.7); border: 1px solid rgba(180,140,110,.18); border-radius: 14px;
+  padding: 18px 20px; box-shadow: 0 2px 10px rgba(100,60,30,.07); }
+.dc-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.dc-icon { width: 38px; height: 38px; border-radius: 10px; display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 800; flex-shrink: 0; }
+.dc-icon.coll { background: rgba(46,125,50,.1); color: #2e7d32; }
+.dc-icon.pay { background: rgba(230,81,0,.1); color: #ef6c00; }
+.dc-title { font-size: 15px; font-weight: 800; color: var(--text); }
+.dc-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.dc-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.dc-tips { margin: 0; padding-left: 18px; }
+.dc-tips li { font-size: 12px; color: var(--muted); line-height: 1.9; }
 </style>

@@ -114,4 +114,5 @@ urlpatterns = [
     path('budget/payment/export', views.budget_payment_export),
     path('budget/payment/<int:pk>', views.budget_payment_detail),
     path('budget/summary', views.budget_summary),
+    path('budget/project-compare', views.budget_project_compare),
 ]

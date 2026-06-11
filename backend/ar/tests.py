@@ -3435,3 +3435,91 @@ class ReverseOffsetAndInstallmentTests(TestCase):
             adv = AdvanceRecord.objects.get(counterparty='导入分期客户')
             self.assertEqual(adv.installments.count(), 1)
             self.assertEqual(adv.installments.first().amount, Decimal('1200'))
+
+
+class BudgetProjectCompareTests(TestCase):
+    """预算项目对照：收/付预算与实际收付经项目简称同窗对齐。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900001400', name='BgtAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='预算客户', short_name='预算项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='BGT-0001')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_compare_aligns_budget_and_actuals(self):
+        from paikuan.models import Payment, PaymentInstallment
+        # 预算：收 10000 / 付 4000（6月）
+        CollectionBudget.objects.create(short_name='预算项目', project_no='BGT-0001',
+                                        delivery_dept=self.dept,
+                                        expected_date=date(2026, 6, 15),
+                                        amount=Decimal('10000'))
+        PaymentBudget.objects.create(short_name='预算项目', project_no='BGT-0001',
+                                     delivery_dept=self.dept,
+                                     expected_date=date(2026, 6, 20),
+                                     amount=Decimal('4000'))
+        # 实际：回款 6000；排款实付 5000（超付款预算）
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                      estimated_amount=Decimal('20000'))
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('6000'),
+                                 payment_date=date(2026, 6, 10))
+        pay = Payment.objects.create(department=self.dept, project_desc='成本',
+                                     payee='供应商', total_amount=Decimal('8000'),
+                                     planned_date=date(2026, 6, 1),
+                                     project_short_name='预算项目')
+        PaymentInstallment.objects.create(payment=pay, seq=1, pay_date=date(2026, 6, 12),
+                                          pay_amount=Decimal('5000'))
+        resp = self.client.get('/api/pk/ar/budget/project-compare',
+                               {'date_start': '2026-06-01', 'date_end': '2026-06-30'},
+                               **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(len(d['rows']), 1)
+        r = d['rows'][0]
+        self.assertEqual(r['project'], '预算项目')
+        self.assertEqual(Decimal(r['budget_in']), Decimal('10000'))
+        self.assertEqual(Decimal(r['actual_in']), Decimal('6000'))
+        self.assertEqual(r['in_rate'], 60.0)
+        self.assertEqual(Decimal(r['budget_out']), Decimal('4000'))
+        self.assertEqual(Decimal(r['actual_out']), Decimal('5000'))
+        self.assertEqual(r['out_rate'], 125.0)
+        self.assertIn('收款滞后', r['tags'])
+        self.assertIn('付款超预算', r['tags'])
+        self.assertEqual(Decimal(r['actual_net']), Decimal('1000'))
+        s = d['summary']
+        self.assertEqual(s['lagging'], 1)
+        self.assertEqual(s['over_budget'], 1)
+
+    def test_compare_unplanned_actuals(self):
+        # 无预算但有实际回款 → 计划外收款
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 6, 1),
+                                      estimated_amount=Decimal('5000'))
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('2000'),
+                                 payment_date=date(2026, 6, 5))
+        resp = self.client.get('/api/pk/ar/budget/project-compare',
+                               {'date_start': '2026-06-01', 'date_end': '2026-06-30'},
+                               **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(len(d['rows']), 1)
+        self.assertIn('计划外收款', d['rows'][0]['tags'])
+        self.assertEqual(d['summary']['unplanned'], 1)
+
+    def test_compare_window_excludes_outside(self):
+        CollectionBudget.objects.create(short_name='预算项目', delivery_dept=self.dept,
+                                        expected_date=date(2026, 7, 1),
+                                        amount=Decimal('9999'))   # 窗外
+        resp = self.client.get('/api/pk/ar/budget/project-compare',
+                               {'date_start': '2026-06-01', 'date_end': '2026-06-30'},
+                               **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.json()['data']['rows']), 0)
