@@ -3868,18 +3868,43 @@ def analytics_project_pnl(request):
                'payments': payments, 'totals': totals, 'payment_side': payment_side})
 
 
+# ── 现金流多维聚合的维度注册表 ─────────────────────────────────────────────────
+# 应收侧键：ARRecord/ARPayment 经 project 关联取值；付款侧键：Payment 自身字段。
+# 新增维度（如客户、负责人）只需在两侧模型补字段后在此登记，前端维度切换即生效。
+_CASHFLOW_DIMS = {
+    'project': {
+        'ar_rec_key': 'project__short_name',
+        'ar_pay_key': 'ar_record__project__short_name',
+        'pk_key': 'payment__project_short_name',
+        'label': '项目',
+    },
+    'secondary_dept': {
+        'ar_rec_key': 'project__sub_dept',
+        'ar_pay_key': 'ar_record__project__sub_dept',
+        'pk_key': 'payment__secondary_dept',
+        'label': '二级部门',
+    },
+}
+
+
 @csrf_exempt
 @pk_required()
 def analytics_project_cashflow(request):
-    """项目现金流汇总：按项目简称聚合年内回款（流入）、排款付款（流出）、应收敞口（未收）。
-    入参：dept(可选), year(默认今年), date_start/date_end(可选，优先级高于year)
-    返回：按净现金降序排列的项目列表 + 汇总。"""
+    """现金流多维聚合：按维度（项目简称/二级部门）聚合区间内回款（流入）、
+    排款付款（流出）、应收敞口（未收）。
+    入参：group_by(project|secondary_dept,默认project), dept(可选),
+          year(默认今年), date_start/date_end(可选，优先级高于year)
+    返回：按净现金降序排列的维度成员列表 + 汇总。"""
     denied = _page_denied(request, 'ar_analytics')
     if denied:
         return denied
     if request.method != 'GET':
         return err('Method not allowed', 405)
     dept = (request.GET.get('dept') or '').strip()
+    group_by = (request.GET.get('group_by') or 'project').strip()
+    dim = _CASHFLOW_DIMS.get(group_by) or _CASHFLOW_DIMS['project']
+    if group_by not in _CASHFLOW_DIMS:
+        group_by = 'project'
     try:
         year = int(request.GET.get('year') or datetime.date.today().year)
     except (TypeError, ValueError):
@@ -3894,51 +3919,53 @@ def analytics_project_cashflow(request):
     except (ValueError, AttributeError):
         date_start, date_end = datetime.date(year, 1, 1), datetime.date(year, 12, 31)
 
+    rec_key, arp_key, pk_key = dim['ar_rec_key'], dim['ar_pay_key'], dim['pk_key']
+
     # ── 应收侧 base queryset ──────────────────────────────────────────────────
     ar_base = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
     if dept:
         ar_base = ar_base.filter(delivery_dept=dept)
 
-    # 当前应收敞口（全周期，当前余额；按项目简称聚合）
-    outstanding_by_proj = {}
+    # 当前应收敞口（全周期，当前余额；按维度键聚合）
+    outstanding_by_key = {}
     for r in (ar_base
-              .filter(project__short_name__isnull=False)
-              .exclude(project__short_name='')
-              .values('project__short_name', 'delivery_dept')
+              .filter(**{f'{rec_key}__isnull': False})
+              .exclude(**{rec_key: ''})
+              .values(rec_key, 'delivery_dept')
               .annotate(outstanding=Sum('outstanding_amount'), estimated=Sum('estimated_amount'))):
-        key = r['project__short_name']
-        if key not in outstanding_by_proj:
-            outstanding_by_proj[key] = {'outstanding': 0.0, 'estimated': 0.0, 'dept': r['delivery_dept'] or ''}
-        outstanding_by_proj[key]['outstanding'] += float(r['outstanding'] or 0)
-        outstanding_by_proj[key]['estimated'] += float(r['estimated'] or 0)
+        key = r[rec_key]
+        if key not in outstanding_by_key:
+            outstanding_by_key[key] = {'outstanding': 0.0, 'estimated': 0.0, 'dept': r['delivery_dept'] or ''}
+        outstanding_by_key[key]['outstanding'] += float(r['outstanding'] or 0)
+        outstanding_by_key[key]['estimated'] += float(r['estimated'] or 0)
 
-    # 区间内回款（流入）：按项目简称聚合
-    inflow_by_proj = {}
+    # 区间内回款（流入）
+    inflow_by_key = {}
     for r in (ARPayment.objects
               .filter(ar_record__in=ar_base,
                       payment_date__gte=date_start,
                       payment_date__lte=date_end)
-              .filter(ar_record__project__short_name__isnull=False)
-              .exclude(ar_record__project__short_name='')
-              .values('ar_record__project__short_name')
+              .filter(**{f'{arp_key}__isnull': False})
+              .exclude(**{arp_key: ''})
+              .values(arp_key)
               .annotate(total=Sum('amount'))):
-        inflow_by_proj[r['ar_record__project__short_name']] = float(r['total'] or 0)
+        inflow_by_key[r[arp_key]] = float(r['total'] or 0)
 
-    # 区间内付款（流出）：PaymentInstallment by project_short_name
-    outflow_by_proj = {}
+    # 区间内付款（流出）：PaymentInstallment 按维度键聚合
+    outflow_by_key = {}
     pi_base = PaymentInstallment.objects.filter(pay_date__gte=date_start, pay_date__lte=date_end)
     if request.pk_role != 'super_admin':
         pi_base = pi_base.filter(payment__department__in=(request.pk_depts or []))
     if dept:
         pi_base = pi_base.filter(payment__department=dept)
-    pi_base = pi_base.exclude(payment__project_short_name='')
-    for r in pi_base.values('payment__project_short_name').annotate(total=Sum('pay_amount')):
-        outflow_by_proj[r['payment__project_short_name']] = float(r['total'] or 0)
+    pi_base = pi_base.exclude(**{pk_key: ''})
+    for r in pi_base.values(pk_key).annotate(total=Sum('pay_amount')):
+        outflow_by_key[r[pk_key]] = float(r['total'] or 0)
 
-    # ── 合并所有涉及项目 ──────────────────────────────────────────────────────
-    all_names = set(outstanding_by_proj) | set(inflow_by_proj) | set(outflow_by_proj)
+    # ── 合并所有维度成员 ──────────────────────────────────────────────────────
+    all_names = set(outstanding_by_key) | set(inflow_by_key) | set(outflow_by_key)
     proj_meta = {}
-    if all_names:
+    if group_by == 'project' and all_names:
         for p in ARProject.objects.filter(short_name__in=list(all_names)):
             proj_meta[p.short_name] = {
                 'dept': p.delivery_dept or '',
@@ -3950,16 +3977,16 @@ def analytics_project_cashflow(request):
     rows = []
     for name in all_names:
         meta = proj_meta.get(name, {})
-        proj_dept = meta.get('dept') or outstanding_by_proj.get(name, {}).get('dept', '')
-        # If dept filter active and this project doesn't match, skip
-        if dept and proj_dept and proj_dept != dept:
+        row_dept = meta.get('dept') or outstanding_by_key.get(name, {}).get('dept', '')
+        # If dept filter active and this member doesn't match, skip
+        if dept and row_dept and row_dept != dept:
             continue
-        inflow = inflow_by_proj.get(name, 0.0)
-        outflow = outflow_by_proj.get(name, 0.0)
-        out_info = outstanding_by_proj.get(name, {})
+        inflow = inflow_by_key.get(name, 0.0)
+        outflow = outflow_by_key.get(name, 0.0)
+        out_info = outstanding_by_key.get(name, {})
         rows.append({
-            'project': name,
-            'dept': proj_dept,
+            'project': name,            # 维度成员名（project 维=项目简称，secondary_dept 维=二级部门名）
+            'dept': row_dept,
             'project_no': meta.get('project_no', ''),
             'customer': meta.get('customer', ''),
             'manager': meta.get('manager', ''),
@@ -3976,6 +4003,8 @@ def analytics_project_cashflow(request):
     return ok({
         'rows': rows,
         'year': year,
+        'group_by': group_by,
+        'group_label': dim['label'],
         'date_start': str(date_start),
         'date_end': str(date_end),
         'summary': {

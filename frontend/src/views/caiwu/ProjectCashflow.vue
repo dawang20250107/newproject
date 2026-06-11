@@ -1,5 +1,6 @@
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
@@ -18,6 +19,14 @@ const filters = reactive({
   date_end: '',
   useCustomDate: false,
 })
+
+// 聚合维度：项目 / 二级部门。后端 _CASHFLOW_DIMS 登记新维度后在此追加即可。
+const DIMS = [
+  { v: 'project', l: '项目' },
+  { v: 'secondary_dept', l: '二级部门' },
+]
+const groupBy = ref('project')
+const isProjDim = computed(() => groupBy.value === 'project')
 
 const sortKey = ref('net')        // net | inflow | outflow | outstanding
 const sortDesc = ref(true)
@@ -58,7 +67,7 @@ function applyPreset(p) {
 async function load() {
   loading.value = true; err.value = ''
   try {
-    const params = { year: filters.year }
+    const params = { year: filters.year, group_by: groupBy.value }
     if (filters.dept) params.dept = filters.dept
     if (filters.useCustomDate && filters.date_start) params.date_start = filters.date_start
     if (filters.useCustomDate && filters.date_end) params.date_end = filters.date_end
@@ -67,6 +76,12 @@ async function load() {
   } catch (e) {
     err.value = e?.msg || '加载失败'
   } finally { loading.value = false }
+}
+
+function setDim(v) {
+  if (groupBy.value === v) return
+  groupBy.value = v
+  load()
 }
 
 function clearCustomDate() {
@@ -94,6 +109,8 @@ const summary = computed(() => data.value?.summary || {})
 const netColor = v => parseFloat(v) >= 0 ? '#2e7d32' : '#c62828'
 
 function openPnl(row) {
+  // 业财损益卡只有项目维度可下钻；二级部门维度点击切回项目维并按部门过滤
+  if (!isProjDim.value) return
   askTarget.value = { name: row.project, year: filters.year }
 }
 
@@ -101,17 +118,30 @@ watch(() => [filters.dept, filters.year], () => {
   if (!filters.useCustomDate) load()
 })
 
-onMounted(load)
+const route = useRoute()
+onMounted(() => {
+  // 资金池「查看全部」等深链带入部门预筛；dept 变化由 watch 触发加载，避免双请求
+  if (route.query.group_by && DIMS.some(d => d.v === route.query.group_by)) {
+    groupBy.value = String(route.query.group_by)
+  }
+  if (route.query.dept) { filters.dept = String(route.query.dept); return }
+  load()
+})
 </script>
 
 <template>
   <div class="pcf-page">
     <div class="pcf-header">
       <div class="pcf-header-left">
-        <h1 class="pcf-title">项目现金流</h1>
-        <p class="pcf-sub">各项目的年内回款（流入）、付款（流出）及净现金，洞察资金健康度</p>
+        <h1 class="pcf-title">{{ isProjDim ? '项目现金流' : '二级部门现金流' }}</h1>
+        <p class="pcf-sub">按{{ isProjDim ? '项目' : '二级部门' }}聚合的回款（流入）、付款（流出）及净现金，洞察资金健康度</p>
       </div>
       <div class="pcf-controls">
+        <!-- 维度切换 -->
+        <div class="pcf-dim-seg">
+          <button v-for="d in DIMS" :key="d.v" class="pcf-dim-btn" :class="{ on: groupBy === d.v }"
+            @click="setDim(d.v)">{{ d.l }}</button>
+        </div>
         <select v-model="filters.dept" class="pcf-sel" @change="filters.useCustomDate ? load() : null">
           <option value="">全部事业部</option>
           <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
@@ -157,7 +187,7 @@ onMounted(load)
       </div>
       <div class="pcf-kpi-sep"></div>
       <div class="pcf-kpi">
-        <span class="k">涉及项目</span>
+        <span class="k">涉及{{ isProjDim ? '项目' : '二级部门' }}</span>
         <span class="v">{{ summary.count }} 个</span>
       </div>
       <span v-if="filters.useCustomDate" class="pcf-date-badge">
@@ -172,20 +202,20 @@ onMounted(load)
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
           <input v-model="search" class="pcf-search" placeholder="搜索项目 / 客户 / 部门" />
         </div>
-        <span class="pcf-count">{{ rows.length }} 个项目</span>
+        <span class="pcf-count">{{ rows.length }} 个{{ isProjDim ? '项目' : '二级部门' }}</span>
       </div>
 
       <div v-if="loading" class="pcf-empty">加载中…</div>
       <div v-else-if="err" class="pcf-empty err">{{ err }}</div>
       <div v-else-if="!rows.length" class="pcf-empty">
-        {{ data ? '暂无项目数据（所选时段内无关联项目简称的回款或付款）' : '请选择筛选条件后加载' }}
+        {{ data ? `暂无数据（所选时段内无关联${isProjDim ? '项目简称' : '二级部门'}的回款或付款）` : '请选择筛选条件后加载' }}
       </div>
 
       <div v-else class="pcf-table-wrap">
         <table class="pcf-table">
           <thead>
             <tr>
-              <th class="pcf-th-proj">项目</th>
+              <th class="pcf-th-proj">{{ isProjDim ? '项目' : '二级部门' }}</th>
               <th>事业部</th>
               <th class="pcf-th-num sortable" :class="{ sorted: sortKey === 'inflow' }" @click="setSort('inflow')">
                 回款流入 <span class="sort-arr">{{ sortKey === 'inflow' ? (sortDesc ? '↓' : '↑') : '↕' }}</span>
@@ -200,11 +230,11 @@ onMounted(load)
                 应收敞口 <span class="sort-arr">{{ sortKey === 'outstanding' ? (sortDesc ? '↓' : '↑') : '↕' }}</span>
               </th>
               <th class="pcf-th-num">回款率</th>
-              <th class="pcf-th-act">详情</th>
+              <th v-if="isProjDim" class="pcf-th-act">详情</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in rows" :key="r.project" class="pcf-row" @click="openPnl(r)">
+            <tr v-for="r in rows" :key="r.project" class="pcf-row" :class="{ 'no-drill': !isProjDim }" @click="openPnl(r)">
               <td class="pcf-td-proj">
                 <div class="pcf-pname">{{ r.project }}</div>
                 <div v-if="r.customer" class="pcf-psub">{{ r.customer }}</div>
@@ -219,7 +249,7 @@ onMounted(load)
               <td class="pcf-td-num muted">
                 {{ r.estimated > 0 ? fmtPct(r.inflow, r.estimated) : '—' }}
               </td>
-              <td class="pcf-td-act">
+              <td v-if="isProjDim" class="pcf-td-act">
                 <button class="pcf-btn-detail" @click.stop="openPnl(r)">业财卡</button>
               </td>
             </tr>
@@ -227,14 +257,14 @@ onMounted(load)
           <!-- Footer totals -->
           <tfoot>
             <tr class="pcf-foot">
-              <td colspan="2">合计 {{ rows.length }} 个项目</td>
+              <td colspan="2">合计 {{ rows.length }} 个{{ isProjDim ? '项目' : '二级部门' }}</td>
               <td class="pcf-td-num green fw">{{ fmtWan(rows.reduce((s, r) => s + r.inflow, 0)) }}</td>
               <td class="pcf-td-num red">{{ fmtWan(rows.reduce((s, r) => s + r.outflow, 0)) }}</td>
               <td class="pcf-td-num fw" :style="{ color: netColor(rows.reduce((s, r) => s + r.net, 0)) }">
                 {{ fmtWan(rows.reduce((s, r) => s + r.net, 0)) }}
               </td>
               <td class="pcf-td-num amber">{{ fmtWan(rows.reduce((s, r) => s + r.outstanding, 0)) }}</td>
-              <td colspan="2"></td>
+              <td :colspan="isProjDim ? 2 : 1"></td>
             </tr>
           </tfoot>
         </table>
@@ -277,6 +307,17 @@ onMounted(load)
   font-size: 12px; padding: 4px 10px; border-radius: 7px; cursor: pointer;
 }
 .pcf-preset:hover { background: rgba(201,99,66,.1); border-color: rgba(201,99,66,.4); color: var(--primary, #c96342); }
+.pcf-dim-seg {
+  display: flex; border: 1px solid rgba(180,140,110,.3); border-radius: 8px; overflow: hidden;
+  background: rgba(255,255,255,.6);
+}
+.pcf-dim-btn {
+  border: none; background: transparent; padding: 6px 14px; font-size: 13px;
+  color: #8a7665; cursor: pointer; font-weight: 600;
+}
+.pcf-dim-btn + .pcf-dim-btn { border-left: 1px solid rgba(180,140,110,.2); }
+.pcf-dim-btn.on { background: var(--primary, #c96342); color: #fff; }
+.pcf-row.no-drill { cursor: default; }
 
 /* KPI bar */
 .pcf-kpi-bar {

@@ -189,26 +189,39 @@ async function saveCfgRow(row) {
   finally { cfgSaving.value = false }
 }
 
-// ── 项目维度：按需懒加载各池的项目现金流明细 ──────────────────────────────
-const projDimDept = ref('')       // 当前展开项目维度的池（一次只展开一个）
-const projDimData = ref({})       // keyed by dept
-const projDimLoading = ref({})    // keyed by dept
+// ── 项目/二级部门维度：按需懒加载各池的现金流明细（cache key = dept|dim）──
+const projDimDept = ref('')       // 当前展开维度明细的池（一次只展开一个）
+const projDimMode = ref('project')  // project | secondary_dept
+const projDimData = ref({})       // keyed by `${dept}|${dim}`
+const projDimLoading = ref({})
 
-async function toggleProjDim(dept) {
+const dimKey = dept => `${dept}|${projDimMode.value}`
+
+async function fetchProjDim(dept) {
+  const key = dimKey(dept)
+  if (projDimData.value[key]) return  // cached
+  projDimLoading.value = { ...projDimLoading.value, [key]: true }
+  try {
+    const year = new Date().getFullYear()
+    const res = await ar.projectCashflow({ dept, year, group_by: projDimMode.value })
+    projDimData.value = { ...projDimData.value, [key]: res.data }
+  } catch (_) {
+    projDimData.value = { ...projDimData.value, [key]: null }
+  } finally {
+    projDimLoading.value = { ...projDimLoading.value, [key]: false }
+  }
+}
+
+function toggleProjDim(dept) {
   if (projDimDept.value === dept) { projDimDept.value = ''; return }
   projDimDept.value = dept
-  if (projDimData.value[dept]) return  // cached
-  projDimLoading.value = { ...projDimLoading.value, [dept]: true }
-  try {
-    const today = new Date()
-    const year = today.getFullYear()
-    const res = await ar.projectCashflow({ dept, year })
-    projDimData.value = { ...projDimData.value, [dept]: res.data }
-  } catch (_) {
-    projDimData.value = { ...projDimData.value, [dept]: null }
-  } finally {
-    projDimLoading.value = { ...projDimLoading.value, [dept]: false }
-  }
+  fetchProjDim(dept)
+}
+
+function setProjDimMode(mode) {
+  if (projDimMode.value === mode) return
+  projDimMode.value = mode
+  if (projDimDept.value) fetchProjDim(projDimDept.value)
 }
 
 const onScopeChange = () => load()
@@ -374,27 +387,33 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <div class="cpd-row"><i>逾期应收在外（催回即流入）</i><b style="color:#e65100">{{ wan(p.expected_in.overdue_outstanding) }}</b></div>
             </div>
           </Transition>
-          <!-- 项目维度明细 -->
+          <!-- 项目/二级部门维度明细 -->
           <Transition v-if="!p.error" name="cpd">
             <div v-if="projDimDept === p.dept" class="cpc-proj-dim">
-              <div v-if="projDimLoading[p.dept]" class="cpd-loading">加载中…</div>
-              <template v-else-if="projDimData[p.dept]">
-                <div class="cpd-proj-head">
-                  <span>{{ projDimData[p.dept].year }}年项目现金流</span>
-                  <span class="cpd-proj-sum">{{ projDimData[p.dept].summary?.count || 0 }} 个项目 · 净现金 <b :style="{ color: parseFloat(projDimData[p.dept].summary?.net) >= 0 ? '#2e7d32' : '#c62828' }">{{ wan(projDimData[p.dept].summary?.net) }}</b></span>
-                </div>
-                <div class="cpd-proj-table" v-if="projDimData[p.dept].rows?.length">
-                  <div v-for="r in projDimData[p.dept].rows.slice(0, 10)" :key="r.project" class="cpd-proj-row">
-                    <span class="cpr-name" :title="r.customer">{{ r.project }}</span>
+              <div class="cpd-proj-head">
+                <span class="cpd-dim-seg">
+                  <button :class="{ on: projDimMode === 'project' }" @click="setProjDimMode('project')">项目</button>
+                  <button :class="{ on: projDimMode === 'secondary_dept' }" @click="setProjDimMode('secondary_dept')">二级部门</button>
+                </span>
+                <span v-if="projDimData[dimKey(p.dept)]" class="cpd-proj-sum">
+                  {{ projDimData[dimKey(p.dept)].summary?.count || 0 }} 个 · 净现金
+                  <b :style="{ color: parseFloat(projDimData[dimKey(p.dept)].summary?.net) >= 0 ? '#2e7d32' : '#c62828' }">{{ wan(projDimData[dimKey(p.dept)].summary?.net) }}</b>
+                </span>
+              </div>
+              <div v-if="projDimLoading[dimKey(p.dept)]" class="cpd-loading">加载中…</div>
+              <template v-else-if="projDimData[dimKey(p.dept)]">
+                <div class="cpd-proj-table" v-if="projDimData[dimKey(p.dept)].rows?.length">
+                  <div v-for="r in projDimData[dimKey(p.dept)].rows.slice(0, 10)" :key="r.project" class="cpd-proj-row">
+                    <span class="cpr-name" :title="r.customer || r.project">{{ r.project }}</span>
                     <span class="cpr-in" title="年内回款流入">↑{{ wan(r.inflow) }}</span>
                     <span class="cpr-out" title="年内付款流出">↓{{ wan(r.outflow) }}</span>
                     <span class="cpr-net" :style="{ color: r.net >= 0 ? '#2e7d32' : '#c62828' }" title="净现金">{{ wan(r.net) }}</span>
                   </div>
-                  <div v-if="projDimData[p.dept].rows.length > 10" class="cpd-proj-more">
-                    ...还有 {{ projDimData[p.dept].rows.length - 10 }} 个项目，<router-link :to="`/caiwu/project-cashflow?dept=${encodeURIComponent(p.dept)}`">查看全部</router-link>
+                  <div v-if="projDimData[dimKey(p.dept)].rows.length > 10" class="cpd-proj-more">
+                    ...还有 {{ projDimData[dimKey(p.dept)].rows.length - 10 }} 个，<router-link :to="`/caiwu/project-cashflow?dept=${encodeURIComponent(p.dept)}`">查看全部</router-link>
                   </div>
                 </div>
-                <div v-else class="cpd-loading">暂无项目数据（当年无关联项目简称的回款或付款）</div>
+                <div v-else class="cpd-loading">暂无数据（当年无关联{{ projDimMode === 'project' ? '项目简称' : '二级部门' }}的回款或付款）</div>
               </template>
               <div v-else class="cpd-loading">加载失败，请稍后重试</div>
             </div>
@@ -638,6 +657,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .cpc-proj-dim { margin-top: 6px; border-top: 1px dashed #d8c9b8; padding-top: 8px; overflow: hidden; }
 .cpd-proj-head { display: flex; justify-content: space-between; align-items: center;
   font-size: 11px; color: #6b5a4a; font-weight: 700; margin-bottom: 6px; }
+.cpd-dim-seg { display: inline-flex; border: 1px solid rgba(180,140,110,.3); border-radius: 6px; overflow: hidden; }
+.cpd-dim-seg button { border: none; background: transparent; padding: 2px 9px; font-size: 10.5px;
+  color: #8a7665; cursor: pointer; font-weight: 600; }
+.cpd-dim-seg button + button { border-left: 1px solid rgba(180,140,110,.2); }
+.cpd-dim-seg button.on { background: var(--primary, #c96342); color: #fff; }
 .cpd-proj-sum b { font-variant-numeric: tabular-nums; }
 .cpd-loading { font-size: 11.5px; color: #9b8070; padding: 6px 0; text-align: center; }
 .cpd-proj-table { display: flex; flex-direction: column; gap: 0; }
