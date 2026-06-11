@@ -301,10 +301,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <svg class="cpc-spark" :viewBox="`0 0 ${spark(p).W} ${spark(p).H}`" :style="`width:${spark(p).W}px;height:${spark(p).H}px`">
                 <line v-if="spark(p).zero != null" x1="6" :y1="spark(p).zero" :x2="spark(p).W - 4" :y2="spark(p).zero"
                       stroke="#c62828" stroke-width="1" stroke-dasharray="3,3" opacity=".6" />
-                <path :d="spark(p).area" :fill="spark(p).danger ? 'rgba(198,40,40,.10)' : 'rgba(21,101,192,.10)'" />
-                <path :d="spark(p).line" fill="none" :stroke="spark(p).danger ? '#c62828' : '#1565c0'" stroke-width="2" stroke-linecap="round" />
+                <path :d="spark(p).area" :fill="spark(p).danger ? 'rgba(198,40,40,.10)' : 'rgba(201,99,66,.12)'" />
+                <path :d="spark(p).line" fill="none" :stroke="spark(p).danger ? '#c62828' : '#c96342'" stroke-width="2" stroke-linecap="round" />
                 <circle v-for="(pt, i) in spark(p).pts" :key="i" :cx="pt[0]" :cy="pt[1]" r="2.6"
-                        :fill="spark(p).danger ? '#c62828' : '#1565c0'" />
+                        :fill="spark(p).danger ? '#c62828' : '#c96342'" />
               </svg>
               <div class="cpc-spark-labels"><i>现在</i><i>+30</i><i>+60</i><i :title="pessimistic ? '30天为审慎口径（含在途支出）' : ''">+90</i></div>
             </div>
@@ -404,6 +404,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     <div v-if="showConfig" class="cp-modal-mask" @click.self="showConfig = false">
       <div class="cp-modal">
         <div class="cp-modal-title">池配置 — 期初基准（该日终账面资金；之后按收支流水推算余额）</div>
+        <div class="cp-table-wrap">
         <table class="cp-table">
           <thead><tr><th>事业部</th><th>期初基准日</th><th>期初金额(元)</th>
             <th title="手动设定的最低安全余额；留空则按预警窗口天数的刚性待付动态推算">资金预警线(元,可选)</th>
@@ -419,6 +420,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             </tr>
           </tbody>
         </table>
+        </div>
         <div class="cp-cfg-note">修改已有池子的期初基准日/期初金额，会重算该池自基准日以来的全部历史余额。</div>
         <div style="text-align:right;margin-top:10px"><button class="cp-btn" @click="showConfig = false">关闭</button></div>
       </div>
@@ -431,10 +433,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .cp-empty { text-align: center; padding: 40px; color: #9e9e9e; }
 .cp-empty.err { color: #c62828; }
 
-/* ══ 深水总览横幅 ══ */
+/* ══ 资金总览横幅（与侧边栏同语言：深咖啡底 + 陶土高光）══ */
 .cp-hero { position: relative; border-radius: 16px; overflow: hidden; margin-bottom: 16px;
-  background: linear-gradient(160deg, #0a2540 0%, #0e3a5c 45%, #14507a 100%);
-  box-shadow: 0 8px 28px rgba(10,37,64,.28); }
+  background: linear-gradient(160deg, #2c180c 0%, #3e2212 45%, #56301a 100%);
+  box-shadow: 0 8px 28px rgba(60,30,12,.3); }
 .hero-waves { position: absolute; inset: 0; pointer-events: none; opacity: .5; }
 .hw { position: absolute; left: 0; width: 300%; height: 90px; bottom: -34px;
   background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 40" preserveAspectRatio="none"><path d="M0 22 Q 30 10 60 22 T 120 22 T 180 22 T 240 22 V40 H0 Z" fill="%23ffffff" opacity="0.06"/></svg>') repeat-x;
@@ -443,58 +445,59 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 @keyframes heroDrift { to { transform: translateX(-240px); } }
 
 .hero-main { position: relative; display: flex; align-items: center; gap: 26px; padding: 18px 22px 12px; flex-wrap: wrap; }
-.hero-title { font-size: 17px; font-weight: 800; color: #eaf6ff; }
-.hero-sub { display: block; font-size: 11px; font-weight: 400; color: #8fb8d9; margin-top: 3px; }
+.hero-title { font-size: 17px; font-weight: 800; color: #f6ece1; }
+.hero-sub { display: block; font-size: 11px; font-weight: 400; color: #c49a7d; margin-top: 3px; }
 .hero-balance { display: flex; flex-direction: column; }
 .hb-num { font-size: 34px; font-weight: 800; color: #fff; letter-spacing: .5px; line-height: 1.05;
-  text-shadow: 0 2px 14px rgba(79,195,247,.35); font-variant-numeric: tabular-nums; }
-.hb-label { font-size: 11px; color: #8fb8d9; margin-top: 2px; }
+  text-shadow: 0 2px 14px rgba(232,133,90,.4); font-variant-numeric: tabular-nums; }
+.hb-label { font-size: 11px; color: #c49a7d; margin-top: 2px; }
 .hero-flow { display: flex; gap: 20px; align-items: flex-end; }
 .hf-step { text-align: center; }
 .hf-val { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .hf-step.pipe .hf-val { color: #ffd54f; font-size: 14px; }
-.hf-step.pipe em { font-style: normal; color: #b8cfe0; font-size: 12px; }
-.hf-k { font-size: 10.5px; color: #8fb8d9; margin-top: 2px; }
+.hf-step.pipe em { font-style: normal; color: #d9bda6; font-size: 12px; }
+.hf-k { font-size: 10.5px; color: #c49a7d; margin-top: 2px; }
 .hero-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .hero-alert i { font-style: normal; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 10px; margin-left: 6px; }
 .ha-danger { background: rgba(255,82,82,.18); color: #ff8a80; animation: pulse 1.6s ease-in-out infinite; }
 .ha-warn { background: rgba(255,183,77,.15); color: #ffd54f; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 5px rgba(255,82,82,.12); } }
-.hero-pess { font-size: 12px; color: #b8cfe0; display: flex; align-items: center; gap: 5px; cursor: pointer; }
-.hero-btn { padding: 6px 14px; border: 1px solid rgba(143,184,217,.45); border-radius: 9px;
-  background: rgba(255,255,255,.07); font-size: 12.5px; color: #eaf6ff; cursor: pointer; backdrop-filter: blur(4px); }
-.hero-btn:hover { background: rgba(255,255,255,.16); }
+.hero-pess { font-size: 12px; color: #d9bda6; display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.hero-btn { padding: 6px 14px; border: 1px solid rgba(216,166,130,.45); border-radius: 9px;
+  background: rgba(255,255,255,.07); font-size: 12.5px; color: #f6ece1; cursor: pointer; backdrop-filter: blur(4px); }
+.hero-btn:hover { background: rgba(232,133,90,.22); border-color: rgba(232,133,90,.6); }
 
-/* 连通水域 */
+/* 余额对比柱 */
 .reservoir { position: relative; display: flex; align-items: flex-end; justify-content: space-around;
   gap: 10px; padding: 8px 26px 0; height: 168px;
-  border-top: 1px solid rgba(143,184,217,.18); }
+  border-top: 1px solid rgba(216,166,130,.22); }
 .rsv-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
   height: 100%; flex: 1; max-width: 120px; cursor: pointer; }
-.rsv-amt { font-size: 12px; font-weight: 700; color: #cfe8ff; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+.rsv-amt { font-size: 12px; font-weight: 700; color: #f6e3d2; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
 .rsv-tube { position: relative; width: 100%; max-width: 74px; height: 100px;
-  border: 1.5px solid rgba(143,184,217,.35); border-bottom: none; border-radius: 10px 10px 0 0;
+  border: 1.5px solid rgba(216,166,130,.38); border-bottom: none; border-radius: 10px 10px 0 0;
   background: rgba(255,255,255,.04); overflow: hidden; }
 .rsv-water { position: absolute; bottom: 0; left: 0; right: 0; transition: height .7s cubic-bezier(.2,.8,.3,1); }
 .rsv-wave, .tank-wave { position: absolute; top: -7px; left: 0; width: 200%; height: 8px;
   background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 8" preserveAspectRatio="none"><path d="M0 4 Q 15 0 30 4 T 60 4 V8 H0 Z" fill="%23ffffff" opacity="0.55"/></svg>') repeat-x;
   background-size: 60px 8px; animation: heroDrift 5s linear infinite; }
 .rsv-warntick { position: absolute; left: 0; right: 0; border-top: 2px dashed rgba(255,138,128,.85); }
-.rsv-name { margin: 6px 0 10px; font-size: 12px; font-weight: 600; color: #b8cfe0; }
-.rsv-col:hover .rsv-tube { border-color: rgba(79,195,247,.8); }
+.rsv-name { margin: 6px 0 10px; font-size: 12px; font-weight: 600; color: #d9bda6; }
+.rsv-col:hover .rsv-tube { border-color: rgba(232,133,90,.85); }
 .t-danger { color: #ff8a80; } .t-warn { color: #ffd54f; }
-.w-ok { background: linear-gradient(180deg, #4fc3f7 0%, #1565c0 90%); }
+.w-ok { background: linear-gradient(180deg, #e8855a 0%, #a84e32 90%); }
 .w-warn { background: linear-gradient(180deg, #ffb74d 0%, #e65100 90%); }
 .w-danger { background: linear-gradient(180deg, #e57373 0%, #b71c1c 90%); }
 
-/* ══ 池子卡片 ══ */
+/* ══ 池子卡片（玻璃拟态，与系统 .card 同语言）══ */
 .cp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
-.cp-card { background: #fff; border: 1.5px solid #e8ddd0; border-radius: 14px; padding: 16px;
-  box-shadow: 0 2px 10px rgba(74,55,40,.05); transition: box-shadow .2s, transform .2s; }
-.cp-card:hover { box-shadow: 0 6px 18px rgba(74,55,40,.10); transform: translateY(-1px); }
-.cp-card.st-danger { border-color: rgba(198,40,40,.55); background: linear-gradient(180deg, rgba(198,40,40,.035), #fff 40%); }
-.cp-card.st-warn { border-color: rgba(230,81,0,.5); }
-.cp-card.st-none { border-style: dashed; box-shadow: none; background: #fdfbf8; }
+.cp-card { background: var(--glass); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--radius); padding: 16px;
+  box-shadow: var(--glass-shadow); transition: box-shadow .2s, transform .2s; transform: translateZ(0); }
+.cp-card:hover { box-shadow: 0 12px 40px rgba(100,60,30,.18), 0 1px 0 rgba(255,255,255,.7) inset; transform: translateY(-1px); }
+.cp-card.st-danger { border-color: rgba(198,40,40,.45); background: linear-gradient(180deg, rgba(198,40,40,.05), var(--glass) 40%); }
+.cp-card.st-warn { border-color: rgba(230,81,0,.4); }
+.cp-card.st-none { border-style: dashed; border-color: var(--border); box-shadow: none; background: rgba(255,252,248,.4); }
 .cpc-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .cpc-dept { font-size: 14.5px; font-weight: 700; color: #4a3728; }
 .cpc-badge { font-size: 11px; font-weight: 700; padding: 3px 11px; border-radius: 10px; }
@@ -504,8 +507,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
 .cpc-body { display: flex; gap: 16px; align-items: stretch; }
 .tank { position: relative; width: 76px; min-height: 128px; border-radius: 10px 10px 14px 14px;
-  background: linear-gradient(180deg, #f4f9fd, #e9f2f9); overflow: hidden; flex-shrink: 0;
-  border: 2px solid #cfe0ee; }
+  background: linear-gradient(180deg, rgba(255,252,248,.9), rgba(244,232,218,.95)); overflow: hidden; flex-shrink: 0;
+  border: 2px solid #e0cdb8; }
 .tank-glass { position: absolute; inset: 0; pointer-events: none; z-index: 3;
   background: linear-gradient(105deg, rgba(255,255,255,.38) 5%, transparent 14%, transparent 80%, rgba(255,255,255,.18) 94%); }
 .tank-water { position: absolute; bottom: 0; left: 0; right: 0; transition: height .8s cubic-bezier(.2,.8,.3,1); z-index: 1; }
@@ -526,7 +529,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .cpc-spark-labels i { font-style: normal; }
 
 .cpc-vitals { display: flex; gap: 8px; margin-top: 12px; }
-.vital { flex: 1; text-align: center; padding: 7px 4px; border-radius: 9px; background: #faf6f1; }
+.vital { flex: 1; text-align: center; padding: 7px 4px; border-radius: 9px; background: rgba(201,99,66,.06); }
 .vital b { display: block; font-size: 14.5px; font-weight: 800; color: #4a3728; font-variant-numeric: tabular-nums; }
 .vital i { font-style: normal; font-size: 10px; color: #9b8070; }
 .vital.good b { color: #2e7d32; } .vital.bad b { color: #c62828; }
@@ -544,9 +547,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .dry { font-size: 30px; margin-bottom: 6px; opacity: .7; }
 
 /* ══ 调拨 ══ */
-.cp-btn { padding: 5px 12px; border: 1px solid #d4b896; border-radius: 7px; background: #faf8f5; font-size: 12.5px; color: #4a3728; cursor: pointer; }
-.cp-btn:hover { border-color: #4a3728; }
-.cp-btn.primary { background: #4a3728; color: #fff; border-color: #4a3728; }
+.cp-btn { padding: 5px 12px; border: 1px solid rgba(201,99,66,.35); border-radius: 7px; background: rgba(201,99,66,.06); font-size: 12.5px; color: var(--primary); cursor: pointer; transition: all .18s; }
+.cp-btn:hover { background: rgba(201,99,66,.13); border-color: var(--primary); }
+.cp-btn.primary { background: var(--grad); color: #fff; border: none; box-shadow: 0 2px 10px var(--primary-glow); }
+.cp-btn.primary:hover:not(:disabled) { filter: brightness(1.08); }
+.cp-btn:disabled { opacity: .5; cursor: not-allowed; }
 .cp-transfer-form { display: flex; gap: 8px; align-items: center; margin-top: 14px; padding: 12px; background: #fef9f5; border: 1px solid #e8ddd0; border-radius: 10px; flex-wrap: wrap; }
 .tr-arrow { font-weight: 700; color: #4a3728; }
 .cp-sel, .cp-inp { padding: 6px 8px; border: 1px solid #d4b896; border-radius: 7px; font-size: 12.5px; background: #fff; }
@@ -555,7 +560,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .tr-item { display: flex; align-items: center; gap: 14px; padding: 8px 12px; border-radius: 9px; background: #faf6f1; font-size: 12.5px; }
 .tr-date { color: #9b8070; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .tr-route { display: flex; align-items: center; gap: 8px; font-weight: 700; color: #4a3728; flex-shrink: 0; }
-.tr-pipe { font-style: normal; font-weight: 600; font-size: 12px; color: #1565c0; background: rgba(21,101,192,.08); padding: 2px 10px; border-radius: 10px; }
+.tr-pipe { font-style: normal; font-weight: 600; font-size: 12px; color: var(--primary); background: rgba(201,99,66,.1); padding: 2px 10px; border-radius: 10px; }
 .tr-meta { display: flex; gap: 12px; color: #9b8070; flex: 1; min-width: 0; flex-wrap: wrap; }
 .tr-meta em { font-style: normal; }
 .tr-meta .tr-reject { color: #c62828; }
@@ -574,12 +579,22 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .cp-method li b { color: #4a3728; }
 .cp-cfg-note { margin-top: 8px; font-size: 11px; color: #e65100; }
 
-.cp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.cp-table th { background: #f3ede6; color: #6b5a4a; padding: 7px 10px; font-weight: 600; text-align: left; white-space: nowrap; }
-.cp-table td { padding: 7px 10px; border-bottom: 1px solid #f0e8de; }
-.cp-modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.cp-modal { background: #fff; border-radius: 12px; padding: 18px; width: min(680px, 94vw); max-height: 84vh; overflow-y: auto; }
-.cp-modal-title { font-size: 14px; font-weight: 700; color: #4a3728; margin-bottom: 12px; }
+/* 配置表格：包一层横向滚动容器，列内容超出弹窗宽度时滚动而不溢出 */
+.cp-table-wrap { overflow-x: auto; border-radius: 10px; }
+.cp-table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: 12.5px; }
+.cp-table th { background: rgba(201,99,66,.07); color: var(--muted); padding: 7px 10px; font-weight: 600; text-align: left; white-space: nowrap; }
+.cp-table td { padding: 7px 10px; border-bottom: 1px solid rgba(180,140,110,.14); white-space: nowrap; }
+.cp-table td b { white-space: normal; word-break: keep-all; }
+/* 弹窗内输入框按内容定宽，抵消全局 input{width:100%} 把单元格撑爆 */
+.cp-table .cp-inp { width: auto; }
+.cp-table input[type="date"].cp-inp { width: 138px; }
+.cp-modal-mask { position: fixed; inset: 0; background: rgba(20,10,5,.42); backdrop-filter: blur(8px);
+  display: flex; align-items: center; justify-content: center; z-index: 1000; animation: fadeIn .18s ease; }
+.cp-modal { background: rgba(255,252,248,.94); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: 18px; padding: 20px;
+  width: min(780px, 94vw); max-height: 84vh; overflow-y: auto;
+  box-shadow: 0 24px 80px rgba(100,60,30,.25), 0 1px 0 rgba(255,255,255,.8) inset; }
+.cp-modal-title { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 12px; line-height: 1.5; }
 
 @media (max-width: 768px) {
   .hero-main { gap: 14px; }
