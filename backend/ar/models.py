@@ -872,7 +872,42 @@ class AdvanceRecord(models.Model):
         }
         if include_writeoffs:
             d['writeoffs'] = [w.to_dict() for w in self.writeoffs.order_by('writeoff_no')]
+            d['installments'] = [i.to_dict() for i in self.installments.order_by('install_no')]
         return d
+
+
+class AdvanceInstallment(models.Model):
+    """预收/预付收付明细 — 一条预收/预付可多次到账/付出（与应收多次回款同构）。
+
+    AdvanceRecord.advance_amount 退化为派生合计（信号自动同步 = 明细之和），
+    所有按总额的查询/核销/资金池口径零改动；明细为正源，逐笔可追溯。"""
+    advance_record = models.ForeignKey(AdvanceRecord, on_delete=models.CASCADE,
+                                       related_name='installments', db_index=True)
+    install_no = models.IntegerField('收付序号')
+    amount = models.DecimalField('收付金额', max_digits=15, decimal_places=2)
+    occur_date = models.DateField('收付日期', db_index=True)
+    notes = models.TextField('备注', blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'ar_advance_installments'
+        unique_together = [('advance_record', 'install_no')]
+        ordering = ['advance_record', 'install_no']
+        indexes = [
+            models.Index(fields=['advance_record', 'occur_date']),
+            models.Index(fields=['occur_date']),
+        ]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'advance_record_id': self.advance_record_id,
+            'install_no': self.install_no,
+            'amount': str(self.amount),
+            'occur_date': str(self.occur_date),
+            'notes': self.notes,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
 
 
 class AdvanceWriteoff(models.Model):

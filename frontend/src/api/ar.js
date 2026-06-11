@@ -88,6 +88,10 @@ const ar = {
   // 预收核销工作台 + 批量核销（一笔预收按先进先出冲抵多条应收）
   offsetWorkbench: p => api.get('/ar/advances/offset-workbench', { params: p }),
   batchWriteoff: (advId, d) => api.post(`/ar/advances/${advId}/batch-writeoff`, d),
+  // 收付明细（一条预收/预付多次到账/付出；总额为派生）
+  listAdvInstallments: id => api.get(`/ar/advances/${id}/installments`),
+  addAdvInstallment: (id, d) => api.post(`/ar/advances/${id}/installments`, d),
+  deleteAdvInstallment: (id, iid) => api.delete(`/ar/advances/${id}/installments/${iid}`),
   advanceOffsettable: p => api.get('/ar/advances/offsettable', { params: p }),
   createAdvance: d => api.post('/ar/advances', d),
   getAdvance: id => api.get(`/ar/advances/${id}`),

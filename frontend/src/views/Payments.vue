@@ -282,21 +282,41 @@ const offsetForm = reactive({ advance_id: '', amount: '', writeoff_date: todayCS
 const offsetBusy = ref(false)
 const offsetDone = ref('')            // 成功提示（留在弹窗里可继续核销）
 
+const offsetHistory = ref([])      // 本排款已有的核销（可反向删除）
+async function fetchOffsetData(p) {
+  const [bal, hist] = await Promise.allSettled([
+    api.get('/payments/prepaid-balance', {
+      params: { project_no: p.project_no || undefined, short_name: p.project_short_name || undefined,
+                payee: p.payee || undefined },
+    }),
+    api.get(`/payments/${p.id}/offsets`),
+  ])
+  offsetItems.value = bal.status === 'fulfilled' ? (bal.value.data?.items || []) : []
+  offsetHistory.value = hist.status === 'fulfilled' ? (hist.value.data?.items || []) : []
+  if (offsetItems.value.length === 1 && !offsetForm.advance_id) offsetForm.advance_id = offsetItems.value[0].id
+}
 async function openOffset(p) {
   offsetTarget.value = p
   Object.assign(offsetForm, { advance_id: '', amount: '', writeoff_date: todayCST() })
   offsetItems.value = []
+  offsetHistory.value = []
   offsetDone.value = ''
   showOffset.value = true
   offsetLoading.value = true
+  try { await fetchOffsetData(p) } finally { offsetLoading.value = false }
+}
+async function reverseOffset(o) {
+  if (!confirm(`反向核销：删除 ${o.writeoff_date} 冲抵的 ${o.amount} 元？\n预付余额将恢复，本排款待付相应回升。`)) return
+  offsetBusy.value = true
   try {
-    const res = await api.get('/payments/prepaid-balance', {
-      params: { project_no: p.project_no || undefined, short_name: p.project_short_name || undefined },
-    })
-    offsetItems.value = res.data?.items || []
-    if (offsetItems.value.length === 1) offsetForm.advance_id = offsetItems.value[0].id
-  } catch (_) { offsetItems.value = [] }
-  finally { offsetLoading.value = false }
+    await api.delete(`/ar/advances/${o.advance_id}/writeoffs/${o.id}`)
+    offsetDone.value = '✓ 已反向核销，预付余额已恢复'
+    await load()
+    const p = items.value.find(x => x.id === offsetTarget.value.id)
+    if (p) offsetTarget.value = p
+    await fetchOffsetData(offsetTarget.value)
+  } catch (e) { alert(e?.msg || e?.error || '反向核销失败') }
+  finally { offsetBusy.value = false }
 }
 const offsetRoom = computed(() => parseFloat(offsetTarget.value?.remaining) || 0)
 async function doOffset() {
@@ -312,13 +332,9 @@ async function doOffset() {
     offsetDone.value = `✓ 已冲抵 ${amt.toFixed(2)} 元（可继续核销其他预付，或关闭）`
     offsetForm.amount = ''
     await load()
-    // 刷新可用预付余额与本行数据
     const p = items.value.find(x => x.id === offsetTarget.value.id)
     if (p) offsetTarget.value = p
-    const res = await api.get('/payments/prepaid-balance', {
-      params: { project_no: offsetTarget.value.project_no || undefined, short_name: offsetTarget.value.project_short_name || undefined },
-    })
-    offsetItems.value = res.data?.items || []
+    await fetchOffsetData(offsetTarget.value)
   } catch (e) { alert(e?.msg || e?.error || '核销失败') }
   finally { offsetBusy.value = false }
 }
@@ -545,6 +561,16 @@ function setPage(p) { filters.page = p; load() }
             · 剩余待付 <b style="color:#e65100">{{ offsetRoom.toFixed(2) }}</b>
           </p>
           <p v-if="offsetDone" style="font-size:12.5px;color:#2e7d32;font-weight:600">{{ offsetDone }}</p>
+          <!-- 已核销记录（可反向核销） -->
+          <div v-if="offsetHistory.length" class="po-history">
+            <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">已核销记录</div>
+            <div v-for="o in offsetHistory" :key="o.id" class="po-hist-row">
+              <span>{{ o.writeoff_date }} · {{ o.counterparty || '—' }}</span>
+              <b>−{{ fmt(o.amount) }}</b>
+              <button v-if="auth.canWrite" class="po-reverse" :disabled="offsetBusy"
+                title="反向核销：预付余额恢复、待付回升" @click="reverseOffset(o)">撤销</button>
+            </div>
+          </div>
           <div v-if="offsetLoading" style="font-size:12.5px;color:var(--muted);padding:10px 0">查询可用预付…</div>
           <div v-else-if="!offsetItems.length" style="font-size:12.5px;color:var(--muted);padding:10px 0">
             该项目暂无可核销的「预付」余额——预付须先在「预收预付」录入并挂到该项目
@@ -687,6 +713,11 @@ function setPage(p) { filters.page = p; load() }
 .pk-pay-tbl .badge { font-size: 10.5px; padding: 2px 7px; }
 
 /* 预付核销弹窗 */
+.po-history { margin-bottom: 10px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 9px; }
+.po-hist-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; padding: 3px 0; }
+.po-hist-row b { color: #c62828; font-variant-numeric: tabular-nums; margin-left: auto; }
+.po-reverse { border: 1px solid rgba(198,40,40,.4); color: #c62828; background: none; border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; }
+.po-reverse:hover:not(:disabled) { background: rgba(198,40,40,.08); }
 .po-list { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; }
 .po-opt { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; cursor: pointer; font-size: 12.5px; }
 .po-opt.on { border-color: var(--primary); background: rgba(201,99,66,0.06); }

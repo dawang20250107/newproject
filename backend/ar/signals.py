@@ -43,6 +43,31 @@ def update_ar_record_on_adjustment_change(sender, instance, **kwargs):
         pass
 
 
+@receiver([post_save, post_delete], sender='ar.AdvanceInstallment')
+def update_advance_on_installment_change(sender, instance, **kwargs):
+    """收付明细变动 → 重算预收/预付的派生总额与未核销余额。
+    advance_amount 自此为派生列：恒等于明细 amount 之和。
+    若减额后总额 < 已核销，recompute 抛 ValidationError 回滚。"""
+    from decimal import Decimal as _D
+    from django.core.exceptions import ValidationError
+    from django.db.models import Sum as _Sum
+    from ar.models import AdvanceRecord
+    try:
+        record = instance.advance_record
+        total = record.installments.aggregate(s=_Sum('amount'))['s'] or _D('0')
+        record.advance_amount = total
+        record.recompute_derived(save=False)
+        AdvanceRecord.objects.filter(pk=record.pk).update(
+            advance_amount=total,
+            written_off_amount=record.written_off_amount,
+            balance_amount=record.balance_amount,
+        )
+    except ValidationError:
+        raise
+    except Exception:
+        pass
+
+
 @receiver([post_save, post_delete], sender='ar.AdvanceWriteoff')
 def update_advance_on_writeoff_change(sender, instance, **kwargs):
     """核销变动 → 重算所属预收/预付的已核销与未核销余额。"""

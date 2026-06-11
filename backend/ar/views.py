@@ -26,7 +26,8 @@ from paikuan.views import (pk_required, ok, err, DEPARTMENTS, VALID_DEPARTMENTS,
                            AR_RECORD_FIELD_DEFS, AR_ADVANCE_FIELD_DEFS, _paid_subq)
 from ar.models import (ARProject, ARRecord, ARPayment, ARAdjustment,
                        CollectionBudget, PaymentBudget,
-                       AdvanceRecord, AdvanceWriteoff, Supplier, Customer,
+                       AdvanceRecord, AdvanceWriteoff, AdvanceInstallment,
+                       Supplier, Customer,
                        Contract, ContractParty, ContractProject, ActionItem,
                        CashPoolConfig, CashPoolTransfer)
 from paikuan.models import Payment, PaymentInstallment, ApprovalRecord
@@ -3103,10 +3104,28 @@ def ar_payment_detail(request, pk, ppk):
     if denied:
         return denied
 
-    # 「预收抵扣」回款由预收核销自动生成，须在预收预付页改/删对应核销，
-    # 不能在此直接编辑或删除（否则两侧台账会失衡）。
-    if pay.source == '预收抵扣' and request.method in ('PUT', 'DELETE'):
-        return err('该回款由预收核销生成，请在「预收预付」页修改或删除对应核销', 400)
+    # 「预收抵扣」回款由预收核销自动生成：金额/日期须在核销侧改（PUT 禁止）；
+    # DELETE 即「反向核销」——删除对应预收核销，预收余额恢复、回款级联删除。
+    if pay.source == '预收抵扣' and request.method == 'PUT':
+        return err('该回款由预收核销生成，请在「预收预付」页修改对应核销，或删除后重新核销', 400)
+    if pay.source == '预收抵扣' and request.method == 'DELETE':
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        wo = AdvanceWriteoff.objects.filter(ar_payment_id=pay.pk).first()
+        if wo is None:
+            # 核销已不存在（历史数据异常）：直接删孤儿回款，恢复应收
+            with transaction.atomic():
+                pay.delete()
+            return ok({'deleted': ppk, 'reversed_writeoff': None})
+        wo_id = wo.pk
+        try:
+            with transaction.atomic():
+                wo.delete()   # 信号级联删本回款 + 重算应收未收与预收余额
+        except ValidationError as e:
+            return err(str(e.message if hasattr(e, 'message') else e), 400)
+        return ok({'deleted': ppk, 'reversed_writeoff': wo_id,
+                   'message': '已反向核销：预收余额恢复，应收未收回升'})
 
     if request.method == 'PUT':
         denied = _write_denied(request)
@@ -4755,6 +4774,12 @@ def _advance_create(request, data):
             created_by=user,
         )
         rec.save()
+        # 总额为派生列（=收付明细之和）：创建时生成首笔收付明细，后续可多次追加
+        if rec.advance_amount:
+            init_date = rec.occur_date or datetime.date(year, month, 1)
+            AdvanceInstallment.objects.create(
+                advance_record=rec, install_no=1, amount=rec.advance_amount,
+                occur_date=init_date, notes='录入初始金额')
     except Exception as e:
         return err(str(e))
     return ok(apply_ar_view_mask(
@@ -4807,7 +4832,23 @@ def advance_detail(request, pk):
         if 'occur_date' in data:
             rec.occur_date = _normalize_date(data['occur_date']) or None
         if 'advance_amount' in data:
-            rec.advance_amount = _dec(data['advance_amount'])
+            # 兼容旧调用方按「总额」编辑：与现总额的差值生成一笔收付明细
+            # （明细为正源、总额为派生，与应收差额调整同款策略）。
+            # 减额低于已核销时信号抛 ValidationError → 400（余额不能为负）
+            new_total = _dec(data['advance_amount'])
+            delta = new_total - (rec.advance_amount or Decimal('0'))
+            if delta:
+                last_inst = rec.installments.order_by('-install_no').first()
+                try:
+                    with transaction.atomic():
+                        AdvanceInstallment.objects.create(
+                            advance_record=rec,
+                            install_no=(last_inst.install_no + 1) if last_inst else 1,
+                            amount=delta, occur_date=rec.occur_date or datetime.date.today(),
+                            notes='人工调整（按总额修改）')
+                except ValidationError as e:
+                    return err(str(e.message if hasattr(e, 'message') else e), 400)
+                rec.advance_amount = new_total
         if 'expected_writeoff_date' in data:
             rec.expected_writeoff_date = _normalize_date(data['expected_writeoff_date']) or None
         if 'notes' in data:
@@ -5195,6 +5236,12 @@ def advance_import(request):
                     notes=p['notes'], created_by=user,
                 )
                 rec.save()
+                # 总额为派生列：导入金额作为首笔收付明细（须先于核销生效）
+                if rec.advance_amount:
+                    AdvanceInstallment.objects.create(
+                        advance_record=rec, install_no=1, amount=rec.advance_amount,
+                        occur_date=rec.occur_date or datetime.date(p['year'], p['month'], 1),
+                        notes='导入初始金额')
                 if p['wo_amount'] and p['wo_date']:
                     amt = _dec(p['wo_amount'])
                     if amt > 0 and not rec.writeoffs.filter(writeoff_date=p['wo_date'], amount=amt).exists():
@@ -5238,6 +5285,9 @@ def advance_export(request):
         (None, '发生月', lambda rec, st: rec.occur_month),
         (None, '款项日期', lambda rec, st: str(rec.occur_date) if rec.occur_date else ''),
         ('adv_amount', '预收/预付金额', lambda rec, st: float(rec.advance_amount)),
+        ('adv_amount', '收付明细',
+         lambda rec, st: '；'.join(f'{i.occur_date}:{i.amount}'
+                                   for i in rec.installments.all())),
         ('adv_writeoff', '已核销金额', lambda rec, st: float(rec.written_off_amount)),
         ('adv_writeoff', '未核销余额', lambda rec, st: float(rec.balance_amount)),
         ('adv_writeoff', '核销状态', lambda rec, st: rec.writeoff_status),
@@ -5365,6 +5415,94 @@ def _create_offset_payment(advance, ar_record, amount, pay_date):
     return ARPayment.objects.create(
         ar_record=ar_record, payment_no=next_no, amount=amount,
         payment_date=pay_date, source='预收抵扣', notes=note)
+
+
+def _adv_installments_payload(rec):
+    """收付明细变更后的统一回包：明细 + 派生总额/余额（UI 一次刷新）。"""
+    rec.refresh_from_db()
+    return {
+        'items': [i.to_dict() for i in rec.installments.order_by('install_no')],
+        'advance_amount': str(rec.advance_amount or 0),
+        'balance_amount': str(rec.balance_amount or 0),
+    }
+
+
+@csrf_exempt
+@pk_required()
+def advance_installments(request, pk):
+    """GET/POST /advances/<pk>/installments — 预收/预付收付明细（多次到账/付出）。"""
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    try:
+        rec = AdvanceRecord.objects.select_related('project').get(pk=pk)
+    except AdvanceRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    if request.pk_role != 'super_admin' and rec.delivery_dept not in request.pk_depts:
+        return err('无权访问', 403)
+    denied = _ar_field_denied(request, 'adv_amount')
+    if denied:
+        return denied
+
+    if request.method == 'GET':
+        return ok(_adv_installments_payload(rec))
+
+    if request.method == 'POST':
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        data = _parse_body(request)
+        amount = _dec(data.get('amount', 0))
+        if not amount:
+            return err('收付金额不能为0（可正可负，负数=退回）')
+        occur = _normalize_date(data.get('occur_date'))
+        if not occur:
+            return err('收付日期无效（格式 2026-01-20）')
+        try:
+            with transaction.atomic():
+                last = rec.installments.select_for_update().order_by('-install_no').first()
+                AdvanceInstallment.objects.create(
+                    advance_record=rec,
+                    install_no=(last.install_no + 1) if last else 1,
+                    amount=amount, occur_date=occur,
+                    notes=(data.get('notes') or '').strip())
+        except ValidationError as e:
+            return err(str(e.message if hasattr(e, 'message') else e), 400)
+        return ok(_adv_installments_payload(rec))
+
+    return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def advance_installment_detail(request, pk, iid):
+    """DELETE /advances/<pk>/installments/<iid> — 删除一笔收付（总额随之回退；
+    删除会使总额低于已核销时拒绝，须先删核销）。"""
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    if request.method != 'DELETE':
+        return err('Method not allowed', 405)
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    try:
+        inst = AdvanceInstallment.objects.select_related('advance_record').get(
+            pk=iid, advance_record_id=pk)
+    except AdvanceInstallment.DoesNotExist:
+        return err('收付明细不存在', 404)
+    rec = inst.advance_record
+    if request.pk_role != 'super_admin' and rec.delivery_dept not in request.pk_depts:
+        return err('无权访问', 403)
+    denied = _ar_field_denied(request, 'adv_amount')
+    if denied:
+        return denied
+    try:
+        with transaction.atomic():
+            inst.delete()
+    except ValidationError as e:
+        return err(str(e.message if hasattr(e, 'message') else e), 400)
+    return ok(_adv_installments_payload(rec))
 
 
 @csrf_exempt

@@ -740,7 +740,10 @@ async function savePayment() {
 }
 
 async function deletePayment(rec, pay) {
-  if (!confirm(`确定删除第${pay.payment_no}次回款 ${pay.amount} 元？`)) return
+  const tip = pay.source === '预收抵扣'
+    ? `撤销该笔预收核销（${pay.amount} 元）？\n预收余额将恢复，本应收未收金额相应回升。`
+    : `确定删除第${pay.payment_no}次回款 ${pay.amount} 元？`
+  if (!confirm(tip)) return
   try { await ar.deletePayment(rec.id, pay.id); await load() }
   catch (e) { alert(e?.msg || '删除失败') }
 }
@@ -1222,9 +1225,10 @@ function clearFilters() {
                       <span class="pay-no">第{{ pay.payment_no }}次</span>
                       <span class="pay-amt">{{ fmtCell(pay.amount) }}</span>
                       <span class="pay-date">{{ pay.payment_date }}</span>
-                      <span v-if="pay.source === '预收抵扣'" class="pay-src" title="由预收核销生成，须在预收预付页删除对应核销">预收抵扣</span>
+                      <span v-if="pay.source === '预收抵扣'" class="pay-src" title="由预收核销生成；删除即反向核销，预收余额恢复">预收抵扣</span>
                       <span v-if="pay.notes" class="pay-notes">{{ pay.notes }}</span>
-                      <button v-if="auth.canDelete && pay.source !== '预收抵扣'" class="pay-del" @click="deletePayment(rec, pay)">删除</button>
+                      <button v-if="auth.canDelete" class="pay-del" @click="deletePayment(rec, pay)">
+                        {{ pay.source === '预收抵扣' ? '撤销核销' : '删除' }}</button>
                     </div>
                   </td>
                 </tr>

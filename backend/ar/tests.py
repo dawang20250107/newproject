@@ -6,7 +6,7 @@ from decimal import Decimal
 import openpyxl
 from django.test import Client, TestCase
 
-from ar.models import (ARPayment, ARProject, ARRecord, ARAdjustment, CollectionBudget, PaymentBudget,
+from ar.models import (ARPayment, ARProject, ARRecord, ARAdjustment, AdvanceInstallment, CollectionBudget, PaymentBudget,
                        AdvanceRecord, AdvanceWriteoff, Customer,
                        Contract, ContractParty, ContractProject, ActionItem)
 from paikuan.models import JobPermission, PaikuanUser
@@ -1098,7 +1098,9 @@ class AdvanceModuleTests(TestCase):
                        'ar_record_id': ar.id}, admin)
         self.assertEqual(w.status_code, 400, w.content)
 
-    def test_offset_payment_cannot_be_deleted_directly(self):
+    def test_offset_payment_delete_reverses_writeoff(self):
+        # 行为升级：删除「预收抵扣」回款 = 反向核销（删对应核销，预收余额恢复）；
+        # PUT 编辑仍然禁止（金额/日期须在核销侧改）。
         admin = self.make_user('13911100013', 'finance_director', role='super_admin')
         proj = self.create_project()
         ar = self._ar_record(proj, 100000)
@@ -1110,8 +1112,17 @@ class AdvanceModuleTests(TestCase):
                       {'amount': 40000, 'writeoff_date': '2026-03-20',
                        'ar_record_id': ar.id}, admin)
         pid = w.json()['data']['ar_payment_id']
+        # PUT 仍禁止
+        pu = self.client.put(f'/api/pk/ar/records/{ar.id}/payments/{pid}',
+                             data=json.dumps({'amount': '1'}),
+                             content_type='application/json', **self.auth(admin))
+        self.assertEqual(pu.status_code, 400, pu.content)
+        # DELETE = 反向核销
         d = self.client.delete(f'/api/pk/ar/records/{ar.id}/payments/{pid}', **self.auth(admin))
-        self.assertEqual(d.status_code, 400, d.content)  # 须经核销删除
+        self.assertEqual(d.status_code, 200, d.content)
+        adv.refresh_from_db()
+        self.assertEqual(adv.balance_amount, Decimal('100000'))
+        self.assertEqual(adv.writeoffs.count(), 0)
 
     # ── 可用预收：本项目 ∪ 散单客户匹配 ────────────────────────────────────────
     def test_available_union_project_and_customer(self):
@@ -3275,3 +3286,152 @@ class OffsetChainTests(TestCase):
         headers = [c.value for c in wb.active[1]]
         self.assertIn('预收冲抵金额', headers)
         self.assertIn('预收冲抵次数', headers)
+
+
+class ReverseOffsetAndInstallmentTests(TestCase):
+    """反向核销（两侧）+ 预付散单匹配 + 预收预付多次收付明细。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900001300', name='RevAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='反核客户', short_name='反核项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='REV-0001')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _adv(self, direction, amount, **kw):
+        return AdvanceRecord.objects.create(
+            direction=direction, delivery_dept=self.dept,
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 1),
+            advance_amount=Decimal(amount), **kw)
+
+    # ── 反向核销：应收侧（删除预收抵扣回款 = 撤销核销）────────────────────────
+    def test_delete_offset_payment_reverses_writeoff(self):
+        adv = self._adv('预收', '1000', project=self.proj, counterparty='反核客户')
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                      estimated_amount=Decimal('800'))
+        resp = self.client.post(f'/api/pk/ar/advances/{adv.id}/batch-writeoff',
+                                data=json.dumps({'record_ids': [rec.id],
+                                                 'writeoff_date': '2026-06-01'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        rec.refresh_from_db(); adv.refresh_from_db()
+        self.assertEqual(rec.outstanding_amount, Decimal('0'))
+        self.assertEqual(adv.balance_amount, Decimal('200'))
+        pay = rec.payments.get(source='预收抵扣')
+        # 在应收侧删除该抵扣回款 → 反向核销
+        resp = self.client.delete(f'/api/pk/ar/records/{rec.id}/payments/{pay.id}', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIsNotNone(resp.json()['data'].get('reversed_writeoff'))
+        rec.refresh_from_db(); adv.refresh_from_db()
+        self.assertEqual(rec.outstanding_amount, Decimal('800'))   # 未收回升
+        self.assertEqual(adv.balance_amount, Decimal('1000'))      # 预收余额恢复
+        self.assertEqual(adv.writeoffs.count(), 0)
+
+    # ── 反向核销：付款侧（删核销 → 冲抵额回退）────────────────────────────────
+    def test_payment_offsets_list_and_reverse(self):
+        from paikuan.models import Payment
+        prepaid = self._adv('预付', '900', project=self.proj, counterparty='某供应商')
+        pay = Payment.objects.create(
+            department=self.dept, project_desc='设备款', payee='某供应商',
+            total_amount=Decimal('1000'), planned_date=date(2026, 7, 1),
+            project_short_name='反核项目')
+        resp = self.client.post(f'/api/pk/ar/advances/{prepaid.id}/writeoffs',
+                                data=json.dumps({'amount': '600', 'writeoff_date': '2026-07-01',
+                                                 'payment_id': pay.id}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        # 列表接口
+        resp = self.client.get(f'/api/pk/payments/{pay.id}/offsets', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(len(d['items']), 1)
+        self.assertEqual(Decimal(d['total_offset']), Decimal('600'))
+        wid = d['items'][0]['id']
+        # 反向核销
+        resp = self.client.delete(f'/api/pk/ar/advances/{prepaid.id}/writeoffs/{wid}', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        pay.refresh_from_db(); prepaid.refresh_from_db()
+        self.assertEqual(pay.prepaid_offset_amount, Decimal('0'))
+        self.assertEqual(prepaid.balance_amount, Decimal('900'))
+
+    # ── 预付散单（未挂项目）按收款方匹配 ─────────────────────────────────────
+    def test_prepaid_balance_matches_loose_by_payee(self):
+        self._adv('预付', '500', counterparty='散单供应商')   # 不挂项目
+        resp = self.client.get('/api/pk/payments/prepaid-balance',
+                               {'payee': '散单供应商'}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertTrue(d['matched'])
+        self.assertEqual(Decimal(d['total_balance']), Decimal('500'))
+
+    # ── 多次收付明细：追加/删除，总额与余额派生 ──────────────────────────────
+    def test_advance_multiple_installments(self):
+        # API 创建 → 自动生成首笔收付明细
+        resp = self.client.post('/api/pk/ar/advances', data=json.dumps({
+            'direction': '预收', 'counterparty': '分期客户', 'delivery_dept': self.dept,
+            'occur_year': 2026, 'occur_month': 4, 'occur_date': '2026-04-01',
+            'advance_amount': '1000'}), content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        aid = resp.json()['data']['id']
+        # 第二笔到账 +500
+        resp = self.client.post(f'/api/pk/ar/advances/{aid}/installments',
+                                data=json.dumps({'amount': '500', 'occur_date': '2026-05-01',
+                                                 'notes': '第二笔预收'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(len(d['items']), 2)
+        self.assertEqual(Decimal(d['advance_amount']), Decimal('1500'))
+        self.assertEqual(Decimal(d['balance_amount']), Decimal('1500'))
+        # 删除第二笔 → 总额回退
+        iid = d['items'][1]['id']
+        resp = self.client.delete(f'/api/pk/ar/advances/{aid}/installments/{iid}', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(Decimal(resp.json()['data']['advance_amount']), Decimal('1000'))
+
+    def test_installment_delete_blocked_below_writeoffs(self):
+        adv = self._adv('预收', '0', counterparty='分期客户2')
+        i1 = AdvanceInstallment.objects.create(advance_record=adv, install_no=1,
+                                               amount=Decimal('600'), occur_date=date(2026, 3, 1))
+        AdvanceInstallment.objects.create(advance_record=adv, install_no=2,
+                                          amount=Decimal('400'), occur_date=date(2026, 4, 1))
+        AdvanceWriteoff.objects.create(advance_record=adv, writeoff_no=1,
+                                       amount=Decimal('700'), writeoff_date=date(2026, 5, 1))
+        # 删 600 的首笔 → 总额 400 < 已核销 700 → 拒绝
+        resp = self.client.delete(f'/api/pk/ar/advances/{adv.id}/installments/{i1.id}', **self.auth())
+        self.assertEqual(resp.status_code, 400)
+        self.assertTrue(AdvanceInstallment.objects.filter(pk=i1.pk).exists())
+
+    def test_legacy_put_amount_creates_delta_installment(self):
+        adv = self._adv('预付', '0', counterparty='调额供应商')
+        AdvanceInstallment.objects.create(advance_record=adv, install_no=1,
+                                          amount=Decimal('300'), occur_date=date(2026, 3, 1))
+        resp = self.client.put(f'/api/pk/ar/advances/{adv.id}',
+                               data=json.dumps({'advance_amount': '800'}),
+                               content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        adv.refresh_from_db()
+        self.assertEqual(adv.advance_amount, Decimal('800'))
+        self.assertEqual(adv.installments.count(), 2)
+
+    def test_advance_import_creates_initial_installment(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['方向*', '往来单位*', '交付部门', '发生年*', '发生月*', '金额*'])
+        ws.append(['预收', '导入分期客户', self.dept, 2026, 5, 1200])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0); buf.name = 'a.xlsx'
+        resp = self.client.post('/api/pk/ar/advances/import', {'file': buf}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        if resp.json()['data'].get('created'):
+            adv = AdvanceRecord.objects.get(counterparty='导入分期客户')
+            self.assertEqual(adv.installments.count(), 1)
+            self.assertEqual(adv.installments.first().amount, Decimal('1200'))

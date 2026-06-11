@@ -224,6 +224,48 @@ async function delWriteoff(w) {
   } catch (e) { alert(e?.msg || '删除失败') }
 }
 
+// ── 收付明细（多次到账/付出；总额=明细之和，派生） ───────────────────────────
+const showInstModal = ref(false)
+const instRec = ref(null)
+const instList = ref([])
+const instForm = reactive({ amount: '', occur_date: todayCST(), notes: '' })
+const instBusy = ref(false)
+async function openInstallments(rec) {
+  instRec.value = rec
+  Object.assign(instForm, { amount: '', occur_date: todayCST(), notes: '' })
+  instList.value = []
+  showInstModal.value = true
+  try {
+    const res = await ar.listAdvInstallments(rec.id)
+    instList.value = res.data.items
+  } catch (_) { instList.value = [] }
+}
+async function addInstallment() {
+  if (!parseFloat(instForm.amount)) { alert('收付金额不能为0（可负=退回）'); return }
+  instBusy.value = true
+  try {
+    const res = await ar.addAdvInstallment(instRec.value.id, { ...instForm })
+    instList.value = res.data.items
+    Object.assign(instForm, { amount: '', occur_date: todayCST(), notes: '' })
+    await load()
+    const fresh = items.value.find(r => r.id === instRec.value.id)
+    if (fresh) instRec.value = fresh
+  } catch (e) { alert(e?.msg || '新增收付失败') }
+  finally { instBusy.value = false }
+}
+async function delInstallment(i) {
+  if (!confirm(`删除第${i.install_no}笔收付 ${i.amount} 元？总额与未核销余额将随之回退。`)) return
+  instBusy.value = true
+  try {
+    const res = await ar.deleteAdvInstallment(instRec.value.id, i.id)
+    instList.value = res.data.items
+    await load()
+    const fresh = items.value.find(r => r.id === instRec.value.id)
+    if (fresh) instRec.value = fresh
+  } catch (e) { alert(e?.msg || '删除失败') }
+  finally { instBusy.value = false }
+}
+
 // ── template / import / export ────────────────────────────────────────────────
 async function downloadTemplate() {
   try {
@@ -482,6 +524,7 @@ onMounted(() => {
                   <span v-else>—</span>
                 </td>
                 <td class="ctr nowrap">
+                  <button v-if="show('adv_amount') && canCreate" class="lnk" title="多次到账/付出明细（总额=明细之和）" @click="openInstallments(r)">收付</button>
                   <button v-if="show('adv_writeoff') && canCreate" class="lnk" @click="openWriteoffs(r)">核销</button>
                   <button v-if="canCreate" class="lnk" @click="openEdit(r)">编辑</button>
                   <button v-if="canDelete" class="lnk danger" @click="removeRec(r)">删除</button>
@@ -659,6 +702,45 @@ onMounted(() => {
         </div>
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="showWoModal = false">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── installment modal（收付明细：一条记录多次到账/付出）── -->
+    <div v-if="showInstModal" class="modal-mask" @click.self="showInstModal = false">
+      <div class="modal">
+        <h3>收付明细 · {{ instRec.counterparty }}</h3>
+        <div class="wo-summary">
+          <span>{{ dirLabel }}总额 <b>{{ fmtAmt(instRec.advance_amount) }}</b><i style="font-style:normal;font-size:11px;color:var(--muted)">（=明细之和）</i></span>
+          <span>已核销 <b>{{ fmtAmt(instRec.written_off_amount) }}</b></span>
+          <span class="hl">未核销余额 <b>{{ fmtAmt(instRec.balance_amount) }}</b></span>
+        </div>
+        <table class="data-table compact">
+          <thead><tr><th>#</th><th class="amt">收付金额</th><th>收付日期</th><th>备注</th><th v-if="canCreate"></th></tr></thead>
+          <tbody>
+            <tr v-if="!instList.length"><td :colspan="canCreate ? 5 : 4" class="empty">暂无收付明细</td></tr>
+            <tr v-for="i in instList" :key="i.id">
+              <td>{{ i.install_no }}</td>
+              <td class="amt" :style="{ color: parseFloat(i.amount) < 0 ? '#c62828' : 'inherit' }">{{ fmtAmt(i.amount) }}</td>
+              <td>{{ i.occur_date }}</td>
+              <td>{{ i.notes || '—' }}</td>
+              <td v-if="canCreate"><button class="lnk danger" :disabled="instBusy" @click="delInstallment(i)">删除</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="canCreate" class="wo-add">
+          <div class="wo-inputs">
+            <input v-model="instForm.amount" type="number" step="0.01" class="inp" placeholder="收付金额(元，可负=退回)" />
+            <input v-model="instForm.occur_date" type="date" class="inp" />
+            <input v-model="instForm.notes" class="inp" placeholder="备注（如：第二笔预付款）" />
+            <button class="btn btn-primary btn-sm" :disabled="instBusy" @click="addInstallment">{{ instBusy ? '…' : `＋ 新增${dirLabel}` }}</button>
+          </div>
+          <p style="font-size:11px;color:var(--muted);margin:6px 0 0">
+            与应收的多次回款同构：同一笔{{ dirLabel }}业务可分多次到账/付出，总额与未核销余额自动派生；删除某笔会回退总额（低于已核销时拒绝，须先删核销）。
+          </p>
+        </div>
+        <div class="modal-foot">
+          <button class="btn btn-ghost" @click="showInstModal = false">关闭</button>
         </div>
       </div>
     </div>

@@ -732,8 +732,11 @@ def payments(request):
 @csrf_exempt
 @pk_required()
 def prepaid_balance(request):
-    """排款页联动：按项目编号/项目简称查该项目的「预付」未核销余额，
-    提示是否先核销再付款。只读；按用户可见部门作用域过滤。未匹配到项目台账则返回空。
+    """排款页联动：查可冲抵本排款的「预付」未核销余额。
+
+    匹配口径（并集）：①挂在该项目（按项目编号/项目简称定位台账）下的预付；
+    ②散单预付（未挂项目）且往来单位 = 排款收款方（payee，忽略大小写精确匹配）。
+    只读；按用户可见部门作用域过滤。
     """
     perms = get_request_perms(request)
     denied = _payments_page_denied(request, perms)
@@ -743,9 +746,10 @@ def prepaid_balance(request):
         return err('Method not allowed', 405)
     project_no = (request.GET.get('project_no') or '').strip()
     short_name = (request.GET.get('short_name') or '').strip()
+    payee = (request.GET.get('payee') or '').strip()
     empty = {'project_no': project_no, 'matched': False, 'count': 0,
              'total_balance': '0.00', 'items': []}
-    if not (project_no or short_name):
+    if not (project_no or short_name or payee):
         return ok(empty)
     from ar.models import AdvanceRecord, ARProject
     proj = None
@@ -753,9 +757,15 @@ def prepaid_balance(request):
         proj = ARProject.objects.filter(project_no=project_no).first()
     if proj is None and short_name:
         proj = ARProject.objects.filter(short_name=short_name).order_by('-id').first()
-    if not proj:
+
+    match = Q()
+    if proj is not None:
+        match |= Q(project=proj)
+    if payee:
+        match |= Q(project__isnull=True, counterparty__iexact=payee)
+    if not match:
         return ok(empty)
-    qs = AdvanceRecord.objects.filter(direction='预付', balance_amount__gt=0, project=proj)
+    qs = AdvanceRecord.objects.filter(match, direction='预付', balance_amount__gt=0)
     if request.pk_role != 'super_admin':
         qs = qs.filter(delivery_dept__in=request.pk_depts)
     agg = qs.aggregate(total=Sum('balance_amount'), cnt=Count('id'))
@@ -770,11 +780,42 @@ def prepaid_balance(request):
     return ok({
         'project_no': project_no,
         'matched': True,
-        'short_name': proj.short_name,
+        'short_name': proj.short_name if proj else '',
         'count': agg['cnt'] or 0,
         'total_balance': str(total),
         'items': items,
     })
+
+
+@csrf_exempt
+@pk_required()
+def payment_offsets(request, pk):
+    """GET /payments/<pk>/offsets — 该排款已关联的预付核销列表（供行内反向核销）。"""
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    try:
+        p = Payment.objects.get(pk=pk)
+    except Payment.DoesNotExist:
+        return err('排款记录不存在', 404)
+    if not can_write_dept(request, p.department) and request.pk_role != 'super_admin':
+        # 只读列表按部门可见性放行：dept_filter 同口径
+        if p.department not in (request.pk_depts or []):
+            return err('无权访问', 403)
+    from ar.models import AdvanceWriteoff
+    items = [{
+        'id': w.id,
+        'advance_id': w.advance_record_id,
+        'counterparty': w.advance_record.counterparty,
+        'amount': str(w.amount),
+        'writeoff_date': str(w.writeoff_date) if w.writeoff_date else None,
+        'notes': w.notes,
+    } for w in (AdvanceWriteoff.objects.select_related('advance_record')
+                .filter(payment_id=pk).order_by('writeoff_date', 'id'))]
+    return ok({'items': items, 'total_offset': str(p.prepaid_offset_amount or 0)})
 
 
 def _list_payments(request):
