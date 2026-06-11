@@ -23,7 +23,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 from paikuan.views import (pk_required, ok, err, DEPARTMENTS, VALID_DEPARTMENTS,
                            get_request_perms, apply_ar_view_mask, AR_PROJECT_FIELD_DEFS,
-                           AR_RECORD_FIELD_DEFS, AR_ADVANCE_FIELD_DEFS)
+                           AR_RECORD_FIELD_DEFS, AR_ADVANCE_FIELD_DEFS, _paid_subq)
 from ar.models import (ARProject, ARRecord, ARPayment, CollectionBudget, PaymentBudget,
                        AdvanceRecord, AdvanceWriteoff, Supplier, Customer,
                        Contract, ContractParty, ContractProject, ActionItem,
@@ -6845,10 +6845,14 @@ def _pool_metrics(dept, cfg, today):
     balance = (cfg.initial_amount + c + ar_ - (p - po) - ap + ti - to_)
 
     # ── 刚性流出：付款台账已审批待付（remaining>0），按计划日期分窗。
-    #    已用预付核销冲抵的部分不再需要现金，故一并扣除（与余额口径对称）─────────
+    #    已用预付核销冲抵的部分不再需要现金，故一并扣除（与余额口径对称）。
+    #    已付额必须用关联子查询（_paid_subq）而非 Sum('installments__...')：
+    #    JOIN 聚合会让 rem__gt=0 落到 HAVING，其中裸列 plan_adjustment/
+    #    total_amount/prepaid_offset_amount 不在 GROUP BY 里——SQLite 容忍，
+    #    生产 MySQL 报 1054 Unknown column in 'having clause'。
+    #    子查询版无 GROUP BY，过滤走 WHERE，两种库都安全（与付款列表口径同源）──
     pay_qs = (Payment.objects.filter(department=dept)
-              .annotate(paid_sum=Coalesce(Sum('installments__pay_amount'),
-                                          Value(0), output_field=DecimalField()))
+              .annotate(paid_sum=_paid_subq())
               .annotate(plan=Coalesce('plan_adjustment', 'total_amount'))
               .annotate(rem=F('plan') - F('paid_sum') - F('prepaid_offset_amount'))
               .filter(rem__gt=0))

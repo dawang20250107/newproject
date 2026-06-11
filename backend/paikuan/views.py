@@ -578,7 +578,7 @@ def _effective_remaining_expr(paid_field='_paid'):
 # ── version / deploy check ──────────────────────────────────────────────────────
 # Bump BUILD_VERSION whenever backend behaviour changes so a deploy can be verified
 # by opening /api/pk/version in a browser (no auth required).
-BUILD_VERSION = '2026-06-10.1'
+BUILD_VERSION = '2026-06-11.1'
 
 
 @csrf_exempt
