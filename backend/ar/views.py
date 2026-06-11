@@ -1317,6 +1317,7 @@ def ar_records(request):
                 actual_invoice_amount=_dec(data['actual_invoice_amount']) if data.get('actual_invoice_amount') not in (None, '') else None,
                 tax_amount=_dec(data['tax_amount']) if data.get('tax_amount') not in (None, '') else None,
                 invoice_date=_normalize_date(data.get('invoice_date')) or None,
+                target_collection_date=_normalize_date(data.get('target_collection_date')) or None,
                 reconciliation_date=_normalize_date(data.get('reconciliation_date')) or None,
                 notes=data.get('notes', '').strip(),
                 created_by=user,
@@ -1377,6 +1378,8 @@ def ar_record_detail(request, pk):
             rec.invoice_date = _normalize_date(data['invoice_date']) or None
         if 'reconciliation_date' in data:
             rec.reconciliation_date = _normalize_date(data['reconciliation_date']) or None
+        if 'target_collection_date' in data:
+            rec.target_collection_date = _normalize_date(data['target_collection_date']) or None
         if 'invoice_batch_no' in data:
             rec.invoice_batch_no = (data['invoice_batch_no'] or '').strip()
         if 'notes' in data:
@@ -1413,7 +1416,7 @@ def ar_record_template(request):
     ws = wb.active
     ws.title = '应收账款明细'
     headers = ['项目编号', '项目简称*', '交付部门', '客户名称', '运作日期*', '预估上账金额', '实际开票金额',
-               '税额(差额模式手填)', '开票日期', '账实差额调整', '回款金额', '回款时间', '备注']
+               '税额(差额模式手填)', '开票日期', '账实差额调整', '目标回款日期', '回款金额', '回款时间', '备注']
     _header_row(ws, headers, color='1B6E35')
     tip_vals = [
         '选填：项目编号（如 YS-20260101-0001）。当同名项目有多个时，填此列可精确指定，避免歧义',
@@ -1427,6 +1430,7 @@ def ar_record_template(request):
         '选填：差额模式时手动填写税额（元）；全额模式：税额=开票金额÷(1+税率)×税率，自动算，无需填',
         '选填：格式 2026-01-15 / 2026/1/15 / 2026年1月15日 均可',
         '选填：账实差额调整（元，可正可负）；未回款 = 上账金额 + 此值 - 已回款；用于修正账面差异',
+        '选填：目标回款日期（业务手工设定的回款目标），格式 2026-02-15；与系统按账期推算的「应收日期」并行',
         '选填：本次回款金额（元）；同一明细行可有多次回款，每次导入新回款均追加，不覆盖历史',
         '选填：回款日期，格式同上（月度回款率按回款日期所在月份计算）',
         '选填备注',
@@ -1441,8 +1445,8 @@ def ar_record_template(request):
         cell.font = tip_font
         cell.alignment = Alignment(wrap_text=True)
     ws.row_dimensions[tip_row].height = 60
-    ws.append(['', EXAMPLE_ROW_MARKER, '运输事业部', '', '2026-01-05', 100000, 100000, '', '2026-01-15', 0, 30000,
-               '2026-01-20', '示例（此行含"示例"标记，导入时自动跳过）'])
+    ws.append(['', EXAMPLE_ROW_MARKER, '运输事业部', '', '2026-01-05', 100000, 100000, '', '2026-01-15', 0,
+               '2026-02-15', 30000, '2026-01-20', '示例（此行含"示例"标记，导入时自动跳过）'])
     for col in range(1, len(headers) + 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 22
     return _export_response(wb, '应收账款明细导入模板.xlsx')
@@ -1493,6 +1497,7 @@ def ar_record_import(request):
         '税额(差额模式手填)':['税额(差额模式手填)', '税额'],
         '开票日期':          ['开票日期', '开票日期(YYYY-MM-DD)', '开票日期*'],
         '账实差额调整':      ['账实差额调整', '账实差额'],
+        '目标回款日期':      ['目标回款日期', '目标回款', '目标回款日'],
         '回款金额':          ['回款金额'],
         '回款时间':          ['回款时间', '回款时间(YYYY-MM-DD)', '回款日期'],
         '备注':              ['备注'],
@@ -1528,7 +1533,7 @@ def ar_record_import(request):
 
     DATA_COLS = ('项目编号', '项目简称*', '交付部门', '客户名称', '运作日期*', '运作年*', '运作月*',
                  '预估上账金额', '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
-                 '回款金额', '回款时间', '备注')
+                 '目标回款日期', '回款金额', '回款时间', '备注')
 
     errors = []      # 格式错误：会导致整表拒绝
     skipped = 0      # 仅保留字段兼容（恒为0）：示例/空行静默忽略，不计入
@@ -1608,6 +1613,11 @@ def ar_record_import(request):
         if inv_raw not in (None, '') and inv_date is None:
             errors.append(f'第{ri}行：「开票日期」"{inv_raw}"格式无效，请用 2026-01-15 格式')
             continue
+        tgt_raw = _cv_raw(ri, '目标回款日期')
+        tgt_date = _normalize_date(tgt_raw)
+        if tgt_raw not in (None, '') and tgt_date is None:
+            errors.append(f'第{ri}行：「目标回款日期」"{tgt_raw}"格式无效，请用 2026-02-15 格式（选填，可留空）')
+            continue
         pay_raw = _cv_raw(ri, '回款时间')
         pay_date = _normalize_date(pay_raw)
         if pay_raw not in (None, '') and pay_date is None:
@@ -1643,7 +1653,7 @@ def ar_record_import(request):
             'customer_hint': row_vals['客户名称'],
             'op_date': op_date,
             'est': est, 'actual': actual, 'tax': tax, 'inv_date': inv_date,
-            'diff': diff, 'notes': row_vals['备注'],
+            'diff': diff, 'notes': row_vals['备注'], 'tgt_date': tgt_date,
             'pay_amount': pay_amount, 'pay_date': pay_date,
         })
 
@@ -1755,6 +1765,8 @@ def ar_record_import(request):
                 rec.tax_amount = p['tax']
             if _can_ar_view(request, 'r_invoice_date'):
                 rec.invoice_date = p['inv_date']
+            if p['tgt_date'] and _can_ar_view(request, 'r_due_date'):
+                rec.target_collection_date = p['tgt_date']
             if p['diff'] is not None and _can_ar_view(request, 'r_account_diff'):
                 rec.account_diff_adjustment = p['diff']
             if _can_ar_view(request, 'r_notes'):
@@ -1862,6 +1874,8 @@ def ar_record_export(request):
         ('r_payments', '回款金额', lambda rec, st: _pay_amounts(rec)),
         ('r_payments', '已回款合计', lambda rec, st: _pay_total(rec)),
         ('r_due_date', '应收日期', lambda rec, st: str(rec.due_date) if rec.due_date else ''),
+        ('r_due_date', '目标回款日期',
+         lambda rec, st: str(rec.target_collection_date) if rec.target_collection_date else ''),
         ('r_reconciliation', '对账状态', lambda rec, st: rec.reconciliation_status),
         ('r_reconciliation', '对账日期',
          lambda rec, st: rec.reconciliation_date.strftime('%Y-%m-%d') if rec.reconciliation_date else ''),
@@ -2015,6 +2029,7 @@ def _apply_record_state_filters(qs, request, today=None):
 _AR_SORT_FIELDS = {
     'operation': ('operation_date',),
     'due_date': ('due_date',),
+    'target_date': ('target_collection_date',),
     'outstanding': ('outstanding_amount',),
     'estimated': ('estimated_amount',),
     'invoiced': ('actual_invoice_amount',),
@@ -2051,7 +2066,8 @@ def _apply_record_sort(qs, request):
 #   date：任选日期字段 + 相对区间(本周/本月/上月/下月/本年/去年/自定义) + 含/不含
 #   amt ：数值字段 + 运算符(=0/≠0/>0/<0/>/</区间)
 # 前端把这两类条件序列化进 conditions(JSON 数组)下发；多条件 AND，可任意叠加。
-_COND_DATE_FIELDS = {'due_date', 'payment_date', 'invoice_date', 'reconciliation_date', 'operation_date'}
+_COND_DATE_FIELDS = {'due_date', 'payment_date', 'invoice_date', 'reconciliation_date',
+                     'operation_date', 'target_collection_date'}
 _COND_AMT_FIELDS = {'estimated_amount', 'outstanding_amount', 'tax_amount',
                     'actual_invoice_amount', 'account_diff_adjustment'}
 

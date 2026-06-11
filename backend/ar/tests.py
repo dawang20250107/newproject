@@ -2787,3 +2787,74 @@ class CustomerProjectSyncTests(TestCase):
                                 data=json.dumps({}), content_type='application/json',
                                 **self.auth())
         self.assertEqual(resp.status_code, 400)
+
+
+class TargetCollectionDateTests(TestCase):
+    """目标回款日期（target_collection_date，选填手工字段）全链路。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900000900', name='TgtDateAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='客户T', short_name='目标日期项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='TGT-0001')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_create_and_update_target_date(self):
+        resp = self.client.post('/api/pk/ar/records', data=json.dumps({
+            'project_id': self.proj.id, 'operation_date': '2026-05-01',
+            'estimated_amount': '1000', 'target_collection_date': '2026-06-15'}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['target_collection_date'], '2026-06-15')
+        rid = d['id']
+        # 更新与清空
+        resp = self.client.put(f'/api/pk/ar/records/{rid}', data=json.dumps({
+            'target_collection_date': ''}), content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIsNone(resp.json()['data']['target_collection_date'])
+
+    def test_import_with_target_date_column(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['项目简称*', '运作日期*', '预估上账金额', '目标回款日期'])
+        ws.append(['目标日期项目', '2026-05-01', 800, '2026-06-20'])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0); buf.name = 'r.xlsx'
+        resp = self.client.post('/api/pk/ar/records/import', {'file': buf}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data'].get('created'), 1, resp.json())
+        rec = ARRecord.objects.get(project=self.proj)
+        self.assertEqual(str(rec.target_collection_date), '2026-06-20')
+
+    def test_import_bad_target_date_rejected(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['项目简称*', '运作日期*', '预估上账金额', '目标回款日期'])
+        ws.append(['目标日期项目', '2026-05-01', 800, '不是日期'])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0); buf.name = 'r.xlsx'
+        resp = self.client.post('/api/pk/ar/records/import', {'file': buf}, **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        d = resp.json()['data']
+        self.assertTrue(d.get('rejected'), d)
+        self.assertTrue(any('目标回款日期' in e for e in d['errors']), d['errors'])
+
+    def test_export_has_target_date_column(self):
+        ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                estimated_amount=Decimal('100'),
+                                target_collection_date=date(2026, 6, 15))
+        resp = self.client.get('/api/pk/ar/records/export', **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        headers = [c.value for c in wb.active[1]]
+        self.assertIn('目标回款日期', headers)
+        idx = headers.index('目标回款日期')
+        self.assertEqual(wb.active.cell(2, idx + 1).value, '2026-06-15')

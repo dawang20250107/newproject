@@ -118,7 +118,7 @@ AR_RECORD_FIELD_DEFS = [
     {'key': 'r_account_diff',          'label': '账实差额',     'group': 'record', 'cols': ['account_diff_adjustment']},
     {'key': 'r_outstanding',           'label': '未回款金额',   'group': 'record', 'cols': ['outstanding_amount']},
     {'key': 'r_due_date',              'label': '应收日期/逾期', 'group': 'record',
-        'cols': ['due_date', 'is_overdue', 'overdue_days']},
+        'cols': ['due_date', 'is_overdue', 'overdue_days', 'target_collection_date']},
     {'key': 'r_reconciliation',        'label': '对账信息',     'group': 'record',
         'cols': ['reconciliation_date', 'reconciliation_status']},
     {'key': 'r_invoice_status',        'label': '开票状态',     'group': 'record', 'cols': ['invoice_status']},
@@ -146,7 +146,8 @@ EXCEL_COLUMN_MAP = [
     ('project_short_name', '项目简称',         'project_short_name'),
     ('applicant',       '申请人',             'applicant'),
     ('approval_number', '审批单号',            'approval_number'),
-    ('project_desc',    '项目编号',            'project_no'),
+    # 项目维度统一走「项目简称」列（与台账精确校验）。项目编号不再出现在
+    # 模板/导入/导出；创建时由简称从台账自动带出（旧文件多出的编号列被忽略）
     ('project_desc',    '付款事项',            'project_desc'),
     ('payee',           '收款方',              'payee'),
     ('total_amount',    '计划总金额(元)',       'total_amount'),
@@ -981,6 +982,14 @@ def _parse_payment_fields(data, payment=None):
     err_psn = _validate_project_short_name(fields['project_short_name'], fields['department'])
     if err_psn:
         return None, err_psn
+    # 项目编号已不再手填/导入：简称合法且编号为空时从台账自动带出，
+    # 保持预付余额联动与历史按编号匹配的分析链路不断
+    if fields['project_short_name'] and not fields['project_no']:
+        from ar.models import ARProject
+        no = (ARProject.objects.filter(short_name=fields['project_short_name'])
+              .order_by('-id').values_list('project_no', flat=True).first())
+        if no:
+            fields['project_no'] = no[:20]
 
     return fields, None
 

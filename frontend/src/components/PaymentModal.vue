@@ -301,10 +301,15 @@ async function submit() {
             :disabled="!editable('secondary_dept')" />
         </div>
         <div v-if="vis('project_short_name')" class="form-group">
-          <label>项目简称 <span class="hint-text">选填，须与项目台账匹配</span></label>
+          <label>项目简称 <span class="hint-text">选填，须与项目台账匹配；选中自动带出二级部门并联动预付余额</span></label>
           <ProjectShortNamePicker v-model="form.project_short_name"
             :disabled="!editable('project_short_name')"
-            @picked="p => { if (!form.secondary_dept && p.sub_dept) form.secondary_dept = p.sub_dept; if (!form.project_no && p.project_no) form.project_no = p.project_no }" />
+            @picked="p => { if (p.sub_dept) form.secondary_dept = p.sub_dept; if (p.project_no) form.project_no = p.project_no }" />
+          <div v-if="prepaid" class="prepaid-hint">
+            <span class="prepaid-tag">预付余额</span>
+            该项目「{{ prepaid.short_name }}」尚有 <b>{{ prepaid.count }}</b> 笔预付未核销，余额合计
+            <b>{{ fmtMoney(prepaid.total_balance) }}</b>，付款前请确认是否应先以预付核销冲抵。
+          </div>
         </div>
       </div>
 
@@ -320,17 +325,7 @@ async function submit() {
         </div>
       </div>
 
-      <div v-if="vis('project_desc')" class="form-row full">
-        <div class="form-group">
-          <label>项目编号 <span class="lbl-tip">（选填，关联项目台账以弹出预付余额）</span></label>
-          <input v-model="form.project_no" placeholder="如 GYL-20260301-0001，可手工填写" :disabled="!editable('project_desc')" maxlength="20" />
-          <div v-if="prepaid" class="prepaid-hint">
-            <span class="prepaid-tag">预付余额</span>
-            该项目「{{ prepaid.short_name }}」尚有 <b>{{ prepaid.count }}</b> 笔预付未核销，余额合计
-            <b>{{ fmtMoney(prepaid.total_balance) }}</b>，付款前请确认是否应先以预付核销冲抵。
-          </div>
-        </div>
-      </div>
+      <!-- 项目编号不再手填：选项目简称时从台账自动带出（隐藏字段，保留预付联动与历史数据链路） -->
 
       <div v-if="vis('project_desc')" class="form-row full">
         <div class="form-group">

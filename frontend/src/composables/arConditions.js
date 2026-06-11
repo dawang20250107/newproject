@@ -31,6 +31,7 @@ export const DIM_FIELDS = [
 export const DATE_FIELDS = [
   { field: 'operation_date', label: '运作日期' },
   { field: 'due_date', label: '应收到期' },
+  { field: 'target_collection_date', label: '目标回款日期' },
   { field: 'payment_date', label: '回款日期' },
   { field: 'invoice_date', label: '开票日期' },
   { field: 'reconciliation_date', label: '对账日期' },

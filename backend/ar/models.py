@@ -374,6 +374,8 @@ class ARRecord(models.Model):
                                                   decimal_places=2, default=0)
     outstanding_amount = models.DecimalField('未回款金额', max_digits=15, decimal_places=2, default=0)
     due_date = models.DateField('应收日期', db_index=True, null=True, blank=True)
+    # 目标回款日期：业务手工填写的回款目标（非必填），与系统按账期推算的 due_date 并行
+    target_collection_date = models.DateField('目标回款日期', null=True, blank=True, db_index=True)
     reconciliation_date = models.DateField('对账日期', null=True, blank=True, db_index=True)
     invoice_batch_no = models.CharField('开票批次号', max_length=50, blank=True, default='',
                                         db_index=True,
@@ -597,6 +599,7 @@ class ARRecord(models.Model):
             'account_diff_adjustment': str(self.account_diff_adjustment),
             'outstanding_amount': str(self.outstanding_amount),
             'due_date': str(self.due_date) if self.due_date else None,
+            'target_collection_date': str(self.target_collection_date) if self.target_collection_date else None,
             'reconciliation_date': str(self.reconciliation_date) if self.reconciliation_date else None,
             'reconciliation_status': self.reconciliation_status,
             'invoice_status': self.invoice_status,

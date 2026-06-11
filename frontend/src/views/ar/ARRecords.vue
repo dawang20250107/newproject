@@ -97,7 +97,7 @@ const recForm = reactive({
   project_id: '', operation_date: todayCST(),
   estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
   invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
-  invoice_batch_no: '', notes: '',
+  target_collection_date: '', invoice_batch_no: '', notes: '',
 })
 
 // ── 开票批次号批量设置 ──────────────────────────────────────────────────────────
@@ -401,7 +401,7 @@ function openCreate() {
     operation_date: todayCST(),
     estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
     invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
-    invoice_batch_no: '', notes: '',
+    target_collection_date: '', invoice_batch_no: '', notes: '',
   })
   showModal.value = true
   projectKeyword.value = ''
@@ -416,6 +416,7 @@ function openEdit(rec) {
     tax_amount: rec.tax_amount || '', invoice_date: rec.invoice_date || '',
     reconciliation_date: rec.reconciliation_date || '',
     account_diff_adjustment: rec.account_diff_adjustment || '',
+    target_collection_date: rec.target_collection_date || '',
     invoice_batch_no: rec.invoice_batch_no || '',
     notes: rec.notes,
   })
@@ -455,6 +456,7 @@ async function saveRec() {
       actual_invoice_amount: recForm.actual_invoice_amount || null,
       tax_amount: recForm.tax_amount || null, invoice_date: recForm.invoice_date || null,
       reconciliation_date: recForm.reconciliation_date || null, account_diff_adjustment: recForm.account_diff_adjustment || 0,
+      target_collection_date: recForm.target_collection_date || null,
       invoice_batch_no: recForm.invoice_batch_no || '',
       notes: recForm.notes,
     }
@@ -806,6 +808,7 @@ function clearFilters() {
                 <th v-if="show('r_account_diff')" class="amt">账实差额</th>
                 <SortTh v-if="show('r_outstanding')" col="outstanding" label="未收金额" class="amt" />
                 <SortTh v-if="show('r_due_date')" col="due_date" label="应收到期" class="ctr" />
+                <SortTh v-if="show('r_due_date')" col="target_date" label="目标回款" class="ctr" />
                 <th v-if="show('r_reconciliation')" class="ctr">对账</th>
                 <th v-if="show('r_payments')" class="ctr">回款</th>
                 <th class="ctr">状态</th>
@@ -871,6 +874,7 @@ function clearFilters() {
                   <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtCell(rec.account_diff_adjustment) : '—' }}</td>
                   <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
                   <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.due_date || '—' }}</td>
+                  <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.target_collection_date || '—' }}</td>
                   <td v-if="show('r_reconciliation')" class="ctr">
                     <span :class="['status-pill', rec.reconciliation_status === '已对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status }}</span>
                   </td>
@@ -1251,6 +1255,10 @@ function clearFilters() {
               <label class="form-field">
                 <span>对账日期</span>
                 <input v-model="recForm.reconciliation_date" type="date" />
+              </label>
+              <label class="form-field">
+                <span>目标回款日期（选填）</span>
+                <input v-model="recForm.target_collection_date" type="date" title="业务手工设定的回款目标，与系统按账期推算的应收到期并行" />
               </label>
               <label class="form-field">
                 <span>差额调整</span>

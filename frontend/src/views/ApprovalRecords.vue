@@ -40,9 +40,9 @@ async function saveMeta(){
   } catch(e){ alert(e?.msg || e?.error || '保存失败') }
   finally{ metaSaving.value = false }
 }
-// 从台账选中项目时，二级部门为空则自动带出项目的二级部门
+// 从台账选中项目时，自动带出该项目的二级部门（台账未填二级部门则保留手填值）
 function onProjPicked(p, target){
-  if (!target.secondary_dept && p.sub_dept) target.secondary_dept = p.sub_dept
+  if (p.sub_dept) target.secondary_dept = p.sub_dept
 }
 const filters = reactive({ applicant:'', approval_number:'', dept:'', page:1, size:50 })
 const statusUpdating = ref({})
