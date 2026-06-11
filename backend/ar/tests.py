@@ -2858,3 +2858,107 @@ class TargetCollectionDateTests(TestCase):
         self.assertIn('目标回款日期', headers)
         idx = headers.index('目标回款日期')
         self.assertEqual(wb.active.cell(2, idx + 1).value, '2026-06-15')
+
+
+class InvoiceBatchWorkbenchTests(TestCase):
+    """合并开票批次工作台：批次明细 / 批次开票落账 / 批次回款先进先出分摊。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900001000', name='BatchAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='批次客户', short_name='批次项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='BAT-0001')
+        # 3条记录合并为一个批次：5月/6月/7月，6月那条带差额调整 +500
+        self.r1 = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                          estimated_amount=Decimal('1000'),
+                                          invoice_batch_no='PF-001')
+        self.r2 = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 6, 1),
+                                          estimated_amount=Decimal('2000'),
+                                          account_diff_adjustment=Decimal('500'),
+                                          invoice_batch_no='PF-001')
+        self.r3 = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 7, 1),
+                                          estimated_amount=Decimal('3000'),
+                                          invoice_batch_no='PF-001')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_batch_detail(self):
+        resp = self.client.get('/api/pk/ar/records/invoice-batches/PF-001', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['summary']['count'], 3)
+        self.assertEqual(Decimal(d['summary']['billable']), Decimal('6500'))  # 6000 + 500差额
+        self.assertEqual(d['summary']['pending_invoice'], 3)
+        # 成员按运作日期排序
+        self.assertEqual([m['operation_date'] for m in d['members']],
+                         ['2026-05-01', '2026-06-01', '2026-07-01'])
+
+    def test_batch_invoice_with_total_mismatch_rejected(self):
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/invoice',
+                                data=json.dumps({'invoice_date': '2026-07-10',
+                                                 'invoice_total': '6000'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('6500', resp.json()['error'])
+
+    def test_batch_invoice_stamps_pending_members(self):
+        # r1 已人工开票 800，批次开票应跳过它
+        self.r1.actual_invoice_amount = Decimal('800')
+        self.r1.invoice_date = date(2026, 6, 1)
+        self.r1.save()
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/invoice',
+                                data=json.dumps({'invoice_date': '2026-07-10'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(len(d['invoiced']), 2)
+        self.assertEqual(d['skipped_already'], 1)
+        self.r1.refresh_from_db(); self.r2.refresh_from_db(); self.r3.refresh_from_db()
+        self.assertEqual(self.r1.actual_invoice_amount, Decimal('800'))      # 原值不动
+        self.assertEqual(self.r2.actual_invoice_amount, Decimal('2500'))     # 2000+500
+        self.assertEqual(self.r3.actual_invoice_amount, Decimal('3000'))
+        self.assertEqual(str(self.r3.invoice_date), '2026-07-10')
+
+    def test_batch_payment_fifo_allocation(self):
+        # 回款 3200：先结清 r1(1000)，再结清 r2(2500口径中的2200... 注意未收=上账+差额)
+        # r1 未收1000，r2 未收2500，r3 未收3000；3200 → r1全收1000 + r2收2200（剩300）
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/payment',
+                                data=json.dumps({'amount': '3200', 'payment_date': '2026-07-20',
+                                                 'notes': '建行到账'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        allocs = resp.json()['data']['allocations']
+        self.assertEqual(len(allocs), 2)
+        self.assertEqual(Decimal(allocs[0]['allocated']), Decimal('1000'))
+        self.assertEqual(Decimal(allocs[0]['outstanding_after']), Decimal('0'))
+        self.assertEqual(Decimal(allocs[1]['allocated']), Decimal('2200'))
+        self.assertEqual(Decimal(allocs[1]['outstanding_after']), Decimal('300'))
+        # 回款行带批次标记，可追溯
+        self.assertTrue(self.r1.payments.filter(notes__contains='PF-001').exists())
+        # 第二次回款 300+3000=3300 全部结清
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/payment',
+                                data=json.dumps({'amount': '3300', 'payment_date': '2026-08-05'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.r2.refresh_from_db(); self.r3.refresh_from_db()
+        self.assertEqual(self.r2.outstanding_amount, Decimal('0'))
+        self.assertEqual(self.r3.outstanding_amount, Decimal('0'))
+
+    def test_batch_payment_over_outstanding_rejected(self):
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/payment',
+                                data=json.dumps({'amount': '99999', 'payment_date': '2026-07-20'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('预收', resp.json()['error'])
+
+    def test_batch_not_found(self):
+        resp = self.client.get('/api/pk/ar/records/invoice-batches/不存在', **self.auth())
+        self.assertEqual(resp.status_code, 404)

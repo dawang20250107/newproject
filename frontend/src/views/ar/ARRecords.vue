@@ -368,6 +368,7 @@ function switchTab(key) {
   else if (key === 'summary') loadGroupSummary()
   else if (key === 'dunning') loadDunning(true)
   else if (!DATA_TABS.includes(prev)) load()  // returning from a non-data tab
+  if (key === 'invoice') loadBatches()
 }
 
 // Shared-filter change → refresh whichever tab consumes those filters.
@@ -375,6 +376,7 @@ function onFilterChange() {
   clearSelection()
   if (activeTab.value === 'summary') loadGroupSummary()
   else load(true)
+  if (activeTab.value === 'invoice') loadBatches()
 }
 
 // 汇总行下钻：把该维度作为条件追加（替换同字段旧条件），切到全部明细
@@ -441,8 +443,82 @@ async function confirmBatchAssign() {
     showBatchModal.value = false
     clearSelection()
     await load()
+    if (activeTab.value === 'invoice') loadBatches()
   } catch (e) { alert(e?.msg || '设置批次号失败')
   } finally { batchAssigning.value = false }
+}
+
+// ── 合并开票批次工作台（开票跟踪 Tab）─────────────────────────────────────────
+// 同批次号的记录合并开一张发票；差额调整落在具体记录上；回款按批次录入，
+// 系统按运作日期先进先出自动分摊到成员记录——不再手工拆账。
+const batches = ref([])
+const batchesLoading = ref(false)
+const showBatchPanel = ref(true)
+const batchDetail = ref({})        // batch_no -> detail（成员明细，懒加载缓存）
+const expandedBatch = ref('')
+const showBatchInvoice = ref(false)
+const showBatchPay = ref(false)
+const batchTarget = ref(null)
+const batchInvForm = reactive({ invoice_date: todayCST(), invoice_total: '' })
+const batchPayForm = reactive({ amount: '', payment_date: todayCST(), notes: '' })
+const batchActing = ref(false)
+const batchPayResult = ref(null)   // 分摊结果回执
+
+async function loadBatches() {
+  batchesLoading.value = true
+  try {
+    const res = await ar.listInvoiceBatches(reqParams())
+    batches.value = res.data.batches
+  } catch (_) { batches.value = [] }
+  finally { batchesLoading.value = false }
+}
+async function fetchBatchDetail(bn, force = false) {
+  if (!force && batchDetail.value[bn]) return batchDetail.value[bn]
+  const res = await ar.getInvoiceBatch(bn)
+  batchDetail.value = { ...batchDetail.value, [bn]: res.data }
+  return res.data
+}
+function toggleBatchExpand(bn) {
+  expandedBatch.value = expandedBatch.value === bn ? '' : bn
+  if (expandedBatch.value) fetchBatchDetail(bn).catch(() => {})
+}
+async function refreshAfterBatchAction(bn) {
+  await Promise.all([loadBatches(), load(), fetchBatchDetail(bn, true).catch(() => {})])
+}
+function openBatchInvoice(b) {
+  batchTarget.value = b
+  Object.assign(batchInvForm, { invoice_date: todayCST(), invoice_total: '' })
+  fetchBatchDetail(b.batch_no).catch(() => {})
+  showBatchInvoice.value = true
+}
+async function doBatchInvoice() {
+  batchActing.value = true
+  try {
+    const res = await ar.batchInvoice(batchTarget.value.batch_no, {
+      invoice_date: batchInvForm.invoice_date,
+      invoice_total: batchInvForm.invoice_total || null,
+    })
+    alert(res.data?.message || '批次开票完成')
+    showBatchInvoice.value = false
+    await refreshAfterBatchAction(batchTarget.value.batch_no)
+  } catch (e) { alert(e?.msg || '批次开票失败') }
+  finally { batchActing.value = false }
+}
+function openBatchPay(b) {
+  batchTarget.value = b
+  Object.assign(batchPayForm, { amount: '', payment_date: todayCST(), notes: '' })
+  batchPayResult.value = null
+  fetchBatchDetail(b.batch_no).catch(() => {})
+  showBatchPay.value = true
+}
+async function doBatchPay() {
+  batchActing.value = true
+  try {
+    const res = await ar.batchPayment(batchTarget.value.batch_no, { ...batchPayForm })
+    batchPayResult.value = res.data   // 留在弹窗里展示分摊回执
+    await refreshAfterBatchAction(batchTarget.value.batch_no)
+  } catch (e) { alert(e?.msg || '批次回款失败') }
+  finally { batchActing.value = false }
 }
 
 async function saveRec() {
@@ -786,6 +862,57 @@ function clearFilters() {
           {{ bulkDeleting ? '删除中…' : `删除选中(${selectedCount})` }}
         </button>
         <button class="bulk-cancel" @click="clearSelection">取消</button>
+      </div>
+
+      <!-- ══ 合并开票批次工作台（开票跟踪 Tab）══ -->
+      <div v-if="activeTab === 'invoice'" class="batch-panel">
+        <div class="bp-head">
+          <span class="bp-title">🧾 合并开票批次<i v-if="batches.length">{{ batches.length }}</i></span>
+          <span class="bp-tip">同批次合并开一张发票 · 回款按批次录入，自动按运作日期先进先出分摊到各记录</span>
+          <button class="bp-toggle" @click="showBatchPanel = !showBatchPanel">{{ showBatchPanel ? '收起 ▲' : '展开 ▼' }}</button>
+        </div>
+        <template v-if="showBatchPanel">
+          <div v-if="batchesLoading" class="bp-empty">加载中…</div>
+          <div v-else-if="!batches.length" class="bp-empty">
+            暂无开票批次——在「全部明细」勾选要合并开票的记录，点「设置批次号」即可
+          </div>
+          <div v-else class="bp-list">
+            <div v-for="b in batches" :key="b.batch_no" class="bp-item">
+              <div class="bp-row" @click="toggleBatchExpand(b.batch_no)">
+                <span class="bp-no">{{ b.batch_no }}</span>
+                <span class="bp-cnt">{{ b.count }} 条</span>
+                <span class="bp-amt"><i>上账</i><b>{{ fmtCell(b.estimated) }}</b></span>
+                <span class="bp-amt"><i>已开票</i><b>{{ parseFloat(b.invoiced) ? fmtCell(b.invoiced) : '—' }}</b></span>
+                <span class="bp-amt ok"><i>已回款</i><b>{{ parseFloat(b.collected) ? fmtCell(b.collected) : '—' }}</b></span>
+                <span class="bp-amt warn"><i>未收</i><b>{{ parseFloat(b.outstanding) ? fmtCell(b.outstanding) : '✓ 结清' }}</b></span>
+                <span class="bp-acts" @click.stop>
+                  <button v-if="auth.canArWrite" class="bp-btn" @click="openBatchInvoice(b)">批次开票</button>
+                  <button v-if="auth.canArWrite && parseFloat(b.outstanding) > 0" class="bp-btn primary" @click="openBatchPay(b)">批次回款</button>
+                  <span class="bp-caret">{{ expandedBatch === b.batch_no ? '▲' : '▼' }}</span>
+                </span>
+              </div>
+              <div v-if="expandedBatch === b.batch_no" class="bp-members">
+                <table v-if="batchDetail[b.batch_no]" class="bp-mtable">
+                  <thead><tr><th>项目</th><th>运作日期</th><th class="r">上账</th><th class="r">差额调整</th><th class="r">应开(上账+差额)</th><th class="r">已开票</th><th>开票日期</th><th class="r">已回款</th><th class="r">未收</th></tr></thead>
+                  <tbody>
+                    <tr v-for="m in batchDetail[b.batch_no].members" :key="m.id">
+                      <td>{{ m.short_name }}</td>
+                      <td>{{ m.operation_date || '—' }}</td>
+                      <td class="r">{{ fmtCell(m.estimated) }}</td>
+                      <td class="r" :class="{ 'bp-diff': parseFloat(m.diff) !== 0 }">{{ parseFloat(m.diff) !== 0 ? fmtCell(m.diff) : '—' }}</td>
+                      <td class="r">{{ fmtCell(m.billable) }}</td>
+                      <td class="r">{{ m.invoiced != null ? fmtCell(m.invoiced) : '未开' }}</td>
+                      <td>{{ m.invoice_date || '—' }}</td>
+                      <td class="r">{{ parseFloat(m.collected) ? fmtCell(m.collected) : '—' }}</td>
+                      <td class="r" :class="parseFloat(m.outstanding) > 0 ? 'bp-out' : 'bp-ok'">{{ parseFloat(m.outstanding) > 0 ? fmtCell(m.outstanding) : '✓' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div v-else class="bp-empty">加载明细…</div>
+              </div>
+            </div>
+          </div>
+        </template>
       </div>
 
       <div v-if="isDataTab" class="table-wrap dt-scroll" style="margin-top:12px">
@@ -1307,6 +1434,105 @@ function clearFilters() {
         </div>
       </div>
 
+      <!-- Batch-Invoice Modal — 批次开票落账 -->
+      <div v-if="showBatchInvoice" class="modal-overlay">
+        <div class="modal-box" style="max-width:560px">
+          <div class="modal-header">
+            <h3>批次开票 — {{ batchTarget?.batch_no }}</h3>
+            <button class="modal-close" @click="showBatchInvoice = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px">
+              对批次内<strong>尚未开票</strong>的记录落账：实际开票金额 = 上账金额 + 账实差额调整，统一盖开票日期。
+              已开票的记录保持原值不动。如发票金额与待开合计不一致，请先到具体记录上调整「账实差额」。
+            </p>
+            <table v-if="batchDetail[batchTarget?.batch_no]" class="bp-mtable" style="margin-bottom:12px">
+              <thead><tr><th>项目</th><th>运作日期</th><th class="r">应开(上账+差额)</th><th>状态</th></tr></thead>
+              <tbody>
+                <tr v-for="m in batchDetail[batchTarget.batch_no].members" :key="m.id">
+                  <td>{{ m.short_name }}</td><td>{{ m.operation_date || '—' }}</td>
+                  <td class="r">{{ fmtCell(m.billable) }}</td>
+                  <td>{{ m.invoiced != null ? '已开票（跳过）' : '待开' }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="form-grid">
+              <label class="form-field">
+                <span>开票日期*</span>
+                <input v-model="batchInvForm.invoice_date" type="date" />
+              </label>
+              <label class="form-field">
+                <span>发票金额（选填，校验用）</span>
+                <input v-model="batchInvForm.invoice_total" type="number" step="0.01" placeholder="填写则须与待开合计一致" />
+              </label>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" @click="showBatchInvoice = false">取消</button>
+            <button class="btn btn-primary" :disabled="batchActing || !batchInvForm.invoice_date" @click="doBatchInvoice">
+              {{ batchActing ? '落账中…' : '确认开票落账' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Batch-Payment Modal — 批次回款自动分摊 -->
+      <div v-if="showBatchPay" class="modal-overlay">
+        <div class="modal-box" style="max-width:560px">
+          <div class="modal-header">
+            <h3>批次回款 — {{ batchTarget?.batch_no }}</h3>
+            <button class="modal-close" @click="showBatchPay = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <template v-if="!batchPayResult">
+              <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px">
+                一张发票到一笔钱，不用再手工拆账：金额将按<strong>运作日期先进先出</strong>自动分摊到批次内仍有未收的记录。
+                可多次录入（部分回款），每次从未结清的记录继续分摊。
+                批次未收合计 <strong>{{ fmtCell(batchTarget?.outstanding) }}</strong> 元。
+              </p>
+              <div class="form-grid">
+                <label class="form-field">
+                  <span>回款金额*（元）</span>
+                  <input v-model="batchPayForm.amount" type="number" step="0.01" :placeholder="`≤ ${batchTarget?.outstanding}`" />
+                </label>
+                <label class="form-field">
+                  <span>回款日期*</span>
+                  <input v-model="batchPayForm.payment_date" type="date" />
+                </label>
+                <label class="form-field span2">
+                  <span>备注（选填）</span>
+                  <input v-model="batchPayForm.notes" placeholder="如：建行到账，回单号xxx" />
+                </label>
+              </div>
+            </template>
+            <template v-else>
+              <p style="font-size:13px;color:#2e7d32;font-weight:600;margin-bottom:10px">✓ {{ batchPayResult.message }}</p>
+              <table class="bp-mtable">
+                <thead><tr><th>项目</th><th>运作日期</th><th class="r">本次分摊</th><th class="r">分摊后未收</th></tr></thead>
+                <tbody>
+                  <tr v-for="a in batchPayResult.allocations" :key="a.record_id">
+                    <td>{{ a.short_name }}</td><td>{{ a.operation_date || '—' }}</td>
+                    <td class="r" style="color:#2e7d32;font-weight:600">+{{ fmtCell(a.allocated) }}</td>
+                    <td class="r" :class="parseFloat(a.outstanding_after) > 0 ? 'bp-out' : 'bp-ok'">
+                      {{ parseFloat(a.outstanding_after) > 0 ? fmtCell(a.outstanding_after) : '✓ 结清' }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </template>
+          </div>
+          <div class="modal-footer">
+            <template v-if="!batchPayResult">
+              <button class="btn btn-ghost" @click="showBatchPay = false">取消</button>
+              <button class="btn btn-primary" :disabled="batchActing || !(parseFloat(batchPayForm.amount) > 0) || !batchPayForm.payment_date" @click="doBatchPay">
+                {{ batchActing ? '分摊中…' : '确认回款并自动分摊' }}
+              </button>
+            </template>
+            <button v-else class="btn btn-primary" @click="showBatchPay = false">完成</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Payment Modal — 录入态：点遮罩不关闭，仅按钮可退出 -->
       <div v-if="showPayModal" class="modal-overlay">
         <div class="modal-box" style="max-width:460px">
@@ -1693,6 +1919,41 @@ function clearFilters() {
 
 /* 开票批次号 badge */
 .batch-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px; background: rgba(33,150,243,0.12); color: #1565c0; border: 1px solid rgba(33,150,243,0.2); white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
+
+/* ══ 合并开票批次工作台 ══ */
+.batch-panel { margin-top: 12px; border: 1px solid rgba(33,150,243,0.22); border-radius: 12px; background: rgba(33,150,243,0.03); overflow: hidden; }
+.bp-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px; }
+.bp-title { font-size: 13px; font-weight: 700; color: #1565c0; }
+.bp-title i { font-style: normal; font-size: 11px; background: rgba(33,150,243,0.14); border-radius: 9px; padding: 1px 7px; margin-left: 6px; }
+.bp-tip { font-size: 11.5px; color: var(--muted); flex: 1; }
+.bp-toggle { border: none; background: none; font-size: 11.5px; color: var(--muted); cursor: pointer; }
+.bp-toggle:hover { color: #1565c0; }
+.bp-empty { padding: 12px 14px; font-size: 12.5px; color: var(--muted); text-align: center; }
+.bp-list { display: flex; flex-direction: column; }
+.bp-item { border-top: 1px solid rgba(33,150,243,0.12); }
+.bp-row { display: flex; align-items: center; gap: 14px; padding: 9px 14px; cursor: pointer; flex-wrap: wrap; }
+.bp-row:hover { background: rgba(33,150,243,0.05); }
+.bp-no { font-weight: 700; font-size: 13px; color: var(--text); min-width: 110px; }
+.bp-cnt { font-size: 12px; color: var(--muted); }
+.bp-amt { display: flex; flex-direction: column; min-width: 86px; }
+.bp-amt i { font-style: normal; font-size: 10.5px; color: var(--muted); }
+.bp-amt b { font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--text); }
+.bp-amt.ok b { color: #2e7d32; }
+.bp-amt.warn b { color: #e65100; }
+.bp-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.bp-btn { border: 1px solid rgba(33,150,243,0.4); background: #fff; color: #1565c0; font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+.bp-btn:hover { background: rgba(33,150,243,0.08); }
+.bp-btn.primary { background: #1565c0; color: #fff; border-color: #1565c0; }
+.bp-btn.primary:hover { filter: brightness(1.1); }
+.bp-caret { font-size: 11px; color: var(--muted); }
+.bp-members { padding: 0 14px 12px; overflow-x: auto; }
+.bp-mtable { width: 100%; border-collapse: collapse; font-size: 12px; background: #fff; border-radius: 8px; overflow: hidden; }
+.bp-mtable th { background: rgba(33,150,243,0.07); color: var(--muted); font-weight: 600; padding: 6px 10px; text-align: left; white-space: nowrap; }
+.bp-mtable td { padding: 6px 10px; border-top: 1px solid rgba(120,120,120,0.08); white-space: nowrap; }
+.bp-mtable .r { text-align: right; font-variant-numeric: tabular-nums; }
+.bp-diff { color: #e65100; font-weight: 600; }
+.bp-out { color: #e65100; font-weight: 600; }
+.bp-ok { color: #2e7d32; font-weight: 700; }
 
 /* Payment rows */
 .pay-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 7px; border: 1px solid var(--border); background: rgba(255,252,250,0.8); cursor: pointer; transition: all 0.14s; font-size: 12.5px; }

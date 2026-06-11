@@ -6095,6 +6095,196 @@ def ar_invoice_batches(request):
     return ok({'batches': rows, 'total': len(rows)})
 
 
+def _batch_members_qs(request, batch_no):
+    """某开票批次在当前用户作用域内的成员记录（含项目信息，按运作日期排序）。"""
+    return (_ar_dept_filter(ARRecord.objects.select_related('project'), request,
+                            shared_field='project__is_shared')
+            .filter(invoice_batch_no=batch_no)
+            .order_by('operation_date', 'id'))
+
+
+def _batch_member_dict(rec):
+    billable = (rec.estimated_amount or Decimal('0')) + (rec.account_diff_adjustment or Decimal('0'))
+    collected = rec.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0')
+    return {
+        'id': rec.id,
+        'short_name': rec.project.short_name,
+        'customer_name': rec.project.customer_name,
+        'delivery_dept': rec.delivery_dept,
+        'operation_date': str(rec.operation_date) if rec.operation_date else None,
+        'estimated': str(rec.estimated_amount or 0),
+        'diff': str(rec.account_diff_adjustment or 0),
+        'billable': str(billable),
+        'invoiced': str(rec.actual_invoice_amount) if rec.actual_invoice_amount is not None else None,
+        'invoice_date': str(rec.invoice_date) if rec.invoice_date else None,
+        'collected': str(collected),
+        'outstanding': str(rec.outstanding_amount or 0),
+    }
+
+
+@csrf_exempt
+@pk_required()
+def ar_invoice_batch_detail(request, batch_no):
+    """GET /records/invoice-batches/<batch_no> — 批次明细：成员逐条 + 汇总。
+    应开口径 = 上账金额 + 账实差额调整（差额已按业务要求落在具体记录上）。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    members = [_batch_member_dict(r) for r in _batch_members_qs(request, batch_no)]
+    if not members:
+        return err('批次不存在或无权访问', 404)
+    s = lambda k: sum(Decimal(m[k]) for m in members if m[k] is not None)  # noqa: E731
+    return ok({
+        'batch_no': batch_no,
+        'members': members,
+        'summary': {
+            'count': len(members),
+            'estimated': str(s('estimated')),
+            'diff': str(s('diff')),
+            'billable': str(s('billable')),
+            'invoiced': str(s('invoiced')),
+            'collected': str(s('collected')),
+            'outstanding': str(s('outstanding')),
+            'pending_invoice': sum(1 for m in members if m['invoiced'] is None),
+        },
+    })
+
+
+@csrf_exempt
+@pk_required()
+def ar_invoice_batch_invoice(request, batch_no):
+    """POST /records/invoice-batches/<batch_no>/invoice — 批次开票落账。
+
+    body: { invoice_date(必填), invoice_total(选填,校验用) }
+    对批次内尚未开票的成员：实际开票金额 = 上账金额 + 账实差额调整，统一盖开票日期。
+    已开票成员跳过不动（金额以记录为准，避免覆盖人工调整）。
+    若传 invoice_total 且与待开合计不一致 → 拒绝并给出逐条分解，
+    引导先把差额调整落到具体记录（与「差额落在哪几笔」的业务纪律一致）。
+    """
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    data = _parse_body(request)
+    inv_date = _normalize_date(data.get('invoice_date'))
+    if not inv_date:
+        return err('开票日期无效（格式 2026-01-15）')
+
+    members = list(_batch_members_qs(request, batch_no))
+    if not members:
+        return err('批次不存在或无权访问', 404)
+    pending = [r for r in members if r.actual_invoice_amount is None]
+    already = [r for r in members if r.actual_invoice_amount is not None]
+    if not pending:
+        return err('该批次所有记录均已开票，无需重复操作')
+
+    pending_total = sum((r.estimated_amount or Decimal('0'))
+                        + (r.account_diff_adjustment or Decimal('0')) for r in pending)
+    inv_total_raw = data.get('invoice_total')
+    if inv_total_raw not in (None, ''):
+        inv_total = _dec(inv_total_raw)
+        if abs(inv_total - pending_total) > Decimal('0.01'):
+            lines = [f'· {r.project.short_name} {r.operation_date}：上账 {r.estimated_amount}'
+                     f'{f" + 差额 {r.account_diff_adjustment}" if r.account_diff_adjustment else ""}'
+                     f' = {(r.estimated_amount or 0) + (r.account_diff_adjustment or 0)}'
+                     for r in pending]
+            return err(f'发票金额 {inv_total} 与批次待开合计 {pending_total} 不一致。'
+                       f'请先在具体记录上调整「账实差额」使合计与发票一致，再批次开票。\n'
+                       f'待开分解：\n' + '\n'.join(lines))
+
+    invoiced = []
+    with transaction.atomic():
+        for r in pending:
+            r.actual_invoice_amount = ((r.estimated_amount or Decimal('0'))
+                                       + (r.account_diff_adjustment or Decimal('0')))
+            r.invoice_date = inv_date
+            r.save()
+            invoiced.append({'id': r.id, 'short_name': r.project.short_name,
+                             'amount': str(r.actual_invoice_amount)})
+    msg = f'批次「{batch_no}」开票完成：{len(invoiced)} 条落账，合计 {pending_total}'
+    if already:
+        msg += f'；{len(already)} 条此前已开票，保持原值未动'
+    return ok({'invoiced': invoiced, 'skipped_already': len(already),
+               'total': str(pending_total), 'message': msg})
+
+
+@csrf_exempt
+@pk_required()
+def ar_invoice_batch_payment(request, batch_no):
+    """POST /records/invoice-batches/<batch_no>/payment — 批次回款自动分摊。
+
+    body: { amount(必填), payment_date(必填), notes(选填) }
+    一张发票（批次）到一笔钱：按运作日期先进先出，逐条冲减成员未收余额，
+    自动生成各记录的回款行（备注带批次号，可追溯）。支持多次回款，
+    每次都从当前仍有未收的成员继续分摊。金额超过批次未收合计 → 拒绝并
+    提示超出部分走「预收款」。
+    """
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    denied = _ar_field_denied(request, 'r_payments')
+    if denied:
+        return denied
+    data = _parse_body(request)
+    amount = _dec(data.get('amount', 0))
+    if amount <= 0:
+        return err('回款金额必须大于0')
+    pay_date = _normalize_date(data.get('payment_date'))
+    if not pay_date:
+        return err('回款日期无效（格式 2026-01-20）')
+    user_notes = (data.get('notes') or '').strip()
+
+    with transaction.atomic():
+        members = list(_batch_members_qs(request, batch_no).select_for_update())
+        if not members:
+            return err('批次不存在或无权访问', 404)
+        open_recs = [r for r in members if (r.outstanding_amount or Decimal('0')) > 0]
+        total_outstanding = sum(r.outstanding_amount for r in open_recs)
+        if not open_recs:
+            return err('该批次已全部回款结清，无未收余额可分摊')
+        if amount > total_outstanding:
+            return err(f'回款金额 {amount} 超过批次未收合计 {total_outstanding}。'
+                       f'请按 {total_outstanding} 录入本批次回款，'
+                       f'超出的 {amount - total_outstanding} 元到「预收预付」录入为该客户预收款')
+
+        remaining = amount
+        allocations = []
+        note = f'批次回款[{batch_no}]' + (f' {user_notes}' if user_notes else '')
+        for r in open_recs:
+            if remaining <= 0:
+                break
+            alloc = min(remaining, r.outstanding_amount)
+            last = r.payments.order_by('-payment_no').first()
+            ARPayment.objects.create(
+                ar_record=r, payment_no=(last.payment_no + 1) if last else 1,
+                amount=alloc, payment_date=pay_date, notes=note)
+            r.refresh_from_db()
+            allocations.append({
+                'record_id': r.id, 'short_name': r.project.short_name,
+                'operation_date': str(r.operation_date) if r.operation_date else None,
+                'allocated': str(alloc), 'outstanding_after': str(r.outstanding_amount),
+            })
+            remaining -= alloc
+
+    settled = sum(1 for a in allocations if Decimal(a['outstanding_after']) <= 0)
+    return ok({
+        'batch_no': batch_no, 'amount': str(amount), 'allocations': allocations,
+        'message': (f'批次「{batch_no}」回款 {amount} 已按运作日期先进先出分摊到 '
+                    f'{len(allocations)} 条记录（{settled} 条就此结清）'),
+    })
+
+
 @csrf_exempt
 @pk_required()
 def ar_records_batch_assign(request):

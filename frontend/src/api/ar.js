@@ -30,6 +30,9 @@ const ar = {
   bulkDeleteRecords: (body, params) => api.post('/ar/records/bulk-delete', body, { params }),
   // 合并开票批次
   listInvoiceBatches: p => api.get('/ar/records/invoice-batches', { params: p }),
+  getInvoiceBatch: bn => api.get(`/ar/records/invoice-batches/${encodeURIComponent(bn)}`),
+  batchInvoice: (bn, d) => api.post(`/ar/records/invoice-batches/${encodeURIComponent(bn)}/invoice`, d),
+  batchPayment: (bn, d) => api.post(`/ar/records/invoice-batches/${encodeURIComponent(bn)}/payment`, d),
   batchAssignBatchNo: (d, params) => api.post('/ar/records/batch-assign', d, { params }),
   recordTemplate: () => api.get('/ar/records/template', { responseType: 'blob' }),
   importRecords: fd => api.post('/ar/records/import', fd),
