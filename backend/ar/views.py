@@ -6960,7 +6960,15 @@ def cash_pool(request):
 
     today = datetime.date.today()
     depts = _pool_visible_depts(request)
-    cfgs = {c.delivery_dept: c for c in CashPoolConfig.objects.filter(delivery_dept__in=depts)}
+    try:
+        cfgs = {c.delivery_dept: c for c in CashPoolConfig.objects.filter(delivery_dept__in=depts)}
+    except Exception as exc:
+        import traceback
+        logger.error('cash_pool: config query failed: %s\n%s', exc, traceback.format_exc())
+        return err(f'资金池配置读取失败：{exc}。'
+                   f'若提示字段/列不存在，说明数据库迁移未应用到当前服务所连的库——'
+                   f'请在服务器运行环境（与启动服务相同的环境变量，含 MYSQL_ADDRESS）'
+                   f'执行 python manage.py migrate 后重启服务', 500)
 
     pools = []
     for dept in depts:
@@ -6976,7 +6984,7 @@ def cash_pool(request):
                          dept, exc, traceback.format_exc())
             pools.append({'dept': dept, 'configured': True, 'error': str(exc)})
 
-    configured = [p for p in pools if p.get('configured')]
+    configured = [p for p in pools if p.get('configured') and not p.get('error')]
     group = None
     if configured:
         def _sumf(getter):
@@ -7107,7 +7115,14 @@ def cash_pool_transfers(request):
         if request.pk_role != 'super_admin':
             mine = request.pk_depts or []
             qs = qs.filter(Q(from_dept__in=mine) | Q(to_dept__in=mine))
-        return ok({'items': [t.to_dict() for t in qs[:200]]})
+        try:
+            return ok({'items': [t.to_dict() for t in qs[:200]]})
+        except Exception as exc:
+            import traceback
+            logger.error('cash_pool_transfers: list failed: %s\n%s', exc, traceback.format_exc())
+            return err(f'调拨台账读取失败：{exc}。'
+                       f'若提示字段/列不存在，请在服务器运行环境执行 '
+                       f'python manage.py migrate 后重启服务', 500)
     if request.method == 'POST':
         data = _parse_body(request)
         f, t, amount, tr_date_d, bad = _validate_transfer_payload(data)
