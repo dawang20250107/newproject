@@ -76,7 +76,7 @@ const form = reactive({
   customer_name: '', short_name: '', delivery_dept: '', sub_dept: '',
   business_mode: '', customer_level: 'A级', status: '运作中', sales_contact: '', project_manager: '',
   has_contract: '有', contract_date: '', reconciliation_days: 0,
-  invoice_wait_days: 0, post_invoice_days: 0, invoice_mode: '全额',
+  invoice_wait_days: 0, post_invoice_days: 0, cycle_start_day: 1, invoice_mode: '全额',
   invoice_type: '专票', tax_rate: '0.06', notes: '',
   customer_id: '',
 })
@@ -194,6 +194,7 @@ function openCreate() {
     sub_dept: '', business_mode: '', customer_level: 'A级', status: '运作中',
     sales_contact: '', project_manager: '', has_contract: '有', contract_date: '',
     reconciliation_days: 0, invoice_wait_days: 0, post_invoice_days: 0,
+    cycle_start_day: 1,
     invoice_mode: '全额', invoice_type: '专票', tax_rate: '0.06', notes: '',
     customer_id: '',
   })
@@ -214,6 +215,7 @@ async function openEdit(item) {
     reconciliation_days: item.reconciliation_days,
     invoice_wait_days: item.invoice_wait_days,
     post_invoice_days: item.post_invoice_days,
+    cycle_start_day: item.cycle_start_day || 1,
     invoice_mode: item.invoice_mode, invoice_type: item.invoice_type,
     tax_rate: item.tax_rate, notes: item.notes,
     customer_id: item.customer_id || '',
@@ -669,6 +671,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <label class="form-field">
                 <span>票后等待期（天） <em>*</em></span>
                 <input v-model.number="form.post_invoice_days" type="number" min="0" />
+              </label>
+              <label class="form-field">
+                <span>对账周期起始日</span>
+                <input v-model.number="form.cycle_start_day" type="number" min="1" max="28"
+                  title="1=自然月（月初到月末，默认）；如月结周期为每月15日到下月14日则填15。应收到期 = 运作日期所在账期的结束日 + 总账期天数；修改后已有明细到期日自动重算" />
               </label>
               <label class="form-field">
                 <span>开票模式 <em>*</em></span>

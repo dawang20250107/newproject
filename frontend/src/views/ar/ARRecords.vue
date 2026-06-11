@@ -97,8 +97,39 @@ const recForm = reactive({
   project_id: '', operation_date: todayCST(),
   estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
   invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
+  adjustment_reason: '',
   target_collection_date: '', invoice_batch_no: '', notes: '',
 })
+
+// ── 差额调整明细（编辑态管理器）─────────────────────────────────────────────
+// 一条应收可多次调整，各带原因与金额；合计与未收由后端派生，前端只管明细。
+const adjList = ref([])
+const adjForm = reactive({ amount: '', reason: '' })
+const adjBusy = ref(false)
+const adjTotal = computed(() =>
+  adjList.value.reduce((s, a) => s + (parseFloat(a.amount) || 0), 0))
+async function addAdjustment() {
+  if (!parseFloat(adjForm.amount)) { alert('调整金额不能为0（可正可负）'); return }
+  if (!adjForm.reason.trim()) { alert('请填写调整原因（如：运费差、客户扣款、补付）'); return }
+  adjBusy.value = true
+  try {
+    const res = await ar.addAdjustment(editRec.value.id, { amount: adjForm.amount, reason: adjForm.reason })
+    adjList.value = res.data.items
+    adjForm.amount = ''; adjForm.reason = ''
+    await load()
+  } catch (e) { alert(e?.msg || '添加调整失败') }
+  finally { adjBusy.value = false }
+}
+async function removeAdjustment(a) {
+  if (!confirm(`删除调整「${a.reason || '未填原因'}：${a.amount}」？差额合计与未收金额将随之回退。`)) return
+  adjBusy.value = true
+  try {
+    const res = await ar.deleteAdjustment(editRec.value.id, a.id)
+    adjList.value = res.data.items
+    await load()
+  } catch (e) { alert(e?.msg || '删除失败') }
+  finally { adjBusy.value = false }
+}
 
 // ── 开票批次号批量设置 ──────────────────────────────────────────────────────────
 const showBatchModal = ref(false)
@@ -403,8 +434,10 @@ function openCreate() {
     operation_date: todayCST(),
     estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
     invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
+    adjustment_reason: '',
     target_collection_date: '', invoice_batch_no: '', notes: '',
   })
+  adjList.value = []
   showModal.value = true
   projectKeyword.value = ''
   searchProjects('')  // initial page of projects
@@ -418,10 +451,13 @@ function openEdit(rec) {
     tax_amount: rec.tax_amount || '', invoice_date: rec.invoice_date || '',
     reconciliation_date: rec.reconciliation_date || '',
     account_diff_adjustment: rec.account_diff_adjustment || '',
+    adjustment_reason: '',
     target_collection_date: rec.target_collection_date || '',
     invoice_batch_no: rec.invoice_batch_no || '',
     notes: rec.notes,
   })
+  adjList.value = rec.adjustments || []
+  Object.assign(adjForm, { amount: '', reason: '' })
   showModal.value = true
 }
 
@@ -531,10 +567,15 @@ async function saveRec() {
       estimated_amount: recForm.estimated_amount || 0,
       actual_invoice_amount: recForm.actual_invoice_amount || null,
       tax_amount: recForm.tax_amount || null, invoice_date: recForm.invoice_date || null,
-      reconciliation_date: recForm.reconciliation_date || null, account_diff_adjustment: recForm.account_diff_adjustment || 0,
+      reconciliation_date: recForm.reconciliation_date || null,
       target_collection_date: recForm.target_collection_date || null,
       invoice_batch_no: recForm.invoice_batch_no || '',
       notes: recForm.notes,
+    }
+    // 差额调整走明细：新建时把初始差额+原因一并提交；编辑态由调整管理器单独维护
+    if (!editRec.value) {
+      payload.account_diff_adjustment = recForm.account_diff_adjustment || 0
+      payload.adjustment_reason = recForm.adjustment_reason || ''
     }
     if (editRec.value) await ar.updateRecord(editRec.value.id, payload)
     else await ar.createRecord(payload)
@@ -899,7 +940,10 @@ function clearFilters() {
                       <td>{{ m.short_name }}</td>
                       <td>{{ m.operation_date || '—' }}</td>
                       <td class="r">{{ fmtCell(m.estimated) }}</td>
-                      <td class="r" :class="{ 'bp-diff': parseFloat(m.diff) !== 0 }">{{ parseFloat(m.diff) !== 0 ? fmtCell(m.diff) : '—' }}</td>
+                      <td class="r" :class="{ 'bp-diff': parseFloat(m.diff) !== 0 }"
+                          :title="(m.adjustments || []).map(a => `${a.reason || '未填原因'}: ${a.amount}`).join('\n') || '无调整'">
+                        {{ parseFloat(m.diff) !== 0 ? fmtCell(m.diff) : '—' }}<i v-if="(m.adjustments || []).length > 1" class="bp-adj-n">×{{ m.adjustments.length }}</i>
+                      </td>
                       <td class="r">{{ fmtCell(m.billable) }}</td>
                       <td class="r">{{ m.invoiced != null ? fmtCell(m.invoiced) : '未开' }}</td>
                       <td>{{ m.invoice_date || '—' }}</td>
@@ -1387,10 +1431,37 @@ function clearFilters() {
                 <span>目标回款日期（选填）</span>
                 <input v-model="recForm.target_collection_date" type="date" title="业务手工设定的回款目标，与系统按账期推算的应收到期并行" />
               </label>
-              <label class="form-field">
-                <span>差额调整</span>
-                <input v-model="recForm.account_diff_adjustment" type="number" step="0.01" />
-              </label>
+              <!-- 新建：初始差额+原因；编辑：调整明细管理器（多次、各带原因金额） -->
+              <template v-if="!editRec">
+                <label class="form-field">
+                  <span>差额调整（选填）</span>
+                  <input v-model="recForm.account_diff_adjustment" type="number" step="0.01" placeholder="可正可负" />
+                </label>
+                <label class="form-field">
+                  <span>差额原因</span>
+                  <input v-model="recForm.adjustment_reason" placeholder="如：运费差/客户扣款/补付" maxlength="200" />
+                </label>
+              </template>
+              <div v-else class="form-field span2 adj-box">
+                <span>差额调整明细<i class="adj-total">合计 {{ adjTotal.toFixed(2) }}（未收 = 上账 + 差额合计 − 已回款）</i></span>
+                <div v-if="adjList.length" class="adj-list">
+                  <div v-for="a in adjList" :key="a.id" class="adj-item">
+                    <b :class="parseFloat(a.amount) >= 0 ? 'adj-pos' : 'adj-neg'">{{ parseFloat(a.amount) >= 0 ? '+' : '' }}{{ a.amount }}</b>
+                    <span class="adj-reason" :title="a.reason">{{ a.reason || '未填原因' }}</span>
+                    <em v-if="a.adjust_date">{{ a.adjust_date }}</em>
+                    <em v-if="a.created_by_name">{{ a.created_by_name }}</em>
+                    <button type="button" class="adj-del" title="删除该笔调整" @click="removeAdjustment(a)">✕</button>
+                  </div>
+                </div>
+                <div v-else class="adj-empty">暂无调整——金额与原因逐笔记录，可多次追加</div>
+                <div class="adj-add">
+                  <input v-model="adjForm.amount" type="number" step="0.01" placeholder="金额（可负）" class="adj-amt-inp" />
+                  <input v-model="adjForm.reason" placeholder="原因（必填，如：运费差/客户扣款）" maxlength="200" class="adj-reason-inp" />
+                  <button type="button" class="btn btn-ghost btn-sm" :disabled="adjBusy" @click="addAdjustment">
+                    {{ adjBusy ? '…' : '＋ 追加调整' }}
+                  </button>
+                </div>
+              </div>
               <label class="form-field span2">
                 <span>开票批次号<span style="color:var(--muted);font-size:11px;margin-left:4px">合并开票时多条填同一批次号，留空=单独开票</span></span>
                 <input v-model="recForm.invoice_batch_no" placeholder="如 PF-2026-001" />
@@ -1920,6 +1991,21 @@ function clearFilters() {
 /* 开票批次号 badge */
 .batch-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px; background: rgba(33,150,243,0.12); color: #1565c0; border: 1px solid rgba(33,150,243,0.2); white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
 
+/* ══ 差额调整明细管理器 ══ */
+.adj-box .adj-total { font-style: normal; font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 8px; }
+.adj-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.adj-item { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border: 1px solid rgba(120,120,120,0.14); border-radius: 8px; background: rgba(255,255,255,0.6); font-size: 12.5px; }
+.adj-item b { font-variant-numeric: tabular-nums; min-width: 76px; }
+.adj-pos { color: #2e7d32; } .adj-neg { color: #c62828; }
+.adj-reason { flex: 1; color: var(--text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.adj-item em { font-style: normal; font-size: 11px; color: var(--muted); }
+.adj-del { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 12px; }
+.adj-del:hover { color: #c62828; }
+.adj-empty { font-size: 12px; color: var(--muted); padding: 6px 0; }
+.adj-add { display: flex; gap: 6px; margin-top: 4px; }
+.adj-add .adj-amt-inp { width: 120px; }
+.adj-add .adj-reason-inp { flex: 1; }
+
 /* ══ 合并开票批次工作台 ══ */
 .batch-panel { margin-top: 12px; border: 1px solid rgba(33,150,243,0.22); border-radius: 12px; background: rgba(33,150,243,0.03); overflow: hidden; }
 .bp-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px; }
@@ -1952,6 +2038,7 @@ function clearFilters() {
 .bp-mtable td { padding: 6px 10px; border-top: 1px solid rgba(120,120,120,0.08); white-space: nowrap; }
 .bp-mtable .r { text-align: right; font-variant-numeric: tabular-nums; }
 .bp-diff { color: #e65100; font-weight: 600; }
+.bp-adj-n { font-style: normal; font-size: 10px; color: var(--muted); margin-left: 3px; }
 .bp-out { color: #e65100; font-weight: 600; }
 .bp-ok { color: #2e7d32; font-weight: 700; }
 

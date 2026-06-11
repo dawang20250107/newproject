@@ -6,7 +6,7 @@ from decimal import Decimal
 import openpyxl
 from django.test import Client, TestCase
 
-from ar.models import (ARPayment, ARProject, ARRecord, CollectionBudget, PaymentBudget,
+from ar.models import (ARPayment, ARProject, ARRecord, ARAdjustment, CollectionBudget, PaymentBudget,
                        AdvanceRecord, AdvanceWriteoff, Customer,
                        Contract, ContractParty, ContractProject, ActionItem)
 from paikuan.models import JobPermission, PaikuanUser
@@ -2962,3 +2962,164 @@ class InvoiceBatchWorkbenchTests(TestCase):
     def test_batch_not_found(self):
         resp = self.client.get('/api/pk/ar/records/invoice-batches/不存在', **self.auth())
         self.assertEqual(resp.status_code, 404)
+
+
+class AdjustmentAndCycleTests(TestCase):
+    """差额调整多笔化（原因+金额，合计派生）+ 对账周期起始日（到期日锚点）。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900001100', name='AdjAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='调整客户', short_name='调整项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='ADJ-0001',
+            reconciliation_days=30)
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    # ── 差额调整：多笔追加/删除，合计与未收派生 ─────────────────────────────
+    def test_multiple_adjustments_derive_total(self):
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                      estimated_amount=Decimal('1000'))
+        r1 = self.client.post(f'/api/pk/ar/records/{rec.id}/adjustments',
+                              data=json.dumps({'amount': '200', 'reason': '运费差'}),
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r1.status_code, 200, r1.content)
+        r2 = self.client.post(f'/api/pk/ar/records/{rec.id}/adjustments',
+                              data=json.dumps({'amount': '-50', 'reason': '客户扣款'}),
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r2.status_code, 200, r2.content)
+        d = r2.json()['data']
+        self.assertEqual(Decimal(d['total_adjustment']), Decimal('150'))
+        self.assertEqual(Decimal(d['outstanding_amount']), Decimal('1150'))
+        self.assertEqual(len(d['items']), 2)
+        # 删除一笔 → 合计回退
+        aid = d['items'][0]['id']
+        r3 = self.client.delete(f'/api/pk/ar/records/{rec.id}/adjustments/{aid}', **self.auth())
+        self.assertEqual(r3.status_code, 200, r3.content)
+        self.assertEqual(Decimal(r3.json()['data']['total_adjustment']), Decimal('-50'))
+        rec.refresh_from_db()
+        self.assertEqual(rec.account_diff_adjustment, Decimal('-50'))
+        self.assertEqual(rec.outstanding_amount, Decimal('950'))
+
+    def test_adjustment_requires_reason_and_nonzero(self):
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                      estimated_amount=Decimal('1000'))
+        r = self.client.post(f'/api/pk/ar/records/{rec.id}/adjustments',
+                             data=json.dumps({'amount': '0', 'reason': 'x'}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post(f'/api/pk/ar/records/{rec.id}/adjustments',
+                             data=json.dumps({'amount': '10', 'reason': ''}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 400)
+
+    def test_adjustment_delete_blocked_when_outstanding_would_go_negative(self):
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                      estimated_amount=Decimal('1000'))
+        adj = ARAdjustment.objects.create(ar_record=rec, amount=Decimal('500'), reason='补付')
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('1300'),
+                                 payment_date=date(2026, 6, 1))
+        # 删除 +500 调整 → 未收 = 1000 - 1300 = -300 → 拒绝
+        r = self.client.delete(f'/api/pk/ar/records/{rec.id}/adjustments/{adj.id}', **self.auth())
+        self.assertEqual(r.status_code, 400)
+        self.assertTrue(ARAdjustment.objects.filter(pk=adj.pk).exists())
+
+    def test_legacy_put_total_creates_delta_adjustment(self):
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                      estimated_amount=Decimal('1000'))
+        ARAdjustment.objects.create(ar_record=rec, amount=Decimal('100'), reason='初始')
+        # 旧调用方按合计改为 250 → 自动生成 +150 的差值明细
+        r = self.client.put(f'/api/pk/ar/records/{rec.id}',
+                            data=json.dumps({'account_diff_adjustment': '250'}),
+                            content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        rec.refresh_from_db()
+        self.assertEqual(rec.account_diff_adjustment, Decimal('250'))
+        self.assertEqual(rec.adjustments.count(), 2)
+
+    def test_import_diff_with_reason_creates_adjustment(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['项目简称*', '运作日期*', '预估上账金额', '账实差额调整', '差额原因'])
+        ws.append(['调整项目', '2026-05-01', 800, -30, '四舍五入'])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0); buf.name = 'r.xlsx'
+        resp = self.client.post('/api/pk/ar/records/import', {'file': buf}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data'].get('created'), 1, resp.json())
+        rec = ARRecord.objects.get(project=self.proj)
+        self.assertEqual(rec.account_diff_adjustment, Decimal('-30'))
+        adj = rec.adjustments.get()
+        self.assertEqual(adj.reason, '四舍五入')
+
+    def test_export_has_adjustment_detail_column(self):
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                      estimated_amount=Decimal('1000'))
+        ARAdjustment.objects.create(ar_record=rec, amount=Decimal('80'), reason='运费差')
+        resp = self.client.get('/api/pk/ar/records/export', **self.auth())
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        headers = [c.value for c in wb.active[1]]
+        self.assertIn('差额明细', headers)
+        idx = headers.index('差额明细')
+        self.assertIn('运费差', str(wb.active.cell(2, idx + 1).value))
+
+    # ── 对账周期起始日 → 到期日锚点 ─────────────────────────────────────────
+    def test_cycle_start_day_due_date(self):
+        # 周期15日~下月14日：运作 5/20 落在 5/15~6/14，账期结束 6/14，+30天账期
+        self.proj.cycle_start_day = 15
+        self.proj.total_days = 30
+        self.proj.save()
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 20),
+                                      estimated_amount=Decimal('100'))
+        self.assertEqual(str(rec.due_date), '2026-07-14')   # 6/14 + 30
+        # 运作 5/10 落在上一周期 4/15~5/14，账期结束 5/14
+        rec2 = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 10),
+                                       estimated_amount=Decimal('100'))
+        self.assertEqual(str(rec2.due_date), '2026-06-13')  # 5/14 + 30
+
+    def test_cycle_default_is_natural_month(self):
+        self.proj.total_days = 30
+        self.proj.save()
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 20),
+                                      estimated_amount=Decimal('100'))
+        self.assertEqual(str(rec.due_date), '2026-06-30')   # 5/31 + 30
+
+    def test_cycle_change_recomputes_existing_due_dates(self):
+        self.proj.total_days = 30
+        self.proj.save()
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 20),
+                                      estimated_amount=Decimal('100'))
+        self.assertEqual(str(rec.due_date), '2026-06-30')
+        # 项目改为月中结 → 信号自动重算存量到期日
+        resp = self.client.put(f'/api/pk/ar/projects/{self.proj.id}',
+                               data=json.dumps({'cycle_start_day': 15}),
+                               content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        rec.refresh_from_db()
+        self.assertEqual(str(rec.due_date), '2026-07-14')
+
+    def test_cycle_start_day_validation(self):
+        resp = self.client.put(f'/api/pk/ar/projects/{self.proj.id}',
+                               data=json.dumps({'cycle_start_day': 31}),
+                               content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('1~28', resp.json()['error'])
+
+    def test_project_import_with_cycle_column(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['客户名称*', '项目简称*', '交付部门*', '销售对接人*', '项目负责人*',
+                   '对账周期起始日(1-28)'])
+        ws.append(['周期客户', '周期项目', self.dept, 'A', 'B', 15])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0); buf.name = 'p.xlsx'
+        resp = self.client.post('/api/pk/ar/projects/import', {'file': buf}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        p = ARProject.objects.get(short_name='周期项目')
+        self.assertEqual(p.cycle_start_day, 15)

@@ -65,6 +65,9 @@ class ARProject(models.Model):
     invoice_wait_days = models.IntegerField('开票等待期(天)', default=0)
     post_invoice_days = models.IntegerField('票后等待期(天)', default=0)
     total_days = models.IntegerField('总账期(天)', default=0)
+    # 对账周期起始日（1~28）：1=自然月（月初到月末，默认）；如填 15 则账期月为
+    # 每月15日~下月14日。只影响应收到期日推算的账期锚点；自然月聚合口径不变。
+    cycle_start_day = models.PositiveSmallIntegerField('对账周期起始日', default=1)
     invoice_mode = models.CharField('开票模式', max_length=4,
                                     choices=[('全额', '全额'), ('差额', '差额')], default='全额')
     invoice_type = models.CharField('专票/普票/不开票', max_length=4,
@@ -210,6 +213,7 @@ class ARProject(models.Model):
             'invoice_wait_days': self.invoice_wait_days,
             'post_invoice_days': self.post_invoice_days,
             'total_days': self.total_days,
+            'cycle_start_day': self.cycle_start_day,
             'invoice_mode': self.invoice_mode,
             'invoice_type': self.invoice_type,
             'tax_rate': str(self.tax_rate),
@@ -335,6 +339,28 @@ def _eomonth(year, month):
     return datetime.date(year, month, calendar.monthrange(year, month)[1])
 
 
+def cycle_end_date(op_date, cycle_start_day=1):
+    """运作日期所在「对账周期」的结束日。
+
+    cycle_start_day=1（默认）即自然月：结束日 = 当月月末（与历史口径一致）。
+    cycle_start_day=N（2~28）：账期月为每月N日~下月N-1日。运作日 >= N 落在
+    本期（结束日=下月N-1），否则落在上期（结束日=本月N-1）。"""
+    csd = int(cycle_start_day or 1)
+    if csd <= 1:
+        return _eomonth(op_date.year, op_date.month)
+    if op_date.day >= csd:
+        ny, nm = (op_date.year + 1, 1) if op_date.month == 12 else (op_date.year, op_date.month + 1)
+        return datetime.date(ny, nm, csd - 1)
+    return datetime.date(op_date.year, op_date.month, csd - 1)
+
+
+def compute_record_due_date(project, op_date):
+    """应收到期日 = 对账周期结束日 + 项目总账期天数。
+    模型 save 与项目变更信号共用此函数，保证两处推算口径一致。"""
+    anchor = cycle_end_date(op_date, getattr(project, 'cycle_start_day', 1))
+    return anchor + datetime.timedelta(days=project.total_days)
+
+
 def _as_date(v):
     """Coerce a value (date / datetime / ISO string / None) to a date, or None.
 
@@ -411,8 +437,8 @@ class ARRecord(models.Model):
 
     def _compute_due_date(self):
         try:
-            end_of_month = _eomonth(self.operation_year, self.operation_month)
-            return end_of_month + datetime.timedelta(days=self.project.total_days)
+            op = self.operation_date or datetime.date(self.operation_year, self.operation_month, 1)
+            return compute_record_due_date(self.project, op)
         except Exception:
             return None
 
@@ -612,6 +638,7 @@ class ARRecord(models.Model):
         }
         if include_payments:
             d['payments'] = [p.to_dict() for p in self.payments.order_by('payment_no')]
+            d['adjustments'] = [a.to_dict() for a in self.adjustments.all()]
         return d
 
 
@@ -652,6 +679,37 @@ class ARPayment(models.Model):
             'payment_date': str(self.payment_date),
             'source': self.source,
             'notes': self.notes,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class ARAdjustment(models.Model):
+    """账实差额调整明细 — 一条应收可多次调整，每次各带原因与金额（可正可负）。
+
+    ARRecord.account_diff_adjustment 退化为派生合计（信号自动同步），所有
+    存量按合计的查询/导出/批次开票口径零改动；新链路以明细为正源，可追溯
+    每笔差额因何而来（如：运费差、扣款、补付、四舍五入）。"""
+    ar_record = models.ForeignKey(ARRecord, on_delete=models.CASCADE,
+                                  related_name='adjustments', db_index=True)
+    amount = models.DecimalField('调整金额', max_digits=15, decimal_places=2)
+    reason = models.CharField('调整原因', max_length=200, blank=True, default='')
+    adjust_date = models.DateField('调整日期', null=True, blank=True)
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='created_ar_adjustments')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'ar_adjustments'
+        ordering = ['ar_record', 'id']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'ar_record_id': self.ar_record_id,
+            'amount': str(self.amount),
+            'reason': self.reason,
+            'adjust_date': str(self.adjust_date) if self.adjust_date else None,
+            'created_by_name': self.created_by.name if self.created_by else '',
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
 

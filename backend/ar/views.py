@@ -24,7 +24,8 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from paikuan.views import (pk_required, ok, err, DEPARTMENTS, VALID_DEPARTMENTS,
                            get_request_perms, apply_ar_view_mask, AR_PROJECT_FIELD_DEFS,
                            AR_RECORD_FIELD_DEFS, AR_ADVANCE_FIELD_DEFS, _paid_subq)
-from ar.models import (ARProject, ARRecord, ARPayment, CollectionBudget, PaymentBudget,
+from ar.models import (ARProject, ARRecord, ARPayment, ARAdjustment,
+                       CollectionBudget, PaymentBudget,
                        AdvanceRecord, AdvanceWriteoff, Supplier, Customer,
                        Contract, ContractParty, ContractProject, ActionItem,
                        CashPoolConfig, CashPoolTransfer)
@@ -48,6 +49,19 @@ def _norm_header(h):
     s = s.replace('（', '(').replace('）', ')')
     s = re.sub(r'\([^)]*\)', '', s)   # 去掉括号及其中的注释
     return s.strip()
+
+
+def _parse_cycle_start_day(v):
+    """对账周期起始日：1~28（1=自然月）。返回 (值, 错误文案)。空值按 1。"""
+    if v in (None, ''):
+        return 1, None
+    try:
+        d = int(float(v))
+    except (TypeError, ValueError):
+        return None, f'对账周期起始日"{v}"无效，须为 1~28 的整数（1=自然月）'
+    if not (1 <= d <= 28):
+        return None, f'对账周期起始日须为 1~28（当前 {d}）。29~31 在短月不存在，请用 28 或改约对账日'
+    return d, None
 
 
 def _match_project_by_short_name(short_name, dept='', allowed_depts=None):
@@ -571,6 +585,9 @@ def projects(request):
             return denied
         from paikuan.models import PaikuanUser
         user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+        csd, csd_err = _parse_cycle_start_day(data.get('cycle_start_day'))
+        if csd_err:
+            return err(csd_err)
         try:
             p = ARProject(
                 customer_name=data.get('customer_name', '').strip(),
@@ -586,6 +603,7 @@ def projects(request):
                 reconciliation_days=int(data.get('reconciliation_days', 0) or 0),
                 invoice_wait_days=int(data.get('invoice_wait_days', 0) or 0),
                 post_invoice_days=int(data.get('post_invoice_days', 0) or 0),
+                cycle_start_day=csd,
                 invoice_mode=data.get('invoice_mode', '全额'),
                 invoice_type=data.get('invoice_type', ''),
                 tax_rate=_dec(data.get('tax_rate', '0')),
@@ -654,6 +672,11 @@ def project_detail(request, pk):
         for field in ('reconciliation_days', 'invoice_wait_days', 'post_invoice_days'):
             if field in data:
                 setattr(proj, field, int(data[field] or 0))
+        if 'cycle_start_day' in data:
+            csd, csd_err = _parse_cycle_start_day(data['cycle_start_day'])
+            if csd_err:
+                return err(csd_err)
+            proj.cycle_start_day = csd
         if 'tax_rate' in data:
             proj.tax_rate = _dec(data['tax_rate'])
         if 'delivery_dept' in data:
@@ -785,6 +808,7 @@ def project_template(request):
     headers = ['客户名称*', '项目简称*', '交付部门*', '二级部门', '业务模式',
                '客户等级', '销售对接人*', '项目负责人*', '有无合同',
                '签订日期', '合同对账期(天)', '开票等待期(天)', '票后等待期(天)',
+               '对账周期起始日(1-28)',
                '开票模式(全额/差额)', '专票/普票/不开票', '税率(如0.06)', '备注']
     _header_row(ws, headers)
     tip_vals = [
@@ -800,7 +824,9 @@ def project_template(request):
         '选填：格式 2026-01-15 / 2026/1/15 / 2026年1月15日 均可',
         '整数天数，默认0（总账期 = 合同对账期 + 开票等待期 + 票后等待期）',
         '整数天数，默认0（同上，三项之和即为应收日期的延迟天数）',
-        '整数天数，默认0（票后等待期：开票后多少天内完成回款；应收日期 = 运作月月末 + 总账期天数；修改后自动更新已有明细）',
+        '整数天数，默认0（票后等待期：开票后多少天内完成回款；应收日期 = 对账周期结束日 + 总账期天数；修改后自动更新已有明细）',
+        '选填：1~28，默认1=自然月（月初到月末）。如月结周期为每月15日到下月14日则填 15；'
+        '应收到期 = 运作日期所在账期的结束日 + 总账期天数，修改后已有明细到期日自动重算',
         '"全额"或"差额"（全额：税额自动计算=开票金额/(1+税率)×税率；差额：手填税额）',
         f'{"/".join(VALID_INVOICE_TYPES)}；选"不开票"时税率自动置0',
         '选填：如 0.06 表示6%，范围 0~1；选"不开票"时留空或填0',
@@ -816,10 +842,10 @@ def project_template(request):
         cell.font = tip_font
         cell.alignment = Alignment(wrap_text=True)
     example = [EXAMPLE_ROW_MARKER, '物流外包A', '劳务事业部', '华南区', '劳务外包',
-               'A级', '张三', '李四', '有', '2026-01-01', 30, 0, 60,
+               'A级', '张三', '李四', '有', '2026-01-01', 30, 0, 60, 1,
                '全额', '专票', 0.06, '示例备注（此行含"示例"标记，导入时自动跳过）']
     ws.append(example)
-    col_widths = [28, 18, 16, 14, 14, 12, 16, 16, 10, 18, 20, 20, 20, 18, 18, 14, 24]
+    col_widths = [28, 18, 16, 14, 14, 12, 16, 16, 10, 18, 20, 20, 20, 20, 18, 18, 14, 24]
     for col, w in enumerate(col_widths, start=1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = w
     ws.row_dimensions[tip_row].height = 60
@@ -940,6 +966,14 @@ def project_import(request):
             invoice_type=invoice_type_val,
             notes=_cv(ri, '备注'),
         )
+        # 对账周期起始日（_norm_header 去括号注释后列名为「对账周期起始日」）
+        csd_raw = _cv(ri, '对账周期起始日(1-28)', '对账周期起始日')
+        if csd_raw:
+            csd_val, csd_err = _parse_cycle_start_day(csd_raw)
+            if csd_err:
+                errors.append(f'第{ri}行: {csd_err}')
+                continue
+            field_vals['cycle_start_day'] = csd_val
         # 仅在明确填写税率时才写入，避免留空时把现有项目的税率清零
         if tax_raw:
             field_vals['tax_rate'] = _dec(tax_raw)
@@ -1026,6 +1060,7 @@ def project_export(request):
         ('p_account_period', '开票等待期(天)', lambda p: p.invoice_wait_days),
         ('p_account_period', '票后等待期(天)', lambda p: p.post_invoice_days),
         ('p_account_period', '总账期(天)', lambda p: p.total_days),
+        ('p_account_period', '对账周期起始日', lambda p: p.cycle_start_day),
         ('p_invoice_config', '开票模式', lambda p: p.invoice_mode),
         ('p_invoice_config', '专票/普票', lambda p: p.invoice_type),
         ('p_invoice_config', '税率', lambda p: str(p.tax_rate)),
@@ -1327,6 +1362,15 @@ def ar_records(request):
             if rec.actual_invoice_amount is not None and not rec.invoice_date:
                 return err('已填实际开票金额，请同时填写开票日期')
             rec.save()
+            # 差额调整走明细：创建时带差额 → 生成一条调整明细（原因可一并提交），
+            # account_diff_adjustment 由信号派生为明细合计
+            init_diff = _dec(data.get('account_diff_adjustment', 0))
+            if init_diff:
+                ARAdjustment.objects.create(
+                    ar_record=rec, amount=init_diff,
+                    reason=(data.get('adjustment_reason') or '').strip() or '录入时调整',
+                    created_by=user)
+                rec.refresh_from_db()
         except Exception as e:
             return err(str(e))
         return ok(apply_ar_view_mask(
@@ -1371,7 +1415,17 @@ def ar_record_detail(request, pk):
         if 'actual_invoice_amount' in data:
             rec.actual_invoice_amount = _dec(data['actual_invoice_amount']) if data['actual_invoice_amount'] not in (None, '') else None
         if 'account_diff_adjustment' in data:
-            rec.account_diff_adjustment = _dec(data['account_diff_adjustment'])
+            # 兼容旧调用方按「合计」编辑：与现合计的差值生成一条调整明细，
+            # 明细为正源、合计为派生（与运作年月→日期同款的派生列策略）
+            new_total = _dec(data['account_diff_adjustment'])
+            delta = new_total - (rec.account_diff_adjustment or Decimal('0'))
+            if delta:
+                from paikuan.models import PaikuanUser as _PU
+                ARAdjustment.objects.create(
+                    ar_record=rec, amount=delta,
+                    reason=(data.get('adjustment_reason') or '').strip() or '人工调整（按合计修改）',
+                    created_by=_PU.objects.filter(id=request.pk_uid).first())
+                rec.account_diff_adjustment = new_total
         if 'tax_amount' in data:
             rec.tax_amount = _dec(data['tax_amount']) if data['tax_amount'] not in (None, '') else None
         if 'invoice_date' in data:
@@ -1416,7 +1470,7 @@ def ar_record_template(request):
     ws = wb.active
     ws.title = '应收账款明细'
     headers = ['项目编号', '项目简称*', '交付部门', '客户名称', '运作日期*', '预估上账金额', '实际开票金额',
-               '税额(差额模式手填)', '开票日期', '账实差额调整', '目标回款日期', '回款金额', '回款时间', '备注']
+               '税额(差额模式手填)', '开票日期', '账实差额调整', '差额原因', '目标回款日期', '回款金额', '回款时间', '备注']
     _header_row(ws, headers, color='1B6E35')
     tip_vals = [
         '选填：项目编号（如 YS-20260101-0001）。当同名项目有多个时，填此列可精确指定，避免歧义',
@@ -1429,7 +1483,8 @@ def ar_record_template(request):
         '选填：实际开票金额（元）；全额模式下税额自动计算；对账时以此确认是否已对账',
         '选填：差额模式时手动填写税额（元）；全额模式：税额=开票金额÷(1+税率)×税率，自动算，无需填',
         '选填：格式 2026-01-15 / 2026/1/15 / 2026年1月15日 均可',
-        '选填：账实差额调整（元，可正可负）；未回款 = 上账金额 + 此值 - 已回款；用于修正账面差异',
+        '选填：账实差额调整（元，可正可负）；未回款 = 上账金额 + 此值 - 已回款；导入后生成一条调整明细，后续可在记录上多次追加不同原因的调整',
+        '选填：本次差额的原因（如：运费差/客户扣款/补付/四舍五入），留空记为"导入差额调整"',
         '选填：目标回款日期（业务手工设定的回款目标），格式 2026-02-15；与系统按账期推算的「应收日期」并行',
         '选填：本次回款金额（元）；同一明细行可有多次回款，每次导入新回款均追加，不覆盖历史',
         '选填：回款日期，格式同上（月度回款率按回款日期所在月份计算）',
@@ -1446,7 +1501,7 @@ def ar_record_template(request):
         cell.alignment = Alignment(wrap_text=True)
     ws.row_dimensions[tip_row].height = 60
     ws.append(['', EXAMPLE_ROW_MARKER, '运输事业部', '', '2026-01-05', 100000, 100000, '', '2026-01-15', 0,
-               '2026-02-15', 30000, '2026-01-20', '示例（此行含"示例"标记，导入时自动跳过）'])
+               '', '2026-02-15', 30000, '2026-01-20', '示例（此行含"示例"标记，导入时自动跳过）'])
     for col in range(1, len(headers) + 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 22
     return _export_response(wb, '应收账款明细导入模板.xlsx')
@@ -1497,6 +1552,7 @@ def ar_record_import(request):
         '税额(差额模式手填)':['税额(差额模式手填)', '税额'],
         '开票日期':          ['开票日期', '开票日期(YYYY-MM-DD)', '开票日期*'],
         '账实差额调整':      ['账实差额调整', '账实差额'],
+        '差额原因':          ['差额原因', '差额调整原因', '调整原因'],
         '目标回款日期':      ['目标回款日期', '目标回款', '目标回款日'],
         '回款金额':          ['回款金额'],
         '回款时间':          ['回款时间', '回款时间(YYYY-MM-DD)', '回款日期'],
@@ -1533,7 +1589,7 @@ def ar_record_import(request):
 
     DATA_COLS = ('项目编号', '项目简称*', '交付部门', '客户名称', '运作日期*', '运作年*', '运作月*',
                  '预估上账金额', '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
-                 '目标回款日期', '回款金额', '回款时间', '备注')
+                 '差额原因', '目标回款日期', '回款金额', '回款时间', '备注')
 
     errors = []      # 格式错误：会导致整表拒绝
     skipped = 0      # 仅保留字段兼容（恒为0）：示例/空行静默忽略，不计入
@@ -1653,7 +1709,8 @@ def ar_record_import(request):
             'customer_hint': row_vals['客户名称'],
             'op_date': op_date,
             'est': est, 'actual': actual, 'tax': tax, 'inv_date': inv_date,
-            'diff': diff, 'notes': row_vals['备注'], 'tgt_date': tgt_date,
+            'diff': diff, 'diff_reason': (row_vals['差额原因'] or '').strip(),
+            'notes': row_vals['备注'], 'tgt_date': tgt_date,
             'pay_amount': pay_amount, 'pay_date': pay_date,
         })
 
@@ -1767,11 +1824,15 @@ def ar_record_import(request):
                 rec.invoice_date = p['inv_date']
             if p['tgt_date'] and _can_ar_view(request, 'r_due_date'):
                 rec.target_collection_date = p['tgt_date']
-            if p['diff'] is not None and _can_ar_view(request, 'r_account_diff'):
-                rec.account_diff_adjustment = p['diff']
             if _can_ar_view(request, 'r_notes'):
                 rec.notes = p['notes']
             rec.save()
+            # 差额走调整明细（合计由信号派生）；须在回款写入前生效，
+            # 否则回款校验「未收不为负」时差额还没计入
+            if p['diff'] and _can_ar_view(request, 'r_account_diff'):
+                ARAdjustment.objects.create(
+                    ar_record=rec, amount=p['diff'],
+                    reason=p['diff_reason'][:200] or '导入差额调整', created_by=user)
             if p['pay_amount'] and p['pay_date']:
                 ARPayment.objects.create(ar_record=rec, payment_no=1,
                                          amount=p['pay_amount'], payment_date=p['pay_date'],
@@ -1868,6 +1929,9 @@ def ar_record_export(request):
         ('r_invoice_date', '开票日期', lambda rec, st: str(rec.invoice_date) if rec.invoice_date else ''),
         ('p_invoice_config', '开票模式', lambda rec, st: rec.project.invoice_mode),
         ('r_account_diff', '账实差额调整', lambda rec, st: float(rec.account_diff_adjustment)),
+        ('r_account_diff', '差额明细',
+         lambda rec, st: '；'.join(f'{a.reason or "未填原因"}:{a.amount}'
+                                   for a in rec.adjustments.all())),
         ('r_outstanding', '未回款金额', lambda rec, st: float(rec.outstanding_amount)),
         # 回款明细：同一明细可有多笔回款，日期/金额按 " / " 并列，另给已回款合计
         ('r_payments', '回款日期', lambda rec, st: _pay_dates(rec)),
@@ -2924,6 +2988,92 @@ def ar_payments(request, pk):
         return ok(pay.to_dict())
 
     return err('Method not allowed', 405)
+
+
+def _adjustments_payload(rec):
+    """调整明细变更后的统一回包：明细列表 + 派生合计 + 最新未收（UI 一次刷新）。"""
+    rec.refresh_from_db()
+    return {
+        'items': [a.to_dict() for a in rec.adjustments.all()],
+        'total_adjustment': str(rec.account_diff_adjustment or 0),
+        'outstanding_amount': str(rec.outstanding_amount or 0),
+    }
+
+
+@csrf_exempt
+@pk_required()
+def ar_adjustments(request, pk):
+    """GET/POST /records/<pk>/adjustments — 差额调整明细（多次、各带原因与金额）。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    try:
+        rec = ARRecord.objects.select_related('project').get(pk=pk)
+    except ARRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    if request.pk_role != 'super_admin' and rec.delivery_dept not in request.pk_depts:
+        return err('无权访问', 403)
+    denied = _ar_field_denied(request, 'r_account_diff')
+    if denied:
+        return denied
+
+    if request.method == 'GET':
+        return ok(_adjustments_payload(rec))
+
+    if request.method == 'POST':
+        denied = _write_denied(request)
+        if denied:
+            return denied
+        data = _parse_body(request)
+        amount = _dec(data.get('amount', 0))
+        if not amount:
+            return err('调整金额不能为0（可正可负）')
+        reason = (data.get('reason') or '').strip()
+        if not reason:
+            return err('请填写调整原因（如：运费差、客户扣款、补付、四舍五入）')
+        from paikuan.models import PaikuanUser
+        try:
+            with transaction.atomic():
+                ARAdjustment.objects.create(
+                    ar_record=rec, amount=amount, reason=reason[:200],
+                    adjust_date=_normalize_date(data.get('adjust_date')) or None,
+                    created_by=PaikuanUser.objects.filter(id=request.pk_uid).first())
+        except ValidationError as e:
+            return err(str(e.message if hasattr(e, 'message') else e), 400)
+        return ok(_adjustments_payload(rec))
+
+    return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def ar_adjustment_detail(request, pk, aid):
+    """DELETE /records/<pk>/adjustments/<aid> — 删除一笔调整（合计随之回退）。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'DELETE':
+        return err('Method not allowed', 405)
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    try:
+        adj = ARAdjustment.objects.select_related('ar_record').get(pk=aid, ar_record_id=pk)
+    except ARAdjustment.DoesNotExist:
+        return err('调整明细不存在', 404)
+    rec = adj.ar_record
+    if request.pk_role != 'super_admin' and rec.delivery_dept not in request.pk_depts:
+        return err('无权访问', 403)
+    denied = _ar_field_denied(request, 'r_account_diff')
+    if denied:
+        return denied
+    try:
+        with transaction.atomic():
+            adj.delete()
+    except ValidationError as e:
+        # 删除该调整会使未收为负（累计回款已超过 上账+剩余差额）→ 拒绝
+        return err(str(e.message if hasattr(e, 'message') else e), 400)
+    return ok(_adjustments_payload(rec))
 
 
 @csrf_exempt
@@ -6106,7 +6256,9 @@ def _batch_members_qs(request, batch_no):
 def _batch_member_dict(rec):
     billable = (rec.estimated_amount or Decimal('0')) + (rec.account_diff_adjustment or Decimal('0'))
     collected = rec.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0')
+    adjustments = [{'reason': a.reason, 'amount': str(a.amount)} for a in rec.adjustments.all()]
     return {
+        'adjustments': adjustments,
         'id': rec.id,
         'short_name': rec.project.short_name,
         'customer_name': rec.project.customer_name,

@@ -40,6 +40,11 @@ const ar = {
   dataHealth: p => api.get('/ar/records/health', { params: p }),
   recomputeRecords: ids => api.post('/ar/records/recompute', { ids }),
 
+  // 差额调整明细（多次、各带原因与金额；合计为派生）
+  listAdjustments: id => api.get(`/ar/records/${id}/adjustments`),
+  addAdjustment: (id, d) => api.post(`/ar/records/${id}/adjustments`, d),
+  deleteAdjustment: (rid, aid) => api.delete(`/ar/records/${rid}/adjustments/${aid}`),
+
   // Payments
   listPayments: id => api.get(`/ar/records/${id}/payments`),
   addPayment: (id, d) => api.post(`/ar/records/${id}/payments`, d),

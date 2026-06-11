@@ -18,6 +18,31 @@ def update_ar_record_on_payment_change(sender, instance, **kwargs):
         pass
 
 
+@receiver([post_save, post_delete], sender='ar.ARAdjustment')
+def update_ar_record_on_adjustment_change(sender, instance, **kwargs):
+    """差额调整明细变动 → 重算所属应收的派生合计与未收余额。
+    account_diff_adjustment 自此为派生列：恒等于明细 amount 之和。"""
+    from decimal import Decimal as _D
+    from django.core.exceptions import ValidationError
+    from django.db.models import Sum as _Sum
+    from ar.models import ARRecord
+    try:
+        record = instance.ar_record
+        total = record.adjustments.aggregate(s=_Sum('amount'))['s'] or _D('0')
+        record.account_diff_adjustment = total
+        record.recompute_derived(save=False)   # 校验未收不为负 + 算 outstanding/税额
+        ARRecord.objects.filter(pk=record.pk).update(
+            account_diff_adjustment=total,
+            outstanding_amount=record.outstanding_amount,
+            tax_amount=record.tax_amount,
+        )
+    except ValidationError:
+        # Re-raise so callers inside transaction.atomic() get a rollback
+        raise
+    except Exception:
+        pass
+
+
 @receiver([post_save, post_delete], sender='ar.AdvanceWriteoff')
 def update_advance_on_writeoff_change(sender, instance, **kwargs):
     """核销变动 → 重算所属预收/预付的已核销与未核销余额。"""
@@ -64,15 +89,15 @@ def delete_linked_offset_payment(sender, instance, **kwargs):
 
 @receiver(post_save, sender='ar.ARProject')
 def update_ar_record_due_dates_on_project_change(sender, instance, **kwargs):
-    """When a project's total_days changes, recompute due_date for all linked ARRecords."""
-    from ar.models import ARRecord
-    total_days = instance.total_days
+    """项目账期参数（总账期天数/对账周期起始日）变更 → 重算名下应收的到期日。
+    推算口径与 ARRecord.save 共用 compute_record_due_date（含对账周期锚点）。"""
+    from ar.models import ARRecord, compute_record_due_date
     updates = []
-    for rec in instance.ar_records.only('id', 'operation_year', 'operation_month', 'due_date'):
+    for rec in instance.ar_records.only('id', 'operation_date', 'operation_year',
+                                        'operation_month', 'due_date'):
         try:
-            last_day = calendar.monthrange(rec.operation_year, rec.operation_month)[1]
-            eom = datetime.date(rec.operation_year, rec.operation_month, last_day)
-            new_due = eom + datetime.timedelta(days=total_days)
+            op = rec.operation_date or datetime.date(rec.operation_year, rec.operation_month, 1)
+            new_due = compute_record_due_date(instance, op)
             if new_due != rec.due_date:
                 updates.append((rec.pk, new_due))
         except Exception:

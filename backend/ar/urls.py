@@ -48,6 +48,8 @@ urlpatterns = [
     path('records/<int:pk>/recompute', views.ar_record_recompute),
     path('records/<int:pk>/payments', views.ar_payments),
     path('records/<int:pk>/payments/<int:ppk>', views.ar_payment_detail),
+    path('records/<int:pk>/adjustments', views.ar_adjustments),
+    path('records/<int:pk>/adjustments/<int:aid>', views.ar_adjustment_detail),
 
     # 供应商池 (suppliers)
     path('suppliers', views.suppliers),
