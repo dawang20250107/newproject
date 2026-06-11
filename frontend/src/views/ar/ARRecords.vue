@@ -796,7 +796,7 @@ function clearFilters() {
                   title="全选本页" @change="toggleSelectPage" />
               </th>
               <SortTh col="short_name" label="项目" />
-              <SortTh col="operation" label="年月" class="ctr" />
+              <SortTh col="operation" label="运作日期" class="ctr" />
 
               <!-- all -->
               <template v-if="activeTab === 'all'">
@@ -1383,7 +1383,7 @@ function clearFilters() {
                 </button>
               </div>
               <table class="health-table">
-                <thead><tr><th>项目编号</th><th>项目简称</th><th>年月</th><th class="r">预估上账</th><th class="r">累计回款</th><th class="r">现存未收</th><th class="r">重算未收</th></tr></thead>
+                <thead><tr><th>项目编号</th><th>项目简称</th><th>运作日期</th><th class="r">预估上账</th><th class="r">累计回款</th><th class="r">现存未收</th><th class="r">重算未收</th></tr></thead>
                 <tbody>
                   <tr v-for="r in healthData.stale" :key="r.id">
                     <td>{{ r.project_no }}</td><td>{{ r.short_name }}</td>
@@ -1403,7 +1403,7 @@ function clearFilters() {
               </div>
               <div class="health-hint">这类记录通常是旧模板把"未收金额"直接导入、或重复导入回款造成。请核对该明细的「预估上账金额」是否偏小、或删除多余的回款记录。点项目编号可在新标签查看明细。</div>
               <table class="health-table">
-                <thead><tr><th>项目编号</th><th>项目简称</th><th>年月</th><th class="r">预估上账</th><th class="r">账实差额</th><th class="r">累计回款</th><th class="r">超出</th></tr></thead>
+                <thead><tr><th>项目编号</th><th>项目简称</th><th>运作日期</th><th class="r">预估上账</th><th class="r">账实差额</th><th class="r">累计回款</th><th class="r">超出</th></tr></thead>
                 <tbody>
                   <tr v-for="r in healthData.negative" :key="r.id">
                     <td>{{ r.project_no }}</td><td>{{ r.short_name }}</td>

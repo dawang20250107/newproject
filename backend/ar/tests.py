@@ -2680,3 +2680,83 @@ class OperationDateTests(TestCase):
         self.assertIn('运作日期', headers)
         self.assertNotIn('运作年', headers)
         self.assertNotIn('运作月', headers)
+
+
+class CustomerProjectSyncTests(TestCase):
+    """项目台账删除 → 客户名单同步收敛（孤儿客户随之清理）。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900000800', name='CustSyncAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _mk_proj(self, short_name, cust, no):
+        return ARProject.objects.create(
+            customer_name=cust.name, short_name=short_name, delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no=no, customer=cust)
+
+    # 单删：客户唯一项目删除后，客户随之从名单移除
+    def test_delete_last_project_purges_customer(self):
+        cust = Customer.objects.create(name='孤儿客户A', delivery_dept=self.dept)
+        proj = self._mk_proj('同步项目A', cust, 'SYNC-0001')
+        resp = self.client.delete(f'/api/pk/ar/projects/{proj.id}', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data'].get('purged_customers'), 1)
+        self.assertFalse(Customer.objects.filter(pk=cust.pk).exists())
+
+    # 单删：客户名下还有其他项目时保留
+    def test_delete_one_of_many_projects_keeps_customer(self):
+        cust = Customer.objects.create(name='多项目客户B', delivery_dept=self.dept)
+        p1 = self._mk_proj('同步项目B1', cust, 'SYNC-0002')
+        self._mk_proj('同步项目B2', cust, 'SYNC-0003')
+        resp = self.client.delete(f'/api/pk/ar/projects/{p1.id}', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data'].get('purged_customers'), 0)
+        self.assertTrue(Customer.objects.filter(pk=cust.pk).exists())
+
+    # 批删：删尽的客户清理，未删尽的保留
+    def test_bulk_delete_purges_only_fully_orphaned(self):
+        c1 = Customer.objects.create(name='批删客户C1', delivery_dept=self.dept)
+        c2 = Customer.objects.create(name='批删客户C2', delivery_dept=self.dept)
+        p1 = self._mk_proj('批删项目C1', c1, 'SYNC-0004')
+        p2 = self._mk_proj('批删项目C2a', c2, 'SYNC-0005')
+        self._mk_proj('批删项目C2b', c2, 'SYNC-0006')   # c2 还剩一个项目
+        resp = self.client.post('/api/pk/ar/projects/bulk-delete',
+                                data=json.dumps({'ids': [p1.id, p2.id]}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['deleted'], 2)
+        self.assertEqual(d.get('purged_customers'), 1)
+        self.assertFalse(Customer.objects.filter(pk=c1.pk).exists())
+        self.assertTrue(Customer.objects.filter(pk=c2.pk).exists())
+
+    # 有合同关联的客户即使项目删尽也保留（避免断掉合同台账）
+    def test_customer_with_contract_link_survives(self):
+        cust = Customer.objects.create(name='有合同客户D', delivery_dept=self.dept)
+        contract = Contract.objects.create(name='合同D', delivery_dept=self.dept)
+        ContractParty.objects.create(contract=contract, customer=cust)
+        proj = self._mk_proj('同步项目D', cust, 'SYNC-0007')
+        resp = self.client.delete(f'/api/pk/ar/projects/{proj.id}', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data'].get('purged_customers'), 0)
+        self.assertTrue(Customer.objects.filter(pk=cust.pk).exists())
+
+    # 同步接口：历史遗留的孤儿客户一键清理
+    def test_sync_endpoint_purges_existing_orphans(self):
+        Customer.objects.create(name='历史孤儿E', delivery_dept=self.dept)
+        cust_live = Customer.objects.create(name='在用客户F', delivery_dept=self.dept)
+        self._mk_proj('在用项目F', cust_live, 'SYNC-0008')
+        resp = self.client.post('/api/pk/ar/customers/sync-from-projects', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data'].get('purged_orphans'), 1)
+        self.assertFalse(Customer.objects.filter(name='历史孤儿E').exists())
+        self.assertTrue(Customer.objects.filter(pk=cust_live.pk).exists())

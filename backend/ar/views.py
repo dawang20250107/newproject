@@ -700,10 +700,28 @@ def project_detail(request, pk):
         denied = _delete_denied(request)
         if denied:
             return denied
+        cust_id = proj.customer_id
         proj.delete()
-        return ok({'deleted': pk})
+        purged = _purge_orphan_customers([cust_id] if cust_id else [])
+        return ok({'deleted': pk, 'purged_customers': purged})
 
     return err('Method not allowed', 405)
+
+
+def _purge_orphan_customers(cust_ids):
+    """项目删除后的客户名单同步：客户名单由项目台账派生，项目删尽即随之移除。
+    仅清理「名下 0 项目且无合同关联」的客户，避免误删仍被合同引用的客户实体。"""
+    ids = [i for i in (cust_ids or []) if i]
+    if not ids:
+        return 0
+    qs = (Customer.objects.filter(pk__in=ids)
+          .annotate(_np=Count('projects', distinct=True),
+                    _nc=Count('contract_links', distinct=True))
+          .filter(_np=0, _nc=0))
+    n = qs.count()
+    if n:
+        qs.delete()
+    return n
 
 
 @csrf_exempt
@@ -748,8 +766,11 @@ def projects_bulk_delete(request):
     if count > 5000:
         return err('单次删除上限 5000 条，请先缩小筛选范围')
     del_ids = list(qs.values_list('id', flat=True))
+    cust_ids = list(qs.exclude(customer_id__isnull=True)
+                    .values_list('customer_id', flat=True).distinct())
     ARProject.objects.filter(pk__in=del_ids).delete()  # 级联删除应收明细/回款
-    return ok({'deleted': len(del_ids)})
+    purged = _purge_orphan_customers(cust_ids)  # 客户名单随项目台账同步收敛
+    return ok({'deleted': len(del_ids), 'purged_customers': purged})
 
 
 @csrf_exempt
@@ -6368,11 +6389,13 @@ def customers_sync_from_projects(request):
     cust_ids = set(scoped_proj.values_list('customer_id', flat=True))
     aligned = _reconcile_customer_levels(cust_ids)
 
-    # 清理无效客户：无交付部门 且 名下 0 项目（历史草稿/已删项目遗留的孤儿）
-    orphan_qs = Customer.objects.filter(delivery_dept='').annotate(
-        _n=Count('projects')).filter(_n=0)
+    # 清理孤儿客户：名下 0 项目且无合同关联（项目台账已删但名单残留）。
+    # 超管清理全局；事业部用户仅清理本部门的孤儿，避免误删他人数据。
+    orphan_qs = Customer.objects.annotate(
+        _np=Count('projects', distinct=True),
+        _nc=Count('contract_links', distinct=True)).filter(_np=0, _nc=0)
     if request.pk_role != 'super_admin':
-        orphan_qs = orphan_qs.none()   # 仅超管清理全局孤儿，避免误删他人数据
+        orphan_qs = orphan_qs.filter(delivery_dept__in=(request.pk_depts or []))
     purged = orphan_qs.count()
     orphan_qs.delete()
 
@@ -6382,7 +6405,7 @@ def customers_sync_from_projects(request):
     if aligned:
         parts.append(f'对齐 {aligned} 个客户的等级')
     if purged:
-        parts.append(f'清理 {purged} 个无部门无项目的孤儿客户')
+        parts.append(f'清理 {purged} 个名下无项目的孤儿客户')
     msg = ('同步完成：' + '；'.join(parts)) if parts else '客户名单与等级已是最新，无需处理'
     return ok({'created_customers': created, 'linked_projects': linked,
                'aligned_levels': aligned, 'purged_orphans': purged, 'message': msg})

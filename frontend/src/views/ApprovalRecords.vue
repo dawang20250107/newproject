@@ -134,8 +134,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         </select>
       </td>
       <td class="ops-cell">
-        <button class="btn btn-ghost btn-sm" :disabled="i.status!=='approved'" @click="openSchedule(i)">一键排款</button>
-        <button class="btn btn-ghost btn-sm" title="补录/修改二级部门与项目简称" @click="openMeta(i)">补录</button>
+        <div class="ops-btns">
+          <button class="btn btn-ghost btn-sm" :disabled="i.status!=='approved'" @click="openSchedule(i)">一键排款</button>
+          <button class="btn btn-ghost btn-sm" title="补录/修改二级部门与项目简称" @click="openMeta(i)">补录</button>
+        </div>
       </td></tr></tbody>
   </table>
 
@@ -192,22 +194,27 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
 .approval-table { width: 100%; table-layout: fixed; }
 /* 行高/内边距对齐全局表格（付款台账），保证两个页面观感一致 */
-.approval-table th, .approval-table td { padding: 11px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.approval-table th, .approval-table td { padding: 11px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .approval-table th:nth-child(1), .approval-table td:nth-child(1) { width: 7%; }
-.approval-table th:nth-child(2), .approval-table td:nth-child(2) { width: 9%; }
-.approval-table th:nth-child(3), .approval-table td:nth-child(3) { width: 8%; }
-.approval-table th:nth-child(4), .approval-table td:nth-child(4) { width: 10%; }
-.approval-table th:nth-child(5), .approval-table td:nth-child(5) { width: 13%; }
-.approval-table th:nth-child(6), .approval-table td:nth-child(6) { width: 13%; }
-.approval-table th:nth-child(7), .approval-table td:nth-child(7) { width: 8%; }
+.approval-table th:nth-child(2), .approval-table td:nth-child(2) { width: 8%; }
+.approval-table th:nth-child(3), .approval-table td:nth-child(3) { width: 7%; }
+.approval-table th:nth-child(4), .approval-table td:nth-child(4) { width: 9%; }
+.approval-table th:nth-child(5), .approval-table td:nth-child(5) { width: 12%; }
+.approval-table th:nth-child(6), .approval-table td:nth-child(6) { width: 12%; }
+.approval-table th:nth-child(7), .approval-table td:nth-child(7) { width: 7%; }
 .approval-table th:nth-child(8), .approval-table td:nth-child(8) { width: 10%; }
-.approval-table th:nth-child(9), .approval-table td:nth-child(9) { width: 11%; }
-.approval-table th:nth-child(10), .approval-table td:nth-child(10) { width: 11%; }
-.approval-table th:nth-child(9), .approval-table td:nth-child(9) { overflow: visible; text-overflow: clip; white-space: normal; }
+.approval-table th:nth-child(9), .approval-table td:nth-child(9) { width: 12%; }
+.approval-table th:nth-child(10), .approval-table td:nth-child(10) { width: 16%; }
+/* 状态/操作两列内容（下拉、按钮）不裁切；下拉以本列宽为限，不再压到操作列 */
+.approval-table th:nth-child(9), .approval-table td:nth-child(9),
+.approval-table th:nth-child(10), .approval-table td:nth-child(10) {
+  overflow: visible; text-overflow: clip; white-space: normal;
+}
 .meta-cell { color: var(--muted); font-size: 12.5px; }
-.ops-cell { display: flex; gap: 4px; flex-wrap: wrap; }
+.ops-btns { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.ops-btns .btn { padding: 4px 8px; font-size: 12px; white-space: nowrap; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .summary, .payee { max-width: 100%; }
-.approval-table select { width: 100%; min-width: 130px; height: 32px; font-size: 13px; padding: 0 24px 0 8px; background-position: right 6px center; }
+.approval-table select { width: 100%; min-width: 0; max-width: 100%; height: 32px; font-size: 12.5px; padding: 0 22px 0 6px; background-position: right 6px center; }
 </style>
