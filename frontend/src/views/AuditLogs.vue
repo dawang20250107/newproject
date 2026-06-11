@@ -63,7 +63,7 @@ const PATH_LABELS = [
   [/\/ar\/actions\/from-signal/, '信号转行动项'], [/\/ar\/actions\/\d+/, '更新行动项'], [/\/ar\/actions/, '新增行动项'],
   [/\/ar\/budget/, '收付款预算'], [/\/ar\/suppliers/, '供应商维护'], [/\/ar\/contracts/, '合同维护'],
   [/\/pk\/payments\/import/, '导入排款'], [/\/pk\/payments\/\d+/, '编辑/删除排款'], [/\/pk\/payments/, '新增排款'],
-  [/\/pk\/approvals/, '审批记录'], [/\/pk\/login/, '登录'], [/\/pk\/register/, '注册'],
+  [/\/pk\/approvals/, '审批管理'], [/\/pk\/login/, '登录'], [/\/pk\/register/, '注册'],
   [/\/pk\/users\/\d+\/approve/, '审批用户'], [/\/pk\/users\/\d+\/reject/, '驳回用户'],
   [/\/pk\/users\/\d+/, '编辑/删除用户'],
   [/\/pk\/permissions/, '权限配置'], [/\/pk\/audit-logs\/prune/, '清理审计日志'],

@@ -1,9 +1,11 @@
+import io
 import json
 from datetime import date
 from decimal import Decimal
 
 from django.test import Client, TestCase
 
+from ar.models import ARProject
 from paikuan.models import JobPermission, PaikuanUser, Payment
 from paikuan.views import DEPARTMENTS, default_job_config, make_token, _invalidate_perm_cache
 
@@ -529,3 +531,151 @@ class PaymentChainIntegrityTests(TestCase):
         else:
             # 单部门环境跳过跨部门场景
             pass
+
+
+class ProjectLinkFieldsTests(TestCase):
+    """二级部门/项目简称字段：排款与审批的创建/编辑/导入校验 + 审批转排款贯通。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = DEPARTMENTS[0]
+        self.dept2 = DEPARTMENTS[1] if len(DEPARTMENTS) > 1 else DEPARTMENTS[0]
+        admin = PaikuanUser(phone='13900000600', name='LinkAdmin', role='super_admin',
+                            job_title='finance_director', departments=DEPARTMENTS,
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.user = admin
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='客户甲', short_name='链路打通项目', delivery_dept=self.dept,
+            sub_dept='华东项目部', sales_contact='S', project_manager='M',
+            project_no='LNK-0001')
+        # is_shared 由模型自动推导（销售对接人≠负责人 → 共享）；这里同名保证非共享
+        self.other_proj = ARProject.objects.create(
+            customer_name='客户乙', short_name='他部门项目', delivery_dept=self.dept2,
+            sales_contact='同人', project_manager='同人', project_no='LNK-0002')
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _post(self, url, payload):
+        return self.client.post(url, data=json.dumps(payload),
+                                content_type='application/json', **self.auth())
+
+    def _payment_payload(self, **kw):
+        base = {'department': self.dept, 'project_desc': '事项', 'payee': '收款方',
+                'total_amount': '1000', 'planned_date': '2026-07-01'}
+        base.update(kw)
+        return base
+
+    # ── 排款：项目简称匹配台账则保存，并写入二级部门 ─────────────────────
+    def test_payment_create_with_valid_short_name(self):
+        resp = self._post('/api/pk/payments', self._payment_payload(
+            project_short_name='链路打通项目', secondary_dept='华东项目部'))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['project_short_name'], '链路打通项目')
+        self.assertEqual(d['secondary_dept'], '华东项目部')
+
+    # ── 排款：台账中不存在的项目简称被拒绝并给出指导 ─────────────────────
+    def test_payment_create_with_unknown_short_name_rejected(self):
+        resp = self._post('/api/pk/payments', self._payment_payload(
+            project_short_name='不存在的项目'))
+        self.assertEqual(resp.status_code, 400, resp.content)
+        msg = resp.json().get('error', '')
+        self.assertIn('项目台账', msg)
+        self.assertIn('不存在', msg)
+
+    # ── 排款：非共享项目不可跨部门引用 ───────────────────────────────────
+    def test_payment_cross_dept_short_name_rejected(self):
+        if self.dept == self.dept2:
+            return
+        resp = self._post('/api/pk/payments', self._payment_payload(
+            project_short_name='他部门项目'))
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn('不一致', resp.json().get('error', ''))
+
+    # ── 排款：共享业务项目可跨部门引用 ───────────────────────────────────
+    def test_payment_shared_project_cross_dept_ok(self):
+        if self.dept == self.dept2:
+            return
+        # is_shared 是推导值：销售对接人≠项目负责人即共享业务
+        self.other_proj.sales_contact = '销售A'
+        self.other_proj.project_manager = '经理B'
+        self.other_proj.save()
+        resp = self._post('/api/pk/payments', self._payment_payload(
+            project_short_name='他部门项目'))
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    # ── 审批：创建带两个新字段；未知简称拒绝 ─────────────────────────────
+    def test_approval_create_with_fields_and_validation(self):
+        ok_resp = self._post('/api/pk/approvals', {
+            'applicant': '张三', 'department': self.dept, 'amount': '800',
+            'summary': 'S', 'payee': 'P',
+            'secondary_dept': '华东项目部', 'project_short_name': '链路打通项目'})
+        self.assertEqual(ok_resp.status_code, 200, ok_resp.content)
+        self.assertEqual(ok_resp.json()['data']['project_short_name'], '链路打通项目')
+        bad = self._post('/api/pk/approvals', {
+            'applicant': '张三', 'department': self.dept, 'amount': '800',
+            'project_short_name': '不存在的项目'})
+        self.assertEqual(bad.status_code, 400, bad.content)
+        self.assertIn('项目台账', bad.json().get('error', ''))
+
+    # ── 审批：归档记录仍可单独补录两个元数据字段，混合编辑仍 409 ─────────
+    def test_archived_approval_meta_fields_editable(self):
+        from paikuan.models import ApprovalRecord
+        rec = ApprovalRecord.objects.create(
+            applicant='A', department=self.dept, approval_number='2' * 21,
+            summary='S', amount=Decimal('100'), payee='P',
+            status='rejected', archived=True)
+        meta = self.client.put(f'/api/pk/approvals/{rec.id}',
+                               data=json.dumps({'secondary_dept': '华北项目部',
+                                                'project_short_name': '链路打通项目'}),
+                               content_type='application/json', **self.auth())
+        self.assertEqual(meta.status_code, 200, meta.content)
+        rec.refresh_from_db()
+        self.assertEqual(rec.secondary_dept, '华北项目部')
+        self.assertEqual(rec.project_short_name, '链路打通项目')
+        mixed = self.client.put(f'/api/pk/approvals/{rec.id}',
+                                data=json.dumps({'secondary_dept': 'X', 'summary': '改摘要'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(mixed.status_code, 409, mixed.content)
+
+    # ── 审批导入：项目简称与台账不匹配的行被拒绝并提示 ───────────────────
+    def test_approval_import_unmatched_short_name_rejected(self):
+        import openpyxl as _xl
+        wb = _xl.Workbook()
+        ws = wb.active
+        ws.append(['申请人*', '所属事业部*', '二级部门', '项目简称', '审批编号*',
+                   '摘要', '申请金额*', '收款主体', '审批状态*'])
+        ws.append(['李四', self.dept, '', '台账没有的项目', '', '摘要', 500, '收款', '待审批'])
+        ws.append(['王五', self.dept, '华东项目部', '链路打通项目', '', '摘要', 600, '收款', '待审批'])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        buf.name = 'a.xlsx'
+        resp = self.client.post('/api/pk/approvals/import', {'file': buf}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['created'], 1)
+        self.assertEqual(d['skipped'], 1)
+        self.assertTrue(any('项目台账' in e for e in d['errors']), d['errors'])
+
+    # ── 审批转排款：两个字段随单带入排款台账 ─────────────────────────────
+    def test_schedule_copies_link_fields_to_payment(self):
+        from paikuan.models import ApprovalRecord
+        rec = ApprovalRecord.objects.create(
+            applicant='A', department=self.dept, approval_number='3' * 21,
+            summary='S', amount=Decimal('900'), payee='P', status='approved',
+            secondary_dept='华东项目部', project_short_name='链路打通项目')
+        resp = self._post(f'/api/pk/approvals/{rec.id}/schedule',
+                          {'planned_date': '2026-07-15', 'total_amount': '900'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        pay = resp.json()['data']['payment']
+        self.assertEqual(pay['secondary_dept'], '华东项目部')
+        self.assertEqual(pay['project_short_name'], '链路打通项目')

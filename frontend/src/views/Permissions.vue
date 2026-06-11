@@ -167,7 +167,7 @@ async function save() {
             <span class="dot"></span>可新增排款（含应收写入）
           </label>
           <label class="perm-chip" :class="{ on: current.config.ar_can_create }"
-                 title="勾选=可编辑应收（项目/客户/应收明细），但不放开付款台账写入；结算会计典型用法">
+                 title="勾选=可编辑应收（项目/客户/应收账款），但不放开付款台账写入；结算会计典型用法">
             <input type="checkbox" v-model="current.config.ar_can_create" />
             <span class="dot"></span>可编辑应收（不含付款）
           </label>

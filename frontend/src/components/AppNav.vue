@@ -136,7 +136,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
       </router-link>
       <router-link v-if="auth.canPage('approval_records')" to="/approvals" class="nav-item" :class="{ active: route.path === '/approvals' }" @click="onNavClick">
         <span class="nav-icon">🧾</span>
-        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">审批记录</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">审批管理</span></Transition>
         <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
       </router-link>
 
@@ -191,7 +191,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
             <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
           </svg>
         </span>
-        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">应收明细</span></Transition>
+        <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-label">应收账款</span></Transition>
         <Transition name="label-fade"><span v-if="!effectiveCollapsed" class="nav-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></span></Transition>
       </router-link>
 

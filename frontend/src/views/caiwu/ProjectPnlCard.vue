@@ -120,6 +120,17 @@ const monthlyOption = computed(() => {
         <BaseChart v-if="monthlyOption" :option="monthlyOption" height="220px" />
         <div v-else class="pnl-empty">暂无逐月盈利数据</div>
 
+        <!-- 付款侧：排款台账经「项目简称/项目编号」打通后的资金流出与净现金 -->
+        <div v-if="data.payment_side" class="pnl-block-title">付款侧（排款台账）<span class="tip">{{ data.payment_side.count }} 笔排款</span></div>
+        <div v-if="data.payment_side" class="pnl-payside">
+          <span><i>计划付款</i><b>{{ fmtWan(data.payment_side.planned) }}</b></span>
+          <span><i>已付</i><b style="color:#c62828">−{{ fmtWan(data.payment_side.paid) }}</b></span>
+          <span v-if="data.payment_side.prepaid_offset > 0"><i>预付冲抵</i><b>{{ fmtWan(data.payment_side.prepaid_offset) }}</b></span>
+          <span><i>待付</i><b>{{ fmtWan(data.payment_side.remaining) }}</b></span>
+          <span><i>项目净现金（回款−已付）</i>
+            <b :style="{ color: data.payment_side.net_cash >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtWan(data.payment_side.net_cash) }}</b></span>
+        </div>
+
         <div class="pnl-block-title">回款流水<span class="tip">{{ data.payments?.length || 0 }} 笔</span></div>
         <div v-if="data.payments?.length" class="pnl-flow">
           <div v-for="(p, i) in data.payments" :key="i" class="flow-item">
@@ -178,4 +189,9 @@ const monthlyOption = computed(() => {
 .flow-item .famt { color: #2e7d32; font-weight: 700; min-width: 72px; }
 .flow-item .fsrc { color: #8a7665; }
 .pill { display: inline-block; padding: 1px 8px; border: 1px solid; border-radius: 10px; font-size: 11px; white-space: nowrap; }
+.pnl-payside { display: flex; flex-wrap: wrap; gap: 14px 22px; padding: 10px 12px;
+  background: rgba(201,99,66,.05); border-radius: 10px; margin-bottom: 4px; }
+.pnl-payside span { display: flex; flex-direction: column; gap: 1px; }
+.pnl-payside i { font-style: normal; font-size: 11px; color: #8a7665; }
+.pnl-payside b { font-size: 14px; font-variant-numeric: tabular-nums; color: #4a3728; }
 </style>

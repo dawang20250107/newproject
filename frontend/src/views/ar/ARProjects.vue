@@ -270,7 +270,7 @@ async function save() {
 }
 
 async function remove(item) {
-  if (!confirm(`确定删除项目「${item.short_name || item.customer_name}」？\n⚠ 该项目下的应收明细和回款记录将一并永久删除，不可恢复。`)) return
+  if (!confirm(`确定删除项目「${item.short_name || item.customer_name}」？\n⚠ 该项目下的应收账款明细和回款记录将一并永久删除，不可恢复。`)) return
   try { await ar.deleteProject(item.id); reloadAll() }
   catch (e) { alert(e?.msg || '删除失败') }
 }
@@ -763,7 +763,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             <button class="modal-close" @click="showDelConfirm = false">✕</button>
           </div>
           <div class="modal-body">
-            <p class="del-warn">⚠ 项目下的应收明细、回款将一并删除，<strong>不可恢复</strong>。</p>
+            <p class="del-warn">⚠ 项目下的应收账款明细、回款将一并删除，<strong>不可恢复</strong>。</p>
 
             <!-- 待删清单（核对）。整个筛选集模式仅显示计数 -->
             <div v-if="selectAllMatching" class="del-allnote">

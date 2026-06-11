@@ -359,6 +359,9 @@ class ARRecord(models.Model):
                                 related_name='ar_records', db_index=True)
     # Denormalised for direct index on delivery_dept without JOIN
     delivery_dept = models.CharField('交付部门', max_length=50, db_index=True, blank=True, default='')
+    operation_date = models.DateField('运作日期', db_index=True, null=True, blank=True,
+                                      help_text='应收发生日期；历史年/月数据迁移为当月1日')
+    # 派生列：始终与 operation_date 同步（save 时维护），供按年/月的聚合分析走索引
     operation_year = models.IntegerField('运作年', db_index=True)
     operation_month = models.IntegerField('运作月', db_index=True)
     estimated_amount = models.DecimalField('预估上账金额', max_digits=15, decimal_places=2, default=0)
@@ -383,7 +386,7 @@ class ARRecord(models.Model):
 
     class Meta:
         db_table = 'ar_records'
-        ordering = ['-operation_year', '-operation_month']
+        ordering = ['-operation_date']
         indexes = [
             models.Index(fields=['delivery_dept', 'due_date']),
             models.Index(fields=['delivery_dept', 'operation_year', 'operation_month']),
@@ -446,6 +449,13 @@ class ARRecord(models.Model):
             )
 
     def save(self, *args, **kwargs):
+        # operation_date 为正源；年/月是派生列（兼容存量按年/月的聚合与筛选）。
+        # 仅给年/月的旧调用方（含存量测试/脚本）反向推导为当月1日。
+        if self.operation_date:
+            self.operation_year = self.operation_date.year
+            self.operation_month = self.operation_date.month
+        elif self.operation_year and self.operation_month:
+            self.operation_date = datetime.date(self.operation_year, self.operation_month, 1)
         self.delivery_dept = self.project.delivery_dept
         if not self.due_date:
             self.due_date = self._compute_due_date()
@@ -577,6 +587,7 @@ class ARRecord(models.Model):
             'total_days': self.project.total_days,
             'invoice_mode': self.project.invoice_mode,
             'tax_rate': str(self.project.tax_rate),
+            'operation_date': str(self.operation_date) if self.operation_date else None,
             'operation_year': self.operation_year,
             'operation_month': self.operation_month,
             'estimated_amount': str(self.estimated_amount),

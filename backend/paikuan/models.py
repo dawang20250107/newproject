@@ -78,6 +78,10 @@ class Payment(models.Model):
     # 关联项目台账编号（可选，自由填写不做强 FK）：用于排款时弹出该项目的预付余额，
     # 并按项目汇总已排/待付。历史存量行为空字符串。
     project_no = models.CharField('项目编号', max_length=20, blank=True, default='', db_index=True)
+    # 二级部门/项目简称（选填，历史数据为空）。项目简称须与项目台账 short_name 匹配
+    # （创建/编辑/导入时校验），作为排款与应收/现金流/分析/资金池打通的项目维度桥梁。
+    secondary_dept = models.CharField('二级部门', max_length=100, blank=True, default='', db_index=True)
+    project_short_name = models.CharField('项目简称', max_length=100, blank=True, default='', db_index=True)
     project_desc = models.TextField('付款事项描述')
     payee = models.CharField('收款方', max_length=200)
     total_amount = models.DecimalField('计划总金额', max_digits=15, decimal_places=2)
@@ -157,6 +161,8 @@ class Payment(models.Model):
             'applicant': self.applicant,
             'approval_number': self.approval_number,
             'project_no': self.project_no,
+            'secondary_dept': self.secondary_dept,
+            'project_short_name': self.project_short_name,
             'project_desc': self.project_desc,
             'payee': self.payee,
             'total_amount': str(self.total_amount),
@@ -212,6 +218,10 @@ class ApprovalRecord(models.Model):
     ]
     applicant = models.CharField('申请人', max_length=100, db_index=True)
     department = models.CharField('所属事业部', max_length=100, db_index=True)
+    # 二级部门/项目简称（选填，历史数据为空，可在操作栏补录）。
+    # 项目简称须与项目台账 short_name 匹配（创建/编辑/导入时校验）。
+    secondary_dept = models.CharField('二级部门', max_length=100, blank=True, default='', db_index=True)
+    project_short_name = models.CharField('项目简称', max_length=100, blank=True, default='', db_index=True)
     approval_number = models.CharField('审批编号', max_length=21, db_index=True)
     summary = models.CharField('摘要', max_length=500)
     amount = models.DecimalField('申请金额', max_digits=15, decimal_places=2)
@@ -231,6 +241,8 @@ class ApprovalRecord(models.Model):
             'id': self.id,
             'applicant': self.applicant,
             'department': self.department,
+            'secondary_dept': self.secondary_dept,
+            'project_short_name': self.project_short_name,
             'approval_number': self.approval_number,
             'summary': self.summary,
             'amount': str(self.amount),

@@ -5,6 +5,7 @@ import { useAuthStore } from '../stores/auth.js'
 import { todayCST } from '../constants.js'
 import { downloadBlob } from '../utils/download.js'
 import EmptyState from '../components/EmptyState.vue'
+import ProjectShortNamePicker from '../components/ProjectShortNamePicker.vue'
 
 const auth = useAuthStore()
 const items = ref([])
@@ -19,8 +20,30 @@ const saving = ref(false)
 const showCreate = ref(false)
 const showSchedule = ref(false)
 const current = ref(null)
-const form = reactive({ applicant:'', department:'', approval_number:'', summary:'', amount:'', payee:'', status:'pending' })
+const form = reactive({ applicant:'', department:'', secondary_dept:'', project_short_name:'', approval_number:'', summary:'', amount:'', payee:'', status:'pending' })
 const scheduleForm = reactive({ planned_date:'', total_amount:'' })
+// 操作栏补录：二级部门/项目简称（历史数据默认空白，归档记录也可补录这两个字段）
+const showMeta = ref(false)
+const metaTarget = ref(null)
+const metaForm = reactive({ secondary_dept:'', project_short_name:'' })
+const metaSaving = ref(false)
+function openMeta(it){
+  metaTarget.value = it
+  Object.assign(metaForm, { secondary_dept: it.secondary_dept || '', project_short_name: it.project_short_name || '' })
+  showMeta.value = true
+}
+async function saveMeta(){
+  metaSaving.value = true
+  try{
+    await api.put(`/approvals/${metaTarget.value.id}`, { ...metaForm })
+    showMeta.value = false; load()
+  } catch(e){ alert(e?.msg || e?.error || '保存失败') }
+  finally{ metaSaving.value = false }
+}
+// 从台账选中项目时，二级部门为空则自动带出项目的二级部门
+function onProjPicked(p, target){
+  if (!target.secondary_dept && p.sub_dept) target.secondary_dept = p.sub_dept
+}
 const filters = reactive({ applicant:'', approval_number:'', dept:'', page:1, size:50 })
 const statusUpdating = ref({})
 const pendingAmountTotal = computed(() => parseFloat(totalAmount.value || 0))
@@ -35,8 +58,8 @@ async function load(){ loading.value=true; try{ const r=await api.get('/approval
 function search(){ filters.page=1; load() }
 function setPage(p){ filters.page=p; load() }
 async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
-function openCreate(){ Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', approval_number:'', summary:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
-async function create(){ saving.value=true; try{ await api.post('/approvals', form); showCreate.value=false; load() } catch(e){ alert(e?.error||'保存失败') } finally{ saving.value=false } }
+function openCreate(){ Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', summary:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
+async function create(){ saving.value=true; try{ await api.post('/approvals', form); showCreate.value=false; load() } catch(e){ alert(e?.msg||e?.error||'保存失败') } finally{ saving.value=false } }
 async function updateStatus(it, status){
   const prev = it.status
   it.status = status
@@ -52,7 +75,7 @@ async function updateStatus(it, status){
 }
 function openSchedule(it){ current.value=it; Object.assign(scheduleForm,{ planned_date: todayCST(), total_amount:it.amount }); showSchedule.value=true }
 async function doSchedule(){ try{ await api.post(`/approvals/${current.value.id}/schedule`, scheduleForm); showSchedule.value=false; load(); alert('排款成功并已归档') } catch(e){ alert(e?.error||'排款失败') } }
-async function downloadTemplate(){ const b=await api.get('/approvals/template',{responseType:'blob'}); dl(b,'审批记录导入模板.xlsx') }
+async function downloadTemplate(){ const b=await api.get('/approvals/template',{responseType:'blob'}); dl(b,'审批管理导入模板.xlsx') }
 const dl = downloadBlob
 function triggerImport(){ fileRef.value.click() }
 async function onImport(e){
@@ -71,7 +94,7 @@ async function onImport(e){
   }catch(err){ alert(err?.error||'导入失败，请检查文件格式或表头') }
   finally{ importing.value=false; e.target.value='' }
 }
-async function doExport(){ exporting.value=true; try{ const b=await api.get('/approvals/export',{params:filters,responseType:'blob'}); dl(b,'审批记录.xlsx') } finally{ exporting.value=false } }
+async function doExport(){ exporting.value=true; try{ const b=await api.get('/approvals/export',{params:filters,responseType:'blob'}); dl(b,'审批管理.xlsx') } finally{ exporting.value=false } }
 
 const onScopeChange = () => {
   if (filters.dept && !auth.effectiveDepts.includes(filters.dept)) filters.dept = ''
@@ -83,7 +106,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 </script>
 
 <template><div>
-  <div class="topbar"><h1>审批记录</h1><div style="display:flex;gap:8px">
+  <div class="topbar"><h1>审批管理</h1><div style="display:flex;gap:8px">
     <button class="btn btn-ghost btn-sm" @click="downloadTemplate">模板</button>
     <button class="btn btn-ghost btn-sm" @click="triggerImport">{{ importing?'导入中…':'导入' }}</button>
     <button class="btn btn-ghost btn-sm" @click="doExport">{{ exporting?'导出中…':'导出' }}</button>
@@ -100,14 +123,20 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   </div>
   <EmptyState v-if="loading" loading />
   <EmptyState v-else-if="!items.length" empty text="暂无审批记录" />
-  <table v-else class="approval-table"><thead><tr><th>申请人</th><th>所属事业部</th><th>审批编号</th><th>摘要</th><th>申请金额</th><th>收款主体</th><th>审批状态</th><th>操作</th></tr></thead>
-    <tbody><tr v-for="i in items" :key="i.id"><td>{{i.applicant}}</td><td>{{i.department}}</td><td class="mono">{{i.approval_number}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}</td><td class="payee">{{i.payee}}</td>
+  <table v-else class="approval-table"><thead><tr><th>申请人</th><th>所属事业部</th><th>二级部门</th><th>项目简称</th><th>审批编号</th><th>摘要</th><th>申请金额</th><th>收款主体</th><th>审批状态</th><th>操作</th></tr></thead>
+    <tbody><tr v-for="i in items" :key="i.id"><td>{{i.applicant}}</td><td>{{i.department}}</td>
+      <td class="meta-cell">{{ i.secondary_dept || '—' }}</td>
+      <td class="meta-cell" :title="i.project_short_name">{{ i.project_short_name || '—' }}</td>
+      <td class="mono">{{i.approval_number}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}</td><td class="payee">{{i.payee}}</td>
       <td>
         <select :value="i.status" :disabled="statusUpdating[i.id]" @change="updateStatus(i, $event.target.value)">
           <option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option>
         </select>
       </td>
-      <td><button class="btn btn-ghost btn-sm" :disabled="i.status!=='approved'" @click="openSchedule(i)">一键排款</button></td></tr></tbody>
+      <td class="ops-cell">
+        <button class="btn btn-ghost btn-sm" :disabled="i.status!=='approved'" @click="openSchedule(i)">一键排款</button>
+        <button class="btn btn-ghost btn-sm" title="补录/修改二级部门与项目简称" @click="openMeta(i)">补录</button>
+      </td></tr></tbody>
   </table>
 
   <!-- 吸底合计 + 翻页：Teleport 到 body 以逃脱 .card transform 产生的 fixed 包含块 -->
@@ -129,6 +158,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <Teleport to="body"><div v-if="showCreate" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>新增审批记录</h3></div><div class="modal-body"><div class="form-grid">
     <label class="form-field"><span>申请人*</span><input v-model="form.applicant"/></label>
     <label class="form-field"><span>所属事业部*</span><select v-model="form.department"><option v-for="d in deptChoices" :key="d" :value="d">{{d}}</option></select></label>
+    <label class="form-field"><span>二级部门</span><input v-model="form.secondary_dept" placeholder="选填，如：华东项目部"/></label>
+    <label class="form-field"><span>项目简称</span><ProjectShortNamePicker v-model="form.project_short_name" @picked="p => onProjPicked(p, form)"/></label>
     <label class="form-field"><span>审批编号</span><input v-model="form.approval_number" placeholder="21位数字；留空自动填21个0占位"/></label>
     <label class="form-field"><span>摘要</span><input v-model="form.summary"/></label>
     <label class="form-field"><span>申请金额*</span><input v-model="form.amount" type="number" step="0.01"/></label>
@@ -141,6 +172,17 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <label class="form-field"><span>计划金额*</span><input v-model="scheduleForm.total_amount" type="number" step="0.01"/></label>
   </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showSchedule=false">取消</button><button class="btn btn-primary" @click="doSchedule">保存并排款</button></div></div></div></Teleport>
 
+  <Teleport to="body"><div v-if="showMeta" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>补录：二级部门 / 项目简称</h3></div><div class="modal-body">
+    <p style="font-size:12px;color:var(--muted);margin:0 0 12px">
+      {{ metaTarget?.applicant }} · {{ metaTarget?.department }} · ¥{{ metaTarget?.amount }}（{{ metaTarget?.summary || '无摘要' }}）<br/>
+      项目简称须与项目台账匹配；填写后该审批/后续排款即可按项目维度打通应收、现金流与分析。
+    </p>
+    <div class="form-grid">
+      <label class="form-field"><span>二级部门</span><input v-model="metaForm.secondary_dept" placeholder="选填，如：华东项目部"/></label>
+      <label class="form-field"><span>项目简称</span><ProjectShortNamePicker v-model="metaForm.project_short_name" @picked="p => onProjPicked(p, metaForm)"/></label>
+    </div>
+  </div><div class="modal-footer"><button class="btn btn-ghost" @click="showMeta=false">取消</button><button class="btn btn-primary" :disabled="metaSaving" @click="saveMeta">保存</button></div></div></div></Teleport>
+
 </div></template>
 
 <style scoped>
@@ -151,15 +193,19 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-table { width: 100%; table-layout: fixed; }
 /* 行高/内边距对齐全局表格（付款台账），保证两个页面观感一致 */
 .approval-table th, .approval-table td { padding: 11px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.approval-table th:nth-child(1), .approval-table td:nth-child(1) { width: 8%; }
-.approval-table th:nth-child(2), .approval-table td:nth-child(2) { width: 11%; }
-.approval-table th:nth-child(3), .approval-table td:nth-child(3) { width: 16%; }
-.approval-table th:nth-child(4), .approval-table td:nth-child(4) { width: 17%; }
-.approval-table th:nth-child(5), .approval-table td:nth-child(5) { width: 10%; }
-.approval-table th:nth-child(6), .approval-table td:nth-child(6) { width: 14%; }
-.approval-table th:nth-child(7), .approval-table td:nth-child(7) { width: 14%; }
+.approval-table th:nth-child(1), .approval-table td:nth-child(1) { width: 7%; }
+.approval-table th:nth-child(2), .approval-table td:nth-child(2) { width: 9%; }
+.approval-table th:nth-child(3), .approval-table td:nth-child(3) { width: 8%; }
+.approval-table th:nth-child(4), .approval-table td:nth-child(4) { width: 10%; }
+.approval-table th:nth-child(5), .approval-table td:nth-child(5) { width: 13%; }
+.approval-table th:nth-child(6), .approval-table td:nth-child(6) { width: 13%; }
+.approval-table th:nth-child(7), .approval-table td:nth-child(7) { width: 8%; }
 .approval-table th:nth-child(8), .approval-table td:nth-child(8) { width: 10%; }
-.approval-table th:nth-child(7), .approval-table td:nth-child(7) { overflow: visible; text-overflow: clip; white-space: normal; }
+.approval-table th:nth-child(9), .approval-table td:nth-child(9) { width: 11%; }
+.approval-table th:nth-child(10), .approval-table td:nth-child(10) { width: 11%; }
+.approval-table th:nth-child(9), .approval-table td:nth-child(9) { overflow: visible; text-overflow: clip; white-space: normal; }
+.meta-cell { color: var(--muted); font-size: 12.5px; }
+.ops-cell { display: flex; gap: 4px; flex-wrap: wrap; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .summary, .payee { max-width: 100%; }

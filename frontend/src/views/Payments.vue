@@ -14,6 +14,45 @@ const auth = useAuthStore()
 // Column visibility from field-level view permissions.
 const showPaid = computed(() => auth.canView('installments'))
 const showRemaining = computed(() => auth.canView('total_amount') && showPaid.value)
+
+// ── 列显示设置（自定义表格呈现，localStorage 持久化）─────────────────────────
+// 权限隐藏的列不出现在设置面板里；用户勾掉的列存 pk_pay_hidden_cols。
+const COL_DEFS = [
+  { key: 'department',         label: '部门',     perm: () => auth.canView('department') },
+  { key: 'secondary_dept',     label: '二级部门', perm: () => auth.canView('secondary_dept') },
+  { key: 'project_short_name', label: '项目简称', perm: () => auth.canView('project_short_name') },
+  { key: 'applicant',          label: '申请人',   perm: () => auth.canView('applicant') },
+  { key: 'approval_number',    label: '审批单号', perm: () => auth.canView('approval_number') },
+  { key: 'project_desc',       label: '付款事项', perm: () => auth.canView('project_desc') },
+  { key: 'payee',              label: '收款方',   perm: () => auth.canView('payee') },
+  { key: 'planned_date',       label: '计划日期', perm: () => auth.canView('planned_date') },
+  { key: 'total_amount',       label: '计划额',   perm: () => auth.canView('total_amount') },
+  { key: 'paid',               label: '已付',     perm: () => showPaid.value },
+  { key: 'remaining',          label: '剩余',     perm: () => showRemaining.value },
+  { key: 'status',             label: '状态',     perm: () => true },
+  { key: 'overdue',            label: '逾期',     perm: () => true },
+  { key: 'plan_adjustment',    label: '计划调整', perm: () => auth.canView('plan_adjustment') },
+]
+const hiddenCols = ref(new Set())
+try { hiddenCols.value = new Set(JSON.parse(localStorage.getItem('pk_pay_hidden_cols') || '[]')) } catch {}
+// 新增列默认隐藏过渡：历史用户首次见到二级部门/项目简称列即默认显示（不在隐藏集合则显示）
+const showColSettings = ref(false)
+function colVisible(key) {
+  const def = COL_DEFS.find(c => c.key === key)
+  if (!def || !def.perm()) return false
+  return !hiddenCols.value.has(key)
+}
+function toggleCol(key) {
+  const next = new Set(hiddenCols.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  hiddenCols.value = next
+  localStorage.setItem('pk_pay_hidden_cols', JSON.stringify([...next]))
+}
+function resetCols() {
+  hiddenCols.value = new Set()
+  localStorage.removeItem('pk_pay_hidden_cols')
+}
 function dash(v) { return v === null || v === undefined ? '—' : fmt(v) }
 const items = ref([])
 const total = ref(0)
@@ -268,6 +307,16 @@ function setPage(p) { filters.page = p; load() }
           <span v-if="exportingXlsx" class="btn-spin"></span>
           <span v-else style="margin-right:4px">📤</span>{{ exportingXlsx ? '导出中…' : '导出' }}
         </button>
+        <div class="col-settings-wrap">
+          <button class="btn btn-ghost btn-sm" title="自定义表格显示哪些列"
+                  @click="showColSettings = !showColSettings">⚙ 列设置</button>
+          <div v-if="showColSettings" class="col-settings-pop" @mouseleave="showColSettings = false">
+            <div class="csp-title">显示列<button class="csp-reset" @click="resetCols">恢复默认</button></div>
+            <label v-for="c in COL_DEFS.filter(c => c.perm())" :key="c.key" class="csp-item">
+              <input type="checkbox" :checked="!hiddenCols.has(c.key)" @change="toggleCol(c.key)" />{{ c.label }}
+            </label>
+          </div>
+        </div>
         <button v-if="auth.canCreate" class="btn btn-primary" @click="openAdd">+ 新增排款</button>
       </div>
     </div>
@@ -338,48 +387,52 @@ function setPage(p) { filters.page = p; load() }
         <table>
           <thead>
             <tr>
-              <th v-if="auth.canView('department')" style="width:5%">部门</th>
-              <th v-if="auth.canView('applicant')" style="width:4%">申请人</th>
-              <th v-if="auth.canView('approval_number')" style="width:8%">审批单号</th>
-              <th v-if="auth.canView('project_desc')">付款事项</th>
-              <th v-if="auth.canView('payee')" style="width:8%">收款方</th>
-              <th v-if="auth.canView('planned_date')" style="width:6%">计划日期</th>
-              <th v-if="auth.canView('total_amount')" style="width:8%">计划额</th>
-              <th v-if="showPaid" style="width:7%">已付</th>
-              <th v-if="showRemaining" style="width:6%">剩余</th>
-              <th style="width:9%">状态</th>
-              <th style="width:6%">逾期</th>
-              <th v-if="auth.canView('plan_adjustment')" style="width:6%">计划调整</th>
+              <th v-if="colVisible('department')" style="width:5%">部门</th>
+              <th v-if="colVisible('secondary_dept')" style="width:5%">二级部门</th>
+              <th v-if="colVisible('project_short_name')" style="width:6%">项目简称</th>
+              <th v-if="colVisible('applicant')" style="width:4%">申请人</th>
+              <th v-if="colVisible('approval_number')" style="width:8%">审批单号</th>
+              <th v-if="colVisible('project_desc')">付款事项</th>
+              <th v-if="colVisible('payee')" style="width:8%">收款方</th>
+              <th v-if="colVisible('planned_date')" style="width:6%">计划日期</th>
+              <th v-if="colVisible('total_amount')" style="width:8%">计划额</th>
+              <th v-if="colVisible('paid')" style="width:7%">已付</th>
+              <th v-if="colVisible('remaining')" style="width:6%">剩余</th>
+              <th v-if="colVisible('status')" style="width:9%">状态</th>
+              <th v-if="colVisible('overdue')" style="width:6%">逾期</th>
+              <th v-if="colVisible('plan_adjustment')" style="width:6%">计划调整</th>
               <th v-if="auth.canWrite || auth.canDelete" style="width:12%">操作</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="p in items" :key="p.id"
               :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today }">
-              <td v-if="auth.canView('department')">{{ p.department }}</td>
-              <td v-if="auth.canView('applicant')">{{ p.applicant || '—' }}</td>
-              <td v-if="auth.canView('approval_number')">{{ p.approval_number || '—' }}</td>
-              <td v-if="auth.canView('project_desc')" class="cell-clip cell-desc"
+              <td v-if="colVisible('department')">{{ p.department }}</td>
+              <td v-if="colVisible('secondary_dept')" class="cell-clip">{{ p.secondary_dept || '—' }}</td>
+              <td v-if="colVisible('project_short_name')" class="cell-clip" :title="p.project_short_name">{{ p.project_short_name || '—' }}</td>
+              <td v-if="colVisible('applicant')">{{ p.applicant || '—' }}</td>
+              <td v-if="colVisible('approval_number')">{{ p.approval_number || '—' }}</td>
+              <td v-if="colVisible('project_desc')" class="cell-clip cell-desc"
                 @mouseenter="showTip($event, p.project_desc)" @mousemove="moveTip" @mouseleave="hideTip">
                 <span v-if="p.project_no" class="proj-no">{{ p.project_no }}</span>{{ p.project_desc }}
               </td>
-              <td v-if="auth.canView('payee')" class="cell-clip cell-payee"
+              <td v-if="colVisible('payee')" class="cell-clip cell-payee"
                 @mouseenter="showTip($event, p.payee)" @mousemove="moveTip" @mouseleave="hideTip">
                 {{ p.payee }}
               </td>
-              <td v-if="auth.canView('planned_date')">{{ p.planned_date }}</td>
-              <td v-if="auth.canView('total_amount')" class="amt">{{ dash(p.total_amount) }}</td>
-              <td v-if="showPaid" class="amt amt-green">{{ dash(p.total_paid) }}</td>
-              <td v-if="showRemaining" class="amt" :class="parseFloat(p.remaining) > 0 ? 'amt-red' : ''">{{ dash(p.remaining) }}</td>
-              <td><StatusBadge :status="p.status" /></td>
-              <td>
+              <td v-if="colVisible('planned_date')">{{ p.planned_date }}</td>
+              <td v-if="colVisible('total_amount')" class="amt">{{ dash(p.total_amount) }}</td>
+              <td v-if="colVisible('paid')" class="amt amt-green">{{ dash(p.total_paid) }}</td>
+              <td v-if="colVisible('remaining')" class="amt" :class="parseFloat(p.remaining) > 0 ? 'amt-red' : ''">{{ dash(p.remaining) }}</td>
+              <td v-if="colVisible('status')"><StatusBadge :status="p.status" /></td>
+              <td v-if="colVisible('overdue')">
                 <span v-if="p.status === 'settled'" class="overdue-tag overdue-ok">—</span>
                 <span v-else-if="p.planned_date && p.planned_date < today"
                       class="overdue-tag overdue-bad">逾期 {{ daysOverdue(p.planned_date) }} 天</span>
                 <span v-else-if="p.planned_date === today" class="overdue-tag overdue-today">今日到期</span>
                 <span v-else class="overdue-tag overdue-ok">未到期</span>
               </td>
-              <td v-if="auth.canView('plan_adjustment')" class="amt">
+              <td v-if="colVisible('plan_adjustment')" class="amt">
                 <span v-if="p.plan_adjustment != null" style="color:#1565c0;font-weight:600">
                   调整→{{ fmt(p.plan_adjustment) }}
                 </span>
@@ -672,4 +725,20 @@ function setPage(p) { filters.page = p; load() }
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .logs-arrow { color: var(--muted); }
 .logs-summary { font-size: 13px; color: var(--text); }
+
+/* ── 列设置弹层 ───────────────────────────────────────────────────────────── */
+.col-settings-wrap { position: relative; }
+.col-settings-pop {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 120;
+  width: 200px; padding: 10px 12px;
+  background: rgba(255,252,248,0.97); backdrop-filter: blur(12px);
+  border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(100,60,30,0.2);
+}
+.csp-title { display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; }
+.csp-reset { border: none; background: none; font-size: 11px; color: var(--primary); cursor: pointer; }
+.csp-item { display: flex; align-items: center; gap: 7px; font-size: 13px;
+  padding: 3px 0; cursor: pointer; color: var(--text); }
+.csp-item input { width: auto; }
 </style>

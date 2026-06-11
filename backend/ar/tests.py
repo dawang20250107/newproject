@@ -2583,3 +2583,100 @@ class ChainIntegrityTests(TestCase):
                     if isinstance(cell.value, str):
                         self.assertFalse(cell.value.startswith('='),
                                          f'未转义公式单元格: {cell.value!r}')
+
+
+class OperationDateTests(TestCase):
+    """运作年/月 → 运作日期（operation_date）全链路：创建、派生、导入、导出。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900000700', name='OpDateAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='客户丙', short_name='日期化项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='OPD-0001')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _post(self, payload):
+        return self.client.post('/api/pk/ar/records', data=json.dumps(payload),
+                                content_type='application/json', **self.auth())
+
+    # ── API 创建：传 operation_date，年/月自动派生 ────────────────────────
+    def test_create_with_operation_date(self):
+        resp = self._post({'project_id': self.proj.id, 'operation_date': '2026-05-18',
+                           'estimated_amount': '1000'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['operation_date'], '2026-05-18')
+        self.assertEqual(d['operation_year'], 2026)
+        self.assertEqual(d['operation_month'], 5)
+
+    # ── API 创建：旧调用方只传年/月 → 默认当月1日 ─────────────────────────
+    def test_create_with_legacy_year_month_defaults_to_first_day(self):
+        resp = self._post({'project_id': self.proj.id, 'operation_year': 2026,
+                           'operation_month': 5, 'estimated_amount': '1000'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data']['operation_date'], '2026-05-01')
+
+    # ── 模型层：仅给年/月直接建模（≈迁移回填语义）→ 派生当月1日 ──────────
+    def test_model_save_derives_date_from_year_month(self):
+        rec = ARRecord.objects.create(project=self.proj, operation_year=2025,
+                                      operation_month=11, estimated_amount=Decimal('1'))
+        self.assertEqual(str(rec.operation_date), '2025-11-01')
+
+    # ── 导入：新模板「运作日期」列；只填到月按当月1日；坏日期整表拒绝 ─────
+    def test_import_with_operation_date_column(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['项目简称*', '运作日期*', '预估上账金额'])
+        ws.append(['日期化项目', '2026-05-18', 800])
+        ws.append(['日期化项目', '2026-06', 900])     # 只填到月 → 06-01
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0); buf.name = 'r.xlsx'
+        resp = self.client.post('/api/pk/ar/records/import', {'file': buf}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data'].get('created'), 2, resp.json())
+        dates = sorted(str(r.operation_date) for r in ARRecord.objects.all())
+        self.assertEqual(dates, ['2026-05-18', '2026-06-01'])
+
+    def test_import_bad_date_rejected_with_guidance(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['项目简称*', '运作日期*', '预估上账金额'])
+        ws.append(['日期化项目', '不是日期', 800])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0); buf.name = 'r.xlsx'
+        resp = self.client.post('/api/pk/ar/records/import', {'file': buf}, **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        d = resp.json()['data']
+        self.assertTrue(d.get('rejected'), d)
+        self.assertTrue(any('运作日期' in e for e in d['errors']), d['errors'])
+
+    # ── 导入：旧模板「运作年/运作月」两列仍兼容 ──────────────────────────
+    def test_import_legacy_year_month_columns_still_work(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['项目简称*', '运作年*', '运作月*', '预估上账金额'])
+        ws.append(['日期化项目', 2026, 7, 700])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0); buf.name = 'r.xlsx'
+        resp = self.client.post('/api/pk/ar/records/import', {'file': buf}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data'].get('created'), 1, resp.json())
+        self.assertEqual(str(ARRecord.objects.first().operation_date), '2026-07-01')
+
+    # ── 导出：包含「运作日期」单列，不再有年/月两列 ──────────────────────
+    def test_export_has_operation_date_column(self):
+        ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 18),
+                                estimated_amount=Decimal('1'))
+        resp = self.client.get('/api/pk/ar/records/export', **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        headers = [c.value for c in wb.active[1]]
+        self.assertIn('运作日期', headers)
+        self.assertNotIn('运作年', headers)
+        self.assertNotIn('运作月', headers)

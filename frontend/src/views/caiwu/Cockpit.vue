@@ -1017,7 +1017,7 @@ onMounted(load)
                     <span class="cfa-drill-lbl">下钻 →</span>
                     <button class="cfa-drill" @click="drillTo('/caiwu/report')">报表</button>
                     <button class="cfa-drill" @click="drillTo('/caiwu/project-margin')">项目毛利</button>
-                    <button class="cfa-drill" @click="drillTo('/ar/records')">应收明细</button>
+                    <button class="cfa-drill" @click="drillTo('/ar/records')">应收账款</button>
                   </div>
                 </div>
               </div>

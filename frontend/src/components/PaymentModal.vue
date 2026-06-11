@@ -4,6 +4,7 @@ import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { DEPARTMENTS as DEPT_CONST } from '../constants.js'
 import { fmtMoney } from '../utils/format.js'
+import ProjectShortNamePicker from './ProjectShortNamePicker.vue'
 
 const props = defineProps({
   payment: { type: Object, default: null },
@@ -32,6 +33,8 @@ const installments = ref([])
 
 const FIELD_COLS = {
   department: ['department'],
+  secondary_dept: ['secondary_dept'],
+  project_short_name: ['project_short_name'],
   applicant: ['applicant'],
   approval_number: ['approval_number'],
   project_desc: ['project_desc', 'project_no'],
@@ -53,6 +56,8 @@ function resetForm() {
   const isNew = !p?.id
   form.value = {
     department: p?.department || (isNew ? _autoDefaultDept() : ''),
+    secondary_dept: p?.secondary_dept || '',
+    project_short_name: p?.project_short_name || '',
     applicant: p?.applicant || '',
     approval_number: p?.approval_number || '',
     project_no: p?.project_no || '',
@@ -286,6 +291,20 @@ async function submit() {
           <label>申请人 <span class="hint-text">选填</span></label>
           <input v-model="form.applicant" placeholder="如：张三" maxlength="100"
             :disabled="!editable('applicant')" />
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div v-if="vis('secondary_dept')" class="form-group">
+          <label>二级部门 <span class="hint-text">选填</span></label>
+          <input v-model="form.secondary_dept" placeholder="如：华东项目部" maxlength="100"
+            :disabled="!editable('secondary_dept')" />
+        </div>
+        <div v-if="vis('project_short_name')" class="form-group">
+          <label>项目简称 <span class="hint-text">选填，须与项目台账匹配</span></label>
+          <ProjectShortNamePicker v-model="form.project_short_name"
+            :disabled="!editable('project_short_name')"
+            @picked="p => { if (!form.secondary_dept && p.sub_dept) form.secondary_dept = p.sub_dept; if (!form.project_no && p.project_no) form.project_no = p.project_no }" />
         </div>
       </div>
 

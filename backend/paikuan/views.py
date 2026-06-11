@@ -46,6 +46,8 @@ JOB_TITLES = {
 # field maps to one or more columns in the serialized payment dict.
 PAYMENT_FIELD_DEFS = [
     {'key': 'department',      'label': '部门',         'cols': ['department']},
+    {'key': 'secondary_dept',  'label': '二级部门',      'cols': ['secondary_dept']},
+    {'key': 'project_short_name', 'label': '项目简称',   'cols': ['project_short_name']},
     {'key': 'applicant',       'label': '申请人',        'cols': ['applicant']},
     {'key': 'approval_number', 'label': '审批单号',      'cols': ['approval_number']},
     {'key': 'project_desc',    'label': '付款事项',      'cols': ['project_desc']},
@@ -140,6 +142,8 @@ AR_FIELD_KEYS = [f['key'] for f in AR_FIELD_DEFS]
 # (perm_field_key, excel_header, db_column)
 EXCEL_COLUMN_MAP = [
     ('department',      '部门',               'department'),
+    ('secondary_dept',  '二级部门',            'secondary_dept'),
+    ('project_short_name', '项目简称',         'project_short_name'),
     ('applicant',       '申请人',             'applicant'),
     ('approval_number', '审批单号',            'approval_number'),
     ('project_desc',    '项目编号',            'project_no'),
@@ -854,6 +858,8 @@ def _parse_payment_fields(data, payment=None):
         return data.get(key, getattr(payment, key, default) if payment else default)
 
     fields['department'] = (get('department') or '').strip()
+    fields['secondary_dept'] = (get('secondary_dept') or '').strip()[:100]
+    fields['project_short_name'] = (get('project_short_name') or '').strip()[:100]
     fields['applicant'] = (get('applicant') or '').strip()[:100]
     fields['approval_number'] = (get('approval_number') or '').strip()
     fields['project_no'] = (get('project_no') or '').strip()[:20]
@@ -971,13 +977,44 @@ def _parse_payment_fields(data, payment=None):
     # Approval number: must be exactly 21 digits when provided
     if fields['approval_number'] and not re.fullmatch(r'\d{21}', fields['approval_number']):
         return None, '审批单号须为21位数字（如不填写可留空）'
+    # 项目简称：填了就必须能在项目台账中找到（打通应收/现金流/分析/资金池的项目维度）
+    err_psn = _validate_project_short_name(fields['project_short_name'], fields['department'])
+    if err_psn:
+        return None, err_psn
 
     return fields, None
 
 
+def _validate_project_short_name(short_name, department=''):
+    """校验项目简称必须与项目台账（ARProject.short_name）精确匹配。
+
+    返回错误文案（str）或 None（通过）。留空视为「暂不关联项目」，直接通过。
+    跨部门项目仅 is_shared（共享业务）的可被其他部门引用。
+    """
+    if not short_name:
+        return None
+    from ar.models import ARProject
+    qs = ARProject.objects.filter(short_name=short_name)
+    if not qs.exists():
+        cand = list(ARProject.objects.filter(short_name__icontains=short_name)
+                    .values_list('short_name', flat=True).distinct()[:5])
+        hint = f'台账中相近的项目简称：{"、".join(cand)}。' if cand else ''
+        return (f'项目简称「{short_name}」在项目台账中不存在。{hint}'
+                f'请先在「项目台账」新建该项目，或通过输入框的模糊搜索从台账中选择'
+                f'已有项目简称；留空表示暂不关联项目')
+    if department and not qs.filter(
+            Q(delivery_dept=department) | Q(is_shared=True)).exists():
+        depts = sorted(set(qs.values_list('delivery_dept', flat=True)))
+        return (f'项目简称「{short_name}」属于「{"/".join(d or "未填部门" for d in depts)}」，'
+                f'与当前部门「{department}」不一致（非共享业务项目不可跨部门引用）。'
+                f'请核对部门，或改填本部门项目台账中的项目简称')
+    return None
+
+
 # Field-name → Chinese-label map for change-log records.
 _PAYMENT_FIELD_LABELS = {
-    'department': '部门', 'applicant': '申请人', 'approval_number': '审批单号',
+    'department': '部门', 'secondary_dept': '二级部门', 'project_short_name': '项目简称',
+    'applicant': '申请人', 'approval_number': '审批单号',
     'project_desc': '付款事项', 'payee': '收款方',
     'total_amount': '计划总金额', 'planned_date': '计划付款日期',
     'notes': '备注',
@@ -1242,6 +1279,8 @@ def approval_records(request):
         data = parse_body(request)
         applicant = (data.get('applicant') or '').strip()
         department = (data.get('department') or '').strip()
+        secondary_dept = (data.get('secondary_dept') or '').strip()[:100]
+        project_short_name = (data.get('project_short_name') or '').strip()[:100]
         approval_number = (data.get('approval_number') or '').strip()
         summary = (data.get('summary') or '').strip()
         payee = (data.get('payee') or '').strip()
@@ -1265,8 +1304,12 @@ def approval_records(request):
         # 仅有审批权限职务可直接登记 approved/rejected；其它人新建只能为 pending
         if status != 'pending' and not is_approver(request):
             return err('当前职务无权直接登记非待审批状态，请先创建为"待审批"', 403, 403)
+        err_psn = _validate_project_short_name(project_short_name, department)
+        if err_psn:
+            return err(err_psn)
         rec = ApprovalRecord.objects.create(
             applicant=applicant, department=department, approval_number=approval_number,
+            secondary_dept=secondary_dept, project_short_name=project_short_name,
             summary=summary, amount=amount, payee=payee, status=status, created_by_id=request.pk_uid
         )
         return ok(rec.to_dict())
@@ -1286,15 +1329,25 @@ def approval_record_detail(request, pk):
     if not can_write_dept(request, rec.department):
         return err('无权操作该部门', 403, 403)
     if request.method == 'PUT':
-        # 归档即终态（已排款 / 已拒绝 / 已撤销）：不可再改——
-        # 已排款的审批改金额会让排款与审批对不上；已拒绝/撤销复活会产生
-        # 列表与资金池在途都看不见的幽灵记录（archived 永远为 True）
-        if rec.archived:
-            return err('该审批记录已归档（已排款或已拒绝/已撤销），不可修改；如需变更请新建记录', 409, 409)
+        data = parse_body(request)
+        # 归档即终态（已排款 / 已拒绝 / 已撤销）：金额/状态等不可再改。
+        # 例外：二级部门/项目简称是补录性元数据（历史数据默认空白，允许操作栏补录），
+        # 仅改这两个字段不影响审批标的与资金池在途口径
+        meta_only = bool(data) and set(data.keys()) <= {'secondary_dept', 'project_short_name'}
+        if rec.archived and not meta_only:
+            return err('该审批记录已归档（已排款或已拒绝/已撤销），不可修改；如需变更请新建记录'
+                       '（二级部门/项目简称两个补录字段除外）', 409, 409)
         # 写入能力闸口：与新建一致（防止只读岗位改写审批台账）
         if perms is not None and not (perms.get('can_create') or is_approver(request)):
             return err('无编辑权限', 403, 403)
-        data = parse_body(request)
+        if 'secondary_dept' in data:
+            rec.secondary_dept = (data.get('secondary_dept') or '').strip()[:100]
+        if 'project_short_name' in data:
+            psn = (data.get('project_short_name') or '').strip()[:100]
+            err_psn = _validate_project_short_name(psn, rec.department)
+            if err_psn:
+                return err(err_psn)
+            rec.project_short_name = psn
         for k in ('applicant', 'summary', 'payee'):
             if k in data:
                 setattr(rec, k, (data.get(k) or '').strip())
@@ -1387,6 +1440,8 @@ def approval_record_schedule(request, pk):
                 created_by_id=request.pk_uid,
                 updated_by_id=request.pk_uid,
                 department=rec.department,
+                secondary_dept=rec.secondary_dept,
+                project_short_name=rec.project_short_name,
                 applicant=rec.applicant,
                 approval_number=rec.approval_number,
                 project_desc=rec.summary,
@@ -1419,13 +1474,13 @@ def approval_template(request):
     wb = Workbook()
     ws = wb.active
     ws.title = '审批记录导入模板'
-    headers = ['申请人*', '所属事业部*', '审批编号*', '摘要', '申请金额*', '收款主体', '审批状态*']
+    headers = ['申请人*', '所属事业部*', '二级部门', '项目简称', '审批编号*', '摘要', '申请金额*', '收款主体', '审批状态*']
     header_fill = PatternFill(fill_type='solid', fgColor='C96342')
     header_font = Font(bold=True, color='FFFFFF', size=11)
     center = Alignment(horizontal='center', vertical='center', wrap_text=True)
     for i, h in enumerate(headers, 1):
         c = ws.cell(row=1, column=i, value=h); c.fill = header_fill; c.font = header_font; c.alignment = center
-    ws.append(['示例张三', '运输事业部', '123456789012345678901', '示例摘要', 10000, '某供应商', '待审批'])
+    ws.append(['示例张三', '运输事业部', '', '', '123456789012345678901', '示例摘要', 10000, '某供应商', '待审批'])
     return _build_excel_response(wb, '审批记录导入模板.xlsx')
 
 
@@ -1501,8 +1556,14 @@ def approval_import(request):
                 raise ValueError()
         except Exception:
             skipped += 1; errors.append(f'第{r}行: 申请金额无效（当前“{amount_raw}”）'); continue
+        # 项目简称：填了就必须与项目台账匹配，搜索不到直接拒绝该行并给出指导
+        psn = cv(r, '项目简称')[:100]
+        err_psn = _validate_project_short_name(psn, dept)
+        if err_psn:
+            skipped += 1; errors.append(f'第{r}行: {err_psn}'); continue
         ApprovalRecord.objects.create(
             applicant=applicant, department=dept, approval_number=no,
+            secondary_dept=cv(r, '二级部门')[:100], project_short_name=psn,
             summary=cv(r, '摘要'), amount=amount, payee=cv(r, '收款主体'),
             status='pending', created_by_id=request.pk_uid
         )
@@ -1533,7 +1594,7 @@ def approval_export(request):
     wb = Workbook()
     ws = wb.active
     ws.title = '审批记录'
-    headers = ['申请人', '所属事业部', '审批编号', '摘要', '申请金额', '收款主体', '审批状态']
+    headers = ['申请人', '所属事业部', '二级部门', '项目简称', '审批编号', '摘要', '申请金额', '收款主体', '审批状态']
     header_fill = PatternFill(fill_type='solid', fgColor='C96342')
     header_font = Font(bold=True, color='FFFFFF', size=11)
     center = Alignment(horizontal='center', vertical='center', wrap_text=True)
@@ -1541,7 +1602,8 @@ def approval_export(request):
         c = ws.cell(row=1, column=i, value=h); c.fill = header_fill; c.font = header_font; c.alignment = center
     cn = {'pending': '待审批', 'approved': '审批通过', 'rejected': '已拒绝', 'canceled': '已撤销'}
     for o in qs:
-        ws.append([_safe(o.applicant), o.department, _safe(o.approval_number),
+        ws.append([_safe(o.applicant), o.department, _safe(o.secondary_dept),
+                   _safe(o.project_short_name), _safe(o.approval_number),
                    _safe(o.summary), float(o.amount), _safe(o.payee),
                    cn.get(o.status, o.status)])
     return _build_excel_response(wb, '审批记录.xlsx')
@@ -1998,6 +2060,8 @@ def payment_template(request):
     # so import skips this row even if the user forgets to delete it.
     example = {
         '部门': EXAMPLE_ROW_MARKER,
+        '二级部门': '选填，如：华东项目部',
+        '项目简称': '选填；须与项目台账的"项目简称"完全一致，搜索不到将拒绝导入',
         '申请人': '如：张三',
         '审批单号': '123456789012345678901',
         '付款事项': '如：工程款结算',

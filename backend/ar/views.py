@@ -1261,7 +1261,7 @@ def ar_records(request):
             return denied
         data = _ar_visible_payload(
             request, _parse_body(request), 'record',
-            extra=('project_id', 'operation_year', 'operation_month'))
+            extra=('project_id', 'operation_date', 'operation_year', 'operation_month'))
         project_id = data.get('project_id')
         if not project_id:
             return err('缺少 project_id')
@@ -1272,17 +1272,26 @@ def ar_records(request):
         denied = _dept_denied(request, proj.delivery_dept, '无权操作此部门')
         if denied:
             return denied
-        year = int(data.get('operation_year', 0) or 0)
-        month = int(data.get('operation_month', 0) or 0)
-        if not (year and 1 <= month <= 12):
-            return err('运作年月无效')
+        # 运作日期为正源；兼容旧调用方只传年/月（默认当月1日）
+        op_raw = _normalize_date(data.get('operation_date'))
+        try:
+            op_date = datetime.date.fromisoformat(op_raw) if op_raw else None
+        except ValueError:
+            op_date = None
+        if not op_date:
+            year = int(data.get('operation_year', 0) or 0)
+            month = int(data.get('operation_month', 0) or 0)
+            if not (year and 1 <= month <= 12):
+                return err('运作日期无效：请提供 operation_date（YYYY-MM-DD）')
+            op_date = datetime.date(year, month, 1)
+        if not (2000 <= op_date.year <= 2100):
+            return err('运作日期超出合理范围（2000–2100）')
         from paikuan.models import PaikuanUser
         user = PaikuanUser.objects.filter(id=request.pk_uid).first()
         try:
             rec = ARRecord(
                 project=proj,
-                operation_year=year,
-                operation_month=month,
+                operation_date=op_date,
                 estimated_amount=_dec(data.get('estimated_amount', 0)),
                 actual_invoice_amount=_dec(data['actual_invoice_amount']) if data.get('actual_invoice_amount') not in (None, '') else None,
                 tax_amount=_dec(data['tax_amount']) if data.get('tax_amount') not in (None, '') else None,
@@ -1382,7 +1391,7 @@ def ar_record_template(request):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '应收账款明细'
-    headers = ['项目编号', '项目简称*', '交付部门', '客户名称', '运作年*', '运作月*', '预估上账金额', '实际开票金额',
+    headers = ['项目编号', '项目简称*', '交付部门', '客户名称', '运作日期*', '预估上账金额', '实际开票金额',
                '税额(差额模式手填)', '开票日期', '账实差额调整', '回款金额', '回款时间', '备注']
     _header_row(ws, headers, color='1B6E35')
     tip_vals = [
@@ -1390,8 +1399,8 @@ def ar_record_template(request):
         '★必填：填写项目台账中的"项目简称"（找不到将拒绝导入并提示先建项目；同名多个时需填交付部门/编号区分）',
         '选填：交付部门/事业部。当不同事业部存在同名项目时，填此列即可精确区分（推荐）',
         '选填：客户名称，用于区分同名项目（同部门同名时再用此列）',
-        '★必填：4位整数，如 2026（每个项目每个月每天都可有多条开票/回款记录，多次导入即追加新行）',
-        '★必填：1-12 的整数（同一项目同一年月可存在多行，代表当月多批次上账）',
+        '★必填：应收发生日期，格式 2026-05-01 / 2026/5/1 均可；只填到月（如 2026-05）按当月1日处理。'
+        '旧模板的「运作年」「运作月」两列仍兼容',
         '选填：当月预计上账金额（元）；计算公式：未回款 = 上账金额 + 账实差额调整 - 全部回款之和',
         '选填：实际开票金额（元）；全额模式下税额自动计算；对账时以此确认是否已对账',
         '选填：差额模式时手动填写税额（元）；全额模式：税额=开票金额÷(1+税率)×税率，自动算，无需填',
@@ -1411,7 +1420,7 @@ def ar_record_template(request):
         cell.font = tip_font
         cell.alignment = Alignment(wrap_text=True)
     ws.row_dimensions[tip_row].height = 60
-    ws.append(['', EXAMPLE_ROW_MARKER, '运输事业部', '', 2026, 1, 100000, 100000, '', '2026-01-15', 0, 30000,
+    ws.append(['', EXAMPLE_ROW_MARKER, '运输事业部', '', '2026-01-05', 100000, 100000, '', '2026-01-15', 0, 30000,
                '2026-01-20', '示例（此行含"示例"标记，导入时自动跳过）'])
     for col in range(1, len(headers) + 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 22
@@ -1455,6 +1464,7 @@ def ar_record_import(request):
         '项目简称*':         ['项目简称*', '项目简称'],
         '交付部门':          ['交付部门', '事业部', '部门'],
         '客户名称':          ['客户名称', '客户', '合同名称'],
+        '运作日期*':         ['运作日期*', '运作日期'],
         '运作年*':           ['运作年*', '运作年'],
         '运作月*':           ['运作月*', '运作月'],
         '预估上账金额':      ['预估上账金额', '预估金额', '上账金额'],
@@ -1495,8 +1505,8 @@ def ar_record_import(request):
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
     allowed_depts = None if request.pk_role == 'super_admin' else request.pk_depts
 
-    DATA_COLS = ('项目编号', '项目简称*', '交付部门', '客户名称', '运作年*', '运作月*', '预估上账金额',
-                 '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
+    DATA_COLS = ('项目编号', '项目简称*', '交付部门', '客户名称', '运作日期*', '运作年*', '运作月*',
+                 '预估上账金额', '实际开票金额', '税额(差额模式手填)', '开票日期', '账实差额调整',
                  '回款金额', '回款时间', '备注')
 
     errors = []      # 格式错误：会导致整表拒绝
@@ -1523,15 +1533,42 @@ def ar_record_import(request):
             errors.append(f'第{ri}行：交付部门"{dept_hint}"无效，可选值为：{"/".join(VALID_DEPARTMENTS)}（留空则按项目简称匹配）')
             continue
 
-        y_raw, m_raw = row_vals['运作年*'], row_vals['运作月*']
-        try:
-            year, month = int(float(y_raw or 0)), int(float(m_raw or 0))
-        except (ValueError, TypeError):
-            errors.append(f'第{ri}行：运作年/月必须是数字（当前 年="{y_raw}" 月="{m_raw}"）')
-            continue
-        if not (2000 <= year <= 2100 and 1 <= month <= 12):
-            errors.append(f'第{ri}行：运作年/月无效（年="{y_raw}" 月="{m_raw}"）。'
-                          f'运作年需为四位年份（如 2026），运作月需为 1-12')
+        # 运作日期（正源）：新模板单列日期；旧模板「运作年+运作月」仍兼容（按当月1日）
+        op_date = None
+        od_raw = _cv_raw(ri, '运作日期*')
+        if od_raw not in (None, ''):
+            od_norm = _normalize_date(od_raw)
+            try:
+                op_date = datetime.date.fromisoformat(od_norm) if od_norm else None
+            except ValueError:
+                op_date = None
+            if op_date is None:
+                # 只填到月（2026-05 / 2026/5 / 2026年5月）→ 当月1日
+                m = re.match(r'^\s*(\d{4})\s*[-/年.]\s*(\d{1,2})\s*月?\s*$', str(od_raw))
+                if m and 1 <= int(m.group(2)) <= 12:
+                    op_date = datetime.date(int(m.group(1)), int(m.group(2)), 1)
+            if op_date is None:
+                errors.append(f'第{ri}行：「运作日期」"{od_raw}"格式无效，'
+                              f'请用 2026-05-01（或只填到月 2026-05，按当月1日处理）')
+                continue
+        else:
+            y_raw, m_raw = row_vals['运作年*'], row_vals['运作月*']
+            if not (y_raw or m_raw):
+                errors.append(f'第{ri}行：缺少「运作日期」（如 2026-05-01）。'
+                              f'旧模板可继续填「运作年」「运作月」两列，按当月1日处理')
+                continue
+            try:
+                year, month = int(float(y_raw or 0)), int(float(m_raw or 0))
+            except (ValueError, TypeError):
+                errors.append(f'第{ri}行：运作年/月必须是数字（当前 年="{y_raw}" 月="{m_raw}"）')
+                continue
+            if not (2000 <= year <= 2100 and 1 <= month <= 12):
+                errors.append(f'第{ri}行：运作年/月无效（年="{y_raw}" 月="{m_raw}"）。'
+                              f'运作年需为四位年份（如 2026），运作月需为 1-12')
+                continue
+            op_date = datetime.date(year, month, 1)
+        if not (2000 <= op_date.year <= 2100):
+            errors.append(f'第{ri}行：运作日期 {op_date} 超出合理范围（2000–2100）')
             continue
 
         est, e = _num_or_err(row_vals['预估上账金额'], '预估上账金额', ri)
@@ -1583,7 +1620,7 @@ def ar_record_import(request):
             'project_no': row_vals['项目编号'],
             'dept_hint': dept_hint,
             'customer_hint': row_vals['客户名称'],
-            'year': year, 'month': month,
+            'op_date': op_date,
             'est': est, 'actual': actual, 'tax': tax, 'inv_date': inv_date,
             'diff': diff, 'notes': row_vals['备注'],
             'pay_amount': pay_amount, 'pay_date': pay_date,
@@ -1688,8 +1725,7 @@ def ar_record_import(request):
                 }
             bucket[key]['count'] += 1
 
-            rec = ARRecord(project=proj, operation_year=p['year'],
-                           operation_month=p['month'], created_by=user)
+            rec = ARRecord(project=proj, operation_date=p['op_date'], created_by=user)
             if p['est'] is not None and _can_ar_view(request, 'r_estimated_amount'):
                 rec.estimated_amount = p['est']
             if _can_ar_view(request, 'r_actual_invoice_amount'):
@@ -1791,8 +1827,7 @@ def ar_record_export(request):
         ('p_project_manager', '项目负责人', lambda rec, st: rec.project.project_manager),
         ('p_sales_contact', '销售对接人', lambda rec, st: rec.project.sales_contact),
         ('p_account_period', '总账期(天)', lambda rec, st: rec.project.total_days),
-        (None, '运作年', lambda rec, st: rec.operation_year),
-        (None, '运作月', lambda rec, st: rec.operation_month),
+        (None, '运作日期', lambda rec, st: str(rec.operation_date) if rec.operation_date else ''),
         ('r_estimated_amount', '预估上账金额', lambda rec, st: float(rec.estimated_amount)),
         ('r_actual_invoice_amount', '实际开票金额',
          lambda rec, st: float(rec.actual_invoice_amount) if rec.actual_invoice_amount is not None else ''),
@@ -1957,7 +1992,7 @@ def _apply_record_state_filters(qs, request, today=None):
 # 应收明细可排序字段白名单：仅暴露已建索引/安全的列，映射到 ORM 字段（值为元组以支持
 # 复合排序，如运作年+月）。前端传 sort=key（升序）或 sort=-key（降序）。
 _AR_SORT_FIELDS = {
-    'operation': ('operation_year', 'operation_month'),
+    'operation': ('operation_date',),
     'due_date': ('due_date',),
     'outstanding': ('outstanding_amount',),
     'estimated': ('estimated_amount',),
@@ -3771,6 +3806,35 @@ def analytics_project_pnl(request):
               'invoiced': t_inv, 'outstanding': t_out, 'collected': t_col, 'collect_rate': cr,
               'overdue': t_ovd, 'overdue_rate': ovr, 'tag': tag, 'tag_label': tag_label}
 
+    # ── 付款侧（排款台账，经「项目简称/项目编号」打通）─────────────────────────
+    # 排款新增 project_short_name 字段后，项目维度可闭环：回款（流入）对照
+    # 排款付款（流出），得到项目净现金。仅匹配非空键，防止空串误匹配全表。
+    payment_side = None
+    if proj:
+        cond = Q()
+        if proj.short_name:
+            cond |= Q(project_short_name=proj.short_name)
+        if proj.project_no:
+            cond |= Q(project_no=proj.project_no)
+        if cond:
+            pq = Payment.objects.filter(cond)
+            if request.pk_role != 'super_admin':
+                pq = pq.filter(department__in=(request.pk_depts or []))
+            agg = pq.annotate(paid_sum=_paid_subq()).aggregate(
+                planned=Sum(Coalesce('plan_adjustment', 'total_amount')),
+                paid=Sum('paid_sum'), offset=Sum('prepaid_offset_amount'), n=Count('id'))
+            planned = float(agg['planned'] or 0)
+            paid = float(agg['paid'] or 0)
+            offset = float(agg['offset'] or 0)
+            payment_side = {
+                'count': agg['n'] or 0,
+                'planned': round(planned, 2),
+                'paid': round(paid, 2),
+                'prepaid_offset': round(offset, 2),
+                'remaining': round(max(0.0, planned - paid - offset), 2),
+                'net_cash': round(t_col - paid, 2),
+            }
+
     project = {
         'name': name,
         'project_no': (proj.project_no if proj else None),
@@ -3787,7 +3851,7 @@ def analytics_project_pnl(request):
         'linked': bool(pids),
     }
     return ok({'year': year, 'project': project, 'monthly': monthly,
-               'payments': payments, 'totals': totals})
+               'payments': payments, 'totals': totals, 'payment_side': payment_side})
 
 
 @csrf_exempt

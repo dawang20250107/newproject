@@ -94,7 +94,7 @@ const showModal = ref(false)
 const editRec = ref(null)
 const saving = ref(false)
 const recForm = reactive({
-  project_id: '', operation_year: yearCST(), operation_month: monthCST(),
+  project_id: '', operation_date: todayCST(),
   estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
   invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
   invoice_batch_no: '', notes: '',
@@ -398,7 +398,7 @@ function openCreate() {
   editRec.value = null
   Object.assign(recForm, {
     project_id: '',
-    operation_year: yearCST(), operation_month: monthCST(),
+    operation_date: todayCST(),
     estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
     invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
     invoice_batch_no: '', notes: '',
@@ -411,7 +411,7 @@ function openCreate() {
 function openEdit(rec) {
   editRec.value = rec
   Object.assign(recForm, {
-    project_id: rec.project_id, operation_year: rec.operation_year, operation_month: rec.operation_month,
+    project_id: rec.project_id, operation_date: rec.operation_date || '',
     estimated_amount: rec.estimated_amount, actual_invoice_amount: rec.actual_invoice_amount || '',
     tax_amount: rec.tax_amount || '', invoice_date: rec.invoice_date || '',
     reconciliation_date: rec.reconciliation_date || '',
@@ -448,9 +448,10 @@ async function saveRec() {
   if (!recForm.project_id) { alert('请选择项目'); return }
   saving.value = true
   try {
+    if (!editRec.value && !recForm.operation_date) { alert('请选择运作日期'); saving.value = false; return }
     const payload = {
-      project_id: recForm.project_id, operation_year: recForm.operation_year,
-      operation_month: recForm.operation_month, estimated_amount: recForm.estimated_amount || 0,
+      project_id: recForm.project_id, operation_date: recForm.operation_date,
+      estimated_amount: recForm.estimated_amount || 0,
       actual_invoice_amount: recForm.actual_invoice_amount || null,
       tax_amount: recForm.tax_amount || null, invoice_date: recForm.invoice_date || null,
       reconciliation_date: recForm.reconciliation_date || null, account_diff_adjustment: recForm.account_diff_adjustment || 0,
@@ -466,7 +467,7 @@ async function saveRec() {
 
 async function deleteRec(rec) {
   const amt = parseFloat(rec.estimated_amount || 0).toFixed(2)
-  if (!confirm(`确定删除「${rec.short_name || rec.customer_name}」${rec.operation_year}年${rec.operation_month}月的应收记录（${amt} 元）？同月可能存在多条记录，请确认。`)) return
+  if (!confirm(`确定删除「${rec.short_name || rec.customer_name}」${rec.operation_date || (rec.operation_year + '年' + rec.operation_month + '月')}的应收记录（${amt} 元）？同期可能存在多条记录，请确认。`)) return
   try { await ar.deleteRecord(rec.id); await load() }
   catch (e) { alert(e?.msg || '删除失败') }
 }
@@ -634,7 +635,7 @@ function clearFilters() {
   <div>
     <div class="topbar">
       <div class="topbar-left">
-        <h1>应收明细</h1>
+        <h1>应收账款</h1>
         <div class="segment-ctrl">
           <button v-for="t in TABS" :key="t.key"
             :class="['seg-btn', activeTab === t.key ? 'active' : '']" @click="switchTab(t.key)">
@@ -859,7 +860,7 @@ function clearFilters() {
                   <div class="proj-no">{{ rec.project_no }}</div>
                 </td>
                 <td class="ctr">
-                  <span class="ym-chip">{{ rec.operation_year }}/{{ String(rec.operation_month).padStart(2,'0') }}</span>
+                  <span class="ym-chip">{{ rec.operation_date || (rec.operation_year + "/" + String(rec.operation_month).padStart(2, "0")) }}</span>
                 </td>
 
                 <!-- all -->
@@ -1046,7 +1047,7 @@ function clearFilters() {
                 </th>
                 <th>项目 / 客户</th>
                 <th class="ctr">交付部门</th>
-                <th class="ctr">运作年月</th>
+                <th class="ctr">运作日期</th>
                 <th class="ctr">应收日期</th>
                 <th class="ctr">逾期天数</th>
                 <th class="amt">未收金额</th>
@@ -1068,7 +1069,7 @@ function clearFilters() {
                   <div class="proj-no">{{ r.project_no }} · {{ r.customer_name }}</div>
                 </td>
                 <td class="ctr text-sm-muted">{{ r.delivery_dept }}</td>
-                <td class="ctr"><span class="ym-chip">{{ r.operation_year }}/{{ String(r.operation_month).padStart(2,'0') }}</span></td>
+                <td class="ctr"><span class="ym-chip">{{ r.operation_date || (r.operation_year + "/" + String(r.operation_month).padStart(2, "0")) }}</span></td>
                 <td class="ctr text-sm-muted">{{ r.due_date }}</td>
                 <td class="ctr"><span class="od-badge" :class="overdueClass(r.overdue_days)">{{ r.overdue_days }}天</span></td>
                 <td class="amt fw" style="color:#c62828">{{ fmtAmt(r.outstanding_amount) }}</td>
@@ -1119,7 +1120,7 @@ function clearFilters() {
                 <th class="amt">回款金额</th>
                 <th>项目</th>
                 <th class="ctr">交付部门</th>
-                <th class="ctr">运作年月</th>
+                <th class="ctr">运作日期</th>
                 <th class="ctr">序号</th>
                 <th>备注</th>
               </tr>
@@ -1135,7 +1136,7 @@ function clearFilters() {
                   <div class="proj-no">{{ p.project_no }}</div>
                 </td>
                 <td class="ctr text-sm-muted">{{ p.delivery_dept }}</td>
-                <td class="ctr"><span class="ym-chip">{{ p.operation_year }}/{{ String(p.operation_month).padStart(2,'0') }}</span></td>
+                <td class="ctr"><span class="ym-chip">{{ p.operation_date || (p.operation_year + "/" + String(p.operation_month).padStart(2, "0")) }}</span></td>
                 <td class="ctr text-sm-muted">第{{ p.payment_no }}次</td>
                 <td class="text-sm-muted">{{ p.notes || '—' }}</td>
               </tr>
@@ -1227,16 +1228,9 @@ function clearFilters() {
                 </select>
               </label>
               <label class="form-field">
-                <span>运作年 <em>*</em></span>
-                <select v-model.number="recForm.operation_year" :disabled="!!editRec">
-                  <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
-                </select>
-              </label>
-              <label class="form-field">
-                <span>运作月 <em>*</em></span>
-                <select v-model.number="recForm.operation_month" :disabled="!!editRec">
-                  <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
-                </select>
+                <span>运作日期 <em>*</em></span>
+                <input v-model="recForm.operation_date" type="date" :disabled="!!editRec"
+                       title="应收发生日期；历史按月数据已迁移为当月1日" />
               </label>
               <label class="form-field">
                 <span>预估上账金额</span>
@@ -1393,7 +1387,7 @@ function clearFilters() {
                 <tbody>
                   <tr v-for="r in healthData.stale" :key="r.id">
                     <td>{{ r.project_no }}</td><td>{{ r.short_name }}</td>
-                    <td>{{ r.operation_year }}-{{ r.operation_month }}</td>
+                    <td>{{ r.operation_date || (r.operation_year + "-" + r.operation_month) }}</td>
                     <td class="r">{{ fmtAmt(r.estimated_amount) }}</td>
                     <td class="r">{{ fmtAmt(r.total_paid) }}</td>
                     <td class="r muted">{{ r.stored_outstanding == null ? '—' : fmtAmt(r.stored_outstanding) }}</td>
@@ -1413,7 +1407,7 @@ function clearFilters() {
                 <tbody>
                   <tr v-for="r in healthData.negative" :key="r.id">
                     <td>{{ r.project_no }}</td><td>{{ r.short_name }}</td>
-                    <td>{{ r.operation_year }}-{{ r.operation_month }}</td>
+                    <td>{{ r.operation_date || (r.operation_year + "-" + r.operation_month) }}</td>
                     <td class="r">{{ fmtAmt(r.estimated_amount) }}</td>
                     <td class="r">{{ fmtAmt(r.account_diff_adjustment) }}</td>
                     <td class="r">{{ fmtAmt(r.total_paid) }}</td>
@@ -1457,7 +1451,7 @@ function clearFilters() {
       <div v-if="showDelConfirm" class="modal-overlay" @click.self="showDelConfirm = false">
         <div class="modal-box" style="max-width:420px">
           <div class="modal-header">
-            <div><h3>确认删除 {{ delConfirmCount }} 条应收明细</h3></div>
+            <div><h3>确认删除 {{ delConfirmCount }} 条应收账款</h3></div>
             <button class="modal-close" @click="showDelConfirm = false">✕</button>
           </div>
           <div class="modal-body">
