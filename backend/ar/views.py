@@ -1,11 +1,14 @@
 import io
 import json
+import logging
 import re
 import datetime
 import calendar
 from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
+
+logger = logging.getLogger(__name__)
 
 from django.core.exceptions import ValidationError
 from django.http import HttpResponse, JsonResponse
@@ -6965,7 +6968,13 @@ def cash_pool(request):
         if cfg is None:
             pools.append({'dept': dept, 'configured': False})
             continue
-        pools.append(_pool_metrics(dept, cfg, today))
+        try:
+            pools.append(_pool_metrics(dept, cfg, today))
+        except Exception as exc:
+            import traceback
+            logger.error('cash_pool: _pool_metrics failed dept=%s: %s\n%s',
+                         dept, exc, traceback.format_exc())
+            pools.append({'dept': dept, 'configured': True, 'error': str(exc)})
 
     configured = [p for p in pools if p.get('configured')]
     group = None

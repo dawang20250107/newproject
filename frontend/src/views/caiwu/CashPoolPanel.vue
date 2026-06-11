@@ -28,11 +28,21 @@ const statusLabel = { ok: '健康', warn: '预警', danger: '告急' }
 async function load() {
   loading.value = true; err.value = ''
   try {
-    const [res, trs] = await Promise.all([ar.cashPool(), ar.listPoolTransfers()])
+    const res = await ar.cashPool()
     data.value = res.data
+  } catch (e) {
+    err.value = e?.msg || (typeof e === 'string' ? e.slice(0, 200) : '加载失败（服务器错误，请检查后端日志）')
+    loading.value = false
+    return
+  }
+  // Transfers are secondary; a failure should not block the pool overview
+  try {
+    const trs = await ar.listPoolTransfers()
     transfers.value = trs.data.items
-  } catch (e) { err.value = e?.msg || '加载失败' }
-  finally { loading.value = false }
+  } catch (_) {
+    transfers.value = []
+  }
+  loading.value = false
 }
 
 const pools = computed(() => data.value?.pools || [])
@@ -259,14 +269,18 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
       <!-- ══ 池子卡片 ══ -->
       <div class="cp-grid">
-        <div v-for="p in configured" :key="p.dept" class="cp-card" :class="`st-${p.warning.status}`"
+        <div v-for="p in configured" :key="p.dept" class="cp-card" :class="p.error ? 'st-none' : `st-${p.warning?.status}`"
              :ref="el => { cardRefs[p.dept] = el }">
           <div class="cpc-top">
             <div class="cpc-dept">{{ p.dept }}</div>
-            <span class="cpc-badge" :class="`bg-${p.warning.status}`">{{ statusLabel[p.warning.status] }}</span>
+            <span v-if="!p.error" class="cpc-badge" :class="`bg-${p.warning.status}`">{{ statusLabel[p.warning.status] }}</span>
+            <span v-else class="cpc-badge" style="background:#c62828;color:#fff">计算失败</span>
+          </div>
+          <div v-if="p.error" class="cpc-unconfigured" style="color:#c62828">
+            指标计算出错：{{ p.error }}<br/>请重启后端服务后刷新，或查阅服务器日志排查原因
           </div>
 
-          <div class="cpc-body">
+          <div v-if="!p.error" class="cpc-body">
             <!-- 余额刻度图 -->
             <div class="tank" :title="p.warning.mode === 'fixed'
                    ? `资金预警线 ${wan(p.warning.amount)}（手动设定的最低安全余额）`
@@ -297,7 +311,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           </div>
 
           <!-- 健康指标条（固定三格，缺数据显示 — 保持排版稳定） -->
-          <div class="cpc-vitals">
+          <div v-if="!p.error" class="cpc-vitals">
             <div class="vital" title="按近90天日均流出，现有余额可支撑的天数（近90天无流出时为 ∞）">
               <b>{{ p.health.runway_days != null ? p.health.runway_days + '天' : '∞' }}</b><i>余额支撑</i>
             </div>
@@ -311,10 +325,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             </div>
           </div>
 
-          <button class="cpc-expand" @click="expandedDept = expandedDept === p.dept ? '' : p.dept">
+          <button v-if="!p.error" class="cpc-expand" @click="expandedDept = expandedDept === p.dept ? '' : p.dept">
             {{ expandedDept === p.dept ? '收起明细 ▲' : '收支构成明细 ▼' }}
           </button>
-          <Transition name="cpd">
+          <Transition v-if="!p.error" name="cpd">
             <div v-if="expandedDept === p.dept" class="cpc-detail">
               <div class="cpd-row"><i>期初（{{ p.config.initial_date }}）</i><b>{{ wan(p.parts.initial) }}</b></div>
               <div class="cpd-row in"><i>＋ 回款</i><b>{{ wan(p.parts.collected) }}</b></div>
