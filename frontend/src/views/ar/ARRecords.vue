@@ -176,6 +176,7 @@ const TABS = [
   { key: 'reconciliation', label: '对账跟踪' },
   { key: 'invoice', label: '开票跟踪' },
   { key: 'collection', label: '回款跟踪' },
+  { key: 'offset', label: '预收核销' },
   { key: 'dunning', label: '催款' },
   { key: 'payments', label: '回款流水' },
   { key: 'summary', label: '汇总' },
@@ -398,6 +399,7 @@ function switchTab(key) {
   if (key === 'payments') loadPayments(true)
   else if (key === 'summary') loadGroupSummary()
   else if (key === 'dunning') loadDunning(true)
+  else if (key === 'offset') loadOffsetWorkbench()
   else if (!DATA_TABS.includes(prev)) load()  // returning from a non-data tab
   if (key === 'invoice') loadBatches()
 }
@@ -592,6 +594,82 @@ async function deleteRec(rec) {
 }
 
 function togglePayments(id) { expandedPayments.value[id] = !expandedPayments.value[id] }
+// 预收冲抵次数（source='预收抵扣' 的回款数）——列表「预收冲抵」列用
+const offsetCount = rec => (rec.payments || []).filter(p => p.source === '预收抵扣').length
+
+// ── 预收核销工作台（预收核销 Tab）────────────────────────────────────────────
+// 按客户聚合「有预收余额 × 名下有未收应收」，勾选多条应收后用一笔预收
+// 按运作日期先进先出批量冲抵——解决一个客户多项目逐条核销太繁的问题。
+const owGroups = ref([])
+const owLoading = ref(false)
+const owQ = ref('')
+let owTimer = null
+const owSel = ref({})              // customer -> Set(record ids)
+const showWoModal = ref(false)
+const woTarget = ref(null)         // { customer, advances, records }（records=已勾选）
+const woForm = reactive({ advance_id: '', amount: '', writeoff_date: todayCST() })
+const woBusy = ref(false)
+const woResult = ref(null)
+
+async function loadOffsetWorkbench() {
+  owLoading.value = true
+  try {
+    const res = await ar.offsetWorkbench({ q: owQ.value.trim() || undefined, dept: deptOfConditions() || undefined })
+    owGroups.value = res.data.groups
+    owSel.value = {}
+  } catch (e) { owGroups.value = []; alert(e?.msg || '加载预收核销工作台失败') }
+  finally { owLoading.value = false }
+}
+function onOwSearch() { clearTimeout(owTimer); owTimer = setTimeout(loadOffsetWorkbench, 300) }
+function owToggle(cust, id) {
+  const s = new Set(owSel.value[cust] || [])
+  s.has(id) ? s.delete(id) : s.add(id)
+  owSel.value = { ...owSel.value, [cust]: s }
+}
+function owToggleAll(g) {
+  const s = new Set(owSel.value[g.customer] || [])
+  const all = g.records.every(r => s.has(r.id))
+  g.records.forEach(r => { all ? s.delete(r.id) : s.add(r.id) })
+  owSel.value = { ...owSel.value, [g.customer]: s }
+}
+const owSelCount = cust => (owSel.value[cust]?.size || 0)
+const woSelRecords = computed(() => {
+  if (!woTarget.value) return []
+  const s = owSel.value[woTarget.value.customer] || new Set()
+  return woTarget.value.records.filter(r => s.has(r.id))
+})
+const woSelOutstanding = computed(() =>
+  woSelRecords.value.reduce((t, r) => t + (parseFloat(r.outstanding) || 0), 0))
+const woAdvBalance = computed(() => {
+  const a = (woTarget.value?.advances || []).find(x => x.id === woForm.advance_id)
+  return a ? parseFloat(a.balance_amount) || 0 : 0
+})
+const woDefaultAmount = computed(() => Math.min(woAdvBalance.value, woSelOutstanding.value))
+
+function openBatchWriteoff(g) {
+  if (!owSelCount(g.customer)) { alert('请先勾选要冲抵的应收明细'); return }
+  woTarget.value = g
+  Object.assign(woForm, {
+    advance_id: g.advances[0]?.id || '',
+    amount: '', writeoff_date: todayCST(),
+  })
+  woResult.value = null
+  showWoModal.value = true
+}
+async function doBatchWriteoff() {
+  const amt = parseFloat(woForm.amount) || woDefaultAmount.value
+  if (!(amt > 0)) { alert('核销金额必须大于0'); return }
+  woBusy.value = true
+  try {
+    const res = await ar.batchWriteoff(woForm.advance_id, {
+      record_ids: woSelRecords.value.map(r => r.id),
+      amount: amt, writeoff_date: woForm.writeoff_date,
+    })
+    woResult.value = res.data
+    await loadOffsetWorkbench()
+  } catch (e) { alert(e?.msg || '批量核销失败') }
+  finally { woBusy.value = false }
+}
 
 function openAddPayment(rec) {
   payRec.value = rec
@@ -762,7 +840,7 @@ function clearFilters() {
           </button>
         </div>
         <!-- 筛选 chip 栏紧跟 Tab 之后，省去独立一行 -->
-        <div v-if="activeTab !== 'payments' && activeTab !== 'dunning'" class="filter-chipbar">
+        <div v-if="activeTab !== 'payments' && activeTab !== 'dunning' && activeTab !== 'offset'" class="filter-chipbar">
           <!-- 常驻快捷搜索：项目 / 负责人 / 编号，模糊匹配，防抖不闪 -->
           <div class="quick-search">
             <svg class="qs-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -982,6 +1060,7 @@ function clearFilters() {
                 <SortTh v-if="show('r_due_date')" col="target_date" label="目标回款" class="ctr" />
                 <th v-if="show('r_reconciliation')" class="ctr">对账</th>
                 <th v-if="show('r_payments')" class="ctr">回款</th>
+                <th v-if="show('r_payments')" class="ctr" title="预收核销冲抵的次数（点数字查看明细）">预收冲抵</th>
                 <th class="ctr">状态</th>
                 <th class="ctr">责任状态</th>
                 <th v-if="show('r_notes')" class="notes-col">备注</th>
@@ -1018,10 +1097,10 @@ function clearFilters() {
           </thead>
           <tbody>
             <tr v-if="loading && !items.length">
-              <td colspan="16" class="empty-cell">⏳ 加载中…</td>
+              <td colspan="17" class="empty-cell">⏳ 加载中…</td>
             </tr>
             <tr v-else-if="!items.length">
-              <td colspan="16" class="empty-cell">暂无数据</td>
+              <td colspan="17" class="empty-cell">暂无数据</td>
             </tr>
             <template v-for="rec in items" :key="rec.id">
               <tr :class="['data-row', rec.is_overdue ? 'row-overdue' : '', (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']">
@@ -1051,6 +1130,11 @@ function clearFilters() {
                   </td>
                   <td v-if="show('r_payments')" class="ctr">
                     <span class="pay-count" :class="rec.payments?.length ? 'count-has' : 'count-none'">{{ rec.payments?.length || 0 }}</span>
+                  </td>
+                  <td v-if="show('r_payments')" class="ctr">
+                    <button class="pay-toggle" :title="offsetCount(rec) ? '点击展开查看预收抵扣明细' : '无预收冲抵'" @click="togglePayments(rec.id)">
+                      <span class="pay-count" :class="offsetCount(rec) ? 'count-offset' : 'count-none'">{{ offsetCount(rec) }}</span>
+                    </button>
                   </td>
                   <td class="ctr">
                     <span v-if="rec.is_overdue" class="status-pill pill-danger">逾期{{ rec.overdue_days }}天</span>
@@ -1127,8 +1211,8 @@ function clearFilters() {
                 </td>
               </tr>
 
-              <!-- Payment detail rows (collection tab) -->
-              <template v-if="activeTab === 'collection' && show('r_payments') && expandedPayments[rec.id]">
+              <!-- Payment detail rows (collection / all tab — 含预收抵扣来源标识) -->
+              <template v-if="(activeTab === 'collection' || activeTab === 'all') && show('r_payments') && expandedPayments[rec.id]">
                 <tr v-if="!rec.payments?.length" class="pay-row">
                   <td :colspan="99" class="pay-empty">暂无回款记录</td>
                 </tr>
@@ -1170,6 +1254,57 @@ function clearFilters() {
       </Teleport>
 
       <!-- ══ 催款工作台 ══ -->
+      <!-- ══ 预收核销工作台 ══ -->
+      <div v-if="activeTab === 'offset'" class="ow-wrap">
+        <div class="ow-head">
+          <div class="quick-search" style="max-width:260px">
+            <svg class="qs-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            <input v-model="owQ" class="qs-input" placeholder="搜客户名" @input="onOwSearch" />
+          </div>
+          <span class="ow-tip">有预收余额且名下有未收应收的客户。勾选应收明细 → 选一笔预收 → 按运作日期先进先出批量冲抵；逐条核销可在「回款跟踪」录入回款时操作</span>
+        </div>
+        <div v-if="owLoading" class="empty-cell" style="padding:30px;text-align:center">⏳ 加载中…</div>
+        <div v-else-if="!owGroups.length" class="empty-cell" style="padding:30px;text-align:center">
+          暂无可核销项——没有「预收有余额 且 名下有未收应收」的客户
+        </div>
+        <div v-else class="ow-groups">
+          <div v-for="g in owGroups" :key="g.customer" class="ow-card">
+            <div class="ow-card-head">
+              <span class="ow-cust">{{ g.customer }}</span>
+              <span class="ow-stat"><i>预收余额</i><b class="ok">{{ fmtCell(g.total_balance) }}</b></span>
+              <span class="ow-stat"><i>未收应收</i><b class="warn">{{ fmtCell(g.total_outstanding) }}</b></span>
+              <span class="ow-stat"><i>可冲抵</i><b>{{ fmtCell(g.offsettable) }}</b></span>
+              <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" style="margin-left:auto"
+                :disabled="!owSelCount(g.customer)" @click="openBatchWriteoff(g)">
+                批量核销{{ owSelCount(g.customer) ? `（已选 ${owSelCount(g.customer)} 条）` : '' }}
+              </button>
+            </div>
+            <div class="ow-advances">
+              <span v-for="a in g.advances" :key="a.id" class="ow-adv-chip" :title="`往来单位：${a.counterparty || '—'} · ${a.delivery_dept}`">
+                预收 {{ a.occur_date || '—' }}<template v-if="a.short_name">·{{ a.short_name }}</template>
+                <b>{{ fmtCell(a.balance_amount) }}</b>
+              </span>
+            </div>
+            <table class="ow-table">
+              <thead><tr>
+                <th class="sel-col"><input type="checkbox" :checked="g.records.length > 0 && g.records.every(r => (owSel[g.customer] || new Set()).has(r.id))" title="全选" @change="owToggleAll(g)" /></th>
+                <th>项目</th><th>运作日期</th><th>应收到期</th><th class="amt">上账</th><th class="amt">未收</th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="r in g.records" :key="r.id" :class="{ 'row-sel': (owSel[g.customer] || new Set()).has(r.id) }" @click="owToggle(g.customer, r.id)">
+                  <td class="sel-col"><input type="checkbox" :checked="(owSel[g.customer] || new Set()).has(r.id)" @click.stop @change="owToggle(g.customer, r.id)" /></td>
+                  <td>{{ r.short_name }}</td>
+                  <td>{{ r.operation_date || '—' }}</td>
+                  <td>{{ r.due_date || '—' }}</td>
+                  <td class="amt">{{ fmtCell(r.estimated) }}</td>
+                  <td class="amt amt-warn">{{ fmtCell(r.outstanding) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       <div v-if="activeTab === 'dunning'">
         <div class="filter-strip" style="margin-top:4px">
           <select v-model="dunFilters.dept" class="sel-bu" @change="loadDunning(true)">
@@ -1604,6 +1739,68 @@ function clearFilters() {
         </div>
       </div>
 
+      <!-- Batch-Writeoff Modal — 预收批量核销（先进先出分摊） -->
+      <div v-if="showWoModal" class="modal-overlay">
+        <div class="modal-box" style="max-width:560px">
+          <div class="modal-header">
+            <h3>预收批量核销 — {{ woTarget?.customer }}</h3>
+            <button class="modal-close" @click="showWoModal = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <template v-if="!woResult">
+              <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px">
+                选一笔预收，金额按<strong>运作日期先进先出</strong>自动分摊到已勾选的 {{ woSelRecords.length }} 条应收
+                （每条生成一笔核销 + 一笔「预收抵扣」回款，两侧台账同步、可追溯）。
+              </p>
+              <div class="wo-adv-pick">
+                <label v-for="a in woTarget?.advances || []" :key="a.id" class="wo-adv-opt" :class="{ on: woForm.advance_id === a.id }">
+                  <input type="radio" :value="a.id" v-model="woForm.advance_id" />
+                  <span>预收 {{ a.occur_date || '—' }}<template v-if="a.short_name"> · {{ a.short_name }}</template><template v-else-if="a.counterparty"> · {{ a.counterparty }}</template></span>
+                  <b>余额 {{ fmtCell(a.balance_amount) }}</b>
+                </label>
+              </div>
+              <div class="form-grid" style="margin-top:10px">
+                <label class="form-field">
+                  <span>核销金额（元）</span>
+                  <input v-model="woForm.amount" type="number" step="0.01" :placeholder="`默认 ${woDefaultAmount.toFixed(2)}（=min(预收余额, 所选未收)）`" />
+                </label>
+                <label class="form-field">
+                  <span>核销日期*</span>
+                  <input v-model="woForm.writeoff_date" type="date" />
+                </label>
+              </div>
+              <p style="font-size:11.5px;color:var(--muted);margin-top:8px">
+                所选未收合计 <b>{{ woSelOutstanding.toFixed(2) }}</b> · 该预收余额 <b>{{ woAdvBalance.toFixed(2) }}</b>
+              </p>
+            </template>
+            <template v-else>
+              <p style="font-size:13px;color:#2e7d32;font-weight:600;margin-bottom:10px">✓ {{ woResult.message }}</p>
+              <table class="bp-mtable">
+                <thead><tr><th>项目</th><th>运作日期</th><th class="r">本次冲抵</th><th class="r">冲抵后未收</th></tr></thead>
+                <tbody>
+                  <tr v-for="a in woResult.allocations" :key="a.record_id">
+                    <td>{{ a.short_name }}</td><td>{{ a.operation_date || '—' }}</td>
+                    <td class="r" style="color:#2e7d32;font-weight:600">+{{ fmtCell(a.allocated) }}</td>
+                    <td class="r" :class="parseFloat(a.outstanding_after) > 0 ? 'bp-out' : 'bp-ok'">
+                      {{ parseFloat(a.outstanding_after) > 0 ? fmtCell(a.outstanding_after) : '✓ 结清' }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </template>
+          </div>
+          <div class="modal-footer">
+            <template v-if="!woResult">
+              <button class="btn btn-ghost" @click="showWoModal = false">取消</button>
+              <button class="btn btn-primary" :disabled="woBusy || !woForm.advance_id || !woForm.writeoff_date" @click="doBatchWriteoff">
+                {{ woBusy ? '核销中…' : '确认批量核销' }}
+              </button>
+            </template>
+            <button v-else class="btn btn-primary" @click="showWoModal = false">完成</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Payment Modal — 录入态：点遮罩不关闭，仅按钮可退出 -->
       <div v-if="showPayModal" class="modal-overlay">
         <div class="modal-box" style="max-width:460px">
@@ -2005,6 +2202,33 @@ function clearFilters() {
 .adj-add { display: flex; gap: 6px; margin-top: 4px; }
 .adj-add .adj-amt-inp { width: 120px; }
 .adj-add .adj-reason-inp { flex: 1; }
+
+/* ══ 预收核销工作台 ══ */
+.ow-wrap { margin-top: 12px; }
+.ow-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.ow-tip { font-size: 11.5px; color: var(--muted); flex: 1; min-width: 240px; }
+.ow-groups { display: flex; flex-direction: column; gap: 14px; }
+.ow-card { border: 1px solid rgba(46,125,50,0.22); border-radius: 12px; background: rgba(46,125,50,0.03); padding: 12px 14px; }
+.ow-card-head { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 8px; }
+.ow-cust { font-size: 14px; font-weight: 800; color: var(--text); }
+.ow-stat { display: flex; flex-direction: column; }
+.ow-stat i { font-style: normal; font-size: 10.5px; color: var(--muted); }
+.ow-stat b { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--text); }
+.ow-stat b.ok { color: #2e7d32; }
+.ow-stat b.warn { color: #e65100; }
+.ow-advances { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.ow-adv-chip { font-size: 11.5px; color: #2e7d32; background: rgba(46,125,50,0.08); border: 1px solid rgba(46,125,50,0.22); border-radius: 9px; padding: 3px 10px; }
+.ow-adv-chip b { font-variant-numeric: tabular-nums; margin-left: 6px; }
+.ow-table { width: 100%; border-collapse: collapse; font-size: 12.5px; background: #fff; border-radius: 8px; overflow: hidden; }
+.ow-table th { background: rgba(46,125,50,0.06); color: var(--muted); font-weight: 600; padding: 7px 10px; text-align: left; white-space: nowrap; }
+.ow-table td { padding: 7px 10px; border-top: 1px solid rgba(120,120,120,0.08); cursor: pointer; }
+.ow-table tr.row-sel td { background: rgba(46,125,50,0.07); }
+.ow-table .amt { text-align: right; font-variant-numeric: tabular-nums; }
+.count-offset { background: rgba(21,101,192,0.13); color: #1565c0; }
+.wo-adv-pick { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; }
+.wo-adv-opt { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; cursor: pointer; font-size: 12.5px; }
+.wo-adv-opt.on { border-color: #2e7d32; background: rgba(46,125,50,0.06); }
+.wo-adv-opt b { margin-left: auto; color: #2e7d32; font-variant-numeric: tabular-nums; }
 
 /* ══ 合并开票批次工作台 ══ */
 .batch-panel { margin-top: 12px; border: 1px solid rgba(33,150,243,0.22); border-radius: 12px; background: rgba(33,150,243,0.03); overflow: hidden; }

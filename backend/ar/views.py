@@ -1937,6 +1937,11 @@ def ar_record_export(request):
         ('r_payments', '回款日期', lambda rec, st: _pay_dates(rec)),
         ('r_payments', '回款金额', lambda rec, st: _pay_amounts(rec)),
         ('r_payments', '已回款合计', lambda rec, st: _pay_total(rec)),
+        ('r_payments', '预收冲抵金额',
+         lambda rec, st: float(sum(p.amount for p in rec.payments.all()
+                                   if p.source == '预收抵扣')) or ''),
+        ('r_payments', '预收冲抵次数',
+         lambda rec, st: sum(1 for p in rec.payments.all() if p.source == '预收抵扣') or ''),
         ('r_due_date', '应收日期', lambda rec, st: str(rec.due_date) if rec.due_date else ''),
         ('r_due_date', '目标回款日期',
          lambda rec, st: str(rec.target_collection_date) if rec.target_collection_date else ''),
@@ -5300,6 +5305,15 @@ def advance_writeoffs(request, pk):
             if payment_obj.department != rec.delivery_dept:
                 return err(f'排款所属部门「{payment_obj.department}」与预付所属部门'
                            f'「{rec.delivery_dept}」不一致，不能关联核销')
+            # 冲抵上限：累计冲抵 + 已付 不得超过计划金额（否则待付为负、口径失真）
+            plan = (payment_obj.plan_adjustment
+                    if payment_obj.plan_adjustment is not None else payment_obj.total_amount)
+            paid = payment_obj.total_paid
+            offset_now = payment_obj.prepaid_offset_amount or Decimal('0')
+            room = (plan or Decimal('0')) - paid - offset_now
+            if amount > room:
+                return err(f'冲抵金额 {amount} 超过该排款剩余待付 {room}'
+                           f'（计划 {plan} − 已付 {paid} − 已冲抵 {offset_now}）')
         try:
             with transaction.atomic():
                 last = rec.writeoffs.select_for_update().order_by('-writeoff_no').first()
@@ -5351,6 +5365,199 @@ def _create_offset_payment(advance, ar_record, amount, pay_date):
     return ARPayment.objects.create(
         ar_record=ar_record, payment_no=next_no, amount=amount,
         payment_date=pay_date, source='预收抵扣', notes=note)
+
+
+@csrf_exempt
+@pk_required()
+def advance_batch_writeoff(request, pk):
+    """POST /advances/<pk>/batch-writeoff — 一笔预收按先进先出批量冲抵多条应收。
+
+    解决「一个客户多个项目/多条应收，逐条核销太繁」：
+    body: { record_ids: [int,...], amount(选填,默认=min(预收余额, 所选未收合计)),
+            writeoff_date(必填) }
+    按运作日期先进先出逐条冲抵：每条生成一笔核销 + 一笔「预收抵扣」回款
+    （与单笔核销同一底层路径，可在两侧追溯）。
+    匹配纪律与单笔核销一致：预收挂项目则只能冲该项目的应收；
+    散单预收（未挂项目）则应收的客户名称须与往来单位一致。
+    """
+    denied = _page_denied(request, 'ar_advance') or _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _write_denied(request) or _ar_field_denied(request, 'adv_writeoff')
+    if denied:
+        return denied
+    try:
+        adv = AdvanceRecord.objects.select_related('project').get(pk=pk)
+    except AdvanceRecord.DoesNotExist:
+        return err('预收记录不存在', 404)
+    if adv.direction != '预收':
+        return err('仅「预收」可批量冲抵应收账款')
+    if request.pk_role != 'super_admin' and adv.delivery_dept not in request.pk_depts:
+        return err('无权访问', 403)
+
+    data = _parse_body(request)
+    ids = data.get('record_ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请勾选要冲抵的应收明细（record_ids）')
+    try:
+        ids = [int(i) for i in ids]
+    except (TypeError, ValueError):
+        return err('record_ids 必须为整数列表')
+    wo_date = _normalize_date(data.get('writeoff_date'))
+    if not wo_date:
+        return err('核销日期无效（格式 2026-01-20）')
+
+    recs = list(ARRecord.objects.select_related('project')
+                .filter(pk__in=ids).order_by('operation_date', 'id'))
+    if len(recs) != len(set(ids)):
+        return err('部分应收明细不存在')
+    for r in recs:
+        if request.pk_role != 'super_admin' and r.delivery_dept not in request.pk_depts:
+            return err(f'无权操作应收明细 #{r.id} 所属部门', 403)
+        if adv.project_id and r.project_id != adv.project_id:
+            return err(f'应收「{r.project.short_name} {r.operation_date}」与预收所属项目不一致，无法冲抵')
+        if not adv.project_id and adv.counterparty and (
+                (r.project.customer_name or '').strip().lower()
+                != adv.counterparty.strip().lower()):
+            return err(f'应收「{r.project.short_name}」客户为「{r.project.customer_name}」，'
+                       f'与预收往来单位「{adv.counterparty}」不一致，无法冲抵')
+    open_recs = [r for r in recs if (r.outstanding_amount or Decimal('0')) > 0]
+    if not open_recs:
+        return err('所选应收明细均已结清，无未收余额可冲抵')
+
+    balance = adv.balance_amount or Decimal('0')
+    total_outstanding = sum(r.outstanding_amount for r in open_recs)
+    default_amt = min(balance, total_outstanding)
+    amount = _dec(data.get('amount', 0)) or default_amt
+    if amount <= 0:
+        return err('核销金额必须大于0')
+    if amount > balance:
+        return err(f'核销金额 {amount} 超过预收未核销余额 {balance}')
+    if amount > total_outstanding:
+        return err(f'核销金额 {amount} 超过所选应收未收合计 {total_outstanding}，'
+                   f'请按 {total_outstanding} 以内录入')
+
+    allocations = []
+    try:
+        with transaction.atomic():
+            adv_locked = AdvanceRecord.objects.select_for_update().get(pk=adv.pk)
+            remaining = amount
+            last_wo = adv_locked.writeoffs.select_for_update().order_by('-writeoff_no').first()
+            next_no = (last_wo.writeoff_no + 1) if last_wo else 1
+            for r in open_recs:
+                if remaining <= 0:
+                    break
+                alloc = min(remaining, r.outstanding_amount)
+                pay = _create_offset_payment(adv_locked, r, alloc, wo_date)
+                AdvanceWriteoff.objects.create(
+                    advance_record=adv_locked, writeoff_no=next_no, amount=alloc,
+                    writeoff_date=wo_date, ar_record=r, ar_payment=pay,
+                    notes=f'批量核销（{len(open_recs)}条应收先进先出）')
+                next_no += 1
+                r.refresh_from_db()
+                allocations.append({
+                    'record_id': r.id, 'short_name': r.project.short_name,
+                    'operation_date': str(r.operation_date) if r.operation_date else None,
+                    'allocated': str(alloc),
+                    'outstanding_after': str(r.outstanding_amount),
+                })
+                remaining -= alloc
+    except ValidationError as e:
+        return err(str(e.message if hasattr(e, 'message') else e), 400)
+
+    adv.refresh_from_db()
+    settled = sum(1 for a in allocations if Decimal(a['outstanding_after']) <= 0)
+    return ok({
+        'advance_id': adv.id, 'amount': str(amount), 'allocations': allocations,
+        'advance_balance_after': str(adv.balance_amount),
+        'message': (f'预收 {amount} 已按运作日期先进先出冲抵 {len(allocations)} 条应收'
+                    f'（{settled} 条就此结清），预收剩余 {adv.balance_amount}'),
+    })
+
+
+@csrf_exempt
+@pk_required()
+def advance_offset_workbench(request):
+    """GET /advances/offset-workbench — 预收核销工作台（应收账款·预收核销 Tab）。
+
+    按客户聚合：有未核销预收余额的客户 × 其名下仍有未收的应收明细，
+    一屏看清「谁的预收还没用、能冲谁的账」，支持勾选批量核销。
+    入参：dept(可选) q(客户名模糊,可选)
+    """
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    dept = (request.GET.get('dept') or '').strip()
+    q = (request.GET.get('q') or '').strip()
+
+    adv_qs = (_advance_dept_filter(AdvanceRecord.objects.select_related('project'), request)
+              .filter(direction='预收', balance_amount__gt=0))
+    if dept:
+        adv_qs = adv_qs.filter(delivery_dept=dept)
+
+    # 客户键：挂项目的取项目客户名，散单取往来单位
+    groups = {}
+    for a in adv_qs.order_by('occur_date', 'id'):
+        cust = ((a.project.customer_name if a.project_id else a.counterparty) or '').strip()
+        if not cust:
+            continue
+        if q and q.lower() not in cust.lower():
+            continue
+        g = groups.setdefault(cust, {'advances': [], 'records': [], '_proj_ids': set()})
+        g['advances'].append({
+            'id': a.id, 'counterparty': a.counterparty,
+            'project_id': a.project_id,
+            'short_name': a.project.short_name if a.project_id else None,
+            'occur_date': str(a.occur_date) if a.occur_date else None,
+            'balance_amount': str(a.balance_amount),
+            'delivery_dept': a.delivery_dept,
+        })
+        if a.project_id:
+            g['_proj_ids'].add(a.project_id)
+
+    if not groups:
+        return ok({'groups': [], 'total': 0})
+
+    # 各客户名下仍有未收的应收（部门作用域内）
+    rec_qs = (_ar_dept_filter(ARRecord.objects.select_related('project'), request,
+                              shared_field='project__is_shared')
+              .filter(outstanding_amount__gt=0,
+                      project__customer_name__in=list(groups.keys())))
+    if dept:
+        rec_qs = rec_qs.filter(delivery_dept=dept)
+    for r in rec_qs.order_by('operation_date', 'id'):
+        cust = (r.project.customer_name or '').strip()
+        if cust not in groups:
+            continue
+        groups[cust]['records'].append({
+            'id': r.id, 'project_id': r.project_id,
+            'short_name': r.project.short_name,
+            'operation_date': str(r.operation_date) if r.operation_date else None,
+            'due_date': str(r.due_date) if r.due_date else None,
+            'estimated': str(r.estimated_amount or 0),
+            'outstanding': str(r.outstanding_amount or 0),
+            'delivery_dept': r.delivery_dept,
+        })
+
+    rows = []
+    for cust, g in sorted(groups.items()):
+        bal = sum(Decimal(a['balance_amount']) for a in g['advances'])
+        out = sum(Decimal(r['outstanding']) for r in g['records'])
+        rows.append({
+            'customer': cust,
+            'advances': g['advances'],
+            'records': g['records'],
+            'total_balance': str(bal),
+            'total_outstanding': str(out),
+            'offsettable': str(min(bal, out)),
+        })
+    # 有账可冲的排前面
+    rows.sort(key=lambda x: Decimal(x['offsettable']), reverse=True)
+    return ok({'groups': rows, 'total': len(rows)})
 
 
 @csrf_exempt

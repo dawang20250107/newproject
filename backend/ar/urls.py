@@ -66,6 +66,8 @@ urlpatterns = [
     path('advances/import', views.advance_import),
     path('advances/export', views.advance_export),
     path('advances/<int:pk>', views.advance_detail),
+    path('advances/offset-workbench', views.advance_offset_workbench),
+    path('advances/<int:pk>/batch-writeoff', views.advance_batch_writeoff),
     path('advances/<int:pk>/writeoffs', views.advance_writeoffs),
     path('advances/<int:pk>/writeoffs/<int:wid>', views.advance_writeoff_detail),
 

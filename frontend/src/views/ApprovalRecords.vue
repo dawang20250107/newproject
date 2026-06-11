@@ -73,7 +73,19 @@ async function updateStatus(it, status){
     statusUpdating.value[it.id] = false
   }
 }
-function openSchedule(it){ current.value=it; Object.assign(scheduleForm,{ planned_date: todayCST(), total_amount:it.amount }); showSchedule.value=true }
+// 排款前联动：该审批关联项目有「预付」未核销余额时提示，排款后可在付款台账行内核销
+const schedPrepaid = ref(null)
+function openSchedule(it){
+  current.value=it
+  Object.assign(scheduleForm,{ planned_date: todayCST(), total_amount:it.amount })
+  schedPrepaid.value = null
+  showSchedule.value=true
+  if (it.project_short_name) {
+    api.get('/payments/prepaid-balance', { params: { short_name: it.project_short_name } })
+      .then(r => { if (r.data?.matched && r.data.count > 0) schedPrepaid.value = r.data })
+      .catch(() => {})
+  }
+}
 async function doSchedule(){ try{ await api.post(`/approvals/${current.value.id}/schedule`, scheduleForm); showSchedule.value=false; load(); alert('排款成功并已归档') } catch(e){ alert(e?.error||'排款失败') } }
 async function downloadTemplate(){ const b=await api.get('/approvals/template',{responseType:'blob'}); dl(b,'审批管理导入模板.xlsx') }
 const dl = downloadBlob
@@ -169,7 +181,13 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <label class="form-field"><span>审批状态</span><select v-model="form.status"><option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option></select></label>
   </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showCreate=false">取消</button><button class="btn btn-primary" :disabled="saving" @click="create">保存</button></div></div></div></Teleport>
 
-  <Teleport to="body"><div v-if="showSchedule" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>一键排款</h3></div><div class="modal-body"><div class="form-grid">
+  <Teleport to="body"><div v-if="showSchedule" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>一键排款</h3></div><div class="modal-body">
+    <div v-if="schedPrepaid" class="sched-prepaid-hint">
+      💡 项目「{{ schedPrepaid.short_name }}」尚有 <b>{{ schedPrepaid.count }}</b> 笔预付未核销，
+      余额合计 <b>{{ schedPrepaid.total_balance }}</b> 元。建议排款后到付款台账该行点「核销」，
+      用预付冲抵以减少重复付现。
+    </div>
+    <div class="form-grid">
     <label class="form-field"><span>计划日期*</span><input v-model="scheduleForm.planned_date" type="date"/></label>
     <label class="form-field"><span>计划金额*</span><input v-model="scheduleForm.total_amount" type="number" step="0.01"/></label>
   </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showSchedule=false">取消</button><button class="btn btn-primary" @click="doSchedule">保存并排款</button></div></div></div></Teleport>
@@ -211,6 +229,9 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   overflow: visible; text-overflow: clip; white-space: normal;
 }
 .meta-cell { color: var(--muted); font-size: 12.5px; }
+.sched-prepaid-hint { font-size: 12.5px; color: #8a6d1a; background: rgba(255,213,79,0.14);
+  border: 1px solid rgba(255,193,7,0.35); border-radius: 9px; padding: 9px 12px; margin-bottom: 12px; line-height: 1.7; }
+.sched-prepaid-hint b { color: #6d4c00; }
 .ops-btns { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
 .ops-btns .btn { padding: 4px 8px; font-size: 12px; white-space: nowrap; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }

@@ -3123,3 +3123,155 @@ class AdjustmentAndCycleTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         p = ARProject.objects.get(short_name='周期项目')
         self.assertEqual(p.cycle_start_day, 15)
+
+
+class OffsetChainTests(TestCase):
+    """预收/预付核销口径前移：批量核销、核销工作台、预付冲抵上限、简称查询。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900001200', name='OffsetAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='核销客户', short_name='核销项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='OFF-0001')
+        self.r1 = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 4, 1),
+                                          estimated_amount=Decimal('1000'))
+        self.r2 = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                          estimated_amount=Decimal('2000'))
+        self.adv = AdvanceRecord.objects.create(
+            direction='预收', counterparty='核销客户', project=self.proj,
+            delivery_dept=self.dept, occur_date=date(2026, 3, 1),
+            occur_year=2026, occur_month=3,
+            advance_amount=Decimal('2500'))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_batch_writeoff_fifo(self):
+        resp = self.client.post(f'/api/pk/ar/advances/{self.adv.id}/batch-writeoff',
+                                data=json.dumps({'record_ids': [self.r1.id, self.r2.id],
+                                                 'amount': '2200', 'writeoff_date': '2026-06-01'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        # 先进先出：r1(4月,1000)先结清，r2 分到 1200
+        self.assertEqual(Decimal(d['allocations'][0]['allocated']), Decimal('1000'))
+        self.assertEqual(Decimal(d['allocations'][1]['allocated']), Decimal('1200'))
+        self.assertEqual(Decimal(d['advance_balance_after']), Decimal('300'))
+        self.r1.refresh_from_db(); self.r2.refresh_from_db()
+        self.assertEqual(self.r1.outstanding_amount, Decimal('0'))
+        self.assertEqual(self.r2.outstanding_amount, Decimal('800'))
+        # 每条都有「预收抵扣」回款 + 核销行可追溯
+        self.assertEqual(self.r1.payments.filter(source='预收抵扣').count(), 1)
+        self.assertEqual(self.adv.writeoffs.count(), 2)
+
+    def test_batch_writeoff_default_amount(self):
+        # 不传金额 → 默认 min(余额2500, 未收合计3000) = 2500
+        resp = self.client.post(f'/api/pk/ar/advances/{self.adv.id}/batch-writeoff',
+                                data=json.dumps({'record_ids': [self.r1.id, self.r2.id],
+                                                 'writeoff_date': '2026-06-01'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.adv.refresh_from_db()
+        self.assertEqual(self.adv.balance_amount, Decimal('0'))
+
+    def test_batch_writeoff_over_balance_rejected(self):
+        resp = self.client.post(f'/api/pk/ar/advances/{self.adv.id}/batch-writeoff',
+                                data=json.dumps({'record_ids': [self.r1.id, self.r2.id],
+                                                 'amount': '9999', 'writeoff_date': '2026-06-01'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400)
+
+    def test_batch_writeoff_cross_project_rejected(self):
+        other = ARProject.objects.create(
+            customer_name='别家客户', short_name='别家项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='OFF-0002')
+        r3 = ARRecord.objects.create(project=other, operation_date=date(2026, 5, 1),
+                                     estimated_amount=Decimal('500'))
+        resp = self.client.post(f'/api/pk/ar/advances/{self.adv.id}/batch-writeoff',
+                                data=json.dumps({'record_ids': [r3.id],
+                                                 'writeoff_date': '2026-06-01'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('不一致', resp.json()['error'])
+
+    def test_offset_workbench_groups_by_customer(self):
+        resp = self.client.get('/api/pk/ar/advances/offset-workbench', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        groups = resp.json()['data']['groups']
+        self.assertEqual(len(groups), 1)
+        g = groups[0]
+        self.assertEqual(g['customer'], '核销客户')
+        self.assertEqual(len(g['advances']), 1)
+        self.assertEqual(len(g['records']), 2)
+        self.assertEqual(Decimal(g['offsettable']), Decimal('2500'))
+
+    def test_prepaid_balance_by_short_name(self):
+        AdvanceRecord.objects.create(
+            direction='预付', counterparty='某供应商', project=self.proj,
+            delivery_dept=self.dept, occur_date=date(2026, 3, 1),
+            occur_year=2026, occur_month=3,
+            advance_amount=Decimal('800'))
+        resp = self.client.get('/api/pk/payments/prepaid-balance',
+                               {'short_name': '核销项目'}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertTrue(d['matched'])
+        self.assertEqual(Decimal(d['total_balance']), Decimal('800'))
+
+    def test_prepaid_writeoff_over_payment_remaining_rejected(self):
+        from paikuan.models import Payment
+        prepaid = AdvanceRecord.objects.create(
+            direction='预付', counterparty='某供应商', project=self.proj,
+            delivery_dept=self.dept, occur_date=date(2026, 3, 1),
+            occur_year=2026, occur_month=3,
+            advance_amount=Decimal('5000'))
+        pay = Payment.objects.create(
+            department=self.dept, project_desc='设备款', payee='某供应商',
+            total_amount=Decimal('1000'), planned_date=date(2026, 7, 1),
+            project_short_name='核销项目')
+        # 冲抵 1200 > 待付 1000 → 拒绝
+        resp = self.client.post(f'/api/pk/ar/advances/{prepaid.id}/writeoffs',
+                                data=json.dumps({'amount': '1200', 'writeoff_date': '2026-07-01',
+                                                 'payment_id': pay.id}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('剩余待付', resp.json()['error'])
+        # 冲抵 600 通过，prepaid_offset_amount 信号更新
+        resp = self.client.post(f'/api/pk/ar/advances/{prepaid.id}/writeoffs',
+                                data=json.dumps({'amount': '600', 'writeoff_date': '2026-07-01',
+                                                 'payment_id': pay.id}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        pay.refresh_from_db()
+        self.assertEqual(pay.prepaid_offset_amount, Decimal('600'))
+        # 第二次核销 500 > 剩余 400 → 拒绝；400 通过（多次核销）
+        resp = self.client.post(f'/api/pk/ar/advances/{prepaid.id}/writeoffs',
+                                data=json.dumps({'amount': '500', 'writeoff_date': '2026-07-02',
+                                                 'payment_id': pay.id}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400)
+        resp = self.client.post(f'/api/pk/ar/advances/{prepaid.id}/writeoffs',
+                                data=json.dumps({'amount': '400', 'writeoff_date': '2026-07-02',
+                                                 'payment_id': pay.id}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        pay.refresh_from_db()
+        self.assertEqual(pay.prepaid_offset_amount, Decimal('1000'))
+
+    def test_ar_export_has_offset_columns(self):
+        self.client.post(f'/api/pk/ar/advances/{self.adv.id}/batch-writeoff',
+                         data=json.dumps({'record_ids': [self.r1.id],
+                                          'writeoff_date': '2026-06-01'}),
+                         content_type='application/json', **self.auth())
+        resp = self.client.get('/api/pk/ar/records/export', **self.auth())
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        headers = [c.value for c in wb.active[1]]
+        self.assertIn('预收冲抵金额', headers)
+        self.assertIn('预收冲抵次数', headers)

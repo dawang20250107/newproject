@@ -271,6 +271,58 @@ function onSaved(p) {
   loadDepts()
 }
 
+// ── 预付核销（排款行内操作，支持多次）────────────────────────────────────────
+// 该排款项目若有「预付」未核销余额，可直接在此冲抵：选预付 → 金额+日期 →
+// 生成核销并自动更新本排款的预付冲抵额（待付 = 计划 − 已付 − 冲抵）。
+const showOffset = ref(false)
+const offsetTarget = ref(null)        // payment row
+const offsetItems = ref([])           // 可用预付列表
+const offsetLoading = ref(false)
+const offsetForm = reactive({ advance_id: '', amount: '', writeoff_date: todayCST() })
+const offsetBusy = ref(false)
+const offsetDone = ref('')            // 成功提示（留在弹窗里可继续核销）
+
+async function openOffset(p) {
+  offsetTarget.value = p
+  Object.assign(offsetForm, { advance_id: '', amount: '', writeoff_date: todayCST() })
+  offsetItems.value = []
+  offsetDone.value = ''
+  showOffset.value = true
+  offsetLoading.value = true
+  try {
+    const res = await api.get('/payments/prepaid-balance', {
+      params: { project_no: p.project_no || undefined, short_name: p.project_short_name || undefined },
+    })
+    offsetItems.value = res.data?.items || []
+    if (offsetItems.value.length === 1) offsetForm.advance_id = offsetItems.value[0].id
+  } catch (_) { offsetItems.value = [] }
+  finally { offsetLoading.value = false }
+}
+const offsetRoom = computed(() => parseFloat(offsetTarget.value?.remaining) || 0)
+async function doOffset() {
+  const amt = parseFloat(offsetForm.amount)
+  if (!offsetForm.advance_id) { alert('请选择要核销的预付'); return }
+  if (!(amt > 0)) { alert('冲抵金额必须大于0'); return }
+  offsetBusy.value = true
+  try {
+    await api.post(`/ar/advances/${offsetForm.advance_id}/writeoffs`, {
+      amount: amt, writeoff_date: offsetForm.writeoff_date,
+      payment_id: offsetTarget.value.id,
+    })
+    offsetDone.value = `✓ 已冲抵 ${amt.toFixed(2)} 元（可继续核销其他预付，或关闭）`
+    offsetForm.amount = ''
+    await load()
+    // 刷新可用预付余额与本行数据
+    const p = items.value.find(x => x.id === offsetTarget.value.id)
+    if (p) offsetTarget.value = p
+    const res = await api.get('/payments/prepaid-balance', {
+      params: { project_no: offsetTarget.value.project_no || undefined, short_name: offsetTarget.value.project_short_name || undefined },
+    })
+    offsetItems.value = res.data?.items || []
+  } catch (e) { alert(e?.msg || e?.error || '核销失败') }
+  finally { offsetBusy.value = false }
+}
+
 async function onDelete(p) {
   if (!confirm(`确定删除「${p.project_desc}」？此操作不可撤销。`)) return
   try {
@@ -441,6 +493,8 @@ function setPage(p) { filters.page = p; load() }
               <td v-if="auth.canWrite || auth.canDelete" class="ops-cell">
                 <div style="display:flex;gap:4px;justify-content:center">
                   <button v-if="auth.canWrite" class="btn btn-ghost btn-sm" @click="openEdit(p)">编辑</button>
+                  <button v-if="auth.canWrite && (p.project_short_name || p.project_no)" class="btn btn-ghost btn-sm"
+                    title="用该项目的预付余额冲抵本排款（支持多次核销）" @click="openOffset(p)">核销</button>
                   <button class="btn btn-ghost btn-sm" @click="openLogs(p)">日志</button>
                   <button v-if="auth.canDelete" class="btn btn-danger btn-sm" @click="onDelete(p)">删除</button>
                 </div>
@@ -475,6 +529,49 @@ function setPage(p) { filters.page = p; load() }
       @saved="onSaved"
       @close="showModal = false"
     />
+
+    <!-- 预付核销弹窗：用项目预付余额冲抵本排款（可多次） -->
+    <div v-if="showOffset" class="overlay" @click.self="showOffset = false">
+      <div class="modal" style="width:520px">
+        <div class="modal-header">
+          <h3>预付核销 — {{ offsetTarget?.project_short_name || offsetTarget?.project_no }}</h3>
+          <button class="modal-close" @click="showOffset = false">×</button>
+        </div>
+        <div style="padding:4px 2px 0">
+          <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px">
+            {{ offsetTarget?.project_desc }} · 收款方 {{ offsetTarget?.payee }}<br/>
+            计划 <b>{{ fmt(offsetTarget?.plan_adjustment ?? offsetTarget?.total_amount) }}</b>
+            · 已冲抵 <b>{{ fmt(offsetTarget?.prepaid_offset_amount || 0) }}</b>
+            · 剩余待付 <b style="color:#e65100">{{ offsetRoom.toFixed(2) }}</b>
+          </p>
+          <p v-if="offsetDone" style="font-size:12.5px;color:#2e7d32;font-weight:600">{{ offsetDone }}</p>
+          <div v-if="offsetLoading" style="font-size:12.5px;color:var(--muted);padding:10px 0">查询可用预付…</div>
+          <div v-else-if="!offsetItems.length" style="font-size:12.5px;color:var(--muted);padding:10px 0">
+            该项目暂无可核销的「预付」余额——预付须先在「预收预付」录入并挂到该项目
+          </div>
+          <div v-else class="po-list">
+            <label v-for="a in offsetItems" :key="a.id" class="po-opt" :class="{ on: offsetForm.advance_id === a.id }">
+              <input type="radio" :value="a.id" v-model="offsetForm.advance_id" />
+              <span>预付 {{ a.occur_date || '—' }} · {{ a.counterparty || '—' }}</span>
+              <b>余额 {{ fmt(a.balance_amount) }}</b>
+            </label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <input v-model="offsetForm.amount" type="number" step="0.01" placeholder="冲抵金额(元)" style="flex:1" />
+            <input v-model="offsetForm.writeoff_date" type="date" style="width:150px" />
+          </div>
+          <p style="font-size:11px;color:var(--muted);margin:6px 0 0">
+            冲抵后：待付 = 计划 − 已付 − 预付冲抵。每次核销逐笔可追溯，可多次核销不同预付。
+          </p>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+          <button class="btn btn-ghost" @click="showOffset = false">关闭</button>
+          <button class="btn btn-primary" :disabled="offsetBusy || !offsetItems.length" @click="doOffset">
+            {{ offsetBusy ? '核销中…' : '确认核销冲抵' }}
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- import result popup -->
     <div v-if="importResult" class="overlay" @click.self="importResult = null">
@@ -588,6 +685,12 @@ function setPage(p) { filters.page = p; load() }
 .pk-pay-tbl .ops-cell { white-space: nowrap; text-align: center; }
 .pk-pay-tbl .ops-cell .btn-sm { padding: 3px 7px; font-size: 11px; border-radius: 6px; }
 .pk-pay-tbl .badge { font-size: 10.5px; padding: 2px 7px; }
+
+/* 预付核销弹窗 */
+.po-list { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; }
+.po-opt { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; cursor: pointer; font-size: 12.5px; }
+.po-opt.on { border-color: var(--primary); background: rgba(201,99,66,0.06); }
+.po-opt b { margin-left: auto; color: #2e7d32; font-variant-numeric: tabular-nums; }
 
 /* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
 

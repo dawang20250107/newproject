@@ -732,9 +732,8 @@ def payments(request):
 @csrf_exempt
 @pk_required()
 def prepaid_balance(request):
-    """排款页联动：按项目编号查该项目的「预付」未核销余额，提示是否先核销再付款。
-
-    只读；按用户可见部门作用域过滤。未匹配到项目台账则返回空。
+    """排款页联动：按项目编号/项目简称查该项目的「预付」未核销余额，
+    提示是否先核销再付款。只读；按用户可见部门作用域过滤。未匹配到项目台账则返回空。
     """
     perms = get_request_perms(request)
     denied = _payments_page_denied(request, perms)
@@ -743,12 +742,17 @@ def prepaid_balance(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
     project_no = (request.GET.get('project_no') or '').strip()
+    short_name = (request.GET.get('short_name') or '').strip()
     empty = {'project_no': project_no, 'matched': False, 'count': 0,
              'total_balance': '0.00', 'items': []}
-    if not project_no:
+    if not (project_no or short_name):
         return ok(empty)
     from ar.models import AdvanceRecord, ARProject
-    proj = ARProject.objects.filter(project_no=project_no).first()
+    proj = None
+    if project_no:
+        proj = ARProject.objects.filter(project_no=project_no).first()
+    if proj is None and short_name:
+        proj = ARProject.objects.filter(short_name=short_name).order_by('-id').first()
     if not proj:
         return ok(empty)
     qs = AdvanceRecord.objects.filter(direction='预付', balance_amount__gt=0, project=proj)
@@ -2335,6 +2339,7 @@ def payment_export(request):
 
     # Determine max installment count across the filtered set for dynamic columns.
     can_view_insts = perms is None or perms['view'].get('installments', True)
+    can_view_amounts = perms is None or perms['view'].get('total_amount', True)
     all_payments = list(qs.prefetch_related('installments').select_related('created_by'))
     if can_view_insts and all_payments:
         max_slots = max((p.installments.count() for p in all_payments), default=0)
@@ -2390,15 +2395,28 @@ def payment_export(request):
                     val = _safe_text(val)
             ws.cell(row=row_idx, column=col_idx, value=val)
 
-        # Append status column after visible cols
-        ws.cell(row=row_idx, column=len(cols) + 1,
+        # Append derived columns after visible cols（导出专用，不参与导入）：
+        # 预付冲抵 / 剩余待付 / 状态。冲抵为核销派生值，导入它会破坏两侧台账平衡。
+        extra_idx = len(cols) + 1
+        if can_view_amounts:
+            try:
+                ws.cell(row=row_idx, column=extra_idx,
+                        value=float(d.get('prepaid_offset_amount') or 0))
+                ws.cell(row=row_idx, column=extra_idx + 1,
+                        value=float(d.get('remaining') or 0))
+            except (ValueError, TypeError):
+                pass
+            extra_idx += 2
+        ws.cell(row=row_idx, column=extra_idx,
                 value=status_label.get(d.get('status', ''), ''))
 
-    # Status header
-    status_header_cell = ws.cell(row=1, column=len(cols) + 1, value='状态')
-    status_header_cell.font = header_font
-    status_header_cell.fill = header_fill
-    status_header_cell.alignment = center
+    # Derived headers
+    extra_headers = (['预付冲抵(元)', '剩余待付(元)'] if can_view_amounts else []) + ['状态']
+    for off, h in enumerate(extra_headers):
+        c = ws.cell(row=1, column=len(cols) + 1 + off, value=h)
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = center
 
     # Auto-width approximation
     for col in ws.columns:
