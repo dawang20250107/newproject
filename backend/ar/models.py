@@ -910,6 +910,42 @@ class AdvanceInstallment(models.Model):
         }
 
 
+class BatchInvoiceEvent(models.Model):
+    """批次开票事件 — 一个批次可多次开票（与批次回款同构）。
+
+    每次开票一行：日期 + 价税合计金额 + 税额，按运作日期先进先出分摊到
+    成员记录的「可开余额」（上账+差额−已开）；allocations 记录逐条分摊额，
+    支持整次撤销。累计开票不得超过批次可开总额。"""
+    batch_no = models.CharField('批次号', max_length=50, db_index=True)
+    invoice_date = models.DateField('开票日期', db_index=True)
+    amount = models.DecimalField('开票金额(价税合计)', max_digits=15, decimal_places=2)
+    tax_amount = models.DecimalField('税额(差额模式手填)', max_digits=15, decimal_places=2,
+                                     null=True, blank=True)
+    notes = models.CharField('备注', max_length=200, blank=True, default='')
+    allocations = models.JSONField('分摊明细', default=list)   # [{record_id, amount}]
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='created_batch_invoices')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'ar_batch_invoice_events'
+        ordering = ['batch_no', 'invoice_date', 'id']
+        indexes = [models.Index(fields=['batch_no', 'invoice_date'])]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'batch_no': self.batch_no,
+            'invoice_date': str(self.invoice_date),
+            'amount': str(self.amount),
+            'tax_amount': str(self.tax_amount) if self.tax_amount is not None else None,
+            'notes': self.notes,
+            'allocations': self.allocations,
+            'created_by_name': self.created_by.name if self.created_by else '',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class AdvanceWriteoff(models.Model):
     """核销子表 — 每次核销一行，不限次数。
 

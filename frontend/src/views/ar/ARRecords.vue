@@ -518,7 +518,7 @@ const expandedBatch = ref('')
 const showBatchInvoice = ref(false)
 const showBatchPay = ref(false)
 const batchTarget = ref(null)
-const batchInvForm = reactive({ invoice_date: todayCST(), invoice_total: '' })
+const batchInvForm = reactive({ invoice_date: todayCST(), amount: '', tax_amount: '', notes: '' })
 const batchPayForm = reactive({ amount: '', payment_date: todayCST(), notes: '' })
 const batchActing = ref(false)
 const batchPayResult = ref(null)   // 分摊结果回执
@@ -544,42 +544,35 @@ function toggleBatchExpand(bn) {
 async function refreshAfterBatchAction(bn) {
   await Promise.all([loadBatches(), load(), fetchBatchDetail(bn, true).catch(() => {})])
 }
-const invSel = ref(new Set())   // 本轮勾选开票的成员（分批开票：可只开一部分）
-function invToggle(id) {
-  const s = new Set(invSel.value)
-  s.has(id) ? s.delete(id) : s.add(id)
-  invSel.value = s
-}
-const invPending = computed(() =>
-  (batchDetail.value[batchTarget.value?.batch_no]?.members || []).filter(m => m.invoiced == null))
-const invSelTotal = computed(() =>
-  invPending.value.filter(m => invSel.value.has(m.id))
-    .reduce((t, m) => t + (parseFloat(m.billable) || 0), 0))
-const invSelTax = computed(() =>
-  invPending.value.filter(m => invSel.value.has(m.id))
-    .reduce((t, m) => t + (parseFloat(m.tax_amount) || 0), 0))
+// 金额级分批开票：每次开票一个事件（日期+金额+税额），先进先出分摊到成员
+// 可开余额，累计 ≤ 上账+差额 合计即可多次开票；事件可整次撤销
+const invDetail = computed(() => batchDetail.value[batchTarget.value?.batch_no])
+const invRoom = computed(() => parseFloat(invDetail.value?.summary?.invoice_room) || 0)
 async function openBatchInvoice(b) {
   batchTarget.value = b
-  Object.assign(batchInvForm, { invoice_date: todayCST(), invoice_total: '' })
+  Object.assign(batchInvForm, { invoice_date: todayCST(), amount: '', tax_amount: '', notes: '' })
   showBatchInvoice.value = true
-  try {
-    const d = await fetchBatchDetail(b.batch_no)
-    invSel.value = new Set((d.members || []).filter(m => m.invoiced == null).map(m => m.id))
-  } catch (_) { invSel.value = new Set() }
+  fetchBatchDetail(b.batch_no, true).catch(() => {})
 }
 async function doBatchInvoice() {
-  if (!invSel.value.size) { alert('请勾选本轮要开票的记录'); return }
+  if (!(parseFloat(batchInvForm.amount) > 0)) { alert('请填写本次开票金额（价税合计）'); return }
   batchActing.value = true
   try {
-    const res = await ar.batchInvoice(batchTarget.value.batch_no, {
-      invoice_date: batchInvForm.invoice_date,
-      invoice_total: batchInvForm.invoice_total || null,
-      record_ids: [...invSel.value],
-    })
-    alert(res.data?.message || '批次开票完成')
-    showBatchInvoice.value = false
+    const res = await ar.batchInvoice(batchTarget.value.batch_no, { ...batchInvForm })
+    alert(res.data?.message || '开票已落账')
+    Object.assign(batchInvForm, { invoice_date: todayCST(), amount: '', tax_amount: '', notes: '' })
     await refreshAfterBatchAction(batchTarget.value.batch_no)
   } catch (e) { alert(e?.msg || '批次开票失败') }
+  finally { batchActing.value = false }
+}
+async function undoBatchInvoice(ev) {
+  if (!confirm(`撤销 ${ev.invoice_date} 的开票 ${ev.amount} 元？各记录开票额将整体回退。`)) return
+  batchActing.value = true
+  try {
+    const res = await ar.batchInvoiceUndo(batchTarget.value.batch_no, { event_id: ev.id })
+    alert(res.data?.message || '已撤销')
+    await refreshAfterBatchAction(batchTarget.value.batch_no)
+  } catch (e) { alert(e?.msg || '撤销失败') }
   finally { batchActing.value = false }
 }
 function openBatchPay(b) {
@@ -1733,51 +1726,75 @@ function clearFilters() {
         </div>
       </div>
 
-      <!-- Batch-Invoice Modal — 批次开票落账 -->
+      <!-- Batch-Invoice Modal — 金额级分批开票（多次开票事件，先进先出分摊） -->
       <div v-if="showBatchInvoice" class="modal-overlay">
-        <div class="modal-box" style="max-width:560px">
+        <div class="modal-box" style="max-width:620px">
           <div class="modal-header">
             <h3>批次开票 — {{ batchTarget?.batch_no }}</h3>
             <button class="modal-close" @click="showBatchInvoice = false">✕</button>
           </div>
           <div class="modal-body">
             <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px">
-              <strong>支持分批开票</strong>：勾选本轮要开的记录（默认全选待开），其余留待下轮。
-              落账规则：实际开票金额 = 上账 + 账实差额；税额按各记录的项目税率分别体现
-              （全额模式自动算，差额模式开票后到记录上手填税额）。
+              <strong>可多次开票</strong>：每次填日期+金额（+税额），系统按运作日期先进先出分摊到各记录的
+              可开余额；累计开票不超过「上账+差额」合计即可。全额模式税额按各记录项目税率自动算，
+              差额模式可在下方填本次手填税额（按分摊占比落到差额模式记录）。
             </p>
-            <table v-if="batchDetail[batchTarget?.batch_no]" class="bp-mtable" style="margin-bottom:12px">
-              <thead><tr><th style="width:30px"></th><th>项目</th><th>运作日期</th><th class="r">应开(上账+差额)</th><th class="r">税率</th><th class="r">税额(预计)</th><th>状态</th></tr></thead>
+
+            <!-- 已开票事件 -->
+            <div v-if="invDetail?.invoice_events?.length" class="bi-events">
+              <div class="bi-events-head">开票记录<i>每行一次开票，可整次撤销</i></div>
+              <div v-for="ev in invDetail.invoice_events" :key="ev.id" class="bi-ev-row">
+                <span class="bie-date">{{ ev.invoice_date }}</span>
+                <b class="bie-amt">{{ fmtCell(ev.amount) }}</b>
+                <span v-if="ev.tax_amount != null" class="bie-tax">税 {{ fmtCell(ev.tax_amount) }}</span>
+                <span class="bie-note" :title="ev.notes">{{ ev.notes }}</span>
+                <button class="bie-undo" :disabled="batchActing" @click="undoBatchInvoice(ev)">撤销</button>
+              </div>
+            </div>
+
+            <!-- 新增开票 -->
+            <div class="bi-add">
+              <div class="bi-add-head">新增开票
+                <span class="bi-room">批次可开余额 <b>{{ invRoom.toFixed(2) }}</b>（上账+差额合计 − 累计已开）</span>
+              </div>
+              <div class="form-grid">
+                <label class="form-field">
+                  <span>开票日期*</span>
+                  <input v-model="batchInvForm.invoice_date" type="date" />
+                </label>
+                <label class="form-field">
+                  <span>开票金额*（价税合计）</span>
+                  <input v-model="batchInvForm.amount" type="number" step="0.01" :placeholder="`≤ ${invRoom.toFixed(2)}`" />
+                </label>
+                <label class="form-field">
+                  <span>税额（选填，差额模式手填）</span>
+                  <input v-model="batchInvForm.tax_amount" type="number" step="0.01" placeholder="全额模式自动算，无需填" />
+                </label>
+                <label class="form-field">
+                  <span>备注（选填）</span>
+                  <input v-model="batchInvForm.notes" placeholder="如：发票号 044001900111" maxlength="200" />
+                </label>
+              </div>
+            </div>
+
+            <!-- 成员可开余额 -->
+            <table v-if="invDetail" class="bp-mtable" style="margin-top:12px">
+              <thead><tr><th>项目</th><th>运作日期</th><th class="r">应开(上账+差额)</th><th class="r">已开票</th><th class="r">剩余可开</th><th class="r">税率</th><th class="r">税额</th></tr></thead>
               <tbody>
-                <tr v-for="m in batchDetail[batchTarget.batch_no].members" :key="m.id"
-                    :style="m.invoiced == null && invSel.has(m.id) ? '' : 'opacity:.55'">
-                  <td><input v-if="m.invoiced == null" type="checkbox" :checked="invSel.has(m.id)" @change="invToggle(m.id)" style="width:auto" /></td>
+                <tr v-for="m in invDetail.members" :key="m.id" :style="parseFloat(m.invoice_room) > 0 ? '' : 'opacity:.55'">
                   <td>{{ m.short_name }}</td><td>{{ m.operation_date || '—' }}</td>
                   <td class="r">{{ fmtCell(m.billable) }}</td>
+                  <td class="r">{{ m.invoiced != null ? fmtCell(m.invoiced) : '—' }}</td>
+                  <td class="r" :class="parseFloat(m.invoice_room) > 0 ? 'bp-out' : 'bp-ok'">{{ parseFloat(m.invoice_room) > 0 ? fmtCell(m.invoice_room) : '✓ 开满' }}</td>
                   <td class="r">{{ parseFloat(m.tax_rate) ? (parseFloat(m.tax_rate) * 100).toFixed(1) + '%' : '—' }}</td>
                   <td class="r">{{ m.tax_amount != null ? fmtCell(m.tax_amount) : (m.invoice_mode === '差额' ? '手填' : '—') }}</td>
-                  <td>{{ m.invoiced != null ? '已开票' : '待开' }}</td>
                 </tr>
               </tbody>
             </table>
-            <p style="font-size:12px;color:var(--text);margin:-4px 0 10px">
-              本轮已选 <b>{{ invSel.size }}</b> 条 · 应开合计 <b>{{ invSelTotal.toFixed(2) }}</b>
-              · 预计税额合计 <b>{{ invSelTax.toFixed(2) }}</b>
-            </p>
-            <div class="form-grid">
-              <label class="form-field">
-                <span>开票日期*</span>
-                <input v-model="batchInvForm.invoice_date" type="date" />
-              </label>
-              <label class="form-field">
-                <span>发票金额（选填，校验用）</span>
-                <input v-model="batchInvForm.invoice_total" type="number" step="0.01" :placeholder="`填写则须与本轮所选合计 ${invSelTotal.toFixed(2)} 一致`" />
-              </label>
-            </div>
           </div>
           <div class="modal-footer">
-            <button class="btn btn-ghost" @click="showBatchInvoice = false">取消</button>
-            <button class="btn btn-primary" :disabled="batchActing || !batchInvForm.invoice_date" @click="doBatchInvoice">
+            <button class="btn btn-ghost" @click="showBatchInvoice = false">关闭</button>
+            <button class="btn btn-primary" :disabled="batchActing || !batchInvForm.invoice_date || !(parseFloat(batchInvForm.amount) > 0)" @click="doBatchInvoice">
               {{ batchActing ? '落账中…' : '确认开票落账' }}
             </button>
           </div>
@@ -2331,6 +2348,23 @@ function clearFilters() {
 .wo-adv-opt { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; cursor: pointer; font-size: 12.5px; }
 .wo-adv-opt.on { border-color: #2e7d32; background: rgba(46,125,50,0.06); }
 .wo-adv-opt b { margin-left: auto; color: #2e7d32; font-variant-numeric: tabular-nums; }
+
+/* 批次开票事件 */
+.bi-events { margin-bottom: 10px; padding: 7px 10px; background: rgba(21,101,192,.04);
+  border: 1px solid rgba(21,101,192,.18); border-radius: 8px; }
+.bi-events-head { font-size: 11.5px; font-weight: 700; color: #1565c0; margin-bottom: 3px; }
+.bi-events-head i { font-style: normal; font-weight: 400; font-size: 10.5px; color: var(--muted); margin-left: 8px; }
+.bi-ev-row { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 3px 0; }
+.bie-date { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 78px; }
+.bie-amt { color: #1565c0; font-variant-numeric: tabular-nums; min-width: 80px; }
+.bie-tax { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.bie-note { flex: 1; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bie-undo { border: 1px solid rgba(198,40,40,.4); color: #c62828; background: none; border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.bie-undo:hover:not(:disabled) { background: rgba(198,40,40,.08); }
+.bi-add { border: 1px dashed rgba(201,99,66,.4); border-radius: 10px; padding: 10px 12px; }
+.bi-add-head { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
+.bi-room { font-size: 11px; font-weight: 400; color: var(--muted); }
+.bi-room b { color: #e65100; font-variant-numeric: tabular-nums; }
 
 /* ══ 合并开票批次工作台 ══ */
 .batch-panel { margin-top: 12px; border: 1px solid rgba(33,150,243,0.22); border-radius: 12px; background: rgba(33,150,243,0.03); overflow: hidden; }

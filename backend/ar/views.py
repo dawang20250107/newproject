@@ -25,6 +25,7 @@ from paikuan.views import (pk_required, ok, err, DEPARTMENTS, VALID_DEPARTMENTS,
                            get_request_perms, apply_ar_view_mask, AR_PROJECT_FIELD_DEFS,
                            AR_RECORD_FIELD_DEFS, AR_ADVANCE_FIELD_DEFS, _paid_subq)
 from ar.models import (ARProject, ARRecord, ARPayment, ARAdjustment,
+                       BatchInvoiceEvent,
                        CollectionBudget, PaymentBudget,
                        AdvanceRecord, AdvanceWriteoff, AdvanceInstallment,
                        Supplier, Customer,
@@ -6875,6 +6876,7 @@ def _batch_member_dict(rec):
         'diff': str(rec.account_diff_adjustment or 0),
         'billable': str(billable),
         'invoiced': str(rec.actual_invoice_amount) if rec.actual_invoice_amount is not None else None,
+        'invoice_room': str(billable - (rec.actual_invoice_amount or Decimal('0'))),
         'invoice_date': str(rec.invoice_date) if rec.invoice_date else None,
         'collected': str(collected),
         'outstanding': str(rec.outstanding_amount or 0),
@@ -6910,11 +6912,14 @@ def ar_invoice_batch_detail(request, batch_no):
         ev['count'] += 1
         ev['payment_ids'].append(p.id)
     collections = [{**e, 'total': str(e['total'])} for e in events.values()]
+    invoice_events = [e.to_dict() for e in
+                      BatchInvoiceEvent.objects.filter(batch_no=batch_no)]
     s = lambda k: sum(Decimal(m[k]) for m in members if m[k] is not None)  # noqa: E731
     return ok({
         'batch_no': batch_no,
         'members': members,
         'collections': collections,
+        'invoice_events': invoice_events,
         'summary': {
             'count': len(members),
             'estimated': str(s('estimated')),
@@ -6924,6 +6929,7 @@ def ar_invoice_batch_detail(request, batch_no):
             'tax': str(s('tax_amount')),
             'collected': str(s('collected')),
             'outstanding': str(s('outstanding')),
+            'invoice_room': str(s('invoice_room')),
             'pending_invoice': sum(1 for m in members if m['invoiced'] is None),
         },
     })
@@ -6932,13 +6938,14 @@ def ar_invoice_batch_detail(request, batch_no):
 @csrf_exempt
 @pk_required()
 def ar_invoice_batch_invoice(request, batch_no):
-    """POST /records/invoice-batches/<batch_no>/invoice — 批次开票落账。
+    """POST /records/invoice-batches/<batch_no>/invoice — 批次开票（金额级分批）。
 
-    body: { invoice_date(必填), invoice_total(选填,校验用) }
-    对批次内尚未开票的成员：实际开票金额 = 上账金额 + 账实差额调整，统一盖开票日期。
-    已开票成员跳过不动（金额以记录为准，避免覆盖人工调整）。
-    若传 invoice_total 且与待开合计不一致 → 拒绝并给出逐条分解，
-    引导先把差额调整落到具体记录（与「差额落在哪几笔」的业务纪律一致）。
+    body: { invoice_date(必填), amount(必填,价税合计), tax_amount(选填,差额模式手填),
+            notes(选填) }
+    与批次回款同构：每次开票一个事件，金额按运作日期先进先出分摊到成员的
+    「可开余额」（上账+差额−已开）。可多次开票，累计不超过批次可开总额即放行。
+    税额：全额模式记录随分摊按项目税率自动重算；差额模式记录按分摊占比
+    分配手填税额。每个事件可整次撤销。
     """
     denied = _page_denied(request, 'ar_records')
     if denied:
@@ -6952,57 +6959,138 @@ def ar_invoice_batch_invoice(request, batch_no):
     inv_date = _normalize_date(data.get('invoice_date'))
     if not inv_date:
         return err('开票日期无效（格式 2026-01-15）')
+    amount = _dec(data.get('amount') or data.get('invoice_total') or 0)
+    if amount <= 0:
+        return err('开票金额必须大于0（价税合计）')
+    tax_raw = data.get('tax_amount')
+    manual_tax = _dec(tax_raw) if tax_raw not in (None, '') else None
+    if manual_tax is not None and (manual_tax < 0 or manual_tax >= amount):
+        return err('税额无效：须 ≥0 且小于开票金额')
 
-    members = list(_batch_members_qs(request, batch_no))
-    if not members:
+    from paikuan.models import PaikuanUser
+    user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+
+    allocations = []
+    try:
+        with transaction.atomic():
+            members = list(_batch_members_qs(request, batch_no).select_for_update())
+            if not members:
+                return err('批次不存在或无权访问', 404)
+
+            def _room(r):
+                billable = ((r.estimated_amount or Decimal('0'))
+                            + (r.account_diff_adjustment or Decimal('0')))
+                return billable - (r.actual_invoice_amount or Decimal('0'))
+
+            open_recs = [r for r in members if _room(r) > 0]
+            total_room = sum(_room(r) for r in open_recs)
+            if total_room <= 0:
+                return err('该批次可开余额已用尽（累计开票已达 上账+差额 合计）')
+            if amount > total_room:
+                return err(f'开票金额 {amount} 超过批次可开余额 {total_room}'
+                           f'（上账+差额合计 − 累计已开）。'
+                           f'如金额确实更大，请先在具体记录上追加「差额调整」')
+
+            # 差额模式记录的手填税额按分摊占比分配；先算分摊再分税
+            remaining = amount
+            plan = []
+            for r in open_recs:
+                if remaining <= 0:
+                    break
+                alloc = min(remaining, _room(r))
+                plan.append((r, alloc))
+                remaining -= alloc
+            diff_alloc_total = sum(a for r, a in plan if r.project.invoice_mode == '差额')
+            for r, alloc in plan:
+                r.actual_invoice_amount = (r.actual_invoice_amount or Decimal('0')) + alloc
+                r.invoice_date = inv_date
+                if (manual_tax is not None and r.project.invoice_mode == '差额'
+                        and diff_alloc_total > 0):
+                    share = (manual_tax * alloc / diff_alloc_total).quantize(Decimal('0.01'))
+                    r.tax_amount = (r.tax_amount or Decimal('0')) + share
+                r.save()   # 全额模式税额由 save() 按税率自动重算
+                allocations.append({'record_id': r.id,
+                                    'short_name': r.project.short_name,
+                                    'operation_date': str(r.operation_date) if r.operation_date else None,
+                                    'amount': str(alloc),
+                                    'invoiced_after': str(r.actual_invoice_amount)})
+            ev = BatchInvoiceEvent.objects.create(
+                batch_no=batch_no, invoice_date=inv_date, amount=amount,
+                tax_amount=manual_tax, notes=(data.get('notes') or '').strip()[:200],
+                allocations=[{'record_id': a['record_id'], 'amount': a['amount']}
+                             for a in allocations],
+                created_by=user)
+    except ValidationError as e:
+        return err(str(e.message if hasattr(e, 'message') else e), 400)
+
+    left = total_room - amount
+    return ok({
+        'event': ev.to_dict(), 'allocations': allocations,
+        'message': (f'批次「{batch_no}」开票 {amount} 已按先进先出分摊到 '
+                    f'{len(allocations)} 条记录' +
+                    (f'，批次剩余可开 {left}' if left > 0 else '，批次已开满')),
+    })
+
+
+@csrf_exempt
+@pk_required()
+def ar_invoice_batch_invoice_undo(request, batch_no):
+    """POST /records/invoice-batches/<batch_no>/invoice-undo — 整次撤销开票事件。
+
+    body: { event_id }。按事件保存的分摊明细逐条回退各记录的开票金额
+    （回退后为0则清空开票金额与日期），全额模式税额自动重算，
+    差额模式按事件手填税额比例回退。事务整体执行。
+    """
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    data = _parse_body(request)
+    try:
+        ev = BatchInvoiceEvent.objects.get(pk=int(data.get('event_id') or 0),
+                                           batch_no=batch_no)
+    except (BatchInvoiceEvent.DoesNotExist, ValueError, TypeError):
+        return err('开票事件不存在（可能已撤销）', 404)
+
+    member_ids = set(_batch_members_qs(request, batch_no).values_list('id', flat=True))
+    if not member_ids:
         return err('批次不存在或无权访问', 404)
-    pending = [r for r in members if r.actual_invoice_amount is None]
-    already = [r for r in members if r.actual_invoice_amount is not None]
-    if not pending:
-        return err('该批次所有记录均已开票，无需重复操作')
-    # 分批开票：可只勾选部分待开成员本轮开票，剩余留待下轮（多轮开完一批）
-    sel_raw = data.get('record_ids')
-    if isinstance(sel_raw, list) and sel_raw:
-        try:
-            sel = {int(i) for i in sel_raw}
-        except (TypeError, ValueError):
-            return err('record_ids 必须为整数列表')
-        bad = sel - {r.id for r in pending}
-        if bad:
-            return err('所选记录中有不属于本批次待开范围的（可能已开票），请刷新后重试')
-        pending = [r for r in pending if r.id in sel]
-
-    pending_total = sum((r.estimated_amount or Decimal('0'))
-                        + (r.account_diff_adjustment or Decimal('0')) for r in pending)
-    inv_total_raw = data.get('invoice_total')
-    if inv_total_raw not in (None, ''):
-        inv_total = _dec(inv_total_raw)
-        if abs(inv_total - pending_total) > Decimal('0.01'):
-            lines = [f'· {r.project.short_name} {r.operation_date}：上账 {r.estimated_amount}'
-                     f'{f" + 差额 {r.account_diff_adjustment}" if r.account_diff_adjustment else ""}'
-                     f' = {(r.estimated_amount or 0) + (r.account_diff_adjustment or 0)}'
-                     for r in pending]
-            return err(f'发票金额 {inv_total} 与批次待开合计 {pending_total} 不一致。'
-                       f'请先在具体记录上调整「账实差额」使合计与发票一致，再批次开票。\n'
-                       f'待开分解：\n' + '\n'.join(lines))
-
-    invoiced = []
-    with transaction.atomic():
-        for r in pending:
-            r.actual_invoice_amount = ((r.estimated_amount or Decimal('0'))
-                                       + (r.account_diff_adjustment or Decimal('0')))
-            r.invoice_date = inv_date
-            r.save()
-            invoiced.append({'id': r.id, 'short_name': r.project.short_name,
-                             'amount': str(r.actual_invoice_amount)})
-    rest = len(members) - len(already) - len(invoiced)
-    msg = f'批次「{batch_no}」本轮开票 {len(invoiced)} 条落账，合计 {pending_total}'
-    if already:
-        msg += f'；{len(already)} 条此前已开票'
-    if rest > 0:
-        msg += f'；剩余 {rest} 条待开，可下轮继续分批开票'
-    return ok({'invoiced': invoiced, 'skipped_already': len(already),
-               'total': str(pending_total), 'message': msg})
+    diff_total = sum(Decimal(a['amount']) for a in ev.allocations or [])
+    try:
+        with transaction.atomic():
+            for a in (ev.allocations or []):
+                rid, amt = a['record_id'], Decimal(a['amount'])
+                if rid not in member_ids:
+                    return err(f'记录 #{rid} 不在当前批次作用域内，无法撤销', 403)
+                r = ARRecord.objects.select_related('project').select_for_update().get(pk=rid)
+                cur = r.actual_invoice_amount or Decimal('0')
+                if cur < amt:
+                    return err(f'记录 #{rid} 当前开票额 {cur} 小于本事件分摊 {amt}，'
+                               f'（可能已被人工修改）请先核对该记录')
+                new_val = cur - amt
+                if ev.tax_amount is not None and r.project.invoice_mode == '差额' and diff_total > 0:
+                    share = (ev.tax_amount * amt / diff_total).quantize(Decimal('0.01'))
+                    r.tax_amount = max(Decimal('0'), (r.tax_amount or Decimal('0')) - share)
+                if new_val <= 0:
+                    r.actual_invoice_amount = None
+                    r.invoice_date = None
+                    if r.project.invoice_mode == '全额':
+                        r.tax_amount = None
+                else:
+                    r.actual_invoice_amount = new_val
+                r.save()
+            ev_id = ev.pk
+            ev.delete()
+    except ARRecord.DoesNotExist:
+        return err('分摊涉及的记录已不存在，无法撤销', 404)
+    except ValidationError as e:
+        return err(str(e.message if hasattr(e, 'message') else e), 400)
+    return ok({'undone': ev_id,
+               'message': f'已撤销 {ev.invoice_date} 的开票 {ev.amount}，各记录开票额已回退'})
 
 
 @csrf_exempt

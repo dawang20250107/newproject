@@ -32,6 +32,7 @@ const ar = {
   listInvoiceBatches: p => api.get('/ar/records/invoice-batches', { params: p }),
   getInvoiceBatch: bn => api.get(`/ar/records/invoice-batches/${encodeURIComponent(bn)}`),
   batchInvoice: (bn, d) => api.post(`/ar/records/invoice-batches/${encodeURIComponent(bn)}/invoice`, d),
+  batchInvoiceUndo: (bn, d) => api.post(`/ar/records/invoice-batches/${encodeURIComponent(bn)}/invoice-undo`, d),
   batchPayment: (bn, d) => api.post(`/ar/records/invoice-batches/${encodeURIComponent(bn)}/payment`, d),
   batchPaymentUndo: (bn, d) => api.post(`/ar/records/invoice-batches/${encodeURIComponent(bn)}/payment-undo`, d),
   batchAssignBatchNo: (d, params) => api.post('/ar/records/batch-assign', d, { params }),

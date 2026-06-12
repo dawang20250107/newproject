@@ -36,6 +36,7 @@ urlpatterns = [
     path('records/invoice-batches', views.ar_invoice_batches),
     path('records/invoice-batches/<str:batch_no>', views.ar_invoice_batch_detail),
     path('records/invoice-batches/<str:batch_no>/invoice', views.ar_invoice_batch_invoice),
+    path('records/invoice-batches/<str:batch_no>/invoice-undo', views.ar_invoice_batch_invoice_undo),
     path('records/invoice-batches/<str:batch_no>/payment', views.ar_invoice_batch_payment),
     path('records/invoice-batches/<str:batch_no>/payment-undo', views.ar_invoice_batch_payment_undo),
     path('records/batch-assign', views.ar_records_batch_assign),

@@ -2916,29 +2916,33 @@ class InvoiceBatchWorkbenchTests(TestCase):
         self.assertEqual([m['operation_date'] for m in d['members']],
                          ['2026-05-01', '2026-06-01', '2026-07-01'])
 
-    def test_batch_invoice_with_total_mismatch_rejected(self):
+    def test_batch_invoice_partial_amount_allowed_over_room_rejected(self):
+        # 金额级分批：6000 ≤ 可开 6500 → 放行；再开 600 超剩余 500 → 拒绝
         resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/invoice',
                                 data=json.dumps({'invoice_date': '2026-07-10',
-                                                 'invoice_total': '6000'}),
+                                                 'amount': '6000'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/invoice',
+                                data=json.dumps({'invoice_date': '2026-07-20',
+                                                 'amount': '600'}),
                                 content_type='application/json', **self.auth())
         self.assertEqual(resp.status_code, 400)
-        self.assertIn('6500', resp.json()['error'])
+        self.assertIn('可开余额', resp.json()['error'])
 
-    def test_batch_invoice_stamps_pending_members(self):
-        # r1 已人工开票 800，批次开票应跳过它
+    def test_batch_invoice_fifo_tops_up_partially_invoiced(self):
+        # r1 已人工开票 800（可开余 200）：开满全批剩余 5700 → r1 补到 1000，r2/r3 开满
         self.r1.actual_invoice_amount = Decimal('800')
         self.r1.invoice_date = date(2026, 6, 1)
         self.r1.save()
         resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/invoice',
-                                data=json.dumps({'invoice_date': '2026-07-10'}),
+                                data=json.dumps({'invoice_date': '2026-07-10',
+                                                 'amount': '5700'}),
                                 content_type='application/json', **self.auth())
         self.assertEqual(resp.status_code, 200, resp.content)
-        d = resp.json()['data']
-        self.assertEqual(len(d['invoiced']), 2)
-        self.assertEqual(d['skipped_already'], 1)
         self.r1.refresh_from_db(); self.r2.refresh_from_db(); self.r3.refresh_from_db()
-        self.assertEqual(self.r1.actual_invoice_amount, Decimal('800'))      # 原值不动
-        self.assertEqual(self.r2.actual_invoice_amount, Decimal('2500'))     # 2000+500
+        self.assertEqual(self.r1.actual_invoice_amount, Decimal('1000'))
+        self.assertEqual(self.r2.actual_invoice_amount, Decimal('2500'))     # 2000+500差额
         self.assertEqual(self.r3.actual_invoice_amount, Decimal('3000'))
         self.assertEqual(str(self.r3.invoice_date), '2026-07-10')
 
@@ -3847,7 +3851,7 @@ class BatchPaymentUndoTests(TestCase):
 
 
 class PartialBatchInvoiceTests(TestCase):
-    """分批开票：勾选部分成员多轮开完一批 + 税额体现。"""
+    """金额级分批开票：多次开票事件先进先出分摊 + 税额 + 整次撤销。"""
 
     def setUp(self):
         self.client = Client()
@@ -3872,54 +3876,128 @@ class PartialBatchInvoiceTests(TestCase):
     def auth(self):
         return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
 
-    def test_partial_invoice_two_rounds(self):
-        # 第一轮只开 r1
-        resp = self.client.post('/api/pk/ar/records/invoice-batches/PB-01/invoice',
-                                data=json.dumps({'invoice_date': '2026-06-01',
-                                                 'record_ids': [self.r1.id]}),
+    def _inv(self, amount, day, **extra):
+        return self.client.post('/api/pk/ar/records/invoice-batches/PB-01/invoice',
+                                data=json.dumps({'invoice_date': day, 'amount': amount, **extra}),
                                 content_type='application/json', **self.auth())
+
+    def test_multiple_invoice_events_fifo(self):
+        # 第一次开 1500：r1 开满 1060，r2 分到 440
+        resp = self._inv('1500', '2026-06-01')
         self.assertEqual(resp.status_code, 200, resp.content)
-        d = resp.json()['data']
-        self.assertEqual(len(d['invoiced']), 1)
-        self.assertIn('剩余 1 条待开', d['message'])
+        allocs = resp.json()['data']['allocations']
+        self.assertEqual(Decimal(allocs[0]['amount']), Decimal('1060'))
+        self.assertEqual(Decimal(allocs[1]['amount']), Decimal('440'))
         self.r1.refresh_from_db(); self.r2.refresh_from_db()
         self.assertEqual(self.r1.actual_invoice_amount, Decimal('1060'))
-        self.assertIsNone(self.r2.actual_invoice_amount)
-        # 全额模式税额自动算：1060/(1.06)*0.06 = 60
-        self.assertEqual(self.r1.tax_amount, Decimal('60.00'))
-        # 第二轮开剩余（不传 record_ids = 全部待开）
-        resp = self.client.post('/api/pk/ar/records/invoice-batches/PB-01/invoice',
-                                data=json.dumps({'invoice_date': '2026-07-01'}),
-                                content_type='application/json', **self.auth())
+        self.assertEqual(self.r1.tax_amount, Decimal('60.00'))   # 全额自动算
+        self.assertEqual(self.r2.actual_invoice_amount, Decimal('440'))
+        # 第二次开 1680：r2 开满（440+1680=2120）
+        resp = self._inv('1680', '2026-07-01')
         self.assertEqual(resp.status_code, 200, resp.content)
         self.r2.refresh_from_db()
         self.assertEqual(self.r2.actual_invoice_amount, Decimal('2120'))
-        self.assertEqual(str(self.r2.invoice_date), '2026-07-01')
-
-    def test_invoice_total_checks_selected_subset(self):
-        # 发票金额校验针对本轮所选合计
-        resp = self.client.post('/api/pk/ar/records/invoice-batches/PB-01/invoice',
-                                data=json.dumps({'invoice_date': '2026-06-01',
-                                                 'record_ids': [self.r1.id],
-                                                 'invoice_total': '3180'}),
-                                content_type='application/json', **self.auth())
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn('1060', resp.json()['error'])
-
-    def test_detail_shows_tax(self):
+        self.assertIn('已开满', resp.json()['data']['message'])
+        # 事件留痕
         d = self.client.get('/api/pk/ar/records/invoice-batches/PB-01', **self.auth()).json()['data']
-        m = d['members'][0]
-        self.assertEqual(m['tax_rate'], '0.0600')
-        self.assertEqual(Decimal(m['tax_amount']), Decimal('60.00'))   # 待开按税率预估
-        self.assertEqual(Decimal(d['summary']['tax']), Decimal('180.00'))  # 60+120
+        self.assertEqual(len(d['invoice_events']), 2)
+        self.assertEqual(Decimal(d['summary']['invoice_room']), Decimal('0'))
 
-    def test_selected_already_invoiced_rejected(self):
-        self.client.post('/api/pk/ar/records/invoice-batches/PB-01/invoice',
-                         data=json.dumps({'invoice_date': '2026-06-01',
-                                          'record_ids': [self.r1.id]}),
-                         content_type='application/json', **self.auth())
-        resp = self.client.post('/api/pk/ar/records/invoice-batches/PB-01/invoice',
-                                data=json.dumps({'invoice_date': '2026-06-02',
-                                                 'record_ids': [self.r1.id]}),
+    def test_over_room_rejected(self):
+        resp = self._inv('5000', '2026-06-01')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('可开余额', resp.json()['error'])
+
+    def test_undo_invoice_event(self):
+        ev = self._inv('1500', '2026-06-01').json()['data']['event']
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PB-01/invoice-undo',
+                                data=json.dumps({'event_id': ev['id']}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.r1.refresh_from_db(); self.r2.refresh_from_db()
+        self.assertIsNone(self.r1.actual_invoice_amount)
+        self.assertIsNone(self.r1.invoice_date)
+        self.assertIsNone(self.r1.tax_amount)
+        self.assertIsNone(self.r2.actual_invoice_amount)
+
+    def test_manual_tax_distributed_to_diff_mode(self):
+        # 差额模式项目：手填税额按分摊占比分配
+        dproj = ARProject.objects.create(
+            customer_name='差额客户', short_name='差额项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='PIV-0002',
+            invoice_mode='差额')
+        r3 = ARRecord.objects.create(project=dproj, operation_date=date(2026, 3, 1),
+                                     estimated_amount=Decimal('1000'),
+                                     invoice_batch_no='PB-02')
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PB-02/invoice',
+                                data=json.dumps({'invoice_date': '2026-06-01',
+                                                 'amount': '600', 'tax_amount': '36'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        r3.refresh_from_db()
+        self.assertEqual(r3.actual_invoice_amount, Decimal('600'))
+        self.assertEqual(r3.tax_amount, Decimal('36.00'))
+        # 可继续开剩余 400
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PB-02/invoice',
+                                data=json.dumps({'invoice_date': '2026-07-01', 'amount': '400'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        r3.refresh_from_db()
+        self.assertEqual(r3.actual_invoice_amount, Decimal('1000'))
+
+
+class BatchPaymentUndoTests(TestCase):
+    """批次管理：批次回款事件还原 + 整次撤销。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900001800', name='UndoAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='撤销客户', short_name='撤销项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='UND-0001')
+        self.r1 = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 4, 1),
+                                          estimated_amount=Decimal('1000'),
+                                          invoice_batch_no='B-01')
+        self.r2 = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                          estimated_amount=Decimal('2000'),
+                                          invoice_batch_no='B-01')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_collections_event_and_undo(self):
+        # 批次回款 1500 → 事件出现在批次明细，整次撤销后未收恢复
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/B-01/payment',
+                                data=json.dumps({'amount': '1500', 'payment_date': '2026-06-01'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = self.client.get('/api/pk/ar/records/invoice-batches/B-01', **self.auth()).json()['data']
+        self.assertEqual(len(d['collections']), 1)
+        ev = d['collections'][0]
+        self.assertEqual(Decimal(ev['total']), Decimal('1500'))
+        self.assertEqual(ev['count'], 2)   # r1 结清1000 + r2 分到500
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/B-01/payment-undo',
+                                data=json.dumps({'payment_ids': ev['payment_ids']}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.r1.refresh_from_db(); self.r2.refresh_from_db()
+        self.assertEqual(self.r1.outstanding_amount, Decimal('1000'))
+        self.assertEqual(self.r2.outstanding_amount, Decimal('2000'))
+
+    def test_undo_rejects_non_batch_payment(self):
+        # 单笔手工回款不能经批次撤销入口删
+        pay = ARPayment.objects.create(ar_record=self.r1, payment_no=1,
+                                       amount=Decimal('100'), payment_date=date(2026, 6, 1))
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/B-01/payment-undo',
+                                data=json.dumps({'payment_ids': [pay.id]}),
                                 content_type='application/json', **self.auth())
         self.assertEqual(resp.status_code, 400)
+        self.assertTrue(ARPayment.objects.filter(pk=pay.pk).exists())
+
+
