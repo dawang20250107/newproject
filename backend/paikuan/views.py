@@ -1623,11 +1623,15 @@ def approval_record_schedule(request, pk):
                 409, 409,
             )
     else:
-        if existing.plan_items.filter(planned_date=planned_date, amount=total_amount).exists():
-            return err(f'重复排款：该审批已有「{planned_date} · {total_amount}」的批次'
-                       f'（防双击保护）。同金额分批请用不同计划日期；'
-                       f'同日确需两批请合并金额为一批',
-                       409, 409)
+        # 防双击：仅拦 10 秒内连续提交的完全相同批次（日期+金额）。
+        # 同日同金额的多批是真实业务需求（如同一天给不同子事项各排一笔），放行。
+        from django.utils import timezone as _tz
+        recent = existing.plan_items.filter(
+            planned_date=planned_date, amount=total_amount,
+            created_at__gte=_tz.now() - datetime.timedelta(seconds=10))
+        if recent.exists():
+            return err('检测到 10 秒内重复提交相同批次（日期+金额），已拦截疑似误触；'
+                       '如确需同日再排一笔相同金额，请稍候片刻再提交', 409, 409)
     try:
         with transaction.atomic():
             rec_locked = ApprovalRecord.objects.select_for_update().get(pk=pk)

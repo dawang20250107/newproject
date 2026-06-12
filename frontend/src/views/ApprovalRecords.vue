@@ -88,12 +88,16 @@ function openSchedule(it){
       .catch(() => {})
   }
 }
+const schedBusy = ref(false)
 async function doSchedule(){
+  if (schedBusy.value) return
+  schedBusy.value = true
   try{
     const res = await api.post(`/approvals/${current.value.id}/schedule`, scheduleForm)
     showSchedule.value=false; load()
     alert(res.data?.message || '排款成功')
   } catch(e){ alert(e?.error||'排款失败') }
+  finally{ schedBusy.value = false }
 }
 async function downloadTemplate(){ const b=await api.get('/approvals/template',{responseType:'blob'}); dl(b,'审批管理导入模板.xlsx') }
 const dl = downloadBlob
@@ -206,7 +210,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <div class="form-grid">
     <label class="form-field"><span>计划日期*</span><input v-model="scheduleForm.planned_date" type="date"/></label>
     <label class="form-field"><span>计划金额*</span><input v-model="scheduleForm.total_amount" type="number" step="0.01"/></label>
-  </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showSchedule=false">取消</button><button class="btn btn-primary" @click="doSchedule">保存并排款</button></div></div></div></Teleport>
+  </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showSchedule=false">取消</button><button class="btn btn-primary" :disabled="schedBusy" @click="doSchedule">{{ schedBusy ? '排款中…' : '保存并排款' }}</button></div></div></div></Teleport>
 
   <Teleport to="body"><div v-if="showMeta" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>补录：二级部门 / 项目简称</h3></div><div class="modal-body">
     <p style="font-size:12px;color:var(--muted);margin:0 0 12px">

@@ -848,3 +848,32 @@ class LegacyScheduleAdoptTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(Payment.objects.filter(approval=rec0).count(), 1)
         self.assertIsNone(Payment.objects.get(project_desc='历史杂费').approval_id)
+
+    def test_same_day_same_amount_allowed_outside_window(self):
+        # 同日同金额多批：真实业务需求，时间窗外放行
+        resp = self._sched_for(self.rec, '3000', '2026-08-01')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        p = Payment.objects.get(approval=self.rec)
+        # 把首批的创建时间拨回 1 分钟前，模拟"稍后再排一笔"
+        from django.utils import timezone
+        from datetime import timedelta
+        p.plan_items.update(created_at=timezone.now() - timedelta(minutes=1))
+        resp = self._sched_for(self.rec, '3000', '2026-08-01')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        p.refresh_from_db()
+        self.assertEqual(p.plan_items.filter(planned_date='2026-08-01',
+                                             amount=Decimal('3000')).count(), 2)
+        self.assertEqual(p.total_amount, Decimal('10000'))   # 4000历史 + 3000 + 3000
+
+    def test_double_click_within_window_rejected(self):
+        # 10秒窗口内连续提交相同批次 → 拦截疑似误触
+        resp = self._sched_for(self.rec, '2000', '2026-09-01')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        resp = self._sched_for(self.rec, '2000', '2026-09-01')
+        self.assertEqual(resp.status_code, 409)
+        self.assertIn('重复提交', resp.json()['error'])
+
+    def _sched_for(self, rec, amount, day):
+        return self.client.post(f'/api/pk/approvals/{rec.id}/schedule',
+                                data=json.dumps({'planned_date': day, 'total_amount': amount}),
+                                content_type='application/json', **self.auth())
