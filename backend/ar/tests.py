@@ -3588,3 +3588,20 @@ class AdvanceDiffSummaryTests(TestCase):
         self.assertEqual(len(resp.json()['data']['rows']), 0)
         resp = self.client.get('/api/pk/ar/advances/diff-summary', {'q': '差异'}, **self.auth())
         self.assertEqual(len(resp.json()['data']['rows']), 1)
+
+    def test_diff_details_use_installment_dates(self):
+        # 多次到账：明细按收付明细的实际发生日期逐笔列出（非首笔/签约日）
+        adv = self._adv('预收', '0', date(2026, 3, 1), '客户A')
+        AdvanceInstallment.objects.create(advance_record=adv, install_no=1,
+                                          amount=Decimal('3000'), occur_date=date(2026, 3, 5))
+        AdvanceInstallment.objects.create(advance_record=adv, install_no=2,
+                                          amount=Decimal('2000'), occur_date=date(2026, 5, 18))
+        resp = self.client.get('/api/pk/ar/advances/diff-summary', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        r = resp.json()['data']['rows'][0]
+        self.assertEqual(Decimal(r['in_total']), Decimal('5000'))
+        self.assertEqual([i['occur_date'] for i in r['in_items']],
+                         ['2026-03-05', '2026-05-18'])
+        # 未核销余额标在该记录最后一笔明细上
+        self.assertEqual(Decimal(r['in_items'][-1]['balance']), Decimal('5000'))
+        self.assertEqual(Decimal(r['in_items'][0]['balance']), Decimal('0'))

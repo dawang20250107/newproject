@@ -5633,7 +5633,8 @@ def advance_diff_summary(request):
     q = (request.GET.get('q') or '').strip().lower()
 
     qs = (_advance_dept_filter(AdvanceRecord.objects.select_related('project'), request)
-          .filter(project__isnull=False))
+          .filter(project__isnull=False)
+          .prefetch_related('installments'))
     if dept:
         qs = qs.filter(delivery_dept=dept)
 
@@ -5650,19 +5651,35 @@ def advance_diff_summary(request):
             'in_total': Decimal('0'), 'out_total': Decimal('0'),
             'in_items': [], 'out_items': [], '_notes': [],
         })
-        item = {
-            'id': a.id,
-            'occur_date': str(a.occur_date) if a.occur_date else f'{a.occur_year}-{a.occur_month:02d}',
-            'amount': str(a.advance_amount or 0),
-            'balance': str(a.balance_amount or 0),
-            'counterparty': a.counterparty or '—',
-        }
+        # 明细按「收付明细」逐笔列出（实际发生日期，多次到账/付出各一行）；
+        # 无明细的历史直建记录回退用记录级款项日期
+        insts = list(a.installments.all())
+        balance_left = a.balance_amount or Decimal('0')
+        if insts:
+            items = [{
+                'id': f'{a.id}-{i.id}',
+                'occur_date': str(i.occur_date),
+                'amount': str(i.amount or 0),
+                'counterparty': a.counterparty or '—',
+            } for i in sorted(insts, key=lambda x: (x.occur_date, x.install_no))]
+        else:
+            items = [{
+                'id': str(a.id),
+                'occur_date': (str(a.occur_date) if a.occur_date
+                               else f'{a.occur_year}-{a.occur_month:02d}'),
+                'amount': str(a.advance_amount or 0),
+                'counterparty': a.counterparty or '—',
+            }]
+        # 未核销余额标在该记录的最后一笔明细上（余额属于记录而非单笔）
+        items[-1]['balance'] = str(balance_left)
+        for it in items:
+            it.setdefault('balance', '0')
         if a.direction == '预收':
             g['in_total'] += a.advance_amount or Decimal('0')
-            g['in_items'].append(item)
+            g['in_items'].extend(items)
         else:
             g['out_total'] += a.advance_amount or Decimal('0')
-            g['out_items'].append(item)
+            g['out_items'].extend(items)
         note = (a.notes or '').strip()
         if note and note not in g['_notes']:
             g['_notes'].append(note)

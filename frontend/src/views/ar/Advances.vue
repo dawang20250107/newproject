@@ -617,8 +617,8 @@ onMounted(() => {
               <template v-for="r in diffData.rows" :key="r.project">
                 <tr class="diff-row" @click="toggleDiffRow(r.project)">
                   <td class="dt-proj">
-                    <div class="proj-name">{{ r.project }}</div>
-                    <div class="dept-tag">{{ r.dept || '—' }}</div>
+                    <span class="dt-name" :title="r.project">{{ r.project }}</span>
+                    <span class="dt-dept">{{ (r.dept || '—').replace('事业部', '') }}</span>
                   </td>
                   <td class="dt-amt" style="color:#2e7d32">{{ parseFloat(r.in_total) ? fmtAmt(r.in_total) : '—' }}</td>
                   <td class="dt-amt" style="color:#ef6c00">{{ parseFloat(r.out_total) ? fmtAmt(r.out_total) : '—' }}</td>
@@ -1068,34 +1068,38 @@ onMounted(() => {
 .adv-notes-cell { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--muted); font-size: 12px; }
 
-/* ══ 收付差异 ══ */
-.diff-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
-.diff-table th { padding: 9px 12px; text-align: left; font-size: 11.5px; font-weight: 700; color: var(--muted);
+/* ══ 收付差异（紧凑排版）══ */
+.diff-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12.5px; }
+.diff-table th { padding: 7px 10px; text-align: left; font-size: 11px; font-weight: 700; color: var(--muted);
   background: rgba(201,99,66,.05); border-bottom: 1px solid rgba(180,140,110,.15); white-space: nowrap; }
-.diff-table td { padding: 9px 12px; border-bottom: 1px solid rgba(180,140,110,.08); vertical-align: middle; }
-.dt-proj { width: 21%; }
-.dt-amt { width: 15%; text-align: right !important; font-variant-numeric: tabular-nums; }
-.dt-notes { width: 30%; }
-.dt-caret { width: 4%; text-align: center; font-size: 11px; color: var(--muted); }
+.diff-table td { padding: 6px 10px; border-bottom: 1px solid rgba(180,140,110,.08); vertical-align: middle; }
+.dt-proj { width: 23%; }
+.dt-amt { width: 14%; text-align: right !important; font-variant-numeric: tabular-nums; }
+.dt-notes { width: 31%; }
+.dt-caret { width: 4%; text-align: center; font-size: 10px; color: var(--muted); }
+td.dt-proj { overflow: hidden; white-space: nowrap; }
+.dt-name { font-weight: 700; color: var(--text); }
+.dt-dept { font-size: 10.5px; color: var(--muted); background: rgba(120,120,120,.08);
+  border-radius: 5px; padding: 1px 6px; margin-left: 6px; white-space: nowrap; }
 td.dt-notes { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--muted); font-size: 12px; }
+  color: var(--muted); font-size: 11.5px; }
 .diff-row { cursor: pointer; transition: background .14s; }
 .diff-row:hover td { background: rgba(201,99,66,.04); }
 .diff-row .fw { font-weight: 700; }
-.diff-detail-row td { background: rgba(250,246,241,.7); padding: 10px 14px; }
-.diff-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.diff-detail-row td { background: rgba(250,246,241,.7); padding: 6px 10px; }
+.diff-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 @media (max-width: 760px) { .diff-detail { grid-template-columns: 1fr; } }
-.dd-col { background: #fff; border: 1px solid rgba(180,140,110,.14); border-radius: 9px; padding: 8px 12px; }
-.dd-head { font-size: 12px; font-weight: 700; margin-bottom: 6px; }
+.dd-col { background: #fff; border: 1px solid rgba(180,140,110,.14); border-radius: 8px; padding: 5px 10px; }
+.dd-head { font-size: 11px; font-weight: 700; margin-bottom: 2px; }
 .dd-head.in { color: #2e7d32; } .dd-head.out { color: #ef6c00; }
-.dd-empty { font-size: 12px; color: var(--muted); padding: 4px 0; }
-.dd-item { display: flex; align-items: center; gap: 10px; font-size: 12.5px; padding: 4px 0;
-  border-top: 1px dashed rgba(180,140,110,.14); }
+.dd-empty { font-size: 11.5px; color: var(--muted); padding: 2px 0; }
+.dd-item { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 2.5px 0;
+  border-top: 1px dashed rgba(180,140,110,.12); line-height: 1.5; }
 .dd-item:first-of-type { border-top: none; }
-.dd-date { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 80px; }
-.dd-amt { font-variant-numeric: tabular-nums; min-width: 84px; text-align: right; }
+.dd-date { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 74px; }
+.dd-amt { font-variant-numeric: tabular-nums; min-width: 78px; text-align: right; }
 .dd-amt.in { color: #2e7d32; } .dd-amt.out { color: #ef6c00; }
 .dd-party { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-.dd-bal { font-style: normal; font-size: 11px; color: #1565c0; background: rgba(21,101,192,.07);
-  border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
+.dd-bal { font-style: normal; font-size: 10.5px; color: #1565c0; background: rgba(21,101,192,.07);
+  border-radius: 5px; padding: 0 6px; white-space: nowrap; }
 </style>
