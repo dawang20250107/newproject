@@ -5617,6 +5617,78 @@ def advance_batch_writeoff(request, pk):
 
 @csrf_exempt
 @pk_required()
+def advance_diff_summary(request):
+    """GET /advances/diff-summary — 收付差异：预收 vs 预付经「项目简称」对齐。
+
+    每个挂了项目的预收/预付按项目聚合：预收金额、预付金额、差异（预收−预付）、
+    备注（成员备注去重并列），并附两侧逐笔明细（日期/金额/往来单位）供展开。
+    入参：dept(可选) q(项目名模糊,可选)。
+    """
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    dept = (request.GET.get('dept') or '').strip()
+    q = (request.GET.get('q') or '').strip().lower()
+
+    qs = (_advance_dept_filter(AdvanceRecord.objects.select_related('project'), request)
+          .filter(project__isnull=False))
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+
+    groups = {}
+    for a in qs.order_by('occur_date', 'id'):
+        name = (a.project.short_name or '').strip()
+        if not name:
+            continue
+        if q and q not in name.lower():
+            continue
+        g = groups.setdefault(name, {
+            'project': name,
+            'dept': a.project.delivery_dept or a.delivery_dept or '',
+            'in_total': Decimal('0'), 'out_total': Decimal('0'),
+            'in_items': [], 'out_items': [], '_notes': [],
+        })
+        item = {
+            'id': a.id,
+            'occur_date': str(a.occur_date) if a.occur_date else f'{a.occur_year}-{a.occur_month:02d}',
+            'amount': str(a.advance_amount or 0),
+            'balance': str(a.balance_amount or 0),
+            'counterparty': a.counterparty or '—',
+        }
+        if a.direction == '预收':
+            g['in_total'] += a.advance_amount or Decimal('0')
+            g['in_items'].append(item)
+        else:
+            g['out_total'] += a.advance_amount or Decimal('0')
+            g['out_items'].append(item)
+        note = (a.notes or '').strip()
+        if note and note not in g['_notes']:
+            g['_notes'].append(note)
+
+    rows = []
+    for g in groups.values():
+        notes = '；'.join(g.pop('_notes'))[:300]
+        rows.append({
+            **{k: (str(v) if isinstance(v, Decimal) else v) for k, v in g.items()},
+            'diff': str(g['in_total'] - g['out_total']),
+            'notes': notes,
+        })
+    # 差异绝对值大的排前面（最该关注的）
+    rows.sort(key=lambda x: abs(Decimal(x['diff'])), reverse=True)
+
+    t_in = sum(Decimal(x['in_total']) for x in rows)
+    t_out = sum(Decimal(x['out_total']) for x in rows)
+    return ok({
+        'rows': rows,
+        'summary': {'count': len(rows), 'in_total': str(t_in), 'out_total': str(t_out),
+                    'diff': str(t_in - t_out)},
+    })
+
+
+@csrf_exempt
+@pk_required()
 def advance_offset_workbench(request):
     """GET /advances/offset-workbench — 预收核销工作台（应收账款·预收核销 Tab）。
 

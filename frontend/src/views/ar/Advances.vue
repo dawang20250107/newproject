@@ -38,7 +38,7 @@ const canCreate = computed(() => auth.canArWrite)
 const canDelete = computed(() => auth.canDelete)
 
 const isReceive = computed(() => direction.value === '预收')
-const isAdvanceMode = computed(() => direction.value !== 'suppliers')
+const isAdvanceMode = computed(() => direction.value === '预收' || direction.value === '预付')
 const dirLabel = computed(() => direction.value === '预收' ? '预收' : '预付')
 const partyLabel = computed(() => direction.value === '预收' ? '客户' : '供应商')
 
@@ -68,9 +68,42 @@ function switchDir(d) {
   direction.value = d
   if (d === 'suppliers') {
     loadSuppliers()
+  } else if (d === 'diff') {
+    loadDiff()
   } else {
     load(true)
   }
+}
+
+// ── 收付差异（预收 vs 预付，按项目简称对齐）─────────────────────────────────
+const diffData = ref(null)
+const diffLoading = ref(false)
+const diffQ = ref('')
+let diffTimer = null
+const diffExpanded = ref(new Set())     // 展开的项目行
+const diffAllOpen = ref(false)          // 一键展开/折叠总控
+
+async function loadDiff() {
+  diffLoading.value = true
+  try {
+    const res = await ar.advanceDiffSummary({ q: diffQ.value.trim() || undefined })
+    diffData.value = res.data
+    diffExpanded.value = new Set()
+    diffAllOpen.value = false
+  } catch (_) { diffData.value = null }
+  finally { diffLoading.value = false }
+}
+function onDiffSearch() { clearTimeout(diffTimer); diffTimer = setTimeout(loadDiff, 300) }
+function toggleDiffRow(name) {
+  const s = new Set(diffExpanded.value)
+  s.has(name) ? s.delete(name) : s.add(name)
+  diffExpanded.value = s
+}
+function toggleDiffAll() {
+  diffAllOpen.value = !diffAllOpen.value
+  diffExpanded.value = diffAllOpen.value
+    ? new Set((diffData.value?.rows || []).map(r => r.project))
+    : new Set()
 }
 function onFilterChange() { load(true) }
 let qTimer = null
@@ -437,6 +470,7 @@ onMounted(() => {
     <div class="dir-tabs">
       <button :class="['dir-tab', { active: direction === '预收' }]" @click="switchDir('预收')">预收（客户预付款）</button>
       <button :class="['dir-tab', { active: direction === '预付' }]" @click="switchDir('预付')">预付（付供应商）</button>
+      <button :class="['dir-tab', { active: direction === 'diff' }]" @click="switchDir('diff')">收付差异</button>
       <div class="dir-tab-sep"></div>
       <button :class="['dir-tab', { active: direction === 'suppliers' }]" @click="switchDir('suppliers')">供应商池</button>
     </div>
@@ -499,11 +533,12 @@ onMounted(() => {
                 <th v-if="show('adv_writeoff')" class="amt">未核销余额</th>
                 <th v-if="show('adv_writeoff')" class="ctr">核销状态</th>
                 <th v-if="show('adv_expected_date')" class="ctr">挂账账龄</th>
+                <th class="adv-notes-col">备注</th>
                 <th class="ctr">操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!loading && !items.length"><td colspan="10" class="empty">暂无{{ dirLabel }}记录</td></tr>
+              <tr v-if="!loading && !items.length"><td colspan="11" class="empty">暂无{{ dirLabel }}记录</td></tr>
               <tr v-for="r in items" :key="r.id">
                 <td v-if="show('adv_counterparty')">{{ r.counterparty || '—' }}</td>
                 <td>
@@ -523,6 +558,7 @@ onMounted(() => {
                   <span v-else-if="r.balance_amount > 0" class="status-pill pill-muted">挂账{{ r.pending_days }}天</span>
                   <span v-else>—</span>
                 </td>
+                <td class="adv-notes-cell" :title="r.notes">{{ r.notes || '—' }}</td>
                 <td class="ctr nowrap">
                   <button v-if="show('adv_amount') && canCreate" class="lnk" title="多次到账/付出明细（总额=明细之和）" @click="openInstallments(r)">收付</button>
                   <button v-if="show('adv_writeoff') && canCreate" class="lnk" @click="openWriteoffs(r)">核销</button>
@@ -538,6 +574,87 @@ onMounted(() => {
           <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="go(page - 1)">上一页</button>
           <span>{{ page }} / {{ totalPages }}（共 {{ total }} 条）</span>
           <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="go(page + 1)">下一页</button>
+        </div>
+      </div>
+    </template>
+
+    <!-- ── 收付差异：预收 vs 预付，按项目简称对齐 ── -->
+    <template v-else-if="direction === 'diff'">
+      <!-- 汇总条 -->
+      <div v-if="diffData?.summary" class="kpi-row">
+        <div class="kpi"><div class="kpi-k">涉及项目</div><div class="kpi-v">{{ diffData.summary.count }} 个</div></div>
+        <div class="kpi"><div class="kpi-k">预收合计</div><div class="kpi-v" style="color:#2e7d32">{{ fmtAmt(diffData.summary.in_total) }}</div></div>
+        <div class="kpi"><div class="kpi-k">预付合计</div><div class="kpi-v" style="color:#ef6c00">{{ fmtAmt(diffData.summary.out_total) }}</div></div>
+        <div class="kpi accent"><div class="kpi-k">差异（预收−预付）</div>
+          <div class="kpi-v" :style="{ color: parseFloat(diffData.summary.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(diffData.summary.diff) }}</div></div>
+      </div>
+
+      <div class="card">
+        <div class="filter-row">
+          <input v-model="diffQ" class="inp sm" style="width:220px" placeholder="搜项目简称" @input="onDiffSearch" />
+          <div style="flex:1"></div>
+          <button class="btn btn-ghost btn-sm" @click="toggleDiffAll">
+            {{ diffAllOpen ? '▲ 一键折叠' : '▼ 一键展开' }}
+          </button>
+        </div>
+        <div v-if="diffLoading" class="empty" style="padding:30px;text-align:center">⏳ 加载中…</div>
+        <div v-else-if="!diffData?.rows?.length" class="empty" style="padding:30px;text-align:center">
+          暂无数据——只有挂了项目台账的预收/预付才参与差异对照
+        </div>
+        <div v-else class="table-wrap">
+          <table class="diff-table">
+            <thead>
+              <tr>
+                <th class="dt-proj">项目简称 / 部门</th>
+                <th class="dt-amt">预收金额</th>
+                <th class="dt-amt">预付金额</th>
+                <th class="dt-amt">差异（预收−预付）</th>
+                <th class="dt-notes">备注</th>
+                <th class="dt-caret"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-for="r in diffData.rows" :key="r.project">
+                <tr class="diff-row" @click="toggleDiffRow(r.project)">
+                  <td class="dt-proj">
+                    <div class="proj-name">{{ r.project }}</div>
+                    <div class="dept-tag">{{ r.dept || '—' }}</div>
+                  </td>
+                  <td class="dt-amt" style="color:#2e7d32">{{ parseFloat(r.in_total) ? fmtAmt(r.in_total) : '—' }}</td>
+                  <td class="dt-amt" style="color:#ef6c00">{{ parseFloat(r.out_total) ? fmtAmt(r.out_total) : '—' }}</td>
+                  <td class="dt-amt fw" :style="{ color: parseFloat(r.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(r.diff) }}</td>
+                  <td class="dt-notes" :title="r.notes">{{ r.notes || '—' }}</td>
+                  <td class="dt-caret">{{ diffExpanded.has(r.project) ? '▲' : '▼' }}</td>
+                </tr>
+                <tr v-if="diffExpanded.has(r.project)" class="diff-detail-row">
+                  <td colspan="6">
+                    <div class="diff-detail">
+                      <div class="dd-col">
+                        <div class="dd-head in">预收明细 · {{ r.in_items.length }} 笔</div>
+                        <div v-if="!r.in_items.length" class="dd-empty">无预收记录</div>
+                        <div v-for="i in r.in_items" :key="'i' + i.id" class="dd-item">
+                          <span class="dd-date">{{ i.occur_date }}</span>
+                          <b class="dd-amt in">{{ fmtAmt(i.amount) }}</b>
+                          <span class="dd-party" :title="i.counterparty">{{ i.counterparty }}</span>
+                          <em v-if="parseFloat(i.balance) > 0" class="dd-bal">余 {{ fmtAmt(i.balance) }}</em>
+                        </div>
+                      </div>
+                      <div class="dd-col">
+                        <div class="dd-head out">预付明细 · {{ r.out_items.length }} 笔</div>
+                        <div v-if="!r.out_items.length" class="dd-empty">无预付记录</div>
+                        <div v-for="i in r.out_items" :key="'o' + i.id" class="dd-item">
+                          <span class="dd-date">{{ i.occur_date }}</span>
+                          <b class="dd-amt out">{{ fmtAmt(i.amount) }}</b>
+                          <span class="dd-party" :title="i.counterparty">{{ i.counterparty }}</span>
+                          <em v-if="parseFloat(i.balance) > 0" class="dd-bal">余 {{ fmtAmt(i.balance) }}</em>
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
         </div>
       </div>
     </template>
@@ -945,4 +1062,40 @@ onMounted(() => {
 .sup-type-btn.active { border-color: var(--primary); background: rgba(201,99,66,0.06); color: var(--primary); }
 .sup-type-desc { font-size: 11px; font-weight: 400; color: var(--muted); }
 .sup-type-btn.active .sup-type-desc { color: var(--primary); opacity: 0.75; }
+
+/* ══ 预收/预付列表备注列：限宽省略，整表保持一页宽 ══ */
+.adv-notes-col { width: 130px; }
+.adv-notes-cell { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font-size: 12px; }
+
+/* ══ 收付差异 ══ */
+.diff-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
+.diff-table th { padding: 9px 12px; text-align: left; font-size: 11.5px; font-weight: 700; color: var(--muted);
+  background: rgba(201,99,66,.05); border-bottom: 1px solid rgba(180,140,110,.15); white-space: nowrap; }
+.diff-table td { padding: 9px 12px; border-bottom: 1px solid rgba(180,140,110,.08); vertical-align: middle; }
+.dt-proj { width: 21%; }
+.dt-amt { width: 15%; text-align: right !important; font-variant-numeric: tabular-nums; }
+.dt-notes { width: 30%; }
+.dt-caret { width: 4%; text-align: center; font-size: 11px; color: var(--muted); }
+td.dt-notes { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font-size: 12px; }
+.diff-row { cursor: pointer; transition: background .14s; }
+.diff-row:hover td { background: rgba(201,99,66,.04); }
+.diff-row .fw { font-weight: 700; }
+.diff-detail-row td { background: rgba(250,246,241,.7); padding: 10px 14px; }
+.diff-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 760px) { .diff-detail { grid-template-columns: 1fr; } }
+.dd-col { background: #fff; border: 1px solid rgba(180,140,110,.14); border-radius: 9px; padding: 8px 12px; }
+.dd-head { font-size: 12px; font-weight: 700; margin-bottom: 6px; }
+.dd-head.in { color: #2e7d32; } .dd-head.out { color: #ef6c00; }
+.dd-empty { font-size: 12px; color: var(--muted); padding: 4px 0; }
+.dd-item { display: flex; align-items: center; gap: 10px; font-size: 12.5px; padding: 4px 0;
+  border-top: 1px dashed rgba(180,140,110,.14); }
+.dd-item:first-of-type { border-top: none; }
+.dd-date { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 80px; }
+.dd-amt { font-variant-numeric: tabular-nums; min-width: 84px; text-align: right; }
+.dd-amt.in { color: #2e7d32; } .dd-amt.out { color: #ef6c00; }
+.dd-party { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.dd-bal { font-style: normal; font-size: 11px; color: #1565c0; background: rgba(21,101,192,.07);
+  border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
 </style>

@@ -3523,3 +3523,68 @@ class BudgetProjectCompareTests(TestCase):
                                **self.auth())
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(resp.json()['data']['rows']), 0)
+
+
+class AdvanceDiffSummaryTests(TestCase):
+    """收付差异：预收 vs 预付按项目简称对齐 + 两侧逐笔明细。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900001500', name='DiffAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='差异客户', short_name='差异项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='DIF-0001')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _adv(self, direction, amount, day, cp, notes=''):
+        return AdvanceRecord.objects.create(
+            direction=direction, project=self.proj, delivery_dept=self.dept,
+            counterparty=cp, occur_year=2026, occur_month=day.month,
+            occur_date=day, advance_amount=Decimal(amount), notes=notes)
+
+    def test_diff_groups_and_details(self):
+        self._adv('预收', '10000', date(2026, 3, 1), '客户A', notes='首期预收')
+        self._adv('预收', '5000', date(2026, 4, 1), '客户A')
+        self._adv('预付', '6000', date(2026, 3, 15), '供应商B', notes='设备预付')
+        resp = self.client.get('/api/pk/ar/advances/diff-summary', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(len(d['rows']), 1)
+        r = d['rows'][0]
+        self.assertEqual(r['project'], '差异项目')
+        self.assertEqual(Decimal(r['in_total']), Decimal('15000'))
+        self.assertEqual(Decimal(r['out_total']), Decimal('6000'))
+        self.assertEqual(Decimal(r['diff']), Decimal('9000'))
+        self.assertEqual(len(r['in_items']), 2)
+        self.assertEqual(len(r['out_items']), 1)
+        self.assertEqual(r['in_items'][0]['counterparty'], '客户A')
+        self.assertEqual(r['out_items'][0]['counterparty'], '供应商B')
+        self.assertIn('首期预收', r['notes'])
+        self.assertIn('设备预付', r['notes'])
+        s = d['summary']
+        self.assertEqual(Decimal(s['diff']), Decimal('9000'))
+
+    def test_diff_excludes_loose_advances(self):
+        # 散单（未挂项目）不参与差异对照
+        AdvanceRecord.objects.create(
+            direction='预收', delivery_dept=self.dept, counterparty='散单客户',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 1),
+            advance_amount=Decimal('999'))
+        resp = self.client.get('/api/pk/ar/advances/diff-summary', **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.json()['data']['rows']), 0)
+
+    def test_diff_q_filter(self):
+        self._adv('预收', '100', date(2026, 3, 1), '客户A')
+        resp = self.client.get('/api/pk/ar/advances/diff-summary', {'q': '不存在'}, **self.auth())
+        self.assertEqual(len(resp.json()['data']['rows']), 0)
+        resp = self.client.get('/api/pk/ar/advances/diff-summary', {'q': '差异'}, **self.auth())
+        self.assertEqual(len(resp.json()['data']['rows']), 1)
