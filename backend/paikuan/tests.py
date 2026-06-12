@@ -778,3 +778,73 @@ class PartialScheduleTests(TestCase):
         self.assertIn('剩余可排', headers)
         idx = headers.index('已排款金额')
         self.assertEqual(wb.active.cell(2, idx + 1).value, 4000)
+
+
+class LegacyScheduleAdoptTests(TestCase):
+    """静默ID上线前的旧排款：再次分批排款时自动收养挂链，不再误报重复。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900002100', name='AdoptAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.rec = ApprovalRecord.objects.create(
+            applicant='李四', department=self.dept, approval_number='2' * 21,
+            summary='运输费', amount=Decimal('10000'), payee='承运商B',
+            status='approved', scheduled_amount=Decimal('4000'))
+        # 旧模式生成的独立排款（未挂 approval 链）
+        self.legacy = Payment.objects.create(
+            department=self.dept, approval_number='2' * 21, payee='承运商B',
+            project_desc='运输费', total_amount=Decimal('4000'),
+            planned_date=date(2026, 7, 1))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_second_tranche_adopts_legacy_payment(self):
+        # 第二批 4000（与历史首批同金额）→ 收养旧记录、追加批次，而非报重复
+        resp = self.client.post(f'/api/pk/approvals/{self.rec.id}/schedule',
+                                data=json.dumps({'planned_date': '2026-08-01',
+                                                 'total_amount': '4000'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.legacy.refresh_from_db()
+        self.assertEqual(self.legacy.approval_id, self.rec.id)      # 已挂链
+        self.assertEqual(self.legacy.total_amount, Decimal('8000'))  # 汇总=两批之和
+        items = list(self.legacy.plan_items.order_by('seq'))
+        self.assertEqual(len(items), 2)
+        self.assertEqual([i.amount for i in items], [Decimal('4000'), Decimal('4000')])
+        self.assertEqual(Payment.objects.filter(approval_number='2' * 21).count(), 1)
+
+    def test_same_amount_different_date_allowed(self):
+        # 同金额多批（不同日期）完全放行
+        for day in ('2026-08-01', '2026-09-01'):
+            resp = self.client.post(f'/api/pk/approvals/{self.rec.id}/schedule',
+                                    data=json.dumps({'planned_date': day,
+                                                     'total_amount': '3000'}),
+                                    content_type='application/json', **self.auth())
+            self.assertEqual(resp.status_code, 200, resp.content)
+        self.legacy.refresh_from_db()
+        self.assertEqual(self.legacy.plan_items.count(), 3)
+        self.assertEqual(self.legacy.total_amount, Decimal('10000'))
+
+    def test_placeholder_number_not_adopted(self):
+        # 占位审批号(全0)不收养：新建独立汇总记录
+        rec0 = ApprovalRecord.objects.create(
+            applicant='王五', department=self.dept, approval_number='0' * 21,
+            summary='杂费', amount=Decimal('500'), payee='某商户', status='approved')
+        Payment.objects.create(
+            department=self.dept, approval_number='0' * 21, payee='某商户',
+            project_desc='历史杂费', total_amount=Decimal('300'),
+            planned_date=date(2026, 6, 1))
+        resp = self.client.post(f'/api/pk/approvals/{rec0.id}/schedule',
+                                data=json.dumps({'planned_date': '2026-08-15',
+                                                 'total_amount': '500'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(Payment.objects.filter(approval=rec0).count(), 1)
+        self.assertIsNone(Payment.objects.get(project_desc='历史杂费').approval_id)

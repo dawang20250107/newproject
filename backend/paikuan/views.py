@@ -1593,6 +1593,18 @@ def approval_record_schedule(request, pk):
     # 一条审批 ↔ 一条付款台账汇总记录（经 approval 静默ID打通）：
     # 首次排款建汇总记录+首条计划明细；再次排款只追加计划明细，汇总派生刷新
     existing = Payment.objects.filter(approval=rec).first()
+    if existing is None and rec.approval_number and set(rec.approval_number) != {'0'}:
+        # 自动收养：本审批在静默ID链路上线前用旧模式排过款（独立记录、未挂链）。
+        # 业务键唯一匹配时挂上链转为追加批次，历史数据自愈；多条匹配（旧模式
+        # 分批生成了多条）时不猜，保持独立。占位审批号(全0)不收养，避免误挂。
+        cand = Payment.objects.filter(
+            approval__isnull=True, approval_number=rec.approval_number,
+            payee=rec.payee, department=rec.department)
+        if cand.count() == 1:
+            existing = cand.first()
+            existing.approval = rec
+            existing.save(update_fields=['approval', 'updated_at'])
+            _ensure_plan_item(existing)   # 旧记录可能缺首条计划明细
     if existing is None:
         # 防历史重复（approval 链路之前的数据按业务键兜底查重）
         fields = {
@@ -1605,12 +1617,16 @@ def approval_record_schedule(request, pk):
         dup = _find_duplicate_payment(fields)
         if dup:
             return err(
-                f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录 #{dup.id}',
+                f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录 #{dup.id}。'
+                f'若这是旧版本分批生成的多条历史记录，请在付款台账核对后调整其中一条的'
+                f'计划日期或金额再排，或换一个计划日期排本批',
                 409, 409,
             )
     else:
         if existing.plan_items.filter(planned_date=planned_date, amount=total_amount).exists():
-            return err(f'重复排款：该审批已有相同计划日期+金额的批次（排款记录 #{existing.id}）',
+            return err(f'重复排款：该审批已有「{planned_date} · {total_amount}」的批次'
+                       f'（防双击保护）。同金额分批请用不同计划日期；'
+                       f'同日确需两批请合并金额为一批',
                        409, 409)
     try:
         with transaction.atomic():
