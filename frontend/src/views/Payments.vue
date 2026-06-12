@@ -489,8 +489,8 @@ function setPage(p) { filters.page = p; load() }
             </tr>
           </thead>
           <tbody>
-            <tr v-for="p in items" :key="p.id"
-              :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today }">
+            <template v-for="p in items" :key="p.id">
+            <tr :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today }">
               <td v-if="colVisible('department')">{{ p.department }}</td>
               <td v-if="colVisible('secondary_dept')" class="cell-clip">{{ p.secondary_dept || '—' }}</td>
               <td v-if="colVisible('project_short_name')" class="cell-clip" :title="p.project_short_name">{{ p.project_short_name || '—' }}</td>
@@ -565,6 +565,7 @@ function setPage(p) { filters.page = p; load() }
                 </div>
               </td>
             </tr>
+            </template>
           </tbody>
         </table>
       </div>
