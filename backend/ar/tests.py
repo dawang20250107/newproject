@@ -3711,3 +3711,81 @@ class ActionPermissionTests(TestCase):
                                 data=json.dumps({'amount': '100', 'writeoff_date': '2026-04-01'}),
                                 content_type='application/json', **self.auth())
         self.assertEqual(resp.status_code, 403)
+
+
+class AutoBatchNoTests(TestCase):
+    """批次号自动生成：客户简称-日期-序号，免人为编码。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900001700', name='AutoBatchAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='华为物流', short_name='华为项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='AB-0001')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _rec(self, month):
+        return ARRecord.objects.create(project=self.proj, operation_date=date(2026, month, 1),
+                                       estimated_amount=Decimal('1000'))
+
+    def test_auto_generates_readable_batch_no(self):
+        r1, r2 = self._rec(4), self._rec(5)
+        resp = self.client.post('/api/pk/ar/records/batch-assign',
+                                data=json.dumps({'ids': [r1.id, r2.id], 'auto': True}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        bn = resp.json()['data']['invoice_batch_no']
+        today = date.today().strftime('%y%m%d')
+        self.assertEqual(bn, f'华为物流-{today}-01')
+        r1.refresh_from_db()
+        self.assertEqual(r1.invoice_batch_no, bn)
+        # 同日再合并一批 → 序号递增
+        r3 = self._rec(6)
+        resp = self.client.post('/api/pk/ar/records/batch-assign',
+                                data=json.dumps({'ids': [r3.id], 'auto': True}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.json()['data']['invoice_batch_no'], f'华为物流-{today}-02')
+
+    def test_auto_multi_customer_prefix(self):
+        other = ARProject.objects.create(
+            customer_name='别家客户', short_name='别家项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='AB-0002')
+        r1 = self._rec(4)
+        r2 = ARRecord.objects.create(project=other, operation_date=date(2026, 4, 1),
+                                     estimated_amount=Decimal('500'))
+        resp = self.client.post('/api/pk/ar/records/batch-assign',
+                                data=json.dumps({'ids': [r1.id, r2.id], 'auto': True}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.json()['data']['invoice_batch_no'].startswith('多户-'))
+
+    def test_manual_and_clear_still_work(self):
+        r1 = self._rec(4)
+        resp = self.client.post('/api/pk/ar/records/batch-assign',
+                                data=json.dumps({'ids': [r1.id], 'invoice_batch_no': '自定义-01'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.json()['data']['invoice_batch_no'], '自定义-01')
+        resp = self.client.post('/api/pk/ar/records/batch-assign',
+                                data=json.dumps({'ids': [r1.id], 'invoice_batch_no': ''}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        r1.refresh_from_db()
+        self.assertEqual(r1.invoice_batch_no, '')
+
+    def test_batch_list_includes_customers(self):
+        r1 = self._rec(4)
+        self.client.post('/api/pk/ar/records/batch-assign',
+                         data=json.dumps({'ids': [r1.id], 'auto': True}),
+                         content_type='application/json', **self.auth())
+        resp = self.client.get('/api/pk/ar/records/invoice-batches', **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        b = resp.json()['data']['batches'][0]
+        self.assertIn('华为物流', b['customers'])

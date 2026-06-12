@@ -463,21 +463,41 @@ function openEdit(rec) {
   showModal.value = true
 }
 
-function openBatchAssign() {
+// 批次号三种来源：auto=系统生成（客户简称-日期-序号，默认推荐，免人为编码）；
+// existing=并入已有批次（下拉选，不用记号）；custom=自定义/清空（保留兜底）
+const batchMode = ref('auto')
+const batchExisting = ref('')
+const batchExistingList = ref([])
+
+async function openBatchAssign() {
   batchNoInput.value = ''
+  batchMode.value = 'auto'
+  batchExisting.value = ''
   showBatchModal.value = true
+  try {
+    const res = await ar.listInvoiceBatches({})
+    batchExistingList.value = res.data.batches || []
+  } catch (_) { batchExistingList.value = [] }
 }
 
 async function confirmBatchAssign() {
+  const body = {}
+  if (batchMode.value === 'auto') body.auto = true
+  else if (batchMode.value === 'existing') {
+    if (!batchExisting.value) { alert('请选择要并入的批次'); return }
+    body.invoice_batch_no = batchExisting.value
+  } else body.invoice_batch_no = batchNoInput.value
   batchAssigning.value = true
   try {
+    let res
     if (selectAllMatching.value) {
-      await ar.batchAssignBatchNo({ all: true, invoice_batch_no: batchNoInput.value }, reqParams())
+      res = await ar.batchAssignBatchNo({ all: true, ...body }, reqParams())
     } else {
-      await ar.batchAssignBatchNo({ ids: [...selectedIds.value], invoice_batch_no: batchNoInput.value })
+      res = await ar.batchAssignBatchNo({ ids: [...selectedIds.value], ...body })
     }
-    const action = batchNoInput.value ? `批次号「${batchNoInput.value}」` : '（清空批次）'
-    alert(`已为 ${selectedCount.value} 条记录设置${action}`)
+    const bn = res.data?.invoice_batch_no
+    alert(bn ? `已合并 ${selectedCount.value} 条记录到批次「${bn}」`
+             : `已为 ${selectedCount.value} 条记录清空批次`)
     showBatchModal.value = false
     clearSelection()
     await load()
@@ -1002,6 +1022,7 @@ function clearFilters() {
             <div v-for="b in batches" :key="b.batch_no" class="bp-item">
               <div class="bp-row" @click="toggleBatchExpand(b.batch_no)">
                 <span class="bp-no">{{ b.batch_no }}</span>
+                <span v-if="b.customers?.length" class="bp-cust" :title="(b.customers || []).join('、')">{{ (b.customers || []).join('、') }}</span>
                 <span class="bp-cnt">{{ b.count }} 条</span>
                 <span class="bp-amt"><i>上账</i><b>{{ fmtCell(b.estimated) }}</b></span>
                 <span class="bp-amt"><i>已开票</i><b>{{ parseFloat(b.invoiced) ? fmtCell(b.invoiced) : '—' }}</b></span>
@@ -1626,14 +1647,40 @@ function clearFilters() {
             <button class="modal-close" @click="showBatchModal = false">✕</button>
           </div>
           <div class="modal-body">
-            <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
-              为 <strong>{{ selectedCount }}</strong> 条记录设置同一开票批次号，相同批次号的记录将合并开具一张发票。
-              留空则清除批次号（取消合并）。
+            <p style="font-size:13px;color:var(--muted);margin-bottom:12px">
+              将 <strong>{{ selectedCount }}</strong> 条记录归入同一开票批次（同批次合并开一张发票，批次回款自动分摊）。
             </p>
-            <label class="form-field span2">
-              <span>批次号</span>
-              <input v-model="batchNoInput" placeholder="如 PF-2026-001（留空=清除批次）" autofocus />
-            </label>
+            <div class="bm-modes">
+              <label class="bm-opt" :class="{ on: batchMode === 'auto' }">
+                <input type="radio" value="auto" v-model="batchMode" />
+                <div>
+                  <b>自动生成批次号（推荐）</b>
+                  <i>系统按「客户简称-日期-序号」命名，如 华为物流-260612-01，见号知义、无需记编码</i>
+                </div>
+              </label>
+              <label class="bm-opt" :class="{ on: batchMode === 'existing' }">
+                <input type="radio" value="existing" v-model="batchMode" />
+                <div>
+                  <b>并入已有批次</b>
+                  <i>追加到之前合并的批次（如同客户当月新增了几条记录）</i>
+                  <select v-if="batchMode === 'existing'" v-model="batchExisting" style="margin-top:6px;width:100%">
+                    <option value="">— 选择批次 —</option>
+                    <option v-for="b in batchExistingList" :key="b.batch_no" :value="b.batch_no">
+                      {{ b.batch_no }}（{{ (b.customers || []).join('、') || '—' }} · {{ b.count }}条）
+                    </option>
+                  </select>
+                </div>
+              </label>
+              <label class="bm-opt" :class="{ on: batchMode === 'custom' }">
+                <input type="radio" value="custom" v-model="batchMode" />
+                <div>
+                  <b>自定义 / 清空</b>
+                  <i>手工输入批次号；留空提交 = 把所选记录移出批次</i>
+                  <input v-if="batchMode === 'custom'" v-model="batchNoInput"
+                         placeholder="自定义批次号（留空=清除批次）" style="margin-top:6px;width:100%" />
+                </div>
+              </label>
+            </div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-ghost" @click="showBatchModal = false">取消</button>
@@ -2248,7 +2295,18 @@ function clearFilters() {
 .bp-row { display: flex; align-items: center; gap: 14px; padding: 9px 14px; cursor: pointer; flex-wrap: wrap; }
 .bp-row:hover { background: rgba(33,150,243,0.05); }
 .bp-no { font-weight: 700; font-size: 13px; color: var(--text); min-width: 110px; }
+.bp-cust { font-size: 12px; color: var(--muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bp-cnt { font-size: 12px; color: var(--muted); }
+
+/* 批次号来源选择 */
+.bm-modes { display: flex; flex-direction: column; gap: 8px; }
+.bm-opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
+.bm-opt.on { border-color: var(--primary); background: rgba(201,99,66,0.05); }
+.bm-opt input[type="radio"] { margin-top: 3px; width: auto; }
+.bm-opt > div { flex: 1; }
+.bm-opt b { display: block; font-size: 13px; color: var(--text); }
+.bm-opt i { display: block; font-style: normal; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 .bp-amt { display: flex; flex-direction: column; min-width: 86px; }
 .bp-amt i { font-style: normal; font-size: 10.5px; color: var(--muted); }
 .bp-amt b { font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--text); }

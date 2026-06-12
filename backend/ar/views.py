@@ -6811,16 +6811,20 @@ def ar_invoice_batches(request):
         for g in qs.values('invoice_batch_no').annotate(s=Sum('payments__amount'))
     }
 
-    # 每批次的明细 record_ids 及部门列表（小数据量下内存聚合比子查询清晰）
-    id_dept_map = defaultdict(lambda: {'ids': [], 'depts': set()})
-    for r in qs.values('id', 'invoice_batch_no', 'delivery_dept'):
-        id_dept_map[r['invoice_batch_no']]['ids'].append(r['id'])
-        id_dept_map[r['invoice_batch_no']]['depts'].add(r['delivery_dept'])
+    # 每批次的明细 record_ids、部门与客户列表（小数据量下内存聚合比子查询清晰）
+    id_dept_map = defaultdict(lambda: {'ids': [], 'depts': set(), 'customers': set()})
+    for r in qs.values('id', 'invoice_batch_no', 'delivery_dept', 'project__customer_name'):
+        m = id_dept_map[r['invoice_batch_no']]
+        m['ids'].append(r['id'])
+        m['depts'].add(r['delivery_dept'])
+        if r['project__customer_name']:
+            m['customers'].add(r['project__customer_name'])
 
     rows = []
     for g in base:
         bn = g['invoice_batch_no']
         meta = id_dept_map[bn]
+        custs = sorted(meta['customers'])
         rows.append({
             'batch_no': bn,
             'count': g['count'] or 0,
@@ -6830,6 +6834,7 @@ def ar_invoice_batches(request):
             'collected': str(collected_map.get(bn, 0)),
             'record_ids': sorted(meta['ids']),
             'dept_names': sorted(meta['depts']),
+            'customers': custs[:3] + (['…'] if len(custs) > 3 else []),
         })
 
     return ok({'batches': rows, 'total': len(rows)})
@@ -7027,14 +7032,32 @@ def ar_invoice_batch_payment(request, batch_no):
     })
 
 
+def _gen_batch_no(qs):
+    """自动生成可读开票批次号：{客户简称}-{YYMMDD}-{序号}。
+
+    人脑不该发明编码——号段以所选记录的客户为前缀（同客户取其名，多客户记
+    「多户」），日期+当日序号保证唯一，看到号就知道是谁、哪天合并的。"""
+    names = set()
+    for r in qs.select_related('project')[:200]:
+        n = (r.project.customer_name or r.project.short_name or '').strip()
+        if n:
+            names.add(n)
+    base = (list(names)[0][:8] if len(names) == 1 else '多户') or '开票'
+    prefix = f'{base}-{datetime.date.today().strftime("%y%m%d")}'
+    seq = ARRecord.objects.filter(invoice_batch_no__startswith=prefix)\
+        .values('invoice_batch_no').distinct().count() + 1
+    return f'{prefix}-{seq:02d}'
+
+
 @csrf_exempt
 @pk_required()
 def ar_records_batch_assign(request):
     """POST /records/batch-assign  —  批量设置 invoice_batch_no。
 
-    Body: { "ids": [1,2,3], "invoice_batch_no": "PF-2026-001" }
+    Body: { "ids": [1,2,3], "invoice_batch_no": "..." } 或 { "ids": [...], "auto": true }
+    auto=true 时系统自动生成可读批次号（客户简称-日期-序号），无需人为编码。
     ids 为空 + all=true 时：对当前筛选全集打标（与 bulk-delete 对齐，但限 5000 条）。
-    invoice_batch_no 传空字符串则清空批次（取消合并）。
+    invoice_batch_no 传空字符串且非 auto 则清空批次（取消合并）。
     """
     denied = _page_denied(request, 'ar_records')
     if denied:
@@ -7047,6 +7070,7 @@ def ar_records_batch_assign(request):
 
     data = _parse_body(request)
     batch_no = (data.get('invoice_batch_no') or '').strip()[:50]
+    auto = data.get('auto') in (True, 'true', '1')
     all_flag = data.get('all') in (True, 'true', '1')
     ids = data.get('ids')
 
@@ -7058,7 +7082,6 @@ def ar_records_batch_assign(request):
         qs = _apply_conditions(qs, request, today)
         if qs.count() > 5000:
             return err('选中记录超过5000条，请缩小筛选范围后再批量操作')
-        updated = qs.update(invoice_batch_no=batch_no)
     else:
         if not ids or not isinstance(ids, list):
             return err('请传入 ids 数组或 all=true')
@@ -7066,7 +7089,10 @@ def ar_records_batch_assign(request):
         qs = ARRecord.objects.filter(pk__in=[int(i) for i in ids])
         if request.pk_role != 'super_admin':
             qs = qs.filter(delivery_dept__in=request.pk_depts)
-        updated = qs.update(invoice_batch_no=batch_no)
+
+    if auto and not batch_no:
+        batch_no = _gen_batch_no(qs)
+    updated = qs.update(invoice_batch_no=batch_no)
 
     action = f'设置批次号为「{batch_no}」' if batch_no else '清空批次号'
     return ok({'updated': updated, 'invoice_batch_no': batch_no,
