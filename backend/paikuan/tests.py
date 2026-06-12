@@ -6,7 +6,7 @@ from decimal import Decimal
 from django.test import Client, TestCase
 
 from ar.models import ARProject
-from paikuan.models import JobPermission, PaikuanUser, Payment
+from paikuan.models import ApprovalRecord, JobPermission, PaikuanUser, Payment
 from paikuan.views import DEPARTMENTS, default_job_config, make_token, _invalidate_perm_cache
 
 
@@ -679,3 +679,77 @@ class ProjectLinkFieldsTests(TestCase):
         pay = resp.json()['data']['payment']
         self.assertEqual(pay['secondary_dept'], '华东项目部')
         self.assertEqual(pay['project_short_name'], '链路打通项目')
+
+
+class PartialScheduleTests(TestCase):
+    """审批分批排款：多次排款分批流转付款台账，排满自动归档。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900002000', name='SchedAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.rec = ApprovalRecord.objects.create(
+            applicant='张三', department=self.dept, approval_number='1' * 21,
+            summary='设备采购', amount=Decimal('10000'), payee='供应商A',
+            status='approved')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _sched(self, amount, day):
+        return self.client.post(f'/api/pk/approvals/{self.rec.id}/schedule',
+                                data=json.dumps({'planned_date': day, 'total_amount': amount}),
+                                content_type='application/json', **self.auth())
+
+    def test_partial_schedules_until_archive(self):
+        # 第一批 4000 → 留在审批管理
+        resp = self._sched('4000', '2026-07-01')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertFalse(d['archived'])
+        self.assertEqual(Decimal(d['remaining_amount']), Decimal('6000'))
+        self.rec.refresh_from_db()
+        self.assertFalse(self.rec.archived)
+        self.assertEqual(self.rec.scheduled_amount, Decimal('4000'))
+        # 第二批 6000 → 排满归档
+        resp = self._sched('6000', '2026-08-01')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.json()['data']['archived'])
+        self.rec.refresh_from_db()
+        self.assertTrue(self.rec.archived)
+        # 两笔排款都在付款台账，字段随单
+        pays = Payment.objects.filter(approval_number='1' * 21).order_by('planned_date')
+        self.assertEqual(pays.count(), 2)
+        self.assertEqual([p.total_amount for p in pays],
+                         [Decimal('4000'), Decimal('6000')])
+
+    def test_over_remaining_rejected(self):
+        self._sched('4000', '2026-07-01')
+        resp = self._sched('7000', '2026-08-01')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('剩余可排', resp.json()['error'])
+
+    def test_archived_cannot_schedule_more(self):
+        self._sched('10000', '2026-07-01')
+        self.rec.refresh_from_db()
+        self.assertTrue(self.rec.archived)
+        resp = self._sched('1', '2026-08-01')
+        self.assertEqual(resp.status_code, 404)   # archived=False 过滤不到
+
+    def test_export_has_schedule_columns(self):
+        self._sched('4000', '2026-07-01')
+        resp = self.client.get('/api/pk/approvals/export', **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        import io as _io
+        import openpyxl as _xl
+        wb = _xl.load_workbook(_io.BytesIO(resp.content))
+        headers = [c.value for c in wb.active[1]]
+        self.assertIn('已排款金额', headers)
+        self.assertIn('剩余可排', headers)
+        idx = headers.index('已排款金额')
+        self.assertEqual(wb.active.cell(2, idx + 1).value, 4000)

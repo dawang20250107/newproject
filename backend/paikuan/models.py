@@ -225,6 +225,8 @@ class ApprovalRecord(models.Model):
     approval_number = models.CharField('审批编号', max_length=21, db_index=True)
     summary = models.CharField('摘要', max_length=500)
     amount = models.DecimalField('申请金额', max_digits=15, decimal_places=2)
+    # 分批排款累计：每次排款累加；排满申请金额自动归档（兼容一次性排款）
+    scheduled_amount = models.DecimalField('已排款金额', max_digits=15, decimal_places=2, default=0)
     payee = models.CharField('收款主体', max_length=200)
     status = models.CharField('审批状态', max_length=20, choices=STATUS_CHOICES, default='pending', db_index=True)
     archived = models.BooleanField('是否归档', default=False, db_index=True)
@@ -246,6 +248,9 @@ class ApprovalRecord(models.Model):
             'approval_number': self.approval_number,
             'summary': self.summary,
             'amount': str(self.amount),
+            'scheduled_amount': str(self.scheduled_amount or 0),
+            'remaining_amount': str(max(Decimal('0'), (self.amount or Decimal('0'))
+                                        - (self.scheduled_amount or Decimal('0')))),
             'payee': self.payee,
             'status': self.status,
             'archived': self.archived,

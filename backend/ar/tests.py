@@ -3844,3 +3844,82 @@ class BatchPaymentUndoTests(TestCase):
                                 content_type='application/json', **self.auth())
         self.assertEqual(resp.status_code, 400)
         self.assertTrue(ARPayment.objects.filter(pk=pay.pk).exists())
+
+
+class PartialBatchInvoiceTests(TestCase):
+    """分批开票：勾选部分成员多轮开完一批 + 税额体现。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900001900', name='PInvAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='分批客户', short_name='分批项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='PIV-0001',
+            invoice_mode='全额', tax_rate=Decimal('0.06'))
+        self.r1 = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 4, 1),
+                                          estimated_amount=Decimal('1060'),
+                                          invoice_batch_no='PB-01')
+        self.r2 = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                          estimated_amount=Decimal('2120'),
+                                          invoice_batch_no='PB-01')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_partial_invoice_two_rounds(self):
+        # 第一轮只开 r1
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PB-01/invoice',
+                                data=json.dumps({'invoice_date': '2026-06-01',
+                                                 'record_ids': [self.r1.id]}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(len(d['invoiced']), 1)
+        self.assertIn('剩余 1 条待开', d['message'])
+        self.r1.refresh_from_db(); self.r2.refresh_from_db()
+        self.assertEqual(self.r1.actual_invoice_amount, Decimal('1060'))
+        self.assertIsNone(self.r2.actual_invoice_amount)
+        # 全额模式税额自动算：1060/(1.06)*0.06 = 60
+        self.assertEqual(self.r1.tax_amount, Decimal('60.00'))
+        # 第二轮开剩余（不传 record_ids = 全部待开）
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PB-01/invoice',
+                                data=json.dumps({'invoice_date': '2026-07-01'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.r2.refresh_from_db()
+        self.assertEqual(self.r2.actual_invoice_amount, Decimal('2120'))
+        self.assertEqual(str(self.r2.invoice_date), '2026-07-01')
+
+    def test_invoice_total_checks_selected_subset(self):
+        # 发票金额校验针对本轮所选合计
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PB-01/invoice',
+                                data=json.dumps({'invoice_date': '2026-06-01',
+                                                 'record_ids': [self.r1.id],
+                                                 'invoice_total': '3180'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('1060', resp.json()['error'])
+
+    def test_detail_shows_tax(self):
+        d = self.client.get('/api/pk/ar/records/invoice-batches/PB-01', **self.auth()).json()['data']
+        m = d['members'][0]
+        self.assertEqual(m['tax_rate'], '0.0600')
+        self.assertEqual(Decimal(m['tax_amount']), Decimal('60.00'))   # 待开按税率预估
+        self.assertEqual(Decimal(d['summary']['tax']), Decimal('180.00'))  # 60+120
+
+    def test_selected_already_invoiced_rejected(self):
+        self.client.post('/api/pk/ar/records/invoice-batches/PB-01/invoice',
+                         data=json.dumps({'invoice_date': '2026-06-01',
+                                          'record_ids': [self.r1.id]}),
+                         content_type='application/json', **self.auth())
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PB-01/invoice',
+                                data=json.dumps({'invoice_date': '2026-06-02',
+                                                 'record_ids': [self.r1.id]}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400)

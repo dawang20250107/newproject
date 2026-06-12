@@ -6852,8 +6852,20 @@ def _batch_member_dict(rec):
     billable = (rec.estimated_amount or Decimal('0')) + (rec.account_diff_adjustment or Decimal('0'))
     collected = rec.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0')
     adjustments = [{'reason': a.reason, 'amount': str(a.amount)} for a in rec.adjustments.all()]
+    # 税额体现：已开票的取记录税额（全额模式自动算/差额模式手填）；
+    # 未开票的按项目税率给预估（全额模式），差额模式无法预估标 None
+    rate = rec.project.tax_rate or Decimal('0')
+    if rec.actual_invoice_amount is not None:
+        tax_show = rec.tax_amount
+    elif rec.project.invoice_mode == '全额' and rate:
+        tax_show = (billable / (1 + rate) * rate).quantize(Decimal('0.01'))
+    else:
+        tax_show = None
     return {
         'adjustments': adjustments,
+        'tax_rate': str(rate),
+        'invoice_mode': rec.project.invoice_mode,
+        'tax_amount': str(tax_show) if tax_show is not None else None,
         'id': rec.id,
         'short_name': rec.project.short_name,
         'customer_name': rec.project.customer_name,
@@ -6909,6 +6921,7 @@ def ar_invoice_batch_detail(request, batch_no):
             'diff': str(s('diff')),
             'billable': str(s('billable')),
             'invoiced': str(s('invoiced')),
+            'tax': str(s('tax_amount')),
             'collected': str(s('collected')),
             'outstanding': str(s('outstanding')),
             'pending_invoice': sum(1 for m in members if m['invoiced'] is None),
@@ -6947,6 +6960,17 @@ def ar_invoice_batch_invoice(request, batch_no):
     already = [r for r in members if r.actual_invoice_amount is not None]
     if not pending:
         return err('该批次所有记录均已开票，无需重复操作')
+    # 分批开票：可只勾选部分待开成员本轮开票，剩余留待下轮（多轮开完一批）
+    sel_raw = data.get('record_ids')
+    if isinstance(sel_raw, list) and sel_raw:
+        try:
+            sel = {int(i) for i in sel_raw}
+        except (TypeError, ValueError):
+            return err('record_ids 必须为整数列表')
+        bad = sel - {r.id for r in pending}
+        if bad:
+            return err('所选记录中有不属于本批次待开范围的（可能已开票），请刷新后重试')
+        pending = [r for r in pending if r.id in sel]
 
     pending_total = sum((r.estimated_amount or Decimal('0'))
                         + (r.account_diff_adjustment or Decimal('0')) for r in pending)
@@ -6971,9 +6995,12 @@ def ar_invoice_batch_invoice(request, batch_no):
             r.save()
             invoiced.append({'id': r.id, 'short_name': r.project.short_name,
                              'amount': str(r.actual_invoice_amount)})
-    msg = f'批次「{batch_no}」开票完成：{len(invoiced)} 条落账，合计 {pending_total}'
+    rest = len(members) - len(already) - len(invoiced)
+    msg = f'批次「{batch_no}」本轮开票 {len(invoiced)} 条落账，合计 {pending_total}'
     if already:
-        msg += f'；{len(already)} 条此前已开票，保持原值未动'
+        msg += f'；{len(already)} 条此前已开票'
+    if rest > 0:
+        msg += f'；剩余 {rest} 条待开，可下轮继续分批开票'
     return ok({'invoiced': invoiced, 'skipped_already': len(already),
                'total': str(pending_total), 'message': msg})
 

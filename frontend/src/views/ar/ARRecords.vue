@@ -544,18 +544,37 @@ function toggleBatchExpand(bn) {
 async function refreshAfterBatchAction(bn) {
   await Promise.all([loadBatches(), load(), fetchBatchDetail(bn, true).catch(() => {})])
 }
-function openBatchInvoice(b) {
+const invSel = ref(new Set())   // 本轮勾选开票的成员（分批开票：可只开一部分）
+function invToggle(id) {
+  const s = new Set(invSel.value)
+  s.has(id) ? s.delete(id) : s.add(id)
+  invSel.value = s
+}
+const invPending = computed(() =>
+  (batchDetail.value[batchTarget.value?.batch_no]?.members || []).filter(m => m.invoiced == null))
+const invSelTotal = computed(() =>
+  invPending.value.filter(m => invSel.value.has(m.id))
+    .reduce((t, m) => t + (parseFloat(m.billable) || 0), 0))
+const invSelTax = computed(() =>
+  invPending.value.filter(m => invSel.value.has(m.id))
+    .reduce((t, m) => t + (parseFloat(m.tax_amount) || 0), 0))
+async function openBatchInvoice(b) {
   batchTarget.value = b
   Object.assign(batchInvForm, { invoice_date: todayCST(), invoice_total: '' })
-  fetchBatchDetail(b.batch_no).catch(() => {})
   showBatchInvoice.value = true
+  try {
+    const d = await fetchBatchDetail(b.batch_no)
+    invSel.value = new Set((d.members || []).filter(m => m.invoiced == null).map(m => m.id))
+  } catch (_) { invSel.value = new Set() }
 }
 async function doBatchInvoice() {
+  if (!invSel.value.size) { alert('请勾选本轮要开票的记录'); return }
   batchActing.value = true
   try {
     const res = await ar.batchInvoice(batchTarget.value.batch_no, {
       invoice_date: batchInvForm.invoice_date,
       invoice_total: batchInvForm.invoice_total || null,
+      record_ids: [...invSel.value],
     })
     alert(res.data?.message || '批次开票完成')
     showBatchInvoice.value = false
@@ -1058,7 +1077,7 @@ function clearFilters() {
                   </div>
                 </div>
                 <table v-if="batchDetail[b.batch_no]" class="bp-mtable">
-                  <thead><tr><th>项目</th><th>运作日期</th><th class="r">上账</th><th class="r">差额调整</th><th class="r">应开(上账+差额)</th><th class="r">已开票</th><th>开票日期</th><th class="r">已回款</th><th class="r">未收</th></tr></thead>
+                  <thead><tr><th>项目</th><th>运作日期</th><th class="r">上账</th><th class="r">差额调整</th><th class="r">应开(上账+差额)</th><th class="r">已开票</th><th class="r">税额</th><th>开票日期</th><th class="r">已回款</th><th class="r">未收</th></tr></thead>
                   <tbody>
                     <tr v-for="m in batchDetail[b.batch_no].members" :key="m.id">
                       <td>{{ m.short_name }}</td>
@@ -1070,6 +1089,7 @@ function clearFilters() {
                       </td>
                       <td class="r">{{ fmtCell(m.billable) }}</td>
                       <td class="r">{{ m.invoiced != null ? fmtCell(m.invoiced) : '未开' }}</td>
+                      <td class="r" :title="m.invoice_mode === '差额' ? '差额模式：税额手填' : `税率 ${(parseFloat(m.tax_rate) * 100).toFixed(1)}%`">{{ m.tax_amount != null ? fmtCell(m.tax_amount) : '—' }}</td>
                       <td>{{ m.invoice_date || '—' }}</td>
                       <td class="r">{{ parseFloat(m.collected) ? fmtCell(m.collected) : '—' }}</td>
                       <td class="r" :class="parseFloat(m.outstanding) > 0 ? 'bp-out' : 'bp-ok'">{{ parseFloat(m.outstanding) > 0 ? fmtCell(m.outstanding) : '✓' }}</td>
@@ -1722,19 +1742,28 @@ function clearFilters() {
           </div>
           <div class="modal-body">
             <p style="font-size:12.5px;color:var(--muted);margin-bottom:10px">
-              对批次内<strong>尚未开票</strong>的记录落账：实际开票金额 = 上账金额 + 账实差额调整，统一盖开票日期。
-              已开票的记录保持原值不动。如发票金额与待开合计不一致，请先到具体记录上调整「账实差额」。
+              <strong>支持分批开票</strong>：勾选本轮要开的记录（默认全选待开），其余留待下轮。
+              落账规则：实际开票金额 = 上账 + 账实差额；税额按各记录的项目税率分别体现
+              （全额模式自动算，差额模式开票后到记录上手填税额）。
             </p>
             <table v-if="batchDetail[batchTarget?.batch_no]" class="bp-mtable" style="margin-bottom:12px">
-              <thead><tr><th>项目</th><th>运作日期</th><th class="r">应开(上账+差额)</th><th>状态</th></tr></thead>
+              <thead><tr><th style="width:30px"></th><th>项目</th><th>运作日期</th><th class="r">应开(上账+差额)</th><th class="r">税率</th><th class="r">税额(预计)</th><th>状态</th></tr></thead>
               <tbody>
-                <tr v-for="m in batchDetail[batchTarget.batch_no].members" :key="m.id">
+                <tr v-for="m in batchDetail[batchTarget.batch_no].members" :key="m.id"
+                    :style="m.invoiced == null && invSel.has(m.id) ? '' : 'opacity:.55'">
+                  <td><input v-if="m.invoiced == null" type="checkbox" :checked="invSel.has(m.id)" @change="invToggle(m.id)" style="width:auto" /></td>
                   <td>{{ m.short_name }}</td><td>{{ m.operation_date || '—' }}</td>
                   <td class="r">{{ fmtCell(m.billable) }}</td>
-                  <td>{{ m.invoiced != null ? '已开票（跳过）' : '待开' }}</td>
+                  <td class="r">{{ parseFloat(m.tax_rate) ? (parseFloat(m.tax_rate) * 100).toFixed(1) + '%' : '—' }}</td>
+                  <td class="r">{{ m.tax_amount != null ? fmtCell(m.tax_amount) : (m.invoice_mode === '差额' ? '手填' : '—') }}</td>
+                  <td>{{ m.invoiced != null ? '已开票' : '待开' }}</td>
                 </tr>
               </tbody>
             </table>
+            <p style="font-size:12px;color:var(--text);margin:-4px 0 10px">
+              本轮已选 <b>{{ invSel.size }}</b> 条 · 应开合计 <b>{{ invSelTotal.toFixed(2) }}</b>
+              · 预计税额合计 <b>{{ invSelTax.toFixed(2) }}</b>
+            </p>
             <div class="form-grid">
               <label class="form-field">
                 <span>开票日期*</span>
@@ -1742,7 +1771,7 @@ function clearFilters() {
               </label>
               <label class="form-field">
                 <span>发票金额（选填，校验用）</span>
-                <input v-model="batchInvForm.invoice_total" type="number" step="0.01" placeholder="填写则须与待开合计一致" />
+                <input v-model="batchInvForm.invoice_total" type="number" step="0.01" :placeholder="`填写则须与本轮所选合计 ${invSelTotal.toFixed(2)} 一致`" />
               </label>
             </div>
           </div>

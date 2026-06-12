@@ -77,7 +77,9 @@ async function updateStatus(it, status){
 const schedPrepaid = ref(null)
 function openSchedule(it){
   current.value=it
-  Object.assign(scheduleForm,{ planned_date: todayCST(), total_amount:it.amount })
+  // 分批排款：默认带出剩余可排（首次=申请金额），可改小分批流转
+  const remaining = parseFloat(it.remaining_amount ?? it.amount) || 0
+  Object.assign(scheduleForm,{ planned_date: todayCST(), total_amount: remaining })
   schedPrepaid.value = null
   showSchedule.value=true
   if (it.project_short_name) {
@@ -86,7 +88,13 @@ function openSchedule(it){
       .catch(() => {})
   }
 }
-async function doSchedule(){ try{ await api.post(`/approvals/${current.value.id}/schedule`, scheduleForm); showSchedule.value=false; load(); alert('排款成功并已归档') } catch(e){ alert(e?.error||'排款失败') } }
+async function doSchedule(){
+  try{
+    const res = await api.post(`/approvals/${current.value.id}/schedule`, scheduleForm)
+    showSchedule.value=false; load()
+    alert(res.data?.message || '排款成功')
+  } catch(e){ alert(e?.error||'排款失败') }
+}
 async function downloadTemplate(){ const b=await api.get('/approvals/template',{responseType:'blob'}); dl(b,'审批管理导入模板.xlsx') }
 const dl = downloadBlob
 function triggerImport(){ fileRef.value.click() }
@@ -139,7 +147,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <tbody><tr v-for="i in items" :key="i.id"><td>{{i.applicant}}</td><td>{{i.department}}</td>
       <td class="meta-cell">{{ i.secondary_dept || '—' }}</td>
       <td class="meta-cell" :title="i.project_short_name">{{ i.project_short_name || '—' }}</td>
-      <td class="mono">{{i.approval_number}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}</td><td class="payee">{{i.payee}}</td>
+      <td class="mono">{{i.approval_number}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}<div v-if="parseFloat(i.scheduled_amount) > 0 && !i.archived" class="sched-sub">已排 {{i.scheduled_amount}}</div></td><td class="payee">{{i.payee}}</td>
       <td>
         <select :value="i.status" :disabled="statusUpdating[i.id]" @change="updateStatus(i, $event.target.value)">
           <option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option>
@@ -181,7 +189,15 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <label class="form-field"><span>审批状态</span><select v-model="form.status"><option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option></select></label>
   </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showCreate=false">取消</button><button class="btn btn-primary" :disabled="saving" @click="create">保存</button></div></div></div></Teleport>
 
-  <Teleport to="body"><div v-if="showSchedule" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>一键排款</h3></div><div class="modal-body">
+  <Teleport to="body"><div v-if="showSchedule" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>排款（支持分批）</h3></div><div class="modal-body">
+    <div class="sched-progress">
+      <span>申请金额 <b>{{ current?.amount }}</b></span>
+      <span>已排款 <b style="color:#2e7d32">{{ current?.scheduled_amount || 0 }}</b></span>
+      <span>剩余可排 <b style="color:#e65100">{{ current?.remaining_amount ?? current?.amount }}</b></span>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin:0 0 10px">
+      本次金额小于剩余可排时为分批排款：本次先流转付款台账，记录留在审批管理可继续排；排满申请金额自动归档。
+    </p>
     <div v-if="schedPrepaid" class="sched-prepaid-hint">
       💡 项目「{{ schedPrepaid.short_name }}」尚有 <b>{{ schedPrepaid.count }}</b> 笔预付未核销，
       余额合计 <b>{{ schedPrepaid.total_balance }}</b> 元。建议排款后到付款台账该行点「核销」，
@@ -232,6 +248,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .sched-prepaid-hint { font-size: 12.5px; color: #8a6d1a; background: rgba(255,213,79,0.14);
   border: 1px solid rgba(255,193,7,0.35); border-radius: 9px; padding: 9px 12px; margin-bottom: 12px; line-height: 1.7; }
 .sched-prepaid-hint b { color: #6d4c00; }
+.sched-progress { display: flex; gap: 18px; font-size: 13px; color: var(--muted);
+  background: rgba(201,99,66,.05); border-radius: 9px; padding: 9px 12px; margin-bottom: 10px; }
+.sched-progress b { font-variant-numeric: tabular-nums; color: var(--text); }
+.sched-sub { font-size: 10.5px; color: #2e7d32; font-weight: 600; margin-top: 1px; }
 .ops-btns { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
 .ops-btns .btn { padding: 4px 8px; font-size: 12px; white-space: nowrap; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }

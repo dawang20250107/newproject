@@ -1496,6 +1496,12 @@ def approval_record_schedule(request, pk):
     total_amount = Decimal(str(data.get('total_amount') or '0'))
     if not planned_date or total_amount <= 0:
         return err('计划日期和计划金额必填')
+    # 分批排款：本次金额不得超过剩余可排（申请金额 − 已排款累计）
+    remaining = (rec.amount or Decimal('0')) - (rec.scheduled_amount or Decimal('0'))
+    if total_amount > remaining:
+        return err(f'本次排款 {total_amount} 超过剩余可排 {remaining}'
+                   f'（申请 {rec.amount} − 已排 {rec.scheduled_amount}）。'
+                   f'如需超额请先修改审批记录的申请金额')
     fields = {
         'department': rec.department,
         'approval_number': rec.approval_number,
@@ -1535,8 +1541,10 @@ def approval_record_schedule(request, pk):
                 planned_date=planned_date,
             )
             _record_payment_changes(p, {}, {}, request, action='create')
-            rec_locked.archived = True
-            rec_locked.save(update_fields=['archived', 'updated_at'])
+            # 分批排款：累加已排；排满申请金额才归档，未排满留在审批管理继续分批
+            rec_locked.scheduled_amount = (rec_locked.scheduled_amount or Decimal('0')) + total_amount
+            rec_locked.archived = rec_locked.scheduled_amount >= (rec_locked.amount or Decimal('0'))
+            rec_locked.save(update_fields=['scheduled_amount', 'archived', 'updated_at'])
     except IntegrityError:
         dup = _find_duplicate_payment(fields)
         ref = f' #{dup.id}' if dup else ''
@@ -1544,7 +1552,12 @@ def approval_record_schedule(request, pk):
             f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录{ref}',
             409, 409,
         )
-    return ok({'payment': p.to_dict(), 'archived': rec.id})
+    rec.refresh_from_db()
+    return ok({'payment': p.to_dict(), 'archived': rec.archived,
+               'scheduled_amount': str(rec.scheduled_amount),
+               'remaining_amount': str(max(Decimal('0'), rec.amount - rec.scheduled_amount)),
+               'message': ('已排满申请金额，记录归档' if rec.archived else
+                           f'本次排款 {total_amount} 已流转付款台账，剩余可排 {rec.amount - rec.scheduled_amount}')})
 
 
 @pk_required()
@@ -1679,7 +1692,8 @@ def approval_export(request):
     wb = Workbook()
     ws = wb.active
     ws.title = '审批记录'
-    headers = ['申请人', '所属事业部', '二级部门', '项目简称', '审批编号', '摘要', '申请金额', '收款主体', '审批状态']
+    headers = ['申请人', '所属事业部', '二级部门', '项目简称', '审批编号', '摘要', '申请金额',
+               '已排款金额', '剩余可排', '收款主体', '审批状态']
     header_fill = PatternFill(fill_type='solid', fgColor='C96342')
     header_font = Font(bold=True, color='FFFFFF', size=11)
     center = Alignment(horizontal='center', vertical='center', wrap_text=True)
@@ -1687,9 +1701,11 @@ def approval_export(request):
         c = ws.cell(row=1, column=i, value=h); c.fill = header_fill; c.font = header_font; c.alignment = center
     cn = {'pending': '待审批', 'approved': '审批通过', 'rejected': '已拒绝', 'canceled': '已撤销'}
     for o in qs:
+        sched = float(o.scheduled_amount or 0)
         ws.append([_safe(o.applicant), o.department, _safe(o.secondary_dept),
                    _safe(o.project_short_name), _safe(o.approval_number),
-                   _safe(o.summary), float(o.amount), _safe(o.payee),
+                   _safe(o.summary), float(o.amount), sched,
+                   max(0.0, float(o.amount) - sched), _safe(o.payee),
                    cn.get(o.status, o.status)])
     return _build_excel_response(wb, '审批记录.xlsx')
 
