@@ -722,11 +722,36 @@ class PartialScheduleTests(TestCase):
         self.assertTrue(resp.json()['data']['archived'])
         self.rec.refresh_from_db()
         self.assertTrue(self.rec.archived)
-        # 两笔排款都在付款台账，字段随单
-        pays = Payment.objects.filter(approval_number='1' * 21).order_by('planned_date')
-        self.assertEqual(pays.count(), 2)
-        self.assertEqual([p.total_amount for p in pays],
-                         [Decimal('4000'), Decimal('6000')])
+        # 付款台账只有一条汇总（经 approval 静默ID打通），两批计划在明细里
+        pays = Payment.objects.filter(approval=self.rec)
+        self.assertEqual(pays.count(), 1)
+        p = pays.first()
+        self.assertEqual(p.total_amount, Decimal('10000'))         # 汇总=各批之和
+        self.assertEqual(str(p.planned_date), '2026-07-01')        # 最早批次日期
+        items = list(p.plan_items.order_by('seq'))
+        self.assertEqual([i.amount for i in items], [Decimal('4000'), Decimal('6000')])
+        self.assertEqual([str(i.planned_date) for i in items], ['2026-07-01', '2026-08-01'])
+
+    def test_plan_item_undo_rolls_back_schedule(self):
+        # 撤销某批计划 → 汇总回退、审批已排款扣减、归档回退可继续排
+        self._sched('4000', '2026-07-01')
+        self._sched('6000', '2026-08-01')
+        self.rec.refresh_from_db()
+        self.assertTrue(self.rec.archived)
+        p = Payment.objects.get(approval=self.rec)
+        second = p.plan_items.get(seq=2)
+        resp = self.client.delete(f'/api/pk/payments/{p.id}/plan-items/{second.id}',
+                                  **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        p.refresh_from_db(); self.rec.refresh_from_db()
+        self.assertEqual(p.total_amount, Decimal('4000'))
+        self.assertEqual(self.rec.scheduled_amount, Decimal('4000'))
+        self.assertFalse(self.rec.archived)   # 可继续分批排款
+        # 最后一批不可单独撤销
+        first = p.plan_items.get(seq=1)
+        resp = self.client.delete(f'/api/pk/payments/{p.id}/plan-items/{first.id}',
+                                  **self.auth())
+        self.assertEqual(resp.status_code, 400)
 
     def test_over_remaining_rejected(self):
         self._sched('4000', '2026-07-01')

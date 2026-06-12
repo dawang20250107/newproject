@@ -79,6 +79,10 @@ class Payment(models.Model):
     # 并按项目汇总已排/待付。历史存量行为空字符串。
     project_no = models.CharField('项目编号', max_length=20, blank=True, default='', db_index=True)
     # 二级部门/项目简称（选填，历史数据为空）。项目简称须与项目台账 short_name 匹配
+    # 来源审批（静默唯一ID）：一条审批 ↔ 一条付款台账汇总记录，分批排款追加计划明细
+    approval = models.ForeignKey('ApprovalRecord', on_delete=models.SET_NULL,
+                                 null=True, blank=True, related_name='payments',
+                                 verbose_name='来源审批')
     # （创建/编辑/导入时校验），作为排款与应收/现金流/分析/资金池打通的项目维度桥梁。
     secondary_dept = models.CharField('二级部门', max_length=100, blank=True, default='', db_index=True)
     project_short_name = models.CharField('项目简称', max_length=100, blank=True, default='', db_index=True)
@@ -143,6 +147,7 @@ class Payment(models.Model):
 
     def to_dict(self):
         insts = list(self.installments.all())
+        plan_items = list(self.plan_items.all())
         total_paid_val = sum(i.pay_amount for i in insts)
         covered = total_paid_val + (self.prepaid_offset_amount or Decimal('0'))
         plan = self.plan_adjustment if self.plan_adjustment is not None else self.total_amount
@@ -161,6 +166,13 @@ class Payment(models.Model):
             'applicant': self.applicant,
             'approval_number': self.approval_number,
             'project_no': self.project_no,
+            'approval_id': self.approval_id,
+            'plan_count': len(plan_items),
+            'plan_items': [
+                {'id': pi.id, 'seq': pi.seq, 'planned_date': str(pi.planned_date),
+                 'amount': str(pi.amount), 'notes': pi.notes}
+                for pi in plan_items
+            ],
             'secondary_dept': self.secondary_dept,
             'project_short_name': self.project_short_name,
             'project_desc': self.project_desc,
@@ -207,6 +219,24 @@ class PaymentInstallment(models.Model):
             models.UniqueConstraint(fields=['payment', 'seq'],
                                     name='uniq_installment_seq_per_payment'),
         ]
+
+
+class PaymentPlanItem(models.Model):
+    """计划排款明细子表：一条 Payment（=一条审批的汇总）可分多批计划排款。
+
+    Payment.total_amount = 明细金额之和、planned_date = 最早计划日（派生，
+    写路径显式同步）；付款台账只显示一条汇总，点开看逐批计划与逐笔实付。"""
+    payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name='plan_items')
+    seq = models.PositiveSmallIntegerField('批次序号', default=1, db_index=True)
+    planned_date = models.DateField('计划日期', db_index=True)
+    amount = models.DecimalField('计划金额', max_digits=15, decimal_places=2)
+    notes = models.CharField('备注', max_length=200, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'paikuan_payment_plan_items'
+        ordering = ['payment', 'seq']
+        indexes = [models.Index(fields=['payment', 'planned_date'])]
 
 
 class ApprovalRecord(models.Model):

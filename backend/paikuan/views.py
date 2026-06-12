@@ -19,7 +19,8 @@ from django.conf import settings
 from django.utils import timezone
 import jwt
 
-from paikuan.models import PaikuanUser, Payment, PaymentInstallment, JobPermission, ApprovalRecord, PaymentChangeLog
+from paikuan.models import (PaikuanUser, Payment, PaymentInstallment, PaymentPlanItem,
+                            JobPermission, ApprovalRecord, PaymentChangeLog)
 
 logger = logging.getLogger('paikuan')
 
@@ -820,6 +821,55 @@ def prepaid_balance(request):
 
 @csrf_exempt
 @pk_required()
+def payment_plan_item_delete(request, pk, iid):
+    """DELETE /payments/<pk>/plan-items/<iid> — 撤销某一批计划排款。
+
+    汇总金额/最早计划日随之回退；该付款若来源于审批（approval 静默ID），
+    审批的已排款累计同步扣减、归档状态回退（可继续分批排款）。
+    护栏：回退后计划合计不得低于 已付+预付冲抵；最后一批不可删（请删除整条记录）。"""
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    if request.method != 'DELETE':
+        return err('Method not allowed', 405)
+    if perms is not None and not perms.get('can_create'):
+        return err('无排款操作权限', 403, 403)
+    try:
+        p = Payment.objects.get(pk=pk)
+    except Payment.DoesNotExist:
+        return err('排款记录不存在', 404)
+    if not can_write_dept(request, p.department):
+        return err('无权操作该部门', 403, 403)
+    try:
+        item = PaymentPlanItem.objects.get(pk=iid, payment_id=pk)
+    except PaymentPlanItem.DoesNotExist:
+        return err('计划批次不存在（可能已撤销）', 404)
+    if p.plan_items.count() <= 1:
+        return err('最后一批计划不可单独撤销——如需作废整条排款请使用删除记录')
+    paid = p.total_paid + (p.prepaid_offset_amount or Decimal('0'))
+    after = (p.total_amount or Decimal('0')) - item.amount
+    if after < paid:
+        return err(f'撤销后计划合计 {after} 将低于 已付+冲抵 {paid}，不能撤销；'
+                   f'请先删除对应付款明细')
+    with transaction.atomic():
+        amt = item.amount
+        item.delete()
+        _sync_payment_plan(p)
+        if p.approval_id:
+            rec = ApprovalRecord.objects.select_for_update().filter(pk=p.approval_id).first()
+            if rec:
+                rec.scheduled_amount = max(Decimal('0'),
+                                           (rec.scheduled_amount or Decimal('0')) - amt)
+                rec.archived = rec.scheduled_amount >= (rec.amount or Decimal('0'))
+                rec.save(update_fields=['scheduled_amount', 'archived', 'updated_at'])
+    p.refresh_from_db()
+    return ok({'payment': p.to_dict(),
+               'message': f'已撤销该批计划 {amt}，汇总与审批已排款同步回退'})
+
+
+@csrf_exempt
+@pk_required()
 def payment_offsets(request, pk):
     """GET /payments/<pk>/offsets — 该排款已关联的预付核销列表（供行内反向核销）。"""
     perms = get_request_perms(request)
@@ -850,7 +900,7 @@ def payment_offsets(request, pk):
 
 
 def _list_payments(request):
-    qs = Payment.objects.select_related('created_by').prefetch_related('installments').all()
+    qs = Payment.objects.select_related('created_by').prefetch_related('installments', 'plan_items').all()
     qs = dept_filter(qs, request)
 
     dept = request.GET.get('dept', '').strip()
@@ -1199,6 +1249,24 @@ def _installments_summary(insts_qs):
     return '；'.join(f'{i.pay_date} ¥{i.pay_amount}' for i in rows)
 
 
+def _sync_payment_plan(p):
+    """计划明细 → 汇总派生：total_amount=明细之和、planned_date=最早计划日。
+    明细为空时不动（直建/导入路径会先建首条明细）。"""
+    items = list(p.plan_items.all())
+    if not items:
+        return
+    p.total_amount = sum(i.amount for i in items)
+    p.planned_date = min(i.planned_date for i in items)
+    p.save(update_fields=['total_amount', 'planned_date', 'updated_at'])
+
+
+def _ensure_plan_item(p):
+    """直建/导入的付款：生成首条计划明细（=计划日期+计划金额），维持派生不变量。"""
+    if p.planned_date and not p.plan_items.exists():
+        PaymentPlanItem.objects.create(payment=p, seq=1, planned_date=p.planned_date,
+                                       amount=p.total_amount or 0)
+
+
 def _create_payment(request):
     perms = get_request_perms(request)
     if perms is not None and not perms['can_create']:
@@ -1221,6 +1289,7 @@ def _create_payment(request):
         with transaction.atomic():
             p = Payment(created_by_id=request.pk_uid, updated_by_id=request.pk_uid, **fields)
             p.save()
+            _ensure_plan_item(p)
             _save_installments(p, parsed_insts)
             _record_payment_changes(p, {}, {}, request, action='create')
     except IntegrityError:
@@ -1230,7 +1299,7 @@ def _create_payment(request):
             f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录{ref}',
             409, 409,
         )
-    p_fresh = Payment.objects.prefetch_related('installments').select_related('created_by').get(id=p.id)
+    p_fresh = Payment.objects.prefetch_related('installments', 'plan_items').select_related('created_by').get(id=p.id)
     return ok(p_fresh.to_dict())
 
 
@@ -1252,7 +1321,7 @@ def _editable_payment_payload(data, perms):
 @pk_required()
 def payment_detail(request, pk):
     try:
-        p = Payment.objects.select_related('created_by').prefetch_related('installments').get(id=pk)
+        p = Payment.objects.select_related('created_by').prefetch_related('installments', 'plan_items').get(id=pk)
     except Payment.DoesNotExist:
         return err('记录不存在', 404)
 
@@ -1279,6 +1348,15 @@ def payment_detail(request, pk):
         if new_dept != p.department and not can_write_dept(request, new_dept):
             return err('无权操作目标部门', 403, 403)
         parsed_insts = fields.pop('installments')  # None means "keep existing"
+        # 多批计划的汇总为派生值：直接改总额/计划日会失真，须经计划批次操作
+        plan_n = p.plan_items.count()
+        if plan_n > 1:
+            from decimal import Decimal as _D
+            if _D(str(fields.get('total_amount', p.total_amount))) != p.total_amount:
+                return err('该排款含多批计划（来自审批分批排款），计划总金额=各批之和，'
+                           '不能直接修改；请在排款明细中撤销/追加批次')
+            if str(fields.get('planned_date', p.planned_date)) != str(p.planned_date):
+                return err('该排款含多批计划，计划日期=最早批次日期，不能直接修改')
         before_snapshot = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
         before_snapshot['installments_summary'] = _installments_summary(p.installments)
         with transaction.atomic():
@@ -1286,12 +1364,22 @@ def payment_detail(request, pk):
                 setattr(p, k, v)
             p.updated_by_id = request.pk_uid
             p.save()
+            # 单批计划：总额/日期变更同步到首条计划明细（维持 汇总=明细之和）
+            if plan_n <= 1:
+                item = p.plan_items.first()
+                if item is None:
+                    _ensure_plan_item(p)
+                elif (item.amount != p.total_amount
+                      or str(item.planned_date) != str(p.planned_date)):
+                    item.amount = p.total_amount
+                    item.planned_date = p.planned_date
+                    item.save(update_fields=['amount', 'planned_date'])
             if parsed_insts is not None:
                 _save_installments(p, parsed_insts)
             after_snapshot = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
             after_snapshot['installments_summary'] = _installments_summary(p.installments)
             _record_payment_changes(p, before_snapshot, after_snapshot, request, action='update')
-        p_fresh = Payment.objects.prefetch_related('installments').select_related('created_by').get(id=p.id)
+        p_fresh = Payment.objects.prefetch_related('installments', 'plan_items').select_related('created_by').get(id=p.id)
         return ok(apply_view_mask(p_fresh.to_dict(), perms))
 
     if request.method == 'DELETE':
@@ -1502,57 +1590,71 @@ def approval_record_schedule(request, pk):
         return err(f'本次排款 {total_amount} 超过剩余可排 {remaining}'
                    f'（申请 {rec.amount} − 已排 {rec.scheduled_amount}）。'
                    f'如需超额请先修改审批记录的申请金额')
-    fields = {
-        'department': rec.department,
-        'approval_number': rec.approval_number,
-        'payee': rec.payee,
-        'planned_date': planned_date,
-        'total_amount': total_amount,
-    }
-    dup = _find_duplicate_payment(fields)
-    if dup:
-        return err(
-            f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录 #{dup.id}',
-            409, 409,
-        )
+    # 一条审批 ↔ 一条付款台账汇总记录（经 approval 静默ID打通）：
+    # 首次排款建汇总记录+首条计划明细；再次排款只追加计划明细，汇总派生刷新
+    existing = Payment.objects.filter(approval=rec).first()
+    if existing is None:
+        # 防历史重复（approval 链路之前的数据按业务键兜底查重）
+        fields = {
+            'department': rec.department,
+            'approval_number': rec.approval_number,
+            'payee': rec.payee,
+            'planned_date': planned_date,
+            'total_amount': total_amount,
+        }
+        dup = _find_duplicate_payment(fields)
+        if dup:
+            return err(
+                f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录 #{dup.id}',
+                409, 409,
+            )
+    else:
+        if existing.plan_items.filter(planned_date=planned_date, amount=total_amount).exists():
+            return err(f'重复排款：该审批已有相同计划日期+金额的批次（排款记录 #{existing.id}）',
+                       409, 409)
     try:
         with transaction.atomic():
-            # 二次检查 + 原子创建+归档（避免并发下两个请求同时通过 dup 检查）
             rec_locked = ApprovalRecord.objects.select_for_update().get(pk=pk)
             if rec_locked.archived:
                 return err('记录已归档', 409, 409)
-            dup2 = _find_duplicate_payment(fields)
-            if dup2:
-                return err(
-                    f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录 #{dup2.id}',
-                    409, 409,
+            remaining = (rec_locked.amount or Decimal('0')) - (rec_locked.scheduled_amount or Decimal('0'))
+            if total_amount > remaining:
+                return err(f'本次排款 {total_amount} 超过剩余可排 {remaining}')
+            if existing is None:
+                p = Payment.objects.create(
+                    created_by_id=request.pk_uid,
+                    updated_by_id=request.pk_uid,
+                    approval=rec_locked,
+                    department=rec.department,
+                    secondary_dept=rec.secondary_dept,
+                    project_short_name=rec.project_short_name,
+                    applicant=rec.applicant,
+                    approval_number=rec.approval_number,
+                    project_desc=rec.summary,
+                    payee=rec.payee,
+                    total_amount=total_amount,
+                    planned_date=planned_date,
                 )
-            p = Payment.objects.create(
-                created_by_id=request.pk_uid,
-                updated_by_id=request.pk_uid,
-                department=rec.department,
-                secondary_dept=rec.secondary_dept,
-                project_short_name=rec.project_short_name,
-                applicant=rec.applicant,
-                approval_number=rec.approval_number,
-                project_desc=rec.summary,
-                payee=rec.payee,
-                total_amount=total_amount,
-                planned_date=planned_date,
-            )
-            _record_payment_changes(p, {}, {}, request, action='create')
+                PaymentPlanItem.objects.create(payment=p, seq=1,
+                                               planned_date=planned_date, amount=total_amount,
+                                               notes='审批排款 第1批')
+                _record_payment_changes(p, {}, {}, request, action='create')
+            else:
+                p = Payment.objects.select_for_update().get(pk=existing.pk)
+                last = p.plan_items.order_by('-seq').first()
+                seq = (last.seq + 1) if last else 1
+                PaymentPlanItem.objects.create(payment=p, seq=seq,
+                                               planned_date=planned_date, amount=total_amount,
+                                               notes=f'审批排款 第{seq}批')
+                _sync_payment_plan(p)
             # 分批排款：累加已排；排满申请金额才归档，未排满留在审批管理继续分批
             rec_locked.scheduled_amount = (rec_locked.scheduled_amount or Decimal('0')) + total_amount
             rec_locked.archived = rec_locked.scheduled_amount >= (rec_locked.amount or Decimal('0'))
             rec_locked.save(update_fields=['scheduled_amount', 'archived', 'updated_at'])
     except IntegrityError:
-        dup = _find_duplicate_payment(fields)
-        ref = f' #{dup.id}' if dup else ''
-        return err(
-            f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录{ref}',
-            409, 409,
-        )
+        return err('重复排款：相同业务键的排款记录已存在', 409, 409)
     rec.refresh_from_db()
+    p.refresh_from_db()
     return ok({'payment': p.to_dict(), 'archived': rec.archived,
                'scheduled_amount': str(rec.scheduled_amount),
                'remaining_amount': str(max(Decimal('0'), rec.amount - rec.scheduled_amount)),
@@ -1741,7 +1843,7 @@ def dashboard(request):
 
     today_payments = [
         apply_view_mask(p.to_dict(), perms)
-        for p in today_qs.select_related('created_by').prefetch_related('installments')[:50]
+        for p in today_qs.select_related('created_by').prefetch_related('installments', 'plan_items')[:50]
     ]
 
     return ok({
@@ -2345,6 +2447,7 @@ def payment_import(request):
             with transaction.atomic():
                 p = Payment.objects.create(
                     created_by_id=request.pk_uid, updated_by_id=request.pk_uid, **fields)
+                _ensure_plan_item(p)
                 _save_installments(p, parsed_insts)
                 _record_payment_changes(p, {}, {}, request, action='create')
             results['created'] += 1
@@ -2379,7 +2482,7 @@ def payment_export(request):
 
     qs = Payment.objects.select_related('created_by').all()
     qs = dept_filter(qs, request)
-    qs = qs.prefetch_related('installments')
+    qs = qs.prefetch_related('installments', 'plan_items')
 
     dept = request.GET.get('dept', '').strip()
     status_q = request.GET.get('status', '').strip()
@@ -2432,7 +2535,7 @@ def payment_export(request):
     # Determine max installment count across the filtered set for dynamic columns.
     can_view_insts = perms is None or perms['view'].get('installments', True)
     can_view_amounts = perms is None or perms['view'].get('total_amount', True)
-    all_payments = list(qs.prefetch_related('installments').select_related('created_by'))
+    all_payments = list(qs.prefetch_related('installments', 'plan_items').select_related('created_by'))
     if can_view_insts and all_payments:
         max_slots = max((p.installments.count() for p in all_payments), default=0)
     else:
@@ -2498,12 +2601,16 @@ def payment_export(request):
                         value=float(d.get('remaining') or 0))
             except (ValueError, TypeError):
                 pass
-            extra_idx += 2
+            plan_items = d.get('plan_items') or []
+            ws.cell(row=row_idx, column=extra_idx + 2,
+                    value='；'.join(f"{pi['planned_date']}:{pi['amount']}" for pi in plan_items)
+                    if len(plan_items) > 1 else '')
+            extra_idx += 3
         ws.cell(row=row_idx, column=extra_idx,
                 value=status_label.get(d.get('status', ''), ''))
 
     # Derived headers
-    extra_headers = (['预付冲抵(元)', '剩余待付(元)'] if can_view_amounts else []) + ['状态']
+    extra_headers = (['预付冲抵(元)', '剩余待付(元)', '计划明细(分批)'] if can_view_amounts else []) + ['状态']
     for off, h in enumerate(extra_headers):
         c = ws.cell(row=1, column=len(cols) + 1 + off, value=h)
         c.font = header_font

@@ -54,6 +54,22 @@ function resetCols() {
   localStorage.removeItem('pk_pay_hidden_cols')
 }
 function dash(v) { return v === null || v === undefined ? '—' : fmt(v) }
+
+// ── 行明细展开：计划明细（分批排款）+ 付款明细（分期实付）─────────────────────
+const expandedRows = ref(new Set())
+function toggleRowDetail(id) {
+  const s = new Set(expandedRows.value)
+  s.has(id) ? s.delete(id) : s.add(id)
+  expandedRows.value = s
+}
+async function removePlanItem(p, pi) {
+  if (!confirm(`撤销第${pi.seq}批计划（${pi.planned_date} · ${pi.amount} 元）？\n汇总金额回退；来源审批的已排款同步扣减、可继续分批排款。`)) return
+  try {
+    const res = await api.delete(`/payments/${p.id}/plan-items/${pi.id}`)
+    alert(res.data?.message || '已撤销')
+    load()
+  } catch (e) { alert(e?.msg || e?.error || '撤销失败') }
+}
 const items = ref([])
 const total = ref(0)
 const outstandingTotal = ref('0')
@@ -488,7 +504,11 @@ function setPage(p) { filters.page = p; load() }
                 @mouseenter="showTip($event, p.payee)" @mousemove="moveTip" @mouseleave="hideTip">
                 {{ p.payee }}
               </td>
-              <td v-if="colVisible('planned_date')">{{ p.planned_date }}</td>
+              <td v-if="colVisible('planned_date')" class="plan-cell" title="点击展开 计划明细 / 付款明细" @click="toggleRowDetail(p.id)">
+                {{ p.planned_date }}
+                <span v-if="p.plan_count > 1" class="plan-badge">×{{ p.plan_count }}批</span>
+                <span class="plan-caret">{{ expandedRows.has(p.id) ? '▲' : '▼' }}</span>
+              </td>
               <td v-if="colVisible('total_amount')" class="amt">{{ dash(p.total_amount) }}</td>
               <td v-if="colVisible('paid')" class="amt amt-green">{{ dash(p.total_paid) }}</td>
               <td v-if="colVisible('remaining')" class="amt" :class="parseFloat(p.remaining) > 0 ? 'amt-red' : ''">{{ dash(p.remaining) }}</td>
@@ -513,6 +533,35 @@ function setPage(p) { filters.page = p; load() }
                     title="用该项目的预付余额冲抵本排款（支持多次核销）" @click="openOffset(p)">核销</button>
                   <button class="btn btn-ghost btn-sm" @click="openLogs(p)">日志</button>
                   <button v-if="auth.canDelete" class="btn btn-danger btn-sm" @click="onDelete(p)">删除</button>
+                </div>
+              </td>
+            </tr>
+            <!-- 行明细：计划明细（分批）/ 付款明细（分期实付）并排 -->
+            <tr v-if="expandedRows.has(p.id)" class="pp-detail-row">
+              <td :colspan="99">
+                <div class="pp-detail">
+                  <div class="ppd-col">
+                    <div class="ppd-head plan">计划明细 · {{ p.plan_count || 0 }} 批<i>来自审批分批排款或直接排款</i></div>
+                    <div v-if="!p.plan_items?.length" class="ppd-empty">无计划明细</div>
+                    <div v-for="pi in p.plan_items" :key="pi.id" class="ppd-item">
+                      <span class="ppd-seq">第{{ pi.seq }}批</span>
+                      <span class="ppd-date">{{ pi.planned_date }}</span>
+                      <b class="ppd-amt plan">{{ fmt(pi.amount) }}</b>
+                      <span class="ppd-note">{{ pi.notes }}</span>
+                      <button v-if="auth.canWrite && p.plan_items.length > 1" class="ppd-del"
+                        title="撤销该批计划（审批已排款同步回退）" @click="removePlanItem(p, pi)">撤销</button>
+                    </div>
+                  </div>
+                  <div class="ppd-col">
+                    <div class="ppd-head paid">付款明细 · {{ p.installments?.length || 0 }} 笔<i>实际付款分期</i></div>
+                    <div v-if="!p.installments?.length" class="ppd-empty">尚无实付记录</div>
+                    <div v-for="i in p.installments" :key="i.id" class="ppd-item">
+                      <span class="ppd-seq">第{{ i.seq }}次</span>
+                      <span class="ppd-date">{{ i.pay_date }}</span>
+                      <b class="ppd-amt paid">{{ fmt(i.pay_amount) }}</b>
+                      <span class="ppd-note">{{ i.notes }}</span>
+                    </div>
+                  </div>
                 </div>
               </td>
             </tr>
@@ -711,6 +760,33 @@ function setPage(p) { filters.page = p; load() }
 .pk-pay-tbl .ops-cell { white-space: nowrap; text-align: center; }
 .pk-pay-tbl .ops-cell .btn-sm { padding: 3px 7px; font-size: 11px; border-radius: 6px; }
 .pk-pay-tbl .badge { font-size: 10.5px; padding: 2px 7px; }
+
+/* 计划/付款明细展开行 */
+.plan-cell { cursor: pointer; white-space: nowrap; }
+.plan-cell:hover { color: var(--primary); }
+.plan-badge { font-size: 10px; font-weight: 700; color: #1565c0; background: rgba(21,101,192,.1);
+  border-radius: 5px; padding: 0 5px; margin-left: 3px; }
+.plan-caret { font-size: 9px; color: var(--muted); margin-left: 2px; }
+.pp-detail-row td { background: rgba(250,246,241,.75); padding: 8px 14px !important;
+  overflow: visible !important; white-space: normal !important; max-width: none !important; }
+.pp-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 860px) { .pp-detail { grid-template-columns: 1fr; } }
+.ppd-col { background: #fff; border: 1px solid rgba(180,140,110,.16); border-radius: 9px; padding: 6px 12px; }
+.ppd-head { font-size: 11.5px; font-weight: 700; margin-bottom: 3px; }
+.ppd-head.plan { color: #1565c0; } .ppd-head.paid { color: #2e7d32; }
+.ppd-head i { font-style: normal; font-weight: 400; font-size: 10.5px; color: var(--muted); margin-left: 8px; }
+.ppd-empty { font-size: 12px; color: var(--muted); padding: 3px 0; }
+.ppd-item { display: flex; align-items: center; gap: 10px; font-size: 12.5px; padding: 3px 0;
+  border-top: 1px dashed rgba(180,140,110,.12); }
+.ppd-item:first-of-type { border-top: none; }
+.ppd-seq { font-size: 11px; color: var(--muted); min-width: 44px; }
+.ppd-date { color: var(--text); font-variant-numeric: tabular-nums; min-width: 84px; }
+.ppd-amt { font-variant-numeric: tabular-nums; min-width: 90px; text-align: right; }
+.ppd-amt.plan { color: #1565c0; } .ppd-amt.paid { color: #2e7d32; }
+.ppd-note { flex: 1; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ppd-del { border: 1px solid rgba(198,40,40,.4); color: #c62828; background: none; border-radius: 6px;
+  padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.ppd-del:hover { background: rgba(198,40,40,.08); }
 
 /* 预付核销弹窗 */
 .po-history { margin-bottom: 10px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 9px; }

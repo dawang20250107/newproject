@@ -31,6 +31,9 @@ const form = ref({})
 // installments: array of {seq, pay_date, pay_amount, notes, id?}
 const installments = ref([])
 
+// 多批计划（审批分批排款汇总）：总额/计划日为派生值，弹窗内锁定
+const multiPlan = computed(() => (props.payment?.plan_count || 0) > 1)
+
 const FIELD_COLS = {
   department: ['department'],
   secondary_dept: ['secondary_dept'],
@@ -376,14 +379,15 @@ async function submit() {
         </div>
         <div v-if="vis('total_amount')" class="form-group">
           <label>计划总金额 (元) *</label>
-          <input v-model="form.total_amount" type="number" min="0" step="0.01" placeholder="0.00" :disabled="!editable('total_amount')" />
+          <input v-model="form.total_amount" type="number" min="0" step="0.01" placeholder="0.00" :disabled="!editable('total_amount') || multiPlan" />
+          <span v-if="multiPlan" class="hint-text" style="color:#1565c0">含 {{ payment?.plan_count }} 批计划，总额=各批之和；调整请在台账行展开「计划明细」操作</span>
         </div>
       </div>
 
       <div class="form-row">
         <div v-if="vis('planned_date')" class="form-group">
           <label>计划付款日期 *</label>
-          <input v-model="form.planned_date" type="date" :disabled="!editable('planned_date')" />
+          <input v-model="form.planned_date" type="date" :disabled="!editable('planned_date') || multiPlan" />
         </div>
         <div v-if="vis('notes')" class="form-group">
           <label>备注</label>
