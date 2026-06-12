@@ -48,6 +48,14 @@ export const useAuthStore = defineStore('auth', () => {
   // any write capability (used to show the edit button at all)
   const canWrite = computed(() => isAdmin.value || perms.value?.can_create === true ||
     Object.values(perms.value?.edit || {}).some(Boolean))
+  // 操作级权限（核销/回款录入等细粒度动作）。旧登录态无 actions 键时回退写权限，
+  // 避免权限升级后未重新登录的用户被锁在外面。
+  function canAction(key) {
+    if (isAdmin.value) return true
+    const acts = perms.value?.actions
+    if (acts && typeof acts === 'object') return acts[key] === true
+    return canArWrite.value || canCreate.value
+  }
 
   // ── active-department scope (global filter at sidebar footer) ──
   // allowed = the user's full permission set (immutable per login)
@@ -124,7 +132,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     token, user, perms, isLoggedIn, role, isSuperAdmin, isAdmin,
-    canView, canEdit, canPage, canArView, canCreate, canArWrite, canDelete, canWrite,
+    canView, canEdit, canPage, canArView, canCreate, canArWrite, canDelete, canWrite, canAction,
     activeDepts, allowedDepts, effectiveDepts, isDeptScoped, setActiveDepts,
     login, register, logout, setAuth, setPerms, refresh,
   }

@@ -383,6 +383,23 @@ def _write_denied(request):
     return None
 
 
+def _action_denied(request, action_key):
+    """操作级权限：核销/回款录入等细粒度动作的独立开关。
+
+    actions[key] 显式配置时以其为准（True 放行 / False 拒绝）；
+    旧配置无 actions 键时回退通用写权限（向后兼容，不会突然把人锁外面）。
+    出纳等岗位可借此单独获得「预付核销」而不必放开整个 can_create。"""
+    perms = get_request_perms(request)
+    if perms is None:
+        return None
+    acts = perms.get('actions')
+    if isinstance(acts, dict) and action_key in acts:
+        if acts.get(action_key):
+            return None
+        return err('当前职务未开通此操作权限，请联系管理员在「权限配置·操作权限」中开通', 403, 403)
+    return _write_denied(request)
+
+
 def _delete_denied(request):
     perms = get_request_perms(request)
     if perms is not None and not perms.get('can_delete', False):
@@ -2968,7 +2985,7 @@ def ar_payments(request, pk):
         return ok([p.to_dict() for p in pays])
 
     if request.method == 'POST':
-        denied = _write_denied(request)
+        denied = _action_denied(request, 'ar_collect')
         if denied:
             return denied
         data = _parse_body(request)
@@ -3109,7 +3126,7 @@ def ar_payment_detail(request, pk, ppk):
     if pay.source == '预收抵扣' and request.method == 'PUT':
         return err('该回款由预收核销生成，请在「预收预付」页修改对应核销，或删除后重新核销', 400)
     if pay.source == '预收抵扣' and request.method == 'DELETE':
-        denied = _write_denied(request)
+        denied = _action_denied(request, 'wo_receive')
         if denied:
             return denied
         wo = AdvanceWriteoff.objects.filter(ar_payment_id=pay.pk).first()
@@ -5324,7 +5341,8 @@ def advance_writeoffs(request, pk):
                    rec.writeoffs.select_related('payment').order_by('writeoff_no')])
 
     if request.method == 'POST':
-        denied = _write_denied(request)
+        denied = _action_denied(request,
+                                'wo_receive' if rec.direction == '预收' else 'wo_prepaid')
         if denied:
             return denied
         data = _parse_body(request)
@@ -5448,7 +5466,7 @@ def advance_installments(request, pk):
         return ok(_adv_installments_payload(rec))
 
     if request.method == 'POST':
-        denied = _write_denied(request)
+        denied = _action_denied(request, 'adv_installment')
         if denied:
             return denied
         data = _parse_body(request)
@@ -5483,7 +5501,7 @@ def advance_installment_detail(request, pk, iid):
         return denied
     if request.method != 'DELETE':
         return err('Method not allowed', 405)
-    denied = _write_denied(request)
+    denied = _action_denied(request, 'adv_installment')
     if denied:
         return denied
     try:
@@ -5523,7 +5541,7 @@ def advance_batch_writeoff(request, pk):
         return denied
     if request.method != 'POST':
         return err('POST only', 405)
-    denied = _write_denied(request) or _ar_field_denied(request, 'adv_writeoff')
+    denied = _action_denied(request, 'wo_receive') or _ar_field_denied(request, 'adv_writeoff')
     if denied:
         return denied
     try:
@@ -5804,8 +5822,9 @@ def advance_writeoff_detail(request, pk, wid):
     if denied:
         return denied
 
+    _wo_action = 'wo_receive' if wo.advance_record.direction == '预收' else 'wo_prepaid'
     if request.method == 'PUT':
-        denied = _write_denied(request)
+        denied = _action_denied(request, _wo_action)
         if denied:
             return denied
         data = _parse_body(request)
@@ -5840,7 +5859,9 @@ def advance_writeoff_detail(request, pk, wid):
         return ok(wo.to_dict())
 
     if request.method == 'DELETE':
-        denied = _delete_denied(request)
+        # 删核销 = 反向核销（撤销自己的操作），按核销操作权限把关，
+        # 不要求通用删除权限——出纳能核销就能撤销自己的核销
+        denied = _action_denied(request, _wo_action)
         if denied:
             return denied
         # 显式事务：核销删除会级联删「预收抵扣」回款并重算应收/预收，
@@ -6951,7 +6972,7 @@ def ar_invoice_batch_payment(request, batch_no):
         return denied
     if request.method != 'POST':
         return err('POST only', 405)
-    denied = _write_denied(request)
+    denied = _action_denied(request, 'ar_collect')
     if denied:
         return denied
     denied = _ar_field_denied(request, 'r_payments')

@@ -509,7 +509,7 @@ function setPage(p) { filters.page = p; load() }
               <td v-if="auth.canWrite || auth.canDelete" class="ops-cell">
                 <div style="display:flex;gap:4px;justify-content:center">
                   <button v-if="auth.canWrite" class="btn btn-ghost btn-sm" @click="openEdit(p)">编辑</button>
-                  <button v-if="auth.canWrite && (p.project_short_name || p.project_no)" class="btn btn-ghost btn-sm"
+                  <button v-if="auth.canAction('wo_prepaid') && (p.project_short_name || p.project_no)" class="btn btn-ghost btn-sm"
                     title="用该项目的预付余额冲抵本排款（支持多次核销）" @click="openOffset(p)">核销</button>
                   <button class="btn btn-ghost btn-sm" @click="openLogs(p)">日志</button>
                   <button v-if="auth.canDelete" class="btn btn-danger btn-sm" @click="onDelete(p)">删除</button>
@@ -567,7 +567,7 @@ function setPage(p) { filters.page = p; load() }
             <div v-for="o in offsetHistory" :key="o.id" class="po-hist-row">
               <span>{{ o.writeoff_date }} · {{ o.counterparty || '—' }}</span>
               <b>−{{ fmt(o.amount) }}</b>
-              <button v-if="auth.canWrite" class="po-reverse" :disabled="offsetBusy"
+              <button v-if="auth.canAction('wo_prepaid')" class="po-reverse" :disabled="offsetBusy"
                 title="反向核销：预付余额恢复、待付回升" @click="reverseOffset(o)">撤销</button>
             </div>
           </div>

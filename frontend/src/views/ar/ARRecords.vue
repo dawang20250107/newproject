@@ -1009,7 +1009,7 @@ function clearFilters() {
                 <span class="bp-amt warn"><i>未收</i><b>{{ parseFloat(b.outstanding) ? fmtCell(b.outstanding) : '✓ 结清' }}</b></span>
                 <span class="bp-acts" @click.stop>
                   <button v-if="auth.canArWrite" class="bp-btn" @click="openBatchInvoice(b)">批次开票</button>
-                  <button v-if="auth.canArWrite && parseFloat(b.outstanding) > 0" class="bp-btn primary" @click="openBatchPay(b)">批次回款</button>
+                  <button v-if="auth.canAction('ar_collect') && parseFloat(b.outstanding) > 0" class="bp-btn primary" @click="openBatchPay(b)">批次回款</button>
                   <span class="bp-caret">{{ expandedBatch === b.batch_no ? '▲' : '▼' }}</span>
                 </span>
               </div>
@@ -1194,7 +1194,7 @@ function clearFilters() {
                       <span style="font-size:12px;color:var(--muted)">{{ rec.payments?.length ? '笔回款' : '无回款' }}</span>
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="margin-left:3px;color:var(--muted)" :style="expandedPayments[rec.id] ? 'transform:rotate(180deg)' : ''"><path d="M6 9l6 6 6-6"/></svg>
                     </button>
-                    <button v-if="auth.canArWrite" class="add-pay-btn" @click="openAddPayment(rec)">+ 回款</button>
+                    <button v-if="auth.canAction('ar_collect')" class="add-pay-btn" @click="openAddPayment(rec)">+ 回款</button>
                   </td>
                   <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
                   <td v-if="show('r_invoice_status')" class="ctr">
@@ -1227,7 +1227,7 @@ function clearFilters() {
                       <span class="pay-date">{{ pay.payment_date }}</span>
                       <span v-if="pay.source === '预收抵扣'" class="pay-src" title="由预收核销生成；删除即反向核销，预收余额恢复">预收抵扣</span>
                       <span v-if="pay.notes" class="pay-notes">{{ pay.notes }}</span>
-                      <button v-if="auth.canDelete" class="pay-del" @click="deletePayment(rec, pay)">
+                      <button v-if="pay.source === '预收抵扣' ? auth.canAction('wo_receive') : auth.canDelete" class="pay-del" @click="deletePayment(rec, pay)">
                         {{ pay.source === '预收抵扣' ? '撤销核销' : '删除' }}</button>
                     </div>
                   </td>
@@ -1278,7 +1278,7 @@ function clearFilters() {
               <span class="ow-stat"><i>预收余额</i><b class="ok">{{ fmtCell(g.total_balance) }}</b></span>
               <span class="ow-stat"><i>未收应收</i><b class="warn">{{ fmtCell(g.total_outstanding) }}</b></span>
               <span class="ow-stat"><i>可冲抵</i><b>{{ fmtCell(g.offsettable) }}</b></span>
-              <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" style="margin-left:auto"
+              <button v-if="auth.canAction('wo_receive')" class="btn btn-primary btn-sm" style="margin-left:auto"
                 :disabled="!owSelCount(g.customer)" @click="openBatchWriteoff(g)">
                 批量核销{{ owSelCount(g.customer) ? `（已选 ${owSelCount(g.customer)} 条）` : '' }}
               </button>

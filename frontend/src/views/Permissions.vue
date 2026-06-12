@@ -10,6 +10,7 @@ const error = ref('')
 const fields = ref([])
 const arFields = ref([])
 const caiwuFields = ref([])
+const actionDefs = ref([])
 const pages = ref([])
 const jobs = ref([])          // [{job_title, label, config}]
 const activeJob = ref('')
@@ -37,10 +38,15 @@ async function load() {
     fields.value = res.data.fields
     arFields.value = res.data.ar_fields || []
     caiwuFields.value = res.data.caiwu_fields || []
+    actionDefs.value = res.data.action_defs || []
     pages.value = res.data.pages
     jobs.value = res.data.jobs
     // Ensure nested config objects exist on each job (older stored configs may lack them)
     for (const j of jobs.value) {
+      if (!j.config.actions) j.config.actions = {}
+      for (const a of actionDefs.value) {
+        if (j.config.actions[a.key] === undefined) j.config.actions[a.key] = false
+      }
       if (!j.config.ar_view) j.config.ar_view = {}
       for (const f of arFields.value) {
         if (j.config.ar_view[f.key] === undefined) j.config.ar_view[f.key] = true
@@ -179,6 +185,19 @@ async function save() {
                  title="勾选=可见本部门全部业务（含自营/非共享）；取消勾选=仅可见共享业务">
             <input type="checkbox" v-model="seeAllBusiness" />
             <span class="dot"></span>可见全部业务（含自营/非共享）
+          </label>
+        </div>
+
+        <!-- 操作权限：与"能否新增记录"解耦的细粒度动作开关（出纳核销等场景） -->
+        <div class="section-title" style="margin-top:20px">操作权限（独立于新增/删除，可单独开通）</div>
+        <div style="font-size:12px;color:var(--muted);margin:-4px 0 8px">
+          典型用法：出纳无需「可新增排款」也能单独开通「预付核销」「回款录入」；动作开了才显示对应按钮。
+        </div>
+        <div class="chip-row">
+          <label v-for="a in actionDefs" :key="a.key" class="perm-chip"
+                 :class="{ on: current.config.actions[a.key] }">
+            <input type="checkbox" v-model="current.config.actions[a.key]" />
+            <span class="dot"></span>{{ a.label }}
           </label>
         </div>
 

@@ -138,6 +138,21 @@ AR_ADVANCE_FIELD_DEFS = [
 AR_FIELD_DEFS = AR_PROJECT_FIELD_DEFS + AR_RECORD_FIELD_DEFS + AR_ADVANCE_FIELD_DEFS
 AR_FIELD_KEYS = [f['key'] for f in AR_FIELD_DEFS]
 
+# ── 操作级权限（独立于"能不能新增记录"的细粒度动作开关）────────────────────────
+# 解决"出纳要做预付核销，却只能靠放开整个 can_create"的粒度问题：
+# 每个动作单独可配，与页面/字段/记录权限正交组合。
+ACTION_DEFS = [
+    {'key': 'wo_prepaid',      'label': '预付核销（排款冲抵/撤销）'},
+    {'key': 'wo_receive',      'label': '预收核销（冲抵应收/批量/撤销）'},
+    {'key': 'ar_collect',      'label': '应收回款录入（单笔/批次分摊）'},
+    {'key': 'adv_installment', 'label': '预收预付收付登记（多次到账/付出）'},
+]
+ACTION_KEYS = [a['key'] for a in ACTION_DEFS]
+
+
+def _all_actions(value):
+    return {k: value for k in ACTION_KEYS}
+
 # Ordered columns for Excel template / import / export.
 # (perm_field_key, excel_header, db_column)
 EXCEL_COLUMN_MAP = [
@@ -220,6 +235,7 @@ def default_job_config(job):
         return {'pages': pages, 'view': _all_fields(True),
                 'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
                 'can_create': True, 'can_delete': True, 'ar_shared_only': False,
+                'actions': _all_actions(True),
                 **_cw_full}
     if job == 'finance_bp':
         pages = {**pages_all, 'caiwu_report': True, 'caiwu_data': True, 'caiwu_charts': True,
@@ -227,6 +243,7 @@ def default_job_config(job):
         return {'pages': pages, 'view': _all_fields(True),
                 'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
                 'can_create': True, 'can_delete': False, 'ar_shared_only': False,
+                'actions': _all_actions(True),
                 **_cw_upload_no_del}
     if job == 'chief_cashier':
         edit = {k: (k in ('installments',)) for k in FIELD_KEYS}
@@ -235,6 +252,7 @@ def default_job_config(job):
         return {'pages': {**pages_all, **ar_pages_all}, 'view': _all_fields(True),
                 'edit': edit, 'ar_view': ar_view,
                 'can_create': True, 'can_delete': False, 'ar_shared_only': False,
+                'actions': _all_actions(True),
                 **_cw_readonly}
     if job == 'cashier':
         edit = {k: (k in ('installments',)) for k in FIELD_KEYS}
@@ -244,6 +262,8 @@ def default_job_config(job):
         return {'pages': {**base_pages, **ar_pages_cashier},
                 'view': _all_fields(True), 'edit': edit, 'ar_view': ar_view,
                 'can_create': False, 'can_delete': False, 'ar_shared_only': False,
+                'actions': {'wo_prepaid': True, 'wo_receive': False,
+                            'ar_collect': True, 'adv_installment': True},
                 **_cw_readonly}
     if job == 'general_manager':
         # 总经理：全量查看，无编辑/创建；财务分析只读
@@ -252,12 +272,14 @@ def default_job_config(job):
         return {'pages': pages, 'view': _all_fields(True),
                 'edit': _all_fields(False), 'ar_view': _all_ar_fields(True),
                 'can_create': False, 'can_delete': False, 'ar_shared_only': False,
+                'actions': _all_actions(False),
                 **_cw_readonly}
     if job == 'gm_assistant':
         # 总经理助理：全量查看 + 可新增（协助登记），不可删除
         return {'pages': pages_all, 'view': _all_fields(True),
                 'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
                 'can_create': True, 'can_delete': False, 'ar_shared_only': False,
+                'actions': _all_actions(True),
                 **_cw_readonly}
     if job == 'settlement_accountant':
         # 结算会计：聚焦应收/对账/开票，可编辑应收主数据；付款条数据只读
@@ -266,6 +288,8 @@ def default_job_config(job):
                 'edit': edit, 'ar_view': _all_ar_fields(True),
                 'can_create': False, 'can_delete': False, 'ar_can_create': True,
                 'ar_shared_only': False,
+                'actions': {'wo_prepaid': False, 'wo_receive': True,
+                            'ar_collect': True, 'adv_installment': True},
                 **_cw_readonly}
     if job == 'sales_bp':
         # 销售BP：仅可见共享业务，AR 只读，无付款操作
@@ -275,11 +299,13 @@ def default_job_config(job):
         return {'pages': pages, 'view': _all_fields(False),
                 'edit': _all_fields(False), 'ar_view': _all_ar_fields(True),
                 'can_create': False, 'can_delete': False, 'ar_shared_only': True,
+                'actions': _all_actions(False),
                 **_cw_readonly}
     # Unknown / no job title → read-only minimum, no caiwu access.
     return {'pages': pages_all, 'view': _all_fields(True),
             'edit': _all_fields(False), 'ar_view': _all_ar_fields(True),
             'can_create': False, 'can_delete': False, 'ar_shared_only': False,
+            'actions': _all_actions(False),
             **_cw_readonly}
 
 
@@ -326,10 +352,13 @@ def get_job_perms(job):
         pages = dict(base['pages']); pages.update(cfg.get('pages', {}))
         ar_view = dict(base.get('ar_view', _all_ar_fields(True)))
         ar_view.update(cfg.get('ar_view', {}))
+        actions = dict(base.get('actions', _all_actions(False)))
+        actions.update(cfg.get('actions', {}))
         caiwu_view = dict(base.get('caiwu_view', _all_caiwu_fields(True)))
         caiwu_view.update(cfg.get('caiwu_view', {}))
         result = {
             'pages': pages, 'view': view, 'edit': edit, 'ar_view': ar_view,
+            'actions': actions,
             'can_create': bool(cfg.get('can_create', base['can_create'])),
             'can_delete': bool(cfg.get('can_delete', base['can_delete'])),
             # 应收专属写权限（结算会计等）：必须在合并时保留，否则一旦超管在权限
@@ -351,6 +380,7 @@ def full_perms():
             'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
             'can_create': True, 'can_delete': True, 'ar_can_create': True,
             'ar_shared_only': False,
+            'actions': _all_actions(True),
             'caiwu_view': _all_caiwu_fields(True),
             'caiwu_upload': True, 'caiwu_publish': True, 'caiwu_delete': True}
 
@@ -359,7 +389,8 @@ def effective_perms(user):
     """Perms object sent to the client (super_admin gets full access)."""
     cfg = full_perms() if user.role == 'super_admin' else get_job_perms(user.job_title)
     return {**cfg, 'is_admin': user.role == 'super_admin',
-            'fields': PAYMENT_FIELD_DEFS, 'ar_fields': AR_FIELD_DEFS}
+            'fields': PAYMENT_FIELD_DEFS, 'ar_fields': AR_FIELD_DEFS,
+            'action_defs': ACTION_DEFS}
 
 
 _AR_DEFS_BY_GROUP = {
@@ -1979,6 +2010,7 @@ def permissions(request):
         'fields': PAYMENT_FIELD_DEFS,
         'ar_fields': AR_FIELD_DEFS,
         'caiwu_fields': CAIWU_FIELD_DEFS,
+        'action_defs': ACTION_DEFS,
         'pages': [
             {'key': 'dashboard',         'label': '今日工作台'},
             {'key': 'payments',          'label': '付款台账'},
@@ -2024,6 +2056,9 @@ def permission_detail(request, job):
         # 避免老前端保存时把该能力清掉；前端传了则以传入为准（可自由搭配）。
         'ar_can_create': bool(cfg.get('ar_can_create', _base.get('ar_can_create', False))),
         'ar_shared_only': bool(cfg.get('ar_shared_only', False)),
+        # 操作级权限：前端未传某键时回退该职务基线默认，避免老前端保存清掉能力
+        'actions': {k: bool(cfg.get('actions', {}).get(
+            k, _base.get('actions', {}).get(k, False))) for k in ACTION_KEYS},
         'caiwu_view': {k: bool(cfg.get('caiwu_view', {}).get(k, True)) for k in CAIWU_FIELD_KEYS},
         'caiwu_upload':  bool(cfg.get('caiwu_upload', False)),
         'caiwu_publish': bool(cfg.get('caiwu_publish', False)),

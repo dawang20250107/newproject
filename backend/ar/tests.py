@@ -160,13 +160,17 @@ class ARPermissionRegressionTests(TestCase):
                 'delivery_dept': self.dept,
                 'amount': '100.00',
             }, user),
-            self.json_post(f'/api/pk/ar/records/{record.id}/payments', {
-                'amount': '100.00',
-                'payment_date': '2026-06-11',
-            }, user),
         ]
 
         self.assertTrue(all(resp.status_code == 403 for resp in checks))
+
+        # 回款录入由操作权限 ar_collect 单独管控（出纳基线默认开通）：
+        # 无 can_create 也可录回款——这是出纳的本职动作，不再绑死通用写权限
+        resp = self.json_post(f'/api/pk/ar/records/{record.id}/payments', {
+            'amount': '100.00',
+            'payment_date': '2026-06-11',
+        }, user)
+        self.assertEqual(resp.status_code, 200, resp.content)
 
     def test_budget_detail_is_department_scoped_and_delete_requires_permission(self):
         user = self.make_user('13910000002', 'finance_bp')
@@ -3605,3 +3609,105 @@ class AdvanceDiffSummaryTests(TestCase):
         # 未核销余额标在该记录最后一笔明细上
         self.assertEqual(Decimal(r['in_items'][-1]['balance']), Decimal('5000'))
         self.assertEqual(Decimal(r['in_items'][0]['balance']), Decimal('0'))
+
+
+class ActionPermissionTests(TestCase):
+    """操作级权限：出纳无 can_create 也能单独获得预付核销等动作。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        self.cashier = PaikuanUser(phone='13900001600', name='出纳小王', role='user',
+                                   job_title='cashier', departments=[self.dept],
+                                   is_active=True, is_approved=True)
+        self.cashier.set_password('Test123456')
+        self.cashier.save()
+        self.token = make_token(self.cashier)
+        self.proj = ARProject.objects.create(
+            customer_name='权限客户', short_name='权限项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='PRM-0001')
+        _invalidate_perm_cache()
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _prepaid(self, amount='1000'):
+        return AdvanceRecord.objects.create(
+            direction='预付', project=self.proj, delivery_dept=self.dept,
+            counterparty='供应商X', occur_year=2026, occur_month=3,
+            occur_date=date(2026, 3, 1), advance_amount=Decimal(amount))
+
+    # 出纳默认：无 can_create，但 actions.wo_prepaid=True → 预付核销放行
+    def test_cashier_can_writeoff_prepaid_without_can_create(self):
+        from paikuan.views import get_job_perms
+        perms = get_job_perms('cashier')
+        self.assertFalse(perms['can_create'])
+        self.assertTrue(perms['actions']['wo_prepaid'])
+        prepaid = self._prepaid()
+        resp = self.client.post(f'/api/pk/ar/advances/{prepaid.id}/writeoffs',
+                                data=json.dumps({'amount': '300', 'writeoff_date': '2026-04-01'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        prepaid.refresh_from_db()
+        self.assertEqual(prepaid.balance_amount, Decimal('700'))
+        # 撤销自己的核销也放行（同动作键，不要求 can_delete）
+        wid = resp.json()['data']['id']
+        resp = self.client.delete(f'/api/pk/ar/advances/{prepaid.id}/writeoffs/{wid}', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    # 出纳默认 wo_receive=False → 预收核销被拒，提示去权限配置开通
+    def test_cashier_receive_writeoff_denied_by_default(self):
+        adv = AdvanceRecord.objects.create(
+            direction='预收', project=self.proj, delivery_dept=self.dept,
+            counterparty='权限客户', occur_year=2026, occur_month=3,
+            occur_date=date(2026, 3, 1), advance_amount=Decimal('1000'))
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                      estimated_amount=Decimal('500'))
+        resp = self.client.post(f'/api/pk/ar/advances/{adv.id}/batch-writeoff',
+                                data=json.dumps({'record_ids': [rec.id],
+                                                 'writeoff_date': '2026-06-01'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn('操作权限', resp.json()['error'])
+
+    # 超管在权限配置开通 wo_receive 后 → 放行（独立配置生效）
+    def test_action_grant_via_permission_config(self):
+        JobPermission.objects.update_or_create(
+            job_title='cashier',
+            defaults={'config': {'actions': {'wo_receive': True}}})
+        _invalidate_perm_cache('cashier')
+        adv = AdvanceRecord.objects.create(
+            direction='预收', project=self.proj, delivery_dept=self.dept,
+            counterparty='权限客户', occur_year=2026, occur_month=3,
+            occur_date=date(2026, 3, 1), advance_amount=Decimal('1000'))
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                      estimated_amount=Decimal('500'))
+        resp = self.client.post(f'/api/pk/ar/advances/{adv.id}/batch-writeoff',
+                                data=json.dumps({'record_ids': [rec.id],
+                                                 'writeoff_date': '2026-06-01'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    # 出纳默认 ar_collect=True → 录回款放行（无 can_create 依然可录）
+    def test_cashier_can_record_collection(self):
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                      estimated_amount=Decimal('800'))
+        resp = self.client.post(f'/api/pk/ar/records/{rec.id}/payments',
+                                data=json.dumps({'amount': '200', 'payment_date': '2026-06-01'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    # 显式 False 覆盖：即使有 can_create 的职务也可被禁用某动作
+    def test_explicit_false_overrides_can_create(self):
+        JobPermission.objects.update_or_create(
+            job_title='cashier',
+            defaults={'config': {'can_create': True, 'actions': {'wo_prepaid': False}}})
+        _invalidate_perm_cache('cashier')
+        prepaid = self._prepaid()
+        resp = self.client.post(f'/api/pk/ar/advances/{prepaid.id}/writeoffs',
+                                data=json.dumps({'amount': '100', 'writeoff_date': '2026-04-01'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 403)

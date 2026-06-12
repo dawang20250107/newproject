@@ -36,6 +36,9 @@ const fmtAmt = (v) => fmtCompact(v, { dash: '0.00' })
 const show = k => auth.canArView(k)
 const canCreate = computed(() => auth.canArWrite)
 const canDelete = computed(() => auth.canDelete)
+// 操作级权限：核销按当前方向取对应动作键；收付登记独立动作
+const canWoAction = computed(() => auth.canAction(direction.value === '预收' ? 'wo_receive' : 'wo_prepaid'))
+const canInstAction = computed(() => auth.canAction('adv_installment'))
 
 const isReceive = computed(() => direction.value === '预收')
 const isAdvanceMode = computed(() => direction.value === '预收' || direction.value === '预付')
@@ -560,8 +563,8 @@ onMounted(() => {
                 </td>
                 <td class="adv-notes-cell" :title="r.notes">{{ r.notes || '—' }}</td>
                 <td class="ctr nowrap">
-                  <button v-if="show('adv_amount') && canCreate" class="lnk" title="多次到账/付出明细（总额=明细之和）" @click="openInstallments(r)">收付</button>
-                  <button v-if="show('adv_writeoff') && canCreate" class="lnk" @click="openWriteoffs(r)">核销</button>
+                  <button v-if="show('adv_amount') && (canCreate || canInstAction)" class="lnk" title="多次到账/付出明细（总额=明细之和）" @click="openInstallments(r)">收付</button>
+                  <button v-if="show('adv_writeoff') && (canCreate || canWoAction)" class="lnk" @click="openWriteoffs(r)">核销</button>
                   <button v-if="canCreate" class="lnk" @click="openEdit(r)">编辑</button>
                   <button v-if="canDelete" class="lnk danger" @click="removeRec(r)">删除</button>
                 </td>
@@ -782,11 +785,11 @@ onMounted(() => {
           <thead>
             <tr>
               <th>#</th><th class="amt">核销金额</th><th>核销日期</th>
-              <th>冲抵明细</th><th>备注</th><th v-if="canDelete"></th>
+              <th>冲抵明细</th><th>备注</th><th v-if="canDelete || canWoAction"></th>
             </tr>
           </thead>
           <tbody>
-            <tr v-if="!woList.length"><td :colspan="canDelete ? 6 : 5" class="empty">暂无核销记录</td></tr>
+            <tr v-if="!woList.length"><td :colspan="(canDelete || canWoAction) ? 6 : 5" class="empty">暂无核销记录</td></tr>
             <tr v-for="w in woList" :key="w.id">
               <td>{{ w.writeoff_no }}</td>
               <td class="amt">{{ fmtAmt(w.amount) }}</td>
@@ -797,11 +800,11 @@ onMounted(() => {
                 <span v-else>—</span>
               </td>
               <td>{{ w.notes || '—' }}</td>
-              <td v-if="canDelete"><button class="lnk danger" @click="delWriteoff(w)">删除</button></td>
+              <td v-if="canDelete || canWoAction"><button class="lnk danger" @click="delWriteoff(w)">删除</button></td>
             </tr>
           </tbody>
         </table>
-        <div v-if="canCreate" class="wo-add">
+        <div v-if="canCreate || canWoAction" class="wo-add">
           <div v-if="canOffset" class="wo-offset-row">
             <span class="wo-offset-lbl">冲抵应收：</span>
             <select v-model="woForm.ar_record_id" class="inp wo-offset-sel">
@@ -833,19 +836,19 @@ onMounted(() => {
           <span class="hl">未核销余额 <b>{{ fmtAmt(instRec.balance_amount) }}</b></span>
         </div>
         <table class="data-table compact">
-          <thead><tr><th>#</th><th class="amt">收付金额</th><th>收付日期</th><th>备注</th><th v-if="canCreate"></th></tr></thead>
+          <thead><tr><th>#</th><th class="amt">收付金额</th><th>收付日期</th><th>备注</th><th v-if="canCreate || canInstAction"></th></tr></thead>
           <tbody>
-            <tr v-if="!instList.length"><td :colspan="canCreate ? 5 : 4" class="empty">暂无收付明细</td></tr>
+            <tr v-if="!instList.length"><td :colspan="(canCreate || canInstAction) ? 5 : 4" class="empty">暂无收付明细</td></tr>
             <tr v-for="i in instList" :key="i.id">
               <td>{{ i.install_no }}</td>
               <td class="amt" :style="{ color: parseFloat(i.amount) < 0 ? '#c62828' : 'inherit' }">{{ fmtAmt(i.amount) }}</td>
               <td>{{ i.occur_date }}</td>
               <td>{{ i.notes || '—' }}</td>
-              <td v-if="canCreate"><button class="lnk danger" :disabled="instBusy" @click="delInstallment(i)">删除</button></td>
+              <td v-if="canCreate || canInstAction"><button class="lnk danger" :disabled="instBusy" @click="delInstallment(i)">删除</button></td>
             </tr>
           </tbody>
         </table>
-        <div v-if="canCreate" class="wo-add">
+        <div v-if="canCreate || canInstAction" class="wo-add">
           <div class="wo-inputs">
             <input v-model="instForm.amount" type="number" step="0.01" class="inp" placeholder="收付金额(元，可负=退回)" />
             <input v-model="instForm.occur_date" type="date" class="inp" />
