@@ -534,3 +534,21 @@ body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
 .pagination .page-btn:hover:not(:disabled) { background: var(--primary); color: #fff; border-color: var(--primary); }
 .pagination .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .pagination .page-info { font-size: 13px; color: var(--muted); }
+
+
+/* ══ 性能模式（perf-lite）：低配设备关闭滚动闪屏元凶 ══════════════════════════
+   backdrop-filter 毛玻璃 + 大阴影 + 常驻动画在滚动时强制逐帧重绘合成层，
+   集成显卡/老机器上表现为闪屏。性能模式全局关停这些纯装饰效果，布局不变。 */
+.perf-lite *, .perf-lite *::before, .perf-lite *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  animation: none !important;
+  transition: none !important;
+  text-shadow: none !important;
+}
+.perf-lite * { box-shadow: none !important; }
+/* 毛玻璃面板失去 blur 后半透明底会透字——给个接近的实底兜底 */
+.perf-lite .modal-box, .perf-lite .modal, .perf-lite .cp-modal,
+.perf-lite .fb-pop, .perf-lite .psn-drop, .perf-lite .col-settings-pop {
+  background: #fffcf8 !important;
+}

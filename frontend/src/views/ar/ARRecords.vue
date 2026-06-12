@@ -175,6 +175,7 @@ const TABS = [
   { key: 'all', label: '全部明细' },
   { key: 'reconciliation', label: '对账跟踪' },
   { key: 'invoice', label: '开票跟踪' },
+  { key: 'batch', label: '批次管理' },
   { key: 'collection', label: '回款跟踪' },
   { key: 'offset', label: '预收核销' },
   { key: 'dunning', label: '催款' },
@@ -400,16 +401,16 @@ function switchTab(key) {
   else if (key === 'summary') loadGroupSummary()
   else if (key === 'dunning') loadDunning(true)
   else if (key === 'offset') loadOffsetWorkbench()
+  else if (key === 'batch') loadBatches()
   else if (!DATA_TABS.includes(prev)) load()  // returning from a non-data tab
-  if (key === 'invoice') loadBatches()
 }
 
 // Shared-filter change → refresh whichever tab consumes those filters.
 function onFilterChange() {
   clearSelection()
   if (activeTab.value === 'summary') loadGroupSummary()
+  else if (activeTab.value === 'batch') loadBatches()
   else load(true)
-  if (activeTab.value === 'invoice') loadBatches()
 }
 
 // 汇总行下钻：把该维度作为条件追加（替换同字段旧条件），切到全部明细
@@ -501,7 +502,7 @@ async function confirmBatchAssign() {
     showBatchModal.value = false
     clearSelection()
     await load()
-    if (activeTab.value === 'invoice') loadBatches()
+    if (activeTab.value === 'batch') loadBatches()
   } catch (e) { alert(e?.msg || '设置批次号失败')
   } finally { batchAssigning.value = false }
 }
@@ -576,6 +577,16 @@ async function doBatchPay() {
     batchPayResult.value = res.data   // 留在弹窗里展示分摊回执
     await refreshAfterBatchAction(batchTarget.value.batch_no)
   } catch (e) { alert(e?.msg || '批次回款失败') }
+  finally { batchActing.value = false }
+}
+async function undoBatchPay(b, ev) {
+  if (!confirm(`撤销 ${ev.payment_date} 的批次回款 ${ev.total} 元（分摊 ${ev.count} 笔）？\n各记录未收金额将整体恢复。`)) return
+  batchActing.value = true
+  try {
+    const res = await ar.batchPaymentUndo(b.batch_no, { payment_ids: ev.payment_ids })
+    alert(res.data?.message || '已撤销')
+    await refreshAfterBatchAction(b.batch_no)
+  } catch (e) { alert(e?.msg || '撤销失败') }
   finally { batchActing.value = false }
 }
 
@@ -1006,8 +1017,8 @@ function clearFilters() {
         <button class="bulk-cancel" @click="clearSelection">取消</button>
       </div>
 
-      <!-- ══ 合并开票批次工作台（开票跟踪 Tab）══ -->
-      <div v-if="activeTab === 'invoice'" class="batch-panel">
+      <!-- ══ 批次管理：合并开票 + 批次回款 一体工作台 ══ -->
+      <div v-if="activeTab === 'batch'" class="batch-panel">
         <div class="bp-head">
           <span class="bp-title">🧾 合并开票批次<i v-if="batches.length">{{ batches.length }}</i></span>
           <span class="bp-tip">同批次合并开一张发票 · 回款按批次录入，自动按运作日期先进先出分摊到各记录</span>
@@ -1035,6 +1046,17 @@ function clearFilters() {
                 </span>
               </div>
               <div v-if="expandedBatch === b.batch_no" class="bp-members">
+                <div v-if="batchDetail[b.batch_no]?.collections?.length" class="bp-colls">
+                  <div class="bp-colls-head">批次回款记录<i>每行是一次到账的整体分摊，可整次撤销</i></div>
+                  <div v-for="(ev, i) in batchDetail[b.batch_no].collections" :key="i" class="bp-coll-row">
+                    <span class="bpc-date">{{ ev.payment_date }}</span>
+                    <b class="bpc-amt">+{{ fmtCell(ev.total) }}</b>
+                    <span class="bpc-n">分摊 {{ ev.count }} 笔</span>
+                    <span class="bpc-note" :title="ev.notes">{{ ev.notes }}</span>
+                    <button v-if="auth.canAction('ar_collect')" class="bpc-undo" :disabled="batchActing"
+                      @click.stop="undoBatchPay(b, ev)">撤销该次回款</button>
+                  </div>
+                </div>
                 <table v-if="batchDetail[b.batch_no]" class="bp-mtable">
                   <thead><tr><th>项目</th><th>运作日期</th><th class="r">上账</th><th class="r">差额调整</th><th class="r">应开(上账+差额)</th><th class="r">已开票</th><th>开票日期</th><th class="r">已回款</th><th class="r">未收</th></tr></thead>
                   <tbody>
@@ -2319,6 +2341,16 @@ function clearFilters() {
 .bp-btn.primary:hover { filter: brightness(1.1); }
 .bp-caret { font-size: 11px; color: var(--muted); }
 .bp-members { padding: 0 14px 12px; overflow-x: auto; }
+.bp-colls { margin-bottom: 8px; padding: 7px 10px; background: rgba(46,125,50,.04); border: 1px solid rgba(46,125,50,.16); border-radius: 8px; }
+.bp-colls-head { font-size: 11.5px; font-weight: 700; color: #2e7d32; margin-bottom: 3px; }
+.bp-colls-head i { font-style: normal; font-weight: 400; font-size: 10.5px; color: var(--muted); margin-left: 8px; }
+.bp-coll-row { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 3px 0; }
+.bpc-date { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 78px; }
+.bpc-amt { color: #2e7d32; font-variant-numeric: tabular-nums; min-width: 80px; }
+.bpc-n { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.bpc-note { flex: 1; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bpc-undo { border: 1px solid rgba(198,40,40,.4); color: #c62828; background: none; border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.bpc-undo:hover:not(:disabled) { background: rgba(198,40,40,.08); }
 .bp-mtable { width: 100%; border-collapse: collapse; font-size: 12px; background: #fff; border-radius: 8px; overflow: hidden; }
 .bp-mtable th { background: rgba(33,150,243,0.07); color: var(--muted); font-weight: 600; padding: 6px 10px; text-align: left; white-space: nowrap; }
 .bp-mtable td { padding: 6px 10px; border-top: 1px solid rgba(120,120,120,0.08); white-space: nowrap; }

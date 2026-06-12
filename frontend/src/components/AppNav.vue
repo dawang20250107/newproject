@@ -18,6 +18,14 @@ const auth = useAuthStore()
 // the desktop collapse preference.
 const effectiveCollapsed = computed(() => props.mobileOpen ? false : props.collapsed)
 
+// 性能模式：关停毛玻璃/动画等装饰效果，解决低配电脑滚动闪屏
+const perfLite = ref(document.documentElement.classList.contains('perf-lite'))
+function togglePerfLite() {
+  perfLite.value = !perfLite.value
+  document.documentElement.classList.toggle('perf-lite', perfLite.value)
+  localStorage.setItem('pk_perf_lite', perfLite.value ? '1' : '0')
+}
+
 function logout() {
   emit('close-mobile')
   auth.logout()
@@ -384,6 +392,10 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
             </div>
           </div>
         </div>
+        <button class="perf-btn" :class="{ on: perfLite }" @click="togglePerfLite"
+          :title="perfLite ? '性能模式已开启：已关闭毛玻璃/动画等效果（解决滚动闪屏）。点击恢复完整视觉效果' : '电脑滚动闪屏/卡顿？点击开启性能模式，关闭毛玻璃与动画'">
+          ⚡
+        </button>
         <button class="logout-btn" @click="logout">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>
@@ -445,6 +457,11 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 </template>
 
 <style scoped>
+.perf-btn { border: 1px solid rgba(216,166,130,.3); background: transparent; color: #b09080;
+  border-radius: 8px; width: 28px; height: 28px; cursor: pointer; font-size: 13px; line-height: 1;
+  flex-shrink: 0; }
+.perf-btn.on { border-color: #ffd54f; color: #ffd54f; background: rgba(255,213,79,.1); }
+
 .sidebar {
   width: var(--nav-w);
   background: rgba(36, 18, 10, 0.82);

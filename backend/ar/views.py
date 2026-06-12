@@ -6882,10 +6882,27 @@ def ar_invoice_batch_detail(request, batch_no):
     members = [_batch_member_dict(r) for r in _batch_members_qs(request, batch_no)]
     if not members:
         return err('批次不存在或无权访问', 404)
+    # 批次回款事件：成员回款中备注带本批次标记的，按(日期+备注)聚合还原为
+    # 「某天的一次批次回款」，支持整次撤销
+    member_ids = [m['id'] for m in members]
+    tag = f'批次回款[{batch_no}]'
+    events = {}
+    for p in (ARPayment.objects.filter(ar_record_id__in=member_ids,
+                                       notes__startswith=tag)
+              .order_by('payment_date', 'id')):
+        key = (str(p.payment_date), p.notes)
+        ev = events.setdefault(key, {'payment_date': str(p.payment_date),
+                                     'notes': p.notes, 'total': Decimal('0'),
+                                     'count': 0, 'payment_ids': []})
+        ev['total'] += p.amount or Decimal('0')
+        ev['count'] += 1
+        ev['payment_ids'].append(p.id)
+    collections = [{**e, 'total': str(e['total'])} for e in events.values()]
     s = lambda k: sum(Decimal(m[k]) for m in members if m[k] is not None)  # noqa: E731
     return ok({
         'batch_no': batch_no,
         'members': members,
+        'collections': collections,
         'summary': {
             'count': len(members),
             'estimated': str(s('estimated')),
@@ -7047,6 +7064,54 @@ def _gen_batch_no(qs):
     seq = ARRecord.objects.filter(invoice_batch_no__startswith=prefix)\
         .values('invoice_batch_no').distinct().count() + 1
     return f'{prefix}-{seq:02d}'
+
+
+@csrf_exempt
+@pk_required()
+def ar_invoice_batch_payment_undo(request, batch_no):
+    """POST /records/invoice-batches/<batch_no>/payment-undo — 整次撤销批次回款。
+
+    body: { payment_ids: [int,...] }（来自批次明细 collections 的一次回款事件）
+    校验每笔都属于本批次成员且带本批次回款标记，事务内整体删除，
+    各记录未收余额随信号恢复——错一笔即整体拒绝，不留半套状态。
+    """
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _action_denied(request, 'ar_collect')
+    if denied:
+        return denied
+    data = _parse_body(request)
+    ids = data.get('payment_ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请提供要撤销的回款 payment_ids')
+    try:
+        ids = [int(i) for i in ids]
+    except (TypeError, ValueError):
+        return err('payment_ids 必须为整数列表')
+
+    member_ids = list(_batch_members_qs(request, batch_no).values_list('id', flat=True))
+    if not member_ids:
+        return err('批次不存在或无权访问', 404)
+    tag = f'批次回款[{batch_no}]'
+    pays = list(ARPayment.objects.filter(pk__in=ids))
+    if len(pays) != len(set(ids)):
+        return err('部分回款记录不存在（可能已被撤销）', 404)
+    for p in pays:
+        if p.ar_record_id not in member_ids:
+            return err(f'回款 #{p.id} 不属于批次「{batch_no}」的成员记录，已拒绝')
+        if not (p.notes or '').startswith(tag):
+            return err(f'回款 #{p.id} 不是本批次的批次回款（{p.notes or "无标记"}），'
+                       f'请到该应收记录上单独处理')
+        if p.source == '预收抵扣':
+            return err(f'回款 #{p.id} 为预收抵扣，请走「撤销核销」')
+    total = sum(p.amount or Decimal('0') for p in pays)
+    with transaction.atomic():
+        ARPayment.objects.filter(pk__in=ids).delete()
+    return ok({'undone': len(pays), 'total': str(total),
+               'message': f'已撤销该次批次回款：{len(pays)} 笔合计 {total}，各记录未收已恢复'})
 
 
 @csrf_exempt

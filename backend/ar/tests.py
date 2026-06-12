@@ -3789,3 +3789,58 @@ class AutoBatchNoTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         b = resp.json()['data']['batches'][0]
         self.assertIn('华为物流', b['customers'])
+
+
+class BatchPaymentUndoTests(TestCase):
+    """批次管理：批次回款事件还原 + 整次撤销。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900001800', name='UndoAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.proj = ARProject.objects.create(
+            customer_name='撤销客户', short_name='撤销项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='UND-0001')
+        self.r1 = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 4, 1),
+                                          estimated_amount=Decimal('1000'),
+                                          invoice_batch_no='B-01')
+        self.r2 = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                          estimated_amount=Decimal('2000'),
+                                          invoice_batch_no='B-01')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_collections_event_and_undo(self):
+        # 批次回款 1500 → 事件出现在批次明细，整次撤销后未收恢复
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/B-01/payment',
+                                data=json.dumps({'amount': '1500', 'payment_date': '2026-06-01'}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = self.client.get('/api/pk/ar/records/invoice-batches/B-01', **self.auth()).json()['data']
+        self.assertEqual(len(d['collections']), 1)
+        ev = d['collections'][0]
+        self.assertEqual(Decimal(ev['total']), Decimal('1500'))
+        self.assertEqual(ev['count'], 2)   # r1 结清1000 + r2 分到500
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/B-01/payment-undo',
+                                data=json.dumps({'payment_ids': ev['payment_ids']}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.r1.refresh_from_db(); self.r2.refresh_from_db()
+        self.assertEqual(self.r1.outstanding_amount, Decimal('1000'))
+        self.assertEqual(self.r2.outstanding_amount, Decimal('2000'))
+
+    def test_undo_rejects_non_batch_payment(self):
+        # 单笔手工回款不能经批次撤销入口删
+        pay = ARPayment.objects.create(ar_record=self.r1, payment_no=1,
+                                       amount=Decimal('100'), payment_date=date(2026, 6, 1))
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/B-01/payment-undo',
+                                data=json.dumps({'payment_ids': [pay.id]}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400)
+        self.assertTrue(ARPayment.objects.filter(pk=pay.pk).exists())
