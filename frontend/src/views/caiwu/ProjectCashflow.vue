@@ -108,6 +108,11 @@ const rows = computed(() => {
 const summary = computed(() => data.value?.summary || {})
 const netColor = v => parseFloat(v) >= 0 ? '#2e7d32' : '#c62828'
 
+const totals = computed(() => rows.value.reduce((t, r) => ({
+  inflow: t.inflow + r.inflow, outflow: t.outflow + r.outflow,
+  net: t.net + r.net, outstanding: t.outstanding + r.outstanding,
+}), { inflow: 0, outflow: 0, net: 0, outstanding: 0 }))
+
 function openPnl(row) {
   // 业财损益卡只有项目维度可下钻；二级部门维度点击切回项目维并按部门过滤
   if (!isProjDim.value) return
@@ -130,74 +135,77 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="pcf-page">
-    <div class="pcf-shell">
-      <!-- Toolbar: 标题 + 维度 + 筛选 同处一行，统一在面板顶部 -->
-      <header class="pcf-bar">
-        <div class="pcf-bar-title">
-          <h1 class="pcf-title">{{ isProjDim ? '项目现金流' : '二级部门现金流' }}</h1>
-          <p class="pcf-sub">按{{ isProjDim ? '项目' : '二级部门' }}聚合的回款 / 付款 / 净现金</p>
-        </div>
-        <div class="pcf-controls">
-          <div class="pcf-dim-seg">
-            <button v-for="d in DIMS" :key="d.v" class="pcf-dim-btn" :class="{ on: groupBy === d.v }"
-              @click="setDim(d.v)">{{ d.l }}</button>
-          </div>
-          <select v-model="filters.dept" class="pcf-sel" @change="filters.useCustomDate ? load() : null">
-            <option value="">全部事业部</option>
-            <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
-          </select>
-          <select v-model.number="filters.year" class="pcf-sel">
-            <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
-          </select>
-          <div class="pcf-date-wrap">
-            <template v-if="filters.useCustomDate">
-              <input v-model="filters.date_start" type="date" class="pcf-date-inp" @change="load" />
-              <span class="pcf-dash">—</span>
-              <input v-model="filters.date_end" type="date" class="pcf-date-inp" @change="load" />
-              <button class="pcf-clear-date" title="还原为年度" @click="clearCustomDate">✕</button>
-            </template>
-            <template v-else>
-              <button v-for="p in PRESETS" :key="p.l" class="pcf-preset" @click="applyPreset(p)">{{ p.l }}</button>
-            </template>
-          </div>
-        </div>
-      </header>
-
-      <!-- KPI 概览：作为面板内的一条嵌入式带，不再是独立浮卡 -->
-      <div v-if="summary.count" class="pcf-kpis">
-        <div class="pcf-kpi">
-          <span class="k">回款（流入）</span>
-          <span class="v green">{{ fmtWan(summary.inflow) }}</span>
-        </div>
-        <div class="pcf-kpi">
-          <span class="k">付款（流出）</span>
-          <span class="v red">{{ fmtWan(summary.outflow) }}</span>
-        </div>
-        <div class="pcf-kpi">
-          <span class="k">净现金</span>
-          <span class="v" :style="{ color: netColor(summary.net) }">{{ fmtWan(summary.net) }}</span>
-        </div>
-        <div class="pcf-kpi">
-          <span class="k">应收敞口</span>
-          <span class="v amber">{{ fmtWan(summary.outstanding) }}</span>
-        </div>
-        <div class="pcf-kpi">
-          <span class="k">涉及{{ isProjDim ? '项目' : '二级部门' }}</span>
-          <span class="v">{{ summary.count }} 个</span>
-        </div>
-        <span v-if="filters.useCustomDate" class="pcf-date-badge">
-          {{ data?.date_start }} ~ {{ data?.date_end }}
-        </span>
+  <div>
+    <!-- 标题：与项目毛利等页一致的 topbar -->
+    <div class="topbar">
+      <div>
+        <h1>{{ isProjDim ? '项目现金流' : '二级部门现金流' }}</h1>
+        <div class="pcf-topsub">按{{ isProjDim ? '项目' : '二级部门' }}聚合的回款（流入）/ 付款（流出）/ 净现金</div>
       </div>
+    </div>
 
-      <!-- 表格区：搜索条 + 表格，同一面板内紧邻 KPI -->
-      <div class="pcf-table-head">
+    <!-- 筛选条：紧凑左对齐，不再撑满整行 -->
+    <div class="pcf-filterbar">
+      <div class="pcf-dim-seg">
+        <button v-for="d in DIMS" :key="d.v" class="pcf-dim-btn" :class="{ on: groupBy === d.v }"
+          @click="setDim(d.v)">{{ d.l }}</button>
+      </div>
+      <select v-model="filters.dept" class="pcf-sel" @change="filters.useCustomDate ? load() : null">
+        <option value="">全部事业部</option>
+        <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+      </select>
+      <select v-model.number="filters.year" class="pcf-sel">
+        <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+      </select>
+      <span class="pcf-fb-sep"></span>
+      <template v-if="filters.useCustomDate">
+        <input v-model="filters.date_start" type="date" class="pcf-date-inp" @change="load" />
+        <span class="pcf-dash">—</span>
+        <input v-model="filters.date_end" type="date" class="pcf-date-inp" @change="load" />
+        <button class="pcf-clear-date" title="还原为年度" @click="clearCustomDate">✕</button>
+      </template>
+      <template v-else>
+        <button v-for="p in PRESETS" :key="p.l" class="pcf-preset" @click="applyPreset(p)">{{ p.l }}</button>
+      </template>
+    </div>
+
+    <!-- KPI：与项目毛利一致的小卡网格 -->
+    <div v-if="summary.count" class="pcf-kpis">
+      <div class="pcf-kpi kpi-in">
+        <div class="pcf-k">回款（流入）</div>
+        <div class="pcf-v green">{{ fmtWan(summary.inflow) }}</div>
+      </div>
+      <div class="pcf-kpi kpi-out">
+        <div class="pcf-k">付款（流出）</div>
+        <div class="pcf-v red">{{ fmtWan(summary.outflow) }}</div>
+      </div>
+      <div class="pcf-kpi kpi-net">
+        <div class="pcf-k">净现金</div>
+        <div class="pcf-v" :style="{ color: netColor(summary.net) }">{{ fmtWan(summary.net) }}</div>
+      </div>
+      <div class="pcf-kpi kpi-os">
+        <div class="pcf-k">应收敞口</div>
+        <div class="pcf-v amber">{{ fmtWan(summary.outstanding) }}</div>
+      </div>
+      <div class="pcf-kpi">
+        <div class="pcf-k">涉及{{ isProjDim ? '项目' : '二级部门' }}</div>
+        <div class="pcf-v">{{ summary.count }} 个</div>
+      </div>
+    </div>
+
+    <!-- 表格：标准 card -->
+    <div class="card">
+      <div class="section-title">
+        {{ isProjDim ? '项目' : '二级部门' }}现金流明细
+        <span class="section-sub">
+          {{ filters.dept || '全部事业部' }}
+          · <template v-if="filters.useCustomDate">{{ data?.date_start }} ~ {{ data?.date_end }}</template>
+          <template v-else>{{ filters.year }} 年</template>
+        </span>
         <div class="pcf-search-wrap">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
           <input v-model="search" class="pcf-search" placeholder="搜索项目 / 客户 / 部门" />
         </div>
-        <span class="pcf-count">{{ rows.length }} 个{{ isProjDim ? '项目' : '二级部门' }}</span>
       </div>
 
       <div v-if="loading" class="pcf-empty">加载中…</div>
@@ -206,26 +214,26 @@ onMounted(() => {
         {{ data ? `暂无数据（所选时段内无关联${isProjDim ? '项目简称' : '二级部门'}的回款或付款）` : '请选择筛选条件后加载' }}
       </div>
 
-      <div v-else class="pcf-table-wrap">
+      <div v-else class="table-wrap">
         <table class="pcf-table">
           <thead>
             <tr>
               <th class="pcf-th-proj">{{ isProjDim ? '项目' : '二级部门' }}</th>
               <th>事业部</th>
-              <th class="pcf-th-num sortable" :class="{ sorted: sortKey === 'inflow' }" @click="setSort('inflow')">
+              <th class="amt sortable" :class="{ sorted: sortKey === 'inflow' }" @click="setSort('inflow')">
                 回款流入 <span class="sort-arr">{{ sortKey === 'inflow' ? (sortDesc ? '↓' : '↑') : '↕' }}</span>
               </th>
-              <th class="pcf-th-num sortable" :class="{ sorted: sortKey === 'outflow' }" @click="setSort('outflow')">
+              <th class="amt sortable" :class="{ sorted: sortKey === 'outflow' }" @click="setSort('outflow')">
                 付款流出 <span class="sort-arr">{{ sortKey === 'outflow' ? (sortDesc ? '↓' : '↑') : '↕' }}</span>
               </th>
-              <th class="pcf-th-num sortable" :class="{ sorted: sortKey === 'net' }" @click="setSort('net')">
+              <th class="amt sortable" :class="{ sorted: sortKey === 'net' }" @click="setSort('net')">
                 净现金 <span class="sort-arr">{{ sortKey === 'net' ? (sortDesc ? '↓' : '↑') : '↕' }}</span>
               </th>
-              <th class="pcf-th-num sortable" :class="{ sorted: sortKey === 'outstanding' }" @click="setSort('outstanding')">
+              <th class="amt sortable" :class="{ sorted: sortKey === 'outstanding' }" @click="setSort('outstanding')">
                 应收敞口 <span class="sort-arr">{{ sortKey === 'outstanding' ? (sortDesc ? '↓' : '↑') : '↕' }}</span>
               </th>
-              <th class="pcf-th-num">回款率</th>
-              <th v-if="isProjDim" class="pcf-th-act">详情</th>
+              <th class="amt">回款率</th>
+              <th v-if="isProjDim" class="ctr">详情</th>
             </tr>
           </thead>
           <tbody>
@@ -234,37 +242,34 @@ onMounted(() => {
                 <div class="pcf-pname">{{ r.project }}</div>
                 <div v-if="r.customer" class="pcf-psub">{{ r.customer }}</div>
               </td>
-              <td class="pcf-td-dept"><span class="dept-tag">{{ r.dept || '—' }}</span></td>
-              <td class="pcf-td-num green fw">{{ r.inflow ? fmtWan(r.inflow) : '—' }}</td>
-              <td class="pcf-td-num red">{{ r.outflow ? fmtWan(r.outflow) : '—' }}</td>
-              <td class="pcf-td-num fw" :style="{ color: netColor(r.net) }">{{ fmtWan(r.net) }}</td>
-              <td class="pcf-td-num" :class="r.outstanding > 0 ? 'amber' : 'muted'">
+              <td><span class="dept-tag">{{ r.dept || '—' }}</span></td>
+              <td class="amt green fw">{{ r.inflow ? fmtWan(r.inflow) : '—' }}</td>
+              <td class="amt red">{{ r.outflow ? fmtWan(r.outflow) : '—' }}</td>
+              <td class="amt fw" :style="{ color: netColor(r.net) }">{{ fmtWan(r.net) }}</td>
+              <td class="amt" :class="r.outstanding > 0 ? 'amber' : 'muted'">
                 {{ r.outstanding > 0 ? fmtWan(r.outstanding) : '—' }}
               </td>
-              <td class="pcf-td-num muted">
+              <td class="amt muted">
                 {{ r.estimated > 0 ? fmtPct(r.inflow, r.estimated) : '—' }}
               </td>
-              <td v-if="isProjDim" class="pcf-td-act">
+              <td v-if="isProjDim" class="ctr">
                 <button class="pcf-btn-detail" @click.stop="openPnl(r)">业财卡</button>
               </td>
             </tr>
           </tbody>
-          <!-- Footer totals -->
           <tfoot>
             <tr class="pcf-foot">
-              <td colspan="2">合计 {{ rows.length }} 个{{ isProjDim ? '项目' : '二级部门' }}</td>
-              <td class="pcf-td-num green fw">{{ fmtWan(rows.reduce((s, r) => s + r.inflow, 0)) }}</td>
-              <td class="pcf-td-num red">{{ fmtWan(rows.reduce((s, r) => s + r.outflow, 0)) }}</td>
-              <td class="pcf-td-num fw" :style="{ color: netColor(rows.reduce((s, r) => s + r.net, 0)) }">
-                {{ fmtWan(rows.reduce((s, r) => s + r.net, 0)) }}
-              </td>
-              <td class="pcf-td-num amber">{{ fmtWan(rows.reduce((s, r) => s + r.outstanding, 0)) }}</td>
+              <td colspan="2" class="fw">合计 {{ rows.length }} 个{{ isProjDim ? '项目' : '二级部门' }}</td>
+              <td class="amt green fw">{{ fmtWan(totals.inflow) }}</td>
+              <td class="amt red fw">{{ fmtWan(totals.outflow) }}</td>
+              <td class="amt fw" :style="{ color: netColor(totals.net) }">{{ fmtWan(totals.net) }}</td>
+              <td class="amt amber fw">{{ fmtWan(totals.outstanding) }}</td>
               <td :colspan="isProjDim ? 2 : 1"></td>
             </tr>
           </tfoot>
         </table>
       </div>
-    </div><!-- /pcf-shell -->
+    </div>
 
     <!-- ProjectPnlCard overlay -->
     <ProjectPnlCard
@@ -278,150 +283,99 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.pcf-page { padding: 20px 24px; max-width: 1200px; }
+.pcf-topsub { font-size: 13px; color: var(--muted); margin-top: 2px; }
 
-/* 单一面板：标题 / 筛选 / KPI / 表格 全部收纳其中，用内部分隔线区隔，
-   不再是三块各自浮动的卡片，整体更聚合 */
-.pcf-shell {
-  background: rgba(255,255,255,.72); border: 1px solid rgba(180,140,110,.18);
-  border-radius: 16px; box-shadow: 0 4px 20px rgba(100,60,30,.08); overflow: hidden;
+/* Filter bar — 紧凑左对齐，对齐项目毛利的 pm-filterbar */
+.pcf-filterbar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 16px;
 }
-
-/* Toolbar */
-.pcf-bar {
-  display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  padding: 16px 20px; flex-wrap: wrap;
-  border-bottom: 1px solid rgba(180,140,110,.12);
-}
-.pcf-bar-title { display: flex; flex-direction: column; gap: 2px; }
-.pcf-title { font-size: 20px; font-weight: 800; color: #5f4d3d; margin: 0; }
-.pcf-sub { font-size: 12px; color: #9b8070; margin: 0; }
-.pcf-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pcf-sel {
-  border: 1px solid rgba(180,140,110,.3); border-radius: 8px; padding: 6px 10px;
-  font-size: 13px; background: rgba(255,255,255,.7); color: #5f4d3d; cursor: pointer;
+  border: 1px solid var(--border); background: rgba(255,255,255,.6); padding: 7px 12px;
+  border-radius: 8px; font-size: 13px; color: var(--text); cursor: pointer; outline: none;
 }
-.pcf-date-wrap { display: flex; align-items: center; gap: 4px; }
+.pcf-sel:hover, .pcf-sel:focus { background: rgba(201,99,66,.09); color: var(--primary); }
+.pcf-fb-sep { width: 1px; height: 20px; background: var(--border); margin: 0 2px; }
+.pcf-dim-seg { display: inline-flex; background: rgba(0,0,0,.05); border-radius: 9px; padding: 3px; }
+.pcf-dim-btn {
+  border: none; background: none; padding: 5px 16px; border-radius: 7px;
+  font-size: 12.5px; color: var(--muted); cursor: pointer; font-weight: 600;
+}
+.pcf-dim-btn.on { background: #fff; color: var(--primary); font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
 .pcf-date-inp {
-  border: 1px solid rgba(180,140,110,.3); border-radius: 8px; padding: 5px 8px;
-  font-size: 12px; background: rgba(255,255,255,.7); color: #5f4d3d;
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
+  font-size: 12.5px; background: rgba(255,255,255,.6); color: var(--text);
 }
-.pcf-dash { color: #9b8070; font-size: 13px; }
-.pcf-clear-date {
-  border: none; background: transparent; cursor: pointer; color: #9b8070; font-size: 13px; padding: 2px 4px;
-}
+.pcf-dash { color: var(--muted); font-size: 13px; }
+.pcf-clear-date { border: none; background: transparent; cursor: pointer; color: var(--muted); font-size: 13px; padding: 2px 4px; }
 .pcf-clear-date:hover { color: #c62828; }
 .pcf-preset {
-  border: 1px solid rgba(180,140,110,.25); background: rgba(255,255,255,.6); color: #6b5a4a;
-  font-size: 12px; padding: 4px 10px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--border); background: rgba(255,255,255,.6); color: var(--muted);
+  font-size: 12.5px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
 }
-.pcf-preset:hover { background: rgba(201,99,66,.1); border-color: rgba(201,99,66,.4); color: var(--primary, #c96342); }
-.pcf-dim-seg {
-  display: flex; border: 1px solid rgba(180,140,110,.3); border-radius: 8px; overflow: hidden;
-  background: rgba(255,255,255,.6);
-}
-.pcf-dim-btn {
-  border: none; background: transparent; padding: 6px 14px; font-size: 13px;
-  color: #8a7665; cursor: pointer; font-weight: 600;
-}
-.pcf-dim-btn + .pcf-dim-btn { border-left: 1px solid rgba(180,140,110,.2); }
-.pcf-dim-btn.on { background: var(--primary, #c96342); color: #fff; }
-.pcf-row.no-drill { cursor: default; }
+.pcf-preset:hover { background: rgba(201,99,66,.09); border-color: rgba(201,99,66,.4); color: var(--primary); }
 
-/* KPI 嵌入带：均分网格，柔色背景，与上方工具条、下方表格用分隔线衔接 */
-.pcf-kpis {
-  display: grid; grid-template-columns: repeat(5, 1fr); align-items: center;
-  gap: 0; padding: 14px 20px; position: relative;
-  background: linear-gradient(180deg, rgba(250,245,240,.5), rgba(255,255,255,0));
-  border-bottom: 1px solid rgba(180,140,110,.12);
-}
+/* KPI 小卡网格 — 对齐项目毛利的 pm-kpis */
+.pcf-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 16px; }
+@media (max-width: 900px) { .pcf-kpis { grid-template-columns: repeat(2, 1fr); } }
 .pcf-kpi {
-  display: flex; flex-direction: column; gap: 4px; padding: 0 18px;
-  border-left: 1px solid rgba(180,140,110,.14);
+  background: rgba(255,255,255,.78); border: 1px solid rgba(255,255,255,.9);
+  border-radius: 14px; padding: 12px 16px; box-shadow: 0 2px 14px rgba(0,0,0,.05);
+  border-left: 3px solid var(--border);
 }
-.pcf-kpi:first-child { border-left: none; padding-left: 0; }
-.pcf-kpi .k { font-size: 11px; color: #9b8070; }
-.pcf-kpi .v { font-size: 19px; font-weight: 800; color: #5f4d3d; font-variant-numeric: tabular-nums; }
-.pcf-kpi .v.green { color: #2e7d32; }
-.pcf-kpi .v.red { color: #c62828; }
-.pcf-kpi .v.amber { color: #e65100; }
-.pcf-date-badge {
-  position: absolute; top: 10px; right: 16px; font-size: 11px; color: #9b8070;
-  background: rgba(180,140,110,.1); border-radius: 6px; padding: 3px 8px;
-}
+.pcf-kpi.kpi-in { border-left-color: #2e7d32; }
+.pcf-kpi.kpi-out { border-left-color: #c62828; }
+.pcf-kpi.kpi-net { border-left-color: var(--primary, #c96342); }
+.pcf-kpi.kpi-os { border-left-color: #e65100; }
+.pcf-k { font-size: 11px; color: var(--muted); font-weight: 700; }
+.pcf-v { font-size: 21px; font-weight: 800; color: var(--text); margin-top: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
-/* 表格头条 */
-.pcf-table-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 20px; border-bottom: 1px solid rgba(180,140,110,.12);
-}
+/* Search in section title */
 .pcf-search-wrap {
-  display: flex; align-items: center; gap: 6px;
-  background: rgba(255,255,255,.8); border: 1px solid rgba(180,140,110,.2);
-  border-radius: 8px; padding: 5px 10px;
+  margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(255,255,255,.8); border: 1px solid var(--border);
+  border-radius: 8px; padding: 5px 10px; color: var(--muted);
 }
-.pcf-search { border: none; background: transparent; font-size: 13px; color: #5f4d3d; outline: none; width: 220px; }
-.pcf-count { font-size: 12px; color: #9b8070; }
-.pcf-empty { padding: 40px; text-align: center; color: #b3a08f; font-size: 13px; }
-.pcf-empty.err { color: #c62828; }
-.pcf-table-wrap { overflow-x: auto; }
+.pcf-search { border: none; background: transparent; font-size: 13px; color: var(--text); outline: none; width: 200px; }
 
-/* Table */
+.pcf-empty { padding: 40px; text-align: center; color: var(--muted); font-size: 13px; }
+.pcf-empty.err { color: #c62828; }
+
+/* Table — 对齐项目毛利的 pm-table */
 .pcf-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .pcf-table thead th {
-  padding: 10px 14px; text-align: left; font-size: 11.5px; font-weight: 700;
-  color: #8a7665; background: rgba(250,245,240,.8);
-  border-bottom: 1px solid rgba(180,140,110,.15); white-space: nowrap;
+  padding: 9px 12px; text-align: left; font-size: 11.5px; font-weight: 700;
+  color: var(--muted); border-bottom: 1px solid rgba(0,0,0,.08); white-space: nowrap;
 }
-.pcf-th-num { text-align: right; }
-.pcf-th-act { text-align: center; }
-.pcf-th-proj { min-width: 160px; }
+.amt { text-align: right; font-variant-numeric: tabular-nums; }
+.ctr { text-align: center; }
 .sortable { cursor: pointer; }
 .sortable:hover { color: var(--primary, #c96342); }
 .sorted { color: var(--primary, #c96342); }
 .sort-arr { font-size: 10px; }
 
-.pcf-row { cursor: pointer; transition: background .15s; }
-.pcf-row:hover td { background: rgba(201,99,66,.04); }
-.pcf-table td { padding: 10px 14px; border-bottom: 1px solid rgba(180,140,110,.08); color: #5f4d3d; vertical-align: middle; }
+.pcf-row { cursor: pointer; }
+.pcf-row.no-drill { cursor: default; }
+.pcf-table tbody td { padding: 9px 12px; border-bottom: 1px solid rgba(0,0,0,.04); color: var(--text); vertical-align: middle; }
+.pcf-table tbody tr:hover td { background: rgba(201,99,66,.03); }
+.pcf-th-proj { min-width: 160px; }
 .pcf-td-proj { min-width: 160px; }
-.pcf-pname { font-weight: 600; font-size: 13px; }
-.pcf-psub { font-size: 11px; color: #9b8070; margin-top: 2px; }
-.pcf-td-dept {}
+.pcf-pname { font-weight: 600; }
+.pcf-psub { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .dept-tag {
   display: inline-block; padding: 2px 7px; border-radius: 5px;
-  background: rgba(180,140,110,.1); color: #8a7665; font-size: 11px; white-space: nowrap;
+  background: rgba(180,140,110,.12); color: var(--muted); font-size: 11px; white-space: nowrap;
 }
-.pcf-td-num { text-align: right; font-variant-numeric: tabular-nums; }
-.pcf-td-act { text-align: center; }
 .green { color: #2e7d32; }
 .red { color: #c62828; }
 .amber { color: #e65100; }
-.muted { color: #9b8070; }
+.muted { color: var(--muted); }
 .fw { font-weight: 700; }
 
 .pcf-btn-detail {
   border: 1px solid rgba(122,159,212,.3); background: rgba(122,159,212,.08);
-  color: #4a6fa5; font-size: 11.5px; padding: 3px 9px; border-radius: 7px; cursor: pointer;
-  white-space: nowrap;
+  color: #4a6fa5; font-size: 11.5px; padding: 3px 9px; border-radius: 7px; cursor: pointer; white-space: nowrap;
 }
 .pcf-btn-detail:hover { background: rgba(122,159,212,.18); }
 
-.pcf-foot td {
-  padding: 10px 14px; font-size: 12px; color: #8a7665;
-  background: rgba(250,245,240,.9); border-top: 2px solid rgba(180,140,110,.18);
-}
-
-/* 让表格首末列与面板 20px 内边距对齐，视觉更整齐 */
-.pcf-table thead th:first-child,
-.pcf-table tbody td:first-child,
-.pcf-table tfoot td:first-child { padding-left: 20px; }
-.pcf-table thead th:last-child,
-.pcf-table tbody td:last-child,
-.pcf-table tfoot td:last-child { padding-right: 20px; }
-
-@media (max-width: 880px) {
-  .pcf-kpis { grid-template-columns: repeat(2, 1fr); gap: 12px 0; }
-  .pcf-kpi:nth-child(odd) { border-left: none; padding-left: 0; }
-}
+.pcf-foot td { padding: 10px 12px; border-top: 2px solid rgba(201,99,66,.3); background: #f8efeb; font-size: 12.5px; color: var(--text); }
 </style>
