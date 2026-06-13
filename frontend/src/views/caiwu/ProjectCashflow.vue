@@ -169,30 +169,6 @@ onMounted(() => {
       </template>
     </div>
 
-    <!-- KPI：与项目毛利一致的小卡网格 -->
-    <div v-if="summary.count" class="pcf-kpis">
-      <div class="pcf-kpi kpi-in">
-        <div class="pcf-k">回款（流入）</div>
-        <div class="pcf-v green">{{ fmtWan(summary.inflow) }}</div>
-      </div>
-      <div class="pcf-kpi kpi-out">
-        <div class="pcf-k">付款（流出）</div>
-        <div class="pcf-v red">{{ fmtWan(summary.outflow) }}</div>
-      </div>
-      <div class="pcf-kpi kpi-net">
-        <div class="pcf-k">净现金</div>
-        <div class="pcf-v" :style="{ color: netColor(summary.net) }">{{ fmtWan(summary.net) }}</div>
-      </div>
-      <div class="pcf-kpi kpi-os">
-        <div class="pcf-k">应收敞口</div>
-        <div class="pcf-v amber">{{ fmtWan(summary.outstanding) }}</div>
-      </div>
-      <div class="pcf-kpi">
-        <div class="pcf-k">涉及{{ isProjDim ? '项目' : '二级部门' }}</div>
-        <div class="pcf-v">{{ summary.count }} 个</div>
-      </div>
-    </div>
-
     <!-- 表格：标准 card -->
     <div class="card">
       <div class="section-title">
@@ -271,6 +247,26 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- 吸底汇总：对齐付款台账的 bottom-bar。Teleport 到 body 逃脱 .card 包含块 -->
+    <Teleport to="body">
+      <div v-if="!loading && !err && rows.length && !askTarget" class="bottom-bar">
+        <div class="bb-summary">
+          <span class="bb-item"><i>合计</i><b>{{ rows.length }}</b> 个{{ isProjDim ? '项目' : '二级部门' }}</span>
+          <span class="bb-item ok"><i>回款流入</i><b>{{ fmtWan(totals.inflow) }}</b></span>
+          <span class="bb-item"><i>付款流出</i><b style="color:#c62828">{{ fmtWan(totals.outflow) }}</b></span>
+          <span class="bb-item"><i>净现金</i><b :style="{ color: netColor(totals.net) }">{{ fmtWan(totals.net) }}</b></span>
+          <span class="bb-item warn"><i>应收敞口</i><b>{{ fmtWan(totals.outstanding) }}</b></span>
+        </div>
+        <div class="bb-pager">
+          <span class="page-info">
+            <template v-if="filters.useCustomDate">{{ data?.date_start }} ~ {{ data?.date_end }}</template>
+            <template v-else>{{ filters.year }} 年</template>
+            · {{ filters.dept || '全部事业部' }}
+          </span>
+        </div>
+      </div>
+    </Teleport>
+
     <!-- ProjectPnlCard overlay -->
     <ProjectPnlCard
       v-if="askTarget"
@@ -313,21 +309,6 @@ onMounted(() => {
   font-size: 12.5px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
 }
 .pcf-preset:hover { background: rgba(201,99,66,.09); border-color: rgba(201,99,66,.4); color: var(--primary); }
-
-/* KPI 小卡网格 — 对齐项目毛利的 pm-kpis */
-.pcf-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 16px; }
-@media (max-width: 900px) { .pcf-kpis { grid-template-columns: repeat(2, 1fr); } }
-.pcf-kpi {
-  background: rgba(255,255,255,.78); border: 1px solid rgba(255,255,255,.9);
-  border-radius: 14px; padding: 12px 16px; box-shadow: 0 2px 14px rgba(0,0,0,.05);
-  border-left: 3px solid var(--border);
-}
-.pcf-kpi.kpi-in { border-left-color: #2e7d32; }
-.pcf-kpi.kpi-out { border-left-color: #c62828; }
-.pcf-kpi.kpi-net { border-left-color: var(--primary, #c96342); }
-.pcf-kpi.kpi-os { border-left-color: #e65100; }
-.pcf-k { font-size: 11px; color: var(--muted); font-weight: 700; }
-.pcf-v { font-size: 21px; font-weight: 800; color: var(--text); margin-top: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* Search in section title */
 .pcf-search-wrap {

@@ -161,34 +161,6 @@ onMounted(() => {
         但持续偏大通常意味着部分收入未挂项目维度或导入期间不一致，请核对。
       </div>
 
-      <!-- KPI -->
-      <div class="pm-kpis">
-        <div class="pm-kpi">
-          <div class="pm-k">项目数</div>
-          <div class="pm-v">{{ summary.project_count }}</div>
-        </div>
-        <div class="pm-kpi">
-          <div class="pm-k">收入合计</div>
-          <div class="pm-v">{{ fmt(summary.total_revenue) }}</div>
-        </div>
-        <div class="pm-kpi">
-          <div class="pm-k">成本合计</div>
-          <div class="pm-v">{{ fmt(summary.total_cost) }}</div>
-        </div>
-        <div class="pm-kpi">
-          <div class="pm-k">毛利合计</div>
-          <div class="pm-v" :class="summary.total_margin >= 0 ? 'v-pos' : 'v-neg'">{{ fmt(summary.total_margin) }}</div>
-        </div>
-        <div class="pm-kpi">
-          <div class="pm-k">毛利率</div>
-          <div class="pm-v">{{ summary.margin_rate === null ? '—' : summary.margin_rate + '%' }}</div>
-        </div>
-        <div v-if="mode === 'direct' && summary.unalloc_cost" class="pm-kpi pm-kpi-pool">
-          <div class="pm-k">未分摊成本池</div>
-          <div class="pm-v">{{ fmt(summary.unalloc_cost) }}</div>
-        </div>
-      </div>
-
       <!-- Table -->
       <div class="card">
         <div class="section-title">
@@ -243,6 +215,23 @@ onMounted(() => {
         </div>
       </div>
     </template>
+
+    <!-- 吸底汇总：对齐付款台账的 bottom-bar -->
+    <Teleport to="body">
+      <div v-if="summary && summary.has_data" class="bottom-bar">
+        <div class="bb-summary">
+          <span class="bb-item"><i>项目数</i><b>{{ summary.project_count }}</b></span>
+          <span class="bb-item"><i>收入合计</i><b>{{ fmt(summary.total_revenue) }}</b></span>
+          <span class="bb-item"><i>成本合计</i><b>{{ fmt(summary.total_cost) }}</b></span>
+          <span class="bb-item" :class="summary.total_margin >= 0 ? 'ok' : 'warn'"><i>毛利合计</i><b>{{ fmt(summary.total_margin) }}</b></span>
+          <span class="bb-item"><i>毛利率</i><b>{{ summary.margin_rate === null ? '—' : summary.margin_rate + '%' }}</b></span>
+          <span v-if="mode === 'direct' && summary.unalloc_cost" class="bb-item"><i>未分摊池</i><b>{{ fmt(summary.unalloc_cost) }}</b></span>
+        </div>
+        <div class="bb-pager">
+          <span class="page-info">{{ bu }} · {{ year }}年{{ month }}月 · {{ mode === 'direct' ? '直接口径' : '分摊口径' }}</span>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -267,19 +256,6 @@ onMounted(() => {
   background: rgba(245,127,23,0.08); border: 1px solid rgba(245,127,23,0.3);
   border-radius: 12px; padding: 12px 16px; margin-bottom: 16px; font-size: 13px; color: #b45309;
 }
-
-.pm-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 16px; }
-@media (max-width: 900px) { .pm-kpis { grid-template-columns: repeat(3, 1fr); } }
-.pm-kpi {
-  background: rgba(255,255,255,0.78); border: 1px solid rgba(255,255,255,0.9);
-  border-radius: 14px; padding: 12px 16px; box-shadow: 0 2px 14px rgba(0,0,0,0.05);
-  border-left: 3px solid var(--border);
-}
-.pm-kpi-pool { border-left-color: #e65100; }
-.pm-k { font-size: 11px; color: var(--muted); font-weight: 700; }
-.pm-v { font-size: 21px; font-weight: 800; color: var(--text); margin-top: 4px; white-space: nowrap; }
-.v-pos { color: #2e7d32; }
-.v-neg { color: #c62828; }
 
 .pm-emptybox {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
