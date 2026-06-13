@@ -241,7 +241,7 @@ onMounted(() => {
 .pm-topbar { gap: 12px; flex-wrap: wrap; }
 .pm-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .pm-sel {
-  height: 32px; padding: 0 10px; border: 1px solid var(--border); background: rgba(255,255,255,0.6);
+  width: auto; height: 32px; padding: 0 10px; border: 1px solid var(--border); background: rgba(255,255,255,0.6);
   border-radius: 8px; font-size: 13px; color: var(--text); cursor: pointer; outline: none;
 }
 .pm-sel:hover, .pm-sel:focus { background: rgba(201,99,66,0.09); color: var(--primary); }

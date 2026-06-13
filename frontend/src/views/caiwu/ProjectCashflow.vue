@@ -323,7 +323,7 @@ onMounted(() => {
 .pcf-topbar { gap: 12px; flex-wrap: wrap; }
 .pcf-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .pcf-sel {
-  border: 1px solid var(--border); background: rgba(255,255,255,.6); padding: 7px 12px;
+  width: auto; border: 1px solid var(--border); background: rgba(255,255,255,.6); padding: 7px 12px;
   border-radius: 8px; font-size: 13px; color: var(--text); cursor: pointer; outline: none;
 }
 .pcf-sel:hover, .pcf-sel:focus { background: rgba(201,99,66,.09); color: var(--primary); }
@@ -336,7 +336,7 @@ onMounted(() => {
 }
 .pcf-dim-btn.on { background: #fff; color: var(--primary); font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
 .pcf-date-inp {
-  border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
+  width: auto; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
   font-size: 12.5px; background: rgba(255,255,255,.6); color: var(--text);
 }
 .pcf-dash { color: var(--muted); font-size: 13px; }
@@ -408,7 +408,7 @@ onMounted(() => {
 .rate-track i { display: block; height: 100%; border-radius: 3px; transition: width .3s; }
 
 /* 日期区间下拉略宽，容纳「自定义…」 */
-.pcf-range-sel { min-width: 78px; }
+.pcf-range-sel { width: auto; min-width: 78px; }
 
 /* 吸底栏小图标（Teleport 内容仍受 scoped 作用域约束） */
 .bb-ico { width: 13px; height: 13px; align-self: center; flex-shrink: 0; }
