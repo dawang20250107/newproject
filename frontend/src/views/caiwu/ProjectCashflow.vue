@@ -131,73 +131,68 @@ onMounted(() => {
 
 <template>
   <div class="pcf-page">
-    <div class="pcf-header">
-      <div class="pcf-header-left">
-        <h1 class="pcf-title">{{ isProjDim ? '项目现金流' : '二级部门现金流' }}</h1>
-        <p class="pcf-sub">按{{ isProjDim ? '项目' : '二级部门' }}聚合的回款（流入）、付款（流出）及净现金，洞察资金健康度</p>
-      </div>
-      <div class="pcf-controls">
-        <!-- 维度切换 -->
-        <div class="pcf-dim-seg">
-          <button v-for="d in DIMS" :key="d.v" class="pcf-dim-btn" :class="{ on: groupBy === d.v }"
-            @click="setDim(d.v)">{{ d.l }}</button>
+    <div class="pcf-shell">
+      <!-- Toolbar: 标题 + 维度 + 筛选 同处一行，统一在面板顶部 -->
+      <header class="pcf-bar">
+        <div class="pcf-bar-title">
+          <h1 class="pcf-title">{{ isProjDim ? '项目现金流' : '二级部门现金流' }}</h1>
+          <p class="pcf-sub">按{{ isProjDim ? '项目' : '二级部门' }}聚合的回款 / 付款 / 净现金</p>
         </div>
-        <select v-model="filters.dept" class="pcf-sel" @change="filters.useCustomDate ? load() : null">
-          <option value="">全部事业部</option>
-          <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
-        </select>
-        <select v-model.number="filters.year" class="pcf-sel">
-          <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
-        </select>
-        <!-- Date range -->
-        <div class="pcf-date-wrap">
-          <template v-if="filters.useCustomDate">
-            <input v-model="filters.date_start" type="date" class="pcf-date-inp" @change="load" />
-            <span class="pcf-dash">—</span>
-            <input v-model="filters.date_end" type="date" class="pcf-date-inp" @change="load" />
-            <button class="pcf-clear-date" title="还原为年度" @click="clearCustomDate">✕</button>
-          </template>
-          <template v-else>
-            <button v-for="p in PRESETS" :key="p.l" class="pcf-preset" @click="applyPreset(p)">{{ p.l }}</button>
-          </template>
+        <div class="pcf-controls">
+          <div class="pcf-dim-seg">
+            <button v-for="d in DIMS" :key="d.v" class="pcf-dim-btn" :class="{ on: groupBy === d.v }"
+              @click="setDim(d.v)">{{ d.l }}</button>
+          </div>
+          <select v-model="filters.dept" class="pcf-sel" @change="filters.useCustomDate ? load() : null">
+            <option value="">全部事业部</option>
+            <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+          </select>
+          <select v-model.number="filters.year" class="pcf-sel">
+            <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
+          </select>
+          <div class="pcf-date-wrap">
+            <template v-if="filters.useCustomDate">
+              <input v-model="filters.date_start" type="date" class="pcf-date-inp" @change="load" />
+              <span class="pcf-dash">—</span>
+              <input v-model="filters.date_end" type="date" class="pcf-date-inp" @change="load" />
+              <button class="pcf-clear-date" title="还原为年度" @click="clearCustomDate">✕</button>
+            </template>
+            <template v-else>
+              <button v-for="p in PRESETS" :key="p.l" class="pcf-preset" @click="applyPreset(p)">{{ p.l }}</button>
+            </template>
+          </div>
         </div>
-      </div>
-    </div>
+      </header>
 
-    <!-- Summary KPI bar -->
-    <div v-if="summary.count" class="pcf-kpi-bar">
-      <div class="pcf-kpi">
-        <span class="k">回款（流入）</span>
-        <span class="v green">{{ fmtWan(summary.inflow) }}</span>
+      <!-- KPI 概览：作为面板内的一条嵌入式带，不再是独立浮卡 -->
+      <div v-if="summary.count" class="pcf-kpis">
+        <div class="pcf-kpi">
+          <span class="k">回款（流入）</span>
+          <span class="v green">{{ fmtWan(summary.inflow) }}</span>
+        </div>
+        <div class="pcf-kpi">
+          <span class="k">付款（流出）</span>
+          <span class="v red">{{ fmtWan(summary.outflow) }}</span>
+        </div>
+        <div class="pcf-kpi">
+          <span class="k">净现金</span>
+          <span class="v" :style="{ color: netColor(summary.net) }">{{ fmtWan(summary.net) }}</span>
+        </div>
+        <div class="pcf-kpi">
+          <span class="k">应收敞口</span>
+          <span class="v amber">{{ fmtWan(summary.outstanding) }}</span>
+        </div>
+        <div class="pcf-kpi">
+          <span class="k">涉及{{ isProjDim ? '项目' : '二级部门' }}</span>
+          <span class="v">{{ summary.count }} 个</span>
+        </div>
+        <span v-if="filters.useCustomDate" class="pcf-date-badge">
+          {{ data?.date_start }} ~ {{ data?.date_end }}
+        </span>
       </div>
-      <div class="pcf-kpi-sep"></div>
-      <div class="pcf-kpi">
-        <span class="k">付款（流出）</span>
-        <span class="v red">{{ fmtWan(summary.outflow) }}</span>
-      </div>
-      <div class="pcf-kpi-sep"></div>
-      <div class="pcf-kpi">
-        <span class="k">净现金</span>
-        <span class="v" :style="{ color: netColor(summary.net) }">{{ fmtWan(summary.net) }}</span>
-      </div>
-      <div class="pcf-kpi-sep"></div>
-      <div class="pcf-kpi">
-        <span class="k">应收敞口</span>
-        <span class="v amber">{{ fmtWan(summary.outstanding) }}</span>
-      </div>
-      <div class="pcf-kpi-sep"></div>
-      <div class="pcf-kpi">
-        <span class="k">涉及{{ isProjDim ? '项目' : '二级部门' }}</span>
-        <span class="v">{{ summary.count }} 个</span>
-      </div>
-      <span v-if="filters.useCustomDate" class="pcf-date-badge">
-        {{ data?.date_start }} ~ {{ data?.date_end }}
-      </span>
-    </div>
 
-    <!-- Table -->
-    <div class="pcf-card">
-      <div class="pcf-card-top">
+      <!-- 表格区：搜索条 + 表格，同一面板内紧邻 KPI -->
+      <div class="pcf-table-head">
         <div class="pcf-search-wrap">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
           <input v-model="search" class="pcf-search" placeholder="搜索项目 / 客户 / 部门" />
@@ -269,7 +264,7 @@ onMounted(() => {
           </tfoot>
         </table>
       </div>
-    </div>
+    </div><!-- /pcf-shell -->
 
     <!-- ProjectPnlCard overlay -->
     <ProjectPnlCard
@@ -284,9 +279,23 @@ onMounted(() => {
 
 <style scoped>
 .pcf-page { padding: 20px 24px; max-width: 1200px; }
-.pcf-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
-.pcf-title { font-size: 22px; font-weight: 800; color: #5f4d3d; margin: 0 0 4px; }
-.pcf-sub { font-size: 12.5px; color: #9b8070; margin: 0; }
+
+/* 单一面板：标题 / 筛选 / KPI / 表格 全部收纳其中，用内部分隔线区隔，
+   不再是三块各自浮动的卡片，整体更聚合 */
+.pcf-shell {
+  background: rgba(255,255,255,.72); border: 1px solid rgba(180,140,110,.18);
+  border-radius: 16px; box-shadow: 0 4px 20px rgba(100,60,30,.08); overflow: hidden;
+}
+
+/* Toolbar */
+.pcf-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 16px 20px; flex-wrap: wrap;
+  border-bottom: 1px solid rgba(180,140,110,.12);
+}
+.pcf-bar-title { display: flex; flex-direction: column; gap: 2px; }
+.pcf-title { font-size: 20px; font-weight: 800; color: #5f4d3d; margin: 0; }
+.pcf-sub { font-size: 12px; color: #9b8070; margin: 0; }
 .pcf-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pcf-sel {
   border: 1px solid rgba(180,140,110,.3); border-radius: 8px; padding: 6px 10px;
@@ -319,34 +328,32 @@ onMounted(() => {
 .pcf-dim-btn.on { background: var(--primary, #c96342); color: #fff; }
 .pcf-row.no-drill { cursor: default; }
 
-/* KPI bar */
-.pcf-kpi-bar {
-  display: flex; align-items: center; gap: 0; flex-wrap: wrap;
-  background: rgba(255,255,255,.7); border: 1px solid rgba(180,140,110,.18);
-  border-radius: 12px; padding: 12px 20px; margin-bottom: 16px;
-  box-shadow: 0 2px 8px rgba(100,60,30,.07);
+/* KPI 嵌入带：均分网格，柔色背景，与上方工具条、下方表格用分隔线衔接 */
+.pcf-kpis {
+  display: grid; grid-template-columns: repeat(5, 1fr); align-items: center;
+  gap: 0; padding: 14px 20px; position: relative;
+  background: linear-gradient(180deg, rgba(250,245,240,.5), rgba(255,255,255,0));
+  border-bottom: 1px solid rgba(180,140,110,.12);
 }
-.pcf-kpi { display: flex; flex-direction: column; gap: 3px; padding: 0 16px; }
+.pcf-kpi {
+  display: flex; flex-direction: column; gap: 4px; padding: 0 18px;
+  border-left: 1px solid rgba(180,140,110,.14);
+}
+.pcf-kpi:first-child { border-left: none; padding-left: 0; }
 .pcf-kpi .k { font-size: 11px; color: #9b8070; }
-.pcf-kpi .v { font-size: 18px; font-weight: 800; color: #5f4d3d; font-variant-numeric: tabular-nums; }
+.pcf-kpi .v { font-size: 19px; font-weight: 800; color: #5f4d3d; font-variant-numeric: tabular-nums; }
 .pcf-kpi .v.green { color: #2e7d32; }
 .pcf-kpi .v.red { color: #c62828; }
 .pcf-kpi .v.amber { color: #e65100; }
-.pcf-kpi-sep { width: 1px; height: 36px; background: rgba(180,140,110,.2); flex-shrink: 0; }
 .pcf-date-badge {
-  margin-left: auto; font-size: 11px; color: #9b8070;
+  position: absolute; top: 10px; right: 16px; font-size: 11px; color: #9b8070;
   background: rgba(180,140,110,.1); border-radius: 6px; padding: 3px 8px;
 }
 
-/* Card */
-.pcf-card {
-  background: rgba(255,255,255,.7); border: 1px solid rgba(180,140,110,.18);
-  border-radius: 14px; box-shadow: 0 2px 12px rgba(100,60,30,.08);
-  overflow: hidden;
-}
-.pcf-card-top {
+/* 表格头条 */
+.pcf-table-head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 16px; border-bottom: 1px solid rgba(180,140,110,.12);
+  padding: 12px 20px; border-bottom: 1px solid rgba(180,140,110,.12);
 }
 .pcf-search-wrap {
   display: flex; align-items: center; gap: 6px;
@@ -403,5 +410,18 @@ onMounted(() => {
 .pcf-foot td {
   padding: 10px 14px; font-size: 12px; color: #8a7665;
   background: rgba(250,245,240,.9); border-top: 2px solid rgba(180,140,110,.18);
+}
+
+/* 让表格首末列与面板 20px 内边距对齐，视觉更整齐 */
+.pcf-table thead th:first-child,
+.pcf-table tbody td:first-child,
+.pcf-table tfoot td:first-child { padding-left: 20px; }
+.pcf-table thead th:last-child,
+.pcf-table tbody td:last-child,
+.pcf-table tfoot td:last-child { padding-right: 20px; }
+
+@media (max-width: 880px) {
+  .pcf-kpis { grid-template-columns: repeat(2, 1fr); gap: 12px 0; }
+  .pcf-kpi:nth-child(odd) { border-left: none; padding-left: 0; }
 }
 </style>
