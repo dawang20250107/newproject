@@ -83,21 +83,32 @@ async function confirmBulkDelete(){
   finally{ bulkDeleting.value = false }
 }
 
-// 批量排款（默认日期=今天，默认金额=各记录剩余可排=申请金额）
+// 批量排款（默认日期=今天，默认金额=各记录剩余可排=申请金额；卡片内可逐条调整金额）
 const showBatchSched = ref(false)
 const batchSchedForm = reactive({ planned_date: '' })
 const batchSchedBusy = ref(false)
+const batchSchedRows = ref([])   // [{ id, label, remaining, amount }]
+const batchSchedTotal = computed(() =>
+  batchSchedRows.value.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0))
+const batchSchedValid = computed(() => batchSchedRows.value.length > 0 &&
+  batchSchedRows.value.every(r => { const a = parseFloat(r.amount); return a > 0 && a <= r.remaining + 1e-6 }))
 function openBatchSchedule(){
   if (!batchSchedSummary.value.count){ alert('所选记录中没有「审批通过且未归档」的可排款记录'); return }
   batchSchedForm.planned_date = todayCST()
+  batchSchedRows.value = selectedSchedulable.value.map(i => {
+    const rem = remOf(i)
+    return { id: i.id, label: [i.payee, i.summary || i.applicant].filter(Boolean).join(' · ') || `#${i.id}`,
+             remaining: rem, amount: rem }
+  })
   showBatchSched.value = true
 }
+function batchSchedResetAll(){ batchSchedRows.value.forEach(r => { r.amount = r.remaining }) }
 async function doBatchSchedule(){
-  if (batchSchedBusy.value) return
+  if (batchSchedBusy.value || !batchSchedValid.value) return
   batchSchedBusy.value = true
   try{
-    const ids = selectedSchedulable.value.map(i => i.id)
-    const r = await api.post('/approvals/bulk-schedule', { ids, planned_date: batchSchedForm.planned_date })
+    const items = batchSchedRows.value.map(r => ({ id: r.id, amount: r.amount }))
+    const r = await api.post('/approvals/bulk-schedule', { items, planned_date: batchSchedForm.planned_date })
     showBatchSched.value = false; clearSelection(); load()
     const d = r.data || {}
     let msg = d.message || '批量排款完成'
@@ -228,16 +239,19 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       </td></tr></tbody>
   </table>
 
-  <div v-if="!loading && items.length && hasSelection && (auth.canDelete || auth.canCreate)" class="bulk-bar">
-    <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
-    <button v-if="auth.canCreate" class="bulk-act" :disabled="!batchSchedSummary.count" @click="openBatchSchedule">批量排款（可排 {{ batchSchedSummary.count }} 条）</button>
-    <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
-    <button class="bulk-cancel" @click="clearSelection">取消</button>
-  </div>
+  <!-- 浮动批量操作条：Teleport 到 body 固定在视口底部，全选后无需下拉即可操作 -->
+  <Teleport to="body">
+    <div v-if="!loading && items.length && hasSelection && !showBatchSched && !showDelConfirm && (auth.canDelete || auth.canCreate)" class="bulk-bar">
+      <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
+      <button v-if="auth.canCreate" class="bulk-act" :disabled="!batchSchedSummary.count" @click="openBatchSchedule">批量排款（可排 {{ batchSchedSummary.count }} 条）</button>
+      <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
+      <button class="bulk-cancel" @click="clearSelection">取消</button>
+    </div>
+  </Teleport>
 
   <!-- 吸底合计 + 翻页：Teleport 到 body 以逃脱 .card transform 产生的 fixed 包含块 -->
   <Teleport to="body">
-    <div v-if="!loading && items.length && !showCreate && !showSchedule && !showBatchSched && !showDelConfirm" class="bottom-bar">
+    <div v-if="!loading && items.length && !hasSelection && !showCreate && !showSchedule && !showBatchSched && !showDelConfirm" class="bottom-bar">
       <div class="bb-summary">
         <span class="bb-item"><i>合计</i><b>{{ total }}</b> 条</span>
         <span class="bb-item warn"><i>申请金额合计</i><b>{{ pendingAmountTotal.toFixed(2) }}</b> 元</span>
@@ -294,18 +308,30 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   </div><div class="modal-footer"><button class="btn btn-ghost" @click="showMeta=false">取消</button><button class="btn btn-primary" :disabled="metaSaving" @click="saveMeta">保存</button></div></div></div></Teleport>
 
   <!-- 批量排款 -->
-  <Teleport to="body"><div v-if="showBatchSched" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>批量排款</h3></div><div class="modal-body">
+  <Teleport to="body"><div v-if="showBatchSched" class="modal-overlay"><div class="modal-box batch-box"><div class="modal-header"><h3>批量排款</h3></div><div class="modal-body">
     <div class="sched-progress">
-      <span>可排记录 <b>{{ batchSchedSummary.count }}</b> 条</span>
-      <span>合计金额 <b style="color:#2e7d32">{{ batchSchedSummary.total.toFixed(2) }}</b> 元</span>
+      <span>可排记录 <b>{{ batchSchedRows.length }}</b> 条</span>
+      <span>合计金额 <b style="color:#2e7d32">{{ batchSchedTotal.toFixed(2) }}</b> 元</span>
     </div>
     <p style="font-size:12px;color:var(--muted);margin:0 0 10px">
-      默认按各记录「剩余可排（首次=申请金额）」于所选日期各排一笔流转付款台账；所选中非「审批通过/已归档」的记录将自动跳过。
+      默认按各记录「剩余可排（首次=申请金额）」各排一笔流转付款台账，可逐条调小做分批排款（不得超过剩余可排）；所选中非「审批通过/已归档」的记录已自动排除。
     </p>
-    <div class="form-grid">
+    <div class="form-grid" style="margin-bottom:10px">
       <label class="form-field"><span>计划日期*</span><input v-model="batchSchedForm.planned_date" type="date"/></label>
     </div>
-  </div><div class="modal-footer"><button class="btn btn-ghost" @click="showBatchSched=false">取消</button><button class="btn btn-primary" :disabled="batchSchedBusy || !batchSchedSummary.count" @click="doBatchSchedule">{{ batchSchedBusy ? '排款中…' : `确认排款 ${batchSchedSummary.count} 条` }}</button></div></div></div></Teleport>
+    <div class="batch-rows-head">
+      <span>本次排款金额（共 {{ batchSchedRows.length }} 条）</span>
+      <button type="button" class="batch-reset" @click="batchSchedResetAll">全部设为剩余可排</button>
+    </div>
+    <div class="batch-rows">
+      <div v-for="r in batchSchedRows" :key="r.id" class="batch-row">
+        <span class="batch-row-label" :title="r.label">{{ r.label }}</span>
+        <span class="batch-row-rem">剩余 {{ r.remaining.toFixed(2) }}</span>
+        <input v-model="r.amount" type="number" step="0.01" min="0" :max="r.remaining"
+               class="batch-row-amt" :class="{ bad: !(parseFloat(r.amount) > 0 && parseFloat(r.amount) <= r.remaining + 1e-6) }"/>
+      </div>
+    </div>
+  </div><div class="modal-footer"><button class="btn btn-ghost" @click="showBatchSched=false">取消</button><button class="btn btn-primary" :disabled="batchSchedBusy || !batchSchedValid" @click="doBatchSchedule">{{ batchSchedBusy ? '排款中…' : `确认排款 ${batchSchedRows.length} 条` }}</button></div></div></div></Teleport>
 
   <!-- 批量删除二次确认 -->
   <Teleport to="body"><div v-if="showDelConfirm" class="modal-overlay"><div class="modal-box" style="max-width:420px"><div class="modal-header"><h3>确认删除 {{ delConfirmCount }} 条审批记录</h3></div><div class="modal-body">
@@ -342,9 +368,11 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   overflow: visible; text-overflow: clip; white-space: normal;
 }
 .approval-table tr.row-sel td { background: rgba(201,99,66,0.06); }
-/* 批量操作条 + 删除二次确认（本组件局部样式，复用全局变量配色） */
-.bulk-bar { display: flex; align-items: center; gap: 12px; margin: 10px 0 0; padding: 8px 14px;
-  border-radius: 10px; background: rgba(198,40,40,0.06); border: 1px solid rgba(198,40,40,0.25); }
+/* 批量操作条：固定浮动在视口底部居中，全选后无需下拉即可操作 */
+.bulk-bar { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 1200;
+  display: flex; align-items: center; gap: 12px; padding: 10px 18px;
+  border-radius: 12px; background: var(--card); border: 1px solid rgba(198,40,40,0.35);
+  box-shadow: 0 8px 28px rgba(0,0,0,0.18); }
 .bulk-n { font-size: 13px; color: var(--text); }
 .bulk-act { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--primary); color: #fff; }
 .bulk-act:disabled { opacity: .5; cursor: default; }
@@ -364,6 +392,20 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .sched-progress { display: flex; gap: 18px; font-size: 13px; color: var(--muted);
   background: rgba(201,99,66,.05); border-radius: 9px; padding: 9px 12px; margin-bottom: 10px; }
 .sched-progress b { font-variant-numeric: tabular-nums; color: var(--text); }
+.batch-box { max-width: 560px; }
+.batch-rows-head { display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+.batch-reset { border: none; background: none; color: var(--primary); font-size: 12px; cursor: pointer; padding: 0; }
+.batch-rows { max-height: 42vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 9px; }
+.batch-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+.batch-row:last-child { border-bottom: none; }
+.batch-row-label { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.batch-row-rem { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.batch-row-amt { width: 120px; height: 30px; padding: 0 8px; border: 1.5px solid var(--border);
+  border-radius: 7px; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; box-sizing: border-box; }
+.batch-row-amt:focus { border-color: var(--primary); outline: none; }
+.batch-row-amt.bad { border-color: var(--danger); background: rgba(198,40,40,0.05); }
 .sched-sub { font-size: 10.5px; color: #2e7d32; font-weight: 600; margin-top: 1px; }
 .ops-btns { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
 .ops-btns .btn { padding: 4px 8px; font-size: 12px; white-space: nowrap; }

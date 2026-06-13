@@ -1022,3 +1022,65 @@ class BulkOpsTests(TestCase):
         a1 = self._mk_approval(1, '1000', status='pending')
         resp = self._post('/api/pk/approvals/bulk-delete', {'ids': [a1.id]})
         self.assertEqual(resp.json()['data']['deleted'], 1)
+
+    # ── 卡片内逐条调整金额（items 入参）─────────────────────────────────────────
+    def test_bulk_schedule_per_record_amount(self):
+        # items 指定各条本次金额（可小于申请金额=分批排款，记录不归档）
+        a1 = self._mk_approval(1, '1000')
+        a2 = self._mk_approval(2, '2000')
+        resp = self._post('/api/pk/approvals/bulk-schedule',
+                          {'items': [{'id': a1.id, 'amount': '300'},
+                                     {'id': a2.id, 'amount': '2000'}],
+                           'planned_date': '2026-07-01'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['scheduled'], 2)
+        self.assertEqual(Decimal(d['total_amount']), Decimal('2300'))
+        p1 = Payment.objects.get(approval=a1)
+        self.assertEqual(p1.total_amount, Decimal('300'))
+        a1.refresh_from_db()
+        self.assertFalse(a1.archived)                 # 分批：未排满不归档
+        self.assertEqual(a1.scheduled_amount, Decimal('300'))
+        a2.refresh_from_db()
+        self.assertTrue(a2.archived)                  # 排满申请金额即归档
+
+    def test_bulk_schedule_over_remaining_skipped(self):
+        # items 金额超过剩余可排 → 该条跳过（_schedule_one 返回 400 类错误）
+        a1 = self._mk_approval(1, '1000')
+        resp = self._post('/api/pk/approvals/bulk-schedule',
+                          {'items': [{'id': a1.id, 'amount': '5000'}],
+                           'planned_date': '2026-07-01'})
+        d = resp.json()['data']
+        self.assertEqual(d['scheduled'], 0)
+        self.assertEqual(len(d['skipped']), 1)
+        self.assertFalse(Payment.objects.filter(approval=a1).exists())
+
+    def test_bulk_pay_per_record_amount(self):
+        # items 指定各条本次付款金额（可小于剩余=分次付款，记录不结清）
+        p1 = self._schedule_payment(1, '1000')
+        p2 = self._schedule_payment(2, '2000')
+        resp = self._post('/api/pk/payments/bulk-pay',
+                          {'items': [{'id': p1.id, 'amount': '400'},
+                                     {'id': p2.id, 'amount': '2000'}],
+                           'pay_date': '2026-07-10'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['paid'], 2)
+        self.assertEqual(Decimal(d['total_amount']), Decimal('2400'))
+        p1.refresh_from_db()
+        self.assertEqual(p1.installments.first().pay_amount, Decimal('400'))
+        self.assertEqual(p1.remaining, Decimal('600'))
+        self.assertNotEqual(p1.status, 'settled')     # 分次付款：未付满不结清
+        p2.refresh_from_db()
+        self.assertEqual(p2.status, 'settled')
+
+    def test_bulk_pay_over_remaining_skipped(self):
+        p1 = self._schedule_payment(1, '1000')
+        resp = self._post('/api/pk/payments/bulk-pay',
+                          {'items': [{'id': p1.id, 'amount': '5000'}],
+                           'pay_date': '2026-07-10'})
+        d = resp.json()['data']
+        self.assertEqual(d['paid'], 0)
+        self.assertEqual(len(d['skipped']), 1)
+        p1.refresh_from_db()
+        self.assertEqual(p1.installments.count(), 0)

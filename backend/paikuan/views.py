@@ -1711,7 +1711,26 @@ def approval_records_bulk_schedule(request):
         if not perms.get('can_create'):
             return err('无新增排款权限', 403, 403)
     body = parse_body(request)
-    ids = body.get('ids') or []
+    # 兼容两种入参：items=[{id, amount}] 逐条指定金额（卡片内可调整）；
+    # 或仅 ids=[] 时各取「剩余可排」为默认金额。
+    raw_items = body.get('items')
+    amount_map = {}
+    if isinstance(raw_items, list) and raw_items:
+        ids = []
+        for it in raw_items:
+            try:
+                rid = int(it.get('id'))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            ids.append(rid)
+            amt_raw = it.get('amount')
+            if amt_raw not in (None, ''):
+                try:
+                    amount_map[rid] = Decimal(str(amt_raw))
+                except (InvalidOperation, ValueError):
+                    amount_map[rid] = None   # 标记金额非法，循环内跳过
+    else:
+        ids = body.get('ids') or []
     if not isinstance(ids, list) or not ids:
         return err('请提供要排款的记录 ids')
     try:
@@ -1732,8 +1751,12 @@ def approval_records_bulk_schedule(request):
         if not can_write_dept(request, rec.department):
             skipped.append({'id': rid, 'reason': '无权操作该部门'})
             continue
-        # 默认本次金额=剩余可排（首次排款即等于申请金额）
-        amount = (rec.amount or Decimal('0')) - (rec.scheduled_amount or Decimal('0'))
+        # 默认本次金额=剩余可排（首次排款即等于申请金额）；卡片内逐条调整时用所填金额
+        remaining = (rec.amount or Decimal('0')) - (rec.scheduled_amount or Decimal('0'))
+        amount = amount_map.get(rid, remaining) if rid in amount_map else remaining
+        if amount is None:
+            skipped.append({'id': rid, 'reason': '金额格式有误'})
+            continue
         p, error, status = _schedule_one(request, rec, planned_date, amount)
         if error:
             skipped.append({'id': rid, 'reason': error})
@@ -1842,7 +1865,26 @@ def payments_bulk_pay(request):
     if perms is not None and not perms['edit'].get('installments', False):
         return err('无登记付款明细的权限', 403, 403)
     body = parse_body(request)
-    ids = body.get('ids') or []
+    # 兼容两种入参：items=[{id, amount}] 逐条指定本次付款金额（卡片内可调整）；
+    # 或仅 ids=[] 时各取「剩余应付」为默认金额。
+    raw_items = body.get('items')
+    amount_map = {}
+    if isinstance(raw_items, list) and raw_items:
+        ids = []
+        for it in raw_items:
+            try:
+                rid = int(it.get('id'))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            ids.append(rid)
+            amt_raw = it.get('amount')
+            if amt_raw not in (None, ''):
+                try:
+                    amount_map[rid] = Decimal(str(amt_raw))
+                except (InvalidOperation, ValueError):
+                    amount_map[rid] = None   # 标记金额非法，循环内跳过
+    else:
+        ids = body.get('ids') or []
     if not isinstance(ids, list) or not ids:
         return err('请提供要付款的记录 ids')
     try:
@@ -1859,9 +1901,16 @@ def payments_bulk_pay(request):
         if not can_write_dept(request, p.department):
             skipped.append({'id': p.id, 'reason': '无权操作该部门'})
             continue
-        amount = p.remaining  # 剩余应付（=计划金额 − 已付 − 预付冲抵）
+        remaining = p.remaining  # 剩余应付（=计划金额 − 已付 − 预付冲抵）
+        amount = amount_map.get(p.id, remaining) if p.id in amount_map else remaining
+        if amount is None:
+            skipped.append({'id': p.id, 'reason': '金额格式有误'})
+            continue
         if amount <= 0:
-            skipped.append({'id': p.id, 'reason': '无剩余应付（已结清）'})
+            skipped.append({'id': p.id, 'reason': '本次付款金额必须大于0'})
+            continue
+        if amount > remaining:
+            skipped.append({'id': p.id, 'reason': f'本次付款 {amount} 超过剩余应付 {remaining}'})
             continue
         before = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
         before['installments_summary'] = _installments_summary(p.installments)

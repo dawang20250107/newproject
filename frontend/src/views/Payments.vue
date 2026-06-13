@@ -410,21 +410,32 @@ async function confirmBulkDelete() {
   finally { bulkDeleting.value = false }
 }
 
-// 批量付款（批量编辑）：默认日期=今天，默认金额=各记录剩余应付=计划金额
+// 批量付款（批量编辑）：默认日期=今天，默认金额=各记录剩余应付=计划金额；卡片内可逐条调整金额
 const showBatchPay = ref(false)
 const batchPayForm = reactive({ pay_date: '' })
 const batchPayBusy = ref(false)
+const batchPayRows = ref([])   // [{ id, label, remaining, amount }]
+const batchPayTotal = computed(() =>
+  batchPayRows.value.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0))
+const batchPayValid = computed(() => batchPayRows.value.length > 0 &&
+  batchPayRows.value.every(r => { const a = parseFloat(r.amount); return a > 0 && a <= r.remaining + 1e-6 }))
 function openBatchPay() {
   if (!batchPaySummary.value.count) { alert('所选记录中没有「有剩余应付」的可付款记录（已结清的已自动排除）'); return }
   batchPayForm.pay_date = todayCST()
+  batchPayRows.value = selectedPayable.value.map(p => {
+    const rem = remOf(p)
+    return { id: p.id, label: [p.payee, p.project_short_name || p.project_desc].filter(Boolean).join(' · ') || `#${p.id}`,
+             remaining: rem, amount: rem }
+  })
   showBatchPay.value = true
 }
+function batchPayResetAll() { batchPayRows.value.forEach(r => { r.amount = r.remaining }) }
 async function doBatchPay() {
-  if (batchPayBusy.value) return
+  if (batchPayBusy.value || !batchPayValid.value) return
   batchPayBusy.value = true
   try {
-    const ids = selectedPayable.value.map(p => p.id)
-    const r = await api.post('/payments/bulk-pay', { ids, pay_date: batchPayForm.pay_date })
+    const items = batchPayRows.value.map(r => ({ id: r.id, amount: r.amount }))
+    const r = await api.post('/payments/bulk-pay', { items, pay_date: batchPayForm.pay_date })
     showBatchPay.value = false; clearSelection(); load()
     const d = r.data || {}
     let msg = d.message || '批量付款完成'
@@ -632,16 +643,19 @@ async function doBatchPay() {
         </table>
       </div>
 
-      <div v-if="!loading && items.length && hasSelection && (auth.canDelete || auth.canEdit('installments'))" class="bulk-bar">
-        <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
-        <button v-if="auth.canEdit('installments')" class="bulk-act" :disabled="!batchPaySummary.count" @click="openBatchPay">批量付款（可付 {{ batchPaySummary.count }} 条）</button>
-        <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
-        <button class="bulk-cancel" @click="clearSelection">取消</button>
-      </div>
+      <!-- 浮动批量操作条：Teleport 到 body 固定在视口底部，全选后无需下拉即可操作 -->
+      <Teleport to="body">
+        <div v-if="!loading && items.length && hasSelection && !showBatchPay && !showDelConfirm && (auth.canDelete || auth.canEdit('installments'))" class="bulk-bar">
+          <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
+          <button v-if="auth.canEdit('installments')" class="bulk-act" :disabled="!batchPaySummary.count" @click="openBatchPay">批量付款（可付 {{ batchPaySummary.count }} 条）</button>
+          <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
+          <button class="bulk-cancel" @click="clearSelection">取消</button>
+        </div>
+      </Teleport>
 
       <!-- 吸底合计 + 翻页：Teleport 到 body 以逃脱 .card transform 产生的 fixed 包含块 -->
       <Teleport to="body">
-        <div v-if="!loading && items.length && !showModal && !showBatchPay && !showDelConfirm" class="bottom-bar">
+        <div v-if="!loading && items.length && !hasSelection && !showModal && !showBatchPay && !showDelConfirm" class="bottom-bar">
           <div class="bb-summary">
             <span class="bb-item"><i>合计</i><b>{{ total }}</b> 条</span>
             <span v-if="auth.canView('total_amount')" class="bb-item"><i>计划总额</i><b>{{ fmt(plannedTotal) }}</b></span>
@@ -813,24 +827,36 @@ async function doBatchPay() {
       </div>
     </Transition>
 
-    <!-- 批量付款（批量编辑） -->
+    <!-- 批量付款（批量编辑）：点击卡片外部不关闭 -->
     <Teleport to="body">
-      <div v-if="showBatchPay" class="overlay" @click.self="showBatchPay = false">
-        <div class="modal" style="width:440px">
+      <div v-if="showBatchPay" class="overlay">
+        <div class="modal" style="width:520px">
           <div class="modal-header"><h3>批量付款</h3><button class="modal-close" @click="showBatchPay = false">×</button></div>
           <div style="padding:4px 2px 0">
             <div class="batch-summary">
-              <span>可付记录 <b>{{ batchPaySummary.count }}</b> 条</span>
-              <span>合计金额 <b style="color:#2e7d32">{{ batchPaySummary.total.toFixed(2) }}</b> 元</span>
+              <span>可付记录 <b>{{ batchPayRows.length }}</b> 条</span>
+              <span>合计金额 <b style="color:#2e7d32">{{ batchPayTotal.toFixed(2) }}</b> 元</span>
             </div>
             <p style="font-size:12px;color:var(--muted);margin:10px 0 12px">
-              默认按各记录「剩余应付（=计划金额 − 已付 − 预付冲抵）」于所选日期各登记一笔付款明细；已结清（无剩余）的记录将自动跳过。
+              默认按各记录「剩余应付（=计划金额 − 已付 − 预付冲抵）」各登记一笔付款明细，可逐条调小做分次付款（不得超过剩余应付）；已结清（无剩余）的记录已自动排除。
             </p>
-            <label class="batch-field"><span>付款日期*</span><input v-model="batchPayForm.pay_date" type="date" /></label>
+            <label class="batch-field" style="margin-bottom:10px"><span>付款日期*</span><input v-model="batchPayForm.pay_date" type="date" /></label>
+            <div class="batch-rows-head">
+              <span>本次付款金额（共 {{ batchPayRows.length }} 条）</span>
+              <button type="button" class="batch-reset" @click="batchPayResetAll">全部设为剩余应付</button>
+            </div>
+            <div class="batch-rows">
+              <div v-for="r in batchPayRows" :key="r.id" class="batch-row">
+                <span class="batch-row-label" :title="r.label">{{ r.label }}</span>
+                <span class="batch-row-rem">剩余 {{ r.remaining.toFixed(2) }}</span>
+                <input v-model="r.amount" type="number" step="0.01" min="0" :max="r.remaining"
+                       class="batch-row-amt" :class="{ bad: !(parseFloat(r.amount) > 0 && parseFloat(r.amount) <= r.remaining + 1e-6) }"/>
+              </div>
+            </div>
           </div>
           <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
             <button class="btn btn-ghost" @click="showBatchPay = false">取消</button>
-            <button class="btn btn-primary" :disabled="batchPayBusy || !batchPaySummary.count" @click="doBatchPay">{{ batchPayBusy ? '付款中…' : `确认付款 ${batchPaySummary.count} 条` }}</button>
+            <button class="btn btn-primary" :disabled="batchPayBusy || !batchPayValid" @click="doBatchPay">{{ batchPayBusy ? '付款中…' : `确认付款 ${batchPayRows.length} 条` }}</button>
           </div>
         </div>
       </div>
@@ -838,7 +864,7 @@ async function doBatchPay() {
 
     <!-- 批量删除二次确认 -->
     <Teleport to="body">
-      <div v-if="showDelConfirm" class="overlay" @click.self="showDelConfirm = false">
+      <div v-if="showDelConfirm" class="overlay">
         <div class="modal" style="width:420px">
           <div class="modal-header"><h3>确认删除 {{ delConfirmCount }} 条排款</h3><button class="modal-close" @click="showDelConfirm = false">×</button></div>
           <div style="padding:4px 2px 0">
@@ -916,8 +942,11 @@ async function doBatchPay() {
 .pk-pay-tbl th.sel-col, .pk-pay-tbl td.sel-col { width: 30px; text-align: center; padding: 9px 4px; max-width: none; overflow: visible; }
 .pk-pay-tbl td.sel-col input, .pk-pay-tbl th.sel-col input { cursor: pointer; }
 .pk-pay-tbl tr.row-sel td { background: rgba(201,99,66,0.06); }
-.bulk-bar { display: flex; align-items: center; gap: 12px; margin: 10px 0 0; padding: 8px 14px;
-  border-radius: 10px; background: rgba(198,40,40,0.06); border: 1px solid rgba(198,40,40,0.25); }
+/* 批量操作条：固定浮动在视口底部居中，全选后无需下拉即可操作 */
+.bulk-bar { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 1200;
+  display: flex; align-items: center; gap: 12px; padding: 10px 18px;
+  border-radius: 12px; background: var(--card); border: 1px solid rgba(198,40,40,0.35);
+  box-shadow: 0 8px 28px rgba(0,0,0,0.18); }
 .bulk-n { font-size: 13px; color: var(--text); }
 .bulk-act { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--primary); color: #fff; }
 .bulk-act:disabled { opacity: .5; cursor: default; }
@@ -930,6 +959,19 @@ async function doBatchPay() {
 .batch-field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
 .batch-field span { color: var(--muted); }
 .batch-field input { padding: 7px 10px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; }
+.batch-rows-head { display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+.batch-reset { border: none; background: none; color: var(--primary); font-size: 12px; cursor: pointer; padding: 0; }
+.batch-rows { max-height: 42vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 9px; }
+.batch-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+.batch-row:last-child { border-bottom: none; }
+.batch-row-label { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.batch-row-rem { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.batch-row-amt { width: 120px; height: 30px; padding: 0 8px; border: 1.5px solid var(--border);
+  border-radius: 7px; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; box-sizing: border-box; }
+.batch-row-amt:focus { border-color: var(--primary); outline: none; }
+.batch-row-amt.bad { border-color: var(--danger); background: rgba(198,40,40,0.05); }
 .del-warn { font-size: 13px; color: var(--danger); margin: 0 0 12px; line-height: 1.6; }
 .del-tip { font-size: 13px; color: var(--text); margin: 0 0 8px; }
 .del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; box-sizing: border-box; }
