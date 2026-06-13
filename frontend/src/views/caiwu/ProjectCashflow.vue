@@ -39,23 +39,24 @@ const fmtPct = (num, den) => den ? `${(num / den * 100).toFixed(1)}%` : '—'
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 
-// Quick date presets
+// Quick date presets（收进单个下拉，省横向空间）
 const PRESETS = [
-  { l: '今年', f: () => ({ date_start: `${filters.year}-01-01`, date_end: `${filters.year}-12-31` }) },
-  { l: '上半年', f: () => ({ date_start: `${filters.year}-01-01`, date_end: `${filters.year}-06-30` }) },
-  { l: '下半年', f: () => ({ date_start: `${filters.year}-07-01`, date_end: `${filters.year}-12-31` }) },
-  { l: '本月', f: () => {
+  { k: 'year', l: '今年', f: () => ({ date_start: `${filters.year}-01-01`, date_end: `${filters.year}-12-31` }) },
+  { k: 'h1', l: '上半年', f: () => ({ date_start: `${filters.year}-01-01`, date_end: `${filters.year}-06-30` }) },
+  { k: 'h2', l: '下半年', f: () => ({ date_start: `${filters.year}-07-01`, date_end: `${filters.year}-12-31` }) },
+  { k: 'month', l: '本月', f: () => {
     const d = new Date(); const y = d.getFullYear(); const m = String(d.getMonth() + 1).padStart(2, '0')
     const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
     return { date_start: `${y}-${m}-01`, date_end: `${y}-${m}-${last}` }
   }},
-  { l: '本季度', f: () => {
+  { k: 'quarter', l: '本季度', f: () => {
     const d = new Date(); const y = d.getFullYear(); const q = Math.floor(d.getMonth() / 3)
     const ms = q * 3 + 1; const me = q * 3 + 3
     const last = new Date(y, me, 0).getDate()
     return { date_start: `${y}-${String(ms).padStart(2,'0')}-01`, date_end: `${y}-${String(me).padStart(2,'0')}-${last}` }
   }},
 ]
+const rangePreset = ref('')   // '' 全年 | 预设key | 'custom'
 
 function applyPreset(p) {
   const { date_start, date_end } = p.f()
@@ -63,6 +64,19 @@ function applyPreset(p) {
   filters.useCustomDate = true
   load()
 }
+
+function onRangeChange() {
+  const v = rangePreset.value
+  if (v === '') { clearCustomDate(); return }
+  if (v === 'custom') {
+    filters.useCustomDate = true
+    if (!filters.date_start) { filters.date_start = `${filters.year}-01-01`; filters.date_end = `${filters.year}-12-31` }
+    load(); return
+  }
+  const p = PRESETS.find(x => x.k === v)
+  if (p) applyPreset(p)
+}
+function onDateEdit() { rangePreset.value = 'custom'; load() }
 
 async function load() {
   loading.value = true; err.value = ''
@@ -116,6 +130,10 @@ function deptStyle(name) {
   return { background: `hsl(${h} 42% 93%)`, color: `hsl(${h} 38% 38%)`, borderColor: `hsl(${h} 40% 84%)` }
 }
 
+// 回款率：迷你进度条 + 色阶（高绿、中琥珀、低红）
+const rateOf = r => (r.estimated > 0 ? (r.inflow / r.estimated) * 100 : null)
+const rateColor = p => (p >= 80 ? '#2e7d32' : p >= 50 ? '#e65100' : '#c62828')
+
 const totals = computed(() => rows.value.reduce((t, r) => ({
   inflow: t.inflow + r.inflow, outflow: t.outflow + r.outflow,
   net: t.net + r.net, outstanding: t.outstanding + r.outstanding,
@@ -163,14 +181,16 @@ onMounted(() => {
         <select v-model.number="filters.year" class="pcf-sel">
           <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
         </select>
+        <!-- 日期区间：5 个预设收进单个下拉 -->
+        <select v-model="rangePreset" class="pcf-sel pcf-range-sel" @change="onRangeChange">
+          <option value="">全年</option>
+          <option v-for="p in PRESETS" :key="p.k" :value="p.k">{{ p.l }}</option>
+          <option value="custom">自定义…</option>
+        </select>
         <template v-if="filters.useCustomDate">
-          <input v-model="filters.date_start" type="date" class="pcf-date-inp" @change="load" />
+          <input v-model="filters.date_start" type="date" class="pcf-date-inp" @change="onDateEdit" />
           <span class="pcf-dash">—</span>
-          <input v-model="filters.date_end" type="date" class="pcf-date-inp" @change="load" />
-          <button class="pcf-clear-date" title="还原为年度" @click="clearCustomDate">✕</button>
-        </template>
-        <template v-else>
-          <button v-for="p in PRESETS" :key="p.l" class="pcf-preset" @click="applyPreset(p)">{{ p.l }}</button>
+          <input v-model="filters.date_end" type="date" class="pcf-date-inp" @change="onDateEdit" />
         </template>
       </div>
     </div>
@@ -229,8 +249,12 @@ onMounted(() => {
               <td class="amt" :class="[r.outstanding > 0 ? 'amber' : 'muted', { 'col-on': sortKey === 'outstanding' }]">
                 {{ r.outstanding > 0 ? fmtWan(r.outstanding) : '—' }}
               </td>
-              <td class="amt muted">
-                {{ r.estimated > 0 ? fmtPct(r.inflow, r.estimated) : '—' }}
+              <td class="amt">
+                <div v-if="rateOf(r) !== null" class="rate-cell">
+                  <span class="rate-val" :style="{ color: rateColor(rateOf(r)) }">{{ rateOf(r).toFixed(1) }}%</span>
+                  <span class="rate-track"><i :style="{ width: Math.min(rateOf(r), 100) + '%', background: rateColor(rateOf(r)) }"></i></span>
+                </div>
+                <span v-else class="muted">—</span>
               </td>
               <td v-if="isProjDim" class="ctr">
                 <button class="pcf-btn-detail" @click.stop="openPnl(r)">业财卡</button>
@@ -257,11 +281,21 @@ onMounted(() => {
     <Teleport to="body">
       <div v-if="!loading && !err && rows.length && !askTarget" class="bottom-bar">
         <div class="bb-summary">
-          <span class="bb-item"><i>合计</i><b>{{ rows.length }}</b> 个{{ isProjDim ? '项目' : '二级部门' }}</span>
-          <span class="bb-item ok"><i>回款流入</i><b>{{ fmtWan(totals.inflow) }}</b></span>
-          <span class="bb-item"><i>付款流出</i><b style="color:#c62828">{{ fmtWan(totals.outflow) }}</b></span>
-          <span class="bb-item"><i>净现金</i><b :style="{ color: netColor(totals.net) }"><span class="bb-caret">{{ totals.net >= 0 ? '▲' : '▼' }}</span>{{ fmtWan(totals.net) }}</b></span>
-          <span class="bb-item warn"><i>应收敞口</i><b>{{ fmtWan(totals.outstanding) }}</b></span>
+          <span class="bb-item">
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#9b8070" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/></svg>
+            <i>合计</i><b>{{ rows.length }}</b> 个{{ isProjDim ? '项目' : '二级部门' }}</span>
+          <span class="bb-item ok">
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#2e7d32" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
+            <i>回款流入</i><b>{{ fmtWan(totals.inflow) }}</b></span>
+          <span class="bb-item">
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#c62828" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V9"/><path d="M7 14l5-5 5 5"/><path d="M5 4h14"/></svg>
+            <i>付款流出</i><b style="color:#c62828">{{ fmtWan(totals.outflow) }}</b></span>
+          <span class="bb-item">
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#7a614c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10.5h18"/></svg>
+            <i>净现金</i><b :style="{ color: netColor(totals.net) }"><span class="bb-caret">{{ totals.net >= 0 ? '▲' : '▼' }}</span>{{ fmtWan(totals.net) }}</b></span>
+          <span class="bb-item warn">
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#c0392b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>
+            <i>应收敞口</i><b>{{ fmtWan(totals.outstanding) }}</b></span>
         </div>
         <div class="bb-pager">
           <span class="page-info">
@@ -366,6 +400,18 @@ onMounted(() => {
 .pcf-table tbody tr:nth-child(even) td.col-on { background: rgba(201,99,66,.05); }
 /* hover 置于斑马纹之后，保证悬停反馈在任意行都可见 */
 .pcf-table tbody tr:hover td { background: rgba(201,99,66,.08); }
+
+/* 回款率：迷你进度条 + 色阶 */
+.rate-cell { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+.rate-val { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 12.5px; }
+.rate-track { width: 58px; height: 4px; border-radius: 3px; background: rgba(180,140,110,.18); overflow: hidden; }
+.rate-track i { display: block; height: 100%; border-radius: 3px; transition: width .3s; }
+
+/* 日期区间下拉略宽，容纳「自定义…」 */
+.pcf-range-sel { min-width: 78px; }
+
+/* 吸底栏小图标（Teleport 内容仍受 scoped 作用域约束） */
+.bb-ico { width: 13px; height: 13px; align-self: center; flex-shrink: 0; }
 .green { color: #2e7d32; }
 .red { color: #c62828; }
 .amber { color: #e65100; }

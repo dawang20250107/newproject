@@ -209,12 +209,24 @@ onMounted(() => {
     <Teleport to="body">
       <div v-if="summary && summary.has_data" class="bottom-bar">
         <div class="bb-summary">
-          <span class="bb-item"><i>项目数</i><b>{{ summary.project_count }}</b></span>
-          <span class="bb-item"><i>收入合计</i><b>{{ fmt(summary.total_revenue) }}</b></span>
-          <span class="bb-item"><i>成本合计</i><b>{{ fmt(summary.total_cost) }}</b></span>
-          <span class="bb-item" :class="summary.total_margin >= 0 ? 'ok' : 'warn'"><i>毛利合计</i><b>{{ fmt(summary.total_margin) }}</b></span>
-          <span class="bb-item"><i>毛利率</i><b>{{ summary.margin_rate === null ? '—' : summary.margin_rate + '%' }}</b></span>
-          <span v-if="mode === 'direct' && summary.unalloc_cost" class="bb-item"><i>未分摊池</i><b>{{ fmt(summary.unalloc_cost) }}</b></span>
+          <span class="bb-item">
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#9b8070" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/></svg>
+            <i>项目数</i><b>{{ summary.project_count }}</b></span>
+          <span class="bb-item">
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#2e7d32" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
+            <i>收入合计</i><b>{{ fmt(summary.total_revenue) }}</b></span>
+          <span class="bb-item">
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#c62828" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V9"/><path d="M7 14l5-5 5 5"/><path d="M5 4h14"/></svg>
+            <i>成本合计</i><b>{{ fmt(summary.total_cost) }}</b></span>
+          <span class="bb-item" :class="summary.total_margin >= 0 ? 'ok' : 'warn'">
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#7a614c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10.5h18"/></svg>
+            <i>毛利合计</i><b>{{ fmt(summary.total_margin) }}</b></span>
+          <span class="bb-item">
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#9b8070" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="2.4"/><circle cx="17" cy="17" r="2.4"/><path d="M18 6L6 18"/></svg>
+            <i>毛利率</i><b>{{ summary.margin_rate === null ? '—' : summary.margin_rate + '%' }}</b></span>
+          <span v-if="mode === 'direct' && summary.unalloc_cost" class="bb-item">
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#e65100" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>
+            <i>未分摊池</i><b>{{ fmt(summary.unalloc_cost) }}</b></span>
         </div>
         <div class="bb-pager">
           <span class="page-info">{{ bu }} · {{ year }}年{{ month }}月 · {{ mode === 'direct' ? '直接口径' : '分摊口径' }}</span>
@@ -258,6 +270,7 @@ onMounted(() => {
 .pm-table thead th { padding: 9px 12px; font-size: 11.5px; color: var(--muted); font-weight: 700; border-bottom: 1px solid rgba(0,0,0,0.08); }
 .pm-table tbody td { padding: 9px 12px; border-bottom: 1px solid rgba(0,0,0,0.04); }
 .caret { font-size: 8px; margin-right: 3px; vertical-align: 1px; opacity: .85; }
+.bb-ico { width: 13px; height: 13px; align-self: center; flex-shrink: 0; }
 /* 极淡斑马纹 + hover（hover 置后，保证任意行可见悬停反馈） */
 .pm-table tbody tr:nth-child(even) td { background: rgba(255,255,255,0.20); }
 .pm-table tbody tr.pm-pool-row td { background: rgba(230,81,0,0.05); }
