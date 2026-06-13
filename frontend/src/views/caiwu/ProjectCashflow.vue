@@ -167,6 +167,11 @@ onMounted(() => {
       <template v-else>
         <button v-for="p in PRESETS" :key="p.l" class="pcf-preset" @click="applyPreset(p)">{{ p.l }}</button>
       </template>
+      <!-- 搜索并入筛选行尾，缩短宽度，给表格内容腾出整行空间 -->
+      <div class="pcf-search-wrap">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input v-model="search" class="pcf-search" placeholder="搜索" />
+      </div>
     </div>
 
     <!-- 表格：标准 card -->
@@ -178,10 +183,6 @@ onMounted(() => {
           · <template v-if="filters.useCustomDate">{{ data?.date_start }} ~ {{ data?.date_end }}</template>
           <template v-else>{{ filters.year }} 年</template>
         </span>
-        <div class="pcf-search-wrap">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-          <input v-model="search" class="pcf-search" placeholder="搜索项目 / 客户 / 部门" />
-        </div>
       </div>
 
       <div v-if="loading" class="pcf-empty">加载中…</div>
@@ -313,10 +314,14 @@ onMounted(() => {
 /* Search in section title */
 .pcf-search-wrap {
   margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
-  background: rgba(255,255,255,.8); border: 1px solid var(--border);
-  border-radius: 8px; padding: 5px 10px; color: var(--muted);
+  background: rgba(255,255,255,.6); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 10px; color: var(--muted);
 }
-.pcf-search { border: none; background: transparent; font-size: 13px; color: var(--text); outline: none; width: 200px; }
+.pcf-search {
+  border: none; background: transparent; font-size: 13px; color: var(--text);
+  outline: none; width: 96px; transition: width .18s;
+}
+.pcf-search:focus { width: 160px; }
 
 .pcf-empty { padding: 40px; text-align: center; color: var(--muted); font-size: 13px; }
 .pcf-empty.err { color: #c62828; }
