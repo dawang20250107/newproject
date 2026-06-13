@@ -175,7 +175,7 @@ onMounted(() => {
                 <td class="fw pm-name" :title="r.project_name">{{ r.project_name }}</td>
                 <td class="amt">{{ fmt(r.revenue) }}</td>
                 <td class="amt">{{ fmt(r.cost) }}</td>
-                <td class="amt" :class="r.margin >= 0 ? 'text-ok' : 'text-danger'">{{ fmt(r.margin) }}</td>
+                <td class="amt" :class="r.margin >= 0 ? 'text-ok' : 'text-danger'"><span class="caret">{{ r.margin >= 0 ? '▲' : '▼' }}</span>{{ fmt(r.margin) }}</td>
                 <td class="amt" :class="r.margin_rate !== null && r.margin_rate < 0 ? 'text-danger' : ''">
                   {{ r.margin_rate === null ? '—' : r.margin_rate + '%' }}
                 </td>
@@ -196,7 +196,7 @@ onMounted(() => {
                 <td class="fw">合计（{{ summary.project_count }} 个项目<span v-if="mode==='direct' && summary.unalloc_cost"> + 未分摊池</span>）</td>
                 <td class="amt fw">{{ fmt(summary.total_revenue) }}</td>
                 <td class="amt fw">{{ fmt(summary.total_cost) }}</td>
-                <td class="amt fw" :class="summary.total_margin >= 0 ? 'text-ok' : 'text-danger'">{{ fmt(summary.total_margin) }}</td>
+                <td class="amt fw" :class="summary.total_margin >= 0 ? 'text-ok' : 'text-danger'"><span class="caret">{{ summary.total_margin >= 0 ? '▲' : '▼' }}</span>{{ fmt(summary.total_margin) }}</td>
                 <td class="amt fw">{{ summary.margin_rate === null ? '—' : summary.margin_rate + '%' }}</td>
               </tr>
             </tfoot>
@@ -257,7 +257,12 @@ onMounted(() => {
 .pm-pool-row td { background: rgba(230,81,0,0.04); color: var(--muted); }
 .pm-table thead th { padding: 9px 12px; font-size: 11.5px; color: var(--muted); font-weight: 700; border-bottom: 1px solid rgba(0,0,0,0.08); }
 .pm-table tbody td { padding: 9px 12px; border-bottom: 1px solid rgba(0,0,0,0.04); }
-.pm-table tbody tr:hover { background: rgba(201,99,66,0.03); }
+.caret { font-size: 8px; margin-right: 3px; vertical-align: 1px; opacity: .85; }
+/* 极淡斑马纹 + hover（hover 置后，保证任意行可见悬停反馈） */
+.pm-table tbody tr:nth-child(even) td { background: rgba(255,255,255,0.20); }
+.pm-table tbody tr.pm-pool-row td { background: rgba(230,81,0,0.05); }
+.pm-table tbody tr:hover td { background: rgba(201,99,66,0.07); }
+.pm-table tbody tr.pm-pool-row:hover td { background: rgba(230,81,0,0.06); }
 .pm-foot td { padding: 10px 12px; border-top: 2px solid rgba(201,99,66,0.3); background: #f8efeb; font-variant-numeric: tabular-nums; }
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .ctr { text-align: center; }

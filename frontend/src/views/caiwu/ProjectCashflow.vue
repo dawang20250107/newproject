@@ -108,6 +108,14 @@ const rows = computed(() => {
 const summary = computed(() => data.value?.summary || {})
 const netColor = v => parseFloat(v) >= 0 ? '#2e7d32' : '#c62828'
 
+// 事业部色标：按名称稳定散列到一个柔和色相，让不同事业部的标签一眼可分
+function deptStyle(name) {
+  if (!name) return {}
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360
+  return { background: `hsl(${h} 42% 93%)`, color: `hsl(${h} 38% 38%)`, borderColor: `hsl(${h} 40% 84%)` }
+}
+
 const totals = computed(() => rows.value.reduce((t, r) => ({
   inflow: t.inflow + r.inflow, outflow: t.outflow + r.outflow,
   net: t.net + r.net, outstanding: t.outstanding + r.outstanding,
@@ -212,11 +220,13 @@ onMounted(() => {
                 <div class="pcf-pname">{{ r.project }}</div>
                 <div v-if="r.customer" class="pcf-psub">{{ r.customer }}</div>
               </td>
-              <td><span class="dept-tag">{{ r.dept || '—' }}</span></td>
-              <td class="amt green fw">{{ r.inflow ? fmtWan(r.inflow) : '—' }}</td>
-              <td class="amt red">{{ r.outflow ? fmtWan(r.outflow) : '—' }}</td>
-              <td class="amt fw" :style="{ color: netColor(r.net) }">{{ fmtWan(r.net) }}</td>
-              <td class="amt" :class="r.outstanding > 0 ? 'amber' : 'muted'">
+              <td><span class="dept-tag" :style="deptStyle(r.dept)">{{ r.dept || '—' }}</span></td>
+              <td class="amt green fw" :class="{ 'col-on': sortKey === 'inflow' }">{{ r.inflow ? fmtWan(r.inflow) : '—' }}</td>
+              <td class="amt red" :class="{ 'col-on': sortKey === 'outflow' }">{{ r.outflow ? fmtWan(r.outflow) : '—' }}</td>
+              <td class="amt fw" :class="{ 'col-on': sortKey === 'net' }" :style="{ color: netColor(r.net) }">
+                <span class="caret">{{ r.net >= 0 ? '▲' : '▼' }}</span>{{ fmtWan(r.net) }}
+              </td>
+              <td class="amt" :class="[r.outstanding > 0 ? 'amber' : 'muted', { 'col-on': sortKey === 'outstanding' }]">
                 {{ r.outstanding > 0 ? fmtWan(r.outstanding) : '—' }}
               </td>
               <td class="amt muted">
@@ -232,7 +242,9 @@ onMounted(() => {
               <td colspan="2" class="fw">合计 {{ rows.length }} 个{{ isProjDim ? '项目' : '二级部门' }}</td>
               <td class="amt green fw">{{ fmtWan(totals.inflow) }}</td>
               <td class="amt red fw">{{ fmtWan(totals.outflow) }}</td>
-              <td class="amt fw" :style="{ color: netColor(totals.net) }">{{ fmtWan(totals.net) }}</td>
+              <td class="amt fw" :style="{ color: netColor(totals.net) }">
+                <span class="caret">{{ totals.net >= 0 ? '▲' : '▼' }}</span>{{ fmtWan(totals.net) }}
+              </td>
               <td class="amt amber fw">{{ fmtWan(totals.outstanding) }}</td>
               <td :colspan="isProjDim ? 2 : 1"></td>
             </tr>
@@ -248,7 +260,7 @@ onMounted(() => {
           <span class="bb-item"><i>合计</i><b>{{ rows.length }}</b> 个{{ isProjDim ? '项目' : '二级部门' }}</span>
           <span class="bb-item ok"><i>回款流入</i><b>{{ fmtWan(totals.inflow) }}</b></span>
           <span class="bb-item"><i>付款流出</i><b style="color:#c62828">{{ fmtWan(totals.outflow) }}</b></span>
-          <span class="bb-item"><i>净现金</i><b :style="{ color: netColor(totals.net) }">{{ fmtWan(totals.net) }}</b></span>
+          <span class="bb-item"><i>净现金</i><b :style="{ color: netColor(totals.net) }"><span class="bb-caret">{{ totals.net >= 0 ? '▲' : '▼' }}</span>{{ fmtWan(totals.net) }}</b></span>
           <span class="bb-item warn"><i>应收敞口</i><b>{{ fmtWan(totals.outstanding) }}</b></span>
         </div>
         <div class="bb-pager">
@@ -339,9 +351,21 @@ onMounted(() => {
 .pcf-pname { font-weight: 600; }
 .pcf-psub { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .dept-tag {
-  display: inline-block; padding: 2px 7px; border-radius: 5px;
-  background: rgba(180,140,110,.12); color: var(--muted); font-size: 11px; white-space: nowrap;
+  display: inline-block; padding: 2px 8px; border-radius: 6px; border: 1px solid transparent;
+  background: rgba(180,140,110,.12); color: var(--muted); font-size: 11px; white-space: nowrap; font-weight: 600;
 }
+/* 净现金 / 合计的方向标记 */
+.caret { font-size: 8px; margin-right: 3px; vertical-align: 1px; opacity: .85; }
+.bb-caret { font-size: 8px; margin-right: 2px; vertical-align: 1px; }
+/* 当前排序列：表头与整列轻微高亮，强化“正在按此列排序” */
+.pcf-table thead th.sorted { background: rgba(201,99,66,.07); }
+.pcf-table tbody td.col-on { background: rgba(201,99,66,.045); }
+.pcf-table tbody tr:hover td.col-on { background: rgba(201,99,66,.07); }
+/* 极淡斑马纹，长表更易读 */
+.pcf-table tbody tr:nth-child(even) td { background: rgba(255,255,255,.20); }
+.pcf-table tbody tr:nth-child(even) td.col-on { background: rgba(201,99,66,.05); }
+/* hover 置于斑马纹之后，保证悬停反馈在任意行都可见 */
+.pcf-table tbody tr:hover td { background: rgba(201,99,66,.08); }
 .green { color: #2e7d32; }
 .red { color: #c62828; }
 .amber { color: #e65100; }
