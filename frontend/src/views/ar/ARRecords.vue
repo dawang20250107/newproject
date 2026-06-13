@@ -223,6 +223,37 @@ const payPage = ref(1)
 const payLoading = ref(false)
 const payExporting = ref(false)
 
+// 回款日期快捷区间（UTC+8 口径，与 todayCST 一致）。当前选中项用于高亮；
+// 手动改任一日期输入即转「自定义」，清空高亮。
+const payRangePreset = ref('')
+const PAY_RANGE_PRESETS = [
+  { key: 'today', label: '今天' },
+  { key: 'week', label: '本周' },
+  { key: 'month', label: '本月' },
+  { key: 'quarter', label: '本季度' },
+  { key: 'year', label: '本年' },
+  { key: '', label: '全部' },
+]
+function setPayRange(key) {
+  payRangePreset.value = key
+  const iso = (d) => d.toISOString().slice(0, 10)
+  const base = new Date(todayCST() + 'T00:00:00Z')   // CST 当天 00:00，用 UTC 方法运算避免本地时区漂移
+  let start = '', end = iso(base)
+  if (key === '') { start = ''; end = '' }
+  else if (key === 'today') { start = iso(base) }
+  else if (key === 'week') {
+    const dow = (base.getUTCDay() + 6) % 7            // 周一=0
+    const s = new Date(base); s.setUTCDate(base.getUTCDate() - dow); start = iso(s)
+  }
+  else if (key === 'month') start = iso(new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 1)))
+  else if (key === 'quarter') start = iso(new Date(Date.UTC(base.getUTCFullYear(), Math.floor(base.getUTCMonth() / 3) * 3, 1)))
+  else if (key === 'year') start = iso(new Date(Date.UTC(base.getUTCFullYear(), 0, 1)))
+  payFilters.pay_start = start
+  payFilters.pay_end = end
+  loadPayments(true)
+}
+function onPayDateChange() { payRangePreset.value = ''; loadPayments(true) }
+
 // ── 催款工作台 (collection workbench) ───────────────────────────────────────
 const dunFilters = reactive({ dept: '', q: '', bucket: '', contact: '' })
 const dunBuckets = ref([])
@@ -1465,9 +1496,12 @@ function clearFilters() {
       <div v-if="activeTab === 'payments'">
         <div class="filter-strip" style="margin-top:4px">
           <label class="pay-range-lbl">回款日期</label>
-          <input v-model="payFilters.pay_start" type="date" class="sel-mo" @change="loadPayments(true)" />
+          <button v-for="r in PAY_RANGE_PRESETS" :key="r.key || 'all'" type="button"
+                  class="pay-range-chip" :class="{ on: payRangePreset === r.key }"
+                  @click="setPayRange(r.key)">{{ r.label }}</button>
+          <input v-model="payFilters.pay_start" type="date" class="sel-mo" @change="onPayDateChange" />
           <span style="color:var(--muted)">~</span>
-          <input v-model="payFilters.pay_end" type="date" class="sel-mo" @change="loadPayments(true)" />
+          <input v-model="payFilters.pay_end" type="date" class="sel-mo" @change="onPayDateChange" />
           <select v-model="payFilters.dept" class="sel-bu" @change="loadPayments(true)">
             <option value="">全部事业部</option>
             <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
@@ -2231,6 +2265,13 @@ function clearFilters() {
 .tot-item.tot-warn { color: #e65100; }
 .tot-item.tot-green { color: #2e7d32; }
 .pay-range-lbl { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.pay-range-chip {
+  font-size: 12px; padding: 3px 10px; border-radius: 13px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--card); color: var(--text);
+  white-space: nowrap; transition: all .12s;
+}
+.pay-range-chip:hover { border-color: var(--primary); color: var(--primary); }
+.pay-range-chip.on { background: var(--primary); border-color: var(--primary); color: #fff; }
 /* 汇总下钻行 + 合计行 */
 .row-drill { cursor: pointer; }
 .row-drill:hover { background: rgba(201,99,66,0.07); }
