@@ -1479,7 +1479,7 @@ function clearFilters() {
         <div v-if="paySummary" class="totals-strip">
           <span class="tot-label">区间合计</span>
           <span class="tot-item"><i>笔数</i>{{ paySummary.count }}</span>
-          <span class="tot-item tot-green"><i>回款总额</i>{{ fmtAmt(paySummary.total_amount) }}</span>
+          <span class="tot-item tot-green"><i>回款总额</i>{{ fmtCell(paySummary.total_amount) }}</span>
         </div>
 
         <div class="table-wrap" style="margin-top:12px">
@@ -1500,7 +1500,7 @@ function clearFilters() {
               <tr v-else-if="!payItems.length"><td colspan="7" class="empty-cell">暂无回款记录</td></tr>
               <tr v-for="p in payItems" :key="p.id" class="data-row">
                 <td class="ctr text-sm-muted">{{ p.payment_date }}</td>
-                <td class="amt fw" style="color:#2e7d32">{{ fmtAmt(p.amount) }}</td>
+                <td class="amt fw" style="color:#2e7d32">{{ fmtCell(p.amount) }}</td>
                 <td>
                   <div class="proj-name">{{ p.short_name || '—' }}</div>
                   <div class="proj-no">{{ p.project_no }}</div>
