@@ -365,14 +365,74 @@ async function onDelete(p) {
   }
 }
 
-function search() { filters.page = 1; load() }
+function search() { filters.page = 1; clearSelection(); load() }
 function resetFilters() {
   Object.assign(filters, { q: '', dept: '', status: '', start_date: '', end_date: '', page: 1 })
   datePreset.value = ''
+  clearSelection()
   load()
 }
 
 function setPage(p) { filters.page = p; load() }
+
+// ── 单选/多选：批量删除 + 批量付款（批量编辑）─────────────────────────────────
+const selectedIds = ref(new Set())                       // 跨页按 id 记忆选择
+const remOf = (p) => parseFloat(p.remaining) || 0
+const pageAllSelected = computed(() => items.value.length > 0 && items.value.every(p => selectedIds.value.has(p.id)))
+const selectedCount = computed(() => selectedIds.value.size)
+const hasSelection = computed(() => selectedIds.value.size > 0)
+function toggleRow(id) { const s = new Set(selectedIds.value); s.has(id) ? s.delete(id) : s.add(id); selectedIds.value = s }
+function toggleSelectPage() { const s = new Set(selectedIds.value); if (pageAllSelected.value) items.value.forEach(p => s.delete(p.id)); else items.value.forEach(p => s.add(p.id)); selectedIds.value = s }
+function clearSelection() { selectedIds.value = new Set() }
+// 批量付款只统计「有剩余应付」的记录（默认付款金额=剩余应付=计划金额）
+const selectedPayable = computed(() => items.value.filter(p => selectedIds.value.has(p.id) && remOf(p) > 0))
+const batchPaySummary = computed(() => ({
+  count: selectedPayable.value.length,
+  total: selectedPayable.value.reduce((s, p) => s + remOf(p), 0),
+}))
+
+// 批量删除（含单选）
+const bulkDeleting = ref(false)
+const showDelConfirm = ref(false)
+const delConfirmText = ref('')
+const delConfirmCount = ref(0)
+const delConfirmOk = computed(() => delConfirmText.value.trim() === String(delConfirmCount.value))
+function bulkDelete() { if (!selectedCount.value) return; delConfirmCount.value = selectedCount.value; delConfirmText.value = ''; showDelConfirm.value = true }
+async function confirmBulkDelete() {
+  if (!delConfirmOk.value) return
+  bulkDeleting.value = true
+  try {
+    const r = await api.post('/payments/bulk-delete', { ids: [...selectedIds.value] })
+    showDelConfirm.value = false; clearSelection(); load()
+    const d = r.data || {}
+    if (d.skipped?.length) alert(`${d.message}\n\n未删除明细：\n` + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0, 15).join('\n'))
+  } catch (e) { alert(e?.msg || e?.error || '删除失败') }
+  finally { bulkDeleting.value = false }
+}
+
+// 批量付款（批量编辑）：默认日期=今天，默认金额=各记录剩余应付=计划金额
+const showBatchPay = ref(false)
+const batchPayForm = reactive({ pay_date: '' })
+const batchPayBusy = ref(false)
+function openBatchPay() {
+  if (!batchPaySummary.value.count) { alert('所选记录中没有「有剩余应付」的可付款记录（已结清的已自动排除）'); return }
+  batchPayForm.pay_date = todayCST()
+  showBatchPay.value = true
+}
+async function doBatchPay() {
+  if (batchPayBusy.value) return
+  batchPayBusy.value = true
+  try {
+    const ids = selectedPayable.value.map(p => p.id)
+    const r = await api.post('/payments/bulk-pay', { ids, pay_date: batchPayForm.pay_date })
+    showBatchPay.value = false; clearSelection(); load()
+    const d = r.data || {}
+    let msg = d.message || '批量付款完成'
+    if (d.skipped?.length) msg += '\n\n跳过明细：\n' + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0, 15).join('\n')
+    alert(msg)
+  } catch (e) { alert(e?.msg || e?.error || '批量付款失败') }
+  finally { batchPayBusy.value = false }
+}
 </script>
 
 <template>
@@ -471,6 +531,7 @@ function setPage(p) { filters.page = p; load() }
         <table>
           <thead>
             <tr>
+              <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
               <th v-if="colVisible('department')" style="width:5%">部门</th>
               <th v-if="colVisible('secondary_dept')" style="width:5%">二级部门</th>
               <th v-if="colVisible('project_short_name')" style="width:6%">项目简称</th>
@@ -490,7 +551,8 @@ function setPage(p) { filters.page = p; load() }
           </thead>
           <tbody>
             <template v-for="p in items" :key="p.id">
-            <tr :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today }">
+            <tr :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today, 'row-sel': selectedIds.has(p.id) }">
+              <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(p.id)" @change="toggleRow(p.id)" /></td>
               <td v-if="colVisible('department')">{{ p.department }}</td>
               <td v-if="colVisible('secondary_dept')" class="cell-clip">{{ p.secondary_dept || '—' }}</td>
               <td v-if="colVisible('project_short_name')" class="cell-clip" :title="p.project_short_name">{{ p.project_short_name || '—' }}</td>
@@ -570,9 +632,16 @@ function setPage(p) { filters.page = p; load() }
         </table>
       </div>
 
+      <div v-if="!loading && items.length && hasSelection && (auth.canDelete || auth.canEdit('installments'))" class="bulk-bar">
+        <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
+        <button v-if="auth.canEdit('installments')" class="bulk-act" :disabled="!batchPaySummary.count" @click="openBatchPay">批量付款（可付 {{ batchPaySummary.count }} 条）</button>
+        <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
+        <button class="bulk-cancel" @click="clearSelection">取消</button>
+      </div>
+
       <!-- 吸底合计 + 翻页：Teleport 到 body 以逃脱 .card transform 产生的 fixed 包含块 -->
       <Teleport to="body">
-        <div v-if="!loading && items.length && !showModal" class="bottom-bar">
+        <div v-if="!loading && items.length && !showModal && !showBatchPay && !showDelConfirm" class="bottom-bar">
           <div class="bb-summary">
             <span class="bb-item"><i>合计</i><b>{{ total }}</b> 条</span>
             <span v-if="auth.canView('total_amount')" class="bb-item"><i>计划总额</i><b>{{ fmt(plannedTotal) }}</b></span>
@@ -743,6 +812,47 @@ function setPage(p) { filters.page = p; load() }
         {{ tip.text }}
       </div>
     </Transition>
+
+    <!-- 批量付款（批量编辑） -->
+    <Teleport to="body">
+      <div v-if="showBatchPay" class="overlay" @click.self="showBatchPay = false">
+        <div class="modal" style="width:440px">
+          <div class="modal-header"><h3>批量付款</h3><button class="modal-close" @click="showBatchPay = false">×</button></div>
+          <div style="padding:4px 2px 0">
+            <div class="batch-summary">
+              <span>可付记录 <b>{{ batchPaySummary.count }}</b> 条</span>
+              <span>合计金额 <b style="color:#2e7d32">{{ batchPaySummary.total.toFixed(2) }}</b> 元</span>
+            </div>
+            <p style="font-size:12px;color:var(--muted);margin:10px 0 12px">
+              默认按各记录「剩余应付（=计划金额 − 已付 − 预付冲抵）」于所选日期各登记一笔付款明细；已结清（无剩余）的记录将自动跳过。
+            </p>
+            <label class="batch-field"><span>付款日期*</span><input v-model="batchPayForm.pay_date" type="date" /></label>
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+            <button class="btn btn-ghost" @click="showBatchPay = false">取消</button>
+            <button class="btn btn-primary" :disabled="batchPayBusy || !batchPaySummary.count" @click="doBatchPay">{{ batchPayBusy ? '付款中…' : `确认付款 ${batchPaySummary.count} 条` }}</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 批量删除二次确认 -->
+    <Teleport to="body">
+      <div v-if="showDelConfirm" class="overlay" @click.self="showDelConfirm = false">
+        <div class="modal" style="width:420px">
+          <div class="modal-header"><h3>确认删除 {{ delConfirmCount }} 条排款</h3><button class="modal-close" @click="showDelConfirm = false">×</button></div>
+          <div style="padding:4px 2px 0">
+            <p class="del-warn">⚠ 删除后不可恢复；已关联预付核销的记录将自动跳过。</p>
+            <p class="del-tip">请输入待删条数 <strong>{{ delConfirmCount }}</strong> 以确认：</p>
+            <input v-model="delConfirmText" class="del-input" :placeholder="`输入 ${delConfirmCount}`" @keyup.enter="confirmBulkDelete" />
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+            <button class="btn btn-ghost" @click="showDelConfirm = false">取消</button>
+            <button class="btn-danger-solid" :disabled="!delConfirmOk || bulkDeleting" @click="confirmBulkDelete">{{ bulkDeleting ? '删除中…' : '确认删除' }}</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -801,6 +911,31 @@ function setPage(p) { filters.page = p; load() }
 .po-opt b { margin-left: auto; color: #2e7d32; font-variant-numeric: tabular-nums; }
 
 /* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
+
+/* 多选列 + 批量操作条 + 删除二次确认 */
+.pk-pay-tbl th.sel-col, .pk-pay-tbl td.sel-col { width: 30px; text-align: center; padding: 9px 4px; max-width: none; overflow: visible; }
+.pk-pay-tbl td.sel-col input, .pk-pay-tbl th.sel-col input { cursor: pointer; }
+.pk-pay-tbl tr.row-sel td { background: rgba(201,99,66,0.06); }
+.bulk-bar { display: flex; align-items: center; gap: 12px; margin: 10px 0 0; padding: 8px 14px;
+  border-radius: 10px; background: rgba(198,40,40,0.06); border: 1px solid rgba(198,40,40,0.25); }
+.bulk-n { font-size: 13px; color: var(--text); }
+.bulk-act { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--primary); color: #fff; }
+.bulk-act:disabled { opacity: .5; cursor: default; }
+.bulk-del { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
+.bulk-del:disabled { opacity: .6; cursor: default; }
+.bulk-cancel { border: none; background: none; color: var(--muted); font-size: 12.5px; cursor: pointer; }
+.batch-summary { display: flex; gap: 18px; font-size: 13px; color: var(--muted);
+  background: rgba(201,99,66,.05); border-radius: 9px; padding: 10px 12px; }
+.batch-summary b { font-variant-numeric: tabular-nums; color: var(--text); }
+.batch-field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+.batch-field span { color: var(--muted); }
+.batch-field input { padding: 7px 10px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; }
+.del-warn { font-size: 13px; color: var(--danger); margin: 0 0 12px; line-height: 1.6; }
+.del-tip { font-size: 13px; color: var(--text); margin: 0 0 8px; }
+.del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; box-sizing: border-box; }
+.del-input:focus { border-color: var(--danger); outline: none; }
+.btn-danger-solid { border: none; border-radius: 8px; padding: 8px 18px; font-size: 14px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
+.btn-danger-solid:disabled { opacity: .5; cursor: default; }
 
 /* Overdue column tag */
 .overdue-tag {

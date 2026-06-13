@@ -877,3 +877,148 @@ class LegacyScheduleAdoptTests(TestCase):
         return self.client.post(f'/api/pk/approvals/{rec.id}/schedule',
                                 data=json.dumps({'planned_date': day, 'total_amount': amount}),
                                 content_type='application/json', **self.auth())
+
+
+class BulkOpsTests(TestCase):
+    """批量删除 / 批量排款（审批）/ 批量付款（付款台账）。含单选=ids 单元素。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900003000', name='BulkAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _mk_approval(self, num, amount, status='approved'):
+        return ApprovalRecord.objects.create(
+            applicant='张三', department=self.dept, approval_number=str(num) * 21,
+            summary='采购', amount=Decimal(amount), payee=f'供应商{num}', status=status)
+
+    def _post(self, url, payload):
+        return self.client.post(url, data=json.dumps(payload),
+                                content_type='application/json', **self.auth())
+
+    # ── 审批批量排款 ──────────────────────────────────────────────────────────
+    def test_bulk_schedule_creates_payments(self):
+        a1 = self._mk_approval(1, '1000')
+        a2 = self._mk_approval(2, '2000')
+        resp = self._post('/api/pk/approvals/bulk-schedule',
+                          {'ids': [a1.id, a2.id], 'planned_date': '2026-07-01'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['scheduled'], 2)
+        self.assertEqual(Decimal(d['total_amount']), Decimal('3000'))
+        self.assertEqual(d['skipped'], [])
+        # 两条付款台账各自打通审批，金额=申请金额，计划日=今天参数
+        for a, amt in ((a1, '1000'), (a2, '2000')):
+            p = Payment.objects.get(approval=a)
+            self.assertEqual(p.total_amount, Decimal(amt))
+            self.assertEqual(str(p.planned_date), '2026-07-01')
+            a.refresh_from_db()
+            self.assertTrue(a.archived)               # 排满申请金额即归档
+
+    def test_bulk_schedule_skips_non_approved(self):
+        a1 = self._mk_approval(1, '1000', status='approved')
+        a2 = self._mk_approval(2, '2000', status='pending')
+        resp = self._post('/api/pk/approvals/bulk-schedule',
+                          {'ids': [a1.id, a2.id], 'planned_date': '2026-07-01'})
+        d = resp.json()['data']
+        self.assertEqual(d['scheduled'], 1)
+        self.assertEqual(len(d['skipped']), 1)
+        self.assertEqual(d['skipped'][0]['id'], a2.id)
+        self.assertFalse(Payment.objects.filter(approval=a2).exists())
+
+    def test_bulk_schedule_default_date_today(self):
+        a1 = self._mk_approval(1, '500')
+        resp = self._post('/api/pk/approvals/bulk-schedule', {'ids': [a1.id]})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data']['scheduled'], 1)
+        p = Payment.objects.get(approval=a1)
+        self.assertEqual(str(p.planned_date), date.today().isoformat())
+
+    # ── 审批批量删除 ──────────────────────────────────────────────────────────
+    def test_bulk_delete_approvals(self):
+        a1 = self._mk_approval(1, '1000', status='pending')
+        a2 = self._mk_approval(2, '2000', status='pending')
+        resp = self._post('/api/pk/approvals/bulk-delete', {'ids': [a1.id, a2.id]})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data']['deleted'], 2)
+        self.assertEqual(ApprovalRecord.objects.count(), 0)
+
+    def test_bulk_delete_skips_scheduled_approval(self):
+        a1 = self._mk_approval(1, '1000')
+        self._post('/api/pk/approvals/bulk-schedule', {'ids': [a1.id], 'planned_date': '2026-07-01'})
+        resp = self._post('/api/pk/approvals/bulk-delete', {'ids': [a1.id]})
+        d = resp.json()['data']
+        self.assertEqual(d['deleted'], 0)
+        self.assertEqual(len(d['skipped']), 1)
+        self.assertTrue(ApprovalRecord.objects.filter(id=a1.id).exists())  # 未删
+
+    # ── 付款台账批量付款 ──────────────────────────────────────────────────────
+    def _schedule_payment(self, num, amount):
+        a = self._mk_approval(num, amount)
+        self._post('/api/pk/approvals/bulk-schedule', {'ids': [a.id], 'planned_date': '2026-07-01'})
+        return Payment.objects.get(approval=a)
+
+    def test_bulk_pay_records_installments(self):
+        p1 = self._schedule_payment(1, '1000')
+        p2 = self._schedule_payment(2, '2000')
+        resp = self._post('/api/pk/payments/bulk-pay',
+                          {'ids': [p1.id, p2.id], 'pay_date': '2026-07-10'})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['paid'], 2)
+        self.assertEqual(Decimal(d['total_amount']), Decimal('3000'))
+        for p, amt in ((p1, '1000'), (p2, '2000')):
+            p.refresh_from_db()
+            inst = list(p.installments.all())
+            self.assertEqual(len(inst), 1)
+            self.assertEqual(inst[0].pay_amount, Decimal(amt))   # 默认=剩余=计划金额
+            self.assertEqual(str(inst[0].pay_date), '2026-07-10')
+            self.assertEqual(p.remaining, Decimal('0'))
+            self.assertEqual(p.status, 'settled')
+
+    def test_bulk_pay_skips_settled(self):
+        p1 = self._schedule_payment(1, '1000')
+        self._post('/api/pk/payments/bulk-pay', {'ids': [p1.id], 'pay_date': '2026-07-10'})
+        resp = self._post('/api/pk/payments/bulk-pay', {'ids': [p1.id], 'pay_date': '2026-07-11'})
+        d = resp.json()['data']
+        self.assertEqual(d['paid'], 0)
+        self.assertEqual(len(d['skipped']), 1)
+        p1.refresh_from_db()
+        self.assertEqual(p1.installments.count(), 1)   # 未重复登记
+
+    def test_bulk_pay_default_date_today(self):
+        p1 = self._schedule_payment(1, '800')
+        resp = self._post('/api/pk/payments/bulk-pay', {'ids': [p1.id]})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        p1.refresh_from_db()
+        self.assertEqual(str(p1.installments.first().pay_date), date.today().isoformat())
+
+    # ── 付款台账批量删除 ──────────────────────────────────────────────────────
+    def test_bulk_delete_payments(self):
+        p1 = self._schedule_payment(1, '1000')
+        p2 = self._schedule_payment(2, '2000')
+        resp = self._post('/api/pk/payments/bulk-delete', {'ids': [p1.id, p2.id]})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data']['deleted'], 2)
+        self.assertEqual(Payment.objects.count(), 0)
+
+    # ── 校验/边界 ────────────────────────────────────────────────────────────
+    def test_empty_ids_rejected(self):
+        for url in ('/api/pk/approvals/bulk-delete', '/api/pk/approvals/bulk-schedule',
+                    '/api/pk/payments/bulk-delete', '/api/pk/payments/bulk-pay'):
+            resp = self._post(url, {'ids': []})
+            self.assertEqual(resp.status_code, 400, url)
+
+    def test_single_select_via_ids(self):
+        # 单选 = ids 单元素，复用批量端点
+        a1 = self._mk_approval(1, '1000', status='pending')
+        resp = self._post('/api/pk/approvals/bulk-delete', {'ids': [a1.id]})
+        self.assertEqual(resp.json()['data']['deleted'], 1)

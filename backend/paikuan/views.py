@@ -1557,39 +1557,23 @@ def approval_record_detail(request, pk):
     return err('Method not allowed', 405)
 
 
-@csrf_exempt
-@pk_required()
-def approval_record_schedule(request, pk):
-    if request.method != 'POST':
-        return err('Method not allowed', 405)
-    # 须同时具备审批页与排款页权限 + 新增权限
-    perms = get_request_perms(request)
-    if perms is not None:
-        if not perms['pages'].get('approval_records', True):
-            return err('无审批记录访问权限', 403, 403)
-        if not perms['pages'].get('payments', True):
-            return err('无排款台账访问权限', 403, 403)
-        if not perms.get('can_create'):
-            return err('无新增排款权限', 403, 403)
-    try:
-        rec = ApprovalRecord.objects.get(pk=pk, archived=False)
-    except ApprovalRecord.DoesNotExist:
-        return err('记录不存在', 404)
-    if not can_write_dept(request, rec.department):
-        return err('无权操作该部门', 403, 403)
+def _schedule_one(request, rec, planned_date, total_amount):
+    """核心排款：把 total_amount@planned_date 排入审批 rec 对应的付款台账汇总记录。
+    返回 (payment, None, 200) 成功 或 (None, error_message, status)。status 为建议 HTTP 码：
+    校验类错误用 400，冲突/防重类用 409。调用方负责页面/部门权限校验；此处复核
+    状态/剩余可排 + 防重 + 原子写入。单条与批量排款共用，保证口径一致。"""
     if rec.status != 'approved':
-        return err('仅审批通过记录可排款')
-    data = parse_body(request)
-    planned_date = data.get('planned_date')
-    total_amount = Decimal(str(data.get('total_amount') or '0'))
-    if not planned_date or total_amount <= 0:
-        return err('计划日期和计划金额必填')
+        return None, '仅审批通过记录可排款', 400
+    if rec.archived:
+        return None, '记录已归档', 409
+    if total_amount is None or total_amount <= 0:
+        return None, '计划金额必须大于0', 400
     # 分批排款：本次金额不得超过剩余可排（申请金额 − 已排款累计）
     remaining = (rec.amount or Decimal('0')) - (rec.scheduled_amount or Decimal('0'))
     if total_amount > remaining:
-        return err(f'本次排款 {total_amount} 超过剩余可排 {remaining}'
-                   f'（申请 {rec.amount} − 已排 {rec.scheduled_amount}）。'
-                   f'如需超额请先修改审批记录的申请金额')
+        return None, (f'本次排款 {total_amount} 超过剩余可排 {remaining}'
+                      f'（申请 {rec.amount} − 已排 {rec.scheduled_amount}）。'
+                      f'如需超额请先修改审批记录的申请金额'), 400
     # 一条审批 ↔ 一条付款台账汇总记录（经 approval 静默ID打通）：
     # 首次排款建汇总记录+首条计划明细；再次排款只追加计划明细，汇总派生刷新
     existing = Payment.objects.filter(approval=rec).first()
@@ -1616,12 +1600,10 @@ def approval_record_schedule(request, pk):
         }
         dup = _find_duplicate_payment(fields)
         if dup:
-            return err(
+            return None, (
                 f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录 #{dup.id}。'
                 f'若这是旧版本分批生成的多条历史记录，请在付款台账核对后调整其中一条的'
-                f'计划日期或金额再排，或换一个计划日期排本批',
-                409, 409,
-            )
+                f'计划日期或金额再排，或换一个计划日期排本批'), 409
     else:
         # 防双击：仅拦 10 秒内连续提交的完全相同批次（日期+金额）。
         # 同日同金额的多批是真实业务需求（如同一天给不同子事项各排一笔），放行。
@@ -1630,16 +1612,16 @@ def approval_record_schedule(request, pk):
             planned_date=planned_date, amount=total_amount,
             created_at__gte=_tz.now() - datetime.timedelta(seconds=10))
         if recent.exists():
-            return err('检测到 10 秒内重复提交相同批次（日期+金额），已拦截疑似误触；'
-                       '如确需同日再排一笔相同金额，请稍候片刻再提交', 409, 409)
+            return None, ('检测到 10 秒内重复提交相同批次（日期+金额），已拦截疑似误触；'
+                          '如确需同日再排一笔相同金额，请稍候片刻再提交'), 409
     try:
         with transaction.atomic():
-            rec_locked = ApprovalRecord.objects.select_for_update().get(pk=pk)
+            rec_locked = ApprovalRecord.objects.select_for_update().get(pk=rec.pk)
             if rec_locked.archived:
-                return err('记录已归档', 409, 409)
+                return None, '记录已归档', 409
             remaining = (rec_locked.amount or Decimal('0')) - (rec_locked.scheduled_amount or Decimal('0'))
             if total_amount > remaining:
-                return err(f'本次排款 {total_amount} 超过剩余可排 {remaining}')
+                return None, f'本次排款 {total_amount} 超过剩余可排 {remaining}', 400
             if existing is None:
                 p = Payment.objects.create(
                     created_by_id=request.pk_uid,
@@ -1672,14 +1654,232 @@ def approval_record_schedule(request, pk):
             rec_locked.archived = rec_locked.scheduled_amount >= (rec_locked.amount or Decimal('0'))
             rec_locked.save(update_fields=['scheduled_amount', 'archived', 'updated_at'])
     except IntegrityError:
-        return err('重复排款：相同业务键的排款记录已存在', 409, 409)
+        return None, '重复排款：相同业务键的排款记录已存在', 409
     rec.refresh_from_db()
     p.refresh_from_db()
+    return p, None, 200
+
+
+@csrf_exempt
+@pk_required()
+def approval_record_schedule(request, pk):
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    # 须同时具备审批页与排款页权限 + 新增权限
+    perms = get_request_perms(request)
+    if perms is not None:
+        if not perms['pages'].get('approval_records', True):
+            return err('无审批记录访问权限', 403, 403)
+        if not perms['pages'].get('payments', True):
+            return err('无排款台账访问权限', 403, 403)
+        if not perms.get('can_create'):
+            return err('无新增排款权限', 403, 403)
+    try:
+        rec = ApprovalRecord.objects.get(pk=pk, archived=False)
+    except ApprovalRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    if not can_write_dept(request, rec.department):
+        return err('无权操作该部门', 403, 403)
+    data = parse_body(request)
+    planned_date = data.get('planned_date')
+    total_amount = Decimal(str(data.get('total_amount') or '0'))
+    if not planned_date or total_amount <= 0:
+        return err('计划日期和计划金额必填')
+    p, error, status = _schedule_one(request, rec, planned_date, total_amount)
+    if error:
+        return err(error, status, status)
     return ok({'payment': p.to_dict(), 'archived': rec.archived,
                'scheduled_amount': str(rec.scheduled_amount),
                'remaining_amount': str(max(Decimal('0'), rec.amount - rec.scheduled_amount)),
                'message': ('已排满申请金额，记录归档' if rec.archived else
                            f'本次排款 {total_amount} 已流转付款台账，剩余可排 {rec.amount - rec.scheduled_amount}')})
+
+
+@csrf_exempt
+@pk_required()
+def approval_records_bulk_schedule(request):
+    """批量排款：对所选审批记录各排一笔（默认金额=剩余可排=申请金额，默认日期=今天）。
+    逐条独立处理，单条失败不影响其它；返回汇总（成功条数/金额合计）与失败明细。"""
+    if request.method != 'POST':
+        return err('POST only', 405)
+    perms = get_request_perms(request)
+    if perms is not None:
+        if not perms['pages'].get('approval_records', True):
+            return err('无审批记录访问权限', 403, 403)
+        if not perms['pages'].get('payments', True):
+            return err('无排款台账访问权限', 403, 403)
+        if not perms.get('can_create'):
+            return err('无新增排款权限', 403, 403)
+    body = parse_body(request)
+    ids = body.get('ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请提供要排款的记录 ids')
+    try:
+        ids = [int(i) for i in ids]
+    except (ValueError, TypeError):
+        return err('ids 必须为整数列表')
+    if len(ids) > 1000:
+        return err('单次批量排款上限 1000 条，请缩小选择范围')
+    planned_date = body.get('planned_date') or datetime.date.today().isoformat()
+    qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids, archived=False), request)
+    recs = {r.id: r for r in qs}
+    scheduled, total, skipped = 0, Decimal('0'), []
+    for rid in ids:
+        rec = recs.get(rid)
+        if rec is None:
+            skipped.append({'id': rid, 'reason': '不存在/已归档/无权限'})
+            continue
+        if not can_write_dept(request, rec.department):
+            skipped.append({'id': rid, 'reason': '无权操作该部门'})
+            continue
+        # 默认本次金额=剩余可排（首次排款即等于申请金额）
+        amount = (rec.amount or Decimal('0')) - (rec.scheduled_amount or Decimal('0'))
+        p, error, status = _schedule_one(request, rec, planned_date, amount)
+        if error:
+            skipped.append({'id': rid, 'reason': error})
+            continue
+        scheduled += 1
+        total += amount
+    return ok({
+        'scheduled': scheduled,
+        'total_amount': str(total),
+        'skipped': skipped,
+        'message': f'已排款 {scheduled} 条，合计 {total}'
+                   + (f'；跳过 {len(skipped)} 条' if skipped else ''),
+    })
+
+
+@csrf_exempt
+@pk_required()
+def approval_records_bulk_delete(request):
+    """批量删除审批记录（含单选）。已关联付款台账（已排款）的记录不删，避免悬空排款。
+    始终受部门作用域与删除权限约束；单次上限 1000 条。"""
+    if request.method != 'POST':
+        return err('POST only', 405)
+    perms = get_request_perms(request)
+    if perms is not None:
+        if not perms['pages'].get('approval_records', True):
+            return err('无访问权限', 403, 403)
+        if not perms.get('can_delete'):
+            return err('无删除权限', 403, 403)
+    body = parse_body(request)
+    ids = body.get('ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请提供要删除的记录 ids')
+    try:
+        ids = [int(i) for i in ids]
+    except (ValueError, TypeError):
+        return err('ids 必须为整数列表')
+    if len(ids) > 1000:
+        return err('单次删除上限 1000 条，请缩小选择范围')
+    qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids), request)
+    deleted, skipped = 0, []
+    for rec in list(qs):
+        if not can_write_dept(request, rec.department):
+            skipped.append({'id': rec.id, 'reason': '无权操作该部门'})
+            continue
+        if rec.payments.exists():
+            skipped.append({'id': rec.id, 'reason': '已关联付款台账（已排款），不能删除；请先在付款台账删除对应排款'})
+            continue
+        rec.delete()
+        deleted += 1
+    return ok({'deleted': deleted, 'skipped': skipped,
+               'message': f'已删除 {deleted} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})
+
+
+@csrf_exempt
+@pk_required()
+def payments_bulk_delete(request):
+    """批量删除付款台账记录（含单选）。已关联预付核销的记录不删（同单条删除口径）。
+    始终受部门作用域与删除权限约束；单次上限 1000 条。"""
+    if request.method != 'POST':
+        return err('POST only', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    if perms is not None and not perms.get('can_delete'):
+        return err('无删除权限', 403, 403)
+    body = parse_body(request)
+    ids = body.get('ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请提供要删除的记录 ids')
+    try:
+        ids = [int(i) for i in ids]
+    except (ValueError, TypeError):
+        return err('ids 必须为整数列表')
+    if len(ids) > 1000:
+        return err('单次删除上限 1000 条，请缩小选择范围')
+    qs = dept_filter(Payment.objects.filter(pk__in=ids), request)
+    deleted, skipped = 0, []
+    for p in list(qs.prefetch_related('prepaid_offsets')):
+        if not can_write_dept(request, p.department):
+            skipped.append({'id': p.id, 'reason': '无权操作该部门'})
+            continue
+        if p.prepaid_offsets.exists():
+            skipped.append({'id': p.id, 'reason': '已关联预付核销，不能删除；请先删除对应核销记录'})
+            continue
+        with transaction.atomic():
+            _record_payment_changes(p, {}, {}, request, action='delete')
+            p.delete()
+        deleted += 1
+    return ok({'deleted': deleted, 'skipped': skipped,
+               'message': f'已删除 {deleted} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})
+
+
+@csrf_exempt
+@pk_required()
+def payments_bulk_pay(request):
+    """批量付款（批量编辑）：对所选付款记录各追加一笔付款明细（默认金额=剩余应付=计划金额，
+    默认日期=今天）。逐条独立处理；返回汇总（成功条数/金额合计）与失败明细。"""
+    if request.method != 'POST':
+        return err('POST only', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    # 记录付款=编辑「付款明细」字段：以该字段的编辑权限闸口
+    if perms is not None and not perms['edit'].get('installments', False):
+        return err('无登记付款明细的权限', 403, 403)
+    body = parse_body(request)
+    ids = body.get('ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请提供要付款的记录 ids')
+    try:
+        ids = [int(i) for i in ids]
+    except (ValueError, TypeError):
+        return err('ids 必须为整数列表')
+    if len(ids) > 1000:
+        return err('单次批量付款上限 1000 条，请缩小选择范围')
+    pay_date = body.get('pay_date') or datetime.date.today().isoformat()
+    notes = (body.get('notes') or '批量付款').strip()[:200]
+    qs = dept_filter(Payment.objects.filter(pk__in=ids), request)
+    paid_cnt, total, skipped = 0, Decimal('0'), []
+    for p in list(qs.prefetch_related('installments')):
+        if not can_write_dept(request, p.department):
+            skipped.append({'id': p.id, 'reason': '无权操作该部门'})
+            continue
+        amount = p.remaining  # 剩余应付（=计划金额 − 已付 − 预付冲抵）
+        if amount <= 0:
+            skipped.append({'id': p.id, 'reason': '无剩余应付（已结清）'})
+            continue
+        before = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
+        before['installments_summary'] = _installments_summary(p.installments)
+        with transaction.atomic():
+            last = p.installments.order_by('-seq').first()
+            seq = (last.seq + 1) if last else 1
+            PaymentInstallment.objects.create(payment=p, seq=seq, pay_date=pay_date,
+                                               pay_amount=amount, notes=notes)
+            p.updated_by_id = request.pk_uid
+            p.save(update_fields=['updated_by', 'updated_at'])
+            after = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
+            after['installments_summary'] = _installments_summary(p.installments)
+            _record_payment_changes(p, before, after, request, action='update')
+        paid_cnt += 1
+        total += amount
+    return ok({'paid': paid_cnt, 'total_amount': str(total), 'skipped': skipped,
+               'message': f'已付款 {paid_cnt} 条，合计 {total}'
+                          + (f'；跳过 {len(skipped)} 条' if skipped else '')})
 
 
 @pk_required()

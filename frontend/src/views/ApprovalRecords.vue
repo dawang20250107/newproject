@@ -48,6 +48,65 @@ const filters = reactive({ applicant:'', approval_number:'', dept:'', page:1, si
 const statusUpdating = ref({})
 const pendingAmountTotal = computed(() => parseFloat(totalAmount.value || 0))
 
+// ── 单选/多选：批量删除 + 批量排款 ─────────────────────────────────────────
+const selectedIds = ref(new Set())                       // 跨页按 id 记忆选择
+const remOf = (it) => parseFloat(it.remaining_amount ?? it.amount) || 0
+const pageAllSelected = computed(() => items.value.length > 0 && items.value.every(r => selectedIds.value.has(r.id)))
+const selectedCount = computed(() => selectedIds.value.size)
+const hasSelection = computed(() => selectedIds.value.size > 0)
+function toggleRow(id){ const s = new Set(selectedIds.value); s.has(id) ? s.delete(id) : s.add(id); selectedIds.value = s }
+function toggleSelectPage(){ const s = new Set(selectedIds.value); if (pageAllSelected.value) items.value.forEach(r => s.delete(r.id)); else items.value.forEach(r => s.add(r.id)); selectedIds.value = s }
+function clearSelection(){ selectedIds.value = new Set() }
+// 仅「审批通过且未归档」可排款；批量排款汇总只统计可排记录（默认金额=剩余可排=申请金额）
+const selectedSchedulable = computed(() => items.value.filter(i => selectedIds.value.has(i.id) && i.status === 'approved' && !i.archived))
+const batchSchedSummary = computed(() => ({
+  count: selectedSchedulable.value.length,
+  total: selectedSchedulable.value.reduce((s, i) => s + remOf(i), 0),
+}))
+
+// 批量删除（含单选）
+const bulkDeleting = ref(false)
+const showDelConfirm = ref(false)
+const delConfirmText = ref('')
+const delConfirmCount = ref(0)
+const delConfirmOk = computed(() => delConfirmText.value.trim() === String(delConfirmCount.value))
+function bulkDelete(){ if (!selectedCount.value) return; delConfirmCount.value = selectedCount.value; delConfirmText.value = ''; showDelConfirm.value = true }
+async function confirmBulkDelete(){
+  if (!delConfirmOk.value) return
+  bulkDeleting.value = true
+  try{
+    const r = await api.post('/approvals/bulk-delete', { ids: [...selectedIds.value] })
+    showDelConfirm.value = false; clearSelection(); load()
+    const d = r.data || {}
+    if (d.skipped?.length) alert(`${d.message}\n\n未删除明细：\n` + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n'))
+  } catch(e){ alert(e?.msg || e?.error || '删除失败') }
+  finally{ bulkDeleting.value = false }
+}
+
+// 批量排款（默认日期=今天，默认金额=各记录剩余可排=申请金额）
+const showBatchSched = ref(false)
+const batchSchedForm = reactive({ planned_date: '' })
+const batchSchedBusy = ref(false)
+function openBatchSchedule(){
+  if (!batchSchedSummary.value.count){ alert('所选记录中没有「审批通过且未归档」的可排款记录'); return }
+  batchSchedForm.planned_date = todayCST()
+  showBatchSched.value = true
+}
+async function doBatchSchedule(){
+  if (batchSchedBusy.value) return
+  batchSchedBusy.value = true
+  try{
+    const ids = selectedSchedulable.value.map(i => i.id)
+    const r = await api.post('/approvals/bulk-schedule', { ids, planned_date: batchSchedForm.planned_date })
+    showBatchSched.value = false; clearSelection(); load()
+    const d = r.data || {}
+    let msg = d.message || '批量排款完成'
+    if (d.skipped?.length) msg += '\n\n跳过明细：\n' + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n')
+    alert(msg)
+  } catch(e){ alert(e?.msg || e?.error || '批量排款失败') }
+  finally{ batchSchedBusy.value = false }
+}
+
 const deptChoices = computed(() => {
   const scope = auth.effectiveDepts
   if (auth.isAdmin && !auth.activeDepts.length) return depts.value
@@ -55,7 +114,7 @@ const deptChoices = computed(() => {
 })
 
 async function load(){ loading.value=true; try{ const r=await api.get('/approvals',{params:filters}); items.value=r.data.items; total.value=r.data.total; totalAmount.value=r.data.total_amount || 0 }finally{loading.value=false}}
-function search(){ filters.page=1; load() }
+function search(){ filters.page=1; clearSelection(); load() }
 function setPage(p){ filters.page=p; load() }
 async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
 function openCreate(){ Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', summary:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
@@ -147,8 +206,12 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   </div>
   <EmptyState v-if="loading" loading />
   <EmptyState v-else-if="!items.length" empty text="暂无审批记录" />
-  <table v-else class="approval-table"><thead><tr><th>申请人</th><th>所属事业部</th><th>二级部门</th><th>项目简称</th><th>审批编号</th><th>摘要</th><th>申请金额</th><th>收款主体</th><th>审批状态</th><th>操作</th></tr></thead>
-    <tbody><tr v-for="i in items" :key="i.id"><td>{{i.applicant}}</td><td>{{i.department}}</td>
+  <table v-else class="approval-table"><thead><tr>
+      <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
+      <th>申请人</th><th>所属事业部</th><th>二级部门</th><th>项目简称</th><th>审批编号</th><th>摘要</th><th>申请金额</th><th>收款主体</th><th>审批状态</th><th>操作</th></tr></thead>
+    <tbody><tr v-for="i in items" :key="i.id" :class="{ 'row-sel': selectedIds.has(i.id) }">
+      <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(i.id)" @change="toggleRow(i.id)" /></td>
+      <td>{{i.applicant}}</td><td>{{i.department}}</td>
       <td class="meta-cell">{{ i.secondary_dept || '—' }}</td>
       <td class="meta-cell" :title="i.project_short_name">{{ i.project_short_name || '—' }}</td>
       <td class="mono">{{i.approval_number}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}<div v-if="parseFloat(i.scheduled_amount) > 0 && !i.archived" class="sched-sub">已排 {{i.scheduled_amount}}</div></td><td class="payee">{{i.payee}}</td>
@@ -165,9 +228,16 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       </td></tr></tbody>
   </table>
 
+  <div v-if="!loading && items.length && hasSelection && (auth.canDelete || auth.canCreate)" class="bulk-bar">
+    <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
+    <button v-if="auth.canCreate" class="bulk-act" :disabled="!batchSchedSummary.count" @click="openBatchSchedule">批量排款（可排 {{ batchSchedSummary.count }} 条）</button>
+    <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
+    <button class="bulk-cancel" @click="clearSelection">取消</button>
+  </div>
+
   <!-- 吸底合计 + 翻页：Teleport 到 body 以逃脱 .card transform 产生的 fixed 包含块 -->
   <Teleport to="body">
-    <div v-if="!loading && items.length && !showCreate && !showSchedule" class="bottom-bar">
+    <div v-if="!loading && items.length && !showCreate && !showSchedule && !showBatchSched && !showDelConfirm" class="bottom-bar">
       <div class="bb-summary">
         <span class="bb-item"><i>合计</i><b>{{ total }}</b> 条</span>
         <span class="bb-item warn"><i>申请金额合计</i><b>{{ pendingAmountTotal.toFixed(2) }}</b> 元</span>
@@ -223,6 +293,27 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     </div>
   </div><div class="modal-footer"><button class="btn btn-ghost" @click="showMeta=false">取消</button><button class="btn btn-primary" :disabled="metaSaving" @click="saveMeta">保存</button></div></div></div></Teleport>
 
+  <!-- 批量排款 -->
+  <Teleport to="body"><div v-if="showBatchSched" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>批量排款</h3></div><div class="modal-body">
+    <div class="sched-progress">
+      <span>可排记录 <b>{{ batchSchedSummary.count }}</b> 条</span>
+      <span>合计金额 <b style="color:#2e7d32">{{ batchSchedSummary.total.toFixed(2) }}</b> 元</span>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin:0 0 10px">
+      默认按各记录「剩余可排（首次=申请金额）」于所选日期各排一笔流转付款台账；所选中非「审批通过/已归档」的记录将自动跳过。
+    </p>
+    <div class="form-grid">
+      <label class="form-field"><span>计划日期*</span><input v-model="batchSchedForm.planned_date" type="date"/></label>
+    </div>
+  </div><div class="modal-footer"><button class="btn btn-ghost" @click="showBatchSched=false">取消</button><button class="btn btn-primary" :disabled="batchSchedBusy || !batchSchedSummary.count" @click="doBatchSchedule">{{ batchSchedBusy ? '排款中…' : `确认排款 ${batchSchedSummary.count} 条` }}</button></div></div></div></Teleport>
+
+  <!-- 批量删除二次确认 -->
+  <Teleport to="body"><div v-if="showDelConfirm" class="modal-overlay"><div class="modal-box" style="max-width:420px"><div class="modal-header"><h3>确认删除 {{ delConfirmCount }} 条审批记录</h3></div><div class="modal-body">
+    <p class="del-warn">⚠ 删除后不可恢复；已排款（已关联付款台账）的记录将自动跳过。</p>
+    <p class="del-tip">请输入待删条数 <strong>{{ delConfirmCount }}</strong> 以确认：</p>
+    <input v-model="delConfirmText" class="del-input" :placeholder="`输入 ${delConfirmCount}`" @keyup.enter="confirmBulkDelete"/>
+  </div><div class="modal-footer"><button class="btn btn-ghost" @click="showDelConfirm=false">取消</button><button class="btn-danger-solid" :disabled="!delConfirmOk || bulkDeleting" @click="confirmBulkDelete">{{ bulkDeleting ? '删除中…' : '确认删除' }}</button></div></div></div></Teleport>
+
 </div></template>
 
 <style scoped>
@@ -233,21 +324,39 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-table { width: 100%; table-layout: fixed; }
 /* 行高/内边距对齐全局表格（付款台账），保证两个页面观感一致 */
 .approval-table th, .approval-table td { padding: 11px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.approval-table th:nth-child(1), .approval-table td:nth-child(1) { width: 7%; }
-.approval-table th:nth-child(2), .approval-table td:nth-child(2) { width: 8%; }
-.approval-table th:nth-child(3), .approval-table td:nth-child(3) { width: 7%; }
-.approval-table th:nth-child(4), .approval-table td:nth-child(4) { width: 9%; }
-.approval-table th:nth-child(5), .approval-table td:nth-child(5) { width: 12%; }
+.approval-table th.sel-col, .approval-table td.sel-col { width: 34px; text-align: center; overflow: visible; padding: 11px 4px; }
+.approval-table th.sel-col input, .approval-table td.sel-col input { cursor: pointer; }
+.approval-table th:nth-child(2), .approval-table td:nth-child(2) { width: 7%; }
+.approval-table th:nth-child(3), .approval-table td:nth-child(3) { width: 8%; }
+.approval-table th:nth-child(4), .approval-table td:nth-child(4) { width: 7%; }
+.approval-table th:nth-child(5), .approval-table td:nth-child(5) { width: 9%; }
 .approval-table th:nth-child(6), .approval-table td:nth-child(6) { width: 12%; }
-.approval-table th:nth-child(7), .approval-table td:nth-child(7) { width: 7%; }
-.approval-table th:nth-child(8), .approval-table td:nth-child(8) { width: 10%; }
-.approval-table th:nth-child(9), .approval-table td:nth-child(9) { width: 12%; }
-.approval-table th:nth-child(10), .approval-table td:nth-child(10) { width: 16%; }
+.approval-table th:nth-child(7), .approval-table td:nth-child(7) { width: 12%; }
+.approval-table th:nth-child(8), .approval-table td:nth-child(8) { width: 7%; }
+.approval-table th:nth-child(9), .approval-table td:nth-child(9) { width: 10%; }
+.approval-table th:nth-child(10), .approval-table td:nth-child(10) { width: 12%; }
+.approval-table th:nth-child(11), .approval-table td:nth-child(11) { width: 16%; }
 /* 状态/操作两列内容（下拉、按钮）不裁切；下拉以本列宽为限，不再压到操作列 */
-.approval-table th:nth-child(9), .approval-table td:nth-child(9),
-.approval-table th:nth-child(10), .approval-table td:nth-child(10) {
+.approval-table th:nth-child(10), .approval-table td:nth-child(10),
+.approval-table th:nth-child(11), .approval-table td:nth-child(11) {
   overflow: visible; text-overflow: clip; white-space: normal;
 }
+.approval-table tr.row-sel td { background: rgba(201,99,66,0.06); }
+/* 批量操作条 + 删除二次确认（本组件局部样式，复用全局变量配色） */
+.bulk-bar { display: flex; align-items: center; gap: 12px; margin: 10px 0 0; padding: 8px 14px;
+  border-radius: 10px; background: rgba(198,40,40,0.06); border: 1px solid rgba(198,40,40,0.25); }
+.bulk-n { font-size: 13px; color: var(--text); }
+.bulk-act { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--primary); color: #fff; }
+.bulk-act:disabled { opacity: .5; cursor: default; }
+.bulk-del { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
+.bulk-del:disabled { opacity: .6; cursor: default; }
+.bulk-cancel { border: none; background: none; color: var(--muted); font-size: 12.5px; cursor: pointer; }
+.del-warn { font-size: 13px; color: var(--danger); margin: 0 0 12px; line-height: 1.6; }
+.del-tip { font-size: 13px; color: var(--text); margin: 0 0 8px; }
+.del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; box-sizing: border-box; }
+.del-input:focus { border-color: var(--danger); outline: none; }
+.btn-danger-solid { border: none; border-radius: 8px; padding: 8px 18px; font-size: 14px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
+.btn-danger-solid:disabled { opacity: .5; cursor: default; }
 .meta-cell { color: var(--muted); font-size: 12.5px; }
 .sched-prepaid-hint { font-size: 12.5px; color: #8a6d1a; background: rgba(255,213,79,0.14);
   border: 1px solid rgba(255,193,7,0.35); border-radius: 9px; padding: 9px 12px; margin-bottom: 12px; line-height: 1.7; }
