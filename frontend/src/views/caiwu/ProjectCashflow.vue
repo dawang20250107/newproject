@@ -136,41 +136,34 @@ onMounted(() => {
 
 <template>
   <div>
-    <!-- 标题：与项目毛利等页一致的 topbar -->
-    <div class="topbar">
-      <div>
-        <h1>{{ isProjDim ? '项目现金流' : '二级部门现金流' }}</h1>
-        <div class="pcf-topsub">按{{ isProjDim ? '项目' : '二级部门' }}聚合的回款（流入）/ 付款（流出）/ 净现金</div>
-      </div>
-    </div>
-
-    <!-- 筛选条：紧凑左对齐，不再撑满整行 -->
-    <div class="pcf-filterbar">
-      <div class="pcf-dim-seg">
+    <!-- 标题行：tab + 全部筛选同处一行，去掉独立的整行筛选框 -->
+    <div class="topbar pcf-topbar">
+      <div class="pcf-dim-seg pcf-tabs">
         <button v-for="d in DIMS" :key="d.v" class="pcf-dim-btn" :class="{ on: groupBy === d.v }"
-          @click="setDim(d.v)">{{ d.l }}</button>
+          @click="setDim(d.v)">{{ d.l }}现金流</button>
       </div>
-      <select v-model="filters.dept" class="pcf-sel" @change="filters.useCustomDate ? load() : null">
-        <option value="">全部事业部</option>
-        <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
-      </select>
-      <select v-model.number="filters.year" class="pcf-sel">
-        <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
-      </select>
-      <span class="pcf-fb-sep"></span>
-      <template v-if="filters.useCustomDate">
-        <input v-model="filters.date_start" type="date" class="pcf-date-inp" @change="load" />
-        <span class="pcf-dash">—</span>
-        <input v-model="filters.date_end" type="date" class="pcf-date-inp" @change="load" />
-        <button class="pcf-clear-date" title="还原为年度" @click="clearCustomDate">✕</button>
-      </template>
-      <template v-else>
-        <button v-for="p in PRESETS" :key="p.l" class="pcf-preset" @click="applyPreset(p)">{{ p.l }}</button>
-      </template>
-      <!-- 搜索并入筛选行尾，缩短宽度，给表格内容腾出整行空间 -->
-      <div class="pcf-search-wrap">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-        <input v-model="search" class="pcf-search" placeholder="搜索" />
+      <div class="pcf-controls">
+        <select v-model="filters.dept" class="pcf-sel" @change="filters.useCustomDate ? load() : null">
+          <option value="">全部事业部</option>
+          <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+        </select>
+        <div class="pcf-search-wrap">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input v-model="search" class="pcf-search" placeholder="搜索项目 / 客户" />
+        </div>
+        <span class="pcf-fb-sep"></span>
+        <select v-model.number="filters.year" class="pcf-sel">
+          <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+        </select>
+        <template v-if="filters.useCustomDate">
+          <input v-model="filters.date_start" type="date" class="pcf-date-inp" @change="load" />
+          <span class="pcf-dash">—</span>
+          <input v-model="filters.date_end" type="date" class="pcf-date-inp" @change="load" />
+          <button class="pcf-clear-date" title="还原为年度" @click="clearCustomDate">✕</button>
+        </template>
+        <template v-else>
+          <button v-for="p in PRESETS" :key="p.l" class="pcf-preset" @click="applyPreset(p)">{{ p.l }}</button>
+        </template>
       </div>
     </div>
 
@@ -280,12 +273,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.pcf-topsub { font-size: 13px; color: var(--muted); margin-top: 2px; }
-
-/* Filter bar — 紧凑左对齐，对齐项目毛利的 pm-filterbar */
-.pcf-filterbar {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 16px;
-}
+/* 标题行：tab 居左作页面标题，筛选项全部并入同一行靠右，去掉独立筛选条 */
+.pcf-topbar { gap: 12px; flex-wrap: wrap; }
+.pcf-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .pcf-sel {
   border: 1px solid var(--border); background: rgba(255,255,255,.6); padding: 7px 12px;
   border-radius: 8px; font-size: 13px; color: var(--text); cursor: pointer; outline: none;
@@ -293,6 +283,7 @@ onMounted(() => {
 .pcf-sel:hover, .pcf-sel:focus { background: rgba(201,99,66,.09); color: var(--primary); }
 .pcf-fb-sep { width: 1px; height: 20px; background: var(--border); margin: 0 2px; }
 .pcf-dim-seg { display: inline-flex; background: rgba(0,0,0,.05); border-radius: 9px; padding: 3px; }
+.pcf-tabs .pcf-dim-btn { font-size: 15px; padding: 6px 18px; }
 .pcf-dim-btn {
   border: none; background: none; padding: 5px 16px; border-radius: 7px;
   font-size: 12.5px; color: var(--muted); cursor: pointer; font-weight: 600;

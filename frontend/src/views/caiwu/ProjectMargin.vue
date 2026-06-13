@@ -95,41 +95,30 @@ onMounted(() => {
 
 <template>
   <div>
-    <div class="topbar">
-      <div>
-        <h1>项目毛利</h1>
-        <div style="font-size:13px;color:var(--muted);margin-top:2px">
-          业财融合 · 金蝶「按项目核算明细账」→ 项目级 收入 / 成本 / 毛利
+    <!-- 标题行：标题居左，筛选项全部并入同一行靠右，去掉独立的整行筛选框 -->
+    <div class="topbar pm-topbar">
+      <h1>项目毛利</h1>
+      <div class="pm-controls">
+        <select v-model="bu" class="pm-sel" @change="load">
+          <option v-for="b in accessibleBus" :key="b" :value="b">{{ b }}</option>
+        </select>
+        <select v-model.number="year" class="pm-sel" @change="load">
+          <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+        </select>
+        <select v-model.number="month" class="pm-sel" @change="load">
+          <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
+        </select>
+        <div class="pm-modes" :title="mode === 'direct' ? '未挂项目成本单列为「未分摊池」' : '未挂成本按各项目收入比例分摊'">
+          <button :class="['pm-mode', mode === 'direct' ? 'on' : '']"
+                  @click="mode = 'direct'; load()">直接口径</button>
+          <button :class="['pm-mode', mode === 'allocated' ? 'on' : '']"
+                  @click="mode = 'allocated'; load()">分摊口径</button>
         </div>
-      </div>
-      <div style="display:flex;gap:8px">
         <label v-if="auth.canUpload" class="btn btn-ghost btn-sm" :class="{ disabled: uploading }" style="cursor:pointer">
-          {{ uploading ? '导入中…' : '↑ 导入项目核算账' }}
+          {{ uploading ? '导入中…' : '↑ 导入' }}
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="onPickFile" />
         </label>
       </div>
-    </div>
-
-    <!-- Filter bar -->
-    <div class="pm-filterbar">
-      <select v-model="bu" class="pm-sel" @change="load">
-        <option v-for="b in accessibleBus" :key="b" :value="b">{{ b }}</option>
-      </select>
-      <select v-model.number="year" class="pm-sel" @change="load">
-        <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
-      </select>
-      <select v-model.number="month" class="pm-sel" @change="load">
-        <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
-      </select>
-      <div class="pm-modes">
-        <button :class="['pm-mode', mode === 'direct' ? 'on' : '']"
-                @click="mode = 'direct'; load()">直接口径</button>
-        <button :class="['pm-mode', mode === 'allocated' ? 'on' : '']"
-                @click="mode = 'allocated'; load()">分摊口径</button>
-      </div>
-      <span class="pm-mode-hint">
-        {{ mode === 'direct' ? '未挂项目成本单列为「未分摊池」' : '未挂成本按各项目收入比例分摊' }}
-      </span>
     </div>
 
     <EmptyState v-if="loading && !data" loading />
@@ -236,21 +225,17 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.pm-filterbar {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  background: rgba(255,255,255,0.88); border: 1px solid rgba(255,255,255,0.92);
-  border-radius: 14px; padding: 8px 12px; box-shadow: 0 2px 14px rgba(0,0,0,0.06);
-  margin-bottom: 18px;
-}
+/* 筛选项并入标题行靠右，去掉独立整行筛选框 */
+.pm-topbar { gap: 12px; flex-wrap: wrap; }
+.pm-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .pm-sel {
-  height: 32px; padding: 0 10px; border: none; background: rgba(0,0,0,0.04);
+  height: 32px; padding: 0 10px; border: 1px solid var(--border); background: rgba(255,255,255,0.6);
   border-radius: 8px; font-size: 13px; color: var(--text); cursor: pointer; outline: none;
 }
 .pm-sel:hover, .pm-sel:focus { background: rgba(201,99,66,0.09); color: var(--primary); }
 .pm-modes { display: inline-flex; background: rgba(0,0,0,0.05); border-radius: 9px; padding: 3px; }
 .pm-mode { border: none; background: none; padding: 5px 14px; border-radius: 7px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
 .pm-mode.on { background: #fff; color: var(--primary); font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
-.pm-mode-hint { font-size: 11.5px; color: var(--muted); }
 
 .pm-warn {
   background: rgba(245,127,23,0.08); border: 1px solid rgba(245,127,23,0.3);
