@@ -309,8 +309,8 @@ function drillTo(path) {
 }
 const KIND_LABEL = { insight: '洞察', background: '背景', rule: '口径' }
 
-// ── 自动沉淀：每轮回答完自动提炼要点入库（开关，默认关）──────────────────────
-const autoDistill = ref(false)
+// ── 自动沉淀：每轮回答完自动提炼要点入库（开关，默认开——越用越懂业务）─────────
+const autoDistill = ref(true)
 async function silentDistill(content) {
   try {
     await api.post('/cockpit/knowledge/distill', { text: content, scope: selectedBu.value || '全集团' })
@@ -671,13 +671,19 @@ const profitContribOption = computed(() => {
   }
 })
 
-// 今日信号（主动洞察）：融合 BU 经营风险 + 业财融合洞察，带可下钻动作
+// 是否「集团口径」：超管/管理员，或可见全部事业部者。仅个别事业部权限的用户
+// 不展示集团级聚合信号（净利率、集团占比等），只看自己权限范围内的事业部信号。
+const isGroupScope = computed(() =>
+  pkAuth.isAdmin || (pkAuth.effectiveDepts?.length || 0) >= BUSINESS_UNITS.length)
+
+// 今日信号（主动洞察）：融合 BU 经营风险 + 业财融合洞察，带可下钻动作。
+// group:true 标记为集团级聚合信号——非集团口径用户会被过滤掉。
 const alerts = computed(() => {
   const rows = buMatrix.value
   const list = []
   const d = derived.value
   // ── 集团级 ────────────────────────────────────────────────
-  if (d?.netMargin != null && d.netMargin < 0) list.push({ level: 'high', text: `集团整体净利率为负（${d.netMargin.toFixed(1)}%），盈利承压` })
+  if (d?.netMargin != null && d.netMargin < 0) list.push({ level: 'high', group: true, text: `集团整体净利率为负（${d.netMargin.toFixed(1)}%），盈利承压` })
   // ── 业财融合：薄利 / 回款风险（来自业财损益摘要）──────────
   const bf = bfSummary.value
   if (bf) {
@@ -704,9 +710,11 @@ const alerts = computed(() => {
   rows.filter(r => !r.loss && r.profRate != null && r.profRate < 80).forEach(r => list.push({ level: 'mid', bu: r.bu, text: `${r.bu} 净利达成偏低（${r.profRate.toFixed(0)}%）` }))
   rows.filter(r => r.revMom != null && r.revMom <= -10).forEach(r => list.push({ level: 'mid', bu: r.bu, text: `${r.bu} 收入环比下滑 ${Math.abs(r.revMom).toFixed(0)}%` }))
   const top = rows[0]
-  if (top && top.share != null && top.share > 50) list.push({ level: 'mid', bu: top.bu, text: `收入高度集中：${top.bu} 占集团 ${top.share.toFixed(0)}%，依赖单一事业部` })
-  if (!list.length) list.push({ level: 'ok', text: '未发现显著经营风险，各事业部运行平稳' })
-  return list.slice(0, 9)
+  if (top && top.share != null && top.share > 50) list.push({ level: 'mid', group: true, bu: top.bu, text: `收入高度集中：${top.bu} 占集团 ${top.share.toFixed(0)}%，依赖单一事业部` })
+  // 非集团口径：剔除集团级聚合信号，仅保留权限范围内事业部的信号
+  const scoped = isGroupScope.value ? list : list.filter(a => !a.group)
+  if (!scoped.length) scoped.push({ level: 'ok', text: '未发现显著经营风险，各事业部运行平稳' })
+  return scoped.slice(0, 9)
 })
 // 信号点击：BU 信号→下钻该事业部；业财信号→切到业财损益 Tab
 function onSignal(a) {
@@ -1060,9 +1068,13 @@ onMounted(load)
             </div>
           </div>
 
-          <label v-show="panelTab === 'chat'" class="cfa-auto">
-            <input type="checkbox" v-model="autoDistill" />
-            <span>自动把回答要点沉淀进知识库（越用越聪明）</span>
+          <label v-show="panelTab === 'chat'" class="cfa-auto" :class="{ on: autoDistill }">
+            <span class="cfa-auto-txt">
+              <b>🪄 自动沉淀</b>
+              <i>每轮回答要点自动入库 · 越用越懂你的业务</i>
+            </span>
+            <input type="checkbox" v-model="autoDistill" class="cfa-switch-input" />
+            <span class="cfa-switch" aria-hidden="true"></span>
           </label>
           <div v-show="panelTab === 'chat'" class="cfa-input-row">
             <textarea v-model="chatInput" class="cfa-input" rows="1"
@@ -1492,9 +1504,35 @@ onMounted(load)
 .cfa-md :deep(.md-list li) { margin: 3px 0; }
 .cfa-md :deep(code) { background: rgba(201,99,66,0.1); color: #a8442a; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 .cfa-md :deep(hr) { border: none; border-top: 1px solid rgba(0,0,0,0.08); margin: 10px 0; }
+/* 表格：横向可滚动，斑马纹 + 主色表头，让流式表格也清晰对齐 */
+.cfa-md :deep(.md-table-wrap) { overflow-x: auto; margin: 9px 0; border: 1px solid rgba(0,0,0,0.1); border-radius: 9px; }
+.cfa-md :deep(.md-table) { border-collapse: collapse; width: 100%; font-size: 12px; line-height: 1.5; }
+.cfa-md :deep(.md-table th), .cfa-md :deep(.md-table td) {
+  padding: 6px 10px; text-align: left; white-space: nowrap;
+  border-bottom: 1px solid rgba(0,0,0,0.07); border-right: 1px solid rgba(0,0,0,0.05);
+}
+.cfa-md :deep(.md-table th) { background: rgba(201,99,66,0.1); color: #8a4b34; font-weight: 700; }
+.cfa-md :deep(.md-table th:last-child), .cfa-md :deep(.md-table td:last-child) { border-right: none; }
+.cfa-md :deep(.md-table tbody tr:last-child td) { border-bottom: none; }
+.cfa-md :deep(.md-table tbody tr:nth-child(even)) { background: rgba(0,0,0,0.02); }
 
-.cfa-auto { display: flex; align-items: center; gap: 6px; padding: 8px 16px 0; font-size: 11.5px; color: var(--muted); cursor: pointer; }
-.cfa-auto input { cursor: pointer; }
+/* 自动沉淀：胶囊开关（默认开），替代原裸 checkbox */
+.cfa-auto {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin: 8px 16px 0; padding: 8px 12px; border-radius: 11px; cursor: pointer;
+  background: rgba(0,0,0,0.025); border: 1px solid rgba(0,0,0,0.07); transition: all .16s;
+}
+.cfa-auto.on { background: rgba(201,99,66,0.07); border-color: rgba(201,99,66,0.28); }
+.cfa-auto-txt { display: flex; flex-direction: column; gap: 1px; line-height: 1.3; }
+.cfa-auto-txt b { font-size: 12px; font-weight: 700; color: var(--text); }
+.cfa-auto-txt i { font-size: 10.5px; color: var(--muted); font-style: normal; }
+.cfa-switch-input { position: absolute; opacity: 0; width: 0; height: 0; }
+.cfa-switch { flex-shrink: 0; position: relative; width: 38px; height: 22px; border-radius: 11px;
+  background: rgba(0,0,0,0.2); transition: background .18s; }
+.cfa-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.28); transition: transform .18s; }
+.cfa-auto.on .cfa-switch { background: var(--primary); }
+.cfa-auto.on .cfa-switch::after { transform: translateX(16px); }
 .cfa-input-row { display: flex; gap: 8px; align-items: flex-end; padding: 8px 16px 16px; border-top: 1px solid rgba(201,99,66,0.12); }
 .cfa-input {
   flex: 1; resize: none; max-height: 120px; min-height: 38px;

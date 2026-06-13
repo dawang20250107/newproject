@@ -250,6 +250,17 @@ const renderedHtml = computed(() => renderMarkdown(props.text))
   font-family: ui-monospace, Menlo, Consolas, monospace;
 }
 .ai-content :deep(hr) { border: none; border-top: 1px solid rgba(201,99,66,0.18); margin: 14px 0; }
+/* 表格：横向可滚动，斑马纹 + 主色表头，让流式表格清晰对齐 */
+.ai-content :deep(.md-table-wrap) { overflow-x: auto; margin: 12px 0; border: 1px solid rgba(201,99,66,0.16); border-radius: 10px; }
+.ai-content :deep(.md-table) { border-collapse: collapse; width: 100%; font-size: 12.5px; line-height: 1.55; }
+.ai-content :deep(.md-table th), .ai-content :deep(.md-table td) {
+  padding: 7px 11px; text-align: left; white-space: nowrap;
+  border-bottom: 1px solid rgba(201,99,66,0.1); border-right: 1px solid rgba(201,99,66,0.07);
+}
+.ai-content :deep(.md-table th) { background: rgba(201,99,66,0.1); color: #8a4b34; font-weight: 700; }
+.ai-content :deep(.md-table th:last-child), .ai-content :deep(.md-table td:last-child) { border-right: none; }
+.ai-content :deep(.md-table tbody tr:last-child td) { border-bottom: none; }
+.ai-content :deep(.md-table tbody tr:nth-child(even)) { background: rgba(201,99,66,0.03); }
 
 /* ── streaming reasoning (collapsible) ───────────────────────────────────── */
 .ai-reasoning {
