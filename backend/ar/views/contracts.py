@@ -165,3 +165,7 @@ def contract_detail(request, pk):
     return err('Method not allowed', 405)
 
 
+
+
+# 再导出本域全部公开名（含单下划线助手），使 `from ar.views import _x` 等旧引用不变。
+__all__ = [n for n in dir() if not n.startswith('__')]

@@ -1769,3 +1769,7 @@ def ar_records_bulk_delete(request):
     ARRecord.objects.filter(pk__in=del_ids).delete()  # 级联删除关联回款
     return ok({'deleted': len(del_ids)})
 
+
+
+# 再导出本域全部公开名（含单下划线助手），使 `from ar.views import _x` 等旧引用不变。
+__all__ = [n for n in dir() if not n.startswith('__')]
