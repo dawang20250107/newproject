@@ -523,6 +523,464 @@ def _header_row(ws, headers, color='1565C0'):
         cell.alignment = Alignment(horizontal='center')
 
 
+# ── 共享：AR 记录过滤 / 状态 / 排序 / 条件助手（records、budget 等域共用）──
+def _apply_record_filters(qs, request):
+    """Shared dimension filters for AR records (used by list + kpi)."""
+    project_id = request.GET.get('project_id', '').strip()
+    if project_id:
+        qs = qs.filter(project_id=int(project_id))
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+    year = request.GET.get('year', '').strip()
+    if year:
+        qs = qs.filter(operation_year=int(year))
+    month = request.GET.get('month', '').strip()
+    if month:
+        qs = qs.filter(operation_month=int(month))
+    manager = request.GET.get('manager', '').strip()
+    if manager:
+        qs = qs.filter(project__project_manager__icontains=manager)
+    is_shared = request.GET.get('is_shared', '').strip()
+    if is_shared in ('1', 'true'):
+        qs = qs.filter(project__is_shared=True)
+    elif is_shared in ('0', 'false'):
+        qs = qs.filter(project__is_shared=False)
+    q = request.GET.get('q', '').strip()
+    if q:
+        qs = qs.filter(
+            Q(project__short_name__icontains=q) |
+            Q(project__customer_name__icontains=q) |
+            Q(project__project_no__icontains=q) |
+            Q(project__project_manager__icontains=q))
+    return qs
+
+
+def _apply_record_state_filters(qs, request, today=None):
+    """Status / invoice / reconciliation / due-date filters for AR records.
+
+    Used by the list view, the export view and the group-summary view so the
+    same filter semantics apply everywhere. NOT used by the KPI endpoint, which
+    computes its own status breakdown from the unfiltered (by-state) set.
+    """
+    if today is None:
+        today = datetime.date.today()
+    eomonth_today = datetime.date(today.year, today.month,
+                                  calendar.monthrange(today.year, today.month)[1])
+
+    status = request.GET.get('status', '').strip()
+    if status == 'overdue':
+        qs = qs.filter(outstanding_amount__gt=0, due_date__lt=today)
+    elif status == 'current':
+        qs = qs.filter(outstanding_amount__gt=0, due_date__gte=today,
+                       due_date__lte=eomonth_today)
+    elif status == 'not_due':
+        qs = qs.filter(outstanding_amount__gt=0, due_date__gt=eomonth_today)
+    elif status == 'settled':
+        qs = qs.filter(outstanding_amount__lte=0)
+    elif status == 'outstanding':
+        qs = qs.filter(outstanding_amount__gt=0)
+
+    inv_status = request.GET.get('invoice_status', '').strip()
+    # 与 ARRecord.invoice_status 属性保持一致：已结清（outstanding<=0）优先级最高，
+    # 因此「未开票」必须排除已结清记录（未开票 = 未开票 且 仍有未收余额）。
+    if inv_status == '未开票':
+        qs = qs.filter(actual_invoice_amount__isnull=True, outstanding_amount__gt=0)
+    elif inv_status == '已结清':
+        qs = qs.filter(outstanding_amount__lte=0)
+    elif inv_status == '已开票':
+        qs = qs.filter(actual_invoice_amount__isnull=False, outstanding_amount__gt=0)
+
+    recon_status = request.GET.get('reconciliation_status', '').strip()
+    if recon_status == '已对账':
+        qs = qs.filter(Q(reconciliation_date__isnull=False) | Q(actual_invoice_amount__isnull=False))
+    elif recon_status == '未对账':
+        qs = qs.filter(reconciliation_date__isnull=True, actual_invoice_amount__isnull=True)
+
+    # 责任状态（responsibility phase）— 按责任归属阶段过滤，与明细列的
+    # post_invoice_status 责任链一致。逾期/等待中的细分依赖日期运算，这里只过滤到
+    # 责任方所属阶段（settled / 对账阶段 / 开票阶段 / 票后回款阶段），可纯 DB 表达。
+    responsibility = request.GET.get('responsibility', '').strip()
+    if responsibility:
+        no_inv = Q(project__invoice_type='不开票')
+        if responsibility == 'settled':
+            qs = qs.filter(outstanding_amount__lte=0)
+        elif responsibility == 'post':
+            # 票后/回款阶段（销售对接人责任）
+            qs = qs.filter(
+                Q(outstanding_amount__gt=0) & (
+                    (no_inv & Q(reconciliation_date__isnull=False)) |
+                    (~no_inv & Q(invoice_date__isnull=False))
+                )
+            )
+        elif responsibility == 'invoice':
+            # 待开票阶段（开票人责任）
+            qs = qs.filter(
+                Q(outstanding_amount__gt=0) & ~no_inv & Q(invoice_date__isnull=True) &
+                (Q(reconciliation_date__isnull=False) | Q(actual_invoice_amount__isnull=False))
+            )
+        elif responsibility == 'recon':
+            # 对账阶段（非销售责任）
+            qs = qs.filter(
+                Q(outstanding_amount__gt=0) & (
+                    (no_inv & Q(reconciliation_date__isnull=True)) |
+                    (~no_inv & Q(invoice_date__isnull=True) &
+                     Q(reconciliation_date__isnull=True) & Q(actual_invoice_amount__isnull=True))
+                )
+            )
+
+    # 回款筛选：pay_status='unpaid' 纯无回款；pay_include_unpaid=1 与日期区间做 OR
+    # （"3月回款 + 含未结清"→传 pay_start/pay_end + pay_include_unpaid=1）
+    pay_status = request.GET.get('pay_status', '').strip()
+    pay_include_unpaid = request.GET.get('pay_include_unpaid', '') in ('1', 'true')
+    pay_start = request.GET.get('pay_start', '').strip()
+    pay_end = request.GET.get('pay_end', '').strip()
+    has_date = bool(pay_start or pay_end)
+
+    if has_date:
+        date_q = Q()
+        if pay_start:
+            date_q &= Q(payments__payment_date__gte=pay_start)
+        if pay_end:
+            date_q &= Q(payments__payment_date__lte=pay_end)
+        if pay_include_unpaid:
+            qs = qs.filter(date_q | Q(outstanding_amount__gt=0))
+        else:
+            qs = qs.filter(date_q)
+        qs = qs.distinct()
+    elif pay_status == 'unpaid':
+        qs = qs.filter(payments__isnull=True)
+    elif pay_include_unpaid:
+        qs = qs.filter(outstanding_amount__gt=0)
+    elif pay_status == 'paid':
+        qs = qs.filter(payments__isnull=False).distinct()
+    return qs
+
+
+# 应收明细可排序字段白名单：仅暴露已建索引/安全的列，映射到 ORM 字段（值为元组以支持
+# 复合排序，如运作年+月）。前端传 sort=key（升序）或 sort=-key（降序）。
+_AR_SORT_FIELDS = {
+    'operation': ('operation_date',),
+    'due_date': ('due_date',),
+    'target_date': ('target_collection_date',),
+    'outstanding': ('outstanding_amount',),
+    'estimated': ('estimated_amount',),
+    'invoiced': ('actual_invoice_amount',),
+    'invoice_date': ('invoice_date',),
+    'reconciliation_date': ('reconciliation_date',),
+    'created': ('created_at',),
+    'dept': ('delivery_dept',),
+    'project_no': ('project__project_no',),
+    'short_name': ('project__short_name',),
+    'manager': ('project__project_manager',),
+}
+
+
+def _apply_record_sort(qs, request):
+    """按白名单字段做服务端排序；空值统一排末尾，并追加 id 作为稳定次序保证分页确定。
+
+    仅作用于列表查询集（不影响合计/聚合）。非法 sort 键安全忽略，回退模型默认排序。
+    """
+    raw = (request.GET.get('sort') or '').strip()
+    if not raw:
+        return qs
+    desc = raw.startswith('-')
+    key = raw[1:] if desc else raw
+    fields = _AR_SORT_FIELDS.get(key)
+    if not fields:
+        return qs
+    terms = [F(f).desc(nulls_last=True) if desc else F(f).asc(nulls_last=True) for f in fields]
+    terms.append(F('id').desc() if desc else F('id').asc())  # 唯一键兜底，分页稳定
+    return qs.order_by(*terms)
+
+
+# ── 条件构建器（BI 式多条件筛选）─────────────────────────────────────────────
+# 维度类条件仍走既有 flat 参数（dept/status/...，语义单一源）；这里只处理两类"新能力"：
+#   date：任选日期字段 + 相对区间(本周/本月/上月/下月/本年/去年/自定义) + 含/不含
+#   amt ：数值字段 + 运算符(=0/≠0/>0/<0/>/</区间)
+# 前端把这两类条件序列化进 conditions(JSON 数组)下发；多条件 AND，可任意叠加。
+_COND_DATE_FIELDS = {'due_date', 'payment_date', 'invoice_date', 'reconciliation_date',
+                     'operation_date', 'target_collection_date'}
+_COND_AMT_FIELDS = {'estimated_amount', 'outstanding_amount', 'tax_amount',
+                    'actual_invoice_amount', 'account_diff_adjustment'}
+
+
+def _relative_date_range(token, today):
+    """相对区间 token → (start, end)（含端点）；未知 token 返回 None。服务端按 today 计算。"""
+    y, m = today.year, today.month
+    if token == 'this_week':
+        start = today - datetime.timedelta(days=today.weekday())
+        return start, start + datetime.timedelta(days=6)
+    if token == 'this_month':
+        return datetime.date(y, m, 1), datetime.date(y, m, calendar.monthrange(y, m)[1])
+    if token == 'last_month':
+        py, pm = (y - 1, 12) if m == 1 else (y, m - 1)
+        return datetime.date(py, pm, 1), datetime.date(py, pm, calendar.monthrange(py, pm)[1])
+    if token == 'next_month':
+        ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+        return datetime.date(ny, nm, 1), datetime.date(ny, nm, calendar.monthrange(ny, nm)[1])
+    if token == 'this_year':
+        return datetime.date(y, 1, 1), datetime.date(y, 12, 31)
+    if token == 'last_year':
+        return datetime.date(y - 1, 1, 1), datetime.date(y - 1, 12, 31)
+    if token == 'last_week':
+        start = today - datetime.timedelta(days=today.weekday() + 7)
+        return start, start + datetime.timedelta(days=6)
+    if token == 'this_quarter':
+        q = (m - 1) // 3
+        qs, qe = q * 3 + 1, q * 3 + 3
+        return datetime.date(y, qs, 1), datetime.date(y, qe, calendar.monthrange(y, qe)[1])
+    if token == 'last_quarter':
+        q = (m - 1) // 3
+        if q == 0:
+            py, lqs, lqe = y - 1, 10, 12
+        else:
+            py, lqs, lqe = y, (q - 1) * 3 + 1, (q - 1) * 3 + 3
+        return datetime.date(py, lqs, 1), datetime.date(py, lqe, calendar.monthrange(py, lqe)[1])
+    return None
+
+
+def _dec_or_none(v):
+    try:
+        return Decimal(str(v))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _parse_ym(s):
+    """解析 'YYYY-MM' → (year, month)；非法返回 None。"""
+    try:
+        ys, ms = str(s).split('-')[:2]
+        return int(ys), int(ms)
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _ym_range_q(start_ym, end_ym):
+    """运作年月区间 → 标量安全 Q（operation_year/month 双列比较）。
+    仅给 start 时退化为单月；start/end 任意顺序都按从小到大归一。"""
+    s = _parse_ym(start_ym) if start_ym else None
+    e = _parse_ym(end_ym) if end_ym else None
+    if s and not e:
+        e = s
+    if e and not s:
+        s = e
+    if not (s and e):
+        return None
+    if s > e:
+        s, e = e, s
+    (y1, m1), (y2, m2) = s, e
+    if y1 == y2:
+        return Q(operation_year=y1, operation_month__gte=m1, operation_month__lte=m2)
+    q = Q(operation_year=y1, operation_month__gte=m1) | Q(operation_year=y2, operation_month__lte=m2)
+    if y2 - y1 >= 2:
+        q |= Q(operation_year__gt=y1, operation_year__lt=y2)
+    return q
+
+
+def _condition_q(c, today, eomonth_today):
+    """把单个条件构建成「标量安全」的 Q（关联字段一律转 id IN 子查询），
+    便于在 且/或 任意组合下安全参与布尔运算。非法条目返回 None。"""
+    if not isinstance(c, dict):
+        return None
+    ctype = c.get('t')
+
+    # ── 条件组（括号）：内部按 group.match(且/或) 组合，整体作为一个标量安全 Q ──
+    # 支持「(A 且 B) 或 C」这类带括号的复合筛选，可与顶层条件任意嵌套一层。
+    if ctype == 'group':
+        inner = c.get('conditions')
+        if not isinstance(inner, list):
+            return None
+        inner_any = (c.get('match') or 'all') == 'any'
+        combined = None
+        for sub in inner:
+            q = _condition_q(sub, today, eomonth_today)
+            if q is None:
+                continue
+            combined = q if combined is None else ((combined | q) if inner_any else (combined & q))
+        return combined
+
+    # ── 维度类 ─────────────────────────────────────────────────────────────
+    if ctype == 'dim':
+        field = c.get('field')
+        # 运作年月：支持区间(value~end) + 含/不含(exclude)；在空值守卫之前处理
+        if field == 'operation_ym':
+            q = _ym_range_q(c.get('value'), c.get('end'))
+            if q is None:
+                return None
+            return ~q if c.get('exclude') else q
+        v = c.get('value')
+        if v in (None, ''):
+            return None
+        if field == 'dept':
+            return Q(delivery_dept=v)
+        if field == 'project_id':
+            try:
+                return Q(project_id=int(v))
+            except (TypeError, ValueError):
+                return None
+        if field == 'manager':
+            return Q(project__project_manager__icontains=v)
+        if field == 'is_shared':
+            return Q(project__is_shared=(str(v) in ('1', 'true', 'True')))
+        if field == 'operation_year':
+            try:
+                return Q(operation_year=int(v))
+            except (TypeError, ValueError):
+                return None
+        if field == 'operation_month':
+            try:
+                return Q(operation_month=int(v))
+            except (TypeError, ValueError):
+                return None
+        if field == 'q':
+            return (Q(project__short_name__icontains=v) | Q(project__customer_name__icontains=v) |
+                    Q(project__project_no__icontains=v) | Q(project__project_manager__icontains=v))
+        if field == 'status':
+            if v == 'overdue':
+                return Q(outstanding_amount__gt=0, due_date__lt=today)
+            if v == 'current':
+                return Q(outstanding_amount__gt=0, due_date__gte=today, due_date__lte=eomonth_today)
+            if v == 'not_due':
+                return Q(outstanding_amount__gt=0, due_date__gt=eomonth_today)
+            if v == 'settled':
+                return Q(outstanding_amount__lte=0)
+            if v == 'outstanding':
+                return Q(outstanding_amount__gt=0)
+            return None
+        if field == 'reconciliation_status':
+            if v == '已对账':
+                return Q(reconciliation_date__isnull=False) | Q(actual_invoice_amount__isnull=False)
+            if v == '未对账':
+                return Q(reconciliation_date__isnull=True, actual_invoice_amount__isnull=True)
+            return None
+        if field == 'invoice_status':
+            if v == '未开票':
+                return Q(actual_invoice_amount__isnull=True, outstanding_amount__gt=0)
+            if v == '已结清':
+                return Q(outstanding_amount__lte=0)
+            if v == '已开票':
+                return Q(actual_invoice_amount__isnull=False, outstanding_amount__gt=0)
+            return None
+        if field == 'responsibility':
+            no_inv = Q(project__invoice_type='不开票')
+            if v == 'settled':
+                return Q(outstanding_amount__lte=0)
+            if v == 'post':
+                return Q(outstanding_amount__gt=0) & (
+                    (no_inv & Q(reconciliation_date__isnull=False)) |
+                    (~no_inv & Q(invoice_date__isnull=False)))
+            if v == 'invoice':
+                return (Q(outstanding_amount__gt=0) & ~no_inv & Q(invoice_date__isnull=True) &
+                        (Q(reconciliation_date__isnull=False) | Q(actual_invoice_amount__isnull=False)))
+            if v == 'recon':
+                return Q(outstanding_amount__gt=0) & (
+                    (no_inv & Q(reconciliation_date__isnull=True)) |
+                    (~no_inv & Q(invoice_date__isnull=True) &
+                     Q(reconciliation_date__isnull=True) & Q(actual_invoice_amount__isnull=True)))
+            return None
+        return None
+
+    # ── 日期类 ─────────────────────────────────────────────────────────────
+    if ctype == 'date':
+        field = c.get('field')
+        if field not in _COND_DATE_FIELDS:
+            return None
+        rng = c.get('range')
+        if rng == 'custom':
+            start = _normalize_date(c.get('start')) or None
+            end = _normalize_date(c.get('end')) or None
+            if not (start or end):
+                return None
+        else:
+            r = _relative_date_range(rng, today)
+            if not r:
+                return None
+            start, end = r
+        exclude = bool(c.get('exclude'))
+        if field == 'payment_date':
+            # 关联回款集 → 转 id IN 子查询，标量安全；不含=无该区间回款
+            sub = ARPayment.objects.all()
+            if start:
+                sub = sub.filter(payment_date__gte=start)
+            if end:
+                sub = sub.filter(payment_date__lte=end)
+            q = Q(id__in=sub.values('ar_record_id'))
+        else:
+            q = Q()
+            if start:
+                q &= Q(**{f'{field}__gte': start})
+            if end:
+                q &= Q(**{f'{field}__lte': end})
+        return ~q if exclude else q
+
+    # ── 金额类 ─────────────────────────────────────────────────────────────
+    if ctype == 'amt':
+        field = c.get('field')
+        if field not in _COND_AMT_FIELDS:
+            return None
+        op = c.get('op')
+        if op == 'gt0':
+            return Q(**{f'{field}__gt': 0})
+        if op == 'lt0':
+            return Q(**{f'{field}__lt': 0})
+        if op == 'eq0':
+            return Q(**{field: 0})
+        if op == 'ne0':
+            return Q(**{f'{field}__gt': 0}) | Q(**{f'{field}__lt': 0})
+        if op in ('gt', 'lt', 'eq'):
+            v = _dec_or_none(c.get('value'))
+            if v is None:
+                return None
+            return Q(**{{'gt': f'{field}__gt', 'lt': f'{field}__lt', 'eq': field}[op]: v})
+        if op == 'between':
+            lo = _dec_or_none(c.get('min'))
+            hi = _dec_or_none(c.get('max'))
+            q = Q()
+            if lo is not None:
+                q &= Q(**{f'{field}__gte': lo})
+            if hi is not None:
+                q &= Q(**{f'{field}__lte': hi})
+            return q if q else None
+        return None
+
+    return None
+
+
+def _apply_conditions(qs, request, today=None):
+    """统一条件评估：conditions(JSON 数组) 经 match(all=且/any=或) 组合为单个 Q 后应用。
+
+    所有条件均为标量安全 Q（关联字段已转 id IN 子查询），可在且/或下自由组合，
+    无需 distinct。非法条目静默跳过，保证健壮与安全。
+    """
+    raw = (request.GET.get('conditions') or '').strip()
+    if not raw:
+        return qs
+    try:
+        conds = json.loads(raw)
+        assert isinstance(conds, list)
+    except (ValueError, AssertionError):
+        return qs
+    if today is None:
+        today = datetime.date.today()
+    eomonth_today = datetime.date(today.year, today.month,
+                                  calendar.monthrange(today.year, today.month)[1])
+    match_any = (request.GET.get('match') or 'all').strip() == 'any'
+
+    combined = None
+    for c in conds:
+        q = _condition_q(c, today, eomonth_today)
+        if q is None:
+            continue
+        if combined is None:
+            combined = q
+        else:
+            combined = (combined | q) if match_any else (combined & q)
+    if combined is not None:
+        qs = qs.filter(combined)
+    return qs
+
+
 # 自动汇总本模块所有公开名（含单下划线助手）供各业务域 `from ._common import *`：
 # dir() 在模块末尾返回当前命名空间全部名称；排除 dunder 即得到需要再导出的集合。
 __all__ = [n for n in dir() if not n.startswith('__')]
