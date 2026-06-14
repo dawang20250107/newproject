@@ -802,6 +802,9 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         msgs = captured['messages']
         self.assertEqual(msgs[0]['role'], 'system')
         self.assertIn('经营数据上下文', msgs[1]['content'])
+        # 注入当前日期，避免到期/逾期天数算错
+        import datetime as _dt
+        self.assertIn(f'{_dt.date.today():%Y年%m月%d日}', msgs[1]['content'])
         self.assertEqual(msgs[-1]['role'], 'user')
         self.assertEqual(msgs[-1]['content'], '利润达标吗？')
 

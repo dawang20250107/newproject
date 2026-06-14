@@ -3190,6 +3190,10 @@ _COCKPIT_CHAT_SYSTEM = (
     '③用 Markdown（标题/列表/加粗）组织答案，避免空话套话；多事业部对比、'
     '多指标并列等结构化数据务必用 Markdown 表格（| 表头 | … | 与 | --- | 分隔行）呈现，金额对齐、便于阅读；'
     '④口径：财务=已发布部门明细表（收入=主营业务收入，利润=经营净利，集团总部为成本中心）。'
+    '⑤数据不足以支撑判断时（如缺少口径/期间/范围或上下文未覆盖且无法取数），'
+    '主动向用户追问澄清，而不是强行作答或臆测；'
+    '⑥区分「事实」与「推断」：基于数据直接得出的结论可径直陈述，你的归因/猜测须显式标注'
+    '（如"推测""可能因为""有待核实"），不要把推断包装成事实。'
 )
 
 
@@ -3478,9 +3482,12 @@ def _cockpit_chat_prepare(request):
     ov_y = _aggregate_total(bu_rows, 'ytd')
     data_pack = _build_cockpit_data_pack(year, month, bus, bu_rows, ov_m, ov_y, actuals)
 
+    import datetime as _dt
+    _wd = '一二三四五六日'[_dt.date.today().weekday()]
+    today_line = f'今天是 {_dt.date.today():%Y年%m月%d日}（星期{_wd}）。涉及到期/逾期/剩余天数等请以此为基准。'
     messages = [
         {'role': 'system', 'content': _COCKPIT_CHAT_SYSTEM},
-        {'role': 'system', 'content': f'【经营数据上下文】\n{data_pack}'},
+        {'role': 'system', 'content': f'{today_line}\n【经营数据上下文】\n{data_pack}'},
     ]
     knowledge = _build_knowledge_context(bus)
     if knowledge:
@@ -4227,6 +4234,10 @@ def chart_waterfall(request):
 
 # ── AI analysis (DeepSeek) ───────────────────────────────────────────────────
 
+# 财务/经营分析以"数字稳定、少漂移"为先，统一用较低采样温度（原 0.3 → 0.2）。
+_AI_TEMPERATURE = 0.2
+
+
 def _deepseek_chat(messages, timeout=90, model=None, max_tokens=1800):
     """Call DeepSeek chat completion API. Returns response text or raises.
 
@@ -4243,7 +4254,7 @@ def _deepseek_chat(messages, timeout=90, model=None, max_tokens=1800):
         json={
             'model': model or settings.DEEPSEEK_MODEL,
             'messages': messages,
-            'temperature': 0.3,
+            'temperature': _AI_TEMPERATURE,
             'max_tokens': max_tokens,
         },
         timeout=timeout,
@@ -4258,7 +4269,7 @@ def _deepseek_chat_raw(messages, tools=None, model=None, timeout=90, max_tokens=
     payload = {
         'model': model or settings.DEEPSEEK_MODEL,
         'messages': messages,
-        'temperature': 0.3,
+        'temperature': _AI_TEMPERATURE,
         'max_tokens': max_tokens,
     }
     if tools:
@@ -4281,7 +4292,7 @@ def _deepseek_stream_raw(messages, tools=None, model=None, max_tokens=1800, time
     payload = {
         'model': model or settings.DEEPSEEK_MODEL,
         'messages': messages,
-        'temperature': 0.3,
+        'temperature': _AI_TEMPERATURE,
         'max_tokens': max_tokens,
         'stream': True,
     }
@@ -4348,7 +4359,7 @@ def _deepseek_stream(messages, model=None, max_tokens=1800, timeout=300):
         json={
             'model': model or settings.DEEPSEEK_MODEL,
             'messages': messages,
-            'temperature': 0.3,
+            'temperature': _AI_TEMPERATURE,
             'max_tokens': max_tokens,
             'stream': True,
         },
