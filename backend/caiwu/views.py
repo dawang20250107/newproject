@@ -3077,12 +3077,6 @@ def _build_report_messages(year, month, bus, period):
     return [{'role': 'system', 'content': _COCKPIT_AI_SYSTEM}, {'role': 'user', 'content': prompt}]
 
 
-def _chunk_text(s, n=48):
-    s = s or ''
-    for i in range(0, len(s), n):
-        yield s[i:i + n]
-
-
 _COCKPIT_AI_SYSTEM = (
     '你是集团CFO级别的资深财务与经营分析专家，既能从全集团高度做综合诊断与事业部横向对比，'
     '也能深入剖析单一事业部的经营状况并给出针对性建议，用中文专业作答。'
@@ -3528,12 +3522,19 @@ def cockpit_ai_chat_stream(request):
             tools = agent_skills.agent_tools()
             convo = list(messages)
             for _step in range(4):  # 工具调用循环上限，防止无限调用
-                msg = _deepseek_chat_raw(convo, tools=tools, model=tool_model,
-                                         timeout=120, max_tokens=2000)
-                tool_calls = msg.get('tool_calls')
+                # 真流式：边逐字推送 reasoning/answer，边累积 tool_calls
+                msg = None
+                for kind, payload in _deepseek_stream_raw(convo, tools=tools, model=tool_model,
+                                                          timeout=120, max_tokens=2000):
+                    if kind == 'final':
+                        msg = payload
+                        break
+                    yield _sse_event({'type': kind, 'delta': payload})
+                tool_calls = (msg or {}).get('tool_calls')
                 if not tool_calls:
-                    for chunk in _chunk_text(msg.get('content') or '（未返回内容）'):
-                        yield _sse_event({'type': 'answer', 'delta': chunk})
+                    # 正文已在上面真流式推送完毕；若模型一字未出则补位
+                    if not (msg and msg.get('content')):
+                        yield _sse_event({'type': 'answer', 'delta': '（未返回内容）'})
                     yield _sse_event({'type': 'done'})
                     return
                 convo.append({'role': 'assistant', 'content': msg.get('content') or '',
@@ -4270,6 +4271,64 @@ def _deepseek_chat_raw(messages, tools=None, model=None, timeout=90, max_tokens=
         json=payload, timeout=timeout)
     resp.raise_for_status()
     return resp.json()['choices'][0]['message']
+
+
+def _deepseek_stream_raw(messages, tools=None, model=None, max_tokens=1800, timeout=300):
+    """流式版 function-calling：边逐字 yield ('reasoning'|'answer', delta) 给前端，
+    边累积 tool_calls 与正文；流结束时 yield 一个 ('final', {'content','tool_calls'})
+    哨兵，让调用方在「单次请求 + 真流式」下仍能判断是否需要执行工具。"""
+    import requests as req_lib
+    payload = {
+        'model': model or settings.DEEPSEEK_MODEL,
+        'messages': messages,
+        'temperature': 0.3,
+        'max_tokens': max_tokens,
+        'stream': True,
+    }
+    if tools:
+        payload['tools'] = tools
+        payload['tool_choice'] = 'auto'
+    resp = req_lib.post(
+        f'{settings.DEEPSEEK_BASE_URL}/chat/completions',
+        headers={'Authorization': f'Bearer {settings.DEEPSEEK_API_KEY}',
+                 'Content-Type': 'application/json'},
+        json=payload, timeout=timeout, stream=True)
+    resp.raise_for_status()
+    content_parts = []
+    tc_acc = {}   # index -> {'id','type','function':{'name','arguments'}}（分片增量拼接）
+    for raw in resp.iter_lines(decode_unicode=False):
+        if not raw:
+            continue
+        line = raw.decode('utf-8', 'ignore')
+        if not line.startswith('data:'):
+            continue
+        data = line[5:].strip()
+        if data == '[DONE]':
+            break
+        try:
+            delta = json.loads(data)['choices'][0]['delta']
+        except (ValueError, KeyError, IndexError):
+            continue
+        rc = delta.get('reasoning_content')
+        if rc:
+            yield ('reasoning', rc)
+        c = delta.get('content')
+        if c:
+            content_parts.append(c)
+            yield ('answer', c)
+        for tcd in (delta.get('tool_calls') or []):
+            slot = tc_acc.setdefault(tcd.get('index', 0),
+                                     {'id': '', 'type': 'function',
+                                      'function': {'name': '', 'arguments': ''}})
+            if tcd.get('id'):
+                slot['id'] = tcd['id']
+            fn = tcd.get('function') or {}
+            if fn.get('name'):
+                slot['function']['name'] += fn['name']
+            if fn.get('arguments'):
+                slot['function']['arguments'] += fn['arguments']
+    tool_calls = [tc_acc[i] for i in sorted(tc_acc)] if tc_acc else None
+    yield ('final', {'content': ''.join(content_parts), 'tool_calls': tool_calls})
 
 
 def _deepseek_stream(messages, model=None, max_tokens=1800, timeout=300):
