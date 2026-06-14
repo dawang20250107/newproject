@@ -192,7 +192,7 @@ async function sendChat(text) {
   chatInput.value = ''
   chatErr.value = ''
   chatMessages.value.push({ role: 'user', content: q })
-  chatMessages.value.push({ role: 'assistant', content: '', reasoning: '', tool: '' })
+  chatMessages.value.push({ role: 'assistant', content: '', reasoning: '', toolSteps: [] })
   const asst = chatMessages.value[chatMessages.value.length - 1]   // reactive proxy
   chatStreaming.value = true
   scrollChatSoon()
@@ -206,8 +206,15 @@ async function sendChat(text) {
     if (selectedBu.value) body.bu = selectedBu.value
     await streamAiAnalysis('/cockpit/ai-chat/stream', body, {
       onReasoning: d => { asst.reasoning += d; scrollChatSoon() },
-      onAnswer: d => { asst.content += d; asst.tool = ''; scrollChatSoon() },
-      onTool: e => { asst.tool = `🛠 正在${e.label || '调用技能'}…`; scrollChatSoon() },
+      onAnswer: d => { asst.content += d; scrollChatSoon() },
+      onTool: e => { asst.toolSteps.push({ label: e.label || '调用技能', name: e.name, ms: null, ok: null }); scrollChatSoon() },
+      onToolDone: e => {
+        for (let k = asst.toolSteps.length - 1; k >= 0; k--) {
+          const s = asst.toolSteps[k]
+          if (s.name === e.name && s.ms == null) { s.ms = e.ms; s.ok = e.ok; break }
+        }
+        scrollChatSoon()
+      },
       onError: m => { chatErr.value = m },
     })
   } catch (e) {
@@ -1012,10 +1019,18 @@ onMounted(load)
                 <div v-if="m.role === 'user'" class="cfa-bubble cfa-user">{{ m.content }}</div>
                 <div v-else class="cfa-asst-wrap">
                   <div class="cfa-bubble cfa-asst">
-                    <div v-if="m.tool && !m.content" class="cfa-tool">{{ m.tool }}</div>
+                    <div v-if="m.toolSteps && m.toolSteps.length" class="cfa-tools">
+                      <div v-for="(s, si) in m.toolSteps" :key="si"
+                           class="cfa-tool" :class="{ done: s.ms != null, fail: s.ok === false }">
+                        <span class="cfa-tool-ic">🛠</span>
+                        <span class="cfa-tool-lb">{{ s.label }}</span>
+                        <span v-if="s.ms == null" class="cfa-tool-run">…</span>
+                        <span v-else class="cfa-tool-ms">{{ s.ok === false ? '✕' : '✓' }} {{ s.ms }}ms</span>
+                      </div>
+                    </div>
                     <div v-if="m.reasoning && !m.content" class="cfa-reasoning">💭 {{ m.reasoning }}</div>
                     <div v-if="m.content" class="cfa-md" v-html="renderMarkdown(m.content)"></div>
-                    <span v-else-if="chatStreaming && i === chatMessages.length - 1 && !m.reasoning && !m.tool" class="cfa-typing">思考中<i>.</i><i>.</i><i>.</i></span>
+                    <span v-else-if="chatStreaming && i === chatMessages.length - 1 && !m.reasoning && !(m.toolSteps && m.toolSteps.length)" class="cfa-typing">思考中<i>.</i><i>.</i><i>.</i></span>
                   </div>
                   <!-- 答案动作：提炼入库 + 下钻 -->
                   <div v-if="m.content && !(chatStreaming && i === chatMessages.length - 1)" class="cfa-actions">
@@ -1485,7 +1500,12 @@ onMounted(load)
 .cfa-bubble { max-width: 88%; border-radius: 14px; padding: 10px 13px; font-size: 13px; line-height: 1.7; }
 .cfa-user { background: linear-gradient(135deg, #c96342, #e8855a); color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
 .cfa-asst { background: rgba(255,255,255,0.92); border: 1px solid rgba(0,0,0,0.06); color: var(--text); border-bottom-left-radius: 4px; }
-.cfa-tool { font-size: 12px; color: var(--primary); font-weight: 600; background: rgba(201,99,66,0.08); border-radius: 8px; padding: 5px 9px; }
+.cfa-tools { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.cfa-tool { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; font-size: 12px; color: var(--primary); font-weight: 600; background: rgba(201,99,66,0.08); border-radius: 8px; padding: 5px 9px; }
+.cfa-tool.done { color: #2e7d32; background: rgba(46,125,50,0.08); }
+.cfa-tool.fail { color: #b3261e; background: rgba(179,38,30,0.08); }
+.cfa-tool-run { letter-spacing: 1px; animation: cfaBlink 1.1s infinite; }
+.cfa-tool-ms { font-weight: 700; font-variant-numeric: tabular-nums; }
 .cfa-reasoning { font-size: 12px; color: #6b7a8c; line-height: 1.6; white-space: pre-wrap; }
 .cfa-typing i { animation: cfaBlink 1.2s infinite; opacity: .3; }
 .cfa-typing i:nth-child(2) { animation-delay: .2s; }

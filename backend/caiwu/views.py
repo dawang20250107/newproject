@@ -3576,9 +3576,12 @@ def cockpit_ai_chat_stream(request):
                         res = sk['handler'](request, a) if sk else {'ok': False, 'error': '未知技能'}
                     except Exception as ex:
                         res = {'ok': False, 'error': str(ex)[:120]}
+                    elapsed_ms = int((time.monotonic() - t0) * 1000)
                     logger.info('agent-tool uid=%s step=%s name=%s ok=%s ms=%d args=%s',
-                                uid, _step, name, res.get('ok'),
-                                int((time.monotonic() - t0) * 1000), raw_args[:200])
+                                uid, _step, name, res.get('ok'), elapsed_ms, raw_args[:200])
+                    yield _sse_event({'type': 'tool_done', 'name': name,
+                                      'label': sk['label'] if sk else (name or '技能'),
+                                      'ok': bool(res.get('ok')), 'ms': elapsed_ms})
                     convo.append({'role': 'tool', 'tool_call_id': tc.get('id'),
                                   'content': json.dumps(res, ensure_ascii=False)})
                 if terminal_done:

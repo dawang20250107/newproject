@@ -921,6 +921,11 @@ class CaiwuMetricsAndTargetsTests(TestCase):
             body = b''.join(resp.streaming_content).decode('utf-8')
         events = [json.loads(fr[5:].strip()) for fr in body.split('\n\n') if fr.strip().startswith('data:')]
         self.assertIn('tool', [e['type'] for e in events])
+        # 工具完成事件含计时与成败，供前端展示"✓ Nms"
+        done = next(e for e in events if e['type'] == 'tool_done')
+        self.assertEqual(done['name'], 'save_knowledge')
+        self.assertTrue(done['ok'])
+        self.assertIsInstance(done['ms'], int)
         answer = ''.join(e['delta'] for e in events if e['type'] == 'answer')
         self.assertIn('已记录并回答', answer)
         items = self.client.get('/api/cw/cockpit/knowledge', **self.auth()).json()['data']['items']
