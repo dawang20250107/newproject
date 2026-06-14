@@ -13,6 +13,7 @@ import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney, topLabel, endLabe
 import { streamAiAnalysis } from '../../utils/aiStream.js'
 import { renderMarkdown } from '../../utils/markdown.js'
 import EmptyState from '../../components/EmptyState.vue'
+import AiMark from '../../components/AiMark.vue'
 
 // 驾驶舱内嵌分析面板（懒加载，首次切到对应 Tab 才载入）
 const ChartsPanel = defineAsyncComponent(() => import('./Charts.vue'))
@@ -747,7 +748,7 @@ onMounted(load)
       <div class="cockpit-title-wrap">
         <h1>财务驾驶舱</h1>
         <button class="cfa-title-btn" :class="{ on: chatOpen }" @click="chatOpen = true" title="业财融合 AI 助手">
-          <span class="cfa-title-orb">🤖</span> 业财 AI 助手 <span class="ai-pro-tag">PRO</span>
+          <AiMark light :size="18" class="cfa-title-orb" /> 业财 AI 助手 <span class="ai-pro-tag">PRO</span>
         </button>
         <button class="present-btn" @click="openPresent" title="大屏复盘模式">🖥 大屏复盘</button>
       </div>
@@ -828,14 +829,14 @@ onMounted(load)
           <div class="section-title signal-title">
             <span>📡 今日信号 <span class="tip">主动洞察 · 点击可下钻</span></span>
             <button class="signal-ai-btn" :disabled="aiLoading" @click="runAiAnalysis">
-              🤖 {{ aiLoading ? '解读中…' : 'AI 解读' }}
+              <AiMark :size="14" style="margin-right:4px" /> {{ aiLoading ? '解读中…' : 'AI 解读' }}
             </button>
           </div>
           <ul class="alert-list">
             <li v-for="(a, i) in alerts" :key="i" class="alert-item" :class="[`al-${a.level}`, { actionable: a.bu || a.tab }]" @click="onSignal(a)">
               <span class="al-dot"></span>
               <span class="al-text">{{ a.text }}</span>
-              <button v-if="a.level !== 'ok'" class="al-ask" title="问 AI 这条信号" @click.stop="askAboutSignal(a)">🤖问</button>
+              <button v-if="a.level !== 'ok'" class="al-ask" title="问 AI 这条信号" @click.stop="askAboutSignal(a)"><AiMark :size="12" style="margin-right:2px" />问</button>
               <button v-if="a.level !== 'ok'" class="al-action" title="转为行动项" @click.stop="createActionFromSignal(a)">→行动</button>
               <span v-if="a.bu || a.tab" class="al-go">›</span>
             </li>
@@ -969,7 +970,7 @@ onMounted(load)
           <div class="cfa-glow"></div>
           <div class="cfa-head">
             <div class="cfa-head-l">
-              <span class="cfa-head-orb">🤖</span>
+              <AiMark :size="30" class="cfa-head-orb" />
               <div>
                 <div class="cfa-title">业财融合 · 经营问答<span class="ai-pro-tag">PRO</span></div>
                 <div class="cfa-scope">{{ aiScopeLabel }} · 全事业部财务+业务数据</div>
@@ -1008,7 +1009,7 @@ onMounted(load)
           <!-- ══ 对话 ══ -->
           <div v-show="panelTab === 'chat'" ref="chatBodyRef" class="cfa-body">
             <div v-if="!chatMessages.length" class="cfa-empty">
-              <div class="cfa-empty-orb">🤖</div>
+              <div class="cfa-empty-orb"><AiMark :size="64" /></div>
               <div class="cfa-empty-title">我是你的业财融合经营助手</div>
               <div class="cfa-empty-sub">已掌握全集团各事业部的财务与业务数据，并会延续知识库里的历史判断。问我任何经营问题：</div>
               <div class="cfa-sugs">
