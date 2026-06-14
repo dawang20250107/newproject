@@ -971,6 +971,33 @@ class CaiwuMetricsAndTargetsTests(TestCase):
             content_type='application/json', **self.auth())
         self.assertGreaterEqual(f.json()['data']['deleted'], 1)
 
+    def test_agent_readonly_query_skills(self):
+        """只读数据查询技能：列表含三个查询工具，可按 期间/事业部 取数且复用驾驶舱口径；
+        无数据时返回兜底文案而非报错。"""
+        self.mk(2026, 5, 200, 130)
+        names = [s['name'] for s in
+                 self.client.get('/api/cw/cockpit/skills', **self.auth()).json()['data']['skills']]
+        for n in ('query_financials', 'query_receivables', 'query_project_margin'):
+            self.assertIn(n, names)
+
+        # 业绩查询：指定期间/事业部 → 返回文本含该事业部口径
+        r = self.client.post(
+            '/api/cw/cockpit/skills/run',
+            data=json.dumps({'name': 'query_financials',
+                             'args': {'year': 2026, 'month': 5, 'bu': self.bu}}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn(self.bu, r.json()['data'])
+
+        # 应收/毛利无数据时不报错，返回字符串兜底
+        for n in ('query_receivables', 'query_project_margin'):
+            q = self.client.post(
+                '/api/cw/cockpit/skills/run',
+                data=json.dumps({'name': n, 'args': {'year': 2026, 'month': 5, 'bu': self.bu}}),
+                content_type='application/json', **self.auth())
+            self.assertEqual(q.status_code, 200, q.content)
+            self.assertIsInstance(q.json()['data'], str)
+
     def test_knowledge_import_dedup(self):
         """同范围内内容完全相同的导入不重复入库。"""
         from django.core.files.uploadedfile import SimpleUploadedFile

@@ -3497,7 +3497,10 @@ def _cockpit_chat_prepare(request):
         messages.append({'role': 'system', 'content':
                          f'你具备以下可调用技能（function-calling）：{brief}。'
                          '当用户的意图明确对应某个技能时（如"生成/出一份月度或年度经营分析报告""把这条记进知识库"），'
-                         '请调用相应技能完成，而不是仅用文字描述；其余经营问答正常作答即可。'})
+                         '请调用相应技能完成，而不是仅用文字描述。'
+                         '【经营数据上下文】仅覆盖当前期间与范围；当用户问到其它月份/年份或其它事业部的'
+                         '业绩、应收回款、项目毛利时，先调用 query_financials / query_receivables / '
+                         'query_project_margin 取数再作答，切勿凭空臆测数字。其余经营问答正常作答即可。'})
     messages += history
     scope = '全集团' if len(bus) > 1 else (bus[0] if bus else '全集团')
     return (messages, scope), None
@@ -3915,6 +3918,85 @@ def _skill_generate_report(request, args):
     text = _deepseek_chat(_build_report_messages(year, month, bus, period),
                           timeout=180, model=settings.DEEPSEEK_PRO_MODEL, max_tokens=3500)
     return {'ok': True, 'data': {'report': text, 'year': year, 'month': month, 'period': period}}
+
+
+# ── 只读数据查询技能：让对话 Agent 能按需翻账（任意期间/事业部），不再被当前快照锁死 ──
+# 全部复用驾驶舱既有口径构造器，与已上线数据完全同源；经 _resolve_query_args 做事业部
+# 权限收敛——用户问不到自己无权访问的事业部。纯读，零写操作、零业务数据风险。
+def _resolve_query_args(request, args):
+    """解析只读查询技能的 year/month/bu：缺省取当前对话期间/范围，bu 经权限校验后收敛。"""
+    import datetime as _dt
+    today = _dt.date.today()
+    try:
+        year = int(args.get('year') or getattr(request, 'chat_year', 0) or 0)
+    except Exception:
+        year = 0
+    try:
+        month = int(args.get('month') or getattr(request, 'chat_month', 0) or 0)
+    except Exception:
+        month = 0
+    bus = list(getattr(request, 'chat_bus', None) or [])
+    if not bus:
+        bus, _e = _resolve_bu_list(request, '')
+    bu_arg = (args.get('bu') or '').strip()
+    if bu_arg and bu_arg in VALID_BUSINESS_UNITS and _can_access_bu(request, bu_arg):
+        bus = [bu_arg]
+    if not (2000 <= year <= 2100):
+        year = today.year
+    if not (1 <= month <= 12):
+        month = today.month
+    return year, month, bus
+
+
+def _compute_cockpit_rows(bus, year, month):
+    """按 (事业部清单, 年, 月) 计算各部 + 集团口径行，供财务查询技能复用驾驶舱口径。"""
+    tgt_index = _load_target_index(bus, year)
+    actuals = _collect_actuals(bus, {year, year - 1})
+    bu_rows = [_bu_metrics(bu, year, month, tgt_index, actuals) for bu in bus]
+    ov_m = _attach_group_chg(_aggregate_total(bu_rows, 'month'), bus, year, month, actuals)
+    ov_y = _aggregate_total(bu_rows, 'ytd')
+    return bu_rows, ov_m, ov_y, actuals
+
+
+@agent_skills.register_skill(
+    'query_financials', '查询经营业绩',
+    '查询指定期间/事业部的财务业绩：收入·成本·利润、目标达成、同比环比、12个月趋势。'
+    '当用户问到当前上下文未覆盖的期间或事业部时调用',
+    {'year': '年份，如2026（可选，默认当前对话期间）',
+     'month': '月份1-12（可选，默认当前对话期间）',
+     'bu': '事业部名称（可选，默认当前范围；无权访问将被忽略）'},
+    tool=True)
+def _skill_query_financials(request, args):
+    year, month, bus = _resolve_query_args(request, args)
+    bu_rows, ov_m, ov_y, actuals = _compute_cockpit_rows(bus, year, month)
+    text = _cockpit_data_lines(year, month, bus, bu_rows, ov_m, ov_y, actuals)
+    return {'ok': True, 'data': text or '（该期间/范围无经营业绩数据）'}
+
+
+@agent_skills.register_skill(
+    'query_receivables', '查询应收回款',
+    '查询指定期间/事业部的应收未收、逾期账龄分布、本期回款与逾期最大项目（业务侧，交付部门口径）',
+    {'year': '年份（可选，默认当前对话期间）',
+     'month': '月份1-12（可选，默认当前对话期间）',
+     'bu': '事业部名称（可选，默认当前范围；无权访问将被忽略）'},
+    tool=True)
+def _skill_query_receivables(request, args):
+    year, month, bus = _resolve_query_args(request, args)
+    text = _build_ar_business_summary(bus, year, month)
+    return {'ok': True, 'data': text or '（该期间/范围无应收回款数据）'}
+
+
+@agent_skills.register_skill(
+    'query_project_margin', '查询项目毛利',
+    '查询指定期间/事业部的项目毛利：各部毛利Top项目与亏损项目（收入−主营成本，直接口径）',
+    {'year': '年份（可选，默认当前对话期间）',
+     'month': '月份1-12（可选，默认当前对话期间）',
+     'bu': '事业部名称（可选，默认当前范围；无权访问将被忽略）'},
+    tool=True)
+def _skill_query_project_margin(request, args):
+    year, month, bus = _resolve_query_args(request, args)
+    text = _build_project_margin_summary(bus, year, month)
+    return {'ok': True, 'data': text or '（该期间/范围无项目毛利数据，可能尚未导入按项目核算账）'}
 
 
 @cw_required()
