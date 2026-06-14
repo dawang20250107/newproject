@@ -1013,7 +1013,8 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.mk(2026, 5, 200, 130)
         names = [s['name'] for s in
                  self.client.get('/api/cw/cockpit/skills', **self.auth()).json()['data']['skills']]
-        for n in ('query_financials', 'query_receivables', 'query_project_margin'):
+        for n in ('query_financials', 'query_receivables', 'query_project_margin',
+                  'query_bf_fusion', 'query_forecast'):
             self.assertIn(n, names)
 
         # 业绩查询：指定期间/事业部 → 返回文本含该事业部口径
@@ -1025,14 +1026,44 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.assertEqual(r.status_code, 200, r.content)
         self.assertIn(self.bu, r.json()['data'])
 
-        # 应收/毛利无数据时不报错，返回字符串兜底
-        for n in ('query_receivables', 'query_project_margin'):
+        # 应收/毛利/归因/预测无数据时不报错，返回字符串兜底
+        for n in ('query_receivables', 'query_project_margin', 'query_bf_fusion', 'query_forecast'):
             q = self.client.post(
                 '/api/cw/cockpit/skills/run',
                 data=json.dumps({'name': n, 'args': {'year': 2026, 'month': 5, 'bu': self.bu}}),
                 content_type='application/json', **self.auth())
             self.assertEqual(q.status_code, 200, q.content)
             self.assertIsInstance(q.json()['data'], str)
+
+    def test_chat_multi_step_tool_calls(self):
+        """跨期间多步取数：模型连续调用查询技能 >4 步后再综合作答（循环上限已提到 6）。"""
+        from unittest import mock
+        self.mk(2026, 5, 200, 130)
+        calls = {'n': 0}
+
+        def fake_stream_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800):
+            calls['n'] += 1
+            if calls['n'] <= 5:   # 连续 5 步各调一次查询工具（旧上限 4 会被卡住）
+                yield ('final', {'content': '', 'tool_calls': [{'id': f'c{calls["n"]}', 'function': {
+                    'name': 'query_financials',
+                    'arguments': '{"year":2026,"month":%d}' % calls['n']}}]})
+            else:
+                yield ('answer', '综合各期：稳健。')
+                yield ('final', {'content': '综合各期：稳健。', 'tool_calls': None})
+
+        with mock.patch('caiwu.views._deepseek_stream_raw', fake_stream_raw):
+            resp = self.client.post(
+                '/api/cw/cockpit/ai-chat/stream',
+                data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu,
+                                 'messages': [{'role': 'user', 'content': '各月对比一下'}]}),
+                content_type='application/json', **self.auth())
+            body = b''.join(resp.streaming_content).decode('utf-8')
+        events = [json.loads(fr[5:].strip())
+                  for fr in body.split('\n\n') if fr.strip().startswith('data:')]
+        # 5 次工具事件 + 最终答案均到达（证明未被 4 步上限截断）
+        self.assertEqual(sum(1 for e in events if e['type'] == 'tool'), 5)
+        self.assertIn('综合各期', ''.join(e['delta'] for e in events if e['type'] == 'answer'))
+        self.assertEqual(events[-1]['type'], 'done')
 
     def test_knowledge_import_dedup(self):
         """同范围内内容完全相同的导入不重复入库。"""

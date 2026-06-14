@@ -3500,8 +3500,11 @@ def _cockpit_chat_prepare(request):
                          '当用户的意图明确对应某个技能时（如"生成/出一份月度或年度经营分析报告""把这条记进知识库"），'
                          '请调用相应技能完成，而不是仅用文字描述。'
                          '【经营数据上下文】仅覆盖当前期间与范围；当用户问到其它月份/年份或其它事业部的'
-                         '业绩、应收回款、项目毛利时，先调用 query_financials / query_receivables / '
-                         'query_project_margin 取数再作答，切勿凭空臆测数字。其余经营问答正常作答即可。'})
+                         '业绩、应收回款、项目毛利、业财归因、全年预测时，先调用对应的 query_* 技能'
+                         '（query_financials / query_receivables / query_project_margin / '
+                         'query_bf_fusion / query_forecast）取数再作答，切勿凭空臆测数字。'
+                         '需要跨期间或跨事业部对比时，可分多次调用查询技能（如先取上半年、再取下半年）'
+                         '逐步取齐数据后再综合作答。其余经营问答正常作答即可。'})
     messages += history
     scope = '全集团' if len(bus) > 1 else (bus[0] if bus else '全集团')
     return (messages, scope), None
@@ -3524,11 +3527,14 @@ def cockpit_ai_chat_stream(request):
     tool_model = settings.DEEPSEEK_MODEL   # function-calling 走支持 tools 的对话模型
 
     def gen():
+        import time
         yield _sse_event({'type': 'meta', 'scope': scope, 'model': tool_model})
+        uid = getattr(request, 'pk_uid', None)
         try:
             tools = agent_skills.agent_tools()
             convo = list(messages)
-            for _step in range(4):  # 工具调用循环上限，防止无限调用
+            max_steps = 6   # 工具调用循环上限：支持「先查A期再查B期再综合」的跨期间多步取数
+            for _step in range(max_steps):
                 # 真流式：边逐字推送 reasoning/answer，边累积 tool_calls
                 msg = None
                 for kind, payload in _deepseek_stream_raw(convo, tools=tools, model=tool_model,
@@ -3550,22 +3556,29 @@ def cockpit_ai_chat_stream(request):
                 for tc in tool_calls:
                     fn = tc.get('function') or {}
                     name = fn.get('name')
+                    raw_args = fn.get('arguments') or '{}'
                     try:
-                        a = json.loads(fn.get('arguments') or '{}')
+                        a = json.loads(raw_args)
                     except Exception:
                         a = {}
                     sk = agent_skills.get_skill(name)
                     yield _sse_event({'type': 'tool', 'name': name,
                                       'label': sk['label'] if sk else (name or '技能')})
+                    t0 = time.monotonic()   # 可观测性：记录每步工具名/参数/耗时/成败
                     if sk and sk.get('terminal') and sk.get('stream_handler'):
                         for kind, delta in sk['stream_handler'](request, a):
                             yield _sse_event({'type': kind, 'delta': delta})
+                        logger.info('agent-tool uid=%s step=%s name=%s terminal ms=%d',
+                                    uid, _step, name, int((time.monotonic() - t0) * 1000))
                         terminal_done = True
                         break
                     try:
                         res = sk['handler'](request, a) if sk else {'ok': False, 'error': '未知技能'}
                     except Exception as ex:
                         res = {'ok': False, 'error': str(ex)[:120]}
+                    logger.info('agent-tool uid=%s step=%s name=%s ok=%s ms=%d args=%s',
+                                uid, _step, name, res.get('ok'),
+                                int((time.monotonic() - t0) * 1000), raw_args[:200])
                     convo.append({'role': 'tool', 'tool_call_id': tc.get('id'),
                                   'content': json.dumps(res, ensure_ascii=False)})
                 if terminal_done:
@@ -4005,6 +4018,33 @@ def _skill_query_project_margin(request, args):
     year, month, bus = _resolve_query_args(request, args)
     text = _build_project_margin_summary(bus, year, month)
     return {'ok': True, 'data': text or '（该期间/范围无项目毛利数据，可能尚未导入按项目核算账）'}
+
+
+@agent_skills.register_skill(
+    'query_bf_fusion', '查询业财归因',
+    '查询指定期间/事业部的业财融合分类：把项目按 盈利×回款 打标签'
+    '（又薄又难收/赚收入不赚钱/赚利润收不回钱/优质），定位最需关注的薄利与逾期项目',
+    {'year': '年份（可选，默认当前对话期间）',
+     'month': '月份1-12（可选，默认当前对话期间）',
+     'bu': '事业部名称（可选，默认当前范围；无权访问将被忽略）'},
+    tool=True)
+def _skill_query_bf_fusion(request, args):
+    year, month, bus = _resolve_query_args(request, args)
+    text = _build_bf_fusion_summary(bus, year, month)
+    return {'ok': True, 'data': text or '（该期间/范围无业财归因数据，需同时有项目毛利与应收数据）'}
+
+
+@agent_skills.register_skill(
+    'query_forecast', '查询全年预测',
+    '查询指定事业部的全年落地预测：YTD 年化推全年 vs 年度目标、利润缺口与坏账风险',
+    {'year': '年份（可选，默认当前对话期间）',
+     'month': '月份1-12（可选，默认当前对话期间；预测取该年已发布全部月份）',
+     'bu': '事业部名称（可选，默认当前范围；无权访问将被忽略）'},
+    tool=True)
+def _skill_query_forecast(request, args):
+    year, month, bus = _resolve_query_args(request, args)
+    text = _build_forecast_summary(bus, year, month)
+    return {'ok': True, 'data': text or '（该年度尚无已发布数据，无法做全年预测）'}
 
 
 @cw_required()

@@ -100,5 +100,11 @@ def _skill_query_inventory(request, args):
 | LLM 调用封装 | `_deepseek_stream_raw`（流式+工具）/ `_deepseek_chat`(_raw) / `_deepseek_stream` |
 
 ---
-往"顶级 Agent"演进的下一步候选：① 更多只读查询工具（覆盖全部数据域）；
-② 工具调用的可观测性（把每步工具名/耗时落日志）；③ 让 Agent 能跨期间自主多步取数后再综合。
+## 演进记录（往"顶级 Agent"）
+
+- [x] 只读查询工具覆盖五大数据域：业绩 / 应收回款 / 项目毛利 / 业财归因 / 全年预测
+      （`query_financials / query_receivables / query_project_margin / query_bf_fusion / query_forecast`）
+- [x] 工具调用可观测性：每步工具名 / 参数 / 耗时(ms) / 成败落 `logger.info('agent-tool …')`
+- [x] 跨期间自主多步取数：工具循环上限提到 6 步，提示鼓励"先取A期再取B期再综合"
+- [ ] 下一批数据域：资金池 / 合同 / 目标分解（需新写跨 app 口径构造器，谨慎对齐口径）
+- [ ] 把工具调用轨迹回传前端做可视化（当前已有 `tool` 事件，可加耗时）
