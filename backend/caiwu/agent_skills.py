@@ -6,7 +6,9 @@
 ③（后续）接入 LLM function-calling，实现"对话即操作"。
 
 具体技能在 caiwu/views.py 里注册（那里有模型与权限上下文），此处只提供纯注册表，
-避免循环依赖。"""
+避免循环依赖。
+
+▶ 想给 Agent 加一项新能力？看同目录 AGENT_SKILLS.md（10 分钟、含可抄模板与安全清单）。"""
 
 _REGISTRY = {}
 
