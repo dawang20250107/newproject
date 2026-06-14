@@ -964,7 +964,8 @@ onMounted(load)
     <!-- ── 业财融合 经营问答 Agent（标题旁入口 + 滑出对话）─────────────────────── -->
     <Teleport to="body">
       <Transition name="cfa-slide">
-        <div v-if="chatOpen" class="cfa-panel">
+        <div v-if="chatOpen" class="cfa-panel" @click.self="chatOpen = false">
+          <div class="cfa-card">
           <div class="cfa-glow"></div>
           <div class="cfa-head">
             <div class="cfa-head-l">
@@ -1104,6 +1105,7 @@ onMounted(load)
           <Transition name="cfa-toast">
             <div v-if="toast" class="cfa-toast">{{ toast }}</div>
           </Transition>
+          </div><!-- /.cfa-card -->
         </div>
       </Transition>
     </Teleport>
@@ -1454,13 +1456,22 @@ onMounted(load)
 .cfa-title-btn .ai-pro-tag { background: rgba(255,255,255,0.25); }
 .cfa-title-orb { font-size: 15px; }
 
+/* 近全屏工作台：半透明模糊背景幕 + 居中大卡片 */
 .cfa-panel {
-  position: fixed; top: 0; right: 0; bottom: 0; z-index: 1201;
-  width: min(440px, 96vw); display: flex; flex-direction: column;
-  background: linear-gradient(180deg, #fffaf3, #fdf4ec);
-  box-shadow: -12px 0 40px rgba(80,40,20,0.22);
-  border-left: 1px solid rgba(201,99,66,0.18);
+  position: fixed; inset: 0; z-index: 1201;
+  display: flex; align-items: center; justify-content: center;
+  padding: max(16px, 4vh) max(16px, 3vw);
+  background: rgba(38,20,10,0.40); backdrop-filter: blur(5px);
 }
+.cfa-card {
+  position: relative; width: min(1180px, 100%); height: min(940px, 100%);
+  display: flex; flex-direction: column; overflow: hidden;
+  background: linear-gradient(180deg, #fffaf3, #fdf4ec);
+  border: 1px solid rgba(201,99,66,0.18); border-radius: 20px;
+  box-shadow: 0 30px 80px rgba(60,28,12,0.36), 0 2px 8px rgba(60,28,12,0.18);
+}
+/* 居中可读列：对话流/工具条/输入区收束到一列，长答案更耐看 */
+.cfa-tabs, .cfa-global, .cfa-auto, .cfa-input-row { width: 100%; max-width: 940px; margin-inline: auto; }
 .cfa-glow {
   position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
   background: linear-gradient(180deg, #c96342, #e8a05a, #7a9fd4);
@@ -1481,13 +1492,14 @@ onMounted(load)
 .cfa-mini:hover { color: var(--primary); border-color: var(--primary); }
 .cfa-x { background: none; border: none; font-size: 24px; line-height: 1; color: var(--muted); cursor: pointer; padding: 0 4px; }
 
-.cfa-body { flex: 1; overflow-y: auto; padding: 16px 16px 8px; }
+.cfa-body { flex: 1; overflow-y: auto; padding: 22px 16px 10px; display: flex; flex-direction: column; align-items: center; }
+.cfa-body > * { width: 100%; max-width: 940px; }
 
-.cfa-empty { text-align: center; padding: 24px 8px; }
-.cfa-empty-orb { font-size: 40px; margin-bottom: 8px; }
-.cfa-empty-title { font-size: 15px; font-weight: 700; color: var(--text); }
-.cfa-empty-sub { font-size: 12.5px; color: var(--muted); margin: 6px 0 16px; line-height: 1.6; }
-.cfa-sugs { display: flex; flex-direction: column; gap: 8px; }
+.cfa-empty { text-align: center; padding: 8vh 8px 24px; max-width: 760px; margin: 0 auto; }
+.cfa-empty-orb { font-size: 56px; margin-bottom: 12px; filter: drop-shadow(0 4px 12px rgba(201,99,66,0.3)); }
+.cfa-empty-title { font-size: 21px; font-weight: 800; color: var(--text); }
+.cfa-empty-sub { font-size: 14px; color: var(--muted); margin: 9px 0 22px; line-height: 1.7; }
+.cfa-sugs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .cfa-sug {
   text-align: left; padding: 10px 13px; border-radius: 11px; cursor: pointer;
   border: 1px solid rgba(201,99,66,0.2); background: rgba(255,255,255,0.7);
@@ -1495,9 +1507,9 @@ onMounted(load)
 }
 .cfa-sug:hover { border-color: var(--primary); background: rgba(201,99,66,0.07); color: var(--primary); }
 
-.cfa-msg { margin-bottom: 14px; display: flex; }
+.cfa-msg { margin-bottom: 16px; display: flex; }
 .cfa-msg.user { justify-content: flex-end; }
-.cfa-bubble { max-width: 88%; border-radius: 14px; padding: 10px 13px; font-size: 13px; line-height: 1.7; }
+.cfa-bubble { max-width: 84%; border-radius: 14px; padding: 12px 15px; font-size: 14px; line-height: 1.75; }
 .cfa-user { background: linear-gradient(135deg, #c96342, #e8855a); color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
 .cfa-asst { background: rgba(255,255,255,0.92); border: 1px solid rgba(0,0,0,0.06); color: var(--text); border-bottom-left-radius: 4px; }
 .cfa-tools { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
@@ -1566,8 +1578,16 @@ onMounted(load)
 }
 .cfa-send:disabled { opacity: .5; cursor: not-allowed; }
 
-.cfa-slide-enter-active, .cfa-slide-leave-active { transition: transform .28s cubic-bezier(0.2,0.8,0.3,1); }
-.cfa-slide-enter-from, .cfa-slide-leave-to { transform: translateX(100%); }
+.cfa-slide-enter-active, .cfa-slide-leave-active { transition: opacity .24s ease; }
+.cfa-slide-enter-from, .cfa-slide-leave-to { opacity: 0; }
+.cfa-slide-enter-active .cfa-card, .cfa-slide-leave-active .cfa-card { transition: transform .26s cubic-bezier(0.2,0.85,0.3,1), opacity .26s ease; }
+.cfa-slide-enter-from .cfa-card, .cfa-slide-leave-to .cfa-card { transform: scale(.965) translateY(10px); opacity: 0; }
+/* 窄屏：占满 + 建议单列 */
+@media (max-width: 760px) {
+  .cfa-panel { padding: 0; }
+  .cfa-card { width: 100%; height: 100%; border-radius: 0; }
+  .cfa-sugs { grid-template-columns: 1fr; }
+}
 
 /* tabs */
 .cfa-tabs { display: flex; align-items: center; gap: 6px; padding: 8px 16px 0; }
