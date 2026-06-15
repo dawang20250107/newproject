@@ -135,6 +135,67 @@ class PaymentPermissionRegressionTests(TestCase):
         rows, e = _read_import_rows(SimpleUploadedFile('x.xls', b'\xd0\xcf\x11\xe0' + b'\x00' * 16))
         self.assertIsNone(rows); self.assertIn('另存为', e)
 
+    def _admin_auth(self):
+        admin = PaikuanUser(phone='13900000099', name='Admin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456'); admin.save()
+        return {'HTTP_AUTHORIZATION': f'Bearer {make_token(admin)}'}
+
+    def _payment_xlsx(self, data_rows):
+        from openpyxl import Workbook
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        wb = Workbook(); ws = wb.active
+        ws.append(['部门', '付款事项', '收款方', '计划付款日期', '审批单号', '计划总金额(元)'])
+        for r in data_rows:
+            ws.append(r)
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        return SimpleUploadedFile('p.xlsx', buf.read(),
+                                  content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+    def test_payment_import_precheck_rules_and_ai(self):
+        """预检：规则错误逐行标注（与导入同口径）+ AI 复核建议挂到对应行。"""
+        from unittest import mock
+        auth = self._admin_auth()
+        rows = [
+            [self.dept, '采购A', '供应商甲', '2026-06-01', '123456', '10000'],  # ok
+            [self.dept, '采购B', '供应商乙', '2026-06-02', '12A3', '20000'],    # 审批编号含字母→规则错
+        ]
+
+        def fake_ai(records):
+            return ([{'row': records[0]['row'], 'field': 'payee', 'issue': '疑似异常',
+                      'suggestion': '核实', 'severity': 'low'}] if records else [])
+
+        with mock.patch('paikuan.views._ai_review_payments', side_effect=fake_ai):
+            resp = self.client.post('/api/pk/payments/import/precheck',
+                                    {'file': self._payment_xlsx(rows)}, **auth)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['total'], 2)
+        self.assertEqual(d['ruleErrors'], 1)
+        self.assertEqual(d['aiFindings'], 1)
+        self.assertEqual(len([r for r in d['rows'] if r['ruleIssue']]), 1)
+
+    def test_payment_import_apply_import_and_download(self):
+        """确认后导入：mode=import 落库；mode=download 返回修正版 xlsx。"""
+        auth = self._admin_auth()
+        rows = [{'row': 2, 'data': {
+            'department': self.dept, 'project_desc': '采购C', 'payee': '供应商丙',
+            'planned_date': '2026-06-03', 'approval_number': '999',
+            'total_amount': '5000', 'installments': []}}]
+        imp = self.client.post('/api/pk/payments/import/apply',
+                               data=json.dumps({'rows': rows, 'mode': 'import'}),
+                               content_type='application/json', **auth)
+        self.assertEqual(imp.status_code, 200, imp.content)
+        self.assertEqual(imp.json()['data']['created'], 1)
+        self.assertTrue(Payment.objects.filter(payee='供应商丙').exists())
+
+        dl = self.client.post('/api/pk/payments/import/apply',
+                              data=json.dumps({'rows': rows, 'mode': 'download'}),
+                              content_type='application/json', **auth)
+        self.assertEqual(dl.status_code, 200)
+        self.assertIn('spreadsheet', dl['Content-Type'])
+
     def test_payment_paid_equal_to_plan_not_rejected(self):
         """实付分笔合计恰等于计划总额时不应被判超出（含两位小数累加）。"""
         from paikuan.views import _parse_payment_fields

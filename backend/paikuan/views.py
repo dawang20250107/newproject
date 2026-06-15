@@ -2652,6 +2652,65 @@ def payment_template(request):
     return _build_excel_response(wb, 'paikuan_import_template.xlsx')
 
 
+def _payment_header_map(rows):
+    """解析表头行 → (col_pos, inst_date_cols, inst_amt_cols, missing_required_set)。
+    付款导入 / 预检 共用，确保两者口径完全一致。"""
+    header_row = [str(v).strip() if v is not None else '' for v in rows[0]]
+    col_pos = {}
+    for i, h in enumerate(header_row):
+        if h in _EXCEL_HEADER_TO_COL:
+            col_pos[_EXCEL_HEADER_TO_COL[h]] = i
+    import re as _re
+    inst_date_cols, inst_amt_cols = {}, {}
+    for i, h in enumerate(header_row):
+        m = _re.fullmatch(r'第(\d+)次付款日期', h)
+        if m:
+            inst_date_cols[int(m.group(1))] = i
+        m2 = _re.fullmatch(r'第(\d+)次付款金额\(元\)', h)
+        if m2:
+            inst_amt_cols[int(m2.group(1))] = i
+    missing = {'department', 'project_desc', 'payee', 'planned_date'} - set(col_pos.keys())
+    return col_pos, inst_date_cols, inst_amt_cols, missing
+
+
+def _payment_row_to_data(row, col_pos, inst_date_cols, inst_amt_cols):
+    """单行单元格 → data dict（含 installments），与导入逻辑一致；不落库。"""
+    def cell_val(col_name):
+        idx = col_pos.get(col_name)
+        if idx is None or idx >= len(row):
+            return None
+        v = row[idx]
+        if hasattr(v, 'strftime'):
+            return v.strftime('%Y-%m-%d')
+        if col_name in _EXCEL_DATE_COLS and isinstance(v, str) and v.strip():
+            return _normalize_date(v)
+        return v
+
+    def cell_at(idx):
+        if idx is None or idx >= len(row):
+            return None
+        v = row[idx]
+        return v.strftime('%Y-%m-%d') if hasattr(v, 'strftime') else v
+
+    data = {col: cell_val(col) for col in col_pos}
+    installments_raw = []
+    for n in sorted(set(inst_date_cols) | set(inst_amt_cols)):
+        raw_date = cell_at(inst_date_cols.get(n))
+        raw_amt = cell_at(inst_amt_cols.get(n))
+        if raw_date and isinstance(raw_date, str):
+            raw_date = _normalize_date(str(raw_date))
+        amt_str = str(raw_amt or '0').replace(',', '').replace('，', '').replace('¥', '').strip()
+        try:
+            amt = Decimal(amt_str or '0')
+        except InvalidOperation:
+            amt = Decimal('0')
+        if raw_date and amt > Decimal('0'):
+            installments_raw.append({'seq': n, 'pay_date': str(raw_date),
+                                     'pay_amount': str(amt), 'notes': ''})
+    data['installments'] = installments_raw
+    return data
+
+
 @csrf_exempt
 @pk_required()
 def payment_import(request):
@@ -2679,80 +2738,24 @@ def payment_import(request):
     if not rows:
         return err('文件为空')
 
-    # Map header position → db column name (base fields)
-    header_row = [str(v).strip() if v is not None else '' for v in rows[0]]
-    col_pos = {}
-    for i, h in enumerate(header_row):
-        if h in _EXCEL_HEADER_TO_COL:
-            col_pos[_EXCEL_HEADER_TO_COL[h]] = i
-
-    # Detect dynamic installment columns: 第N次付款日期 / 第N次付款金额(元)
-    import re as _re
-    inst_date_cols = {}  # seq_no → column index
-    inst_amt_cols = {}
-    for i, h in enumerate(header_row):
-        m = _re.fullmatch(r'第(\d+)次付款日期', h)
-        if m:
-            inst_date_cols[int(m.group(1))] = i
-        m2 = _re.fullmatch(r'第(\d+)次付款金额\(元\)', h)
-        if m2:
-            inst_amt_cols[int(m2.group(1))] = i
-
-    # Match the fields _parse_payment_fields actually validates as required.
-    required_headers = {'department', 'project_desc', 'payee', 'planned_date'}
-    missing = required_headers - set(col_pos.keys())
+    # Map header position → db column name (base fields) + 动态分期列
+    col_pos, inst_date_cols, inst_amt_cols, missing = _payment_header_map(rows)
     if missing:
         missing_labels = [h for _, h, c in EXCEL_COLUMN_MAP if c in missing]
         return err(f'模板缺少必要列：{", ".join(missing_labels)}，请重新下载模板')
 
     results = {'created': 0, 'skipped': 0, 'errors': []}
 
-    def cell_val(row, col_name):
-        idx = col_pos.get(col_name)
-        if idx is None or idx >= len(row):
-            return None
-        v = row[idx]
-        if hasattr(v, 'strftime'):
-            return v.strftime('%Y-%m-%d')
-        if col_name in _EXCEL_DATE_COLS and isinstance(v, str) and v.strip():
-            return _normalize_date(v)
-        return v
-
-    def cell_at(row, idx):
-        if idx is None or idx >= len(row):
-            return None
-        v = row[idx]
-        if hasattr(v, 'strftime'):
-            return v.strftime('%Y-%m-%d')
-        return v
-
     for row_num, row in enumerate(rows[1:], start=2):
         if all(v is None or v == '' for v in row):
             continue
 
-        dept_raw = cell_val(row, 'department')
+        dept_raw = row[col_pos['department']] if col_pos.get('department') is not None \
+            and col_pos['department'] < len(row) else None
         if dept_raw and str(dept_raw).strip().startswith('示例'):
             continue
 
-        data = {col: cell_val(row, col) for col in col_pos}
-
-        # Build installments list from dynamic columns
-        inst_seqs = sorted(set(inst_date_cols) | set(inst_amt_cols))
-        installments_raw = []
-        for n in inst_seqs:
-            raw_date = cell_at(row, inst_date_cols.get(n))
-            raw_amt = cell_at(row, inst_amt_cols.get(n))
-            if raw_date:
-                raw_date = _normalize_date(str(raw_date)) if isinstance(raw_date, str) else raw_date
-            amt_str = str(raw_amt or '0').replace(',', '').replace('，', '').replace('¥', '').strip()
-            try:
-                amt = Decimal(amt_str or '0')
-            except InvalidOperation:
-                amt = Decimal('0')
-            if raw_date and amt > Decimal('0'):
-                installments_raw.append({'seq': n, 'pay_date': str(raw_date), 'pay_amount': str(amt), 'notes': ''})
-
-        data['installments'] = installments_raw
+        data = _payment_row_to_data(row, col_pos, inst_date_cols, inst_amt_cols)
 
         fields, error = _parse_payment_fields(data)
         if error:
@@ -2788,6 +2791,209 @@ def payment_import(request):
         results['message'] = f'全部 {results["created"]} 条数据成功导入'
     elif results['created'] > 0:
         results['message'] = f'成功导入 {results["created"]} 条，跳过 {results["skipped"]} 条（含错误）'
+    else:
+        results['message'] = f'没有可导入的数据（跳过 {results["skipped"]} 条）'
+    return ok(results)
+
+
+def _ai_review_payments(records):
+    """用 DeepSeek 复核付款导入数据，挑出规则覆盖不到的"软问题"（疑似乱码/测试数据、
+    金额异常、部门/收款方写法不一致、日期不合常理、同审批号矛盾、疑似重复等）。
+    best-effort：无 key / 异常 / 无数据时返回 []。
+    返回 [{'row','field','issue','suggestion','severity'}]。"""
+    if not getattr(settings, 'DEEPSEEK_API_KEY', '') or not records:
+        return []
+    try:
+        from caiwu.views import _deepseek_chat
+    except Exception:
+        return []
+    import json as _json
+    sys = (
+        '你是企业付款台账的数据质检助手。下面是一批待导入的付款记录（已通过基础格式校验）。'
+        '请只挑出"疑似有问题"的行，找规则难以发现的软问题：收款方像乱码/测试数据/占位符；'
+        '金额明显异常（疑似多或少一个0、过大或过小）；部门或收款方写法不一致（同一对象多种写法）；'
+        '计划付款日期不合常理（过去太久或未来太远）；同一审批单号下收款方/金额相互矛盾；疑似重复行。'
+        '严格只返回 JSON 数组，每个元素形如 '
+        '{"row":行号,"field":"字段名","issue":"问题简述","suggestion":"修正建议(可空)","severity":"high|medium|low"}。'
+        '没有发现问题就返回 []。不要输出 JSON 以外的任何文字。'
+    )
+    try:
+        text = _deepseek_chat(
+            [{'role': 'system', 'content': sys},
+             {'role': 'user', 'content': _json.dumps(records[:50], ensure_ascii=False)}],
+            timeout=60, max_tokens=1500)
+        arr = _json.loads(text[text.index('['):text.rindex(']') + 1])
+    except Exception:
+        return []
+    out = []
+    for it in arr if isinstance(arr, list) else []:
+        if isinstance(it, dict) and it.get('row') is not None:
+            sev = it.get('severity')
+            out.append({
+                'row': it.get('row'),
+                'field': str(it.get('field', ''))[:40],
+                'issue': str(it.get('issue', ''))[:200],
+                'suggestion': str(it.get('suggestion', ''))[:200],
+                'severity': sev if sev in ('high', 'medium', 'low') else 'medium',
+            })
+    return out
+
+
+def _payment_clean_view(data):
+    """把解析后的 data 收敛为前端可编辑/回写的清洗字段。"""
+    return {
+        'department': data.get('department') or '',
+        'project_short_name': data.get('project_short_name') or '',
+        'project_desc': data.get('project_desc') or '',
+        'payee': data.get('payee') or '',
+        'total_amount': str(data.get('total_amount') or ''),
+        'planned_date': str(data.get('planned_date') or ''),
+        'approval_number': data.get('approval_number') or '',
+        'notes': data.get('notes') or '',
+        'installments': data.get('installments') or [],
+    }
+
+
+@csrf_exempt
+@pk_required()
+def payment_import_precheck(request):
+    """导入预检：①规则预检（复用 _parse_payment_fields，与真实导入同口径）②AI 复核疑点。
+    只读不落库；返回逐行报告供前端展示、编辑、确认。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    if perms is not None and not perms['can_create']:
+        return err('无新增权限', 403, 403)
+    upload = request.FILES.get('file')
+    if not upload:
+        return err('请上传文件（.xlsx / .csv）')
+    if upload.size > 5 * 1024 * 1024:
+        return err('文件过大，请确认文件不超过5MB')
+    rows, ferr = _read_import_rows(upload)
+    if ferr:
+        return err(ferr)
+    if not rows:
+        return err('文件为空')
+    col_pos, inst_date_cols, inst_amt_cols, missing = _payment_header_map(rows)
+    if missing:
+        missing_labels = [h for _, h, c in EXCEL_COLUMN_MAP if c in missing]
+        return err(f'模板缺少必要列：{", ".join(missing_labels)}，请重新下载模板')
+
+    report_rows, ai_input = [], []
+    for row_num, row in enumerate(rows[1:], start=2):
+        if all(v is None or v == '' for v in row):
+            continue
+        di = col_pos.get('department')
+        dept_raw = row[di] if di is not None and di < len(row) else None
+        if dept_raw and str(dept_raw).strip().startswith('示例'):
+            continue
+        data = _payment_row_to_data(row, col_pos, inst_date_cols, inst_amt_cols)
+        fields, error = _parse_payment_fields(data)
+        rule_issue, warn = error, None
+        if not error:
+            if not can_write_dept(request, fields['department']):
+                rule_issue = f'无权操作部门"{fields["department"]}"'
+            else:
+                f2 = dict(fields); f2.pop('installments', None)
+                dup = _find_duplicate_payment(f2)
+                if dup:
+                    warn = f'疑似重复（已存在排款 #{dup.id}）'
+        clean = _payment_clean_view(data)
+        report_rows.append({'row': row_num, 'data': clean,
+                            'ruleIssue': rule_issue, 'warn': warn, 'ai': []})
+        if not rule_issue:
+            ai_input.append({'row': row_num, 'department': clean['department'],
+                             'project_desc': clean['project_desc'], 'payee': clean['payee'],
+                             'total_amount': clean['total_amount'],
+                             'planned_date': clean['planned_date'],
+                             'approval_number': clean['approval_number']})
+
+    by_row = {}
+    for fnd in _ai_review_payments(ai_input):
+        by_row.setdefault(fnd['row'], []).append(fnd)
+    for rr in report_rows:
+        rr['ai'] = by_row.get(rr['row'], [])
+
+    return ok({
+        'total': len(report_rows),
+        'ruleErrors': sum(1 for r in report_rows if r['ruleIssue']),
+        'aiFindings': sum(len(r['ai']) for r in report_rows),
+        'aiEnabled': bool(getattr(settings, 'DEEPSEEK_API_KEY', '')),
+        'rows': report_rows,
+    })
+
+
+def _payment_corrected_xlsx(rows):
+    """把修正后的行写成标准模板格式的 .xlsx 返回（含动态分期列），可直接再次导入。"""
+    from openpyxl import Workbook
+    base = [(h, c) for _, h, c in EXCEL_COLUMN_MAP]
+    max_inst = max((len(r.get('data', r).get('installments') or []) for r in rows), default=0)
+    wb = Workbook(); ws = wb.active; ws.title = '付款台账(修正版)'
+    headers = [h for h, _ in base]
+    for n in range(1, max_inst + 1):
+        headers += [f'第{n}次付款日期', f'第{n}次付款金额(元)']
+    ws.append(headers)
+    for r in rows:
+        d = r.get('data', r)
+        line = [d.get(c, '') if d.get(c) is not None else '' for _, c in base]
+        insts = d.get('installments') or []
+        for n in range(max_inst):
+            it = insts[n] if n < len(insts) else {}
+            line += [it.get('pay_date', ''), it.get('pay_amount', '')]
+        ws.append(line)
+    return _build_excel_response(wb, '付款台账_修正版.xlsx')
+
+
+@csrf_exempt
+@pk_required()
+def payment_import_apply(request):
+    """对预检并经用户确认/修正后的行执行：mode=import 直接导入；mode=download 下载修正版文件。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    if perms is not None and not perms['can_create']:
+        return err('无新增权限', 403, 403)
+    body = parse_body(request)
+    rows = body.get('rows') or []
+    if not isinstance(rows, list) or not rows:
+        return err('没有可处理的数据')
+    if (body.get('mode') or 'import') == 'download':
+        return _payment_corrected_xlsx(rows)
+
+    results = {'created': 0, 'skipped': 0, 'errors': []}
+    for r in rows:
+        rn = r.get('row', '?')
+        data = dict(r.get('data') or r)
+        fields, error = _parse_payment_fields(data)
+        if error:
+            results['errors'].append(f'第{rn}行: {error}'); results['skipped'] += 1; continue
+        if not can_write_dept(request, fields['department']):
+            results['errors'].append(f'第{rn}行: 无权操作部门"{fields["department"]}"')
+            results['skipped'] += 1; continue
+        parsed_insts = fields.pop('installments') or []
+        dup = _find_duplicate_payment(fields)
+        if dup:
+            results['errors'].append(f'第{rn}行: 跳过重复（已存在排款 #{dup.id}）')
+            results['skipped'] += 1; continue
+        try:
+            with transaction.atomic():
+                p = Payment.objects.create(
+                    created_by_id=request.pk_uid, updated_by_id=request.pk_uid, **fields)
+                _ensure_plan_item(p); _save_installments(p, parsed_insts)
+                _record_payment_changes(p, {}, {}, request, action='create')
+            results['created'] += 1
+        except Exception as e:
+            results['errors'].append(f'第{rn}行: 保存失败 ({e})'); results['skipped'] += 1
+    if results['created'] and not results['skipped']:
+        results['message'] = f'全部 {results["created"]} 条成功导入'
+    elif results['created']:
+        results['message'] = f'成功导入 {results["created"]} 条，跳过 {results["skipped"]} 条'
     else:
         results['message'] = f'没有可导入的数据（跳过 {results["skipped"]} 条）'
     return ok(results)

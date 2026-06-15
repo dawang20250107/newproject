@@ -8,6 +8,7 @@ import { downloadBlob } from '../utils/download.js'
 import StatusBadge from '../components/StatusBadge.vue'
 import PaymentModal from '../components/PaymentModal.vue'
 import ImportResultModal from '../components/ImportResultModal.vue'
+import ImportPrecheckModal from '../components/ImportPrecheckModal.vue'
 import EmptyState from '../components/EmptyState.vue'
 
 const auth = useAuthStore()
@@ -187,6 +188,56 @@ async function downloadTemplate() {
 function triggerImport() {
   importResult.value = null
   importInputRef.value.click()
+}
+
+// ── AI 导入预检（规则 + AI 复核 → 修正 → 确认导入/下载修正版）──────────────────
+const precheckInputRef = ref(null)
+const prechecking = ref(false)
+const precheckResult = ref(null)
+const precheckBusy = ref(false)
+
+function triggerPrecheck() {
+  precheckResult.value = null
+  precheckInputRef.value.click()
+}
+
+async function onPrecheckFile(e) {
+  const file = e.target.files[0]
+  if (!file) return
+  prechecking.value = true
+  const fd = new FormData()
+  fd.append('file', file)
+  try {
+    const res = await api.post('/payments/import/precheck', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' }, timeout: 90000,
+    })
+    precheckResult.value = res.data
+  } catch (ex) {
+    importResult.value = { error: ex?.msg || '预检失败，请检查文件格式' }
+  } finally {
+    prechecking.value = false
+    e.target.value = ''
+  }
+}
+
+async function onPrecheckApply({ mode, rows }) {
+  precheckBusy.value = true
+  try {
+    if (mode === 'download') {
+      const blob = await api.post('/payments/import/apply',
+        { rows, mode: 'download' }, { responseType: 'blob', timeout: 90000 })
+      triggerDownload(blob, '付款台账_修正版.xlsx')
+    } else {
+      const res = await api.post('/payments/import/apply', { rows, mode: 'import' }, { timeout: 90000 })
+      precheckResult.value = null
+      importResult.value = res.data
+      if (res.data.created > 0) load()
+    }
+  } catch (ex) {
+    alert(ex?.msg || ex?.error || '处理失败')
+  } finally {
+    precheckBusy.value = false
+  }
 }
 
 async function onImportFile(e) {
@@ -459,6 +510,11 @@ async function doBatchPay() {
           <span v-if="importing" class="btn-spin"></span>
           <span v-else style="margin-right:4px">📥</span>{{ importing ? '导入中…' : '导入' }}
         </button>
+        <button class="btn btn-ghost btn-sm pc-btn" :disabled="prechecking" @click="triggerPrecheck"
+                title="AI 预检：规则校验 + 智能复核，可就地修正后再导入">
+          <span v-if="prechecking" class="btn-spin"></span>
+          <span v-else style="margin-right:4px">🔍</span>{{ prechecking ? '预检中…' : 'AI 预检' }}
+        </button>
         <button class="btn btn-ghost btn-sm" :disabled="exportingXlsx" @click="exportExcel">
           <span v-if="exportingXlsx" class="btn-spin"></span>
           <span v-else style="margin-right:4px">📤</span>{{ exportingXlsx ? '导出中…' : '导出' }}
@@ -479,6 +535,7 @@ async function doBatchPay() {
 
     <!-- hidden file input for import -->
     <input ref="importInputRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImportFile" />
+    <input ref="precheckInputRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onPrecheckFile" />
 
     <div class="card" style="margin-bottom:16px">
       <div class="filter-bar">
@@ -735,6 +792,10 @@ async function doBatchPay() {
 
     <!-- import result popup -->
     <ImportResultModal :result="importResult" @close="importResult = null" />
+
+    <!-- AI 导入预检 -->
+    <ImportPrecheckModal :report="precheckResult" :busy="precheckBusy"
+      @close="precheckResult = null" @apply="onPrecheckApply" />
 
     <!-- Change log drawer -->
     <Teleport to="body">
