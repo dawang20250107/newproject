@@ -521,7 +521,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <span class="proj-no-tag">{{ item.project_no }}</span>
                 <span v-if="item.is_draft" class="badge-draft" title="导入自动创建，请补充完善">待完善</span>
               </td>
-              <td v-if="show('p_contract_name') || show('p_short_name')">
+              <td v-if="show('p_contract_name') || show('p_short_name')"
+                :title="item.customer_name + (item.short_name ? ' / ' + item.short_name : '')">
                 <div class="contract-name">{{ item.customer_name }}</div>
                 <div v-if="item.short_name" class="short-name">{{ item.short_name }}</div>
               </td>
@@ -532,13 +533,13 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <span v-else class="st-pill" :class="statusClass(item.status)">{{ item.status }}</span>
               </td>
               <td v-if="show('p_delivery_dept')"><span class="dept-chip">{{ item.delivery_dept }}</span></td>
-              <td v-if="show('p_sub_dept')" class="text-muted">{{ item.sub_dept || '—' }}</td>
-              <td v-if="show('p_business_mode')" class="text-muted">{{ item.business_mode || '—' }}</td>
+              <td v-if="show('p_sub_dept')" class="text-muted" :title="item.sub_dept || ''">{{ item.sub_dept || '—' }}</td>
+              <td v-if="show('p_business_mode')" class="text-muted" :title="item.business_mode || ''">{{ item.business_mode || '—' }}</td>
               <td v-if="show('p_customer_level')" class="ctr">
                 <span class="level-chip" :class="'lv-' + (item.customer_level || '')">{{ item.customer_level || '—' }}</span>
               </td>
-              <td v-if="show('p_project_manager')" class="person">{{ item.project_manager }}</td>
-              <td v-if="show('p_sales_contact')" class="person">
+              <td v-if="show('p_project_manager')" class="person" :title="item.project_manager || ''">{{ item.project_manager }}</td>
+              <td v-if="show('p_sales_contact')" class="person" :title="item.sales_contact || ''">
                 {{ item.sales_contact }}
                 <span v-if="item.is_shared" class="badge-shared">共享</span>
               </td>
@@ -553,7 +554,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <span class="invoice-mode" :class="item.invoice_mode === '全额' ? 'mode-full' : 'mode-diff'">{{ item.invoice_mode }}</span>
                 <div class="text-sm text-muted">{{ item.invoice_type }} · {{ (parseFloat(item.tax_rate) * 100).toFixed(0) }}%</div>
               </td>
-              <td v-if="show('p_notes')" class="text-muted text-sm">{{ item.notes || '—' }}</td>
+              <td v-if="show('p_notes')" class="text-muted text-sm" :title="item.notes || ''">{{ item.notes || '—' }}</td>
               <td class="ctr">
                 <div class="row-actions">
                   <button v-if="item.is_draft && auth.canArWrite" class="icon-btn icon-btn-complete" @click="completeDraft(item)" title="补充完善草稿项目">完善</button>
@@ -872,7 +873,9 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   color: var(--muted); padding: 6px 7px; background: rgba(0,0,0,0.025);
   border-bottom: 1px solid rgba(0,0,0,0.06); white-space: nowrap;
 }
-.proj-table td { padding: 5px 7px; vertical-align: middle; }
+/* 单元格强制单行：行高不随列宽变化，从设计上杜绝「滚动条↔换行↔高度」回流抖动。
+   两行结构的单元格（客户名+简称）每行各自单行截断，整体高度仍恒定。 */
+.proj-table td { padding: 5px 7px; vertical-align: middle; white-space: nowrap; }
 .proj-table .data-row { transition: background 0.12s; }
 .proj-table .data-row:hover { background: rgba(201,99,66,0.04); }
 .proj-table .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.035); }
@@ -881,8 +884,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .empty-inner { color: var(--muted); font-size: 14px; }
 
 .proj-no-tag { font-family: monospace; font-size: 11.5px; color: var(--muted); background: rgba(0,0,0,0.04); padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
-.contract-name { font-weight: 600; font-size: 13px; color: var(--text); }
-.short-name { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+/* 长文本列截断+省略号（完整内容见悬停提示） */
+.contract-name { font-weight: 600; font-size: 13px; color: var(--text); max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+.short-name { font-size: 11.5px; color: var(--muted); margin-top: 2px; max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+.proj-table td.person { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+.proj-table td.text-muted { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 .dept-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; background: rgba(201,99,66,0.1); color: var(--primary); font-weight: 600; white-space: nowrap; }
 .person { font-size: 12.5px; color: var(--text); white-space: nowrap; }
 .badge-shared { font-size: 10px; padding: 1px 7px; border-radius: 8px; background: rgba(106,27,154,0.1); color: #6a1b9a; font-weight: 600; margin-left: 5px; }

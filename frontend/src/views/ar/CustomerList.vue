@@ -262,10 +262,10 @@ onMounted(() => load(true))
             <tr v-if="!loading && !items.length"><td colspan="10" class="empty">暂无客户数据</td></tr>
             <tr v-for="c in items" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)">
               <td class="ctr chk-col" @click.stop><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
-              <td class="l name">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
+              <td class="l name" :title="c.name + (c.contact ? ' · ' + c.contact : '')">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
               <td class="ctr"><span class="st-pill" :class="statusClass(c.status)">{{ c.status || '运作中' }}</span></td>
               <td class="ctr"><span v-if="c.level" class="lvl" :class="levelClass(c.level)">{{ c.level }}</span><span v-else class="muted">—</span></td>
-              <td class="l dept-cell">{{ c.delivery_dept || '—' }}</td>
+              <td class="l dept-cell" :title="c.delivery_dept || ''">{{ c.delivery_dept || '—' }}</td>
               <td class="ctr">{{ c.project_count ?? 0 }}</td>
               <td class="rgt">{{ wan(c.invoiced) }}</td>
               <td class="rgt strong">{{ wan(c.outstanding) }}</td>
@@ -437,7 +437,11 @@ onMounted(() => load(true))
 .cu-table th.ctr { text-align: center; }
 .cu-table th.clk { cursor: pointer; user-select: none; }
 .cu-table th.clk:hover { color: var(--primary); }
-.cu-table td { padding: 10px 14px; border-bottom: 1px solid #f0e8de; text-align: right; color: #2d2010; }
+/* 单元格强制单行：行高不随列宽变化，从设计上杜绝「滚动条↔换行↔高度」回流抖动 */
+.cu-table td { padding: 10px 14px; border-bottom: 1px solid #f0e8de; text-align: right; color: #2d2010; white-space: nowrap; }
+/* 长文本列截断+省略号（完整内容见悬停提示），保持列宽稳定与排版整洁 */
+.cu-table td.name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.cu-table td.dept-cell { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
 .cu-table td.l { text-align: left; }
 .cu-table td.ctr { text-align: center; }
 .row { cursor: pointer; }
