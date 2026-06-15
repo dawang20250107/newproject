@@ -21,6 +21,15 @@
   --blur: blur(22px) saturate(180%);
 }
 
+/* 始终保留文档滚动条占位，避免「滚动条出现/消失→内容宽度变化→自适应表格重新换行→
+   高度变化→滚动条再切换」的回流抖动（项目台账/客户管理这类宽表最易触发，且与机器性能/
+   浏览器/缩放相关，表现为内容疯狂跳动+卡顿）。overflow-y:scroll 兼容所有浏览器，
+   scrollbar-gutter 为现代浏览器提供更干净的占位。 */
+html {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
@@ -81,6 +90,7 @@ body {
   flex: 1; overflow-y: auto; padding: 28px 28px 72px;
   margin-left: var(--nav-w);
   transition: margin-left 0.46s cubic-bezier(0.45, 0, 0.15, 1);
+  scrollbar-gutter: stable;
 }
 .main-content.nav-collapsed { margin-left: var(--nav-w-collapsed); }
 /* logged-out pages (login) have no sidebar — fill the whole width so the
@@ -433,6 +443,15 @@ tr.overdue-row td:first-child { border-left: 3px solid #c62828; }
 }
 @media (prefers-reduced-motion: reduce) {
   .overdue-kpi-card .kpi-value-pulse { animation: none; }
+  /* 低性能/省电/无障碍场景：去掉会触发整页回流的布局动画与各类过渡，避免卡顿与抖动。
+     导航收起的 margin-left 过渡会让宽表逐帧重排，这里直接瞬时切换。 */
+  .main-content { transition: none !important; }
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ── compact filter controls ─────────────────────────────────────────────── */
