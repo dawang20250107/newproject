@@ -1970,6 +1970,51 @@ def approval_template(request):
     return _build_excel_response(wb, '审批记录导入模板.xlsx')
 
 
+def _read_import_rows(upload):
+    """把上传的表格文件读成行列表（每行 tuple，rows[0] 为表头），兼容多种格式：
+    .xlsx/.xlsm（openpyxl）、.csv（UTF-8/GBK 自适应编码）；旧版 .xls 给出可操作的改存提示。
+    返回 (rows, error)。"""
+    name = (getattr(upload, 'name', '') or '').lower()
+    try:
+        data = upload.read()
+    except Exception:
+        return None, '文件读取失败，请重试'
+    if not data:
+        return None, '文件为空'
+    head = data[:4]
+    # .xlsx/.xlsm 本质是 zip（magic 'PK\x03\x04'）
+    if head[:2] == b'PK' or name.endswith(('.xlsx', '.xlsm')):
+        try:
+            import io
+            from openpyxl import load_workbook
+            wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+            ws = wb.active
+            rows = list(ws.iter_rows(values_only=True))
+            wb.close()
+            return rows, None
+        except Exception:
+            return None, '文件已损坏或不是有效的 .xlsx，请用 Excel 重新「另存为」.xlsx 后再试'
+    # 旧版 .xls 二进制（OLE2，magic D0 CF 11 E0）—— openpyxl 读不了，给可操作提示
+    if head == b'\xd0\xcf\x11\xe0' or name.endswith('.xls'):
+        return None, '检测到旧版 .xls 文件：请在 Excel 中「另存为」→「Excel 工作簿(.xlsx)」或「CSV」后再导入'
+    # 其余按 CSV 处理（编码自适应：UTF-8 带/不带 BOM、GBK）
+    text = None
+    for enc in ('utf-8-sig', 'gbk', 'utf-8'):
+        try:
+            text = data.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        return None, '无法识别的文件格式或编码，请上传 .xlsx，或 UTF-8/GBK 编码的 .csv'
+    import csv
+    import io
+    rows = [tuple(row) for row in csv.reader(io.StringIO(text))]
+    if not rows:
+        return None, '文件为空'
+    return rows, None
+
+
 @csrf_exempt
 @pk_required()
 def approval_import(request):
@@ -1984,10 +2029,19 @@ def approval_import(request):
     f = request.FILES.get('file')
     if not f:
         return err('请上传文件')
-    from openpyxl import load_workbook
-    wb = load_workbook(f, data_only=True)
-    ws = wb.active
-    headers = [str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1)]
+    rows, ferr = _read_import_rows(f)
+    if ferr:
+        return err(ferr)
+    if not rows:
+        return err('文件为空')
+    max_row = len(rows)
+    max_col = max((len(r) for r in rows), default=0)
+
+    def cell(r, c):  # 1-indexed，等价于原 ws.cell(r, c).value
+        row = rows[r - 1] if 0 < r <= max_row else ()
+        return row[c - 1] if 0 < c <= len(row) else None
+
+    headers = [str(cell(1, c) or '').strip() for c in range(1, max_col + 1)]
 
     # 表头健壮匹配：去掉 *、＊、空格后建索引，并支持别名——这样模板(带*)、导出文件
     # (不带*)、以及用户轻微改动表头都能正确识别，避免"按要求填了却整表跳过"。
@@ -2003,7 +2057,7 @@ def approval_import(request):
         for n in names:
             ci = norm_col.get(_norm(n))
             if ci:
-                return str(ws.cell(r, ci).value or '').strip()
+                return str(cell(r, ci) or '').strip()
         return ''
 
     # 必要列缺失（多为表头被删/改名/选错文件）→ 明确报错，而不是静默全跳过
@@ -2012,7 +2066,7 @@ def approval_import(request):
 
     created = skipped = 0
     errors = []
-    for r in range(2, ws.max_row + 1):
+    for r in range(2, max_row + 1):
         applicant = cv(r, '申请人')
         dept = cv(r, '所属事业部', '事业部', '部门')
         no = cv(r, '审批编号', '审批单号')
@@ -2608,31 +2662,20 @@ def payment_import(request):
     denied = _payments_page_denied(request, perms)
     if denied:
         return denied
-    try:
-        from openpyxl import load_workbook
-    except ImportError:
-        return err('服务器缺少 openpyxl 依赖', 500)
-
     if perms is not None and not perms['can_create']:
         return err('无新增权限', 403, 403)
 
     upload = request.FILES.get('file')
     if not upload:
-        return err('请上传Excel文件(.xlsx)')
+        return err('请上传文件（.xlsx / .csv）')
 
     MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
     if upload.size > MAX_UPLOAD_BYTES:
         return err('文件过大，请确认文件不超过5MB')
 
-    try:
-        wb = load_workbook(upload, read_only=True, data_only=True)
-    except Exception:
-        return err('文件格式有误，请使用下载的模板（.xlsx格式）')
-
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
-    wb.close()
-
+    rows, ferr = _read_import_rows(upload)
+    if ferr:
+        return err(ferr)
     if not rows:
         return err('文件为空')
 

@@ -207,7 +207,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <button class="btn btn-ghost btn-sm" @click="doExport">{{ exporting?'导出中…':'导出' }}</button>
     <button v-if="auth.canCreate" class="btn btn-primary" @click="openCreate">+ 新增审批记录</button>
   </div></div>
-  <input ref="fileRef" type="file" accept=".xlsx,.xls" style="display:none" @change="onImport" />
+  <input ref="fileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImport" />
   <div class="card approval-card"><div class="filter-row">
     <div class="filter-bar">
     <input v-model="filters.applicant" placeholder="申请人(模糊)" @keyup.enter="search"/>

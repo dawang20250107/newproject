@@ -478,7 +478,7 @@ async function doBatchPay() {
     </div>
 
     <!-- hidden file input for import -->
-    <input ref="importInputRef" type="file" accept=".xlsx,.xls" style="display:none" @change="onImportFile" />
+    <input ref="importInputRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImportFile" />
 
     <div class="card" style="margin-bottom:16px">
       <div class="filter-bar">

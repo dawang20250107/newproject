@@ -114,6 +114,27 @@ class PaymentPermissionRegressionTests(TestCase):
         self.assertIsNone(_clean_approval_number('1' * 100)[1])
         self.assertIsNotNone(_clean_approval_number('1' * 101)[1])
 
+    def test_read_import_rows_multiformat(self):
+        """导入读取器兼容多格式：.xlsx / .csv(UTF-8/GBK)；旧版 .xls 给可操作提示。"""
+        import io
+        from openpyxl import Workbook
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from paikuan.views import _read_import_rows
+        # .xlsx
+        wb = Workbook(); ws = wb.active; ws.append(['甲', '乙']); ws.append([1, 2])
+        buf = io.BytesIO(); wb.save(buf)
+        rows, e = _read_import_rows(SimpleUploadedFile('x.xlsx', buf.getvalue()))
+        self.assertIsNone(e, e); self.assertEqual(rows[0], ('甲', '乙'))
+        # .csv（UTF-8 带 BOM）
+        rows, e = _read_import_rows(SimpleUploadedFile('x.csv', '甲,乙\n1,2\n'.encode('utf-8-sig')))
+        self.assertIsNone(e, e); self.assertEqual(rows[0], ('甲', '乙'))
+        # .csv（GBK）
+        rows, e = _read_import_rows(SimpleUploadedFile('x.csv', '部门,金额\n'.encode('gbk')))
+        self.assertIsNone(e, e); self.assertEqual(rows[0][0], '部门')
+        # 旧版 .xls（OLE2 magic）→ 友好改存提示
+        rows, e = _read_import_rows(SimpleUploadedFile('x.xls', b'\xd0\xcf\x11\xe0' + b'\x00' * 16))
+        self.assertIsNone(rows); self.assertIn('另存为', e)
+
     def test_payment_paid_equal_to_plan_not_rejected(self):
         """实付分笔合计恰等于计划总额时不应被判超出（含两位小数累加）。"""
         from paikuan.views import _parse_payment_fields
