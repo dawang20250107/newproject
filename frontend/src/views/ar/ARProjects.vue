@@ -882,8 +882,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .stat-pill {
   display: flex; flex-direction: column; gap: 2px;
   padding: 10px 18px; border-radius: 12px;
-  background: rgba(255,255,255,0.7); border: 1px solid rgba(255,255,255,0.8);
-  box-shadow: 0 2px 12px rgba(0,0,0,0.06); backdrop-filter: blur(10px); min-width: 88px;
+  background: rgba(255,255,255,0.92); border: 1px solid rgba(255,255,255,0.8);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.06); min-width: 88px;
 }
 .stat-pill-gold { border-left: 3px solid #c9a227; }
 .stat-pill-blue { border-left: 3px solid #1565c0; }
@@ -906,7 +906,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 /* 单元格强制单行：行高不随列宽变化，从设计上杜绝「滚动条↔换行↔高度」回流抖动。
    两行结构的单元格（客户名+简称）每行各自单行截断，整体高度仍恒定。 */
 .proj-table td { padding: 5px 7px; vertical-align: middle; white-space: nowrap; }
-.proj-table .data-row { transition: background 0.12s; }
+/* no transition: avoids per-row repaint churn as rows scroll under the cursor */
+.proj-table .data-row { }
 .proj-table .data-row:hover { background: rgba(201,99,66,0.04); }
 .proj-table .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.035); }
 

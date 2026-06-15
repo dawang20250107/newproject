@@ -99,9 +99,15 @@ body {
 
 /* ── glassmorphism cards ─────────────────────────────────────────────────── */
 .card {
-  background: var(--glass);
-  backdrop-filter: var(--blur);
-  -webkit-backdrop-filter: var(--blur);
+  /* NOTE: no backdrop-filter here. A .card is the page's large *scrolling*
+     surface; blurring the position:fixed background under it forces the
+     browser to re-rasterize the blur every single scroll frame, which on
+     integrated GPUs locks up the whole window (worst on the wide tables in
+     项目台账/客户管理). We keep the frosted *look* with a near-opaque fill
+     instead — visually all but identical over the soft background, but free
+     to scroll. backdrop-filter is kept only on static (non-scrolling)
+     overlays: modals, nav, popovers. */
+  background: rgba(255, 252, 248, 0.86);
   border-radius: var(--radius);
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow);
@@ -179,10 +185,12 @@ input, textarea, select {
   font-family: inherit; font-size: 14px; outline: none;
   border: 1.5px solid var(--border); border-radius: 10px;
   padding: 9px 13px;
-  background: rgba(255,253,250,0.7);
+  /* near-opaque fill instead of a translucent one + backdrop blur: a filter
+     strip has many inputs, and each backdrop-filter is its own layer that
+     re-blurs the fixed background on every scroll frame. */
+  background: rgba(255,253,250,0.92);
   color: var(--text); width: 100%;
   transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
-  backdrop-filter: blur(4px);
 }
 input:focus, textarea:focus, select:focus {
   border-color: var(--primary);
@@ -192,7 +200,10 @@ input:focus, textarea:focus, select:focus {
 input::placeholder { color: rgba(155,128,112,0.65); }
 
 /* ── table ───────────────────────────────────────────────────────────────── */
-.table-wrap { overflow-x: auto; border-radius: 10px; }
+/* contain: content (= layout paint style, NOT size) scopes the table's reflow
+   and repaint to this box, so a wide auto-layout table can't invalidate the
+   whole document during scroll — kills the scrollbar↔reflow jank on wide tables. */
+.table-wrap { overflow-x: auto; border-radius: 10px; contain: content; }
 table { width: 100%; border-collapse: collapse; white-space: nowrap; }
 th, td { padding: 11px 15px; text-align: left; border-bottom: 1px solid rgba(180,140,110,0.12); }
 th {
@@ -200,7 +211,10 @@ th {
   font-weight: 600; font-size: 12px; color: var(--muted);
   letter-spacing: 0.04em; text-transform: uppercase;
 }
-tr { transition: background 0.15s; }
+/* No transition on rows: during wheel-scroll the cursor stays put while rows
+   slide under it, so a per-row background transition fires on every row that
+   passes — each one repainting inside the card. Instant hover is imperceptible
+   and removes that per-frame repaint churn. */
 tr:hover td { background: rgba(201,99,66,0.035); }
 tr:last-child td { border-bottom: none; }
 
