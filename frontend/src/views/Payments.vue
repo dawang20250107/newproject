@@ -220,15 +220,15 @@ async function onPrecheckFile(e) {
   }
 }
 
-async function onPrecheckApply({ mode, rows }) {
+async function onPrecheckApply({ mode, rows, okRows }) {
   precheckBusy.value = true
   try {
     if (mode === 'download') {
       const blob = await api.post('/payments/import/apply',
-        { rows, mode: 'download' }, { responseType: 'blob', timeout: 90000 })
+        { rows, okRows, mode: 'download' }, { responseType: 'blob', timeout: 90000 })
       triggerDownload(blob, '付款台账_修正版.xlsx')
     } else {
-      const res = await api.post('/payments/import/apply', { rows, mode: 'import' }, { timeout: 90000 })
+      const res = await api.post('/payments/import/apply', { rows, okRows, mode: 'import' }, { timeout: 90000 })
       precheckResult.value = null
       importResult.value = res.data
       if (res.data.created > 0) load()

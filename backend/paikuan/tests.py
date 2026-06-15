@@ -158,8 +158,9 @@ class PaymentPermissionRegressionTests(TestCase):
         from unittest import mock
         auth = self._admin_auth()
         rows = [
-            [self.dept, '采购A', '供应商甲', '2026-06-01', '123456', '10000'],  # ok
+            [self.dept, '采购A', '供应商甲', '2026-06-01', '123456', '10000'],  # ok → 被 AI 标注
             [self.dept, '采购B', '供应商乙', '2026-06-02', '12A3', '20000'],    # 审批编号含字母→规则错
+            [self.dept, '采购C', '供应商丙', '2026-06-03', '789', '30000'],     # 完全通过 → okRows
         ]
 
         def fake_ai(records):
@@ -171,10 +172,15 @@ class PaymentPermissionRegressionTests(TestCase):
                                     {'file': self._payment_xlsx(rows)}, **auth)
         self.assertEqual(resp.status_code, 200, resp.content)
         d = resp.json()['data']
-        self.assertEqual(d['total'], 2)
+        self.assertEqual(d['total'], 3)
         self.assertEqual(d['ruleErrors'], 1)
         self.assertEqual(d['aiFindings'], 1)
-        self.assertEqual(len([r for r in d['rows'] if r['ruleIssue']]), 1)
+        # 只返回"需关注"的行（1 规则错误 + 1 AI 标注），完全通过的行进 okRows 不展示
+        self.assertEqual(d['attention'], 2)
+        self.assertEqual(d['okCount'], 1)
+        self.assertEqual(len(d['rows']), 2)
+        self.assertEqual(len(d['okRows']), 1)
+        self.assertTrue(any(c['key'] == 'payee' for c in d['columns']))
 
     def test_payment_import_apply_import_and_download(self):
         """确认后导入：mode=import 落库；mode=download 返回修正版 xlsx。"""

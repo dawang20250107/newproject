@@ -2877,6 +2877,11 @@ def payment_import_precheck(request):
         return err(ferr)
     if not rows:
         return err('文件为空')
+    # 行数上限：超大文件不做逐行预检（逐行 DB 校验 + 前端渲染成本高），引导拆分或直接导入
+    PRECHECK_MAX = 10000
+    if len(rows) - 1 > PRECHECK_MAX:
+        return err(f'数据量较大（约 {len(rows) - 1} 行），AI 预检最多支持 {PRECHECK_MAX} 行；'
+                   f'请拆分文件后预检，或直接使用「导入」。')
     col_pos, inst_date_cols, inst_amt_cols, missing = _payment_header_map(rows)
     if missing:
         missing_labels = [h for _, h, c in EXCEL_COLUMN_MAP if c in missing]
@@ -2917,12 +2922,44 @@ def payment_import_precheck(request):
     for rr in report_rows:
         rr['ai'] = by_row.get(rr['row'], [])
 
+    # 只把"需关注"的行（规则错误 / 疑似重复 / AI 疑点）返回前端展示编辑；其余已通过的行
+    # 仅回传数据、不渲染，确认时一并导入 —— 这样 1 万行也不会卡（前端只渲染少量问题行）。
+    columns = [
+        {'key': 'department', 'label': '部门'},
+        {'key': 'payee', 'label': '收款方'},
+        {'key': 'total_amount', 'label': '计划金额'},
+        {'key': 'planned_date', 'label': '计划日期'},
+        {'key': 'approval_number', 'label': '审批单号'},
+        {'key': 'project_short_name', 'label': '项目简称'},
+        {'key': 'project_desc', 'label': '付款事项'},
+    ]
+    attention, ok_data, rule_errors, warns, ai_findings = [], [], 0, 0, 0
+    for r in report_rows:
+        ai_findings += len(r['ai'])
+        if r['ruleIssue']:
+            rule_errors += 1
+            r['status'] = 'error'
+            attention.append(r)
+        elif r['warn']:
+            warns += 1
+            r['status'] = 'warn'
+            attention.append(r)
+        elif r['ai']:
+            r['status'] = 'review'
+            attention.append(r)
+        else:
+            ok_data.append(r['data'])
     return ok({
         'total': len(report_rows),
-        'ruleErrors': sum(1 for r in report_rows if r['ruleIssue']),
-        'aiFindings': sum(len(r['ai']) for r in report_rows),
+        'attention': len(attention),
+        'okCount': len(ok_data),
+        'ruleErrors': rule_errors,
+        'warns': warns,
+        'aiFindings': ai_findings,
         'aiEnabled': bool(getattr(settings, 'DEEPSEEK_API_KEY', '')),
-        'rows': report_rows,
+        'columns': columns,
+        'rows': attention,   # 仅"需关注"的行
+        'okRows': ok_data,   # 已通过、不展示、确认时一并导入
     })
 
 
@@ -2960,7 +2997,10 @@ def payment_import_apply(request):
     if perms is not None and not perms['can_create']:
         return err('无新增权限', 403, 403)
     body = parse_body(request)
-    rows = body.get('rows') or []
+    in_rows = body.get('rows') or []
+    ok_rows = body.get('okRows') or []
+    # 需关注行（可能已被用户就地修正）+ 已通过行（原样回传）一并处理
+    rows = list(in_rows) + [{'data': d} for d in ok_rows]
     if not isinstance(rows, list) or not rows:
         return err('没有可处理的数据')
     if (body.get('mode') or 'import') == 'download':
