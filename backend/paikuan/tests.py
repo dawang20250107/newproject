@@ -355,6 +355,47 @@ class ApprovalImportTests(TestCase):
         self.assertEqual(d['skipped'], 2, d)          # 示例行不计入跳过
         self.assertEqual(len(d['errors']), 2, d)
 
+    def test_approval_import_precheck_and_apply(self):
+        """审批预检：规则错误逐行标注 + AI 复核挂行，只返回需关注行 + okRows；apply 修正后落库。"""
+        from unittest import mock
+        headers = ['申请人*', '所属事业部*', '审批编号*', '摘要', '申请金额*', '收款主体', '审批状态*']
+        rows = [
+            ['李四', self.dept, '2' * 21, '摘要', 5000, '甲', '待审批'],   # ok → 被 AI 标注
+            ['王五', self.dept, '12A3', '', 6000, '乙', '待审批'],          # 审批编号非数字 → 规则错
+            ['赵六', self.dept, '789', '', 7000, '丙', '待审批'],           # 完全通过 → okRows
+        ]
+
+        def fake_ai(records):
+            return ([{'row': records[0]['row'], 'field': 'payee', 'issue': '疑似异常',
+                      'suggestion': '核实', 'severity': 'low'}] if records else [])
+
+        with mock.patch('paikuan.views._ai_review_approvals', side_effect=fake_ai):
+            resp = self.client.post('/api/pk/approvals/import/precheck',
+                                    {'file': self._xlsx(headers, rows)}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['total'], 3)
+        self.assertEqual(d['ruleErrors'], 1)
+        self.assertEqual(d['aiFindings'], 1)
+        self.assertEqual(d['attention'], 2)            # 1 规则错误 + 1 AI 标注
+        self.assertEqual(d['okCount'], 1)
+        self.assertEqual(len(d['rows']), 2)
+        self.assertEqual(len(d['okRows']), 1)
+        self.assertTrue(any(c['key'] == 'applicant' for c in d['columns']))
+
+        # apply：就地修正规则错误行（审批编号改为合法数字）+ okRows 一并落库
+        attention = d['rows']
+        for r in attention:
+            if r['status'] == 'error':
+                r['data']['approval_number'] = '123'
+        imp = self.client.post('/api/pk/approvals/import/apply',
+                               data=json.dumps({'rows': attention, 'okRows': d['okRows'],
+                                                'mode': 'import'}),
+                               content_type='application/json', **self.auth())
+        self.assertEqual(imp.status_code, 200, imp.content)
+        self.assertEqual(imp.json()['data']['created'], 3, imp.content)   # 2 需关注 + 1 通过
+        self.assertEqual(ApprovalRecord.objects.count(), 3)
+
 
 class StatsCarryoverTests(TestCase):
     """月度统计：前期未付的排款结转到本期展示。"""

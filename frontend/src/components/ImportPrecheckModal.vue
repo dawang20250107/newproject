@@ -61,7 +61,7 @@ function apply(mode) {
             <span class="pc-tag" :class="'pc-tag-' + r.status">{{ tagText(r) }}</span>
           </div>
           <div class="pc-fields">
-            <label v-for="col in columns" :key="col.key" :class="{ wide: col.key === 'project_desc' }">
+            <label v-for="col in columns" :key="col.key" :class="{ wide: col.wide || col.key === 'project_desc' }">
               {{ col.label }}<input v-model="r.data[col.key]" />
             </label>
           </div>

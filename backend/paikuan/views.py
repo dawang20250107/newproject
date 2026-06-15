@@ -2015,6 +2015,106 @@ def _read_import_rows(upload):
     return rows, None
 
 
+# ── 审批导入：解析/校验抽成复用函数，供「导入」与「导入预检」同口径调用 ──────────
+_APPROVAL_COLUMNS = [
+    {'key': 'applicant', 'label': '申请人'},
+    {'key': 'department', 'label': '所属事业部'},
+    {'key': 'amount', 'label': '申请金额'},
+    {'key': 'approval_number', 'label': '审批编号'},
+    {'key': 'payee', 'label': '收款主体'},
+    {'key': 'secondary_dept', 'label': '二级部门'},
+    {'key': 'project_short_name', 'label': '项目简称'},
+    {'key': 'summary', 'label': '摘要', 'wide': True},
+    {'key': 'status', 'label': '审批状态'},
+]
+
+
+def _approval_reader(rows):
+    """从行列表构造 (cv, max_row, missing)。cv(r,*names) 取规范化表头对应单元格文本。
+    表头去掉 *＊空格后匹配并支持别名——模板(带*)、导出文件(不带*)、轻微改名都能识别。"""
+    max_row = len(rows)
+    max_col = max((len(r) for r in rows), default=0)
+
+    def cell(r, c):  # 1-indexed
+        row = rows[r - 1] if 0 < r <= max_row else ()
+        return row[c - 1] if 0 < c <= len(row) else None
+
+    def _norm(h):
+        return str(h or '').strip().replace('*', '').replace('＊', '').replace(' ', '').replace('　', '')
+    norm_col = {}
+    for c in range(1, max_col + 1):
+        key = _norm(cell(1, c))
+        if key and key not in norm_col:
+            norm_col[key] = c
+
+    def cv(r, *names):
+        for n in names:
+            ci = norm_col.get(_norm(n))
+            if ci:
+                return str(cell(r, ci) or '').strip()
+        return ''
+    missing = not (norm_col.get('申请人') and (norm_col.get('申请金额') or norm_col.get('金额')))
+    return cv, max_row, missing
+
+
+def _approval_row_view(cv, r):
+    """读一行为可编辑的清洗字段 dict（与导入同口径取值）。"""
+    return {
+        'applicant': cv(r, '申请人'),
+        'department': cv(r, '所属事业部', '事业部', '部门'),
+        'secondary_dept': cv(r, '二级部门'),
+        'project_short_name': cv(r, '项目简称'),
+        'approval_number': cv(r, '审批编号', '审批单号'),
+        'summary': cv(r, '摘要'),
+        'amount': cv(r, '申请金额', '金额'),
+        'payee': cv(r, '收款主体'),
+        'status': cv(r, '审批状态', '状态') or '待审批',
+    }
+
+
+def _approval_row_is_blank(v):
+    return not any([v['applicant'], v['department'], v['approval_number'], v['amount'],
+                    v['summary'], v['payee']])
+
+
+def _parse_approval_fields(data, request):
+    """校验+规范化一行审批数据；返回 (fields, error)。与 approval_import 同口径。"""
+    applicant = (data.get('applicant') or '').strip()
+    dept = (data.get('department') or '').strip()
+    no = (data.get('approval_number') or '').strip()
+    status_cn = (data.get('status') or '待审批').strip()
+    amount_raw = str(data.get('amount') or '').strip()
+    if not applicant or not amount_raw:
+        return None, '申请人和金额不能为空'
+    no_clean, err_no = _clean_approval_number(no)
+    if err_no:
+        return None, f'{err_no}（当前“{no}”）'
+    no = no_clean
+    if status_cn not in {'待审批', 'pending'}:
+        return None, f'仅允许导入“待审批”状态（当前“{status_cn}”）'
+    if dept not in VALID_DEPARTMENTS:
+        return None, f'所属事业部无效（当前“{dept or "空"}”）'
+    if not can_write_dept(request, dept):
+        return None, f'无权操作事业部 {dept}'
+    try:
+        amount = Decimal(str(amount_raw).replace(',', '').replace('，', '').replace('¥', '').strip())
+        if amount <= 0:
+            raise ValueError()
+    except Exception:
+        return None, f'申请金额无效（当前“{amount_raw}”）'
+    # 项目简称：填了就必须与项目台账匹配，搜索不到直接拒绝该行并给出指导
+    psn = (data.get('project_short_name') or '')[:100]
+    err_psn = _validate_project_short_name(psn, dept)
+    if err_psn:
+        return None, err_psn
+    return {
+        'applicant': applicant, 'department': dept, 'approval_number': no,
+        'secondary_dept': (data.get('secondary_dept') or '')[:100], 'project_short_name': psn,
+        'summary': data.get('summary') or '', 'amount': amount, 'payee': data.get('payee') or '',
+        'status': 'pending',
+    }, None
+
+
 @csrf_exempt
 @pk_required()
 def approval_import(request):
@@ -2034,81 +2134,190 @@ def approval_import(request):
         return err(ferr)
     if not rows:
         return err('文件为空')
-    max_row = len(rows)
-    max_col = max((len(r) for r in rows), default=0)
-
-    def cell(r, c):  # 1-indexed，等价于原 ws.cell(r, c).value
-        row = rows[r - 1] if 0 < r <= max_row else ()
-        return row[c - 1] if 0 < c <= len(row) else None
-
-    headers = [str(cell(1, c) or '').strip() for c in range(1, max_col + 1)]
-
-    # 表头健壮匹配：去掉 *、＊、空格后建索引，并支持别名——这样模板(带*)、导出文件
-    # (不带*)、以及用户轻微改动表头都能正确识别，避免"按要求填了却整表跳过"。
-    def _norm(h):
-        return str(h or '').strip().replace('*', '').replace('＊', '').replace(' ', '').replace('　', '')
-    norm_col = {}
-    for i, h in enumerate(headers, 1):
-        key = _norm(h)
-        if key and key not in norm_col:
-            norm_col[key] = i
-
-    def cv(r, *names):
-        for n in names:
-            ci = norm_col.get(_norm(n))
-            if ci:
-                return str(cell(r, ci) or '').strip()
-        return ''
-
+    cv, max_row, missing = _approval_reader(rows)
     # 必要列缺失（多为表头被删/改名/选错文件）→ 明确报错，而不是静默全跳过
-    if not (norm_col.get('申请人') and (norm_col.get('申请金额') or norm_col.get('金额'))):
+    if missing:
         return err('未识别到必要表头（申请人 / 申请金额）。请使用最新模板，或确认首行表头与列内容未被删改、且未选错文件。')
 
     created = skipped = 0
     errors = []
     for r in range(2, max_row + 1):
-        applicant = cv(r, '申请人')
-        dept = cv(r, '所属事业部', '事业部', '部门')
-        no = cv(r, '审批编号', '审批单号')
-        status_cn = cv(r, '审批状态', '状态') or '待审批'
-        amount_raw = cv(r, '申请金额', '金额')
-        # 整行空白：直接略过，不计入跳过/报错（容忍模板尾部空行）
-        if not any([applicant, dept, no, amount_raw, cv(r, '摘要'), cv(r, '收款主体')]):
+        view = _approval_row_view(cv, r)
+        # 整行空白：略过（容忍尾部空行）；模板示例行：静默跳过
+        if _approval_row_is_blank(view):
             continue
-        # 模板自带的示例行：静默跳过，避免误导入为真实数据
-        if applicant.startswith('示例') or cv(r, '摘要').startswith('示例'):
+        if view['applicant'].startswith('示例') or view['summary'].startswith('示例'):
             continue
-        if not applicant or not amount_raw:
-            skipped += 1; errors.append(f'第{r}行: 申请人和金额不能为空'); continue
-        no_clean, err_no = _clean_approval_number(no)
-        if err_no:
-            skipped += 1; errors.append(f'第{r}行: {err_no}（当前“{no}”）'); continue
-        no = no_clean
-        if status_cn not in {'待审批', 'pending'}:
-            skipped += 1; errors.append(f'第{r}行: 仅允许导入“待审批”状态（当前“{status_cn}”）'); continue
-        if dept not in VALID_DEPARTMENTS:
-            skipped += 1; errors.append(f'第{r}行: 所属事业部无效（当前“{dept or "空"}”）'); continue
-        if not can_write_dept(request, dept):
-            skipped += 1; errors.append(f'第{r}行: 无权操作事业部 {dept}'); continue
-        try:
-            amount = Decimal(str(amount_raw).replace(',', '').replace('，', '').replace('¥', '').strip())
-            if amount <= 0:
-                raise ValueError()
-        except Exception:
-            skipped += 1; errors.append(f'第{r}行: 申请金额无效（当前“{amount_raw}”）'); continue
-        # 项目简称：填了就必须与项目台账匹配，搜索不到直接拒绝该行并给出指导
-        psn = cv(r, '项目简称')[:100]
-        err_psn = _validate_project_short_name(psn, dept)
-        if err_psn:
-            skipped += 1; errors.append(f'第{r}行: {err_psn}'); continue
-        ApprovalRecord.objects.create(
-            applicant=applicant, department=dept, approval_number=no,
-            secondary_dept=cv(r, '二级部门')[:100], project_short_name=psn,
-            summary=cv(r, '摘要'), amount=amount, payee=cv(r, '收款主体'),
-            status='pending', created_by_id=request.pk_uid
-        )
+        fields, error = _parse_approval_fields(view, request)
+        if error:
+            skipped += 1; errors.append(f'第{r}行: {error}'); continue
+        ApprovalRecord.objects.create(created_by_id=request.pk_uid, **fields)
         created += 1
     return ok({'created': created, 'skipped': skipped, 'errors': errors})
+
+
+_AI_REVIEW_APPROVAL_SYS = (
+    '你是企业审批台账的数据质检助手。下面是一批待导入的审批记录（已通过基础格式校验）。'
+    '请只挑出"疑似有问题"的行，找规则难以发现的软问题：申请人/收款主体像乱码/测试数据/占位符；'
+    '申请金额明显异常（疑似多或少一个0、过大或过小）；同一审批编号下申请人/金额/收款主体相互矛盾；'
+    '摘要与金额/部门明显不符；疑似重复行。严格只返回 JSON 数组，每个元素形如 '
+    '{"row":行号,"field":"字段名","issue":"问题简述","suggestion":"修正建议(可空)","severity":"high|medium|low"}。'
+    '没有发现问题就返回 []。不要输出 JSON 以外的任何文字。'
+)
+
+
+def _ai_review_records(records, system_prompt):
+    """通用：用 DeepSeek 复核一批待导入记录，挑出规则覆盖不到的软问题。
+    best-effort：无 key / 异常 / 无数据时返回 []。返回 [{'row','field','issue','suggestion','severity'}]。"""
+    if not getattr(settings, 'DEEPSEEK_API_KEY', '') or not records:
+        return []
+    try:
+        from caiwu.views import _deepseek_chat
+    except Exception:
+        return []
+    import json as _json
+    try:
+        text = _deepseek_chat(
+            [{'role': 'system', 'content': system_prompt},
+             {'role': 'user', 'content': _json.dumps(records[:50], ensure_ascii=False)}],
+            timeout=60, max_tokens=1500)
+        arr = _json.loads(text[text.index('['):text.rindex(']') + 1])
+    except Exception:
+        return []
+    out = []
+    for it in arr if isinstance(arr, list) else []:
+        if isinstance(it, dict) and it.get('row') is not None:
+            sev = it.get('severity')
+            out.append({
+                'row': it.get('row'), 'field': str(it.get('field', ''))[:40],
+                'issue': str(it.get('issue', ''))[:200],
+                'suggestion': str(it.get('suggestion', ''))[:200],
+                'severity': sev if sev in ('high', 'medium', 'low') else 'medium',
+            })
+    return out
+
+
+def _ai_review_approvals(records):
+    return _ai_review_records(records, _AI_REVIEW_APPROVAL_SYS)
+
+
+def _approval_corrected_xlsx(rows):
+    """把修正后的审批行写成标准模板格式 .xlsx 返回，可直接再次导入。"""
+    from openpyxl import Workbook
+    cols = [('申请人', 'applicant'), ('所属事业部', 'department'), ('二级部门', 'secondary_dept'),
+            ('项目简称', 'project_short_name'), ('审批编号', 'approval_number'), ('摘要', 'summary'),
+            ('申请金额', 'amount'), ('收款主体', 'payee'), ('审批状态', 'status')]
+    wb = Workbook(); ws = wb.active; ws.title = '审批记录(修正版)'
+    ws.append([h for h, _ in cols])
+    for r in rows:
+        d = r.get('data', r)
+        ws.append([d.get(c, '') if d.get(c) is not None else '' for _, c in cols])
+    return _build_excel_response(wb, '审批记录_修正版.xlsx')
+
+
+@csrf_exempt
+@pk_required()
+def approval_import_precheck(request):
+    """审批导入预检：①规则预检（复用 _parse_approval_fields，与导入同口径）②AI 复核疑点。
+    只读不落库；只返回"需关注"的行供前端展示编辑，其余通过的行放 okRows 确认时一并导入。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    if perms is not None:
+        if not perms['pages'].get('approval_records', True):
+            return err('无访问权限', 403, 403)
+        if not perms.get('can_create'):
+            return err('无新增权限', 403, 403)
+    f = request.FILES.get('file')
+    if not f:
+        return err('请上传文件')
+    if getattr(f, 'size', 0) > 5 * 1024 * 1024:
+        return err('文件过大，请确认文件不超过5MB')
+    rows, ferr = _read_import_rows(f)
+    if ferr:
+        return err(ferr)
+    if not rows:
+        return err('文件为空')
+    PRECHECK_MAX = 10000
+    if len(rows) - 1 > PRECHECK_MAX:
+        return ok({'skipPrecheck': True, 'total': len(rows) - 1,
+                   'reason': f'数据量较大（约 {len(rows) - 1} 行，超过 {PRECHECK_MAX} 行），已跳过 AI 预检，直接导入。'})
+    cv, max_row, missing = _approval_reader(rows)
+    if missing:
+        return err('未识别到必要表头（申请人 / 申请金额）。请使用最新模板，或确认首行表头与列内容未被删改、且未选错文件。')
+
+    report_rows, ai_input = [], []
+    for r in range(2, max_row + 1):
+        view = _approval_row_view(cv, r)
+        if _approval_row_is_blank(view):
+            continue
+        if view['applicant'].startswith('示例') or view['summary'].startswith('示例'):
+            continue
+        fields, error = _parse_approval_fields(view, request)
+        report_rows.append({'row': r, 'data': view, 'ruleIssue': error, 'warn': None, 'ai': []})
+        if not error:
+            ai_input.append({'row': r, 'applicant': view['applicant'], 'department': view['department'],
+                             'amount': view['amount'], 'payee': view['payee'],
+                             'approval_number': view['approval_number'], 'summary': view['summary']})
+
+    by_row = {}
+    for fnd in _ai_review_approvals(ai_input):
+        by_row.setdefault(fnd['row'], []).append(fnd)
+    for rr in report_rows:
+        rr['ai'] = by_row.get(rr['row'], [])
+
+    attention, ok_data, rule_errors, ai_findings = [], [], 0, 0
+    for rr in report_rows:
+        ai_findings += len(rr['ai'])
+        if rr['ruleIssue']:
+            rule_errors += 1; rr['status'] = 'error'; attention.append(rr)
+        elif rr['ai']:
+            rr['status'] = 'review'; attention.append(rr)
+        else:
+            ok_data.append(rr['data'])
+    return ok({
+        'total': len(report_rows), 'attention': len(attention), 'okCount': len(ok_data),
+        'ruleErrors': rule_errors, 'warns': 0, 'aiFindings': ai_findings,
+        'aiEnabled': bool(getattr(settings, 'DEEPSEEK_API_KEY', '')),
+        'columns': _APPROVAL_COLUMNS, 'rows': attention, 'okRows': ok_data,
+    })
+
+
+@csrf_exempt
+@pk_required()
+def approval_import_apply(request):
+    """对预检并经用户确认/修正后的审批行执行：mode=import 直接导入；mode=download 下载修正版。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    if perms is not None:
+        if not perms['pages'].get('approval_records', True):
+            return err('无访问权限', 403, 403)
+        if not perms.get('can_create'):
+            return err('无新增权限', 403, 403)
+    body = parse_body(request)
+    in_rows = body.get('rows') or []
+    ok_rows = body.get('okRows') or []
+    rows = list(in_rows) + [{'data': d} for d in ok_rows]
+    if not isinstance(rows, list) or not rows:
+        return err('没有可处理的数据')
+    if (body.get('mode') or 'import') == 'download':
+        return _approval_corrected_xlsx(rows)
+
+    created = skipped = 0
+    errors = []
+    for r in rows:
+        rn = r.get('row', '?')
+        data = dict(r.get('data') or r)
+        fields, error = _parse_approval_fields(data, request)
+        if error:
+            skipped += 1; errors.append(f'第{rn}行: {error}'); continue
+        ApprovalRecord.objects.create(created_by_id=request.pk_uid, **fields)
+        created += 1
+    msg = (f'全部 {created} 条成功导入' if created and not skipped
+           else f'成功导入 {created} 条，跳过 {skipped} 条' if created
+           else f'没有可导入的数据（跳过 {skipped} 条）')
+    return ok({'created': created, 'skipped': skipped, 'errors': errors, 'message': msg})
 
 
 @pk_required()
@@ -2796,47 +3005,21 @@ def payment_import(request):
     return ok(results)
 
 
+_AI_REVIEW_PAYMENT_SYS = (
+    '你是企业付款台账的数据质检助手。下面是一批待导入的付款记录（已通过基础格式校验）。'
+    '请只挑出"疑似有问题"的行，找规则难以发现的软问题：收款方像乱码/测试数据/占位符；'
+    '金额明显异常（疑似多或少一个0、过大或过小）；部门或收款方写法不一致（同一对象多种写法）；'
+    '计划付款日期不合常理（过去太久或未来太远）；同一审批单号下收款方/金额相互矛盾；疑似重复行。'
+    '严格只返回 JSON 数组，每个元素形如 '
+    '{"row":行号,"field":"字段名","issue":"问题简述","suggestion":"修正建议(可空)","severity":"high|medium|low"}。'
+    '没有发现问题就返回 []。不要输出 JSON 以外的任何文字。'
+)
+
+
 def _ai_review_payments(records):
     """用 DeepSeek 复核付款导入数据，挑出规则覆盖不到的"软问题"（疑似乱码/测试数据、
-    金额异常、部门/收款方写法不一致、日期不合常理、同审批号矛盾、疑似重复等）。
-    best-effort：无 key / 异常 / 无数据时返回 []。
-    返回 [{'row','field','issue','suggestion','severity'}]。"""
-    if not getattr(settings, 'DEEPSEEK_API_KEY', '') or not records:
-        return []
-    try:
-        from caiwu.views import _deepseek_chat
-    except Exception:
-        return []
-    import json as _json
-    sys = (
-        '你是企业付款台账的数据质检助手。下面是一批待导入的付款记录（已通过基础格式校验）。'
-        '请只挑出"疑似有问题"的行，找规则难以发现的软问题：收款方像乱码/测试数据/占位符；'
-        '金额明显异常（疑似多或少一个0、过大或过小）；部门或收款方写法不一致（同一对象多种写法）；'
-        '计划付款日期不合常理（过去太久或未来太远）；同一审批单号下收款方/金额相互矛盾；疑似重复行。'
-        '严格只返回 JSON 数组，每个元素形如 '
-        '{"row":行号,"field":"字段名","issue":"问题简述","suggestion":"修正建议(可空)","severity":"high|medium|low"}。'
-        '没有发现问题就返回 []。不要输出 JSON 以外的任何文字。'
-    )
-    try:
-        text = _deepseek_chat(
-            [{'role': 'system', 'content': sys},
-             {'role': 'user', 'content': _json.dumps(records[:50], ensure_ascii=False)}],
-            timeout=60, max_tokens=1500)
-        arr = _json.loads(text[text.index('['):text.rindex(']') + 1])
-    except Exception:
-        return []
-    out = []
-    for it in arr if isinstance(arr, list) else []:
-        if isinstance(it, dict) and it.get('row') is not None:
-            sev = it.get('severity')
-            out.append({
-                'row': it.get('row'),
-                'field': str(it.get('field', ''))[:40],
-                'issue': str(it.get('issue', ''))[:200],
-                'suggestion': str(it.get('suggestion', ''))[:200],
-                'severity': sev if sev in ('high', 'medium', 'low') else 'medium',
-            })
-    return out
+    金额异常、部门/收款方写法不一致、日期不合常理、同审批号矛盾、疑似重复等）。"""
+    return _ai_review_records(records, _AI_REVIEW_PAYMENT_SYS)
 
 
 def _payment_clean_view(data):

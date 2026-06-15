@@ -25,6 +25,8 @@ urlpatterns = [
     path('approvals/bulk-schedule', views.approval_records_bulk_schedule),
     path('approvals/template', views.approval_template),
     path('approvals/import', views.approval_import),
+    path('approvals/import/precheck', views.approval_import_precheck),
+    path('approvals/import/apply', views.approval_import_apply),
     path('approvals/export', views.approval_export),
     path('approvals/<int:pk>', views.approval_record_detail),
     path('approvals/<int:pk>/schedule', views.approval_record_schedule),

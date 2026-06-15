@@ -7,6 +7,7 @@ import { downloadBlob } from '../utils/download.js'
 import EmptyState from '../components/EmptyState.vue'
 import ProjectShortNamePicker from '../components/ProjectShortNamePicker.vue'
 import ImportResultModal from '../components/ImportResultModal.vue'
+import ImportPrecheckModal from '../components/ImportPrecheckModal.vue'
 
 const auth = useAuthStore()
 const items = ref([])
@@ -17,6 +18,8 @@ const depts = ref([])
 const fileRef = ref(null)
 const importing = ref(false)
 const importResult = ref(null)
+const precheckResult = ref(null)
+const precheckBusy = ref(false)
 const exporting = ref(false)
 const saving = ref(false)
 const showCreate = ref(false)
@@ -173,21 +176,49 @@ async function doSchedule(){
 }
 async function downloadTemplate(){ const b=await api.get('/approvals/template',{responseType:'blob'}); dl(b,'审批管理导入模板.xlsx') }
 const dl = downloadBlob
-function triggerImport(){ fileRef.value.click() }
+function triggerImport(){ importResult.value=null; precheckResult.value=null; fileRef.value.click() }
+
+// 智能导入：先规则+AI 预检；发现「需关注」的行才让 AI 介入弹窗协助修正，否则直接导入
 async function onImport(e){
-  const f=e.target.files?.[0]; if(!f) return
-  importing.value=true; const fd=new FormData(); fd.append('file',f)
+  const f=e.target.files?.[0]; if(!f){ return }
+  e.target.value=''
+  importing.value=true; importResult.value=null; precheckResult.value=null
   try{
-    const r=await api.post('/approvals/import',fd,{headers:{'Content-Type':'multipart/form-data'}})
-    const d=r.data||{}
-    // 完整展示全部未通过校验的行（弹窗内可滚动），不再用 alert 截断只显示前 15 条
-    importResult.value = {
-      created: d.created||0, skipped: d.skipped||0, errors: d.errors||[],
-      message: `新增 ${d.created||0} 条，跳过 ${d.skipped||0} 条（含错误）`,
+    const fd=new FormData(); fd.append('file',f)
+    const report=(await api.post('/approvals/import/precheck',fd,{
+      headers:{'Content-Type':'multipart/form-data'}, timeout:120000,
+    })).data
+    if(report && !report.skipPrecheck && report.attention>0){
+      precheckResult.value=report; return
+    }
+    // 全部通过（或超大文件跳过预检）→ 直接导入
+    const fd2=new FormData(); fd2.append('file',f)
+    const d=(await api.post('/approvals/import',fd2,{
+      headers:{'Content-Type':'multipart/form-data'}, timeout:60000,
+    })).data||{}
+    importResult.value={
+      created:d.created||0, skipped:d.skipped||0, errors:d.errors||[],
+      message:`新增 ${d.created||0} 条，跳过 ${d.skipped||0} 条（含错误）`,
     }
     load()
-  }catch(err){ importResult.value = { error: err?.error || '导入失败，请检查文件格式或表头' } }
-  finally{ importing.value=false; e.target.value='' }
+  }catch(err){ importResult.value={ error: err?.msg || err?.error || '导入失败，请检查文件格式或表头' } }
+  finally{ importing.value=false }
+}
+
+async function onPrecheckApply({ mode, rows, okRows }){
+  precheckBusy.value=true
+  try{
+    if(mode==='download'){
+      const b=await api.post('/approvals/import/apply',{rows,okRows,mode:'download'},{responseType:'blob',timeout:90000})
+      dl(b,'审批记录_修正版.xlsx')
+    }else{
+      const d=(await api.post('/approvals/import/apply',{rows,okRows,mode:'import'},{timeout:90000})).data||{}
+      precheckResult.value=null
+      importResult.value={ created:d.created||0, skipped:d.skipped||0, errors:d.errors||[], message:d.message }
+      if(d.created>0) load()
+    }
+  }catch(err){ alert(err?.msg||err?.error||'处理失败') }
+  finally{ precheckBusy.value=false }
 }
 async function doExport(){ exporting.value=true; try{ const b=await api.get('/approvals/export',{params:filters,responseType:'blob'}); dl(b,'审批管理.xlsx') } finally{ exporting.value=false } }
 
@@ -203,7 +234,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 <template><div>
   <div class="topbar"><h1>审批管理</h1><div style="display:flex;gap:8px">
     <button class="btn btn-ghost btn-sm" @click="downloadTemplate">模板</button>
-    <button class="btn btn-ghost btn-sm" @click="triggerImport">{{ importing?'导入中…':'导入' }}</button>
+    <button class="btn btn-ghost btn-sm" :disabled="importing" @click="triggerImport"
+            title="导入会自动做规则校验 + AI 智能复核；发现问题时 AI 会介入，协助你就地修正后再导入">{{ importing?'导入中…':'导入' }}</button>
     <button class="btn btn-ghost btn-sm" @click="doExport">{{ exporting?'导出中…':'导出' }}</button>
     <button v-if="auth.canCreate" class="btn btn-primary" @click="openCreate">+ 新增审批记录</button>
   </div></div>
@@ -342,6 +374,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   </div><div class="modal-footer"><button class="btn btn-ghost" @click="showDelConfirm=false">取消</button><button class="btn-danger-solid" :disabled="!delConfirmOk || bulkDeleting" @click="confirmBulkDelete">{{ bulkDeleting ? '删除中…' : '确认删除' }}</button></div></div></div></Teleport>
 
   <ImportResultModal :result="importResult" @close="importResult = null" />
+  <ImportPrecheckModal :report="precheckResult" :busy="precheckBusy"
+    @close="precheckResult = null" @apply="onPrecheckApply" />
 </div></template>
 
 <style scoped>
