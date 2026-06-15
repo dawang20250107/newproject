@@ -1101,9 +1101,7 @@ def _parse_payment_fields(data, payment=None):
         return None, '收款方仅允许输入文字内容，不能含特殊符号'
     if not fields['planned_date']:
         return None, '计划付款日期必填'
-    # Approval number: must be exactly 21 digits when provided
-    if fields['approval_number'] and not re.fullmatch(r'\d{21}', fields['approval_number']):
-        return None, '审批单号须为21位数字（如不填写可留空）'
+    # 审批单号：付款台账不再强制 21 位格式，填了即接受（可选）
     # 项目简称：填了就必须能在项目台账中找到（打通应收/现金流/分析/资金池的项目维度）
     err_psn = _validate_project_short_name(fields['project_short_name'], fields['department'])
     if err_psn:

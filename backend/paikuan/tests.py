@@ -90,6 +90,28 @@ class PaymentPermissionRegressionTests(TestCase):
         if resp.status_code == 200:
             self.assertEqual(resp.json()['data']['project_no'], 'GYL-TEST-0002')
 
+    def test_payment_accepts_non_21_digit_approval_number(self):
+        """付款台账不再强制审批单号 21 位：任意非空值都应被接受。"""
+        from paikuan.views import _parse_payment_fields
+        fields, error = _parse_payment_fields({
+            'department': self.dept, 'approval_number': 'ABC-123',
+            'project_desc': 'D', 'payee': 'P', 'total_amount': '5000',
+            'planned_date': '2026-06-01',
+        })
+        self.assertIsNone(error, error)
+        self.assertEqual(fields['approval_number'], 'ABC-123')
+
+    def test_payment_paid_equal_to_plan_not_rejected(self):
+        """实付分笔合计恰等于计划总额时不应被判超出（含两位小数累加）。"""
+        from paikuan.views import _parse_payment_fields
+        fields, error = _parse_payment_fields({
+            'department': self.dept, 'project_desc': 'D', 'payee': 'P',
+            'total_amount': '1234.56', 'planned_date': '2026-06-01',
+            'installments': [{'pay_date': '2026-06-01', 'pay_amount': '617.28'},
+                             {'pay_date': '2026-06-02', 'pay_amount': '617.28'}],
+        })
+        self.assertIsNone(error, error)
+
     def test_stale_token_rejected_after_user_deactivated(self):
         self.user.is_active = False
         self.user.save(update_fields=['is_active'])

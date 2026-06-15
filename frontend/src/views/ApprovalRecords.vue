@@ -6,6 +6,7 @@ import { todayCST } from '../constants.js'
 import { downloadBlob } from '../utils/download.js'
 import EmptyState from '../components/EmptyState.vue'
 import ProjectShortNamePicker from '../components/ProjectShortNamePicker.vue'
+import ImportResultModal from '../components/ImportResultModal.vue'
 
 const auth = useAuthStore()
 const items = ref([])
@@ -15,6 +16,7 @@ const loading = ref(false)
 const depts = ref([])
 const fileRef = ref(null)
 const importing = ref(false)
+const importResult = ref(null)
 const exporting = ref(false)
 const saving = ref(false)
 const showCreate = ref(false)
@@ -177,15 +179,14 @@ async function onImport(e){
   importing.value=true; const fd=new FormData(); fd.append('file',f)
   try{
     const r=await api.post('/approvals/import',fd,{headers:{'Content-Type':'multipart/form-data'}})
-    const d=r.data||{}; const errs=d.errors||[]
-    let msg=`导入完成：新增 ${d.created||0} 条，跳过 ${d.skipped||0} 条`
-    if(errs.length){
-      const show=errs.slice(0,15)
-      msg+='\n\n未导入明细（含原因）：\n'+show.join('\n')
-      if(errs.length>show.length) msg+=`\n…等共 ${errs.length} 条`
+    const d=r.data||{}
+    // 完整展示全部未通过校验的行（弹窗内可滚动），不再用 alert 截断只显示前 15 条
+    importResult.value = {
+      created: d.created||0, skipped: d.skipped||0, errors: d.errors||[],
+      message: `新增 ${d.created||0} 条，跳过 ${d.skipped||0} 条（含错误）`,
     }
-    alert(msg); load()
-  }catch(err){ alert(err?.error||'导入失败，请检查文件格式或表头') }
+    load()
+  }catch(err){ importResult.value = { error: err?.error || '导入失败，请检查文件格式或表头' } }
   finally{ importing.value=false; e.target.value='' }
 }
 async function doExport(){ exporting.value=true; try{ const b=await api.get('/approvals/export',{params:filters,responseType:'blob'}); dl(b,'审批管理.xlsx') } finally{ exporting.value=false } }
@@ -340,6 +341,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <input v-model="delConfirmText" class="del-input" :placeholder="`输入 ${delConfirmCount}`" @keyup.enter="confirmBulkDelete"/>
   </div><div class="modal-footer"><button class="btn btn-ghost" @click="showDelConfirm=false">取消</button><button class="btn-danger-solid" :disabled="!delConfirmOk || bulkDeleting" @click="confirmBulkDelete">{{ bulkDeleting ? '删除中…' : '确认删除' }}</button></div></div></div></Teleport>
 
+  <ImportResultModal :result="importResult" @close="importResult = null" />
 </div></template>
 
 <style scoped>

@@ -119,7 +119,10 @@ const adjustedTarget = computed(() => {
   const adj = parseFloat(form.value.plan_adjustment)
   return (!isNaN(adj) && adj > 0) ? adj : plannedTotal.value
 })
-const overpaid = computed(() => plannedTotal.value > 0 && paidSoFar.value > plannedTotal.value)
+// 按「分」取整比较，避免浮点累加误差把"实付==计划"误判为超出（如 617.28+617.28）
+const overpaid = computed(() =>
+  plannedTotal.value > 0 && Math.round(paidSoFar.value * 100) > Math.round(plannedTotal.value * 100)
+)
 const remaining = computed(() => Math.max(0, adjustedTarget.value - paidSoFar.value))
 
 // Installment helpers
@@ -318,13 +321,9 @@ async function submit() {
 
       <div class="form-row">
         <div v-if="vis('approval_number')" class="form-group">
-          <label>审批单号 <span class="hint-text">21位数字，可选</span></label>
-          <input v-model="form.approval_number" placeholder="填写则需为21位数字" maxlength="21"
-            :disabled="!editable('approval_number')"
-            :class="{ 'input-warn': form.approval_number && !/^\d{21}$/.test(form.approval_number) }" />
-          <span v-if="form.approval_number && !/^\d{21}$/.test(form.approval_number)" class="field-err">
-            已输入 {{ form.approval_number.replace(/\D/g, '').length }} 位数字，需满21位
-          </span>
+          <label>审批单号 <span class="hint-text">可选</span></label>
+          <input v-model="form.approval_number" placeholder="审批单号（可选）" maxlength="64"
+            :disabled="!editable('approval_number')" />
         </div>
       </div>
 
