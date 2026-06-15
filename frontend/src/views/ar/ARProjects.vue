@@ -7,6 +7,7 @@ import { downloadBlob } from '../../utils/download.js'
 import { fmtCompact, fmtMoney } from '../../utils/format.js'
 import { TOOLTIP } from '../../utils/chartTheme.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
+import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 
 const auth = useAuthStore()
 const items = ref([])
@@ -27,6 +28,9 @@ const importing = ref(false)
 const exporting = ref(false)
 const fileInput = ref(null)
 const importResult = ref(null)   // { ok, title, sections: [{label, items, warn?}] }
+const precheckResult = ref(null)
+const precheckBusy = ref(false)
+const pendingFile = ref(null)    // 保存原文件，AI 介入确认后重提
 
 // ── 多选 + 批量删除 ─────────────────────────────────────────────────────────
 const selectedIds = ref(new Set())          // 按 id 记忆选择（本页）
@@ -307,23 +311,45 @@ async function downloadTemplate() {
 
 async function handleImport(e) {
   const f = e.target.files?.[0]; if (!f) return
+  if (fileInput.value) fileInput.value.value = ''
+  pendingFile.value = f
   importing.value = true
+  precheckResult.value = null
   try {
     const fd = new FormData(); fd.append('file', f)
-    const res = await ar.importProjects(fd); const d = res.data
-    if (d.rejected) {
-      // 整表未执行：列出全部需修正项，按提示改后重导（不会半截写入、不会漏导）
-      importResult.value = { ok: false, title: d.message || '导入未执行，请按提示修正后重新导入',
-        sections: [{ label: `以下 ${d.errors?.length || 0} 处需在表格中修正`, warn: true, items: d.errors || [] }] }
-    } else {
-      const counts = [`新增 ${d.created} 条`]
-      if (d.updated) counts.push(`更新 ${d.updated} 条`)
-      importResult.value = { ok: true, title: `导入完成：${counts.join('，')}`, sections: [] }
+    const report = (await ar.precheckProjects(fd)).data
+    if (report && !report.skipPrecheck && report.attention > 0) {
+      precheckResult.value = report; return
     }
-    reloadAll()
+    await doImport(f)
   } catch (err) {
     importResult.value = { ok: false, title: '导入失败', sections: [{ label: '错误信息', warn: true, items: [err?.msg || err?.error || err?.message || '服务器错误，请联系管理员'] }] }
-  } finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
+  } finally { importing.value = false }
+}
+
+async function doImport(f) {
+  const fd = new FormData(); fd.append('file', f)
+  const res = await ar.importProjects(fd); const d = res.data
+  if (d.rejected) {
+    importResult.value = { ok: false, title: d.message || '导入未执行，请按提示修正后重新导入',
+      sections: [{ label: `以下 ${d.errors?.length || 0} 处需在表格中修正`, warn: true, items: d.errors || [] }] }
+  } else {
+    const counts = [`新增 ${d.created} 条`]
+    if (d.updated) counts.push(`更新 ${d.updated} 条`)
+    importResult.value = { ok: true, title: `导入完成：${counts.join('，')}`, sections: [] }
+  }
+  reloadAll()
+}
+
+async function onPrecheckApply({ mode }) {
+  if (mode !== 'import') return
+  precheckBusy.value = true
+  try {
+    await doImport(pendingFile.value)
+    precheckResult.value = null
+  } catch (err) {
+    alert(err?.msg || err?.error || '导入失败')
+  } finally { precheckBusy.value = false; importing.value = false }
 }
 
 async function exportData() {
@@ -761,6 +787,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         </div>
       </div>
     </Teleport>
+
+    <!-- 导入预检弹窗 -->
+    <ImportPrecheckModal :report="precheckResult" :busy="precheckBusy" :readonly="true"
+      @close="precheckResult = null" @apply="onPrecheckApply" />
 
     <!-- 批量删除确认：列出待删项目 + 二次输入条数 -->
     <Teleport to="body">

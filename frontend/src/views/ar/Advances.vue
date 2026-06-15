@@ -6,6 +6,7 @@ import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
 import { downloadBlob } from '../../utils/download.js'
+import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -48,6 +49,9 @@ const partyLabel = computed(() => direction.value === '预收' ? '客户' : '供
 const importing = ref(false)
 const exporting = ref(false)
 const fileInput = ref(null)
+const precheckResult = ref(null)
+const precheckBusy = ref(false)
+const pendingFile = ref(null)
 
 async function load(reset = false) {
   if (!isAdvanceMode.value) return
@@ -311,19 +315,41 @@ async function downloadTemplate() {
 }
 async function handleImport(e) {
   const f = e.target.files?.[0]; if (!f) return
+  pendingFile.value = f
+  precheckResult.value = null
+  importing.value = true
+  try {
+    const fd = new FormData(); fd.append('file', f)
+    const pr = await ar.precheckAdvances(fd); const pd = pr.data
+    if (pd.skipPrecheck) { await doImport(f); return }
+    if ((pd.attention || 0) > 0) { precheckResult.value = pd; return }
+    await doImport(f)
+  } catch (e) { alert(e?.msg || '导入失败') }
+  finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
+}
+
+async function doImport(f) {
   importing.value = true
   try {
     const fd = new FormData(); fd.append('file', f)
     const res = await ar.importAdvances(fd); const d = res.data
     if (d.rejected) {
-      // 整表未执行：列出全部需修正项，改后重导（不会半截写入、不会漏导）
       alert((d.message || '导入未执行，请按提示修正后重新导入') + '\n\n' + (d.errors || []).join('\n'))
     } else {
       alert(`导入完成：创建 ${d.created} 条`)
     }
     await load()
   } catch (e) { alert(e?.msg || '导入失败') }
-  finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
+  finally { importing.value = false }
+}
+
+async function onPrecheckApply({ mode }) {
+  if (mode !== 'import') return
+  precheckBusy.value = true
+  try {
+    await doImport(pendingFile.value)
+    precheckResult.value = null
+  } finally { precheckBusy.value = false; importing.value = false }
 }
 async function exportData() {
   exporting.value = true
@@ -945,6 +971,10 @@ onMounted(() => {
       </div>
     </div>
   </div>
+
+  <!-- 导入预检弹窗 -->
+  <ImportPrecheckModal :report="precheckResult" :busy="precheckBusy" :readonly="true"
+    @close="precheckResult = null" @apply="onPrecheckApply" />
 </template>
 
 <style scoped>

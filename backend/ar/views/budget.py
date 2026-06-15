@@ -380,6 +380,132 @@ def _budget_import(request, Model, kind):
                'errors': [], 'warnings': warnings})
 
 
+_BUDGET_AI_SYS = {
+    'collection': (
+        '你是企业回款预算台账的数据质检助手。下面是一批待导入的回款预算记录（已通过基础格式校验）。'
+        '请只挑出"疑似有问题"的行，找规则难以发现的软问题：项目简称像占位符/测试数据；'
+        '金额明显异常（0元/极大极小）；预计回款日期不合常理（过去太久或未来太远）；疑似重复行。'
+        '严格只返回 JSON 数组，每个元素形如 '
+        '{"row":行号,"field":"字段名","issue":"问题简述","suggestion":"修正建议(可空)","severity":"high|medium|low"}。'
+        '没有发现问题就返回 []。不要输出 JSON 以外的任何文字。'
+    ),
+    'payment': (
+        '你是企业付款预算台账的数据质检助手。下面是一批待导入的付款预算记录（已通过基础格式校验）。'
+        '请只挑出"疑似有问题"的行：项目简称像占位符/测试数据；金额异常；'
+        '预计付款日期不合常理；疑似重复行。严格只返回 JSON 数组，每个元素形如 '
+        '{"row":行号,"field":"字段名","issue":"...","suggestion":"...","severity":"high|medium|low"}。'
+        '没有发现问题就返回 []。不要输出 JSON 以外的任何文字。'
+    ),
+}
+
+_BUDGET_COLUMNS = {
+    'collection': [
+        {'key': 'short_name', 'label': '项目简称/摘要', 'wide': True},
+        {'key': 'expected_date', 'label': '预计收款日期'},
+        {'key': 'dept', 'label': '交付部门'},
+        {'key': 'amount', 'label': '金额'},
+        {'key': 'notes', 'label': '备注'},
+    ],
+    'payment': [
+        {'key': 'short_name', 'label': '项目简称/摘要', 'wide': True},
+        {'key': 'expected_date', 'label': '预计付款日期'},
+        {'key': 'dept', 'label': '交付部门'},
+        {'key': 'amount', 'label': '金额'},
+        {'key': 'notes', 'label': '备注'},
+    ],
+}
+
+
+def _budget_precheck(request, kind):
+    """预算导入预检：规则校验 + AI 复核。只读不落库；返回逐行报告供前端展示。
+    用户确认后由前端重新提交文件到 /import 端点写库（AR 通用「文件留存+重提」模式）。"""
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _page_denied(request, 'ar_budget')
+    if denied:
+        return denied
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    f = request.FILES.get('file')
+    if not f:
+        return err('请上传文件')
+    if getattr(f, 'size', 0) > 5 * 1024 * 1024:
+        return err('文件过大，请确认文件不超过5MB')
+    try:
+        wb = openpyxl.load_workbook(f, data_only=True)
+        ws = wb.active
+    except Exception as e:
+        return err(f'无法读取Excel: {e}')
+
+    data_rows = ws.max_row - 1
+    if data_rows > PRECHECK_MAX:
+        return ok({'skipPrecheck': True, 'total': data_rows,
+                   'reason': f'数据量较大（约 {data_rows} 行），已跳过 AI 预检，直接导入。'})
+
+    headers = [str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1)]
+    col_map = {h: c + 1 for c, h in enumerate(headers)}
+    lbl = _budget_label(kind)
+    date_col_names = [f'预计{lbl}日期*', f'预计{lbl}日期(YYYY-MM-DD)*', f'预计{lbl}日期']
+
+    def _raw_first(row, names):
+        for n in names:
+            if n in col_map:
+                return ws.cell(row, col_map[n]).value
+        return None
+
+    def _cv(row, name):
+        idx = col_map.get(name)
+        if idx is None:
+            return ''
+        v = ws.cell(row, idx).value
+        return str(v).strip() if v is not None else ''
+
+    search_depts = None if request.pk_role == 'super_admin' else request.pk_depts
+    report_rows, ai_input = [], []
+
+    for ri in range(2, ws.max_row + 1):
+        short_name = _cv(ri, '项目简称/摘要*')
+        if not short_name or EXAMPLE_ROW_MARKER in short_name or short_name.startswith('★'):
+            continue
+        date_str = _normalize_date(_raw_first(ri, date_col_names))
+        rule_issue = None
+        if not date_str:
+            raw_date = _cv(ri, date_col_names[0]) if date_col_names[0] in col_map else ''
+            rule_issue = f'预计{lbl}日期无效（{"读到：" + raw_date if raw_date else "该格为空"}），请填 2026-06-15 格式'
+        else:
+            filled_dept = _cv(ri, '交付部门')
+            dept = filled_dept
+            if dept and dept not in VALID_DEPARTMENTS:
+                rule_issue = f'无效交付部门"{dept}"'
+            elif request.pk_role != 'super_admin' and dept and dept not in request.pk_depts:
+                rule_issue = f'无权操作部门"{dept}"'
+            else:
+                amount_raw = _cv(ri, '金额*')
+                from decimal import Decimal as _Dec, InvalidOperation as _IOp
+                try:
+                    amount = _Dec(amount_raw.replace(',', ''))
+                    if amount <= 0:
+                        raise ValueError()
+                except (Exception,):
+                    rule_issue = f'金额必须大于0（当前"{amount_raw or "空"}"）'
+
+        data = {'short_name': short_name, 'expected_date': date_str or '',
+                'dept': _cv(ri, '交付部门'), 'amount': _cv(ri, '金额*'), 'notes': _cv(ri, '备注')}
+        report_rows.append({'row': ri, 'data': data, 'ruleIssue': rule_issue, 'warn': None, 'ai': []})
+        if not rule_issue:
+            ai_input.append({'row': ri, 'short_name': short_name, 'dept': data['dept'],
+                             'amount': data['amount'], 'expected_date': date_str})
+
+    by_row = {}
+    for fnd in _ar_ai_review(ai_input, _BUDGET_AI_SYS[kind]):
+        by_row.setdefault(fnd['row'], []).append(fnd)
+    for rr in report_rows:
+        rr['ai'] = by_row.get(rr['row'], [])
+
+    return ok(_ar_precheck_report(report_rows, _BUDGET_COLUMNS[kind]))
+
+
 def _budget_export(request, Model, kind):
     denied = _page_denied(request, 'ar_budget')
     if denied:
@@ -422,6 +548,12 @@ def budget_collection_import(request):
 
 @csrf_exempt
 @pk_required()
+def budget_collection_import_precheck(request):
+    return _budget_precheck(request, 'collection')
+
+
+@csrf_exempt
+@pk_required()
 def budget_collection_export(request):
     return _budget_export(request, CollectionBudget, 'collection')
 
@@ -436,6 +568,12 @@ def budget_payment_template(request):
 @pk_required()
 def budget_payment_import(request):
     return _budget_import(request, PaymentBudget, 'payment')
+
+
+@csrf_exempt
+@pk_required()
+def budget_payment_import_precheck(request):
+    return _budget_precheck(request, 'payment')
 
 
 @csrf_exempt

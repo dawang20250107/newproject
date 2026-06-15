@@ -10,6 +10,7 @@ import { useServerSort } from '../../composables/useServerSort.js'
 import SortTh from '../../components/ar/SortTh.vue'
 import FilterPanel from '../../components/ar/FilterPanel.vue'
 import { describeCondition } from '../../composables/arConditions.js'
+import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -163,6 +164,9 @@ const importing = ref(false)
 const exporting = ref(false)
 const fileInput = ref(null)
 const importResult = ref(null)   // { ok: bool, title, lines: [] }
+const precheckResult = ref(null)
+const precheckBusy = ref(false)
+const pendingFile = ref(null)
 
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
@@ -831,6 +835,21 @@ async function downloadTemplate() {
 
 async function handleImport(e) {
   const f = e.target.files?.[0]; if (!f) return
+  pendingFile.value = f
+  precheckResult.value = null
+  importing.value = true
+  try {
+    const fd = new FormData(); fd.append('file', f)
+    const pr = await ar.precheckRecords(fd); const pd = pr.data
+    if (pd.skipPrecheck) { await doImport(f); return }
+    if ((pd.attention || 0) > 0) { precheckResult.value = pd; return }
+    await doImport(f)
+  } catch (err) {
+    importResult.value = { ok: false, title: '导入失败', sections: [{ label: '错误信息', items: [err?.msg || err?.error || err?.message || '服务器错误，请联系管理员'] }] }
+  } finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
+}
+
+async function doImport(f) {
   importing.value = true
   try {
     const fd = new FormData(); fd.append('file', f)
@@ -859,7 +878,16 @@ async function handleImport(e) {
     }
   } catch (err) {
     importResult.value = { ok: false, title: '导入失败', sections: [{ label: '错误信息', items: [err?.msg || err?.error || err?.message || '服务器错误，请联系管理员'] }] }
-  } finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
+  } finally { importing.value = false }
+}
+
+async function onPrecheckApply({ mode }) {
+  if (mode !== 'import') return
+  precheckBusy.value = true
+  try {
+    await doImport(pendingFile.value)
+    precheckResult.value = null
+  } finally { precheckBusy.value = false; importing.value = false }
 }
 
 async function exportData() {
@@ -2101,6 +2129,10 @@ function clearFilters() {
           </div>
         </div>
       </div>
+
+      <!-- 导入预检弹窗 -->
+      <ImportPrecheckModal :report="precheckResult" :busy="precheckBusy" :readonly="true"
+        @close="precheckResult = null" @apply="onPrecheckApply" />
 
       <!-- 批量删除二次输入确认 -->
       <div v-if="showDelConfirm" class="modal-overlay" @click.self="showDelConfirm = false">

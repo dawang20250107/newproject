@@ -519,6 +519,117 @@ def project_import(request):
     return ok({'created': created, 'updated': updated, 'skipped': 0, 'errors': []})
 
 
+_PROJECT_AI_SYS = (
+    '你是企业项目台账的数据质检助手。下面是一批待导入的项目记录（已通过基础格式校验）。'
+    '请只挑出"疑似有问题"的行：客户名称/项目简称像乱码/测试数据/占位符；'
+    '同一客户存在明显重复（简称、部门、销售对接人相同）；税率或账期天数明显异常。'
+    '严格只返回 JSON 数组，每个元素形如 '
+    '{"row":行号,"field":"字段名","issue":"问题简述","suggestion":"修正建议(可空)","severity":"high|medium|low"}。'
+    '没有发现问题就返回 []。不要输出 JSON 以外的任何文字。'
+)
+
+_PROJECT_COLUMNS = [
+    {'key': 'customer_name', 'label': '客户名称'},
+    {'key': 'short_name', 'label': '项目简称'},
+    {'key': 'dept', 'label': '交付部门'},
+    {'key': 'sales_contact', 'label': '销售对接人'},
+    {'key': 'project_manager', 'label': '项目负责人'},
+    {'key': 'business_mode', 'label': '业务模式'},
+    {'key': 'has_contract', 'label': '有无合同'},
+]
+
+
+@csrf_exempt
+@pk_required()
+def project_import_precheck(request):
+    """项目台账导入预检：规则校验 + AI 复核。只读不落库。
+    用户确认后由前端重新提交文件到 /import 写库（AR 通用「文件留存+重提」模式）。"""
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _page_denied(request, 'ar_projects')
+    if denied:
+        return denied
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    f = request.FILES.get('file')
+    if not f:
+        return err('请上传文件')
+    if getattr(f, 'size', 0) > 5 * 1024 * 1024:
+        return err('文件过大，请确认文件不超过5MB')
+    try:
+        wb = openpyxl.load_workbook(f, data_only=True)
+        ws = wb.active
+    except Exception as e:
+        return err(f'无法读取Excel: {e}')
+
+    data_rows = ws.max_row - 1
+    if data_rows > PRECHECK_MAX:
+        return ok({'skipPrecheck': True, 'total': data_rows,
+                   'reason': f'数据量较大（约 {data_rows} 行），已跳过 AI 预检，直接导入。'})
+
+    headers = [str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1)]
+    col_map = {_norm_header(h): i + 1 for i, h in enumerate(headers)}
+
+    def _cv(row, *names):
+        for name in names:
+            idx = col_map.get(_norm_header(name))
+            if idx is None:
+                continue
+            v = ws.cell(row, idx).value
+            if v is not None and str(v).strip():
+                return str(v).strip()
+        return ''
+
+    report_rows, ai_input = [], []
+
+    for ri in range(2, ws.max_row + 1):
+        customer_name = _cv(ri, '客户名称', '客户名称*', '合同名称', '合同名称*')
+        short_name_val = _cv(ri, '项目简称', '项目简称*')
+        dept = _cv(ri, '交付部门', '交付部门*')
+        if (EXAMPLE_ROW_MARKER in customer_name or customer_name.startswith('★')
+                or EXAMPLE_ROW_MARKER in short_name_val or short_name_val.startswith('★')):
+            continue
+        if not customer_name:
+            customer_name = short_name_val
+        if not customer_name:
+            if not any(_cv(ri, h) for h in ('交付部门', '销售对接人', '项目负责人', '业务模式')):
+                continue
+        rule_issue = None
+        if not customer_name:
+            rule_issue = '缺少「客户名称」或「项目简称」，无法识别项目'
+        elif dept and dept not in VALID_DEPARTMENTS:
+            rule_issue = f'交付部门"{dept}"无效，可选值为：{"/".join(VALID_DEPARTMENTS)}'
+        elif request.pk_role != 'super_admin' and dept and dept not in request.pk_depts:
+            rule_issue = f'无权操作部门"{dept}"'
+        else:
+            customer_level_val = _cv(ri, '客户等级')
+            if customer_level_val and customer_level_val not in VALID_CUSTOMER_LEVELS:
+                rule_issue = f'客户等级"{customer_level_val}"无效，应为：{"/".join(VALID_CUSTOMER_LEVELS)}'
+            else:
+                invoice_type_val = _cv(ri, '专票/普票/不开票', '专票/普票', '发票类型')
+                if invoice_type_val and invoice_type_val not in VALID_INVOICE_TYPES:
+                    rule_issue = f'发票类型"{invoice_type_val}"无效，应为：{"/".join(VALID_INVOICE_TYPES)}'
+
+        data = {'customer_name': customer_name, 'short_name': short_name_val, 'dept': dept,
+                'sales_contact': _cv(ri, '销售对接人', '销售对接人*'),
+                'project_manager': _cv(ri, '项目负责人', '项目负责人*'),
+                'business_mode': _cv(ri, '业务模式'), 'has_contract': _cv(ri, '有无合同') or '无'}
+        report_rows.append({'row': ri, 'data': data, 'ruleIssue': rule_issue, 'warn': None, 'ai': []})
+        if not rule_issue:
+            ai_input.append({'row': ri, 'customer_name': customer_name, 'short_name': short_name_val,
+                             'dept': dept, 'sales_contact': data['sales_contact'],
+                             'project_manager': data['project_manager']})
+
+    by_row = {}
+    for fnd in _ar_ai_review(ai_input, _PROJECT_AI_SYS):
+        by_row.setdefault(fnd['row'], []).append(fnd)
+    for rr in report_rows:
+        rr['ai'] = by_row.get(rr['row'], [])
+
+    return ok(_ar_precheck_report(report_rows, _PROJECT_COLUMNS))
+
+
 @csrf_exempt
 @pk_required()
 def project_export(request):

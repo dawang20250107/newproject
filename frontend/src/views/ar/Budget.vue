@@ -9,6 +9,7 @@ import { downloadBlob } from '../../utils/download.js'
 import EmptyState from '../../components/EmptyState.vue'
 import BaseChart from '../../components/ar/BaseChart.vue'
 import ProjectPnlCard from '../caiwu/ProjectPnlCard.vue'
+import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 
 const auth = useAuthStore()
 const activeTab = ref('summary')
@@ -317,6 +318,10 @@ const importing = ref(false)
 const exporting = ref(false)
 const collFileInput = ref(null)
 const payFileInput = ref(null)
+const precheckResult = ref(null)
+const precheckBusy = ref(false)
+const pendingFile = ref(null)
+const pendingType = ref(null)
 
 const saveBlob = downloadBlob
 
@@ -331,6 +336,23 @@ async function downloadTemplate(type) {
 async function handleImport(type, ev) {
   const file = ev.target.files?.[0]
   if (!file) return
+  pendingFile.value = file
+  pendingType.value = type
+  precheckResult.value = null
+  importing.value = true
+  try {
+    const fd = new FormData(); fd.append('file', file)
+    const pr = type === 'collection'
+      ? await ar.precheckCollectionBudget(fd) : await ar.precheckPaymentBudget(fd)
+    const pd = pr.data
+    if (pd.skipPrecheck) { await doImport(type, file); return }
+    if ((pd.attention || 0) > 0) { precheckResult.value = pd; return }
+    await doImport(type, file)
+  } catch (e) { alert(e?.msg || '导入失败')
+  } finally { importing.value = false; ev.target.value = '' }
+}
+
+async function doImport(type, file) {
   importing.value = true
   try {
     const fd = new FormData(); fd.append('file', file)
@@ -338,7 +360,6 @@ async function handleImport(type, ev) {
       ? await ar.importCollectionBudget(fd) : await ar.importPaymentBudget(fd)
     const d = res.data
     if (d.rejected) {
-      // 整表未执行：列出全部需修正项，改后重导（不会半截写入、不会漏导）
       let msg = d.message || '导入未执行，请按提示修正后重新导入'
       if (d.errors?.length) msg += `\n\n需修正：\n${d.errors.slice(0, 20).join('\n')}`
       alert(msg)
@@ -350,7 +371,16 @@ async function handleImport(type, ev) {
     }
     await loadAll()
   } catch (e) { alert(e?.msg || '导入失败')
-  } finally { importing.value = false; ev.target.value = '' }
+  } finally { importing.value = false }
+}
+
+async function onPrecheckApply({ mode }) {
+  if (mode !== 'import') return
+  precheckBusy.value = true
+  try {
+    await doImport(pendingType.value, pendingFile.value)
+    precheckResult.value = null
+  } finally { precheckBusy.value = false; importing.value = false }
 }
 
 async function exportData(type) {
@@ -866,6 +896,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         </div>
       </div>
     </Teleport>
+
+    <!-- 导入预检弹窗 -->
+    <ImportPrecheckModal :report="precheckResult" :busy="precheckBusy" :readonly="true"
+      @close="precheckResult = null" @apply="onPrecheckApply" />
   </div>
 </template>
 

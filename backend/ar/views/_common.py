@@ -23,7 +23,8 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 from paikuan.views import (pk_required, ok, err, DEPARTMENTS, VALID_DEPARTMENTS,
                            get_request_perms, apply_ar_view_mask, AR_PROJECT_FIELD_DEFS,
-                           AR_RECORD_FIELD_DEFS, AR_ADVANCE_FIELD_DEFS, _paid_subq)
+                           AR_RECORD_FIELD_DEFS, AR_ADVANCE_FIELD_DEFS, _paid_subq,
+                           _ai_review_records)
 from ar.models import (ARProject, ARRecord, ARPayment, ARAdjustment,
                        BatchInvoiceEvent,
                        CollectionBudget, PaymentBudget,
@@ -40,6 +41,37 @@ ADVANCE_DIRECTIONS = ['预收', '预付']
 
 EXAMPLE_ROW_MARKER = '示例-导入前请删除此行'
 VALID_CUSTOMER_LEVELS = ['S级', 'A级', 'B级', 'C级', 'D级']
+
+PRECHECK_MAX = 10000   # 超过此行数跳过预检、直接导入
+
+
+def _ar_ai_review(records, system_prompt):
+    """Best-effort AI review for AR module import rows. Wraps the generic paikuan helper."""
+    return _ai_review_records(records, system_prompt)
+
+
+def _ar_precheck_report(report_rows, columns):
+    """将 [{row, data, ruleIssue, warn, ai}] 列表打包成前端预检 Modal 需要的 response shape。"""
+    ai_findings = sum(len(r['ai']) for r in report_rows)
+    attention, ok_data, rule_errors = [], [], 0
+    for r in report_rows:
+        if r['ruleIssue']:
+            rule_errors += 1
+            r['status'] = 'error'
+            attention.append(r)
+        elif r['ai']:
+            r['status'] = 'review'
+            attention.append(r)
+        else:
+            ok_data.append(r['data'])
+    import django.conf as _dc
+    ai_enabled = bool(getattr(_dc.settings, 'DEEPSEEK_API_KEY', ''))
+    return {
+        'total': len(report_rows), 'attention': len(attention), 'okCount': len(ok_data),
+        'ruleErrors': rule_errors, 'warns': 0, 'aiFindings': ai_findings,
+        'aiEnabled': ai_enabled, 'columns': columns,
+        'rows': attention, 'okRows': [],   # AR: re-submit file on confirm, no JSON apply needed
+    }
 VALID_INVOICE_TYPES = ['专票', '普票', '不开票']
 
 

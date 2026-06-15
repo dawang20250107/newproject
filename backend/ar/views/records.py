@@ -388,6 +388,158 @@ def ar_record_template(request):
     return _export_response(wb, '应收账款明细导入模板.xlsx')
 
 
+_AR_RECORD_AI_SYS = (
+    '你是企业应收账款的数据质检助手。下面是一批待导入的应收明细记录（已通过基础格式校验）。'
+    '请只挑出"疑似有问题"的行：项目简称像占位符/测试数据；预估上账金额或实际开票金额异常'
+    '（0元/极大极小/疑似少零）；开票日期晚于回款日期；疑似重复行；回款金额超过上账金额。'
+    '严格只返回 JSON 数组，每个元素形如 '
+    '{"row":行号,"field":"字段名","issue":"问题简述","suggestion":"修正建议(可空)","severity":"high|medium|low"}。'
+    '没有发现问题就返回 []。不要输出 JSON 以外的任何文字。'
+)
+
+_AR_RECORD_COLUMNS = [
+    {'key': 'short_name', 'label': '项目简称'},
+    {'key': 'dept_hint', 'label': '交付部门'},
+    {'key': 'op_date', 'label': '运作日期'},
+    {'key': 'est', 'label': '预估上账金额'},
+    {'key': 'actual', 'label': '实际开票金额'},
+    {'key': 'inv_date', 'label': '开票日期'},
+    {'key': 'notes', 'label': '备注', 'wide': True},
+]
+
+
+@csrf_exempt
+@pk_required()
+def ar_record_import_precheck(request):
+    """应收明细导入预检：格式校验 + 项目存在性检查 + AI 复核。只读不落库。
+    用户确认后由前端重新提交文件到 /import 写库（AR 通用「文件留存+重提」模式）。"""
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    f = request.FILES.get('file')
+    if not f:
+        return err('请上传文件')
+    if getattr(f, 'size', 0) > 5 * 1024 * 1024:
+        return err('文件过大，请确认文件不超过5MB')
+    try:
+        wb = openpyxl.load_workbook(f, data_only=True)
+        ws = wb.active
+    except Exception as e:
+        return err(f'无法读取Excel: {e}')
+
+    data_rows = ws.max_row - 1
+    if data_rows > PRECHECK_MAX:
+        return ok({'skipPrecheck': True, 'total': data_rows,
+                   'reason': f'数据量较大（约 {data_rows} 行），已跳过 AI 预检，直接导入。'})
+
+    headers = [str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1)]
+    col_map = {_norm_header(h): i + 1 for i, h in enumerate(headers)}
+    _ALIASES = {
+        '项目简称*':         ['项目简称*', '项目简称'],
+        '交付部门':          ['交付部门', '事业部', '部门'],
+        '运作日期*':         ['运作日期*', '运作日期'],
+        '运作年*':           ['运作年*', '运作年'],
+        '运作月*':           ['运作月*', '运作月'],
+        '预估上账金额':      ['预估上账金额', '预估金额', '上账金额'],
+        '实际开票金额':      ['实际开票金额', '开票金额'],
+        '开票日期':          ['开票日期', '开票日期(YYYY-MM-DD)', '开票日期*'],
+        '回款金额':          ['回款金额'],
+        '回款时间':          ['回款时间', '回款时间(YYYY-MM-DD)', '回款日期'],
+        '备注':              ['备注'],
+    }
+
+    def _resolve_idx(name):
+        for h in _ALIASES.get(name, [name]):
+            if _norm_header(h) in col_map:
+                return col_map[_norm_header(h)]
+        return None
+
+    def _cv_raw(row, name):
+        idx = _resolve_idx(name)
+        return ws.cell(row, idx).value if idx else None
+
+    def _cv(row, name):
+        v = _cv_raw(row, name)
+        return str(v).strip() if v is not None else ''
+
+    DATA_COLS = ('项目简称*', '交付部门', '运作日期*', '运作年*', '运作月*',
+                 '预估上账金额', '实际开票金额', '开票日期', '回款金额', '回款时间', '备注')
+
+    allowed_depts = None if request.pk_role == 'super_admin' else request.pk_depts
+    report_rows, ai_input = [], []
+
+    for ri in range(2, ws.max_row + 1):
+        row_vals = {h: _cv(ri, h) for h in DATA_COLS}
+        short_name = row_vals['项目简称*']
+        has_any = any(v for v in row_vals.values())
+        if EXAMPLE_ROW_MARKER in short_name or short_name.startswith('★'):
+            continue
+        if not has_any:
+            continue
+        rule_issue = None
+        if not short_name:
+            rule_issue = '缺少「项目简称」，请补填'
+        else:
+            dept_hint = row_vals['交付部门']
+            if dept_hint and dept_hint not in VALID_DEPARTMENTS:
+                rule_issue = f'交付部门"{dept_hint}"无效，可选值为：{"/".join(VALID_DEPARTMENTS)}'
+            if not rule_issue:
+                status, payload = _classify_project_for_import(
+                    short_name, '', '', allowed_depts, dept_hint=dept_hint)
+                if status == 'not_found':
+                    rule_issue = f'项目「{short_name}」在项目台账中不存在，请先在台账新建'
+                elif status == 'ambiguous':
+                    depts = sorted({c['delivery_dept'] for c in payload if c.get('delivery_dept')})
+                    rule_issue = (f'项目「{short_name}」匹配到 {len(payload)} 个，无法区分'
+                                  + (f'（部门：{"/".join(depts)}，请填交付部门区分）' if len(depts) > 1 else ''))
+                elif status == 'bad_no':
+                    rule_issue = '项目编号无效，请清空后改用简称匹配'
+            if not rule_issue:
+                od_raw = _cv_raw(ri, '运作日期*')
+                if od_raw not in (None, ''):
+                    od_norm = _normalize_date(od_raw)
+                    if not od_norm:
+                        m = re.match(r'^\s*(\d{4})\s*[-/年.]\s*(\d{1,2})\s*月?\s*$', str(od_raw))
+                        if not m:
+                            rule_issue = f'「运作日期」"{od_raw}"格式无效，请用 2026-05-01 格式'
+                else:
+                    if not (row_vals['运作年*'] or row_vals['运作月*']):
+                        rule_issue = '缺少「运作日期」，请补填（如 2026-05-01）'
+            if not rule_issue:
+                for amt_col, lbl in (('预估上账金额', '预估上账金额'), ('实际开票金额', '实际开票金额'),
+                                     ('回款金额', '回款金额')):
+                    raw = row_vals[amt_col]
+                    if raw:
+                        try:
+                            Decimal(str(raw).replace(',', '').replace('，', ''))
+                        except Exception:
+                            rule_issue = f'「{lbl}」"{raw}"不是有效数字'; break
+
+        dept_hint = row_vals['交付部门']
+        op_date_str = str(_cv_raw(ri, '运作日期*') or '').strip() or f"{row_vals['运作年*']}-{row_vals['运作月*']}"
+        data = {'short_name': short_name, 'dept_hint': dept_hint, 'op_date': op_date_str,
+                'est': row_vals['预估上账金额'], 'actual': row_vals['实际开票金额'],
+                'inv_date': _cv(ri, '开票日期'), 'notes': row_vals['备注']}
+        report_rows.append({'row': ri, 'data': data, 'ruleIssue': rule_issue, 'warn': None, 'ai': []})
+        if not rule_issue:
+            ai_input.append({'row': ri, 'short_name': short_name, 'dept': dept_hint,
+                             'op_date': op_date_str, 'est': row_vals['预估上账金额'],
+                             'actual': row_vals['实际开票金额']})
+
+    by_row = {}
+    for fnd in _ar_ai_review(ai_input, _AR_RECORD_AI_SYS):
+        by_row.setdefault(fnd['row'], []).append(fnd)
+    for rr in report_rows:
+        rr['ai'] = by_row.get(rr['row'], [])
+
+    return ok(_ar_precheck_report(report_rows, _AR_RECORD_COLUMNS))
+
+
 @csrf_exempt
 @pk_required()
 def ar_record_import(request):

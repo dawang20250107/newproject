@@ -641,6 +641,133 @@ def advance_import(request):
     return ok({'created': created, 'updated': 0, 'skipped': 0, 'errors': []})
 
 
+_ADVANCE_AI_SYS = (
+    '你是企业预收预付台账的数据质检助手。下面是一批待导入的预收预付记录（已通过基础格式校验）。'
+    '请只挑出"疑似有问题"的行，找规则难以发现的软问题：往来单位像乱码/测试数据/占位符；'
+    '金额明显异常（0元/极大极小/疑似少一个零）；同一往来单位方向/金额相互矛盾；疑似重复行。'
+    '严格只返回 JSON 数组，每个元素形如 '
+    '{"row":行号,"field":"字段名","issue":"问题简述","suggestion":"修正建议(可空)","severity":"high|medium|low"}。'
+    '没有发现问题就返回 []。不要输出 JSON 以外的任何文字。'
+)
+
+_ADVANCE_COLUMNS = [
+    {'key': 'direction', 'label': '方向'},
+    {'key': 'short_name', 'label': '项目简称'},
+    {'key': 'dept', 'label': '交付部门'},
+    {'key': 'counterparty', 'label': '往来单位'},
+    {'key': 'amount', 'label': '金额'},
+    {'key': 'year', 'label': '发生年'},
+    {'key': 'month', 'label': '发生月'},
+    {'key': 'notes', 'label': '备注'},
+]
+
+
+@csrf_exempt
+@pk_required()
+def advance_import_precheck(request):
+    """预收预付导入预检：规则校验 + AI 复核。只读不落库。
+    用户确认后由前端重新提交文件到 /import 写库（AR 通用「文件留存+重提」模式）。"""
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    f = request.FILES.get('file')
+    if not f:
+        return err('请上传文件')
+    if getattr(f, 'size', 0) > 5 * 1024 * 1024:
+        return err('文件过大，请确认文件不超过5MB')
+    try:
+        wb = openpyxl.load_workbook(f, data_only=True)
+        ws = wb.active
+    except Exception as e:
+        return err(f'无法读取Excel: {e}')
+
+    data_rows = ws.max_row - 1
+    if data_rows > PRECHECK_MAX:
+        return ok({'skipPrecheck': True, 'total': data_rows,
+                   'reason': f'数据量较大（约 {data_rows} 行），已跳过 AI 预检，直接导入。'})
+
+    headers = [str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1)]
+    col_map = {h: c + 1 for c, h in enumerate(headers)}
+    _ALIASES = {
+        '方向(预收/预付)*': ['方向(预收/预付)*', '方向(预收/预付)', '方向'],
+        '项目简称': ['项目简称', '项目简称*'],
+        '交付部门': ['交付部门'],
+        '往来单位*': ['往来单位*', '往来单位'],
+        '发生年*': ['发生年*', '发生年'],
+        '发生月*': ['发生月*', '发生月'],
+        '预收/预付金额': ['预收/预付金额', '金额'],
+        '备注': ['备注'],
+    }
+
+    def _resolve_idx(name):
+        for h in _ALIASES.get(name, [name]):
+            if h in col_map:
+                return col_map[h]
+        return None
+
+    def _cv(row, name):
+        idx = _resolve_idx(name)
+        v = ws.cell(row, idx).value if idx else None
+        return str(v).strip() if v is not None else ''
+
+    search_depts = None if request.pk_role == 'super_admin' else request.pk_depts
+    report_rows, ai_input = [], []
+
+    for ri in range(2, ws.max_row + 1):
+        direction = _cv(ri, '方向(预收/预付)*')
+        short_name = _cv(ri, '项目简称')
+        counterparty = _cv(ri, '往来单位*')
+        if EXAMPLE_ROW_MARKER in short_name or direction.startswith('★'):
+            continue
+        if not direction and not counterparty and not short_name:
+            continue
+        rule_issue = None
+        if direction not in ADVANCE_DIRECTIONS:
+            rule_issue = f'方向"{direction}"无效，应为 预收/预付'
+        elif short_name:
+            proj = _match_project_by_short_name(short_name, allowed_depts=search_depts)
+            if not proj:
+                rule_issue = f'项目简称"{short_name}"未匹配到项目，请核对简称或先在项目台账建项目'
+        else:
+            dept = _cv(ri, '交付部门')
+            if not dept:
+                rule_issue = '未填项目简称时必须填写交付部门'
+            elif request.pk_role != 'super_admin' and dept not in request.pk_depts:
+                rule_issue = f'无权操作部门"{dept}"'
+        if not rule_issue:
+            year_s = _cv(ri, '发生年*')
+            month_s = _cv(ri, '发生月*')
+            try:
+                y, m = int(year_s or 0), int(month_s or 0)
+                if not (y and 1 <= m <= 12):
+                    raise ValueError()
+            except (ValueError, TypeError):
+                rule_issue = f'发生年月无效（年="{year_s or "空"}" 月="{month_s or "空"}"）'
+
+        proj_val = _match_project_by_short_name(short_name, allowed_depts=search_depts) if short_name else None
+        dept_val = proj_val.delivery_dept if proj_val else _cv(ri, '交付部门')
+        data = {'direction': direction, 'short_name': short_name, 'dept': dept_val,
+                'counterparty': counterparty, 'amount': _cv(ri, '预收/预付金额'),
+                'year': _cv(ri, '发生年*'), 'month': _cv(ri, '发生月*'), 'notes': _cv(ri, '备注')}
+        report_rows.append({'row': ri, 'data': data, 'ruleIssue': rule_issue, 'warn': None, 'ai': []})
+        if not rule_issue:
+            ai_input.append({'row': ri, 'direction': direction, 'counterparty': counterparty,
+                             'amount': data['amount'], 'short_name': short_name, 'dept': dept_val})
+
+    by_row = {}
+    for fnd in _ar_ai_review(ai_input, _ADVANCE_AI_SYS):
+        by_row.setdefault(fnd['row'], []).append(fnd)
+    for rr in report_rows:
+        rr['ai'] = by_row.get(rr['row'], [])
+
+    return ok(_ar_precheck_report(report_rows, _ADVANCE_COLUMNS))
+
+
 @csrf_exempt
 @pk_required()
 def advance_export(request):
