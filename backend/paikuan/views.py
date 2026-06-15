@@ -1829,6 +1829,51 @@ def approval_records_bulk_delete(request):
 
 @csrf_exempt
 @pk_required()
+def approval_records_bulk_approve(request):
+    """批量审批通过（含单选）：把所选「待审批」记录置为审批通过。
+    与单条审批同口径：仅审批职务可操作（is_approver），受部门作用域约束；
+    非「待审批」状态（已通过/已拒绝/已撤销/已归档）逐条跳过，不报错。单次上限 1000 条。"""
+    if request.method != 'POST':
+        return err('POST only', 405)
+    perms = get_request_perms(request)
+    if perms is not None and not perms['pages'].get('approval_records', True):
+        return err('无访问权限', 403, 403)
+    # 审批通过是终态决策，仅审批职务可操作（与单条 PUT status=approved 一致）
+    if not is_approver(request):
+        return err('当前职务无权审批', 403, 403)
+    body = parse_body(request)
+    ids = body.get('ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请提供要审批的记录 ids')
+    try:
+        ids = [int(i) for i in ids]
+    except (ValueError, TypeError):
+        return err('ids 必须为整数列表')
+    if len(ids) > 1000:
+        return err('单次审批上限 1000 条，请缩小选择范围')
+    qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids), request)
+    recs = {r.id: r for r in qs}
+    approved, skipped = 0, []
+    for rid in ids:
+        rec = recs.get(rid)
+        if rec is None:
+            skipped.append({'id': rid, 'reason': '不存在/无权限'})
+            continue
+        if not can_write_dept(request, rec.department):
+            skipped.append({'id': rid, 'reason': '无权操作该部门'})
+            continue
+        if rec.status != 'pending':
+            skipped.append({'id': rid, 'reason': '非「待审批」状态，已跳过'})
+            continue
+        rec.status = 'approved'
+        rec.save(update_fields=['status', 'updated_at'])
+        approved += 1
+    return ok({'approved': approved, 'skipped': skipped,
+               'message': f'已审批通过 {approved} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})
+
+
+@csrf_exempt
+@pk_required()
 def payments_bulk_delete(request):
     """批量删除付款台账记录（含单选）。已关联预付核销的记录不删（同单条删除口径）。
     始终受部门作用域与删除权限约束；单次上限 1000 条。"""

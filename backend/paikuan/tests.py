@@ -1124,6 +1124,57 @@ class BulkOpsTests(TestCase):
         self.assertEqual(len(d['skipped']), 1)
         self.assertTrue(ApprovalRecord.objects.filter(id=a1.id).exists())  # 未删
 
+    # ── 审批批量通过 ──────────────────────────────────────────────────────────
+    def test_bulk_approve_pending(self):
+        a1 = self._mk_approval(1, '1000', status='pending')
+        a2 = self._mk_approval(2, '2000', status='pending')
+        resp = self._post('/api/pk/approvals/bulk-approve', {'ids': [a1.id, a2.id]})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['approved'], 2)
+        self.assertEqual(d['skipped'], [])
+        for a in (a1, a2):
+            a.refresh_from_db()
+            self.assertEqual(a.status, 'approved')
+            self.assertFalse(a.archived)   # 审批通过不归档（仍可排款）
+
+    def test_bulk_approve_skips_non_pending(self):
+        a1 = self._mk_approval(1, '1000', status='pending')
+        a2 = self._mk_approval(2, '2000', status='approved')
+        a3 = self._mk_approval(3, '3000', status='rejected')
+        resp = self._post('/api/pk/approvals/bulk-approve', {'ids': [a1.id, a2.id, a3.id]})
+        d = resp.json()['data']
+        self.assertEqual(d['approved'], 1)
+        self.assertEqual({s['id'] for s in d['skipped']}, {a2.id, a3.id})
+        a1.refresh_from_db()
+        self.assertEqual(a1.status, 'approved')
+
+    def test_bulk_approve_single_via_ids(self):
+        a1 = self._mk_approval(1, '1000', status='pending')
+        resp = self._post('/api/pk/approvals/bulk-approve', {'ids': [a1.id]})
+        self.assertEqual(resp.json()['data']['approved'], 1)
+
+    def test_bulk_approve_empty_ids_rejected(self):
+        resp = self._post('/api/pk/approvals/bulk-approve', {'ids': []})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_bulk_approve_non_approver_forbidden(self):
+        # 非审批职务（如普通登记岗）无权批量审批，返回 403
+        clerk = PaikuanUser(phone='13900003111', name='Clerk', role='user',
+                            job_title='cashier', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        clerk.set_password('Test123456')
+        clerk.save()
+        token = make_token(clerk)
+        a1 = self._mk_approval(1, '1000', status='pending')
+        resp = self.client.post('/api/pk/approvals/bulk-approve',
+                                data=json.dumps({'ids': [a1.id]}),
+                                content_type='application/json',
+                                HTTP_AUTHORIZATION=f'Bearer {token}')
+        self.assertEqual(resp.status_code, 403, resp.content)
+        a1.refresh_from_db()
+        self.assertEqual(a1.status, 'pending')   # 未被改动
+
     # ── 付款台账批量付款 ──────────────────────────────────────────────────────
     def _schedule_payment(self, num, amount):
         a = self._mk_approval(num, amount)

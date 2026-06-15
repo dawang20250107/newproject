@@ -22,6 +22,7 @@ urlpatterns = [
     path('payments/<int:pk>/plan-items/<int:iid>', views.payment_plan_item_delete),
     path('approvals', views.approval_records),
     path('approvals/bulk-delete', views.approval_records_bulk_delete),
+    path('approvals/bulk-approve', views.approval_records_bulk_approve),
     path('approvals/bulk-schedule', views.approval_records_bulk_schedule),
     path('approvals/template', views.approval_template),
     path('approvals/import', views.approval_import),

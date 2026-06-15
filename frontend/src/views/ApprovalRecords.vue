@@ -62,6 +62,8 @@ const hasSelection = computed(() => selectedIds.value.size > 0)
 function toggleRow(id){ const s = new Set(selectedIds.value); s.has(id) ? s.delete(id) : s.add(id); selectedIds.value = s }
 function toggleSelectPage(){ const s = new Set(selectedIds.value); if (pageAllSelected.value) items.value.forEach(r => s.delete(r.id)); else items.value.forEach(r => s.add(r.id)); selectedIds.value = s }
 function clearSelection(){ selectedIds.value = new Set() }
+// 仅「待审批」可批量通过；汇总只统计可审批记录
+const selectedApprovable = computed(() => items.value.filter(i => selectedIds.value.has(i.id) && i.status === 'pending'))
 // 仅「审批通过且未归档」可排款；批量排款汇总只统计可排记录（默认金额=剩余可排=申请金额）
 const selectedSchedulable = computed(() => items.value.filter(i => selectedIds.value.has(i.id) && i.status === 'approved' && !i.archived))
 const batchSchedSummary = computed(() => ({
@@ -86,6 +88,24 @@ async function confirmBulkDelete(){
     if (d.skipped?.length) alert(`${d.message}\n\n未删除明细：\n` + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n'))
   } catch(e){ alert(e?.msg || e?.error || '删除失败') }
   finally{ bulkDeleting.value = false }
+}
+
+// 批量审批通过：仅对所选「待审批」记录生效，非待审批自动跳过
+const bulkApproving = ref(false)
+async function bulkApprove(){
+  const n = selectedApprovable.value.length
+  if (!n){ alert('所选记录中没有「待审批」状态的可审批记录'); return }
+  if (!confirm(`确认将所选的 ${n} 条「待审批」记录批量审批通过？`)) return
+  bulkApproving.value = true
+  try{
+    const r = await api.post('/approvals/bulk-approve', { ids: selectedApprovable.value.map(i => i.id) })
+    clearSelection(); load()
+    const d = r.data || {}
+    let msg = d.message || '批量审批完成'
+    if (d.skipped?.length) msg += '\n\n跳过明细：\n' + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n')
+    alert(msg)
+  } catch(e){ alert(e?.msg || e?.error || '批量审批失败') }
+  finally{ bulkApproving.value = false }
 }
 
 // 批量排款（默认日期=今天，默认金额=各记录剩余可排=申请金额；卡片内可逐条调整金额）
@@ -276,6 +296,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <Teleport to="body">
     <div v-if="!loading && items.length && hasSelection && !showBatchSched && !showDelConfirm && (auth.canDelete || auth.canCreate)" class="bulk-bar">
       <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
+      <button v-if="auth.canCreate" class="bulk-approve" :disabled="bulkApproving || !selectedApprovable.length" @click="bulkApprove">{{ bulkApproving ? '审批中…' : `批量通过（待审 ${selectedApprovable.length} 条）` }}</button>
       <button v-if="auth.canCreate" class="bulk-act" :disabled="!batchSchedSummary.count" @click="openBatchSchedule">批量排款（可排 {{ batchSchedSummary.count }} 条）</button>
       <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
       <button class="bulk-cancel" @click="clearSelection">取消</button>
@@ -410,7 +431,9 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   border-radius: 12px; background: var(--card); border: 1px solid rgba(198,40,40,0.35);
   box-shadow: 0 8px 28px rgba(0,0,0,0.18); }
 .bulk-n { font-size: 13px; color: var(--text); }
-.bulk-act { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--primary); color: #fff; }
+.bulk-approve { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: #2e7d32; color: #fff; }
+.bulk-approve:disabled { opacity: .5; cursor: default; }
+.bulk-act { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--primary); color: #fff; }
 .bulk-act:disabled { opacity: .5; cursor: default; }
 .bulk-del { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
 .bulk-del:disabled { opacity: .6; cursor: default; }
