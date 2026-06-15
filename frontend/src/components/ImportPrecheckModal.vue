@@ -38,7 +38,7 @@ function apply(mode) {
   <div v-if="report" class="overlay" @click.self="$emit('close')">
     <div class="modal pc-modal">
       <div class="modal-header">
-        <h3>导入预检 <span class="pc-sub">规则校验 + AI 智能复核</span></h3>
+        <h3>发现需要确认的数据 <span class="pc-sub">AI 已介入 · 协助你修正后再导入</span></h3>
         <button class="modal-close" @click="$emit('close')">×</button>
       </div>
 

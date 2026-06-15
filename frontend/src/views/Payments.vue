@@ -187,36 +187,46 @@ async function downloadTemplate() {
 
 function triggerImport() {
   importResult.value = null
+  precheckResult.value = null
   importInputRef.value.click()
 }
 
-// ── AI 导入预检（规则 + AI 复核 → 修正 → 确认导入/下载修正版）──────────────────
-const precheckInputRef = ref(null)
-const prechecking = ref(false)
+// ── 智能导入：选文件 → 先做规则+AI 预检（只读不落库）。发现「需关注」的行才让 AI
+//    介入弹窗、协助就地修正后再导入；全部通过 / 超大文件跳过预检则直接导入 ──────────
 const precheckResult = ref(null)
 const precheckBusy = ref(false)
 
-function triggerPrecheck() {
-  precheckResult.value = null
-  precheckInputRef.value.click()
-}
-
-async function onPrecheckFile(e) {
+async function onImportFile(e) {
   const file = e.target.files[0]
   if (!file) return
-  prechecking.value = true
-  const fd = new FormData()
-  fd.append('file', file)
+  e.target.value = ''
+  importing.value = true
+  importResult.value = null
+  precheckResult.value = null
   try {
-    const res = await api.post('/payments/import/precheck', fd, {
-      headers: { 'Content-Type': 'multipart/form-data' }, timeout: 90000,
+    // 第一步：预检（规则校验 + AI 复核）
+    const fd = new FormData()
+    fd.append('file', file)
+    const report = (await api.post('/payments/import/precheck', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000,
+    })).data
+    // 发现问题 → AI 介入：弹窗展示问题并协助就地修正后再导入
+    if (report && !report.skipPrecheck && report.attention > 0) {
+      precheckResult.value = report
+      return
+    }
+    // 全部通过（或超大文件跳过预检）→ 直接导入
+    const fd2 = new FormData()
+    fd2.append('file', file)
+    const res = await api.post('/payments/import', fd2, {
+      headers: { 'Content-Type': 'multipart/form-data' }, timeout: 60000,
     })
-    precheckResult.value = res.data
+    importResult.value = res.data
+    if (res.data.created > 0) load()
   } catch (ex) {
-    importResult.value = { error: ex?.msg || '预检失败，请检查文件格式' }
+    importResult.value = { error: ex?.msg || '导入失败，请检查文件格式' }
   } finally {
-    prechecking.value = false
-    e.target.value = ''
+    importing.value = false
   }
 }
 
@@ -237,28 +247,6 @@ async function onPrecheckApply({ mode, rows, okRows }) {
     alert(ex?.msg || ex?.error || '处理失败')
   } finally {
     precheckBusy.value = false
-  }
-}
-
-async function onImportFile(e) {
-  const file = e.target.files[0]
-  if (!file) return
-  importing.value = true
-  importResult.value = null
-  const formData = new FormData()
-  formData.append('file', file)
-  try {
-    const res = await api.post('/payments/import', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 60000,
-    })
-    importResult.value = res.data
-    if (res.data.created > 0) load()
-  } catch (ex) {
-    importResult.value = { error: ex?.msg || '导入失败，请检查文件格式' }
-  } finally {
-    importing.value = false
-    e.target.value = ''
   }
 }
 
@@ -506,14 +494,10 @@ async function doBatchPay() {
         <button class="btn btn-ghost btn-sm" @click="downloadTemplate" title="下载Excel导入模板">
           <span style="margin-right:4px">⬇</span>模板
         </button>
-        <button class="btn btn-ghost btn-sm" :disabled="importing" @click="triggerImport">
+        <button class="btn btn-ghost btn-sm" :disabled="importing" @click="triggerImport"
+                title="导入会自动做规则校验 + AI 智能复核；发现问题时 AI 会介入，协助你就地修正后再导入">
           <span v-if="importing" class="btn-spin"></span>
           <span v-else style="margin-right:4px">📥</span>{{ importing ? '导入中…' : '导入' }}
-        </button>
-        <button class="btn btn-ghost btn-sm pc-btn" :disabled="prechecking" @click="triggerPrecheck"
-                title="AI 预检：规则校验 + 智能复核，可就地修正后再导入">
-          <span v-if="prechecking" class="btn-spin"></span>
-          <span v-else style="margin-right:4px">🔍</span>{{ prechecking ? '预检中…' : 'AI 预检' }}
         </button>
         <button class="btn btn-ghost btn-sm" :disabled="exportingXlsx" @click="exportExcel">
           <span v-if="exportingXlsx" class="btn-spin"></span>
@@ -535,7 +519,6 @@ async function doBatchPay() {
 
     <!-- hidden file input for import -->
     <input ref="importInputRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImportFile" />
-    <input ref="precheckInputRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onPrecheckFile" />
 
     <div class="card" style="margin-bottom:16px">
       <div class="filter-bar">

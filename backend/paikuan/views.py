@@ -2877,11 +2877,13 @@ def payment_import_precheck(request):
         return err(ferr)
     if not rows:
         return err('文件为空')
-    # 行数上限：超大文件不做逐行预检（逐行 DB 校验 + 前端渲染成本高），引导拆分或直接导入
+    # 行数上限：超大文件不做逐行预检（逐行 DB 校验 + AI 复核 + 前端渲染成本高）。
+    # 返回 skipPrecheck 让前端跳过 AI 介入、直接走常规导入（而非报错挡住用户）。
     PRECHECK_MAX = 10000
     if len(rows) - 1 > PRECHECK_MAX:
-        return err(f'数据量较大（约 {len(rows) - 1} 行），AI 预检最多支持 {PRECHECK_MAX} 行；'
-                   f'请拆分文件后预检，或直接使用「导入」。')
+        return ok({'skipPrecheck': True, 'total': len(rows) - 1,
+                   'reason': f'数据量较大（约 {len(rows) - 1} 行，超过 {PRECHECK_MAX} 行），'
+                             f'已跳过 AI 预检，直接导入。'})
     col_pos, inst_date_cols, inst_amt_cols, missing = _payment_header_map(rows)
     if missing:
         missing_labels = [h for _, h, c in EXCEL_COLUMN_MAP if c in missing]
