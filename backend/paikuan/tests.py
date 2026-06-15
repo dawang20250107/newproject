@@ -90,16 +90,29 @@ class PaymentPermissionRegressionTests(TestCase):
         if resp.status_code == 200:
             self.assertEqual(resp.json()['data']['project_no'], 'GYL-TEST-0002')
 
-    def test_payment_accepts_non_21_digit_approval_number(self):
-        """付款台账不再强制审批单号 21 位：任意非空值都应被接受。"""
-        from paikuan.views import _parse_payment_fields
-        fields, error = _parse_payment_fields({
-            'department': self.dept, 'approval_number': 'ABC-123',
-            'project_desc': 'D', 'payee': 'P', 'total_amount': '5000',
-            'planned_date': '2026-06-01',
-        })
+    def test_payment_approval_number_cleaned_and_validated(self):
+        """审批单号：清洗（去空格/不可打印字符）后校验 1–100 位数字；空则占位 21 个 0。"""
+        from paikuan.views import _parse_payment_fields, _clean_approval_number
+
+        def parse(no):
+            return _parse_payment_fields({
+                'department': self.dept, 'approval_number': no, 'project_desc': 'D',
+                'payee': 'P', 'total_amount': '5000', 'planned_date': '2026-06-01'})
+
+        # 带空格/零宽字符 → 清洗为纯数字后通过
+        fields, error = parse('  123 456​789  ')
         self.assertIsNone(error, error)
-        self.assertEqual(fields['approval_number'], 'ABC-123')
+        self.assertEqual(fields['approval_number'], '123456789')
+        # 空 → 自动占位 21 个 0
+        fields, error = parse('   ')
+        self.assertIsNone(error, error)
+        self.assertEqual(fields['approval_number'], '0' * 21)
+        # 含字母 → 拒绝
+        _, error = parse('12A3')
+        self.assertIsNotNone(error)
+        # 边界：100 位通过、101 位拒绝
+        self.assertIsNone(_clean_approval_number('1' * 100)[1])
+        self.assertIsNotNone(_clean_approval_number('1' * 101)[1])
 
     def test_payment_paid_equal_to_plan_not_rejected(self):
         """实付分笔合计恰等于计划总额时不应被判超出（含两位小数累加）。"""
@@ -242,7 +255,7 @@ class ApprovalImportTests(TestCase):
         headers = ['申请人*', '所属事业部*', '审批编号*', '摘要', '申请金额*', '收款主体', '审批状态*']
         rows = [
             ['李四', self.dept, '2' * 21, '', 5000, '', '待审批'],       # ok
-            ['王五', self.dept, '123', '', 6000, '', '待审批'],          # 审批编号非21位
+            ['王五', self.dept, '12A3', '', 6000, '', '待审批'],         # 审批编号含字母 → 非数字
             ['赵六', '不存在事业部', '3' * 21, '', 7000, '', '待审批'],   # 部门无效
             ['示例张三', self.dept, '4' * 21, '示例摘要', 9, '', '待审批'],  # 示例行静默跳过
         ]

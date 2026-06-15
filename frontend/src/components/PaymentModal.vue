@@ -123,6 +123,11 @@ const adjustedTarget = computed(() => {
 const overpaid = computed(() =>
   plannedTotal.value > 0 && Math.round(paidSoFar.value * 100) > Math.round(plannedTotal.value * 100)
 )
+// 审批单号软校验：去空格后须为 1–100 位数字（留空交后端自动占位，不报警）
+const approvalNoInvalid = computed(() => {
+  const cleaned = (form.value.approval_number || '').replace(/\s/g, '')
+  return !!cleaned && !/^\d{1,100}$/.test(cleaned)
+})
 const remaining = computed(() => Math.max(0, adjustedTarget.value - paidSoFar.value))
 
 // Installment helpers
@@ -321,9 +326,11 @@ async function submit() {
 
       <div class="form-row">
         <div v-if="vis('approval_number')" class="form-group">
-          <label>审批单号 <span class="hint-text">可选</span></label>
-          <input v-model="form.approval_number" placeholder="审批单号（可选）" maxlength="64"
-            :disabled="!editable('approval_number')" />
+          <label>审批单号 <span class="hint-text">可选，最多100位数字</span></label>
+          <input v-model="form.approval_number" placeholder="可选，最多100位数字；留空将自动占位" maxlength="100"
+            :disabled="!editable('approval_number')"
+            :class="{ 'input-warn': approvalNoInvalid }" />
+          <span v-if="approvalNoInvalid" class="field-err">需为数字（最多100位），空格/不可见字符将自动清除</span>
         </div>
       </div>
 

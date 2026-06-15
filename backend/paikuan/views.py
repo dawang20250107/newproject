@@ -978,6 +978,18 @@ def _list_payments(request):
     })
 
 
+def _clean_approval_number(raw):
+    """清洗并校验审批编号：剔除空格、不可打印/控制/零宽等字符（导入 Excel 常见脏数据），
+    清洗后空值占位为 21 个 0，其余须为 1–100 位数字。返回 (cleaned, error)。"""
+    s = ''.join(ch for ch in str(raw if raw is not None else '')
+                if ch.isprintable() and not ch.isspace())
+    if not s:
+        return '0' * 21, None
+    if not re.fullmatch(r'\d{1,100}', s):
+        return None, '审批编号清洗后须为1–100位数字（不填将自动占位为21个0）'
+    return s, None
+
+
 def _parse_payment_fields(data, payment=None):
     fields = {}
 
@@ -988,7 +1000,7 @@ def _parse_payment_fields(data, payment=None):
     fields['secondary_dept'] = (get('secondary_dept') or '').strip()[:100]
     fields['project_short_name'] = (get('project_short_name') or '').strip()[:100]
     fields['applicant'] = (get('applicant') or '').strip()[:100]
-    fields['approval_number'] = (get('approval_number') or '').strip()
+    fields['approval_number'] = get('approval_number') or ''
     fields['project_no'] = (get('project_no') or '').strip()[:20]
     fields['project_desc'] = (get('project_desc') or '').strip()
     fields['payee'] = (get('payee') or '').strip()
@@ -1101,7 +1113,11 @@ def _parse_payment_fields(data, payment=None):
         return None, '收款方仅允许输入文字内容，不能含特殊符号'
     if not fields['planned_date']:
         return None, '计划付款日期必填'
-    # 审批单号：付款台账不再强制 21 位格式，填了即接受（可选）
+    # 审批单号：清洗（去空格/不可打印字符）后校验 1–100 位数字；空则占位为 21 个 0
+    cleaned_no, err_no = _clean_approval_number(fields['approval_number'])
+    if err_no:
+        return None, err_no
+    fields['approval_number'] = cleaned_no
     # 项目简称：填了就必须能在项目台账中找到（打通应收/现金流/分析/资金池的项目维度）
     err_psn = _validate_project_short_name(fields['project_short_name'], fields['department'])
     if err_psn:
@@ -1159,9 +1175,10 @@ def _find_duplicate_payment(fields, exclude_id=None):
     """Detect duplicate planned payments on same business key.
 
     Business key: department + approval_number + payee + planned_date + total_amount.
-    Skip the rule when approval_number is blank (low confidence).
+    Skip the rule when approval_number is blank or the 21-zero placeholder (low confidence).
     """
-    if not fields.get('approval_number'):
+    no = fields.get('approval_number') or ''
+    if not no or set(no) == {'0'}:
         return None
     qs = Payment.objects.filter(
         department=fields['department'],
@@ -1461,11 +1478,10 @@ def approval_records(request):
             return err('申请人不能为空')
         if amount <= 0:
             return err('申请金额必须大于0')
-        # 空审批编号自动填 21 位 0（占位，便于后续补录）
-        if not approval_number:
-            approval_number = '0' * 21
-        elif not re.fullmatch(r'\d{21}', approval_number):
-            return err('审批编号必须为21位数字')
+        # 审批编号：清洗后校验 1–100 位数字；空则自动占位 21 个 0
+        approval_number, err_no = _clean_approval_number(approval_number)
+        if err_no:
+            return err(err_no)
         if department not in VALID_DEPARTMENTS:
             return err('所属事业部无效')
         if status not in {'pending', 'approved', 'rejected', 'canceled'}:
@@ -1526,8 +1542,11 @@ def approval_record_detail(request, pk):
             if not can_write_dept(request, data['department']):
                 return err('无权操作目标事业部', 403, 403)
             rec.department = data['department']
-        if 'approval_number' in data and re.fullmatch(r'\d{21}', str(data['approval_number'])):
-            rec.approval_number = str(data['approval_number'])
+        if 'approval_number' in data:
+            cleaned_no, err_no = _clean_approval_number(data['approval_number'])
+            if err_no:
+                return err(err_no)
+            rec.approval_number = cleaned_no
         if 'amount' in data:
             try:
                 new_amount = Decimal(str(data['amount'] or '0'))
@@ -2007,10 +2026,10 @@ def approval_import(request):
             continue
         if not applicant or not amount_raw:
             skipped += 1; errors.append(f'第{r}行: 申请人和金额不能为空'); continue
-        if not no:
-            no = '0' * 21
-        elif not re.fullmatch(r'\d{21}', no):
-            skipped += 1; errors.append(f'第{r}行: 审批编号必须为21位数字（当前“{no}”），不填可留空'); continue
+        no_clean, err_no = _clean_approval_number(no)
+        if err_no:
+            skipped += 1; errors.append(f'第{r}行: {err_no}（当前“{no}”）'); continue
+        no = no_clean
         if status_cn not in {'待审批', 'pending'}:
             skipped += 1; errors.append(f'第{r}行: 仅允许导入“待审批”状态（当前“{status_cn}”）'); continue
         if dept not in VALID_DEPARTMENTS:
