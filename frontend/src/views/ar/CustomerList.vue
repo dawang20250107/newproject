@@ -4,6 +4,7 @@ import { useAuthStore } from '../../stores/auth.js'
 import { yearCST, todayCST, DEPARTMENTS } from '../../constants.js'
 import ar from '../../api/ar.js'
 import ColumnFilter from '../../components/ColumnFilter.vue'
+import SkeletonRow from '../../components/SkeletonRow.vue'
 
 // 项目损益卡（复用 P1 组件）— 点客户项目即下钻全链路损益
 const ProjectPnlCard = defineAsyncComponent(() => import('../caiwu/ProjectPnlCard.vue'))
@@ -14,6 +15,7 @@ const accessibleDepts = computed(() => (auth.effectiveDepts || []).filter(d => D
 const items = ref([])
 const total = ref(0)
 const loading = ref(false)
+const loadErr = ref('')
 const page = ref(1)
 const size = 50
 const filters = reactive({ q: '', level: '', dept: '', status: '' })
@@ -127,12 +129,14 @@ async function bulkDeleteCustomers() {
 async function load(reset = false) {
   if (reset) { page.value = 1; clearSel() }
   loading.value = true
+  loadErr.value = ''
   try {
     const params = { ...filters, page: page.value, size, sort: sortKey.value, dir: sortDir.value }
     if (Object.keys(colFilters).length) params.filters = JSON.stringify(colFilters)
     const res = await ar.listCustomers(params)
     items.value = res.data.items
     total.value = res.data.total
+  } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
   } finally { loading.value = false }
 }
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size)))
@@ -288,7 +292,13 @@ onMounted(() => load(true))
             </tr>
           </thead>
           <tbody>
-            <tr v-if="!loading && !items.length"><td colspan="10" class="empty">暂无客户数据</td></tr>
+            <template v-if="loading && !items.length">
+              <SkeletonRow v-for="n in 8" :key="n" :cols="10" />
+            </template>
+            <tr v-else-if="loadErr">
+              <td colspan="10" class="empty">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></td>
+            </tr>
+            <tr v-else-if="!loading && !items.length"><td colspan="10" class="empty">暂无客户数据</td></tr>
             <tr v-for="c in items" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)">
               <td class="ctr chk-col" @click.stop><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
               <td class="l name" :title="c.name + (c.contact ? ' · ' + c.contact : '')">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
@@ -308,7 +318,7 @@ onMounted(() => load(true))
         <button :disabled="page <= 1" class="page-btn" @click="go(page - 1)">‹ 上一页</button>
         <span class="page-info">第 {{ page }} / {{ totalPages }} 页 · 共 {{ total }} 个客户</span>
         <button :disabled="page >= totalPages" class="page-btn" @click="go(page + 1)">下一页 ›</button>
-        <span class="pg-jump">跳至<input v-model.number="jumpPage" class="pg-jump-input" type="number" min="1" :max="totalPages" @keyup.enter="doJump" />页<button class="page-btn" @click="doJump">Go</button></span>
+        <span class="pg-jump">跳至<input v-model.number="jumpPage" class="pg-jump-input" type="number" min="1" :max="totalPages" :placeholder="`1-${totalPages}`" @keyup.enter="doJump" />页<button class="page-btn" @click="doJump">Go</button></span>
       </div>
     </div>
 

@@ -10,6 +10,7 @@ import { TOOLTIP } from '../../utils/chartTheme.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
+import SkeletonRow from '../../components/SkeletonRow.vue'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -17,6 +18,7 @@ const items = ref([])
 const total = ref(0)
 const stats = ref(null)
 const loading = ref(false)
+const loadErr = ref('')
 const page = ref(1)
 const size = 50
 const jumpPage = ref(1)
@@ -164,10 +166,12 @@ function fmtNum(v) {
 async function load(reset = false) {
   if (reset) { page.value = 1; clearSelection() }  // 改筛选/搜索即清空选择，避免误删旧筛选项
   loading.value = true
+  loadErr.value = ''
   try {
     const res = await ar.listProjects(buildParams())
     items.value = res.data.items
     total.value = res.data.total
+  } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
   } finally { loading.value = false }
 }
 
@@ -565,8 +569,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             </tr>
           </thead>
           <tbody>
-            <tr v-if="loading && !items.length">
-              <td colspan="16" class="empty-cell"><div class="empty-inner">⏳ 加载中…</div></td>
+            <template v-if="loading && !items.length">
+              <SkeletonRow v-for="n in 8" :key="n" :cols="10" />
+            </template>
+            <tr v-else-if="loadErr">
+              <td colspan="16" class="empty-cell">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer;font-size:13px;text-decoration:underline" @click="load()">重试</button></td>
             </tr>
             <tr v-else-if="!items.length">
               <td colspan="16" class="empty-cell"><div class="empty-inner">暂无项目数据，点击「新增项目」开始</div></td>
@@ -634,7 +641,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <button :disabled="page <= 1" class="page-btn" @click="page--; load()">‹ 上一页</button>
         <span class="page-info">第 {{ page }} 页 · 共 {{ total }} 条</span>
         <button :disabled="page * size >= total" class="page-btn" @click="page++; load()">下一页 ›</button>
-        <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" class="pg-jump-input" @keyup.enter="doJump" />页</span>
+        <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" :placeholder="`1-${Math.ceil(total / size)}`" class="pg-jump-input" @keyup.enter="doJump" />页</span>
       </div>
     </div>
     </div><!-- /projTab list -->

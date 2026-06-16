@@ -2,6 +2,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import api from '../api/index.js'
 import ColumnFilter from '../components/ColumnFilter.vue'
+import SkeletonRow from '../components/SkeletonRow.vue'
 
 const items = ref([])
 const total = ref(0)
@@ -142,7 +143,9 @@ onMounted(() => load())
             </tr>
           </thead>
           <tbody>
-            <tr v-if="loading && !items.length"><td colspan="8" class="empty-cell">⏳ 加载中…</td></tr>
+            <template v-if="loading && !items.length">
+              <SkeletonRow v-for="n in 8" :key="n" :cols="6" />
+            </template>
             <tr v-else-if="!items.length"><td colspan="8" class="empty-cell">暂无审计记录</td></tr>
             <template v-for="l in items" :key="l.id">
               <tr class="data-row">
@@ -177,7 +180,7 @@ onMounted(() => load())
         <button :disabled="page <= 1" class="page-btn" @click="page--; load()">‹ 上一页</button>
         <span class="page-info">{{ page }} / {{ Math.ceil(total / size) }} 页 · 共 {{ total }} 条</span>
         <button :disabled="page * size >= total" class="page-btn" @click="page++; load()">下一页 ›</button>
-        <span class="pg-jump">跳至<input v-model.number="jumpPage" class="pg-jump-input" type="number" min="1" :max="Math.ceil(total/size)" @keyup.enter="doJump" />页<button class="page-btn" @click="doJump">Go</button></span>
+        <span class="pg-jump">跳至<input v-model.number="jumpPage" class="pg-jump-input" type="number" min="1" :max="Math.ceil(total/size)" :placeholder="`1-${Math.ceil(total/size)}`" @keyup.enter="doJump" />页<button class="page-btn" @click="doJump">Go</button></span>
       </div>
     </div>
   </div>

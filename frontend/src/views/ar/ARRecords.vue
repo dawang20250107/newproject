@@ -13,6 +13,7 @@ import FilterPanel from '../../components/ar/FilterPanel.vue'
 import { describeCondition, STATUS_OPTS, RECON_OPTS, INVOICE_OPTS, RESP_OPTS } from '../../composables/arConditions.js'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
+import SkeletonRow from '../../components/SkeletonRow.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -26,6 +27,7 @@ const healthData = ref(null)
 const showHealthModal = ref(false)
 const healthFixing = ref(false)
 const loading = ref(false)
+const loadErr = ref('')
 const page = ref(1)
 const size = 50
 const activeTab = ref('all')   // all | reconciliation | invoice | collection
@@ -400,6 +402,7 @@ function doJump() {
 async function load(reset = false) {
   if (reset) page.value = 1
   loading.value = true
+  loadErr.value = ''
   try {
     const [recs, kpi] = await Promise.all([
       ar.listRecords(buildParams({ ...reqParams(),
@@ -410,6 +413,7 @@ async function load(reset = false) {
     total.value = recs.data.total
     summaryData.value = recs.data.summary
     kpiData.value = kpi.data
+  } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
   } finally { loading.value = false }
   loadHealth()
 }
@@ -1293,8 +1297,11 @@ function clearFilters() {
             </tr>
           </thead>
           <tbody>
-            <tr v-if="loading && !items.length">
-              <td colspan="17" class="empty-cell">⏳ 加载中…</td>
+            <template v-if="loading && !items.length">
+              <SkeletonRow v-for="n in 8" :key="n" :cols="12" />
+            </template>
+            <tr v-else-if="loadErr">
+              <td colspan="17" class="empty-cell">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer" @click="load()">重试</button></td>
             </tr>
             <tr v-else-if="!items.length">
               <td colspan="17" class="empty-cell">暂无数据</td>
@@ -1447,7 +1454,7 @@ function clearFilters() {
             <button :disabled="page <= 1" class="page-btn" @click="page--; load()">‹ 上一页</button>
             <span class="page-info">{{ page }} / {{ Math.ceil(total / size) }} 页 · 共 {{ total }} 条</span>
             <button :disabled="page * size >= total" class="page-btn" @click="page++; load()">下一页 ›</button>
-            <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" class="pg-jump-input" @keyup.enter="doJump" />页</span>
+            <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" class="pg-jump-input" :placeholder="`1-${Math.ceil(total / size)}`" @keyup.enter="doJump" />页</span>
           </div>
         </div>
       </Teleport>

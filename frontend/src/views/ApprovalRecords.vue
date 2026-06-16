@@ -9,6 +9,7 @@ import ProjectShortNamePicker from '../components/ProjectShortNamePicker.vue'
 import ImportResultModal from '../components/ImportResultModal.vue'
 import ImportPrecheckModal from '../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../components/ColumnFilter.vue'
+import SkeletonRow from '../components/SkeletonRow.vue'
 import { useToast } from '../composables/useToast.js'
 const toast = useToast()
 
@@ -196,7 +197,8 @@ function doJump() {
   const p = Math.max(1, Math.min(tp, jumpPage.value || 1))
   page.value = p; load()
 }
-async function load(){ loading.value=true; try{ const r=await api.get('/approvals',{params:buildParams()}); items.value=r.data.items; total.value=r.data.total; totalAmount.value=r.data.total_amount || 0 }finally{loading.value=false}}
+const loadErr = ref('')
+async function load(){ loading.value=true; loadErr.value=''; try{ const r=await api.get('/approvals',{params:buildParams()}); items.value=r.data.items; total.value=r.data.total; totalAmount.value=r.data.total_amount || 0 }catch(e){ loadErr.value = e?.error || e?.message || '加载失败，请刷新重试' }finally{loading.value=false}}
 function search(){ page.value=1; clearSelection(); load() }
 function setPage(p){ page.value=p; load() }
 async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
@@ -318,9 +320,9 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <button v-if="activeFilterCount || q || sortField" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters">清除全部筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
     </div>
   </div>
-  <EmptyState v-if="loading" loading />
-  <EmptyState v-else-if="!items.length" empty text="暂无审批记录" />
-  <table v-else class="approval-table"><thead><tr>
+  <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
+  <EmptyState v-else-if="!loading && !items.length" empty :text="activeFilterCount || q ? '暂无匹配记录' : '暂无审批记录，点击「新增」创建第一条记录'" />
+  <table v-if="!loadErr" class="approval-table"><thead><tr>
       <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
       <th><ColumnFilter label="申请人" field="applicant" type="text" :model-value="colFilters.applicant" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('applicant',v)" @sort="o=>setSort('applicant',o)" /></th>
       <th><ColumnFilter label="所属事业部" field="department" type="enum" :options="deptChoices" :model-value="colFilters.department" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('department',v)" @sort="o=>setSort('department',o)" /></th>
@@ -333,7 +335,12 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <th><ColumnFilter label="收款主体" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
       <th><ColumnFilter label="审批状态" field="status" type="enum" :options="STATUS_OPTS" :model-value="colFilters.status" :sortable="false" @update:model-value="v=>setColFilter('status',v)" /></th>
       <th>操作</th></tr></thead>
-    <tbody><tr v-for="i in items" :key="i.id" :class="{ 'row-sel': selectedIds.has(i.id) }">
+    <tbody>
+      <template v-if="loading">
+        <SkeletonRow v-for="n in 8" :key="n" :cols="9" />
+      </template>
+      <template v-else>
+      <tr v-for="i in items" :key="i.id" :class="{ 'row-sel': selectedIds.has(i.id) }">
       <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(i.id)" @change="toggleRow(i.id)" /></td>
       <td>{{i.applicant}}</td><td>{{i.department}}</td>
       <td class="meta-cell">{{ i.secondary_dept || '—' }}</td>
@@ -349,7 +356,9 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
           <button class="btn btn-ghost btn-sm" :disabled="i.status!=='approved'" @click="openSchedule(i)">一键排款</button>
           <button class="btn btn-ghost btn-sm" title="补录/修改二级部门与项目简称" @click="openMeta(i)">补录</button>
         </div>
-      </td></tr></tbody>
+      </td></tr>
+      </template>
+    </tbody>
   </table>
 
   <!-- 浮动批量操作条：Teleport 到 body 固定在视口底部，全选后无需下拉即可操作 -->
@@ -374,7 +383,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         <button :disabled="page <= 1" class="page-btn" @click="setPage(page - 1)">‹ 上一页</button>
         <span class="page-info">{{ page }} / {{ Math.ceil(total / size) || 1 }} 页 · 共 {{ total }} 条</span>
         <button :disabled="page * size >= total" class="page-btn" @click="setPage(page + 1)">下一页 ›</button>
-        <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" class="pg-jump-input" @keyup.enter="doJump" />页</span>
+        <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" class="pg-jump-input" :placeholder="`1-${Math.ceil(total / size) || 1}`" @keyup.enter="doJump" />页</span>
       </div>
     </div>
   </Teleport>
@@ -462,6 +471,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 </div></template>
 
 <style scoped>
+.err-banner { background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: #856404; display: flex; align-items: center; gap: 8px; }
 .approval-card { padding: 12px; }
 .filter-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
 .filter-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

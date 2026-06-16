@@ -4,6 +4,7 @@ import api from '../api/index.js'
 import { DEPARTMENTS, ROLE_LABELS, JOB_LABELS, JOB_OPTIONS } from '../constants.js'
 import EmptyState from '../components/EmptyState.vue'
 import ColumnFilter from '../components/ColumnFilter.vue'
+import SkeletonRow from '../components/SkeletonRow.vue'
 import { useToast } from '../composables/useToast.js'
 
 const toast = useToast()
@@ -315,6 +316,10 @@ async function reject(u) {
               </tr>
             </thead>
             <tbody>
+              <template v-if="loading">
+                <SkeletonRow v-for="n in 8" :key="n" :cols="7" />
+              </template>
+              <template v-else>
               <tr v-for="u in displayActiveUsers" :key="u.id">
                 <td>
                   <div style="display:flex;align-items:center;gap:8px">
@@ -343,6 +348,7 @@ async function reject(u) {
                   </div>
                 </td>
               </tr>
+              </template>
             </tbody>
           </table>
         </div>

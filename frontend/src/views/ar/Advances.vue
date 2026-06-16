@@ -9,6 +9,7 @@ import { fmtCompact } from '../../utils/format.js'
 import { downloadBlob } from '../../utils/download.js'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
+import SkeletonRow from '../../components/SkeletonRow.vue'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -20,6 +21,7 @@ const items = ref([])
 const total = ref(0)
 const kpi = ref(null)
 const loading = ref(false)
+const loadErr = ref('')
 const page = ref(1)
 const size = 50
 
@@ -87,6 +89,7 @@ async function load(reset = false) {
   if (!isAdvanceMode.value) return
   if (reset) page.value = 1
   loading.value = true
+  loadErr.value = ''
   try {
     const params = buildParams()
     const [res, k] = await Promise.all([
@@ -96,6 +99,7 @@ async function load(reset = false) {
     items.value = res.data.items
     total.value = res.data.total
     kpi.value = k.data[direction.value]
+  } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
   } finally { loading.value = false }
 }
 
@@ -601,7 +605,13 @@ onMounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!loading && !items.length"><td colspan="11" class="empty">暂无{{ dirLabel }}记录</td></tr>
+              <template v-if="loading && !items.length">
+                <SkeletonRow v-for="n in 8" :key="n" :cols="11" />
+              </template>
+              <tr v-else-if="loadErr">
+                <td colspan="11" class="empty">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer;font-size:13px;text-decoration:underline" @click="load()">重试</button></td>
+              </tr>
+              <tr v-else-if="!items.length"><td colspan="11" class="empty">暂无{{ dirLabel }}记录</td></tr>
               <tr v-for="r in items" :key="r.id">
                 <td v-if="show('adv_counterparty')">{{ r.counterparty || '—' }}</td>
                 <td>
@@ -637,7 +647,7 @@ onMounted(() => {
           <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="go(page - 1)">上一页</button>
           <span>{{ page }} / {{ totalPages }}（共 {{ total }} 条）</span>
           <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="go(page + 1)">下一页</button>
-          <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" class="pg-jump-input" @keyup.enter="doJump" />页</span>
+          <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" :placeholder="`1-${totalPages}`" class="pg-jump-input" @keyup.enter="doJump" />页</span>
         </div>
       </div>
     </template>

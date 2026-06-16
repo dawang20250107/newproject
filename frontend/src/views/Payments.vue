@@ -12,6 +12,7 @@ import ImportResultModal from '../components/ImportResultModal.vue'
 import ImportPrecheckModal from '../components/ImportPrecheckModal.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ColumnFilter from '../components/ColumnFilter.vue'
+import SkeletonRow from '../components/SkeletonRow.vue'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -683,11 +684,10 @@ async function doBatchPay() {
         <span class="filter-hint" title="点击列名旁 ⏷ 可按列筛选 / 排序" style="cursor:default">?</span>
       </div>
 
-      <EmptyState v-if="loading" loading />
-      <EmptyState v-else-if="loadErr" :error="loadErr" />
-      <EmptyState v-else-if="!items.length" empty />
+      <EmptyState v-if="loadErr" :error="loadErr" />
+      <EmptyState v-else-if="!loading && !items.length" empty />
 
-      <div v-else class="table-wrap pk-pay-tbl">
+      <div v-if="!loadErr" class="table-wrap pk-pay-tbl">
         <table>
           <thead>
             <tr>
@@ -711,6 +711,10 @@ async function doBatchPay() {
             </tr>
           </thead>
           <tbody>
+            <template v-if="loading">
+              <SkeletonRow v-for="n in 8" :key="n" :cols="10" />
+            </template>
+            <template v-else>
             <template v-for="p in items" :key="p.id">
             <tr :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today, 'row-sel': selectedIds.has(p.id) }">
               <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(p.id)" @change="toggleRow(p.id)" /></td>
@@ -790,6 +794,7 @@ async function doBatchPay() {
               </td>
             </tr>
             </template>
+            </template>
           </tbody>
         </table>
       </div>
@@ -817,7 +822,7 @@ async function doBatchPay() {
             <button :disabled="filters.page <= 1" class="page-btn" @click="setPage(filters.page - 1)">‹ 上一页</button>
             <span class="page-info">{{ filters.page }} / {{ totalPages }} 页 · 共 {{ total }} 条</span>
             <button :disabled="filters.page * filters.size >= total" class="page-btn" @click="setPage(filters.page + 1)">下一页 ›</button>
-            <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" :max="totalPages" class="pg-jump-input" @keyup.enter="doJump" />页</span>
+            <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" :max="totalPages" class="pg-jump-input" :placeholder="`1-${totalPages}`" @keyup.enter="doJump" />页</span>
           </div>
         </div>
       </Teleport>
