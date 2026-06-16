@@ -33,6 +33,8 @@ class PaikuanUser(models.Model):
     approved_at = models.DateTimeField('审批时间', null=True, blank=True)
     # 改密时间戳：早于它签发的 JWT 一律拒绝（改密码即踢掉旧会话）
     pwd_changed_at = models.DateTimeField('密码修改时间', null=True, blank=True)
+    # 强制改密：超管重置为临时密码后置 True，用户下次登录须先改密才能正常使用
+    must_change_password = models.BooleanField('需强制改密', default=False)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -58,6 +60,7 @@ class PaikuanUser(models.Model):
             'departments': self.departments,
             'is_active': self.is_active,
             'is_approved': self.is_approved,
+            'must_change_password': self.must_change_password,
             'approved_at': self.approved_at.isoformat() if self.approved_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }

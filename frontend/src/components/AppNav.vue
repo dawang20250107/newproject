@@ -3,6 +3,7 @@ import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth.js'
 import { ROLE_LABELS, JOB_LABELS } from '../constants.js'
+import ChangePasswordModal from './ChangePasswordModal.vue'
 
 const props = defineProps({
   collapsed: { type: Boolean, default: false },
@@ -31,6 +32,8 @@ function logout() {
   auth.logout()
   router.push('/login')
 }
+
+const showChangePwd = ref(false)
 
 function toggleCollapse() {
   emit('update:collapsed', !props.collapsed)
@@ -396,6 +399,12 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
           :title="perfLite ? '性能模式已开启：已关闭毛玻璃/动画等效果（解决滚动闪屏）。点击恢复完整视觉效果' : '电脑滚动闪屏/卡顿？点击开启性能模式，关闭毛玻璃与动画'">
           ⚡
         </button>
+        <button class="logout-btn pwd-btn" title="修改密码" @click="showChangePwd = true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
+          </svg>
+          改密
+        </button>
         <button class="logout-btn" @click="logout">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>
@@ -453,6 +462,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         <path v-else d="M9 18l6-6-6-6"/>
       </svg>
     </button>
+    <ChangePasswordModal v-if="showChangePwd" @close="showChangePwd = false" />
   </nav>
 </template>
 

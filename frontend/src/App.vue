@@ -3,6 +3,7 @@ import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import AppNav from './components/AppNav.vue'
 import WelcomeOverlay from './components/WelcomeOverlay.vue'
+import ChangePasswordModal from './components/ChangePasswordModal.vue'
 import { useAuthStore } from './stores/auth.js'
 
 const route = useRoute()
@@ -103,5 +104,8 @@ function onNavCollapse(v) {
     </div>
 
     <WelcomeOverlay v-if="showWelcome" :user="auth.user" @done="showWelcome = false" />
+
+    <!-- 超管重置临时密码后：强制改密，覆盖全屏不可跳过 -->
+    <ChangePasswordModal v-if="auth.isLoggedIn && auth.mustChangePassword" forced />
   </div>
 </template>

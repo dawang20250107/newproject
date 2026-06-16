@@ -103,10 +103,29 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('pk_active_depts')
   }
 
+  // 超管重置临时密码后，登录响应带 must_change_password → 强制改密
+  const mustChangePassword = ref(false)
+
   async function login(phone, password) {
     const res = await api.post('/login', { phone, password })
     setAuth(res.data.token, res.data.user, res.data.permissions)
+    mustChangePassword.value = !!res.data.must_change_password
     return res.data.user
+  }
+
+  // 自助改密：成功后服务端返回新 token（旧会话已失效），无缝续上
+  async function changePassword(oldPassword, newPassword) {
+    const res = await api.post('/me/password', { old_password: oldPassword, new_password: newPassword })
+    if (res.data?.token) {
+      token.value = res.data.token
+      localStorage.setItem('pk_token', res.data.token)
+    }
+    if (res.data?.user) {
+      user.value = res.data.user
+      localStorage.setItem('pk_user', JSON.stringify(res.data.user))
+    }
+    mustChangePassword.value = false
+    return res.data
   }
 
   // Refresh user + permissions from server (perms may change while logged in).
@@ -135,5 +154,6 @@ export const useAuthStore = defineStore('auth', () => {
     canView, canEdit, canPage, canArView, canCreate, canArWrite, canDelete, canWrite, canAction,
     activeDepts, allowedDepts, effectiveDepts, isDeptScoped, setActiveDepts,
     login, register, logout, setAuth, setPerms, refresh,
+    mustChangePassword, changePassword,
   }
 })

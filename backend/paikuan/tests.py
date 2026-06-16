@@ -1473,3 +1473,103 @@ class PaymentComputedFilterTests(TestCase):
         d = r.json()['data']
         self.assertEqual(d['total'], 2)
         self.assertEqual(Decimal(d['planned_total']), Decimal('2000'))
+
+
+class AuthPasswordPolicyTests(TestCase):
+    """密码强度校验 + 自助改密 + 超管重置临时密码（强制改密）。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = DEPARTMENTS[0]
+        # 第一个用户即超管
+        self.admin = PaikuanUser(phone='13900001000', name='Boss', role='super_admin',
+                                 job_title='finance_director', departments=[self.dept],
+                                 is_active=True, is_approved=True)
+        self.admin.set_password('Admin12345'); self.admin.save()
+        self.admin_token = make_token(self.admin)
+        # 普通用户
+        self.u = PaikuanUser(phone='13900001001', name='Zhang', role='operator',
+                             job_title='cashier', departments=[self.dept],
+                             is_active=True, is_approved=True)
+        self.u.set_password('Good1234'); self.u.save()
+        self.u_token = make_token(self.u)
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def _register(self, **over):
+        body = {'phone': '13900002000', 'password': 'Strong123', 'name': '新人',
+                'job_title': 'cashier', 'departments': [self.dept]}
+        body.update(over)
+        return self.client.post('/api/pk/register', data=json.dumps(body),
+                                content_type='application/json')
+
+    def test_register_rejects_weak_passwords(self):
+        for pw in ['12345678', 'abcdefgh', '88888888', 'password',
+                   'aaaaaaaa', '13900002000']:
+            r = self._register(password=pw)
+            self.assertIn('error', r.json(), f'{pw} 应被拒')
+            self.assertFalse(PaikuanUser.objects.filter(phone='13900002000').exists(),
+                             f'{pw} 不应建号')
+
+    def test_register_rejects_password_contains_phone(self):
+        r = self._register(password='ab13900002000')
+        self.assertIn('error', r.json())
+
+    def test_register_accepts_strong_password(self):
+        r = self._register(password='Qingdao2026')
+        self.assertNotIn('error', r.json(), r.content)
+        self.assertTrue(PaikuanUser.objects.filter(phone='13900002000').exists())
+
+    def test_change_password_wrong_old(self):
+        r = self.client.post('/api/pk/me/password',
+                             data=json.dumps({'old_password': 'WRONG', 'new_password': 'NewGood123'}),
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=f'Bearer {self.u_token}')
+        self.assertIn('error', r.json())
+
+    def test_change_password_weak_new_rejected(self):
+        r = self.client.post('/api/pk/me/password',
+                             data=json.dumps({'old_password': 'Good1234', 'new_password': '12345678'}),
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=f'Bearer {self.u_token}')
+        self.assertIn('error', r.json())
+
+    def test_change_password_success_returns_token_and_clears_flag(self):
+        self.u.must_change_password = True; self.u.save()
+        r = self.client.post('/api/pk/me/password',
+                             data=json.dumps({'old_password': 'Good1234', 'new_password': 'Brand2026new'}),
+                             content_type='application/json',
+                             HTTP_AUTHORIZATION=f'Bearer {self.u_token}')
+        d = r.json()
+        self.assertNotIn('error', d, r.content)
+        self.assertIn('token', d['data'])
+        self.u.refresh_from_db()
+        self.assertFalse(self.u.must_change_password)
+        self.assertTrue(self.u.check_password('Brand2026new'))
+
+    def test_admin_reset_sets_must_change_and_validates(self):
+        # 弱临时密码被拒
+        r = self.client.put(f'/api/pk/users/{self.u.id}',
+                            data=json.dumps({'password': '12345678'}),
+                            content_type='application/json',
+                            HTTP_AUTHORIZATION=f'Bearer {self.admin_token}')
+        self.assertIn('error', r.json())
+        # 合规临时密码 → must_change_password=True
+        r = self.client.put(f'/api/pk/users/{self.u.id}',
+                            data=json.dumps({'password': 'Temp2026ab'}),
+                            content_type='application/json',
+                            HTTP_AUTHORIZATION=f'Bearer {self.admin_token}')
+        self.assertNotIn('error', r.json(), r.content)
+        self.u.refresh_from_db()
+        self.assertTrue(self.u.must_change_password)
+
+    def test_login_surfaces_must_change_flag(self):
+        self.u.must_change_password = True
+        self.u.set_password('Temp2026ab'); self.u.save()
+        r = self.client.post('/api/pk/login',
+                            data=json.dumps({'phone': '13900001001', 'password': 'Temp2026ab'}),
+                            content_type='application/json')
+        d = r.json()['data']
+        self.assertTrue(d['must_change_password'])

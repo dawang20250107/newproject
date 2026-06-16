@@ -689,6 +689,39 @@ def version(request):
 
 # ── auth ──────────────────────────────────────────────────────────────────────
 
+# 常见弱密码黑名单（小写比对）：纯弱口令直接拒绝，不指望用户自觉
+_WEAK_PASSWORDS = {
+    '12345678', '123456789', '1234567890', '88888888', '66668888', '11111111',
+    '00000000', 'password', 'password1', 'passw0rd', 'abc12345', 'abcd1234',
+    'qwerty123', 'qwertyui', 'admin123', 'iloveyou', 'a1234567', '1qaz2wsx',
+    'zaq12wsx', '123qwe123', 'aa123456', 'woaini123', '123456abc', 'abc123456',
+}
+
+
+def _validate_password_strength(pwd, phone='', name=''):
+    """密码强度校验：返回错误文案（不通过）或 None（通过）。
+    用于注册 / 自助改密 / 超管重置三处，口径统一。"""
+    pwd = pwd or ''
+    if len(pwd) < 8:
+        return '密码至少8位'
+    if len(pwd) > 128:
+        return '密码过长（最多128位）'
+    has_letter = any(c.isalpha() for c in pwd)
+    has_digit = any(c.isdigit() for c in pwd)
+    if not (has_letter and has_digit):
+        return '密码须同时包含字母和数字'
+    if len(set(pwd)) <= 2:
+        return '密码过于简单（字符种类太少）'
+    low = pwd.lower()
+    if low in _WEAK_PASSWORDS:
+        return '密码过于常见，请更换'
+    if phone and phone in pwd:
+        return '密码不能包含手机号'
+    if name and name.lower() and name.lower() in low:
+        return '密码不能包含姓名'
+    return None
+
+
 @csrf_exempt
 def register(request):
     if request.method != 'POST':
@@ -704,8 +737,9 @@ def register(request):
         return err('手机号、密码和姓名均必填')
     if not phone.isdigit() or len(phone) < 8:
         return err('手机号格式有误')
-    if len(password) < 8:
-        return err('密码至少8位（建议包含字母和数字）')
+    pwd_err = _validate_password_strength(password, phone=phone, name=name)
+    if pwd_err:
+        return err(pwd_err)
     if not job_title or job_title not in JOB_TITLES:
         return err('请选择有效职务')
     if not isinstance(depts, list) or len(depts) == 0:
@@ -770,7 +804,8 @@ def login(request):
     if not user.is_approved:
         return err('账号待审批，请联系管理员', 403, -2)
     return ok({'token': make_token(user), 'user': user.to_dict(),
-               'permissions': effective_perms(user)})
+               'permissions': effective_perms(user),
+               'must_change_password': user.must_change_password})
 
 
 @csrf_exempt
@@ -800,6 +835,34 @@ def me(request):
     except PaikuanUser.DoesNotExist:
         return err('用户不存在', 404)
     return ok({'user': user.to_dict(), 'permissions': effective_perms(user)})
+
+
+@csrf_exempt
+@pk_required()
+def change_password(request):
+    """自助修改密码：验旧密码 + 新密码强度校验。改密即刷新 pwd_changed_at（踢掉其它
+    会话）并清除强制改密标志；返回新 token 让当前会话无缝续上。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    try:
+        user = PaikuanUser.objects.get(id=request.pk_uid)
+    except PaikuanUser.DoesNotExist:
+        return err('用户不存在', 404)
+    data = parse_body(request)
+    old_pwd = (data.get('old_password') or '').strip()
+    new_pwd = (data.get('new_password') or '').strip()
+    if not user.check_password(old_pwd):
+        return err('原密码不正确', 400)
+    if new_pwd == old_pwd:
+        return err('新密码不能与原密码相同')
+    pwd_err = _validate_password_strength(new_pwd, phone=user.phone, name=user.name)
+    if pwd_err:
+        return err(pwd_err)
+    user.set_password(new_pwd)
+    user.pwd_changed_at = timezone.now()
+    user.must_change_password = False
+    user.save(update_fields=['password_hash', 'pwd_changed_at', 'must_change_password', 'updated_at'])
+    return ok({'token': make_token(user), 'user': user.to_dict()})
 
 
 # ── payments ──────────────────────────────────────────────────────────────────
@@ -2871,10 +2934,13 @@ def user_detail(request, pk):
         if 'is_active' in data:
             user.is_active = bool(data['is_active'])
         if data.get('password'):
-            if len(data['password']) < 8:
-                return err('新密码至少8位（建议包含字母和数字）')
+            pwd_err = _validate_password_strength(data['password'], phone=user.phone, name=user.name)
+            if pwd_err:
+                return err('新' + pwd_err if pwd_err.startswith('密码') else pwd_err)
             user.set_password(data['password'])
             user.pwd_changed_at = timezone.now()
+            # 超管重置 = 临时密码：用户下次登录须先自助改密
+            user.must_change_password = True
         user.save()
         return ok(user.to_dict())
 
