@@ -25,6 +25,7 @@ const COL_DEFS = [
   { key: 'project_short_name', label: '项目简称', perm: () => auth.canView('project_short_name') },
   { key: 'applicant',          label: '申请人',   perm: () => auth.canView('applicant') },
   { key: 'approval_number',    label: '审批单号', perm: () => auth.canView('approval_number') },
+  { key: 'g7_number',          label: 'G7编号',   perm: () => true },
   { key: 'project_desc',       label: '付款事项', perm: () => auth.canView('project_desc') },
   { key: 'payee',              label: '收款方',   perm: () => auth.canView('payee') },
   { key: 'planned_date',       label: '计划日期', perm: () => auth.canView('planned_date') },
@@ -87,11 +88,59 @@ const today = todayCST()  // UTC+8，与服务端 Asia/Shanghai 保持一致
 
 const filters = reactive({
   q: '', dept: '', status: '', start_date: '', end_date: '',
+  pay_date_start: '', pay_date_end: '', g7_number: '',
   page: 1, size: 50,
 })
 
+// ── tab control: 台账 | 付款流水 ─────────────────────────────────────────────
+const activeTab = ref('ledger')  // 'ledger' | 'flow'
+
+// 付款流水 state
+const flowItems = ref([])
+const flowTotal = ref(0)
+const flowTotalAmount = ref('0')
+const flowLoading = ref(false)
+const flowPage = ref(1)
+const flowFilters = reactive({ q: '', dept: '', pay_date_start: '', pay_date_end: '', g7_number: '' })
+const flowDatePreset = ref('')
+
+async function loadFlow() {
+  flowLoading.value = true
+  try {
+    const params = Object.fromEntries(Object.entries({
+      ...flowFilters, page: flowPage.value, size: 50,
+    }).filter(([, v]) => v !== ''))
+    const res = await api.get('/payments/installments', { params })
+    flowItems.value = res.data.items
+    flowTotal.value = res.data.total
+    flowTotalAmount.value = res.data.total_amount ?? '0'
+  } catch (e) { console.error(e) }
+  finally { flowLoading.value = false }
+}
+
+function searchFlow() { flowPage.value = 1; loadFlow() }
+function resetFlowFilters() {
+  Object.assign(flowFilters, { q: '', dept: '', pay_date_start: '', pay_date_end: '', g7_number: '' })
+  flowDatePreset.value = ''; flowPage.value = 1; loadFlow()
+}
+
+function applyFlowDatePreset() {
+  if (flowDatePreset.value === '') { flowFilters.pay_date_start = ''; flowFilters.pay_date_end = '' }
+  else if (flowDatePreset.value !== 'custom') {
+    const [s, e] = dateRangeFor(flowDatePreset.value)
+    flowFilters.pay_date_start = s; flowFilters.pay_date_end = e
+  }
+  flowPage.value = 1; loadFlow()
+}
+
+function switchTab(t) {
+  activeTab.value = t
+  if (t === 'flow' && !flowItems.value.length && !flowLoading.value) loadFlow()
+}
+
 // ── date preset selector ──────────────────────────────────────────────────────
 const datePreset = ref('')
+const payDatePreset = ref('')
 
 function _d(y, m, d) {
   return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
@@ -135,6 +184,16 @@ function applyDatePreset() {
   } else {
     const [s, e] = dateRangeFor(datePreset.value)
     filters.start_date = s; filters.end_date = e
+  }
+  filters.page = 1; load()
+}
+
+function applyPayDatePreset() {
+  if (payDatePreset.value === '' || payDatePreset.value === 'custom') {
+    if (payDatePreset.value === '') { filters.pay_date_start = ''; filters.pay_date_end = '' }
+  } else {
+    const [s, e] = dateRangeFor(payDatePreset.value)
+    filters.pay_date_start = s; filters.pay_date_end = e
   }
   filters.page = 1; load()
 }
@@ -407,7 +466,8 @@ async function onDelete(p) {
 
 function search() { filters.page = 1; clearSelection(); load() }
 function resetFilters() {
-  Object.assign(filters, { q: '', dept: '', status: '', start_date: '', end_date: '', page: 1 })
+  Object.assign(filters, { q: '', dept: '', status: '', start_date: '', end_date: '',
+    pay_date_start: '', pay_date_end: '', g7_number: '', page: 1 })
   datePreset.value = ''
   clearSelection()
   load()
@@ -489,7 +549,13 @@ async function doBatchPay() {
 <template>
   <div>
     <div class="topbar">
-      <h1>付款台账</h1>
+      <div style="display:flex;align-items:center;gap:14px">
+        <h1>付款台账</h1>
+        <div class="tab-bar">
+          <button :class="['tab-btn', activeTab==='ledger' ? 'active' : '']" @click="switchTab('ledger')">台账</button>
+          <button :class="['tab-btn', activeTab==='flow' ? 'active' : '']" @click="switchTab('flow')">付款流水</button>
+        </div>
+      </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-ghost btn-sm" @click="downloadTemplate" title="下载Excel导入模板">
           <span style="margin-right:4px">⬇</span>模板
@@ -520,9 +586,10 @@ async function doBatchPay() {
     <!-- hidden file input for import -->
     <input ref="importInputRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImportFile" />
 
-    <div class="card" style="margin-bottom:16px">
+    <div v-if="activeTab === 'ledger'" class="card" style="margin-bottom:16px">
       <div class="filter-bar">
-        <input v-model="filters.q" placeholder="搜索事项/收款方/单号/申请人…" style="min-width:200px" @keyup.enter="search" />
+        <input v-model="filters.q" placeholder="搜索事项/收款方/单号/申请人…" style="min-width:180px" @keyup.enter="search" />
+        <input v-model="filters.g7_number" placeholder="G7编号" style="width:120px" @keyup.enter="search" />
         <select v-model="filters.dept" @change="search">
           <option value="">全部部门</option>
           <option v-for="d in deptChoices" :key="d" :value="d">{{ d }}</option>
@@ -571,6 +638,37 @@ async function doBatchPay() {
         <span v-else-if="datePreset && filters.start_date" class="date-range-hint">
           {{ filters.start_date }} ~ {{ filters.end_date }}
         </span>
+        <span class="filter-group-lbl">付款日</span>
+        <select v-model="payDatePreset" @change="applyPayDatePreset" style="min-width:100px">
+          <option value="">全部日期</option>
+          <optgroup label="本期">
+            <option value="today">今天</option>
+            <option value="this_week">本周</option>
+            <option value="this_month">本月</option>
+            <option value="this_quarter">本季度</option>
+            <option value="this_year">本年</option>
+          </optgroup>
+          <optgroup label="上期">
+            <option value="last_week">上周</option>
+            <option value="last_month">上月</option>
+            <option value="last_quarter">上季度</option>
+            <option value="last_year">上年</option>
+          </optgroup>
+          <optgroup label="近期">
+            <option value="last7">近 7 天</option>
+            <option value="last30">近 30 天</option>
+            <option value="last90">近 90 天</option>
+          </optgroup>
+          <option value="custom">自定义…</option>
+        </select>
+        <template v-if="payDatePreset === 'custom'">
+          <input v-model="filters.pay_date_start" type="date" style="min-width:120px" @change="search" />
+          <span style="color:var(--muted);font-size:12px;flex-shrink:0">~</span>
+          <input v-model="filters.pay_date_end" type="date" style="min-width:120px" @change="search" />
+        </template>
+        <span v-else-if="payDatePreset && filters.pay_date_start" class="date-range-hint">
+          {{ filters.pay_date_start }} ~ {{ filters.pay_date_end }}
+        </span>
         <button class="btn btn-ghost btn-sm" @click="search">筛选</button>
         <button class="btn btn-sm" style="background:var(--bg2);border:none" @click="resetFilters">重置</button>
       </div>
@@ -589,6 +687,7 @@ async function doBatchPay() {
               <th v-if="colVisible('project_short_name')" style="width:6%">项目简称</th>
               <th v-if="colVisible('applicant')" style="width:4%">申请人</th>
               <th v-if="colVisible('approval_number')" style="width:8%">审批单号</th>
+              <th v-if="colVisible('g7_number')" style="width:8%">G7编号</th>
               <th v-if="colVisible('project_desc')">付款事项</th>
               <th v-if="colVisible('payee')" style="width:8%">收款方</th>
               <th v-if="colVisible('planned_date')" style="width:6%">计划日期</th>
@@ -610,6 +709,7 @@ async function doBatchPay() {
               <td v-if="colVisible('project_short_name')" class="cell-clip" :title="p.project_short_name">{{ p.project_short_name || '—' }}</td>
               <td v-if="colVisible('applicant')">{{ p.applicant || '—' }}</td>
               <td v-if="colVisible('approval_number')">{{ p.approval_number || '—' }}</td>
+              <td v-if="colVisible('g7_number')" style="color:var(--muted);font-size:11.5px">{{ p.g7_number || '—' }}</td>
               <td v-if="colVisible('project_desc')" class="cell-clip cell-desc"
                 @mouseenter="showTip($event, p.project_desc)" @mousemove="moveTip" @mouseleave="hideTip">
                 <span v-if="p.project_no" class="proj-no">{{ p.project_no }}</span>{{ p.project_desc }}
@@ -707,6 +807,101 @@ async function doBatchPay() {
             <button :disabled="filters.page <= 1" class="page-btn" @click="setPage(filters.page - 1)">‹ 上一页</button>
             <span class="page-info">{{ filters.page }} / {{ Math.ceil(total / filters.size) || 1 }} 页 · 共 {{ total }} 条</span>
             <button :disabled="filters.page * filters.size >= total" class="page-btn" @click="setPage(filters.page + 1)">下一页 ›</button>
+          </div>
+        </div>
+      </Teleport>
+    </div>
+
+    <!-- ══ 付款流水 Tab ══ -->
+    <div v-if="activeTab === 'flow'" class="card" style="margin-bottom:16px">
+      <div class="filter-bar" style="flex-wrap:wrap;gap:8px;margin-bottom:12px">
+        <input v-model="flowFilters.q" placeholder="搜索事项/收款方/单号…" style="min-width:180px" @keyup.enter="searchFlow" />
+        <input v-model="flowFilters.g7_number" placeholder="G7编号" style="width:120px" @keyup.enter="searchFlow" />
+        <select v-model="flowFilters.dept" @change="searchFlow">
+          <option value="">全部部门</option>
+          <option v-for="d in deptChoices" :key="d" :value="d">{{ d }}</option>
+        </select>
+        <span class="filter-group-lbl">付款日</span>
+        <select v-model="flowDatePreset" @change="applyFlowDatePreset" style="min-width:100px">
+          <option value="">全部日期</option>
+          <optgroup label="本期">
+            <option value="today">今天</option>
+            <option value="this_week">本周</option>
+            <option value="this_month">本月</option>
+            <option value="this_quarter">本季度</option>
+            <option value="this_year">本年</option>
+          </optgroup>
+          <optgroup label="上期">
+            <option value="last_week">上周</option>
+            <option value="last_month">上月</option>
+            <option value="last_quarter">上季度</option>
+            <option value="last_year">上年</option>
+          </optgroup>
+          <optgroup label="近期">
+            <option value="last7">近 7 天</option>
+            <option value="last30">近 30 天</option>
+            <option value="last90">近 90 天</option>
+          </optgroup>
+          <option value="custom">自定义…</option>
+        </select>
+        <template v-if="flowDatePreset === 'custom'">
+          <input v-model="flowFilters.pay_date_start" type="date" style="min-width:120px" @change="searchFlow" />
+          <span style="color:var(--muted);font-size:12px;flex-shrink:0">~</span>
+          <input v-model="flowFilters.pay_date_end" type="date" style="min-width:120px" @change="searchFlow" />
+        </template>
+        <span v-else-if="flowDatePreset && flowFilters.pay_date_start" class="date-range-hint">
+          {{ flowFilters.pay_date_start }} ~ {{ flowFilters.pay_date_end }}
+        </span>
+        <button class="btn btn-ghost btn-sm" @click="searchFlow">筛选</button>
+        <button class="btn btn-sm" style="background:var(--bg2);border:none" @click="resetFlowFilters">重置</button>
+      </div>
+      <EmptyState v-if="flowLoading" loading />
+      <EmptyState v-else-if="!flowItems.length" empty text="暂无付款流水" />
+      <div v-else class="table-wrap">
+        <table class="flow-tbl">
+          <thead>
+            <tr>
+              <th style="width:6%">部门</th>
+              <th style="width:8%">项目简称</th>
+              <th>付款事项</th>
+              <th style="width:10%">收款方</th>
+              <th style="width:10%">审批单号</th>
+              <th style="width:8%">G7编号</th>
+              <th style="width:7%">计划日期</th>
+              <th style="width:7%">付款日期</th>
+              <th style="width:8%">付款金额</th>
+              <th style="width:12%">备注</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="inst in flowItems" :key="inst.id" class="flow-row">
+              <td>{{ inst.department }}</td>
+              <td class="cell-clip" :title="inst.project_short_name">{{ inst.project_short_name || '—' }}</td>
+              <td class="cell-clip">
+                <span v-if="inst.project_short_name" class="proj-no">{{ inst.project_short_name }}</span>
+                {{ inst.project_desc }}
+              </td>
+              <td class="cell-clip" :title="inst.payee">{{ inst.payee }}</td>
+              <td style="font-size:11.5px;color:var(--muted)">{{ inst.approval_number || '—' }}</td>
+              <td style="font-size:11.5px;color:var(--muted)">{{ inst.g7_number || '—' }}</td>
+              <td>{{ inst.planned_date || '—' }}</td>
+              <td style="font-weight:600;color:#1565c0">{{ inst.pay_date }}</td>
+              <td class="amt amt-green">{{ inst.pay_amount != null ? fmt(inst.pay_amount) : '—' }}</td>
+              <td class="cell-clip" style="color:var(--muted);font-size:11.5px">{{ inst.notes || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <Teleport to="body">
+        <div v-if="!flowLoading && flowItems.length" class="bottom-bar">
+          <div class="bb-summary">
+            <span class="bb-item"><i>合计</i><b>{{ flowTotal }}</b> 笔</span>
+            <span v-if="auth.canView('total_amount') && flowTotalAmount" class="bb-item ok"><i>付款总额</i><b>{{ fmt(flowTotalAmount) }}</b></span>
+          </div>
+          <div v-if="flowTotal > 50" class="bb-pager">
+            <button :disabled="flowPage <= 1" class="page-btn" @click="flowPage--; loadFlow()">‹ 上一页</button>
+            <span class="page-info">{{ flowPage }} / {{ Math.ceil(flowTotal / 50) || 1 }} 页 · 共 {{ flowTotal }} 笔</span>
+            <button :disabled="flowPage * 50 >= flowTotal" class="page-btn" @click="flowPage++; loadFlow()">下一页 ›</button>
           </div>
         </div>
       </Teleport>
@@ -878,6 +1073,19 @@ async function doBatchPay() {
 </template>
 
 <style scoped>
+/* Tab bar */
+.tab-bar { display: flex; gap: 2px; background: rgba(0,0,0,0.05); border-radius: 10px; padding: 3px; }
+.tab-btn { border: none; background: none; padding: 5px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; transition: none; }
+.tab-btn.active { background: #fff; color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
+
+/* 付款日期 label in filter bar */
+.filter-group-lbl { font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+
+/* 付款流水 table */
+.flow-tbl { width: 100%; table-layout: fixed; }
+.flow-tbl th, .flow-tbl td { padding: 8px 8px; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-row:hover { background: rgba(21,101,192,0.03); }
+
 .date-range-hint {
   font-size: 11.5px; color: var(--muted); white-space: nowrap; flex-shrink: 0;
   padding: 4px 8px; background: rgba(201,99,66,0.06); border-radius: 7px;

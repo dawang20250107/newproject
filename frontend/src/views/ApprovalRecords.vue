@@ -25,7 +25,7 @@ const saving = ref(false)
 const showCreate = ref(false)
 const showSchedule = ref(false)
 const current = ref(null)
-const form = reactive({ applicant:'', department:'', secondary_dept:'', project_short_name:'', approval_number:'', summary:'', amount:'', payee:'', status:'pending' })
+const form = reactive({ applicant:'', department:'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', amount:'', payee:'', status:'pending' })
 const scheduleForm = reactive({ planned_date:'', total_amount:'' })
 // 操作栏补录：二级部门/项目简称（历史数据默认空白，归档记录也可补录这两个字段）
 const showMeta = ref(false)
@@ -49,7 +49,7 @@ async function saveMeta(){
 function onProjPicked(p, target){
   if (p.sub_dept) target.secondary_dept = p.sub_dept
 }
-const filters = reactive({ applicant:'', approval_number:'', dept:'', page:1, size:50 })
+const filters = reactive({ applicant:'', approval_number:'', g7_number:'', dept:'', page:1, size:50 })
 const statusUpdating = ref({})
 const pendingAmountTotal = computed(() => parseFloat(totalAmount.value || 0))
 
@@ -153,7 +153,7 @@ async function load(){ loading.value=true; try{ const r=await api.get('/approval
 function search(){ filters.page=1; clearSelection(); load() }
 function setPage(p){ filters.page=p; load() }
 async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
-function openCreate(){ Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', summary:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
+function openCreate(){ Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
 async function create(){ saving.value=true; try{ await api.post('/approvals', form); showCreate.value=false; load() } catch(e){ alert(e?.msg||e?.error||'保存失败') } finally{ saving.value=false } }
 async function updateStatus(it, status){
   const prev = it.status
@@ -264,6 +264,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <div class="filter-bar">
     <input v-model="filters.applicant" placeholder="申请人(模糊)" @keyup.enter="search"/>
     <input v-model="filters.approval_number" placeholder="审批编号(模糊)" @keyup.enter="search"/>
+    <input v-model="filters.g7_number" placeholder="G7编号(模糊)" @keyup.enter="search" style="width:140px"/>
     <select v-model="filters.dept" @change="search"><option value="">全部事业部</option><option v-for="d in deptChoices" :key="d" :value="d">{{d}}</option></select>
     <button class="btn btn-ghost btn-sm" @click="search">筛选</button>
     </div>
@@ -272,13 +273,13 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <EmptyState v-else-if="!items.length" empty text="暂无审批记录" />
   <table v-else class="approval-table"><thead><tr>
       <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
-      <th>申请人</th><th>所属事业部</th><th>二级部门</th><th>项目简称</th><th>审批编号</th><th>摘要</th><th>申请金额</th><th>收款主体</th><th>审批状态</th><th>操作</th></tr></thead>
+      <th>申请人</th><th>所属事业部</th><th>二级部门</th><th>项目简称</th><th>审批编号</th><th>G7编号</th><th>摘要</th><th>申请金额</th><th>收款主体</th><th>审批状态</th><th>操作</th></tr></thead>
     <tbody><tr v-for="i in items" :key="i.id" :class="{ 'row-sel': selectedIds.has(i.id) }">
       <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(i.id)" @change="toggleRow(i.id)" /></td>
       <td>{{i.applicant}}</td><td>{{i.department}}</td>
       <td class="meta-cell">{{ i.secondary_dept || '—' }}</td>
       <td class="meta-cell" :title="i.project_short_name">{{ i.project_short_name || '—' }}</td>
-      <td class="mono">{{i.approval_number}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}<div v-if="parseFloat(i.scheduled_amount) > 0 && !i.archived" class="sched-sub">已排 {{i.scheduled_amount}}</div></td><td class="payee">{{i.payee}}</td>
+      <td class="mono">{{i.approval_number}}</td><td class="mono g7-cell">{{i.g7_number || '—'}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}<div v-if="parseFloat(i.scheduled_amount) > 0 && !i.archived" class="sched-sub">已排 {{i.scheduled_amount}}</div></td><td class="payee">{{i.payee}}</td>
       <td>
         <select :value="i.status" :disabled="statusUpdating[i.id]" @change="updateStatus(i, $event.target.value)">
           <option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option>
@@ -325,6 +326,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <label class="form-field"><span>二级部门</span><input v-model="form.secondary_dept" placeholder="选填，如：华东项目部"/></label>
     <label class="form-field"><span>项目简称</span><ProjectShortNamePicker v-model="form.project_short_name" @picked="p => onProjPicked(p, form)"/></label>
     <label class="form-field"><span>审批编号</span><input v-model="form.approval_number" placeholder="21位数字；留空自动填21个0占位"/></label>
+    <label class="form-field"><span>G7编号</span><input v-model="form.g7_number" placeholder="选填，最多21位数字" maxlength="21"/></label>
     <label class="form-field"><span>摘要</span><input v-model="form.summary"/></label>
     <label class="form-field"><span>申请金额*</span><input v-model="form.amount" type="number" step="0.01"/></label>
     <label class="form-field"><span>收款主体</span><input v-model="form.payee"/></label>
@@ -409,21 +411,23 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-table th, .approval-table td { padding: 11px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .approval-table th.sel-col, .approval-table td.sel-col { width: 34px; text-align: center; overflow: visible; padding: 11px 4px; }
 .approval-table th.sel-col input, .approval-table td.sel-col input { cursor: pointer; }
-.approval-table th:nth-child(2), .approval-table td:nth-child(2) { width: 7%; }
-.approval-table th:nth-child(3), .approval-table td:nth-child(3) { width: 8%; }
-.approval-table th:nth-child(4), .approval-table td:nth-child(4) { width: 7%; }
-.approval-table th:nth-child(5), .approval-table td:nth-child(5) { width: 9%; }
-.approval-table th:nth-child(6), .approval-table td:nth-child(6) { width: 12%; }
-.approval-table th:nth-child(7), .approval-table td:nth-child(7) { width: 12%; }
-.approval-table th:nth-child(8), .approval-table td:nth-child(8) { width: 7%; }
-.approval-table th:nth-child(9), .approval-table td:nth-child(9) { width: 10%; }
-.approval-table th:nth-child(10), .approval-table td:nth-child(10) { width: 12%; }
-.approval-table th:nth-child(11), .approval-table td:nth-child(11) { width: 16%; }
+.approval-table th:nth-child(2), .approval-table td:nth-child(2) { width: 6%; }
+.approval-table th:nth-child(3), .approval-table td:nth-child(3) { width: 7%; }
+.approval-table th:nth-child(4), .approval-table td:nth-child(4) { width: 6%; }
+.approval-table th:nth-child(5), .approval-table td:nth-child(5) { width: 8%; }
+.approval-table th:nth-child(6), .approval-table td:nth-child(6) { width: 11%; }
+.approval-table th:nth-child(7), .approval-table td:nth-child(7) { width: 9%; }
+.approval-table th:nth-child(8), .approval-table td:nth-child(8) { width: 10%; }
+.approval-table th:nth-child(9), .approval-table td:nth-child(9) { width: 6%; }
+.approval-table th:nth-child(10), .approval-table td:nth-child(10) { width: 9%; }
+.approval-table th:nth-child(11), .approval-table td:nth-child(11) { width: 10%; }
+.approval-table th:nth-child(12), .approval-table td:nth-child(12) { width: 15%; }
 /* 状态/操作两列内容（下拉、按钮）不裁切；下拉以本列宽为限，不再压到操作列 */
-.approval-table th:nth-child(10), .approval-table td:nth-child(10),
-.approval-table th:nth-child(11), .approval-table td:nth-child(11) {
+.approval-table th:nth-child(11), .approval-table td:nth-child(11),
+.approval-table th:nth-child(12), .approval-table td:nth-child(12) {
   overflow: visible; text-overflow: clip; white-space: normal;
 }
+.g7-cell { color: var(--muted); font-size: 11.5px; }
 .approval-table tr.row-sel td { background: rgba(201,99,66,0.06); }
 /* 批量操作条：固定浮动在视口底部居中，全选后无需下拉即可操作 */
 .bulk-bar { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 1200;

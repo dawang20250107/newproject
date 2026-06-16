@@ -907,10 +907,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 /* ── Filter bar ── */
 .bgt-filterbar {
   display: flex; align-items: center;
-  background: rgba(255,255,255,0.88); border: 1px solid rgba(255,255,255,0.9);
+  background: rgba(255,255,255,0.96); border: 1px solid rgba(255,255,255,0.9);
   border-radius: 14px; padding: 4px 10px;
   box-shadow: 0 2px 14px rgba(0,0,0,0.06);
-  margin-bottom: 20px; backdrop-filter: blur(10px);
+  margin-bottom: 20px;
   flex-wrap: nowrap; overflow-x: auto;
 }
 .fbg { display: flex; align-items: center; gap: 7px; padding: 5px 10px; }
@@ -1058,7 +1058,6 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .budget-table { width: 100%; }
 .budget-table th { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); padding: 9px 12px; background: rgba(0,0,0,0.02); }
 .budget-table td { padding: 10px 12px; vertical-align: middle; }
-.data-row { transition: background 0.12s; }
 .data-row:hover { background: rgba(201,99,66,0.03); }
 .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.04); }
 .empty-cell { text-align: center; padding: 40px !important; color: var(--muted); }
@@ -1104,7 +1103,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .cmp-table th.amt { text-align: right; }
 .cmp-table td { padding: 9px 12px; border-bottom: 1px solid rgba(180,140,110,.08); vertical-align: middle; }
 .cmp-table td.amt { text-align: right; font-variant-numeric: tabular-nums; }
-.cmp-row { cursor: pointer; transition: background .14s; }
+.cmp-row { cursor: pointer; }
 .cmp-row:hover td { background: rgba(201,99,66,.04); }
 .cmp-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .cmp-bar-line { display: flex; align-items: center; gap: 8px; }

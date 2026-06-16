@@ -92,6 +92,7 @@ class Payment(models.Model):
     planned_date = models.DateField('计划付款日期', db_index=True)
     notes = models.TextField('备注', blank=True, default='')
     plan_adjustment = models.DecimalField('计划调整金额', max_digits=15, decimal_places=2, null=True, blank=True)
+    g7_number = models.CharField('G7编号', max_length=21, blank=True, default='', db_index=True)
     # 系统自动维护：等于所有关联 AdvanceWriteoff.amount 之和，现金流视图从 paid 中扣除此金额防双重计
     prepaid_offset_amount = models.DecimalField('预付核销冲抵金额', max_digits=15, decimal_places=2, default=Decimal('0'))
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
@@ -191,6 +192,7 @@ class Payment(models.Model):
             ],
             'notes': self.notes,
             'plan_adjustment': str(self.plan_adjustment) if self.plan_adjustment is not None else None,
+            'g7_number': self.g7_number,
             'prepaid_offset_amount': str(self.prepaid_offset_amount),
             'total_paid': str(total_paid_val),
             'remaining': str(remaining_val),
@@ -253,6 +255,7 @@ class ApprovalRecord(models.Model):
     secondary_dept = models.CharField('二级部门', max_length=100, blank=True, default='', db_index=True)
     project_short_name = models.CharField('项目简称', max_length=100, blank=True, default='', db_index=True)
     approval_number = models.CharField('审批编号', max_length=21, db_index=True)
+    g7_number = models.CharField('G7编号', max_length=21, blank=True, default='', db_index=True)
     summary = models.CharField('摘要', max_length=500)
     amount = models.DecimalField('申请金额', max_digits=15, decimal_places=2)
     # 分批排款累计：每次排款累加；排满申请金额自动归档（兼容一次性排款）
@@ -276,6 +279,7 @@ class ApprovalRecord(models.Model):
             'secondary_dept': self.secondary_dept,
             'project_short_name': self.project_short_name,
             'approval_number': self.approval_number,
+            'g7_number': self.g7_number,
             'summary': self.summary,
             'amount': str(self.amount),
             'scheduled_amount': str(self.scheduled_amount or 0),

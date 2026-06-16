@@ -51,6 +51,7 @@ PAYMENT_FIELD_DEFS = [
     {'key': 'project_short_name', 'label': '项目简称',   'cols': ['project_short_name']},
     {'key': 'applicant',       'label': '申请人',        'cols': ['applicant']},
     {'key': 'approval_number', 'label': '审批单号',      'cols': ['approval_number']},
+    {'key': 'g7_number',       'label': 'G7编号',        'cols': ['g7_number']},
     {'key': 'project_desc',    'label': '付款事项',      'cols': ['project_desc']},
     {'key': 'payee',           'label': '收款方',        'cols': ['payee']},
     {'key': 'total_amount',    'label': '计划总金额',    'cols': ['total_amount']},
@@ -162,6 +163,7 @@ EXCEL_COLUMN_MAP = [
     ('project_short_name', '项目简称',         'project_short_name'),
     ('applicant',       '申请人',             'applicant'),
     ('approval_number', '审批单号',            'approval_number'),
+    ('g7_number',       'G7编号',              'g7_number'),
     # 项目维度统一走「项目简称」列（与台账精确校验）。项目编号不再出现在
     # 模板/导入/导出；创建时由简称从台账自动带出（旧文件多出的编号列被忽略）
     ('project_desc',    '付款事项',            'project_desc'),
@@ -907,6 +909,9 @@ def _list_payments(request):
     status_q = request.GET.get('status', '').strip()
     start = request.GET.get('start_date', '').strip()
     end = request.GET.get('end_date', '').strip()
+    pay_start = request.GET.get('pay_date_start', '').strip()
+    pay_end = request.GET.get('pay_date_end', '').strip()
+    g7_no = request.GET.get('g7_number', '').strip()
     q = request.GET.get('q', '').strip()
 
     if dept:
@@ -915,11 +920,17 @@ def _list_payments(request):
         qs = qs.filter(planned_date__gte=start)
     if end:
         qs = qs.filter(planned_date__lte=end)
+    if pay_start:
+        qs = qs.filter(installments__pay_date__gte=pay_start).distinct()
+    if pay_end:
+        qs = qs.filter(installments__pay_date__lte=pay_end).distinct()
+    if g7_no:
+        qs = qs.filter(g7_number__icontains=g7_no)
     if q:
         qs = qs.filter(
             Q(project_desc__icontains=q) | Q(payee__icontains=q) |
-            Q(approval_number__icontains=q) | Q(department__icontains=q) |
-            Q(applicant__icontains=q)
+            Q(approval_number__icontains=q) | Q(g7_number__icontains=q) |
+            Q(department__icontains=q) | Q(applicant__icontains=q)
         )
 
     try:
@@ -1001,6 +1012,7 @@ def _parse_payment_fields(data, payment=None):
     fields['project_short_name'] = (get('project_short_name') or '').strip()[:100]
     fields['applicant'] = (get('applicant') or '').strip()[:100]
     fields['approval_number'] = get('approval_number') or ''
+    fields['g7_number'] = (get('g7_number') or '').strip()[:21]
     fields['project_no'] = (get('project_no') or '').strip()[:20]
     fields['project_desc'] = (get('project_desc') or '').strip()
     fields['payee'] = (get('payee') or '').strip()
@@ -1163,7 +1175,7 @@ def _validate_project_short_name(short_name, department=''):
 # Field-name → Chinese-label map for change-log records.
 _PAYMENT_FIELD_LABELS = {
     'department': '部门', 'secondary_dept': '二级部门', 'project_short_name': '项目简称',
-    'applicant': '申请人', 'approval_number': '审批单号',
+    'applicant': '申请人', 'approval_number': '审批单号', 'g7_number': 'G7编号',
     'project_desc': '付款事项', 'payee': '收款方',
     'total_amount': '计划总金额', 'planned_date': '计划付款日期',
     'notes': '备注',
@@ -1440,6 +1452,82 @@ def payment_change_logs(request, pk):
 
 @csrf_exempt
 @pk_required()
+def payment_installments(request):
+    """GET — 付款流水：列出 PaymentInstallment 明细，支持付款日期范围/部门/关键字筛选。"""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+
+    qs = PaymentInstallment.objects.select_related('payment').all()
+    # Dept visibility: mirror dept_filter but via related field payment__department
+    if request.pk_role != 'super_admin':
+        qs = qs.filter(payment__department__in=request.pk_depts or [])
+
+    dept = request.GET.get('dept', '').strip()
+    start = request.GET.get('pay_date_start', '').strip()
+    end = request.GET.get('pay_date_end', '').strip()
+    g7_no = request.GET.get('g7_number', '').strip()
+    q = request.GET.get('q', '').strip()
+
+    if dept:
+        qs = qs.filter(payment__department=dept)
+    if start:
+        qs = qs.filter(pay_date__gte=start)
+    if end:
+        qs = qs.filter(pay_date__lte=end)
+    if g7_no:
+        qs = qs.filter(payment__g7_number__icontains=g7_no)
+    if q:
+        qs = qs.filter(
+            Q(payment__project_desc__icontains=q) | Q(payment__payee__icontains=q) |
+            Q(payment__approval_number__icontains=q) | Q(payment__g7_number__icontains=q) |
+            Q(payment__applicant__icontains=q)
+        )
+
+    qs = qs.order_by('-pay_date', '-id')
+
+    try:
+        page = max(1, int(request.GET.get('page', 1)))
+        size = min(200, max(1, int(request.GET.get('size', 50))))
+    except ValueError:
+        page, size = 1, 50
+
+    total = qs.count()
+    total_amount_val = qs.aggregate(s=Sum('pay_amount'))['s'] or Decimal('0')
+
+    can_view_amounts = perms is None or perms['view'].get('total_amount', True)
+
+    items = []
+    for inst in qs[(page - 1) * size: page * size]:
+        p = inst.payment
+        items.append({
+            'id': inst.id,
+            'payment_id': p.id,
+            'seq': inst.seq,
+            'pay_date': str(inst.pay_date),
+            'pay_amount': str(inst.pay_amount) if can_view_amounts else None,
+            'notes': inst.notes,
+            'department': p.department,
+            'secondary_dept': p.secondary_dept,
+            'project_short_name': p.project_short_name,
+            'project_desc': p.project_desc,
+            'payee': p.payee,
+            'approval_number': p.approval_number,
+            'g7_number': p.g7_number,
+            'planned_date': str(p.planned_date) if p.planned_date else None,
+        })
+
+    return ok({
+        'items': items, 'total': total, 'page': page, 'size': size,
+        'total_amount': str(total_amount_val) if can_view_amounts else None,
+    })
+
+
+@csrf_exempt
+@pk_required()
 def approval_records(request):
     perms = get_request_perms(request)
     if perms is not None and not perms['pages'].get('approval_records', True):
@@ -1449,12 +1537,15 @@ def approval_records(request):
         dept = request.GET.get('dept', '').strip()
         applicant = request.GET.get('applicant', '').strip()
         approval_no = request.GET.get('approval_number', '').strip()
+        g7_no = request.GET.get('g7_number', '').strip()
         if dept:
             qs = qs.filter(department=dept)
         if applicant:
             qs = qs.filter(applicant__icontains=applicant)
         if approval_no:
             qs = qs.filter(approval_number__icontains=approval_no)
+        if g7_no:
+            qs = qs.filter(g7_number__icontains=g7_no)
         total_amount = qs.aggregate(s=Sum('amount'))['s'] or Decimal('0')
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
@@ -1470,6 +1561,7 @@ def approval_records(request):
         secondary_dept = (data.get('secondary_dept') or '').strip()[:100]
         project_short_name = (data.get('project_short_name') or '').strip()[:100]
         approval_number = (data.get('approval_number') or '').strip()
+        g7_number_val = (data.get('g7_number') or '').strip()[:21]
         summary = (data.get('summary') or '').strip()
         payee = (data.get('payee') or '').strip()
         status = (data.get('status') or 'pending').strip()
@@ -1496,6 +1588,7 @@ def approval_records(request):
             return err(err_psn)
         rec = ApprovalRecord.objects.create(
             applicant=applicant, department=department, approval_number=approval_number,
+            g7_number=g7_number_val,
             secondary_dept=secondary_dept, project_short_name=project_short_name,
             summary=summary, amount=amount, payee=payee, status=status, created_by_id=request.pk_uid
         )
@@ -1547,6 +1640,8 @@ def approval_record_detail(request, pk):
             if err_no:
                 return err(err_no)
             rec.approval_number = cleaned_no
+        if 'g7_number' in data:
+            rec.g7_number = (data.get('g7_number') or '').strip()[:21]
         if 'amount' in data:
             try:
                 new_amount = Decimal(str(data['amount'] or '0'))
@@ -2005,13 +2100,13 @@ def approval_template(request):
     wb = Workbook()
     ws = wb.active
     ws.title = '审批记录导入模板'
-    headers = ['申请人*', '所属事业部*', '二级部门', '项目简称', '审批编号*', '摘要', '申请金额*', '收款主体', '审批状态*']
+    headers = ['申请人*', '所属事业部*', '二级部门', '项目简称', '审批编号*', 'G7编号', '摘要', '申请金额*', '收款主体', '审批状态*']
     header_fill = PatternFill(fill_type='solid', fgColor='C96342')
     header_font = Font(bold=True, color='FFFFFF', size=11)
     center = Alignment(horizontal='center', vertical='center', wrap_text=True)
     for i, h in enumerate(headers, 1):
         c = ws.cell(row=1, column=i, value=h); c.fill = header_fill; c.font = header_font; c.alignment = center
-    ws.append(['示例张三', '运输事业部', '', '', '123456789012345678901', '示例摘要', 10000, '某供应商', '待审批'])
+    ws.append(['示例张三', '运输事业部', '', '', '123456789012345678901', '', '示例摘要', 10000, '某供应商', '待审批'])
     return _build_excel_response(wb, '审批记录导入模板.xlsx')
 
 
@@ -2066,6 +2161,7 @@ _APPROVAL_COLUMNS = [
     {'key': 'department', 'label': '所属事业部'},
     {'key': 'amount', 'label': '申请金额'},
     {'key': 'approval_number', 'label': '审批编号'},
+    {'key': 'g7_number', 'label': 'G7编号'},
     {'key': 'payee', 'label': '收款主体'},
     {'key': 'secondary_dept', 'label': '二级部门'},
     {'key': 'project_short_name', 'label': '项目简称'},
@@ -2110,6 +2206,7 @@ def _approval_row_view(cv, r):
         'secondary_dept': cv(r, '二级部门'),
         'project_short_name': cv(r, '项目简称'),
         'approval_number': cv(r, '审批编号', '审批单号'),
+        'g7_number': cv(r, 'G7编号'),
         'summary': cv(r, '摘要'),
         'amount': cv(r, '申请金额', '金额'),
         'payee': cv(r, '收款主体'),
@@ -2154,6 +2251,7 @@ def _parse_approval_fields(data, request):
         return None, err_psn
     return {
         'applicant': applicant, 'department': dept, 'approval_number': no,
+        'g7_number': (data.get('g7_number') or '')[:21],
         'secondary_dept': (data.get('secondary_dept') or '')[:100], 'project_short_name': psn,
         'summary': data.get('summary') or '', 'amount': amount, 'payee': data.get('payee') or '',
         'status': 'pending',
@@ -2388,7 +2486,7 @@ def approval_export(request):
     wb = Workbook()
     ws = wb.active
     ws.title = '审批记录'
-    headers = ['申请人', '所属事业部', '二级部门', '项目简称', '审批编号', '摘要', '申请金额',
+    headers = ['申请人', '所属事业部', '二级部门', '项目简称', '审批编号', 'G7编号', '摘要', '申请金额',
                '已排款金额', '剩余可排', '收款主体', '审批状态']
     header_fill = PatternFill(fill_type='solid', fgColor='C96342')
     header_font = Font(bold=True, color='FFFFFF', size=11)
@@ -2400,7 +2498,7 @@ def approval_export(request):
         sched = float(o.scheduled_amount or 0)
         ws.append([_safe(o.applicant), o.department, _safe(o.secondary_dept),
                    _safe(o.project_short_name), _safe(o.approval_number),
-                   _safe(o.summary), float(o.amount), sched,
+                   _safe(o.g7_number), _safe(o.summary), float(o.amount), sched,
                    max(0.0, float(o.amount) - sched), _safe(o.payee),
                    cn.get(o.status, o.status)])
     return _build_excel_response(wb, '审批记录.xlsx')
@@ -2865,6 +2963,7 @@ def payment_template(request):
         '项目简称': '选填；须与项目台账的"项目简称"完全一致，搜索不到将拒绝导入',
         '申请人': '如：张三',
         '审批单号': '123456789012345678901',
+        'G7编号': '',
         '付款事项': '如：工程款结算',
         '收款方': '如：某某公司',
         '计划总金额(元)': 100000,
@@ -3077,6 +3176,7 @@ def _payment_clean_view(data):
         'total_amount': str(data.get('total_amount') or ''),
         'planned_date': str(data.get('planned_date') or ''),
         'approval_number': data.get('approval_number') or '',
+        'g7_number': data.get('g7_number') or '',
         'notes': data.get('notes') or '',
         'installments': data.get('installments') or [],
     }
@@ -3304,8 +3404,8 @@ def payment_export(request):
     if q_str:
         qs = qs.filter(
             Q(project_desc__icontains=q_str) | Q(payee__icontains=q_str) |
-            Q(approval_number__icontains=q_str) | Q(department__icontains=q_str) |
-            Q(applicant__icontains=q_str)
+            Q(approval_number__icontains=q_str) | Q(g7_number__icontains=q_str) |
+            Q(department__icontains=q_str) | Q(applicant__icontains=q_str)
         )
     if status_q:
         qs = qs.annotate(paid=_paid_expr())

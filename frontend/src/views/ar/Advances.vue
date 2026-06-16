@@ -1116,7 +1116,7 @@ td.dt-proj { overflow: hidden; white-space: nowrap; }
   border-radius: 5px; padding: 1px 6px; margin-left: 6px; white-space: nowrap; }
 td.dt-notes { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--muted); font-size: 11.5px; }
-.diff-row { cursor: pointer; transition: background .14s; }
+.diff-row { cursor: pointer; }
 .diff-row:hover td { background: rgba(201,99,66,.04); }
 .diff-row .fw { font-weight: 700; }
 .diff-detail-row td { background: rgba(250,246,241,.7); padding: 6px 10px; }

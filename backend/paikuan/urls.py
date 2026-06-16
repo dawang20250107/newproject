@@ -11,6 +11,7 @@ urlpatterns = [
     path('payments/bulk-delete', views.payments_bulk_delete),
     path('payments/bulk-pay', views.payments_bulk_pay),
     path('payments/prepaid-balance', views.prepaid_balance),
+    path('payments/installments', views.payment_installments),
     path('payments/template', views.payment_template),
     path('payments/import', views.payment_import),
     path('payments/import/precheck', views.payment_import_precheck),

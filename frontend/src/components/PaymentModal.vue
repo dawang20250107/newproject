@@ -40,6 +40,7 @@ const FIELD_COLS = {
   project_short_name: ['project_short_name'],
   applicant: ['applicant'],
   approval_number: ['approval_number'],
+  g7_number: ['g7_number'],
   project_desc: ['project_desc', 'project_no'],
   payee: ['payee'],
   total_amount: ['total_amount'],
@@ -63,6 +64,7 @@ function resetForm() {
     project_short_name: p?.project_short_name || '',
     applicant: p?.applicant || '',
     approval_number: p?.approval_number || '',
+    g7_number: p?.g7_number || '',
     project_no: p?.project_no || '',
     project_desc: p?.project_desc || '',
     payee: p?.payee || '',
@@ -331,6 +333,10 @@ async function submit() {
             :disabled="!editable('approval_number')"
             :class="{ 'input-warn': approvalNoInvalid }" />
           <span v-if="approvalNoInvalid" class="field-err">需为数字（最多100位），空格/不可见字符将自动清除</span>
+        </div>
+        <div class="form-group">
+          <label>G7编号 <span class="hint-text">选填，最多21位</span></label>
+          <input v-model="form.g7_number" placeholder="选填，G7系统编号" maxlength="21" />
         </div>
       </div>
 

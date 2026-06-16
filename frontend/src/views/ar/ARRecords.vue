@@ -2266,11 +2266,11 @@ function clearFilters() {
 .clear-mini:hover { color: var(--primary); }
 
 /* KPI bar */
-.metrics-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; padding: 9px 16px; background: rgba(0,0,0,0.02); border-radius: 12px; }
+.metrics-bar { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; overflow-x: auto; margin-bottom: 4px; padding: 9px 16px; background: rgba(0,0,0,0.02); border-radius: 12px; }
 .metrics-div { width: 1px; align-self: stretch; min-height: 20px; background: rgba(0,0,0,0.1); margin: 0 2px; }
 /* 汇总区：全集合计 / 时段合计 两行纵向堆叠，标签等宽使两行数据项左对齐 */
 .metrics-summary { display: flex; flex-direction: column; gap: 7px; }
-.metrics-sum-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.metrics-sum-row { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; }
 .metrics-sum-row + .metrics-sum-row { padding-top: 7px; border-top: 1px dashed rgba(0,0,0,0.1); }
 .sum-section-lbl { flex: 0 0 auto; width: 60px; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: 0.5px; white-space: nowrap; cursor: default; padding: 2px 7px; border-radius: 6px; background: rgba(0,0,0,0.04); text-align: center; }
 .sum-section-lbl.alt { background: rgba(46,125,50,0.08); color: #2e7d32; }
@@ -2321,7 +2321,6 @@ function clearFilters() {
 /* 选择列 */
 .sel-col { width: 30px; text-align: center; padding-left: 8px !important; padding-right: 4px !important; }
 .sel-col input { cursor: pointer; }
-.data-row { transition: background 0.12s; }
 .data-row:hover { background: rgba(201,99,66,0.03); }
 .row-sel, .row-sel:hover { background: rgba(201,99,66,0.09) !important; }
 /* 批量删除工具条 */
