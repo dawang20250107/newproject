@@ -374,7 +374,7 @@ async function doImport(f) {
       toast.success(`导入完成：创建 ${d.created} 条`)
     }
     await load()
-  } catch (e) { alert(e?.msg || '导入失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { importing.value = false }
 }
 
@@ -391,7 +391,7 @@ async function exportData() {
   try {
     const res = await ar.exportAdvances(buildParams())
     downloadBlob(res, `${dirLabel.value}明细.xlsx`)
-  } catch (e) { alert(e?.msg || '导出失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { exporting.value = false }
 }
 
@@ -500,13 +500,13 @@ async function saveSupplier() {
     else await ar.createSupplier(payload)
     showSupplierModal.value = false
     await loadSuppliers()
-  } catch (e) { alert(e?.msg || '保存失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { supplierSaving.value = false }
 }
 async function removeSupplier(s) {
   if (!confirm(`确认删除供应商「${s.name}」？`)) return
   try { await ar.deleteSupplier(s.id); await loadSuppliers() }
-  catch (e) { alert(e?.msg || '删除失败') }
+  catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
 onMounted(() => {
@@ -567,7 +567,6 @@ onMounted(() => {
             <option value="部分核销">部分核销</option>
             <option value="已核销">已核销</option>
           </select>
-          <span class="filter-hint">提示：点击列名旁的 ⏷ 可按列筛选 / 排序</span>
           <button v-if="projectFilter" class="proj-chip" @click="clearProjectFilter">
             项目：{{ projectFilter.label }} ✕
           </button>
@@ -638,6 +637,7 @@ onMounted(() => {
           <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="go(page - 1)">上一页</button>
           <span>{{ page }} / {{ totalPages }}（共 {{ total }} 条）</span>
           <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="go(page + 1)">下一页</button>
+          <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" class="pg-jump-input" @keyup.enter="doJump" />页</span>
         </div>
       </div>
     </template>

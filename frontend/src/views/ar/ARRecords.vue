@@ -735,7 +735,7 @@ async function deleteRec(rec) {
   const amt = parseFloat(rec.estimated_amount || 0).toFixed(2)
   if (!confirm(`确定删除「${rec.short_name || rec.customer_name}」${rec.operation_date || (rec.operation_year + '年' + rec.operation_month + '月')}的应收记录（${amt} 元）？同期可能存在多条记录，请确认。`)) return
   try { await ar.deleteRecord(rec.id); await load() }
-  catch (e) { alert(e?.msg || '删除失败') }
+  catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
 function togglePayments(id) { expandedPayments.value[id] = !expandedPayments.value[id] }
@@ -762,7 +762,7 @@ async function loadOffsetWorkbench() {
     const res = await ar.offsetWorkbench({ q: owQ.value.trim() || undefined, dept: deptOfConditions() || undefined })
     owGroups.value = res.data.groups
     owSel.value = {}
-  } catch (e) { owGroups.value = []; alert(e?.msg || '加载预收核销工作台失败') }
+  } catch (e) { owGroups.value = []; toast.error(e?.msg || e?.error || '操作失败') }
   finally { owLoading.value = false }
 }
 function onOwSearch() { clearTimeout(owTimer); owTimer = setTimeout(loadOffsetWorkbench, 300) }
@@ -792,7 +792,7 @@ const woAdvBalance = computed(() => {
 const woDefaultAmount = computed(() => Math.min(woAdvBalance.value, woSelOutstanding.value))
 
 function openBatchWriteoff(g) {
-  if (!owSelCount(g.customer)) { alert('请先勾选要冲抵的应收明细'); return }
+  if (!owSelCount(g.customer)) { toast.error('请先勾选要冲抵的应收明细'); return }
   woTarget.value = g
   Object.assign(woForm, {
     advance_id: g.advances[0]?.id || '',
@@ -803,7 +803,7 @@ function openBatchWriteoff(g) {
 }
 async function doBatchWriteoff() {
   const amt = parseFloat(woForm.amount) || woDefaultAmount.value
-  if (!(amt > 0)) { alert('核销金额必须大于0'); return }
+  if (!(amt > 0)) { toast.error('核销金额必须大于0'); return }
   woBusy.value = true
   try {
     const res = await ar.batchWriteoff(woForm.advance_id, {
@@ -812,7 +812,7 @@ async function doBatchWriteoff() {
     })
     woResult.value = res.data
     await loadOffsetWorkbench()
-  } catch (e) { alert(e?.msg || '批量核销失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { woBusy.value = false }
 }
 
@@ -853,7 +853,7 @@ function selectAdvForWriteoff(a) {
 
 async function applyAdvanceWriteoff() {
   const amt = parseFloat(advWoForm.amount)
-  if (!(amt > 0)) { alert('下账金额必须大于0'); return }
+  if (!(amt > 0)) { toast.error('下账金额必须大于0'); return }
   advWoSaving.value = true
   try {
     await ar.addWriteoff(advWoSel.value.id, {
@@ -863,7 +863,7 @@ async function applyAdvanceWriteoff() {
     })
     showPayModal.value = false
     await load()
-  } catch (e) { alert(e?.msg || '预收下账失败')
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { advWoSaving.value = false }
 }
 
@@ -875,12 +875,12 @@ function gotoAdvance() {
 }
 
 async function savePayment() {
-  if (!payForm.amount || !payForm.payment_date) { alert('金额和日期必填'); return }
+  if (!payForm.amount || !payForm.payment_date) { toast.error('金额和日期必填'); return }
   paySaving.value = true
   try {
     await ar.addPayment(payRec.value.id, payForm)
     showPayModal.value = false; await load()
-  } catch (e) { alert(e?.msg || '保存失败')
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { paySaving.value = false }
 }
 
@@ -890,7 +890,7 @@ async function deletePayment(rec, pay) {
     : `确定删除第${pay.payment_no}次回款 ${pay.amount} 元？`
   if (!confirm(tip)) return
   try { await ar.deletePayment(rec.id, pay.id); await load() }
-  catch (e) { alert(e?.msg || '删除失败') }
+  catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
 async function downloadTemplate() {
