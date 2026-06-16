@@ -633,3 +633,66 @@ body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
 @media (max-width: 640px) {
   .dept-pick { flex-wrap: wrap !important; }
 }
+
+/* Mobile table horizontal scroll cue */
+@media (max-width: 768px) {
+  .table-wrap {
+    position: relative;
+  }
+  .table-wrap::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 32px;
+    height: 100%;
+    background: linear-gradient(to right, transparent, rgba(255,255,255,0.85));
+    pointer-events: none;
+    z-index: 2;
+  }
+}
+
+/* Mobile filter bar */
+@media (max-width: 640px) {
+  .filter-bar, .filter-row, .filter-strip {
+    flex-wrap: wrap;
+    gap: 6px !important;
+  }
+  .filter-bar .btn, .filter-row .btn, .filter-strip .btn {
+    font-size: 12px;
+    padding: 4px 10px;
+  }
+  .filter-bar input[type="text"],
+  .filter-bar input[type="search"],
+  .filter-bar input[type="date"],
+  .filter-row input[type="text"],
+  .filter-row input[type="search"],
+  .filter-row input[type="date"] {
+    font-size: 12px;
+    padding: 4px 8px;
+  }
+}
+
+/* Payments KPI mobile compact */
+@media (max-width: 640px) {
+  .pk-kpi-row, .pk-kpi-bar {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+  }
+  .pk-kpi-row > *, .pk-kpi-bar > * {
+    flex: 0 0 calc(50% - 4px) !important;
+    min-width: 0 !important;
+  }
+}
+
+/* Mobile sticky first column */
+@media (max-width: 640px) {
+  .table-wrap table tbody td:first-child,
+  .table-wrap table thead th:first-child {
+    position: sticky;
+    left: 0;
+    background: var(--bg, #fff);
+    z-index: 1;
+    box-shadow: 2px 0 4px rgba(0,0,0,0.05);
+  }
+}
