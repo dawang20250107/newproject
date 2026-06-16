@@ -34,6 +34,16 @@ function logout() {
 }
 
 const showChangePwd = ref(false)
+const pwdChangedOk = ref(false)
+let _pwdOkTimer = null
+function onChangePwdClose(success) {
+  showChangePwd.value = false
+  if (success) {
+    pwdChangedOk.value = true
+    clearTimeout(_pwdOkTimer)
+    _pwdOkTimer = setTimeout(() => { pwdChangedOk.value = false }, 3000)
+  }
+}
 
 function toggleCollapse() {
   emit('update:collapsed', !props.collapsed)
@@ -462,11 +472,23 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         <path v-else d="M9 18l6-6-6-6"/>
       </svg>
     </button>
-    <ChangePasswordModal v-if="showChangePwd" @close="showChangePwd = false" />
+    <ChangePasswordModal v-if="showChangePwd" @close="onChangePwdClose" />
+    <Transition name="pwd-ok-fade">
+      <div v-if="pwdChangedOk" class="pwd-ok-toast">✓ 密码已修改</div>
+    </Transition>
   </nav>
 </template>
 
 <style scoped>
+.pwd-ok-toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: #2e7d32; color: #fff; padding: 8px 20px;
+  border-radius: 20px; font-size: 13px; z-index: 9999; pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+}
+.pwd-ok-fade-enter-active, .pwd-ok-fade-leave-active { transition: opacity 0.35s; }
+.pwd-ok-fade-enter-from, .pwd-ok-fade-leave-to { opacity: 0; }
+
 .perf-btn { border: 1px solid rgba(216,166,130,.3); background: transparent; color: #b09080;
   border-radius: 8px; width: 28px; height: 28px; cursor: pointer; font-size: 13px; line-height: 1;
   flex-shrink: 0; }

@@ -88,8 +88,7 @@ const loadErr = ref('')
 const today = todayCST()  // UTC+8，与服务端 Asia/Shanghai 保持一致
 
 const filters = reactive({
-  q: '', dept: '', status: '', start_date: '', end_date: '',
-  pay_date_start: '', pay_date_end: '', g7_number: '',
+  q: '', pay_date_start: '', pay_date_end: '',
   page: 1, size: 50,
 })
 
@@ -180,7 +179,6 @@ function switchTab(t) {
 }
 
 // ── date preset selector ──────────────────────────────────────────────────────
-const datePreset = ref('')
 const payDatePreset = ref('')
 
 function _d(y, m, d) {
@@ -217,16 +215,6 @@ function dateRangeFor(key) {
     case 'last90':       return [_addDays(today, -89), today]
     default:             return ['', '']
   }
-}
-
-function applyDatePreset() {
-  if (datePreset.value === '' || datePreset.value === 'custom') {
-    if (datePreset.value === '') { filters.start_date = ''; filters.end_date = '' }
-  } else {
-    const [s, e] = dateRangeFor(datePreset.value)
-    filters.start_date = s; filters.end_date = e
-  }
-  filters.page = 1; load()
 }
 
 function applyPayDatePreset() {
@@ -519,12 +507,11 @@ async function onDelete(p) {
 
 function search() { filters.page = 1; clearSelection(); load() }
 function resetFilters() {
-  Object.assign(filters, { q: '', dept: '', status: '', start_date: '', end_date: '',
-    pay_date_start: '', pay_date_end: '', g7_number: '', page: 1 })
+  Object.assign(filters, { q: '', pay_date_start: '', pay_date_end: '', page: 1 })
   Object.keys(colFilters).forEach(k => delete colFilters[k])
   statusSel.value = ''
   sortField.value = ''; sortOrder.value = ''
-  datePreset.value = ''; payDatePreset.value = ''
+  payDatePreset.value = ''
   clearSelection()
   load()
 }

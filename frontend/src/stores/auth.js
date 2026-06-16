@@ -104,7 +104,8 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   // 超管重置临时密码后，登录响应带 must_change_password → 强制改密
-  const mustChangePassword = ref(false)
+  // 从 localStorage 缓存的 user 恢复，避免刷新页面后标志丢失
+  const mustChangePassword = ref(user.value?.must_change_password || false)
 
   async function login(phone, password) {
     const res = await api.post('/login', { phone, password })
@@ -135,6 +136,8 @@ export const useAuthStore = defineStore('auth', () => {
       if (res.data?.user) {
         user.value = res.data.user
         localStorage.setItem('pk_user', JSON.stringify(res.data.user))
+        if (typeof res.data.user.must_change_password === 'boolean')
+          mustChangePassword.value = res.data.user.must_change_password
       }
       if (res.data?.permissions) setPerms(res.data.permissions)
     } catch { /* keep cached perms */ }

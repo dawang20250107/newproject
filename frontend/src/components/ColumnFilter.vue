@@ -177,9 +177,10 @@ onBeforeUnmount(() => {
 
     <Teleport to="body">
       <div v-if="open" class="colf-pop" :style="{ top: pos.top + 'px', left: pos.left + 'px' }">
-        <div v-if="sortable" class="colf-sort">
+        <div v-if="sortable" class="colf-sort" :class="{ 'colf-sort-only': !filterable }">
           <button type="button" :class="{ act: sortField === field && sortOrder === 'asc' }" @click="setSort('asc')">▲ 升序</button>
           <button type="button" :class="{ act: sortField === field && sortOrder === 'desc' }" @click="setSort('desc')">▼ 降序</button>
+          <button v-if="!filterable" type="button" class="colf-close" @click="open = false">✕</button>
         </div>
 
         <template v-if="filterable">
@@ -261,13 +262,20 @@ onBeforeUnmount(() => {
   padding: 10px; display: flex; flex-direction: column; gap: 8px;
   font-size: 12px; color: var(--text);
   -webkit-backdrop-filter: none; backdrop-filter: none;
+  max-height: 80vh; overflow-y: auto;
 }
 .colf-sort { display: flex; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.colf-sort.colf-sort-only { border-bottom: none; padding-bottom: 0; }
 .colf-sort button {
   flex: 1; padding: 5px 0; border: 1px solid var(--border); border-radius: 6px;
   background: transparent; cursor: pointer; color: var(--muted); font-size: 11.5px;
 }
 .colf-sort button.act { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.08); }
+.colf-close {
+  flex: 0 0 auto; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: transparent; cursor: pointer; color: var(--muted); font-size: 10px; line-height: 1;
+}
+.colf-close:hover { border-color: var(--danger); color: var(--danger); }
 
 .colf-op, .colf-in {
   width: 100%; box-sizing: border-box; padding: 6px 8px;
