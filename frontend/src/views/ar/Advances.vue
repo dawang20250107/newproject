@@ -1070,7 +1070,13 @@ onMounted(() => {
 .lnk { background: none; border: none; color: var(--primary); cursor: pointer; font-size: 13px; padding: 2px 6px; }
 .lnk.danger { color: #c62828; }
 
-.pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; font-size: 13px; color: var(--muted); }
+.pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+.pg-jump{display:inline-flex;align-items:center;gap:4px;font-size:13px;color:var(--muted);margin-left:8px}
+.pg-jump-input{width:46px;text-align:center;padding:2px 4px;border:1px solid var(--border);border-radius:6px;font-size:13px}
+@media (max-width: 640px) {
+  .kpi-row { flex-wrap: wrap !important; }
+  .kpi { min-width: calc(50% - 6px) !important; flex: 1 1 calc(50% - 6px) !important; }
+}
 
 .modal-mask { position: fixed; inset: 0; background: rgba(20,10,5,0.42); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; z-index: 200; padding: 20px; }
 .modal {
