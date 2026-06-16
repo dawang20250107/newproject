@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount, computed } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { todayCST } from '../constants.js'
@@ -9,6 +9,8 @@ import ProjectShortNamePicker from '../components/ProjectShortNamePicker.vue'
 import ImportResultModal from '../components/ImportResultModal.vue'
 import ImportPrecheckModal from '../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../components/ColumnFilter.vue'
+import { useToast } from '../composables/useToast.js'
+const toast = useToast()
 
 const auth = useAuthStore()
 const items = ref([])
@@ -43,7 +45,7 @@ async function saveMeta(){
   try{
     await api.put(`/approvals/${metaTarget.value.id}`, { ...metaForm })
     showMeta.value = false; load()
-  } catch(e){ alert(e?.msg || e?.error || '保存失败') }
+  } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
   finally{ metaSaving.value = false }
 }
 // 从台账选中项目时，自动带出该项目的二级部门（台账未填二级部门则保留手填值）
@@ -84,6 +86,11 @@ function buildParams() {
   if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
   return p
 }
+let _qTimer = null
+watch(() => q.value, () => {
+  clearTimeout(_qTimer)
+  _qTimer = setTimeout(() => { page.value = 1; clearSelection(); load() }, 350)
+})
 const statusUpdating = ref({})
 const pendingAmountTotal = computed(() => parseFloat(totalAmount.value || 0))
 
@@ -119,8 +126,8 @@ async function confirmBulkDelete(){
     const r = await api.post('/approvals/bulk-delete', { ids: [...selectedIds.value] })
     showDelConfirm.value = false; clearSelection(); load()
     const d = r.data || {}
-    if (d.skipped?.length) alert(`${d.message}\n\n未删除明细：\n` + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n'))
-  } catch(e){ alert(e?.msg || e?.error || '删除失败') }
+    if (d.skipped?.length) toast.warn(`${d.message}\n\n未删除明细：\n` + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n'))
+  } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
   finally{ bulkDeleting.value = false }
 }
 
@@ -128,7 +135,7 @@ async function confirmBulkDelete(){
 const bulkApproving = ref(false)
 async function bulkApprove(){
   const n = selectedApprovable.value.length
-  if (!n){ alert('所选记录中没有「待审批」状态的可审批记录'); return }
+  if (!n){ toast.warn('所选记录中没有「待审批」状态的可审批记录'); return }
   if (!confirm(`确认将所选的 ${n} 条「待审批」记录批量审批通过？`)) return
   bulkApproving.value = true
   try{
@@ -136,9 +143,9 @@ async function bulkApprove(){
     clearSelection(); load()
     const d = r.data || {}
     let msg = d.message || '批量审批完成'
-    if (d.skipped?.length) msg += '\n\n跳过明细：\n' + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n')
-    alert(msg)
-  } catch(e){ alert(e?.msg || e?.error || '批量审批失败') }
+    if (d.skipped?.length) { msg += '\n\n跳过明细：\n' + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n'); toast.warn(msg) }
+    else toast.success(msg)
+  } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
   finally{ bulkApproving.value = false }
 }
 
@@ -152,7 +159,7 @@ const batchSchedTotal = computed(() =>
 const batchSchedValid = computed(() => batchSchedRows.value.length > 0 &&
   batchSchedRows.value.every(r => { const a = parseFloat(r.amount); return a > 0 && a <= r.remaining + 1e-6 }))
 function openBatchSchedule(){
-  if (!batchSchedSummary.value.count){ alert('所选记录中没有「审批通过且未归档」的可排款记录'); return }
+  if (!batchSchedSummary.value.count){ toast.warn('所选记录中没有「审批通过且未归档」的可排款记录'); return }
   batchSchedForm.planned_date = todayCST()
   batchSchedRows.value = selectedSchedulable.value.map(i => {
     const rem = remOf(i)
@@ -171,9 +178,9 @@ async function doBatchSchedule(){
     showBatchSched.value = false; clearSelection(); load()
     const d = r.data || {}
     let msg = d.message || '批量排款完成'
-    if (d.skipped?.length) msg += '\n\n跳过明细：\n' + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n')
-    alert(msg)
-  } catch(e){ alert(e?.msg || e?.error || '批量排款失败') }
+    if (d.skipped?.length) { msg += '\n\n跳过明细：\n' + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n'); toast.warn(msg) }
+    else toast.success(msg)
+  } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
   finally{ batchSchedBusy.value = false }
 }
 
@@ -183,12 +190,18 @@ const deptChoices = computed(() => {
   return depts.value.filter(d => scope.includes(d))
 })
 
+const jumpPage = ref(1)
+function doJump() {
+  const tp = Math.ceil(total.value / size.value)
+  const p = Math.max(1, Math.min(tp, jumpPage.value || 1))
+  page.value = p; load()
+}
 async function load(){ loading.value=true; try{ const r=await api.get('/approvals',{params:buildParams()}); items.value=r.data.items; total.value=r.data.total; totalAmount.value=r.data.total_amount || 0 }finally{loading.value=false}}
 function search(){ page.value=1; clearSelection(); load() }
 function setPage(p){ page.value=p; load() }
 async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
 function openCreate(){ Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
-async function create(){ saving.value=true; try{ await api.post('/approvals', form); showCreate.value=false; load() } catch(e){ alert(e?.msg||e?.error||'保存失败') } finally{ saving.value=false } }
+async function create(){ saving.value=true; try{ await api.post('/approvals', form); showCreate.value=false; load(); toast.success('已保存') } catch(e){ toast.error(e?.msg||e?.error||'操作失败') } finally{ saving.value=false } }
 async function updateStatus(it, status){
   const prev = it.status
   it.status = status
@@ -197,7 +210,7 @@ async function updateStatus(it, status){
     await api.put(`/approvals/${it.id}`,{ status })
   } catch(e){
     it.status = prev
-    alert(e?.error||'更新失败')
+    toast.error(e?.msg || e?.error || '操作失败')
   } finally {
     statusUpdating.value[it.id] = false
   }
@@ -224,8 +237,8 @@ async function doSchedule(){
   try{
     const res = await api.post(`/approvals/${current.value.id}/schedule`, scheduleForm)
     showSchedule.value=false; load()
-    alert(res.data?.message || '排款成功')
-  } catch(e){ alert(e?.error||'排款失败') }
+    toast.success(res.data?.message || '排款成功')
+  } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
   finally{ schedBusy.value = false }
 }
 async function downloadTemplate(){ const b=await api.get('/approvals/template',{responseType:'blob'}); dl(b,'审批管理导入模板.xlsx') }
@@ -271,7 +284,7 @@ async function onPrecheckApply({ mode, rows, okRows }){
       importResult.value={ created:d.created||0, skipped:d.skipped||0, errors:d.errors||[], message:d.message }
       if(d.created>0) load()
     }
-  }catch(err){ alert(err?.msg||err?.error||'处理失败') }
+  }catch(err){ toast.error(err?.msg||err?.error||'操作失败') }
   finally{ precheckBusy.value=false }
 }
 async function doExport(){ exporting.value=true; try{ const b=await api.get('/approvals/export',{params:buildParams(),responseType:'blob'}); dl(b,'审批管理.xlsx') } finally{ exporting.value=false } }
@@ -303,7 +316,6 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <input v-model="q" class="global-search" placeholder="🔍 全局搜索：申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
     <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
     <button v-if="activeFilterCount || q || sortField" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters">清除全部筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
-    <span class="filter-hint">提示：点击列名旁的 ⏷ 可按列筛选 / 排序</span>
     </div>
   </div>
   <EmptyState v-if="loading" loading />
@@ -362,12 +374,13 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         <button :disabled="page <= 1" class="page-btn" @click="setPage(page - 1)">‹ 上一页</button>
         <span class="page-info">{{ page }} / {{ Math.ceil(total / size) || 1 }} 页 · 共 {{ total }} 条</span>
         <button :disabled="page * size >= total" class="page-btn" @click="setPage(page + 1)">下一页 ›</button>
+        <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" class="pg-jump-input" @keyup.enter="doJump" />页</span>
       </div>
     </div>
   </Teleport>
   </div>
 
-  <Teleport to="body"><div v-if="showCreate" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>新增审批记录</h3></div><div class="modal-body"><div class="form-grid">
+  <Teleport to="body"><div v-if="showCreate" class="modal-overlay" tabindex="-1" @keyup.escape.capture="showCreate = false"><div class="modal-box"><div class="modal-header"><h3>新增审批记录</h3></div><div class="modal-body"><div class="form-grid">
     <label class="form-field"><span>申请人*</span><input v-model="form.applicant"/></label>
     <label class="form-field"><span>所属事业部*</span><select v-model="form.department"><option v-for="d in deptChoices" :key="d" :value="d">{{d}}</option></select></label>
     <label class="form-field"><span>二级部门</span><input v-model="form.secondary_dept" placeholder="选填，如：华东项目部"/></label>
@@ -454,7 +467,6 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .filter-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .global-search { min-width: 340px; flex: 0 1 420px; }
 .clear-all { color: var(--primary); }
-.filter-hint { font-size: 11.5px; color: var(--muted); margin-left: 4px; }
 /* 列头允许漏斗按钮溢出展示，不被裁切 */
 .approval-table thead th { overflow: visible; }
 
@@ -529,4 +541,6 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .summary, .payee { max-width: 100%; }
 .approval-table select { width: 100%; min-width: 0; max-width: 100%; height: 32px; font-size: 12.5px; padding: 0 22px 0 6px; background-position: right 6px center; }
+.pg-jump { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); margin-left: 8px; }
+.pg-jump-input { width: 46px; text-align: center; padding: 2px 4px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
 </style>

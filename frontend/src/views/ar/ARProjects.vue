@@ -1,5 +1,6 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from 'vue'
+import { useToast } from '../../composables/useToast.js'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST } from '../../constants.js'
 import ar from '../../api/ar.js'
@@ -10,6 +11,7 @@ import BaseChart from '../../components/ar/BaseChart.vue'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 
+const toast = useToast()
 const auth = useAuthStore()
 const items = ref([])
 const total = ref(0)
@@ -17,6 +19,12 @@ const stats = ref(null)
 const loading = ref(false)
 const page = ref(1)
 const size = 50
+const jumpPage = ref(1)
+function doJump() {
+  const tp = Math.ceil(total.value / size)
+  const p = Math.max(1, Math.min(tp, jumpPage.value || 1))
+  page.value = p; load()
+}
 
 // 顶部仅保留全局关键字搜索 + 无列头等价物的页面级开关（共享业务 / 草稿）。
 // 真实数据列（交付部门 / 客户等级 / 开票模式 / 状态 等）改用 Excel 风格列头筛选。
@@ -105,7 +113,7 @@ async function confirmBulkDelete() {
     showDelConfirm.value = false
     clearSelection()
     reloadAll()
-  } catch (e) { alert(e?.msg || '删除失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { bulkDeleting.value = false }
 }
 
@@ -120,7 +128,7 @@ const form = reactive({
 // 项目台账内联改状态（与客户详情两边改同一字段，自动同步）
 async function changeStatus(item) {
   try { await ar.updateProject(item.id, { status: item.status }) }
-  catch (e) { alert(e?.msg || e?.error || '改状态失败') }
+  catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
 // 客户池（一次性加载）+ 当前项目挂靠的合同
@@ -282,7 +290,7 @@ const REQUIRED = [
 async function save() {
   const missing = REQUIRED.filter(([k]) => form[k] === '' || form[k] === null || form[k] === undefined)
   if (missing.length) {
-    alert('请填写所有必填字段：\n' + missing.map(([, l]) => l).join('、'))
+    toast.error('请填写所有必填字段：' + missing.map(([, l]) => l).join('、'))
     return
   }
   saving.value = true
@@ -306,14 +314,14 @@ async function save() {
     showModal.value = false
     reloadAll()
   } catch (e) {
-    alert(e?.msg || '保存失败，请检查必填项与部门权限')
+    toast.error(e?.msg || e?.error || '操作失败')
   } finally { saving.value = false }
 }
 
 async function remove(item) {
   if (!confirm(`确定删除项目「${item.short_name || item.customer_name}」？\n⚠ 该项目下的应收账款明细和回款记录将一并永久删除，不可恢复。`)) return
   try { await ar.deleteProject(item.id); reloadAll() }
-  catch (e) { alert(e?.msg || '删除失败') }
+  catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
 async function completeDraft(item) {
@@ -341,7 +349,7 @@ async function downloadTemplate() {
   try {
     const res = await ar.projectTemplate()
     downloadBlob(res, '项目信息导入模板.xlsx')
-  } catch (e) { alert(e?.msg || '模板下载失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
 async function handleImport(e) {
@@ -383,7 +391,7 @@ async function onPrecheckApply({ mode }) {
     await doImport(pendingFile.value)
     precheckResult.value = null
   } catch (err) {
-    alert(err?.msg || err?.error || '导入失败')
+    toast.error(err?.msg || err?.error || '操作失败')
   } finally { precheckBusy.value = false; importing.value = false }
 }
 
@@ -392,7 +400,7 @@ async function exportData() {
   try {
     const res = await ar.exportProjects(buildParams())
     downloadBlob(res, '项目信息.xlsx')
-  } catch (e) { alert(e?.msg || '导出失败')
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { exporting.value = false }
 }
 
@@ -414,17 +422,17 @@ async function promoteDrafts() {
   promotingDrafts.value = true
   try {
     const pv = (await ar.promoteDraftProjects({ preview: 1 })).data
-    if (!pv.total) { alert('没有待完善草稿'); return }
+    if (!pv.total) { toast.error('没有待完善草稿'); return }
     let tip = `共 ${pv.total} 个草稿：\n· 可直接转正（有交付部门）${pv.ready} 个 → 转为正式项目并同步客户\n`
     if (pv.need_dept > 0) tip += `· 缺交付部门 ${pv.need_dept} 个 → 无法自动转，需到台账补部门后再转\n`
     tip += `\n确认转正这 ${pv.ready} 个？（应收数据保留，不会丢）`
-    if (pv.ready === 0) { alert(tip.replace(/\n确认.*/, '\n\n暂无可直接转正的草稿，请先补交付部门。')); return }
+    if (pv.ready === 0) { toast.error('暂无可直接转正的草稿，请先补交付部门。'); return }
     if (!confirm(tip)) return
     const res = await ar.promoteDraftProjects({})
-    alert(res.data?.message || '已转正')
+    toast.success(res.data?.message || '已转正')
     if (filters.is_draft) filters.is_draft = ''
     reloadAll()
-  } catch (e) { alert(e?.msg || e?.error || '转正失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { promotingDrafts.value = false }
 }
 
@@ -515,7 +523,6 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <option value="false">已完善项目</option>
       </select>
       <button v-if="hasActiveFilters" class="filter-reset" @click="resetFilters">重置筛选</button>
-      <span class="filter-hint">点击列名旁的 ⏷ 可按列筛选 / 排序</span>
     </div>
 
     <!-- 选择 + 批量删除工具条（选中后出现） -->
@@ -627,6 +634,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <button :disabled="page <= 1" class="page-btn" @click="page--; load()">‹ 上一页</button>
         <span class="page-info">第 {{ page }} 页 · 共 {{ total }} 条</span>
         <button :disabled="page * size >= total" class="page-btn" @click="page++; load()">下一页 ›</button>
+        <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" class="pg-jump-input" @keyup.enter="doJump" />页</span>
       </div>
     </div>
     </div><!-- /projTab list -->

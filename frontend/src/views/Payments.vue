@@ -1,5 +1,6 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount, reactive, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, reactive, computed, watch } from 'vue'
+import { useToast } from '../composables/useToast.js'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { todayCST } from '../constants.js'
@@ -12,6 +13,7 @@ import ImportPrecheckModal from '../components/ImportPrecheckModal.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ColumnFilter from '../components/ColumnFilter.vue'
 
+const toast = useToast()
 const auth = useAuthStore()
 
 // Column visibility from field-level view permissions.
@@ -70,9 +72,9 @@ async function removePlanItem(p, pi) {
   if (!confirm(`撤销第${pi.seq}批计划（${pi.planned_date} · ${pi.amount} 元）？\n汇总金额回退；来源审批的已排款同步扣减、可继续分批排款。`)) return
   try {
     const res = await api.delete(`/payments/${p.id}/plan-items/${pi.id}`)
-    alert(res.data?.message || '已撤销')
+    toast.success(res.data?.message || '已撤销')
     load()
-  } catch (e) { alert(e?.msg || e?.error || '撤销失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '撤销失败') }
 }
 const items = ref([])
 const total = ref(0)
@@ -281,7 +283,7 @@ async function downloadTemplate() {
     // Interceptor returns res.data, so for a blob request this IS the Blob.
     const blob = await api.get('/payments/template', { responseType: 'blob', timeout: 60000 })
     triggerDownload(blob, '排款导入模板.xlsx')
-  } catch { alert('模板下载失败') }
+  } catch { toast.error('模板下载失败') }
 }
 
 function triggerImport() {
@@ -343,7 +345,7 @@ async function onPrecheckApply({ mode, rows, okRows }) {
       if (res.data.created > 0) load()
     }
   } catch (ex) {
-    alert(ex?.msg || ex?.error || '处理失败')
+    toast.error(ex?.msg || ex?.error || '处理失败')
   } finally {
     precheckBusy.value = false
   }
@@ -357,7 +359,7 @@ async function exportExcel() {
     const blob = await api.get('/payments/export', { params, responseType: 'blob', timeout: 60000 })
     const date = new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '月') + '日'
     triggerDownload(blob, `排款记录_${date}.xlsx`)
-  } catch (e) { alert(e?.msg || '导出失败，请稍后重试') }
+  } catch (e) { toast.error(e?.msg || '导出失败，请稍后重试') }
   finally { exportingXlsx.value = false }
 }
 
@@ -471,14 +473,14 @@ async function reverseOffset(o) {
     const p = items.value.find(x => x.id === offsetTarget.value.id)
     if (p) offsetTarget.value = p
     await fetchOffsetData(offsetTarget.value)
-  } catch (e) { alert(e?.msg || e?.error || '反向核销失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '反向核销失败') }
   finally { offsetBusy.value = false }
 }
 const offsetRoom = computed(() => parseFloat(offsetTarget.value?.remaining) || 0)
 async function doOffset() {
   const amt = parseFloat(offsetForm.amount)
-  if (!offsetForm.advance_id) { alert('请选择要核销的预付'); return }
-  if (!(amt > 0)) { alert('冲抵金额必须大于0'); return }
+  if (!offsetForm.advance_id) { toast.error('请选择要核销的预付'); return }
+  if (!(amt > 0)) { toast.error('冲抵金额必须大于0'); return }
   offsetBusy.value = true
   try {
     await api.post(`/ar/advances/${offsetForm.advance_id}/writeoffs`, {
@@ -491,7 +493,7 @@ async function doOffset() {
     const p = items.value.find(x => x.id === offsetTarget.value.id)
     if (p) offsetTarget.value = p
     await fetchOffsetData(offsetTarget.value)
-  } catch (e) { alert(e?.msg || e?.error || '核销失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '核销失败') }
   finally { offsetBusy.value = false }
 }
 
@@ -501,7 +503,7 @@ async function onDelete(p) {
     await api.delete(`/payments/${p.id}`)
     load()
   } catch (e) {
-    alert(e?.msg || '删除失败')
+    toast.error(e?.msg || '删除失败')
   }
 }
 
@@ -548,8 +550,8 @@ async function confirmBulkDelete() {
     const r = await api.post('/payments/bulk-delete', { ids: [...selectedIds.value] })
     showDelConfirm.value = false; clearSelection(); load()
     const d = r.data || {}
-    if (d.skipped?.length) alert(`${d.message}\n\n未删除明细：\n` + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0, 15).join('\n'))
-  } catch (e) { alert(e?.msg || e?.error || '删除失败') }
+    if (d.skipped?.length) toast.error(`${d.message}\n\n未删除明细：\n` + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0, 15).join('\n'))
+  } catch (e) { toast.error(e?.msg || e?.error || '删除失败') }
   finally { bulkDeleting.value = false }
 }
 
@@ -563,7 +565,7 @@ const batchPayTotal = computed(() =>
 const batchPayValid = computed(() => batchPayRows.value.length > 0 &&
   batchPayRows.value.every(r => { const a = parseFloat(r.amount); return a > 0 && a <= r.remaining + 1e-6 }))
 function openBatchPay() {
-  if (!batchPaySummary.value.count) { alert('所选记录中没有「有剩余应付」的可付款记录（已结清的已自动排除）'); return }
+  if (!batchPaySummary.value.count) { toast.error('所选记录中没有「有剩余应付」的可付款记录（已结清的已自动排除）'); return }
   batchPayForm.pay_date = todayCST()
   batchPayRows.value = selectedPayable.value.map(p => {
     const rem = remOf(p)
@@ -583,8 +585,8 @@ async function doBatchPay() {
     const d = r.data || {}
     let msg = d.message || '批量付款完成'
     if (d.skipped?.length) msg += '\n\n跳过明细：\n' + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0, 15).join('\n')
-    alert(msg)
-  } catch (e) { alert(e?.msg || e?.error || '批量付款失败') }
+    toast.success(msg)
+  } catch (e) { toast.error(e?.msg || e?.error || '批量付款失败') }
   finally { batchPayBusy.value = false }
 }
 </script>

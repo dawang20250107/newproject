@@ -6,6 +6,7 @@ import ColumnFilter from '../components/ColumnFilter.vue'
 const items = ref([])
 const total = ref(0)
 const page = ref(1)
+const jumpPage = ref(1)
 const size = 50
 const loading = ref(false)
 const pruning = ref(false)
@@ -73,6 +74,10 @@ async function prune() {
   finally { pruning.value = false }
 }
 function toggleExpand(id) { expanded.value[id] = !expanded.value[id] }
+function doJump() {
+  const p = Math.max(1, Math.min(Math.ceil(total.value / size), Math.round(jumpPage.value)))
+  if (p !== page.value) { page.value = p; load() }
+}
 const fmtTime = t => t ? t.replace('T', ' ').slice(0, 19) : '—'
 const methodClass = m => ({ POST: 'm-post', PUT: 'm-put', PATCH: 'm-put', DELETE: 'm-del' }[m] || '')
 // 把接口路径翻译成人话，便于非技术人员看懂
@@ -120,7 +125,6 @@ onMounted(() => load())
       <div class="filter-strip">
         <input v-model="q" placeholder="🔍 全局搜索：操作人 / 接口路径" class="search-input global-search" @input="onSearch" />
         <button v-if="activeFilterCount || q || sortField" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters">清除全部筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
-        <span class="filter-hint">提示：点击列名旁的 ⏷ 可按列筛选 / 排序</span>
       </div>
 
       <div class="table-wrap" style="margin-top:12px">
@@ -148,7 +152,7 @@ onMounted(() => load())
                   <span class="method-badge" :class="methodClass(l.method)">{{ l.method }}</span>
                   <span v-if="pathLabel(l.path)" class="op-label">{{ pathLabel(l.path) }}</span>
                 </td>
-                <td class="path-cell">{{ l.path }}</td>
+                <td class="path-cell" :title="l.path">{{ l.path }}</td>
                 <td class="ctr"><span class="mod-chip">{{ l.module || '—' }}</span></td>
                 <td class="ctr">
                   <span class="st-badge" :class="l.status_code < 400 ? 'st-ok' : 'st-fail'">{{ l.status_code }}</span>
@@ -173,6 +177,7 @@ onMounted(() => load())
         <button :disabled="page <= 1" class="page-btn" @click="page--; load()">‹ 上一页</button>
         <span class="page-info">{{ page }} / {{ Math.ceil(total / size) }} 页 · 共 {{ total }} 条</span>
         <button :disabled="page * size >= total" class="page-btn" @click="page++; load()">下一页 ›</button>
+        <span class="pg-jump">跳至<input v-model.number="jumpPage" class="pg-jump-input" type="number" min="1" :max="Math.ceil(total/size)" @keyup.enter="doJump" />页<button class="page-btn" @click="doJump">Go</button></span>
       </div>
     </div>
   </div>
@@ -214,4 +219,6 @@ onMounted(() => load())
 .page-btn { padding: 5px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; font-size: 13px; cursor: pointer; }
 .page-btn:disabled { opacity: .4; cursor: default; }
 .page-info { font-size: 13px; color: var(--muted); }
+.pg-jump{display:inline-flex;align-items:center;gap:4px;font-size:13px;color:var(--muted);margin-left:8px}
+.pg-jump-input{width:46px;text-align:center;padding:2px 4px;border:1px solid var(--border);border-radius:6px;font-size:13px}
 </style>
