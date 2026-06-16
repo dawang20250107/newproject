@@ -585,3 +585,51 @@ body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
 .perf-lite .fb-pop, .perf-lite .psn-drop, .perf-lite .col-settings-pop {
   background: #fffcf8 !important;
 }
+
+/* ── 必填字段 * 标注 ──────────────────────────────────────────────────────── */
+.required-star { color: #c62828; font-weight: 700; margin-left: 2px; }
+.form-field > label .required-star,
+.cp-field > label .required-star { color: #c62828; }
+
+/* ── 加载骨架屏 ──────────────────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(90deg,
+    rgba(200,188,172,.35) 25%, rgba(200,188,172,.65) 50%, rgba(200,188,172,.35) 75%);
+  background-size: 200% 100%;
+  animation: sk-shimmer 1.4s infinite ease-in-out;
+  border-radius: 5px;
+  display: inline-block;
+}
+@keyframes sk-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── KPI 卡片移动端响应 ─────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .kpi-row, .kpi-bar, .metrics-row {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+  }
+  .kpi-card, .kpi-item, .metric-card {
+    min-width: calc(50% - 8px) !important;
+    flex: 1 1 calc(50% - 8px) !important;
+    box-sizing: border-box;
+  }
+}
+
+/* ── 分页跳转输入（各页面共用）──────────────────────────────────────────── */
+.pg-jump {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 13px; color: var(--muted); margin-left: 8px;
+}
+.pg-jump-input {
+  width: 46px; text-align: center; padding: 2px 4px;
+  border: 1.5px solid var(--border); border-radius: 6px; font-size: 13px;
+}
+.pg-jump-input:focus { border-color: var(--primary); outline: none; }
+
+/* ── 移动端部门按钮换行 ──────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .dept-pick { flex-wrap: wrap !important; }
+}

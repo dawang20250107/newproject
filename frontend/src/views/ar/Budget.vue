@@ -11,6 +11,8 @@ import BaseChart from '../../components/ar/BaseChart.vue'
 import ProjectPnlCard from '../caiwu/ProjectPnlCard.vue'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
+import { useToast } from '../../composables/useToast.js'
+const toast = useToast()
 
 const auth = useAuthStore()
 const activeTab = ref('summary')
@@ -348,7 +350,7 @@ function openEdit(type, item) {
 
 async function save() {
   if (!form.short_name || !form.expected_date || !form.amount) {
-    alert('请填写项目简称、预计日期和金额'); return
+    toast.error('请填写项目简称、预计日期和金额'); return
   }
   saving.value = true
   try {
@@ -360,7 +362,7 @@ async function save() {
       else await ar.createPaymentBudget(form)
     }
     showModal.value = false; await loadAll()
-  } catch (e) { alert(e?.msg || '保存失败')
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { saving.value = false }
 }
 
@@ -370,7 +372,7 @@ async function remove(type, item) {
     if (type === 'collection') await ar.deleteCollectionBudget(item.id)
     else await ar.deletePaymentBudget(item.id)
     await loadAll()
-  } catch (e) { alert(e?.msg || '删除失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
 // ── Template / Import / Export ─────────────────────────────────────────────────
@@ -390,7 +392,7 @@ async function downloadTemplate(type) {
     const res = type === 'collection'
       ? await ar.collectionBudgetTemplate() : await ar.paymentBudgetTemplate()
     saveBlob(res, `${type === 'collection' ? '收款' : '付款'}预算导入模板.xlsx`)
-  } catch (e) { alert('模板下载失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
 async function handleImport(type, ev) {
@@ -408,7 +410,7 @@ async function handleImport(type, ev) {
     if (pd.skipPrecheck) { await doImport(type, file); return }
     if ((pd.attention || 0) > 0) { precheckResult.value = pd; return }
     await doImport(type, file)
-  } catch (e) { alert(e?.msg || '导入失败')
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { importing.value = false; ev.target.value = '' }
 }
 
@@ -422,15 +424,15 @@ async function doImport(type, file) {
     if (d.rejected) {
       let msg = d.message || '导入未执行，请按提示修正后重新导入'
       if (d.errors?.length) msg += `\n\n需修正：\n${d.errors.slice(0, 20).join('\n')}`
-      alert(msg)
+      toast.error(msg)
     } else {
       let msg = `导入完成：新增 ${d.created} 条`
       if (d.corrected) msg += `，按项目台账自动更正 ${d.corrected} 条`
       if (d.warnings?.length) msg += `\n\n已更正：\n${d.warnings.slice(0, 15).join('\n')}`
-      alert(msg)
+      toast.success(msg)
     }
     await loadAll()
-  } catch (e) { alert(e?.msg || '导入失败')
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { importing.value = false }
 }
 
@@ -450,7 +452,7 @@ async function exportData(type) {
     const res = type === 'collection'
       ? await ar.exportCollectionBudget(params) : await ar.exportPaymentBudget(params)
     saveBlob(res, `${type === 'collection' ? '收款' : '付款'}预算.xlsx`)
-  } catch (e) { alert(e?.response?.data?.msg || '导出失败')
+  } catch (e) { toast.error(e?.response?.data?.msg || e?.msg || e?.error || '操作失败')
   } finally { exporting.value = false }
 }
 
@@ -1195,4 +1197,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .dc-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .dc-tips { margin: 0; padding-left: 18px; }
 .dc-tips li { font-size: 12px; color: var(--muted); line-height: 1.9; }
+
+@media (max-width: 640px) {
+  .cmp-kpi-bar { flex-wrap: wrap !important; }
+}
 </style>
