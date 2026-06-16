@@ -1,10 +1,21 @@
 """客户管理（customers）业务域视图：客户列表/详情、等级批量标注与回流校准、
 从项目同步、批量删除（清理孤儿客户）。共享基座来自 _common。"""
 from ._common import *  # noqa: F401,F403
+from paikuan.list_filters import build_filter_q
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 客户管理 (customers)
 # ──────────────────────────────────────────────────────────────────────────────
+
+# Excel 风格列头筛选：仅真实列（聚合列 应收/逾期/开票/项目数 走既有 SORT_MAP 排序）
+CUSTOMER_FILTER_REGISTRY = {
+    'name':          {'type': 'text', 'col': 'name'},
+    'contact':       {'type': 'text', 'col': 'contact'},
+    'level':         {'type': 'enum', 'col': 'level'},
+    'status':        {'type': 'enum', 'col': 'status'},
+    'delivery_dept': {'type': 'enum', 'col': 'delivery_dept'},
+    'customer_date': {'type': 'date', 'col': 'customer_date'},
+}
 
 @csrf_exempt
 @pk_required()
@@ -47,6 +58,10 @@ def customers(request):
         dept = request.GET.get('dept', '').strip()
         if dept:
             qs = qs.filter(delivery_dept=dept)
+        # 列头精确筛选（filters JSON，白名单解析）
+        fq, _fq_distinct = build_filter_q(request.GET.get('filters', ''), CUSTOMER_FILTER_REGISTRY)
+        if fq:
+            qs = qs.filter(fq)
 
         # 数据库级聚合应收（客户已按事业部隔离 → 其全部应收即本部门，无需逐条过滤部门）
         # shared_only 岗位：所有计数/求和叠加「项目为共享业务」过滤。
@@ -73,6 +88,7 @@ def customers(request):
             'outstanding': 's_outstanding', 'overdue': 's_overdue', 'invoiced': 's_invoiced',
             'project_count': 's_project_count', 'name': 'name', 'level': 'level',
             'customer_date': 'customer_date', 'created_at': 'created_at',
+            'status': 'status', 'delivery_dept': 'delivery_dept', 'contact': 'contact',
         }
         sort = SORT_MAP.get(request.GET.get('sort', 'outstanding'), 's_outstanding')
         direction = '' if request.GET.get('dir', 'desc') == 'asc' else '-'

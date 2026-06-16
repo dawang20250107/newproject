@@ -3,6 +3,7 @@ import { ref, reactive, computed, onMounted, defineAsyncComponent } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { yearCST, todayCST, DEPARTMENTS } from '../../constants.js'
 import ar from '../../api/ar.js'
+import ColumnFilter from '../../components/ColumnFilter.vue'
 
 // 项目损益卡（复用 P1 组件）— 点客户项目即下钻全链路损益
 const ProjectPnlCard = defineAsyncComponent(() => import('../caiwu/ProjectPnlCard.vue'))
@@ -19,9 +20,22 @@ const filters = reactive({ q: '', level: '', dept: '', status: '' })
 const STATUSES = ['运作中', '中断', '结束']
 const statusClass = s => ({ '运作中': 'st-on', '中断': 'st-pause', '结束': 'st-end' }[s] || 'st-on')
 
-// 排序（当前页客户端排序：未收/逾期最常用）
+// 排序（服务端，跨分页生效；未收/逾期最常用）
 const sortKey = ref('outstanding')
 const sortDir = ref('desc')
+
+// Excel 风格列头筛选：真实列走 filters JSON，计算列仅排序
+const colFilters = reactive({})
+function setColFilter(field, val) {
+  if (val == null) delete colFilters[field]
+  else colFilters[field] = val
+  load(true)
+}
+function setColSort(field, order) {
+  if (!order) { sortKey.value = 'outstanding'; sortDir.value = 'desc' }
+  else { sortKey.value = field; sortDir.value = order }
+  load(true)
+}
 
 // 详情抽屉
 const detail = ref(null)        // 客户详情数据
@@ -114,7 +128,9 @@ async function load(reset = false) {
   if (reset) { page.value = 1; clearSel() }
   loading.value = true
   try {
-    const res = await ar.listCustomers({ ...filters, page: page.value, size, sort: sortKey.value, dir: sortDir.value })
+    const params = { ...filters, page: page.value, size, sort: sortKey.value, dir: sortDir.value }
+    if (Object.keys(colFilters).length) params.filters = JSON.stringify(colFilters)
+    const res = await ar.listCustomers(params)
     items.value = res.data.items
     total.value = res.data.total
   } finally { loading.value = false }
@@ -124,8 +140,13 @@ function go(p) { if (p < 1 || p > totalPages.value) return; page.value = p; load
 
 let searchTimer = null
 function onSearchInput() { clearTimeout(searchTimer); searchTimer = setTimeout(() => load(true), 280) }
-const hasActiveFilters = computed(() => !!(filters.q || filters.level || filters.dept || filters.status))
-function resetFilters() { filters.q = ''; filters.level = ''; filters.dept = ''; filters.status = ''; load(true) }
+const hasActiveFilters = computed(() => !!(filters.q || filters.level || filters.dept || filters.status || Object.keys(colFilters).length))
+function resetFilters() {
+  filters.q = ''; filters.level = ''; filters.dept = ''; filters.status = ''
+  Object.keys(colFilters).forEach(k => delete colFilters[k])
+  sortKey.value = 'outstanding'; sortDir.value = 'desc'
+  load(true)
+}
 
 // 服务端排序：跨所有分页生效（点表头切换字段/方向并回到第1页重新取数）
 function setSort(k) {
@@ -204,23 +225,12 @@ onMounted(() => load(true))
     <!-- 筛选 -->
     <div class="filter-strip">
       <div class="search-box">
-        <input v-model="filters.q" class="search-input" placeholder="搜索客户名称 / 联系人 / 备注"
+        <input v-model="filters.q" class="search-input" placeholder="🔍 全局搜索：客户名称 / 联系人 / 备注"
                @input="onSearchInput" @keyup.enter="load(true)" />
         <button v-if="filters.q" class="search-clear" @click="filters.q=''; load(true)">✕</button>
       </div>
-      <select v-model="filters.dept" class="sel-bu" @change="load(true)">
-        <option value="">全部事业部</option>
-        <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
-      </select>
-      <select v-model="filters.level" class="sel-bu" @change="load(true)">
-        <option value="">全部等级</option>
-        <option v-for="l in LEVELS" :key="l" :value="l">{{ l }}</option>
-      </select>
-      <select v-model="filters.status" class="sel-bu" @change="load(true)">
-        <option value="">全部状态</option>
-        <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
-      </select>
-      <button v-if="hasActiveFilters" class="filter-reset" @click="resetFilters">重置筛选</button>
+      <button v-if="hasActiveFilters" class="filter-reset" @click="resetFilters">清除全部筛选</button>
+      <span class="colf-tip">点击列名旁 ⏷ 可按列筛选 / 排序</span>
       <div class="spacer"></div>
       <div class="count-tip">共 {{ total }} 个客户</div>
     </div>
@@ -247,14 +257,14 @@ onMounted(() => load(true))
           <thead>
             <tr>
               <th class="ctr chk-col"><input type="checkbox" :checked="allOnPageSelected" @change="toggleSelAll" title="全选本页" /></th>
-              <th class="l">客户名称</th>
-              <th class="ctr">状态</th>
-              <th class="ctr">等级</th>
-              <th class="l">事业部</th>
-              <th class="ctr clk" @click="setSort('project_count')">项目数{{ sortArrow('project_count') }}</th>
-              <th class="rgt clk" @click="setSort('invoiced')">累计开票{{ sortArrow('invoiced') }}</th>
-              <th class="rgt clk" @click="setSort('outstanding')">未收金额{{ sortArrow('outstanding') }}</th>
-              <th class="rgt clk" @click="setSort('overdue')">逾期金额{{ sortArrow('overdue') }}</th>
+              <th class="l"><ColumnFilter label="客户名称" field="name" type="text" :model-value="colFilters.name" :sort-field="sortKey" :sort-order="sortDir" @update:model-value="v=>setColFilter('name',v)" @sort="o=>setColSort('name',o)" /></th>
+              <th class="ctr"><ColumnFilter label="状态" field="status" type="enum" :options="STATUSES" :model-value="colFilters.status" :sort-field="sortKey" :sort-order="sortDir" @update:model-value="v=>setColFilter('status',v)" @sort="o=>setColSort('status',o)" /></th>
+              <th class="ctr"><ColumnFilter label="等级" field="level" type="enum" :options="LEVELS" :model-value="colFilters.level" :sort-field="sortKey" :sort-order="sortDir" @update:model-value="v=>setColFilter('level',v)" @sort="o=>setColSort('level',o)" /></th>
+              <th class="l"><ColumnFilter label="事业部" field="delivery_dept" type="enum" :options="accessibleDepts" :model-value="colFilters.delivery_dept" :sort-field="sortKey" :sort-order="sortDir" @update:model-value="v=>setColFilter('delivery_dept',v)" @sort="o=>setColSort('delivery_dept',o)" /></th>
+              <th class="ctr"><ColumnFilter label="项目数" field="project_count" :filterable="false" :sort-field="sortKey" :sort-order="sortDir" @sort="o=>setColSort('project_count',o)" /></th>
+              <th class="rgt"><ColumnFilter label="累计开票" field="invoiced" :filterable="false" :sort-field="sortKey" :sort-order="sortDir" @sort="o=>setColSort('invoiced',o)" /></th>
+              <th class="rgt"><ColumnFilter label="未收金额" field="outstanding" :filterable="false" :sort-field="sortKey" :sort-order="sortDir" @sort="o=>setColSort('outstanding',o)" /></th>
+              <th class="rgt"><ColumnFilter label="逾期金额" field="overdue" :filterable="false" :sort-field="sortKey" :sort-order="sortDir" @sort="o=>setColSort('overdue',o)" /></th>
               <th class="ctr">操作</th>
             </tr>
           </thead>
@@ -432,9 +442,10 @@ onMounted(() => load(true))
 .row.sel td { background: rgba(21,101,192,.06); }
 
 .cu-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.cu-table th { background: #f3ede6; color: #6b5a4a; padding: 9px 14px; font-weight: 600; white-space: nowrap; text-align: right; }
+.cu-table th { background: #f3ede6; color: #6b5a4a; padding: 9px 14px; font-weight: 600; white-space: nowrap; text-align: right; overflow: visible; }
 .cu-table th.l { text-align: left; }
 .cu-table th.ctr { text-align: center; }
+.colf-tip { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .cu-table th.clk { cursor: pointer; user-select: none; }
 .cu-table th.clk:hover { color: var(--primary); }
 /* 单元格强制单行：行高不随列宽变化，从设计上杜绝「滚动条↔换行↔高度」回流抖动 */

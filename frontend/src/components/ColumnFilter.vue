@@ -17,6 +17,7 @@ const props = defineProps({
   single:   { type: Boolean, default: false },        // enum 单选（用于计算型状态等）
   datePresets: { type: Boolean, default: true },      // date 类型是否显示快捷区间
   sortable: { type: Boolean, default: true },
+  filterable: { type: Boolean, default: true },   // false → 仅排序（计算/聚合列）
   sortField:{ type: String,  default: '' },           // 当前生效的排序字段
   sortOrder:{ type: String,  default: '' },           // 'asc' | 'desc' | ''
 })
@@ -181,6 +182,7 @@ onBeforeUnmount(() => {
           <button type="button" :class="{ act: sortField === field && sortOrder === 'desc' }" @click="setSort('desc')">▼ 降序</button>
         </div>
 
+        <template v-if="filterable">
         <!-- 文本 -->
         <template v-if="type === 'text'">
           <select v-model="op" class="colf-op">
@@ -232,6 +234,7 @@ onBeforeUnmount(() => {
           <button type="button" class="colf-clear" @click="clear">清除</button>
           <button type="button" class="colf-apply" @click="apply">应用</button>
         </div>
+        </template>
       </div>
     </Teleport>
   </span>
