@@ -337,7 +337,7 @@ async function delInstallment(i) {
     await load()
     const fresh = items.value.find(r => r.id === instRec.value.id)
     if (fresh) instRec.value = fresh
-  } catch (e) { alert(e?.msg || '删除失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { instBusy.value = false }
 }
 
@@ -346,7 +346,7 @@ async function downloadTemplate() {
   try {
     const res = await ar.advanceTemplate()
     downloadBlob(res, '预收预付导入模板.xlsx')
-  } catch (e) { alert(e?.msg || '模板下载失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 async function handleImport(e) {
   const f = e.target.files?.[0]; if (!f) return
@@ -359,7 +359,7 @@ async function handleImport(e) {
     if (pd.skipPrecheck) { await doImport(f); return }
     if ((pd.attention || 0) > 0) { precheckResult.value = pd; return }
     await doImport(f)
-  } catch (e) { alert(e?.msg || '导入失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
 }
 
@@ -369,9 +369,9 @@ async function doImport(f) {
     const fd = new FormData(); fd.append('file', f)
     const res = await ar.importAdvances(fd); const d = res.data
     if (d.rejected) {
-      alert((d.message || '导入未执行，请按提示修正后重新导入') + '\n\n' + (d.errors || []).join('\n'))
+      toast.error(d.message || '导入未执行，请按提示修正后重新导入')
     } else {
-      alert(`导入完成：创建 ${d.created} 条`)
+      toast.success(`导入完成：创建 ${d.created} 条`)
     }
     await load()
   } catch (e) { alert(e?.msg || '导入失败') }

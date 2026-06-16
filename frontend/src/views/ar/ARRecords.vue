@@ -672,9 +672,9 @@ async function undoBatchInvoice(ev) {
   batchActing.value = true
   try {
     const res = await ar.batchInvoiceUndo(batchTarget.value.batch_no, { event_id: ev.id })
-    alert(res.data?.message || '已撤销')
+    toast.success(res.data?.message || '已撤销')
     await refreshAfterBatchAction(batchTarget.value.batch_no)
-  } catch (e) { alert(e?.msg || '撤销失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { batchActing.value = false }
 }
 function openBatchPay(b) {
@@ -690,7 +690,7 @@ async function doBatchPay() {
     const res = await ar.batchPayment(batchTarget.value.batch_no, { ...batchPayForm })
     batchPayResult.value = res.data   // 留在弹窗里展示分摊回执
     await refreshAfterBatchAction(batchTarget.value.batch_no)
-  } catch (e) { alert(e?.msg || '批次回款失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { batchActing.value = false }
 }
 async function undoBatchPay(b, ev) {
@@ -698,17 +698,17 @@ async function undoBatchPay(b, ev) {
   batchActing.value = true
   try {
     const res = await ar.batchPaymentUndo(b.batch_no, { payment_ids: ev.payment_ids })
-    alert(res.data?.message || '已撤销')
+    toast.success(res.data?.message || '已撤销')
     await refreshAfterBatchAction(b.batch_no)
-  } catch (e) { alert(e?.msg || '撤销失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { batchActing.value = false }
 }
 
 async function saveRec() {
-  if (!recForm.project_id) { alert('请选择项目'); return }
+  if (!recForm.project_id) { toast.error('请选择项目'); return }
   saving.value = true
   try {
-    if (!editRec.value && !recForm.operation_date) { alert('请选择运作日期'); saving.value = false; return }
+    if (!editRec.value && !recForm.operation_date) { toast.error('请选择运作日期'); saving.value = false; return }
     const payload = {
       project_id: recForm.project_id, operation_date: recForm.operation_date,
       estimated_amount: recForm.estimated_amount || 0,
@@ -727,7 +727,7 @@ async function saveRec() {
     if (editRec.value) await ar.updateRecord(editRec.value.id, payload)
     else await ar.createRecord(payload)
     showModal.value = false; await load()
-  } catch (e) { alert(e?.msg || '保存失败')
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { saving.value = false }
 }
 
