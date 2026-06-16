@@ -1,8 +1,67 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed } from 'vue'
 import api from '../api/index.js'
 import { DEPARTMENTS, ROLE_LABELS, JOB_LABELS, JOB_OPTIONS } from '../constants.js'
 import EmptyState from '../components/EmptyState.vue'
+import ColumnFilter from '../components/ColumnFilter.vue'
+
+// ── 列头筛选 + 排序（客户端，全部用户已一次性加载，无服务端分页）──────────────
+const colFilters = reactive({})
+const sortField = ref('')
+const sortOrder = ref('')
+
+const ROLE_OPTIONS = Object.entries(ROLE_LABELS).map(([value, label]) => ({ value, label }))
+const JOBTITLE_OPTIONS = JOB_OPTIONS.map(jt => ({ value: jt.v, label: jt.label }))
+const STATUS_OPTIONS = [{ value: 'active', label: '在用' }, { value: 'inactive', label: '停用' }]
+
+const USER_COL_META = {
+  name:        { type: 'text', get: u => u.name },
+  phone:       { type: 'text', get: u => u.phone },
+  role:        { type: 'enum', get: u => u.role },
+  job_title:   { type: 'enum', get: u => u.job_title },
+  departments: { type: 'enum', get: u => u.departments || [] },
+  status:      { type: 'enum', get: u => (u.is_active ? 'active' : 'inactive') },
+  created_at:  { type: 'date', get: u => u.created_at },
+}
+
+function clauseMatch(val, clause, type) {
+  if (!clause || !clause.op) return true
+  const v = clause.value
+  if (type === 'enum') { // v is array of selected
+    if (!Array.isArray(v) || !v.length) return true
+    return Array.isArray(val) ? val.some(x => v.includes(x)) : v.includes(val)
+  }
+  if (type === 'date') {
+    const d = String(val || '').slice(0, 10); const [s, e] = Array.isArray(v) ? v : []
+    if (s && d < s) return false; if (e && d > e) return false; return true
+  }
+  if (type === 'number') {
+    const n = parseFloat(val); if (isNaN(n)) return false
+    if (clause.op === 'between') { const [a, b] = Array.isArray(v) ? v : []; if (a !== '' && a != null && n < parseFloat(a)) return false; if (b !== '' && b != null && n > parseFloat(b)) return false; return true }
+    const t = parseFloat(v); if (isNaN(t)) return true
+    return { eq: n === t, gt: n > t, lt: n < t, gte: n >= t, lte: n <= t }[clause.op] ?? true
+  }
+  const s = String(val ?? '').toLowerCase(); const q = String(v ?? '').toLowerCase()
+  return clause.op === 'eq' ? s === q : s.includes(q)
+}
+
+function setColFilter(field, val) {
+  if (val && val.op) colFilters[field] = val
+  else delete colFilters[field]
+}
+
+function setSort(field, order) {
+  sortField.value = order ? field : ''
+  sortOrder.value = order || ''
+}
+
+function clearColFilters() {
+  for (const k of Object.keys(colFilters)) delete colFilters[k]
+  sortField.value = ''
+  sortOrder.value = ''
+}
+
+const hasColFilters = computed(() => Object.keys(colFilters).length > 0 || !!sortField.value)
 
 const users = ref([])
 const loading = ref(false)
@@ -27,6 +86,21 @@ const deletedIds = new Set()
 const pendingUsers = computed(() => users.value.filter(u => !u.is_approved && u.role !== 'super_admin'))
 const activeUsers  = computed(() => users.value.filter(u => u.is_approved || u.role === 'super_admin'))
 const displayUsers = computed(() => tab.value === 'pending' ? pendingUsers.value : activeUsers.value)
+
+const displayActiveUsers = computed(() => {
+  let arr = activeUsers.value.filter(u =>
+    Object.entries(colFilters).every(([f, c]) => clauseMatch(USER_COL_META[f].get(u), c, USER_COL_META[f].type)))
+  if (sortField.value) {
+    const meta = USER_COL_META[sortField.value]
+    arr = [...arr].sort((a, b) => {
+      let x = meta.get(a), y = meta.get(b)
+      if (Array.isArray(x)) x = x.join(','); if (Array.isArray(y)) y = y.join(',')
+      x = x ?? ''; y = y ?? ''
+      return (x > y ? 1 : x < y ? -1 : 0) * (sortOrder.value === 'desc' ? -1 : 1)
+    })
+  }
+  return arr
+})
 
 async function load() {
   loading.value = true
@@ -154,6 +228,9 @@ async function reject(u) {
       <button :class="['tab', tab === 'all' ? 'active' : '']" @click="tab = 'all'">
         已审批用户
       </button>
+      <button v-if="tab === 'all' && hasColFilters" class="btn btn-ghost btn-sm clear-filters-btn" @click="clearColFilters">
+        清除全部筛选
+      </button>
     </div>
 
     <div class="card">
@@ -222,18 +299,18 @@ async function reject(u) {
           <table>
             <thead>
               <tr>
-                <th>用户</th>
-                <th>手机号</th>
-                <th>角色</th>
-                <th>职务</th>
-                <th>负责部门</th>
-                <th>状态</th>
-                <th>创建时间</th>
+                <th><ColumnFilter label="用户" field="name" type="text" :model-value="colFilters.name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('name',v)" @sort="o=>setSort('name',o)" /></th>
+                <th><ColumnFilter label="手机号" field="phone" type="text" :model-value="colFilters.phone" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('phone',v)" @sort="o=>setSort('phone',o)" /></th>
+                <th><ColumnFilter label="角色" field="role" type="enum" :options="ROLE_OPTIONS" :model-value="colFilters.role" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('role',v)" @sort="o=>setSort('role',o)" /></th>
+                <th><ColumnFilter label="职务" field="job_title" type="enum" :options="JOBTITLE_OPTIONS" :model-value="colFilters.job_title" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('job_title',v)" @sort="o=>setSort('job_title',o)" /></th>
+                <th><ColumnFilter label="负责部门" field="departments" type="enum" :options="DEPARTMENTS" :model-value="colFilters.departments" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('departments',v)" @sort="o=>setSort('departments',o)" /></th>
+                <th><ColumnFilter label="状态" field="status" type="enum" :options="STATUS_OPTIONS" :model-value="colFilters.status" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('status',v)" @sort="o=>setSort('status',o)" /></th>
+                <th><ColumnFilter label="创建时间" field="created_at" type="date" :model-value="colFilters.created_at" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('created_at',v)" @sort="o=>setSort('created_at',o)" /></th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="u in activeUsers" :key="u.id">
+              <tr v-for="u in displayActiveUsers" :key="u.id">
                 <td>
                   <div style="display:flex;align-items:center;gap:8px">
                     <div class="table-avatar">{{ u.name?.[0] || '?' }}</div>
@@ -415,6 +492,10 @@ async function reject(u) {
   border-color: var(--primary); background: rgba(201,99,66,0.1);
   color: var(--primary); font-weight: 600;
 }
+
+/* 列头筛选漏斗不被裁剪 */
+.table-wrap thead th { overflow: visible; }
+.clear-filters-btn { margin-left: auto; align-self: center; }
 
 .table-avatar {
   width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
