@@ -10,6 +10,7 @@ import EmptyState from '../../components/EmptyState.vue'
 import BaseChart from '../../components/ar/BaseChart.vue'
 import ProjectPnlCard from '../caiwu/ProjectPnlCard.vue'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
+import ColumnFilter from '../../components/ColumnFilter.vue'
 
 const auth = useAuthStore()
 const activeTab = ref('summary')
@@ -243,13 +244,72 @@ async function loadCompare() {
   } catch (_) { compareData.value = null }
   finally { compareLoading.value = false }
 }
+// ── 对比表 Excel 风格列头筛选 + 排序（客户端：对比数据为后端聚合结果）──────────
+const CMP_TAG_OPTS = ['收款达成', '收款滞后', '付款超预算', '计划外收款', '计划外付款']
+const CMP_COL_META = {
+  project:    { type: 'text',   get: r => r.project },
+  budget_in:  { type: 'number', get: r => r.budget_in },
+  actual_in:  { type: 'number', get: r => r.actual_in },
+  budget_out: { type: 'number', get: r => r.budget_out },
+  actual_out: { type: 'number', get: r => r.actual_out },
+  actual_net: { type: 'number', get: r => r.actual_net },
+  tags:       { type: 'enum',   get: r => r.tags || [] },
+}
+const cmpColFilters = reactive({})
+const cmpSortField = ref('')
+const cmpSortOrder = ref('')
+function cmpClauseMatch(val, clause, type) {
+  if (!clause || !clause.op) return true
+  const v = clause.value
+  if (type === 'enum') {
+    if (!Array.isArray(v) || !v.length) return true
+    return Array.isArray(val) ? val.some(x => v.includes(x)) : v.includes(val)
+  }
+  if (type === 'number') {
+    const n = parseFloat(val); if (isNaN(n)) return false
+    if (clause.op === 'between') {
+      const [a, b] = Array.isArray(v) ? v : []
+      if (a !== '' && a != null && n < parseFloat(a)) return false
+      if (b !== '' && b != null && n > parseFloat(b)) return false
+      return true
+    }
+    const t = parseFloat(v); if (isNaN(t)) return true
+    return { eq: n === t, gt: n > t, lt: n < t, gte: n >= t, lte: n <= t }[clause.op] ?? true
+  }
+  const s = String(val ?? '').toLowerCase(); const qq = String(v ?? '').toLowerCase()
+  return clause.op === 'eq' ? s === qq : s.includes(qq)
+}
+function cmpSetColFilter(field, val) {
+  if (val == null) delete cmpColFilters[field]; else cmpColFilters[field] = val
+}
+function cmpSetSort(field, order) {
+  cmpSortField.value = order ? field : ''
+  cmpSortOrder.value = order || ''
+}
 const compareRows = computed(() => {
-  const rows = compareData.value?.rows || []
+  let rows = compareData.value?.rows || []
   const q = compareQ.value.trim().toLowerCase()
-  if (!q) return rows
-  return rows.filter(r => r.project.toLowerCase().includes(q)
-    || (r.customer || '').toLowerCase().includes(q)
-    || (r.dept || '').toLowerCase().includes(q))
+  if (q) {
+    rows = rows.filter(r => r.project.toLowerCase().includes(q)
+      || (r.customer || '').toLowerCase().includes(q)
+      || (r.dept || '').toLowerCase().includes(q))
+  }
+  const fields = Object.keys(cmpColFilters)
+  if (fields.length) {
+    rows = rows.filter(r => fields.every(f =>
+      cmpClauseMatch(CMP_COL_META[f].get(r), cmpColFilters[f], CMP_COL_META[f].type)))
+  }
+  if (cmpSortField.value) {
+    const meta = CMP_COL_META[cmpSortField.value]
+    const dir = cmpSortOrder.value === 'desc' ? -1 : 1
+    rows = [...rows].sort((a, b) => {
+      let x = meta.get(a), y = meta.get(b)
+      if (meta.type === 'number') { x = parseFloat(x) || 0; y = parseFloat(y) || 0 }
+      else { x = String(x ?? ''); y = String(y ?? '') }
+      return (x > y ? 1 : x < y ? -1 : 0) * dir
+    })
+  }
+  return rows
 })
 const TAG_STYLE = {
   '收款达成': { bg: 'rgba(46,125,50,.12)', c: '#2e7d32' },
@@ -628,13 +688,13 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           <table class="cmp-table">
             <thead>
               <tr>
-                <th style="min-width:150px">项目</th>
-                <th class="amt">收款预算</th>
-                <th style="min-width:150px">实际收款 / 达成</th>
-                <th class="amt">付款预算</th>
-                <th style="min-width:150px">实际付款 / 执行</th>
-                <th class="amt">净现金(实际)</th>
-                <th>状态</th>
+                <th style="min-width:150px"><ColumnFilter label="项目" field="project" type="text" :model-value="cmpColFilters.project" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('project',v)" @sort="o=>cmpSetSort('project',o)" /></th>
+                <th class="amt"><ColumnFilter label="收款预算" field="budget_in" type="number" :model-value="cmpColFilters.budget_in" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('budget_in',v)" @sort="o=>cmpSetSort('budget_in',o)" /></th>
+                <th style="min-width:150px"><ColumnFilter label="实际收款 / 达成" field="actual_in" type="number" :model-value="cmpColFilters.actual_in" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_in',v)" @sort="o=>cmpSetSort('actual_in',o)" /></th>
+                <th class="amt"><ColumnFilter label="付款预算" field="budget_out" type="number" :model-value="cmpColFilters.budget_out" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('budget_out',v)" @sort="o=>cmpSetSort('budget_out',o)" /></th>
+                <th style="min-width:150px"><ColumnFilter label="实际付款 / 执行" field="actual_out" type="number" :model-value="cmpColFilters.actual_out" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_out',v)" @sort="o=>cmpSetSort('actual_out',o)" /></th>
+                <th class="amt"><ColumnFilter label="净现金(实际)" field="actual_net" type="number" :model-value="cmpColFilters.actual_net" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_net',v)" @sort="o=>cmpSetSort('actual_net',o)" /></th>
+                <th><ColumnFilter label="状态" field="tags" type="enum" :sortable="false" :options="CMP_TAG_OPTS" :model-value="cmpColFilters.tags" @update:model-value="v=>cmpSetColFilter('tags',v)" /></th>
               </tr>
             </thead>
             <tbody>
@@ -1099,7 +1159,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .cmp-search { border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; width: 210px; background: rgba(255,255,255,.8); }
 .cmp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .cmp-table th { padding: 9px 12px; text-align: left; font-size: 11.5px; font-weight: 700; color: var(--muted);
-  background: rgba(201,99,66,.05); border-bottom: 1px solid rgba(180,140,110,.15); white-space: nowrap; }
+  background: rgba(201,99,66,.05); border-bottom: 1px solid rgba(180,140,110,.15); white-space: nowrap; overflow: visible; }
 .cmp-table th.amt { text-align: right; }
 .cmp-table td { padding: 9px 12px; border-bottom: 1px solid rgba(180,140,110,.08); vertical-align: middle; }
 .cmp-table td.amt { text-align: right; font-variant-numeric: tabular-nums; }
