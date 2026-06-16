@@ -116,7 +116,7 @@ async function bulkDeleteCustomers() {
     const d = res.data
     showToast(d?.message || `已删除 ${d?.deleted ?? 0} 个客户`)
     if (d?.skipped_reasons?.length) {
-      alert(`以下客户被保护跳过：\n\n${d.skipped_reasons.join('\n')}`)
+      showToast(`以下客户被保护跳过：${d.skipped_reasons.join('；')}`)
     }
     clearSel()
     await load(true)
@@ -467,7 +467,6 @@ onMounted(() => load(true))
 .cu-table th { background: #f3ede6; color: #6b5a4a; padding: 9px 14px; font-weight: 600; white-space: nowrap; text-align: right; overflow: visible; }
 .cu-table th.l { text-align: left; }
 .cu-table th.ctr { text-align: center; }
-.colf-tip { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .cu-table th.clk { cursor: pointer; user-select: none; }
 .cu-table th.clk:hover { color: var(--primary); }
 /* 单元格强制单行：行高不随列宽变化，从设计上杜绝「滚动条↔换行↔高度」回流抖动 */
