@@ -8,8 +8,7 @@ def migrate_pay_slots_to_installments(apps, schema_editor):
     PaymentInstallment = apps.get_model('paikuan', 'PaymentInstallment')
     batch = []
     # Use raw SQL to avoid decimal-conversion issues with SQLite integer defaults
-    from django.db import connection
-    cursor = connection.cursor()
+    cursor = schema_editor.connection.cursor()
     cursor.execute(
         'SELECT id, pay1_date, pay1_amount, pay2_date, pay2_amount, pay3_date, pay3_amount '
         'FROM paikuan_payments'
@@ -36,10 +35,10 @@ def migrate_pay_slots_to_installments(apps, schema_editor):
 
 def reverse_installments_to_pay_slots(apps, schema_editor):
     PaymentInstallment = apps.get_model('paikuan', 'PaymentInstallment')
-    from django.db import connection
-    cursor = connection.cursor()
+    cursor = schema_editor.connection.cursor()
     cursor.execute('SELECT DISTINCT payment_id FROM paikuan_payment_installments')
     pids = [r[0] for r in cursor.fetchall()]
+    ph = '%s' if schema_editor.connection.vendor != 'sqlite' else '?'
     for pid in pids:
         insts = list(PaymentInstallment.objects.filter(payment_id=pid).order_by('seq', 'pay_date')[:3])
         vals = {}
@@ -51,8 +50,8 @@ def reverse_installments_to_pay_slots(apps, schema_editor):
                 vals[f'{slot}_date'] = None
                 vals[f'{slot}_amount'] = 0
         cursor.execute(
-            'UPDATE paikuan_payments SET pay1_date=?, pay1_amount=?, pay2_date=?, pay2_amount=?, '
-            'pay3_date=?, pay3_amount=? WHERE id=?',
+            f'UPDATE paikuan_payments SET pay1_date={ph}, pay1_amount={ph}, pay2_date={ph}, pay2_amount={ph}, '
+            f'pay3_date={ph}, pay3_amount={ph} WHERE id={ph}',
             [vals['pay1_date'], float(vals['pay1_amount']),
              vals['pay2_date'], float(vals['pay2_amount']),
              vals['pay3_date'], float(vals['pay3_amount']), pid]
