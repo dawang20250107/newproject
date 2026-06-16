@@ -253,8 +253,8 @@ onBeforeUnmount(() => {
 
 .colf-pop {
   position: fixed; z-index: 4000; width: 240px;
-  background: var(--card, #fff); border: 1px solid var(--border);
-  border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+  background: #fffdfa; border: 1px solid #d9ccbd;
+  border-radius: 8px; box-shadow: 0 8px 26px rgba(80,50,25,0.22);
   padding: 10px; display: flex; flex-direction: column; gap: 8px;
   font-size: 12px; color: var(--text);
   -webkit-backdrop-filter: none; backdrop-filter: none;
