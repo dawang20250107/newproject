@@ -82,14 +82,24 @@ async function toggle() {
   if (open.value) { open.value = false; return }
   syncDraftFromModel()
   const r = btnRef.value.getBoundingClientRect()
-  // 弹层定宽 240，靠右对齐到漏斗按钮，避免溢出视口
+  const estimatedH = 280
+  let top = r.bottom + 6
+  if (top + estimatedH > window.innerHeight - 12) {
+    top = r.top - estimatedH - 6
+    if (top < 8) top = 8
+  }
   let left = r.right - 240
   if (left < 8) left = 8
-  pos.value = { top: r.bottom + 6, left }
+  pos.value = { top, left }
   open.value = true
   await nextTick()
-  const el = document.querySelector('.colf-pop input, .colf-pop select')
-  el && el.focus()
+  if (props.type === 'enum') {
+    const first = document.querySelector('.colf-pop input[type="checkbox"]')
+    first && first.focus()
+  } else {
+    const el = document.querySelector('.colf-pop input, .colf-pop select')
+    el && el.focus()
+  }
 }
 
 function apply() {
@@ -300,7 +310,7 @@ onBeforeUnmount(() => {
   background: transparent; cursor: pointer; color: var(--muted); font-size: 11px;
 }
 .colf-chips button:hover { border-color: var(--primary); color: var(--primary); }
-.colf-enum { max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.colf-enum { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .colf-chk { display: flex; align-items: center; gap: 7px; padding: 4px 4px; border-radius: 5px; cursor: pointer; }
 .colf-chk:hover { background: rgba(201,99,66,0.06); }
 .colf-chk input { margin: 0; }
