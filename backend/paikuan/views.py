@@ -78,6 +78,17 @@ PAYMENT_FILTER_REGISTRY = {
                            'multi': True, 'sortable': False},
 }
 
+# 审计日志：仅登记 AuditLog 上真实存在的 DB 列（result 为计算口径，
+# 由既有 status_code 阈值逻辑处理，不入通用解析器）。
+AUDITLOG_FILTER_REGISTRY = {
+    'user_name':   {'type': 'text',   'col': 'user_name'},
+    'module':      {'type': 'enum',   'col': 'module'},
+    'method':      {'type': 'enum',   'col': 'method'},
+    'path':        {'type': 'text',   'col': 'path'},
+    'status_code': {'type': 'number', 'col': 'status_code'},
+    'created_at':  {'type': 'date',   'col': 'created_at__date'},
+}
+
 # ── permission model ────────────────────────────────────────────────────────────
 # Payment fields that can be individually permission-controlled. Each logical
 # field maps to one or more columns in the serialized payment dict.
@@ -3658,6 +3669,16 @@ def audit_logs(request):
     date_end = request.GET.get('date_end', '').strip()
     if date_end:
         qs = qs.filter(created_at__date__lte=date_end)
+
+    # Excel 风格列头筛选 + 排序（白名单解析；与上方旧参数向后兼容并存）
+    fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), AUDITLOG_FILTER_REGISTRY)
+    if fq:
+        qs = qs.filter(fq)
+        if fq_distinct:
+            qs = qs.distinct()
+    sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), AUDITLOG_FILTER_REGISTRY)
+    if sort_by:
+        qs = qs.order_by(sort_by)
 
     total = qs.count()
     page = max(1, int(request.GET.get('page', 1) or 1))

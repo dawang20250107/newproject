@@ -1,6 +1,7 @@
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import api from '../api/index.js'
+import ColumnFilter from '../components/ColumnFilter.vue'
 
 const items = ref([])
 const total = ref(0)
@@ -9,22 +10,50 @@ const size = 50
 const loading = ref(false)
 const pruning = ref(false)
 const expanded = ref({})
-const filters = reactive({ q: '', module: '', method: '', result: '', date_start: '', date_end: '' })
 let qTimer = null
 
-const MODULES = [
-  { key: '', label: '全部模块' },
-  { key: 'paikuan', label: '排款/用户/权限' },
-  { key: 'ar', label: '应收' },
-  { key: 'caiwu', label: '财务分析' },
+// 模块 / 方法 枚举选项（供列头筛选下拉复用）
+const MODULE_OPTS = [
+  { value: 'paikuan', label: '排款/用户/权限' },
+  { value: 'ar', label: '应收' },
+  { value: 'caiwu', label: '财务分析' },
 ]
-const METHODS = ['', 'POST', 'PUT', 'PATCH', 'DELETE']
+const METHOD_OPTS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH']
+
+// ── Excel 风格列头筛选 + 排序 ───────────────────────────────────────────────
+const q = ref('')                  // 顶部全局关键字（操作人 / 接口路径模糊）
+const colFilters = reactive({})    // field -> {op, value}
+const sortField = ref('')
+const sortOrder = ref('')          // 'asc' | 'desc' | ''
+const activeFilterCount = computed(() => Object.keys(colFilters).length)
+function setColFilter(field, val) {
+  if (val == null) delete colFilters[field]
+  else colFilters[field] = val
+  page.value = 1; load()
+}
+function setSort(field, order) {
+  sortField.value = order ? field : ''
+  sortOrder.value = order || ''
+  page.value = 1; load()
+}
+function clearAllFilters() {
+  Object.keys(colFilters).forEach(k => delete colFilters[k])
+  q.value = ''; sortField.value = ''; sortOrder.value = ''
+  page.value = 1; load()
+}
+function buildParams() {
+  const p = { page: page.value, size }
+  if (q.value.trim()) p.q = q.value.trim()
+  if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
+  if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
+  return p
+}
 
 async function load(reset = false) {
   if (reset) page.value = 1
   loading.value = true
   try {
-    const res = await api.get('/audit-logs', { params: { ...filters, page: page.value, size } })
+    const res = await api.get('/audit-logs', { params: buildParams() })
     items.value = res.data.items
     total.value = res.data.total
   } finally { loading.value = false }
@@ -89,33 +118,21 @@ onMounted(() => load())
 
     <div class="card">
       <div class="filter-strip">
-        <input v-model="filters.q" placeholder="搜操作人 / 接口路径" class="search-input" @input="onSearch" />
-        <select v-model="filters.module" class="sel-bu" @change="load(true)">
-          <option v-for="m in MODULES" :key="m.key" :value="m.key">{{ m.label }}</option>
-        </select>
-        <select v-model="filters.method" class="sel-bu" @change="load(true)">
-          <option v-for="m in METHODS" :key="m" :value="m">{{ m || '全部方法' }}</option>
-        </select>
-        <select v-model="filters.result" class="sel-bu" @change="load(true)">
-          <option value="">全部结果</option>
-          <option value="ok">成功</option>
-          <option value="fail">失败/被拒</option>
-        </select>
-        <input v-model="filters.date_start" type="date" class="sel-mo" @change="load(true)" />
-        <span style="color:var(--muted)">~</span>
-        <input v-model="filters.date_end" type="date" class="sel-mo" @change="load(true)" />
+        <input v-model="q" placeholder="🔍 全局搜索：操作人 / 接口路径" class="search-input global-search" @input="onSearch" />
+        <button v-if="activeFilterCount || q || sortField" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters">清除全部筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
+        <span class="filter-hint">提示：点击列名旁的 ⏷ 可按列筛选 / 排序</span>
       </div>
 
       <div class="table-wrap" style="margin-top:12px">
         <table class="audit-table">
           <thead>
             <tr>
-              <th class="ctr">时间</th>
-              <th>操作人</th>
-              <th class="ctr">操作</th>
-              <th>接口</th>
-              <th class="ctr">模块</th>
-              <th class="ctr">结果</th>
+              <th class="ctr"><ColumnFilter label="时间" field="created_at" type="date" :model-value="colFilters.created_at" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('created_at',v)" @sort="o=>setSort('created_at',o)" /></th>
+              <th><ColumnFilter label="操作人" field="user_name" type="text" :model-value="colFilters.user_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('user_name',v)" @sort="o=>setSort('user_name',o)" /></th>
+              <th class="ctr"><ColumnFilter label="操作" field="method" type="enum" :options="METHOD_OPTS" :model-value="colFilters.method" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('method',v)" @sort="o=>setSort('method',o)" /></th>
+              <th><ColumnFilter label="接口" field="path" type="text" :model-value="colFilters.path" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('path',v)" @sort="o=>setSort('path',o)" /></th>
+              <th class="ctr"><ColumnFilter label="模块" field="module" type="enum" :options="MODULE_OPTS" :model-value="colFilters.module" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('module',v)" @sort="o=>setSort('module',o)" /></th>
+              <th class="ctr"><ColumnFilter label="结果" field="status_code" type="number" :model-value="colFilters.status_code" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('status_code',v)" @sort="o=>setSort('status_code',o)" /></th>
               <th class="ctr">来源IP</th>
               <th class="ctr">参数</th>
             </tr>
@@ -165,9 +182,13 @@ onMounted(() => load())
 .audit-sub { font-size: 12px; color: var(--muted); margin-left: 12px; }
 .filter-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .search-input { padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; width: 200px; }
-.sel-bu, .sel-mo { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; background: #fff; }
+.global-search { min-width: 280px; flex: 0 1 360px; width: auto; }
+.clear-all { color: var(--primary); }
+.filter-hint { font-size: 11.5px; color: var(--muted); margin-left: 4px; }
 .table-wrap { overflow-x: auto; }
 .audit-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+/* 列头允许漏斗按钮溢出展示，不被裁切 */
+.audit-table thead th { overflow: visible; }
 .audit-table th { background: var(--th-bg, #f6f3ef); color: var(--muted); padding: 8px 10px; font-weight: 600; text-align: left; white-space: nowrap; }
 .audit-table th.ctr, .audit-table td.ctr { text-align: center; }
 .audit-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); }
