@@ -10,6 +10,7 @@ import PaymentModal from '../components/PaymentModal.vue'
 import ImportResultModal from '../components/ImportResultModal.vue'
 import ImportPrecheckModal from '../components/ImportPrecheckModal.vue'
 import EmptyState from '../components/EmptyState.vue'
+import ColumnFilter from '../components/ColumnFilter.vue'
 
 const auth = useAuthStore()
 
@@ -91,6 +92,44 @@ const filters = reactive({
   pay_date_start: '', pay_date_end: '', g7_number: '',
   page: 1, size: 50,
 })
+
+// ── Excel 风格列头筛选 + 排序 ───────────────────────────────────────────────
+// 计划状态为计算口径，单独走既有 status 查询参数（单选）；其余真实列走 colFilters JSON。
+const PAY_STATUS_OPTS = [
+  { value: 'pending', label: '⏳ 待付款' }, { value: 'partial', label: '⚡ 部分付款' },
+  { value: 'settled', label: '✅ 已付清' }, { value: 'adjusted', label: '📋 计划调整' },
+  { value: 'overdue', label: '⚠ 已逾期' },
+]
+const colFilters = reactive({})    // field -> {op, value}（不含 status）
+const statusSel = ref('')          // 计划状态单选 → status 查询参数
+const sortField = ref('')
+const sortOrder = ref('')
+const activeFilterCount = computed(() =>
+  Object.keys(colFilters).length + (statusSel.value ? 1 : 0))
+function setColFilter(field, val) {
+  if (val == null) delete colFilters[field]
+  else colFilters[field] = val
+  filters.page = 1; clearSelection(); load()
+}
+function setStatusFilter(val) {
+  // 状态列为单选，ColumnFilter 以 {op:'in',value:[x]} 上抛
+  statusSel.value = (val && Array.isArray(val.value) && val.value.length) ? val.value[0] : ''
+  filters.page = 1; clearSelection(); load()
+}
+const statusColModel = computed(() => statusSel.value ? { op: 'in', value: [statusSel.value] } : null)
+function setSort(field, order) {
+  sortField.value = order ? field : ''
+  sortOrder.value = order || ''
+  filters.page = 1; load()
+}
+function buildParams() {
+  const p = { page: filters.page, size: filters.size }
+  if (filters.q.trim()) p.q = filters.q.trim()
+  if (statusSel.value) p.status = statusSel.value
+  if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
+  if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
+  return p
+}
 
 // ── tab control: 台账 | 付款流水 ─────────────────────────────────────────────
 const activeTab = ref('ledger')  // 'ledger' | 'flow'
@@ -189,12 +228,23 @@ function applyDatePreset() {
 }
 
 function applyPayDatePreset() {
-  if (payDatePreset.value === '' || payDatePreset.value === 'custom') {
-    if (payDatePreset.value === '') { filters.pay_date_start = ''; filters.pay_date_end = '' }
+  // 回款日期跨关联表，无对应可视列 → 仍走顶部预设，统一落到 colFilters.pay_date
+  if (payDatePreset.value === '' ) {
+    filters.pay_date_start = ''; filters.pay_date_end = ''
+    delete colFilters.pay_date
+  } else if (payDatePreset.value === 'custom') {
+    // 自定义：由下方两个日期框驱动（@change 调 applyPayDateCustom）
   } else {
     const [s, e] = dateRangeFor(payDatePreset.value)
     filters.pay_date_start = s; filters.pay_date_end = e
+    colFilters.pay_date = { op: 'between', value: [s, e] }
   }
+  filters.page = 1; load()
+}
+function applyPayDateCustom() {
+  const s = filters.pay_date_start, e = filters.pay_date_end
+  if (s || e) colFilters.pay_date = { op: 'between', value: [s, e] }
+  else delete colFilters.pay_date
   filters.page = 1; load()
 }
 
@@ -312,9 +362,8 @@ async function onPrecheckApply({ mode, rows, okRows }) {
 async function exportExcel() {
   exportingXlsx.value = true
   try {
-    const params = Object.fromEntries(
-      Object.entries(filters).filter(([k, v]) => v !== '' && k !== 'page' && k !== 'size')
-    )
+    const params = buildParams()
+    delete params.page; delete params.size
     const blob = await api.get('/payments/export', { params, responseType: 'blob', timeout: 60000 })
     const date = new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '月') + '日'
     triggerDownload(blob, `排款记录_${date}.xlsx`)
@@ -328,8 +377,7 @@ async function load() {
   loading.value = true
   loadErr.value = ''
   try {
-    const params = Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== ''))
-    const res = await api.get('/payments', { params })
+    const res = await api.get('/payments', { params: buildParams() })
     items.value = res.data.items
     total.value = res.data.total
     outstandingTotal.value = res.data.outstanding_total ?? '0'
@@ -352,7 +400,10 @@ async function loadDepts() {
 
 // Reload list when the global active-dept scope changes.
 const onScopeChange = () => {
-  if (filters.dept && !auth.effectiveDepts.includes(filters.dept)) filters.dept = ''
+  const sel = colFilters.department
+  if (sel && Array.isArray(sel.value) && sel.value.some(d => !auth.effectiveDepts.includes(d))) {
+    delete colFilters.department
+  }
   filters.page = 1
   load()
 }
@@ -468,7 +519,10 @@ function search() { filters.page = 1; clearSelection(); load() }
 function resetFilters() {
   Object.assign(filters, { q: '', dept: '', status: '', start_date: '', end_date: '',
     pay_date_start: '', pay_date_end: '', g7_number: '', page: 1 })
-  datePreset.value = ''
+  Object.keys(colFilters).forEach(k => delete colFilters[k])
+  statusSel.value = ''
+  sortField.value = ''; sortOrder.value = ''
+  datePreset.value = ''; payDatePreset.value = ''
   clearSelection()
   load()
 }
@@ -588,57 +642,9 @@ async function doBatchPay() {
 
     <div v-if="activeTab === 'ledger'" class="card" style="margin-bottom:16px">
       <div class="filter-bar">
-        <input v-model="filters.q" placeholder="搜索事项/收款方/单号/申请人…" style="min-width:180px" @keyup.enter="search" />
-        <input v-model="filters.g7_number" placeholder="G7编号" style="width:120px" @keyup.enter="search" />
-        <select v-model="filters.dept" @change="search">
-          <option value="">全部部门</option>
-          <option v-for="d in deptChoices" :key="d" :value="d">{{ d }}</option>
-        </select>
-        <select v-model="filters.status" @change="search">
-          <option value="">全部状态</option>
-          <option value="pending">⏳ 待付款</option>
-          <option value="partial">⚡ 部分付款</option>
-          <option value="settled">✅ 已付清</option>
-          <option value="adjusted">📋 计划调整</option>
-          <option value="overdue">⚠ 已逾期</option>
-        </select>
-        <select v-model="datePreset" @change="applyDatePreset" style="min-width:100px">
-          <option value="">全部日期</option>
-          <optgroup label="本期">
-            <option value="today">今天</option>
-            <option value="this_week">本周</option>
-            <option value="this_month">本月</option>
-            <option value="this_quarter">本季度</option>
-            <option value="this_year">本年</option>
-          </optgroup>
-          <optgroup label="上期">
-            <option value="last_week">上周</option>
-            <option value="last_month">上月</option>
-            <option value="last_quarter">上季度</option>
-            <option value="last_year">上年</option>
-          </optgroup>
-          <optgroup label="下期">
-            <option value="next_week">下周</option>
-            <option value="next_month">下月</option>
-            <option value="next_quarter">下季度</option>
-            <option value="next_year">下年</option>
-          </optgroup>
-          <optgroup label="近期">
-            <option value="last7">近 7 天</option>
-            <option value="last30">近 30 天</option>
-            <option value="last90">近 90 天</option>
-          </optgroup>
-          <option value="custom">自定义…</option>
-        </select>
-        <template v-if="datePreset === 'custom'">
-          <input v-model="filters.start_date" type="date" style="min-width:120px" @change="search" />
-          <span style="color:var(--muted);font-size:12px;flex-shrink:0">~</span>
-          <input v-model="filters.end_date" type="date" style="min-width:120px" @change="search" />
-        </template>
-        <span v-else-if="datePreset && filters.start_date" class="date-range-hint">
-          {{ filters.start_date }} ~ {{ filters.end_date }}
-        </span>
-        <span class="filter-group-lbl">付款日</span>
+        <input v-model="filters.q" class="global-search" placeholder="🔍 全局搜索：事项 / 收款方 / 单号 / 申请人 / G7…" @keyup.enter="search" />
+        <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
+        <span class="filter-group-lbl">回款日</span>
         <select v-model="payDatePreset" @change="applyPayDatePreset" style="min-width:100px">
           <option value="">全部日期</option>
           <optgroup label="本期">
@@ -662,15 +668,15 @@ async function doBatchPay() {
           <option value="custom">自定义…</option>
         </select>
         <template v-if="payDatePreset === 'custom'">
-          <input v-model="filters.pay_date_start" type="date" style="min-width:120px" @change="search" />
+          <input v-model="filters.pay_date_start" type="date" style="min-width:120px" @change="applyPayDateCustom" />
           <span style="color:var(--muted);font-size:12px;flex-shrink:0">~</span>
-          <input v-model="filters.pay_date_end" type="date" style="min-width:120px" @change="search" />
+          <input v-model="filters.pay_date_end" type="date" style="min-width:120px" @change="applyPayDateCustom" />
         </template>
         <span v-else-if="payDatePreset && filters.pay_date_start" class="date-range-hint">
           {{ filters.pay_date_start }} ~ {{ filters.pay_date_end }}
         </span>
-        <button class="btn btn-ghost btn-sm" @click="search">筛选</button>
-        <button class="btn btn-sm" style="background:var(--bg2);border:none" @click="resetFilters">重置</button>
+        <button v-if="activeFilterCount || filters.q || sortField" class="btn btn-sm clear-all-btn" @click="resetFilters">清除全部筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
+        <span class="filter-hint">点击列名旁 ⏷ 可按列筛选 / 排序</span>
       </div>
 
       <EmptyState v-if="loading" loading />
@@ -682,21 +688,21 @@ async function doBatchPay() {
           <thead>
             <tr>
               <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
-              <th v-if="colVisible('department')" style="width:5%">部门</th>
-              <th v-if="colVisible('secondary_dept')" style="width:5%">二级部门</th>
-              <th v-if="colVisible('project_short_name')" style="width:6%">项目简称</th>
-              <th v-if="colVisible('applicant')" style="width:4%">申请人</th>
-              <th v-if="colVisible('approval_number')" style="width:8%">审批单号</th>
-              <th v-if="colVisible('g7_number')" style="width:8%">G7编号</th>
-              <th v-if="colVisible('project_desc')">付款事项</th>
-              <th v-if="colVisible('payee')" style="width:8%">收款方</th>
-              <th v-if="colVisible('planned_date')" style="width:6%">计划日期</th>
-              <th v-if="colVisible('total_amount')" style="width:8%">计划额</th>
+              <th v-if="colVisible('department')" style="width:5%"><ColumnFilter label="部门" field="department" type="enum" :options="deptChoices" :model-value="colFilters.department" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('department',v)" @sort="o=>setSort('department',o)" /></th>
+              <th v-if="colVisible('secondary_dept')" style="width:5%"><ColumnFilter label="二级部门" field="secondary_dept" type="text" :model-value="colFilters.secondary_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('secondary_dept',v)" @sort="o=>setSort('secondary_dept',o)" /></th>
+              <th v-if="colVisible('project_short_name')" style="width:6%"><ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" /></th>
+              <th v-if="colVisible('applicant')" style="width:4%"><ColumnFilter label="申请人" field="applicant" type="text" :model-value="colFilters.applicant" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('applicant',v)" @sort="o=>setSort('applicant',o)" /></th>
+              <th v-if="colVisible('approval_number')" style="width:8%"><ColumnFilter label="审批单号" field="approval_number" type="text" :model-value="colFilters.approval_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('approval_number',v)" @sort="o=>setSort('approval_number',o)" /></th>
+              <th v-if="colVisible('g7_number')" style="width:8%"><ColumnFilter label="G7编号" field="g7_number" type="text" :model-value="colFilters.g7_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('g7_number',v)" @sort="o=>setSort('g7_number',o)" /></th>
+              <th v-if="colVisible('project_desc')"><ColumnFilter label="付款事项" field="project_desc" type="text" :model-value="colFilters.project_desc" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_desc',v)" @sort="o=>setSort('project_desc',o)" /></th>
+              <th v-if="colVisible('payee')" style="width:8%"><ColumnFilter label="收款方" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
+              <th v-if="colVisible('planned_date')" style="width:6%"><ColumnFilter label="计划日期" field="planned_date" type="date" :model-value="colFilters.planned_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('planned_date',v)" @sort="o=>setSort('planned_date',o)" /></th>
+              <th v-if="colVisible('total_amount')" style="width:8%"><ColumnFilter label="计划额" field="total_amount" type="number" :model-value="colFilters.total_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('total_amount',v)" @sort="o=>setSort('total_amount',o)" /></th>
               <th v-if="colVisible('paid')" style="width:7%">已付</th>
               <th v-if="colVisible('remaining')" style="width:6%">剩余</th>
-              <th v-if="colVisible('status')" style="width:9%">状态</th>
+              <th v-if="colVisible('status')" style="width:9%"><ColumnFilter label="状态" field="status" type="enum" :options="PAY_STATUS_OPTS" :single="true" :sortable="false" :model-value="statusColModel" @update:model-value="setStatusFilter" /></th>
               <th v-if="colVisible('overdue')" style="width:6%">逾期</th>
-              <th v-if="colVisible('plan_adjustment')" style="width:6%">计划调整</th>
+              <th v-if="colVisible('plan_adjustment')" style="width:6%"><ColumnFilter label="计划调整" field="plan_adjustment" type="number" :model-value="colFilters.plan_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('plan_adjustment',v)" @sort="o=>setSort('plan_adjustment',o)" /></th>
               <th v-if="auth.canWrite || auth.canDelete" style="width:12%">操作</th>
             </tr>
           </thead>
@@ -1096,6 +1102,11 @@ async function doBatchPay() {
 .pk-pay-tbl table { table-layout: fixed; }
 .pk-pay-tbl th, .pk-pay-tbl td { padding: 9px 7px; font-size: 12.5px; }
 .pk-pay-tbl td:not(.ops-cell) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+/* 列头放置筛选漏斗：允许溢出展示，不裁切 */
+.pk-pay-tbl thead th { overflow: visible; }
+.global-search { min-width: 300px; flex: 0 1 380px; }
+.clear-all-btn { background: var(--bg2); border: none; color: var(--primary); }
+.filter-hint { font-size: 11.5px; color: var(--muted); margin-left: auto; white-space: nowrap; }
 /* 操作列：不裁剪，按钮正常显示，更紧凑 */
 .pk-pay-tbl .ops-cell { white-space: nowrap; text-align: center; }
 .pk-pay-tbl .ops-cell .btn-sm { padding: 3px 7px; font-size: 11px; border-radius: 6px; }

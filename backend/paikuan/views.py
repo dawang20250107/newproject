@@ -21,6 +21,7 @@ import jwt
 
 from paikuan.models import (PaikuanUser, Payment, PaymentInstallment, PaymentPlanItem,
                             JobPermission, ApprovalRecord, PaymentChangeLog)
+from paikuan.list_filters import build_filter_q, resolve_sort
 
 logger = logging.getLogger('paikuan')
 
@@ -40,6 +41,41 @@ JOB_TITLES = {
     'gm_assistant': '总经理助理',
     'settlement_accountant': '结算会计',
     'sales_bp': '销售BP',
+}
+
+# ── Excel 风格列头筛选/排序的列注册表（白名单）──────────────────────────────────
+# 只有此处登记的字段才能被前端 filters/sort 命中。type 决定可用运算符；
+# col 为 ORM lookup；multi=True 表示反向关联(需 .distinct())；sortable=False 禁排序。
+APPROVAL_FILTER_REGISTRY = {
+    'applicant':          {'type': 'text',   'col': 'applicant'},
+    'department':         {'type': 'enum',   'col': 'department'},
+    'secondary_dept':     {'type': 'text',   'col': 'secondary_dept'},
+    'project_short_name': {'type': 'text',   'col': 'project_short_name'},
+    'approval_number':    {'type': 'text',   'col': 'approval_number'},
+    'g7_number':          {'type': 'text',   'col': 'g7_number'},
+    'summary':            {'type': 'text',   'col': 'summary'},
+    'amount':             {'type': 'number', 'col': 'amount'},
+    'payee':              {'type': 'text',   'col': 'payee'},
+    'status':             {'type': 'enum',   'col': 'status'},
+}
+
+# 付款台账：本期只登记真实 DB 列（计算列 已付/剩余/逾期 下期再做注解筛选）。
+# status 为计算口径，单独走既有 annotation 逻辑，不入通用解析器。
+PAYMENT_FILTER_REGISTRY = {
+    'department':         {'type': 'enum',   'col': 'department'},
+    'secondary_dept':     {'type': 'text',   'col': 'secondary_dept'},
+    'project_short_name': {'type': 'text',   'col': 'project_short_name'},
+    'applicant':          {'type': 'text',   'col': 'applicant'},
+    'approval_number':    {'type': 'text',   'col': 'approval_number'},
+    'g7_number':          {'type': 'text',   'col': 'g7_number'},
+    'project_desc':       {'type': 'text',   'col': 'project_desc'},
+    'payee':              {'type': 'text',   'col': 'payee'},
+    'planned_date':       {'type': 'date',   'col': 'planned_date'},
+    'total_amount':       {'type': 'number', 'col': 'total_amount'},
+    'plan_adjustment':    {'type': 'number', 'col': 'plan_adjustment'},
+    # 回款日期：反向关联到分期表，需去重；排序无意义故禁用
+    'pay_date':           {'type': 'date',   'col': 'installments__pay_date',
+                           'multi': True, 'sortable': False},
 }
 
 # ── permission model ────────────────────────────────────────────────────────────
@@ -933,6 +969,16 @@ def _list_payments(request):
             Q(department__icontains=q) | Q(applicant__icontains=q)
         )
 
+    # 列头精确筛选（filters JSON，白名单解析）+ 列头排序
+    fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), PAYMENT_FILTER_REGISTRY)
+    if fq:
+        qs = qs.filter(fq)
+        if fq_distinct:
+            qs = qs.distinct()
+    sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), PAYMENT_FILTER_REGISTRY)
+    if sort_by:
+        qs = qs.order_by(sort_by)
+
     try:
         page = max(1, int(request.GET.get('page', 1)))
         size = min(200, max(1, int(request.GET.get('size', 50))))
@@ -1534,18 +1580,23 @@ def approval_records(request):
         return err('无访问权限', 403, 403)
     if request.method == 'GET':
         qs = dept_filter(ApprovalRecord.objects.filter(archived=False), request)
-        dept = request.GET.get('dept', '').strip()
-        applicant = request.GET.get('applicant', '').strip()
-        approval_no = request.GET.get('approval_number', '').strip()
-        g7_no = request.GET.get('g7_number', '').strip()
-        if dept:
-            qs = qs.filter(department=dept)
-        if applicant:
-            qs = qs.filter(applicant__icontains=applicant)
-        if approval_no:
-            qs = qs.filter(approval_number__icontains=approval_no)
-        if g7_no:
-            qs = qs.filter(g7_number__icontains=g7_no)
+        # 全局关键字（跨字段模糊）+ 列头精确筛选（filters JSON）+ 列头排序
+        kw = request.GET.get('q', '').strip()
+        if kw:
+            qs = qs.filter(
+                Q(applicant__icontains=kw) | Q(department__icontains=kw) |
+                Q(secondary_dept__icontains=kw) | Q(project_short_name__icontains=kw) |
+                Q(approval_number__icontains=kw) | Q(g7_number__icontains=kw) |
+                Q(summary__icontains=kw) | Q(payee__icontains=kw)
+            )
+        fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), APPROVAL_FILTER_REGISTRY)
+        if fq:
+            qs = qs.filter(fq)
+            if fq_distinct:
+                qs = qs.distinct()
+        sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), APPROVAL_FILTER_REGISTRY)
+        if sort_by:
+            qs = qs.order_by(sort_by)
         total_amount = qs.aggregate(s=Sum('amount'))['s'] or Decimal('0')
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
@@ -2471,6 +2522,23 @@ def approval_export(request):
     if perms is not None and not perms['pages'].get('approval_records', True):
         return err('无访问权限', 403, 403)
     qs = dept_filter(ApprovalRecord.objects.filter(archived=False), request)
+    # 全局关键字 + 列头筛选 + 排序：导出与列表口径一致
+    kw = request.GET.get('q', '').strip()
+    if kw:
+        qs = qs.filter(
+            Q(applicant__icontains=kw) | Q(department__icontains=kw) |
+            Q(secondary_dept__icontains=kw) | Q(project_short_name__icontains=kw) |
+            Q(approval_number__icontains=kw) | Q(g7_number__icontains=kw) |
+            Q(summary__icontains=kw) | Q(payee__icontains=kw)
+        )
+    fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), APPROVAL_FILTER_REGISTRY)
+    if fq:
+        qs = qs.filter(fq)
+        if fq_distinct:
+            qs = qs.distinct()
+    _sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), APPROVAL_FILTER_REGISTRY)
+    if _sort_by:
+        qs = qs.order_by(_sort_by)
     if qs.count() > 5000:
         return err('导出超过5000行，请缩小筛选范围')
 
@@ -3407,6 +3475,15 @@ def payment_export(request):
             Q(approval_number__icontains=q_str) | Q(g7_number__icontains=q_str) |
             Q(department__icontains=q_str) | Q(applicant__icontains=q_str)
         )
+    # 列头精确筛选 + 排序：导出与列表口径一致（筛了再导出）
+    fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), PAYMENT_FILTER_REGISTRY)
+    if fq:
+        qs = qs.filter(fq)
+        if fq_distinct:
+            qs = qs.distinct()
+    _sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), PAYMENT_FILTER_REGISTRY)
+    if _sort_by:
+        qs = qs.order_by(_sort_by)
     if status_q:
         qs = qs.annotate(paid=_paid_expr())
         if status_q == 'pending':

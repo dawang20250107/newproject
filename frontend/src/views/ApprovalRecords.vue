@@ -8,6 +8,7 @@ import EmptyState from '../components/EmptyState.vue'
 import ProjectShortNamePicker from '../components/ProjectShortNamePicker.vue'
 import ImportResultModal from '../components/ImportResultModal.vue'
 import ImportPrecheckModal from '../components/ImportPrecheckModal.vue'
+import ColumnFilter from '../components/ColumnFilter.vue'
 
 const auth = useAuthStore()
 const items = ref([])
@@ -49,7 +50,40 @@ async function saveMeta(){
 function onProjPicked(p, target){
   if (p.sub_dept) target.secondary_dept = p.sub_dept
 }
-const filters = reactive({ applicant:'', approval_number:'', g7_number:'', dept:'', page:1, size:50 })
+// ── Excel 风格列头筛选 + 排序 ───────────────────────────────────────────────
+const STATUS_OPTS = [
+  { value: 'pending', label: '待审批' }, { value: 'approved', label: '审批通过' },
+  { value: 'rejected', label: '已拒绝' }, { value: 'canceled', label: '已撤销' },
+]
+const q = ref('')                  // 顶部全局关键字（跨字段模糊）
+const colFilters = reactive({})    // field -> {op, value}
+const sortField = ref('')
+const sortOrder = ref('')          // 'asc' | 'desc' | ''
+const page = ref(1)
+const size = ref(50)
+const activeFilterCount = computed(() => Object.keys(colFilters).length)
+function setColFilter(field, val) {
+  if (val == null) delete colFilters[field]
+  else colFilters[field] = val
+  page.value = 1; clearSelection(); load()
+}
+function setSort(field, order) {
+  sortField.value = order ? field : ''
+  sortOrder.value = order || ''
+  page.value = 1; load()
+}
+function clearAllFilters() {
+  Object.keys(colFilters).forEach(k => delete colFilters[k])
+  q.value = ''; sortField.value = ''; sortOrder.value = ''
+  page.value = 1; clearSelection(); load()
+}
+function buildParams() {
+  const p = { page: page.value, size: size.value }
+  if (q.value.trim()) p.q = q.value.trim()
+  if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
+  if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
+  return p
+}
 const statusUpdating = ref({})
 const pendingAmountTotal = computed(() => parseFloat(totalAmount.value || 0))
 
@@ -149,9 +183,9 @@ const deptChoices = computed(() => {
   return depts.value.filter(d => scope.includes(d))
 })
 
-async function load(){ loading.value=true; try{ const r=await api.get('/approvals',{params:filters}); items.value=r.data.items; total.value=r.data.total; totalAmount.value=r.data.total_amount || 0 }finally{loading.value=false}}
-function search(){ filters.page=1; clearSelection(); load() }
-function setPage(p){ filters.page=p; load() }
+async function load(){ loading.value=true; try{ const r=await api.get('/approvals',{params:buildParams()}); items.value=r.data.items; total.value=r.data.total; totalAmount.value=r.data.total_amount || 0 }finally{loading.value=false}}
+function search(){ page.value=1; clearSelection(); load() }
+function setPage(p){ page.value=p; load() }
 async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
 function openCreate(){ Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
 async function create(){ saving.value=true; try{ await api.post('/approvals', form); showCreate.value=false; load() } catch(e){ alert(e?.msg||e?.error||'保存失败') } finally{ saving.value=false } }
@@ -240,11 +274,15 @@ async function onPrecheckApply({ mode, rows, okRows }){
   }catch(err){ alert(err?.msg||err?.error||'处理失败') }
   finally{ precheckBusy.value=false }
 }
-async function doExport(){ exporting.value=true; try{ const b=await api.get('/approvals/export',{params:filters,responseType:'blob'}); dl(b,'审批管理.xlsx') } finally{ exporting.value=false } }
+async function doExport(){ exporting.value=true; try{ const b=await api.get('/approvals/export',{params:buildParams(),responseType:'blob'}); dl(b,'审批管理.xlsx') } finally{ exporting.value=false } }
 
 const onScopeChange = () => {
-  if (filters.dept && !auth.effectiveDepts.includes(filters.dept)) filters.dept = ''
-  filters.page = 1
+  // 事业部范围切换：若列头筛了已超出范围的事业部，清掉该列筛选
+  const sel = colFilters.department
+  if (sel && Array.isArray(sel.value) && sel.value.some(d => !auth.effectiveDepts.includes(d))) {
+    delete colFilters.department
+  }
+  page.value = 1
   load()
 }
 onMounted(()=>{ load(); loadDepts(); window.addEventListener('pk:depts-changed', onScopeChange) })
@@ -262,18 +300,27 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <input ref="fileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImport" />
   <div class="card approval-card"><div class="filter-row">
     <div class="filter-bar">
-    <input v-model="filters.applicant" placeholder="申请人(模糊)" @keyup.enter="search"/>
-    <input v-model="filters.approval_number" placeholder="审批编号(模糊)" @keyup.enter="search"/>
-    <input v-model="filters.g7_number" placeholder="G7编号(模糊)" @keyup.enter="search" style="width:140px"/>
-    <select v-model="filters.dept" @change="search"><option value="">全部事业部</option><option v-for="d in deptChoices" :key="d" :value="d">{{d}}</option></select>
-    <button class="btn btn-ghost btn-sm" @click="search">筛选</button>
+    <input v-model="q" class="global-search" placeholder="🔍 全局搜索：申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
+    <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
+    <button v-if="activeFilterCount || q || sortField" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters">清除全部筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
+    <span class="filter-hint">提示：点击列名旁的 ⏷ 可按列筛选 / 排序</span>
     </div>
   </div>
   <EmptyState v-if="loading" loading />
   <EmptyState v-else-if="!items.length" empty text="暂无审批记录" />
   <table v-else class="approval-table"><thead><tr>
       <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
-      <th>申请人</th><th>所属事业部</th><th>二级部门</th><th>项目简称</th><th>审批编号</th><th>G7编号</th><th>摘要</th><th>申请金额</th><th>收款主体</th><th>审批状态</th><th>操作</th></tr></thead>
+      <th><ColumnFilter label="申请人" field="applicant" type="text" :model-value="colFilters.applicant" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('applicant',v)" @sort="o=>setSort('applicant',o)" /></th>
+      <th><ColumnFilter label="所属事业部" field="department" type="enum" :options="deptChoices" :model-value="colFilters.department" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('department',v)" @sort="o=>setSort('department',o)" /></th>
+      <th><ColumnFilter label="二级部门" field="secondary_dept" type="text" :model-value="colFilters.secondary_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('secondary_dept',v)" @sort="o=>setSort('secondary_dept',o)" /></th>
+      <th><ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" /></th>
+      <th><ColumnFilter label="审批编号" field="approval_number" type="text" :model-value="colFilters.approval_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('approval_number',v)" @sort="o=>setSort('approval_number',o)" /></th>
+      <th><ColumnFilter label="G7编号" field="g7_number" type="text" :model-value="colFilters.g7_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('g7_number',v)" @sort="o=>setSort('g7_number',o)" /></th>
+      <th><ColumnFilter label="摘要" field="summary" type="text" :model-value="colFilters.summary" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('summary',v)" @sort="o=>setSort('summary',o)" /></th>
+      <th><ColumnFilter label="申请金额" field="amount" type="number" :model-value="colFilters.amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('amount',v)" @sort="o=>setSort('amount',o)" /></th>
+      <th><ColumnFilter label="收款主体" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
+      <th><ColumnFilter label="审批状态" field="status" type="enum" :options="STATUS_OPTS" :model-value="colFilters.status" :sortable="false" @update:model-value="v=>setColFilter('status',v)" /></th>
+      <th>操作</th></tr></thead>
     <tbody><tr v-for="i in items" :key="i.id" :class="{ 'row-sel': selectedIds.has(i.id) }">
       <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(i.id)" @change="toggleRow(i.id)" /></td>
       <td>{{i.applicant}}</td><td>{{i.department}}</td>
@@ -311,10 +358,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         <span class="bb-item"><i>合计</i><b>{{ total }}</b> 条</span>
         <span class="bb-item warn"><i>申请金额合计</i><b>{{ pendingAmountTotal.toFixed(2) }}</b> 元</span>
       </div>
-      <div v-if="total > filters.size" class="bb-pager">
-        <button :disabled="filters.page <= 1" class="page-btn" @click="setPage(filters.page - 1)">‹ 上一页</button>
-        <span class="page-info">{{ filters.page }} / {{ Math.ceil(total / filters.size) || 1 }} 页 · 共 {{ total }} 条</span>
-        <button :disabled="filters.page * filters.size >= total" class="page-btn" @click="setPage(filters.page + 1)">下一页 ›</button>
+      <div v-if="total > size" class="bb-pager">
+        <button :disabled="page <= 1" class="page-btn" @click="setPage(page - 1)">‹ 上一页</button>
+        <span class="page-info">{{ page }} / {{ Math.ceil(total / size) || 1 }} 页 · 共 {{ total }} 条</span>
+        <button :disabled="page * size >= total" class="page-btn" @click="setPage(page + 1)">下一页 ›</button>
       </div>
     </div>
   </Teleport>
@@ -404,6 +451,12 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 <style scoped>
 .approval-card { padding: 12px; }
 .filter-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+.filter-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.global-search { min-width: 340px; flex: 0 1 420px; }
+.clear-all { color: var(--primary); }
+.filter-hint { font-size: 11.5px; color: var(--muted); margin-left: 4px; }
+/* 列头允许漏斗按钮溢出展示，不被裁切 */
+.approval-table thead th { overflow: visible; }
 
 /* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
 .approval-table { width: 100%; table-layout: fixed; }

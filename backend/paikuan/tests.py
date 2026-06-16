@@ -1299,3 +1299,92 @@ class BulkOpsTests(TestCase):
         self.assertEqual(len(d['skipped']), 1)
         p1.refresh_from_db()
         self.assertEqual(p1.installments.count(), 0)
+
+
+class ColumnFilterTests(TestCase):
+    """Excel 风格列头筛选 + 排序：filters(JSON) / sort / order 的白名单解析与生效。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = DEPARTMENTS[0]
+        u = PaikuanUser(phone='13900000900', name='Admin', role='super_admin',
+                        job_title='finance_director', departments=[self.dept],
+                        is_active=True, is_approved=True)
+        u.set_password('Test123456'); u.save()
+        self.user = u
+        self.token = make_token(u)
+        # 付款台账：两条不同金额/日期/收款方
+        Payment.objects.create(created_by=u, department=self.dept, approval_number='',
+                               g7_number='G70001', project_desc='甲项目', payee='阿尔法',
+                               applicant='张三', total_amount=Decimal('1000'),
+                               planned_date=date(2026, 1, 10))
+        Payment.objects.create(created_by=u, department=self.dept, approval_number='',
+                               g7_number='G70002', project_desc='乙项目', payee='贝塔',
+                               applicant='李四', total_amount=Decimal('8000'),
+                               planned_date=date(2026, 6, 20))
+        # 审批管理：两条
+        ApprovalRecord.objects.create(applicant='王五', department=self.dept,
+                                      approval_number='1', g7_number='', summary='差旅',
+                                      amount=Decimal('500'), payee='丙方', status='pending')
+        ApprovalRecord.objects.create(applicant='赵六', department=self.dept,
+                                      approval_number='2', g7_number='', summary='采购',
+                                      amount=Decimal('9000'), payee='丁方', status='approved')
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _items(self, url, params):
+        r = self.client.get(url, params, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        return r.json()['data']['items']
+
+    # ── 付款台账 ──
+    def test_payment_text_contains(self):
+        items = self._items('/api/pk/payments',
+                            {'filters': json.dumps({'payee': {'op': 'contains', 'value': '阿尔法'}})})
+        self.assertEqual([i['payee'] for i in items], ['阿尔法'])
+
+    def test_payment_number_between(self):
+        items = self._items('/api/pk/payments',
+                            {'filters': json.dumps({'total_amount': {'op': 'gte', 'value': '5000'}})})
+        self.assertEqual([i['project_desc'] for i in items], ['乙项目'])
+
+    def test_payment_date_range(self):
+        items = self._items('/api/pk/payments',
+                            {'filters': json.dumps({'planned_date': {'op': 'between',
+                                                                     'value': ['2026-06-01', '2026-06-30']}})})
+        self.assertEqual([i['project_desc'] for i in items], ['乙项目'])
+
+    def test_payment_sort_amount_asc(self):
+        items = self._items('/api/pk/payments', {'sort': 'total_amount', 'order': 'asc'})
+        amts = [Decimal(i['total_amount']) for i in items]
+        self.assertEqual(amts, sorted(amts))
+
+    def test_payment_illegal_field_ignored(self):
+        # 未注册字段不应影响结果（静默忽略），返回全部
+        items = self._items('/api/pk/payments',
+                            {'filters': json.dumps({'created_by__password': {'op': 'eq', 'value': 'x'}})})
+        self.assertEqual(len(items), 2)
+
+    # ── 审批管理 ──
+    def test_approval_enum_status_in(self):
+        items = self._items('/api/pk/approvals',
+                            {'filters': json.dumps({'status': {'op': 'in', 'value': ['approved']}})})
+        self.assertEqual([i['applicant'] for i in items], ['赵六'])
+
+    def test_approval_number_gt(self):
+        items = self._items('/api/pk/approvals',
+                            {'filters': json.dumps({'amount': {'op': 'gt', 'value': '1000'}})})
+        self.assertEqual([i['applicant'] for i in items], ['赵六'])
+
+    def test_approval_global_q(self):
+        items = self._items('/api/pk/approvals', {'q': '采购'})
+        self.assertEqual([i['applicant'] for i in items], ['赵六'])
+
+    def test_approval_sort_amount_desc(self):
+        items = self._items('/api/pk/approvals', {'sort': 'amount', 'order': 'desc'})
+        self.assertEqual([i['applicant'] for i in items], ['赵六', '王五'])

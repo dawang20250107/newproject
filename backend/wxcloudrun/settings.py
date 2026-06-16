@@ -10,8 +10,9 @@ _DEV_JWT_SECRET = 'paikuan-jwt-secret-change-in-prod-Qr8sT1uV'
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', _DEV_SECRET_KEY)
 JWT_SECRET = os.environ.get('JWT_SECRET', _DEV_JWT_SECRET)
 
-# DeepSeek AI API (stored via env var; fallback for dev only)
-DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', 'sk-d7721aa1a60b4a7c9b93181e9cfe7cfc')
+# DeepSeek AI API：仅从环境变量读取，源码不内置任何密钥。
+# 未设置时 AI 相关接口会优雅返回「未配置」(503)，不影响其余功能。
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '')
 DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
 # 更强的模型，用于「财务驾驶舱」全集团高度的综合分析（推理量更大）。
 # 生产可经环境变量切到 V4 Pro 等更强模型，如 DEEPSEEK_PRO_MODEL=deepseek-reasoner。
