@@ -189,7 +189,6 @@ onMounted(() => load())
 .search-input { padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; width: 200px; }
 .global-search { min-width: 280px; flex: 0 1 360px; width: auto; }
 .clear-all { color: var(--primary); }
-.filter-hint { font-size: 11.5px; color: var(--muted); margin-left: 4px; }
 .table-wrap { overflow-x: auto; }
 .audit-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 /* 列头允许漏斗按钮溢出展示，不被裁切 */
