@@ -680,7 +680,7 @@ async function doBatchPay() {
           {{ filters.pay_date_start }} ~ {{ filters.pay_date_end }}
         </span>
         <button v-if="activeFilterCount || filters.q || sortField" class="btn btn-sm clear-all-btn" @click="resetFilters">清除全部筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
-        <span class="filter-hint">点击列名旁 ⏷ 可按列筛选 / 排序</span>
+        <span class="filter-hint" title="点击列名旁 ⏷ 可按列筛选 / 排序" style="cursor:default">?</span>
       </div>
 
       <EmptyState v-if="loading" loading />
@@ -1312,4 +1312,7 @@ async function doBatchPay() {
 .csp-item { display: flex; align-items: center; gap: 7px; font-size: 13px;
   padding: 3px 0; cursor: pointer; color: var(--text); }
 .csp-item input { width: auto; }
+
+.pg-jump { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); margin-left: 8px; }
+.pg-jump-input { width: 46px; text-align: center; padding: 2px 4px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
 </style>
