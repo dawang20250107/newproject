@@ -2,6 +2,51 @@
 分组汇总、催收工作台与催办、回款与调整、对账数据健康、批量重算/删除。
 共享导入·常量·过滤助手等来自 _common。"""
 from ._common import *  # noqa: F401,F403
+from paikuan.list_filters import build_filter_q, resolve_sort
+
+# ── 应收明细 Excel 风格列头筛选 + 排序白名单 ─────────────────────────────────
+# 仅登记【真实存储列】（含项目 FK 上的文本列，multi 需去重）；计算/派生/聚合列
+# （对账状态、开票状态、责任状态、回款笔数、预收冲抵等）一律不登记，留待后续阶段。
+# 与既有 flat 维度筛选 / conditions / _apply_record_sort 并存，互不影响。
+ARRECORD_FILTER_REGISTRY = {
+    # 文本（项目 FK 文本列：反向 JOIN 需 distinct）
+    'customer_name':      {'type': 'text', 'col': 'project__customer_name', 'multi': True},
+    'short_name':         {'type': 'text', 'col': 'project__short_name', 'multi': True},
+    'project_no':         {'type': 'text', 'col': 'project__project_no', 'multi': True},
+    'invoice_batch_no':   {'type': 'text', 'col': 'invoice_batch_no'},
+    'notes':              {'type': 'text', 'col': 'notes'},
+    # 枚举（ARRecord 上的去规范化部门列，真实存储）
+    'delivery_dept':      {'type': 'enum', 'col': 'delivery_dept'},
+    # 日期（均为真实存储 DateField）
+    'operation_date':     {'type': 'date', 'col': 'operation_date'},
+    'due_date':           {'type': 'date', 'col': 'due_date'},
+    'invoice_date':       {'type': 'date', 'col': 'invoice_date'},
+    'reconciliation_date':{'type': 'date', 'col': 'reconciliation_date'},
+    'target_collection_date': {'type': 'date', 'col': 'target_collection_date'},
+    # 数值（均为真实存储 DecimalField，非注解/计算）
+    'estimated_amount':       {'type': 'number', 'col': 'estimated_amount'},
+    'actual_invoice_amount':  {'type': 'number', 'col': 'actual_invoice_amount'},
+    'tax_amount':             {'type': 'number', 'col': 'tax_amount'},
+    'account_diff_adjustment':{'type': 'number', 'col': 'account_diff_adjustment'},
+    'outstanding_amount':     {'type': 'number', 'col': 'outstanding_amount'},
+}
+
+
+def _apply_colfilter_sort(qs, request):
+    """应用列头筛选(filters JSON) + 列头排序(sort/order)。
+
+    放在既有筛选之后、分页之前；与 flat 维度/状态筛选、_apply_record_sort 叠加。
+    列头排序仅在命中白名单时生效，否则不动既有排序结果。"""
+    fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), ARRECORD_FILTER_REGISTRY)
+    if fq:
+        qs = qs.filter(fq)
+        if fq_distinct:
+            qs = qs.distinct()
+    sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'),
+                           ARRECORD_FILTER_REGISTRY)
+    if sort_by:
+        qs = qs.order_by(sort_by)
+    return qs
 
 # ══════════════════════════════════════════════════════════════════════════════
 # AR Records
@@ -59,6 +104,8 @@ def ar_records(request):
         qs = _apply_record_state_filters(qs, request, today)
         qs = _apply_conditions(qs, request, today)
         qs = _apply_record_sort(qs, request)
+        # 列头筛选 + 列头排序（真实列白名单）：叠加在既有筛选/排序之后
+        qs = _apply_colfilter_sort(qs, request)
 
         include_payments = request.GET.get('include_payments', '') in ('1', 'true')
         page = max(1, int(request.GET.get('page', 1) or 1))
@@ -72,6 +119,13 @@ def ar_records(request):
         qs_agg = _apply_record_filters(qs_agg, request)
         qs_agg = _apply_record_state_filters(qs_agg, request, today)
         qs_agg = _apply_conditions(qs_agg, request, today)
+        # 列头筛选同步进合计集，使"筛选即合计"summary 与可见列表口径一致
+        # （排序对 aggregate 无意义，故只取 filters，不取 sort）
+        _fq, _fq_distinct = build_filter_q(request.GET.get('filters', ''), ARRECORD_FILTER_REGISTRY)
+        if _fq:
+            qs_agg = qs_agg.filter(_fq)
+            if _fq_distinct:
+                qs_agg = qs_agg.distinct()
 
         # 当前筛选全集的金额合计（不止当前页）——支撑"筛选即合计"。
         # 重要：筛选含 payments 关联（回款日期/含未结清）时 qs_agg 带 JOIN，直接
@@ -929,6 +983,8 @@ def ar_record_export(request):
     qs = _apply_record_state_filters(qs, request, today)
     qs = _apply_conditions(qs, request, today)
     qs = _apply_record_sort(qs, request)
+    # 列头筛选 + 列头排序：与列表口径一致
+    qs = _apply_colfilter_sort(qs, request)
     if qs.count() > 5000:
         return err('导出超过5000行，请缩小筛选范围')
     qs = qs.prefetch_related('payments')

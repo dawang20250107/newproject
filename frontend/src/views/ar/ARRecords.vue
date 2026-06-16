@@ -11,6 +11,7 @@ import SortTh from '../../components/ar/SortTh.vue'
 import FilterPanel from '../../components/ar/FilterPanel.vue'
 import { describeCondition } from '../../composables/arConditions.js'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
+import ColumnFilter from '../../components/ColumnFilter.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -87,9 +88,47 @@ async function confirmBulkDelete() {
   finally { bulkDeleting.value = false }
 }
 
-// 服务端排序（点表头）——状态机经 provide 下放给各 <SortTh>，变化即回首页重拉
-const sorter = useServerSort(() => load(true))
+// 服务端排序（点表头）——状态机经 provide 下放给各 <SortTh>，变化即回首页重拉。
+// SortTh 排序生效即清掉列头排序，保证两套排序互斥、sort 参数单一来源。
+const sorter = useServerSort(() => {
+  if (sorter.sort.value) { sortField.value = ''; sortOrder.value = '' }
+  load(true)
+})
 provide('arSort', sorter)
+
+// ── Excel 风格列头筛选 + 排序（真实列）──────────────────────────────────────
+// 与既有 conditions / SortTh 并存：列头筛选走独立 filters(JSON) 参数下发；列头排序
+// 与 SortTh 互斥（任一生效即清空另一方），统一序列化为后端 sort/order。仅作用于
+// 应收明细列表 + 导出，不进 KPI / 分组汇总 / 批量等其它接口。
+const colFilters = reactive({})    // field -> {op, value}
+const sortField = ref('')
+const sortOrder = ref('')          // 'asc' | 'desc' | ''
+// 部门枚举选项复用页面既有可访问部门列表
+function setColFilter(field, val) {
+  if (val == null) delete colFilters[field]
+  else colFilters[field] = val
+  clearSelection()
+  load(true)
+}
+function setSort(field, order) {
+  sortField.value = order ? field : ''
+  sortOrder.value = order || ''
+  // 列头排序生效即清掉 SortTh 排序，避免两套排序争用 sort 参数
+  if (order && sorter.sort.value) sorter.sort.value = ''
+  load(true)
+}
+function buildParams(base = {}) {
+  const p = { ...base }
+  if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
+  // 排序优先级：列头排序 > SortTh 排序
+  if (sortField.value && sortOrder.value) {
+    p.sort = sortField.value
+    p.order = sortOrder.value
+  } else if (sorter.sort.value) {
+    p.sort = sorter.sort.value
+  }
+  return p
+}
 
 const showModal = ref(false)
 const editRec = ref(null)
@@ -191,7 +230,8 @@ const isDataTab = computed(() => DATA_TABS.includes(activeTab.value))
 const summaryData = ref(null)
 
 // ── 筛选 chip 栏 ─────────────────────────────────────────────────────────────
-const hasAnyFilter = computed(() => conditions.value.length > 0)
+const hasAnyFilter = computed(() =>
+  conditions.value.length > 0 || Object.keys(colFilters).length > 0 || !!sortField.value)
 // chip 文案统一由 describeCondition 生成（与面板单一来源）
 const chipText = describeCondition
 function removeCondition(i) {
@@ -352,8 +392,8 @@ async function load(reset = false) {
   loading.value = true
   try {
     const [recs, kpi] = await Promise.all([
-      ar.listRecords({ ...reqParams(), sort: sorter.sort.value || undefined,
-        include_payments: 1, page: page.value, size }),
+      ar.listRecords(buildParams({ ...reqParams(),
+        include_payments: 1, page: page.value, size })),
       ar.recordsKpi(reqParams()),
     ])
     items.value = recs.data.items
@@ -893,7 +933,7 @@ async function onPrecheckApply({ mode }) {
 async function exportData() {
   exporting.value = true
   try {
-    const res = await ar.exportRecords(reqParams())
+    const res = await ar.exportRecords(buildParams(reqParams()))
     downloadBlob(res, '应收账款明细.xlsx')
   } catch (e) { alert(e?.msg || '导出失败')
   } finally { exporting.value = false }
@@ -929,6 +969,10 @@ function clearFilters() {
   conditions.value = []
   matchMode.value = 'all'
   quickQ.value = ''
+  // 一并清掉 Excel 风格列头筛选 + 列头排序
+  Object.keys(colFilters).forEach(k => delete colFilters[k])
+  sortField.value = ''
+  sortOrder.value = ''
   onFilterChange()
 }
 </script>
@@ -1164,49 +1208,49 @@ function clearFilters() {
                   :indeterminate.prop="hasSelection && !pageAllSelected"
                   title="全选本页" @change="toggleSelectPage" />
               </th>
-              <SortTh col="short_name" label="项目" />
-              <SortTh col="operation" label="运作日期" class="ctr" />
+              <th><ColumnFilter label="项目" field="short_name" type="text" :model-value="colFilters.short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('short_name',v)" @sort="o=>setSort('short_name',o)" /></th>
+              <th class="ctr"><ColumnFilter label="运作日期" field="operation_date" type="date" :model-value="colFilters.operation_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('operation_date',v)" @sort="o=>setSort('operation_date',o)" /></th>
 
               <!-- all -->
               <template v-if="activeTab === 'all'">
-                <SortTh v-if="show('r_estimated_amount')" col="estimated" label="预估金额" class="amt" />
-                <SortTh v-if="show('r_actual_invoice_amount')" col="invoiced" label="实际开票" class="amt" />
-                <th v-if="show('r_tax_amount')" class="amt">税额</th>
-                <th v-if="show('r_account_diff')" class="amt">账实差额</th>
-                <SortTh v-if="show('r_outstanding')" col="outstanding" label="未收金额" class="amt" />
-                <SortTh v-if="show('r_due_date')" col="due_date" label="应收到期" class="ctr" />
-                <SortTh v-if="show('r_due_date')" col="target_date" label="目标回款" class="ctr" />
+                <th v-if="show('r_estimated_amount')" class="amt"><ColumnFilter label="预估金额" field="estimated_amount" type="number" :model-value="colFilters.estimated_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('estimated_amount',v)" @sort="o=>setSort('estimated_amount',o)" /></th>
+                <th v-if="show('r_actual_invoice_amount')" class="amt"><ColumnFilter label="实际开票" field="actual_invoice_amount" type="number" :model-value="colFilters.actual_invoice_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('actual_invoice_amount',v)" @sort="o=>setSort('actual_invoice_amount',o)" /></th>
+                <th v-if="show('r_tax_amount')" class="amt"><ColumnFilter label="税额" field="tax_amount" type="number" :model-value="colFilters.tax_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('tax_amount',v)" @sort="o=>setSort('tax_amount',o)" /></th>
+                <th v-if="show('r_account_diff')" class="amt"><ColumnFilter label="账实差额" field="account_diff_adjustment" type="number" :model-value="colFilters.account_diff_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('account_diff_adjustment',v)" @sort="o=>setSort('account_diff_adjustment',o)" /></th>
+                <th v-if="show('r_outstanding')" class="amt"><ColumnFilter label="未收金额" field="outstanding_amount" type="number" :model-value="colFilters.outstanding_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('outstanding_amount',v)" @sort="o=>setSort('outstanding_amount',o)" /></th>
+                <th v-if="show('r_due_date')" class="ctr"><ColumnFilter label="应收到期" field="due_date" type="date" :model-value="colFilters.due_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('due_date',v)" @sort="o=>setSort('due_date',o)" /></th>
+                <th v-if="show('r_due_date')" class="ctr"><ColumnFilter label="目标回款" field="target_collection_date" type="date" :model-value="colFilters.target_collection_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('target_collection_date',v)" @sort="o=>setSort('target_collection_date',o)" /></th>
                 <th v-if="show('r_reconciliation')" class="ctr">对账</th>
                 <th v-if="show('r_payments')" class="ctr">回款</th>
                 <th v-if="show('r_payments')" class="ctr" title="预收核销冲抵的次数（点数字查看明细）">预收冲抵</th>
                 <th class="ctr">状态</th>
                 <th class="ctr">责任状态</th>
-                <th v-if="show('r_notes')" class="notes-col">备注</th>
+                <th v-if="show('r_notes')" class="notes-col"><ColumnFilter label="备注" field="notes" type="text" :model-value="colFilters.notes" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('notes',v)" @sort="o=>setSort('notes',o)" /></th>
               </template>
               <!-- reconciliation -->
               <template v-else-if="activeTab === 'reconciliation'">
-                <SortTh v-if="show('r_estimated_amount')" col="estimated" label="预估金额" class="amt" />
+                <th v-if="show('r_estimated_amount')" class="amt"><ColumnFilter label="预估金额" field="estimated_amount" type="number" :model-value="colFilters.estimated_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('estimated_amount',v)" @sort="o=>setSort('estimated_amount',o)" /></th>
                 <th v-if="show('r_reconciliation')" class="ctr">对账状态</th>
-                <SortTh v-if="show('r_reconciliation')" col="reconciliation_date" label="对账日期" class="ctr" />
-                <SortTh v-if="show('r_due_date')" col="due_date" label="应收到期" class="ctr" />
+                <th v-if="show('r_reconciliation')" class="ctr"><ColumnFilter label="对账日期" field="reconciliation_date" type="date" :model-value="colFilters.reconciliation_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('reconciliation_date',v)" @sort="o=>setSort('reconciliation_date',o)" /></th>
+                <th v-if="show('r_due_date')" class="ctr"><ColumnFilter label="应收到期" field="due_date" type="date" :model-value="colFilters.due_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('due_date',v)" @sort="o=>setSort('due_date',o)" /></th>
                 <th class="ctr">状态</th>
-                <SortTh v-if="show('r_outstanding')" col="outstanding" label="未收金额" class="amt" />
+                <th v-if="show('r_outstanding')" class="amt"><ColumnFilter label="未收金额" field="outstanding_amount" type="number" :model-value="colFilters.outstanding_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('outstanding_amount',v)" @sort="o=>setSort('outstanding_amount',o)" /></th>
               </template>
               <!-- invoice -->
               <template v-else-if="activeTab === 'invoice'">
-                <th class="ctr">批次号</th>
-                <SortTh v-if="show('r_estimated_amount')" col="estimated" label="预估金额" class="amt" />
-                <SortTh v-if="show('r_actual_invoice_amount')" col="invoiced" label="实际开票额" class="amt" />
-                <th v-if="show('r_tax_amount')" class="amt">税额</th>
-                <SortTh v-if="show('r_invoice_date')" col="invoice_date" label="开票日期" class="ctr" />
-                <th v-if="show('r_account_diff')" class="amt">账实差额</th>
+                <th class="ctr"><ColumnFilter label="批次号" field="invoice_batch_no" type="text" :model-value="colFilters.invoice_batch_no" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('invoice_batch_no',v)" @sort="o=>setSort('invoice_batch_no',o)" /></th>
+                <th v-if="show('r_estimated_amount')" class="amt"><ColumnFilter label="预估金额" field="estimated_amount" type="number" :model-value="colFilters.estimated_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('estimated_amount',v)" @sort="o=>setSort('estimated_amount',o)" /></th>
+                <th v-if="show('r_actual_invoice_amount')" class="amt"><ColumnFilter label="实际开票额" field="actual_invoice_amount" type="number" :model-value="colFilters.actual_invoice_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('actual_invoice_amount',v)" @sort="o=>setSort('actual_invoice_amount',o)" /></th>
+                <th v-if="show('r_tax_amount')" class="amt"><ColumnFilter label="税额" field="tax_amount" type="number" :model-value="colFilters.tax_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('tax_amount',v)" @sort="o=>setSort('tax_amount',o)" /></th>
+                <th v-if="show('r_invoice_date')" class="ctr"><ColumnFilter label="开票日期" field="invoice_date" type="date" :model-value="colFilters.invoice_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('invoice_date',v)" @sort="o=>setSort('invoice_date',o)" /></th>
+                <th v-if="show('r_account_diff')" class="amt"><ColumnFilter label="账实差额" field="account_diff_adjustment" type="number" :model-value="colFilters.account_diff_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('account_diff_adjustment',v)" @sort="o=>setSort('account_diff_adjustment',o)" /></th>
                 <th v-if="show('r_invoice_status')" class="ctr">开票状态</th>
               </template>
               <!-- collection -->
               <template v-else>
                 <th class="amt">应收基础</th>
                 <th v-if="show('r_payments')">回款记录</th>
-                <SortTh v-if="show('r_outstanding')" col="outstanding" label="未收金额" class="amt" />
+                <th v-if="show('r_outstanding')" class="amt"><ColumnFilter label="未收金额" field="outstanding_amount" type="number" :model-value="colFilters.outstanding_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('outstanding_amount',v)" @sort="o=>setSort('outstanding_amount',o)" /></th>
                 <th v-if="show('r_invoice_status')" class="ctr">回款状态</th>
               </template>
 
@@ -2312,6 +2356,8 @@ function clearFilters() {
 /* Table — 紧凑：数据量大，尽量一屏多看 */
 .rec-table { width: 100%; }
 .rec-table th { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 6px 10px; background: rgba(0,0,0,0.02); white-space: nowrap; }
+/* 列头筛选漏斗弹层经 Teleport 到 body 不受裁剪，但漏斗按钮本身需可见，避免被表头裁掉 */
+.rec-table thead th { overflow: visible; }
 .rec-table td { padding: 5px 10px; vertical-align: middle; font-size: 12.5px; }
 /* 数据表内部滚动：表头吸顶 + 合计行吸底，行在中间滚动，合计始终停在表区底部
    （无需把整页拉到最底就能看到汇总）。max-height 留给上方筛选/指标条，可按需微调。 */
