@@ -389,6 +389,14 @@ const fmtAmt = (v) => fmtCompact(v, { dash: '0.00' })
 // 表格内金额：精确数值、千分位、不带单位（KPI 指标条仍用 fmtAmt 带单位）
 const fmtCell = (v) => fmtMoney(v, '—')
 
+// ── 分页跳转 ────────────────────────────────────────────────────────────────
+const jumpPage = ref(1)
+function doJump() {
+  const tp = Math.ceil(total.value / size)
+  const p = Math.max(1, Math.min(tp, jumpPage.value || 1))
+  page.value = p; load(false)
+}
+
 async function load(reset = false) {
   if (reset) page.value = 1
   loading.value = true
@@ -396,7 +404,7 @@ async function load(reset = false) {
     const [recs, kpi] = await Promise.all([
       ar.listRecords(buildParams({ ...reqParams(),
         include_payments: 1, page: page.value, size })),
-      ar.recordsKpi(reqParams()),
+      ar.recordsKpi(buildParams(reqParams())),
     ])
     items.value = recs.data.items
     total.value = recs.data.total
@@ -897,7 +905,7 @@ async function downloadTemplate() {
   try {
     const res = await ar.recordTemplate()
     downloadBlob(res, '应收账款明细导入模板.xlsx')
-  } catch (e) { alert(e?.msg || '模板下载失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
 async function handleImport(e) {
@@ -962,7 +970,7 @@ async function exportData() {
   try {
     const res = await ar.exportRecords(buildParams(reqParams()))
     downloadBlob(res, '应收账款明细.xlsx')
-  } catch (e) { alert(e?.msg || '导出失败')
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { exporting.value = false }
 }
 
@@ -1315,7 +1323,7 @@ function clearFilters() {
                   <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.due_date || '—' }}</td>
                   <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.target_collection_date || '—' }}</td>
                   <td v-if="show('r_reconciliation')" class="ctr">
-                    <span :class="['status-pill', rec.reconciliation_status === '已对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status }}</span>
+                    <span :class="['status-pill', rec.reconciliation_status === '已对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status === '已对账' ? '✓ 已对账' : '○ 未对账' }}</span>
                   </td>
                   <td v-if="show('r_payments')" class="ctr">
                     <span class="pay-count" :class="rec.payments?.length ? 'count-has' : 'count-none'">{{ rec.payments?.length || 0 }}</span>
@@ -1342,7 +1350,7 @@ function clearFilters() {
                 <template v-else-if="activeTab === 'reconciliation'">
                   <td v-if="show('r_estimated_amount')" class="amt fw">{{ fmtCell(rec.estimated_amount) }}</td>
                   <td v-if="show('r_reconciliation')" class="ctr">
-                    <span :class="['status-pill', rec.reconciliation_status === '已对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status }}</span>
+                    <span :class="['status-pill', rec.reconciliation_status === '已对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status === '已对账' ? '✓ 已对账' : '○ 未对账' }}</span>
                   </td>
                   <td v-if="show('r_reconciliation')" class="ctr text-sm-muted">{{ rec.reconciliation_date || '—' }}</td>
                   <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.due_date || '—' }}</td>
@@ -1367,7 +1375,7 @@ function clearFilters() {
                   <td v-if="show('r_invoice_date')" class="ctr text-sm-muted">{{ rec.invoice_date || '—' }}</td>
                   <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtCell(rec.account_diff_adjustment) : '—' }}</td>
                   <td v-if="show('r_invoice_status')" class="ctr">
-                    <span :class="['status-pill', rec.invoice_status === '已结清' ? 'pill-ok' : rec.invoice_status === '部分回款' ? 'pill-blue' : rec.invoice_status === '已开票' ? 'pill-warn' : 'pill-muted']">{{ rec.invoice_status }}</span>
+                    <span :class="['status-pill', rec.invoice_status === '已结清' ? 'pill-ok' : rec.invoice_status === '部分回款' ? 'pill-blue' : rec.invoice_status === '已开票' ? 'pill-warn' : 'pill-muted']">{{ rec.invoice_status === '已开票' ? '✓ 已开票' : rec.invoice_status === '未开票' ? '○ 未开票' : rec.invoice_status }}</span>
                   </td>
                 </template>
 
@@ -1384,7 +1392,7 @@ function clearFilters() {
                   </td>
                   <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
                   <td v-if="show('r_invoice_status')" class="ctr">
-                    <span :class="['status-pill', rec.invoice_status === '已结清' ? 'pill-ok' : rec.invoice_status === '部分回款' ? 'pill-blue' : rec.invoice_status === '已开票' ? 'pill-warn' : 'pill-muted']">{{ rec.invoice_status }}</span>
+                    <span :class="['status-pill', rec.invoice_status === '已结清' ? 'pill-ok' : rec.invoice_status === '部分回款' ? 'pill-blue' : rec.invoice_status === '已开票' ? 'pill-warn' : 'pill-muted']">{{ rec.invoice_status === '已开票' ? '✓ 已开票' : rec.invoice_status === '未开票' ? '○ 未开票' : rec.invoice_status }}</span>
                   </td>
                 </template>
 
@@ -1439,6 +1447,7 @@ function clearFilters() {
             <button :disabled="page <= 1" class="page-btn" @click="page--; load()">‹ 上一页</button>
             <span class="page-info">{{ page }} / {{ Math.ceil(total / size) }} 页 · 共 {{ total }} 条</span>
             <button :disabled="page * size >= total" class="page-btn" @click="page++; load()">下一页 ›</button>
+            <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" class="pg-jump-input" @keyup.enter="doJump" />页</span>
           </div>
         </div>
       </Teleport>
@@ -2656,4 +2665,14 @@ function clearFilters() {
 .od-badge.od-warn { background: rgba(230,81,0,0.1); color: #e65100; }
 .od-badge.od-danger { background: rgba(198,40,40,0.1); color: #c62828; }
 .dun-has-action { font-size: 12px; color: #2e7d32; font-weight: 600; }
+
+/* 分页跳转 */
+.pg-jump { display:inline-flex;align-items:center;gap:4px;font-size:13px;color:var(--muted);margin-left:8px; }
+.pg-jump-input { width:46px;text-align:center;padding:2px 4px;border:1px solid var(--border);border-radius:6px;font-size:13px; }
+
+/* 移动端 KPI 响应式 */
+@media (max-width: 640px) {
+  .metrics-bar { flex-wrap: wrap !important; }
+  .kpi-item, .kpi-progress { min-width: calc(50% - 8px) !important; flex: 1 1 calc(50% - 8px) !important; }
+}
 </style>
