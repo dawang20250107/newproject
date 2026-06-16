@@ -2,9 +2,24 @@
 列表/KPI/汇总/可用额/可冲销记录、导入导出、分期、核销与批量核销、差额汇总、
 冲销工作台等。共享基座来自 _common。"""
 from ._common import *  # noqa: F401,F403
+from paikuan.list_filters import build_filter_q, resolve_sort
 
 # 预收预付 (Advance receipts / prepayments) — 单表 + direction 判别，挂项目台账
 # ══════════════════════════════════════════════════════════════════════════════
+
+# Excel 风格列头筛选 + 排序白名单：仅登记真实 DB 列（计算列/派生状态不在此）。
+# project__short_name 走关联 lookup，命中时需 .distinct()（multi=True）。
+ADVANCE_FILTER_REGISTRY = {
+    'direction':              {'type': 'enum',   'col': 'direction'},
+    'counterparty':           {'type': 'text',   'col': 'counterparty'},
+    'delivery_dept':          {'type': 'enum',   'col': 'delivery_dept'},
+    'occur_date':             {'type': 'date',   'col': 'occur_date'},
+    'expected_writeoff_date': {'type': 'date',   'col': 'expected_writeoff_date'},
+    'advance_amount':         {'type': 'number', 'col': 'advance_amount'},
+    'written_off_amount':     {'type': 'number', 'col': 'written_off_amount'},
+    'balance_amount':         {'type': 'number', 'col': 'balance_amount'},
+    'project_short_name':     {'type': 'text',   'col': 'project__short_name', 'multi': True},
+}
 
 def _advance_dept_filter(qs, request):
     """Dept-scope advances. Project-linked rows use project.is_shared for the
@@ -45,6 +60,12 @@ def _apply_advance_filters(qs, request):
                        Q(project__short_name__icontains=q) |
                        Q(project__project_no__icontains=q) |
                        Q(notes__icontains=q))
+    # Excel 风格列头筛选（白名单驱动，叠加在既有维度筛选之上）
+    fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), ADVANCE_FILTER_REGISTRY)
+    if fq:
+        qs = qs.filter(fq)
+        if fq_distinct:
+            qs = qs.distinct()
     return qs
 
 
@@ -60,6 +81,11 @@ def advances(request):
         qs = _advance_dept_filter(
             AdvanceRecord.objects.select_related('project', 'created_by'), request)
         qs = _apply_advance_filters(qs, request)
+        # 列头排序仅作用于分页列表（汇总不受影响）；非法/未指定回退模型默认排序
+        sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'),
+                               ADVANCE_FILTER_REGISTRY)
+        if sort_by:
+            qs = qs.order_by(sort_by)
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
 
@@ -777,6 +803,11 @@ def advance_export(request):
     today = datetime.date.today()
     qs = _apply_advance_filters(
         _advance_dept_filter(AdvanceRecord.objects.select_related('project'), request), request)
+    # 导出与列表口径一致：同样应用列头排序
+    sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'),
+                           ADVANCE_FILTER_REGISTRY)
+    if sort_by:
+        qs = qs.order_by(sort_by)
     if qs.count() > 5000:
         return err('导出超过5000行，请缩小筛选范围')
 

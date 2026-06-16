@@ -7,6 +7,7 @@ import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
 import { downloadBlob } from '../../utils/download.js'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
+import ColumnFilter from '../../components/ColumnFilter.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -20,7 +21,34 @@ const loading = ref(false)
 const page = ref(1)
 const size = 50
 
-const filters = reactive({ dept: '', year: '', month: '', writeoff_status: '', q: '' })
+// 顶部全局关键字 + 与列头无重复的页级控件（年/月/核销状态）。
+// 部门改由列头「交付部门」筛选，dept 不再出现于工具栏。
+const filters = reactive({ year: '', month: '', writeoff_status: '', q: '' })
+
+// ── Excel 风格列头筛选 + 排序 ───────────────────────────────────────────────
+const colFilters = reactive({})          // field -> {op, value}
+const sortField = ref('')
+const sortOrder = ref('')                // 'asc' | 'desc' | ''
+// 列头「交付部门」枚举选项（与工具栏部门口径一致）
+const deptOptions = computed(() =>
+  accessibleDepts.value.map(d => ({ value: d, label: d })))
+function setColFilter(field, val) {
+  if (val == null) delete colFilters[field]
+  else colFilters[field] = val
+  load(true)
+}
+function setSort(field, order) {
+  sortField.value = order ? field : ''
+  sortOrder.value = order || ''
+  load(true)
+}
+function buildParams() {
+  const p = { direction: direction.value, ...filters, page: page.value, size }
+  if (projectFilter.value) p.project_id = projectFilter.value.id
+  if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
+  if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
+  return p
+}
 
 // 部门下拉数据源：优先用与系统常量匹配的事业部；若用户真实部门名不在常量内
 // （历史命名/二级部门等），回退到其真实可见部门，避免下拉为空导致无法选择部门。
@@ -58,8 +86,7 @@ async function load(reset = false) {
   if (reset) page.value = 1
   loading.value = true
   try {
-    const params = { direction: direction.value, ...filters, page: page.value, size }
-    if (projectFilter.value) params.project_id = projectFilter.value.id
+    const params = buildParams()
     const [res, k] = await Promise.all([
       ar.listAdvances(params),
       ar.advancesKpi({ direction: direction.value, ...filters }),
@@ -354,7 +381,7 @@ async function onPrecheckApply({ mode }) {
 async function exportData() {
   exporting.value = true
   try {
-    const res = await ar.exportAdvances({ direction: direction.value, ...filters })
+    const res = await ar.exportAdvances(buildParams())
     downloadBlob(res, `${dirLabel.value}明细.xlsx`)
   } catch (e) { alert(e?.msg || '导出失败') }
   finally { exporting.value = false }
@@ -517,10 +544,7 @@ onMounted(() => {
     <template v-if="isAdvanceMode">
       <div class="card">
         <div class="filter-row">
-          <select v-if="accessibleDepts.length > 1" v-model="filters.dept" class="sel sm" @change="onFilterChange">
-            <option value="">全部部门</option>
-            <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
-          </select>
+          <input v-model="filters.q" class="inp sm global-search" placeholder="🔍 全局搜索：往来单位 / 项目 / 编号 / 备注…" @input="onQInput" />
           <select v-model="filters.year" class="sel sm" @change="onFilterChange">
             <option value="">年</option>
             <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
@@ -535,7 +559,7 @@ onMounted(() => {
             <option value="部分核销">部分核销</option>
             <option value="已核销">已核销</option>
           </select>
-          <input v-model="filters.q" class="inp sm" placeholder="🔍 搜索往来单位 / 项目 / 备注" @input="onQInput" />
+          <span class="filter-hint">提示：点击列名旁的 ⏷ 可按列筛选 / 排序</span>
           <button v-if="projectFilter" class="proj-chip" @click="clearProjectFilter">
             项目：{{ projectFilter.label }} ✕
           </button>
@@ -553,15 +577,18 @@ onMounted(() => {
           <table class="data-table">
             <thead>
               <tr>
-                <th v-if="show('adv_counterparty')">往来单位</th>
-                <th>项目/部门</th>
+                <th v-if="show('adv_counterparty')"><ColumnFilter label="往来单位" field="counterparty" type="text" :model-value="colFilters.counterparty" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('counterparty',v)" @sort="o=>setSort('counterparty',o)" /></th>
+                <th class="proj-dept-th">
+                  <ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" />
+                  <ColumnFilter label="部门" field="delivery_dept" type="enum" :options="deptOptions" :model-value="colFilters.delivery_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('delivery_dept',v)" @sort="o=>setSort('delivery_dept',o)" />
+                </th>
                 <th>发生年月</th>
-                <th>款项日期</th>
-                <th v-if="show('adv_amount')" class="amt">{{ dirLabel }}金额</th>
-                <th v-if="show('adv_writeoff')" class="amt">已核销</th>
-                <th v-if="show('adv_writeoff')" class="amt">未核销余额</th>
+                <th><ColumnFilter label="款项日期" field="occur_date" type="date" :model-value="colFilters.occur_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('occur_date',v)" @sort="o=>setSort('occur_date',o)" /></th>
+                <th v-if="show('adv_amount')" class="amt"><ColumnFilter :label="`${dirLabel}金额`" field="advance_amount" type="number" :model-value="colFilters.advance_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('advance_amount',v)" @sort="o=>setSort('advance_amount',o)" /></th>
+                <th v-if="show('adv_writeoff')" class="amt"><ColumnFilter label="已核销" field="written_off_amount" type="number" :model-value="colFilters.written_off_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('written_off_amount',v)" @sort="o=>setSort('written_off_amount',o)" /></th>
+                <th v-if="show('adv_writeoff')" class="amt"><ColumnFilter label="未核销余额" field="balance_amount" type="number" :model-value="colFilters.balance_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('balance_amount',v)" @sort="o=>setSort('balance_amount',o)" /></th>
                 <th v-if="show('adv_writeoff')" class="ctr">核销状态</th>
-                <th v-if="show('adv_expected_date')" class="ctr">挂账账龄</th>
+                <th v-if="show('adv_expected_date')" class="ctr"><ColumnFilter label="挂账账龄" field="expected_writeoff_date" type="date" :model-value="colFilters.expected_writeoff_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('expected_writeoff_date',v)" @sort="o=>setSort('expected_writeoff_date',o)" /></th>
                 <th class="adv-notes-col">备注</th>
                 <th class="ctr">操作</th>
               </tr>
@@ -1011,6 +1038,12 @@ onMounted(() => {
 .data-table.compact { min-width: 0; }
 .data-table th, .data-table td { padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .data-table thead th { color: var(--muted); font-weight: 700; font-size: 12px; background: rgba(180,140,110,.06); }
+/* 列头漏斗按钮 / 弹层定位锚点不被单元格裁切 */
+.data-table thead th { overflow: visible; }
+/* 项目简称 + 部门 两个列头筛选并排 */
+.proj-dept-th { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.global-search { width: 360px; min-width: 300px; max-width: 100%; flex: 0 1 360px; }
+.filter-hint { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .data-table th.amt, .data-table td.amt { text-align: right; }
 .data-table th.ctr, .data-table td.ctr { text-align: center; }
 .num-strong { font-weight: 700; }
