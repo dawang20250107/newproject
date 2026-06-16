@@ -9,7 +9,7 @@ import { downloadBlob } from '../../utils/download.js'
 import { useServerSort } from '../../composables/useServerSort.js'
 import SortTh from '../../components/ar/SortTh.vue'
 import FilterPanel from '../../components/ar/FilterPanel.vue'
-import { describeCondition } from '../../composables/arConditions.js'
+import { describeCondition, STATUS_OPTS, RECON_OPTS, INVOICE_OPTS, RESP_OPTS } from '../../composables/arConditions.js'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 
@@ -493,6 +493,31 @@ function upsertDim(field, value) {
   const list = conditions.value.filter(c => !(c.t === 'dim' && c.field === field))
   list.push({ t: 'dim', field, value })
   conditions.value = list
+}
+
+// ── 状态类列头筛选（计算列）：复用既有 dim/conditions 机制，与筛选面板/chip 同源 ──
+// 这些状态（状态/对账/开票/责任）后端已有成熟的 dim 过滤口径，列头只做单选 dim 的增删，
+// 不新增任何 SQL 注解，避免与 @property 显示口径出现偏差。
+const _toOpts = arr => arr.map(o => ({ value: o.v, label: o.l }))
+const DIM_OPTS = {
+  status: _toOpts(STATUS_OPTS),
+  reconciliation_status: _toOpts(RECON_OPTS),
+  invoice_status: _toOpts(INVOICE_OPTS),
+  responsibility: _toOpts(RESP_OPTS),
+}
+function setDimFilter(field, value) {
+  const list = conditions.value.filter(c => !(c.t === 'dim' && c.field === field))
+  if (value) list.push({ t: 'dim', field, value })
+  conditions.value = list
+  onFilterChange()
+}
+function dimModel(field) {
+  const c = conditions.value.find(x => x.t === 'dim' && x.field === field)
+  return c ? { op: 'in', value: [c.value] } : null
+}
+function onDimCol(field, val) {
+  const v = (val && Array.isArray(val.value) && val.value.length) ? val.value[0] : ''
+  setDimFilter(field, v)
 }
 function drillIntoGroup(row) {
   if (!DRILLABLE_DIMS.includes(summaryGroupBy.value)) return
@@ -1220,20 +1245,20 @@ function clearFilters() {
                 <th v-if="show('r_outstanding')" class="amt"><ColumnFilter label="未收金额" field="outstanding_amount" type="number" :model-value="colFilters.outstanding_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('outstanding_amount',v)" @sort="o=>setSort('outstanding_amount',o)" /></th>
                 <th v-if="show('r_due_date')" class="ctr"><ColumnFilter label="应收到期" field="due_date" type="date" :model-value="colFilters.due_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('due_date',v)" @sort="o=>setSort('due_date',o)" /></th>
                 <th v-if="show('r_due_date')" class="ctr"><ColumnFilter label="目标回款" field="target_collection_date" type="date" :model-value="colFilters.target_collection_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('target_collection_date',v)" @sort="o=>setSort('target_collection_date',o)" /></th>
-                <th v-if="show('r_reconciliation')" class="ctr">对账</th>
+                <th v-if="show('r_reconciliation')" class="ctr"><ColumnFilter label="对账" field="reconciliation_status" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.reconciliation_status" :model-value="dimModel('reconciliation_status')" @update:model-value="v=>onDimCol('reconciliation_status',v)" /></th>
                 <th v-if="show('r_payments')" class="ctr">回款</th>
                 <th v-if="show('r_payments')" class="ctr" title="预收核销冲抵的次数（点数字查看明细）">预收冲抵</th>
-                <th class="ctr">状态</th>
-                <th class="ctr">责任状态</th>
+                <th class="ctr"><ColumnFilter label="状态" field="status" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.status" :model-value="dimModel('status')" @update:model-value="v=>onDimCol('status',v)" /></th>
+                <th class="ctr"><ColumnFilter label="责任状态" field="responsibility" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.responsibility" :model-value="dimModel('responsibility')" @update:model-value="v=>onDimCol('responsibility',v)" /></th>
                 <th v-if="show('r_notes')" class="notes-col"><ColumnFilter label="备注" field="notes" type="text" :model-value="colFilters.notes" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('notes',v)" @sort="o=>setSort('notes',o)" /></th>
               </template>
               <!-- reconciliation -->
               <template v-else-if="activeTab === 'reconciliation'">
                 <th v-if="show('r_estimated_amount')" class="amt"><ColumnFilter label="预估金额" field="estimated_amount" type="number" :model-value="colFilters.estimated_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('estimated_amount',v)" @sort="o=>setSort('estimated_amount',o)" /></th>
-                <th v-if="show('r_reconciliation')" class="ctr">对账状态</th>
+                <th v-if="show('r_reconciliation')" class="ctr"><ColumnFilter label="对账状态" field="reconciliation_status" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.reconciliation_status" :model-value="dimModel('reconciliation_status')" @update:model-value="v=>onDimCol('reconciliation_status',v)" /></th>
                 <th v-if="show('r_reconciliation')" class="ctr"><ColumnFilter label="对账日期" field="reconciliation_date" type="date" :model-value="colFilters.reconciliation_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('reconciliation_date',v)" @sort="o=>setSort('reconciliation_date',o)" /></th>
                 <th v-if="show('r_due_date')" class="ctr"><ColumnFilter label="应收到期" field="due_date" type="date" :model-value="colFilters.due_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('due_date',v)" @sort="o=>setSort('due_date',o)" /></th>
-                <th class="ctr">状态</th>
+                <th class="ctr"><ColumnFilter label="状态" field="status" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.status" :model-value="dimModel('status')" @update:model-value="v=>onDimCol('status',v)" /></th>
                 <th v-if="show('r_outstanding')" class="amt"><ColumnFilter label="未收金额" field="outstanding_amount" type="number" :model-value="colFilters.outstanding_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('outstanding_amount',v)" @sort="o=>setSort('outstanding_amount',o)" /></th>
               </template>
               <!-- invoice -->
@@ -1244,14 +1269,14 @@ function clearFilters() {
                 <th v-if="show('r_tax_amount')" class="amt"><ColumnFilter label="税额" field="tax_amount" type="number" :model-value="colFilters.tax_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('tax_amount',v)" @sort="o=>setSort('tax_amount',o)" /></th>
                 <th v-if="show('r_invoice_date')" class="ctr"><ColumnFilter label="开票日期" field="invoice_date" type="date" :model-value="colFilters.invoice_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('invoice_date',v)" @sort="o=>setSort('invoice_date',o)" /></th>
                 <th v-if="show('r_account_diff')" class="amt"><ColumnFilter label="账实差额" field="account_diff_adjustment" type="number" :model-value="colFilters.account_diff_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('account_diff_adjustment',v)" @sort="o=>setSort('account_diff_adjustment',o)" /></th>
-                <th v-if="show('r_invoice_status')" class="ctr">开票状态</th>
+                <th v-if="show('r_invoice_status')" class="ctr"><ColumnFilter label="开票状态" field="invoice_status" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.invoice_status" :model-value="dimModel('invoice_status')" @update:model-value="v=>onDimCol('invoice_status',v)" /></th>
               </template>
               <!-- collection -->
               <template v-else>
                 <th class="amt">应收基础</th>
                 <th v-if="show('r_payments')">回款记录</th>
                 <th v-if="show('r_outstanding')" class="amt"><ColumnFilter label="未收金额" field="outstanding_amount" type="number" :model-value="colFilters.outstanding_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('outstanding_amount',v)" @sort="o=>setSort('outstanding_amount',o)" /></th>
-                <th v-if="show('r_invoice_status')" class="ctr">回款状态</th>
+                <th v-if="show('r_invoice_status')" class="ctr"><ColumnFilter label="回款状态" field="status" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.status" :model-value="dimModel('status')" @update:model-value="v=>onDimCol('status',v)" /></th>
               </template>
 
               <th class="ctr">操作</th>
