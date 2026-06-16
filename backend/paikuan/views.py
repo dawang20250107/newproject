@@ -1019,6 +1019,35 @@ def payment_offsets(request, pk):
     return ok({'items': items, 'total_offset': str(p.prepaid_offset_amount or 0)})
 
 
+def _apply_payment_status_filter(qs, status_q, paid_annotated):
+    """付款台账状态筛选：口径与前端 StatusBadge / to_dict 完全一致（含预付冲抵）。
+    供 _list_payments 与 payment_export 共用，避免两处逻辑漂移。
+    """
+    if not status_q:
+        return qs
+    if not paid_annotated:
+        qs = qs.annotate(paid=_paid_expr())
+    if status_q == 'pending':
+        qs = qs.filter(paid=Decimal('0'), plan_adjustment__isnull=True,
+                       prepaid_offset_amount=Decimal('0'))
+    elif status_q == 'settled':
+        qs = qs.filter(
+            Q(paid__gte=F('total_amount') - F('prepaid_offset_amount')) |
+            Q(plan_adjustment__isnull=False,
+              paid__gte=F('plan_adjustment') - F('prepaid_offset_amount'))
+        )
+    elif status_q == 'partial':
+        qs = qs.filter(paid__gt=Decimal('0'),
+                       paid__lt=F('total_amount') - F('prepaid_offset_amount'),
+                       plan_adjustment__isnull=True)
+    elif status_q == 'overdue':
+        qs = qs.filter(planned_date__lt=datetime.date.today()).filter(_not_settled_q('paid'))
+    elif status_q == 'adjusted':
+        qs = qs.filter(plan_adjustment__isnull=False,
+                       paid__lt=F('plan_adjustment') - F('prepaid_offset_amount'))
+    return qs
+
+
 def _apply_payment_computed_filters(qs, request):
     """付款台账「计算列」筛选 + 排序：已付(paid)/剩余(remaining)/逾期(overdue)。
 
@@ -1122,30 +1151,8 @@ def _list_payments(request):
     except ValueError:
         page, size = 1, 50
 
-    # Status filter via SQL annotation — avoids fetching all rows into Python.
-    # 口径与 _not_settled_q 一致：已付 + 预付冲抵 对比有效计划（调整额优先）。
-    if status_q:
-        if not _paid_annotated:
-            qs = qs.annotate(paid=_paid_expr())
-        if status_q == 'pending':
-            qs = qs.filter(paid=Decimal('0'), plan_adjustment__isnull=True,
-                           prepaid_offset_amount=Decimal('0'))
-        elif status_q == 'settled':
-            qs = qs.filter(
-                Q(paid__gte=F('total_amount') - F('prepaid_offset_amount')) |
-                Q(plan_adjustment__isnull=False,
-                  paid__gte=F('plan_adjustment') - F('prepaid_offset_amount'))
-            )
-        elif status_q == 'partial':
-            qs = qs.filter(paid__gt=Decimal('0'),
-                           paid__lt=F('total_amount') - F('prepaid_offset_amount'),
-                           plan_adjustment__isnull=True)
-        elif status_q == 'overdue':
-            today_val = datetime.date.today()
-            qs = qs.filter(planned_date__lt=today_val).filter(_not_settled_q('paid'))
-        elif status_q == 'adjusted':
-            qs = qs.filter(plan_adjustment__isnull=False,
-                           paid__lt=F('plan_adjustment') - F('prepaid_offset_amount'))
+    # Status filter — shared helper 与 export 口径完全一致
+    qs = _apply_payment_status_filter(qs, status_q, _paid_annotated)
 
     total = qs.count()
 
@@ -3627,27 +3634,7 @@ def payment_export(request):
         qs = qs.order_by(_sort_by)
     # 计算列（已付/剩余/逾期）筛选与排序：导出与列表口径一致
     qs, _paid_annotated = _apply_payment_computed_filters(qs, request)
-    if status_q:
-        if not _paid_annotated:
-            qs = qs.annotate(paid=_paid_expr())
-        if status_q == 'pending':
-            qs = qs.filter(paid=Decimal('0'), plan_adjustment__isnull=True)
-        elif status_q == 'settled':
-            qs = qs.filter(
-                Q(paid__gte=F('total_amount')) |
-                Q(plan_adjustment__isnull=False, paid__gte=F('plan_adjustment'))
-            )
-        elif status_q == 'partial':
-            qs = qs.filter(paid__gt=Decimal('0'), paid__lt=F('total_amount'),
-                           plan_adjustment__isnull=True)
-        elif status_q == 'adjusted':
-            qs = qs.filter(plan_adjustment__isnull=False, paid__lt=F('plan_adjustment'))
-        elif status_q == 'overdue':
-            today_val = datetime.date.today()
-            qs = qs.filter(planned_date__lt=today_val).filter(
-                Q(plan_adjustment__isnull=True, paid__lt=F('total_amount')) |
-                Q(plan_adjustment__isnull=False, paid__lt=F('plan_adjustment'))
-            )
+    qs = _apply_payment_status_filter(qs, status_q, _paid_annotated)
 
     # Reject rather than silently truncate: a truncated export is worse than no export.
     EXPORT_CAP = 5000
