@@ -100,6 +100,8 @@ const PAY_STATUS_OPTS = [
   { value: 'settled', label: '✅ 已付清' }, { value: 'adjusted', label: '📋 计划调整' },
   { value: 'overdue', label: '⚠ 已逾期' },
 ]
+// 逾期列：派生是/否（计划日期已过且未结清）
+const OVERDUE_OPTS = [{ value: '是', label: '是（已逾期）' }, { value: '否', label: '否' }]
 const colFilters = reactive({})    // field -> {op, value}（不含 status）
 const statusSel = ref('')          // 计划状态单选 → status 查询参数
 const sortField = ref('')
@@ -698,10 +700,10 @@ async function doBatchPay() {
               <th v-if="colVisible('payee')" style="width:8%"><ColumnFilter label="收款方" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
               <th v-if="colVisible('planned_date')" style="width:6%"><ColumnFilter label="计划日期" field="planned_date" type="date" :model-value="colFilters.planned_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('planned_date',v)" @sort="o=>setSort('planned_date',o)" /></th>
               <th v-if="colVisible('total_amount')" style="width:8%"><ColumnFilter label="计划额" field="total_amount" type="number" :model-value="colFilters.total_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('total_amount',v)" @sort="o=>setSort('total_amount',o)" /></th>
-              <th v-if="colVisible('paid')" style="width:7%">已付</th>
-              <th v-if="colVisible('remaining')" style="width:6%">剩余</th>
+              <th v-if="colVisible('paid')" style="width:7%"><ColumnFilter label="已付" field="paid" type="number" :model-value="colFilters.paid" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('paid',v)" @sort="o=>setSort('paid',o)" /></th>
+              <th v-if="colVisible('remaining')" style="width:6%"><ColumnFilter label="剩余" field="remaining" type="number" :model-value="colFilters.remaining" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('remaining',v)" @sort="o=>setSort('remaining',o)" /></th>
               <th v-if="colVisible('status')" style="width:9%"><ColumnFilter label="状态" field="status" type="enum" :options="PAY_STATUS_OPTS" :single="true" :sortable="false" :model-value="statusColModel" @update:model-value="setStatusFilter" /></th>
-              <th v-if="colVisible('overdue')" style="width:6%">逾期</th>
+              <th v-if="colVisible('overdue')" style="width:6%"><ColumnFilter label="逾期" field="overdue" type="enum" :options="OVERDUE_OPTS" :sortable="false" :model-value="colFilters.overdue" @update:model-value="v=>setColFilter('overdue',v)" /></th>
               <th v-if="colVisible('plan_adjustment')" style="width:6%"><ColumnFilter label="计划调整" field="plan_adjustment" type="number" :model-value="colFilters.plan_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('plan_adjustment',v)" @sort="o=>setSort('plan_adjustment',o)" /></th>
               <th v-if="auth.canWrite || auth.canDelete" style="width:12%">操作</th>
             </tr>

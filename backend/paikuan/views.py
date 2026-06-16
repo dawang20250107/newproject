@@ -14,7 +14,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction, IntegrityError
 from django.db.models import F, Q, Sum, Count, Case, When, ExpressionWrapper, Value, OuterRef, Subquery
 from django.db.models import DecimalField as DjDecimalField
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, Greatest
 from django.conf import settings
 from django.utils import timezone
 import jwt
@@ -76,6 +76,14 @@ PAYMENT_FILTER_REGISTRY = {
     # 回款日期：反向关联到分期表，需去重；排序无意义故禁用
     'pay_date':           {'type': 'date',   'col': 'installments__pay_date',
                            'multi': True, 'sortable': False},
+}
+
+# 付款台账「计算列」筛选：已付/剩余为 SQL 注解后的数值列；逾期为派生是/否（单独处理）。
+# 这些列不在 PAYMENT_FILTER_REGISTRY（真实列）中，需先注解再用本表走通用数值解析器。
+# 注解名避免与模型 @property（total_paid / remaining）冲突：remaining→remaining_calc。
+PAYMENT_COMPUTED_REGISTRY = {
+    'paid':      {'type': 'number', 'col': 'paid'},
+    'remaining': {'type': 'number', 'col': 'remaining_calc'},
 }
 
 # 审计日志：仅登记 AuditLog 上真实存在的 DB 列（result 为计算口径，
@@ -948,6 +956,58 @@ def payment_offsets(request, pk):
     return ok({'items': items, 'total_offset': str(p.prepaid_offset_amount or 0)})
 
 
+def _apply_payment_computed_filters(qs, request):
+    """付款台账「计算列」筛选 + 排序：已付(paid)/剩余(remaining)/逾期(overdue)。
+
+    口径与 Payment.to_dict 显示值严格一致：
+      · 已付   = 分期回款合计（_paid_expr）
+      · 剩余   = max(0, 有效计划 − 已付 − 预付冲抵)（Greatest 钳到 0，与 property 一致）
+      · 逾期=是 = 计划日期 < 今天 且 未结清（复用 _not_settled_q）
+    仅在请求确有计算列筛选/排序时才注解，避免拖慢默认列表。
+    返回 (qs, paid_annotated) 供下游 status 注解去重，防止 paid 重复注解报错。
+    """
+    raw = request.GET.get('filters', '')
+    spec = {}
+    try:
+        if raw:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                spec = parsed
+    except (ValueError, TypeError):
+        spec = {}
+    sort_f = (request.GET.get('sort') or '').strip()
+
+    if not (any(k in spec for k in ('paid', 'remaining', 'overdue')) or sort_f in ('paid', 'remaining')):
+        return qs, False
+
+    qs = qs.annotate(paid=_paid_expr()).annotate(
+        remaining_calc=Greatest(Value(Decimal('0'), output_field=_DEC18),
+                                _effective_remaining_expr('paid'), output_field=_DEC18))
+
+    # 已付/剩余：复用通用数值解析器（注解名即 col）
+    fq, _ = build_filter_q(raw, PAYMENT_COMPUTED_REGISTRY)
+    if fq:
+        qs = qs.filter(fq)
+
+    # 逾期(是/否)：派生布尔，单独构造
+    ov = spec.get('overdue')
+    if isinstance(ov, dict) and ov.get('op') == 'in':
+        vals = {str(x) for x in (ov.get('value') or [])}
+        overdue_q = Q(planned_date__lt=datetime.date.today()) & _not_settled_q('paid')
+        if '是' in vals and '否' not in vals:
+            qs = qs.filter(overdue_q)
+        elif '否' in vals and '是' not in vals:
+            qs = qs.exclude(overdue_q)
+        # 同时勾选是+否 或 都不勾 → 不约束
+
+    if sort_f in ('paid', 'remaining'):
+        prefix = '-' if (request.GET.get('order') or '').lower() == 'desc' else ''
+        col = 'remaining_calc' if sort_f == 'remaining' else 'paid'
+        qs = qs.order_by(f'{prefix}{col}')
+
+    return qs, True
+
+
 def _list_payments(request):
     qs = Payment.objects.select_related('created_by').prefetch_related('installments', 'plan_items').all()
     qs = dept_filter(qs, request)
@@ -990,6 +1050,9 @@ def _list_payments(request):
     if sort_by:
         qs = qs.order_by(sort_by)
 
+    # 计算列（已付/剩余/逾期）筛选与排序：按需注解，复用既有金额口径表达式
+    qs, _paid_annotated = _apply_payment_computed_filters(qs, request)
+
     try:
         page = max(1, int(request.GET.get('page', 1)))
         size = min(200, max(1, int(request.GET.get('size', 50))))
@@ -999,7 +1062,8 @@ def _list_payments(request):
     # Status filter via SQL annotation — avoids fetching all rows into Python.
     # 口径与 _not_settled_q 一致：已付 + 预付冲抵 对比有效计划（调整额优先）。
     if status_q:
-        qs = qs.annotate(paid=_paid_expr())
+        if not _paid_annotated:
+            qs = qs.annotate(paid=_paid_expr())
         if status_q == 'pending':
             qs = qs.filter(paid=Decimal('0'), plan_adjustment__isnull=True,
                            prepaid_offset_amount=Decimal('0'))
@@ -3495,8 +3559,11 @@ def payment_export(request):
     _sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), PAYMENT_FILTER_REGISTRY)
     if _sort_by:
         qs = qs.order_by(_sort_by)
+    # 计算列（已付/剩余/逾期）筛选与排序：导出与列表口径一致
+    qs, _paid_annotated = _apply_payment_computed_filters(qs, request)
     if status_q:
-        qs = qs.annotate(paid=_paid_expr())
+        if not _paid_annotated:
+            qs = qs.annotate(paid=_paid_expr())
         if status_q == 'pending':
             qs = qs.filter(paid=Decimal('0'), plan_adjustment__isnull=True)
         elif status_q == 'settled':

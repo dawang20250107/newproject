@@ -1388,3 +1388,88 @@ class ColumnFilterTests(TestCase):
     def test_approval_sort_amount_desc(self):
         items = self._items('/api/pk/approvals', {'sort': 'amount', 'order': 'desc'})
         self.assertEqual([i['applicant'] for i in items], ['赵六', '王五'])
+
+
+class PaymentComputedFilterTests(TestCase):
+    """付款台账计算列筛选：已付/剩余(数值)、逾期(是/否)，及按已付/剩余排序。
+    口径必须与 Payment.to_dict 显示值一致。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = DEPARTMENTS[0]
+        u = PaikuanUser(phone='13900000950', name='Admin', role='super_admin',
+                        job_title='finance_director', departments=[self.dept],
+                        is_active=True, is_approved=True)
+        u.set_password('Test123456'); u.save()
+        self.user = u
+        self.token = make_token(u)
+        from paikuan.models import PaymentInstallment
+        today = date.today()
+        past = today - __import__('datetime').timedelta(days=10)
+        future = today + __import__('datetime').timedelta(days=30)
+        # A: 未付，计划在过去 → paid=0, remaining=1000, 逾期=是
+        self.a = Payment.objects.create(created_by=u, department=self.dept, approval_number='',
+                                        project_desc='甲', payee='A', total_amount=Decimal('1000'),
+                                        planned_date=past)
+        # B: 已付清，计划在过去 → paid=1000, remaining=0, 逾期=否(已结清)
+        self.b = Payment.objects.create(created_by=u, department=self.dept, approval_number='',
+                                        project_desc='乙', payee='B', total_amount=Decimal('1000'),
+                                        planned_date=past)
+        PaymentInstallment.objects.create(payment=self.b, seq=1, pay_date=past, pay_amount=Decimal('1000'))
+        # C: 部分付款，计划在未来 → paid=400, remaining=600, 逾期=否
+        self.c = Payment.objects.create(created_by=u, department=self.dept, approval_number='',
+                                        project_desc='丙', payee='C', total_amount=Decimal('1000'),
+                                        planned_date=future)
+        PaymentInstallment.objects.create(payment=self.c, seq=1, pay_date=future, pay_amount=Decimal('400'))
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _descs(self, params):
+        r = self.client.get('/api/pk/payments', params, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        return sorted(i['project_desc'] for i in r.json()['data']['items'])
+
+    def test_paid_gte(self):
+        # 已付 >= 400 → 乙(1000) 丙(400)
+        self.assertEqual(self._descs({'filters': json.dumps({'paid': {'op': 'gte', 'value': '400'}})}),
+                         ['丙', '乙'])
+
+    def test_remaining_zero(self):
+        # 剩余 = 0 → 仅乙(已结清，钳到0)
+        self.assertEqual(self._descs({'filters': json.dumps({'remaining': {'op': 'eq', 'value': '0'}})}),
+                         ['乙'])
+
+    def test_remaining_between(self):
+        # 剩余 区间 [500,700] → 仅丙(600)
+        self.assertEqual(self._descs({'filters': json.dumps({'remaining': {'op': 'between', 'value': ['500', '700']}})}),
+                         ['丙'])
+
+    def test_overdue_yes(self):
+        # 逾期=是 → 仅甲(过去且未结清)；乙过去但已结清=否，丙未来=否
+        self.assertEqual(self._descs({'filters': json.dumps({'overdue': {'op': 'in', 'value': ['是']}})}),
+                         ['甲'])
+
+    def test_overdue_no(self):
+        # 逾期=否 → 乙、丙
+        self.assertEqual(self._descs({'filters': json.dumps({'overdue': {'op': 'in', 'value': ['否']}})}),
+                         ['丙', '乙'])
+
+    def test_sort_paid_asc(self):
+        r = self.client.get('/api/pk/payments', {'sort': 'paid', 'order': 'asc'}, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        descs = [i['project_desc'] for i in r.json()['data']['items']]
+        # paid: 甲0 < 丙400 < 乙1000
+        self.assertEqual(descs, ['甲', '丙', '乙'])
+
+    def test_summary_consistent_with_filter(self):
+        # 筛选即合计：已付>=400 时 planned_total 应为 乙+丙 = 2000
+        r = self.client.get('/api/pk/payments',
+                            {'filters': json.dumps({'paid': {'op': 'gte', 'value': '400'}})}, **self.auth())
+        d = r.json()['data']
+        self.assertEqual(d['total'], 2)
+        self.assertEqual(Decimal(d['planned_total']), Decimal('2000'))
