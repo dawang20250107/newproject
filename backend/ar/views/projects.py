@@ -1,10 +1,31 @@
 """项目台账（projects）业务域视图：项目列表/详情/批量删除、模板·导入导出、统计、
 草稿项目完善与提升，以及项目侧的合同挂接、客户清理等助手。共享基座来自 _common。"""
 from ._common import *  # noqa: F401,F403
+from paikuan.list_filters import build_filter_q, resolve_sort
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Projects
 # ══════════════════════════════════════════════════════════════════════════════
+
+# Excel 风格「列头筛选 + 排序」白名单：仅登记 ARProject 上的真实 DB 列（跳过
+# 计算/聚合列）。col 为 ORM lookup。未注册字段/类型不符的运算符一律静默忽略。
+PROJECT_FILTER_REGISTRY = {
+    'customer_name':   {'type': 'text',   'col': 'customer_name'},
+    'short_name':      {'type': 'text',   'col': 'short_name'},
+    'project_no':      {'type': 'text',   'col': 'project_no'},
+    'delivery_dept':   {'type': 'enum',   'col': 'delivery_dept'},
+    'sub_dept':        {'type': 'text',   'col': 'sub_dept'},
+    # business_mode 在模型中为自由文本、无固定选项 → 用文本「包含/等于」筛选
+    'business_mode':   {'type': 'text',   'col': 'business_mode'},
+    'customer_level':  {'type': 'enum',   'col': 'customer_level'},
+    'project_manager': {'type': 'text',   'col': 'project_manager'},
+    'sales_contact':   {'type': 'text',   'col': 'sales_contact'},
+    'invoice_mode':    {'type': 'enum',   'col': 'invoice_mode'},
+    'status':          {'type': 'enum',   'col': 'status'},
+    'contract_date':   {'type': 'date',   'col': 'contract_date'},
+    'tax_rate':        {'type': 'number', 'col': 'tax_rate'},
+}
+
 
 def _apply_project_list_filters(qs, request):
     """项目台账列表筛选（q/dept/manager/is_shared/is_draft/customer_level/invoice_mode）。
@@ -43,6 +64,12 @@ def _apply_project_list_filters(qs, request):
     status = request.GET.get('status', '').strip()
     if status:
         qs = qs.filter(status=status)
+    # Excel 风格列头筛选（白名单驱动）；与列表 GET / 批量删除共用此口径。
+    fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), PROJECT_FILTER_REGISTRY)
+    if fq:
+        qs = qs.filter(fq)
+        if fq_distinct:
+            qs = qs.distinct()
     return qs
 
 
@@ -57,6 +84,11 @@ def projects(request):
         qs = _apply_project_list_filters(
             _ar_dept_filter(ARProject.objects.all(), request, shared_field='is_shared'),
             request)
+
+        # Excel 风格列头排序（白名单驱动）；未指定/非法字段回退模型默认排序。
+        sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), PROJECT_FILTER_REGISTRY)
+        if sort_by:
+            qs = qs.order_by(sort_by)
 
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(100, max(1, int(request.GET.get('size', 50) or 50)))
@@ -645,6 +677,16 @@ def project_export(request):
         qs = qs.filter(
             Q(customer_name__icontains=q) | Q(short_name__icontains=q) |
             Q(project_no__icontains=q))
+
+    # 列头筛选 + 排序：与列表 GET 同口径，使导出与所见筛选/排序结果一致。
+    fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), PROJECT_FILTER_REGISTRY)
+    if fq:
+        qs = qs.filter(fq)
+        if fq_distinct:
+            qs = qs.distinct()
+    _sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), PROJECT_FILTER_REGISTRY)
+    if _sort_by:
+        qs = qs.order_by(_sort_by)
 
     if qs.count() > 5000:
         return err('导出超过5000行，请缩小筛选范围')

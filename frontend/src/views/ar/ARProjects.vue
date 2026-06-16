@@ -8,6 +8,7 @@ import { fmtCompact, fmtMoney } from '../../utils/format.js'
 import { TOOLTIP } from '../../utils/chartTheme.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
+import ColumnFilter from '../../components/ColumnFilter.vue'
 
 const auth = useAuthStore()
 const items = ref([])
@@ -17,9 +18,41 @@ const loading = ref(false)
 const page = ref(1)
 const size = 50
 
-const filters = reactive({ q: '', dept: '', customer_level: '', invoice_mode: '', is_shared: '', is_draft: '', status: '' })
+// 顶部仅保留全局关键字搜索 + 无列头等价物的页面级开关（共享业务 / 草稿）。
+// 真实数据列（交付部门 / 客户等级 / 开票模式 / 状态 等）改用 Excel 风格列头筛选。
+const filters = reactive({ q: '', is_shared: '', is_draft: '' })
+// ── Excel 风格列头筛选 + 排序 ───────────────────────────────────────────────
+const colFilters = reactive({})    // field -> {op, value}
+const sortField = ref('')
+const sortOrder = ref('')          // 'asc' | 'desc' | ''
 const CUSTOMER_LEVELS = ['S级', 'A级', 'B级', 'C级', 'D级']
 const STATUSES = ['运作中', '中断', '结束']
+const INVOICE_MODES = ['全额', '差额']
+function setColFilter(field, val) {
+  if (val == null) delete colFilters[field]
+  else colFilters[field] = val
+  page.value = 1; clearSelection(); reloadAll()
+}
+function setSort(field, order) {
+  sortField.value = order ? field : ''
+  sortOrder.value = order || ''
+  page.value = 1; load()
+}
+const activeColFilterCount = computed(() => Object.keys(colFilters).length)
+// 统计条按单一交付部门聚合：列头仅选了一个事业部时带入，否则按全部口径。
+const statDept = computed(() => {
+  const sel = colFilters.delivery_dept
+  return (sel && Array.isArray(sel.value) && sel.value.length === 1) ? sel.value[0] : ''
+})
+function buildParams() {
+  const p = { page: page.value, size }
+  if (filters.q.trim()) p.q = filters.q.trim()
+  if (filters.is_shared) p.is_shared = filters.is_shared
+  if (filters.is_draft) p.is_draft = filters.is_draft
+  if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
+  if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
+  return p
+}
 const statusClass = s => ({ '运作中': 'st-on', '中断': 'st-pause', '结束': 'st-end' }[s] || 'st-on')
 const showModal = ref(false)
 const editItem = ref(null)
@@ -67,7 +100,7 @@ async function confirmBulkDelete() {
   if (!delConfirmOk.value) return
   bulkDeleting.value = true
   try {
-    if (selectAllMatching.value) await ar.bulkDeleteProjects({ all: true }, { ...filters })
+    if (selectAllMatching.value) await ar.bulkDeleteProjects({ all: true }, buildParams())
     else await ar.bulkDeleteProjects({ ids: [...selectedIds.value] })
     showDelConfirm.value = false
     clearSelection()
@@ -124,7 +157,7 @@ async function load(reset = false) {
   if (reset) { page.value = 1; clearSelection() }  // 改筛选/搜索即清空选择，避免误删旧筛选项
   loading.value = true
   try {
-    const res = await ar.listProjects({ ...filters, page: page.value, size })
+    const res = await ar.listProjects(buildParams())
     items.value = res.data.items
     total.value = res.data.total
   } finally { loading.value = false }
@@ -132,7 +165,7 @@ async function load(reset = false) {
 
 async function loadStats() {
   try {
-    const res = await ar.projectStats({ dept: filters.dept })
+    const res = await ar.projectStats({ dept: statDept.value })
     stats.value = res.data
   } catch { stats.value = null }
 }
@@ -148,17 +181,17 @@ function onSearchInput() {
 function clearSearch() { filters.q = ''; load(true) }
 
 const hasActiveFilters = computed(() =>
-  !!(filters.q || filters.dept || filters.customer_level || filters.invoice_mode ||
-     filters.is_draft || filters.status || (filters.is_shared && !auth.perms?.ar_shared_only)))
+  !!(filters.q || filters.is_draft || activeColFilterCount.value || sortField.value ||
+     (filters.is_shared && !auth.perms?.ar_shared_only)))
 
 function resetFilters() {
   filters.q = ''
-  filters.dept = ''
-  filters.customer_level = ''
-  filters.invoice_mode = ''
   if (!auth.perms?.ar_shared_only) filters.is_shared = ''
   filters.is_draft = ''
-  filters.status = ''
+  Object.keys(colFilters).forEach(k => delete colFilters[k])
+  sortField.value = ''
+  sortOrder.value = ''
+  page.value = 1
   reloadAll()
 }
 
@@ -262,10 +295,12 @@ async function save() {
       await ar.updateProject(editItem.value.id, payload)
     } else {
       const saved = await ar.createProject({ ...form, customer_id: form.customer_id || null, contract_ids: contractIds })
-      // 新建后确保立即可见：清空搜索、按新项目部门筛选、回到首页
+      // 新建后确保立即可见：清空搜索、按新项目部门（列头筛选）锁定、回到首页
       filters.q = ''
       const newDept = saved?.data?.delivery_dept || form.delivery_dept
-      if (newDept && accessibleDepts.value.includes(newDept)) filters.dept = newDept
+      if (newDept && accessibleDepts.value.includes(newDept)) {
+        colFilters.delivery_dept = { op: 'in', value: [newDept] }
+      }
       page.value = 1
     }
     showModal.value = false
@@ -355,14 +390,20 @@ async function onPrecheckApply({ mode }) {
 async function exportData() {
   exporting.value = true
   try {
-    const res = await ar.exportProjects(filters)
+    const res = await ar.exportProjects(buildParams())
     downloadBlob(res, '项目信息.xlsx')
   } catch (e) { alert(e?.msg || '导出失败')
   } finally { exporting.value = false }
 }
 
 const onScopeChange = () => {
-  if (filters.dept && !accessibleDepts.value.includes(filters.dept)) filters.dept = ''
+  // 事业部范围切换：若列头筛了已超出范围的事业部，剔除越界值（清空则去掉该列筛选）
+  const sel = colFilters.delivery_dept
+  if (sel && Array.isArray(sel.value)) {
+    const kept = sel.value.filter(d => accessibleDepts.value.includes(d))
+    if (kept.length) colFilters.delivery_dept = { op: 'in', value: kept }
+    else delete colFilters.delivery_dept
+  }
   page.value = 1
   reloadAll()
 }
@@ -460,23 +501,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                @input="onSearchInput" @keyup.enter="load(true)" />
         <button v-if="filters.q" class="search-clear" title="清除" @click="clearSearch">✕</button>
       </div>
-      <select v-model="filters.dept" class="sel-bu" @change="reloadAll">
-        <option value="">全部事业部</option>
-        <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
-      </select>
-      <select v-model="filters.customer_level" class="sel-mo" @change="load(true)">
-        <option value="">全部等级</option>
-        <option v-for="l in CUSTOMER_LEVELS" :key="l" :value="l">{{ l }}</option>
-      </select>
-      <select v-model="filters.status" class="sel-mo" @change="load(true)">
-        <option value="">全部状态</option>
-        <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
-      </select>
-      <select v-model="filters.invoice_mode" class="sel-mo" @change="load(true)">
-        <option value="">全部开票</option>
-        <option value="全额">全额</option>
-        <option value="差额">差额</option>
-      </select>
+      <!-- 真实数据列（事业部 / 等级 / 状态 / 开票 等）改用列头 ⏷ 筛选 + 排序；
+           此处仅保留无列头等价物的页面级开关（共享业务 / 草稿）。 -->
       <select v-model="filters.is_shared" class="sel-mo" @change="load(true)"
               :disabled="auth.perms?.ar_shared_only">
         <option value="">全部业务</option>
@@ -489,6 +515,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <option value="false">已完善项目</option>
       </select>
       <button v-if="hasActiveFilters" class="filter-reset" @click="resetFilters">重置筛选</button>
+      <span class="filter-hint">点击列名旁的 ⏷ 可按列筛选 / 排序</span>
     </div>
 
     <!-- 选择 + 批量删除工具条（选中后出现） -->
@@ -513,19 +540,19 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <input type="checkbox" :checked="pageAllSelected" :disabled="!items.length"
                   title="全选本页" @change="toggleSelectPage" />
               </th>
-              <th>项目编号</th>
-              <th v-if="show('p_contract_name') || show('p_short_name')">客户 / 简称</th>
-              <th class="ctr">状态</th>
-              <th v-if="show('p_delivery_dept')">交付部门</th>
-              <th v-if="show('p_sub_dept')">二级部门</th>
-              <th v-if="show('p_business_mode')">业务模式</th>
-              <th v-if="show('p_customer_level')" class="ctr">客户等级</th>
-              <th v-if="show('p_project_manager')">负责人</th>
-              <th v-if="show('p_sales_contact')">销售</th>
+              <th><ColumnFilter label="项目编号" field="project_no" type="text" :model-value="colFilters.project_no" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_no',v)" @sort="o=>setSort('project_no',o)" /></th>
+              <th v-if="show('p_contract_name') || show('p_short_name')"><ColumnFilter label="客户 / 简称" field="customer_name" type="text" :model-value="colFilters.customer_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('customer_name',v)" @sort="o=>setSort('customer_name',o)" /></th>
+              <th class="ctr"><ColumnFilter label="状态" field="status" type="enum" :options="STATUSES" :model-value="colFilters.status" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('status',v)" @sort="o=>setSort('status',o)" /></th>
+              <th v-if="show('p_delivery_dept')"><ColumnFilter label="交付部门" field="delivery_dept" type="enum" :options="accessibleDepts" :model-value="colFilters.delivery_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('delivery_dept',v)" @sort="o=>setSort('delivery_dept',o)" /></th>
+              <th v-if="show('p_sub_dept')"><ColumnFilter label="二级部门" field="sub_dept" type="text" :model-value="colFilters.sub_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('sub_dept',v)" @sort="o=>setSort('sub_dept',o)" /></th>
+              <th v-if="show('p_business_mode')"><ColumnFilter label="业务模式" field="business_mode" type="text" :model-value="colFilters.business_mode" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('business_mode',v)" @sort="o=>setSort('business_mode',o)" /></th>
+              <th v-if="show('p_customer_level')" class="ctr"><ColumnFilter label="客户等级" field="customer_level" type="enum" :options="CUSTOMER_LEVELS" :model-value="colFilters.customer_level" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('customer_level',v)" @sort="o=>setSort('customer_level',o)" /></th>
+              <th v-if="show('p_project_manager')"><ColumnFilter label="负责人" field="project_manager" type="text" :model-value="colFilters.project_manager" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_manager',v)" @sort="o=>setSort('project_manager',o)" /></th>
+              <th v-if="show('p_sales_contact')"><ColumnFilter label="销售" field="sales_contact" type="text" :model-value="colFilters.sales_contact" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('sales_contact',v)" @sort="o=>setSort('sales_contact',o)" /></th>
               <th v-if="show('p_has_contract')" class="ctr">合同</th>
-              <th v-if="show('p_contract_date')" class="ctr">签订日期</th>
+              <th v-if="show('p_contract_date')" class="ctr"><ColumnFilter label="签订日期" field="contract_date" type="date" :model-value="colFilters.contract_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('contract_date',v)" @sort="o=>setSort('contract_date',o)" /></th>
               <th v-if="show('p_account_period')" class="ctr">总账期</th>
-              <th v-if="show('p_invoice_config')" class="ctr">开票</th>
+              <th v-if="show('p_invoice_config')" class="ctr"><ColumnFilter label="开票" field="invoice_mode" type="enum" :options="INVOICE_MODES" :model-value="colFilters.invoice_mode" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('invoice_mode',v)" @sort="o=>setSort('invoice_mode',o)" /></th>
               <th v-if="show('p_notes')">备注</th>
               <th class="ctr">操作</th>
             </tr>
@@ -903,6 +930,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   color: var(--muted); padding: 6px 7px; background: rgba(0,0,0,0.025);
   border-bottom: 1px solid rgba(0,0,0,0.06); white-space: nowrap;
 }
+/* 列头允许筛选漏斗按钮溢出展示，不被裁切 */
+.proj-table thead th { overflow: visible; }
 /* 单元格强制单行：行高不随列宽变化，从设计上杜绝「滚动条↔换行↔高度」回流抖动。
    两行结构的单元格（客户名+简称）每行各自单行截断，整体高度仍恒定。 */
 .proj-table td { padding: 5px 7px; vertical-align: middle; white-space: nowrap; }
@@ -998,8 +1027,9 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .derived-label { font-size: 11px; color: var(--muted); font-weight: 500; }
 .derived-value { font-size: 16px; font-weight: 700; color: var(--primary); }
 .filter-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.filter-hint { font-size: 11.5px; color: var(--muted); margin-left: 4px; white-space: nowrap; }
 .search-box {
-  position: relative; display: flex; align-items: center; flex: 1; min-width: 280px; max-width: 460px;
+  position: relative; display: flex; align-items: center; flex: 1; min-width: 320px; max-width: 460px;
 }
 .search-ico { position: absolute; left: 11px; color: var(--muted); pointer-events: none; }
 .search-input {
