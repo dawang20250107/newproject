@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted, defineAsyncComponent } from 'vue'
+import { ref, reactive, computed, onMounted, defineAsyncComponent, nextTick } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { yearCST, todayCST, DEPARTMENTS } from '../../constants.js'
 import ar from '../../api/ar.js'
@@ -137,6 +137,11 @@ async function load(reset = false) {
 }
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size)))
 function go(p) { if (p < 1 || p > totalPages.value) return; page.value = p; load() }
+const jumpPage = ref(1)
+function doJump() {
+  const p = Math.max(1, Math.min(totalPages.value, Math.round(jumpPage.value)))
+  if (p !== page.value) go(p)
+}
 
 let searchTimer = null
 function onSearchInput() { clearTimeout(searchTimer); searchTimer = setTimeout(() => load(true), 280) }
@@ -163,10 +168,25 @@ async function openDetail(c) {
   try {
     const res = await ar.getCustomer(c.id)
     detail.value = res.data
+    await nextTick()
+    const drawerEl = document.querySelector('.drawer')
+    if (drawerEl) {
+      const closeBtn = drawerEl.querySelector('.dw-close')
+      if (closeBtn) closeBtn.focus()
+    }
   } catch (e) { showToast(e?.error || '加载失败') }
   finally { detailLoading.value = false }
 }
 function closeDrawer() { drawerOpen.value = false; detail.value = null }
+
+function trapTab(e) {
+  const el = e.currentTarget
+  const focusable = [...el.querySelectorAll('button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])')].filter(x => !x.disabled)
+  if (!focusable.length) { e.preventDefault(); return }
+  const first = focusable[0], last = focusable[focusable.length - 1]
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+}
 
 function openCreate() {
   Object.assign(editForm, { id: null, name: '', delivery_dept: filters.dept || accessibleDepts.value[0] || '', level: '', status: '运作中', contact: '', customer_date: todayCST(), notes: '', push_status: false })
@@ -230,8 +250,7 @@ onMounted(() => load(true))
         <button v-if="filters.q" class="search-clear" @click="filters.q=''; load(true)">✕</button>
       </div>
       <button v-if="hasActiveFilters" class="filter-reset" @click="resetFilters">清除全部筛选</button>
-      <span class="colf-tip">点击列名旁 ⏷ 可按列筛选 / 排序</span>
-      <div class="spacer"></div>
+<div class="spacer"></div>
       <div class="count-tip">共 {{ total }} 个客户</div>
     </div>
 
@@ -289,6 +308,7 @@ onMounted(() => load(true))
         <button :disabled="page <= 1" class="page-btn" @click="go(page - 1)">‹ 上一页</button>
         <span class="page-info">第 {{ page }} / {{ totalPages }} 页 · 共 {{ total }} 个客户</span>
         <button :disabled="page >= totalPages" class="page-btn" @click="go(page + 1)">下一页 ›</button>
+        <span class="pg-jump">跳至<input v-model.number="jumpPage" class="pg-jump-input" type="number" min="1" :max="totalPages" @keyup.enter="doJump" />页<button class="page-btn" @click="doJump">Go</button></span>
       </div>
     </div>
 
@@ -296,7 +316,7 @@ onMounted(() => load(true))
     <Teleport to="body">
       <Transition name="drawer">
         <div v-if="drawerOpen" class="drawer-mask" @click.self="closeDrawer">
-          <div class="drawer">
+          <div class="drawer" tabindex="-1" @keydown.tab.capture="trapTab" @keydown.escape="closeDrawer">
             <div class="dw-head">
               <div>
                 <div class="dw-title">{{ detail?.name || '加载中…' }}
@@ -419,6 +439,8 @@ onMounted(() => load(true))
 .cu-pager .page-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
 .cu-pager .page-btn:disabled { opacity: .4; cursor: default; }
 .cu-pager .page-info { font-size: 12.5px; color: #9b8070; }
+.pg-jump{display:inline-flex;align-items:center;gap:4px;font-size:13px;color:var(--muted);margin-left:8px}
+.pg-jump-input{width:46px;text-align:center;padding:2px 4px;border:1px solid var(--border);border-radius:6px;font-size:13px}
 .sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
 
 .filter-strip { display: flex; align-items: center; gap: 10px; margin: 14px 0; }

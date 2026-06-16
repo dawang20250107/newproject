@@ -1100,4 +1100,6 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .draft-clear-btn { font-size: 10.5px; padding: 1px 8px; border: 1px solid rgba(46,125,50,.4); background: rgba(46,125,50,.06); color: #2e7d32; border-radius: 9px; cursor: pointer; white-space: nowrap; }
 .draft-clear-btn:hover:not(:disabled) { background: rgba(46,125,50,.14); }
 .draft-clear-btn:disabled { opacity: .5; cursor: default; }
+.pg-jump{display:inline-flex;align-items:center;gap:4px;font-size:13px;color:var(--muted);margin-left:8px}
+.pg-jump-input{width:46px;text-align:center;padding:2px 4px;border:1px solid var(--border);border-radius:6px;font-size:13px}
 </style>

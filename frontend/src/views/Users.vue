@@ -4,6 +4,9 @@ import api from '../api/index.js'
 import { DEPARTMENTS, ROLE_LABELS, JOB_LABELS, JOB_OPTIONS } from '../constants.js'
 import EmptyState from '../components/EmptyState.vue'
 import ColumnFilter from '../components/ColumnFilter.vue'
+import { useToast } from '../composables/useToast.js'
+
+const toast = useToast()
 
 // ── 列头筛选 + 排序（客户端，全部用户已一次性加载，无服务端分页）──────────────
 const colFilters = reactive({})
@@ -165,14 +168,16 @@ async function saveEdit() {
 }
 
 async function deactivate(u) {
-  if (!confirm(`⚠️ 确定删除「${u.name}」的账号？\n\n此操作将永久删除该用户的登录记录，无法恢复。\n如需重新使用，须重新注册并等待审批。`)) return
+  if (!confirm(`确认删除用户「${u.name}」？此操作不可撤销。`)) return
+  const typed = window.prompt(`请输入用户名「${u.name}」以确认删除：`)
+  if (typed !== u.name) { toast.warn('输入不匹配，已取消'); return }
   try {
     await api.delete(`/users/${u.id}`)
     deletedIds.add(u.id)                                    // never let it reappear
     users.value = users.value.filter(x => x.id !== u.id)  // instant feedback
     await load()                                            // reconcile with server truth
   } catch (e) {
-    alert(e?.error || '操作失败')
+    toast.warn(e?.error || '操作失败')
   }
 }
 
@@ -185,7 +190,7 @@ async function approve(u) {
     })
     load()
   } catch (e) {
-    alert(e?.error || '审批失败')
+    toast.warn(e?.error || '审批失败')
   } finally {
     approveLoading.value[u.id] = false
   }
@@ -197,7 +202,7 @@ async function reject(u) {
     await api.post(`/users/${u.id}/reject`, {})
     load()
   } catch (e) {
-    alert(e?.error || '操作失败')
+    toast.warn(e?.error || '操作失败')
   }
 }
 </script>
@@ -486,7 +491,7 @@ async function reject(u) {
 .dept-mini {
   padding: 3px 9px; border-radius: 14px; font-size: 11px; cursor: pointer;
   border: 1.5px solid var(--border); background: rgba(255,253,250,0.7);
-  transition: all 0.16s; user-select: none;
+  transition: all 0.16s; user-select: none; margin-bottom: 4px;
 }
 .dept-mini.on {
   border-color: var(--primary); background: rgba(201,99,66,0.1);

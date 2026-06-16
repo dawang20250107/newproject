@@ -1,6 +1,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { useToast } from '../../composables/useToast.js'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
@@ -9,6 +10,7 @@ import { downloadBlob } from '../../utils/download.js'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 
+const toast = useToast()
 const auth = useAuthStore()
 const route = useRoute()
 
@@ -144,6 +146,12 @@ let qTimer = null
 function onQInput() { clearTimeout(qTimer); qTimer = setTimeout(() => load(true), 300) }
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size)))
 function go(p) { if (p < 1 || p > totalPages.value) return; page.value = p; load() }
+const jumpPage = ref(1)
+function doJump() {
+  const tp = Math.ceil(total.value / size)
+  const p = Math.max(1, Math.min(tp, jumpPage.value || 1))
+  page.value = p; load()
+}
 
 // ── create / edit ──────────────────────────────────────────────────────────
 const showModal = ref(false)
@@ -223,13 +231,13 @@ async function save() {
     else await ar.createAdvance(payload)
     showModal.value = false
     await load()
-  } catch (e) { alert(e?.msg || '保存失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { saving.value = false }
 }
 async function removeRec(rec) {
   if (!confirm(`确认删除该${dirLabel.value}记录（${rec.counterparty}）？核销记录将一并删除。`)) return
   try { await ar.deleteAdvance(rec.id); await load() }
-  catch (e) { alert(e?.msg || '删除失败') }
+  catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
 // ── writeoffs ───────────────────────────────────────────────────────────────
@@ -266,7 +274,7 @@ async function refreshWriteoffs() {
   woList.value = res.data
 }
 async function addWriteoff() {
-  if (!(parseFloat(woForm.amount) > 0)) { alert('核销金额必须大于0'); return }
+  if (!(parseFloat(woForm.amount) > 0)) { toast.error('核销金额必须大于0'); return }
   woSaving.value = true
   try {
     const payload = { ...woForm }
@@ -278,7 +286,7 @@ async function addWriteoff() {
     await load()
     const fresh = items.value.find(r => r.id === woRec.value.id)
     if (fresh) woRec.value = fresh
-  } catch (e) { alert(e?.msg || '核销失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { woSaving.value = false }
 }
 async function delWriteoff(w) {
@@ -288,7 +296,7 @@ async function delWriteoff(w) {
     await refreshWriteoffs(); await load()
     const fresh = items.value.find(r => r.id === woRec.value.id)
     if (fresh) woRec.value = fresh
-  } catch (e) { alert(e?.msg || '删除失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
 // ── 收付明细（多次到账/付出；总额=明细之和，派生） ───────────────────────────
@@ -308,7 +316,7 @@ async function openInstallments(rec) {
   } catch (_) { instList.value = [] }
 }
 async function addInstallment() {
-  if (!parseFloat(instForm.amount)) { alert('收付金额不能为0（可负=退回）'); return }
+  if (!parseFloat(instForm.amount)) { toast.error('收付金额不能为0（可负=退回）'); return }
   instBusy.value = true
   try {
     const res = await ar.addAdvInstallment(instRec.value.id, { ...instForm })
@@ -317,7 +325,7 @@ async function addInstallment() {
     await load()
     const fresh = items.value.find(r => r.id === instRec.value.id)
     if (fresh) instRec.value = fresh
-  } catch (e) { alert(e?.msg || '新增收付失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { instBusy.value = false }
 }
 async function delInstallment(i) {

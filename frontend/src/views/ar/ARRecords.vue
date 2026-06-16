@@ -7,6 +7,7 @@ import ar from '../../api/ar.js'
 import { fmtCompact, fmtMoney } from '../../utils/format.js'
 import { downloadBlob } from '../../utils/download.js'
 import { useServerSort } from '../../composables/useServerSort.js'
+import { useToast } from '../../composables/useToast.js'
 import SortTh from '../../components/ar/SortTh.vue'
 import FilterPanel from '../../components/ar/FilterPanel.vue'
 import { describeCondition, STATUS_OPTS, RECON_OPTS, INVOICE_OPTS, RESP_OPTS } from '../../composables/arConditions.js'
@@ -17,6 +18,7 @@ const route = useRoute()
 const router = useRouter()
 
 const auth = useAuthStore()
+const toast = useToast()
 const items = ref([])
 const total = ref(0)
 const kpiData = ref(null)
@@ -84,7 +86,7 @@ async function confirmBulkDelete() {
     showDelConfirm.value = false
     clearSelection()
     await load(true)
-  } catch (e) { alert(e?.msg || '删除失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { bulkDeleting.value = false }
 }
 
@@ -149,15 +151,15 @@ const adjBusy = ref(false)
 const adjTotal = computed(() =>
   adjList.value.reduce((s, a) => s + (parseFloat(a.amount) || 0), 0))
 async function addAdjustment() {
-  if (!parseFloat(adjForm.amount)) { alert('调整金额不能为0（可正可负）'); return }
-  if (!adjForm.reason.trim()) { alert('请填写调整原因（如：运费差、客户扣款、补付）'); return }
+  if (!parseFloat(adjForm.amount)) { toast.error('调整金额不能为0（可正可负）'); return }
+  if (!adjForm.reason.trim()) { toast.error('请填写调整原因（如：运费差、客户扣款、补付）'); return }
   adjBusy.value = true
   try {
     const res = await ar.addAdjustment(editRec.value.id, { amount: adjForm.amount, reason: adjForm.reason })
     adjList.value = res.data.items
     adjForm.amount = ''; adjForm.reason = ''
     await load()
-  } catch (e) { alert(e?.msg || '添加调整失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { adjBusy.value = false }
 }
 async function removeAdjustment(a) {
@@ -167,7 +169,7 @@ async function removeAdjustment(a) {
     const res = await ar.deleteAdjustment(editRec.value.id, a.id)
     adjList.value = res.data.items
     await load()
-  } catch (e) { alert(e?.msg || '删除失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { adjBusy.value = false }
 }
 
@@ -360,9 +362,9 @@ async function createDunningTasks() {
     const d = res.data
     let msg = `已生成 ${d.created} 条催款任务`
     if (d.skipped) msg += `，${d.skipped} 条已有未关闭任务（跳过）`
-    alert(msg)
+    toast.success(msg)
     await loadDunning(true)
-  } catch (e) { alert(e?.msg || '生成失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { dunCreating.value = false }
 }
 // 逾期天数着色：≤30 橙、>30 红
@@ -421,9 +423,9 @@ async function fixStaleRecords() {
     const failed = res.data.failed || []
     let msg = `已重算修复 ${res.data.fixed} 条`
     if (failed.length) msg += `\n${failed.length} 条仍需人工处理（累计回款超过上账口径）`
-    alert(msg)
+    toast.success(msg)
     await loadHealth(); await load()
-  } catch (e) { alert(e?.msg || '重算失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { healthFixing.value = false }
 }
 
@@ -443,7 +445,7 @@ async function exportPayments() {
   try {
     const res = await ar.exportPaymentLedger(payFilters)
     downloadBlob(res, '回款流水.xlsx')
-  } catch (e) { alert(e?.msg || '导出失败')
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { payExporting.value = false }
 }
 
@@ -585,7 +587,7 @@ async function confirmBatchAssign() {
   const body = {}
   if (batchMode.value === 'auto') body.auto = true
   else if (batchMode.value === 'existing') {
-    if (!batchExisting.value) { alert('请选择要并入的批次'); return }
+    if (!batchExisting.value) { toast.error('请选择要并入的批次'); return }
     body.invoice_batch_no = batchExisting.value
   } else body.invoice_batch_no = batchNoInput.value
   batchAssigning.value = true
@@ -597,13 +599,13 @@ async function confirmBatchAssign() {
       res = await ar.batchAssignBatchNo({ ids: [...selectedIds.value], ...body })
     }
     const bn = res.data?.invoice_batch_no
-    alert(bn ? `已合并 ${selectedCount.value} 条记录到批次「${bn}」`
+    toast.success(bn ? `已合并 ${selectedCount.value} 条记录到批次「${bn}」`
              : `已为 ${selectedCount.value} 条记录清空批次`)
     showBatchModal.value = false
     clearSelection()
     await load()
     if (activeTab.value === 'batch') loadBatches()
-  } catch (e) { alert(e?.msg || '设置批次号失败')
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { batchAssigning.value = false }
 }
 
@@ -655,14 +657,14 @@ async function openBatchInvoice(b) {
   fetchBatchDetail(b.batch_no, true).catch(() => {})
 }
 async function doBatchInvoice() {
-  if (!(parseFloat(batchInvForm.amount) > 0)) { alert('请填写本次开票金额（价税合计）'); return }
+  if (!(parseFloat(batchInvForm.amount) > 0)) { toast.error('请填写本次开票金额（价税合计）'); return }
   batchActing.value = true
   try {
     const res = await ar.batchInvoice(batchTarget.value.batch_no, { ...batchInvForm })
-    alert(res.data?.message || '开票已落账')
+    toast.success(res.data?.message || '开票已落账')
     Object.assign(batchInvForm, { invoice_date: todayCST(), amount: '', tax_amount: '', notes: '' })
     await refreshAfterBatchAction(batchTarget.value.batch_no)
-  } catch (e) { alert(e?.msg || '批次开票失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { batchActing.value = false }
 }
 async function undoBatchInvoice(ev) {

@@ -507,6 +507,13 @@ async function onDelete(p) {
   }
 }
 
+// At module level (not inside setup, before the function)
+let _qTimer = null
+watch(() => filters.q, () => {
+  clearTimeout(_qTimer)
+  _qTimer = setTimeout(() => { filters.page = 1; clearSelection(); load() }, 350)
+})
+
 function search() { filters.page = 1; clearSelection(); load() }
 function resetFilters() {
   Object.assign(filters, { q: '', pay_date_start: '', pay_date_end: '', page: 1 })
@@ -518,7 +525,13 @@ function resetFilters() {
   load()
 }
 
+const totalPages = computed(() => Math.ceil(total.value / filters.size) || 1)
+const jumpPage = ref(1)
 function setPage(p) { filters.page = p; load() }
+function doJump() {
+  const p = Math.max(1, Math.min(totalPages.value, jumpPage.value || 1))
+  setPage(p)
+}
 
 // ── 单选/多选：批量删除 + 批量付款（批量编辑）─────────────────────────────────
 const selectedIds = ref(new Set())                       // 跨页按 id 记忆选择
@@ -802,8 +815,9 @@ async function doBatchPay() {
           </div>
           <div v-if="total > filters.size" class="bb-pager">
             <button :disabled="filters.page <= 1" class="page-btn" @click="setPage(filters.page - 1)">‹ 上一页</button>
-            <span class="page-info">{{ filters.page }} / {{ Math.ceil(total / filters.size) || 1 }} 页 · 共 {{ total }} 条</span>
+            <span class="page-info">{{ filters.page }} / {{ totalPages }} 页 · 共 {{ total }} 条</span>
             <button :disabled="filters.page * filters.size >= total" class="page-btn" @click="setPage(filters.page + 1)">下一页 ›</button>
+            <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" :max="totalPages" class="pg-jump-input" @keyup.enter="doJump" />页</span>
           </div>
         </div>
       </Teleport>
@@ -1090,6 +1104,7 @@ async function doBatchPay() {
 }
 
 /* 付款台账：固定布局，不超出卡片宽度（table-layout:fixed 已防横向溢出，无需 overflow-x:hidden） */
+.table-wrap.pk-pay-tbl { padding-bottom: 70px; }
 .pk-pay-tbl table { table-layout: fixed; }
 .pk-pay-tbl th, .pk-pay-tbl td { padding: 9px 7px; font-size: 12.5px; }
 .pk-pay-tbl td:not(.ops-cell) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
