@@ -720,7 +720,7 @@ async function saveRec() {
   if (!recForm.project_id) { toast.error('请选择项目'); return }
   saving.value = true
   try {
-    if (!editRec.value && !recForm.operation_date) { toast.error('请选择运作日期'); saving.value = false; return }
+    if (!recForm.operation_date) { toast.error('请选择运作日期'); saving.value = false; return }
     const payload = {
       project_id: recForm.project_id, operation_date: recForm.operation_date,
       estimated_amount: recForm.estimated_amount || 0,
@@ -1748,8 +1748,8 @@ function clearFilters() {
               </label>
               <label class="form-field">
                 <span>运作日期 <em>*</em></span>
-                <input v-model="recForm.operation_date" type="date" :disabled="!!editRec"
-                       title="应收发生日期；历史按月数据已迁移为当月1日" />
+                <input v-model="recForm.operation_date" type="date"
+                       title="应收发生日期；修改后将按项目账期重算应收日期" />
               </label>
               <label class="form-field">
                 <span>预估上账金额</span>

@@ -343,7 +343,23 @@ def ar_record_detail(request, pk):
         denied = _write_denied(request)
         if denied:
             return denied
-        data = _ar_visible_payload(request, _parse_body(request), 'record')
+        data = _ar_visible_payload(request, _parse_body(request), 'record',
+                                   extra=('operation_date',))
+        # 运作日期可改：变更后同步重算应收日期(due_date，由运作日期+项目账期派生)；
+        # 目标回款日期(target_collection_date)为手工值，不随之变动。
+        if 'operation_date' in data:
+            op_raw = _normalize_date(data['operation_date'])
+            try:
+                new_op = datetime.date.fromisoformat(op_raw) if op_raw else None
+            except ValueError:
+                new_op = None
+            if not new_op:
+                return err('运作日期无效：请提供 operation_date（YYYY-MM-DD）')
+            if not (2000 <= new_op.year <= 2100):
+                return err('运作日期超出合理范围（2000–2100）')
+            if new_op != rec.operation_date:
+                rec.operation_date = new_op
+                rec.due_date = rec._compute_due_date()
         for field in ('estimated_amount',):
             if field in data:
                 setattr(rec, field, _dec(data[field]))
