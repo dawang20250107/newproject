@@ -635,6 +635,33 @@ def _paid_expr():
     return _paid_subq()
 
 
+def _paid_subq_windowed(pay_start, pay_end):
+    """Correlated subquery: sum of installment amounts within an optional
+    pay_date window. 台账「已付」按付款日期窗口筛选时与「付款流水」同口径——
+    仅统计落在窗口内的实付，避免把窗口外的历史分期也计入（否则两表对不上）。"""
+    sub = PaymentInstallment.objects.filter(payment_id=OuterRef('pk'))
+    if pay_start:
+        sub = sub.filter(pay_date__gte=pay_start)
+    if pay_end:
+        sub = sub.filter(pay_date__lte=pay_end)
+    return Coalesce(
+        Subquery(
+            sub.values('payment_id').annotate(s=Sum('pay_amount')).values('s'),
+            output_field=_DEC,
+        ),
+        Value(Decimal('0')),
+        output_field=_DEC,
+    )
+
+
+def _safe_iso_date(s):
+    """Parse 'YYYY-MM-DD' → date, or None on any failure (defensive)."""
+    try:
+        return datetime.date.fromisoformat(s)
+    except Exception:
+        return None
+
+
 def _remaining_expr():
     """SQL expression for remaining = total_amount - paid (requires 'paid' annotation)."""
     return ExpressionWrapper(F('total_amount') - F('paid'), output_field=_DEC)
@@ -1156,21 +1183,43 @@ def _list_payments(request):
 
     total = qs.count()
 
-    # 未结清合计：与 stats/资金池共用同一口径 helper（扣预付冲抵）
-    paid_expr = _paid_expr()
+    # 已付口径：未加付款日期窗口时＝累计实付；加了窗口时＝窗口内实付（与「付款流水」对账一致）。
+    # 「未结清/剩余」始终用累计实付（lifetime），以保证逾期/结清判断不受日期筛选影响。
+    pay_window_active = bool(pay_start or pay_end)
     not_settled = _not_settled_q('_paid')
     effective_remaining = _effective_remaining_expr('_paid')
-    summary = qs.annotate(_paid=paid_expr).aggregate(
+    annotated = qs.annotate(_paid=_paid_expr())
+    if pay_window_active:
+        annotated = annotated.annotate(_paid_win=_paid_subq_windowed(pay_start, pay_end))
+        paid_total_expr = Sum('_paid_win')
+    else:
+        paid_total_expr = Sum('_paid')
+    summary = annotated.aggregate(
         outstanding=Sum(effective_remaining, filter=not_settled),
         outstanding_count=Count('id', filter=not_settled),
         planned_total=Sum('total_amount'),
-        paid_total=Sum('_paid'),
+        paid_total=paid_total_expr,
     )
     outstanding_total = summary['outstanding'] or Decimal('0')
     outstanding_count = summary['outstanding_count'] or 0
 
     perms = get_request_perms(request)
-    items = [apply_view_mask(p.to_dict(), perms) for p in qs[(page - 1) * size: page * size]]
+    page_slice = qs[(page - 1) * size: page * size]
+    if pay_window_active:
+        ws = _safe_iso_date(pay_start) if pay_start else None
+        we = _safe_iso_date(pay_end) if pay_end else None
+        items = []
+        for p in page_slice:
+            d = apply_view_mask(p.to_dict(), perms)
+            # 实付列改为「窗口内实付」，与付款流水逐行对账；剩余/状态仍由 to_dict 按累计实付给出。
+            if d.get('total_paid') is not None:
+                win = sum((i.pay_amount for i in p.installments.all()
+                           if (ws is None or i.pay_date >= ws)
+                           and (we is None or i.pay_date <= we)), Decimal('0'))
+                d['total_paid'] = str(win)
+            items.append(d)
+    else:
+        items = [apply_view_mask(p.to_dict(), perms) for p in page_slice]
     return ok({
         'items': items, 'total': total, 'page': page, 'size': size,
         'outstanding_total': str(outstanding_total),
@@ -3623,6 +3672,13 @@ def payment_export(request):
             Q(approval_number__icontains=q_str) | Q(g7_number__icontains=q_str) |
             Q(department__icontains=q_str) | Q(applicant__icontains=q_str)
         )
+    # 付款日期窗口：导出须与列表视图一致（此前漏掉该筛选，导出会忽略付款日期范围）。
+    pay_start = request.GET.get('pay_date_start', '').strip()
+    pay_end = request.GET.get('pay_date_end', '').strip()
+    if pay_start:
+        qs = qs.filter(installments__pay_date__gte=pay_start).distinct()
+    if pay_end:
+        qs = qs.filter(installments__pay_date__lte=pay_end).distinct()
     # 列头精确筛选 + 排序：导出与列表口径一致（筛了再导出）
     fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), PAYMENT_FILTER_REGISTRY)
     if fq:
