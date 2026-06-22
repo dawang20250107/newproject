@@ -198,7 +198,7 @@ function onProjectKeywordInput() {
 }
 const showPayModal = ref(false)
 const payRec = ref(null)
-const payForm = reactive({ amount: '', payment_date: '', notes: '' })
+const payForm = reactive({ amount: '', payment_date: '', notes: '', source: '回款', counterparty_dept: '' })
 const paySaving = ref(false)
 // 录入回款时联动：该项目可用预收（只读提示，便于判断是否以预收冲抵应收）
 const payAdvance = ref(null)
@@ -263,7 +263,7 @@ function onQuickSearch() {
 function clearQuickQ() { quickQ.value = ''; clearTimeout(quickTimer); applyQuickQ() }
 
 // ── 回款流水 (payment ledger) ───────────────────────────────────────────────
-const payFilters = reactive({ pay_start: '', pay_end: '', dept: '', q: '' })
+const payFilters = reactive({ pay_start: '', pay_end: '', dept: '', q: '', source: '' })
 const payItems = ref([])
 const paySummary = ref(null)
 const payTotal = ref(0)
@@ -753,6 +753,8 @@ async function deleteRec(rec) {
 function togglePayments(id) { expandedPayments.value[id] = !expandedPayments.value[id] }
 // 预收冲抵次数（source='预收抵扣' 的回款数）——列表「预收冲抵」列用
 const offsetCount = rec => (rec.payments || []).filter(p => p.source === '预收抵扣').length
+// 内部往来核销次数（source='内部往来'）——列表「内部往来」列用
+const internalCount = rec => (rec.payments || []).filter(p => p.source === '内部往来').length
 
 // ── 预收核销工作台（预收核销 Tab）────────────────────────────────────────────
 // 按客户聚合「有预收余额 × 名下有未收应收」，勾选多条应收后用一笔预收
@@ -830,7 +832,7 @@ async function doBatchWriteoff() {
 
 function openAddPayment(rec) {
   payRec.value = rec
-  Object.assign(payForm, { amount: '', payment_date: todayCST(), notes: '' })
+  Object.assign(payForm, { amount: '', payment_date: todayCST(), notes: '', source: '回款', counterparty_dept: '' })
   payAdvance.value = null
   advWoSel.value = null
   showPayModal.value = true
@@ -888,6 +890,9 @@ function gotoAdvance() {
 
 async function savePayment() {
   if (!payForm.amount || !payForm.payment_date) { toast.error('金额和日期必填'); return }
+  if (payForm.source === '内部往来' && !payForm.counterparty_dept) {
+    toast.error('内部往来核销请选择往来部门'); return
+  }
   paySaving.value = true
   try {
     await ar.addPayment(payRec.value.id, payForm)
@@ -899,7 +904,9 @@ async function savePayment() {
 async function deletePayment(rec, pay) {
   const tip = pay.source === '预收抵扣'
     ? `撤销该笔预收核销（${pay.amount} 元）？\n预收余额将恢复，本应收未收金额相应回升。`
-    : `确定删除第${pay.payment_no}次回款 ${pay.amount} 元？`
+    : pay.source === '内部往来'
+      ? `确定删除该笔内部往来核销（${pay.amount} 元 · 往来部门 ${pay.counterparty_dept || '—'}）？\n本应收未收金额相应回升。`
+      : `确定删除第${pay.payment_no}次回款 ${pay.amount} 元？`
   if (!confirm(tip)) return
   try { await ar.deletePayment(rec.id, pay.id); await load() }
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
@@ -1262,6 +1269,7 @@ function clearFilters() {
                 <th v-if="show('r_reconciliation')" class="ctr"><ColumnFilter label="对账" field="reconciliation_status" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.reconciliation_status" :model-value="dimModel('reconciliation_status')" @update:model-value="v=>onDimCol('reconciliation_status',v)" /></th>
                 <th v-if="show('r_payments')" class="ctr">回款</th>
                 <th v-if="show('r_payments')" class="ctr" title="预收核销冲抵的次数（点数字查看明细）">预收冲抵</th>
+                <th v-if="show('r_payments')" class="ctr" title="事业部间内部往来核销的次数（点数字查看明细）">内部往来</th>
                 <th class="ctr"><ColumnFilter label="状态" field="status" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.status" :model-value="dimModel('status')" @update:model-value="v=>onDimCol('status',v)" /></th>
                 <th class="ctr"><ColumnFilter label="责任状态" field="responsibility" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.responsibility" :model-value="dimModel('responsibility')" @update:model-value="v=>onDimCol('responsibility',v)" /></th>
                 <th v-if="show('r_notes')" class="notes-col"><ColumnFilter label="备注" field="notes" type="text" :model-value="colFilters.notes" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('notes',v)" @sort="o=>setSort('notes',o)" /></th>
@@ -1338,6 +1346,11 @@ function clearFilters() {
                   <td v-if="show('r_payments')" class="ctr">
                     <button class="pay-toggle" :title="offsetCount(rec) ? '点击展开查看预收抵扣明细' : '无预收冲抵'" @click="togglePayments(rec.id)">
                       <span class="pay-count" :class="offsetCount(rec) ? 'count-offset' : 'count-none'">{{ offsetCount(rec) }}</span>
+                    </button>
+                  </td>
+                  <td v-if="show('r_payments')" class="ctr">
+                    <button class="pay-toggle" :title="internalCount(rec) ? '点击展开查看内部往来核销明细' : '无内部往来核销'" @click="togglePayments(rec.id)">
+                      <span class="pay-count" :class="internalCount(rec) ? 'count-internal' : 'count-none'">{{ internalCount(rec) }}</span>
                     </button>
                   </td>
                   <td class="ctr">
@@ -1427,6 +1440,7 @@ function clearFilters() {
                       <span class="pay-amt">{{ fmtCell(pay.amount) }}</span>
                       <span class="pay-date">{{ pay.payment_date }}</span>
                       <span v-if="pay.source === '预收抵扣'" class="pay-src" title="由预收核销生成；删除即反向核销，预收余额恢复">预收抵扣</span>
+                      <span v-else-if="pay.source === '内部往来'" class="pay-src pay-src-internal" :title="`事业部间内部往来核销（不计现金）· 往来部门：${pay.counterparty_dept || '—'}`">内部往来 · {{ pay.counterparty_dept || '—' }}</span>
                       <span v-if="pay.notes" class="pay-notes">{{ pay.notes }}</span>
                       <button v-if="pay.source === '预收抵扣' ? auth.canAction('wo_receive') : auth.canDelete" class="pay-del" @click="deletePayment(rec, pay)">
                         {{ pay.source === '预收抵扣' ? '撤销核销' : '删除' }}</button>
@@ -1621,6 +1635,12 @@ function clearFilters() {
             <option value="">全部事业部</option>
             <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
           </select>
+          <select v-model="payFilters.source" class="sel-bu" @change="loadPayments(true)" title="按回款来源筛选">
+            <option value="">全部来源</option>
+            <option value="回款">现金回款</option>
+            <option value="预收抵扣">预收抵扣</option>
+            <option value="内部往来">内部往来</option>
+          </select>
           <input v-model="payFilters.q" placeholder="搜索项目" class="search-input" @input="loadPayments(true)" />
           <button class="btn btn-ghost btn-sm" :disabled="payExporting" @click="exportPayments">↓ 导出</button>
         </div>
@@ -1636,7 +1656,8 @@ function clearFilters() {
             <thead>
               <tr>
                 <th class="ctr">回款日期</th>
-                <th class="amt">回款金额</th>
+                <th class="amt">金额</th>
+                <th class="ctr">来源</th>
                 <th>项目</th>
                 <th class="ctr">交付部门</th>
                 <th class="ctr">运作日期</th>
@@ -1645,11 +1666,16 @@ function clearFilters() {
               </tr>
             </thead>
             <tbody>
-              <tr v-if="payLoading && !payItems.length"><td colspan="7" class="empty-cell">⏳ 加载中…</td></tr>
-              <tr v-else-if="!payItems.length"><td colspan="7" class="empty-cell">暂无回款记录</td></tr>
+              <tr v-if="payLoading && !payItems.length"><td colspan="8" class="empty-cell">⏳ 加载中…</td></tr>
+              <tr v-else-if="!payItems.length"><td colspan="8" class="empty-cell">暂无回款记录</td></tr>
               <tr v-for="p in payItems" :key="p.id" class="data-row">
                 <td class="ctr text-sm-muted">{{ p.payment_date }}</td>
-                <td class="amt fw" style="color:#2e7d32">{{ fmtCell(p.amount) }}</td>
+                <td class="amt fw" :style="{ color: p.source === '内部往来' ? '#6a1b9a' : '#2e7d32' }">{{ fmtCell(p.amount) }}</td>
+                <td class="ctr">
+                  <span v-if="p.source === '内部往来'" class="pay-src pay-src-internal" :title="`往来部门：${p.counterparty_dept || '—'}（不计现金）`">内部往来 · {{ p.counterparty_dept || '—' }}</span>
+                  <span v-else-if="p.source === '预收抵扣'" class="pay-src">预收抵扣</span>
+                  <span v-else class="text-sm-muted">现金回款</span>
+                </td>
                 <td>
                   <div class="proj-name">{{ p.short_name || '—' }}</div>
                   <div class="proj-no">{{ p.project_no }}</div>
@@ -2074,13 +2100,23 @@ function clearFilters() {
         <div class="modal-box" style="max-width:460px">
           <div class="modal-header">
             <div>
-              <h3>录入回款</h3>
+              <h3>{{ payForm.source === '内部往来' ? '内部往来核销' : '录入回款' }}</h3>
               <div style="font-size:12px;color:var(--muted);margin-top:2px">{{ payRec?.short_name || payRec?.customer_name }}</div>
             </div>
             <button class="modal-close" @click="showPayModal = false">✕</button>
           </div>
           <div class="modal-body">
-            <div v-if="payAdvance" class="adv-hint">
+            <!-- 类型切换：银行回款（现金）/ 内部往来核销（事业部间，不计现金） -->
+            <div class="pay-type-tabs">
+              <button type="button" class="pay-type-tab" :class="{ on: payForm.source === '回款' }"
+                      @click="payForm.source = '回款'; payForm.counterparty_dept = ''">银行回款</button>
+              <button type="button" class="pay-type-tab" :class="{ on: payForm.source === '内部往来' }"
+                      @click="payForm.source = '内部往来'; advWoSel = null">内部往来核销</button>
+            </div>
+            <div v-if="payForm.source === '内部往来'" class="internal-note">
+              事业部间内部往来核销：冲减本笔应收未收，<strong>不计现金</strong>（不进现金流/资金池）。
+            </div>
+            <div v-if="payForm.source === '回款' && payAdvance" class="adv-hint">
               <div class="adv-hint-head">
                 <span class="adv-hint-tag">可用预收</span>
                 <span>该项目尚有 <b>{{ payAdvance.count }}</b> 笔预收，余额合计
@@ -2110,12 +2146,19 @@ function clearFilters() {
               <div v-else class="adv-hint-note">提示：可直接「用此预收下账」抵扣本笔应收（生成预收抵扣、不计现金）；或在预收页统一管理核销。下方录入则为正常现金回款。</div>
             </div>
             <div class="form-grid">
+              <label v-if="payForm.source === '内部往来'" class="form-field span2">
+                <span>往来部门 <em>*</em></span>
+                <select v-model="payForm.counterparty_dept">
+                  <option value="" disabled>选择往来事业部</option>
+                  <option v-for="d in DEPARTMENTS" :key="d" :value="d">{{ d }}</option>
+                </select>
+              </label>
               <label class="form-field span2">
-                <span>回款金额 <em>*</em></span>
+                <span>{{ payForm.source === '内部往来' ? '核销金额' : '回款金额' }} <em>*</em></span>
                 <input v-model="payForm.amount" type="number" step="0.01" autofocus />
               </label>
               <label class="form-field span2">
-                <span>回款日期 <em>*</em></span>
+                <span>{{ payForm.source === '内部往来' ? '核销日期' : '回款日期' }} <em>*</em></span>
                 <input v-model="payForm.payment_date" type="date" />
               </label>
               <label class="form-field span2">
@@ -2126,7 +2169,7 @@ function clearFilters() {
           </div>
           <div class="modal-footer">
             <button class="btn btn-ghost" @click="showPayModal = false">取消</button>
-            <button class="btn btn-primary" :disabled="paySaving" @click="savePayment">{{ paySaving ? '保存中…' : '保存回款' }}</button>
+            <button class="btn btn-primary" :disabled="paySaving" @click="savePayment">{{ paySaving ? '保存中…' : (payForm.source === '内部往来' ? '保存核销' : '保存回款') }}</button>
           </div>
         </div>
       </div>
@@ -2599,9 +2642,17 @@ function clearFilters() {
 .pay-amt { font-weight: 700; color: #2e7d32; }
 .pay-date { font-size: 12px; color: var(--muted); }
 .pay-src { font-size: 11px; font-weight: 600; color: #1b6e35; background: rgba(27,110,53,0.1); padding: 1px 7px; border-radius: 999px; }
+.pay-src-internal { color: #6a1b9a; background: rgba(106,27,154,0.1); }
 .pay-notes { font-size: 12px; color: var(--muted); font-style: italic; }
 .pay-del { margin-left: auto; font-size: 11.5px; color: #c62828; background: none; border: none; cursor: pointer; }
 .pay-del:hover { text-decoration: underline; }
+/* 内部往来核销：列表次数徽标 + 录入弹窗类型切换 */
+.count-internal { background: rgba(106,27,154,0.13); color: #6a1b9a; }
+.pay-type-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.pay-type-tab { flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: 9px; background: rgba(255,252,250,0.8); cursor: pointer; font-size: 13px; color: var(--text); transition: all 0.14s; }
+.pay-type-tab:hover { border-color: var(--primary); }
+.pay-type-tab.on { background: var(--primary); color: #fff; border-color: var(--primary); font-weight: 600; }
+.internal-note { font-size: 12px; color: #6a1b9a; background: rgba(106,27,154,0.07); border: 1px solid rgba(106,27,154,0.2); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
 
 .row-acts { display: flex; gap: 4px; justify-content: center; }
 .icon-btn { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255,252,250,0.7); display: flex; align-items: center; justify-content: center; color: var(--muted); cursor: pointer; transition: all 0.13s; }

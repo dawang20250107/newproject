@@ -1047,6 +1047,11 @@ def ar_record_export(request):
                                    if p.source == '预收抵扣')) or ''),
         ('r_payments', '预收冲抵次数',
          lambda rec, st: sum(1 for p in rec.payments.all() if p.source == '预收抵扣') or ''),
+        ('r_payments', '内部往来金额',
+         lambda rec, st: float(sum(p.amount for p in rec.payments.all()
+                                   if p.source == '内部往来')) or ''),
+        ('r_payments', '内部往来次数',
+         lambda rec, st: sum(1 for p in rec.payments.all() if p.source == '内部往来') or ''),
         ('r_due_date', '应收日期', lambda rec, st: str(rec.due_date) if rec.due_date else ''),
         ('r_due_date', '目标回款日期',
          lambda rec, st: str(rec.target_collection_date) if rec.target_collection_date else ''),
@@ -1160,6 +1165,9 @@ def _payment_ledger_qs(request):
     project_id = request.GET.get('project_id', '').strip()
     if project_id:
         qs = qs.filter(ar_record__project_id=int(project_id))
+    source = request.GET.get('source', '').strip()
+    if source:
+        qs = qs.filter(source=source)
     q = request.GET.get('q', '').strip()
     if q:
         qs = qs.filter(
@@ -1178,12 +1186,15 @@ def _payment_ledger_row(p):
         'payment_no': p.payment_no,
         'payment_date': str(p.payment_date) if p.payment_date else None,
         'amount': str(p.amount),
+        'source': p.source,
+        'counterparty_dept': p.counterparty_dept,
         'notes': p.notes,
         'project_no': proj.project_no,
         'short_name': proj.short_name,
         'delivery_dept': rec.delivery_dept,
         'operation_year': rec.operation_year,
         'operation_month': rec.operation_month,
+        'operation_date': str(rec.operation_date) if rec.operation_date else None,
     }
 
 
@@ -1227,14 +1238,14 @@ def ar_payment_ledger_export(request):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '回款流水'
-    headers = ['回款日期', '回款金额', '项目编号', '项目简称', '交付部门',
-               '运作年', '运作月', '回款序号', '备注']
+    headers = ['回款日期', '回款金额', '来源', '往来部门', '项目编号', '项目简称',
+               '交付部门', '运作年', '运作月', '回款序号', '备注']
     _header_row(ws, headers, color='1B6E35')
     for p in qs:
         r = _payment_ledger_row(p)
-        ws.append([r['payment_date'], float(p.amount), r['project_no'], r['short_name'],
-                   r['delivery_dept'], r['operation_year'], r['operation_month'],
-                   r['payment_no'], r['notes']])
+        ws.append([r['payment_date'], float(p.amount), r['source'], r['counterparty_dept'],
+                   r['project_no'], r['short_name'], r['delivery_dept'],
+                   r['operation_year'], r['operation_month'], r['payment_no'], r['notes']])
     return _export_response(wb, '回款流水.xlsx')
 
 
@@ -1623,10 +1634,23 @@ def ar_payments(request, pk):
         data = _parse_body(request)
         amount = _dec(data.get('amount', 0))
         if amount <= 0:
-            return err('回款金额必须大于0')
+            return err('金额必须大于0')
         pay_date = _normalize_date(data.get('payment_date'))
         if not pay_date:
-            return err('回款日期无效')
+            return err('日期无效')
+        # 来源：'回款'（现金）或 '内部往来'（事业部间核销，不计现金）。
+        # '预收抵扣' 仅由预收核销自动生成，禁止经此接口手工录入。
+        source = (data.get('source') or '回款').strip()
+        counterparty = (data.get('counterparty_dept') or '').strip()
+        if source == '预收抵扣':
+            return err('预收抵扣由预收核销自动生成，请在「预收预付」页操作')
+        if source not in ('回款', '内部往来'):
+            return err('回款来源无效')
+        if source == '内部往来':
+            if counterparty not in VALID_DEPARTMENTS:
+                return err('内部往来核销须选择有效的往来事业部')
+        else:
+            counterparty = ''   # 现金回款不带往来部门
         try:
             with transaction.atomic():
                 last = rec.payments.select_for_update().order_by('-payment_no').first()
@@ -1636,6 +1660,8 @@ def ar_payments(request, pk):
                     payment_no=next_no,
                     amount=amount,
                     payment_date=pay_date,
+                    source=source,
+                    counterparty_dept=counterparty,
                     notes=data.get('notes', '').strip(),
                 )
         except ValidationError as e:
@@ -1784,10 +1810,16 @@ def ar_payment_detail(request, pk, ppk):
         if 'amount' in data:
             amount = _dec(data['amount'])
             if amount <= 0:
-                return err('回款金额必须大于0')
+                return err('金额必须大于0')
             pay.amount = amount
         if 'payment_date' in data:
             pay.payment_date = _normalize_date(data['payment_date']) or pay.payment_date
+        # 往来部门仅对内部往来核销有意义，且必须是有效事业部
+        if 'counterparty_dept' in data and pay.source == '内部往来':
+            cp = (data['counterparty_dept'] or '').strip()
+            if cp not in VALID_DEPARTMENTS:
+                return err('内部往来核销须选择有效的往来事业部')
+            pay.counterparty_dept = cp
         if 'notes' in data:
             pay.notes = data['notes'].strip()
         try:

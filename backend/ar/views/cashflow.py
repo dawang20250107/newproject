@@ -59,11 +59,11 @@ def cashflow(request):
     month_keys = [f'{y}-{m:02d}' for y, m in months]
 
     # AR collections by month across all requested depts.
-    # 排除「预收抵扣」：其现金已在预收发生时计入流入，重复计会虚增现金。
+    # 排除非现金来源（预收抵扣/内部往来）：其不构成现金流入，计入会虚增现金。
     ar_coll = (ARPayment.objects
                .filter(payment_date__gte=start_date, payment_date__lte=end_date,
                        ar_record__delivery_dept__in=depts)
-               .exclude(source='预收抵扣')
+               .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
                .annotate(ym=TruncMonth('payment_date'))
                .values('ym', 'ar_record__delivery_dept')
                .annotate(collected=Sum('amount')))
