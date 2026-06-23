@@ -80,7 +80,8 @@ class Command(BaseCommand):
     # ── 应收明细 ────────────────────────────────────────────────────────────────
     def _seed_ar(self, path, clear):
         import openpyxl
-        from ar.models import ARProject, ARRecord, ARPayment, AdvanceRecord, AdvanceWriteoff
+        from ar.models import (ARProject, ARRecord, ARPayment, ARAdjustment,
+                               AdvanceRecord, AdvanceWriteoff)
         if not path.exists():
             self.stderr.write(f'缺少数据文件：{path}')
             return
@@ -89,6 +90,7 @@ class Command(BaseCommand):
                 AdvanceWriteoff.objects.all().delete()
                 AdvanceRecord.objects.all().delete()
                 ARPayment.objects.all().delete()
+                ARAdjustment.objects.all().delete()
                 ARRecord.objects.all().delete()
                 ARProject.objects.all().delete()
             self.stdout.write('已清空应收数据表。')
@@ -165,6 +167,11 @@ class Command(BaseCommand):
                         reconciliation_date=_date(cell(r, '对账日期')), due_date=due,
                         notes=(str(cell(r, '备注')).strip() if cell(r, '备注') else ''),
                         delivery_dept=dept)
+                    # 差额走明细链路（带 adjust_date），与导入口径一致，时段合计方能归集
+                    if adj:
+                        ARAdjustment.objects.create(
+                            ar_record=rec, amount=adj, reason='导入差额调整',
+                            adjust_date=rec.operation_date or due)
                     for n, (pd, pa) in enumerate(pays, start=1):
                         ARPayment.objects.create(ar_record=rec, payment_no=n, amount=pa,
                                                  payment_date=pd, source='回款')
