@@ -808,6 +808,21 @@ class ARFilterScheme(models.Model):
         }
 
 
+class ARSchemeDefault(models.Model):
+    """用户的「默认筛选方案」（按列表 module 唯一）：跟随账号、跨设备同步。
+    方案删除时级联清理；可指向自己的私有方案或团队公共方案。"""
+    user = models.ForeignKey(PaikuanUser, on_delete=models.CASCADE,
+                             related_name='ar_scheme_defaults')
+    module = models.CharField('所属列表', max_length=40, default='ar_records', db_index=True)
+    scheme = models.ForeignKey(ARFilterScheme, on_delete=models.CASCADE,
+                               related_name='default_of')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ar_scheme_defaults'
+        unique_together = [('user', 'module')]
+
+
 class AdvanceRecord(models.Model):
     """预收/预付台账明细 — 每笔预收或预付一条，direction 区分方向。
 

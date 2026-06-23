@@ -3,7 +3,7 @@
 import json as _json
 
 from ._common import *  # noqa: F401,F403
-from ar.models import ARFilterScheme
+from ar.models import ARFilterScheme, ARSchemeDefault
 
 # 单用户方案数量上限（私有+创建的公共合计），防滥建
 _SCHEME_LIMIT = 100
@@ -45,8 +45,16 @@ def ar_filter_schemes(request):
         return err('未知列表', 400)
 
     if request.method == 'GET':
-        rows = [s.to_dict() for s in _visible_schemes(request, module)]
-        return ok({'items': rows})
+        # 当前用户在该列表的默认方案（跟随账号）→ 标注 is_default
+        default_id = (ARSchemeDefault.objects
+                      .filter(user_id=request.pk_uid, module=module)
+                      .values_list('scheme_id', flat=True).first())
+        rows = []
+        for s in _visible_schemes(request, module):
+            d = s.to_dict()
+            d['is_default'] = (s.id == default_id)
+            rows.append(d)
+        return ok({'items': rows, 'default_id': default_id})
 
     if request.method == 'POST':
         data = _parse_body(request)
@@ -130,3 +138,36 @@ def ar_filter_scheme_detail(request, pk):
         return ok({'deleted': pk})
 
     return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def ar_filter_scheme_default(request):
+    """设/取消「默认方案」（跟随账号，按列表唯一）。
+    body: {scheme_id: <id> | null, module}。scheme_id 为空 → 取消默认。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    data = _parse_body(request)
+    module = (data.get('module') or 'ar_records').strip()
+    if module not in _VALID_MODULES:
+        return err('未知列表', 400)
+    sid = data.get('scheme_id')
+    # 取消默认
+    if sid in (None, '', 0, '0'):
+        ARSchemeDefault.objects.filter(user_id=request.pk_uid, module=module).delete()
+        return ok({'default_id': None})
+    # 设默认：方案须对当前用户可见（本人私有 或 公共）
+    try:
+        obj = ARFilterScheme.objects.get(pk=int(sid), module=module)
+    except (ARFilterScheme.DoesNotExist, TypeError, ValueError):
+        return err('方案不存在', 404)
+    if obj.scope != 'public' and obj.owner_id != request.pk_uid:
+        return err('无权将此方案设为默认', 403, 403)
+    from paikuan.models import PaikuanUser
+    user = PaikuanUser.objects.filter(id=request.pk_uid).first()
+    ARSchemeDefault.objects.update_or_create(
+        user=user, module=module, defaults={'scheme': obj})
+    return ok({'default_id': obj.id})

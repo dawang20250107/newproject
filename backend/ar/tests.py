@@ -859,6 +859,45 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(up.status_code, 200)
         self.assertEqual(up.json()['data']['name'], '团队-逾期清单')
 
+    def test_filter_scheme_default_follows_account(self):
+        """默认方案存服务端、跟随账号：set-default 后列表标 is_default；方案删除自动清默认。"""
+        a = self.make_user('13900000214', 'finance_director', role='super_admin')
+        conds = [{'t': 'dim', 'field': 'status', 'value': 'overdue'}]
+        sid = self.json_post('/api/pk/ar/filter-schemes',
+                             {'name': '默认逾期', 'scope': 'private', 'conditions': conds}, a
+                             ).json()['data']['id']
+        # 设为默认
+        r = self.json_post('/api/pk/ar/filter-schemes/set-default',
+                           {'module': 'ar_records', 'scheme_id': sid}, a)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['data']['default_id'], sid)
+        # 列表带回 default_id + 该方案 is_default=True（跨设备/会话只认服务端）
+        lst = self.client.get('/api/pk/ar/filter-schemes', **self.auth(a)).json()['data']
+        self.assertEqual(lst['default_id'], sid)
+        self.assertTrue(next(s for s in lst['items'] if s['id'] == sid)['is_default'])
+        # 取消默认
+        self.json_post('/api/pk/ar/filter-schemes/set-default',
+                       {'module': 'ar_records', 'scheme_id': None}, a)
+        lst2 = self.client.get('/api/pk/ar/filter-schemes', **self.auth(a)).json()['data']
+        self.assertIsNone(lst2['default_id'])
+        # 重新设默认后删除方案 → 默认随级联清理
+        self.json_post('/api/pk/ar/filter-schemes/set-default',
+                       {'module': 'ar_records', 'scheme_id': sid}, a)
+        self.client.delete(f'/api/pk/ar/filter-schemes/{sid}', **self.auth(a))
+        lst3 = self.client.get('/api/pk/ar/filter-schemes', **self.auth(a)).json()['data']
+        self.assertIsNone(lst3['default_id'])
+
+    def test_filter_scheme_default_requires_visibility(self):
+        """不能把别人的私有方案设为自己的默认。"""
+        a = self.make_user('13900000215', 'finance_director', role='super_admin')
+        b = self.make_user('13900000216', 'finance_director', role='super_admin')
+        sid = self.json_post('/api/pk/ar/filter-schemes',
+                             {'name': 'A私有', 'scope': 'private', 'conditions': []}, a
+                             ).json()['data']['id']
+        r = self.json_post('/api/pk/ar/filter-schemes/set-default',
+                           {'module': 'ar_records', 'scheme_id': sid}, b)
+        self.assertEqual(r.status_code, 403)
+
     def test_filter_scheme_same_name_overwrites(self):
         """同名同范围方案覆盖更新，不堆重复。"""
         a = self.make_user('13900000213', 'finance_director', role='super_admin')

@@ -435,8 +435,7 @@ const showPresetDrop = ref(false)
 const newPresetName = ref('')
 const newSchemeScope = ref('private')   // private | public
 const schemesLoaded = ref(false)
-const DEFAULT_KEY = () => `ar_default_scheme_${auth.user?.id || 'anon'}`
-const defaultSchemeId = ref(Number(localStorage.getItem(DEFAULT_KEY())) || null)
+const defaultSchemeId = ref(null)        // 服务端记录的默认方案（跟随账号）
 const mySchemes = computed(() => schemes.value.filter(s => s.scope === 'private'))
 const publicSchemes = computed(() => schemes.value.filter(s => s.scope === 'public'))
 const isMine = s => s.owner_id === auth.user?.id
@@ -446,6 +445,7 @@ async function loadSchemes() {
   try {
     const res = await ar.listFilterSchemes({ module: 'ar_records' })
     schemes.value = res.data.items || []
+    defaultSchemeId.value = res.data.default_id || null
   } catch { schemes.value = [] }
   finally { schemesLoaded.value = true }
 }
@@ -473,19 +473,16 @@ async function deleteScheme(s) {
   if (!confirm(`删除方案「${s.name}」？${s.scope === 'public' ? '（公共方案，团队成员将不再可见）' : ''}`)) return
   try {
     await ar.deleteFilterScheme(s.id)
-    if (defaultSchemeId.value === s.id) { defaultSchemeId.value = null; localStorage.removeItem(DEFAULT_KEY()) }
-    await loadSchemes()
+    await loadSchemes()   // 默认方案随级联清理，重拉即同步
   } catch (e) { toast.error(e?.msg || e?.error || '删除失败') }
 }
-// 默认方案（金蝶「默认过滤方案」）：本地按用户记一个指针，进页自动套用；再点取消。
-function toggleDefaultScheme(s) {
-  if (defaultSchemeId.value === s.id) {
-    defaultSchemeId.value = null
-    localStorage.removeItem(DEFAULT_KEY())
-  } else {
-    defaultSchemeId.value = s.id
-    localStorage.setItem(DEFAULT_KEY(), String(s.id))
-  }
+// 默认方案（金蝶「默认过滤方案」）：存服务端、跟随账号、跨设备同步；再点取消。
+async function toggleDefaultScheme(s) {
+  const next = defaultSchemeId.value === s.id ? null : s.id
+  try {
+    await ar.setDefaultFilterScheme({ module: 'ar_records', scheme_id: next })
+    defaultSchemeId.value = next
+  } catch (e) { toast.error(e?.msg || e?.error || '设置默认失败') }
 }
 
 // ── 多维汇总 (group-by pivot) ────────────────────────────────────────────────

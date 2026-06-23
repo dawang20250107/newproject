@@ -29,6 +29,7 @@ const ar = {
   createFilterScheme: d => api.post('/ar/filter-schemes', d),
   updateFilterScheme: (id, d) => api.put(`/ar/filter-schemes/${id}`, d),
   deleteFilterScheme: id => api.delete(`/ar/filter-schemes/${id}`),
+  setDefaultFilterScheme: d => api.post('/ar/filter-schemes/set-default', d),
   createRecord: d => api.post('/ar/records', d),
   getRecord: id => api.get(`/ar/records/${id}`),
   updateRecord: (id, d) => api.put(`/ar/records/${id}`, d),
