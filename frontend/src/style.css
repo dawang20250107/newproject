@@ -546,6 +546,7 @@ body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
 .bb-item b { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text); font-size: 13.5px; }
 .bb-item.warn b { color: #c0392b; }
 .bb-item.ok b   { color: #2e7d32; }
+.bb-item.adj b  { color: #6a5acd; }
 .bb-pager { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .bottom-bar .page-btn {
   padding: 4px 14px; border: 1px solid var(--border); border-radius: 7px;
