@@ -755,6 +755,8 @@ function togglePayments(id) { expandedPayments.value[id] = !expandedPayments.val
 const offsetCount = rec => (rec.payments || []).filter(p => p.source === '预收抵扣').length
 // 内部往来核销次数（source='内部往来'）——列表「内部往来」列用
 const internalCount = rec => (rec.payments || []).filter(p => p.source === '内部往来').length
+// 回款合计：该应收所有回款记录金额之和（含现金/预收抵扣/内部往来，与回款记录笔数口径一致）
+const paidTotal = rec => (rec.payments || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0)
 
 // ── 预收核销工作台（预收核销 Tab）────────────────────────────────────────────
 // 按客户聚合「有预收余额 × 名下有未收应收」，勾选多条应收后用一笔预收
@@ -1300,6 +1302,7 @@ function clearFilters() {
               <template v-else>
                 <th class="amt">应收基础</th>
                 <th v-if="show('r_payments')">回款记录</th>
+                <th v-if="show('r_payments')" class="amt">回款合计</th>
                 <th v-if="show('r_outstanding')" class="amt"><ColumnFilter label="未收金额" field="outstanding_amount" type="number" :model-value="colFilters.outstanding_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('outstanding_amount',v)" @sort="o=>setSort('outstanding_amount',o)" /></th>
                 <th v-if="show('r_invoice_status')" class="ctr"><ColumnFilter label="回款状态" field="status" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.status" :model-value="dimModel('status')" @update:model-value="v=>onDimCol('status',v)" /></th>
               </template>
@@ -1413,6 +1416,7 @@ function clearFilters() {
                     </button>
                     <button v-if="auth.canAction('ar_collect')" class="add-pay-btn" @click="openAddPayment(rec)">+ 回款</button>
                   </td>
+                  <td v-if="show('r_payments')" class="amt fw" :class="paidTotal(rec) > 0 ? 'amt-ok' : ''" :title="`${rec.payments?.length || 0} 笔回款合计`">{{ paidTotal(rec) > 0 ? fmtCell(paidTotal(rec)) : '—' }}</td>
                   <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
                   <td v-if="show('r_invoice_status')" class="ctr">
                     <span :class="['status-pill', rec.invoice_status === '已结清' ? 'pill-ok' : rec.invoice_status === '部分回款' ? 'pill-blue' : rec.invoice_status === '已开票' ? 'pill-warn' : 'pill-muted']">{{ rec.invoice_status === '已开票' ? '✓ 已开票' : rec.invoice_status === '未开票' ? '○ 未开票' : rec.invoice_status }}</span>
@@ -2504,6 +2508,7 @@ function clearFilters() {
 .text-muted { color: var(--muted); }
 .text-sm-muted { font-size: 12px; color: var(--muted); }
 .amt-warn { color: #e65100; font-weight: 700; }
+.amt-ok { color: #2e7d32; font-weight: 700; }
 .amt-zero { color: var(--muted); }
 .mode-tag { font-size: 11.5px; padding: 2px 8px; border-radius: 8px; background: rgba(0,0,0,0.05); color: var(--muted); font-weight: 500; }
 
