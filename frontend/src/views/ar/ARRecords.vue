@@ -14,6 +14,7 @@ import { describeCondition, STATUS_OPTS, RECON_OPTS, INVOICE_OPTS, RESP_OPTS } f
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
+import { useColWidths } from '../../composables/useColWidths.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -99,6 +100,15 @@ const sorter = useServerSort(() => {
   load(true)
 })
 provide('arSort', sorter)
+
+// ── 列宽持久化（拖拽调整，自动存 localStorage）──────────────────────────────
+const cw = useColWidths('ar_records', {
+  short_name: 180, operation_date: 96, estimated_amount: 100, actual_invoice_amount: 100,
+  tax_amount: 80, account_diff_adjustment: 90, outstanding_amount: 100,
+  due_date: 96, target_collection_date: 96, reconciliation_date: 96,
+  reconciliation_status: 80, status: 72, notes: 140, invoice_batch_no: 110,
+  invoice_date: 96, invoice_status: 80,
+})
 
 // ── Excel 风格列头筛选 + 排序（真实列）──────────────────────────────────────
 // 与既有 conditions / SortTh 并存：列头筛选走独立 filters(JSON) 参数下发；列头排序
@@ -218,6 +228,59 @@ const importResult = ref(null)   // { ok: bool, title, lines: [] }
 const precheckResult = ref(null)
 const precheckBusy = ref(false)
 const pendingFile = ref(null)
+
+// ── 催收跟进日志 ─────────────────────────────────────────────────────────────
+const showLogModal = ref(false)
+const logRec = ref(null)         // 当前打开日志的应收记录
+const logItems = ref([])
+const logLoading = ref(false)
+const logSaving = ref(false)
+const LOG_TYPES = [
+  { v: 'call', l: '电话' }, { v: 'email', l: '邮件' },
+  { v: 'visit', l: '拜访' }, { v: 'meeting', l: '会议' }, { v: 'other', l: '其他' },
+]
+const LOG_STATUSES = [
+  { v: 'in_progress', l: '跟进中' }, { v: 'pending', l: '待回复' },
+  { v: 'resolved', l: '已解决' }, { v: 'no_response', l: '无响应' },
+]
+const logForm = reactive({ log_type: 'call', contact_person: '', note: '', status: 'in_progress', follow_up_date: '' })
+
+async function openLogModal(rec) {
+  logRec.value = rec
+  showLogModal.value = true
+  logLoading.value = true
+  try {
+    const res = await ar.listCollectionLogs(rec.id)
+    logItems.value = res.data.items || []
+  } finally { logLoading.value = false }
+}
+async function addLog() {
+  if (!logForm.note.trim()) { toast.error('请填写跟进内容'); return }
+  logSaving.value = true
+  try {
+    const res = await ar.addCollectionLog(logRec.value.id, {
+      log_type: logForm.log_type,
+      contact_person: logForm.contact_person.trim(),
+      note: logForm.note.trim(),
+      status: logForm.status,
+      follow_up_date: logForm.follow_up_date || null,
+    })
+    logItems.value = [res.data, ...logItems.value]
+    logForm.note = ''; logForm.contact_person = ''; logForm.follow_up_date = ''
+    toast.success('跟进记录已保存')
+  } catch (e) { toast.error(e?.msg || e?.error || '保存失败') }
+  finally { logSaving.value = false }
+}
+async function deleteLog(log) {
+  if (!confirm(`删除该跟进记录？`)) return
+  try {
+    await ar.deleteCollectionLog(logRec.value.id, log.id)
+    logItems.value = logItems.value.filter(l => l.id !== log.id)
+  } catch (e) { toast.error(e?.msg || e?.error || '删除失败') }
+}
+const logTypeLabel = v => LOG_TYPES.find(t => t.v === v)?.l || v
+const logStatusLabel = v => LOG_STATUSES.find(s => s.v === v)?.l || v
+const logStatusClass = v => ({ resolved: 'log-ok', no_response: 'log-muted', pending: 'log-warn' }[v] || '')
 
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
@@ -1218,6 +1281,7 @@ function clearFilters() {
             <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />
           </label>
           <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">↓ 导出</button>
+          <button class="btn btn-ghost btn-sm" @click="() => window.print()" title="打印当前表格">⎙ 打印</button>
           <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate">+ 新增应收</button>
         </div>
       </div>
@@ -1469,13 +1533,19 @@ function clearFilters() {
         <table class="rec-table">
           <thead>
             <tr>
-              <th v-if="auth.canDelete" class="sel-col">
+              <th v-if="auth.canDelete" class="sel-col sticky-col">
                 <input type="checkbox" :checked="pageAllSelected"
                   :indeterminate.prop="hasSelection && !pageAllSelected"
                   title="全选本页" @change="toggleSelectPage" />
               </th>
-              <th><ColumnFilter label="项目" field="short_name" type="text" :values-provider="distinctProvider" :model-value="colFilters.short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('short_name',v)" @sort="o=>setSort('short_name',o)" /></th>
-              <th class="ctr"><ColumnFilter label="运作日期" field="operation_date" type="date" :model-value="colFilters.operation_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('operation_date',v)" @sort="o=>setSort('operation_date',o)" /></th>
+              <th class="sticky-col" :style="cw.thStyle('short_name')">
+                <ColumnFilter label="项目" field="short_name" type="text" :values-provider="distinctProvider" :model-value="colFilters.short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('short_name',v)" @sort="o=>setSort('short_name',o)" />
+                <div class="col-rh" @mousedown.stop="cw.startDrag($event, 'short_name')"></div>
+              </th>
+              <th class="ctr" :style="cw.thStyle('operation_date')">
+                <ColumnFilter label="运作日期" field="operation_date" type="date" :model-value="colFilters.operation_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('operation_date',v)" @sort="o=>setSort('operation_date',o)" />
+                <div class="col-rh" @mousedown.stop="cw.startDrag($event, 'operation_date')"></div>
+              </th>
 
               <!-- all -->
               <template v-if="activeTab === 'all'">
@@ -1538,10 +1608,10 @@ function clearFilters() {
             </tr>
             <template v-for="rec in items" :key="rec.id">
               <tr :class="['data-row', agingRowClass(rec), (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']">
-                <td v-if="auth.canDelete" class="sel-col">
+                <td v-if="auth.canDelete" class="sel-col sticky-col">
                   <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @change="toggleRow(rec.id)" />
                 </td>
-                <td>
+                <td class="sticky-col" :style="cw.thStyle('short_name')">
                   <div class="proj-name" :title="rec.short_name || rec.customer_name">{{ rec.short_name || rec.customer_name }}</div>
                   <div v-if="rec.short_name && rec.short_name !== rec.customer_name" class="proj-sub" :title="rec.customer_name">{{ rec.customer_name }}</div>
                   <div class="proj-no">{{ rec.project_no }}</div>
@@ -1649,6 +1719,9 @@ function clearFilters() {
 
                 <td class="ctr">
                   <div class="row-acts">
+                    <button class="icon-btn" @click="openLogModal(rec)" title="催收跟进日志">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                    </button>
                     <button v-if="auth.canArWrite" class="icon-btn" @click="openEdit(rec)" title="编辑">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4z"/></svg>
                     </button>
@@ -2399,6 +2472,63 @@ function clearFilters() {
         </div>
       </div>
 
+      <!-- 催收跟进日志 Modal -->
+      <div v-if="showLogModal" class="modal-overlay" @click.self="showLogModal = false">
+        <div class="modal-box" style="max-width:520px">
+          <div class="modal-header">
+            <div>
+              <h3>催收跟进日志</h3>
+              <div style="font-size:12px;color:var(--muted);margin-top:2px">{{ logRec?.short_name || logRec?.customer_name }}</div>
+            </div>
+            <button class="modal-close" @click="showLogModal = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <!-- 新增日志表单 -->
+            <div class="log-add-form">
+              <div class="log-form-row">
+                <select v-model="logForm.log_type" class="log-type-sel">
+                  <option v-for="t in LOG_TYPES" :key="t.v" :value="t.v">{{ t.l }}</option>
+                </select>
+                <input v-model="logForm.contact_person" class="log-contact-inp" placeholder="联系人（选填）" maxlength="100" />
+                <select v-model="logForm.status" class="log-status-sel">
+                  <option v-for="s in LOG_STATUSES" :key="s.v" :value="s.v">{{ s.l }}</option>
+                </select>
+              </div>
+              <textarea v-model="logForm.note" class="log-note-ta" placeholder="跟进内容（必填）…" rows="3"></textarea>
+              <div class="log-form-row">
+                <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px">
+                  计划跟进 <input v-model="logForm.follow_up_date" type="date" class="log-date-inp" />
+                </label>
+                <button class="btn btn-primary btn-sm" :disabled="logSaving || !logForm.note.trim()" @click="addLog">
+                  {{ logSaving ? '…' : '＋ 记录' }}
+                </button>
+              </div>
+            </div>
+            <!-- 历史日志列表 -->
+            <div v-if="logLoading" class="log-empty">加载中…</div>
+            <div v-else-if="!logItems.length" class="log-empty">暂无跟进记录</div>
+            <div v-else class="log-list">
+              <div v-for="log in logItems" :key="log.id" class="log-item">
+                <div class="log-item-head">
+                  <span class="log-type-tag">{{ logTypeLabel(log.log_type) }}</span>
+                  <span v-if="log.contact_person" class="log-contact">{{ log.contact_person }}</span>
+                  <span :class="['log-status', logStatusClass(log.status)]">{{ logStatusLabel(log.status) }}</span>
+                  <span class="log-time">{{ log.created_at?.slice(0, 16).replace('T', ' ') }}</span>
+                  <span v-if="log.created_by_name" class="log-by">{{ log.created_by_name }}</span>
+                  <button v-if="auth.isSuperAdmin || log.created_by_id === auth.user?.id"
+                          class="log-del" @click="deleteLog(log)">✕</button>
+                </div>
+                <div class="log-note">{{ log.note }}</div>
+                <div v-if="log.follow_up_date" class="log-followup">计划跟进：{{ log.follow_up_date }}</div>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" @click="showLogModal = false">关闭</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Payment Modal — 录入态：点遮罩不关闭，仅按钮可退出 -->
       <div v-if="showPayModal" class="modal-overlay">
         <div class="modal-box" style="max-width:460px">
@@ -3141,5 +3271,85 @@ function clearFilters() {
 @media (max-width: 640px) {
   .metrics-bar { flex-wrap: wrap !important; }
   .kpi-item, .kpi-progress { min-width: calc(50% - 8px) !important; flex: 1 1 calc(50% - 8px) !important; }
+}
+
+/* ── 列宽拖拽调整柄 ──────────────────────────────────────────────────── */
+.rec-table th { position: relative; }
+.col-rh {
+  position: absolute; right: 0; top: 0; bottom: 0; width: 5px;
+  cursor: col-resize; z-index: 1;
+  opacity: 0; transition: opacity 0.15s;
+}
+.col-rh:hover, .col-rh:active { opacity: 1; background: rgba(201,99,66,0.45); }
+.rec-table th:hover .col-rh { opacity: 0.35; }
+
+/* ── 冻结首列 ──────────────────────────────────────────────────────── */
+.sticky-col {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: #f4f1ef;
+}
+.rec-table tbody tr td.sticky-col { background: inherit; }
+.dt-scroll .rec-table thead th.sticky-col { z-index: 7; background: #f4f1ef; }
+/* 行悬停时首列随行色变化 */
+.rec-table tbody tr:hover td.sticky-col { background: rgba(201,99,66,0.04); }
+.rec-table tbody tr.row-sel td.sticky-col { background: rgba(201,99,66,0.08); }
+
+/* ── 催收跟进日志 ──────────────────────────────────────────────────── */
+.log-add-form {
+  padding: 12px 14px; background: rgba(0,0,0,0.025); border-radius: 10px;
+  margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px;
+}
+.log-form-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.log-type-sel, .log-status-sel {
+  padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; font-size: 12.5px;
+}
+.log-contact-inp {
+  flex: 1; min-width: 80px; padding: 5px 8px; border: 1px solid var(--border);
+  border-radius: 7px; font-size: 12.5px;
+}
+.log-date-inp { padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+.log-note-ta {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 12.5px; font-family: inherit; resize: vertical; min-height: 60px;
+  box-sizing: border-box;
+}
+.log-note-ta:focus { outline: none; border-color: var(--primary); }
+.log-list { display: flex; flex-direction: column; gap: 10px; max-height: 320px; overflow-y: auto; }
+.log-item {
+  padding: 10px 12px; border-radius: 9px; border: 1px solid var(--border);
+  background: rgba(255,252,250,0.7);
+}
+.log-item-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 5px; }
+.log-type-tag {
+  padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-weight: 600;
+  background: rgba(201,99,66,0.1); color: var(--primary);
+}
+.log-contact { font-size: 12px; color: var(--muted); }
+.log-status { font-size: 11.5px; padding: 1px 6px; border-radius: 5px; background: rgba(0,0,0,0.05); }
+.log-status.log-ok { background: rgba(46,125,50,0.1); color: #2e7d32; }
+.log-status.log-warn { background: rgba(230,81,0,0.1); color: #e65100; }
+.log-status.log-muted { background: rgba(0,0,0,0.07); color: var(--muted); }
+.log-time { font-size: 11px; color: var(--muted); margin-left: auto; }
+.log-by { font-size: 11px; color: var(--muted); }
+.log-del {
+  background: none; border: none; color: var(--muted); cursor: pointer; font-size: 11px;
+  padding: 2px 5px; border-radius: 4px; transition: all 0.1s;
+}
+.log-del:hover { color: #c62828; background: rgba(198,40,40,0.08); }
+.log-note { font-size: 13px; line-height: 1.55; color: #333; white-space: pre-wrap; }
+.log-followup { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+.log-empty { padding: 20px 0; text-align: center; color: var(--muted); font-size: 13px; }
+
+/* ── 打印布局 ──────────────────────────────────────────────────────── */
+@media print {
+  .ar-head, .filter-chipbar, .bulk-bar, .bottom-bar,
+  .segment-ctrl, .metrics-bar, .health-alert,
+  .row-acts, .col-rh, button, .modal-overlay { display: none !important; }
+  .card { box-shadow: none !important; border: none !important; padding: 0 !important; }
+  .dt-scroll { max-height: none !important; overflow: visible !important; }
+  .rec-table th, .rec-table td { font-size: 9pt !important; padding: 3px 6px !important; }
+  body { background: white !important; }
 }
 </style>

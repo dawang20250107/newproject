@@ -13,6 +13,7 @@ import ColumnFilter from '../../components/ColumnFilter.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
 import SchemePicker from '../../components/SchemePicker.vue'
 import { useTableSchemes } from '../../composables/useTableSchemes.js'
+import { useColWidths } from '../../composables/useColWidths.js'
 
 const toast = useToast()
 const auth = useAuthStore()

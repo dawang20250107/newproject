@@ -130,4 +130,8 @@ urlpatterns = [
     path('budget/payment/<int:pk>', views.budget_payment_detail),
     path('budget/summary', views.budget_summary),
     path('budget/project-compare', views.budget_project_compare),
+
+    # 催收跟进日志
+    path('records/<int:pk>/collection-logs', views.ar_collection_logs),
+    path('records/<int:pk>/collection-logs/<int:lid>', views.ar_collection_log_detail),
 ]

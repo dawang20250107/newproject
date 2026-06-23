@@ -15,6 +15,7 @@ import ColumnFilter from '../components/ColumnFilter.vue'
 import SkeletonRow from '../components/SkeletonRow.vue'
 import SchemePicker from '../components/SchemePicker.vue'
 import { useTableSchemes } from '../composables/useTableSchemes.js'
+import { useColWidths } from '../composables/useColWidths.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -95,6 +96,13 @@ const today = todayCST()  // UTC+8，与服务端 Asia/Shanghai 保持一致
 const filters = reactive({
   q: '', pay_date_start: '', pay_date_end: '',
   page: 1, size: 50,
+})
+
+// 列宽持久化
+const cw = useColWidths('pk_payments', {
+  project_desc: 200, payee: 130, department: 70, secondary_dept: 80,
+  project_short_name: 100, applicant: 70, approval_number: 110, g7_number: 110,
+  planned_date: 90, total_amount: 90, paid: 90, remaining: 90, status: 100,
 })
 
 // ── Excel 风格列头筛选 + 排序 ───────────────────────────────────────────────
@@ -706,8 +714,8 @@ async function doBatchPay() {
         <table>
           <thead>
             <tr>
-              <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
-              <th v-if="colVisible('department')" style="width:5%"><ColumnFilter label="部门" field="department" type="enum" :options="deptChoices" :model-value="colFilters.department" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('department',v)" @sort="o=>setSort('department',o)" /></th>
+              <th class="sel-col sticky-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
+              <th v-if="colVisible('department')" :style="cw.thStyle('department')"><ColumnFilter label="部门" field="department" type="enum" :options="deptChoices" :model-value="colFilters.department" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('department',v)" @sort="o=>setSort('department',o)" /></th>
               <th v-if="colVisible('secondary_dept')" style="width:5%"><ColumnFilter label="二级部门" field="secondary_dept" type="text" :model-value="colFilters.secondary_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('secondary_dept',v)" @sort="o=>setSort('secondary_dept',o)" /></th>
               <th v-if="colVisible('project_short_name')" style="width:6%"><ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" /></th>
               <th v-if="colVisible('applicant')" style="width:4%"><ColumnFilter label="申请人" field="applicant" type="text" :model-value="colFilters.applicant" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('applicant',v)" @sort="o=>setSort('applicant',o)" /></th>
@@ -1335,4 +1343,21 @@ async function doBatchPay() {
 
 .pg-jump { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); margin-left: 8px; }
 .pg-jump-input { width: 46px; text-align: center; padding: 2px 4px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+
+/* 列宽拖拽柄 + 冻结列 */
+.pk-pay-tbl table th { position: relative; }
+.col-rh {
+  position: absolute; right: 0; top: 0; bottom: 0; width: 5px;
+  cursor: col-resize; opacity: 0; transition: opacity 0.15s;
+}
+.col-rh:hover, .col-rh:active { opacity: 1; background: rgba(201,99,66,0.4); }
+.pk-pay-tbl table th:hover .col-rh { opacity: 0.35; }
+.sticky-col { position: sticky; left: 0; z-index: 3; background: #f8f4f0; }
+.pk-pay-tbl table thead th.sticky-col { z-index: 6; background: #f8f4f0; }
+.pk-pay-tbl table tbody td.sticky-col { background: #fff; }
+.pk-pay-tbl table tbody tr:hover td.sticky-col { background: rgba(0,0,0,0.025); }
+
+@media print {
+  .pk-pay-tbl table th, .pk-pay-tbl table td { font-size: 9pt !important; padding: 3px 6px !important; }
+}
 </style>

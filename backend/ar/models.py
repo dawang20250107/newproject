@@ -1311,3 +1311,55 @@ class CashPoolTransfer(models.Model):
             'review_notes': self.review_notes,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class ARCollectionLog(models.Model):
+    """催收跟进日志 — 每条应收账款可关联多条跟进记录（电话/邮件/拜访等）。"""
+    LOG_TYPE_CHOICES = [
+        ('call', '电话'),
+        ('email', '邮件'),
+        ('visit', '拜访'),
+        ('meeting', '会议'),
+        ('other', '其他'),
+    ]
+    STATUS_CHOICES = [
+        ('pending', '待回复'),
+        ('in_progress', '跟进中'),
+        ('resolved', '已解决'),
+        ('no_response', '无响应'),
+    ]
+
+    ar_record = models.ForeignKey(ARRecord, on_delete=models.CASCADE,
+                                  related_name='collection_logs', db_index=True)
+    log_type = models.CharField('跟进类型', max_length=10, choices=LOG_TYPE_CHOICES, default='call')
+    contact_person = models.CharField('联系人', max_length=100, blank=True, default='')
+    note = models.TextField('跟进内容', blank=True, default='')
+    status = models.CharField('状态', max_length=20, choices=STATUS_CHOICES, default='in_progress')
+    follow_up_date = models.DateField('计划跟进日期', null=True, blank=True)
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='collection_logs')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ar_collection_logs'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['ar_record', 'created_at']),
+        ]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'ar_record_id': self.ar_record_id,
+            'log_type': self.log_type,
+            'log_type_display': dict(self.LOG_TYPE_CHOICES).get(self.log_type, self.log_type),
+            'contact_person': self.contact_person,
+            'note': self.note,
+            'status': self.status,
+            'status_display': dict(self.STATUS_CHOICES).get(self.status, self.status),
+            'follow_up_date': str(self.follow_up_date) if self.follow_up_date else None,
+            'created_by_id': self.created_by_id,
+            'created_by_name': self.created_by.name if self.created_by else '',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }

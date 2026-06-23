@@ -7,6 +7,7 @@ import ColumnFilter from '../../components/ColumnFilter.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
 import SchemePicker from '../../components/SchemePicker.vue'
 import { useTableSchemes } from '../../composables/useTableSchemes.js'
+import { useColWidths } from '../../composables/useColWidths.js'
 
 // 项目损益卡（复用 P1 组件）— 点客户项目即下钻全链路损益
 const ProjectPnlCard = defineAsyncComponent(() => import('../caiwu/ProjectPnlCard.vue'))
@@ -27,6 +28,12 @@ const statusClass = s => ({ '运作中': 'st-on', '中断': 'st-pause', '结束'
 // 排序（服务端，跨分页生效；未收/逾期最常用）
 const sortKey = ref('outstanding')
 const sortDir = ref('desc')
+
+// 列宽持久化
+const cw = useColWidths('ar_customers', {
+  name: 180, delivery_dept: 80, level: 70, status: 72, contact: 100,
+  outstanding: 100, overdue_amount: 100, project_count: 72,
+})
 
 // Excel 风格列头筛选：真实列走 filters JSON，计算列仅排序
 const colFilters = reactive({})
@@ -295,8 +302,11 @@ onMounted(async () => {
         <table class="cu-table">
           <thead>
             <tr>
-              <th class="ctr chk-col"><input type="checkbox" :checked="allOnPageSelected" @change="toggleSelAll" title="全选本页" /></th>
-              <th class="l"><ColumnFilter label="客户名称" field="name" type="text" :model-value="colFilters.name" :sort-field="sortKey" :sort-order="sortDir" @update:model-value="v=>setColFilter('name',v)" @sort="o=>setColSort('name',o)" /></th>
+              <th class="ctr chk-col sticky-col"><input type="checkbox" :checked="allOnPageSelected" @change="toggleSelAll" title="全选本页" /></th>
+              <th class="l sticky-col" :style="cw.thStyle('name')">
+                <ColumnFilter label="客户名称" field="name" type="text" :model-value="colFilters.name" :sort-field="sortKey" :sort-order="sortDir" @update:model-value="v=>setColFilter('name',v)" @sort="o=>setColSort('name',o)" />
+                <div class="col-rh" @mousedown.stop="cw.startDrag($event, 'name')"></div>
+              </th>
               <th class="ctr"><ColumnFilter label="状态" field="status" type="enum" :options="STATUSES" :model-value="colFilters.status" :sort-field="sortKey" :sort-order="sortDir" @update:model-value="v=>setColFilter('status',v)" @sort="o=>setColSort('status',o)" /></th>
               <th class="ctr"><ColumnFilter label="等级" field="level" type="enum" :options="LEVELS" :model-value="colFilters.level" :sort-field="sortKey" :sort-order="sortDir" @update:model-value="v=>setColFilter('level',v)" @sort="o=>setColSort('level',o)" /></th>
               <th class="l"><ColumnFilter label="事业部" field="delivery_dept" type="enum" :options="accessibleDepts" :model-value="colFilters.delivery_dept" :sort-field="sortKey" :sort-order="sortDir" @update:model-value="v=>setColFilter('delivery_dept',v)" @sort="o=>setColSort('delivery_dept',o)" /></th>
@@ -316,8 +326,8 @@ onMounted(async () => {
             </tr>
             <tr v-else-if="!loading && !items.length"><td colspan="10" class="empty">暂无客户数据</td></tr>
             <tr v-for="c in items" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)">
-              <td class="ctr chk-col" @click.stop><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
-              <td class="l name" :title="c.name + (c.contact ? ' · ' + c.contact : '')">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
+              <td class="ctr chk-col sticky-col" @click.stop><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
+              <td class="l name sticky-col" :style="cw.thStyle('name')" :title="c.name + (c.contact ? ' · ' + c.contact : '')">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
               <td class="ctr"><span class="st-pill" :class="statusClass(c.status)">{{ c.status || '运作中' }}</span></td>
               <td class="ctr"><span v-if="c.level" class="lvl" :class="levelClass(c.level)">{{ c.level }}</span><span v-else class="muted">—</span></td>
               <td class="l dept-cell" :title="c.delivery_dept || ''">{{ c.delivery_dept || '—' }}</td>
@@ -575,4 +585,19 @@ onMounted(async () => {
 @media (max-width: 640px) {
   .dw-kpis { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* 列宽拖拽柄 */
+.cu-table th { position: relative; }
+.col-rh {
+  position: absolute; right: 0; top: 0; bottom: 0; width: 5px;
+  cursor: col-resize; opacity: 0; transition: opacity 0.15s;
+}
+.col-rh:hover, .col-rh:active { opacity: 1; background: rgba(201,99,66,0.4); }
+.cu-table th:hover .col-rh { opacity: 0.35; }
+
+/* 冻结首列 */
+.sticky-col { position: sticky; left: 0; z-index: 3; background: #f3ede6; }
+.cu-table tbody tr td.sticky-col { background: #fdfbf8; }
+.cu-table tbody tr:hover td.sticky-col { background: #faf5ef; }
+.cu-table tbody tr.sel td.sticky-col { background: rgba(21,101,192,.06); }
 </style>
