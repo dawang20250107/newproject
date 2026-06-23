@@ -56,6 +56,10 @@ urlpatterns = [
     path('records/<int:pk>/adjustments', views.ar_adjustments),
     path('records/<int:pk>/adjustments/<int:aid>', views.ar_adjustment_detail),
 
+    # 筛选方案 (filter schemes)：命名保存高级筛选，私有/公共团队共享
+    path('filter-schemes', views.ar_filter_schemes),
+    path('filter-schemes/<int:pk>', views.ar_filter_scheme_detail),
+
     # 供应商池 (suppliers)
     path('suppliers', views.suppliers),
     path('suppliers/search', views.supplier_search),

@@ -24,6 +24,11 @@ const ar = {
   exportPaymentLedger: p => api.get('/ar/records/payments/export', { params: p, responseType: 'blob' }),
   collectionWorkbench: p => api.get('/ar/records/collection', { params: p }),
   createDunning: d => api.post('/ar/records/collection/dunning', d),
+  // 筛选方案（私有/公共团队共享）
+  listFilterSchemes: p => api.get('/ar/filter-schemes', { params: p }),
+  createFilterScheme: d => api.post('/ar/filter-schemes', d),
+  updateFilterScheme: (id, d) => api.put(`/ar/filter-schemes/${id}`, d),
+  deleteFilterScheme: id => api.delete(`/ar/filter-schemes/${id}`),
   createRecord: d => api.post('/ar/records', d),
   getRecord: id => api.get(`/ar/records/${id}`),
   updateRecord: (id, d) => api.put(`/ar/records/${id}`, d),

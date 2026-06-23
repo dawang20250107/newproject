@@ -763,6 +763,51 @@ class CollectionBudget(models.Model):
         }
 
 
+class ARFilterScheme(models.Model):
+    """筛选方案（对标金蝶云星空「过滤方案」）：把一组高级筛选条件命名保存，
+    可设为私有（仅本人）或公共（团队共享）。conditions/match 为前端筛选 DSL 的快照。
+
+    module 标识方案所属的列表（当前仅 ar_records），便于未来在别的台账复用。"""
+    SCOPE_CHOICES = [('private', '私有'), ('public', '公共')]
+
+    name = models.CharField('方案名称', max_length=40)
+    module = models.CharField('所属列表', max_length=40, default='ar_records', db_index=True)
+    scope = models.CharField('可见范围', max_length=10, choices=SCOPE_CHOICES,
+                             default='private', db_index=True)
+    conditions = models.TextField('条件快照(JSON)', blank=True, default='[]')
+    match = models.CharField('组间连接', max_length=4, default='all')  # all(且) | any(或)
+    owner = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                              null=True, blank=True, related_name='ar_filter_schemes')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ar_filter_schemes'
+        ordering = ['name']
+        indexes = [
+            models.Index(fields=['module', 'scope']),
+            models.Index(fields=['owner', 'module']),
+        ]
+
+    def to_dict(self):
+        import json as _json
+        try:
+            conds = _json.loads(self.conditions or '[]')
+        except (ValueError, TypeError):
+            conds = []
+        return {
+            'id': self.id,
+            'name': self.name,
+            'module': self.module,
+            'scope': self.scope,
+            'conditions': conds,
+            'match': self.match,
+            'owner_id': self.owner_id,
+            'owner_name': self.owner.name if self.owner else '',
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class AdvanceRecord(models.Model):
     """预收/预付台账明细 — 每笔预收或预付一条，direction 区分方向。
 

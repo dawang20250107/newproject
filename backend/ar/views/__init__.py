@@ -17,6 +17,7 @@ from .suppliers import *  # noqa: F401,F403,E402
 from .customers import *  # noqa: F401,F403,E402
 from .contracts import *  # noqa: F401,F403,E402
 from .budget import *     # noqa: F401,F403,E402
+from .filter_schemes import *  # noqa: F401,F403,E402
 from .invoices import *   # noqa: F401,F403,E402
 from .cashflow import *   # noqa: F401,F403,E402
 from .actions import *    # noqa: F401,F403,E402

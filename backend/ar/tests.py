@@ -826,6 +826,53 @@ class ARPermissionRegressionTests(TestCase):
                               {'field': 'outstanding_amount'}, **self.auth(admin))
         self.assertEqual(bad.status_code, 400)
 
+    def test_filter_schemes_private_vs_public_visibility(self):
+        """筛选方案：私有仅本人可见，公共团队共享；跨用户可见性 + 删除权限。"""
+        a = self.make_user('13900000211', 'finance_director', role='super_admin')
+        b = self.make_user('13900000212', 'finance_director', role='super_admin')
+        conds = [{'t': 'dim', 'field': 'status', 'value': 'overdue'}]
+
+        # A 建一个私有 + 一个公共
+        r1 = self.json_post('/api/pk/ar/filter-schemes',
+                            {'name': '我的逾期', 'scope': 'private', 'conditions': conds, 'match': 'all'}, a)
+        self.assertEqual(r1.status_code, 200)
+        r2 = self.json_post('/api/pk/ar/filter-schemes',
+                            {'name': '团队逾期', 'scope': 'public', 'conditions': conds, 'match': 'all'}, a)
+        self.assertEqual(r2.status_code, 200)
+        pub_id = r2.json()['data']['id']
+        priv_id = r1.json()['data']['id']
+
+        # A 看到两个
+        la = self.client.get('/api/pk/ar/filter-schemes', **self.auth(a)).json()['data']['items']
+        self.assertEqual({s['name'] for s in la}, {'我的逾期', '团队逾期'})
+        # B 只看到公共那个
+        lb = self.client.get('/api/pk/ar/filter-schemes', **self.auth(b)).json()['data']['items']
+        self.assertEqual([s['name'] for s in lb], ['团队逾期'])
+        # 公共方案条件快照原样带回
+        self.assertEqual(lb[0]['conditions'], conds)
+
+        # B 无法访问/删除 A 的私有方案（不可见 → 403）
+        d = self.client.delete(f'/api/pk/ar/filter-schemes/{priv_id}', **self.auth(b))
+        self.assertEqual(d.status_code, 403)
+        # 公共方案：A 可重命名（PUT）
+        up = self.json_put(f'/api/pk/ar/filter-schemes/{pub_id}', {'name': '团队-逾期清单'}, a)
+        self.assertEqual(up.status_code, 200)
+        self.assertEqual(up.json()['data']['name'], '团队-逾期清单')
+
+    def test_filter_scheme_same_name_overwrites(self):
+        """同名同范围方案覆盖更新，不堆重复。"""
+        a = self.make_user('13900000213', 'finance_director', role='super_admin')
+        c1 = [{'t': 'amt', 'field': 'outstanding_amount', 'op': 'gt0'}]
+        c2 = [{'t': 'dim', 'field': 'status', 'value': 'overdue'}]
+        self.json_post('/api/pk/ar/filter-schemes',
+                       {'name': '常用', 'scope': 'private', 'conditions': c1}, a)
+        self.json_post('/api/pk/ar/filter-schemes',
+                       {'name': '常用', 'scope': 'private', 'conditions': c2}, a)
+        items = self.client.get('/api/pk/ar/filter-schemes', **self.auth(a)).json()['data']['items']
+        same = [s for s in items if s['name'] == '常用']
+        self.assertEqual(len(same), 1)            # 覆盖，不重复
+        self.assertEqual(same[0]['conditions'], c2)   # 取最新快照
+
     def test_summary_not_inflated_by_multiple_payments(self):
         admin = self.make_user('13900000055', 'finance_director', role='super_admin')
         project = self.create_project()

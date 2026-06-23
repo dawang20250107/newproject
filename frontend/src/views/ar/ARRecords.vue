@@ -428,38 +428,64 @@ async function loadAging() {
   finally { agingLoading.value = false }
 }
 
-// ── 筛选方案 ─────────────────────────────────────────────────────────────────
-// 以 localStorage 存取命名筛选方案（conditions + matchMode 快照）
-const PRESET_KEY = 'ar_filter_presets_v1'
-const presets = ref(JSON.parse(localStorage.getItem(PRESET_KEY) || '[]'))
+// ── 筛选方案（对标金蝶云星空「过滤方案」）─────────────────────────────────────
+// 服务端存储，私有(仅本人)/公共(团队共享)；默认方案指针存本地(按用户)，进入页自动套用。
+const schemes = ref([])
 const showPresetDrop = ref(false)
 const newPresetName = ref('')
-function savePresets() { localStorage.setItem(PRESET_KEY, JSON.stringify(presets.value)) }
-function loadPreset(p) {
-  conditions.value = JSON.parse(JSON.stringify(p.conditions))
-  matchMode.value = p.matchMode || 'all'
+const newSchemeScope = ref('private')   // private | public
+const schemesLoaded = ref(false)
+const DEFAULT_KEY = () => `ar_default_scheme_${auth.user?.id || 'anon'}`
+const defaultSchemeId = ref(Number(localStorage.getItem(DEFAULT_KEY())) || null)
+const mySchemes = computed(() => schemes.value.filter(s => s.scope === 'private'))
+const publicSchemes = computed(() => schemes.value.filter(s => s.scope === 'public'))
+const isMine = s => s.owner_id === auth.user?.id
+const isDefaultScheme = s => s.id === defaultSchemeId.value
+
+async function loadSchemes() {
+  try {
+    const res = await ar.listFilterSchemes({ module: 'ar_records' })
+    schemes.value = res.data.items || []
+  } catch { schemes.value = [] }
+  finally { schemesLoaded.value = true }
+}
+function applyScheme(s) {
+  conditions.value = JSON.parse(JSON.stringify(s.conditions || []))
+  matchMode.value = s.match || 'all'
   showPresetDrop.value = false
   onFilterChange()
 }
-function deletePreset(idx) {
-  presets.value.splice(idx, 1)
-  savePresets()
-}
-function saveCurrentAsPreset() {
+async function saveCurrentScheme() {
   const name = newPresetName.value.trim()
   if (!name) return
-  const prevDefault = presets.value.find(p => p.name === name)?.isDefault
-  presets.value = presets.value.filter(p => p.name !== name)
-  presets.value.unshift({ name, conditions: JSON.parse(JSON.stringify(conditions.value)), matchMode: matchMode.value, isDefault: !!prevDefault })
-  savePresets()
-  newPresetName.value = ''
-  showPresetDrop.value = false
+  try {
+    await ar.createFilterScheme({
+      name, scope: newSchemeScope.value, module: 'ar_records',
+      conditions: conditions.value, match: matchMode.value,
+    })
+    newPresetName.value = ''
+    showPresetDrop.value = false
+    await loadSchemes()
+    toast.success(`已保存${newSchemeScope.value === 'public' ? '公共' : '私有'}方案「${name}」`)
+  } catch (e) { toast.error(e?.msg || e?.error || '保存失败') }
 }
-// 默认方案（对标金蝶「设为默认方案」）：进入页面自动套用；同一时刻仅一个默认。
-function toggleDefaultPreset(idx) {
-  const willBe = !presets.value[idx].isDefault
-  presets.value.forEach((p, i) => { p.isDefault = willBe && i === idx })
-  savePresets()
+async function deleteScheme(s) {
+  if (!confirm(`删除方案「${s.name}」？${s.scope === 'public' ? '（公共方案，团队成员将不再可见）' : ''}`)) return
+  try {
+    await ar.deleteFilterScheme(s.id)
+    if (defaultSchemeId.value === s.id) { defaultSchemeId.value = null; localStorage.removeItem(DEFAULT_KEY()) }
+    await loadSchemes()
+  } catch (e) { toast.error(e?.msg || e?.error || '删除失败') }
+}
+// 默认方案（金蝶「默认过滤方案」）：本地按用户记一个指针，进页自动套用；再点取消。
+function toggleDefaultScheme(s) {
+  if (defaultSchemeId.value === s.id) {
+    defaultSchemeId.value = null
+    localStorage.removeItem(DEFAULT_KEY())
+  } else {
+    defaultSchemeId.value = s.id
+    localStorage.setItem(DEFAULT_KEY(), String(s.id))
+  }
 }
 
 // ── 多维汇总 (group-by pivot) ────────────────────────────────────────────────
@@ -1149,17 +1175,19 @@ const onScopeChange = () => {
   else load(true)
   void before
 }
-onMounted(() => {
+onMounted(async () => {
   // 路由跳转带入的筛选（来自现金流/分析/项目台账等）→ 转成条件
   const fromRoute = route.query.status || route.query.project_id || route.query.dept
   if (route.query.status) conditions.value.push({ t: 'dim', field: 'status', value: route.query.status })
   if (route.query.project_id) conditions.value.push({ t: 'dim', field: 'project_id', value: route.query.project_id })
   if (route.query.dept) conditions.value.push({ t: 'dim', field: 'dept', value: route.query.dept })
-  // 默认方案（对标金蝶「默认过滤方案」）：无路由带入时自动套用用户设的默认方案
-  const def = !fromRoute && presets.value.find(p => p.isDefault)
+  // 拉取筛选方案；无路由带入时自动套用用户设的「默认方案」（对标金蝶默认过滤方案）
+  await loadSchemes()
+  const def = !fromRoute && defaultSchemeId.value
+    && schemes.value.find(s => s.id === defaultSchemeId.value)
   if (def && def.conditions?.length) {
     conditions.value = JSON.parse(JSON.stringify(def.conditions))
-    matchMode.value = def.matchMode || 'all'
+    matchMode.value = def.match || 'all'
   } else if (!conditions.value.some(c => c.t === 'dim' && c.field === 'status')) {
     // 无默认方案 → 默认只看「未结清」（先聚焦没收完的）；可点掉该条件看全部
     conditions.value.push({ t: 'dim', field: 'status', value: 'outstanding' })
@@ -1221,29 +1249,52 @@ function clearFilters() {
             <button title="移除" @click.stop="removeCondition(i)">✕</button>
           </span>
           <button v-if="hasAnyFilter" class="clear-mini" @click="clearFilters">清空</button>
-          <!-- 筛选方案：保存/加载命名方案，localStorage 持久化 -->
+          <!-- 筛选方案（对标金蝶过滤方案）：服务端存储，私有/公共团队共享 + 默认方案 -->
           <div class="preset-wrap">
             <button class="preset-btn" :class="{ on: showPresetDrop }" @click="showPresetDrop = !showPresetDrop"
-                    title="保存/加载筛选方案">
+                    title="保存/加载筛选方案（私有/公共）">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-              方案<span v-if="presets.length" class="fb-badge">{{ presets.length }}</span>
+              方案<span v-if="schemes.length" class="fb-badge">{{ schemes.length }}</span>
             </button>
             <div v-if="showPresetDrop" class="preset-drop">
               <div class="preset-save-row">
-                <input v-model="newPresetName" class="preset-name-input" placeholder="方案名称…" maxlength="20"
-                       @keyup.enter="saveCurrentAsPreset" />
+                <input v-model="newPresetName" class="preset-name-input" placeholder="方案名称…" maxlength="40"
+                       @keyup.enter="saveCurrentScheme" />
                 <button class="preset-save-btn" :disabled="!newPresetName.trim() || !conditions.length"
-                        @click="saveCurrentAsPreset">保存当前</button>
+                        @click="saveCurrentScheme">保存</button>
               </div>
-              <div v-if="!presets.length" class="preset-empty">暂无保存的方案</div>
-              <div v-for="(p, idx) in presets" :key="p.name" class="preset-item" @click="loadPreset(p)">
-                <button class="preset-star" :class="{ on: p.isDefault }"
-                        :title="p.isDefault ? '默认方案（进入页面自动套用）· 点击取消' : '设为默认方案'"
-                        @click.stop="toggleDefaultPreset(idx)">{{ p.isDefault ? '★' : '☆' }}</button>
-                <span class="preset-name">{{ p.name }}</span>
-                <span class="preset-count">{{ p.conditions.length }} 个条件</span>
-                <button class="preset-del" @click.stop="deletePreset(idx)">✕</button>
+              <div class="preset-scope-row">
+                <span class="preset-scope-lbl">范围</span>
+                <button class="preset-scope-seg" :class="{ on: newSchemeScope === 'private' }" @click="newSchemeScope = 'private'">私有</button>
+                <button class="preset-scope-seg" :class="{ on: newSchemeScope === 'public' }"
+                        :disabled="!auth.canArWrite" :title="auth.canArWrite ? '团队共享' : '需写入权限'"
+                        @click="newSchemeScope = 'public'">公共（团队共享）</button>
               </div>
+
+              <div v-if="!schemesLoaded" class="preset-empty">加载中…</div>
+              <template v-else>
+                <div v-if="mySchemes.length" class="preset-grp">我的方案</div>
+                <div v-for="s in mySchemes" :key="s.id" class="preset-item" @click="applyScheme(s)">
+                  <button class="preset-star" :class="{ on: isDefaultScheme(s) }"
+                          :title="isDefaultScheme(s) ? '默认方案（进入页面自动套用）· 点击取消' : '设为默认方案'"
+                          @click.stop="toggleDefaultScheme(s)">{{ isDefaultScheme(s) ? '★' : '☆' }}</button>
+                  <span class="preset-name">{{ s.name }}</span>
+                  <span class="preset-count">{{ s.conditions.length }} 条件</span>
+                  <button class="preset-del" @click.stop="deleteScheme(s)">✕</button>
+                </div>
+
+                <div v-if="publicSchemes.length" class="preset-grp">公共方案 <i>团队共享</i></div>
+                <div v-for="s in publicSchemes" :key="s.id" class="preset-item" @click="applyScheme(s)">
+                  <button class="preset-star" :class="{ on: isDefaultScheme(s) }"
+                          :title="isDefaultScheme(s) ? '默认方案 · 点击取消' : '设为默认方案'"
+                          @click.stop="toggleDefaultScheme(s)">{{ isDefaultScheme(s) ? '★' : '☆' }}</button>
+                  <span class="preset-name">{{ s.name }}<span class="preset-pub">公</span></span>
+                  <span class="preset-count" :title="`创建人：${s.owner_name || '—'}`">{{ s.owner_name || '—' }}</span>
+                  <button v-if="isMine(s) || auth.isSuperAdmin" class="preset-del" @click.stop="deleteScheme(s)">✕</button>
+                </div>
+
+                <div v-if="!schemes.length" class="preset-empty">暂无方案，设好筛选后点「保存」</div>
+              </template>
             </div>
             <div v-if="showPresetDrop" class="preset-backdrop" @click="showPresetDrop = false"></div>
           </div>
@@ -2802,6 +2853,17 @@ function clearFilters() {
   border: none; border-radius: 6px; background: var(--primary); color: #fff; cursor: pointer;
 }
 .preset-save-btn:disabled { opacity: .45; cursor: default; }
+.preset-scope-row { display: flex; align-items: center; gap: 5px; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+.preset-scope-lbl { font-size: 11px; color: var(--muted); }
+.preset-scope-seg {
+  flex: 1; padding: 4px 6px; font-size: 11px; border: 1px solid var(--border);
+  border-radius: 6px; background: #fff; color: var(--muted); cursor: pointer; white-space: nowrap;
+}
+.preset-scope-seg.on { border-color: var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); font-weight: 600; }
+.preset-scope-seg:disabled { opacity: .4; cursor: not-allowed; }
+.preset-grp { font-size: 11px; color: var(--muted); font-weight: 700; padding: 8px 12px 3px; }
+.preset-grp i { font-weight: 400; font-style: normal; color: #c9963f; }
+.preset-pub { font-size: 9px; background: #c9963f; color: #fff; border-radius: 3px; padding: 0 3px; margin-left: 4px; vertical-align: middle; }
 .preset-empty { padding: 10px 12px; font-size: 12px; color: var(--muted); }
 .preset-item {
   display: flex; align-items: center; gap: 6px;
