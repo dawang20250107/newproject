@@ -225,7 +225,7 @@ const TABS = [
   { key: 'batch', label: '批次管理' },
   { key: 'collection', label: '回款跟踪' },
   { key: 'offset', label: '预收核销' },
-  { key: 'dunning', label: '催款' },
+  { key: 'dunning', label: '逾期看板' },
   { key: 'payments', label: '回款流水' },
   { key: 'summary', label: '汇总' },
 ]
@@ -1095,11 +1095,8 @@ function clearFilters() {
     <div class="card" :class="{ 'data-reloading': loading && items.length }">
       <!-- 合并指标条：左侧=本Tab进度/重点；右侧=当前筛选全集合计 -->
       <div v-if="isDataTab && (kpiData || summaryData)" class="metrics-bar">
-        <template v-if="kpiData">
-          <template v-if="activeTab === 'all'">
-            <div class="kpi-item danger"><span class="kpi-k">逾期</span><span class="kpi-v">{{ kpiData.overdue.count }} 笔 / {{ fmtCell(kpiData.overdue.amount) }}</span></div>
-          </template>
-          <template v-else-if="activeTab === 'reconciliation'">
+        <template v-if="kpiData && activeTab !== 'all'">
+          <template v-if="activeTab === 'reconciliation'">
             <div class="kpi-progress">
               <div class="kpi-k">对账完成度</div>
               <div class="kpi-track"><div class="kpi-fill fill-blue" :style="`width:${kpiData.reconciliation.rate}%`"></div></div>
@@ -1126,14 +1123,16 @@ function clearFilters() {
           </template>
         </template>
 
-        <span v-if="kpiData && summaryData" class="metrics-div"></span>
+        <span v-if="kpiData && summaryData && activeTab !== 'all'" class="metrics-div"></span>
 
         <!-- 汇总区：时段合计（单行紧凑条）；筛选集列合计见表格底部吸底合计行 -->
+        <!-- 应收为净额（预估 − 已回款，分批回款扣回真实未收）；调整=账实差额；应收+调整=未收 -->
         <div v-if="summaryData" class="period-bar"
-             :title="`基准日 ${summaryData.ref_date}（取筛选中最晚日期，无筛选则今天）；按应收到期日/回款日期归入对应月/周区间（周五~周四口径）`">
+             :title="`基准日 ${summaryData.ref_date}（取筛选中最晚日期，无筛选则今天）。应收=预估上账−已回款（净额）；调整=账实差额；已收=区间内实际回款。应收/调整按到期日、已收按回款日归入对应月/周（周五~周四口径）`">
           <span class="period-lbl">时段合计</span>
           <span class="pd-k">{{ summaryData.ref_month }}当期</span>
           <span class="pd-num">应 {{ fmtCell(summaryData.month_curr_est) }}</span>
+          <span class="pd-num adj">调 {{ fmtCell(summaryData.month_curr_adjust) }}</span>
           <span class="pd-num ok">收 {{ fmtCell(summaryData.month_curr_collected) }}</span>
           <span class="pd-sep">·</span>
           <span class="pd-k">逾期</span>
@@ -1142,11 +1141,13 @@ function clearFilters() {
           <span class="pd-sep pipe">|</span>
           <span class="pd-k">{{ summaryData.ref_week_label }}({{ summaryData.ref_week }})</span>
           <span class="pd-num">应 {{ fmtCell(summaryData.week_est) }}</span>
+          <span class="pd-num adj">调 {{ fmtCell(summaryData.week_adjust) }}</span>
           <span class="pd-num ok">收 {{ fmtCell(summaryData.week_collected) }}</span>
           <span class="pd-sep">·</span>
           <span class="pd-k">上周({{ summaryData.prev_ref_week }})</span>
-          <span class="pd-num">{{ fmtCell(summaryData.prev_week_est) }}</span>
-          <span class="pd-num ok">{{ fmtCell(summaryData.prev_week_collected) }}</span>
+          <span class="pd-num">应 {{ fmtCell(summaryData.prev_week_est) }}</span>
+          <span class="pd-num adj">调 {{ fmtCell(summaryData.prev_week_adjust) }}</span>
+          <span class="pd-num ok">收 {{ fmtCell(summaryData.prev_week_collected) }}</span>
         </div>
       </div>
 
@@ -2396,6 +2397,7 @@ function clearFilters() {
 .pd-num { font-size: 12px; font-weight: 600; color: var(--text); }
 .pd-num.ok { color: #2e7d32; }
 .pd-num.warn { color: #e65100; }
+.pd-num.adj { color: #6a5acd; font-weight: 500; }
 .pd-sep { color: var(--muted); opacity: 0.4; }
 .pd-sep.pipe { margin: 0 4px; opacity: 0.25; }
 .kpi-item { display: flex; align-items: baseline; gap: 6px; }

@@ -788,8 +788,11 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         s = resp.json()['data']['summary']
 
-        # 当期应收：due_date=2026-06-30 落在6月 → rec_june 的 estimated_amount=1000
-        self.assertEqual(Decimal(s['month_curr_est']), Decimal('1000.00'))
+        # 当期应收（净额）：due_date=2026-06-30 落在6月，rec_june 预估1000
+        # 减去该记录全部已回款(400+250=650) → 350（分批回款扣回真实未收）
+        self.assertEqual(Decimal(s['month_curr_est']), Decimal('350.00'))
+        # 当期调整：rec_june 无账实差额 → 0
+        self.assertEqual(Decimal(s['month_curr_adjust']), Decimal('0'))
         self.assertEqual(s['ref_month'], '2026年6月')
         # 当期已收：payment_date 在6月(06-15) 且 ar_record.due_date>=mo_start(06-30>=06-01) → 250
         self.assertEqual(Decimal(s['month_curr_collected']), Decimal('250.00'))
@@ -799,14 +802,16 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(Decimal(s['month_overdue_collected']), Decimal('0'))
 
         # week window for 2026-06-30 (Tuesday), 周五~周四口径: Fri=2026-06-26, Thu=2026-07-02
-        # rec_june has due_date=2026-06-30 (in that week) → week_est includes it
-        self.assertEqual(Decimal(s['week_est']), Decimal('1000.00'))
+        # rec_june due_date=2026-06-30 在该周 → week_est 取净额 1000−650=350
+        self.assertEqual(Decimal(s['week_est']), Decimal('350.00'))
+        self.assertEqual(Decimal(s['week_adjust']), Decimal('0'))
         # week_collected: payment on 2026-07-01 is in the week → 400 (not the 06-15 one)
         self.assertEqual(Decimal(s['week_collected']), Decimal('400.00'))
         self.assertEqual(s['ref_week'], '6/26~7/2')
         # 上周环比窗口：6/19~6/25，无到期/回款落入 → 0
         self.assertEqual(s['prev_ref_week'], '6/19~6/25')
         self.assertEqual(Decimal(s['prev_week_est']), Decimal('0'))
+        self.assertEqual(Decimal(s['prev_week_adjust']), Decimal('0'))
         self.assertEqual(Decimal(s['prev_week_collected']), Decimal('0'))
 
         # ── 关键回归：历史月份筛选（早于今天）时 ref_date 不应被 today 覆盖 ──
@@ -830,6 +835,37 @@ class ARPermissionRegressionTests(TestCase):
         s3 = resp3.json()['data']['summary']
         self.assertEqual(s3['ref_date'], date.today().isoformat())
         self.assertEqual(s3['ref_week_label'], '本周')
+
+    def test_summary_period_net_est_and_adjust(self):
+        """时段合计：应收=预估−已回款（净额），调整单列；应收+调整=未收。"""
+        from ar.models import ARAdjustment
+        admin = self.make_user('13900000077', 'finance_director', role='super_admin')
+        project = self.create_project()
+
+        # 当月到期记录：预估1000，分两次回款共300，账实差额+50
+        rec = ARRecord.objects.create(
+            project=project, operation_year=2026, operation_month=6,
+            estimated_amount=Decimal('1000.00'))
+        ARRecord.objects.filter(pk=rec.pk).update(due_date=date(2026, 6, 30))
+        ARPayment.objects.create(ar_record=rec, payment_no=1,
+                                 amount=Decimal('200.00'), payment_date=date(2026, 6, 10))
+        ARPayment.objects.create(ar_record=rec, payment_no=2,
+                                 amount=Decimal('100.00'), payment_date=date(2026, 6, 20))
+        ARAdjustment.objects.create(ar_record=rec, amount=Decimal('50.00'),
+                                    reason='运费差', adjust_date=date(2026, 6, 12))
+        rec.refresh_from_db()
+
+        resp = self.client.get('/api/pk/ar/records', {'year': 2026, 'month': 6},
+                               **self.auth(admin))
+        s = resp.json()['data']['summary']
+        # 应收(净) = 预估1000 − 已回款300 = 700
+        self.assertEqual(Decimal(s['month_curr_est']), Decimal('700.00'))
+        # 调整 = 账实差额合计 +50
+        self.assertEqual(Decimal(s['month_curr_adjust']), Decimal('50.00'))
+        # 恒等式：应收(净) + 调整 = 未收(outstanding) = 1000+50−300 = 750
+        self.assertEqual(Decimal(s['month_curr_est']) + Decimal(s['month_curr_adjust']),
+                         rec.outstanding_amount)
+        self.assertEqual(rec.outstanding_amount, Decimal('750.00'))
 
     def test_records_search_matches_project_manager(self):
         admin = self.make_user('13900000066', 'finance_director', role='super_admin')
