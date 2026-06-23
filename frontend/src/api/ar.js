@@ -123,6 +123,7 @@ const ar = {
   projectPnl: p => api.get('/ar/analytics/project-pnl', { params: p }),
   projectCashflow: p => api.get('/ar/analytics/project-cashflow', { params: p }),
   forecast: p => api.get('/ar/analytics/forecast', { params: p }),
+  agingByCustomer: p => api.get('/ar/analytics/aging-by-customer', { params: p }),
 
   // P4 行动项
   listActions: p => api.get('/ar/actions', { params: p }),

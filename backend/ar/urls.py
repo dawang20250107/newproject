@@ -92,6 +92,7 @@ urlpatterns = [
     path('analytics/project-cashflow', views.analytics_project_cashflow),
     path('analytics/forecast', views.analytics_forecast),
     path('analytics/target-decomp', views.analytics_target_decomp),
+    path('analytics/aging-by-customer', views.analytics_aging_by_customer),
 
     # P4 行动项
     path('actions', views.ar_actions),

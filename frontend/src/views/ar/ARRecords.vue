@@ -30,7 +30,7 @@ const loading = ref(false)
 const loadErr = ref('')
 const page = ref(1)
 const size = 50
-const activeTab = ref('all')   // all | reconciliation | invoice | collection
+const activeTab = ref('all')   // all | reconciliation | invoice | collection | aging
 
 // 统一筛选：所有维度/日期/金额都是 conditions 里的一条；matchMode 决定 且/或。
 // 直接序列化为后端 conditions(JSON) + match 参数，前端不再有零散 flat 筛选。
@@ -229,6 +229,7 @@ const TABS = [
   { key: 'offset', label: '预收核销' },
   { key: 'dunning', label: '逾期看板' },
   { key: 'payments', label: '回款流水' },
+  { key: 'aging', label: '账龄分析' },
   { key: 'summary', label: '汇总' },
 ]
 const DATA_TABS = ['all', 'reconciliation', 'invoice', 'collection']
@@ -396,6 +397,58 @@ async function createDunningTasks() {
 // 逾期天数着色：≤30 橙、>30 红
 const overdueClass = d => (d > 30 ? 'od-danger' : 'od-warn')
 
+// ── 账龄分段行着色 ────────────────────────────────────────────────────────────
+// 4 段账龄桶，颜色随逾期天数递进（1-30淡黄 → 31-60橙 → 61-90淡红 → >90深红）
+const agingRowClass = rec => {
+  if (!rec.is_overdue) return ''
+  const d = rec.overdue_days || 0
+  if (d > 90) return 'age-90plus'
+  if (d > 60) return 'age-61-90'
+  if (d > 30) return 'age-31-60'
+  return 'age-1-30'
+}
+
+// ── 账龄分析 Tab ──────────────────────────────────────────────────────────────
+const agingRows = ref([])
+const agingSummary = ref(null)
+const agingLoading = ref(false)
+async function loadAging() {
+  agingLoading.value = true
+  try {
+    const res = await ar.agingByCustomer(buildParams(reqParams()))
+    agingRows.value = res.data.rows || []
+    agingSummary.value = res.data.summary || null
+  } catch (e) { toast.error(e?.msg || e?.error || '账龄数据加载失败') }
+  finally { agingLoading.value = false }
+}
+
+// ── 筛选方案 ─────────────────────────────────────────────────────────────────
+// 以 localStorage 存取命名筛选方案（conditions + matchMode 快照）
+const PRESET_KEY = 'ar_filter_presets_v1'
+const presets = ref(JSON.parse(localStorage.getItem(PRESET_KEY) || '[]'))
+const showPresetDrop = ref(false)
+const newPresetName = ref('')
+function savePresets() { localStorage.setItem(PRESET_KEY, JSON.stringify(presets.value)) }
+function loadPreset(p) {
+  conditions.value = JSON.parse(JSON.stringify(p.conditions))
+  matchMode.value = p.matchMode || 'all'
+  showPresetDrop.value = false
+  onFilterChange()
+}
+function deletePreset(idx) {
+  presets.value.splice(idx, 1)
+  savePresets()
+}
+function saveCurrentAsPreset() {
+  const name = newPresetName.value.trim()
+  if (!name) return
+  presets.value = presets.value.filter(p => p.name !== name)
+  presets.value.unshift({ name, conditions: JSON.parse(JSON.stringify(conditions.value)), matchMode: matchMode.value })
+  savePresets()
+  newPresetName.value = ''
+  showPresetDrop.value = false
+}
+
 // ── 多维汇总 (group-by pivot) ────────────────────────────────────────────────
 const GROUP_DIMS = [
   { key: 'dept', label: '交付部门' },
@@ -512,6 +565,7 @@ function switchTab(key) {
   activeTab.value = key
   if (key === 'payments') enterPayments()
   else if (key === 'summary') loadGroupSummary()
+  else if (key === 'aging') loadAging()
   else if (key === 'dunning') loadDunning(true)
   else if (key === 'offset') loadOffsetWorkbench()
   else if (key === 'batch') loadBatches()
@@ -522,6 +576,7 @@ function switchTab(key) {
 function onFilterChange() {
   clearSelection()
   if (activeTab.value === 'summary') loadGroupSummary()
+  else if (activeTab.value === 'aging') loadAging()
   else if (activeTab.value === 'batch') loadBatches()
   else if (activeTab.value === 'offset') loadOffsetWorkbench()
   else load(true)
@@ -1076,6 +1131,7 @@ const onScopeChange = () => {
   if (dunFilters.dept && !accessibleDepts.value.includes(dunFilters.dept)) dunFilters.dept = ''
   if (activeTab.value === 'payments') loadPayments(true)
   else if (activeTab.value === 'summary') loadGroupSummary()
+  else if (activeTab.value === 'aging') loadAging()
   else if (activeTab.value === 'dunning') loadDunning(true)
   else load(true)
   void before
@@ -1146,6 +1202,29 @@ function clearFilters() {
             <button title="移除" @click.stop="removeCondition(i)">✕</button>
           </span>
           <button v-if="hasAnyFilter" class="clear-mini" @click="clearFilters">清空</button>
+          <!-- 筛选方案：保存/加载命名方案，localStorage 持久化 -->
+          <div class="preset-wrap">
+            <button class="preset-btn" :class="{ on: showPresetDrop }" @click="showPresetDrop = !showPresetDrop"
+                    title="保存/加载筛选方案">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+              方案<span v-if="presets.length" class="fb-badge">{{ presets.length }}</span>
+            </button>
+            <div v-if="showPresetDrop" class="preset-drop">
+              <div class="preset-save-row">
+                <input v-model="newPresetName" class="preset-name-input" placeholder="方案名称…" maxlength="20"
+                       @keyup.enter="saveCurrentAsPreset" />
+                <button class="preset-save-btn" :disabled="!newPresetName.trim() || !conditions.length"
+                        @click="saveCurrentAsPreset">保存当前</button>
+              </div>
+              <div v-if="!presets.length" class="preset-empty">暂无保存的方案</div>
+              <div v-for="(p, idx) in presets" :key="p.name" class="preset-item" @click="loadPreset(p)">
+                <span class="preset-name">{{ p.name }}</span>
+                <span class="preset-count">{{ p.conditions.length }} 个条件</span>
+                <button class="preset-del" @click.stop="deletePreset(idx)">✕</button>
+              </div>
+            </div>
+            <div v-if="showPresetDrop" class="preset-backdrop" @click="showPresetDrop = false"></div>
+          </div>
         </div>
       </div>
       <div class="ctrl-row">
@@ -1386,7 +1465,7 @@ function clearFilters() {
               <td colspan="17" class="empty-cell">暂无数据</td>
             </tr>
             <template v-for="rec in items" :key="rec.id">
-              <tr :class="['data-row', rec.is_overdue ? 'row-overdue' : '', (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']">
+              <tr :class="['data-row', agingRowClass(rec), (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']">
                 <td v-if="auth.canDelete" class="sel-col">
                   <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @change="toggleRow(rec.id)" />
                 </td>
@@ -1792,6 +1871,59 @@ function clearFilters() {
       </div>
 
       <!-- ══ 多维汇总（透视）══ -->
+      <!-- 账龄分析：按客户汇总四段账龄桶，金蝶云星空标志性报表 -->
+      <div v-if="activeTab === 'aging'" class="aging-wrap">
+        <div class="aging-legend">
+          <span class="aging-dot age-1-30"></span>1-30天
+          <span class="aging-dot age-31-60"></span>31-60天
+          <span class="aging-dot age-61-90"></span>61-90天
+          <span class="aging-dot age-90plus"></span>&gt;90天
+          <span class="text-sm-muted" style="margin-left:8px">（仅含未收余额 &gt; 0 的记录；沿用上方筛选条件）</span>
+        </div>
+        <div class="table-wrap">
+          <table class="rec-table aging-table">
+            <thead>
+              <tr>
+                <th>客户名称</th>
+                <th class="ctr">记录数</th>
+                <th class="amt" title="due_date >= 今天 或 无到期日">未到期</th>
+                <th class="amt age-1-30-head">1-30天</th>
+                <th class="amt age-31-60-head">31-60天</th>
+                <th class="amt age-61-90-head">61-90天</th>
+                <th class="amt age-90plus-head">&gt;90天</th>
+                <th class="amt fw">未收合计</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="agingLoading && !agingRows.length"><td colspan="8" class="empty-cell">⏳ 加载中…</td></tr>
+              <tr v-else-if="!agingRows.length"><td colspan="8" class="empty-cell">暂无未收数据</td></tr>
+              <tr v-for="r in agingRows" :key="r.customer_name" class="data-row aging-row">
+                <td class="fw">{{ r.customer_name || '—' }}</td>
+                <td class="ctr text-sm-muted">{{ r.count }}</td>
+                <td class="amt">{{ parseFloat(r.not_due) > 0 ? fmtCell(r.not_due) : '—' }}</td>
+                <td class="amt" :class="parseFloat(r.b1_30) > 0 ? 'age-amt-1-30' : ''">{{ parseFloat(r.b1_30) > 0 ? fmtCell(r.b1_30) : '—' }}</td>
+                <td class="amt" :class="parseFloat(r.b31_60) > 0 ? 'age-amt-31-60' : ''">{{ parseFloat(r.b31_60) > 0 ? fmtCell(r.b31_60) : '—' }}</td>
+                <td class="amt" :class="parseFloat(r.b61_90) > 0 ? 'age-amt-61-90' : ''">{{ parseFloat(r.b61_90) > 0 ? fmtCell(r.b61_90) : '—' }}</td>
+                <td class="amt" :class="parseFloat(r.b90plus) > 0 ? 'age-amt-90plus' : ''">{{ parseFloat(r.b90plus) > 0 ? fmtCell(r.b90plus) : '—' }}</td>
+                <td class="amt fw" :class="parseFloat(r.total) > 0 ? 'amt-warn' : 'amt-zero'">{{ fmtCell(r.total) }}</td>
+              </tr>
+            </tbody>
+            <tfoot v-if="agingSummary">
+              <tr class="group-total-row">
+                <td class="fw">合计</td>
+                <td class="ctr">{{ agingSummary.count }}</td>
+                <td class="amt fw">{{ parseFloat(agingSummary.not_due) > 0 ? fmtCell(agingSummary.not_due) : '—' }}</td>
+                <td class="amt fw age-amt-1-30">{{ parseFloat(agingSummary.b1_30) > 0 ? fmtCell(agingSummary.b1_30) : '—' }}</td>
+                <td class="amt fw age-amt-31-60">{{ parseFloat(agingSummary.b31_60) > 0 ? fmtCell(agingSummary.b31_60) : '—' }}</td>
+                <td class="amt fw age-amt-61-90">{{ parseFloat(agingSummary.b61_90) > 0 ? fmtCell(agingSummary.b61_90) : '—' }}</td>
+                <td class="amt fw age-amt-90plus">{{ parseFloat(agingSummary.b90plus) > 0 ? fmtCell(agingSummary.b90plus) : '—' }}</td>
+                <td class="amt fw amt-warn">{{ fmtCell(agingSummary.total) }}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
       <div v-if="activeTab === 'summary'">
         <div class="filter-strip" style="margin-top:4px">
           <label class="pay-range-lbl">分组维度</label>
@@ -2596,6 +2728,68 @@ function clearFilters() {
 .sum-foot-lbl { white-space: nowrap; color: var(--primary); }
 .rec-table tfoot .amt-warn { color: #e65100; }
 .rec-table tfoot .amt-muted { color: var(--muted); font-weight: 600; }
+
+/* ══ 账龄分段行着色（4 段递进，替换旧 row-overdue 单一样式）══ */
+.age-1-30  { background: rgba(255,235,59,0.10); }
+.age-31-60 { background: rgba(255,152,0,0.11); }
+.age-61-90 { background: rgba(244,67,54,0.09); }
+.age-90plus { background: rgba(183,28,28,0.10); }
+
+/* ══ 账龄分析 Tab ══ */
+.aging-wrap { padding: 4px 0 0; }
+.aging-legend { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); padding: 6px 2px 10px; flex-wrap: wrap; }
+.aging-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-left: 8px; }
+.aging-dot.age-1-30  { background: rgba(255,152,0,0.45); }
+.aging-dot.age-31-60 { background: rgba(239,108,0,0.55); }
+.aging-dot.age-61-90 { background: rgba(211,47,47,0.5); }
+.aging-dot.age-90plus { background: rgba(136,14,79,0.5); }
+
+.aging-table th.age-1-30-head  { color: #e65100; }
+.aging-table th.age-31-60-head { color: #bf360c; }
+.aging-table th.age-61-90-head { color: #c62828; }
+.aging-table th.age-90plus-head { color: #880e4f; }
+
+.age-amt-1-30  { color: #e65100; font-weight: 600; }
+.age-amt-31-60 { color: #bf360c; font-weight: 600; }
+.age-amt-61-90 { color: #c62828; font-weight: 600; }
+.age-amt-90plus { color: #880e4f; font-weight: 700; }
+
+/* ══ 筛选方案 ══ */
+.preset-wrap { position: relative; }
+.preset-btn {
+  display: flex; align-items: center; gap: 5px;
+  padding: 4px 9px; font-size: 12px; font-weight: 500;
+  border: 1.5px solid var(--border); border-radius: 6px;
+  background: #fff; color: var(--text); cursor: pointer; white-space: nowrap;
+}
+.preset-btn:hover, .preset-btn.on { border-color: var(--primary); color: var(--primary); }
+.preset-drop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 200;
+  background: #fff; border: 1.5px solid var(--border); border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.12); min-width: 240px; padding: 8px 0;
+}
+.preset-backdrop { position: fixed; inset: 0; z-index: 199; }
+.preset-save-row { display: flex; gap: 6px; padding: 6px 10px 8px; border-bottom: 1px solid var(--border); }
+.preset-name-input {
+  flex: 1; padding: 5px 8px; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 6px; outline: none;
+}
+.preset-name-input:focus { border-color: var(--primary); }
+.preset-save-btn {
+  padding: 5px 10px; font-size: 12px; white-space: nowrap;
+  border: none; border-radius: 6px; background: var(--primary); color: #fff; cursor: pointer;
+}
+.preset-save-btn:disabled { opacity: .45; cursor: default; }
+.preset-empty { padding: 10px 12px; font-size: 12px; color: var(--muted); }
+.preset-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 12px; cursor: pointer; font-size: 13px;
+}
+.preset-item:hover { background: rgba(201,99,66,0.05); }
+.preset-name { flex: 1; font-weight: 500; }
+.preset-count { font-size: 11px; color: var(--muted); }
+.preset-del { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 12px; }
+.preset-del:hover { color: var(--danger); }
 
 .empty-cell { text-align: center; padding: 48px !important; color: var(--muted); font-size: 14px; }
 .proj-name { font-weight: 600; font-size: 12.5px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

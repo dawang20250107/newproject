@@ -1194,5 +1194,113 @@ def analytics_target_decomp(request):
 
 
 
+
+@csrf_exempt
+@pk_required()
+def analytics_aging_by_customer(request):
+    """按客户汇总账龄：各客户未收金额按逾期分桶（未到期/1-30/31-60/61-90/90+天）。
+
+    入参：dept(可选), conditions(JSON, 可选), match(all/any, 默认all)
+    返回：items 按 total_outstanding 降序 + summary 全客户汇总。
+    """
+    denied = _page_denied(request, 'ar_analytics')
+    if denied:
+        return denied
+
+    today = datetime.date.today()
+
+    qs = _ar_dept_filter(
+        ARRecord.objects.filter(outstanding_amount__gt=0), request,
+        shared_field='project__is_shared')
+
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+
+    qs = _apply_conditions(qs, request, today=today)
+
+    # Optional text search via ?q=
+    q = request.GET.get('q', '').strip()
+    if q:
+        qs = qs.filter(
+            Q(project__short_name__icontains=q) |
+            Q(project__customer_name__icontains=q) |
+            Q(project__project_no__icontains=q) |
+            Q(project__project_manager__icontains=q))
+
+    # Fetch only the fields we need
+    rows = qs.values('project__customer_name', 'due_date', 'outstanding_amount')
+
+    # Bucket boundaries
+    d30 = today - datetime.timedelta(days=30)
+    d60 = today - datetime.timedelta(days=60)
+    d90 = today - datetime.timedelta(days=90)
+
+    # Aggregate in Python by customer_name
+    ZERO = Decimal('0')
+    agg = {}  # customer_name -> {not_due, b1_30, b31_60, b61_90, b90plus, count}
+
+    for r in rows:
+        cname = (r['project__customer_name'] or '').strip() or '（未填写）'
+        amt = r['outstanding_amount'] or ZERO
+        due = r['due_date']
+
+        if cname not in agg:
+            agg[cname] = {
+                'not_due': ZERO,
+                'b1_30': ZERO,
+                'b31_60': ZERO,
+                'b61_90': ZERO,
+                'b90plus': ZERO,
+                'count': 0,
+            }
+        a = agg[cname]
+        a['count'] += 1
+
+        # Bucket assignment
+        if due is None or due >= today:
+            a['not_due'] += amt
+        elif due >= d30:
+            a['b1_30'] += amt
+        elif due >= d60:
+            a['b31_60'] += amt
+        elif due >= d90:
+            a['b61_90'] += amt
+        else:
+            a['b90plus'] += amt
+
+    def _fmt(v):
+        return str(v.quantize(Decimal('0.01')))
+
+    items = []
+    for cname, a in agg.items():
+        total = a['not_due'] + a['b1_30'] + a['b31_60'] + a['b61_90'] + a['b90plus']
+        items.append({
+            'customer_name': cname,
+            'not_due': _fmt(a['not_due']),
+            'b1_30': _fmt(a['b1_30']),
+            'b31_60': _fmt(a['b31_60']),
+            'b61_90': _fmt(a['b61_90']),
+            'b90plus': _fmt(a['b90plus']),
+            'total': _fmt(total),
+            'count': a['count'],
+        })
+
+    items.sort(key=lambda x: Decimal(x['total']), reverse=True)
+
+    # Summary across all customers
+    summary = {
+        'not_due': _fmt(sum((Decimal(i['not_due']) for i in items), ZERO)),
+        'b1_30': _fmt(sum((Decimal(i['b1_30']) for i in items), ZERO)),
+        'b31_60': _fmt(sum((Decimal(i['b31_60']) for i in items), ZERO)),
+        'b61_90': _fmt(sum((Decimal(i['b61_90']) for i in items), ZERO)),
+        'b90plus': _fmt(sum((Decimal(i['b90plus']) for i in items), ZERO)),
+        'total': _fmt(sum((Decimal(i['total']) for i in items), ZERO)),
+        'count': sum(i['count'] for i in items),
+        'customer_count': len(items),
+    }
+
+    return ok({'items': items, 'summary': summary})
+
 # 再导出本域全部公开名（含单下划线助手），使 `from ar.views import _x` 等旧引用不变。
-__all__ = [n for n in dir() if not n.startswith('__')]
+__all__ = [n for n in dir() if not n.startswith("__")]
