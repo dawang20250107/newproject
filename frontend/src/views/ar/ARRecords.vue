@@ -809,6 +809,12 @@ function ledgerRows(rec) {
   }))
   return [...pays, ...adjs].sort((x, y) => (x.date || '').localeCompare(y.date || ''))
 }
+// 展开流水：回款跟踪 Tab 只看「回款」（差额调整已在列表单列，不混入流水以免混淆）；
+// 其余 Tab（如全部）保留回款+调整的完整台账。
+function streamRows(rec) {
+  const rows = ledgerRows(rec)
+  return activeTab.value === 'collection' ? rows.filter(r => r.kind === 'pay') : rows
+}
 // 从展开流水里删除一笔差额调整（与编辑弹窗里的 removeAdjustment 等价，但作用于列表行）
 async function deleteLedgerAdj(rec, a) {
   if (!confirm(`删除调整「${a.reason || '未填原因'}：${a.amount}」？差额合计与未收金额将随之回退。`)) return
@@ -1358,9 +1364,10 @@ function clearFilters() {
               </template>
               <!-- collection -->
               <template v-else>
-                <th class="amt">应收基础</th>
+                <th class="amt" title="应收基础 = 预估上账（不剔除差额调整）">应收基础</th>
                 <th v-if="show('r_payments')">回款记录</th>
                 <th v-if="show('r_payments')" class="amt">回款合计</th>
+                <th v-if="show('r_account_diff')" class="amt" title="差额调整：改变应收基数（非回款），可正可负">差额调整</th>
                 <th v-if="show('r_outstanding')" class="amt"><ColumnFilter label="未收金额" field="outstanding_amount" type="number" :model-value="colFilters.outstanding_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('outstanding_amount',v)" @sort="o=>setSort('outstanding_amount',o)" /></th>
                 <th v-if="show('r_invoice_status')" class="ctr"><ColumnFilter label="回款状态" field="status" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.status" :model-value="dimModel('status')" @update:model-value="v=>onDimCol('status',v)" /></th>
               </template>
@@ -1468,7 +1475,7 @@ function clearFilters() {
 
                 <!-- collection -->
                 <template v-else>
-                  <td class="amt fw">{{ fmtCell(rec.actual_invoice_amount || rec.estimated_amount) }}</td>
+                  <td class="amt fw" title="应收基础 = 预估上账（不剔除差额调整）">{{ fmtCell(rec.estimated_amount) }}</td>
                   <td v-if="show('r_payments')">
                     <button class="pay-toggle" @click="togglePayments(rec.id)">
                       <span class="pay-count" :class="rec.payments?.length ? 'count-has' : 'count-none'">{{ rec.payments?.length || 0 }}</span>
@@ -1479,6 +1486,10 @@ function clearFilters() {
                   </td>
                   <td v-if="show('r_payments')" class="amt fw" :class="paidTotal(rec) > 0 ? 'amt-ok' : ''" :title="paidTotalTitle(rec)">
                     {{ paidTotal(rec) > 0 ? fmtCell(paidTotal(rec)) : '—' }}<i v-if="nonCashTotal(rec) > 0" class="noncash-dot" title="含非现金（内部往来/预收抵扣）">*</i></td>
+                  <td v-if="show('r_account_diff')" class="amt" :title="`差额调整（非回款，可正可负）；未收 = 应收基础 ${fmtCell(rec.estimated_amount)} + 差额 ${fmtCell(rec.account_diff_adjustment)} − 回款合计 ${fmtCell(paidTotal(rec))}`">
+                    <span v-if="parseFloat(rec.account_diff_adjustment) !== 0" :class="parseFloat(rec.account_diff_adjustment) >= 0 ? 'adj-pos' : 'adj-neg'">{{ parseFloat(rec.account_diff_adjustment) > 0 ? '+' : '' }}{{ fmtCell(rec.account_diff_adjustment) }}</span>
+                    <span v-else>—</span>
+                  </td>
                   <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
                   <td v-if="show('r_invoice_status')" class="ctr">
                     <span :class="['status-pill', rec.invoice_status === '已结清' ? 'pill-ok' : rec.invoice_status === '部分回款' ? 'pill-blue' : rec.invoice_status === '已开票' ? 'pill-warn' : 'pill-muted']">{{ rec.invoice_status === '已开票' ? '✓ 已开票' : rec.invoice_status === '未开票' ? '○ 未开票' : rec.invoice_status }}</span>
@@ -1500,10 +1511,10 @@ function clearFilters() {
 
               <!-- Payment detail rows (collection / all tab — 含预收抵扣来源标识) -->
               <template v-if="(activeTab === 'collection' || activeTab === 'all') && show('r_payments') && expandedPayments[rec.id]">
-                <tr v-if="!ledgerRows(rec).length" class="pay-row">
-                  <td :colspan="99" class="pay-empty">暂无回款 / 差额调整</td>
+                <tr v-if="!streamRows(rec).length" class="pay-row">
+                  <td :colspan="99" class="pay-empty">{{ activeTab === 'collection' ? '暂无回款' : '暂无回款 / 差额调整' }}</td>
                 </tr>
-                <tr v-else v-for="row in ledgerRows(rec)" :key="row.key" class="pay-row">
+                <tr v-else v-for="row in streamRows(rec)" :key="row.key" class="pay-row">
                   <td :colspan="99">
                     <!-- 银行回款 / 内部往来 / 预收抵扣 -->
                     <div v-if="row.kind === 'pay'" class="pay-detail">
