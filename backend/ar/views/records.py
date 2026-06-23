@@ -173,11 +173,14 @@ def ar_records(request):
         mo_start = datetime.date(ref_date.year, ref_date.month, 1)
         mo_end = datetime.date(ref_date.year, ref_date.month,
                                calendar.monthrange(ref_date.year, ref_date.month)[1])
-        # 周窗口（周一 ~ 周日）
-        wk_start = ref_date - datetime.timedelta(days=ref_date.weekday())
+        # 周窗口（业务口径：周五 ~ 次周周四）。Friday=weekday 4。
+        wk_start = ref_date - datetime.timedelta(days=(ref_date.weekday() - 4) % 7)
         wk_end = wk_start + datetime.timedelta(days=6)
+        # 上一周（同口径，用于环比比对）
+        prev_wk_start = wk_start - datetime.timedelta(days=7)
+        prev_wk_end = wk_start - datetime.timedelta(days=1)
         # 周标签随基准日联动：基准周==今天所在周时叫"本周"，否则叫"该周"
-        today_wk_start = today - datetime.timedelta(days=today.weekday())
+        today_wk_start = today - datetime.timedelta(days=(today.weekday() - 4) % 7)
         week_label = '本周' if wk_start == today_wk_start else '该周'
 
         # 应收：按 due_date 落在窗口内的记录预估金额求和（null due_date 自动排除）
@@ -205,6 +208,12 @@ def ar_records(request):
         week_collected = (pay_in_set
                           .filter(payment_date__gte=wk_start, payment_date__lte=wk_end)
                           .aggregate(s=Sum('amount'))['s'] or 0)
+        # 上周（环比）：应收按 due_date、已收按 payment_date 落在上周窗口
+        prev_week_est = (base.filter(due_date__gte=prev_wk_start, due_date__lte=prev_wk_end)
+                         .aggregate(s=Sum('estimated_amount'))['s'] or 0)
+        prev_week_collected = (pay_in_set
+                               .filter(payment_date__gte=prev_wk_start, payment_date__lte=prev_wk_end)
+                               .aggregate(s=Sum('amount'))['s'] or 0)
 
         summary = {
             'count': total,
@@ -220,9 +229,12 @@ def ar_records(request):
             'month_overdue_collected': str(month_overdue_collected),
             'week_est': str(week_est),
             'week_collected': str(week_collected),
+            'prev_week_est': str(prev_week_est),
+            'prev_week_collected': str(prev_week_collected),
             'ref_date': ref_date.isoformat(),
             'ref_month': f'{ref_date.year}年{ref_date.month}月',
             'ref_week': f'{wk_start.month}/{wk_start.day}~{wk_end.month}/{wk_end.day}',
+            'prev_ref_week': f'{prev_wk_start.month}/{prev_wk_start.day}~{prev_wk_end.month}/{prev_wk_end.day}',
             'ref_week_label': week_label,
         }
         items = list(qs[(page - 1) * size: page * size])
@@ -235,10 +247,16 @@ def ar_records(request):
             pay_map = defaultdict(list)
             for p in pay_qs:
                 pay_map[p.ar_record_id].append(p.to_dict())
+            # Prefetch adjustments（编辑态需带出已有差额调整明细以便删除）
+            adj_qs = ARAdjustment.objects.filter(ar_record_id__in=record_ids)
+            adj_map = defaultdict(list)
+            for a in adj_qs:
+                adj_map[a.ar_record_id].append(a.to_dict())
             rows = []
             for r in items:
                 d = r.to_dict(today=today)
                 d['payments'] = pay_map.get(r.id, [])
+                d['adjustments'] = adj_map.get(r.id, [])
                 rows.append(apply_ar_view_mask(d, perms, 'record'))
         else:
             rows = [apply_ar_view_mask(r.to_dict(today=today), perms, 'record') for r in items]

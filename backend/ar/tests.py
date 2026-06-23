@@ -775,7 +775,7 @@ class ARPermissionRegressionTests(TestCase):
             estimated_amount=Decimal('2000.00'))
         ARRecord.objects.filter(pk=rec_july.pk).update(due_date=date(2026, 7, 15))
 
-        # Payment on 2026-07-01 → inside the week (6/29~7/5) but NOT in June month
+        # Payment on 2026-07-01 → inside the week (6/26~7/2, 周五~周四口径) but NOT in June month
         ARPayment.objects.create(ar_record=rec_june, payment_no=1,
                                  amount=Decimal('400.00'), payment_date=date(2026, 7, 1))
         # Payment on 2026-06-15 → inside June month but NOT in the week
@@ -798,11 +798,16 @@ class ARPermissionRegressionTests(TestCase):
         # 逾期已收：payment_date 在6月(06-15) 且 ar_record.due_date<mo_start(06-30<06-01? No) → 0
         self.assertEqual(Decimal(s['month_overdue_collected']), Decimal('0'))
 
-        # week window for 2026-06-30 (Tuesday): Mon=2026-06-29, Sun=2026-07-05
+        # week window for 2026-06-30 (Tuesday), 周五~周四口径: Fri=2026-06-26, Thu=2026-07-02
         # rec_june has due_date=2026-06-30 (in that week) → week_est includes it
         self.assertEqual(Decimal(s['week_est']), Decimal('1000.00'))
         # week_collected: payment on 2026-07-01 is in the week → 400 (not the 06-15 one)
         self.assertEqual(Decimal(s['week_collected']), Decimal('400.00'))
+        self.assertEqual(s['ref_week'], '6/26~7/2')
+        # 上周环比窗口：6/19~6/25，无到期/回款落入 → 0
+        self.assertEqual(s['prev_ref_week'], '6/19~6/25')
+        self.assertEqual(Decimal(s['prev_week_est']), Decimal('0'))
+        self.assertEqual(Decimal(s['prev_week_collected']), Decimal('0'))
 
         # ── 关键回归：历史月份筛选（早于今天）时 ref_date 不应被 today 覆盖 ──
         # year=2026 month=6 is before today (2026-05-30... actually June is after May, let's use a past year)
@@ -815,7 +820,8 @@ class ARPermissionRegressionTests(TestCase):
         # ref_date must be 2026-03-31 (March), not today (May)
         self.assertEqual(s2['ref_date'], '2026-03-31')
         self.assertEqual(s2['ref_month'], '2026年3月')
-        self.assertEqual(s2['ref_week'], '3/30~4/5')  # week of 2026-03-31 (Mon3/30~Sun4/5)
+        self.assertEqual(s2['ref_week'], '3/27~4/2')  # week of 2026-03-31 (周五3/27~周四4/2)
+        self.assertEqual(s2['prev_ref_week'], '3/20~3/26')  # 上周环比窗口
         # 基准周非今天所在周 → 标签为"该周"
         self.assertEqual(s2['ref_week_label'], '该周')
 

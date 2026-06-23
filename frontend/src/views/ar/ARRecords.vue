@@ -1095,7 +1095,7 @@ function clearFilters() {
       <div v-if="isDataTab && (kpiData || summaryData)" class="metrics-bar">
         <template v-if="kpiData">
           <template v-if="activeTab === 'all'">
-            <div class="kpi-item danger"><span class="kpi-k">逾期</span><span class="kpi-v">{{ kpiData.overdue.count }} 笔 / {{ fmtAmt(kpiData.overdue.amount) }}</span></div>
+            <div class="kpi-item danger"><span class="kpi-k">逾期</span><span class="kpi-v">{{ kpiData.overdue.count }} 笔 / {{ fmtCell(kpiData.overdue.amount) }}</span></div>
           </template>
           <template v-else-if="activeTab === 'reconciliation'">
             <div class="kpi-progress">
@@ -1134,29 +1134,32 @@ function clearFilters() {
             <!-- 当期：due_date 落在基准月内 -->
             <div class="kpi-item" :title="`${summaryData.ref_month}内 due_date 到期的预估应收`">
               <span class="kpi-k">{{ summaryData.ref_month }}当期应收</span>
-              <span class="kpi-v">{{ fmtAmt(summaryData.month_curr_est) }}</span>
+              <span class="kpi-v">{{ fmtCell(summaryData.month_curr_est) }}</span>
             </div>
             <div class="kpi-item ok" :title="`${summaryData.ref_month}内 payment_date，且到期日在本月及以后的回款`">
               <span class="kpi-k">{{ summaryData.ref_month }}当期已收</span>
-              <span class="kpi-v">{{ fmtAmt(summaryData.month_curr_collected) }}</span>
+              <span class="kpi-v">{{ fmtCell(summaryData.month_curr_collected) }}</span>
             </div>
             <!-- 逾期：due_date 早于基准月且仍有未收余额 / 回款中对应逾期记录的部分 -->
             <div class="kpi-item warn" :title="`due_date 早于 ${summaryData.ref_month} 且仍有未收余额的记录，outstanding_amount 之和`">
               <span class="kpi-k">{{ summaryData.ref_month }}逾期应收</span>
-              <span class="kpi-v">{{ fmtAmt(summaryData.month_overdue_est) }}</span>
+              <span class="kpi-v">{{ fmtCell(summaryData.month_overdue_est) }}</span>
             </div>
             <div class="kpi-item ok" :title="`${summaryData.ref_month}内 payment_date，且到期日早于本月（逾期后补收）的回款`">
               <span class="kpi-k">{{ summaryData.ref_month }}逾期已收</span>
-              <span class="kpi-v">{{ fmtAmt(summaryData.month_overdue_collected) }}</span>
+              <span class="kpi-v">{{ fmtCell(summaryData.month_overdue_collected) }}</span>
             </div>
             <span class="metrics-div"></span>
-            <div class="kpi-item" :title="`应收到期在 ${summaryData.ref_week} 这一周内的预估金额`">
+            <!-- 周维度（周五~次周周四）：本周 + 上周环比，比对放在同一格内不占表格空间 -->
+            <div class="kpi-item" :title="`周应收（周五~周四口径）：本周 ${summaryData.ref_week} 到期预估，对比上周 ${summaryData.prev_ref_week}`">
               <span class="kpi-k">{{ summaryData.ref_week_label }}应收<span class="kpi-sub">{{ summaryData.ref_week }}</span></span>
-              <span class="kpi-v">{{ fmtAmt(summaryData.week_est) }}</span>
+              <span class="kpi-v">{{ fmtCell(summaryData.week_est) }}</span>
+              <span class="kpi-cmp">上周 <b>{{ fmtCell(summaryData.prev_week_est) }}</b><span class="kpi-cmp-rng">{{ summaryData.prev_ref_week }}</span></span>
             </div>
-            <div class="kpi-item ok" :title="`回款日期在 ${summaryData.ref_week} 这一周内的实际回款额`">
+            <div class="kpi-item ok" :title="`周已收（周五~周四口径）：本周 ${summaryData.ref_week} 实际回款，对比上周 ${summaryData.prev_ref_week}`">
               <span class="kpi-k">{{ summaryData.ref_week_label }}已收<span class="kpi-sub">{{ summaryData.ref_week }}</span></span>
-              <span class="kpi-v">{{ fmtAmt(summaryData.week_collected) }}</span>
+              <span class="kpi-v">{{ fmtCell(summaryData.week_collected) }}</span>
+              <span class="kpi-cmp">上周 <b>{{ fmtCell(summaryData.prev_week_collected) }}</b><span class="kpi-cmp-rng">{{ summaryData.prev_ref_week }}</span></span>
             </div>
           </div>
         </div>
@@ -2408,6 +2411,10 @@ function clearFilters() {
 .kpi-k { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 1px; }
 .kpi-sub { font-size: 10px; color: var(--muted); opacity: 0.75; font-weight: 400; }
 .kpi-v { font-size: 15px; font-weight: 700; color: var(--text); }
+/* 周环比：上周值贴在本周值右侧同一行，小号弱化，不增加高度、不占表格空间 */
+.kpi-cmp { font-size: 11px; color: var(--muted); display: inline-flex; align-items: baseline; gap: 3px; white-space: nowrap; }
+.kpi-cmp b { font-weight: 600; color: var(--text); }
+.kpi-cmp-rng { font-size: 9px; opacity: 0.6; }
 .kpi-item.ok .kpi-v { color: #2e7d32; }
 .kpi-item.warn .kpi-v { color: #e65100; }
 .kpi-item.danger .kpi-v { color: #c62828; }
