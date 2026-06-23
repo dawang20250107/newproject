@@ -1128,42 +1128,25 @@ function clearFilters() {
 
         <span v-if="kpiData && summaryData" class="metrics-div"></span>
 
-        <!-- 汇总区：时段合计（本月+本周）；筛选集列合计见表格底部吸底合计行 -->
-        <div v-if="summaryData" class="metrics-summary">
-          <!-- 时段合计——月/周应收已收，文案随基准日期联动 -->
-          <div class="metrics-sum-row">
-            <span class="sum-section-lbl alt" :title="`基准日 ${summaryData.ref_date}（取筛选中最晚日期，无筛选则今天）；按应收到期日/回款日期归入对应月、周区间`">时段合计</span>
-            <!-- 当期：due_date 落在基准月内 -->
-            <div class="kpi-item" :title="`${summaryData.ref_month}内 due_date 到期的预估应收`">
-              <span class="kpi-k">{{ summaryData.ref_month }}当期应收</span>
-              <span class="kpi-v">{{ fmtCell(summaryData.month_curr_est) }}</span>
-            </div>
-            <div class="kpi-item ok" :title="`${summaryData.ref_month}内 payment_date，且到期日在本月及以后的回款`">
-              <span class="kpi-k">{{ summaryData.ref_month }}当期已收</span>
-              <span class="kpi-v">{{ fmtCell(summaryData.month_curr_collected) }}</span>
-            </div>
-            <!-- 逾期：due_date 早于基准月且仍有未收余额 / 回款中对应逾期记录的部分 -->
-            <div class="kpi-item warn" :title="`due_date 早于 ${summaryData.ref_month} 且仍有未收余额的记录，outstanding_amount 之和`">
-              <span class="kpi-k">{{ summaryData.ref_month }}逾期应收</span>
-              <span class="kpi-v">{{ fmtCell(summaryData.month_overdue_est) }}</span>
-            </div>
-            <div class="kpi-item ok" :title="`${summaryData.ref_month}内 payment_date，且到期日早于本月（逾期后补收）的回款`">
-              <span class="kpi-k">{{ summaryData.ref_month }}逾期已收</span>
-              <span class="kpi-v">{{ fmtCell(summaryData.month_overdue_collected) }}</span>
-            </div>
-            <span class="metrics-div"></span>
-            <!-- 周维度（周五~次周周四）：本周 + 上周环比，比对放在同一格内不占表格空间 -->
-            <div class="kpi-item" :title="`周应收（周五~周四口径）：本周 ${summaryData.ref_week} 到期预估，对比上周 ${summaryData.prev_ref_week}`">
-              <span class="kpi-k">{{ summaryData.ref_week_label }}应收<span class="kpi-sub">{{ summaryData.ref_week }}</span></span>
-              <span class="kpi-v">{{ fmtCell(summaryData.week_est) }}</span>
-              <span class="kpi-cmp">上周 <b>{{ fmtCell(summaryData.prev_week_est) }}</b><span class="kpi-cmp-rng">{{ summaryData.prev_ref_week }}</span></span>
-            </div>
-            <div class="kpi-item ok" :title="`周已收（周五~周四口径）：本周 ${summaryData.ref_week} 实际回款，对比上周 ${summaryData.prev_ref_week}`">
-              <span class="kpi-k">{{ summaryData.ref_week_label }}已收<span class="kpi-sub">{{ summaryData.ref_week }}</span></span>
-              <span class="kpi-v">{{ fmtCell(summaryData.week_collected) }}</span>
-              <span class="kpi-cmp">上周 <b>{{ fmtCell(summaryData.prev_week_collected) }}</b><span class="kpi-cmp-rng">{{ summaryData.prev_ref_week }}</span></span>
-            </div>
-          </div>
+        <!-- 汇总区：时段合计（单行紧凑条）；筛选集列合计见表格底部吸底合计行 -->
+        <div v-if="summaryData" class="period-bar"
+             :title="`基准日 ${summaryData.ref_date}（取筛选中最晚日期，无筛选则今天）；按应收到期日/回款日期归入对应月/周区间（周五~周四口径）`">
+          <span class="period-lbl">时段合计</span>
+          <span class="pd-k">{{ summaryData.ref_month }}当期</span>
+          <span class="pd-num">应 {{ fmtCell(summaryData.month_curr_est) }}</span>
+          <span class="pd-num ok">收 {{ fmtCell(summaryData.month_curr_collected) }}</span>
+          <span class="pd-sep">·</span>
+          <span class="pd-k">逾期</span>
+          <span class="pd-num warn">应 {{ fmtCell(summaryData.month_overdue_est) }}</span>
+          <span class="pd-num ok">收 {{ fmtCell(summaryData.month_overdue_collected) }}</span>
+          <span class="pd-sep pipe">|</span>
+          <span class="pd-k">{{ summaryData.ref_week_label }}({{ summaryData.ref_week }})</span>
+          <span class="pd-num">应 {{ fmtCell(summaryData.week_est) }}</span>
+          <span class="pd-num ok">收 {{ fmtCell(summaryData.week_collected) }}</span>
+          <span class="pd-sep">·</span>
+          <span class="pd-k">上周({{ summaryData.prev_ref_week }})</span>
+          <span class="pd-num">{{ fmtCell(summaryData.prev_week_est) }}</span>
+          <span class="pd-num ok">{{ fmtCell(summaryData.prev_week_collected) }}</span>
         </div>
       </div>
 
@@ -2334,8 +2317,9 @@ function clearFilters() {
 .act-btn:disabled { opacity: 0.4; cursor: default; }
 .act-btn--on { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.08); font-weight: 600; }
 
-/* Topbar: title + inline tabs */
+/* Topbar: title + inline tabs + right-side action buttons */
 .topbar-left { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.ctrl-row { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; flex-shrink: 0; }
 
 /* Segment control */
 .segment-ctrl { display: inline-flex; gap: 0; padding: 3px; background: rgba(0,0,0,0.04); border-radius: 11px; flex-wrap: wrap; }
@@ -2405,12 +2389,15 @@ function clearFilters() {
 /* KPI bar */
 .metrics-bar { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; overflow-x: auto; margin-bottom: 4px; padding: 9px 16px; background: rgba(0,0,0,0.02); border-radius: 12px; }
 .metrics-div { width: 1px; align-self: stretch; min-height: 20px; background: rgba(0,0,0,0.1); margin: 0 2px; }
-/* 汇总区：全集合计 / 时段合计 两行纵向堆叠，标签等宽使两行数据项左对齐 */
-.metrics-summary { display: flex; flex-direction: column; gap: 7px; }
-.metrics-sum-row { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; }
-.metrics-sum-row + .metrics-sum-row { padding-top: 7px; border-top: 1px dashed rgba(0,0,0,0.1); }
-.sum-section-lbl { flex: 0 0 auto; width: 60px; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: 0.5px; white-space: nowrap; cursor: default; padding: 2px 7px; border-radius: 6px; background: rgba(0,0,0,0.04); text-align: center; }
-.sum-section-lbl.alt { background: rgba(46,125,50,0.08); color: #2e7d32; }
+/* 汇总区：时段合计单行紧凑条 */
+.period-bar { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; white-space: nowrap; }
+.period-lbl { flex-shrink: 0; font-size: 10.5px; font-weight: 700; color: #2e7d32; padding: 1px 6px; border-radius: 4px; background: rgba(46,125,50,0.12); margin-right: 3px; }
+.pd-k { font-size: 11px; color: var(--muted); font-weight: 500; }
+.pd-num { font-size: 12px; font-weight: 600; color: var(--text); }
+.pd-num.ok { color: #2e7d32; }
+.pd-num.warn { color: #e65100; }
+.pd-sep { color: var(--muted); opacity: 0.4; }
+.pd-sep.pipe { margin: 0 4px; opacity: 0.25; }
 .kpi-item { display: flex; align-items: baseline; gap: 6px; }
 .kpi-k { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 1px; }
 .kpi-sub { font-size: 10px; color: var(--muted); opacity: 0.75; font-weight: 400; }
