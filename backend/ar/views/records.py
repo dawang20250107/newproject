@@ -183,13 +183,19 @@ def ar_records(request):
         today_wk_start = today - datetime.timedelta(days=(today.weekday() - 4) % 7)
         week_label = '本周' if wk_start == today_wk_start else '该周'
 
-        # 应收（净额口径）：按 due_date 落在窗口内的记录，取「预估上账 − 该批已回款」，
-        # 这样分批回款的记录只显示尚未收回的真实应收，不再用毛预估虚高。
-        def _period_net_est(recs):
+        # 应收（期初存量口径）：本期到期的毛预估 + 期前调整 − 期前已收
+        # = 「期初时该批记录还欠多少」→ 即本期期望收多少，与「本期收」/「本期调整」并排不重复
+        # 注意：扣的是 payment_date < period_start 的历史回款，而非全部回款；
+        # 同理只扣 adjust_date < period_start 的历史调整；本期内的收/调分别进「收」/「调」列。
+        def _period_net_est(recs, period_start):
             gross = recs.aggregate(s=Sum('estimated_amount'))['s'] or 0
-            paid = (ARPayment.objects.filter(ar_record__in=recs)
-                    .aggregate(s=Sum('amount'))['s'] or 0)
-            return gross - paid
+            prior_paid = (ARPayment.objects
+                          .filter(ar_record__in=recs, payment_date__lt=period_start)
+                          .aggregate(s=Sum('amount'))['s'] or 0)
+            prior_adj = (ARAdjustment.objects
+                         .filter(ar_record__in=recs, adjust_date__lt=period_start)
+                         .aggregate(s=Sum('amount'))['s'] or 0)
+            return gross + prior_adj - prior_paid
         # 调整：按「调整日期 adjust_date」落在窗口内的差额调整明细求和（限当前筛选记录集）。
         # 与已收按 payment_date 同为事件日期口径——调整发生在哪个月就归哪个月，
         # 不再借用到期日，解决「差额调整不知归属月份」的问题。
@@ -200,13 +206,14 @@ def ar_records(request):
                     .aggregate(s=Sum('amount'))['s'] or 0)
         # 当期：应收按 due_date 落在基准月内；调整按 adjust_date 落在基准月内
         month_curr_est = _period_net_est(
-            base.filter(due_date__gte=mo_start, due_date__lte=mo_end))
+            base.filter(due_date__gte=mo_start, due_date__lte=mo_end), mo_start)
         month_curr_adjust = _period_adjust(mo_start, mo_end)
         # 逾期应收：due_date 早于基准月且仍有未收余额，取 outstanding_amount 之和
+        # outstanding 已含全量调整/回款，此处保持存量快照口径（逾期应收≠当期，无「期初」概念）
         month_overdue_est = (base.filter(due_date__lt=mo_start, outstanding_amount__gt=0)
                              .aggregate(s=Sum('outstanding_amount'))['s'] or 0)
         week_est = _period_net_est(
-            base.filter(due_date__gte=wk_start, due_date__lte=wk_end))
+            base.filter(due_date__gte=wk_start, due_date__lte=wk_end), wk_start)
         week_adjust = _period_adjust(wk_start, wk_end)
 
         # 已收：按 payment_date 落在窗口内，限当前筛选记录集
@@ -224,9 +231,9 @@ def ar_records(request):
         week_collected = (pay_in_set
                           .filter(payment_date__gte=wk_start, payment_date__lte=wk_end)
                           .aggregate(s=Sum('amount'))['s'] or 0)
-        # 上周（环比）：应收(净)按 due_date、调整按 adjust_date、已收按 payment_date 落在上周窗口
+        # 上周（环比）：应收按 due_date、调整按 adjust_date、已收按 payment_date 落在上周窗口
         prev_week_est = _period_net_est(
-            base.filter(due_date__gte=prev_wk_start, due_date__lte=prev_wk_end))
+            base.filter(due_date__gte=prev_wk_start, due_date__lte=prev_wk_end), prev_wk_start)
         prev_week_adjust = _period_adjust(prev_wk_start, prev_wk_end)
         prev_week_collected = (pay_in_set
                                .filter(payment_date__gte=prev_wk_start, payment_date__lte=prev_wk_end)

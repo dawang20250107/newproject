@@ -810,9 +810,9 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         s = resp.json()['data']['summary']
 
-        # 当期应收（净额）：due_date=2026-06-30 落在6月，rec_june 预估1000
-        # 减去该记录全部已回款(400+250=650) → 350（分批回款扣回真实未收）
-        self.assertEqual(Decimal(s['month_curr_est']), Decimal('350.00'))
+        # 当期应收（期初存量）：due_date=2026-06-30 落在6月，rec_june 预估1000
+        # 期前（payment_date < 2026-06-01）无回款 → 期初应收 = 1000（毛预估）
+        self.assertEqual(Decimal(s['month_curr_est']), Decimal('1000.00'))
         # 当期调整：rec_june 无账实差额 → 0
         self.assertEqual(Decimal(s['month_curr_adjust']), Decimal('0'))
         self.assertEqual(s['ref_month'], '2026年6月')
@@ -824,8 +824,9 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(Decimal(s['month_overdue_collected']), Decimal('0'))
 
         # week window for 2026-06-30 (Tuesday), 周五~周四口径: Fri=2026-06-26, Thu=2026-07-02
-        # rec_june due_date=2026-06-30 在该周 → week_est 取净额 1000−650=350
-        self.assertEqual(Decimal(s['week_est']), Decimal('350.00'))
+        # rec_june due_date=2026-06-30 在该周; 期前(payment_date < 2026-06-26) = 250(06-15)
+        # week_est = 1000 − 250 = 750
+        self.assertEqual(Decimal(s['week_est']), Decimal('750.00'))
         self.assertEqual(Decimal(s['week_adjust']), Decimal('0'))
         # week_collected: payment on 2026-07-01 is in the week → 400 (not the 06-15 one)
         self.assertEqual(Decimal(s['week_collected']), Decimal('400.00'))
@@ -859,12 +860,13 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(s3['ref_week_label'], '本周')
 
     def test_summary_period_net_est_and_adjust(self):
-        """时段合计：应收=预估−已回款（净额），调整单列；应收+调整=未收。"""
+        """时段合计：应收=期初存量（毛预估−期前已收−期前已调），调整=本期调，收=本期收。
+        恒等式：期初应收 + 本期调整 − 本期已收 = 期末未收(outstanding)。"""
         from ar.models import ARAdjustment
         admin = self.make_user('13900000077', 'finance_director', role='super_admin')
         project = self.create_project()
 
-        # 当月到期记录：预估1000，分两次回款共300，账实差额+50
+        # 当月到期记录：预估1000，两次回款共300（均在6月），账实差额+50（6月）
         rec = ARRecord.objects.create(
             project=project, operation_year=2026, operation_month=6,
             estimated_amount=Decimal('1000.00'))
@@ -880,13 +882,18 @@ class ARPermissionRegressionTests(TestCase):
         resp = self.client.get('/api/pk/ar/records', {'year': 2026, 'month': 6},
                                **self.auth(admin))
         s = resp.json()['data']['summary']
-        # 应收(净) = 预估1000 − 已回款300 = 700
-        self.assertEqual(Decimal(s['month_curr_est']), Decimal('700.00'))
-        # 调整 = 账实差额合计 +50
+        # 应收(期初存量) = 毛预估1000 − 期前回款0 − 期前调整0 = 1000
+        # （两笔回款 payment_date 均在6月内，不早于 mo_start=06-01，不计入"期前"）
+        self.assertEqual(Decimal(s['month_curr_est']), Decimal('1000.00'))
+        # 调整 = 本期调整合计 +50（adjust_date=06-12 在6月）
         self.assertEqual(Decimal(s['month_curr_adjust']), Decimal('50.00'))
-        # 恒等式：应收(净) + 调整 = 未收(outstanding) = 1000+50−300 = 750
-        self.assertEqual(Decimal(s['month_curr_est']) + Decimal(s['month_curr_adjust']),
-                         rec.outstanding_amount)
+        # 恒等式：期初应收 + 本期调整 − 本期已收 = 期末未收(outstanding)
+        # 1000 + 50 − 300 = 750
+        month_curr_collected = Decimal(s['month_curr_collected'])
+        self.assertEqual(month_curr_collected, Decimal('300.00'))
+        self.assertEqual(
+            Decimal(s['month_curr_est']) + Decimal(s['month_curr_adjust']) - month_curr_collected,
+            rec.outstanding_amount)
         self.assertEqual(rec.outstanding_amount, Decimal('750.00'))
 
     def test_summary_adjust_buckets_by_adjust_date(self):
