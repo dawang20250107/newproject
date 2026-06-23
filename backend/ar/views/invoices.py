@@ -1,4 +1,5 @@
 """合并开票批次（invoice batches）业务域：按 invoice_batch_no 分组汇总 + 批量开票/付款及撤销 + 批量打标。共享基座来自 _common。"""
+import uuid
 from ._common import *  # noqa: F401,F403
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -128,13 +129,23 @@ def ar_invoice_batch_detail(request, batch_no):
     # 「某天的一次批次回款」，支持整次撤销
     member_ids = [m['id'] for m in members]
     tag = f'批次回款[{batch_no}]'
+
+    def _disp_note(note):
+        # 剥离「批次回款[batch]#token 」机器前缀，仅展示用户备注
+        rest = note[len(tag):] if note.startswith(tag) else note
+        if rest.startswith('#'):
+            rest = rest.split(' ', 1)[1] if ' ' in rest else ''
+        return rest.strip()
+
     events = {}
     for p in (ARPayment.objects.filter(ar_record_id__in=member_ids,
                                        notes__startswith=tag)
               .order_by('payment_date', 'id')):
+        # 按原始备注（含唯一事件标记）+日期聚合：新数据每次录入各成一组，
+        # 旧数据（无标记）按原(日期,备注)口径还原，行为不变
         key = (str(p.payment_date), p.notes)
         ev = events.setdefault(key, {'payment_date': str(p.payment_date),
-                                     'notes': p.notes, 'total': Decimal('0'),
+                                     'notes': _disp_note(p.notes), 'total': Decimal('0'),
                                      'count': 0, 'payment_ids': []})
         ev['total'] += p.amount or Decimal('0')
         ev['count'] += 1
@@ -367,7 +378,10 @@ def ar_invoice_batch_payment(request, batch_no):
 
         remaining = amount
         allocations = []
-        note = f'批次回款[{batch_no}]' + (f' {user_notes}' if user_notes else '')
+        # 每次录入生成唯一事件标记，使「同日同备注」的两次批次回款不被还原时合并，
+        # 撤销才能精确到单次（标记仅用于聚合，展示时剥离）
+        event_token = uuid.uuid4().hex[:8]
+        note = f'批次回款[{batch_no}]#{event_token}' + (f' {user_notes}' if user_notes else '')
         for r in open_recs:
             if remaining <= 0:
                 break

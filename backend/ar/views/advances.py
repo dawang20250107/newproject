@@ -1312,6 +1312,10 @@ def advance_offset_workbench(request):
 
     rows = []
     for cust, g in sorted(groups.items()):
+        # 名下无可冲抵应收的分组（含散单往来单位名与客户名对不上的情况）直接丢弃，
+        # 避免渲染「有预收却按钮恒置灰」的死卡片——本工作台只列「有预收且有未收」的客户
+        if not g['records']:
+            continue
         bal = sum(Decimal(a['balance_amount']) for a in g['advances'])
         out = sum(Decimal(r['outstanding']) for r in g['records'])
         rows.append({

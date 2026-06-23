@@ -1124,12 +1124,23 @@ def ar_records_kpi(request):
     qs = _apply_record_filters(
         _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared'), request)
     qs = _apply_conditions(qs, request, today)
+    # 列头筛选（Excel 风格）同步进 KPI 集，使进度条/待办计数与列表、底部合计同口径
+    _fq, _fq_distinct = build_filter_q(request.GET.get('filters', ''), ARRECORD_FILTER_REGISTRY)
+    if _fq:
+        qs = qs.filter(_fq)
+        if _fq_distinct:
+            qs = qs.distinct()
 
     total = qs.count()
 
-    # Reconciliation: 已对账 vs 未对账
-    recon_done = qs.filter(Q(reconciliation_date__isnull=False) | Q(actual_invoice_amount__isnull=False)).count()
-    recon_pending = total - recon_done
+    # Reconciliation: 已对账 vs 未对账。「待对账」严格对齐行内 reconciliation_status
+    # 的「未对账」口径（仍有未收 且 未开票 且 无对账日期）；已结清/已开票均算已对账，
+    # 否则计数会与表格 pill 打架。
+    recon_pending_qs = qs.filter(outstanding_amount__gt=0,
+                                 reconciliation_date__isnull=True,
+                                 actual_invoice_amount__isnull=True)
+    recon_pending = recon_pending_qs.count()
+    recon_done = total - recon_pending
 
     # Invoice: 已开票 vs 未开票（含金额）。已结清记录不计入「待开票」，与
     # invoice_status 属性及列表筛选保持一致（已结清优先级高于未开票）。
@@ -1163,13 +1174,15 @@ def ar_records_kpi(request):
         'estimated_total': str(estimated_total),
         'reconciliation': {
             'done': recon_done, 'pending': recon_pending,
-            'rate': _rate(recon_done, total),
-            'pending_amount': str(qs.filter(reconciliation_date__isnull=True, actual_invoice_amount__isnull=True)
-                                  .aggregate(s=Sum('outstanding_amount'))['s'] or 0),
+            # 完成度 = 非「未对账」占比，待对账归零即 100%，与计数自洽
+            'rate': _rate(total - recon_pending, total),
+            'pending_amount': str(recon_pending_qs.aggregate(s=Sum('outstanding_amount'))['s'] or 0),
         },
         'invoice': {
             'done': inv_done, 'pending': inv_pending,
-            'rate': _rate(inv_done, total),
+            # 完成度 = 非「未开票（待开票）」占比；已结清无需开票也算完成，
+            # 避免出现「完成度 80% 但待开票 0 笔」的自相矛盾
+            'rate': _rate(total - inv_pending, total),
             'pending_amount': str(inv_pending_amount),
             'done_amount': str(inv_done_amount),
         },
@@ -1321,6 +1334,12 @@ def ar_records_group_summary(request):
     qs = _apply_record_filters(qs, request)
     qs = _apply_record_state_filters(qs, request, today)
     qs = _apply_conditions(qs, request, today)
+    # 列头筛选（Excel 风格）也并入，使「沿用上方筛选条件」名副其实（与列表/KPI 同口径）
+    _fq, _fq_distinct = build_filter_q(request.GET.get('filters', ''), ARRECORD_FILTER_REGISTRY)
+    if _fq:
+        qs = qs.filter(_fq)
+        if _fq_distinct:
+            qs = qs.distinct()
     # 若 flat 筛选带 payments JOIN（旧参数），落到无 JOIN 基表避免分组聚合行扇出翻倍；
     # 用 id IN 子查询代替全量拉 id（大数据量友好）。条件构建器条件已是标量安全，无需此步但无害。
     qs = ARRecord.objects.filter(id__in=qs.order_by().values('id'))

@@ -303,8 +303,24 @@ function setPayRange(key) {
   loadPayments(true)
 }
 function onPayDateChange() { payRangePreset.value = ''; loadPayments(true) }
+// 回款日期可选范围（约束日期选择器，避免几十年空日历）
+const payBounds = ref({ min: '', max: '' })
+async function loadPayBounds() {
+  try {
+    const res = await ar.recordsDateBounds()
+    payBounds.value = { min: res.data.min || '', max: res.data.max || '' }
+  } catch (_) { /* 取不到边界不影响录入 */ }
+}
+// 首次进入「回款流水」默认本月区间（而非全时段拉全量），并加载日期边界
+let payInitialized = false
+function enterPayments() {
+  if (payInitialized) { loadPayments(true); return }
+  payInitialized = true
+  loadPayBounds()
+  setPayRange('month')   // 内部已 loadPayments(true)
+}
 
-// ── 催款工作台 (collection workbench) ───────────────────────────────────────
+// ── 逾期看板 / 催款工作台 (overdue board / collection workbench) ─────────────
 const dunFilters = reactive({ dept: '', q: '', bucket: '', contact: '' })
 const dunBuckets = ref([])
 const dunContacts = ref([])
@@ -332,6 +348,12 @@ async function loadDunning(reset = false) {
 function onDunSearch() {
   clearTimeout(dunQTimer)
   dunQTimer = setTimeout(() => loadDunning(true), 300)
+}
+// 翻页即清空勾选：勾选与「全选本页」一致按页计，避免跨页带入旧选导致「已选 N」与所见不符
+function dunChangePage(delta) {
+  dunPage.value += delta
+  dunSelected.value = new Set()
+  loadDunning()
 }
 function toggleDunBucket(key) {
   dunFilters.bucket = dunFilters.bucket === key ? '' : key
@@ -466,7 +488,7 @@ async function exportPayments() {
 async function loadGroupSummary() {
   groupLoading.value = true
   try {
-    const res = await ar.recordsSummary({ ...reqParams(), group_by: summaryGroupBy.value })
+    const res = await ar.recordsSummary(buildParams({ ...reqParams(), group_by: summaryGroupBy.value }))
     groupRows.value = res.data.rows
   } finally { groupLoading.value = false }
 }
@@ -488,7 +510,7 @@ function switchTab(key) {
   const prev = activeTab.value
   if (key === prev) return
   activeTab.value = key
-  if (key === 'payments') loadPayments(true)
+  if (key === 'payments') enterPayments()
   else if (key === 'summary') loadGroupSummary()
   else if (key === 'dunning') loadDunning(true)
   else if (key === 'offset') loadOffsetWorkbench()
@@ -501,6 +523,7 @@ function onFilterChange() {
   clearSelection()
   if (activeTab.value === 'summary') loadGroupSummary()
   else if (activeTab.value === 'batch') loadBatches()
+  else if (activeTab.value === 'offset') loadOffsetWorkbench()
   else load(true)
 }
 
@@ -659,6 +682,11 @@ function toggleBatchExpand(bn) {
 }
 async function refreshAfterBatchAction(bn) {
   await Promise.all([loadBatches(), load(), fetchBatchDetail(bn, true).catch(() => {})])
+  // 重新定位 batchTarget，否则弹窗里的「批次未收合计」等仍显示动作前的旧对象
+  if (batchTarget.value?.batch_no === bn) {
+    const fresh = batches.value.find(b => b.batch_no === bn)
+    if (fresh) batchTarget.value = fresh
+  }
 }
 // 金额级分批开票：每次开票一个事件（日期+金额+税额），先进先出分摊到成员
 // 可开余额，累计 ≤ 上账+差额 合计即可多次开票；事件可整次撤销
@@ -759,6 +787,14 @@ const offsetCount = rec => (rec.payments || []).filter(p => p.source === '预收
 const internalCount = rec => (rec.payments || []).filter(p => p.source === '内部往来').length
 // 回款合计：该应收所有回款记录金额之和（含现金/预收抵扣/内部往来，与回款记录笔数口径一致）
 const paidTotal = rec => (rec.payments || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0)
+// 其中非现金部分（内部往来核销 + 预收抵扣）——回款合计里这部分不进现金流/资金池
+const nonCashTotal = rec => (rec.payments || [])
+  .filter(p => p.source === '内部往来' || p.source === '预收抵扣')
+  .reduce((s, p) => s + (parseFloat(p.amount) || 0), 0)
+const paidTotalTitle = rec => {
+  const nc = nonCashTotal(rec)
+  return `${rec.payments?.length || 0} 笔回款合计` + (nc > 0 ? `（其中非现金 ${fmtCell(nc)}：内部往来/预收抵扣，不计现金流）` : '')
+}
 // 统一流水：把回款（银行回款/内部往来/预收抵扣）与差额调整合并成一条按日期排序的时间线，
 // 类型一目了然。回款减少未收、调整改变应收基数，各带标签与符号，互不混淆。
 function ledgerRows(rec) {
@@ -830,6 +866,14 @@ const woAdvBalance = computed(() => {
   return a ? parseFloat(a.balance_amount) || 0 : 0
 })
 const woDefaultAmount = computed(() => Math.min(woAdvBalance.value, woSelOutstanding.value))
+// 选中的预收；项目绑定预收（有 project_id）只能冲抵同项目应收——标记不兼容的已选记录
+const woSelAdvance = computed(() =>
+  (woTarget.value?.advances || []).find(a => a.id === woForm.advance_id) || null)
+const woIncompatRecords = computed(() => {
+  const a = woSelAdvance.value
+  if (!a || !a.project_id) return []   // 散单预收可冲抵本客户任意应收
+  return woSelRecords.value.filter(r => r.project_id !== a.project_id)
+})
 
 function openBatchWriteoff(g) {
   if (!owSelCount(g.customer)) { toast.error('请先勾选要冲抵的应收明细'); return }
@@ -844,6 +888,10 @@ function openBatchWriteoff(g) {
 async function doBatchWriteoff() {
   const amt = parseFloat(woForm.amount) || woDefaultAmount.value
   if (!(amt > 0)) { toast.error('核销金额必须大于0'); return }
+  if (woIncompatRecords.value.length) {
+    toast.error(`所选含 ${woIncompatRecords.value.length} 条非本预收所属项目的应收，项目绑定预收只能冲抵同项目应收，请取消勾选后重试`)
+    return
+  }
   woBusy.value = true
   try {
     const res = await ar.batchWriteoff(woForm.advance_id, {
@@ -901,6 +949,7 @@ async function applyAdvanceWriteoff() {
       writeoff_date: payForm.payment_date || todayCST(),
       ar_record_id: payRec.value.id,
     })
+    toast.success('已用预收下账')
     showPayModal.value = false
     await load()
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
@@ -922,6 +971,7 @@ async function savePayment() {
   paySaving.value = true
   try {
     await ar.addPayment(payRec.value.id, payForm)
+    toast.success(payForm.source === '内部往来' ? '内部往来核销已保存' : '回款已保存')
     showPayModal.value = false; await load()
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { paySaving.value = false }
@@ -1182,7 +1232,7 @@ function clearFilters() {
         <button v-if="pageAllSelected && !selectAllMatching && total > items.length"
           class="bulk-all" @click="selectAllMatching = true">选择全部 {{ total }} 条</button>
         <span v-if="selectAllMatching" class="bulk-all-on">已选中整个筛选集</span>
-        <button v-if="auth.canArWrite" class="btn btn-ghost btn-sm" style="margin-left:4px" @click="openBatchAssign">
+        <button v-if="auth.canArWrite && (activeTab === 'all' || activeTab === 'invoice')" class="btn btn-ghost btn-sm" style="margin-left:4px" @click="openBatchAssign">
           设置批次号
         </button>
         <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">
@@ -1355,7 +1405,10 @@ function clearFilters() {
                     <span :class="['status-pill', rec.reconciliation_status === '已对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status === '已对账' ? '✓ 已对账' : '○ 未对账' }}</span>
                   </td>
                   <td v-if="show('r_payments')" class="ctr">
-                    <span class="pay-count" :class="rec.payments?.length ? 'count-has' : 'count-none'">{{ rec.payments?.length || 0 }}</span>
+                    <button class="pay-toggle" :title="(rec.payments?.length || rec.adjustments?.length) ? '点击展开回款 / 差额调整流水' : '暂无回款 / 差额调整'" @click="togglePayments(rec.id)">
+                      <span class="pay-count" :class="rec.payments?.length ? 'count-has' : 'count-none'">{{ rec.payments?.length || 0 }}</span>
+                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="margin-left:2px;color:var(--muted)" :style="expandedPayments[rec.id] ? 'transform:rotate(180deg)' : ''"><path d="M6 9l6 6 6-6"/></svg>
+                    </button>
                   </td>
                   <td v-if="show('r_payments')" class="ctr">
                     <button class="pay-toggle" :title="offsetCount(rec) ? '点击展开查看预收抵扣明细' : '无预收冲抵'" @click="togglePayments(rec.id)">
@@ -1424,7 +1477,8 @@ function clearFilters() {
                     </button>
                     <button v-if="auth.canAction('ar_collect')" class="add-pay-btn" @click="openAddPayment(rec)">+ 回款</button>
                   </td>
-                  <td v-if="show('r_payments')" class="amt fw" :class="paidTotal(rec) > 0 ? 'amt-ok' : ''" :title="`${rec.payments?.length || 0} 笔回款合计`">{{ paidTotal(rec) > 0 ? fmtCell(paidTotal(rec)) : '—' }}</td>
+                  <td v-if="show('r_payments')" class="amt fw" :class="paidTotal(rec) > 0 ? 'amt-ok' : ''" :title="paidTotalTitle(rec)">
+                    {{ paidTotal(rec) > 0 ? fmtCell(paidTotal(rec)) : '—' }}<i v-if="nonCashTotal(rec) > 0" class="noncash-dot" title="含非现金（内部往来/预收抵扣）">*</i></td>
                   <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
                   <td v-if="show('r_invoice_status')" class="ctr">
                     <span :class="['status-pill', rec.invoice_status === '已结清' ? 'pill-ok' : rec.invoice_status === '部分回款' ? 'pill-blue' : rec.invoice_status === '已开票' ? 'pill-warn' : 'pill-muted']">{{ rec.invoice_status === '已开票' ? '✓ 已开票' : rec.invoice_status === '未开票' ? '○ 未开票' : rec.invoice_status }}</span>
@@ -1433,12 +1487,13 @@ function clearFilters() {
 
                 <td class="ctr">
                   <div class="row-acts">
-                    <button class="icon-btn" @click="openEdit(rec)" title="编辑">
+                    <button v-if="auth.canArWrite" class="icon-btn" @click="openEdit(rec)" title="编辑">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4z"/></svg>
                     </button>
                     <button v-if="auth.canDelete" class="icon-btn icon-btn-del" @click="deleteRec(rec)" title="删除">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
                     </button>
+                    <span v-if="!auth.canArWrite && !auth.canDelete" class="text-sm-muted">—</span>
                   </div>
                 </td>
               </tr>
@@ -1498,7 +1553,6 @@ function clearFilters() {
         </div>
       </Teleport>
 
-      <!-- ══ 催款工作台 ══ -->
       <!-- ══ 预收核销工作台 ══ -->
       <div v-if="activeTab === 'offset'" class="ow-wrap">
         <div class="ow-head">
@@ -1550,7 +1604,12 @@ function clearFilters() {
         </div>
       </div>
 
+      <!-- ══ 逾期看板（原催款工作台）══ -->
       <div v-if="activeTab === 'dunning'">
+        <div class="bp-head" style="margin-top:4px">
+          <span class="bp-title">⏰ 逾期看板</span>
+          <span class="bp-tip">逾期未收应收一览：按账龄分桶 / 对接人聚合，可勾选批量生成催款任务（进财务驾驶舱·决策行动）</span>
+        </div>
         <div class="filter-strip" style="margin-top:4px">
           <select v-model="dunFilters.dept" class="sel-bu" @change="loadDunning(true)">
             <option value="">全部事业部</option>
@@ -1612,8 +1671,8 @@ function clearFilters() {
               </tr>
             </thead>
             <tbody>
-              <tr v-if="dunLoading && !dunItems.length"><td colspan="10" class="empty-cell">⏳ 加载中…</td></tr>
-              <tr v-else-if="!dunItems.length"><td colspan="10" class="empty-cell">🎉 当前范围内没有逾期应收</td></tr>
+              <tr v-if="dunLoading && !dunItems.length"><td :colspan="auth.canArWrite ? 10 : 9" class="empty-cell">⏳ 加载中…</td></tr>
+              <tr v-else-if="!dunItems.length"><td :colspan="auth.canArWrite ? 10 : 9" class="empty-cell">🎉 当前范围内没有逾期应收</td></tr>
               <tr v-for="r in dunItems" :key="r.id" class="data-row">
                 <td v-if="auth.canArWrite" class="sel-col">
                   <input type="checkbox" :disabled="!!r.open_action_id"
@@ -1640,9 +1699,9 @@ function clearFilters() {
         </div>
 
         <div v-if="dunTotal > size" class="pagination">
-          <button :disabled="dunPage <= 1" class="page-btn" @click="dunPage--; loadDunning()">‹ 上一页</button>
+          <button :disabled="dunPage <= 1" class="page-btn" @click="dunChangePage(-1)">‹ 上一页</button>
           <span class="page-info">{{ dunPage }} / {{ Math.ceil(dunTotal / size) }} 页 · 共 {{ dunTotal }} 条</span>
-          <button :disabled="dunPage * size >= dunTotal" class="page-btn" @click="dunPage++; loadDunning()">下一页 ›</button>
+          <button :disabled="dunPage * size >= dunTotal" class="page-btn" @click="dunChangePage(1)">下一页 ›</button>
         </div>
       </div>
 
@@ -1653,9 +1712,9 @@ function clearFilters() {
           <button v-for="r in PAY_RANGE_PRESETS" :key="r.key || 'all'" type="button"
                   class="pay-range-chip" :class="{ on: payRangePreset === r.key }"
                   @click="setPayRange(r.key)">{{ r.label }}</button>
-          <input v-model="payFilters.pay_start" type="date" class="sel-mo" @change="onPayDateChange" />
+          <input v-model="payFilters.pay_start" type="date" class="sel-mo" :min="payBounds.min" :max="payBounds.max" @change="onPayDateChange" />
           <span style="color:var(--muted)">~</span>
-          <input v-model="payFilters.pay_end" type="date" class="sel-mo" @change="onPayDateChange" />
+          <input v-model="payFilters.pay_end" type="date" class="sel-mo" :min="payBounds.min" :max="payBounds.max" @change="onPayDateChange" />
           <select v-model="payFilters.dept" class="sel-bu" @change="loadPayments(true)">
             <option value="">全部事业部</option>
             <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
@@ -1838,7 +1897,7 @@ function clearFilters() {
                 </label>
               </template>
               <div v-else class="form-field span2 adj-box">
-                <span>差额调整明细<i class="adj-total">合计 {{ adjTotal.toFixed(2) }}（未收 = 上账 + 差额合计 − 已回款）</i></span>
+                <span>差额调整明细<i class="adj-total">合计 {{ fmtCell(adjTotal) }}（未收 = 上账 + 差额合计 − 已回款）</i></span>
                 <div v-if="adjList.length" class="adj-list">
                   <div v-for="a in adjList" :key="a.id" class="adj-item">
                     <b :class="parseFloat(a.amount) >= 0 ? 'adj-pos' : 'adj-neg'">{{ parseFloat(a.amount) >= 0 ? '+' : '' }}{{ a.amount }}</b>
@@ -1956,7 +2015,7 @@ function clearFilters() {
             <!-- 新增开票 -->
             <div class="bi-add">
               <div class="bi-add-head">新增开票
-                <span class="bi-room">批次可开余额 <b>{{ invRoom.toFixed(2) }}</b>（上账+差额合计 − 累计已开）</span>
+                <span class="bi-room">批次可开余额 <b>{{ fmtCell(invRoom) }}</b>（上账+差额合计 − 累计已开）</span>
               </div>
               <div class="form-grid">
                 <label class="form-field">
@@ -1965,7 +2024,7 @@ function clearFilters() {
                 </label>
                 <label class="form-field">
                   <span>开票金额*（价税合计）</span>
-                  <input v-model="batchInvForm.amount" type="number" step="0.01" :placeholder="`≤ ${invRoom.toFixed(2)}`" />
+                  <input v-model="batchInvForm.amount" type="number" step="0.01" :placeholder="`≤ ${fmtCell(invRoom)}`" />
                 </label>
                 <label class="form-field">
                   <span>税额（选填，差额模式手填）</span>
@@ -2019,7 +2078,7 @@ function clearFilters() {
               <div class="form-grid">
                 <label class="form-field">
                   <span>回款金额*（元）</span>
-                  <input v-model="batchPayForm.amount" type="number" step="0.01" :placeholder="`≤ ${batchTarget?.outstanding}`" />
+                  <input v-model="batchPayForm.amount" type="number" step="0.01" :placeholder="`≤ ${fmtCell(batchTarget?.outstanding)}`" />
                 </label>
                 <label class="form-field">
                   <span>回款日期*</span>
@@ -2082,7 +2141,7 @@ function clearFilters() {
               <div class="form-grid" style="margin-top:10px">
                 <label class="form-field">
                   <span>核销金额（元）</span>
-                  <input v-model="woForm.amount" type="number" step="0.01" :placeholder="`默认 ${woDefaultAmount.toFixed(2)}（=min(预收余额, 所选未收)）`" />
+                  <input v-model="woForm.amount" type="number" step="0.01" :placeholder="`默认 ${fmtCell(woDefaultAmount)}（=min(预收余额, 所选未收)）`" />
                 </label>
                 <label class="form-field">
                   <span>核销日期*</span>
@@ -2090,8 +2149,12 @@ function clearFilters() {
                 </label>
               </div>
               <p style="font-size:11.5px;color:var(--muted);margin-top:8px">
-                所选未收合计 <b>{{ woSelOutstanding.toFixed(2) }}</b> · 该预收余额 <b>{{ woAdvBalance.toFixed(2) }}</b>
+                所选未收合计 <b>{{ fmtCell(woSelOutstanding) }}</b> · 该预收余额 <b>{{ fmtCell(woAdvBalance) }}</b>
               </p>
+              <div v-if="woIncompatRecords.length" class="wo-incompat">
+                ⚠ 该预收绑定项目「{{ woSelAdvance?.short_name || '—' }}」，以下 {{ woIncompatRecords.length }} 条非本项目应收无法用它冲抵，请取消勾选：
+                <span v-for="r in woIncompatRecords" :key="r.id" class="wo-incompat-item">{{ r.short_name }}</span>
+              </div>
             </template>
             <template v-else>
               <p style="font-size:13px;color:#2e7d32;font-weight:600;margin-bottom:10px">✓ {{ woResult.message }}</p>
@@ -2112,7 +2175,7 @@ function clearFilters() {
           <div class="modal-footer">
             <template v-if="!woResult">
               <button class="btn btn-ghost" @click="showWoModal = false">取消</button>
-              <button class="btn btn-primary" :disabled="woBusy || !woForm.advance_id || !woForm.writeoff_date" @click="doBatchWriteoff">
+              <button class="btn btn-primary" :disabled="woBusy || !woForm.advance_id || !woForm.writeoff_date || woIncompatRecords.length > 0" @click="doBatchWriteoff">
                 {{ woBusy ? '核销中…' : '确认批量核销' }}
               </button>
             </template>
@@ -2135,7 +2198,7 @@ function clearFilters() {
             <!-- 类型切换：银行回款（现金）/ 内部往来核销（事业部间，不计现金） -->
             <div class="pay-type-tabs">
               <button type="button" class="pay-type-tab" :class="{ on: payForm.source === '回款' }"
-                      @click="payForm.source = '回款'; payForm.counterparty_dept = ''">银行回款</button>
+                      @click="payForm.source = '回款'; payForm.counterparty_dept = ''; advWoSel = null">银行回款</button>
               <button type="button" class="pay-type-tab" :class="{ on: payForm.source === '内部往来' }"
                       @click="payForm.source = '内部往来'; advWoSel = null">内部往来核销</button>
             </div>
@@ -2180,8 +2243,11 @@ function clearFilters() {
                 </select>
               </label>
               <label class="form-field span2">
-                <span>{{ payForm.source === '内部往来' ? '核销金额' : '回款金额' }} <em>*</em></span>
-                <input v-model="payForm.amount" type="number" step="0.01" autofocus />
+                <span>{{ payForm.source === '内部往来' ? '核销金额' : '回款金额' }} <em>*</em>
+                  <i v-if="payRec" class="field-hint">未收上限 {{ fmtCell(payRec.outstanding_amount) }}</i>
+                </span>
+                <input v-model="payForm.amount" type="number" step="0.01" :max="payRec?.outstanding_amount" autofocus />
+                <i v-if="payRec && parseFloat(payForm.amount) > parseFloat(payRec.outstanding_amount)" class="field-warn">超过未收 {{ fmtCell(payRec.outstanding_amount) }}，将被拒绝（多收部分请到「预收预付」录入）</i>
               </label>
               <label class="form-field span2">
                 <span>{{ payForm.source === '内部往来' ? '核销日期' : '回款日期' }} <em>*</em></span>
@@ -2631,6 +2697,12 @@ function clearFilters() {
 .bm-opt.on { border-color: var(--primary); background: rgba(201,99,66,0.05); }
 .bm-opt input[type="radio"] { margin-top: 3px; width: auto; }
 .bm-opt > div { flex: 1; }
+/* 表单内联提示 / 警示 + 非现金标记 + 跨项目核销警示 */
+.field-hint { font-style: normal; font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 6px; }
+.field-warn { display: block; margin-top: 4px; font-size: 11.5px; color: #c62828; }
+.noncash-dot { color: #6a1b9a; font-weight: 700; margin-left: 1px; cursor: help; }
+.wo-incompat { margin-top: 8px; padding: 7px 10px; border-radius: 8px; background: rgba(198,40,40,0.08); color: #c62828; font-size: 11.5px; line-height: 1.6; }
+.wo-incompat-item { display: inline-block; margin: 0 4px; font-weight: 600; }
 .bm-opt b { display: block; font-size: 13px; color: var(--text); }
 .bm-opt i { display: block; font-style: normal; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 .bp-amt { display: flex; flex-direction: column; min-width: 86px; }

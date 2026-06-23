@@ -734,7 +734,29 @@ class ARPermissionRegressionTests(TestCase):
         # KPI「待开票」笔数同样应排除已结清记录
         kpi = self.client.get('/api/pk/ar/records/kpi', **self.auth(admin))
         self.assertEqual(kpi.status_code, 200, kpi.content)
-        self.assertEqual(kpi.json()['data']['invoice']['pending'], 1)
+        inv = kpi.json()['data']['invoice']
+        self.assertEqual(inv['pending'], 1)
+        # 完成度 = (total−待开票)/total = (2−1)/2 = 50%，已结清算「已完成」，
+        # 不再出现「完成度低却待开票为0」的矛盾
+        self.assertEqual(inv['rate'], 50.0)
+
+    def test_kpi_respects_column_filters(self):
+        # 列头筛选应同步进 KPI（进度条/待办与列表同口径）
+        admin = self.make_user('13900000079', 'finance_director', role='super_admin')
+        project = self.create_project()
+        a = ARRecord.objects.create(project=project, operation_year=2026,
+                                    operation_month=7, estimated_amount=Decimal('500.00'))
+        ARRecord.objects.create(project=project, operation_year=2026,
+                                operation_month=7, estimated_amount=Decimal('9000.00'))
+        # 不带筛选：两条都未开票 → 待开票 2
+        k0 = self.client.get('/api/pk/ar/records/kpi', **self.auth(admin)).json()['data']
+        self.assertEqual(k0['invoice']['pending'], 2)
+        # 列头筛选 估算金额 ≤ 1000：只剩 a 一条 → 待开票 1、total 1
+        filters = json.dumps({'estimated_amount': {'op': 'lte', 'value': 1000}})
+        k1 = self.client.get('/api/pk/ar/records/kpi', {'filters': filters},
+                             **self.auth(admin)).json()['data']
+        self.assertEqual(k1['total'], 1)
+        self.assertEqual(k1['invoice']['pending'], 1)
 
     def test_summary_not_inflated_by_multiple_payments(self):
         admin = self.make_user('13900000055', 'finance_director', role='super_admin')
@@ -3912,6 +3934,27 @@ class BatchPaymentUndoTests(TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertTrue(ARPayment.objects.filter(pk=pay.pk).exists())
 
+    def test_same_day_same_note_payments_stay_separate(self):
+        # 同日、相同（空）备注的两次批次回款，应还原为两个独立事件，
+        # 撤销其一只回退该次（唯一事件标记防止合并）
+        for amt in ('300', '500'):
+            r = self.client.post('/api/pk/ar/records/invoice-batches/B-01/payment',
+                                 data=json.dumps({'amount': amt, 'payment_date': '2026-06-01'}),
+                                 content_type='application/json', **self.auth())
+            self.assertEqual(r.status_code, 200, r.content)
+        d = self.client.get('/api/pk/ar/records/invoice-batches/B-01', **self.auth()).json()['data']
+        self.assertEqual(len(d['collections']), 2)   # 两次未被合并
+        totals = sorted(Decimal(ev['total']) for ev in d['collections'])
+        self.assertEqual(totals, [Decimal('300'), Decimal('500')])
+        ev300 = next(ev for ev in d['collections'] if Decimal(ev['total']) == Decimal('300'))
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/B-01/payment-undo',
+                                data=json.dumps({'payment_ids': ev300['payment_ids']}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d2 = self.client.get('/api/pk/ar/records/invoice-batches/B-01', **self.auth()).json()['data']
+        self.assertEqual(len(d2['collections']), 1)
+        self.assertEqual(Decimal(d2['collections'][0]['total']), Decimal('500'))
+
 
 class PartialBatchInvoiceTests(TestCase):
     """金额级分批开票：多次开票事件先进先出分摊 + 税额 + 整次撤销。"""
@@ -4062,5 +4105,26 @@ class BatchPaymentUndoTests(TestCase):
                                 content_type='application/json', **self.auth())
         self.assertEqual(resp.status_code, 400)
         self.assertTrue(ARPayment.objects.filter(pk=pay.pk).exists())
+
+    def test_same_day_same_note_payments_stay_separate(self):
+        # 同日、相同（空）备注的两次批次回款，应还原为两个独立事件，
+        # 撤销其一只回退该次（唯一事件标记防止合并）
+        for amt in ('300', '500'):
+            r = self.client.post('/api/pk/ar/records/invoice-batches/B-01/payment',
+                                 data=json.dumps({'amount': amt, 'payment_date': '2026-06-01'}),
+                                 content_type='application/json', **self.auth())
+            self.assertEqual(r.status_code, 200, r.content)
+        d = self.client.get('/api/pk/ar/records/invoice-batches/B-01', **self.auth()).json()['data']
+        self.assertEqual(len(d['collections']), 2)   # 两次未被合并
+        totals = sorted(Decimal(ev['total']) for ev in d['collections'])
+        self.assertEqual(totals, [Decimal('300'), Decimal('500')])
+        ev300 = next(ev for ev in d['collections'] if Decimal(ev['total']) == Decimal('300'))
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/B-01/payment-undo',
+                                data=json.dumps({'payment_ids': ev300['payment_ids']}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d2 = self.client.get('/api/pk/ar/records/invoice-batches/B-01', **self.auth()).json()['data']
+        self.assertEqual(len(d2['collections']), 1)
+        self.assertEqual(Decimal(d2['collections'][0]['total']), Decimal('500'))
 
 
