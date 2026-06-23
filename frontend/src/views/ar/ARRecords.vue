@@ -1207,16 +1207,28 @@ function clearFilters() {
 
 <template>
   <div>
-    <div class="topbar">
-      <div class="topbar-left">
+    <div class="ar-head">
+      <!-- 行1：标题 + 主操作（模板/导入/导出/新增）-->
+      <div class="ar-head-top">
         <h1>应收账款</h1>
-        <div class="segment-ctrl">
-          <button v-for="t in TABS" :key="t.key"
-            :class="['seg-btn', activeTab === t.key ? 'active' : '']" @click="switchTab(t.key)">
-            <span class="seg-dot"></span>{{ t.label }}
-          </button>
+        <div class="ctrl-row">
+          <button class="btn btn-ghost btn-sm" @click="downloadTemplate">↓ 模板</button>
+          <label class="btn btn-ghost btn-sm" style="cursor:pointer">
+            {{ importing ? '导入中…' : '↑ 导入' }}
+            <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />
+          </label>
+          <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">↓ 导出</button>
+          <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate">+ 新增应收</button>
         </div>
-        <!-- 筛选 chip 栏紧跟 Tab 之后，省去独立一行 -->
+      </div>
+      <!-- 行2：Tab 栏，独占一行，留足横向空间 -->
+      <div class="segment-ctrl">
+        <button v-for="t in TABS" :key="t.key"
+          :class="['seg-btn', activeTab === t.key ? 'active' : '']" @click="switchTab(t.key)">
+          <span class="seg-dot"></span>{{ t.label }}
+        </button>
+      </div>
+        <!-- 行3：筛选工具栏（快捷搜索 + 高级筛选 + 条件 chip + 方案），数据 Tab 才显示 -->
         <div v-if="activeTab !== 'payments' && activeTab !== 'dunning' && activeTab !== 'offset'" class="filter-chipbar">
           <!-- 常驻快捷搜索：项目 / 负责人 / 编号，模糊匹配，防抖不闪 -->
           <div class="quick-search">
@@ -1296,16 +1308,6 @@ function clearFilters() {
             <div v-if="showPresetDrop" class="preset-backdrop" @click="showPresetDrop = false"></div>
           </div>
         </div>
-      </div>
-      <div class="ctrl-row">
-        <button class="btn btn-ghost btn-sm" @click="downloadTemplate">↓ 模板</button>
-        <label class="btn btn-ghost btn-sm" style="cursor:pointer">
-          {{ importing ? '导入中…' : '↑ 导入' }}
-          <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />
-        </label>
-        <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">↓ 导出</button>
-        <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate">+ 新增应收</button>
-      </div>
     </div>
 
     <!-- 数据体检提示：检测到旧模板导入等造成的口径异常记录 -->
@@ -2632,20 +2634,26 @@ function clearFilters() {
 .act-btn:disabled { opacity: 0.4; cursor: default; }
 .act-btn--on { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.08); font-weight: 600; }
 
-/* Topbar: title + inline tabs + right-side action buttons */
-.topbar-left { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-.ctrl-row { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; flex-shrink: 0; }
+/* 页头：三行结构——标题+主操作 / Tab 栏 / 筛选工具栏，各占一行互不挤压 */
+.ar-head { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; margin-bottom: 18px; }
+.ar-head-top { align-self: stretch; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.ar-head-top h1 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
+.ctrl-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
 
 /* Segment control */
-.segment-ctrl { display: inline-flex; gap: 0; padding: 3px; background: rgba(0,0,0,0.04); border-radius: 11px; flex-wrap: wrap; }
+.segment-ctrl { display: flex; align-self: flex-start; max-width: 100%; gap: 2px; padding: 3px; background: rgba(0,0,0,0.04); border-radius: 11px; flex-wrap: wrap; }
 .seg-btn { display: flex; align-items: center; gap: 5px; padding: 6px 14px; border-radius: 9px; border: none; font-size: 12.5px; font-weight: 500; color: var(--muted); background: transparent; cursor: pointer; transition: all 0.18s; }
 .seg-btn .seg-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(155,128,112,0.3); transition: all 0.18s; }
 .seg-btn.active { background: white; color: var(--primary); font-weight: 700; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
 .seg-btn.active .seg-dot { background: var(--primary); box-shadow: 0 0 6px rgba(201,99,66,0.5); }
 
-/* ── 极简筛选 chip 栏 ─────────────────────────────────────────── */
+/* ── 筛选工具栏（独占一行，卡片化，与 Tab/表格分层）─────────────── */
 .filter-bar { margin: 12px 0; }
-.filter-chipbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.filter-chipbar {
+  align-self: stretch; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 9px 12px; background: rgba(0,0,0,0.018);
+  border: 1px solid var(--border); border-radius: 12px;
+}
 .quick-search { position: relative; display: inline-flex; align-items: center; }
 .qs-ico { position: absolute; left: 9px; color: var(--muted); pointer-events: none; }
 .qs-input {
