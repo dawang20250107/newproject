@@ -48,6 +48,7 @@ urlpatterns = [
     path('records/export', views.ar_record_export),
     path('records/health', views.ar_data_health),
     path('records/recompute', views.ar_records_recompute_bulk),
+    path('records/bulk-assign-collector', views.ar_records_bulk_assign_collector),
     path('records/bulk-delete', views.ar_records_bulk_delete),
     path('records/<int:pk>', views.ar_record_detail),
     path('records/<int:pk>/recompute', views.ar_record_recompute),
@@ -55,6 +56,9 @@ urlpatterns = [
     path('records/<int:pk>/payments/<int:ppk>', views.ar_payment_detail),
     path('records/<int:pk>/adjustments', views.ar_adjustments),
     path('records/<int:pk>/adjustments/<int:aid>', views.ar_adjustment_detail),
+
+    # 账龄分桶边界配置
+    path('aging-config', views.ar_aging_config),
 
     # 筛选方案 (filter schemes)：命名保存高级筛选，私有/公共团队共享 + 默认方案
     path('filter-schemes', views.ar_filter_schemes),

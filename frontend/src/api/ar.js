@@ -57,6 +57,13 @@ const ar = {
   updateCollectionLog: (rid, lid, d) => api.put(`/ar/records/${rid}/collection-logs/${lid}`, d),
   deleteCollectionLog: (rid, lid) => api.delete(`/ar/records/${rid}/collection-logs/${lid}`),
 
+  // 批量分配催收人
+  bulkAssignCollector: (body, params) => api.post('/ar/records/bulk-assign-collector', body, { params }),
+
+  // 账龄分桶配置
+  getAgingConfig: () => api.get('/ar/aging-config'),
+  updateAgingConfig: d => api.put('/ar/aging-config', d),
+
   // 差额调整明细（多次、各带原因与金额；合计为派生）
   listAdjustments: id => api.get(`/ar/records/${id}/adjustments`),
   addAdjustment: (id, d) => api.post(`/ar/records/${id}/adjustments`, d),

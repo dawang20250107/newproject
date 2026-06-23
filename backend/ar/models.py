@@ -407,6 +407,7 @@ class ARRecord(models.Model):
                                         db_index=True,
                                         help_text='合并开票批次号；相同批次号的记录将合并为一张发票')
     notes = models.TextField('备注', blank=True, default='')
+    collector = models.CharField('催收负责人', max_length=100, blank=True, default='', db_index=True)
     created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
                                    null=True, blank=True, related_name='created_ar_records')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -632,6 +633,7 @@ class ARRecord(models.Model):
             'post_invoice_status': self.post_invoice_status(today),
             'invoice_batch_no': self.invoice_batch_no,
             'notes': self.notes,
+            'collector': self.collector,
             **st,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
@@ -1362,4 +1364,34 @@ class ARCollectionLog(models.Model):
             'created_by_id': self.created_by_id,
             'created_by_name': self.created_by.name if self.created_by else '',
             'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class AgingBucketConfig(models.Model):
+    """账龄分桶边界配置（全局单条，超管可改）。默认: 30/60/90 天。
+    前端据此着色 + 账龄分析 Tab 按此切割区间。"""
+    bucket1 = models.PositiveIntegerField('桶1上限(天)', default=30)
+    bucket2 = models.PositiveIntegerField('桶2上限(天)', default=60)
+    bucket3 = models.PositiveIntegerField('桶3上限(天)', default=90)
+    updated_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='aging_config_updates')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ar_aging_bucket_config'
+
+    @classmethod
+    def get_or_default(cls):
+        obj = cls.objects.first()
+        if obj:
+            return {'bucket1': obj.bucket1, 'bucket2': obj.bucket2, 'bucket3': obj.bucket3, 'id': obj.id}
+        return {'bucket1': 30, 'bucket2': 60, 'bucket3': 90, 'id': None}
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'bucket1': self.bucket1,
+            'bucket2': self.bucket2,
+            'bucket3': self.bucket3,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }

@@ -101,6 +101,122 @@ const sorter = useServerSort(() => {
 })
 provide('arSort', sorter)
 
+// ── 行密度切换（紧凑/标准/宽松）——对标金蝶行间距三档切换 ─────────────────────
+const DENSITIES = ['compact', 'normal', 'comfortable']
+const DENSITY_LABELS = { compact: '紧凑', normal: '标准', comfortable: '宽松' }
+const density = ref(localStorage.getItem('ar_records_density') || 'normal')
+function setDensity(d) {
+  density.value = d
+  try { localStorage.setItem('ar_records_density', d) } catch (_) {}
+}
+
+// ── 全屏模式 ──────────────────────────────────────────────────────────────────
+const isFullscreen = ref(false)
+function toggleFullscreen() {
+  const el = document.querySelector('.card') || document.documentElement
+  if (!document.fullscreenElement) {
+    el.requestFullscreen?.().then(() => { isFullscreen.value = true }).catch(() => {})
+  } else {
+    document.exitFullscreen?.().then(() => { isFullscreen.value = false }).catch(() => {})
+  }
+}
+// 监听 ESC 退出全屏
+if (typeof document !== 'undefined') {
+  document.addEventListener('fullscreenchange', () => {
+    isFullscreen.value = !!document.fullscreenElement
+  })
+}
+
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const ctxMenu = reactive({ show: false, x: 0, y: 0, rec: null })
+function openCtxMenu(e, rec) {
+  ctxMenu.show = true
+  ctxMenu.x = e.clientX
+  ctxMenu.y = e.clientY
+  ctxMenu.rec = rec
+}
+function closeCtxMenu() { ctxMenu.show = false; ctxMenu.rec = null }
+
+// ── 列可见性面板（用户可隐藏权限范围内的列）──────────────────────────────────
+const COL_VIS_DEFS = [
+  { key: 'r_estimated_amount', label: '预估金额' },
+  { key: 'r_actual_invoice_amount', label: '实际开票' },
+  { key: 'r_tax_amount', label: '税额' },
+  { key: 'r_account_diff', label: '账实差额' },
+  { key: 'r_outstanding', label: '未收金额' },
+  { key: 'r_due_date', label: '到期日期' },
+  { key: 'r_reconciliation', label: '对账状态' },
+  { key: 'r_payments', label: '回款记录' },
+  { key: 'r_invoice_date', label: '开票日期' },
+  { key: 'r_invoice_status', label: '开票状态' },
+  { key: 'r_notes', label: '备注' },
+]
+const showColPanel = ref(false)
+function _loadHiddenCols() {
+  try { return new Set(JSON.parse(localStorage.getItem('ar_hidden_cols') || '[]')) } catch { return new Set() }
+}
+const hiddenCols = ref(_loadHiddenCols())
+function toggleColVis(key) {
+  const s = new Set(hiddenCols.value)
+  if (s.has(key)) s.delete(key); else s.add(key)
+  hiddenCols.value = s
+  try { localStorage.setItem('ar_hidden_cols', JSON.stringify([...s])) } catch (_) {}
+}
+// 覆盖原 show()：同时考虑权限和用户隐藏
+const showCol = k => auth.canArView(k) && !hiddenCols.value.has(k)
+
+// ── 批量分配催收人 ────────────────────────────────────────────────────────────
+const showCollectorAssign = ref(false)
+const collectorInput = ref('')
+const collectorAssigning = ref(false)
+async function doBulkAssignCollector() {
+  collectorAssigning.value = true
+  try {
+    let res
+    if (selectAllMatching.value) {
+      res = await ar.bulkAssignCollector({ all: true, collector: collectorInput.value.trim() }, reqParams())
+    } else {
+      res = await ar.bulkAssignCollector({ ids: [...selectedIds.value], collector: collectorInput.value.trim() })
+    }
+    toast.success(`已为 ${res.data?.updated || selectedCount.value} 条记录分配催收人`)
+    showCollectorAssign.value = false
+    collectorInput.value = ''
+    clearSelection()
+    await load()
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
+  } finally { collectorAssigning.value = false }
+}
+
+// ── 账龄分桶配置 ──────────────────────────────────────────────────────────────
+const showAgingCfgModal = ref(false)
+const agingCfgForm = reactive({ bucket1: 30, bucket2: 60, bucket3: 90 })
+const agingCfgSaving = ref(false)
+async function openAgingCfg() {
+  try {
+    const res = await ar.getAgingConfig()
+    Object.assign(agingCfgForm, res.data)
+  } catch (_) {}
+  showAgingCfgModal.value = true
+}
+async function saveAgingCfg() {
+  agingCfgSaving.value = true
+  try {
+    await ar.updateAgingConfig({ ...agingCfgForm })
+    toast.success('账龄配置已保存')
+    showAgingCfgModal.value = false
+    if (activeTab.value === 'aging') loadAging()
+  } catch (e) { toast.error(e?.msg || e?.error || '保存失败')
+  } finally { agingCfgSaving.value = false }
+}
+
+// ── 到期预警：7 天内到期且未结清 ─────────────────────────────────────────────
+function dueSoon(rec) {
+  if (!rec.due_date || rec.invoice_status === '已结清') return false
+  const today = todayCST()
+  const diff = (new Date(rec.due_date) - new Date(today)) / 86400000
+  return diff >= 0 && diff <= 7
+}
+
 // ── 列宽持久化（拖拽调整，自动存 localStorage）──────────────────────────────
 const cw = useColWidths('ar_records', {
   short_name: 180, operation_date: 96, estimated_amount: 100, actual_invoice_amount: 100,
@@ -286,8 +402,8 @@ const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMEN
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
-// Field-permission column visibility
-const show = k => auth.canArView(k)
+// Field-permission column visibility (aliased to showCol after col-panel additions above)
+const show = showCol
 
 const TABS = [
   { key: 'all', label: '全部明细' },
@@ -1215,7 +1331,12 @@ async function onPrecheckApply({ mode }) {
 async function exportData() {
   exporting.value = true
   try {
-    const res = await ar.exportRecords(buildParams(reqParams()))
+    const visCols = COL_VIS_DEFS.filter(d => showCol(d.key)).map(d => d.key)
+    const params = buildParams(reqParams())
+    if (visCols.length < COL_VIS_DEFS.filter(d => auth.canArView(d.key)).length) {
+      params.vis_cols = visCols.join(',')
+    }
+    const res = await ar.exportRecords(params)
     downloadBlob(res, '应收账款明细.xlsx')
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { exporting.value = false }
@@ -1275,6 +1396,40 @@ function clearFilters() {
       <div class="ar-head-top">
         <h1>应收账款</h1>
         <div class="ctrl-row">
+          <!-- 行密度切换 -->
+          <div class="density-seg">
+            <button v-for="d in DENSITIES" :key="d"
+              :class="['density-btn', density === d ? 'on' : '']"
+              :title="DENSITY_LABELS[d]" @click="setDensity(d)">
+              <span class="density-icon">
+                <template v-if="d === 'compact'">≡</template>
+                <template v-else-if="d === 'normal'">☰</template>
+                <template v-else>⬛</template>
+              </span>
+            </button>
+          </div>
+          <!-- 列可见性 -->
+          <div class="col-vis-wrap">
+            <button class="btn btn-ghost btn-sm" :class="{ on: showColPanel }" title="列显示设置"
+              @click="showColPanel = !showColPanel">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+              列<span v-if="hiddenCols.size" class="fb-badge">{{ hiddenCols.size }}</span>
+            </button>
+            <div v-if="showColPanel" class="col-vis-drop">
+              <div class="col-vis-head">列显示设置</div>
+              <label v-for="c in COL_VIS_DEFS.filter(d => auth.canArView(d.key))" :key="c.key" class="col-vis-item">
+                <input type="checkbox" :checked="!hiddenCols.has(c.key)" @change="toggleColVis(c.key)" />
+                {{ c.label }}
+              </label>
+            </div>
+            <div v-if="showColPanel" class="col-vis-backdrop" @click="showColPanel = false"></div>
+          </div>
+          <!-- 全屏 -->
+          <button class="btn btn-ghost btn-sm" :title="isFullscreen ? '退出全屏' : '全屏模式'"
+            @click="toggleFullscreen">
+            <svg v-if="!isFullscreen" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M8 3H5a2 2 0 00-2 2v3M21 8V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3M16 21h3a2 2 0 002-2v-3"/></svg>
+            <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M8 3v3a2 2 0 01-2 2H3M21 8h-3a2 2 0 01-2-2V3M3 16h3a2 2 0 012 2v3M16 21v-3a2 2 0 012-2h3"/></svg>
+          </button>
           <button class="btn btn-ghost btn-sm" @click="downloadTemplate">↓ 模板</button>
           <label class="btn btn-ghost btn-sm" style="cursor:pointer">
             {{ importing ? '导入中…' : '↑ 导入' }}
@@ -1387,7 +1542,7 @@ function clearFilters() {
     </div>
 
     <!-- Tab + table card -->
-    <div class="card" :class="{ 'data-reloading': loading && items.length }">
+    <div class="card" :class="['density-' + density, { 'data-reloading': loading && items.length }]">
       <!-- 合并指标条：左侧=本Tab进度/重点；右侧=当前筛选全集合计 -->
       <div v-if="isDataTab && (kpiData || summaryData)" class="metrics-bar">
         <template v-if="kpiData && activeTab !== 'all'">
@@ -1456,6 +1611,19 @@ function clearFilters() {
         <button v-if="auth.canArWrite && (activeTab === 'all' || activeTab === 'invoice')" class="btn btn-ghost btn-sm" style="margin-left:4px" @click="openBatchAssign">
           设置批次号
         </button>
+        <template v-if="auth.canArWrite && !showCollectorAssign">
+          <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="showCollectorAssign = true">
+            分配催收人
+          </button>
+        </template>
+        <template v-if="showCollectorAssign">
+          <input v-model="collectorInput" class="collector-inp" placeholder="催收人姓名" maxlength="100"
+            @keyup.enter="doBulkAssignCollector" />
+          <button class="btn btn-primary btn-sm" :disabled="collectorAssigning" @click="doBulkAssignCollector">
+            {{ collectorAssigning ? '…' : '确定' }}
+          </button>
+          <button class="btn btn-ghost btn-sm" @click="showCollectorAssign = false; collectorInput = ''">取消</button>
+        </template>
         <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">
           {{ bulkDeleting ? '删除中…' : `删除选中(${selectedCount})` }}
         </button>
@@ -1607,12 +1775,16 @@ function clearFilters() {
               <td colspan="17" class="empty-cell">暂无数据</td>
             </tr>
             <template v-for="rec in items" :key="rec.id">
-              <tr :class="['data-row', agingRowClass(rec), (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']">
+              <tr :class="['data-row', agingRowClass(rec), (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']"
+                @contextmenu.prevent="openCtxMenu($event, rec)">
                 <td v-if="auth.canDelete" class="sel-col sticky-col">
                   <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @change="toggleRow(rec.id)" />
                 </td>
                 <td class="sticky-col" :style="cw.thStyle('short_name')">
-                  <div class="proj-name" :title="rec.short_name || rec.customer_name">{{ rec.short_name || rec.customer_name }}</div>
+                  <div class="proj-name" :title="rec.short_name || rec.customer_name">
+                    {{ rec.short_name || rec.customer_name }}
+                    <span v-if="dueSoon(rec)" class="due-soon-badge" :title="`应收到期：${rec.due_date}`">即将到期</span>
+                  </div>
                   <div v-if="rec.short_name && rec.short_name !== rec.customer_name" class="proj-sub" :title="rec.customer_name">{{ rec.customer_name }}</div>
                   <div class="proj-no">{{ rec.project_no }}</div>
                 </td>
@@ -2024,6 +2196,9 @@ function clearFilters() {
           <span class="aging-dot age-61-90"></span>61-90天
           <span class="aging-dot age-90plus"></span>&gt;90天
           <span class="text-sm-muted" style="margin-left:8px">（仅含未收余额 &gt; 0 的记录；沿用上方筛选条件）</span>
+          <button v-if="auth.isSuperAdmin" class="aging-cfg-btn" title="配置账龄分桶边界" @click="openAgingCfg">
+            ⚙ 配置
+          </button>
         </div>
         <div class="table-wrap">
           <table class="rec-table aging-table">
@@ -2701,6 +2876,64 @@ function clearFilters() {
       <ImportPrecheckModal :report="precheckResult" :busy="precheckBusy" :readonly="true"
         @close="precheckResult = null" @apply="onPrecheckApply" />
 
+      <!-- 右键上下文菜单 -->
+      <div v-if="ctxMenu.show" class="ctx-backdrop" @click="closeCtxMenu" @contextmenu.prevent="closeCtxMenu"></div>
+      <div v-if="ctxMenu.show" class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }">
+        <button class="ctx-item" @click="openLogModal(ctxMenu.rec); closeCtxMenu()">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+          催收跟进日志
+        </button>
+        <button v-if="auth.canArWrite" class="ctx-item" @click="openEdit(ctxMenu.rec); closeCtxMenu()">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4z"/></svg>
+          编辑
+        </button>
+        <button v-if="auth.canArWrite" class="ctx-item" @click="openAddPayment(ctxMenu.rec); closeCtxMenu()">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+          录入回款
+        </button>
+        <div v-if="auth.canDelete" class="ctx-divider"></div>
+        <button v-if="auth.canDelete" class="ctx-item ctx-item-danger" @click="deleteRec(ctxMenu.rec); closeCtxMenu()">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+          删除
+        </button>
+      </div>
+
+      <!-- 账龄配置弹窗 -->
+      <div v-if="showAgingCfgModal" class="modal-overlay" @click.self="showAgingCfgModal = false">
+        <div class="modal-box" style="max-width:360px">
+          <div class="modal-header">
+            <h3>账龄分桶配置</h3>
+            <button class="modal-close" @click="showAgingCfgModal = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <p class="text-sm-muted" style="margin-bottom:14px">设置各账龄段的天数上限，影响账龄分析及逾期看板的分段显示。</p>
+            <div class="form-grid">
+              <label class="form-field">
+                <span>第1桶上限（天）</span>
+                <input v-model.number="agingCfgForm.bucket1" type="number" min="1" max="365" />
+              </label>
+              <label class="form-field">
+                <span>第2桶上限（天）</span>
+                <input v-model.number="agingCfgForm.bucket2" type="number" min="1" max="365" />
+              </label>
+              <label class="form-field">
+                <span>第3桶上限（天）</span>
+                <input v-model.number="agingCfgForm.bucket3" type="number" min="1" max="365" />
+              </label>
+              <div class="form-field" style="grid-column:span 2">
+                <span class="text-sm-muted">第4桶：超过第3桶上限（无上限）。默认值：30 / 60 / 90 天。</span>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" @click="showAgingCfgModal = false">取消</button>
+            <button class="btn btn-primary" :disabled="agingCfgSaving" @click="saveAgingCfg">
+              {{ agingCfgSaving ? '保存中…' : '保存配置' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- 批量删除二次输入确认 -->
       <div v-if="showDelConfirm" class="modal-overlay" @click.self="showDelConfirm = false">
         <div class="modal-box" style="max-width:420px">
@@ -3341,6 +3574,97 @@ function clearFilters() {
 .log-note { font-size: 13px; line-height: 1.55; color: #333; white-space: pre-wrap; }
 .log-followup { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
 .log-empty { padding: 20px 0; text-align: center; color: var(--muted); font-size: 13px; }
+
+/* ── 冻结列阴影线（Kingdee 风格：右侧投影提示有内容在后面滚动）──── */
+.sticky-col::after {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; right: -4px;
+  width: 4px;
+  pointer-events: none;
+  box-shadow: 4px 0 8px rgba(0,0,0,0.10);
+  z-index: 2;
+}
+
+/* ── 行密度切换 ──────────────────────────────────────────────────── */
+.density-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.density-btn {
+  padding: 4px 7px; border: none; background: none; cursor: pointer;
+  color: var(--muted); font-size: 13px; line-height: 1; transition: all .12s;
+}
+.density-btn:hover { background: rgba(0,0,0,0.05); }
+.density-btn.on { background: rgba(201,99,66,0.1); color: var(--primary); }
+.density-icon { display: block; }
+
+/* row-py 驱动行间距（通过 td padding） */
+.density-compact .rec-table td { padding-top: 2px !important; padding-bottom: 2px !important; }
+.density-comfortable .rec-table td { padding-top: 10px !important; padding-bottom: 10px !important; }
+
+/* ── 列可见性面板 ─────────────────────────────────────────────────── */
+.col-vis-wrap { position: relative; }
+.col-vis-drop {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 200;
+  min-width: 160px; background: #fff; border: 1.5px solid var(--border);
+  border-radius: 10px; box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+  padding: 8px 4px;
+}
+.col-vis-head {
+  font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .04em; padding: 4px 12px 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px;
+}
+.col-vis-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 12px; cursor: pointer; font-size: 12.5px; color: var(--text);
+  transition: background .1s; border-radius: 6px; margin: 1px 4px;
+}
+.col-vis-item:hover { background: rgba(201,99,66,0.06); }
+.col-vis-item input { cursor: pointer; }
+.col-vis-backdrop { position: fixed; inset: 0; z-index: 199; }
+.btn.on { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.06); }
+
+/* ── 右键菜单 ────────────────────────────────────────────────────── */
+.ctx-backdrop { position: fixed; inset: 0; z-index: 300; }
+.ctx-menu {
+  position: fixed; z-index: 301;
+  background: #fff; border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.16); min-width: 148px; padding: 5px 0;
+}
+.ctx-item {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 8px 14px; border: none; background: none;
+  font-size: 13px; color: var(--text); cursor: pointer; text-align: left; transition: background .1s;
+}
+.ctx-item:hover { background: rgba(201,99,66,0.06); }
+.ctx-item svg { flex-shrink: 0; color: var(--muted); }
+.ctx-item-danger { color: #c62828; }
+.ctx-item-danger:hover { background: rgba(198,40,40,0.07); }
+.ctx-divider { height: 1px; background: var(--border); margin: 3px 0; }
+
+/* ── 到期预警徽标 ─────────────────────────────────────────────────── */
+.due-soon-badge {
+  display: inline-block; margin-left: 5px; font-size: 10px; font-weight: 700;
+  padding: 1px 6px; border-radius: 8px; vertical-align: middle;
+  background: rgba(230,81,0,0.14); color: #e65100;
+  animation: pulse-warn 2s ease-in-out infinite;
+}
+@keyframes pulse-warn {
+  0%, 100% { opacity: 1; } 50% { opacity: .6; }
+}
+
+/* ── 批量分配催收人 ─────────────────────────────────────────────── */
+.collector-inp {
+  padding: 4px 9px; border: 1px solid var(--border); border-radius: 7px;
+  font-size: 12.5px; width: 140px; outline: none;
+}
+.collector-inp:focus { border-color: var(--primary); }
+
+/* ── 账龄配置按钮 ─────────────────────────────────────────────────── */
+.aging-cfg-btn {
+  margin-left: auto; padding: 3px 10px; font-size: 12px; font-weight: 500;
+  border: 1px solid var(--border); border-radius: 7px; background: #fff; color: var(--muted);
+  cursor: pointer; transition: all .14s;
+}
+.aging-cfg-btn:hover { border-color: var(--primary); color: var(--primary); }
 
 /* ── 打印布局 ──────────────────────────────────────────────────────── */
 @media print {

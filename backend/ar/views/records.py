@@ -1066,6 +1066,9 @@ def ar_record_export(request):
     if denied:
         return denied
     today = datetime.date.today()
+    # 可见列控制：前端传 vis_cols 参数（逗号分隔的 perm key），空=全部
+    vis_raw = request.GET.get('vis_cols', '')
+    vis_set = set(vis_raw.split(',')) if vis_raw.strip() else set()
     # 导出与列表口径一致：复用同一套筛选 + 条件构建器（含日期相对区间/金额运算符）
     qs = _ar_dept_filter(ARRecord.objects.select_related('project'), request,
                          shared_field='project__is_shared')
@@ -1137,6 +1140,8 @@ def ar_record_export(request):
         ('r_due_date', '逾期天数', lambda rec, st: st['overdue_days'] if st['is_overdue'] else ''),
         ('r_notes', '备注', lambda rec, st: rec.notes),
     ])
+    if vis_set:
+        columns = [(pk, hd, fn) for pk, hd, fn in columns if pk is None or pk in vis_set]
     _header_row(ws, [header for _, header, _ in columns], color='1B6E35')
     for rec in qs:
         st = rec.status_dict(today)
@@ -2066,6 +2071,37 @@ def ar_records_recompute_bulk(request):
             failed.append({'id': rec.id,
                            'msg': str(e.message if hasattr(e, 'message') else e)})
     return ok({'fixed': fixed, 'failed': failed})
+
+
+@csrf_exempt
+@pk_required()
+def ar_records_bulk_assign_collector(request):
+    """批量分配催收负责人。body: {ids: [int...], collector: str} 或 {all: true, collector: str} + 筛选参数。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    data = _parse_body(request)
+    collector = (data.get('collector') or '').strip()[:100]
+    if data.get('all'):
+        today = datetime.date.today()
+        qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
+        qs = _apply_record_filters(qs, request)
+        qs = _apply_conditions(qs, request, today)
+        _fq, _fq_distinct = build_filter_q(request.GET.get('filters', ''), ARRECORD_FILTER_REGISTRY)
+        if _fq:
+            qs = qs.filter(_fq)
+            if _fq_distinct:
+                qs = qs.distinct()
+    else:
+        ids = [int(i) for i in (data.get('ids') or []) if str(i).isdigit()]
+        if not ids:
+            return err('请指定要操作的记录')
+        qs = ARRecord.objects.filter(id__in=ids)
+    count = qs.update(collector=collector)
+    return ok({'updated': count, 'collector': collector})
 
 
 @csrf_exempt
