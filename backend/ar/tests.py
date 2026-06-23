@@ -758,6 +758,74 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(k1['total'], 1)
         self.assertEqual(k1['invoice']['pending'], 1)
 
+    def test_column_filter_extended_text_operators(self):
+        """金蝶式文本运算符：不等于/不包含/开头/结尾/为空/不为空/选值(in)。"""
+        admin = self.make_user('13900000201', 'finance_director', role='super_admin')
+        p_alpha = self.create_project(short_name='Alpha物流')
+        p_beta = self.create_project(short_name='Beta仓储')
+        p_gamma = self.create_project(short_name='Gamma物流')
+        for p in (p_alpha, p_beta, p_gamma):
+            ARRecord.objects.create(project=p, operation_year=2026,
+                                    operation_month=7, estimated_amount=Decimal('100.00'))
+
+        def names(filters):
+            resp = self.client.get('/api/pk/ar/records', {'filters': json.dumps(filters)},
+                                   **self.auth(admin))
+            self.assertEqual(resp.status_code, 200)
+            return sorted(r['short_name'] for r in resp.json()['data']['items'])
+
+        # 开头是 "Alpha"
+        self.assertEqual(names({'short_name': {'op': 'startswith', 'value': 'Alpha'}}), ['Alpha物流'])
+        # 结尾是 "物流"
+        self.assertEqual(names({'short_name': {'op': 'endswith', 'value': '物流'}}), ['Alpha物流', 'Gamma物流'])
+        # 不包含 "物流"
+        self.assertEqual(names({'short_name': {'op': 'not_contains', 'value': '物流'}}), ['Beta仓储'])
+        # 不等于 "Beta仓储"
+        self.assertEqual(names({'short_name': {'op': 'ne', 'value': 'Beta仓储'}}), ['Alpha物流', 'Gamma物流'])
+        # 选值（Excel 自动筛选）：勾选 Alpha物流 + Beta仓储
+        self.assertEqual(names({'short_name': {'op': 'in', 'value': ['Alpha物流', 'Beta仓储']}}),
+                         ['Alpha物流', 'Beta仓储'])
+        # 选值排除：not_in 排除 Alpha物流
+        self.assertEqual(names({'short_name': {'op': 'not_in', 'value': ['Alpha物流']}}),
+                         ['Beta仓储', 'Gamma物流'])
+
+    def test_column_filter_empty_not_empty(self):
+        """为空/不为空（一元运算符，不读 value）。"""
+        admin = self.make_user('13900000202', 'finance_director', role='super_admin')
+        p = self.create_project()
+        with_notes = ARRecord.objects.create(project=p, operation_year=2026,
+                                             operation_month=7, estimated_amount=Decimal('100.00'),
+                                             notes='催过一次')
+        ARRecord.objects.create(project=p, operation_year=2026, operation_month=7,
+                                estimated_amount=Decimal('100.00'), notes='')
+
+        def ids(filters):
+            resp = self.client.get('/api/pk/ar/records', {'filters': json.dumps(filters)},
+                                   **self.auth(admin))
+            return {r['id'] for r in resp.json()['data']['items']}
+        # 备注不为空 → 只剩有备注那条
+        self.assertEqual(ids({'notes': {'op': 'not_empty'}}), {with_notes.id})
+        # 备注为空 → 不含有备注那条
+        self.assertNotIn(with_notes.id, ids({'notes': {'op': 'empty'}}))
+
+    def test_distinct_values_endpoint(self):
+        """列头「选值」清单：返回该列在可见数据里出现过的去重值。"""
+        admin = self.make_user('13900000203', 'finance_director', role='super_admin')
+        for nm in ('物流甲', '物流甲', '物流乙'):
+            p = self.create_project(short_name=nm)
+            ARRecord.objects.create(project=p, operation_year=2026,
+                                    operation_month=7, estimated_amount=Decimal('100.00'))
+        resp = self.client.get('/api/pk/ar/records/distinct-values',
+                               {'field': 'short_name'}, **self.auth(admin))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()['data']
+        self.assertEqual(data['values'], ['物流乙', '物流甲'])   # 去重 + 排序
+        self.assertFalse(data['truncated'])
+        # 非白名单/计算列拒绝取值
+        bad = self.client.get('/api/pk/ar/records/distinct-values',
+                              {'field': 'outstanding_amount'}, **self.auth(admin))
+        self.assertEqual(bad.status_code, 400)
+
     def test_summary_not_inflated_by_multiple_payments(self):
         admin = self.make_user('13900000055', 'finance_director', role='super_admin')
         project = self.create_project()

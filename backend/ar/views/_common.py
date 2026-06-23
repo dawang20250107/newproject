@@ -961,10 +961,16 @@ def _condition_q(c, today, eomonth_today):
             return Q(**{field: 0})
         if op == 'ne0':
             return Q(**{f'{field}__gt': 0}) | Q(**{f'{field}__lt': 0})
-        if op in ('gt', 'lt', 'eq'):
+        if op == 'empty':
+            return Q(**{f'{field}__isnull': True})
+        if op == 'not_empty':
+            return Q(**{f'{field}__isnull': False})
+        if op in ('gt', 'lt', 'eq', 'ne'):
             v = _dec_or_none(c.get('value'))
             if v is None:
                 return None
+            if op == 'ne':
+                return ~Q(**{field: v})
             return Q(**{{'gt': f'{field}__gt', 'lt': f'{field}__lt', 'eq': field}[op]: v})
         if op == 'between':
             lo = _dec_or_none(c.get('min'))

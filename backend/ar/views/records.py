@@ -90,6 +90,32 @@ def ar_records_date_bounds(request):
 
 @csrf_exempt
 @pk_required()
+def ar_records_distinct_values(request):
+    """列头「选值」清单（Excel 自动筛选）：返回某文本/枚举列在当前可见数据里出现过的
+    去重值，供前端勾选筛选。尊重部门可见性 + 当前高级筛选条件；最多 500 个防超大基数。"""
+    if request.method != 'GET':
+        return err('GET only', 405)
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    field = (request.GET.get('field') or '').strip()
+    meta = ARRECORD_FILTER_REGISTRY.get(field)
+    if not meta or meta['type'] not in ('text', 'enum'):
+        return err('字段不可取值', 400)
+    qs = _ar_dept_filter(ARRecord.objects.all(), request,
+                         shared_field='project__is_shared')
+    qs = _apply_conditions(qs, request)
+    col = meta['col']
+    raw = (qs.values_list(col, flat=True)
+           .exclude(**{f'{col}__isnull': True}).exclude(**{col: ''})
+           .distinct())
+    vals = sorted({str(v) for v in raw if v not in (None, '')})
+    truncated = len(vals) > 500
+    return ok({'field': field, 'values': vals[:500], 'truncated': truncated})
+
+
+@csrf_exempt
+@pk_required()
 def ar_records(request):
     denied = _page_denied(request, 'ar_records')
     if denied:

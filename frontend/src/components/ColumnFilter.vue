@@ -1,10 +1,12 @@
 <script setup>
-/* Excel 风格列头筛选 + 排序的弹出控件，复用于审批管理 / 付款台账。
-   - type=text   → 包含 / 等于
-   - type=number → = > < ≥ ≤ 区间
-   - type=date   → 起止范围组（任一侧可空）
-   - type=enum   → 多选（任一命中）
-   modelValue 形如 {op, value}（value 可为字符串或二元数组），无筛选时为 null。
+/* Excel / 金蝶风格列头筛选 + 排序的弹出控件，复用于审批管理 / 付款台账 / 应收明细。
+   - type=text   → 条件模式（包含/不包含/等于/不等于/开头/结尾/为空/不为空）
+                   + 选值模式（勾选该列实际出现的值；需父级提供 valuesProvider）
+   - type=number → = ≠ > < ≥ ≤ 区间 / 空 / 非空
+   - type=date   → 起止范围组（任一侧可空）+ 为空/不为空
+   - type=enum   → 多选（在/不在）
+   modelValue 形如 {op, value}（value 可为字符串或数组），无筛选时为 null。
+   一元运算符（为空/不为空）不带 value，但仍算「已筛选」。
    排序通过 sort 事件上抛 'asc' | 'desc' | ''（清除）。 */
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 
@@ -20,6 +22,9 @@ const props = defineProps({
   filterable: { type: Boolean, default: true },   // false → 仅排序（计算/聚合列）
   sortField:{ type: String,  default: '' },           // 当前生效的排序字段
   sortOrder:{ type: String,  default: '' },           // 'asc' | 'desc' | ''
+  // 选值清单数据源：(field) => Promise<{values:string[], truncated:bool}>。
+  // 仅 text 列提供时启用「选值」模式（Excel 自动筛选）。
+  valuesProvider: { type: Function, default: null },
 })
 const emit = defineEmits(['update:modelValue', 'sort'])
 
@@ -33,14 +38,39 @@ const v1 = ref('')
 const v2 = ref('')
 const enumSel = ref([])
 
-const NUM_OPS = [
-  { v: 'eq', t: '=' }, { v: 'gt', t: '>' }, { v: 'lt', t: '<' },
-  { v: 'gte', t: '≥' }, { v: 'lte', t: '≤' }, { v: 'between', t: '区间' },
+// 文本「选值」模式（Excel 自动筛选）
+const hasValuePicker = computed(() => props.type === 'text' && !!props.valuesProvider)
+const mode = ref('values')            // 'values' | 'cond'（仅 text 且有 valuesProvider 时切换）
+const valList = ref([])
+const valSel = ref([])
+const valSearch = ref('')
+const valLoading = ref(false)
+const valTruncated = ref(false)
+const valShown = computed(() => {
+  const kw = valSearch.value.trim().toLowerCase()
+  return kw ? valList.value.filter(v => v.toLowerCase().includes(kw)) : valList.value
+})
+const valAllChecked = computed(() =>
+  valShown.value.length > 0 && valShown.value.every(v => valSel.value.includes(v)))
+
+const TEXT_OPS = [
+  { v: 'contains', t: '包含' }, { v: 'not_contains', t: '不包含' },
+  { v: 'eq', t: '等于' }, { v: 'ne', t: '不等于' },
+  { v: 'startswith', t: '开头是' }, { v: 'endswith', t: '结尾是' },
+  { v: 'empty', t: '为空' }, { v: 'not_empty', t: '不为空' },
 ]
+const NUM_OPS = [
+  { v: 'eq', t: '=' }, { v: 'ne', t: '≠' }, { v: 'gt', t: '>' }, { v: 'lt', t: '<' },
+  { v: 'gte', t: '≥' }, { v: 'lte', t: '≤' }, { v: 'between', t: '区间' },
+  { v: 'empty', t: '空' }, { v: 'not_empty', t: '非空' },
+]
+const NULLARY = ['empty', 'not_empty']    // 不需要 value 的一元运算符
+const needsValue = computed(() => !NULLARY.includes(op.value))
 
 const active = computed(() => {
   const m = props.modelValue
   if (!m || !m.op) return false
+  if (NULLARY.includes(m.op)) return true       // 为空/不为空 即已筛选
   const val = m.value
   if (Array.isArray(val)) return val.some(x => x !== '' && x != null)
   return val !== '' && val != null
@@ -53,10 +83,12 @@ const enumOpts = computed(() =>
 function syncDraftFromModel() {
   const m = props.modelValue
   if (props.type === 'enum') {
+    op.value = m?.op === 'not_in' ? 'not_in' : 'in'
     enumSel.value = m && Array.isArray(m.value) ? [...m.value] : []
     return
   }
   if (props.type === 'date') {
+    if (NULLARY.includes(m?.op)) { op.value = m.op; v1.value = ''; v2.value = ''; return }
     op.value = 'between'
     v1.value = m && Array.isArray(m.value) ? (m.value[0] || '') : ''
     v2.value = m && Array.isArray(m.value) ? (m.value[1] || '') : ''
@@ -74,15 +106,33 @@ function syncDraftFromModel() {
     return
   }
   // text
-  op.value = m?.op || 'contains'
-  v1.value = m && !Array.isArray(m.value) ? (m.value ?? '') : ''
+  if (hasValuePicker.value && (!m || m.op === 'in' || m.op === 'not_in')) {
+    mode.value = 'values'
+    valSel.value = m && Array.isArray(m.value) ? [...m.value] : []
+    loadValues()
+  } else {
+    mode.value = hasValuePicker.value ? 'cond' : 'values'
+    op.value = m?.op || 'contains'
+    v1.value = m && !Array.isArray(m.value) ? (m.value ?? '') : ''
+  }
+}
+
+async function loadValues() {
+  if (!props.valuesProvider) return
+  valLoading.value = true
+  try {
+    const res = await props.valuesProvider(props.field)
+    valList.value = res?.values || []
+    valTruncated.value = !!res?.truncated
+  } catch { valList.value = []; valTruncated.value = false }
+  finally { valLoading.value = false }
 }
 
 async function toggle() {
   if (open.value) { open.value = false; return }
   syncDraftFromModel()
   const r = btnRef.value.getBoundingClientRect()
-  const estimatedH = 280
+  const estimatedH = 300
   let top = r.bottom + 6
   if (top + estimatedH > window.innerHeight - 12) {
     top = r.top - estimatedH - 6
@@ -96,7 +146,7 @@ async function toggle() {
   if (props.type === 'enum') {
     const first = document.querySelector('.colf-pop input[type="checkbox"]')
     first && first.focus()
-  } else {
+  } else if (!(props.type === 'text' && mode.value === 'values')) {
     const el = document.querySelector('.colf-pop input, .colf-pop select')
     el && el.focus()
   }
@@ -105,7 +155,11 @@ async function toggle() {
 function apply() {
   let payload = null
   if (props.type === 'enum') {
-    payload = enumSel.value.length ? { op: 'in', value: [...enumSel.value] } : null
+    payload = enumSel.value.length ? { op: op.value === 'not_in' ? 'not_in' : 'in', value: [...enumSel.value] } : null
+  } else if (props.type === 'text' && hasValuePicker.value && mode.value === 'values') {
+    payload = valSel.value.length ? { op: 'in', value: [...valSel.value] } : null
+  } else if (NULLARY.includes(op.value)) {
+    payload = { op: op.value, value: '' }
   } else if (props.type === 'date') {
     payload = (v1.value || v2.value) ? { op: 'between', value: [v1.value, v2.value] } : null
   } else if (props.type === 'number') {
@@ -122,6 +176,7 @@ function apply() {
 }
 
 function clear() {
+  valSel.value = []
   emit('update:modelValue', null)
   open.value = false
 }
@@ -134,6 +189,22 @@ function toggleEnum(val) {
   const i = enumSel.value.indexOf(val)
   if (i >= 0) enumSel.value.splice(i, 1)
   else enumSel.value.push(val)
+}
+
+function toggleVal(val) {
+  const i = valSel.value.indexOf(val)
+  if (i >= 0) valSel.value.splice(i, 1)
+  else valSel.value.push(val)
+}
+function toggleValAll() {
+  if (valAllChecked.value) {
+    const shown = new Set(valShown.value)
+    valSel.value = valSel.value.filter(v => !shown.has(v))
+  } else {
+    const set = new Set(valSel.value)
+    valShown.value.forEach(v => set.add(v))
+    valSel.value = [...set]
+  }
 }
 
 // 日期快捷区间（组件内自算，不依赖业务页面）
@@ -153,12 +224,16 @@ function presetRange(k) {
   if (k === 'last90') { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - 89); return [_iso(s), _iso(e)] }
   return ['', '']
 }
-function applyPreset(k) { const [s, e] = presetRange(k); v1.value = s; v2.value = e; apply() }
+function applyPreset(k) { const [s, e] = presetRange(k); op.value = 'between'; v1.value = s; v2.value = e; apply() }
 
 function setSort(order) {
   // 再次点击同方向 = 取消排序
   emit('sort', props.sortOrder === order && props.sortField === props.field ? '' : order)
   open.value = false
+}
+function switchMode(m) {
+  mode.value = m
+  if (m === 'values' && !valList.value.length) loadValues()
 }
 
 function onDocClick(e) {
@@ -194,13 +269,40 @@ onBeforeUnmount(() => {
         </div>
 
         <template v-if="filterable">
-        <!-- 文本 -->
+        <!-- 文本：选值 / 条件 模式切换（仅在提供 valuesProvider 时显示切换条）-->
         <template v-if="type === 'text'">
-          <select v-model="op" class="colf-op">
-            <option value="contains">包含</option>
-            <option value="eq">等于</option>
-          </select>
-          <input v-model="v1" class="colf-in" placeholder="输入关键字" @keyup.enter="apply" />
+          <div v-if="hasValuePicker" class="colf-modetab">
+            <button type="button" :class="{ act: mode === 'values' }" @click="switchMode('values')">选值</button>
+            <button type="button" :class="{ act: mode === 'cond' }" @click="switchMode('cond')">条件</button>
+          </div>
+
+          <!-- 选值模式：Excel 自动筛选 -->
+          <template v-if="hasValuePicker && mode === 'values'">
+            <input v-model="valSearch" class="colf-in" placeholder="搜索值…" />
+            <div v-if="valLoading" class="colf-vmsg">加载中…</div>
+            <template v-else>
+              <label v-if="valShown.length" class="colf-chk colf-chk-all">
+                <input type="checkbox" :checked="valAllChecked" @change="toggleValAll" />
+                <span>全选（{{ valSel.length }}/{{ valList.length }}）</span>
+              </label>
+              <div class="colf-enum">
+                <label v-for="val in valShown" :key="val" class="colf-chk">
+                  <input type="checkbox" :checked="valSel.includes(val)" @change="toggleVal(val)" />
+                  <span :title="val">{{ val }}</span>
+                </label>
+                <div v-if="!valShown.length" class="colf-vmsg">无匹配值</div>
+              </div>
+              <div v-if="valTruncated" class="colf-vmsg colf-vmsg-warn">值过多，仅列前 500 个，请用「条件」模式</div>
+            </template>
+          </template>
+
+          <!-- 条件模式：运算符 + 输入 -->
+          <template v-else>
+            <select v-model="op" class="colf-op">
+              <option v-for="o in TEXT_OPS" :key="o.v" :value="o.v">{{ o.t }}</option>
+            </select>
+            <input v-if="needsValue" v-model="v1" class="colf-in" placeholder="输入关键字" @keyup.enter="apply" />
+          </template>
         </template>
 
         <!-- 数字 -->
@@ -209,22 +311,26 @@ onBeforeUnmount(() => {
             <button v-for="o in NUM_OPS" :key="o.v" type="button"
                     :class="{ act: op === o.v }" @click="op = o.v">{{ o.t }}</button>
           </div>
-          <template v-if="op === 'between'">
-            <div class="colf-range">
-              <input v-model="v1" class="colf-in" type="number" placeholder="最小" @keyup.enter="apply" />
-              <span class="colf-tilde">~</span>
-              <input v-model="v2" class="colf-in" type="number" placeholder="最大" @keyup.enter="apply" />
-            </div>
+          <template v-if="needsValue">
+            <template v-if="op === 'between'">
+              <div class="colf-range">
+                <input v-model="v1" class="colf-in" type="number" placeholder="最小" @keyup.enter="apply" />
+                <span class="colf-tilde">~</span>
+                <input v-model="v2" class="colf-in" type="number" placeholder="最大" @keyup.enter="apply" />
+              </div>
+            </template>
+            <input v-else v-model="v1" class="colf-in" type="number" placeholder="数值" @keyup.enter="apply" />
           </template>
-          <input v-else v-model="v1" class="colf-in" type="number" placeholder="数值" @keyup.enter="apply" />
         </template>
 
         <!-- 日期范围 -->
         <template v-else-if="type === 'date'">
           <div v-if="datePresets" class="colf-chips">
             <button v-for="p in DATE_PRESETS" :key="p.k" type="button" @click="applyPreset(p.k)">{{ p.t }}</button>
+            <button type="button" :class="{ act: op === 'empty' }" @click="op = 'empty'">为空</button>
+            <button type="button" :class="{ act: op === 'not_empty' }" @click="op = 'not_empty'">不为空</button>
           </div>
-          <div class="colf-range colf-range-date">
+          <div v-if="needsValue" class="colf-range colf-range-date">
             <input v-model="v1" class="colf-in" type="date" @keyup.enter="apply" />
             <span class="colf-tilde">~</span>
             <input v-model="v2" class="colf-in" type="date" @keyup.enter="apply" />
@@ -233,6 +339,10 @@ onBeforeUnmount(() => {
 
         <!-- 枚举多选 -->
         <template v-else-if="type === 'enum'">
+          <div v-if="!single" class="colf-modetab colf-modetab-enum">
+            <button type="button" :class="{ act: op !== 'not_in' }" @click="op = 'in'">在（命中）</button>
+            <button type="button" :class="{ act: op === 'not_in' }" @click="op = 'not_in'">不在（排除）</button>
+          </div>
           <div class="colf-enum">
             <label v-for="o in enumOpts" :key="o.value" class="colf-chk">
               <input type="checkbox" :checked="enumSel.includes(o.value)" @change="toggleEnum(o.value)" />
@@ -287,6 +397,15 @@ onBeforeUnmount(() => {
 }
 .colf-close:hover { border-color: var(--danger); color: var(--danger); }
 
+/* 选值 / 条件 模式切换条 */
+.colf-modetab { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.colf-modetab button {
+  flex: 1; padding: 5px 0; border: none; background: transparent; cursor: pointer;
+  color: var(--muted); font-size: 11.5px; font-weight: 600;
+}
+.colf-modetab button.act { background: var(--primary); color: #fff; }
+.colf-modetab-enum button { font-size: 11px; }
+
 .colf-op, .colf-in {
   width: 100%; box-sizing: border-box; padding: 6px 8px;
   border: 1px solid var(--border); border-radius: 6px; font-size: 12px;
@@ -310,10 +429,15 @@ onBeforeUnmount(() => {
   background: transparent; cursor: pointer; color: var(--muted); font-size: 11px;
 }
 .colf-chips button:hover { border-color: var(--primary); color: var(--primary); }
+.colf-chips button.act { border-color: var(--primary); color: #fff; background: var(--primary); }
 .colf-enum { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .colf-chk { display: flex; align-items: center; gap: 7px; padding: 4px 4px; border-radius: 5px; cursor: pointer; }
 .colf-chk:hover { background: rgba(201,99,66,0.06); }
-.colf-chk input { margin: 0; }
+.colf-chk input { margin: 0; flex-shrink: 0; }
+.colf-chk span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.colf-chk-all { font-weight: 700; border-bottom: 1px dashed var(--border); border-radius: 0; padding-bottom: 5px; }
+.colf-vmsg { font-size: 11px; color: var(--muted); padding: 4px 2px; }
+.colf-vmsg-warn { color: #bf360c; }
 
 .colf-foot { display: flex; gap: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
 .colf-clear, .colf-apply { flex: 1; padding: 6px 0; border-radius: 6px; cursor: pointer; font-size: 12px; }

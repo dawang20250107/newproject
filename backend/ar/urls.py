@@ -27,6 +27,7 @@ urlpatterns = [
 
     # AR Records
     path('records/date-bounds', views.ar_records_date_bounds),
+    path('records/distinct-values', views.ar_records_distinct_values),
     path('records', views.ar_records),
     path('records/kpi', views.ar_records_kpi),
     path('records/summary', views.ar_records_group_summary),

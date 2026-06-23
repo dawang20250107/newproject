@@ -22,11 +22,22 @@ from decimal import Decimal, InvalidOperation
 
 from django.db.models import Q
 
-# 每种列类型允许的运算符（前端越界传入会被忽略）
-_TEXT_OPS = {'contains', 'eq'}
-_NUMBER_OPS = {'eq', 'gt', 'lt', 'gte', 'lte', 'between'}
-_DATE_OPS = {'eq', 'gte', 'lte', 'between'}
-_ENUM_OPS = {'in'}
+# 每种列类型允许的运算符（前端越界传入会被忽略）。对标金蝶云星空通用过滤：
+# 文本支持 等于/不等于/包含/不包含/开头/结尾/为空/不为空 + 选值(in/not_in)；
+# 数字与日期支持 为空/不为空；枚举支持 在/不在。
+_TEXT_OPS = {'contains', 'eq', 'ne', 'not_contains', 'startswith', 'endswith',
+             'empty', 'not_empty', 'in', 'not_in'}
+_NUMBER_OPS = {'eq', 'ne', 'gt', 'lt', 'gte', 'lte', 'between', 'empty', 'not_empty'}
+_DATE_OPS = {'eq', 'gte', 'lte', 'between', 'empty', 'not_empty'}
+_ENUM_OPS = {'in', 'not_in'}
+
+# 不需要 value 的「一元运算符」（为空/不为空）——需在空值守卫之前判定，否则会被跳过
+_NULLARY_OPS = {'empty', 'not_empty'}
+
+
+def _empty_q(col):
+    """文本「为空」：NULL 或空串都算空。"""
+    return Q(**{f'{col}__isnull': True}) | Q(**{col: ''})
 
 
 def _num(v):
@@ -80,12 +91,40 @@ def build_filter_q(raw_json, registry):
         t = meta['type']
         added = False
 
-        if t == 'text' and op in _TEXT_OPS:
-            s = str(val or '').strip()
-            if not s:
-                continue
-            q &= Q(**{f'{col}__icontains': s}) if op == 'contains' else Q(**{col: s})
+        # 一元运算符（为空/不为空）：文本/数字/日期通用，不读 value，最先处理
+        if op in _NULLARY_OPS and (
+                (t == 'text' and op in _TEXT_OPS) or
+                (t == 'number' and op in _NUMBER_OPS) or
+                (t == 'date' and op in _DATE_OPS)):
+            empty = _empty_q(col) if t == 'text' else Q(**{f'{col}__isnull': True})
+            q &= empty if op == 'empty' else ~empty
             added = True
+
+        elif t == 'text' and op in _TEXT_OPS:
+            # 选值清单（Excel 自动筛选）：in/not_in 取字符串数组
+            if op in ('in', 'not_in'):
+                vals = [str(x).strip() for x in val if str(x).strip()] if isinstance(val, (list, tuple)) else []
+                if vals:
+                    inq = Q(**{f'{col}__in': vals})
+                    q &= inq if op == 'in' else ~inq
+                    added = True
+            else:
+                s = str(val or '').strip()
+                if not s:
+                    continue
+                if op == 'eq':
+                    q &= Q(**{col: s})
+                elif op == 'ne':
+                    q &= ~Q(**{col: s})
+                elif op == 'contains':
+                    q &= Q(**{f'{col}__icontains': s})
+                elif op == 'not_contains':
+                    q &= ~Q(**{f'{col}__icontains': s})
+                elif op == 'startswith':
+                    q &= Q(**{f'{col}__istartswith': s})
+                elif op == 'endswith':
+                    q &= Q(**{f'{col}__iendswith': s})
+                added = True
 
         elif t == 'number' and op in _NUMBER_OPS:
             if op == 'between':
@@ -101,7 +140,10 @@ def build_filter_q(raw_json, registry):
                 n = _num(val)
                 if n is None:
                     continue
-                q &= Q(**{(col if op == 'eq' else f'{col}__{op}'): n})
+                if op == 'ne':
+                    q &= ~Q(**{col: n})
+                else:
+                    q &= Q(**{(col if op == 'eq' else f'{col}__{op}'): n})
                 added = True
 
         elif t == 'date' and op in _DATE_OPS:
@@ -124,7 +166,8 @@ def build_filter_q(raw_json, registry):
         elif t == 'enum' and op in _ENUM_OPS:
             vals = [str(x).strip() for x in val if str(x).strip()] if isinstance(val, (list, tuple)) else []
             if vals:
-                q &= Q(**{f'{col}__in': vals})
+                inq = Q(**{f'{col}__in': vals})
+                q &= inq if op == 'in' else ~inq
                 added = True
 
         if added and meta.get('multi'):

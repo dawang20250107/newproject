@@ -70,7 +70,7 @@ function patch() { emit('change') }
       <select v-model="cond.op" class="fl-sel" @change="patch()">
         <option v-for="o in AMT_OPS" :key="o.v" :value="o.v">{{ o.l }}</option>
       </select>
-      <input v-if="['gt','lt','eq'].includes(cond.op)" v-model="cond.value" type="number" class="fl-num" placeholder="数值" @input="patch()" />
+      <input v-if="['gt','lt','eq','ne'].includes(cond.op)" v-model="cond.value" type="number" class="fl-num" placeholder="数值" @input="patch()" />
       <template v-else-if="cond.op === 'between'">
         <input v-model="cond.min" type="number" class="fl-num" placeholder="下限" @input="patch()" />
         <span class="fl-dash">~</span>

@@ -114,6 +114,12 @@ function setColFilter(field, val) {
   clearSelection()
   load(true)
 }
+// 列头「选值」数据源（Excel 自动筛选）：取该列在当前筛选集里出现过的去重值。
+// 尊重当前高级筛选条件（reqParams），让选值清单随上下文收窄。
+async function distinctProvider(field) {
+  const res = await ar.recordsDistinctValues({ field, ...reqParams() })
+  return res.data
+}
 function setSort(field, order) {
   sortField.value = order ? field : ''
   sortOrder.value = order || ''
@@ -442,11 +448,18 @@ function deletePreset(idx) {
 function saveCurrentAsPreset() {
   const name = newPresetName.value.trim()
   if (!name) return
+  const prevDefault = presets.value.find(p => p.name === name)?.isDefault
   presets.value = presets.value.filter(p => p.name !== name)
-  presets.value.unshift({ name, conditions: JSON.parse(JSON.stringify(conditions.value)), matchMode: matchMode.value })
+  presets.value.unshift({ name, conditions: JSON.parse(JSON.stringify(conditions.value)), matchMode: matchMode.value, isDefault: !!prevDefault })
   savePresets()
   newPresetName.value = ''
   showPresetDrop.value = false
+}
+// 默认方案（对标金蝶「设为默认方案」）：进入页面自动套用；同一时刻仅一个默认。
+function toggleDefaultPreset(idx) {
+  const willBe = !presets.value[idx].isDefault
+  presets.value.forEach((p, i) => { p.isDefault = willBe && i === idx })
+  savePresets()
 }
 
 // ── 多维汇总 (group-by pivot) ────────────────────────────────────────────────
@@ -1138,11 +1151,17 @@ const onScopeChange = () => {
 }
 onMounted(() => {
   // 路由跳转带入的筛选（来自现金流/分析/项目台账等）→ 转成条件
+  const fromRoute = route.query.status || route.query.project_id || route.query.dept
   if (route.query.status) conditions.value.push({ t: 'dim', field: 'status', value: route.query.status })
   if (route.query.project_id) conditions.value.push({ t: 'dim', field: 'project_id', value: route.query.project_id })
   if (route.query.dept) conditions.value.push({ t: 'dim', field: 'dept', value: route.query.dept })
-  // 默认只看「未结清」（应收明细/对账/开票/回款都先聚焦没收完的）；可点掉该条件看全部
-  if (!conditions.value.some(c => c.t === 'dim' && c.field === 'status')) {
+  // 默认方案（对标金蝶「默认过滤方案」）：无路由带入时自动套用用户设的默认方案
+  const def = !fromRoute && presets.value.find(p => p.isDefault)
+  if (def && def.conditions?.length) {
+    conditions.value = JSON.parse(JSON.stringify(def.conditions))
+    matchMode.value = def.matchMode || 'all'
+  } else if (!conditions.value.some(c => c.t === 'dim' && c.field === 'status')) {
+    // 无默认方案 → 默认只看「未结清」（先聚焦没收完的）；可点掉该条件看全部
     conditions.value.push({ t: 'dim', field: 'status', value: 'outstanding' })
   }
   load()
@@ -1218,6 +1237,9 @@ function clearFilters() {
               </div>
               <div v-if="!presets.length" class="preset-empty">暂无保存的方案</div>
               <div v-for="(p, idx) in presets" :key="p.name" class="preset-item" @click="loadPreset(p)">
+                <button class="preset-star" :class="{ on: p.isDefault }"
+                        :title="p.isDefault ? '默认方案（进入页面自动套用）· 点击取消' : '设为默认方案'"
+                        @click.stop="toggleDefaultPreset(idx)">{{ p.isDefault ? '★' : '☆' }}</button>
                 <span class="preset-name">{{ p.name }}</span>
                 <span class="preset-count">{{ p.conditions.length }} 个条件</span>
                 <button class="preset-del" @click.stop="deletePreset(idx)">✕</button>
@@ -1402,7 +1424,7 @@ function clearFilters() {
                   :indeterminate.prop="hasSelection && !pageAllSelected"
                   title="全选本页" @change="toggleSelectPage" />
               </th>
-              <th><ColumnFilter label="项目" field="short_name" type="text" :model-value="colFilters.short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('short_name',v)" @sort="o=>setSort('short_name',o)" /></th>
+              <th><ColumnFilter label="项目" field="short_name" type="text" :values-provider="distinctProvider" :model-value="colFilters.short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('short_name',v)" @sort="o=>setSort('short_name',o)" /></th>
               <th class="ctr"><ColumnFilter label="运作日期" field="operation_date" type="date" :model-value="colFilters.operation_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('operation_date',v)" @sort="o=>setSort('operation_date',o)" /></th>
 
               <!-- all -->
@@ -1420,7 +1442,7 @@ function clearFilters() {
                 <th v-if="show('r_payments')" class="ctr" title="事业部间内部往来核销的次数（点数字查看明细）">内部往来</th>
                 <th class="ctr"><ColumnFilter label="状态" field="status" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.status" :model-value="dimModel('status')" @update:model-value="v=>onDimCol('status',v)" /></th>
                 <th class="ctr"><ColumnFilter label="责任状态" field="responsibility" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.responsibility" :model-value="dimModel('responsibility')" @update:model-value="v=>onDimCol('responsibility',v)" /></th>
-                <th v-if="show('r_notes')" class="notes-col"><ColumnFilter label="备注" field="notes" type="text" :model-value="colFilters.notes" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('notes',v)" @sort="o=>setSort('notes',o)" /></th>
+                <th v-if="show('r_notes')" class="notes-col"><ColumnFilter label="备注" field="notes" type="text" :values-provider="distinctProvider" :model-value="colFilters.notes" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('notes',v)" @sort="o=>setSort('notes',o)" /></th>
               </template>
               <!-- reconciliation -->
               <template v-else-if="activeTab === 'reconciliation'">
@@ -1433,7 +1455,7 @@ function clearFilters() {
               </template>
               <!-- invoice -->
               <template v-else-if="activeTab === 'invoice'">
-                <th class="ctr"><ColumnFilter label="批次号" field="invoice_batch_no" type="text" :model-value="colFilters.invoice_batch_no" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('invoice_batch_no',v)" @sort="o=>setSort('invoice_batch_no',o)" /></th>
+                <th class="ctr"><ColumnFilter label="批次号" field="invoice_batch_no" type="text" :values-provider="distinctProvider" :model-value="colFilters.invoice_batch_no" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('invoice_batch_no',v)" @sort="o=>setSort('invoice_batch_no',o)" /></th>
                 <th v-if="show('r_estimated_amount')" class="amt"><ColumnFilter label="预估金额" field="estimated_amount" type="number" :model-value="colFilters.estimated_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('estimated_amount',v)" @sort="o=>setSort('estimated_amount',o)" /></th>
                 <th v-if="show('r_actual_invoice_amount')" class="amt"><ColumnFilter label="实际开票额" field="actual_invoice_amount" type="number" :model-value="colFilters.actual_invoice_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('actual_invoice_amount',v)" @sort="o=>setSort('actual_invoice_amount',o)" /></th>
                 <th v-if="show('r_tax_amount')" class="amt"><ColumnFilter label="税额" field="tax_amount" type="number" :model-value="colFilters.tax_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('tax_amount',v)" @sort="o=>setSort('tax_amount',o)" /></th>
@@ -2786,6 +2808,9 @@ function clearFilters() {
   padding: 7px 12px; cursor: pointer; font-size: 13px;
 }
 .preset-item:hover { background: rgba(201,99,66,0.05); }
+.preset-star { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 0 2px; line-height: 1; }
+.preset-star.on { color: #f5a623; }
+.preset-star:hover { color: #f5a623; }
 .preset-name { flex: 1; font-weight: 500; }
 .preset-count { font-size: 11px; color: var(--muted); }
 .preset-del { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 12px; }

@@ -52,7 +52,8 @@ export const DATE_RANGES = [
 ]
 export const AMT_OPS = [
   { v: 'ne0', l: '≠0' }, { v: 'eq0', l: '=0' }, { v: 'gt0', l: '>0' }, { v: 'lt0', l: '<0' },
-  { v: 'gt', l: '>' }, { v: 'lt', l: '<' }, { v: 'between', l: '区间' },
+  { v: 'gt', l: '>' }, { v: 'lt', l: '<' }, { v: 'eq', l: '=' }, { v: 'ne', l: '≠' },
+  { v: 'between', l: '区间' }, { v: 'empty', l: '为空' }, { v: 'not_empty', l: '不为空' },
 ]
 
 const _find = (list, field) => list.find(f => f.field === field) || {}
@@ -89,7 +90,7 @@ export function describeCondition(c) {
     const f = _find(AMT_FIELDS, c.field)
     let opTxt = _lbl(AMT_OPS, c.op)
     if (c.op === 'between') opTxt = `${c.min || '…'}~${c.max || '…'}`
-    else if (['gt', 'lt', 'eq'].includes(c.op)) opTxt = `${opTxt}${c.value || ''}`
+    else if (['gt', 'lt', 'eq', 'ne'].includes(c.op)) opTxt = `${opTxt}${c.value || ''}`
     return `${f.label || c.field} ${opTxt}`
   }
   return ''

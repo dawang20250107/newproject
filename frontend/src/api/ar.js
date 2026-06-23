@@ -16,6 +16,7 @@ const ar = {
 
   // AR Records
   recordsDateBounds: () => api.get('/ar/records/date-bounds'),
+  recordsDistinctValues: p => api.get('/ar/records/distinct-values', { params: p }),
   listRecords: p => api.get('/ar/records', { params: p }),
   recordsKpi: p => api.get('/ar/records/kpi', { params: p }),
   recordsSummary: p => api.get('/ar/records/summary', { params: p }),
