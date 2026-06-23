@@ -867,6 +867,27 @@ class ARPermissionRegressionTests(TestCase):
                          rec.outstanding_amount)
         self.assertEqual(rec.outstanding_amount, Decimal('750.00'))
 
+    def test_summary_adjust_buckets_by_adjust_date(self):
+        """差额调整按其 adjust_date 归入月/周，与记录到期日无关。"""
+        from ar.models import ARAdjustment
+        admin = self.make_user('13900000088', 'finance_director', role='super_admin')
+        project = self.create_project()
+        # 记录 6 月到期；两笔调整：一笔 6 月（当月），一笔 5 月（不应入当月）
+        rec = ARRecord.objects.create(
+            project=project, operation_year=2026, operation_month=6,
+            estimated_amount=Decimal('1000.00'))
+        ARRecord.objects.filter(pk=rec.pk).update(due_date=date(2026, 6, 30))
+        ARAdjustment.objects.create(ar_record=rec, amount=Decimal('30.00'),
+                                    reason='6月调整', adjust_date=date(2026, 6, 5))
+        ARAdjustment.objects.create(ar_record=rec, amount=Decimal('70.00'),
+                                    reason='5月调整', adjust_date=date(2026, 5, 20))
+
+        resp = self.client.get('/api/pk/ar/records', {'year': 2026, 'month': 6},
+                               **self.auth(admin))
+        s = resp.json()['data']['summary']
+        # 仅 6/5 那笔(30) 落在基准月，5/20 那笔(70)不计——尽管两笔都挂在同一条 6 月到期记录上
+        self.assertEqual(Decimal(s['month_curr_adjust']), Decimal('30.00'))
+
     def test_records_search_matches_project_manager(self):
         admin = self.make_user('13900000066', 'finance_director', role='super_admin')
         project = self.create_project()  # project_manager 'PM A'

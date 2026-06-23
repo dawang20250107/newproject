@@ -148,18 +148,20 @@ const recForm = reactive({
 // ── 差额调整明细（编辑态管理器）─────────────────────────────────────────────
 // 一条应收可多次调整，各带原因与金额；合计与未收由后端派生，前端只管明细。
 const adjList = ref([])
-const adjForm = reactive({ amount: '', reason: '' })
+const adjForm = reactive({ amount: '', reason: '', date: todayCST() })
 const adjBusy = ref(false)
 const adjTotal = computed(() =>
   adjList.value.reduce((s, a) => s + (parseFloat(a.amount) || 0), 0))
 async function addAdjustment() {
   if (!parseFloat(adjForm.amount)) { toast.error('调整金额不能为0（可正可负）'); return }
   if (!adjForm.reason.trim()) { toast.error('请填写调整原因（如：运费差、客户扣款、补付）'); return }
+  if (!adjForm.date) { toast.error('请选择调整日期（决定该笔差额归入哪个月/周）'); return }
   adjBusy.value = true
   try {
-    const res = await ar.addAdjustment(editRec.value.id, { amount: adjForm.amount, reason: adjForm.reason })
+    const res = await ar.addAdjustment(editRec.value.id,
+      { amount: adjForm.amount, reason: adjForm.reason, adjust_date: adjForm.date })
     adjList.value = res.data.items
-    adjForm.amount = ''; adjForm.reason = ''
+    adjForm.amount = ''; adjForm.reason = ''; adjForm.date = todayCST()
     await load()
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { adjBusy.value = false }
@@ -574,7 +576,7 @@ function openEdit(rec) {
     notes: rec.notes,
   })
   adjList.value = rec.adjustments || []
-  Object.assign(adjForm, { amount: '', reason: '' })
+  Object.assign(adjForm, { amount: '', reason: '', date: todayCST() })
   showModal.value = true
 }
 
@@ -757,6 +759,28 @@ const offsetCount = rec => (rec.payments || []).filter(p => p.source === '预收
 const internalCount = rec => (rec.payments || []).filter(p => p.source === '内部往来').length
 // 回款合计：该应收所有回款记录金额之和（含现金/预收抵扣/内部往来，与回款记录笔数口径一致）
 const paidTotal = rec => (rec.payments || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0)
+// 统一流水：把回款（银行回款/内部往来/预收抵扣）与差额调整合并成一条按日期排序的时间线，
+// 类型一目了然。回款减少未收、调整改变应收基数，各带标签与符号，互不混淆。
+function ledgerRows(rec) {
+  const pays = (rec.payments || []).map(p => ({
+    key: 'p' + p.id, kind: 'pay', date: p.payment_date || '',
+    amount: parseFloat(p.amount) || 0, source: p.source || '回款',
+    counterparty_dept: p.counterparty_dept, notes: p.notes, raw: p,
+  }))
+  const adjs = (rec.adjustments || []).map(a => ({
+    key: 'a' + a.id, kind: 'adj', date: a.adjust_date || '',
+    amount: parseFloat(a.amount) || 0, reason: a.reason, raw: a,
+  }))
+  return [...pays, ...adjs].sort((x, y) => (x.date || '').localeCompare(y.date || ''))
+}
+// 从展开流水里删除一笔差额调整（与编辑弹窗里的 removeAdjustment 等价，但作用于列表行）
+async function deleteLedgerAdj(rec, a) {
+  if (!confirm(`删除调整「${a.reason || '未填原因'}：${a.amount}」？差额合计与未收金额将随之回退。`)) return
+  try {
+    await ar.deleteAdjustment(rec.id, a.id)
+    await load()
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+}
 
 // ── 预收核销工作台（预收核销 Tab）────────────────────────────────────────────
 // 按客户聚合「有预收余额 × 名下有未收应收」，勾选多条应收后用一笔预收
@@ -1128,7 +1152,7 @@ function clearFilters() {
         <!-- 汇总区：时段合计（单行紧凑条）；筛选集列合计见表格底部吸底合计行 -->
         <!-- 应收为净额（预估 − 已回款，分批回款扣回真实未收）；调整=账实差额；应收+调整=未收 -->
         <div v-if="summaryData" class="period-bar"
-             :title="`基准日 ${summaryData.ref_date}（取筛选中最晚日期，无筛选则今天）。应收=预估上账−已回款（净额）；调整=账实差额；已收=区间内实际回款。应收/调整按到期日、已收按回款日归入对应月/周（周五~周四口径）`">
+             :title="`基准日 ${summaryData.ref_date}（取筛选中最晚日期，无筛选则今天）。应收=预估上账−已回款（净额）；调整=账实差额；已收=区间内实际回款。应收按到期日、调整按调整日期、已收按回款日各自归入对应月/周（周五~周四口径）`">
           <span class="period-lbl">时段合计</span>
           <span class="pd-k">{{ summaryData.ref_month }}当期</span>
           <span class="pd-num">应 {{ fmtCell(summaryData.month_curr_est) }}</span>
@@ -1421,20 +1445,29 @@ function clearFilters() {
 
               <!-- Payment detail rows (collection / all tab — 含预收抵扣来源标识) -->
               <template v-if="(activeTab === 'collection' || activeTab === 'all') && show('r_payments') && expandedPayments[rec.id]">
-                <tr v-if="!rec.payments?.length" class="pay-row">
-                  <td :colspan="99" class="pay-empty">暂无回款记录</td>
+                <tr v-if="!ledgerRows(rec).length" class="pay-row">
+                  <td :colspan="99" class="pay-empty">暂无回款 / 差额调整</td>
                 </tr>
-                <tr v-else v-for="pay in rec.payments" :key="pay.id" class="pay-row">
+                <tr v-else v-for="row in ledgerRows(rec)" :key="row.key" class="pay-row">
                   <td :colspan="99">
-                    <div class="pay-detail">
-                      <span class="pay-no">第{{ pay.payment_no }}次</span>
-                      <span class="pay-amt">{{ fmtCell(pay.amount) }}</span>
-                      <span class="pay-date">{{ pay.payment_date }}</span>
-                      <span v-if="pay.source === '预收抵扣'" class="pay-src" title="由预收核销生成；删除即反向核销，预收余额恢复">预收抵扣</span>
-                      <span v-else-if="pay.source === '内部往来'" class="pay-src pay-src-internal" :title="`事业部间内部往来核销（不计现金）· 往来部门：${pay.counterparty_dept || '—'}`">内部往来 · {{ pay.counterparty_dept || '—' }}</span>
-                      <span v-if="pay.notes" class="pay-notes">{{ pay.notes }}</span>
-                      <button v-if="pay.source === '预收抵扣' ? auth.canAction('wo_receive') : auth.canDelete" class="pay-del" @click="deletePayment(rec, pay)">
-                        {{ pay.source === '预收抵扣' ? '撤销核销' : '删除' }}</button>
+                    <!-- 银行回款 / 内部往来 / 预收抵扣 -->
+                    <div v-if="row.kind === 'pay'" class="pay-detail">
+                      <span class="pay-date">{{ row.date || '—' }}</span>
+                      <span v-if="row.source === '预收抵扣'" class="pay-src" title="由预收核销生成；删除即反向核销，预收余额恢复">预收抵扣</span>
+                      <span v-else-if="row.source === '内部往来'" class="pay-src pay-src-internal" :title="`事业部间内部往来核销（不计现金）· 往来部门：${row.counterparty_dept || '—'}`">内部往来 · {{ row.counterparty_dept || '—' }}</span>
+                      <span v-else class="pay-src pay-src-bank" title="银行回款（计入现金/资金池）">银行回款</span>
+                      <span class="pay-amt">{{ fmtCell(row.amount) }}</span>
+                      <span v-if="row.notes" class="pay-notes">{{ row.notes }}</span>
+                      <button v-if="row.source === '预收抵扣' ? auth.canAction('wo_receive') : auth.canDelete" class="pay-del" @click="deletePayment(rec, row.raw)">
+                        {{ row.source === '预收抵扣' ? '撤销核销' : '删除' }}</button>
+                    </div>
+                    <!-- 差额调整（改变应收基数，不是回款；可正可负） -->
+                    <div v-else class="pay-detail">
+                      <span class="pay-date">{{ row.date || '—' }}</span>
+                      <span class="pay-src pay-src-adj" title="差额调整：改变应收基数（非回款），可正可负">差额调整</span>
+                      <span class="pay-amt" :class="row.amount >= 0 ? 'adj-pos' : 'adj-neg'">{{ row.amount >= 0 ? '+' : '' }}{{ fmtCell(row.amount) }}</span>
+                      <span v-if="row.reason" class="pay-notes">{{ row.reason }}</span>
+                      <button v-if="auth.canDelete" class="pay-del" @click="deleteLedgerAdj(rec, row.raw)">删除</button>
                     </div>
                   </td>
                 </tr>
@@ -1818,6 +1851,7 @@ function clearFilters() {
                 <div v-else class="adj-empty">暂无调整——金额与原因逐笔记录，可多次追加</div>
                 <div class="adj-add">
                   <input v-model="adjForm.amount" type="number" step="0.01" placeholder="金额（可负）" class="adj-amt-inp" />
+                  <input v-model="adjForm.date" type="date" class="adj-date-inp" title="调整日期：决定该笔差额归入哪个月/周" />
                   <input v-model="adjForm.reason" placeholder="原因（必填，如：运费差/客户扣款）" maxlength="200" class="adj-reason-inp" />
                   <button type="button" class="btn btn-ghost btn-sm" :disabled="adjBusy" @click="addAdjustment">
                     {{ adjBusy ? '…' : '＋ 追加调整' }}
@@ -2526,6 +2560,7 @@ function clearFilters() {
 .adj-empty { font-size: 12px; color: var(--muted); padding: 6px 0; }
 .adj-add { display: flex; gap: 6px; margin-top: 4px; }
 .adj-add .adj-amt-inp { width: 120px; }
+.adj-add .adj-date-inp { width: 140px; }
 .adj-add .adj-reason-inp { flex: 1; }
 
 /* ══ 预收核销工作台 ══ */
@@ -2645,6 +2680,9 @@ function clearFilters() {
 .pay-date { font-size: 12px; color: var(--muted); }
 .pay-src { font-size: 11px; font-weight: 600; color: #1b6e35; background: rgba(27,110,53,0.1); padding: 1px 7px; border-radius: 999px; }
 .pay-src-internal { color: #6a1b9a; background: rgba(106,27,154,0.1); }
+.pay-src-bank { color: #1565c0; background: rgba(21,101,192,0.1); }
+.pay-src-adj { color: #6a5acd; background: rgba(106,90,205,0.12); }
+.pay-amt.adj-pos { color: #2e7d32; } .pay-amt.adj-neg { color: #c62828; }
 .pay-notes { font-size: 12px; color: var(--muted); font-style: italic; }
 .pay-del { margin-left: auto; font-size: 11.5px; color: #c62828; background: none; border: none; cursor: pointer; }
 .pay-del:hover { text-decoration: underline; }
