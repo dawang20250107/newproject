@@ -1402,7 +1402,7 @@ function clearFilters() {
                   <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.due_date || '—' }}</td>
                   <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.target_collection_date || '—' }}</td>
                   <td v-if="show('r_reconciliation')" class="ctr">
-                    <span :class="['status-pill', rec.reconciliation_status === '已对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status === '已对账' ? '✓ 已对账' : '○ 未对账' }}</span>
+                    <span :class="['status-pill', rec.reconciliation_status !== '未对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status === '已对账' ? '✓ 已对账' : rec.reconciliation_status === '已结清' ? '✓ 已结清' : '○ 未对账' }}</span>
                   </td>
                   <td v-if="show('r_payments')" class="ctr">
                     <button class="pay-toggle" :title="(rec.payments?.length || rec.adjustments?.length) ? '点击展开回款 / 差额调整流水' : '暂无回款 / 差额调整'" @click="togglePayments(rec.id)">
@@ -1437,7 +1437,7 @@ function clearFilters() {
                 <template v-else-if="activeTab === 'reconciliation'">
                   <td v-if="show('r_estimated_amount')" class="amt fw">{{ fmtCell(rec.estimated_amount) }}</td>
                   <td v-if="show('r_reconciliation')" class="ctr">
-                    <span :class="['status-pill', rec.reconciliation_status === '已对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status === '已对账' ? '✓ 已对账' : '○ 未对账' }}</span>
+                    <span :class="['status-pill', rec.reconciliation_status !== '未对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status === '已对账' ? '✓ 已对账' : rec.reconciliation_status === '已结清' ? '✓ 已结清' : '○ 未对账' }}</span>
                   </td>
                   <td v-if="show('r_reconciliation')" class="ctr text-sm-muted">{{ rec.reconciliation_date || '—' }}</td>
                   <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.due_date || '—' }}</td>
