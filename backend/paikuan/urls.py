@@ -1,8 +1,13 @@
 from django.urls import path
 from paikuan import views
+from paikuan import views_schemes
 
 urlpatterns = [
     path('version', views.version),
+    # 通用列表筛选方案（表格方案基座）：私有/公共 + 默认，按 module 区分列表页
+    path('list-schemes', views_schemes.list_schemes),
+    path('list-schemes/set-default', views_schemes.list_scheme_default),
+    path('list-schemes/<int:pk>', views_schemes.list_scheme_detail),
     path('register', views.register),
     path('login', views.login),
     path('registration-status', views.registration_status),

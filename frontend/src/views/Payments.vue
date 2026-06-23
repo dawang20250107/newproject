@@ -13,6 +13,8 @@ import ImportPrecheckModal from '../components/ImportPrecheckModal.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ColumnFilter from '../components/ColumnFilter.vue'
 import SkeletonRow from '../components/SkeletonRow.vue'
+import SchemePicker from '../components/SchemePicker.vue'
+import { useTableSchemes } from '../composables/useTableSchemes.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -126,6 +128,15 @@ function setSort(field, order) {
   sortOrder.value = order || ''
   filters.page = 1; load()
 }
+// 通用筛选方案（表格方案基座）：保存列头筛选 + 排序 + 计划状态单选为命名方案
+const schemes = useTableSchemes('pk_payments', {
+  colFilters, sortField, sortOrder,
+  extra: {
+    get: () => ({ status: statusSel.value || '' }),
+    set: (p) => { statusSel.value = p.status || '' },
+  },
+  onApply: () => { filters.page = 1; clearSelection(); load() },
+})
 function buildParams() {
   const p = { page: filters.page, size: filters.size }
   if (filters.q.trim()) p.q = filters.q.trim()
@@ -400,8 +411,11 @@ const onScopeChange = () => {
   filters.page = 1
   load()
 }
-onMounted(() => {
-  load(); loadDepts()
+onMounted(async () => {
+  loadDepts()
+  // 有默认方案则套用并由其触发加载；否则常规加载
+  const applied = await schemes.loadAndApplyDefault()
+  if (!applied) load()
   window.addEventListener('pk:depts-changed', onScopeChange)
 })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
@@ -681,6 +695,7 @@ async function doBatchPay() {
           {{ filters.pay_date_start }} ~ {{ filters.pay_date_end }}
         </span>
         <button v-if="activeFilterCount || filters.q || sortField" class="btn btn-sm clear-all-btn" @click="resetFilters">清除全部筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
+        <SchemePicker :ctl="schemes" :can-public="auth.canCreate" :is-super-admin="auth.isSuperAdmin" />
         <span class="filter-hint" title="点击列名旁 ⏷ 可按列筛选 / 排序" style="cursor:default">?</span>
       </div>
 

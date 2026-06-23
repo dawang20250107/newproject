@@ -403,3 +403,62 @@ class AuditLog(models.Model):
             'ip': self.ip,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class ListScheme(models.Model):
+    """通用「列表筛选方案」（表格方案基座）：保存某列表页的列头筛选 + 排序快照，
+    可私有（仅本人）或公共（团队共享）。payload 为页面自定义的状态 JSON，典型为
+    {colFilters:{...}, sort:'field', order:'asc'}。module 区分所属列表页。
+
+    与应收的 ARFilterScheme（高级分组条件 DSL）并行：此基座面向所有用 ColumnFilter
+    的列表（付款台账/审批/客户/项目/预收/日志/用户…），开箱即用。"""
+    SCOPE_CHOICES = [('private', '私有'), ('public', '公共')]
+
+    name = models.CharField('方案名称', max_length=40)
+    module = models.CharField('所属列表', max_length=40, db_index=True)
+    scope = models.CharField('可见范围', max_length=10, choices=SCOPE_CHOICES,
+                             default='private', db_index=True)
+    payload = models.TextField('状态快照(JSON)', blank=True, default='{}')
+    owner = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                              null=True, blank=True, related_name='list_schemes')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'pk_list_schemes'
+        ordering = ['name']
+        indexes = [
+            models.Index(fields=['module', 'scope']),
+            models.Index(fields=['owner', 'module']),
+        ]
+
+    def to_dict(self):
+        import json as _json
+        try:
+            data = _json.loads(self.payload or '{}')
+        except (ValueError, TypeError):
+            data = {}
+        return {
+            'id': self.id,
+            'name': self.name,
+            'module': self.module,
+            'scope': self.scope,
+            'payload': data,
+            'owner_id': self.owner_id,
+            'owner_name': self.owner.name if self.owner else '',
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class ListSchemeDefault(models.Model):
+    """用户在某列表页的默认方案（按 module 唯一）：跟随账号、跨设备。"""
+    user = models.ForeignKey(PaikuanUser, on_delete=models.CASCADE,
+                             related_name='list_scheme_defaults')
+    module = models.CharField('所属列表', max_length=40, db_index=True)
+    scheme = models.ForeignKey(ListScheme, on_delete=models.CASCADE,
+                               related_name='default_of')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'pk_list_scheme_defaults'
+        unique_together = [('user', 'module')]

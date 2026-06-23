@@ -1573,3 +1573,81 @@ class AuthPasswordPolicyTests(TestCase):
                             content_type='application/json')
         d = r.json()['data']
         self.assertTrue(d['must_change_password'])
+
+
+class ListSchemeTests(TestCase):
+    """通用列表筛选方案基座：CRUD、私有/公共可见性、默认方案跟随账号。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = DEPARTMENTS[0]
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def _user(self, phone, role='super_admin', job='finance_director'):
+        u = PaikuanUser(phone=phone, name=f'{job} {phone}', role=role, job_title=job,
+                        departments=[self.dept], is_active=True, is_approved=True)
+        u.set_password('Test123456')
+        u.save()
+        return u
+
+    def auth(self, u):
+        return {'HTTP_AUTHORIZATION': f'Bearer {make_token(u)}'}
+
+    def post(self, url, payload, u):
+        return self.client.post(url, data=json.dumps(payload),
+                                content_type='application/json', **self.auth(u))
+
+    def test_private_vs_public_visibility_and_payload(self):
+        a = self._user('13900000301')
+        b = self._user('13900000302')
+        payload = {'colFilters': {'applicant': {'op': 'contains', 'value': '张'}},
+                   'sort': 'planned_date', 'order': 'desc', 'status': '待付款'}
+        # A 建私有 + 公共
+        r1 = self.post('/api/pk/list-schemes',
+                       {'module': 'pk_payments', 'name': '我的待付', 'scope': 'private', 'payload': payload}, a)
+        self.assertEqual(r1.status_code, 200)
+        # payload 原样回带
+        self.assertEqual(r1.json()['data']['payload'], payload)
+        r2 = self.post('/api/pk/list-schemes',
+                       {'module': 'pk_payments', 'name': '团队待付', 'scope': 'public', 'payload': payload}, a)
+        self.assertEqual(r2.status_code, 200)
+        # A 看到两个
+        la = self.client.get('/api/pk/list-schemes', {'module': 'pk_payments'}, **self.auth(a)).json()['data']
+        self.assertEqual({s['name'] for s in la['items']}, {'我的待付', '团队待付'})
+        # B 只看到公共
+        lb = self.client.get('/api/pk/list-schemes', {'module': 'pk_payments'}, **self.auth(b)).json()['data']
+        self.assertEqual([s['name'] for s in lb['items']], ['团队待付'])
+
+    def test_public_scheme_requires_create_perm(self):
+        # cashier 角色无 can_create → 不能建公共，但能建私有
+        cashier = self._user('13900000303', role='operator', job='cashier')
+        pub = self.post('/api/pk/list-schemes',
+                        {'module': 'pk_payments', 'name': 'x', 'scope': 'public', 'payload': {}}, cashier)
+        self.assertEqual(pub.status_code, 403)
+        priv = self.post('/api/pk/list-schemes',
+                         {'module': 'pk_payments', 'name': 'x', 'scope': 'private', 'payload': {}}, cashier)
+        self.assertEqual(priv.status_code, 200)
+
+    def test_default_follows_account_and_cascade(self):
+        a = self._user('13900000304')
+        sid = self.post('/api/pk/list-schemes',
+                        {'module': 'pk_payments', 'name': '默认', 'scope': 'private', 'payload': {}}, a
+                        ).json()['data']['id']
+        r = self.post('/api/pk/list-schemes/set-default',
+                      {'module': 'pk_payments', 'scheme_id': sid}, a)
+        self.assertEqual(r.json()['data']['default_id'], sid)
+        lst = self.client.get('/api/pk/list-schemes', {'module': 'pk_payments'}, **self.auth(a)).json()['data']
+        self.assertEqual(lst['default_id'], sid)
+        self.assertTrue(next(s for s in lst['items'] if s['id'] == sid)['is_default'])
+        # 删除方案 → 默认级联清理
+        self.client.delete(f'/api/pk/list-schemes/{sid}', **self.auth(a))
+        lst2 = self.client.get('/api/pk/list-schemes', {'module': 'pk_payments'}, **self.auth(a)).json()['data']
+        self.assertIsNone(lst2['default_id'])
+
+    def test_unknown_module_rejected(self):
+        a = self._user('13900000305')
+        r = self.client.get('/api/pk/list-schemes', {'module': 'nope'}, **self.auth(a))
+        self.assertEqual(r.status_code, 400)
