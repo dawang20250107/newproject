@@ -11,6 +11,8 @@ import BaseChart from '../../components/ar/BaseChart.vue'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
+import SchemePicker from '../../components/SchemePicker.vue'
+import { useTableSchemes } from '../../composables/useTableSchemes.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -48,6 +50,11 @@ function setSort(field, order) {
   sortOrder.value = order || ''
   page.value = 1; load()
 }
+// 通用筛选方案（表格方案基座）：保存列头筛选 + 排序为命名方案，套用时重载列表与统计
+const schemes = useTableSchemes('ar_projects', {
+  colFilters, sortField, sortOrder,
+  onApply: () => { page.value = 1; clearSelection(); reloadAll() },
+})
 const activeColFilterCount = computed(() => Object.keys(colFilters).length)
 // 统计条按单一交付部门聚合：列头仅选了一个事业部时带入，否则按全部口径。
 const statDept = computed(() => {
@@ -440,9 +447,13 @@ async function promoteDrafts() {
   finally { promotingDrafts.value = false }
 }
 
-onMounted(() => {
+onMounted(async () => {
   if (auth.perms?.ar_shared_only) filters.is_shared = '1'
-  load(); loadStats(); loadCustomers(); window.addEventListener('pk:depts-changed', onScopeChange)
+  loadCustomers()
+  // 有默认方案则套用并由其触发加载；否则常规加载
+  const applied = await schemes.loadAndApplyDefault()
+  if (!applied) reloadAll()
+  window.addEventListener('pk:depts-changed', onScopeChange)
 })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 </script>
@@ -527,6 +538,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <option value="false">已完善项目</option>
       </select>
       <button v-if="hasActiveFilters" class="filter-reset" @click="resetFilters">重置筛选</button>
+      <SchemePicker :ctl="schemes" :can-public="auth.canArWrite" :is-super-admin="auth.isSuperAdmin" />
     </div>
 
     <!-- 选择 + 批量删除工具条（选中后出现） -->

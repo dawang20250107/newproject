@@ -13,13 +13,21 @@ from .views import ok, err, parse_body, pk_required, get_request_perms
 _MODULE_PAGE = {
     'pk_payments': 'payments',
     'pk_approvals': 'approval_records',
+    'ar_projects': 'ar_projects',
+    'ar_customers': 'ar_projects',   # 客户列表沿用项目页权限
+    'ar_advances': 'ar_advance',
+    'ar_budget': 'ar_budget',
 }
+# 仅超管可见的列表（无 pages 权限位，单独按角色门禁）
+_ADMIN_MODULES = {'pk_users', 'pk_audit_logs'}
 _SCHEME_LIMIT = 100
 _VALID_SCOPES = {'private', 'public'}
 
 
 def _module_denied(request, module):
-    """列表页访问权限（按 module 映射）。未登记的 module → 400。"""
+    """列表页访问权限（按 module 映射）。超管专属列表单独门禁；未登记 → 400。"""
+    if module in _ADMIN_MODULES:
+        return None if request.pk_role == 'super_admin' else err('无访问权限', 403, 403)
     page = _MODULE_PAGE.get(module)
     if not page:
         return err('未知列表', 400)

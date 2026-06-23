@@ -10,6 +10,8 @@ import ImportResultModal from '../components/ImportResultModal.vue'
 import ImportPrecheckModal from '../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../components/ColumnFilter.vue'
 import SkeletonRow from '../components/SkeletonRow.vue'
+import SchemePicker from '../components/SchemePicker.vue'
+import { useTableSchemes } from '../composables/useTableSchemes.js'
 import { useToast } from '../composables/useToast.js'
 const toast = useToast()
 
@@ -75,6 +77,11 @@ function setSort(field, order) {
   sortOrder.value = order || ''
   page.value = 1; load()
 }
+// 通用筛选方案（表格方案基座）：保存列头筛选 + 排序为命名方案
+const schemes = useTableSchemes('pk_approvals', {
+  colFilters, sortField, sortOrder,
+  onApply: () => { page.value = 1; clearSelection(); load() },
+})
 function clearAllFilters() {
   Object.keys(colFilters).forEach(k => delete colFilters[k])
   q.value = ''; sortField.value = ''; sortOrder.value = ''
@@ -300,7 +307,13 @@ const onScopeChange = () => {
   page.value = 1
   load()
 }
-onMounted(()=>{ load(); loadDepts(); window.addEventListener('pk:depts-changed', onScopeChange) })
+onMounted(async ()=>{
+  loadDepts()
+  // 有默认方案则套用并由其触发加载；否则常规加载
+  const applied = await schemes.loadAndApplyDefault()
+  if (!applied) load()
+  window.addEventListener('pk:depts-changed', onScopeChange)
+})
 onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange))
 </script>
 
@@ -318,6 +331,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <input v-model="q" class="global-search" placeholder="🔍 全局搜索：申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
     <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
     <button v-if="activeFilterCount || q || sortField" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters">清除全部筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
+    <SchemePicker :ctl="schemes" :can-public="auth.canCreate" :is-super-admin="auth.isSuperAdmin" />
     </div>
   </div>
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>

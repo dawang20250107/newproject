@@ -5,6 +5,8 @@ import { yearCST, todayCST, DEPARTMENTS } from '../../constants.js'
 import ar from '../../api/ar.js'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
+import SchemePicker from '../../components/SchemePicker.vue'
+import { useTableSchemes } from '../../composables/useTableSchemes.js'
 
 // 项目损益卡（复用 P1 组件）— 点客户项目即下钻全链路损益
 const ProjectPnlCard = defineAsyncComponent(() => import('../caiwu/ProjectPnlCard.vue'))
@@ -165,6 +167,16 @@ function setSort(k) {
 }
 function sortArrow(k) { return sortKey.value === k ? (sortDir.value === 'desc' ? ' ↓' : ' ↑') : '' }
 
+// 通用筛选方案（表格方案基座）：列头筛选 + 排序(sortKey/sortDir) + 顶部等级/部门/状态筛选
+const schemes = useTableSchemes('ar_customers', {
+  colFilters, sortField: sortKey, sortOrder: sortDir,
+  extra: {
+    get: () => ({ level: filters.level, dept: filters.dept, status: filters.status }),
+    set: (p) => { filters.level = p.level || ''; filters.dept = p.dept || ''; filters.status = p.status || '' },
+  },
+  onApply: () => { load(true) },
+})
+
 async function openDetail(c) {
   drawerOpen.value = true
   detailLoading.value = true
@@ -227,7 +239,10 @@ async function saveCustomer() {
   finally { saving.value = false }
 }
 
-onMounted(() => load(true))
+onMounted(async () => {
+  const applied = await schemes.loadAndApplyDefault()
+  if (!applied) load(true)
+})
 </script>
 
 <template>
@@ -254,6 +269,7 @@ onMounted(() => load(true))
         <button v-if="filters.q" class="search-clear" @click="filters.q=''; load(true)">✕</button>
       </div>
       <button v-if="hasActiveFilters" class="filter-reset" @click="resetFilters">清除全部筛选</button>
+      <SchemePicker :ctl="schemes" :can-public="auth.canArWrite" :is-super-admin="auth.isSuperAdmin" />
 <div class="spacer"></div>
       <div class="count-tip">共 {{ total }} 个客户</div>
     </div>

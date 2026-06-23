@@ -1651,3 +1651,25 @@ class ListSchemeTests(TestCase):
         a = self._user('13900000305')
         r = self.client.get('/api/pk/list-schemes', {'module': 'nope'}, **self.auth(a))
         self.assertEqual(r.status_code, 400)
+
+    def test_ar_module_uses_project_page_perm(self):
+        # AR 列表模块映射到对应页权限；超管直接放行，能建并取回
+        a = self._user('13900000306')
+        for module in ('ar_projects', 'ar_customers', 'ar_advances', 'ar_budget'):
+            r = self.post('/api/pk/list-schemes',
+                          {'module': module, 'name': f'{module}方案', 'scope': 'private',
+                           'payload': {'colFilters': {}, 'sort': '', 'order': ''}}, a)
+            self.assertEqual(r.status_code, 200, module)
+            lst = self.client.get('/api/pk/list-schemes', {'module': module}, **self.auth(a)).json()['data']
+            self.assertEqual([s['name'] for s in lst['items']], [f'{module}方案'])
+
+    def test_admin_only_modules_gated(self):
+        # pk_users / pk_audit_logs 仅超管可用；非超管被拒
+        admin = self._user('13900000307', role='super_admin')
+        non_admin = self._user('13900000308', role='operator', job='cashier')
+        for module in ('pk_users', 'pk_audit_logs'):
+            ok_r = self.post('/api/pk/list-schemes',
+                             {'module': module, 'name': 'x', 'scope': 'private', 'payload': {}}, admin)
+            self.assertEqual(ok_r.status_code, 200, module)
+            denied = self.client.get('/api/pk/list-schemes', {'module': module}, **self.auth(non_admin))
+            self.assertEqual(denied.status_code, 403, module)

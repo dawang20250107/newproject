@@ -3,6 +3,11 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import api from '../api/index.js'
 import ColumnFilter from '../components/ColumnFilter.vue'
 import SkeletonRow from '../components/SkeletonRow.vue'
+import SchemePicker from '../components/SchemePicker.vue'
+import { useTableSchemes } from '../composables/useTableSchemes.js'
+import { useAuthStore } from '../stores/auth.js'
+
+const auth = useAuthStore()
 
 const items = ref([])
 const total = ref(0)
@@ -28,6 +33,11 @@ const colFilters = reactive({})    // field -> {op, value}
 const sortField = ref('')
 const sortOrder = ref('')          // 'asc' | 'desc' | ''
 const activeFilterCount = computed(() => Object.keys(colFilters).length)
+// 通用筛选方案（表格方案基座）：保存列头筛选 + 排序为命名方案
+const schemes = useTableSchemes('pk_audit_logs', {
+  colFilters, sortField, sortOrder,
+  onApply: () => { load(true) },
+})
 function setColFilter(field, val) {
   if (val == null) delete colFilters[field]
   else colFilters[field] = val
@@ -108,7 +118,11 @@ function pathLabel(path) {
   for (const [re, label] of PATH_LABELS) if (re.test(path)) return label
   return ''
 }
-onMounted(() => load())
+onMounted(async () => {
+  // 有默认方案则套用并由其触发加载；否则常规加载
+  const applied = await schemes.loadAndApplyDefault()
+  if (!applied) load(true)
+})
 </script>
 
 <template>
@@ -126,6 +140,7 @@ onMounted(() => load())
       <div class="filter-strip">
         <input v-model="q" placeholder="🔍 全局搜索：操作人 / 接口路径" class="search-input global-search" @input="onSearch" />
         <button v-if="activeFilterCount || q || sortField" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters">清除全部筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
+        <SchemePicker :ctl="schemes" :can-public="true" :is-super-admin="true" />
       </div>
 
       <div class="table-wrap" style="margin-top:12px">

@@ -10,6 +10,8 @@ import { downloadBlob } from '../../utils/download.js'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
+import SchemePicker from '../../components/SchemePicker.vue'
+import { useTableSchemes } from '../../composables/useTableSchemes.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -46,6 +48,11 @@ function setSort(field, order) {
   sortOrder.value = order || ''
   load(true)
 }
+// 通用筛选方案（表格方案基座）：保存列头筛选 + 排序为命名方案
+const schemes = useTableSchemes('ar_advances', {
+  colFilters, sortField, sortOrder,
+  onApply: () => { load(true) },
+})
 function buildParams() {
   const p = { direction: direction.value, ...filters, page: page.value, size }
   if (projectFilter.value) p.project_id = projectFilter.value.id
@@ -513,13 +520,15 @@ async function removeSupplier(s) {
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
-onMounted(() => {
+onMounted(async () => {
   const q = route.query || {}
   if (q.direction === '预收' || q.direction === '预付') direction.value = q.direction
   if (q.project_id) {
     projectFilter.value = { id: Number(q.project_id), label: q.project_no || `项目#${q.project_id}` }
   }
-  load()
+  // 有默认方案则套用并由其触发加载；否则常规加载
+  const applied = await schemes.loadAndApplyDefault()
+  if (!applied) load(true)
 })
 </script>
 
@@ -574,6 +583,7 @@ onMounted(() => {
           <button v-if="projectFilter" class="proj-chip" @click="clearProjectFilter">
             项目：{{ projectFilter.label }} ✕
           </button>
+          <SchemePicker :ctl="schemes" :can-public="auth.canArWrite" :is-super-admin="auth.isSuperAdmin" />
           <div class="spacer"></div>
           <button class="btn btn-ghost btn-sm" @click="downloadTemplate">下载模板</button>
           <label v-if="canCreate" class="btn btn-ghost btn-sm" :class="{ disabled: importing }">

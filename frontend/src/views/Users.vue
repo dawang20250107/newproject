@@ -5,9 +5,13 @@ import { DEPARTMENTS, ROLE_LABELS, JOB_LABELS, JOB_OPTIONS } from '../constants.
 import EmptyState from '../components/EmptyState.vue'
 import ColumnFilter from '../components/ColumnFilter.vue'
 import SkeletonRow from '../components/SkeletonRow.vue'
+import SchemePicker from '../components/SchemePicker.vue'
 import { useToast } from '../composables/useToast.js'
+import { useTableSchemes } from '../composables/useTableSchemes.js'
+import { useAuthStore } from '../stores/auth.js'
 
 const toast = useToast()
+const auth = useAuthStore()
 
 // ── 列头筛选 + 排序（客户端，全部用户已一次性加载，无服务端分页）──────────────
 const colFilters = reactive({})
@@ -58,6 +62,14 @@ function setSort(field, order) {
   sortField.value = order ? field : ''
   sortOrder.value = order || ''
 }
+
+// 通用筛选方案（表格方案基座）：列头筛选 + 排序存成命名方案。
+// 本页为客户端筛选（displayActiveUsers 计算属性自动响应 colFilters/sort），
+// 套用方案直接改这些响应式状态即可，无需重新拉取数据。
+const schemes = useTableSchemes('pk_users', {
+  colFilters, sortField, sortOrder,
+  onApply: () => {},
+})
 
 function clearColFilters() {
   for (const k of Object.keys(colFilters)) delete colFilters[k]
@@ -128,7 +140,10 @@ function toggleApproveDept(uid, d) {
   else arr.splice(i, 1)
 }
 
-onMounted(load)
+onMounted(async () => {
+  const applied = await schemes.loadAndApplyDefault()
+  if (!applied) load()
+})
 
 function openEdit(u) {
   editUser.value = u
@@ -237,6 +252,7 @@ async function reject(u) {
       <button v-if="tab === 'all' && hasColFilters" class="btn btn-ghost btn-sm clear-filters-btn" @click="clearColFilters">
         清除全部筛选
       </button>
+      <SchemePicker v-if="tab === 'all'" :ctl="schemes" :can-public="true" :is-super-admin="true" :class="{ 'scheme-picker-push': !hasColFilters }" />
     </div>
 
     <div class="card">
@@ -507,6 +523,7 @@ async function reject(u) {
 /* 列头筛选漏斗不被裁剪 */
 .table-wrap thead th { overflow: visible; }
 .clear-filters-btn { margin-left: auto; align-self: center; }
+.scheme-picker-push { margin-left: auto; }
 
 .table-avatar {
   width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
