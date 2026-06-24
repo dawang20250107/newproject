@@ -13,6 +13,9 @@ import SkeletonRow from '../../components/SkeletonRow.vue'
 import SchemePicker from '../../components/SchemePicker.vue'
 import { useTableSchemes } from '../../composables/useTableSchemes.js'
 import { useColWidths } from '../../composables/useColWidths.js'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -521,6 +524,81 @@ async function removeSupplier(s) {
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+async function copyField(val, label) {
+  const ok = await copyText(val)
+  ok ? toast.success(`已复制：${label}`) : toast.error('复制失败')
+}
+async function copyWholeRow(row, cols) {
+  const ok = await copyRowTSV(row, cols, { header: true })
+  ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
+}
+
+// 预收/预付记录表
+const ctxRec = useContextMenu()
+const REC_COPY_COLS = [
+  { key: 'counterparty', label: '往来单位' },
+  { key: 'short_name', label: '项目' },
+  { key: 'delivery_dept', label: '交付部门' },
+  { key: 'occur_date', label: '发生日期' },
+  { key: 'advance_amount', label: '总额', format: v => fmtAmt(v) },
+  { key: 'written_off_amount', label: '已核销', format: v => fmtAmt(v) },
+  { key: 'balance_amount', label: '余额', format: v => fmtAmt(v) },
+  { key: 'writeoff_status', label: '核销状态' },
+]
+const ctxRecItems = computed(() => {
+  const r = ctxRec.menu.payload
+  if (!r) return []
+  return [
+    { key: 'inst', label: '收付明细', icon: 'payment', hidden: !(canCreate.value || canInstAction.value), action: x => openInstallments(x) },
+    { key: 'wo', label: '核销', icon: 'refresh', hidden: !(canCreate.value || canWoAction.value), action: x => openWriteoffs(x) },
+    { key: 'edit', label: '编辑', icon: 'edit', shortcut: 'E', hidden: !canCreate.value, action: x => openEdit(x) },
+    { divider: true },
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: x => copyWholeRow(x, REC_COPY_COLS) },
+        { divider: true },
+        { key: 'copy-cp', label: '往来单位', icon: 'customer', hidden: !r.counterparty, action: x => copyField(x.counterparty, x.counterparty) },
+        { key: 'copy-proj', label: '项目', icon: 'cell', hidden: !r.short_name, action: x => copyField(x.short_name, x.short_name) },
+        { key: 'copy-bal', label: '余额', icon: 'cell', action: x => copyField(fmtAmt(x.balance_amount), fmtAmt(x.balance_amount)) },
+      ],
+    },
+    { divider: true },
+    { key: 'del', label: '删除', icon: 'trash', danger: true, hidden: !canDelete.value, action: x => removeRec(x) },
+  ]
+})
+
+// 供应商表
+const ctxSup = useContextMenu()
+const SUP_COPY_COLS = [
+  { key: 'name', label: '供应商' },
+  { key: 'supplier_type', label: '类型', format: v => (v === 'private' ? '私有' : '公共') },
+  { key: 'project_short_name', label: '项目' },
+  { key: 'delivery_dept', label: '交付部门' },
+  { key: 'contact', label: '联系人' },
+  { key: 'prepaid_balance', label: '预付余额', format: v => fmtAmt(v) },
+]
+const ctxSupItems = computed(() => {
+  const s = ctxSup.menu.payload
+  if (!s) return []
+  return [
+    { key: 'edit', label: '编辑', icon: 'edit', shortcut: 'E', hidden: !canCreate.value, action: x => openEditSupplier(x) },
+    { divider: true },
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: x => copyWholeRow(x, SUP_COPY_COLS) },
+        { divider: true },
+        { key: 'copy-name', label: '供应商名称', icon: 'customer', action: x => copyField(x.name, x.name) },
+        { key: 'copy-contact', label: '联系人', icon: 'cell', hidden: !s.contact, action: x => copyField(x.contact, x.contact) },
+      ],
+    },
+    { divider: true },
+    { key: 'del', label: '删除', icon: 'trash', danger: true, hidden: !canDelete.value, action: x => removeSupplier(x) },
+  ]
+})
+
 onMounted(async () => {
   const q = route.query || {}
   if (q.direction === '预收' || q.direction === '预付') direction.value = q.direction
@@ -623,7 +701,7 @@ onMounted(async () => {
                 <td colspan="11" class="empty">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer;font-size:13px;text-decoration:underline" @click="load()">重试</button></td>
               </tr>
               <tr v-else-if="!items.length"><td colspan="11" class="empty">暂无{{ dirLabel }}记录</td></tr>
-              <tr v-for="r in items" :key="r.id">
+              <tr v-for="r in items" :key="r.id" @contextmenu.prevent="ctxRec.open($event, r)">
                 <td v-if="show('adv_counterparty')">{{ r.counterparty || '—' }}</td>
                 <td>
                   <div v-if="r.short_name" class="proj-name">{{ r.short_name }}</div>
@@ -778,7 +856,7 @@ onMounted(async () => {
               <tr v-if="!supplierLoading && !supplierItems.length">
                 <td colspan="6" class="empty">暂无供应商，点击「新增供应商」添加</td>
               </tr>
-              <tr v-for="s in supplierItems" :key="s.id">
+              <tr v-for="s in supplierItems" :key="s.id" @contextmenu.prevent="ctxSup.open($event, s)">
                 <td><b>{{ s.name }}</b><div v-if="s.notes" class="dept-tag">{{ s.notes }}</div></td>
                 <td class="ctr">
                   <span class="status-pill" :class="s.supplier_type === 'private' ? 'pill-blue' : 'pill-muted'">
@@ -1031,6 +1109,10 @@ onMounted(async () => {
   <!-- 导入预检弹窗 -->
   <ImportPrecheckModal :report="precheckResult" :busy="precheckBusy" :readonly="true"
     @close="precheckResult = null" @apply="onPrecheckApply" />
+
+  <!-- 右键上下文菜单（预收/预付记录 + 供应商） -->
+  <ContextMenu :ctx="ctxRec" :items="ctxRecItems" />
+  <ContextMenu :ctx="ctxSup" :items="ctxSupItems" />
 </template>
 
 <style scoped>
