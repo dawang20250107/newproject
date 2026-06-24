@@ -460,7 +460,7 @@ const ctxItems = computed(() => {
   if (!p) return []
   const canOffset = auth.canAction('wo_prepaid') && (p.project_short_name || p.project_no)
   return [
-    { key: 'detail', label: expandedRows.has(p.id) ? '收起明细' : '展开计划/付款明细', icon: 'eye', action: r => toggleRowDetail(r.id) },
+    { key: 'detail', label: expandedRows.value.has(p.id) ? '收起明细' : '展开计划/付款明细', icon: 'eye', action: r => toggleRowDetail(r.id) },
     { key: 'edit', label: '编辑', icon: 'edit', shortcut: 'E', hidden: !auth.canWrite, action: r => openEdit(r) },
     { key: 'offset', label: '预付核销', icon: 'refresh', hidden: !canOffset, action: r => openOffset(r) },
     { key: 'logs', label: '变更日志', icon: 'history', shortcut: 'L', action: r => openLogs(r) },
