@@ -29,6 +29,7 @@ const precheckBusy = ref(false)
 const exporting = ref(false)
 const saving = ref(false)
 const showCreate = ref(false)
+const editId = ref(null)        // null=新增；非空=编辑该记录（共用新增弹窗，prefill + PUT）
 const showSchedule = ref(false)
 const current = ref(null)
 const form = reactive({ applicant:'', department:'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', amount:'', payee:'', status:'pending' })
@@ -209,8 +210,11 @@ async function load(){ loading.value=true; loadErr.value=''; try{ const r=await 
 function search(){ page.value=1; clearSelection(); load() }
 function setPage(p){ page.value=p; load() }
 async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
-function openCreate(){ Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
-async function create(){ saving.value=true; try{ await api.post('/approvals', form); showCreate.value=false; load(); toast.success('已保存') } catch(e){ toast.error(e?.msg||e?.error||'操作失败') } finally{ saving.value=false } }
+function openCreate(){ editId.value=null; Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
+// 编辑：复用新增弹窗，回填后改走 PUT。已归档（已排款/已拒绝/已撤销）记录为终态不可编辑，
+// 仅金额、状态等受后端口径约束（金额仅「待审批」可改、审批/拒绝须审批权限），后端会兜底校验
+function openEdit(it){ editId.value=it.id; Object.assign(form,{ applicant:it.applicant||'', department:it.department||'', secondary_dept:it.secondary_dept||'', project_short_name:it.project_short_name||'', approval_number:it.approval_number||'', g7_number:it.g7_number||'', summary:it.summary||'', amount:it.amount||'', payee:it.payee||'', status:it.status||'pending' }); showCreate.value=true }
+async function create(){ saving.value=true; try{ if(editId.value){ await api.put(`/approvals/${editId.value}`, form) } else { await api.post('/approvals', form) } showCreate.value=false; load(); toast.success('已保存') } catch(e){ toast.error(e?.msg||e?.error||'操作失败') } finally{ saving.value=false } }
 async function updateStatus(it, status){
   const prev = it.status
   it.status = status
@@ -368,6 +372,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <td class="ops-cell">
         <div class="ops-btns">
           <button class="btn btn-ghost btn-sm" :disabled="i.status!=='approved'" @click="openSchedule(i)">一键排款</button>
+          <button v-if="auth.canCreate" class="btn btn-ghost btn-sm icon-btn" :disabled="i.archived"
+                  :title="i.archived ? '已归档（已排款/已拒绝/已撤销）不可编辑' : '编辑审批记录'" @click="openEdit(i)">✏️</button>
           <button class="btn btn-ghost btn-sm" title="补录/修改二级部门与项目简称" @click="openMeta(i)">补录</button>
         </div>
       </td></tr>
@@ -403,7 +409,11 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   </Teleport>
   </div>
 
-  <Teleport to="body"><div v-if="showCreate" class="modal-overlay" tabindex="-1" @keyup.escape.capture="showCreate = false"><div class="modal-box"><div class="modal-header"><h3>新增审批记录</h3></div><div class="modal-body"><div class="form-grid">
+  <Teleport to="body"><div v-if="showCreate" class="modal-overlay" tabindex="-1" @keyup.escape.capture="showCreate = false"><div class="modal-box"><div class="modal-header"><h3>{{ editId ? '编辑审批记录' : '新增审批记录' }}</h3></div><div class="modal-body">
+    <p v-if="editId" style="font-size:12px;color:var(--muted);margin:0 0 12px">
+      申请金额仅「待审批」状态可改（已审批请先退回待审批）；设为「审批通过/已拒绝」需审批权限；已排款/已归档记录不可在此编辑。
+    </p>
+    <div class="form-grid">
     <label class="form-field"><span>申请人*</span><input v-model="form.applicant"/></label>
     <label class="form-field"><span>所属事业部*</span><select v-model="form.department"><option v-for="d in deptChoices" :key="d" :value="d">{{d}}</option></select></label>
     <label class="form-field"><span>二级部门</span><input v-model="form.secondary_dept" placeholder="选填，如：华东项目部"/></label>
@@ -566,6 +576,9 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .sched-sub { font-size: 10.5px; color: #2e7d32; font-weight: 600; margin-top: 1px; }
 .ops-btns { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
 .ops-btns .btn { padding: 4px 8px; font-size: 12px; white-space: nowrap; }
+/* 编辑图标按钮：与同行操作按钮等高，emoji 居中 */
+.ops-btns .icon-btn { padding: 4px 7px; line-height: 1; }
+.ops-btns .icon-btn:disabled { opacity: .4; cursor: default; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .summary, .payee { max-width: 100%; }
