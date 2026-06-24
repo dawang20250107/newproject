@@ -13,6 +13,7 @@ db.sqlite3
 .env
 staticfiles/
 media/
+backend/uploads/
 
 # ── Node / frontend ──────────────────────────────────────
 node_modules/

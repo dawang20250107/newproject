@@ -116,6 +116,10 @@ USE_TZ = True
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+MEDIA_ROOT = BASE_DIR / 'uploads'
+UPLOAD_MAX_MB = int(os.environ.get('UPLOAD_MAX_MB', '20'))
+# X-Accel-Redirect: set to '/protected-media/' in nginx production config
+X_ACCEL_REDIRECT_BASE = os.environ.get('X_ACCEL_REDIRECT_BASE', '')
 
 # W039: MySQL 不支持条件唯一约束 (UniqueConstraint(condition=...))。
 # 我们已知 paikuan.Payment.uniq_payment_business_key 在 MySQL 上不会真正建出，

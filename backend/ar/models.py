@@ -408,6 +408,8 @@ class ARRecord(models.Model):
                                         help_text='合并开票批次号；相同批次号的记录将合并为一张发票')
     notes = models.TextField('备注', blank=True, default='')
     collector = models.CharField('催收负责人', max_length=100, blank=True, default='', db_index=True)
+    activity_count = models.IntegerField('动态数', default=0)
+    attachment_count = models.IntegerField('附件数', default=0)
     created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
                                    null=True, blank=True, related_name='created_ar_records')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -634,6 +636,8 @@ class ARRecord(models.Model):
             'invoice_batch_no': self.invoice_batch_no,
             'notes': self.notes,
             'collector': self.collector,
+            'activity_count': self.activity_count,
+            'attachment_count': self.attachment_count,
             **st,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
@@ -1394,4 +1398,136 @@ class AgingBucketConfig(models.Model):
             'bucket2': self.bucket2,
             'bucket3': self.bucket3,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+import uuid as _uuid
+
+
+def _attachment_upload_path(instance, filename):
+    ext = os.path.splitext(filename)[1].lower()
+    uid = _uuid.uuid4().hex
+    return f'ar/{instance.ar_record_id}/{uid}{ext}'
+
+
+class ARActivity(models.Model):
+    """统一应收动态/跟进日志 — 覆盖对账/开票/回款/催款全生命周期。
+    迁移自并取代 ARCollectionLog（已迁移数据 stage='dunning'）。
+    """
+    STAGE_CHOICES = [
+        ('reconciliation', '对账'),
+        ('invoice', '开票'),
+        ('collection', '回款'),
+        ('dunning', '催款'),
+        ('general', '通用'),
+    ]
+    ACT_TYPE_CHOICES = [
+        ('call', '电话'),
+        ('email', '邮件'),
+        ('visit', '拜访'),
+        ('meeting', '会议'),
+        ('system', '系统事件'),
+        ('note', '备注'),
+        ('other', '其他'),
+    ]
+    STATUS_CHOICES = [
+        ('pending', '待回复'),
+        ('in_progress', '跟进中'),
+        ('resolved', '已解决'),
+        ('no_response', '无响应'),
+    ]
+
+    ar_record = models.ForeignKey(
+        ARRecord, on_delete=models.CASCADE,
+        related_name='activities', db_index=True)
+    stage = models.CharField('阶段', max_length=20, choices=STAGE_CHOICES,
+                             default='dunning', db_index=True)
+    act_type = models.CharField('类型', max_length=10, choices=ACT_TYPE_CHOICES,
+                                default='call')
+    contact_person = models.CharField('联系人', max_length=100, blank=True, default='')
+    note = models.TextField('内容', blank=True, default='')
+    status = models.CharField('状态', max_length=20, choices=STATUS_CHOICES,
+                              default='in_progress')
+    follow_up_date = models.DateField('计划跟进日期', null=True, blank=True)
+    created_by = models.ForeignKey(
+        PaikuanUser, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='ar_activities')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ar_activities'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['ar_record', 'stage', 'created_at']),
+        ]
+
+    def to_dict(self, request_uid=None, request_role=None):
+        can_edit = (request_role == 'super_admin'
+                    or self.created_by_id == request_uid)
+        return {
+            'id': self.id,
+            'stage': self.stage,
+            'stage_display': dict(self.STAGE_CHOICES).get(self.stage, self.stage),
+            'act_type': self.act_type,
+            'act_type_display': dict(self.ACT_TYPE_CHOICES).get(self.act_type, self.act_type),
+            'contact_person': self.contact_person,
+            'note': self.note,
+            'status': self.status,
+            'status_display': dict(self.STATUS_CHOICES).get(self.status, self.status),
+            'follow_up_date': str(self.follow_up_date) if self.follow_up_date else None,
+            'created_by_id': self.created_by_id,
+            'created_by_name': self.created_by.name if self.created_by else '',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'can_edit': can_edit,
+        }
+
+
+class ARAttachment(models.Model):
+    """应收账款附件 — 文件落磁盘，DB 只存元数据。支持图片/PDF/Excel/Word 等。"""
+    IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+    ALLOWED_EXTS = IMAGE_EXTS | {'.pdf', '.xlsx', '.xls', '.docx', '.doc', '.txt', '.csv'}
+
+    ar_record = models.ForeignKey(
+        ARRecord, on_delete=models.CASCADE,
+        related_name='attachments', db_index=True)
+    activity = models.ForeignKey(
+        ARActivity, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='attachments')
+    stage = models.CharField('阶段', max_length=20,
+                             choices=ARActivity.STAGE_CHOICES, default='general')
+    file = models.FileField('文件', upload_to=_attachment_upload_path, max_length=500)
+    file_name = models.CharField('原始文件名', max_length=255)
+    file_size = models.IntegerField('文件大小(字节)', default=0)
+    mime_type = models.CharField('MIME类型', max_length=100, blank=True, default='')
+    thumb_path = models.CharField('缩略图相对路径', max_length=500, blank=True, default='')
+    uploaded_by = models.ForeignKey(
+        PaikuanUser, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='ar_attachments')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'ar_attachments'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['ar_record', 'stage', 'created_at']),
+        ]
+
+    def to_dict(self, record_id=None):
+        rid = record_id or self.ar_record_id
+        ext = os.path.splitext(self.file_name)[1].lower()
+        is_image = ext in self.IMAGE_EXTS
+        return {
+            'id': self.id,
+            'stage': self.stage,
+            'stage_display': dict(ARActivity.STAGE_CHOICES).get(self.stage, self.stage),
+            'file_name': self.file_name,
+            'file_size': self.file_size,
+            'mime_type': self.mime_type,
+            'is_image': is_image,
+            'has_thumb': bool(self.thumb_path),
+            'thumb_url': f'/api/pk/ar/records/{rid}/attachments/{self.id}/thumb' if self.thumb_path else None,
+            'download_url': f'/api/pk/ar/records/{rid}/attachments/{self.id}',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'uploaded_by_name': self.uploaded_by.name if self.uploaded_by else '',
         }
