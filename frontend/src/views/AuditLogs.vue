@@ -1,6 +1,10 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import api from '../api/index.js'
+import ContextMenu from '../components/ContextMenu.vue'
+import { useContextMenu } from '../composables/useContextMenu.js'
+import { useToast } from '../composables/useToast.js'
+import { copyText, copyRowTSV } from '../utils/clipboard.js'
 import ColumnFilter from '../components/ColumnFilter.vue'
 import SkeletonRow from '../components/SkeletonRow.vue'
 import SchemePicker from '../components/SchemePicker.vue'
@@ -91,6 +95,43 @@ function doJump() {
 }
 const fmtTime = t => t ? t.replace('T', ' ').slice(0, 19) : '—'
 const methodClass = m => ({ POST: 'm-post', PUT: 'm-put', PATCH: 'm-put', DELETE: 'm-del' }[m] || '')
+
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const toast = useToast()
+const ctx = useContextMenu()
+const LOG_COPY_COLS = [
+  { key: 'created_at', label: '时间', format: v => fmtTime(v) },
+  { key: 'user_name', label: '操作人' },
+  { key: 'method', label: '方法' },
+  { key: 'path', label: '接口路径' },
+  { key: 'module', label: '模块' },
+  { key: 'status_code', label: '状态码', format: v => String(v) },
+  { key: 'ip', label: 'IP' },
+]
+async function copyField(val, label) {
+  const ok = await copyText(val)
+  ok ? toast.success(`已复制：${label}`) : toast.error('复制失败')
+}
+async function copyWholeRow(l) {
+  const ok = await copyRowTSV(l, LOG_COPY_COLS, { header: true })
+  ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
+}
+const ctxItems = computed(() => {
+  const l = ctx.menu.payload
+  if (!l) return []
+  const hasPayload = l.payload && Object.keys(l.payload).length > 0
+  return [
+    { key: 'expand', label: expanded.value[l.id] ? '收起请求参数' : '展开请求参数', icon: 'eye', hidden: !hasPayload, action: r => toggleExpand(r.id) },
+    { divider: true },
+    { key: 'copy', label: '复制', icon: 'copy', children: [
+      { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: r => copyWholeRow(r) },
+      { divider: true },
+      { key: 'copy-path', label: '接口路径', icon: 'link', hidden: !l.path, action: r => copyField(r.path, r.path) },
+      { key: 'copy-user', label: '操作人', icon: 'customer', hidden: !l.user_name, action: r => copyField(r.user_name, r.user_name) },
+      { key: 'copy-payload', label: '请求参数(JSON)', icon: 'cell', hidden: !hasPayload, action: r => copyField(JSON.stringify(r.payload, null, 2), 'payload') },
+    ]},
+  ]
+})
 // 把接口路径翻译成人话，便于非技术人员看懂
 const PATH_LABELS = [
   [/\/ar\/projects\/import/, '导入项目'], [/\/ar\/projects\/export/, '导出项目'],
@@ -163,7 +204,7 @@ onMounted(async () => {
             </template>
             <tr v-else-if="!items.length"><td colspan="8" class="empty-cell">暂无审计记录</td></tr>
             <template v-for="l in items" :key="l.id">
-              <tr class="data-row">
+              <tr class="data-row" @contextmenu.prevent="ctx.open($event, l)">
                 <td class="ctr time-cell">{{ fmtTime(l.created_at) }}</td>
                 <td class="fw">{{ l.user_name || '（未登录）' }}</td>
                 <td class="ctr">
@@ -199,6 +240,7 @@ onMounted(async () => {
       </div>
     </div>
   </div>
+  <ContextMenu :ctx="ctx" :items="ctxItems" />
 </template>
 
 <style scoped>

@@ -4,6 +4,10 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { useToast } from '../../composables/useToast.js'
+import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import { fmtCompact } from '../../utils/format.js'
 import { HIDE_OVERLAP } from '../../utils/chartTheme.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
@@ -35,6 +39,36 @@ const loading = ref(false)
 
 // 亿/万 两级单位（无空格，两位小数），万元以下取整；空值显示「0」
 const fmtWan = (v) => fmtCompact(v, { smallRound: true, dash: '0' })
+
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const toast = useToast()
+const ctx = useContextMenu()
+const CF_COPY_COLS = [
+  { key: 'ym', label: '月份' },
+  { key: 'collected', label: '实收', format: v => fmtWan(v) },
+  { key: 'paid', label: '实付', format: v => fmtWan(v) },
+  { key: 'budget_collection', label: '收款预算', format: v => fmtWan(v) },
+  { key: 'budget_payment', label: '付款预算', format: v => fmtWan(v) },
+  { key: 'net', label: '净现金流', format: v => fmtWan(v) },
+  { key: 'cumulative_net', label: '累计净现金流', format: v => fmtWan(v) },
+]
+async function cfCopyField(val, label) {
+  const ok = await copyText(val == null ? '' : String(val))
+  ok ? toast.success(`已复制：${label}`) : toast.error('复制失败')
+}
+const ctxItems = computed(() => {
+  const r = ctx.menu.payload
+  if (!r) return []
+  return [
+    { key: 'copy', label: '复制', icon: 'copy', children: [
+      { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: row => copyRowTSV(row, CF_COPY_COLS, { header: true }).then(ok => ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')) },
+      { divider: true },
+      { key: 'copy-ym', label: '月份', icon: 'chart', hidden: !r.ym, action: row => cfCopyField(row.ym, row.ym) },
+      { key: 'copy-net', label: '净现金流', icon: 'chart', action: row => cfCopyField(row.net, '净现金流') },
+      { key: 'copy-cumulative', label: '累计净现金流', icon: 'chart', action: row => cfCopyField(row.cumulative_net, '累计净现金流') },
+    ]},
+  ]
+})
 
 async function load() {
   if (!filters.start_date || !filters.end_date) return
@@ -475,7 +509,8 @@ const deptBalanceOption = computed(() => {
           </thead>
           <tbody>
             <tr v-for="(ym, i) in cfData.months" :key="ym"
-                :class="{ 'row-alert': cfData.totals.outflow[i] > cfData.totals.inflow[i] && cfData.totals.inflow[i] > 0 }">
+                :class="{ 'row-alert': cfData.totals.outflow[i] > cfData.totals.inflow[i] && cfData.totals.inflow[i] > 0 }"
+                @contextmenu.prevent="ctx.open($event, { ym, collected: cfData.totals.collected[i], paid: cfData.totals.paid[i], budget_collection: cfData.totals.budget_collection[i], budget_payment: cfData.totals.budget_payment[i], net: cfData.totals.net[i], cumulative_net: cfData.totals.cumulative_net[i] })">
               <td class="fw">{{ ym }}</td>
               <td class="amt text-coll">{{ fmtWan(cfData.totals.collected[i]) }}</td>
               <td class="amt" :class="cfData.totals.outflow[i] > cfData.totals.inflow[i] ? 'text-danger' : 'text-pay'">
@@ -494,6 +529,7 @@ const deptBalanceOption = computed(() => {
         </table>
       </div>
     </div>
+    <ContextMenu :ctx="ctx" :items="ctxItems" />
   </div>
 </template>
 

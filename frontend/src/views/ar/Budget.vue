@@ -12,6 +12,9 @@ import ProjectPnlCard from '../caiwu/ProjectPnlCard.vue'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 import { useToast } from '../../composables/useToast.js'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 const toast = useToast()
 
 const auth = useAuthStore()
@@ -375,6 +378,65 @@ async function remove(type, item) {
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+async function copyField(val, label) {
+  const ok = await copyText(val)
+  ok ? toast.success(`已复制：${label}`) : toast.error('复制失败')
+}
+
+// 预算对比表（compareRows）
+const ctxCmp = useContextMenu()
+const CMP_COPY_COLS = [
+  { key: 'project', label: '项目' },
+  { key: 'budget_in', label: '收款预算', format: v => fmtAmt(v) },
+  { key: 'actual_in', label: '实际收款', format: v => fmtAmt(v) },
+  { key: 'budget_out', label: '付款预算', format: v => fmtAmt(v) },
+  { key: 'actual_out', label: '实际付款', format: v => fmtAmt(v) },
+  { key: 'actual_net', label: '净流量', format: v => fmtAmt(v) },
+]
+const ctxCmpItems = computed(() => {
+  const r = ctxCmp.menu.payload
+  if (!r) return []
+  return [
+    { key: 'pnl', label: '查看业财损益卡', icon: 'chart', action: row => openPnl(row) },
+    { divider: true },
+    { key: 'copy', label: '复制', icon: 'copy', children: [
+      { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: row => copyRowTSV(row, CMP_COPY_COLS, { header: true }).then(ok => ok ? toast.success('已复制整行') : toast.error('复制失败')) },
+      { divider: true },
+      { key: 'copy-name', label: '项目名称', icon: 'cell', action: row => copyField(row.project, row.project) },
+      { key: 'copy-net', label: '净流量', icon: 'cell', action: row => copyField(fmtAmt(row.actual_net), fmtAmt(row.actual_net)) },
+    ]},
+  ]
+})
+
+// 预算明细行（收款 + 付款，通过 btype 区分）
+const ctxBudget = useContextMenu()
+const BUDGET_COPY_COLS = [
+  { key: 'project_no', label: '项目编号' },
+  { key: 'short_name', label: '项目' },
+  { key: 'expected_date', label: '预计日期' },
+  { key: 'delivery_dept', label: '交付部门' },
+  { key: 'amount', label: '金额', format: v => fmtAmt(v) },
+  { key: 'notes', label: '备注' },
+]
+const ctxBudgetItems = computed(() => {
+  const p = ctxBudget.menu.payload
+  if (!p) return []
+  const { btype, item: it } = p
+  return [
+    { key: 'edit', label: '编辑', icon: 'edit', shortcut: 'E', hidden: !auth.canArWrite, action: ({ btype: t, item: r }) => openEdit(t, r) },
+    { divider: true },
+    { key: 'copy', label: '复制', icon: 'copy', children: [
+      { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: ({ item: r }) => copyRowTSV(r, BUDGET_COPY_COLS, { header: true }).then(ok => ok ? toast.success('已复制整行') : toast.error('复制失败')) },
+      { divider: true },
+      { key: 'copy-proj', label: '项目简称', icon: 'cell', hidden: !it.short_name, action: ({ item: r }) => copyField(r.short_name, r.short_name) },
+      { key: 'copy-amt', label: '金额', icon: 'cell', action: ({ item: r }) => copyField(fmtAmt(r.amount), fmtAmt(r.amount)) },
+    ]},
+    { divider: true },
+    { key: 'del', label: '删除', icon: 'trash', danger: true, hidden: !auth.canDelete, action: ({ btype: t, item: r }) => remove(t, r) },
+  ]
+})
+
 // ── Template / Import / Export ─────────────────────────────────────────────────
 const importing = ref(false)
 const exporting = ref(false)
@@ -703,7 +765,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               </tr>
             </thead>
             <tbody>
-              <tr v-for="r in compareRows" :key="r.project" class="cmp-row" @click="openPnl(r)">
+              <tr v-for="r in compareRows" :key="r.project" class="cmp-row" @click="openPnl(r)" @contextmenu.prevent="ctxCmp.open($event, r)">
                 <td>
                   <div class="fw">{{ r.project }}</div>
                   <div class="cmp-sub">{{ r.dept || '—' }}<template v-if="r.manager"> · {{ r.manager }}</template></div>
@@ -771,7 +833,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <tr v-if="!collItems.length">
                 <td colspan="8" class="empty-cell">暂无收款预算数据</td>
               </tr>
-              <tr v-for="item in collItems" :key="item.id" class="data-row">
+              <tr v-for="item in collItems" :key="item.id" class="data-row" @contextmenu.prevent="ctxBudget.open($event, { btype: 'collection', item })">
                 <td><span class="proj-no-tag">{{ item.project_no || '—' }}</span></td>
                 <td class="fw">{{ item.short_name }}</td>
                 <td class="ctr text-sm">{{ item.expected_date }}</td>
@@ -825,7 +887,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <tr v-if="!payItems.length">
                 <td colspan="8" class="empty-cell">暂无付款预算数据</td>
               </tr>
-              <tr v-for="item in payItems" :key="item.id" class="data-row">
+              <tr v-for="item in payItems" :key="item.id" class="data-row" @contextmenu.prevent="ctxBudget.open($event, { btype: 'payment', item })">
                 <td><span class="proj-no-tag">{{ item.project_no || '—' }}</span></td>
                 <td class="fw">{{ item.short_name }}</td>
                 <td class="ctr text-sm">{{ item.expected_date }}</td>
@@ -967,6 +1029,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     <!-- 导入预检弹窗 -->
     <ImportPrecheckModal :report="precheckResult" :busy="precheckBusy" :readonly="true"
       @close="precheckResult = null" @apply="onPrecheckApply" />
+
+    <!-- 右键上下文菜单 -->
+    <ContextMenu :ctx="ctxCmp" :items="ctxCmpItems" />
+    <ContextMenu :ctx="ctxBudget" :items="ctxBudgetItems" />
   </div>
 </template>
 
