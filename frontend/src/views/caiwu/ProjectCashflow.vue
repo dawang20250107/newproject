@@ -353,14 +353,13 @@ onMounted(() => {
   background: #f4f1ef; box-shadow: inset 0 -1px 0 rgba(0,0,0,.08);
 }
 
-/* Table */
+/* Table — 表头与单元格统一居中，字段名与内容上下对齐 */
 .pcf-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .pcf-table thead th {
-  padding: 9px 12px; text-align: left; font-size: 11.5px; font-weight: 700;
+  padding: 9px 12px; text-align: center; font-size: 11.5px; font-weight: 700;
   color: var(--muted); white-space: nowrap; background: #f4f1ef;
 }
-.amt { text-align: right; font-variant-numeric: tabular-nums; }
-.ctr { text-align: center; }
+.amt { font-variant-numeric: tabular-nums; }
 .sortable { cursor: pointer; }
 .sortable:hover { color: var(--primary, #c96342); }
 /* 排序列表头用实色，防滚动时数据透出 */
@@ -369,7 +368,7 @@ onMounted(() => {
 
 .pcf-row { cursor: pointer; }
 .pcf-row.no-drill { cursor: default; }
-.pcf-table tbody td { padding: 9px 12px; border-bottom: 1px solid rgba(0,0,0,.04); color: var(--text); vertical-align: middle; }
+.pcf-table tbody td { padding: 9px 12px; border-bottom: 1px solid rgba(0,0,0,.04); color: var(--text); vertical-align: middle; text-align: center; }
 .pcf-table tbody tr:hover td { background: rgba(201,99,66,.08); }
 .pcf-th-proj { min-width: 160px; }
 .pcf-td-proj { min-width: 160px; }
@@ -389,7 +388,7 @@ onMounted(() => {
 .pcf-table tbody tr:hover td { background: rgba(201,99,66,.08); }
 
 /* 回款率：迷你进度条 + 色阶 */
-.rate-cell { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+.rate-cell { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; }
 .rate-val { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 12.5px; }
 .rate-track { width: 58px; height: 4px; border-radius: 3px; background: rgba(180,140,110,.18); overflow: hidden; }
 .rate-track i { display: block; height: 100%; border-radius: 3px; transition: width .3s; }
