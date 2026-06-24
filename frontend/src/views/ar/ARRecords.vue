@@ -482,30 +482,35 @@ const PAY_RANGE_PRESETS = [
   { key: 'year', label: '本年' },
   { key: '', label: '全部' },
 ]
-// 快捷区间按「本地日历日」计算，与右侧原生日期选择框、用户设备日历完全一致。
-// 之前用 UTC+8 硬编码（todayCST），非 UTC+8 用户或按本地日期录入的数据会错位一天，
-// 导致「今天明明有回款，点『今天』却查不到」。改用本地日历后两者口径统一。
+// 快捷区间按 UTC+8（北京时间）计算，与 todayCST() 等系统函数口径一致。
 function setPayRange(key) {
   payRangePreset.value = key
-  const pad = (n) => String(n).padStart(2, '0')
-  const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-  const now = new Date()
-  const today = ymd(now)
-  let start = '', end = today
+  const iso = (d) => d.toISOString().slice(0, 10)
+  const base = new Date(todayCST() + 'T00:00:00Z')
+  let start = '', end = iso(base)
   if (key === '') { start = ''; end = '' }
-  else if (key === 'today') { start = today }
+  else if (key === 'today') { start = iso(base) }
   else if (key === 'week') {
-    const dow = (now.getDay() + 6) % 7                // 周一=0
-    const s = new Date(now); s.setDate(now.getDate() - dow); start = ymd(s)
+    const dow = (base.getUTCDay() + 6) % 7
+    const s = new Date(base); s.setUTCDate(base.getUTCDate() - dow); start = iso(s)
   }
-  else if (key === 'month') start = ymd(new Date(now.getFullYear(), now.getMonth(), 1))
-  else if (key === 'quarter') start = ymd(new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1))
-  else if (key === 'year') start = ymd(new Date(now.getFullYear(), 0, 1))
+  else if (key === 'month') start = iso(new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 1)))
+  else if (key === 'quarter') start = iso(new Date(Date.UTC(base.getUTCFullYear(), Math.floor(base.getUTCMonth() / 3) * 3, 1)))
+  else if (key === 'year') start = iso(new Date(Date.UTC(base.getUTCFullYear(), 0, 1)))
   payFilters.pay_start = start
   payFilters.pay_end = end
   loadPayments(true)
 }
 function onPayDateChange() { payRangePreset.value = ''; loadPayments(true) }
+const payJumpPage = ref('')
+function payDoJump() {
+  const p = parseInt(payJumpPage.value)
+  const maxPage = Math.ceil(payTotal.value / size)
+  if (!p || p < 1 || p > maxPage) return
+  payPage.value = p
+  loadPayments()
+  payJumpPage.value = ''
+}
 // 回款日期可选范围（约束日期选择器，避免几十年空日历）
 const payBounds = ref({ min: '', max: '' })
 async function loadPayBounds() {
@@ -557,6 +562,16 @@ function dunChangePage(delta) {
   dunPage.value += delta
   dunSelected.value = new Set()
   loadDunning()
+}
+const dunJumpPage = ref('')
+function dunDoJump() {
+  const p = parseInt(dunJumpPage.value)
+  const maxPage = Math.ceil(dunTotal.value / size)
+  if (!p || p < 1 || p > maxPage) return
+  dunPage.value = p
+  dunSelected.value = new Set()
+  loadDunning()
+  dunJumpPage.value = ''
 }
 function toggleDunBucket(key) {
   dunFilters.bucket = dunFilters.bucket === key ? '' : key
@@ -1558,7 +1573,7 @@ function clearFilters() {
     </div>
 
     <!-- Tab + table card -->
-    <div class="card" :class="['density-' + density, { 'data-reloading': loading && items.length }]">
+    <div class="card" :class="['density-' + density, { 'data-reloading': loading && items.length, 'pane-mode': activeTab === 'dunning' || activeTab === 'payments' }]">
       <!-- 合并指标条：左侧=本Tab进度/重点；右侧=当前筛选全集合计 -->
       <div v-if="isDataTab && (kpiData || summaryData)" class="metrics-bar">
         <!-- 聚焦待办切换（金蝶查询模式）：默认仅看本环节待处理，可一键看全部 -->
@@ -2130,10 +2145,11 @@ function clearFilters() {
           </table>
         </div>
 
-        <div v-if="dunTotal > size" class="pagination pane-pager">
-          <button :disabled="dunPage <= 1" class="page-btn" @click="dunChangePage(-1)">‹ 上一页</button>
-          <span class="page-info">{{ dunPage }} / {{ Math.ceil(dunTotal / size) }} 页 · 共 {{ dunTotal }} 条</span>
-          <button :disabled="dunPage * size >= dunTotal" class="page-btn" @click="dunChangePage(1)">下一页 ›</button>
+        <div class="pagination pane-pager">
+          <button v-if="dunTotal > size" :disabled="dunPage <= 1" class="page-btn" @click="dunChangePage(-1)">‹ 上一页</button>
+          <span class="page-info"><template v-if="dunTotal > size">第 {{ dunPage }} / {{ Math.ceil(dunTotal / size) }} 页 · </template>共 {{ dunTotal }} 条</span>
+          <button v-if="dunTotal > size" :disabled="dunPage * size >= dunTotal" class="page-btn" @click="dunChangePage(1)">下一页 ›</button>
+          <span v-if="dunTotal > size" class="pg-jump">跳至<input v-model.number="dunJumpPage" class="pg-jump-input" type="number" min="1" :max="Math.ceil(dunTotal / size)" @keyup.enter="dunDoJump" />页<button class="page-btn" @click="dunDoJump">Go</button></span>
         </div>
       </div>
 
@@ -2206,10 +2222,11 @@ function clearFilters() {
           </table>
         </div>
 
-        <div v-if="payTotal > size" class="pagination pane-pager">
-          <button :disabled="payPage <= 1" class="page-btn" @click="payPage--; loadPayments()">‹ 上一页</button>
-          <span class="page-info">{{ payPage }} / {{ Math.ceil(payTotal / size) }} 页 · 共 {{ payTotal }} 条</span>
-          <button :disabled="payPage * size >= payTotal" class="page-btn" @click="payPage++; loadPayments()">下一页 ›</button>
+        <div class="pagination pane-pager">
+          <button v-if="payTotal > size" :disabled="payPage <= 1" class="page-btn" @click="payPage--; loadPayments()">‹ 上一页</button>
+          <span class="page-info"><template v-if="payTotal > size">第 {{ payPage }} / {{ Math.ceil(payTotal / size) }} 页 · </template>共 {{ payTotal }} 条</span>
+          <button v-if="payTotal > size" :disabled="payPage * size >= payTotal" class="page-btn" @click="payPage++; loadPayments()">下一页 ›</button>
+          <span v-if="payTotal > size" class="pg-jump">跳至<input v-model.number="payJumpPage" class="pg-jump-input" type="number" min="1" :max="Math.ceil(payTotal / size)" @keyup.enter="payDoJump" />页<button class="page-btn" @click="payDoJump">Go</button></span>
         </div>
       </div>
 
@@ -2982,9 +2999,11 @@ function clearFilters() {
 .ar-pane.pane-flex > .pane-head { flex-shrink: 0; }
 .ar-pane.pane-flex > .pane-scroll { flex: 1; min-height: 0; overflow: auto; margin-top: 12px; }
 .ar-pane.pane-flex > .pane-pager {
-  flex-shrink: 0; margin: 0; padding: 10px 0 2px;
+  flex-shrink: 0; margin: 0; padding: 6px 0 8px;
   border-top: 1px solid var(--border); background: var(--card);
 }
+/* 逾期看板/回款流水标签页：pager 紧贴底部，不需要卡片底部预留空间 */
+.ar-view > .card.pane-mode { padding-bottom: 4px; }
 /* 表头吸顶，长表滚动时列名常驻 */
 .pane-flex .pane-scroll .rec-table thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
 .pane-flex .pane-scroll .rec-table thead .sel-col { z-index: 6; }
