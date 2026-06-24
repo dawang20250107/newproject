@@ -1659,7 +1659,7 @@ function clearFilters() {
       </div>
 
       <!-- ══ 批次管理：合并开票 + 批次回款 一体工作台 ══ -->
-      <div v-if="activeTab === 'batch'" class="batch-panel">
+      <div v-if="activeTab === 'batch'" class="batch-panel ar-pane">
         <div class="bp-head">
           <span class="bp-title">🧾 合并开票批次<i v-if="batches.length">{{ batches.length }}</i></span>
           <span class="bp-tip">同批次合并开一张发票 · 回款按批次录入，自动按运作日期先进先出分摊到各记录</span>
@@ -1994,7 +1994,7 @@ function clearFilters() {
       </Teleport>
 
       <!-- ══ 预收核销工作台 ══ -->
-      <div v-if="activeTab === 'offset'" class="ow-wrap">
+      <div v-if="activeTab === 'offset'" class="ow-wrap ar-pane">
         <div class="ow-head">
           <div class="quick-search" style="max-width:260px">
             <svg class="qs-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -2045,7 +2045,7 @@ function clearFilters() {
       </div>
 
       <!-- ══ 逾期看板（原催款工作台）══ -->
-      <div v-if="activeTab === 'dunning'">
+      <div v-if="activeTab === 'dunning'" class="ar-pane">
         <div class="bp-head" style="margin-top:4px">
           <span class="bp-title">⏰ 逾期看板</span>
           <span class="bp-tip">逾期未收应收一览：按账龄分桶 / 对接人聚合，可勾选批量生成催款任务（进财务驾驶舱·决策行动）</span>
@@ -2206,7 +2206,7 @@ function clearFilters() {
       </div>
 
       <!-- ══ 回款流水 ══ -->
-      <div v-if="activeTab === 'payments'">
+      <div v-if="activeTab === 'payments'" class="ar-pane">
         <div class="filter-strip" style="margin-top:4px">
           <label class="pay-range-lbl">回款日期</label>
           <button v-for="r in PAY_RANGE_PRESETS" :key="r.key || 'all'" type="button"
@@ -2280,7 +2280,7 @@ function clearFilters() {
         </div>
       </div>
 
-      <div v-if="activeTab === 'summary'">
+      <div v-if="activeTab === 'summary'" class="ar-pane">
         <div class="filter-strip" style="margin-top:4px">
           <label class="pay-range-lbl">分组维度</label>
           <select v-model="summaryGroupBy" class="sel-bu" @change="loadGroupSummary">
@@ -3039,6 +3039,9 @@ function clearFilters() {
    padding-bottom 留出 bottom-bar 高度(36px)，避免表格最后一行被遮挡 */
 .ar-view > .card { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 14px 36px; }
 .ar-view > .card > .table-wrap { flex: 1; min-height: 0; }
+/* 次级 Tab（逾期看板/回款流水/汇总/预收核销/批次管理）：包裹层撑满剩余高度并内部滚动，
+   否则长表格会溢出 overflow:hidden 的 .ar-view 被裁剪，导致「只显示几行、无法滚动/翻页」。 */
+.ar-view > .card > .ar-pane { flex: 1; min-height: 0; overflow: auto; }
 
 /* 页头：三行结构——标题+主操作 / Tab 栏 / 筛选工具栏，各占一行互不挤压 */
 .ar-head { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-bottom: 8px; flex-shrink: 0; }
