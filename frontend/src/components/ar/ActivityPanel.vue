@@ -9,7 +9,8 @@
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import ar from '../../api/ar.js'
 import { useToast } from '../../composables/useToast.js'
-import { todayCST } from '../../constants.js'
+import { todayCST, DEPARTMENTS } from '../../constants.js'
+import { copyText } from '../../utils/clipboard.js'
 import LifelineSection from './LifelineSection.vue'
 
 const props = defineProps({
@@ -181,17 +182,24 @@ async function saveFieldValue(field, val) {
 function setToday(field) { if (props.canWrite) saveFieldValue(field, todayCST()) }
 
 // ── 回款登记 ─────────────────────────────────────────────────────────────────
-const payForm = reactive({ amount: '', payment_date: '', source: '回款', notes: '' })
+// source：'回款'（现金）｜ '内部往来'（事业部间核销，需选往来部门，不计现金）
+const DEPT_OPTS = computed(() => DEPARTMENTS.filter(d => d !== props.rec.delivery_dept))
+const payForm = reactive({ amount: '', payment_date: '', source: '回款', counterparty_dept: '', notes: '' })
 const addingPay = ref(false)
 async function submitPayment() {
-  if (!(Number(payForm.amount) > 0)) { toast.error('请填写回款金额'); return }
-  if (!payForm.payment_date) { toast.error('请选择回款日期'); return }
+  if (!(Number(payForm.amount) > 0)) { toast.error('请填写金额'); return }
+  if (!payForm.payment_date) { toast.error('请选择日期'); return }
+  if (payForm.source === '内部往来' && !payForm.counterparty_dept) { toast.error('请选择往来事业部'); return }
   addingPay.value = true
   try {
-    await ar.addPayment(props.rec.id, { ...payForm })
+    await ar.addPayment(props.rec.id, {
+      amount: payForm.amount, payment_date: payForm.payment_date, source: payForm.source,
+      counterparty_dept: payForm.source === '内部往来' ? payForm.counterparty_dept : '',
+      notes: payForm.notes,
+    })
     await refreshRecordAndPayments()
-    payForm.amount = ''; payForm.notes = ''
-    toast.success('已登记回款')
+    payForm.amount = ''; payForm.notes = ''; payForm.counterparty_dept = ''
+    toast.success(payForm.source === '内部往来' ? '已登记内部往来核销' : '已登记回款')
   } catch (e) {
     toast.error(errMsg(e))
   } finally {
@@ -303,6 +311,32 @@ const adding = ref(false)
 const composeTa = ref(null)
 const STAGE_LABEL = { reconciliation: '对账', invoice: '开票', collection: '回款', dunning: '催款' }
 
+// 快捷跟进短语：一键插入常用催收用语，减少重复打字
+const QUICK_PHRASES = ['已电话联系，承诺近期付款', '对方财务已确认，走流程中', '已发送对账单/催款函', '客户资金紧张，申请延期', '多次联系暂无回复']
+function insertPhrase(p) {
+  compose.note = compose.note.trim() ? compose.note.trim() + '；' + p : p
+  nextTick(() => composeTa.value?.focus())
+}
+
+// 复制催收摘要：把整单生命周期要点复制为文本，便于微信/邮件交接
+async function copySummary() {
+  const r = props.rec
+  const invDone = !!(r.invoice_date || Number(r.actual_invoice_amount) > 0)
+  const lastDun = actsByStage.value.dunning[0]
+  const lines = [
+    `【${r.short_name || r.customer_name}】应收摘要`,
+    `客户：${r.customer_name || '—'}　交付部门：${r.delivery_dept || '—'}`,
+    `应收 ¥${fmtAmt(estimated.value)}　已收 ¥${fmtAmt(paid.value)}　欠款 ¥${fmtAmt(outstanding.value)}`,
+    overdueDays.value > 0 ? `⚠️ 已逾期 ${overdueDays.value} 天` : `应收到期：${r.due_date || '—'}`,
+    `对账：${r.reconciliation_date || '未对账'}　开票：${invDone ? ('¥' + fmtAmt(r.actual_invoice_amount) + (r.invoice_date ? ' / ' + r.invoice_date : '')) : '未开票'}`,
+    r.collector ? `催收负责人：${r.collector}` : '',
+    r.target_collection_date ? `目标回款日：${r.target_collection_date}` : '',
+    lastDun ? `最近跟进（${(lastDun.created_at || '').slice(0, 10)}）：${lastDun.note}` : '',
+  ].filter(Boolean)
+  const okCopy = await copyText(lines.join('\n'))
+  okCopy ? toast.success('已复制催收摘要') : toast.error('复制失败')
+}
+
 async function submitCompose() {
   if (!compose.note.trim()) { toast.error('请填写跟进内容'); return }
   adding.value = true
@@ -409,7 +443,10 @@ function onKey(e) {
             <span class="ap-proj" :title="rec.short_name || rec.customer_name">{{ rec.short_name || rec.customer_name }}</span>
             <span v-if="rec.customer_name && rec.customer_name !== rec.short_name" class="ap-sub">{{ rec.customer_name }}</span>
           </div>
-          <button class="ap-close" title="关闭 (Esc)" @click="close">✕</button>
+          <div class="ap-hbtns">
+            <button class="ap-icobtn" title="复制催收摘要" @click="copySummary">📋</button>
+            <button class="ap-close" title="关闭 (Esc)" @click="close">✕</button>
+          </div>
         </div>
         <!-- 金额进度 -->
         <div class="ap-money">
@@ -567,16 +604,26 @@ function onKey(e) {
                   <span class="pay-amt">¥{{ fmtAmt(p.amount) }}</span>
                   <span class="pay-date">{{ p.payment_date }}</span>
                   <span class="pay-src" :class="{ 'pay-src-other': p.source !== '回款' }">{{ p.source }}</span>
-                  <span v-if="p.counterparty_dept" class="pay-cp">{{ p.counterparty_dept }}</span>
-                  <button v-if="canCollect && p.source === '回款'" class="pay-del" title="删除" @click="deletePayment(p)">🗑</button>
+                  <span v-if="p.counterparty_dept" class="pay-cp">↔ {{ p.counterparty_dept }}</span>
+                  <button v-if="canCollect && p.source !== '预收抵扣'" class="pay-del" title="删除" @click="deletePayment(p)">🗑</button>
                 </div>
               </div>
               <div v-else class="pay-empty">暂无回款记录</div>
-              <!-- 登记回款 -->
-              <div v-if="canCollect && outstanding > 0" class="pay-add">
-                <input v-model="payForm.amount" type="number" step="0.01" class="pay-inp pay-inp-amt" placeholder="回款金额" />
-                <input v-model="payForm.payment_date" type="date" class="pay-inp" />
-                <button class="pay-btn" :disabled="addingPay" @click="submitPayment">{{ addingPay ? '…' : '登记回款' }}</button>
+              <!-- 登记回款 / 内部往来核销 -->
+              <div v-if="canCollect && outstanding > 0" class="pay-form">
+                <div class="pay-srcs">
+                  <button class="pay-src-tab" :class="{ on: payForm.source === '回款' }" @click="payForm.source = '回款'">💵 现金回款</button>
+                  <button class="pay-src-tab" :class="{ on: payForm.source === '内部往来' }" @click="payForm.source = '内部往来'">↔ 内部往来</button>
+                </div>
+                <div class="pay-add">
+                  <input v-model="payForm.amount" type="number" step="0.01" class="pay-inp pay-inp-amt" :placeholder="payForm.source === '内部往来' ? '核销金额' : '回款金额'" />
+                  <input v-model="payForm.payment_date" type="date" class="pay-inp" />
+                  <select v-if="payForm.source === '内部往来'" v-model="payForm.counterparty_dept" class="pay-inp pay-inp-dept">
+                    <option value="" disabled>往来事业部</option>
+                    <option v-for="d in DEPT_OPTS" :key="d" :value="d">{{ d }}</option>
+                  </select>
+                  <button class="pay-btn" :disabled="addingPay" @click="submitPayment">{{ addingPay ? '…' : '登记' }}</button>
+                </div>
               </div>
               <button v-if="canCollect && outstanding > 0" class="pay-settle" :disabled="addingPay" @click="settleRemaining">
                 ✓ 一键结清余款 ¥{{ fmtAmt(outstanding) }}
@@ -626,6 +673,9 @@ function onKey(e) {
           <button v-for="t in ACT_TYPES" :key="t.v" class="ap-cmp-type" :class="{ on: compose.act_type === t.v }" :title="t.t" @click="compose.act_type = t.v">{{ t.l }}</button>
           <span class="ap-cmp-target">记入 <b :style="{ color: ACCENT[composeStage] }">{{ STAGE_LABEL[composeStage] }}</b></span>
         </div>
+        <div class="ap-cmp-phrases">
+          <button v-for="p in QUICK_PHRASES" :key="p" class="ap-cmp-phrase" :title="`插入：${p}`" @click="insertPhrase(p)">{{ p }}</button>
+        </div>
         <textarea v-model="compose.note" ref="composeTa" class="ap-cmp-ta" rows="2"
           :placeholder="`记录${STAGE_LABEL[composeStage]}跟进…（Ctrl+Enter 保存）`" @keydown.ctrl.enter.prevent="submitCompose"></textarea>
         <div class="ap-cmp-row2">
@@ -658,6 +708,9 @@ function onKey(e) {
 .ap-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .ap-proj { font-size: 16px; font-weight: 800; color: #5a4636; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ap-sub { font-size: 11.5px; color: #9b8070; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-hbtns { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.ap-icobtn { border: none; background: rgba(0,0,0,.04); width: 26px; height: 26px; border-radius: 50%; font-size: 12px; cursor: pointer; transition: all .12s; }
+.ap-icobtn:hover { background: rgba(201,99,66,.12); }
 .ap-close { border: none; background: rgba(0,0,0,.04); width: 26px; height: 26px; border-radius: 50%; font-size: 13px; color: #9b8070; cursor: pointer; flex-shrink: 0; transition: all .12s; }
 .ap-close:hover { background: rgba(201,99,66,.12); color: #c96342; }
 
@@ -763,9 +816,15 @@ function onKey(e) {
 .pay-del { border: none; background: none; font-size: 11px; cursor: pointer; opacity: .65; flex-shrink: 0; }
 .pay-del:hover { opacity: 1; }
 .pay-empty { font-size: 11.5px; color: #bda797; text-align: center; padding: 6px 0; }
-.pay-add { display: flex; gap: 6px; align-items: center; }
+.pay-form { display: flex; flex-direction: column; gap: 6px; }
+.pay-srcs { display: flex; gap: 5px; }
+.pay-src-tab { flex: 1; border: 1px solid rgba(180,140,110,.28); background: #fff; color: #8a7665; font-size: 11.5px; padding: 5px 0; border-radius: 7px; cursor: pointer; transition: all .12s; }
+.pay-src-tab:hover { border-color: rgba(46,158,91,.45); }
+.pay-src-tab.on { border-color: #2e9e5b; background: rgba(46,158,91,.1); color: #25844c; font-weight: 700; }
+.pay-add { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .pay-inp { border: 1px solid rgba(180,140,110,.3); border-radius: 7px; padding: 5px 8px; font-size: 12px; color: #5a4636; background: #fff; outline: none; font-family: inherit; min-width: 0; }
-.pay-inp-amt { flex: 1; }
+.pay-inp-amt { flex: 1; min-width: 90px; }
+.pay-inp-dept { flex: 1; min-width: 110px; }
 .pay-inp:focus { border-color: rgba(46,158,91,.5); }
 .pay-btn { padding: 6px 14px; border: none; border-radius: 7px; background: linear-gradient(120deg, #2e9e5b, #25844c); color: #fff; font-size: 12px; font-weight: 700; cursor: pointer; flex-shrink: 0; }
 .pay-btn:disabled { opacity: .5; cursor: default; }
@@ -781,6 +840,9 @@ function onKey(e) {
 .ap-cmp-type.on { border-color: #c96342; background: rgba(201,99,66,.1); transform: translateY(-1px); }
 .ap-cmp-target { margin-left: auto; font-size: 11px; color: #a8917e; }
 .ap-cmp-target b { font-weight: 800; }
+.ap-cmp-phrases { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 1px; scrollbar-width: thin; }
+.ap-cmp-phrase { flex-shrink: 0; border: 1px solid rgba(180,140,110,.28); background: #fff; color: #8a7665; font-size: 11px; padding: 3px 9px; border-radius: 12px; cursor: pointer; white-space: nowrap; transition: all .12s; }
+.ap-cmp-phrase:hover { border-color: #c96342; color: #c96342; background: rgba(201,99,66,.05); }
 .ap-cmp-ta { width: 100%; border: 1px solid rgba(180,140,110,.25); border-radius: 9px; padding: 8px 10px; font-size: 13px; color: #5a4636; resize: vertical; min-height: 40px; font-family: inherit; background: #fff; outline: none; box-sizing: border-box; transition: border-color .12s; }
 .ap-cmp-ta:focus { border-color: rgba(201,99,66,.55); }
 .ap-cmp-row2 { display: flex; gap: 6px; align-items: center; }
