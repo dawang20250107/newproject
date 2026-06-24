@@ -3,8 +3,13 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS } from '../../constants.js'
 import ar from '../../api/ar.js'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { useToast } from '../../composables/useToast.js'
 
 const auth = useAuthStore()
+const toast = useToast()
 const items = ref([])
 const total = ref(0)
 const loading = ref(false)
@@ -170,6 +175,45 @@ async function remove(item) {
   catch (e) { alert(e?.msg || '删除失败') }
 }
 
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const ctx = useContextMenu()
+const ROW_COPY_COLS = [
+  { key: 'name', label: '合同名称' },
+  { key: 'contract_no', label: '合同编号' },
+  { key: 'delivery_dept', label: '交付部门' },
+  { key: 'sign_date', label: '签订日期' },
+  { key: 'amount', label: '合同额', format: v => fmtNum(v) },
+  { key: 'party_count', label: '关联方数' },
+  { key: 'project_count', label: '关联项目数' },
+]
+async function copyField(val, label) {
+  const ok = await copyText(val)
+  ok ? toast.success(`已复制：${label}`) : toast.error('复制失败')
+}
+async function copyWholeRow(c) {
+  const ok = await copyRowTSV(c, ROW_COPY_COLS, { header: true })
+  ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
+}
+const ctxItems = computed(() => {
+  const c = ctx.menu.payload
+  if (!c) return []
+  return [
+    { key: 'edit', label: '编辑 / 维护关联', icon: 'edit', shortcut: 'E', action: r => openEdit(r) },
+    { divider: true },
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: r => copyWholeRow(r) },
+        { divider: true },
+        { key: 'copy-name', label: '合同名称', icon: 'cell', action: r => copyField(r.name, r.name) },
+        { key: 'copy-no', label: '合同编号', icon: 'invoice', hidden: !c.contract_no, action: r => copyField(r.contract_no, r.contract_no) },
+      ],
+    },
+    { divider: true },
+    { key: 'del', label: '删除合同', icon: 'trash', danger: true, hidden: !auth.canDelete, action: r => remove(r) },
+  ]
+})
+
 const onScopeChange = () => {
   if (filters.dept && !accessibleDepts.value.includes(filters.dept)) filters.dept = ''
   page.value = 1
@@ -227,7 +271,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           <tbody>
             <tr v-if="loading && !items.length"><td colspan="8" class="empty-cell">⏳ 加载中…</td></tr>
             <tr v-else-if="!items.length"><td colspan="8" class="empty-cell">暂无合同，点击「新增合同」开始</td></tr>
-            <tr v-for="c in items" :key="c.id" class="data-row">
+            <tr v-for="c in items" :key="c.id" class="data-row" @contextmenu.prevent="ctx.open($event, c)">
               <td class="ct-name">{{ c.name }}</td>
               <td class="text-muted mono">{{ c.contract_no || '—' }}</td>
               <td><span class="dept-chip">{{ c.delivery_dept || '—' }}</span></td>
@@ -336,6 +380,9 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         </div>
       </div>
     </Teleport>
+
+    <!-- 右键上下文菜单 -->
+    <ContextMenu :ctx="ctx" :items="ctxItems" />
   </div>
 </template>
 

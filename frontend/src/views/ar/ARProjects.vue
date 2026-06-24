@@ -14,6 +14,9 @@ import SkeletonRow from '../../components/SkeletonRow.vue'
 import SchemePicker from '../../components/SchemePicker.vue'
 import { useTableSchemes } from '../../composables/useTableSchemes.js'
 import { useColWidths } from '../../composables/useColWidths.js'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -140,6 +143,58 @@ async function changeStatus(item) {
   try { await ar.updateProject(item.id, { status: item.status }) }
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
+async function setStatus(item, s) {
+  if (item.status === s) return
+  item.status = s
+  await changeStatus(item)
+  toast.success(`✓ 项目「${item.short_name || item.customer_name}」状态改为${s}`)
+}
+
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const ctx = useContextMenu()
+const ROW_COPY_COLS = [
+  { key: 'project_no', label: '项目编号' },
+  { key: 'customer_name', label: '客户' },
+  { key: 'short_name', label: '项目简称' },
+  { key: 'status', label: '状态' },
+  { key: 'delivery_dept', label: '交付部门' },
+  { key: 'project_manager', label: '项目经理' },
+  { key: 'has_contract', label: '有无合同' },
+  { key: 'total_days', label: '账期', format: v => (v == null ? '' : v + '天') },
+]
+async function copyField(val, label) {
+  const ok = await copyText(val)
+  ok ? toast.success(`已复制：${label}`) : toast.error('复制失败')
+}
+async function copyWholeRow(item) {
+  const ok = await copyRowTSV(item, ROW_COPY_COLS, { header: true })
+  ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
+}
+const ctxItems = computed(() => {
+  const it = ctx.menu.payload
+  if (!it) return []
+  return [
+    { key: 'complete', label: '补充完善草稿', icon: 'edit', hidden: !(it.is_draft && auth.canArWrite), action: r => completeDraft(r) },
+    { key: 'edit', label: '编辑项目', icon: 'edit', shortcut: 'E', action: r => openEdit(r) },
+    {
+      key: 'status', label: '改状态', icon: 'status', hidden: !auth.canArWrite,
+      children: STATUSES.map(s => ({ key: 'st-' + s, label: s, icon: 'status', active: it.status === s, action: r => setStatus(r, s) })),
+    },
+    { divider: true },
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: r => copyWholeRow(r) },
+        { divider: true },
+        { key: 'copy-no', label: '项目编号', icon: 'invoice', hidden: !it.project_no, action: r => copyField(r.project_no, r.project_no) },
+        { key: 'copy-cust', label: '客户名称', icon: 'customer', hidden: !it.customer_name, action: r => copyField(r.customer_name, r.customer_name) },
+        { key: 'copy-short', label: '项目简称', icon: 'cell', hidden: !it.short_name, action: r => copyField(r.short_name, r.short_name) },
+      ],
+    },
+    { divider: true },
+    { key: 'del', label: '删除项目', icon: 'trash', danger: true, hidden: !auth.canDelete, action: r => remove(r) },
+  ]
+})
 
 // 客户池（一次性加载）+ 当前项目挂靠的合同
 const customers = ref([])
@@ -592,7 +647,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <td colspan="16" class="empty-cell"><div class="empty-inner">暂无项目数据，点击「新增项目」开始</div></td>
             </tr>
             <tr v-for="item in items" :key="item.id" class="data-row"
-              :class="{ 'row-sel': selectAllMatching || selectedIds.has(item.id) }">
+              :class="{ 'row-sel': selectAllMatching || selectedIds.has(item.id) }"
+              @contextmenu.prevent="ctx.open($event, item)">
               <td v-if="auth.canDelete" class="ctr sel-col">
                 <input type="checkbox" :checked="selectAllMatching || selectedIds.has(item.id)"
                   @change="toggleRow(item.id)" />
@@ -883,6 +939,9 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         </div>
       </div>
     </Teleport>
+
+    <!-- 右键上下文菜单 -->
+    <ContextMenu :ctx="ctx" :items="ctxItems" />
 
   </div>
 </template>
