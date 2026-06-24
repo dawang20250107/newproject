@@ -1573,11 +1573,9 @@ function clearFilters() {
           </template>
         </template>
 
-        <span v-if="kpiData && summaryData && activeTab !== 'all'" class="metrics-div"></span>
-
-        <!-- 汇总区：时段合计（单行紧凑条）；筛选集列合计见表格底部吸底合计行 -->
+        <!-- 汇总区：时段合计（单行紧凑条）仅在「全部明细」展示；筛选集列合计见表格底部吸底合计行 -->
         <!-- 应收为净额（预估 − 已回款，分批回款扣回真实未收）；调整=账实差额；应收+调整=未收 -->
-        <div v-if="summaryData" class="period-bar"
+        <div v-if="summaryData && activeTab === 'all'" class="period-bar"
              :title="`基准日 ${summaryData.ref_date}（取筛选中最晚日期，无筛选则今天）。应收=预估上账−已回款（净额）；调整=账实差额；已收=区间内实际回款。应收按到期日、调整按调整日期、已收按回款日各自归入对应月/周（周五~周四口径）`">
           <span class="period-lbl">时段合计</span>
           <span class="pd-k">{{ summaryData.ref_month }}当期</span>
@@ -1786,7 +1784,6 @@ function clearFilters() {
                     <span v-if="dueSoon(rec)" class="due-soon-badge" :title="`应收到期：${rec.due_date}`">即将到期</span>
                   </div>
                   <div v-if="rec.short_name && rec.short_name !== rec.customer_name" class="proj-sub" :title="rec.customer_name">{{ rec.customer_name }}</div>
-                  <div class="proj-no">{{ rec.project_no }}</div>
                 </td>
                 <td class="ctr">
                   <span class="ym-chip">{{ rec.operation_date || (rec.operation_year + "/" + String(rec.operation_month).padStart(2, "0")) }}</span>
