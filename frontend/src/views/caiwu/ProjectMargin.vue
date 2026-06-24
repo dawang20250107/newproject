@@ -6,9 +6,15 @@ import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import api from '../../api/caiwu.js'
 import { fmtCompact } from '../../utils/format.js'
 import EmptyState from '../../components/EmptyState.vue'
+import ProjectPnlCard from './ProjectPnlCard.vue'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { useToast } from '../../composables/useToast.js'
 
 const auth = useCaiwuAuth()
 const route = useRoute()
+const toast = useToast()
 
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
@@ -27,6 +33,46 @@ const loading = ref(false)
 const loadErr = ref('')
 
 const fmt = (v) => fmtCompact(v, { space: true })
+
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const pnlTarget = ref(null)
+function openPnl(r) {
+  if (!r?.project_name) return
+  pnlTarget.value = { name: r.project_name, year: year.value }
+}
+const ctx = useContextMenu()
+const ROW_COPY_COLS = [
+  { key: 'project_name', label: '项目' },
+  { key: 'revenue', label: '收入', format: v => fmt(v) },
+  { key: 'cost', label: '成本', format: v => fmt(v) },
+  { key: 'margin', label: '毛利', format: v => fmt(v) },
+  { key: 'margin_rate', label: '毛利率', format: v => (v === null ? '' : v + '%') },
+]
+async function copyField(val, label) {
+  const ok = await copyText(val)
+  ok ? toast.success(`已复制：${label}`) : toast.error('复制失败')
+}
+async function copyWholeRow(r) {
+  const ok = await copyRowTSV(r, ROW_COPY_COLS, { header: true })
+  ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
+}
+const ctxItems = computed(() => {
+  const r = ctx.menu.payload
+  if (!r) return []
+  return [
+    { key: 'pnl', label: '查看业财损益卡', icon: 'chart', action: row => openPnl(row) },
+    { divider: true },
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: row => copyWholeRow(row) },
+        { divider: true },
+        { key: 'copy-name', label: '项目名称', icon: 'cell', action: row => copyField(row.project_name, row.project_name) },
+        { key: 'copy-margin', label: '毛利', icon: 'cell', action: row => copyField(fmt(row.margin), fmt(row.margin)) },
+      ],
+    },
+  ]
+})
 
 const rows = computed(() => data.value?.rows || [])
 const summary = computed(() => data.value?.summary || null)
@@ -170,9 +216,9 @@ onMounted(() => {
             </thead>
             <tbody>
               <tr v-if="!rows.length && !showPool"><td colspan="6" class="empty-cell">本事业部本期无已挂项目的数据</td></tr>
-              <tr v-for="(r, i) in rows" :key="r.project_name">
+              <tr v-for="(r, i) in rows" :key="r.project_name" class="pm-row" @click="openPnl(r)" @contextmenu.prevent="ctx.open($event, r)">
                 <td class="ctr text-muted">{{ i + 1 }}</td>
-                <td class="fw pm-name" :title="r.project_name">{{ r.project_name }}</td>
+                <td class="fw pm-name" :title="r.project_name">{{ r.project_name }}<span class="pm-drill">损益 ›</span></td>
                 <td class="amt">{{ fmt(r.revenue) }}</td>
                 <td class="amt">{{ fmt(r.cost) }}</td>
                 <td class="amt" :class="r.margin >= 0 ? 'text-ok' : 'text-danger'"><span class="caret">{{ r.margin >= 0 ? '▲' : '▼' }}</span>{{ fmt(r.margin) }}</td>
@@ -233,6 +279,12 @@ onMounted(() => {
         </div>
       </div>
     </Teleport>
+
+    <!-- 业财损益卡 -->
+    <ProjectPnlCard v-if="pnlTarget" :name="pnlTarget.name" :year="pnlTarget.year" :askable="false" @close="pnlTarget = null" />
+
+    <!-- 右键上下文菜单 -->
+    <ContextMenu :ctx="ctx" :items="ctxItems" />
   </div>
 </template>
 
@@ -270,6 +322,10 @@ onMounted(() => {
 .pm-table { width: 100%; font-size: 13px; }
 .pm-table th.ctr, .pm-table td.ctr { width: 44px; }
 .pm-name { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-row { cursor: pointer; }
+.pm-row:hover { background: rgba(201,99,66,0.045); }
+.pm-drill { margin-left: 6px; font-size: 11px; color: var(--primary); opacity: 0; transition: opacity .12s; }
+.pm-row:hover .pm-drill { opacity: .75; }
 .pm-pool-row td { background: rgba(230,81,0,0.04); color: var(--muted); }
 .pm-table thead th { padding: 9px 12px; font-size: 11.5px; color: var(--muted); font-weight: 700; border-bottom: 1px solid rgba(0,0,0,0.08); }
 .pm-table tbody td { padding: 9px 12px; border-bottom: 1px solid rgba(0,0,0,0.04); }
