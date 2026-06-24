@@ -223,7 +223,7 @@ onMounted(() => {
 
     <!-- 表格：标准 card -->
     <div class="card fh-fill">
-      <div class="section-title">
+      <div class="section-title pcf-sec-title">
         {{ isProjDim ? '项目' : '二级部门' }}现金流明细
         <span class="section-sub">
           {{ filters.dept || '全部事业部' }}
@@ -287,18 +287,6 @@ onMounted(() => {
               </td>
             </tr>
           </tbody>
-          <tfoot>
-            <tr class="pcf-foot">
-              <td colspan="2" class="fw">合计 {{ rows.length }} 个{{ isProjDim ? '项目' : '二级部门' }}</td>
-              <td class="amt green fw">{{ fmtWan(totals.inflow) }}</td>
-              <td class="amt red fw">{{ fmtWan(totals.outflow) }}</td>
-              <td class="amt fw" :style="{ color: netColor(totals.net) }">
-                <span class="caret">{{ totals.net >= 0 ? '▲' : '▼' }}</span>{{ fmtWan(totals.net) }}
-              </td>
-              <td class="amt amber fw">{{ fmtWan(totals.outstanding) }}</td>
-              <td :colspan="isProjDim ? 2 : 1"></td>
-            </tr>
-          </tfoot>
         </table>
       </div>
     </div>
@@ -346,10 +334,10 @@ onMounted(() => {
 
 <style scoped>
 /* CSS 自定义属性统一分发到所有子控件（紧凑高度，给表格让位） */
-.pcf-wrap { --pcf-h: 30px; --pcf-radius: 7px; }
+.pcf-wrap { --pcf-h: 28px; --pcf-radius: 7px; }
 
 /* 标题行：tab 居左作页面标题，4 个筛选小框靠右同行，允许窄屏换行 */
-.pcf-topbar { gap: 12px 16px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.pcf-topbar { gap: 8px 12px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 
 /* 右上角筛选小框：同行排列、靠右、间距紧凑 */
 .pcf-top-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
@@ -391,12 +379,12 @@ onMounted(() => {
 .pcf-search-wrap {
   display: inline-flex; align-items: center; gap: 5px;
   height: var(--pcf-h); box-sizing: border-box;
-  width: 168px; flex: 0 0 auto;
+  width: 148px; flex: 0 0 auto;
   background: rgba(255,255,255,.6); border: 1px solid var(--border);
   border-radius: var(--pcf-radius); padding: 0 9px; color: var(--muted);
   transition: border-color .15s, background-color .15s, width .18s;
 }
-.pcf-search-wrap:focus-within { width: 220px; border-color: rgba(201,99,66,.5); background: #fff; color: var(--primary); }
+.pcf-search-wrap:focus-within { width: 200px; border-color: rgba(201,99,66,.5); background: #fff; color: var(--primary); }
 .pcf-search-ico { flex-shrink: 0; }
 .pcf-search {
   flex: 1 1 auto; min-width: 0;
@@ -408,15 +396,30 @@ onMounted(() => {
 .pcf-empty { padding: 40px; text-align: center; color: var(--muted); font-size: 13px; }
 .pcf-empty.err { color: #c62828; }
 
+/* 标题精简：与右上筛选/吸底栏信息不重复占行，压缩上下边距把空间让给表格 */
+.pcf-sec-title { margin: 0 0 8px; font-size: 14px; }
+.pcf-sec-title .section-sub { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 6px; }
+
 /* 固定视口：表头吸顶 + 为吸底栏预留空间 */
 .fh-fill { padding-bottom: 40px; }
-.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+/* 表头吸顶：背景必须完全不透明，否则滚动时下方数据会透过表头透出。
+   用实色 + 投影分隔，并把 thead/th 一并设为同色，杜绝任何半透明缝隙。 */
+.table-wrap thead { position: sticky; top: 0; z-index: 5; }
+.table-wrap thead th {
+  position: sticky; top: 0; z-index: 5;
+  background: #f4f1ef; box-shadow: inset 0 -1px 0 rgba(0,0,0,.08);
+}
+.table-wrap thead::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 6px;
+  background: linear-gradient(rgba(0,0,0,.05), transparent); pointer-events: none;
+}
 
 /* Table — 对齐项目毛利的 pm-table */
 .pcf-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .pcf-table thead th {
   padding: 9px 12px; text-align: left; font-size: 11.5px; font-weight: 700;
   color: var(--muted); border-bottom: 1px solid rgba(0,0,0,.08); white-space: nowrap;
+  background: #f4f1ef;
 }
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .ctr { text-align: center; }
@@ -440,8 +443,9 @@ onMounted(() => {
 /* 净现金 / 合计的方向标记 */
 .caret { font-size: 8px; margin-right: 3px; vertical-align: 1px; opacity: .85; }
 .bb-caret { font-size: 8px; margin-right: 2px; vertical-align: 1px; }
-/* 当前排序列：表头与整列轻微高亮，强化“正在按此列排序” */
-.pcf-table thead th.sorted { background: rgba(201,99,66,.07); }
+/* 当前排序列：表头与整列轻微高亮，强化“正在按此列排序”。
+   表头用实色（在 #f4f1ef 上叠加 7% 主色），避免半透明导致滚动数据透出。 */
+.pcf-table thead th.sorted { background: #f0e6e1; }
 .pcf-table tbody td.col-on { background: rgba(201,99,66,.045); }
 .pcf-table tbody tr:hover td.col-on { background: rgba(201,99,66,.07); }
 /* 极淡斑马纹，长表更易读 */
@@ -472,6 +476,4 @@ onMounted(() => {
   color: #4a6fa5; font-size: 11.5px; padding: 3px 9px; border-radius: 7px; cursor: pointer; white-space: nowrap;
 }
 .pcf-btn-detail:hover { background: rgba(122,159,212,.18); }
-
-.pcf-foot td { padding: 10px 12px; border-top: 2px solid rgba(201,99,66,.3); background: #f8efeb; font-size: 12.5px; color: var(--text); }
 </style>
