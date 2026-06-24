@@ -8,6 +8,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 from ._common import *  # noqa: F401,F403
 from ..models import ARActivity, ARAttachment
+from paikuan.models import PaikuanUser
 
 
 # ── 允许的文件扩展名 ──────────────────────────────────────────────────────────
