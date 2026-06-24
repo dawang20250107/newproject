@@ -15,6 +15,9 @@ import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
 import { useColWidths } from '../../composables/useColWidths.js'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -141,14 +144,59 @@ if (typeof document !== 'undefined') {
 }
 
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
-const ctxMenu = reactive({ show: false, x: 0, y: 0, rec: null })
-function openCtxMenu(e, rec) {
-  ctxMenu.show = true
-  ctxMenu.x = e.clientX
-  ctxMenu.y = e.clientY
-  ctxMenu.rec = rec
+const ctx = useContextMenu()
+
+// 复制整行用的列定义（Tab 分隔，可直接粘进 Excel）
+const ROW_COPY_COLS = [
+  { key: 'short_name', label: '项目' },
+  { key: 'customer_name', label: '客户' },
+  { key: 'operation_date', label: '运作日期', format: (v, r) => v || (r.operation_year + '-' + String(r.operation_month).padStart(2, '0')) },
+  { key: 'estimated_amount', label: '预估金额', format: v => fmtMoney(v) },
+  { key: 'actual_invoice_amount', label: '已开票', format: v => (v == null ? '' : fmtMoney(v)) },
+  { key: 'outstanding_amount', label: '未收金额', format: v => fmtMoney(v) },
+  { key: 'due_date', label: '应收到期' },
+  { key: 'overdue_days', label: '逾期天数', format: v => (v > 0 ? v : '') },
+  { key: 'invoice_batch_no', label: '开票批次' },
+]
+
+async function copyField(val, label) {
+  const ok = await copyText(val)
+  ok ? toast.success(`已复制${label ? '：' + label : ''}`) : toast.error('复制失败')
 }
-function closeCtxMenu() { ctxMenu.show = false; ctxMenu.rec = null }
+async function copyWholeRow(rec) {
+  const ok = await copyRowTSV(rec, ROW_COPY_COLS, { header: true })
+  ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
+}
+
+// 菜单项依据当前行（ctx.menu.payload）动态计算：已结清行禁用「录入回款」，
+// 复制子菜单按字段是否有值动态显隐，删除归到底部危险分组。
+const ctxItems = computed(() => {
+  const rec = ctx.menu.payload
+  if (!rec) return []
+  const settled = parseFloat(rec.outstanding_amount || 0) <= 0
+  return [
+    { key: 'log', label: '催收跟进日志', icon: 'log', shortcut: 'L', action: r => openLogModal(r) },
+    { key: 'edit', label: '编辑', icon: 'edit', shortcut: 'E', hidden: !auth.canArWrite, action: r => openEdit(r) },
+    {
+      key: 'pay', label: settled ? '录入回款（已结清）' : '录入回款', icon: 'payment', shortcut: 'P',
+      hidden: !auth.canArWrite, disabled: settled, action: r => openAddPayment(r),
+    },
+    { divider: true },
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: r => copyWholeRow(r) },
+        { divider: true },
+        { key: 'copy-proj', label: '项目简称', icon: 'cell', hidden: !rec.short_name, action: r => copyField(r.short_name, r.short_name) },
+        { key: 'copy-cust', label: '客户名称', icon: 'customer', hidden: !rec.customer_name, action: r => copyField(r.customer_name, r.customer_name) },
+        { key: 'copy-batch', label: '开票批次号', icon: 'invoice', hidden: !rec.invoice_batch_no, action: r => copyField(r.invoice_batch_no, r.invoice_batch_no) },
+        { key: 'copy-out', label: '未收金额', icon: 'cell', action: r => copyField(fmtMoney(r.outstanding_amount), fmtMoney(r.outstanding_amount)) },
+      ],
+    },
+    { divider: true },
+    { key: 'del', label: '删除', icon: 'trash', danger: true, hidden: !auth.canDelete, action: r => deleteRec(r) },
+  ]
+})
 
 // ── 列可见性面板（用户可隐藏权限范围内的列）──────────────────────────────────
 const COL_VIS_DEFS = [
@@ -1818,7 +1866,7 @@ function clearFilters() {
             </tr>
             <template v-for="rec in items" :key="rec.id">
               <tr :class="['data-row', agingRowClass(rec), (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']"
-                @contextmenu.prevent="openCtxMenu($event, rec)">
+                @contextmenu.prevent="ctx.open($event, rec)">
                 <td v-if="auth.canDelete" class="sel-col sticky-col">
                   <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @change="toggleRow(rec.id)" />
                 </td>
@@ -2849,27 +2897,8 @@ function clearFilters() {
       <ImportPrecheckModal :report="precheckResult" :busy="precheckBusy" :readonly="true"
         @close="precheckResult = null" @apply="onPrecheckApply" />
 
-      <!-- 右键上下文菜单 -->
-      <div v-if="ctxMenu.show" class="ctx-backdrop" @click="closeCtxMenu" @contextmenu.prevent="closeCtxMenu"></div>
-      <div v-if="ctxMenu.show" class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }">
-        <button class="ctx-item" @click="openLogModal(ctxMenu.rec); closeCtxMenu()">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
-          催收跟进日志
-        </button>
-        <button v-if="auth.canArWrite" class="ctx-item" @click="openEdit(ctxMenu.rec); closeCtxMenu()">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4z"/></svg>
-          编辑
-        </button>
-        <button v-if="auth.canArWrite" class="ctx-item" @click="openAddPayment(ctxMenu.rec); closeCtxMenu()">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
-          录入回款
-        </button>
-        <div v-if="auth.canDelete" class="ctx-divider"></div>
-        <button v-if="auth.canDelete" class="ctx-item ctx-item-danger" @click="deleteRec(ctxMenu.rec); closeCtxMenu()">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
-          删除
-        </button>
-      </div>
+      <!-- 右键上下文菜单（公共组件，声明式菜单项见 ctxItems） -->
+      <ContextMenu :ctx="ctx" :items="ctxItems" />
 
       <!-- 账龄配置弹窗 -->
       <div v-if="showAgingCfgModal" class="modal-overlay" @click.self="showAgingCfgModal = false">
@@ -3612,24 +3641,6 @@ function clearFilters() {
 .col-vis-item input { cursor: pointer; }
 .col-vis-backdrop { position: fixed; inset: 0; z-index: 199; }
 .btn.on { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.06); }
-
-/* ── 右键菜单 ────────────────────────────────────────────────────── */
-.ctx-backdrop { position: fixed; inset: 0; z-index: 300; }
-.ctx-menu {
-  position: fixed; z-index: 301;
-  background: #fff; border: 1px solid var(--border); border-radius: 10px;
-  box-shadow: 0 8px 28px rgba(0,0,0,0.16); min-width: 148px; padding: 5px 0;
-}
-.ctx-item {
-  display: flex; align-items: center; gap: 8px;
-  width: 100%; padding: 8px 14px; border: none; background: none;
-  font-size: 13px; color: var(--text); cursor: pointer; text-align: left; transition: background .1s;
-}
-.ctx-item:hover { background: rgba(201,99,66,0.06); }
-.ctx-item svg { flex-shrink: 0; color: var(--muted); }
-.ctx-item-danger { color: #c62828; }
-.ctx-item-danger:hover { background: rgba(198,40,40,0.07); }
-.ctx-divider { height: 1px; background: var(--border); margin: 3px 0; }
 
 /* ── 到期预警徽标 ─────────────────────────────────────────────────── */
 .due-soon-badge {
