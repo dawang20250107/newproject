@@ -184,19 +184,14 @@ onMounted(() => {
 </script>
 
 <template>
-  <div>
-    <!-- 标题行：tab + 全部筛选同处一行，去掉独立的整行筛选框 -->
+  <div class="pcf-wrap">
+    <!-- 标题行：tab 居左，事业部 / 年份 / 时间范围靠右 -->
     <div class="topbar pcf-topbar">
       <div class="pcf-dim-seg pcf-tabs">
         <button v-for="d in DIMS" :key="d.v" class="pcf-dim-btn" :class="{ on: groupBy === d.v }"
           @click="setDim(d.v)">{{ d.l }}现金流</button>
       </div>
-      <div class="pcf-controls">
-        <!-- 搜索：可伸缩，给足最小宽度避免占位文案被截断 -->
-        <div class="pcf-search-wrap">
-          <svg class="pcf-search-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-          <input v-model="search" class="pcf-search" placeholder="搜索项目 / 客户 / 事业部" />
-        </div>
+      <div class="pcf-top-right">
         <select v-model="filters.dept" class="pcf-sel" @change="filters.useCustomDate ? load() : null">
           <option value="">全部事业部</option>
           <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
@@ -205,18 +200,23 @@ onMounted(() => {
         <select v-model.number="filters.year" class="pcf-sel pcf-year-sel">
           <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
         </select>
-        <!-- 日期区间：预设收进单个下拉 -->
         <select v-model="rangePreset" class="pcf-sel pcf-range-sel" @change="onRangeChange">
           <option value="">全年</option>
           <option v-for="p in PRESETS" :key="p.k" :value="p.k">{{ p.l }}</option>
           <option value="custom">自定义…</option>
         </select>
-        <!-- 自定义区间：成对日期输入，作为一组对齐 -->
-        <div v-if="filters.useCustomDate" class="pcf-daterange">
-          <input v-model="filters.date_start" type="date" class="pcf-date-inp" @change="onDateEdit" />
-          <span class="pcf-dash">—</span>
-          <input v-model="filters.date_end" type="date" class="pcf-date-inp" @change="onDateEdit" />
-        </div>
+      </div>
+    </div>
+    <!-- 搜索 + 自定义日期区间独占一行，空间充裕 -->
+    <div class="pcf-filter-row">
+      <div class="pcf-search-wrap">
+        <svg class="pcf-search-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input v-model="search" class="pcf-search" placeholder="搜索项目 / 客户 / 事业部" />
+      </div>
+      <div v-if="filters.useCustomDate" class="pcf-daterange">
+        <input v-model="filters.date_start" type="date" class="pcf-date-inp" @change="onDateEdit" />
+        <span class="pcf-dash">—</span>
+        <input v-model="filters.date_end" type="date" class="pcf-date-inp" @change="onDateEdit" />
       </div>
     </div>
 
@@ -344,16 +344,18 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* 标题行：tab 居左作页面标题，筛选项全部并入同一行靠右，去掉独立筛选条 */
-.pcf-topbar { gap: 12px; flex-wrap: wrap; }
+/* CSS 自定义属性统一分发到所有子控件 */
+.pcf-wrap { --pcf-h: 34px; --pcf-radius: 8px; }
 
-/* 右上角控件统一规格：同高、同圆角，宽度按内容协调，窄屏优雅换行 */
-.pcf-controls {
-  --pcf-h: 34px;            /* 所有控件统一高度 */
-  --pcf-radius: 8px;
-  display: flex; align-items: center; gap: 8px;
-  flex-wrap: wrap; justify-content: flex-end; row-gap: 8px;
-}
+/* 标题行：tab 居左，右侧为维度无关筛选，不换行 */
+.pcf-topbar { gap: 16px; align-items: center; }
+
+/* 右上角下拉控件行 */
+.pcf-top-right { display: inline-flex; align-items: center; gap: 8px; }
+
+/* 搜索 + 自定义日期独占一行，搜索框可充分伸展 */
+.pcf-filter-row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+
 /* 下拉：统一高度/圆角/内边距；箭头留白，避免文本与箭头重叠被截断 */
 .pcf-sel {
   height: var(--pcf-h); box-sizing: border-box;
@@ -387,11 +389,11 @@ onMounted(() => {
 .pcf-date-inp:hover, .pcf-date-inp:focus { background: rgba(201,99,66,.06); border-color: rgba(201,99,66,.4); }
 .pcf-dash { color: var(--muted); font-size: 13px; flex-shrink: 0; }
 
-/* 搜索：与其它控件同高，最小宽度容纳完整占位文案，可弹性伸缩不裁切 */
+/* 搜索：独占一行后可充分伸展，最大宽度限制避免过宽 */
 .pcf-search-wrap {
   display: inline-flex; align-items: center; gap: 6px;
   height: var(--pcf-h); box-sizing: border-box;
-  flex: 1 1 200px; min-width: 180px; max-width: 280px;
+  flex: 1 1 auto; min-width: 220px; max-width: 460px;
   background: rgba(255,255,255,.6); border: 1px solid var(--border);
   border-radius: var(--pcf-radius); padding: 0 11px; color: var(--muted);
   transition: border-color .15s, background-color .15s;

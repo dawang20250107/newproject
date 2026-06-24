@@ -30,20 +30,19 @@ const exporting = ref(false)
 
 const metricsData = ref(null)
 
-// 三大指标（收入 / 经营毛利 / 经营净利）完成表默认折叠，点击表头展开。
-// 以 TABLES 的 tKey 作为唯一键，初始全部折叠（true = 折叠）。
+// 三大目标（收入 / 经营毛利 / 经营净利）的输入网格默认折叠，点击标题展开。
+// 以 GRIDS 的 key 作为唯一键，初始全部折叠（true = 折叠）。
 const collapsed = reactive({})
 function isCollapsed(key) {
-  // 未初始化的视为折叠（默认折叠）
   return collapsed[key] !== false
 }
 function toggleSection(key) {
   collapsed[key] = !isCollapsed(key)
 }
-const allExpanded = computed(() => TABLES.every(t => collapsed[t.tKey] === false))
+const allExpanded = computed(() => GRIDS.every(g => collapsed[g.key] === false))
 function toggleAll() {
-  const next = !allExpanded.value          // 当前未全展开 → 全部展开
-  for (const t of TABLES) collapsed[t.tKey] = !next
+  const next = !allExpanded.value
+  for (const g of GRIDS) collapsed[g.key] = !next
 }
 
 // editGrid[bu] = { rev/prof/gross: [Jan…Dec (0-11), annual (12)] }
@@ -305,6 +304,9 @@ onMounted(load)
             <div class="grid-hint">月度合计必须等于年度目标，否则无法保存</div>
           </div>
           <div class="card-header-right">
+            <button class="btn btn-ghost btn-sm" @click="toggleAll">
+              {{ allExpanded ? '全部收起' : '全部展开' }}
+            </button>
             <select v-model="targetYear" class="sel-yr">
               <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
             </select>
@@ -327,10 +329,16 @@ onMounted(load)
           </div>
         </div>
 
-        <!-- 三组目标网格 -->
+        <!-- 三组目标网格：默认折叠，点标题展开 -->
         <template v-for="g in GRIDS" :key="g.key">
-          <div class="grid-sub-title" :style="g.key !== 'rev' ? 'margin-top:16px' : ''">{{ g.label }}</div>
-          <div class="grid-scroll">
+          <div class="grid-sub-title sec-toggle" :class="{ collapsed: isCollapsed(g.key) }"
+               :style="g.key !== 'rev' ? 'margin-top:16px' : ''"
+               role="button" tabindex="0"
+               @click="toggleSection(g.key)" @keydown.enter.space.prevent="toggleSection(g.key)">
+            <span class="sec-caret">▾</span>
+            {{ g.label }}
+          </div>
+          <div v-show="!isCollapsed(g.key)" class="grid-scroll">
             <table class="tgt-grid">
               <thead>
                 <tr>
@@ -382,25 +390,18 @@ onMounted(load)
         <select v-model="reportMonth" class="sel-mo">
           <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
         </select>
-        <!-- 三大指标默认折叠，这里提供「全部展开 / 全部收起」一键开关 -->
-        <button class="btn btn-ghost btn-sm" style="margin-left:auto" @click="toggleAll">
-          {{ allExpanded ? '全部收起' : '全部展开' }}
-        </button>
       </div>
 
       <EmptyState v-if="loadingMetrics && !metricsData" loading />
       <template v-else-if="metricsData">
         <div :class="{ 'data-reloading': loadingMetrics }">
 
-          <!-- 三张完成表（三大指标）：默认折叠，点击表头展开/收起 -->
+          <!-- 三张完成表（三大指标）：始终展开 -->
           <div v-for="t in TABLES" :key="t.tKey" class="card">
-            <div class="section-title sec-toggle" :class="{ collapsed: isCollapsed(t.tKey) }"
-                 role="button" tabindex="0"
-                 @click="toggleSection(t.tKey)" @keydown.enter.space.prevent="toggleSection(t.tKey)">
-              <span class="sec-caret">▾</span>
+            <div class="section-title" style="margin-bottom:14px">
               {{ t.title }} · {{ reportYear }}年{{ reportMonth }}月
             </div>
-            <div v-show="!isCollapsed(t.tKey)" class="table-scroll">
+            <div class="table-scroll">
               <table class="metric-table">
                 <thead>
                   <tr>
