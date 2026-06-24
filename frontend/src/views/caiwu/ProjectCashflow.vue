@@ -185,38 +185,39 @@ onMounted(() => {
 
 <template>
   <div class="pcf-wrap">
-    <!-- 标题行：tab 居左，事业部 / 年份 / 时间范围靠右 -->
+    <!-- 标题行：tab 居左作页面标题，4 个紧凑筛选小框靠右同行，整行留给表格 -->
     <div class="topbar pcf-topbar">
       <div class="pcf-dim-seg pcf-tabs">
         <button v-for="d in DIMS" :key="d.v" class="pcf-dim-btn" :class="{ on: groupBy === d.v }"
           @click="setDim(d.v)">{{ d.l }}现金流</button>
       </div>
       <div class="pcf-top-right">
+        <!-- ① 事业部 -->
         <select v-model="filters.dept" class="pcf-sel" @change="filters.useCustomDate ? load() : null">
           <option value="">全部事业部</option>
           <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
         </select>
-        <span class="pcf-fb-sep"></span>
+        <!-- ② 年份 -->
         <select v-model.number="filters.year" class="pcf-sel pcf-year-sel">
           <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
         </select>
+        <!-- ③ 时间范围 -->
         <select v-model="rangePreset" class="pcf-sel pcf-range-sel" @change="onRangeChange">
           <option value="">全年</option>
           <option v-for="p in PRESETS" :key="p.k" :value="p.k">{{ p.l }}</option>
           <option value="custom">自定义…</option>
         </select>
-      </div>
-    </div>
-    <!-- 搜索 + 自定义日期区间独占一行，空间充裕 -->
-    <div class="pcf-filter-row">
-      <div class="pcf-search-wrap">
-        <svg class="pcf-search-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-        <input v-model="search" class="pcf-search" placeholder="搜索项目 / 客户 / 事业部" />
-      </div>
-      <div v-if="filters.useCustomDate" class="pcf-daterange">
-        <input v-model="filters.date_start" type="date" class="pcf-date-inp" @change="onDateEdit" />
-        <span class="pcf-dash">—</span>
-        <input v-model="filters.date_end" type="date" class="pcf-date-inp" @change="onDateEdit" />
+        <!-- ④ 搜索 -->
+        <div class="pcf-search-wrap">
+          <svg class="pcf-search-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input v-model="search" class="pcf-search" placeholder="搜索项目 / 客户" />
+        </div>
+        <!-- 自定义日期：选「自定义」时紧随其后出现 -->
+        <div v-if="filters.useCustomDate" class="pcf-daterange">
+          <input v-model="filters.date_start" type="date" class="pcf-date-inp" @change="onDateEdit" />
+          <span class="pcf-dash">—</span>
+          <input v-model="filters.date_end" type="date" class="pcf-date-inp" @change="onDateEdit" />
+        </div>
       </div>
     </div>
 
@@ -344,24 +345,21 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* CSS 自定义属性统一分发到所有子控件 */
-.pcf-wrap { --pcf-h: 34px; --pcf-radius: 8px; }
+/* CSS 自定义属性统一分发到所有子控件（紧凑高度，给表格让位） */
+.pcf-wrap { --pcf-h: 30px; --pcf-radius: 7px; }
 
-/* 标题行：tab 居左，右侧为维度无关筛选，不换行 */
-.pcf-topbar { gap: 16px; align-items: center; }
+/* 标题行：tab 居左作页面标题，4 个筛选小框靠右同行，允许窄屏换行 */
+.pcf-topbar { gap: 12px 16px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 
-/* 右上角下拉控件行 */
-.pcf-top-right { display: inline-flex; align-items: center; gap: 8px; }
-
-/* 搜索 + 自定义日期独占一行，搜索框可充分伸展 */
-.pcf-filter-row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+/* 右上角筛选小框：同行排列、靠右、间距紧凑 */
+.pcf-top-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
 
 /* 下拉：统一高度/圆角/内边距；箭头留白，避免文本与箭头重叠被截断 */
 .pcf-sel {
   height: var(--pcf-h); box-sizing: border-box;
   border: 1px solid var(--border); background: rgba(255,255,255,.6);
-  padding: 0 28px 0 12px; border-radius: var(--pcf-radius);
-  font-size: 13px; line-height: 1; color: var(--text); cursor: pointer; outline: none;
+  padding: 0 26px 0 10px; border-radius: var(--pcf-radius);
+  font-size: 12.5px; line-height: 1; color: var(--text); cursor: pointer; outline: none;
   /* 自绘下拉箭头，跨浏览器一致，且预留右侧空间不挤压文字 */
   -webkit-appearance: none; -moz-appearance: none; appearance: none;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239b8070' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>");
@@ -369,10 +367,10 @@ onMounted(() => {
   transition: background-color .15s, border-color .15s, color .15s;
 }
 .pcf-sel:hover, .pcf-sel:focus { background-color: rgba(201,99,66,.09); border-color: rgba(201,99,66,.4); color: var(--primary); }
-.pcf-year-sel { min-width: 84px; }
-.pcf-fb-sep { width: 1px; height: 18px; background: var(--border); margin: 0 2px; flex-shrink: 0; }
+.pcf-sel.pcf-year-sel { min-width: 78px; }
+.pcf-sel.pcf-range-sel { min-width: 90px; }
 .pcf-dim-seg { display: inline-flex; background: rgba(0,0,0,.05); border-radius: 9px; padding: 3px; }
-.pcf-tabs .pcf-dim-btn { font-size: 15px; padding: 6px 18px; }
+.pcf-tabs .pcf-dim-btn { font-size: 14px; padding: 5px 16px; }
 .pcf-dim-btn {
   border: none; background: none; padding: 5px 16px; border-radius: 7px;
   font-size: 12.5px; color: var(--muted); cursor: pointer; font-weight: 600;
@@ -389,20 +387,20 @@ onMounted(() => {
 .pcf-date-inp:hover, .pcf-date-inp:focus { background: rgba(201,99,66,.06); border-color: rgba(201,99,66,.4); }
 .pcf-dash { color: var(--muted); font-size: 13px; flex-shrink: 0; }
 
-/* 搜索：独占一行后可充分伸展，最大宽度限制避免过宽 */
+/* 搜索：作为第 4 个小框，与下拉同高、紧凑定宽（聚焦时略微展宽） */
 .pcf-search-wrap {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 5px;
   height: var(--pcf-h); box-sizing: border-box;
-  flex: 1 1 auto; min-width: 220px; max-width: 460px;
+  width: 168px; flex: 0 0 auto;
   background: rgba(255,255,255,.6); border: 1px solid var(--border);
-  border-radius: var(--pcf-radius); padding: 0 11px; color: var(--muted);
-  transition: border-color .15s, background-color .15s;
+  border-radius: var(--pcf-radius); padding: 0 9px; color: var(--muted);
+  transition: border-color .15s, background-color .15s, width .18s;
 }
-.pcf-search-wrap:focus-within { border-color: rgba(201,99,66,.5); background: #fff; color: var(--primary); }
+.pcf-search-wrap:focus-within { width: 220px; border-color: rgba(201,99,66,.5); background: #fff; color: var(--primary); }
 .pcf-search-ico { flex-shrink: 0; }
 .pcf-search {
   flex: 1 1 auto; min-width: 0;
-  border: none; background: transparent; font-size: 13px; color: var(--text);
+  border: none; background: transparent; font-size: 12.5px; color: var(--text);
   outline: none; width: 100%;
 }
 .pcf-search::placeholder { color: var(--muted); }
