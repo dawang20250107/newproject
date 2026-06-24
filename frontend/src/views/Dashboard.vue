@@ -105,10 +105,10 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
         </span>
       </div>
 
-      <div class="card">
+      <div class="card fh-fill">
         <div class="section-title">今日计划付款 ({{ data.today_count }} 笔)</div>
         <EmptyState v-if="!data.today_payments.length" icon="🎉" text="今日暂无计划付款" />
-        <div v-else class="table-wrap">
+        <div v-else class="table-wrap page-scroll">
           <table class="today-table">
             <thead>
               <tr>
@@ -211,4 +211,28 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .today-table .amt { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ── 排版紧凑：收紧工作台各区块的间距/内边距 ───────────────────────── */
+.topbar { margin-bottom: 10px; }
+.kpi-grid { gap: 10px; margin-bottom: 12px; }
+.kpi-card { padding: 13px 16px; }
+.kpi-card .label { margin-bottom: 5px; }
+.kpi-card .value { font-size: 24px; }
+.kpi-card .sub { margin-top: 3px; }
+.overdue-alert { padding: 9px 14px; margin-bottom: 12px; }
+.card { padding: 12px 14px; }
+.section-title { margin-bottom: 10px; }
+
+/* ── 固定一页 + 表格底部保护 ─────────────────────────────────────────
+   本路由已加 fullHeight，由全局 .main-content.full-height-view 锁定主区
+   不滚动。这里把视图根做成纵向 flex：KPI/告警/标题为不滚动头部
+   (flex-shrink:0)，付款卡片 .fh-fill 撑满剩余高度，表格 .page-scroll
+   内部滚动。底部留白避免最后一行被吸底 bottom-bar 遮挡或贴边。 */
+.topbar, .kpi-grid, .overdue-alert { flex-shrink: 0; }
+.card.fh-fill { padding-bottom: 4px; }
+.card.fh-fill .section-title { flex-shrink: 0; }
+/* 表头吸顶，滚动时列名常驻 */
+.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+/* 表格底部保护：滚动区末端留出空间，最后一行不贴边/不被遮挡 */
+.table-wrap.page-scroll { padding-bottom: 28px; }
 </style>

@@ -4,7 +4,7 @@ import { useAuthStore } from '../stores/auth.js'
 const routes = [
   { path: '/login', component: () => import('../views/Login.vue'), meta: { public: true } },
   { path: '/', redirect: '/dashboard' },
-  { path: '/dashboard', component: () => import('../views/Dashboard.vue'), meta: { page: 'dashboard' } },
+  { path: '/dashboard', component: () => import('../views/Dashboard.vue'), meta: { page: 'dashboard', fullHeight: true } },
   { path: '/payments', component: () => import('../views/Payments.vue'), meta: { page: 'payments', fullHeight: true } },
   { path: '/approvals', component: () => import('../views/ApprovalRecords.vue'), meta: { page: 'approval_records', fullHeight: true } },
   { path: '/stats', component: () => import('../views/Stats.vue'), meta: { page: 'stats', fullHeight: true } },

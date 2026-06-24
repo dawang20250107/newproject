@@ -53,18 +53,10 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 
 <template>
   <div>
-    <div class="topbar" style="align-items:flex-start">
+    <div class="topbar">
       <h1>月度统计</h1>
-      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:10px">
-        <div style="display:flex;gap:8px;align-items:center">
-          <select v-model="year" style="width:90px" @change="load">
-            <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
-          </select>
-          <select v-model="month" style="width:80px" @change="load">
-            <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
-          </select>
-          <button class="btn btn-ghost btn-sm" @click="load">查询</button>
-        </div>
+      <!-- 顶部筛选行：事业部 + 日期查询，单行水平对齐 -->
+      <div class="filter-row">
         <div v-if="availableDepts.length > 1" class="dept-filter">
           <span class="dept-filter-label">部门</span>
           <button
@@ -73,6 +65,15 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
             @click="toggleDept(d)"
           >{{ d }}</button>
           <button v-if="selectedDepts.length" class="dept-chip-clear" @click="selectedDepts = []; load()">清空</button>
+        </div>
+        <div class="date-query">
+          <select v-model="year" @change="load">
+            <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+          </select>
+          <select v-model="month" @change="load">
+            <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" @click="load">查询</button>
         </div>
       </div>
     </div>
@@ -106,7 +107,7 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
         </div>
         <div class="kpi-card">
           <div class="label">付款状态分布</div>
-          <div style="font-size:13px;margin-top:8px;display:flex;flex-direction:column;gap:4px">
+          <div style="font-size:13px;margin-top:6px;display:flex;flex-direction:column;gap:3px">
             <span>✅ 已付清 {{ data.by_status.settled }} 笔</span>
             <span>⚡ 部分付款 {{ data.by_status.partial }} 笔</span>
             <span>⏳ 待付款 {{ data.by_status.pending }} 笔</span>
@@ -115,7 +116,7 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
       </div>
 
       <!-- completion rate bar -->
-      <div class="card" style="margin-bottom:16px">
+      <div class="card" style="margin-bottom:12px">
         <div class="section-title">付款完成率</div>
         <div style="background:var(--bg2);border-radius:8px;height:20px;overflow:hidden">
           <div :style="`width:${data.completion_rate}%;background:var(--grad);height:100%;transition:width .6s;border-radius:8px`"></div>
@@ -173,7 +174,55 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 
 <style scoped>
 /* Fixed-viewport: header stays put, whole stats body scrolls inside locked viewport */
-.topbar { flex-shrink: 0; }
+.topbar { flex-shrink: 0; align-items: center; gap: 12px; }
+
+/* ── 紧凑排版：收紧 KPI 卡片内边距、卡片间距与各区块间距 ────────────── */
+.stats-body :deep(.kpi-grid) {
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.stats-body :deep(.kpi-card) {
+  padding: 13px 15px;
+  /* 统一卡片高度，配合金额不换行避免高低不齐 */
+  min-height: 92px;
+  display: flex;
+  flex-direction: column;
+}
+.stats-body :deep(.kpi-card .label) { margin-bottom: 5px; }
+.stats-body :deep(.kpi-card .sub) { margin-top: 4px; }
+/* 金额值锁定为单行：缩小并 clamp 字号 + 不换行 + 等宽数字，必要时整体缩放至容器内 */
+.stats-body :deep(.kpi-card .value) {
+  font-size: clamp(16px, 2.1vw, 23px);
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.stats-body :deep(.card) { padding: 14px 16px; }
+.stats-body :deep(.section-title) { margin-bottom: 10px; }
+
+/* ── 顶部筛选行：事业部 + 日期查询，单行水平对齐 ──────────────────── */
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.date-query {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 统一控件高度并垂直居中对齐 */
+.date-query select {
+  height: 32px;
+  width: 86px;
+}
+.date-query .btn-sm { height: 32px; }
+
 /* .stats-body uses global .page-scroll (flex:1; min-height:0; overflow:auto) */
 .dept-filter {
   display: flex;
