@@ -7,6 +7,9 @@ import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 import AiAnalysisModal from '../../components/caiwu/AiAnalysisModal.vue'
 import api from '../../api/caiwu.js'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
 import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney, topLabel, endLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
@@ -740,6 +743,33 @@ const engineLine = computed(() => {
 })
 
 onMounted(load)
+
+// ── 右键上下文菜单（事业部矩阵表）────────────────────────────────────────────
+const ctxMatrix = useContextMenu()
+const MATRIX_COPY_COLS = [
+  { key: 'bu', label: '事业部' },
+  { key: 'rev', label: '本月收入', format: (v) => wan ? wan(v) : String(v) },
+  { key: 'gross', label: '毛利', format: (v) => wan ? wan(v) : String(v) },
+  { key: 'prof', label: '净利润', format: (v) => wan ? wan(v) : String(v) },
+  { key: 'ytdRev', label: 'YTD收入', format: (v) => wan ? wan(v) : String(v) },
+]
+const ctxMatrixItems = computed(() => {
+  const r = ctxMatrix.menu.payload
+  if (!r) return []
+  return [
+    { key: 'drill', label: '下钻详情', icon: 'chart', action: () => openDrill(r.bu) },
+    { divider: true },
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '整行', icon: 'cell', action: () => copyRowTSV(r, MATRIX_COPY_COLS, { header: true }).then(() => showToast('已复制')) },
+        { divider: true },
+        { key: 'copy-bu', label: '事业部名称', icon: 'copy', action: () => copyText(r.bu).then(() => showToast('已复制')) },
+        { key: 'copy-prof', label: '净利润', icon: 'copy', action: () => copyText(wan(r.prof)).then(() => showToast('已复制')) },
+      ],
+    },
+  ]
+})
 </script>
 
 <template>
@@ -882,7 +912,7 @@ onMounted(load)
             </thead>
             <tbody>
               <tr v-if="!buMatrix.length"><td colspan="11" class="mtx-empty">暂无已发布的事业部数据</td></tr>
-              <tr v-for="r in buMatrix" :key="r.bu" :class="{ 'row-loss': r.loss }" class="drillable" @click="openDrill(r.bu)">
+              <tr v-for="r in buMatrix" :key="r.bu" :class="{ 'row-loss': r.loss }" class="drillable" @click="openDrill(r.bu)" @contextmenu.prevent="ctxMatrix.open($event, r)">
                 <td class="l bu">{{ r.bu }}<span class="drill-hint">下钻 ›</span></td>
                 <td class="strong">{{ wan(r.rev) }}</td>
                 <td><span :style="`color:${rateColor(r.revRate)}`">{{ fmtRate(r.revRate) }}</span></td>
@@ -1225,6 +1255,8 @@ onMounted(load)
     <Transition name="cfa-toast">
       <div v-if="alertToast" class="p4-toast">{{ alertToast }}</div>
     </Transition>
+
+    <ContextMenu :ctx="ctxMatrix" :items="ctxMatrixItems" />
   </div>
 </template>
 

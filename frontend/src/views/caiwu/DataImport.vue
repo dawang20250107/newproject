@@ -5,6 +5,10 @@ import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import api from '../../api/caiwu.js'
 import { fmtCompact, fmtDateTime } from '../../utils/format.js'
 import EmptyState from '../../components/EmptyState.vue'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText } from '../../utils/clipboard.js'
+import { useToast } from '../../composables/useToast.js'
 
 const auth = useCaiwuAuth()
 const batches = ref([])
@@ -200,6 +204,29 @@ function batchLight(b) {
     : { cls: 'light-red', label: '未提交' }
 }
 
+const toast = useToast()
+// ── 右键上下文菜单（批次列表）────────────────────────────────────────────────
+const ctx = useContextMenu()
+const ctxItems = computed(() => {
+  const b = ctx.menu.payload
+  if (!b) return []
+  const isDraft = b.status !== 'published'
+  return [
+    { key: 'pub', label: '发布', icon: 'plus', hidden: !(isDraft && auth.canPublish), action: x => doPublish(x.id) },
+    { key: 'replace', label: '替换数据', icon: 'refresh', hidden: !(!isDraft && auth.canUpload), action: x => openReplace(x) },
+    { divider: true },
+    {
+      key: 'copy', label: '复制批次信息', icon: 'copy',
+      children: [
+        { key: 'copy-bu', label: '事业部', icon: 'cell', action: x => copyText(x.business_unit).then(ok => ok ? toast.success('已复制：' + x.business_unit) : toast.error('复制失败')) },
+        { key: 'copy-period', label: '期间', icon: 'cell', action: x => copyText(x.year + 'Y' + x.month + 'M').then(ok => ok ? toast.success('已复制') : toast.error('复制失败')) },
+      ],
+    },
+    { divider: true },
+    { key: 'del', label: '删除批次', icon: 'trash', danger: true, hidden: !auth.canDelete, action: x => doDelete(x) },
+  ]
+})
+
 onMounted(() => {
   loadBatches()
   loadSubmissionStatus()
@@ -278,7 +305,7 @@ onMounted(() => {
         <div style="font-size:12px;color:var(--muted);margin-top:6px">上传金蝶导出的部门明细表，或使用KXT模板手动填报</div>
       </div>
       <div v-else class="batch-list">
-        <div v-for="b in batches" :key="b.id" class="batch-row">
+        <div v-for="b in batches" :key="b.id" class="batch-row" @contextmenu.prevent="ctx.open($event, b)">
           <!-- 状态灯：红灯=未提交(草稿)，绿灯=已提交(已发布) -->
           <span class="light-dot" :class="batchLight(b).cls" :title="batchLight(b).label"></span>
           <!-- 事业部 -->
@@ -483,6 +510,9 @@ onMounted(() => {
         </div>
       </div>
     </Transition>
+
+    <!-- 右键上下文菜单（批次列表）-->
+    <ContextMenu :ctx="ctx" :items="ctxItems" />
   </div>
 </template>
 

@@ -8,7 +8,7 @@
           <div
             v-else-if="it.children && it.children.length"
             class="ctxm-item ctxm-has-sub"
-            :class="{ disabled: it.disabled }"
+            :class="{ disabled: it.disabled, focused: i === focusedIdx }"
             @mouseenter="onSubEnter($event, it.key)"
             @mouseleave="onSubLeave"
           >
@@ -42,8 +42,9 @@
           <button
             v-else
             class="ctxm-item"
-            :class="{ 'ctxm-danger': it.danger, disabled: it.disabled, active: it.active }"
+            :class="{ 'ctxm-danger': it.danger, disabled: it.disabled, active: it.active, focused: i === focusedIdx }"
             :disabled="it.disabled"
+            tabindex="-1"
             @click="run(it)"
           >
             <span class="ctxm-ico" v-html="iconSvg(it.icon)"></span>
@@ -87,6 +88,15 @@ const visibleItems = computed(() => {
   return out
 })
 
+const focusedIdx = ref(-1)
+
+function getFocusableItems() {
+  return visibleItems.value
+    .map((it, i) => ({ it, i }))
+    .filter(({ it }) => !it.divider && !it.disabled)
+    .map(({ i }) => i)
+}
+
 function run(it) {
   if (!it || it.disabled) return
   const payload = props.ctx.menu.payload
@@ -113,10 +123,29 @@ function onSubLeave() {
   subTimer = setTimeout(() => { openSub.value = null }, 160)
 }
 
-function onKey(e) { if (e.key === 'Escape') props.ctx.close() }
+function onKey(e) {
+  if (e.key === 'Escape') { props.ctx.close(); return }
+  if (!props.ctx.menu.show) return
+  const focusable = getFocusableItems()
+  if (!focusable.length) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    const cur = focusable.indexOf(focusedIdx.value)
+    focusedIdx.value = focusable[cur < focusable.length - 1 ? cur + 1 : 0]
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    const cur = focusable.indexOf(focusedIdx.value)
+    focusedIdx.value = focusable[cur > 0 ? cur - 1 : focusable.length - 1]
+  } else if (e.key === 'Enter') {
+    e.preventDefault()
+    const it = visibleItems.value[focusedIdx.value]
+    if (it && !it.divider && !it.disabled) run(it)
+  }
+}
 
 watch(() => props.ctx.menu.show, (show) => {
   if (show) {
+    focusedIdx.value = -1
     openSub.value = null
     pos.x = props.ctx.menu.x
     pos.y = props.ctx.menu.y
@@ -187,6 +216,7 @@ function iconSvg(name) {
   transition: background .1s; position: relative;
 }
 .ctxm-item:hover { background: rgba(201,99,66,0.07); }
+.ctxm-item.focused { background: rgba(201,99,66,0.10); }
 .ctxm-item.disabled { color: var(--muted); opacity: .55; cursor: default; pointer-events: none; }
 .ctxm-item.active { font-weight: 600; }
 .ctxm-ico { flex-shrink: 0; display: inline-flex; color: var(--muted); width: 13px; }

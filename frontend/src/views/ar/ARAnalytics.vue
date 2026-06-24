@@ -8,6 +8,9 @@ import { fmtCompact } from '../../utils/format.js'
 import { valueAxis, catAxis, gridFor, bottomLegend, topLabel, rightLabel, endLabel, insideLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
 import EmptyState from '../../components/EmptyState.vue'
 import BaseChart from '../../components/ar/BaseChart.vue'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 
 defineProps({ embedded: { type: Boolean, default: false } })
 
@@ -295,6 +298,100 @@ const onScopeChange = () => {
 }
 onMounted(() => { loadAll(); window.addEventListener('pk:depts-changed', onScopeChange) })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
+
+// ── Toast helper ──────────────────────────────────────────────────────────────
+const arToast = ref('')
+let arToastTimer = null
+function showArToast(msg) {
+  arToast.value = msg
+  clearTimeout(arToastTimer)
+  arToastTimer = setTimeout(() => { arToast.value = '' }, 2200)
+}
+
+// ── 右键上下文菜单 ─────────────────────────────────────────────────────────────
+
+// 1) 事业部应收矩阵
+const ctxDept = useContextMenu()
+const DEPT_COPY_COLS = [
+  { key: 'dept', label: '事业部' },
+  { key: 'estimated', label: '上账金额', format: (v) => fmtWan(v) },
+  { key: 'collected', label: '已收', format: (v) => fmtWan(v) },
+  { key: 'outstanding', label: '未收', format: (v) => fmtWan(v) },
+  { key: 'overdue_amount', label: '逾期金额', format: (v) => fmtWan(v) },
+  { key: 'rate', label: '回款率', format: (v) => v == null ? '—' : v.toFixed(0) + '%' },
+  { key: 'month_target', label: '本月到期目标', format: (v) => fmtWan(v) },
+]
+const ctxDeptItems = computed(() => {
+  const r = ctxDept.menu.payload
+  if (!r) return []
+  return [
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '整行', icon: 'cell', action: () => copyRowTSV(r, DEPT_COPY_COLS, { header: true }).then(() => showArToast('已复制')) },
+        { divider: true },
+        { key: 'copy-dept', label: '事业部', icon: 'copy', action: () => copyText(r.dept).then(() => showArToast('已复制')) },
+        { key: 'copy-out', label: '未收', icon: 'copy', action: () => copyText(fmtWan(r.outstanding)).then(() => showArToast('已复制')) },
+        { key: 'copy-overdue', label: '逾期', icon: 'copy', action: () => copyText(fmtWan(r.overdue_amount)).then(() => showArToast('已复制')) },
+      ],
+    },
+  ]
+})
+
+// 2) 项目负责人表
+const ctxPm = useContextMenu()
+const PM_COPY_COLS = [
+  { key: 'pm', label: '负责人' },
+  { key: 'project_count', label: '项目数' },
+  { key: 'estimated', label: '上账金额', format: (v) => fmtWan(v) },
+  { key: 'collected', label: '已收', format: (v) => fmtWan(v) },
+  { key: 'outstanding', label: '未收', format: (v) => fmtWan(v) },
+  { key: 'rate', label: '回款率', format: (v) => v == null ? '—' : v.toFixed(1) + '%' },
+]
+const ctxPmItems = computed(() => {
+  const d = ctxPm.menu.payload
+  if (!d) return []
+  return [
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '整行', icon: 'cell', action: () => copyRowTSV(d, PM_COPY_COLS, { header: true }).then(() => showArToast('已复制')) },
+        { divider: true },
+        { key: 'copy-pm', label: '负责人', icon: 'copy', action: () => copyText(d.pm).then(() => showArToast('已复制')) },
+        { key: 'copy-out', label: '未收', icon: 'copy', action: () => copyText(fmtWan(d.outstanding)).then(() => showArToast('已复制')) },
+        { key: 'copy-rate', label: '回款率', icon: 'copy', action: () => copyText(d.rate == null ? '—' : d.rate.toFixed(1) + '%').then(() => showArToast('已复制')) },
+      ],
+    },
+  ]
+})
+
+// 3) 下钻明细弹窗
+const ctxDetail = useContextMenu()
+const DETAIL_COPY_COLS = [
+  { key: 'short_name', label: '项目' },
+  { key: 'project_no', label: '项目编号' },
+  { key: 'operation_year', label: '年' },
+  { key: 'operation_month', label: '月' },
+  { key: 'outstanding_amount', label: '未收金额', format: (v) => fmtWan(v) },
+  { key: 'due_date', label: '应收到期' },
+]
+const ctxDetailItems = computed(() => {
+  const r = ctxDetail.menu.payload
+  if (!r) return []
+  return [
+    { key: 'view', label: '查看应收记录', icon: 'link', action: () => router.push({ path: '/ar/records', query: { project_id: r.project_id } }) },
+    { divider: true },
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '整行', icon: 'cell', action: () => copyRowTSV(r, DETAIL_COPY_COLS, { header: true }).then(() => showArToast('已复制')) },
+        { divider: true },
+        { key: 'copy-proj', label: '项目', icon: 'copy', action: () => copyText(r.short_name || r.customer_name).then(() => showArToast('已复制')) },
+        { key: 'copy-out', label: '未收金额', icon: 'copy', action: () => copyText(fmtWan(r.outstanding_amount)).then(() => showArToast('已复制')) },
+      ],
+    },
+  ]
+})
 </script>
 
 <template>
@@ -374,7 +471,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in deptRows" :key="r.dept" :class="{ 'row-zero': !r.record_count }">
+            <tr v-for="r in deptRows" :key="r.dept" :class="{ 'row-zero': !r.record_count }" @contextmenu.prevent="ctxDept.open($event, r)">
               <td class="l">
                 <span class="dept-dot" :style="`background:${deptColor(r.dept)}`"></span>{{ r.dept }}
               </td>
@@ -460,7 +557,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               </tr>
             </thead>
             <tbody>
-              <tr v-for="d in pmData" :key="d.pm">
+              <tr v-for="d in pmData" :key="d.pm" @contextmenu.prevent="ctxPm.open($event, d)">
                 <td class="fw">{{ d.pm }}</td>
                 <td class="ctr text-muted">{{ d.project_count }}</td>
                 <td class="amt">{{ fmtWan(d.estimated) }}</td>
@@ -498,7 +595,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   <tr><th>项目</th><th class="ctr">年月</th><th class="amt">未收金额</th><th class="ctr">应收到期</th><th class="ctr">状态</th></tr>
                 </thead>
                 <tbody>
-                  <tr v-for="r in detail.items" :key="r.id">
+                  <tr v-for="r in detail.items" :key="r.id" @contextmenu.prevent="ctxDetail.open($event, r)">
                     <td><div class="dt-name">{{ r.short_name || r.customer_name }}</div><div class="dt-no">{{ r.project_no }}</div></td>
                     <td class="ctr">{{ r.operation_year }}/{{ String(r.operation_month).padStart(2,'0') }}</td>
                     <td class="amt" :class="parseFloat(r.outstanding_amount) > 0 ? 'dt-warn' : 'dt-zero'">{{ fmtWan(r.outstanding_amount) }}</td>
@@ -519,6 +616,16 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           </div>
         </div>
       </div>
+    </Teleport>
+
+    <ContextMenu :ctx="ctxDept" :items="ctxDeptItems" />
+    <ContextMenu :ctx="ctxPm" :items="ctxPmItems" />
+    <ContextMenu :ctx="ctxDetail" :items="ctxDetailItems" />
+
+    <Teleport to="body">
+      <Transition name="ar-toast">
+        <div v-if="arToast" class="ar-toast-msg">{{ arToast }}</div>
+      </Transition>
     </Teleport>
   </div>
 </template>
@@ -621,4 +728,9 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .dt-blue { background: rgba(21,101,192,.1); color: #1565c0; }
 .dt-ok { background: rgba(46,125,50,.1); color: #2e7d32; }
 .dt-mut { background: rgba(0,0,0,.06); color: var(--muted); }
+
+/* ar toast */
+.ar-toast-msg { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: rgba(30,18,10,0.9); color: #fff; font-size: 12.5px; padding: 8px 16px; border-radius: 20px; white-space: nowrap; z-index: 8000; pointer-events: none; }
+.ar-toast-enter-active, .ar-toast-leave-active { transition: opacity .2s, transform .2s; }
+.ar-toast-enter-from, .ar-toast-leave-to { opacity: 0; transform: translateX(-50%) translateY(6px); }
 </style>

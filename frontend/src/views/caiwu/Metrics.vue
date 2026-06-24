@@ -8,6 +8,10 @@ import { fmtCompact, fmtPct } from '../../utils/format.js'
 import { valueAxis, catAxis, gridFor, bottomLegend, topLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
 import { downloadBlob } from '../../utils/download.js'
 import EmptyState from '../../components/EmptyState.vue'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText } from '../../utils/clipboard.js'
+import { useToast } from '../../composables/useToast.js'
 
 const auth = useCaiwuAuth()
 
@@ -274,6 +278,22 @@ const chartOption = computed(() => {
   }
 })
 
+const toast = useToast()
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const ctxMetrics = useContextMenu()
+const ctxMetricsItems = computed(() => {
+  const r = ctxMetrics.menu.payload
+  if (!r) return []
+  return [
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-bu', label: '事业部', icon: 'cell', action: row => copyText(row.business_unit).then(ok => ok ? toast.success('已复制：' + row.business_unit) : toast.error('复制失败')) },
+      ],
+    },
+  ]
+})
+
 onMounted(load)
 </script>
 
@@ -415,7 +435,7 @@ onMounted(load)
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="r in rows" :key="r.business_unit" :class="{ 'total-row': r._isTotal }">
+                  <tr v-for="r in rows" :key="r.business_unit" :class="{ 'total-row': r._isTotal }" @contextmenu.prevent="ctxMetrics.open($event, r)">
                     <td class="col-bu">{{ r.business_unit }}</td>
                     <td>{{ fmtWan(r.month[t.tKey]) }}</td>
                     <td class="num-strong">{{ fmtWan(r.month[t.aKey]) }}</td>
@@ -441,6 +461,7 @@ onMounted(load)
           </div>
         </div>
       </template>
+    <ContextMenu :ctx="ctxMetrics" :items="ctxMetricsItems" />
     </template>
   </div>
 </template>

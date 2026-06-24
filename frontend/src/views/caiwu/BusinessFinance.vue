@@ -8,6 +8,10 @@ import { TOOLTIP } from '../../utils/chartTheme.js'
 import EmptyState from '../../components/EmptyState.vue'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 import ProjectPnlCard from './ProjectPnlCard.vue'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { useToast } from '../../composables/useToast.js'
 
 defineProps({ embedded: { type: Boolean, default: false } })
 const emit = defineEmits(['ask-ai'])
@@ -80,6 +84,35 @@ function openPnl(row) {
   if (isCustomer.value) return            // 客户维度不下钻单项目卡
   pnlName.value = row.project_name
 }
+
+const toast = useToast()
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const ctx = useContextMenu()
+const BF_COPY_COLS = computed(() => [
+  { key: 'label', label: isCustomer.value ? '客户' : '项目' },
+  { key: 'customer', label: '客户' },
+  { key: 'revenue', label: '收入', format: v => fmtWan(v) },
+  { key: 'margin_rate', label: '毛利率', format: v => fmtPct(v) },
+  { key: 'outstanding', label: '未收', format: v => fmtWan(v) },
+  { key: 'tag_label', label: '标签' },
+])
+const ctxItems = computed(() => {
+  const r = ctx.menu.payload
+  if (!r) return []
+  return [
+    { key: 'pnl', label: '查看业财损益卡', icon: 'chart', hidden: !!isCustomer.value, action: row => openPnl(row) },
+    { divider: true },
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: row => copyRowTSV(row, BF_COPY_COLS.value, { header: true }).then(ok => ok ? toast.success('已复制整行') : toast.error('复制失败')) },
+        { divider: true },
+        { key: 'copy-label', label: isCustomer.value ? '客户名称' : '项目名称', icon: 'cell', action: row => copyText(row.label).then(ok => ok ? toast.success('已复制：' + row.label) : toast.error('复制失败')) },
+        { key: 'copy-out', label: '未收', icon: 'cell', action: row => copyText(fmtWan(row.outstanding)).then(ok => ok ? toast.success('已复制：' + fmtWan(row.outstanding)) : toast.error('复制失败')) },
+      ],
+    },
+  ]
+})
 
 // ── 业财四象限：横轴毛利率、纵轴回款健康度(=100−逾期率)、气泡=收入、配色=标签 ──
 const quadrantOption = computed(() => {
@@ -255,7 +288,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="r in rows" :key="r.key" :class="{ clickable: !isCustomer }" @click="openPnl(r)">
+                  <tr v-for="r in rows" :key="r.key" :class="{ clickable: !isCustomer }" @click="openPnl(r)" @contextmenu.prevent="ctx.open($event, r)">
                     <td class="l" :title="isCustomer ? r.label : r.label + '（点击看损益卡）'">{{ r.label }}</td>
                     <td v-if="!isCustomer" class="dim">{{ r.customer || '—' }}</td>
                     <td class="num">{{ fmtWan(r.revenue) }}</td>
@@ -273,6 +306,9 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
       </div>
     </template>
     <EmptyState v-else empty text="暂无业财融合数据" />
+
+    <!-- 右键上下文菜单 -->
+    <ContextMenu :ctx="ctx" :items="ctxItems" />
 
     <!-- 项目损益卡（全链路）— 共享组件 -->
     <ProjectPnlCard v-if="pnlName" :name="pnlName" :year="selectedYear" askable

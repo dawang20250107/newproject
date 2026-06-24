@@ -5,6 +5,10 @@ import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 import { yearCST } from '../../constants.js'
 import { fmtCompact } from '../../utils/format.js'
 import { valueAxis, catAxis, gridFor, TOOLTIP } from '../../utils/chartTheme.js'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText } from '../../utils/clipboard.js'
+import { useToast } from '../../composables/useToast.js'
 
 const props = defineProps({ embedded: Boolean, selectedBu: { type: String, default: '' } })
 
@@ -141,6 +145,23 @@ const monthlyOption = computed(() => {
   }
 })
 
+const toast = useToast()
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const ctxTarget = useContextMenu()
+const ctxTargetItems = computed(() => {
+  const r = ctxTarget.menu.payload
+  if (!r) return []
+  return [
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-bu', label: '事业部', icon: 'cell', action: row => copyText(row.bu).then(ok => ok ? toast.success('已复制：' + row.bu) : toast.error('复制失败')) },
+        { key: 'copy-ytd', label: 'YTD达成率', icon: 'cell', action: row => copyText(row.ytd != null ? row.ytd.toFixed(0) + '%' : '—').then(ok => ok ? toast.success('已复制') : toast.error('复制失败')) },
+      ],
+    },
+  ]
+})
+
 onMounted(load)
 </script>
 
@@ -205,7 +226,7 @@ onMounted(load)
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in matrixRows" :key="row.bu">
+              <tr v-for="row in matrixRows" :key="row.bu" @contextmenu.prevent="ctxTarget.open($event, row)">
                 <td class="l bu" @click="expandedBu = expandedBu === row.bu ? '' : row.bu" style="cursor:pointer">{{ row.bu }}</td>
                 <td v-for="(c, i) in row.cells" :key="i"
                     :style="`background:${cellBg(c)}`"
@@ -285,6 +306,7 @@ onMounted(load)
       </div>
     </template>
     <div v-else class="td-empty">暂无数据</div>
+    <ContextMenu :ctx="ctxTarget" :items="ctxTargetItems" />
   </div>
 </template>
 

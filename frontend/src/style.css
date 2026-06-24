@@ -720,3 +720,8 @@ body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
     box-shadow: 2px 0 4px rgba(0,0,0,0.05);
   }
 }
+
+/* Right-click affordance: rows with context menus show context-menu cursor */
+.data-row, .drillable, .pcf-row, .cmp-row, .pm-row, .row {
+  cursor: context-menu;
+}

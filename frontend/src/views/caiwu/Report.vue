@@ -10,6 +10,10 @@ import { fmtCompact } from '../../utils/format.js'
 import { downloadBlob } from '../../utils/download.js'
 import { streamAiAnalysis } from '../../utils/aiStream.js'
 import EmptyState from '../../components/EmptyState.vue'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText } from '../../utils/clipboard.js'
+import { useToast } from '../../composables/useToast.js'
 
 const auth = useCaiwuAuth()
 const year = ref(lastMonthCST().year)
@@ -142,6 +146,23 @@ async function exportReport() {
   finally { exporting.value = false }
 }
 
+const toast = useToast()
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const ctxReport = useContextMenu()
+const ctxReportItems = computed(() => {
+  const r = ctxReport.menu.payload
+  if (!r) return []
+  return [
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-name', label: '科目名称', icon: 'cell', action: row => copyText(row.name).then(ok => ok ? toast.success('已复制：' + row.name) : toast.error('复制失败')) },
+        { key: 'copy-total', label: '合计金额', icon: 'cell', action: row => copyText(fmt(row.total)).then(ok => ok ? toast.success('已复制：' + fmt(row.total)) : toast.error('复制失败')) },
+      ],
+    },
+  ]
+})
+
 const route = useRoute()
 onMounted(() => {
   const qb = route.query.bu, qy = +route.query.year
@@ -239,7 +260,7 @@ onMounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="r in flatRows" :key="r.key" :class="['mx-row', `d${r.depth}`, { calc: r.calc, 'has-pct': r.pct }]">
+              <tr v-for="r in flatRows" :key="r.key" :class="['mx-row', `d${r.depth}`, { calc: r.calc, 'has-pct': r.pct }]" @contextmenu.prevent="ctxReport.open($event, r)">
                 <td class="mx-name" :style="`padding-left:${10 + r.depth * 16}px`">{{ r.name }}</td>
                 <td v-for="(v, i) in r.values" :key="i" class="mx-num" :class="{ neg: v < 0 }">
                   <div class="mx-amt">{{ fmt(v) }}</div>
@@ -261,6 +282,7 @@ onMounted(() => {
       :visible="aiVisible" :loading="aiLoading" :text="aiText" :error="aiErr"
       title="AI 财务分析" :subtitle="aiScopeLabel"
       @close="aiVisible = false" @reanalyze="runAiAnalysis" />
+    <ContextMenu :ctx="ctxReport" :items="ctxReportItems" />
   </div>
 </template>
 
