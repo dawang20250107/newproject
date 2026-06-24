@@ -1605,7 +1605,7 @@ function clearFilters() {
             </div>
             <div v-if="showPresetDrop" class="preset-backdrop" @click="showPresetDrop = false"></div>
           </div>
-          <span class="rc-hint" title="在任意行上点鼠标右键：催收日志 / 编辑 / 录入回款 / 删除">
+          <span class="rc-hint" title="在任意行上点鼠标右键：催收日志 / 编辑 / 录入回款 / 复制(整行·项目·客户·批次·未收) / 删除">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 3v6"/></svg>
             右键行可操作
           </span>
