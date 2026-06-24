@@ -398,7 +398,21 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   </div>
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
   <EmptyState v-else-if="!loading && !items.length" empty :text="activeFilterCount || q ? '暂无匹配记录' : '暂无审批记录，点击「新增」创建第一条记录'" />
-  <div v-if="!loadErr" class="table-wrap page-scroll"><table class="approval-table"><thead><tr>
+  <div v-if="!loadErr" class="table-wrap page-scroll"><table class="approval-table">
+    <colgroup>
+      <col class="cg-sel" /><!-- 选择 -->
+      <col style="width:7%" /><!-- 申请人 -->
+      <col style="width:8%" /><!-- 所属事业部 -->
+      <col style="width:8%" /><!-- 二级部门 -->
+      <col style="width:11%" /><!-- 项目简称 -->
+      <col style="width:11%" /><!-- 审批编号 -->
+      <col style="width:9%" /><!-- G7编号 -->
+      <col style="width:15%" /><!-- 摘要 -->
+      <col style="width:9%" /><!-- 申请金额 -->
+      <col style="width:12%" /><!-- 收款主体 -->
+      <col style="width:10%" /><!-- 审批状态 -->
+    </colgroup>
+    <thead><tr>
       <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
       <th><ColumnFilter label="申请人" field="applicant" type="text" :model-value="colFilters.applicant" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('applicant',v)" @sort="o=>setSort('applicant',o)" /></th>
       <th><ColumnFilter label="所属事业部" field="department" type="enum" :options="deptChoices" :model-value="colFilters.department" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('department',v)" @sort="o=>setSort('department',o)" /></th>
@@ -565,24 +579,14 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 
 /* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
 .approval-table { width: 100%; table-layout: fixed; }
+/* 列宽由 <colgroup> 统一声明（11 列）；选择列固定窄宽，其余按百分比分配 */
+.approval-table col.cg-sel { width: 34px; }
 /* 行高/内边距对齐全局表格（付款台账），保证两个页面观感一致 */
 .approval-table th, .approval-table td { padding: 11px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.approval-table th.sel-col, .approval-table td.sel-col { width: 34px; text-align: center; overflow: visible; padding: 11px 4px; }
+.approval-table th.sel-col, .approval-table td.sel-col { text-align: center; overflow: visible; padding: 11px 4px; }
 .approval-table th.sel-col input, .approval-table td.sel-col input { cursor: pointer; }
-.approval-table th:nth-child(2), .approval-table td:nth-child(2) { width: 6%; }
-.approval-table th:nth-child(3), .approval-table td:nth-child(3) { width: 7%; }
-.approval-table th:nth-child(4), .approval-table td:nth-child(4) { width: 6%; }
-.approval-table th:nth-child(5), .approval-table td:nth-child(5) { width: 8%; }
-.approval-table th:nth-child(6), .approval-table td:nth-child(6) { width: 11%; }
-.approval-table th:nth-child(7), .approval-table td:nth-child(7) { width: 9%; }
-.approval-table th:nth-child(8), .approval-table td:nth-child(8) { width: 10%; }
-.approval-table th:nth-child(9), .approval-table td:nth-child(9) { width: 6%; }
-.approval-table th:nth-child(10), .approval-table td:nth-child(10) { width: 9%; }
-.approval-table th:nth-child(11), .approval-table td:nth-child(11) { width: 10%; }
-.approval-table th:nth-child(12), .approval-table td:nth-child(12) { width: 15%; }
-/* 状态/操作两列内容（下拉、按钮）不裁切；下拉以本列宽为限，不再压到操作列 */
-.approval-table th:nth-child(11), .approval-table td:nth-child(11),
-.approval-table th:nth-child(12), .approval-table td:nth-child(12) {
+/* 审批状态列（末列）内容（下拉）不裁切，以本列宽为限 */
+.approval-table th:last-child, .approval-table td:last-child {
   overflow: visible; text-overflow: clip; white-space: normal;
 }
 .g7-cell { color: var(--muted); font-size: 11.5px; }

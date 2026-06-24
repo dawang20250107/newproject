@@ -12,8 +12,9 @@ const toast = useToast()
 const errMsg = e => e?.msg || e?.error || '操作失败'
 
 // ── 数据 ──────────────────────────────────────────────────────────────────
+// 一次拉全量，阶段筛选在前端进行：切换即时、生命周期各阶段计数始终准确
 const loading = ref(false)
-const activities = ref([])
+const allActivities = ref([])
 const attachments = ref([])
 const activeStage = ref('')  // '' = all stages
 
@@ -26,11 +27,15 @@ const STAGES = [
 ]
 const REAL_STAGES = STAGES.slice(1)
 
+const activities = computed(() => activeStage.value
+  ? allActivities.value.filter(a => a.stage === activeStage.value)
+  : allActivities.value)
+
 async function load() {
   loading.value = true
   try {
-    const res = await ar.listActivity(props.rec.id, activeStage.value ? { stage: activeStage.value } : {})
-    activities.value = res.data.activities || []
+    const res = await ar.listActivity(props.rec.id, {})
+    allActivities.value = res.data.activities || []
     attachments.value = res.data.attachments || []
   } catch (e) {
     toast.error(errMsg(e))
@@ -40,9 +45,8 @@ async function load() {
 }
 
 watch(() => props.rec?.id, (id) => { if (id) load() }, { immediate: true })
-// 切换阶段：重载，并让"新增动态/上传附件"默认归入当前阶段（全部时回落催款/通用）
+// 切换阶段：只更新录入默认归属（全部时回落催款/通用），不再重新请求
 watch(activeStage, (s) => {
-  load()
   addForm.stage = s || 'dunning'
   uploadStage.value = s || 'general'
 })
@@ -109,8 +113,7 @@ async function submitAdd() {
   adding.value = true
   try {
     const res = await ar.addActivity(props.rec.id, { ...addForm })
-    // 只有当该动态属于当前筛选阶段（或正看全部）时才插入列表
-    if (!activeStage.value || res.data.stage === activeStage.value) activities.value.unshift(res.data)
+    allActivities.value.unshift(res.data)   // 全量列表统一插入，筛选交给 computed
     emit('field-saved', { id: props.rec.id, activity_count: (props.rec.activity_count || 0) + 1 })
     addForm.note = ''; addForm.contact_person = ''; addForm.follow_up_date = ''
     toast.success('已记录')
@@ -140,8 +143,8 @@ async function saveEdit(act) {
       note: editBuf.note, status: editBuf.status,
       follow_up_date: editBuf.follow_up_date || null,
     })
-    const idx = activities.value.findIndex(a => a.id === act.id)
-    if (idx !== -1) activities.value[idx] = res.data
+    const idx = allActivities.value.findIndex(a => a.id === act.id)
+    if (idx !== -1) allActivities.value[idx] = res.data
     editingId.value = null
     toast.success('已更新')
   } catch (e) {
@@ -153,7 +156,7 @@ async function deleteAct(act) {
   if (!confirm(`删除这条${act.act_type_display}记录？`)) return
   try {
     await ar.deleteActivity(props.rec.id, act.id)
-    activities.value = activities.value.filter(a => a.id !== act.id)
+    allActivities.value = allActivities.value.filter(a => a.id !== act.id)
     emit('field-saved', { id: props.rec.id, activity_count: Math.max(0, (props.rec.activity_count || 1) - 1) })
     toast.success('已删除')
   } catch (e) {
@@ -166,8 +169,8 @@ async function toggleStatus(act) {
   const next = order[(order.indexOf(act.status) + 1) % order.length]
   try {
     const res = await ar.updateActivity(props.rec.id, act.id, { note: act.note, status: next })
-    const idx = activities.value.findIndex(a => a.id === act.id)
-    if (idx !== -1) activities.value[idx] = res.data
+    const idx = allActivities.value.findIndex(a => a.id === act.id)
+    if (idx !== -1) allActivities.value[idx] = res.data
   } catch (e) {
     toast.error(errMsg(e))
   }
@@ -276,7 +279,7 @@ const lifecycleSteps = computed(() => {
   const paid = Math.max(0, total - outstanding)
   const pct = total > 0 ? Math.min(1, paid / total) : 0
   const byStage = {}
-  for (const a of activities.value) byStage[a.stage] = (byStage[a.stage] || 0) + 1
+  for (const a of allActivities.value) byStage[a.stage] = (byStage[a.stage] || 0) + 1
 
   const reconDone = !!r.reconciliation_date
   const invoiceDone = !!(r.invoice_date || Number(r.actual_invoice_amount) > 0)
@@ -284,28 +287,28 @@ const lifecycleSteps = computed(() => {
   const overdue = Number(r.overdue_days || 0)
 
   return [
-    { key: 'contract', label: '合同', sub: '已签订', state: 'done', icon: 'contract' },
+    { key: 'contract', label: '合同', sub: '已签订', state: 'done', icon: 'contract', stage: '', count: 0 },
     {
-      key: 'reconciliation', label: '对账',
+      key: 'reconciliation', label: '对账', stage: 'reconciliation', count: byStage.reconciliation || 0,
       sub: r.reconciliation_date || (byStage.reconciliation ? `${byStage.reconciliation}条` : ''),
       state: reconDone ? 'done' : (byStage.reconciliation ? 'active' : 'pending'),
       icon: 'reconciliation',
     },
     {
-      key: 'invoice', label: '开票',
+      key: 'invoice', label: '开票', stage: 'invoice', count: byStage.invoice || 0,
       sub: r.invoice_date || (Number(r.actual_invoice_amount) > 0 ? fmtAmt(r.actual_invoice_amount) : ''),
       state: invoiceDone ? 'done' : (byStage.invoice ? 'active' : 'pending'),
       icon: 'invoice',
     },
     {
-      key: 'collection', label: '回款',
+      key: 'collection', label: '回款', stage: 'collection', count: byStage.collection || 0,
       sub: collDone ? '完成' : (pct > 0 ? `${Math.round(pct * 100)}%` : ''),
       state: collDone ? 'done' : (pct > 0 ? 'partial' : (byStage.collection ? 'active' : 'pending')),
       pct,
       icon: 'collection',
     },
     {
-      key: 'dunning', label: '催款',
+      key: 'dunning', label: '催款', stage: 'dunning', count: byStage.dunning || 0,
       sub: overdue > 0 ? `逾期${overdue}天` : (byStage.dunning ? `${byStage.dunning}次` : ''),
       state: overdue > 0 ? 'urgent' : (byStage.dunning ? 'active' : 'pending'),
       icon: 'dunning',
@@ -318,6 +321,30 @@ function lcLineState(cur, next) {
   if (cur.state === 'done') return 'progress'
   return 'pending'
 }
+
+// ── 垂直时间线：按日期分组 ──────────────────────────────────────────────────
+function dayLabel(day) {
+  if (!day) return ''
+  const d = new Date(day + 'T00:00:00')
+  if (isNaN(d)) return day
+  const now = new Date()
+  const diff = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - d) / 86400000)
+  if (diff === 0) return '今天'
+  if (diff === 1) return '昨天'
+  if (diff === 2) return '前天'
+  const wd = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()]
+  return `${day.slice(5).replace('-', '月')}日 · ${wd}`
+}
+const timelineGroups = computed(() => {
+  const groups = []
+  const map = new Map()
+  for (const a of activities.value) {
+    const day = (a.created_at || '').slice(0, 10)
+    if (!map.has(day)) { const g = { day, label: dayLabel(day), items: [] }; map.set(day, g); groups.push(g) }
+    map.get(day).items.push(a)
+  }
+  return groups
+})
 
 // ── 键盘 ──────────────────────────────────────────────────────────────────
 function onKey(e) {
@@ -355,17 +382,20 @@ onBeforeUnmount(() => {
       <div class="ap-lifecycle">
         <div class="ap-lc-track">
           <template v-for="(step, i) in lifecycleSteps" :key="step.key">
-            <div class="ap-lc-step">
+            <button class="ap-lc-step" :class="{ 'lc-step-on': step.stage && activeStage === step.stage, 'lc-step-clickable': step.stage }"
+              :disabled="!step.stage" :title="step.stage ? `查看${step.label}记录` : ''"
+              @click="step.stage && (activeStage = activeStage === step.stage ? '' : step.stage)">
               <div class="ap-lc-node" :class="`lc-${step.state}`"
                 :style="step.state === 'partial' ? { '--pct': step.pct } : {}">
                 <!-- svg injected via v-html from internal LC_ICONS constant -->
                 <span class="ap-lc-icon-wrap" v-html="LC_ICONS[step.icon]"></span>
+                <span v-if="step.count" class="ap-lc-badge">{{ step.count }}</span>
               </div>
               <div class="ap-lc-labels">
                 <span class="ap-lc-name">{{ step.label }}</span>
                 <span v-if="step.sub" class="ap-lc-sub" :class="`lc-sub-${step.state}`">{{ step.sub }}</span>
               </div>
-            </div>
+            </button>
             <div v-if="i < lifecycleSteps.length - 1" class="ap-lc-conn"
               :class="`lc-conn-${lcLineState(step, lifecycleSteps[i + 1])}`"></div>
           </template>
@@ -435,11 +465,6 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- 阶段筛选 -->
-      <div class="ap-tabs">
-        <button v-for="s in STAGES" :key="s.v" class="ap-tab" :class="{ on: activeStage === s.v }" @click="activeStage = s.v">{{ s.l }}</button>
-      </div>
-
       <!-- 快速录入 -->
       <div class="ap-add">
         <div class="ap-add-row1">
@@ -465,38 +490,54 @@ onBeforeUnmount(() => {
         <template v-else>
           <!-- 跟进时间线 -->
           <div class="ap-sec">
-            <span class="ap-sec-t">跟进记录</span><span class="ap-cnt">{{ activities.length }}</span>
+            <span class="ap-sec-t">跟进时间线</span><span class="ap-cnt">{{ activities.length }}</span>
+            <span v-if="activeStage" class="ap-sec-filter">仅看{{ STAGE_LABEL[activeStage] }} · <a @click="activeStage=''">清除</a></span>
           </div>
-          <div v-if="!activities.length" class="ap-empty">暂无跟进记录，在上方记录第一条</div>
-          <div v-else class="ap-timeline">
-            <div v-for="act in activities" :key="act.id" class="ap-act" :style="{ '--sc': statusColor(act.status) }">
-              <div class="ap-act-head">
-                <span class="ap-act-icon">{{ actIcon(act.act_type) }}</span>
-                <span class="ap-act-who">{{ act.created_by_name || '—' }}</span>
-                <span v-if="!activeStage" class="ap-stage-tag">{{ STAGE_LABEL[act.stage] || act.stage_display }}</span>
-                <button class="ap-status-chip" @click="act.can_edit && toggleStatus(act)" :title="act.can_edit ? '点击切换状态' : ''">{{ act.status_display }}</button>
-                <span class="ap-act-time">{{ fmtTime(act.created_at) }}</span>
-                <template v-if="act.can_edit && editingId !== act.id">
-                  <button class="ap-ico-btn" title="编辑" @click="startEdit(act)">✏️</button>
-                  <button class="ap-ico-btn ap-ico-del" title="删除" @click="deleteAct(act)">🗑</button>
-                </template>
+          <div v-if="!activities.length" class="ap-empty">
+            <div class="ap-empty-ico">🕓</div>
+            {{ activeStage ? `暂无${STAGE_LABEL[activeStage]}阶段记录` : '暂无跟进记录，在上方记录第一条' }}
+          </div>
+          <div v-else class="ap-tl">
+            <template v-for="g in timelineGroups" :key="g.day">
+              <!-- 日期节点 -->
+              <div class="ap-tl-date">
+                <span class="ap-tl-date-node"></span>
+                <span class="ap-tl-date-txt">{{ g.label }}</span>
               </div>
-              <template v-if="editingId === act.id">
-                <textarea v-model="editBuf.note" class="ap-edit-ta" rows="3"></textarea>
-                <div class="ap-edit-foot">
-                  <select v-model="editBuf.status" class="ap-mini-sel">
-                    <option v-for="s in STATUSES" :key="s.v" :value="s.v">{{ s.l }}</option>
-                  </select>
-                  <input v-model="editBuf.follow_up_date" type="date" class="ap-mini-sel" />
-                  <button class="ap-save-btn" @click="saveEdit(act)">保存</button>
-                  <button class="ap-cancel-btn" @click="cancelEdit">取消</button>
+              <!-- 当日动态 -->
+              <div v-for="act in g.items" :key="act.id" class="ap-tl-item" :style="{ '--sc': statusColor(act.status) }">
+                <div class="ap-tl-gutter">
+                  <span class="ap-tl-dot" :title="act.act_type_display">{{ actIcon(act.act_type) }}</span>
                 </div>
-              </template>
-              <template v-else>
-                <div class="ap-act-note">{{ act.note }}</div>
-                <div v-if="act.follow_up_date" class="ap-act-followup">📅 计划跟进 {{ act.follow_up_date }}</div>
-              </template>
-            </div>
+                <div class="ap-tl-card">
+                  <div class="ap-tl-head">
+                    <span class="ap-tl-who">{{ act.created_by_name || '—' }}</span>
+                    <span v-if="!activeStage" class="ap-stage-tag">{{ STAGE_LABEL[act.stage] || act.stage_display }}</span>
+                    <button class="ap-status-chip" @click="act.can_edit && toggleStatus(act)" :title="act.can_edit ? '点击切换状态' : ''">{{ act.status_display }}</button>
+                    <span class="ap-tl-time">{{ fmtTime(act.created_at).slice(11) || fmtTime(act.created_at) }}</span>
+                    <template v-if="act.can_edit && editingId !== act.id">
+                      <button class="ap-ico-btn" title="编辑" @click="startEdit(act)">✏️</button>
+                      <button class="ap-ico-btn ap-ico-del" title="删除" @click="deleteAct(act)">🗑</button>
+                    </template>
+                  </div>
+                  <template v-if="editingId === act.id">
+                    <textarea v-model="editBuf.note" class="ap-edit-ta" rows="3"></textarea>
+                    <div class="ap-edit-foot">
+                      <select v-model="editBuf.status" class="ap-mini-sel">
+                        <option v-for="s in STATUSES" :key="s.v" :value="s.v">{{ s.l }}</option>
+                      </select>
+                      <input v-model="editBuf.follow_up_date" type="date" class="ap-mini-sel" />
+                      <button class="ap-save-btn" @click="saveEdit(act)">保存</button>
+                      <button class="ap-cancel-btn" @click="cancelEdit">取消</button>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div class="ap-tl-note">{{ act.note }}</div>
+                    <div v-if="act.follow_up_date" class="ap-tl-followup">📅 计划跟进 {{ act.follow_up_date }}</div>
+                  </template>
+                </div>
+              </div>
+            </template>
           </div>
 
           <!-- 附件 -->
@@ -580,12 +621,6 @@ onBeforeUnmount(() => {
 .ap-qinput, .ap-qta { border: 1px solid rgba(201,99,66,.45); border-radius: 6px; padding: 3px 7px; font-size: 12.5px; color: #5a4636; background: #fff; outline: none; font-family: inherit; }
 .ap-qcell--wide .ap-qta { flex: 1; resize: vertical; min-height: 40px; }
 
-/* 阶段 tabs */
-.ap-tabs { display: flex; gap: 3px; padding: 8px 12px; border-bottom: 1px solid rgba(180,140,110,.15); flex-shrink: 0; }
-.ap-tab { flex: 1; border: none; background: none; font-size: 12px; padding: 5px 0; border-radius: 8px; cursor: pointer; color: #8a7665; transition: all .12s; }
-.ap-tab:hover { background: rgba(201,99,66,.07); }
-.ap-tab.on { background: rgba(201,99,66,.13); color: #c96342; font-weight: 700; }
-
 /* 快速录入 */
 .ap-add { padding: 10px 14px; border-bottom: 1px solid rgba(180,140,110,.15); display: flex; flex-direction: column; gap: 7px; flex-shrink: 0; background: rgba(255,253,250,.6); }
 .ap-add-row1 { display: flex; gap: 5px; align-items: center; }
@@ -610,21 +645,80 @@ onBeforeUnmount(() => {
 .ap-sec-t { font-size: 12.5px; font-weight: 800; color: #8a7665; letter-spacing: .02em; }
 .ap-cnt { font-size: 11px; background: rgba(201,99,66,.12); color: #c96342; padding: 0 7px; border-radius: 10px; font-weight: 700; line-height: 17px; }
 .ap-sec-sel { margin-left: auto; }
-.ap-empty { font-size: 12.5px; color: #bda797; text-align: center; padding: 14px 0; }
+.ap-sec-filter { margin-left: auto; font-size: 10.5px; color: #a8917e; }
+.ap-sec-filter a { color: #c96342; cursor: pointer; text-decoration: none; }
+.ap-sec-filter a:hover { text-decoration: underline; }
+.ap-empty { font-size: 12.5px; color: #bda797; text-align: center; padding: 22px 0; }
+.ap-empty-ico { font-size: 26px; opacity: .55; margin-bottom: 6px; }
 
-/* 时间线 */
-.ap-timeline { display: flex; flex-direction: column; gap: 8px; }
-.ap-act { background: #fff; border: 1px solid rgba(180,140,110,.18); border-left: 3px solid var(--sc); border-radius: 9px; padding: 9px 11px; display: flex; flex-direction: column; gap: 5px; }
-.ap-act-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.ap-act-icon { font-size: 14px; line-height: 1; }
-.ap-act-who { font-size: 12px; font-weight: 700; color: #5a4636; }
+/* ══════════════════════════════════════════════════════
+   垂直时间线
+   ══════════════════════════════════════════════════════ */
+.ap-tl { position: relative; padding: 2px 0; }
+/* 主干竖线：贯穿首尾，渐隐两端 */
+.ap-tl::before {
+  content: ''; position: absolute; left: 13px; top: 10px; bottom: 10px; width: 2px;
+  background: linear-gradient(180deg,
+    rgba(180,140,110,.04), rgba(180,140,110,.3) 6%,
+    rgba(180,140,110,.3) 94%, rgba(180,140,110,.04));
+  border-radius: 2px;
+}
+
+/* 日期节点 */
+.ap-tl-date { position: relative; display: flex; align-items: center; gap: 8px; margin: 4px 0 7px; }
+.ap-tl-date-node {
+  width: 28px; flex-shrink: 0; height: 12px; position: relative;
+}
+.ap-tl-date-node::before {
+  content: ''; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) rotate(45deg);
+  width: 7px; height: 7px; background: #c96342; border-radius: 2px;
+  box-shadow: 0 0 0 3px #fbf7f1, 0 0 0 4px rgba(201,99,66,.25);
+}
+.ap-tl-date-txt {
+  font-size: 11px; font-weight: 700; color: #b07a52;
+  background: rgba(201,99,66,.08); padding: 1px 9px; border-radius: 9px;
+  letter-spacing: .02em;
+}
+
+/* 时间线条目 */
+.ap-tl-item { position: relative; display: flex; gap: 11px; padding-bottom: 11px; }
+.ap-tl-gutter { width: 28px; flex-shrink: 0; display: flex; justify-content: center; }
+.ap-tl-dot {
+  position: relative; z-index: 1; width: 28px; height: 28px; flex-shrink: 0;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 14px; line-height: 1;
+  background: #fff; border: 2px solid var(--sc);
+  box-shadow: 0 0 0 3px #fbf7f1, 0 2px 5px rgba(60,30,10,.1);
+}
+
+/* 卡片 */
+.ap-tl-card {
+  flex: 1; min-width: 0; background: #fff;
+  border: 1px solid rgba(180,140,110,.18);
+  border-left: 3px solid var(--sc);
+  border-radius: 9px; padding: 8px 11px;
+  display: flex; flex-direction: column; gap: 5px;
+  box-shadow: 0 1px 3px rgba(60,30,10,.04);
+  transition: box-shadow .15s, transform .12s;
+}
+.ap-tl-item:hover .ap-tl-card { box-shadow: 0 3px 10px rgba(60,30,10,.09); transform: translateY(-1px); }
+/* 卡片左侧小箭头，指向时间线 */
+.ap-tl-card::before {
+  content: ''; position: absolute; left: 36px; top: 13px;
+  width: 8px; height: 8px; background: #fff;
+  border-left: 1px solid rgba(180,140,110,.18); border-bottom: 1px solid rgba(180,140,110,.18);
+  transform: rotate(45deg); z-index: 0;
+}
+
+.ap-tl-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ap-tl-who { font-size: 12px; font-weight: 700; color: #5a4636; }
 .ap-stage-tag { font-size: 10px; color: #8a7665; background: rgba(180,140,110,.14); padding: 0 6px; border-radius: 7px; line-height: 16px; }
 .ap-status-chip { border: none; font-size: 10.5px; font-weight: 700; cursor: pointer; padding: 1px 8px; border-radius: 8px; color: var(--sc); background: color-mix(in srgb, var(--sc) 12%, transparent); }
-.ap-act-time { font-size: 10.5px; color: #bda797; margin-left: auto; }
+.ap-tl-time { font-size: 10.5px; color: #bda797; margin-left: auto; font-variant-numeric: tabular-nums; }
 .ap-ico-btn { border: none; background: none; font-size: 12px; cursor: pointer; padding: 1px 3px; border-radius: 5px; opacity: .7; }
 .ap-ico-btn:hover { opacity: 1; background: rgba(0,0,0,.05); }
-.ap-act-note { font-size: 13px; color: #4a3a2c; white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
-.ap-act-followup { font-size: 11px; color: #a8917e; }
+.ap-tl-note { font-size: 13px; color: #4a3a2c; white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
+.ap-tl-followup { font-size: 11px; color: #a8917e; }
 .ap-edit-ta { width: 100%; border: 1px solid rgba(201,99,66,.45); border-radius: 7px; padding: 6px 9px; font-size: 13px; color: #5a4636; resize: vertical; font-family: inherit; box-sizing: border-box; outline: none; }
 .ap-edit-foot { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
 .ap-save-btn { padding: 4px 14px; border: none; border-radius: 6px; background: #c96342; color: #fff; font-size: 12px; font-weight: 700; cursor: pointer; margin-left: auto; }
@@ -671,7 +765,27 @@ onBeforeUnmount(() => {
 .ap-lc-step {
   display: flex; flex-direction: column; align-items: center; gap: 6px;
   width: 56px; flex-shrink: 0;
+  border: none; background: none; padding: 2px 0; margin: 0; font-family: inherit;
+  border-radius: 12px; transition: background .15s;
 }
+.lc-step-clickable { cursor: pointer; }
+.lc-step-clickable:hover { background: rgba(201,99,66,.06); }
+.ap-lc-step:disabled { cursor: default; }
+/* 选中（已筛选该阶段）：底部高亮 + 名称变色 */
+.lc-step-on { background: rgba(201,99,66,.1); }
+.lc-step-on .ap-lc-name { color: #c96342; }
+.lc-step-on .ap-lc-node { box-shadow: 0 0 0 3px rgba(201,99,66,.18), 0 3px 10px rgba(201,99,66,.25); }
+
+/* 计数角标 */
+.ap-lc-badge {
+  position: absolute; top: -3px; right: -3px; z-index: 2;
+  min-width: 15px; height: 15px; padding: 0 3px;
+  border-radius: 8px; background: #fff; color: #c96342;
+  border: 1.5px solid #c96342;
+  font-size: 9px; font-weight: 800; line-height: 12px; text-align: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,.12);
+}
+
 .ap-lc-conn {
   flex: 1; height: 2px; margin-top: 18px; border-radius: 2px;
   min-width: 6px; transition: background .35s ease;
