@@ -1,157 +1,198 @@
 <script setup>
+/*
+ * 应收账款「生命线工作台」—— 一条应收记录的完整生命故事。
+ * 合同 → 对账 → 开票 → 回款 → 催款，每个关键节点的录入/跟踪/附件都在此完成，不再跳转。
+ *  · 顶部生命线导航：点击节点平滑滚动到对应阶段；滚动时自动高亮当前阶段（scroll-spy）
+ *  · 各阶段为可折叠里程碑：已完成自动折叠，需处理的自动展开
+ *  · 底部录入条「上下文感知」：跟随当前阶段，记录的跟进自动归入该阶段
+ */
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import ar from '../../api/ar.js'
 import { useToast } from '../../composables/useToast.js'
+import LifelineSection from './LifelineSection.vue'
 
 const props = defineProps({
-  rec: { type: Object, required: true },   // AR record object
+  rec: { type: Object, required: true },
+  canWrite: { type: Boolean, default: false },     // auth.canArWrite —— 改记录字段
+  canCollect: { type: Boolean, default: false },   // auth.canAction('ar_collect') —— 登记回款
 })
 const emit = defineEmits(['close', 'field-saved'])
 
 const toast = useToast()
 const errMsg = e => e?.msg || e?.error || '操作失败'
 
-// ── 数据 ──────────────────────────────────────────────────────────────────
-// 一次拉全量，阶段筛选在前端进行：切换即时、生命周期各阶段计数始终准确
+// ── 数据：一次拉全量，按阶段在前端切分 ──────────────────────────────────────
 const loading = ref(false)
 const allActivities = ref([])
 const attachments = ref([])
-const activeStage = ref('')  // '' = all stages
-
-const STAGES = [
-  { v: '', l: '全部' },
-  { v: 'reconciliation', l: '对账' },
-  { v: 'invoice', l: '开票' },
-  { v: 'collection', l: '回款' },
-  { v: 'dunning', l: '催款' },
-]
-const REAL_STAGES = STAGES.slice(1)
-
-const activities = computed(() => activeStage.value
-  ? allActivities.value.filter(a => a.stage === activeStage.value)
-  : allActivities.value)
+const payments = ref([])
 
 async function load() {
   loading.value = true
   try {
-    const res = await ar.listActivity(props.rec.id, {})
-    allActivities.value = res.data.activities || []
-    attachments.value = res.data.attachments || []
+    const [actRes, payRes] = await Promise.all([
+      ar.listActivity(props.rec.id, {}),
+      // 回款明细对所有可见者展示；无 r_payments 权限时后端 403，降级为空列表
+      ar.listPayments(props.rec.id).catch(() => ({ data: [] })),
+    ])
+    allActivities.value = actRes.data.activities || []
+    attachments.value = actRes.data.attachments || []
+    payments.value = Array.isArray(payRes.data) ? payRes.data : []
   } catch (e) {
     toast.error(errMsg(e))
   } finally {
     loading.value = false
   }
 }
-
 watch(() => props.rec?.id, (id) => { if (id) load() }, { immediate: true })
-// 切换阶段：只更新录入默认归属（全部时回落催款/通用），不再重新请求
-watch(activeStage, (s) => {
-  addForm.stage = s || 'dunning'
-  uploadStage.value = s || 'general'
+
+const actsByStage = computed(() => {
+  const m = { reconciliation: [], invoice: [], collection: [], dunning: [], general: [] }
+  for (const a of allActivities.value) (m[a.stage] || (m[a.stage] = [])).push(a)
+  return m
+})
+const attsByStage = computed(() => {
+  const m = { reconciliation: [], invoice: [], collection: [], dunning: [], general: [] }
+  for (const a of attachments.value) (m[a.stage] || (m[a.stage] = [])).push(a)
+  return m
 })
 
-const imageAtts = computed(() => attachments.value.filter(a => a.is_image))
-const fileAtts = computed(() => attachments.value.filter(a => !a.is_image))
+// ── 金额 / 进度 ──────────────────────────────────────────────────────────────
+function fmtAmt(v) {
+  if (v == null || v === '') return '0'
+  const n = Number(v)
+  if (isNaN(n)) return '0'
+  if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(2) + '亿'
+  if (Math.abs(n) >= 1e4) return (n / 1e4).toFixed(1) + '万'
+  return Math.round(n).toLocaleString()
+}
+const estimated = computed(() => Number(props.rec.estimated_amount || 0))
+const outstanding = computed(() => Number(props.rec.outstanding_amount || 0))
+const paid = computed(() => Math.max(0, estimated.value - outstanding.value))
+const paidPct = computed(() => estimated.value > 0 ? Math.min(1, paid.value / estimated.value) : 0)
+const overdueDays = computed(() => Number(props.rec.overdue_days || 0))
+
+// ── 各阶段状态推断（导航 + 区块共用）────────────────────────────────────────
+const stageInfo = computed(() => {
+  const r = props.rec
+  const reconDone = !!r.reconciliation_date
+  const invDone = !!(r.invoice_date || Number(r.actual_invoice_amount) > 0)
+  const collDone = estimated.value > 0 && outstanding.value === 0
+  const a = actsByStage.value
+  return {
+    contract: { state: 'done', label: '已签订' },
+    reconciliation: {
+      state: reconDone ? 'done' : (a.reconciliation.length ? 'active' : 'pending'),
+      label: reconDone ? '已对账' : '待对账',
+      summary: reconDone ? `对账日 ${r.reconciliation_date}` : '尚未对账',
+    },
+    invoice: {
+      state: invDone ? 'done' : (a.invoice.length ? 'active' : 'pending'),
+      label: invDone ? '已开票' : '待开票',
+      summary: invDone ? `¥${fmtAmt(r.actual_invoice_amount)}${r.invoice_date ? ' · ' + r.invoice_date : ''}` : '尚未开票',
+    },
+    collection: {
+      state: collDone ? 'done' : (paid.value > 0 ? 'partial' : (a.collection.length ? 'active' : 'pending')),
+      label: collDone ? '已收齐' : (paid.value > 0 ? `已收 ${Math.round(paidPct.value * 100)}%` : '待回款'),
+      summary: `¥${fmtAmt(paid.value)} / ¥${fmtAmt(estimated.value)}`,
+    },
+    dunning: {
+      state: overdueDays.value > 0 ? 'urgent' : (a.dunning.length ? 'active' : 'pending'),
+      label: overdueDays.value > 0 ? `逾期 ${overdueDays.value} 天` : '跟进中',
+      summary: a.dunning.length ? `${a.dunning.length} 条跟进` : '暂无跟进',
+    },
+  }
+})
+
+const NAV = [
+  { stage: 'contract', label: '合同', icon: '📄' },
+  { stage: 'reconciliation', label: '对账', icon: '✓' },
+  { stage: 'invoice', label: '开票', icon: '🧾' },
+  { stage: 'collection', label: '回款', icon: '💰' },
+  { stage: 'dunning', label: '催款', icon: '🔔' },
+]
+const ACCENT = { reconciliation: '#1976d2', invoice: '#8e63c5', collection: '#2e9e5b', dunning: '#c96342' }
+const REAL_STAGES = ['reconciliation', 'invoice', 'collection', 'dunning']
 
 // ── 滑入 / 滑出动画 ─────────────────────────────────────────────────────────
 const visible = ref(false)
 function close() { visible.value = false; setTimeout(() => emit('close'), 220) }
 
-// ── 快速编辑（行内）─────────────────────────────────────────────────────────
-const editField = ref('')   // '' | 'collector' | 'target' | 'notes'
-const quickFields = reactive({ collector: '', target_collection_date: '', notes: '' })
-const collectorInp = ref(null), dateInp = ref(null), notesTa = ref(null)
-
-watch(() => props.rec, (r) => {
-  if (r) {
-    quickFields.collector = r.collector || ''
-    quickFields.target_collection_date = r.target_collection_date || ''
-    quickFields.notes = r.notes || ''
-  }
-}, { immediate: true })
-
-function beginEdit(field) {
-  editField.value = field
-  nextTick(() => {
-    ({ collector: collectorInp, target: dateInp, notes: notesTa }[field])?.value?.focus()
-  })
+// ── 记录字段行内编辑（对账日期 / 开票字段 / 催收人 / 目标回款 / 备注）─────────
+const editingField = ref('')
+const fieldBuf = ref('')
+const fieldInp = ref(null)
+function beginField(field, cur) {
+  if (!props.canWrite) return
+  editingField.value = field
+  fieldBuf.value = cur ?? ''
+  nextTick(() => fieldInp.value?.focus())
 }
-async function saveQuickField(field, key) {
+async function saveField() {
+  const field = editingField.value
+  if (!field) { return }
+  editingField.value = ''
+  const val = fieldBuf.value === '' ? null : fieldBuf.value
+  // 与现值相同则跳过
+  if ((props.rec[field] ?? null) === val) return
   try {
-    await ar.quickEdit(props.rec.id, { [key]: quickFields[key] })
-    emit('field-saved', { id: props.rec.id, [key]: quickFields[key] })
+    const res = await ar.updateRecord(props.rec.id, { [field]: val })
+    Object.assign(props.rec, res.data)          // 同步本面板（含重算后的未收/税额等派生值）
+    emit('field-saved', { id: props.rec.id, ...res.data })
     toast.success('已保存')
   } catch (e) {
     toast.error(errMsg(e))
   }
-  editField.value = ''
 }
 
-// ── 新增动态 ──────────────────────────────────────────────────────────────
-const ACT_TYPES = [
-  { v: 'call', l: '📞', title: '电话' },
-  { v: 'email', l: '📧', title: '邮件' },
-  { v: 'visit', l: '🚶', title: '拜访' },
-  { v: 'meeting', l: '💬', title: '会议' },
-  { v: 'note', l: '📝', title: '备注' },
-]
-const STATUSES = [
-  { v: 'in_progress', l: '跟进中' },
-  { v: 'pending', l: '待回复' },
-  { v: 'resolved', l: '已解决' },
-  { v: 'no_response', l: '无响应' },
-]
-const addForm = reactive({
-  act_type: 'call', stage: 'dunning', contact_person: '',
-  note: '', status: 'in_progress', follow_up_date: '',
-})
-const adding = ref(false)
-
-async function submitAdd() {
-  if (!addForm.note.trim()) { toast.error('请填写跟进内容'); return }
-  adding.value = true
+// ── 回款登记 ─────────────────────────────────────────────────────────────────
+const payForm = reactive({ amount: '', payment_date: '', source: '回款', notes: '' })
+const addingPay = ref(false)
+async function submitPayment() {
+  if (!(Number(payForm.amount) > 0)) { toast.error('请填写回款金额'); return }
+  if (!payForm.payment_date) { toast.error('请选择回款日期'); return }
+  addingPay.value = true
   try {
-    const res = await ar.addActivity(props.rec.id, { ...addForm })
-    allActivities.value.unshift(res.data)   // 全量列表统一插入，筛选交给 computed
-    emit('field-saved', { id: props.rec.id, activity_count: (props.rec.activity_count || 0) + 1 })
-    addForm.note = ''; addForm.contact_person = ''; addForm.follow_up_date = ''
-    toast.success('已记录')
+    await ar.addPayment(props.rec.id, { ...payForm })
+    await refreshRecordAndPayments()
+    payForm.amount = ''; payForm.notes = ''
+    toast.success('已登记回款')
   } catch (e) {
     toast.error(errMsg(e))
   } finally {
-    adding.value = false
+    addingPay.value = false
   }
 }
-
-// ── 编辑 / 删除动态 ────────────────────────────────────────────────────────
-const editingId = ref(null)
-const editBuf = reactive({ note: '', status: '', follow_up_date: '' })
-
-function startEdit(act) {
-  editingId.value = act.id
-  editBuf.note = act.note
-  editBuf.status = act.status
-  editBuf.follow_up_date = act.follow_up_date || ''
-}
-function cancelEdit() { editingId.value = null }
-
-async function saveEdit(act) {
-  if (!editBuf.note.trim()) { toast.error('内容不能为空'); return }
+async function deletePayment(p) {
+  if (!confirm(`删除第 ${p.payment_no} 笔回款（¥${p.amount}）？`)) return
   try {
-    const res = await ar.updateActivity(props.rec.id, act.id, {
-      note: editBuf.note, status: editBuf.status,
-      follow_up_date: editBuf.follow_up_date || null,
-    })
-    const idx = allActivities.value.findIndex(a => a.id === act.id)
-    if (idx !== -1) allActivities.value[idx] = res.data
-    editingId.value = null
-    toast.success('已更新')
+    await ar.deletePayment(props.rec.id, p.id)
+    await refreshRecordAndPayments()
+    toast.success('已删除')
   } catch (e) {
     toast.error(errMsg(e))
   }
 }
+async function refreshRecordAndPayments() {
+  // 回款增删由后端信号重算 outstanding，回拉记录 + 回款以刷新欠款/进度
+  const [recRes, payRes] = await Promise.all([
+    ar.getRecord(props.rec.id),
+    ar.listPayments(props.rec.id),
+  ])
+  Object.assign(props.rec, recRes.data)
+  emit('field-saved', { id: props.rec.id, ...recRes.data })
+  payments.value = Array.isArray(payRes.data) ? payRes.data : []
+}
 
+// ── 阶段内动态：编辑 / 删除 / 状态切换（由各区块上抛）─────────────────────────
+async function saveActEdit({ act, note, status, follow_up_date }) {
+  try {
+    const res = await ar.updateActivity(props.rec.id, act.id, { note, status, follow_up_date: follow_up_date || null })
+    const i = allActivities.value.findIndex(a => a.id === act.id)
+    if (i !== -1) allActivities.value[i] = res.data
+    toast.success('已更新')
+  } catch (e) { toast.error(errMsg(e)) }
+}
 async function deleteAct(act) {
   if (!confirm(`删除这条${act.act_type_display}记录？`)) return
   try {
@@ -159,69 +200,35 @@ async function deleteAct(act) {
     allActivities.value = allActivities.value.filter(a => a.id !== act.id)
     emit('field-saved', { id: props.rec.id, activity_count: Math.max(0, (props.rec.activity_count || 1) - 1) })
     toast.success('已删除')
-  } catch (e) {
-    toast.error(errMsg(e))
-  }
+  } catch (e) { toast.error(errMsg(e)) }
 }
-
 async function toggleStatus(act) {
   const order = ['in_progress', 'pending', 'resolved', 'no_response']
   const next = order[(order.indexOf(act.status) + 1) % order.length]
   try {
     const res = await ar.updateActivity(props.rec.id, act.id, { note: act.note, status: next })
-    const idx = allActivities.value.findIndex(a => a.id === act.id)
-    if (idx !== -1) allActivities.value[idx] = res.data
-  } catch (e) {
-    toast.error(errMsg(e))
-  }
+    const i = allActivities.value.findIndex(a => a.id === act.id)
+    if (i !== -1) allActivities.value[i] = res.data
+  } catch (e) { toast.error(errMsg(e)) }
 }
 
-// ── 附件上传 ──────────────────────────────────────────────────────────────
-const uploading = ref(false)
-const dragOver = ref(false)
-const fileInputRef = ref(null)
-const uploadStage = ref('general')
-const ALLOWED = ['.jpg','.jpeg','.png','.gif','.webp','.pdf','.xlsx','.xls','.docx','.doc','.txt','.csv']
-
-async function uploadFile(file) {
+// ── 附件上传 / 删除 ──────────────────────────────────────────────────────────
+async function uploadTo(file, stage) {
   if (!file) return
   const ext = '.' + file.name.split('.').pop().toLowerCase()
-  if (!ALLOWED.includes(ext)) { toast.error(`不支持 ${ext} 格式。支持：图片/PDF/Excel/Word/CSV/TXT`); return }
+  const ALLOWED = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.xlsx', '.xls', '.docx', '.doc', '.txt', '.csv']
+  if (!ALLOWED.includes(ext)) { toast.error(`不支持 ${ext} 格式`); return }
   if (file.size > 20 * 1024 * 1024) { toast.error('文件不能超过 20MB'); return }
-  uploading.value = true
   try {
     const fd = new FormData()
     fd.append('file', file)
-    fd.append('stage', uploadStage.value)
+    fd.append('stage', stage)
     const res = await ar.uploadAttachment(props.rec.id, fd)
     attachments.value.unshift(res.data)
     emit('field-saved', { id: props.rec.id, attachment_count: (props.rec.attachment_count || 0) + 1 })
     toast.success(`已上传：${file.name}`)
-  } catch (e) {
-    toast.error(errMsg(e))
-  } finally {
-    uploading.value = false
-  }
+  } catch (e) { toast.error(errMsg(e)) }
 }
-
-function onFileInput(e) { uploadFile(e.target.files[0]); e.target.value = '' }
-function onDrop(e) { dragOver.value = false; const f = e.dataTransfer?.files?.[0]; if (f) uploadFile(f) }
-
-function onPaste(e) {
-  const items = e.clipboardData?.items
-  if (!items) return
-  for (const item of items) {
-    if (item.type.startsWith('image/')) {
-      const f = item.getAsFile()
-      if (f) {
-        uploadFile(new File([f], `clipboard-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'')}.png`, { type: f.type }))
-        e.preventDefault()
-        break
-      }
-    }
-  }
-}
-
 async function deleteAtt(att) {
   if (!confirm(`删除附件「${att.file_name}」？`)) return
   try {
@@ -229,356 +236,329 @@ async function deleteAtt(att) {
     attachments.value = attachments.value.filter(a => a.id !== att.id)
     emit('field-saved', { id: props.rec.id, attachment_count: Math.max(0, (props.rec.attachment_count || 1) - 1) })
     toast.success('已删除')
-  } catch (e) {
-    toast.error(errMsg(e))
+  } catch (e) { toast.error(errMsg(e)) }
+}
+
+// ── 底部录入条（上下文感知）──────────────────────────────────────────────────
+const ACT_TYPES = [
+  { v: 'call', l: '📞', t: '电话' }, { v: 'email', l: '📧', t: '邮件' },
+  { v: 'visit', l: '🚶', t: '拜访' }, { v: 'meeting', l: '💬', t: '会议' }, { v: 'note', l: '📝', t: '备注' },
+]
+const STATUSES = [
+  { v: 'in_progress', l: '跟进中' }, { v: 'pending', l: '待回复' },
+  { v: 'resolved', l: '已解决' }, { v: 'no_response', l: '无响应' },
+]
+const composeStage = ref('dunning')          // 录入归属阶段（跟随滚动 / 点击）
+const compose = reactive({ act_type: 'call', note: '', status: 'in_progress', follow_up_date: '' })
+const adding = ref(false)
+const composeTa = ref(null)
+const STAGE_LABEL = { reconciliation: '对账', invoice: '开票', collection: '回款', dunning: '催款' }
+
+async function submitCompose() {
+  if (!compose.note.trim()) { toast.error('请填写跟进内容'); return }
+  adding.value = true
+  try {
+    const res = await ar.addActivity(props.rec.id, {
+      stage: composeStage.value, act_type: compose.act_type,
+      note: compose.note, status: compose.status, follow_up_date: compose.follow_up_date || null,
+    })
+    allActivities.value.unshift(res.data)
+    emit('field-saved', { id: props.rec.id, activity_count: (props.rec.activity_count || 0) + 1 })
+    compose.note = ''; compose.follow_up_date = ''
+    toast.success(`已记录到「${STAGE_LABEL[composeStage.value]}」`)
+  } catch (e) { toast.error(errMsg(e)) }
+  finally { adding.value = false }
+}
+function focusCompose(stage) {
+  composeManual.value = true
+  composeStage.value = stage
+  nextTick(() => composeTa.value?.focus())
+  setTimeout(() => { composeManual.value = false }, 1200)
+}
+
+// ── 滚动定位 + scroll-spy ────────────────────────────────────────────────────
+const bodyEl = ref(null)
+const sectionEls = {}
+const expandFns = {}
+const activeNav = ref('contract')
+const composeManual = ref(false)
+let io = null
+
+function registerSection(stage, el, expandFn) {
+  if (el) {
+    el.setAttribute('data-stage', stage)
+    sectionEls[stage] = el
+    if (expandFn) expandFns[stage] = expandFn
+    if (io) io.observe(el)
+  } else if (sectionEls[stage]) {
+    if (io) io.unobserve(sectionEls[stage])
+    delete sectionEls[stage]
+    delete expandFns[stage]
   }
 }
-
-// ── 工具 ──────────────────────────────────────────────────────────────────
-function fmtSize(b) {
-  if (b < 1024) return b + 'B'
-  if (b < 1048576) return (b / 1024).toFixed(1) + 'KB'
-  return (b / 1048576).toFixed(1) + 'MB'
+function scrollToStage(stage) {
+  expandFns[stage]?.()                       // 收起的（如已完成）阶段，点导航即展开
+  activeNav.value = stage
+  if (REAL_STAGES.includes(stage)) focusComposeSilently(stage)
+  nextTick(() => sectionEls[stage]?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
 }
-function fmtTime(iso) { return iso ? iso.replace('T', ' ').slice(0, 16) : '' }
-function fileIcon(att) {
-  const ext = att.file_name.split('.').pop().toLowerCase()
-  if (ext === 'pdf') return '📄'
-  if (['xlsx','xls','csv'].includes(ext)) return '📊'
-  if (['docx','doc'].includes(ext)) return '📝'
-  return '📎'
-}
-const STATUS_COLOR = { in_progress: '#1565c0', pending: '#e8830c', resolved: '#2e7d32', no_response: '#9e9e9e' }
-function statusColor(s) { return STATUS_COLOR[s] || '#888' }
-function actIcon(t) { return { call: '📞', email: '📧', visit: '🚶', meeting: '💬', system: '⚙️', note: '📝', other: '💡' }[t] || '💬' }
-const STAGE_LABEL = Object.fromEntries(REAL_STAGES.map(s => [s.v, s.l]))
-
-// ── 生命周期进度条 ─────────────────────────────────────────────────────────────
-function fmtAmt(v) {
-  if (v == null || v === '') return '—'
-  const n = Number(v)
-  if (isNaN(n)) return '—'
-  if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(1) + '亿'
-  if (Math.abs(n) >= 1e4) return (n / 1e4).toFixed(1) + '万'
-  return Math.round(n).toLocaleString()
-}
-
-// Internal constant — no user input, safe to use with v-html
-const LC_ICONS = {
-  contract: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 2h6.8L13 4.7V14a.5.5 0 01-.5.5h-9A.5.5 0 013 14V2.5A.5.5 0 013.5 2z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M10.3 2v2.7H13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.5 7.5h5M5.5 10h5M5.5 12h3" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>`,
-  reconciliation: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2.5 5.5l2.5 2.5 5-5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.5 11l2.5 2.5 5-5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 4.5v7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity=".5"/></svg>`,
-  invoice: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 2.5h10v12l-1.5-1.2-1.5 1.2-1.5-1.2-1.5 1.2-1.5-1.2-1.5 1.2V2.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5.5 6.5h5M5.5 9h5M5.5 11h3.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>`,
-  collection: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.2"/><path d="M8 4.5v1M8 10.5v1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M6.2 6.9c0-.77.8-1.4 1.8-1.4s1.8.63 1.8 1.4c0 1.73-3.6 1.73-3.6 3.2 0 .77.8 1.4 1.8 1.4s1.8-.63 1.8-1.4" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>`,
-  dunning: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 2a4.5 4.5 0 00-4.5 4.5C3.5 9 4.5 10.5 5 12h6c.5-1.5 1.5-3 1.5-5.5A4.5 4.5 0 008 2z" stroke="currentColor" stroke-width="1.2"/><path d="M6.5 12a1.5 1.5 0 003 0" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>`,
-}
-
-const lifecycleSteps = computed(() => {
-  const r = props.rec
-  const total = Number(r.estimated_amount || 0)
-  const outstanding = Number(r.outstanding_amount || 0)
-  const paid = Math.max(0, total - outstanding)
-  const pct = total > 0 ? Math.min(1, paid / total) : 0
-  const byStage = {}
-  for (const a of allActivities.value) byStage[a.stage] = (byStage[a.stage] || 0) + 1
-
-  const reconDone = !!r.reconciliation_date
-  const invoiceDone = !!(r.invoice_date || Number(r.actual_invoice_amount) > 0)
-  const collDone = total > 0 && outstanding === 0
-  const overdue = Number(r.overdue_days || 0)
-
-  return [
-    { key: 'contract', label: '合同', sub: '已签订', state: 'done', icon: 'contract', stage: '', count: 0 },
-    {
-      key: 'reconciliation', label: '对账', stage: 'reconciliation', count: byStage.reconciliation || 0,
-      sub: r.reconciliation_date || (byStage.reconciliation ? `${byStage.reconciliation}条` : ''),
-      state: reconDone ? 'done' : (byStage.reconciliation ? 'active' : 'pending'),
-      icon: 'reconciliation',
-    },
-    {
-      key: 'invoice', label: '开票', stage: 'invoice', count: byStage.invoice || 0,
-      sub: r.invoice_date || (Number(r.actual_invoice_amount) > 0 ? fmtAmt(r.actual_invoice_amount) : ''),
-      state: invoiceDone ? 'done' : (byStage.invoice ? 'active' : 'pending'),
-      icon: 'invoice',
-    },
-    {
-      key: 'collection', label: '回款', stage: 'collection', count: byStage.collection || 0,
-      sub: collDone ? '完成' : (pct > 0 ? `${Math.round(pct * 100)}%` : ''),
-      state: collDone ? 'done' : (pct > 0 ? 'partial' : (byStage.collection ? 'active' : 'pending')),
-      pct,
-      icon: 'collection',
-    },
-    {
-      key: 'dunning', label: '催款', stage: 'dunning', count: byStage.dunning || 0,
-      sub: overdue > 0 ? `逾期${overdue}天` : (byStage.dunning ? `${byStage.dunning}次` : ''),
-      state: overdue > 0 ? 'urgent' : (byStage.dunning ? 'active' : 'pending'),
-      icon: 'dunning',
-    },
-  ]
-})
-
-function lcLineState(cur, next) {
-  if (cur.state === 'done' && next.state === 'done') return 'done'
-  if (cur.state === 'done') return 'progress'
-  return 'pending'
-}
-
-// ── 垂直时间线：按日期分组 ──────────────────────────────────────────────────
-function dayLabel(day) {
-  if (!day) return ''
-  const d = new Date(day + 'T00:00:00')
-  if (isNaN(d)) return day
-  const now = new Date()
-  const diff = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - d) / 86400000)
-  if (diff === 0) return '今天'
-  if (diff === 1) return '昨天'
-  if (diff === 2) return '前天'
-  const wd = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()]
-  return `${day.slice(5).replace('-', '月')}日 · ${wd}`
-}
-const timelineGroups = computed(() => {
-  const groups = []
-  const map = new Map()
-  for (const a of activities.value) {
-    const day = (a.created_at || '').slice(0, 10)
-    if (!map.has(day)) { const g = { day, label: dayLabel(day), items: [] }; map.set(day, g); groups.push(g) }
-    map.get(day).items.push(a)
-  }
-  return groups
-})
-
-// ── 键盘 ──────────────────────────────────────────────────────────────────
-function onKey(e) {
-  if (e.key !== 'Escape') return
-  if (editField.value) { editField.value = ''; return }
-  if (editingId.value !== null) { cancelEdit(); return }
-  close()
+function focusComposeSilently(stage) {
+  composeManual.value = true
+  composeStage.value = stage
+  setTimeout(() => { composeManual.value = false }, 900)
 }
 
 onMounted(() => {
   requestAnimationFrame(() => { visible.value = true })
   document.addEventListener('paste', onPaste)
   document.addEventListener('keydown', onKey)
+  io = new IntersectionObserver((entries) => {
+    // 取与检测带相交、且最靠上的区块作为当前阶段
+    const hit = entries.filter(e => e.isIntersecting)
+      .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0]
+    if (hit) {
+      const stage = hit.target.getAttribute('data-stage')
+      if (stage) {
+        activeNav.value = stage
+        if (!composeManual.value && REAL_STAGES.includes(stage)) composeStage.value = stage
+      }
+    }
+  }, { root: bodyEl.value, rootMargin: '-12% 0px -78% 0px', threshold: 0 })
+  Object.values(sectionEls).forEach(el => el && io.observe(el))
 })
 onBeforeUnmount(() => {
   document.removeEventListener('paste', onPaste)
   document.removeEventListener('keydown', onKey)
+  if (io) io.disconnect()
 })
+
+function onPaste(e) {
+  const items = e.clipboardData?.items
+  if (!items) return
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      const f = item.getAsFile()
+      if (f) { uploadTo(new File([f], `clipboard-${Date.now()}.png`, { type: f.type }), composeStage.value); e.preventDefault(); break }
+    }
+  }
+}
+function onKey(e) {
+  if (e.key !== 'Escape') return
+  if (editingField.value) { editingField.value = ''; return }
+  close()
+}
 </script>
 
 <template>
   <Teleport to="body">
     <div class="ap-backdrop" :class="{ 'ap-open': visible }" @click.self="close"></div>
     <div class="ap-panel" :class="{ 'ap-open': visible }">
-      <!-- 头部 -->
+      <!-- ═══ 头部 ═══ -->
       <div class="ap-header">
-        <div class="ap-title">
-          <span class="ap-proj" :title="rec.short_name || rec.customer_name">{{ rec.short_name || rec.customer_name }}</span>
-          <span v-if="rec.customer_name && rec.customer_name !== rec.short_name" class="ap-sub">{{ rec.customer_name }}</span>
-        </div>
-        <button class="ap-close" title="关闭 (Esc)" @click="close">✕</button>
-      </div>
-
-      <!-- 生命周期进度条 -->
-      <div class="ap-lifecycle">
-        <div class="ap-lc-track">
-          <template v-for="(step, i) in lifecycleSteps" :key="step.key">
-            <button class="ap-lc-step" :class="{ 'lc-step-on': step.stage && activeStage === step.stage, 'lc-step-clickable': step.stage }"
-              :disabled="!step.stage" :title="step.stage ? `查看${step.label}记录` : ''"
-              @click="step.stage && (activeStage = activeStage === step.stage ? '' : step.stage)">
-              <div class="ap-lc-node" :class="`lc-${step.state}`"
-                :style="step.state === 'partial' ? { '--pct': step.pct } : {}">
-                <!-- svg injected via v-html from internal LC_ICONS constant -->
-                <span class="ap-lc-icon-wrap" v-html="LC_ICONS[step.icon]"></span>
-                <span v-if="step.count" class="ap-lc-badge">{{ step.count }}</span>
-              </div>
-              <div class="ap-lc-labels">
-                <span class="ap-lc-name">{{ step.label }}</span>
-                <span v-if="step.sub" class="ap-lc-sub" :class="`lc-sub-${step.state}`">{{ step.sub }}</span>
-              </div>
-            </button>
-            <div v-if="i < lifecycleSteps.length - 1" class="ap-lc-conn"
-              :class="`lc-conn-${lcLineState(step, lifecycleSteps[i + 1])}`"></div>
-          </template>
-        </div>
-        <!-- 关键指标 -->
-        <div class="ap-lc-metrics">
-          <div class="ap-lc-metric">
-            <span class="ap-lc-mv">¥{{ fmtAmt(rec.estimated_amount) }}</span>
-            <span class="ap-lc-mk">应收</span>
+        <div class="ap-htop">
+          <div class="ap-title">
+            <span class="ap-proj" :title="rec.short_name || rec.customer_name">{{ rec.short_name || rec.customer_name }}</span>
+            <span v-if="rec.customer_name && rec.customer_name !== rec.short_name" class="ap-sub">{{ rec.customer_name }}</span>
           </div>
-          <div class="ap-lc-mdiv"></div>
-          <div class="ap-lc-metric">
-            <span class="ap-lc-mv ap-lc-mv--good">
-              ¥{{ fmtAmt(Math.max(0, Number(rec.estimated_amount || 0) - Number(rec.outstanding_amount || 0))) }}
+          <button class="ap-close" title="关闭 (Esc)" @click="close">✕</button>
+        </div>
+        <!-- 金额进度 -->
+        <div class="ap-money">
+          <div class="ap-money-row">
+            <span class="ap-m-est">应收 ¥{{ fmtAmt(estimated) }}</span>
+            <span class="ap-m-pct">{{ Math.round(paidPct * 100) }}%</span>
+          </div>
+          <div class="ap-bar"><div class="ap-bar-fill" :style="{ width: (paidPct * 100) + '%' }"></div></div>
+          <div class="ap-money-foot">
+            <span class="ap-m-paid">已收 ¥{{ fmtAmt(paid) }}</span>
+            <span class="ap-m-out" :class="{ 'ap-m-danger': overdueDays > 0 }">
+              欠款 ¥{{ fmtAmt(outstanding) }}
+              <em v-if="overdueDays > 0" class="ap-m-od">逾期{{ overdueDays }}天</em>
             </span>
-            <span class="ap-lc-mk">已收</span>
           </div>
-          <div class="ap-lc-mdiv"></div>
-          <div class="ap-lc-metric">
-            <span class="ap-lc-mv" :class="Number(rec.outstanding_amount) > 0 ? 'ap-lc-mv--warn' : 'ap-lc-mv--good'">
-              ¥{{ fmtAmt(rec.outstanding_amount) }}
-            </span>
-            <span class="ap-lc-mk">欠款</span>
-          </div>
-          <template v-if="Number(rec.overdue_days) > 0">
-            <div class="ap-lc-mdiv"></div>
-            <div class="ap-lc-metric">
-              <span class="ap-lc-mv ap-lc-mv--danger">{{ rec.overdue_days }}天</span>
-              <span class="ap-lc-mk">逾期</span>
-            </div>
-          </template>
-          <template v-else-if="rec.target_collection_date">
-            <div class="ap-lc-mdiv"></div>
-            <div class="ap-lc-metric">
-              <span class="ap-lc-mv ap-lc-mv--target">{{ rec.target_collection_date }}</span>
-              <span class="ap-lc-mk">目标</span>
-            </div>
-          </template>
         </div>
       </div>
 
-      <!-- 快速编辑信息条 -->
-      <div class="ap-quick">
-        <div class="ap-qcell">
-          <span class="ap-qlabel">催收人</span>
-          <input v-if="editField==='collector'" ref="collectorInp" v-model="quickFields.collector" class="ap-qinput" placeholder="姓名"
-            @blur="saveQuickField('collector','collector')" @keyup.enter="saveQuickField('collector','collector')" @keyup.escape="editField=''" />
-          <span v-else class="ap-qval" :class="{ 'ap-qval--empty': !quickFields.collector }" @click="beginEdit('collector')">
-            {{ quickFields.collector || '＋ 设置' }}
-          </span>
-        </div>
-        <div class="ap-qcell">
-          <span class="ap-qlabel">目标回款</span>
-          <input v-if="editField==='target'" ref="dateInp" v-model="quickFields.target_collection_date" type="date" class="ap-qinput"
-            @blur="saveQuickField('target','target_collection_date')" @keyup.enter="saveQuickField('target','target_collection_date')" @keyup.escape="editField=''" />
-          <span v-else class="ap-qval" :class="{ 'ap-qval--empty': !quickFields.target_collection_date }" @click="beginEdit('target')">
-            {{ quickFields.target_collection_date || '＋ 设置' }}
-          </span>
-        </div>
-        <div class="ap-qcell ap-qcell--wide">
-          <span class="ap-qlabel">备注</span>
-          <textarea v-if="editField==='notes'" ref="notesTa" v-model="quickFields.notes" class="ap-qta" rows="2"
-            @blur="saveQuickField('notes','notes')" @keyup.escape="editField=''"></textarea>
-          <span v-else class="ap-qval ap-qval--notes" :class="{ 'ap-qval--empty': !quickFields.notes }" @click="beginEdit('notes')">
-            {{ quickFields.notes || '＋ 添加备注' }}
-          </span>
-        </div>
+      <!-- ═══ 生命线导航 ═══ -->
+      <div class="ap-nav">
+        <template v-for="(n, i) in NAV" :key="n.stage">
+          <button class="ap-nav-step" :class="{ on: activeNav === n.stage }" @click="scrollToStage(n.stage)">
+            <span class="ap-nav-dot" :class="`nv-${(stageInfo[n.stage] || {}).state || 'pending'}`">{{ n.icon }}</span>
+            <span class="ap-nav-lab">{{ n.label }}</span>
+          </button>
+          <span v-if="i < NAV.length - 1" class="ap-nav-line"
+            :class="{ 'nv-line-done': (stageInfo[NAV[i].stage] || {}).state === 'done' }"></span>
+        </template>
       </div>
 
-      <!-- 快速录入 -->
-      <div class="ap-add">
-        <div class="ap-add-row1">
-          <button v-for="t in ACT_TYPES" :key="t.v" class="ap-type-chip" :class="{ on: addForm.act_type === t.v }" :title="t.title" @click="addForm.act_type = t.v">{{ t.l }}</button>
-          <select v-model="addForm.stage" class="ap-mini-sel" title="归入阶段">
-            <option v-for="s in REAL_STAGES" :key="s.v" :value="s.v">{{ s.l }}</option>
-          </select>
-        </div>
-        <textarea v-model="addForm.note" class="ap-add-ta" rows="2" placeholder="跟进内容…（Ctrl+Enter 保存）" @keydown.ctrl.enter.prevent="submitAdd"></textarea>
-        <div class="ap-add-row2">
-          <select v-model="addForm.status" class="ap-mini-sel">
-            <option v-for="s in STATUSES" :key="s.v" :value="s.v">{{ s.l }}</option>
-          </select>
-          <input v-model="addForm.follow_up_date" type="date" class="ap-mini-sel" title="计划跟进日期" />
-          <button class="ap-add-btn" :disabled="adding || !addForm.note.trim()" @click="submitAdd">{{ adding ? '保存…' : '记录' }}</button>
-        </div>
-      </div>
-
-      <div class="ap-body">
+      <!-- ═══ 生命线主体 ═══ -->
+      <div ref="bodyEl" class="ap-body">
         <template v-if="loading">
-          <div class="ap-skeleton" v-for="n in 3" :key="n"></div>
+          <div class="ap-skeleton" v-for="n in 4" :key="n"></div>
         </template>
         <template v-else>
-          <!-- 跟进时间线 -->
-          <div class="ap-sec">
-            <span class="ap-sec-t">跟进时间线</span><span class="ap-cnt">{{ activities.length }}</span>
-            <span v-if="activeStage" class="ap-sec-filter">仅看{{ STAGE_LABEL[activeStage] }} · <a @click="activeStage=''">清除</a></span>
-          </div>
-          <div v-if="!activities.length" class="ap-empty">
-            <div class="ap-empty-ico">🕓</div>
-            {{ activeStage ? `暂无${STAGE_LABEL[activeStage]}阶段记录` : '暂无跟进记录，在上方记录第一条' }}
-          </div>
-          <div v-else class="ap-tl">
-            <template v-for="g in timelineGroups" :key="g.day">
-              <!-- 日期节点 -->
-              <div class="ap-tl-date">
-                <span class="ap-tl-date-node"></span>
-                <span class="ap-tl-date-txt">{{ g.label }}</span>
+          <!-- 合同 -->
+          <section :ref="el => registerSection('contract', el)" class="ap-contract">
+            <div class="apc-head"><span class="apc-ico">📄</span><span class="apc-title">合同</span><span class="apc-done">已签订</span></div>
+            <div class="apc-grid">
+              <div class="apc-cell"><i>客户</i><b>{{ rec.customer_name || '—' }}</b></div>
+              <div class="apc-cell"><i>交付部门</i><b>{{ rec.delivery_dept || '—' }}</b></div>
+              <div class="apc-cell"><i>预估应收</i><b>¥{{ fmtAmt(estimated) }}</b></div>
+              <div class="apc-cell"><i>应收到期</i><b>{{ rec.due_date || '—' }}</b></div>
+            </div>
+          </section>
+
+          <!-- 对账 -->
+          <LifelineSection
+            stage="reconciliation" title="对账" icon="✓" :accent="ACCENT.reconciliation"
+            :state="stageInfo.reconciliation.state" :state-label="stageInfo.reconciliation.label" :summary="stageInfo.reconciliation.summary"
+            :activities="actsByStage.reconciliation" :attachments="attsByStage.reconciliation"
+            :can-write="canWrite" :default-open="stageInfo.reconciliation.state !== 'done'"
+            @save-edit="saveActEdit" @delete-act="deleteAct" @toggle-status="toggleStatus"
+            @upload="f => uploadTo(f, 'reconciliation')" @delete-att="deleteAtt" @compose="focusCompose" @register="registerSection">
+            <template #fields>
+              <div class="kf">
+                <span class="kf-lab">对账日期</span>
+                <input v-if="editingField === 'reconciliation_date'" ref="fieldInp" v-model="fieldBuf" type="date" class="kf-inp"
+                  @blur="saveField" @keyup.enter="saveField" @keyup.escape="editingField = ''" />
+                <span v-else class="kf-val" :class="{ empty: !rec.reconciliation_date, ro: !canWrite }" @click="beginField('reconciliation_date', rec.reconciliation_date)">
+                  {{ rec.reconciliation_date || (canWrite ? '＋ 标记对账日' : '—') }}
+                </span>
               </div>
-              <!-- 当日动态 -->
-              <div v-for="act in g.items" :key="act.id" class="ap-tl-item" :style="{ '--sc': statusColor(act.status) }">
-                <div class="ap-tl-gutter">
-                  <span class="ap-tl-dot" :title="act.act_type_display">{{ actIcon(act.act_type) }}</span>
+            </template>
+          </LifelineSection>
+
+          <!-- 开票 -->
+          <LifelineSection
+            stage="invoice" title="开票" icon="🧾" :accent="ACCENT.invoice"
+            :state="stageInfo.invoice.state" :state-label="stageInfo.invoice.label" :summary="stageInfo.invoice.summary"
+            :activities="actsByStage.invoice" :attachments="attsByStage.invoice"
+            :can-write="canWrite" :default-open="stageInfo.invoice.state !== 'done'"
+            @save-edit="saveActEdit" @delete-act="deleteAct" @toggle-status="toggleStatus"
+            @upload="f => uploadTo(f, 'invoice')" @delete-att="deleteAtt" @compose="focusCompose" @register="registerSection">
+            <template #fields>
+              <div class="kf-grid">
+                <div class="kf">
+                  <span class="kf-lab">实际开票金额</span>
+                  <input v-if="editingField === 'actual_invoice_amount'" ref="fieldInp" v-model="fieldBuf" type="number" step="0.01" class="kf-inp" placeholder="0.00"
+                    @blur="saveField" @keyup.enter="saveField" @keyup.escape="editingField = ''" />
+                  <span v-else class="kf-val" :class="{ empty: rec.actual_invoice_amount == null, ro: !canWrite }" @click="beginField('actual_invoice_amount', rec.actual_invoice_amount)">
+                    {{ rec.actual_invoice_amount != null ? '¥' + fmtAmt(rec.actual_invoice_amount) : (canWrite ? '＋ 填写' : '—') }}
+                  </span>
                 </div>
-                <div class="ap-tl-card">
-                  <div class="ap-tl-head">
-                    <span class="ap-tl-who">{{ act.created_by_name || '—' }}</span>
-                    <span v-if="!activeStage" class="ap-stage-tag">{{ STAGE_LABEL[act.stage] || act.stage_display }}</span>
-                    <button class="ap-status-chip" @click="act.can_edit && toggleStatus(act)" :title="act.can_edit ? '点击切换状态' : ''">{{ act.status_display }}</button>
-                    <span class="ap-tl-time">{{ fmtTime(act.created_at).slice(11) || fmtTime(act.created_at) }}</span>
-                    <template v-if="act.can_edit && editingId !== act.id">
-                      <button class="ap-ico-btn" title="编辑" @click="startEdit(act)">✏️</button>
-                      <button class="ap-ico-btn ap-ico-del" title="删除" @click="deleteAct(act)">🗑</button>
-                    </template>
-                  </div>
-                  <template v-if="editingId === act.id">
-                    <textarea v-model="editBuf.note" class="ap-edit-ta" rows="3"></textarea>
-                    <div class="ap-edit-foot">
-                      <select v-model="editBuf.status" class="ap-mini-sel">
-                        <option v-for="s in STATUSES" :key="s.v" :value="s.v">{{ s.l }}</option>
-                      </select>
-                      <input v-model="editBuf.follow_up_date" type="date" class="ap-mini-sel" />
-                      <button class="ap-save-btn" @click="saveEdit(act)">保存</button>
-                      <button class="ap-cancel-btn" @click="cancelEdit">取消</button>
-                    </div>
-                  </template>
-                  <template v-else>
-                    <div class="ap-tl-note">{{ act.note }}</div>
-                    <div v-if="act.follow_up_date" class="ap-tl-followup">📅 计划跟进 {{ act.follow_up_date }}</div>
-                  </template>
+                <div class="kf">
+                  <span class="kf-lab">开票日期</span>
+                  <input v-if="editingField === 'invoice_date'" ref="fieldInp" v-model="fieldBuf" type="date" class="kf-inp"
+                    @blur="saveField" @keyup.enter="saveField" @keyup.escape="editingField = ''" />
+                  <span v-else class="kf-val" :class="{ empty: !rec.invoice_date, ro: !canWrite }" @click="beginField('invoice_date', rec.invoice_date)">
+                    {{ rec.invoice_date || (canWrite ? '＋ 选择' : '—') }}
+                  </span>
+                </div>
+                <div class="kf">
+                  <span class="kf-lab">税额</span>
+                  <input v-if="editingField === 'tax_amount'" ref="fieldInp" v-model="fieldBuf" type="number" step="0.01" class="kf-inp" placeholder="0.00"
+                    @blur="saveField" @keyup.enter="saveField" @keyup.escape="editingField = ''" />
+                  <span v-else class="kf-val" :class="{ empty: rec.tax_amount == null, ro: !canWrite }" @click="beginField('tax_amount', rec.tax_amount)">
+                    {{ rec.tax_amount != null ? '¥' + fmtAmt(rec.tax_amount) : (canWrite ? '＋ 填写' : '—') }}
+                  </span>
+                </div>
+                <div class="kf">
+                  <span class="kf-lab">开票批次号</span>
+                  <input v-if="editingField === 'invoice_batch_no'" ref="fieldInp" v-model="fieldBuf" type="text" class="kf-inp" placeholder="批次号"
+                    @blur="saveField" @keyup.enter="saveField" @keyup.escape="editingField = ''" />
+                  <span v-else class="kf-val" :class="{ empty: !rec.invoice_batch_no, ro: !canWrite }" @click="beginField('invoice_batch_no', rec.invoice_batch_no)">
+                    {{ rec.invoice_batch_no || (canWrite ? '＋ 关联批次' : '—') }}
+                  </span>
+                </div>
+              </div>
+              <div v-if="rec.invoice_batch_no" class="kf-batch-hint">
+                🔗 已并入批次 <b>{{ rec.invoice_batch_no }}</b>，可在「应收明细 · 批次」页做批量开票/回款
+              </div>
+            </template>
+          </LifelineSection>
+
+          <!-- 回款 -->
+          <LifelineSection
+            stage="collection" title="回款" icon="💰" :accent="ACCENT.collection"
+            :state="stageInfo.collection.state" :state-label="stageInfo.collection.label" :summary="stageInfo.collection.summary"
+            :activities="actsByStage.collection" :attachments="attsByStage.collection"
+            :can-write="canWrite" :default-open="estimated > 0 && outstanding > 0"
+            @save-edit="saveActEdit" @delete-act="deleteAct" @toggle-status="toggleStatus"
+            @upload="f => uploadTo(f, 'collection')" @delete-att="deleteAtt" @compose="focusCompose" @register="registerSection">
+            <template #fields>
+              <!-- 回款进度 -->
+              <div class="pay-prog">
+                <div class="pay-prog-bar"><div class="pay-prog-fill" :style="{ width: (paidPct * 100) + '%' }"></div></div>
+                <div class="pay-prog-txt"><span>已收 ¥{{ fmtAmt(paid) }}</span><span>待收 ¥{{ fmtAmt(outstanding) }}</span></div>
+              </div>
+              <!-- 回款明细 -->
+              <div v-if="payments.length" class="pay-list">
+                <div v-for="p in payments" :key="p.id" class="pay-item">
+                  <span class="pay-no">#{{ p.payment_no }}</span>
+                  <span class="pay-amt">¥{{ fmtAmt(p.amount) }}</span>
+                  <span class="pay-date">{{ p.payment_date }}</span>
+                  <span class="pay-src" :class="{ 'pay-src-other': p.source !== '回款' }">{{ p.source }}</span>
+                  <span v-if="p.counterparty_dept" class="pay-cp">{{ p.counterparty_dept }}</span>
+                  <button v-if="canCollect && p.source === '回款'" class="pay-del" title="删除" @click="deletePayment(p)">🗑</button>
+                </div>
+              </div>
+              <div v-else class="pay-empty">暂无回款记录</div>
+              <!-- 登记回款 -->
+              <div v-if="canCollect && outstanding > 0" class="pay-add">
+                <input v-model="payForm.amount" type="number" step="0.01" class="pay-inp pay-inp-amt" placeholder="回款金额" />
+                <input v-model="payForm.payment_date" type="date" class="pay-inp" />
+                <button class="pay-btn" :disabled="addingPay" @click="submitPayment">{{ addingPay ? '…' : '登记回款' }}</button>
+              </div>
+            </template>
+          </LifelineSection>
+
+          <!-- 催款 -->
+          <LifelineSection
+            stage="dunning" title="催款" icon="🔔" :accent="ACCENT.dunning"
+            :state="stageInfo.dunning.state" :state-label="stageInfo.dunning.label" :summary="stageInfo.dunning.summary"
+            :activities="actsByStage.dunning" :attachments="attsByStage.dunning"
+            :can-write="canWrite" :default-open="true"
+            @save-edit="saveActEdit" @delete-act="deleteAct" @toggle-status="toggleStatus"
+            @upload="f => uploadTo(f, 'dunning')" @delete-att="deleteAtt" @compose="focusCompose" @register="registerSection">
+            <template #fields>
+              <div class="kf-grid">
+                <div class="kf">
+                  <span class="kf-lab">催收负责人</span>
+                  <input v-if="editingField === 'collector'" ref="fieldInp" v-model="fieldBuf" type="text" class="kf-inp" placeholder="姓名"
+                    @blur="saveField" @keyup.enter="saveField" @keyup.escape="editingField = ''" />
+                  <span v-else class="kf-val" :class="{ empty: !rec.collector, ro: !canWrite }" @click="beginField('collector', rec.collector)">
+                    {{ rec.collector || (canWrite ? '＋ 指定' : '—') }}
+                  </span>
+                </div>
+                <div class="kf">
+                  <span class="kf-lab">目标回款日</span>
+                  <input v-if="editingField === 'target_collection_date'" ref="fieldInp" v-model="fieldBuf" type="date" class="kf-inp"
+                    @blur="saveField" @keyup.enter="saveField" @keyup.escape="editingField = ''" />
+                  <span v-else class="kf-val" :class="{ empty: !rec.target_collection_date, ro: !canWrite }" @click="beginField('target_collection_date', rec.target_collection_date)">
+                    {{ rec.target_collection_date || (canWrite ? '＋ 设定' : '—') }}
+                  </span>
                 </div>
               </div>
             </template>
-          </div>
-
-          <!-- 附件 -->
-          <div class="ap-sec">
-            <span class="ap-sec-t">附件</span><span class="ap-cnt">{{ attachments.length }}</span>
-            <select v-model="uploadStage" class="ap-mini-sel ap-sec-sel" title="上传归入阶段">
-              <option v-for="s in REAL_STAGES" :key="s.v" :value="s.v">{{ s.l }}</option>
-              <option value="general">通用</option>
-            </select>
-          </div>
-
-          <!-- 图片：缩略图网格 -->
-          <div v-if="imageAtts.length" class="ap-img-grid">
-            <div v-for="att in imageAtts" :key="att.id" class="ap-img-cell" :title="att.file_name">
-              <a :href="att.download_url" target="_blank">
-                <img :src="att.thumb_url || att.download_url" class="ap-img" :alt="att.file_name" />
-              </a>
-              <button class="ap-img-del" title="删除" @click="deleteAtt(att)">✕</button>
-              <span class="ap-img-cap">{{ att.stage_display }}</span>
-            </div>
-          </div>
-
-          <!-- 文件：紧凑列表 -->
-          <div v-for="att in fileAtts" :key="att.id" class="ap-file">
-            <span class="ap-file-icon">{{ fileIcon(att) }}</span>
-            <div class="ap-file-info">
-              <a :href="att.download_url" target="_blank" class="ap-file-name" :title="att.file_name">{{ att.file_name }}</a>
-              <span class="ap-file-meta">{{ fmtSize(att.file_size) }} · {{ att.stage_display }} · {{ att.uploaded_by_name }}</span>
-            </div>
-            <button class="ap-file-del" title="删除" @click="deleteAtt(att)">✕</button>
-          </div>
-
-          <!-- 上传区 -->
-          <div class="ap-dropzone" :class="{ 'ap-dz-over': dragOver, 'ap-dz-up': uploading }"
-            @dragover.prevent="dragOver=true" @dragleave="dragOver=false" @drop.prevent="onDrop" @click="fileInputRef?.click()">
-            <span v-if="uploading">⏳ 上传中…</span>
-            <span v-else>{{ dragOver ? '松手上传' : '⬆ 拖拽 / 点击上传 · Ctrl+V 粘贴截图' }}</span>
-            <input ref="fileInputRef" type="file" class="ap-file-input"
-              accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,.xlsx,.xls,.docx,.doc,.txt,.csv" @change="onFileInput" />
-          </div>
+          </LifelineSection>
         </template>
+      </div>
+
+      <!-- ═══ 上下文录入条 ═══ -->
+      <div v-if="canWrite && !loading" class="ap-compose">
+        <div class="ap-cmp-row1">
+          <button v-for="t in ACT_TYPES" :key="t.v" class="ap-cmp-type" :class="{ on: compose.act_type === t.v }" :title="t.t" @click="compose.act_type = t.v">{{ t.l }}</button>
+          <span class="ap-cmp-target">记入 <b :style="{ color: ACCENT[composeStage] }">{{ STAGE_LABEL[composeStage] }}</b></span>
+        </div>
+        <textarea v-model="compose.note" ref="composeTa" class="ap-cmp-ta" rows="2"
+          :placeholder="`记录${STAGE_LABEL[composeStage]}跟进…（Ctrl+Enter 保存）`" @keydown.ctrl.enter.prevent="submitCompose"></textarea>
+        <div class="ap-cmp-row2">
+          <select v-model="compose.status" class="ap-cmp-sel">
+            <option v-for="s in STATUSES" :key="s.v" :value="s.v">{{ s.l }}</option>
+          </select>
+          <input v-model="compose.follow_up_date" type="date" class="ap-cmp-sel" title="计划跟进日期" />
+          <button class="ap-cmp-btn" :disabled="adding || !compose.note.trim()" @click="submitCompose">{{ adding ? '保存…' : '记录' }}</button>
+        </div>
       </div>
     </div>
   </Teleport>
@@ -588,9 +568,8 @@ onBeforeUnmount(() => {
 .ap-backdrop { position: fixed; inset: 0; z-index: 700; background: rgba(40,24,12,0.22); opacity: 0; transition: opacity .22s ease; }
 .ap-backdrop.ap-open { opacity: 1; }
 .ap-panel {
-  position: fixed; top: 0; right: 0; bottom: 0; width: 392px; max-width: 94vw;
-  z-index: 701; background: #fbf7f1;
-  border-left: 1px solid rgba(180,140,110,.28);
+  position: fixed; top: 0; right: 0; bottom: 0; width: 560px; max-width: 96vw;
+  z-index: 701; background: #fbf7f1; border-left: 1px solid rgba(180,140,110,.28);
   box-shadow: -10px 0 40px rgba(60,30,10,0.16);
   display: flex; flex-direction: column; overflow: hidden;
   transform: translateX(100%); transition: transform .24s cubic-bezier(.4,0,.2,1);
@@ -598,316 +577,109 @@ onBeforeUnmount(() => {
 .ap-panel.ap-open { transform: translateX(0); }
 
 /* 头部 */
-.ap-header {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  padding: 13px 16px; border-bottom: 1px solid rgba(180,140,110,.2);
-  background: linear-gradient(135deg, #fceede, #fbf7f1); flex-shrink: 0;
-}
+.ap-header { padding: 13px 16px 11px; border-bottom: 1px solid rgba(180,140,110,.2); background: linear-gradient(135deg, #fceede, #fbf7f1); flex-shrink: 0; }
+.ap-htop { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .ap-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.ap-proj { font-size: 15px; font-weight: 800; color: #5a4636; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-proj { font-size: 16px; font-weight: 800; color: #5a4636; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ap-sub { font-size: 11.5px; color: #9b8070; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ap-close { border: none; background: rgba(0,0,0,.04); width: 26px; height: 26px; border-radius: 50%; font-size: 13px; color: #9b8070; cursor: pointer; flex-shrink: 0; transition: all .12s; }
 .ap-close:hover { background: rgba(201,99,66,.12); color: #c96342; }
 
-/* 快速编辑信息条 */
-.ap-quick { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 10px 16px; border-bottom: 1px solid rgba(180,140,110,.15); flex-shrink: 0; }
-.ap-qcell { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.ap-qcell--wide { flex-basis: 100%; }
-.ap-qlabel { font-size: 11px; color: #a8917e; flex-shrink: 0; }
-.ap-qval { font-size: 12.5px; color: #5a4636; cursor: pointer; padding: 2px 7px; border-radius: 6px; border: 1px solid transparent; transition: all .1s; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ap-qcell--wide .ap-qval { max-width: none; flex: 1; white-space: pre-wrap; word-break: break-word; }
-.ap-qval:hover { background: #fff; border-color: rgba(201,99,66,.25); }
-.ap-qval--empty { color: #c0ad9d; }
-.ap-qinput, .ap-qta { border: 1px solid rgba(201,99,66,.45); border-radius: 6px; padding: 3px 7px; font-size: 12.5px; color: #5a4636; background: #fff; outline: none; font-family: inherit; }
-.ap-qcell--wide .ap-qta { flex: 1; resize: vertical; min-height: 40px; }
+/* 金额进度 */
+.ap-money { margin-top: 9px; }
+.ap-money-row { display: flex; justify-content: space-between; align-items: baseline; }
+.ap-m-est { font-size: 13px; font-weight: 800; color: #5a4636; }
+.ap-m-pct { font-size: 12px; font-weight: 800; color: #2e9e5b; }
+.ap-bar { height: 7px; border-radius: 4px; background: rgba(180,140,110,.18); overflow: hidden; margin: 4px 0; }
+.ap-bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, #66bb6a, #2e9e5b); transition: width .4s ease; }
+.ap-money-foot { display: flex; justify-content: space-between; font-size: 11.5px; }
+.ap-m-paid { color: #2e7d32; font-weight: 600; }
+.ap-m-out { color: #8a7665; font-weight: 600; }
+.ap-m-danger { color: #c62828; }
+.ap-m-od { font-style: normal; font-size: 10px; background: rgba(198,40,40,.12); color: #c62828; padding: 0 6px; border-radius: 7px; margin-left: 4px; font-weight: 700; }
 
-/* 快速录入 */
-.ap-add { padding: 10px 14px; border-bottom: 1px solid rgba(180,140,110,.15); display: flex; flex-direction: column; gap: 7px; flex-shrink: 0; background: rgba(255,253,250,.6); }
-.ap-add-row1 { display: flex; gap: 5px; align-items: center; }
-.ap-type-chip { border: 1px solid rgba(180,140,110,.25); background: #fff; border-radius: 8px; padding: 3px 8px; font-size: 14px; cursor: pointer; line-height: 1; transition: all .12s; }
-.ap-type-chip:hover { border-color: rgba(201,99,66,.5); }
-.ap-type-chip.on { border-color: #c96342; background: rgba(201,99,66,.1); transform: translateY(-1px); }
-.ap-add-ta { width: 100%; border: 1px solid rgba(180,140,110,.25); border-radius: 9px; padding: 8px 10px; font-size: 13px; color: #5a4636; resize: vertical; min-height: 42px; font-family: inherit; background: #fff; outline: none; box-sizing: border-box; transition: border-color .12s; }
-.ap-add-ta:focus { border-color: rgba(201,99,66,.55); }
-.ap-add-row2 { display: flex; gap: 6px; align-items: center; }
-.ap-mini-sel { border: 1px solid rgba(180,140,110,.28); border-radius: 7px; font-size: 12px; padding: 4px 7px; color: #5a4636; background: #fff; outline: none; font-family: inherit; }
-.ap-add-row1 .ap-mini-sel { margin-left: auto; }
-.ap-add-btn { margin-left: auto; padding: 6px 18px; border: none; border-radius: 8px; background: linear-gradient(120deg, #c96342, #b5532f); color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; transition: filter .12s; }
-.ap-add-btn:hover:not(:disabled) { filter: brightness(1.06); }
-.ap-add-btn:disabled { opacity: .45; cursor: default; }
+/* 生命线导航 */
+.ap-nav { display: flex; align-items: flex-start; padding: 10px 14px; border-bottom: 1px solid rgba(180,140,110,.15); background: rgba(255,253,250,.6); flex-shrink: 0; }
+.ap-nav-step { display: flex; flex-direction: column; align-items: center; gap: 4px; border: none; background: none; cursor: pointer; padding: 2px 0; width: 50px; flex-shrink: 0; border-radius: 9px; transition: background .12s; }
+.ap-nav-step:hover { background: rgba(201,99,66,.06); }
+.ap-nav-step.on .ap-nav-lab { color: #c96342; font-weight: 800; }
+.ap-nav-dot { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; background: #f0e6dc; color: #a8917e; transition: box-shadow .15s; }
+.ap-nav-step.on .ap-nav-dot { box-shadow: 0 0 0 3px rgba(201,99,66,.16); }
+.nv-done { background: linear-gradient(145deg, #66bb6a, #2e7d32); color: #fff; }
+.nv-active { background: linear-gradient(145deg, #e07848, #c96342); color: #fff; }
+.nv-partial { background: linear-gradient(145deg, #ffb74d, #f57c00); color: #fff; }
+.nv-urgent { background: linear-gradient(145deg, #ef5350, #c62828); color: #fff; animation: nv-pulse 1.4s ease-out infinite; }
+@keyframes nv-pulse { 0% { box-shadow: 0 0 0 0 rgba(239,83,80,.5); } 100% { box-shadow: 0 0 0 8px rgba(239,83,80,0); } }
+.ap-nav-lab { font-size: 11px; color: #8a7665; white-space: nowrap; }
+.ap-nav-line { flex: 1; height: 2px; background: rgba(180,140,110,.25); margin-top: 15px; border-radius: 2px; min-width: 4px; }
+.nv-line-done { background: linear-gradient(90deg, #66bb6a, #2e7d32); }
 
-/* 滚动区 */
-.ap-body { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 9px; }
-.ap-skeleton { height: 56px; border-radius: 10px; background: linear-gradient(90deg, rgba(180,140,110,.08), rgba(180,140,110,.16), rgba(180,140,110,.08)); background-size: 200% 100%; animation: ap-sk 1.3s ease infinite; }
+/* 主体 */
+.ap-body { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 11px; scroll-behavior: smooth; }
+.ap-body > section { scroll-margin-top: 8px; }
+.ap-skeleton { height: 66px; border-radius: 12px; background: linear-gradient(90deg, rgba(180,140,110,.08), rgba(180,140,110,.16), rgba(180,140,110,.08)); background-size: 200% 100%; animation: ap-sk 1.3s ease infinite; }
 @keyframes ap-sk { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-.ap-sec { display: flex; align-items: center; gap: 7px; margin-top: 2px; }
-.ap-sec-t { font-size: 12.5px; font-weight: 800; color: #8a7665; letter-spacing: .02em; }
-.ap-cnt { font-size: 11px; background: rgba(201,99,66,.12); color: #c96342; padding: 0 7px; border-radius: 10px; font-weight: 700; line-height: 17px; }
-.ap-sec-sel { margin-left: auto; }
-.ap-sec-filter { margin-left: auto; font-size: 10.5px; color: #a8917e; }
-.ap-sec-filter a { color: #c96342; cursor: pointer; text-decoration: none; }
-.ap-sec-filter a:hover { text-decoration: underline; }
-.ap-empty { font-size: 12.5px; color: #bda797; text-align: center; padding: 22px 0; }
-.ap-empty-ico { font-size: 26px; opacity: .55; margin-bottom: 6px; }
+/* 合同区块 */
+.ap-contract { border: 1px solid rgba(180,140,110,.2); border-radius: 12px; background: #fff; padding: 11px 13px; }
+.apc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+.apc-ico { width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(145deg, #b8a48f, #97826c); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; }
+.apc-title { font-size: 13.5px; font-weight: 800; color: #5a4636; }
+.apc-done { font-size: 10.5px; font-weight: 700; padding: 1px 8px; border-radius: 8px; color: #2e7d32; background: rgba(46,125,50,.1); }
+.apc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+.apc-cell { display: flex; flex-direction: column; gap: 1px; }
+.apc-cell i { font-size: 10.5px; color: #a8917e; font-style: normal; }
+.apc-cell b { font-size: 12.5px; color: #5a4636; font-weight: 700; }
 
-/* ══════════════════════════════════════════════════════
-   垂直时间线
-   ══════════════════════════════════════════════════════ */
-.ap-tl { position: relative; padding: 2px 0; }
-/* 主干竖线：贯穿首尾，渐隐两端 */
-.ap-tl::before {
-  content: ''; position: absolute; left: 13px; top: 10px; bottom: 10px; width: 2px;
-  background: linear-gradient(180deg,
-    rgba(180,140,110,.04), rgba(180,140,110,.3) 6%,
-    rgba(180,140,110,.3) 94%, rgba(180,140,110,.04));
-  border-radius: 2px;
-}
+/* 关键字段 */
+.kf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+.kf { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.kf-lab { font-size: 11px; color: #a8917e; flex-shrink: 0; }
+.kf-val { font-size: 12.5px; color: #5a4636; cursor: pointer; padding: 2px 8px; border-radius: 6px; border: 1px solid transparent; transition: all .1s; font-weight: 600; }
+.kf-val:hover { background: #fff; border-color: rgba(201,99,66,.25); }
+.kf-val.empty { color: #c0ad9d; font-weight: 400; }
+.kf-val.ro { cursor: default; }
+.kf-val.ro:hover { background: none; border-color: transparent; }
+.kf-inp { border: 1px solid rgba(201,99,66,.45); border-radius: 6px; padding: 3px 7px; font-size: 12.5px; color: #5a4636; background: #fff; outline: none; font-family: inherit; max-width: 130px; }
+.kf-batch-hint { font-size: 11px; color: #8e63c5; background: rgba(142,99,197,.08); padding: 5px 9px; border-radius: 7px; }
+.kf-batch-hint b { font-weight: 800; }
 
-/* 日期节点 */
-.ap-tl-date { position: relative; display: flex; align-items: center; gap: 8px; margin: 4px 0 7px; }
-.ap-tl-date-node {
-  width: 28px; flex-shrink: 0; height: 12px; position: relative;
-}
-.ap-tl-date-node::before {
-  content: ''; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) rotate(45deg);
-  width: 7px; height: 7px; background: #c96342; border-radius: 2px;
-  box-shadow: 0 0 0 3px #fbf7f1, 0 0 0 4px rgba(201,99,66,.25);
-}
-.ap-tl-date-txt {
-  font-size: 11px; font-weight: 700; color: #b07a52;
-  background: rgba(201,99,66,.08); padding: 1px 9px; border-radius: 9px;
-  letter-spacing: .02em;
-}
+/* 回款 */
+.pay-prog { display: flex; flex-direction: column; gap: 4px; }
+.pay-prog-bar { height: 8px; border-radius: 5px; background: rgba(180,140,110,.18); overflow: hidden; }
+.pay-prog-fill { height: 100%; border-radius: 5px; background: linear-gradient(90deg, #66bb6a, #2e9e5b); transition: width .4s ease; }
+.pay-prog-txt { display: flex; justify-content: space-between; font-size: 11px; color: #8a7665; font-weight: 600; }
+.pay-list { display: flex; flex-direction: column; gap: 5px; }
+.pay-item { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid rgba(180,140,110,.16); border-radius: 8px; padding: 6px 10px; }
+.pay-no { font-size: 10.5px; color: #a8917e; font-weight: 700; flex-shrink: 0; }
+.pay-amt { font-size: 13px; font-weight: 800; color: #2e7d32; font-variant-numeric: tabular-nums; }
+.pay-date { font-size: 11.5px; color: #8a7665; }
+.pay-src { font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 7px; color: #2e9e5b; background: rgba(46,158,91,.1); margin-left: auto; }
+.pay-src-other { color: #e8830c; background: rgba(232,131,12,.1); }
+.pay-cp { font-size: 10px; color: #8a7665; }
+.pay-del { border: none; background: none; font-size: 11px; cursor: pointer; opacity: .65; flex-shrink: 0; }
+.pay-del:hover { opacity: 1; }
+.pay-empty { font-size: 11.5px; color: #bda797; text-align: center; padding: 6px 0; }
+.pay-add { display: flex; gap: 6px; align-items: center; }
+.pay-inp { border: 1px solid rgba(180,140,110,.3); border-radius: 7px; padding: 5px 8px; font-size: 12px; color: #5a4636; background: #fff; outline: none; font-family: inherit; min-width: 0; }
+.pay-inp-amt { flex: 1; }
+.pay-inp:focus { border-color: rgba(46,158,91,.5); }
+.pay-btn { padding: 6px 14px; border: none; border-radius: 7px; background: linear-gradient(120deg, #2e9e5b, #25844c); color: #fff; font-size: 12px; font-weight: 700; cursor: pointer; flex-shrink: 0; }
+.pay-btn:disabled { opacity: .5; cursor: default; }
 
-/* 时间线条目 */
-.ap-tl-item { position: relative; display: flex; gap: 11px; padding-bottom: 11px; }
-.ap-tl-gutter { width: 28px; flex-shrink: 0; display: flex; justify-content: center; }
-.ap-tl-dot {
-  position: relative; z-index: 1; width: 28px; height: 28px; flex-shrink: 0;
-  border-radius: 50%; display: flex; align-items: center; justify-content: center;
-  font-size: 14px; line-height: 1;
-  background: #fff; border: 2px solid var(--sc);
-  box-shadow: 0 0 0 3px #fbf7f1, 0 2px 5px rgba(60,30,10,.1);
-}
-
-/* 卡片 */
-.ap-tl-card {
-  flex: 1; min-width: 0; background: #fff;
-  border: 1px solid rgba(180,140,110,.18);
-  border-left: 3px solid var(--sc);
-  border-radius: 9px; padding: 8px 11px;
-  display: flex; flex-direction: column; gap: 5px;
-  box-shadow: 0 1px 3px rgba(60,30,10,.04);
-  transition: box-shadow .15s, transform .12s;
-}
-.ap-tl-item:hover .ap-tl-card { box-shadow: 0 3px 10px rgba(60,30,10,.09); transform: translateY(-1px); }
-/* 卡片左侧小箭头，指向时间线 */
-.ap-tl-card::before {
-  content: ''; position: absolute; left: 36px; top: 13px;
-  width: 8px; height: 8px; background: #fff;
-  border-left: 1px solid rgba(180,140,110,.18); border-bottom: 1px solid rgba(180,140,110,.18);
-  transform: rotate(45deg); z-index: 0;
-}
-
-.ap-tl-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.ap-tl-who { font-size: 12px; font-weight: 700; color: #5a4636; }
-.ap-stage-tag { font-size: 10px; color: #8a7665; background: rgba(180,140,110,.14); padding: 0 6px; border-radius: 7px; line-height: 16px; }
-.ap-status-chip { border: none; font-size: 10.5px; font-weight: 700; cursor: pointer; padding: 1px 8px; border-radius: 8px; color: var(--sc); background: color-mix(in srgb, var(--sc) 12%, transparent); }
-.ap-tl-time { font-size: 10.5px; color: #bda797; margin-left: auto; font-variant-numeric: tabular-nums; }
-.ap-ico-btn { border: none; background: none; font-size: 12px; cursor: pointer; padding: 1px 3px; border-radius: 5px; opacity: .7; }
-.ap-ico-btn:hover { opacity: 1; background: rgba(0,0,0,.05); }
-.ap-tl-note { font-size: 13px; color: #4a3a2c; white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
-.ap-tl-followup { font-size: 11px; color: #a8917e; }
-.ap-edit-ta { width: 100%; border: 1px solid rgba(201,99,66,.45); border-radius: 7px; padding: 6px 9px; font-size: 13px; color: #5a4636; resize: vertical; font-family: inherit; box-sizing: border-box; outline: none; }
-.ap-edit-foot { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
-.ap-save-btn { padding: 4px 14px; border: none; border-radius: 6px; background: #c96342; color: #fff; font-size: 12px; font-weight: 700; cursor: pointer; margin-left: auto; }
-.ap-cancel-btn { padding: 4px 11px; border: 1px solid rgba(180,140,110,.3); border-radius: 6px; background: #fff; font-size: 12px; cursor: pointer; color: #8a7665; }
-
-/* 图片网格 */
-.ap-img-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
-.ap-img-cell { position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; border: 1px solid rgba(180,140,110,.2); }
-.ap-img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
-.ap-img-del { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; border: none; border-radius: 50%; background: rgba(0,0,0,.5); color: #fff; font-size: 10px; cursor: pointer; line-height: 18px; padding: 0; opacity: 0; transition: opacity .12s; }
-.ap-img-cell:hover .ap-img-del { opacity: 1; }
-.ap-img-cap { position: absolute; left: 0; bottom: 0; right: 0; font-size: 9px; color: #fff; background: rgba(0,0,0,.4); padding: 1px 5px; text-align: center; }
-
-/* 文件列表 */
-.ap-file { display: flex; align-items: center; gap: 9px; background: #fff; border: 1px solid rgba(180,140,110,.18); border-radius: 9px; padding: 8px 11px; }
-.ap-file-icon { font-size: 18px; flex-shrink: 0; }
-.ap-file-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.ap-file-name { font-size: 12.5px; color: #1565c0; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ap-file-name:hover { text-decoration: underline; }
-.ap-file-meta { font-size: 10.5px; color: #a8917e; }
-.ap-file-del { border: none; background: none; color: #c0ad9d; font-size: 12px; cursor: pointer; flex-shrink: 0; padding: 2px 5px; border-radius: 5px; }
-.ap-file-del:hover { color: #c62828; background: rgba(198,40,40,.07); }
-
-/* 上传区 */
-.ap-dropzone { border: 2px dashed rgba(180,140,110,.35); border-radius: 10px; padding: 14px; text-align: center; font-size: 12px; color: #a8917e; cursor: pointer; transition: all .15s; position: relative; }
-.ap-dropzone:hover, .ap-dz-over { background: rgba(201,99,66,.05); border-color: #c96342; color: #c96342; }
-.ap-dz-up { opacity: .6; pointer-events: none; }
-.ap-file-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-
-/* ══════════════════════════════════════════════════════
-   生命周期进度条
-   ══════════════════════════════════════════════════════ */
-.ap-lifecycle {
-  padding: 14px 16px 12px;
-  border-bottom: 1px solid rgba(180,140,110,.18);
-  background: linear-gradient(180deg, #fdf4ea 0%, #fbf7f1 100%);
-  flex-shrink: 0;
-}
-
-/* ── Track ── */
-.ap-lc-track {
-  display: flex; align-items: flex-start;
-}
-.ap-lc-step {
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
-  width: 56px; flex-shrink: 0;
-  border: none; background: none; padding: 2px 0; margin: 0; font-family: inherit;
-  border-radius: 12px; transition: background .15s;
-}
-.lc-step-clickable { cursor: pointer; }
-.lc-step-clickable:hover { background: rgba(201,99,66,.06); }
-.ap-lc-step:disabled { cursor: default; }
-/* 选中（已筛选该阶段）：底部高亮 + 名称变色 */
-.lc-step-on { background: rgba(201,99,66,.1); }
-.lc-step-on .ap-lc-name { color: #c96342; }
-.lc-step-on .ap-lc-node { box-shadow: 0 0 0 3px rgba(201,99,66,.18), 0 3px 10px rgba(201,99,66,.25); }
-
-/* 计数角标 */
-.ap-lc-badge {
-  position: absolute; top: -3px; right: -3px; z-index: 2;
-  min-width: 15px; height: 15px; padding: 0 3px;
-  border-radius: 8px; background: #fff; color: #c96342;
-  border: 1.5px solid #c96342;
-  font-size: 9px; font-weight: 800; line-height: 12px; text-align: center;
-  box-shadow: 0 1px 3px rgba(0,0,0,.12);
-}
-
-.ap-lc-conn {
-  flex: 1; height: 2px; margin-top: 18px; border-radius: 2px;
-  min-width: 6px; transition: background .35s ease;
-}
-.lc-conn-done    { background: linear-gradient(90deg, #43a047, #2e7d32); }
-.lc-conn-progress{ background: linear-gradient(90deg, #66bb6a, #c96342); }
-.lc-conn-pending { background: rgba(180,140,110,.22); }
-
-/* ── Step node ── */
-.ap-lc-node {
-  width: 38px; height: 38px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  position: relative; flex-shrink: 0;
-  transition: box-shadow .2s, transform .15s;
-}
-.ap-lc-node:hover { transform: translateY(-1px); }
-
-/* done: green gradient + white icon */
-.lc-done {
-  background: linear-gradient(145deg, #66bb6a, #2e7d32);
-  color: #fff;
-  box-shadow: 0 3px 10px rgba(46,125,50,.32), 0 1px 3px rgba(0,0,0,.12);
-}
-/* partial: conic-gradient ring + white inner disc */
-.lc-partial {
-  background: conic-gradient(#c96342 calc(var(--pct, 0) * 1turn), #e8d9ce 0);
-  color: #c96342;
-  box-shadow: 0 2px 8px rgba(201,99,66,.22);
-}
-.lc-partial::after {
-  content: ''; position: absolute; inset: 6px; border-radius: 50%;
-  background: #fff; box-shadow: inset 0 0 0 1px rgba(201,99,66,.1);
-}
-/* active: primary gradient + pulse ring */
-.lc-active {
-  background: linear-gradient(145deg, #e07848, #c96342);
-  color: #fff;
-  box-shadow: 0 3px 10px rgba(201,99,66,.38), 0 1px 3px rgba(0,0,0,.1);
-}
-.lc-active::before {
-  content: ''; position: absolute; inset: -6px; border-radius: 50%;
-  border: 2px solid #c96342; opacity: 0;
-  animation: lc-pulse 1.9s ease-out infinite;
-}
-/* urgent: red + fast pulse */
-.lc-urgent {
-  background: linear-gradient(145deg, #ef5350, #c62828);
-  color: #fff;
-  box-shadow: 0 3px 10px rgba(198,40,40,.38), 0 1px 3px rgba(0,0,0,.1);
-}
-.lc-urgent::before {
-  content: ''; position: absolute; inset: -6px; border-radius: 50%;
-  border: 2px solid #ef5350; opacity: 0;
-  animation: lc-pulse 1.1s ease-out infinite;
-}
-/* pending: white + soft border */
-.lc-pending {
-  background: #fff;
-  border: 2px solid #ddd0c4;
-  color: #c0ad9d;
-  box-shadow: 0 1px 4px rgba(0,0,0,.06);
-}
-
-@keyframes lc-pulse {
-  0%   { transform: scale(.72); opacity: .65; }
-  100% { transform: scale(1.55); opacity: 0; }
-}
-
-/* ── Icon wrap (sits above ::after in partial) ── */
-.ap-lc-icon-wrap {
-  width: 16px; height: 16px;
-  display: flex; align-items: center; justify-content: center;
-  position: relative; z-index: 1; flex-shrink: 0;
-  line-height: 0;
-}
-.ap-lc-icon-wrap svg { width: 16px; height: 16px; display: block; }
-
-/* ── Labels ── */
-.ap-lc-labels {
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-}
-.ap-lc-name {
-  font-size: 11.5px; font-weight: 700; color: #5a4636;
-  white-space: nowrap; letter-spacing: .01em;
-}
-.ap-lc-sub {
-  font-size: 10px; white-space: nowrap;
-  max-width: 56px; overflow: hidden; text-overflow: ellipsis;
-  color: #b0987e;
-}
-.lc-sub-done    { color: #2e7d32; font-weight: 600; }
-.lc-sub-partial { color: #c96342; font-weight: 700; }
-.lc-sub-active  { color: #c96342; }
-.lc-sub-urgent  { color: #c62828; font-weight: 700; }
-
-/* ── Metrics row ── */
-.ap-lc-metrics {
-  display: flex; align-items: center;
-  margin-top: 13px; padding: 8px 12px;
-  background: rgba(255,255,255,.78);
-  border-radius: 10px;
-  border: 1px solid rgba(180,140,110,.16);
-  box-shadow: 0 1px 4px rgba(60,30,10,.05);
-}
-.ap-lc-metric {
-  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
-}
-.ap-lc-mdiv {
-  width: 1px; height: 28px; flex-shrink: 0;
-  background: rgba(180,140,110,.2);
-  margin: 0 2px;
-}
-.ap-lc-mv {
-  font-size: 13px; font-weight: 800; color: #5a4636;
-  font-variant-numeric: tabular-nums; line-height: 1.2;
-  white-space: nowrap;
-}
-.ap-lc-mv--good   { color: #2e7d32; }
-.ap-lc-mv--warn   { color: #c96342; }
-.ap-lc-mv--danger { color: #c62828; }
-.ap-lc-mv--target { color: #1565c0; font-size: 11px; font-weight: 700; }
-.ap-lc-mk {
-  font-size: 10px; color: #a8917e; line-height: 1;
-}
+/* 录入条 */
+.ap-compose { padding: 9px 14px 11px; border-top: 1px solid rgba(180,140,110,.18); background: rgba(255,253,250,.92); flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; }
+.ap-cmp-row1 { display: flex; gap: 5px; align-items: center; }
+.ap-cmp-type { border: 1px solid rgba(180,140,110,.25); background: #fff; border-radius: 8px; padding: 3px 8px; font-size: 14px; cursor: pointer; line-height: 1; transition: all .12s; }
+.ap-cmp-type:hover { border-color: rgba(201,99,66,.5); }
+.ap-cmp-type.on { border-color: #c96342; background: rgba(201,99,66,.1); transform: translateY(-1px); }
+.ap-cmp-target { margin-left: auto; font-size: 11px; color: #a8917e; }
+.ap-cmp-target b { font-weight: 800; }
+.ap-cmp-ta { width: 100%; border: 1px solid rgba(180,140,110,.25); border-radius: 9px; padding: 8px 10px; font-size: 13px; color: #5a4636; resize: vertical; min-height: 40px; font-family: inherit; background: #fff; outline: none; box-sizing: border-box; transition: border-color .12s; }
+.ap-cmp-ta:focus { border-color: rgba(201,99,66,.55); }
+.ap-cmp-row2 { display: flex; gap: 6px; align-items: center; }
+.ap-cmp-sel { border: 1px solid rgba(180,140,110,.28); border-radius: 7px; font-size: 12px; padding: 5px 7px; color: #5a4636; background: #fff; outline: none; font-family: inherit; }
+.ap-cmp-btn { margin-left: auto; padding: 6px 20px; border: none; border-radius: 8px; background: linear-gradient(120deg, #c96342, #b5532f); color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; transition: filter .12s; }
+.ap-cmp-btn:hover:not(:disabled) { filter: brightness(1.06); }
+.ap-cmp-btn:disabled { opacity: .45; cursor: default; }
 </style>

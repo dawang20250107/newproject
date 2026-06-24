@@ -422,11 +422,12 @@ function onPanelFieldSaved(data) {
   const idx = items.value.findIndex(r => r.id === data.id)
   if (idx === -1) return
   const row = items.value[idx]
-  if (data.activity_count != null) row.activity_count = data.activity_count
-  if (data.attachment_count != null) row.attachment_count = data.attachment_count
-  if ('collector' in data) row.collector = data.collector
-  if ('notes' in data) row.notes = data.notes
-  if ('target_collection_date' in data) row.target_collection_date = data.target_collection_date
+  // 工作台编辑记录字段后回传完整记录（或计数增量）——合并除 id 外的所有键，
+  // 使列表中的金额/对账/开票/回款/未收等派生值与面板保持一致。
+  for (const k in data) {
+    if (k === 'id') continue
+    row[k] = data[k]
+  }
 }
 
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
@@ -2640,7 +2641,8 @@ function clearFilters() {
       </div>
 
       <!-- 催款工作台面板 -->
-      <ActivityPanel v-if="panelRec" :rec="panelRec" @close="panelRec = null" @field-saved="onPanelFieldSaved" />
+      <ActivityPanel v-if="panelRec" :key="panelRec.id" :rec="panelRec" :can-write="auth.canArWrite" :can-collect="auth.canAction('ar_collect')"
+        @close="panelRec = null" @field-saved="onPanelFieldSaved" />
 
       <!-- Payment Modal — 录入态：点遮罩不关闭，仅按钮可退出 -->
       <div v-if="showPayModal" class="modal-overlay">
