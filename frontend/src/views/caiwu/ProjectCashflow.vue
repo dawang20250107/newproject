@@ -4,8 +4,14 @@ import { useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
-import { fmtCompact } from '../../utils/format.js'
+import { fmtCompact, fmtMoney } from '../../utils/format.js'
 import ProjectPnlCard from './ProjectPnlCard.vue'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { useToast } from '../../composables/useToast.js'
+
+const toast = useToast()
 
 const auth = useAuthStore()
 const loading = ref(false)
@@ -168,6 +174,46 @@ function openPnl(row) {
   askTarget.value = { name: row.project, year: filters.year }
 }
 
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const ctx = useContextMenu()
+const dimLabel = computed(() => DIMS.find(d => d.v === groupBy.value)?.l || '名称')
+const ROW_COPY_COLS = computed(() => [
+  { key: 'project', label: dimLabel.value },
+  { key: 'inflow', label: '流入', format: v => fmtMoney(v) },
+  { key: 'outflow', label: '流出', format: v => fmtMoney(v) },
+  { key: 'net', label: '净流量', format: v => fmtMoney(v) },
+  { key: 'outstanding', label: '未收', format: v => fmtMoney(v) },
+])
+async function copyField(val, label) {
+  const ok = await copyText(val)
+  ok ? toast.success(`已复制：${label}`) : toast.error('复制失败')
+}
+async function copyWholeRow(r) {
+  const ok = await copyRowTSV(r, ROW_COPY_COLS.value, { header: true })
+  ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
+}
+const ctxItems = computed(() => {
+  const r = ctx.menu.payload
+  if (!r) return []
+  return [
+    {
+      key: 'pnl', label: isProjDim.value ? '查看业财损益卡' : '业财损益卡（仅项目维度）',
+      icon: 'chart', disabled: !isProjDim.value, action: row => openPnl(row),
+    },
+    { divider: true },
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: row => copyWholeRow(row) },
+        { divider: true },
+        { key: 'copy-name', label: dimLabel.value + '名称', icon: 'cell', action: row => copyField(row.project, row.project) },
+        { key: 'copy-net', label: '净流量', icon: 'cell', action: row => copyField(fmtMoney(row.net), fmtMoney(row.net)) },
+        { key: 'copy-out', label: '未收', icon: 'cell', action: row => copyField(fmtMoney(row.outstanding), fmtMoney(row.outstanding)) },
+      ],
+    },
+  ]
+})
+
 watch(() => [filters.dept, filters.year], () => {
   if (!filters.useCustomDate) load()
 })
@@ -255,7 +301,7 @@ onMounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in rows" :key="r.project" class="pcf-row" :class="{ 'no-drill': !isProjDim }" @click="openPnl(r)">
+            <tr v-for="r in rows" :key="r.project" class="pcf-row" :class="{ 'no-drill': !isProjDim }" @click="openPnl(r)" @contextmenu.prevent="ctx.open($event, r)">
               <td class="pcf-td-proj">
                 <div class="pcf-pname">{{ r.project }}</div>
                 <div v-if="r.customer" class="pcf-psub">{{ r.customer }}</div>
@@ -323,6 +369,9 @@ onMounted(() => {
       :askable="false"
       @close="askTarget = null"
     />
+
+    <!-- 右键上下文菜单 -->
+    <ContextMenu :ctx="ctx" :items="ctxItems" />
   </div>
 </template>
 
