@@ -250,6 +250,75 @@ function statusColor(s) { return STATUS_COLOR[s] || '#888' }
 function actIcon(t) { return { call: '📞', email: '📧', visit: '🚶', meeting: '💬', system: '⚙️', note: '📝', other: '💡' }[t] || '💬' }
 const STAGE_LABEL = Object.fromEntries(REAL_STAGES.map(s => [s.v, s.l]))
 
+// ── 生命周期进度条 ─────────────────────────────────────────────────────────────
+function fmtAmt(v) {
+  if (v == null || v === '') return '—'
+  const n = Number(v)
+  if (isNaN(n)) return '—'
+  if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(1) + '亿'
+  if (Math.abs(n) >= 1e4) return (n / 1e4).toFixed(1) + '万'
+  return Math.round(n).toLocaleString()
+}
+
+// Internal constant — no user input, safe to use with v-html
+const LC_ICONS = {
+  contract: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 2h6.8L13 4.7V14a.5.5 0 01-.5.5h-9A.5.5 0 013 14V2.5A.5.5 0 013.5 2z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M10.3 2v2.7H13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.5 7.5h5M5.5 10h5M5.5 12h3" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>`,
+  reconciliation: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2.5 5.5l2.5 2.5 5-5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.5 11l2.5 2.5 5-5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 4.5v7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity=".5"/></svg>`,
+  invoice: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 2.5h10v12l-1.5-1.2-1.5 1.2-1.5-1.2-1.5 1.2-1.5-1.2-1.5 1.2V2.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5.5 6.5h5M5.5 9h5M5.5 11h3.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>`,
+  collection: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.2"/><path d="M8 4.5v1M8 10.5v1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M6.2 6.9c0-.77.8-1.4 1.8-1.4s1.8.63 1.8 1.4c0 1.73-3.6 1.73-3.6 3.2 0 .77.8 1.4 1.8 1.4s1.8-.63 1.8-1.4" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>`,
+  dunning: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 2a4.5 4.5 0 00-4.5 4.5C3.5 9 4.5 10.5 5 12h6c.5-1.5 1.5-3 1.5-5.5A4.5 4.5 0 008 2z" stroke="currentColor" stroke-width="1.2"/><path d="M6.5 12a1.5 1.5 0 003 0" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>`,
+}
+
+const lifecycleSteps = computed(() => {
+  const r = props.rec
+  const total = Number(r.estimated_amount || 0)
+  const outstanding = Number(r.outstanding_amount || 0)
+  const paid = Math.max(0, total - outstanding)
+  const pct = total > 0 ? Math.min(1, paid / total) : 0
+  const byStage = {}
+  for (const a of activities.value) byStage[a.stage] = (byStage[a.stage] || 0) + 1
+
+  const reconDone = !!r.reconciliation_date
+  const invoiceDone = !!(r.invoice_date || Number(r.actual_invoice_amount) > 0)
+  const collDone = total > 0 && outstanding === 0
+  const overdue = Number(r.overdue_days || 0)
+
+  return [
+    { key: 'contract', label: '合同', sub: '已签订', state: 'done', icon: 'contract' },
+    {
+      key: 'reconciliation', label: '对账',
+      sub: r.reconciliation_date || (byStage.reconciliation ? `${byStage.reconciliation}条` : ''),
+      state: reconDone ? 'done' : (byStage.reconciliation ? 'active' : 'pending'),
+      icon: 'reconciliation',
+    },
+    {
+      key: 'invoice', label: '开票',
+      sub: r.invoice_date || (Number(r.actual_invoice_amount) > 0 ? fmtAmt(r.actual_invoice_amount) : ''),
+      state: invoiceDone ? 'done' : (byStage.invoice ? 'active' : 'pending'),
+      icon: 'invoice',
+    },
+    {
+      key: 'collection', label: '回款',
+      sub: collDone ? '完成' : (pct > 0 ? `${Math.round(pct * 100)}%` : ''),
+      state: collDone ? 'done' : (pct > 0 ? 'partial' : (byStage.collection ? 'active' : 'pending')),
+      pct,
+      icon: 'collection',
+    },
+    {
+      key: 'dunning', label: '催款',
+      sub: overdue > 0 ? `逾期${overdue}天` : (byStage.dunning ? `${byStage.dunning}次` : ''),
+      state: overdue > 0 ? 'urgent' : (byStage.dunning ? 'active' : 'pending'),
+      icon: 'dunning',
+    },
+  ]
+})
+
+function lcLineState(cur, next) {
+  if (cur.state === 'done' && next.state === 'done') return 'done'
+  if (cur.state === 'done') return 'progress'
+  return 'pending'
+}
+
 // ── 键盘 ──────────────────────────────────────────────────────────────────
 function onKey(e) {
   if (e.key !== 'Escape') return
@@ -280,6 +349,62 @@ onBeforeUnmount(() => {
           <span v-if="rec.customer_name && rec.customer_name !== rec.short_name" class="ap-sub">{{ rec.customer_name }}</span>
         </div>
         <button class="ap-close" title="关闭 (Esc)" @click="close">✕</button>
+      </div>
+
+      <!-- 生命周期进度条 -->
+      <div class="ap-lifecycle">
+        <div class="ap-lc-track">
+          <template v-for="(step, i) in lifecycleSteps" :key="step.key">
+            <div class="ap-lc-step">
+              <div class="ap-lc-node" :class="`lc-${step.state}`"
+                :style="step.state === 'partial' ? { '--pct': step.pct } : {}">
+                <!-- svg injected via v-html from internal LC_ICONS constant -->
+                <span class="ap-lc-icon-wrap" v-html="LC_ICONS[step.icon]"></span>
+              </div>
+              <div class="ap-lc-labels">
+                <span class="ap-lc-name">{{ step.label }}</span>
+                <span v-if="step.sub" class="ap-lc-sub" :class="`lc-sub-${step.state}`">{{ step.sub }}</span>
+              </div>
+            </div>
+            <div v-if="i < lifecycleSteps.length - 1" class="ap-lc-conn"
+              :class="`lc-conn-${lcLineState(step, lifecycleSteps[i + 1])}`"></div>
+          </template>
+        </div>
+        <!-- 关键指标 -->
+        <div class="ap-lc-metrics">
+          <div class="ap-lc-metric">
+            <span class="ap-lc-mv">¥{{ fmtAmt(rec.estimated_amount) }}</span>
+            <span class="ap-lc-mk">应收</span>
+          </div>
+          <div class="ap-lc-mdiv"></div>
+          <div class="ap-lc-metric">
+            <span class="ap-lc-mv ap-lc-mv--good">
+              ¥{{ fmtAmt(Math.max(0, Number(rec.estimated_amount || 0) - Number(rec.outstanding_amount || 0))) }}
+            </span>
+            <span class="ap-lc-mk">已收</span>
+          </div>
+          <div class="ap-lc-mdiv"></div>
+          <div class="ap-lc-metric">
+            <span class="ap-lc-mv" :class="Number(rec.outstanding_amount) > 0 ? 'ap-lc-mv--warn' : 'ap-lc-mv--good'">
+              ¥{{ fmtAmt(rec.outstanding_amount) }}
+            </span>
+            <span class="ap-lc-mk">欠款</span>
+          </div>
+          <template v-if="Number(rec.overdue_days) > 0">
+            <div class="ap-lc-mdiv"></div>
+            <div class="ap-lc-metric">
+              <span class="ap-lc-mv ap-lc-mv--danger">{{ rec.overdue_days }}天</span>
+              <span class="ap-lc-mk">逾期</span>
+            </div>
+          </template>
+          <template v-else-if="rec.target_collection_date">
+            <div class="ap-lc-mdiv"></div>
+            <div class="ap-lc-metric">
+              <span class="ap-lc-mv ap-lc-mv--target">{{ rec.target_collection_date }}</span>
+              <span class="ap-lc-mk">目标</span>
+            </div>
+          </template>
+        </div>
       </div>
 
       <!-- 快速编辑信息条 -->
@@ -528,4 +653,147 @@ onBeforeUnmount(() => {
 .ap-dropzone:hover, .ap-dz-over { background: rgba(201,99,66,.05); border-color: #c96342; color: #c96342; }
 .ap-dz-up { opacity: .6; pointer-events: none; }
 .ap-file-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+/* ══════════════════════════════════════════════════════
+   生命周期进度条
+   ══════════════════════════════════════════════════════ */
+.ap-lifecycle {
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid rgba(180,140,110,.18);
+  background: linear-gradient(180deg, #fdf4ea 0%, #fbf7f1 100%);
+  flex-shrink: 0;
+}
+
+/* ── Track ── */
+.ap-lc-track {
+  display: flex; align-items: flex-start;
+}
+.ap-lc-step {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  width: 56px; flex-shrink: 0;
+}
+.ap-lc-conn {
+  flex: 1; height: 2px; margin-top: 18px; border-radius: 2px;
+  min-width: 6px; transition: background .35s ease;
+}
+.lc-conn-done    { background: linear-gradient(90deg, #43a047, #2e7d32); }
+.lc-conn-progress{ background: linear-gradient(90deg, #66bb6a, #c96342); }
+.lc-conn-pending { background: rgba(180,140,110,.22); }
+
+/* ── Step node ── */
+.ap-lc-node {
+  width: 38px; height: 38px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  position: relative; flex-shrink: 0;
+  transition: box-shadow .2s, transform .15s;
+}
+.ap-lc-node:hover { transform: translateY(-1px); }
+
+/* done: green gradient + white icon */
+.lc-done {
+  background: linear-gradient(145deg, #66bb6a, #2e7d32);
+  color: #fff;
+  box-shadow: 0 3px 10px rgba(46,125,50,.32), 0 1px 3px rgba(0,0,0,.12);
+}
+/* partial: conic-gradient ring + white inner disc */
+.lc-partial {
+  background: conic-gradient(#c96342 calc(var(--pct, 0) * 1turn), #e8d9ce 0);
+  color: #c96342;
+  box-shadow: 0 2px 8px rgba(201,99,66,.22);
+}
+.lc-partial::after {
+  content: ''; position: absolute; inset: 6px; border-radius: 50%;
+  background: #fff; box-shadow: inset 0 0 0 1px rgba(201,99,66,.1);
+}
+/* active: primary gradient + pulse ring */
+.lc-active {
+  background: linear-gradient(145deg, #e07848, #c96342);
+  color: #fff;
+  box-shadow: 0 3px 10px rgba(201,99,66,.38), 0 1px 3px rgba(0,0,0,.1);
+}
+.lc-active::before {
+  content: ''; position: absolute; inset: -6px; border-radius: 50%;
+  border: 2px solid #c96342; opacity: 0;
+  animation: lc-pulse 1.9s ease-out infinite;
+}
+/* urgent: red + fast pulse */
+.lc-urgent {
+  background: linear-gradient(145deg, #ef5350, #c62828);
+  color: #fff;
+  box-shadow: 0 3px 10px rgba(198,40,40,.38), 0 1px 3px rgba(0,0,0,.1);
+}
+.lc-urgent::before {
+  content: ''; position: absolute; inset: -6px; border-radius: 50%;
+  border: 2px solid #ef5350; opacity: 0;
+  animation: lc-pulse 1.1s ease-out infinite;
+}
+/* pending: white + soft border */
+.lc-pending {
+  background: #fff;
+  border: 2px solid #ddd0c4;
+  color: #c0ad9d;
+  box-shadow: 0 1px 4px rgba(0,0,0,.06);
+}
+
+@keyframes lc-pulse {
+  0%   { transform: scale(.72); opacity: .65; }
+  100% { transform: scale(1.55); opacity: 0; }
+}
+
+/* ── Icon wrap (sits above ::after in partial) ── */
+.ap-lc-icon-wrap {
+  width: 16px; height: 16px;
+  display: flex; align-items: center; justify-content: center;
+  position: relative; z-index: 1; flex-shrink: 0;
+  line-height: 0;
+}
+.ap-lc-icon-wrap svg { width: 16px; height: 16px; display: block; }
+
+/* ── Labels ── */
+.ap-lc-labels {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+}
+.ap-lc-name {
+  font-size: 11.5px; font-weight: 700; color: #5a4636;
+  white-space: nowrap; letter-spacing: .01em;
+}
+.ap-lc-sub {
+  font-size: 10px; white-space: nowrap;
+  max-width: 56px; overflow: hidden; text-overflow: ellipsis;
+  color: #b0987e;
+}
+.lc-sub-done    { color: #2e7d32; font-weight: 600; }
+.lc-sub-partial { color: #c96342; font-weight: 700; }
+.lc-sub-active  { color: #c96342; }
+.lc-sub-urgent  { color: #c62828; font-weight: 700; }
+
+/* ── Metrics row ── */
+.ap-lc-metrics {
+  display: flex; align-items: center;
+  margin-top: 13px; padding: 8px 12px;
+  background: rgba(255,255,255,.78);
+  border-radius: 10px;
+  border: 1px solid rgba(180,140,110,.16);
+  box-shadow: 0 1px 4px rgba(60,30,10,.05);
+}
+.ap-lc-metric {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+}
+.ap-lc-mdiv {
+  width: 1px; height: 28px; flex-shrink: 0;
+  background: rgba(180,140,110,.2);
+  margin: 0 2px;
+}
+.ap-lc-mv {
+  font-size: 13px; font-weight: 800; color: #5a4636;
+  font-variant-numeric: tabular-nums; line-height: 1.2;
+  white-space: nowrap;
+}
+.ap-lc-mv--good   { color: #2e7d32; }
+.ap-lc-mv--warn   { color: #c96342; }
+.ap-lc-mv--danger { color: #c62828; }
+.ap-lc-mv--target { color: #1565c0; font-size: 11px; font-weight: 700; }
+.ap-lc-mk {
+  font-size: 10px; color: #a8917e; line-height: 1;
+}
 </style>
