@@ -2089,6 +2089,7 @@ def ar_records_bulk_assign_collector(request):
         today = datetime.date.today()
         qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
         qs = _apply_record_filters(qs, request)
+        qs = _apply_record_state_filters(qs, request, today)
         qs = _apply_conditions(qs, request, today)
         _fq, _fq_distinct = build_filter_q(request.GET.get('filters', ''), ARRECORD_FILTER_REGISTRY)
         if _fq:

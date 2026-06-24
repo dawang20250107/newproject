@@ -662,6 +662,20 @@ def _apply_record_state_filters(qs, request, today=None):
                 )
             )
 
+    # 聚焦待办（金蝶式查询模式）：对账/开票/回款 Tab 默认只看「待处理」子集。
+    # 口径与 KPI 进度条的 pending 完全一致，使列表条数与进度分母对齐：
+    #   reconciliation → 未对账（仍有未收 且 未对账 且 未开票）
+    #   invoice        → 未开票（未开票 且 仍有未收）
+    #   collection     → 未结清（仍有未收）
+    focus = request.GET.get('focus', '').strip()
+    if focus == 'reconciliation':
+        qs = qs.filter(outstanding_amount__gt=0, reconciliation_date__isnull=True,
+                       actual_invoice_amount__isnull=True)
+    elif focus == 'invoice':
+        qs = qs.filter(actual_invoice_amount__isnull=True, outstanding_amount__gt=0)
+    elif focus == 'collection':
+        qs = qs.filter(outstanding_amount__gt=0)
+
     # 回款筛选：pay_status='unpaid' 纯无回款；pay_include_unpaid=1 与日期区间做 OR
     # （"3月回款 + 含未结清"→传 pay_start/pay_end + pay_include_unpaid=1）
     pay_status = request.GET.get('pay_status', '').strip()

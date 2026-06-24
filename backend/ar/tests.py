@@ -740,6 +740,50 @@ class ARPermissionRegressionTests(TestCase):
         # 不再出现「完成度低却待开票为0」的矛盾
         self.assertEqual(inv['rate'], 50.0)
 
+    def test_focus_param_matches_kpi_pending(self):
+        # 金蝶式聚焦查询：focus=reconciliation/invoice/collection 只返回本环节待办子集，
+        # 且条数与 KPI 进度条的 pending 分子完全一致（列表 = 进度待办，不打架）。
+        admin = self.make_user('13900000079', 'finance_director', role='super_admin')
+        project = self.create_project()
+
+        # A: 未对账 + 未开票 + 有未收 → 三个 focus 都应命中
+        a = ARRecord.objects.create(project=project, operation_year=2026,
+                                    operation_month=7, estimated_amount=Decimal('500.00'))
+        # B: 已开票（有发票额）但仍有未收 → recon 已对账口径、invoice 已开票，collection 仍待收
+        b = ARRecord.objects.create(project=project, operation_year=2026,
+                                    operation_month=8, estimated_amount=Decimal('400.00'),
+                                    actual_invoice_amount=Decimal('400.00'),
+                                    reconciliation_date=date(2026, 8, 1))
+        # C: 已全额回款 → 已结清，任何 focus 都不应命中
+        c = ARRecord.objects.create(project=project, operation_year=2026,
+                                    operation_month=9, estimated_amount=Decimal('300.00'))
+        ARPayment.objects.create(ar_record=c, payment_no=1,
+                                 amount=Decimal('300.00'), payment_date=date(2026, 9, 10))
+        c.refresh_from_db()
+        self.assertLessEqual(c.outstanding_amount, Decimal('0'))
+
+        def focus_ids(f):
+            resp = self.client.get('/api/pk/ar/records', {'focus': f}, **self.auth(admin))
+            self.assertEqual(resp.status_code, 200, resp.content)
+            return {r['id'] for r in resp.json()['data']['items']}, resp.json()['data']['total']
+
+        recon_ids, recon_total = focus_ids('reconciliation')
+        inv_ids, inv_total = focus_ids('invoice')
+        coll_ids, coll_total = focus_ids('collection')
+
+        # 对账待办：仅 A（未对账且未开票且有未收）
+        self.assertEqual(recon_ids, {a.id})
+        # 开票待办：仅 A（未开票且有未收）；B 已开票、C 已结清均排除
+        self.assertEqual(inv_ids, {a.id})
+        # 回款待办：A、B（仍有未收）；C 已结清排除
+        self.assertEqual(coll_ids, {a.id, b.id})
+
+        # 与 KPI pending 分子对齐
+        kpi = self.client.get('/api/pk/ar/records/kpi', **self.auth(admin)).json()['data']
+        self.assertEqual(recon_total, kpi['reconciliation']['pending'])
+        self.assertEqual(inv_total, kpi['invoice']['pending'])
+        self.assertEqual(coll_total, kpi['collection']['outstanding_count'])
+
     def test_kpi_respects_column_filters(self):
         # 列头筛选应同步进 KPI（进度条/待办与列表同口径）
         admin = self.make_user('13900000079', 'finance_director', role='super_admin')

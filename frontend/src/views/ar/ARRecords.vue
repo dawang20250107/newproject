@@ -42,6 +42,19 @@ const showFilterPanel = ref(false)
 const reqParams = () => (conditions.value.length
   ? { conditions: JSON.stringify(conditions.value), match: matchMode.value }
   : {})
+// 聚焦待办（金蝶式查询模式）：对账/开票/回款 Tab 默认只看「待处理」子集，可切「全部」。
+// focus 由后端按与 KPI 进度条一致的口径过滤；全部明细不受影响。
+const FOCUS_TABS = ['reconciliation', 'invoice', 'collection']
+const isFocusTab = computed(() => FOCUS_TABS.includes(activeTab.value))
+const pendingOnly = ref(true)   // 进入聚焦页默认仅待处理
+const focusParam = computed(() => (isFocusTab.value && pendingOnly.value) ? activeTab.value : '')
+// 记录集作用域参数：reqParams 叠加聚焦过滤，供列表/导出/批量操作共用，使三者口径一致。
+// KPI 例外——它要对全集算分母（完成度/待办数），故仍用 reqParams（不加 focus）。
+const scopedParams = () => {
+  const p = reqParams()
+  if (focusParam.value) p.focus = focusParam.value
+  return p
+}
 // 体检接口需要部门维度：从条件里取第一个 dept 维度（没有则不限部门）
 const deptOfConditions = () => {
   const c = conditions.value.find(x => x.t === 'dim' && x.field === 'dept')
@@ -84,7 +97,7 @@ async function confirmBulkDelete() {
   if (!delConfirmOk.value) return
   bulkDeleting.value = true
   try {
-    if (selectAllMatching.value) await ar.bulkDeleteRecords({ all: true }, reqParams())
+    if (selectAllMatching.value) await ar.bulkDeleteRecords({ all: true }, scopedParams())
     else await ar.bulkDeleteRecords({ ids: [...selectedIds.value] })
     showDelConfirm.value = false
     clearSelection()
@@ -174,7 +187,7 @@ async function doBulkAssignCollector() {
   try {
     let res
     if (selectAllMatching.value) {
-      res = await ar.bulkAssignCollector({ all: true, collector: collectorInput.value.trim() }, reqParams())
+      res = await ar.bulkAssignCollector({ all: true, collector: collectorInput.value.trim() }, scopedParams())
     } else {
       res = await ar.bulkAssignCollector({ ids: [...selectedIds.value], collector: collectorInput.value.trim() })
     }
@@ -697,7 +710,7 @@ async function load(reset = false) {
   loadErr.value = ''
   try {
     const [recs, kpi] = await Promise.all([
-      ar.listRecords(buildParams({ ...reqParams(),
+      ar.listRecords(buildParams({ ...scopedParams(),
         include_payments: 1, page: page.value, size })),
       ar.recordsKpi(buildParams(reqParams())),
     ])
@@ -784,7 +797,23 @@ function switchTab(key) {
   else if (key === 'dunning') loadDunning(true)
   else if (key === 'offset') loadOffsetWorkbench()
   else if (key === 'batch') loadBatches()
-  else if (!DATA_TABS.includes(prev)) load()  // returning from a non-data tab
+  else {
+    // DATA_TABS（全部/对账/开票/回款）：进入聚焦页默认仅待办；
+    // 当有效 focus 过滤变化（进/出聚焦页）时需重新拉数，否则沿用已加载集仅切列。
+    if (FOCUS_TABS.includes(key)) pendingOnly.value = true
+    if (!DATA_TABS.includes(prev) || FOCUS_TABS.includes(key) || FOCUS_TABS.includes(prev)) {
+      clearSelection()
+      load(true)
+    }
+  }
+}
+
+// 聚焦页「待处理 ｜ 全部」切换：改变 focus 口径后重拉当前集
+function setPendingOnly(v) {
+  if (pendingOnly.value === v) return
+  pendingOnly.value = v
+  clearSelection()
+  load(true)
 }
 
 // Shared-filter change → refresh whichever tab consumes those filters.
@@ -901,7 +930,7 @@ async function confirmBatchAssign() {
   try {
     let res
     if (selectAllMatching.value) {
-      res = await ar.batchAssignBatchNo({ all: true, ...body }, reqParams())
+      res = await ar.batchAssignBatchNo({ all: true, ...body }, scopedParams())
     } else {
       res = await ar.batchAssignBatchNo({ ids: [...selectedIds.value], ...body })
     }
@@ -1332,7 +1361,7 @@ async function exportData() {
   exporting.value = true
   try {
     const visCols = COL_VIS_DEFS.filter(d => showCol(d.key)).map(d => d.key)
-    const params = buildParams(reqParams())
+    const params = buildParams(scopedParams())
     if (visCols.length < COL_VIS_DEFS.filter(d => auth.canArView(d.key)).length) {
       params.vis_cols = visCols.join(',')
     }
@@ -1545,6 +1574,11 @@ function clearFilters() {
     <div class="card" :class="['density-' + density, { 'data-reloading': loading && items.length }]">
       <!-- 合并指标条：左侧=本Tab进度/重点；右侧=当前筛选全集合计 -->
       <div v-if="isDataTab && (kpiData || summaryData)" class="metrics-bar">
+        <!-- 聚焦待办切换（金蝶查询模式）：默认仅看本环节待处理，可一键看全部 -->
+        <div v-if="isFocusTab" class="focus-toggle" title="默认仅显示本环节待处理记录；切「全部」查看含已完成的全集">
+          <button :class="['focus-seg', pendingOnly ? 'on' : '']" @click="setPendingOnly(true)">待处理</button>
+          <button :class="['focus-seg', !pendingOnly ? 'on' : '']" @click="setPendingOnly(false)">全部</button>
+        </div>
         <template v-if="kpiData && activeTab !== 'all'">
           <template v-if="activeTab === 'reconciliation'">
             <div class="kpi-progress">
@@ -1770,7 +1804,13 @@ function clearFilters() {
               <td colspan="17" class="empty-cell">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer" @click="load()">重试</button></td>
             </tr>
             <tr v-else-if="!items.length">
-              <td colspan="17" class="empty-cell">暂无数据</td>
+              <td colspan="17" class="empty-cell">
+                <template v-if="isFocusTab && pendingOnly">
+                  🎉 本环节暂无待处理记录
+                  <button style="border:none;background:none;color:var(--primary);cursor:pointer;font-size:inherit" @click="setPendingOnly(false)">查看全部</button>
+                </template>
+                <template v-else>暂无数据</template>
+              </td>
             </tr>
             <template v-for="rec in items" :key="rec.id">
               <tr :class="['data-row', agingRowClass(rec), (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']"
@@ -3072,6 +3112,11 @@ function clearFilters() {
 /* KPI bar */
 .metrics-bar { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; overflow-x: auto; margin-bottom: 4px; padding: 9px 16px; background: rgba(0,0,0,0.02); border-radius: 12px; }
 .metrics-div { width: 1px; align-self: stretch; min-height: 20px; background: rgba(0,0,0,0.1); margin: 0 2px; }
+/* 聚焦待办切换（金蝶查询模式）：紧凑分段开关 */
+.focus-toggle { display: inline-flex; flex-shrink: 0; padding: 2px; gap: 2px; background: rgba(0,0,0,0.05); border-radius: 8px; }
+.focus-seg { border: none; background: transparent; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--muted); padding: 3px 11px; border-radius: 6px; transition: all .15s; }
+.focus-seg:hover { color: var(--text); }
+.focus-seg.on { background: var(--card, #fff); color: var(--primary); box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
 /* 汇总区：时段合计单行紧凑条 */
 .period-bar { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; white-space: nowrap; }
 .period-lbl { flex-shrink: 0; font-size: 10.5px; font-weight: 700; color: #2e7d32; padding: 1px 6px; border-radius: 4px; background: rgba(46,125,50,0.12); margin-right: 3px; }
