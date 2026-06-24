@@ -40,21 +40,44 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 
 // Quick date presets（收进单个下拉，省横向空间）
+// 工具：本地日期 -> YYYY-MM-DD；某月最后一天
+const pad2 = n => String(n).padStart(2, '0')
+const ymd = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+const lastDayOfMonth = (y, m0) => new Date(y, m0 + 1, 0).getDate()  // m0：0-based 月
+// 给定基准日往前 n 天的区间（含今天）
+const lastNDays = n => {
+  const end = new Date()
+  const start = new Date(); start.setDate(start.getDate() - (n - 1))
+  return { date_start: ymd(start), date_end: ymd(end) }
+}
 const PRESETS = [
   { k: 'year', l: '今年', f: () => ({ date_start: `${filters.year}-01-01`, date_end: `${filters.year}-12-31` }) },
   { k: 'h1', l: '上半年', f: () => ({ date_start: `${filters.year}-01-01`, date_end: `${filters.year}-06-30` }) },
   { k: 'h2', l: '下半年', f: () => ({ date_start: `${filters.year}-07-01`, date_end: `${filters.year}-12-31` }) },
   { k: 'month', l: '本月', f: () => {
-    const d = new Date(); const y = d.getFullYear(); const m = String(d.getMonth() + 1).padStart(2, '0')
-    const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
-    return { date_start: `${y}-${m}-01`, date_end: `${y}-${m}-${last}` }
+    const d = new Date(); const y = d.getFullYear(); const m0 = d.getMonth()
+    return { date_start: `${y}-${pad2(m0 + 1)}-01`, date_end: `${y}-${pad2(m0 + 1)}-${pad2(lastDayOfMonth(y, m0))}` }
+  }},
+  { k: 'lastMonth', l: '上月', f: () => {
+    const now = new Date()
+    const y = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()
+    const m0 = now.getMonth() === 0 ? 11 : now.getMonth() - 1
+    return { date_start: `${y}-${pad2(m0 + 1)}-01`, date_end: `${y}-${pad2(m0 + 1)}-${pad2(lastDayOfMonth(y, m0))}` }
   }},
   { k: 'quarter', l: '本季度', f: () => {
     const d = new Date(); const y = d.getFullYear(); const q = Math.floor(d.getMonth() / 3)
-    const ms = q * 3 + 1; const me = q * 3 + 3
-    const last = new Date(y, me, 0).getDate()
-    return { date_start: `${y}-${String(ms).padStart(2,'0')}-01`, date_end: `${y}-${String(me).padStart(2,'0')}-${last}` }
+    const ms0 = q * 3; const me0 = q * 3 + 2
+    return { date_start: `${y}-${pad2(ms0 + 1)}-01`, date_end: `${y}-${pad2(me0 + 1)}-${pad2(lastDayOfMonth(y, me0))}` }
   }},
+  { k: 'lastQuarter', l: '上季度', f: () => {
+    const now = new Date(); const curQ = Math.floor(now.getMonth() / 3)
+    const y = curQ === 0 ? now.getFullYear() - 1 : now.getFullYear()
+    const q = curQ === 0 ? 3 : curQ - 1
+    const ms0 = q * 3; const me0 = q * 3 + 2
+    return { date_start: `${y}-${pad2(ms0 + 1)}-01`, date_end: `${y}-${pad2(me0 + 1)}-${pad2(lastDayOfMonth(y, me0))}` }
+  }},
+  { k: 'd30', l: '近 30 天', f: () => lastNDays(30) },
+  { k: 'd90', l: '近 90 天', f: () => lastNDays(90) },
 ]
 const rangePreset = ref('')   // '' 全年 | 预设key | 'custom'
 
@@ -169,29 +192,31 @@ onMounted(() => {
           @click="setDim(d.v)">{{ d.l }}现金流</button>
       </div>
       <div class="pcf-controls">
+        <!-- 搜索：可伸缩，给足最小宽度避免占位文案被截断 -->
+        <div class="pcf-search-wrap">
+          <svg class="pcf-search-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input v-model="search" class="pcf-search" placeholder="搜索项目 / 客户 / 事业部" />
+        </div>
         <select v-model="filters.dept" class="pcf-sel" @change="filters.useCustomDate ? load() : null">
           <option value="">全部事业部</option>
           <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
         </select>
-        <div class="pcf-search-wrap">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-          <input v-model="search" class="pcf-search" placeholder="搜索项目 / 客户" />
-        </div>
         <span class="pcf-fb-sep"></span>
-        <select v-model.number="filters.year" class="pcf-sel">
+        <select v-model.number="filters.year" class="pcf-sel pcf-year-sel">
           <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
         </select>
-        <!-- 日期区间：5 个预设收进单个下拉 -->
+        <!-- 日期区间：预设收进单个下拉 -->
         <select v-model="rangePreset" class="pcf-sel pcf-range-sel" @change="onRangeChange">
           <option value="">全年</option>
           <option v-for="p in PRESETS" :key="p.k" :value="p.k">{{ p.l }}</option>
           <option value="custom">自定义…</option>
         </select>
-        <template v-if="filters.useCustomDate">
+        <!-- 自定义区间：成对日期输入，作为一组对齐 -->
+        <div v-if="filters.useCustomDate" class="pcf-daterange">
           <input v-model="filters.date_start" type="date" class="pcf-date-inp" @change="onDateEdit" />
           <span class="pcf-dash">—</span>
           <input v-model="filters.date_end" type="date" class="pcf-date-inp" @change="onDateEdit" />
-        </template>
+        </div>
       </div>
     </div>
 
@@ -321,13 +346,29 @@ onMounted(() => {
 <style scoped>
 /* 标题行：tab 居左作页面标题，筛选项全部并入同一行靠右，去掉独立筛选条 */
 .pcf-topbar { gap: 12px; flex-wrap: wrap; }
-.pcf-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-.pcf-sel {
-  width: auto; border: 1px solid var(--border); background: rgba(255,255,255,.6); padding: 7px 12px;
-  border-radius: 8px; font-size: 13px; color: var(--text); cursor: pointer; outline: none;
+
+/* 右上角控件统一规格：同高、同圆角，宽度按内容协调，窄屏优雅换行 */
+.pcf-controls {
+  --pcf-h: 34px;            /* 所有控件统一高度 */
+  --pcf-radius: 8px;
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap; justify-content: flex-end; row-gap: 8px;
 }
-.pcf-sel:hover, .pcf-sel:focus { background: rgba(201,99,66,.09); color: var(--primary); }
-.pcf-fb-sep { width: 1px; height: 20px; background: var(--border); margin: 0 2px; }
+/* 下拉：统一高度/圆角/内边距；箭头留白，避免文本与箭头重叠被截断 */
+.pcf-sel {
+  height: var(--pcf-h); box-sizing: border-box;
+  border: 1px solid var(--border); background: rgba(255,255,255,.6);
+  padding: 0 28px 0 12px; border-radius: var(--pcf-radius);
+  font-size: 13px; line-height: 1; color: var(--text); cursor: pointer; outline: none;
+  /* 自绘下拉箭头，跨浏览器一致，且预留右侧空间不挤压文字 */
+  -webkit-appearance: none; -moz-appearance: none; appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239b8070' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>");
+  background-repeat: no-repeat; background-position: right 9px center;
+  transition: background-color .15s, border-color .15s, color .15s;
+}
+.pcf-sel:hover, .pcf-sel:focus { background-color: rgba(201,99,66,.09); border-color: rgba(201,99,66,.4); color: var(--primary); }
+.pcf-year-sel { min-width: 84px; }
+.pcf-fb-sep { width: 1px; height: 18px; background: var(--border); margin: 0 2px; flex-shrink: 0; }
 .pcf-dim-seg { display: inline-flex; background: rgba(0,0,0,.05); border-radius: 9px; padding: 3px; }
 .pcf-tabs .pcf-dim-btn { font-size: 15px; padding: 6px 18px; }
 .pcf-dim-btn {
@@ -335,30 +376,34 @@ onMounted(() => {
   font-size: 12.5px; color: var(--muted); cursor: pointer; font-weight: 600;
 }
 .pcf-dim-btn.on { background: #fff; color: var(--primary); font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+/* 自定义日期：成对输入作为一组，同高对齐，破折号居中 */
+.pcf-daterange { display: inline-flex; align-items: center; gap: 6px; }
 .pcf-date-inp {
-  width: auto; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
-  font-size: 12.5px; background: rgba(255,255,255,.6); color: var(--text);
+  height: var(--pcf-h); box-sizing: border-box;
+  border: 1px solid var(--border); border-radius: var(--pcf-radius); padding: 0 9px;
+  font-size: 12.5px; line-height: 1; background: rgba(255,255,255,.6); color: var(--text);
+  outline: none; transition: border-color .15s, background-color .15s;
 }
-.pcf-dash { color: var(--muted); font-size: 13px; }
-.pcf-clear-date { border: none; background: transparent; cursor: pointer; color: var(--muted); font-size: 13px; padding: 2px 4px; }
-.pcf-clear-date:hover { color: #c62828; }
-.pcf-preset {
-  border: 1px solid var(--border); background: rgba(255,255,255,.6); color: var(--muted);
-  font-size: 12.5px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
-}
-.pcf-preset:hover { background: rgba(201,99,66,.09); border-color: rgba(201,99,66,.4); color: var(--primary); }
+.pcf-date-inp:hover, .pcf-date-inp:focus { background: rgba(201,99,66,.06); border-color: rgba(201,99,66,.4); }
+.pcf-dash { color: var(--muted); font-size: 13px; flex-shrink: 0; }
 
-/* Search in section title */
+/* 搜索：与其它控件同高，最小宽度容纳完整占位文案，可弹性伸缩不裁切 */
 .pcf-search-wrap {
-  margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 6px;
+  height: var(--pcf-h); box-sizing: border-box;
+  flex: 1 1 200px; min-width: 180px; max-width: 280px;
   background: rgba(255,255,255,.6); border: 1px solid var(--border);
-  border-radius: 8px; padding: 6px 10px; color: var(--muted);
+  border-radius: var(--pcf-radius); padding: 0 11px; color: var(--muted);
+  transition: border-color .15s, background-color .15s;
 }
+.pcf-search-wrap:focus-within { border-color: rgba(201,99,66,.5); background: #fff; color: var(--primary); }
+.pcf-search-ico { flex-shrink: 0; }
 .pcf-search {
+  flex: 1 1 auto; min-width: 0;
   border: none; background: transparent; font-size: 13px; color: var(--text);
-  outline: none; width: 96px; transition: width .18s;
+  outline: none; width: 100%;
 }
-.pcf-search:focus { width: 160px; }
+.pcf-search::placeholder { color: var(--muted); }
 
 .pcf-empty { padding: 40px; text-align: center; color: var(--muted); font-size: 13px; }
 .pcf-empty.err { color: #c62828; }
@@ -411,8 +456,8 @@ onMounted(() => {
 .rate-track { width: 58px; height: 4px; border-radius: 3px; background: rgba(180,140,110,.18); overflow: hidden; }
 .rate-track i { display: block; height: 100%; border-radius: 3px; transition: width .3s; }
 
-/* 日期区间下拉略宽，容纳「自定义…」 */
-.pcf-range-sel { width: auto; min-width: 78px; }
+/* 日期区间下拉略宽，容纳「自定义…」「近 90 天」等较长选项 */
+.pcf-range-sel { min-width: 96px; }
 
 /* 吸底栏小图标（Teleport 内容仍受 scoped 作用域约束） */
 .bb-ico { width: 13px; height: 13px; align-self: center; flex-shrink: 0; }

@@ -30,6 +30,22 @@ const exporting = ref(false)
 
 const metricsData = ref(null)
 
+// 三大指标（收入 / 经营毛利 / 经营净利）完成表默认折叠，点击表头展开。
+// 以 TABLES 的 tKey 作为唯一键，初始全部折叠（true = 折叠）。
+const collapsed = reactive({})
+function isCollapsed(key) {
+  // 未初始化的视为折叠（默认折叠）
+  return collapsed[key] !== false
+}
+function toggleSection(key) {
+  collapsed[key] = !isCollapsed(key)
+}
+const allExpanded = computed(() => TABLES.every(t => collapsed[t.tKey] === false))
+function toggleAll() {
+  const next = !allExpanded.value          // 当前未全展开 → 全部展开
+  for (const t of TABLES) collapsed[t.tKey] = !next
+}
+
 // editGrid[bu] = { rev/prof/gross: [Jan…Dec (0-11), annual (12)] }
 const editGrid = reactive({})
 
@@ -366,16 +382,25 @@ onMounted(load)
         <select v-model="reportMonth" class="sel-mo">
           <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
         </select>
+        <!-- 三大指标默认折叠，这里提供「全部展开 / 全部收起」一键开关 -->
+        <button class="btn btn-ghost btn-sm" style="margin-left:auto" @click="toggleAll">
+          {{ allExpanded ? '全部收起' : '全部展开' }}
+        </button>
       </div>
 
       <EmptyState v-if="loadingMetrics && !metricsData" loading />
       <template v-else-if="metricsData">
         <div :class="{ 'data-reloading': loadingMetrics }">
 
-          <!-- 三张完成表 -->
+          <!-- 三张完成表（三大指标）：默认折叠，点击表头展开/收起 -->
           <div v-for="t in TABLES" :key="t.tKey" class="card">
-            <div class="section-title" style="margin-bottom:14px">{{ t.title }} · {{ reportYear }}年{{ reportMonth }}月</div>
-            <div class="table-scroll">
+            <div class="section-title sec-toggle" :class="{ collapsed: isCollapsed(t.tKey) }"
+                 role="button" tabindex="0"
+                 @click="toggleSection(t.tKey)" @keydown.enter.space.prevent="toggleSection(t.tKey)">
+              <span class="sec-caret">▾</span>
+              {{ t.title }} · {{ reportYear }}年{{ reportMonth }}月
+            </div>
+            <div v-show="!isCollapsed(t.tKey)" class="table-scroll">
               <table class="metric-table">
                 <thead>
                   <tr>
@@ -448,13 +473,20 @@ onMounted(load)
 .row-err { background: rgba(198,40,40,.04) !important; }
 .row-err .col-bu { color: #c62828; }
 .t-input {
-  width: 62px; padding: 4px 5px; text-align: right; font-size: 12px;
+  /* 自适应宽度：最小 62px，可随内容增长，确保较长数值（如 12345.67）完整可见 */
+  width: 62px; min-width: 62px; max-width: 96px; padding: 4px 5px; text-align: right;
+  font-size: clamp(10px, 1.05vw, 12px); font-variant-numeric: tabular-nums;
   border: 1px solid var(--border); border-radius: 5px; background: rgba(255,255,255,.6); color: var(--text);
+  text-overflow: clip;
 }
 .t-input:focus { outline: none; border-color: var(--primary); }
 .t-input:disabled { background: transparent; border-color: transparent; color: var(--text); }
-.t-annual { border-color: rgba(201,99,66,.4); background: rgba(201,99,66,.04); width: 70px; }
-.col-sum-val { font-weight: 700; color: var(--text); font-size: 12px; }
+.t-annual { border-color: rgba(201,99,66,.4); background: rgba(201,99,66,.04); width: 70px; min-width: 70px; }
+/* 合计/数值单元格：等宽数字、不换行整行展示，避免长数字被截断 */
+.col-sum-val {
+  font-weight: 700; color: var(--text); font-size: 12px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
 .col-diff-val { font-size: 12px; font-weight: 700; }
 .diff-ok { color: #2e7d32; }
 .diff-err { color: #c62828; font-weight: 800; }
@@ -468,10 +500,29 @@ onMounted(load)
 .save-ok { color: #2e7d32; }
 .save-err { color: #c62828; }
 
+/* ── 三大指标可折叠表头 ──────────────────────────────────────────────── */
+.sec-toggle {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 14px; cursor: pointer; user-select: none;
+}
+.sec-toggle.collapsed { margin-bottom: 0; }  /* 折叠时无表体，去掉多余下边距 */
+.sec-toggle:hover { color: var(--primary); }
+.sec-caret {
+  display: inline-block; font-size: 11px; color: var(--muted);
+  transition: transform .2s ease; transform: rotate(0deg);  /* 展开：朝下 ▾ */
+}
+.sec-toggle.collapsed .sec-caret { transform: rotate(-90deg); }  /* 折叠：朝右 ▸ */
+
 .table-scroll { overflow-x: auto; }
 .metric-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 700px; }
 .metric-table th, .metric-table td {
   padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+/* 数值列：等宽数字 + 不换行整行显示，让较长的金额（如「12,345.67 万」）完整展示而不被截断 */
+.metric-table td:not(.col-bu) {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+  overflow: visible;
 }
 .metric-table thead th {
   color: var(--muted); font-weight: 700; font-size: 12px;
