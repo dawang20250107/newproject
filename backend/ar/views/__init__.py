@@ -24,3 +24,4 @@ from .actions import *    # noqa: F401,F403,E402
 from .pool import *       # noqa: F401,F403,E402
 from .collection_logs import *   # noqa: F401,F403,E402
 from .aging_config import *   # noqa: F401,F403,E402
+from .activity import *   # noqa: F401,F403,E402

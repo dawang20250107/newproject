@@ -18,6 +18,7 @@ import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import ActivityPanel from '../../components/ar/ActivityPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -175,7 +176,7 @@ const ctxItems = computed(() => {
   if (!rec) return []
   const settled = parseFloat(rec.outstanding_amount || 0) <= 0
   return [
-    { key: 'log', label: '催收跟进日志', icon: 'log', shortcut: 'L', action: r => openLogModal(r) },
+    { key: 'log', label: '催款工作台', icon: 'log', shortcut: 'L', action: r => { panelRec.value = r } },
     { key: 'edit', label: '编辑', icon: 'edit', shortcut: 'E', hidden: !auth.canArWrite, action: r => openEdit(r) },
     {
       key: 'pay', label: settled ? '录入回款（已结清）' : '录入回款', icon: 'payment', shortcut: 'P',
@@ -407,58 +408,19 @@ const precheckResult = ref(null)
 const precheckBusy = ref(false)
 const pendingFile = ref(null)
 
-// ── 催收跟进日志 ─────────────────────────────────────────────────────────────
-const showLogModal = ref(false)
-const logRec = ref(null)         // 当前打开日志的应收记录
-const logItems = ref([])
-const logLoading = ref(false)
-const logSaving = ref(false)
-const LOG_TYPES = [
-  { v: 'call', l: '电话' }, { v: 'email', l: '邮件' },
-  { v: 'visit', l: '拜访' }, { v: 'meeting', l: '会议' }, { v: 'other', l: '其他' },
-]
-const LOG_STATUSES = [
-  { v: 'in_progress', l: '跟进中' }, { v: 'pending', l: '待回复' },
-  { v: 'resolved', l: '已解决' }, { v: 'no_response', l: '无响应' },
-]
-const logForm = reactive({ log_type: 'call', contact_person: '', note: '', status: 'in_progress', follow_up_date: '' })
+// ── 催款工作台面板 ──────────────────────────────────────────────────────────
+const panelRec = ref(null)
 
-async function openLogModal(rec) {
-  logRec.value = rec
-  showLogModal.value = true
-  logLoading.value = true
-  try {
-    const res = await ar.listCollectionLogs(rec.id)
-    logItems.value = res.data.items || []
-  } finally { logLoading.value = false }
+function onPanelFieldSaved(data) {
+  const idx = items.value.findIndex(r => r.id === data.id)
+  if (idx === -1) return
+  const row = items.value[idx]
+  if (data.activity_count != null) row.activity_count = data.activity_count
+  if (data.attachment_count != null) row.attachment_count = data.attachment_count
+  if ('collector' in data) row.collector = data.collector
+  if ('notes' in data) row.notes = data.notes
+  if ('target_collection_date' in data) row.target_collection_date = data.target_collection_date
 }
-async function addLog() {
-  if (!logForm.note.trim()) { toast.error('请填写跟进内容'); return }
-  logSaving.value = true
-  try {
-    const res = await ar.addCollectionLog(logRec.value.id, {
-      log_type: logForm.log_type,
-      contact_person: logForm.contact_person.trim(),
-      note: logForm.note.trim(),
-      status: logForm.status,
-      follow_up_date: logForm.follow_up_date || null,
-    })
-    logItems.value = [res.data, ...logItems.value]
-    logForm.note = ''; logForm.contact_person = ''; logForm.follow_up_date = ''
-    toast.success('跟进记录已保存')
-  } catch (e) { toast.error(e?.msg || e?.error || '保存失败') }
-  finally { logSaving.value = false }
-}
-async function deleteLog(log) {
-  if (!confirm(`删除该跟进记录？`)) return
-  try {
-    await ar.deleteCollectionLog(logRec.value.id, log.id)
-    logItems.value = logItems.value.filter(l => l.id !== log.id)
-  } catch (e) { toast.error(e?.msg || e?.error || '删除失败') }
-}
-const logTypeLabel = v => LOG_TYPES.find(t => t.v === v)?.l || v
-const logStatusLabel = v => LOG_STATUSES.find(s => s.v === v)?.l || v
-const logStatusClass = v => ({ resolved: 'log-ok', no_response: 'log-muted', pending: 'log-warn' }[v] || '')
 
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
@@ -1876,6 +1838,10 @@ function clearFilters() {
                     <span v-if="dueSoon(rec)" class="due-soon-badge" :title="`应收到期：${rec.due_date}`">即将到期</span>
                   </div>
                   <div v-if="rec.short_name && rec.short_name !== rec.customer_name" class="proj-sub" :title="rec.customer_name">{{ rec.customer_name }}</div>
+                  <div v-if="rec.activity_count || rec.attachment_count" class="rec-badge-row">
+                    <span v-if="rec.activity_count" class="rec-badge rec-badge-act" :title="`${rec.activity_count} 条跟进动态`" @click.stop="panelRec = rec">💬 {{ rec.activity_count }}</span>
+                    <span v-if="rec.attachment_count" class="rec-badge rec-badge-att" :title="`${rec.attachment_count} 个附件`" @click.stop="panelRec = rec">📎 {{ rec.attachment_count }}</span>
+                  </div>
                 </td>
                 <td class="ctr">
                   <span class="ym-chip">{{ rec.operation_date || (rec.operation_year + "/" + String(rec.operation_month).padStart(2, "0")) }}</span>
@@ -2668,62 +2634,8 @@ function clearFilters() {
         </div>
       </div>
 
-      <!-- 催收跟进日志 Modal -->
-      <div v-if="showLogModal" class="modal-overlay" @click.self="showLogModal = false">
-        <div class="modal-box" style="max-width:520px">
-          <div class="modal-header">
-            <div>
-              <h3>催收跟进日志</h3>
-              <div style="font-size:12px;color:var(--muted);margin-top:2px">{{ logRec?.short_name || logRec?.customer_name }}</div>
-            </div>
-            <button class="modal-close" @click="showLogModal = false">✕</button>
-          </div>
-          <div class="modal-body">
-            <!-- 新增日志表单 -->
-            <div class="log-add-form">
-              <div class="log-form-row">
-                <select v-model="logForm.log_type" class="log-type-sel">
-                  <option v-for="t in LOG_TYPES" :key="t.v" :value="t.v">{{ t.l }}</option>
-                </select>
-                <input v-model="logForm.contact_person" class="log-contact-inp" placeholder="联系人（选填）" maxlength="100" />
-                <select v-model="logForm.status" class="log-status-sel">
-                  <option v-for="s in LOG_STATUSES" :key="s.v" :value="s.v">{{ s.l }}</option>
-                </select>
-              </div>
-              <textarea v-model="logForm.note" class="log-note-ta" placeholder="跟进内容（必填）…" rows="3"></textarea>
-              <div class="log-form-row">
-                <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px">
-                  计划跟进 <input v-model="logForm.follow_up_date" type="date" class="log-date-inp" />
-                </label>
-                <button class="btn btn-primary btn-sm" :disabled="logSaving || !logForm.note.trim()" @click="addLog">
-                  {{ logSaving ? '…' : '＋ 记录' }}
-                </button>
-              </div>
-            </div>
-            <!-- 历史日志列表 -->
-            <div v-if="logLoading" class="log-empty">加载中…</div>
-            <div v-else-if="!logItems.length" class="log-empty">暂无跟进记录</div>
-            <div v-else class="log-list">
-              <div v-for="log in logItems" :key="log.id" class="log-item">
-                <div class="log-item-head">
-                  <span class="log-type-tag">{{ logTypeLabel(log.log_type) }}</span>
-                  <span v-if="log.contact_person" class="log-contact">{{ log.contact_person }}</span>
-                  <span :class="['log-status', logStatusClass(log.status)]">{{ logStatusLabel(log.status) }}</span>
-                  <span class="log-time">{{ log.created_at?.slice(0, 16).replace('T', ' ') }}</span>
-                  <span v-if="log.created_by_name" class="log-by">{{ log.created_by_name }}</span>
-                  <button v-if="auth.isSuperAdmin || log.created_by_id === auth.user?.id"
-                          class="log-del" @click="deleteLog(log)">✕</button>
-                </div>
-                <div class="log-note">{{ log.note }}</div>
-                <div v-if="log.follow_up_date" class="log-followup">计划跟进：{{ log.follow_up_date }}</div>
-              </div>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button class="btn btn-ghost" @click="showLogModal = false">关闭</button>
-          </div>
-        </div>
-      </div>
+      <!-- 催款工作台面板 -->
+      <ActivityPanel v-if="panelRec" :rec="panelRec" @close="panelRec = null" @field-saved="onPanelFieldSaved" />
 
       <!-- Payment Modal — 录入态：点遮罩不关闭，仅按钮可退出 -->
       <div v-if="showPayModal" class="modal-overlay">
@@ -3549,51 +3461,16 @@ function clearFilters() {
 .rec-table tbody tr.row-sel td.sticky-col,
 .rec-table tbody tr.row-sel:hover td.sticky-col { background: #f2e5de; }
 
-/* ── 催收跟进日志 ──────────────────────────────────────────────────── */
-.log-add-form {
-  padding: 12px 14px; background: rgba(0,0,0,0.025); border-radius: 10px;
-  margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px;
+/* ── 动态 / 附件徽标 ─────────────────────────────────────────────── */
+.rec-badge-row { display: flex; gap: 4px; margin-top: 3px; flex-wrap: wrap; }
+.rec-badge {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 1px 6px; border-radius: 8px; font-size: 10.5px; font-weight: 600;
+  cursor: pointer; user-select: none; transition: opacity .12s;
 }
-.log-form-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.log-type-sel, .log-status-sel {
-  padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; font-size: 12.5px;
-}
-.log-contact-inp {
-  flex: 1; min-width: 80px; padding: 5px 8px; border: 1px solid var(--border);
-  border-radius: 7px; font-size: 12.5px;
-}
-.log-date-inp { padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
-.log-note-ta {
-  width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
-  font-size: 12.5px; font-family: inherit; resize: vertical; min-height: 60px;
-  box-sizing: border-box;
-}
-.log-note-ta:focus { outline: none; border-color: var(--primary); }
-.log-list { display: flex; flex-direction: column; gap: 10px; max-height: 320px; overflow-y: auto; }
-.log-item {
-  padding: 10px 12px; border-radius: 9px; border: 1px solid var(--border);
-  background: rgba(255,252,250,0.7);
-}
-.log-item-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 5px; }
-.log-type-tag {
-  padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-weight: 600;
-  background: rgba(201,99,66,0.1); color: var(--primary);
-}
-.log-contact { font-size: 12px; color: var(--muted); }
-.log-status { font-size: 11.5px; padding: 1px 6px; border-radius: 5px; background: rgba(0,0,0,0.05); }
-.log-status.log-ok { background: rgba(46,125,50,0.1); color: #2e7d32; }
-.log-status.log-warn { background: rgba(230,81,0,0.1); color: #e65100; }
-.log-status.log-muted { background: rgba(0,0,0,0.07); color: var(--muted); }
-.log-time { font-size: 11px; color: var(--muted); margin-left: auto; }
-.log-by { font-size: 11px; color: var(--muted); }
-.log-del {
-  background: none; border: none; color: var(--muted); cursor: pointer; font-size: 11px;
-  padding: 2px 5px; border-radius: 4px; transition: all 0.1s;
-}
-.log-del:hover { color: #c62828; background: rgba(198,40,40,0.08); }
-.log-note { font-size: 13px; line-height: 1.55; color: #333; white-space: pre-wrap; }
-.log-followup { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
-.log-empty { padding: 20px 0; text-align: center; color: var(--muted); font-size: 13px; }
+.rec-badge:hover { opacity: .75; }
+.rec-badge-act { background: rgba(201,99,66,0.10); color: var(--primary); }
+.rec-badge-att { background: rgba(25,118,210,0.10); color: #1976d2; }
 
 /* ── 冻结列阴影线（Kingdee 风格：右侧投影提示有内容在后面滚动）──── */
 .sticky-col::after {

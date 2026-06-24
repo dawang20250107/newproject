@@ -57,6 +57,17 @@ const ar = {
   updateCollectionLog: (rid, lid, d) => api.put(`/ar/records/${rid}/collection-logs/${lid}`, d),
   deleteCollectionLog: (rid, lid) => api.delete(`/ar/records/${rid}/collection-logs/${lid}`),
 
+  // ── 应收动态 + 附件（催款工作台）─────────────────────────────────────────
+  listActivity: (id, params) => api.get(`/ar/records/${id}/activity`, { params }),
+  addActivity: (id, d) => api.post(`/ar/records/${id}/activity`, d),
+  updateActivity: (id, aid, d) => api.put(`/ar/records/${id}/activity/${aid}`, d),
+  deleteActivity: (id, aid) => api.delete(`/ar/records/${id}/activity/${aid}`),
+  uploadAttachment: (id, formData) => api.post(`/ar/records/${id}/attachments`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }),
+  deleteAttachment: (id, fid) => api.delete(`/ar/records/${id}/attachments/${fid}`),
+  quickEdit: (id, d) => api.patch(`/ar/records/${id}/quick-edit`, d),
+
   // 批量分配催收人
   bulkAssignCollector: (body, params) => api.post('/ar/records/bulk-assign-collector', body, { params }),
 

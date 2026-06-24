@@ -138,4 +138,12 @@ urlpatterns = [
     # 催收跟进日志
     path('records/<int:pk>/collection-logs', views.ar_collection_logs),
     path('records/<int:pk>/collection-logs/<int:lid>', views.ar_collection_log_detail),
+
+    # 统一动态 + 附件
+    path('records/<int:pk>/activity', views.ar_activity_list),
+    path('records/<int:pk>/activity/<int:aid>', views.ar_activity_detail),
+    path('records/<int:pk>/attachments', views.ar_attachment_list),
+    path('records/<int:pk>/attachments/<int:fid>', views.ar_attachment_detail),
+    path('records/<int:pk>/attachments/<int:fid>/thumb', views.ar_attachment_thumb),
+    path('records/<int:pk>/quick-edit', views.ar_record_quick_edit),
 ]
