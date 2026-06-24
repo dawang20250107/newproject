@@ -217,7 +217,8 @@ async function saveAgingCfg() {
     await ar.updateAgingConfig({ ...agingCfgForm })
     toast.success('账龄配置已保存')
     showAgingCfgModal.value = false
-    if (activeTab.value === 'dunning') loadAging()
+    // 账龄分桶边界变化会影响逾期看板的分桶卡片，重新拉取
+    if (activeTab.value === 'dunning') loadDunning(true)
   } catch (e) { toast.error(e?.msg || e?.error || '保存失败')
   } finally { agingCfgSaving.value = false }
 }
@@ -605,20 +606,6 @@ const agingRowClass = rec => {
   return 'age-1-30'
 }
 
-// ── 账龄分析 Tab ──────────────────────────────────────────────────────────────
-const agingRows = ref([])
-const agingSummary = ref(null)
-const agingLoading = ref(false)
-async function loadAging() {
-  agingLoading.value = true
-  try {
-    const res = await ar.agingByCustomer(buildParams(reqParams()))
-    agingRows.value = res.data.rows || []
-    agingSummary.value = res.data.summary || null
-  } catch (e) { toast.error(e?.msg || e?.error || '账龄数据加载失败') }
-  finally { agingLoading.value = false }
-}
-
 // ── 筛选方案（对标金蝶云星空「过滤方案」）─────────────────────────────────────
 // 服务端存储，私有(仅本人)/公共(团队共享)；默认方案指针存本地(按用户)，进入页自动套用。
 const schemes = ref([])
@@ -792,7 +779,7 @@ function switchTab(key) {
   activeTab.value = key
   if (key === 'payments') enterPayments()
   else if (key === 'summary') loadGroupSummary()
-  else if (key === 'dunning') { loadDunning(true); loadAging() }
+  else if (key === 'dunning') loadDunning(true)
   else if (key === 'offset') loadOffsetWorkbench()
   else if (key === 'batch') loadBatches()
   else {
@@ -1377,7 +1364,7 @@ const onScopeChange = () => {
   if (dunFilters.dept && !accessibleDepts.value.includes(dunFilters.dept)) dunFilters.dept = ''
   if (activeTab.value === 'payments') loadPayments(true)
   else if (activeTab.value === 'summary') loadGroupSummary()
-  else if (activeTab.value === 'dunning') { loadDunning(true); loadAging() }
+  else if (activeTab.value === 'dunning') loadDunning(true)
   else load(true)
   void before
 }
@@ -2045,54 +2032,55 @@ function clearFilters() {
       </div>
 
       <!-- ══ 逾期看板（原催款工作台）══ -->
-      <div v-if="activeTab === 'dunning'" class="ar-pane">
-        <div class="bp-head" style="margin-top:4px">
-          <span class="bp-title">⏰ 逾期看板</span>
-          <span class="bp-tip">逾期未收应收一览：按账龄分桶 / 对接人聚合，可勾选批量生成催款任务（进财务驾驶舱·决策行动）</span>
-        </div>
-        <div class="filter-strip" style="margin-top:4px">
-          <select v-model="dunFilters.dept" class="sel-bu" @change="loadDunning(true)">
-            <option value="">全部事业部</option>
-            <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
-          </select>
-          <input v-model="dunFilters.q" placeholder="搜项目 / 客户 / 对接人" class="search-input" @input="onDunSearch" />
-          <span v-if="dunSummary" class="text-sm-muted" style="margin-left:auto">
-            当前范围逾期 <strong>{{ dunSummary.count }}</strong> 笔 / <strong style="color:#c62828">{{ fmtAmt(dunSummary.amount) }}</strong>
-          </span>
+      <div v-if="activeTab === 'dunning'" class="ar-pane pane-flex">
+        <div class="pane-head">
+          <!-- 标题并入筛选行，省去单独的提示条占行 -->
+          <div class="filter-strip" style="margin-top:4px">
+            <span class="bp-title" style="white-space:nowrap">⏰ 逾期看板</span>
+            <select v-model="dunFilters.dept" class="sel-bu" @change="loadDunning(true)">
+              <option value="">全部事业部</option>
+              <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+            </select>
+            <input v-model="dunFilters.q" placeholder="搜项目 / 客户 / 对接人" class="search-input" @input="onDunSearch" />
+            <button v-if="auth.isSuperAdmin" class="aging-cfg-btn" title="配置账龄分桶边界" @click="openAgingCfg">⚙ 账龄分桶</button>
+            <span v-if="dunSummary" class="text-sm-muted" style="margin-left:auto">
+              当前范围逾期 <strong>{{ dunSummary.count }}</strong> 笔 / <strong style="color:#c62828">{{ fmtAmt(dunSummary.amount) }}</strong>
+            </span>
+          </div>
+
+          <!-- 账龄分桶卡片（点击筛选） -->
+          <div class="dun-buckets">
+            <button v-for="b in dunBuckets" :key="b.key"
+              class="dun-bucket" :class="{ on: dunFilters.bucket === b.key, empty: !b.count }"
+              @click="toggleDunBucket(b.key)">
+              <div class="db-label">逾期{{ b.label }}</div>
+              <div class="db-count">{{ b.count }} 笔</div>
+              <div class="db-amt">{{ fmtAmt(b.amount) }}</div>
+            </button>
+          </div>
+
+          <!-- 责任人聚合 chips（点击筛选） -->
+          <div v-if="dunContacts.length" class="dun-contacts">
+            <span class="dc-label">按销售对接人：</span>
+            <button v-for="c in dunContacts.slice(0, 12)" :key="c.sales_contact"
+              class="dc-chip" :class="{ on: dunFilters.contact === c.sales_contact }"
+              :title="`最长逾期 ${c.max_overdue_days} 天`"
+              @click="toggleDunContact(c.sales_contact)">
+              {{ c.sales_contact }} · {{ c.count }}笔 · {{ fmtAmt(c.amount) }}
+            </button>
+          </div>
+
+          <!-- 批量生成催款任务工具条 -->
+          <div v-if="auth.canArWrite && dunSelected.size" class="bulk-bar">
+            <span class="bulk-n">已选 <strong>{{ dunSelected.size }}</strong> 条</span>
+            <button class="btn btn-primary btn-sm" :disabled="dunCreating" @click="createDunningTasks">
+              {{ dunCreating ? '生成中…' : '⚡ 生成催款任务' }}
+            </button>
+            <span class="text-sm-muted">生成后出现在 财务驾驶舱 → 决策行动，负责人默认为销售对接人</span>
+          </div>
         </div>
 
-        <!-- 账龄分桶卡片（点击筛选） -->
-        <div class="dun-buckets">
-          <button v-for="b in dunBuckets" :key="b.key"
-            class="dun-bucket" :class="{ on: dunFilters.bucket === b.key, empty: !b.count }"
-            @click="toggleDunBucket(b.key)">
-            <div class="db-label">逾期{{ b.label }}</div>
-            <div class="db-count">{{ b.count }} 笔</div>
-            <div class="db-amt">{{ fmtAmt(b.amount) }}</div>
-          </button>
-        </div>
-
-        <!-- 责任人聚合 chips（点击筛选） -->
-        <div v-if="dunContacts.length" class="dun-contacts">
-          <span class="dc-label">按销售对接人：</span>
-          <button v-for="c in dunContacts.slice(0, 12)" :key="c.sales_contact"
-            class="dc-chip" :class="{ on: dunFilters.contact === c.sales_contact }"
-            :title="`最长逾期 ${c.max_overdue_days} 天`"
-            @click="toggleDunContact(c.sales_contact)">
-            {{ c.sales_contact }} · {{ c.count }}笔 · {{ fmtAmt(c.amount) }}
-          </button>
-        </div>
-
-        <!-- 批量生成催款任务工具条 -->
-        <div v-if="auth.canArWrite && dunSelected.size" class="bulk-bar">
-          <span class="bulk-n">已选 <strong>{{ dunSelected.size }}</strong> 条</span>
-          <button class="btn btn-primary btn-sm" :disabled="dunCreating" @click="createDunningTasks">
-            {{ dunCreating ? '生成中…' : '⚡ 生成催款任务' }}
-          </button>
-          <span class="text-sm-muted">生成后出现在 财务驾驶舱 → 决策行动，负责人默认为销售对接人</span>
-        </div>
-
-        <div class="table-wrap" style="margin-top:12px">
+        <div class="table-wrap pane-scroll">
           <table class="rec-table">
             <thead>
               <tr>
@@ -2120,7 +2108,7 @@ function clearFilters() {
                 </td>
                 <td>
                   <div class="proj-name">{{ r.short_name || r.customer_name }}</div>
-                  <div class="proj-no">{{ r.project_no }} · {{ r.customer_name }}</div>
+                  <div class="proj-sub">{{ r.customer_name }}</div>
                 </td>
                 <td class="ctr text-sm-muted">{{ r.delivery_dept }}</td>
                 <td class="ctr"><span class="ym-chip">{{ r.operation_date || (r.operation_year + "/" + String(r.operation_month).padStart(2, "0")) }}</span></td>
@@ -2138,104 +2126,46 @@ function clearFilters() {
           </table>
         </div>
 
-        <div v-if="dunTotal > size" class="pagination">
+        <div v-if="dunTotal > size" class="pagination pane-pager">
           <button :disabled="dunPage <= 1" class="page-btn" @click="dunChangePage(-1)">‹ 上一页</button>
           <span class="page-info">{{ dunPage }} / {{ Math.ceil(dunTotal / size) }} 页 · 共 {{ dunTotal }} 条</span>
           <button :disabled="dunPage * size >= dunTotal" class="page-btn" @click="dunChangePage(1)">下一页 ›</button>
         </div>
-
-        <!-- 账龄分析（融入逾期看板）：按客户汇总四段账龄桶 -->
-        <div class="aging-wrap" style="margin-top:18px">
-          <div class="aging-section-head">
-            <span class="bp-title">📊 账龄分析</span>
-            <span class="bp-tip">按客户汇总未收账款的账龄分布</span>
-          </div>
-          <div class="aging-legend">
-            <span class="aging-dot age-1-30"></span>1-30天
-            <span class="aging-dot age-31-60"></span>31-60天
-            <span class="aging-dot age-61-90"></span>61-90天
-            <span class="aging-dot age-90plus"></span>&gt;90天
-            <span class="text-sm-muted" style="margin-left:8px">（仅含未收余额 &gt; 0 的记录；沿用上方筛选条件）</span>
-            <button v-if="auth.isSuperAdmin" class="aging-cfg-btn" title="配置账龄分桶边界" @click="openAgingCfg">
-              ⚙ 配置
-            </button>
-          </div>
-          <div class="table-wrap">
-            <table class="rec-table aging-table">
-              <thead>
-                <tr>
-                  <th>客户名称</th>
-                  <th class="ctr">记录数</th>
-                  <th class="amt" title="due_date >= 今天 或 无到期日">未到期</th>
-                  <th class="amt age-1-30-head">1-30天</th>
-                  <th class="amt age-31-60-head">31-60天</th>
-                  <th class="amt age-61-90-head">61-90天</th>
-                  <th class="amt age-90plus-head">&gt;90天</th>
-                  <th class="amt fw">未收合计</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-if="agingLoading && !agingRows.length"><td colspan="8" class="empty-cell">⏳ 加载中…</td></tr>
-                <tr v-else-if="!agingRows.length"><td colspan="8" class="empty-cell">暂无未收数据</td></tr>
-                <tr v-for="r in agingRows" :key="r.customer_name" class="data-row aging-row">
-                  <td class="fw">{{ r.customer_name || '—' }}</td>
-                  <td class="ctr text-sm-muted">{{ r.count }}</td>
-                  <td class="amt">{{ parseFloat(r.not_due) > 0 ? fmtCell(r.not_due) : '—' }}</td>
-                  <td class="amt" :class="parseFloat(r.b1_30) > 0 ? 'age-amt-1-30' : ''">{{ parseFloat(r.b1_30) > 0 ? fmtCell(r.b1_30) : '—' }}</td>
-                  <td class="amt" :class="parseFloat(r.b31_60) > 0 ? 'age-amt-31-60' : ''">{{ parseFloat(r.b31_60) > 0 ? fmtCell(r.b31_60) : '—' }}</td>
-                  <td class="amt" :class="parseFloat(r.b61_90) > 0 ? 'age-amt-61-90' : ''">{{ parseFloat(r.b61_90) > 0 ? fmtCell(r.b61_90) : '—' }}</td>
-                  <td class="amt" :class="parseFloat(r.b90plus) > 0 ? 'age-amt-90plus' : ''">{{ parseFloat(r.b90plus) > 0 ? fmtCell(r.b90plus) : '—' }}</td>
-                  <td class="amt fw" :class="parseFloat(r.total) > 0 ? 'amt-warn' : 'amt-zero'">{{ fmtCell(r.total) }}</td>
-                </tr>
-              </tbody>
-              <tfoot v-if="agingSummary">
-                <tr class="group-total-row">
-                  <td class="fw">合计</td>
-                  <td class="ctr">{{ agingSummary.count }}</td>
-                  <td class="amt fw">{{ parseFloat(agingSummary.not_due) > 0 ? fmtCell(agingSummary.not_due) : '—' }}</td>
-                  <td class="amt fw age-amt-1-30">{{ parseFloat(agingSummary.b1_30) > 0 ? fmtCell(agingSummary.b1_30) : '—' }}</td>
-                  <td class="amt fw age-amt-31-60">{{ parseFloat(agingSummary.b31_60) > 0 ? fmtCell(agingSummary.b31_60) : '—' }}</td>
-                  <td class="amt fw age-amt-61-90">{{ parseFloat(agingSummary.b61_90) > 0 ? fmtCell(agingSummary.b61_90) : '—' }}</td>
-                  <td class="amt fw age-amt-90plus">{{ parseFloat(agingSummary.b90plus) > 0 ? fmtCell(agingSummary.b90plus) : '—' }}</td>
-                  <td class="amt fw amt-warn">{{ fmtCell(agingSummary.total) }}</td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </div>
       </div>
 
       <!-- ══ 回款流水 ══ -->
-      <div v-if="activeTab === 'payments'" class="ar-pane">
-        <div class="filter-strip" style="margin-top:4px">
-          <label class="pay-range-lbl">回款日期</label>
-          <button v-for="r in PAY_RANGE_PRESETS" :key="r.key || 'all'" type="button"
-                  class="pay-range-chip" :class="{ on: payRangePreset === r.key }"
-                  @click="setPayRange(r.key)">{{ r.label }}</button>
-          <input v-model="payFilters.pay_start" type="date" class="sel-mo" :min="payBounds.min" :max="payBounds.max" @change="onPayDateChange" />
-          <span style="color:var(--muted)">~</span>
-          <input v-model="payFilters.pay_end" type="date" class="sel-mo" :min="payBounds.min" :max="payBounds.max" @change="onPayDateChange" />
-          <select v-model="payFilters.dept" class="sel-bu" @change="loadPayments(true)">
-            <option value="">全部事业部</option>
-            <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
-          </select>
-          <select v-model="payFilters.source" class="sel-bu" @change="loadPayments(true)" title="按回款来源筛选">
-            <option value="">全部来源</option>
-            <option value="回款">现金回款</option>
-            <option value="预收抵扣">预收抵扣</option>
-            <option value="内部往来">内部往来</option>
-          </select>
-          <input v-model="payFilters.q" placeholder="搜索项目" class="search-input" @input="loadPayments(true)" />
-          <button class="btn btn-ghost btn-sm" :disabled="payExporting" @click="exportPayments">↓ 导出</button>
+      <div v-if="activeTab === 'payments'" class="ar-pane pane-flex">
+        <div class="pane-head">
+          <div class="filter-strip" style="margin-top:4px">
+            <label class="pay-range-lbl">回款日期</label>
+            <button v-for="r in PAY_RANGE_PRESETS" :key="r.key || 'all'" type="button"
+                    class="pay-range-chip" :class="{ on: payRangePreset === r.key }"
+                    @click="setPayRange(r.key)">{{ r.label }}</button>
+            <input v-model="payFilters.pay_start" type="date" class="sel-mo" :min="payBounds.min" :max="payBounds.max" @change="onPayDateChange" />
+            <span style="color:var(--muted)">~</span>
+            <input v-model="payFilters.pay_end" type="date" class="sel-mo" :min="payBounds.min" :max="payBounds.max" @change="onPayDateChange" />
+            <select v-model="payFilters.dept" class="sel-bu" @change="loadPayments(true)">
+              <option value="">全部事业部</option>
+              <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+            </select>
+            <select v-model="payFilters.source" class="sel-bu" @change="loadPayments(true)" title="按回款来源筛选">
+              <option value="">全部来源</option>
+              <option value="回款">现金回款</option>
+              <option value="预收抵扣">预收抵扣</option>
+              <option value="内部往来">内部往来</option>
+            </select>
+            <input v-model="payFilters.q" placeholder="搜索项目" class="search-input" @input="loadPayments(true)" />
+            <button class="btn btn-ghost btn-sm" :disabled="payExporting" @click="exportPayments">↓ 导出</button>
+          </div>
+
+          <div v-if="paySummary" class="totals-strip">
+            <span class="tot-label">区间合计</span>
+            <span class="tot-item"><i>笔数</i>{{ paySummary.count }}</span>
+            <span class="tot-item tot-green"><i>回款总额</i>{{ fmtCell(paySummary.total_amount) }}</span>
+          </div>
         </div>
 
-        <div v-if="paySummary" class="totals-strip">
-          <span class="tot-label">区间合计</span>
-          <span class="tot-item"><i>笔数</i>{{ paySummary.count }}</span>
-          <span class="tot-item tot-green"><i>回款总额</i>{{ fmtCell(paySummary.total_amount) }}</span>
-        </div>
-
-        <div class="table-wrap" style="margin-top:12px">
+        <div class="table-wrap pane-scroll">
           <table class="rec-table">
             <thead>
               <tr>
@@ -2262,7 +2192,6 @@ function clearFilters() {
                 </td>
                 <td>
                   <div class="proj-name">{{ p.short_name || '—' }}</div>
-                  <div class="proj-no">{{ p.project_no }}</div>
                 </td>
                 <td class="ctr text-sm-muted">{{ p.delivery_dept }}</td>
                 <td class="ctr"><span class="ym-chip">{{ p.operation_date || (p.operation_year + "/" + String(p.operation_month).padStart(2, "0")) }}</span></td>
@@ -2273,7 +2202,7 @@ function clearFilters() {
           </table>
         </div>
 
-        <div v-if="payTotal > size" class="pagination">
+        <div v-if="payTotal > size" class="pagination pane-pager">
           <button :disabled="payPage <= 1" class="page-btn" @click="payPage--; loadPayments()">‹ 上一页</button>
           <span class="page-info">{{ payPage }} / {{ Math.ceil(payTotal / size) }} 页 · 共 {{ payTotal }} 条</span>
           <button :disabled="payPage * size >= payTotal" class="page-btn" @click="payPage++; loadPayments()">下一页 ›</button>
@@ -3043,6 +2972,19 @@ function clearFilters() {
    否则长表格会溢出 overflow:hidden 的 .ar-view 被裁剪，导致「只显示几行、无法滚动/翻页」。 */
 .ar-view > .card > .ar-pane { flex: 1; min-height: 0; overflow: auto; }
 
+/* 工作台型 pane（逾期看板 / 回款流水）：顶部筛选固定、表格区内滚、底部分页/合计吸底，
+   避免整页一起滚动导致「翻页按钮跟着列表跑、底部汇总不固定」。 */
+.ar-view > .card > .ar-pane.pane-flex { display: flex; flex-direction: column; overflow: hidden; }
+.ar-pane.pane-flex > .pane-head { flex-shrink: 0; }
+.ar-pane.pane-flex > .pane-scroll { flex: 1; min-height: 0; overflow: auto; margin-top: 12px; }
+.ar-pane.pane-flex > .pane-pager {
+  flex-shrink: 0; margin: 0; padding: 10px 0 2px;
+  border-top: 1px solid var(--border); background: var(--card);
+}
+/* 表头吸顶，长表滚动时列名常驻 */
+.pane-flex .pane-scroll .rec-table thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.pane-flex .pane-scroll .rec-table thead .sel-col { z-index: 6; }
+
 /* 页头：三行结构——标题+主操作 / Tab 栏 / 筛选工具栏，各占一行互不挤压 */
 .ar-head { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-bottom: 8px; flex-shrink: 0; }
 .ar-head-top { align-self: stretch; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
@@ -3226,26 +3168,6 @@ function clearFilters() {
 .age-61-90 { background: rgba(244,67,54,0.09); }
 .age-90plus { background: rgba(183,28,28,0.10); }
 
-/* ══ 账龄分析（融入逾期看板）══ */
-.aging-section-head { display: flex; align-items: center; gap: 10px; padding: 9px 2px 6px; }
-.aging-wrap { padding: 4px 0 0; }
-.aging-legend { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); padding: 6px 2px 10px; flex-wrap: wrap; }
-.aging-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-left: 8px; }
-.aging-dot.age-1-30  { background: rgba(255,152,0,0.45); }
-.aging-dot.age-31-60 { background: rgba(239,108,0,0.55); }
-.aging-dot.age-61-90 { background: rgba(211,47,47,0.5); }
-.aging-dot.age-90plus { background: rgba(136,14,79,0.5); }
-
-.aging-table th.age-1-30-head  { color: #e65100; }
-.aging-table th.age-31-60-head { color: #bf360c; }
-.aging-table th.age-61-90-head { color: #c62828; }
-.aging-table th.age-90plus-head { color: #880e4f; }
-
-.age-amt-1-30  { color: #e65100; font-weight: 600; }
-.age-amt-31-60 { color: #bf360c; font-weight: 600; }
-.age-amt-61-90 { color: #c62828; font-weight: 600; }
-.age-amt-90plus { color: #880e4f; font-weight: 700; }
-
 /* ══ 筛选方案 ══ */
 .preset-wrap { position: relative; }
 .preset-btn {
@@ -3301,6 +3223,7 @@ function clearFilters() {
 .proj-name { font-weight: 600; font-size: 12.5px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-sub { font-size: 11.5px; color: var(--muted); margin-top: 1px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-no { font-family: monospace; font-size: 11px; color: var(--muted); margin-top: 2px; }
+.proj-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .notes-col { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .ym-chip { font-size: 12px; font-weight: 600; color: var(--muted); background: rgba(0,0,0,0.05); padding: 2px 8px; border-radius: 6px; white-space: nowrap; }
 .ctr { text-align: center; }
