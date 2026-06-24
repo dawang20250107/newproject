@@ -2,6 +2,9 @@
 import { ref, reactive, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
+import ContextMenu from '../components/ContextMenu.vue'
+import { useContextMenu } from '../composables/useContextMenu.js'
+import { copyText, copyRowTSV } from '../utils/clipboard.js'
 import { todayCST } from '../constants.js'
 import { downloadBlob } from '../utils/download.js'
 import EmptyState from '../components/EmptyState.vue'
@@ -228,6 +231,55 @@ async function updateStatus(it, status){
     statusUpdating.value[it.id] = false
   }
 }
+
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const ctx = useContextMenu()
+const APR_STATUSES = [
+  { v: 'pending', l: '待审批' }, { v: 'approved', l: '审批通过' },
+  { v: 'rejected', l: '已拒绝' }, { v: 'canceled', l: '已撤销' },
+]
+const ROW_COPY_COLS = [
+  { key: 'applicant', label: '申请人' },
+  { key: 'department', label: '部门' },
+  { key: 'project_short_name', label: '项目' },
+  { key: 'approval_number', label: '审批单号' },
+  { key: 'g7_number', label: 'G7单号' },
+  { key: 'summary', label: '摘要' },
+  { key: 'amount', label: '金额' },
+  { key: 'payee', label: '收款方' },
+]
+async function copyField(val, label) {
+  const ok = await copyText(val)
+  ok ? toast.success(`已复制：${label}`) : toast.error('复制失败')
+}
+async function copyWholeRow(it) {
+  const ok = await copyRowTSV(it, ROW_COPY_COLS, { header: true })
+  ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
+}
+const ctxItems = computed(() => {
+  const i = ctx.menu.payload
+  if (!i) return []
+  return [
+    { key: 'sched', label: '一键排款', icon: 'payment', disabled: i.status !== 'approved', action: r => openSchedule(r) },
+    {
+      key: 'status', label: '改状态', icon: 'status', hidden: !auth.canCreate,
+      children: APR_STATUSES.map(s => ({ key: 'st-' + s.v, label: s.l, icon: 'status', active: i.status === s.v, action: r => updateStatus(r, s.v) })),
+    },
+    { key: 'edit', label: '编辑审批记录', icon: 'edit', shortcut: 'E', hidden: !auth.canCreate, disabled: i.archived, action: r => openEdit(r) },
+    { key: 'meta', label: '补录二级部门 / 项目', icon: 'cell', action: r => openMeta(r) },
+    { divider: true },
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: r => copyWholeRow(r) },
+        { divider: true },
+        { key: 'copy-no', label: '审批单号', icon: 'invoice', hidden: !i.approval_number, action: r => copyField(r.approval_number, r.approval_number) },
+        { key: 'copy-g7', label: 'G7 单号', icon: 'invoice', hidden: !i.g7_number, action: r => copyField(r.g7_number, r.g7_number) },
+        { key: 'copy-payee', label: '收款方', icon: 'customer', hidden: !i.payee, action: r => copyField(r.payee, r.payee) },
+      ],
+    },
+  ]
+})
 // 排款前联动：该审批关联项目有「预付」未核销余额时提示，排款后可在付款台账行内核销
 const schedPrepaid = ref(null)
 function openSchedule(it){
@@ -358,7 +410,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         <SkeletonRow v-for="n in 8" :key="n" :cols="9" />
       </template>
       <template v-else>
-      <tr v-for="i in items" :key="i.id" :class="{ 'row-sel': selectedIds.has(i.id) }">
+      <tr v-for="i in items" :key="i.id" :class="{ 'row-sel': selectedIds.has(i.id) }" @contextmenu.prevent="ctx.open($event, i)">
       <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(i.id)" @change="toggleRow(i.id)" /></td>
       <td>{{i.applicant}}</td><td>{{i.department}}</td>
       <td class="meta-cell">{{ i.secondary_dept || '—' }}</td>
@@ -492,6 +544,9 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <ImportResultModal :result="importResult" @close="importResult = null" />
   <ImportPrecheckModal :report="precheckResult" :busy="precheckBusy"
     @close="precheckResult = null" @apply="onPrecheckApply" />
+
+  <!-- 右键上下文菜单 -->
+  <ContextMenu :ctx="ctx" :items="ctxItems" />
 </div></template>
 
 <style scoped>

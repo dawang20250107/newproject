@@ -1,5 +1,8 @@
 <script setup>
 import { ref, reactive, onMounted, computed } from 'vue'
+import ContextMenu from '../components/ContextMenu.vue'
+import { useContextMenu } from '../composables/useContextMenu.js'
+import { copyText, copyRowTSV } from '../utils/clipboard.js'
 import api from '../api/index.js'
 import { DEPARTMENTS, ROLE_LABELS, JOB_LABELS, JOB_OPTIONS } from '../constants.js'
 import EmptyState from '../components/EmptyState.vue'
@@ -197,6 +200,44 @@ async function deactivate(u) {
   }
 }
 
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const ctx = useContextMenu()
+const ROW_COPY_COLS = [
+  { key: 'name', label: '姓名' },
+  { key: 'phone', label: '手机号' },
+  { key: 'role', label: '角色', format: v => ROLE_LABELS[v] || v },
+  { key: 'job_title', label: '职务', format: v => JOB_LABELS[v] || '' },
+  { key: 'departments', label: '事业部', format: v => (Array.isArray(v) ? v.join('、') : '') },
+  { key: 'is_active', label: '状态', format: v => (v ? '启用' : '停用') },
+]
+async function copyField(val, label) {
+  const ok = await copyText(val)
+  ok ? toast.success(`已复制：${label}`) : toast.warn('复制失败')
+}
+async function copyWholeRow(u) {
+  const ok = await copyRowTSV(u, ROW_COPY_COLS, { header: true })
+  ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.warn('复制失败')
+}
+const ctxItems = computed(() => {
+  const u = ctx.menu.payload
+  if (!u) return []
+  return [
+    { key: 'edit', label: '编辑用户', icon: 'edit', shortcut: 'E', action: r => openEdit(r) },
+    { divider: true },
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: r => copyWholeRow(r) },
+        { divider: true },
+        { key: 'copy-name', label: '姓名', icon: 'customer', action: r => copyField(r.name, r.name) },
+        { key: 'copy-phone', label: '手机号', icon: 'cell', hidden: !u.phone, action: r => copyField(r.phone, r.phone) },
+      ],
+    },
+    { divider: true },
+    { key: 'del', label: '删除用户', icon: 'trash', danger: true, hidden: u.role === 'super_admin', action: r => deactivate(r) },
+  ]
+})
+
 async function approve(u) {
   approveLoading.value[u.id] = true
   try {
@@ -336,7 +377,7 @@ async function reject(u) {
                 <SkeletonRow v-for="n in 8" :key="n" :cols="7" />
               </template>
               <template v-else>
-              <tr v-for="u in displayActiveUsers" :key="u.id">
+              <tr v-for="u in displayActiveUsers" :key="u.id" @contextmenu.prevent="ctx.open($event, u)">
                 <td>
                   <div style="display:flex;align-items:center;gap:8px">
                     <div class="table-avatar">{{ u.name?.[0] || '?' }}</div>
@@ -443,6 +484,9 @@ async function reject(u) {
         </div>
       </div>
     </div>
+
+    <!-- 右键上下文菜单 -->
+    <ContextMenu :ctx="ctx" :items="ctxItems" />
   </div>
 </template>
 
