@@ -9,6 +9,7 @@
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import ar from '../../api/ar.js'
 import { useToast } from '../../composables/useToast.js'
+import { todayCST } from '../../constants.js'
 import LifelineSection from './LifelineSection.vue'
 
 const props = defineProps({
@@ -46,14 +47,15 @@ async function load() {
 }
 watch(() => props.rec?.id, (id) => { if (id) load() }, { immediate: true })
 
+// 旧数据的 general/未知阶段并入「催款」兜底展示，避免遗漏
 const actsByStage = computed(() => {
-  const m = { reconciliation: [], invoice: [], collection: [], dunning: [], general: [] }
-  for (const a of allActivities.value) (m[a.stage] || (m[a.stage] = [])).push(a)
+  const m = { reconciliation: [], invoice: [], collection: [], dunning: [] }
+  for (const a of allActivities.value) (m[a.stage] || m.dunning).push(a)
   return m
 })
 const attsByStage = computed(() => {
-  const m = { reconciliation: [], invoice: [], collection: [], dunning: [], general: [] }
-  for (const a of attachments.value) (m[a.stage] || (m[a.stage] = [])).push(a)
+  const m = { reconciliation: [], invoice: [], collection: [], dunning: [] }
+  for (const a of attachments.value) (m[a.stage] || m.dunning).push(a)
   return m
 })
 
@@ -104,6 +106,35 @@ const stageInfo = computed(() => {
   }
 })
 
+// ── 跟进提醒：到期的计划跟进 + 距上次催款天数 ────────────────────────────────
+const pendingFollowUp = computed(() => {
+  const today = todayCST()
+  return allActivities.value
+    .filter(a => a.follow_up_date && a.status !== 'resolved' && a.follow_up_date <= today)
+    .sort((x, y) => (x.follow_up_date < y.follow_up_date ? -1 : 1))[0] || null
+})
+const daysSinceLastDun = computed(() => {
+  const last = actsByStage.value.dunning[0]   // 倒序，[0] 为最新
+  if (!last?.created_at) return null
+  const d = new Date(last.created_at.replace(' ', 'T'))
+  if (isNaN(d)) return null
+  return Math.floor((Date.now() - d.getTime()) / 86400000)
+})
+
+// ── 智能下一步：把面板从"看板"变成"行动建议" ──────────────────────────────────
+const settled = computed(() => estimated.value > 0 && outstanding.value === 0)
+const nextAction = computed(() => {
+  const r = props.rec
+  const invDone = !!(r.invoice_date || Number(r.actual_invoice_amount) > 0)
+  if (settled.value) return { icon: '✅', text: '已全部收齐，应收已结清', tone: 'done', stage: 'collection' }
+  if (overdueDays.value > 0) return { icon: '⚠️', text: `已逾期 ${overdueDays.value} 天，建议立即催款`, tone: 'danger', stage: 'dunning', cta: '去催款' }
+  if (pendingFollowUp.value) return { icon: '📅', text: `有计划跟进已到期（${pendingFollowUp.value.follow_up_date}）`, tone: 'warn', stage: 'dunning', cta: '去跟进' }
+  if (!r.reconciliation_date && !invDone) return { icon: '✓', text: '尚未对账，建议先完成对账', tone: 'info', stage: 'reconciliation', cta: '去对账' }
+  if (r.reconciliation_date && !invDone) return { icon: '🧾', text: '对账已完成，可以开票了', tone: 'info', stage: 'invoice', cta: '去开票' }
+  if (invDone && outstanding.value > 0) return { icon: '💰', text: `已开票，待回款 ¥${fmtAmt(outstanding.value)}`, tone: 'info', stage: 'collection', cta: '记回款' }
+  return null
+})
+
 const NAV = [
   { stage: 'contract', label: '合同', icon: '📄' },
   { stage: 'reconciliation', label: '对账', icon: '✓' },
@@ -133,8 +164,10 @@ async function saveField() {
   if (!field) { return }
   editingField.value = ''
   const val = fieldBuf.value === '' ? null : fieldBuf.value
-  // 与现值相同则跳过
-  if ((props.rec[field] ?? null) === val) return
+  if ((props.rec[field] ?? null) === val) return   // 与现值相同则跳过
+  await saveFieldValue(field, val)
+}
+async function saveFieldValue(field, val) {
   try {
     const res = await ar.updateRecord(props.rec.id, { [field]: val })
     Object.assign(props.rec, res.data)          // 同步本面板（含重算后的未收/税额等派生值）
@@ -144,6 +177,8 @@ async function saveField() {
     toast.error(errMsg(e))
   }
 }
+// 日期字段「今天」快捷填入
+function setToday(field) { if (props.canWrite) saveFieldValue(field, todayCST()) }
 
 // ── 回款登记 ─────────────────────────────────────────────────────────────────
 const payForm = reactive({ amount: '', payment_date: '', source: '回款', notes: '' })
@@ -157,6 +192,20 @@ async function submitPayment() {
     await refreshRecordAndPayments()
     payForm.amount = ''; payForm.notes = ''
     toast.success('已登记回款')
+  } catch (e) {
+    toast.error(errMsg(e))
+  } finally {
+    addingPay.value = false
+  }
+}
+async function settleRemaining() {
+  if (!(outstanding.value > 0)) return
+  if (!confirm(`登记一笔 ¥${fmtAmt(outstanding.value)} 的回款，结清全部余款？`)) return
+  addingPay.value = true
+  try {
+    await ar.addPayment(props.rec.id, { amount: outstanding.value, payment_date: todayCST(), source: '回款', notes: '结清余款' })
+    await refreshRecordAndPayments()
+    toast.success('已结清余款')
   } catch (e) {
     toast.error(errMsg(e))
   } finally {
@@ -391,6 +440,14 @@ function onKey(e) {
         </template>
       </div>
 
+      <!-- ═══ 智能下一步 ═══ -->
+      <div v-if="!loading && nextAction" class="ap-next" :class="`nx-${nextAction.tone}`"
+        :role="nextAction.cta ? 'button' : null" @click="nextAction.cta && scrollToStage(nextAction.stage)">
+        <span class="ap-next-ico">{{ nextAction.icon }}</span>
+        <span class="ap-next-txt">{{ nextAction.text }}</span>
+        <span v-if="nextAction.cta" class="ap-next-cta">{{ nextAction.cta }} →</span>
+      </div>
+
       <!-- ═══ 生命线主体 ═══ -->
       <div ref="bodyEl" class="ap-body">
         <template v-if="loading">
@@ -399,12 +456,22 @@ function onKey(e) {
         <template v-else>
           <!-- 合同 -->
           <section :ref="el => registerSection('contract', el)" class="ap-contract">
-            <div class="apc-head"><span class="apc-ico">📄</span><span class="apc-title">合同</span><span class="apc-done">已签订</span></div>
+            <div class="apc-head"><span class="apc-ico">📄</span><span class="apc-title">合同 / 概要</span><span class="apc-done">已签订</span></div>
             <div class="apc-grid">
               <div class="apc-cell"><i>客户</i><b>{{ rec.customer_name || '—' }}</b></div>
               <div class="apc-cell"><i>交付部门</i><b>{{ rec.delivery_dept || '—' }}</b></div>
               <div class="apc-cell"><i>预估应收</i><b>¥{{ fmtAmt(estimated) }}</b></div>
               <div class="apc-cell"><i>应收到期</i><b>{{ rec.due_date || '—' }}</b></div>
+              <div class="apc-cell"><i>项目经理</i><b>{{ rec.project_manager || '—' }}</b></div>
+              <div class="apc-cell"><i>开票方式</i><b>{{ rec.invoice_mode || '—' }}</b></div>
+            </div>
+            <div class="apc-notes">
+              <span class="apc-notes-lab">备注</span>
+              <textarea v-if="editingField === 'notes'" ref="fieldInp" v-model="fieldBuf" class="apc-notes-ta" rows="2"
+                @blur="saveField" @keyup.escape="editingField = ''"></textarea>
+              <span v-else class="apc-notes-val" :class="{ empty: !rec.notes, ro: !canWrite }" @click="beginField('notes', rec.notes)">
+                {{ rec.notes || (canWrite ? '＋ 添加备注' : '—') }}
+              </span>
             </div>
           </section>
 
@@ -424,6 +491,7 @@ function onKey(e) {
                 <span v-else class="kf-val" :class="{ empty: !rec.reconciliation_date, ro: !canWrite }" @click="beginField('reconciliation_date', rec.reconciliation_date)">
                   {{ rec.reconciliation_date || (canWrite ? '＋ 标记对账日' : '—') }}
                 </span>
+                <button v-if="canWrite && !rec.reconciliation_date && editingField !== 'reconciliation_date'" class="kf-today" @click="setToday('reconciliation_date')">今天</button>
               </div>
             </template>
           </LifelineSection>
@@ -440,7 +508,7 @@ function onKey(e) {
               <div class="kf-grid">
                 <div class="kf">
                   <span class="kf-lab">实际开票金额</span>
-                  <input v-if="editingField === 'actual_invoice_amount'" ref="fieldInp" v-model="fieldBuf" type="number" step="0.01" class="kf-inp" placeholder="0.00"
+                  <input v-if="editingField === 'actual_invoice_amount'" ref="fieldInp" v-model="fieldBuf" type="number" step="0.01" class="kf-inp" :placeholder="`预估 ${estimated}`"
                     @blur="saveField" @keyup.enter="saveField" @keyup.escape="editingField = ''" />
                   <span v-else class="kf-val" :class="{ empty: rec.actual_invoice_amount == null, ro: !canWrite }" @click="beginField('actual_invoice_amount', rec.actual_invoice_amount)">
                     {{ rec.actual_invoice_amount != null ? '¥' + fmtAmt(rec.actual_invoice_amount) : (canWrite ? '＋ 填写' : '—') }}
@@ -453,6 +521,7 @@ function onKey(e) {
                   <span v-else class="kf-val" :class="{ empty: !rec.invoice_date, ro: !canWrite }" @click="beginField('invoice_date', rec.invoice_date)">
                     {{ rec.invoice_date || (canWrite ? '＋ 选择' : '—') }}
                   </span>
+                  <button v-if="canWrite && !rec.invoice_date && editingField !== 'invoice_date'" class="kf-today" @click="setToday('invoice_date')">今天</button>
                 </div>
                 <div class="kf">
                   <span class="kf-lab">税额</span>
@@ -509,6 +578,9 @@ function onKey(e) {
                 <input v-model="payForm.payment_date" type="date" class="pay-inp" />
                 <button class="pay-btn" :disabled="addingPay" @click="submitPayment">{{ addingPay ? '…' : '登记回款' }}</button>
               </div>
+              <button v-if="canCollect && outstanding > 0" class="pay-settle" :disabled="addingPay" @click="settleRemaining">
+                ✓ 一键结清余款 ¥{{ fmtAmt(outstanding) }}
+              </button>
             </template>
           </LifelineSection>
 
@@ -538,6 +610,10 @@ function onKey(e) {
                     {{ rec.target_collection_date || (canWrite ? '＋ 设定' : '—') }}
                   </span>
                 </div>
+              </div>
+              <div v-if="daysSinceLastDun != null" class="dun-last" :class="{ cold: daysSinceLastDun >= 7 }">
+                <template v-if="daysSinceLastDun === 0">🔥 今天已跟进</template>
+                <template v-else>{{ daysSinceLastDun >= 7 ? '🥶' : '🕓' }} 上次跟进 {{ daysSinceLastDun }} 天前{{ daysSinceLastDun >= 7 ? ' · 建议再跟进' : '' }}</template>
               </div>
             </template>
           </LifelineSection>
@@ -614,6 +690,21 @@ function onKey(e) {
 .ap-nav-line { flex: 1; height: 2px; background: rgba(180,140,110,.25); margin-top: 15px; border-radius: 2px; min-width: 4px; }
 .nv-line-done { background: linear-gradient(90deg, #66bb6a, #2e7d32); }
 
+/* 智能下一步 */
+.ap-next { display: flex; align-items: center; gap: 9px; padding: 9px 16px; flex-shrink: 0; border-bottom: 1px solid rgba(180,140,110,.15); font-size: 12.5px; font-weight: 600; }
+.ap-next[role="button"] { cursor: pointer; transition: filter .12s; }
+.ap-next[role="button"]:hover { filter: brightness(.97); }
+.ap-next-ico { font-size: 15px; flex-shrink: 0; }
+.ap-next-txt { flex: 1; min-width: 0; }
+.ap-next-cta { font-size: 11.5px; font-weight: 800; padding: 3px 12px; border-radius: 8px; background: rgba(255,255,255,.7); flex-shrink: 0; }
+.nx-danger { background: linear-gradient(90deg, #fdeceb, #fbf7f1); color: #c62828; }
+.nx-danger .ap-next-cta { color: #c62828; }
+.nx-warn { background: linear-gradient(90deg, #fdf3e6, #fbf7f1); color: #e8830c; }
+.nx-warn .ap-next-cta { color: #e8830c; }
+.nx-info { background: linear-gradient(90deg, #eaf2fb, #fbf7f1); color: #1565c0; }
+.nx-info .ap-next-cta { color: #1565c0; }
+.nx-done { background: linear-gradient(90deg, #eaf6ec, #fbf7f1); color: #2e7d32; }
+
 /* 主体 */
 .ap-body { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 11px; scroll-behavior: smooth; }
 .ap-body > section { scroll-margin-top: 8px; }
@@ -630,6 +721,14 @@ function onKey(e) {
 .apc-cell { display: flex; flex-direction: column; gap: 1px; }
 .apc-cell i { font-size: 10.5px; color: #a8917e; font-style: normal; }
 .apc-cell b { font-size: 12.5px; color: #5a4636; font-weight: 700; }
+.apc-notes { display: flex; align-items: flex-start; gap: 8px; margin-top: 9px; padding-top: 9px; border-top: 1px solid rgba(180,140,110,.14); }
+.apc-notes-lab { font-size: 10.5px; color: #a8917e; flex-shrink: 0; padding-top: 2px; }
+.apc-notes-val { font-size: 12.5px; color: #5a4636; cursor: pointer; flex: 1; padding: 2px 7px; border-radius: 6px; border: 1px solid transparent; white-space: pre-wrap; word-break: break-word; }
+.apc-notes-val:hover { background: #fbf7f1; border-color: rgba(201,99,66,.22); }
+.apc-notes-val.empty { color: #c0ad9d; }
+.apc-notes-val.ro { cursor: default; }
+.apc-notes-val.ro:hover { background: none; border-color: transparent; }
+.apc-notes-ta { flex: 1; border: 1px solid rgba(201,99,66,.4); border-radius: 6px; padding: 5px 8px; font-size: 12.5px; color: #5a4636; resize: vertical; font-family: inherit; outline: none; box-sizing: border-box; }
 
 /* 关键字段 */
 .kf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
@@ -641,8 +740,12 @@ function onKey(e) {
 .kf-val.ro { cursor: default; }
 .kf-val.ro:hover { background: none; border-color: transparent; }
 .kf-inp { border: 1px solid rgba(201,99,66,.45); border-radius: 6px; padding: 3px 7px; font-size: 12.5px; color: #5a4636; background: #fff; outline: none; font-family: inherit; max-width: 130px; }
+.kf-today { border: 1px solid rgba(180,140,110,.3); background: #fff; color: #8a7665; font-size: 10px; padding: 2px 7px; border-radius: 6px; cursor: pointer; flex-shrink: 0; transition: all .12s; }
+.kf-today:hover { border-color: #c96342; color: #c96342; }
 .kf-batch-hint { font-size: 11px; color: #8e63c5; background: rgba(142,99,197,.08); padding: 5px 9px; border-radius: 7px; }
 .kf-batch-hint b { font-weight: 800; }
+.dun-last { font-size: 11px; color: #8a7665; padding: 2px 2px 0; }
+.dun-last.cold { color: #c96342; font-weight: 600; }
 
 /* 回款 */
 .pay-prog { display: flex; flex-direction: column; gap: 4px; }
@@ -666,6 +769,9 @@ function onKey(e) {
 .pay-inp:focus { border-color: rgba(46,158,91,.5); }
 .pay-btn { padding: 6px 14px; border: none; border-radius: 7px; background: linear-gradient(120deg, #2e9e5b, #25844c); color: #fff; font-size: 12px; font-weight: 700; cursor: pointer; flex-shrink: 0; }
 .pay-btn:disabled { opacity: .5; cursor: default; }
+.pay-settle { border: 1px dashed rgba(46,158,91,.5); background: rgba(46,158,91,.05); color: #25844c; font-size: 11.5px; font-weight: 700; padding: 6px; border-radius: 8px; cursor: pointer; transition: background .12s; }
+.pay-settle:hover:not(:disabled) { background: rgba(46,158,91,.12); }
+.pay-settle:disabled { opacity: .5; cursor: default; }
 
 /* 录入条 */
 .ap-compose { padding: 9px 14px 11px; border-top: 1px solid rgba(180,140,110,.18); background: rgba(255,253,250,.92); flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; }
