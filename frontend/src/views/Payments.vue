@@ -1359,7 +1359,9 @@ async function doBatchPay() {
 .sticky-col { position: sticky; left: 0; z-index: 3; background: #f8f4f0; }
 .pk-pay-tbl table thead th.sticky-col { z-index: 6; background: #f8f4f0; }
 .pk-pay-tbl table tbody td.sticky-col { background: #fff; }
-.pk-pay-tbl table tbody tr:hover td.sticky-col { background: rgba(0,0,0,0.025); }
+/* 冻结首列悬停 / 选中态用实色，避免右滚时透出下层内容 */
+.pk-pay-tbl table tbody tr:hover td.sticky-col { background: #f4f1ec; }
+.pk-pay-tbl table tbody tr.row-sel td.sticky-col { background: #f3ebe6; }
 
 @media print {
   .pk-pay-tbl table th, .pk-pay-tbl table td { font-size: 9pt !important; padding: 3px 6px !important; }

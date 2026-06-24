@@ -602,5 +602,6 @@ onMounted(async () => {
 .sticky-col { position: sticky; left: 0; z-index: 3; background: #f3ede6; }
 .cu-table tbody tr td.sticky-col { background: #fdfbf8; }
 .cu-table tbody tr:hover td.sticky-col { background: #faf5ef; }
-.cu-table tbody tr.sel td.sticky-col { background: rgba(21,101,192,.06); }
+/* 选中态用实色，避免右滚时透出下层内容 */
+.cu-table tbody tr.sel td.sticky-col { background: #eef2f7; }
 </style>

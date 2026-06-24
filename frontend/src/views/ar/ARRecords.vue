@@ -1557,6 +1557,10 @@ function clearFilters() {
             </div>
             <div v-if="showPresetDrop" class="preset-backdrop" @click="showPresetDrop = false"></div>
           </div>
+          <span class="rc-hint" title="在任意行上点鼠标右键：催收日志 / 编辑 / 录入回款 / 删除">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 3v6"/></svg>
+            右键行可操作
+          </span>
         </div>
     </div>
 
@@ -1794,8 +1798,6 @@ function clearFilters() {
                 <th v-if="show('r_outstanding')" class="amt"><ColumnFilter label="未收金额" field="outstanding_amount" type="number" :model-value="colFilters.outstanding_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('outstanding_amount',v)" @sort="o=>setSort('outstanding_amount',o)" /></th>
                 <th v-if="show('r_invoice_status')" class="ctr"><ColumnFilter label="回款状态" field="status" type="enum" :single="true" :sortable="false" :options="DIM_OPTS.status" :model-value="dimModel('status')" @update:model-value="v=>onDimCol('status',v)" /></th>
               </template>
-
-              <th class="ctr">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -1927,21 +1929,6 @@ function clearFilters() {
                     <span :class="['status-pill', rec.invoice_status === '已结清' ? 'pill-ok' : rec.invoice_status === '部分回款' ? 'pill-blue' : rec.invoice_status === '已开票' ? 'pill-warn' : 'pill-muted']">{{ rec.invoice_status === '已开票' ? '✓ 已开票' : rec.invoice_status === '未开票' ? '○ 未开票' : rec.invoice_status }}</span>
                   </td>
                 </template>
-
-                <td class="ctr">
-                  <div class="row-acts">
-                    <button class="icon-btn" @click="openLogModal(rec)" title="催收跟进日志">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
-                    </button>
-                    <button v-if="auth.canArWrite" class="icon-btn" @click="openEdit(rec)" title="编辑">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4z"/></svg>
-                    </button>
-                    <button v-if="auth.canDelete" class="icon-btn icon-btn-del" @click="deleteRec(rec)" title="删除">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
-                    </button>
-                    <span v-if="!auth.canArWrite && !auth.canDelete" class="text-sm-muted">—</span>
-                  </div>
-                </td>
               </tr>
 
               <!-- Payment detail rows (collection / all tab — 含预收抵扣来源标识) -->
@@ -3028,6 +3015,10 @@ function clearFilters() {
   padding: 5px 10px; background: rgba(0,0,0,0.018);
   border: 1px solid var(--border); border-radius: 9px;
 }
+/* 右键操作提示（操作列已隐藏，改由行右键菜单承载） */
+.rc-hint { margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11.5px; color: var(--muted); white-space: nowrap; cursor: default; }
+.rc-hint svg { opacity: 0.7; }
 .quick-search { position: relative; display: inline-flex; align-items: center; }
 .qs-ico { position: absolute; left: 9px; color: var(--muted); pointer-events: none; }
 .qs-input {
@@ -3423,11 +3414,6 @@ function clearFilters() {
 .pay-type-tab.on { background: var(--primary); color: #fff; border-color: var(--primary); font-weight: 600; }
 .internal-note { font-size: 12px; color: #6a1b9a; background: rgba(106,27,154,0.07); border: 1px solid rgba(106,27,154,0.2); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
 
-.row-acts { display: flex; gap: 4px; justify-content: center; }
-.icon-btn { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255,252,250,0.7); display: flex; align-items: center; justify-content: center; color: var(--muted); cursor: pointer; transition: all 0.13s; }
-.icon-btn:hover { border-color: var(--primary); color: var(--primary); }
-.icon-btn-del:hover { border-color: #c62828; color: #c62828; background: rgba(198,40,40,0.07); }
-
 .pagination { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 16px 0 4px; }
 /* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
 
@@ -3520,11 +3506,19 @@ function clearFilters() {
   z-index: 3;
   background: #f4f1ef;
 }
-.rec-table tbody tr td.sticky-col { background: inherit; }
+/* 冻结首列必须用「不透明」背景：卡片是半透明玻璃(--card 0.62)，
+   若用 inherit / 半透明色，右滚时下层单元格会透过冻结列显形。
+   这里给每种行态一个在卡片表面上预混好的实色，杜绝透视。 */
+.rec-table tbody td.sticky-col { background: #f6f2ed; }
+.rec-table tbody tr.age-1-30   td.sticky-col { background: #f7f1db; }
+.rec-table tbody tr.age-31-60  td.sticky-col { background: #f7e8d3; }
+.rec-table tbody tr.age-61-90  td.sticky-col { background: #f6e2dd; }
+.rec-table tbody tr.age-90plus td.sticky-col { background: #f0ddd8; }
 .dt-scroll .rec-table thead th.sticky-col { z-index: 7; background: #f4f1ef; }
-/* 行悬停时首列随行色变化 */
-.rec-table tbody tr:hover td.sticky-col { background: rgba(201,99,66,0.04); }
-.rec-table tbody tr.row-sel td.sticky-col { background: rgba(201,99,66,0.08); }
+/* 行悬停 / 选中时首列随行色变化（同样用实色） */
+.rec-table tbody tr:hover td.sticky-col { background: #f4ece6; }
+.rec-table tbody tr.row-sel td.sticky-col,
+.rec-table tbody tr.row-sel:hover td.sticky-col { background: #f2e5de; }
 
 /* ── 催收跟进日志 ──────────────────────────────────────────────────── */
 .log-add-form {
