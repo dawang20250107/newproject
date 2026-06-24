@@ -411,6 +411,13 @@ const pendingFile = ref(null)
 // ── 催款工作台面板 ──────────────────────────────────────────────────────────
 const panelRec = ref(null)
 
+// 双击行打开催款工作台；点在交互控件（勾选框/按钮/下拉/链接/展开器）上时不触发，避免误触
+function onRowDblClick(rec, e) {
+  if (e.target.closest('input, button, select, textarea, a, .pay-toggle, [contenteditable]')) return
+  window.getSelection?.()?.removeAllRanges?.()   // 清掉双击产生的文字选区
+  panelRec.value = rec
+}
+
 function onPanelFieldSaved(data) {
   const idx = items.value.findIndex(r => r.id === data.id)
   if (idx === -1) return
@@ -1828,20 +1835,18 @@ function clearFilters() {
             </tr>
             <template v-for="rec in items" :key="rec.id">
               <tr :class="['data-row', agingRowClass(rec), (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']"
-                @contextmenu.prevent="ctx.open($event, rec)">
+                @contextmenu.prevent="ctx.open($event, rec)" @dblclick="onRowDblClick(rec, $event)">
                 <td v-if="auth.canDelete" class="sel-col sticky-col">
                   <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @change="toggleRow(rec.id)" />
                 </td>
                 <td class="sticky-col" :style="cw.thStyle('short_name')">
                   <div class="proj-name" :title="rec.short_name || rec.customer_name">
-                    {{ rec.short_name || rec.customer_name }}
+                    <span class="proj-name-text">{{ rec.short_name || rec.customer_name }}</span>
                     <span v-if="dueSoon(rec)" class="due-soon-badge" :title="`应收到期：${rec.due_date}`">即将到期</span>
+                    <span v-if="rec.activity_count" class="rec-badge rec-badge-act" :title="`${rec.activity_count} 条跟进动态，点击打开催款工作台`" @click.stop="panelRec = rec">💬{{ rec.activity_count }}</span>
+                    <span v-if="rec.attachment_count" class="rec-badge rec-badge-att" :title="`${rec.attachment_count} 个附件，点击打开催款工作台`" @click.stop="panelRec = rec">📎{{ rec.attachment_count }}</span>
                   </div>
                   <div v-if="rec.short_name && rec.short_name !== rec.customer_name" class="proj-sub" :title="rec.customer_name">{{ rec.customer_name }}</div>
-                  <div v-if="rec.activity_count || rec.attachment_count" class="rec-badge-row">
-                    <span v-if="rec.activity_count" class="rec-badge rec-badge-act" :title="`${rec.activity_count} 条跟进动态`" @click.stop="panelRec = rec">💬 {{ rec.activity_count }}</span>
-                    <span v-if="rec.attachment_count" class="rec-badge rec-badge-att" :title="`${rec.attachment_count} 个附件`" @click.stop="panelRec = rec">📎 {{ rec.attachment_count }}</span>
-                  </div>
                 </td>
                 <td class="ctr">
                   <span class="ym-chip">{{ rec.operation_date || (rec.operation_year + "/" + String(rec.operation_month).padStart(2, "0")) }}</span>
@@ -3175,7 +3180,8 @@ function clearFilters() {
 .preset-del:hover { color: var(--danger); }
 
 .empty-cell { text-align: center; padding: 48px !important; color: var(--muted); font-size: 14px; }
-.proj-name { font-weight: 600; font-size: 12.5px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-name { display: flex; align-items: center; gap: 5px; font-weight: 600; font-size: 12.5px; max-width: 230px; }
+.proj-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .proj-sub { font-size: 11.5px; color: var(--muted); margin-top: 1px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-no { font-family: monospace; font-size: 11px; color: var(--muted); margin-top: 2px; }
 .proj-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
@@ -3461,16 +3467,18 @@ function clearFilters() {
 .rec-table tbody tr.row-sel td.sticky-col,
 .rec-table tbody tr.row-sel:hover td.sticky-col { background: #f2e5de; }
 
-/* ── 动态 / 附件徽标 ─────────────────────────────────────────────── */
-.rec-badge-row { display: flex; gap: 4px; margin-top: 3px; flex-wrap: wrap; }
+/* ── 动态 / 附件徽标（内联在项目名右侧，不另占行）──────────────── */
 .rec-badge {
-  display: inline-flex; align-items: center; gap: 2px;
-  padding: 1px 6px; border-radius: 8px; font-size: 10.5px; font-weight: 600;
-  cursor: pointer; user-select: none; transition: opacity .12s;
+  flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 1px;
+  padding: 0 5px; height: 16px; line-height: 16px; border-radius: 7px;
+  font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums;
+  cursor: pointer; user-select: none; transition: filter .12s;
 }
-.rec-badge:hover { opacity: .75; }
-.rec-badge-act { background: rgba(201,99,66,0.10); color: var(--primary); }
-.rec-badge-att { background: rgba(25,118,210,0.10); color: #1976d2; }
+.rec-badge:hover { filter: brightness(0.96) saturate(1.25); }
+.rec-badge-act { background: rgba(201,99,66,0.12); color: var(--primary); }
+.rec-badge-att { background: rgba(25,118,210,0.12); color: #1976d2; }
+.due-soon-badge { flex-shrink: 0; }
 
 /* ── 冻结列阴影线（Kingdee 风格：右侧投影提示有内容在后面滚动）──── */
 .sticky-col::after {

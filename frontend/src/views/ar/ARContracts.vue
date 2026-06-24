@@ -214,6 +214,12 @@ const ctxItems = computed(() => {
   ]
 })
 
+function onRowDblClick(item, e) {
+  if (e.target.closest('input, button, select, textarea, a')) return
+  if (!auth.canArWrite) return
+  openEdit(item)
+}
+
 const onScopeChange = () => {
   if (filters.dept && !accessibleDepts.value.includes(filters.dept)) filters.dept = ''
   page.value = 1
@@ -265,13 +271,12 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <th class="rgt">合同金额</th>
               <th class="ctr">客户数</th>
               <th class="ctr">项目数</th>
-              <th class="ctr">操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-if="loading && !items.length"><td colspan="8" class="empty-cell">⏳ 加载中…</td></tr>
-            <tr v-else-if="!items.length"><td colspan="8" class="empty-cell">暂无合同，点击「新增合同」开始</td></tr>
-            <tr v-for="c in items" :key="c.id" class="data-row" @contextmenu.prevent="ctx.open($event, c)">
+            <tr v-if="loading && !items.length"><td colspan="7" class="empty-cell">⏳ 加载中…</td></tr>
+            <tr v-else-if="!items.length"><td colspan="7" class="empty-cell">暂无合同，点击「新增合同」开始</td></tr>
+            <tr v-for="c in items" :key="c.id" class="data-row" @contextmenu.prevent="ctx.open($event, c)" @dblclick="onRowDblClick(c, $event)">
               <td class="ct-name">{{ c.name }}</td>
               <td class="text-muted mono">{{ c.contract_no || '—' }}</td>
               <td><span class="dept-chip">{{ c.delivery_dept || '—' }}</span></td>
@@ -279,12 +284,6 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <td class="rgt mono">{{ fmtNum(c.amount) }}</td>
               <td class="ctr"><span class="cnt-chip">{{ c.party_count }}</span></td>
               <td class="ctr"><span class="cnt-chip">{{ c.project_count }}</span></td>
-              <td class="ctr">
-                <div class="row-actions">
-                  <button class="icon-btn" @click="openEdit(c)" title="编辑/维护关联">编辑</button>
-                  <button v-if="auth.canDelete" class="icon-btn icon-btn-danger" @click="remove(c)" title="删除">删除</button>
-                </div>
-              </td>
             </tr>
           </tbody>
         </table>

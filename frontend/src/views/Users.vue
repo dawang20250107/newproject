@@ -202,6 +202,12 @@ async function deactivate(u) {
 
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
 const ctx = useContextMenu()
+
+function onRowDblClick(item, e) {
+  if (e.target.closest('input, button, select, textarea, a')) return
+  openEdit(item)
+}
+
 const ROW_COPY_COLS = [
   { key: 'name', label: '姓名' },
   { key: 'phone', label: '手机号' },
@@ -369,7 +375,6 @@ async function reject(u) {
                 <th><ColumnFilter label="负责部门" field="departments" type="enum" :options="DEPARTMENTS" :model-value="colFilters.departments" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('departments',v)" @sort="o=>setSort('departments',o)" /></th>
                 <th><ColumnFilter label="状态" field="status" type="enum" :options="STATUS_OPTIONS" :model-value="colFilters.status" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('status',v)" @sort="o=>setSort('status',o)" /></th>
                 <th><ColumnFilter label="创建时间" field="created_at" type="date" :model-value="colFilters.created_at" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('created_at',v)" @sort="o=>setSort('created_at',o)" /></th>
-                <th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -377,7 +382,7 @@ async function reject(u) {
                 <SkeletonRow v-for="n in 8" :key="n" :cols="7" />
               </template>
               <template v-else>
-              <tr v-for="u in displayActiveUsers" :key="u.id" @contextmenu.prevent="ctx.open($event, u)">
+              <tr v-for="u in displayActiveUsers" :key="u.id" @contextmenu.prevent="ctx.open($event, u)" @dblclick="onRowDblClick(u, $event)">
                 <td>
                   <div style="display:flex;align-items:center;gap:8px">
                     <div class="table-avatar">{{ u.name?.[0] || '?' }}</div>
@@ -398,12 +403,6 @@ async function reject(u) {
                   </span>
                 </td>
                 <td style="font-size:12px;color:var(--muted)">{{ u.created_at?.slice(0, 10) }}</td>
-                <td>
-                  <div style="display:flex;gap:6px">
-                    <button class="btn btn-ghost btn-sm" @click="openEdit(u)">编辑</button>
-                    <button v-if="u.role !== 'super_admin'" class="btn btn-danger btn-sm" @click="deactivate(u)">删除</button>
-                  </div>
-                </td>
               </tr>
               </template>
             </tbody>

@@ -251,6 +251,12 @@ async function saveCustomer() {
 
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
 const ctx = useContextMenu()
+// 双击数据行 = 编辑（与右键「编辑客户」同一处理）
+function onRowDblClick(c, e) {
+  if (e.target.closest('input, button, select, textarea, a')) return
+  if (!auth.canArWrite) return
+  editCustomerRow(c)
+}
 const ROW_COPY_COLS = [
   { key: 'name', label: '客户名称' },
   { key: 'contact', label: '联系人' },
@@ -376,18 +382,17 @@ onMounted(async () => {
               <th class="rgt"><ColumnFilter label="累计开票" field="invoiced" :filterable="false" :sort-field="sortKey" :sort-order="sortDir" @sort="o=>setColSort('invoiced',o)" /></th>
               <th class="rgt"><ColumnFilter label="未收金额" field="outstanding" :filterable="false" :sort-field="sortKey" :sort-order="sortDir" @sort="o=>setColSort('outstanding',o)" /></th>
               <th class="rgt"><ColumnFilter label="逾期金额" field="overdue" :filterable="false" :sort-field="sortKey" :sort-order="sortDir" @sort="o=>setColSort('overdue',o)" /></th>
-              <th class="ctr">操作</th>
             </tr>
           </thead>
           <tbody>
             <template v-if="loading && !items.length">
-              <SkeletonRow v-for="n in 8" :key="n" :cols="10" />
+              <SkeletonRow v-for="n in 8" :key="n" :cols="9" />
             </template>
             <tr v-else-if="loadErr">
-              <td colspan="10" class="empty">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></td>
+              <td colspan="9" class="empty">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></td>
             </tr>
-            <tr v-else-if="!loading && !items.length"><td colspan="10" class="empty">暂无客户数据</td></tr>
-            <tr v-for="c in items" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)" @contextmenu.prevent="ctx.open($event, c)">
+            <tr v-else-if="!loading && !items.length"><td colspan="9" class="empty">暂无客户数据</td></tr>
+            <tr v-for="c in items" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)" @dblclick="onRowDblClick(c, $event)" @contextmenu.prevent="ctx.open($event, c)">
               <td class="ctr chk-col sticky-col" @click.stop><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
               <td class="l name sticky-col" :style="cw.thStyle('name')" :title="c.name + (c.contact ? ' · ' + c.contact : '')">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
               <td class="ctr"><span class="st-pill" :class="statusClass(c.status)">{{ c.status || '运作中' }}</span></td>
@@ -397,7 +402,6 @@ onMounted(async () => {
               <td class="rgt">{{ wan(c.invoiced) }}</td>
               <td class="rgt strong">{{ wan(c.outstanding) }}</td>
               <td class="rgt"><span :class="{ overdue: (c.overdue||0) > 0 }">{{ wan(c.overdue) }}</span></td>
-              <td class="ctr"><button class="btn-link" @click.stop="openDetail(c)">查看 ›</button></td>
             </tr>
           </tbody>
         </table>

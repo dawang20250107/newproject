@@ -152,6 +152,11 @@ async function setStatus(item, s) {
 
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
 const ctx = useContextMenu()
+function onRowDblClick(item, e) {
+  if (e.target.closest('input, button, select, textarea, a')) return
+  if (!auth.canArWrite) return
+  openEdit(item)
+}
 const ROW_COPY_COLS = [
   { key: 'project_no', label: '项目编号' },
   { key: 'customer_name', label: '客户' },
@@ -633,12 +638,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <th v-if="show('p_account_period')" class="ctr">总账期</th>
               <th v-if="show('p_invoice_config')" class="ctr"><ColumnFilter label="开票" field="invoice_mode" type="enum" :options="INVOICE_MODES" :model-value="colFilters.invoice_mode" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('invoice_mode',v)" @sort="o=>setSort('invoice_mode',o)" /></th>
               <th v-if="show('p_notes')">备注</th>
-              <th class="ctr">操作</th>
             </tr>
           </thead>
           <tbody>
             <template v-if="loading && !items.length">
-              <SkeletonRow v-for="n in 8" :key="n" :cols="10" />
+              <SkeletonRow v-for="n in 8" :key="n" :cols="9" />
             </template>
             <tr v-else-if="loadErr">
               <td colspan="16" class="empty-cell">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer;font-size:13px;text-decoration:underline" @click="load()">重试</button></td>
@@ -648,6 +652,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             </tr>
             <tr v-for="item in items" :key="item.id" class="data-row"
               :class="{ 'row-sel': selectAllMatching || selectedIds.has(item.id) }"
+              @dblclick="onRowDblClick(item, $event)"
               @contextmenu.prevent="ctx.open($event, item)">
               <td v-if="auth.canDelete" class="ctr sel-col">
                 <input type="checkbox" :checked="selectAllMatching || selectedIds.has(item.id)"
@@ -691,17 +696,6 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <div class="text-sm text-muted">{{ item.invoice_type }} · {{ (parseFloat(item.tax_rate) * 100).toFixed(0) }}%</div>
               </td>
               <td v-if="show('p_notes')" class="text-muted text-sm" :title="item.notes || ''">{{ item.notes || '—' }}</td>
-              <td class="ctr">
-                <div class="row-actions">
-                  <button v-if="item.is_draft && auth.canArWrite" class="icon-btn icon-btn-complete" @click="completeDraft(item)" title="补充完善草稿项目">完善</button>
-                  <button class="icon-btn" @click="openEdit(item)" title="编辑">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                  </button>
-                  <button v-if="auth.canDelete" class="icon-btn icon-btn-danger" @click="remove(item)" title="删除">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
-                  </button>
-                </div>
-              </td>
             </tr>
           </tbody>
         </table>

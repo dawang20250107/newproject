@@ -75,6 +75,11 @@ function toggleRowDetail(id) {
   s.has(id) ? s.delete(id) : s.add(id)
   expandedRows.value = s
 }
+// 双击行 → 展开/收起 计划+付款明细（点在控件或计划日期单元格上不重复触发）
+function onRowDblClick(p, e) {
+  if (e.target.closest('input, button, select, textarea, a, .plan-cell')) return
+  toggleRowDetail(p.id)
+}
 async function removePlanItem(p, pi) {
   if (!confirm(`撤销第${pi.seq}批计划（${pi.planned_date} · ${pi.amount} 元）？\n汇总金额回退；来源审批的已排款同步扣减、可继续分批排款。`)) return
   try {
@@ -780,7 +785,6 @@ async function doBatchPay() {
               <th v-if="colVisible('status')" style="width:9%"><ColumnFilter label="状态" field="status" type="enum" :options="PAY_STATUS_OPTS" :single="true" :sortable="false" :model-value="statusColModel" @update:model-value="setStatusFilter" /></th>
               <th v-if="colVisible('overdue')" style="width:6%"><ColumnFilter label="逾期" field="overdue" type="enum" :options="OVERDUE_OPTS" :sortable="false" :model-value="colFilters.overdue" @update:model-value="v=>setColFilter('overdue',v)" /></th>
               <th v-if="colVisible('plan_adjustment')" style="width:6%"><ColumnFilter label="计划调整" field="plan_adjustment" type="number" :model-value="colFilters.plan_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('plan_adjustment',v)" @sort="o=>setSort('plan_adjustment',o)" /></th>
-              <th v-if="auth.canWrite || auth.canDelete" style="width:12%">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -790,7 +794,7 @@ async function doBatchPay() {
             <template v-else>
             <template v-for="p in items" :key="p.id">
             <tr :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today, 'row-sel': selectedIds.has(p.id) }"
-                @contextmenu.prevent="ctx.open($event, p)">
+                @contextmenu.prevent="ctx.open($event, p)" @dblclick="onRowDblClick(p, $event)">
               <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(p.id)" @change="toggleRow(p.id)" /></td>
               <td v-if="colVisible('department')">{{ p.department }}</td>
               <td v-if="colVisible('secondary_dept')" class="cell-clip">{{ p.secondary_dept || '—' }}</td>
@@ -827,15 +831,6 @@ async function doBatchPay() {
                   调整→{{ fmt(p.plan_adjustment) }}
                 </span>
                 <span v-else style="color:var(--muted)">—</span>
-              </td>
-              <td v-if="auth.canWrite || auth.canDelete" class="ops-cell">
-                <div style="display:flex;gap:4px;justify-content:center">
-                  <button v-if="auth.canWrite" class="btn btn-ghost btn-sm" @click="openEdit(p)">编辑</button>
-                  <button v-if="auth.canAction('wo_prepaid') && (p.project_short_name || p.project_no)" class="btn btn-ghost btn-sm"
-                    title="用该项目的预付余额冲抵本排款（支持多次核销）" @click="openOffset(p)">核销</button>
-                  <button class="btn btn-ghost btn-sm" @click="openLogs(p)">日志</button>
-                  <button v-if="auth.canDelete" class="btn btn-danger btn-sm" @click="onDelete(p)">删除</button>
-                </div>
               </td>
             </tr>
             <!-- 行明细：计划明细（分批）/ 付款明细（分期实付）并排 -->

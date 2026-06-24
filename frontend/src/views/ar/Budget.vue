@@ -437,6 +437,13 @@ const ctxBudgetItems = computed(() => {
   ]
 })
 
+// 双击数据行 → 打开编辑
+function onRowDblClick(type, item, e) {
+  if (e.target.closest('input, button, select, textarea, a')) return
+  if (!auth.canArWrite) return
+  openEdit(type, item)
+}
+
 // ── Template / Import / Export ─────────────────────────────────────────────────
 const importing = ref(false)
 const exporting = ref(false)
@@ -826,14 +833,14 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <th>项目编号</th><th>项目简称 / 摘要</th>
                 <th class="ctr">预计收款日期</th><th>二级部门</th>
                 <th>交付部门</th><th class="amt">金额</th>
-                <th>备注</th><th class="ctr">操作</th>
+                <th>备注</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!collItems.length">
-                <td colspan="8" class="empty-cell">暂无收款预算数据</td>
+                <td colspan="7" class="empty-cell">暂无收款预算数据</td>
               </tr>
-              <tr v-for="item in collItems" :key="item.id" class="data-row" @contextmenu.prevent="ctxBudget.open($event, { btype: 'collection', item })">
+              <tr v-for="item in collItems" :key="item.id" class="data-row" @contextmenu.prevent="ctxBudget.open($event, { btype: 'collection', item })" @dblclick="onRowDblClick('collection', item, $event)">
                 <td><span class="proj-no-tag">{{ item.project_no || '—' }}</span></td>
                 <td class="fw">{{ item.short_name }}</td>
                 <td class="ctr text-sm">{{ item.expected_date }}</td>
@@ -841,16 +848,6 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <td><span class="dept-chip">{{ item.delivery_dept || '—' }}</span></td>
                 <td class="amt coll-amt fw">{{ fmtAmt(item.amount) }}</td>
                 <td class="text-muted">{{ item.notes }}</td>
-                <td class="ctr">
-                  <div class="row-acts">
-                    <button class="icon-btn" @click="openEdit('collection', item)">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4z"/></svg>
-                    </button>
-                    <button v-if="auth.canDelete" class="icon-btn icon-btn-del" @click="remove('collection', item)">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
-                    </button>
-                  </div>
-                </td>
               </tr>
             </tbody>
           </table>
@@ -880,14 +877,14 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <th>项目编号</th><th>项目简称 / 摘要</th>
                 <th class="ctr">预计付款日期</th><th>二级部门</th>
                 <th>交付部门</th><th class="amt">金额</th>
-                <th>备注</th><th class="ctr">操作</th>
+                <th>备注</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!payItems.length">
-                <td colspan="8" class="empty-cell">暂无付款预算数据</td>
+                <td colspan="7" class="empty-cell">暂无付款预算数据</td>
               </tr>
-              <tr v-for="item in payItems" :key="item.id" class="data-row" @contextmenu.prevent="ctxBudget.open($event, { btype: 'payment', item })">
+              <tr v-for="item in payItems" :key="item.id" class="data-row" @contextmenu.prevent="ctxBudget.open($event, { btype: 'payment', item })" @dblclick="onRowDblClick('payment', item, $event)">
                 <td><span class="proj-no-tag">{{ item.project_no || '—' }}</span></td>
                 <td class="fw">{{ item.short_name }}</td>
                 <td class="ctr text-sm">{{ item.expected_date }}</td>
@@ -895,16 +892,6 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <td><span class="dept-chip">{{ item.delivery_dept || '—' }}</span></td>
                 <td class="amt pay-amt fw">{{ fmtAmt(item.amount) }}</td>
                 <td class="text-muted">{{ item.notes }}</td>
-                <td class="ctr">
-                  <div class="row-acts">
-                    <button class="icon-btn" @click="openEdit('payment', item)">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4z"/></svg>
-                    </button>
-                    <button v-if="auth.canDelete" class="icon-btn icon-btn-del" @click="remove('payment', item)">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
-                    </button>
-                  </div>
-                </td>
               </tr>
             </tbody>
           </table>

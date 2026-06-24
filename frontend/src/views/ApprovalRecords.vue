@@ -218,6 +218,12 @@ function openCreate(){ editId.value=null; Object.assign(form,{ applicant:'', dep
 // 仅金额、状态等受后端口径约束（金额仅「待审批」可改、审批/拒绝须审批权限），后端会兜底校验
 function openEdit(it){ editId.value=it.id; Object.assign(form,{ applicant:it.applicant||'', department:it.department||'', secondary_dept:it.secondary_dept||'', project_short_name:it.project_short_name||'', approval_number:it.approval_number||'', g7_number:it.g7_number||'', summary:it.summary||'', amount:it.amount||'', payee:it.payee||'', status:it.status||'pending' }); showCreate.value=true }
 async function create(){ saving.value=true; try{ if(editId.value){ await api.put(`/approvals/${editId.value}`, form) } else { await api.post('/approvals', form) } showCreate.value=false; load(); toast.success('已保存') } catch(e){ toast.error(e?.msg||e?.error||'操作失败') } finally{ saving.value=false } }
+// 双击行 → 编辑（点在勾选框/状态下拉等控件上不触发；已归档不可编辑）
+function onRowDblClick(it, e){
+  if (e.target.closest('input, button, select, textarea, a')) return
+  if (!auth.canCreate || it.archived) return
+  openEdit(it)
+}
 async function updateStatus(it, status){
   const prev = it.status
   it.status = status
@@ -404,13 +410,13 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <th><ColumnFilter label="申请金额" field="amount" type="number" :model-value="colFilters.amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('amount',v)" @sort="o=>setSort('amount',o)" /></th>
       <th><ColumnFilter label="收款主体" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
       <th><ColumnFilter label="审批状态" field="status" type="enum" :options="STATUS_OPTS" :model-value="colFilters.status" :sortable="false" @update:model-value="v=>setColFilter('status',v)" /></th>
-      <th>操作</th></tr></thead>
+      </tr></thead>
     <tbody>
       <template v-if="loading">
-        <SkeletonRow v-for="n in 8" :key="n" :cols="9" />
+        <SkeletonRow v-for="n in 8" :key="n" :cols="11" />
       </template>
       <template v-else>
-      <tr v-for="i in items" :key="i.id" :class="{ 'row-sel': selectedIds.has(i.id) }" @contextmenu.prevent="ctx.open($event, i)">
+      <tr v-for="i in items" :key="i.id" :class="{ 'row-sel': selectedIds.has(i.id) }" @contextmenu.prevent="ctx.open($event, i)" @dblclick="onRowDblClick(i, $event)">
       <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(i.id)" @change="toggleRow(i.id)" /></td>
       <td>{{i.applicant}}</td><td>{{i.department}}</td>
       <td class="meta-cell">{{ i.secondary_dept || '—' }}</td>
@@ -421,14 +427,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
           <option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option>
         </select>
       </td>
-      <td class="ops-cell">
-        <div class="ops-btns">
-          <button class="btn btn-ghost btn-sm" :disabled="i.status!=='approved'" @click="openSchedule(i)">一键排款</button>
-          <button v-if="auth.canCreate" class="btn btn-ghost btn-sm icon-btn" :disabled="i.archived"
-                  :title="i.archived ? '已归档（已排款/已拒绝/已撤销）不可编辑' : '编辑审批记录'" @click="openEdit(i)">✏️</button>
-          <button class="btn btn-ghost btn-sm" title="补录/修改二级部门与项目简称" @click="openMeta(i)">补录</button>
-        </div>
-      </td></tr>
+      </tr>
       </template>
     </tbody>
   </table></div>

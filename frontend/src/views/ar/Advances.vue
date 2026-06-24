@@ -534,6 +534,13 @@ async function copyWholeRow(row, cols) {
   ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
 }
 
+// 双击数据行 = 打开编辑（主操作）；默认编辑预收/预付记录，可传入供应商编辑等其它处理器
+function onRowDblClick(item, e, handler = openEdit) {
+  if (e.target.closest('input, button, select, textarea, a')) return
+  if (!canCreate.value) return
+  handler(item)
+}
+
 // 预收/预付记录表
 const ctxRec = useContextMenu()
 const REC_COPY_COLS = [
@@ -690,18 +697,17 @@ onMounted(async () => {
                 <th v-if="show('adv_writeoff')" class="ctr">核销状态</th>
                 <th v-if="show('adv_expected_date')" class="ctr"><ColumnFilter label="挂账账龄" field="expected_writeoff_date" type="date" :model-value="colFilters.expected_writeoff_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('expected_writeoff_date',v)" @sort="o=>setSort('expected_writeoff_date',o)" /></th>
                 <th class="adv-notes-col">备注</th>
-                <th class="ctr">操作</th>
               </tr>
             </thead>
             <tbody>
               <template v-if="loading && !items.length">
-                <SkeletonRow v-for="n in 8" :key="n" :cols="11" />
+                <SkeletonRow v-for="n in 8" :key="n" :cols="10" />
               </template>
               <tr v-else-if="loadErr">
-                <td colspan="11" class="empty">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer;font-size:13px;text-decoration:underline" @click="load()">重试</button></td>
+                <td colspan="10" class="empty">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer;font-size:13px;text-decoration:underline" @click="load()">重试</button></td>
               </tr>
-              <tr v-else-if="!items.length"><td colspan="11" class="empty">暂无{{ dirLabel }}记录</td></tr>
-              <tr v-for="r in items" :key="r.id" @contextmenu.prevent="ctxRec.open($event, r)">
+              <tr v-else-if="!items.length"><td colspan="10" class="empty">暂无{{ dirLabel }}记录</td></tr>
+              <tr v-for="r in items" :key="r.id" @contextmenu.prevent="ctxRec.open($event, r)" @dblclick="onRowDblClick(r, $event)">
                 <td v-if="show('adv_counterparty')">{{ r.counterparty || '—' }}</td>
                 <td>
                   <div v-if="r.short_name" class="proj-name">{{ r.short_name }}</div>
@@ -721,12 +727,6 @@ onMounted(async () => {
                   <span v-else>—</span>
                 </td>
                 <td class="adv-notes-cell" :title="r.notes">{{ r.notes || '—' }}</td>
-                <td class="ctr nowrap">
-                  <button v-if="show('adv_amount') && (canCreate || canInstAction)" class="lnk" title="多次到账/付出明细（总额=明细之和）" @click="openInstallments(r)">收付</button>
-                  <button v-if="show('adv_writeoff') && (canCreate || canWoAction)" class="lnk" @click="openWriteoffs(r)">核销</button>
-                  <button v-if="canCreate" class="lnk" @click="openEdit(r)">编辑</button>
-                  <button v-if="canDelete" class="lnk danger" @click="removeRec(r)">删除</button>
-                </td>
               </tr>
             </tbody>
           </table>
@@ -849,14 +849,13 @@ onMounted(async () => {
                 <th>关联项目 / 部门</th>
                 <th>联系人</th>
                 <th class="amt">预付余额</th>
-                <th class="ctr">操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!supplierLoading && !supplierItems.length">
-                <td colspan="6" class="empty">暂无供应商，点击「新增供应商」添加</td>
+                <td colspan="5" class="empty">暂无供应商，点击「新增供应商」添加</td>
               </tr>
-              <tr v-for="s in supplierItems" :key="s.id" @contextmenu.prevent="ctxSup.open($event, s)">
+              <tr v-for="s in supplierItems" :key="s.id" @contextmenu.prevent="ctxSup.open($event, s)" @dblclick="onRowDblClick(s, $event, openEditSupplier)">
                 <td><b>{{ s.name }}</b><div v-if="s.notes" class="dept-tag">{{ s.notes }}</div></td>
                 <td class="ctr">
                   <span class="status-pill" :class="s.supplier_type === 'private' ? 'pill-blue' : 'pill-muted'">
@@ -873,10 +872,6 @@ onMounted(async () => {
                     {{ parseFloat(s.prepaid_balance) > 0 ? fmtAmt(s.prepaid_balance) : '—' }}
                   </span>
                   <span v-if="s.prepaid_count > 0" class="kpi-sub"> {{ s.prepaid_count }}笔</span>
-                </td>
-                <td class="ctr nowrap">
-                  <button v-if="canCreate" class="lnk" @click="openEditSupplier(s)">编辑</button>
-                  <button v-if="canDelete" class="lnk danger" @click="removeSupplier(s)">删除</button>
                 </td>
               </tr>
             </tbody>
