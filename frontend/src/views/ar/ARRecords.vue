@@ -472,8 +472,7 @@ const payPage = ref(1)
 const payLoading = ref(false)
 const payExporting = ref(false)
 
-// 回款日期快捷区间（UTC+8 口径，与 todayCST 一致）。当前选中项用于高亮；
-// 手动改任一日期输入即转「自定义」，清空高亮。
+// 回款日期快捷区间。当前选中项用于高亮；手动改任一日期输入即转「自定义」，清空高亮。
 const payRangePreset = ref('')
 const PAY_RANGE_PRESETS = [
   { key: 'today', label: '今天' },
@@ -483,20 +482,25 @@ const PAY_RANGE_PRESETS = [
   { key: 'year', label: '本年' },
   { key: '', label: '全部' },
 ]
+// 快捷区间按「本地日历日」计算，与右侧原生日期选择框、用户设备日历完全一致。
+// 之前用 UTC+8 硬编码（todayCST），非 UTC+8 用户或按本地日期录入的数据会错位一天，
+// 导致「今天明明有回款，点『今天』却查不到」。改用本地日历后两者口径统一。
 function setPayRange(key) {
   payRangePreset.value = key
-  const iso = (d) => d.toISOString().slice(0, 10)
-  const base = new Date(todayCST() + 'T00:00:00Z')   // CST 当天 00:00，用 UTC 方法运算避免本地时区漂移
-  let start = '', end = iso(base)
+  const pad = (n) => String(n).padStart(2, '0')
+  const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  const now = new Date()
+  const today = ymd(now)
+  let start = '', end = today
   if (key === '') { start = ''; end = '' }
-  else if (key === 'today') { start = iso(base) }
+  else if (key === 'today') { start = today }
   else if (key === 'week') {
-    const dow = (base.getUTCDay() + 6) % 7            // 周一=0
-    const s = new Date(base); s.setUTCDate(base.getUTCDate() - dow); start = iso(s)
+    const dow = (now.getDay() + 6) % 7                // 周一=0
+    const s = new Date(now); s.setDate(now.getDate() - dow); start = ymd(s)
   }
-  else if (key === 'month') start = iso(new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 1)))
-  else if (key === 'quarter') start = iso(new Date(Date.UTC(base.getUTCFullYear(), Math.floor(base.getUTCMonth() / 3) * 3, 1)))
-  else if (key === 'year') start = iso(new Date(Date.UTC(base.getUTCFullYear(), 0, 1)))
+  else if (key === 'month') start = ymd(new Date(now.getFullYear(), now.getMonth(), 1))
+  else if (key === 'quarter') start = ymd(new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1))
+  else if (key === 'year') start = ymd(new Date(now.getFullYear(), 0, 1))
   payFilters.pay_start = start
   payFilters.pay_end = end
   loadPayments(true)
