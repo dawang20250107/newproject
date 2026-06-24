@@ -179,48 +179,25 @@ async function downloadTemplate() {
   } catch (e) { alert(e?.error || '下载失败') }
 }
 
-// completeness label for submission status matrix (backend provides .complete)
-function completenessLabel(row) {
-  if (!row) return '—'
-  if (row.complete) return '完整'
-  const dept = row.department_detail?.status
-  if (dept === 'draft') return '草稿中'
-  if (dept) return '未完整'
-  return '未提交'
-}
-
-// ── Opt 1: dynamic strong reminders for unsubmitted / incomplete BUs ──────────
+// ── 未提交/未完整事业部统计（用于紧凑提示「N 个未提交」）──────────────────────
 const statusRows = computed(() => submissionStatus.value?.bus || [])
-const completeCount = computed(() => statusRows.value.filter(r => r.complete).length)
-const reminderItems = computed(() =>
-  statusRows.value
-    .filter(r => !r.complete)
-    .map(r => ({
-      bu: r.bu,
-      kind: r.department_detail ? 'partial' : 'missing',
-      label: completenessLabel(r),
-    }))
-)
-const allComplete = computed(() => statusRows.value.length > 0 && reminderItems.value.length === 0)
+const reminderItems = computed(() => statusRows.value.filter(r => !r.complete))
 
-function rowAlertClass(row) {
-  if (row.complete) return ''
-  return row.department_detail ? 'row-partial' : 'row-missing'
+// ── 紧凑状态灯：红灯=未提交，绿灯=已提交，黄灯=草稿中 ────────────────────────
+// 用于「月度提交状态」每个事业部，只展示 事业部 + 状态灯
+function lightInfo(row) {
+  const info = row?.department_detail
+  const status = info?.status
+  if (status === 'published') return { cls: 'light-green', label: '已提交' }
+  if (status === 'draft')     return { cls: 'light-amber', label: '草稿中' }
+  return { cls: 'light-red', label: '未提交' }
 }
 
-// info is the per-type dict {status,...} or null
-function statusBadgeClass(info) {
-  const status = info?.status
-  if (status === 'published') return 'badge badge-success'
-  if (status === 'draft') return 'badge badge-warn'
-  return 'badge badge-muted'
-}
-
-function statusLabel(info) {
-  const status = info?.status
-  if (status === 'published') return '已发布 ✓'
-  if (status === 'draft') return '草稿 ●'
-  return '未提交 ○'
+// 批次状态灯：已发布=绿灯(已提交)，草稿=红灯(未提交)
+function batchLight(b) {
+  return b.status === 'published'
+    ? { cls: 'light-green', label: '已提交' }
+    : { cls: 'light-red', label: '未提交' }
 }
 
 onMounted(() => {
@@ -247,11 +224,20 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- ── Opt 8: Monthly Submission Status Panel ──────────────────────────── -->
-    <div class="card" style="margin-bottom:16px">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+    <!-- ── Opt 8: 月度提交状态（紧凑：事业部 + 状态灯）─────────────────────── -->
+    <div class="card compact-card" style="margin-bottom:12px">
+      <div class="ss-head">
         <div class="section-title" style="margin:0">月度提交状态</div>
-        <div style="display:flex;gap:8px;align-items:center">
+        <div class="ss-head-right">
+          <!-- 红灯=未提交 的紧凑提示 -->
+          <span v-if="!statusLoading && submissionStatus && statusRows.length" class="ss-summary">
+            <span v-if="reminderItems.length" class="ss-summary-warn">
+              <span class="light-dot light-red"></span>{{ reminderItems.length }} 个未提交
+            </span>
+            <span v-else class="ss-summary-ok">
+              <span class="light-dot light-green"></span>全部已提交
+            </span>
+          </span>
           <select v-model="statusYear" class="sel-yr" @change="loadSubmissionStatus">
             <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
           </select>
@@ -261,116 +247,56 @@ onMounted(() => {
         </div>
       </div>
 
-      <EmptyState v-if="statusLoading" loading style="padding:16px" />
-      <EmptyState v-else-if="!submissionStatus || !submissionStatus.bus?.length" icon="📋" text="暂无提交数据" style="padding:16px" />
-      <template v-else>
-        <!-- Dynamic strong reminder: unsubmitted / incomplete BUs -->
-        <div v-if="reminderItems.length" class="submit-alert">
-          <div class="sa-icon">!</div>
-          <div class="sa-main">
-            <div class="sa-headline">
-              <strong>{{ statusYear }}年{{ statusMonth }}月</strong> 还有
-              <strong class="sa-count">{{ reminderItems.length }}</strong> 个事业部未完成提交
-              <span class="sa-sub">已完整 {{ completeCount }}/{{ statusRows.length }}</span>
-            </div>
-            <div class="sa-chips">
-              <span
-                v-for="it in reminderItems"
-                :key="it.bu"
-                class="sa-chip"
-                :class="'sa-' + it.kind"
-              ><span class="sa-dot"></span>{{ it.bu }} · {{ it.label }}</span>
-            </div>
-          </div>
+      <EmptyState v-if="statusLoading" loading style="padding:12px" />
+      <EmptyState v-else-if="!submissionStatus || !submissionStatus.bus?.length" icon="📋" text="暂无提交数据" style="padding:12px" />
+      <!-- 紧凑状态灯网格：每个事业部一格，红灯=未提交 -->
+      <div v-else class="light-grid">
+        <div
+          v-for="row in submissionStatus.bus"
+          :key="row.bu"
+          class="light-cell"
+          :title="row.bu + ' · ' + lightInfo(row).label"
+        >
+          <span class="light-dot" :class="lightInfo(row).cls"></span>
+          <span class="light-bu">{{ row.bu }}</span>
         </div>
-        <div v-else-if="allComplete" class="submit-ok">
-          <span class="sa-check">✓</span>
-          {{ statusYear }}年{{ statusMonth }}月 全部 {{ statusRows.length }} 个事业部均已完整提交
-        </div>
-
-        <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>事业部</th>
-              <th>部门明细表</th>
-              <th>完整度</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="row in submissionStatus.bus" :key="row.bu" :class="rowAlertClass(row)">
-              <td><strong>{{ row.bu }}</strong></td>
-              <td>
-                <span :class="statusBadgeClass(row.department_detail)">
-                  {{ statusLabel(row.department_detail) }}
-                </span>
-              </td>
-              <td>
-                <span
-                  class="badge"
-                  :class="row.complete ? 'badge-success' : (rowAlertClass(row) === 'row-missing' ? 'badge-miss' : 'badge-warn')"
-                >
-                  <span v-if="!row.complete" class="sa-dot sa-dot-inline"></span>{{ completenessLabel(row) }}
-                </span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        </div>
-      </template>
+      </div>
     </div>
 
     <EmptyState v-if="loading" loading />
     <EmptyState v-else-if="loadErr" :error="loadErr" />
 
-    <!-- Batch list -->
-    <div v-else class="card">
-      <div class="section-title">导入批次</div>
+    <!-- Batch list — 紧凑行：事业部 + 状态灯（红灯=未提交）+ 操作 -->
+    <div v-else class="card compact-card">
+      <div class="ss-head">
+        <div class="section-title" style="margin:0">导入批次</div>
+        <span v-if="batches.length" class="ss-summary">共 {{ batches.length }} 个批次</span>
+      </div>
       <div v-if="!batches.length" class="empty">
         <div class="icon">📂</div>
         <div>暂无导入记录</div>
         <div style="font-size:12px;color:var(--muted);margin-top:6px">上传金蝶导出的部门明细表，或使用KXT模板手动填报</div>
       </div>
-      <div v-else class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>事业部</th><th>年月</th><th>类型</th><th>状态</th>
-              <th>行数</th><th>上传人</th><th>上传时间</th><th>发布时间</th><th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="b in batches" :key="b.id">
-              <td><strong>{{ b.business_unit }}</strong></td>
-              <td>{{ b.year }}年{{ b.month }}月</td>
-              <td>
-                <span class="badge badge-muted" style="font-size:10px">
-                  {{ b.batch_type === 'profit_loss' ? '利润表' : '部门明细表' }}
-                </span>
-              </td>
-              <td>
-                <span :class="['badge', b.status === 'published' ? 'badge-success' : 'badge-muted']">
-                  {{ b.status === 'published' ? '已发布' : '草稿' }}
-                </span>
-              </td>
-              <td style="color:var(--muted)">{{ b.row_count }}</td>
-              <td style="font-size:12px">{{ b.uploaded_by || '-' }}</td>
-              <td style="font-size:12px;color:var(--muted)">{{ fmtDt(b.uploaded_at) }}</td>
-              <td style="font-size:12px;color:var(--muted)">{{ fmtDt(b.published_at) }}</td>
-              <td>
-                <div style="display:flex;gap:6px;flex-wrap:wrap">
-                  <!-- draft -->
-                  <button v-if="b.status === 'draft' && auth.canPublish" class="btn btn-ghost btn-sm" @click="doPublish(b.id)">发布</button>
-                  <!-- published: re-upload to replace -->
-                  <button v-if="b.status === 'published' && auth.canUpload" class="btn btn-ghost btn-sm" @click="openReplace(b)">替换</button>
-                  <!-- delete (draft or published) -->
-                  <button v-if="auth.canDelete" class="btn btn-danger btn-sm" @click="doDelete(b)">删除</button>
-                  <span v-if="b.status === 'published' && !auth.canUpload && !auth.canDelete" style="color:var(--muted);font-size:12px">—</span>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div v-else class="batch-list">
+        <div v-for="b in batches" :key="b.id" class="batch-row">
+          <!-- 状态灯：红灯=未提交(草稿)，绿灯=已提交(已发布) -->
+          <span class="light-dot" :class="batchLight(b).cls" :title="batchLight(b).label"></span>
+          <!-- 事业部 -->
+          <strong class="br-bu">{{ b.business_unit }}</strong>
+          <!-- 状态文字 -->
+          <span class="br-status" :class="b.status === 'published' ? 'st-ok' : 'st-no'">{{ batchLight(b).label }}</span>
+          <!-- 次要信息：年月 · 类型 · 行数 -->
+          <span class="br-meta">{{ b.year }}年{{ b.month }}月</span>
+          <span class="br-meta br-type">{{ b.batch_type === 'profit_loss' ? '利润表' : '部门明细表' }}</span>
+          <span class="br-meta br-dim">{{ b.row_count }} 行 · {{ b.uploaded_by || '-' }} · {{ fmtDt(b.published_at || b.uploaded_at) }}</span>
+          <!-- 操作（紧凑） -->
+          <span class="br-actions">
+            <button v-if="b.status === 'draft' && auth.canPublish" class="btn btn-ghost btn-sm" @click="doPublish(b.id)">发布</button>
+            <button v-if="b.status === 'published' && auth.canUpload" class="btn btn-ghost btn-sm" @click="openReplace(b)">替换</button>
+            <button v-if="auth.canDelete" class="btn btn-danger btn-sm" @click="doDelete(b)">删除</button>
+            <span v-if="b.status === 'published' && !auth.canUpload && !auth.canDelete" style="color:var(--muted);font-size:12px">—</span>
+          </span>
+        </div>
       </div>
     </div>
 
@@ -650,75 +576,63 @@ td.amt, th.amt { text-align: right; font-variant-numeric: tabular-nums; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* Status badge variants */
-.badge-warn { background: rgba(245,127,23,0.12); color: #b45309; }
-.badge-info { background: rgba(21,101,192,0.1); color: #1565c0; }
-.badge-miss { background: rgba(211,47,47,0.12); color: #c62828; }
+/* ── 紧凑卡片 + 通用表头行 ───────────────────────────────────────────────── */
+.compact-card { padding: 12px 14px; }
+.ss-head {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 8px; margin-bottom: 10px;
+}
+.ss-head-right { display: flex; gap: 8px; align-items: center; }
+.ss-summary { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.ss-summary-warn { display: inline-flex; align-items: center; gap: 5px; color: #c62828; font-weight: 600; }
+.ss-summary-ok { display: inline-flex; align-items: center; gap: 5px; color: #2e7d32; font-weight: 600; }
 
-/* ── Opt 1: dynamic strong reminder ─────────────────────────────────────────── */
-.submit-alert {
-  display: flex; align-items: center; gap: 14px;
-  padding: 14px 18px; margin-bottom: 14px;
-  border-radius: 14px;
-  background: linear-gradient(120deg, rgba(211,47,47,0.10), rgba(245,127,23,0.10));
-  border: 1px solid rgba(211,47,47,0.28);
-  box-shadow: 0 0 0 0 rgba(211,47,47,0.45);
-  animation: saGlow 2s ease-in-out infinite;
+/* ── 状态灯（红=未提交 / 绿=已提交 / 黄=草稿中）─────────────────────────── */
+.light-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
+  display: inline-block;
 }
-@keyframes saGlow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(211,47,47,0.30); }
-  50%      { box-shadow: 0 0 16px 3px rgba(211,47,47,0.22); }
+.light-red   { background: #e53935; box-shadow: 0 0 0 3px rgba(229,57,53,0.16); }
+.light-green { background: #2e7d32; box-shadow: 0 0 0 3px rgba(46,125,50,0.14); }
+.light-amber { background: #f57f17; box-shadow: 0 0 0 3px rgba(245,127,23,0.16); }
+
+/* 月度提交状态：紧凑事业部灯网格 */
+.light-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  gap: 6px;
 }
-.sa-icon {
-  flex-shrink: 0;
-  width: 34px; height: 34px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 20px; font-weight: 900; color: #fff;
-  background: linear-gradient(135deg, #e53935, #c62828);
-  box-shadow: 0 4px 12px rgba(211,47,47,0.4);
-  animation: saPulse 1.4s ease-in-out infinite;
+.light-cell {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: rgba(255,253,250,0.6);
+  font-size: 12.5px; min-width: 0;
 }
-@keyframes saPulse {
-  0%, 100% { transform: scale(1); }
-  50%      { transform: scale(1.14); }
+.light-bu { font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── 导入批次：紧凑行 ───────────────────────────────────────────────────── */
+.batch-list { display: flex; flex-direction: column; }
+.batch-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 4px; border-bottom: 1px solid var(--border);
+  min-height: 34px;
 }
-.sa-main { flex: 1; min-width: 0; }
-.sa-headline { font-size: 14px; color: var(--text); font-weight: 600; }
-.sa-count { color: #c62828; font-size: 16px; margin: 0 1px; }
-.sa-sub { font-size: 12px; color: var(--muted); font-weight: 500; margin-left: 8px; }
-.sa-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.sa-chip {
-  display: inline-flex; align-items: center; gap: 5px;
-  font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
-  border: 1px solid transparent;
+.batch-row:last-child { border-bottom: none; }
+.batch-row:hover { background: rgba(201,99,66,0.035); }
+.br-bu { font-size: 13.5px; flex-shrink: 0; }
+.br-status { font-size: 12px; font-weight: 600; flex-shrink: 0; }
+.br-status.st-ok { color: #2e7d32; }
+.br-status.st-no { color: #c62828; }
+.br-meta { font-size: 12px; color: var(--muted); flex-shrink: 0; }
+.br-type {
+  font-size: 10px; padding: 1px 7px; border-radius: 8px;
+  background: rgba(0,0,0,0.05); color: var(--muted);
 }
-.sa-missing { background: rgba(211,47,47,0.12); color: #c62828; border-color: rgba(211,47,47,0.25); }
-.sa-partial { background: rgba(245,127,23,0.12); color: #b45309; border-color: rgba(245,127,23,0.25); }
-.sa-dot {
-  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
-  background: currentColor;
-  animation: saBlink 1.2s ease-in-out infinite;
-}
-.sa-dot-inline { display: inline-block; margin-right: 5px; vertical-align: middle; }
-@keyframes saBlink {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.25; }
-}
-.submit-ok {
-  display: flex; align-items: center; gap: 8px;
-  padding: 10px 16px; margin-bottom: 14px; border-radius: 12px;
-  background: rgba(46,125,50,0.08); border: 1px solid rgba(46,125,50,0.22);
-  color: #2e7d32; font-size: 13px; font-weight: 600;
-}
-.sa-check {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; border-radius: 50%;
-  background: #2e7d32; color: #fff; font-size: 13px; font-weight: 900;
+.br-dim { color: rgba(155,128,112,0.7); flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.br-actions { display: flex; gap: 6px; flex-shrink: 0; margin-left: auto; }
+@media (max-width: 600px) {
+  .br-meta:not(.br-dim) { display: none; }
+  .br-dim { flex: 0 1 auto; }
 }
 
-/* Incomplete row highlight in the status table */
-tr.row-missing td:first-child { box-shadow: inset 3px 0 0 #e53935; }
-tr.row-partial td:first-child { box-shadow: inset 3px 0 0 #f57f17; }
-tr.row-missing { background: rgba(211,47,47,0.035); }
-tr.row-partial { background: rgba(245,127,23,0.035); }
 </style>

@@ -128,7 +128,7 @@ onMounted(() => { loadL1() })
 
     <!-- ── L1 tab ──────────────────────────────────────── -->
     <div v-if="tab === 'l1'" class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div class="card-head">
         <div class="section-title" style="margin:0">一级科目（全局通用）</div>
         <button class="btn btn-primary btn-sm" @click="openL1Form()">新增科目</button>
       </div>
@@ -165,7 +165,7 @@ onMounted(() => { loadL1() })
 
     <!-- ── L2 tab ──────────────────────────────────────── -->
     <div v-else-if="tab === 'l2'" class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+      <div class="card-head">
         <div style="display:flex;align-items:center;gap:10px">
           <div class="section-title" style="margin:0">二级项目部</div>
           <select v-model="l2Bu" class="sel-bu-sm" @change="loadL2">
@@ -197,7 +197,7 @@ onMounted(() => { loadL1() })
 
     <!-- ── L3 tab ──────────────────────────────────────── -->
     <div v-else-if="tab === 'l3'" class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+      <div class="card-head">
         <div style="display:flex;align-items:center;gap:10px">
           <div class="section-title" style="margin:0">三级科目明细</div>
           <select v-model="l3Bu" class="sel-bu-sm" @change="loadL3">
@@ -307,15 +307,47 @@ onMounted(() => { loadL1() })
 </template>
 
 <style scoped>
-.tab-bar { display: flex; gap: 4px; margin-bottom: 20px; background: var(--bg2); border-radius: 12px; padding: 4px; width: fit-content; }
-.tab-btn { padding: 7px 18px; border-radius: 9px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted); background: none; transition: all .16s; }
+/* ── 顶部栏 ─────────────────────────────────────────── */
+.topbar { margin-bottom: 10px; }
+
+/* ── 标签页（更紧凑）────────────────────────────────── */
+.tab-bar { display: flex; gap: 3px; margin-bottom: 12px; background: var(--bg2); border-radius: 10px; padding: 3px; width: fit-content; }
+.tab-btn { padding: 6px 14px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted); background: none; transition: all .16s; }
 .tab-btn:hover { color: var(--primary); }
 .tab-btn.active { background: var(--card); color: var(--primary); box-shadow: 0 1px 5px rgba(100,60,30,.12); }
 
-.user-avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--grad); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; flex-shrink: 0; }
+/* ── 卡片（收紧内边距）─────────────────────────────── */
+.card { padding: 13px 14px; }
 
-.dept-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.dept-chip { padding: 4px 11px; border-radius: 14px; font-size: 12px; cursor: pointer; border: 1.5px solid var(--border); background: rgba(255,253,250,.7); color: var(--text); transition: all .16s; }
-.dept-chip:hover { border-color: var(--primary); color: var(--primary); }
-.dept-chip.on { border-color: var(--primary); background: rgba(201,99,66,.1); color: var(--primary); font-weight: 600; }
+/* 卡片头部：标题 + 操作按钮一行对齐 */
+.card-head {
+  display: flex; justify-content: space-between; align-items: center;
+  flex-wrap: wrap; gap: 8px; margin-bottom: 10px;
+}
+
+/* ── 科目列表表格（收紧行高/单元格内边距）──────────── */
+.card :deep(table) { font-size: 13px; }
+.card :deep(th),
+.card :deep(td) { padding: 7px 12px; }
+
+/* 业务单元选择器（紧凑下拉）*/
+.sel-bu-sm { width: auto; min-width: 120px; padding: 5px 10px; font-size: 13px; border-radius: 8px; }
+
+/* 错误提示条（紧凑）*/
+.error-banner {
+  margin-bottom: 10px; padding: 7px 11px; border-radius: 8px;
+  font-size: 13px; color: var(--danger, #c62828);
+  background: rgba(198,40,40,0.08); border: 1px solid rgba(198,40,40,0.18);
+}
+
+/* ── 弹窗（全局 .modal-box padding:0，此处补上紧凑内边距）── */
+.modal-box { padding: 20px 22px; }
+.modal-box h2 { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+/* 表单行更紧凑：单列堆叠、收紧间距 */
+.modal-box :deep(.form-row) { grid-template-columns: 1fr; gap: 5px; margin-bottom: 10px; }
+.modal-box :deep(.form-row label) { font-size: 13px; color: var(--muted); }
+.modal-box :deep(.form-row input),
+.modal-box :deep(.form-row select) { padding: 7px 11px; font-size: 13px; border-radius: 8px; }
+/* 操作按钮行：右对齐、收紧上方间距 */
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
 </style>
