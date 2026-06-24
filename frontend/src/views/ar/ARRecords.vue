@@ -1404,8 +1404,14 @@ onMounted(async () => {
   }
   load()
   window.addEventListener('pk:depts-changed', onScopeChange)
+  // 固定布局：锁页面滚动，只让表格区内滚，鼠标滚轮不再上下翻整页
+  const mc = document.querySelector('.main-content')
+  if (mc) mc.classList.add('full-height-view')
 })
-onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
+onBeforeUnmount(() => {
+  window.removeEventListener('pk:depts-changed', onScopeChange)
+  document.querySelector('.main-content')?.classList.remove('full-height-view')
+})
 function clearFilters() {
   conditions.value = []
   matchMode.value = 'all'
@@ -1419,7 +1425,7 @@ function clearFilters() {
 </script>
 
 <template>
-  <div>
+  <div class="ar-view">
     <div class="ar-head">
       <!-- 行1：标题 + 主操作（模板/导入/导出/新增）-->
       <div class="ar-head-top">
@@ -3034,15 +3040,22 @@ function clearFilters() {
 .act-btn:disabled { opacity: 0.4; cursor: default; }
 .act-btn--on { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.08); font-weight: 600; }
 
+/* 固定视口布局：页面不再整体滚动，只有表格区内滚 */
+.ar-view { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+/* card 填满剩余高度，内部再用 flex-column 把表格撑满；
+   padding-bottom 留出 bottom-bar 高度(36px)，避免表格最后一行被遮挡 */
+.ar-view > .card { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 14px 36px; }
+.ar-view > .card > .table-wrap { flex: 1; min-height: 0; }
+
 /* 页头：三行结构——标题+主操作 / Tab 栏 / 筛选工具栏，各占一行互不挤压 */
-.ar-head { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; margin-bottom: 18px; }
+.ar-head { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-bottom: 8px; flex-shrink: 0; }
 .ar-head-top { align-self: stretch; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
-.ar-head-top h1 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
+.ar-head-top h1 { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -0.02em; }
 .ctrl-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
 
 /* Segment control */
-.segment-ctrl { display: flex; align-self: flex-start; max-width: 100%; gap: 2px; padding: 3px; background: rgba(0,0,0,0.04); border-radius: 11px; flex-wrap: wrap; }
-.seg-btn { display: flex; align-items: center; gap: 5px; padding: 6px 14px; border-radius: 9px; border: none; font-size: 12.5px; font-weight: 500; color: var(--muted); background: transparent; cursor: pointer; transition: all 0.18s; }
+.segment-ctrl { display: flex; align-self: flex-start; max-width: 100%; gap: 2px; padding: 2px; background: rgba(0,0,0,0.04); border-radius: 9px; flex-wrap: wrap; flex-shrink: 0; }
+.seg-btn { display: flex; align-items: center; gap: 4px; padding: 4px 11px; border-radius: 7px; border: none; font-size: 12px; font-weight: 500; color: var(--muted); background: transparent; cursor: pointer; transition: all 0.18s; }
 .seg-btn .seg-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(155,128,112,0.3); transition: all 0.18s; }
 .seg-btn.active { background: white; color: var(--primary); font-weight: 700; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
 .seg-btn.active .seg-dot { background: var(--primary); box-shadow: 0 0 6px rgba(201,99,66,0.5); }
@@ -3050,15 +3063,15 @@ function clearFilters() {
 /* ── 筛选工具栏（独占一行，卡片化，与 Tab/表格分层）─────────────── */
 .filter-bar { margin: 12px 0; }
 .filter-chipbar {
-  align-self: stretch; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 9px 12px; background: rgba(0,0,0,0.018);
-  border: 1px solid var(--border); border-radius: 12px;
+  align-self: stretch; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex-shrink: 0;
+  padding: 5px 10px; background: rgba(0,0,0,0.018);
+  border: 1px solid var(--border); border-radius: 9px;
 }
 .quick-search { position: relative; display: inline-flex; align-items: center; }
 .qs-ico { position: absolute; left: 9px; color: var(--muted); pointer-events: none; }
 .qs-input {
-  width: 200px; padding: 6px 26px 6px 30px; border: 1px solid var(--border); border-radius: 9px;
-  background: rgba(255,252,250,0.9); font-size: 13px; color: var(--text);
+  width: 190px; padding: 4px 24px 4px 28px; border: 1px solid var(--border); border-radius: 7px;
+  background: rgba(255,252,250,0.9); font-size: 12.5px; color: var(--text);
   transition: border-color .14s, box-shadow .14s, width .18s;
 }
 .qs-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(201,99,66,0.12); width: 240px; }
@@ -3110,7 +3123,7 @@ function clearFilters() {
 .clear-mini:hover { color: var(--primary); }
 
 /* KPI bar */
-.metrics-bar { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; overflow-x: auto; margin-bottom: 4px; padding: 9px 16px; background: rgba(0,0,0,0.02); border-radius: 12px; }
+.metrics-bar { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; overflow-x: auto; margin-bottom: 4px; padding: 5px 10px; background: rgba(0,0,0,0.02); border-radius: 8px; flex-shrink: 0; }
 .metrics-div { width: 1px; align-self: stretch; min-height: 20px; background: rgba(0,0,0,0.1); margin: 0 2px; }
 /* 聚焦待办切换（金蝶查询模式）：紧凑分段开关 */
 .focus-toggle { display: inline-flex; flex-shrink: 0; padding: 2px; gap: 2px; background: rgba(0,0,0,0.05); border-radius: 8px; }
@@ -3172,9 +3185,8 @@ function clearFilters() {
 /* 列头筛选漏斗弹层经 Teleport 到 body 不受裁剪，但漏斗按钮本身需可见，避免被表头裁掉 */
 .rec-table thead th { overflow: visible; }
 .rec-table td { padding: 5px 10px; vertical-align: middle; font-size: 12.5px; }
-/* 数据表内部滚动：表头吸顶 + 合计行吸底，行在中间滚动，合计始终停在表区底部
-   （无需把整页拉到最底就能看到汇总）。max-height 留给上方筛选/指标条，可按需微调。 */
-.dt-scroll { max-height: calc(100vh - 250px); overflow: auto; }
+/* 表格填满卡片剩余高度（由 flex: 1 on .table-wrap 驱动），overflow:auto 使只有表格内滚 */
+.dt-scroll { height: 100%; overflow: auto; }
 .dt-scroll .rec-table thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
 .dt-scroll .rec-table thead .sel-col { z-index: 6; }
 /* 选择列 */
@@ -3183,7 +3195,7 @@ function clearFilters() {
 .data-row:hover { background: rgba(201,99,66,0.03); }
 .row-sel, .row-sel:hover { background: rgba(201,99,66,0.09) !important; }
 /* 批量删除工具条 */
-.bulk-bar { display: flex; align-items: center; gap: 12px; margin: 10px 0 0; padding: 8px 14px;
+.bulk-bar { display: flex; align-items: center; gap: 10px; margin: 5px 0 0; padding: 5px 12px; flex-shrink: 0;
   border-radius: 10px; background: rgba(198,40,40,0.06); border: 1px solid rgba(198,40,40,0.25); }
 .bulk-n { font-size: 13px; color: var(--text); }
 .bulk-all { border: none; background: none; color: var(--primary); font-size: 12.5px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }

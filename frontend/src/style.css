@@ -93,6 +93,9 @@ body {
   scrollbar-gutter: stable;
 }
 .main-content.nav-collapsed { margin-left: var(--nav-w-collapsed); }
+/* 固定视口页面（如应收账款）：锁定主区不滚动，由页面内部的表格区独立滚动。
+   padding 改为只保留顶部，底部交给表格填满（bottom-bar 高 36px 已固定占位）。 */
+.main-content.full-height-view { overflow: hidden; padding-bottom: 0; height: 100vh; display: flex; flex-direction: column; }
 /* logged-out pages (login) have no sidebar — fill the whole width so the
    page can center its own content instead of shrinking to the flex item. */
 .main-public { flex: 1; width: 100%; min-width: 0; }
@@ -530,34 +533,34 @@ tr.overdue-row td:first-child { border-left: 3px solid #c62828; }
    block. Uses body.nav-collapsed (synced from App.vue watch) to shift left. */
 .bottom-bar {
   position: fixed; bottom: 0; left: var(--nav-w); right: 0; z-index: 90;
-  height: 52px; display: flex; align-items: center; justify-content: space-between;
-  gap: 16px; padding: 0 28px; flex-wrap: nowrap;
+  height: 36px; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 0 16px; flex-wrap: nowrap;
   background: #e4d8cc;
-  border-top: 1.5px solid rgba(160, 120, 90, 0.30);
-  box-shadow: 0 -2px 12px rgba(100, 60, 30, 0.14);
+  border-top: 1px solid rgba(160, 120, 90, 0.25);
+  box-shadow: 0 -1px 6px rgba(100, 60, 30, 0.10);
   transition: left 0.46s cubic-bezier(0.45, 0, 0.15, 1);
 }
 body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
 @media (max-width: 768px) { .bottom-bar { left: 0; } }
 
-.bb-summary { display: flex; align-items: center; gap: 20px; min-width: 0; overflow: hidden; }
-.bb-item { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; font-size: 13px; flex-shrink: 0; }
-.bb-item i { font-style: normal; font-size: 11px; color: var(--muted); letter-spacing: 0.02em; }
-.bb-item b { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text); font-size: 13.5px; }
+.bb-summary { display: flex; align-items: center; gap: 14px; min-width: 0; overflow: hidden; }
+.bb-item { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; font-size: 11.5px; flex-shrink: 0; }
+.bb-item i { font-style: normal; font-size: 10px; color: var(--muted); letter-spacing: 0.02em; }
+.bb-item b { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text); font-size: 12px; }
 .bb-item.warn b { color: #c0392b; }
 .bb-item.ok b   { color: #2e7d32; }
 .bb-item.adj b  { color: #6a5acd; }
-.bb-pager { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.bb-pager { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .bottom-bar .page-btn {
-  padding: 4px 14px; border: 1px solid var(--border); border-radius: 7px;
+  padding: 2px 10px; border: 1px solid var(--border); border-radius: 5px;
   background: rgba(255, 252, 250, 0.7); color: var(--text);
-  font-size: 12.5px; font-family: inherit; cursor: pointer; transition: all 0.14s;
+  font-size: 11.5px; font-family: inherit; cursor: pointer; transition: all 0.14s;
 }
 .bottom-bar .page-btn:hover:not(:disabled) {
   border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.08);
 }
 .bottom-bar .page-btn:disabled { opacity: 0.36; cursor: default; }
-.bottom-bar .page-info { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.bottom-bar .page-info { font-size: 11px; color: var(--muted); white-space: nowrap; }
 
 /* In-card pagination (payment ledger tab, etc.) — light theme */
 .pagination .page-btn {
