@@ -185,51 +185,45 @@ onMounted(() => {
 
 <template>
   <div class="pcf-wrap">
-    <!-- 标题行：tab 居左作页面标题，4 个紧凑筛选小框靠右同行，整行留给表格 -->
-    <div class="topbar pcf-topbar">
-      <div class="pcf-dim-seg pcf-tabs">
-        <button v-for="d in DIMS" :key="d.v" class="pcf-dim-btn" :class="{ on: groupBy === d.v }"
-          @click="setDim(d.v)">{{ d.l }}现金流</button>
-      </div>
-      <div class="pcf-top-right">
-        <!-- ① 事业部 -->
-        <select v-model="filters.dept" class="pcf-sel" @change="filters.useCustomDate ? load() : null">
-          <option value="">全部事业部</option>
-          <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
-        </select>
-        <!-- ② 年份 -->
-        <select v-model.number="filters.year" class="pcf-sel pcf-year-sel">
-          <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
-        </select>
-        <!-- ③ 时间范围 -->
-        <select v-model="rangePreset" class="pcf-sel pcf-range-sel" @change="onRangeChange">
-          <option value="">全年</option>
-          <option v-for="p in PRESETS" :key="p.k" :value="p.k">{{ p.l }}</option>
-          <option value="custom">自定义…</option>
-        </select>
-        <!-- ④ 搜索 -->
-        <div class="pcf-search-wrap">
-          <svg class="pcf-search-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-          <input v-model="search" class="pcf-search" placeholder="搜索项目 / 客户" />
-        </div>
-        <!-- 自定义日期：选「自定义」时紧随其后出现 -->
-        <div v-if="filters.useCustomDate" class="pcf-daterange">
-          <input v-model="filters.date_start" type="date" class="pcf-date-inp" @change="onDateEdit" />
-          <span class="pcf-dash">—</span>
-          <input v-model="filters.date_end" type="date" class="pcf-date-inp" @change="onDateEdit" />
+    <!-- 标题行：h1 + 维度 tab，对齐付款台账风格 -->
+    <div class="topbar">
+      <div style="display:flex;align-items:center;gap:14px">
+        <h1>项目现金流</h1>
+        <div class="tab-bar">
+          <button v-for="d in DIMS" :key="d.v" class="tab-btn" :class="{ active: groupBy === d.v }"
+            @click="setDim(d.v)">{{ d.l }}</button>
         </div>
       </div>
     </div>
 
-    <!-- 表格：标准 card -->
+    <!-- 表格卡片 -->
     <div class="card fh-fill">
-      <div class="section-title pcf-sec-title">
-        {{ isProjDim ? '项目' : '二级部门' }}现金流明细
-        <span class="section-sub">
-          {{ filters.dept || '全部事业部' }}
-          · <template v-if="filters.useCustomDate">{{ data?.date_start }} ~ {{ data?.date_end }}</template>
-          <template v-else>{{ filters.year }} 年</template>
+      <!-- 筛选条：对齐付款台账 filter-bar 风格 -->
+      <div class="filter-bar">
+        <select v-model="filters.dept" @change="filters.useCustomDate ? load() : null">
+          <option value="">全部事业部</option>
+          <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+        </select>
+        <select v-model.number="filters.year">
+          <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+        </select>
+        <select v-model="rangePreset" style="min-width:100px" @change="onRangeChange">
+          <option value="">全年</option>
+          <option v-for="p in PRESETS" :key="p.k" :value="p.k">{{ p.l }}</option>
+          <option value="custom">自定义…</option>
+        </select>
+        <template v-if="filters.useCustomDate">
+          <input v-model="filters.date_start" type="date" style="min-width:120px" @change="onDateEdit" />
+          <span style="color:var(--muted);font-size:12px;flex-shrink:0">~</span>
+          <input v-model="filters.date_end" type="date" style="min-width:120px" @change="onDateEdit" />
+        </template>
+        <span v-else-if="rangePreset && rangePreset !== 'custom' && filters.date_start" class="date-range-hint">
+          {{ filters.date_start }} ~ {{ filters.date_end }}
         </span>
+        <div class="pcf-search-wrap">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="flex-shrink:0;color:var(--muted)"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input v-model="search" class="pcf-search" placeholder="搜索项目 / 客户" />
+        </div>
       </div>
 
       <div v-if="loading" class="pcf-empty">加载中…</div>
@@ -333,105 +327,50 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* CSS 自定义属性统一分发到所有子控件（紧凑高度，给表格让位） */
-.pcf-wrap { --pcf-h: 28px; --pcf-radius: 7px; }
+/* 维度 tab（对齐付款台账 .tab-bar / .tab-btn）*/
+.tab-bar { display: flex; gap: 2px; background: rgba(0,0,0,0.05); border-radius: 10px; padding: 3px; }
+.tab-btn { border: none; background: none; padding: 5px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; }
+.tab-btn.active { background: #fff; color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
 
-/* 标题行：tab 居左作页面标题，4 个筛选小框靠右同行，允许窄屏换行 */
-.pcf-topbar { gap: 8px 12px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-
-/* 右上角筛选小框：同行排列、靠右、间距紧凑 */
-.pcf-top-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
-
-/* 下拉：统一高度/圆角/内边距；箭头留白，避免文本与箭头重叠被截断 */
-.pcf-sel {
-  height: var(--pcf-h); box-sizing: border-box;
-  border: 1px solid var(--border); background: rgba(255,255,255,.6);
-  padding: 0 26px 0 10px; border-radius: var(--pcf-radius);
-  font-size: 12.5px; line-height: 1; color: var(--text); cursor: pointer; outline: none;
-  /* 自绘下拉箭头，跨浏览器一致，且预留右侧空间不挤压文字 */
-  -webkit-appearance: none; -moz-appearance: none; appearance: none;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239b8070' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>");
-  background-repeat: no-repeat; background-position: right 9px center;
-  transition: background-color .15s, border-color .15s, color .15s;
-}
-.pcf-sel:hover, .pcf-sel:focus { background-color: rgba(201,99,66,.09); border-color: rgba(201,99,66,.4); color: var(--primary); }
-.pcf-sel.pcf-year-sel { min-width: 78px; }
-.pcf-sel.pcf-range-sel { min-width: 90px; }
-.pcf-dim-seg { display: inline-flex; background: rgba(0,0,0,.05); border-radius: 9px; padding: 3px; }
-.pcf-tabs .pcf-dim-btn { font-size: 14px; padding: 5px 16px; }
-.pcf-dim-btn {
-  border: none; background: none; padding: 5px 16px; border-radius: 7px;
-  font-size: 12.5px; color: var(--muted); cursor: pointer; font-weight: 600;
-}
-.pcf-dim-btn.on { background: #fff; color: var(--primary); font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
-/* 自定义日期：成对输入作为一组，同高对齐，破折号居中 */
-.pcf-daterange { display: inline-flex; align-items: center; gap: 6px; }
-.pcf-date-inp {
-  height: var(--pcf-h); box-sizing: border-box;
-  border: 1px solid var(--border); border-radius: var(--pcf-radius); padding: 0 9px;
-  font-size: 12.5px; line-height: 1; background: rgba(255,255,255,.6); color: var(--text);
-  outline: none; transition: border-color .15s, background-color .15s;
-}
-.pcf-date-inp:hover, .pcf-date-inp:focus { background: rgba(201,99,66,.06); border-color: rgba(201,99,66,.4); }
-.pcf-dash { color: var(--muted); font-size: 13px; flex-shrink: 0; }
-
-/* 搜索：作为第 4 个小框，与下拉同高、紧凑定宽（聚焦时略微展宽） */
+/* 搜索小框：内嵌在 filter-bar 右侧，宽度自适应 */
 .pcf-search-wrap {
-  display: inline-flex; align-items: center; gap: 5px;
-  height: var(--pcf-h); box-sizing: border-box;
-  width: 148px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 6px;
   background: rgba(255,255,255,.6); border: 1px solid var(--border);
-  border-radius: var(--pcf-radius); padding: 0 9px; color: var(--muted);
-  transition: border-color .15s, background-color .15s, width .18s;
+  border-radius: 8px; padding: 0 10px; height: 32px; min-width: 140px;
+  transition: border-color .15s, width .18s;
 }
-.pcf-search-wrap:focus-within { width: 200px; border-color: rgba(201,99,66,.5); background: #fff; color: var(--primary); }
-.pcf-search-ico { flex-shrink: 0; }
-.pcf-search {
-  flex: 1 1 auto; min-width: 0;
-  border: none; background: transparent; font-size: 12.5px; color: var(--text);
-  outline: none; width: 100%;
-}
+.pcf-search-wrap:focus-within { border-color: rgba(201,99,66,.5); background: #fff; min-width: 200px; }
+.pcf-search { flex: 1 1 auto; min-width: 0; border: none; background: transparent; font-size: 13px; color: var(--text); outline: none; }
 .pcf-search::placeholder { color: var(--muted); }
 
 .pcf-empty { padding: 40px; text-align: center; color: var(--muted); font-size: 13px; }
 .pcf-empty.err { color: #c62828; }
 
-/* 标题精简：与右上筛选/吸底栏信息不重复占行，压缩上下边距把空间让给表格 */
-.pcf-sec-title { margin: 0 0 8px; font-size: 14px; }
-.pcf-sec-title .section-sub { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 6px; }
-
-/* 固定视口：表头吸顶 + 为吸底栏预留空间 */
+/* 固定视口：fh-fill + page-scroll（全局 full-height-view 链路），表头吸顶实色 */
 .fh-fill { padding-bottom: 40px; }
-/* 表头吸顶：背景必须完全不透明，否则滚动时下方数据会透过表头透出。
-   用实色 + 投影分隔，并把 thead/th 一并设为同色，杜绝任何半透明缝隙。 */
-.table-wrap thead { position: sticky; top: 0; z-index: 5; }
 .table-wrap thead th {
   position: sticky; top: 0; z-index: 5;
   background: #f4f1ef; box-shadow: inset 0 -1px 0 rgba(0,0,0,.08);
 }
-.table-wrap thead::after {
-  content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 6px;
-  background: linear-gradient(rgba(0,0,0,.05), transparent); pointer-events: none;
-}
 
-/* Table — 对齐项目毛利的 pm-table */
+/* Table */
 .pcf-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .pcf-table thead th {
   padding: 9px 12px; text-align: left; font-size: 11.5px; font-weight: 700;
-  color: var(--muted); border-bottom: 1px solid rgba(0,0,0,.08); white-space: nowrap;
-  background: #f4f1ef;
+  color: var(--muted); white-space: nowrap; background: #f4f1ef;
 }
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .ctr { text-align: center; }
 .sortable { cursor: pointer; }
 .sortable:hover { color: var(--primary, #c96342); }
-.sorted { color: var(--primary, #c96342); }
+/* 排序列表头用实色，防滚动时数据透出 */
+.pcf-table thead th.sorted { background: #f0e6e1; color: var(--primary, #c96342); }
 .sort-arr { font-size: 10px; }
 
 .pcf-row { cursor: pointer; }
 .pcf-row.no-drill { cursor: default; }
 .pcf-table tbody td { padding: 9px 12px; border-bottom: 1px solid rgba(0,0,0,.04); color: var(--text); vertical-align: middle; }
-.pcf-table tbody tr:hover td { background: rgba(201,99,66,.03); }
+.pcf-table tbody tr:hover td { background: rgba(201,99,66,.08); }
 .pcf-th-proj { min-width: 160px; }
 .pcf-td-proj { min-width: 160px; }
 .pcf-pname { font-weight: 600; }
@@ -440,18 +379,13 @@ onMounted(() => {
   display: inline-block; padding: 2px 8px; border-radius: 6px; border: 1px solid transparent;
   background: rgba(180,140,110,.12); color: var(--muted); font-size: 11px; white-space: nowrap; font-weight: 600;
 }
-/* 净现金 / 合计的方向标记 */
 .caret { font-size: 8px; margin-right: 3px; vertical-align: 1px; opacity: .85; }
 .bb-caret { font-size: 8px; margin-right: 2px; vertical-align: 1px; }
-/* 当前排序列：表头与整列轻微高亮，强化“正在按此列排序”。
-   表头用实色（在 #f4f1ef 上叠加 7% 主色），避免半透明导致滚动数据透出。 */
 .pcf-table thead th.sorted { background: #f0e6e1; }
 .pcf-table tbody td.col-on { background: rgba(201,99,66,.045); }
 .pcf-table tbody tr:hover td.col-on { background: rgba(201,99,66,.07); }
-/* 极淡斑马纹，长表更易读 */
 .pcf-table tbody tr:nth-child(even) td { background: rgba(255,255,255,.20); }
 .pcf-table tbody tr:nth-child(even) td.col-on { background: rgba(201,99,66,.05); }
-/* hover 置于斑马纹之后，保证悬停反馈在任意行都可见 */
 .pcf-table tbody tr:hover td { background: rgba(201,99,66,.08); }
 
 /* 回款率：迷你进度条 + 色阶 */
@@ -460,10 +394,7 @@ onMounted(() => {
 .rate-track { width: 58px; height: 4px; border-radius: 3px; background: rgba(180,140,110,.18); overflow: hidden; }
 .rate-track i { display: block; height: 100%; border-radius: 3px; transition: width .3s; }
 
-/* 日期区间下拉略宽，容纳「自定义…」「近 90 天」等较长选项 */
-.pcf-range-sel { min-width: 96px; }
-
-/* 吸底栏小图标（Teleport 内容仍受 scoped 作用域约束） */
+/* 吸底栏小图标 */
 .bb-ico { width: 13px; height: 13px; align-self: center; flex-shrink: 0; }
 .green { color: #2e7d32; }
 .red { color: #c62828; }
