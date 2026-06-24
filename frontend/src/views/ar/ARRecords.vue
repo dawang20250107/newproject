@@ -31,7 +31,7 @@ const loading = ref(false)
 const loadErr = ref('')
 const page = ref(1)
 const size = 50
-const activeTab = ref('all')   // all | reconciliation | invoice | collection | aging
+const activeTab = ref('all')   // all | reconciliation | invoice | collection | dunning | ...
 
 // 统一筛选：所有维度/日期/金额都是 conditions 里的一条；matchMode 决定 且/或。
 // 直接序列化为后端 conditions(JSON) + match 参数，前端不再有零散 flat 筛选。
@@ -217,7 +217,7 @@ async function saveAgingCfg() {
     await ar.updateAgingConfig({ ...agingCfgForm })
     toast.success('账龄配置已保存')
     showAgingCfgModal.value = false
-    if (activeTab.value === 'aging') loadAging()
+    if (activeTab.value === 'dunning') loadAging()
   } catch (e) { toast.error(e?.msg || e?.error || '保存失败')
   } finally { agingCfgSaving.value = false }
 }
@@ -427,7 +427,6 @@ const TABS = [
   { key: 'offset', label: '预收核销' },
   { key: 'dunning', label: '逾期看板' },
   { key: 'payments', label: '回款流水' },
-  { key: 'aging', label: '账龄分析' },
   { key: 'summary', label: '汇总' },
 ]
 const DATA_TABS = ['all', 'reconciliation', 'invoice', 'collection']
@@ -793,8 +792,7 @@ function switchTab(key) {
   activeTab.value = key
   if (key === 'payments') enterPayments()
   else if (key === 'summary') loadGroupSummary()
-  else if (key === 'aging') loadAging()
-  else if (key === 'dunning') loadDunning(true)
+  else if (key === 'dunning') { loadDunning(true); loadAging() }
   else if (key === 'offset') loadOffsetWorkbench()
   else if (key === 'batch') loadBatches()
   else {
@@ -820,7 +818,6 @@ function setPendingOnly(v) {
 function onFilterChange() {
   clearSelection()
   if (activeTab.value === 'summary') loadGroupSummary()
-  else if (activeTab.value === 'aging') loadAging()
   else if (activeTab.value === 'batch') loadBatches()
   else if (activeTab.value === 'offset') loadOffsetWorkbench()
   else load(true)
@@ -1380,8 +1377,7 @@ const onScopeChange = () => {
   if (dunFilters.dept && !accessibleDepts.value.includes(dunFilters.dept)) dunFilters.dept = ''
   if (activeTab.value === 'payments') loadPayments(true)
   else if (activeTab.value === 'summary') loadGroupSummary()
-  else if (activeTab.value === 'aging') loadAging()
-  else if (activeTab.value === 'dunning') loadDunning(true)
+  else if (activeTab.value === 'dunning') { loadDunning(true); loadAging() }
   else load(true)
   void before
 }
@@ -2147,6 +2143,66 @@ function clearFilters() {
           <span class="page-info">{{ dunPage }} / {{ Math.ceil(dunTotal / size) }} 页 · 共 {{ dunTotal }} 条</span>
           <button :disabled="dunPage * size >= dunTotal" class="page-btn" @click="dunChangePage(1)">下一页 ›</button>
         </div>
+
+        <!-- 账龄分析（融入逾期看板）：按客户汇总四段账龄桶 -->
+        <div class="aging-wrap" style="margin-top:18px">
+          <div class="aging-section-head">
+            <span class="bp-title">📊 账龄分析</span>
+            <span class="bp-tip">按客户汇总未收账款的账龄分布</span>
+          </div>
+          <div class="aging-legend">
+            <span class="aging-dot age-1-30"></span>1-30天
+            <span class="aging-dot age-31-60"></span>31-60天
+            <span class="aging-dot age-61-90"></span>61-90天
+            <span class="aging-dot age-90plus"></span>&gt;90天
+            <span class="text-sm-muted" style="margin-left:8px">（仅含未收余额 &gt; 0 的记录；沿用上方筛选条件）</span>
+            <button v-if="auth.isSuperAdmin" class="aging-cfg-btn" title="配置账龄分桶边界" @click="openAgingCfg">
+              ⚙ 配置
+            </button>
+          </div>
+          <div class="table-wrap">
+            <table class="rec-table aging-table">
+              <thead>
+                <tr>
+                  <th>客户名称</th>
+                  <th class="ctr">记录数</th>
+                  <th class="amt" title="due_date >= 今天 或 无到期日">未到期</th>
+                  <th class="amt age-1-30-head">1-30天</th>
+                  <th class="amt age-31-60-head">31-60天</th>
+                  <th class="amt age-61-90-head">61-90天</th>
+                  <th class="amt age-90plus-head">&gt;90天</th>
+                  <th class="amt fw">未收合计</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="agingLoading && !agingRows.length"><td colspan="8" class="empty-cell">⏳ 加载中…</td></tr>
+                <tr v-else-if="!agingRows.length"><td colspan="8" class="empty-cell">暂无未收数据</td></tr>
+                <tr v-for="r in agingRows" :key="r.customer_name" class="data-row aging-row">
+                  <td class="fw">{{ r.customer_name || '—' }}</td>
+                  <td class="ctr text-sm-muted">{{ r.count }}</td>
+                  <td class="amt">{{ parseFloat(r.not_due) > 0 ? fmtCell(r.not_due) : '—' }}</td>
+                  <td class="amt" :class="parseFloat(r.b1_30) > 0 ? 'age-amt-1-30' : ''">{{ parseFloat(r.b1_30) > 0 ? fmtCell(r.b1_30) : '—' }}</td>
+                  <td class="amt" :class="parseFloat(r.b31_60) > 0 ? 'age-amt-31-60' : ''">{{ parseFloat(r.b31_60) > 0 ? fmtCell(r.b31_60) : '—' }}</td>
+                  <td class="amt" :class="parseFloat(r.b61_90) > 0 ? 'age-amt-61-90' : ''">{{ parseFloat(r.b61_90) > 0 ? fmtCell(r.b61_90) : '—' }}</td>
+                  <td class="amt" :class="parseFloat(r.b90plus) > 0 ? 'age-amt-90plus' : ''">{{ parseFloat(r.b90plus) > 0 ? fmtCell(r.b90plus) : '—' }}</td>
+                  <td class="amt fw" :class="parseFloat(r.total) > 0 ? 'amt-warn' : 'amt-zero'">{{ fmtCell(r.total) }}</td>
+                </tr>
+              </tbody>
+              <tfoot v-if="agingSummary">
+                <tr class="group-total-row">
+                  <td class="fw">合计</td>
+                  <td class="ctr">{{ agingSummary.count }}</td>
+                  <td class="amt fw">{{ parseFloat(agingSummary.not_due) > 0 ? fmtCell(agingSummary.not_due) : '—' }}</td>
+                  <td class="amt fw age-amt-1-30">{{ parseFloat(agingSummary.b1_30) > 0 ? fmtCell(agingSummary.b1_30) : '—' }}</td>
+                  <td class="amt fw age-amt-31-60">{{ parseFloat(agingSummary.b31_60) > 0 ? fmtCell(agingSummary.b31_60) : '—' }}</td>
+                  <td class="amt fw age-amt-61-90">{{ parseFloat(agingSummary.b61_90) > 0 ? fmtCell(agingSummary.b61_90) : '—' }}</td>
+                  <td class="amt fw age-amt-90plus">{{ parseFloat(agingSummary.b90plus) > 0 ? fmtCell(agingSummary.b90plus) : '—' }}</td>
+                  <td class="amt fw amt-warn">{{ fmtCell(agingSummary.total) }}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
       </div>
 
       <!-- ══ 回款流水 ══ -->
@@ -2221,63 +2277,6 @@ function clearFilters() {
           <button :disabled="payPage <= 1" class="page-btn" @click="payPage--; loadPayments()">‹ 上一页</button>
           <span class="page-info">{{ payPage }} / {{ Math.ceil(payTotal / size) }} 页 · 共 {{ payTotal }} 条</span>
           <button :disabled="payPage * size >= payTotal" class="page-btn" @click="payPage++; loadPayments()">下一页 ›</button>
-        </div>
-      </div>
-
-      <!-- ══ 多维汇总（透视）══ -->
-      <!-- 账龄分析：按客户汇总四段账龄桶，金蝶云星空标志性报表 -->
-      <div v-if="activeTab === 'aging'" class="aging-wrap">
-        <div class="aging-legend">
-          <span class="aging-dot age-1-30"></span>1-30天
-          <span class="aging-dot age-31-60"></span>31-60天
-          <span class="aging-dot age-61-90"></span>61-90天
-          <span class="aging-dot age-90plus"></span>&gt;90天
-          <span class="text-sm-muted" style="margin-left:8px">（仅含未收余额 &gt; 0 的记录；沿用上方筛选条件）</span>
-          <button v-if="auth.isSuperAdmin" class="aging-cfg-btn" title="配置账龄分桶边界" @click="openAgingCfg">
-            ⚙ 配置
-          </button>
-        </div>
-        <div class="table-wrap">
-          <table class="rec-table aging-table">
-            <thead>
-              <tr>
-                <th>客户名称</th>
-                <th class="ctr">记录数</th>
-                <th class="amt" title="due_date >= 今天 或 无到期日">未到期</th>
-                <th class="amt age-1-30-head">1-30天</th>
-                <th class="amt age-31-60-head">31-60天</th>
-                <th class="amt age-61-90-head">61-90天</th>
-                <th class="amt age-90plus-head">&gt;90天</th>
-                <th class="amt fw">未收合计</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="agingLoading && !agingRows.length"><td colspan="8" class="empty-cell">⏳ 加载中…</td></tr>
-              <tr v-else-if="!agingRows.length"><td colspan="8" class="empty-cell">暂无未收数据</td></tr>
-              <tr v-for="r in agingRows" :key="r.customer_name" class="data-row aging-row">
-                <td class="fw">{{ r.customer_name || '—' }}</td>
-                <td class="ctr text-sm-muted">{{ r.count }}</td>
-                <td class="amt">{{ parseFloat(r.not_due) > 0 ? fmtCell(r.not_due) : '—' }}</td>
-                <td class="amt" :class="parseFloat(r.b1_30) > 0 ? 'age-amt-1-30' : ''">{{ parseFloat(r.b1_30) > 0 ? fmtCell(r.b1_30) : '—' }}</td>
-                <td class="amt" :class="parseFloat(r.b31_60) > 0 ? 'age-amt-31-60' : ''">{{ parseFloat(r.b31_60) > 0 ? fmtCell(r.b31_60) : '—' }}</td>
-                <td class="amt" :class="parseFloat(r.b61_90) > 0 ? 'age-amt-61-90' : ''">{{ parseFloat(r.b61_90) > 0 ? fmtCell(r.b61_90) : '—' }}</td>
-                <td class="amt" :class="parseFloat(r.b90plus) > 0 ? 'age-amt-90plus' : ''">{{ parseFloat(r.b90plus) > 0 ? fmtCell(r.b90plus) : '—' }}</td>
-                <td class="amt fw" :class="parseFloat(r.total) > 0 ? 'amt-warn' : 'amt-zero'">{{ fmtCell(r.total) }}</td>
-              </tr>
-            </tbody>
-            <tfoot v-if="agingSummary">
-              <tr class="group-total-row">
-                <td class="fw">合计</td>
-                <td class="ctr">{{ agingSummary.count }}</td>
-                <td class="amt fw">{{ parseFloat(agingSummary.not_due) > 0 ? fmtCell(agingSummary.not_due) : '—' }}</td>
-                <td class="amt fw age-amt-1-30">{{ parseFloat(agingSummary.b1_30) > 0 ? fmtCell(agingSummary.b1_30) : '—' }}</td>
-                <td class="amt fw age-amt-31-60">{{ parseFloat(agingSummary.b31_60) > 0 ? fmtCell(agingSummary.b31_60) : '—' }}</td>
-                <td class="amt fw age-amt-61-90">{{ parseFloat(agingSummary.b61_90) > 0 ? fmtCell(agingSummary.b61_90) : '—' }}</td>
-                <td class="amt fw age-amt-90plus">{{ parseFloat(agingSummary.b90plus) > 0 ? fmtCell(agingSummary.b90plus) : '—' }}</td>
-                <td class="amt fw amt-warn">{{ fmtCell(agingSummary.total) }}</td>
-              </tr>
-            </tfoot>
-          </table>
         </div>
       </div>
 
@@ -3224,7 +3223,8 @@ function clearFilters() {
 .age-61-90 { background: rgba(244,67,54,0.09); }
 .age-90plus { background: rgba(183,28,28,0.10); }
 
-/* ══ 账龄分析 Tab ══ */
+/* ══ 账龄分析（融入逾期看板）══ */
+.aging-section-head { display: flex; align-items: center; gap: 10px; padding: 9px 2px 6px; }
 .aging-wrap { padding: 4px 0 0; }
 .aging-legend { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); padding: 6px 2px 10px; flex-wrap: wrap; }
 .aging-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-left: 8px; }
