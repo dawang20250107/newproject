@@ -146,4 +146,5 @@ urlpatterns = [
     path('records/<int:pk>/attachments/<int:fid>', views.ar_attachment_detail),
     path('records/<int:pk>/attachments/<int:fid>/thumb', views.ar_attachment_thumb),
     path('records/<int:pk>/quick-edit', views.ar_record_quick_edit),
+    path('records/<int:pk>/audit', views.ar_record_audit),
 ]

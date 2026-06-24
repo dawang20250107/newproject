@@ -379,3 +379,83 @@ def ar_record_quick_edit(request, pk):
     # Use update() to avoid triggering full save/recompute
     ARRecord.objects.filter(pk=pk).update(**{k: getattr(rec, k) for k in updated})
     return ok(updated)
+
+
+# ── 操作审计轨迹（谁/何时/改了什么）─────────────────────────────────────────────
+
+# 记录级字段中文名（payload 的键 → 展示名），用于「修改 开票日期 → …」式描述
+_AUDIT_FIELD_LABELS = {
+    'reconciliation_date': '对账日期', 'invoice_date': '开票日期',
+    'actual_invoice_amount': '实际开票金额', 'tax_amount': '税额',
+    'invoice_batch_no': '开票批次号', 'target_collection_date': '目标回款日',
+    'collector': '催收负责人', 'notes': '备注', 'estimated_amount': '预估应收',
+    'operation_date': '运作日期', 'account_diff_adjustment': '账实差额',
+}
+
+
+def _audit_event(a):
+    """把一条请求级 AuditLog 翻译成面向业务的事件（图标 + 动作 + 细节）。"""
+    method, path = a.method, a.path
+    payload = a.payload if isinstance(a.payload, dict) else {}
+    icon, action, detail = '✏️', '修改记录', ''
+
+    if '/activity' in path:
+        icon = '💬'
+        action = {'POST': '新增跟进', 'PUT': '编辑跟进', 'DELETE': '删除跟进'}.get(method, '跟进')
+        if method != 'DELETE':
+            stage_l = dict(ARActivity.STAGE_CHOICES).get(payload.get('stage') or '', '')
+            note = (payload.get('note') or '').strip()
+            detail = ' · '.join(x for x in (stage_l, note[:30]) if x)
+    elif '/attachments' in path:
+        icon = '📎'
+        action = {'POST': '上传附件', 'DELETE': '删除附件'}.get(method, '附件')
+    elif '/payments' in path:
+        if method == 'POST':
+            icon, action = '💰', '登记回款'
+            amt = payload.get('amount')
+            src = payload.get('source')
+            if amt:
+                detail = f'¥{amt}' + (f' · {src}' if src and src != '回款' else '')
+        elif method == 'DELETE':
+            icon, action = '🗑', '删除回款'
+    elif '/adjustments' in path:
+        icon = '⚖️'
+        action = '新增差额调整' if method == 'POST' else '删除差额调整'
+    else:
+        # 记录字段编辑（PUT /records/{id} 或 PATCH /quick-edit）
+        labels = [(_AUDIT_FIELD_LABELS.get(k), payload.get(k)) for k in payload.keys()
+                  if k in _AUDIT_FIELD_LABELS]
+        if labels:
+            action = '修改 ' + '、'.join(l for l, _ in labels)
+            detail = '；'.join(f'{l}→{v}' for l, v in labels if v not in (None, ''))
+    return {
+        'id': a.id,
+        'user_name': a.user_name or '系统',
+        'created_at': a.created_at.isoformat() if a.created_at else None,
+        'icon': icon, 'action': action, 'detail': detail,
+    }
+
+
+@csrf_exempt
+@pk_required()
+def ar_record_audit(request, pk):
+    """GET /records/{pk}/audit -- 该记录的操作审计轨迹（谁、何时、改了什么）。"""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    _, err_resp = _get_record_or_403(request, pk)
+    if err_resp:
+        return err_resp
+
+    from django.db.models import Q
+    from paikuan.models import AuditLog
+    # 精确匹配本记录：以 /ar/records/{pk} 结尾（记录本体）或含 /ar/records/{pk}/（子资源）；
+    # 末尾带 '/' 可避免 id=1 误配 id=19。仅取成功写操作。
+    base = f'/ar/records/{pk}'
+    qs = (AuditLog.objects
+          .filter(Q(path__endswith=base) | Q(path__contains=base + '/'))
+          .filter(status_code__gte=200, status_code__lt=400)
+          .order_by('-created_at')[:80])
+    return ok([_audit_event(a) for a in qs])

@@ -318,3 +318,38 @@ class ActivityWorkbenchTests(TestCase):
         ARRecord.objects.filter(pk=rid).update(activity_count=42)
         call_command('recompute_ar_counters', '--dry-run', stdout=io.StringIO())
         self.assertEqual(ARRecord.objects.get(pk=rid).activity_count, 42)  # untouched
+
+    # ── 操作审计轨迹 ──────────────────────────────────────────────────────────
+    def test_audit_trail_collects_record_writes(self):
+        rid = self.record.id
+        # 三类写操作：改记录字段、加跟进、登记回款（中间件自动写 AuditLog）
+        self._put(f'/api/pk/ar/records/{rid}',
+                  {'reconciliation_date': '2024-02-01'}, self.admin)
+        self._post(f'/api/pk/ar/records/{rid}/activity',
+                   {'note': '已电话联系', 'stage': 'dunning'}, self.admin)
+
+        res = self.client.get(f'/api/pk/ar/records/{rid}/audit', **self._auth(self.admin))
+        self.assertEqual(res.status_code, 200)
+        events = res.json()['data']
+        actions = [e['action'] for e in events]
+        self.assertTrue(any('对账日期' in a for a in actions))   # 字段编辑被翻译
+        self.assertIn('新增跟进', actions)
+        # 每条事件都带操作人与时间
+        self.assertTrue(all(e['user_name'] and e['created_at'] for e in events))
+
+    def test_audit_trail_does_not_leak_other_record(self):
+        """id 前缀不应误配：record 1 的轨迹不含 record 11 的写操作。"""
+        other = self._make_record(self.project)   # 不同 id
+        self._put(f'/api/pk/ar/records/{other.id}',
+                  {'collector': '他人记录'}, self.admin)
+        res = self.client.get(f'/api/pk/ar/records/{self.record.id}/audit',
+                              **self._auth(self.admin))
+        details = ' '.join(e.get('detail', '') for e in res.json()['data'])
+        self.assertNotIn('他人记录', details)
+
+    def test_audit_trail_dept_access_enforced(self):
+        outsider = self._make_user('13900000940', role='operator',
+                                   departments=[self.other_dept])
+        res = self.client.get(f'/api/pk/ar/records/{self.record.id}/audit',
+                              **self._auth(outsider))
+        self.assertEqual(res.status_code, 403)

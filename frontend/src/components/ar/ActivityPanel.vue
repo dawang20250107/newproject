@@ -150,6 +150,36 @@ const REAL_STAGES = ['reconciliation', 'invoice', 'collection', 'dunning']
 const visible = ref(false)
 function close() { visible.value = false; setTimeout(() => emit('close'), 220) }
 
+// ── 操作轨迹（懒加载）────────────────────────────────────────────────────────
+const auditOpen = ref(false)
+const auditLoaded = ref(false)
+const auditLoading = ref(false)
+const auditLog = ref([])
+async function toggleAudit() {
+  auditOpen.value = !auditOpen.value
+  if (auditOpen.value && !auditLoaded.value) {
+    auditLoading.value = true
+    try {
+      const res = await ar.recordAudit(props.rec.id)
+      auditLog.value = res.data || []
+      auditLoaded.value = true
+    } catch (e) {
+      toast.error(errMsg(e))
+    } finally {
+      auditLoading.value = false
+    }
+  }
+}
+function fmtAuditTime(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (isNaN(d)) return iso.slice(0, 16).replace('T', ' ')
+  const today = todayCST()
+  const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  return ds === today ? `今天 ${hm}` : `${ds.slice(5)} ${hm}`
+}
+
 // ── 记录字段行内编辑（对账日期 / 开票字段 / 催收人 / 目标回款 / 备注）─────────
 const editingField = ref('')
 const fieldBuf = ref('')
@@ -318,6 +348,45 @@ function insertPhrase(p) {
   nextTick(() => composeTa.value?.focus())
 }
 
+// 一键催款函：按记录信息套用正式模板生成催款函草稿，可编辑后复制
+const showLetter = ref(false)
+const letterText = ref('')
+function fmtFull(v) { const n = Number(v || 0); return isNaN(n) ? '0.00' : n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
+function genDunningLetter() {
+  const r = props.rec
+  const today = todayCST()
+  const overdueLine = overdueDays.value > 0
+    ? `该款项已逾期 ${overdueDays.value} 天，敬请贵司高度重视。`
+    : (r.due_date ? `上述款项应于 ${r.due_date} 前结清。` : '')
+  letterText.value = [
+    '催 款 函',
+    '',
+    `致：${r.customer_name || '贵单位'}`,
+    '',
+    `贵司与我司业务往来中，截至 ${today}，下列款项尚未结清：`,
+    '',
+    `　项目名称：${r.short_name || r.customer_name || '—'}`,
+    `　应收金额：¥${fmtFull(estimated.value)}`,
+    `　已收金额：¥${fmtFull(paid.value)}`,
+    `　未收金额：¥${fmtFull(outstanding.value)}`,
+    r.invoice_date ? `　开票日期：${r.invoice_date}` : '',
+    r.due_date ? `　应收到期：${r.due_date}` : '',
+    '',
+    overdueLine,
+    '请贵司在收到本函后尽快安排付款。如款项已付，请忽略本函并提供付款凭证，以便我司核对。',
+    '',
+    '特此函告。',
+    '',
+    `${r.collector ? '经办人：' + r.collector : ''}`,
+    `${today}`,
+  ].filter(l => l !== '').join('\n')
+  showLetter.value = true
+}
+async function copyLetter() {
+  const ok = await copyText(letterText.value)
+  ok ? toast.success('催款函已复制') : toast.error('复制失败')
+}
+
 // 复制催收摘要：把整单生命周期要点复制为文本，便于微信/邮件交接
 async function copySummary() {
   const r = props.rec
@@ -427,6 +496,7 @@ function onPaste(e) {
 }
 function onKey(e) {
   if (e.key !== 'Escape') return
+  if (showLetter.value) { showLetter.value = false; return }
   if (editingField.value) { editingField.value = ''; return }
   close()
 }
@@ -658,13 +728,54 @@ function onKey(e) {
                   </span>
                 </div>
               </div>
-              <div v-if="daysSinceLastDun != null" class="dun-last" :class="{ cold: daysSinceLastDun >= 7 }">
-                <template v-if="daysSinceLastDun === 0">🔥 今天已跟进</template>
-                <template v-else>{{ daysSinceLastDun >= 7 ? '🥶' : '🕓' }} 上次跟进 {{ daysSinceLastDun }} 天前{{ daysSinceLastDun >= 7 ? ' · 建议再跟进' : '' }}</template>
+              <div class="dun-foot">
+                <span v-if="daysSinceLastDun != null" class="dun-last" :class="{ cold: daysSinceLastDun >= 7 }">
+                  <template v-if="daysSinceLastDun === 0">🔥 今天已跟进</template>
+                  <template v-else>{{ daysSinceLastDun >= 7 ? '🥶' : '🕓' }} 上次跟进 {{ daysSinceLastDun }} 天前{{ daysSinceLastDun >= 7 ? ' · 建议再跟进' : '' }}</template>
+                </span>
+                <button class="dun-letter-btn" @click="genDunningLetter">📄 生成催款函</button>
               </div>
             </template>
           </LifelineSection>
+
+          <!-- 操作轨迹 -->
+          <section class="ap-audit">
+            <button class="ap-audit-head" @click="toggleAudit">
+              <span class="ap-audit-ico">📜</span>
+              <span class="ap-audit-title">操作轨迹</span>
+              <span class="ap-audit-hint">谁 · 何时 · 改了什么</span>
+              <span class="ap-audit-caret" :class="{ open: auditOpen }">⌃</span>
+            </button>
+            <div v-if="auditOpen" class="ap-audit-body">
+              <div v-if="auditLoading" class="ap-audit-empty">加载中…</div>
+              <div v-else-if="!auditLog.length" class="ap-audit-empty">暂无操作记录</div>
+              <div v-else class="ap-audit-list">
+                <div v-for="(ev, i) in auditLog" :key="ev.id" class="ap-audit-item" :class="{ last: i === auditLog.length - 1 }">
+                  <span class="ap-audit-dot">{{ ev.icon }}</span>
+                  <div class="ap-audit-main">
+                    <div class="ap-audit-act">{{ ev.action }}<span v-if="ev.detail" class="ap-audit-detail"> {{ ev.detail }}</span></div>
+                    <div class="ap-audit-meta">{{ ev.user_name }} · {{ fmtAuditTime(ev.created_at) }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
         </template>
+      </div>
+
+      <!-- ═══ 催款函弹层 ═══ -->
+      <div v-if="showLetter" class="lt-overlay" @click.self="showLetter = false">
+        <div class="lt-modal">
+          <div class="lt-head">
+            <span class="lt-title">📄 催款函草稿</span>
+            <button class="lt-close" @click="showLetter = false">✕</button>
+          </div>
+          <textarea v-model="letterText" class="lt-ta" rows="16"></textarea>
+          <div class="lt-foot">
+            <span class="lt-hint">可编辑后复制 · 粘贴到微信/邮件/Word</span>
+            <button class="lt-copy" @click="copyLetter">复制全文</button>
+          </div>
+        </div>
       </div>
 
       <!-- ═══ 上下文录入条 ═══ -->
@@ -797,8 +908,24 @@ function onKey(e) {
 .kf-today:hover { border-color: #c96342; color: #c96342; }
 .kf-batch-hint { font-size: 11px; color: #8e63c5; background: rgba(142,99,197,.08); padding: 5px 9px; border-radius: 7px; }
 .kf-batch-hint b { font-weight: 800; }
-.dun-last { font-size: 11px; color: #8a7665; padding: 2px 2px 0; }
+.dun-foot { display: flex; align-items: center; gap: 8px; padding-top: 2px; }
+.dun-last { font-size: 11px; color: #8a7665; }
 .dun-last.cold { color: #c96342; font-weight: 600; }
+.dun-letter-btn { margin-left: auto; border: 1px solid rgba(201,99,66,.35); background: #fff; color: #c96342; font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 7px; cursor: pointer; transition: all .12s; flex-shrink: 0; }
+.dun-letter-btn:hover { background: rgba(201,99,66,.07); }
+
+/* 催款函弹层 */
+.lt-overlay { position: fixed; inset: 0; z-index: 720; background: rgba(40,24,12,.4); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.lt-modal { width: 480px; max-width: 94vw; background: #fff; border-radius: 14px; box-shadow: 0 16px 50px rgba(60,30,10,.3); display: flex; flex-direction: column; overflow: hidden; }
+.lt-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid rgba(180,140,110,.18); background: linear-gradient(135deg, #fceede, #fff); }
+.lt-title { font-size: 14px; font-weight: 800; color: #5a4636; }
+.lt-close { border: none; background: rgba(0,0,0,.04); width: 26px; height: 26px; border-radius: 50%; font-size: 13px; color: #9b8070; cursor: pointer; }
+.lt-close:hover { background: rgba(201,99,66,.12); color: #c96342; }
+.lt-ta { border: none; outline: none; resize: vertical; padding: 14px 18px; font-size: 13px; line-height: 1.8; color: #3a2e22; font-family: inherit; min-height: 280px; letter-spacing: .01em; }
+.lt-foot { display: flex; align-items: center; gap: 10px; padding: 11px 16px; border-top: 1px solid rgba(180,140,110,.18); background: #fbf7f1; }
+.lt-hint { font-size: 11px; color: #a8917e; }
+.lt-copy { margin-left: auto; padding: 7px 22px; border: none; border-radius: 8px; background: linear-gradient(120deg, #c96342, #b5532f); color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; }
+.lt-copy:hover { filter: brightness(1.06); }
 
 /* 回款 */
 .pay-prog { display: flex; flex-direction: column; gap: 4px; }
@@ -831,6 +958,26 @@ function onKey(e) {
 .pay-settle { border: 1px dashed rgba(46,158,91,.5); background: rgba(46,158,91,.05); color: #25844c; font-size: 11.5px; font-weight: 700; padding: 6px; border-radius: 8px; cursor: pointer; transition: background .12s; }
 .pay-settle:hover:not(:disabled) { background: rgba(46,158,91,.12); }
 .pay-settle:disabled { opacity: .5; cursor: default; }
+
+/* 操作轨迹 */
+.ap-audit { border: 1px solid rgba(180,140,110,.2); border-radius: 12px; background: #fff; overflow: hidden; }
+.ap-audit-head { width: 100%; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: none; background: none; cursor: pointer; font-family: inherit; }
+.ap-audit-head:hover { background: rgba(201,99,66,.03); }
+.ap-audit-ico { font-size: 14px; }
+.ap-audit-title { font-size: 13px; font-weight: 800; color: #5a4636; }
+.ap-audit-hint { font-size: 10.5px; color: #b0987e; }
+.ap-audit-caret { margin-left: auto; font-size: 13px; color: #c0ad9d; transition: transform .2s; transform: rotate(180deg); }
+.ap-audit-caret.open { transform: rotate(0deg); }
+.ap-audit-body { padding: 2px 12px 12px; }
+.ap-audit-empty { font-size: 12px; color: #bda797; text-align: center; padding: 12px 0; }
+.ap-audit-list { position: relative; padding-left: 4px; }
+.ap-audit-item { display: flex; gap: 9px; position: relative; padding-bottom: 11px; }
+.ap-audit-item:not(.last)::before { content: ''; position: absolute; left: 11px; top: 22px; bottom: 0; width: 1.5px; background: rgba(180,140,110,.22); }
+.ap-audit-dot { width: 23px; height: 23px; flex-shrink: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; background: #fbf7f1; border: 1px solid rgba(180,140,110,.25); z-index: 1; }
+.ap-audit-main { flex: 1; min-width: 0; padding-top: 1px; }
+.ap-audit-act { font-size: 12.5px; color: #4a3a2c; font-weight: 600; }
+.ap-audit-detail { color: #8a7665; font-weight: 400; }
+.ap-audit-meta { font-size: 10.5px; color: #a8917e; margin-top: 1px; }
 
 /* 录入条 */
 .ap-compose { padding: 9px 14px 11px; border-top: 1px solid rgba(180,140,110,.18); background: rgba(255,253,250,.92); flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; }

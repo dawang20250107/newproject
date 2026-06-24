@@ -67,6 +67,7 @@ const ar = {
   }),
   deleteAttachment: (id, fid) => api.delete(`/ar/records/${id}/attachments/${fid}`),
   quickEdit: (id, d) => api.patch(`/ar/records/${id}/quick-edit`, d),
+  recordAudit: id => api.get(`/ar/records/${id}/audit`),
 
   // 批量分配催收人
   bulkAssignCollector: (body, params) => api.post('/ar/records/bulk-assign-collector', body, { params }),
