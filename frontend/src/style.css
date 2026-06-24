@@ -87,15 +87,35 @@ body {
 /* ── layout ──────────────────────────────────────────────────────────────── */
 .layout { display: flex; min-height: 100vh; position: relative; z-index: 1; }
 .main-content {
-  flex: 1; overflow-y: auto; padding: 28px 28px 72px;
+  flex: 1; overflow-y: auto; padding: 20px 24px 72px;
   margin-left: var(--nav-w);
   transition: margin-left 0.46s cubic-bezier(0.45, 0, 0.15, 1);
   scrollbar-gutter: stable;
 }
 .main-content.nav-collapsed { margin-left: var(--nav-w-collapsed); }
-/* 固定视口页面（如应收账款）：锁定主区不滚动，由页面内部的表格区独立滚动。
-   padding 改为只保留顶部，底部交给表格填满（bottom-bar 高 36px 已固定占位）。 */
-.main-content.full-height-view { overflow: hidden; padding-bottom: 0; height: 100vh; display: flex; flex-direction: column; }
+/* ── 固定视口页面（列表/表格类，由 route.meta.fullHeight 驱动）─────────────────
+   锁定主区不滚动，页面内部承担滚动的容器自行填满剩余高度并内部滚动，
+   鼠标滚轮只滚表格行、不再整页上下翻。padding 去掉底部，底部交给内容填满
+   （吸底 bottom-bar 高 36px 已 fixed 固定占位）。 */
+.main-content.full-height-view {
+  overflow: hidden; padding-bottom: 0; height: 100vh;
+  display: flex; flex-direction: column;
+}
+/* 视图根元素（router-view 单根）填满锁定视口，成为纵向 flex 容器 */
+.main-content.full-height-view > * {
+  flex: 1 1 auto; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column;
+}
+/* 共享契约：页面给「中间层容器」加 .fh-fill（撑高但不滚），给「滚动面」加
+   .page-scroll（撑高并内部滚动）。两者把 flex 链从根一路传导到表格区。 */
+.main-content.full-height-view .fh-fill {
+  flex: 1 1 auto; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column;
+}
+.main-content.full-height-view .page-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
+/* fullHeight 页的页头/筛选等非滚动块不被压缩 */
+.main-content.full-height-view > * > .topbar,
+.main-content.full-height-view > * > .tabs { flex-shrink: 0; }
 /* logged-out pages (login) have no sidebar — fill the whole width so the
    page can center its own content instead of shrinking to the flex item. */
 .main-public { flex: 1; width: 100%; min-width: 0; }
@@ -114,7 +134,7 @@ body {
   border-radius: var(--radius);
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow);
-  padding: 22px;
+  padding: 16px;
   transition: box-shadow 0.25s ease;
   /* GPU layer promotion — keeps animated orbs from triggering card repaints. */
   transform: translateZ(0);
@@ -349,8 +369,8 @@ tr:last-child td { border-bottom: none; }
 .empty .icon { font-size: 42px; margin-bottom: 12px; }
 
 /* ── top bar ─────────────────────────────────────────────────────────────── */
-.topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 26px; }
-.topbar h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
+.topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.topbar h1 { font-size: 19px; font-weight: 800; letter-spacing: -0.02em; }
 
 /* ── amount colors ───────────────────────────────────────────────────────── */
 .amt { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }

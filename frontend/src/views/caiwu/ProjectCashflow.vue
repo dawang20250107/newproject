@@ -196,7 +196,7 @@ onMounted(() => {
     </div>
 
     <!-- 表格：标准 card -->
-    <div class="card">
+    <div class="card fh-fill">
       <div class="section-title">
         {{ isProjDim ? '项目' : '二级部门' }}现金流明细
         <span class="section-sub">
@@ -212,7 +212,7 @@ onMounted(() => {
         {{ data ? `暂无数据（所选时段内无关联${isProjDim ? '项目简称' : '二级部门'}的回款或付款）` : '请选择筛选条件后加载' }}
       </div>
 
-      <div v-else class="table-wrap">
+      <div v-else class="table-wrap page-scroll">
         <table class="pcf-table">
           <thead>
             <tr>
@@ -362,6 +362,10 @@ onMounted(() => {
 
 .pcf-empty { padding: 40px; text-align: center; color: var(--muted); font-size: 13px; }
 .pcf-empty.err { color: #c62828; }
+
+/* 固定视口：表头吸顶 + 为吸底栏预留空间 */
+.fh-fill { padding-bottom: 40px; }
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
 
 /* Table — 对齐项目毛利的 pm-table */
 .pcf-table { width: 100%; border-collapse: collapse; font-size: 13px; }

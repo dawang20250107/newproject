@@ -77,6 +77,7 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
       </div>
     </div>
 
+    <div class="stats-body page-scroll">
     <EmptyState v-if="loading" loading />
     <EmptyState v-else-if="loadErr" :error="loadErr" />
 
@@ -166,10 +167,14 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
         </div>
       </div>
     </template>
+    </div><!-- /.stats-body -->
   </div>
 </template>
 
 <style scoped>
+/* Fixed-viewport: header stays put, whole stats body scrolls inside locked viewport */
+.topbar { flex-shrink: 0; }
+/* .stats-body uses global .page-scroll (flex:1; min-height:0; overflow:auto) */
 .dept-filter {
   display: flex;
   align-items: center;

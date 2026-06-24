@@ -99,7 +99,7 @@ function onNavCollapse(v) {
 
       <AppNav v-if="showNav" :collapsed="navCollapsed" :mobile-open="mobileNavOpen"
         @update:collapsed="onNavCollapse" @close-mobile="mobileNavOpen = false" @hover="onNavHover" />
-      <main :class="showNav ? ['main-content', navCollapsed ? 'nav-collapsed' : ''] : 'main-public'">
+      <main :class="showNav ? ['main-content', navCollapsed ? 'nav-collapsed' : '', route.meta.fullHeight ? 'full-height-view' : ''] : 'main-public'">
         <router-view />
       </main>
     </div>

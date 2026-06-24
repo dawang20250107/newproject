@@ -297,8 +297,8 @@ onMounted(async () => {
     </div>
 
     <!-- 客户列表 -->
-    <div class="card" :class="{ 'data-reloading': loading && items.length }">
-      <div class="table-wrap">
+    <div class="card fh-fill" :class="{ 'data-reloading': loading && items.length }">
+      <div class="table-wrap page-scroll">
         <table class="cu-table">
           <thead>
             <tr>
@@ -501,6 +501,9 @@ onMounted(async () => {
 
 .cu-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .cu-table th { background: #f3ede6; color: #6b5a4a; padding: 9px 14px; font-weight: 600; white-space: nowrap; text-align: right; overflow: visible; }
+/* 固定视口：表头吸顶，仅表体内部滚动 */
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f3ede6; }
+.cu-pager { flex-shrink: 0; }
 .cu-table th.l { text-align: left; }
 .cu-table th.ctr { text-align: center; }
 .cu-table th.clk { cursor: pointer; user-select: none; }

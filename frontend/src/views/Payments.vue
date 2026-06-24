@@ -667,7 +667,7 @@ async function doBatchPay() {
     <!-- hidden file input for import -->
     <input ref="importInputRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImportFile" />
 
-    <div v-if="activeTab === 'ledger'" class="card" style="margin-bottom:16px">
+    <div v-if="activeTab === 'ledger'" class="card fh-fill" style="margin-bottom:16px">
       <div class="filter-bar">
         <input v-model="filters.q" class="global-search" placeholder="🔍 全局搜索：事项 / 收款方 / 单号 / 申请人 / G7…" @keyup.enter="search" />
         <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
@@ -710,7 +710,7 @@ async function doBatchPay() {
       <EmptyState v-if="loadErr" :error="loadErr" />
       <EmptyState v-else-if="!loading && !items.length" empty />
 
-      <div v-if="!loadErr" class="table-wrap pk-pay-tbl">
+      <div v-if="!loadErr" class="table-wrap pk-pay-tbl page-scroll">
         <table>
           <thead>
             <tr>
@@ -852,7 +852,7 @@ async function doBatchPay() {
     </div>
 
     <!-- ══ 付款流水 Tab ══ -->
-    <div v-if="activeTab === 'flow'" class="card" style="margin-bottom:16px">
+    <div v-if="activeTab === 'flow'" class="card fh-fill" style="margin-bottom:16px">
       <div class="filter-bar" style="flex-wrap:wrap;gap:8px;margin-bottom:12px">
         <input v-model="flowFilters.q" placeholder="搜索事项/收款方/单号…" style="min-width:180px" @keyup.enter="searchFlow" />
         <input v-model="flowFilters.g7_number" placeholder="G7编号" style="width:120px" @keyup.enter="searchFlow" />
@@ -896,7 +896,7 @@ async function doBatchPay() {
       </div>
       <EmptyState v-if="flowLoading" loading />
       <EmptyState v-else-if="!flowItems.length" empty text="暂无付款流水" />
-      <div v-else class="table-wrap">
+      <div v-else class="table-wrap page-scroll">
         <table class="flow-tbl">
           <thead>
             <tr>
@@ -1130,6 +1130,10 @@ async function doBatchPay() {
   padding: 4px 8px; background: rgba(201,99,66,0.06); border-radius: 7px;
   border: 1px solid rgba(201,99,66,0.18);
 }
+
+/* 固定视口布局：卡片在底部为吸底合计条预留空间，表头随滚动吸顶 */
+.card.fh-fill { padding-bottom: 40px; }
+.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
 
 /* 付款台账：固定布局，不超出卡片宽度（table-layout:fixed 已防横向溢出，无需 overflow-x:hidden） */
 .table-wrap.pk-pay-tbl { padding-bottom: 70px; }

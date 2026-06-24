@@ -336,7 +336,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   </div>
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
   <EmptyState v-else-if="!loading && !items.length" empty :text="activeFilterCount || q ? '暂无匹配记录' : '暂无审批记录，点击「新增」创建第一条记录'" />
-  <table v-if="!loadErr" class="approval-table"><thead><tr>
+  <div v-if="!loadErr" class="table-wrap page-scroll"><table class="approval-table"><thead><tr>
       <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
       <th><ColumnFilter label="申请人" field="applicant" type="text" :model-value="colFilters.applicant" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('applicant',v)" @sort="o=>setSort('applicant',o)" /></th>
       <th><ColumnFilter label="所属事业部" field="department" type="enum" :options="deptChoices" :model-value="colFilters.department" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('department',v)" @sort="o=>setSort('department',o)" /></th>
@@ -373,7 +373,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       </td></tr>
       </template>
     </tbody>
-  </table>
+  </table></div>
 
   <!-- 浮动批量操作条：Teleport 到 body 固定在视口底部，全选后无需下拉即可操作 -->
   <Teleport to="body">
@@ -487,12 +487,17 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 <style scoped>
 .err-banner { background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: #856404; display: flex; align-items: center; gap: 8px; }
 .approval-card { padding: 12px; }
-.filter-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+/* 固定视口布局：卡片底部为吸底合计条预留空间 */
+/* 吸底 bottom-bar(36px) 占位：滚动区底部留白，最后一行不被遮挡 */
+.table-wrap.page-scroll { padding-bottom: 40px; }
+.filter-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; flex-shrink: 0; }
 .filter-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .global-search { min-width: 340px; flex: 0 1 420px; }
 .clear-all { color: var(--primary); }
 /* 列头允许漏斗按钮溢出展示，不被裁切 */
 .approval-table thead th { overflow: visible; }
+/* 表头随表体滚动吸顶（不透明背景，避免行透出） */
+.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
 
 /* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
 .approval-table { width: 100%; table-layout: fixed; }

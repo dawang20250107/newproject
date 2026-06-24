@@ -151,12 +151,12 @@ onMounted(() => {
       </div>
 
       <!-- Table -->
-      <div class="card">
+      <div class="card fh-fill">
         <div class="section-title">
           项目毛利明细
           <span class="section-sub">{{ bu }} · {{ year }}年{{ month }}月 · {{ mode === 'direct' ? '直接口径' : '分摊口径' }}</span>
         </div>
-        <div class="table-wrap">
+        <div class="table-wrap page-scroll">
           <table class="pm-table">
             <thead>
               <tr>
@@ -262,6 +262,10 @@ onMounted(() => {
 .pm-empty-ico { font-size: 40px; margin-bottom: 10px; opacity: .85; }
 .pm-empty-title { font-size: 15px; font-weight: 700; color: var(--text); }
 .pm-empty-sub { font-size: 12.5px; color: var(--muted); margin-top: 6px; max-width: 420px; line-height: 1.6; }
+
+/* 固定视口：表头吸顶 + 为吸底栏预留空间 */
+.fh-fill { padding-bottom: 40px; }
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
 
 .pm-table { width: 100%; font-size: 13px; }
 .pm-table th.ctr, .pm-table td.ctr { width: 44px; }

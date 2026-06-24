@@ -1404,14 +1404,8 @@ onMounted(async () => {
   }
   load()
   window.addEventListener('pk:depts-changed', onScopeChange)
-  // 固定布局：锁页面滚动，只让表格区内滚，鼠标滚轮不再上下翻整页
-  const mc = document.querySelector('.main-content')
-  if (mc) mc.classList.add('full-height-view')
 })
-onBeforeUnmount(() => {
-  window.removeEventListener('pk:depts-changed', onScopeChange)
-  document.querySelector('.main-content')?.classList.remove('full-height-view')
-})
+onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 function clearFilters() {
   conditions.value = []
   matchMode.value = 'all'

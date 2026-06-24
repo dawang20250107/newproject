@@ -144,7 +144,7 @@ async function save() {
         >{{ j.label }}</button>
       </div>
 
-      <div v-if="current" class="card">
+      <div v-if="current" class="card page-scroll">
         <div v-if="error" class="alert alert-err">{{ error }}</div>
 
         <!-- pages -->
@@ -358,6 +358,8 @@ async function save() {
 .perm-chip.alt.on .dot { background: #1565c0; box-shadow: 0 0 8px rgba(21,101,192,0.5); }
 
 .perm-table { width: 100%; }
+/* sticky header while card scrolls (fixed-viewport layout) */
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #fffdfa; }
 .perm-table th.ctr, .perm-table td.ctr { text-align: center; width: 130px; }
 .perm-table .fname { font-weight: 600; }
 .all-row { display: flex; gap: 4px; justify-content: center; margin-top: 4px; }

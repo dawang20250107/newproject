@@ -564,7 +564,7 @@ onMounted(async () => {
 
     <!-- ── Advance list (预收/预付) ── -->
     <template v-if="isAdvanceMode">
-      <div class="card">
+      <div class="card fh-fill">
         <div class="filter-row">
           <input v-model="filters.q" class="inp sm global-search" placeholder="🔍 全局搜索：往来单位 / 项目 / 编号 / 备注…" @input="onQInput" />
           <select v-model="filters.year" class="sel sm" @change="onFilterChange">
@@ -595,7 +595,7 @@ onMounted(async () => {
           <button v-if="canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增{{ dirLabel }}</button>
         </div>
 
-        <div class="table-scroll">
+        <div class="table-scroll page-scroll">
           <table class="data-table">
             <thead>
               <tr>
@@ -674,7 +674,7 @@ onMounted(async () => {
           <div class="kpi-v" :style="{ color: parseFloat(diffData.summary.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(diffData.summary.diff) }}</div></div>
       </div>
 
-      <div class="card">
+      <div class="card fh-fill">
         <div class="filter-row">
           <input v-model="diffQ" class="inp sm" style="width:220px" placeholder="搜项目简称" @input="onDiffSearch" />
           <div style="flex:1"></div>
@@ -686,7 +686,7 @@ onMounted(async () => {
         <div v-else-if="!diffData?.rows?.length" class="empty" style="padding:30px;text-align:center">
           暂无数据——只有挂了项目台账的预收/预付才参与差异对照
         </div>
-        <div v-else class="table-wrap">
+        <div v-else class="table-wrap page-scroll">
           <table class="diff-table">
             <thead>
               <tr>
@@ -746,7 +746,7 @@ onMounted(async () => {
 
     <!-- ── Supplier pool ── -->
     <template v-else>
-      <div class="card">
+      <div class="card fh-fill">
         <div class="filter-row">
           <select v-model="supplierFilters.type" class="sel sm" @change="loadSuppliers">
             <option value="">全部类型</option>
@@ -762,7 +762,7 @@ onMounted(async () => {
           <button v-if="canCreate" class="btn btn-primary btn-sm" @click="openCreateSupplier">+ 新增供应商</button>
         </div>
 
-        <div class="table-scroll">
+        <div class="table-scroll page-scroll">
           <table class="data-table">
             <thead>
               <tr>
@@ -1063,6 +1063,11 @@ onMounted(async () => {
 .btn.disabled { opacity: .6; pointer-events: none; }
 
 .table-scroll { overflow-x: auto; }
+/* fixed-viewport: scroll wrappers fill the card; sticky header stays put */
+.table-scroll.page-scroll { overflow: auto; }
+.table-scroll.page-scroll thead th,
+.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.pager { flex-shrink: 0; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 760px; }
 .data-table.compact { min-width: 0; }
 .data-table th, .data-table td { padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }

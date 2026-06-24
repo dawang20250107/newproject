@@ -136,14 +136,14 @@ onMounted(async () => {
       </div>
     </div>
 
-    <div class="card">
+    <div class="card fh-fill">
       <div class="filter-strip">
         <input v-model="q" placeholder="🔍 全局搜索：操作人 / 接口路径" class="search-input global-search" @input="onSearch" />
         <button v-if="activeFilterCount || q || sortField" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters">清除全部筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
         <SchemePicker :ctl="schemes" :can-public="true" :is-super-admin="true" />
       </div>
 
-      <div class="table-wrap" style="margin-top:12px">
+      <div class="table-wrap page-scroll" style="margin-top:12px">
         <table class="audit-table">
           <thead>
             <tr>
@@ -212,6 +212,8 @@ onMounted(async () => {
 /* 列头允许漏斗按钮溢出展示，不被裁切 */
 .audit-table thead th { overflow: visible; }
 .audit-table th { background: var(--th-bg, #f6f3ef); color: var(--muted); padding: 8px 10px; font-weight: 600; text-align: left; white-space: nowrap; }
+/* sticky header while body scrolls (fixed-viewport layout) */
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f6f3ef; }
 .audit-table th.ctr, .audit-table td.ctr { text-align: center; }
 .audit-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); }
 .data-row:hover { background: rgba(0,0,0,0.018); }
@@ -232,7 +234,7 @@ onMounted(async () => {
 .exp-btn:hover { border-color: #1565c0; color: #1565c0; }
 .payload-row td { background: rgba(0,0,0,0.02); }
 .payload-pre { margin: 0; font-size: 12px; max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
-.pagination { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; }
+.pagination { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; flex-shrink: 0; }
 .page-btn { padding: 5px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; font-size: 13px; cursor: pointer; }
 .page-btn:disabled { opacity: .4; cursor: default; }
 .page-info { font-size: 13px; color: var(--muted); }

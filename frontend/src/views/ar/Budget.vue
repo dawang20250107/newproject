@@ -510,6 +510,9 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
       <button :class="['seg-btn', activeTab === 'data' ? 'active' : '']" @click="activeTab = 'data'">数据加工</button>
     </div>
 
+    <!-- Tab body: scrolls inside the locked viewport while header/tabs stay fixed -->
+    <div class="bgt-body page-scroll">
+
     <!-- ── Summary Tab ── -->
     <template v-if="activeTab === 'summary'">
 
@@ -896,6 +899,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
       </div>
     </template>
 
+    </div><!-- /.bgt-body -->
+
     <!-- 业财损益卡（项目对照点击行） -->
     <ProjectPnlCard v-if="pnlTarget" :name="pnlTarget.name" :year="pnlTarget.year"
       :askable="false" @close="pnlTarget = null" />
@@ -966,6 +971,12 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 </template>
 
 <style scoped>
+/* ── Fixed-viewport layout: header/tabs stay put, tab body scrolls ── */
+.bgt-body { /* .page-scroll (global) handles flex-grow + overflow */ }
+.topbar,
+.bgt-filterbar,
+.segment-ctrl { flex-shrink: 0; }
+
 /* ── Filter bar ── */
 .bgt-filterbar {
   display: flex; align-items: center;

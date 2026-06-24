@@ -209,8 +209,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     </div>
 
     <!-- Table -->
-    <div class="card" :class="{ 'data-reloading': loading && items.length }">
-      <div class="table-wrap">
+    <div class="card fh-fill" :class="{ 'data-reloading': loading && items.length }">
+      <div class="table-wrap page-scroll">
         <table class="ct-table">
           <thead>
             <tr>
@@ -350,6 +350,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
 .ct-table { width: 100%; font-size: 12.5px; }
 .ct-table th { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 9px 12px; background: rgba(0,0,0,0.025); border-bottom: 1px solid rgba(0,0,0,0.06); white-space: nowrap; }
+/* 固定视口：表头吸顶，仅表体内部滚动（用不透明色，避免滚动内容透出） */
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f5f2ee; }
 .ct-table td { padding: 9px 12px; vertical-align: middle; }
 .ct-table .data-row:hover { background: rgba(201,99,66,0.04); }
 .ct-table .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.035); }
@@ -367,7 +369,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .icon-btn:hover { border-color: var(--primary); color: var(--primary); }
 .icon-btn-danger:hover { border-color: #c62828; color: #c62828; }
 
-.pagination { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 16px 0 4px; }
+.pagination { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 16px 0 4px; flex-shrink: 0; }
 .page-btn { padding: 5px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,252,250,0.7); font-size: 13px; cursor: pointer; }
 .page-btn:disabled { opacity: .35; cursor: default; }
 .page-info { font-size: 13px; color: var(--muted); }

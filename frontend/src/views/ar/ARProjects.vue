@@ -469,7 +469,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
       </div>
     </div>
 
-    <div>
+    <div class="fh-fill">
     <!-- Stats strip -->
     <div class="stats-strip">
       <div class="stat-pill">
@@ -555,8 +555,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     </div>
 
     <!-- Table card -->
-    <div class="card" :class="{ 'data-reloading': loading && items.length }">
-      <div class="table-wrap">
+    <div class="card fh-fill" :class="{ 'data-reloading': loading && items.length }">
+      <div class="table-wrap page-scroll">
         <table class="proj-table">
           <thead>
             <tr>
@@ -960,6 +960,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 }
 /* 列头允许筛选漏斗按钮溢出展示，不被裁切 */
 .proj-table thead th { overflow: visible; }
+/* 固定视口：表头吸顶，仅表体内部滚动（用不透明色，避免滚动内容透出） */
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f5f2ee; }
 /* 单元格强制单行：行高不随列宽变化，从设计上杜绝「滚动条↔换行↔高度」回流抖动。
    两行结构的单元格（客户名+简称）每行各自单行截断，整体高度仍恒定。 */
 .proj-table td { padding: 5px 7px; vertical-align: middle; white-space: nowrap; }
@@ -1038,7 +1040,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .icon-btn:hover { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.08); }
 .icon-btn-danger:hover { border-color: #c62828; color: #c62828; background: rgba(198,40,40,0.07); }
 
-.pagination { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 16px 0 4px; }
+.pagination { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 16px 0 4px; flex-shrink: 0; }
 .page-btn { padding: 5px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,252,250,0.7); color: var(--text); font-size: 13px; cursor: pointer; transition: all 0.14s; }
 .page-btn:hover { border-color: var(--primary); color: var(--primary); }
 .page-btn:disabled { opacity: 0.35; cursor: default; }

@@ -255,7 +255,7 @@ async function reject(u) {
       <SchemePicker v-if="tab === 'all'" :ctl="schemes" :can-public="true" :is-super-admin="true" :class="{ 'scheme-picker-push': !hasColFilters }" />
     </div>
 
-    <div class="card">
+    <div class="card fh-fill">
       <EmptyState v-if="loading" loading />
 
       <!-- PENDING TAB -->
@@ -317,7 +317,7 @@ async function reject(u) {
       <!-- ALL APPROVED TAB -->
       <template v-else>
         <EmptyState v-if="!activeUsers.length" icon="👤" text="暂无用户" />
-        <div v-else class="table-wrap">
+        <div v-else class="table-wrap page-scroll">
           <table>
             <thead>
               <tr>
@@ -522,6 +522,8 @@ async function reject(u) {
 
 /* 列头筛选漏斗不被裁剪 */
 .table-wrap thead th { overflow: visible; }
+/* sticky header while body scrolls (fixed-viewport layout) */
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
 .clear-filters-btn { margin-left: auto; align-self: center; }
 .scheme-picker-push { margin-left: auto; }
 
