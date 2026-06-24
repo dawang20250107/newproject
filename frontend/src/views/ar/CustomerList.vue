@@ -8,6 +8,9 @@ import SkeletonRow from '../../components/SkeletonRow.vue'
 import SchemePicker from '../../components/SchemePicker.vue'
 import { useTableSchemes } from '../../composables/useTableSchemes.js'
 import { useColWidths } from '../../composables/useColWidths.js'
+import ContextMenu from '../../components/ContextMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu.js'
+import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 
 // 项目损益卡（复用 P1 组件）— 点客户项目即下钻全链路损益
 const ProjectPnlCard = defineAsyncComponent(() => import('../caiwu/ProjectPnlCard.vue'))
@@ -246,6 +249,65 @@ async function saveCustomer() {
   finally { saving.value = false }
 }
 
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const ctx = useContextMenu()
+const ROW_COPY_COLS = [
+  { key: 'name', label: '客户名称' },
+  { key: 'contact', label: '联系人' },
+  { key: 'status', label: '状态' },
+  { key: 'level', label: '等级' },
+  { key: 'delivery_dept', label: '事业部' },
+  { key: 'project_count', label: '项目数' },
+  { key: 'invoiced', label: '已开票' },
+  { key: 'outstanding', label: '未收' },
+  { key: 'overdue', label: '逾期' },
+]
+async function copyField(val, label) {
+  const ok = await copyText(val)
+  showToast(ok ? `✓ 已复制：${label}` : '复制失败')
+}
+async function copyWholeRow(c) {
+  const ok = await copyRowTSV(c, ROW_COPY_COLS, { header: true })
+  showToast(ok ? '✓ 已复制整行（含表头，可粘贴到 Excel）' : '复制失败')
+}
+// 从行直接编辑：拉取完整客户后填表（行数据缺 notes/customer_date 等字段）
+async function editCustomerRow(c) {
+  try {
+    const d = (await ar.getCustomer(c.id)).data
+    Object.assign(editForm, { id: d.id, name: d.name, delivery_dept: d.delivery_dept || '', level: d.level || '', status: d.status || '运作中', contact: d.contact || '', customer_date: d.customer_date || '', notes: d.notes || '', push_status: false })
+    showEdit.value = true
+  } catch (e) { showToast(e?.error || '加载客户失败') }
+}
+async function deleteCustomerRow(c) {
+  if (!confirm(`确定删除客户「${c.name}」？若名下仍有项目或应收，系统将拒绝删除。`)) return
+  try {
+    await ar.deleteCustomer(c.id)
+    showToast('✓ 已删除')
+    await load()
+  } catch (e) { showToast(e?.error || e?.msg || '删除失败（可能名下仍有项目）') }
+}
+const ctxItems = computed(() => {
+  const c = ctx.menu.payload
+  if (!c) return []
+  return [
+    { key: 'detail', label: '查看详情与项目损益', icon: 'eye', shortcut: '↵', action: r => openDetail(r) },
+    { key: 'edit', label: '编辑客户', icon: 'edit', shortcut: 'E', hidden: !auth.canArWrite, action: r => editCustomerRow(r) },
+    { divider: true },
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: r => copyWholeRow(r) },
+        { divider: true },
+        { key: 'copy-name', label: '客户名称', icon: 'customer', action: r => copyField(r.name, r.name) },
+        { key: 'copy-contact', label: '联系人', icon: 'cell', hidden: !c.contact, action: r => copyField(r.contact, r.contact) },
+        { key: 'copy-out', label: '未收金额', icon: 'cell', action: r => copyField(String(r.outstanding ?? 0), String(r.outstanding ?? 0)) },
+      ],
+    },
+    { divider: true },
+    { key: 'del', label: '删除客户', icon: 'trash', danger: true, hidden: !auth.canDelete, action: r => deleteCustomerRow(r) },
+  ]
+})
+
 onMounted(async () => {
   const applied = await schemes.loadAndApplyDefault()
   if (!applied) load(true)
@@ -325,7 +387,7 @@ onMounted(async () => {
               <td colspan="10" class="empty">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></td>
             </tr>
             <tr v-else-if="!loading && !items.length"><td colspan="10" class="empty">暂无客户数据</td></tr>
-            <tr v-for="c in items" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)">
+            <tr v-for="c in items" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)" @contextmenu.prevent="ctx.open($event, c)">
               <td class="ctr chk-col sticky-col" @click.stop><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
               <td class="l name sticky-col" :style="cw.thStyle('name')" :title="c.name + (c.contact ? ' · ' + c.contact : '')">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
               <td class="ctr"><span class="st-pill" :class="statusClass(c.status)">{{ c.status || '运作中' }}</span></td>
@@ -411,6 +473,9 @@ onMounted(async () => {
 
     <!-- 项目损益卡 -->
     <ProjectPnlCard v-if="pnlName" :name="pnlName" :year="year" @close="pnlName = ''" />
+
+    <!-- 右键上下文菜单 -->
+    <ContextMenu :ctx="ctx" :items="ctxItems" />
 
     <!-- 编辑/新建客户 -->
     <Teleport to="body">

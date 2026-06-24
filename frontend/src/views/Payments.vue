@@ -16,6 +16,9 @@ import SkeletonRow from '../components/SkeletonRow.vue'
 import SchemePicker from '../components/SchemePicker.vue'
 import { useTableSchemes } from '../composables/useTableSchemes.js'
 import { useColWidths } from '../composables/useColWidths.js'
+import ContextMenu from '../components/ContextMenu.vue'
+import { useContextMenu } from '../composables/useContextMenu.js'
+import { copyText, copyRowTSV } from '../utils/clipboard.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -431,6 +434,53 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 function openAdd() { editItem.value = null; showModal.value = true }
 function openEdit(p) { editItem.value = p; showModal.value = true }
 
+// ── 右键上下文菜单 ────────────────────────────────────────────────────────────
+const ctx = useContextMenu()
+const ROW_COPY_COLS = [
+  { key: 'department', label: '事业部' },
+  { key: 'project_short_name', label: '项目' },
+  { key: 'payee', label: '收款方' },
+  { key: 'approval_number', label: '审批单号' },
+  { key: 'planned_date', label: '计划日期' },
+  { key: 'total_amount', label: '计划额', format: v => fmtMoney(v) },
+  { key: 'total_paid', label: '已付', format: v => fmtMoney(v) },
+  { key: 'remaining', label: '剩余', format: v => fmtMoney(v) },
+  { key: 'status', label: '状态' },
+]
+async function copyField(val, label) {
+  const ok = await copyText(val)
+  ok ? toast.success(`已复制${label ? '：' + label : ''}`) : toast.error('复制失败')
+}
+async function copyWholeRow(p) {
+  const ok = await copyRowTSV(p, ROW_COPY_COLS, { header: true })
+  ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
+}
+const ctxItems = computed(() => {
+  const p = ctx.menu.payload
+  if (!p) return []
+  const canOffset = auth.canAction('wo_prepaid') && (p.project_short_name || p.project_no)
+  return [
+    { key: 'detail', label: expandedRows.has(p.id) ? '收起明细' : '展开计划/付款明细', icon: 'eye', action: r => toggleRowDetail(r.id) },
+    { key: 'edit', label: '编辑', icon: 'edit', shortcut: 'E', hidden: !auth.canWrite, action: r => openEdit(r) },
+    { key: 'offset', label: '预付核销', icon: 'refresh', hidden: !canOffset, action: r => openOffset(r) },
+    { key: 'logs', label: '变更日志', icon: 'history', shortcut: 'L', action: r => openLogs(r) },
+    { divider: true },
+    {
+      key: 'copy', label: '复制', icon: 'copy',
+      children: [
+        { key: 'copy-row', label: '复制整行', icon: 'copy', shortcut: '⌘C', action: r => copyWholeRow(r) },
+        { divider: true },
+        { key: 'copy-proj', label: '项目', icon: 'cell', hidden: !p.project_short_name, action: r => copyField(r.project_short_name, r.project_short_name) },
+        { key: 'copy-payee', label: '收款方', icon: 'customer', hidden: !p.payee, action: r => copyField(r.payee, r.payee) },
+        { key: 'copy-appr', label: '审批单号', icon: 'invoice', hidden: !p.approval_number, action: r => copyField(r.approval_number, r.approval_number) },
+        { key: 'copy-remain', label: '剩余应付', icon: 'cell', action: r => copyField(fmtMoney(r.remaining), fmtMoney(r.remaining)) },
+      ],
+    },
+    { divider: true },
+    { key: 'del', label: '删除', icon: 'trash', danger: true, hidden: !auth.canDelete, action: r => onDelete(r) },
+  ]
+})
+
 // ── change-log drawer ─────────────────────────────────────────────────────────
 const logsOpen = ref(false)
 const logsTarget = ref(null)
@@ -739,7 +789,8 @@ async function doBatchPay() {
             </template>
             <template v-else>
             <template v-for="p in items" :key="p.id">
-            <tr :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today, 'row-sel': selectedIds.has(p.id) }">
+            <tr :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today, 'row-sel': selectedIds.has(p.id) }"
+                @contextmenu.prevent="ctx.open($event, p)">
               <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(p.id)" @change="toggleRow(p.id)" /></td>
               <td v-if="colVisible('department')">{{ p.department }}</td>
               <td v-if="colVisible('secondary_dept')" class="cell-clip">{{ p.secondary_dept || '—' }}</td>
@@ -1013,6 +1064,9 @@ async function doBatchPay() {
     <!-- AI 导入预检 -->
     <ImportPrecheckModal :report="precheckResult" :busy="precheckBusy"
       @close="precheckResult = null" @apply="onPrecheckApply" />
+
+    <!-- 右键上下文菜单 -->
+    <ContextMenu :ctx="ctx" :items="ctxItems" />
 
     <!-- Change log drawer -->
     <Teleport to="body">
