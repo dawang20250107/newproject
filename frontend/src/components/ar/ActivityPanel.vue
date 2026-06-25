@@ -1029,7 +1029,7 @@ function onKey(e) {
 .ap-backdrop.ap-open { opacity: 1; }
 
 .ap-panel {
-  position: fixed; top: 0; right: 0; bottom: 0; width: 600px; max-width: 97vw;
+  position: fixed; top: 0; right: 0; bottom: 0; width: 740px; max-width: 97vw;
   z-index: 701;
   background: #f8f5f0;
   border-left: 1px solid rgba(160,120,80,.2);
@@ -1131,7 +1131,7 @@ function onKey(e) {
 .ai-note-ta { flex: 1; border: 1.5px solid rgba(201,99,66,.4); border-radius: 6px; padding: 5px 8px; font-size: 12px; color: #4a3322; resize: vertical; font-family: inherit; outline: none; box-sizing: border-box; }
 
 /* ── 主体滚动区 ── */
-.ap-body { flex: 1; overflow-y: auto; padding: 14px 16px 8px; display: flex; flex-direction: column; gap: 10px; scroll-behavior: smooth; }
+.ap-body { flex: 1; overflow-y: auto; padding: 10px 14px 6px; display: flex; flex-direction: column; gap: 8px; scroll-behavior: smooth; }
 /* 滚动容器内每个块都锁定自然高度：.lc-detail / .dun-section / 审计区都带
    overflow:hidden，若被 flex 压缩，自动最小尺寸会塌缩为 0 进而裁切内容
    （表现为"工作台内容被压缩看不见"）。统一禁止收缩，超出由 .ap-body 滚动。 */
@@ -1154,7 +1154,7 @@ function onKey(e) {
   background: #ffffff;
   border-radius: 18px;
   border: 1px solid rgba(160,120,80,.16);
-  padding: 14px 14px 16px;
+  padding: 10px 12px 12px;
   box-shadow: 0 2px 12px rgba(40,20,8,.06), 0 1px 3px rgba(40,20,8,.04);
   flex-shrink: 0;
   gap: 0;
@@ -1184,7 +1184,7 @@ function onKey(e) {
 .lc-node {
   flex: 1;
   display: flex; flex-direction: column; align-items: center;
-  gap: 6px; padding: 12px 8px 14px;
+  gap: 4px; padding: 8px 6px 10px;
   border: 2px solid transparent;
   border-radius: 16px;
   background: #faf7f3;
@@ -1224,16 +1224,16 @@ function onKey(e) {
 
 /* 图标圆 */
 .lc-dot {
-  width: 44px; height: 44px; border-radius: 50%;
+  width: 36px; height: 36px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  font-size: 18px; font-weight: 700;
+  font-size: 15px; font-weight: 700;
   background: #ece7e1; color: #a8917e;
   transition: all .22s cubic-bezier(.4,0,.2,1);
   flex-shrink: 0;
 }
 .lc-dot-done {
   background: linear-gradient(135deg, #66bb6a, #1b5e20);
-  color: #fff; font-size: 20px;
+  color: #fff; font-size: 17px;
   box-shadow: 0 4px 14px rgba(46,125,50,.35);
 }
 .lc-dot-active {
@@ -1306,7 +1306,7 @@ function onKey(e) {
 /* 节点详情头部 */
 .nd-stage-header {
   display: flex; align-items: center; gap: 10px;
-  padding: 12px 16px 11px;
+  padding: 9px 14px 8px;
   background: linear-gradient(135deg,
     color-mix(in srgb, var(--ac) 8%, #fff) 0%,
     #fff 100%);
@@ -1327,8 +1327,8 @@ function onKey(e) {
 /* 详情主体：每个直接子块自带 margin:x 16px 做横向内缩并保留各自的纵向
    padding；这里只兜底首块顶距与末块底距。不要再加 padding:0 16px 通配规则
    ——它会以更高特异性清掉子块的纵向 padding，把字段/按钮挤成一条线。 */
-.lc-detail > *:not(.nd-stage-header):first-of-type { margin-top: 12px; }
-.lc-detail > *:last-child { margin-bottom: 14px; }
+.lc-detail > *:not(.nd-stage-header):first-of-type { margin-top: 8px; }
+.lc-detail > *:last-child { margin-bottom: 10px; }
 
 /* 跳过开票卡片 */
 .lc-detail > .nd-skip-card {
@@ -1336,8 +1336,8 @@ function onKey(e) {
   background: linear-gradient(135deg, #f5f0eb, #faf8f5);
   border: 1.5px solid rgba(160,120,80,.2);
   border-radius: 12px;
-  padding: 13px 14px;
-  margin: 12px 16px 0;
+  padding: 10px 12px;
+  margin: 8px 14px 0;
 }
 .nd-skip-icon { font-size: 24px; flex-shrink: 0; }
 .nd-skip-body { flex: 1; display: flex; flex-direction: column; gap: 2px; }
@@ -1365,15 +1365,15 @@ function onKey(e) {
   background: #faf7f3;
   border: 1.5px solid rgba(160,120,80,.14);
   border-radius: 10px;
-  padding: 10px 12px;
-  display: flex; flex-direction: column; gap: 9px;
-  margin: 12px 16px 0;
+  padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 7px;
+  margin: 8px 14px 0;
 }
 .lc-detail > .nd-fields-2 {
   display: grid; grid-template-columns: 1fr 1fr;
-  gap: 9px 18px;
+  gap: 7px 16px;
   padding: 0;
-  margin: 12px 16px 0;
+  margin: 8px 14px 0;
 }
 .kf { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .kf-lab {
@@ -1414,7 +1414,7 @@ function onKey(e) {
    ════════════════════════════════════════════════════ */
 .nd-acts {
   display: flex; flex-direction: column; gap: 0;
-  margin: 10px 16px 0;
+  margin: 8px 14px 0;
   position: relative;
 }
 .nd-acts::before {
@@ -1469,7 +1469,7 @@ function onKey(e) {
 .act-cancel { padding: 3px 10px; border: 1.5px solid rgba(160,120,80,.28); border-radius: 7px; background: #fff; font-size: 11.5px; cursor: pointer; color: #9b8070; }
 
 /* 附件区 */
-.nd-atts { display: flex; flex-direction: column; gap: 5px; margin: 8px 16px 0; }
+.nd-atts { display: flex; flex-direction: column; gap: 5px; margin: 6px 14px 0; }
 .att-file {
   display: flex; align-items: center; gap: 8px;
   background: #faf7f3; border: 1px solid rgba(160,120,80,.15);
@@ -1494,9 +1494,9 @@ function onKey(e) {
 /* "记录跟进" 快捷按钮 */
 .nd-compose-btn {
   border: 1.5px dashed rgba(160,120,80,.32); background: none;
-  color: #b0987e; font-size: 11.5px; padding: 8px;
+  color: #b0987e; font-size: 11.5px; padding: 7px;
   border-radius: 10px; cursor: pointer; transition: all .15s; font-weight: 600;
-  margin: 8px 16px 14px; text-align: center;
+  margin: 6px 14px 10px; text-align: center;
 }
 .nd-compose-btn:hover {
   background: color-mix(in srgb, var(--ac, #c96342) 5%, transparent);
@@ -1504,7 +1504,7 @@ function onKey(e) {
 }
 
 /* ── 回款 ── */
-.pay-prog { display: flex; flex-direction: column; gap: 5px; margin: 12px 16px 0; }
+.pay-prog { display: flex; flex-direction: column; gap: 5px; margin: 8px 14px 0; }
 .pay-prog-bar { height: 10px; border-radius: 7px; background: rgba(160,120,80,.15); overflow: hidden; }
 .pay-prog-fill {
   height: 100%; border-radius: 7px;
@@ -1512,7 +1512,7 @@ function onKey(e) {
   transition: width .5s cubic-bezier(.4,0,.2,1);
 }
 .pay-prog-txt { display: flex; justify-content: space-between; font-size: 11px; color: #9b8070; font-weight: 700; }
-.pay-list  { display: flex; flex-direction: column; gap: 5px; margin: 10px 16px 0; }
+.pay-list  { display: flex; flex-direction: column; gap: 5px; margin: 8px 14px 0; }
 .pay-item  {
   display: flex; align-items: center; gap: 8px;
   background: #fff; border: 1px solid rgba(160,120,80,.15);
@@ -1527,8 +1527,8 @@ function onKey(e) {
 .pay-cp  { font-size: 10px; color: #9b8070; }
 .pay-del { border: none; background: none; font-size: 12px; cursor: pointer; opacity: .55; flex-shrink: 0; transition: opacity .12s; }
 .pay-del:hover { opacity: 1; }
-.pay-empty { font-size: 11.5px; color: #c4b3a5; text-align: center; padding: 8px 0; margin: 4px 16px 0; }
-.pay-form  { display: flex; flex-direction: column; gap: 7px; margin: 10px 16px 0; }
+.pay-empty { font-size: 11.5px; color: #c4b3a5; text-align: center; padding: 6px 0; margin: 4px 14px 0; }
+.pay-form  { display: flex; flex-direction: column; gap: 7px; margin: 8px 14px 0; }
 .pay-srcs  { display: flex; gap: 6px; }
 .pay-src-tab {
   flex: 1; border: 1.5px solid rgba(160,120,80,.25); background: #fff;
@@ -1552,9 +1552,9 @@ function onKey(e) {
 .pay-settle {
   border: 2px dashed rgba(46,158,91,.45);
   background: rgba(46,158,91,.04); color: #1b5e20;
-  font-size: 11.5px; font-weight: 700; padding: 8px;
+  font-size: 11.5px; font-weight: 700; padding: 7px;
   border-radius: 10px; cursor: pointer; transition: all .15s;
-  margin: 8px 16px 0; display: block; width: calc(100% - 32px);
+  margin: 6px 14px 0; display: block; width: calc(100% - 28px);
 }
 .pay-settle:hover:not(:disabled) { background: rgba(46,158,91,.1); box-shadow: 0 2px 10px rgba(46,125,50,.15); }
 .pay-settle:disabled { opacity: .5; cursor: default; }
