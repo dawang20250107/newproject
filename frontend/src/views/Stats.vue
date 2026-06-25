@@ -216,10 +216,14 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
   align-items: center;
   gap: 8px;
 }
-/* 统一控件高度并垂直居中对齐 */
+/* 统一控件高度并垂直居中对齐；覆盖全局 input/select 的 padding:9px 13px，
+   避免在 height:32px + box-sizing:border-box 下文字被上下裁剪 */
 .date-query select {
   height: 32px;
-  width: 86px;
+  width: auto;
+  min-width: 80px;
+  padding: 4px 8px;
+  font-size: 13px;
 }
 .date-query .btn-sm { height: 32px; }
 

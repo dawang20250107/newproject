@@ -452,7 +452,7 @@ onBeforeUnmount(() => {
 .colf-enum { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .colf-chk { display: flex; align-items: center; gap: 7px; padding: 4px 4px; border-radius: 5px; cursor: pointer; }
 .colf-chk:hover { background: rgba(201,99,66,0.06); }
-.colf-chk input { margin: 0; flex-shrink: 0; }
+.colf-chk input { margin: 0; flex-shrink: 0; width: auto; }
 .colf-chk span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .colf-chk-all { font-weight: 700; border-bottom: 1px dashed var(--border); border-radius: 0; padding-bottom: 5px; }
 .colf-vmsg { font-size: 11px; color: var(--muted); padding: 4px 2px; }
