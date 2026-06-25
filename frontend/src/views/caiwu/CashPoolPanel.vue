@@ -245,58 +245,77 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     <div v-else-if="err" class="cp-empty err">{{ err }}</div>
     <template v-else-if="data">
 
-      <!-- ══ 集团资金总览横幅 ══ -->
-      <div class="cp-hero">
+      <!-- ══ 资金总览 · 命令条 ══ -->
+      <header class="cp-hero">
+        <div class="hero-glow"></div>
         <div class="hero-waves"><i class="hw hw1"></i><i class="hw hw2"></i></div>
-        <div class="hero-main">
-          <div class="hero-title">资金池<span class="hero-sub">事业部资金调度 · {{ data.today }}</span></div>
-          <template v-if="data.group">
-            <div class="hero-balance">
-              <div class="hb-num">{{ wan(data.group.balance) }}</div>
-              <div class="hb-label">{{ balanceLabel }}</div>
+
+        <!-- 顶行：标识 + 操作 -->
+        <div class="hero-row">
+          <div class="hero-id">
+            <span class="hero-mark">💧</span>
+            <div class="hero-id-txt">
+              <div class="hero-title">资金池</div>
+              <div class="hero-sub">事业部资金调度 · {{ data.today }}</div>
             </div>
-            <div class="hero-flow">
-              <div v-for="(k, i) in ['d30','d60','d90']" :key="k" class="hf-step">
-                <div class="hf-val" :style="`color:${projColor(data.group['projection_' + k])}`">{{ wan(data.group['projection_' + k]) }}</div>
-                <div class="hf-k">+{{ [30,60,90][i] }}天预测余额</div>
-              </div>
-              <div class="hf-step pipe">
-                <div class="hf-val">{{ wan(data.group.pipeline_approved) }}<em> / {{ wan(data.group.pipeline_pending) }}</em></div>
-                <div class="hf-k">在途支出：已批 / 审批中</div>
-              </div>
-            </div>
-          </template>
-          <div v-else class="hero-balance"><div class="hb-label">尚未配置任何资金池</div></div>
+          </div>
           <div class="hero-actions">
             <span v-if="data.group && (data.group.danger_count || data.group.warn_count)" class="hero-alert">
-              <i v-if="data.group.danger_count" class="ha-danger">🚨 {{ data.group.danger_count }}池告急</i>
-              <i v-if="data.group.warn_count" class="ha-warn">⚠ {{ data.group.warn_count }}池预警</i>
+              <i v-if="data.group.danger_count" class="ha-danger">🚨 {{ data.group.danger_count }} 池告急</i>
+              <i v-if="data.group.warn_count" class="ha-warn">⚠ {{ data.group.warn_count }} 池预警</i>
             </span>
-            <label class="hero-pess" title="勾选后：30天预测余额按「已批待排的在途支出与待批调拨出款，30天内全部付出」的审慎口径计算">
-              <input type="checkbox" v-model="pessimistic" />审慎口径
+            <label class="hero-pess" :class="{ on: pessimistic }"
+                   title="勾选后：30天预测余额按「已批待排的在途支出与待批调拨出款，30天内全部付出」的审慎口径计算">
+              <input type="checkbox" v-model="pessimistic" /><span>审慎口径</span>
             </label>
-            <button class="hero-btn" @click="showMethodology = !showMethodology">ⓘ 口径说明</button>
-            <button v-if="auth.isSuperAdmin" class="hero-btn" @click="showTransfer = !showTransfer">⇄ 调拨</button>
-            <button v-else-if="canRequestTransfer" class="hero-btn" @click="showTransfer = !showTransfer">⇄ 申请调拨</button>
+            <button class="hero-btn" :class="{ on: showMethodology }" @click="showMethodology = !showMethodology">ⓘ 口径</button>
+            <button v-if="auth.isSuperAdmin" class="hero-btn" :class="{ on: showTransfer }" @click="showTransfer = !showTransfer">⇄ 调拨</button>
+            <button v-else-if="canRequestTransfer" class="hero-btn" :class="{ on: showTransfer }" @click="showTransfer = !showTransfer">⇄ 申请调拨</button>
             <button v-if="auth.isSuperAdmin" class="hero-btn" @click="openConfig">⚙ 池配置</button>
           </div>
         </div>
 
-        <!-- 余额对比：各池柱形同一基准 -->
-        <div v-if="configured.length" class="reservoir">
-          <div v-for="p in configured" :key="p.dept" class="rsv-col" @click="focusPool(p.dept)"
-               :title="`${p.dept}：账面余额 ${wan(p.balance)}（点击查看明细）`">
-            <div class="rsv-amt">{{ wan(p.balance) }}</div>
-            <div class="rsv-tube">
-              <div class="rsv-water" :class="`w-${p.warning.status}`" :style="`height:${colHeight(p)}%`">
-                <i class="rsv-wave"></i>
+        <!-- 主行：余额 + 预测 -->
+        <div class="hero-body">
+          <template v-if="data.group">
+            <div class="hero-balance">
+              <div class="hb-label">{{ balanceLabel }}</div>
+              <div class="hb-num">{{ wan(data.group.balance) }}</div>
+              <div class="hb-foot">
+                <span class="hb-foot-k">在途支出</span>
+                <b>{{ wan(data.group.pipeline_approved) }}</b><em>已批</em>
+                <span class="hb-foot-slash">/</span>
+                <b>{{ wan(data.group.pipeline_pending) }}</b><em>审批中</em>
               </div>
-              <i v-if="warnTick(p)" class="rsv-warntick" :style="`bottom:${warnTick(p)}%`"></i>
             </div>
-            <div class="rsv-name" :class="`t-${p.warning.status}`">{{ p.dept.replace('事业部', '') }}</div>
+            <div class="hero-proj">
+              <div v-for="(k, i) in ['d30','d60','d90']" :key="k" class="hp-step">
+                <div class="hp-val" :style="`color:${projColor(data.group['projection_' + k])}`">{{ wan(data.group['projection_' + k]) }}</div>
+                <div class="hp-k">+{{ [30,60,90][i] }} 天预测余额</div>
+              </div>
+            </div>
+          </template>
+          <div v-else class="hero-balance"><div class="hb-label">尚未配置任何资金池</div></div>
+        </div>
+
+        <!-- 余额对比：各池水位 -->
+        <div v-if="configured.length" class="reservoir">
+          <div class="rsv-caption">各池水位对比 <em>（柱高按最大余额归一 · 虚线＝资金预警线 · 点击聚焦）</em></div>
+          <div class="rsv-rail">
+            <div v-for="p in configured" :key="p.dept" class="rsv-col" @click="focusPool(p.dept)"
+                 :title="`${p.dept}：账面余额 ${wan(p.balance)}（点击查看明细）`">
+              <div class="rsv-amt">{{ wan(p.balance) }}</div>
+              <div class="rsv-tube">
+                <div class="rsv-water" :class="`w-${p.warning.status}`" :style="`height:${colHeight(p)}%`">
+                  <i class="rsv-wave"></i>
+                </div>
+                <i v-if="warnTick(p)" class="rsv-warntick" :style="`bottom:${warnTick(p)}%`"></i>
+              </div>
+              <div class="rsv-name" :class="`t-${p.warning.status}`">{{ p.dept.replace('事业部', '') }}</div>
+            </div>
           </div>
         </div>
-      </div>
+      </header>
 
       <!-- ══ 口径说明 ══ -->
       <div v-if="showMethodology" class="cp-method card">
@@ -511,205 +530,268 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 </template>
 
 <style scoped>
-.cp-panel { padding: 16px 0; }
-.cp-empty { text-align: center; padding: 40px; color: #9e9e9e; }
-.cp-empty.err { color: #c62828; }
+.cp-panel { padding: 18px 0; }
+.cp-empty { text-align: center; padding: 48px; color: var(--muted); }
+.cp-empty.err { color: var(--c-danger); }
 
-/* ══ 资金总览横幅（与侧边栏同语言：深咖啡底 + 陶土高光）══ */
-.cp-hero { position: relative; border-radius: 16px; overflow: hidden; margin-bottom: 16px;
-  background: linear-gradient(160deg, #2c180c 0%, #3e2212 45%, #56301a 100%);
-  box-shadow: 0 8px 28px rgba(60,30,12,.3); }
-.hero-waves { position: absolute; inset: 0; pointer-events: none; opacity: .5; }
+/* ════════════════════════════════════════════════════
+   资金总览 · 命令条（深陶土底 + 暖高光 + 水波）
+   ════════════════════════════════════════════════════ */
+.cp-hero { position: relative; border-radius: var(--radius-lg); overflow: hidden; margin-bottom: 18px;
+  background: linear-gradient(155deg, #2a160a 0%, #3c2011 42%, #5a3219 100%);
+  box-shadow: 0 14px 44px rgba(50,24,8,.34), 0 1px 0 rgba(255,255,255,.06) inset;
+  isolation: isolate; }
+.hero-glow { position: absolute; top: -40%; right: -10%; width: 60%; height: 180%;
+  background: radial-gradient(closest-side, rgba(224,132,92,.45), transparent 70%);
+  pointer-events: none; z-index: 0; }
+.hero-waves { position: absolute; inset: 0; pointer-events: none; opacity: .5; z-index: 0; }
 .hw { position: absolute; left: 0; width: 300%; height: 90px; bottom: -34px;
   background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 40" preserveAspectRatio="none"><path d="M0 22 Q 30 10 60 22 T 120 22 T 180 22 T 240 22 V40 H0 Z" fill="%23ffffff" opacity="0.06"/></svg>') repeat-x;
   background-size: 240px 40px; animation: heroDrift 16s linear infinite; }
 .hw2 { bottom: -22px; opacity: .8; animation-duration: 9s; animation-direction: reverse; }
 @keyframes heroDrift { to { transform: translateX(-240px); } }
 
-.hero-main { position: relative; display: flex; align-items: center; gap: 26px; padding: 18px 22px 12px; flex-wrap: wrap; }
-.hero-title { font-size: 17px; font-weight: 800; color: #f6ece1; }
-.hero-sub { display: block; font-size: 11px; font-weight: 400; color: #c49a7d; margin-top: 3px; }
-.hero-balance { display: flex; flex-direction: column; }
-.hb-num { font-size: 34px; font-weight: 800; color: #fff; letter-spacing: .5px; line-height: 1.05;
-  text-shadow: 0 2px 14px rgba(232,133,90,.4); font-variant-numeric: tabular-nums; }
-.hb-label { font-size: 11px; color: #c49a7d; margin-top: 2px; }
-.hero-flow { display: flex; gap: 20px; align-items: flex-end; }
-.hf-step { text-align: center; }
-.hf-val { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.hf-step.pipe .hf-val { color: #ffd54f; font-size: 14px; }
-.hf-step.pipe em { font-style: normal; color: #d9bda6; font-size: 12px; }
-.hf-k { font-size: 10.5px; color: #c49a7d; margin-top: 2px; }
-.hero-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.hero-alert i { font-style: normal; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 10px; margin-left: 6px; }
-.ha-danger { background: rgba(255,82,82,.18); color: #ff8a80; animation: pulse 1.6s ease-in-out infinite; }
-.ha-warn { background: rgba(255,183,77,.15); color: #ffd54f; }
+/* 顶行 */
+.hero-row { position: relative; z-index: 1; display: flex; align-items: flex-start;
+  justify-content: space-between; gap: 16px; padding: 16px 20px 0; flex-wrap: wrap; }
+.hero-id { display: flex; align-items: center; gap: 11px; }
+.hero-mark { width: 38px; height: 38px; flex-shrink: 0; border-radius: 11px; font-size: 19px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,.1); border: 1px solid rgba(232,160,120,.32);
+  box-shadow: 0 4px 14px rgba(0,0,0,.2) inset, 0 2px 8px rgba(0,0,0,.18); }
+.hero-title { font-size: 18px; font-weight: 800; color: #f7ede2; letter-spacing: .2px; }
+.hero-sub { font-size: 11.5px; color: #c79c7e; margin-top: 2px; }
+.hero-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hero-alert { display: flex; gap: 6px; }
+.hero-alert i { font-style: normal; font-size: 11.5px; font-weight: 700; padding: 4px 11px; border-radius: 20px; }
+.ha-danger { background: rgba(255,82,82,.18); color: #ff9a90; animation: pulse 1.6s ease-in-out infinite; }
+.ha-warn { background: rgba(255,183,77,.16); color: #ffd27a; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 5px rgba(255,82,82,.12); } }
-.hero-pess { font-size: 12px; color: #d9bda6; display: flex; align-items: center; gap: 5px; cursor: pointer; }
-.hero-btn { padding: 6px 14px; border: 1px solid rgba(216,166,130,.45); border-radius: 9px;
-  background: rgba(255,255,255,.07); font-size: 12.5px; color: #f6ece1; cursor: pointer; backdrop-filter: blur(4px); }
-.hero-btn:hover { background: rgba(232,133,90,.22); border-color: rgba(232,133,90,.6); }
+.hero-pess { font-size: 12px; color: #e8cdb6; display: flex; align-items: center; gap: 6px; cursor: pointer;
+  padding: 6px 12px 6px 10px; border-radius: 20px; border: 1px solid rgba(216,166,130,.3);
+  background: rgba(255,255,255,.05); transition: all .16s; user-select: none; }
+.hero-pess:hover { background: rgba(255,255,255,.1); }
+.hero-pess.on { background: rgba(232,133,90,.22); border-color: rgba(232,133,90,.55); color: #ffe7d4; }
+.hero-pess input { accent-color: #e0845c; cursor: pointer; }
+.hero-btn { padding: 7px 14px; border: 1px solid rgba(216,166,130,.4); border-radius: 20px;
+  background: rgba(255,255,255,.06); font-size: 12.5px; font-weight: 600; color: #f3e3d6; cursor: pointer;
+  transition: all .16s; }
+.hero-btn:hover { background: rgba(232,133,90,.2); border-color: rgba(232,133,90,.6); transform: translateY(-1px); }
+.hero-btn.on { background: rgba(232,133,90,.28); border-color: rgba(232,160,120,.7); color: #fff; }
 
-/* 余额对比柱 */
-.reservoir { position: relative; display: flex; align-items: flex-end; justify-content: space-around;
-  gap: 10px; padding: 8px 26px 0; height: 168px;
-  border-top: 1px solid rgba(216,166,130,.22); }
+/* 主行：余额 + 预测 */
+.hero-body { position: relative; z-index: 1; display: flex; align-items: flex-end; gap: 18px;
+  padding: 14px 20px 16px; flex-wrap: wrap; }
+.hero-balance { display: flex; flex-direction: column; gap: 3px; }
+.hb-label { font-size: 11px; font-weight: 600; color: #c79c7e; text-transform: none; letter-spacing: .3px; }
+.hb-num { font-size: 40px; font-weight: 800; color: #fff; letter-spacing: .5px; line-height: 1;
+  text-shadow: 0 2px 18px rgba(232,133,90,.45); font-variant-numeric: tabular-nums; }
+.hb-foot { display: flex; align-items: baseline; gap: 5px; margin-top: 5px; font-size: 12px; color: #d9bda6; flex-wrap: wrap; }
+.hb-foot-k { color: #b88e70; margin-right: 2px; }
+.hb-foot b { color: #ffd27a; font-weight: 700; font-variant-numeric: tabular-nums; }
+.hb-foot em { font-style: normal; color: #b88e70; font-size: 11px; }
+.hb-foot-slash { color: #8a6a52; }
+.hero-proj { display: flex; gap: 10px; margin-left: auto; }
+.hp-step { text-align: center; padding: 9px 16px; border-radius: var(--radius-sm);
+  background: rgba(255,255,255,.06); border: 1px solid rgba(216,166,130,.22); min-width: 92px; }
+.hp-val { font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.hp-k { font-size: 10.5px; color: #c79c7e; margin-top: 3px; }
+
+/* 各池水位对比 */
+.reservoir { position: relative; z-index: 1; padding: 12px 22px 6px;
+  border-top: 1px solid rgba(216,166,130,.2); background: rgba(0,0,0,.12); }
+.rsv-caption { font-size: 11px; color: #c79c7e; margin-bottom: 6px; }
+.rsv-caption em { font-style: normal; color: #9a755b; }
+.rsv-rail { display: flex; align-items: flex-end; justify-content: space-around; gap: 10px; height: 150px; }
 .rsv-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
   height: 100%; flex: 1; max-width: 120px; cursor: pointer; }
-.rsv-amt { font-size: 12px; font-weight: 700; color: #f6e3d2; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
-.rsv-tube { position: relative; width: 100%; max-width: 74px; height: 100px;
-  border: 1.5px solid rgba(216,166,130,.38); border-bottom: none; border-radius: 10px 10px 0 0;
-  background: rgba(255,255,255,.04); overflow: hidden; }
+.rsv-amt { font-size: 12px; font-weight: 700; color: #f6e3d2; margin-bottom: 5px; font-variant-numeric: tabular-nums; }
+.rsv-tube { position: relative; width: 100%; max-width: 70px; height: 96px;
+  border: 1.5px solid rgba(216,166,130,.36); border-bottom: none; border-radius: 11px 11px 0 0;
+  background: rgba(255,255,255,.04); overflow: hidden; transition: border-color .18s; }
 .rsv-water { position: absolute; bottom: 0; left: 0; right: 0; transition: height .7s cubic-bezier(.2,.8,.3,1); }
 .rsv-wave, .tank-wave { position: absolute; top: -7px; left: 0; width: 200%; height: 8px;
   background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 8" preserveAspectRatio="none"><path d="M0 4 Q 15 0 30 4 T 60 4 V8 H0 Z" fill="%23ffffff" opacity="0.55"/></svg>') repeat-x;
   background-size: 60px 8px; animation: heroDrift 5s linear infinite; }
 .rsv-warntick { position: absolute; left: 0; right: 0; border-top: 2px dashed rgba(255,138,128,.85); }
-.rsv-name { margin: 6px 0 10px; font-size: 12px; font-weight: 600; color: #d9bda6; }
-.rsv-col:hover .rsv-tube { border-color: rgba(232,133,90,.85); }
-.t-danger { color: #ff8a80; } .t-warn { color: #ffd54f; }
+.rsv-name { margin: 7px 0 10px; font-size: 12px; font-weight: 600; color: #d9bda6; transition: color .18s; }
+.rsv-col:hover .rsv-tube { border-color: rgba(232,133,90,.9); }
+.rsv-col:hover .rsv-name { color: #ffe7d4; }
+.t-danger { color: #ff9a90 !important; } .t-warn { color: #ffd27a !important; }
 .w-ok { background: linear-gradient(180deg, #e8855a 0%, #a84e32 90%); }
 .w-warn { background: linear-gradient(180deg, #ffb74d 0%, #e65100 90%); }
 .w-danger { background: linear-gradient(180deg, #e57373 0%, #b71c1c 90%); }
 
-/* ══ 池子卡片（玻璃拟态，与系统 .card 同语言）══ */
-.cp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
-.cp-card { background: var(--glass); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
-  border: 1px solid var(--glass-border); border-radius: var(--radius); padding: 16px;
-  box-shadow: var(--glass-shadow); transition: box-shadow .2s, transform .2s; transform: translateZ(0); }
-.cp-card:hover { box-shadow: 0 12px 40px rgba(100,60,30,.18), 0 1px 0 rgba(255,255,255,.7) inset; transform: translateY(-1px); }
-.cp-card.st-danger { border-color: rgba(198,40,40,.45); background: linear-gradient(180deg, rgba(198,40,40,.05), var(--glass) 40%); }
-.cp-card.st-warn { border-color: rgba(230,81,0,.4); }
+/* ════════════════════════════════════════════════════
+   口径说明
+   ════════════════════════════════════════════════════ */
+.cp-method { margin-bottom: 16px; padding: 16px 18px; background: var(--glass);
+  backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--radius); box-shadow: var(--glass-shadow); }
+.cp-method .section-title { font-size: 13.5px; font-weight: 800; color: var(--text); }
+.cp-method ul { margin: 0; padding-left: 18px; }
+.cp-method li { font-size: 12px; color: var(--text-2); line-height: 1.95; }
+.cp-method li b { color: var(--text); }
+.cp-method-note { margin: 8px 0; padding: 9px 13px; background: var(--surface-tint);
+  border-left: 3px solid var(--primary); border-radius: var(--radius-xs); list-style: none; margin-left: -18px; }
+
+/* ════════════════════════════════════════════════════
+   池子卡片
+   ════════════════════════════════════════════════════ */
+.cp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+.cp-card { position: relative; background: var(--glass);
+  backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--radius); padding: 16px 16px 14px;
+  box-shadow: var(--glass-shadow); transition: box-shadow .2s, transform .2s; transform: translateZ(0);
+  overflow: hidden; }
+.cp-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: var(--grad); opacity: .9; }
+.cp-card.st-warn::before { background: linear-gradient(90deg, #ffb74d, #e65100); }
+.cp-card.st-danger::before { background: linear-gradient(90deg, #e57373, #b71c1c); }
+.cp-card.st-none::before { display: none; }
+.cp-card:hover { box-shadow: 0 14px 44px rgba(100,60,30,.2), 0 1px 0 rgba(255,255,255,.7) inset; transform: translateY(-2px); }
+.cp-card.st-danger { border-color: var(--c-danger-bdr); background: linear-gradient(180deg, var(--c-danger-bg), var(--glass) 38%); }
+.cp-card.st-warn { border-color: var(--c-warn-bdr); }
 .cp-card.st-none { border-style: dashed; border-color: var(--border); box-shadow: none; background: rgba(255,252,248,.4); }
-.cpc-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.cpc-dept { font-size: 14.5px; font-weight: 700; color: #4a3728; }
-.cpc-badge { font-size: 11px; font-weight: 700; padding: 3px 11px; border-radius: 10px; }
-.bg-ok { background: rgba(46,125,50,.12); color: #2e7d32; }
-.bg-warn { background: rgba(230,81,0,.12); color: #e65100; }
-.bg-danger { background: rgba(198,40,40,.14); color: #c62828; animation: pulse 1.6s ease-in-out infinite; }
+.cpc-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 13px; }
+.cpc-dept { font-size: 15px; font-weight: 800; color: var(--text); letter-spacing: .2px; }
+.cpc-badge { font-size: 11px; font-weight: 700; padding: 3px 12px; border-radius: 20px; }
+.bg-ok { background: var(--c-success-bg); color: var(--c-success); border: 1px solid var(--c-success-bdr); }
+.bg-warn { background: var(--c-warn-bg); color: var(--c-warn); border: 1px solid var(--c-warn-bdr); }
+.bg-danger { background: var(--c-danger-bg); color: var(--c-danger); border: 1px solid var(--c-danger-bdr); animation: pulse 1.6s ease-in-out infinite; }
 
 .cpc-body { display: flex; gap: 16px; align-items: stretch; }
-.tank { position: relative; width: 76px; min-height: 128px; border-radius: 10px 10px 14px 14px;
-  background: linear-gradient(180deg, rgba(255,252,248,.9), rgba(244,232,218,.95)); overflow: hidden; flex-shrink: 0;
-  border: 2px solid #e0cdb8; }
+.tank { position: relative; width: 74px; min-height: 130px; border-radius: 10px 10px 14px 14px;
+  background: linear-gradient(180deg, rgba(255,252,248,.92), rgba(244,232,218,.96)); overflow: hidden; flex-shrink: 0;
+  border: 2px solid #e3d1bc; box-shadow: 0 2px 8px rgba(120,80,40,.08) inset; }
 .tank-glass { position: absolute; inset: 0; pointer-events: none; z-index: 3;
-  background: linear-gradient(105deg, rgba(255,255,255,.38) 5%, transparent 14%, transparent 80%, rgba(255,255,255,.18) 94%); }
+  background: linear-gradient(105deg, rgba(255,255,255,.4) 5%, transparent 14%, transparent 80%, rgba(255,255,255,.2) 94%); }
 .tank-water { position: absolute; bottom: 0; left: 0; right: 0; transition: height .8s cubic-bezier(.2,.8,.3,1); z-index: 1; }
 .tank-wave.wave2 { animation-duration: 8s; animation-direction: reverse; opacity: .5; top: -5px; }
 .tank-warnline { position: absolute; bottom: 33.3%; left: 0; right: 0; z-index: 2;
   border-top: 2px dashed rgba(198,40,40,.8); }
-.tank-warnline b { position: absolute; right: 1px; top: -7px; font-size: 9px; color: #c62828;
-  font-weight: 700; background: rgba(255,255,255,.82); border-radius: 4px; padding: 0 3px; line-height: 13px; }
+.tank-warnline b { position: absolute; right: 1px; top: -7px; font-size: 9px; color: var(--c-danger);
+  font-weight: 700; background: rgba(255,255,255,.85); border-radius: 4px; padding: 0 3px; line-height: 13px; }
 
 .cpc-nums { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 3px; min-width: 0; }
-.cpc-balance { font-size: 26px; font-weight: 800; color: #2d2010; font-variant-numeric: tabular-nums; line-height: 1.1; }
-.cpc-balance.neg { color: #c62828; }
-.cpc-negtip { font-size: 10.5px; color: #c62828; background: rgba(198,40,40,.07); border-radius: 6px; padding: 2px 7px; }
-.cpc-warn { font-size: 11px; color: #e65100; }
-.cpc-warn em { font-style: normal; color: #9b8070; }
-.cpc-spark { margin-top: 6px; display: block; }
-.cpc-spark-labels { display: flex; justify-content: space-between; width: 158px; font-size: 9.5px; color: #9b8070; padding: 0 4px; }
+.cpc-balance { font-size: 28px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; line-height: 1.08; letter-spacing: -.3px; }
+.cpc-balance.neg { color: var(--c-danger); }
+.cpc-negtip { font-size: 10.5px; color: var(--c-danger); background: var(--c-danger-bg); border-radius: var(--radius-xs); padding: 3px 8px; line-height: 1.45; }
+.cpc-warn { font-size: 11px; color: var(--c-warn); font-weight: 600; }
+.cpc-warn em { font-style: normal; color: var(--muted); font-weight: 400; }
+.cpc-spark { margin-top: 7px; display: block; }
+.cpc-spark-labels { display: flex; justify-content: space-between; width: 158px; font-size: 9.5px; color: var(--muted); padding: 0 4px; }
 .cpc-spark-labels i { font-style: normal; }
 
-.cpc-vitals { display: flex; gap: 8px; margin-top: 12px; }
-.vital { flex: 1; text-align: center; padding: 7px 4px; border-radius: 9px; background: rgba(201,99,66,.06); }
-.vital b { display: block; font-size: 14.5px; font-weight: 800; color: #4a3728; font-variant-numeric: tabular-nums; }
-.vital i { font-style: normal; font-size: 10px; color: #9b8070; }
-.vital.good b { color: #2e7d32; } .vital.bad b { color: #c62828; }
+.cpc-vitals { display: flex; gap: 8px; margin-top: 13px; }
+.vital { flex: 1; text-align: center; padding: 8px 4px; border-radius: var(--radius-sm);
+  background: var(--surface-tint); border: 1px solid var(--border-soft); }
+.vital b { display: block; font-size: 15px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+.vital i { font-style: normal; font-size: 10px; color: var(--muted); }
+.vital.good b { color: var(--c-success); } .vital.bad b { color: var(--c-danger); }
 
-.cpc-expands { display: flex; gap: 0; margin-top: 10px; border-top: 1px dashed rgba(180,140,110,.18); }
-.cpc-expand { flex: 1; padding: 5px 2px; border: none; background: none; font-size: 11px; color: #9b8070; cursor: pointer; }
-.cpc-expand:hover { color: #4a3728; }
-.cpc-expand.proj { border-left: 1px dashed rgba(180,140,110,.22); color: #6b7fa0; }
-.cpc-expand.proj:hover { color: #1565c0; }
-.cpc-detail { margin-top: 6px; border-top: 1px dashed #e8ddd0; padding-top: 8px; overflow: hidden; }
+.cpc-expands { display: flex; gap: 0; margin-top: 11px; border-top: 1px dashed var(--border); }
+.cpc-expand { flex: 1; padding: 7px 2px; border: none; background: none; font-size: 11px; font-weight: 600; color: var(--muted); cursor: pointer; transition: color .14s; }
+.cpc-expand:hover { color: var(--text); }
+.cpc-expand.proj { border-left: 1px dashed var(--border); color: var(--c-info); }
+.cpc-expand.proj:hover { color: #0d47a1; }
+.cpc-detail { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 9px; overflow: hidden; }
 .cpd-enter-active { transition: all .25s ease; } .cpd-enter-from { opacity: 0; transform: translateY(-6px); }
-.cpd-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2.5px 0; color: #6b5a4a; }
-.cpd-row b { color: #2d2010; font-weight: 600; font-variant-numeric: tabular-nums; }
-.cpd-row.in b { color: #2e7d32; }
-.cpd-row.out b { color: #c62828; }
-.cpd-sep { border-top: 1px dashed #e8ddd0; margin: 6px 0; }
-.cpc-unconfigured { text-align: center; padding: 26px 0 30px; color: #9b8070; font-size: 13px; }
-.dry { font-size: 30px; margin-bottom: 6px; opacity: .7; }
+.cpd-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; padding: 3px 0; color: var(--text-2); }
+.cpd-row i { font-style: normal; }
+.cpd-row b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.cpd-row.in b { color: var(--c-success); }
+.cpd-row.out b { color: var(--c-danger); }
+.cpd-sep { border-top: 1px dashed var(--border); margin: 7px 0; }
+.cpc-unconfigured { text-align: center; padding: 26px 0 30px; color: var(--muted); font-size: 13px; }
 
-/* ══ 调拨 ══ */
-.cp-btn { padding: 5px 12px; border: 1px solid rgba(201,99,66,.35); border-radius: 7px; background: rgba(201,99,66,.06); font-size: 12.5px; color: var(--primary); cursor: pointer; transition: all .18s; }
+/* ════════════════════════════════════════════════════
+   调拨表单 + 台账
+   ════════════════════════════════════════════════════ */
+.cp-btn { padding: 6px 13px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
+  background: var(--surface-tint); font-size: 12.5px; font-weight: 600; color: var(--primary); cursor: pointer; transition: all .16s; }
 .cp-btn:hover { background: rgba(201,99,66,.13); border-color: var(--primary); }
-.cp-btn.primary { background: var(--grad); color: #fff; border: none; box-shadow: 0 2px 10px var(--primary-glow); }
-.cp-btn.primary:hover:not(:disabled) { filter: brightness(1.08); }
+.cp-btn.primary { background: var(--grad); color: #fff; border: none; box-shadow: 0 3px 12px var(--primary-glow); }
+.cp-btn.primary:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
 .cp-btn:disabled { opacity: .5; cursor: not-allowed; }
-.cp-transfer-form { display: flex; gap: 8px; align-items: center; margin-top: 14px; padding: 12px; background: #fef9f5; border: 1px solid #e8ddd0; border-radius: 10px; flex-wrap: wrap; }
-.tr-arrow { font-weight: 700; color: #4a3728; }
-.cp-sel, .cp-inp { padding: 6px 8px; border: 1px solid #d4b896; border-radius: 7px; font-size: 12.5px; background: #fff; }
-.cp-tr-card { margin-top: 14px; padding: 14px; }
+.cp-transfer-form { display: flex; gap: 8px; align-items: center; margin-top: 14px; padding: 14px;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); flex-wrap: wrap;
+  box-shadow: var(--shadow-sm); }
+.tr-arrow { font-weight: 800; color: var(--primary); }
+.cp-sel, .cp-inp { padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); font-size: 12.5px; background: #fff; color: var(--text); transition: border-color .14s, box-shadow .14s; }
+.cp-sel:focus, .cp-inp:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-glow); }
+.cp-tr-card { margin-top: 14px; padding: 16px; }
+.cp-tr-card .section-title { font-size: 13.5px; font-weight: 800; color: var(--text); }
 .tr-list { display: flex; flex-direction: column; gap: 6px; }
-.tr-item { display: flex; align-items: center; gap: 14px; padding: 8px 12px; border-radius: 9px; background: #faf6f1; font-size: 12.5px; }
-.tr-date { color: #9b8070; font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.tr-route { display: flex; align-items: center; gap: 8px; font-weight: 700; color: #4a3728; flex-shrink: 0; }
-.tr-pipe { font-style: normal; font-weight: 600; font-size: 12px; color: var(--primary); background: rgba(201,99,66,.1); padding: 2px 10px; border-radius: 10px; }
-.tr-meta { display: flex; gap: 12px; color: #9b8070; flex: 1; min-width: 0; flex-wrap: wrap; }
+.tr-item { display: flex; align-items: center; gap: 14px; padding: 9px 13px; border-radius: var(--radius-sm); background: var(--surface-tint); font-size: 12.5px; border: 1px solid transparent; transition: background .14s; }
+.tr-item:hover { background: rgba(201,99,66,.07); }
+.tr-date { color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.tr-route { display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--text); flex-shrink: 0; }
+.tr-pipe { font-style: normal; font-weight: 700; font-size: 12px; color: var(--primary); background: rgba(201,99,66,.1); padding: 2px 10px; border-radius: 20px; }
+.tr-meta { display: flex; gap: 12px; color: var(--muted); flex: 1; min-width: 0; flex-wrap: wrap; }
 .tr-meta em { font-style: normal; }
-.tr-meta .tr-reject { color: #c62828; }
-.tr-status { font-style: normal; font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 9px; flex-shrink: 0; }
-.ts-pending { background: rgba(230,81,0,.12); color: #e65100; }
-.ts-approved { background: rgba(46,125,50,.12); color: #2e7d32; }
+.tr-meta .tr-reject { color: var(--c-danger); }
+.tr-status { font-style: normal; font-size: 11px; font-weight: 700; padding: 2px 10px; border-radius: 20px; flex-shrink: 0; }
+.ts-pending { background: var(--c-warn-bg); color: var(--c-warn); }
+.ts-approved { background: var(--c-success-bg); color: var(--c-success); }
 .ts-rejected { background: rgba(120,120,120,.13); color: #757575; }
 .tr-item.trs-rejected .tr-route, .tr-item.trs-rejected .tr-pipe { opacity: .55; }
-.tr-item.trs-pending { background: #fff8f0; border: 1px dashed rgba(230,81,0,.35); }
-.tr-hint { width: 100%; font-size: 11px; color: #9b8070; }
-.cp-ok { border: 1px solid rgba(46,125,50,.45); color: #2e7d32; background: none; border-radius: 6px; padding: 2px 8px; font-size: 11px; cursor: pointer; }
-.cp-del { border: 1px solid rgba(198,40,40,.4); color: #c62828; background: none; border-radius: 6px; padding: 2px 8px; font-size: 11px; cursor: pointer; }
-.cp-method { margin-bottom: 14px; padding: 12px 16px; }
-.cp-method ul { margin: 0; padding-left: 18px; }
-.cp-method li { font-size: 12px; color: #6b5a4a; line-height: 1.9; }
-.cp-method li b { color: #4a3728; }
-.cp-method-note { margin-top: 6px; padding: 8px 11px; background: rgba(201,99,66,.06);
-  border-left: 3px solid rgba(201,99,66,.45); border-radius: 6px; list-style: none; margin-left: -18px; }
-.cp-cfg-note { margin-top: 8px; font-size: 11px; color: #e65100; }
+.tr-item.trs-pending { background: #fff8f0; border-color: var(--c-warn-bdr); border-style: dashed; }
+.tr-hint { width: 100%; font-size: 11px; color: var(--muted); }
+.cp-ok { border: 1px solid var(--c-success-bdr); color: var(--c-success); background: var(--c-success-bg); border-radius: var(--radius-xs); padding: 3px 10px; font-size: 11px; font-weight: 600; cursor: pointer; transition: filter .14s; }
+.cp-ok:hover { filter: brightness(.96); }
+.cp-del { border: 1px solid var(--c-danger-bdr); color: var(--c-danger); background: var(--c-danger-bg); border-radius: var(--radius-xs); padding: 3px 10px; font-size: 11px; font-weight: 600; cursor: pointer; transition: filter .14s; }
+.cp-del:hover { filter: brightness(.96); }
+.cp-cfg-note { margin-top: 8px; font-size: 11px; color: var(--c-warn); }
 
 /* 项目维度 */
-.cpc-proj-dim { margin-top: 6px; border-top: 1px dashed #d8c9b8; padding-top: 8px; overflow: hidden; }
+.cpc-proj-dim { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 9px; overflow: hidden; }
 .cpd-proj-head { display: flex; justify-content: space-between; align-items: center;
-  font-size: 11px; color: #6b5a4a; font-weight: 700; margin-bottom: 6px; }
-.cpd-dim-seg { display: inline-flex; border: 1px solid rgba(180,140,110,.3); border-radius: 6px; overflow: hidden; }
-.cpd-dim-seg button { border: none; background: transparent; padding: 2px 9px; font-size: 10.5px;
-  color: #8a7665; cursor: pointer; font-weight: 600; }
-.cpd-dim-seg button + button { border-left: 1px solid rgba(180,140,110,.2); }
-.cpd-dim-seg button.on { background: var(--primary, #c96342); color: #fff; }
+  font-size: 11px; color: var(--text-2); font-weight: 700; margin-bottom: 7px; }
+.cpd-dim-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); overflow: hidden; }
+.cpd-dim-seg button { border: none; background: transparent; padding: 3px 10px; font-size: 10.5px;
+  color: var(--muted); cursor: pointer; font-weight: 600; transition: all .14s; }
+.cpd-dim-seg button + button { border-left: 1px solid var(--border); }
+.cpd-dim-seg button.on { background: var(--primary); color: #fff; }
 .cpd-proj-sum b { font-variant-numeric: tabular-nums; }
-.cpd-loading { font-size: 11.5px; color: #9b8070; padding: 6px 0; text-align: center; }
+.cpd-loading { font-size: 11.5px; color: var(--muted); padding: 7px 0; text-align: center; }
 .cpd-proj-table { display: flex; flex-direction: column; gap: 0; }
 .cpd-proj-row {
-  display: flex; align-items: center; gap: 6px; padding: 4px 0;
-  font-size: 11.5px; border-bottom: 1px solid rgba(180,140,110,.08);
+  display: flex; align-items: center; gap: 6px; padding: 5px 0;
+  font-size: 11.5px; border-bottom: 1px solid var(--border-soft);
 }
-.cpr-name { flex: 1; color: #4a3728; font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
-.cpr-in { color: #2e7d32; font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 54px; text-align: right; }
-.cpr-out { color: #c62828; font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 54px; text-align: right; }
+.cpr-name { flex: 1; color: var(--text); font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
+.cpr-in { color: var(--c-success); font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 54px; text-align: right; }
+.cpr-out { color: var(--c-danger); font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 54px; text-align: right; }
 .cpr-net { font-weight: 700; font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 54px; text-align: right; }
-.cpd-proj-more { font-size: 11px; color: #9b8070; padding: 4px 0; text-align: center; }
-.cpd-proj-more a { color: var(--primary, #c96342); text-decoration: none; }
+.cpd-proj-more { font-size: 11px; color: var(--muted); padding: 5px 0; text-align: center; }
+.cpd-proj-more a { color: var(--primary); text-decoration: none; }
 .cpd-proj-more a:hover { text-decoration: underline; }
 
-/* 配置表格：包一层横向滚动容器，列内容超出弹窗宽度时滚动而不溢出 */
-.cp-table-wrap { overflow-x: auto; border-radius: 10px; }
+/* ════════════════════════════════════════════════════
+   池配置弹窗
+   ════════════════════════════════════════════════════ */
+.cp-table-wrap { overflow-x: auto; border-radius: var(--radius-sm); }
 .cp-table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: 12.5px; }
-.cp-table th { background: rgba(201,99,66,.07); color: var(--muted); padding: 7px 10px; font-weight: 600; text-align: left; white-space: nowrap; }
-.cp-table td { padding: 7px 10px; border-bottom: 1px solid rgba(180,140,110,.14); white-space: nowrap; }
+.cp-table th { background: var(--surface-tint); color: var(--muted); padding: 8px 11px; font-weight: 700; text-align: left; white-space: nowrap; }
+.cp-table td { padding: 8px 11px; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
 .cp-table td b { white-space: normal; word-break: keep-all; }
-/* 弹窗内输入框按内容定宽，抵消全局 input{width:100%} 把单元格撑爆 */
 .cp-table .cp-inp { width: auto; }
 .cp-table input[type="date"].cp-inp { width: 138px; }
 .cp-modal-mask { position: fixed; inset: 0; background: rgba(20,10,5,.42); backdrop-filter: blur(8px);
   display: flex; align-items: center; justify-content: center; z-index: 1000; animation: fadeIn .18s ease; }
-.cp-modal { background: rgba(255,252,248,.94); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
-  border: 1px solid var(--glass-border); border-radius: 18px; padding: 20px;
+.cp-modal { background: var(--surface-2); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border); border-radius: var(--radius-lg); padding: 22px;
   width: min(780px, 94vw); max-height: 84vh; overflow-y: auto;
-  box-shadow: 0 24px 80px rgba(100,60,30,.25), 0 1px 0 rgba(255,255,255,.8) inset; }
-.cp-modal-title { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 12px; line-height: 1.5; }
+  box-shadow: var(--shadow-lg), 0 1px 0 rgba(255,255,255,.8) inset; }
+.cp-modal-title { font-size: 14.5px; font-weight: 800; color: var(--text); margin-bottom: 14px; line-height: 1.5; }
 
 @media (max-width: 768px) {
-  .hero-main { gap: 14px; }
-  .hb-num { font-size: 26px; }
-  .reservoir { padding: 8px 10px 0; height: 140px; }
+  .hero-body { gap: 12px; }
+  .hero-proj { margin-left: 0; width: 100%; }
+  .hp-step { flex: 1; min-width: 0; }
+  .hb-num { font-size: 30px; }
+  .reservoir { padding: 12px 12px 6px; }
+  .rsv-rail { height: 130px; }
 }
 </style>
