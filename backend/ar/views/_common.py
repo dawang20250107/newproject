@@ -14,7 +14,8 @@ from django.core.exceptions import ValidationError
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction
-from django.db.models import Sum, Count, Q, F, Value, Case, When, IntegerField, CharField, DecimalField, Max, Min
+from django.db.models import (Sum, Count, Q, F, Value, Case, When, IntegerField,
+                              CharField, DecimalField, Max, Min, OuterRef, Subquery)
 from django.db.models.functions import TruncMonth, Coalesce
 from django.utils import timezone
 
@@ -44,6 +45,49 @@ EXAMPLE_ROW_MARKER = '示例-导入前请删除此行'
 VALID_CUSTOMER_LEVELS = ['S级', 'A级', 'B级', 'C级', 'D级']
 
 PRECHECK_MAX = 10000   # 超过此行数跳过预检、直接导入
+
+
+def cash_flow_window(depts, start, end):
+    """[start,end] 区间的经营现金净流量——全系统统一口径（驾驶舱「现金流分析」、
+    周期报表「现金流情况」、预算管理「净现金流」共用，确保三处口径一致）：
+
+      流入 = 现金回款（剔除非现金来源：预收抵扣/内部往来）+ 预收
+      流出 = 实付（扣除预付核销冲抵）+ 预付
+      净额 = 流入 − 流出
+
+    返回 Decimal 字典；金额格式化由各调用方按需处理。"""
+    coll = (ARPayment.objects
+            .filter(ar_record__delivery_dept__in=depts, payment_date__gte=start, payment_date__lte=end)
+            .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
+            .aggregate(x=Sum('amount'))['x'] or Decimal('0'))
+    paid = (PaymentInstallment.objects
+            .filter(payment__department__in=depts, pay_date__gte=start, pay_date__lte=end)
+            .aggregate(x=Sum('pay_amount'))['x'] or Decimal('0'))
+    # 预付核销冲抵：按首个实付日期（否则计划付款日）归期，从实付中扣除
+    earliest = Subquery(PaymentInstallment.objects.filter(payment_id=OuterRef('pk'))
+                        .order_by('pay_date').values('pay_date')[:1])
+    offset = (Payment.objects
+              .filter(department__in=depts, prepaid_offset_amount__gt=0)
+              .annotate(fp=earliest)
+              .annotate(ad=Coalesce('fp', 'planned_date'))
+              .filter(ad__gte=start, ad__lte=end)
+              .aggregate(x=Sum('prepaid_offset_amount'))['x'] or Decimal('0'))
+    paid = max(Decimal('0'), paid - offset)
+    adv_recv = adv_paid = Decimal('0')
+    for r in (AdvanceRecord.objects
+              .filter(delivery_dept__in=depts, occur_date__gte=start, occur_date__lte=end)
+              .values('direction').annotate(x=Sum('advance_amount'))):
+        if r['direction'] == '预收':
+            adv_recv += r['x'] or Decimal('0')
+        else:
+            adv_paid += r['x'] or Decimal('0')
+    inflow = coll + adv_recv
+    outflow = paid + adv_paid
+    return {
+        'collected': coll, 'advance_received': adv_recv,
+        'paid': paid, 'advance_paid': adv_paid,
+        'inflow': inflow, 'outflow': outflow, 'net': inflow - outflow,
+    }
 
 
 def _ar_ai_review(records, system_prompt):

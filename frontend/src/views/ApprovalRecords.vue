@@ -22,6 +22,8 @@ const auth = useAuthStore()
 const items = ref([])
 const total = ref(0)
 const totalAmount = ref(0)
+const totalScheduled = ref(0)
+const totalRemaining = ref(0)
 const loading = ref(false)
 const depts = ref([])
 const fileRef = ref(null)
@@ -105,6 +107,8 @@ watch(() => q.value, () => {
 })
 const statusUpdating = ref({})
 const pendingAmountTotal = computed(() => parseFloat(totalAmount.value || 0))
+const scheduledTotal = computed(() => parseFloat(totalScheduled.value || 0))
+const remainingTotal = computed(() => parseFloat(totalRemaining.value || 0))
 
 // ── 单选/多选：批量删除 + 批量排款 ─────────────────────────────────────────
 const selectedIds = ref(new Set())                       // 跨页按 id 记忆选择
@@ -209,7 +213,7 @@ function doJump() {
   page.value = p; load()
 }
 const loadErr = ref('')
-async function load(){ loading.value=true; loadErr.value=''; try{ const r=await api.get('/approvals',{params:buildParams()}); items.value=r.data.items; total.value=r.data.total; totalAmount.value=r.data.total_amount || 0 }catch(e){ loadErr.value = e?.error || e?.message || '加载失败，请刷新重试' }finally{loading.value=false}}
+async function load(){ loading.value=true; loadErr.value=''; try{ const r=await api.get('/approvals',{params:buildParams()}); items.value=r.data.items; total.value=r.data.total; totalAmount.value=r.data.total_amount || 0; totalScheduled.value=r.data.total_scheduled || 0; totalRemaining.value=r.data.total_remaining || 0 }catch(e){ loadErr.value = e?.error || e?.message || '加载失败，请刷新重试' }finally{loading.value=false}}
 function search(){ page.value=1; clearSelection(); load() }
 function setPage(p){ page.value=p; load() }
 async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
@@ -422,12 +426,14 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <th><ColumnFilter label="G7编号" field="g7_number" type="text" :model-value="colFilters.g7_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('g7_number',v)" @sort="o=>setSort('g7_number',o)" /></th>
       <th><ColumnFilter label="摘要" field="summary" type="text" :model-value="colFilters.summary" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('summary',v)" @sort="o=>setSort('summary',o)" /></th>
       <th><ColumnFilter label="申请金额" field="amount" type="number" :model-value="colFilters.amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('amount',v)" @sort="o=>setSort('amount',o)" /></th>
+      <th class="amt-h">已排金额</th>
+      <th class="amt-h">未排金额</th>
       <th><ColumnFilter label="收款主体" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
       <th><ColumnFilter label="审批状态" field="status" type="enum" :options="STATUS_OPTS" :model-value="colFilters.status" :sortable="false" @update:model-value="v=>setColFilter('status',v)" /></th>
       </tr></thead>
     <tbody>
       <template v-if="loading">
-        <SkeletonRow v-for="n in 8" :key="n" :cols="11" />
+        <SkeletonRow v-for="n in 8" :key="n" :cols="13" />
       </template>
       <template v-else>
       <tr v-for="i in items" :key="i.id" :class="{ 'row-sel': selectedIds.has(i.id) }" @contextmenu.prevent="ctx.open($event, i)" @dblclick="onRowDblClick(i, $event)">
@@ -435,7 +441,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <td>{{i.applicant}}</td><td>{{i.department}}</td>
       <td class="meta-cell">{{ i.secondary_dept || '—' }}</td>
       <td class="meta-cell" :title="i.project_short_name">{{ i.project_short_name || '—' }}</td>
-      <td class="mono">{{i.approval_number}}</td><td class="mono g7-cell">{{i.g7_number || '—'}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}<div v-if="parseFloat(i.scheduled_amount) > 0 && !i.archived" class="sched-sub">已排 {{i.scheduled_amount}}</div></td><td class="payee">{{i.payee}}</td>
+      <td class="mono">{{i.approval_number}}</td><td class="mono g7-cell">{{i.g7_number || '—'}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}</td>
+      <td class="amt sched-c">{{ parseFloat(i.scheduled_amount) > 0 ? i.scheduled_amount : '—' }}</td>
+      <td class="amt remain-c" :class="{ 'remain-zero': parseFloat(i.remaining_amount) <= 0 }">{{ parseFloat(i.remaining_amount) > 0 ? i.remaining_amount : '—' }}</td>
+      <td class="payee">{{i.payee}}</td>
       <td>
         <select :value="i.status" :disabled="statusUpdating[i.id]" @change="updateStatus(i, $event.target.value)">
           <option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option>
@@ -462,7 +471,9 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <div v-if="!loading && items.length && !hasSelection && !showCreate && !showSchedule && !showBatchSched && !showDelConfirm" class="bottom-bar">
       <div class="bb-summary">
         <span class="bb-item"><i>合计</i><b>{{ total }}</b> 条</span>
-        <span class="bb-item warn"><i>申请金额合计</i><b>{{ pendingAmountTotal.toFixed(2) }}</b> 元</span>
+        <span class="bb-item"><i>总申请</i><b>{{ pendingAmountTotal.toFixed(2) }}</b> 元</span>
+        <span class="bb-item ok"><i>已排合计</i><b>{{ scheduledTotal.toFixed(2) }}</b> 元</span>
+        <span class="bb-item warn"><i>未排合计</i><b>{{ remainingTotal.toFixed(2) }}</b> 元</span>
       </div>
       <div v-if="total > size" class="bb-pager">
         <button :disabled="page <= 1" class="page-btn" @click="setPage(page - 1)">‹ 上一页</button>
@@ -639,6 +650,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .ops-btns .icon-btn:disabled { opacity: .4; cursor: default; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
+.amt-h { text-align: right; }
+.sched-c { color: #2e7d32; font-weight: 600; }
+.remain-c { color: #e65100; font-weight: 600; }
+.remain-c.remain-zero { color: var(--muted); font-weight: 400; }
 .summary, .payee { max-width: 100%; }
 .approval-table select { width: 100%; min-width: 0; max-width: 100%; height: 32px; font-size: 12.5px; padding: 0 22px 0 6px; background-position: right 6px center; }
 .pg-jump { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); margin-left: 8px; }

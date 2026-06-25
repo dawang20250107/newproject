@@ -1791,12 +1791,20 @@ def approval_records(request):
         sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), APPROVAL_FILTER_REGISTRY)
         if sort_by:
             qs = qs.order_by(sort_by)
-        total_amount = qs.aggregate(s=Sum('amount'))['s'] or Decimal('0')
+        # 全量（跨页）合计：总申请 / 已排合计 / 未排合计。列表已过滤 archived=False，
+        # 故每条 remaining = amount - scheduled_amount ≥ 0，未排合计 = 总申请 - 已排合计。
+        sums = qs.aggregate(s=Sum('amount'), sched=Sum('scheduled_amount'))
+        total_amount = sums['s'] or Decimal('0')
+        total_scheduled = sums['sched'] or Decimal('0')
+        total_remaining = total_amount - total_scheduled
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
         total = qs.count()
         items = [o.to_dict() for o in qs[(page - 1) * size: page * size]]
-        return ok({'items': items, 'total': total, 'page': page, 'size': size, 'total_amount': str(total_amount)})
+        return ok({'items': items, 'total': total, 'page': page, 'size': size,
+                   'total_amount': str(total_amount),
+                   'total_scheduled': str(total_scheduled),
+                   'total_remaining': str(total_remaining)})
     if request.method == 'POST':
         if perms is not None and not perms.get('can_create'):
             return err('无新增权限', 403, 403)

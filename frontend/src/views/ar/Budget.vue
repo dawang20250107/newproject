@@ -111,10 +111,10 @@ const payAchievement = computed(() => {
   return { pct: Math.min(pct, 100), rawPct: pct.toFixed(1), over: pct > 100 }
 })
 
-const netCashflow = computed(() => {
-  if (!summary.value) return 0
-  return parseFloat(summary.value.actual_collection) - parseFloat(summary.value.actual_payment)
-})
+// 净现金流采用后端统一口径（剔除非现金回款 + 扣预付冲抵 + 含预收/预付），与驾驶舱「现金流分析」一致。
+const netCashflow = computed(() => parseFloat(summary.value?.net_cashflow ?? 0) || 0)
+const cashInflow = computed(() => parseFloat(summary.value?.cash_inflow ?? 0) || 0)
+const cashOutflow = computed(() => parseFloat(summary.value?.cash_outflow ?? 0) || 0)
 
 const comparisonChartOption = computed(() => {
   if (!summary.value) return null
@@ -686,14 +686,14 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
       <div class="bottom-grid">
         <!-- Net metric -->
         <div class="card net-card">
-          <div class="net-label">净现金流（实收 − 实付）</div>
+          <div class="net-label">净现金流（现金流入 − 现金流出）</div>
           <div class="net-value" :class="netCashflow >= 0 ? 'net-pos' : 'net-neg'">
             {{ netCashflow >= 0 ? '+' : '' }}{{ fmtAmt(netCashflow) }}
           </div>
-          <div class="net-sub">{{ periodLabel }} · {{ selectedDept || '全部事业部' }}</div>
+          <div class="net-sub">{{ periodLabel }} · {{ selectedDept || '全部事业部' }} · 同「现金流分析」口径</div>
           <div class="net-breakdown">
-            <div class="nb-item"><span class="nb-dot nb-coll"></span>实际收款 {{ fmtAmt(summary?.actual_collection || 0) }}</div>
-            <div class="nb-item"><span class="nb-dot nb-pay"></span>实际付款 {{ fmtAmt(summary?.actual_payment || 0) }}</div>
+            <div class="nb-item"><span class="nb-dot nb-coll"></span>现金流入 {{ fmtAmt(cashInflow) }}</div>
+            <div class="nb-item"><span class="nb-dot nb-pay"></span>现金流出 {{ fmtAmt(cashOutflow) }}</div>
           </div>
         </div>
 

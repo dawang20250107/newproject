@@ -235,41 +235,9 @@ def _budget_metric(depts, year, p_start, p_end, month_start, month_end):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _cash_window(depts, s, e):
-    """[s,e] 区间的经营现金流：流入=现金回款+预收；流出=实付(扣预付冲抵)+预付。"""
-    coll = (ARPayment.objects
-            .filter(ar_record__delivery_dept__in=depts, payment_date__gte=s, payment_date__lte=e)
-            .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
-            .aggregate(x=Sum('amount'))['x'] or Decimal('0'))
-    paid = (PaymentInstallment.objects
-            .filter(payment__department__in=depts, pay_date__gte=s, pay_date__lte=e)
-            .aggregate(x=Sum('pay_amount'))['x'] or Decimal('0'))
-    # 预付核销冲抵：按首个实付日期（否则计划付款日）归期
-    earliest = Subquery(PaymentInstallment.objects.filter(payment_id=OuterRef('pk'))
-                        .order_by('pay_date').values('pay_date')[:1])
-    offset = (Payment.objects
-              .filter(department__in=depts, prepaid_offset_amount__gt=0)
-              .annotate(fp=earliest)
-              .annotate(ad=Coalesce('fp', 'planned_date'))
-              .filter(ad__gte=s, ad__lte=e)
-              .aggregate(x=Sum('prepaid_offset_amount'))['x'] or Decimal('0'))
-    paid = max(Decimal('0'), paid - offset)
-    adv = (AdvanceRecord.objects
-           .filter(delivery_dept__in=depts, occur_date__gte=s, occur_date__lte=e)
-           .values('direction').annotate(x=Sum('advance_amount')))
-    adv_recv = adv_paid = Decimal('0')
-    for r in adv:
-        if r['direction'] == '预收':
-            adv_recv += r['x'] or Decimal('0')
-        else:
-            adv_paid += r['x'] or Decimal('0')
-    inflow = coll + adv_recv
-    outflow = paid + adv_paid
-    return {
-        'collected': _money(coll), 'advance_received': _money(adv_recv),
-        'paid': _money(paid), 'advance_paid': _money(adv_paid),
-        'inflow': _money(inflow), 'outflow': _money(outflow),
-        'net': _money(inflow - outflow),
-    }
+    """[s,e] 区间经营现金流——委托全系统统一口径 cash_flow_window，仅做金额格式化。"""
+    cw = cash_flow_window(depts, s, e)
+    return {k: _money(v) for k, v in cw.items()}
 
 
 def _cash_metric(depts, year, p_start, p_end):

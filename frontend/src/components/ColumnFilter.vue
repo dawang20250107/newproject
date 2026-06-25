@@ -77,8 +77,18 @@ const active = computed(() => {
 })
 const sorted = computed(() => props.sortable && props.sortField === props.field && props.sortOrder)
 
-const enumOpts = computed(() =>
-  props.options.map(o => (typeof o === 'string' ? { value: o, label: o } : o)))
+// 归一化枚举选项：兼容 'string' / {value,label} / {v,l} 三种来源；label 缺失时回退到
+// value，确保不会渲染出「没有名称的勾选框」。非数组来源一律视作空集。
+const enumOpts = computed(() => {
+  const src = Array.isArray(props.options) ? props.options : []
+  return src.map(o => {
+    if (typeof o === 'string' || typeof o === 'number') return { value: o, label: String(o) }
+    if (o == null) return { value: '', label: '' }
+    const value = o.value !== undefined ? o.value : o.v
+    const label = o.label !== undefined ? o.label : (o.l !== undefined ? o.l : value)
+    return { value, label: label == null ? '' : String(label) }
+  })
+})
 
 function syncDraftFromModel() {
   const m = props.modelValue
@@ -344,7 +354,7 @@ onBeforeUnmount(() => {
             <button type="button" :class="{ act: op === 'not_in' }" @click="op = 'not_in'">不在（排除）</button>
           </div>
           <div class="colf-enum">
-            <label v-for="o in enumOpts" :key="o.value" class="colf-chk">
+            <label v-for="(o, i) in enumOpts" :key="i" class="colf-chk">
               <input type="checkbox" :checked="enumSel.includes(o.value)" @change="toggleEnum(o.value)" />
               <span>{{ o.label }}</span>
             </label>
