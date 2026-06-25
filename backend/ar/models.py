@@ -578,6 +578,22 @@ class ARRecord(models.Model):
         return '已对账' if self.reconciliation_date else '未对账'
 
     @property
+    def effective_reconciliation_date(self):
+        """对账日期显示默认：有手填则直接用；
+        已开票无手填则默认为开票日期（批次开票取第一次开票事件的日期）。"""
+        if self.reconciliation_date:
+            return self.reconciliation_date
+        if self.actual_invoice_amount is None:
+            return None
+        if self.invoice_batch_no:
+            return (BatchInvoiceEvent.objects
+                    .filter(batch_no=self.invoice_batch_no)
+                    .order_by('invoice_date', 'id')
+                    .values_list('invoice_date', flat=True)
+                    .first())
+        return self.invoice_date
+
+    @property
     def invoice_status(self):
         if (self.outstanding_amount or Decimal('0')) <= 0:
             return '已结清'
@@ -630,7 +646,7 @@ class ARRecord(models.Model):
             'outstanding_amount': str(self.outstanding_amount),
             'due_date': str(self.due_date) if self.due_date else None,
             'target_collection_date': str(self.target_collection_date) if self.target_collection_date else None,
-            'reconciliation_date': str(self.reconciliation_date) if self.reconciliation_date else None,
+            'reconciliation_date': str(self.effective_reconciliation_date) if self.effective_reconciliation_date else None,
             'reconciliation_status': self.reconciliation_status,
             'invoice_status': self.invoice_status,
             'post_invoice_status': self.post_invoice_status(today),
