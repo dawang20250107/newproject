@@ -172,7 +172,7 @@ const ar = {
 
   // 周期报表（周报 / 月报）
   periodicReport: p => api.get('/ar/periodic-report', { params: p }),
-  exportPeriodicReport: p => api.get('/ar/periodic-report/export', { params: p, responseType: 'blob' }),
+  exportPeriodicReport: (p, narrative) => api.post('/ar/periodic-report/export', { narrative: narrative || {} }, { params: p, responseType: 'blob' }),
 
   // Budget
   listCollectionBudget: p => api.get('/ar/budget/collection', { params: p }),

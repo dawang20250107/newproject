@@ -10,6 +10,9 @@ const err = ref('')
 const exporting = ref(false)
 const reportEl = ref(null)
 
+// 年度/本年累计数据成熟度开关：基础数据齐全前，YTD 一律以「—」示意，结构保留便于后期启用
+const ytdReady = ref(false)
+
 // ── 期间控制 ──────────────────────────────────────────────────────────────
 const periodType = ref('monthly')
 const selYear = ref(yearCST())
@@ -17,6 +20,25 @@ const selMonth = ref(monthCST())
 const selWeekIdx = ref(0)
 const scopeValue = ref('')
 const reviewer = ref('李亚琳')
+
+// ── 汇报说明（手工填写，导出图片/Excel 时一并带出）──────────────────────────
+const narrative = ref({
+  summary: '',   // 经营分析：得 / 失 / 策略
+  risk: '',      // 风险与异常提示
+  plan: '',      // 下期工作重点
+  support: '',   // 需协调 / 支持事项
+})
+const narrativeFields = [
+  { key: 'summary', label: '经营分析（得 / 失 / 策略）', ph: '本期经营亮点、未达成项及应对策略…' },
+  { key: 'risk', label: '风险与异常提示', ph: '逾期、资金缺口、重大异常事项…' },
+  { key: 'plan', label: '下期工作重点', ph: '下一周期重点推进事项…' },
+  { key: 'support', label: '需协调 / 支持事项', ph: '需集团或相关部门协助支持的事项…' },
+]
+function autoGrow(e) {
+  const el = e.target
+  el.style.height = 'auto'
+  el.style.height = el.scrollHeight + 'px'
+}
 
 const yearOptions = computed(() => {
   const y = yearCST(); return [y, y - 1, y - 2]
@@ -40,7 +62,7 @@ const weekOptions = computed(() => {
         idx: weeks.length,
         start: start.toISOString().slice(0, 10),
         end: end.toISOString().slice(0, 10),
-        label: `第${weeks.length + 1}周（${fmtMD(start)}~${fmtMD(end)}）`,
+        label: `第${weeks.length + 1}周·${fmtMD(start)}-${fmtMD(end)}`,
       })
     }
     cur.setUTCDate(cur.getUTCDate() + 7); guard++
@@ -57,6 +79,8 @@ function wan(v) {
   if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(2) + '亿'
   return (n / 1e4).toFixed(1)
 }
+function ytdWan(v) { return ytdReady.value ? wan(v) : '—' }
+function ytdRate(v) { return ytdReady.value ? rate(v) : '—' }
 function rate(v) { return v == null ? '—' : v + '%' }
 function rateClass(v, good = 100) {
   if (v == null) return ''
@@ -117,7 +141,7 @@ const cash = computed(() => data.value?.cash)
 async function exportExcel() {
   exporting.value = true
   try {
-    const blob = await ar.exportPeriodicReport(buildParams())
+    const blob = await ar.exportPeriodicReport(buildParams(), narrative.value)
     downloadBlob(blob, `${meta.value.title}.xlsx`)
   } catch (e) {
     alert(e?.msg || '导出失败')
@@ -154,7 +178,7 @@ onMounted(load)
 
 <template>
   <div class="pr-wrap">
-    <!-- ══ 控制栏 ══ -->
+    <!-- ══ 控制栏（全部并列一行）══ -->
     <div class="pr-bar">
       <div class="seg">
         <button :class="{ on: periodType === 'monthly' }" @click="periodType = 'monthly'; onPeriodChange()">月报</button>
@@ -167,7 +191,7 @@ onMounted(load)
       <select v-model.number="selMonth" class="pr-sel" @change="onPeriodChange">
         <option v-for="m in 12" :key="m" :value="m">{{ m }}月</option>
       </select>
-      <select v-if="periodType === 'weekly'" v-model.number="selWeekIdx" class="pr-sel wk" @change="load">
+      <select v-if="periodType === 'weekly'" v-model.number="selWeekIdx" class="pr-sel" @change="load">
         <option v-for="w in weekOptions" :key="w.idx" :value="w.idx">{{ w.label }}</option>
       </select>
 
@@ -206,7 +230,7 @@ onMounted(load)
         <div class="rp-sec-hd"><span class="rp-sec-num">（一）</span>项目规模<em>年初至今 · 项目台账口径</em></div>
         <table class="rp-tbl">
           <thead><tr>
-            <th class="lft">事业部</th><th>在运项目</th><th>年初至今新签</th>
+            <th class="lft">事业部</th><th>在运项目</th><th>本年新签</th>
             <th>本期新签</th><th>较上期增减</th><th>项目总数</th>
           </tr></thead>
           <tbody>
@@ -224,10 +248,10 @@ onMounted(load)
 
       <!-- 二、应收账款 -->
       <section class="rp-sec">
-        <div class="rp-sec-hd"><span class="rp-sec-num">（二）</span>应收账款情况<em>资金运动表口径 · 期初+新增−回款±调整=期末</em></div>
+        <div class="rp-sec-hd"><span class="rp-sec-num">（二）</span>应收账款情况<em>资金运动表口径 · 期初余额 → 回款核销 → 期末余额</em></div>
         <table class="rp-tbl">
           <thead><tr>
-            <th class="lft">事业部</th><th>期初未收</th><th>本期新增</th>
+            <th class="lft">事业部</th><th>期初未收</th>
             <th>现金回款</th><th>非现金核销</th><th>账实差额</th>
             <th>期末未收</th><th>回款率</th>
           </tr></thead>
@@ -235,7 +259,6 @@ onMounted(load)
             <tr v-for="r in arRows" :key="r.name" :class="{ tot: r._total }">
               <td class="lft">{{ r.name }}</td>
               <td>{{ wan(r.opening) }}</td>
-              <td class="in">{{ wan(r.new_ar) }}</td>
               <td class="in">{{ wan(r.cash_in) }}</td>
               <td>{{ wan(r.noncash_in) }}</td>
               <td>{{ wan(r.adj_in) }}</td>
@@ -271,7 +294,7 @@ onMounted(load)
 
       <!-- 三、应收预算 -->
       <section class="rp-sec">
-        <div class="rp-sec-hd"><span class="rp-sec-num">（三）</span>应收预算完成<em>本期 + 年度累计</em></div>
+        <div class="rp-sec-hd"><span class="rp-sec-num">（三）</span>应收预算完成<em>本期口径（年度待数据齐全后启用）</em></div>
         <table class="rp-tbl">
           <thead><tr>
             <th class="lft">事业部</th><th>本期预算</th><th>本期实际</th><th>本期完成率</th>
@@ -283,9 +306,9 @@ onMounted(load)
               <td>{{ wan(r.coll_budget) }}</td>
               <td class="in">{{ wan(r.coll_actual) }}</td>
               <td><span class="rt" :class="rateClass(r.coll_rate)">{{ rate(r.coll_rate) }}</span></td>
-              <td>{{ wan(r.coll_budget_ytd) }}</td>
-              <td class="in">{{ wan(r.coll_actual_ytd) }}</td>
-              <td><span class="rt" :class="rateClass(r.coll_rate_ytd)">{{ rate(r.coll_rate_ytd) }}</span></td>
+              <td class="ytd">{{ ytdWan(r.coll_budget_ytd) }}</td>
+              <td class="ytd">{{ ytdWan(r.coll_actual_ytd) }}</td>
+              <td class="ytd">{{ ytdRate(r.coll_rate_ytd) }}</td>
             </tr>
           </tbody>
         </table>
@@ -293,7 +316,7 @@ onMounted(load)
 
       <!-- 四、应付预算 -->
       <section class="rp-sec">
-        <div class="rp-sec-hd"><span class="rp-sec-num">（四）</span>应付预算完成<em>月度口径（付款预算按月维护）</em></div>
+        <div class="rp-sec-hd"><span class="rp-sec-num">（四）</span>应付预算完成<em>月度口径（年度待数据齐全后启用）</em></div>
         <table class="rp-tbl">
           <thead><tr>
             <th class="lft">事业部</th><th>本月预算</th><th>本月实际</th><th>本月完成率</th>
@@ -305,9 +328,9 @@ onMounted(load)
               <td>{{ wan(r.pay_budget) }}</td>
               <td class="out">{{ wan(r.pay_actual) }}</td>
               <td><span class="rt" :class="rateClass(r.pay_rate)">{{ rate(r.pay_rate) }}</span></td>
-              <td>{{ wan(r.pay_budget_ytd) }}</td>
-              <td class="out">{{ wan(r.pay_actual_ytd) }}</td>
-              <td><span class="rt" :class="rateClass(r.pay_rate_ytd)">{{ rate(r.pay_rate_ytd) }}</span></td>
+              <td class="ytd">{{ ytdWan(r.pay_budget_ytd) }}</td>
+              <td class="ytd">{{ ytdWan(r.pay_actual_ytd) }}</td>
+              <td class="ytd">{{ ytdRate(r.pay_rate_ytd) }}</td>
             </tr>
           </tbody>
         </table>
@@ -319,18 +342,30 @@ onMounted(load)
         <table class="rp-tbl cash">
           <thead><tr><th class="lft">现金流项目</th><th>本期金额</th><th>本年累计</th></tr></thead>
           <tbody>
-            <tr class="lv1"><td class="lft">一、经营活动现金流入</td><td class="in strong">{{ wan(cash.period.inflow) }}</td><td class="in strong">{{ wan(cash.ytd.inflow) }}</td></tr>
-            <tr><td class="lft sub">　现金回款</td><td>{{ wan(cash.period.collected) }}</td><td>{{ wan(cash.ytd.collected) }}</td></tr>
-            <tr><td class="lft sub">　预收款</td><td>{{ wan(cash.period.advance_received) }}</td><td>{{ wan(cash.ytd.advance_received) }}</td></tr>
-            <tr class="lv1"><td class="lft">二、经营活动现金流出</td><td class="out strong">{{ wan(cash.period.outflow) }}</td><td class="out strong">{{ wan(cash.ytd.outflow) }}</td></tr>
-            <tr><td class="lft sub">　实付款项（扣预付冲抵）</td><td>{{ wan(cash.period.paid) }}</td><td>{{ wan(cash.ytd.paid) }}</td></tr>
-            <tr><td class="lft sub">　预付款</td><td>{{ wan(cash.period.advance_paid) }}</td><td>{{ wan(cash.ytd.advance_paid) }}</td></tr>
+            <tr class="lv1"><td class="lft">一、经营活动现金流入</td><td class="in strong">{{ wan(cash.period.inflow) }}</td><td class="ytd strong">{{ ytdWan(cash.ytd.inflow) }}</td></tr>
+            <tr><td class="lft sub">　现金回款</td><td>{{ wan(cash.period.collected) }}</td><td class="ytd">{{ ytdWan(cash.ytd.collected) }}</td></tr>
+            <tr><td class="lft sub">　预收款</td><td>{{ wan(cash.period.advance_received) }}</td><td class="ytd">{{ ytdWan(cash.ytd.advance_received) }}</td></tr>
+            <tr class="lv1"><td class="lft">二、经营活动现金流出</td><td class="out strong">{{ wan(cash.period.outflow) }}</td><td class="ytd strong">{{ ytdWan(cash.ytd.outflow) }}</td></tr>
+            <tr><td class="lft sub">　实付款项（扣预付冲抵）</td><td>{{ wan(cash.period.paid) }}</td><td class="ytd">{{ ytdWan(cash.ytd.paid) }}</td></tr>
+            <tr><td class="lft sub">　预付款</td><td>{{ wan(cash.period.advance_paid) }}</td><td class="ytd">{{ ytdWan(cash.ytd.advance_paid) }}</td></tr>
             <tr class="lv1 net"><td class="lft">三、经营活动净现金流</td>
               <td :class="cash.period.net >= 0 ? 'in strong' : 'neg strong'">{{ wan(cash.period.net) }}</td>
-              <td :class="cash.ytd.net >= 0 ? 'in strong' : 'neg strong'">{{ wan(cash.ytd.net) }}</td>
+              <td class="ytd strong">{{ ytdWan(cash.ytd.net) }}</td>
             </tr>
           </tbody>
         </table>
+      </section>
+
+      <!-- 六、汇报说明（手工填写）-->
+      <section class="rp-sec">
+        <div class="rp-sec-hd"><span class="rp-sec-num">（六）</span>汇报说明<em>业财分析 · 手工填写</em></div>
+        <div class="rp-notes">
+          <div v-for="f in narrativeFields" :key="f.key" class="rp-note">
+            <div class="rp-note-lbl">{{ f.label }}</div>
+            <textarea v-model="narrative[f.key]" class="rp-note-ta" rows="2"
+                      :placeholder="f.ph" @input="autoGrow"></textarea>
+          </div>
+        </div>
       </section>
 
       <!-- 签字栏 -->
@@ -341,7 +376,8 @@ onMounted(load)
       </div>
 
       <div class="rp-foot">
-        本报告由系统按取值期间自动生成，账面余额为存量口径，现金流为期间流量口径，所有金额以导出时点数据为准。
+        本报告由系统按取值期间自动生成，账面余额为存量口径、现金流为期间流量口径，二者不应直接相等；
+        标注「—」的年度/本年累计项待基础数据齐全后启用。所有金额以导出时点数据为准。
       </div>
     </div>
   </div>
@@ -360,16 +396,15 @@ onMounted(load)
 .pr-bar-spacer { flex: 1; }
 .seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); overflow: hidden; }
 .seg button {
-  border: none; background: transparent; padding: 6px 16px; font-size: 13px;
+  border: none; background: transparent; padding: 6px 14px; font-size: 13px;
   font-weight: 700; color: var(--muted); cursor: pointer; transition: background .14s, color .14s;
 }
 .seg button + button { border-left: 1px solid var(--border); }
 .seg button.on { background: var(--primary); color: #fff; }
 .pr-sel {
-  padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
-  font-size: 13px; background: var(--surface-1); color: var(--text); cursor: pointer;
+  padding: 6px 9px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
+  font-size: 13px; background: var(--surface-1); color: var(--text); cursor: pointer; max-width: 150px;
 }
-.pr-sel.wk { min-width: 168px; }
 .pr-sel:focus { outline: none; border-color: var(--primary); }
 .pr-btn {
   padding: 7px 15px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
@@ -434,6 +469,7 @@ onMounted(load)
 .rp-tbl td.out { color: #b00020; }
 .rp-tbl td.neg { color: #b00020; }
 .rp-tbl td.strong { font-weight: 800; }
+.rp-tbl td.ytd { color: #bbb; }
 
 .dlt { font-weight: 700; }
 .dlt.pos { color: #0a7a4a; } .dlt.neg { color: #b00020; }
@@ -451,6 +487,18 @@ onMounted(load)
 .rp-tbl.cash tr.lv1 td { background: #f0f0f0; font-weight: 800; }
 .rp-tbl.cash tr.net td { border-top: 2px solid #333; background: #f5f5f5; font-size: 13px; font-weight: 800; }
 
+/* 汇报说明 */
+.rp-notes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.rp-note { display: flex; flex-direction: column; }
+.rp-note-lbl { font-size: 12.5px; font-weight: 700; color: #333; margin-bottom: 5px; }
+.rp-note-ta {
+  border: 1px solid #ddd; border-radius: 3px; background: #fcfcfc;
+  font-size: 12.5px; line-height: 1.7; color: #1a1a1a; padding: 8px 10px;
+  resize: none; outline: none; font-family: inherit; min-height: 56px; overflow: hidden;
+}
+.rp-note-ta:focus { border-color: var(--primary); background: #fff; }
+.rp-note-ta::placeholder { color: #bbb; }
+
 /* 签字栏 */
 .rp-sign {
   display: flex; gap: 40px; justify-content: flex-end;
@@ -467,7 +515,7 @@ onMounted(load)
 
 @media (max-width: 768px) {
   .report { padding: 18px 14px; }
-  .rp-twin { grid-template-columns: 1fr; }
+  .rp-twin, .rp-notes { grid-template-columns: 1fr; }
   .rp-meta { font-size: 11px; }
   .rp-sign { flex-wrap: wrap; gap: 16px; justify-content: flex-start; }
 }
