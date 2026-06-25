@@ -137,6 +137,18 @@ const arRows = computed(() => scopeRows('ar'))
 const budRows = computed(() => scopeRows('budget'))
 const cash = computed(() => data.value?.cash)
 
+const isGroupCash = computed(() => meta.value?.scope_kind === 'group' && depts.value.length > 1)
+const cashByDept = computed(() => data.value?.cash?.by_dept || {})
+const cashItems = [
+  { key: 'inflow', label: '一、经营活动现金流入', level: 1, cellClass: 'in' },
+  { key: 'collected', label: '　现金回款', level: 2, cellClass: '' },
+  { key: 'advance_received', label: '　预收款', level: 2, cellClass: '' },
+  { key: 'outflow', label: '二、经营活动现金流出', level: 1, cellClass: 'out' },
+  { key: 'paid', label: '　实付款项（扣预付冲抵）', level: 2, cellClass: '' },
+  { key: 'advance_paid', label: '　预付款', level: 2, cellClass: '' },
+  { key: 'net', label: '三、经营活动净现金流', level: 1, cellClass: 'net' },
+]
+
 // ── 导出 ─────────────────────────────────────────────────────────────────
 async function exportExcel() {
   exporting.value = true
@@ -231,7 +243,7 @@ onMounted(load)
         <table class="rp-tbl">
           <thead><tr>
             <th class="lft">事业部</th><th>在运项目</th><th>本年新签</th>
-            <th>本期新签</th><th>较上期增减</th><th>项目总数</th>
+            <th>本期新签</th><th>较上期增减</th><th>项目总数（含已结束或中断）</th>
           </tr></thead>
           <tbody>
             <tr v-for="r in projRows" :key="r.name" :class="{ tot: r._total }">
@@ -269,36 +281,38 @@ onMounted(load)
         </table>
         <div class="rp-twin">
           <table class="rp-tbl mini">
-            <thead><tr><th class="lft">期末账龄</th><th>逾期未收</th><th>未到期</th></tr></thead>
+            <thead><tr><th class="lft">逾期情况</th><th>逾期应收</th><th>逾期已收</th><th>逾期回款率</th></tr></thead>
             <tbody>
               <tr v-for="r in arRows" :key="r.name" :class="{ tot: r._total }">
                 <td class="lft">{{ r.name }}</td>
                 <td class="neg">{{ wan(r.overdue) }}</td>
-                <td>{{ wan(r.not_due) }}</td>
+                <td class="in">{{ wan(r.overdue_collected) }}</td>
+                <td><span class="rt" :class="rateClass(r.overdue_rate)">{{ rate(r.overdue_rate) }}</span></td>
               </tr>
             </tbody>
           </table>
           <table class="rp-tbl mini">
-            <thead><tr><th class="lft">本期到期</th><th>到期应收</th><th>到期已回</th><th>到期回款率</th></tr></thead>
+            <thead><tr><th class="lft">未到期情况</th><th>未到期应收</th><th>未到期已收</th><th>未到期回款率</th></tr></thead>
             <tbody>
               <tr v-for="r in arRows" :key="r.name" :class="{ tot: r._total }">
                 <td class="lft">{{ r.name }}</td>
-                <td>{{ wan(r.due_amt) }}</td>
-                <td class="in">{{ wan(r.due_collected) }}</td>
-                <td><span class="rt" :class="rateClass(r.due_rate)">{{ rate(r.due_rate) }}</span></td>
+                <td>{{ wan(r.not_due) }}</td>
+                <td class="in">{{ wan(r.not_due_collected) }}</td>
+                <td><span class="rt" :class="rateClass(r.not_due_rate)">{{ rate(r.not_due_rate) }}</span></td>
               </tr>
             </tbody>
           </table>
         </div>
       </section>
 
-      <!-- 三、应收预算 -->
+      <!-- 三、应收应付预算 -->
       <section class="rp-sec">
-        <div class="rp-sec-hd"><span class="rp-sec-num">（三）</span>应收预算完成<em>本期口径（年度待数据齐全后启用）</em></div>
+        <div class="rp-sec-hd"><span class="rp-sec-num">（三）</span>应收应付预算完成<em>本期口径</em></div>
         <table class="rp-tbl">
           <thead><tr>
-            <th class="lft">事业部</th><th>本期预算</th><th>本期实际</th><th>本期完成率</th>
-            <th>年度预算</th><th>年度实际</th><th>年度完成率</th>
+            <th class="lft">事业部</th>
+            <th>应收预算</th><th>应收实际</th><th>应收完成率</th>
+            <th>应付预算</th><th>应付实际</th><th>应付完成率</th>
           </tr></thead>
           <tbody>
             <tr v-for="r in budRows" :key="r.name" :class="{ tot: r._total }">
@@ -306,40 +320,51 @@ onMounted(load)
               <td>{{ wan(r.coll_budget) }}</td>
               <td class="in">{{ wan(r.coll_actual) }}</td>
               <td><span class="rt" :class="rateClass(r.coll_rate)">{{ rate(r.coll_rate) }}</span></td>
-              <td class="ytd">{{ ytdWan(r.coll_budget_ytd) }}</td>
-              <td class="ytd">{{ ytdWan(r.coll_actual_ytd) }}</td>
-              <td class="ytd">{{ ytdRate(r.coll_rate_ytd) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-
-      <!-- 四、应付预算 -->
-      <section class="rp-sec">
-        <div class="rp-sec-hd"><span class="rp-sec-num">（四）</span>应付预算完成<em>月度口径（年度待数据齐全后启用）</em></div>
-        <table class="rp-tbl">
-          <thead><tr>
-            <th class="lft">事业部</th><th>本月预算</th><th>本月实际</th><th>本月完成率</th>
-            <th>年度预算</th><th>年度实际</th><th>年度完成率</th>
-          </tr></thead>
-          <tbody>
-            <tr v-for="r in budRows" :key="r.name" :class="{ tot: r._total }">
-              <td class="lft">{{ r.name }}</td>
               <td>{{ wan(r.pay_budget) }}</td>
               <td class="out">{{ wan(r.pay_actual) }}</td>
               <td><span class="rt" :class="rateClass(r.pay_rate)">{{ rate(r.pay_rate) }}</span></td>
-              <td class="ytd">{{ ytdWan(r.pay_budget_ytd) }}</td>
-              <td class="ytd">{{ ytdWan(r.pay_actual_ytd) }}</td>
-              <td class="ytd">{{ ytdRate(r.pay_rate_ytd) }}</td>
             </tr>
           </tbody>
         </table>
       </section>
 
-      <!-- 五、现金流 -->
+      <!-- 四、现金流 -->
       <section class="rp-sec" v-if="cash">
-        <div class="rp-sec-hd"><span class="rp-sec-num">（五）</span>现金流情况<em>经营活动现金流 · 与现金流分析同口径</em></div>
-        <table class="rp-tbl cash">
+        <div class="rp-sec-hd"><span class="rp-sec-num">（四）</span>现金流情况<em>经营活动现金流 · 与现金流分析同口径</em></div>
+
+        <!-- 集团视图：各事业部横向展示 -->
+        <div v-if="isGroupCash" class="cash-pivot-wrap">
+          <table class="rp-tbl cash-pivot">
+            <thead>
+              <tr>
+                <th class="lft">现金流项目</th>
+                <th v-for="d in depts" :key="d">{{ d }}</th>
+                <th class="hd-total">合计</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-for="item in cashItems" :key="item.key">
+                <tr :class="{ lv1: item.level === 1, net: item.key === 'net' }">
+                  <td class="lft" :class="item.level === 2 ? 'sub' : ''">{{ item.label }}</td>
+                  <td v-for="d in depts" :key="d"
+                      :class="item.key === 'net'
+                        ? ((cashByDept[d]?.period?.[item.key] ?? 0) >= 0 ? 'in' : 'neg')
+                        : item.cellClass">
+                    {{ wan(cashByDept[d]?.period?.[item.key]) }}
+                  </td>
+                  <td :class="[item.key === 'net'
+                      ? ((cash.period[item.key] ?? 0) >= 0 ? 'in strong' : 'neg strong')
+                      : (item.cellClass ? item.cellClass + ' strong' : 'strong')]">
+                    {{ wan(cash.period[item.key]) }}
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 单事业部视图 -->
+        <table v-else class="rp-tbl cash">
           <thead><tr><th class="lft">现金流项目</th><th>本期金额</th><th>本年累计</th></tr></thead>
           <tbody>
             <tr class="lv1"><td class="lft">一、经营活动现金流入</td><td class="in strong">{{ wan(cash.period.inflow) }}</td><td class="ytd strong">{{ ytdWan(cash.ytd.inflow) }}</td></tr>
@@ -356,9 +381,9 @@ onMounted(load)
         </table>
       </section>
 
-      <!-- 六、汇报说明（手工填写）-->
+      <!-- 五、汇报说明（手工填写）-->
       <section class="rp-sec">
-        <div class="rp-sec-hd"><span class="rp-sec-num">（六）</span>汇报说明<em>业财分析 · 手工填写</em></div>
+        <div class="rp-sec-hd"><span class="rp-sec-num">（五）</span>汇报说明<em>业财分析 · 手工填写</em></div>
         <div class="rp-notes">
           <div v-for="f in narrativeFields" :key="f.key" class="rp-note">
             <div class="rp-note-lbl">{{ f.label }}</div>
@@ -377,7 +402,7 @@ onMounted(load)
 
       <div class="rp-foot">
         本报告由系统按取值期间自动生成，账面余额为存量口径、现金流为期间流量口径，二者不应直接相等；
-        标注「—」的年度/本年累计项待基础数据齐全后启用。所有金额以导出时点数据为准。
+        现金流「本年累计」项待基础数据齐全后启用（标注「—」）。所有金额以导出时点数据为准。
       </div>
     </div>
   </div>
@@ -481,11 +506,20 @@ onMounted(load)
 .rp-twin { display: grid; grid-template-columns: 1fr 1.3fr; gap: 14px; margin-top: 12px; }
 .rp-tbl.mini th, .rp-tbl.mini td { padding: 6px 9px; font-size: 12px; }
 
-/* 现金流表 */
+/* 现金流表（单事业部）*/
 .rp-tbl.cash td.lft { font-weight: 600; }
 .rp-tbl.cash td.lft.sub { font-weight: 400; color: #555; }
 .rp-tbl.cash tr.lv1 td { background: #f0f0f0; font-weight: 800; }
 .rp-tbl.cash tr.net td { border-top: 2px solid #333; background: #f5f5f5; font-size: 13px; font-weight: 800; }
+
+/* 现金流横向透视表（集团视图）*/
+.cash-pivot-wrap { overflow-x: auto; }
+.rp-tbl.cash-pivot td.lft { font-weight: 600; min-width: 200px; }
+.rp-tbl.cash-pivot td.lft.sub { font-weight: 400; color: #555; }
+.rp-tbl.cash-pivot tr.lv1 td { background: #f0f0f0; font-weight: 800; }
+.rp-tbl.cash-pivot tr.net td { border-top: 2px solid #333; background: #f5f5f5; font-size: 13px; font-weight: 800; }
+.rp-tbl.cash-pivot th.hd-total { background: #d8d8d8; font-weight: 900; }
+.rp-tbl.cash-pivot td:last-child { background: #f5f5f5; font-weight: 700; border-left: 2px solid #aaa; }
 
 /* 汇报说明 */
 .rp-notes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
