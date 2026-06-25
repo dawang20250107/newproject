@@ -1,0 +1,238 @@
+<script setup>
+import { ref, onMounted, computed } from 'vue'
+import api from '../api/index.js'
+import { useAuthStore } from '../stores/auth.js'
+import { fmtCompact } from '../utils/format.js'
+import StatusBadge from '../components/StatusBadge.vue'
+import EmptyState from '../components/EmptyState.vue'
+
+const auth = useAuthStore()
+const data = ref(null)
+const loading = ref(true)
+const loadErr = ref('')
+const welcomeName = ref('')
+
+const showAmount = computed(() => auth.canView('total_amount'))
+const showPaid = computed(() => auth.canView('installments'))
+
+// 万/元 两级单位（不启用「亿」），单位前带空格；空值显示「—」
+const fmt = (n) => fmtCompact(n, { space: true, yuan: true, yi: false })
+
+async function load() {
+  loading.value = true
+  loadErr.value = ''
+  try {
+    const res = await api.get('/dashboard')
+    data.value = res.data
+  } catch (e) {
+    loadErr.value = e?.error || '加载失败，请刷新重试'
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  load()
+  const name = sessionStorage.getItem('pk_welcome')
+  if (name && name !== '1') {
+    welcomeName.value = name
+    sessionStorage.removeItem('pk_welcome')
+    setTimeout(() => { welcomeName.value = '' }, 3500)
+  } else if (name === '1') {
+    sessionStorage.removeItem('pk_welcome')
+  }
+})
+
+const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })
+</script>
+
+<template>
+  <div>
+    <!-- welcome toast shown once after approval auto-login -->
+    <Transition name="welcome-fade">
+      <div v-if="welcomeName" class="welcome-toast">
+        🎉 欢迎加入，{{ welcomeName }}！账号已通过审批，正式进入系统。
+      </div>
+    </Transition>
+
+    <div class="topbar">
+      <div>
+        <h1>今日工作台</h1>
+        <div style="font-size:13px;color:var(--muted);margin-top:2px">{{ today }}</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" @click="load">刷新</button>
+    </div>
+
+    <EmptyState v-if="loading" loading />
+    <EmptyState v-else-if="loadErr" :error="loadErr" />
+
+    <template v-else-if="data">
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="label">今日计划付款</div>
+          <div class="value">{{ data.today_count }}</div>
+          <div v-if="showAmount" class="sub">共 {{ fmt(data.today_amount) }}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="label">待付款记录</div>
+          <div class="value" style="color:#c62828">{{ data.pending_count }}</div>
+          <div v-if="showAmount" class="sub">{{ fmt(data.pending_amount) }}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="label">部分付款中</div>
+          <div class="value" style="color:#f57f17">{{ data.partial_count }}</div>
+          <div v-if="showAmount" class="sub">{{ fmt(data.partial_amount) }}</div>
+        </div>
+        <div :class="['kpi-card', data.overdue_count > 0 ? 'overdue-kpi-card' : '']">
+          <div class="label">已逾期未付</div>
+          <div :class="['value', data.overdue_count > 0 ? 'kpi-value-pulse' : '']" style="color:#c62828">
+            {{ data.overdue_count }}
+          </div>
+          <div v-if="showAmount" class="sub">{{ fmt(data.overdue_amount) }}</div>
+        </div>
+      </div>
+
+      <!-- overdue alert banner -->
+      <div v-if="data.overdue_count > 0" class="overdue-alert">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        <span>
+          当前有 <strong>{{ data.overdue_count }}</strong> 笔排款已逾期未付
+          <template v-if="showAmount">，合计 <strong>{{ fmt(data.overdue_amount) }}</strong></template>
+          ，请及时跟进处理。
+        </span>
+      </div>
+
+      <div class="card fh-fill">
+        <div class="section-title">今日计划付款 ({{ data.today_count }} 笔)</div>
+        <EmptyState v-if="!data.today_payments.length" icon="🎉" text="今日暂无计划付款" />
+        <div v-else class="table-wrap page-scroll">
+          <table class="today-table">
+            <thead>
+              <tr>
+                <th v-if="auth.canView('department')" class="col-dept">部门</th>
+                <th v-if="auth.canView('project_desc')" class="col-desc">付款事项</th>
+                <th v-if="auth.canView('payee')" class="col-payee">收款方</th>
+                <th v-if="showAmount" class="col-amt">计划金额</th>
+                <th v-if="showPaid" class="col-amt">已付</th>
+                <th class="col-status">状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="p in data.today_payments" :key="p.id">
+                <td v-if="auth.canView('department')" class="col-dept">{{ p.department }}</td>
+                <td v-if="auth.canView('project_desc')" class="col-desc" :title="p.project_desc">{{ p.project_desc }}</td>
+                <td v-if="auth.canView('payee')" class="col-payee" :title="p.payee">{{ p.payee }}</td>
+                <td v-if="showAmount" class="col-amt amt">{{ fmt(p.total_amount) }}</td>
+                <td v-if="showPaid" class="col-amt amt">{{ fmt(p.total_paid) }}</td>
+                <td class="col-status"><StatusBadge :status="p.status" /></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
+  </div>
+</template>
+
+<style scoped>
+.welcome-toast {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: linear-gradient(135deg, #c96342, #e8855a 55%, #e8a84a);
+  background-size: 200% 100%;
+  color: #fff;
+  padding: 16px 34px;
+  border-radius: 32px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  box-shadow: 0 10px 34px rgba(201,99,66,0.5);
+  z-index: 9999;
+  white-space: nowrap;
+  overflow: hidden;
+  animation: toastShine 2.6s ease-in-out infinite, toastBob 2.8s ease-in-out infinite;
+}
+.welcome-toast::after {
+  content: '';
+  position: absolute; top: 0; bottom: 0; left: -60%;
+  width: 50%;
+  background: linear-gradient(100deg, transparent, rgba(255,255,255,0.45), transparent);
+  transform: skewX(-18deg);
+  animation: toastSweep 2.8s ease-in-out 0.5s infinite;
+}
+@keyframes toastShine { 0%,100% { background-position: 0% 0; } 50% { background-position: 100% 0; } }
+@keyframes toastBob { 0%,100% { transform: translateX(-50%) translateY(0); } 50% { transform: translateX(-50%) translateY(-3px); } }
+@keyframes toastSweep { 0% { left: -60%; } 55%,100% { left: 130%; } }
+.welcome-fade-enter-active { transition: all 0.55s cubic-bezier(0.22,1,0.36,1); }
+.welcome-fade-leave-active { transition: all 0.6s ease; }
+.welcome-fade-enter-from  { opacity: 0; transform: translateX(-50%) translateY(-18px) scale(0.92); }
+.welcome-fade-leave-to    { opacity: 0; transform: translateX(-50%) translateY(-10px) scale(0.96); }
+
+.overdue-alert {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(198,40,40,0.08);
+  border: 1px solid rgba(198,40,40,0.22);
+  border-left: 4px solid #c62828;
+  border-radius: 10px;
+  padding: 11px 16px;
+  margin-bottom: 16px;
+  color: #b71c1c;
+  font-size: 13.5px;
+}
+.overdue-alert svg { flex-shrink: 0; color: #c62828; }
+
+/* Today's payment plan — compact, tidy row/column density */
+.today-table { width: 100%; font-size: 13px; table-layout: fixed; }
+.today-table thead th {
+  padding: 8px 10px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.04em;
+  color: var(--muted); text-transform: uppercase;
+  background: rgba(0,0,0,0.025);
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+.today-table tbody td {
+  padding: 9px 10px;
+  vertical-align: middle;
+  border-bottom: 1px solid rgba(0,0,0,0.04);
+}
+.today-table tbody tr:last-child td { border-bottom: none; }
+.today-table tbody tr:hover { background: rgba(201,99,66,0.03); }
+.today-table .col-dept   { width: 12%; }
+.today-table .col-desc   { width: auto; }
+.today-table .col-payee  { width: 18%; }
+.today-table .col-amt    { width: 12%; }
+.today-table .col-status { width: 90px; text-align: center; }
+.today-table .col-desc, .today-table .col-payee {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.today-table .amt { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ── 排版紧凑：收紧工作台各区块的间距/内边距 ───────────────────────── */
+.topbar { margin-bottom: 10px; }
+.kpi-grid { gap: 10px; margin-bottom: 12px; }
+.kpi-card { padding: 13px 16px; }
+.kpi-card .label { margin-bottom: 5px; }
+.kpi-card .value { font-size: 24px; }
+.kpi-card .sub { margin-top: 3px; }
+.overdue-alert { padding: 9px 14px; margin-bottom: 12px; }
+.card { padding: 12px 14px; }
+.section-title { margin-bottom: 10px; }
+
+/* ── 固定一页 + 表格底部保护 ─────────────────────────────────────────
+   本路由已加 fullHeight，由全局 .main-content.full-height-view 锁定主区
+   不滚动。这里把视图根做成纵向 flex：KPI/告警/标题为不滚动头部
+   (flex-shrink:0)，付款卡片 .fh-fill 撑满剩余高度，表格 .page-scroll
+   内部滚动。底部留白避免最后一行被吸底 bottom-bar 遮挡或贴边。 */
+.topbar, .kpi-grid, .overdue-alert { flex-shrink: 0; }
+.card.fh-fill { padding-bottom: 4px; }
+.card.fh-fill .section-title { flex-shrink: 0; }
+/* 表头吸顶，滚动时列名常驻 */
+.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+/* 表格底部保护：滚动区末端留出空间，最后一行不贴边/不被遮挡 */
+.table-wrap.page-scroll { padding-bottom: 28px; }
+</style>

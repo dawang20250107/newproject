@@ -1,0 +1,789 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ════════════════════════════════════════════════════
+   DESIGN TOKENS
+   Warm Parchment × Terracotta — KXT 财务系统
+════════════════════════════════════════════════════ */
+:root {
+  /* ── page surfaces ── */
+  --bg:              #eae4da;
+  --bg2:             #e2dbd0;
+  --surface-1:       rgba(255,253,250,0.88);   /* cards */
+  --surface-2:       rgba(255,254,251,0.96);   /* modals */
+  --surface-tint:    rgba(201,99,66,0.042);    /* brand-tinted rows / highlights */
+
+  /* ── brand / primary ── */
+  --primary:         #c96342;
+  --primary-light:   #e0845c;
+  --primary-dark:    #a84e32;
+  --primary-glow:    rgba(201,99,66,0.30);
+  --grad:            linear-gradient(135deg, #c96342, #e0845c);
+  --grad-v:          linear-gradient(180deg, #c96342, #a84e32);
+
+  /* ── text hierarchy ── */
+  --text:            #1a1208;
+  --text-2:          #5c4230;
+  --muted:           #8a7464;
+  --muted-light:     #b09888;
+
+  /* ── semantic status ── */
+  --c-success:       #2e7d32;
+  --c-success-bg:    rgba(46,125,50,0.09);
+  --c-success-bdr:   rgba(46,125,50,0.22);
+  --c-danger:        #c62828;
+  --c-danger-bg:     rgba(198,40,40,0.08);
+  --c-danger-bdr:    rgba(198,40,40,0.20);
+  --c-warn:          #e65100;
+  --c-warn-bg:       rgba(245,127,23,0.10);
+  --c-warn-bdr:      rgba(245,127,23,0.26);
+  --c-info:          #1565c0;
+  --c-info-bg:       rgba(21,101,192,0.08);
+  --c-info-bdr:      rgba(21,101,192,0.20);
+
+  /* ── borders ── */
+  --border-soft:     rgba(180,140,110,0.14);
+  --border:          rgba(180,140,110,0.22);
+  --border-strong:   rgba(160,120,85,0.32);
+
+  /* ── glass / elevation ── */
+  --glass:           rgba(255,253,250,0.70);
+  --glass-border:    rgba(255,255,255,0.68);
+  --glass-shadow:    0 6px 28px rgba(100,60,30,0.12), 0 1px 0 rgba(255,255,255,0.72) inset;
+  --shadow-sm:       0 1px 5px rgba(100,60,30,0.10);
+  --shadow-md:       0 6px 24px rgba(100,60,30,0.13);
+  --shadow-lg:       0 18px 56px rgba(100,60,30,0.20);
+  --card:            var(--glass);
+
+  /* ── shape ── */
+  --radius:          14px;
+  --radius-sm:       9px;
+  --radius-xs:       6px;
+  --radius-lg:       20px;
+
+  /* ── layout ── */
+  --nav-w:           224px;
+  --nav-w-collapsed: 68px;
+  --blur:            blur(20px) saturate(180%);
+}
+
+/* 始终保留文档滚动条占位，避免「滚动条出现/消失→内容宽度变化→自适应表格重新换行→
+   高度变化→滚动条再切换」的回流抖动（项目台账/客户管理这类宽表最易触发，且与机器性能/
+   浏览器/缩放相关，表现为内容疯狂跳动+卡顿）。overflow-y:scroll 兼容所有浏览器，
+   scrollbar-gutter 为现代浏览器提供更干净的占位。 */
+html {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  background: #e2dbd1;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── animated background ─────────────────────────────────────────────────── */
+#app { min-height: 100vh; position: relative; }
+
+.bg-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: linear-gradient(150deg, #f0ece3 0%, #e5ddd2 45%, #ece6db 100%);
+  contain: layout paint;
+  transform: translateZ(0);
+}
+.bg-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(70px);
+  opacity: 0.15;
+}
+.bg-orb-1 {
+  width: 680px; height: 680px;
+  background: radial-gradient(circle, #c96342 0%, transparent 68%);
+  top: -200px; left: -160px;
+}
+.bg-orb-2 {
+  width: 480px; height: 480px;
+  background: radial-gradient(circle, #e8a84a 0%, transparent 68%);
+  bottom: -100px; right: -80px;
+  opacity: 0.11;
+}
+.bg-orb-3 {
+  width: 400px; height: 400px;
+  background: radial-gradient(circle, #c96342 0%, transparent 70%);
+  top: 45%; left: 55%;
+  opacity: 0.07;
+}
+.bg-orb-4 {
+  width: 280px; height: 280px;
+  background: radial-gradient(circle, #d4946a 0%, transparent 70%);
+  top: 20%; right: 15%;
+  opacity: 0.09;
+}
+
+/* ── layout ──────────────────────────────────────────────────────────────── */
+.layout { display: flex; min-height: 100vh; position: relative; z-index: 1; }
+.main-content {
+  flex: 1; overflow-y: auto; padding: 20px 24px 72px;
+  margin-left: var(--nav-w);
+  transition: margin-left 0.46s cubic-bezier(0.45, 0, 0.15, 1);
+  scrollbar-gutter: stable;
+}
+.main-content.nav-collapsed { margin-left: var(--nav-w-collapsed); }
+/* ── 固定视口页面（列表/表格类，由 route.meta.fullHeight 驱动）─────────────────
+   锁定主区不滚动，页面内部承担滚动的容器自行填满剩余高度并内部滚动，
+   鼠标滚轮只滚表格行、不再整页上下翻。padding 去掉底部，底部交给内容填满
+   （吸底 bottom-bar 高 36px 已 fixed 固定占位）。 */
+.main-content.full-height-view {
+  overflow: hidden; padding-bottom: 0; height: 100vh;
+  display: flex; flex-direction: column;
+}
+/* 视图根元素（router-view 单根）填满锁定视口，成为纵向 flex 容器 */
+.main-content.full-height-view > * {
+  flex: 1 1 auto; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column;
+}
+/* 共享契约：页面给「中间层容器」加 .fh-fill（撑高但不滚），给「滚动面」加
+   .page-scroll（撑高并内部滚动）。两者把 flex 链从根一路传导到表格区。 */
+.main-content.full-height-view .fh-fill {
+  flex: 1 1 auto; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column;
+}
+.main-content.full-height-view .page-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
+/* fullHeight 页的页头/筛选等非滚动块不被压缩 */
+.main-content.full-height-view > * > .topbar,
+.main-content.full-height-view > * > .tabs { flex-shrink: 0; }
+/* logged-out pages (login) have no sidebar — fill the whole width so the
+   page can center its own content instead of shrinking to the flex item. */
+.main-public { flex: 1; width: 100%; min-width: 0; }
+
+/* ── glassmorphism cards ─────────────────────────────────────────────────── */
+.card {
+  /* NOTE: no backdrop-filter here. A .card is the page's large *scrolling*
+     surface; blurring the position:fixed background under it forces the
+     browser to re-rasterize the blur every single scroll frame, which on
+     integrated GPUs locks up the whole window (worst on the wide tables in
+     项目台账/客户管理). We keep the frosted *look* with a near-opaque fill
+     instead — visually all but identical over the soft background, but free
+     to scroll. backdrop-filter is kept only on static (non-scrolling)
+     overlays: modals, nav, popovers. */
+  background: rgba(255,253,250,0.90);
+  border-radius: var(--radius);
+  border: 1px solid rgba(255,255,255,0.65);
+  box-shadow: 0 2px 12px rgba(100,60,30,0.09), 0 1px 0 rgba(255,255,255,0.8) inset;
+  padding: 16px;
+  transition: box-shadow 0.22s ease;
+  transform: translateZ(0);
+}
+.card:hover {
+  box-shadow: 0 8px 36px rgba(100,60,30,0.15), 0 1px 0 rgba(255,255,255,0.9) inset;
+}
+
+/* ── buttons ─────────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 18px; border-radius: 10px; border: none;
+  font-size: 14px; font-weight: 500;
+  transition: all 0.2s cubic-bezier(0.4,0,0.2,1);
+  cursor: pointer; position: relative; overflow: hidden;
+  user-select: none;
+}
+.btn::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  background: white; opacity: 0; transition: opacity 0.15s;
+}
+.btn:active::after { opacity: 0.12; }
+.btn:focus-visible {
+  outline: 2.5px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.btn-primary {
+  background: var(--grad); color: #fff;
+  box-shadow: 0 3px 12px var(--primary-glow);
+}
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.07);
+  box-shadow: 0 6px 20px var(--primary-glow), 0 0 0 1px rgba(201,99,66,0.18);
+  transform: translateY(-1px);
+}
+.btn-primary:active:not(:disabled) { transform: translateY(0); }
+
+.btn-ghost {
+  background: rgba(201,99,66,0.07);
+  color: var(--primary);
+  border: 1px solid rgba(201,99,66,0.22);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: rgba(201,99,66,0.13);
+  border-color: rgba(201,99,66,0.4);
+  box-shadow: 0 0 10px rgba(201,99,66,0.12);
+}
+
+.btn-danger {
+  background: var(--c-danger-bg); color: var(--c-danger);
+  border: 1px solid var(--c-danger-bdr);
+}
+.btn-danger:hover:not(:disabled) {
+  background: #e74c3c; color: #fff;
+  box-shadow: 0 4px 14px rgba(231,76,60,0.32);
+  border-color: #e74c3c;
+}
+
+.btn-success {
+  background: var(--c-success-bg); color: var(--c-success);
+  border: 1px solid var(--c-success-bdr);
+}
+.btn-success:hover:not(:disabled) {
+  background: #2e7d32; color: #fff;
+  box-shadow: 0 4px 14px rgba(46,125,50,0.32);
+  border-color: #2e7d32;
+}
+
+.btn-sm { padding: 5px 11px; font-size: 12px; border-radius: var(--radius-sm); }
+.btn:disabled { opacity: 0.42; cursor: not-allowed; filter: none !important; transform: none !important; box-shadow: none !important; }
+
+/* ── inputs ──────────────────────────────────────────────────────────────── */
+input, textarea, select {
+  font-family: inherit; font-size: 14px; outline: none;
+  border: 1.5px solid var(--border); border-radius: 10px;
+  padding: 9px 13px;
+  /* near-opaque fill instead of a translucent one + backdrop blur: a filter
+     strip has many inputs, and each backdrop-filter is its own layer that
+     re-blurs the fixed background on every scroll frame. */
+  background: rgba(255,254,251,0.94);
+  color: var(--text); width: 100%;
+  transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
+}
+input:focus, textarea:focus, select:focus {
+  border-color: var(--primary);
+  background: #fffcfa;
+  box-shadow: 0 0 0 3px rgba(201,99,66,0.12), 0 1px 6px rgba(100,60,30,0.07);
+}
+input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: none;
+}
+input::placeholder { color: rgba(138,116,100,0.55); }
+
+/* ── table ───────────────────────────────────────────────────────────────── */
+/* contain: content (= layout paint style, NOT size) scopes the table's reflow
+   and repaint to this box, so a wide auto-layout table can't invalidate the
+   whole document during scroll — kills the scrollbar↔reflow jank on wide tables. */
+.table-wrap { overflow-x: auto; border-radius: 10px; contain: content; }
+table { width: 100%; border-collapse: collapse; white-space: nowrap; }
+th, td { padding: 11px 15px; text-align: left; border-bottom: 1px solid rgba(180,140,110,0.10); }
+th {
+  background: rgba(201,99,66,0.055);
+  font-weight: 700; font-size: 11.5px; color: var(--muted);
+  letter-spacing: 0.05em; text-transform: uppercase;
+  border-bottom: 1px solid rgba(201,99,66,0.12);
+}
+/* No transition on rows: during wheel-scroll the cursor stays put while rows
+   slide under it, so a per-row background transition fires on every row that
+   passes — each one repainting inside the card. Instant hover is imperceptible
+   and removes that per-frame repaint churn. */
+tr:hover td { background: rgba(201,99,66,0.048); }
+tr:last-child td { border-bottom: none; }
+
+/* ── kpi cards ───────────────────────────────────────────────────────────── */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(185px, 1fr));
+  gap: 16px; margin-bottom: 26px;
+}
+.kpi-card {
+  background: var(--glass);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  transition: transform 0.22s ease, box-shadow 0.22s ease;
+}
+.kpi-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 40px rgba(100,60,30,0.18), 0 1px 0 rgba(255,255,255,0.82) inset;
+}
+.kpi-card .label {
+  font-size: 11px; color: var(--muted); margin-bottom: 8px;
+  letter-spacing: 0.06em; text-transform: uppercase; font-weight: 700;
+}
+.kpi-card .value {
+  font-size: 28px; font-weight: 800; color: var(--primary);
+  line-height: 1; letter-spacing: -0.02em;
+}
+.kpi-card .sub { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+/* ── badges ──────────────────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex; align-items: center;
+  padding: 2px 9px; border-radius: 20px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  white-space: nowrap; border: 1px solid transparent;
+}
+.badge-settled  { background: var(--c-success-bg); color: var(--c-success);  border-color: var(--c-success-bdr); }
+.badge-partial  { background: var(--c-warn-bg);    color: var(--c-warn);     border-color: var(--c-warn-bdr); }
+.badge-pending  { background: var(--c-danger-bg);  color: var(--c-danger);   border-color: var(--c-danger-bdr); }
+.badge-adjusted { background: var(--c-info-bg);    color: var(--c-info);     border-color: var(--c-info-bdr); }
+.badge-super_admin { background: rgba(201,99,66,0.12); color: var(--primary); border-color: rgba(201,99,66,0.25); }
+.badge-manager  { background: var(--c-info-bg);    color: var(--c-info);     border-color: var(--c-info-bdr); }
+.badge-operator { background: var(--c-success-bg); color: var(--c-success);  border-color: var(--c-success-bdr); }
+.badge-viewer   { background: rgba(106,27,154,0.08); color: #6a1b9a; border-color: rgba(106,27,154,0.18); }
+.badge-awaiting { background: var(--c-warn-bg);    color: var(--c-warn);     border-color: var(--c-warn-bdr); }
+
+/* ── forms ───────────────────────────────────────────────────────────────── */
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 14px; }
+.form-row.full { grid-template-columns: 1fr; }
+.form-group { display: flex; flex-direction: column; gap: 5px; }
+.form-group label { font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: 0.03em; }
+
+/* ── modals ──────────────────────────────────────────────────────────────── */
+.overlay {
+  position: fixed; inset: 0;
+  background: rgba(18,9,4,0.44);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 200;
+  backdrop-filter: blur(10px);
+  animation: fadeIn 0.16s ease;
+}
+.modal {
+  background: rgba(255,253,250,0.92);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-radius: var(--radius-lg);
+  padding: 32px;
+  width: 600px; max-width: 95vw; max-height: 90vh; overflow-y: auto;
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 24px 80px rgba(80,40,20,0.28), 0 1px 0 rgba(255,255,255,0.85) inset;
+  animation: modalIn 0.28s cubic-bezier(0.34,1.5,0.64,1);
+}
+.modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; }
+.modal-header h3 { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
+.modal-close {
+  background: rgba(0,0,0,0.05); border: none; font-size: 18px;
+  color: var(--muted); border-radius: var(--radius-sm);
+  width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+  transition: all 0.18s; cursor: pointer;
+}
+.modal-close:hover { background: rgba(201,99,66,0.10); color: var(--primary); }
+.modal-footer {
+  display: flex; justify-content: flex-end; gap: 10px;
+  margin-top: 22px; border-top: 1px solid var(--border); padding-top: 18px;
+}
+
+/* ── sections ────────────────────────────────────────────────────────────── */
+.section-title {
+  font-size: 15px; font-weight: 700; margin-bottom: 16px;
+  color: var(--text); display: flex; align-items: center; gap: 8px;
+  letter-spacing: -0.01em;
+}
+.section-title::before {
+  content: ''; width: 3px; height: 16px; border-radius: 2px;
+  background: var(--grad); display: inline-block; flex-shrink: 0;
+}
+
+.inst-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  padding: 14px; background: var(--surface-tint);
+  border-radius: 10px; margin-bottom: 8px;
+  border: 1px solid rgba(201,99,66,0.08);
+}
+
+/* ── filter bar ──────────────────────────────────────────────────────────── */
+.filter-bar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; align-items: center; }
+.filter-bar input, .filter-bar select { width: auto; min-width: 130px; }
+
+/* ── pagination ──────────────────────────────────────────────────────────── */
+.pagination {
+  display: flex; align-items: center; gap: 8px;
+  justify-content: flex-end; margin-top: 18px;
+  font-size: 13px; color: var(--muted);
+}
+.pagination button {
+  padding: 5px 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--glass); cursor: pointer;
+  transition: all 0.18s;
+}
+.pagination button:hover:not(:disabled) { background: var(--primary); color: #fff; border-color: var(--primary); }
+.pagination button:disabled { opacity: 0.38; cursor: not-allowed; }
+
+/* ── alerts ──────────────────────────────────────────────────────────────── */
+.alert { padding: 11px 15px; border-radius: var(--radius-sm); font-size: 13px; margin-bottom: 14px; animation: fadeIn 0.2s ease; }
+.alert-err  { background: var(--c-danger-bg);  color: var(--c-danger);  border: 1px solid var(--c-danger-bdr); }
+.alert-ok   { background: var(--c-success-bg); color: var(--c-success); border: 1px solid var(--c-success-bdr); }
+.alert-info { background: var(--c-info-bg);    color: var(--c-info);    border: 1px solid var(--c-info-bdr); }
+.alert-warn { background: var(--c-warn-bg);    color: var(--c-warn);    border: 1px solid var(--c-warn-bdr); }
+
+/* ── empty state ─────────────────────────────────────────────────────────── */
+.empty { text-align: center; padding: 52px 24px; color: var(--muted); }
+.empty .icon { font-size: 42px; margin-bottom: 12px; }
+
+/* ── top bar ─────────────────────────────────────────────────────────────── */
+.topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.topbar h1 { font-size: 19px; font-weight: 800; letter-spacing: -0.03em; color: var(--text); }
+
+/* ── amount colors ───────────────────────────────────────────────────────── */
+.amt { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+.amt-red   { color: var(--c-danger);  font-weight: 600; }
+.amt-green { color: var(--c-success); font-weight: 600; }
+
+/* ── tabs ────────────────────────────────────────────────────────────────── */
+.tabs {
+  display: flex; gap: 3px; padding: 3px;
+  background: rgba(0,0,0,0.055); border-radius: 11px;
+  width: fit-content; margin-bottom: 20px;
+}
+.tab {
+  padding: 7px 17px; border-radius: 8px; font-size: 13px; font-weight: 500;
+  cursor: pointer; border: none; background: transparent; color: var(--muted);
+  transition: all 0.18s; white-space: nowrap;
+}
+.tab.active {
+  background: rgba(255,253,250,0.92); color: var(--primary);
+  box-shadow: 0 1px 8px rgba(100,60,30,0.11), 0 0 0 1px rgba(255,255,255,0.5) inset;
+  font-weight: 600;
+}
+
+/* ── animations ──────────────────────────────────────────────────────────── */
+@keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
+@keyframes modalIn {
+  from { opacity:0; transform: scale(0.95) translateY(12px); }
+  to   { opacity:1; transform: scale(1) translateY(0); }
+}
+@keyframes slideUp {
+  from { opacity:0; transform: translateY(22px); }
+  to   { opacity:1; transform: translateY(0); }
+}
+@keyframes spinIn {
+  from { transform: rotate(-180deg) scale(0); opacity:0; }
+  to   { transform: rotate(0) scale(1); opacity:1; }
+}
+.animate-up { animation: slideUp 0.38s cubic-bezier(0.34,1.2,0.64,1) both; }
+
+/* ── scrollbar ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(160,128,104,0.30); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(160,128,104,0.55); }
+
+/* ── mobile hamburger + drawer backdrop (hidden on desktop) ──────────────── */
+.mobile-nav-toggle { display: none; }
+.mobile-nav-backdrop { display: none; }
+
+/* ── responsive ──────────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .main-content { margin-left: 0 !important; padding: 64px 14px 40px; }
+  /* NOTE: the off-canvas drawer transform/z-index lives in AppNav.vue scoped
+     styles so it can out-specify the scoped base .sidebar rule. */
+
+  /* hamburger button, fixed top-left */
+  .mobile-nav-toggle {
+    display: flex; align-items: center; justify-content: center;
+    position: fixed; top: 12px; left: 12px;
+    width: 42px; height: 42px; border-radius: 12px;
+    background: rgba(34,16,8,0.92);
+    color: #e8d4c4; border: 1px solid rgba(255,255,255,0.10);
+    z-index: 250;
+    box-shadow: 0 4px 16px rgba(18,7,3,0.28);
+    backdrop-filter: blur(8px);
+  }
+  .mobile-nav-toggle:active { background: var(--primary); color: #fff; }
+
+  /* drawer backdrop */
+  .mobile-nav-backdrop {
+    display: block; position: fixed; inset: 0;
+    background: rgba(18,9,4,0.48); backdrop-filter: blur(4px);
+    z-index: 280;
+  }
+
+  .form-row { grid-template-columns: 1fr; }
+  .modal { padding: 20px 18px; border-radius: 18px; width: 100%; max-width: 100%;
+    max-height: 92vh; }
+  .overlay { align-items: flex-end; }   /* sheet-style modal on phones */
+  .modal-footer { position: sticky; bottom: 0; background: rgba(255,253,250,0.97);
+    padding-top: 12px; }
+  .kpi-grid { grid-template-columns: repeat(2,1fr); }
+  .topbar { flex-direction: column; align-items: flex-start; gap: 12px; }
+
+  /* larger touch targets */
+  .btn { min-height: 38px; }
+  .btn-sm { min-height: 32px; }
+  table th, table td { padding: 10px 10px; }
+}
+
+@media (max-width: 480px) {
+  .kpi-grid { grid-template-columns: 1fr; }
+}
+
+.backdrop-fade-enter-active, .backdrop-fade-leave-active { transition: opacity 0.25s ease; }
+.backdrop-fade-enter-from, .backdrop-fade-leave-to { opacity: 0; }
+
+
+
+/* ── overdue indicators (GPU-composited: only opacity/transform) ──────────── */
+tr.overdue-row { background-color: rgba(198,40,40,0.045); }
+tr.overdue-row td:first-child { border-left: 3px solid var(--c-danger); }
+.overdue-kpi-card { background-color: rgba(198,40,40,0.04); }
+.overdue-kpi-card .kpi-value-pulse {
+  display: inline-block; border-radius: 8px; padding: 0 4px;
+  animation: kpi-scale-pulse 2s ease-in-out infinite;
+  will-change: transform; transform-origin: center;
+}
+@keyframes kpi-scale-pulse {
+  0%, 100% { transform: scale(1); }
+  50%       { transform: scale(1.06); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .overdue-kpi-card .kpi-value-pulse { animation: none; }
+  /* 低性能/省电/无障碍场景：去掉会触发整页回流的布局动画与各类过渡，避免卡顿与抖动。
+     导航收起的 margin-left 过渡会让宽表逐帧重排，这里直接瞬时切换。 */
+  .main-content { transition: none !important; }
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── compact filter controls ─────────────────────────────────────────────── */
+.ctrl-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sel-yr, .sel-mo, .sel-bu {
+  width: auto; min-width: 0;
+  padding: 5px 28px 5px 10px; height: 32px;
+  font-size: 12.5px; border-radius: var(--radius-sm);
+  background: rgba(255,254,251,0.92);
+}
+.ctrl-sep { width: 1px; height: 20px; background: var(--border); flex-shrink: 0; }
+.search-input {
+  padding: 5px 12px; height: 32px;
+  border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 12.5px; min-width: 180px;
+  background: rgba(255,254,251,0.92); width: auto;
+}
+
+/* ── modal overlay / box (used in AR views via Teleport) ─────────────────── */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(18,9,4,0.44);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 200; backdrop-filter: blur(10px);
+  animation: fadeIn 0.16s ease;
+}
+.modal-box {
+  background: rgba(255,253,250,0.94);
+  backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  border-radius: var(--radius-lg); padding: 0;
+  width: 600px; max-width: 95vw; max-height: 90vh; overflow-y: auto;
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 24px 80px rgba(80,40,20,0.28), 0 1px 0 rgba(255,255,255,0.85) inset;
+  animation: modalIn 0.26s cubic-bezier(0.34,1.5,0.64,1);
+}
+.modal-box .modal-header { padding: 24px 28px 0; margin-bottom: 0; }
+.modal-box .modal-body   { padding: 16px 28px; }
+.modal-box .modal-footer { padding: 12px 28px 20px; margin-top: 0; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px; }
+
+/* ── form grid / field (used in AR modal forms) ──────────────────────────── */
+.form-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+}
+.form-field {
+  display: flex; flex-direction: column; gap: 5px;
+  font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: 0.02em;
+}
+.form-field em { color: var(--primary); font-style: normal; }
+.form-field input, .form-field select, .form-field textarea { margin-top: 0; }
+.form-field.span2 { grid-column: span 2; }
+
+/* ── data reloading state ────────────────────────────────────────────────── */
+.data-reloading { opacity: 0.58; pointer-events: none; transition: opacity 0.2s; }
+
+@media (max-width: 640px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .form-field.span2 { grid-column: span 1; }
+}
+
+/* ── Fixed summary + pagination bar (bottom of table views) ──────────────── */
+/* Teleported to <body> to escape .card { transform: translateZ(0) } containing
+   block. Uses body.nav-collapsed (synced from App.vue watch) to shift left. */
+.bottom-bar {
+  position: fixed; bottom: 0; left: var(--nav-w); right: 0; z-index: 90;
+  height: 36px; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 0 16px; flex-wrap: nowrap;
+  background: rgba(235,228,218,0.96);
+  border-top: 1px solid rgba(180,140,110,0.20);
+  box-shadow: 0 -2px 12px rgba(100,60,30,0.09);
+  backdrop-filter: blur(10px);
+  transition: left 0.46s cubic-bezier(0.45, 0, 0.15, 1);
+}
+body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
+@media (max-width: 768px) { .bottom-bar { left: 0; } }
+
+.bb-summary { display: flex; align-items: center; gap: 14px; min-width: 0; overflow: hidden; }
+.bb-item { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; font-size: 11.5px; flex-shrink: 0; }
+.bb-item i { font-style: normal; font-size: 10px; color: var(--muted); letter-spacing: 0.02em; }
+.bb-item b { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text); font-size: 12px; }
+.bb-item.warn b { color: var(--c-danger); }
+.bb-item.ok b   { color: var(--c-success); }
+.bb-item.adj b  { color: #6a5acd; }
+.bb-pager { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.bottom-bar .page-btn {
+  padding: 2px 10px; border: 1px solid var(--border); border-radius: var(--radius-xs);
+  background: rgba(255,253,250,0.75); color: var(--text);
+  font-size: 11.5px; font-family: inherit; cursor: pointer; transition: all 0.14s;
+}
+.bottom-bar .page-btn:hover:not(:disabled) {
+  border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.07);
+}
+.bottom-bar .page-btn:disabled { opacity: 0.34; cursor: default; }
+.bottom-bar .page-info { font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+/* In-card pagination (payment ledger tab, etc.) — light theme */
+.pagination .page-btn {
+  padding: 5px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: var(--glass); color: var(--text); cursor: pointer;
+  font-size: 13px; font-family: inherit; transition: all 0.18s;
+}
+.pagination .page-btn:hover:not(:disabled) { background: var(--primary); color: #fff; border-color: var(--primary); }
+.pagination .page-btn:disabled { opacity: 0.38; cursor: not-allowed; }
+.pagination .page-info { font-size: 13px; color: var(--muted); }
+
+
+/* ══ 性能模式（perf-lite）：低配设备关闭滚动闪屏元凶 ══════════════════════════
+   backdrop-filter 毛玻璃 + 大阴影 + 常驻动画在滚动时强制逐帧重绘合成层，
+   集成显卡/老机器上表现为闪屏。性能模式全局关停这些纯装饰效果，布局不变。 */
+.perf-lite *, .perf-lite *::before, .perf-lite *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  animation: none !important;
+  transition: none !important;
+  text-shadow: none !important;
+}
+.perf-lite * { box-shadow: none !important; }
+/* 毛玻璃面板失去 blur 后半透明底会透字——给个接近的实底兜底 */
+.perf-lite .modal-box, .perf-lite .modal, .perf-lite .cp-modal,
+.perf-lite .fb-pop, .perf-lite .psn-drop, .perf-lite .col-settings-pop {
+  background: #fffcf8 !important;
+}
+
+/* ── 必填字段 * 标注 ──────────────────────────────────────────────────────── */
+.required-star { color: var(--c-danger); font-weight: 700; margin-left: 2px; }
+.form-field > label .required-star,
+.cp-field > label .required-star { color: var(--c-danger); }
+
+/* ── 加载骨架屏 ──────────────────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(90deg,
+    rgba(195,180,164,.30) 25%, rgba(195,180,164,.58) 50%, rgba(195,180,164,.30) 75%);
+  background-size: 200% 100%;
+  animation: sk-shimmer 1.4s infinite ease-in-out;
+  border-radius: var(--radius-xs);
+  display: inline-block;
+}
+@keyframes sk-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── KPI 卡片移动端响应 ─────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .kpi-row, .kpi-bar, .metrics-row {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+  }
+  .kpi-card, .kpi-item, .metric-card {
+    min-width: calc(50% - 8px) !important;
+    flex: 1 1 calc(50% - 8px) !important;
+    box-sizing: border-box;
+  }
+}
+
+/* ── 分页跳转输入（各页面共用）──────────────────────────────────────────── */
+.pg-jump {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 13px; color: var(--muted); margin-left: 8px;
+}
+.pg-jump-input {
+  width: 46px; text-align: center; padding: 2px 4px;
+  border: 1.5px solid var(--border); border-radius: var(--radius-xs); font-size: 13px;
+}
+.pg-jump-input:focus { border-color: var(--primary); outline: none; }
+
+/* ── 移动端部门按钮换行 ──────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .dept-pick { flex-wrap: wrap !important; }
+}
+
+/* Mobile table horizontal scroll cue */
+@media (max-width: 768px) {
+  .table-wrap {
+    position: relative;
+  }
+  .table-wrap::after {
+    content: '';
+    position: absolute; top: 0; right: 0;
+    width: 32px; height: 100%;
+    background: linear-gradient(to right, transparent, rgba(255,253,250,0.88));
+    pointer-events: none; z-index: 2;
+  }
+}
+
+/* Mobile filter bar */
+@media (max-width: 640px) {
+  .filter-bar, .filter-row, .filter-strip {
+    flex-wrap: wrap;
+    gap: 6px !important;
+  }
+  .filter-bar .btn, .filter-row .btn, .filter-strip .btn {
+    font-size: 12px;
+    padding: 4px 10px;
+  }
+  .filter-bar input[type="text"],
+  .filter-bar input[type="search"],
+  .filter-bar input[type="date"],
+  .filter-row input[type="text"],
+  .filter-row input[type="search"],
+  .filter-row input[type="date"] {
+    font-size: 12px;
+    padding: 4px 8px;
+  }
+}
+
+/* Payments KPI mobile compact */
+@media (max-width: 640px) {
+  .pk-kpi-row, .pk-kpi-bar {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+  }
+  .pk-kpi-row > *, .pk-kpi-bar > * {
+    flex: 0 0 calc(50% - 4px) !important;
+    min-width: 0 !important;
+  }
+}
+
+/* Mobile sticky first column */
+@media (max-width: 640px) {
+  .table-wrap table tbody td:first-child,
+  .table-wrap table thead th:first-child {
+    position: sticky;
+    left: 0;
+    background: var(--bg, #fff);
+    z-index: 1;
+    box-shadow: 2px 0 4px rgba(0,0,0,0.05);
+  }
+}
+
+/* Right-click affordance: rows with context menus show context-menu cursor */
+.data-row, .drillable, .pcf-row, .cmp-row, .pm-row, .row {
+  cursor: context-menu;
+}
