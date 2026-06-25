@@ -272,6 +272,15 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   outline: none;
 }
 input::placeholder { color: rgba(138,116,100,0.55); }
+/* width:100% above is meant for text/number/date/select fields. Checkboxes &
+   radios are intrinsically sized; stretching them to 100% makes them swallow
+   their flex row and squeeze the adjacent label to zero width (the「无名勾选框」
+   bug). Reset them globally so every checkbox/radio in the app renders next to
+   its label — no per-component width:auto patching needed. */
+input[type="checkbox"], input[type="radio"] {
+  width: auto; padding: 0; border-radius: 0;
+  accent-color: var(--primary);
+}
 
 /* ── table ───────────────────────────────────────────────────────────────── */
 /* contain: content (= layout paint style, NOT size) scopes the table's reflow
