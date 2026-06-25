@@ -112,6 +112,10 @@ urlpatterns = [
     # Cashflow comparison
     path('cashflow', views.cashflow),
 
+    # 周期报表（周报 / 月报）
+    path('periodic-report', views.periodic_report),
+    path('periodic-report/export', views.periodic_report_export),
+
     # 资金池 (cash pool)
     path('pool', views.cash_pool),
     path('pool/config', views.cash_pool_config),

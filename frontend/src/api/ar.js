@@ -170,6 +170,10 @@ const ar = {
   // Cashflow
   cashflow: p => api.get('/ar/cashflow', { params: p }),
 
+  // 周期报表（周报 / 月报）
+  periodicReport: p => api.get('/ar/periodic-report', { params: p }),
+  exportPeriodicReport: p => api.get('/ar/periodic-report/export', { params: p, responseType: 'blob' }),
+
   // Budget
   listCollectionBudget: p => api.get('/ar/budget/collection', { params: p }),
   createCollectionBudget: d => api.post('/ar/budget/collection', d),
