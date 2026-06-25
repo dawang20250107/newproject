@@ -1178,6 +1178,10 @@ def advance_diff_summary(request):
     if dept:
         qs = qs.filter(delivery_dept=dept)
 
+    today = datetime.date.today()
+    cur_month = (today.year, today.month)
+    cur_week_key = _period_of(today, 'week')[0]
+
     groups = {}
     for a in qs.order_by('occur_date', 'id'):
         name = (a.project.short_name or '').strip()
@@ -1189,6 +1193,8 @@ def advance_diff_summary(request):
             'project': name,
             'dept': a.project.delivery_dept or a.delivery_dept or '',
             'in_total': Decimal('0'), 'out_total': Decimal('0'),
+            'month_in': Decimal('0'), 'month_out': Decimal('0'),
+            'week_in': Decimal('0'), 'week_out': Decimal('0'),
             'in_items': [], 'out_items': [], '_notes': [],
         })
         # 明细按「收付明细」逐笔列出（实际发生日期，多次到账/付出各一行）；
@@ -1223,13 +1229,29 @@ def advance_diff_summary(request):
         note = (a.notes or '').strip()
         if note and note not in g['_notes']:
             g['_notes'].append(note)
+        # 月差异 / 周差异：按收付明细实际发生日归期（无明细回退记录级日期）
+        flows = ([(i.occur_date, i.amount or Decimal('0')) for i in insts]
+                 if insts else [(a.occur_date, a.advance_amount or Decimal('0'))])
+        for d, amt in flows:
+            if d is None:
+                continue
+            if (d.year, d.month) == cur_month:
+                if a.direction == '预收': g['month_in'] += amt
+                else: g['month_out'] += amt
+            if _period_of(d, 'week')[0] == cur_week_key:
+                if a.direction == '预收': g['week_in'] += amt
+                else: g['week_out'] += amt
 
     rows = []
     for g in groups.values():
         notes = '；'.join(g.pop('_notes'))[:300]
+        month_diff = g.pop('month_in') - g.pop('month_out')
+        week_diff = g.pop('week_in') - g.pop('week_out')
         rows.append({
             **{k: (str(v) if isinstance(v, Decimal) else v) for k, v in g.items()},
             'diff': str(g['in_total'] - g['out_total']),
+            'month_diff': str(month_diff),
+            'week_diff': str(week_diff),
             'notes': notes,
         })
     # 差异绝对值大的排前面（最该关注的）
@@ -1237,10 +1259,15 @@ def advance_diff_summary(request):
 
     t_in = sum(Decimal(x['in_total']) for x in rows)
     t_out = sum(Decimal(x['out_total']) for x in rows)
+    iso = today.isocalendar()
     return ok({
         'rows': rows,
         'summary': {'count': len(rows), 'in_total': str(t_in), 'out_total': str(t_out),
                     'diff': str(t_in - t_out)},
+        'period_labels': {
+            'month': f'{today.year}年{today.month}月',
+            'week': f'{today.year}年第{iso[1]}周',
+        },
     })
 
 

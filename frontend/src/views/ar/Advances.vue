@@ -120,7 +120,7 @@ function switchDir(d) {
   if (d === 'suppliers') {
     loadSuppliers()
   } else if (d === 'diff') {
-    diffView.value === 'project' ? loadDiff() : loadTimeline()
+    loadDiff()
   } else {
     load(true)
   }
@@ -157,80 +157,8 @@ function toggleDiffAll() {
     : new Set()
 }
 
-// ── 收付差异 · 时间维度（月 / 周）─────────────────────────────────────────────
-const diffView = ref('project')             // 'project' | 'month' | 'week'
-const timelineYear = ref(yearCST())         // 选定年份（仅月/周视图）
-const timelineData = ref(null)
-const timelineLoading = ref(false)
-const expandedPeriods = ref(new Set())      // 展开的期间
-const expandedPeriodProjects = ref(new Set())  // 展开的「期间-项目」(`${period}|${proj}`)
-const timelineExporting = ref(false)
-// 年份选项：当前年起向前 5 年
-const yearOptions = computed(() => {
-  const y = yearCST(); return [y, y - 1, y - 2, y - 3, y - 4, y - 5]
-})
-
-async function loadTimeline() {
-  timelineLoading.value = true
-  try {
-    const res = await ar.advanceDiffTimeline({
-      grain: diffView.value,
-      start: `${timelineYear.value}-01-01`,
-      end: `${timelineYear.value}-12-31`,
-      q: diffQ.value.trim() || undefined,
-    })
-    timelineData.value = res.data
-    expandedPeriods.value = new Set()
-    expandedPeriodProjects.value = new Set()
-  } catch (_) { timelineData.value = null }
-  finally { timelineLoading.value = false }
-}
-function setDiffView(v) {
-  diffView.value = v
-  if (v === 'project') loadDiff()
-  else loadTimeline()
-}
-function togglePeriod(key) {
-  const s = new Set(expandedPeriods.value)
-  s.has(key) ? s.delete(key) : s.add(key)
-  expandedPeriods.value = s
-}
-function togglePeriodProject(period, proj) {
-  const k = `${period}|${proj}`
-  const s = new Set(expandedPeriodProjects.value)
-  s.has(k) ? s.delete(k) : s.add(k)
-  expandedPeriodProjects.value = s
-}
-async function exportTimeline() {
-  timelineExporting.value = true
-  try {
-    const res = await ar.advanceDiffTimelineExport({
-      grain: diffView.value,
-      start: `${timelineYear.value}-01-01`,
-      end: `${timelineYear.value}-12-31`,
-      q: diffQ.value.trim() || undefined,
-    })
-    downloadBlob(res, `收付差异-按${diffView.value === 'week' ? '周' : '月'}-${timelineYear.value}.xlsx`)
-  } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
-  finally { timelineExporting.value = false }
-}
 const diffClass = v => parseFloat(v) >= 0 ? 'amt-pos' : 'amt-neg'
 const fmtDiff = v => (parseFloat(v) > 0 ? '+' : '') + fmtAmt(v)
-// 把「日期未记录」桶拼成一个伪期间，统一进表格单循环渲染（累计差异不适用 → null）
-const timelinePeriods = computed(() => {
-  const ps = (timelineData.value?.periods || []).slice()
-  const n = timelineData.value?.null_period
-  if (n && (parseFloat(n.in_total) || parseFloat(n.out_total))) {
-    ps.push({ period: '__null__', label: '日期未记录', in_total: n.in_total,
-              out_total: n.out_total, diff: n.diff, cum_diff: null, projects: n.projects })
-  }
-  return ps
-})
-// 当时间视图下搜索框变化：重新拉时间线（与按项目视图共用 diffQ）
-function onTimelineSearch() {
-  clearTimeout(diffTimer)
-  diffTimer = setTimeout(() => { diffView.value === 'project' ? loadDiff() : loadTimeline() }, 300)
-}
 function onFilterChange() { load(true) }
 let qTimer = null
 function onQInput() { clearTimeout(qTimer); qTimer = setTimeout(() => load(true), 300) }
@@ -816,198 +744,88 @@ onMounted(async () => {
       </div>
     </template>
 
-    <!-- ── 收付差异：预收 vs 预付（按项目 / 按月 / 按周） ── -->
+    <!-- ── 收付差异：预收 vs 预付（按项目，含月差异/周差异列）── -->
     <template v-else-if="direction === 'diff'">
-      <!-- 视角切换 + 时间维度的年份选择 / 导出 -->
-      <div class="diff-viewbar">
-        <div class="diff-view-tabs">
-          <button :class="{ act: diffView === 'project' }" @click="setDiffView('project')">按项目</button>
-          <button :class="{ act: diffView === 'month' }" @click="setDiffView('month')">按月</button>
-          <button :class="{ act: diffView === 'week' }" @click="setDiffView('week')">按周</button>
-        </div>
-        <template v-if="diffView !== 'project'">
-          <select v-model.number="timelineYear" class="sel sm" @change="loadTimeline">
-            <option v-for="y in yearOptions" :key="y" :value="y">{{ y }} 年</option>
-          </select>
-          <button class="btn btn-ghost btn-sm" :disabled="timelineExporting" @click="exportTimeline">
-            {{ timelineExporting ? '导出中…' : '↓ 导出' }}
-          </button>
-        </template>
+      <div v-if="diffData?.summary" class="kpi-row">
+        <div class="kpi"><div class="kpi-k">涉及项目</div><div class="kpi-v">{{ diffData.summary.count }} 个</div></div>
+        <div class="kpi"><div class="kpi-k">预收合计</div><div class="kpi-v" style="color:#2e7d32">{{ fmtAmt(diffData.summary.in_total) }}</div></div>
+        <div class="kpi"><div class="kpi-k">预付合计</div><div class="kpi-v" style="color:#ef6c00">{{ fmtAmt(diffData.summary.out_total) }}</div></div>
+        <div class="kpi accent"><div class="kpi-k">差异（预收−预付）</div>
+          <div class="kpi-v" :style="{ color: parseFloat(diffData.summary.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(diffData.summary.diff) }}</div></div>
       </div>
 
-      <!-- ════ 按项目视图 ════ -->
-      <template v-if="diffView === 'project'">
-        <div v-if="diffData?.summary" class="kpi-row">
-          <div class="kpi"><div class="kpi-k">涉及项目</div><div class="kpi-v">{{ diffData.summary.count }} 个</div></div>
-          <div class="kpi"><div class="kpi-k">预收合计</div><div class="kpi-v" style="color:#2e7d32">{{ fmtAmt(diffData.summary.in_total) }}</div></div>
-          <div class="kpi"><div class="kpi-k">预付合计</div><div class="kpi-v" style="color:#ef6c00">{{ fmtAmt(diffData.summary.out_total) }}</div></div>
-          <div class="kpi accent"><div class="kpi-k">差异（预收−预付）</div>
-            <div class="kpi-v" :style="{ color: parseFloat(diffData.summary.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(diffData.summary.diff) }}</div></div>
+      <div class="card fh-fill">
+        <div class="filter-row">
+          <input v-model="diffQ" class="inp sm" style="width:220px" placeholder="搜项目简称" @input="onDiffSearch" />
+          <div style="flex:1"></div>
+          <button class="btn btn-ghost btn-sm" @click="toggleDiffAll">
+            {{ diffAllOpen ? '▲ 一键折叠' : '▼ 一键展开' }}
+          </button>
         </div>
-
-        <div class="card fh-fill">
-          <div class="filter-row">
-            <input v-model="diffQ" class="inp sm" style="width:220px" placeholder="搜项目简称" @input="onDiffSearch" />
-            <div style="flex:1"></div>
-            <button class="btn btn-ghost btn-sm" @click="toggleDiffAll">
-              {{ diffAllOpen ? '▲ 一键折叠' : '▼ 一键展开' }}
-            </button>
-          </div>
-          <div v-if="diffLoading" class="empty" style="padding:30px;text-align:center">⏳ 加载中…</div>
-          <div v-else-if="!diffData?.rows?.length" class="empty" style="padding:30px;text-align:center">
-            暂无数据——只有挂了项目台账的预收/预付才参与差异对照
-          </div>
-          <div v-else class="table-wrap page-scroll">
-            <table class="diff-table">
-              <thead>
-                <tr>
-                  <th class="dt-proj">项目简称 / 部门</th>
-                  <th class="dt-amt">预收金额</th>
-                  <th class="dt-amt">预付金额</th>
-                  <th class="dt-amt">差异（预收−预付）</th>
-                  <th class="dt-notes">备注</th>
-                  <th class="dt-caret"></th>
+        <div v-if="diffLoading" class="empty" style="padding:30px;text-align:center">⏳ 加载中…</div>
+        <div v-else-if="!diffData?.rows?.length" class="empty" style="padding:30px;text-align:center">
+          暂无数据——只有挂了项目台账的预收/预付才参与差异对照
+        </div>
+        <div v-else class="table-wrap page-scroll">
+          <table class="diff-table">
+            <thead>
+              <tr>
+                <th class="dt-proj">项目简称 / 部门</th>
+                <th class="dt-amt">预收金额</th>
+                <th class="dt-amt">预付金额</th>
+                <th class="dt-amt">差异（累计）</th>
+                <th class="dt-amt dt-period">{{ diffData?.period_labels?.month || '月差异' }}</th>
+                <th class="dt-amt dt-period">{{ diffData?.period_labels?.week || '周差异' }}</th>
+                <th class="dt-notes">备注</th>
+                <th class="dt-caret"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-for="r in diffData.rows" :key="r.project">
+                <tr class="diff-row" @click="toggleDiffRow(r.project)">
+                  <td class="dt-proj">
+                    <span class="dt-name" :title="r.project">{{ r.project }}</span>
+                    <span class="dt-dept">{{ (r.dept || '—').replace('事业部', '') }}</span>
+                  </td>
+                  <td class="dt-amt" style="color:#2e7d32">{{ parseFloat(r.in_total) ? fmtAmt(r.in_total) : '—' }}</td>
+                  <td class="dt-amt" style="color:#ef6c00">{{ parseFloat(r.out_total) ? fmtAmt(r.out_total) : '—' }}</td>
+                  <td class="dt-amt fw" :style="{ color: parseFloat(r.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(r.diff) }}</td>
+                  <td class="dt-amt dt-period" :class="parseFloat(r.month_diff) ? diffClass(r.month_diff) : ''">{{ parseFloat(r.month_diff) ? fmtDiff(r.month_diff) : '—' }}</td>
+                  <td class="dt-amt dt-period" :class="parseFloat(r.week_diff) ? diffClass(r.week_diff) : ''">{{ parseFloat(r.week_diff) ? fmtDiff(r.week_diff) : '—' }}</td>
+                  <td class="dt-notes" :title="r.notes">{{ r.notes || '—' }}</td>
+                  <td class="dt-caret">{{ diffExpanded.has(r.project) ? '▲' : '▼' }}</td>
                 </tr>
-              </thead>
-              <tbody>
-                <template v-for="r in diffData.rows" :key="r.project">
-                  <tr class="diff-row" @click="toggleDiffRow(r.project)">
-                    <td class="dt-proj">
-                      <span class="dt-name" :title="r.project">{{ r.project }}</span>
-                      <span class="dt-dept">{{ (r.dept || '—').replace('事业部', '') }}</span>
-                    </td>
-                    <td class="dt-amt" style="color:#2e7d32">{{ parseFloat(r.in_total) ? fmtAmt(r.in_total) : '—' }}</td>
-                    <td class="dt-amt" style="color:#ef6c00">{{ parseFloat(r.out_total) ? fmtAmt(r.out_total) : '—' }}</td>
-                    <td class="dt-amt fw" :style="{ color: parseFloat(r.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(r.diff) }}</td>
-                    <td class="dt-notes" :title="r.notes">{{ r.notes || '—' }}</td>
-                    <td class="dt-caret">{{ diffExpanded.has(r.project) ? '▲' : '▼' }}</td>
-                  </tr>
-                  <tr v-if="diffExpanded.has(r.project)" class="diff-detail-row">
-                    <td colspan="6">
-                      <div class="diff-detail">
-                        <div class="dd-col">
-                          <div class="dd-head in">预收明细 · {{ r.in_items.length }} 笔</div>
-                          <div v-if="!r.in_items.length" class="dd-empty">无预收记录</div>
-                          <div v-for="i in r.in_items" :key="'i' + i.id" class="dd-item">
-                            <span class="dd-date">{{ i.occur_date }}</span>
-                            <b class="dd-amt in">{{ fmtAmt(i.amount) }}</b>
-                            <span class="dd-party" :title="i.counterparty">{{ i.counterparty }}</span>
-                            <em v-if="parseFloat(i.balance) > 0" class="dd-bal">余 {{ fmtAmt(i.balance) }}</em>
-                          </div>
-                        </div>
-                        <div class="dd-col">
-                          <div class="dd-head out">预付明细 · {{ r.out_items.length }} 笔</div>
-                          <div v-if="!r.out_items.length" class="dd-empty">无预付记录</div>
-                          <div v-for="i in r.out_items" :key="'o' + i.id" class="dd-item">
-                            <span class="dd-date">{{ i.occur_date }}</span>
-                            <b class="dd-amt out">{{ fmtAmt(i.amount) }}</b>
-                            <span class="dd-party" :title="i.counterparty">{{ i.counterparty }}</span>
-                            <em v-if="parseFloat(i.balance) > 0" class="dd-bal">余 {{ fmtAmt(i.balance) }}</em>
-                          </div>
+                <tr v-if="diffExpanded.has(r.project)" class="diff-detail-row">
+                  <td colspan="8">
+                    <div class="diff-detail">
+                      <div class="dd-col">
+                        <div class="dd-head in">预收明细 · {{ r.in_items.length }} 笔</div>
+                        <div v-if="!r.in_items.length" class="dd-empty">无预收记录</div>
+                        <div v-for="i in r.in_items" :key="'i' + i.id" class="dd-item">
+                          <span class="dd-date">{{ i.occur_date }}</span>
+                          <b class="dd-amt in">{{ fmtAmt(i.amount) }}</b>
+                          <span class="dd-party" :title="i.counterparty">{{ i.counterparty }}</span>
+                          <em v-if="parseFloat(i.balance) > 0" class="dd-bal">余 {{ fmtAmt(i.balance) }}</em>
                         </div>
                       </div>
-                    </td>
-                  </tr>
-                </template>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </template>
-
-      <!-- ════ 时间维度视图（按月 / 按周） ════ -->
-      <template v-else>
-        <div v-if="timelineData?.summary" class="kpi-row">
-          <div class="kpi"><div class="kpi-k">{{ diffView === 'week' ? '周期数' : '月数' }}</div><div class="kpi-v">{{ timelineData.summary.period_count }}</div></div>
-          <div class="kpi"><div class="kpi-k">预收发生</div><div class="kpi-v" style="color:#2e7d32">{{ fmtAmt(timelineData.summary.in_total) }}</div></div>
-          <div class="kpi"><div class="kpi-k">预付发生</div><div class="kpi-v" style="color:#ef6c00">{{ fmtAmt(timelineData.summary.out_total) }}</div></div>
-          <div class="kpi accent"><div class="kpi-k">差异合计</div>
-            <div class="kpi-v" :style="{ color: parseFloat(timelineData.summary.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(timelineData.summary.diff) }}</div></div>
-        </div>
-
-        <div class="card fh-fill">
-          <div class="filter-row">
-            <input v-model="diffQ" class="inp sm" style="width:220px" placeholder="搜项目简称" @input="onTimelineSearch" />
-            <div style="flex:1"></div>
-            <span class="tl-hint">{{ diffView === 'week' ? '周差异' : '月差异' }} = 当期预收发生 − 预付发生</span>
-          </div>
-          <div v-if="timelineLoading" class="empty" style="padding:30px;text-align:center">⏳ 加载中…</div>
-          <div v-else-if="!timelinePeriods.length" class="empty" style="padding:30px;text-align:center">
-            该年度暂无挂项目的预收/预付发生记录
-          </div>
-          <div v-else class="table-wrap page-scroll">
-            <table class="diff-table">
-              <thead>
-                <tr>
-                  <th class="dt-proj">项目简称 / 部门</th>
-                  <th class="dt-amt">预收金额</th>
-                  <th class="dt-amt">预付金额</th>
-                  <th class="dt-amt">{{ diffView === 'week' ? '周差异' : '月差异' }}</th>
-                  <th class="dt-notes">备注</th>
-                  <th class="dt-caret"></th>
+                      <div class="dd-col">
+                        <div class="dd-head out">预付明细 · {{ r.out_items.length }} 笔</div>
+                        <div v-if="!r.out_items.length" class="dd-empty">无预付记录</div>
+                        <div v-for="i in r.out_items" :key="'o' + i.id" class="dd-item">
+                          <span class="dd-date">{{ i.occur_date }}</span>
+                          <b class="dd-amt out">{{ fmtAmt(i.amount) }}</b>
+                          <span class="dd-party" :title="i.counterparty">{{ i.counterparty }}</span>
+                          <em v-if="parseFloat(i.balance) > 0" class="dd-bal">余 {{ fmtAmt(i.balance) }}</em>
+                        </div>
+                      </div>
+                    </div>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                <template v-for="p in timelinePeriods" :key="p.period">
-                  <!-- 期间汇总行（与按项目行同结构，期间名作为项目位） -->
-                  <tr class="diff-row tl-period-row" :class="{ 'tl-null': p.period === '__null__' }" @click="togglePeriod(p.period)">
-                    <td class="dt-proj">
-                      <span class="dt-name">{{ p.label }}</span>
-                    </td>
-                    <td class="dt-amt" style="color:#2e7d32">{{ parseFloat(p.in_total) ? fmtAmt(p.in_total) : '—' }}</td>
-                    <td class="dt-amt" style="color:#ef6c00">{{ parseFloat(p.out_total) ? fmtAmt(p.out_total) : '—' }}</td>
-                    <td class="dt-amt fw" :class="diffClass(p.diff)">{{ fmtDiff(p.diff) }}</td>
-                    <td class="dt-notes">—</td>
-                    <td class="dt-caret">{{ p.projects.length ? (expandedPeriods.has(p.period) ? '▲' : '▼') : '' }}</td>
-                  </tr>
-                  <!-- 期间内项目行（同按项目视图） -->
-                  <template v-if="expandedPeriods.has(p.period)">
-                    <template v-for="proj in p.projects" :key="p.period + '|' + proj.project">
-                      <tr class="diff-row tl-proj-row" @click="togglePeriodProject(p.period, proj.project)">
-                        <td class="dt-proj tl-proj">
-                          <span class="dt-name" :title="proj.project">{{ proj.project }}</span>
-                          <span class="dt-dept">{{ (proj.dept || '—').replace('事业部', '') }}</span>
-                        </td>
-                        <td class="dt-amt" style="color:#2e7d32">{{ parseFloat(proj.in_total) ? fmtAmt(proj.in_total) : '—' }}</td>
-                        <td class="dt-amt" style="color:#ef6c00">{{ parseFloat(proj.out_total) ? fmtAmt(proj.out_total) : '—' }}</td>
-                        <td class="dt-amt fw" :class="diffClass(proj.diff)">{{ fmtDiff(proj.diff) }}</td>
-                        <td class="dt-notes">—</td>
-                        <td class="dt-caret">{{ expandedPeriodProjects.has(p.period + '|' + proj.project) ? '▲' : '▼' }}</td>
-                      </tr>
-                      <tr v-if="expandedPeriodProjects.has(p.period + '|' + proj.project)" class="diff-detail-row">
-                        <td colspan="6">
-                          <div class="diff-detail">
-                            <div class="dd-col">
-                              <div class="dd-head in">预收明细 · {{ proj.in_items.length }} 笔</div>
-                              <div v-if="!proj.in_items.length" class="dd-empty">无预收记录</div>
-                              <div v-for="i in proj.in_items" :key="'i' + i.id" class="dd-item">
-                                <span class="dd-date">{{ i.occur_date }}</span>
-                                <b class="dd-amt in">{{ fmtAmt(i.amount) }}</b>
-                                <span class="dd-party" :title="i.counterparty">{{ i.counterparty }}</span>
-                                <em v-if="parseFloat(i.balance) > 0" class="dd-bal">余 {{ fmtAmt(i.balance) }}</em>
-                              </div>
-                            </div>
-                            <div class="dd-col">
-                              <div class="dd-head out">预付明细 · {{ proj.out_items.length }} 笔</div>
-                              <div v-if="!proj.out_items.length" class="dd-empty">无预付记录</div>
-                              <div v-for="i in proj.out_items" :key="'o' + i.id" class="dd-item">
-                                <span class="dd-date">{{ i.occur_date }}</span>
-                                <b class="dd-amt out">{{ fmtAmt(i.amount) }}</b>
-                                <span class="dd-party" :title="i.counterparty">{{ i.counterparty }}</span>
-                                <em v-if="parseFloat(i.balance) > 0" class="dd-bal">余 {{ fmtAmt(i.balance) }}</em>
-                              </div>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    </template>
-                  </template>
-                </template>
-              </tbody>
-            </table>
-          </div>
+              </template>
+            </tbody>
+          </table>
         </div>
-      </template>
+      </div>
     </template>
 
     <!-- ── Supplier pool ── -->
@@ -1444,9 +1262,10 @@ onMounted(async () => {
 .diff-table th { padding: 7px 10px; text-align: left; font-size: 11px; font-weight: 700; color: var(--muted);
   background: rgba(201,99,66,.05); border-bottom: 1px solid rgba(180,140,110,.15); white-space: nowrap; }
 .diff-table td { padding: 6px 10px; border-bottom: 1px solid rgba(180,140,110,.08); vertical-align: middle; }
-.dt-proj { width: 23%; }
-.dt-amt { width: 14%; text-align: right !important; font-variant-numeric: tabular-nums; }
-.dt-notes { width: 31%; }
+.dt-proj { width: 21%; }
+.dt-amt { width: 11%; text-align: right !important; font-variant-numeric: tabular-nums; }
+.dt-period { background: rgba(201,99,66,.03); }
+.dt-notes { width: 17%; }
 .dt-caret { width: 4%; text-align: center; font-size: 10px; color: var(--muted); }
 td.dt-proj { overflow: hidden; white-space: nowrap; }
 .dt-name { font-weight: 700; color: var(--text); }
@@ -1474,20 +1293,6 @@ td.dt-notes { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 .dd-bal { font-style: normal; font-size: 10.5px; color: #1565c0; background: rgba(21,101,192,.07);
   border-radius: 5px; padding: 0 6px; white-space: nowrap; }
 
-/* ── 收付差异 · 视角切换 + 时间维度表 ── */
-.diff-viewbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-.diff-view-tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
-.diff-view-tabs button { padding: 6px 16px; border: none; background: transparent; cursor: pointer;
-  color: var(--muted); font-size: 12.5px; font-weight: 600; border-right: 1px solid var(--border); }
-.diff-view-tabs button:last-child { border-right: none; }
-.diff-view-tabs button.act { background: var(--primary); color: #fff; }
-.tl-hint { font-size: 11px; color: var(--muted); }
 .amt-pos { color: #2e7d32; }
 .amt-neg { color: #c62828; }
-.tl-period-row > td { border-bottom: 1px solid rgba(180,140,110,.16); font-weight: 600; }
-.tl-period-row:hover td { background: rgba(201,99,66,.05); }
-.tl-period-row.tl-null td.dt-proj { color: #b06a00; }
-.tl-proj-row { cursor: pointer; background: rgba(250,246,241,.5); }
-.tl-proj-row:hover td { background: rgba(201,99,66,.05); }
-.dt-proj.tl-proj { padding-left: 24px !important; font-weight: 400; }
 </style>
