@@ -806,15 +806,6 @@ onMounted(async () => {
           <button :class="{ act: diffView === 'month' }" @click="setDiffView('month')">按月</button>
           <button :class="{ act: diffView === 'week' }" @click="setDiffView('week')">按周</button>
         </div>
-        <div style="flex:1"></div>
-        <template v-if="diffView !== 'project'">
-          <select v-model.number="matrixYear" class="sel sm" @change="loadMatrix">
-            <option v-for="y in yearOptions" :key="y" :value="y">{{ y }} 年</option>
-          </select>
-          <button class="btn btn-ghost btn-sm" :disabled="matrixExporting" @click="exportMatrix">
-            {{ matrixExporting ? '导出中…' : '↓ 导出' }}
-          </button>
-        </template>
       </div>
 
       <!-- ════ 按项目视图（累计差异 + 逐笔明细） ════ -->
@@ -905,6 +896,12 @@ onMounted(async () => {
             </span>
             <span class="tl-hint">单元格 = 当期差异（预收−预付）；正绿负红，「·」无发生</span>
             <div style="flex:1"></div>
+            <select v-model.number="matrixYear" class="sel sel-xs" @change="loadMatrix">
+              <option v-for="y in yearOptions" :key="y" :value="y">{{ y }}</option>
+            </select>
+            <button class="btn btn-ghost btn-sm" :disabled="matrixExporting" @click="exportMatrix">
+              {{ matrixExporting ? '导出中…' : '↓ 导出' }}
+            </button>
           </div>
           <div v-if="matrixLoading" class="empty" style="padding:30px;text-align:center">⏳ 加载中…</div>
           <div v-else-if="!matrixData?.rows?.length" class="empty" style="padding:30px;text-align:center">
@@ -1270,6 +1267,7 @@ onMounted(async () => {
 .sel, .inp { padding: 6px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); font-size: 13px; }
 .filter-row .sel, .filter-row .inp { width: auto; font-size: 12.5px; }
 .sel.sm { padding: 5px 8px; font-size: 12.5px; }
+.sel-xs { padding: 3px 6px; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text); cursor: pointer; }
 .inp.sm { padding: 5px 9px; font-size: 12.5px; width: 240px; max-width: 100%; }
 .btn.disabled { opacity: .6; pointer-events: none; }
 
