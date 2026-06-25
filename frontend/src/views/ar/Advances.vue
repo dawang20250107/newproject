@@ -806,6 +806,7 @@ onMounted(async () => {
           <button :class="{ act: diffView === 'month' }" @click="setDiffView('month')">按月</button>
           <button :class="{ act: diffView === 'week' }" @click="setDiffView('week')">按周</button>
         </div>
+        <div style="flex:1"></div>
         <template v-if="diffView !== 'project'">
           <select v-model.number="matrixYear" class="sel sm" @change="loadMatrix">
             <option v-for="y in yearOptions" :key="y" :value="y">{{ y }} 年</option>
@@ -818,17 +819,14 @@ onMounted(async () => {
 
       <!-- ════ 按项目视图（累计差异 + 逐笔明细） ════ -->
       <template v-if="diffView === 'project'">
-        <div v-if="diffData?.summary" class="kpi-row">
-          <div class="kpi"><div class="kpi-k">涉及项目</div><div class="kpi-v">{{ diffData.summary.count }} 个</div></div>
-          <div class="kpi"><div class="kpi-k">预收合计</div><div class="kpi-v" style="color:#2e7d32">{{ fmtAmt(diffData.summary.in_total) }}</div></div>
-          <div class="kpi"><div class="kpi-k">预付合计</div><div class="kpi-v" style="color:#ef6c00">{{ fmtAmt(diffData.summary.out_total) }}</div></div>
-          <div class="kpi accent"><div class="kpi-k">差异（预收−预付）</div>
-            <div class="kpi-v" :style="{ color: parseFloat(diffData.summary.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(diffData.summary.diff) }}</div></div>
-        </div>
-
         <div class="card fh-fill">
           <div class="filter-row">
             <input v-model="diffQ" class="inp sm" style="width:220px" placeholder="搜项目简称" @input="onDiffSearch" />
+            <span v-if="diffData?.summary" class="tl-stat">
+              {{ diffData.summary.count }} 项 · 预收 <b style="color:#2e7d32">{{ fmtAmt(diffData.summary.in_total) }}</b> ·
+              预付 <b style="color:#ef6c00">{{ fmtAmt(diffData.summary.out_total) }}</b> ·
+              差异 <b :style="{ color: parseFloat(diffData.summary.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(diffData.summary.diff) }}</b>
+            </span>
             <div style="flex:1"></div>
             <button class="btn btn-ghost btn-sm" @click="toggleDiffAll">
               {{ diffAllOpen ? '▲ 一键折叠' : '▼ 一键展开' }}
@@ -898,19 +896,14 @@ onMounted(async () => {
 
       <!-- ════ 透视表视图（按月 / 按周：项目 × 期间矩阵） ════ -->
       <template v-else>
-        <div v-if="matrixData?.summary" class="kpi-row">
-          <div class="kpi"><div class="kpi-k">涉及项目</div><div class="kpi-v">{{ matrixData.summary.project_count }} 个</div></div>
-          <div class="kpi"><div class="kpi-k">{{ diffView === 'week' ? '周期数' : '月数' }}</div><div class="kpi-v">{{ matrixData.summary.period_count }}</div></div>
-          <div class="kpi"><div class="kpi-k">预收合计</div><div class="kpi-v" style="color:#2e7d32">{{ fmtAmt(matrixData.summary.in_total) }}</div></div>
-          <div class="kpi"><div class="kpi-k">预付合计</div><div class="kpi-v" style="color:#ef6c00">{{ fmtAmt(matrixData.summary.out_total) }}</div></div>
-          <div class="kpi accent"><div class="kpi-k">差异合计</div>
-            <div class="kpi-v" :style="{ color: parseFloat(matrixData.summary.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(matrixData.summary.diff) }}</div></div>
-        </div>
-
         <div class="card fh-fill">
           <div class="filter-row">
             <input v-model="diffQ" class="inp sm" style="width:220px" placeholder="搜项目简称" @input="onDiffSearch" />
-            <span class="tl-hint">单元格 = 该项目当期差异（预收−预付）；正绿负红，「·」表示当期无发生</span>
+            <span v-if="matrixData?.summary" class="tl-stat">
+              {{ matrixData.summary.project_count }} 项 · {{ matrixData.summary.period_count }} {{ diffView === 'week' ? '周' : '月' }} ·
+              差异 <b :style="{ color: parseFloat(matrixData.summary.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(matrixData.summary.diff) }}</b>
+            </span>
+            <span class="tl-hint">单元格 = 当期差异（预收−预付）；正绿负红，「·」无发生</span>
             <div style="flex:1"></div>
           </div>
           <div v-if="matrixLoading" class="empty" style="padding:30px;text-align:center">⏳ 加载中…</div>
@@ -1440,6 +1433,8 @@ td.dt-notes { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 .diff-view-tabs button:last-child { border-right: none; }
 .diff-view-tabs button.act { background: var(--primary); color: #fff; }
 .tl-hint { font-size: 11px; color: var(--muted); }
+.tl-stat { font-size: 12px; color: var(--text); font-weight: 600; }
+.tl-stat b { font-weight: 800; }
 
 /* ── 收付差异 · 透视矩阵（项目 × 期间，单元格=当期差异） ── */
 .matrix-scroll { overflow: auto; }
