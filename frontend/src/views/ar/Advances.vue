@@ -163,6 +163,12 @@ function toggleDiffAll() {
 const diffClass = v => parseFloat(v) >= 0 ? 'amt-pos' : 'amt-neg'
 const fmtDiff = v => (parseFloat(v) > 0 ? '+' : '') + fmtAmt(v)
 
+function drillToProject(r) {
+  filters.q = r.project
+  direction.value = '预收'
+  load(true)
+}
+
 // ── 收付差异 · 透视表（项目 × 月/周矩阵）─────────────────────────────────────
 // 三视角：按项目（累计+逐笔明细）/ 按月 / 按周（项目×期间矩阵，单元格=当期差异）
 const diffView = ref('project')              // 'project' | 'month' | 'week'
@@ -846,7 +852,7 @@ onMounted(async () => {
               </thead>
               <tbody>
                 <template v-for="r in diffData.rows" :key="r.project">
-                  <tr class="diff-row" @click="toggleDiffRow(r.project)">
+                  <tr class="diff-row" @click="toggleDiffRow(r.project)" @dblclick.stop="drillToProject(r)">
                     <td class="dt-proj">
                       <span class="dt-name" :title="r.project">{{ r.project }}</span>
                       <span class="dt-dept">{{ (r.dept || '—').replace('事业部', '') }}</span>
@@ -924,7 +930,7 @@ onMounted(async () => {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="r in matrixData.rows" :key="r.project" class="mx-row">
+                <tr v-for="r in matrixData.rows" :key="r.project" class="mx-row" @dblclick.stop="drillToProject(r)">
                   <td class="mx-proj">
                     <span class="dt-name" :title="r.project">{{ r.project }}</span>
                     <span class="dt-dept">{{ (r.dept || '—').replace('事业部', '') }}</span>
@@ -1404,6 +1410,8 @@ td.dt-notes { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 .diff-row { cursor: pointer; }
 .diff-row:hover td { background: rgba(201,99,66,.04); }
 .diff-row .fw { font-weight: 700; }
+.mx-row { cursor: pointer; }
+.mx-row:hover td { background: rgba(201,99,66,.04); }
 .diff-detail-row td { background: rgba(250,246,241,.7); padding: 6px 10px; }
 .diff-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 @media (max-width: 760px) { .diff-detail { grid-template-columns: 1fr; } }
