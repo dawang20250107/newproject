@@ -60,6 +60,11 @@ APPROVAL_FILTER_REGISTRY = {
     'status':             {'type': 'enum',   'col': 'status'},
 }
 
+# 审批管理「计算列」未排金额 = max(0, 申请额 − 已排额)。需先注解再走通用数值解析器。
+APPROVAL_COMPUTED_REGISTRY = {
+    'remaining_amount': {'type': 'number', 'col': 'remaining_calc'},
+}
+
 # 付款台账：本期只登记真实 DB 列（计算列 已付/剩余/逾期 下期再做注解筛选）。
 # status 为计算口径，单独走既有 annotation 逻辑，不入通用解析器。
 PAYMENT_FILTER_REGISTRY = {
@@ -1047,40 +1052,53 @@ def payment_offsets(request, pk):
     return ok({'items': items, 'total_offset': str(p.prepaid_offset_amount or 0)})
 
 
+def _payment_status_bucket_q(status):
+    """单个付款计划状态桶 → Q（口径与前端 StatusBadge / to_dict 一致，含预付冲抵）。"""
+    if status == 'pending':
+        return Q(paid=Decimal('0'), plan_adjustment__isnull=True,
+                 prepaid_offset_amount=Decimal('0'))
+    if status == 'settled':
+        return (Q(paid__gte=F('total_amount') - F('prepaid_offset_amount')) |
+                Q(plan_adjustment__isnull=False,
+                  paid__gte=F('plan_adjustment') - F('prepaid_offset_amount')))
+    if status == 'partial':
+        return Q(paid__gt=Decimal('0'),
+                 paid__lt=F('total_amount') - F('prepaid_offset_amount'),
+                 plan_adjustment__isnull=True)
+    if status == 'overdue':
+        return Q(planned_date__lt=datetime.date.today()) & _not_settled_q('paid')
+    if status == 'adjusted':
+        return Q(plan_adjustment__isnull=False,
+                 paid__lt=F('plan_adjustment') - F('prepaid_offset_amount'))
+    return None
+
+
 def _apply_payment_status_filter(qs, status_q, paid_annotated, hide_settled=False):
     """付款台账状态筛选：口径与前端 StatusBadge / to_dict 完全一致（含预付冲抵）。
     供 _list_payments 与 payment_export 共用，避免两处逻辑漂移。
+    status_q 支持逗号分隔的多状态（多选并集，OR）。
     hide_settled=True 时排除已付清记录（进入页面默认非已付清视图）。
     """
-    if not status_q and not hide_settled:
+    statuses = [s.strip() for s in (status_q or '').split(',') if s.strip()]
+    if not statuses and not hide_settled:
         return qs
     if not paid_annotated:
         qs = qs.annotate(paid=_paid_expr())
-    if not status_q and hide_settled:
+    if not statuses and hide_settled:
         settled_q = (
             Q(paid__gte=F('total_amount') - F('prepaid_offset_amount')) |
             Q(plan_adjustment__isnull=False,
               paid__gte=F('plan_adjustment') - F('prepaid_offset_amount'))
         )
         return qs.exclude(settled_q)
-    if status_q == 'pending':
-        qs = qs.filter(paid=Decimal('0'), plan_adjustment__isnull=True,
-                       prepaid_offset_amount=Decimal('0'))
-    elif status_q == 'settled':
-        qs = qs.filter(
-            Q(paid__gte=F('total_amount') - F('prepaid_offset_amount')) |
-            Q(plan_adjustment__isnull=False,
-              paid__gte=F('plan_adjustment') - F('prepaid_offset_amount'))
-        )
-    elif status_q == 'partial':
-        qs = qs.filter(paid__gt=Decimal('0'),
-                       paid__lt=F('total_amount') - F('prepaid_offset_amount'),
-                       plan_adjustment__isnull=True)
-    elif status_q == 'overdue':
-        qs = qs.filter(planned_date__lt=datetime.date.today()).filter(_not_settled_q('paid'))
-    elif status_q == 'adjusted':
-        qs = qs.filter(plan_adjustment__isnull=False,
-                       paid__lt=F('plan_adjustment') - F('prepaid_offset_amount'))
+    # 多选状态：各桶 Q 求并集
+    combined = None
+    for s in statuses:
+        sub = _payment_status_bucket_q(s)
+        if sub is not None:
+            combined = sub if combined is None else (combined | sub)
+    if combined is not None:
+        qs = qs.filter(combined)
     return qs
 
 
@@ -1793,12 +1811,21 @@ def approval_records(request):
                 Q(approval_number__icontains=kw) | Q(g7_number__icontains=kw) |
                 Q(summary__icontains=kw) | Q(payee__icontains=kw)
             )
-        fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), APPROVAL_FILTER_REGISTRY)
+        # 未排金额为计算列：仅当筛选/排序用到时再注解（amount − scheduled，钳 0）
+        spec_raw = request.GET.get('filters', '')
+        sort_f = (request.GET.get('sort') or '').strip()
+        if 'remaining_amount' in spec_raw or sort_f == 'remaining_amount':
+            qs = qs.annotate(remaining_calc=Greatest(
+                Value(Decimal('0'), output_field=_DEC18),
+                ExpressionWrapper(F('amount') - F('scheduled_amount'), output_field=_DEC18),
+                output_field=_DEC18))
+        merged_reg = {**APPROVAL_FILTER_REGISTRY, **APPROVAL_COMPUTED_REGISTRY}
+        fq, fq_distinct = build_filter_q(spec_raw, merged_reg)
         if fq:
             qs = qs.filter(fq)
             if fq_distinct:
                 qs = qs.distinct()
-        sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), APPROVAL_FILTER_REGISTRY)
+        sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), merged_reg)
         if sort_by:
             qs = qs.order_by(sort_by)
         # 全量（跨页）合计：总申请 / 已排合计 / 未排合计。列表已过滤 archived=False，

@@ -1389,6 +1389,21 @@ class ColumnFilterTests(TestCase):
         items = self._items('/api/pk/approvals', {'sort': 'amount', 'order': 'desc'})
         self.assertEqual([i['applicant'] for i in items], ['赵六', '王五'])
 
+    def test_approval_remaining_amount_computed_filter_and_sort(self):
+        """未排金额（计算列 = 申请额 − 已排额，钳 0）支持数值筛选 + 排序。"""
+        # 第三条：申请 2000，已排 1800 → 未排 200（最小）
+        ApprovalRecord.objects.create(applicant='孙七', department=self.dept,
+                                      approval_number='3', g7_number='', summary='维修',
+                                      amount=Decimal('2000'), scheduled_amount=Decimal('1800'),
+                                      payee='戊方', status='pending')
+        # 未排 < 1000 → 王五(500) + 孙七(200)
+        items = self._items('/api/pk/approvals',
+                            {'filters': json.dumps({'remaining_amount': {'op': 'lt', 'value': '1000'}})})
+        self.assertEqual(sorted(i['applicant'] for i in items), ['孙七', '王五'])
+        # 升序排序：孙七200 < 王五500 < 赵六9000
+        items2 = self._items('/api/pk/approvals', {'sort': 'remaining_amount', 'order': 'asc'})
+        self.assertEqual([i['applicant'] for i in items2], ['孙七', '王五', '赵六'])
+
 
 class PaymentComputedFilterTests(TestCase):
     """付款台账计算列筛选：已付/剩余(数值)、逾期(是/否)，及按已付/剩余排序。
@@ -1473,6 +1488,17 @@ class PaymentComputedFilterTests(TestCase):
         d = r.json()['data']
         self.assertEqual(d['total'], 2)
         self.assertEqual(Decimal(d['planned_total']), Decimal('2000'))
+
+    def test_status_multi_select_union(self):
+        """计划状态列头多选：status 逗号分隔取并集（A 逾期 / B 已付清 / C 部分付款）。"""
+        # 单选仍生效
+        self.assertEqual(self._descs({'status': 'overdue'}), ['甲'])
+        self.assertEqual(self._descs({'status': 'settled'}), ['乙'])
+        self.assertEqual(self._descs({'status': 'partial'}), ['丙'])
+        # 多选并集
+        self.assertEqual(self._descs({'status': 'overdue,settled'}), ['乙', '甲'])
+        self.assertEqual(self._descs({'status': 'overdue,partial'}), ['丙', '甲'])
+        self.assertEqual(self._descs({'status': 'overdue,settled,partial'}), ['丙', '乙', '甲'])
 
 
 class AuthPasswordPolicyTests(TestCase):

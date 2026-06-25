@@ -17,6 +17,7 @@ const props = defineProps({
   modelValue: { type: Object, default: null },       // {op, value} | null
   options:  { type: Array,   default: () => [] },     // enum: [{value,label}] 或 [string]
   single:   { type: Boolean, default: false },        // enum 单选（用于计算型状态等）
+  noExclude:{ type: Boolean, default: false },        // enum 多选但隐藏「包含/排除」（派生状态桶只支持并集）
   datePresets: { type: Boolean, default: true },      // date 类型是否显示快捷区间
   sortable: { type: Boolean, default: true },
   filterable: { type: Boolean, default: true },   // false → 仅排序（计算/聚合列）
@@ -349,7 +350,7 @@ onBeforeUnmount(() => {
 
         <!-- 枚举多选 -->
         <template v-else-if="type === 'enum'">
-          <div v-if="!single" class="colf-match-row">
+          <div v-if="!single && !noExclude" class="colf-match-row">
             <span class="colf-match-lbl">匹配：</span>
             <button type="button" :class="{ act: op !== 'not_in' }" @click="op = 'in'">包含</button>
             <button type="button" :class="{ act: op === 'not_in' }" @click="op = 'not_in'">排除</button>

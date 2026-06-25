@@ -1,6 +1,6 @@
 import io
 import json
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import openpyxl
@@ -664,6 +664,41 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(ids(conds, 'all'), set())
         # 或：未开票 或 预估>150 → a(未开票) + b(预估200) = 两条
         self.assertEqual(ids(conds, 'any'), {a.id, b.id})
+
+    def test_dim_condition_multi_value_union(self):
+        """列头枚举多选：dim 条件 value 为数组时各桶取并集（OR）。"""
+        import json as _json
+        admin = self.make_user('13900000089', 'finance_director', role='super_admin')
+        project = self.create_project()
+        today = date.today()
+        # a: 逾期（有未收 + 应收到期已过）
+        a = ARRecord.objects.create(project=project, operation_year=2026, operation_month=5,
+                                    estimated_amount=Decimal('100.00'),
+                                    due_date=today - timedelta(days=10))
+        # b: 已结清（全额回款 → outstanding<=0）
+        b = ARRecord.objects.create(project=project, operation_year=2026, operation_month=6,
+                                    estimated_amount=Decimal('200.00'),
+                                    actual_invoice_amount=Decimal('200.00'))
+        ARPayment.objects.create(ar_record=b, payment_no=1, amount=Decimal('200.00'),
+                                 payment_date=today)
+        # c: 未到期（有未收 + 到期日在远期）
+        c = ARRecord.objects.create(project=project, operation_year=2026, operation_month=7,
+                                    estimated_amount=Decimal('300.00'),
+                                    due_date=today + timedelta(days=120))
+
+        def ids(value):
+            conds = [{'t': 'dim', 'field': 'status', 'value': value}]
+            resp = self.client.get('/api/pk/ar/records', {'conditions': _json.dumps(conds)},
+                                   **self.auth(admin))
+            self.assertEqual(resp.status_code, 200, resp.content)
+            return {r['id'] for r in resp.json()['data']['items']}
+
+        # 单值仍生效（向后兼容）
+        self.assertEqual(ids('overdue'), {a.id})
+        self.assertEqual(ids('settled'), {b.id})
+        # 多选（数组）= 并集
+        self.assertEqual(ids(['overdue', 'settled']), {a.id, b.id})
+        self.assertEqual(ids(['overdue', 'not_due']), {a.id, c.id})
 
     def test_conditions_builder_date_and_amount(self):
         """条件构建器：金额运算符(≠0) + 回款日期相对区间(含/不含本月)。"""

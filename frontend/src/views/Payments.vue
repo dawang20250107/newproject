@@ -123,24 +123,24 @@ const PAY_STATUS_OPTS = [
 // 逾期列：派生是/否（计划日期已过且未结清）
 const OVERDUE_OPTS = [{ value: '是', label: '是（已逾期）' }, { value: '否', label: '否' }]
 const colFilters = reactive({})    // field -> {op, value}（不含 status）
-const statusSel = ref('')          // 计划状态单选 → status 查询参数
+const statusSel = ref([])          // 计划状态多选 → status 查询参数（逗号分隔并集）
 const payDeptFilter = ref('')      // 筛选栏事业部快选
 const hideSettled = ref(true)      // 默认隐藏已付清（进入页面默认展示非已付清）
 const sortField = ref('')
 const sortOrder = ref('')
 const activeFilterCount = computed(() =>
-  Object.keys(colFilters).length + (statusSel.value ? 1 : 0) + (payDeptFilter.value ? 1 : 0))
+  Object.keys(colFilters).length + (statusSel.value.length ? 1 : 0) + (payDeptFilter.value ? 1 : 0))
 function setColFilter(field, val) {
   if (val == null) delete colFilters[field]
   else colFilters[field] = val
   filters.page = 1; clearSelection(); load()
 }
 function setStatusFilter(val) {
-  // 状态列为单选，ColumnFilter 以 {op:'in',value:[x]} 上抛
-  statusSel.value = (val && Array.isArray(val.value) && val.value.length) ? val.value[0] : ''
+  // 状态列多选，ColumnFilter 以 {op:'in',value:[...]} 上抛
+  statusSel.value = (val && Array.isArray(val.value)) ? val.value.filter(Boolean) : []
   filters.page = 1; clearSelection(); load()
 }
-const statusColModel = computed(() => statusSel.value ? { op: 'in', value: [statusSel.value] } : null)
+const statusColModel = computed(() => statusSel.value.length ? { op: 'in', value: [...statusSel.value] } : null)
 function setSort(field, order) {
   sortField.value = order ? field : ''
   sortOrder.value = order || ''
@@ -150,9 +150,9 @@ function setSort(field, order) {
 const schemes = useTableSchemes('pk_payments', {
   colFilters, sortField, sortOrder,
   extra: {
-    get: () => ({ status: statusSel.value || '', dept: payDeptFilter.value || '', hide_settled: hideSettled.value }),
+    get: () => ({ status: statusSel.value.join(',') || '', dept: payDeptFilter.value || '', hide_settled: hideSettled.value }),
     set: (p) => {
-      statusSel.value = p.status || ''
+      statusSel.value = p.status ? String(p.status).split(',').filter(Boolean) : []
       payDeptFilter.value = p.dept || ''
       hideSettled.value = p.hide_settled !== false
     },
@@ -163,8 +163,8 @@ function buildParams() {
   const p = { page: filters.page, size: filters.size }
   if (filters.q.trim()) p.q = filters.q.trim()
   if (payDeptFilter.value) p.dept = payDeptFilter.value
-  if (statusSel.value) p.status = statusSel.value
-  if (hideSettled.value && !statusSel.value) p.hide_settled = '1'
+  if (statusSel.value.length) p.status = statusSel.value.join(',')
+  if (hideSettled.value && !statusSel.value.length) p.hide_settled = '1'
   if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
   if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
   return p
@@ -604,7 +604,7 @@ function search() { filters.page = 1; clearSelection(); load() }
 function resetFilters() {
   Object.assign(filters, { q: '', pay_date_start: '', pay_date_end: '', page: 1 })
   Object.keys(colFilters).forEach(k => delete colFilters[k])
-  statusSel.value = ''
+  statusSel.value = []
   payDeptFilter.value = ''
   hideSettled.value = true
   sortField.value = ''; sortOrder.value = ''
@@ -800,7 +800,7 @@ async function doBatchPay() {
               <th v-if="colVisible('total_amount')" style="width:8%"><ColumnFilter label="计划额" field="total_amount" type="number" :model-value="colFilters.total_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('total_amount',v)" @sort="o=>setSort('total_amount',o)" /></th>
               <th v-if="colVisible('paid')" style="width:7%"><ColumnFilter label="已付" field="paid" type="number" :model-value="colFilters.paid" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('paid',v)" @sort="o=>setSort('paid',o)" /></th>
               <th v-if="colVisible('remaining')" style="width:6%"><ColumnFilter label="剩余" field="remaining" type="number" :model-value="colFilters.remaining" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('remaining',v)" @sort="o=>setSort('remaining',o)" /></th>
-              <th v-if="colVisible('status')" style="width:9%"><ColumnFilter label="状态" field="status" type="enum" :options="PAY_STATUS_OPTS" :single="true" :sortable="false" :model-value="statusColModel" @update:model-value="setStatusFilter" /></th>
+              <th v-if="colVisible('status')" style="width:9%"><ColumnFilter label="状态" field="status" type="enum" :options="PAY_STATUS_OPTS" :no-exclude="true" :sortable="false" :model-value="statusColModel" @update:model-value="setStatusFilter" /></th>
               <th v-if="colVisible('overdue')" style="width:6%"><ColumnFilter label="逾期" field="overdue" type="enum" :options="OVERDUE_OPTS" :sortable="false" :model-value="colFilters.overdue" @update:model-value="v=>setColFilter('overdue',v)" /></th>
               <th v-if="colVisible('plan_adjustment')" style="width:6%"><ColumnFilter label="计划调整" field="plan_adjustment" type="number" :model-value="colFilters.plan_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('plan_adjustment',v)" @sort="o=>setSort('plan_adjustment',o)" /></th>
             </tr>

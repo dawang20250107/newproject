@@ -273,13 +273,21 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 }
 input::placeholder { color: rgba(138,116,100,0.55); }
 /* width:100% above is meant for text/number/date/select fields. Checkboxes &
-   radios are intrinsically sized; stretching them to 100% makes them swallow
-   their flex row and squeeze the adjacent label to zero width (the「无名勾选框」
-   bug). Reset them globally so every checkbox/radio in the app renders next to
-   its label — no per-component width:auto patching needed. */
+   radios are intrinsically sized; the base rule's width:100% / custom border /
+   fill / focus-glow all fight the native control: 100% makes a checkbox swallow
+   its flex row and squeeze the label to zero width (the「无名勾选框」bug), while
+   the focus background+box-shadow *transition* fires on every click and reads as
+   a local flicker (「点击时局部闪动」). Strip all of it so checkboxes/radios use
+   their native look (tinted by accent-color) and never animate on focus. */
 input[type="checkbox"], input[type="radio"] {
-  width: auto; padding: 0; border-radius: 0;
+  width: auto; flex-shrink: 0;
+  padding: 0; border: none; border-radius: 0;
+  background: none; box-shadow: none; transition: none;
   accent-color: var(--primary);
+}
+input[type="checkbox"]:focus, input[type="radio"]:focus,
+input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
+  background: none; box-shadow: none; border: none;
 }
 
 /* ── table ───────────────────────────────────────────────────────────────── */

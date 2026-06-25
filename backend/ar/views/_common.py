@@ -901,6 +901,15 @@ def _condition_q(c, today, eomonth_today):
                 return None
             return ~q if c.get('exclude') else q
         v = c.get('value')
+        # 多选：value 为列表 → 逐值求 Q 后 OR（列头枚举筛选支持「在 A / B / …」并集）。
+        # 单值路径保持不变，向后兼容快捷 Tab / KPI 钻取等既有单值入口。
+        if isinstance(v, (list, tuple)):
+            combined = None
+            for item in v:
+                sub = _condition_q({**c, 'value': item}, today, eomonth_today)
+                if sub is not None:
+                    combined = sub if combined is None else (combined | sub)
+            return combined
         if v in (None, ''):
             return None
         if field == 'dept':
