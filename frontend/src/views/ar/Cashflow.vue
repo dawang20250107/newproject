@@ -534,79 +534,46 @@ const deptBalanceOption = computed(() => {
 </template>
 
 <style scoped>
-/* ── Polished filter bar ── */
+/* ── 筛选条（玻璃态，对齐系统设计令牌）── */
 .cf-filterbar {
   display: flex; align-items: center;
-  background: rgba(255,255,255,0.88); border: 1px solid rgba(255,255,255,0.92);
-  border-radius: 14px; padding: 4px 10px;
-  box-shadow: 0 2px 14px rgba(0,0,0,0.06);
-  margin-bottom: 20px; backdrop-filter: blur(10px);
+  background: var(--surface-1); border: 1px solid var(--glass-border);
+  border-radius: var(--radius); padding: 5px 12px;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 18px; backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
   flex-wrap: nowrap; overflow-x: auto;
 }
 .cfb-group { display: flex; align-items: center; gap: 7px; padding: 5px 10px; }
 .cfb-icon  { color: var(--muted); flex-shrink: 0; }
 .cfb-lbl   { font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap; }
-.cfb-div   { width: 1px; height: 24px; background: rgba(0,0,0,0.09); margin: 0 4px; flex-shrink: 0; }
-.cfb-sel {
-  height: 30px; padding: 0 10px; border: none;
-  background: rgba(0,0,0,0.04); border-radius: 8px;
+.cfb-div   { width: 1px; height: 24px; background: var(--border); margin: 0 4px; flex-shrink: 0; }
+.cfb-sel, .cfb-date {
+  height: 30px; padding: 0 10px; border: 1px solid transparent;
+  background: var(--surface-tint); border-radius: var(--radius-xs);
   font-size: 12.5px; color: var(--text); cursor: pointer; outline: none;
-  transition: background .15s, color .15s;
+  transition: background .15s, color .15s, border-color .15s, box-shadow .15s;
 }
-.cfb-sel:hover, .cfb-sel:focus { background: rgba(201,99,66,0.09); color: var(--primary); }
+.cfb-sel:hover, .cfb-sel:focus, .cfb-date:hover, .cfb-date:focus {
+  background: color-mix(in srgb, var(--primary) 9%, transparent);
+  color: var(--primary); border-color: var(--border-strong);
+}
+.cfb-sel:focus, .cfb-date:focus { box-shadow: 0 0 0 3px var(--primary-glow); }
 .cfb-dept { min-width: 110px; }
-.cfb-date {
-  height: 30px; padding: 0 8px; border: none;
-  background: rgba(0,0,0,0.04); border-radius: 8px;
-  font-size: 12.5px; color: var(--text); cursor: pointer; outline: none;
-  width: 138px; font-variant-numeric: tabular-nums;
-  transition: background .15s, color .15s;
-}
-.cfb-date:hover, .cfb-date:focus { background: rgba(201,99,66,0.09); color: var(--primary); }
+.cfb-date { width: 138px; font-variant-numeric: tabular-nums; }
 .cfb-to   { font-size: 12px; color: var(--muted); }
 .cfb-loading { margin-left: auto; padding-left: 12px; font-size: 12px; color: var(--primary); display: flex; align-items: center; gap: 5px; white-space: nowrap; }
 .cfb-spin { display: inline-block; animation: cfSpin 0.9s linear infinite; }
 @keyframes cfSpin { to { transform: rotate(360deg); } }
 
-/* ── Reminder banners (GPU-composited: opacity-only pulse) ── */
-.urge-banner {
-  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
-  padding: 14px 20px; margin-bottom: 16px; border-radius: 14px;
-  background: rgba(198,40,40,.06); border: 1.5px solid rgba(198,40,40,.3);
-  box-shadow: 0 2px 14px rgba(198,40,40,.10);
-}
-.urge-left  { display: flex; align-items: center; gap: 12px; }
-.urge-icon  { font-size: 24px; }
-.urge-title { font-weight: 700; color: #c62828; font-size: 14px; }
-.urge-sub   { font-size: 12.5px; color: #c62828; opacity: .9; margin-top: 2px; }
-.urge-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.urge-key   { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.urge-key-label { font-size: 11px; color: #c62828; font-weight: 600; }
-.urge-chip  { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 3px 10px; border-radius: 12px; background: rgba(255,255,255,.6); border: 1px solid rgba(198,40,40,.3); color: #c62828; cursor: pointer; transition: all .14s; }
-.urge-chip:hover { background: #c62828; color: #fff; }
-.urge-btn   { padding: 7px 16px; border-radius: 9px; border: none; background: #c62828; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: filter .14s; }
-.urge-btn:hover { filter: brightness(1.08); }
-
-.cashflow-alert {
-  display: flex; align-items: flex-start; gap: 14px; padding: 14px 20px; margin: 0 0 16px;
-  background: rgba(245,127,23,.08); border: 1.5px solid rgba(245,127,23,.3); border-radius: 12px;
-}
-.alert-icon  { font-size: 20px; flex-shrink: 0; }
-.alert-title { font-weight: 700; color: #e65100; font-size: 13.5px; }
-.alert-months { font-size: 12px; color: #e65100; margin-top: 3px; opacity: .9; }
-
-/* ── Title inline alert ── */
-.cf-title-alert {
-  font-size: 13px; font-weight: 700; color: #c62828;
-  margin-left: 14px; vertical-align: middle;
-}
+/* ── 标题内联预警 ── */
+.cf-title-alert { font-size: 13px; font-weight: 700; color: var(--c-danger); margin-left: 14px; vertical-align: middle; }
 .cf-embed-alert {
-  font-size: 13px; font-weight: 700; color: #c62828;
-  background: rgba(198,40,40,.07); border: 1px solid rgba(198,40,40,.2);
-  border-radius: 10px; padding: 8px 14px; margin-bottom: 14px;
+  font-size: 13px; font-weight: 700; color: var(--c-danger);
+  background: var(--c-danger-bg); border: 1px solid var(--c-danger-bdr);
+  border-radius: var(--radius-sm); padding: 8px 14px; margin-bottom: 14px;
 }
 
-/* ── KPI cards: 三组一排（收款 / 付款 / 现金流） ── */
+/* ── KPI 卡：三组一排（收款 / 付款 / 现金流）── */
 .cf-kpi-groups { display: flex; gap: 16px; margin-bottom: 16px; align-items: stretch; }
 .kpi-group { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .kg-coll, .kg-pay { flex: 3; }   /* 各 3 张卡 */
@@ -615,28 +582,32 @@ const deptBalanceOption = computed(() => {
   font-size: 12px; font-weight: 800; letter-spacing: .1em;
   padding-left: 9px; border-left: 3px solid; line-height: 1.1;
 }
-.kgh-coll { color: #2e7d32; border-color: #2e7d32; }
-.kgh-pay  { color: #e65100; border-color: #e65100; }
-.kgh-cash { color: #1565c0; border-color: #1565c0; }
+.kgh-coll { color: var(--c-success); border-color: var(--c-success); }
+.kgh-pay  { color: var(--c-warn);    border-color: var(--c-warn); }
+.kgh-cash { color: var(--c-info);    border-color: var(--c-info); }
 .kpi-group-cards { display: flex; gap: 10px; min-width: 0; }
 .kpi-group-cards .ck-card { flex: 1; min-width: 0; }
 
 .ck-card {
-  background: rgba(255,255,255,0.78); border: 1px solid rgba(255,255,255,0.9); border-radius: 14px;
-  padding: 12px 14px; box-shadow: 0 2px 14px rgba(0,0,0,0.05); border-left: 3px solid var(--border);
+  position: relative; overflow: hidden;
+  background: var(--surface-1); border: 1px solid var(--glass-border); border-radius: var(--radius);
+  padding: 12px 14px; box-shadow: var(--shadow-sm); border-left: 3px solid var(--border);
+  transition: box-shadow .18s, transform .18s;
 }
-.ck-coll       { border-left-color: #2e7d32; }
-.ck-coll-soft  { border-left-color: rgba(46,125,50,0.38); }
-.ck-pay        { border-left-color: #e65100; }
-.ck-pay-soft   { border-left-color: rgba(230,81,0,0.38); }
-.ck-net-pos    { border-left-color: #2e7d32; }
-.ck-net-neg    { border-left-color: #c62828; }
+.ck-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+/* 主卡（实收 / 实付 / 净额）淡色铺底，与辅助卡拉开层级 */
+.ck-coll      { border-left-color: var(--c-success); background: linear-gradient(180deg, var(--c-success-bg), var(--surface-1) 58%); }
+.ck-coll-soft { border-left-color: color-mix(in srgb, var(--c-success) 40%, transparent); }
+.ck-pay       { border-left-color: var(--c-warn); background: linear-gradient(180deg, var(--c-warn-bg), var(--surface-1) 58%); }
+.ck-pay-soft  { border-left-color: color-mix(in srgb, var(--c-warn) 40%, transparent); }
+.ck-net-pos   { border-left-color: var(--c-success); background: linear-gradient(180deg, var(--c-success-bg), var(--surface-1) 58%); }
+.ck-net-neg   { border-left-color: var(--c-danger); background: linear-gradient(180deg, var(--c-danger-bg), var(--surface-1) 52%); }
 .ck-label    { font-size: 10.5px; color: var(--muted); font-weight: 700; letter-spacing: .03em; white-space: nowrap; }
-.ck-value    { font-size: 19px; font-weight: 800; color: var(--text); line-height: 1.2; margin: 5px 0 3px; white-space: nowrap; }
-.v-pos       { color: #2e7d32 !important; }
-.v-neg       { color: #c62828 !important; }
+.ck-value    { font-size: 20px; font-weight: 800; color: var(--text); line-height: 1.2; margin: 5px 0 3px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.v-pos       { color: var(--c-success) !important; }
+.v-neg       { color: var(--c-danger) !important; }
 .ck-sub      { font-size: 11px; white-space: nowrap; }
-.ach-ok      { color: #2e7d32; font-weight: 600; }
+.ach-ok      { color: var(--c-success); font-weight: 600; }
 .ach-off     { color: var(--muted); }
 
 /* 窄屏：三组换行堆叠，组内卡片仍并排；超窄时卡片再换行 */
@@ -649,22 +620,22 @@ const deptBalanceOption = computed(() => {
   .kpi-group-cards .ck-card { flex: 1 1 calc(50% - 5px); }
 }
 
-/* ── Chart grid ── */
+/* ── 图表网格 ── */
 .cockpit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .cockpit-grid .span2 { grid-column: span 2; }
 @media (max-width: 900px) { .cockpit-grid { grid-template-columns: 1fr; } .cockpit-grid .span2 { grid-column: 1; } }
 .chart-empty { height: 120px; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; }
 
-/* ── Section title with sub-label ── */
+/* ── 区块小标题副标签 ── */
 .section-sub { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 8px; }
 
-/* ── Table ── */
-.row-alert { background: rgba(198,40,40,.04); }
+/* ── 表格 ── */
+.row-alert { background: var(--c-danger-bg); }
 .fw { font-weight: 600; }
 .amt { text-align: right; }
 .muted { color: var(--muted); }
-.text-coll   { color: #2e7d32; font-weight: 600; }
-.text-pay    { color: #e65100; }
-.text-danger { color: #c62828; font-weight: 600; }
-.text-ok     { color: #2e7d32; font-weight: 600; }
+.text-coll   { color: var(--c-success); font-weight: 600; }
+.text-pay    { color: var(--c-warn); }
+.text-danger { color: var(--c-danger); font-weight: 600; }
+.text-ok     { color: var(--c-success); font-weight: 600; }
 </style>

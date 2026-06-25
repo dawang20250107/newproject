@@ -1282,11 +1282,11 @@ const ctxMatrixItems = computed(() => {
   padding: 10px 20px; font-size: 14px; font-weight: 600; color: var(--muted);
   border-radius: 10px 10px 0 0; transition: color .15s, background .15s;
 }
-.ck-tab:hover { color: var(--primary); background: rgba(201,99,66,.05); }
+.ck-tab:hover { color: var(--primary); background: var(--surface-tint); }
 .ck-tab.on { color: var(--primary); font-weight: 800; }
 .ck-tab.on::after {
   content: ''; position: absolute; left: 14px; right: 14px; bottom: -1px; height: 3px;
-  border-radius: 3px 3px 0 0; background: linear-gradient(90deg, #c96342, #e8a05a);
+  border-radius: 3px 3px 0 0; background: var(--grad);
 }
 
 /* ── ZONE 1 · hero KPIs + ratio strip ───────────────────────────────────────── */
