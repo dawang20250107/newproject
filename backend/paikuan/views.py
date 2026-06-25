@@ -55,6 +55,7 @@ APPROVAL_FILTER_REGISTRY = {
     'g7_number':          {'type': 'text',   'col': 'g7_number'},
     'summary':            {'type': 'text',   'col': 'summary'},
     'amount':             {'type': 'number', 'col': 'amount'},
+    'scheduled_amount':   {'type': 'number', 'col': 'scheduled_amount'},
     'payee':              {'type': 'text',   'col': 'payee'},
     'status':             {'type': 'enum',   'col': 'status'},
 }
@@ -1046,14 +1047,22 @@ def payment_offsets(request, pk):
     return ok({'items': items, 'total_offset': str(p.prepaid_offset_amount or 0)})
 
 
-def _apply_payment_status_filter(qs, status_q, paid_annotated):
+def _apply_payment_status_filter(qs, status_q, paid_annotated, hide_settled=False):
     """付款台账状态筛选：口径与前端 StatusBadge / to_dict 完全一致（含预付冲抵）。
     供 _list_payments 与 payment_export 共用，避免两处逻辑漂移。
+    hide_settled=True 时排除已付清记录（进入页面默认非已付清视图）。
     """
-    if not status_q:
+    if not status_q and not hide_settled:
         return qs
     if not paid_annotated:
         qs = qs.annotate(paid=_paid_expr())
+    if not status_q and hide_settled:
+        settled_q = (
+            Q(paid__gte=F('total_amount') - F('prepaid_offset_amount')) |
+            Q(plan_adjustment__isnull=False,
+              paid__gte=F('plan_adjustment') - F('prepaid_offset_amount'))
+        )
+        return qs.exclude(settled_q)
     if status_q == 'pending':
         qs = qs.filter(paid=Decimal('0'), plan_adjustment__isnull=True,
                        prepaid_offset_amount=Decimal('0'))
@@ -1133,6 +1142,7 @@ def _list_payments(request):
 
     dept = request.GET.get('dept', '').strip()
     status_q = request.GET.get('status', '').strip()
+    hide_settled = request.GET.get('hide_settled') == '1'
     start = request.GET.get('start_date', '').strip()
     end = request.GET.get('end_date', '').strip()
     pay_start = request.GET.get('pay_date_start', '').strip()
@@ -1179,7 +1189,7 @@ def _list_payments(request):
         page, size = 1, 50
 
     # Status filter — shared helper 与 export 口径完全一致
-    qs = _apply_payment_status_filter(qs, status_q, _paid_annotated)
+    qs = _apply_payment_status_filter(qs, status_q, _paid_annotated, hide_settled=hide_settled)
 
     total = qs.count()
 
@@ -3664,6 +3674,7 @@ def payment_export(request):
 
     dept = request.GET.get('dept', '').strip()
     status_q = request.GET.get('status', '').strip()
+    hide_settled = request.GET.get('hide_settled') == '1'
     start = request.GET.get('start_date', '').strip()
     end = request.GET.get('end_date', '').strip()
     q_str = request.GET.get('q', '').strip()
@@ -3698,7 +3709,7 @@ def payment_export(request):
         qs = qs.order_by(_sort_by)
     # 计算列（已付/剩余/逾期）筛选与排序：导出与列表口径一致
     qs, _paid_annotated = _apply_payment_computed_filters(qs, request)
-    qs = _apply_payment_status_filter(qs, status_q, _paid_annotated)
+    qs = _apply_payment_status_filter(qs, status_q, _paid_annotated, hide_settled=hide_settled)
 
     # Reject rather than silently truncate: a truncated export is worse than no export.
     EXPORT_CAP = 5000

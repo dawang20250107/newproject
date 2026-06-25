@@ -124,10 +124,12 @@ const PAY_STATUS_OPTS = [
 const OVERDUE_OPTS = [{ value: '是', label: '是（已逾期）' }, { value: '否', label: '否' }]
 const colFilters = reactive({})    // field -> {op, value}（不含 status）
 const statusSel = ref('')          // 计划状态单选 → status 查询参数
+const payDeptFilter = ref('')      // 筛选栏事业部快选
+const hideSettled = ref(true)      // 默认隐藏已付清（进入页面默认展示非已付清）
 const sortField = ref('')
 const sortOrder = ref('')
 const activeFilterCount = computed(() =>
-  Object.keys(colFilters).length + (statusSel.value ? 1 : 0))
+  Object.keys(colFilters).length + (statusSel.value ? 1 : 0) + (payDeptFilter.value ? 1 : 0))
 function setColFilter(field, val) {
   if (val == null) delete colFilters[field]
   else colFilters[field] = val
@@ -148,15 +150,21 @@ function setSort(field, order) {
 const schemes = useTableSchemes('pk_payments', {
   colFilters, sortField, sortOrder,
   extra: {
-    get: () => ({ status: statusSel.value || '' }),
-    set: (p) => { statusSel.value = p.status || '' },
+    get: () => ({ status: statusSel.value || '', dept: payDeptFilter.value || '', hide_settled: hideSettled.value }),
+    set: (p) => {
+      statusSel.value = p.status || ''
+      payDeptFilter.value = p.dept || ''
+      hideSettled.value = p.hide_settled !== false
+    },
   },
   onApply: () => { filters.page = 1; clearSelection(); load() },
 })
 function buildParams() {
   const p = { page: filters.page, size: filters.size }
   if (filters.q.trim()) p.q = filters.q.trim()
+  if (payDeptFilter.value) p.dept = payDeptFilter.value
   if (statusSel.value) p.status = statusSel.value
+  if (hideSettled.value && !statusSel.value) p.hide_settled = '1'
   if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
   if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
   return p
@@ -597,6 +605,8 @@ function resetFilters() {
   Object.assign(filters, { q: '', pay_date_start: '', pay_date_end: '', page: 1 })
   Object.keys(colFilters).forEach(k => delete colFilters[k])
   statusSel.value = ''
+  payDeptFilter.value = ''
+  hideSettled.value = true
   sortField.value = ''; sortOrder.value = ''
   payDatePreset.value = ''
   clearSelection()
@@ -726,6 +736,14 @@ async function doBatchPay() {
       <div class="filter-bar">
         <input v-model="filters.q" class="global-search" placeholder="🔍 全局搜索：事项 / 收款方 / 单号 / 申请人 / G7…" @keyup.enter="search" />
         <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
+        <select v-model="payDeptFilter" @change="search" style="min-width:90px">
+          <option value="">全部事业部</option>
+          <option v-for="d in deptChoices" :key="d" :value="d">{{ d }}</option>
+        </select>
+        <label class="filter-toggle" :class="{ active: !hideSettled }" title="切换是否显示已付清记录">
+          <input type="checkbox" :checked="!hideSettled" @change="hideSettled = !hideSettled; filters.page=1; clearSelection(); load()" />
+          含已付清
+        </label>
         <span class="filter-group-lbl">回款日</span>
         <select v-model="payDatePreset" @change="applyPayDatePreset" style="min-width:100px">
           <option value="">全部日期</option>
@@ -1168,6 +1186,16 @@ async function doBatchPay() {
 
 /* 付款日期 label in filter bar */
 .filter-group-lbl { font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+
+/* 含已付清 toggle */
+.filter-toggle {
+  display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px;
+  border: 1px solid var(--border); border-radius: 8px; font-size: 12px;
+  color: var(--muted); cursor: pointer; white-space: nowrap; flex-shrink: 0;
+  background: transparent; user-select: none;
+}
+.filter-toggle input { margin: 0; cursor: pointer; }
+.filter-toggle.active { border-color: var(--primary); color: var(--primary); }
 
 /* 付款流水 table */
 .flow-tbl { width: 100%; table-layout: fixed; }

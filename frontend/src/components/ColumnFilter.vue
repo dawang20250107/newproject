@@ -264,7 +264,7 @@ onBeforeUnmount(() => {
 <template>
   <span class="colf">
     <span class="colf-label">{{ label }}</span>
-    <button ref="btnRef" :data-colf="field" class="colf-btn" :class="{ on: active || sorted }"
+    <button v-if="sortable || filterable" ref="btnRef" :data-colf="field" class="colf-btn" :class="{ on: active || sorted }"
             type="button" @click.stop="toggle" :title="active ? '已筛选' : '筛选 / 排序'">
       <span class="colf-funnel">⏷</span>
       <span v-if="sorted" class="colf-sortmark">{{ sortOrder === 'asc' ? '▲' : '▼' }}</span>
@@ -349,9 +349,10 @@ onBeforeUnmount(() => {
 
         <!-- 枚举多选 -->
         <template v-else-if="type === 'enum'">
-          <div v-if="!single" class="colf-modetab colf-modetab-enum">
-            <button type="button" :class="{ act: op !== 'not_in' }" @click="op = 'in'">在（命中）</button>
-            <button type="button" :class="{ act: op === 'not_in' }" @click="op = 'not_in'">不在（排除）</button>
+          <div v-if="!single" class="colf-match-row">
+            <span class="colf-match-lbl">匹配：</span>
+            <button type="button" :class="{ act: op !== 'not_in' }" @click="op = 'in'">包含</button>
+            <button type="button" :class="{ act: op === 'not_in' }" @click="op = 'not_in'">排除</button>
           </div>
           <div class="colf-enum">
             <label v-for="(o, i) in enumOpts" :key="i" class="colf-chk">
@@ -407,14 +408,22 @@ onBeforeUnmount(() => {
 }
 .colf-close:hover { border-color: var(--danger); color: var(--danger); }
 
-/* 选值 / 条件 模式切换条 */
+/* 选值 / 条件 模式切换条（文本型） */
 .colf-modetab { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
 .colf-modetab button {
   flex: 1; padding: 5px 0; border: none; background: transparent; cursor: pointer;
   color: var(--muted); font-size: 11.5px; font-weight: 600;
 }
 .colf-modetab button.act { background: var(--primary); color: #fff; }
-.colf-modetab-enum button { font-size: 11px; }
+
+/* 枚举列「匹配：包含 / 排除」行 */
+.colf-match-row { display: flex; align-items: center; gap: 4px; }
+.colf-match-lbl { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+.colf-match-row button {
+  padding: 2px 10px; border: 1px solid var(--border); border-radius: 10px;
+  background: transparent; cursor: pointer; color: var(--muted); font-size: 11px;
+}
+.colf-match-row button.act { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.08); }
 
 .colf-op, .colf-in {
   width: 100%; box-sizing: border-box; padding: 6px 8px;
