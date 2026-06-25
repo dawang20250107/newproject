@@ -461,7 +461,7 @@ def _xlsx_report(data):
     r = 4
     P = data['projects']['total']
     r = section(ws, r, '一、项目规模')
-    r = hdr(ws, r, ['事业部', '在运项目', '年初至今新签', '本期新签', '上期新签', '较上期增减', '项目总数'])
+    r = hdr(ws, r, ['事业部', '在运项目', '本年新签', '本期新签', '上期新签', '较上期增减', '项目总数'])
     rows = data['projects']['rows']
     for d in m['depts']:
         pr = rows[d]
@@ -471,16 +471,16 @@ def _xlsx_report(data):
 
     r += 1
     r = section(ws, r, '二、应收账款情况')
-    r = hdr(ws, r, ['事业部', '期初未收', '本期新增', '现金回款', '非现金核销', '账实差额',
+    r = hdr(ws, r, ['事业部', '期初未收', '现金回款', '非现金核销', '账实差额',
                     '期末未收', '其中逾期', '其中未到期'])
     arows = data['ar']['rows']
     for d in m['depts']:
         a = arows[d]
-        r = row(ws, r, [d, a['opening'], a['new_ar'], a['cash_in'], a['noncash_in'], a['adj_in'],
+        r = row(ws, r, [d, a['opening'], a['cash_in'], a['noncash_in'], a['adj_in'],
                         a['closing'], a['overdue'], a['not_due']])
     if m['is_multi']:
         a = data['ar']['total']
-        r = row(ws, r, ['合计', a['opening'], a['new_ar'], a['cash_in'], a['noncash_in'], a['adj_in'],
+        r = row(ws, r, ['合计', a['opening'], a['cash_in'], a['noncash_in'], a['adj_in'],
                         a['closing'], a['overdue'], a['not_due']], bold=True)
     # 到期回款
     r = hdr(ws, r, ['事业部', '本期到期应收', '本期到期已回', '到期回款率(%)'])
@@ -491,42 +491,65 @@ def _xlsx_report(data):
         a = data['ar']['total']
         r = row(ws, r, ['合计', a['due_amt'], a['due_collected'], a['due_rate']], bold=True)
 
+    # 年度/本年累计数据成熟度：基础数据齐全前以「—」示意（与前端口径一致）
+    Y = '—'
     r += 1
     r = section(ws, r, '三、应收预算完成')
     r = hdr(ws, r, ['事业部', '本期预算', '本期实际', '本期完成率(%)', '年度预算', '年度实际', '年度完成率(%)'])
     brows = data['budget']['rows']
     for d in m['depts']:
         b = brows[d]
-        r = row(ws, r, [d, b['coll_budget'], b['coll_actual'], b['coll_rate'],
-                        b['coll_budget_ytd'], b['coll_actual_ytd'], b['coll_rate_ytd']])
+        r = row(ws, r, [d, b['coll_budget'], b['coll_actual'], b['coll_rate'], Y, Y, Y])
     if m['is_multi']:
         b = data['budget']['total']
-        r = row(ws, r, ['合计', b['coll_budget'], b['coll_actual'], b['coll_rate'],
-                        b['coll_budget_ytd'], b['coll_actual_ytd'], b['coll_rate_ytd']], bold=True)
+        r = row(ws, r, ['合计', b['coll_budget'], b['coll_actual'], b['coll_rate'], Y, Y, Y], bold=True)
 
     r += 1
     r = section(ws, r, '四、应付预算完成（月度口径）')
     r = hdr(ws, r, ['事业部', '本月预算', '本月实际', '本月完成率(%)', '年度预算', '年度实际', '年度完成率(%)'])
     for d in m['depts']:
         b = brows[d]
-        r = row(ws, r, [d, b['pay_budget'], b['pay_actual'], b['pay_rate'],
-                        b['pay_budget_ytd'], b['pay_actual_ytd'], b['pay_rate_ytd']])
+        r = row(ws, r, [d, b['pay_budget'], b['pay_actual'], b['pay_rate'], Y, Y, Y])
     if m['is_multi']:
         b = data['budget']['total']
-        r = row(ws, r, ['合计', b['pay_budget'], b['pay_actual'], b['pay_rate'],
-                        b['pay_budget_ytd'], b['pay_actual_ytd'], b['pay_rate_ytd']], bold=True)
+        r = row(ws, r, ['合计', b['pay_budget'], b['pay_actual'], b['pay_rate'], Y, Y, Y], bold=True)
 
     r += 1
     r = section(ws, r, '五、现金流情况')
     r = hdr(ws, r, ['项目', '本期金额', '本年累计'])
-    cp, cy = data['cash']['period'], data['cash']['ytd']
-    r = row(ws, r, ['一、经营活动现金流入', cp['inflow'], cy['inflow']], bold=True)
-    r = row(ws, r, ['　现金回款', cp['collected'], cy['collected']])
-    r = row(ws, r, ['　预收款', cp['advance_received'], cy['advance_received']])
-    r = row(ws, r, ['二、经营活动现金流出', cp['outflow'], cy['outflow']], bold=True)
-    r = row(ws, r, ['　实付款项（扣预付冲抵）', cp['paid'], cy['paid']])
-    r = row(ws, r, ['　预付款', cp['advance_paid'], cy['advance_paid']])
-    r = row(ws, r, ['三、经营活动净现金流', cp['net'], cy['net']], bold=True)
+    cp = data['cash']['period']
+    r = row(ws, r, ['一、经营活动现金流入', cp['inflow'], Y], bold=True)
+    r = row(ws, r, ['　现金回款', cp['collected'], Y])
+    r = row(ws, r, ['　预收款', cp['advance_received'], Y])
+    r = row(ws, r, ['二、经营活动现金流出', cp['outflow'], Y], bold=True)
+    r = row(ws, r, ['　实付款项（扣预付冲抵）', cp['paid'], Y])
+    r = row(ws, r, ['　预付款', cp['advance_paid'], Y])
+    r = row(ws, r, ['三、经营活动净现金流', cp['net'], Y], bold=True)
+
+    # 六、汇报说明（手工填写，随导出带出）
+    nv = data.get('narrative') or {}
+    note_fields = [
+        ('经营分析（得 / 失 / 策略）', 'summary'),
+        ('风险与异常提示', 'risk'),
+        ('下期工作重点', 'plan'),
+        ('需协调 / 支持事项', 'support'),
+    ]
+    if any((nv.get(k) or '').strip() for _, k in note_fields):
+        r += 1
+        r = section(ws, r, '六、汇报说明')
+        for label, key in note_fields:
+            text = (nv.get(key) or '').strip()
+            if not text:
+                continue
+            lc = ws.cell(row=r, column=1, value=label)
+            lc.font = Font(bold=True)
+            lc.border = border
+            lc.alignment = Alignment(horizontal='left', vertical='top')
+            ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=ncol)
+            tc = ws.cell(row=r, column=2, value=text)
+            tc.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+            tc.border = border
+            r += 1
 
     # 列宽
     ws.column_dimensions['A'].width = 22
@@ -548,6 +571,12 @@ def periodic_report_export(request):
     reviewer_override = (request.GET.get('reviewer') or '').strip()
     if reviewer_override:
         data['meta']['reviewer'] = reviewer_override
+    # 汇报说明（手工填写）经 POST body 带入
+    if request.method == 'POST' and request.body:
+        try:
+            data['narrative'] = (json.loads(request.body) or {}).get('narrative') or {}
+        except (ValueError, TypeError):
+            data['narrative'] = {}
     wb = _xlsx_report(data)
     fname = f"{data['meta']['title']}.xlsx"
     return _export_response(wb, fname)
