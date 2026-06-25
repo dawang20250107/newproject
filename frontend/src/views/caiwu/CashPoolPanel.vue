@@ -49,6 +49,16 @@ const pools = computed(() => data.value?.pools || [])
 const configured = computed(() => pools.value.filter(p => p.configured))
 const unconfigured = computed(() => pools.value.filter(p => !p.configured))
 
+// 汇总横幅标签：只有可见范围覆盖全部事业部时才叫「集团资金余额」；
+// 非超管/过滤后的子集只是「可见池子的合计」，避免事业部用户误以为是集团口径。
+const balanceLabel = computed(() => {
+  const g = data.value?.group
+  if (!g) return '资金余额'
+  if (g.is_full_scope) return '集团资金余额'
+  if (g.scope_dept_count === 1) return '本部门资金余额'
+  return '合计资金余额（可见范围）'
+})
+
 // ── 余额对比条：各池柱高按最大余额归一 ──────────────────────────────────────
 const maxBalance = computed(() =>
   Math.max(1, ...configured.value.map(p => parseFloat(p.balance) || 0)))
@@ -243,7 +253,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           <template v-if="data.group">
             <div class="hero-balance">
               <div class="hb-num">{{ wan(data.group.balance) }}</div>
-              <div class="hb-label">集团资金余额</div>
+              <div class="hb-label">{{ balanceLabel }}</div>
             </div>
             <div class="hero-flow">
               <div v-for="(k, i) in ['d30','d60','d90']" :key="k" class="hf-step">
@@ -290,9 +300,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
       <!-- ══ 口径说明 ══ -->
       <div v-if="showMethodology" class="cp-method card">
-        <div class="section-title" style="margin-bottom:6px">口径说明（与现金流分析一致）</div>
+        <div class="section-title" style="margin-bottom:6px">口径说明</div>
         <ul>
           <li><b>账面余额</b> ＝ 期初金额 ＋ 现金流入 − 现金流出 ± 池间调拨（仅已生效的调拨计入）。</li>
+          <li class="cp-method-note"><b>为什么与「现金流分析」对不上？</b> 资金池余额是<b>存量</b>（期初基准日累计至今、且含池间调拨）；现金流分析是<b>选定区间的流量</b>（不含期初基准、不含内部调拨）。二者口径不同，<b>不应直接相等</b>。单个事业部尤其明显——调拨会改变它的池余额，但在现金流分析里不出现。</li>
           <li><b>现金流入</b> ＝ 应收回款 ＋ 预收款。其中<b>预收冲抵</b>（用客户预收款核销应收）不计现金流入——现金在预收入账当天已经计入，冲抵只是账务确认，再计就重复了。</li>
           <li><b>现金流出</b> ＝ 实付分期 ＋ 预付款 − <b>预付冲抵</b>（用预付余额抵减正式付款）。现金在预付发生当天已经流出，核销冲抵当天没有新的现金事件，不再重复计。</li>
           <li><b>刚性待付</b> ＝ 付款台账中已审批待付的余额（计划金额 − 已付 − 预付冲抵），按计划付款日分 30/60/90 天窗口。</li>
@@ -651,6 +662,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .cp-method ul { margin: 0; padding-left: 18px; }
 .cp-method li { font-size: 12px; color: #6b5a4a; line-height: 1.9; }
 .cp-method li b { color: #4a3728; }
+.cp-method-note { margin-top: 6px; padding: 8px 11px; background: rgba(201,99,66,.06);
+  border-left: 3px solid rgba(201,99,66,.45); border-radius: 6px; list-style: none; margin-left: -18px; }
 .cp-cfg-note { margin-top: 8px; font-size: 11px; color: #e65100; }
 
 /* 项目维度 */

@@ -212,10 +212,15 @@ def cash_pool(request):
 
     configured = [p for p in pools if p.get('configured') and not p.get('error')]
     group = None
+    # 「集团」口径仅在可见范围覆盖全部事业部时成立；非超管（或超管用全局
+    # ?depts 过滤到子集）时，这个汇总只是「可见池子的合计」，不能叫集团余额。
+    is_full_scope = set(depts) >= VALID_DEPARTMENTS
     if configured:
         def _sumf(getter):
             return str(sum(Decimal(getter(p)) for p in configured))
         group = {
+            'is_full_scope': is_full_scope,
+            'scope_dept_count': len(depts),
             'balance': _sumf(lambda p: p['balance']),
             'warning_amount': _sumf(lambda p: p['warning']['amount']),
             'committed_total': _sumf(lambda p: p['committed']['total']),
@@ -227,7 +232,8 @@ def cash_pool(request):
             'danger_count': sum(1 for p in configured if p['warning']['status'] == 'danger'),
             'warn_count': sum(1 for p in configured if p['warning']['status'] == 'warn'),
         }
-    return ok({'pools': pools, 'group': group, 'today': str(today)})
+    return ok({'pools': pools, 'group': group, 'is_full_scope': is_full_scope,
+               'today': str(today)})
 
 
 @csrf_exempt
