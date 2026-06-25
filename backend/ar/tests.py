@@ -1228,6 +1228,70 @@ class AdvanceModuleTests(TestCase):
         self.assertEqual(recv.balance_amount, Decimal('60000.00'))  # 100000 - 40000
         self.assertEqual(recv.delivery_dept, self.dept)
 
+    # ── 收付差异 · 时间维度（月/周）分解 ────────────────────────────────────────
+    def test_diff_timeline_month_and_week(self):
+        admin = self.make_user('13911100009', 'finance_director', role='super_admin')
+        proj = self.create_project(short_name='时间线项目')
+        # 1月预收10万、2月预付4万、3月预收3万 → 累计差异应为 10/6/9（万）
+        AdvanceRecord.objects.create(direction='预收', project=proj, delivery_dept=self.dept,
+                                     counterparty='客户甲', occur_year=2026, occur_month=1,
+                                     occur_date=date(2026, 1, 10), advance_amount=Decimal('100000'))
+        AdvanceRecord.objects.create(direction='预付', project=proj, delivery_dept=self.dept,
+                                     counterparty='供应商乙', occur_year=2026, occur_month=2,
+                                     occur_date=date(2026, 2, 15), advance_amount=Decimal('40000'))
+        AdvanceRecord.objects.create(direction='预收', project=proj, delivery_dept=self.dept,
+                                     counterparty='客户丙', occur_year=2026, occur_month=3,
+                                     occur_date=date(2026, 3, 5), advance_amount=Decimal('30000'))
+        # 缺日期的记录 → 归入 null 桶
+        AdvanceRecord.objects.create(direction='预收', project=proj, delivery_dept=self.dept,
+                                     counterparty='客户丁', occur_year=2026, occur_month=4,
+                                     occur_date=None, advance_amount=Decimal('5000'))
+
+        r = self.client.get('/api/pk/ar/advances/diff-timeline',
+                            {'grain': 'month'}, **self.auth(admin))
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()['data']
+        self.assertEqual(d['grain'], 'month')
+        # 连续补桶：1/2/3 月三期（含中间无收付的月也应在序列中）
+        periods = {p['period']: p for p in d['periods']}
+        self.assertIn('2026-01', periods)
+        self.assertIn('2026-02', periods)
+        self.assertIn('2026-03', periods)
+        # 本期差异
+        self.assertEqual(periods['2026-01']['diff'], '100000.00')
+        self.assertEqual(periods['2026-02']['diff'], '-40000.00')
+        self.assertEqual(periods['2026-03']['diff'], '30000.00')
+        # 累计差异滚动求和：10 / 6 / 9 万
+        self.assertEqual(periods['2026-01']['cum_diff'], '100000.00')
+        self.assertEqual(periods['2026-02']['cum_diff'], '60000.00')
+        self.assertEqual(periods['2026-03']['cum_diff'], '90000.00')
+        # null 桶（缺日期）单列，不混入时间序
+        self.assertIsNotNone(d['null_period'])
+        self.assertEqual(d['null_period']['in_total'], '5000.00')
+        # 汇总：总预收 13.5 万、总预付 4 万
+        self.assertEqual(d['summary']['in_total'], '135000.00')
+        self.assertEqual(d['summary']['out_total'], '40000.00')
+
+        # 周粒度：仍能返回且 grain 标记正确
+        rw = self.client.get('/api/pk/ar/advances/diff-timeline',
+                            {'grain': 'week'}, **self.auth(admin))
+        self.assertEqual(rw.status_code, 200, rw.content)
+        self.assertEqual(rw.json()['data']['grain'], 'week')
+
+        # 日期窗口过滤：仅 2 月 → 只剩预付一期
+        rf = self.client.get('/api/pk/ar/advances/diff-timeline',
+                            {'grain': 'month', 'start': '2026-02-01', 'end': '2026-02-28'},
+                            **self.auth(admin))
+        df = rf.json()['data']
+        self.assertEqual(df['summary']['out_total'], '40000.00')
+        self.assertEqual(df['summary']['in_total'], '0')
+
+        # 导出 Excel：返回 xlsx 附件
+        re = self.client.get('/api/pk/ar/advances/diff-timeline/export',
+                            {'grain': 'month'}, **self.auth(admin))
+        self.assertEqual(re.status_code, 200, re.content)
+        self.assertIn('spreadsheet', re['Content-Type'])
+
     # ── 现金流打通：净额含预收(流入)与预付(流出) ───────────────────────────────
     def test_cashflow_includes_advances(self):
         admin = self.make_user('13911100004', 'finance_director', role='super_admin')
