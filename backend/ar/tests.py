@@ -1292,6 +1292,55 @@ class AdvanceModuleTests(TestCase):
         self.assertEqual(re.status_code, 200, re.content)
         self.assertIn('spreadsheet', re['Content-Type'])
 
+    def test_diff_matrix_pivot(self):
+        """收付差异透视表：项目×期间矩阵——单元格=当期差异，含每项目总差异与每期合计。"""
+        admin = self.make_user('13911100019', 'finance_director', role='super_admin')
+        proj = self.create_project(short_name='透视项目')
+        # 1月预收10万、2月预付4万、3月预收3万 → 总差异 9 万
+        AdvanceRecord.objects.create(direction='预收', project=proj, delivery_dept=self.dept,
+                                     counterparty='客户甲', occur_year=2026, occur_month=1,
+                                     occur_date=date(2026, 1, 10), advance_amount=Decimal('100000'))
+        AdvanceRecord.objects.create(direction='预付', project=proj, delivery_dept=self.dept,
+                                     counterparty='供应商乙', occur_year=2026, occur_month=2,
+                                     occur_date=date(2026, 2, 15), advance_amount=Decimal('40000'))
+        AdvanceRecord.objects.create(direction='预收', project=proj, delivery_dept=self.dept,
+                                     counterparty='客户丙', occur_year=2026, occur_month=3,
+                                     occur_date=date(2026, 3, 5), advance_amount=Decimal('30000'))
+
+        r = self.client.get('/api/pk/ar/advances/diff-matrix',
+                            {'grain': 'month'}, **self.auth(admin))
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()['data']
+        self.assertEqual(d['grain'], 'month')
+        # 列（期间）：连续 1/2/3 月，紧凑标签
+        labels = {c['period']: c['label'] for c in d['periods']}
+        self.assertEqual(labels['2026-01'], '1月')
+        self.assertIn('2026-02', labels)
+        self.assertIn('2026-03', labels)
+        # 行（项目）：单行，含总差异 9 万
+        self.assertEqual(len(d['rows']), 1)
+        row = d['rows'][0]
+        self.assertEqual(row['project'], '透视项目')
+        self.assertEqual(row['total_diff'], '90000.00')
+        # 单元格 = 该项目当期差异
+        self.assertEqual(row['cells']['2026-01']['diff'], '100000.00')
+        self.assertEqual(row['cells']['2026-02']['diff'], '-40000.00')
+        self.assertEqual(row['cells']['2026-03']['diff'], '30000.00')
+        # 每期合计行
+        self.assertEqual(d['period_totals']['2026-01']['diff'], '100000.00')
+        self.assertEqual(d['period_totals']['2026-02']['diff'], '-40000.00')
+        # 汇总
+        self.assertEqual(d['summary']['project_count'], 1)
+        self.assertEqual(d['summary']['diff'], '90000.00')
+
+        # 周粒度：列标签为 Wxx
+        rw = self.client.get('/api/pk/ar/advances/diff-matrix',
+                            {'grain': 'week'}, **self.auth(admin))
+        self.assertEqual(rw.status_code, 200, rw.content)
+        dw = rw.json()['data']
+        self.assertEqual(dw['grain'], 'week')
+        self.assertTrue(all(c['label'].startswith('W') for c in dw['periods']))
+
     # ── 现金流打通：净额含预收(流入)与预付(流出) ───────────────────────────────
     def test_cashflow_includes_advances(self):
         admin = self.make_user('13911100004', 'finance_director', role='super_admin')

@@ -127,6 +127,8 @@ const ar = {
   // 收付差异 · 时间维度（月/周）分解 + 导出
   advanceDiffTimeline: p => api.get('/ar/advances/diff-timeline', { params: p }),
   advanceDiffTimelineExport: p => api.get('/ar/advances/diff-timeline/export', { params: p, responseType: 'blob' }),
+  // 收付差异 · 透视表（项目 × 月/周矩阵）
+  advanceDiffMatrix: p => api.get('/ar/advances/diff-matrix', { params: p }),
   batchWriteoff: (advId, d) => api.post(`/ar/advances/${advId}/batch-writeoff`, d),
   // 收付明细（一条预收/预付多次到账/付出；总额为派生）
   listAdvInstallments: id => api.get(`/ar/advances/${id}/installments`),

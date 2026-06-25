@@ -120,7 +120,7 @@ function switchDir(d) {
   if (d === 'suppliers') {
     loadSuppliers()
   } else if (d === 'diff') {
-    loadDiff()
+    diffView.value === 'project' ? loadDiff() : loadMatrix()
   } else {
     load(true)
   }
@@ -144,7 +144,10 @@ async function loadDiff() {
   } catch (_) { diffData.value = null }
   finally { diffLoading.value = false }
 }
-function onDiffSearch() { clearTimeout(diffTimer); diffTimer = setTimeout(loadDiff, 300) }
+function onDiffSearch() {
+  clearTimeout(diffTimer)
+  diffTimer = setTimeout(() => { diffView.value === 'project' ? loadDiff() : loadMatrix() }, 300)
+}
 function toggleDiffRow(name) {
   const s = new Set(diffExpanded.value)
   s.has(name) ? s.delete(name) : s.add(name)
@@ -159,6 +162,50 @@ function toggleDiffAll() {
 
 const diffClass = v => parseFloat(v) >= 0 ? 'amt-pos' : 'amt-neg'
 const fmtDiff = v => (parseFloat(v) > 0 ? '+' : '') + fmtAmt(v)
+
+// ── 收付差异 · 透视表（项目 × 月/周矩阵）─────────────────────────────────────
+// 三视角：按项目（累计+逐笔明细）/ 按月 / 按周（项目×期间矩阵，单元格=当期差异）
+const diffView = ref('project')              // 'project' | 'month' | 'week'
+const matrixYear = ref(yearCST())
+const matrixData = ref(null)
+const matrixLoading = ref(false)
+const matrixExporting = ref(false)
+const yearOptions = computed(() => {
+  const y = yearCST(); return [y, y - 1, y - 2, y - 3, y - 4, y - 5]
+})
+
+async function loadMatrix() {
+  matrixLoading.value = true
+  try {
+    const res = await ar.advanceDiffMatrix({
+      grain: diffView.value,
+      start: `${matrixYear.value}-01-01`,
+      end: `${matrixYear.value}-12-31`,
+      q: diffQ.value.trim() || undefined,
+    })
+    matrixData.value = res.data
+  } catch (_) { matrixData.value = null }
+  finally { matrixLoading.value = false }
+}
+function setDiffView(v) {
+  if (v === diffView.value) return
+  diffView.value = v
+  v === 'project' ? loadDiff() : loadMatrix()
+}
+function cellOf(row, key) { return row.cells?.[key] || null }
+async function exportMatrix() {
+  matrixExporting.value = true
+  try {
+    const res = await ar.advanceDiffTimelineExport({
+      grain: diffView.value,
+      start: `${matrixYear.value}-01-01`,
+      end: `${matrixYear.value}-12-31`,
+      q: diffQ.value.trim() || undefined,
+    })
+    downloadBlob(res, `收付差异-按${diffView.value === 'week' ? '周' : '月'}-${matrixYear.value}.xlsx`)
+  } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
+  finally { matrixExporting.value = false }
+}
 function onFilterChange() { load(true) }
 let qTimer = null
 function onQInput() { clearTimeout(qTimer); qTimer = setTimeout(() => load(true), 300) }
@@ -746,86 +793,168 @@ onMounted(async () => {
 
     <!-- ── 收付差异：预收 vs 预付（按项目，含月差异/周差异列）── -->
     <template v-else-if="direction === 'diff'">
-      <div v-if="diffData?.summary" class="kpi-row">
-        <div class="kpi"><div class="kpi-k">涉及项目</div><div class="kpi-v">{{ diffData.summary.count }} 个</div></div>
-        <div class="kpi"><div class="kpi-k">预收合计</div><div class="kpi-v" style="color:#2e7d32">{{ fmtAmt(diffData.summary.in_total) }}</div></div>
-        <div class="kpi"><div class="kpi-k">预付合计</div><div class="kpi-v" style="color:#ef6c00">{{ fmtAmt(diffData.summary.out_total) }}</div></div>
-        <div class="kpi accent"><div class="kpi-k">差异（预收−预付）</div>
-          <div class="kpi-v" :style="{ color: parseFloat(diffData.summary.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(diffData.summary.diff) }}</div></div>
+      <!-- 视角切换：按项目（累计+逐笔）/ 按月 / 按周（项目×期间透视表） -->
+      <div class="diff-viewbar">
+        <div class="diff-view-tabs">
+          <button :class="{ act: diffView === 'project' }" @click="setDiffView('project')">按项目</button>
+          <button :class="{ act: diffView === 'month' }" @click="setDiffView('month')">按月</button>
+          <button :class="{ act: diffView === 'week' }" @click="setDiffView('week')">按周</button>
+        </div>
+        <template v-if="diffView !== 'project'">
+          <select v-model.number="matrixYear" class="sel sm" @change="loadMatrix">
+            <option v-for="y in yearOptions" :key="y" :value="y">{{ y }} 年</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" :disabled="matrixExporting" @click="exportMatrix">
+            {{ matrixExporting ? '导出中…' : '↓ 导出' }}
+          </button>
+        </template>
       </div>
 
-      <div class="card fh-fill">
-        <div class="filter-row">
-          <input v-model="diffQ" class="inp sm" style="width:220px" placeholder="搜项目简称" @input="onDiffSearch" />
-          <div style="flex:1"></div>
-          <button class="btn btn-ghost btn-sm" @click="toggleDiffAll">
-            {{ diffAllOpen ? '▲ 一键折叠' : '▼ 一键展开' }}
-          </button>
+      <!-- ════ 按项目视图（累计差异 + 逐笔明细） ════ -->
+      <template v-if="diffView === 'project'">
+        <div v-if="diffData?.summary" class="kpi-row">
+          <div class="kpi"><div class="kpi-k">涉及项目</div><div class="kpi-v">{{ diffData.summary.count }} 个</div></div>
+          <div class="kpi"><div class="kpi-k">预收合计</div><div class="kpi-v" style="color:#2e7d32">{{ fmtAmt(diffData.summary.in_total) }}</div></div>
+          <div class="kpi"><div class="kpi-k">预付合计</div><div class="kpi-v" style="color:#ef6c00">{{ fmtAmt(diffData.summary.out_total) }}</div></div>
+          <div class="kpi accent"><div class="kpi-k">差异（预收−预付）</div>
+            <div class="kpi-v" :style="{ color: parseFloat(diffData.summary.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(diffData.summary.diff) }}</div></div>
         </div>
-        <div v-if="diffLoading" class="empty" style="padding:30px;text-align:center">⏳ 加载中…</div>
-        <div v-else-if="!diffData?.rows?.length" class="empty" style="padding:30px;text-align:center">
-          暂无数据——只有挂了项目台账的预收/预付才参与差异对照
+
+        <div class="card fh-fill">
+          <div class="filter-row">
+            <input v-model="diffQ" class="inp sm" style="width:220px" placeholder="搜项目简称" @input="onDiffSearch" />
+            <div style="flex:1"></div>
+            <button class="btn btn-ghost btn-sm" @click="toggleDiffAll">
+              {{ diffAllOpen ? '▲ 一键折叠' : '▼ 一键展开' }}
+            </button>
+          </div>
+          <div v-if="diffLoading" class="empty" style="padding:30px;text-align:center">⏳ 加载中…</div>
+          <div v-else-if="!diffData?.rows?.length" class="empty" style="padding:30px;text-align:center">
+            暂无数据——只有挂了项目台账的预收/预付才参与差异对照
+          </div>
+          <div v-else class="table-wrap page-scroll">
+            <table class="diff-table">
+              <thead>
+                <tr>
+                  <th class="dt-proj">项目简称 / 部门</th>
+                  <th class="dt-amt">预收金额</th>
+                  <th class="dt-amt">预付金额</th>
+                  <th class="dt-amt">差异（预收−预付）</th>
+                  <th class="dt-notes">备注</th>
+                  <th class="dt-caret"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <template v-for="r in diffData.rows" :key="r.project">
+                  <tr class="diff-row" @click="toggleDiffRow(r.project)">
+                    <td class="dt-proj">
+                      <span class="dt-name" :title="r.project">{{ r.project }}</span>
+                      <span class="dt-dept">{{ (r.dept || '—').replace('事业部', '') }}</span>
+                    </td>
+                    <td class="dt-amt" style="color:#2e7d32">{{ parseFloat(r.in_total) ? fmtAmt(r.in_total) : '—' }}</td>
+                    <td class="dt-amt" style="color:#ef6c00">{{ parseFloat(r.out_total) ? fmtAmt(r.out_total) : '—' }}</td>
+                    <td class="dt-amt fw" :style="{ color: parseFloat(r.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(r.diff) }}</td>
+                    <td class="dt-notes" :title="r.notes">{{ r.notes || '—' }}</td>
+                    <td class="dt-caret">{{ diffExpanded.has(r.project) ? '▲' : '▼' }}</td>
+                  </tr>
+                  <tr v-if="diffExpanded.has(r.project)" class="diff-detail-row">
+                    <td colspan="6">
+                      <div class="diff-detail">
+                        <div class="dd-col">
+                          <div class="dd-head in">预收明细 · {{ r.in_items.length }} 笔</div>
+                          <div v-if="!r.in_items.length" class="dd-empty">无预收记录</div>
+                          <div v-for="i in r.in_items" :key="'i' + i.id" class="dd-item">
+                            <span class="dd-date">{{ i.occur_date }}</span>
+                            <b class="dd-amt in">{{ fmtAmt(i.amount) }}</b>
+                            <span class="dd-party" :title="i.counterparty">{{ i.counterparty }}</span>
+                            <em v-if="parseFloat(i.balance) > 0" class="dd-bal">余 {{ fmtAmt(i.balance) }}</em>
+                          </div>
+                        </div>
+                        <div class="dd-col">
+                          <div class="dd-head out">预付明细 · {{ r.out_items.length }} 笔</div>
+                          <div v-if="!r.out_items.length" class="dd-empty">无预付记录</div>
+                          <div v-for="i in r.out_items" :key="'o' + i.id" class="dd-item">
+                            <span class="dd-date">{{ i.occur_date }}</span>
+                            <b class="dd-amt out">{{ fmtAmt(i.amount) }}</b>
+                            <span class="dd-party" :title="i.counterparty">{{ i.counterparty }}</span>
+                            <em v-if="parseFloat(i.balance) > 0" class="dd-bal">余 {{ fmtAmt(i.balance) }}</em>
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
         </div>
-        <div v-else class="table-wrap page-scroll">
-          <table class="diff-table">
-            <thead>
-              <tr>
-                <th class="dt-proj">项目简称 / 部门</th>
-                <th class="dt-amt">预收金额</th>
-                <th class="dt-amt">预付金额</th>
-                <th class="dt-amt">差异（累计）</th>
-                <th class="dt-amt dt-period">{{ diffData?.period_labels?.month || '月差异' }}</th>
-                <th class="dt-amt dt-period">{{ diffData?.period_labels?.week || '周差异' }}</th>
-                <th class="dt-notes">备注</th>
-                <th class="dt-caret"></th>
-              </tr>
-            </thead>
-            <tbody>
-              <template v-for="r in diffData.rows" :key="r.project">
-                <tr class="diff-row" @click="toggleDiffRow(r.project)">
-                  <td class="dt-proj">
+      </template>
+
+      <!-- ════ 透视表视图（按月 / 按周：项目 × 期间矩阵） ════ -->
+      <template v-else>
+        <div v-if="matrixData?.summary" class="kpi-row">
+          <div class="kpi"><div class="kpi-k">涉及项目</div><div class="kpi-v">{{ matrixData.summary.project_count }} 个</div></div>
+          <div class="kpi"><div class="kpi-k">{{ diffView === 'week' ? '周期数' : '月数' }}</div><div class="kpi-v">{{ matrixData.summary.period_count }}</div></div>
+          <div class="kpi"><div class="kpi-k">预收合计</div><div class="kpi-v" style="color:#2e7d32">{{ fmtAmt(matrixData.summary.in_total) }}</div></div>
+          <div class="kpi"><div class="kpi-k">预付合计</div><div class="kpi-v" style="color:#ef6c00">{{ fmtAmt(matrixData.summary.out_total) }}</div></div>
+          <div class="kpi accent"><div class="kpi-k">差异合计</div>
+            <div class="kpi-v" :style="{ color: parseFloat(matrixData.summary.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(matrixData.summary.diff) }}</div></div>
+        </div>
+
+        <div class="card fh-fill">
+          <div class="filter-row">
+            <input v-model="diffQ" class="inp sm" style="width:220px" placeholder="搜项目简称" @input="onDiffSearch" />
+            <span class="tl-hint">单元格 = 该项目当期差异（预收−预付）；正绿负红，「·」表示当期无发生</span>
+            <div style="flex:1"></div>
+          </div>
+          <div v-if="matrixLoading" class="empty" style="padding:30px;text-align:center">⏳ 加载中…</div>
+          <div v-else-if="!matrixData?.rows?.length" class="empty" style="padding:30px;text-align:center">
+            该年度暂无挂项目的预收/预付发生记录
+          </div>
+          <div v-else class="table-wrap page-scroll matrix-scroll">
+            <table class="diff-table matrix-table">
+              <thead>
+                <tr>
+                  <th class="mx-proj">项目简称 / 部门</th>
+                  <th class="mx-amt">预收</th>
+                  <th class="mx-amt">预付</th>
+                  <th class="mx-amt mx-tot">总差异</th>
+                  <th v-for="c in matrixData.periods" :key="c.period" class="mx-amt mx-period"
+                      :class="{ 'mx-null': c.period === '__null__' }">{{ c.label }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in matrixData.rows" :key="r.project" class="mx-row">
+                  <td class="mx-proj">
                     <span class="dt-name" :title="r.project">{{ r.project }}</span>
                     <span class="dt-dept">{{ (r.dept || '—').replace('事业部', '') }}</span>
                   </td>
-                  <td class="dt-amt" style="color:#2e7d32">{{ parseFloat(r.in_total) ? fmtAmt(r.in_total) : '—' }}</td>
-                  <td class="dt-amt" style="color:#ef6c00">{{ parseFloat(r.out_total) ? fmtAmt(r.out_total) : '—' }}</td>
-                  <td class="dt-amt fw" :style="{ color: parseFloat(r.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(r.diff) }}</td>
-                  <td class="dt-amt dt-period" :class="parseFloat(r.month_diff) ? diffClass(r.month_diff) : ''">{{ parseFloat(r.month_diff) ? fmtDiff(r.month_diff) : '—' }}</td>
-                  <td class="dt-amt dt-period" :class="parseFloat(r.week_diff) ? diffClass(r.week_diff) : ''">{{ parseFloat(r.week_diff) ? fmtDiff(r.week_diff) : '—' }}</td>
-                  <td class="dt-notes" :title="r.notes">{{ r.notes || '—' }}</td>
-                  <td class="dt-caret">{{ diffExpanded.has(r.project) ? '▲' : '▼' }}</td>
-                </tr>
-                <tr v-if="diffExpanded.has(r.project)" class="diff-detail-row">
-                  <td colspan="8">
-                    <div class="diff-detail">
-                      <div class="dd-col">
-                        <div class="dd-head in">预收明细 · {{ r.in_items.length }} 笔</div>
-                        <div v-if="!r.in_items.length" class="dd-empty">无预收记录</div>
-                        <div v-for="i in r.in_items" :key="'i' + i.id" class="dd-item">
-                          <span class="dd-date">{{ i.occur_date }}</span>
-                          <b class="dd-amt in">{{ fmtAmt(i.amount) }}</b>
-                          <span class="dd-party" :title="i.counterparty">{{ i.counterparty }}</span>
-                          <em v-if="parseFloat(i.balance) > 0" class="dd-bal">余 {{ fmtAmt(i.balance) }}</em>
-                        </div>
-                      </div>
-                      <div class="dd-col">
-                        <div class="dd-head out">预付明细 · {{ r.out_items.length }} 笔</div>
-                        <div v-if="!r.out_items.length" class="dd-empty">无预付记录</div>
-                        <div v-for="i in r.out_items" :key="'o' + i.id" class="dd-item">
-                          <span class="dd-date">{{ i.occur_date }}</span>
-                          <b class="dd-amt out">{{ fmtAmt(i.amount) }}</b>
-                          <span class="dd-party" :title="i.counterparty">{{ i.counterparty }}</span>
-                          <em v-if="parseFloat(i.balance) > 0" class="dd-bal">余 {{ fmtAmt(i.balance) }}</em>
-                        </div>
-                      </div>
-                    </div>
+                  <td class="mx-amt" style="color:#2e7d32">{{ parseFloat(r.in_total) ? fmtAmt(r.in_total) : '·' }}</td>
+                  <td class="mx-amt" style="color:#ef6c00">{{ parseFloat(r.out_total) ? fmtAmt(r.out_total) : '·' }}</td>
+                  <td class="mx-amt fw mx-tot" :class="diffClass(r.total_diff)">{{ fmtAmt(r.total_diff) }}</td>
+                  <td v-for="c in matrixData.periods" :key="c.period" class="mx-amt mx-cell"
+                      :class="cellOf(r, c.period) && parseFloat(cellOf(r, c.period).diff) ? diffClass(cellOf(r, c.period).diff) : ''"
+                      :title="cellOf(r, c.period) ? `${c.label}｜预收 ${fmtAmt(cellOf(r, c.period).in)}｜预付 ${fmtAmt(cellOf(r, c.period).out)}` : ''">
+                    {{ cellOf(r, c.period) && parseFloat(cellOf(r, c.period).diff) ? fmtDiff(cellOf(r, c.period).diff) : '·' }}
                   </td>
                 </tr>
-              </template>
-            </tbody>
-          </table>
+              </tbody>
+              <tfoot>
+                <tr class="mx-total-row">
+                  <td class="mx-proj">合计</td>
+                  <td class="mx-amt" style="color:#2e7d32">{{ fmtAmt(matrixData.summary.in_total) }}</td>
+                  <td class="mx-amt" style="color:#ef6c00">{{ fmtAmt(matrixData.summary.out_total) }}</td>
+                  <td class="mx-amt fw mx-tot" :class="diffClass(matrixData.summary.diff)">{{ fmtAmt(matrixData.summary.diff) }}</td>
+                  <td v-for="c in matrixData.periods" :key="c.period" class="mx-amt fw"
+                      :class="matrixData.period_totals[c.period] && parseFloat(matrixData.period_totals[c.period].diff) ? diffClass(matrixData.period_totals[c.period].diff) : ''">
+                    {{ matrixData.period_totals[c.period] && parseFloat(matrixData.period_totals[c.period].diff) ? fmtDiff(matrixData.period_totals[c.period].diff) : '·' }}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
         </div>
-      </div>
+      </template>
     </template>
 
     <!-- ── Supplier pool ── -->
@@ -1262,10 +1391,9 @@ onMounted(async () => {
 .diff-table th { padding: 7px 10px; text-align: left; font-size: 11px; font-weight: 700; color: var(--muted);
   background: rgba(201,99,66,.05); border-bottom: 1px solid rgba(180,140,110,.15); white-space: nowrap; }
 .diff-table td { padding: 6px 10px; border-bottom: 1px solid rgba(180,140,110,.08); vertical-align: middle; }
-.dt-proj { width: 21%; }
-.dt-amt { width: 11%; text-align: right !important; font-variant-numeric: tabular-nums; }
-.dt-period { background: rgba(201,99,66,.03); }
-.dt-notes { width: 17%; }
+.dt-proj { width: 23%; }
+.dt-amt { width: 14%; text-align: right !important; font-variant-numeric: tabular-nums; }
+.dt-notes { width: 31%; }
 .dt-caret { width: 4%; text-align: center; font-size: 10px; color: var(--muted); }
 td.dt-proj { overflow: hidden; white-space: nowrap; }
 .dt-name { font-weight: 700; color: var(--text); }
@@ -1295,4 +1423,38 @@ td.dt-notes { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 
 .amt-pos { color: #2e7d32; }
 .amt-neg { color: #c62828; }
+
+/* ── 收付差异 · 视角切换条（按项目 / 按月 / 按周） ── */
+.diff-viewbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.diff-view-tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.diff-view-tabs button { padding: 6px 16px; border: none; background: transparent; cursor: pointer;
+  color: var(--muted); font-size: 12.5px; font-weight: 600; border-right: 1px solid var(--border); }
+.diff-view-tabs button:last-child { border-right: none; }
+.diff-view-tabs button.act { background: var(--primary); color: #fff; }
+.tl-hint { font-size: 11px; color: var(--muted); }
+
+/* ── 收付差异 · 透视矩阵（项目 × 期间，单元格=当期差异） ── */
+.matrix-scroll { overflow: auto; }
+.matrix-table { table-layout: auto; min-width: 100%; border-collapse: separate; border-spacing: 0; }
+.matrix-table th, .matrix-table td { border-bottom: 1px solid rgba(180,140,110,.1); white-space: nowrap; }
+.matrix-table .mx-amt { width: auto; text-align: right !important; padding: 6px 10px;
+  font-variant-numeric: tabular-nums; }
+.matrix-table .mx-period { min-width: 70px; }
+.matrix-table .mx-tot { box-shadow: 1px 0 0 rgba(180,140,110,.18); }
+.matrix-table .mx-cell { color: var(--muted); }
+.matrix-table .mx-cell.amt-pos { color: #2e7d32; }
+.matrix-table .mx-cell.amt-neg { color: #c62828; }
+.matrix-table thead th.mx-null, .matrix-table td.mx-null { color: #b06a00; }
+/* 冻结首列（项目名）：横向滚动期间时项目锚点常驻 */
+.matrix-table .mx-proj { position: sticky; left: 0; z-index: 3; background: var(--card);
+  min-width: 150px; max-width: 220px; text-align: left !important; padding: 6px 12px;
+  overflow: hidden; box-shadow: 1px 0 0 rgba(180,140,110,.18); }
+.matrix-table thead th.mx-proj { z-index: 7; background: #f4f1ef; }
+.matrix-table tbody tr:hover td { background: rgba(201,99,66,.04); }
+.matrix-table tbody tr:hover .mx-proj { background: #faf6f1; }
+.matrix-table .fw { font-weight: 700; }
+/* 冻结底部合计行 */
+.mx-total-row td { position: sticky; bottom: 0; z-index: 2; background: #f5efe8;
+  font-weight: 700; border-top: 1px solid rgba(180,140,110,.28); }
+.mx-total-row .mx-proj { z-index: 4; background: #f5efe8; }
 </style>

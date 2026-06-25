@@ -1178,10 +1178,6 @@ def advance_diff_summary(request):
     if dept:
         qs = qs.filter(delivery_dept=dept)
 
-    today = datetime.date.today()
-    cur_month = (today.year, today.month)
-    cur_week_key = _period_of(today, 'week')[0]
-
     groups = {}
     for a in qs.order_by('occur_date', 'id'):
         name = (a.project.short_name or '').strip()
@@ -1193,8 +1189,6 @@ def advance_diff_summary(request):
             'project': name,
             'dept': a.project.delivery_dept or a.delivery_dept or '',
             'in_total': Decimal('0'), 'out_total': Decimal('0'),
-            'month_in': Decimal('0'), 'month_out': Decimal('0'),
-            'week_in': Decimal('0'), 'week_out': Decimal('0'),
             'in_items': [], 'out_items': [], '_notes': [],
         })
         # 明细按「收付明细」逐笔列出（实际发生日期，多次到账/付出各一行）；
@@ -1229,29 +1223,13 @@ def advance_diff_summary(request):
         note = (a.notes or '').strip()
         if note and note not in g['_notes']:
             g['_notes'].append(note)
-        # 月差异 / 周差异：按收付明细实际发生日归期（无明细回退记录级日期）
-        flows = ([(i.occur_date, i.amount or Decimal('0')) for i in insts]
-                 if insts else [(a.occur_date, a.advance_amount or Decimal('0'))])
-        for d, amt in flows:
-            if d is None:
-                continue
-            if (d.year, d.month) == cur_month:
-                if a.direction == '预收': g['month_in'] += amt
-                else: g['month_out'] += amt
-            if _period_of(d, 'week')[0] == cur_week_key:
-                if a.direction == '预收': g['week_in'] += amt
-                else: g['week_out'] += amt
 
     rows = []
     for g in groups.values():
         notes = '；'.join(g.pop('_notes'))[:300]
-        month_diff = g.pop('month_in') - g.pop('month_out')
-        week_diff = g.pop('week_in') - g.pop('week_out')
         rows.append({
             **{k: (str(v) if isinstance(v, Decimal) else v) for k, v in g.items()},
             'diff': str(g['in_total'] - g['out_total']),
-            'month_diff': str(month_diff),
-            'week_diff': str(week_diff),
             'notes': notes,
         })
     # 差异绝对值大的排前面（最该关注的）
@@ -1259,15 +1237,10 @@ def advance_diff_summary(request):
 
     t_in = sum(Decimal(x['in_total']) for x in rows)
     t_out = sum(Decimal(x['out_total']) for x in rows)
-    iso = today.isocalendar()
     return ok({
         'rows': rows,
         'summary': {'count': len(rows), 'in_total': str(t_in), 'out_total': str(t_out),
                     'diff': str(t_in - t_out)},
-        'period_labels': {
-            'month': f'{today.year}年{today.month}月',
-            'week': f'{today.year}年第{iso[1]}周',
-        },
     })
 
 
@@ -1503,6 +1476,92 @@ def advance_diff_timeline_export(request):
             ws2.append(['日期未记录', pr['project'], pr['dept'],
                         float(pr['in_total']), float(pr['out_total']), float(pr['diff'])])
     return _export_response(wb, f'收付差异-按{gl}.xlsx')
+
+
+def _short_period_label(period_key, grain):
+    """矩阵列头用的紧凑标签：月→「1月」，周→「W12」，缺日期→「未记录」。
+    （前端按单年窗口请求，月份在同年内不致歧义。）"""
+    if period_key == '__null__':
+        return '未记录'
+    if grain == 'week':
+        return 'W' + period_key.split('-W')[-1]
+    return f'{int(period_key.split("-")[1])}月'
+
+
+def _compute_diff_matrix(request):
+    """收付差异透视表：在 _compute_diff_timeline 的「期间×项目」结果上转置为
+    「项目×期间」矩阵——行=项目，列=各月/周，单元格=该项目当期差异，另带
+    每项目预收/预付/总差异合计与每期合计行。复用同一套日期归期逻辑。"""
+    data = _compute_diff_timeline(request)
+    grain = data['grain']
+
+    # 列（期间）：时间序在前，缺日期列（若有）置末
+    cols = [{'period': p['period'], 'label': _short_period_label(p['period'], grain)}
+            for p in data['periods']]
+
+    rows = {}   # name -> {project,dept,in_total,out_total,cells}
+
+    def _slot(name, dept_name):
+        return rows.setdefault(name, {
+            'project': name, 'dept': dept_name,
+            'in_total': Decimal('0'), 'out_total': Decimal('0'), 'cells': {}})
+
+    def _absorb(period_key, projects):
+        for pr in projects:
+            s = _slot(pr['project'], pr['dept'])
+            s['cells'][period_key] = {
+                'in': pr['in_total'], 'out': pr['out_total'], 'diff': pr['diff']}
+            s['in_total'] += Decimal(pr['in_total'])
+            s['out_total'] += Decimal(pr['out_total'])
+
+    for p in data['periods']:
+        _absorb(p['period'], p['projects'])
+    if data['null_period']:
+        cols.append({'period': '__null__', 'label': '未记录'})
+        _absorb('__null__', data['null_period']['projects'])
+
+    # 每期合计（底部行）
+    period_totals = {p['period']: {'in': p['in_total'], 'out': p['out_total'],
+                                   'diff': p['diff']} for p in data['periods']}
+    if data['null_period']:
+        n = data['null_period']
+        period_totals['__null__'] = {'in': n['in_total'], 'out': n['out_total'],
+                                     'diff': n['diff']}
+
+    out_rows = []
+    for s in rows.values():
+        td = s['in_total'] - s['out_total']
+        out_rows.append({
+            'project': s['project'], 'dept': s['dept'],
+            'in_total': str(s['in_total']), 'out_total': str(s['out_total']),
+            'total_diff': str(td), 'cells': s['cells'],
+        })
+    out_rows.sort(key=lambda r: abs(Decimal(r['total_diff'])), reverse=True)
+
+    sm = data['summary']
+    return {
+        'grain': grain,
+        'periods': cols,
+        'rows': out_rows,
+        'period_totals': period_totals,
+        'summary': {
+            'in_total': sm['in_total'], 'out_total': sm['out_total'],
+            'diff': sm['diff'], 'project_count': len(out_rows),
+            'period_count': len(data['periods']),
+        },
+    }
+
+
+@csrf_exempt
+@pk_required()
+def advance_diff_matrix(request):
+    """GET /advances/diff-matrix — 收付差异透视表（项目 × 月/周矩阵）。详见 _compute_diff_matrix。"""
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    return ok(_compute_diff_matrix(request))
 
 
 @csrf_exempt
