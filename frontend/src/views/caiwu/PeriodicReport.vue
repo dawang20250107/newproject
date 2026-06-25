@@ -11,38 +11,33 @@ const exporting = ref(false)
 const reportEl = ref(null)
 
 // ── 期间控制 ──────────────────────────────────────────────────────────────
-const periodType = ref('monthly')          // monthly | weekly
+const periodType = ref('monthly')
 const selYear = ref(yearCST())
 const selMonth = ref(monthCST())
-const selWeekIdx = ref(0)                   // 当月第几周的下标
-const scopeValue = ref('')                  // '' = 默认；'group' 或 事业部名
+const selWeekIdx = ref(0)
+const scopeValue = ref('')
 const reviewer = ref('李亚琳')
 
 const yearOptions = computed(() => {
   const y = yearCST(); return [y, y - 1, y - 2]
 })
 
-// 当前选择月份内的「周」列表（ISO 周一为周首，按自然月归属起始周一）
+// 当月周列表（ISO 周一为周首）
 const weekOptions = computed(() => {
   const y = selYear.value, m = selMonth.value
   const first = new Date(Date.UTC(y, m - 1, 1))
   const last = new Date(Date.UTC(y, m, 0))
-  // 找到该月第一个周一（或包含 1 号那一周的周一）
   const weeks = []
   let cur = new Date(first)
-  // 回退到所在周的周一
-  const dow = (cur.getUTCDay() + 6) % 7   // 周一=0
+  const dow = (cur.getUTCDay() + 6) % 7
   cur.setUTCDate(cur.getUTCDate() - dow)
   let guard = 0
   while (cur <= last && guard < 8) {
     const start = new Date(cur)
     const end = new Date(cur); end.setUTCDate(end.getUTCDate() + 6)
-    // 仅纳入起始周一落在本月、或该周与本月有交集的周
     if (end >= first && start <= last) {
-      const anchor = start < first ? first : start
-      const wom = Math.floor((anchor.getUTCDate() - 1) / 7) + 1
       weeks.push({
-        idx: weeks.length, wom,
+        idx: weeks.length,
         start: start.toISOString().slice(0, 10),
         end: end.toISOString().slice(0, 10),
         label: `第${weeks.length + 1}周（${fmtMD(start)}~${fmtMD(end)}）`,
@@ -54,7 +49,7 @@ const weekOptions = computed(() => {
 })
 function fmtMD(d) { return `${d.getUTCMonth() + 1}/${d.getUTCDate()}` }
 
-// ── 金额格式：万元 ───────────────────────────────────────────────────────
+// ── 格式化 ────────────────────────────────────────────────────────────────
 function wan(v) {
   const n = parseFloat(v)
   if (v == null || isNaN(n)) return '—'
@@ -71,7 +66,7 @@ function deltaTxt(v) { return v > 0 ? `+${v}` : (v < 0 ? `${v}` : '0') }
 
 // ── 加载 ─────────────────────────────────────────────────────────────────
 function buildParams() {
-  const p = { period: periodType.value }
+  const p = { period: periodType.value, reviewer: reviewer.value }
   if (scopeValue.value === 'group') p.scope = 'group'
   else if (scopeValue.value) p.dept = scopeValue.value
   if (periodType.value === 'weekly') {
@@ -89,9 +84,11 @@ async function load() {
   try {
     const res = await ar.periodicReport(buildParams())
     data.value = res.data
-    // 首次拉到 scopes_available 后，若用户未显式选择，保持后端默认 scope 名称同步
-    if (!scopeValue.value && data.value?.meta) {
-      scopeValue.value = data.value.meta.scope_kind === 'group' ? 'group' : data.value.meta.scope_name
+    if (data.value?.meta) {
+      reviewer.value = data.value.meta.reviewer
+      if (!scopeValue.value) {
+        scopeValue.value = data.value.meta.scope_kind === 'group' ? 'group' : data.value.meta.scope_name
+      }
     }
   } catch (e) {
     err.value = e?.msg || '加载失败'
@@ -105,7 +102,6 @@ const scopes = computed(() => data.value?.scopes_available || [])
 const depts = computed(() => meta.value?.depts || [])
 const isMulti = computed(() => meta.value?.is_multi)
 
-// 行迭代：各事业部 + 合计（多部门时）
 function scopeRows(section) {
   if (!data.value) return []
   const rows = depts.value.map(d => ({ name: d, ...data.value[section].rows[d] }))
@@ -181,8 +177,8 @@ onMounted(load)
 
       <div class="pr-bar-spacer"></div>
 
-      <button class="pr-btn" :disabled="exporting || !data" @click="exportImage">🖼 导出图片</button>
-      <button class="pr-btn accent" :disabled="exporting || !data" @click="exportExcel">⬇ 导出 Excel</button>
+      <button class="pr-btn" :disabled="exporting || !data" @click="exportImage">导出图片</button>
+      <button class="pr-btn accent" :disabled="exporting || !data" @click="exportExcel">导出 Excel</button>
     </div>
 
     <div v-if="loading && !data" class="pr-empty">报表生成中…</div>
@@ -192,12 +188,11 @@ onMounted(load)
     <div v-else-if="data" ref="reportEl" class="report">
       <!-- 报头 -->
       <div class="rp-head">
-        <div class="rp-emblem">财</div>
         <h1 class="rp-title">{{ meta.title }}</h1>
         <div class="rp-meta">
           <span>汇报人：<b>{{ meta.reporter }}</b></span>
           <span class="rp-div">|</span>
-          <span>审核人：<b>{{ meta.reviewer }}</b></span>
+          <span>审核人：<input v-model="reviewer" class="rp-reviewer-input" /></span>
           <span class="rp-div">|</span>
           <span>汇报日期：<b>{{ meta.report_date }}</b></span>
           <span class="rp-div">|</span>
@@ -208,7 +203,7 @@ onMounted(load)
 
       <!-- 一、项目规模 -->
       <section class="rp-sec">
-        <div class="rp-sec-hd"><i>一</i> 项目规模 <em>年初至今 · 项目台账口径</em></div>
+        <div class="rp-sec-hd"><span class="rp-sec-num">（一）</span>项目规模<em>年初至今 · 项目台账口径</em></div>
         <table class="rp-tbl">
           <thead><tr>
             <th class="lft">事业部</th><th>在运项目</th><th>年初至今新签</th>
@@ -229,7 +224,7 @@ onMounted(load)
 
       <!-- 二、应收账款 -->
       <section class="rp-sec">
-        <div class="rp-sec-hd"><i>二</i> 应收账款情况 <em>资金运动表口径 · 期初+新增−回款±调整=期末</em></div>
+        <div class="rp-sec-hd"><span class="rp-sec-num">（二）</span>应收账款情况<em>资金运动表口径 · 期初+新增−回款±调整=期末</em></div>
         <table class="rp-tbl">
           <thead><tr>
             <th class="lft">事业部</th><th>期初未收</th><th>本期新增</th>
@@ -249,7 +244,6 @@ onMounted(load)
             </tr>
           </tbody>
         </table>
-        <!-- 账龄 + 到期 -->
         <div class="rp-twin">
           <table class="rp-tbl mini">
             <thead><tr><th class="lft">期末账龄</th><th>逾期未收</th><th>未到期</th></tr></thead>
@@ -275,9 +269,9 @@ onMounted(load)
         </div>
       </section>
 
-      <!-- 三、应收预算 + 四、应付预算 -->
+      <!-- 三、应收预算 -->
       <section class="rp-sec">
-        <div class="rp-sec-hd"><i>三</i> 应收预算完成 <em>本期 + 年度累计</em></div>
+        <div class="rp-sec-hd"><span class="rp-sec-num">（三）</span>应收预算完成<em>本期 + 年度累计</em></div>
         <table class="rp-tbl">
           <thead><tr>
             <th class="lft">事业部</th><th>本期预算</th><th>本期实际</th><th>本期完成率</th>
@@ -297,8 +291,9 @@ onMounted(load)
         </table>
       </section>
 
+      <!-- 四、应付预算 -->
       <section class="rp-sec">
-        <div class="rp-sec-hd"><i>四</i> 应付预算完成 <em>月度口径（付款预算按月维护）</em></div>
+        <div class="rp-sec-hd"><span class="rp-sec-num">（四）</span>应付预算完成<em>月度口径（付款预算按月维护）</em></div>
         <table class="rp-tbl">
           <thead><tr>
             <th class="lft">事业部</th><th>本月预算</th><th>本月实际</th><th>本月完成率</th>
@@ -320,7 +315,7 @@ onMounted(load)
 
       <!-- 五、现金流 -->
       <section class="rp-sec" v-if="cash">
-        <div class="rp-sec-hd"><i>五</i> 现金流情况 <em>经营活动现金流 · 与现金流分析同口径</em></div>
+        <div class="rp-sec-hd"><span class="rp-sec-num">（五）</span>现金流情况<em>经营活动现金流 · 与现金流分析同口径</em></div>
         <table class="rp-tbl cash">
           <thead><tr><th class="lft">现金流项目</th><th>本期金额</th><th>本年累计</th></tr></thead>
           <tbody>
@@ -338,9 +333,15 @@ onMounted(load)
         </table>
       </section>
 
+      <!-- 签字栏 -->
+      <div class="rp-sign">
+        <span>汇报人签字：<span class="rp-sign-line"></span></span>
+        <span>审核人签字：<span class="rp-sign-line"></span></span>
+        <span>签发日期：<span class="rp-sign-line"></span></span>
+      </div>
+
       <div class="rp-foot">
-        本报告由系统按取值期间自动生成；账面余额为存量口径，现金流为期间流量口径，
-        二者不应直接相等。所有金额随数据录入实时变化，以导出时点为准。
+        本报告由系统按取值期间自动生成，账面余额为存量口径，现金流为期间流量口径，所有金额以导出时点数据为准。
       </div>
     </div>
   </div>
@@ -358,96 +359,116 @@ onMounted(load)
 }
 .pr-bar-spacer { flex: 1; }
 .seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); overflow: hidden; }
-.seg button { border: none; background: transparent; padding: 6px 16px; font-size: 13px; font-weight: 700; color: var(--muted); cursor: pointer; transition: all .14s; }
+.seg button {
+  border: none; background: transparent; padding: 6px 16px; font-size: 13px;
+  font-weight: 700; color: var(--muted); cursor: pointer; transition: background .14s, color .14s;
+}
 .seg button + button { border-left: 1px solid var(--border); }
-.seg button.on { background: var(--grad); color: #fff; }
+.seg button.on { background: var(--primary); color: #fff; }
 .pr-sel {
   padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
   font-size: 13px; background: var(--surface-1); color: var(--text); cursor: pointer;
 }
 .pr-sel.wk { min-width: 168px; }
-.pr-sel:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-glow); }
+.pr-sel:focus { outline: none; border-color: var(--primary); }
 .pr-btn {
-  padding: 7px 15px; border: 1px solid var(--border-strong); border-radius: 20px;
+  padding: 7px 15px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
   background: var(--surface-tint); font-size: 13px; font-weight: 600; color: var(--text-2);
-  cursor: pointer; transition: all .14s; white-space: nowrap;
+  cursor: pointer; transition: border-color .14s, color .14s; white-space: nowrap;
 }
 .pr-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
-.pr-btn.accent { background: var(--grad); color: #fff; border: none; box-shadow: 0 3px 10px var(--primary-glow); }
-.pr-btn.accent:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
+.pr-btn.accent { background: var(--primary); color: #fff; border-color: var(--primary); }
+.pr-btn.accent:hover:not(:disabled) { opacity: .88; }
 .pr-btn:disabled { opacity: .5; cursor: not-allowed; }
 
 .pr-empty { text-align: center; padding: 60px; color: var(--muted); }
 .pr-empty.err { color: var(--c-danger); }
 
-/* ── 报告正文：纸面感 ── */
+/* ── 报告正文 ── */
 .report {
-  background: #fff; border: 1px solid var(--border-soft); border-radius: var(--radius);
-  padding: 30px 34px 24px; box-shadow: var(--shadow-md); max-width: 1080px; margin: 0 auto;
+  background: #fff; border: 1px solid #ddd;
+  padding: 32px 38px 28px; max-width: 1080px; margin: 0 auto;
+  box-shadow: 0 2px 8px rgba(0,0,0,.08);
 }
 
 /* 报头 */
-.rp-head { text-align: center; padding-bottom: 16px; border-bottom: 2.5px solid var(--primary); margin-bottom: 22px; position: relative; }
-.rp-emblem {
-  width: 42px; height: 42px; border-radius: 50%; background: var(--grad); color: #fff;
-  font-size: 20px; font-weight: 800; display: flex; align-items: center; justify-content: center;
-  margin: 0 auto 10px; box-shadow: 0 4px 14px var(--primary-glow);
+.rp-head {
+  text-align: center; padding-bottom: 16px;
+  border-bottom: 2px solid #1a1a1a; margin-bottom: 24px;
 }
-.rp-title { font-size: 23px; font-weight: 900; color: var(--text); letter-spacing: 1px; margin: 0 0 12px; }
-.rp-meta { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; font-size: 12.5px; color: var(--text-2); }
-.rp-meta b { color: var(--text); font-weight: 700; }
-.rp-div { color: var(--border-strong); }
-.rp-unit { font-size: 11px; color: var(--muted); margin-top: 8px; }
+.rp-title { font-size: 22px; font-weight: 900; color: #1a1a1a; letter-spacing: 2px; margin: 0 0 12px; }
+.rp-meta { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; font-size: 12.5px; color: #555; }
+.rp-meta b { color: #1a1a1a; font-weight: 700; }
+.rp-div { color: #bbb; }
+.rp-unit { font-size: 11.5px; color: #888; margin-top: 8px; }
 
-/* 分区 */
-.rp-sec { margin-bottom: 22px; }
+/* 审核人内联编辑 */
+.rp-reviewer-input {
+  border: none; border-bottom: 1px dashed #bbb; background: transparent;
+  font-size: 12.5px; font-weight: 700; color: #1a1a1a;
+  width: 72px; padding: 0 2px; outline: none; font-family: inherit;
+}
+.rp-reviewer-input:focus { border-bottom-color: var(--primary); }
+
+/* 分区标题 */
+.rp-sec { margin-bottom: 24px; }
 .rp-sec-hd {
-  display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 800;
-  color: var(--text); margin-bottom: 10px; padding-left: 2px;
+  display: flex; align-items: baseline; gap: 4px; font-size: 14px; font-weight: 800;
+  color: #1a1a1a; padding: 6px 0; margin-bottom: 10px; border-bottom: 1px solid #d0d0d0;
 }
-.rp-sec-hd i {
-  font-style: normal; width: 22px; height: 22px; border-radius: 6px; background: var(--grad);
-  color: #fff; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
-}
-.rp-sec-hd em { font-style: normal; font-size: 11.5px; font-weight: 500; color: var(--muted); }
+.rp-sec-num { font-weight: 800; }
+.rp-sec-hd em { font-style: normal; font-size: 11.5px; font-weight: 400; color: #888; margin-left: 8px; }
 
-/* 表格：Excel 风格 */
+/* 表格：精简 Excel 风格 */
 .rp-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .rp-tbl th {
-  background: var(--surface-tint); color: var(--text-2); font-weight: 700; padding: 8px 10px;
-  text-align: right; border: 1px solid var(--border-soft); white-space: nowrap;
+  background: #f0f0f0; color: #333; font-weight: 700; padding: 8px 10px;
+  text-align: right; border: 1px solid #ccc; white-space: nowrap;
 }
 .rp-tbl th.lft { text-align: left; }
-.rp-tbl td { padding: 7px 10px; text-align: right; border: 1px solid var(--border-soft); color: var(--text); }
-.rp-tbl td.lft { text-align: left; font-weight: 600; color: var(--text-2); }
-.rp-tbl tbody tr:hover { background: color-mix(in srgb, var(--primary) 3%, transparent); }
-.rp-tbl tr.tot td { background: var(--surface-tint); font-weight: 800; color: var(--text); border-top: 2px solid var(--border-strong); }
-.rp-tbl td.in { color: var(--c-success); }
-.rp-tbl td.out { color: var(--c-danger); }
-.rp-tbl td.neg { color: var(--c-danger); }
-.rp-tbl td.strong { font-weight: 800; color: var(--text); }
+.rp-tbl td { padding: 7px 10px; text-align: right; border: 1px solid #e0e0e0; color: #1a1a1a; }
+.rp-tbl td.lft { text-align: left; font-weight: 600; color: #333; }
+.rp-tbl tbody tr:hover { background: #fafafa; }
+.rp-tbl tr.tot td { background: #ebebeb; font-weight: 800; border-top: 2px solid #aaa; }
+.rp-tbl td.in { color: #0a7a4a; }
+.rp-tbl td.out { color: #b00020; }
+.rp-tbl td.neg { color: #b00020; }
+.rp-tbl td.strong { font-weight: 800; }
 
 .dlt { font-weight: 700; }
-.dlt.pos { color: var(--c-success); } .dlt.neg { color: var(--c-danger); }
-.rt { font-weight: 700; padding: 1px 7px; border-radius: 10px; font-size: 11.5px; }
-.rt.pos { color: var(--c-success); background: var(--c-success-bg); }
-.rt.mid { color: var(--c-warn); background: var(--c-warn-bg); }
-.rt.neg { color: var(--c-danger); background: var(--c-danger-bg); }
+.dlt.pos { color: #0a7a4a; } .dlt.neg { color: #b00020; }
+.rt { font-weight: 700; padding: 1px 6px; border-radius: 2px; font-size: 11.5px; }
+.rt.pos { color: #0a7a4a; background: #e6f4ee; }
+.rt.mid { color: #a05a00; background: #fef3e2; }
+.rt.neg { color: #b00020; background: #fde8eb; }
 
 .rp-twin { display: grid; grid-template-columns: 1fr 1.3fr; gap: 14px; margin-top: 12px; }
 .rp-tbl.mini th, .rp-tbl.mini td { padding: 6px 9px; font-size: 12px; }
 
 /* 现金流表 */
 .rp-tbl.cash td.lft { font-weight: 600; }
-.rp-tbl.cash td.lft.sub { font-weight: 400; color: var(--text-2); }
-.rp-tbl.cash tr.lv1 td { background: var(--surface-tint); font-weight: 800; }
-.rp-tbl.cash tr.net td { border-top: 2px solid var(--primary); background: color-mix(in srgb, var(--primary) 7%, #fff); font-size: 13.5px; }
+.rp-tbl.cash td.lft.sub { font-weight: 400; color: #555; }
+.rp-tbl.cash tr.lv1 td { background: #f0f0f0; font-weight: 800; }
+.rp-tbl.cash tr.net td { border-top: 2px solid #333; background: #f5f5f5; font-size: 13px; font-weight: 800; }
 
-.rp-foot { font-size: 11px; color: var(--muted); line-height: 1.7; padding-top: 14px; border-top: 1px dashed var(--border); margin-top: 4px; }
+/* 签字栏 */
+.rp-sign {
+  display: flex; gap: 40px; justify-content: flex-end;
+  padding: 20px 0 8px; font-size: 12.5px; color: #555;
+  border-top: 1px solid #e0e0e0; margin-top: 16px;
+}
+.rp-sign-line {
+  display: inline-block; width: 80px; border-bottom: 1px solid #999;
+  margin-left: 4px; vertical-align: bottom;
+}
+
+/* 备注行 */
+.rp-foot { font-size: 11px; color: #999; line-height: 1.7; padding-top: 12px; }
 
 @media (max-width: 768px) {
   .report { padding: 18px 14px; }
   .rp-twin { grid-template-columns: 1fr; }
   .rp-meta { font-size: 11px; }
+  .rp-sign { flex-wrap: wrap; gap: 16px; justify-content: flex-start; }
 }
 </style>

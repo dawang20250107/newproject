@@ -545,6 +545,9 @@ def periodic_report_export(request):
     data, e = _compute_report(request, today)
     if e:
         return err(e['error'])
+    reviewer_override = (request.GET.get('reviewer') or '').strip()
+    if reviewer_override:
+        data['meta']['reviewer'] = reviewer_override
     wb = _xlsx_report(data)
     fname = f"{data['meta']['title']}.xlsx"
     return _export_response(wb, fname)
