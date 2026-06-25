@@ -73,14 +73,22 @@ const invoiceSkipped = computed(() => props.rec.invoice_mode === '不开票')
 const nodeStates = computed(() => {
   const r = props.rec
   const a = actsByStage.value
-  const reconDone = !!r.reconciliation_date
+  // 对账状态以后端派生的 reconciliation_status 为准，与「应收明细」严格对齐。
+  // 后端规则（models.py ARRecord.reconciliation_status）：已结清 / 已开票
+  // （actual_invoice_amount 非空，业务上视作已对账）/ 已填对账日，任一成立即已对账。
+  // 早先只用 !!reconciliation_date 判断，会漏掉「已开票默认对账」「已结清」两种
+  // 情况，导致明细显示已对账而工作台显示未对账。无该字段时回退到旧口径兜底。
+  const reconStatus = r.reconciliation_status
+  const reconDone = reconStatus ? reconStatus !== '未对账' : !!r.reconciliation_date
   const invDone   = !!(r.invoice_date || Number(r.actual_invoice_amount) > 0)
   const collDone  = estimated.value > 0 && outstanding.value === 0
   return {
     reconciliation: {
       state:   reconDone ? 'done' : (a.reconciliation.length ? 'active' : 'pending'),
       label:   reconDone ? '已对账' : '待对账',
-      summary: reconDone ? r.reconciliation_date : (a.reconciliation.length ? `${a.reconciliation.length} 条跟进` : null),
+      summary: reconDone
+        ? (r.reconciliation_date || (reconStatus === '已结清' ? '已结清' : '随开票对账'))
+        : (a.reconciliation.length ? `${a.reconciliation.length} 条跟进` : null),
     },
     invoice: {
       state:   invoiceSkipped.value ? 'skipped' : (invDone ? 'done' : (a.invoice.length ? 'active' : 'pending')),
@@ -108,7 +116,12 @@ const activeNode = ref(null)
 
 function getDefaultNode() {
   const r = props.rec
-  if (!r.reconciliation_date) return 'reconciliation'
+  // 与 nodeStates 同口径：对账完成以 reconciliation_status 为准，避免「已开票
+  // 默认对账」的记录仍把默认展开节点停在对账。
+  const reconDone = r.reconciliation_status
+    ? r.reconciliation_status !== '未对账'
+    : !!r.reconciliation_date
+  if (!reconDone) return 'reconciliation'
   const invDone = !!(r.invoice_date || Number(r.actual_invoice_amount) > 0)
   if (!invoiceSkipped.value && !invDone) return 'invoice'
   return 'collection'
