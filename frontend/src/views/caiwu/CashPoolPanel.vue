@@ -12,9 +12,7 @@ const transfers = ref([])
 const expandedDept = ref('')
 const cardRefs = {}
 
-// 审慎口径开关：已批待排的在途支出与待批调拨出款，按30天内全部付出计入预测
 const pessimistic = ref(false)
-// 余额构成与预测的口径说明
 const showMethodology = ref(false)
 
 const wan = v => {
@@ -35,7 +33,6 @@ async function load() {
     loading.value = false
     return
   }
-  // Transfers are secondary; a failure should not block the pool overview
   try {
     const trs = await ar.listPoolTransfers()
     transfers.value = trs.data.items
@@ -49,8 +46,6 @@ const pools = computed(() => data.value?.pools || [])
 const configured = computed(() => pools.value.filter(p => p.configured))
 const unconfigured = computed(() => pools.value.filter(p => !p.configured))
 
-// 汇总横幅标签：只有可见范围覆盖全部事业部时才叫「集团资金余额」；
-// 非超管/过滤后的子集只是「可见池子的合计」，避免事业部用户误以为是集团口径。
 const balanceLabel = computed(() => {
   const g = data.value?.group
   if (!g) return '资金余额'
@@ -59,7 +54,6 @@ const balanceLabel = computed(() => {
   return '合计资金余额（可见范围）'
 })
 
-// ── 余额对比条：各池柱高按最大余额归一 ──────────────────────────────────────
 const maxBalance = computed(() =>
   Math.max(1, ...configured.value.map(p => parseFloat(p.balance) || 0)))
 const colHeight = p => Math.max(6, Math.min(90, (parseFloat(p.balance) || 0) / maxBalance.value * 90))
@@ -68,8 +62,6 @@ const warnTick = p => {
   return w > 0 ? Math.min(100, w / maxBalance.value * 100) : null
 }
 
-// ── 余额刻度图填充：以「资金预警线×3」为满格基准，预警线天然落在 1/3 高度；
-//    封顶 88% 留出顶部呼吸空间 ──────────────────────────────────────────────
 function fillPct(p) {
   const bal = parseFloat(p.balance)
   const warn = parseFloat(p.warning.amount)
@@ -82,10 +74,8 @@ function projVal(p, key) {
   if (key === 'd30' && pessimistic.value) return p.projection.d30_with_pipeline
   return p.projection[key]
 }
-const projColor = v => (parseFloat(v) < 0 ? '#ff8a80' : '#69f0ae')
-const projColorDark = v => (parseFloat(v) < 0 ? '#c62828' : '#2e7d32')
+const projColor = v => (parseFloat(v) < 0 ? 'var(--c-danger)' : 'var(--c-success)')
 
-// ── 余额预测迷你曲线（现在→+30→+60→+90）────────────────────────────────────
 function spark(p) {
   const vals = [parseFloat(p.balance), parseFloat(projVal(p, 'd30')),
                 parseFloat(projVal(p, 'd60')), parseFloat(projVal(p, 'd90'))]
@@ -106,11 +96,9 @@ function focusPool(dept) {
   nextTick(() => cardRefs[dept]?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
 }
 
-// ── 池间调拨：超管直接生效；事业部用户提交申请，由调出方审批 ────────────────
 const showTransfer = ref(false)
 const trForm = reactive({ from_dept: '', to_dept: '', amount: '', transfer_date: todayCST(), expected_return_date: '', notes: '' })
 const trSaving = ref(false)
-// 事业部用户具备应收写入能力即可发起申请（与后端 _write_denied 口径一致）
 const canRequestTransfer = computed(() => auth.canArWrite && !auth.isSuperAdmin)
 const myDepts = computed(() => auth.user?.departments || [])
 const trStatusLabel = { pending: '待审批', approved: '已生效', rejected: '已拒绝' }
@@ -128,7 +116,6 @@ async function saveTransfer() {
   finally { trSaving.value = false }
 }
 
-// 审批权限：超管；或调出方事业部成员（有写入权限）且不是申请发起人本人
 function canReview(t) {
   if (t.status !== 'pending') return false
   if (auth.isSuperAdmin) return true
@@ -158,7 +145,6 @@ async function removeTransfer(t) {
   catch (e) { alert(e?.msg || '删除失败') }
 }
 
-// ── 池配置（超管）──────────────────────────────────────────────────────────
 const showConfig = ref(false)
 const cfgRows = ref([])
 const cfgSaving = ref(false)
@@ -179,7 +165,6 @@ async function openConfig() {
 }
 async function saveCfgRow(row) {
   if (!row.initial_date) { alert('期初基准日必填'); return }
-  // 修改已生效的期初基准会重算该池自基准日以来的全部历史余额（含历史调拨校验口径）
   if (row.saved && (row.initial_date !== row.origDate
       || String(row.initial_amount || 0) !== String(row.origAmount || 0))) {
     if (!confirm(`「${row.delivery_dept}」已有期初基准（${row.origDate} / ¥${row.origAmount}）。\n修改期初基准日或期初金额将重算该池全部历史余额，历史调拨与预警状态也会随之变化。确认修改？`)) return
@@ -199,17 +184,16 @@ async function saveCfgRow(row) {
   finally { cfgSaving.value = false }
 }
 
-// ── 项目/二级部门维度：按需懒加载各池的现金流明细（cache key = dept|dim）──
-const projDimDept = ref('')       // 当前展开维度明细的池（一次只展开一个）
-const projDimMode = ref('project')  // project | secondary_dept
-const projDimData = ref({})       // keyed by `${dept}|${dim}`
+const projDimDept = ref('')
+const projDimMode = ref('project')
+const projDimData = ref({})
 const projDimLoading = ref({})
 
 const dimKey = dept => `${dept}|${projDimMode.value}`
 
 async function fetchProjDim(dept) {
   const key = dimKey(dept)
-  if (projDimData.value[key]) return  // cached
+  if (projDimData.value[key]) return
   projDimLoading.value = { ...projDimLoading.value, [key]: true }
   try {
     const year = new Date().getFullYear()
@@ -245,553 +229,735 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     <div v-else-if="err" class="cp-empty err">{{ err }}</div>
     <template v-else-if="data">
 
-      <!-- ══ 资金总览 · 命令条 ══ -->
-      <header class="cp-hero">
-        <div class="hero-glow"></div>
-        <div class="hero-waves"><i class="hw hw1"></i><i class="hw hw2"></i></div>
-
-        <!-- 顶行：标识 + 操作 -->
-        <div class="hero-row">
-          <div class="hero-id">
-            <span class="hero-mark">💧</span>
-            <div class="hero-id-txt">
-              <div class="hero-title">资金池</div>
-              <div class="hero-sub">事业部资金调度 · {{ data.today }}</div>
-            </div>
+      <!-- ══ 命令条 ══ -->
+      <div class="cp-bar">
+        <div class="cpb-brand">
+          <span class="cpb-icon">💧</span>
+          <div>
+            <div class="cpb-title">资金池</div>
+            <div class="cpb-date">{{ data.today }}</div>
           </div>
-          <div class="hero-actions">
-            <span v-if="data.group && (data.group.danger_count || data.group.warn_count)" class="hero-alert">
-              <i v-if="data.group.danger_count" class="ha-danger">🚨 {{ data.group.danger_count }} 池告急</i>
-              <i v-if="data.group.warn_count" class="ha-warn">⚠ {{ data.group.warn_count }} 池预警</i>
+        </div>
+
+        <div v-if="data.group" class="cpb-summary">
+          <div class="cpb-main-num">{{ wan(data.group.balance) }}</div>
+          <div class="cpb-main-label">{{ balanceLabel }}</div>
+          <div class="cpb-projs">
+            <span v-for="(k,i) in ['d30','d60','d90']" :key="k" class="cpb-proj">
+              <em>+{{ [30,60,90][i] }}天</em>
+              <b :style="`color:${projColor(data.group['projection_'+k])}`">{{ wan(data.group['projection_'+k]) }}</b>
             </span>
-            <label class="hero-pess" :class="{ on: pessimistic }"
-                   title="勾选后：30天预测余额按「已批待排的在途支出与待批调拨出款，30天内全部付出」的审慎口径计算">
-              <input type="checkbox" v-model="pessimistic" /><span>审慎口径</span>
-            </label>
-            <button class="hero-btn" :class="{ on: showMethodology }" @click="showMethodology = !showMethodology">ⓘ 口径</button>
-            <button v-if="auth.isSuperAdmin" class="hero-btn" :class="{ on: showTransfer }" @click="showTransfer = !showTransfer">⇄ 调拨</button>
-            <button v-else-if="canRequestTransfer" class="hero-btn" :class="{ on: showTransfer }" @click="showTransfer = !showTransfer">⇄ 申请调拨</button>
-            <button v-if="auth.isSuperAdmin" class="hero-btn" @click="openConfig">⚙ 池配置</button>
           </div>
         </div>
 
-        <!-- 主行：余额 + 预测 -->
-        <div class="hero-body">
-          <template v-if="data.group">
-            <div class="hero-balance">
-              <div class="hb-label">{{ balanceLabel }}</div>
-              <div class="hb-num">{{ wan(data.group.balance) }}</div>
-              <div class="hb-foot">
-                <span class="hb-foot-k">在途支出</span>
-                <b>{{ wan(data.group.pipeline_approved) }}</b><em>已批</em>
-                <span class="hb-foot-slash">/</span>
-                <b>{{ wan(data.group.pipeline_pending) }}</b><em>审批中</em>
-              </div>
-            </div>
-            <div class="hero-proj">
-              <div v-for="(k, i) in ['d30','d60','d90']" :key="k" class="hp-step">
-                <div class="hp-val" :style="`color:${projColor(data.group['projection_' + k])}`">{{ wan(data.group['projection_' + k]) }}</div>
-                <div class="hp-k">+{{ [30,60,90][i] }} 天预测余额</div>
-              </div>
-            </div>
-          </template>
-          <div v-else class="hero-balance"><div class="hb-label">尚未配置任何资金池</div></div>
+        <div class="cpb-alerts-area">
+          <span v-if="data.group?.danger_count" class="cpb-alert-chip danger">
+            🚨 {{ data.group.danger_count }} 池告急
+          </span>
+          <span v-if="data.group?.warn_count" class="cpb-alert-chip warn">
+            ⚠ {{ data.group.warn_count }} 池预警
+          </span>
+          <span v-if="data.group?.pipeline_approved || data.group?.pipeline_pending"
+                class="cpb-pipeline">
+            在途 <b>{{ wan(data.group.pipeline_approved) }}</b>已批
+            / <b>{{ wan(data.group.pipeline_pending) }}</b>审批中
+          </span>
         </div>
 
-        <!-- 余额对比：各池水位 -->
-        <div v-if="configured.length" class="reservoir">
-          <div class="rsv-caption">各池水位对比 <em>（柱高按最大余额归一 · 虚线＝资金预警线 · 点击聚焦）</em></div>
-          <div class="rsv-rail">
-            <div v-for="p in configured" :key="p.dept" class="rsv-col" @click="focusPool(p.dept)"
-                 :title="`${p.dept}：账面余额 ${wan(p.balance)}（点击查看明细）`">
-              <div class="rsv-amt">{{ wan(p.balance) }}</div>
-              <div class="rsv-tube">
-                <div class="rsv-water" :class="`w-${p.warning.status}`" :style="`height:${colHeight(p)}%`">
-                  <i class="rsv-wave"></i>
-                </div>
-                <i v-if="warnTick(p)" class="rsv-warntick" :style="`bottom:${warnTick(p)}%`"></i>
-              </div>
-              <div class="rsv-name" :class="`t-${p.warning.status}`">{{ p.dept.replace('事业部', '') }}</div>
-            </div>
-          </div>
+        <div class="cpb-actions">
+          <label class="pess-toggle" :class="{ on: pessimistic }"
+                 title="勾选后：30天预测余额按审慎口径（含在途支出）计算">
+            <input type="checkbox" v-model="pessimistic" /><span>审慎</span>
+          </label>
+          <button class="cpb-btn" @click="showMethodology = true">口径说明</button>
+          <button v-if="auth.isSuperAdmin || canRequestTransfer" class="cpb-btn accent"
+                  @click="showTransfer = true">
+            ⇄ {{ auth.isSuperAdmin ? '调拨' : '申请调拨' }}
+          </button>
+          <button v-if="auth.isSuperAdmin" class="cpb-btn" @click="openConfig">⚙ 配置</button>
         </div>
-      </header>
-
-      <!-- ══ 口径说明 ══ -->
-      <div v-if="showMethodology" class="cp-method card">
-        <div class="section-title" style="margin-bottom:6px">口径说明</div>
-        <ul>
-          <li><b>账面余额</b> ＝ 期初金额 ＋ 现金流入 − 现金流出 ± 池间调拨（仅已生效的调拨计入）。</li>
-          <li class="cp-method-note"><b>为什么与「现金流分析」对不上？</b> 资金池余额是<b>存量</b>（期初基准日累计至今、且含池间调拨）；现金流分析是<b>选定区间的流量</b>（不含期初基准、不含内部调拨）。二者口径不同，<b>不应直接相等</b>。单个事业部尤其明显——调拨会改变它的池余额，但在现金流分析里不出现。</li>
-          <li><b>现金流入</b> ＝ 应收回款 ＋ 预收款。其中<b>预收冲抵</b>（用客户预收款核销应收）不计现金流入——现金在预收入账当天已经计入，冲抵只是账务确认，再计就重复了。</li>
-          <li><b>现金流出</b> ＝ 实付分期 ＋ 预付款 − <b>预付冲抵</b>（用预付余额抵减正式付款）。现金在预付发生当天已经流出，核销冲抵当天没有新的现金事件，不再重复计。</li>
-          <li><b>刚性待付</b> ＝ 付款台账中已审批待付的余额（计划金额 − 已付 − 预付冲抵），按计划付款日分 30/60/90 天窗口。</li>
-          <li><b>在途支出</b> ＝ 审批记录中「已批待排 / 审批中」的金额 ＋ 待审批的调拨出款申请。尚未排款，金额与时点存在不确定性。</li>
-          <li><b>资金预警线</b> ＝ 超管手动设定的最低安全余额；未设定时按「未来 N 天刚性待付（含逾期未付）」动态推算。余额低于预警线即「告急」。</li>
-          <li><b>预测余额</b> ＝ 当前余额 ＋ 预期回款（按到期日分窗）− 刚性待付。审慎口径再扣除在途支出与待批调拨出款。</li>
-        </ul>
       </div>
 
-      <!-- ══ 池子卡片 ══ -->
-      <div class="cp-grid">
-        <div v-for="p in configured" :key="p.dept" class="cp-card" :class="p.error ? 'st-none' : `st-${p.warning?.status}`"
-             :ref="el => { cardRefs[p.dept] = el }">
-          <div class="cpc-top">
-            <div class="cpc-dept">{{ p.dept }}</div>
-            <span v-if="!p.error" class="cpc-badge" :class="`bg-${p.warning.status}`">{{ statusLabel[p.warning.status] }}</span>
-            <span v-else class="cpc-badge" style="background:#c62828;color:#fff">计算失败</span>
+      <!-- ══ 水位总览条（横向）══ -->
+      <div v-if="configured.length" class="rsv-strip">
+        <div v-for="p in configured" :key="p.dept" class="rsv-seg"
+             :class="`st-${p.warning?.status}`"
+             :title="`${p.dept}：${wan(p.balance)} · 点击跳转`"
+             @click="focusPool(p.dept)">
+          <div class="rsv-fill" :class="`w-${p.warning?.status}`" :style="`width:${colHeight(p)}%`">
+            <i v-if="warnTick(p)" class="rsv-warn-mark" :style="`left:${warnTick(p)}%`"></i>
           </div>
-          <div v-if="p.error" class="cpc-unconfigured" style="color:#c62828">
-            指标计算出错：{{ p.error }}<br/>请重启后端服务后刷新，或查阅服务器日志排查原因
-          </div>
+          <span class="rsv-label">{{ p.dept.replace('事业部','') }}</span>
+          <span class="rsv-val">{{ wan(p.balance) }}</span>
+        </div>
+      </div>
 
-          <div v-if="!p.error" class="cpc-body">
-            <!-- 余额刻度图 -->
-            <div class="tank" :title="p.warning.mode === 'fixed'
-                   ? `资金预警线 ${wan(p.warning.amount)}（手动设定的最低安全余额）`
-                   : `资金预警线 ${wan(p.warning.amount)}（未来${p.config.warning_days}天刚性待付推算）`">
-              <div class="tank-glass"></div>
-              <div class="tank-water" :class="`w-${p.warning.status}`" :style="`height:${fillPct(p)}%`">
-                <i class="tank-wave"></i><i class="tank-wave wave2"></i>
+      <!-- ══ 池列表（行式，非卡片）══ -->
+      <div class="cp-list">
+        <template v-for="p in configured" :key="p.dept">
+          <!-- 池行 -->
+          <div class="pool-row" :class="[`st-${p.warning?.status}`, { active: expandedDept === p.dept }]"
+               :ref="el => { cardRefs[p.dept] = el }"
+               @click="expandedDept = expandedDept === p.dept ? '' : p.dept">
+
+            <!-- 竖向水管 -->
+            <div class="pool-tube" :title="`水位 ${fillPct(p).toFixed(0)}%`">
+              <div class="pool-tube-fill" :class="`w-${p.warning?.status}`"
+                   :style="`height:${fillPct(p)}%`">
+                <i class="ptf-wave"></i>
               </div>
-              <i v-if="parseFloat(p.warning.amount) > 0" class="tank-warnline"><b>预警</b></i>
+              <i v-if="parseFloat(p.warning?.amount) > 0" class="pool-tube-warn"></i>
             </div>
 
-            <div class="cpc-nums">
-              <div class="cpc-balance" :class="{ neg: parseFloat(p.balance) < 0 }">{{ wan(p.balance) }}</div>
-              <div v-if="parseFloat(p.balance) < 0" class="cpc-negtip">账面余额为负——请核对期初基准与收支流水是否完整</div>
-              <div class="cpc-warn">资金预警线 {{ wan(p.warning.amount) }}
-                <em>· {{ p.warning.mode === 'fixed' ? '手动设定' : p.config.warning_days + '天刚性待付' }}</em></div>
-              <!-- 余额预测走势 -->
-              <svg class="cpc-spark" :viewBox="`0 0 ${spark(p).W} ${spark(p).H}`" :style="`width:${spark(p).W}px;height:${spark(p).H}px`">
-                <line v-if="spark(p).zero != null" x1="6" :y1="spark(p).zero" :x2="spark(p).W - 4" :y2="spark(p).zero"
-                      stroke="#c62828" stroke-width="1" stroke-dasharray="3,3" opacity=".6" />
-                <path :d="spark(p).area" :fill="spark(p).danger ? 'rgba(198,40,40,.10)' : 'rgba(201,99,66,.12)'" />
-                <path :d="spark(p).line" fill="none" :stroke="spark(p).danger ? '#c62828' : '#c96342'" stroke-width="2" stroke-linecap="round" />
-                <circle v-for="(pt, i) in spark(p).pts" :key="i" :cx="pt[0]" :cy="pt[1]" r="2.6"
-                        :fill="spark(p).danger ? '#c62828' : '#c96342'" />
-              </svg>
-              <div class="cpc-spark-labels"><i>现在</i><i>+30</i><i>+60</i><i :title="pessimistic ? '30天为审慎口径（含在途支出）' : ''">+90</i></div>
+            <!-- 事业部 + 状态 -->
+            <div class="pool-id">
+              <span class="pool-name">{{ p.dept.replace('事业部', '') }}</span>
+              <span v-if="p.error" class="pool-badge err">出错</span>
+              <span v-else class="pool-badge" :class="`bd-${p.warning.status}`">
+                {{ statusLabel[p.warning.status] }}
+              </span>
             </div>
+
+            <!-- 余额 -->
+            <div class="pool-balance" :class="{ neg: parseFloat(p.balance) < 0 }">
+              {{ wan(p.balance) }}
+              <span class="pool-warn-line-label" v-if="!p.error">
+                预警 {{ wan(p.warning.amount) }}
+              </span>
+            </div>
+
+            <!-- 预测迷你图 -->
+            <svg v-if="!p.error" class="pool-spark"
+                 :viewBox="`0 0 ${spark(p).W} ${spark(p).H}`" width="110" height="32">
+              <line v-if="spark(p).zero != null"
+                    x1="6" :y1="spark(p).zero" :x2="spark(p).W-4" :y2="spark(p).zero"
+                    stroke="#c62828" stroke-width="1" stroke-dasharray="3,3" opacity=".5" />
+              <path :d="spark(p).area"
+                    :fill="spark(p).danger ? 'rgba(198,40,40,.09)' : 'rgba(201,99,66,.1)'" />
+              <path :d="spark(p).line" fill="none"
+                    :stroke="spark(p).danger ? '#c62828' : '#c96342'"
+                    stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+              <circle v-for="(pt,i) in spark(p).pts" :key="i"
+                      :cx="pt[0]" :cy="pt[1]" r="2.2"
+                      :fill="spark(p).danger ? '#c62828' : '#c96342'" />
+            </svg>
+
+            <!-- 健康 KPI 小标签 -->
+            <div v-if="!p.error" class="pool-kpi-row">
+              <span class="kpi-tag" :class="parseFloat(projVal(p,'d30'))>=0?'good':'bad'"
+                    title="+30天预测余额（审慎口径下含在途支出扣减）">
+                +30天 {{ wan(projVal(p, 'd30')) }}
+              </span>
+              <span class="kpi-tag neutral"
+                    title="按近90天日均流出，当前余额可支撑天数">
+                {{ p.health.runway_days != null ? p.health.runway_days + '天续航' : '∞续航' }}
+              </span>
+              <span class="kpi-tag" :class="(p.health.self_rate ?? 0) >= 100 ? 'good' : 'warn'"
+                    title="近90天流入/流出，>100%为净流入">
+                自给 {{ p.health.self_rate != null ? p.health.self_rate + '%' : '—' }}
+              </span>
+            </div>
+
+            <div class="pool-chevron" :class="{ open: expandedDept === p.dept }">›</div>
           </div>
 
-          <!-- 健康指标条（固定三格，缺数据显示 — 保持排版稳定） -->
-          <div v-if="!p.error" class="cpc-vitals">
-            <div class="vital" title="按近90天日均流出，现有余额可支撑的天数（近90天无流出时为 ∞）">
-              <b>{{ p.health.runway_days != null ? p.health.runway_days + '天' : '∞' }}</b><i>余额支撑</i>
-            </div>
-            <div class="vital" title="近90天 流入/流出（>100% 为净流入部门）"
-                 :class="p.health.self_rate == null ? '' : (p.health.self_rate >= 100 ? 'good' : 'bad')">
-              <b>{{ p.health.self_rate != null ? p.health.self_rate + '%' : '—' }}</b><i>自给率</i>
-            </div>
-            <div class="vital" :title="`+30天预测余额${pessimistic ? '（审慎口径）' : ''}`"
-                 :class="parseFloat(projVal(p, 'd30')) >= 0 ? 'good' : 'bad'">
-              <b>{{ wan(projVal(p, 'd30')) }}</b><i>+30天余额</i>
-            </div>
-          </div>
+          <!-- 手风琴详情 -->
+          <Transition name="acc">
+            <div v-if="expandedDept === p.dept && !p.error" class="pool-detail">
+              <div class="pd-cols">
 
-          <div v-if="!p.error" class="cpc-expands">
-            <button class="cpc-expand" @click="expandedDept = expandedDept === p.dept ? '' : p.dept">
-              {{ expandedDept === p.dept ? '收起明细 ▲' : '收支构成 ▼' }}
-            </button>
-            <button class="cpc-expand proj" @click="toggleProjDim(p.dept)">
-              {{ projDimDept === p.dept ? '收起项目 ▲' : '项目维度 ▼' }}
-            </button>
-          </div>
-          <Transition v-if="!p.error" name="cpd">
-            <div v-if="expandedDept === p.dept" class="cpc-detail">
-              <div class="cpd-row"><i>期初（{{ p.config.initial_date }}）</i><b>{{ wan(p.parts.initial) }}</b></div>
-              <div class="cpd-row in"><i>＋ 回款</i><b>{{ wan(p.parts.collected) }}</b></div>
-              <div class="cpd-row in"><i>＋ 预收款</i><b>{{ wan(p.parts.advance_received) }}</b></div>
-              <div class="cpd-row out"><i>− 实付（已扣预付冲抵）</i><b>{{ wan(p.parts.paid) }}</b></div>
-              <div class="cpd-row out"><i>− 预付款</i><b>{{ wan(p.parts.advance_paid) }}</b></div>
-              <div class="cpd-row" v-if="parseFloat(p.parts.transfer_in) || parseFloat(p.parts.transfer_out)">
-                <i>± 调拨（已生效）</i><b>+{{ wan(p.parts.transfer_in) }} / −{{ wan(p.parts.transfer_out) }}</b></div>
-              <div class="cpd-sep"></div>
-              <div class="cpd-row out"><i>刚性待付：已到期</i><b style="color:#c62828">{{ wan(p.committed.overdue) }}</b></div>
-              <div class="cpd-row out"><i>刚性待付：30/60/90天</i><b>{{ wan(p.committed.d30) }} / {{ wan(p.committed.d60) }} / {{ wan(p.committed.d90) }}</b></div>
-              <div class="cpd-row"><i>在途支出：已批待排 / 审批中</i><b>{{ wan(p.pipeline.approved) }} / {{ wan(p.pipeline.pending) }}</b></div>
-              <div class="cpd-row out" v-if="parseFloat(p.pipeline.transfer_out_pending)">
-                <i>待批调拨出款申请</i><b style="color:#e65100">{{ wan(p.pipeline.transfer_out_pending) }}</b></div>
-              <div class="cpd-row in"><i>预期回款：30/60/90天</i><b>{{ wan(p.expected_in.d30) }} / {{ wan(p.expected_in.d60) }} / {{ wan(p.expected_in.d90) }}</b></div>
-              <div class="cpd-row"><i>逾期应收在外（催回即流入）</i><b style="color:#e65100">{{ wan(p.expected_in.overdue_outstanding) }}</b></div>
-            </div>
-          </Transition>
-          <!-- 项目/二级部门维度明细 -->
-          <Transition v-if="!p.error" name="cpd">
-            <div v-if="projDimDept === p.dept" class="cpc-proj-dim">
-              <div class="cpd-proj-head">
-                <span class="cpd-dim-seg">
-                  <button :class="{ on: projDimMode === 'project' }" @click="setProjDimMode('project')">项目</button>
-                  <button :class="{ on: projDimMode === 'secondary_dept' }" @click="setProjDimMode('secondary_dept')">二级部门</button>
-                </span>
-                <span v-if="projDimData[dimKey(p.dept)]" class="cpd-proj-sum">
-                  {{ projDimData[dimKey(p.dept)].summary?.count || 0 }} 个 · 净现金
-                  <b :style="{ color: parseFloat(projDimData[dimKey(p.dept)].summary?.net) >= 0 ? '#2e7d32' : '#c62828' }">{{ wan(projDimData[dimKey(p.dept)].summary?.net) }}</b>
-                </span>
-              </div>
-              <div v-if="projDimLoading[dimKey(p.dept)]" class="cpd-loading">加载中…</div>
-              <template v-else-if="projDimData[dimKey(p.dept)]">
-                <div class="cpd-proj-table" v-if="projDimData[dimKey(p.dept)].rows?.length">
-                  <div v-for="r in projDimData[dimKey(p.dept)].rows.slice(0, 10)" :key="r.project" class="cpd-proj-row">
-                    <span class="cpr-name" :title="r.customer || r.project">{{ r.project }}</span>
-                    <span class="cpr-in" title="年内回款流入">↑{{ wan(r.inflow) }}</span>
-                    <span class="cpr-out" title="年内付款流出">↓{{ wan(r.outflow) }}</span>
-                    <span class="cpr-net" :style="{ color: r.net >= 0 ? '#2e7d32' : '#c62828' }" title="净现金">{{ wan(r.net) }}</span>
+                <!-- 收支构成 -->
+                <div class="pd-col">
+                  <div class="pd-col-head">收支构成</div>
+                  <div class="pd-row"><i>期初（{{ p.config.initial_date }}）</i><b>{{ wan(p.parts.initial) }}</b></div>
+                  <div class="pd-row in"><i>＋ 回款</i><b>{{ wan(p.parts.collected) }}</b></div>
+                  <div class="pd-row in"><i>＋ 预收款</i><b>{{ wan(p.parts.advance_received) }}</b></div>
+                  <div class="pd-row out"><i>− 实付（已扣预付冲抵）</i><b>{{ wan(p.parts.paid) }}</b></div>
+                  <div class="pd-row out"><i>− 预付款</i><b>{{ wan(p.parts.advance_paid) }}</b></div>
+                  <div v-if="parseFloat(p.parts.transfer_in) || parseFloat(p.parts.transfer_out)" class="pd-row">
+                    <i>± 调拨（已生效）</i>
+                    <b>+{{ wan(p.parts.transfer_in) }} / −{{ wan(p.parts.transfer_out) }}</b>
                   </div>
-                  <div v-if="projDimData[dimKey(p.dept)].rows.length > 10" class="cpd-proj-more">
-                    ...还有 {{ projDimData[dimKey(p.dept)].rows.length - 10 }} 个，<router-link :to="`/caiwu/project-cashflow?dept=${encodeURIComponent(p.dept)}`">查看全部</router-link>
+                  <div v-if="parseFloat(p.balance) < 0" class="pd-negtip">
+                    ⚠ 账面余额为负——请核对期初基准与收支流水是否完整
                   </div>
                 </div>
-                <div v-else class="cpd-loading">暂无数据（当年无关联{{ projDimMode === 'project' ? '项目简称' : '二级部门' }}的回款或付款）</div>
-              </template>
-              <div v-else class="cpd-loading">加载失败，请稍后重试</div>
+
+                <!-- 待付与在途 -->
+                <div class="pd-col">
+                  <div class="pd-col-head">刚性待付 · 在途</div>
+                  <div class="pd-row out"><i>已到期未付</i><b style="color:var(--c-danger)">{{ wan(p.committed.overdue) }}</b></div>
+                  <div class="pd-row out"><i>30 / 60 / 90天待付</i><b>{{ wan(p.committed.d30) }} / {{ wan(p.committed.d60) }} / {{ wan(p.committed.d90) }}</b></div>
+                  <div class="pd-row"><i>在途：已批待排 / 审批中</i><b>{{ wan(p.pipeline.approved) }} / {{ wan(p.pipeline.pending) }}</b></div>
+                  <div v-if="parseFloat(p.pipeline.transfer_out_pending)" class="pd-row out">
+                    <i>待批调拨出款申请</i><b style="color:#e65100">{{ wan(p.pipeline.transfer_out_pending) }}</b>
+                  </div>
+                  <div class="pd-col-head" style="margin-top:10px">预期回款</div>
+                  <div class="pd-row in"><i>30 / 60 / 90天内</i><b>{{ wan(p.expected_in.d30) }} / {{ wan(p.expected_in.d60) }} / {{ wan(p.expected_in.d90) }}</b></div>
+                  <div class="pd-row"><i>逾期应收在外</i><b style="color:#e65100">{{ wan(p.expected_in.overdue_outstanding) }}</b></div>
+                </div>
+
+                <!-- 项目维度 -->
+                <div class="pd-col">
+                  <div class="pd-col-head">
+                    项目维度
+                    <span class="dim-seg" @click.stop>
+                      <button :class="{ on: projDimMode === 'project' }" @click="setProjDimMode('project')">项目</button>
+                      <button :class="{ on: projDimMode === 'secondary_dept' }" @click="setProjDimMode('secondary_dept')">二级部门</button>
+                    </span>
+                    <button class="pd-load-btn" @click.stop="toggleProjDim(p.dept)">
+                      {{ projDimDept === p.dept ? '收起' : '加载' }}
+                    </button>
+                  </div>
+                  <div v-if="projDimLoading[dimKey(p.dept)]" class="pd-loading">加载中…</div>
+                  <template v-else-if="projDimDept === p.dept && projDimData[dimKey(p.dept)]">
+                    <div v-if="projDimData[dimKey(p.dept)].rows?.length" class="pd-proj-list">
+                      <div v-for="r in projDimData[dimKey(p.dept)].rows.slice(0, 8)" :key="r.project" class="pd-proj-row">
+                        <span class="ppr-name" :title="r.project">{{ r.project }}</span>
+                        <span class="ppr-in" title="年内流入">↑{{ wan(r.inflow) }}</span>
+                        <span class="ppr-out" title="年内流出">↓{{ wan(r.outflow) }}</span>
+                        <span class="ppr-net" :style="{ color: r.net >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ wan(r.net) }}</span>
+                      </div>
+                      <div v-if="projDimData[dimKey(p.dept)].rows.length > 8" class="pd-more">
+                        还有 {{ projDimData[dimKey(p.dept)].rows.length - 8 }} 条
+                        <router-link :to="`/caiwu/project-cashflow?dept=${encodeURIComponent(p.dept)}`">查看全部 →</router-link>
+                      </div>
+                    </div>
+                    <div v-else class="pd-loading">暂无关联{{ projDimMode === 'project' ? '项目' : '二级部门' }}数据</div>
+                  </template>
+                  <div v-else-if="projDimDept === p.dept" class="pd-loading">加载失败，请稍后重试</div>
+                  <div v-else class="pd-hint">点击「加载」查看{{ projDimMode === 'project' ? '项目' : '二级部门' }}维度现金分布</div>
+                </div>
+              </div>
             </div>
           </Transition>
-        </div>
+        </template>
 
         <!-- 未配置的池 -->
-        <div v-for="p in unconfigured" :key="p.dept" class="cp-card st-none">
-          <div class="cpc-dept">{{ p.dept }}</div>
-          <div class="cpc-unconfigured">
+        <div v-for="p in unconfigured" :key="p.dept" class="pool-row st-none nocfg">
+          <div class="pool-tube"></div>
+          <div class="pool-id">
+            <span class="pool-name">{{ p.dept.replace('事业部', '') }}</span>
+            <span class="pool-badge bd-none">未配置</span>
+          </div>
+          <div class="pool-nocfg-txt">
             未配置期初基准，暂无法核算余额
-            <button v-if="auth.isSuperAdmin" class="cp-btn" style="margin-top:8px" @click="openConfig">配置期初基准</button>
+            <button v-if="auth.isSuperAdmin" class="cpb-btn" style="margin-left:10px" @click.stop="openConfig">去配置</button>
           </div>
         </div>
       </div>
 
-      <!-- ══ 调拨表单 + 台账 ══ -->
-      <div v-if="showTransfer && (auth.isSuperAdmin || canRequestTransfer)" class="cp-transfer-form">
-        <select v-model="trForm.from_dept" class="cp-sel"><option value="">调出方</option>
-          <option v-for="p in configured" :key="p.dept" :value="p.dept">{{ p.dept }}（{{ wan(p.balance) }}）</option></select>
-        <span class="tr-arrow">→</span>
-        <select v-model="trForm.to_dept" class="cp-sel"><option value="">调入方</option>
-          <option v-for="p in configured" :key="p.dept" :value="p.dept">{{ p.dept }}</option></select>
-        <input v-model="trForm.amount" type="number" min="0" placeholder="金额(元)" class="cp-inp" style="width:120px" />
-        <input v-if="auth.isSuperAdmin" v-model="trForm.transfer_date" type="date" class="cp-inp" title="调拨日期（实际发生日）" />
-        <input v-model="trForm.expected_return_date" type="date" class="cp-inp" title="约定归还日（可选）" />
-        <input v-model="trForm.notes" placeholder="备注（如：拆借月息0.3%）" class="cp-inp" style="flex:1" />
-        <button class="cp-btn primary" :disabled="trSaving" @click="saveTransfer">
-          {{ trSaving ? '提交中…' : (auth.isSuperAdmin ? '确认调拨' : '提交申请') }}</button>
-        <div v-if="!auth.isSuperAdmin" class="tr-hint">申请须经调出方事业部（或超管）审批后生效；生效日以审批日为准</div>
-      </div>
-
-      <div v-if="transfers.length" class="card cp-tr-card">
-        <div class="section-title" style="margin-bottom:8px">⇄ 池间调拨台账（内部拆借）</div>
-        <div class="tr-list">
-          <div v-for="t in transfers" :key="t.id" class="tr-item" :class="`trs-${t.status}`">
+      <!-- ══ 调拨台账（精简列表，位于池列表下方）══ -->
+      <div v-if="transfers.length" class="cp-ledger">
+        <div class="ledger-head">⇄ 池间调拨台账 <em>（{{ transfers.length }} 条）</em></div>
+        <div class="ledger-list">
+          <div v-for="t in transfers" :key="t.id" class="ledger-item" :class="`trs-${t.status}`">
+            <span class="ts-chip" :class="`ts-${t.status}`">{{ trStatusLabel[t.status] || t.status }}</span>
             <span class="tr-date">{{ t.transfer_date }}</span>
-            <span class="tr-status" :class="`ts-${t.status}`">{{ trStatusLabel[t.status] || t.status }}</span>
-            <span class="tr-route"><b>{{ t.from_dept.replace('事业部','') }}</b><i class="tr-pipe">— {{ wan(t.amount) }} →</i><b>{{ t.to_dept.replace('事业部','') }}</b></span>
-            <span class="tr-meta">
-              <em v-if="t.expected_return_date">约定归还 {{ t.expected_return_date }}</em>
+            <span class="tr-route">
+              <b>{{ t.from_dept.replace('事业部', '') }}</b>
+              <i class="tr-pipe">→</i>
+              <b>{{ t.to_dept.replace('事业部', '') }}</b>
+            </span>
+            <span class="tr-amt">{{ wan(t.amount) }}</span>
+            <span class="tr-notes">
+              <em v-if="t.expected_return_date">归还 {{ t.expected_return_date }}</em>
               <em v-if="t.notes">{{ t.notes }}</em>
               <em v-if="t.created_by_name">申请 {{ t.created_by_name }}</em>
               <em v-if="t.reviewed_by_name">审批 {{ t.reviewed_by_name }}</em>
-              <em v-if="t.status === 'rejected' && t.review_notes" class="tr-reject">拒因：{{ t.review_notes }}</em>
+              <em v-if="t.status === 'rejected' && t.review_notes" class="rej">拒：{{ t.review_notes }}</em>
             </span>
             <template v-if="canReview(t)">
-              <button class="cp-ok" @click="approveTransfer(t)">批准</button>
-              <button class="cp-del" @click="rejectTransfer(t)">拒绝</button>
+              <button class="tr-ok" @click="approveTransfer(t)">批准</button>
+              <button class="tr-del" @click="rejectTransfer(t)">拒绝</button>
             </template>
-            <button v-if="canCancel(t) && !canReview(t)" class="cp-del" @click="removeTransfer(t)">撤回</button>
-            <button v-else-if="auth.isSuperAdmin && t.status !== 'pending'" class="cp-del" @click="removeTransfer(t)">删</button>
+            <button v-if="canCancel(t) && !canReview(t)" class="tr-del" @click="removeTransfer(t)">撤回</button>
+            <button v-else-if="auth.isSuperAdmin && t.status !== 'pending'" class="tr-del" @click="removeTransfer(t)">删</button>
           </div>
         </div>
       </div>
-    </template>
 
-    <!-- 池配置弹窗（超管） -->
-    <div v-if="showConfig" class="cp-modal-mask" @click.self="showConfig = false">
-      <div class="cp-modal">
-        <div class="cp-modal-title">池配置 — 期初基准（该日终账面资金；之后按收支流水推算余额）</div>
-        <div class="cp-table-wrap">
-        <table class="cp-table">
-          <thead><tr><th>事业部</th><th>期初基准日</th><th>期初金额(元)</th>
-            <th title="手动设定的最低安全余额；留空则按预警窗口天数的刚性待付动态推算">资金预警线(元,可选)</th>
-            <th title="未设固定预警线时：预警线 = 未来N天刚性待付">预警窗口(天)</th><th></th></tr></thead>
-          <tbody>
-            <tr v-for="row in cfgRows" :key="row.delivery_dept">
-              <td><b>{{ row.delivery_dept }}</b> <span v-if="row.saved" style="color:#2e7d32">✓</span></td>
-              <td><input v-model="row.initial_date" type="date" class="cp-inp" /></td>
-              <td><input v-model="row.initial_amount" type="number" class="cp-inp" style="width:120px" /></td>
-              <td><input v-model="row.warning_amount" type="number" min="0" placeholder="留空=按天数推算" class="cp-inp" style="width:130px" /></td>
-              <td><input v-model.number="row.warning_days" type="number" min="7" max="120" class="cp-inp" style="width:64px" /></td>
-              <td><button class="cp-btn primary" :disabled="cfgSaving" @click="saveCfgRow(row)">保存</button></td>
-            </tr>
-          </tbody>
-        </table>
+    </template><!-- end v-else-if data -->
+
+    <!-- ══ 口径说明 Modal ══ -->
+    <Teleport to="body">
+      <Transition name="modal">
+        <div v-if="showMethodology" class="modal-mask" @click.self="showMethodology = false">
+          <div class="modal-box">
+            <div class="modal-hd">
+              <span class="modal-title">口径说明</span>
+              <button class="modal-close" @click="showMethodology = false">✕</button>
+            </div>
+            <div class="modal-bd">
+              <ul class="method-list">
+                <li><b>账面余额</b> ＝ 期初金额 ＋ 现金流入 − 现金流出 ± 池间调拨（仅已生效的调拨计入）。</li>
+                <li class="method-note">
+                  <b>为什么与「现金流分析」对不上？</b>
+                  资金池余额是<b>存量</b>（期初基准日累计至今，含池间调拨）；
+                  现金流分析是<b>选定区间的流量</b>（不含期初基准，不含内部调拨）。
+                  二者口径不同，<b>不应直接相等</b>。单个事业部尤其明显——调拨改变池余额，但不进入现金流分析。
+                </li>
+                <li><b>现金流入</b> ＝ 应收回款 ＋ 预收款。<b>预收冲抵</b>不计现金流入——现金在预收入账时已计入，冲抵只是账务确认。</li>
+                <li><b>现金流出</b> ＝ 实付分期 ＋ 预付款 − <b>预付冲抵</b>。预付发生时已流出，冲抵时无新现金事件。</li>
+                <li><b>刚性待付</b> ＝ 付款台账中已审批待付余额（计划金额 − 已付 − 预付冲抵），按计划付款日分 30/60/90 天窗口。</li>
+                <li><b>在途支出</b> ＝ 审批记录中「已批待排 / 审批中」金额 ＋ 待审批调拨出款申请。尚未排款，金额存在不确定性。</li>
+                <li><b>资金预警线</b> ＝ 超管手动设定的最低安全余额；未设定时按「未来 N 天刚性待付」动态推算。余额低于预警线即「告急」。</li>
+                <li><b>预测余额</b> ＝ 当前余额 ＋ 预期回款（按到期日分窗）− 刚性待付。审慎口径再扣除在途支出与待批调拨出款。</li>
+              </ul>
+            </div>
+          </div>
         </div>
-        <div class="cp-cfg-note">修改已有池子的期初基准日/期初金额，会重算该池自基准日以来的全部历史余额。</div>
-        <div style="text-align:right;margin-top:10px"><button class="cp-btn" @click="showConfig = false">关闭</button></div>
+      </Transition>
+    </Teleport>
+
+    <!-- ══ 调拨 Modal ══ -->
+    <Teleport to="body">
+      <Transition name="modal">
+        <div v-if="showTransfer && (auth.isSuperAdmin || canRequestTransfer)"
+             class="modal-mask" @click.self="showTransfer = false">
+          <div class="modal-box transfer-modal">
+            <div class="modal-hd">
+              <span class="modal-title">{{ auth.isSuperAdmin ? '池间调拨' : '申请调拨' }}</span>
+              <button class="modal-close" @click="showTransfer = false">✕</button>
+            </div>
+            <div class="modal-bd">
+              <div class="tr-grid">
+                <div class="tr-field">
+                  <label class="tr-label">调出方</label>
+                  <select v-model="trForm.from_dept" class="tr-sel">
+                    <option value="">请选择</option>
+                    <option v-for="p in configured" :key="p.dept" :value="p.dept">
+                      {{ p.dept }}（{{ wan(p.balance) }}）
+                    </option>
+                  </select>
+                </div>
+                <div class="tr-arrow-center">→</div>
+                <div class="tr-field">
+                  <label class="tr-label">调入方</label>
+                  <select v-model="trForm.to_dept" class="tr-sel">
+                    <option value="">请选择</option>
+                    <option v-for="p in configured" :key="p.dept" :value="p.dept">{{ p.dept }}</option>
+                  </select>
+                </div>
+                <div class="tr-field">
+                  <label class="tr-label">金额（元）</label>
+                  <input v-model="trForm.amount" type="number" min="0" placeholder="0.00" class="tr-inp" />
+                </div>
+                <div v-if="auth.isSuperAdmin" class="tr-field">
+                  <label class="tr-label">调拨日期</label>
+                  <input v-model="trForm.transfer_date" type="date" class="tr-inp" />
+                </div>
+                <div class="tr-field">
+                  <label class="tr-label">约定归还日（可选）</label>
+                  <input v-model="trForm.expected_return_date" type="date" class="tr-inp" />
+                </div>
+                <div class="tr-field tr-field-full">
+                  <label class="tr-label">备注</label>
+                  <input v-model="trForm.notes" placeholder="如：拆借月息0.3%" class="tr-inp" />
+                </div>
+              </div>
+              <div v-if="!auth.isSuperAdmin" class="tr-hint-box">
+                申请须经调出方事业部（或超管）审批后生效；生效日以审批日为准
+              </div>
+              <div class="modal-footer">
+                <button class="cpb-btn" @click="showTransfer = false">取消</button>
+                <button class="cpb-btn accent" :disabled="trSaving" @click="saveTransfer">
+                  {{ trSaving ? '提交中…' : (auth.isSuperAdmin ? '确认调拨' : '提交申请') }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- ══ 池配置 Modal（超管）══ -->
+    <div v-if="showConfig" class="modal-mask" @click.self="showConfig = false">
+      <div class="modal-box config-modal">
+        <div class="modal-hd">
+          <span class="modal-title">池配置 — 期初基准</span>
+          <button class="modal-close" @click="showConfig = false">✕</button>
+        </div>
+        <div class="modal-bd">
+          <div class="cp-table-wrap">
+            <table class="cp-table">
+              <thead><tr>
+                <th>事业部</th><th>期初基准日</th><th>期初金额(元)</th>
+                <th title="手动设定的最低安全余额；留空则按预警窗口天数的刚性待付动态推算">资金预警线(元,可选)</th>
+                <th title="未设固定预警线时：预警线 = 未来N天刚性待付">预警窗口(天)</th><th></th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="row in cfgRows" :key="row.delivery_dept">
+                  <td><b>{{ row.delivery_dept }}</b> <span v-if="row.saved" style="color:var(--c-success)">✓</span></td>
+                  <td><input v-model="row.initial_date" type="date" class="tr-inp" /></td>
+                  <td><input v-model="row.initial_amount" type="number" class="tr-inp" style="width:120px" /></td>
+                  <td><input v-model="row.warning_amount" type="number" min="0" placeholder="留空=按天数推算" class="tr-inp" style="width:130px" /></td>
+                  <td><input v-model.number="row.warning_days" type="number" min="7" max="120" class="tr-inp" style="width:64px" /></td>
+                  <td><button class="cpb-btn accent" :disabled="cfgSaving" @click="saveCfgRow(row)">保存</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="cfg-note">修改已有池子的期初基准日/期初金额，会重算该池自基准日以来的全部历史余额。</div>
+        </div>
       </div>
     </div>
+
   </div>
 </template>
 
 <style scoped>
-.cp-panel { padding: 18px 0; }
+/* ═══════════════════════════════════════════
+   基础
+   ═══════════════════════════════════════════ */
+.cp-panel { padding: 16px 0; }
 .cp-empty { text-align: center; padding: 48px; color: var(--muted); }
 .cp-empty.err { color: var(--c-danger); }
 
-/* ════════════════════════════════════════════════════
-   资金总览 · 命令条（深陶土底 + 暖高光 + 水波）
-   ════════════════════════════════════════════════════ */
-.cp-hero { position: relative; border-radius: var(--radius-lg); overflow: hidden; margin-bottom: 18px;
-  background: linear-gradient(155deg, #2a160a 0%, #3c2011 42%, #5a3219 100%);
-  box-shadow: 0 14px 44px rgba(50,24,8,.34), 0 1px 0 rgba(255,255,255,.06) inset;
-  isolation: isolate; }
-.hero-glow { position: absolute; top: -40%; right: -10%; width: 60%; height: 180%;
-  background: radial-gradient(closest-side, rgba(224,132,92,.45), transparent 70%);
-  pointer-events: none; z-index: 0; }
-.hero-waves { position: absolute; inset: 0; pointer-events: none; opacity: .5; z-index: 0; }
-.hw { position: absolute; left: 0; width: 300%; height: 90px; bottom: -34px;
-  background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 40" preserveAspectRatio="none"><path d="M0 22 Q 30 10 60 22 T 120 22 T 180 22 T 240 22 V40 H0 Z" fill="%23ffffff" opacity="0.06"/></svg>') repeat-x;
-  background-size: 240px 40px; animation: heroDrift 16s linear infinite; }
-.hw2 { bottom: -22px; opacity: .8; animation-duration: 9s; animation-direction: reverse; }
-@keyframes heroDrift { to { transform: translateX(-240px); } }
+/* ═══════════════════════════════════════════
+   命令条
+   ═══════════════════════════════════════════ */
+.cp-bar {
+  display: flex; align-items: center; gap: 0;
+  background: linear-gradient(135deg, #1e0e06 0%, #2e160a 50%, #3d1f0d 100%);
+  border-radius: var(--radius-lg); margin-bottom: 12px;
+  padding: 14px 20px; box-shadow: 0 8px 32px rgba(40,16,4,.28);
+  border: 1px solid rgba(201,99,66,.18); flex-wrap: wrap; gap: 8px;
+}
+.cpb-brand { display: flex; align-items: center; gap: 10px; margin-right: 4px; }
+.cpb-icon { font-size: 22px; filter: drop-shadow(0 2px 6px rgba(201,99,66,.5)); }
+.cpb-title { font-size: 15px; font-weight: 800; color: #f5e8dc; line-height: 1; }
+.cpb-date { font-size: 11px; color: #a07050; margin-top: 3px; }
 
-/* 顶行 */
-.hero-row { position: relative; z-index: 1; display: flex; align-items: flex-start;
-  justify-content: space-between; gap: 16px; padding: 16px 20px 0; flex-wrap: wrap; }
-.hero-id { display: flex; align-items: center; gap: 11px; }
-.hero-mark { width: 38px; height: 38px; flex-shrink: 0; border-radius: 11px; font-size: 19px;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(255,255,255,.1); border: 1px solid rgba(232,160,120,.32);
-  box-shadow: 0 4px 14px rgba(0,0,0,.2) inset, 0 2px 8px rgba(0,0,0,.18); }
-.hero-title { font-size: 18px; font-weight: 800; color: #f7ede2; letter-spacing: .2px; }
-.hero-sub { font-size: 11.5px; color: #c79c7e; margin-top: 2px; }
-.hero-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.hero-alert { display: flex; gap: 6px; }
-.hero-alert i { font-style: normal; font-size: 11.5px; font-weight: 700; padding: 4px 11px; border-radius: 20px; }
-.ha-danger { background: rgba(255,82,82,.18); color: #ff9a90; animation: pulse 1.6s ease-in-out infinite; }
-.ha-warn { background: rgba(255,183,77,.16); color: #ffd27a; }
-@keyframes pulse { 50% { box-shadow: 0 0 0 5px rgba(255,82,82,.12); } }
-.hero-pess { font-size: 12px; color: #e8cdb6; display: flex; align-items: center; gap: 6px; cursor: pointer;
-  padding: 6px 12px 6px 10px; border-radius: 20px; border: 1px solid rgba(216,166,130,.3);
-  background: rgba(255,255,255,.05); transition: all .16s; user-select: none; }
-.hero-pess:hover { background: rgba(255,255,255,.1); }
-.hero-pess.on { background: rgba(232,133,90,.22); border-color: rgba(232,133,90,.55); color: #ffe7d4; }
-.hero-pess input { accent-color: #e0845c; cursor: pointer; }
-.hero-btn { padding: 7px 14px; border: 1px solid rgba(216,166,130,.4); border-radius: 20px;
-  background: rgba(255,255,255,.06); font-size: 12.5px; font-weight: 600; color: #f3e3d6; cursor: pointer;
-  transition: all .16s; }
-.hero-btn:hover { background: rgba(232,133,90,.2); border-color: rgba(232,133,90,.6); transform: translateY(-1px); }
-.hero-btn.on { background: rgba(232,133,90,.28); border-color: rgba(232,160,120,.7); color: #fff; }
+.cpb-summary {
+  display: flex; align-items: baseline; gap: 14px; padding: 0 18px;
+  border-left: 1px solid rgba(201,99,66,.2); border-right: 1px solid rgba(201,99,66,.2);
+  margin: 0 8px; flex-wrap: wrap;
+}
+.cpb-main-num {
+  font-size: 32px; font-weight: 900; color: #fff;
+  font-variant-numeric: tabular-nums; line-height: 1;
+  text-shadow: 0 2px 16px rgba(201,99,66,.4);
+}
+.cpb-main-label { font-size: 11px; color: #a07050; align-self: flex-end; padding-bottom: 3px; }
+.cpb-projs { display: flex; gap: 12px; align-items: center; }
+.cpb-proj { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.cpb-proj em { font-style: normal; font-size: 10px; color: #806040; }
+.cpb-proj b { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
 
-/* 主行：余额 + 预测 */
-.hero-body { position: relative; z-index: 1; display: flex; align-items: flex-end; gap: 18px;
-  padding: 14px 20px 16px; flex-wrap: wrap; }
-.hero-balance { display: flex; flex-direction: column; gap: 3px; }
-.hb-label { font-size: 11px; font-weight: 600; color: #c79c7e; text-transform: none; letter-spacing: .3px; }
-.hb-num { font-size: 40px; font-weight: 800; color: #fff; letter-spacing: .5px; line-height: 1;
-  text-shadow: 0 2px 18px rgba(232,133,90,.45); font-variant-numeric: tabular-nums; }
-.hb-foot { display: flex; align-items: baseline; gap: 5px; margin-top: 5px; font-size: 12px; color: #d9bda6; flex-wrap: wrap; }
-.hb-foot-k { color: #b88e70; margin-right: 2px; }
-.hb-foot b { color: #ffd27a; font-weight: 700; font-variant-numeric: tabular-nums; }
-.hb-foot em { font-style: normal; color: #b88e70; font-size: 11px; }
-.hb-foot-slash { color: #8a6a52; }
-.hero-proj { display: flex; gap: 10px; margin-left: auto; }
-.hp-step { text-align: center; padding: 9px 16px; border-radius: var(--radius-sm);
-  background: rgba(255,255,255,.06); border: 1px solid rgba(216,166,130,.22); min-width: 92px; }
-.hp-val { font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
-.hp-k { font-size: 10.5px; color: #c79c7e; margin-top: 3px; }
+.cpb-alerts-area { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cpb-alert-chip {
+  font-size: 11.5px; font-weight: 700; padding: 4px 12px;
+  border-radius: 20px; white-space: nowrap;
+}
+.cpb-alert-chip.danger { background: rgba(255,82,82,.18); color: #ff9a90; animation: cpPulse 1.6s ease-in-out infinite; }
+.cpb-alert-chip.warn { background: rgba(255,183,77,.16); color: #ffd27a; }
+@keyframes cpPulse { 50% { box-shadow: 0 0 0 5px rgba(255,82,82,.1); } }
+.cpb-pipeline { font-size: 11.5px; color: #a07050; white-space: nowrap; }
+.cpb-pipeline b { color: #e8d0b0; font-weight: 700; font-variant-numeric: tabular-nums; }
 
-/* 各池水位对比 */
-.reservoir { position: relative; z-index: 1; padding: 12px 22px 6px;
-  border-top: 1px solid rgba(216,166,130,.2); background: rgba(0,0,0,.12); }
-.rsv-caption { font-size: 11px; color: #c79c7e; margin-bottom: 6px; }
-.rsv-caption em { font-style: normal; color: #9a755b; }
-.rsv-rail { display: flex; align-items: flex-end; justify-content: space-around; gap: 10px; height: 150px; }
-.rsv-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
-  height: 100%; flex: 1; max-width: 120px; cursor: pointer; }
-.rsv-amt { font-size: 12px; font-weight: 700; color: #f6e3d2; margin-bottom: 5px; font-variant-numeric: tabular-nums; }
-.rsv-tube { position: relative; width: 100%; max-width: 70px; height: 96px;
-  border: 1.5px solid rgba(216,166,130,.36); border-bottom: none; border-radius: 11px 11px 0 0;
-  background: rgba(255,255,255,.04); overflow: hidden; transition: border-color .18s; }
-.rsv-water { position: absolute; bottom: 0; left: 0; right: 0; transition: height .7s cubic-bezier(.2,.8,.3,1); }
-.rsv-wave, .tank-wave { position: absolute; top: -7px; left: 0; width: 200%; height: 8px;
-  background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 8" preserveAspectRatio="none"><path d="M0 4 Q 15 0 30 4 T 60 4 V8 H0 Z" fill="%23ffffff" opacity="0.55"/></svg>') repeat-x;
-  background-size: 60px 8px; animation: heroDrift 5s linear infinite; }
-.rsv-warntick { position: absolute; left: 0; right: 0; border-top: 2px dashed rgba(255,138,128,.85); }
-.rsv-name { margin: 7px 0 10px; font-size: 12px; font-weight: 600; color: #d9bda6; transition: color .18s; }
-.rsv-col:hover .rsv-tube { border-color: rgba(232,133,90,.9); }
-.rsv-col:hover .rsv-name { color: #ffe7d4; }
-.t-danger { color: #ff9a90 !important; } .t-warn { color: #ffd27a !important; }
-.w-ok { background: linear-gradient(180deg, #e8855a 0%, #a84e32 90%); }
-.w-warn { background: linear-gradient(180deg, #ffb74d 0%, #e65100 90%); }
-.w-danger { background: linear-gradient(180deg, #e57373 0%, #b71c1c 90%); }
+.cpb-actions { display: flex; align-items: center; gap: 7px; margin-left: auto; flex-wrap: wrap; }
+.pess-toggle {
+  display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none;
+  font-size: 12px; color: #c8a080; padding: 5px 11px 5px 9px; border-radius: 20px;
+  border: 1px solid rgba(201,99,66,.28); background: rgba(255,255,255,.04);
+  transition: all .15s;
+}
+.pess-toggle:hover { background: rgba(255,255,255,.09); }
+.pess-toggle.on { background: rgba(201,99,66,.22); border-color: rgba(201,99,66,.5); color: #ffd8b8; }
+.pess-toggle input { accent-color: #c96342; cursor: pointer; }
+.cpb-btn {
+  padding: 6px 14px; border: 1px solid rgba(201,99,66,.35); border-radius: 20px;
+  background: rgba(255,255,255,.06); font-size: 12px; font-weight: 600; color: #e8d0b8;
+  cursor: pointer; transition: all .15s; white-space: nowrap;
+}
+.cpb-btn:hover { background: rgba(201,99,66,.18); border-color: rgba(201,99,66,.6); }
+.cpb-btn.accent { background: var(--grad); border: none; color: #fff; box-shadow: 0 3px 10px rgba(201,99,66,.35); }
+.cpb-btn.accent:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
+.cpb-btn:disabled { opacity: .5; cursor: not-allowed; }
 
-/* ════════════════════════════════════════════════════
-   口径说明
-   ════════════════════════════════════════════════════ */
-.cp-method { margin-bottom: 16px; padding: 16px 18px; background: var(--glass);
-  backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
-  border: 1px solid var(--glass-border); border-radius: var(--radius); box-shadow: var(--glass-shadow); }
-.cp-method .section-title { font-size: 13.5px; font-weight: 800; color: var(--text); }
-.cp-method ul { margin: 0; padding-left: 18px; }
-.cp-method li { font-size: 12px; color: var(--text-2); line-height: 1.95; }
-.cp-method li b { color: var(--text); }
-.cp-method-note { margin: 8px 0; padding: 9px 13px; background: var(--surface-tint);
-  border-left: 3px solid var(--primary); border-radius: var(--radius-xs); list-style: none; margin-left: -18px; }
+/* ═══════════════════════════════════════════
+   水位总览条（横向进度条）
+   ═══════════════════════════════════════════ */
+.rsv-strip {
+  display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px;
+  background: var(--surface-1); border: 1px solid var(--border-soft);
+  border-radius: var(--radius); padding: 10px 14px;
+  box-shadow: var(--shadow-sm);
+}
+.rsv-seg {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  position: relative; height: 22px;
+}
+.rsv-seg:hover .rsv-fill { filter: brightness(1.12); }
+.rsv-fill {
+  position: relative; height: 14px; border-radius: 7px; min-width: 4px;
+  transition: width .7s cubic-bezier(.2,.8,.3,1);
+  flex-shrink: 0;
+}
+.rsv-fill.w-ok { background: linear-gradient(90deg, #c96342, #e8855a); }
+.rsv-fill.w-warn { background: linear-gradient(90deg, #e65100, #ffb74d); }
+.rsv-fill.w-danger { background: linear-gradient(90deg, #b71c1c, #e57373); }
+.rsv-warn-mark {
+  position: absolute; top: -3px; bottom: -3px; width: 2px;
+  background: rgba(255,82,82,.9); border-radius: 1px;
+  box-shadow: 0 0 4px rgba(255,82,82,.6);
+}
+.rsv-label { font-size: 11.5px; color: var(--text-2); font-weight: 600; min-width: 36px; white-space: nowrap; }
+.rsv-val { font-size: 11.5px; color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
 
-/* ════════════════════════════════════════════════════
-   池子卡片
-   ════════════════════════════════════════════════════ */
-.cp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
-.cp-card { position: relative; background: var(--glass);
-  backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
-  border: 1px solid var(--glass-border); border-radius: var(--radius); padding: 16px 16px 14px;
-  box-shadow: var(--glass-shadow); transition: box-shadow .2s, transform .2s; transform: translateZ(0);
-  overflow: hidden; }
-.cp-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
-  background: var(--grad); opacity: .9; }
-.cp-card.st-warn::before { background: linear-gradient(90deg, #ffb74d, #e65100); }
-.cp-card.st-danger::before { background: linear-gradient(90deg, #e57373, #b71c1c); }
-.cp-card.st-none::before { display: none; }
-.cp-card:hover { box-shadow: 0 14px 44px rgba(100,60,30,.2), 0 1px 0 rgba(255,255,255,.7) inset; transform: translateY(-2px); }
-.cp-card.st-danger { border-color: var(--c-danger-bdr); background: linear-gradient(180deg, var(--c-danger-bg), var(--glass) 38%); }
-.cp-card.st-warn { border-color: var(--c-warn-bdr); }
-.cp-card.st-none { border-style: dashed; border-color: var(--border); box-shadow: none; background: rgba(255,252,248,.4); }
-.cpc-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 13px; }
-.cpc-dept { font-size: 15px; font-weight: 800; color: var(--text); letter-spacing: .2px; }
-.cpc-badge { font-size: 11px; font-weight: 700; padding: 3px 12px; border-radius: 20px; }
-.bg-ok { background: var(--c-success-bg); color: var(--c-success); border: 1px solid var(--c-success-bdr); }
-.bg-warn { background: var(--c-warn-bg); color: var(--c-warn); border: 1px solid var(--c-warn-bdr); }
-.bg-danger { background: var(--c-danger-bg); color: var(--c-danger); border: 1px solid var(--c-danger-bdr); animation: pulse 1.6s ease-in-out infinite; }
+/* ═══════════════════════════════════════════
+   池列表
+   ═══════════════════════════════════════════ */
+.cp-list {
+  background: var(--surface-1); border: 1px solid var(--border-soft);
+  border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow-sm);
+}
 
-.cpc-body { display: flex; gap: 16px; align-items: stretch; }
-.tank { position: relative; width: 74px; min-height: 130px; border-radius: 10px 10px 14px 14px;
-  background: linear-gradient(180deg, rgba(255,252,248,.92), rgba(244,232,218,.96)); overflow: hidden; flex-shrink: 0;
-  border: 2px solid #e3d1bc; box-shadow: 0 2px 8px rgba(120,80,40,.08) inset; }
-.tank-glass { position: absolute; inset: 0; pointer-events: none; z-index: 3;
-  background: linear-gradient(105deg, rgba(255,255,255,.4) 5%, transparent 14%, transparent 80%, rgba(255,255,255,.2) 94%); }
-.tank-water { position: absolute; bottom: 0; left: 0; right: 0; transition: height .8s cubic-bezier(.2,.8,.3,1); z-index: 1; }
-.tank-wave.wave2 { animation-duration: 8s; animation-direction: reverse; opacity: .5; top: -5px; }
-.tank-warnline { position: absolute; bottom: 33.3%; left: 0; right: 0; z-index: 2;
-  border-top: 2px dashed rgba(198,40,40,.8); }
-.tank-warnline b { position: absolute; right: 1px; top: -7px; font-size: 9px; color: var(--c-danger);
-  font-weight: 700; background: rgba(255,255,255,.85); border-radius: 4px; padding: 0 3px; line-height: 13px; }
+/* 池行 */
+.pool-row {
+  display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+  border-bottom: 1px solid var(--border-soft); cursor: pointer;
+  transition: background .14s; position: relative;
+  border-left: 3px solid transparent;
+}
+.pool-row:last-child { border-bottom: none; }
+.pool-row:hover { background: var(--surface-tint); }
+.pool-row.active { background: color-mix(in srgb, var(--primary) 4%, transparent); }
+.pool-row.st-ok { border-left-color: var(--c-success); }
+.pool-row.st-warn { border-left-color: var(--c-warn); }
+.pool-row.st-danger { border-left-color: var(--c-danger); }
+.pool-row.st-none { border-left-color: var(--border); cursor: default; }
+.pool-row.nocfg { opacity: .7; }
 
-.cpc-nums { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 3px; min-width: 0; }
-.cpc-balance { font-size: 28px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; line-height: 1.08; letter-spacing: -.3px; }
-.cpc-balance.neg { color: var(--c-danger); }
-.cpc-negtip { font-size: 10.5px; color: var(--c-danger); background: var(--c-danger-bg); border-radius: var(--radius-xs); padding: 3px 8px; line-height: 1.45; }
-.cpc-warn { font-size: 11px; color: var(--c-warn); font-weight: 600; }
-.cpc-warn em { font-style: normal; color: var(--muted); font-weight: 400; }
-.cpc-spark { margin-top: 7px; display: block; }
-.cpc-spark-labels { display: flex; justify-content: space-between; width: 158px; font-size: 9.5px; color: var(--muted); padding: 0 4px; }
-.cpc-spark-labels i { font-style: normal; }
+/* 水管 */
+.pool-tube {
+  width: 12px; height: 48px; border-radius: 6px 6px 8px 8px; flex-shrink: 0;
+  background: rgba(0,0,0,.06); border: 1.5px solid var(--border);
+  position: relative; overflow: hidden;
+}
+.pool-tube-fill {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  transition: height .8s cubic-bezier(.2,.8,.3,1);
+  border-radius: 0 0 5px 5px;
+}
+.pool-tube-fill.w-ok { background: linear-gradient(180deg, #e8855a, #a84e32); }
+.pool-tube-fill.w-warn { background: linear-gradient(180deg, #ffb74d, #e65100); }
+.pool-tube-fill.w-danger { background: linear-gradient(180deg, #e57373, #b71c1c); }
+.ptf-wave {
+  position: absolute; top: -4px; left: 0; width: 200%; height: 5px;
+  background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 5" preserveAspectRatio="none"><path d="M0 2.5 Q 15 0 30 2.5 T 60 2.5 V5 H0 Z" fill="%23ffffff" opacity="0.5"/></svg>') repeat-x;
+  background-size: 60px 5px; animation: waveDrift 4s linear infinite;
+}
+@keyframes waveDrift { to { transform: translateX(-50%); } }
+.pool-tube-warn {
+  position: absolute; left: -2px; right: -2px; bottom: 33.3%;
+  border-top: 1.5px dashed rgba(198,40,40,.75);
+}
 
-.cpc-vitals { display: flex; gap: 8px; margin-top: 13px; }
-.vital { flex: 1; text-align: center; padding: 8px 4px; border-radius: var(--radius-sm);
-  background: var(--surface-tint); border: 1px solid var(--border-soft); }
-.vital b { display: block; font-size: 15px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
-.vital i { font-style: normal; font-size: 10px; color: var(--muted); }
-.vital.good b { color: var(--c-success); } .vital.bad b { color: var(--c-danger); }
+/* 池行各列 */
+.pool-id { display: flex; flex-direction: column; gap: 3px; min-width: 60px; flex-shrink: 0; }
+.pool-name { font-size: 14px; font-weight: 800; color: var(--text); }
+.pool-badge {
+  font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 20px;
+  width: fit-content;
+}
+.bd-ok { background: var(--c-success-bg); color: var(--c-success); border: 1px solid var(--c-success-bdr); }
+.bd-warn { background: var(--c-warn-bg); color: var(--c-warn); border: 1px solid var(--c-warn-bdr); }
+.bd-danger { background: var(--c-danger-bg); color: var(--c-danger); border: 1px solid var(--c-danger-bdr); animation: cpPulse 1.6s ease-in-out infinite; }
+.bd-none { background: var(--surface-tint); color: var(--muted); border: 1px solid var(--border); }
+.pool-badge.err { background: var(--c-danger-bg); color: var(--c-danger); border: 1px solid var(--c-danger-bdr); }
 
-.cpc-expands { display: flex; gap: 0; margin-top: 11px; border-top: 1px dashed var(--border); }
-.cpc-expand { flex: 1; padding: 7px 2px; border: none; background: none; font-size: 11px; font-weight: 600; color: var(--muted); cursor: pointer; transition: color .14s; }
-.cpc-expand:hover { color: var(--text); }
-.cpc-expand.proj { border-left: 1px dashed var(--border); color: var(--c-info); }
-.cpc-expand.proj:hover { color: #0d47a1; }
-.cpc-detail { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 9px; overflow: hidden; }
-.cpd-enter-active { transition: all .25s ease; } .cpd-enter-from { opacity: 0; transform: translateY(-6px); }
-.cpd-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; padding: 3px 0; color: var(--text-2); }
-.cpd-row i { font-style: normal; }
-.cpd-row b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.cpd-row.in b { color: var(--c-success); }
-.cpd-row.out b { color: var(--c-danger); }
-.cpd-sep { border-top: 1px dashed var(--border); margin: 7px 0; }
-.cpc-unconfigured { text-align: center; padding: 26px 0 30px; color: var(--muted); font-size: 13px; }
+.pool-balance {
+  font-size: 24px; font-weight: 900; color: var(--text);
+  font-variant-numeric: tabular-nums; line-height: 1; min-width: 80px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.pool-balance.neg { color: var(--c-danger); }
+.pool-warn-line-label { font-size: 10px; font-weight: 500; color: var(--c-warn); }
 
-/* ════════════════════════════════════════════════════
-   调拨表单 + 台账
-   ════════════════════════════════════════════════════ */
-.cp-btn { padding: 6px 13px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
-  background: var(--surface-tint); font-size: 12.5px; font-weight: 600; color: var(--primary); cursor: pointer; transition: all .16s; }
-.cp-btn:hover { background: rgba(201,99,66,.13); border-color: var(--primary); }
-.cp-btn.primary { background: var(--grad); color: #fff; border: none; box-shadow: 0 3px 12px var(--primary-glow); }
-.cp-btn.primary:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
-.cp-btn:disabled { opacity: .5; cursor: not-allowed; }
-.cp-transfer-form { display: flex; gap: 8px; align-items: center; margin-top: 14px; padding: 14px;
-  background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); flex-wrap: wrap;
-  box-shadow: var(--shadow-sm); }
-.tr-arrow { font-weight: 800; color: var(--primary); }
-.cp-sel, .cp-inp { padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); font-size: 12.5px; background: #fff; color: var(--text); transition: border-color .14s, box-shadow .14s; }
-.cp-sel:focus, .cp-inp:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-glow); }
-.cp-tr-card { margin-top: 14px; padding: 16px; }
-.cp-tr-card .section-title { font-size: 13.5px; font-weight: 800; color: var(--text); }
-.tr-list { display: flex; flex-direction: column; gap: 6px; }
-.tr-item { display: flex; align-items: center; gap: 14px; padding: 9px 13px; border-radius: var(--radius-sm); background: var(--surface-tint); font-size: 12.5px; border: 1px solid transparent; transition: background .14s; }
-.tr-item:hover { background: rgba(201,99,66,.07); }
-.tr-date { color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.tr-route { display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--text); flex-shrink: 0; }
-.tr-pipe { font-style: normal; font-weight: 700; font-size: 12px; color: var(--primary); background: rgba(201,99,66,.1); padding: 2px 10px; border-radius: 20px; }
-.tr-meta { display: flex; gap: 12px; color: var(--muted); flex: 1; min-width: 0; flex-wrap: wrap; }
-.tr-meta em { font-style: normal; }
-.tr-meta .tr-reject { color: var(--c-danger); }
-.tr-status { font-style: normal; font-size: 11px; font-weight: 700; padding: 2px 10px; border-radius: 20px; flex-shrink: 0; }
-.ts-pending { background: var(--c-warn-bg); color: var(--c-warn); }
-.ts-approved { background: var(--c-success-bg); color: var(--c-success); }
-.ts-rejected { background: rgba(120,120,120,.13); color: #757575; }
-.tr-item.trs-rejected .tr-route, .tr-item.trs-rejected .tr-pipe { opacity: .55; }
-.tr-item.trs-pending { background: #fff8f0; border-color: var(--c-warn-bdr); border-style: dashed; }
-.tr-hint { width: 100%; font-size: 11px; color: var(--muted); }
-.cp-ok { border: 1px solid var(--c-success-bdr); color: var(--c-success); background: var(--c-success-bg); border-radius: var(--radius-xs); padding: 3px 10px; font-size: 11px; font-weight: 600; cursor: pointer; transition: filter .14s; }
-.cp-ok:hover { filter: brightness(.96); }
-.cp-del { border: 1px solid var(--c-danger-bdr); color: var(--c-danger); background: var(--c-danger-bg); border-radius: var(--radius-xs); padding: 3px 10px; font-size: 11px; font-weight: 600; cursor: pointer; transition: filter .14s; }
-.cp-del:hover { filter: brightness(.96); }
-.cp-cfg-note { margin-top: 8px; font-size: 11px; color: var(--c-warn); }
+.pool-spark { display: block; flex-shrink: 0; }
+
+.pool-kpi-row { display: flex; gap: 5px; flex-wrap: wrap; flex: 1; }
+.kpi-tag {
+  font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 20px;
+  border: 1px solid var(--border-soft); background: var(--surface-tint); color: var(--muted);
+  white-space: nowrap;
+}
+.kpi-tag.good { color: var(--c-success); background: var(--c-success-bg); border-color: var(--c-success-bdr); }
+.kpi-tag.bad { color: var(--c-danger); background: var(--c-danger-bg); border-color: var(--c-danger-bdr); }
+.kpi-tag.warn { color: var(--c-warn); background: var(--c-warn-bg); border-color: var(--c-warn-bdr); }
+
+.pool-chevron {
+  font-size: 20px; color: var(--muted); transition: transform .2s, color .14s;
+  flex-shrink: 0; line-height: 1;
+}
+.pool-chevron.open { transform: rotate(90deg); color: var(--primary); }
+.pool-row:hover .pool-chevron { color: var(--text-2); }
+
+.pool-nocfg-txt { font-size: 12.5px; color: var(--muted); flex: 1; }
+
+/* 手风琴详情 */
+.acc-enter-active { transition: all .24s ease; }
+.acc-leave-active { transition: all .18s ease; }
+.acc-enter-from, .acc-leave-to { opacity: 0; transform: translateY(-8px); max-height: 0; }
+.acc-enter-to, .acc-leave-from { max-height: 600px; }
+
+.pool-detail {
+  padding: 14px 16px 16px 28px; border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--primary) 3%, var(--surface-1));
+  border-left: 3px solid color-mix(in srgb, var(--primary) 30%, transparent);
+}
+.pd-cols { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+.pd-col { display: flex; flex-direction: column; gap: 2px; }
+.pd-col-head {
+  font-size: 11px; font-weight: 800; color: var(--primary); text-transform: uppercase;
+  letter-spacing: .6px; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;
+}
+.pd-row { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; padding: 2.5px 0; color: var(--text-2); border-bottom: 1px solid var(--border-soft); }
+.pd-row:last-child { border-bottom: none; }
+.pd-row i { font-style: normal; }
+.pd-row b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.pd-row.in b { color: var(--c-success); }
+.pd-row.out b { color: var(--c-danger); }
+.pd-negtip { font-size: 10.5px; color: var(--c-danger); background: var(--c-danger-bg); border-radius: var(--radius-xs); padding: 4px 8px; margin-top: 4px; }
 
 /* 项目维度 */
-.cpc-proj-dim { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 9px; overflow: hidden; }
-.cpd-proj-head { display: flex; justify-content: space-between; align-items: center;
-  font-size: 11px; color: var(--text-2); font-weight: 700; margin-bottom: 7px; }
-.cpd-dim-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); overflow: hidden; }
-.cpd-dim-seg button { border: none; background: transparent; padding: 3px 10px; font-size: 10.5px;
-  color: var(--muted); cursor: pointer; font-weight: 600; transition: all .14s; }
-.cpd-dim-seg button + button { border-left: 1px solid var(--border); }
-.cpd-dim-seg button.on { background: var(--primary); color: #fff; }
-.cpd-proj-sum b { font-variant-numeric: tabular-nums; }
-.cpd-loading { font-size: 11.5px; color: var(--muted); padding: 7px 0; text-align: center; }
-.cpd-proj-table { display: flex; flex-direction: column; gap: 0; }
-.cpd-proj-row {
-  display: flex; align-items: center; gap: 6px; padding: 5px 0;
-  font-size: 11.5px; border-bottom: 1px solid var(--border-soft);
-}
-.cpr-name { flex: 1; color: var(--text); font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
-.cpr-in { color: var(--c-success); font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 54px; text-align: right; }
-.cpr-out { color: var(--c-danger); font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 54px; text-align: right; }
-.cpr-net { font-weight: 700; font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 54px; text-align: right; }
-.cpd-proj-more { font-size: 11px; color: var(--muted); padding: 5px 0; text-align: center; }
-.cpd-proj-more a { color: var(--primary); text-decoration: none; }
-.cpd-proj-more a:hover { text-decoration: underline; }
+.dim-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); overflow: hidden; margin-left: 4px; }
+.dim-seg button { border: none; background: transparent; padding: 2px 8px; font-size: 10px; color: var(--muted); cursor: pointer; font-weight: 600; transition: all .12s; }
+.dim-seg button + button { border-left: 1px solid var(--border); }
+.dim-seg button.on { background: var(--primary); color: #fff; }
+.pd-load-btn { border: 1px solid var(--border-strong); background: var(--surface-tint); color: var(--text-2); font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-xs); cursor: pointer; margin-left: 4px; transition: all .12s; }
+.pd-load-btn:hover { background: rgba(201,99,66,.12); border-color: var(--primary); color: var(--primary); }
+.pd-loading { font-size: 11px; color: var(--muted); padding: 8px 0; }
+.pd-hint { font-size: 11px; color: var(--muted); padding: 8px 0; font-style: italic; }
+.pd-proj-list { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; }
+.pd-proj-row { display: flex; align-items: center; gap: 5px; padding: 3px 0; font-size: 11px; border-bottom: 1px solid var(--border-soft); }
+.pd-proj-row:last-child { border-bottom: none; }
+.ppr-name { flex: 1; color: var(--text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
+.ppr-in { color: var(--c-success); font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 48px; text-align: right; }
+.ppr-out { color: var(--c-danger); font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 48px; text-align: right; }
+.ppr-net { font-weight: 700; font-variant-numeric: tabular-nums; flex-shrink: 0; min-width: 48px; text-align: right; }
+.pd-more { font-size: 11px; color: var(--muted); padding: 4px 0; }
+.pd-more a { color: var(--primary); text-decoration: none; }
+.pd-more a:hover { text-decoration: underline; }
 
-/* ════════════════════════════════════════════════════
-   池配置弹窗
-   ════════════════════════════════════════════════════ */
-.cp-table-wrap { overflow-x: auto; border-radius: var(--radius-sm); }
+/* ═══════════════════════════════════════════
+   调拨台账
+   ═══════════════════════════════════════════ */
+.cp-ledger {
+  margin-top: 12px; background: var(--surface-1); border: 1px solid var(--border-soft);
+  border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow-sm);
+}
+.ledger-head {
+  padding: 9px 16px; font-size: 13px; font-weight: 800; color: var(--text);
+  border-bottom: 1px solid var(--border-soft); background: var(--surface-tint);
+}
+.ledger-head em { font-style: normal; color: var(--muted); font-weight: 500; font-size: 11.5px; }
+.ledger-list { display: flex; flex-direction: column; }
+.ledger-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+  font-size: 12px; border-bottom: 1px solid var(--border-soft); flex-wrap: wrap;
+}
+.ledger-item:last-child { border-bottom: none; }
+.ledger-item:hover { background: var(--surface-tint); }
+.ledger-item.trs-pending { background: color-mix(in srgb, var(--c-warn) 5%, transparent); border-left: 3px solid var(--c-warn); }
+.ledger-item.trs-rejected { opacity: .6; }
+.ts-chip { font-size: 10.5px; font-weight: 700; padding: 2px 9px; border-radius: 20px; flex-shrink: 0; }
+.ts-pending { background: var(--c-warn-bg); color: var(--c-warn); }
+.ts-approved { background: var(--c-success-bg); color: var(--c-success); }
+.ts-rejected { background: rgba(120,120,120,.12); color: #888; }
+.tr-date { color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.tr-route { display: flex; align-items: center; gap: 6px; font-weight: 700; color: var(--text); flex-shrink: 0; }
+.tr-pipe { font-style: normal; color: var(--primary); font-weight: 800; }
+.tr-amt { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.tr-notes { display: flex; gap: 10px; color: var(--muted); flex: 1; flex-wrap: wrap; }
+.tr-notes em { font-style: normal; }
+.tr-notes .rej { color: var(--c-danger); }
+.tr-ok { border: 1px solid var(--c-success-bdr); color: var(--c-success); background: var(--c-success-bg); border-radius: var(--radius-xs); padding: 3px 10px; font-size: 11px; font-weight: 600; cursor: pointer; transition: filter .12s; }
+.tr-ok:hover { filter: brightness(.94); }
+.tr-del { border: 1px solid var(--c-danger-bdr); color: var(--c-danger); background: var(--c-danger-bg); border-radius: var(--radius-xs); padding: 3px 10px; font-size: 11px; font-weight: 600; cursor: pointer; transition: filter .12s; }
+.tr-del:hover { filter: brightness(.94); }
+
+/* ═══════════════════════════════════════════
+   Modal 通用
+   ═══════════════════════════════════════════ */
+.modal-mask {
+  position: fixed; inset: 0; background: rgba(10,5,2,.48);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  display: flex; align-items: center; justify-content: center; z-index: 1000;
+}
+.modal-enter-active { transition: all .2s ease; }
+.modal-leave-active { transition: all .16s ease; }
+.modal-enter-from, .modal-leave-to { opacity: 0; transform: scale(.96); }
+
+.modal-box {
+  background: var(--surface-2); border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg); width: min(560px, 94vw); max-height: 88vh;
+  overflow: hidden; display: flex; flex-direction: column;
+  box-shadow: 0 24px 64px rgba(10,5,2,.38), 0 1px 0 rgba(255,255,255,.8) inset;
+}
+.modal-box.transfer-modal { width: min(520px, 94vw); }
+.modal-box.config-modal { width: min(820px, 96vw); }
+
+.modal-hd {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px 14px; border-bottom: 1px solid var(--border-soft);
+  background: var(--surface-tint); flex-shrink: 0;
+}
+.modal-title { font-size: 14px; font-weight: 800; color: var(--text); }
+.modal-close {
+  width: 28px; height: 28px; border: none; background: var(--surface-1);
+  border-radius: 50%; cursor: pointer; font-size: 14px; color: var(--muted);
+  display: flex; align-items: center; justify-content: center; transition: all .14s;
+  border: 1px solid var(--border-soft);
+}
+.modal-close:hover { background: var(--c-danger-bg); color: var(--c-danger); border-color: var(--c-danger-bdr); }
+.modal-bd { padding: 20px; overflow-y: auto; flex: 1; }
+.modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-soft); }
+
+/* 口径说明 modal 内容 */
+.method-list { margin: 0; padding-left: 18px; }
+.method-list li { font-size: 12.5px; color: var(--text-2); line-height: 2; }
+.method-list li b { color: var(--text); }
+.method-note {
+  margin: 10px 0; padding: 10px 14px; background: var(--surface-tint);
+  border-left: 3px solid var(--primary); border-radius: var(--radius-xs);
+  list-style: none; margin-left: -18px;
+}
+
+/* 调拨表单 */
+.tr-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px 10px; align-items: end; }
+.tr-field { display: flex; flex-direction: column; gap: 5px; }
+.tr-field-full { grid-column: 1 / -1; }
+.tr-arrow-center { font-size: 22px; font-weight: 900; color: var(--primary); padding-bottom: 6px; text-align: center; }
+.tr-label { font-size: 11.5px; font-weight: 700; color: var(--text-2); }
+.tr-sel, .tr-inp {
+  padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
+  font-size: 13px; background: var(--surface-1); color: var(--text); width: 100%;
+  transition: border-color .14s, box-shadow .14s; box-sizing: border-box;
+}
+.tr-sel:focus, .tr-inp:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-glow); }
+.tr-hint-box {
+  margin-top: 12px; padding: 10px 13px; font-size: 11.5px; color: var(--c-warn);
+  background: var(--c-warn-bg); border-radius: var(--radius-sm); border: 1px solid var(--c-warn-bdr);
+}
+
+/* 配置表格 */
+.cp-table-wrap { overflow-x: auto; border-radius: var(--radius-sm); border: 1px solid var(--border-soft); }
 .cp-table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: 12.5px; }
 .cp-table th { background: var(--surface-tint); color: var(--muted); padding: 8px 11px; font-weight: 700; text-align: left; white-space: nowrap; }
 .cp-table td { padding: 8px 11px; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
-.cp-table td b { white-space: normal; word-break: keep-all; }
-.cp-table .cp-inp { width: auto; }
-.cp-table input[type="date"].cp-inp { width: 138px; }
-.cp-modal-mask { position: fixed; inset: 0; background: rgba(20,10,5,.42); backdrop-filter: blur(8px);
-  display: flex; align-items: center; justify-content: center; z-index: 1000; animation: fadeIn .18s ease; }
-.cp-modal { background: var(--surface-2); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
-  border: 1px solid var(--glass-border); border-radius: var(--radius-lg); padding: 22px;
-  width: min(780px, 94vw); max-height: 84vh; overflow-y: auto;
-  box-shadow: var(--shadow-lg), 0 1px 0 rgba(255,255,255,.8) inset; }
-.cp-modal-title { font-size: 14.5px; font-weight: 800; color: var(--text); margin-bottom: 14px; line-height: 1.5; }
+.cp-table tbody tr:last-child td { border-bottom: none; }
+.cfg-note { margin-top: 10px; font-size: 11px; color: var(--c-warn); }
 
+/* 响应式 */
 @media (max-width: 768px) {
-  .hero-body { gap: 12px; }
-  .hero-proj { margin-left: 0; width: 100%; }
-  .hp-step { flex: 1; min-width: 0; }
-  .hb-num { font-size: 30px; }
-  .reservoir { padding: 12px 12px 6px; }
-  .rsv-rail { height: 130px; }
+  .pd-cols { grid-template-columns: 1fr; }
+  .cpb-summary { border: none; padding: 0; margin: 0; }
+  .cpb-projs { flex-wrap: wrap; }
+  .pool-spark { display: none; }
+  .tr-grid { grid-template-columns: 1fr; }
+  .tr-arrow-center { display: none; }
 }
 </style>
