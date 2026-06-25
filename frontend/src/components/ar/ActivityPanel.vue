@@ -1119,6 +1119,10 @@ function onKey(e) {
 
 /* ── 主体滚动区 ── */
 .ap-body { flex: 1; overflow-y: auto; padding: 14px 16px 8px; display: flex; flex-direction: column; gap: 10px; scroll-behavior: smooth; }
+/* 滚动容器内每个块都锁定自然高度：.lc-detail / .dun-section / 审计区都带
+   overflow:hidden，若被 flex 压缩，自动最小尺寸会塌缩为 0 进而裁切内容
+   （表现为"工作台内容被压缩看不见"）。统一禁止收缩，超出由 .ap-body 滚动。 */
+.ap-body > * { flex-shrink: 0; }
 .ap-body::-webkit-scrollbar { width: 4px; }
 .ap-body::-webkit-scrollbar-track { background: transparent; }
 .ap-body::-webkit-scrollbar-thumb { background: rgba(160,120,80,.25); border-radius: 4px; }
@@ -1280,6 +1284,10 @@ function onKey(e) {
   overflow: hidden;
   box-shadow: 0 6px 28px rgba(40,20,8,.09), 0 2px 6px rgba(40,20,8,.05);
   display: flex; flex-direction: column; gap: 0;
+  /* 关键：在 .ap-body 这个纵向 flex 容器里，overflow:hidden 会让该元素的
+     自动最小尺寸塌缩为 0，被 flex 压扁后内容被裁切（表现为"工作台内容被压缩
+     看不见"）。flex-shrink:0 锁定其自然高度，让滚动交给 .ap-body 承担。 */
+  flex-shrink: 0;
 }
 
 /* 节点详情头部 */
@@ -1303,21 +1311,14 @@ function onKey(e) {
 }
 .nd-stage-sum { font-size: 11px; color: #9b8070; margin-left: auto; font-weight: 600; }
 
-/* 详情主体 */
-.lc-detail > *:not(.nd-stage-header) {
-  padding: 0 16px;
-}
-.lc-detail > *:not(.nd-stage-header):first-of-type,
-.lc-detail > .nd-fields:first-of-type,
-.lc-detail > .nd-skip-card,
-.lc-detail > .nd-fields,
-.lc-detail > .nd-fields-2 {
-  margin-top: 12px;
-}
+/* 详情主体：每个直接子块自带 margin:x 16px 做横向内缩并保留各自的纵向
+   padding；这里只兜底首块顶距与末块底距。不要再加 padding:0 16px 通配规则
+   ——它会以更高特异性清掉子块的纵向 padding，把字段/按钮挤成一条线。 */
+.lc-detail > *:not(.nd-stage-header):first-of-type { margin-top: 12px; }
 .lc-detail > *:last-child { margin-bottom: 14px; }
 
 /* 跳过开票卡片 */
-.nd-skip-card {
+.lc-detail > .nd-skip-card {
   display: flex; align-items: center; gap: 12px;
   background: linear-gradient(135deg, #f5f0eb, #faf8f5);
   border: 1.5px solid rgba(160,120,80,.2);
@@ -1343,8 +1344,11 @@ function onKey(e) {
 }
 .nd-skip-toggle:hover { border-color: #8e63c5; color: #8e63c5; background: rgba(142,99,197,.05); }
 
-/* 字段区 */
-.nd-fields {
+/* 字段区
+   注意：选择器写成 .lc-detail > .nd-fields 提升特异性，否则会被上方
+   .lc-detail > *:not(.nd-stage-header){padding:0 16px} 覆盖，导致内边距
+   被清零、字段挤成一团。 */
+.lc-detail > .nd-fields {
   background: #faf7f3;
   border: 1.5px solid rgba(160,120,80,.14);
   border-radius: 10px;
@@ -1352,9 +1356,10 @@ function onKey(e) {
   display: flex; flex-direction: column; gap: 9px;
   margin: 12px 16px 0;
 }
-.nd-fields-2 {
+.lc-detail > .nd-fields-2 {
   display: grid; grid-template-columns: 1fr 1fr;
   gap: 9px 18px;
+  padding: 0;
   margin: 12px 16px 0;
 }
 .kf { display: flex; align-items: center; gap: 8px; min-width: 0; }
