@@ -972,19 +972,41 @@ def prepaid_balance(request):
     })
 
 
+def _parse_plan_item_body(data):
+    """解析计划批次入参（编辑/追加共用）→ (planned_date, amount, notes) 或 (None, err)。"""
+    raw_date = (data.get('planned_date') or '').strip()
+    if not raw_date:
+        return None, '计划日期必填'
+    try:
+        planned_date = datetime.date.fromisoformat(raw_date)
+    except (ValueError, TypeError):
+        return None, '计划日期格式有误（应为 YYYY-MM-DD）'
+    try:
+        amount = Decimal(str(data.get('amount')))
+    except (InvalidOperation, ValueError, TypeError):
+        return None, '计划金额格式有误'
+    # Decimal('NaN')/('Infinity') 能构造但后续比较会抛 InvalidOperation → 显式拦掉，避免 500
+    if not amount.is_finite():
+        return None, '计划金额格式有误'
+    if amount <= 0:
+        return None, '计划金额必须大于0'
+    notes = (data.get('notes') or '').strip()[:200]
+    return (planned_date, amount, notes), None
+
+
 @csrf_exempt
 @pk_required()
-def payment_plan_item_delete(request, pk, iid):
-    """DELETE /payments/<pk>/plan-items/<iid> — 撤销某一批计划排款。
+def payment_plan_items(request, pk):
+    """POST /payments/<pk>/plan-items — 给某条付款台账追加一批计划排款（排款管理）。
 
-    汇总金额/最早计划日随之回退；该付款若来源于审批（approval 静默ID），
-    审批的已排款累计同步扣减、归档状态回退（可继续分批排款）。
-    护栏：回退后计划合计不得低于 已付+预付冲抵；最后一批不可删（请删除整条记录）。"""
+    与审批侧「分批排款」同口径：汇总金额/最早计划日随之派生刷新；该付款若来源于
+    审批，审批的已排款累计与归档状态同步对账。若已挂审批，本批不得使累计排款额
+    超过审批申请金额（剩余可排）。"""
     perms = get_request_perms(request)
     denied = _payments_page_denied(request, perms)
     if denied:
         return denied
-    if request.method != 'DELETE':
+    if request.method != 'POST':
         return err('Method not allowed', 405)
     if perms is not None and not perms.get('can_create'):
         return err('无排款操作权限', 403, 403)
@@ -994,31 +1016,116 @@ def payment_plan_item_delete(request, pk, iid):
         return err('排款记录不存在', 404)
     if not can_write_dept(request, p.department):
         return err('无权操作该部门', 403, 403)
-    try:
-        item = PaymentPlanItem.objects.get(pk=iid, payment_id=pk)
-    except PaymentPlanItem.DoesNotExist:
-        return err('计划批次不存在（可能已撤销）', 404)
-    if p.plan_items.count() <= 1:
-        return err('最后一批计划不可单独撤销——如需作废整条排款请使用删除记录')
-    paid = p.total_paid + (p.prepaid_offset_amount or Decimal('0'))
-    after = (p.total_amount or Decimal('0')) - item.amount
-    if after < paid:
-        return err(f'撤销后计划合计 {after} 将低于 已付+冲抵 {paid}，不能撤销；'
-                   f'请先删除对应付款明细')
+    parsed, error = _parse_plan_item_body(parse_body(request))
+    if error:
+        return err(error)
+    planned_date, amount, notes = parsed
+    approval_id = p.approval_id   # FK 一经建立即不可变，非锁读取用于确定锁序归属
     with transaction.atomic():
-        amt = item.amount
-        item.delete()
+        # 统一锁序：先审批后付款（与 _schedule_one 一致，避免 AB-BA 死锁）；
+        # 剩余可排在锁内重算，消除 TOCTOU（并发追加各自读快照导致超额）。
+        rec = (ApprovalRecord.objects.select_for_update().filter(pk=approval_id).first()
+               if approval_id else None)
+        p = Payment.objects.select_for_update().get(pk=pk)
+        if rec:
+            current = (PaymentPlanItem.objects.filter(payment__approval_id=approval_id)
+                       .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+            remaining = (rec.amount or Decimal('0')) - current
+            if amount > remaining:
+                return err(f'本批 {amount} 超过剩余可排 {remaining}'
+                           f'（申请 {rec.amount} − 已排 {current}）', 400, 400)
+        last = p.plan_items.order_by('-seq').first()
+        seq = (last.seq + 1) if last else 1
+        PaymentPlanItem.objects.create(payment=p, seq=seq, planned_date=planned_date,
+                                       amount=amount, notes=notes or f'追加排款 第{seq}批')
         _sync_payment_plan(p)
-        if p.approval_id:
-            rec = ApprovalRecord.objects.select_for_update().filter(pk=p.approval_id).first()
-            if rec:
-                rec.scheduled_amount = max(Decimal('0'),
-                                           (rec.scheduled_amount or Decimal('0')) - amt)
-                rec.archived = rec.scheduled_amount >= (rec.amount or Decimal('0'))
-                rec.save(update_fields=['scheduled_amount', 'archived', 'updated_at'])
+        _reconcile_approval_schedule(approval_id)
     p.refresh_from_db()
     return ok({'payment': p.to_dict(),
-               'message': f'已撤销该批计划 {amt}，汇总与审批已排款同步回退'})
+               'message': f'已追加计划批次 {amount}，汇总与审批已排款同步'})
+
+
+@csrf_exempt
+@pk_required()
+def payment_plan_item_detail(request, pk, iid):
+    """计划批次的编辑 / 撤销（排款管理）。
+
+    PUT    /payments/<pk>/plan-items/<iid> — 编辑某批计划的日期/金额/备注。
+    DELETE /payments/<pk>/plan-items/<iid> — 撤销某批计划。
+
+    两者都会派生刷新汇总（total_amount=批次之和、planned_date=最早批次日），并把来源
+    审批的已排款累计与归档状态重算对账。护栏：调整/撤销后计划合计不得低于 已付+预付
+    冲抵；已挂审批时累计排款不得超过申请金额；最后一批不可单独撤销（请删除整条排款）。"""
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    if request.method not in ('PUT', 'DELETE'):
+        return err('Method not allowed', 405)
+    if perms is not None and not perms.get('can_create'):
+        return err('无排款操作权限', 403, 403)
+    # 归属审批（FK 一经建立即不可变）：非锁读取仅用于确定锁序与存在性
+    try:
+        approval_id = Payment.objects.values_list('approval_id', flat=True).get(pk=pk)
+    except Payment.DoesNotExist:
+        return err('排款记录不存在', 404)
+
+    # PUT 入参在锁外解析（无需持锁）
+    if request.method == 'PUT':
+        parsed, error = _parse_plan_item_body(parse_body(request))
+        if error:
+            return err(error)
+        planned_date, amount, notes = parsed
+
+    with transaction.atomic():
+        # 统一锁序：先审批后付款（与 _schedule_one / 追加批次一致，避免 AB-BA 死锁）；
+        # 所有护栏在锁内以最新数据重算，消除 TOCTOU（并发编辑/撤销读旧快照越界）。
+        rec = (ApprovalRecord.objects.select_for_update().filter(pk=approval_id).first()
+               if approval_id else None)
+        try:
+            p = Payment.objects.select_for_update().get(pk=pk)
+        except Payment.DoesNotExist:
+            return err('排款记录不存在', 404)
+        if not can_write_dept(request, p.department):
+            return err('无权操作该部门', 403, 403)
+        try:
+            item = PaymentPlanItem.objects.get(pk=iid, payment_id=pk)
+        except PaymentPlanItem.DoesNotExist:
+            return err('计划批次不存在（可能已撤销）', 404)
+        paid = p.total_paid + (p.prepaid_offset_amount or Decimal('0'))
+
+        if request.method == 'DELETE':
+            if p.plan_items.count() <= 1:
+                return err('最后一批计划不可单独撤销——如需作废整条排款请使用删除记录')
+            after = (p.total_amount or Decimal('0')) - item.amount
+            if after < paid:
+                return err(f'撤销后计划合计 {after} 将低于 已付+冲抵 {paid}，不能撤销；'
+                           f'请先删除对应付款明细')
+            amt = item.amount
+            item.delete()
+            _sync_payment_plan(p)
+            _reconcile_approval_schedule(approval_id)
+            p.refresh_from_db()
+            return ok({'payment': p.to_dict(),
+                       'message': f'已撤销该批计划 {amt}，汇总与审批已排款同步回退'})
+
+        # PUT — 编辑批次
+        after = (p.total_amount or Decimal('0')) - item.amount + amount
+        if after < paid:
+            return err(f'调整后计划合计 {after} 将低于 已付+冲抵 {paid}，不能调整；'
+                       f'请先删除对应付款明细或调高金额')
+        if rec and after > (rec.amount or Decimal('0')):
+            return err(f'调整后累计排款 {after} 超过审批申请金额 {rec.amount}；'
+                       f'如需超额请先修改审批记录的申请金额', 400, 400)
+        item.planned_date = planned_date
+        item.amount = amount
+        item.notes = notes
+        item.save(update_fields=['planned_date', 'amount', 'notes'])
+        _sync_payment_plan(p)
+        _reconcile_approval_schedule(approval_id)
+        p.refresh_from_db()
+        return ok({'payment': p.to_dict(),
+                   'message': f'已调整该批计划为 {planned_date} · {amount}，汇总与审批已排款同步'})
 
 
 @csrf_exempt
@@ -1555,6 +1662,34 @@ def _sync_payment_plan(p):
     p.save(update_fields=['total_amount', 'planned_date', 'updated_at'])
 
 
+def _reconcile_approval_schedule(approval_id):
+    """审批「已排款」与「归档」状态 ←→ 付款台账「计划批次」的单一正源对账。
+
+    口径：审批.已排款 == 该审批关联付款台账的全部计划批次(PaymentPlanItem)之和。
+    任何会改变计划批次的付款台账写操作（编辑计划额/删除整条排款/编辑或撤销单批/
+    追加批次）之后都应调用本函数，把 scheduled_amount 重算为批次之和、并据此重置
+    archived（approved 记录按是否排满；rejected/canceled 维持终态归档）。
+
+    幂等：以「批次之和」为正源整体重算，多次调用结果一致，不会因增量漂移失真。
+    必须在改动 plan_items / 删除 Payment 之后调用（删除会级联清空批次→对账归零→
+    审批回到可排款态）。应在 transaction.atomic 内调用以与本次写操作同生共死。"""
+    if not approval_id:
+        return
+    rec = ApprovalRecord.objects.select_for_update().filter(pk=approval_id).first()
+    if not rec:
+        return
+    scheduled = (PaymentPlanItem.objects
+                 .filter(payment__approval_id=approval_id)
+                 .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+    rec.scheduled_amount = scheduled
+    # rejected/canceled 为终态，保持归档；approved 记录按是否排满申请金额决定归档
+    if rec.status in {'rejected', 'canceled'}:
+        rec.archived = True
+    else:
+        rec.archived = scheduled >= (rec.amount or Decimal('0'))
+    rec.save(update_fields=['scheduled_amount', 'archived', 'updated_at'])
+
+
 def _ensure_plan_item(p):
     """直建/导入的付款：生成首条计划明细（=计划日期+计划金额），维持派生不变量。"""
     if p.planned_date and not p.plan_items.exists():
@@ -1652,6 +1787,13 @@ def payment_detail(request, pk):
                            '不能直接修改；请在排款明细中撤销/追加批次')
             if str(fields.get('planned_date', p.planned_date)) != str(p.planned_date):
                 return err('该排款含多批计划，计划日期=最早批次日期，不能直接修改')
+        # 单批且来源审批：改后的计划额=该审批已排款，不得超过审批申请金额（防经台账超额排款）
+        if plan_n <= 1 and p.approval_id:
+            new_total = Decimal(str(fields.get('total_amount', p.total_amount)))
+            _rec = ApprovalRecord.objects.filter(pk=p.approval_id).first()
+            if _rec and new_total > (_rec.amount or Decimal('0')):
+                return err(f'计划额 {new_total} 超过来源审批申请金额 {_rec.amount}；'
+                           f'如需超额请先修改审批记录的申请金额', 400, 400)
         before_snapshot = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
         before_snapshot['installments_summary'] = _installments_summary(p.installments)
         with transaction.atomic():
@@ -1671,6 +1813,8 @@ def payment_detail(request, pk):
                     item.save(update_fields=['amount', 'planned_date'])
             if parsed_insts is not None:
                 _save_installments(p, parsed_insts)
+            # 计划额变更（单批与首条明细同步后）→ 审批「已排款/归档」对账，保持口径一致
+            _reconcile_approval_schedule(p.approval_id)
             after_snapshot = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
             after_snapshot['installments_summary'] = _installments_summary(p.installments)
             _record_payment_changes(p, before_snapshot, after_snapshot, request, action='update')
@@ -1688,9 +1832,12 @@ def payment_detail(request, pk):
         if p.prepaid_offsets.exists():
             return err('该排款已关联预付核销，不能直接删除；'
                        '请先到「预收预付」删除对应核销记录后再删本排款', 409, 409)
+        approval_id = p.approval_id   # 删除前留存：级联清空计划批次后据此把审批回退为可排款
         with transaction.atomic():
             _record_payment_changes(p, {}, {}, request, action='delete')
             p.delete()
+            # 整条排款删除 → 该审批已排款归零、归档回退，可重新排款
+            _reconcile_approval_schedule(approval_id)
         return ok({'deleted': pk})
 
     return err('Method not allowed', 405)
@@ -2018,10 +2165,15 @@ def _schedule_one(request, rec, planned_date, total_amount):
                           '如确需同日再排一笔相同金额，请稍候片刻再提交'), 409
     try:
         with transaction.atomic():
+            # 统一锁序：先锁审批，再锁付款（与台账侧排款管理一致，避免 AB-BA 死锁）
             rec_locked = ApprovalRecord.objects.select_for_update().get(pk=rec.pk)
             if rec_locked.archived:
                 return None, '记录已归档', 409
-            remaining = (rec_locked.amount or Decimal('0')) - (rec_locked.scheduled_amount or Decimal('0'))
+            # 已排款以「关联付款台账的计划批次之和」为正源（兼容历史 scheduled_amount
+            # 漂移与旧记录收养：收养时已 _ensure_plan_item 物化首条批次，此处即可如实计入）
+            already = (PaymentPlanItem.objects.filter(payment__approval_id=rec_locked.pk)
+                       .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+            remaining = (rec_locked.amount or Decimal('0')) - already
             if total_amount > remaining:
                 return None, f'本次排款 {total_amount} 超过剩余可排 {remaining}', 400
             if existing is None:
@@ -2051,10 +2203,9 @@ def _schedule_one(request, rec, planned_date, total_amount):
                                                planned_date=planned_date, amount=total_amount,
                                                notes=f'审批排款 第{seq}批')
                 _sync_payment_plan(p)
-            # 分批排款：累加已排；排满申请金额才归档，未排满留在审批管理继续分批
-            rec_locked.scheduled_amount = (rec_locked.scheduled_amount or Decimal('0')) + total_amount
-            rec_locked.archived = rec_locked.scheduled_amount >= (rec_locked.amount or Decimal('0'))
-            rec_locked.save(update_fields=['scheduled_amount', 'archived', 'updated_at'])
+            # 已排款/归档以批次之和对账（单一正源），替代易漂移的增量累加；
+            # 排满申请金额才归档，未排满留在审批管理可继续分批
+            _reconcile_approval_schedule(rec_locked.pk)
     except IntegrityError:
         return None, '重复排款：相同业务键的排款记录已存在', 409
     rec.refresh_from_db()
@@ -2289,9 +2440,11 @@ def payments_bulk_delete(request):
         if p.prepaid_offsets.exists():
             skipped.append({'id': p.id, 'reason': '已关联预付核销，不能删除；请先删除对应核销记录'})
             continue
+        approval_id = p.approval_id   # 删除前留存，删后把来源审批回退为可排款
         with transaction.atomic():
             _record_payment_changes(p, {}, {}, request, action='delete')
             p.delete()
+            _reconcile_approval_schedule(approval_id)
         deleted += 1
     return ok({'deleted': deleted, 'skipped': skipped,
                'message': f'已删除 {deleted} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})

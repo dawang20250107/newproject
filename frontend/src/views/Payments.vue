@@ -72,9 +72,23 @@ function dash(v) { return v === null || v === undefined ? '—' : fmt(v) }
 const expandedRows = ref(new Set())
 function toggleRowDetail(id) {
   const s = new Set(expandedRows.value)
-  s.has(id) ? s.delete(id) : s.add(id)
+  if (s.has(id)) {
+    s.delete(id)
+    // 收起正在编辑/追加批次的行时复位编辑态，避免全局 planEdit 残留把所有行的批次按钮隐藏
+    if (planEdit.id === `new:${id}` || rowOwnsPlanEdit(id)) cancelEditPlan()
+  } else {
+    s.add(id)
+  }
   expandedRows.value = s
 }
+// planEdit.id 是否属于该付款行（其某条计划批次正在编辑，或正在向该行追加批次）
+function rowOwnsPlanEdit(paymentId) {
+  if (!planEdit.id) return false
+  if (planEdit.id === `new:${paymentId}`) return true
+  const p = items.value.find(x => x.id === paymentId)
+  return !!(p && p.plan_items?.some(pi => pi.id === planEdit.id))
+}
+function isRowEditing(p) { return rowOwnsPlanEdit(p.id) }
 // 双击行 → 展开/收起 计划+付款明细（点在控件或计划日期单元格上不重复触发）
 function onRowDblClick(p, e) {
   if (e.target.closest('input, button, select, textarea, a, .plan-cell')) return
@@ -87,6 +101,53 @@ async function removePlanItem(p, pi) {
     toast.success(res.data?.message || '已撤销')
     load()
   } catch (e) { toast.error(e?.msg || e?.error || '撤销失败') }
+}
+
+// ── 排款管理：编辑 / 追加 计划批次（与来源审批已排款双向同步）────────────────────
+// planEdit.id：正在编辑的批次id（'new:'+paymentId 表示该付款正在追加新批次）
+const planEdit = reactive({ id: null, planned_date: '', amount: '', notes: '', busy: false })
+function startEditPlan(pi) {
+  planEdit.id = pi.id
+  planEdit.planned_date = pi.planned_date
+  planEdit.amount = pi.amount
+  planEdit.notes = pi.notes || ''
+  planEdit.busy = false
+}
+function startAddPlan(p) {
+  planEdit.id = `new:${p.id}`
+  planEdit.planned_date = todayCST()
+  planEdit.amount = ''
+  planEdit.notes = ''
+  planEdit.busy = false
+}
+function cancelEditPlan() { planEdit.id = null }
+async function saveEditPlan(p, pi) {
+  const amt = parseFloat(planEdit.amount)
+  if (!planEdit.planned_date) { toast.warn('请填写计划日期'); return }
+  if (!(amt > 0)) { toast.warn('计划金额必须大于0'); return }
+  planEdit.busy = true
+  try {
+    const body = { planned_date: planEdit.planned_date, amount: amt, notes: planEdit.notes }
+    const res = await api.put(`/payments/${p.id}/plan-items/${pi.id}`, body)
+    toast.success(res.data?.message || '已调整')
+    planEdit.id = null
+    load()
+  } catch (e) { toast.error(e?.msg || e?.error || '调整失败') }
+  finally { planEdit.busy = false }
+}
+async function saveAddPlan(p) {
+  const amt = parseFloat(planEdit.amount)
+  if (!planEdit.planned_date) { toast.warn('请填写计划日期'); return }
+  if (!(amt > 0)) { toast.warn('计划金额必须大于0'); return }
+  planEdit.busy = true
+  try {
+    const body = { planned_date: planEdit.planned_date, amount: amt, notes: planEdit.notes }
+    const res = await api.post(`/payments/${p.id}/plan-items`, body)
+    toast.success(res.data?.message || '已追加批次')
+    planEdit.id = null
+    load()
+  } catch (e) { toast.error(e?.msg || e?.error || '追加失败') }
+  finally { planEdit.busy = false }
 }
 const items = ref([])
 const total = ref(0)
@@ -856,16 +917,40 @@ async function doBatchPay() {
               <td :colspan="99">
                 <div class="pp-detail">
                   <div class="ppd-col">
-                    <div class="ppd-head plan">计划明细 · {{ p.plan_count || 0 }} 批<i>来自审批分批排款或直接排款</i></div>
+                    <div class="ppd-head plan">计划明细 · {{ p.plan_count || 0 }} 批<i>排款管理：编辑/撤销/追加，均与来源审批已排款同步</i></div>
                     <div v-if="!p.plan_items?.length" class="ppd-empty">无计划明细</div>
-                    <div v-for="pi in p.plan_items" :key="pi.id" class="ppd-item">
-                      <span class="ppd-seq">第{{ pi.seq }}批</span>
-                      <span class="ppd-date">{{ pi.planned_date }}</span>
-                      <b class="ppd-amt plan">{{ fmt(pi.amount) }}</b>
-                      <span class="ppd-note">{{ pi.notes }}</span>
-                      <button v-if="auth.canWrite && p.plan_items.length > 1" class="ppd-del"
-                        title="撤销该批计划（审批已排款同步回退）" @click="removePlanItem(p, pi)">撤销</button>
+                    <template v-for="pi in p.plan_items" :key="pi.id">
+                      <!-- 编辑态 -->
+                      <div v-if="planEdit.id === pi.id" class="ppd-item editing">
+                        <span class="ppd-seq">第{{ pi.seq }}批</span>
+                        <input v-model="planEdit.planned_date" type="date" class="ppd-edit-date" />
+                        <input v-model="planEdit.amount" type="number" step="0.01" class="ppd-edit-amt" placeholder="金额" />
+                        <input v-model="planEdit.notes" type="text" class="ppd-edit-note" placeholder="备注" />
+                        <button class="ppd-save" :disabled="planEdit.busy" @click="saveEditPlan(p, pi)">保存</button>
+                        <button class="ppd-cancel" :disabled="planEdit.busy" @click="cancelEditPlan">取消</button>
+                      </div>
+                      <!-- 展示态 -->
+                      <div v-else class="ppd-item">
+                        <span class="ppd-seq">第{{ pi.seq }}批</span>
+                        <span class="ppd-date">{{ pi.planned_date }}</span>
+                        <b class="ppd-amt plan">{{ fmt(pi.amount) }}</b>
+                        <span class="ppd-note">{{ pi.notes }}</span>
+                        <button v-if="auth.canWrite && !isRowEditing(p)" class="ppd-edit-btn"
+                          title="编辑该批计划（审批已排款同步）" @click="startEditPlan(pi)">编辑</button>
+                        <button v-if="auth.canWrite && p.plan_items.length > 1 && !isRowEditing(p)" class="ppd-del"
+                          title="撤销该批计划（审批已排款同步回退）" @click="removePlanItem(p, pi)">撤销</button>
+                      </div>
+                    </template>
+                    <!-- 追加批次态 -->
+                    <div v-if="planEdit.id === `new:${p.id}`" class="ppd-item editing">
+                      <span class="ppd-seq">追加</span>
+                      <input v-model="planEdit.planned_date" type="date" class="ppd-edit-date" />
+                      <input v-model="planEdit.amount" type="number" step="0.01" class="ppd-edit-amt" placeholder="金额" />
+                      <input v-model="planEdit.notes" type="text" class="ppd-edit-note" placeholder="备注" />
+                      <button class="ppd-save" :disabled="planEdit.busy" @click="saveAddPlan(p)">保存</button>
+                      <button class="ppd-cancel" :disabled="planEdit.busy" @click="cancelEditPlan">取消</button>
                     </div>
+                    <button v-if="auth.canWrite && !isRowEditing(p)" class="ppd-add" @click="startAddPlan(p)">+ 追加计划批次</button>
                   </div>
                   <div class="ppd-col">
                     <div class="ppd-head paid">付款明细 · {{ p.installments?.length || 0 }} 笔<i>实际付款分期</i></div>
@@ -1253,6 +1338,23 @@ async function doBatchPay() {
 .ppd-del { border: 1px solid rgba(198,40,40,.4); color: #c62828; background: none; border-radius: 6px;
   padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .ppd-del:hover { background: rgba(198,40,40,.08); }
+/* 排款管理：编辑/追加批次 */
+.ppd-edit-btn { border: 1px solid rgba(21,101,192,.4); color: #1565c0; background: none; border-radius: 6px;
+  padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.ppd-edit-btn:hover { background: rgba(21,101,192,.08); }
+.ppd-item.editing { gap: 6px; flex-wrap: wrap; }
+.ppd-edit-date, .ppd-edit-amt, .ppd-edit-note {
+  border: 1px solid var(--border-strong); border-radius: 6px; padding: 2px 6px; font-size: 12px;
+  background: var(--surface-1); color: var(--text); }
+.ppd-edit-date { width: 130px; } .ppd-edit-amt { width: 96px; text-align: right; } .ppd-edit-note { flex: 1; min-width: 90px; }
+.ppd-save { border: 1px solid var(--primary); background: var(--primary); color: #fff; border-radius: 6px;
+  padding: 1px 10px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.ppd-save:disabled { opacity: .55; cursor: not-allowed; }
+.ppd-cancel { border: 1px solid var(--border-strong); background: none; color: var(--text-2); border-radius: 6px;
+  padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.ppd-add { margin-top: 5px; border: 1px dashed rgba(21,101,192,.45); color: #1565c0; background: none;
+  border-radius: 6px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
+.ppd-add:hover { background: rgba(21,101,192,.06); }
 
 /* 预付核销弹窗 */
 .po-history { margin-bottom: 10px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 9px; }
