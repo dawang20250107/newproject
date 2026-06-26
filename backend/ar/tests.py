@@ -1056,33 +1056,31 @@ class ARPermissionRegressionTests(TestCase):
         # 逾期已收：payment_date 在6月(06-15) 且 ar_record.due_date<mo_start(06-30<06-01? No) → 0
         self.assertEqual(Decimal(s['month_overdue_collected']), Decimal('0'))
 
-        # week window for 2026-06-30 (Tuesday), 周五~周四口径: Fri=2026-06-26, Thu=2026-07-02
-        # rec_june due_date=2026-06-30 在该周; 期前(payment_date < 2026-06-26) = 250(06-15)
+        # 周窗口（不跨月口径）：2026-06-30（周二）所在自然周 Fri=6/26～Thu=7/2
+        # 月份裁剪后：wk=[6/26, 6/30]（末周 5 天，不延伸到 7 月）
+        # rec_june due_date=06-30 落在该周; 期前(payment_date < 6/26) = 250(06-15)
         # week_est = 1000 − 250 = 750
         self.assertEqual(Decimal(s['week_est']), Decimal('750.00'))
         self.assertEqual(Decimal(s['week_adjust']), Decimal('0'))
-        # week_collected: payment on 2026-07-01 is in the week → 400 (not the 06-15 one)
-        self.assertEqual(Decimal(s['week_collected']), Decimal('400.00'))
-        self.assertEqual(s['ref_week'], '6/26~7/2')
-        # 上周环比窗口：6/19~6/25，无到期/回款落入 → 0
+        # week_collected: 周窗口 [6/26,6/30]；07-01 不在此区间，06-15 也不在 → 0
+        self.assertEqual(Decimal(s['week_collected']), Decimal('0'))
+        self.assertEqual(s['ref_week'], '6/26~6/30')          # 月份裁剪：不延伸到 7 月
+        # 上周环比窗口：上个自然周 Fri=6/19～Thu=6/25（全在 6 月，无裁剪）
         self.assertEqual(s['prev_ref_week'], '6/19~6/25')
         self.assertEqual(Decimal(s['prev_week_est']), Decimal('0'))
         self.assertEqual(Decimal(s['prev_week_adjust']), Decimal('0'))
         self.assertEqual(Decimal(s['prev_week_collected']), Decimal('0'))
 
         # ── 关键回归：历史月份筛选（早于今天）时 ref_date 不应被 today 覆盖 ──
-        # year=2026 month=6 is before today (2026-05-30... actually June is after May, let's use a past year)
-        # Use July record filtered by pay_end=2026-03-31 (before today=2026-05-30)
-        # ref_candidates should be [2026-03-31], ref_date=2026-03-31 (not today=May)
+        # ref_date=2026-03-31（周二），自然周 Fri=3/27～Thu=4/2；月份裁剪到 [3/27,3/31]
         resp2 = self.client.get('/api/pk/ar/records', {'pay_end': '2026-03-31'},
                                 **self.auth(admin))
         self.assertEqual(resp2.status_code, 200)
         s2 = resp2.json()['data']['summary']
-        # ref_date must be 2026-03-31 (March), not today (May)
         self.assertEqual(s2['ref_date'], '2026-03-31')
         self.assertEqual(s2['ref_month'], '2026年3月')
-        self.assertEqual(s2['ref_week'], '3/27~4/2')  # week of 2026-03-31 (周五3/27~周四4/2)
-        self.assertEqual(s2['prev_ref_week'], '3/20~3/26')  # 上周环比窗口
+        self.assertEqual(s2['ref_week'], '3/27~3/31')          # 月份裁剪：不延伸到 4 月
+        self.assertEqual(s2['prev_ref_week'], '3/20~3/26')     # 上周环比（全在 3 月）
         # 基准周非今天所在周 → 标签为"该周"
         self.assertEqual(s2['ref_week_label'], '该周')
 

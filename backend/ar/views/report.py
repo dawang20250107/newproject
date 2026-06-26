@@ -35,9 +35,12 @@ def _resolve_period(request, today):
     if sd and ed:
         start, end = _ISO(sd), _ISO(ed)
     elif ptype == 'weekly':
-        weekday = today.weekday()  # 周一=0
-        start = today - datetime.timedelta(days=weekday)
-        end = start + datetime.timedelta(days=6)
+        # 业务口径：周五~次周周四，不跨月
+        _nat_fri = today - datetime.timedelta(days=(today.weekday() - 4) % 7)
+        _mo_s = datetime.date(today.year, today.month, 1)
+        _mo_e = datetime.date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
+        start = max(_nat_fri, _mo_s)
+        end = min(_nat_fri + datetime.timedelta(days=6), _mo_e)
     else:
         y = _int_param(request, 'year', today.year)
         m = _int_param(request, 'month', today.month)
@@ -63,8 +66,17 @@ def _resolve_period(request, today):
 def _prev_period(ptype, start, end):
     """上一可比期间（周报=上一周；月报=上一月），用于「增减」对比。"""
     if ptype == 'weekly':
-        p_end = start - datetime.timedelta(days=1)
-        p_start = p_end - datetime.timedelta(days=6)
+        # start 可能是经月份裁剪的值；先还原到其所在自然周五
+        _nat_fri = start - datetime.timedelta(days=(start.weekday() - 4) % 7)
+        # 上一自然周五~周四窗口，再裁剪到该周五所属月
+        _prev_fri = _nat_fri - datetime.timedelta(days=7)
+        _prev_thu = _prev_fri + datetime.timedelta(days=6)
+        _mo_s = datetime.date(_prev_fri.year, _prev_fri.month, 1)
+        _mo_e = datetime.date(
+            _prev_fri.year, _prev_fri.month,
+            calendar.monthrange(_prev_fri.year, _prev_fri.month)[1])
+        p_start = max(_prev_fri, _mo_s)
+        p_end   = min(_prev_thu, _mo_e)
     else:
         p_end = start - datetime.timedelta(days=1)
         p_start = datetime.date(p_end.year, p_end.month, 1)

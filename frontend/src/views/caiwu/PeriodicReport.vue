@@ -44,25 +44,30 @@ const yearOptions = computed(() => {
   const y = yearCST(); return [y, y - 1, y - 2]
 })
 
-// 当月周列表（ISO 周一为周首）
+// 当月周列表（业务口径：上周五~本周四，不跨月；首末周为部分周）
 const weekOptions = computed(() => {
   const y = selYear.value, m = selMonth.value
-  const first = new Date(Date.UTC(y, m - 1, 1))
-  const last = new Date(Date.UTC(y, m, 0))
+  const first = new Date(Date.UTC(y, m - 1, 1))   // 月首
+  const last  = new Date(Date.UTC(y, m, 0))         // 月末
   const weeks = []
+  // 从月首所在自然周的周五开始（可能在上月）
+  // UTC getUTCDay(): 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
   let cur = new Date(first)
-  const dow = (cur.getUTCDay() + 6) % 7
-  cur.setUTCDate(cur.getUTCDate() - dow)
+  const daysSinceFri = (cur.getUTCDay() - 5 + 7) % 7  // 距上个周五的天数（Fri=0,Sat=1,...,Thu=6）
+  cur.setUTCDate(cur.getUTCDate() - daysSinceFri)       // 回退到周五
   let guard = 0
   while (cur <= last && guard < 8) {
-    const start = new Date(cur)
-    const end = new Date(cur); end.setUTCDate(end.getUTCDate() + 6)
-    if (end >= first && start <= last) {
+    const natStart = new Date(cur)
+    const natEnd   = new Date(cur); natEnd.setUTCDate(natEnd.getUTCDate() + 6)  // 下周四
+    // 裁剪到月份边界（首周/末周可能是部分周）
+    const wkStart  = natStart < first ? new Date(first) : new Date(natStart)
+    const wkEnd    = natEnd   > last  ? new Date(last)  : new Date(natEnd)
+    if (wkStart <= last) {
       weeks.push({
         idx: weeks.length,
-        start: start.toISOString().slice(0, 10),
-        end: end.toISOString().slice(0, 10),
-        label: `第${weeks.length + 1}周·${fmtMD(start)}-${fmtMD(end)}`,
+        start: wkStart.toISOString().slice(0, 10),
+        end:   wkEnd.toISOString().slice(0, 10),
+        label: `第${weeks.length + 1}周·${fmtMD(wkStart)}-${fmtMD(wkEnd)}`,
       })
     }
     cur.setUTCDate(cur.getUTCDate() + 7); guard++
@@ -70,6 +75,17 @@ const weekOptions = computed(() => {
   return weeks
 })
 function fmtMD(d) { return `${d.getUTCMonth() + 1}/${d.getUTCDate()}` }
+
+// 自动定位到包含 today 的那一周（仅在当前月时有效）
+function autoSelectWeek() {
+  if (periodType.value !== 'weekly') return
+  const now = new Date()
+  const y = now.getUTCFullYear(), m = now.getUTCMonth() + 1
+  if (selYear.value !== y || selMonth.value !== m) return
+  const todayStr = now.toISOString().slice(0, 10)
+  const idx = weekOptions.value.findIndex(w => w.start <= todayStr && w.end >= todayStr)
+  if (idx >= 0) selWeekIdx.value = idx
+}
 
 // ── 格式化 ────────────────────────────────────────────────────────────────
 function wan(v) {
@@ -179,8 +195,9 @@ async function exportImage() {
 }
 
 function onPeriodChange() {
-  if (periodType.value === 'weekly' && selWeekIdx.value >= weekOptions.value.length) {
-    selWeekIdx.value = 0
+  if (periodType.value === 'weekly') {
+    autoSelectWeek()
+    if (selWeekIdx.value >= weekOptions.value.length) selWeekIdx.value = 0
   }
   load()
 }

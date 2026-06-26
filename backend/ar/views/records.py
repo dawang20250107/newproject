@@ -231,14 +231,26 @@ def ar_records(request):
         mo_start = datetime.date(ref_date.year, ref_date.month, 1)
         mo_end = datetime.date(ref_date.year, ref_date.month,
                                calendar.monthrange(ref_date.year, ref_date.month)[1])
-        # 周窗口（业务口径：周五 ~ 次周周四）。Friday=weekday 4。
-        wk_start = ref_date - datetime.timedelta(days=(ref_date.weekday() - 4) % 7)
-        wk_end = wk_start + datetime.timedelta(days=6)
-        # 上一周（同口径，用于环比比对）
-        prev_wk_start = wk_start - datetime.timedelta(days=7)
-        prev_wk_end = wk_start - datetime.timedelta(days=1)
+        # 周窗口（业务口径：周五 ~ 次周周四，不跨月）。Friday=weekday 4。
+        # 自然周五~次周四窗口
+        _wk_nat_fri = ref_date - datetime.timedelta(days=(ref_date.weekday() - 4) % 7)
+        _wk_nat_thu = _wk_nat_fri + datetime.timedelta(days=6)
+        # 首周/末周按月份边界裁剪，保证不跨月
+        wk_start = max(_wk_nat_fri, mo_start)
+        wk_end   = min(_wk_nat_thu, mo_end)
+        # 上一周（同口径）：自然上个周五~周四，同样裁剪到其所属月范围
+        _prev_nat_fri = _wk_nat_fri - datetime.timedelta(days=7)
+        _prev_nat_thu = _prev_nat_fri + datetime.timedelta(days=6)
+        _prev_mo_s = datetime.date(_prev_nat_fri.year, _prev_nat_fri.month, 1)
+        _prev_mo_e = datetime.date(
+            _prev_nat_fri.year, _prev_nat_fri.month,
+            calendar.monthrange(_prev_nat_fri.year, _prev_nat_fri.month)[1])
+        prev_wk_start = max(_prev_nat_fri, _prev_mo_s)
+        prev_wk_end   = min(_prev_nat_thu, _prev_mo_e)
         # 周标签随基准日联动：基准周==今天所在周时叫"本周"，否则叫"该周"
-        today_wk_start = today - datetime.timedelta(days=(today.weekday() - 4) % 7)
+        _today_nat_fri = today - datetime.timedelta(days=(today.weekday() - 4) % 7)
+        _today_mo_s = datetime.date(today.year, today.month, 1)
+        today_wk_start = max(_today_nat_fri, _today_mo_s)
         week_label = '本周' if wk_start == today_wk_start else '该周'
 
         # 应收（期初存量口径）：本期到期的毛预估 + 期前调整 − 期前已收
