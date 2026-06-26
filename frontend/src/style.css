@@ -473,6 +473,9 @@ tr:last-child td { border-bottom: none; }
 
 /* ── top bar ─────────────────────────────────────────────────────────────── */
 .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+/* 右上角悬浮通知铃铛预留空间，避免遮挡页头右侧工具区 */
+.main-content .topbar { padding-right: 52px; }
+@media (max-width: 768px) { .main-content .topbar { padding-right: 46px; } }
 .topbar h1 { font-size: 19px; font-weight: 800; letter-spacing: -0.03em; color: var(--text); }
 
 /* ── amount colors ───────────────────────────────────────────────────────── */
