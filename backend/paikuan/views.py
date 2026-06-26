@@ -54,6 +54,7 @@ APPROVAL_FILTER_REGISTRY = {
     'approval_number':    {'type': 'text',   'col': 'approval_number'},
     'g7_number':          {'type': 'text',   'col': 'g7_number'},
     'summary':            {'type': 'text',   'col': 'summary'},
+    'notes':              {'type': 'text',   'col': 'notes'},
     'amount':             {'type': 'number', 'col': 'amount'},
     'scheduled_amount':   {'type': 'number', 'col': 'scheduled_amount'},
     'payee':              {'type': 'text',   'col': 'payee'},
@@ -2026,6 +2027,7 @@ def approval_records(request):
         approval_number = (data.get('approval_number') or '').strip()
         g7_number_val = (data.get('g7_number') or '').strip()[:21]
         summary = (data.get('summary') or '').strip()
+        notes = (data.get('notes') or '').strip()[:500]
         payee = (data.get('payee') or '').strip()
         status = (data.get('status') or 'pending').strip()
         amount = Decimal(str(data.get('amount') or '0'))
@@ -2053,7 +2055,8 @@ def approval_records(request):
             applicant=applicant, department=department, approval_number=approval_number,
             g7_number=g7_number_val,
             secondary_dept=secondary_dept, project_short_name=project_short_name,
-            summary=summary, amount=amount, payee=payee, status=status, created_by_id=request.pk_uid
+            summary=summary, notes=notes, amount=amount, payee=payee, status=status,
+            created_by_id=request.pk_uid
         )
         return ok(rec.to_dict())
     return err('Method not allowed', 405)
@@ -2094,6 +2097,8 @@ def approval_record_detail(request, pk):
         for k in ('applicant', 'summary', 'payee'):
             if k in data:
                 setattr(rec, k, (data.get(k) or '').strip())
+        if 'notes' in data:
+            rec.notes = (data.get('notes') or '').strip()[:500]
         if 'department' in data and data['department'] in VALID_DEPARTMENTS:
             if not can_write_dept(request, data['department']):
                 return err('无权操作目标事业部', 403, 403)
@@ -3059,7 +3064,7 @@ def approval_export(request):
     wb = Workbook()
     ws = wb.active
     ws.title = '审批记录'
-    headers = ['申请人', '所属事业部', '二级部门', '项目简称', '审批编号', 'G7编号', '摘要', '申请金额',
+    headers = ['申请人', '所属事业部', '二级部门', '项目简称', '审批编号', 'G7编号', '摘要', '备注', '申请金额',
                '已排款金额', '剩余可排', '收款主体', '审批状态']
     header_fill = PatternFill(fill_type='solid', fgColor='C96342')
     header_font = Font(bold=True, color='FFFFFF', size=11)
@@ -3071,7 +3076,7 @@ def approval_export(request):
         sched = float(o.scheduled_amount or 0)
         ws.append([_safe(o.applicant), o.department, _safe(o.secondary_dept),
                    _safe(o.project_short_name), _safe(o.approval_number),
-                   _safe(o.g7_number), _safe(o.summary), float(o.amount), sched,
+                   _safe(o.g7_number), _safe(o.summary), _safe(o.notes), float(o.amount), sched,
                    max(0.0, float(o.amount) - sched), _safe(o.payee),
                    cn.get(o.status, o.status)])
     return _build_excel_response(wb, '审批记录.xlsx')
@@ -4199,14 +4204,12 @@ def transport_import(request):
         raw = {h: (row[i] if i < len(row) else None) for h, i in pos.items()}
         payee = str(cell(row, '对账对象') or '').strip() or bill_no
         org = str(cell(row, '所属组织') or '').strip()
-        notes = str(cell(row, '备注') or '').strip()
-        # 审批编号须为纯数字：取对账单号的数字部分（唯一），避免排款业务键串号；
-        # 完整对账单号另存 ext_bill_no 供去重与导出。
-        digits = re.sub(r'\D', '', bill_no)
-        approval_no = digits if digits else '0' * 21
+        notes = str(cell(row, '备注') or '').strip()[:500]
+        # 字段映射（与运输口径约定）：
+        #   G7编号 ← 对账单号（原表唯一单号，最长21位）
+        #   审批编号 ← 留空（运输无内部审批号；去重靠 ext_bill_no 唯一约束）
+        #   收款主体 ← 对账对象；备注 ← 原表备注原文
         summary = f'运输对账 {bill_no}'
-        if notes:
-            summary = f'{summary}（{notes}）'[:500]
         importer = getattr(getattr(request, 'pk_user', None), 'name', '') or '运输导入'
         try:
             with transaction.atomic():
@@ -4214,7 +4217,8 @@ def transport_import(request):
                     created_by_id=request.pk_uid,
                     applicant=importer,
                     department=TRANSPORT_DEPT, secondary_dept=org,
-                    approval_number=approval_no, summary=summary,
+                    approval_number='', g7_number=bill_no[:21],
+                    summary=summary, notes=notes,
                     amount=amount, payee=payee, status='approved',
                     ext_source=TRANSPORT_SOURCE, ext_bill_no=bill_no, ext_raw=raw,
                 )
@@ -4251,7 +4255,6 @@ def transport_export(request):
         return denied
     try:
         from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill, Alignment
     except ImportError:
         return err('服务器缺少 openpyxl 依赖', 500)
 
@@ -4318,14 +4321,10 @@ def transport_export(request):
     wb = Workbook()
     ws = wb.active
     ws.title = '运输对账单'
-    header_font = Font(bold=True, color='FFFFFF', size=11)
-    header_fill = PatternFill(fill_type='solid', fgColor='C96342')
-    center = Alignment(horizontal='center', vertical='center')
+    # 零误差还原：表头为原表纯文本，不施加任何品牌底色/字体样式（与来源系统原表一致，
+    # 仅状态列的「值」可改写）。导出 = 原表逐字 + 已结算行状态列改为「已结算」。
     for ci, h in enumerate(headers, 1):
-        c = ws.cell(row=1, column=ci, value=h)
-        c.font = header_font
-        c.fill = header_fill
-        c.alignment = center
+        ws.cell(row=1, column=ci, value=h)
 
     _FORMULA_CHARS = ('=', '+', '@')
 

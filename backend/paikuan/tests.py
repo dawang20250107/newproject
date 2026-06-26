@@ -1976,9 +1976,11 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(rec.status, 'approved')          # 已通过，可直接排款
         self.assertEqual(rec.department, '运输事业部')
         self.assertEqual(rec.secondary_dept, '运输项目一部')
-        self.assertEqual(rec.payee, '安仕吉-浓香酒')
+        self.assertEqual(rec.payee, '安仕吉-浓香酒')          # 收款主体 ← 对账对象
         self.assertEqual(rec.amount, Decimal('4828.5'))   # 取绝对值
-        self.assertEqual(rec.approval_number, '202606260055')  # 对账单号数字部分（唯一）
+        self.assertEqual(rec.approval_number, '')          # 审批编号留空
+        self.assertEqual(rec.g7_number, 'ZD202606260055')  # G7编号 ← 对账单号
+        self.assertEqual(rec.notes, '税后利润 2592.27 税后利润率 30.19%')  # 备注 ← 原表备注原文
         self.assertEqual(rec.ext_raw['对账单号'], 'ZD202606260055')
         self.assertEqual(rec.ext_raw['实际对账金额'], -4828.5)  # 原始负数逐字保留
 
@@ -2026,6 +2028,22 @@ class TransportReconciliationTests(TestCase):
         # B 未结算：状态保留原值「已通过」，全列零误差
         self.assertEqual(rowb[si].value, '已通过')
         self.assertEqual(rowb[ai].value, -2000)
+
+        # 强校验「零误差」：未结算行 B 逐列与原表完全一致（空单元 None/'' 视为等价）
+        def _norm(v):
+            return None if v in (None, '') else v
+        orig_b = self._row(2, 'ZD202606260020', '承运商乙', 2000)
+        for ci, col in enumerate(self.HEADERS):
+            self.assertEqual(_norm(rowb[ci].value), _norm(orig_b[ci]),
+                             f'未结算行列「{col}」发生漂移')
+        # 已结算行 A：除「状态」列外全列与原表一致，状态列改为「已结算」
+        orig_a = self._row(1, 'ZD202606260010', '承运商甲', 1000)
+        for ci, col in enumerate(self.HEADERS):
+            if col == '状态':
+                self.assertEqual(rowa[ci].value, '已结算')
+            else:
+                self.assertEqual(_norm(rowa[ci].value), _norm(orig_a[ci]),
+                                 f'已结算行非状态列「{col}」发生漂移')
 
     def test_export_empty_before_scheduling(self):
         # 仅导入未排款 → 付款管理无运输付款记录 → 导出报错引导先排款

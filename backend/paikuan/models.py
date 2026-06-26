@@ -260,6 +260,8 @@ class ApprovalRecord(models.Model):
     approval_number = models.CharField('审批编号', max_length=21, db_index=True)
     g7_number = models.CharField('G7编号', max_length=21, blank=True, default='', db_index=True)
     summary = models.CharField('摘要', max_length=500)
+    # 备注：手工登记可填；运输事业部导入时承载原表「备注」列原文
+    notes = models.CharField('备注', max_length=500, blank=True, default='')
     amount = models.DecimalField('申请金额', max_digits=15, decimal_places=2)
     # 分批排款累计：每次排款累加；排满申请金额自动归档（兼容一次性排款）
     scheduled_amount = models.DecimalField('已排款金额', max_digits=15, decimal_places=2, default=0)
@@ -302,6 +304,7 @@ class ApprovalRecord(models.Model):
             'approval_number': self.approval_number,
             'g7_number': self.g7_number,
             'summary': self.summary,
+            'notes': self.notes,
             'amount': str(self.amount),
             'scheduled_amount': str(self.scheduled_amount or 0),
             'remaining_amount': str(max(Decimal('0'), (self.amount or Decimal('0'))

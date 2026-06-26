@@ -42,7 +42,7 @@ const showCreate = ref(false)
 const editId = ref(null)        // null=新增；非空=编辑该记录（共用新增弹窗，prefill + PUT）
 const showSchedule = ref(false)
 const current = ref(null)
-const form = reactive({ applicant:'', department:'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', amount:'', payee:'', status:'pending' })
+const form = reactive({ applicant:'', department:'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', notes:'', amount:'', payee:'', status:'pending' })
 const scheduleForm = reactive({ planned_date:'', total_amount:'' })
 // 操作栏补录：二级部门/项目简称（历史数据默认空白，归档记录也可补录这两个字段）
 const showMeta = ref(false)
@@ -340,10 +340,10 @@ async function load(){ loading.value=true; loadErr.value=''; try{ const r=await 
 function search(){ page.value=1; clearSelection(); load() }
 function setPage(p){ page.value=p; load() }
 async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
-function openCreate(){ editId.value=null; Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
+function openCreate(){ editId.value=null; Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', notes:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
 // 编辑：复用新增弹窗，回填后改走 PUT。已归档（已排款/已拒绝/已撤销）记录为终态不可编辑，
 // 仅金额、状态等受后端口径约束（金额仅「待审批」可改、审批/拒绝须审批权限），后端会兜底校验
-function openEdit(it){ editId.value=it.id; Object.assign(form,{ applicant:it.applicant||'', department:it.department||'', secondary_dept:it.secondary_dept||'', project_short_name:it.project_short_name||'', approval_number:it.approval_number||'', g7_number:it.g7_number||'', summary:it.summary||'', amount:it.amount||'', payee:it.payee||'', status:it.status||'pending' }); showCreate.value=true }
+function openEdit(it){ editId.value=it.id; Object.assign(form,{ applicant:it.applicant||'', department:it.department||'', secondary_dept:it.secondary_dept||'', project_short_name:it.project_short_name||'', approval_number:it.approval_number||'', g7_number:it.g7_number||'', summary:it.summary||'', notes:it.notes||'', amount:it.amount||'', payee:it.payee||'', status:it.status||'pending' }); showCreate.value=true }
 async function create(){ saving.value=true; try{ if(editId.value){ await api.put(`/approvals/${editId.value}`, form) } else { await api.post('/approvals', form) } showCreate.value=false; load(); toast.success('已保存') } catch(e){ toast.error(e?.msg||e?.error||'操作失败') } finally{ saving.value=false } }
 // 双击行 → 编辑（点在勾选框/状态下拉等控件上不触发；已归档不可编辑）
 function onRowDblClick(it, e){
@@ -378,6 +378,7 @@ const ROW_COPY_COLS = [
   { key: 'approval_number', label: '审批单号' },
   { key: 'g7_number', label: 'G7单号' },
   { key: 'summary', label: '摘要' },
+  { key: 'notes', label: '备注' },
   { key: 'amount', label: '金额' },
   { key: 'payee', label: '收款方' },
 ]
@@ -524,7 +525,12 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 </script>
 
 <template><div>
-  <div class="topbar"><h1>审批管理</h1><div style="display:flex;gap:8px">
+  <div class="topbar"><h1>审批管理</h1><div class="topbar-tools">
+    <input v-model="q" class="global-search" placeholder="🔍 申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
+    <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
+    <button v-if="activeFilterCount || q || sortField" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters" title="清除全部列筛选 / 搜索 / 排序">清除筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
+    <SchemePicker :ctl="schemes" :can-public="auth.canCreate" :is-super-admin="auth.isSuperAdmin" />
+    <span class="tb-sep"></span>
     <button class="btn btn-ghost btn-sm" @click="downloadTemplate">模板</button>
     <button class="btn btn-ghost btn-sm" :disabled="importing" @click="triggerImport"
             title="导入会自动做规则校验 + AI 智能复核；发现问题时 AI 会介入，协助你就地修正后再导入">{{ importing?'导入中…':'导入' }}</button>
@@ -532,35 +538,29 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <button v-if="canTransport" class="btn btn-ghost btn-sm tp-btn" :disabled="importingTransport" @click="triggerTransportImport"
             title="运输事业部专用：上传运输系统导出的对账单原始表 → 金额自动取绝对值、对账单号去重，建为「已通过」审批记录，再排款进付款管理">
       <span style="margin-right:3px">🚚</span>{{ importingTransport?'导入中…':'运输导入' }}</button>
-    <button v-if="auth.canCreate" class="btn btn-primary" @click="openCreate">+ 新增审批记录</button>
+    <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增</button>
   </div></div>
   <input ref="fileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImport" />
   <input ref="transportFileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onTransportImport" />
-  <div class="card approval-card fh-fill"><div class="filter-row">
-    <div class="filter-bar">
-    <input v-model="q" class="global-search" placeholder="🔍 全局搜索：申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
-    <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
-    <button v-if="activeFilterCount || q || sortField" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters">清除全部筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
-    <SchemePicker :ctl="schemes" :can-public="auth.canCreate" :is-super-admin="auth.isSuperAdmin" />
-    </div>
-  </div>
+  <div class="card approval-card fh-fill">
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
   <EmptyState v-else-if="!loading && !items.length" empty :text="activeFilterCount || q ? '暂无匹配记录' : '暂无审批记录，点击「新增」创建第一条记录'" />
   <div v-if="!loadErr" class="table-wrap page-scroll"><table class="approval-table">
     <colgroup>
       <col class="cg-sel" /><!-- 选择 -->
-      <col style="width:7%" /><!-- 申请人 -->
-      <col style="width:8%" /><!-- 所属事业部 -->
-      <col style="width:8%" /><!-- 二级部门 -->
-      <col style="width:9%" /><!-- 项目简称 -->
-      <col style="width:9%" /><!-- 审批编号 -->
+      <col style="width:6%" /><!-- 申请人 -->
+      <col style="width:7%" /><!-- 所属事业部 -->
+      <col style="width:7%" /><!-- 二级部门 -->
+      <col style="width:8%" /><!-- 项目简称 -->
+      <col style="width:8%" /><!-- 审批编号 -->
       <col style="width:8%" /><!-- G7编号 -->
-      <col style="width:13%" /><!-- 摘要 -->
-      <col style="width:9%" /><!-- 审批状态 -->
-      <col style="width:8%" /><!-- 申请金额 -->
-      <col style="width:8%" /><!-- 已排金额 -->
-      <col style="width:8%" /><!-- 未排金额 -->
-      <col style="width:11%" /><!-- 收款主体 -->
+      <col style="width:11%" /><!-- 摘要 -->
+      <col style="width:10%" /><!-- 备注 -->
+      <col style="width:8%" /><!-- 审批状态 -->
+      <col style="width:7%" /><!-- 申请金额 -->
+      <col style="width:7%" /><!-- 已排金额 -->
+      <col style="width:7%" /><!-- 未排金额 -->
+      <col style="width:10%" /><!-- 收款主体 -->
     </colgroup>
     <thead><tr>
       <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
@@ -571,6 +571,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <th><ColumnFilter label="审批编号" field="approval_number" type="text" :model-value="colFilters.approval_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('approval_number',v)" @sort="o=>setSort('approval_number',o)" /></th>
       <th><ColumnFilter label="G7编号" field="g7_number" type="text" :model-value="colFilters.g7_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('g7_number',v)" @sort="o=>setSort('g7_number',o)" /></th>
       <th><ColumnFilter label="摘要" field="summary" type="text" :model-value="colFilters.summary" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('summary',v)" @sort="o=>setSort('summary',o)" /></th>
+      <th><ColumnFilter label="备注" field="notes" type="text" :model-value="colFilters.notes" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('notes',v)" @sort="o=>setSort('notes',o)" /></th>
       <th><ColumnFilter label="审批状态" field="status" type="enum" :options="STATUS_OPTS" :model-value="colFilters.status" :sortable="false" @update:model-value="v=>setColFilter('status',v)" /></th>
       <th><ColumnFilter label="申请金额" field="amount" type="number" :model-value="colFilters.amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('amount',v)" @sort="o=>setSort('amount',o)" /></th>
       <th class="amt-h"><ColumnFilter label="已排金额" field="scheduled_amount" type="number" :model-value="colFilters.scheduled_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('scheduled_amount',v)" @sort="o=>setSort('scheduled_amount',o)" /></th>
@@ -579,7 +580,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       </tr></thead>
     <tbody>
       <template v-if="loading">
-        <SkeletonRow v-for="n in 8" :key="n" :cols="13" />
+        <SkeletonRow v-for="n in 8" :key="n" :cols="14" />
       </template>
       <template v-else>
       <template v-for="i in items" :key="i.id">
@@ -588,7 +589,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <td>{{i.applicant}}</td><td>{{i.department}}</td>
       <td class="meta-cell">{{ i.secondary_dept || '—' }}</td>
       <td class="meta-cell" :title="i.project_short_name">{{ i.project_short_name || '—' }}</td>
-      <td class="mono">{{i.approval_number}}</td><td class="mono g7-cell">{{i.g7_number || '—'}}</td><td class="summary">{{i.summary}}</td>
+      <td class="mono">{{i.approval_number || '—'}}</td><td class="mono g7-cell">{{i.g7_number || '—'}}</td><td class="summary" :title="i.summary">{{i.summary}}</td>
+      <td class="notes-cell" :title="i.notes">{{ i.notes || '—' }}</td>
       <td :class="['status-cell', 'st-' + i.status]" :title="i.status === 'approved' ? '审批通过，可排款' : (i.status === 'pending' ? '待审批，通过后方可排款' : '')">
         <div class="status-wrap">
           <span class="status-badge">{{ {pending:'待审批',approved:'审批通过',rejected:'已拒绝',canceled:'已撤销'}[i.status] || i.status }}</span>
@@ -611,7 +613,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       </tr>
       <!-- 排款批次明细面板 -->
       <tr v-if="isAprSchedExpanded(i.id)" class="apr-plan-detail-row">
-        <td colspan="13">
+        <td colspan="14">
           <div class="apr-plan-detail">
             <div v-if="aprSchedCache[i.id]?.loading" class="apd-loading">加载中…</div>
             <div v-else-if="aprSchedCache[i.id]?.error" class="apd-error">{{ aprSchedCache[i.id].error }}</div>
@@ -700,6 +702,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <label class="form-field"><span>审批编号</span><input v-model="form.approval_number" placeholder="21位数字；留空自动填21个0占位"/></label>
     <label class="form-field"><span>G7编号</span><input v-model="form.g7_number" placeholder="选填，最多21位数字" maxlength="21"/></label>
     <label class="form-field"><span>摘要</span><input v-model="form.summary"/></label>
+    <label class="form-field"><span>备注</span><input v-model="form.notes" placeholder="选填"/></label>
     <label class="form-field"><span>申请金额*</span><input v-model="form.amount" type="number" step="0.01"/></label>
     <label class="form-field"><span>收款主体</span><input v-model="form.payee"/></label>
     <label class="form-field"><span>审批状态</span><select v-model="form.status"><option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option></select></label>
@@ -785,9 +788,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 固定视口布局：卡片底部为吸底合计条预留空间 */
 /* 吸底 bottom-bar(36px) 占位：滚动区底部留白，最后一行不被遮挡 */
 .table-wrap.page-scroll { padding-bottom: 40px; }
-.filter-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; flex-shrink: 0; }
-.filter-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.global-search { min-width: 340px; flex: 0 1 420px; }
+/* 搜索 + 方案 + 导入导出 收纳进页头右侧，腾出整行垂直空间给表格 */
+.topbar-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.topbar-tools .global-search { min-width: 180px; flex: 0 1 240px; height: 30px; }
+.tb-sep { width: 1px; align-self: stretch; min-height: 20px; background: var(--border); margin: 0 2px; }
 .clear-all { color: var(--primary); }
 /* 列头允许漏斗按钮溢出展示，不被裁切 */
 .approval-table thead th { overflow: visible; }
@@ -799,8 +803,9 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 列宽由 <colgroup> 统一声明（11 列）；选择列固定窄宽，其余按百分比分配 */
 .approval-table col.cg-sel { width: 34px; }
 /* 行高/内边距对齐全局表格（付款管理），保证两个页面观感一致 */
-.approval-table th, .approval-table td { padding: 11px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.approval-table th.sel-col, .approval-table td.sel-col { text-align: center; overflow: visible; padding: 11px 4px; }
+/* 紧凑排版：数据量大，行间距尽量收紧（行高随内边距 + 徽章/下拉高度联动） */
+.approval-table th, .approval-table td { padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; }
+.approval-table th.sel-col, .approval-table td.sel-col { text-align: center; overflow: visible; padding: 4px 4px; }
 .approval-table th.sel-col input, .approval-table td.sel-col input { cursor: pointer; }
 /* 审批状态列（末列）内容（下拉）不裁切，以本列宽为限 */
 .approval-table th:last-child, .approval-table td:last-child {
@@ -809,8 +814,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 审批状态色码徽章：badge 显示颜色，transparent overlay select 捕获交互 */
 .status-wrap { position: relative; display: inline-block; min-width: 72px; width: 100%; }
 .status-badge {
-  display: block; border-radius: 999px; padding: 5px 10px;
-  font-size: 12.5px; font-weight: 700; border: 1.5px solid transparent;
+  display: block; border-radius: 999px; padding: 2px 9px;
+  font-size: 12px; font-weight: 700; border: 1.5px solid transparent;
   text-align: center; white-space: nowrap; pointer-events: none;
 }
 .status-overlay {
@@ -877,7 +882,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .remain-c { color: #e65100; font-weight: 600; }
 .remain-c.remain-zero { color: var(--muted); font-weight: 400; }
 .summary, .payee { max-width: 100%; }
-.approval-table select { width: 100%; min-width: 0; max-width: 100%; height: 32px; font-size: 12.5px; padding: 0 22px 0 6px; background-position: right 6px center; }
+.notes-cell { color: var(--muted); font-size: 12px; }
+.approval-table select { width: 100%; min-width: 0; max-width: 100%; height: 26px; font-size: 12px; padding: 0 20px 0 6px; background-position: right 6px center; }
 .pg-jump { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); margin-left: 8px; }
 .pg-jump-input { width: 46px; text-align: center; padding: 2px 4px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
 /* 已排金额列：可点击展开排款明细 */
