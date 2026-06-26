@@ -110,6 +110,100 @@ const pendingAmountTotal = computed(() => parseFloat(totalAmount.value || 0))
 const scheduledTotal = computed(() => parseFloat(totalScheduled.value || 0))
 const remainingTotal = computed(() => parseFloat(totalRemaining.value || 0))
 
+// ── 排款管理：展开计划批次面板（点击已排金额列）────────────────────────────────
+const aprSchedExpanded = ref(new Set())          // approval IDs with open sched panel
+const aprSchedCache = ref({})                    // id → { loading, data, error }
+const aprPlanEdit = reactive({ approval_id: null, id: null, planned_date: '', amount: '', notes: '', busy: false })
+
+function isAprSchedExpanded(id) { return aprSchedExpanded.value.has(id) }
+
+async function toggleAprSchedDetail(rec) {
+  const s = new Set(aprSchedExpanded.value)
+  if (s.has(rec.id)) {
+    s.delete(rec.id)
+    if (aprPlanEdit.approval_id === rec.id) cancelAprPlanEdit()
+  } else {
+    s.add(rec.id)
+    if (!aprSchedCache.value[rec.id] || aprSchedCache.value[rec.id].error) {
+      await loadAprSchedDetail(rec.id)
+    }
+  }
+  aprSchedExpanded.value = s
+}
+
+async function loadAprSchedDetail(aprid) {
+  aprSchedCache.value = { ...aprSchedCache.value, [aprid]: { loading: true, data: null, error: '' } }
+  try {
+    const r = await api.get(`/approvals/${aprid}/schedule-detail`)
+    aprSchedCache.value = { ...aprSchedCache.value, [aprid]: { loading: false, data: r.data, error: '' } }
+  } catch (e) {
+    aprSchedCache.value = { ...aprSchedCache.value, [aprid]: { loading: false, data: null, error: e?.error || e?.msg || '加载失败' } }
+  }
+}
+
+function cancelAprPlanEdit() { aprPlanEdit.approval_id = null; aprPlanEdit.id = null }
+
+function startAprPlanEdit(aprid, pi) {
+  aprPlanEdit.approval_id = aprid
+  aprPlanEdit.id = pi.id
+  aprPlanEdit.planned_date = pi.planned_date
+  aprPlanEdit.amount = pi.amount
+  aprPlanEdit.notes = pi.notes || ''
+  aprPlanEdit.busy = false
+}
+
+async function saveAprPlanEdit(aprid) {
+  const payment_id = aprSchedCache.value[aprid]?.data?.payment_id
+  if (!payment_id) return
+  const amt = parseFloat(aprPlanEdit.amount)
+  if (!aprPlanEdit.planned_date) { toast.warn('请填写计划日期'); return }
+  if (!(amt > 0)) { toast.warn('计划金额必须大于0'); return }
+  aprPlanEdit.busy = true
+  try {
+    const body = { planned_date: aprPlanEdit.planned_date, amount: amt, notes: aprPlanEdit.notes }
+    const res = await api.put(`/payments/${payment_id}/plan-items/${aprPlanEdit.id}`, body)
+    toast.success(res.data?.message || '已调整排款批次')
+    cancelAprPlanEdit()
+    await loadAprSchedDetail(aprid)
+    load()
+  } catch (e) { toast.error(e?.msg || e?.error || '调整失败') }
+  finally { aprPlanEdit.busy = false }
+}
+
+async function removeAprPlanItem(aprid, pi) {
+  const cache = aprSchedCache.value[aprid]?.data
+  const payment_id = cache?.payment_id
+  if (!payment_id) return
+  const batchCount = cache?.plan_items?.length || 0
+  if (batchCount <= 1) {
+    toast.warn('最后一批计划不可单独撤回——如需退回全部排款，请使用「退回全部排款」')
+    return
+  }
+  if (!confirm(`撤回第${pi.seq}批排款（${pi.planned_date} · ¥${pi.amount}）？\n来源审批已排款同步扣减，可继续补排。`)) return
+  try {
+    const res = await api.delete(`/payments/${payment_id}/plan-items/${pi.id}`)
+    toast.success(res.data?.message || '已撤回')
+    await loadAprSchedDetail(aprid)
+    load()
+  } catch (e) { toast.error(e?.msg || e?.error || '撤回失败') }
+}
+
+async function returnFullSchedule(rec) {
+  if (!confirm(`退回「${rec.payee || rec.applicant}」全部排款（¥${rec.scheduled_amount}）？\n关联付款管理记录将删除，审批已排款归零，可重新排款。`)) return
+  try {
+    const r = await api.post('/approvals/bulk-return-schedule', { ids: [rec.id] })
+    const d = r.data || {}
+    if (d.skipped?.length) {
+      toast.warn(d.message + '\n' + d.skipped.map(s => s.reason).join('\n'))
+    } else {
+      toast.success(d.message || '已退回排款')
+    }
+    delete aprSchedCache.value[rec.id]
+    aprSchedExpanded.value = new Set([...aprSchedExpanded.value].filter(id => id !== rec.id))
+    load()
+  } catch (e) { toast.error(e?.msg || e?.error || '退回失败') }
+}
+
 // ── 单选/多选：批量删除 + 批量排款 ─────────────────────────────────────────
 const selectedIds = ref(new Set())                       // 跨页按 id 记忆选择
 const remOf = (it) => parseFloat(it.remaining_amount ?? it.amount) || 0
@@ -123,6 +217,8 @@ function clearSelection(){ selectedIds.value = new Set() }
 const selectedApprovable = computed(() => items.value.filter(i => selectedIds.value.has(i.id) && i.status === 'pending'))
 // 仅「审批通过且未归档」可排款；批量排款汇总只统计可排记录（默认金额=剩余可排=申请金额）
 const selectedSchedulable = computed(() => items.value.filter(i => selectedIds.value.has(i.id) && i.status === 'approved' && !i.archived))
+// 有已排款的记录可「批量退回排款」（不管是否归档）
+const selectedWithSchedule = computed(() => items.value.filter(i => selectedIds.value.has(i.id) && parseFloat(i.scheduled_amount) > 0))
 const batchSchedSummary = computed(() => ({
   count: selectedSchedulable.value.length,
   total: selectedSchedulable.value.reduce((s, i) => s + remOf(i), 0),
@@ -145,6 +241,28 @@ async function confirmBulkDelete(){
     if (d.skipped?.length) toast.warn(`${d.message}\n\n未删除明细：\n` + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n'))
   } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
   finally{ bulkDeleting.value = false }
+}
+
+// 批量退回排款：退回所选有已排款记录的排款，已排款归零可重新排款
+const bulkReturning = ref(false)
+async function bulkReturnSchedule(){
+  const targets = selectedWithSchedule.value
+  if (!targets.length){ toast.warn('所选记录中没有已排款的可退回记录'); return }
+  const total = targets.reduce((s, i) => s + parseFloat(i.scheduled_amount || 0), 0)
+  if (!confirm(`批量退回 ${targets.length} 条记录的全部排款（合计 ¥${total.toFixed(2)}）？\n关联付款管理记录将删除，各审批已排款归零，可重新排款。`)) return
+  bulkReturning.value = true
+  try {
+    const r = await api.post('/approvals/bulk-return-schedule', { ids: targets.map(i => i.id) })
+    const d = r.data || {}
+    // 清除已退回审批的展开缓存
+    targets.forEach(i => { delete aprSchedCache.value[i.id] })
+    aprSchedExpanded.value = new Set([...aprSchedExpanded.value].filter(id => !targets.find(t => t.id === id)))
+    clearSelection(); load()
+    let msg = d.message || '批量退回完成'
+    if (d.skipped?.length) { msg += '\n\n跳过明细：\n' + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n'); toast.warn(msg) }
+    else toast.success(msg)
+  } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
+  finally{ bulkReturning.value = false }
 }
 
 // 批量审批通过：仅对所选「待审批」记录生效，非待审批自动跳过
@@ -436,13 +554,21 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         <SkeletonRow v-for="n in 8" :key="n" :cols="13" />
       </template>
       <template v-else>
-      <tr v-for="i in items" :key="i.id" :class="{ 'row-sel': selectedIds.has(i.id) }" @contextmenu.prevent="ctx.open($event, i)" @dblclick="onRowDblClick(i, $event)">
+      <template v-for="i in items" :key="i.id">
+      <tr :class="{ 'row-sel': selectedIds.has(i.id) }" @contextmenu.prevent="ctx.open($event, i)" @dblclick="onRowDblClick(i, $event)">
       <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(i.id)" @change="toggleRow(i.id)" /></td>
       <td>{{i.applicant}}</td><td>{{i.department}}</td>
       <td class="meta-cell">{{ i.secondary_dept || '—' }}</td>
       <td class="meta-cell" :title="i.project_short_name">{{ i.project_short_name || '—' }}</td>
       <td class="mono">{{i.approval_number}}</td><td class="mono g7-cell">{{i.g7_number || '—'}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}</td>
-      <td class="amt sched-c">{{ parseFloat(i.scheduled_amount) > 0 ? i.scheduled_amount : '—' }}</td>
+      <td class="amt sched-c plan-cell" :title="parseFloat(i.scheduled_amount) > 0 ? '点击展开排款批次明细（排款管理）' : ''"
+          @click="parseFloat(i.scheduled_amount) > 0 && toggleAprSchedDetail(i)">
+        <template v-if="parseFloat(i.scheduled_amount) > 0">
+          {{ i.scheduled_amount }}
+          <span class="plan-caret">{{ isAprSchedExpanded(i.id) ? '▲' : '▼' }}</span>
+        </template>
+        <span v-else>—</span>
+      </td>
       <td class="amt remain-c" :class="{ 'remain-zero': parseFloat(i.remaining_amount) <= 0 }">{{ parseFloat(i.remaining_amount) > 0 ? i.remaining_amount : '—' }}</td>
       <td class="payee">{{i.payee}}</td>
       <td>
@@ -451,6 +577,50 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         </select>
       </td>
       </tr>
+      <!-- 排款批次明细面板 -->
+      <tr v-if="isAprSchedExpanded(i.id)" class="apr-plan-detail-row">
+        <td colspan="13">
+          <div class="apr-plan-detail">
+            <div v-if="aprSchedCache[i.id]?.loading" class="apd-loading">加载中…</div>
+            <div v-else-if="aprSchedCache[i.id]?.error" class="apd-error">{{ aprSchedCache[i.id].error }}</div>
+            <template v-else-if="aprSchedCache[i.id]?.data">
+              <div class="apd-head">
+                排款批次明细（付款管理 #{{ aprSchedCache[i.id].data.payment_id }} · 计划合计 ¥{{ aprSchedCache[i.id].data.total_amount }} · 已付 ¥{{ aprSchedCache[i.id].data.total_paid }}）
+                <i>编辑/撤回均与审批已排款双向同步；审批记录状态不受影响</i>
+                <button v-if="auth.canCreate" class="apd-return-all"
+                  title="退回全部排款（删除付款管理记录，审批已排款归零，可重新排款）"
+                  @click="returnFullSchedule(i)">退回全部排款</button>
+              </div>
+              <div v-for="pi in aprSchedCache[i.id].data.plan_items" :key="pi.id" class="apd-item">
+                <!-- 编辑态 -->
+                <template v-if="aprPlanEdit.id === pi.id && aprPlanEdit.approval_id === i.id">
+                  <span class="apd-seq">第{{ pi.seq }}批</span>
+                  <input v-model="aprPlanEdit.planned_date" type="date" class="apd-edit-date" />
+                  <input v-model="aprPlanEdit.amount" type="number" step="0.01" class="apd-edit-amt" placeholder="金额" />
+                  <input v-model="aprPlanEdit.notes" type="text" class="apd-edit-note" placeholder="备注" />
+                  <button class="apd-save" :disabled="aprPlanEdit.busy" @click="saveAprPlanEdit(i.id)">保存</button>
+                  <button class="apd-cancel" :disabled="aprPlanEdit.busy" @click="cancelAprPlanEdit">取消</button>
+                </template>
+                <!-- 展示态 -->
+                <template v-else>
+                  <span class="apd-seq">第{{ pi.seq }}批</span>
+                  <span class="apd-date">{{ pi.planned_date }}</span>
+                  <b class="apd-amt">¥{{ pi.amount }}</b>
+                  <span class="apd-note">{{ pi.notes }}</span>
+                  <template v-if="auth.canCreate && !aprPlanEdit.id">
+                    <button class="apd-edit" title="编辑该批次日期/金额/备注" @click="startAprPlanEdit(i.id, pi)">编辑</button>
+                    <button v-if="aprSchedCache[i.id].data.plan_items.length > 1" class="apd-del"
+                      title="撤回该批次（审批已排款同步扣减，可继续排）"
+                      @click="removeAprPlanItem(i.id, pi)">撤回</button>
+                  </template>
+                </template>
+              </div>
+              <div v-if="!aprSchedCache[i.id].data.plan_items.length" class="apd-empty">暂无计划批次</div>
+            </template>
+          </div>
+        </td>
+      </tr>
+      </template>
       </template>
     </tbody>
   </table></div>
@@ -461,6 +631,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
       <button v-if="auth.canCreate" class="bulk-approve" :disabled="bulkApproving || !selectedApprovable.length" @click="bulkApprove">{{ bulkApproving ? '审批中…' : `批量通过（待审 ${selectedApprovable.length} 条）` }}</button>
       <button v-if="auth.canCreate" class="bulk-act" :disabled="!batchSchedSummary.count" @click="openBatchSchedule">批量排款（可排 {{ batchSchedSummary.count }} 条）</button>
+      <button v-if="auth.canCreate && selectedWithSchedule.length" class="bulk-return" :disabled="bulkReturning" @click="bulkReturnSchedule">{{ bulkReturning ? '退回中…' : `批量退回排款（${selectedWithSchedule.length} 条）` }}</button>
       <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
       <button class="bulk-cancel" @click="clearSelection">取消</button>
     </div>
@@ -658,4 +829,35 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-table select { width: 100%; min-width: 0; max-width: 100%; height: 32px; font-size: 12.5px; padding: 0 22px 0 6px; background-position: right 6px center; }
 .pg-jump { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); margin-left: 8px; }
 .pg-jump-input { width: 46px; text-align: center; padding: 2px 4px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+/* 已排金额列：可点击展开排款明细 */
+.approval-table td.plan-cell { cursor: pointer; user-select: none; }
+.plan-caret { font-size: 9px; color: var(--muted); margin-left: 3px; }
+/* 批量退回按钮 */
+.bulk-return { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: #e65100; color: #fff; }
+.bulk-return:disabled { opacity: .5; cursor: default; }
+/* 排款批次明细展开行 */
+.apr-plan-detail-row td { padding: 0; }
+.apr-plan-detail { background: #faf8f6; border-top: 1px solid var(--border); padding: 10px 16px 12px; }
+.apd-head { font-size: 12px; color: var(--muted); margin-bottom: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.apd-head i { font-style: normal; color: #1565c0; font-size: 11px; }
+.apd-loading, .apd-error, .apd-empty { font-size: 12.5px; color: var(--muted); padding: 6px 0; }
+.apd-error { color: var(--danger); }
+.apd-item { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid rgba(0,0,0,0.05); }
+.apd-item:last-child { border-bottom: none; }
+.apd-seq { font-size: 11.5px; color: var(--muted); min-width: 40px; }
+.apd-date { font-size: 13px; min-width: 90px; font-variant-numeric: tabular-nums; }
+.apd-amt { font-size: 13px; min-width: 90px; color: #2e7d32; font-variant-numeric: tabular-nums; }
+.apd-note { font-size: 12px; color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.apd-edit, .apd-del { border: 1px solid var(--border); background: var(--card); border-radius: 6px; padding: 3px 9px; font-size: 12px; cursor: pointer; }
+.apd-edit:hover { border-color: var(--primary); color: var(--primary); }
+.apd-del { color: var(--danger); }
+.apd-del:hover { border-color: var(--danger); background: rgba(198,40,40,0.06); }
+.apd-edit-date { width: 120px; height: 28px; padding: 0 6px; border: 1.5px solid var(--border); border-radius: 6px; font-size: 12.5px; }
+.apd-edit-amt { width: 100px; height: 28px; padding: 0 6px; border: 1.5px solid var(--border); border-radius: 6px; font-size: 12.5px; text-align: right; }
+.apd-edit-note { flex: 1; height: 28px; padding: 0 6px; border: 1.5px solid var(--border); border-radius: 6px; font-size: 12.5px; min-width: 80px; }
+.apd-save { border: none; background: var(--primary); color: #fff; border-radius: 6px; padding: 3px 12px; font-size: 12px; cursor: pointer; }
+.apd-save:disabled { opacity: .5; cursor: default; }
+.apd-cancel { border: 1px solid var(--border); background: none; border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; color: var(--muted); }
+.apd-return-all { margin-left: auto; border: 1px solid #e65100; background: rgba(230,81,0,0.08); color: #e65100; border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; font-weight: 600; }
+.apd-return-all:hover { background: #e65100; color: #fff; }
 </style>

@@ -1040,6 +1040,8 @@ def payment_plan_items(request, pk):
                                        amount=amount, notes=notes or f'追加排款 第{seq}批')
         _sync_payment_plan(p)
         _reconcile_approval_schedule(approval_id)
+        _record_plan_item_log(p, request,
+                              new_desc=f'追加第{seq}批 {planned_date} ¥{amount}')
     p.refresh_from_db()
     return ok({'payment': p.to_dict(),
                'message': f'已追加计划批次 {amount}，汇总与审批已排款同步'})
@@ -1102,14 +1104,21 @@ def payment_plan_item_detail(request, pk, iid):
                 return err(f'撤销后计划合计 {after} 将低于 已付+冲抵 {paid}，不能撤销；'
                            f'请先删除对应付款明细')
             amt = item.amount
+            seq_n = item.seq
+            date_n = item.planned_date
             item.delete()
             _sync_payment_plan(p)
             _reconcile_approval_schedule(approval_id)
+            _record_plan_item_log(p, request,
+                                  old_desc=f'撤回第{seq_n}批 {date_n} ¥{amt}')
             p.refresh_from_db()
             return ok({'payment': p.to_dict(),
                        'message': f'已撤销该批计划 {amt}，汇总与审批已排款同步回退'})
 
         # PUT — 编辑批次
+        old_date = item.planned_date
+        old_amount = item.amount
+        old_seq = item.seq
         after = (p.total_amount or Decimal('0')) - item.amount + amount
         if after < paid:
             return err(f'调整后计划合计 {after} 将低于 已付+冲抵 {paid}，不能调整；'
@@ -1123,6 +1132,9 @@ def payment_plan_item_detail(request, pk, iid):
         item.save(update_fields=['planned_date', 'amount', 'notes'])
         _sync_payment_plan(p)
         _reconcile_approval_schedule(approval_id)
+        _record_plan_item_log(p, request,
+                              old_desc=f'第{old_seq}批 {old_date} ¥{old_amount}',
+                              new_desc=f'第{old_seq}批 {planned_date} ¥{amount}')
         p.refresh_from_db()
         return ok({'payment': p.to_dict(),
                    'message': f'已调整该批计划为 {planned_date} · {amount}，汇总与审批已排款同步'})
@@ -1625,6 +1637,18 @@ def _record_payment_changes(payment, before_dict, after_dict, request, action='u
         ))
     if logs:
         PaymentChangeLog.objects.bulk_create(logs)
+
+
+def _record_plan_item_log(payment, request, old_desc='', new_desc=''):
+    """PaymentChangeLog entry for a plan-batch add/edit/withdraw (audit trail)."""
+    user = (PaikuanUser.objects.filter(id=request.pk_uid).only('id', 'name').first()
+            if getattr(request, 'pk_uid', None) else None)
+    PaymentChangeLog.objects.create(
+        payment=payment, payment_id_snapshot=payment.id,
+        action='update', operator=user, operator_name=user.name if user else '',
+        field_name='plan_items', field_label='计划批次',
+        old_value=old_desc, new_value=new_desc,
+    )
 
 
 def _save_installments(payment, parsed_insts):
@@ -2363,6 +2387,93 @@ def approval_records_bulk_delete(request):
         deleted += 1
     return ok({'deleted': deleted, 'skipped': skipped,
                'message': f'已删除 {deleted} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})
+
+
+@csrf_exempt
+@pk_required()
+def approval_schedule_detail(request, pk):
+    """GET /approvals/<pk>/schedule-detail —
+    返回该审批关联的付款管理计划批次，供审批管理「排款管理」面板展示和操作。"""
+    perms = get_request_perms(request)
+    if perms is not None and not perms['pages'].get('approval_records', True):
+        return err('无访问权限', 403, 403)
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    try:
+        rec = ApprovalRecord.objects.get(pk=pk)
+    except ApprovalRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    if request.pk_role != 'super_admin' and rec.department not in (request.pk_depts or []):
+        return err('无权访问', 403)
+    payment = (Payment.objects.prefetch_related('plan_items', 'installments')
+               .filter(approval=rec).first())
+    if not payment:
+        return ok({'payment_id': None, 'plan_items': [], 'total_paid': '0',
+                   'total_amount': '0', 'can_edit': False})
+    can_edit = perms is None or bool(perms.get('can_create'))
+    return ok({
+        'payment_id': payment.id,
+        'plan_items': [
+            {'id': pi.id, 'seq': pi.seq, 'planned_date': str(pi.planned_date),
+             'amount': str(pi.amount), 'notes': pi.notes,
+             'created_at': pi.created_at.isoformat() if pi.created_at else None}
+            for pi in payment.plan_items.all()
+        ],
+        'total_paid': str(payment.total_paid),
+        'total_amount': str(payment.total_amount),
+        'can_edit': can_edit,
+    })
+
+
+@csrf_exempt
+@pk_required()
+def approval_records_bulk_return_schedule(request):
+    """POST /approvals/bulk-return-schedule —
+    批量退回排款：删除所选审批关联的付款管理记录，已排款归零、归档回退，审批可重新排款。
+    单条失败不影响其它；返回汇总（成功条数）与失败明细（含原因）。"""
+    if request.method != 'POST':
+        return err('POST only', 405)
+    perms = get_request_perms(request)
+    if perms is not None:
+        if not perms['pages'].get('approval_records', True):
+            return err('无访问权限', 403, 403)
+        if not perms.get('can_create'):
+            return err('无排款管理权限', 403, 403)
+    body = parse_body(request)
+    ids = body.get('ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请提供要退回排款的审批记录 ids')
+    try:
+        ids = [int(i) for i in ids]
+    except (ValueError, TypeError):
+        return err('ids 必须为整数列表')
+    if len(ids) > 200:
+        return err('单次批量退回上限 200 条，请缩小选择范围')
+    qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids), request)
+    returned, skipped = 0, []
+    for rec in list(qs):
+        if not can_write_dept(request, rec.department):
+            skipped.append({'id': rec.id, 'reason': '无权操作该部门'})
+            continue
+        payment = Payment.objects.filter(approval=rec).first()
+        if not payment:
+            skipped.append({'id': rec.id, 'reason': '未找到关联排款记录'})
+            continue
+        if payment.prepaid_offsets.exists():
+            skipped.append({'id': rec.id,
+                            'reason': '排款已关联预付核销，不能退回；请先删除核销记录'})
+            continue
+        with transaction.atomic():
+            _record_payment_changes(payment, {}, {}, request, action='delete')
+            payment.delete()
+            _reconcile_approval_schedule(rec.id)
+        returned += 1
+    return ok({
+        'returned': returned,
+        'skipped': skipped,
+        'message': (f'已退回 {returned} 条排款'
+                    + (f'；跳过 {len(skipped)} 条' if skipped else '')),
+    })
 
 
 @csrf_exempt

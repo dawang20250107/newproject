@@ -529,6 +529,17 @@ async function copyWholeRow(p) {
   const ok = await copyRowTSV(p, ROW_COPY_COLS, { header: true })
   ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
 }
+async function returnPayment(p) {
+  const label = [p.payee, p.project_short_name || p.project_desc].filter(Boolean).join(' · ') || `#${p.id}`
+  const approvalHint = p.approval_id ? `\n来源审批已排款将归零（¥${p.total_amount}），可重新排款。` : ''
+  if (!confirm(`退回排款「${label}」（计划 ¥${p.total_amount}）？${approvalHint}\n此操作不可撤销。`)) return
+  try {
+    await api.delete(`/payments/${p.id}`)
+    toast.success('已退回排款，来源审批已排款同步归零')
+    load()
+  } catch (e) { toast.error(e?.msg || e?.error || '退回失败') }
+}
+
 const ctxItems = computed(() => {
   const p = ctx.menu.payload
   if (!p) return []
@@ -536,6 +547,7 @@ const ctxItems = computed(() => {
   return [
     { key: 'detail', label: expandedRows.value.has(p.id) ? '收起明细' : '展开计划/付款明细', icon: 'eye', action: r => toggleRowDetail(r.id) },
     { key: 'edit', label: '编辑', icon: 'edit', shortcut: 'E', hidden: !auth.canWrite, action: r => openEdit(r) },
+    { key: 'return', label: p.approval_id ? '退回排款（还原至审批）' : '退回排款（删除）', icon: 'trash', danger: true, hidden: !auth.canDelete, action: r => returnPayment(r) },
     { key: 'offset', label: '预付核销', icon: 'refresh', hidden: !canOffset, action: r => openOffset(r) },
     { key: 'logs', label: '变更日志', icon: 'history', shortcut: 'L', action: r => openLogs(r) },
     { divider: true },
