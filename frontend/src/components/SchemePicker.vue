@@ -1,22 +1,45 @@
 <script setup>
 // 通用「筛选方案」下拉（表格方案基座 UI）：配合 useTableSchemes 使用，任意列表页可复用。
 // 私有/公共分组展示、设默认（★）、保存当前列头筛选+排序为命名方案。
+import { ref } from 'vue'
+
 const props = defineProps({
   ctl: { type: Object, required: true },        // useTableSchemes(...) 的返回
   canPublic: { type: Boolean, default: false }, // 是否允许创建公共方案（写权限）
   isSuperAdmin: { type: Boolean, default: false },
 })
 const c = props.ctl
+const btnRef = ref(null)
+const dropStyle = ref({})
+const DROP_W = 264   // 与 .sp-drop width 保持一致
+
+function openDrop() {
+  if (!c.showDrop.value && btnRef.value) {
+    const r = btnRef.value.getBoundingClientRect()
+    const W = window.innerWidth
+    // 右对齐按钮右缘，再夹紧到视口内，避免导航折叠时左右溢出被截断
+    let left = r.right - DROP_W
+    if (left < 8) left = 8
+    if (left + DROP_W > W - 8) left = W - 8 - DROP_W
+    dropStyle.value = {
+      top: (r.bottom + 6) + 'px',
+      left: left + 'px',
+      maxHeight: Math.max(180, window.innerHeight - r.bottom - 20) + 'px',
+    }
+  }
+  c.showDrop.value = !c.showDrop.value
+}
 </script>
 
 <template>
   <div class="sp-wrap">
-    <button class="sp-btn" :class="{ on: c.showDrop.value }" title="保存/加载筛选方案（私有/公共）"
-            @click="c.showDrop.value = !c.showDrop.value">
+    <button ref="btnRef" class="sp-btn" :class="{ on: c.showDrop.value }" title="保存/加载筛选方案（私有/公共）"
+            @click="openDrop">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
       方案<span v-if="c.schemes.value.length" class="sp-badge">{{ c.schemes.value.length }}</span>
     </button>
-    <div v-if="c.showDrop.value" class="sp-drop">
+    <Teleport to="body">
+    <div v-if="c.showDrop.value" class="sp-drop" :style="dropStyle">
       <div class="sp-save-row">
         <input v-model="c.newName.value" class="sp-name-input" placeholder="方案名称…" maxlength="40"
                @keyup.enter="c.saveCurrent()" />
@@ -55,6 +78,7 @@ const c = props.ctl
       </template>
     </div>
     <div v-if="c.showDrop.value" class="sp-backdrop" @click="c.showDrop.value = false"></div>
+    </Teleport>
   </div>
 </template>
 
@@ -67,11 +91,12 @@ const c = props.ctl
 .sp-btn:hover, .sp-btn.on { border-color: var(--primary); color: var(--primary); }
 .sp-badge { background: var(--primary); color: #fff; border-radius: 8px; padding: 0 5px; font-size: 10px; font-weight: 700; }
 .sp-drop {
-  position: absolute; top: calc(100% + 6px); right: 0; z-index: 200;
+  position: fixed; z-index: 4500;
   background: #fff; border: 1.5px solid var(--border); border-radius: 10px;
-  box-shadow: 0 6px 20px rgba(0,0,0,0.12); min-width: 250px; padding: 8px 0;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.12); width: 264px; padding: 8px 0;
+  overflow-y: auto; overscroll-behavior: contain;
 }
-.sp-backdrop { position: fixed; inset: 0; z-index: 199; }
+.sp-backdrop { position: fixed; inset: 0; z-index: 4499; }
 .sp-save-row { display: flex; gap: 6px; padding: 6px 10px 8px; border-bottom: 1px solid var(--border); }
 .sp-name-input { flex: 1; padding: 5px 8px; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; outline: none; }
 .sp-name-input:focus { border-color: var(--primary); }
@@ -90,7 +115,7 @@ const c = props.ctl
 .sp-item:hover { background: rgba(201,99,66,0.05); }
 .sp-star { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 0 2px; line-height: 1; }
 .sp-star.on, .sp-star:hover { color: #f5a623; }
-.sp-name { flex: 1; font-weight: 500; }
+.sp-name { flex: 1; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sp-owner { font-size: 11px; color: var(--muted); }
 .sp-del { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 12px; }
 .sp-del:hover { color: var(--danger); }

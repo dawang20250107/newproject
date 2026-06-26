@@ -403,7 +403,7 @@ onMounted(load)
 
       <!-- ── 完成情况 ──────────────────────────────────────────────────────── -->
       <div class="ctrl-row" style="margin-bottom:4px">
-        <span class="section-title" style="margin:0">完成情况</span>
+        <span class="section-title" style="margin:0;white-space:nowrap;flex-shrink:0">完成情况</span>
         <select v-model="reportYear" class="sel-yr">
           <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
         </select>

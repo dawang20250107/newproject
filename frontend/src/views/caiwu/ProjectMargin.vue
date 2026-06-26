@@ -251,7 +251,7 @@ onMounted(() => {
       </div>
     </template>
 
-    <!-- 吸底汇总：对齐付款台账的 bottom-bar -->
+    <!-- 吸底汇总：对齐付款管理的 bottom-bar -->
     <Teleport to="body">
       <div v-if="summary && summary.has_data" class="bottom-bar">
         <div class="bb-summary">

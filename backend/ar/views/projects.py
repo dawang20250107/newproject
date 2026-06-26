@@ -24,6 +24,8 @@ PROJECT_FILTER_REGISTRY = {
     'status':          {'type': 'enum',   'col': 'status'},
     'contract_date':   {'type': 'date',   'col': 'contract_date'},
     'tax_rate':        {'type': 'number', 'col': 'tax_rate'},
+    'has_contract':    {'type': 'enum',   'col': 'has_contract'},
+    'notes':           {'type': 'text',   'col': 'notes'},
 }
 
 
@@ -736,11 +738,15 @@ def project_stats(request):
         qs = qs.filter(delivery_dept=dept)
 
     total = qs.count()
-    shared = qs.filter(is_shared=True).count()
     draft_count = qs.filter(is_draft=True).count()
 
-    # Customer level breakdown
-    level_rows = qs.values('customer_level').annotate(c=Count('id'))
+    # 运作中项目：S/A级客户数和共享业务数均以运作中项目为准
+    running_qs = qs.filter(status='运作中')
+    running_count = running_qs.count()
+    shared = running_qs.filter(is_shared=True).count()
+
+    # Customer level breakdown（仅运作中）
+    level_rows = running_qs.values('customer_level').annotate(c=Count('id'))
     level_map = {(r['customer_level'] or '未分级'): r['c'] for r in level_rows}
     s_count = level_map.get('S级', 0) + level_map.get('S', 0)
     a_count = level_map.get('A级', 0) + level_map.get('A', 0)
@@ -762,6 +768,7 @@ def project_stats(request):
 
     return ok({
         'total': total,
+        'running_count': running_count,
         'shared': shared,
         'draft_count': draft_count,
         's_count': s_count,

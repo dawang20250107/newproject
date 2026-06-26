@@ -1,6 +1,6 @@
 <script setup>
 // 统一的「导入结果」弹窗：完整展示 成功/跳过 数量与全部未通过校验的行（可滚动，不截断）。
-// 付款台账与审批管理共用，避免各自用 alert 截断只显示部分错误。
+// 付款管理与审批管理共用，避免各自用 alert 截断只显示部分错误。
 // result 形如 { created, skipped, errors:[...], message? } 或 { error: '整文件失败原因' }。
 defineProps({ result: { type: Object, default: null } })
 defineEmits(['close'])

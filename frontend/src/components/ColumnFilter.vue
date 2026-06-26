@@ -1,5 +1,5 @@
 <script setup>
-/* Excel / 金蝶风格列头筛选 + 排序的弹出控件，复用于审批管理 / 付款台账 / 应收明细。
+/* Excel / 金蝶风格列头筛选 + 排序的弹出控件，复用于审批管理 / 付款管理 / 应收明细。
    - type=text   → 条件模式（包含/不包含/等于/不等于/开头/结尾/为空/不为空）
                    + 选值模式（勾选该列实际出现的值；需父级提供 valuesProvider）
    - type=number → = ≠ > < ≥ ≤ 区间 / 空 / 非空
@@ -17,6 +17,7 @@ const props = defineProps({
   modelValue: { type: Object, default: null },       // {op, value} | null
   options:  { type: Array,   default: () => [] },     // enum: [{value,label}] 或 [string]
   single:   { type: Boolean, default: false },        // enum 单选（用于计算型状态等）
+  noExclude:{ type: Boolean, default: false },        // enum 多选但隐藏「包含/排除」（派生状态桶只支持并集）
   datePresets: { type: Boolean, default: true },      // date 类型是否显示快捷区间
   sortable: { type: Boolean, default: true },
   filterable: { type: Boolean, default: true },   // false → 仅排序（计算/聚合列）
@@ -77,8 +78,18 @@ const active = computed(() => {
 })
 const sorted = computed(() => props.sortable && props.sortField === props.field && props.sortOrder)
 
-const enumOpts = computed(() =>
-  props.options.map(o => (typeof o === 'string' ? { value: o, label: o } : o)))
+// 归一化枚举选项：兼容 'string' / {value,label} / {v,l} 三种来源；label 缺失时回退到
+// value，确保不会渲染出「没有名称的勾选框」。非数组来源一律视作空集。
+const enumOpts = computed(() => {
+  const src = Array.isArray(props.options) ? props.options : []
+  return src.map(o => {
+    if (typeof o === 'string' || typeof o === 'number') return { value: o, label: String(o) }
+    if (o == null) return { value: '', label: '' }
+    const value = o.value !== undefined ? o.value : o.v
+    const label = o.label !== undefined ? o.label : (o.l !== undefined ? o.l : value)
+    return { value, label: label == null ? '' : String(label) }
+  })
+})
 
 function syncDraftFromModel() {
   const m = props.modelValue
@@ -254,7 +265,7 @@ onBeforeUnmount(() => {
 <template>
   <span class="colf">
     <span class="colf-label">{{ label }}</span>
-    <button ref="btnRef" :data-colf="field" class="colf-btn" :class="{ on: active || sorted }"
+    <button v-if="sortable || filterable" ref="btnRef" :data-colf="field" class="colf-btn" :class="{ on: active || sorted }"
             type="button" @click.stop="toggle" :title="active ? '已筛选' : '筛选 / 排序'">
       <span class="colf-funnel">⏷</span>
       <span v-if="sorted" class="colf-sortmark">{{ sortOrder === 'asc' ? '▲' : '▼' }}</span>
@@ -339,12 +350,13 @@ onBeforeUnmount(() => {
 
         <!-- 枚举多选 -->
         <template v-else-if="type === 'enum'">
-          <div v-if="!single" class="colf-modetab colf-modetab-enum">
-            <button type="button" :class="{ act: op !== 'not_in' }" @click="op = 'in'">在（命中）</button>
-            <button type="button" :class="{ act: op === 'not_in' }" @click="op = 'not_in'">不在（排除）</button>
+          <div v-if="!single && !noExclude" class="colf-match-row">
+            <span class="colf-match-lbl">匹配：</span>
+            <button type="button" :class="{ act: op !== 'not_in' }" @click="op = 'in'">包含</button>
+            <button type="button" :class="{ act: op === 'not_in' }" @click="op = 'not_in'">排除</button>
           </div>
           <div class="colf-enum">
-            <label v-for="o in enumOpts" :key="o.value" class="colf-chk">
+            <label v-for="(o, i) in enumOpts" :key="i" class="colf-chk">
               <input type="checkbox" :checked="enumSel.includes(o.value)" @change="toggleEnum(o.value)" />
               <span>{{ o.label }}</span>
             </label>
@@ -397,14 +409,22 @@ onBeforeUnmount(() => {
 }
 .colf-close:hover { border-color: var(--danger); color: var(--danger); }
 
-/* 选值 / 条件 模式切换条 */
+/* 选值 / 条件 模式切换条（文本型） */
 .colf-modetab { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
 .colf-modetab button {
   flex: 1; padding: 5px 0; border: none; background: transparent; cursor: pointer;
   color: var(--muted); font-size: 11.5px; font-weight: 600;
 }
 .colf-modetab button.act { background: var(--primary); color: #fff; }
-.colf-modetab-enum button { font-size: 11px; }
+
+/* 枚举列「匹配：包含 / 排除」行 */
+.colf-match-row { display: flex; align-items: center; gap: 4px; }
+.colf-match-lbl { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+.colf-match-row button {
+  padding: 2px 10px; border: 1px solid var(--border); border-radius: 10px;
+  background: transparent; cursor: pointer; color: var(--muted); font-size: 11px;
+}
+.colf-match-row button.act { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.08); }
 
 .colf-op, .colf-in {
   width: 100%; box-sizing: border-box; padding: 6px 8px;
@@ -433,7 +453,7 @@ onBeforeUnmount(() => {
 .colf-enum { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .colf-chk { display: flex; align-items: center; gap: 7px; padding: 4px 4px; border-radius: 5px; cursor: pointer; }
 .colf-chk:hover { background: rgba(201,99,66,0.06); }
-.colf-chk input { margin: 0; flex-shrink: 0; }
+.colf-chk input { margin: 0; flex-shrink: 0; width: auto; }
 .colf-chk span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .colf-chk-all { font-weight: 700; border-bottom: 1px dashed var(--border); border-radius: 0; padding-bottom: 5px; }
 .colf-vmsg { font-size: 11px; color: var(--muted); padding: 4px 2px; }

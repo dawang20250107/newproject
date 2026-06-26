@@ -44,25 +44,30 @@ const yearOptions = computed(() => {
   const y = yearCST(); return [y, y - 1, y - 2]
 })
 
-// 当月周列表（ISO 周一为周首）
+// 当月周列表（业务口径：上周五~本周四，不跨月；首末周为部分周）
 const weekOptions = computed(() => {
   const y = selYear.value, m = selMonth.value
-  const first = new Date(Date.UTC(y, m - 1, 1))
-  const last = new Date(Date.UTC(y, m, 0))
+  const first = new Date(Date.UTC(y, m - 1, 1))   // 月首
+  const last  = new Date(Date.UTC(y, m, 0))         // 月末
   const weeks = []
+  // 从月首所在自然周的周五开始（可能在上月）
+  // UTC getUTCDay(): 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
   let cur = new Date(first)
-  const dow = (cur.getUTCDay() + 6) % 7
-  cur.setUTCDate(cur.getUTCDate() - dow)
+  const daysSinceFri = (cur.getUTCDay() - 5 + 7) % 7  // 距上个周五的天数（Fri=0,Sat=1,...,Thu=6）
+  cur.setUTCDate(cur.getUTCDate() - daysSinceFri)       // 回退到周五
   let guard = 0
   while (cur <= last && guard < 8) {
-    const start = new Date(cur)
-    const end = new Date(cur); end.setUTCDate(end.getUTCDate() + 6)
-    if (end >= first && start <= last) {
+    const natStart = new Date(cur)
+    const natEnd   = new Date(cur); natEnd.setUTCDate(natEnd.getUTCDate() + 6)  // 下周四
+    // 裁剪到月份边界（首周/末周可能是部分周）
+    const wkStart  = natStart < first ? new Date(first) : new Date(natStart)
+    const wkEnd    = natEnd   > last  ? new Date(last)  : new Date(natEnd)
+    if (wkStart <= last) {
       weeks.push({
         idx: weeks.length,
-        start: start.toISOString().slice(0, 10),
-        end: end.toISOString().slice(0, 10),
-        label: `第${weeks.length + 1}周·${fmtMD(start)}-${fmtMD(end)}`,
+        start: wkStart.toISOString().slice(0, 10),
+        end:   wkEnd.toISOString().slice(0, 10),
+        label: `第${weeks.length + 1}周·${fmtMD(wkStart)}-${fmtMD(wkEnd)}`,
       })
     }
     cur.setUTCDate(cur.getUTCDate() + 7); guard++
@@ -70,6 +75,17 @@ const weekOptions = computed(() => {
   return weeks
 })
 function fmtMD(d) { return `${d.getUTCMonth() + 1}/${d.getUTCDate()}` }
+
+// 自动定位到包含 today 的那一周（仅在当前月时有效）
+function autoSelectWeek() {
+  if (periodType.value !== 'weekly') return
+  const now = new Date()
+  const y = now.getUTCFullYear(), m = now.getUTCMonth() + 1
+  if (selYear.value !== y || selMonth.value !== m) return
+  const todayStr = now.toISOString().slice(0, 10)
+  const idx = weekOptions.value.findIndex(w => w.start <= todayStr && w.end >= todayStr)
+  if (idx >= 0) selWeekIdx.value = idx
+}
 
 // ── 格式化 ────────────────────────────────────────────────────────────────
 function wan(v) {
@@ -137,6 +153,18 @@ const arRows = computed(() => scopeRows('ar'))
 const budRows = computed(() => scopeRows('budget'))
 const cash = computed(() => data.value?.cash)
 
+const isGroupCash = computed(() => meta.value?.scope_kind === 'group' && depts.value.length > 1)
+const cashByDept = computed(() => data.value?.cash?.by_dept || {})
+const cashItems = [
+  { key: 'inflow', label: '一、经营活动现金流入', level: 1, cellClass: 'in' },
+  { key: 'collected', label: '　现金回款', level: 2, cellClass: '' },
+  { key: 'advance_received', label: '　预收款', level: 2, cellClass: '' },
+  { key: 'outflow', label: '二、经营活动现金流出', level: 1, cellClass: 'out' },
+  { key: 'paid', label: '　实付款项（扣预付冲抵）', level: 2, cellClass: '' },
+  { key: 'advance_paid', label: '　预付款', level: 2, cellClass: '' },
+  { key: 'net', label: '三、经营活动净现金流', level: 1, cellClass: 'net' },
+]
+
 // ── 导出 ─────────────────────────────────────────────────────────────────
 async function exportExcel() {
   exporting.value = true
@@ -167,8 +195,9 @@ async function exportImage() {
 }
 
 function onPeriodChange() {
-  if (periodType.value === 'weekly' && selWeekIdx.value >= weekOptions.value.length) {
-    selWeekIdx.value = 0
+  if (periodType.value === 'weekly') {
+    autoSelectWeek()
+    if (selWeekIdx.value >= weekOptions.value.length) selWeekIdx.value = 0
   }
   load()
 }
@@ -231,7 +260,7 @@ onMounted(load)
         <table class="rp-tbl">
           <thead><tr>
             <th class="lft">事业部</th><th>在运项目</th><th>本年新签</th>
-            <th>本期新签</th><th>较上期增减</th><th>项目总数</th>
+            <th>本期新签</th><th>较上期增减</th><th>项目总数（含已结束或中断）</th>
           </tr></thead>
           <tbody>
             <tr v-for="r in projRows" :key="r.name" :class="{ tot: r._total }">
@@ -267,38 +296,46 @@ onMounted(load)
             </tr>
           </tbody>
         </table>
-        <div class="rp-twin">
-          <table class="rp-tbl mini">
-            <thead><tr><th class="lft">期末账龄</th><th>逾期未收</th><th>未到期</th></tr></thead>
-            <tbody>
-              <tr v-for="r in arRows" :key="r.name" :class="{ tot: r._total }">
-                <td class="lft">{{ r.name }}</td>
-                <td class="neg">{{ wan(r.overdue) }}</td>
-                <td>{{ wan(r.not_due) }}</td>
-              </tr>
-            </tbody>
-          </table>
-          <table class="rp-tbl mini">
-            <thead><tr><th class="lft">本期到期</th><th>到期应收</th><th>到期已回</th><th>到期回款率</th></tr></thead>
-            <tbody>
-              <tr v-for="r in arRows" :key="r.name" :class="{ tot: r._total }">
-                <td class="lft">{{ r.name }}</td>
-                <td>{{ wan(r.due_amt) }}</td>
-                <td class="in">{{ wan(r.due_collected) }}</td>
-                <td><span class="rt" :class="rateClass(r.due_rate)">{{ rate(r.due_rate) }}</span></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <div class="rp-sub-cap">到期账龄结构<em>将期末仍未收的余额按到期日拆为 逾期（期初前已到期）· 当期（本期内到期）· 未到期（期末后到期 / 无到期日）三段，刻画期末未收的账龄构成</em></div>
+        <table class="rp-tbl aging">
+          <thead>
+            <tr class="grp-hd">
+              <th class="lft" rowspan="2">事业部</th>
+              <th colspan="3" class="g-over">逾期（已过期）</th>
+              <th colspan="3" class="g-curr">当期（本期到期）</th>
+              <th colspan="3" class="g-notdue">未到期（未来）</th>
+            </tr>
+            <tr class="sub-hd">
+              <th>应收</th><th>已收</th><th>回款率</th>
+              <th class="bd-l">应收</th><th>已收</th><th>回款率</th>
+              <th class="bd-l">应收</th><th>已收</th><th>回款率</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="r in arRows" :key="r.name" :class="{ tot: r._total }">
+              <td class="lft">{{ r.name }}</td>
+              <td class="neg">{{ wan(r.overdue) }}</td>
+              <td class="in">{{ wan(r.overdue_collected) }}</td>
+              <td><span class="rt" :class="rateClass(r.overdue_rate)">{{ rate(r.overdue_rate) }}</span></td>
+              <td class="bd-l">{{ wan(r.current) }}</td>
+              <td class="in">{{ wan(r.current_collected) }}</td>
+              <td><span class="rt" :class="rateClass(r.current_rate)">{{ rate(r.current_rate) }}</span></td>
+              <td class="bd-l">{{ wan(r.not_due) }}</td>
+              <td class="in">{{ wan(r.not_due_collected) }}</td>
+              <td><span class="rt" :class="rateClass(r.not_due_rate)">{{ rate(r.not_due_rate) }}</span></td>
+            </tr>
+          </tbody>
+        </table>
       </section>
 
-      <!-- 三、应收预算 -->
+      <!-- 三、应收应付预算 -->
       <section class="rp-sec">
-        <div class="rp-sec-hd"><span class="rp-sec-num">（三）</span>应收预算完成<em>本期口径（年度待数据齐全后启用）</em></div>
+        <div class="rp-sec-hd"><span class="rp-sec-num">（三）</span>应收应付预算完成<em>本期口径</em></div>
         <table class="rp-tbl">
           <thead><tr>
-            <th class="lft">事业部</th><th>本期预算</th><th>本期实际</th><th>本期完成率</th>
-            <th>年度预算</th><th>年度实际</th><th>年度完成率</th>
+            <th class="lft">事业部</th>
+            <th>应收预算</th><th>应收实际</th><th>应收完成率</th>
+            <th>应付预算</th><th>应付实际</th><th>应付完成率</th>
           </tr></thead>
           <tbody>
             <tr v-for="r in budRows" :key="r.name" :class="{ tot: r._total }">
@@ -306,40 +343,51 @@ onMounted(load)
               <td>{{ wan(r.coll_budget) }}</td>
               <td class="in">{{ wan(r.coll_actual) }}</td>
               <td><span class="rt" :class="rateClass(r.coll_rate)">{{ rate(r.coll_rate) }}</span></td>
-              <td class="ytd">{{ ytdWan(r.coll_budget_ytd) }}</td>
-              <td class="ytd">{{ ytdWan(r.coll_actual_ytd) }}</td>
-              <td class="ytd">{{ ytdRate(r.coll_rate_ytd) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-
-      <!-- 四、应付预算 -->
-      <section class="rp-sec">
-        <div class="rp-sec-hd"><span class="rp-sec-num">（四）</span>应付预算完成<em>月度口径（年度待数据齐全后启用）</em></div>
-        <table class="rp-tbl">
-          <thead><tr>
-            <th class="lft">事业部</th><th>本月预算</th><th>本月实际</th><th>本月完成率</th>
-            <th>年度预算</th><th>年度实际</th><th>年度完成率</th>
-          </tr></thead>
-          <tbody>
-            <tr v-for="r in budRows" :key="r.name" :class="{ tot: r._total }">
-              <td class="lft">{{ r.name }}</td>
               <td>{{ wan(r.pay_budget) }}</td>
               <td class="out">{{ wan(r.pay_actual) }}</td>
               <td><span class="rt" :class="rateClass(r.pay_rate)">{{ rate(r.pay_rate) }}</span></td>
-              <td class="ytd">{{ ytdWan(r.pay_budget_ytd) }}</td>
-              <td class="ytd">{{ ytdWan(r.pay_actual_ytd) }}</td>
-              <td class="ytd">{{ ytdRate(r.pay_rate_ytd) }}</td>
             </tr>
           </tbody>
         </table>
       </section>
 
-      <!-- 五、现金流 -->
+      <!-- 四、现金流 -->
       <section class="rp-sec" v-if="cash">
-        <div class="rp-sec-hd"><span class="rp-sec-num">（五）</span>现金流情况<em>经营活动现金流 · 与现金流分析同口径</em></div>
-        <table class="rp-tbl cash">
+        <div class="rp-sec-hd"><span class="rp-sec-num">（四）</span>现金流情况<em>经营活动现金流 · 与现金流分析同口径</em></div>
+
+        <!-- 集团视图：各事业部横向展示 -->
+        <div v-if="isGroupCash" class="cash-pivot-wrap">
+          <table class="rp-tbl cash-pivot">
+            <thead>
+              <tr>
+                <th class="lft">现金流项目</th>
+                <th v-for="d in depts" :key="d">{{ d }}</th>
+                <th class="hd-total">合计</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-for="item in cashItems" :key="item.key">
+                <tr :class="{ lv1: item.level === 1, net: item.key === 'net' }">
+                  <td class="lft" :class="item.level === 2 ? 'sub' : ''">{{ item.label }}</td>
+                  <td v-for="d in depts" :key="d"
+                      :class="item.key === 'net'
+                        ? ((cashByDept[d]?.period?.[item.key] ?? 0) >= 0 ? 'in' : 'neg')
+                        : item.cellClass">
+                    {{ wan(cashByDept[d]?.period?.[item.key]) }}
+                  </td>
+                  <td :class="[item.key === 'net'
+                      ? ((cash.period[item.key] ?? 0) >= 0 ? 'in strong' : 'neg strong')
+                      : (item.cellClass ? item.cellClass + ' strong' : 'strong')]">
+                    {{ wan(cash.period[item.key]) }}
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 单事业部视图 -->
+        <table v-else class="rp-tbl cash">
           <thead><tr><th class="lft">现金流项目</th><th>本期金额</th><th>本年累计</th></tr></thead>
           <tbody>
             <tr class="lv1"><td class="lft">一、经营活动现金流入</td><td class="in strong">{{ wan(cash.period.inflow) }}</td><td class="ytd strong">{{ ytdWan(cash.ytd.inflow) }}</td></tr>
@@ -356,9 +404,9 @@ onMounted(load)
         </table>
       </section>
 
-      <!-- 六、汇报说明（手工填写）-->
+      <!-- 五、汇报说明（手工填写）-->
       <section class="rp-sec">
-        <div class="rp-sec-hd"><span class="rp-sec-num">（六）</span>汇报说明<em>业财分析 · 手工填写</em></div>
+        <div class="rp-sec-hd"><span class="rp-sec-num">（五）</span>汇报说明<em>业财分析 · 手工填写</em></div>
         <div class="rp-notes">
           <div v-for="f in narrativeFields" :key="f.key" class="rp-note">
             <div class="rp-note-lbl">{{ f.label }}</div>
@@ -377,7 +425,7 @@ onMounted(load)
 
       <div class="rp-foot">
         本报告由系统按取值期间自动生成，账面余额为存量口径、现金流为期间流量口径，二者不应直接相等；
-        标注「—」的年度/本年累计项待基础数据齐全后启用。所有金额以导出时点数据为准。
+        现金流「本年累计」项待基础数据齐全后启用（标注「—」）。所有金额以导出时点数据为准。
       </div>
     </div>
   </div>
@@ -481,11 +529,31 @@ onMounted(load)
 .rp-twin { display: grid; grid-template-columns: 1fr 1.3fr; gap: 14px; margin-top: 12px; }
 .rp-tbl.mini th, .rp-tbl.mini td { padding: 6px 9px; font-size: 12px; }
 
-/* 现金流表 */
+/* 到期账龄结构矩阵：逾期 / 当期 / 未到期 三段分组列，横向同事业部对比、纵向同口径对比 */
+.rp-sub-cap { margin: 14px 0 6px; font-size: 12.5px; font-weight: 700; color: #333; }
+.rp-sub-cap em { font-style: normal; font-size: 11px; font-weight: 400; color: #999; margin-left: 8px; }
+.rp-tbl.aging th, .rp-tbl.aging td { padding: 6px 8px; font-size: 12px; }
+.rp-tbl.aging tr.grp-hd th { font-size: 12px; font-weight: 800; padding: 5px 8px; }
+.rp-tbl.aging tr.sub-hd th { font-weight: 600; color: #555; background: #f7f7f7; }
+.rp-tbl.aging .g-over   { background: #fde8eb; color: #b00020; }
+.rp-tbl.aging .g-curr   { background: #fef3e2; color: #a05a00; }
+.rp-tbl.aging .g-notdue { background: #eef4f0; color: #0a7a4a; }
+.rp-tbl.aging .bd-l { border-left: 2px solid #bcbcbc; }
+
+/* 现金流表（单事业部）*/
 .rp-tbl.cash td.lft { font-weight: 600; }
 .rp-tbl.cash td.lft.sub { font-weight: 400; color: #555; }
 .rp-tbl.cash tr.lv1 td { background: #f0f0f0; font-weight: 800; }
 .rp-tbl.cash tr.net td { border-top: 2px solid #333; background: #f5f5f5; font-size: 13px; font-weight: 800; }
+
+/* 现金流横向透视表（集团视图）*/
+.cash-pivot-wrap { overflow-x: auto; }
+.rp-tbl.cash-pivot td.lft { font-weight: 600; min-width: 200px; }
+.rp-tbl.cash-pivot td.lft.sub { font-weight: 400; color: #555; }
+.rp-tbl.cash-pivot tr.lv1 td { background: #f0f0f0; font-weight: 800; }
+.rp-tbl.cash-pivot tr.net td { border-top: 2px solid #333; background: #f5f5f5; font-size: 13px; font-weight: 800; }
+.rp-tbl.cash-pivot th.hd-total { background: #d8d8d8; font-weight: 900; }
+.rp-tbl.cash-pivot td:last-child { background: #f5f5f5; font-weight: 700; border-left: 2px solid #aaa; }
 
 /* 汇报说明 */
 .rp-notes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }

@@ -231,7 +231,7 @@ onMounted(() => {
 
 <template>
   <div class="pcf-wrap">
-    <!-- 标题行：h1 + 维度 tab，对齐付款台账风格 -->
+    <!-- 标题行：h1 + 维度 tab，对齐付款管理风格 -->
     <div class="topbar">
       <div style="display:flex;align-items:center;gap:14px">
         <h1>项目现金流</h1>
@@ -244,7 +244,7 @@ onMounted(() => {
 
     <!-- 表格卡片 -->
     <div class="card fh-fill">
-      <!-- 筛选条：对齐付款台账 filter-bar 风格 -->
+      <!-- 筛选条：对齐付款管理 filter-bar 风格 -->
       <div class="filter-bar">
         <select v-model="filters.dept" @change="filters.useCustomDate ? load() : null">
           <option value="">全部事业部</option>
@@ -331,7 +331,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- 吸底汇总：对齐付款台账的 bottom-bar。Teleport 到 body 逃脱 .card 包含块 -->
+    <!-- 吸底汇总：对齐付款管理的 bottom-bar。Teleport 到 body 逃脱 .card 包含块 -->
     <Teleport to="body">
       <div v-if="!loading && !err && rows.length && !askTarget" class="bottom-bar">
         <div class="bb-summary">
@@ -376,7 +376,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* 维度 tab（对齐付款台账 .tab-bar / .tab-btn）*/
+/* 维度 tab（对齐付款管理 .tab-bar / .tab-btn）*/
 .tab-bar { display: flex; gap: 2px; background: rgba(0,0,0,0.05); border-radius: 10px; padding: 3px; }
 .tab-btn { border: none; background: none; padding: 5px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; }
 .tab-btn.active { background: #fff; color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.12); }

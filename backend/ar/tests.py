@@ -1,6 +1,6 @@
 import io
 import json
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import openpyxl
@@ -665,6 +665,41 @@ class ARPermissionRegressionTests(TestCase):
         # 或：未开票 或 预估>150 → a(未开票) + b(预估200) = 两条
         self.assertEqual(ids(conds, 'any'), {a.id, b.id})
 
+    def test_dim_condition_multi_value_union(self):
+        """列头枚举多选：dim 条件 value 为数组时各桶取并集（OR）。"""
+        import json as _json
+        admin = self.make_user('13900000089', 'finance_director', role='super_admin')
+        project = self.create_project()
+        today = date.today()
+        # a: 逾期（有未收 + 应收到期已过）
+        a = ARRecord.objects.create(project=project, operation_year=2026, operation_month=5,
+                                    estimated_amount=Decimal('100.00'),
+                                    due_date=today - timedelta(days=10))
+        # b: 已结清（全额回款 → outstanding<=0）
+        b = ARRecord.objects.create(project=project, operation_year=2026, operation_month=6,
+                                    estimated_amount=Decimal('200.00'),
+                                    actual_invoice_amount=Decimal('200.00'))
+        ARPayment.objects.create(ar_record=b, payment_no=1, amount=Decimal('200.00'),
+                                 payment_date=today)
+        # c: 未到期（有未收 + 到期日在远期）
+        c = ARRecord.objects.create(project=project, operation_year=2026, operation_month=7,
+                                    estimated_amount=Decimal('300.00'),
+                                    due_date=today + timedelta(days=120))
+
+        def ids(value):
+            conds = [{'t': 'dim', 'field': 'status', 'value': value}]
+            resp = self.client.get('/api/pk/ar/records', {'conditions': _json.dumps(conds)},
+                                   **self.auth(admin))
+            self.assertEqual(resp.status_code, 200, resp.content)
+            return {r['id'] for r in resp.json()['data']['items']}
+
+        # 单值仍生效（向后兼容）
+        self.assertEqual(ids('overdue'), {a.id})
+        self.assertEqual(ids('settled'), {b.id})
+        # 多选（数组）= 并集
+        self.assertEqual(ids(['overdue', 'settled']), {a.id, b.id})
+        self.assertEqual(ids(['overdue', 'not_due']), {a.id, c.id})
+
     def test_conditions_builder_date_and_amount(self):
         """条件构建器：金额运算符(≠0) + 回款日期相对区间(含/不含本月)。"""
         import json as _json
@@ -1021,33 +1056,31 @@ class ARPermissionRegressionTests(TestCase):
         # 逾期已收：payment_date 在6月(06-15) 且 ar_record.due_date<mo_start(06-30<06-01? No) → 0
         self.assertEqual(Decimal(s['month_overdue_collected']), Decimal('0'))
 
-        # week window for 2026-06-30 (Tuesday), 周五~周四口径: Fri=2026-06-26, Thu=2026-07-02
-        # rec_june due_date=2026-06-30 在该周; 期前(payment_date < 2026-06-26) = 250(06-15)
+        # 周窗口（不跨月口径）：2026-06-30（周二）所在自然周 Fri=6/26～Thu=7/2
+        # 月份裁剪后：wk=[6/26, 6/30]（末周 5 天，不延伸到 7 月）
+        # rec_june due_date=06-30 落在该周; 期前(payment_date < 6/26) = 250(06-15)
         # week_est = 1000 − 250 = 750
         self.assertEqual(Decimal(s['week_est']), Decimal('750.00'))
         self.assertEqual(Decimal(s['week_adjust']), Decimal('0'))
-        # week_collected: payment on 2026-07-01 is in the week → 400 (not the 06-15 one)
-        self.assertEqual(Decimal(s['week_collected']), Decimal('400.00'))
-        self.assertEqual(s['ref_week'], '6/26~7/2')
-        # 上周环比窗口：6/19~6/25，无到期/回款落入 → 0
+        # week_collected: 周窗口 [6/26,6/30]；07-01 不在此区间，06-15 也不在 → 0
+        self.assertEqual(Decimal(s['week_collected']), Decimal('0'))
+        self.assertEqual(s['ref_week'], '6/26~6/30')          # 月份裁剪：不延伸到 7 月
+        # 上周环比窗口：上个自然周 Fri=6/19～Thu=6/25（全在 6 月，无裁剪）
         self.assertEqual(s['prev_ref_week'], '6/19~6/25')
         self.assertEqual(Decimal(s['prev_week_est']), Decimal('0'))
         self.assertEqual(Decimal(s['prev_week_adjust']), Decimal('0'))
         self.assertEqual(Decimal(s['prev_week_collected']), Decimal('0'))
 
         # ── 关键回归：历史月份筛选（早于今天）时 ref_date 不应被 today 覆盖 ──
-        # year=2026 month=6 is before today (2026-05-30... actually June is after May, let's use a past year)
-        # Use July record filtered by pay_end=2026-03-31 (before today=2026-05-30)
-        # ref_candidates should be [2026-03-31], ref_date=2026-03-31 (not today=May)
+        # ref_date=2026-03-31（周二），自然周 Fri=3/27～Thu=4/2；月份裁剪到 [3/27,3/31]
         resp2 = self.client.get('/api/pk/ar/records', {'pay_end': '2026-03-31'},
                                 **self.auth(admin))
         self.assertEqual(resp2.status_code, 200)
         s2 = resp2.json()['data']['summary']
-        # ref_date must be 2026-03-31 (March), not today (May)
         self.assertEqual(s2['ref_date'], '2026-03-31')
         self.assertEqual(s2['ref_month'], '2026年3月')
-        self.assertEqual(s2['ref_week'], '3/27~4/2')  # week of 2026-03-31 (周五3/27~周四4/2)
-        self.assertEqual(s2['prev_ref_week'], '3/20~3/26')  # 上周环比窗口
+        self.assertEqual(s2['ref_week'], '3/27~3/31')          # 月份裁剪：不延伸到 4 月
+        self.assertEqual(s2['prev_ref_week'], '3/20~3/26')     # 上周环比（全在 3 月）
         # 基准周非今天所在周 → 标签为"该周"
         self.assertEqual(s2['ref_week_label'], '该周')
 
@@ -1227,6 +1260,114 @@ class AdvanceModuleTests(TestCase):
         recv = AdvanceRecord.objects.get(direction='预收', counterparty='客户甲')
         self.assertEqual(recv.balance_amount, Decimal('60000.00'))  # 100000 - 40000
         self.assertEqual(recv.delivery_dept, self.dept)
+
+    # ── 收付差异 · 时间维度（月/周）分解 ────────────────────────────────────────
+    def test_diff_timeline_month_and_week(self):
+        admin = self.make_user('13911100009', 'finance_director', role='super_admin')
+        proj = self.create_project(short_name='时间线项目')
+        # 1月预收10万、2月预付4万、3月预收3万 → 累计差异应为 10/6/9（万）
+        AdvanceRecord.objects.create(direction='预收', project=proj, delivery_dept=self.dept,
+                                     counterparty='客户甲', occur_year=2026, occur_month=1,
+                                     occur_date=date(2026, 1, 10), advance_amount=Decimal('100000'))
+        AdvanceRecord.objects.create(direction='预付', project=proj, delivery_dept=self.dept,
+                                     counterparty='供应商乙', occur_year=2026, occur_month=2,
+                                     occur_date=date(2026, 2, 15), advance_amount=Decimal('40000'))
+        AdvanceRecord.objects.create(direction='预收', project=proj, delivery_dept=self.dept,
+                                     counterparty='客户丙', occur_year=2026, occur_month=3,
+                                     occur_date=date(2026, 3, 5), advance_amount=Decimal('30000'))
+        # 缺日期的记录 → 归入 null 桶
+        AdvanceRecord.objects.create(direction='预收', project=proj, delivery_dept=self.dept,
+                                     counterparty='客户丁', occur_year=2026, occur_month=4,
+                                     occur_date=None, advance_amount=Decimal('5000'))
+
+        r = self.client.get('/api/pk/ar/advances/diff-timeline',
+                            {'grain': 'month'}, **self.auth(admin))
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()['data']
+        self.assertEqual(d['grain'], 'month')
+        # 连续补桶：1/2/3 月三期（含中间无收付的月也应在序列中）
+        periods = {p['period']: p for p in d['periods']}
+        self.assertIn('2026-01', periods)
+        self.assertIn('2026-02', periods)
+        self.assertIn('2026-03', periods)
+        # 本期差异
+        self.assertEqual(periods['2026-01']['diff'], '100000.00')
+        self.assertEqual(periods['2026-02']['diff'], '-40000.00')
+        self.assertEqual(periods['2026-03']['diff'], '30000.00')
+        # 累计差异滚动求和：10 / 6 / 9 万
+        self.assertEqual(periods['2026-01']['cum_diff'], '100000.00')
+        self.assertEqual(periods['2026-02']['cum_diff'], '60000.00')
+        self.assertEqual(periods['2026-03']['cum_diff'], '90000.00')
+        # null 桶（缺日期）单列，不混入时间序
+        self.assertIsNotNone(d['null_period'])
+        self.assertEqual(d['null_period']['in_total'], '5000.00')
+        # 汇总：总预收 13.5 万、总预付 4 万
+        self.assertEqual(d['summary']['in_total'], '135000.00')
+        self.assertEqual(d['summary']['out_total'], '40000.00')
+
+        # 周粒度：仍能返回且 grain 标记正确
+        rw = self.client.get('/api/pk/ar/advances/diff-timeline',
+                            {'grain': 'week'}, **self.auth(admin))
+        self.assertEqual(rw.status_code, 200, rw.content)
+        self.assertEqual(rw.json()['data']['grain'], 'week')
+
+        # 日期窗口过滤：仅 2 月 → 只剩预付一期
+        rf = self.client.get('/api/pk/ar/advances/diff-timeline',
+                            {'grain': 'month', 'start': '2026-02-01', 'end': '2026-02-28'},
+                            **self.auth(admin))
+        df = rf.json()['data']
+        self.assertEqual(df['summary']['out_total'], '40000.00')
+        self.assertEqual(df['summary']['in_total'], '0')
+
+        # 导出 Excel：返回 xlsx 附件
+        re = self.client.get('/api/pk/ar/advances/diff-timeline/export',
+                            {'grain': 'month'}, **self.auth(admin))
+        self.assertEqual(re.status_code, 200, re.content)
+        self.assertIn('spreadsheet', re['Content-Type'])
+
+    def test_diff_timeline_period_projects_detail(self):
+        """按月/按周视图依赖：每期 projects 拆分须带项目级当期差异 + 逐笔明细，
+        供前端选定某期后渲染与「按项目」一致的可展开表格。"""
+        admin = self.make_user('13911100019', 'finance_director', role='super_admin')
+        proj = self.create_project(short_name='透视项目')
+        # 1月预收10万、2月预付4万、3月预收3万
+        AdvanceRecord.objects.create(direction='预收', project=proj, delivery_dept=self.dept,
+                                     counterparty='客户甲', occur_year=2026, occur_month=1,
+                                     occur_date=date(2026, 1, 10), advance_amount=Decimal('100000'))
+        AdvanceRecord.objects.create(direction='预付', project=proj, delivery_dept=self.dept,
+                                     counterparty='供应商乙', occur_year=2026, occur_month=2,
+                                     occur_date=date(2026, 2, 15), advance_amount=Decimal('40000'))
+        AdvanceRecord.objects.create(direction='预收', project=proj, delivery_dept=self.dept,
+                                     counterparty='客户丙', occur_year=2026, occur_month=3,
+                                     occur_date=date(2026, 3, 5), advance_amount=Decimal('30000'))
+
+        r = self.client.get('/api/pk/ar/advances/diff-timeline',
+                            {'grain': 'month'}, **self.auth(admin))
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()['data']
+        periods = {p['period']: p for p in d['periods']}
+        # 1月：项目级当期差异 = +10 万，预收明细带日期/金额/往来单位
+        jan = periods['2026-01']['projects']
+        self.assertEqual(len(jan), 1)
+        self.assertEqual(jan[0]['project'], '透视项目')
+        self.assertEqual(jan[0]['diff'], '100000.00')
+        self.assertEqual(len(jan[0]['in_items']), 1)
+        self.assertEqual(jan[0]['in_items'][0]['amount'], '100000.00')
+        self.assertEqual(jan[0]['in_items'][0]['counterparty'], '客户甲')
+        self.assertEqual(jan[0]['out_items'], [])
+        # 2月：项目级当期差异 = −4 万（预付侧）
+        feb = periods['2026-02']['projects']
+        self.assertEqual(feb[0]['diff'], '-40000.00')
+        self.assertEqual(len(feb[0]['out_items']), 1)
+        self.assertEqual(feb[0]['out_items'][0]['amount'], '40000.00')
+
+        # 周粒度：仍按项目拆分并带当期差异
+        rw = self.client.get('/api/pk/ar/advances/diff-timeline',
+                            {'grain': 'week'}, **self.auth(admin))
+        self.assertEqual(rw.status_code, 200, rw.content)
+        dw = rw.json()['data']
+        self.assertEqual(dw['grain'], 'week')
+        self.assertTrue(any(p['projects'] for p in dw['periods']))
 
     # ── 现金流打通：净额含预收(流入)与预付(流出) ───────────────────────────────
     def test_cashflow_includes_advances(self):

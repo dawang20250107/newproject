@@ -35,9 +35,12 @@ def _resolve_period(request, today):
     if sd and ed:
         start, end = _ISO(sd), _ISO(ed)
     elif ptype == 'weekly':
-        weekday = today.weekday()  # 周一=0
-        start = today - datetime.timedelta(days=weekday)
-        end = start + datetime.timedelta(days=6)
+        # 业务口径：周五~次周周四，不跨月
+        _nat_fri = today - datetime.timedelta(days=(today.weekday() - 4) % 7)
+        _mo_s = datetime.date(today.year, today.month, 1)
+        _mo_e = datetime.date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
+        start = max(_nat_fri, _mo_s)
+        end = min(_nat_fri + datetime.timedelta(days=6), _mo_e)
     else:
         y = _int_param(request, 'year', today.year)
         m = _int_param(request, 'month', today.month)
@@ -63,8 +66,17 @@ def _resolve_period(request, today):
 def _prev_period(ptype, start, end):
     """上一可比期间（周报=上一周；月报=上一月），用于「增减」对比。"""
     if ptype == 'weekly':
-        p_end = start - datetime.timedelta(days=1)
-        p_start = p_end - datetime.timedelta(days=6)
+        # start 可能是经月份裁剪的值；先还原到其所在自然周五
+        _nat_fri = start - datetime.timedelta(days=(start.weekday() - 4) % 7)
+        # 上一自然周五~周四窗口，再裁剪到该周五所属月
+        _prev_fri = _nat_fri - datetime.timedelta(days=7)
+        _prev_thu = _prev_fri + datetime.timedelta(days=6)
+        _mo_s = datetime.date(_prev_fri.year, _prev_fri.month, 1)
+        _mo_e = datetime.date(
+            _prev_fri.year, _prev_fri.month,
+            calendar.monthrange(_prev_fri.year, _prev_fri.month)[1])
+        p_start = max(_prev_fri, _mo_s)
+        p_end   = min(_prev_thu, _mo_e)
     else:
         p_end = start - datetime.timedelta(days=1)
         p_start = datetime.date(p_end.year, p_end.month, 1)
@@ -152,12 +164,15 @@ def _ar_metric(depts, p_start, p_end):
                 .annotate(paid_end=Coalesce(pay_to_end_sq, Value(Decimal('0'),
                           output_field=DecimalField(max_digits=18, decimal_places=2))))
                 .annotate(out_end=F('estimated_amount') + F('account_diff_adjustment') - F('paid_end')))
-        overdue = (recs.filter(due_date__lt=p_end, out_end__gt=0)
+        # 账龄三分：逾期（期初前已到期）/ 当期（本期内到期）/ 未到期（期末后到期或无到期日）
+        overdue = (recs.filter(due_date__lt=p_start, out_end__gt=0)
+                   .aggregate(s=Sum('out_end'))['s'] or Decimal('0'))
+        current = (recs.filter(due_date__gte=p_start, due_date__lt=p_end, out_end__gt=0)
                    .aggregate(s=Sum('out_end'))['s'] or Decimal('0'))
         not_due = (recs.filter(Q(due_date__gte=p_end) | Q(due_date__isnull=True), out_end__gt=0)
                    .aggregate(s=Sum('out_end'))['s'] or Decimal('0'))
 
-        # 本期到期 & 到期回款率
+        # 本期到期 & 到期回款率（保留用于 Excel 导出兼容）
         due_recs = ARRecord.objects.filter(delivery_dept=d, due_date__gte=p_start, due_date__lte=p_end)
         due_amt = due_recs.aggregate(s=Sum(F('estimated_amount') + F('account_diff_adjustment')))['s'] or Decimal('0')
         due_collected = (ARPayment.objects
@@ -165,6 +180,27 @@ def _ar_metric(depts, p_start, p_end):
                                  ar_record__due_date__lte=p_end, payment_date__lte=p_end)
                          .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
                          .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+
+        # 逾期已收：期内现金回款中，对应期初前已逾期（due_date < p_start）的应收记录的部分
+        overdue_collected = (ARPayment.objects
+                             .filter(ar_record__delivery_dept=d, payment_date__gte=p_start,
+                                     payment_date__lte=p_end, ar_record__due_date__lt=p_start)
+                             .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
+                             .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+        # 当期已收：期内现金回款中，对应本期内到期（p_start ≤ due_date < p_end）的应收记录的部分
+        current_collected = (ARPayment.objects
+                             .filter(ar_record__delivery_dept=d, payment_date__gte=p_start,
+                                     payment_date__lte=p_end, ar_record__due_date__gte=p_start,
+                                     ar_record__due_date__lt=p_end)
+                             .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
+                             .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+        # 未到期已收：期内现金回款中，对应未到期（due_date >= p_end 或无到期日）的应收记录的部分
+        not_due_collected = (ARPayment.objects
+                             .filter(ar_record__delivery_dept=d, payment_date__gte=p_start,
+                                     payment_date__lte=p_end)
+                             .filter(Q(ar_record__due_date__gte=p_end) | Q(ar_record__due_date__isnull=True))
+                             .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
+                             .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
 
         rows[d] = {
             'opening': _money(opening),
@@ -174,7 +210,14 @@ def _ar_metric(depts, p_start, p_end):
             'adj_in': _money(adj_in),
             'closing': _money(closing),
             'overdue': _money(overdue),
+            'overdue_collected': _money(overdue_collected),
+            'overdue_rate': _rate(overdue_collected, overdue + overdue_collected),
+            'current': _money(current),
+            'current_collected': _money(current_collected),
+            'current_rate': _rate(current_collected, current + current_collected),
             'not_due': _money(not_due),
+            'not_due_collected': _money(not_due_collected),
+            'not_due_rate': _rate(not_due_collected, not_due + not_due_collected),
             'due_amt': _money(due_amt),
             'due_collected': _money(due_collected),
             'due_rate': _rate(due_collected, due_amt),
@@ -235,41 +278,9 @@ def _budget_metric(depts, year, p_start, p_end, month_start, month_end):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _cash_window(depts, s, e):
-    """[s,e] 区间的经营现金流：流入=现金回款+预收；流出=实付(扣预付冲抵)+预付。"""
-    coll = (ARPayment.objects
-            .filter(ar_record__delivery_dept__in=depts, payment_date__gte=s, payment_date__lte=e)
-            .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
-            .aggregate(x=Sum('amount'))['x'] or Decimal('0'))
-    paid = (PaymentInstallment.objects
-            .filter(payment__department__in=depts, pay_date__gte=s, pay_date__lte=e)
-            .aggregate(x=Sum('pay_amount'))['x'] or Decimal('0'))
-    # 预付核销冲抵：按首个实付日期（否则计划付款日）归期
-    earliest = Subquery(PaymentInstallment.objects.filter(payment_id=OuterRef('pk'))
-                        .order_by('pay_date').values('pay_date')[:1])
-    offset = (Payment.objects
-              .filter(department__in=depts, prepaid_offset_amount__gt=0)
-              .annotate(fp=earliest)
-              .annotate(ad=Coalesce('fp', 'planned_date'))
-              .filter(ad__gte=s, ad__lte=e)
-              .aggregate(x=Sum('prepaid_offset_amount'))['x'] or Decimal('0'))
-    paid = max(Decimal('0'), paid - offset)
-    adv = (AdvanceRecord.objects
-           .filter(delivery_dept__in=depts, occur_date__gte=s, occur_date__lte=e)
-           .values('direction').annotate(x=Sum('advance_amount')))
-    adv_recv = adv_paid = Decimal('0')
-    for r in adv:
-        if r['direction'] == '预收':
-            adv_recv += r['x'] or Decimal('0')
-        else:
-            adv_paid += r['x'] or Decimal('0')
-    inflow = coll + adv_recv
-    outflow = paid + adv_paid
-    return {
-        'collected': _money(coll), 'advance_received': _money(adv_recv),
-        'paid': _money(paid), 'advance_paid': _money(adv_paid),
-        'inflow': _money(inflow), 'outflow': _money(outflow),
-        'net': _money(inflow - outflow),
-    }
+    """[s,e] 区间经营现金流——委托全系统统一口径 cash_flow_window，仅做金额格式化。"""
+    cw = cash_flow_window(depts, s, e)
+    return {k: _money(v) for k, v in cw.items()}
 
 
 def _cash_metric(depts, year, p_start, p_end):
@@ -331,10 +342,17 @@ def _compute_report(request, today):
     # 合计行
     proj_total = _sum_rows(projects, depts, ['active', 'total', 'ytd_new', 'period_new', 'prev_new', 'delta'])
     ar_keys = ['opening', 'new_ar', 'cash_in', 'noncash_in', 'adj_in', 'closing',
-               'overdue', 'not_due', 'due_amt', 'due_collected']
+               'overdue', 'overdue_collected', 'current', 'current_collected',
+               'not_due', 'not_due_collected', 'due_amt', 'due_collected']
     ar_total = _sum_rows(ar, depts, ar_keys)
     ar_total['due_rate'] = _rate(ar_total['due_collected'], ar_total['due_amt'])
     ar_total['collect_rate'] = _rate(ar_total['cash_in'], ar_total['opening'] + ar_total['new_ar'])
+    ar_total['overdue_rate'] = _rate(ar_total['overdue_collected'],
+                                     ar_total['overdue'] + ar_total['overdue_collected'])
+    ar_total['current_rate'] = _rate(ar_total['current_collected'],
+                                     ar_total['current'] + ar_total['current_collected'])
+    ar_total['not_due_rate'] = _rate(ar_total['not_due_collected'],
+                                     ar_total['not_due'] + ar_total['not_due_collected'])
     bud_keys = ['coll_budget', 'coll_actual', 'coll_budget_ytd', 'coll_actual_ytd',
                 'pay_budget', 'pay_actual', 'pay_budget_ytd', 'pay_actual_ytd']
     bud_total = _sum_rows(budget, depts, bud_keys)
@@ -342,6 +360,10 @@ def _compute_report(request, today):
     bud_total['coll_rate_ytd'] = _rate(bud_total['coll_actual_ytd'], bud_total['coll_budget_ytd'])
     bud_total['pay_rate'] = _rate(bud_total['pay_actual'], bud_total['pay_budget'])
     bud_total['pay_rate_ytd'] = _rate(bud_total['pay_actual_ytd'], bud_total['pay_budget_ytd'])
+
+    # 集团视图：提供各事业部现金流细目，供前端横向展示
+    if scope_kind == 'group' and len(depts) > 1:
+        cash['by_dept'] = {d: _cash_metric([d], year, p_start, p_end) for d in depts}
 
     reporter = getattr(request.pk_user, 'name', '') or '—'
 
@@ -471,51 +493,46 @@ def _xlsx_report(data):
 
     r += 1
     r = section(ws, r, '二、应收账款情况')
-    r = hdr(ws, r, ['事业部', '期初未收', '现金回款', '非现金核销', '账实差额',
-                    '期末未收', '其中逾期', '其中未到期'])
+    r = hdr(ws, r, ['事业部', '期初未收', '现金回款', '非现金核销', '账实差额', '期末未收', '回款率(%)'])
     arows = data['ar']['rows']
     for d in m['depts']:
         a = arows[d]
         r = row(ws, r, [d, a['opening'], a['cash_in'], a['noncash_in'], a['adj_in'],
-                        a['closing'], a['overdue'], a['not_due']])
+                        a['closing'], a['collect_rate']])
     if m['is_multi']:
         a = data['ar']['total']
         r = row(ws, r, ['合计', a['opening'], a['cash_in'], a['noncash_in'], a['adj_in'],
-                        a['closing'], a['overdue'], a['not_due']], bold=True)
-    # 到期回款
-    r = hdr(ws, r, ['事业部', '本期到期应收', '本期到期已回', '到期回款率(%)'])
+                        a['closing'], a['collect_rate']], bold=True)
+    # 到期账龄结构：逾期 / 当期 / 未到期分类回款
+    r = hdr(ws, r, ['事业部', '逾期应收', '逾期已收', '逾期回款率(%)',
+                    '当期应收', '当期已收', '当期回款率(%)',
+                    '未到期应收', '未到期已收', '未到期回款率(%)'])
     for d in m['depts']:
         a = arows[d]
-        r = row(ws, r, [d, a['due_amt'], a['due_collected'], a['due_rate']])
+        r = row(ws, r, [d, a['overdue'], a['overdue_collected'], a['overdue_rate'],
+                        a['current'], a['current_collected'], a['current_rate'],
+                        a['not_due'], a['not_due_collected'], a['not_due_rate']])
     if m['is_multi']:
         a = data['ar']['total']
-        r = row(ws, r, ['合计', a['due_amt'], a['due_collected'], a['due_rate']], bold=True)
+        r = row(ws, r, ['合计', a['overdue'], a['overdue_collected'], a['overdue_rate'],
+                        a['current'], a['current_collected'], a['current_rate'],
+                        a['not_due'], a['not_due_collected'], a['not_due_rate']], bold=True)
 
-    # 年度/本年累计数据成熟度：基础数据齐全前以「—」示意（与前端口径一致）
-    Y = '—'
     r += 1
-    r = section(ws, r, '三、应收预算完成')
-    r = hdr(ws, r, ['事业部', '本期预算', '本期实际', '本期完成率(%)', '年度预算', '年度实际', '年度完成率(%)'])
+    r = section(ws, r, '三、应收应付预算完成（本期口径）')
+    r = hdr(ws, r, ['事业部', '应收预算', '应收实际', '应收完成率(%)', '应付预算', '应付实际', '应付完成率(%)'])
     brows = data['budget']['rows']
     for d in m['depts']:
         b = brows[d]
-        r = row(ws, r, [d, b['coll_budget'], b['coll_actual'], b['coll_rate'], Y, Y, Y])
+        r = row(ws, r, [d, b['coll_budget'], b['coll_actual'], b['coll_rate'],
+                        b['pay_budget'], b['pay_actual'], b['pay_rate']])
     if m['is_multi']:
         b = data['budget']['total']
-        r = row(ws, r, ['合计', b['coll_budget'], b['coll_actual'], b['coll_rate'], Y, Y, Y], bold=True)
+        r = row(ws, r, ['合计', b['coll_budget'], b['coll_actual'], b['coll_rate'],
+                        b['pay_budget'], b['pay_actual'], b['pay_rate']], bold=True)
 
     r += 1
-    r = section(ws, r, '四、应付预算完成（月度口径）')
-    r = hdr(ws, r, ['事业部', '本月预算', '本月实际', '本月完成率(%)', '年度预算', '年度实际', '年度完成率(%)'])
-    for d in m['depts']:
-        b = brows[d]
-        r = row(ws, r, [d, b['pay_budget'], b['pay_actual'], b['pay_rate'], Y, Y, Y])
-    if m['is_multi']:
-        b = data['budget']['total']
-        r = row(ws, r, ['合计', b['pay_budget'], b['pay_actual'], b['pay_rate'], Y, Y, Y], bold=True)
-
-    r += 1
-    r = section(ws, r, '五、现金流情况')
+    r = section(ws, r, '四、现金流情况')
     r = hdr(ws, r, ['项目', '本期金额', '本年累计'])
     cp = data['cash']['period']
     r = row(ws, r, ['一、经营活动现金流入', cp['inflow'], Y], bold=True)
@@ -536,7 +553,7 @@ def _xlsx_report(data):
     ]
     if any((nv.get(k) or '').strip() for _, k in note_fields):
         r += 1
-        r = section(ws, r, '六、汇报说明')
+        r = section(ws, r, '五、汇报说明')
         for label, key in note_fields:
             text = (nv.get(key) or '').strip()
             if not text:

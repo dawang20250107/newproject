@@ -660,6 +660,10 @@ def budget_summary(request):
                 'actual_payment': float(ap_d),
             })
 
+    # 净现金流——与「现金流分析」「周期报表」同一口径（剔除非现金回款、扣预付冲抵、含预收/预付），
+    # 避免预算页与驾驶舱算出的净现金流不一致。收/付达成率仍用上方毛额口径（与收/付预算同口径对照）。
+    cw = cash_flow_window(depts, start_date, end_date)
+
     return ok({
         'start_date': str(start_date), 'end_date': str(end_date), 'depts': depts,
         'budget_collection': str(budget_coll),
@@ -672,6 +676,10 @@ def budget_summary(request):
         'payment_gap': str(budget_paid - actual_paid),
         'has_alert': actual_paid > actual_coll,
         'by_dept': by_dept_result,
+        # 现金净流量（统一口径）
+        'cash_inflow': str(cw['inflow']),
+        'cash_outflow': str(cw['outflow']),
+        'net_cashflow': str(cw['net']),
     })
 
 

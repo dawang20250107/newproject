@@ -169,8 +169,40 @@ def ar_records(request):
             out=Sum('outstanding_amount', filter=Q(outstanding_amount__gt=0)),
             adj=Sum('account_diff_adjustment'),
         )
-        collected = (ARPayment.objects.filter(ar_record_id__in=matched_ids)
-                     .aggregate(s=Sum('amount'))['s'] or 0)
+        # 已收汇总：只计入与当前回款日期筛选范围一致的回款，
+        # 避免"筛本月回款"却把记录上其他月份的回款也累加进来。
+        pay_qs = ARPayment.objects.filter(ar_record_id__in=matched_ids)
+        # 路径①：顶部平铺参数 pay_start / pay_end
+        _pay_start = request.GET.get('pay_start', '').strip()
+        _pay_end   = request.GET.get('pay_end', '').strip()
+        if _pay_start:
+            pay_qs = pay_qs.filter(payment_date__gte=_pay_start)
+        if _pay_end:
+            pay_qs = pay_qs.filter(payment_date__lte=_pay_end)
+        # 路径②：列头条件筛选 conditions JSON 里的 payment_date 条目（AND 模式）
+        if not _pay_start and not _pay_end:
+            _raw_conds = (request.GET.get('conditions') or '').strip()
+            if _raw_conds and (request.GET.get('match') or 'all') != 'any':
+                try:
+                    _conds = json.loads(_raw_conds)
+                    if isinstance(_conds, list):
+                        for _c in _conds:
+                            if (_c.get('type') == 'date' and _c.get('field') == 'payment_date'
+                                    and not _c.get('exclude')):
+                                _rng = _c.get('range')
+                                if _rng == 'custom':
+                                    _s = _normalize_date(_c.get('start'))
+                                    _e = _normalize_date(_c.get('end'))
+                                else:
+                                    _r = _relative_date_range(_rng, today)
+                                    _s, _e = _r if _r else (None, None)
+                                if _s:
+                                    pay_qs = pay_qs.filter(payment_date__gte=_s)
+                                if _e:
+                                    pay_qs = pay_qs.filter(payment_date__lte=_e)
+                except (ValueError, TypeError):
+                    pass
+        collected = pay_qs.aggregate(s=Sum('amount'))['s'] or 0
 
         # ── 时段合计：本月应收/已收 + 本周应收/已收 ─────────────────────────
         # 基准日期 = 所有日期筛选里最晚的一天（都没选则用今天）
@@ -199,14 +231,26 @@ def ar_records(request):
         mo_start = datetime.date(ref_date.year, ref_date.month, 1)
         mo_end = datetime.date(ref_date.year, ref_date.month,
                                calendar.monthrange(ref_date.year, ref_date.month)[1])
-        # 周窗口（业务口径：周五 ~ 次周周四）。Friday=weekday 4。
-        wk_start = ref_date - datetime.timedelta(days=(ref_date.weekday() - 4) % 7)
-        wk_end = wk_start + datetime.timedelta(days=6)
-        # 上一周（同口径，用于环比比对）
-        prev_wk_start = wk_start - datetime.timedelta(days=7)
-        prev_wk_end = wk_start - datetime.timedelta(days=1)
+        # 周窗口（业务口径：周五 ~ 次周周四，不跨月）。Friday=weekday 4。
+        # 自然周五~次周四窗口
+        _wk_nat_fri = ref_date - datetime.timedelta(days=(ref_date.weekday() - 4) % 7)
+        _wk_nat_thu = _wk_nat_fri + datetime.timedelta(days=6)
+        # 首周/末周按月份边界裁剪，保证不跨月
+        wk_start = max(_wk_nat_fri, mo_start)
+        wk_end   = min(_wk_nat_thu, mo_end)
+        # 上一周（同口径）：自然上个周五~周四，同样裁剪到其所属月范围
+        _prev_nat_fri = _wk_nat_fri - datetime.timedelta(days=7)
+        _prev_nat_thu = _prev_nat_fri + datetime.timedelta(days=6)
+        _prev_mo_s = datetime.date(_prev_nat_fri.year, _prev_nat_fri.month, 1)
+        _prev_mo_e = datetime.date(
+            _prev_nat_fri.year, _prev_nat_fri.month,
+            calendar.monthrange(_prev_nat_fri.year, _prev_nat_fri.month)[1])
+        prev_wk_start = max(_prev_nat_fri, _prev_mo_s)
+        prev_wk_end   = min(_prev_nat_thu, _prev_mo_e)
         # 周标签随基准日联动：基准周==今天所在周时叫"本周"，否则叫"该周"
-        today_wk_start = today - datetime.timedelta(days=(today.weekday() - 4) % 7)
+        _today_nat_fri = today - datetime.timedelta(days=(today.weekday() - 4) % 7)
+        _today_mo_s = datetime.date(today.year, today.month, 1)
+        today_wk_start = max(_today_nat_fri, _today_mo_s)
         week_label = '本周' if wk_start == today_wk_start else '该周'
 
         # 应收（期初存量口径）：本期到期的毛预估 + 期前调整 − 期前已收

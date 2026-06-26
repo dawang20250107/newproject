@@ -72,9 +72,23 @@ function dash(v) { return v === null || v === undefined ? '—' : fmt(v) }
 const expandedRows = ref(new Set())
 function toggleRowDetail(id) {
   const s = new Set(expandedRows.value)
-  s.has(id) ? s.delete(id) : s.add(id)
+  if (s.has(id)) {
+    s.delete(id)
+    // 收起正在编辑/追加批次的行时复位编辑态，避免全局 planEdit 残留把所有行的批次按钮隐藏
+    if (planEdit.id === `new:${id}` || rowOwnsPlanEdit(id)) cancelEditPlan()
+  } else {
+    s.add(id)
+  }
   expandedRows.value = s
 }
+// planEdit.id 是否属于该付款行（其某条计划批次正在编辑，或正在向该行追加批次）
+function rowOwnsPlanEdit(paymentId) {
+  if (!planEdit.id) return false
+  if (planEdit.id === `new:${paymentId}`) return true
+  const p = items.value.find(x => x.id === paymentId)
+  return !!(p && p.plan_items?.some(pi => pi.id === planEdit.id))
+}
+function isRowEditing(p) { return rowOwnsPlanEdit(p.id) }
 // 双击行 → 展开/收起 计划+付款明细（点在控件或计划日期单元格上不重复触发）
 function onRowDblClick(p, e) {
   if (e.target.closest('input, button, select, textarea, a, .plan-cell')) return
@@ -87,6 +101,53 @@ async function removePlanItem(p, pi) {
     toast.success(res.data?.message || '已撤销')
     load()
   } catch (e) { toast.error(e?.msg || e?.error || '撤销失败') }
+}
+
+// ── 排款管理：编辑 / 追加 计划批次（与来源审批已排款双向同步）────────────────────
+// planEdit.id：正在编辑的批次id（'new:'+paymentId 表示该付款正在追加新批次）
+const planEdit = reactive({ id: null, planned_date: '', amount: '', notes: '', busy: false })
+function startEditPlan(pi) {
+  planEdit.id = pi.id
+  planEdit.planned_date = pi.planned_date
+  planEdit.amount = pi.amount
+  planEdit.notes = pi.notes || ''
+  planEdit.busy = false
+}
+function startAddPlan(p) {
+  planEdit.id = `new:${p.id}`
+  planEdit.planned_date = todayCST()
+  planEdit.amount = ''
+  planEdit.notes = ''
+  planEdit.busy = false
+}
+function cancelEditPlan() { planEdit.id = null }
+async function saveEditPlan(p, pi) {
+  const amt = parseFloat(planEdit.amount)
+  if (!planEdit.planned_date) { toast.warn('请填写计划日期'); return }
+  if (!(amt > 0)) { toast.warn('计划金额必须大于0'); return }
+  planEdit.busy = true
+  try {
+    const body = { planned_date: planEdit.planned_date, amount: amt, notes: planEdit.notes }
+    const res = await api.put(`/payments/${p.id}/plan-items/${pi.id}`, body)
+    toast.success(res.data?.message || '已调整')
+    planEdit.id = null
+    load()
+  } catch (e) { toast.error(e?.msg || e?.error || '调整失败') }
+  finally { planEdit.busy = false }
+}
+async function saveAddPlan(p) {
+  const amt = parseFloat(planEdit.amount)
+  if (!planEdit.planned_date) { toast.warn('请填写计划日期'); return }
+  if (!(amt > 0)) { toast.warn('计划金额必须大于0'); return }
+  planEdit.busy = true
+  try {
+    const body = { planned_date: planEdit.planned_date, amount: amt, notes: planEdit.notes }
+    const res = await api.post(`/payments/${p.id}/plan-items`, body)
+    toast.success(res.data?.message || '已追加批次')
+    planEdit.id = null
+    load()
+  } catch (e) { toast.error(e?.msg || e?.error || '追加失败') }
+  finally { planEdit.busy = false }
 }
 const items = ref([])
 const total = ref(0)
@@ -123,22 +184,24 @@ const PAY_STATUS_OPTS = [
 // 逾期列：派生是/否（计划日期已过且未结清）
 const OVERDUE_OPTS = [{ value: '是', label: '是（已逾期）' }, { value: '否', label: '否' }]
 const colFilters = reactive({})    // field -> {op, value}（不含 status）
-const statusSel = ref('')          // 计划状态单选 → status 查询参数
+const statusSel = ref([])          // 计划状态多选 → status 查询参数（逗号分隔并集）
+const payDeptFilter = ref('')      // 筛选栏事业部快选
+const hideSettled = ref(true)      // 默认隐藏已付清（进入页面默认展示非已付清）
 const sortField = ref('')
 const sortOrder = ref('')
 const activeFilterCount = computed(() =>
-  Object.keys(colFilters).length + (statusSel.value ? 1 : 0))
+  Object.keys(colFilters).length + (statusSel.value.length ? 1 : 0) + (payDeptFilter.value ? 1 : 0))
 function setColFilter(field, val) {
   if (val == null) delete colFilters[field]
   else colFilters[field] = val
   filters.page = 1; clearSelection(); load()
 }
 function setStatusFilter(val) {
-  // 状态列为单选，ColumnFilter 以 {op:'in',value:[x]} 上抛
-  statusSel.value = (val && Array.isArray(val.value) && val.value.length) ? val.value[0] : ''
+  // 状态列多选，ColumnFilter 以 {op:'in',value:[...]} 上抛
+  statusSel.value = (val && Array.isArray(val.value)) ? val.value.filter(Boolean) : []
   filters.page = 1; clearSelection(); load()
 }
-const statusColModel = computed(() => statusSel.value ? { op: 'in', value: [statusSel.value] } : null)
+const statusColModel = computed(() => statusSel.value.length ? { op: 'in', value: [...statusSel.value] } : null)
 function setSort(field, order) {
   sortField.value = order ? field : ''
   sortOrder.value = order || ''
@@ -148,15 +211,21 @@ function setSort(field, order) {
 const schemes = useTableSchemes('pk_payments', {
   colFilters, sortField, sortOrder,
   extra: {
-    get: () => ({ status: statusSel.value || '' }),
-    set: (p) => { statusSel.value = p.status || '' },
+    get: () => ({ status: statusSel.value.join(',') || '', dept: payDeptFilter.value || '', hide_settled: hideSettled.value }),
+    set: (p) => {
+      statusSel.value = p.status ? String(p.status).split(',').filter(Boolean) : []
+      payDeptFilter.value = p.dept || ''
+      hideSettled.value = p.hide_settled !== false
+    },
   },
   onApply: () => { filters.page = 1; clearSelection(); load() },
 })
 function buildParams() {
   const p = { page: filters.page, size: filters.size }
   if (filters.q.trim()) p.q = filters.q.trim()
-  if (statusSel.value) p.status = statusSel.value
+  if (payDeptFilter.value) p.dept = payDeptFilter.value
+  if (statusSel.value.length) p.status = statusSel.value.join(',')
+  if (hideSettled.value && !statusSel.value.length) p.hide_settled = '1'
   if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
   if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
   return p
@@ -365,7 +434,7 @@ async function onPrecheckApply({ mode, rows, okRows }) {
     if (mode === 'download') {
       const blob = await api.post('/payments/import/apply',
         { rows, okRows, mode: 'download' }, { responseType: 'blob', timeout: 90000 })
-      triggerDownload(blob, '付款台账_修正版.xlsx')
+      triggerDownload(blob, '付款管理_修正版.xlsx')
     } else {
       const res = await api.post('/payments/import/apply', { rows, okRows, mode: 'import' }, { timeout: 90000 })
       precheckResult.value = null
@@ -460,6 +529,17 @@ async function copyWholeRow(p) {
   const ok = await copyRowTSV(p, ROW_COPY_COLS, { header: true })
   ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
 }
+async function returnPayment(p) {
+  const label = [p.payee, p.project_short_name || p.project_desc].filter(Boolean).join(' · ') || `#${p.id}`
+  const approvalHint = p.approval_id ? `\n来源审批已排款将归零（¥${p.total_amount}），可重新排款。` : ''
+  if (!confirm(`退回排款「${label}」（计划 ¥${p.total_amount}）？${approvalHint}\n此操作不可撤销。`)) return
+  try {
+    await api.delete(`/payments/${p.id}`)
+    toast.success('已退回排款，来源审批已排款同步归零')
+    load()
+  } catch (e) { toast.error(e?.msg || e?.error || '退回失败') }
+}
+
 const ctxItems = computed(() => {
   const p = ctx.menu.payload
   if (!p) return []
@@ -467,6 +547,7 @@ const ctxItems = computed(() => {
   return [
     { key: 'detail', label: expandedRows.value.has(p.id) ? '收起明细' : '展开计划/付款明细', icon: 'eye', action: r => toggleRowDetail(r.id) },
     { key: 'edit', label: '编辑', icon: 'edit', shortcut: 'E', hidden: !auth.canWrite, action: r => openEdit(r) },
+    { key: 'return', label: p.approval_id ? '退回排款（还原至审批）' : '退回排款（删除）', icon: 'trash', danger: true, hidden: !auth.canDelete, action: r => returnPayment(r) },
     { key: 'offset', label: '预付核销', icon: 'refresh', hidden: !canOffset, action: r => openOffset(r) },
     { key: 'logs', label: '变更日志', icon: 'history', shortcut: 'L', action: r => openLogs(r) },
     { divider: true },
@@ -596,7 +677,9 @@ function search() { filters.page = 1; clearSelection(); load() }
 function resetFilters() {
   Object.assign(filters, { q: '', pay_date_start: '', pay_date_end: '', page: 1 })
   Object.keys(colFilters).forEach(k => delete colFilters[k])
-  statusSel.value = ''
+  statusSel.value = []
+  payDeptFilter.value = ''
+  hideSettled.value = true
   sortField.value = ''; sortOrder.value = ''
   payDatePreset.value = ''
   clearSelection()
@@ -686,7 +769,7 @@ async function doBatchPay() {
   <div>
     <div class="topbar">
       <div style="display:flex;align-items:center;gap:14px">
-        <h1>付款台账</h1>
+        <h1>付款管理</h1>
         <div class="tab-bar">
           <button :class="['tab-btn', activeTab==='ledger' ? 'active' : '']" @click="switchTab('ledger')">台账</button>
           <button :class="['tab-btn', activeTab==='flow' ? 'active' : '']" @click="switchTab('flow')">付款流水</button>
@@ -726,6 +809,14 @@ async function doBatchPay() {
       <div class="filter-bar">
         <input v-model="filters.q" class="global-search" placeholder="🔍 全局搜索：事项 / 收款方 / 单号 / 申请人 / G7…" @keyup.enter="search" />
         <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
+        <select v-model="payDeptFilter" @change="search" style="min-width:90px">
+          <option value="">全部事业部</option>
+          <option v-for="d in deptChoices" :key="d" :value="d">{{ d }}</option>
+        </select>
+        <label class="filter-toggle" :class="{ active: !hideSettled }" title="切换是否显示已付清记录">
+          <input type="checkbox" :checked="!hideSettled" @change="hideSettled = !hideSettled; filters.page=1; clearSelection(); load()" />
+          含已付清
+        </label>
         <span class="filter-group-lbl">回款日</span>
         <select v-model="payDatePreset" @change="applyPayDatePreset" style="min-width:100px">
           <option value="">全部日期</option>
@@ -782,7 +873,7 @@ async function doBatchPay() {
               <th v-if="colVisible('total_amount')" style="width:8%"><ColumnFilter label="计划额" field="total_amount" type="number" :model-value="colFilters.total_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('total_amount',v)" @sort="o=>setSort('total_amount',o)" /></th>
               <th v-if="colVisible('paid')" style="width:7%"><ColumnFilter label="已付" field="paid" type="number" :model-value="colFilters.paid" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('paid',v)" @sort="o=>setSort('paid',o)" /></th>
               <th v-if="colVisible('remaining')" style="width:6%"><ColumnFilter label="剩余" field="remaining" type="number" :model-value="colFilters.remaining" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('remaining',v)" @sort="o=>setSort('remaining',o)" /></th>
-              <th v-if="colVisible('status')" style="width:9%"><ColumnFilter label="状态" field="status" type="enum" :options="PAY_STATUS_OPTS" :single="true" :sortable="false" :model-value="statusColModel" @update:model-value="setStatusFilter" /></th>
+              <th v-if="colVisible('status')" style="width:9%"><ColumnFilter label="状态" field="status" type="enum" :options="PAY_STATUS_OPTS" :no-exclude="true" :sortable="false" :model-value="statusColModel" @update:model-value="setStatusFilter" /></th>
               <th v-if="colVisible('overdue')" style="width:6%"><ColumnFilter label="逾期" field="overdue" type="enum" :options="OVERDUE_OPTS" :sortable="false" :model-value="colFilters.overdue" @update:model-value="v=>setColFilter('overdue',v)" /></th>
               <th v-if="colVisible('plan_adjustment')" style="width:6%"><ColumnFilter label="计划调整" field="plan_adjustment" type="number" :model-value="colFilters.plan_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('plan_adjustment',v)" @sort="o=>setSort('plan_adjustment',o)" /></th>
             </tr>
@@ -838,16 +929,40 @@ async function doBatchPay() {
               <td :colspan="99">
                 <div class="pp-detail">
                   <div class="ppd-col">
-                    <div class="ppd-head plan">计划明细 · {{ p.plan_count || 0 }} 批<i>来自审批分批排款或直接排款</i></div>
+                    <div class="ppd-head plan">计划明细 · {{ p.plan_count || 0 }} 批<i>排款管理：编辑/撤销/追加，均与来源审批已排款同步</i></div>
                     <div v-if="!p.plan_items?.length" class="ppd-empty">无计划明细</div>
-                    <div v-for="pi in p.plan_items" :key="pi.id" class="ppd-item">
-                      <span class="ppd-seq">第{{ pi.seq }}批</span>
-                      <span class="ppd-date">{{ pi.planned_date }}</span>
-                      <b class="ppd-amt plan">{{ fmt(pi.amount) }}</b>
-                      <span class="ppd-note">{{ pi.notes }}</span>
-                      <button v-if="auth.canWrite && p.plan_items.length > 1" class="ppd-del"
-                        title="撤销该批计划（审批已排款同步回退）" @click="removePlanItem(p, pi)">撤销</button>
+                    <template v-for="pi in p.plan_items" :key="pi.id">
+                      <!-- 编辑态 -->
+                      <div v-if="planEdit.id === pi.id" class="ppd-item editing">
+                        <span class="ppd-seq">第{{ pi.seq }}批</span>
+                        <input v-model="planEdit.planned_date" type="date" class="ppd-edit-date" />
+                        <input v-model="planEdit.amount" type="number" step="0.01" class="ppd-edit-amt" placeholder="金额" />
+                        <input v-model="planEdit.notes" type="text" class="ppd-edit-note" placeholder="备注" />
+                        <button class="ppd-save" :disabled="planEdit.busy" @click="saveEditPlan(p, pi)">保存</button>
+                        <button class="ppd-cancel" :disabled="planEdit.busy" @click="cancelEditPlan">取消</button>
+                      </div>
+                      <!-- 展示态 -->
+                      <div v-else class="ppd-item">
+                        <span class="ppd-seq">第{{ pi.seq }}批</span>
+                        <span class="ppd-date">{{ pi.planned_date }}</span>
+                        <b class="ppd-amt plan">{{ fmt(pi.amount) }}</b>
+                        <span class="ppd-note">{{ pi.notes }}</span>
+                        <button v-if="auth.canWrite && !isRowEditing(p)" class="ppd-edit-btn"
+                          title="编辑该批计划（审批已排款同步）" @click="startEditPlan(pi)">编辑</button>
+                        <button v-if="auth.canWrite && p.plan_items.length > 1 && !isRowEditing(p)" class="ppd-del"
+                          title="撤销该批计划（审批已排款同步回退）" @click="removePlanItem(p, pi)">撤销</button>
+                      </div>
+                    </template>
+                    <!-- 追加批次态 -->
+                    <div v-if="planEdit.id === `new:${p.id}`" class="ppd-item editing">
+                      <span class="ppd-seq">追加</span>
+                      <input v-model="planEdit.planned_date" type="date" class="ppd-edit-date" />
+                      <input v-model="planEdit.amount" type="number" step="0.01" class="ppd-edit-amt" placeholder="金额" />
+                      <input v-model="planEdit.notes" type="text" class="ppd-edit-note" placeholder="备注" />
+                      <button class="ppd-save" :disabled="planEdit.busy" @click="saveAddPlan(p)">保存</button>
+                      <button class="ppd-cancel" :disabled="planEdit.busy" @click="cancelEditPlan">取消</button>
                     </div>
+                    <button v-if="auth.canWrite && !isRowEditing(p)" class="ppd-add" @click="startAddPlan(p)">+ 追加计划批次</button>
                   </div>
                   <div class="ppd-col">
                     <div class="ppd-head paid">付款明细 · {{ p.installments?.length || 0 }} 笔<i>实际付款分期</i></div>
@@ -1169,6 +1284,16 @@ async function doBatchPay() {
 /* 付款日期 label in filter bar */
 .filter-group-lbl { font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
 
+/* 含已付清 toggle */
+.filter-toggle {
+  display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px;
+  border: 1px solid var(--border); border-radius: 8px; font-size: 12px;
+  color: var(--muted); cursor: pointer; white-space: nowrap; flex-shrink: 0;
+  background: transparent; user-select: none;
+}
+.filter-toggle input { margin: 0; cursor: pointer; }
+.filter-toggle.active { border-color: var(--primary); color: var(--primary); }
+
 /* 付款流水 table */
 .flow-tbl { width: 100%; table-layout: fixed; }
 .flow-tbl th, .flow-tbl td { padding: 8px 8px; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1184,7 +1309,7 @@ async function doBatchPay() {
 .card.fh-fill { padding-bottom: 40px; }
 .table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
 
-/* 付款台账：固定布局，不超出卡片宽度（table-layout:fixed 已防横向溢出，无需 overflow-x:hidden） */
+/* 付款管理：固定布局，不超出卡片宽度（table-layout:fixed 已防横向溢出，无需 overflow-x:hidden） */
 .table-wrap.pk-pay-tbl { padding-bottom: 70px; }
 .pk-pay-tbl table { table-layout: fixed; }
 .pk-pay-tbl th, .pk-pay-tbl td { padding: 9px 7px; font-size: 12.5px; }
@@ -1225,6 +1350,23 @@ async function doBatchPay() {
 .ppd-del { border: 1px solid rgba(198,40,40,.4); color: #c62828; background: none; border-radius: 6px;
   padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .ppd-del:hover { background: rgba(198,40,40,.08); }
+/* 排款管理：编辑/追加批次 */
+.ppd-edit-btn { border: 1px solid rgba(21,101,192,.4); color: #1565c0; background: none; border-radius: 6px;
+  padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.ppd-edit-btn:hover { background: rgba(21,101,192,.08); }
+.ppd-item.editing { gap: 6px; flex-wrap: wrap; }
+.ppd-edit-date, .ppd-edit-amt, .ppd-edit-note {
+  border: 1px solid var(--border-strong); border-radius: 6px; padding: 2px 6px; font-size: 12px;
+  background: var(--surface-1); color: var(--text); }
+.ppd-edit-date { width: 130px; } .ppd-edit-amt { width: 96px; text-align: right; } .ppd-edit-note { flex: 1; min-width: 90px; }
+.ppd-save { border: 1px solid var(--primary); background: var(--primary); color: #fff; border-radius: 6px;
+  padding: 1px 10px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.ppd-save:disabled { opacity: .55; cursor: not-allowed; }
+.ppd-cancel { border: 1px solid var(--border-strong); background: none; color: var(--text-2); border-radius: 6px;
+  padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.ppd-add { margin-top: 5px; border: 1px dashed rgba(21,101,192,.45); color: #1565c0; background: none;
+  border-radius: 6px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
+.ppd-add:hover { background: rgba(21,101,192,.06); }
 
 /* 预付核销弹窗 */
 .po-history { margin-bottom: 10px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 9px; }

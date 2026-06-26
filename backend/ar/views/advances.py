@@ -1244,6 +1244,240 @@ def advance_diff_summary(request):
     })
 
 
+# ── 收付差异 · 时间维度（月/周）分解 ──────────────────────────────────────────
+def _period_of(d, grain):
+    """把日期 d 落到时间桶。返回 (key, sort, label, anchor)。
+    anchor 为该桶起点日期（月首 / 周一），用于连续补桶。"""
+    if grain == 'week':
+        iso = d.isocalendar()
+        y, w = iso[0], iso[1]
+        monday = d - datetime.timedelta(days=d.weekday())
+        return f'{y}-W{w:02d}', y * 100 + w, f'{y}年第{w}周', monday
+    return (f'{d.year}-{d.month:02d}', d.year * 100 + d.month,
+            f'{d.year}年{d.month}月', datetime.date(d.year, d.month, 1))
+
+
+def _fill_periods(present, grain):
+    """在已出现的桶 anchor 之间连续补齐空桶，保证累计差异曲线不断档。
+    present: {key: (sort, label, anchor)}。返回按时间排序的 [(key,label)] 全序列。"""
+    if not present:
+        return []
+    anchors = sorted(v[2] for v in present.values())
+    lo, hi = anchors[0], anchors[-1]
+    seq = []
+    if grain == 'week':
+        cur = lo
+        while cur <= hi:
+            k, _, lbl, _ = _period_of(cur, 'week')
+            seq.append((k, lbl))
+            cur += datetime.timedelta(days=7)
+    else:
+        y, m = lo.year, lo.month
+        while (y, m) <= (hi.year, hi.month):
+            seq.append((f'{y}-{m:02d}', f'{y}年{m}月'))
+            m += 1
+            if m > 12:
+                y, m = y + 1, 1
+    return seq
+
+
+def _compute_diff_timeline(request):
+    """收付差异时间维度核心：按资金实际发生日把挂项目的预收/预付分摊到月/周桶。
+
+    日期基准优先「收付明细」installment.occur_date（实际资金日），无明细回退记录
+    occur_date；仍缺失者归入 null 桶。每期给出 预收发生/预付发生/本期差异/累计差异，
+    并附每期内项目级拆分与逐笔明细。返回 dict（供 JSON 与导出共用）。
+    入参：grain(month|week) start end(YYYY-MM-DD,可选) dept q(项目名,可选)。
+    """
+    grain = (request.GET.get('grain') or 'month').strip()
+    if grain not in ('month', 'week'):
+        grain = 'month'
+    dept = (request.GET.get('dept') or '').strip()
+    q = (request.GET.get('q') or '').strip().lower()
+
+    def _pd(s):
+        try:
+            return datetime.date.fromisoformat(s) if s else None
+        except ValueError:
+            return None
+    start = _pd((request.GET.get('start') or '').strip())
+    end = _pd((request.GET.get('end') or '').strip())
+
+    qs = (_advance_dept_filter(AdvanceRecord.objects.select_related('project'), request)
+          .filter(project__isnull=False)
+          .prefetch_related('installments'))
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+
+    # period_key -> {sort,label,in_total,out_total,projects:{name:{...}}}
+    buckets = {}
+    present = {}        # period_key -> (sort,label,anchor)，用于连续补桶
+    null_bucket = {'in_total': Decimal('0'), 'out_total': Decimal('0'), 'projects': {}}
+    has_null = False
+
+    def _proj_slot(container, name, dept_name):
+        return container.setdefault(name, {
+            'project': name, 'dept': dept_name,
+            'in_total': Decimal('0'), 'out_total': Decimal('0'),
+            'in_items': [], 'out_items': [],
+        })
+
+    for a in qs.order_by('occur_date', 'id'):
+        name = (a.project.short_name or '').strip()
+        if not name:
+            continue
+        if q and q not in name.lower():
+            continue
+        dept_name = a.project.delivery_dept or a.delivery_dept or ''
+        # 逐笔资金流：优先收付明细；无明细回退记录级单笔。余额标在记录最后一笔。
+        insts = list(a.installments.all())
+        if insts:
+            flows = [{'date': i.occur_date, 'amount': i.amount or Decimal('0'),
+                      'id': f'{a.id}-{i.id}'}
+                     for i in sorted(insts, key=lambda x: (x.occur_date, x.install_no))]
+        else:
+            flows = [{'date': a.occur_date, 'amount': a.advance_amount or Decimal('0'),
+                      'id': str(a.id)}]
+        balance_left = a.balance_amount or Decimal('0')
+        for idx, fl in enumerate(flows):
+            d = fl['date']
+            item = {
+                'id': fl['id'],
+                'occur_date': str(d) if d else '—',
+                'amount': str(fl['amount']),
+                'counterparty': a.counterparty or '—',
+                'balance': str(balance_left) if idx == len(flows) - 1 else '0',
+            }
+            if d is None:
+                if start or end:
+                    continue    # 指定时间窗时，无日期记录无法归期 → 排除
+                tgt, pslot = null_bucket, null_bucket['projects']
+                has_null = True
+            elif (start and d < start) or (end and d > end):
+                continue        # 超出请求时间窗，跳过
+            else:
+                key, sort, label, anchor = _period_of(d, grain)
+                present.setdefault(key, (sort, label, anchor))
+                tgt = buckets.setdefault(key, {
+                    'sort': sort, 'label': label,
+                    'in_total': Decimal('0'), 'out_total': Decimal('0'), 'projects': {}})
+                pslot = tgt['projects']
+            slot = _proj_slot(pslot, name, dept_name)
+            if a.direction == '预收':
+                tgt['in_total'] += fl['amount']
+                slot['in_total'] += fl['amount']
+                slot['in_items'].append(item)
+            else:
+                tgt['out_total'] += fl['amount']
+                slot['out_total'] += fl['amount']
+                slot['out_items'].append(item)
+
+    def _ser_projects(pdict):
+        out = []
+        for p in pdict.values():
+            out.append({
+                'project': p['project'], 'dept': p['dept'],
+                'in_total': str(p['in_total']), 'out_total': str(p['out_total']),
+                'diff': str(p['in_total'] - p['out_total']),
+                'in_items': p['in_items'], 'out_items': p['out_items'],
+            })
+        out.sort(key=lambda x: abs(Decimal(x['diff'])), reverse=True)
+        return out
+
+    # 连续补桶 + 累计差异（按时间序滚动求和）
+    seq = _fill_periods(present, grain)
+    periods, cum = [], Decimal('0')
+    t_in = t_out = Decimal('0')
+    for key, label in seq:
+        b = buckets.get(key)
+        if b:
+            bin_, bout = b['in_total'], b['out_total']
+            projects = _ser_projects(b['projects'])
+        else:
+            bin_, bout, projects = Decimal('0'), Decimal('0'), []
+        diff = bin_ - bout
+        cum += diff
+        t_in += bin_
+        t_out += bout
+        periods.append({
+            'period': key, 'label': label,
+            'in_total': str(bin_), 'out_total': str(bout),
+            'diff': str(diff), 'cum_diff': str(cum),
+            'projects': projects,
+        })
+
+    null_period = None
+    if has_null:
+        nin, nout = null_bucket['in_total'], null_bucket['out_total']
+        null_period = {
+            'in_total': str(nin), 'out_total': str(nout), 'diff': str(nin - nout),
+            'projects': _ser_projects(null_bucket['projects']),
+        }
+        t_in += nin
+        t_out += nout
+
+    return {
+        'grain': grain,
+        'periods': periods,
+        'null_period': null_period,
+        'summary': {
+            'in_total': str(t_in), 'out_total': str(t_out), 'diff': str(t_in - t_out),
+            'cum_diff_end': str(cum), 'period_count': len(periods),
+        },
+    }
+
+
+@csrf_exempt
+@pk_required()
+def advance_diff_timeline(request):
+    """GET /advances/diff-timeline — 收付差异时间维度（月/周）分解。详见 _compute_diff_timeline。"""
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    return ok(_compute_diff_timeline(request))
+
+
+@csrf_exempt
+@pk_required()
+def advance_diff_timeline_export(request):
+    """GET /advances/diff-timeline/export — 收付差异时间维度导出 Excel（时间汇总 + 项目明细两表）。"""
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    data = _compute_diff_timeline(request)
+    gl = '周' if data['grain'] == 'week' else '月'
+
+    wb = openpyxl.Workbook()
+    # Sheet 1：时间汇总
+    ws1 = wb.active
+    ws1.title = '时间汇总'
+    _header_row(ws1, [f'{gl}份', '预收发生', '预付发生', '本期差异', '累计差异'], color='6A1B9A')
+    for p in data['periods']:
+        ws1.append([p['label'], float(p['in_total']), float(p['out_total']),
+                    float(p['diff']), float(p['cum_diff'])])
+    if data['null_period']:
+        n = data['null_period']
+        ws1.append(['日期未记录', float(n['in_total']), float(n['out_total']), float(n['diff']), ''])
+
+    # Sheet 2：项目明细（每期 × 项目）
+    ws2 = wb.create_sheet('项目明细')
+    _header_row(ws2, [f'{gl}份', '项目简称', '交付部门', '预收发生', '预付发生', '本期差异'],
+                color='6A1B9A')
+    for p in data['periods']:
+        for pr in p['projects']:
+            ws2.append([p['label'], pr['project'], pr['dept'],
+                        float(pr['in_total']), float(pr['out_total']), float(pr['diff'])])
+    if data['null_period']:
+        for pr in data['null_period']['projects']:
+            ws2.append(['日期未记录', pr['project'], pr['dept'],
+                        float(pr['in_total']), float(pr['out_total']), float(pr['diff'])])
+    return _export_response(wb, f'收付差异-按{gl}.xlsx')
+
+
 @csrf_exempt
 @pk_required()
 def advance_offset_workbench(request):

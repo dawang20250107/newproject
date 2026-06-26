@@ -75,6 +75,14 @@ function buildParams() {
   return p
 }
 const statusClass = s => ({ '运作中': 'st-on', '中断': 'st-pause', '结束': 'st-end' }[s] || 'st-on')
+// 项目编号列默认隐藏，可通过筛选激活或手动切换以给备注列更多空间
+let _initShowProjectNo = false
+try { _initShowProjectNo = JSON.parse(localStorage.getItem('ar_proj_show_no') || 'false') } catch {}
+const showProjectNo = ref(_initShowProjectNo)
+function toggleProjectNo() {
+  showProjectNo.value = !showProjectNo.value
+  localStorage.setItem('ar_proj_show_no', JSON.stringify(showProjectNo.value))
+}
 const showModal = ref(false)
 const editItem = ref(null)
 const saving = ref(false)
@@ -534,18 +542,21 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     <div class="stats-strip">
       <div class="stat-pill">
         <div class="stat-label">项目总数</div>
-        <div class="stat-value">{{ stats?.total ?? '—' }}</div>
+        <div class="stat-value">
+          {{ stats?.total ?? '—' }}
+          <span v-if="stats?.running_count != null" class="stat-sub">/ {{ stats.running_count }} 运作中</span>
+        </div>
       </div>
       <div class="stat-pill stat-pill-gold">
-        <div class="stat-label">S 级客户</div>
+        <div class="stat-label">S 级客户（运作中）</div>
         <div class="stat-value">{{ stats?.s_count ?? 0 }}</div>
       </div>
       <div class="stat-pill stat-pill-blue">
-        <div class="stat-label">A 级客户</div>
+        <div class="stat-label">A 级客户（运作中）</div>
         <div class="stat-value">{{ stats?.a_count ?? 0 }}</div>
       </div>
       <div class="stat-pill stat-pill-purple">
-        <div class="stat-label">共享业务</div>
+        <div class="stat-label">共享业务（运作中）</div>
         <div class="stat-value">{{ stats?.shared ?? 0 }}</div>
       </div>
       <div v-if="stats?.draft_count" class="stat-pill stat-pill-draft">
@@ -599,6 +610,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <option value="false">已完善项目</option>
       </select>
       <button v-if="hasActiveFilters" class="filter-reset" @click="resetFilters">重置筛选</button>
+      <button class="filter-reset" :class="{ 'filter-reset-on': showProjectNo }" @click="toggleProjectNo" title="切换显示项目编号列">{{ showProjectNo ? '隐藏编号' : '显示编号' }}</button>
       <SchemePicker :ctl="schemes" :can-public="auth.canArWrite" :is-super-admin="auth.isSuperAdmin" />
     </div>
 
@@ -624,7 +636,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <input type="checkbox" :checked="pageAllSelected" :disabled="!items.length"
                   title="全选本页" @change="toggleSelectPage" />
               </th>
-              <th><ColumnFilter label="项目编号" field="project_no" type="text" :model-value="colFilters.project_no" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_no',v)" @sort="o=>setSort('project_no',o)" /></th>
+              <th v-if="showProjectNo || colFilters.project_no"><ColumnFilter label="项目编号" field="project_no" type="text" :model-value="colFilters.project_no" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_no',v)" @sort="o=>setSort('project_no',o)" /></th>
               <th v-if="show('p_contract_name') || show('p_short_name')"><ColumnFilter label="客户 / 简称" field="customer_name" type="text" :model-value="colFilters.customer_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('customer_name',v)" @sort="o=>setSort('customer_name',o)" /></th>
               <th class="ctr"><ColumnFilter label="状态" field="status" type="enum" :options="STATUSES" :model-value="colFilters.status" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('status',v)" @sort="o=>setSort('status',o)" /></th>
               <th v-if="show('p_delivery_dept')"><ColumnFilter label="交付部门" field="delivery_dept" type="enum" :options="accessibleDepts" :model-value="colFilters.delivery_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('delivery_dept',v)" @sort="o=>setSort('delivery_dept',o)" /></th>
@@ -633,11 +645,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <th v-if="show('p_customer_level')" class="ctr"><ColumnFilter label="客户等级" field="customer_level" type="enum" :options="CUSTOMER_LEVELS" :model-value="colFilters.customer_level" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('customer_level',v)" @sort="o=>setSort('customer_level',o)" /></th>
               <th v-if="show('p_project_manager')"><ColumnFilter label="负责人" field="project_manager" type="text" :model-value="colFilters.project_manager" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_manager',v)" @sort="o=>setSort('project_manager',o)" /></th>
               <th v-if="show('p_sales_contact')"><ColumnFilter label="销售" field="sales_contact" type="text" :model-value="colFilters.sales_contact" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('sales_contact',v)" @sort="o=>setSort('sales_contact',o)" /></th>
-              <th v-if="show('p_has_contract')" class="ctr">合同</th>
+              <th v-if="show('p_has_contract')" class="ctr"><ColumnFilter label="合同" field="has_contract" type="enum" :options="['有','无']" :model-value="colFilters.has_contract" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('has_contract',v)" @sort="o=>setSort('has_contract',o)" /></th>
               <th v-if="show('p_contract_date')" class="ctr"><ColumnFilter label="签订日期" field="contract_date" type="date" :model-value="colFilters.contract_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('contract_date',v)" @sort="o=>setSort('contract_date',o)" /></th>
               <th v-if="show('p_account_period')" class="ctr">总账期</th>
               <th v-if="show('p_invoice_config')" class="ctr"><ColumnFilter label="开票" field="invoice_mode" type="enum" :options="INVOICE_MODES" :model-value="colFilters.invoice_mode" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('invoice_mode',v)" @sort="o=>setSort('invoice_mode',o)" /></th>
-              <th v-if="show('p_notes')">备注</th>
+              <th v-if="show('p_notes')"><ColumnFilter label="备注" field="notes" type="text" :model-value="colFilters.notes" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('notes',v)" @sort="o=>setSort('notes',o)" /></th>
             </tr>
           </thead>
           <tbody>
@@ -658,7 +670,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                 <input type="checkbox" :checked="selectAllMatching || selectedIds.has(item.id)"
                   @change="toggleRow(item.id)" />
               </td>
-              <td>
+              <td v-if="showProjectNo || colFilters.project_no">
                 <span class="proj-no-tag">{{ item.project_no }}</span>
                 <span v-if="item.is_draft" class="badge-draft" title="导入自动创建，请补充完善">待完善</span>
               </td>
@@ -999,6 +1011,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .stat-pill-mom { border-left: 3px solid #2e7d32; }
 .stat-label { font-size: 11px; color: var(--muted); font-weight: 500; letter-spacing: 0.03em; }
 .stat-value { font-size: 20px; font-weight: 700; color: var(--text); line-height: 1.2; display: flex; align-items: baseline; gap: 6px; }
+.stat-sub { font-size: 12px; font-weight: 500; color: var(--muted); }
 .mom-tag { font-size: 12px; font-weight: 700; }
 .mom-up { color: #2e7d32; }
 .mom-down { color: #c62828; }
@@ -1133,6 +1146,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   color: var(--primary); font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
 }
 .filter-reset:hover { background: rgba(201,99,66,0.08); }
+.filter-reset-on { background: rgba(201,99,66,0.1); border-style: solid; }
 
 /* 关联客户 / 合同 */
 .link-section { margin-top: 16px; padding: 14px 28px 4px; border-top: 1px dashed var(--border); }

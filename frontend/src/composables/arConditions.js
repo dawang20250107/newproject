@@ -72,7 +72,11 @@ export function describeCondition(c) {
     if (c.field === 'project_id') return '指定项目'   // 仅经深链创建，不在菜单
     const f = _find(DIM_FIELDS, c.field)
     let val = c.value
-    if (f.kind === 'select') val = _lbl(f.opts || [], c.value)
+    // 多选：value 为数组 → 各值取标签后以「/」连接（如「状态: 逾期 / 已结清」）
+    if (Array.isArray(c.value)) {
+      val = c.value.map(x => f.kind === 'select' ? _lbl(f.opts || [], x) : x).join(' / ')
+    }
+    else if (f.kind === 'select') val = _lbl(f.opts || [], c.value)
     else if (c.field === 'operation_month') val = `${c.value}月`
     else if (c.field === 'operation_ym') {
       // 区间(start~end) + 含/不含；end 为空时退化为单月
