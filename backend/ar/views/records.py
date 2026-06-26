@@ -169,8 +169,40 @@ def ar_records(request):
             out=Sum('outstanding_amount', filter=Q(outstanding_amount__gt=0)),
             adj=Sum('account_diff_adjustment'),
         )
-        collected = (ARPayment.objects.filter(ar_record_id__in=matched_ids)
-                     .aggregate(s=Sum('amount'))['s'] or 0)
+        # 已收汇总：只计入与当前回款日期筛选范围一致的回款，
+        # 避免"筛本月回款"却把记录上其他月份的回款也累加进来。
+        pay_qs = ARPayment.objects.filter(ar_record_id__in=matched_ids)
+        # 路径①：顶部平铺参数 pay_start / pay_end
+        _pay_start = request.GET.get('pay_start', '').strip()
+        _pay_end   = request.GET.get('pay_end', '').strip()
+        if _pay_start:
+            pay_qs = pay_qs.filter(payment_date__gte=_pay_start)
+        if _pay_end:
+            pay_qs = pay_qs.filter(payment_date__lte=_pay_end)
+        # 路径②：列头条件筛选 conditions JSON 里的 payment_date 条目（AND 模式）
+        if not _pay_start and not _pay_end:
+            _raw_conds = (request.GET.get('conditions') or '').strip()
+            if _raw_conds and (request.GET.get('match') or 'all') != 'any':
+                try:
+                    _conds = json.loads(_raw_conds)
+                    if isinstance(_conds, list):
+                        for _c in _conds:
+                            if (_c.get('type') == 'date' and _c.get('field') == 'payment_date'
+                                    and not _c.get('exclude')):
+                                _rng = _c.get('range')
+                                if _rng == 'custom':
+                                    _s = _normalize_date(_c.get('start'))
+                                    _e = _normalize_date(_c.get('end'))
+                                else:
+                                    _r = _relative_date_range(_rng, today)
+                                    _s, _e = _r if _r else (None, None)
+                                if _s:
+                                    pay_qs = pay_qs.filter(payment_date__gte=_s)
+                                if _e:
+                                    pay_qs = pay_qs.filter(payment_date__lte=_e)
+                except (ValueError, TypeError):
+                    pass
+        collected = pay_qs.aggregate(s=Sum('amount'))['s'] or 0
 
         # ── 时段合计：本月应收/已收 + 本周应收/已收 ─────────────────────────
         # 基准日期 = 所有日期筛选里最晚的一天（都没选则用今天）
