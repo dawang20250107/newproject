@@ -484,6 +484,22 @@ async function exportTransport() {
   finally { exportingTransport.value = false }
 }
 
+// 运输专用 G7编号（= 原表对账单号）批量复制到剪贴板
+// 来源：若有勾选取勾选行（当前页），否则取全部可见行；跳过空 G7 编号；
+// 普通点击用「+」连接，Shift+点击用空格连接
+async function copyG7Numbers(e) {
+  const sep = e?.shiftKey ? ' ' : '+'
+  const pool = selectedIds.value.size
+    ? items.value.filter(p => selectedIds.value.has(p.id))
+    : items.value
+  const nums = [...new Map(pool.map(p => [p.g7_number, p])).values()]
+    .map(p => (p.g7_number || '').trim()).filter(Boolean)
+  if (!nums.length) { toast.warn('当前行中没有 G7 编号（对账单号）可复制'); return }
+  const ok = await copyText(nums.join(sep))
+  if (ok) toast.success(`已复制 ${nums.length} 个对账单号（${sep === '+' ? '+连接' : '空格连接'}）`)
+  else toast.error('复制失败，请手动复制')
+}
+
 const triggerDownload = downloadBlob
 
 async function load() {
@@ -818,6 +834,10 @@ async function doBatchPay() {
                   :title="selectedCount ? `导出勾选的 ${selectedCount} 条已排款运输付款（已结算行状态列改为已结算，其余原样还原）` : '导出全部已排款运输付款，原表格式零误差还原；已结算行状态列改为已结算'">
             <span v-if="exportingTransport" class="btn-spin"></span>
             <span v-else style="margin-right:4px">🚚</span>{{ exportingTransport ? '导出中…' : (selectedCount ? `运输导出(${selectedCount})` : '运输导出') }}
+          </button>
+          <button class="btn btn-ghost btn-sm tp-btn" @click="copyG7Numbers($event)"
+                  :title="(selectedCount ? `复制勾选 ${selectedCount} 条的` : '复制当前页') + ' G7编号（= 对账单号），以「+」连接；Shift+点击改用空格连接'">
+            📋 复制单号
           </button>
         </template>
         <div class="col-settings-wrap">
