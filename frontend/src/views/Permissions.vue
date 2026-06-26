@@ -168,12 +168,12 @@ async function save() {
         <div class="section-title" style="margin-top:20px">记录操作权限</div>
         <div class="chip-row">
           <label class="perm-chip" :class="{ on: current.config.can_create }"
-                 title="勾选=可新增/编辑付款台账（同时也放开应收写入）">
+                 title="勾选=可新增/编辑付款管理（同时也放开应收写入）">
             <input type="checkbox" v-model="current.config.can_create" />
             <span class="dot"></span>可新增排款（含应收写入）
           </label>
           <label class="perm-chip" :class="{ on: current.config.ar_can_create }"
-                 title="勾选=可编辑应收（项目/客户/应收账款），但不放开付款台账写入；结算会计典型用法">
+                 title="勾选=可编辑应收（项目/客户/应收账款），但不放开付款管理写入；结算会计典型用法">
             <input type="checkbox" v-model="current.config.ar_can_create" />
             <span class="dot"></span>可编辑应收（不含付款）
           </label>

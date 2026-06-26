@@ -290,7 +290,7 @@ const ctxItems = computed(() => {
     },
   ]
 })
-// 排款前联动：该审批关联项目有「预付」未核销余额时提示，排款后可在付款台账行内核销
+// 排款前联动：该审批关联项目有「预付」未核销余额时提示，排款后可在付款管理行内核销
 const schedPrepaid = ref(null)
 function openSchedule(it){
   current.value=it
@@ -509,11 +509,11 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <span>剩余可排 <b style="color:#e65100">{{ current?.remaining_amount ?? current?.amount }}</b></span>
     </div>
     <p style="font-size:12px;color:var(--muted);margin:0 0 10px">
-      本次金额小于剩余可排时为分批排款：本次先流转付款台账，记录留在审批管理可继续排；排满申请金额自动归档。
+      本次金额小于剩余可排时为分批排款：本次先流转付款管理，记录留在审批管理可继续排；排满申请金额自动归档。
     </p>
     <div v-if="schedPrepaid" class="sched-prepaid-hint">
       💡 项目「{{ schedPrepaid.short_name }}」尚有 <b>{{ schedPrepaid.count }}</b> 笔预付未核销，
-      余额合计 <b>{{ schedPrepaid.total_balance }}</b> 元。建议排款后到付款台账该行点「核销」，
+      余额合计 <b>{{ schedPrepaid.total_balance }}</b> 元。建议排款后到付款管理该行点「核销」，
       用预付冲抵以减少重复付现。
     </div>
     <div class="form-grid">
@@ -539,7 +539,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <span>合计金额 <b style="color:#2e7d32">{{ batchSchedTotal.toFixed(2) }}</b> 元</span>
     </div>
     <p style="font-size:12px;color:var(--muted);margin:0 0 10px">
-      默认按各记录「剩余可排（首次=申请金额）」各排一笔流转付款台账，可逐条调小做分批排款（不得超过剩余可排）；所选中非「审批通过/已归档」的记录已自动排除。
+      默认按各记录「剩余可排（首次=申请金额）」各排一笔流转付款管理，可逐条调小做分批排款（不得超过剩余可排）；所选中非「审批通过/已归档」的记录已自动排除。
     </p>
     <div class="form-grid" style="margin-bottom:10px">
       <label class="form-field"><span>计划日期*</span><input v-model="batchSchedForm.planned_date" type="date"/></label>
@@ -560,7 +560,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 
   <!-- 批量删除二次确认 -->
   <Teleport to="body"><div v-if="showDelConfirm" class="modal-overlay"><div class="modal-box" style="max-width:420px"><div class="modal-header"><h3>确认删除 {{ delConfirmCount }} 条审批记录</h3></div><div class="modal-body">
-    <p class="del-warn">⚠ 删除后不可恢复；已排款（已关联付款台账）的记录将自动跳过。</p>
+    <p class="del-warn">⚠ 删除后不可恢复；已排款（已关联付款管理）的记录将自动跳过。</p>
     <p class="del-tip">请输入待删条数 <strong>{{ delConfirmCount }}</strong> 以确认：</p>
     <input v-model="delConfirmText" class="del-input" :placeholder="`输入 ${delConfirmCount}`" @keyup.enter="confirmBulkDelete"/>
   </div><div class="modal-footer"><button class="btn btn-ghost" @click="showDelConfirm=false">取消</button><button class="btn-danger-solid" :disabled="!delConfirmOk || bulkDeleting" @click="confirmBulkDelete">{{ bulkDeleting ? '删除中…' : '确认删除' }}</button></div></div></div></Teleport>
@@ -592,7 +592,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-table { width: 100%; table-layout: fixed; }
 /* 列宽由 <colgroup> 统一声明（11 列）；选择列固定窄宽，其余按百分比分配 */
 .approval-table col.cg-sel { width: 34px; }
-/* 行高/内边距对齐全局表格（付款台账），保证两个页面观感一致 */
+/* 行高/内边距对齐全局表格（付款管理），保证两个页面观感一致 */
 .approval-table th, .approval-table td { padding: 11px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .approval-table th.sel-col, .approval-table td.sel-col { text-align: center; overflow: visible; padding: 11px 4px; }
 .approval-table th.sel-col input, .approval-table td.sel-col input { cursor: pointer; }

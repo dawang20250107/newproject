@@ -82,7 +82,7 @@ class Payment(models.Model):
     # 并按项目汇总已排/待付。历史存量行为空字符串。
     project_no = models.CharField('项目编号', max_length=20, blank=True, default='', db_index=True)
     # 二级部门/项目简称（选填，历史数据为空）。项目简称须与项目台账 short_name 匹配
-    # 来源审批（静默唯一ID）：一条审批 ↔ 一条付款台账汇总记录，分批排款追加计划明细
+    # 来源审批（静默唯一ID）：一条审批 ↔ 一条付款管理汇总记录，分批排款追加计划明细
     approval = models.ForeignKey('ApprovalRecord', on_delete=models.SET_NULL,
                                  null=True, blank=True, related_name='payments',
                                  verbose_name='来源审批')
@@ -229,8 +229,8 @@ class PaymentInstallment(models.Model):
 class PaymentPlanItem(models.Model):
     """计划排款明细子表：一条 Payment（=一条审批的汇总）可分多批计划排款。
 
-    Payment.total_amount = 明细金额之和、planned_date = 最早计划日（派生，
-    写路径显式同步）；付款台账只显示一条汇总，点开看逐批计划与逐笔实付。"""
+    Payment.total_amount = 明细金额之和、planned_date = 最后一次排款批次的计划日（派生，
+    写路径显式同步）；付款管理只显示一条汇总，点开看逐批计划与逐笔实付。"""
     payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name='plan_items')
     seq = models.PositiveSmallIntegerField('批次序号', default=1, db_index=True)
     planned_date = models.DateField('计划日期', db_index=True)
@@ -411,7 +411,7 @@ class ListScheme(models.Model):
     {colFilters:{...}, sort:'field', order:'asc'}。module 区分所属列表页。
 
     与应收的 ARFilterScheme（高级分组条件 DSL）并行：此基座面向所有用 ColumnFilter
-    的列表（付款台账/审批/客户/项目/预收/日志/用户…），开箱即用。"""
+    的列表（付款管理/审批/客户/项目/预收/日志/用户…），开箱即用。"""
     SCOPE_CHOICES = [('private', '私有'), ('public', '公共')]
 
     name = models.CharField('方案名称', max_length=40)

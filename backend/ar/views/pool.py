@@ -66,7 +66,7 @@ def _pool_metrics(dept, cfg, today):
     c, ar_, p, po, ap, ti, to_ = _pool_actual_flows(dept, start, today)
     balance = (cfg.initial_amount + c + ar_ - (p - po) - ap + ti - to_)
 
-    # ── 刚性流出：付款台账已审批待付（remaining>0），按计划日期分窗。
+    # ── 刚性流出：付款管理已审批待付（remaining>0），按计划日期分窗。
     #    已用预付核销冲抵的部分不再需要现金，故一并扣除（与余额口径对称）。
     #    已付额必须用关联子查询（_paid_subq）而非 Sum('installments__...')：
     #    JOIN 聚合会让 rem__gt=0 落到 HAVING，其中裸列 plan_adjustment/

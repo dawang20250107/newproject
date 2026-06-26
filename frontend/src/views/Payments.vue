@@ -434,7 +434,7 @@ async function onPrecheckApply({ mode, rows, okRows }) {
     if (mode === 'download') {
       const blob = await api.post('/payments/import/apply',
         { rows, okRows, mode: 'download' }, { responseType: 'blob', timeout: 90000 })
-      triggerDownload(blob, '付款台账_修正版.xlsx')
+      triggerDownload(blob, '付款管理_修正版.xlsx')
     } else {
       const res = await api.post('/payments/import/apply', { rows, okRows, mode: 'import' }, { timeout: 90000 })
       precheckResult.value = null
@@ -757,7 +757,7 @@ async function doBatchPay() {
   <div>
     <div class="topbar">
       <div style="display:flex;align-items:center;gap:14px">
-        <h1>付款台账</h1>
+        <h1>付款管理</h1>
         <div class="tab-bar">
           <button :class="['tab-btn', activeTab==='ledger' ? 'active' : '']" @click="switchTab('ledger')">台账</button>
           <button :class="['tab-btn', activeTab==='flow' ? 'active' : '']" @click="switchTab('flow')">付款流水</button>
@@ -1297,7 +1297,7 @@ async function doBatchPay() {
 .card.fh-fill { padding-bottom: 40px; }
 .table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
 
-/* 付款台账：固定布局，不超出卡片宽度（table-layout:fixed 已防横向溢出，无需 overflow-x:hidden） */
+/* 付款管理：固定布局，不超出卡片宽度（table-layout:fixed 已防横向溢出，无需 overflow-x:hidden） */
 .table-wrap.pk-pay-tbl { padding-bottom: 70px; }
 .pk-pay-tbl table { table-layout: fixed; }
 .pk-pay-tbl th, .pk-pay-tbl td { padding: 9px 7px; font-size: 12.5px; }

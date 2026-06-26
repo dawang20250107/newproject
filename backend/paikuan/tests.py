@@ -847,7 +847,7 @@ class ProjectLinkFieldsTests(TestCase):
 
 
 class PartialScheduleTests(TestCase):
-    """审批分批排款：多次排款分批流转付款台账，排满自动归档。"""
+    """审批分批排款：多次排款分批流转付款管理，排满自动归档。"""
 
     def setUp(self):
         self.client = Client()
@@ -887,12 +887,12 @@ class PartialScheduleTests(TestCase):
         self.assertTrue(resp.json()['data']['archived'])
         self.rec.refresh_from_db()
         self.assertTrue(self.rec.archived)
-        # 付款台账只有一条汇总（经 approval 静默ID打通），两批计划在明细里
+        # 付款管理只有一条汇总（经 approval 静默ID打通），两批计划在明细里
         pays = Payment.objects.filter(approval=self.rec)
         self.assertEqual(pays.count(), 1)
         p = pays.first()
         self.assertEqual(p.total_amount, Decimal('10000'))         # 汇总=各批之和
-        self.assertEqual(str(p.planned_date), '2026-07-01')        # 最早批次日期
+        self.assertEqual(str(p.planned_date), '2026-08-01')        # 最后一次排款批次日期
         items = list(p.plan_items.order_by('seq'))
         self.assertEqual([i.amount for i in items], [Decimal('4000'), Decimal('6000')])
         self.assertEqual([str(i.planned_date) for i in items], ['2026-07-01', '2026-08-01'])
@@ -946,9 +946,9 @@ class PartialScheduleTests(TestCase):
 
 
 class PaymentScheduleSyncTests(TestCase):
-    """付款台账 编辑/删除/批次管理 ←→ 审批「已排款 / 归档」双向同步对账。
+    """付款管理 编辑/删除/批次管理 ←→ 审批「已排款 / 归档」双向同步对账。
 
-    口径：审批.已排款 == 关联付款台账全部计划批次之和；任一改动后两侧都应一致，
+    口径：审批.已排款 == 关联付款管理全部计划批次之和；任一改动后两侧都应一致，
     且归档状态随排满/未排满自动切换（未排满回到审批管理可继续分批排款）。"""
 
     def setUp(self):
@@ -984,7 +984,7 @@ class PaymentScheduleSyncTests(TestCase):
         return self.client.post(url, data=json.dumps(body),
                                 content_type='application/json', **self.auth())
 
-    # ── 编辑付款台账「计划额」→ 审批已排款同步、归档回退 ──
+    # ── 编辑付款管理「计划额」→ 审批已排款同步、归档回退 ──
     def test_edit_payment_amount_syncs_approval(self):
         self._sched('10000', '2026-07-01')          # 排满归档（单批）
         self.rec.refresh_from_db()
@@ -1008,7 +1008,7 @@ class PaymentScheduleSyncTests(TestCase):
         self.rec.refresh_from_db()
         self.assertEqual(self.rec.scheduled_amount, Decimal('6000'))   # 未改
 
-    # ── 删除付款台账 → 审批回退为可排款 ──
+    # ── 删除付款管理 → 审批回退为可排款 ──
     def test_delete_payment_frees_approval(self):
         self._sched('10000', '2026-07-01')
         self.rec.refresh_from_db(); self.assertTrue(self.rec.archived)
@@ -1041,7 +1041,7 @@ class PaymentScheduleSyncTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         p.refresh_from_db(); self.rec.refresh_from_db()
         self.assertEqual(p.total_amount, Decimal('7000'))        # 4000+3000
-        self.assertEqual(str(p.planned_date), '2026-07-01')      # 最早批次日
+        self.assertEqual(str(p.planned_date), '2026-08-15')      # 最后一次排款批次日（seq2）
         self.assertEqual(self.rec.scheduled_amount, Decimal('7000'))
         self.assertFalse(self.rec.archived)
 
@@ -1091,6 +1091,22 @@ class PaymentScheduleSyncTests(TestCase):
         self.assertIn('剩余可排', resp.json()['error'])
         self.rec.refresh_from_db()
         self.assertEqual(self.rec.scheduled_amount, Decimal('4000'))   # 未改
+
+    def test_summary_planned_date_follows_last_schedule(self):
+        # 多次排款，汇总计划日以「最后一次排款」（seq 最大）的批次日为准，
+        # 既非最早(min)也非最晚(max)日期，而是末次排款动作的日期。
+        self._sched('2000', '2026-07-01')   # seq1
+        self._sched('3000', '2026-09-01')   # seq2（日期最晚）
+        self._sched('5000', '2026-08-01')   # seq3（最后一次排款）
+        p = self._payment()
+        self.assertEqual(str(p.planned_date), '2026-08-01')   # = seq3 末次排款日
+        # 撤销末批后，汇总日回退为上一末批（seq2=09-01）
+        third = p.plan_items.get(seq=3)
+        resp = self.client.delete(f'/api/pk/payments/{p.id}/plan-items/{third.id}',
+                                  **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        p.refresh_from_db()
+        self.assertEqual(str(p.planned_date), '2026-09-01')   # 末批=seq2
 
     def test_plan_item_amount_nan_infinity_rejected_not_500(self):
         # Decimal('NaN')/('Infinity') 能构造但比较会抛 → 必须以 400 拦掉而非 500
@@ -1241,7 +1257,7 @@ class LegacyScheduleAdoptTests(TestCase):
 
 
 class BulkOpsTests(TestCase):
-    """批量删除 / 批量排款（审批）/ 批量付款（付款台账）。含单选=ids 单元素。"""
+    """批量删除 / 批量排款（审批）/ 批量付款（付款管理）。含单选=ids 单元素。"""
 
     def setUp(self):
         self.client = Client()
@@ -1276,7 +1292,7 @@ class BulkOpsTests(TestCase):
         self.assertEqual(d['scheduled'], 2)
         self.assertEqual(Decimal(d['total_amount']), Decimal('3000'))
         self.assertEqual(d['skipped'], [])
-        # 两条付款台账各自打通审批，金额=申请金额，计划日=今天参数
+        # 两条付款管理各自打通审批，金额=申请金额，计划日=今天参数
         for a, amt in ((a1, '1000'), (a2, '2000')):
             p = Payment.objects.get(approval=a)
             self.assertEqual(p.total_amount, Decimal(amt))
@@ -1372,7 +1388,7 @@ class BulkOpsTests(TestCase):
         a1.refresh_from_db()
         self.assertEqual(a1.status, 'pending')   # 未被改动
 
-    # ── 付款台账批量付款 ──────────────────────────────────────────────────────
+    # ── 付款管理批量付款 ──────────────────────────────────────────────────────
     def _schedule_payment(self, num, amount):
         a = self._mk_approval(num, amount)
         self._post('/api/pk/approvals/bulk-schedule', {'ids': [a.id], 'planned_date': '2026-07-01'})
@@ -1413,7 +1429,7 @@ class BulkOpsTests(TestCase):
         p1.refresh_from_db()
         self.assertEqual(str(p1.installments.first().pay_date), date.today().isoformat())
 
-    # ── 付款台账批量删除 ──────────────────────────────────────────────────────
+    # ── 付款管理批量删除 ──────────────────────────────────────────────────────
     def test_bulk_delete_payments(self):
         p1 = self._schedule_payment(1, '1000')
         p2 = self._schedule_payment(2, '2000')
@@ -1511,7 +1527,7 @@ class ColumnFilterTests(TestCase):
         u.set_password('Test123456'); u.save()
         self.user = u
         self.token = make_token(u)
-        # 付款台账：两条不同金额/日期/收款方
+        # 付款管理：两条不同金额/日期/收款方
         Payment.objects.create(created_by=u, department=self.dept, approval_number='',
                                g7_number='G70001', project_desc='甲项目', payee='阿尔法',
                                applicant='张三', total_amount=Decimal('1000'),
@@ -1539,7 +1555,7 @@ class ColumnFilterTests(TestCase):
         self.assertEqual(r.status_code, 200, r.content)
         return r.json()['data']['items']
 
-    # ── 付款台账 ──
+    # ── 付款管理 ──
     def test_payment_text_contains(self):
         items = self._items('/api/pk/payments',
                             {'filters': json.dumps({'payee': {'op': 'contains', 'value': '阿尔法'}})})
@@ -1603,7 +1619,7 @@ class ColumnFilterTests(TestCase):
 
 
 class PaymentComputedFilterTests(TestCase):
-    """付款台账计算列筛选：已付/剩余(数值)、逾期(是/否)，及按已付/剩余排序。
+    """付款管理计算列筛选：已付/剩余(数值)、逾期(是/否)，及按已付/剩余排序。
     口径必须与 Payment.to_dict 显示值一致。"""
 
     def setUp(self):

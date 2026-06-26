@@ -140,7 +140,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 
       <router-link v-if="auth.canPage('payments')" to="/payments" class="nav-item"
         :class="{ active: route.path === '/payments' }"
-        :title="effectiveCollapsed ? '付款台账' : undefined"
+        :title="effectiveCollapsed ? '付款管理' : undefined"
         @click="onNavClick">
         <span class="nav-icon">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -149,7 +149,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
           </svg>
         </span>
         <Transition name="label-fade">
-          <span v-if="!effectiveCollapsed" class="nav-label">付款台账</span>
+          <span v-if="!effectiveCollapsed" class="nav-label">付款管理</span>
         </Transition>
       </router-link>
 
