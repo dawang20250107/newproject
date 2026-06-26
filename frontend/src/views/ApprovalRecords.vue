@@ -17,8 +17,11 @@ import SchemePicker from '../components/SchemePicker.vue'
 import { useTableSchemes } from '../composables/useTableSchemes.js'
 import { useToast } from '../composables/useToast.js'
 import { useAsyncExport } from '../composables/useAsyncExport.js'
+import { useRangeSelection } from '../composables/useRangeSelection.js'
 const toast = useToast()
 const { exporting: bgExporting, startExport } = useAsyncExport()
+// Excel 式区域选择 + 复制（忽略首列复选框）
+const rangeSel = useRangeSelection({ ignoreCols: [0], onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
 
 const auth = useAuthStore()
 const items = ref([])
@@ -639,7 +642,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <div class="card approval-card fh-fill">
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
   <EmptyState v-else-if="!loading && !items.length" :variant="activeFilterCount || q ? 'search' : 'empty'" :text="activeFilterCount || q ? '没有符合当前筛选条件的审批记录' : '暂无审批记录，点击「新增」创建第一条记录'" />
-  <div v-if="!loadErr" class="table-wrap page-scroll"><table class="approval-table">
+  <div v-if="!loadErr" class="table-wrap page-scroll" :ref="rangeSel.setRoot"><table class="approval-table">
     <colgroup>
       <col class="cg-sel" /><!-- 选择 -->
       <col style="width:6%" /><!-- 申请人 -->
@@ -775,6 +778,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         <span class="bb-item"><i>总申请</i><b>{{ pendingAmountTotal.toFixed(2) }}</b> 元</span>
         <span class="bb-item ok"><i>已排合计</i><b>{{ scheduledTotal.toFixed(2) }}</b> 元</span>
         <span class="bb-item warn"><i>未排合计</i><b>{{ remainingTotal.toFixed(2) }}</b> 元</span>
+        <span class="bb-hint" title="按住鼠标拖选单元格区域，Ctrl/⌘+C 复制，可粘贴进 Excel">💡 拖选 + Ctrl C 复制区域</span>
       </div>
       <div v-if="total > size" class="bb-pager">
         <button :disabled="page <= 1" class="page-btn" @click="setPage(page - 1)">‹ 上一页</button>
@@ -931,6 +935,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
 
 /* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
+.bb-hint { font-size: 11px; color: var(--muted); margin-left: 8px; opacity: 0.8; white-space: nowrap; cursor: help; }
+@media (max-width: 900px) { .bb-hint { display: none; } }
 .approval-table { width: 100%; table-layout: fixed; }
 /* 列宽由 <colgroup> 统一声明；选择列固定窄宽、审批状态列缩小，其余按百分比分配 */
 .approval-table col.cg-sel { width: 34px; }
@@ -963,6 +969,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .status-cell.st-canceled .status-badge { color: #5f5f5f; background: rgba(120,120,120,0.15); border-color: rgba(120,120,120,0.5); }
 .g7-cell { color: var(--muted); font-size: 11.5px; }
 .approval-table tr.row-sel td { background: rgba(201,99,66,0.06); }
+/* Excel 式区域选择高亮（直接由 useRangeSelection 给 td 加类，不逐格绑定） */
+.approval-table td.cell-range-sel { background: rgba(21,101,192,0.14) !important; box-shadow: inset 0 0 0 1px rgba(21,101,192,0.28); }
+/* 拖拽选区时禁用原生文本选择（电子表格式交互）；行内 input 仍可正常编辑 */
+.approval-table tbody { user-select: none; }
 /* 批量操作条：固定浮动在视口底部居中，全选后无需下拉即可操作 */
 .bulk-bar { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 1200;
   display: flex; align-items: center; gap: 12px; padding: 10px 18px;

@@ -20,10 +20,13 @@ import ContextMenu from '../components/ContextMenu.vue'
 import { useContextMenu } from '../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../utils/clipboard.js'
 import { useAsyncExport } from '../composables/useAsyncExport.js'
+import { useRangeSelection } from '../composables/useRangeSelection.js'
 
 const toast = useToast()
 const auth = useAuthStore()
 const { exporting: bgExporting, startExport } = useAsyncExport()
+// Excel 式区域选择 + 复制（忽略首列复选框）
+const rangeSel = useRangeSelection({ ignoreCols: [0], onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
 
 // Column visibility from field-level view permissions.
 const showPaid = computed(() => auth.canView('installments'))
@@ -977,7 +980,7 @@ async function doBatchPay() {
       <EmptyState v-if="loadErr" :error="loadErr" />
       <EmptyState v-else-if="!loading && !items.length" :variant="activeFilterCount ? 'search' : 'empty'" :text="activeFilterCount ? '没有符合当前筛选条件的付款记录' : '暂无付款记录'" />
 
-      <div v-if="!loadErr" class="table-wrap pk-pay-tbl page-scroll">
+      <div v-if="!loadErr" class="table-wrap pk-pay-tbl page-scroll" :ref="rangeSel.setRoot">
         <table>
           <thead>
             <tr>
@@ -1046,7 +1049,7 @@ async function doBatchPay() {
               </td>
             </tr>
             <!-- 行明细：计划明细（分批）/ 付款明细（分期实付）并排 -->
-            <tr v-if="expandedRows.has(p.id)" class="pp-detail-row">
+            <tr v-if="expandedRows.has(p.id)" class="pp-detail-row" data-skiprange>
               <td :colspan="99">
                 <div class="pp-detail">
                   <div class="ppd-col">
@@ -1462,6 +1465,9 @@ async function doBatchPay() {
 .pk-pay-tbl table { table-layout: fixed; }
 .pk-pay-tbl th, .pk-pay-tbl td { padding: var(--td-py) var(--td-px); font-size: var(--td-fs); }
 .pk-pay-tbl td:not(.ops-cell) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+/* Excel 式区域选择高亮（useRangeSelection 直接给 td 加类） */
+.pk-pay-tbl td.cell-range-sel { background: rgba(21,101,192,0.14) !important; box-shadow: inset 0 0 0 1px rgba(21,101,192,0.28); }
+.pk-pay-tbl tbody { user-select: none; }
 /* 列头放置筛选漏斗：允许溢出展示，不裁切 */
 .pk-pay-tbl thead th { overflow: visible; }
 .global-search { min-width: 300px; flex: 0 1 380px; }
