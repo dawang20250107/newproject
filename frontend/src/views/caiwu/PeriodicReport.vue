@@ -279,30 +279,36 @@ onMounted(load)
             </tr>
           </tbody>
         </table>
-        <div class="rp-twin">
-          <table class="rp-tbl mini">
-            <thead><tr><th class="lft">逾期情况</th><th>逾期应收</th><th>逾期已收</th><th>逾期回款率</th></tr></thead>
-            <tbody>
-              <tr v-for="r in arRows" :key="r.name" :class="{ tot: r._total }">
-                <td class="lft">{{ r.name }}</td>
-                <td class="neg">{{ wan(r.overdue) }}</td>
-                <td class="in">{{ wan(r.overdue_collected) }}</td>
-                <td><span class="rt" :class="rateClass(r.overdue_rate)">{{ rate(r.overdue_rate) }}</span></td>
-              </tr>
-            </tbody>
-          </table>
-          <table class="rp-tbl mini">
-            <thead><tr><th class="lft">未到期情况</th><th>未到期应收</th><th>未到期已收</th><th>未到期回款率</th></tr></thead>
-            <tbody>
-              <tr v-for="r in arRows" :key="r.name" :class="{ tot: r._total }">
-                <td class="lft">{{ r.name }}</td>
-                <td>{{ wan(r.not_due) }}</td>
-                <td class="in">{{ wan(r.not_due_collected) }}</td>
-                <td><span class="rt" :class="rateClass(r.not_due_rate)">{{ rate(r.not_due_rate) }}</span></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <div class="rp-sub-cap">到期账龄结构<em>将期末仍未收的余额按到期日拆为 逾期（期初前已到期）· 当期（本期内到期）· 未到期（期末后到期 / 无到期日）三段，刻画期末未收的账龄构成</em></div>
+        <table class="rp-tbl aging">
+          <thead>
+            <tr class="grp-hd">
+              <th class="lft" rowspan="2">事业部</th>
+              <th colspan="3" class="g-over">逾期（已过期）</th>
+              <th colspan="3" class="g-curr">当期（本期到期）</th>
+              <th colspan="3" class="g-notdue">未到期（未来）</th>
+            </tr>
+            <tr class="sub-hd">
+              <th>应收</th><th>已收</th><th>回款率</th>
+              <th class="bd-l">应收</th><th>已收</th><th>回款率</th>
+              <th class="bd-l">应收</th><th>已收</th><th>回款率</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="r in arRows" :key="r.name" :class="{ tot: r._total }">
+              <td class="lft">{{ r.name }}</td>
+              <td class="neg">{{ wan(r.overdue) }}</td>
+              <td class="in">{{ wan(r.overdue_collected) }}</td>
+              <td><span class="rt" :class="rateClass(r.overdue_rate)">{{ rate(r.overdue_rate) }}</span></td>
+              <td class="bd-l">{{ wan(r.current) }}</td>
+              <td class="in">{{ wan(r.current_collected) }}</td>
+              <td><span class="rt" :class="rateClass(r.current_rate)">{{ rate(r.current_rate) }}</span></td>
+              <td class="bd-l">{{ wan(r.not_due) }}</td>
+              <td class="in">{{ wan(r.not_due_collected) }}</td>
+              <td><span class="rt" :class="rateClass(r.not_due_rate)">{{ rate(r.not_due_rate) }}</span></td>
+            </tr>
+          </tbody>
+        </table>
       </section>
 
       <!-- 三、应收应付预算 -->
@@ -505,6 +511,17 @@ onMounted(load)
 
 .rp-twin { display: grid; grid-template-columns: 1fr 1.3fr; gap: 14px; margin-top: 12px; }
 .rp-tbl.mini th, .rp-tbl.mini td { padding: 6px 9px; font-size: 12px; }
+
+/* 到期账龄结构矩阵：逾期 / 当期 / 未到期 三段分组列，横向同事业部对比、纵向同口径对比 */
+.rp-sub-cap { margin: 14px 0 6px; font-size: 12.5px; font-weight: 700; color: #333; }
+.rp-sub-cap em { font-style: normal; font-size: 11px; font-weight: 400; color: #999; margin-left: 8px; }
+.rp-tbl.aging th, .rp-tbl.aging td { padding: 6px 8px; font-size: 12px; }
+.rp-tbl.aging tr.grp-hd th { font-size: 12px; font-weight: 800; padding: 5px 8px; }
+.rp-tbl.aging tr.sub-hd th { font-weight: 600; color: #555; background: #f7f7f7; }
+.rp-tbl.aging .g-over   { background: #fde8eb; color: #b00020; }
+.rp-tbl.aging .g-curr   { background: #fef3e2; color: #a05a00; }
+.rp-tbl.aging .g-notdue { background: #eef4f0; color: #0a7a4a; }
+.rp-tbl.aging .bd-l { border-left: 2px solid #bcbcbc; }
 
 /* 现金流表（单事业部）*/
 .rp-tbl.cash td.lft { font-weight: 600; }
