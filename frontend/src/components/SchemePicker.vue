@@ -1,22 +1,38 @@
 <script setup>
 // 通用「筛选方案」下拉（表格方案基座 UI）：配合 useTableSchemes 使用，任意列表页可复用。
 // 私有/公共分组展示、设默认（★）、保存当前列头筛选+排序为命名方案。
+import { ref } from 'vue'
+
 const props = defineProps({
   ctl: { type: Object, required: true },        // useTableSchemes(...) 的返回
   canPublic: { type: Boolean, default: false }, // 是否允许创建公共方案（写权限）
   isSuperAdmin: { type: Boolean, default: false },
 })
 const c = props.ctl
+const btnRef = ref(null)
+const dropStyle = ref({})
+
+function openDrop() {
+  if (btnRef.value) {
+    const r = btnRef.value.getBoundingClientRect()
+    dropStyle.value = {
+      top: (r.bottom + 6) + 'px',
+      right: (window.innerWidth - r.right) + 'px',
+    }
+  }
+  c.showDrop.value = !c.showDrop.value
+}
 </script>
 
 <template>
   <div class="sp-wrap">
-    <button class="sp-btn" :class="{ on: c.showDrop.value }" title="保存/加载筛选方案（私有/公共）"
-            @click="c.showDrop.value = !c.showDrop.value">
+    <button ref="btnRef" class="sp-btn" :class="{ on: c.showDrop.value }" title="保存/加载筛选方案（私有/公共）"
+            @click="openDrop">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
       方案<span v-if="c.schemes.value.length" class="sp-badge">{{ c.schemes.value.length }}</span>
     </button>
-    <div v-if="c.showDrop.value" class="sp-drop">
+    <Teleport to="body">
+    <div v-if="c.showDrop.value" class="sp-drop" :style="dropStyle">
       <div class="sp-save-row">
         <input v-model="c.newName.value" class="sp-name-input" placeholder="方案名称…" maxlength="40"
                @keyup.enter="c.saveCurrent()" />
@@ -55,6 +71,7 @@ const c = props.ctl
       </template>
     </div>
     <div v-if="c.showDrop.value" class="sp-backdrop" @click="c.showDrop.value = false"></div>
+    </Teleport>
   </div>
 </template>
 
@@ -67,11 +84,11 @@ const c = props.ctl
 .sp-btn:hover, .sp-btn.on { border-color: var(--primary); color: var(--primary); }
 .sp-badge { background: var(--primary); color: #fff; border-radius: 8px; padding: 0 5px; font-size: 10px; font-weight: 700; }
 .sp-drop {
-  position: absolute; top: calc(100% + 6px); right: 0; z-index: 200;
+  position: fixed; z-index: 4500;
   background: #fff; border: 1.5px solid var(--border); border-radius: 10px;
   box-shadow: 0 6px 20px rgba(0,0,0,0.12); min-width: 250px; padding: 8px 0;
 }
-.sp-backdrop { position: fixed; inset: 0; z-index: 199; }
+.sp-backdrop { position: fixed; inset: 0; z-index: 4499; }
 .sp-save-row { display: flex; gap: 6px; padding: 6px 10px 8px; border-bottom: 1px solid var(--border); }
 .sp-name-input { flex: 1; padding: 5px 8px; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; outline: none; }
 .sp-name-input:focus { border-color: var(--primary); }

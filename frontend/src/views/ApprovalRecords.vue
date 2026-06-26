@@ -572,9 +572,12 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <td class="amt remain-c" :class="{ 'remain-zero': parseFloat(i.remaining_amount) <= 0 }">{{ parseFloat(i.remaining_amount) > 0 ? i.remaining_amount : '—' }}</td>
       <td class="payee">{{i.payee}}</td>
       <td :class="['status-cell', 'st-' + i.status]" :title="i.status === 'approved' ? '审批通过，可排款' : (i.status === 'pending' ? '待审批，通过后方可排款' : '')">
-        <select class="status-select" :value="i.status" :disabled="statusUpdating[i.id]" @change="updateStatus(i, $event.target.value)">
-          <option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option>
-        </select>
+        <div class="status-wrap">
+          <span class="status-badge">{{ {pending:'待审批',approved:'审批通过',rejected:'已拒绝',canceled:'已撤销'}[i.status] || i.status }}</span>
+          <select class="status-overlay" :value="i.status" :disabled="statusUpdating[i.id]" @change="updateStatus(i, $event.target.value)" title="点击更改审批状态">
+            <option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option>
+          </select>
+        </div>
       </td>
       </tr>
       <!-- 排款批次明细面板 -->
@@ -771,18 +774,22 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-table th:last-child, .approval-table td:last-child {
   overflow: visible; text-overflow: clip; white-space: normal;
 }
-/* 审批状态色码：下拉本身即状态徽章，一眼区分「审批通过=可排款」 */
-.status-cell .status-select {
-  width: 100%; max-width: 100%; box-sizing: border-box;
-  border-radius: 999px; padding: 5px 10px; font-size: 12.5px; font-weight: 700;
-  border: 1.5px solid transparent; cursor: pointer; appearance: none;
-  text-align: center; text-align-last: center;
+/* 审批状态色码徽章：badge 显示颜色，transparent overlay select 捕获交互 */
+.status-wrap { position: relative; display: inline-block; min-width: 72px; width: 100%; }
+.status-badge {
+  display: block; border-radius: 999px; padding: 5px 10px;
+  font-size: 12.5px; font-weight: 700; border: 1.5px solid transparent;
+  text-align: center; white-space: nowrap; pointer-events: none;
 }
-.status-cell .status-select:disabled { opacity: .6; cursor: default; }
-.status-cell.st-pending  .status-select { color: #8a6d1a; background: rgba(255,213,79,0.18); border-color: rgba(255,193,7,0.55); }
-.status-cell.st-approved .status-select { color: #1b5e20; background: rgba(46,125,50,0.14); border-color: rgba(46,125,50,0.55); }
-.status-cell.st-rejected .status-select { color: #b71c1c; background: rgba(198,40,40,0.11); border-color: rgba(198,40,40,0.5); }
-.status-cell.st-canceled .status-select { color: #5f5f5f; background: rgba(120,120,120,0.12); border-color: rgba(120,120,120,0.45); }
+.status-overlay {
+  position: absolute; inset: 0; opacity: 0; cursor: pointer;
+  width: 100%; height: 100%; border: none; background: none;
+}
+.status-overlay:disabled { cursor: default; }
+.status-cell.st-pending  .status-badge { color: #8a6d1a; background: rgba(255,213,79,0.25); border-color: rgba(255,193,7,0.6); }
+.status-cell.st-approved .status-badge { color: #1b5e20; background: rgba(46,125,50,0.18); border-color: rgba(46,125,50,0.6); }
+.status-cell.st-rejected .status-badge { color: #b71c1c; background: rgba(198,40,40,0.14); border-color: rgba(198,40,40,0.55); }
+.status-cell.st-canceled .status-badge { color: #5f5f5f; background: rgba(120,120,120,0.15); border-color: rgba(120,120,120,0.5); }
 .g7-cell { color: var(--muted); font-size: 11.5px; }
 .approval-table tr.row-sel td { background: rgba(201,99,66,0.06); }
 /* 批量操作条：固定浮动在视口底部居中，全选后无需下拉即可操作 */
