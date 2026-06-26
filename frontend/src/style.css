@@ -224,6 +224,14 @@ body {
   outline-offset: 2px;
 }
 
+/* ── 全局按钮一致性兜底 ──────────────────────────────────────────────────────
+   系统里既有标准 .btn，也有大量自定义类名按钮（.bulk-act/.bulk-del/.footer-btn/
+   .page-btn 等）。这里用低优先级的元素选择器统一「禁用光标」与「键盘焦点轮廓」，
+   不覆盖各自更具体的视觉样式，只补齐操作手感与无障碍的一致性。 */
+button { font-family: inherit; }
+button:disabled { cursor: not-allowed; }
+button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
 .btn-primary {
   background: var(--grad); color: #fff;
   box-shadow: 0 3px 12px var(--primary-glow);
@@ -662,7 +670,13 @@ tr.overdue-row td:first-child { border-left: 3px solid var(--c-danger); }
   transition: left 0.46s cubic-bezier(0.45, 0, 0.15, 1);
 }
 body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
-@media (max-width: 768px) { .bottom-bar { left: 0; } }
+@media (max-width: 768px) {
+  .bottom-bar { left: 0; }
+  /* 手机端：财务合计横向可滚动，避免金额被裁切；分页器收紧 */
+  .bb-summary { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .bb-summary::-webkit-scrollbar { display: none; }
+  .bottom-bar .page-info { font-size: 10px; }
+}
 
 .bb-summary { display: flex; align-items: center; gap: 14px; min-width: 0; overflow: hidden; }
 .bb-item { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; font-size: 11.5px; flex-shrink: 0; }

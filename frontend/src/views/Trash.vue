@@ -160,7 +160,12 @@ function fmtDate(s) {
 
 .trash-hint { font-size: 12.5px; color: var(--muted); margin-bottom: 16px; }
 .trash-card { background: rgba(255,253,250,0.90); border-radius: var(--radius); border: 1px solid rgba(255,255,255,0.65);
-  box-shadow: 0 2px 12px rgba(100,60,30,0.09); overflow: hidden; }
+  box-shadow: 0 2px 12px rgba(100,60,30,0.09); overflow-x: auto; }
+@media (max-width: 768px) {
+  .trash-page { padding: 14px; }
+  .trash-header { gap: 10px; }
+  .trash-actions { width: 100%; margin-left: 0; }
+}
 
 .trash-loading, .trash-empty { text-align: center; padding: 60px 20px; color: var(--muted); }
 .trash-empty { display: flex; flex-direction: column; align-items: center; gap: 12px; }
