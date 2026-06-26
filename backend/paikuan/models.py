@@ -98,15 +98,6 @@ class Payment(models.Model):
     g7_number = models.CharField('G7编号', max_length=21, blank=True, default='', db_index=True)
     # 系统自动维护：等于所有关联 AdvanceWriteoff.amount 之和，现金流视图从 paid 中扣除此金额防双重计
     prepaid_offset_amount = models.DecimalField('预付核销冲抵金额', max_digits=15, decimal_places=2, default=Decimal('0'))
-    # ── 外部来源溯源（运输事业部对账单导入专用）──────────────────────────────
-    # 运输事业部从自有系统导出的对账单格式与排款表不一致：金额为负、列结构不同。
-    # 导入时转为标准 Payment（金额取绝对值）；ext_* 保留原始信息以便导出时零误差还原。
-    # ext_source 为空表示普通排款记录；非空（如 'transport'）表示外部导入。
-    ext_source = models.CharField('外部来源', max_length=20, blank=True, default='', db_index=True)
-    # 外部唯一单号（运输对账单号，如 ZD202606260055），作为导入去重键
-    ext_bill_no = models.CharField('外部对账单号', max_length=64, blank=True, default='', db_index=True)
-    # 原始行快照：{原表头: 原值} 全列逐字保存，导出时按原格式还原（仅状态列可改）
-    ext_raw = models.JSONField('外部原始行', default=dict, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -126,12 +117,6 @@ class Payment(models.Model):
                         'planned_date', 'total_amount'],
                 condition=~models.Q(approval_number=''),
                 name='uniq_payment_business_key',
-            ),
-            # 外部来源对账单号唯一（运输导入去重的 DB 兜底）。仅 ext_bill_no 非空时生效。
-            models.UniqueConstraint(
-                fields=['ext_source', 'ext_bill_no'],
-                condition=~models.Q(ext_bill_no=''),
-                name='uniq_payment_ext_bill_no',
             ),
         ]
 
@@ -211,8 +196,6 @@ class Payment(models.Model):
             'notes': self.notes,
             'plan_adjustment': str(self.plan_adjustment) if self.plan_adjustment is not None else None,
             'g7_number': self.g7_number,
-            'ext_source': self.ext_source,
-            'ext_bill_no': self.ext_bill_no,
             'prepaid_offset_amount': str(self.prepaid_offset_amount),
             'total_paid': str(total_paid_val),
             'remaining': str(remaining_val),
@@ -284,12 +267,30 @@ class ApprovalRecord(models.Model):
     status = models.CharField('审批状态', max_length=20, choices=STATUS_CHOICES, default='pending', db_index=True)
     archived = models.BooleanField('是否归档', default=False, db_index=True)
     created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='approval_records')
+    # ── 外部来源溯源（运输事业部对账单导入专用）──────────────────────────────
+    # 运输事业部从自有系统导出的对账单结构与排款表不一致：金额为负、列结构不同。
+    # 导入时转为「已通过」审批记录（金额取绝对值），手动排款后进入付款管理结算；
+    # ext_* 逐字保留原始信息，供付款管理侧导出时按原表格式零误差还原（仅状态列可改）。
+    # ext_source 为空表示普通审批记录；非空（如 'transport'）表示外部导入。
+    ext_source = models.CharField('外部来源', max_length=20, blank=True, default='', db_index=True)
+    # 外部唯一单号（运输对账单号，如 ZD202606260055），作为导入去重键
+    ext_bill_no = models.CharField('外部对账单号', max_length=64, blank=True, default='', db_index=True)
+    # 原始行快照：{原表头: 原值} 全列逐字保存，导出时按原格式还原
+    ext_raw = models.JSONField('外部原始行', default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'paikuan_approval_records'
         ordering = ['-created_at']
+        constraints = [
+            # 外部来源对账单号唯一（运输导入去重的 DB 兜底）。仅 ext_bill_no 非空时生效。
+            models.UniqueConstraint(
+                fields=['ext_source', 'ext_bill_no'],
+                condition=~models.Q(ext_bill_no=''),
+                name='uniq_approval_ext_bill_no',
+            ),
+        ]
 
     def to_dict(self):
         return {
@@ -308,6 +309,8 @@ class ApprovalRecord(models.Model):
             'payee': self.payee,
             'status': self.status,
             'archived': self.archived,
+            'ext_source': self.ext_source,
+            'ext_bill_no': self.ext_bill_no,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
 

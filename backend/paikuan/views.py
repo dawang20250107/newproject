@@ -4109,10 +4109,10 @@ def payment_export(request):
 
 # ── 运输事业部对账单 专用导入 / 导出 ────────────────────────────────────────────
 # 运输事业部从自有系统导出的对账单结构与排款表完全不同（14 固定列、金额为负）。
-# 导入：逐行转为标准 Payment（金额取绝对值、映射部门/收款方/日期），原始整行存 ext_raw，
-#       以「对账单号」为唯一键去重；之后即可像普通排款一样走付款 / 分期 / 结算流程。
-# 导出：按勾选 / 筛选取回这些 Payment，从 ext_raw 原样还原原表格式，逐字零误差，
-#       仅把「状态」列改写为「已结算」（限系统内已付清的行），供回传运输自有系统。
+# 导入（审批管理）：逐行转为「已通过」审批记录（金额取绝对值、映射部门/收款方），原始整行
+#       存 ext_raw，以「对账单号」为唯一键去重。之后由用户在审批管理手动排款进入付款管理。
+# 导出（付款管理）：按勾选 / 筛选取回已排款的运输付款记录，从来源审批的 ext_raw 原样还原原表，
+#       逐字零误差，仅把「状态」列改写为「已结算」（限系统内已付清行），供回传运输自有系统。
 TRANSPORT_SOURCE = 'transport'
 TRANSPORT_DEPT = '运输事业部'
 # 运输对账单原表头（顺序即导出列顺序，必须与来源系统完全一致）
@@ -4121,36 +4121,24 @@ TRANSPORT_HEADERS = [
     '对账时间', '状态', '创建人', '创建时间', '备注', '单据类别', '账单调整', '对账金额',
 ]
 TRANSPORT_KEY_COL = '对账单号'      # 去重唯一键
-TRANSPORT_AMOUNT_COL = '实际对账金额'  # 取绝对值作为计划金额（已含账单调整的最终额）
+TRANSPORT_AMOUNT_COL = '实际对账金额'  # 取绝对值作为申请金额（已含账单调整的最终额）
 TRANSPORT_STATUS_COL = '状态'       # 导出时改写为「已结算」的列
 TRANSPORT_SETTLED_LABEL = '已结算'
-
-
-def _transport_row_date(raw):
-    """从原始行里取一个日期作为 Payment.planned_date：优先对账时间，回退创建时间，再回退今天。"""
-    for col in ('对账时间', '创建时间'):
-        v = raw.get(col)
-        if v:
-            iso = _normalize_date(str(v).split(' ')[0].split('T')[0])
-            try:
-                return datetime.date.fromisoformat(iso)
-            except (ValueError, TypeError):
-                continue
-    return timezone.localdate()
 
 
 @csrf_exempt
 @pk_required()
 def transport_import(request):
-    """POST — 运输事业部对账单导入：原表 → 标准 Payment（金额取绝对值），按对账单号去重。"""
+    """POST（审批管理）— 运输对账单导入：原表 → 「已通过」审批记录（金额取绝对值），
+    按对账单号去重。导入后由用户在审批管理手动排款流转至付款管理。"""
     if request.method != 'POST':
         return err('Method not allowed', 405)
     perms = get_request_perms(request)
-    denied = _payments_page_denied(request, perms)
-    if denied:
-        return denied
-    if perms is not None and not perms['can_create']:
-        return err('无新增权限', 403, 403)
+    if perms is not None:
+        if not perms['pages'].get('approval_records', True):
+            return err('无审批记录访问权限', 403, 403)
+        if not perms.get('can_create'):
+            return err('无新增权限', 403, 403)
     if not can_write_dept(request, TRANSPORT_DEPT):
         return err(f'无权操作部门"{TRANSPORT_DEPT}"', 403, 403)
     upload = request.FILES.get('file')
@@ -4180,7 +4168,7 @@ def transport_import(request):
     results = {'created': 0, 'skipped': 0, 'duplicates': 0, 'errors': []}
     seen_in_file = set()
     existing = set(
-        Payment.objects.filter(ext_source=TRANSPORT_SOURCE)
+        ApprovalRecord.objects.filter(ext_source=TRANSPORT_SOURCE)
         .values_list('ext_bill_no', flat=True)
     )
     for rn, row in enumerate(rows[1:], start=2):
@@ -4212,18 +4200,24 @@ def transport_import(request):
         payee = str(cell(row, '对账对象') or '').strip() or bill_no
         org = str(cell(row, '所属组织') or '').strip()
         notes = str(cell(row, '备注') or '').strip()
+        # 审批编号须为纯数字：取对账单号的数字部分（唯一），避免排款业务键串号；
+        # 完整对账单号另存 ext_bill_no 供去重与导出。
+        digits = re.sub(r'\D', '', bill_no)
+        approval_no = digits if digits else '0' * 21
+        summary = f'运输对账 {bill_no}'
+        if notes:
+            summary = f'{summary}（{notes}）'[:500]
+        importer = getattr(getattr(request, 'pk_user', None), 'name', '') or '运输导入'
         try:
             with transaction.atomic():
-                p = Payment.objects.create(
-                    created_by_id=request.pk_uid, updated_by_id=request.pk_uid,
+                ApprovalRecord.objects.create(
+                    created_by_id=request.pk_uid,
+                    applicant=importer,
                     department=TRANSPORT_DEPT, secondary_dept=org,
-                    project_desc=payee, payee=payee,
-                    total_amount=amount, planned_date=_transport_row_date(raw),
-                    notes=notes,
+                    approval_number=approval_no, summary=summary,
+                    amount=amount, payee=payee, status='approved',
                     ext_source=TRANSPORT_SOURCE, ext_bill_no=bill_no, ext_raw=raw,
                 )
-                _ensure_plan_item(p)
-                _record_payment_changes(p, {}, {}, request, action='create')
             results['created'] += 1
             seen_in_file.add(bill_no)
         except IntegrityError:
@@ -4234,7 +4228,7 @@ def transport_import(request):
             results['errors'].append(f'第{rn}行: 对账单 {bill_no} 保存失败 ({e})')
             results['skipped'] += 1
 
-    parts = [f'成功导入 {results["created"]} 条']
+    parts = [f'成功导入 {results["created"]} 条（已建为「审批通过」记录，请在审批管理排款）']
     if results['duplicates']:
         parts.append(f'跳过重复 {results["duplicates"]} 条')
     other_skip = results['skipped'] - results['duplicates']
@@ -4247,8 +4241,8 @@ def transport_import(request):
 @csrf_exempt
 @pk_required()
 def transport_export(request):
-    """GET — 运输对账单导出：按 ids（勾选）/ 筛选取回运输来源 Payment，原样还原原表，
-    仅把状态列改为「已结算」（限系统内已付清行）。零误差回传运输自有系统。"""
+    """GET（付款管理）— 运输对账单导出：按 ids（勾选付款记录）/ 筛选取回已排款的运输付款，
+    从来源审批的 ext_raw 原样还原原表，仅把状态列改为「已结算」（限已付清行）。零误差回传。"""
     if request.method != 'GET':
         return err('Method not allowed', 405)
     perms = get_request_perms(request)
@@ -4261,11 +4255,12 @@ def transport_export(request):
     except ImportError:
         return err('服务器缺少 openpyxl 依赖', 500)
 
-    qs = Payment.objects.filter(ext_source=TRANSPORT_SOURCE)
+    # 运输付款 = 来源审批为运输导入的付款记录（经手动排款流转而来）
+    qs = Payment.objects.filter(approval__ext_source=TRANSPORT_SOURCE)
     qs = dept_filter(qs, request)
-    qs = qs.prefetch_related('installments')
+    qs = qs.select_related('approval').prefetch_related('installments')
 
-    # 勾选导出优先：ids=逗号分隔的主键
+    # 勾选导出优先：ids=逗号分隔的付款记录主键
     ids_raw = (request.GET.get('ids') or '').strip()
     if ids_raw:
         try:
@@ -4284,7 +4279,7 @@ def transport_export(request):
             qs = qs.filter(planned_date__lte=end)
         if q_str:
             qs = qs.filter(
-                Q(payee__icontains=q_str) | Q(ext_bill_no__icontains=q_str) |
+                Q(payee__icontains=q_str) | Q(approval__ext_bill_no__icontains=q_str) |
                 Q(secondary_dept__icontains=q_str) | Q(notes__icontains=q_str)
             )
         fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), PAYMENT_FILTER_REGISTRY)
@@ -4295,13 +4290,27 @@ def transport_export(request):
 
     payments = list(qs)
     if not payments:
-        return err('没有可导出的运输对账记录（请先勾选行或调整筛选）')
+        return err('没有可导出的运输对账记录（请先在审批管理排款，再勾选付款记录或调整筛选）')
     EXPORT_CAP = 5000
     if len(payments) > EXPORT_CAP:
         return err(f'当前结果共 {len(payments)} 条，超出导出上限（{EXPORT_CAP} 条），请缩小范围')
 
+    # 一条审批（一张对账单）↔ 一条付款汇总记录；按对账单号去重，保证一单一行
+    by_bill = {}
+    for p in payments:
+        rec = p.approval
+        if rec is None or not isinstance(rec.ext_raw, dict) or not rec.ext_raw:
+            continue
+        key = rec.ext_bill_no or rec.id
+        # 同单多条付款（理论上不会）取已结算优先
+        if key not in by_bill or (p.status == 'settled' and by_bill[key].status != 'settled'):
+            by_bill[key] = p
+    rows_out = list(by_bill.values())
+    if not rows_out:
+        return err('选中的付款记录没有可还原的运输对账原始数据')
+
     # 还原列顺序：以导入时保存的原始表头为准（兼容来源系统列序），回退到标准表头
-    sample_raw = next((p.ext_raw for p in payments if isinstance(p.ext_raw, dict) and p.ext_raw), None)
+    sample_raw = rows_out[0].approval.ext_raw
     headers = list(sample_raw.keys()) if sample_raw else list(TRANSPORT_HEADERS)
     if TRANSPORT_STATUS_COL not in headers:
         headers.append(TRANSPORT_STATUS_COL)
@@ -4326,8 +4335,8 @@ def transport_export(request):
             return "'" + v
         return v
 
-    for ri, p in enumerate(payments, start=2):
-        raw = p.ext_raw if isinstance(p.ext_raw, dict) else {}
+    for ri, p in enumerate(rows_out, start=2):
+        raw = p.approval.ext_raw
         settled = p.status == 'settled'
         for ci, h in enumerate(headers, 1):
             if h == TRANSPORT_STATUS_COL:

@@ -31,6 +31,11 @@ const importing = ref(false)
 const importResult = ref(null)
 const precheckResult = ref(null)
 const precheckBusy = ref(false)
+// 运输事业部对账单专用导入：原表 → 「已通过」审批记录（金额取绝对值、对账单号去重）
+const transportFileRef = ref(null)
+const importingTransport = ref(false)
+const canTransport = computed(() =>
+  auth.canCreate && (auth.isSuperAdmin || auth.effectiveDepts.includes('运输事业部')))
 const exporting = ref(false)
 const saving = ref(false)
 const showCreate = ref(false)
@@ -465,6 +470,23 @@ async function onImport(e){
   finally{ importing.value=false }
 }
 
+// 运输事业部对账单导入：上传运输系统导出的原始表 → 建「已通过」审批记录
+function triggerTransportImport(){ importResult.value=null; precheckResult.value=null; transportFileRef.value.click() }
+async function onTransportImport(e){
+  const f=e.target.files?.[0]; if(!f){ return }
+  e.target.value=''
+  importingTransport.value=true; importResult.value=null; precheckResult.value=null
+  try{
+    const fd=new FormData(); fd.append('file',f)
+    const d=(await api.post('/approvals/transport/import',fd,{
+      headers:{'Content-Type':'multipart/form-data'}, timeout:120000,
+    })).data||{}
+    importResult.value={ created:d.created||0, skipped:d.skipped||0, errors:d.errors||[], message:d.message }
+    if(d.created>0) load()
+  }catch(err){ importResult.value={ error: err?.msg || err?.error || '运输对账单导入失败，请确认上传的是运输系统导出的原始表' } }
+  finally{ importingTransport.value=false }
+}
+
 async function onPrecheckApply({ mode, rows, okRows }){
   precheckBusy.value=true
   try{
@@ -507,9 +529,13 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <button class="btn btn-ghost btn-sm" :disabled="importing" @click="triggerImport"
             title="导入会自动做规则校验 + AI 智能复核；发现问题时 AI 会介入，协助你就地修正后再导入">{{ importing?'导入中…':'导入' }}</button>
     <button class="btn btn-ghost btn-sm" @click="doExport">{{ exporting?'导出中…':'导出' }}</button>
+    <button v-if="canTransport" class="btn btn-ghost btn-sm tp-btn" :disabled="importingTransport" @click="triggerTransportImport"
+            title="运输事业部专用：上传运输系统导出的对账单原始表 → 金额自动取绝对值、对账单号去重，建为「已通过」审批记录，再排款进付款管理">
+      <span style="margin-right:3px">🚚</span>{{ importingTransport?'导入中…':'运输导入' }}</button>
     <button v-if="auth.canCreate" class="btn btn-primary" @click="openCreate">+ 新增审批记录</button>
   </div></div>
   <input ref="fileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImport" />
+  <input ref="transportFileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onTransportImport" />
   <div class="card approval-card fh-fill"><div class="filter-row">
     <div class="filter-bar">
     <input v-model="q" class="global-search" placeholder="🔍 全局搜索：申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
@@ -751,6 +777,9 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 </div></template>
 
 <style scoped>
+/* 运输事业部专用导入按钮：强调色与普通导入区分 */
+.tp-btn { border-color: rgba(201,99,66,0.4); color: var(--primary); }
+.tp-btn:hover:not(:disabled) { background: rgba(201,99,66,0.08); border-color: var(--primary); }
 .err-banner { background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: #856404; display: flex; align-items: center; gap: 8px; }
 .approval-card { padding: 12px; }
 /* 固定视口布局：卡片底部为吸底合计条预留空间 */

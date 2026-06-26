@@ -460,39 +460,11 @@ async function exportExcel() {
   finally { exportingXlsx.value = false }
 }
 
-// ── 运输事业部专用导入 / 导出（原表负数 ↔ 标准排款，对账单号去重，导出零误差还原）──
-// 仅对可写「运输事业部」的用户展示。
+// ── 运输事业部对账单导出（付款管理侧）：已排款付款记录 → 原表格式零误差还原 ──
+// 导入口在「审批管理」（建已通过审批记录），此处仅保留导出。仅对可写运输事业部用户展示。
 const canTransport = computed(() =>
   auth.canCreate && (auth.isSuperAdmin || auth.effectiveDepts.includes('运输事业部')))
-const transportInputRef = ref(null)
-const importingTransport = ref(false)
 const exportingTransport = ref(false)
-
-function triggerTransportImport() {
-  importResult.value = null
-  transportInputRef.value.click()
-}
-
-async function onTransportFile(e) {
-  const file = e.target.files[0]
-  if (!file) return
-  e.target.value = ''
-  importingTransport.value = true
-  importResult.value = null
-  try {
-    const fd = new FormData()
-    fd.append('file', file)
-    const res = await api.post('/payments/transport/import', fd, {
-      headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000,
-    })
-    importResult.value = res.data
-    if (res.data.created > 0) load()
-  } catch (ex) {
-    importResult.value = { error: ex?.msg || '运输对账单导入失败，请确认上传的是运输系统导出的原始表' }
-  } finally {
-    importingTransport.value = false
-  }
-}
 
 async function exportTransport() {
   exportingTransport.value = true
@@ -841,14 +813,9 @@ async function doBatchPay() {
           <span v-else style="margin-right:4px">📤</span>{{ exportingXlsx ? '导出中…' : '导出' }}
         </button>
         <template v-if="canTransport">
-          <span class="tp-divider" title="运输事业部对账单专用通道"></span>
-          <button class="btn btn-ghost btn-sm tp-btn" :disabled="importingTransport" @click="triggerTransportImport"
-                  title="导入运输系统导出的对账单原始表：金额自动取绝对值、对账单号去重，转为标准排款">
-            <span v-if="importingTransport" class="btn-spin"></span>
-            <span v-else style="margin-right:4px">🚚</span>{{ importingTransport ? '导入中…' : '运输导入' }}
-          </button>
+          <span class="tp-divider" title="运输事业部对账单专用通道（导入在审批管理）"></span>
           <button class="btn btn-ghost btn-sm tp-btn" :disabled="exportingTransport" @click="exportTransport"
-                  :title="selectedCount ? `导出勾选的 ${selectedCount} 条（已结算行状态列改为已结算，其余原样还原）` : '导出全部运输对账记录，原表格式零误差还原；已结算行状态列改为已结算'">
+                  :title="selectedCount ? `导出勾选的 ${selectedCount} 条已排款运输付款（已结算行状态列改为已结算，其余原样还原）` : '导出全部已排款运输付款，原表格式零误差还原；已结算行状态列改为已结算'">
             <span v-if="exportingTransport" class="btn-spin"></span>
             <span v-else style="margin-right:4px">🚚</span>{{ exportingTransport ? '导出中…' : (selectedCount ? `运输导出(${selectedCount})` : '运输导出') }}
           </button>
@@ -869,8 +836,6 @@ async function doBatchPay() {
 
     <!-- hidden file input for import -->
     <input ref="importInputRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImportFile" />
-    <!-- hidden file input for transport reconciliation import -->
-    <input ref="transportInputRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onTransportFile" />
 
     <div v-if="activeTab === 'ledger'" class="card fh-fill" style="margin-bottom:16px">
       <div class="filter-bar">

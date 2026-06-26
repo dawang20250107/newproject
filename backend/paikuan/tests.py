@@ -1953,28 +1953,39 @@ class TransportReconciliationTests(TestCase):
                                   content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
     def _import(self, rows):
-        return self.client.post('/api/pk/payments/transport/import',
+        # 导入口在审批管理：建「已通过」审批记录
+        return self.client.post('/api/pk/approvals/transport/import',
                                 {'file': self._xlsx(rows)}, **self.auth())
 
-    def test_import_maps_abs_amount_and_fields(self):
+    def _schedule(self, rec, amount):
+        # 手动排款：审批 → 付款管理（与现有排款同口径）
+        return self.client.post(
+            f'/api/pk/approvals/{rec.id}/schedule',
+            data=json.dumps({'planned_date': '2026-06-27', 'total_amount': str(amount)}),
+            content_type='application/json', **self.auth())
+
+    def test_import_creates_approved_record_abs_amount(self):
         resp = self._import([self._row(1, 'ZD202606260055', '安仕吉-浓香酒', 4828.5)])
         self.assertEqual(resp.status_code, 200, resp.content)
         d = resp.json()['data']
         self.assertEqual(d['created'], 1)
-        p = Payment.objects.get(ext_bill_no='ZD202606260055')
-        self.assertEqual(p.ext_source, 'transport')
-        self.assertEqual(p.department, '运输事业部')
-        self.assertEqual(p.secondary_dept, '运输项目一部')
-        self.assertEqual(p.payee, '安仕吉-浓香酒')
-        self.assertEqual(p.total_amount, Decimal('4828.5'))     # 取绝对值
-        self.assertEqual(p.planned_date, date(2026, 6, 26))      # 对账时间日期
-        self.assertEqual(p.ext_raw['对账单号'], 'ZD202606260055')
-        self.assertEqual(p.ext_raw['实际对账金额'], -4828.5)      # 原始负数逐字保留
+        # 进的是审批管理，建为「已通过」审批记录（非付款记录）
+        self.assertEqual(Payment.objects.filter(approval__ext_source='transport').count(), 0)
+        rec = ApprovalRecord.objects.get(ext_bill_no='ZD202606260055')
+        self.assertEqual(rec.ext_source, 'transport')
+        self.assertEqual(rec.status, 'approved')          # 已通过，可直接排款
+        self.assertEqual(rec.department, '运输事业部')
+        self.assertEqual(rec.secondary_dept, '运输项目一部')
+        self.assertEqual(rec.payee, '安仕吉-浓香酒')
+        self.assertEqual(rec.amount, Decimal('4828.5'))   # 取绝对值
+        self.assertEqual(rec.approval_number, '202606260055')  # 对账单号数字部分（唯一）
+        self.assertEqual(rec.ext_raw['对账单号'], 'ZD202606260055')
+        self.assertEqual(rec.ext_raw['实际对账金额'], -4828.5)  # 原始负数逐字保留
 
     def test_import_dedup_by_bill_no(self):
         # 文件内重复 + 二次导入重复，均按对账单号去重
-        rows = [self._row(1, 'ZD0001', 'A', 100), self._row(2, 'ZD0001', 'A', 100),
-                self._row(3, 'ZD0002', 'B', 200)]
+        rows = [self._row(1, 'ZD202606260001', 'A', 100), self._row(2, 'ZD202606260001', 'A', 100),
+                self._row(3, 'ZD202606260002', 'B', 200)]
         d = self._import(rows).json()['data']
         self.assertEqual(d['created'], 2)
         self.assertEqual(d['duplicates'], 1)
@@ -1982,19 +1993,23 @@ class TransportReconciliationTests(TestCase):
         d2 = self._import(rows).json()['data']
         self.assertEqual(d2['created'], 0)
         self.assertEqual(d2['duplicates'], 3)
-        self.assertEqual(Payment.objects.filter(ext_source='transport').count(), 2)
+        self.assertEqual(ApprovalRecord.objects.filter(ext_source='transport').count(), 2)
 
-    def test_export_roundtrip_zero_drift_only_status_changes(self):
-        # 导入两条 → 结算其一 → 导出，校验：仅已结算行状态列改写，其余逐字零误差
-        self._import([self._row(1, 'ZD-A', '承运商甲', 1000),
-                      self._row(2, 'ZD-B', '承运商乙', 2000)])
-        pa = Payment.objects.get(ext_bill_no='ZD-A')
-        pb = Payment.objects.get(ext_bill_no='ZD-B')
+    def test_full_flow_roundtrip_zero_drift_only_status_changes(self):
+        # 导入(审批) → 手动排款(付款) → 结算其一 → 付款管理导出，校验仅已结算行状态列改写
+        self._import([self._row(1, 'ZD202606260010', '承运商甲', 1000),
+                      self._row(2, 'ZD202606260020', '承运商乙', 2000)])
+        ra = ApprovalRecord.objects.get(ext_bill_no='ZD202606260010')
+        rb = ApprovalRecord.objects.get(ext_bill_no='ZD202606260020')
+        self.assertEqual(self._schedule(ra, 1000).status_code, 200)
+        self.assertEqual(self._schedule(rb, 2000).status_code, 200)
+        pa = Payment.objects.get(approval=ra)
+        pb = Payment.objects.get(approval=rb)
         # 结算 A：付清 → status=settled
         PaymentInstallment.objects.create(payment=pa, seq=1, pay_date=date(2026, 6, 27),
                                            pay_amount=Decimal('1000'))
         self.assertEqual(pa.status, 'settled')
-        # 勾选导出 A + B
+        # 勾选导出 A + B（付款记录主键）
         resp = self.client.get('/api/pk/payments/transport/export',
                                {'ids': f'{pa.id},{pb.id}'}, **self.auth())
         self.assertEqual(resp.status_code, 200, resp.content)
@@ -2004,22 +2019,22 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(hdr, self.HEADERS)            # 原列顺序还原
         si = hdr.index('状态'); bi = hdr.index('对账单号'); ai = hdr.index('实际对账金额')
         by_bill = {row[bi].value: row for row in ws.iter_rows(min_row=2)}
-        ra, rb = by_bill['ZD-A'], by_bill['ZD-B']
+        rowa, rowb = by_bill['ZD202606260010'], by_bill['ZD202606260020']
         # A 已结算：状态列改写；金额等其它列零误差（负数原样）
-        self.assertEqual(ra[si].value, '已结算')
-        self.assertEqual(ra[ai].value, -1000)
+        self.assertEqual(rowa[si].value, '已结算')
+        self.assertEqual(rowa[ai].value, -1000)
         # B 未结算：状态保留原值「已通过」，全列零误差
-        self.assertEqual(rb[si].value, '已通过')
-        self.assertEqual(rb[ai].value, -2000)
+        self.assertEqual(rowb[si].value, '已通过')
+        self.assertEqual(rowb[ai].value, -2000)
 
-    def test_export_requires_selection_or_filter(self):
-        self._import([self._row(1, 'ZD-X', 'X', 500)])
-        # 无 ids、无筛选 → 导出全部运输记录（仍应成功，含1条）
+    def test_export_empty_before_scheduling(self):
+        # 仅导入未排款 → 付款管理无运输付款记录 → 导出报错引导先排款
+        self._import([self._row(1, 'ZD202606260030', 'X', 500)])
         resp = self.client.get('/api/pk/payments/transport/export', **self.auth())
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 400)
 
     def test_import_rejects_unparseable_amount(self):
-        bad = self._row(1, 'ZD-BAD', 'X', 0)
+        bad = self._row(1, 'ZD202606260099', 'X', 0)
         bad[5] = 'abc'   # 实际对账金额列非数字
         d = self._import([bad]).json()['data']
         self.assertEqual(d['created'], 0)
