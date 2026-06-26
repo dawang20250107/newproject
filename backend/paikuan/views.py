@@ -1274,7 +1274,10 @@ def _apply_payment_computed_filters(qs, request):
     return qs, True
 
 
-def _list_payments(request):
+def _payments_filtered_qs(request):
+    """付款列表「筛选后、未分页」queryset（与列表完全同口径）：部门作用域 + 顶部筛选 +
+    列头筛选 + 计算列筛选 + 状态筛选 + 排序。返回 (qs, paid_annotated)。
+    供列表分页、跨页全选取 ID、运输单号复制等共用——保证「看到什么就操作/复制什么」。"""
     qs = Payment.objects.select_related('created_by').prefetch_related('installments', 'plan_items').all()
     qs = dept_filter(qs, request)
 
@@ -1319,15 +1322,21 @@ def _list_payments(request):
 
     # 计算列（已付/剩余/逾期）筛选与排序：按需注解，复用既有金额口径表达式
     qs, _paid_annotated = _apply_payment_computed_filters(qs, request)
+    # Status filter — shared helper 与 export 口径完全一致
+    qs = _apply_payment_status_filter(qs, status_q, _paid_annotated, hide_settled=hide_settled)
+    return qs, _paid_annotated
+
+
+def _list_payments(request):
+    qs, _paid_annotated = _payments_filtered_qs(request)
+    pay_start = request.GET.get('pay_date_start', '').strip()
+    pay_end = request.GET.get('pay_date_end', '').strip()
 
     try:
         page = max(1, int(request.GET.get('page', 1)))
         size = min(200, max(1, int(request.GET.get('size', 50))))
     except ValueError:
         page, size = 1, 50
-
-    # Status filter — shared helper 与 export 口径完全一致
-    qs = _apply_payment_status_filter(qs, status_q, _paid_annotated, hide_settled=hide_settled)
 
     total = qs.count()
 
@@ -1968,6 +1977,39 @@ def payment_installments(request):
     })
 
 
+def _approvals_filtered_qs(request):
+    """审批列表「筛选后、未分页」queryset（与列表完全同口径）：部门作用域 + 全局关键字 +
+    列头筛选 + 计算列注解 + 排序。供列表分页与跨页全选取 ID 共用。"""
+    qs = dept_filter(ApprovalRecord.objects.filter(archived=False), request)
+    # 全局关键字（跨字段模糊）+ 列头精确筛选（filters JSON）+ 列头排序
+    kw = request.GET.get('q', '').strip()
+    if kw:
+        qs = qs.filter(
+            Q(applicant__icontains=kw) | Q(department__icontains=kw) |
+            Q(secondary_dept__icontains=kw) | Q(project_short_name__icontains=kw) |
+            Q(approval_number__icontains=kw) | Q(g7_number__icontains=kw) |
+            Q(summary__icontains=kw) | Q(payee__icontains=kw)
+        )
+    # 未排金额为计算列：仅当筛选/排序用到时再注解（amount − scheduled，钳 0）
+    spec_raw = request.GET.get('filters', '')
+    sort_f = (request.GET.get('sort') or '').strip()
+    if 'remaining_amount' in spec_raw or sort_f == 'remaining_amount':
+        qs = qs.annotate(remaining_calc=Greatest(
+            Value(Decimal('0'), output_field=_DEC18),
+            ExpressionWrapper(F('amount') - F('scheduled_amount'), output_field=_DEC18),
+            output_field=_DEC18))
+    merged_reg = {**APPROVAL_FILTER_REGISTRY, **APPROVAL_COMPUTED_REGISTRY}
+    fq, fq_distinct = build_filter_q(spec_raw, merged_reg)
+    if fq:
+        qs = qs.filter(fq)
+        if fq_distinct:
+            qs = qs.distinct()
+    sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), merged_reg)
+    if sort_by:
+        qs = qs.order_by(sort_by)
+    return qs
+
+
 @csrf_exempt
 @pk_required()
 def approval_records(request):
@@ -1975,33 +2017,7 @@ def approval_records(request):
     if perms is not None and not perms['pages'].get('approval_records', True):
         return err('无访问权限', 403, 403)
     if request.method == 'GET':
-        qs = dept_filter(ApprovalRecord.objects.filter(archived=False), request)
-        # 全局关键字（跨字段模糊）+ 列头精确筛选（filters JSON）+ 列头排序
-        kw = request.GET.get('q', '').strip()
-        if kw:
-            qs = qs.filter(
-                Q(applicant__icontains=kw) | Q(department__icontains=kw) |
-                Q(secondary_dept__icontains=kw) | Q(project_short_name__icontains=kw) |
-                Q(approval_number__icontains=kw) | Q(g7_number__icontains=kw) |
-                Q(summary__icontains=kw) | Q(payee__icontains=kw)
-            )
-        # 未排金额为计算列：仅当筛选/排序用到时再注解（amount − scheduled，钳 0）
-        spec_raw = request.GET.get('filters', '')
-        sort_f = (request.GET.get('sort') or '').strip()
-        if 'remaining_amount' in spec_raw or sort_f == 'remaining_amount':
-            qs = qs.annotate(remaining_calc=Greatest(
-                Value(Decimal('0'), output_field=_DEC18),
-                ExpressionWrapper(F('amount') - F('scheduled_amount'), output_field=_DEC18),
-                output_field=_DEC18))
-        merged_reg = {**APPROVAL_FILTER_REGISTRY, **APPROVAL_COMPUTED_REGISTRY}
-        fq, fq_distinct = build_filter_q(spec_raw, merged_reg)
-        if fq:
-            qs = qs.filter(fq)
-            if fq_distinct:
-                qs = qs.distinct()
-        sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), merged_reg)
-        if sort_by:
-            qs = qs.order_by(sort_by)
+        qs = _approvals_filtered_qs(request)
         # 全量（跨页）合计：总申请 / 已排合计 / 未排合计。列表已过滤 archived=False，
         # 故每条 remaining = amount - scheduled_amount ≥ 0，未排合计 = 总申请 - 已排合计。
         sums = qs.aggregate(s=Sum('amount'), sched=Sum('scheduled_amount'))
@@ -2217,6 +2233,7 @@ def _schedule_one(request, rec, planned_date, total_amount):
                     project_short_name=rec.project_short_name,
                     applicant=rec.applicant,
                     approval_number=rec.approval_number,
+                    g7_number=rec.g7_number,   # G7编号随审批带入付款（运输事业部即对账单号）
                     project_desc=rec.summary,
                     payee=rec.payee,
                     total_amount=total_amount,
@@ -4354,6 +4371,78 @@ def transport_export(request):
 
     today = timezone.localdate().strftime('%Y%m%d')
     return _build_excel_response(wb, f'运输对账单_已结算_{today}.xlsx')
+
+
+# 跨页全选上限：与各批量操作的单次上限对齐（批量删除/审批/排款/付款均为 1000）。
+SELECT_ALL_CAP = 1000
+# 运输单号复制上限：与导出上限对齐，足够覆盖整批对账。
+G7_COPY_CAP = 5000
+
+
+@pk_required()
+def payments_select_ids(request):
+    """跨页全选：返回当前筛选口径下的全部付款记录 ID（与列表同口径，去分页）。
+    供「选择全部筛选结果」后做跨页批量操作。上限 SELECT_ALL_CAP，超出时 capped=True。"""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    qs, _ = _payments_filtered_qs(request)
+    # 清空排序避免 DISTINCT + 非选择列 ORDER BY 在部分数据库报错；多取 1 条用于判溢出
+    ids = list(qs.order_by().values_list('id', flat=True).distinct()[:SELECT_ALL_CAP + 1])
+    capped = len(ids) > SELECT_ALL_CAP
+    ids = ids[:SELECT_ALL_CAP]
+    return ok({'ids': ids, 'count': len(ids), 'capped': capped, 'cap': SELECT_ALL_CAP})
+
+
+@pk_required()
+def transport_g7_numbers(request):
+    """运输专用：返回所选(ids)/当前筛选口径下付款记录的 G7编号（=对账单号）去重列表，
+    供前端以「+」或空格连接复制到剪贴板。跨页全量，不受分页限制。上限 G7_COPY_CAP。"""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    ids_raw = (request.GET.get('ids') or '').strip()
+    if ids_raw:
+        try:
+            ids = [int(x) for x in ids_raw.split(',') if x.strip()]
+        except ValueError:
+            return err('ids 参数格式有误')
+        qs = dept_filter(Payment.objects.filter(pk__in=ids), request)
+    else:
+        qs, _ = _payments_filtered_qs(request)
+    # 保序去重（清空排序以规避 DISTINCT/ORDER BY 跨库差异；顺序对拼接用途不敏感）
+    seen, nums = set(), []
+    for g7 in qs.order_by().values_list('g7_number', flat=True).iterator():
+        g7 = (g7 or '').strip()
+        if not g7 or g7 in seen:
+            continue
+        seen.add(g7)
+        nums.append(g7)
+        if len(nums) >= G7_COPY_CAP:
+            break
+    return ok({'numbers': nums, 'count': len(nums), 'capped': len(nums) >= G7_COPY_CAP})
+
+
+@pk_required()
+def approvals_select_ids(request):
+    """跨页全选：返回当前筛选口径下的全部审批记录 ID（与列表同口径，去分页）。
+    供「选择全部筛选结果」后做跨页批量操作。上限 SELECT_ALL_CAP。"""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    if perms is not None and not perms['pages'].get('approval_records', True):
+        return err('无访问权限', 403, 403)
+    qs = _approvals_filtered_qs(request)
+    ids = list(qs.order_by().values_list('id', flat=True).distinct()[:SELECT_ALL_CAP + 1])
+    capped = len(ids) > SELECT_ALL_CAP
+    ids = ids[:SELECT_ALL_CAP]
+    return ok({'ids': ids, 'count': len(ids), 'capped': capped, 'cap': SELECT_ALL_CAP})
 
 
 # ── departments ───────────────────────────────────────────────────────────────

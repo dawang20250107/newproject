@@ -2058,3 +2058,36 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(d['created'], 0)
         self.assertEqual(d['skipped'], 1)
         self.assertTrue(d['errors'])
+
+    def test_g7_numbers_copy_filter_and_ids(self):
+        # 导入 + 排款 → 两条运输付款；G7编号=对账单号，跨页复制接口取全量/勾选
+        self._import([self._row(1, 'ZD202606260040', '甲', 100),
+                      self._row(2, 'ZD202606260041', '乙', 200)])
+        ra = ApprovalRecord.objects.get(ext_bill_no='ZD202606260040')
+        rb = ApprovalRecord.objects.get(ext_bill_no='ZD202606260041')
+        self._schedule(ra, 100)
+        self._schedule(rb, 200)
+        pa = Payment.objects.get(approval=ra)
+        # 无 ids → 走筛选口径取全部（去重）
+        d = self.client.get('/api/pk/payments/transport/g7-numbers', **self.auth()).json()['data']
+        self.assertEqual(set(d['numbers']), {'ZD202606260040', 'ZD202606260041'})
+        self.assertEqual(d['count'], 2)
+        self.assertFalse(d['capped'])
+        # 勾选 ids → 仅取选中
+        d2 = self.client.get('/api/pk/payments/transport/g7-numbers',
+                             {'ids': str(pa.id)}, **self.auth()).json()['data']
+        self.assertEqual(d2['numbers'], ['ZD202606260040'])
+
+    def test_select_ids_cross_page(self):
+        # 跨页全选：select-ids 返回当前筛选口径下全部付款记录 ID（不分页）
+        self._import([self._row(1, 'ZD202606260050', '甲', 100),
+                      self._row(2, 'ZD202606260051', '乙', 200)])
+        for bill in ('ZD202606260050', 'ZD202606260051'):
+            rec = ApprovalRecord.objects.get(ext_bill_no=bill)
+            self._schedule(rec, rec.amount)
+        d = self.client.get('/api/pk/payments/select-ids', **self.auth()).json()['data']
+        pids = set(Payment.objects.filter(approval__ext_source='transport')
+                   .values_list('id', flat=True))
+        self.assertEqual(set(d['ids']), pids)
+        self.assertEqual(d['count'], 2)
+        self.assertFalse(d['capped'])

@@ -23,14 +23,20 @@ urlpatterns = [
     path('payments/import/precheck', views.payment_import_precheck),
     path('payments/import/apply', views.payment_import_apply),
     path('payments/export', views.payment_export),
+    # 跨页全选：返回当前筛选口径下的全部付款记录 ID（供跨页批量操作）
+    path('payments/select-ids', views.payments_select_ids),
     # 运输事业部对账单导出（付款管理侧）：已排款付款记录 → 原表格式零误差还原
     path('payments/transport/export', views.transport_export),
+    # 运输专用：当前筛选/勾选的 G7编号（对账单号）去重列表 → 前端复制到剪贴板
+    path('payments/transport/g7-numbers', views.transport_g7_numbers),
     path('payments/<int:pk>', views.payment_detail),
     path('payments/<int:pk>/logs', views.payment_change_logs),
     path('payments/<int:pk>/offsets', views.payment_offsets),
     path('payments/<int:pk>/plan-items', views.payment_plan_items),
     path('payments/<int:pk>/plan-items/<int:iid>', views.payment_plan_item_detail),
     path('approvals', views.approval_records),
+    # 跨页全选：返回当前筛选口径下的全部审批记录 ID（供跨页批量操作）
+    path('approvals/select-ids', views.approvals_select_ids),
     path('approvals/bulk-delete', views.approval_records_bulk_delete),
     path('approvals/bulk-approve', views.approval_records_bulk_approve),
     path('approvals/bulk-schedule', views.approval_records_bulk_schedule),

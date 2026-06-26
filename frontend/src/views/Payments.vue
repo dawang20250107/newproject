@@ -484,20 +484,50 @@ async function exportTransport() {
   finally { exportingTransport.value = false }
 }
 
-// 运输专用 G7编号（= 原表对账单号）批量复制到剪贴板
-// 来源：若有勾选取勾选行（当前页），否则取全部可见行；跳过空 G7 编号；
-// 普通点击用「+」连接，Shift+点击用空格连接
+// 运输专用 G7编号（= 原表对账单号）批量复制到剪贴板 —— 服务端取数，跨页全量。
+// 来源：有勾选取勾选（跨页 ids），否则取当前筛选口径全部；后端去重。
+// 普通点击用「+」连接，Shift+点击用空格连接。
+const copyingG7 = ref(false)
 async function copyG7Numbers(e) {
+  if (copyingG7.value) return
   const sep = e?.shiftKey ? ' ' : '+'
-  const pool = selectedIds.value.size
-    ? items.value.filter(p => selectedIds.value.has(p.id))
-    : items.value
-  const nums = [...new Map(pool.map(p => [p.g7_number, p])).values()]
-    .map(p => (p.g7_number || '').trim()).filter(Boolean)
-  if (!nums.length) { toast.warn('当前行中没有 G7 编号（对账单号）可复制'); return }
-  const ok = await copyText(nums.join(sep))
-  if (ok) toast.success(`已复制 ${nums.length} 个对账单号（${sep === '+' ? '+连接' : '空格连接'}）`)
-  else toast.error('复制失败，请手动复制')
+  copyingG7.value = true
+  try {
+    const params = {}
+    if (selectedIds.value.size) {
+      params.ids = [...selectedIds.value].join(',')
+    } else {
+      const p = buildParams(); delete p.page; delete p.size
+      Object.assign(params, p)
+    }
+    const res = await api.get('/payments/transport/g7-numbers', { params, timeout: 60000 })
+    const nums = res.data?.numbers || []
+    if (!nums.length) { toast.warn('当前范围内没有 G7 编号（对账单号）可复制'); return }
+    const ok = await copyText(nums.join(sep))
+    if (!ok) { toast.error('复制失败，请手动复制'); return }
+    let msg = `已复制 ${nums.length} 个对账单号（${sep === '+' ? '+ 连接' : '空格连接'}）`
+    if (res.data?.capped) msg += `，已达上限 ${nums.length} 条，请缩小筛选`
+    toast.success(msg)
+  } catch (err) {
+    toast.error(err?.msg || err?.error || '复制对账单号失败')
+  } finally { copyingG7.value = false }
+}
+
+// 跨页全选：拉取当前筛选口径下全部记录 ID 填入选择集（供跨页批量操作）
+const selectingAll = ref(false)
+async function selectAllFiltered() {
+  if (selectingAll.value) return
+  selectingAll.value = true
+  try {
+    const p = buildParams(); delete p.page; delete p.size
+    const res = await api.get('/payments/select-ids', { params: p, timeout: 60000 })
+    const ids = res.data?.ids || []
+    selectedIds.value = new Set(ids)
+    if (res.data?.capped) toast.warn(`已选前 ${ids.length} 条（达单次上限 ${res.data.cap}）；批量操作请分批或缩小筛选`)
+    else toast.success(`已跨页选中全部 ${ids.length} 条筛选结果`)
+  } catch (err) {
+    toast.error(err?.msg || err?.error || '全选失败')
+  } finally { selectingAll.value = false }
 }
 
 const triggerDownload = downloadBlob
@@ -835,9 +865,10 @@ async function doBatchPay() {
             <span v-if="exportingTransport" class="btn-spin"></span>
             <span v-else style="margin-right:4px">🚚</span>{{ exportingTransport ? '导出中…' : (selectedCount ? `运输导出(${selectedCount})` : '运输导出') }}
           </button>
-          <button class="btn btn-ghost btn-sm tp-btn" @click="copyG7Numbers($event)"
-                  :title="(selectedCount ? `复制勾选 ${selectedCount} 条的` : '复制当前页') + ' G7编号（= 对账单号），以「+」连接；Shift+点击改用空格连接'">
-            📋 复制单号
+          <button class="btn btn-ghost btn-sm tp-btn" :disabled="copyingG7" @click="copyG7Numbers($event)"
+                  :title="(selectedCount ? `复制勾选 ${selectedCount} 条的` : '复制当前筛选全部') + ' G7编号（= 对账单号），跨页全量；以「+」连接，Shift+点击改用空格连接'">
+            <span v-if="copyingG7" class="btn-spin"></span>
+            <span v-else style="margin-right:2px">📋</span>{{ copyingG7 ? '复制中…' : '复制单号' }}
           </button>
         </template>
         <div class="col-settings-wrap">
@@ -1039,8 +1070,12 @@ async function doBatchPay() {
       <Teleport to="body">
         <div v-if="!loading && items.length && hasSelection && !showBatchPay && !showDelConfirm && (auth.canDelete || auth.canEdit('installments'))" class="bulk-bar">
           <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
+          <button v-if="selectedCount < total" class="bulk-selall" :disabled="selectingAll" @click="selectAllFiltered"
+                  :title="`跨页选中当前筛选下全部 ${total} 条（上限 1000，供批量操作）`">{{ selectingAll ? '全选中…' : `选择全部 ${total} 条` }}</button>
           <button v-if="auth.canEdit('installments')" class="bulk-act" :disabled="!batchPaySummary.count" @click="openBatchPay">批量付款（可付 {{ batchPaySummary.count }} 条）</button>
           <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
+          <button v-if="canTransport" class="bulk-act" :disabled="copyingG7" @click="copyG7Numbers($event)"
+                  title="复制所选记录的 G7编号（对账单号），「+」连接；Shift+点击改用空格连接">📋 复制单号</button>
           <button class="bulk-cancel" @click="clearSelection">取消</button>
         </div>
       </Teleport>
@@ -1448,6 +1483,8 @@ async function doBatchPay() {
   border-radius: 12px; background: var(--card); border: 1px solid rgba(198,40,40,0.35);
   box-shadow: 0 8px 28px rgba(0,0,0,0.18); }
 .bulk-n { font-size: 13px; color: var(--text); }
+.bulk-selall { border: 1px solid var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); border-radius: 8px; padding: 5px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.bulk-selall:disabled { opacity: .5; cursor: default; }
 .bulk-act { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--primary); color: #fff; }
 .bulk-act:disabled { opacity: .5; cursor: default; }
 .bulk-del { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }

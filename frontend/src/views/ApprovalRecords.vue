@@ -251,17 +251,17 @@ async function confirmBulkDelete(){
 // 批量退回排款：退回所选有已排款记录的排款，已排款归零可重新排款
 const bulkReturning = ref(false)
 async function bulkReturnSchedule(){
-  const targets = selectedWithSchedule.value
-  if (!targets.length){ toast.warn('所选记录中没有已排款的可退回记录'); return }
-  const total = targets.reduce((s, i) => s + parseFloat(i.scheduled_amount || 0), 0)
-  if (!confirm(`批量退回 ${targets.length} 条记录的全部排款（合计 ¥${total.toFixed(2)}）？\n关联付款管理记录将删除，各审批已排款归零，可重新排款。`)) return
+  // 跨页：发送全部已选 id，后端对无已排款的记录自动跳过（单次上限 200）
+  if (!selectedCount.value){ toast.warn('请先选择记录'); return }
+  if (!confirm(`批量退回所选 ${selectedCount.value} 条记录的排款？\n无已排款的记录自动跳过；关联付款管理记录将删除，已排款归零，可重新排款。`)) return
   bulkReturning.value = true
   try {
-    const r = await api.post('/approvals/bulk-return-schedule', { ids: targets.map(i => i.id) })
+    const ids = [...selectedIds.value]
+    const r = await api.post('/approvals/bulk-return-schedule', { ids })
     const d = r.data || {}
     // 清除已退回审批的展开缓存
-    targets.forEach(i => { delete aprSchedCache.value[i.id] })
-    aprSchedExpanded.value = new Set([...aprSchedExpanded.value].filter(id => !targets.find(t => t.id === id)))
+    ids.forEach(id => { delete aprSchedCache.value[id] })
+    aprSchedExpanded.value = new Set([...aprSchedExpanded.value].filter(id => !selectedIds.value.has(id)))
     clearSelection(); load()
     let msg = d.message || '批量退回完成'
     if (d.skipped?.length) { msg += '\n\n跳过明细：\n' + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n'); toast.warn(msg) }
@@ -270,15 +270,14 @@ async function bulkReturnSchedule(){
   finally{ bulkReturning.value = false }
 }
 
-// 批量审批通过：仅对所选「待审批」记录生效，非待审批自动跳过
+// 批量审批通过：跨页发送全部已选 id，后端对非「待审批」记录自动跳过
 const bulkApproving = ref(false)
 async function bulkApprove(){
-  const n = selectedApprovable.value.length
-  if (!n){ toast.warn('所选记录中没有「待审批」状态的可审批记录'); return }
-  if (!confirm(`确认将所选的 ${n} 条「待审批」记录批量审批通过？`)) return
+  if (!selectedCount.value){ toast.warn('请先选择记录'); return }
+  if (!confirm(`确认将所选 ${selectedCount.value} 条记录批量审批通过？\n非「待审批」状态将自动跳过。`)) return
   bulkApproving.value = true
   try{
-    const r = await api.post('/approvals/bulk-approve', { ids: selectedApprovable.value.map(i => i.id) })
+    const r = await api.post('/approvals/bulk-approve', { ids: [...selectedIds.value] })
     clearSelection(); load()
     const d = r.data || {}
     let msg = d.message || '批量审批完成'
@@ -286,6 +285,25 @@ async function bulkApprove(){
     else toast.success(msg)
   } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
   finally{ bulkApproving.value = false }
+}
+
+// 跨页全选：拉取当前筛选口径下全部审批 ID 填入选择集（供跨页批量操作）
+const selectingAll = ref(false)
+// 选择集是否含当前页之外的记录（决定批量按钮是否放宽「本页可用」判定）
+const isCrossPageSelection = computed(() =>
+  [...selectedIds.value].some(id => !items.value.some(i => i.id === id)))
+async function selectAllFiltered(){
+  if (selectingAll.value) return
+  selectingAll.value = true
+  try{
+    const p = buildParams(); delete p.page; delete p.size
+    const res = await api.get('/approvals/select-ids', { params: p, timeout: 60000 })
+    const ids = res.data?.ids || []
+    selectedIds.value = new Set(ids)
+    if (res.data?.capped) toast.warn(`已选前 ${ids.length} 条（达单次上限 ${res.data.cap}）；批量操作请分批或缩小筛选`)
+    else toast.success(`已跨页选中全部 ${ids.length} 条筛选结果`)
+  } catch(e){ toast.error(e?.msg || e?.error || '全选失败') }
+  finally{ selectingAll.value = false }
 }
 
 // 批量排款（默认日期=今天，默认金额=各记录剩余可排=申请金额；卡片内可逐条调整金额）
@@ -663,9 +681,11 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <Teleport to="body">
     <div v-if="!loading && items.length && hasSelection && !showBatchSched && !showDelConfirm && (auth.canDelete || auth.canCreate)" class="bulk-bar">
       <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
-      <button v-if="auth.canCreate" class="bulk-approve" :disabled="bulkApproving || !selectedApprovable.length" @click="bulkApprove">{{ bulkApproving ? '审批中…' : `批量通过（待审 ${selectedApprovable.length} 条）` }}</button>
-      <button v-if="auth.canCreate" class="bulk-act" :disabled="!batchSchedSummary.count" @click="openBatchSchedule">批量排款（可排 {{ batchSchedSummary.count }} 条）</button>
-      <button v-if="auth.canCreate && selectedWithSchedule.length" class="bulk-return" :disabled="bulkReturning" @click="bulkReturnSchedule">{{ bulkReturning ? '退回中…' : `批量退回排款（${selectedWithSchedule.length} 条）` }}</button>
+      <button v-if="selectedCount < total" class="bulk-selall" :disabled="selectingAll" @click="selectAllFiltered"
+              :title="`跨页选中当前筛选下全部 ${total} 条（上限 1000，供批量操作）`">{{ selectingAll ? '全选中…' : `选择全部 ${total} 条` }}</button>
+      <button v-if="auth.canCreate" class="bulk-approve" :disabled="bulkApproving || (!isCrossPageSelection && !selectedApprovable.length)" @click="bulkApprove">{{ bulkApproving ? '审批中…' : (isCrossPageSelection ? '批量通过' : `批量通过（待审 ${selectedApprovable.length} 条）`) }}</button>
+      <button v-if="auth.canCreate" class="bulk-act" :disabled="!batchSchedSummary.count" @click="openBatchSchedule" :title="isCrossPageSelection ? '批量排款需逐条确认金额，仅对当前页所选记录生效' : ''">批量排款（可排 {{ batchSchedSummary.count }} 条）</button>
+      <button v-if="auth.canCreate && (isCrossPageSelection || selectedWithSchedule.length)" class="bulk-return" :disabled="bulkReturning" @click="bulkReturnSchedule">{{ bulkReturning ? '退回中…' : (isCrossPageSelection ? '批量退回排款' : `批量退回排款（${selectedWithSchedule.length} 条）`) }}</button>
       <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
       <button class="bulk-cancel" @click="clearSelection">取消</button>
     </div>
@@ -835,6 +855,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   border-radius: 12px; background: var(--card); border: 1px solid rgba(198,40,40,0.35);
   box-shadow: 0 8px 28px rgba(0,0,0,0.18); }
 .bulk-n { font-size: 13px; color: var(--text); }
+.bulk-selall { border: 1px solid var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); border-radius: 8px; padding: 5px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.bulk-selall:disabled { opacity: .5; cursor: default; }
 .bulk-approve { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: #2e7d32; color: #fff; }
 .bulk-approve:disabled { opacity: .5; cursor: default; }
 .bulk-act { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--primary); color: #fff; }
