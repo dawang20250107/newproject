@@ -1979,8 +1979,12 @@ def payment_installments(request):
 
 def _approvals_filtered_qs(request):
     """审批列表「筛选后、未分页」queryset（与列表完全同口径）：部门作用域 + 全局关键字 +
-    列头筛选 + 计算列注解 + 排序。供列表分页与跨页全选取 ID 共用。"""
-    qs = dept_filter(ApprovalRecord.objects.filter(archived=False), request)
+    列头筛选 + 计算列注解 + 排序。供列表分页与跨页全选取 ID 共用。
+
+    可见口径：仅隐藏「审批通过且已排满」的归档记录（已完全流转至付款管理）；
+    已拒绝/已撤销虽为终态（archived=True）但仍需可在审批管理查阅，故不再一刀切按
+    archived 隐藏。默认只看待审批/审批通过由前端状态列筛选控制（可清除以查看全部）。"""
+    qs = dept_filter(ApprovalRecord.objects.all(), request).exclude(status='approved', archived=True)
     # 全局关键字（跨字段模糊）+ 列头精确筛选（filters JSON）+ 列头排序
     kw = request.GET.get('q', '').strip()
     if kw:
@@ -2018,9 +2022,11 @@ def approval_records(request):
         return err('无访问权限', 403, 403)
     if request.method == 'GET':
         qs = _approvals_filtered_qs(request)
-        # 全量（跨页）合计：总申请 / 已排合计 / 未排合计。列表已过滤 archived=False，
-        # 故每条 remaining = amount - scheduled_amount ≥ 0，未排合计 = 总申请 - 已排合计。
-        sums = qs.aggregate(s=Sum('amount'), sched=Sum('scheduled_amount'))
+        # 全量（跨页）合计：总申请 / 已排合计 / 未排合计。合计仅统计在途标的
+        # （待审批 / 审批通过），已拒绝/已撤销为终态不计入；在途记录 remaining =
+        # amount - scheduled_amount ≥ 0，故未排合计 = 总申请 - 已排合计。
+        live_qs = qs.exclude(status__in=['rejected', 'canceled'])
+        sums = live_qs.aggregate(s=Sum('amount'), sched=Sum('scheduled_amount'))
         total_amount = sums['s'] or Decimal('0')
         total_scheduled = sums['sched'] or Decimal('0')
         total_remaining = total_amount - total_scheduled
@@ -3048,7 +3054,8 @@ def approval_export(request):
     perms = get_request_perms(request)
     if perms is not None and not perms['pages'].get('approval_records', True):
         return err('无访问权限', 403, 403)
-    qs = dept_filter(ApprovalRecord.objects.filter(archived=False), request)
+    # 与列表同口径：仅隐藏「审批通过且已排满」的归档记录，已拒绝/已撤销仍可导出
+    qs = dept_filter(ApprovalRecord.objects.all(), request).exclude(status='approved', archived=True)
     # 全局关键字 + 列头筛选 + 排序：导出与列表口径一致
     kw = request.GET.get('q', '').strip()
     if kw:
@@ -4329,9 +4336,13 @@ def transport_export(request):
     if not rows_out:
         return err('选中的付款记录没有可还原的运输对账原始数据')
 
-    # 还原列顺序：以导入时保存的原始表头为准（兼容来源系统列序），回退到标准表头
-    sample_raw = rows_out[0].approval.ext_raw
-    headers = list(sample_raw.keys()) if sample_raw else list(TRANSPORT_HEADERS)
+    # 还原列顺序：必须与运输系统原表列序一致。注意生产库（Postgres jsonb）不保证
+    # JSON 键的存储顺序，直接取 ext_raw.keys() 会被打乱；故按原表标准列序
+    # TRANSPORT_HEADERS 重排已存在的列，原表外的额外列（若有）按出现顺序追加在后。
+    sample_raw = rows_out[0].approval.ext_raw or {}
+    canonical = [h for h in TRANSPORT_HEADERS if h in sample_raw]
+    extras = [h for h in sample_raw.keys() if h not in TRANSPORT_HEADERS]
+    headers = canonical + extras if canonical or extras else list(TRANSPORT_HEADERS)
     if TRANSPORT_STATUS_COL not in headers:
         headers.append(TRANSPORT_STATUS_COL)
 

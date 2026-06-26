@@ -248,6 +248,18 @@ async function confirmBulkDelete(){
   finally{ bulkDeleting.value = false }
 }
 
+// 单条删除（右键菜单）：复用批量删除端点，已排款记录后端自动跳过
+async function deleteOne(rec){
+  const label = [rec.payee, rec.summary || rec.applicant].filter(Boolean).join(' · ') || `#${rec.id}`
+  if (!confirm(`确定删除审批记录「${label}」（¥${rec.amount}）？\n已排款（已关联付款管理）的记录将自动跳过；删除不可恢复。`)) return
+  try{
+    const r = await api.post('/approvals/bulk-delete', { ids: [rec.id] })
+    const d = r.data || {}
+    if (d.deleted > 0){ toast.success('已删除'); load() }
+    else { toast.warn(d.skipped?.[0]?.reason || '未删除（可能已排款，请先在付款管理删除对应排款）') }
+  } catch(e){ toast.error(e?.msg || e?.error || '删除失败') }
+}
+
 // 批量退回排款：退回所选有已排款记录的排款，已排款归零可重新排款
 const bulkReturning = ref(false)
 async function bulkReturnSchedule(){
@@ -431,6 +443,7 @@ const ctxItems = computed(() => {
     },
     { key: 'edit', label: '编辑审批记录', icon: 'edit', shortcut: 'E', hidden: !auth.canCreate, disabled: i.archived, action: r => openEdit(r) },
     { key: 'meta', label: '补录二级部门 / 项目', icon: 'cell', action: r => openMeta(r) },
+    { key: 'del', label: '删除审批记录', icon: 'trash', danger: true, hidden: !auth.canDelete, action: r => deleteOne(r) },
     { divider: true },
     {
       key: 'copy', label: '复制', icon: 'copy',
@@ -546,9 +559,13 @@ const onScopeChange = () => {
 }
 onMounted(async ()=>{
   loadDepts()
-  // 有默认方案则套用并由其触发加载；否则常规加载
+  // 有默认方案则套用并由其触发加载；否则套用「默认只看待审批 + 审批通过」状态筛选后加载。
+  // （已拒绝/已撤销仍在库可查，清除状态筛选即可查看全部）
   const applied = await schemes.loadAndApplyDefault()
-  if (!applied) load()
+  if (!applied) {
+    colFilters.status = { op: 'in', value: ['pending', 'approved'] }
+    load()
+  }
   window.addEventListener('pk:depts-changed', onScopeChange)
 })
 onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange))
@@ -582,15 +599,15 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <col style="width:7%" /><!-- 所属事业部 -->
       <col style="width:7%" /><!-- 二级部门 -->
       <col style="width:8%" /><!-- 项目简称 -->
-      <col style="width:8%" /><!-- 审批编号 -->
-      <col style="width:8%" /><!-- G7编号 -->
-      <col style="width:11%" /><!-- 摘要 -->
-      <col style="width:10%" /><!-- 备注 -->
-      <col style="width:8%" /><!-- 审批状态 -->
+      <col style="width:9%" /><!-- 审批编号 -->
+      <col style="width:9%" /><!-- G7编号 -->
+      <col style="width:12%" /><!-- 摘要 -->
+      <col class="cg-status" /><!-- 审批状态（缩小） -->
       <col style="width:7%" /><!-- 申请金额 -->
       <col style="width:7%" /><!-- 已排金额 -->
       <col style="width:7%" /><!-- 未排金额 -->
       <col style="width:10%" /><!-- 收款主体 -->
+      <col style="width:11%" /><!-- 备注（末列） -->
     </colgroup>
     <thead><tr>
       <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
@@ -601,12 +618,12 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <th><ColumnFilter label="审批编号" field="approval_number" type="text" :model-value="colFilters.approval_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('approval_number',v)" @sort="o=>setSort('approval_number',o)" /></th>
       <th><ColumnFilter label="G7编号" field="g7_number" type="text" :model-value="colFilters.g7_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('g7_number',v)" @sort="o=>setSort('g7_number',o)" /></th>
       <th><ColumnFilter label="摘要" field="summary" type="text" :model-value="colFilters.summary" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('summary',v)" @sort="o=>setSort('summary',o)" /></th>
-      <th><ColumnFilter label="备注" field="notes" type="text" :model-value="colFilters.notes" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('notes',v)" @sort="o=>setSort('notes',o)" /></th>
-      <th><ColumnFilter label="审批状态" field="status" type="enum" :options="STATUS_OPTS" :model-value="colFilters.status" :sortable="false" @update:model-value="v=>setColFilter('status',v)" /></th>
+      <th class="status-h"><ColumnFilter label="审批状态" field="status" type="enum" :options="STATUS_OPTS" :model-value="colFilters.status" :sortable="false" @update:model-value="v=>setColFilter('status',v)" /></th>
       <th><ColumnFilter label="申请金额" field="amount" type="number" :model-value="colFilters.amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('amount',v)" @sort="o=>setSort('amount',o)" /></th>
       <th class="amt-h"><ColumnFilter label="已排金额" field="scheduled_amount" type="number" :model-value="colFilters.scheduled_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('scheduled_amount',v)" @sort="o=>setSort('scheduled_amount',o)" /></th>
       <th class="amt-h"><ColumnFilter label="未排金额" field="remaining_amount" type="number" :model-value="colFilters.remaining_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('remaining_amount',v)" @sort="o=>setSort('remaining_amount',o)" /></th>
       <th><ColumnFilter label="收款主体" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
+      <th><ColumnFilter label="备注" field="notes" type="text" :model-value="colFilters.notes" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('notes',v)" @sort="o=>setSort('notes',o)" /></th>
       </tr></thead>
     <tbody>
       <template v-if="loading">
@@ -616,11 +633,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <template v-for="i in items" :key="i.id">
       <tr :class="{ 'row-sel': selectedIds.has(i.id) }" @contextmenu.prevent="ctx.open($event, i)" @dblclick="onRowDblClick(i, $event)">
       <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(i.id)" @change="toggleRow(i.id)" /></td>
-      <td>{{i.applicant}}</td><td>{{i.department}}</td>
-      <td class="meta-cell">{{ i.secondary_dept || '—' }}</td>
+      <td :title="i.applicant">{{i.applicant}}</td><td :title="i.department">{{i.department}}</td>
+      <td class="meta-cell" :title="i.secondary_dept">{{ i.secondary_dept || '—' }}</td>
       <td class="meta-cell" :title="i.project_short_name">{{ i.project_short_name || '—' }}</td>
-      <td class="mono">{{i.approval_number || '—'}}</td><td class="mono g7-cell">{{i.g7_number || '—'}}</td><td class="summary" :title="i.summary">{{i.summary}}</td>
-      <td class="notes-cell" :title="i.notes">{{ i.notes || '—' }}</td>
+      <td class="mono" :title="i.approval_number">{{i.approval_number || '—'}}</td><td class="mono g7-cell" :title="i.g7_number">{{i.g7_number || '—'}}</td><td class="summary" :title="i.summary">{{i.summary}}</td>
       <td :class="['status-cell', 'st-' + i.status]" :title="i.status === 'approved' ? '审批通过，可排款' : (i.status === 'pending' ? '待审批，通过后方可排款' : '')">
         <div class="status-wrap">
           <span class="status-badge">{{ {pending:'待审批',approved:'审批通过',rejected:'已拒绝',canceled:'已撤销'}[i.status] || i.status }}</span>
@@ -629,7 +645,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
           </select>
         </div>
       </td>
-      <td class="amt">{{i.amount}}</td>
+      <td class="amt" :title="i.amount">{{i.amount}}</td>
       <td class="amt sched-c plan-cell" :title="parseFloat(i.scheduled_amount) > 0 ? '点击展开排款批次明细（排款管理）' : ''"
           @click="parseFloat(i.scheduled_amount) > 0 && toggleAprSchedDetail(i)">
         <template v-if="parseFloat(i.scheduled_amount) > 0">
@@ -639,7 +655,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         <span v-else>—</span>
       </td>
       <td class="amt remain-c" :class="{ 'remain-zero': parseFloat(i.remaining_amount) <= 0 }">{{ parseFloat(i.remaining_amount) > 0 ? i.remaining_amount : '—' }}</td>
-      <td class="payee">{{i.payee}}</td>
+      <td class="payee" :title="i.payee">{{i.payee}}</td>
+      <td class="notes-cell" :title="i.notes">{{ i.notes || '—' }}</td>
       </tr>
       <!-- 排款批次明细面板 -->
       <tr v-if="isAprSchedExpanded(i.id)" class="apr-plan-detail-row">
@@ -844,23 +861,25 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 
 /* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
 .approval-table { width: 100%; table-layout: fixed; }
-/* 列宽由 <colgroup> 统一声明（11 列）；选择列固定窄宽，其余按百分比分配 */
+/* 列宽由 <colgroup> 统一声明；选择列固定窄宽、审批状态列缩小，其余按百分比分配 */
 .approval-table col.cg-sel { width: 34px; }
+.approval-table col.cg-status { width: 60px; }
 /* 行高/内边距对齐全局表格（付款管理），保证两个页面观感一致 */
-/* 紧凑排版：数据量大，行间距尽量收紧（行高随内边距 + 徽章/下拉高度联动） */
-.approval-table th, .approval-table td { padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; }
+/* 紧凑排版：数据量大，行间距固定收紧（固定行高 + 单行省略，超出鼠标悬停 title 展示） */
+.approval-table th, .approval-table td { padding: 3px 8px; height: 28px; box-sizing: border-box; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; line-height: 1.4; }
 .approval-table th.sel-col, .approval-table td.sel-col { text-align: center; overflow: visible; padding: 4px 4px; }
 .approval-table th.sel-col input, .approval-table td.sel-col input { cursor: pointer; }
 /* 审批状态列（末列）内容（下拉）不裁切，以本列宽为限 */
 .approval-table th:last-child, .approval-table td:last-child {
   overflow: visible; text-overflow: clip; white-space: normal;
 }
-/* 审批状态色码徽章：badge 显示颜色，transparent overlay select 捕获交互 */
-.status-wrap { position: relative; display: inline-block; min-width: 72px; width: 100%; }
+/* 审批状态色码徽章：badge 显示颜色，transparent overlay select 捕获交互（列已缩小） */
+.status-wrap { position: relative; display: inline-block; min-width: 48px; width: 100%; }
 .status-badge {
-  display: block; border-radius: 999px; padding: 2px 9px;
-  font-size: 12px; font-weight: 700; border: 1.5px solid transparent;
+  display: block; border-radius: 999px; padding: 1px 4px;
+  font-size: 11px; font-weight: 700; border: 1px solid transparent;
   text-align: center; white-space: nowrap; pointer-events: none;
+  overflow: hidden; text-overflow: ellipsis;
 }
 .status-overlay {
   position: absolute; inset: 0; opacity: 0; cursor: pointer;

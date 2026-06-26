@@ -2091,3 +2091,83 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(set(d['ids']), pids)
         self.assertEqual(d['count'], 2)
         self.assertFalse(d['capped'])
+
+    def test_export_column_order_canonical_despite_scrambled_raw(self):
+        # 模拟生产库（Postgres jsonb）不保证 JSON 键序：ext_raw 以乱序键存储，
+        # 导出仍须按原表标准列序 TRANSPORT_HEADERS 还原，列序不漂移。
+        self._import([self._row(1, 'ZD202606260060', '甲', 300)])
+        rec = ApprovalRecord.objects.get(ext_bill_no='ZD202606260060')
+        # 反转 ext_raw 键序后回存，模拟 jsonb 重排键
+        rec.ext_raw = {k: rec.ext_raw[k] for k in reversed(list(rec.ext_raw.keys()))}
+        rec.save(update_fields=['ext_raw'])
+        self._schedule(rec, 300)
+        p = Payment.objects.get(approval=rec)
+        resp = self.client.get('/api/pk/payments/transport/export',
+                               {'ids': str(p.id)}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        from openpyxl import load_workbook
+        ws = load_workbook(io.BytesIO(resp.content), data_only=True).active
+        hdr = [c.value for c in ws[1]]
+        self.assertEqual(hdr, self.HEADERS)   # 乱序键 → 仍按标准列序导出
+
+
+class ApprovalVisibilityTests(TestCase):
+    """审批列表可见口径：已拒绝/已撤销可查阅（默认由前端状态筛选隐藏），合计只计在途；
+    已排满归档的审批通过记录仍隐藏（已完全流转至付款管理）。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900003900', name='VisAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _mk(self, num, amount, status='pending', archived=False):
+        return ApprovalRecord.objects.create(
+            applicant='张三', department=self.dept, approval_number=str(num) * 21,
+            summary='采购', amount=Decimal(amount), payee=f'供应商{num}',
+            status=status, archived=archived)
+
+    def _list(self, params=None):
+        r = self.client.get('/api/pk/approvals', params or {}, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        return r.json()['data']
+
+    def test_rejected_canceled_visible_but_excluded_from_totals(self):
+        self._mk(1, '1000', status='pending')
+        self._mk(2, '2000', status='approved')
+        self._mk(3, '3000', status='rejected', archived=True)
+        self._mk(4, '4000', status='canceled', archived=True)
+        # 无状态筛选 → 四条全部可查（不再因 archived 隐藏已拒绝/已撤销）
+        d = self._list()
+        self.assertEqual(d['total'], 4)
+        # 合计只计在途（待审批 + 审批通过）= 1000 + 2000
+        self.assertEqual(Decimal(d['total_amount']), Decimal('3000'))
+        # 状态筛选「已拒绝」→ 命中第三条
+        d2 = self._list({'filters': json.dumps({'status': {'op': 'in', 'value': ['rejected']}})})
+        self.assertEqual(d2['total'], 1)
+        self.assertEqual(d2['items'][0]['status'], 'rejected')
+
+    def test_default_status_filter_shows_pending_approved(self):
+        self._mk(1, '1000', status='pending')
+        self._mk(2, '2000', status='approved')
+        self._mk(3, '3000', status='rejected', archived=True)
+        self._mk(4, '4000', status='canceled', archived=True)
+        # 前端默认状态筛选 [pending, approved] 对应的后端查询
+        d = self._list({'filters': json.dumps({'status': {'op': 'in', 'value': ['pending', 'approved']}})})
+        self.assertEqual(d['total'], 2)
+        self.assertEqual({i['status'] for i in d['items']}, {'pending', 'approved'})
+
+    def test_fully_scheduled_approved_hidden(self):
+        # 审批通过且已排满（archived=True, status=approved）→ 列表隐藏（已流转付款管理）
+        self._mk(1, '1000', status='approved', archived=True)
+        keep = self._mk(2, '2000', status='approved', archived=False)
+        d = self._list()
+        self.assertEqual(d['total'], 1)
+        self.assertEqual(d['items'][0]['id'], keep.id)
