@@ -2259,3 +2259,113 @@ class AsyncExportTests(TestCase):
         # 当前用户查别人的任务 → 404
         r = self.client.get(f'/api/pk/exports/{job.id}', **self.auth())
         self.assertEqual(r.status_code, 404)
+
+
+class BudgetCheckTests(TestCase):
+    """排款超预算预警端点：本月已排款 vs AR 付款预算。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900005000', name='BudgAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456'); admin.save()
+        self.admin = admin
+        self.token = make_token(admin)
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _sched(self, amount, planned_date):
+        rec = ApprovalRecord.objects.create(
+            applicant='张三', department=self.dept, approval_number='9' * 21,
+            summary='采购', amount=Decimal(amount), payee='供应商', status='approved')
+        return self.client.post(f'/api/pk/approvals/{rec.id}/schedule',
+                                data=json.dumps({'planned_date': planned_date, 'total_amount': amount}),
+                                content_type='application/json', **self.auth())
+
+    def test_no_budget_returns_has_budget_false(self):
+        r = self.client.get('/api/pk/approvals/budget-check',
+                            {'dept': self.dept, 'month': '2026-07', 'amount': '1000'}, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertFalse(r.json()['data']['has_budget'])
+
+    def test_over_budget_detected(self):
+        from ar.models import PaymentBudget
+        PaymentBudget.objects.create(short_name='本月预算', expected_date='2026-07-15',
+                                     delivery_dept=self.dept, amount=Decimal('5000'))
+        self._sched('4000', '2026-07-10')   # 已排 4000
+        # 再排 2000 → 4000+2000 > 5000，超预算
+        r = self.client.get('/api/pk/approvals/budget-check',
+                            {'dept': self.dept, 'month': '2026-07', 'amount': '2000'}, **self.auth())
+        d = r.json()['data']
+        self.assertTrue(d['has_budget'])
+        self.assertEqual(Decimal(d['scheduled']), Decimal('4000'))
+        self.assertTrue(d['over'])
+        self.assertEqual(Decimal(d['over_by']), Decimal('1000'))
+
+    def test_within_budget(self):
+        from ar.models import PaymentBudget
+        PaymentBudget.objects.create(short_name='本月预算', expected_date='2026-07-15',
+                                     delivery_dept=self.dept, amount=Decimal('10000'))
+        self._sched('3000', '2026-07-10')
+        r = self.client.get('/api/pk/approvals/budget-check',
+                            {'dept': self.dept, 'month': '2026-07', 'amount': '2000'}, **self.auth())
+        d = r.json()['data']
+        self.assertFalse(d['over'])
+        self.assertEqual(Decimal(d['remaining']), Decimal('7000'))        # 10000 - 3000
+        self.assertEqual(Decimal(d['remaining_after']), Decimal('5000'))  # - 2000
+
+
+class HousekeepingCommandTests(TestCase):
+    """定时维护命令：回收站自动清理 + 导出任务清理。"""
+
+    def setUp(self):
+        self.dept = DEPARTMENTS[0]
+        self.user = PaikuanUser(phone='13900006000', name='HK', role='super_admin',
+                                job_title='finance_director', departments=[self.dept],
+                                is_active=True, is_approved=True)
+        self.user.set_password('Test123456'); self.user.save()
+
+    def test_housekeeping_purges_old_trash(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from django.core.management import call_command
+        old = timezone.now() - timedelta(days=40)
+        recent = timezone.now() - timedelta(days=5)
+        # 旧软删（应清）
+        a_old = ApprovalRecord.objects.create(
+            applicant='a', department=self.dept, approval_number='1' * 21, summary='s',
+            amount=Decimal('100'), payee='p', deleted_at=old)
+        # 近期软删（保留）
+        a_recent = ApprovalRecord.objects.create(
+            applicant='b', department=self.dept, approval_number='2' * 21, summary='s',
+            amount=Decimal('100'), payee='p', deleted_at=recent)
+        call_command('pk_housekeeping', '--trash-days', '30')
+        self.assertFalse(ApprovalRecord.objects.filter(pk=a_old.pk).exists())
+        self.assertTrue(ApprovalRecord.objects.filter(pk=a_recent.pk).exists())
+
+    def test_housekeeping_dry_run_keeps_all(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from django.core.management import call_command
+        old = timezone.now() - timedelta(days=40)
+        a = ApprovalRecord.objects.create(
+            applicant='a', department=self.dept, approval_number='3' * 21, summary='s',
+            amount=Decimal('100'), payee='p', deleted_at=old)
+        call_command('pk_housekeeping', '--trash-days', '30', '--dry-run')
+        self.assertTrue(ApprovalRecord.objects.filter(pk=a.pk).exists())
+
+    def test_aging_digest_json_runs(self):
+        from django.core.management import call_command
+        from io import StringIO
+        out = StringIO()
+        call_command('pk_aging_digest', '--json', stdout=out)
+        data = json.loads(out.getvalue())
+        self.assertIn('overdue', data)
+        self.assertIn('budget', data)

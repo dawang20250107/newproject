@@ -2320,9 +2320,10 @@ def approval_budget_check(request):
     except (ValueError, InvalidOperation):
         return err('参数格式错误')
 
-    # 已排款：本月该部门在付款管理已安排的批次金额合计
+    # 已排款：本月该部门在付款管理已安排的批次金额合计（department 在父表 Payment 上）
     scheduled_agg = (PaymentPlanItem.objects
-                     .filter(department=dept,
+                     .filter(payment__department=dept,
+                             payment__deleted_at__isnull=True,
                              planned_date__year=year,
                              planned_date__month=mon)
                      .aggregate(s=Sum('amount')))
