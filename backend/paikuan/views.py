@@ -3178,6 +3178,224 @@ def _approval_export_core(request, export_cap=5000):
 
 # ── dashboard ─────────────────────────────────────────────────────────────────
 
+# ── 待办工作台 + 通知中心 ─────────────────────────────────────────────────────
+# 工作台「待办桶」实时计算（无存储），按部门作用域 + 部门联动分解；
+# 通知中心据此桶生成 per-user 持久化事件（dedup 幂等）。两者共享同一计算引擎。
+
+def _agg_by_dept(rows, amount_key):
+    """把 [{department, <amount_key>}] 按部门聚合 → (总数, 总额, 部门明细[降序])。
+    在 Python 内聚合，避免「相关子查询 + GROUP BY」在 Postgres 上的取数歧义。"""
+    from collections import defaultdict
+    agg = defaultdict(lambda: [0, Decimal('0')])
+    for r in rows:
+        d = r.get('department') or '（未填部门）'
+        agg[d][0] += 1
+        agg[d][1] += (r.get(amount_key) or Decimal('0'))
+    by_dept = [{'dept': d, 'count': c, 'amount': str(a)}
+               for d, (c, a) in sorted(agg.items(), key=lambda kv: kv[1][1], reverse=True)]
+    total_c = sum(c for c, _ in agg.values())
+    total_a = sum((a for _, a in agg.values()), Decimal('0'))
+    return total_c, total_a, by_dept
+
+
+def _workbench_buckets(depts):
+    """计算工作台各待办桶。depts=None 表示全部（超管/无作用域）；否则按部门列表过滤。
+    返回桶列表，每桶含 count/amount/level/link/by_dept（部门联动明细）。"""
+    today = timezone.localdate()
+
+    def scope(qs):
+        return qs if depts is None else qs.filter(department__in=depts)
+
+    buckets = []
+
+    # 1. 待审批：待审批状态的审批记录
+    rows = scope(ApprovalRecord.objects.filter(status='pending', deleted_at__isnull=True)) \
+        .values('department', 'amount')
+    c, a, bd = _agg_by_dept(rows, 'amount')
+    buckets.append({'key': 'approval_pending', 'label': '待审批', 'level': 'info',
+                    'count': c, 'amount': str(a), 'link': '/approvals',
+                    'link_query': {'status': 'pending'}, 'by_dept': bd})
+
+    # 2. 待排款：审批通过、未归档、未排满（剩余可排 > 0）
+    rows = scope(ApprovalRecord.objects.filter(
+        status='approved', archived=False, deleted_at__isnull=True,
+        scheduled_amount__lt=F('amount'))) \
+        .annotate(rem=ExpressionWrapper(F('amount') - F('scheduled_amount'), output_field=_DEC18)) \
+        .values('department', 'rem')
+    c, a, bd = _agg_by_dept(rows, 'rem')
+    buckets.append({'key': 'schedule_pending', 'label': '待排款', 'level': 'info',
+                    'count': c, 'amount': str(a), 'link': '/approvals',
+                    'link_query': {'status': 'approved'}, 'by_dept': bd})
+
+    # 3 & 4. 付款：今日到期 / 逾期未付（剩余应付 > 0）
+    pay = scope(Payment.objects.filter(deleted_at__isnull=True)).annotate(
+        paid=_paid_expr(),
+        rem=ExpressionWrapper(F('total_amount') - _paid_expr(), output_field=_DEC18))
+    due_rows = list(pay.filter(paid__lt=F('total_amount'), planned_date=today)
+                    .values('department', 'rem'))
+    c, a, bd = _agg_by_dept(due_rows, 'rem')
+    buckets.append({'key': 'payment_due', 'label': '今日到期', 'level': 'warn',
+                    'count': c, 'amount': str(a), 'link': '/payments',
+                    'link_query': {}, 'by_dept': bd})
+    overdue_rows = list(pay.filter(paid__lt=F('total_amount'), planned_date__lt=today)
+                        .values('department', 'rem'))
+    c, a, bd = _agg_by_dept(overdue_rows, 'rem')
+    buckets.append({'key': 'overdue', 'label': '逾期未付', 'level': 'danger',
+                    'count': c, 'amount': str(a), 'link': '/payments',
+                    'link_query': {'overdue': '1'}, 'by_dept': bd})
+
+    # 5. 超预算事业部：本月已排款 > 付款预算
+    over_depts = []
+    over_total = Decimal('0')
+    ym = (today.year, today.month)
+    sched_rows = (PaymentPlanItem.objects
+                  .filter(payment__deleted_at__isnull=True,
+                          planned_date__year=ym[0], planned_date__month=ym[1])
+                  .values('payment__department').annotate(s=Sum('amount')))
+    sched_by_dept = {r['payment__department']: (r['s'] or Decimal('0')) for r in sched_rows}
+    budget_by_dept = {}
+    try:
+        from ar.models import PaymentBudget
+        for r in (PaymentBudget.objects
+                  .filter(expected_date__year=ym[0], expected_date__month=ym[1])
+                  .values('delivery_dept').annotate(s=Sum('amount'))):
+            budget_by_dept[r['delivery_dept']] = r['s'] or Decimal('0')
+    except Exception:
+        pass
+    for dept, sched in sched_by_dept.items():
+        if depts is not None and dept not in depts:
+            continue
+        bud = budget_by_dept.get(dept)
+        if bud is not None and sched > bud:
+            over = sched - bud
+            over_total += over
+            over_depts.append({'dept': dept, 'count': 1, 'amount': str(over)})
+    over_depts.sort(key=lambda x: Decimal(x['amount']), reverse=True)
+    buckets.append({'key': 'budget_alert', 'label': '超预算事业部', 'level': 'warn',
+                    'count': len(over_depts), 'amount': str(over_total), 'link': '/ar/budget',
+                    'link_query': {}, 'by_dept': over_depts})
+
+    return buckets
+
+
+def _depts_scope_for_request(request):
+    """请求级部门作用域：超管无作用域时 None（全部）；否则取
+    可见部门 ∩ 当前会话激活部门（?depts=）。与 dept_filter 同口径。"""
+    raw = request.GET.get('depts', '').strip()
+    requested = [d for d in raw.split(',') if d.strip()] if raw else []
+    if request.pk_role == 'super_admin':
+        return requested or None
+    allowed = set(request.pk_depts or [])
+    if requested:
+        active = [d for d in requested if d in allowed]
+        if active:
+            return active
+    return list(request.pk_depts or [])
+
+
+@pk_required()
+def workbench(request):
+    """GET — 待办工作台：实时计算各待办桶（按部门作用域 + 部门联动明细）。"""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    depts = _depts_scope_for_request(request)
+    buckets = _workbench_buckets(depts)
+    return ok({'buckets': buckets, 'generated_at': timezone.now().isoformat()})
+
+
+# ── 通知中心 ───────────────────────────────────────────────────────────────────
+# 通知按 per-user 持久化（dedup_key 幂等）。懒生成：用户拉通知/未读数时按其部门
+# 作用域计算待办桶并 upsert 通知（一天一类型一部门一条）；定时命令对全体活跃用户
+# 主动预生成。
+
+def _ensure_notifications(user):
+    """为单个用户按其部门作用域生成「应办」通知（dedup 幂等，重复调用零副作用）。
+    仅对有意义的桶（待审批/待排款/今日到期/逾期/超预算）生成；空桶不生成。"""
+    from paikuan.models import Notification
+    depts = None if user.role == 'super_admin' else list(user.departments or [])
+    # 无部门的普通用户：无可办事项
+    if depts is not None and not depts:
+        return 0
+    buckets = _workbench_buckets(depts)
+    today = timezone.localdate().isoformat()
+    level_kind = {b['key']: b for b in buckets}
+    created = 0
+    specs = [
+        ('approval_pending', '待审批提醒', lambda b: f"有 {b['count']} 条审批待处理，合计 ¥{b['amount']}", '/approvals'),
+        ('schedule_pending', '待排款提醒', lambda b: f"有 {b['count']} 条已通过审批待排款，合计 ¥{b['amount']}", '/approvals'),
+        ('payment_due', '今日到期付款', lambda b: f"今日有 {b['count']} 笔付款到期，合计 ¥{b['amount']}", '/payments'),
+        ('overdue', '逾期未付预警', lambda b: f"有 {b['count']} 笔付款已逾期未付，合计 ¥{b['amount']}", '/payments'),
+        ('budget_alert', '超预算预警', lambda b: f"有 {b['count']} 个事业部本月排款超预算，超支合计 ¥{b['amount']}", '/ar/budget'),
+    ]
+    for key, title, body_fn, link in specs:
+        b = level_kind.get(key)
+        if not b or not b['count']:
+            continue
+        dedup = f'{key}:{today}'
+        _, was_created = Notification.objects.get_or_create(
+            recipient=user, dedup_key=dedup,
+            defaults={'kind': key, 'level': b['level'], 'title': title,
+                      'body': body_fn(b), 'link': link, 'dept': ''})
+        if was_created:
+            created += 1
+    return created
+
+
+@pk_required()
+def notifications(request):
+    """GET — 当前用户通知列表（懒生成后返回）。?unread=1 仅未读；分页。"""
+    from paikuan.models import Notification
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    try:
+        _ensure_notifications(request.pk_user)
+    except Exception:
+        logger.exception('ensure notifications failed')
+    qs = Notification.objects.filter(recipient_id=request.pk_uid)
+    if request.GET.get('unread') == '1':
+        qs = qs.filter(is_read=False)
+    try:
+        page = max(1, int(request.GET.get('page', 1)))
+        size = min(50, max(1, int(request.GET.get('size', 20))))
+    except ValueError:
+        page, size = 1, 20
+    total = qs.count()
+    unread = Notification.objects.filter(recipient_id=request.pk_uid, is_read=False).count()
+    rows = qs[(page - 1) * size:page * size]
+    return ok({'total': total, 'unread': unread,
+               'items': [n.to_dict() for n in rows]})
+
+
+@pk_required()
+def notifications_unread_count(request):
+    """GET — 未读通知数（铃铛徽标轮询用，先懒生成）。"""
+    from paikuan.models import Notification
+    try:
+        _ensure_notifications(request.pk_user)
+    except Exception:
+        logger.exception('ensure notifications failed')
+    n = Notification.objects.filter(recipient_id=request.pk_uid, is_read=False).count()
+    return ok({'unread': n})
+
+
+@csrf_exempt
+@pk_required()
+def notifications_read(request):
+    """POST {ids:[...]} 或 {all:true} — 标记已读。"""
+    from paikuan.models import Notification
+    if request.method != 'POST':
+        return err('POST only', 405)
+    body = parse_body(request)
+    qs = Notification.objects.filter(recipient_id=request.pk_uid, is_read=False)
+    if not body.get('all'):
+        ids = [int(i) for i in (body.get('ids') or [])]
+        if not ids:
+            return err('ids 必填或传 all:true')
+        qs = qs.filter(pk__in=ids)
+    n = qs.update(is_read=True, read_at=timezone.now())
+    return ok({'marked': n})
+
+
 @pk_required()
 def dashboard(request):
     if request.method != 'GET':
