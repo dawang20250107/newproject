@@ -316,22 +316,34 @@ const batchSchedTotal = computed(() =>
 const batchSchedValid = computed(() => batchSchedRows.value.length > 0 &&
   batchSchedRows.value.every(r => { const a = parseFloat(r.amount); return a > 0 && a <= r.remaining + 1e-6 }))
 function openBatchSchedule(){
-  if (!batchSchedSummary.value.count){ toast.warn('所选记录中没有「审批通过且未归档」的可排款记录'); return }
   batchSchedForm.planned_date = todayCST()
-  batchSchedRows.value = selectedSchedulable.value.map(i => {
-    const rem = remOf(i)
-    return { id: i.id, label: [i.payee, i.summary || i.applicant].filter(Boolean).join(' · ') || `#${i.id}`,
-             remaining: rem, amount: rem }
-  })
+  if (isCrossPageSelection.value) {
+    // 跨页模式：不展示逐条金额，后端各取剩余可排
+    batchSchedRows.value = []
+  } else {
+    if (!batchSchedSummary.value.count){ toast.warn('所选记录中没有「审批通过且未归档」的可排款记录'); return }
+    batchSchedRows.value = selectedSchedulable.value.map(i => {
+      const rem = remOf(i)
+      return { id: i.id, label: [i.payee, i.summary || i.applicant].filter(Boolean).join(' · ') || `#${i.id}`,
+               remaining: rem, amount: rem }
+    })
+  }
   showBatchSched.value = true
 }
 function batchSchedResetAll(){ batchSchedRows.value.forEach(r => { r.amount = r.remaining }) }
 async function doBatchSchedule(){
-  if (batchSchedBusy.value || !batchSchedValid.value) return
+  if (batchSchedBusy.value) return
+  if (!isCrossPageSelection.value && !batchSchedValid.value) return
   batchSchedBusy.value = true
   try{
-    const items = batchSchedRows.value.map(r => ({ id: r.id, amount: r.amount }))
-    const r = await api.post('/approvals/bulk-schedule', { items, planned_date: batchSchedForm.planned_date })
+    let body
+    if (isCrossPageSelection.value) {
+      body = { ids: [...selectedIds.value], planned_date: batchSchedForm.planned_date }
+    } else {
+      const items = batchSchedRows.value.map(r => ({ id: r.id, amount: r.amount }))
+      body = { items, planned_date: batchSchedForm.planned_date }
+    }
+    const r = await api.post('/approvals/bulk-schedule', body)
     showBatchSched.value = false; clearSelection(); load()
     const d = r.data || {}
     let msg = d.message || '批量排款完成'
@@ -684,7 +696,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <button v-if="selectedCount < total" class="bulk-selall" :disabled="selectingAll" @click="selectAllFiltered"
               :title="`跨页选中当前筛选下全部 ${total} 条（上限 1000，供批量操作）`">{{ selectingAll ? '全选中…' : `选择全部 ${total} 条` }}</button>
       <button v-if="auth.canCreate" class="bulk-approve" :disabled="bulkApproving || (!isCrossPageSelection && !selectedApprovable.length)" @click="bulkApprove">{{ bulkApproving ? '审批中…' : (isCrossPageSelection ? '批量通过' : `批量通过（待审 ${selectedApprovable.length} 条）`) }}</button>
-      <button v-if="auth.canCreate" class="bulk-act" :disabled="!batchSchedSummary.count" @click="openBatchSchedule" :title="isCrossPageSelection ? '批量排款需逐条确认金额，仅对当前页所选记录生效' : ''">批量排款（可排 {{ batchSchedSummary.count }} 条）</button>
+      <button v-if="auth.canCreate" class="bulk-act" :disabled="!isCrossPageSelection && !batchSchedSummary.count" @click="openBatchSchedule">{{ isCrossPageSelection ? `批量排款（${selectedCount} 条）` : `批量排款（可排 ${batchSchedSummary.count} 条）` }}</button>
       <button v-if="auth.canCreate && (isCrossPageSelection || selectedWithSchedule.length)" class="bulk-return" :disabled="bulkReturning" @click="bulkReturnSchedule">{{ bulkReturning ? '退回中…' : (isCrossPageSelection ? '批量退回排款' : `批量退回排款（${selectedWithSchedule.length} 条）`) }}</button>
       <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
       <button class="bulk-cancel" @click="clearSelection">取消</button>
@@ -760,29 +772,41 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 
   <!-- 批量排款 -->
   <Teleport to="body"><div v-if="showBatchSched" class="modal-overlay"><div class="modal-box batch-box"><div class="modal-header"><h3>批量排款</h3></div><div class="modal-body">
-    <div class="sched-progress">
-      <span>可排记录 <b>{{ batchSchedRows.length }}</b> 条</span>
-      <span>合计金额 <b style="color:#2e7d32">{{ batchSchedTotal.toFixed(2) }}</b> 元</span>
-    </div>
-    <p style="font-size:12px;color:var(--muted);margin:0 0 10px">
-      默认按各记录「剩余可排（首次=申请金额）」各排一笔流转付款管理，可逐条调小做分批排款（不得超过剩余可排）；所选中非「审批通过/已归档」的记录已自动排除。
-    </p>
+    <template v-if="isCrossPageSelection">
+      <div class="sched-progress">
+        <span>已选记录 <b>{{ selectedCount }}</b> 条（非「审批通过且未归档」的自动跳过）</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 10px">
+        跨页批量排款：各记录按各自「剩余可排金额（首次 = 申请金额）」排款，非「审批通过」或已归档记录自动跳过。
+      </p>
+    </template>
+    <template v-else>
+      <div class="sched-progress">
+        <span>可排记录 <b>{{ batchSchedRows.length }}</b> 条</span>
+        <span>合计金额 <b style="color:#2e7d32">{{ batchSchedTotal.toFixed(2) }}</b> 元</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 10px">
+        默认按各记录「剩余可排（首次=申请金额）」各排一笔流转付款管理，可逐条调小做分批排款（不得超过剩余可排）；所选中非「审批通过/已归档」的记录已自动排除。
+      </p>
+    </template>
     <div class="form-grid" style="margin-bottom:10px">
       <label class="form-field"><span>计划日期*</span><input v-model="batchSchedForm.planned_date" type="date"/></label>
     </div>
-    <div class="batch-rows-head">
-      <span>本次排款金额（共 {{ batchSchedRows.length }} 条）</span>
-      <button type="button" class="batch-reset" @click="batchSchedResetAll">全部设为剩余可排</button>
-    </div>
-    <div class="batch-rows">
-      <div v-for="r in batchSchedRows" :key="r.id" class="batch-row">
-        <span class="batch-row-label" :title="r.label">{{ r.label }}</span>
-        <span class="batch-row-rem">剩余 {{ r.remaining.toFixed(2) }}</span>
-        <input v-model="r.amount" type="number" step="0.01" min="0" :max="r.remaining"
-               class="batch-row-amt" :class="{ bad: !(parseFloat(r.amount) > 0 && parseFloat(r.amount) <= r.remaining + 1e-6) }"/>
+    <template v-if="!isCrossPageSelection">
+      <div class="batch-rows-head">
+        <span>本次排款金额（共 {{ batchSchedRows.length }} 条）</span>
+        <button type="button" class="batch-reset" @click="batchSchedResetAll">全部设为剩余可排</button>
       </div>
-    </div>
-  </div><div class="modal-footer"><button class="btn btn-ghost" @click="showBatchSched=false">取消</button><button class="btn btn-primary" :disabled="batchSchedBusy || !batchSchedValid" @click="doBatchSchedule">{{ batchSchedBusy ? '排款中…' : `确认排款 ${batchSchedRows.length} 条` }}</button></div></div></div></Teleport>
+      <div class="batch-rows">
+        <div v-for="r in batchSchedRows" :key="r.id" class="batch-row">
+          <span class="batch-row-label" :title="r.label">{{ r.label }}</span>
+          <span class="batch-row-rem">剩余 {{ r.remaining.toFixed(2) }}</span>
+          <input v-model="r.amount" type="number" step="0.01" min="0" :max="r.remaining"
+                 class="batch-row-amt" :class="{ bad: !(parseFloat(r.amount) > 0 && parseFloat(r.amount) <= r.remaining + 1e-6) }"/>
+        </div>
+      </div>
+    </template>
+  </div><div class="modal-footer"><button class="btn btn-ghost" @click="showBatchSched=false">取消</button><button class="btn btn-primary" :disabled="batchSchedBusy || (!isCrossPageSelection && !batchSchedValid)" @click="doBatchSchedule">{{ batchSchedBusy ? '排款中…' : (isCrossPageSelection ? `确认排款 ${selectedCount} 条` : `确认排款 ${batchSchedRows.length} 条`) }}</button></div></div></div></Teleport>
 
   <!-- 批量删除二次确认 -->
   <Teleport to="body"><div v-if="showDelConfirm" class="modal-overlay"><div class="modal-box" style="max-width:420px"><div class="modal-header"><h3>确认删除 {{ delConfirmCount }} 条审批记录</h3></div><div class="modal-body">

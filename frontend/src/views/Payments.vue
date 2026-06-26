@@ -779,6 +779,9 @@ const batchPaySummary = computed(() => ({
   count: selectedPayable.value.length,
   total: selectedPayable.value.reduce((s, p) => s + remOf(p), 0),
 }))
+// 选择集是否含当前页之外的记录（决定批量付款是否跨页模式）
+const isCrossPageSelection = computed(() =>
+  [...selectedIds.value].some(id => !items.value.some(p => p.id === id)))
 
 // 批量删除（含单选）
 const bulkDeleting = ref(false)
@@ -809,22 +812,34 @@ const batchPayTotal = computed(() =>
 const batchPayValid = computed(() => batchPayRows.value.length > 0 &&
   batchPayRows.value.every(r => { const a = parseFloat(r.amount); return a > 0 && a <= r.remaining + 1e-6 }))
 function openBatchPay() {
-  if (!batchPaySummary.value.count) { toast.error('所选记录中没有「有剩余应付」的可付款记录（已结清的已自动排除）'); return }
   batchPayForm.pay_date = todayCST()
-  batchPayRows.value = selectedPayable.value.map(p => {
-    const rem = remOf(p)
-    return { id: p.id, label: [p.payee, p.project_short_name || p.project_desc].filter(Boolean).join(' · ') || `#${p.id}`,
-             remaining: rem, amount: rem }
-  })
+  if (isCrossPageSelection.value) {
+    // 跨页模式：不展示逐条金额，后端各取剩余应付
+    batchPayRows.value = []
+  } else {
+    if (!batchPaySummary.value.count) { toast.error('所选记录中没有「有剩余应付」的可付款记录（已结清的已自动排除）'); return }
+    batchPayRows.value = selectedPayable.value.map(p => {
+      const rem = remOf(p)
+      return { id: p.id, label: [p.payee, p.project_short_name || p.project_desc].filter(Boolean).join(' · ') || `#${p.id}`,
+               remaining: rem, amount: rem }
+    })
+  }
   showBatchPay.value = true
 }
 function batchPayResetAll() { batchPayRows.value.forEach(r => { r.amount = r.remaining }) }
 async function doBatchPay() {
-  if (batchPayBusy.value || !batchPayValid.value) return
+  if (batchPayBusy.value) return
+  if (!isCrossPageSelection.value && !batchPayValid.value) return
   batchPayBusy.value = true
   try {
-    const items = batchPayRows.value.map(r => ({ id: r.id, amount: r.amount }))
-    const r = await api.post('/payments/bulk-pay', { items, pay_date: batchPayForm.pay_date })
+    let body
+    if (isCrossPageSelection.value) {
+      body = { ids: [...selectedIds.value], pay_date: batchPayForm.pay_date }
+    } else {
+      const items = batchPayRows.value.map(r => ({ id: r.id, amount: r.amount }))
+      body = { items, pay_date: batchPayForm.pay_date }
+    }
+    const r = await api.post('/payments/bulk-pay', body)
     showBatchPay.value = false; clearSelection(); load()
     const d = r.data || {}
     let msg = d.message || '批量付款完成'
@@ -1072,7 +1087,7 @@ async function doBatchPay() {
           <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
           <button v-if="selectedCount < total" class="bulk-selall" :disabled="selectingAll" @click="selectAllFiltered"
                   :title="`跨页选中当前筛选下全部 ${total} 条（上限 1000，供批量操作）`">{{ selectingAll ? '全选中…' : `选择全部 ${total} 条` }}</button>
-          <button v-if="auth.canEdit('installments')" class="bulk-act" :disabled="!batchPaySummary.count" @click="openBatchPay">批量付款（可付 {{ batchPaySummary.count }} 条）</button>
+          <button v-if="auth.canEdit('installments')" class="bulk-act" :disabled="!isCrossPageSelection && !batchPaySummary.count" @click="openBatchPay">{{ isCrossPageSelection ? `批量付款（${selectedCount} 条）` : `批量付款（可付 ${batchPaySummary.count} 条）` }}</button>
           <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
           <button v-if="canTransport" class="bulk-act" :disabled="copyingG7" @click="copyG7Numbers($event)"
                   title="复制所选记录的 G7编号（对账单号），「+」连接；Shift+点击改用空格连接">📋 复制单号</button>
@@ -1313,30 +1328,42 @@ async function doBatchPay() {
         <div class="modal" style="width:520px">
           <div class="modal-header"><h3>批量付款</h3><button class="modal-close" @click="showBatchPay = false">×</button></div>
           <div style="padding:4px 2px 0">
-            <div class="batch-summary">
-              <span>可付记录 <b>{{ batchPayRows.length }}</b> 条</span>
-              <span>合计金额 <b style="color:#2e7d32">{{ batchPayTotal.toFixed(2) }}</b> 元</span>
-            </div>
-            <p style="font-size:12px;color:var(--muted);margin:10px 0 12px">
-              默认按各记录「剩余应付（=计划金额 − 已付 − 预付冲抵）」各登记一笔付款明细，可逐条调小做分次付款（不得超过剩余应付）；已结清（无剩余）的记录已自动排除。
-            </p>
-            <label class="batch-field" style="margin-bottom:10px"><span>付款日期*</span><input v-model="batchPayForm.pay_date" type="date" /></label>
-            <div class="batch-rows-head">
-              <span>本次付款金额（共 {{ batchPayRows.length }} 条）</span>
-              <button type="button" class="batch-reset" @click="batchPayResetAll">全部设为剩余应付</button>
-            </div>
-            <div class="batch-rows">
-              <div v-for="r in batchPayRows" :key="r.id" class="batch-row">
-                <span class="batch-row-label" :title="r.label">{{ r.label }}</span>
-                <span class="batch-row-rem">剩余 {{ r.remaining.toFixed(2) }}</span>
-                <input v-model="r.amount" type="number" step="0.01" min="0" :max="r.remaining"
-                       class="batch-row-amt" :class="{ bad: !(parseFloat(r.amount) > 0 && parseFloat(r.amount) <= r.remaining + 1e-6) }"/>
+            <template v-if="isCrossPageSelection">
+              <div class="batch-summary">
+                <span>已选记录 <b>{{ selectedCount }}</b> 条（无剩余应付的自动跳过）</span>
               </div>
-            </div>
+              <p style="font-size:12px;color:var(--muted);margin:10px 0 12px">
+                跨页批量付款：各记录按各自「剩余应付（=计划金额 − 已付 − 预付冲抵）」登记付款明细，已结清（无剩余）的记录自动跳过。
+              </p>
+            </template>
+            <template v-else>
+              <div class="batch-summary">
+                <span>可付记录 <b>{{ batchPayRows.length }}</b> 条</span>
+                <span>合计金额 <b style="color:#2e7d32">{{ batchPayTotal.toFixed(2) }}</b> 元</span>
+              </div>
+              <p style="font-size:12px;color:var(--muted);margin:10px 0 12px">
+                默认按各记录「剩余应付（=计划金额 − 已付 − 预付冲抵）」各登记一笔付款明细，可逐条调小做分次付款（不得超过剩余应付）；已结清（无剩余）的记录已自动排除。
+              </p>
+            </template>
+            <label class="batch-field" style="margin-bottom:10px"><span>付款日期*</span><input v-model="batchPayForm.pay_date" type="date" /></label>
+            <template v-if="!isCrossPageSelection">
+              <div class="batch-rows-head">
+                <span>本次付款金额（共 {{ batchPayRows.length }} 条）</span>
+                <button type="button" class="batch-reset" @click="batchPayResetAll">全部设为剩余应付</button>
+              </div>
+              <div class="batch-rows">
+                <div v-for="r in batchPayRows" :key="r.id" class="batch-row">
+                  <span class="batch-row-label" :title="r.label">{{ r.label }}</span>
+                  <span class="batch-row-rem">剩余 {{ r.remaining.toFixed(2) }}</span>
+                  <input v-model="r.amount" type="number" step="0.01" min="0" :max="r.remaining"
+                         class="batch-row-amt" :class="{ bad: !(parseFloat(r.amount) > 0 && parseFloat(r.amount) <= r.remaining + 1e-6) }"/>
+                </div>
+              </div>
+            </template>
           </div>
           <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
             <button class="btn btn-ghost" @click="showBatchPay = false">取消</button>
-            <button class="btn btn-primary" :disabled="batchPayBusy || !batchPayValid" @click="doBatchPay">{{ batchPayBusy ? '付款中…' : `确认付款 ${batchPayRows.length} 条` }}</button>
+            <button class="btn btn-primary" :disabled="batchPayBusy || (!isCrossPageSelection && !batchPayValid)" @click="doBatchPay">{{ batchPayBusy ? '付款中…' : (isCrossPageSelection ? `确认付款 ${selectedCount} 条` : `确认付款 ${batchPayRows.length} 条`) }}</button>
           </div>
         </div>
       </div>
