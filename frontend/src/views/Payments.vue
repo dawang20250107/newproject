@@ -821,7 +821,18 @@ const batchPayRows = ref([])   // [{ id, label, remaining, amount }]
 const batchPayTotal = computed(() =>
   batchPayRows.value.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0))
 const batchPayValid = computed(() => batchPayRows.value.length > 0 &&
-  batchPayRows.value.every(r => { const a = parseFloat(r.amount); return a > 0 && a <= r.remaining + 1e-6 }))
+  batchPayRows.value.every(r => !payRowError(r)))
+// 行内即时校验：返回该行付款金额的错误文案（空 = 合法）
+function payRowError(r) {
+  if (r.amount === '' || r.amount == null) return '请填写金额'
+  const a = parseFloat(r.amount)
+  if (isNaN(a)) return '金额格式有误'
+  if (a <= 0) return '金额需大于 0'
+  if (a > r.remaining + 1e-6) return `超过剩余应付 ${r.remaining.toFixed(2)}`
+  return ''
+}
+const batchPayErrCount = computed(() =>
+  batchPayRows.value.filter(r => payRowError(r)).length)
 function openBatchPay() {
   batchPayForm.pay_date = todayCST()
   if (isCrossPageSelection.value) {
@@ -1363,12 +1374,18 @@ async function doBatchPay() {
                 <span>本次付款金额（共 {{ batchPayRows.length }} 条）</span>
                 <button type="button" class="batch-reset" @click="batchPayResetAll">全部设为剩余应付</button>
               </div>
+              <div v-if="batchPayErrCount" class="batch-err-banner">
+                ⚠ {{ batchPayErrCount }} 行金额有误，请修正后再提交
+              </div>
               <div class="batch-rows">
-                <div v-for="r in batchPayRows" :key="r.id" class="batch-row">
+                <div v-for="r in batchPayRows" :key="r.id" class="batch-row" :class="{ 'row-bad': payRowError(r) }">
                   <span class="batch-row-label" :title="r.label">{{ r.label }}</span>
                   <span class="batch-row-rem">剩余 {{ r.remaining.toFixed(2) }}</span>
-                  <input v-model="r.amount" type="number" step="0.01" min="0" :max="r.remaining"
-                         class="batch-row-amt" :class="{ bad: !(parseFloat(r.amount) > 0 && parseFloat(r.amount) <= r.remaining + 1e-6) }"/>
+                  <div class="batch-amt-wrap">
+                    <input v-model="r.amount" type="number" step="0.01" min="0" :max="r.remaining"
+                           class="batch-row-amt" :class="{ bad: !!payRowError(r) }"/>
+                    <span v-if="payRowError(r)" class="batch-row-err">{{ payRowError(r) }}</span>
+                  </div>
                 </div>
               </div>
             </template>
@@ -1548,6 +1565,11 @@ async function doBatchPay() {
   border-radius: 7px; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; box-sizing: border-box; }
 .batch-row-amt:focus { border-color: var(--primary); outline: none; }
 .batch-row-amt.bad { border-color: var(--danger); background: rgba(198,40,40,0.05); }
+.batch-row.row-bad { background: rgba(198,40,40,0.035); }
+.batch-amt-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.batch-row-err { font-size: 10.5px; color: var(--danger); white-space: nowrap; line-height: 1.2; }
+.batch-err-banner { font-size: 12px; color: var(--danger); background: rgba(198,40,40,0.07);
+  border: 1px solid rgba(198,40,40,0.22); border-radius: 7px; padding: 6px 10px; margin-bottom: 8px; }
 .del-warn { font-size: 13px; color: var(--danger); margin: 0 0 12px; line-height: 1.6; }
 .del-tip { font-size: 13px; color: var(--text); margin: 0 0 8px; }
 .del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; box-sizing: border-box; }

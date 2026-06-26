@@ -328,7 +328,18 @@ const batchSchedRows = ref([])   // [{ id, label, remaining, amount }]
 const batchSchedTotal = computed(() =>
   batchSchedRows.value.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0))
 const batchSchedValid = computed(() => batchSchedRows.value.length > 0 &&
-  batchSchedRows.value.every(r => { const a = parseFloat(r.amount); return a > 0 && a <= r.remaining + 1e-6 }))
+  batchSchedRows.value.every(r => !schedRowError(r)))
+// 行内即时校验：返回该行金额的错误文案（空 = 合法），供逐条红框 + 提示展示
+function schedRowError(r) {
+  if (r.amount === '' || r.amount == null) return '请填写金额'
+  const a = parseFloat(r.amount)
+  if (isNaN(a)) return '金额格式有误'
+  if (a <= 0) return '金额需大于 0'
+  if (a > r.remaining + 1e-6) return `超过剩余可排 ${r.remaining.toFixed(2)}`
+  return ''
+}
+const batchSchedErrCount = computed(() =>
+  batchSchedRows.value.filter(r => schedRowError(r)).length)
 function openBatchSchedule(){
   batchSchedForm.planned_date = todayCST()
   if (isCrossPageSelection.value) {
@@ -868,12 +879,18 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         <span>本次排款金额（共 {{ batchSchedRows.length }} 条）</span>
         <button type="button" class="batch-reset" @click="batchSchedResetAll">全部设为剩余可排</button>
       </div>
+      <div v-if="batchSchedErrCount" class="batch-err-banner">
+        ⚠ {{ batchSchedErrCount }} 行金额有误，请修正后再提交
+      </div>
       <div class="batch-rows">
-        <div v-for="r in batchSchedRows" :key="r.id" class="batch-row">
+        <div v-for="r in batchSchedRows" :key="r.id" class="batch-row" :class="{ 'row-bad': schedRowError(r) }">
           <span class="batch-row-label" :title="r.label">{{ r.label }}</span>
           <span class="batch-row-rem">剩余 {{ r.remaining.toFixed(2) }}</span>
-          <input v-model="r.amount" type="number" step="0.01" min="0" :max="r.remaining"
-                 class="batch-row-amt" :class="{ bad: !(parseFloat(r.amount) > 0 && parseFloat(r.amount) <= r.remaining + 1e-6) }"/>
+          <div class="batch-amt-wrap">
+            <input v-model="r.amount" type="number" step="0.01" min="0" :max="r.remaining"
+                   class="batch-row-amt" :class="{ bad: !!schedRowError(r) }"/>
+            <span v-if="schedRowError(r)" class="batch-row-err">{{ schedRowError(r) }}</span>
+          </div>
         </div>
       </div>
     </template>
@@ -997,6 +1014,11 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   border-radius: 7px; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; box-sizing: border-box; }
 .batch-row-amt:focus { border-color: var(--primary); outline: none; }
 .batch-row-amt.bad { border-color: var(--danger); background: rgba(198,40,40,0.05); }
+.batch-row.row-bad { background: rgba(198,40,40,0.035); }
+.batch-amt-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.batch-row-err { font-size: 10.5px; color: var(--danger); white-space: nowrap; line-height: 1.2; }
+.batch-err-banner { font-size: 12px; color: var(--danger); background: rgba(198,40,40,0.07);
+  border: 1px solid rgba(198,40,40,0.22); border-radius: 7px; padding: 6px 10px; margin-bottom: 8px; }
 .sched-sub { font-size: 10.5px; color: #2e7d32; font-weight: 600; margin-top: 1px; }
 .ops-btns { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
 .ops-btns .btn { padding: 4px 8px; font-size: 12px; white-space: nowrap; }
