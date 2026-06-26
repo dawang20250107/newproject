@@ -11,13 +11,20 @@ const props = defineProps({
 const c = props.ctl
 const btnRef = ref(null)
 const dropStyle = ref({})
+const DROP_W = 264   // 与 .sp-drop width 保持一致
 
 function openDrop() {
-  if (btnRef.value) {
+  if (!c.showDrop.value && btnRef.value) {
     const r = btnRef.value.getBoundingClientRect()
+    const W = window.innerWidth
+    // 右对齐按钮右缘，再夹紧到视口内，避免导航折叠时左右溢出被截断
+    let left = r.right - DROP_W
+    if (left < 8) left = 8
+    if (left + DROP_W > W - 8) left = W - 8 - DROP_W
     dropStyle.value = {
       top: (r.bottom + 6) + 'px',
-      right: (window.innerWidth - r.right) + 'px',
+      left: left + 'px',
+      maxHeight: Math.max(180, window.innerHeight - r.bottom - 20) + 'px',
     }
   }
   c.showDrop.value = !c.showDrop.value
@@ -86,7 +93,8 @@ function openDrop() {
 .sp-drop {
   position: fixed; z-index: 4500;
   background: #fff; border: 1.5px solid var(--border); border-radius: 10px;
-  box-shadow: 0 6px 20px rgba(0,0,0,0.12); min-width: 250px; padding: 8px 0;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.12); width: 264px; padding: 8px 0;
+  overflow-y: auto; overscroll-behavior: contain;
 }
 .sp-backdrop { position: fixed; inset: 0; z-index: 4499; }
 .sp-save-row { display: flex; gap: 6px; padding: 6px 10px 8px; border-bottom: 1px solid var(--border); }
@@ -107,7 +115,7 @@ function openDrop() {
 .sp-item:hover { background: rgba(201,99,66,0.05); }
 .sp-star { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 0 2px; line-height: 1; }
 .sp-star.on, .sp-star:hover { color: #f5a623; }
-.sp-name { flex: 1; font-weight: 500; }
+.sp-name { flex: 1; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sp-owner { font-size: 11px; color: var(--muted); }
 .sp-del { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 12px; }
 .sp-del:hover { color: var(--danger); }

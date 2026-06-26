@@ -510,7 +510,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <button v-if="auth.canCreate" class="btn btn-primary" @click="openCreate">+ 新增审批记录</button>
   </div></div>
   <input ref="fileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImport" />
-  <div class="card approval-card"><div class="filter-row">
+  <div class="card approval-card fh-fill"><div class="filter-row">
     <div class="filter-bar">
     <input v-model="q" class="global-search" placeholder="🔍 全局搜索：申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
     <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
@@ -526,13 +526,15 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <col style="width:7%" /><!-- 申请人 -->
       <col style="width:8%" /><!-- 所属事业部 -->
       <col style="width:8%" /><!-- 二级部门 -->
-      <col style="width:11%" /><!-- 项目简称 -->
-      <col style="width:11%" /><!-- 审批编号 -->
-      <col style="width:9%" /><!-- G7编号 -->
-      <col style="width:15%" /><!-- 摘要 -->
-      <col style="width:9%" /><!-- 申请金额 -->
-      <col style="width:12%" /><!-- 收款主体 -->
-      <col style="width:10%" /><!-- 审批状态 -->
+      <col style="width:9%" /><!-- 项目简称 -->
+      <col style="width:9%" /><!-- 审批编号 -->
+      <col style="width:8%" /><!-- G7编号 -->
+      <col style="width:13%" /><!-- 摘要 -->
+      <col style="width:9%" /><!-- 审批状态 -->
+      <col style="width:8%" /><!-- 申请金额 -->
+      <col style="width:8%" /><!-- 已排金额 -->
+      <col style="width:8%" /><!-- 未排金额 -->
+      <col style="width:11%" /><!-- 收款主体 -->
     </colgroup>
     <thead><tr>
       <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
@@ -543,11 +545,11 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <th><ColumnFilter label="审批编号" field="approval_number" type="text" :model-value="colFilters.approval_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('approval_number',v)" @sort="o=>setSort('approval_number',o)" /></th>
       <th><ColumnFilter label="G7编号" field="g7_number" type="text" :model-value="colFilters.g7_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('g7_number',v)" @sort="o=>setSort('g7_number',o)" /></th>
       <th><ColumnFilter label="摘要" field="summary" type="text" :model-value="colFilters.summary" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('summary',v)" @sort="o=>setSort('summary',o)" /></th>
+      <th><ColumnFilter label="审批状态" field="status" type="enum" :options="STATUS_OPTS" :model-value="colFilters.status" :sortable="false" @update:model-value="v=>setColFilter('status',v)" /></th>
       <th><ColumnFilter label="申请金额" field="amount" type="number" :model-value="colFilters.amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('amount',v)" @sort="o=>setSort('amount',o)" /></th>
       <th class="amt-h"><ColumnFilter label="已排金额" field="scheduled_amount" type="number" :model-value="colFilters.scheduled_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('scheduled_amount',v)" @sort="o=>setSort('scheduled_amount',o)" /></th>
       <th class="amt-h"><ColumnFilter label="未排金额" field="remaining_amount" type="number" :model-value="colFilters.remaining_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('remaining_amount',v)" @sort="o=>setSort('remaining_amount',o)" /></th>
       <th><ColumnFilter label="收款主体" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
-      <th><ColumnFilter label="审批状态" field="status" type="enum" :options="STATUS_OPTS" :model-value="colFilters.status" :sortable="false" @update:model-value="v=>setColFilter('status',v)" /></th>
       </tr></thead>
     <tbody>
       <template v-if="loading">
@@ -560,7 +562,16 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <td>{{i.applicant}}</td><td>{{i.department}}</td>
       <td class="meta-cell">{{ i.secondary_dept || '—' }}</td>
       <td class="meta-cell" :title="i.project_short_name">{{ i.project_short_name || '—' }}</td>
-      <td class="mono">{{i.approval_number}}</td><td class="mono g7-cell">{{i.g7_number || '—'}}</td><td class="summary">{{i.summary}}</td><td class="amt">{{i.amount}}</td>
+      <td class="mono">{{i.approval_number}}</td><td class="mono g7-cell">{{i.g7_number || '—'}}</td><td class="summary">{{i.summary}}</td>
+      <td :class="['status-cell', 'st-' + i.status]" :title="i.status === 'approved' ? '审批通过，可排款' : (i.status === 'pending' ? '待审批，通过后方可排款' : '')">
+        <div class="status-wrap">
+          <span class="status-badge">{{ {pending:'待审批',approved:'审批通过',rejected:'已拒绝',canceled:'已撤销'}[i.status] || i.status }}</span>
+          <select class="status-overlay" :value="i.status" :disabled="statusUpdating[i.id]" @change="updateStatus(i, $event.target.value)" title="点击更改审批状态">
+            <option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option>
+          </select>
+        </div>
+      </td>
+      <td class="amt">{{i.amount}}</td>
       <td class="amt sched-c plan-cell" :title="parseFloat(i.scheduled_amount) > 0 ? '点击展开排款批次明细（排款管理）' : ''"
           @click="parseFloat(i.scheduled_amount) > 0 && toggleAprSchedDetail(i)">
         <template v-if="parseFloat(i.scheduled_amount) > 0">
@@ -571,14 +582,6 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       </td>
       <td class="amt remain-c" :class="{ 'remain-zero': parseFloat(i.remaining_amount) <= 0 }">{{ parseFloat(i.remaining_amount) > 0 ? i.remaining_amount : '—' }}</td>
       <td class="payee">{{i.payee}}</td>
-      <td :class="['status-cell', 'st-' + i.status]" :title="i.status === 'approved' ? '审批通过，可排款' : (i.status === 'pending' ? '待审批，通过后方可排款' : '')">
-        <div class="status-wrap">
-          <span class="status-badge">{{ {pending:'待审批',approved:'审批通过',rejected:'已拒绝',canceled:'已撤销'}[i.status] || i.status }}</span>
-          <select class="status-overlay" :value="i.status" :disabled="statusUpdating[i.id]" @change="updateStatus(i, $event.target.value)" title="点击更改审批状态">
-            <option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option>
-          </select>
-        </div>
-      </td>
       </tr>
       <!-- 排款批次明细面板 -->
       <tr v-if="isAprSchedExpanded(i.id)" class="apr-plan-detail-row">
