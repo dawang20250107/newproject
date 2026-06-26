@@ -23,6 +23,9 @@ urlpatterns = [
     path('payments/import/precheck', views.payment_import_precheck),
     path('payments/import/apply', views.payment_import_apply),
     path('payments/export', views.payment_export),
+    # 运输事业部对账单 专用导入 / 导出（原表格式 ↔ 标准排款）
+    path('payments/transport/import', views.transport_import),
+    path('payments/transport/export', views.transport_export),
     path('payments/<int:pk>', views.payment_detail),
     path('payments/<int:pk>/logs', views.payment_change_logs),
     path('payments/<int:pk>/offsets', views.payment_offsets),

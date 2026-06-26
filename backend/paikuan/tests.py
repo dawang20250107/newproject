@@ -1912,3 +1912,116 @@ class ListSchemeTests(TestCase):
             self.assertEqual(ok_r.status_code, 200, module)
             denied = self.client.get('/api/pk/list-schemes', {'module': module}, **self.auth(non_admin))
             self.assertEqual(denied.status_code, 403, module)
+
+
+class TransportReconciliationTests(TestCase):
+    """运输事业部对账单专用导入/导出：原表(负数/异构列) ↔ 标准排款，去重 + 零误差往返。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900009100', name='TransAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    # 运输系统导出的原始表头（与生产一致）
+    HEADERS = ['序号', '所属组织', '对账单号', '对账对象', '联系电话', '实际对账金额',
+               '对账时间', '状态', '创建人', '创建时间', '备注', '单据类别', '账单调整', '对账金额']
+
+    def _row(self, seq, bill_no, payee, amount, status='已通过'):
+        # amount 传正数，原表里存为负数（来源系统口径）
+        return [seq, '运输项目一部', bill_no, payee, '', -abs(amount),
+                '2026-06-26 10:47:20', status, '谭雯雯', '2026-06-26 10:51:24',
+                '税后利润 2592.27 税后利润率 30.19%', '车辆', '', -abs(amount)]
+
+    def _xlsx(self, rows):
+        from openpyxl import Workbook
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        wb = Workbook(); ws = wb.active
+        ws.append(self.HEADERS)
+        for r in rows:
+            ws.append(r)
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        return SimpleUploadedFile('transport.xlsx', buf.read(),
+                                  content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+    def _import(self, rows):
+        return self.client.post('/api/pk/payments/transport/import',
+                                {'file': self._xlsx(rows)}, **self.auth())
+
+    def test_import_maps_abs_amount_and_fields(self):
+        resp = self._import([self._row(1, 'ZD202606260055', '安仕吉-浓香酒', 4828.5)])
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['created'], 1)
+        p = Payment.objects.get(ext_bill_no='ZD202606260055')
+        self.assertEqual(p.ext_source, 'transport')
+        self.assertEqual(p.department, '运输事业部')
+        self.assertEqual(p.secondary_dept, '运输项目一部')
+        self.assertEqual(p.payee, '安仕吉-浓香酒')
+        self.assertEqual(p.total_amount, Decimal('4828.5'))     # 取绝对值
+        self.assertEqual(p.planned_date, date(2026, 6, 26))      # 对账时间日期
+        self.assertEqual(p.ext_raw['对账单号'], 'ZD202606260055')
+        self.assertEqual(p.ext_raw['实际对账金额'], -4828.5)      # 原始负数逐字保留
+
+    def test_import_dedup_by_bill_no(self):
+        # 文件内重复 + 二次导入重复，均按对账单号去重
+        rows = [self._row(1, 'ZD0001', 'A', 100), self._row(2, 'ZD0001', 'A', 100),
+                self._row(3, 'ZD0002', 'B', 200)]
+        d = self._import(rows).json()['data']
+        self.assertEqual(d['created'], 2)
+        self.assertEqual(d['duplicates'], 1)
+        # 再次导入同文件 → 全部判重，0 新增
+        d2 = self._import(rows).json()['data']
+        self.assertEqual(d2['created'], 0)
+        self.assertEqual(d2['duplicates'], 3)
+        self.assertEqual(Payment.objects.filter(ext_source='transport').count(), 2)
+
+    def test_export_roundtrip_zero_drift_only_status_changes(self):
+        # 导入两条 → 结算其一 → 导出，校验：仅已结算行状态列改写，其余逐字零误差
+        self._import([self._row(1, 'ZD-A', '承运商甲', 1000),
+                      self._row(2, 'ZD-B', '承运商乙', 2000)])
+        pa = Payment.objects.get(ext_bill_no='ZD-A')
+        pb = Payment.objects.get(ext_bill_no='ZD-B')
+        # 结算 A：付清 → status=settled
+        PaymentInstallment.objects.create(payment=pa, seq=1, pay_date=date(2026, 6, 27),
+                                           pay_amount=Decimal('1000'))
+        self.assertEqual(pa.status, 'settled')
+        # 勾选导出 A + B
+        resp = self.client.get('/api/pk/payments/transport/export',
+                               {'ids': f'{pa.id},{pb.id}'}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        from openpyxl import load_workbook
+        ws = load_workbook(io.BytesIO(resp.content), data_only=True).active
+        hdr = [c.value for c in ws[1]]
+        self.assertEqual(hdr, self.HEADERS)            # 原列顺序还原
+        si = hdr.index('状态'); bi = hdr.index('对账单号'); ai = hdr.index('实际对账金额')
+        by_bill = {row[bi].value: row for row in ws.iter_rows(min_row=2)}
+        ra, rb = by_bill['ZD-A'], by_bill['ZD-B']
+        # A 已结算：状态列改写；金额等其它列零误差（负数原样）
+        self.assertEqual(ra[si].value, '已结算')
+        self.assertEqual(ra[ai].value, -1000)
+        # B 未结算：状态保留原值「已通过」，全列零误差
+        self.assertEqual(rb[si].value, '已通过')
+        self.assertEqual(rb[ai].value, -2000)
+
+    def test_export_requires_selection_or_filter(self):
+        self._import([self._row(1, 'ZD-X', 'X', 500)])
+        # 无 ids、无筛选 → 导出全部运输记录（仍应成功，含1条）
+        resp = self.client.get('/api/pk/payments/transport/export', **self.auth())
+        self.assertEqual(resp.status_code, 200)
+
+    def test_import_rejects_unparseable_amount(self):
+        bad = self._row(1, 'ZD-BAD', 'X', 0)
+        bad[5] = 'abc'   # 实际对账金额列非数字
+        d = self._import([bad]).json()['data']
+        self.assertEqual(d['created'], 0)
+        self.assertEqual(d['skipped'], 1)
+        self.assertTrue(d['errors'])

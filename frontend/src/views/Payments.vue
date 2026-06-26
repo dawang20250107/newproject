@@ -460,6 +460,58 @@ async function exportExcel() {
   finally { exportingXlsx.value = false }
 }
 
+// ── 运输事业部专用导入 / 导出（原表负数 ↔ 标准排款，对账单号去重，导出零误差还原）──
+// 仅对可写「运输事业部」的用户展示。
+const canTransport = computed(() =>
+  auth.canCreate && (auth.isSuperAdmin || auth.effectiveDepts.includes('运输事业部')))
+const transportInputRef = ref(null)
+const importingTransport = ref(false)
+const exportingTransport = ref(false)
+
+function triggerTransportImport() {
+  importResult.value = null
+  transportInputRef.value.click()
+}
+
+async function onTransportFile(e) {
+  const file = e.target.files[0]
+  if (!file) return
+  e.target.value = ''
+  importingTransport.value = true
+  importResult.value = null
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await api.post('/payments/transport/import', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000,
+    })
+    importResult.value = res.data
+    if (res.data.created > 0) load()
+  } catch (ex) {
+    importResult.value = { error: ex?.msg || '运输对账单导入失败，请确认上传的是运输系统导出的原始表' }
+  } finally {
+    importingTransport.value = false
+  }
+}
+
+async function exportTransport() {
+  exportingTransport.value = true
+  try {
+    // 勾选优先：选中行按 ids 导出；未勾选则导出当前可见范围内全部运输对账记录
+    const params = {}
+    if (selectedIds.value.size) {
+      params.ids = [...selectedIds.value].join(',')
+    } else {
+      const p = buildParams(); delete p.page; delete p.size
+      Object.assign(params, p)
+    }
+    const blob = await api.get('/payments/transport/export', { params, responseType: 'blob', timeout: 60000 })
+    const date = new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '月') + '日'
+    triggerDownload(blob, `运输对账单_已结算_${date}.xlsx`)
+  } catch (e) { toast.error(e?.msg || '运输对账单导出失败') }
+  finally { exportingTransport.value = false }
+}
+
 const triggerDownload = downloadBlob
 
 async function load() {
@@ -788,6 +840,19 @@ async function doBatchPay() {
           <span v-if="exportingXlsx" class="btn-spin"></span>
           <span v-else style="margin-right:4px">📤</span>{{ exportingXlsx ? '导出中…' : '导出' }}
         </button>
+        <template v-if="canTransport">
+          <span class="tp-divider" title="运输事业部对账单专用通道"></span>
+          <button class="btn btn-ghost btn-sm tp-btn" :disabled="importingTransport" @click="triggerTransportImport"
+                  title="导入运输系统导出的对账单原始表：金额自动取绝对值、对账单号去重，转为标准排款">
+            <span v-if="importingTransport" class="btn-spin"></span>
+            <span v-else style="margin-right:4px">🚚</span>{{ importingTransport ? '导入中…' : '运输导入' }}
+          </button>
+          <button class="btn btn-ghost btn-sm tp-btn" :disabled="exportingTransport" @click="exportTransport"
+                  :title="selectedCount ? `导出勾选的 ${selectedCount} 条（已结算行状态列改为已结算，其余原样还原）` : '导出全部运输对账记录，原表格式零误差还原；已结算行状态列改为已结算'">
+            <span v-if="exportingTransport" class="btn-spin"></span>
+            <span v-else style="margin-right:4px">🚚</span>{{ exportingTransport ? '导出中…' : (selectedCount ? `运输导出(${selectedCount})` : '运输导出') }}
+          </button>
+        </template>
         <div class="col-settings-wrap">
           <button class="btn btn-ghost btn-sm" title="自定义表格显示哪些列"
                   @click="showColSettings = !showColSettings">⚙ 列设置</button>
@@ -804,6 +869,8 @@ async function doBatchPay() {
 
     <!-- hidden file input for import -->
     <input ref="importInputRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImportFile" />
+    <!-- hidden file input for transport reconciliation import -->
+    <input ref="transportInputRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onTransportFile" />
 
     <div v-if="activeTab === 'ledger'" class="card fh-fill" style="margin-bottom:16px">
       <div class="filter-bar">
@@ -1276,6 +1343,11 @@ async function doBatchPay() {
 </template>
 
 <style scoped>
+/* 运输事业部专用通道：分隔符 + 按钮强调色（与普通导入导出区分）*/
+.tp-divider { width: 1px; height: 18px; background: var(--border); margin: 0 2px; display: inline-block; }
+.tp-btn { border-color: rgba(201,99,66,0.4); color: var(--primary); }
+.tp-btn:hover:not(:disabled) { background: rgba(201,99,66,0.08); border-color: var(--primary); }
+
 /* Tab bar */
 .tab-bar { display: flex; gap: 2px; background: rgba(0,0,0,0.05); border-radius: 10px; padding: 3px; }
 .tab-btn { border: none; background: none; padding: 5px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; transition: none; }

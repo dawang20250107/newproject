@@ -4107,6 +4107,247 @@ def payment_export(request):
     return _build_excel_response(wb, f'排款记录_{today}.xlsx')
 
 
+# ── 运输事业部对账单 专用导入 / 导出 ────────────────────────────────────────────
+# 运输事业部从自有系统导出的对账单结构与排款表完全不同（14 固定列、金额为负）。
+# 导入：逐行转为标准 Payment（金额取绝对值、映射部门/收款方/日期），原始整行存 ext_raw，
+#       以「对账单号」为唯一键去重；之后即可像普通排款一样走付款 / 分期 / 结算流程。
+# 导出：按勾选 / 筛选取回这些 Payment，从 ext_raw 原样还原原表格式，逐字零误差，
+#       仅把「状态」列改写为「已结算」（限系统内已付清的行），供回传运输自有系统。
+TRANSPORT_SOURCE = 'transport'
+TRANSPORT_DEPT = '运输事业部'
+# 运输对账单原表头（顺序即导出列顺序，必须与来源系统完全一致）
+TRANSPORT_HEADERS = [
+    '序号', '所属组织', '对账单号', '对账对象', '联系电话', '实际对账金额',
+    '对账时间', '状态', '创建人', '创建时间', '备注', '单据类别', '账单调整', '对账金额',
+]
+TRANSPORT_KEY_COL = '对账单号'      # 去重唯一键
+TRANSPORT_AMOUNT_COL = '实际对账金额'  # 取绝对值作为计划金额（已含账单调整的最终额）
+TRANSPORT_STATUS_COL = '状态'       # 导出时改写为「已结算」的列
+TRANSPORT_SETTLED_LABEL = '已结算'
+
+
+def _transport_row_date(raw):
+    """从原始行里取一个日期作为 Payment.planned_date：优先对账时间，回退创建时间，再回退今天。"""
+    for col in ('对账时间', '创建时间'):
+        v = raw.get(col)
+        if v:
+            iso = _normalize_date(str(v).split(' ')[0].split('T')[0])
+            try:
+                return datetime.date.fromisoformat(iso)
+            except (ValueError, TypeError):
+                continue
+    return timezone.localdate()
+
+
+@csrf_exempt
+@pk_required()
+def transport_import(request):
+    """POST — 运输事业部对账单导入：原表 → 标准 Payment（金额取绝对值），按对账单号去重。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    if perms is not None and not perms['can_create']:
+        return err('无新增权限', 403, 403)
+    if not can_write_dept(request, TRANSPORT_DEPT):
+        return err(f'无权操作部门"{TRANSPORT_DEPT}"', 403, 403)
+    upload = request.FILES.get('file')
+    if not upload:
+        return err('请上传文件（.xlsx / .csv）')
+    if upload.size > 5 * 1024 * 1024:
+        return err('文件过大，请确认文件不超过5MB')
+    rows, ferr = _read_import_rows(upload)
+    if ferr:
+        return err(ferr)
+    if not rows or len(rows) < 2:
+        return err('文件为空或缺少数据行')
+
+    # 表头定位：按列名匹配（容忍列顺序变化 / 前后空白），必须含对账单号与金额列
+    header = [str(h).strip() if h is not None else '' for h in rows[0]]
+    pos = {h: i for i, h in enumerate(header)}
+    missing = [c for c in (TRANSPORT_KEY_COL, TRANSPORT_AMOUNT_COL) if c not in pos]
+    if missing:
+        return err(f'运输对账单缺少必要列：{"、".join(missing)}。请直接上传运输系统导出的原始表')
+
+    def cell(row, col):
+        i = pos.get(col)
+        if i is None or i >= len(row):
+            return None
+        return row[i]
+
+    results = {'created': 0, 'skipped': 0, 'duplicates': 0, 'errors': []}
+    seen_in_file = set()
+    existing = set(
+        Payment.objects.filter(ext_source=TRANSPORT_SOURCE)
+        .values_list('ext_bill_no', flat=True)
+    )
+    for rn, row in enumerate(rows[1:], start=2):
+        if row is None or all(v is None or str(v).strip() == '' for v in row):
+            continue
+        bill_no = cell(row, TRANSPORT_KEY_COL)
+        bill_no = str(bill_no).strip() if bill_no is not None else ''
+        if not bill_no:
+            results['errors'].append(f'第{rn}行: 缺少对账单号，已跳过')
+            results['skipped'] += 1
+            continue
+        if bill_no in seen_in_file or bill_no in existing:
+            results['duplicates'] += 1
+            results['skipped'] += 1
+            continue
+        amt_raw = cell(row, TRANSPORT_AMOUNT_COL)
+        try:
+            amount = abs(Decimal(str(amt_raw).strip()))
+        except (InvalidOperation, AttributeError, TypeError):
+            results['errors'].append(f'第{rn}行: 金额"{amt_raw}"无法解析，已跳过')
+            results['skipped'] += 1
+            continue
+        if amount <= 0:
+            results['errors'].append(f'第{rn}行: 对账单 {bill_no} 金额为0，已跳过')
+            results['skipped'] += 1
+            continue
+        # 原始整行逐字快照（按原表头键存，导出据此零误差还原）
+        raw = {h: (row[i] if i < len(row) else None) for h, i in pos.items()}
+        payee = str(cell(row, '对账对象') or '').strip() or bill_no
+        org = str(cell(row, '所属组织') or '').strip()
+        notes = str(cell(row, '备注') or '').strip()
+        try:
+            with transaction.atomic():
+                p = Payment.objects.create(
+                    created_by_id=request.pk_uid, updated_by_id=request.pk_uid,
+                    department=TRANSPORT_DEPT, secondary_dept=org,
+                    project_desc=payee, payee=payee,
+                    total_amount=amount, planned_date=_transport_row_date(raw),
+                    notes=notes,
+                    ext_source=TRANSPORT_SOURCE, ext_bill_no=bill_no, ext_raw=raw,
+                )
+                _ensure_plan_item(p)
+                _record_payment_changes(p, {}, {}, request, action='create')
+            results['created'] += 1
+            seen_in_file.add(bill_no)
+        except IntegrityError:
+            # DB 兜底唯一约束命中（并发或已存在）→ 计为重复
+            results['duplicates'] += 1
+            results['skipped'] += 1
+        except Exception as e:
+            results['errors'].append(f'第{rn}行: 对账单 {bill_no} 保存失败 ({e})')
+            results['skipped'] += 1
+
+    parts = [f'成功导入 {results["created"]} 条']
+    if results['duplicates']:
+        parts.append(f'跳过重复 {results["duplicates"]} 条')
+    other_skip = results['skipped'] - results['duplicates']
+    if other_skip > 0:
+        parts.append(f'跳过异常 {other_skip} 条')
+    results['message'] = '；'.join(parts)
+    return ok(results)
+
+
+@csrf_exempt
+@pk_required()
+def transport_export(request):
+    """GET — 运输对账单导出：按 ids（勾选）/ 筛选取回运输来源 Payment，原样还原原表，
+    仅把状态列改为「已结算」（限系统内已付清行）。零误差回传运输自有系统。"""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except ImportError:
+        return err('服务器缺少 openpyxl 依赖', 500)
+
+    qs = Payment.objects.filter(ext_source=TRANSPORT_SOURCE)
+    qs = dept_filter(qs, request)
+    qs = qs.prefetch_related('installments')
+
+    # 勾选导出优先：ids=逗号分隔的主键
+    ids_raw = (request.GET.get('ids') or '').strip()
+    if ids_raw:
+        try:
+            ids = [int(x) for x in ids_raw.split(',') if x.strip()]
+        except ValueError:
+            return err('ids 参数格式有误')
+        qs = qs.filter(id__in=ids)
+    else:
+        # 否则走列表同款筛选（日期 / 关键词 / 列头筛选）
+        start = request.GET.get('start_date', '').strip()
+        end = request.GET.get('end_date', '').strip()
+        q_str = request.GET.get('q', '').strip()
+        if start:
+            qs = qs.filter(planned_date__gte=start)
+        if end:
+            qs = qs.filter(planned_date__lte=end)
+        if q_str:
+            qs = qs.filter(
+                Q(payee__icontains=q_str) | Q(ext_bill_no__icontains=q_str) |
+                Q(secondary_dept__icontains=q_str) | Q(notes__icontains=q_str)
+            )
+        fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), PAYMENT_FILTER_REGISTRY)
+        if fq:
+            qs = qs.filter(fq)
+            if fq_distinct:
+                qs = qs.distinct()
+
+    payments = list(qs)
+    if not payments:
+        return err('没有可导出的运输对账记录（请先勾选行或调整筛选）')
+    EXPORT_CAP = 5000
+    if len(payments) > EXPORT_CAP:
+        return err(f'当前结果共 {len(payments)} 条，超出导出上限（{EXPORT_CAP} 条），请缩小范围')
+
+    # 还原列顺序：以导入时保存的原始表头为准（兼容来源系统列序），回退到标准表头
+    sample_raw = next((p.ext_raw for p in payments if isinstance(p.ext_raw, dict) and p.ext_raw), None)
+    headers = list(sample_raw.keys()) if sample_raw else list(TRANSPORT_HEADERS)
+    if TRANSPORT_STATUS_COL not in headers:
+        headers.append(TRANSPORT_STATUS_COL)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '运输对账单'
+    header_font = Font(bold=True, color='FFFFFF', size=11)
+    header_fill = PatternFill(fill_type='solid', fgColor='C96342')
+    center = Alignment(horizontal='center', vertical='center')
+    for ci, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=ci, value=h)
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = center
+
+    _FORMULA_CHARS = ('=', '+', '@')
+
+    def _safe(v):
+        # Excel 注入防护：仅对会被当成公式的纯文本前缀加引号，不动数字 → 不改变数值精度
+        if isinstance(v, str) and v and v[0] in _FORMULA_CHARS:
+            return "'" + v
+        return v
+
+    for ri, p in enumerate(payments, start=2):
+        raw = p.ext_raw if isinstance(p.ext_raw, dict) else {}
+        settled = p.status == 'settled'
+        for ci, h in enumerate(headers, 1):
+            if h == TRANSPORT_STATUS_COL:
+                # 仅已结算行改写状态列；未结算保留原值（零误差）
+                val = TRANSPORT_SETTLED_LABEL if settled else raw.get(h)
+            else:
+                val = raw.get(h)
+            # 空单元格统一还原为空字符串，与来源系统原表表示一致（避免 None/'' 表象差异）
+            if val is None:
+                val = ''
+            ws.cell(row=ri, column=ci, value=_safe(val))
+
+    for col in ws.columns:
+        max_len = max((len(str(c.value or '')) for c in col), default=10)
+        ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 36)
+
+    today = timezone.localdate().strftime('%Y%m%d')
+    return _build_excel_response(wb, f'运输对账单_已结算_{today}.xlsx')
+
+
 # ── departments ───────────────────────────────────────────────────────────────
 
 @pk_required()
