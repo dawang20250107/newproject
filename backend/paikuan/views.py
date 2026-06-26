@@ -3114,6 +3114,10 @@ def approval_import_apply(request):
 
 @pk_required()
 def approval_export(request):
+    return _approval_export_core(request)
+
+
+def _approval_export_core(request, export_cap=5000):
     if request.method != 'GET':
         return err('Method not allowed', 405)
     perms = get_request_perms(request)
@@ -3138,8 +3142,8 @@ def approval_export(request):
     _sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), APPROVAL_FILTER_REGISTRY)
     if _sort_by:
         qs = qs.order_by(_sort_by)
-    if qs.count() > 5000:
-        return err('导出超过5000行，请缩小筛选范围')
+    if qs.count() > export_cap:
+        return err(f'导出超过{export_cap}行，请缩小筛选范围或使用后台导出')
 
     # Excel 公式注入防护：以 =+-@ 等开头的文本前置单引号转义
     _formula_chars = ('=', '+', '-', '@', '\t', '\r')
@@ -4043,6 +4047,10 @@ def payment_import_apply(request):
 @pk_required()
 def payment_export(request):
     """GET — export filtered payment list to Excel (same filters as list view)."""
+    return _payment_export_core(request)
+
+
+def _payment_export_core(request, export_cap=5000):
     if request.method != 'GET':
         return err('Method not allowed', 405)
     perms = get_request_perms(request)
@@ -4099,12 +4107,11 @@ def payment_export(request):
     qs = _apply_payment_status_filter(qs, status_q, _paid_annotated, hide_settled=hide_settled)
 
     # Reject rather than silently truncate: a truncated export is worse than no export.
-    EXPORT_CAP = 5000
     total_count = qs.count()
-    if total_count > EXPORT_CAP:
+    if total_count > export_cap:
         return err(
-            f'当前筛选结果共 {total_count} 条，超出导出上限（{EXPORT_CAP} 条）。'
-            '请缩小日期范围或添加其他筛选条件后重试。'
+            f'当前筛选结果共 {total_count} 条，超出导出上限（{export_cap} 条）。'
+            '请缩小日期范围或添加其他筛选条件后重试，或使用后台导出。'
         )
 
     # Determine max installment count across the filtered set for dynamic columns.
@@ -4336,6 +4343,10 @@ def transport_import(request):
 def transport_export(request):
     """GET（付款管理）— 运输对账单导出：按 ids（勾选付款记录）/ 筛选取回已排款的运输付款，
     从来源审批的 ext_raw 原样还原原表，仅把状态列改为「已结算」（限已付清行）。零误差回传。"""
+    return _transport_export_core(request)
+
+
+def _transport_export_core(request, export_cap=5000):
     if request.method != 'GET':
         return err('Method not allowed', 405)
     perms = get_request_perms(request)
@@ -4383,9 +4394,8 @@ def transport_export(request):
     payments = list(qs)
     if not payments:
         return err('没有可导出的运输对账记录（请先在审批管理排款，再勾选付款记录或调整筛选）')
-    EXPORT_CAP = 5000
-    if len(payments) > EXPORT_CAP:
-        return err(f'当前结果共 {len(payments)} 条，超出导出上限（{EXPORT_CAP} 条），请缩小范围')
+    if len(payments) > export_cap:
+        return err(f'当前结果共 {len(payments)} 条，超出导出上限（{export_cap} 条），请缩小范围')
 
     # 一条审批（一张对账单）↔ 一条付款汇总记录；按对账单号去重，保证一单一行
     by_bill = {}
@@ -4447,6 +4457,147 @@ def transport_export(request):
 
     today = timezone.localdate().strftime('%Y%m%d')
     return _build_excel_response(wb, f'运输对账单_已结算_{today}.xlsx')
+
+
+# ── 异步导出（大数据量后台任务）──────────────────────────────────────────────
+# 同步导出上限 5000 行，超出改后台异步生成：前端建任务→轮询状态→完成后下载。
+# 文件字节存 ExportJob.file_data（DB），跨 gunicorn worker 共享，无需 Redis/Celery。
+ASYNC_EXPORT_CAP = 100000   # 后台导出硬上限（保护内存与 DB BLOB 体积）
+
+# 哪些列表筛选参数需要快照进 ExportJob.params 以便后台重建同口径 queryset。
+_EXPORT_PARAM_KEYS = (
+    'q', 'filters', 'sort', 'order', 'depts', 'dept', 'status', 'hide_settled',
+    'start_date', 'end_date', 'pay_date_start', 'pay_date_end', 'g7_number', 'ids',
+)
+
+
+class _ReplayRequest:
+    """后台导出 worker 用：模拟一个已认证的 GET 请求，承载导出核心读取的全部上下文
+    （pk_* 身份 + GET 筛选参数）。导出核心只读不写，故无需真实 HttpRequest。"""
+    method = 'GET'
+
+    def __init__(self, user, params):
+        self.pk_user = user
+        self.pk_uid = user.id
+        self.pk_role = user.role
+        self.pk_job = user.job_title
+        self.pk_depts = user.departments or []
+        self.GET = params or {}
+
+
+def _run_export_job(job_id):
+    """后台线程：重建筛选 → 生成 xlsx → 字节落库。独立 DB 连接，结束务必关闭。"""
+    from django.db import connection
+    from paikuan.models import ExportJob
+    _CORES = {'approvals': _approval_export_core, 'payments': _payment_export_core,
+              'transport': _transport_export_core}
+    try:
+        job = ExportJob.objects.get(pk=job_id)
+    except ExportJob.DoesNotExist:
+        return
+    try:
+        job.status = 'running'
+        job.save(update_fields=['status'])
+        core = _CORES.get(job.kind)
+        if core is None:
+            raise ValueError(f'未知导出类型 {job.kind}')
+        req = _ReplayRequest(job.created_by, job.params)
+        resp = core(req, export_cap=ASYNC_EXPORT_CAP)
+        if getattr(resp, 'status_code', 200) != 200:
+            # 错误响应体为 JSON {error/msg}
+            try:
+                payload = json.loads(resp.content.decode('utf-8'))
+                msg = payload.get('error') or payload.get('msg') or '导出失败'
+            except Exception:
+                msg = '导出失败'
+            job.status = 'failed'
+            job.error = msg
+            job.finished_at = timezone.now()
+            job.save(update_fields=['status', 'error', 'finished_at'])
+            return
+        content = resp.content
+        # 从 Content-Disposition 还原文件名（_build_excel_response 已 URL 编码）
+        job.file_data = content
+        if not job.filename:
+            job.filename = {'approvals': '审批记录.xlsx', 'payments': '排款记录.xlsx',
+                            'transport': '运输对账单.xlsx'}.get(job.kind, '导出.xlsx')
+        job.status = 'done'
+        job.finished_at = timezone.now()
+        job.save(update_fields=['file_data', 'filename', 'status', 'finished_at'])
+    except Exception as e:
+        logger.exception('export job %s failed', job_id)
+        try:
+            job.status = 'failed'
+            job.error = str(e)[:500]
+            job.finished_at = timezone.now()
+            job.save(update_fields=['status', 'error', 'finished_at'])
+        except Exception:
+            pass
+    finally:
+        connection.close()
+
+
+@csrf_exempt
+@pk_required()
+def export_create(request):
+    """POST {kind, params} — 建后台导出任务并启动线程。返回 {id, status}。
+    kind ∈ approvals|payments|transport；params 为列表筛选参数快照。"""
+    from paikuan.models import ExportJob
+    if request.method != 'POST':
+        return err('POST only', 405)
+    body = parse_body(request)
+    kind = (body.get('kind') or '').strip()
+    if kind not in ('approvals', 'payments', 'transport'):
+        return err('未知导出类型')
+    # 权限校验：与对应列表页一致
+    perms = get_request_perms(request)
+    if kind == 'approvals':
+        if perms is not None and not perms['pages'].get('approval_records', True):
+            return err('无访问权限', 403, 403)
+    else:
+        denied = _payments_page_denied(request, perms)
+        if denied:
+            return denied
+    raw_params = body.get('params') or {}
+    params = {k: str(raw_params[k]) for k in _EXPORT_PARAM_KEYS if k in raw_params and raw_params[k] not in (None, '')}
+    job = ExportJob.objects.create(kind=kind, created_by=request.pk_user, params=params)
+    t = threading.Thread(target=_run_export_job, args=(job.id,), daemon=True)
+    t.start()
+    return ok(job.to_dict())
+
+
+@pk_required()
+def export_status(request, pk):
+    """GET — 单个导出任务状态（轮询用）。"""
+    from paikuan.models import ExportJob
+    job = ExportJob.objects.filter(pk=pk, created_by_id=request.pk_uid).first()
+    if not job:
+        return err('任务不存在', 404)
+    return ok(job.to_dict())
+
+
+@pk_required()
+def export_list(request):
+    """GET — 当前用户最近的导出任务（默认 20 条）。"""
+    from paikuan.models import ExportJob
+    jobs = ExportJob.objects.filter(created_by_id=request.pk_uid)[:20]
+    return ok({'items': [j.to_dict() for j in jobs]})
+
+
+@pk_required()
+def export_download(request, pk):
+    """GET — 下载已完成的导出文件字节。"""
+    from paikuan.models import ExportJob
+    job = ExportJob.objects.filter(pk=pk, created_by_id=request.pk_uid).first()
+    if not job:
+        return err('任务不存在', 404)
+    if job.status != 'done' or not job.file_data:
+        return err('文件尚未生成完成')
+    resp = HttpResponse(
+        bytes(job.file_data),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    resp['Content-Disposition'] = f"attachment; filename*=UTF-8''{quote(job.filename)}"
+    return resp
 
 
 # 跨页全选上限：与各批量操作的单次上限对齐（批量删除/审批/排款/付款均为 1000）。

@@ -16,7 +16,9 @@ import SkeletonRow from '../components/SkeletonRow.vue'
 import SchemePicker from '../components/SchemePicker.vue'
 import { useTableSchemes } from '../composables/useTableSchemes.js'
 import { useToast } from '../composables/useToast.js'
+import { useAsyncExport } from '../composables/useAsyncExport.js'
 const toast = useToast()
+const { exporting: bgExporting, startExport } = useAsyncExport()
 
 const auth = useAuthStore()
 const items = ref([])
@@ -563,7 +565,23 @@ async function onPrecheckApply({ mode, rows, okRows }){
   }catch(err){ toast.error(err?.msg||err?.error||'操作失败') }
   finally{ precheckBusy.value=false }
 }
-async function doExport(){ exporting.value=true; try{ const b=await api.get('/approvals/export',{params:buildParams(),responseType:'blob'}); dl(b,'审批管理.xlsx') } finally{ exporting.value=false } }
+async function doExport(){
+  exporting.value=true
+  try{
+    const b=await api.get('/approvals/export',{params:buildParams(),responseType:'blob'})
+    dl(b,'审批管理.xlsx')
+  } catch(e){
+    // 同步导出超出上限（>5000 行）→ 自动转后台异步导出
+    const msg = e?.msg || e?.error || ''
+    if (/导出超过|后台导出|超出导出上限/.test(msg)) {
+      startExport('approvals', buildParams())
+    } else {
+      toast.error(msg || '导出失败')
+    }
+  } finally{ exporting.value=false }
+}
+// 显式后台导出（无视同步上限，直接走异步任务）
+function doBgExport(){ startExport('approvals', buildParams()) }
 
 const onScopeChange = () => {
   // 事业部范围切换：若列头筛了已超出范围的事业部，清掉该列筛选
@@ -598,7 +616,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <button class="btn btn-ghost btn-sm" @click="downloadTemplate">模板</button>
     <button class="btn btn-ghost btn-sm" :disabled="importing" @click="triggerImport"
             title="导入会自动做规则校验 + AI 智能复核；发现问题时 AI 会介入，协助你就地修正后再导入">{{ importing?'导入中…':'导入' }}</button>
-    <button class="btn btn-ghost btn-sm" @click="doExport">{{ exporting?'导出中…':'导出' }}</button>
+    <button class="btn btn-ghost btn-sm" @click="doExport" :disabled="exporting || bgExporting"
+            title="导出当前筛选结果；超过 5000 行自动转后台导出，完成后自动下载">{{ exporting?'导出中…':(bgExporting?'后台导出中…':'导出') }}</button>
     <button v-if="canTransport" class="btn btn-ghost btn-sm tp-btn" :disabled="importingTransport" @click="triggerTransportImport"
             title="运输事业部专用：上传运输系统导出的对账单原始表 → 金额自动取绝对值、对账单号去重，建为「已通过」审批记录，再排款进付款管理">
       <span style="margin-right:3px">🚚</span>{{ importingTransport?'导入中…':'运输导入' }}</button>
@@ -608,7 +627,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <input ref="transportFileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onTransportImport" />
   <div class="card approval-card fh-fill">
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
-  <EmptyState v-else-if="!loading && !items.length" empty :text="activeFilterCount || q ? '暂无匹配记录' : '暂无审批记录，点击「新增」创建第一条记录'" />
+  <EmptyState v-else-if="!loading && !items.length" :variant="activeFilterCount || q ? 'search' : 'empty'" :text="activeFilterCount || q ? '没有符合当前筛选条件的审批记录' : '暂无审批记录，点击「新增」创建第一条记录'" />
   <div v-if="!loadErr" class="table-wrap page-scroll"><table class="approval-table">
     <colgroup>
       <col class="cg-sel" /><!-- 选择 -->

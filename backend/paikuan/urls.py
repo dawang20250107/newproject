@@ -63,6 +63,11 @@ urlpatterns = [
     path('departments', views.departments),
     path('trash/approvals', views.trash_approvals),
     path('trash/payments', views.trash_payments),
+    # 异步导出（大数据量后台任务）
+    path('exports', views.export_create),
+    path('exports/list', views.export_list),
+    path('exports/<int:pk>', views.export_status),
+    path('exports/<int:pk>/download', views.export_download),
     path('audit-logs', views.audit_logs),
     path('audit-logs/prune', views.audit_logs_prune),
 ]

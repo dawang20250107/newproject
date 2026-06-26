@@ -491,3 +491,40 @@ class ListSchemeDefault(models.Model):
     class Meta:
         db_table = 'pk_list_scheme_defaults'
         unique_together = [('user', 'module')]
+
+
+class ExportJob(models.Model):
+    """异步导出任务：大数据量导出改后台生成，前端轮询状态、完成后下载。
+    文件字节存 DB（BinaryField），跨 gunicorn worker 共享、无需外部存储/队列。"""
+    KIND_CHOICES = [('approvals', '审批记录'), ('payments', '排款记录'), ('transport', '运输对账单')]
+    STATUS_CHOICES = [('pending', '排队中'), ('running', '生成中'),
+                      ('done', '已完成'), ('failed', '失败')]
+    kind = models.CharField('导出类型', max_length=20, choices=KIND_CHOICES)
+    status = models.CharField('状态', max_length=12, choices=STATUS_CHOICES, default='pending', db_index=True)
+    # 重建 queryset 所需的列表筛选参数（原 GET 查询串的键值快照）
+    params = models.JSONField('筛选参数', default=dict, blank=True)
+    filename = models.CharField('文件名', max_length=200, blank=True, default='')
+    file_data = models.BinaryField('文件字节', null=True, blank=True)
+    row_count = models.IntegerField('导出行数', default=0)
+    error = models.TextField('错误信息', blank=True, default='')
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.CASCADE, related_name='export_jobs')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True, db_index=True)
+    finished_at = models.DateTimeField('完成时间', null=True, blank=True)
+
+    class Meta:
+        db_table = 'pk_export_jobs'
+        ordering = ['-created_at']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'kind': self.kind,
+            'kind_label': dict(self.KIND_CHOICES).get(self.kind, self.kind),
+            'status': self.status,
+            'filename': self.filename,
+            'row_count': self.row_count,
+            'error': self.error,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'finished_at': self.finished_at.isoformat() if self.finished_at else None,
+            'ready': self.status == 'done',
+        }

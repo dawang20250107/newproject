@@ -19,9 +19,11 @@ import { useColWidths } from '../composables/useColWidths.js'
 import ContextMenu from '../components/ContextMenu.vue'
 import { useContextMenu } from '../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../utils/clipboard.js'
+import { useAsyncExport } from '../composables/useAsyncExport.js'
 
 const toast = useToast()
 const auth = useAuthStore()
+const { exporting: bgExporting, startExport } = useAsyncExport()
 
 // Column visibility from field-level view permissions.
 const showPaid = computed(() => auth.canView('installments'))
@@ -456,7 +458,16 @@ async function exportExcel() {
     const blob = await api.get('/payments/export', { params, responseType: 'blob', timeout: 60000 })
     const date = new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '月') + '日'
     triggerDownload(blob, `排款记录_${date}.xlsx`)
-  } catch (e) { toast.error(e?.msg || '导出失败，请稍后重试') }
+  } catch (e) {
+    // 同步导出超出上限（>5000 行）→ 自动转后台异步导出
+    const msg = e?.msg || e?.error || ''
+    if (/超出导出上限|后台导出|导出超过/.test(msg)) {
+      const params = buildParams(); delete params.page; delete params.size
+      startExport('payments', params)
+    } else {
+      toast.error(msg || '导出失败，请稍后重试')
+    }
+  }
   finally { exportingXlsx.value = false }
 }
 
@@ -869,9 +880,10 @@ async function doBatchPay() {
           <span v-if="importing" class="btn-spin"></span>
           <span v-else style="margin-right:4px">📥</span>{{ importing ? '导入中…' : '导入' }}
         </button>
-        <button class="btn btn-ghost btn-sm" :disabled="exportingXlsx" @click="exportExcel">
-          <span v-if="exportingXlsx" class="btn-spin"></span>
-          <span v-else style="margin-right:4px">📤</span>{{ exportingXlsx ? '导出中…' : '导出' }}
+        <button class="btn btn-ghost btn-sm" :disabled="exportingXlsx || bgExporting" @click="exportExcel"
+                title="导出当前筛选结果；超过 5000 行自动转后台导出，完成后自动下载">
+          <span v-if="exportingXlsx || bgExporting" class="btn-spin"></span>
+          <span v-else style="margin-right:4px">📤</span>{{ exportingXlsx ? '导出中…' : (bgExporting ? '后台导出中…' : '导出') }}
         </button>
         <template v-if="canTransport">
           <span class="tp-divider" title="运输事业部对账单专用通道（导入在审批管理）"></span>
@@ -952,7 +964,7 @@ async function doBatchPay() {
       </div>
 
       <EmptyState v-if="loadErr" :error="loadErr" />
-      <EmptyState v-else-if="!loading && !items.length" empty />
+      <EmptyState v-else-if="!loading && !items.length" :variant="activeFilterCount ? 'search' : 'empty'" :text="activeFilterCount ? '没有符合当前筛选条件的付款记录' : '暂无付款记录'" />
 
       <div v-if="!loadErr" class="table-wrap pk-pay-tbl page-scroll">
         <table>

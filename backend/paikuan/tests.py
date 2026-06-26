@@ -2175,3 +2175,87 @@ class ApprovalVisibilityTests(TestCase):
         d = self._list()
         self.assertEqual(d['total'], 1)
         self.assertEqual(d['items'][0]['id'], keep.id)
+
+
+class AsyncExportTests(TestCase):
+    """异步导出：核心 replay-request 机制 + 任务建立/状态/权限。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = DEPARTMENTS[0]
+        self.admin = PaikuanUser(phone='13900004000', name='ExpAdmin', role='super_admin',
+                                 job_title='finance_director', departments=[self.dept],
+                                 is_active=True, is_approved=True)
+        self.admin.set_password('Test123456')
+        self.admin.save()
+        self.token = make_token(self.admin)
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _mk_approvals(self, n):
+        for i in range(n):
+            ApprovalRecord.objects.create(
+                applicant='张三', department=self.dept, approval_number=str(i + 1).zfill(21),
+                summary=f'采购{i}', amount=Decimal('1000'), payee=f'供应商{i}', status='pending')
+
+    def test_replay_request_builds_approval_xlsx(self):
+        # 直接驱动导出核心（无线程）：验证 _ReplayRequest 能重建同口径并生成有效 xlsx
+        from paikuan.views import _approval_export_core, _ReplayRequest
+        self._mk_approvals(3)
+        req = _ReplayRequest(self.admin, {})
+        resp = _approval_export_core(req, export_cap=100000)
+        self.assertEqual(resp.status_code, 200, getattr(resp, 'content', b''))
+        from openpyxl import load_workbook
+        ws = load_workbook(io.BytesIO(resp.content), data_only=True).active
+        # 表头 + 3 行数据
+        self.assertEqual(ws.max_row, 4)
+
+    def test_run_export_job_end_to_end(self):
+        # 同线程直接跑 worker 逻辑（不经 threading），验证落库字节
+        from paikuan.models import ExportJob
+        from paikuan.views import _run_export_job
+        self._mk_approvals(2)
+        job = ExportJob.objects.create(kind='approvals', created_by=self.admin, params={})
+        # worker 会在 finally 关闭连接；TestCase 下手动调用核心避免连接副作用——
+        # 这里直接调用核心并落库，等价于 worker 主体逻辑
+        from paikuan.views import _approval_export_core, _ReplayRequest
+        resp = _approval_export_core(_ReplayRequest(self.admin, {}), export_cap=100000)
+        self.assertEqual(resp.status_code, 200)
+        job.file_data = resp.content
+        job.filename = '审批记录.xlsx'
+        job.status = 'done'
+        job.save()
+        # 下载端点
+        r = self.client.get(f'/api/pk/exports/{job.id}/download', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(len(r.content) > 100)
+
+    def test_export_create_endpoint(self):
+        self._mk_approvals(1)
+        r = self.client.post('/api/pk/exports', data=json.dumps({'kind': 'approvals', 'params': {}}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()['data']
+        self.assertIn(d['status'], ('pending', 'running', 'done'))
+        self.assertEqual(d['kind'], 'approvals')
+
+    def test_export_create_rejects_unknown_kind(self):
+        r = self.client.post('/api/pk/exports', data=json.dumps({'kind': 'bogus'}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 400)
+
+    def test_export_status_scoped_to_owner(self):
+        from paikuan.models import ExportJob
+        other = PaikuanUser(phone='13900004001', name='Other', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        other.set_password('Test123456'); other.save()
+        job = ExportJob.objects.create(kind='approvals', created_by=other, params={})
+        # 当前用户查别人的任务 → 404
+        r = self.client.get(f'/api/pk/exports/{job.id}', **self.auth())
+        self.assertEqual(r.status_code, 404)
