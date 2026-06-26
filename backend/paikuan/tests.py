@@ -1326,7 +1326,9 @@ class BulkOpsTests(TestCase):
         resp = self._post('/api/pk/approvals/bulk-delete', {'ids': [a1.id, a2.id]})
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(resp.json()['data']['deleted'], 2)
-        self.assertEqual(ApprovalRecord.objects.count(), 0)
+        # soft-delete: records still exist in DB but with deleted_at set
+        self.assertEqual(ApprovalRecord.objects.filter(deleted_at__isnull=True).count(), 0)
+        self.assertEqual(ApprovalRecord.objects.filter(deleted_at__isnull=False).count(), 2)
 
     def test_bulk_delete_skips_scheduled_approval(self):
         a1 = self._mk_approval(1, '1000')
@@ -1436,7 +1438,9 @@ class BulkOpsTests(TestCase):
         resp = self._post('/api/pk/payments/bulk-delete', {'ids': [p1.id, p2.id]})
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(resp.json()['data']['deleted'], 2)
-        self.assertEqual(Payment.objects.count(), 0)
+        # soft-delete: records still exist in DB but with deleted_at set
+        self.assertEqual(Payment.objects.filter(deleted_at__isnull=True).count(), 0)
+        self.assertEqual(Payment.objects.filter(deleted_at__isnull=False).count(), 2)
 
     # ── 校验/边界 ────────────────────────────────────────────────────────────
     def test_empty_ids_rejected(self):

@@ -64,6 +64,24 @@
   --nav-w:           224px;
   --nav-w-collapsed: 68px;
   --blur:            blur(20px) saturate(180%);
+
+  /* ── table density (comfortable default) ── */
+  --td-h:            36px;
+  --td-py:           6px;
+  --td-px:           10px;
+  --td-fs:           13px;
+}
+html.density-compact {
+  --td-h:   28px;
+  --td-py:  3px;
+  --td-px:  8px;
+  --td-fs:  12.5px;
+}
+html.density-spacious {
+  --td-h:   46px;
+  --td-py:  11px;
+  --td-px:  14px;
+  --td-fs:  13.5px;
 }
 
 /* 始终保留文档滚动条占位，避免「滚动条出现/消失→内容宽度变化→自适应表格重新换行→

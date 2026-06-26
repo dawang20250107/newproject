@@ -39,6 +39,7 @@ urlpatterns = [
     path('approvals/select-ids', views.approvals_select_ids),
     path('approvals/bulk-delete', views.approval_records_bulk_delete),
     path('approvals/bulk-approve', views.approval_records_bulk_approve),
+    path('approvals/budget-check', views.approval_budget_check),
     path('approvals/bulk-schedule', views.approval_records_bulk_schedule),
     path('approvals/bulk-return-schedule', views.approval_records_bulk_return_schedule),
     path('approvals/template', views.approval_template),
@@ -60,6 +61,8 @@ urlpatterns = [
     path('permissions', views.permissions),
     path('permissions/<str:job>', views.permission_detail),
     path('departments', views.departments),
+    path('trash/approvals', views.trash_approvals),
+    path('trash/payments', views.trash_payments),
     path('audit-logs', views.audit_logs),
     path('audit-logs/prune', views.audit_logs_prune),
 ]

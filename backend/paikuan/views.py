@@ -1278,7 +1278,7 @@ def _payments_filtered_qs(request):
     """付款列表「筛选后、未分页」queryset（与列表完全同口径）：部门作用域 + 顶部筛选 +
     列头筛选 + 计算列筛选 + 状态筛选 + 排序。返回 (qs, paid_annotated)。
     供列表分页、跨页全选取 ID、运输单号复制等共用——保证「看到什么就操作/复制什么」。"""
-    qs = Payment.objects.select_related('created_by').prefetch_related('installments', 'plan_items').all()
+    qs = Payment.objects.select_related('created_by').prefetch_related('installments', 'plan_items').filter(deleted_at__isnull=True)
     qs = dept_filter(qs, request)
 
     dept = request.GET.get('dept', '').strip()
@@ -1715,7 +1715,7 @@ def _reconcile_approval_schedule(approval_id):
     if not rec:
         return
     scheduled = (PaymentPlanItem.objects
-                 .filter(payment__approval_id=approval_id)
+                 .filter(payment__approval_id=approval_id, payment__deleted_at__isnull=True)
                  .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
     rec.scheduled_amount = scheduled
     # rejected/canceled 为终态，保持归档；approved 记录按是否排满申请金额决定归档
@@ -1984,7 +1984,7 @@ def _approvals_filtered_qs(request):
     可见口径：仅隐藏「审批通过且已排满」的归档记录（已完全流转至付款管理）；
     已拒绝/已撤销虽为终态（archived=True）但仍需可在审批管理查阅，故不再一刀切按
     archived 隐藏。默认只看待审批/审批通过由前端状态列筛选控制（可清除以查看全部）。"""
-    qs = dept_filter(ApprovalRecord.objects.all(), request).exclude(status='approved', archived=True)
+    qs = dept_filter(ApprovalRecord.objects.all(), request).exclude(status='approved', archived=True).filter(deleted_at__isnull=True)
     # 全局关键字（跨字段模糊）+ 列头精确筛选（filters JSON）+ 列头排序
     kw = request.GET.get('q', '').strip()
     if kw:
@@ -2302,6 +2302,63 @@ def approval_record_schedule(request, pk):
                            f'本次排款 {total_amount} 已流转付款管理，剩余可排 {rec.amount - rec.scheduled_amount}')})
 
 
+@pk_required()
+def approval_budget_check(request):
+    """排款超预算预警：查询某部门某月的预算总额与已排款总额，返回是否超预算。
+    GET ?dept=<部门>&month=<yyyy-mm>&amount=<本次拟排金额>
+    budget 取自 AR PaymentBudget（按 delivery_dept + expected_date 月份合计）。
+    scheduled 取自 PaymentPlanItem（按 department + planned_date 月份合计）。
+    """
+    dept = request.GET.get('dept', '').strip()
+    month = request.GET.get('month', '').strip()  # yyyy-mm
+    amount_str = request.GET.get('amount', '0').strip()
+    if not dept or not month:
+        return err('dept 和 month 必填')
+    try:
+        year, mon = int(month[:4]), int(month[5:7])
+        proposed = Decimal(amount_str) if amount_str else Decimal('0')
+    except (ValueError, InvalidOperation):
+        return err('参数格式错误')
+
+    # 已排款：本月该部门在付款管理已安排的批次金额合计
+    scheduled_agg = (PaymentPlanItem.objects
+                     .filter(department=dept,
+                             planned_date__year=year,
+                             planned_date__month=mon)
+                     .aggregate(s=Sum('amount')))
+    scheduled = scheduled_agg['s'] or Decimal('0')
+
+    # 预算：取 AR PaymentBudget（按 delivery_dept + expected_date 月份合计）
+    budget = None
+    try:
+        from ar.models import PaymentBudget
+        budget_agg = (PaymentBudget.objects
+                      .filter(delivery_dept=dept,
+                              expected_date__year=year,
+                              expected_date__month=mon)
+                      .aggregate(s=Sum('amount')))
+        if budget_agg['s'] is not None:
+            budget = budget_agg['s']
+    except Exception:
+        pass
+
+    if budget is None:
+        return ok({'has_budget': False, 'scheduled': str(scheduled), 'proposed': str(proposed)})
+
+    remaining = budget - scheduled
+    remaining_after = remaining - proposed
+    return ok({
+        'has_budget': True,
+        'budget': str(budget),
+        'scheduled': str(scheduled),
+        'proposed': str(proposed),
+        'remaining': str(remaining),
+        'remaining_after': str(remaining_after),
+        'over': remaining_after < Decimal('0'),
+        'over_by': str(abs(remaining_after)) if remaining_after < Decimal('0') else '0',
+    })
+
+
 @csrf_exempt
 @pk_required()
 def approval_records_bulk_schedule(request):
@@ -2403,6 +2460,8 @@ def approval_records_bulk_delete(request):
     if len(ids) > 1000:
         return err('单次删除上限 1000 条，请缩小选择范围')
     qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids), request)
+    now = timezone.now()
+    actor = getattr(request, 'pk_user', None)
     deleted, skipped = 0, []
     for rec in list(qs):
         if not can_write_dept(request, rec.department):
@@ -2411,10 +2470,12 @@ def approval_records_bulk_delete(request):
         if rec.payments.exists():
             skipped.append({'id': rec.id, 'reason': '已关联付款管理（已排款），不能删除；请先在付款管理删除对应排款'})
             continue
-        rec.delete()
+        rec.deleted_at = now
+        rec.deleted_by = actor
+        rec.save(update_fields=['deleted_at', 'deleted_by'])
         deleted += 1
     return ok({'deleted': deleted, 'skipped': skipped,
-               'message': f'已删除 {deleted} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})
+               'message': f'已移入回收站 {deleted} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})
 
 
 @csrf_exempt
@@ -2572,7 +2633,9 @@ def payments_bulk_delete(request):
         return err('ids 必须为整数列表')
     if len(ids) > 1000:
         return err('单次删除上限 1000 条，请缩小选择范围')
-    qs = dept_filter(Payment.objects.filter(pk__in=ids), request)
+    qs = dept_filter(Payment.objects.filter(pk__in=ids, deleted_at__isnull=True), request)
+    now = timezone.now()
+    actor = getattr(request, 'pk_user', None)
     deleted, skipped = 0, []
     for p in list(qs.prefetch_related('prepaid_offsets')):
         if not can_write_dept(request, p.department):
@@ -2581,14 +2644,16 @@ def payments_bulk_delete(request):
         if p.prepaid_offsets.exists():
             skipped.append({'id': p.id, 'reason': '已关联预付核销，不能删除；请先删除对应核销记录'})
             continue
-        approval_id = p.approval_id   # 删除前留存，删后把来源审批回退为可排款
+        approval_id = p.approval_id
         with transaction.atomic():
             _record_payment_changes(p, {}, {}, request, action='delete')
-            p.delete()
+            p.deleted_at = now
+            p.deleted_by = actor
+            p.save(update_fields=['deleted_at', 'deleted_by'])
             _reconcile_approval_schedule(approval_id)
         deleted += 1
     return ok({'deleted': deleted, 'skipped': skipped,
-               'message': f'已删除 {deleted} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})
+               'message': f'已移入回收站 {deleted} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})
 
 
 @csrf_exempt
@@ -3055,7 +3120,7 @@ def approval_export(request):
     if perms is not None and not perms['pages'].get('approval_records', True):
         return err('无访问权限', 403, 403)
     # 与列表同口径：仅隐藏「审批通过且已排满」的归档记录，已拒绝/已撤销仍可导出
-    qs = dept_filter(ApprovalRecord.objects.all(), request).exclude(status='approved', archived=True)
+    qs = dept_filter(ApprovalRecord.objects.all(), request).exclude(status='approved', archived=True).filter(deleted_at__isnull=True)
     # 全局关键字 + 列头筛选 + 排序：导出与列表口径一致
     kw = request.GET.get('q', '').strip()
     if kw:
@@ -4457,6 +4522,113 @@ def approvals_select_ids(request):
 
 
 # ── departments ───────────────────────────────────────────────────────────────
+
+@csrf_exempt
+@pk_required()
+def trash_approvals(request):
+    """回收站 — 审批管理（软删记录查询/恢复/彻底删除）。
+    GET：列出被软删的审批记录。
+    POST { action: 'restore'|'purge', ids: [...] }：还原或永久删除。
+    """
+    perms = get_request_perms(request)
+    if perms is not None and not perms['pages'].get('approval_records', True):
+        return err('无访问权限', 403, 403)
+    qs = dept_filter(ApprovalRecord.objects.filter(deleted_at__isnull=False), request)
+
+    if request.method == 'GET':
+        try:
+            page = max(1, int(request.GET.get('page', 1)))
+            size = min(100, max(1, int(request.GET.get('size', 50))))
+        except ValueError:
+            page, size = 1, 50
+        total = qs.count()
+        rows = qs.order_by('-deleted_at')[(page-1)*size:page*size]
+        return ok({'total': total, 'items': [
+            {**r.to_dict(), 'deleted_at': r.deleted_at.isoformat() if r.deleted_at else None,
+             'deleted_by_name': r.deleted_by.name if r.deleted_by else None}
+            for r in rows
+        ]})
+
+    if request.method == 'POST':
+        if perms is not None and not perms.get('can_delete'):
+            return err('无删除权限', 403, 403)
+        body = parse_body(request)
+        action = body.get('action', 'restore')
+        ids = [int(i) for i in (body.get('ids') or [])]
+        if not ids:
+            return err('ids 必填')
+        targets = list(qs.filter(pk__in=ids))
+        count = 0
+        for rec in targets:
+            if action == 'restore':
+                rec.deleted_at = None
+                rec.deleted_by = None
+                rec.save(update_fields=['deleted_at', 'deleted_by'])
+            elif action == 'purge':
+                if rec.payments.exists():
+                    continue
+                rec.delete()
+            count += 1
+        return ok({'count': count, 'action': action})
+    return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def trash_payments(request):
+    """回收站 — 付款管理（软删记录查询/恢复/彻底删除）。
+    GET：列出被软删的付款记录。
+    POST { action: 'restore'|'purge', ids: [...] }：还原或永久删除。
+    """
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    qs = dept_filter(Payment.objects.filter(deleted_at__isnull=False), request)
+
+    if request.method == 'GET':
+        try:
+            page = max(1, int(request.GET.get('page', 1)))
+            size = min(100, max(1, int(request.GET.get('size', 50))))
+        except ValueError:
+            page, size = 1, 50
+        total = qs.count()
+        rows = list(qs.order_by('-deleted_at')[(page-1)*size:page*size])
+        return ok({'total': total, 'items': [
+            {**p.to_dict(), 'deleted_at': p.deleted_at.isoformat() if p.deleted_at else None,
+             'deleted_by_name': p.deleted_by.name if p.deleted_by else None}
+            for p in rows
+        ]})
+
+    if request.method == 'POST':
+        if perms is not None and not perms.get('can_delete'):
+            return err('无删除权限', 403, 403)
+        body = parse_body(request)
+        action = body.get('action', 'restore')
+        ids = [int(i) for i in (body.get('ids') or [])]
+        if not ids:
+            return err('ids 必填')
+        targets = list(qs.filter(pk__in=ids))
+        count = 0
+        for p in targets:
+            if action == 'restore':
+                approval_id = p.approval_id
+                p.deleted_at = None
+                p.deleted_by = None
+                p.save(update_fields=['deleted_at', 'deleted_by'])
+                _reconcile_approval_schedule(approval_id)
+            elif action == 'purge':
+                if p.prepaid_offsets.exists():
+                    continue
+                approval_id = p.approval_id
+                with transaction.atomic():
+                    _record_payment_changes(p, {}, {}, request, action='delete')
+                    p.delete()
+                    _reconcile_approval_schedule(approval_id)
+            count += 1
+        return ok({'count': count, 'action': action})
+    return err('Method not allowed', 405)
+
 
 @pk_required()
 def departments(request):

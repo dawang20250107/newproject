@@ -459,19 +459,36 @@ const ctxItems = computed(() => {
 })
 // 排款前联动：该审批关联项目有「预付」未核销余额时提示，排款后可在付款管理行内核销
 const schedPrepaid = ref(null)
+// 预算预警
+const schedBudget = ref(null) // null | { has_budget, budget, scheduled, remaining, remaining_after, over, over_by }
+function fetchBudgetCheck() {
+  if (!current.value) return
+  const dept = current.value.department
+  const date = scheduleForm.planned_date
+  const amount = scheduleForm.total_amount
+  if (!dept || !date || !amount) { schedBudget.value = null; return }
+  const month = date.slice(0, 7) // yyyy-mm
+  api.get('/approvals/budget-check', { params: { dept, month, amount } })
+    .then(r => { schedBudget.value = r.data })
+    .catch(() => { schedBudget.value = null })
+}
 function openSchedule(it){
   current.value=it
   // 分批排款：默认带出剩余可排（首次=申请金额），可改小分批流转
   const remaining = parseFloat(it.remaining_amount ?? it.amount) || 0
   Object.assign(scheduleForm,{ planned_date: todayCST(), total_amount: remaining })
   schedPrepaid.value = null
+  schedBudget.value = null
   showSchedule.value=true
   if (it.project_short_name) {
     api.get('/payments/prepaid-balance', { params: { short_name: it.project_short_name } })
       .then(r => { if (r.data?.matched && r.data.count > 0) schedPrepaid.value = r.data })
       .catch(() => {})
   }
+  fetchBudgetCheck()
 }
+watch(() => scheduleForm.planned_date, fetchBudgetCheck)
+watch(() => scheduleForm.total_amount, fetchBudgetCheck)
 const schedBusy = ref(false)
 async function doSchedule(){
   if (schedBusy.value) return
@@ -774,7 +791,25 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <div class="form-grid">
     <label class="form-field"><span>计划日期*</span><input v-model="scheduleForm.planned_date" type="date"/></label>
     <label class="form-field"><span>计划金额*</span><input v-model="scheduleForm.total_amount" type="number" step="0.01"/></label>
-  </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showSchedule=false">取消</button><button class="btn btn-primary" :disabled="schedBusy" @click="doSchedule">{{ schedBusy ? '排款中…' : '保存并排款' }}</button></div></div></div></Teleport>
+  </div>
+  <div v-if="schedBudget?.has_budget" class="sched-budget-bar" :class="{ 'over-budget': schedBudget.over }">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+      <path v-if="schedBudget.over" d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line v-if="schedBudget.over" x1="12" y1="9" x2="12" y2="13"/><line v-if="schedBudget.over" x1="12" y1="17" x2="12.01" y2="17"/>
+      <circle v-if="!schedBudget.over" cx="12" cy="12" r="10"/><path v-if="!schedBudget.over" d="M12 16v-4M12 8h.01"/>
+    </svg>
+    <div style="flex:1;min-width:0">
+      <div v-if="schedBudget.over" style="font-weight:700">
+        ⚠ 超预算预警：本次排款将超出 {{ current?.department }} {{ scheduleForm.planned_date?.slice(0,7) }} 预算 <b>¥{{ schedBudget.over_by }}</b>
+      </div>
+      <div v-else>
+        本月预算尚余 <b>¥{{ schedBudget.remaining }}</b>，排款后余 <b>¥{{ schedBudget.remaining_after }}</b>
+      </div>
+      <div style="font-size:11px;opacity:0.7;margin-top:2px">
+        预算 ¥{{ schedBudget.budget }} · 已排 ¥{{ schedBudget.scheduled }} · 本次 ¥{{ schedBudget.proposed }}
+      </div>
+    </div>
+  </div>
+  </div><div class="modal-footer"><button class="btn btn-ghost" @click="showSchedule=false">取消</button><button class="btn btn-primary" :disabled="schedBusy" @click="doSchedule">{{ schedBusy ? '排款中…' : '保存并排款' }}</button></div></div></div></Teleport>
 
   <Teleport to="body"><div v-if="showMeta" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>补录：二级部门 / 项目简称</h3></div><div class="modal-body">
     <p style="font-size:12px;color:var(--muted);margin:0 0 12px">
@@ -866,7 +901,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-table col.cg-status { width: 60px; }
 /* 行高/内边距对齐全局表格（付款管理），保证两个页面观感一致 */
 /* 紧凑排版：数据量大，行间距固定收紧（固定行高 + 单行省略，超出鼠标悬停 title 展示） */
-.approval-table th, .approval-table td { padding: 3px 8px; height: 28px; box-sizing: border-box; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; line-height: 1.4; }
+.approval-table th, .approval-table td { padding: var(--td-py) var(--td-px); height: var(--td-h); box-sizing: border-box; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--td-fs); line-height: 1.4; }
 .approval-table th.sel-col, .approval-table td.sel-col { text-align: center; overflow: visible; padding: 4px 4px; }
 .approval-table th.sel-col input, .approval-table td.sel-col input { cursor: pointer; }
 /* 审批状态列（末列）内容（下拉）不裁切，以本列宽为限 */
@@ -920,6 +955,15 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .sched-progress { display: flex; gap: 18px; font-size: 13px; color: var(--muted);
   background: rgba(201,99,66,.05); border-radius: 9px; padding: 9px 12px; margin-bottom: 10px; }
 .sched-progress b { font-variant-numeric: tabular-nums; color: var(--text); }
+.sched-budget-bar {
+  display: flex; align-items: flex-start; gap: 8px; padding: 9px 12px; border-radius: 9px;
+  font-size: 12.5px; line-height: 1.6; margin-top: 10px;
+  background: var(--c-info-bg); border: 1px solid var(--c-info-bdr); color: var(--c-info);
+}
+.sched-budget-bar.over-budget {
+  background: rgba(230,81,0,0.10); border-color: rgba(230,81,0,0.32); color: var(--c-warn);
+}
+.sched-budget-bar.over-budget b { color: var(--c-danger); }
 .batch-box { max-width: 560px; }
 .batch-rows-head { display: flex; align-items: center; justify-content: space-between;
   font-size: 12px; color: var(--muted); margin: 0 0 6px; }

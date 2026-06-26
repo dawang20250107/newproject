@@ -98,6 +98,9 @@ class Payment(models.Model):
     g7_number = models.CharField('G7编号', max_length=21, blank=True, default='', db_index=True)
     # 系统自动维护：等于所有关联 AdvanceWriteoff.amount 之和，现金流视图从 paid 中扣除此金额防双重计
     prepaid_offset_amount = models.DecimalField('预付核销冲抵金额', max_digits=15, decimal_places=2, default=Decimal('0'))
+    deleted_at = models.DateTimeField('软删除时间', null=True, blank=True, db_index=True)
+    deleted_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='deleted_payments')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -279,6 +282,9 @@ class ApprovalRecord(models.Model):
     ext_bill_no = models.CharField('外部对账单号', max_length=64, blank=True, default='', db_index=True)
     # 原始行快照：{原表头: 原值} 全列逐字保存，导出时按原格式还原
     ext_raw = models.JSONField('外部原始行', default=dict, blank=True)
+    deleted_at = models.DateTimeField('软删除时间', null=True, blank=True, db_index=True)
+    deleted_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='deleted_approval_records')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
