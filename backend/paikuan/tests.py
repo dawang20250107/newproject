@@ -2114,6 +2114,85 @@ class TransportReconciliationTests(TestCase):
         hdr = [c.value for c in ws[1]]
         self.assertEqual(hdr, self.HEADERS)   # 乱序键 → 仍按标准列序导出
 
+    # ── 数据冲突防护 ─────────────────────────────────────────────────────────
+
+    def test_import_skips_source_already_settled(self):
+        # 源状态「已结算」→ 跳过以防重复付款，单独计数上报
+        rows = [self._row(1, 'ZD-SETTLED', '甲', 100, status='已结算'),
+                self._row(2, 'ZD-OK', '乙', 200, status='已通过')]
+        d = self._import(rows).json()['data']
+        self.assertEqual(d['created'], 1)
+        self.assertEqual(d['already_settled'], 1)
+        self.assertFalse(ApprovalRecord.objects.filter(ext_bill_no='ZD-SETTLED').exists())
+        self.assertTrue(ApprovalRecord.objects.filter(ext_bill_no='ZD-OK').exists())
+        self.assertIn('防重复付款', d['message'])
+
+    def test_import_skips_source_voided(self):
+        # 源状态「已作废」/「已取消」→ 失效单据跳过，不应付款
+        rows = [self._row(1, 'ZD-VOID', '甲', 100, status='已作废'),
+                self._row(2, 'ZD-CANCEL', '乙', 200, status='已取消')]
+        d = self._import(rows).json()['data']
+        self.assertEqual(d['created'], 0)
+        self.assertEqual(d['voided'], 2)
+        self.assertEqual(ApprovalRecord.objects.filter(ext_source='transport').count(), 0)
+
+    def test_import_allows_pending_settlement_status(self):
+        # 「未结算」「待结算」含「结算」二字但应可正常导入（精确匹配不误伤）
+        rows = [self._row(1, 'ZD-UNSET', '甲', 100, status='未结算'),
+                self._row(2, 'ZD-WAIT', '乙', 200, status='待结算')]
+        d = self._import(rows).json()['data']
+        self.assertEqual(d['created'], 2)
+        self.assertEqual(d['already_settled'], 0)
+
+    def test_export_unions_columns_across_drifted_batches(self):
+        # 列漂移：两批导入列集不同（新批次多一列「新增字段」），导出表头须取并集不丢列
+        self._import([self._row(1, 'ZD-OLD', '甲', 100)])     # 14 列标准表
+        rec_old = ApprovalRecord.objects.get(ext_bill_no='ZD-OLD')
+        # 模拟新批次：原表新增一列「新增字段」
+        new_headers = self.HEADERS + ['新增字段']
+        new_row = self._row(2, 'ZD-NEW', '乙', 200) + ['额外值']
+        from openpyxl import Workbook, load_workbook
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        wb = Workbook(); ws = wb.active
+        ws.append(new_headers); ws.append(new_row)
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        self.client.post('/api/pk/approvals/transport/import',
+                         {'file': SimpleUploadedFile('t2.xlsx', buf.read())}, **self.auth())
+        rec_new = ApprovalRecord.objects.get(ext_bill_no='ZD-NEW')
+        self._schedule(rec_old, 100); self._schedule(rec_new, 200)
+        resp = self.client.get('/api/pk/payments/transport/export', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        ws2 = load_workbook(io.BytesIO(resp.content), data_only=True).active
+        hdr = [c.value for c in ws2[1]]
+        # 标准 14 列 + 并集追加「新增字段」，共 15 列，无丢列
+        self.assertIn('新增字段', hdr)
+        self.assertEqual(hdr[:len(self.HEADERS)], self.HEADERS)
+        # 新批次行的额外列值还原；旧批次行该列为空（不报错）
+        by_bill = {}
+        bi = hdr.index('对账单号')
+        for row in ws2.iter_rows(min_row=2):
+            by_bill[row[bi].value] = row
+        ni = hdr.index('新增字段')
+        self.assertEqual(by_bill['ZD-NEW'][ni].value, '额外值')
+        self.assertIn(by_bill['ZD-OLD'][ni].value, (None, ''))
+
+    def test_export_non_settled_never_claims_settled(self):
+        # 历史脏数据：ext_raw 状态本身是「已结算」，但我方付款未结算 →
+        # 导出不得谎报「已结算」，应改写为「未结算」
+        self._import([self._row(1, 'ZD-DIRTY', '甲', 500)])
+        rec = ApprovalRecord.objects.get(ext_bill_no='ZD-DIRTY')
+        rec.ext_raw = {**rec.ext_raw, '状态': '已结算'}   # 模拟脏数据
+        rec.save(update_fields=['ext_raw'])
+        self._schedule(rec, 200)   # 仅排款，未实际付款 → 付款状态非 settled
+        p = Payment.objects.get(approval=rec)
+        resp = self.client.get('/api/pk/payments/transport/export',
+                               {'ids': str(p.id)}, **self.auth())
+        from openpyxl import load_workbook
+        ws = load_workbook(io.BytesIO(resp.content), data_only=True).active
+        hdr = [c.value for c in ws[1]]; si = hdr.index('状态')
+        row = list(ws.iter_rows(min_row=2))[0]
+        self.assertEqual(row[si].value, '未结算')   # 我方未付 → 不谎报已结算
+
 
 class ApprovalVisibilityTests(TestCase):
     """审批列表可见口径：已拒绝/已撤销可查阅（默认由前端状态筛选隐藏），合计只计在途；

@@ -4444,6 +4444,12 @@ TRANSPORT_KEY_COL = '对账单号'      # 去重唯一键
 TRANSPORT_AMOUNT_COL = '实际对账金额'  # 取绝对值作为申请金额（已含账单调整的最终额）
 TRANSPORT_STATUS_COL = '状态'       # 导出时改写为「已结算」的列
 TRANSPORT_SETTLED_LABEL = '已结算'
+# 运输对账单正常应为「已通过」（对账通过、待我方付款）。下列源状态不可导入：
+#   已结算/已完成类 → 源系统已结算，再导入排款会重复付款；
+#   作废/取消/驳回类 → 单据已失效，不应付款。
+# 精确匹配（规范化后），避免误伤「未结算/待结算」（含「结算」二字但应可导入）。
+TRANSPORT_BLOCK_SETTLED = {'已结算', '已完成', '已支付', '已付款', '结算完成', '付款完成'}
+TRANSPORT_BLOCK_VOID = {'已作废', '作废', '已取消', '取消', '已关闭', '已驳回', '驳回', '已拒绝', '拒绝', '无效'}
 
 
 @csrf_exempt
@@ -4485,7 +4491,8 @@ def transport_import(request):
             return None
         return row[i]
 
-    results = {'created': 0, 'skipped': 0, 'duplicates': 0, 'errors': []}
+    results = {'created': 0, 'skipped': 0, 'duplicates': 0,
+               'already_settled': 0, 'voided': 0, 'errors': []}
     seen_in_file = set()
     existing = set(
         ApprovalRecord.objects.filter(ext_source=TRANSPORT_SOURCE)
@@ -4503,6 +4510,20 @@ def transport_import(request):
         if bill_no in seen_in_file or bill_no in existing:
             results['duplicates'] += 1
             results['skipped'] += 1
+            continue
+        # 源状态冲突校验：源系统已结算/已作废的单据不可导入（防重复付款 / 失效单据付款）
+        src_status = str(cell(row, TRANSPORT_STATUS_COL) or '').strip()
+        if src_status in TRANSPORT_BLOCK_SETTLED:
+            results['already_settled'] += 1
+            results['skipped'] += 1
+            results['errors'].append(
+                f'第{rn}行: 对账单 {bill_no} 源状态「{src_status}」已结算，跳过以防重复付款')
+            continue
+        if src_status in TRANSPORT_BLOCK_VOID:
+            results['voided'] += 1
+            results['skipped'] += 1
+            results['errors'].append(
+                f'第{rn}行: 对账单 {bill_no} 源状态「{src_status}」已作废/取消，跳过')
             continue
         amt_raw = cell(row, TRANSPORT_AMOUNT_COL)
         try:
@@ -4550,7 +4571,12 @@ def transport_import(request):
     parts = [f'成功导入 {results["created"]} 条（已建为「审批通过」记录，请在审批管理排款）']
     if results['duplicates']:
         parts.append(f'跳过重复 {results["duplicates"]} 条')
-    other_skip = results['skipped'] - results['duplicates']
+    if results['already_settled']:
+        parts.append(f'跳过源已结算 {results["already_settled"]} 条（防重复付款）')
+    if results['voided']:
+        parts.append(f'跳过源已作废/取消 {results["voided"]} 条')
+    other_skip = (results['skipped'] - results['duplicates']
+                  - results['already_settled'] - results['voided'])
     if other_skip > 0:
         parts.append(f'跳过异常 {other_skip} 条')
     results['message'] = '；'.join(parts)
@@ -4630,13 +4656,21 @@ def _transport_export_core(request, export_cap=5000):
     if not rows_out:
         return err('选中的付款记录没有可还原的运输对账原始数据')
 
-    # 还原列顺序：必须与运输系统原表列序一致。注意生产库（Postgres jsonb）不保证
-    # JSON 键的存储顺序，直接取 ext_raw.keys() 会被打乱；故按原表标准列序
-    # TRANSPORT_HEADERS 重排已存在的列，原表外的额外列（若有）按出现顺序追加在后。
-    sample_raw = rows_out[0].approval.ext_raw or {}
-    canonical = [h for h in TRANSPORT_HEADERS if h in sample_raw]
-    extras = [h for h in sample_raw.keys() if h not in TRANSPORT_HEADERS]
-    headers = canonical + extras if canonical or extras else list(TRANSPORT_HEADERS)
+    # 还原列顺序：必须与运输系统原表列序一致。两个坑：
+    #   ① 生产库（Postgres jsonb）不保证 JSON 键存储顺序 → 不能依赖 ext_raw.keys() 顺序；
+    #   ② 不同批次导入的列集可能漂移（运输系统加列）→ 不能只看首行，否则丢列/错位。
+    # 故按原表标准列序 TRANSPORT_HEADERS 排在前，再把「所有行」出现过的、标准列以外的
+    # 额外列按首次出现顺序并集追加在后，保证任何行的任何列都不丢失。
+    all_raws = [(r.approval.ext_raw or {}) for r in rows_out]
+    canonical = [h for h in TRANSPORT_HEADERS if any(h in raw for raw in all_raws)]
+    seen_cols = set(canonical)
+    extras = []
+    for raw in all_raws:
+        for k in raw.keys():
+            if k not in seen_cols:
+                seen_cols.add(k)
+                extras.append(k)
+    headers = canonical + extras if (canonical or extras) else list(TRANSPORT_HEADERS)
     if TRANSPORT_STATUS_COL not in headers:
         headers.append(TRANSPORT_STATUS_COL)
 
@@ -4661,8 +4695,16 @@ def _transport_export_core(request, export_cap=5000):
         settled = p.status == 'settled'
         for ci, h in enumerate(headers, 1):
             if h == TRANSPORT_STATUS_COL:
-                # 仅已结算行改写状态列；未结算保留原值（零误差）
-                val = TRANSPORT_SETTLED_LABEL if settled else raw.get(h)
+                # 状态列以「我方结算」为准（这是导出存在的意义）：
+                #   已结算 → 写「已结算」；
+                #   未结算 → 保留源原值（零误差）；但若源原值本身就是「已结算类」
+                #   （历史遗留：在导入状态校验之前导入的脏数据），不沿用以免谎报已结算，
+                #   改写为明确的「未结算」，杜绝「我方未付却显示已结算」的错配。
+                if settled:
+                    val = TRANSPORT_SETTLED_LABEL
+                else:
+                    orig = raw.get(h)
+                    val = '未结算' if str(orig or '').strip() in TRANSPORT_BLOCK_SETTLED else orig
             else:
                 val = raw.get(h)
             # 空单元格统一还原为空字符串，与来源系统原表表示一致（避免 None/'' 表象差异）
