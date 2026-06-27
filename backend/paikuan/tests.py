@@ -1326,7 +1326,9 @@ class BulkOpsTests(TestCase):
         resp = self._post('/api/pk/approvals/bulk-delete', {'ids': [a1.id, a2.id]})
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(resp.json()['data']['deleted'], 2)
-        self.assertEqual(ApprovalRecord.objects.count(), 0)
+        # soft-delete: records still exist in DB but with deleted_at set
+        self.assertEqual(ApprovalRecord.objects.filter(deleted_at__isnull=True).count(), 0)
+        self.assertEqual(ApprovalRecord.objects.filter(deleted_at__isnull=False).count(), 2)
 
     def test_bulk_delete_skips_scheduled_approval(self):
         a1 = self._mk_approval(1, '1000')
@@ -1436,7 +1438,9 @@ class BulkOpsTests(TestCase):
         resp = self._post('/api/pk/payments/bulk-delete', {'ids': [p1.id, p2.id]})
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(resp.json()['data']['deleted'], 2)
-        self.assertEqual(Payment.objects.count(), 0)
+        # soft-delete: records still exist in DB but with deleted_at set
+        self.assertEqual(Payment.objects.filter(deleted_at__isnull=True).count(), 0)
+        self.assertEqual(Payment.objects.filter(deleted_at__isnull=False).count(), 2)
 
     # ── 校验/边界 ────────────────────────────────────────────────────────────
     def test_empty_ids_rejected(self):
@@ -1912,3 +1916,676 @@ class ListSchemeTests(TestCase):
             self.assertEqual(ok_r.status_code, 200, module)
             denied = self.client.get('/api/pk/list-schemes', {'module': module}, **self.auth(non_admin))
             self.assertEqual(denied.status_code, 403, module)
+
+
+class TransportReconciliationTests(TestCase):
+    """运输事业部对账单专用导入/导出：原表(负数/异构列) ↔ 标准排款，去重 + 零误差往返。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900009100', name='TransAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    # 运输系统导出的原始表头（与生产一致）
+    HEADERS = ['序号', '所属组织', '对账单号', '对账对象', '联系电话', '实际对账金额',
+               '对账时间', '状态', '创建人', '创建时间', '备注', '单据类别', '账单调整', '对账金额']
+
+    def _row(self, seq, bill_no, payee, amount, status='已通过'):
+        # amount 传正数，原表里存为负数（来源系统口径）
+        return [seq, '运输项目一部', bill_no, payee, '', -abs(amount),
+                '2026-06-26 10:47:20', status, '谭雯雯', '2026-06-26 10:51:24',
+                '税后利润 2592.27 税后利润率 30.19%', '车辆', '', -abs(amount)]
+
+    def _xlsx(self, rows):
+        from openpyxl import Workbook
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        wb = Workbook(); ws = wb.active
+        ws.append(self.HEADERS)
+        for r in rows:
+            ws.append(r)
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        return SimpleUploadedFile('transport.xlsx', buf.read(),
+                                  content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+    def _import(self, rows):
+        # 导入口在审批管理：建「已通过」审批记录
+        return self.client.post('/api/pk/approvals/transport/import',
+                                {'file': self._xlsx(rows)}, **self.auth())
+
+    def _schedule(self, rec, amount):
+        # 手动排款：审批 → 付款管理（与现有排款同口径）
+        return self.client.post(
+            f'/api/pk/approvals/{rec.id}/schedule',
+            data=json.dumps({'planned_date': '2026-06-27', 'total_amount': str(amount)}),
+            content_type='application/json', **self.auth())
+
+    def test_import_creates_approved_record_abs_amount(self):
+        resp = self._import([self._row(1, 'ZD202606260055', '安仕吉-浓香酒', 4828.5)])
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['created'], 1)
+        # 进的是审批管理，建为「已通过」审批记录（非付款记录）
+        self.assertEqual(Payment.objects.filter(approval__ext_source='transport').count(), 0)
+        rec = ApprovalRecord.objects.get(ext_bill_no='ZD202606260055')
+        self.assertEqual(rec.ext_source, 'transport')
+        self.assertEqual(rec.status, 'approved')          # 已通过，可直接排款
+        self.assertEqual(rec.department, '运输事业部')
+        self.assertEqual(rec.secondary_dept, '运输项目一部')
+        self.assertEqual(rec.payee, '安仕吉-浓香酒')          # 收款主体 ← 对账对象
+        self.assertEqual(rec.amount, Decimal('4828.5'))   # 取绝对值
+        self.assertEqual(rec.approval_number, '')          # 审批编号留空
+        self.assertEqual(rec.g7_number, 'ZD202606260055')  # G7编号 ← 对账单号
+        self.assertEqual(rec.notes, '税后利润 2592.27 税后利润率 30.19%')  # 备注 ← 原表备注原文
+        self.assertEqual(rec.ext_raw['对账单号'], 'ZD202606260055')
+        self.assertEqual(rec.ext_raw['实际对账金额'], -4828.5)  # 原始负数逐字保留
+
+    def test_import_dedup_by_bill_no(self):
+        # 文件内重复 + 二次导入重复，均按对账单号去重
+        rows = [self._row(1, 'ZD202606260001', 'A', 100), self._row(2, 'ZD202606260001', 'A', 100),
+                self._row(3, 'ZD202606260002', 'B', 200)]
+        d = self._import(rows).json()['data']
+        self.assertEqual(d['created'], 2)
+        self.assertEqual(d['duplicates'], 1)
+        # 再次导入同文件 → 全部判重，0 新增
+        d2 = self._import(rows).json()['data']
+        self.assertEqual(d2['created'], 0)
+        self.assertEqual(d2['duplicates'], 3)
+        self.assertEqual(ApprovalRecord.objects.filter(ext_source='transport').count(), 2)
+
+    def test_full_flow_roundtrip_zero_drift_only_status_changes(self):
+        # 导入(审批) → 手动排款(付款) → 结算其一 → 付款管理导出，校验仅已结算行状态列改写
+        self._import([self._row(1, 'ZD202606260010', '承运商甲', 1000),
+                      self._row(2, 'ZD202606260020', '承运商乙', 2000)])
+        ra = ApprovalRecord.objects.get(ext_bill_no='ZD202606260010')
+        rb = ApprovalRecord.objects.get(ext_bill_no='ZD202606260020')
+        self.assertEqual(self._schedule(ra, 1000).status_code, 200)
+        self.assertEqual(self._schedule(rb, 2000).status_code, 200)
+        pa = Payment.objects.get(approval=ra)
+        pb = Payment.objects.get(approval=rb)
+        # 结算 A：付清 → status=settled
+        PaymentInstallment.objects.create(payment=pa, seq=1, pay_date=date(2026, 6, 27),
+                                           pay_amount=Decimal('1000'))
+        self.assertEqual(pa.status, 'settled')
+        # 勾选导出 A + B（付款记录主键）
+        resp = self.client.get('/api/pk/payments/transport/export',
+                               {'ids': f'{pa.id},{pb.id}'}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        from openpyxl import load_workbook
+        ws = load_workbook(io.BytesIO(resp.content), data_only=True).active
+        hdr = [c.value for c in ws[1]]
+        self.assertEqual(hdr, self.HEADERS)            # 原列顺序还原
+        si = hdr.index('状态'); bi = hdr.index('对账单号'); ai = hdr.index('实际对账金额')
+        by_bill = {row[bi].value: row for row in ws.iter_rows(min_row=2)}
+        rowa, rowb = by_bill['ZD202606260010'], by_bill['ZD202606260020']
+        # A 已结算：状态列改写；金额等其它列零误差（负数原样）
+        self.assertEqual(rowa[si].value, '已结算')
+        self.assertEqual(rowa[ai].value, -1000)
+        # B 未结算：状态保留原值「已通过」，全列零误差
+        self.assertEqual(rowb[si].value, '已通过')
+        self.assertEqual(rowb[ai].value, -2000)
+
+        # 强校验「零误差」：未结算行 B 逐列与原表完全一致（空单元 None/'' 视为等价）
+        def _norm(v):
+            return None if v in (None, '') else v
+        orig_b = self._row(2, 'ZD202606260020', '承运商乙', 2000)
+        for ci, col in enumerate(self.HEADERS):
+            self.assertEqual(_norm(rowb[ci].value), _norm(orig_b[ci]),
+                             f'未结算行列「{col}」发生漂移')
+        # 已结算行 A：除「状态」列外全列与原表一致，状态列改为「已结算」
+        orig_a = self._row(1, 'ZD202606260010', '承运商甲', 1000)
+        for ci, col in enumerate(self.HEADERS):
+            if col == '状态':
+                self.assertEqual(rowa[ci].value, '已结算')
+            else:
+                self.assertEqual(_norm(rowa[ci].value), _norm(orig_a[ci]),
+                                 f'已结算行非状态列「{col}」发生漂移')
+
+    def test_export_empty_before_scheduling(self):
+        # 仅导入未排款 → 付款管理无运输付款记录 → 导出报错引导先排款
+        self._import([self._row(1, 'ZD202606260030', 'X', 500)])
+        resp = self.client.get('/api/pk/payments/transport/export', **self.auth())
+        self.assertEqual(resp.status_code, 400)
+
+    def test_import_rejects_unparseable_amount(self):
+        bad = self._row(1, 'ZD202606260099', 'X', 0)
+        bad[5] = 'abc'   # 实际对账金额列非数字
+        d = self._import([bad]).json()['data']
+        self.assertEqual(d['created'], 0)
+        self.assertEqual(d['skipped'], 1)
+        self.assertTrue(d['errors'])
+
+    def test_g7_numbers_copy_filter_and_ids(self):
+        # 导入 + 排款 → 两条运输付款；G7编号=对账单号，跨页复制接口取全量/勾选
+        self._import([self._row(1, 'ZD202606260040', '甲', 100),
+                      self._row(2, 'ZD202606260041', '乙', 200)])
+        ra = ApprovalRecord.objects.get(ext_bill_no='ZD202606260040')
+        rb = ApprovalRecord.objects.get(ext_bill_no='ZD202606260041')
+        self._schedule(ra, 100)
+        self._schedule(rb, 200)
+        pa = Payment.objects.get(approval=ra)
+        # 无 ids → 走筛选口径取全部（去重）
+        d = self.client.get('/api/pk/payments/transport/g7-numbers', **self.auth()).json()['data']
+        self.assertEqual(set(d['numbers']), {'ZD202606260040', 'ZD202606260041'})
+        self.assertEqual(d['count'], 2)
+        self.assertFalse(d['capped'])
+        # 勾选 ids → 仅取选中
+        d2 = self.client.get('/api/pk/payments/transport/g7-numbers',
+                             {'ids': str(pa.id)}, **self.auth()).json()['data']
+        self.assertEqual(d2['numbers'], ['ZD202606260040'])
+
+    def test_select_ids_cross_page(self):
+        # 跨页全选：select-ids 返回当前筛选口径下全部付款记录 ID（不分页）
+        self._import([self._row(1, 'ZD202606260050', '甲', 100),
+                      self._row(2, 'ZD202606260051', '乙', 200)])
+        for bill in ('ZD202606260050', 'ZD202606260051'):
+            rec = ApprovalRecord.objects.get(ext_bill_no=bill)
+            self._schedule(rec, rec.amount)
+        d = self.client.get('/api/pk/payments/select-ids', **self.auth()).json()['data']
+        pids = set(Payment.objects.filter(approval__ext_source='transport')
+                   .values_list('id', flat=True))
+        self.assertEqual(set(d['ids']), pids)
+        self.assertEqual(d['count'], 2)
+        self.assertFalse(d['capped'])
+
+    def test_export_column_order_canonical_despite_scrambled_raw(self):
+        # 模拟生产库（Postgres jsonb）不保证 JSON 键序：ext_raw 以乱序键存储，
+        # 导出仍须按原表标准列序 TRANSPORT_HEADERS 还原，列序不漂移。
+        self._import([self._row(1, 'ZD202606260060', '甲', 300)])
+        rec = ApprovalRecord.objects.get(ext_bill_no='ZD202606260060')
+        # 反转 ext_raw 键序后回存，模拟 jsonb 重排键
+        rec.ext_raw = {k: rec.ext_raw[k] for k in reversed(list(rec.ext_raw.keys()))}
+        rec.save(update_fields=['ext_raw'])
+        self._schedule(rec, 300)
+        p = Payment.objects.get(approval=rec)
+        resp = self.client.get('/api/pk/payments/transport/export',
+                               {'ids': str(p.id)}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        from openpyxl import load_workbook
+        ws = load_workbook(io.BytesIO(resp.content), data_only=True).active
+        hdr = [c.value for c in ws[1]]
+        self.assertEqual(hdr, self.HEADERS)   # 乱序键 → 仍按标准列序导出
+
+    # ── 数据冲突防护 ─────────────────────────────────────────────────────────
+
+    def test_import_skips_source_already_settled(self):
+        # 源状态「已结算」→ 跳过以防重复付款，单独计数上报
+        rows = [self._row(1, 'ZD-SETTLED', '甲', 100, status='已结算'),
+                self._row(2, 'ZD-OK', '乙', 200, status='已通过')]
+        d = self._import(rows).json()['data']
+        self.assertEqual(d['created'], 1)
+        self.assertEqual(d['already_settled'], 1)
+        self.assertFalse(ApprovalRecord.objects.filter(ext_bill_no='ZD-SETTLED').exists())
+        self.assertTrue(ApprovalRecord.objects.filter(ext_bill_no='ZD-OK').exists())
+        self.assertIn('防重复付款', d['message'])
+
+    def test_import_skips_source_voided(self):
+        # 源状态「已作废」/「已取消」→ 失效单据跳过，不应付款
+        rows = [self._row(1, 'ZD-VOID', '甲', 100, status='已作废'),
+                self._row(2, 'ZD-CANCEL', '乙', 200, status='已取消')]
+        d = self._import(rows).json()['data']
+        self.assertEqual(d['created'], 0)
+        self.assertEqual(d['voided'], 2)
+        self.assertEqual(ApprovalRecord.objects.filter(ext_source='transport').count(), 0)
+
+    def test_import_allows_pending_settlement_status(self):
+        # 「未结算」「待结算」含「结算」二字但应可正常导入（精确匹配不误伤）
+        rows = [self._row(1, 'ZD-UNSET', '甲', 100, status='未结算'),
+                self._row(2, 'ZD-WAIT', '乙', 200, status='待结算')]
+        d = self._import(rows).json()['data']
+        self.assertEqual(d['created'], 2)
+        self.assertEqual(d['already_settled'], 0)
+
+    def test_export_unions_columns_across_drifted_batches(self):
+        # 列漂移：两批导入列集不同（新批次多一列「新增字段」），导出表头须取并集不丢列
+        self._import([self._row(1, 'ZD-OLD', '甲', 100)])     # 14 列标准表
+        rec_old = ApprovalRecord.objects.get(ext_bill_no='ZD-OLD')
+        # 模拟新批次：原表新增一列「新增字段」
+        new_headers = self.HEADERS + ['新增字段']
+        new_row = self._row(2, 'ZD-NEW', '乙', 200) + ['额外值']
+        from openpyxl import Workbook, load_workbook
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        wb = Workbook(); ws = wb.active
+        ws.append(new_headers); ws.append(new_row)
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        self.client.post('/api/pk/approvals/transport/import',
+                         {'file': SimpleUploadedFile('t2.xlsx', buf.read())}, **self.auth())
+        rec_new = ApprovalRecord.objects.get(ext_bill_no='ZD-NEW')
+        self._schedule(rec_old, 100); self._schedule(rec_new, 200)
+        resp = self.client.get('/api/pk/payments/transport/export', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        ws2 = load_workbook(io.BytesIO(resp.content), data_only=True).active
+        hdr = [c.value for c in ws2[1]]
+        # 标准 14 列 + 并集追加「新增字段」，共 15 列，无丢列
+        self.assertIn('新增字段', hdr)
+        self.assertEqual(hdr[:len(self.HEADERS)], self.HEADERS)
+        # 新批次行的额外列值还原；旧批次行该列为空（不报错）
+        by_bill = {}
+        bi = hdr.index('对账单号')
+        for row in ws2.iter_rows(min_row=2):
+            by_bill[row[bi].value] = row
+        ni = hdr.index('新增字段')
+        self.assertEqual(by_bill['ZD-NEW'][ni].value, '额外值')
+        self.assertIn(by_bill['ZD-OLD'][ni].value, (None, ''))
+
+    def _precheck(self, rows):
+        return self.client.post('/api/pk/approvals/transport/import/precheck',
+                                {'file': self._xlsx(rows)}, **self.auth())
+
+    def test_precheck_categorizes_rows(self):
+        # 预检只读分析：将导入 / 源已结算 / 源已作废 / 文件内重复 / 数据异常
+        bad = self._row(9, 'ZD-BAD', 'X', 0); bad[5] = 'abc'
+        rows = [
+            self._row(1, 'ZD-P1', '甲', 100, status='已通过'),
+            self._row(2, 'ZD-P2', '乙', 200, status='已结算'),    # 源已结算
+            self._row(3, 'ZD-P3', '丙', 300, status='已作废'),    # 源已作废
+            self._row(4, 'ZD-P1', '甲', 100, status='已通过'),    # 文件内重复
+            bad,                                                   # 金额异常
+        ]
+        d = self._precheck(rows).json()['data']
+        self.assertEqual(d['total'], 5)
+        self.assertEqual(d['will_import'], 1)
+        self.assertEqual(len(d['settled']), 1)
+        self.assertEqual(d['settled'][0]['bill_no'], 'ZD-P2')
+        self.assertEqual(len(d['voided']), 1)
+        self.assertEqual(len(d['dup_in_file']), 1)
+        self.assertEqual(len(d['bad']), 1)
+        # 预检只读：不落库
+        self.assertEqual(ApprovalRecord.objects.filter(ext_source='transport').count(), 0)
+
+    def test_precheck_detects_system_dup_and_column_drift(self):
+        # 系统内已存在 + 列漂移（新增列 / 缺标准列）
+        self._import([self._row(1, 'ZD-EXIST', '甲', 100)])   # 先入库
+        from openpyxl import Workbook
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        new_headers = [h for h in self.HEADERS if h != '联系电话'] + ['新增列']  # 缺一标准列 + 加一新列
+        def row2(bill):
+            base = {'序号': 1, '所属组织': '运输项目一部', '对账单号': bill, '对账对象': '甲',
+                    '实际对账金额': -100, '对账时间': '', '状态': '已通过', '创建人': '', '创建时间': '',
+                    '备注': '', '单据类别': '', '账单调整': '', '对账金额': -100, '新增列': 'X'}
+            return [base.get(h, '') for h in new_headers]
+        wb = Workbook(); ws = wb.active
+        ws.append(new_headers); ws.append(row2('ZD-EXIST')); ws.append(row2('ZD-FRESH'))
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        r = self.client.post('/api/pk/approvals/transport/import/precheck',
+                             {'file': SimpleUploadedFile('t.xlsx', buf.read())}, **self.auth())
+        d = r.json()['data']
+        self.assertEqual(len(d['dup_in_system']), 1)
+        self.assertEqual(d['dup_in_system'][0]['bill_no'], 'ZD-EXIST')
+        self.assertEqual(d['will_import'], 1)
+        self.assertIn('新增列', d['extra_columns'])
+        self.assertIn('联系电话', d['missing_standard'])
+
+    def test_precheck_missing_required_column_errors(self):
+        from openpyxl import Workbook
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        wb = Workbook(); ws = wb.active
+        ws.append(['序号', '对账对象'])   # 缺对账单号 + 金额
+        ws.append([1, '甲'])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        r = self.client.post('/api/pk/approvals/transport/import/precheck',
+                             {'file': SimpleUploadedFile('t.xlsx', buf.read())}, **self.auth())
+        self.assertEqual(r.status_code, 400)
+
+    def test_export_non_settled_never_claims_settled(self):
+        # 历史脏数据：ext_raw 状态本身是「已结算」，但我方付款未结算 →
+        # 导出不得谎报「已结算」，应改写为「未结算」
+        self._import([self._row(1, 'ZD-DIRTY', '甲', 500)])
+        rec = ApprovalRecord.objects.get(ext_bill_no='ZD-DIRTY')
+        rec.ext_raw = {**rec.ext_raw, '状态': '已结算'}   # 模拟脏数据
+        rec.save(update_fields=['ext_raw'])
+        self._schedule(rec, 200)   # 仅排款，未实际付款 → 付款状态非 settled
+        p = Payment.objects.get(approval=rec)
+        resp = self.client.get('/api/pk/payments/transport/export',
+                               {'ids': str(p.id)}, **self.auth())
+        from openpyxl import load_workbook
+        ws = load_workbook(io.BytesIO(resp.content), data_only=True).active
+        hdr = [c.value for c in ws[1]]; si = hdr.index('状态')
+        row = list(ws.iter_rows(min_row=2))[0]
+        self.assertEqual(row[si].value, '未结算')   # 我方未付 → 不谎报已结算
+
+
+class ApprovalVisibilityTests(TestCase):
+    """审批列表可见口径：已拒绝/已撤销可查阅（默认由前端状态筛选隐藏），合计只计在途；
+    已排满归档的审批通过记录仍隐藏（已完全流转至付款管理）。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900003900', name='VisAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _mk(self, num, amount, status='pending', archived=False):
+        return ApprovalRecord.objects.create(
+            applicant='张三', department=self.dept, approval_number=str(num) * 21,
+            summary='采购', amount=Decimal(amount), payee=f'供应商{num}',
+            status=status, archived=archived)
+
+    def _list(self, params=None):
+        r = self.client.get('/api/pk/approvals', params or {}, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        return r.json()['data']
+
+    def test_rejected_canceled_visible_but_excluded_from_totals(self):
+        self._mk(1, '1000', status='pending')
+        self._mk(2, '2000', status='approved')
+        self._mk(3, '3000', status='rejected', archived=True)
+        self._mk(4, '4000', status='canceled', archived=True)
+        # 无状态筛选 → 四条全部可查（不再因 archived 隐藏已拒绝/已撤销）
+        d = self._list()
+        self.assertEqual(d['total'], 4)
+        # 合计只计在途（待审批 + 审批通过）= 1000 + 2000
+        self.assertEqual(Decimal(d['total_amount']), Decimal('3000'))
+        # 状态筛选「已拒绝」→ 命中第三条
+        d2 = self._list({'filters': json.dumps({'status': {'op': 'in', 'value': ['rejected']}})})
+        self.assertEqual(d2['total'], 1)
+        self.assertEqual(d2['items'][0]['status'], 'rejected')
+
+    def test_default_status_filter_shows_pending_approved(self):
+        self._mk(1, '1000', status='pending')
+        self._mk(2, '2000', status='approved')
+        self._mk(3, '3000', status='rejected', archived=True)
+        self._mk(4, '4000', status='canceled', archived=True)
+        # 前端默认状态筛选 [pending, approved] 对应的后端查询
+        d = self._list({'filters': json.dumps({'status': {'op': 'in', 'value': ['pending', 'approved']}})})
+        self.assertEqual(d['total'], 2)
+        self.assertEqual({i['status'] for i in d['items']}, {'pending', 'approved'})
+
+    def test_fully_scheduled_approved_hidden(self):
+        # 审批通过且已排满（archived=True, status=approved）→ 列表隐藏（已流转付款管理）
+        self._mk(1, '1000', status='approved', archived=True)
+        keep = self._mk(2, '2000', status='approved', archived=False)
+        d = self._list()
+        self.assertEqual(d['total'], 1)
+        self.assertEqual(d['items'][0]['id'], keep.id)
+
+
+class AsyncExportTests(TestCase):
+    """异步导出：核心 replay-request 机制 + 任务建立/状态/权限。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = DEPARTMENTS[0]
+        self.admin = PaikuanUser(phone='13900004000', name='ExpAdmin', role='super_admin',
+                                 job_title='finance_director', departments=[self.dept],
+                                 is_active=True, is_approved=True)
+        self.admin.set_password('Test123456')
+        self.admin.save()
+        self.token = make_token(self.admin)
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _mk_approvals(self, n):
+        for i in range(n):
+            ApprovalRecord.objects.create(
+                applicant='张三', department=self.dept, approval_number=str(i + 1).zfill(21),
+                summary=f'采购{i}', amount=Decimal('1000'), payee=f'供应商{i}', status='pending')
+
+    def test_replay_request_builds_approval_xlsx(self):
+        # 直接驱动导出核心（无线程）：验证 _ReplayRequest 能重建同口径并生成有效 xlsx
+        from paikuan.views import _approval_export_core, _ReplayRequest
+        self._mk_approvals(3)
+        req = _ReplayRequest(self.admin, {})
+        resp = _approval_export_core(req, export_cap=100000)
+        self.assertEqual(resp.status_code, 200, getattr(resp, 'content', b''))
+        from openpyxl import load_workbook
+        ws = load_workbook(io.BytesIO(resp.content), data_only=True).active
+        # 表头 + 3 行数据
+        self.assertEqual(ws.max_row, 4)
+
+    def test_run_export_job_end_to_end(self):
+        # 同线程直接跑 worker 逻辑（不经 threading），验证落库字节
+        from paikuan.models import ExportJob
+        from paikuan.views import _run_export_job
+        self._mk_approvals(2)
+        job = ExportJob.objects.create(kind='approvals', created_by=self.admin, params={})
+        # worker 会在 finally 关闭连接；TestCase 下手动调用核心避免连接副作用——
+        # 这里直接调用核心并落库，等价于 worker 主体逻辑
+        from paikuan.views import _approval_export_core, _ReplayRequest
+        resp = _approval_export_core(_ReplayRequest(self.admin, {}), export_cap=100000)
+        self.assertEqual(resp.status_code, 200)
+        job.file_data = resp.content
+        job.filename = '审批记录.xlsx'
+        job.status = 'done'
+        job.save()
+        # 下载端点
+        r = self.client.get(f'/api/pk/exports/{job.id}/download', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(len(r.content) > 100)
+
+    def test_export_create_endpoint(self):
+        self._mk_approvals(1)
+        r = self.client.post('/api/pk/exports', data=json.dumps({'kind': 'approvals', 'params': {}}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()['data']
+        self.assertIn(d['status'], ('pending', 'running', 'done'))
+        self.assertEqual(d['kind'], 'approvals')
+
+    def test_export_create_rejects_unknown_kind(self):
+        r = self.client.post('/api/pk/exports', data=json.dumps({'kind': 'bogus'}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 400)
+
+    def test_export_status_scoped_to_owner(self):
+        from paikuan.models import ExportJob
+        other = PaikuanUser(phone='13900004001', name='Other', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        other.set_password('Test123456'); other.save()
+        job = ExportJob.objects.create(kind='approvals', created_by=other, params={})
+        # 当前用户查别人的任务 → 404
+        r = self.client.get(f'/api/pk/exports/{job.id}', **self.auth())
+        self.assertEqual(r.status_code, 404)
+
+
+class BudgetCheckTests(TestCase):
+    """排款超预算预警端点：本月已排款 vs AR 付款预算。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900005000', name='BudgAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456'); admin.save()
+        self.admin = admin
+        self.token = make_token(admin)
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _sched(self, amount, planned_date):
+        rec = ApprovalRecord.objects.create(
+            applicant='张三', department=self.dept, approval_number='9' * 21,
+            summary='采购', amount=Decimal(amount), payee='供应商', status='approved')
+        return self.client.post(f'/api/pk/approvals/{rec.id}/schedule',
+                                data=json.dumps({'planned_date': planned_date, 'total_amount': amount}),
+                                content_type='application/json', **self.auth())
+
+    def test_no_budget_returns_has_budget_false(self):
+        r = self.client.get('/api/pk/approvals/budget-check',
+                            {'dept': self.dept, 'month': '2026-07', 'amount': '1000'}, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertFalse(r.json()['data']['has_budget'])
+
+    def test_over_budget_detected(self):
+        from ar.models import PaymentBudget
+        PaymentBudget.objects.create(short_name='本月预算', expected_date='2026-07-15',
+                                     delivery_dept=self.dept, amount=Decimal('5000'))
+        self._sched('4000', '2026-07-10')   # 已排 4000
+        # 再排 2000 → 4000+2000 > 5000，超预算
+        r = self.client.get('/api/pk/approvals/budget-check',
+                            {'dept': self.dept, 'month': '2026-07', 'amount': '2000'}, **self.auth())
+        d = r.json()['data']
+        self.assertTrue(d['has_budget'])
+        self.assertEqual(Decimal(d['scheduled']), Decimal('4000'))
+        self.assertTrue(d['over'])
+        self.assertEqual(Decimal(d['over_by']), Decimal('1000'))
+
+    def test_within_budget(self):
+        from ar.models import PaymentBudget
+        PaymentBudget.objects.create(short_name='本月预算', expected_date='2026-07-15',
+                                     delivery_dept=self.dept, amount=Decimal('10000'))
+        self._sched('3000', '2026-07-10')
+        r = self.client.get('/api/pk/approvals/budget-check',
+                            {'dept': self.dept, 'month': '2026-07', 'amount': '2000'}, **self.auth())
+        d = r.json()['data']
+        self.assertFalse(d['over'])
+        self.assertEqual(Decimal(d['remaining']), Decimal('7000'))        # 10000 - 3000
+        self.assertEqual(Decimal(d['remaining_after']), Decimal('5000'))  # - 2000
+
+
+class HousekeepingCommandTests(TestCase):
+    """定时维护命令：回收站自动清理 + 导出任务清理。"""
+
+    def setUp(self):
+        self.dept = DEPARTMENTS[0]
+        self.user = PaikuanUser(phone='13900006000', name='HK', role='super_admin',
+                                job_title='finance_director', departments=[self.dept],
+                                is_active=True, is_approved=True)
+        self.user.set_password('Test123456'); self.user.save()
+
+    def test_housekeeping_purges_old_trash(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from django.core.management import call_command
+        old = timezone.now() - timedelta(days=40)
+        recent = timezone.now() - timedelta(days=5)
+        # 旧软删（应清）
+        a_old = ApprovalRecord.objects.create(
+            applicant='a', department=self.dept, approval_number='1' * 21, summary='s',
+            amount=Decimal('100'), payee='p', deleted_at=old)
+        # 近期软删（保留）
+        a_recent = ApprovalRecord.objects.create(
+            applicant='b', department=self.dept, approval_number='2' * 21, summary='s',
+            amount=Decimal('100'), payee='p', deleted_at=recent)
+        call_command('pk_housekeeping', '--trash-days', '30')
+        self.assertFalse(ApprovalRecord.objects.filter(pk=a_old.pk).exists())
+        self.assertTrue(ApprovalRecord.objects.filter(pk=a_recent.pk).exists())
+
+    def test_housekeeping_dry_run_keeps_all(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from django.core.management import call_command
+        old = timezone.now() - timedelta(days=40)
+        a = ApprovalRecord.objects.create(
+            applicant='a', department=self.dept, approval_number='3' * 21, summary='s',
+            amount=Decimal('100'), payee='p', deleted_at=old)
+        call_command('pk_housekeeping', '--trash-days', '30', '--dry-run')
+        self.assertTrue(ApprovalRecord.objects.filter(pk=a.pk).exists())
+
+    def test_aging_digest_json_runs(self):
+        from django.core.management import call_command
+        from io import StringIO
+        out = StringIO()
+        call_command('pk_aging_digest', '--json', stdout=out)
+        data = json.loads(out.getvalue())
+        self.assertIn('overdue', data)
+        self.assertIn('budget', data)
+
+
+class WorkbenchNotificationTests(TestCase):
+    """待办工作台 + 通知中心：桶计算、部门作用域、懒生成、已读、幂等。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = '运输事业部'
+        self.other_dept = '集团总部'
+        self.admin = PaikuanUser(phone='13900007000', name='WbAdmin', role='super_admin',
+                                 job_title='finance_director', departments=[self.dept],
+                                 is_active=True, is_approved=True)
+        self.admin.set_password('Test123456'); self.admin.save()
+        self.token = make_token(self.admin)
+        # 普通用户仅管辖 other_dept
+        self.scoped = PaikuanUser(phone='13900007001', name='Scoped', role='operator',
+                                  job_title='cashier', departments=[self.other_dept],
+                                  is_active=True, is_approved=True)
+        self.scoped.set_password('Test123456'); self.scoped.save()
+        self.scoped_token = make_token(self.scoped)
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self, t=None):
+        return {'HTTP_AUTHORIZATION': f'Bearer {t or self.token}'}
+
+    def _approval(self, dept, amount, status='pending'):
+        return ApprovalRecord.objects.create(
+            applicant='张三', department=dept, approval_number='7' * 21,
+            summary='采购', amount=Decimal(amount), payee='供应商', status=status)
+
+    def test_workbench_pending_bucket(self):
+        self._approval(self.dept, '1000', status='pending')
+        self._approval(self.dept, '2000', status='pending')
+        r = self.client.get('/api/pk/workbench', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        buckets = {b['key']: b for b in r.json()['data']['buckets']}
+        self.assertEqual(buckets['approval_pending']['count'], 2)
+        self.assertEqual(Decimal(buckets['approval_pending']['amount']), Decimal('3000'))
+        # 部门联动明细
+        self.assertEqual(buckets['approval_pending']['by_dept'][0]['dept'], self.dept)
+
+    def test_workbench_dept_scope_isolates(self):
+        self._approval(self.dept, '1000', status='pending')          # 运输
+        self._approval(self.other_dept, '5000', status='pending')    # 集团
+        # 普通用户只管辖 集团总部 → 只看到集团的待审批
+        r = self.client.get('/api/pk/workbench', **self.auth(self.scoped_token))
+        buckets = {b['key']: b for b in r.json()['data']['buckets']}
+        self.assertEqual(buckets['approval_pending']['count'], 1)
+        self.assertEqual(Decimal(buckets['approval_pending']['amount']), Decimal('5000'))
+
+    def test_notifications_lazy_generate_and_read(self):
+        self._approval(self.dept, '1000', status='pending')
+        # 拉通知 → 懒生成
+        r = self.client.get('/api/pk/notifications', **self.auth())
+        d = r.json()['data']
+        self.assertGreaterEqual(d['unread'], 1)
+        self.assertTrue(any(n['kind'] == 'approval_pending' for n in d['items']))
+        # 标记全部已读
+        r2 = self.client.post('/api/pk/notifications/read',
+                              data=json.dumps({'all': True}), content_type='application/json', **self.auth())
+        self.assertEqual(r2.status_code, 200)
+        r3 = self.client.get('/api/pk/notifications/unread-count', **self.auth())
+        self.assertEqual(r3.json()['data']['unread'], 0)
+
+    def test_notifications_idempotent_dedup(self):
+        self._approval(self.dept, '1000', status='pending')
+        from paikuan.views import _ensure_notifications
+        n1 = _ensure_notifications(self.admin)
+        n2 = _ensure_notifications(self.admin)
+        self.assertGreaterEqual(n1, 1)
+        self.assertEqual(n2, 0)   # 二次调用零新增（dedup）
+
+    def test_generate_command_runs(self):
+        from django.core.management import call_command
+        from io import StringIO
+        self._approval(self.dept, '1000', status='pending')
+        out = StringIO()
+        call_command('pk_generate_notifications', stdout=out)
+        self.assertIn('生成', out.getvalue())

@@ -5,6 +5,7 @@ const routes = [
   { path: '/login', component: () => import('../views/Login.vue'), meta: { public: true } },
   { path: '/', redirect: '/dashboard' },
   { path: '/dashboard', component: () => import('../views/Dashboard.vue'), meta: { page: 'dashboard', fullHeight: true } },
+  { path: '/workbench', component: () => import('../views/Workbench.vue'), meta: { page: 'dashboard' } },
   { path: '/payments', component: () => import('../views/Payments.vue'), meta: { page: 'payments', fullHeight: true } },
   { path: '/approvals', component: () => import('../views/ApprovalRecords.vue'), meta: { page: 'approval_records', fullHeight: true } },
   { path: '/stats', component: () => import('../views/Stats.vue'), meta: { page: 'stats', fullHeight: true } },
@@ -33,6 +34,7 @@ const routes = [
   { path: '/users', component: () => import('../views/Users.vue'), meta: { role: 'super_admin', fullHeight: true } },
   { path: '/permissions', component: () => import('../views/Permissions.vue'), meta: { role: 'super_admin', fullHeight: true } },
   { path: '/audit', component: () => import('../views/AuditLogs.vue'), meta: { role: 'super_admin', fullHeight: true } },
+  { path: '/trash', component: () => import('../views/Trash.vue'), meta: { page: 'trash', fullHeight: true } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
@@ -42,6 +44,7 @@ const router = createRouter({
 })
 
 function canVisit(auth, page) {
+  if (page === 'trash') return auth.canDelete
   if (!auth.canPage(page)) return false
   // 月度统计 is entirely amount-based; hide it from users who can't view amounts.
   if (page === 'stats' && !auth.canView('total_amount')) return false

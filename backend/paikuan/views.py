@@ -54,6 +54,7 @@ APPROVAL_FILTER_REGISTRY = {
     'approval_number':    {'type': 'text',   'col': 'approval_number'},
     'g7_number':          {'type': 'text',   'col': 'g7_number'},
     'summary':            {'type': 'text',   'col': 'summary'},
+    'notes':              {'type': 'text',   'col': 'notes'},
     'amount':             {'type': 'number', 'col': 'amount'},
     'scheduled_amount':   {'type': 'number', 'col': 'scheduled_amount'},
     'payee':              {'type': 'text',   'col': 'payee'},
@@ -1273,8 +1274,11 @@ def _apply_payment_computed_filters(qs, request):
     return qs, True
 
 
-def _list_payments(request):
-    qs = Payment.objects.select_related('created_by').prefetch_related('installments', 'plan_items').all()
+def _payments_filtered_qs(request):
+    """付款列表「筛选后、未分页」queryset（与列表完全同口径）：部门作用域 + 顶部筛选 +
+    列头筛选 + 计算列筛选 + 状态筛选 + 排序。返回 (qs, paid_annotated)。
+    供列表分页、跨页全选取 ID、运输单号复制等共用——保证「看到什么就操作/复制什么」。"""
+    qs = Payment.objects.select_related('created_by').prefetch_related('installments', 'plan_items').filter(deleted_at__isnull=True)
     qs = dept_filter(qs, request)
 
     dept = request.GET.get('dept', '').strip()
@@ -1318,15 +1322,21 @@ def _list_payments(request):
 
     # 计算列（已付/剩余/逾期）筛选与排序：按需注解，复用既有金额口径表达式
     qs, _paid_annotated = _apply_payment_computed_filters(qs, request)
+    # Status filter — shared helper 与 export 口径完全一致
+    qs = _apply_payment_status_filter(qs, status_q, _paid_annotated, hide_settled=hide_settled)
+    return qs, _paid_annotated
+
+
+def _list_payments(request):
+    qs, _paid_annotated = _payments_filtered_qs(request)
+    pay_start = request.GET.get('pay_date_start', '').strip()
+    pay_end = request.GET.get('pay_date_end', '').strip()
 
     try:
         page = max(1, int(request.GET.get('page', 1)))
         size = min(200, max(1, int(request.GET.get('size', 50))))
     except ValueError:
         page, size = 1, 50
-
-    # Status filter — shared helper 与 export 口径完全一致
-    qs = _apply_payment_status_filter(qs, status_q, _paid_annotated, hide_settled=hide_settled)
 
     total = qs.count()
 
@@ -1705,7 +1715,7 @@ def _reconcile_approval_schedule(approval_id):
     if not rec:
         return
     scheduled = (PaymentPlanItem.objects
-                 .filter(payment__approval_id=approval_id)
+                 .filter(payment__approval_id=approval_id, payment__deleted_at__isnull=True)
                  .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
     rec.scheduled_amount = scheduled
     # rejected/canceled 为终态，保持归档；approved 记录按是否排满申请金额决定归档
@@ -1967,6 +1977,43 @@ def payment_installments(request):
     })
 
 
+def _approvals_filtered_qs(request):
+    """审批列表「筛选后、未分页」queryset（与列表完全同口径）：部门作用域 + 全局关键字 +
+    列头筛选 + 计算列注解 + 排序。供列表分页与跨页全选取 ID 共用。
+
+    可见口径：仅隐藏「审批通过且已排满」的归档记录（已完全流转至付款管理）；
+    已拒绝/已撤销虽为终态（archived=True）但仍需可在审批管理查阅，故不再一刀切按
+    archived 隐藏。默认只看待审批/审批通过由前端状态列筛选控制（可清除以查看全部）。"""
+    qs = dept_filter(ApprovalRecord.objects.all(), request).exclude(status='approved', archived=True).filter(deleted_at__isnull=True)
+    # 全局关键字（跨字段模糊）+ 列头精确筛选（filters JSON）+ 列头排序
+    kw = request.GET.get('q', '').strip()
+    if kw:
+        qs = qs.filter(
+            Q(applicant__icontains=kw) | Q(department__icontains=kw) |
+            Q(secondary_dept__icontains=kw) | Q(project_short_name__icontains=kw) |
+            Q(approval_number__icontains=kw) | Q(g7_number__icontains=kw) |
+            Q(summary__icontains=kw) | Q(payee__icontains=kw)
+        )
+    # 未排金额为计算列：仅当筛选/排序用到时再注解（amount − scheduled，钳 0）
+    spec_raw = request.GET.get('filters', '')
+    sort_f = (request.GET.get('sort') or '').strip()
+    if 'remaining_amount' in spec_raw or sort_f == 'remaining_amount':
+        qs = qs.annotate(remaining_calc=Greatest(
+            Value(Decimal('0'), output_field=_DEC18),
+            ExpressionWrapper(F('amount') - F('scheduled_amount'), output_field=_DEC18),
+            output_field=_DEC18))
+    merged_reg = {**APPROVAL_FILTER_REGISTRY, **APPROVAL_COMPUTED_REGISTRY}
+    fq, fq_distinct = build_filter_q(spec_raw, merged_reg)
+    if fq:
+        qs = qs.filter(fq)
+        if fq_distinct:
+            qs = qs.distinct()
+    sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), merged_reg)
+    if sort_by:
+        qs = qs.order_by(sort_by)
+    return qs
+
+
 @csrf_exempt
 @pk_required()
 def approval_records(request):
@@ -1974,36 +2021,12 @@ def approval_records(request):
     if perms is not None and not perms['pages'].get('approval_records', True):
         return err('无访问权限', 403, 403)
     if request.method == 'GET':
-        qs = dept_filter(ApprovalRecord.objects.filter(archived=False), request)
-        # 全局关键字（跨字段模糊）+ 列头精确筛选（filters JSON）+ 列头排序
-        kw = request.GET.get('q', '').strip()
-        if kw:
-            qs = qs.filter(
-                Q(applicant__icontains=kw) | Q(department__icontains=kw) |
-                Q(secondary_dept__icontains=kw) | Q(project_short_name__icontains=kw) |
-                Q(approval_number__icontains=kw) | Q(g7_number__icontains=kw) |
-                Q(summary__icontains=kw) | Q(payee__icontains=kw)
-            )
-        # 未排金额为计算列：仅当筛选/排序用到时再注解（amount − scheduled，钳 0）
-        spec_raw = request.GET.get('filters', '')
-        sort_f = (request.GET.get('sort') or '').strip()
-        if 'remaining_amount' in spec_raw or sort_f == 'remaining_amount':
-            qs = qs.annotate(remaining_calc=Greatest(
-                Value(Decimal('0'), output_field=_DEC18),
-                ExpressionWrapper(F('amount') - F('scheduled_amount'), output_field=_DEC18),
-                output_field=_DEC18))
-        merged_reg = {**APPROVAL_FILTER_REGISTRY, **APPROVAL_COMPUTED_REGISTRY}
-        fq, fq_distinct = build_filter_q(spec_raw, merged_reg)
-        if fq:
-            qs = qs.filter(fq)
-            if fq_distinct:
-                qs = qs.distinct()
-        sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), merged_reg)
-        if sort_by:
-            qs = qs.order_by(sort_by)
-        # 全量（跨页）合计：总申请 / 已排合计 / 未排合计。列表已过滤 archived=False，
-        # 故每条 remaining = amount - scheduled_amount ≥ 0，未排合计 = 总申请 - 已排合计。
-        sums = qs.aggregate(s=Sum('amount'), sched=Sum('scheduled_amount'))
+        qs = _approvals_filtered_qs(request)
+        # 全量（跨页）合计：总申请 / 已排合计 / 未排合计。合计仅统计在途标的
+        # （待审批 / 审批通过），已拒绝/已撤销为终态不计入；在途记录 remaining =
+        # amount - scheduled_amount ≥ 0，故未排合计 = 总申请 - 已排合计。
+        live_qs = qs.exclude(status__in=['rejected', 'canceled'])
+        sums = live_qs.aggregate(s=Sum('amount'), sched=Sum('scheduled_amount'))
         total_amount = sums['s'] or Decimal('0')
         total_scheduled = sums['sched'] or Decimal('0')
         total_remaining = total_amount - total_scheduled
@@ -2026,6 +2049,7 @@ def approval_records(request):
         approval_number = (data.get('approval_number') or '').strip()
         g7_number_val = (data.get('g7_number') or '').strip()[:21]
         summary = (data.get('summary') or '').strip()
+        notes = (data.get('notes') or '').strip()[:500]
         payee = (data.get('payee') or '').strip()
         status = (data.get('status') or 'pending').strip()
         amount = Decimal(str(data.get('amount') or '0'))
@@ -2053,7 +2077,8 @@ def approval_records(request):
             applicant=applicant, department=department, approval_number=approval_number,
             g7_number=g7_number_val,
             secondary_dept=secondary_dept, project_short_name=project_short_name,
-            summary=summary, amount=amount, payee=payee, status=status, created_by_id=request.pk_uid
+            summary=summary, notes=notes, amount=amount, payee=payee, status=status,
+            created_by_id=request.pk_uid
         )
         return ok(rec.to_dict())
     return err('Method not allowed', 405)
@@ -2094,6 +2119,8 @@ def approval_record_detail(request, pk):
         for k in ('applicant', 'summary', 'payee'):
             if k in data:
                 setattr(rec, k, (data.get(k) or '').strip())
+        if 'notes' in data:
+            rec.notes = (data.get('notes') or '').strip()[:500]
         if 'department' in data and data['department'] in VALID_DEPARTMENTS:
             if not can_write_dept(request, data['department']):
                 return err('无权操作目标事业部', 403, 403)
@@ -2212,6 +2239,7 @@ def _schedule_one(request, rec, planned_date, total_amount):
                     project_short_name=rec.project_short_name,
                     applicant=rec.applicant,
                     approval_number=rec.approval_number,
+                    g7_number=rec.g7_number,   # G7编号随审批带入付款（运输事业部即对账单号）
                     project_desc=rec.summary,
                     payee=rec.payee,
                     total_amount=total_amount,
@@ -2272,6 +2300,64 @@ def approval_record_schedule(request, pk):
                'remaining_amount': str(max(Decimal('0'), rec.amount - rec.scheduled_amount)),
                'message': ('已排满申请金额，记录归档' if rec.archived else
                            f'本次排款 {total_amount} 已流转付款管理，剩余可排 {rec.amount - rec.scheduled_amount}')})
+
+
+@pk_required()
+def approval_budget_check(request):
+    """排款超预算预警：查询某部门某月的预算总额与已排款总额，返回是否超预算。
+    GET ?dept=<部门>&month=<yyyy-mm>&amount=<本次拟排金额>
+    budget 取自 AR PaymentBudget（按 delivery_dept + expected_date 月份合计）。
+    scheduled 取自 PaymentPlanItem（按 department + planned_date 月份合计）。
+    """
+    dept = request.GET.get('dept', '').strip()
+    month = request.GET.get('month', '').strip()  # yyyy-mm
+    amount_str = request.GET.get('amount', '0').strip()
+    if not dept or not month:
+        return err('dept 和 month 必填')
+    try:
+        year, mon = int(month[:4]), int(month[5:7])
+        proposed = Decimal(amount_str) if amount_str else Decimal('0')
+    except (ValueError, InvalidOperation):
+        return err('参数格式错误')
+
+    # 已排款：本月该部门在付款管理已安排的批次金额合计（department 在父表 Payment 上）
+    scheduled_agg = (PaymentPlanItem.objects
+                     .filter(payment__department=dept,
+                             payment__deleted_at__isnull=True,
+                             planned_date__year=year,
+                             planned_date__month=mon)
+                     .aggregate(s=Sum('amount')))
+    scheduled = scheduled_agg['s'] or Decimal('0')
+
+    # 预算：取 AR PaymentBudget（按 delivery_dept + expected_date 月份合计）
+    budget = None
+    try:
+        from ar.models import PaymentBudget
+        budget_agg = (PaymentBudget.objects
+                      .filter(delivery_dept=dept,
+                              expected_date__year=year,
+                              expected_date__month=mon)
+                      .aggregate(s=Sum('amount')))
+        if budget_agg['s'] is not None:
+            budget = budget_agg['s']
+    except Exception:
+        pass
+
+    if budget is None:
+        return ok({'has_budget': False, 'scheduled': str(scheduled), 'proposed': str(proposed)})
+
+    remaining = budget - scheduled
+    remaining_after = remaining - proposed
+    return ok({
+        'has_budget': True,
+        'budget': str(budget),
+        'scheduled': str(scheduled),
+        'proposed': str(proposed),
+        'remaining': str(remaining),
+        'remaining_after': str(remaining_after),
+        'over': remaining_after < Decimal('0'),
+        'over_by': str(abs(remaining_after)) if remaining_after < Decimal('0') else '0',
+    })
 
 
 @csrf_exempt
@@ -2375,6 +2461,8 @@ def approval_records_bulk_delete(request):
     if len(ids) > 1000:
         return err('单次删除上限 1000 条，请缩小选择范围')
     qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids), request)
+    now = timezone.now()
+    actor = getattr(request, 'pk_user', None)
     deleted, skipped = 0, []
     for rec in list(qs):
         if not can_write_dept(request, rec.department):
@@ -2383,10 +2471,12 @@ def approval_records_bulk_delete(request):
         if rec.payments.exists():
             skipped.append({'id': rec.id, 'reason': '已关联付款管理（已排款），不能删除；请先在付款管理删除对应排款'})
             continue
-        rec.delete()
+        rec.deleted_at = now
+        rec.deleted_by = actor
+        rec.save(update_fields=['deleted_at', 'deleted_by'])
         deleted += 1
     return ok({'deleted': deleted, 'skipped': skipped,
-               'message': f'已删除 {deleted} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})
+               'message': f'已移入回收站 {deleted} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})
 
 
 @csrf_exempt
@@ -2544,7 +2634,9 @@ def payments_bulk_delete(request):
         return err('ids 必须为整数列表')
     if len(ids) > 1000:
         return err('单次删除上限 1000 条，请缩小选择范围')
-    qs = dept_filter(Payment.objects.filter(pk__in=ids), request)
+    qs = dept_filter(Payment.objects.filter(pk__in=ids, deleted_at__isnull=True), request)
+    now = timezone.now()
+    actor = getattr(request, 'pk_user', None)
     deleted, skipped = 0, []
     for p in list(qs.prefetch_related('prepaid_offsets')):
         if not can_write_dept(request, p.department):
@@ -2553,14 +2645,16 @@ def payments_bulk_delete(request):
         if p.prepaid_offsets.exists():
             skipped.append({'id': p.id, 'reason': '已关联预付核销，不能删除；请先删除对应核销记录'})
             continue
-        approval_id = p.approval_id   # 删除前留存，删后把来源审批回退为可排款
+        approval_id = p.approval_id
         with transaction.atomic():
             _record_payment_changes(p, {}, {}, request, action='delete')
-            p.delete()
+            p.deleted_at = now
+            p.deleted_by = actor
+            p.save(update_fields=['deleted_at', 'deleted_by'])
             _reconcile_approval_schedule(approval_id)
         deleted += 1
     return ok({'deleted': deleted, 'skipped': skipped,
-               'message': f'已删除 {deleted} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})
+               'message': f'已移入回收站 {deleted} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})
 
 
 @csrf_exempt
@@ -3021,12 +3115,17 @@ def approval_import_apply(request):
 
 @pk_required()
 def approval_export(request):
+    return _approval_export_core(request)
+
+
+def _approval_export_core(request, export_cap=5000):
     if request.method != 'GET':
         return err('Method not allowed', 405)
     perms = get_request_perms(request)
     if perms is not None and not perms['pages'].get('approval_records', True):
         return err('无访问权限', 403, 403)
-    qs = dept_filter(ApprovalRecord.objects.filter(archived=False), request)
+    # 与列表同口径：仅隐藏「审批通过且已排满」的归档记录，已拒绝/已撤销仍可导出
+    qs = dept_filter(ApprovalRecord.objects.all(), request).exclude(status='approved', archived=True).filter(deleted_at__isnull=True)
     # 全局关键字 + 列头筛选 + 排序：导出与列表口径一致
     kw = request.GET.get('q', '').strip()
     if kw:
@@ -3044,8 +3143,8 @@ def approval_export(request):
     _sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), APPROVAL_FILTER_REGISTRY)
     if _sort_by:
         qs = qs.order_by(_sort_by)
-    if qs.count() > 5000:
-        return err('导出超过5000行，请缩小筛选范围')
+    if qs.count() > export_cap:
+        return err(f'导出超过{export_cap}行，请缩小筛选范围或使用后台导出')
 
     # Excel 公式注入防护：以 =+-@ 等开头的文本前置单引号转义
     _formula_chars = ('=', '+', '-', '@', '\t', '\r')
@@ -3059,7 +3158,7 @@ def approval_export(request):
     wb = Workbook()
     ws = wb.active
     ws.title = '审批记录'
-    headers = ['申请人', '所属事业部', '二级部门', '项目简称', '审批编号', 'G7编号', '摘要', '申请金额',
+    headers = ['申请人', '所属事业部', '二级部门', '项目简称', '审批编号', 'G7编号', '摘要', '备注', '申请金额',
                '已排款金额', '剩余可排', '收款主体', '审批状态']
     header_fill = PatternFill(fill_type='solid', fgColor='C96342')
     header_font = Font(bold=True, color='FFFFFF', size=11)
@@ -3071,13 +3170,231 @@ def approval_export(request):
         sched = float(o.scheduled_amount or 0)
         ws.append([_safe(o.applicant), o.department, _safe(o.secondary_dept),
                    _safe(o.project_short_name), _safe(o.approval_number),
-                   _safe(o.g7_number), _safe(o.summary), float(o.amount), sched,
+                   _safe(o.g7_number), _safe(o.summary), _safe(o.notes), float(o.amount), sched,
                    max(0.0, float(o.amount) - sched), _safe(o.payee),
                    cn.get(o.status, o.status)])
     return _build_excel_response(wb, '审批记录.xlsx')
 
 
 # ── dashboard ─────────────────────────────────────────────────────────────────
+
+# ── 待办工作台 + 通知中心 ─────────────────────────────────────────────────────
+# 工作台「待办桶」实时计算（无存储），按部门作用域 + 部门联动分解；
+# 通知中心据此桶生成 per-user 持久化事件（dedup 幂等）。两者共享同一计算引擎。
+
+def _agg_by_dept(rows, amount_key):
+    """把 [{department, <amount_key>}] 按部门聚合 → (总数, 总额, 部门明细[降序])。
+    在 Python 内聚合，避免「相关子查询 + GROUP BY」在 Postgres 上的取数歧义。"""
+    from collections import defaultdict
+    agg = defaultdict(lambda: [0, Decimal('0')])
+    for r in rows:
+        d = r.get('department') or '（未填部门）'
+        agg[d][0] += 1
+        agg[d][1] += (r.get(amount_key) or Decimal('0'))
+    by_dept = [{'dept': d, 'count': c, 'amount': str(a)}
+               for d, (c, a) in sorted(agg.items(), key=lambda kv: kv[1][1], reverse=True)]
+    total_c = sum(c for c, _ in agg.values())
+    total_a = sum((a for _, a in agg.values()), Decimal('0'))
+    return total_c, total_a, by_dept
+
+
+def _workbench_buckets(depts):
+    """计算工作台各待办桶。depts=None 表示全部（超管/无作用域）；否则按部门列表过滤。
+    返回桶列表，每桶含 count/amount/level/link/by_dept（部门联动明细）。"""
+    today = timezone.localdate()
+
+    def scope(qs):
+        return qs if depts is None else qs.filter(department__in=depts)
+
+    buckets = []
+
+    # 1. 待审批：待审批状态的审批记录
+    rows = scope(ApprovalRecord.objects.filter(status='pending', deleted_at__isnull=True)) \
+        .values('department', 'amount')
+    c, a, bd = _agg_by_dept(rows, 'amount')
+    buckets.append({'key': 'approval_pending', 'label': '待审批', 'level': 'info',
+                    'count': c, 'amount': str(a), 'link': '/approvals',
+                    'link_query': {'status': 'pending'}, 'by_dept': bd})
+
+    # 2. 待排款：审批通过、未归档、未排满（剩余可排 > 0）
+    rows = scope(ApprovalRecord.objects.filter(
+        status='approved', archived=False, deleted_at__isnull=True,
+        scheduled_amount__lt=F('amount'))) \
+        .annotate(rem=ExpressionWrapper(F('amount') - F('scheduled_amount'), output_field=_DEC18)) \
+        .values('department', 'rem')
+    c, a, bd = _agg_by_dept(rows, 'rem')
+    buckets.append({'key': 'schedule_pending', 'label': '待排款', 'level': 'info',
+                    'count': c, 'amount': str(a), 'link': '/approvals',
+                    'link_query': {'status': 'approved'}, 'by_dept': bd})
+
+    # 3 & 4. 付款：今日到期 / 逾期未付（剩余应付 > 0）
+    pay = scope(Payment.objects.filter(deleted_at__isnull=True)).annotate(
+        paid=_paid_expr(),
+        rem=ExpressionWrapper(F('total_amount') - _paid_expr(), output_field=_DEC18))
+    due_rows = list(pay.filter(paid__lt=F('total_amount'), planned_date=today)
+                    .values('department', 'rem'))
+    c, a, bd = _agg_by_dept(due_rows, 'rem')
+    buckets.append({'key': 'payment_due', 'label': '今日到期', 'level': 'warn',
+                    'count': c, 'amount': str(a), 'link': '/payments',
+                    'link_query': {}, 'by_dept': bd})
+    overdue_rows = list(pay.filter(paid__lt=F('total_amount'), planned_date__lt=today)
+                        .values('department', 'rem'))
+    c, a, bd = _agg_by_dept(overdue_rows, 'rem')
+    buckets.append({'key': 'overdue', 'label': '逾期未付', 'level': 'danger',
+                    'count': c, 'amount': str(a), 'link': '/payments',
+                    'link_query': {'overdue': '1'}, 'by_dept': bd})
+
+    # 5. 超预算事业部：本月已排款 > 付款预算
+    over_depts = []
+    over_total = Decimal('0')
+    ym = (today.year, today.month)
+    sched_rows = (PaymentPlanItem.objects
+                  .filter(payment__deleted_at__isnull=True,
+                          planned_date__year=ym[0], planned_date__month=ym[1])
+                  .values('payment__department').annotate(s=Sum('amount')))
+    sched_by_dept = {r['payment__department']: (r['s'] or Decimal('0')) for r in sched_rows}
+    budget_by_dept = {}
+    try:
+        from ar.models import PaymentBudget
+        for r in (PaymentBudget.objects
+                  .filter(expected_date__year=ym[0], expected_date__month=ym[1])
+                  .values('delivery_dept').annotate(s=Sum('amount'))):
+            budget_by_dept[r['delivery_dept']] = r['s'] or Decimal('0')
+    except Exception:
+        pass
+    for dept, sched in sched_by_dept.items():
+        if depts is not None and dept not in depts:
+            continue
+        bud = budget_by_dept.get(dept)
+        if bud is not None and sched > bud:
+            over = sched - bud
+            over_total += over
+            over_depts.append({'dept': dept, 'count': 1, 'amount': str(over)})
+    over_depts.sort(key=lambda x: Decimal(x['amount']), reverse=True)
+    buckets.append({'key': 'budget_alert', 'label': '超预算事业部', 'level': 'warn',
+                    'count': len(over_depts), 'amount': str(over_total), 'link': '/ar/budget',
+                    'link_query': {}, 'by_dept': over_depts})
+
+    return buckets
+
+
+def _depts_scope_for_request(request):
+    """请求级部门作用域：超管无作用域时 None（全部）；否则取
+    可见部门 ∩ 当前会话激活部门（?depts=）。与 dept_filter 同口径。"""
+    raw = request.GET.get('depts', '').strip()
+    requested = [d for d in raw.split(',') if d.strip()] if raw else []
+    if request.pk_role == 'super_admin':
+        return requested or None
+    allowed = set(request.pk_depts or [])
+    if requested:
+        active = [d for d in requested if d in allowed]
+        if active:
+            return active
+    return list(request.pk_depts or [])
+
+
+@pk_required()
+def workbench(request):
+    """GET — 待办工作台：实时计算各待办桶（按部门作用域 + 部门联动明细）。"""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    depts = _depts_scope_for_request(request)
+    buckets = _workbench_buckets(depts)
+    return ok({'buckets': buckets, 'generated_at': timezone.now().isoformat()})
+
+
+# ── 通知中心 ───────────────────────────────────────────────────────────────────
+# 通知按 per-user 持久化（dedup_key 幂等）。懒生成：用户拉通知/未读数时按其部门
+# 作用域计算待办桶并 upsert 通知（一天一类型一部门一条）；定时命令对全体活跃用户
+# 主动预生成。
+
+def _ensure_notifications(user):
+    """为单个用户按其部门作用域生成「应办」通知（dedup 幂等，重复调用零副作用）。
+    仅对有意义的桶（待审批/待排款/今日到期/逾期/超预算）生成；空桶不生成。"""
+    from paikuan.models import Notification
+    depts = None if user.role == 'super_admin' else list(user.departments or [])
+    # 无部门的普通用户：无可办事项
+    if depts is not None and not depts:
+        return 0
+    buckets = _workbench_buckets(depts)
+    today = timezone.localdate().isoformat()
+    level_kind = {b['key']: b for b in buckets}
+    created = 0
+    specs = [
+        ('approval_pending', '待审批提醒', lambda b: f"有 {b['count']} 条审批待处理，合计 ¥{b['amount']}", '/approvals'),
+        ('schedule_pending', '待排款提醒', lambda b: f"有 {b['count']} 条已通过审批待排款，合计 ¥{b['amount']}", '/approvals'),
+        ('payment_due', '今日到期付款', lambda b: f"今日有 {b['count']} 笔付款到期，合计 ¥{b['amount']}", '/payments'),
+        ('overdue', '逾期未付预警', lambda b: f"有 {b['count']} 笔付款已逾期未付，合计 ¥{b['amount']}", '/payments'),
+        ('budget_alert', '超预算预警', lambda b: f"有 {b['count']} 个事业部本月排款超预算，超支合计 ¥{b['amount']}", '/ar/budget'),
+    ]
+    for key, title, body_fn, link in specs:
+        b = level_kind.get(key)
+        if not b or not b['count']:
+            continue
+        dedup = f'{key}:{today}'
+        _, was_created = Notification.objects.get_or_create(
+            recipient=user, dedup_key=dedup,
+            defaults={'kind': key, 'level': b['level'], 'title': title,
+                      'body': body_fn(b), 'link': link, 'dept': ''})
+        if was_created:
+            created += 1
+    return created
+
+
+@pk_required()
+def notifications(request):
+    """GET — 当前用户通知列表（懒生成后返回）。?unread=1 仅未读；分页。"""
+    from paikuan.models import Notification
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    try:
+        _ensure_notifications(request.pk_user)
+    except Exception:
+        logger.exception('ensure notifications failed')
+    qs = Notification.objects.filter(recipient_id=request.pk_uid)
+    if request.GET.get('unread') == '1':
+        qs = qs.filter(is_read=False)
+    try:
+        page = max(1, int(request.GET.get('page', 1)))
+        size = min(50, max(1, int(request.GET.get('size', 20))))
+    except ValueError:
+        page, size = 1, 20
+    total = qs.count()
+    unread = Notification.objects.filter(recipient_id=request.pk_uid, is_read=False).count()
+    rows = qs[(page - 1) * size:page * size]
+    return ok({'total': total, 'unread': unread,
+               'items': [n.to_dict() for n in rows]})
+
+
+@pk_required()
+def notifications_unread_count(request):
+    """GET — 未读通知数（铃铛徽标轮询用，先懒生成）。"""
+    from paikuan.models import Notification
+    try:
+        _ensure_notifications(request.pk_user)
+    except Exception:
+        logger.exception('ensure notifications failed')
+    n = Notification.objects.filter(recipient_id=request.pk_uid, is_read=False).count()
+    return ok({'unread': n})
+
+
+@csrf_exempt
+@pk_required()
+def notifications_read(request):
+    """POST {ids:[...]} 或 {all:true} — 标记已读。"""
+    from paikuan.models import Notification
+    if request.method != 'POST':
+        return err('POST only', 405)
+    body = parse_body(request)
+    qs = Notification.objects.filter(recipient_id=request.pk_uid, is_read=False)
+    if not body.get('all'):
+        ids = [int(i) for i in (body.get('ids') or [])]
+        if not ids:
+            return err('ids 必填或传 all:true')
+        qs = qs.filter(pk__in=ids)
+    n = qs.update(is_read=True, read_at=timezone.now())
+    return ok({'marked': n})
+
 
 @pk_required()
 def dashboard(request):
@@ -3949,6 +4266,10 @@ def payment_import_apply(request):
 @pk_required()
 def payment_export(request):
     """GET — export filtered payment list to Excel (same filters as list view)."""
+    return _payment_export_core(request)
+
+
+def _payment_export_core(request, export_cap=5000):
     if request.method != 'GET':
         return err('Method not allowed', 405)
     perms = get_request_perms(request)
@@ -4005,12 +4326,11 @@ def payment_export(request):
     qs = _apply_payment_status_filter(qs, status_q, _paid_annotated, hide_settled=hide_settled)
 
     # Reject rather than silently truncate: a truncated export is worse than no export.
-    EXPORT_CAP = 5000
     total_count = qs.count()
-    if total_count > EXPORT_CAP:
+    if total_count > export_cap:
         return err(
-            f'当前筛选结果共 {total_count} 条，超出导出上限（{EXPORT_CAP} 条）。'
-            '请缩小日期范围或添加其他筛选条件后重试。'
+            f'当前筛选结果共 {total_count} 条，超出导出上限（{export_cap} 条）。'
+            '请缩小日期范围或添加其他筛选条件后重试，或使用后台导出。'
         )
 
     # Determine max installment count across the filtered set for dynamic columns.
@@ -4107,7 +4427,678 @@ def payment_export(request):
     return _build_excel_response(wb, f'排款记录_{today}.xlsx')
 
 
+# ── 运输事业部对账单 专用导入 / 导出 ────────────────────────────────────────────
+# 运输事业部从自有系统导出的对账单结构与排款表完全不同（14 固定列、金额为负）。
+# 导入（审批管理）：逐行转为「已通过」审批记录（金额取绝对值、映射部门/收款方），原始整行
+#       存 ext_raw，以「对账单号」为唯一键去重。之后由用户在审批管理手动排款进入付款管理。
+# 导出（付款管理）：按勾选 / 筛选取回已排款的运输付款记录，从来源审批的 ext_raw 原样还原原表，
+#       逐字零误差，仅把「状态」列改写为「已结算」（限系统内已付清行），供回传运输自有系统。
+TRANSPORT_SOURCE = 'transport'
+TRANSPORT_DEPT = '运输事业部'
+# 运输对账单原表头（顺序即导出列顺序，必须与来源系统完全一致）
+TRANSPORT_HEADERS = [
+    '序号', '所属组织', '对账单号', '对账对象', '联系电话', '实际对账金额',
+    '对账时间', '状态', '创建人', '创建时间', '备注', '单据类别', '账单调整', '对账金额',
+]
+TRANSPORT_KEY_COL = '对账单号'      # 去重唯一键
+TRANSPORT_AMOUNT_COL = '实际对账金额'  # 取绝对值作为申请金额（已含账单调整的最终额）
+TRANSPORT_STATUS_COL = '状态'       # 导出时改写为「已结算」的列
+TRANSPORT_SETTLED_LABEL = '已结算'
+# 运输对账单正常应为「已通过」（对账通过、待我方付款）。下列源状态不可导入：
+#   已结算/已完成类 → 源系统已结算，再导入排款会重复付款；
+#   作废/取消/驳回类 → 单据已失效，不应付款。
+# 精确匹配（规范化后），避免误伤「未结算/待结算」（含「结算」二字但应可导入）。
+TRANSPORT_BLOCK_SETTLED = {'已结算', '已完成', '已支付', '已付款', '结算完成', '付款完成'}
+TRANSPORT_BLOCK_VOID = {'已作废', '作废', '已取消', '取消', '已关闭', '已驳回', '驳回', '已拒绝', '拒绝', '无效'}
+
+
+def _transport_analyze(rows, existing_bills):
+    """运输对账单逐行分类（只读，不落库）。导入与导入预检共用同一口径，杜绝漂移。
+    返回各类别清单 + 列漂移信息。existing_bills：系统内已存在的 ext_bill_no 集合。"""
+    header = [str(h).strip() if h is not None else '' for h in rows[0]]
+    pos = {h: i for i, h in enumerate(header)}
+    report = {
+        'header': header,
+        'missing_required': [c for c in (TRANSPORT_KEY_COL, TRANSPORT_AMOUNT_COL) if c not in pos],
+        # 列漂移：原表新增的非标准列 / 缺失的标准列
+        'extra_columns': [h for h in header if h and h not in TRANSPORT_HEADERS],
+        'missing_standard': [h for h in TRANSPORT_HEADERS if h not in pos],
+        'total': 0,
+        'ok': [], 'settled': [], 'voided': [],
+        'dup_in_file': [], 'dup_in_system': [], 'bad': [],
+    }
+    if report['missing_required']:
+        return report
+
+    def cell(row, col):
+        i = pos.get(col)
+        return row[i] if (i is not None and i < len(row)) else None
+
+    seen = set()
+    for rn, row in enumerate(rows[1:], start=2):
+        if row is None or all(v is None or str(v).strip() == '' for v in row):
+            continue
+        report['total'] += 1
+        bill_no = str(cell(row, TRANSPORT_KEY_COL) or '').strip()
+        if not bill_no:
+            report['bad'].append({'row': rn, 'bill_no': '', 'reason': '缺少对账单号'})
+            continue
+        if bill_no in seen:
+            report['dup_in_file'].append({'row': rn, 'bill_no': bill_no})
+            continue
+        if bill_no in existing_bills:
+            report['dup_in_system'].append({'row': rn, 'bill_no': bill_no})
+            continue
+        src_status = str(cell(row, TRANSPORT_STATUS_COL) or '').strip()
+        if src_status in TRANSPORT_BLOCK_SETTLED:
+            report['settled'].append({'row': rn, 'bill_no': bill_no, 'src_status': src_status})
+            continue
+        if src_status in TRANSPORT_BLOCK_VOID:
+            report['voided'].append({'row': rn, 'bill_no': bill_no, 'src_status': src_status})
+            continue
+        amt_raw = cell(row, TRANSPORT_AMOUNT_COL)
+        try:
+            amount = abs(Decimal(str(amt_raw).strip()))
+        except (InvalidOperation, AttributeError, TypeError):
+            report['bad'].append({'row': rn, 'bill_no': bill_no, 'reason': f'金额「{amt_raw}」无法解析'})
+            continue
+        if amount <= 0:
+            report['bad'].append({'row': rn, 'bill_no': bill_no, 'reason': '金额为 0'})
+            continue
+        raw = {h: (row[i] if i < len(row) else None) for h, i in pos.items()}
+        report['ok'].append({
+            'row': rn, 'bill_no': bill_no, 'src_status': src_status,
+            'payee': str(cell(row, '对账对象') or '').strip() or bill_no,
+            'org': str(cell(row, '所属组织') or '').strip(),
+            'notes': str(cell(row, '备注') or '').strip()[:500],
+            'amount': amount, 'raw': raw,
+        })
+        seen.add(bill_no)
+    return report
+
+
+def _transport_read_for_analyze(request):
+    """运输导入/预检共用的鉴权 + 取文件 + 读行 + 取已存在单号。
+    成功返回 (rows, existing_bills, None)；失败返回 (None, None, err_response)。"""
+    perms = get_request_perms(request)
+    if perms is not None:
+        if not perms['pages'].get('approval_records', True):
+            return None, None, err('无审批记录访问权限', 403, 403)
+        if not perms.get('can_create'):
+            return None, None, err('无新增权限', 403, 403)
+    if not can_write_dept(request, TRANSPORT_DEPT):
+        return None, None, err(f'无权操作部门"{TRANSPORT_DEPT}"', 403, 403)
+    upload = request.FILES.get('file')
+    if not upload:
+        return None, None, err('请上传文件（.xlsx / .csv）')
+    if upload.size > 5 * 1024 * 1024:
+        return None, None, err('文件过大，请确认文件不超过5MB')
+    rows, ferr = _read_import_rows(upload)
+    if ferr:
+        return None, None, err(ferr)
+    if not rows or len(rows) < 2:
+        return None, None, err('文件为空或缺少数据行')
+    existing = set(ApprovalRecord.objects.filter(ext_source=TRANSPORT_SOURCE)
+                   .values_list('ext_bill_no', flat=True))
+    return rows, existing, None
+
+
+@csrf_exempt
+@pk_required()
+def transport_import_precheck(request):
+    """POST（审批管理）— 运输对账单导入预检：只读分析，返回逐类详单供前端确认。
+    覆盖：将导入 / 源已结算（防重复付款）/ 源已作废 / 文件内重复 / 系统内重复 /
+    数据异常 / 列漂移（新增列、缺标准列）。不落库。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    rows, existing, resp = _transport_read_for_analyze(request)
+    if resp:
+        return resp
+    report = _transport_analyze(rows, existing)
+    if report['missing_required']:
+        return err(f'运输对账单缺少必要列：{"、".join(report["missing_required"])}。请直接上传运输系统导出的原始表')
+
+    def slim(i):
+        return {'row': i['row'], 'bill_no': i['bill_no'],
+                'payee': i['payee'], 'amount': str(i['amount']), 'src_status': i['src_status']}
+    return ok({
+        'total': report['total'],
+        'will_import': len(report['ok']),
+        'ok_sample': [slim(i) for i in report['ok'][:100]],
+        'settled': report['settled'],
+        'voided': report['voided'],
+        'dup_in_file': report['dup_in_file'],
+        'dup_in_system': report['dup_in_system'],
+        'bad': report['bad'],
+        'extra_columns': report['extra_columns'],
+        'missing_standard': report['missing_standard'],
+    })
+
+
+@csrf_exempt
+@pk_required()
+def transport_import(request):
+    """POST（审批管理）— 运输对账单导入：原表 → 「已通过」审批记录（金额取绝对值），
+    按对账单号去重。源已结算/已作废单据跳过（防重复付款）。导入后手动排款流转付款管理。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    rows, existing, resp = _transport_read_for_analyze(request)
+    if resp:
+        return resp
+    report = _transport_analyze(rows, existing)
+    if report['missing_required']:
+        return err(f'运输对账单缺少必要列：{"、".join(report["missing_required"])}。请直接上传运输系统导出的原始表')
+
+    results = {'created': 0, 'skipped': 0, 'duplicates': 0,
+               'already_settled': 0, 'voided': 0, 'errors': []}
+    importer = getattr(getattr(request, 'pk_user', None), 'name', '') or '运输导入'
+    for item in report['ok']:
+        bill_no = item['bill_no']
+        try:
+            with transaction.atomic():
+                ApprovalRecord.objects.create(
+                    created_by_id=request.pk_uid, applicant=importer,
+                    department=TRANSPORT_DEPT, secondary_dept=item['org'],
+                    approval_number='', g7_number=bill_no[:21],
+                    summary=f'运输对账 {bill_no}', notes=item['notes'],
+                    amount=item['amount'], payee=item['payee'], status='approved',
+                    ext_source=TRANSPORT_SOURCE, ext_bill_no=bill_no, ext_raw=item['raw'],
+                )
+            results['created'] += 1
+        except IntegrityError:
+            # DB 兜底唯一约束命中（并发）→ 计为重复
+            results['duplicates'] += 1
+            results['skipped'] += 1
+        except Exception as e:
+            results['errors'].append(f'第{item["row"]}行: 对账单 {bill_no} 保存失败 ({e})')
+            results['skipped'] += 1
+
+    # 汇总各跳过类别（与预检同口径）
+    results['duplicates'] += len(report['dup_in_file']) + len(report['dup_in_system'])
+    results['already_settled'] = len(report['settled'])
+    results['voided'] = len(report['voided'])
+    results['skipped'] += (len(report['dup_in_file']) + len(report['dup_in_system'])
+                           + len(report['settled']) + len(report['voided']) + len(report['bad']))
+    for s in report['settled']:
+        results['errors'].append(
+            f'第{s["row"]}行: 对账单 {s["bill_no"]} 源状态「{s["src_status"]}」已结算，跳过以防重复付款')
+    for v in report['voided']:
+        results['errors'].append(
+            f'第{v["row"]}行: 对账单 {v["bill_no"]} 源状态「{v["src_status"]}」已作废/取消，跳过')
+    for b in report['bad']:
+        results['errors'].append(f'第{b["row"]}行: 对账单 {b["bill_no"] or "(空)"} {b["reason"]}，已跳过')
+
+    parts = [f'成功导入 {results["created"]} 条（已建为「审批通过」记录，请在审批管理排款）']
+    if results['duplicates']:
+        parts.append(f'跳过重复 {results["duplicates"]} 条')
+    if results['already_settled']:
+        parts.append(f'跳过源已结算 {results["already_settled"]} 条（防重复付款）')
+    if results['voided']:
+        parts.append(f'跳过源已作废/取消 {results["voided"]} 条')
+    if report['bad']:
+        parts.append(f'跳过异常 {len(report["bad"])} 条')
+    results['message'] = '；'.join(parts)
+    return ok(results)
+
+
+@csrf_exempt
+@pk_required()
+def transport_export(request):
+    """GET（付款管理）— 运输对账单导出：按 ids（勾选付款记录）/ 筛选取回已排款的运输付款，
+    从来源审批的 ext_raw 原样还原原表，仅把状态列改为「已结算」（限已付清行）。零误差回传。"""
+    return _transport_export_core(request)
+
+
+def _transport_export_core(request, export_cap=5000):
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    try:
+        from openpyxl import Workbook
+    except ImportError:
+        return err('服务器缺少 openpyxl 依赖', 500)
+
+    # 运输付款 = 来源审批为运输导入的付款记录（经手动排款流转而来）
+    qs = Payment.objects.filter(approval__ext_source=TRANSPORT_SOURCE)
+    qs = dept_filter(qs, request)
+    qs = qs.select_related('approval').prefetch_related('installments')
+
+    # 勾选导出优先：ids=逗号分隔的付款记录主键
+    ids_raw = (request.GET.get('ids') or '').strip()
+    if ids_raw:
+        try:
+            ids = [int(x) for x in ids_raw.split(',') if x.strip()]
+        except ValueError:
+            return err('ids 参数格式有误')
+        qs = qs.filter(id__in=ids)
+    else:
+        # 否则走列表同款筛选（日期 / 关键词 / 列头筛选）
+        start = request.GET.get('start_date', '').strip()
+        end = request.GET.get('end_date', '').strip()
+        q_str = request.GET.get('q', '').strip()
+        if start:
+            qs = qs.filter(planned_date__gte=start)
+        if end:
+            qs = qs.filter(planned_date__lte=end)
+        if q_str:
+            qs = qs.filter(
+                Q(payee__icontains=q_str) | Q(approval__ext_bill_no__icontains=q_str) |
+                Q(secondary_dept__icontains=q_str) | Q(notes__icontains=q_str)
+            )
+        fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), PAYMENT_FILTER_REGISTRY)
+        if fq:
+            qs = qs.filter(fq)
+            if fq_distinct:
+                qs = qs.distinct()
+
+    payments = list(qs)
+    if not payments:
+        return err('没有可导出的运输对账记录（请先在审批管理排款，再勾选付款记录或调整筛选）')
+    if len(payments) > export_cap:
+        return err(f'当前结果共 {len(payments)} 条，超出导出上限（{export_cap} 条），请缩小范围')
+
+    # 一条审批（一张对账单）↔ 一条付款汇总记录；按对账单号去重，保证一单一行
+    by_bill = {}
+    for p in payments:
+        rec = p.approval
+        if rec is None or not isinstance(rec.ext_raw, dict) or not rec.ext_raw:
+            continue
+        key = rec.ext_bill_no or rec.id
+        # 同单多条付款（理论上不会）取已结算优先
+        if key not in by_bill or (p.status == 'settled' and by_bill[key].status != 'settled'):
+            by_bill[key] = p
+    rows_out = list(by_bill.values())
+    if not rows_out:
+        return err('选中的付款记录没有可还原的运输对账原始数据')
+
+    # 还原列顺序：必须与运输系统原表列序一致。两个坑：
+    #   ① 生产库（Postgres jsonb）不保证 JSON 键存储顺序 → 不能依赖 ext_raw.keys() 顺序；
+    #   ② 不同批次导入的列集可能漂移（运输系统加列）→ 不能只看首行，否则丢列/错位。
+    # 故按原表标准列序 TRANSPORT_HEADERS 排在前，再把「所有行」出现过的、标准列以外的
+    # 额外列按首次出现顺序并集追加在后，保证任何行的任何列都不丢失。
+    all_raws = [(r.approval.ext_raw or {}) for r in rows_out]
+    canonical = [h for h in TRANSPORT_HEADERS if any(h in raw for raw in all_raws)]
+    seen_cols = set(canonical)
+    extras = []
+    for raw in all_raws:
+        for k in raw.keys():
+            if k not in seen_cols:
+                seen_cols.add(k)
+                extras.append(k)
+    headers = canonical + extras if (canonical or extras) else list(TRANSPORT_HEADERS)
+    if TRANSPORT_STATUS_COL not in headers:
+        headers.append(TRANSPORT_STATUS_COL)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '运输对账单'
+    # 零误差还原：表头为原表纯文本，不施加任何品牌底色/字体样式（与来源系统原表一致，
+    # 仅状态列的「值」可改写）。导出 = 原表逐字 + 已结算行状态列改为「已结算」。
+    for ci, h in enumerate(headers, 1):
+        ws.cell(row=1, column=ci, value=h)
+
+    _FORMULA_CHARS = ('=', '+', '@')
+
+    def _safe(v):
+        # Excel 注入防护：仅对会被当成公式的纯文本前缀加引号，不动数字 → 不改变数值精度
+        if isinstance(v, str) and v and v[0] in _FORMULA_CHARS:
+            return "'" + v
+        return v
+
+    for ri, p in enumerate(rows_out, start=2):
+        raw = p.approval.ext_raw
+        settled = p.status == 'settled'
+        for ci, h in enumerate(headers, 1):
+            if h == TRANSPORT_STATUS_COL:
+                # 状态列以「我方结算」为准（这是导出存在的意义）：
+                #   已结算 → 写「已结算」；
+                #   未结算 → 保留源原值（零误差）；但若源原值本身就是「已结算类」
+                #   （历史遗留：在导入状态校验之前导入的脏数据），不沿用以免谎报已结算，
+                #   改写为明确的「未结算」，杜绝「我方未付却显示已结算」的错配。
+                if settled:
+                    val = TRANSPORT_SETTLED_LABEL
+                else:
+                    orig = raw.get(h)
+                    val = '未结算' if str(orig or '').strip() in TRANSPORT_BLOCK_SETTLED else orig
+            else:
+                val = raw.get(h)
+            # 空单元格统一还原为空字符串，与来源系统原表表示一致（避免 None/'' 表象差异）
+            if val is None:
+                val = ''
+            ws.cell(row=ri, column=ci, value=_safe(val))
+
+    for col in ws.columns:
+        max_len = max((len(str(c.value or '')) for c in col), default=10)
+        ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 36)
+
+    today = timezone.localdate().strftime('%Y%m%d')
+    return _build_excel_response(wb, f'运输对账单_已结算_{today}.xlsx')
+
+
+# ── 异步导出（大数据量后台任务）──────────────────────────────────────────────
+# 同步导出上限 5000 行，超出改后台异步生成：前端建任务→轮询状态→完成后下载。
+# 文件字节存 ExportJob.file_data（DB），跨 gunicorn worker 共享，无需 Redis/Celery。
+ASYNC_EXPORT_CAP = 100000   # 后台导出硬上限（保护内存与 DB BLOB 体积）
+
+# 哪些列表筛选参数需要快照进 ExportJob.params 以便后台重建同口径 queryset。
+_EXPORT_PARAM_KEYS = (
+    'q', 'filters', 'sort', 'order', 'depts', 'dept', 'status', 'hide_settled',
+    'start_date', 'end_date', 'pay_date_start', 'pay_date_end', 'g7_number', 'ids',
+)
+
+
+class _ReplayRequest:
+    """后台导出 worker 用：模拟一个已认证的 GET 请求，承载导出核心读取的全部上下文
+    （pk_* 身份 + GET 筛选参数）。导出核心只读不写，故无需真实 HttpRequest。"""
+    method = 'GET'
+
+    def __init__(self, user, params):
+        self.pk_user = user
+        self.pk_uid = user.id
+        self.pk_role = user.role
+        self.pk_job = user.job_title
+        self.pk_depts = user.departments or []
+        self.GET = params or {}
+
+
+def _run_export_job(job_id):
+    """后台线程：重建筛选 → 生成 xlsx → 字节落库。独立 DB 连接，结束务必关闭。"""
+    from django.db import connection
+    from paikuan.models import ExportJob
+    _CORES = {'approvals': _approval_export_core, 'payments': _payment_export_core,
+              'transport': _transport_export_core}
+    try:
+        job = ExportJob.objects.get(pk=job_id)
+    except ExportJob.DoesNotExist:
+        return
+    try:
+        job.status = 'running'
+        job.save(update_fields=['status'])
+        core = _CORES.get(job.kind)
+        if core is None:
+            raise ValueError(f'未知导出类型 {job.kind}')
+        req = _ReplayRequest(job.created_by, job.params)
+        resp = core(req, export_cap=ASYNC_EXPORT_CAP)
+        if getattr(resp, 'status_code', 200) != 200:
+            # 错误响应体为 JSON {error/msg}
+            try:
+                payload = json.loads(resp.content.decode('utf-8'))
+                msg = payload.get('error') or payload.get('msg') or '导出失败'
+            except Exception:
+                msg = '导出失败'
+            job.status = 'failed'
+            job.error = msg
+            job.finished_at = timezone.now()
+            job.save(update_fields=['status', 'error', 'finished_at'])
+            return
+        content = resp.content
+        # 从 Content-Disposition 还原文件名（_build_excel_response 已 URL 编码）
+        job.file_data = content
+        if not job.filename:
+            job.filename = {'approvals': '审批记录.xlsx', 'payments': '排款记录.xlsx',
+                            'transport': '运输对账单.xlsx'}.get(job.kind, '导出.xlsx')
+        job.status = 'done'
+        job.finished_at = timezone.now()
+        job.save(update_fields=['file_data', 'filename', 'status', 'finished_at'])
+    except Exception as e:
+        logger.exception('export job %s failed', job_id)
+        try:
+            job.status = 'failed'
+            job.error = str(e)[:500]
+            job.finished_at = timezone.now()
+            job.save(update_fields=['status', 'error', 'finished_at'])
+        except Exception:
+            pass
+    finally:
+        connection.close()
+
+
+@csrf_exempt
+@pk_required()
+def export_create(request):
+    """POST {kind, params} — 建后台导出任务并启动线程。返回 {id, status}。
+    kind ∈ approvals|payments|transport；params 为列表筛选参数快照。"""
+    from paikuan.models import ExportJob
+    if request.method != 'POST':
+        return err('POST only', 405)
+    body = parse_body(request)
+    kind = (body.get('kind') or '').strip()
+    if kind not in ('approvals', 'payments', 'transport'):
+        return err('未知导出类型')
+    # 权限校验：与对应列表页一致
+    perms = get_request_perms(request)
+    if kind == 'approvals':
+        if perms is not None and not perms['pages'].get('approval_records', True):
+            return err('无访问权限', 403, 403)
+    else:
+        denied = _payments_page_denied(request, perms)
+        if denied:
+            return denied
+    raw_params = body.get('params') or {}
+    params = {k: str(raw_params[k]) for k in _EXPORT_PARAM_KEYS if k in raw_params and raw_params[k] not in (None, '')}
+    job = ExportJob.objects.create(kind=kind, created_by=request.pk_user, params=params)
+    t = threading.Thread(target=_run_export_job, args=(job.id,), daemon=True)
+    t.start()
+    return ok(job.to_dict())
+
+
+@pk_required()
+def export_status(request, pk):
+    """GET — 单个导出任务状态（轮询用）。"""
+    from paikuan.models import ExportJob
+    job = ExportJob.objects.filter(pk=pk, created_by_id=request.pk_uid).first()
+    if not job:
+        return err('任务不存在', 404)
+    return ok(job.to_dict())
+
+
+@pk_required()
+def export_list(request):
+    """GET — 当前用户最近的导出任务（默认 20 条）。"""
+    from paikuan.models import ExportJob
+    jobs = ExportJob.objects.filter(created_by_id=request.pk_uid)[:20]
+    return ok({'items': [j.to_dict() for j in jobs]})
+
+
+@pk_required()
+def export_download(request, pk):
+    """GET — 下载已完成的导出文件字节。"""
+    from paikuan.models import ExportJob
+    job = ExportJob.objects.filter(pk=pk, created_by_id=request.pk_uid).first()
+    if not job:
+        return err('任务不存在', 404)
+    if job.status != 'done' or not job.file_data:
+        return err('文件尚未生成完成')
+    resp = HttpResponse(
+        bytes(job.file_data),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    resp['Content-Disposition'] = f"attachment; filename*=UTF-8''{quote(job.filename)}"
+    return resp
+
+
+# 跨页全选上限：与各批量操作的单次上限对齐（批量删除/审批/排款/付款均为 1000）。
+SELECT_ALL_CAP = 1000
+# 运输单号复制上限：与导出上限对齐，足够覆盖整批对账。
+G7_COPY_CAP = 5000
+
+
+@pk_required()
+def payments_select_ids(request):
+    """跨页全选：返回当前筛选口径下的全部付款记录 ID（与列表同口径，去分页）。
+    供「选择全部筛选结果」后做跨页批量操作。上限 SELECT_ALL_CAP，超出时 capped=True。"""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    qs, _ = _payments_filtered_qs(request)
+    # 清空排序避免 DISTINCT + 非选择列 ORDER BY 在部分数据库报错；多取 1 条用于判溢出
+    ids = list(qs.order_by().values_list('id', flat=True).distinct()[:SELECT_ALL_CAP + 1])
+    capped = len(ids) > SELECT_ALL_CAP
+    ids = ids[:SELECT_ALL_CAP]
+    return ok({'ids': ids, 'count': len(ids), 'capped': capped, 'cap': SELECT_ALL_CAP})
+
+
+@pk_required()
+def transport_g7_numbers(request):
+    """运输专用：返回所选(ids)/当前筛选口径下付款记录的 G7编号（=对账单号）去重列表，
+    供前端以「+」或空格连接复制到剪贴板。跨页全量，不受分页限制。上限 G7_COPY_CAP。"""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    ids_raw = (request.GET.get('ids') or '').strip()
+    if ids_raw:
+        try:
+            ids = [int(x) for x in ids_raw.split(',') if x.strip()]
+        except ValueError:
+            return err('ids 参数格式有误')
+        qs = dept_filter(Payment.objects.filter(pk__in=ids), request)
+    else:
+        qs, _ = _payments_filtered_qs(request)
+    # 保序去重（清空排序以规避 DISTINCT/ORDER BY 跨库差异；顺序对拼接用途不敏感）
+    seen, nums = set(), []
+    for g7 in qs.order_by().values_list('g7_number', flat=True).iterator():
+        g7 = (g7 or '').strip()
+        if not g7 or g7 in seen:
+            continue
+        seen.add(g7)
+        nums.append(g7)
+        if len(nums) >= G7_COPY_CAP:
+            break
+    return ok({'numbers': nums, 'count': len(nums), 'capped': len(nums) >= G7_COPY_CAP})
+
+
+@pk_required()
+def approvals_select_ids(request):
+    """跨页全选：返回当前筛选口径下的全部审批记录 ID（与列表同口径，去分页）。
+    供「选择全部筛选结果」后做跨页批量操作。上限 SELECT_ALL_CAP。"""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    if perms is not None and not perms['pages'].get('approval_records', True):
+        return err('无访问权限', 403, 403)
+    qs = _approvals_filtered_qs(request)
+    ids = list(qs.order_by().values_list('id', flat=True).distinct()[:SELECT_ALL_CAP + 1])
+    capped = len(ids) > SELECT_ALL_CAP
+    ids = ids[:SELECT_ALL_CAP]
+    return ok({'ids': ids, 'count': len(ids), 'capped': capped, 'cap': SELECT_ALL_CAP})
+
+
 # ── departments ───────────────────────────────────────────────────────────────
+
+@csrf_exempt
+@pk_required()
+def trash_approvals(request):
+    """回收站 — 审批管理（软删记录查询/恢复/彻底删除）。
+    GET：列出被软删的审批记录。
+    POST { action: 'restore'|'purge', ids: [...] }：还原或永久删除。
+    """
+    perms = get_request_perms(request)
+    if perms is not None and not perms['pages'].get('approval_records', True):
+        return err('无访问权限', 403, 403)
+    qs = dept_filter(ApprovalRecord.objects.filter(deleted_at__isnull=False), request)
+
+    if request.method == 'GET':
+        try:
+            page = max(1, int(request.GET.get('page', 1)))
+            size = min(100, max(1, int(request.GET.get('size', 50))))
+        except ValueError:
+            page, size = 1, 50
+        total = qs.count()
+        rows = qs.order_by('-deleted_at')[(page-1)*size:page*size]
+        return ok({'total': total, 'items': [
+            {**r.to_dict(), 'deleted_at': r.deleted_at.isoformat() if r.deleted_at else None,
+             'deleted_by_name': r.deleted_by.name if r.deleted_by else None}
+            for r in rows
+        ]})
+
+    if request.method == 'POST':
+        if perms is not None and not perms.get('can_delete'):
+            return err('无删除权限', 403, 403)
+        body = parse_body(request)
+        action = body.get('action', 'restore')
+        ids = [int(i) for i in (body.get('ids') or [])]
+        if not ids:
+            return err('ids 必填')
+        targets = list(qs.filter(pk__in=ids))
+        count = 0
+        for rec in targets:
+            if action == 'restore':
+                rec.deleted_at = None
+                rec.deleted_by = None
+                rec.save(update_fields=['deleted_at', 'deleted_by'])
+            elif action == 'purge':
+                if rec.payments.exists():
+                    continue
+                rec.delete()
+            count += 1
+        return ok({'count': count, 'action': action})
+    return err('Method not allowed', 405)
+
+
+@csrf_exempt
+@pk_required()
+def trash_payments(request):
+    """回收站 — 付款管理（软删记录查询/恢复/彻底删除）。
+    GET：列出被软删的付款记录。
+    POST { action: 'restore'|'purge', ids: [...] }：还原或永久删除。
+    """
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    qs = dept_filter(Payment.objects.filter(deleted_at__isnull=False), request)
+
+    if request.method == 'GET':
+        try:
+            page = max(1, int(request.GET.get('page', 1)))
+            size = min(100, max(1, int(request.GET.get('size', 50))))
+        except ValueError:
+            page, size = 1, 50
+        total = qs.count()
+        rows = list(qs.order_by('-deleted_at')[(page-1)*size:page*size])
+        return ok({'total': total, 'items': [
+            {**p.to_dict(), 'deleted_at': p.deleted_at.isoformat() if p.deleted_at else None,
+             'deleted_by_name': p.deleted_by.name if p.deleted_by else None}
+            for p in rows
+        ]})
+
+    if request.method == 'POST':
+        if perms is not None and not perms.get('can_delete'):
+            return err('无删除权限', 403, 403)
+        body = parse_body(request)
+        action = body.get('action', 'restore')
+        ids = [int(i) for i in (body.get('ids') or [])]
+        if not ids:
+            return err('ids 必填')
+        targets = list(qs.filter(pk__in=ids))
+        count = 0
+        for p in targets:
+            if action == 'restore':
+                approval_id = p.approval_id
+                p.deleted_at = None
+                p.deleted_by = None
+                p.save(update_fields=['deleted_at', 'deleted_by'])
+                _reconcile_approval_schedule(approval_id)
+            elif action == 'purge':
+                if p.prepaid_offsets.exists():
+                    continue
+                approval_id = p.approval_id
+                with transaction.atomic():
+                    _record_payment_changes(p, {}, {}, request, action='delete')
+                    p.delete()
+                    _reconcile_approval_schedule(approval_id)
+            count += 1
+        return ok({'count': count, 'action': action})
+    return err('Method not allowed', 405)
+
 
 @pk_required()
 def departments(request):

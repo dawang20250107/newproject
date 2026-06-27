@@ -27,6 +27,22 @@ function togglePerfLite() {
   localStorage.setItem('pk_perf_lite', perfLite.value ? '1' : '0')
 }
 
+// 表格密度切换：compact → comfortable → spacious，持久化
+const DENSITIES = ['compact', 'comfortable', 'spacious']
+const DENSITY_LABELS = { compact: '紧凑', comfortable: '适中', spacious: '宽松' }
+const density = ref(localStorage.getItem('pk_density') || 'comfortable')
+function applyDensity(d) {
+  DENSITIES.forEach(v => document.documentElement.classList.remove(`density-${v}`))
+  if (d !== 'comfortable') document.documentElement.classList.add(`density-${d}`)
+}
+applyDensity(density.value)
+function cycleDensity() {
+  const next = DENSITIES[(DENSITIES.indexOf(density.value) + 1) % DENSITIES.length]
+  density.value = next
+  localStorage.setItem('pk_density', next)
+  applyDensity(next)
+}
+
 function logout() {
   emit('close-mobile')
   auth.logout()
@@ -135,6 +151,20 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         </span>
         <Transition name="label-fade">
           <span v-if="!effectiveCollapsed" class="nav-label">今日工作台</span>
+        </Transition>
+      </router-link>
+
+      <router-link v-if="auth.canPage('dashboard')" to="/workbench" class="nav-item"
+        :class="{ active: route.path === '/workbench' }"
+        :title="effectiveCollapsed ? '待办中心' : undefined"
+        @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+          </svg>
+        </span>
+        <Transition name="label-fade">
+          <span v-if="!effectiveCollapsed" class="nav-label">待办中心</span>
         </Transition>
       </router-link>
 
@@ -436,6 +466,20 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
           <span v-if="!effectiveCollapsed" class="nav-label">审计日志</span>
         </Transition>
       </router-link>
+
+      <router-link v-if="auth.canDelete" to="/trash" class="nav-item"
+        :class="{ active: route.path === '/trash' }"
+        :title="effectiveCollapsed ? '回收站' : undefined"
+        @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
+          </svg>
+        </span>
+        <Transition name="label-fade">
+          <span v-if="!effectiveCollapsed" class="nav-label">回收站</span>
+        </Transition>
+      </router-link>
     </div>
 
     <!-- Footer -->
@@ -477,6 +521,14 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
               <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>
             </svg>
             退出
+          </button>
+          <button class="footer-btn density-btn" @click="cycleDensity"
+            :title="`表格密度：${DENSITY_LABELS[density]}（点击切换）`">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round">
+              <line x1="3" y1="6" x2="21" y2="6"/>
+              <line x1="3" y1="12" x2="21" y2="12"/>
+              <line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
           </button>
           <button class="footer-btn perf-btn" :class="{ on: perfLite }" @click="togglePerfLite"
             :title="perfLite ? '性能模式已开启（点击恢复完整视觉）' : '滚动卡顿？点击开启性能模式'">
@@ -708,6 +760,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 }
 .footer-btn.logout-btn:hover { background: rgba(220,70,50,0.16); color: #ff8a7a; border-color: rgba(220,70,50,0.24); }
 .footer-btn.pwd-btn:hover { background: rgba(255,255,255,0.09); color: rgba(255,248,244,0.9); border-color: rgba(255,255,255,0.12); }
+.footer-btn.density-btn { flex: none; width: 30px; padding: 6px; }
+.footer-btn.density-btn:hover { background: rgba(255,255,255,0.09); color: rgba(255,248,244,0.9); border-color: rgba(255,255,255,0.12); }
 .footer-btn.perf-btn { flex: none; width: 30px; padding: 6px; font-size: 13px; }
 .footer-btn.perf-btn.on { border-color: #ffd54f; color: #ffd54f; background: rgba(255,213,79,0.1); }
 .footer-btn.icon-only { width: 34px; flex: none; margin: 0 auto; padding: 8px; }

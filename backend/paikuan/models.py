@@ -98,6 +98,9 @@ class Payment(models.Model):
     g7_number = models.CharField('G7编号', max_length=21, blank=True, default='', db_index=True)
     # 系统自动维护：等于所有关联 AdvanceWriteoff.amount 之和，现金流视图从 paid 中扣除此金额防双重计
     prepaid_offset_amount = models.DecimalField('预付核销冲抵金额', max_digits=15, decimal_places=2, default=Decimal('0'))
+    deleted_at = models.DateTimeField('软删除时间', null=True, blank=True, db_index=True)
+    deleted_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='deleted_payments')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -260,6 +263,8 @@ class ApprovalRecord(models.Model):
     approval_number = models.CharField('审批编号', max_length=21, db_index=True)
     g7_number = models.CharField('G7编号', max_length=21, blank=True, default='', db_index=True)
     summary = models.CharField('摘要', max_length=500)
+    # 备注：手工登记可填；运输事业部导入时承载原表「备注」列原文
+    notes = models.CharField('备注', max_length=500, blank=True, default='')
     amount = models.DecimalField('申请金额', max_digits=15, decimal_places=2)
     # 分批排款累计：每次排款累加；排满申请金额自动归档（兼容一次性排款）
     scheduled_amount = models.DecimalField('已排款金额', max_digits=15, decimal_places=2, default=0)
@@ -267,12 +272,33 @@ class ApprovalRecord(models.Model):
     status = models.CharField('审批状态', max_length=20, choices=STATUS_CHOICES, default='pending', db_index=True)
     archived = models.BooleanField('是否归档', default=False, db_index=True)
     created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='approval_records')
+    # ── 外部来源溯源（运输事业部对账单导入专用）──────────────────────────────
+    # 运输事业部从自有系统导出的对账单结构与排款表不一致：金额为负、列结构不同。
+    # 导入时转为「已通过」审批记录（金额取绝对值），手动排款后进入付款管理结算；
+    # ext_* 逐字保留原始信息，供付款管理侧导出时按原表格式零误差还原（仅状态列可改）。
+    # ext_source 为空表示普通审批记录；非空（如 'transport'）表示外部导入。
+    ext_source = models.CharField('外部来源', max_length=20, blank=True, default='', db_index=True)
+    # 外部唯一单号（运输对账单号，如 ZD202606260055），作为导入去重键
+    ext_bill_no = models.CharField('外部对账单号', max_length=64, blank=True, default='', db_index=True)
+    # 原始行快照：{原表头: 原值} 全列逐字保存，导出时按原格式还原
+    ext_raw = models.JSONField('外部原始行', default=dict, blank=True)
+    deleted_at = models.DateTimeField('软删除时间', null=True, blank=True, db_index=True)
+    deleted_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='deleted_approval_records')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'paikuan_approval_records'
         ordering = ['-created_at']
+        constraints = [
+            # 外部来源对账单号唯一（运输导入去重的 DB 兜底）。仅 ext_bill_no 非空时生效。
+            models.UniqueConstraint(
+                fields=['ext_source', 'ext_bill_no'],
+                condition=~models.Q(ext_bill_no=''),
+                name='uniq_approval_ext_bill_no',
+            ),
+        ]
 
     def to_dict(self):
         return {
@@ -284,6 +310,7 @@ class ApprovalRecord(models.Model):
             'approval_number': self.approval_number,
             'g7_number': self.g7_number,
             'summary': self.summary,
+            'notes': self.notes,
             'amount': str(self.amount),
             'scheduled_amount': str(self.scheduled_amount or 0),
             'remaining_amount': str(max(Decimal('0'), (self.amount or Decimal('0'))
@@ -291,6 +318,8 @@ class ApprovalRecord(models.Model):
             'payee': self.payee,
             'status': self.status,
             'archived': self.archived,
+            'ext_source': self.ext_source,
+            'ext_bill_no': self.ext_bill_no,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
 
@@ -462,3 +491,90 @@ class ListSchemeDefault(models.Model):
     class Meta:
         db_table = 'pk_list_scheme_defaults'
         unique_together = [('user', 'module')]
+
+
+class ExportJob(models.Model):
+    """异步导出任务：大数据量导出改后台生成，前端轮询状态、完成后下载。
+    文件字节存 DB（BinaryField），跨 gunicorn worker 共享、无需外部存储/队列。"""
+    KIND_CHOICES = [('approvals', '审批记录'), ('payments', '排款记录'), ('transport', '运输对账单')]
+    STATUS_CHOICES = [('pending', '排队中'), ('running', '生成中'),
+                      ('done', '已完成'), ('failed', '失败')]
+    kind = models.CharField('导出类型', max_length=20, choices=KIND_CHOICES)
+    status = models.CharField('状态', max_length=12, choices=STATUS_CHOICES, default='pending', db_index=True)
+    # 重建 queryset 所需的列表筛选参数（原 GET 查询串的键值快照）
+    params = models.JSONField('筛选参数', default=dict, blank=True)
+    filename = models.CharField('文件名', max_length=200, blank=True, default='')
+    file_data = models.BinaryField('文件字节', null=True, blank=True)
+    row_count = models.IntegerField('导出行数', default=0)
+    error = models.TextField('错误信息', blank=True, default='')
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.CASCADE, related_name='export_jobs')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True, db_index=True)
+    finished_at = models.DateTimeField('完成时间', null=True, blank=True)
+
+    class Meta:
+        db_table = 'pk_export_jobs'
+        ordering = ['-created_at']
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'kind': self.kind,
+            'kind_label': dict(self.KIND_CHOICES).get(self.kind, self.kind),
+            'status': self.status,
+            'filename': self.filename,
+            'row_count': self.row_count,
+            'error': self.error,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'finished_at': self.finished_at.isoformat() if self.finished_at else None,
+            'ready': self.status == 'done',
+        }
+
+
+class Notification(models.Model):
+    """通知中心：per-user 持久化事件流，带已读态与事业部联动标签。
+    生成幂等：dedup_key（kind:dept:实体:日期）唯一约束，重复生成自动跳过。"""
+    KIND_CHOICES = [
+        ('approval_pending', '待审批'),
+        ('schedule_pending', '待排款'),
+        ('payment_due', '今日到期'),
+        ('overdue', '逾期未付'),
+        ('budget_alert', '超预算预警'),
+        ('prepaid_pending', '预付待核销'),
+        ('system', '系统消息'),
+    ]
+    LEVEL_CHOICES = [('info', '提示'), ('warn', '提醒'), ('danger', '预警')]
+    recipient = models.ForeignKey(PaikuanUser, on_delete=models.CASCADE, related_name='notifications')
+    dept = models.CharField('关联事业部', max_length=100, blank=True, default='', db_index=True)
+    kind = models.CharField('类型', max_length=24, choices=KIND_CHOICES, db_index=True)
+    level = models.CharField('级别', max_length=8, choices=LEVEL_CHOICES, default='info')
+    title = models.CharField('标题', max_length=200)
+    body = models.CharField('内容', max_length=500, blank=True, default='')
+    link = models.CharField('跳转链接', max_length=300, blank=True, default='')
+    # 去重键：同类型 + 部门 + 实体 + 日期 一天内只生成一条
+    dedup_key = models.CharField('去重键', max_length=200, db_index=True)
+    is_read = models.BooleanField('已读', default=False, db_index=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True, db_index=True)
+    read_at = models.DateTimeField('已读时间', null=True, blank=True)
+
+    class Meta:
+        db_table = 'pk_notifications'
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(fields=['recipient', 'dedup_key'],
+                                    name='uniq_notification_recipient_dedup'),
+        ]
+        indexes = [models.Index(fields=['recipient', 'is_read', '-created_at'])]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'dept': self.dept,
+            'kind': self.kind,
+            'kind_label': dict(self.KIND_CHOICES).get(self.kind, self.kind),
+            'level': self.level,
+            'title': self.title,
+            'body': self.body,
+            'link': self.link,
+            'is_read': self.is_read,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }

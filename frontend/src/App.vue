@@ -5,6 +5,7 @@ import AppNav from './components/AppNav.vue'
 import WelcomeOverlay from './components/WelcomeOverlay.vue'
 import ChangePasswordModal from './components/ChangePasswordModal.vue'
 import Toast from './components/Toast.vue'
+import NotificationBell from './components/NotificationBell.vue'
 import { useAuthStore } from './stores/auth.js'
 
 const route = useRoute()
@@ -103,6 +104,9 @@ function onNavCollapse(v) {
         <router-view />
       </main>
     </div>
+
+    <!-- 通知中心铃铛：登录后全局右上角悬浮 -->
+    <NotificationBell v-if="showNav" />
 
     <WelcomeOverlay v-if="showWelcome" :user="auth.user" @done="showWelcome = false" />
 
