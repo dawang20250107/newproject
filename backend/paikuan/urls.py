@@ -47,6 +47,7 @@ urlpatterns = [
     path('approvals/import/precheck', views.approval_import_precheck),
     path('approvals/import/apply', views.approval_import_apply),
     # 运输事业部对账单导入（审批管理侧）：原表 → 「已通过」审批记录
+    path('approvals/transport/import/precheck', views.transport_import_precheck),
     path('approvals/transport/import', views.transport_import),
     path('approvals/export', views.approval_export),
     path('approvals/<int:pk>', views.approval_record_detail),

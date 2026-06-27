@@ -11,6 +11,7 @@ import EmptyState from '../components/EmptyState.vue'
 import ProjectShortNamePicker from '../components/ProjectShortNamePicker.vue'
 import ImportResultModal from '../components/ImportResultModal.vue'
 import ImportPrecheckModal from '../components/ImportPrecheckModal.vue'
+import TransportPrecheckModal from '../components/TransportPrecheckModal.vue'
 import ColumnFilter from '../components/ColumnFilter.vue'
 import SkeletonRow from '../components/SkeletonRow.vue'
 import SchemePicker from '../components/SchemePicker.vue'
@@ -547,20 +548,40 @@ async function onImport(e){
   finally{ importing.value=false }
 }
 
-// 运输事业部对账单导入：上传运输系统导出的原始表 → 建「已通过」审批记录
-function triggerTransportImport(){ importResult.value=null; precheckResult.value=null; transportFileRef.value.click() }
+// 运输事业部对账单导入：先预检（逐类详列将导入/各类跳过/列漂移）→ 用户确认 → 落库
+const transportPrecheck = ref(null)   // 预检报告（非空时弹出预检弹窗）
+const transportFile = ref(null)       // 暂存待导入文件，确认后提交
+function triggerTransportImport(){ importResult.value=null; precheckResult.value=null; transportPrecheck.value=null; transportFileRef.value.click() }
 async function onTransportImport(e){
   const f=e.target.files?.[0]; if(!f){ return }
   e.target.value=''
   importingTransport.value=true; importResult.value=null; precheckResult.value=null
   try{
     const fd=new FormData(); fd.append('file',f)
+    const d=(await api.post('/approvals/transport/import/precheck',fd,{
+      headers:{'Content-Type':'multipart/form-data'}, timeout:120000,
+    })).data||{}
+    transportFile.value=f
+    transportPrecheck.value=d
+  }catch(err){ importResult.value={ error: err?.msg || err?.error || '运输对账单预检失败，请确认上传的是运输系统导出的原始表' } }
+  finally{ importingTransport.value=false }
+}
+function cancelTransportPrecheck(){ transportPrecheck.value=null; transportFile.value=null }
+async function confirmTransportImport(){
+  if(!transportFile.value) return
+  importingTransport.value=true
+  try{
+    const fd=new FormData(); fd.append('file',transportFile.value)
     const d=(await api.post('/approvals/transport/import',fd,{
       headers:{'Content-Type':'multipart/form-data'}, timeout:120000,
     })).data||{}
+    transportPrecheck.value=null; transportFile.value=null
     importResult.value={ created:d.created||0, skipped:d.skipped||0, errors:d.errors||[], message:d.message }
     if(d.created>0) load()
-  }catch(err){ importResult.value={ error: err?.msg || err?.error || '运输对账单导入失败，请确认上传的是运输系统导出的原始表' } }
+  }catch(err){
+    transportPrecheck.value=null; transportFile.value=null
+    importResult.value={ error: err?.msg || err?.error || '运输对账单导入失败，请重试' }
+  }
   finally{ importingTransport.value=false }
 }
 
@@ -910,6 +931,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <ImportResultModal :result="importResult" @close="importResult = null" />
   <ImportPrecheckModal :report="precheckResult" :busy="precheckBusy"
     @close="precheckResult = null" @apply="onPrecheckApply" />
+  <TransportPrecheckModal :report="transportPrecheck" :busy="importingTransport"
+    @confirm="confirmTransportImport" @cancel="cancelTransportPrecheck" />
 
   <!-- 右键上下文菜单 -->
   <ContextMenu :ctx="ctx" :items="ctxItems" />

@@ -4452,121 +4452,181 @@ TRANSPORT_BLOCK_SETTLED = {'已结算', '已完成', '已支付', '已付款', '
 TRANSPORT_BLOCK_VOID = {'已作废', '作废', '已取消', '取消', '已关闭', '已驳回', '驳回', '已拒绝', '拒绝', '无效'}
 
 
-@csrf_exempt
-@pk_required()
-def transport_import(request):
-    """POST（审批管理）— 运输对账单导入：原表 → 「已通过」审批记录（金额取绝对值），
-    按对账单号去重。导入后由用户在审批管理手动排款流转至付款管理。"""
-    if request.method != 'POST':
-        return err('Method not allowed', 405)
-    perms = get_request_perms(request)
-    if perms is not None:
-        if not perms['pages'].get('approval_records', True):
-            return err('无审批记录访问权限', 403, 403)
-        if not perms.get('can_create'):
-            return err('无新增权限', 403, 403)
-    if not can_write_dept(request, TRANSPORT_DEPT):
-        return err(f'无权操作部门"{TRANSPORT_DEPT}"', 403, 403)
-    upload = request.FILES.get('file')
-    if not upload:
-        return err('请上传文件（.xlsx / .csv）')
-    if upload.size > 5 * 1024 * 1024:
-        return err('文件过大，请确认文件不超过5MB')
-    rows, ferr = _read_import_rows(upload)
-    if ferr:
-        return err(ferr)
-    if not rows or len(rows) < 2:
-        return err('文件为空或缺少数据行')
-
-    # 表头定位：按列名匹配（容忍列顺序变化 / 前后空白），必须含对账单号与金额列
+def _transport_analyze(rows, existing_bills):
+    """运输对账单逐行分类（只读，不落库）。导入与导入预检共用同一口径，杜绝漂移。
+    返回各类别清单 + 列漂移信息。existing_bills：系统内已存在的 ext_bill_no 集合。"""
     header = [str(h).strip() if h is not None else '' for h in rows[0]]
     pos = {h: i for i, h in enumerate(header)}
-    missing = [c for c in (TRANSPORT_KEY_COL, TRANSPORT_AMOUNT_COL) if c not in pos]
-    if missing:
-        return err(f'运输对账单缺少必要列：{"、".join(missing)}。请直接上传运输系统导出的原始表')
+    report = {
+        'header': header,
+        'missing_required': [c for c in (TRANSPORT_KEY_COL, TRANSPORT_AMOUNT_COL) if c not in pos],
+        # 列漂移：原表新增的非标准列 / 缺失的标准列
+        'extra_columns': [h for h in header if h and h not in TRANSPORT_HEADERS],
+        'missing_standard': [h for h in TRANSPORT_HEADERS if h not in pos],
+        'total': 0,
+        'ok': [], 'settled': [], 'voided': [],
+        'dup_in_file': [], 'dup_in_system': [], 'bad': [],
+    }
+    if report['missing_required']:
+        return report
 
     def cell(row, col):
         i = pos.get(col)
-        if i is None or i >= len(row):
-            return None
-        return row[i]
+        return row[i] if (i is not None and i < len(row)) else None
 
-    results = {'created': 0, 'skipped': 0, 'duplicates': 0,
-               'already_settled': 0, 'voided': 0, 'errors': []}
-    seen_in_file = set()
-    existing = set(
-        ApprovalRecord.objects.filter(ext_source=TRANSPORT_SOURCE)
-        .values_list('ext_bill_no', flat=True)
-    )
+    seen = set()
     for rn, row in enumerate(rows[1:], start=2):
         if row is None or all(v is None or str(v).strip() == '' for v in row):
             continue
-        bill_no = cell(row, TRANSPORT_KEY_COL)
-        bill_no = str(bill_no).strip() if bill_no is not None else ''
+        report['total'] += 1
+        bill_no = str(cell(row, TRANSPORT_KEY_COL) or '').strip()
         if not bill_no:
-            results['errors'].append(f'第{rn}行: 缺少对账单号，已跳过')
-            results['skipped'] += 1
+            report['bad'].append({'row': rn, 'bill_no': '', 'reason': '缺少对账单号'})
             continue
-        if bill_no in seen_in_file or bill_no in existing:
-            results['duplicates'] += 1
-            results['skipped'] += 1
+        if bill_no in seen:
+            report['dup_in_file'].append({'row': rn, 'bill_no': bill_no})
             continue
-        # 源状态冲突校验：源系统已结算/已作废的单据不可导入（防重复付款 / 失效单据付款）
+        if bill_no in existing_bills:
+            report['dup_in_system'].append({'row': rn, 'bill_no': bill_no})
+            continue
         src_status = str(cell(row, TRANSPORT_STATUS_COL) or '').strip()
         if src_status in TRANSPORT_BLOCK_SETTLED:
-            results['already_settled'] += 1
-            results['skipped'] += 1
-            results['errors'].append(
-                f'第{rn}行: 对账单 {bill_no} 源状态「{src_status}」已结算，跳过以防重复付款')
+            report['settled'].append({'row': rn, 'bill_no': bill_no, 'src_status': src_status})
             continue
         if src_status in TRANSPORT_BLOCK_VOID:
-            results['voided'] += 1
-            results['skipped'] += 1
-            results['errors'].append(
-                f'第{rn}行: 对账单 {bill_no} 源状态「{src_status}」已作废/取消，跳过')
+            report['voided'].append({'row': rn, 'bill_no': bill_no, 'src_status': src_status})
             continue
         amt_raw = cell(row, TRANSPORT_AMOUNT_COL)
         try:
             amount = abs(Decimal(str(amt_raw).strip()))
         except (InvalidOperation, AttributeError, TypeError):
-            results['errors'].append(f'第{rn}行: 金额"{amt_raw}"无法解析，已跳过')
-            results['skipped'] += 1
+            report['bad'].append({'row': rn, 'bill_no': bill_no, 'reason': f'金额「{amt_raw}」无法解析'})
             continue
         if amount <= 0:
-            results['errors'].append(f'第{rn}行: 对账单 {bill_no} 金额为0，已跳过')
-            results['skipped'] += 1
+            report['bad'].append({'row': rn, 'bill_no': bill_no, 'reason': '金额为 0'})
             continue
-        # 原始整行逐字快照（按原表头键存，导出据此零误差还原）
         raw = {h: (row[i] if i < len(row) else None) for h, i in pos.items()}
-        payee = str(cell(row, '对账对象') or '').strip() or bill_no
-        org = str(cell(row, '所属组织') or '').strip()
-        notes = str(cell(row, '备注') or '').strip()[:500]
-        # 字段映射（与运输口径约定）：
-        #   G7编号 ← 对账单号（原表唯一单号，最长21位）
-        #   审批编号 ← 留空（运输无内部审批号；去重靠 ext_bill_no 唯一约束）
-        #   收款主体 ← 对账对象；备注 ← 原表备注原文
-        summary = f'运输对账 {bill_no}'
-        importer = getattr(getattr(request, 'pk_user', None), 'name', '') or '运输导入'
+        report['ok'].append({
+            'row': rn, 'bill_no': bill_no, 'src_status': src_status,
+            'payee': str(cell(row, '对账对象') or '').strip() or bill_no,
+            'org': str(cell(row, '所属组织') or '').strip(),
+            'notes': str(cell(row, '备注') or '').strip()[:500],
+            'amount': amount, 'raw': raw,
+        })
+        seen.add(bill_no)
+    return report
+
+
+def _transport_read_for_analyze(request):
+    """运输导入/预检共用的鉴权 + 取文件 + 读行 + 取已存在单号。
+    成功返回 (rows, existing_bills, None)；失败返回 (None, None, err_response)。"""
+    perms = get_request_perms(request)
+    if perms is not None:
+        if not perms['pages'].get('approval_records', True):
+            return None, None, err('无审批记录访问权限', 403, 403)
+        if not perms.get('can_create'):
+            return None, None, err('无新增权限', 403, 403)
+    if not can_write_dept(request, TRANSPORT_DEPT):
+        return None, None, err(f'无权操作部门"{TRANSPORT_DEPT}"', 403, 403)
+    upload = request.FILES.get('file')
+    if not upload:
+        return None, None, err('请上传文件（.xlsx / .csv）')
+    if upload.size > 5 * 1024 * 1024:
+        return None, None, err('文件过大，请确认文件不超过5MB')
+    rows, ferr = _read_import_rows(upload)
+    if ferr:
+        return None, None, err(ferr)
+    if not rows or len(rows) < 2:
+        return None, None, err('文件为空或缺少数据行')
+    existing = set(ApprovalRecord.objects.filter(ext_source=TRANSPORT_SOURCE)
+                   .values_list('ext_bill_no', flat=True))
+    return rows, existing, None
+
+
+@csrf_exempt
+@pk_required()
+def transport_import_precheck(request):
+    """POST（审批管理）— 运输对账单导入预检：只读分析，返回逐类详单供前端确认。
+    覆盖：将导入 / 源已结算（防重复付款）/ 源已作废 / 文件内重复 / 系统内重复 /
+    数据异常 / 列漂移（新增列、缺标准列）。不落库。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    rows, existing, resp = _transport_read_for_analyze(request)
+    if resp:
+        return resp
+    report = _transport_analyze(rows, existing)
+    if report['missing_required']:
+        return err(f'运输对账单缺少必要列：{"、".join(report["missing_required"])}。请直接上传运输系统导出的原始表')
+
+    def slim(i):
+        return {'row': i['row'], 'bill_no': i['bill_no'],
+                'payee': i['payee'], 'amount': str(i['amount']), 'src_status': i['src_status']}
+    return ok({
+        'total': report['total'],
+        'will_import': len(report['ok']),
+        'ok_sample': [slim(i) for i in report['ok'][:100]],
+        'settled': report['settled'],
+        'voided': report['voided'],
+        'dup_in_file': report['dup_in_file'],
+        'dup_in_system': report['dup_in_system'],
+        'bad': report['bad'],
+        'extra_columns': report['extra_columns'],
+        'missing_standard': report['missing_standard'],
+    })
+
+
+@csrf_exempt
+@pk_required()
+def transport_import(request):
+    """POST（审批管理）— 运输对账单导入：原表 → 「已通过」审批记录（金额取绝对值），
+    按对账单号去重。源已结算/已作废单据跳过（防重复付款）。导入后手动排款流转付款管理。"""
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    rows, existing, resp = _transport_read_for_analyze(request)
+    if resp:
+        return resp
+    report = _transport_analyze(rows, existing)
+    if report['missing_required']:
+        return err(f'运输对账单缺少必要列：{"、".join(report["missing_required"])}。请直接上传运输系统导出的原始表')
+
+    results = {'created': 0, 'skipped': 0, 'duplicates': 0,
+               'already_settled': 0, 'voided': 0, 'errors': []}
+    importer = getattr(getattr(request, 'pk_user', None), 'name', '') or '运输导入'
+    for item in report['ok']:
+        bill_no = item['bill_no']
         try:
             with transaction.atomic():
                 ApprovalRecord.objects.create(
-                    created_by_id=request.pk_uid,
-                    applicant=importer,
-                    department=TRANSPORT_DEPT, secondary_dept=org,
+                    created_by_id=request.pk_uid, applicant=importer,
+                    department=TRANSPORT_DEPT, secondary_dept=item['org'],
                     approval_number='', g7_number=bill_no[:21],
-                    summary=summary, notes=notes,
-                    amount=amount, payee=payee, status='approved',
-                    ext_source=TRANSPORT_SOURCE, ext_bill_no=bill_no, ext_raw=raw,
+                    summary=f'运输对账 {bill_no}', notes=item['notes'],
+                    amount=item['amount'], payee=item['payee'], status='approved',
+                    ext_source=TRANSPORT_SOURCE, ext_bill_no=bill_no, ext_raw=item['raw'],
                 )
             results['created'] += 1
-            seen_in_file.add(bill_no)
         except IntegrityError:
-            # DB 兜底唯一约束命中（并发或已存在）→ 计为重复
+            # DB 兜底唯一约束命中（并发）→ 计为重复
             results['duplicates'] += 1
             results['skipped'] += 1
         except Exception as e:
-            results['errors'].append(f'第{rn}行: 对账单 {bill_no} 保存失败 ({e})')
+            results['errors'].append(f'第{item["row"]}行: 对账单 {bill_no} 保存失败 ({e})')
             results['skipped'] += 1
+
+    # 汇总各跳过类别（与预检同口径）
+    results['duplicates'] += len(report['dup_in_file']) + len(report['dup_in_system'])
+    results['already_settled'] = len(report['settled'])
+    results['voided'] = len(report['voided'])
+    results['skipped'] += (len(report['dup_in_file']) + len(report['dup_in_system'])
+                           + len(report['settled']) + len(report['voided']) + len(report['bad']))
+    for s in report['settled']:
+        results['errors'].append(
+            f'第{s["row"]}行: 对账单 {s["bill_no"]} 源状态「{s["src_status"]}」已结算，跳过以防重复付款')
+    for v in report['voided']:
+        results['errors'].append(
+            f'第{v["row"]}行: 对账单 {v["bill_no"]} 源状态「{v["src_status"]}」已作废/取消，跳过')
+    for b in report['bad']:
+        results['errors'].append(f'第{b["row"]}行: 对账单 {b["bill_no"] or "(空)"} {b["reason"]}，已跳过')
 
     parts = [f'成功导入 {results["created"]} 条（已建为「审批通过」记录，请在审批管理排款）']
     if results['duplicates']:
@@ -4575,10 +4635,8 @@ def transport_import(request):
         parts.append(f'跳过源已结算 {results["already_settled"]} 条（防重复付款）')
     if results['voided']:
         parts.append(f'跳过源已作废/取消 {results["voided"]} 条')
-    other_skip = (results['skipped'] - results['duplicates']
-                  - results['already_settled'] - results['voided'])
-    if other_skip > 0:
-        parts.append(f'跳过异常 {other_skip} 条')
+    if report['bad']:
+        parts.append(f'跳过异常 {len(report["bad"])} 条')
     results['message'] = '；'.join(parts)
     return ok(results)
 

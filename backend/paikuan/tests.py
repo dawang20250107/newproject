@@ -2176,6 +2176,65 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(by_bill['ZD-NEW'][ni].value, '额外值')
         self.assertIn(by_bill['ZD-OLD'][ni].value, (None, ''))
 
+    def _precheck(self, rows):
+        return self.client.post('/api/pk/approvals/transport/import/precheck',
+                                {'file': self._xlsx(rows)}, **self.auth())
+
+    def test_precheck_categorizes_rows(self):
+        # 预检只读分析：将导入 / 源已结算 / 源已作废 / 文件内重复 / 数据异常
+        bad = self._row(9, 'ZD-BAD', 'X', 0); bad[5] = 'abc'
+        rows = [
+            self._row(1, 'ZD-P1', '甲', 100, status='已通过'),
+            self._row(2, 'ZD-P2', '乙', 200, status='已结算'),    # 源已结算
+            self._row(3, 'ZD-P3', '丙', 300, status='已作废'),    # 源已作废
+            self._row(4, 'ZD-P1', '甲', 100, status='已通过'),    # 文件内重复
+            bad,                                                   # 金额异常
+        ]
+        d = self._precheck(rows).json()['data']
+        self.assertEqual(d['total'], 5)
+        self.assertEqual(d['will_import'], 1)
+        self.assertEqual(len(d['settled']), 1)
+        self.assertEqual(d['settled'][0]['bill_no'], 'ZD-P2')
+        self.assertEqual(len(d['voided']), 1)
+        self.assertEqual(len(d['dup_in_file']), 1)
+        self.assertEqual(len(d['bad']), 1)
+        # 预检只读：不落库
+        self.assertEqual(ApprovalRecord.objects.filter(ext_source='transport').count(), 0)
+
+    def test_precheck_detects_system_dup_and_column_drift(self):
+        # 系统内已存在 + 列漂移（新增列 / 缺标准列）
+        self._import([self._row(1, 'ZD-EXIST', '甲', 100)])   # 先入库
+        from openpyxl import Workbook
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        new_headers = [h for h in self.HEADERS if h != '联系电话'] + ['新增列']  # 缺一标准列 + 加一新列
+        def row2(bill):
+            base = {'序号': 1, '所属组织': '运输项目一部', '对账单号': bill, '对账对象': '甲',
+                    '实际对账金额': -100, '对账时间': '', '状态': '已通过', '创建人': '', '创建时间': '',
+                    '备注': '', '单据类别': '', '账单调整': '', '对账金额': -100, '新增列': 'X'}
+            return [base.get(h, '') for h in new_headers]
+        wb = Workbook(); ws = wb.active
+        ws.append(new_headers); ws.append(row2('ZD-EXIST')); ws.append(row2('ZD-FRESH'))
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        r = self.client.post('/api/pk/approvals/transport/import/precheck',
+                             {'file': SimpleUploadedFile('t.xlsx', buf.read())}, **self.auth())
+        d = r.json()['data']
+        self.assertEqual(len(d['dup_in_system']), 1)
+        self.assertEqual(d['dup_in_system'][0]['bill_no'], 'ZD-EXIST')
+        self.assertEqual(d['will_import'], 1)
+        self.assertIn('新增列', d['extra_columns'])
+        self.assertIn('联系电话', d['missing_standard'])
+
+    def test_precheck_missing_required_column_errors(self):
+        from openpyxl import Workbook
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        wb = Workbook(); ws = wb.active
+        ws.append(['序号', '对账对象'])   # 缺对账单号 + 金额
+        ws.append([1, '甲'])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        r = self.client.post('/api/pk/approvals/transport/import/precheck',
+                             {'file': SimpleUploadedFile('t.xlsx', buf.read())}, **self.auth())
+        self.assertEqual(r.status_code, 400)
+
     def test_export_non_settled_never_claims_settled(self):
         # 历史脏数据：ext_raw 状态本身是「已结算」，但我方付款未结算 →
         # 导出不得谎报「已结算」，应改写为「未结算」
