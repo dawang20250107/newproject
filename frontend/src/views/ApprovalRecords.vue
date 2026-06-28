@@ -20,6 +20,7 @@ import { useToast } from '../composables/useToast.js'
 import { useAsyncExport } from '../composables/useAsyncExport.js'
 import { useRangeSelection } from '../composables/useRangeSelection.js'
 import { createRequestLane } from '../utils/requestLane.js'
+import { cachedGet } from '../api/refCache.js'
 const toast = useToast()
 const { exporting: bgExporting, startExport } = useAsyncExport()
 // Excel 式区域选择 + 复制（忽略首列复选框）
@@ -415,7 +416,7 @@ async function load(){
 }
 function search(){ page.value=1; clearSelection(); load() }
 function setPage(p){ page.value=p; load() }
-async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
+async function loadDepts(){ try{const r=await cachedGet('/departments'); depts.value=r.data}catch{}}
 function openCreate(){ editId.value=null; Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', notes:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
 // 编辑：复用新增弹窗，回填后改走 PUT。已归档（已排款/已拒绝/已撤销）记录为终态不可编辑，
 // 仅金额、状态等受后端口径约束（金额仅「待审批」可改、审批/拒绝须审批权限），后端会兜底校验

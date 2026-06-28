@@ -22,6 +22,7 @@ import { copyText, copyRowTSV } from '../utils/clipboard.js'
 import { useAsyncExport } from '../composables/useAsyncExport.js'
 import { useRangeSelection } from '../composables/useRangeSelection.js'
 import { createRequestLane } from '../utils/requestLane.js'
+import { cachedGet } from '../api/refCache.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -571,7 +572,7 @@ async function load() {
 
 async function loadDepts() {
   try {
-    const res = await api.get('/departments')
+    const res = await cachedGet('/departments')
     departments.value = res.data
   } catch {}
 }
