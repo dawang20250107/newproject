@@ -21,6 +21,7 @@ import { useContextMenu } from '../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../utils/clipboard.js'
 import { useAsyncExport } from '../composables/useAsyncExport.js'
 import { useRangeSelection } from '../composables/useRangeSelection.js'
+import { createRequestLane } from '../utils/requestLane.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -165,6 +166,7 @@ const departments = ref([])
 const showModal = ref(false)
 const editItem = ref(null)
 const loadErr = ref('')
+const listLane = createRequestLane()   // 列表请求竞态车道：新请求自动取消旧请求
 const today = todayCST()  // UTC+8，与服务端 Asia/Shanghai 保持一致
 
 const filters = reactive({
@@ -549,17 +551,20 @@ const triggerDownload = downloadBlob
 async function load() {
   loading.value = true
   loadErr.value = ''
+  const sig = listLane.signal()
   try {
-    const res = await api.get('/payments', { params: buildParams() })
+    const res = await api.get('/payments', { params: buildParams(), signal: sig })
     items.value = res.data.items
     total.value = res.data.total
     outstandingTotal.value = res.data.outstanding_total ?? '0'
     outstandingCount.value = res.data.outstanding_count ?? 0
     plannedTotal.value = res.data.planned_total ?? '0'
     paidTotal.value = res.data.paid_total ?? '0'
+    loading.value = false
   } catch (e) {
+    // 被新请求取消：保持 loading，交由接管的新请求收尾
+    if (e?.__canceled || sig.aborted) return
     loadErr.value = e?.msg || '加载失败，请刷新重试'
-  } finally {
     loading.value = false
   }
 }

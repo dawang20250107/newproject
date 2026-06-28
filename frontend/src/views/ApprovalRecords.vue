@@ -19,6 +19,7 @@ import { useTableSchemes } from '../composables/useTableSchemes.js'
 import { useToast } from '../composables/useToast.js'
 import { useAsyncExport } from '../composables/useAsyncExport.js'
 import { useRangeSelection } from '../composables/useRangeSelection.js'
+import { createRequestLane } from '../utils/requestLane.js'
 const toast = useToast()
 const { exporting: bgExporting, startExport } = useAsyncExport()
 // Excel 式区域选择 + 复制（忽略首列复选框）
@@ -395,7 +396,23 @@ function doJump() {
   page.value = p; load()
 }
 const loadErr = ref('')
-async function load(){ loading.value=true; loadErr.value=''; try{ const r=await api.get('/approvals',{params:buildParams()}); items.value=r.data.items; total.value=r.data.total; totalAmount.value=r.data.total_amount || 0; totalScheduled.value=r.data.total_scheduled || 0; totalRemaining.value=r.data.total_remaining || 0 }catch(e){ loadErr.value = e?.error || e?.message || '加载失败，请刷新重试' }finally{loading.value=false}}
+const listLane = createRequestLane()   // 列表请求竞态车道：新请求自动取消旧请求
+async function load(){
+  loading.value=true; loadErr.value=''
+  const sig = listLane.signal()
+  try{
+    const r=await api.get('/approvals',{params:buildParams(), signal: sig})
+    items.value=r.data.items; total.value=r.data.total
+    totalAmount.value=r.data.total_amount || 0; totalScheduled.value=r.data.total_scheduled || 0
+    totalRemaining.value=r.data.total_remaining || 0
+    loading.value=false
+  }catch(e){
+    // 被新请求取消：保持 loading，交由接管的新请求收尾，避免闪烁/旧数据覆盖
+    if (e?.__canceled || sig.aborted) return
+    loadErr.value = e?.error || e?.msg || e?.message || '加载失败，请刷新重试'
+    loading.value=false
+  }
+}
 function search(){ page.value=1; clearSelection(); load() }
 function setPage(p){ page.value=p; load() }
 async function loadDepts(){ try{const r=await api.get('/departments'); depts.value=r.data}catch{}}
