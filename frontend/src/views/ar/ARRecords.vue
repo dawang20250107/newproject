@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount, provide } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, provide, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
@@ -11,14 +11,16 @@ import { useToast } from '../../composables/useToast.js'
 import SortTh from '../../components/ar/SortTh.vue'
 import FilterPanel from '../../components/ar/FilterPanel.vue'
 import { describeCondition, STATUS_OPTS, RECON_OPTS, INVOICE_OPTS, RESP_OPTS } from '../../composables/arConditions.js'
-import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
 import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
-import ActivityPanel from '../../components/ar/ActivityPanel.vue'
+// 重型抽屉/弹窗按需加载：仅打开活动抽屉 / 导入预检时才拉取其代码块，
+// 大幅瘦身应收明细主路由块（ActivityPanel 单文件 1.7k 行）。
+const ActivityPanel = defineAsyncComponent(() => import('../../components/ar/ActivityPanel.vue'))
+const ImportPrecheckModal = defineAsyncComponent(() => import('../../components/ImportPrecheckModal.vue'))
 
 const route = useRoute()
 const router = useRouter()
