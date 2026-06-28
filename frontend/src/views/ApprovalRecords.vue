@@ -690,7 +690,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <th><ColumnFilter label="G7编号" field="g7_number" type="text" :model-value="colFilters.g7_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('g7_number',v)" @sort="o=>setSort('g7_number',o)" /></th>
       <th><ColumnFilter label="摘要" field="summary" type="text" :model-value="colFilters.summary" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('summary',v)" @sort="o=>setSort('summary',o)" /></th>
       <th class="status-h"><ColumnFilter label="审批状态" field="status" type="enum" :options="STATUS_OPTS" :model-value="colFilters.status" :sortable="false" @update:model-value="v=>setColFilter('status',v)" /></th>
-      <th><ColumnFilter label="申请金额" field="amount" type="number" :model-value="colFilters.amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('amount',v)" @sort="o=>setSort('amount',o)" /></th>
+      <th class="amt-h"><ColumnFilter label="申请金额" field="amount" type="number" :model-value="colFilters.amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('amount',v)" @sort="o=>setSort('amount',o)" /></th>
       <th class="amt-h"><ColumnFilter label="已排金额" field="scheduled_amount" type="number" :model-value="colFilters.scheduled_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('scheduled_amount',v)" @sort="o=>setSort('scheduled_amount',o)" /></th>
       <th class="amt-h"><ColumnFilter label="未排金额" field="remaining_amount" type="number" :model-value="colFilters.remaining_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('remaining_amount',v)" @sort="o=>setSort('remaining_amount',o)" /></th>
       <th><ColumnFilter label="收款主体" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
@@ -730,7 +730,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <td class="notes-cell" :title="i.notes">{{ i.notes || '—' }}</td>
       </tr>
       <!-- 排款批次明细面板 -->
-      <tr v-if="isAprSchedExpanded(i.id)" class="apr-plan-detail-row">
+      <tr v-if="isAprSchedExpanded(i.id)" class="apr-plan-detail-row" data-skiprange>
         <td colspan="14">
           <div class="apr-plan-detail">
             <div v-if="aprSchedCache[i.id]?.loading" class="apd-loading">加载中…</div>
@@ -952,34 +952,36 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .topbar-tools .global-search { min-width: 180px; flex: 0 1 240px; height: 30px; }
 .tb-sep { width: 1px; align-self: stretch; min-height: 20px; background: var(--border); margin: 0 2px; }
 .clear-all { color: var(--primary); }
-/* 列头允许漏斗按钮溢出展示，不被裁切 */
-.approval-table thead th { overflow: visible; }
+/* 列头：字段名完整展示，空间不足时换行成两行（不挤压、不截断），漏斗不裁切 */
+.approval-table thead th {
+  overflow: visible; white-space: normal; vertical-align: middle;
+  line-height: 1.25; height: auto; padding-top: 5px; padding-bottom: 5px;
+}
+.approval-table thead :deep(.colf) { align-items: center; }
+.approval-table thead :deep(.colf-label) { white-space: normal; word-break: break-word; }
 /* 表头随表体滚动吸顶（不透明背景，避免行透出） */
 .table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
 
 /* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
 .bb-hint { font-size: 11px; color: var(--muted); margin-left: 8px; opacity: 0.8; white-space: nowrap; cursor: help; }
 @media (max-width: 900px) { .bb-hint { display: none; } }
-.approval-table { width: 100%; table-layout: fixed; }
+/* width:100% 充满；min-width 保证窄屏下横向滚动而非把列名/数据挤扁 */
+.approval-table { width: 100%; min-width: 1120px; table-layout: fixed; }
 /* 列宽由 <colgroup> 统一声明；选择列固定窄宽、审批状态列缩小，其余按百分比分配 */
 .approval-table col.cg-sel { width: 34px; }
-.approval-table col.cg-status { width: 60px; }
+/* 审批状态列：宽度够放下「审批通过」整词 + 下拉箭头，不再截断成「审批」 */
+.approval-table col.cg-status { width: 88px; }
 /* 行高/内边距对齐全局表格（付款管理），保证两个页面观感一致 */
 /* 紧凑排版：数据量大，行间距固定收紧（固定行高 + 单行省略，超出鼠标悬停 title 展示） */
 .approval-table th, .approval-table td { padding: var(--td-py) var(--td-px); height: var(--td-h); box-sizing: border-box; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--td-fs); line-height: 1.4; }
 .approval-table th.sel-col, .approval-table td.sel-col { text-align: center; overflow: visible; padding: 4px 4px; }
 .approval-table th.sel-col input, .approval-table td.sel-col input { cursor: pointer; }
-/* 审批状态列（末列）内容（下拉）不裁切，以本列宽为限 */
-.approval-table th:last-child, .approval-table td:last-child {
-  overflow: visible; text-overflow: clip; white-space: normal;
-}
-/* 审批状态色码徽章：badge 显示颜色，transparent overlay select 捕获交互（列已缩小） */
-.status-wrap { position: relative; display: inline-block; min-width: 48px; width: 100%; }
+/* 审批状态色码徽章：badge 显示颜色，transparent overlay select 捕获交互 */
+.status-wrap { position: relative; display: inline-block; width: 100%; }
 .status-badge {
-  display: block; border-radius: 999px; padding: 1px 4px;
-  font-size: 11px; font-weight: 700; border: 1px solid transparent;
+  display: block; border-radius: 999px; padding: 2px 8px;
+  font-size: 11.5px; font-weight: 700; border: 1px solid transparent;
   text-align: center; white-space: nowrap; pointer-events: none;
-  overflow: hidden; text-overflow: ellipsis;
 }
 .status-overlay {
   position: absolute; inset: 0; opacity: 0; cursor: pointer;
@@ -991,7 +993,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .status-cell.st-rejected .status-badge { color: #b71c1c; background: rgba(198,40,40,0.14); border-color: rgba(198,40,40,0.55); }
 .status-cell.st-canceled .status-badge { color: #5f5f5f; background: rgba(120,120,120,0.15); border-color: rgba(120,120,120,0.5); }
 .g7-cell { color: var(--muted); font-size: 11.5px; }
-.approval-table tr.row-sel td { background: rgba(201,99,66,0.06); }
+/* 行悬停高亮：宽表跨 14 列时帮助视线锁定整行（明细行/选中行不参与/不被覆盖） */
+.approval-table tbody tr:not(.apr-plan-detail-row):hover td { background: rgba(201,99,66,0.045); }
+.approval-table tr.row-sel td,
+.approval-table tbody tr.row-sel:hover td { background: rgba(201,99,66,0.09); }
 /* Excel 式区域选择高亮（直接由 useRangeSelection 给 td 加类，不逐格绑定） */
 .approval-table td.cell-range-sel { background: rgba(21,101,192,0.14) !important; box-shadow: inset 0 0 0 1px rgba(21,101,192,0.28); }
 /* 拖拽选区时禁用原生文本选择（电子表格式交互）；行内 input 仍可正常编辑 */

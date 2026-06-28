@@ -1468,8 +1468,13 @@ async function doBatchPay() {
 /* Excel 式区域选择高亮（useRangeSelection 直接给 td 加类） */
 .pk-pay-tbl td.cell-range-sel { background: rgba(21,101,192,0.14) !important; box-shadow: inset 0 0 0 1px rgba(21,101,192,0.28); }
 .pk-pay-tbl tbody { user-select: none; }
-/* 列头放置筛选漏斗：允许溢出展示，不裁切 */
-.pk-pay-tbl thead th { overflow: visible; }
+/* 列头：字段名完整展示，空间不足时换行成两行（不挤压、不截断），漏斗不裁切 */
+.pk-pay-tbl thead th {
+  overflow: visible; white-space: normal; vertical-align: middle;
+  line-height: 1.25; padding-top: 5px; padding-bottom: 5px;
+}
+.pk-pay-tbl thead :deep(.colf) { align-items: center; }
+.pk-pay-tbl thead :deep(.colf-label) { white-space: normal; word-break: break-word; }
 .global-search { min-width: 300px; flex: 0 1 380px; }
 .clear-all-btn { background: var(--bg2); border: none; color: var(--primary); }
 .filter-hint { font-size: 11.5px; color: var(--muted); margin-left: auto; white-space: nowrap; }
