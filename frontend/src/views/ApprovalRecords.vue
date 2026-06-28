@@ -956,9 +956,11 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-table thead th {
   overflow: visible; white-space: normal; vertical-align: middle;
   line-height: 1.25; height: auto; padding-top: 5px; padding-bottom: 5px;
+  font-size: 12px; letter-spacing: -0.2px;
 }
 .approval-table thead :deep(.colf) { align-items: center; }
-.approval-table thead :deep(.colf-label) { white-space: normal; word-break: break-word; }
+/* 换行时两行字数尽量均衡（text-wrap:balance），避免 4+1 这种头重脚轻 */
+.approval-table thead :deep(.colf-label) { white-space: normal; text-wrap: balance; }
 /* 表头随表体滚动吸顶（不透明背景，避免行透出） */
 .table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
 

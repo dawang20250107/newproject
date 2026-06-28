@@ -1472,9 +1472,11 @@ async function doBatchPay() {
 .pk-pay-tbl thead th {
   overflow: visible; white-space: normal; vertical-align: middle;
   line-height: 1.25; padding-top: 5px; padding-bottom: 5px;
+  font-size: 12px; letter-spacing: -0.2px;
 }
 .pk-pay-tbl thead :deep(.colf) { align-items: center; }
-.pk-pay-tbl thead :deep(.colf-label) { white-space: normal; word-break: break-word; }
+/* 换行时两行字数尽量均衡，避免头重脚轻 */
+.pk-pay-tbl thead :deep(.colf-label) { white-space: normal; text-wrap: balance; }
 .global-search { min-width: 300px; flex: 0 1 380px; }
 .clear-all-btn { background: var(--bg2); border: none; color: var(--primary); }
 .filter-hint { font-size: 11.5px; color: var(--muted); margin-left: auto; white-space: nowrap; }
