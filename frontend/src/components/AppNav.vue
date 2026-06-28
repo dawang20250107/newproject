@@ -154,20 +154,6 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         </Transition>
       </router-link>
 
-      <router-link v-if="auth.canPage('dashboard')" to="/workbench" class="nav-item"
-        :class="{ active: route.path === '/workbench' }"
-        :title="effectiveCollapsed ? '待办中心' : undefined"
-        @click="onNavClick">
-        <span class="nav-icon">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
-          </svg>
-        </span>
-        <Transition name="label-fade">
-          <span v-if="!effectiveCollapsed" class="nav-label">待办中心</span>
-        </Transition>
-      </router-link>
-
       <router-link v-if="auth.canPage('payments')" to="/payments" class="nav-item"
         :class="{ active: route.path === '/payments' }"
         :title="effectiveCollapsed ? '付款管理' : undefined"

@@ -54,11 +54,6 @@ urlpatterns = [
     path('approvals/<int:pk>/schedule', views.approval_record_schedule),
     path('approvals/<int:pk>/schedule-detail', views.approval_schedule_detail),
     path('dashboard', views.dashboard),
-    # 待办工作台 + 通知中心
-    path('workbench', views.workbench),
-    path('notifications', views.notifications),
-    path('notifications/unread-count', views.notifications_unread_count),
-    path('notifications/read', views.notifications_read),
     path('stats', views.stats),
     path('users', views.users),
     path('users/<int:pk>', views.user_detail),
