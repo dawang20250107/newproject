@@ -5,6 +5,7 @@ import AppNav from './components/AppNav.vue'
 import WelcomeOverlay from './components/WelcomeOverlay.vue'
 import ChangePasswordModal from './components/ChangePasswordModal.vue'
 import Toast from './components/Toast.vue'
+import ErrorBoundary from './components/ErrorBoundary.vue'
 import { useAuthStore } from './stores/auth.js'
 
 const route = useRoute()
@@ -100,7 +101,11 @@ function onNavCollapse(v) {
       <AppNav v-if="showNav" :collapsed="navCollapsed" :mobile-open="mobileNavOpen"
         @update:collapsed="onNavCollapse" @close-mobile="mobileNavOpen = false" @hover="onNavHover" />
       <main :class="showNav ? ['main-content', navCollapsed ? 'nav-collapsed' : '', route.meta.fullHeight ? 'full-height-view' : ''] : 'main-public'">
-        <router-view />
+        <router-view v-slot="{ Component }">
+          <ErrorBoundary :key="route.path">
+            <component :is="Component" />
+          </ErrorBoundary>
+        </router-view>
       </main>
     </div>
 
