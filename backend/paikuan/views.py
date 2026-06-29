@@ -4225,6 +4225,7 @@ TRANSPORT_HEADERS = [
 TRANSPORT_KEY_COL = '对账单号'      # 去重唯一键
 TRANSPORT_AMOUNT_COL = '实际对账金额'  # 取绝对值作为申请金额（已含账单调整的最终额）
 TRANSPORT_STATUS_COL = '状态'       # 导出时改写为「已结算」的列
+TRANSPORT_SEQ_COL = '序号'          # 导出时按输出行重排为 1,2,3…（不沿用原表零散序号）
 TRANSPORT_SETTLED_LABEL = '已结算'
 # 运输对账单正常应为「已通过」（对账通过、待我方付款）。下列源状态不可导入：
 #   已结算/已完成类 → 源系统已结算，再导入排款会重复付款；
@@ -4535,7 +4536,11 @@ def _transport_export_core(request, export_cap=5000):
         raw = p.approval.ext_raw
         settled = p.status == 'settled'
         for ci, h in enumerate(headers, 1):
-            if h == TRANSPORT_STATUS_COL:
+            if h == TRANSPORT_SEQ_COL:
+                # 序号按导出行顺序重排 1,2,3…：导出常是勾选/筛选/去重后的子集，
+                # 沿用原表零散序号会断号，统一从 1 连续编号更规范。
+                val = ri - 1
+            elif h == TRANSPORT_STATUS_COL:
                 # 状态列以「我方结算」为准（这是导出存在的意义）：
                 #   已结算 → 写「已结算」；
                 #   未结算 → 保留源原值（零误差）；但若源原值本身就是「已结算类」

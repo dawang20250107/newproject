@@ -2022,9 +2022,13 @@ class TransportReconciliationTests(TestCase):
         from openpyxl import load_workbook
         ws = load_workbook(io.BytesIO(resp.content), data_only=True).active
         hdr = [c.value for c in ws[1]]
-        self.assertEqual(hdr, self.HEADERS)            # 原列顺序还原
+        self.assertEqual(hdr, self.HEADERS)            # 列序固定为标准列序，不漂移
         si = hdr.index('状态'); bi = hdr.index('对账单号'); ai = hdr.index('实际对账金额')
-        by_bill = {row[bi].value: row for row in ws.iter_rows(min_row=2)}
+        seqi = hdr.index('序号')
+        body = list(ws.iter_rows(min_row=2))
+        # 序号按导出行顺序重排为连续 1,2,…（不沿用原表零散序号）
+        self.assertEqual([r[seqi].value for r in body], list(range(1, len(body) + 1)))
+        by_bill = {row[bi].value: row for row in body}
         rowa, rowb = by_bill['ZD202606260010'], by_bill['ZD202606260020']
         # A 已结算：状态列改写；金额等其它列零误差（负数原样）
         self.assertEqual(rowa[si].value, '已结算')
@@ -2033,18 +2037,23 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(rowb[si].value, '已通过')
         self.assertEqual(rowb[ai].value, -2000)
 
-        # 强校验「零误差」：未结算行 B 逐列与原表完全一致（空单元 None/'' 视为等价）
+        # 强校验「零误差」：除「状态」（按我方结算改写）与「序号」（按行重排）外，
+        # 逐列与原表完全一致（空单元 None/'' 视为等价）
         def _norm(v):
             return None if v in (None, '') else v
+        REWRITTEN = ('状态', '序号')
         orig_b = self._row(2, 'ZD202606260020', '承运商乙', 2000)
         for ci, col in enumerate(self.HEADERS):
+            if col in REWRITTEN:
+                continue
             self.assertEqual(_norm(rowb[ci].value), _norm(orig_b[ci]),
                              f'未结算行列「{col}」发生漂移')
-        # 已结算行 A：除「状态」列外全列与原表一致，状态列改为「已结算」
         orig_a = self._row(1, 'ZD202606260010', '承运商甲', 1000)
         for ci, col in enumerate(self.HEADERS):
             if col == '状态':
                 self.assertEqual(rowa[ci].value, '已结算')
+            elif col == '序号':
+                continue
             else:
                 self.assertEqual(_norm(rowa[ci].value), _norm(orig_a[ci]),
                                  f'已结算行非状态列「{col}」发生漂移')
@@ -2204,6 +2213,8 @@ class TransportReconciliationTests(TestCase):
         self.assertIn(row[self.HEADERS.index('单据类别')].value, (None, ''))
         # 有值的列正常还原（对账单号）
         self.assertEqual(row[self.HEADERS.index('对账单号')].value, 'ZD-SHORT')
+        # 序号从 1 开始（即便原表缺/乱，导出按行重排）
+        self.assertEqual(row[self.HEADERS.index('序号')].value, 1)
 
     def _precheck(self, rows):
         return self.client.post('/api/pk/approvals/transport/import/precheck',
