@@ -2196,6 +2196,30 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(d['created'], 2)
         self.assertEqual(d['already_settled'], 0)
 
+    def test_import_handles_real_datetime_cells(self):
+        # 原表「对账时间/创建时间」为真正的 datetime 单元格 → 不再因
+        # "Object of type datetime is not JSON serializable" 保存失败
+        from datetime import datetime as _dt, date as _date
+        row = self._row(1, 'ZD-DT', '甲', 100)
+        row[self.HEADERS.index('对账时间')] = _dt(2026, 6, 26, 16, 38, 1)
+        row[self.HEADERS.index('创建时间')] = _date(2026, 6, 26)   # 纯日期格
+        d = self._import([row]).json()['data']
+        self.assertEqual(d['created'], 1, d)
+        rec = ApprovalRecord.objects.get(ext_bill_no='ZD-DT')
+        self.assertEqual(rec.ext_raw['对账时间'], '2026-06-26 16:38:01')  # 含时分秒
+        self.assertEqual(rec.ext_raw['创建时间'], '2026-06-26')           # 纯日期
+        # 排款 + 导出往返不报错，时间列原样还原
+        self._schedule(rec, 100)
+        p = Payment.objects.get(approval=rec)
+        resp = self.client.get('/api/pk/payments/transport/export',
+                               {'ids': str(p.id)}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        from openpyxl import load_workbook
+        ws = load_workbook(io.BytesIO(resp.content), data_only=True).active
+        hdr = [c.value for c in ws[1]]
+        row2 = list(ws.iter_rows(min_row=2))[0]
+        self.assertEqual(row2[hdr.index('对账时间')].value, '2026-06-26 16:38:01')
+
     def test_export_unions_columns_across_drifted_batches(self):
         # 列漂移：两批导入列集不同（新批次多一列「新增字段」），导出表头须取并集不丢列
         self._import([self._row(1, 'ZD-OLD', '甲', 100)])     # 14 列标准表

@@ -4235,6 +4235,24 @@ TRANSPORT_BLOCK_SETTLED = {'已结算', '已完成', '已支付', '已付款', '
 TRANSPORT_BLOCK_VOID = {'已作废', '作废', '已取消', '取消', '已关闭', '已驳回', '驳回', '已拒绝', '拒绝', '无效'}
 
 
+def _transport_json_safe(v):
+    """把 openpyxl 读出的单元格值转成 JSON 可序列化值（存入 ext_raw JSONField）。
+    运输原表「对账时间/创建时间」是真正的 datetime → 直接入 JSON 会报
+    "Object of type datetime is not JSON serializable"。统一转贴近原表的字符串。"""
+    if isinstance(v, datetime.datetime):
+        # 纯日期格（零点）只留日期，避免凭空多出 00:00:00；否则保留到秒
+        if (v.hour, v.minute, v.second, v.microsecond) == (0, 0, 0, 0):
+            return v.strftime('%Y-%m-%d')
+        return v.strftime('%Y-%m-%d %H:%M:%S')
+    if isinstance(v, datetime.date):
+        return v.strftime('%Y-%m-%d')
+    if isinstance(v, datetime.time):
+        return v.strftime('%H:%M:%S')
+    if isinstance(v, Decimal):
+        return float(v)
+    return v
+
+
 def _transport_analyze(rows, existing_bills):
     """运输对账单逐行分类（只读，不落库）。导入与导入预检共用同一口径，杜绝漂移。
     返回各类别清单 + 列漂移信息。existing_bills：系统内已存在的 ext_bill_no 集合。"""
@@ -4288,7 +4306,7 @@ def _transport_analyze(rows, existing_bills):
         if amount <= 0:
             report['bad'].append({'row': rn, 'bill_no': bill_no, 'reason': '金额为 0'})
             continue
-        raw = {h: (row[i] if i < len(row) else None) for h, i in pos.items()}
+        raw = {h: (_transport_json_safe(row[i]) if i < len(row) else None) for h, i in pos.items()}
         report['ok'].append({
             'row': rn, 'bill_no': bill_no, 'src_status': src_status,
             'payee': str(cell(row, '对账对象') or '').strip() or bill_no,
