@@ -4792,6 +4792,10 @@ def trash_approvals(request):
     if perms is not None and not perms['pages'].get('approval_records', True):
         return err('无访问权限', 403, 403)
     qs = dept_filter(ApprovalRecord.objects.filter(deleted_at__isnull=False), request)
+    # 页内事业部筛选（在全局作用域之内进一步收窄）；同时作用于列表与跨页 all 操作
+    _dept = request.GET.get('dept', '').strip()
+    if _dept:
+        qs = qs.filter(department=_dept)
 
     if request.method == 'GET':
         try:
@@ -4847,6 +4851,10 @@ def trash_payments(request):
     if denied:
         return denied
     qs = dept_filter(Payment.objects.filter(deleted_at__isnull=False), request)
+    # 页内事业部筛选（在全局作用域之内进一步收窄）；同时作用于列表与跨页 all 操作
+    _dept = request.GET.get('dept', '').strip()
+    if _dept:
+        qs = qs.filter(department=_dept)
 
     if request.method == 'GET':
         try:

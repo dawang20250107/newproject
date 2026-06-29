@@ -1361,6 +1361,27 @@ class BulkOpsTests(TestCase):
         resp = self._post('/api/pk/trash/approvals', {'action': 'restore'})
         self.assertEqual(resp.status_code, 400)
 
+    def test_trash_dept_filter_scopes_list_and_select_all(self):
+        # 两个事业部各软删 1 条 → 按事业部筛选只看该部门；跨页 all 也限定在该部门
+        a1 = self._mk_approval(1, '1000', status='pending')          # 运输事业部
+        a2 = ApprovalRecord.objects.create(applicant='李四', department='集团总部',
+                                           approval_number='2' * 21, summary='采购',
+                                           amount=Decimal('2000'), payee='供应商2', status='pending')
+        self._post('/api/pk/approvals/bulk-delete', {'ids': [a1.id, a2.id]})
+        # 列表按事业部筛选
+        r = self.client.get('/api/pk/trash/approvals', {'dept': '集团总部'}, **self.auth())
+        d = r.json()['data']
+        self.assertEqual(d['total'], 1)
+        self.assertEqual(d['items'][0]['department'], '集团总部')
+        # 跨页 all + dept：只还原该部门，另一部门仍在回收站
+        resp = self.client.post('/api/pk/trash/approvals?dept=集团总部',
+                                data=json.dumps({'action': 'restore', 'all': True}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.json()['data']['count'], 1)
+        a1.refresh_from_db(); a2.refresh_from_db()
+        self.assertIsNotNone(a1.deleted_at)   # 运输的仍在回收站
+        self.assertIsNone(a2.deleted_at)      # 集团的已还原
+
     # ── 审批批量通过 ──────────────────────────────────────────────────────────
     def test_bulk_approve_pending(self):
         a1 = self._mk_approval(1, '1000', status='pending')

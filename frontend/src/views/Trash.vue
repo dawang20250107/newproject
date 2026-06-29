@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import api from '../api/index.js'
+import { cachedGet } from '../api/refCache.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useToast } from '../composables/useToast.js'
 
@@ -16,6 +17,12 @@ const page = ref(1)
 const size = 50
 const selectedIds = ref(new Set())
 const allAcross = ref(false)   // 跨页全选：作用于全部软删记录
+const deptFilter = ref('')     // 页内事业部筛选（'' = 全部）
+const depts = ref([])
+
+async function loadDepts() {
+  try { const r = await cachedGet('/departments'); depts.value = r.data || [] } catch {}
+}
 
 const pageAllSelected = computed(() =>
   items.value.length > 0 && selectedIds.value.size === items.value.length)
@@ -27,7 +34,9 @@ async function load() {
   selectedIds.value = new Set()
   allAcross.value = false
   try {
-    const r = await api.get(`/trash/${activeTab.value}`, { params: { page: page.value, size } })
+    const params = { page: page.value, size }
+    if (deptFilter.value) params.dept = deptFilter.value
+    const r = await api.get(`/trash/${activeTab.value}`, { params })
     items.value = r.data.items || []
     total.value = r.data.total || 0
   } catch (e) {
@@ -38,7 +47,8 @@ async function load() {
 }
 
 function switchTab(t) { activeTab.value = t; page.value = 1; load() }
-onMounted(load)
+function onDeptChange() { page.value = 1; load() }
+onMounted(() => { loadDepts(); load() })
 
 function toggleSel(id) {
   allAcross.value = false   // 手动改选 → 退出跨页全选
@@ -64,7 +74,9 @@ async function doAction(action) {
   busy.value = true
   try {
     const body = allAcross.value ? { action, all: true } : { action, ids: [...selectedIds.value] }
-    const r = await api.post(`/trash/${activeTab.value}`, body)
+    // dept 作为 query 参数传给后端，使跨页 all 操作同样限定在当前事业部筛选内
+    const cfg = deptFilter.value ? { params: { dept: deptFilter.value } } : {}
+    const r = await api.post(`/trash/${activeTab.value}`, body, cfg)
     const n = r.data.count
     toast.success(`已${label} ${n} 条` + (allAcross.value && total.value > n ? `（单次上限 ${SELECT_ALL_CAP}，剩余请再次操作）` : ''))
     load()
@@ -93,6 +105,10 @@ function fmtDate(s) {
         <button :class="['ttab', activeTab === 'approvals' ? 'active' : '']" @click="switchTab('approvals')">审批管理</button>
         <button :class="['ttab', activeTab === 'payments' ? 'active' : '']" @click="switchTab('payments')">付款管理</button>
       </div>
+      <select v-model="deptFilter" class="trash-dept" @change="onDeptChange" title="按事业部筛选">
+        <option value="">全部事业部</option>
+        <option v-for="d in depts" :key="d" :value="d">{{ d }}</option>
+      </select>
       <div class="trash-actions" v-if="auth.canDelete">
         <span v-if="selectedCount" class="trash-selcount">已选 {{ selectedCount }} 条</span>
         <button class="tact-btn restore" :disabled="!selectedCount || busy" @click="doAction('restore')">
@@ -179,6 +195,9 @@ function fmtDate(s) {
 .ttab { border: none; background: none; padding: 5px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
   color: var(--muted); cursor: pointer; transition: all 0.16s; }
 .ttab.active { background: #fff; color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+.trash-dept { height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: #fff; font-size: 13px; color: var(--text); cursor: pointer; }
+.trash-dept:focus { outline: none; border-color: var(--primary); }
 .trash-actions { display: flex; gap: 8px; margin-left: auto; }
 .tact-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px;
   font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: all 0.16s; }
