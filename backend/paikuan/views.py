@@ -4812,10 +4812,14 @@ def trash_approvals(request):
             return err('无删除权限', 403, 403)
         body = parse_body(request)
         action = body.get('action', 'restore')
-        ids = [int(i) for i in (body.get('ids') or [])]
-        if not ids:
-            return err('ids 必填')
-        targets = list(qs.filter(pk__in=ids))
+        # 跨页全选：all=true 作用于当前作用域下「全部软删记录」（上限保护，超出分批处理）
+        if body.get('all'):
+            targets = list(qs.order_by('-deleted_at')[:SELECT_ALL_CAP])
+        else:
+            ids = [int(i) for i in (body.get('ids') or [])]
+            if not ids:
+                return err('ids 必填或传 all:true')
+            targets = list(qs.filter(pk__in=ids))
         count = 0
         for rec in targets:
             if action == 'restore':
@@ -4863,10 +4867,14 @@ def trash_payments(request):
             return err('无删除权限', 403, 403)
         body = parse_body(request)
         action = body.get('action', 'restore')
-        ids = [int(i) for i in (body.get('ids') or [])]
-        if not ids:
-            return err('ids 必填')
-        targets = list(qs.filter(pk__in=ids))
+        # 跨页全选：all=true 作用于当前作用域下「全部软删记录」（上限保护，超出分批处理）
+        if body.get('all'):
+            targets = list(qs.order_by('-deleted_at')[:SELECT_ALL_CAP])
+        else:
+            ids = [int(i) for i in (body.get('ids') or [])]
+            if not ids:
+                return err('ids 必填或传 all:true')
+            targets = list(qs.filter(pk__in=ids))
         count = 0
         for p in targets:
             if action == 'restore':

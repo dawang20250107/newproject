@@ -1339,6 +1339,28 @@ class BulkOpsTests(TestCase):
         self.assertEqual(len(d['skipped']), 1)
         self.assertTrue(ApprovalRecord.objects.filter(id=a1.id).exists())  # 未删
 
+    # ── 回收站跨页全选 ────────────────────────────────────────────────────────
+    def test_trash_select_all_restores_across_pages(self):
+        # 软删 3 条 → 回收站 all=true 一次性还原全部（跨页），不依赖逐条 ids
+        ids = [self._mk_approval(i, '1000', status='pending').id for i in range(1, 4)]
+        self._post('/api/pk/approvals/bulk-delete', {'ids': ids})
+        self.assertEqual(ApprovalRecord.objects.filter(deleted_at__isnull=False).count(), 3)
+        resp = self._post('/api/pk/trash/approvals', {'action': 'restore', 'all': True})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data']['count'], 3)
+        self.assertEqual(ApprovalRecord.objects.filter(deleted_at__isnull=False).count(), 0)
+
+    def test_trash_select_all_purges_across_pages(self):
+        ids = [self._mk_approval(i, '1000', status='pending').id for i in range(1, 4)]
+        self._post('/api/pk/approvals/bulk-delete', {'ids': ids})
+        resp = self._post('/api/pk/trash/approvals', {'action': 'purge', 'all': True})
+        self.assertEqual(resp.json()['data']['count'], 3)
+        self.assertEqual(ApprovalRecord.objects.filter(id__in=ids).count(), 0)  # 物理删除
+
+    def test_trash_requires_ids_or_all(self):
+        resp = self._post('/api/pk/trash/approvals', {'action': 'restore'})
+        self.assertEqual(resp.status_code, 400)
+
     # ── 审批批量通过 ──────────────────────────────────────────────────────────
     def test_bulk_approve_pending(self):
         a1 = self._mk_approval(1, '1000', status='pending')

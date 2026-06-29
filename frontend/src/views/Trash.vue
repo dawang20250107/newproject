@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useToast } from '../composables/useToast.js'
@@ -7,6 +7,7 @@ import { useToast } from '../composables/useToast.js'
 const auth = useAuthStore()
 const toast = useToast()
 
+const SELECT_ALL_CAP = 1000  // 与后端单次处理上限对齐
 const activeTab = ref('approvals') // 'approvals' | 'payments'
 const loading = ref(false)
 const items = ref([])
@@ -14,10 +15,17 @@ const total = ref(0)
 const page = ref(1)
 const size = 50
 const selectedIds = ref(new Set())
+const allAcross = ref(false)   // 跨页全选：作用于全部软删记录
+
+const pageAllSelected = computed(() =>
+  items.value.length > 0 && selectedIds.value.size === items.value.length)
+const selectedCount = computed(() => allAcross.value ? total.value : selectedIds.value.size)
+const hasMorePages = computed(() => total.value > items.value.length)
 
 async function load() {
   loading.value = true
   selectedIds.value = new Set()
+  allAcross.value = false
   try {
     const r = await api.get(`/trash/${activeTab.value}`, { params: { page: page.value, size } })
     items.value = r.data.items || []
@@ -33,23 +41,32 @@ function switchTab(t) { activeTab.value = t; page.value = 1; load() }
 onMounted(load)
 
 function toggleSel(id) {
+  allAcross.value = false   // 手动改选 → 退出跨页全选
   if (selectedIds.value.has(id)) selectedIds.value.delete(id)
   else selectedIds.value.add(id)
 }
 function toggleAll() {
+  allAcross.value = false
   if (selectedIds.value.size === items.value.length) selectedIds.value = new Set()
   else selectedIds.value = new Set(items.value.map(i => i.id))
 }
+function selectAllAcross() {
+  allAcross.value = true
+  selectedIds.value = new Set(items.value.map(i => i.id))  // 视觉上本页也勾上
+}
+function clearSelection() { allAcross.value = false; selectedIds.value = new Set() }
 
 const busy = ref(false)
 async function doAction(action) {
-  if (!selectedIds.value.size) { toast.warn('请先选择记录'); return }
+  if (!selectedCount.value) { toast.warn('请先选择记录'); return }
   const label = action === 'restore' ? '还原' : '彻底删除'
-  if (action === 'purge' && !confirm(`彻底删除 ${selectedIds.value.size} 条记录？此操作不可撤销。`)) return
+  if (action === 'purge' && !confirm(`彻底删除 ${selectedCount.value} 条记录？此操作不可撤销。`)) return
   busy.value = true
   try {
-    const r = await api.post(`/trash/${activeTab.value}`, { action, ids: [...selectedIds.value] })
-    toast.success(`已${label} ${r.data.count} 条`)
+    const body = allAcross.value ? { action, all: true } : { action, ids: [...selectedIds.value] }
+    const r = await api.post(`/trash/${activeTab.value}`, body)
+    const n = r.data.count
+    toast.success(`已${label} ${n} 条` + (allAcross.value && total.value > n ? `（单次上限 ${SELECT_ALL_CAP}，剩余请再次操作）` : ''))
     load()
   } catch (e) {
     toast.error(e?.msg || '操作失败')
@@ -77,17 +94,30 @@ function fmtDate(s) {
         <button :class="['ttab', activeTab === 'payments' ? 'active' : '']" @click="switchTab('payments')">付款管理</button>
       </div>
       <div class="trash-actions" v-if="auth.canDelete">
-        <button class="tact-btn restore" :disabled="!selectedIds.size || busy" @click="doAction('restore')">
+        <span v-if="selectedCount" class="trash-selcount">已选 {{ selectedCount }} 条</span>
+        <button class="tact-btn restore" :disabled="!selectedCount || busy" @click="doAction('restore')">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 109-9H3"/><polyline points="3 3 3 9 9 9"/></svg>
           还原
         </button>
-        <button class="tact-btn purge" :disabled="!selectedIds.size || busy" @click="doAction('purge')">
+        <button class="tact-btn purge" :disabled="!selectedCount || busy" @click="doAction('purge')">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
           彻底删除
         </button>
       </div>
     </div>
     <div class="trash-hint">回收站内的记录不计入列表和统计；可还原恢复，或彻底删除永久清除。</div>
+
+    <!-- 跨页全选条：本页全选且有更多页时出现 -->
+    <div v-if="auth.canDelete && (pageAllSelected || allAcross) && hasMorePages" class="trash-selbar">
+      <template v-if="!allAcross">
+        已选本页 {{ selectedIds.size }} 条。
+        <button class="trash-selink" @click="selectAllAcross">选择全部 {{ total }} 条（跨页）</button>
+      </template>
+      <template v-else>
+        已选择<b>全部 {{ total }} 条</b>软删记录{{ total > SELECT_ALL_CAP ? `（单次最多处理 ${SELECT_ALL_CAP} 条，可重复操作）` : '' }}。
+        <button class="trash-selink" @click="clearSelection">清除选择</button>
+      </template>
+    </div>
 
     <div class="trash-card">
       <div v-if="loading" class="trash-loading">加载中…</div>
@@ -101,7 +131,7 @@ function fmtDate(s) {
         <table class="trash-tbl">
           <thead>
             <tr>
-              <th class="sel-col"><input type="checkbox" :checked="selectedIds.size === items.length && items.length > 0" @change="toggleAll"/></th>
+              <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="allAcross && total > items.length" @change="toggleAll"/></th>
               <th v-if="activeTab === 'approvals'">申请人</th>
               <th>部门</th>
               <th v-if="activeTab === 'approvals'">审批编号</th>
@@ -159,6 +189,17 @@ function fmtDate(s) {
 .tact-btn.purge:hover:not(:disabled) { background: var(--c-danger); color: #fff; }
 
 .trash-hint { font-size: 12.5px; color: var(--muted); margin-bottom: 16px; }
+.trash-selcount { font-size: 12.5px; color: var(--text-2); font-weight: 600; align-self: center; margin-right: 2px; }
+.trash-selbar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 12.5px; color: var(--text-2); margin: -6px 0 14px;
+  background: rgba(201,99,66,0.06); border: 1px solid rgba(201,99,66,0.2);
+  border-radius: 9px; padding: 8px 14px;
+}
+.trash-selbar b { color: var(--primary); }
+.trash-selink { border: none; background: none; color: var(--primary); font-weight: 700;
+  font-size: 12.5px; cursor: pointer; padding: 0; text-decoration: underline; }
+.trash-selink:hover { color: var(--primary-dark); }
 .trash-card { background: rgba(255,253,250,0.90); border-radius: var(--radius); border: 1px solid rgba(255,255,255,0.65);
   box-shadow: 0 2px 12px rgba(100,60,30,0.09); overflow-x: auto; }
 @media (max-width: 768px) {
