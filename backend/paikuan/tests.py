@@ -2176,6 +2176,35 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(by_bill['ZD-NEW'][ni].value, '额外值')
         self.assertIn(by_bill['ZD-OLD'][ni].value, (None, ''))
 
+    def test_export_pads_missing_standard_columns_to_full_table(self):
+        # 列少的导入（缺标准列「联系电话」「单据类别」）→ 导出仍补齐为完整标准表，
+        # 缺失列以空白呈现，列序与标准表一致。
+        from openpyxl import Workbook, load_workbook
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        short_headers = [h for h in self.HEADERS if h not in ('联系电话', '单据类别')]
+        # 按精简表头组装一行（仍含必需的 对账单号 / 实际对账金额）
+        full = dict(zip(self.HEADERS, self._row(1, 'ZD-SHORT', '甲', 300)))
+        short_row = [full[h] for h in short_headers]
+        wb = Workbook(); ws = wb.active
+        ws.append(short_headers); ws.append(short_row)
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        self.client.post('/api/pk/approvals/transport/import',
+                         {'file': SimpleUploadedFile('short.xlsx', buf.read())}, **self.auth())
+        rec = ApprovalRecord.objects.get(ext_bill_no='ZD-SHORT')
+        self._schedule(rec, 300)
+        resp = self.client.get('/api/pk/payments/transport/export', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        ws2 = load_workbook(io.BytesIO(resp.content), data_only=True).active
+        hdr = [c.value for c in ws2[1]]
+        # 导出补齐为完整标准 14 列，列序与标准一致
+        self.assertEqual(hdr, self.HEADERS)
+        # 缺失的标准列在数据行为空白（不报错、不串列）
+        row = list(ws2.iter_rows(min_row=2))[0]
+        self.assertIn(row[self.HEADERS.index('联系电话')].value, (None, ''))
+        self.assertIn(row[self.HEADERS.index('单据类别')].value, (None, ''))
+        # 有值的列正常还原（对账单号）
+        self.assertEqual(row[self.HEADERS.index('对账单号')].value, 'ZD-SHORT')
+
     def _precheck(self, rows):
         return self.client.post('/api/pk/approvals/transport/import/precheck',
                                 {'file': self._xlsx(rows)}, **self.auth())

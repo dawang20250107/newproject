@@ -4496,13 +4496,14 @@ def _transport_export_core(request, export_cap=5000):
     if not rows_out:
         return err('选中的付款记录没有可还原的运输对账原始数据')
 
-    # 还原列顺序：必须与运输系统原表列序一致。两个坑：
-    #   ① 生产库（Postgres jsonb）不保证 JSON 键存储顺序 → 不能依赖 ext_raw.keys() 顺序；
-    #   ② 不同批次导入的列集可能漂移（运输系统加列）→ 不能只看首行，否则丢列/错位。
-    # 故按原表标准列序 TRANSPORT_HEADERS 排在前，再把「所有行」出现过的、标准列以外的
-    # 额外列按首次出现顺序并集追加在后，保证任何行的任何列都不丢失。
+    # ── 导出统一为「标准表」：无论导入表列多列少，导出一律补齐为标准结构 ──
+    #   · 标准列：始终按 TRANSPORT_HEADERS 全列、固定列序输出。
+    #       - 列少的导入（缺标准列）→ 缺失列补空白单元，仍是完整标准表；
+    #       - 列序乱（生产库 jsonb 不保证键序）→ 强制按标准列序，不漂移。
+    #   · 非标准额外列：标准列之后，按「所有行」首次出现顺序并集追加，避免丢数据
+    #       （列多的导入不丢列，但标准块永远在前、结构稳定、可被运输系统原样回导）。
     all_raws = [(r.approval.ext_raw or {}) for r in rows_out]
-    canonical = [h for h in TRANSPORT_HEADERS if any(h in raw for raw in all_raws)]
+    canonical = list(TRANSPORT_HEADERS)        # 始终输出全部标准列（缺失留空）
     seen_cols = set(canonical)
     extras = []
     for raw in all_raws:
@@ -4510,7 +4511,7 @@ def _transport_export_core(request, export_cap=5000):
             if k not in seen_cols:
                 seen_cols.add(k)
                 extras.append(k)
-    headers = canonical + extras if (canonical or extras) else list(TRANSPORT_HEADERS)
+    headers = canonical + extras
     if TRANSPORT_STATUS_COL not in headers:
         headers.append(TRANSPORT_STATUS_COL)
 
