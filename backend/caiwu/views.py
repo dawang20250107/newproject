@@ -219,18 +219,10 @@ def _extract_json_block(text, kind='object'):
         return None
 
 
-_XL_FORMULA_CHARS = ('=', '+', '-', '@', '\t', '\r')
-
-
 def _build_excel_response(wb, filename):
-    # 公式注入防护：科目/项目等文本若以 = + - @ 开头，Excel 会当公式执行；
-    # 出口统一加单引号前缀（与 AR 模块 _export_response 同一策略）
-    for ws in wb.worksheets:
-        for row in ws.iter_rows():
-            for cell in row:
-                v = cell.value
-                if isinstance(v, str) and v and v[0] in _XL_FORMULA_CHARS:
-                    cell.value = "'" + v
+    # 公式注入防护：出口统一全表扫描（全系统共享单一实现 wxcloudrun.excel_safe）
+    from wxcloudrun.excel_safe import sanitize_workbook
+    sanitize_workbook(wb)
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)

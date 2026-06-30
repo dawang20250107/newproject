@@ -567,18 +567,11 @@ def _visible_ar_export_cols(request, columns):
     return [col for col in columns if col[0] is None or ar_view.get(col[0], True)]
 
 
-_XL_FORMULA_CHARS = ('=', '+', '-', '@', '\t', '\r')
-
-
 def _export_response(wb, filename):
-    # Excel 公式注入防护（与排款导出口径一致）：全部工作表的文本单元格，
-    # 以 =+-@ 等开头的前置单引号转义。集中在导出总出口做，覆盖所有 AR 导出。
-    for ws in wb.worksheets:
-        for row in ws.iter_rows():
-            for cell in row:
-                v = cell.value
-                if isinstance(v, str) and v and v[0] in _XL_FORMULA_CHARS:
-                    cell.value = "'" + v
+    # Excel 公式注入防护：集中在导出总出口做，覆盖所有 AR 导出
+    # （全系统共享单一实现 wxcloudrun.excel_safe）。
+    from wxcloudrun.excel_safe import sanitize_workbook
+    sanitize_workbook(wb)
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)

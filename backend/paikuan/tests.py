@@ -2615,3 +2615,48 @@ class HousekeepingCommandTests(TestCase):
         self.assertIn('overdue', data)
         self.assertIn('budget', data)
 
+
+
+class InfraHardeningTests(TestCase):
+    """运维硬化：健康/就绪探针 + 去重排除软删。"""
+
+    def test_healthz_liveness(self):
+        r = self.client.get('/healthz')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.content, b'ok')
+
+    def test_readyz_checks_db(self):
+        r = self.client.get('/readyz')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['status'], 'ready')
+
+    def test_find_duplicate_excludes_soft_deleted(self):
+        from datetime import date as _date
+        from django.utils import timezone
+        from paikuan.views import _find_duplicate_payment
+        fields = dict(department='运输事业部', approval_number='9' * 21, payee='供应商',
+                      planned_date=_date(2026, 7, 1), total_amount=Decimal('1000'))
+        p = Payment.objects.create(project_desc='测试', **fields)
+        # 在册记录 → 命中重复
+        self.assertIsNotNone(_find_duplicate_payment(fields))
+        # 软删后 → 不再命中（允许用相同业务键合法重建）
+        p.deleted_at = timezone.now()
+        p.save(update_fields=['deleted_at'])
+        self.assertIsNone(_find_duplicate_payment(fields))
+
+    def test_excel_formula_injection_guard_at_chokepoint(self):
+        # 出口统一公式注入防护：以 = + - @ 开头的文本前置单引号，数字不受影响
+        from openpyxl import Workbook, load_workbook
+        from wxcloudrun.excel_safe import excel_safe
+        from paikuan.views import _build_excel_response
+        self.assertEqual(excel_safe('=SUM(A1)'), "'=SUM(A1)")
+        self.assertEqual(excel_safe('-cmd'), "'-cmd")
+        self.assertEqual(excel_safe('正常文本'), '正常文本')
+        wb = Workbook(); ws = wb.active
+        ws.append(['=cmd', '@x', '正常', 123])
+        resp = _build_excel_response(wb, 't.xlsx')
+        ws2 = load_workbook(io.BytesIO(resp.content)).active
+        self.assertEqual(ws2.cell(1, 1).value, "'=cmd")
+        self.assertEqual(ws2.cell(1, 2).value, "'@x")
+        self.assertEqual(ws2.cell(1, 3).value, '正常')
+        self.assertEqual(ws2.cell(1, 4).value, 123)

@@ -19,7 +19,18 @@ DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
 DEEPSEEK_PRO_MODEL = os.environ.get('DEEPSEEK_PRO_MODEL', 'deepseek-reasoner')
 DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1'
 
-if SECRET_KEY == _DEV_SECRET_KEY or JWT_SECRET == _DEV_JWT_SECRET:
+# 生产判定：设置了 MYSQL_ADDRESS 即视为生产（与下方 DATABASES 选择同一信号）。
+_IS_PROD = bool(os.environ.get('MYSQL_ADDRESS'))
+_USING_DEV_SECRET = SECRET_KEY == _DEV_SECRET_KEY or JWT_SECRET == _DEV_JWT_SECRET
+if _USING_DEV_SECRET:
+    if _IS_PROD:
+        # 生产仍用入库默认密钥 = 攻击者可离线伪造任意审批人/管理员 JWT。
+        # 直接拒绝启动，迫使运维设置环境变量（最常见的是迁移/重装时漏配）。
+        from django.core.exceptions import ImproperlyConfigured
+        raise ImproperlyConfigured(
+            'SECURITY: 生产环境（已设置 MYSQL_ADDRESS）检测到默认密钥，拒绝启动。'
+            '请先设置 DJANGO_SECRET_KEY 与 JWT_SECRET 环境变量再启动。'
+        )
     logging.warning(
         'SECURITY: Using insecure dev secrets. '
         'Set DJANGO_SECRET_KEY and JWT_SECRET environment variables in production.'
@@ -32,6 +43,11 @@ ALLOWED_HOSTS = [
     'localhost',
     '127.0.0.1',
 ]
+# 允许经环境变量追加 Host（云托管/k8s 健康探针常按 Pod IP 或内网域名直连，
+# 否则 CommonMiddleware 会以 400 拒绝探针 → 实例被误判不健康）。
+_EXTRA_HOSTS = os.environ.get('EXTRA_ALLOWED_HOSTS', '')
+if _EXTRA_HOSTS:
+    ALLOWED_HOSTS += [h.strip() for h in _EXTRA_HOSTS.split(',') if h.strip()]
 
 INSTALLED_APPS = [
     'corsheaders',
@@ -143,3 +159,38 @@ LOGGING = {
         'caiwu': {'handlers': ['console'], 'level': 'DEBUG', 'propagate': False},
     },
 }
+
+
+# ── 可观测性：Sentry 错误追踪 + Prometheus 指标 ─────────────────────────────────
+# 均为「可选依赖」：未安装或未配置时静默跳过，绝不影响启动（开发/CI 无需安装）。
+def _has_module(name):
+    import importlib.util
+    return importlib.util.find_spec(name) is not None
+
+
+# Prometheus RED 指标：装了 django_prometheus 即自动启用，/metrics 暴露
+# 请求量/延迟/状态码（按视图维度），供 Prometheus 抓取与告警。
+PROMETHEUS_ENABLED = _has_module('django_prometheus')
+if PROMETHEUS_ENABLED:
+    if 'django_prometheus' not in INSTALLED_APPS:
+        INSTALLED_APPS = INSTALLED_APPS + ['django_prometheus']
+    # Before 必须首位、After 必须末位（包裹整条中间件链以测全程耗时）。
+    MIDDLEWARE = (
+        ['django_prometheus.middleware.PrometheusBeforeMiddleware']
+        + MIDDLEWARE
+        + ['django_prometheus.middleware.PrometheusAfterMiddleware']
+    )
+
+# Sentry：仅当装了 sentry-sdk 且设置了 SENTRY_DSN 才初始化。
+SENTRY_DSN = os.environ.get('SENTRY_DSN', '')
+if SENTRY_DSN and _has_module('sentry_sdk'):
+    import sentry_sdk
+    from sentry_sdk.integrations.django import DjangoIntegration
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[DjangoIntegration()],
+        traces_sample_rate=float(os.environ.get('SENTRY_TRACES_SAMPLE_RATE', '0.0')),
+        send_default_pii=False,   # 财务系统：默认不上送 PII（手机号/姓名）
+        environment=os.environ.get('SENTRY_ENV', 'production' if _IS_PROD else 'dev'),
+        release=os.environ.get('SENTRY_RELEASE', ''),
+    )

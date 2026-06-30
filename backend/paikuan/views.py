@@ -1589,12 +1589,15 @@ def _find_duplicate_payment(fields, exclude_id=None):
     no = fields.get('approval_number') or ''
     if not no or set(no) == {'0'}:
         return None
+    # 仅与「在册」记录比对：软删记录已移入回收站、用户不可见，否则会以一条看不见的
+    # 记录把合法重建判为重复（409），让财务陷入死胡同。与全局软删口径一致。
     qs = Payment.objects.filter(
         department=fields['department'],
         approval_number=fields['approval_number'],
         payee=fields['payee'],
         planned_date=fields['planned_date'],
         total_amount=fields['total_amount'],
+        deleted_at__isnull=True,
     )
     if exclude_id:
         qs = qs.exclude(id=exclude_id)
@@ -3579,7 +3582,13 @@ def _visible_excel_cols(perms, n_installments=TEMPLATE_INSTALLMENT_SLOTS):
     return cols
 
 
-def _build_excel_response(wb, filename):
+def _build_excel_response(wb, filename, formula_guard=True):
+    # 出口 chokepoint 统一公式注入防护：覆盖所有导出（含导入修正版下载等用户可控文本），
+    # 新增导出点无需各自记得调用。运输零误差导出传 formula_guard=False（其自带更窄的
+    # 逐格防护，且需保留原值还原契约）。
+    if formula_guard:
+        from wxcloudrun.excel_safe import sanitize_workbook
+        sanitize_workbook(wb)
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -4581,7 +4590,9 @@ def _transport_export_core(request, export_cap=5000):
         ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 36)
 
     today = timezone.localdate().strftime('%Y%m%d')
-    return _build_excel_response(wb, f'运输对账单_已结算_{today}.xlsx')
+    # 运输导出零误差还原：保留其自带的更窄逐格防护（仅 = + @），不施加 chokepoint 全表扫描，
+    # 以免给以「-」开头的原始文本前置单引号、破坏与运输系统的原样回导契约。
+    return _build_excel_response(wb, f'运输对账单_已结算_{today}.xlsx', formula_guard=False)
 
 
 # ── 异步导出（大数据量后台任务）──────────────────────────────────────────────

@@ -10,3 +10,6 @@ requests>=2.31
 pypdf>=4.2
 python-docx>=1.1
 Pillow>=10.0
+# 可观测性（可选）：未安装/未配置 SENTRY_DSN 时 settings 静默跳过，不影响启动
+sentry-sdk>=2.0
+django-prometheus>=2.3
