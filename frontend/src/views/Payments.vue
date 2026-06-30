@@ -52,6 +52,7 @@ const COL_DEFS = [
   { key: 'status',             label: '状态',     perm: () => true },
   { key: 'overdue',            label: '逾期',     perm: () => true },
   { key: 'plan_adjustment',    label: '计划调整', perm: () => auth.canView('plan_adjustment') },
+  { key: 'notes',              label: '备注',     perm: () => true },
 ]
 const hiddenCols = ref(new Set())
 try { hiddenCols.value = new Set(JSON.parse(localStorage.getItem('pk_pay_hidden_cols') || '[]')) } catch {}
@@ -179,7 +180,7 @@ const filters = reactive({
 const cw = useColWidths('pk_payments', {
   project_desc: 200, payee: 130, department: 70, secondary_dept: 80,
   project_short_name: 100, applicant: 70, approval_number: 110, g7_number: 110,
-  planned_date: 90, total_amount: 90, paid: 90, remaining: 90, status: 100,
+  planned_date: 90, total_amount: 90, paid: 90, remaining: 90, status: 100, notes: 140,
 })
 
 // ── Excel 风格列头筛选 + 排序 ───────────────────────────────────────────────
@@ -1100,6 +1101,7 @@ async function doBatchPay() {
               <th v-if="colVisible('status')" style="width:9%"><ColumnFilter label="状态" field="status" type="enum" :options="PAY_STATUS_OPTS" :no-exclude="true" :sortable="false" :model-value="statusColModel" @update:model-value="setStatusFilter" /></th>
               <th v-if="colVisible('overdue')" style="width:6%"><ColumnFilter label="逾期" field="overdue" type="enum" :options="OVERDUE_OPTS" :sortable="false" :model-value="colFilters.overdue" @update:model-value="v=>setColFilter('overdue',v)" /></th>
               <th v-if="colVisible('plan_adjustment')" style="width:6%"><ColumnFilter label="计划调整" field="plan_adjustment" type="number" :model-value="colFilters.plan_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('plan_adjustment',v)" @sort="o=>setSort('plan_adjustment',o)" /></th>
+              <th v-if="colVisible('notes')" :style="cw.thStyle('notes')"><ColumnFilter label="备注" field="notes" type="text" :model-value="colFilters.notes" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('notes',v)" @sort="o=>setSort('notes',o)" /></th>
             </tr>
           </thead>
           <tbody>
@@ -1134,9 +1136,11 @@ async function doBatchPay() {
               <td v-if="colVisible('paid')" class="amt amt-green">{{ dash(p.total_paid) }}</td>
               <td v-if="colVisible('remaining')" class="amt" :class="parseFloat(p.remaining) > 0 ? 'amt-red' : ''">{{ dash(p.remaining) }}</td>
               <td v-if="colVisible('status')" class="status-cell">
-                <button class="prio-star" :class="{ on: p.is_priority }" @click.stop="togglePriorityOne(p)"
-                        :title="p.is_priority ? '重点付款（点击取消标记）' : '标记为重点付款'">★</button>
-                <StatusBadge :status="p.status" />
+                <span class="status-wrap">
+                  <button class="prio-star" :class="{ on: p.is_priority }" @click.stop="togglePriorityOne(p)"
+                          :title="p.is_priority ? '重点付款（点击取消标记）' : '标记为重点付款'">★</button>
+                  <StatusBadge :status="p.status" />
+                </span>
               </td>
               <td v-if="colVisible('overdue')">
                 <span v-if="p.status === 'settled'" class="overdue-tag overdue-ok">—</span>
@@ -1151,6 +1155,8 @@ async function doBatchPay() {
                 </span>
                 <span v-else style="color:var(--muted)">—</span>
               </td>
+              <td v-if="colVisible('notes')" class="cell-clip" :title="p.notes"
+                  @mouseenter="showTip($event, p.notes)" @mousemove="moveTip" @mouseleave="hideTip">{{ p.notes || '—' }}</td>
             </tr>
             <!-- 行明细：计划明细（分批）/ 付款明细（分期实付）并排 -->
             <tr v-if="expandedRows.has(p.id)" class="pp-detail-row" data-skiprange>
@@ -1673,7 +1679,9 @@ async function doBatchPay() {
 .bulk-star:disabled, .bulk-star-off:disabled { opacity: .5; cursor: default; }
 
 /* 重点付款：状态列内嵌星标（不占独立列）+ 行金色左缘 */
-.status-cell { display: flex; align-items: center; gap: 6px; }
+/* 状态列：td 保持 table-cell（垂直对齐/列宽不破），flex 收进内层 wrapper */
+.status-cell { white-space: nowrap; }
+.status-wrap { display: inline-flex; align-items: center; gap: 6px; }
 .prio-star { border: none; background: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 0;
   color: #d9cfc2; transition: color .12s, transform .12s; flex-shrink: 0; }
 .prio-star:hover { color: #f5a623; transform: scale(1.18); }

@@ -1983,9 +1983,11 @@ class TransportReconciliationTests(TestCase):
                '实际对账金额', '对账时间', '状态', '创建人', '创建时间', '备注', '单据类别',
                '账单调整', '对账金额', '结算方式', '实对网货服务费合计', '实对网货费用合计', '开户人']
 
-    def _row(self, seq, bill_no, payee, amount, status='已通过'):
+    def _row(self, seq, bill_no, payee, amount, status='已通过',
+             summary='对账摘要', remark='YD20260626'):
         # amount 传正数，原表里存为负数（来源系统口径）
-        return [seq, '运输项目一部', bill_no, '', '支出', payee, '', -abs(amount),
+        # 字段映射：收支方式→收款主体(payee)、对账对象→摘要(summary)、运单号→备注(notes)
+        return [seq, '运输项目一部', bill_no, remark, payee, summary, '', -abs(amount),
                 '2026-06-26 10:47:20', status, '谭雯雯', '2026-06-26 10:51:24',
                 '税后利润 2592.27 税后利润率 30.19%', '车辆', '', -abs(amount),
                 '银行转账', '', '', '']
@@ -2025,11 +2027,12 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(rec.status, 'approved')          # 已通过，可直接排款
         self.assertEqual(rec.department, '运输事业部')
         self.assertEqual(rec.secondary_dept, '运输项目一部')
-        self.assertEqual(rec.payee, '安仕吉-浓香酒')          # 收款主体 ← 对账对象
+        self.assertEqual(rec.payee, '安仕吉-浓香酒')          # 收款主体 ← 收支方式
+        self.assertEqual(rec.summary, '对账摘要')             # 摘要 ← 对账对象
         self.assertEqual(rec.amount, Decimal('4828.5'))   # 取绝对值
         self.assertEqual(rec.approval_number, '')          # 审批编号留空
         self.assertEqual(rec.g7_number, 'ZD202606260055')  # G7编号 ← 对账单号
-        self.assertEqual(rec.notes, '税后利润 2592.27 税后利润率 30.19%')  # 备注 ← 原表备注原文
+        self.assertEqual(rec.notes, 'YD20260626')          # 备注 ← 运单号
         self.assertEqual(rec.ext_raw['对账单号'], 'ZD202606260055')
         self.assertEqual(rec.ext_raw['实际对账金额'], -4828.5)  # 原始负数逐字保留
 
@@ -2056,6 +2059,8 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(self._schedule(rb, 2000).status_code, 200)
         pa = Payment.objects.get(approval=ra)
         pb = Payment.objects.get(approval=rb)
+        # 备注随审批排款带入付款台账（运输事业部即运单号）
+        self.assertEqual(pa.notes, 'YD20260626')
         # 结算 A：付清 → status=settled
         PaymentInstallment.objects.create(payment=pa, seq=1, pay_date=date(2026, 6, 27),
                                            pay_amount=Decimal('1000'))

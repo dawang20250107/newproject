@@ -77,6 +77,7 @@ PAYMENT_FILTER_REGISTRY = {
     'g7_number':          {'type': 'text',   'col': 'g7_number'},
     'project_desc':       {'type': 'text',   'col': 'project_desc'},
     'payee':              {'type': 'text',   'col': 'payee'},
+    'notes':              {'type': 'text',   'col': 'notes'},
     'planned_date':       {'type': 'date',   'col': 'planned_date'},
     'total_amount':       {'type': 'number', 'col': 'total_amount'},
     'plan_adjustment':    {'type': 'number', 'col': 'plan_adjustment'},
@@ -2272,6 +2273,7 @@ def _schedule_one(request, rec, planned_date, total_amount):
                     g7_number=rec.g7_number,   # G7编号随审批带入付款（运输事业部即对账单号）
                     project_desc=rec.summary,
                     payee=rec.payee,
+                    notes=rec.notes,           # 备注随审批带入付款台账（运输事业部即运单号）
                     total_amount=total_amount,
                     planned_date=planned_date,
                 )
@@ -4375,9 +4377,12 @@ def _transport_analyze(rows, existing_bills):
         raw = {h: (_transport_json_safe(row[i]) if i < len(row) else None) for h, i in pos.items()}
         report['ok'].append({
             'row': rn, 'bill_no': bill_no, 'src_status': src_status,
-            'payee': str(cell(row, '对账对象') or '').strip() or bill_no,
+            # 字段映射（运输原表列 → 我方记录字段）：
+            #   收支方式 → 收款主体(payee)、对账对象 → 摘要(summary)、运单号 → 备注(notes)
+            'payee': str(cell(row, '收支方式') or '').strip() or bill_no,
+            'summary': str(cell(row, '对账对象') or '').strip() or f'运输对账 {bill_no}',
             'org': str(cell(row, '所属组织') or '').strip(),
-            'notes': str(cell(row, '备注') or '').strip()[:500],
+            'notes': str(cell(row, '运单号') or '').strip()[:500],
             'amount': amount, 'raw': raw,
         })
         seen.add(bill_no)
@@ -4467,7 +4472,7 @@ def transport_import(request):
                     created_by_id=request.pk_uid, applicant=importer,
                     department=TRANSPORT_DEPT, secondary_dept=item['org'],
                     approval_number='', g7_number=bill_no[:21],
-                    summary=f'运输对账 {bill_no}', notes=item['notes'],
+                    summary=item['summary'][:500], notes=item['notes'],
                     amount=item['amount'], payee=item['payee'], status='approved',
                     ext_source=TRANSPORT_SOURCE, ext_bill_no=bill_no, ext_raw=item['raw'],
                 )
