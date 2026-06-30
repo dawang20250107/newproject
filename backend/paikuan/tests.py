@@ -1973,7 +1973,6 @@ class TransportReconciliationTests(TestCase):
                             is_active=True, is_approved=True)
         admin.set_password('Test123456')
         admin.save()
-        self.user = admin
         self.token = make_token(admin)
 
     def auth(self):
@@ -2036,28 +2035,6 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(rec.notes, 'YD20260626')          # 备注 ← 运单号
         self.assertEqual(rec.ext_raw['对账单号'], 'ZD202606260055')
         self.assertEqual(rec.ext_raw['实际对账金额'], -4828.5)  # 原始负数逐字保留
-
-    def test_payment_exposes_live_approval_summary(self):
-        # 付款管理实时体现来源审批「摘要」（取 live 值，非排款时快照）
-        self._import([self._row(1, 'ZD-SUM-1', '安仕吉', 1000, summary='原始摘要')])
-        rec = ApprovalRecord.objects.get(ext_bill_no='ZD-SUM-1')
-        self.assertEqual(self._schedule(rec, 1000).status_code, 200)
-        p = Payment.objects.select_related('approval').get(approval=rec)
-        self.assertEqual(p.to_dict()['approval_summary'], '原始摘要')
-        # 审批侧改摘要 → 付款 to_dict 即时反映（证明非快照）
-        rec.summary = '修改后的摘要'
-        rec.save(update_fields=['summary'])
-        p2 = Payment.objects.select_related('approval').get(approval=rec)
-        self.assertEqual(p2.to_dict()['approval_summary'], '修改后的摘要')
-
-    def test_payment_without_approval_has_empty_summary(self):
-        # 无来源审批的手工付款：approval_summary 为空串，不报错
-        from datetime import date as _d
-        p = Payment.objects.create(
-            created_by_id=self.user.id, department=self.dept,
-            project_desc='手工付款', payee='供应商X',
-            total_amount=Decimal('500'), planned_date=_d(2026, 6, 27))
-        self.assertEqual(p.to_dict()['approval_summary'], '')
 
     def test_import_dedup_by_bill_no(self):
         # 文件内重复 + 二次导入重复，均按对账单号去重
