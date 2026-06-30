@@ -4379,8 +4379,9 @@ def _transport_analyze(rows, existing_bills):
             'row': rn, 'bill_no': bill_no, 'src_status': src_status,
             # 字段映射（运输原表列 → 我方记录字段）：
             #   收支方式 → 收款主体(payee)、对账对象 → 摘要(summary)、运单号 → 备注(notes)
-            'payee': str(cell(row, '收支方式') or '').strip() or bill_no,
-            'summary': str(cell(row, '对账对象') or '').strip() or f'运输对账 {bill_no}',
+            # 各列均按目标字段 max_length 截断，杜绝超长源值导致入库失败。
+            'payee': (str(cell(row, '收支方式') or '').strip() or bill_no)[:200],
+            'summary': (str(cell(row, '对账对象') or '').strip() or f'运输对账 {bill_no}')[:500],
             'org': str(cell(row, '所属组织') or '').strip(),
             'notes': str(cell(row, '运单号') or '').strip()[:500],
             'amount': amount, 'raw': raw,
