@@ -1979,14 +1979,16 @@ class TransportReconciliationTests(TestCase):
         return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
 
     # 运输系统导出的原始表头（与生产一致）
-    HEADERS = ['序号', '所属组织', '对账单号', '对账对象', '联系电话', '实际对账金额',
-               '对账时间', '状态', '创建人', '创建时间', '备注', '单据类别', '账单调整', '对账金额']
+    HEADERS = ['序号', '所属组织', '对账单号', '运单号', '收支方式', '对账对象', '联系电话',
+               '实际对账金额', '对账时间', '状态', '创建人', '创建时间', '备注', '单据类别',
+               '账单调整', '对账金额', '结算方式', '实对网货服务费合计', '实对网货费用合计', '开户人']
 
     def _row(self, seq, bill_no, payee, amount, status='已通过'):
         # amount 传正数，原表里存为负数（来源系统口径）
-        return [seq, '运输项目一部', bill_no, payee, '', -abs(amount),
+        return [seq, '运输项目一部', bill_no, '', '支出', payee, '', -abs(amount),
                 '2026-06-26 10:47:20', status, '谭雯雯', '2026-06-26 10:51:24',
-                '税后利润 2592.27 税后利润率 30.19%', '车辆', '', -abs(amount)]
+                '税后利润 2592.27 税后利润率 30.19%', '车辆', '', -abs(amount),
+                '银行转账', '', '', '']
 
     def _xlsx(self, rows):
         from openpyxl import Workbook
