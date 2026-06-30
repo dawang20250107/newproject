@@ -2702,3 +2702,57 @@ class PaymentDedupKeyTests(TestCase):
         self.assertIsNone(Payment.objects.get(pk=p.pk).dedup_key)   # 软删释放键
         p2 = self._mk()                                             # 同业务键可重建
         self.assertIsNotNone(p2.dedup_key)
+
+
+class PriorityAndNumberFilterTests(TestCase):
+    """重点付款标记 + 批量单号筛选（付款/审批）。"""
+
+    def setUp(self):
+        _invalidate_perm_cache()
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900008000', name='PrAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456'); admin.save()
+        self.token = make_token(admin)
+
+    def tearDown(self):
+        _invalidate_perm_cache()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _post(self, url, payload):
+        return self.client.post(url, data=json.dumps(payload), content_type='application/json', **self.auth())
+
+    def _pay(self, g7, amount='100'):
+        from datetime import date as _date
+        return Payment.objects.create(department=self.dept, project_desc='x', payee='供应商',
+                                      total_amount=Decimal(amount), planned_date=_date(2026, 7, 1), g7_number=g7)
+
+    def test_mark_priority_filter_and_clear_all(self):
+        p1 = self._pay('G1'); self._pay('G2')
+        self.assertEqual(self._post('/api/pk/payments/mark-priority', {'ids': [p1.id], 'value': True})
+                         .json()['data']['count'], 1)
+        d = self.client.get('/api/pk/payments', {'priority': '1'}, **self.auth()).json()['data']
+        self.assertEqual(d['total'], 1)
+        self.assertEqual(d['items'][0]['id'], p1.id)
+        self.assertTrue(d['items'][0]['is_priority'])
+        # 一键清除全部
+        self.assertEqual(self._post('/api/pk/payments/mark-priority', {'all': True}).json()['data']['count'], 1)
+        self.assertEqual(Payment.objects.filter(is_priority=True).count(), 0)
+
+    def test_numbers_filter_payments_any_delimiter(self):
+        self._pay('ZD-A'); self._pay('ZD-B'); self._pay('ZD-C')
+        d = self.client.get('/api/pk/payments', {'numbers': 'ZD-A, ZD-C+ZD-X'}, **self.auth()).json()['data']
+        self.assertEqual({i['g7_number'] for i in d['items']}, {'ZD-A', 'ZD-C'})
+
+    def test_numbers_filter_approvals(self):
+        for n, g7 in (('1', 'G7-A'), ('2', 'G7-B')):
+            ApprovalRecord.objects.create(applicant='a', department=self.dept,
+                                          approval_number=n * 21, summary='s', amount=Decimal('100'),
+                                          payee='p', g7_number=g7, status='pending')
+        d = self.client.get('/api/pk/approvals', {'numbers': 'G7-A\nG7-Z'}, **self.auth()).json()['data']
+        self.assertEqual(d['total'], 1)
+        self.assertEqual(d['items'][0]['g7_number'], 'G7-A')

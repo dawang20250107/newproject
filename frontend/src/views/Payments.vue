@@ -228,6 +228,9 @@ const schemes = useTableSchemes('pk_payments', {
   },
   onApply: () => { filters.page = 1; clearSelection(); load() },
 })
+// 重点付款筛选 + 批量单号筛选
+const priorityOnly = ref(false)   // 只看重点
+const numbersFilter = ref('')     // 已应用的批量单号（逗号连接）
 function buildParams() {
   const p = { page: filters.page, size: filters.size }
   if (filters.q.trim()) p.q = filters.q.trim()
@@ -236,8 +239,12 @@ function buildParams() {
   if (hideSettled.value && !statusSel.value.length) p.hide_settled = '1'
   if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
   if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
+  if (priorityOnly.value) p.priority = '1'
+  if (numbersFilter.value) p.numbers = numbersFilter.value
   return p
 }
+// activeFilterCount 已含列头/状态/部门；这里把重点与单号也并入提示（不影响原逻辑）
+const extraFilterCount = computed(() => (priorityOnly.value ? 1 : 0) + (numbersFilter.value ? 1 : 0))
 
 // ── tab control: 台账 | 付款流水 ─────────────────────────────────────────────
 const activeTab = ref('ledger')  // 'ledger' | 'flow'
@@ -636,6 +643,7 @@ const ctxItems = computed(() => {
   const canOffset = auth.canAction('wo_prepaid') && (p.project_short_name || p.project_no)
   return [
     { key: 'detail', label: expandedRows.value.has(p.id) ? '收起明细' : '展开计划/付款明细', icon: 'eye', action: r => toggleRowDetail(r.id) },
+    { key: 'priority', label: p.is_priority ? '取消重点标记' : '标记为重点付款', icon: 'star', action: r => togglePriorityOne(r) },
     { key: 'edit', label: '编辑', icon: 'edit', shortcut: 'E', hidden: !auth.canWrite, action: r => openEdit(r) },
     { key: 'return', label: p.approval_id ? '退回排款（还原至审批）' : '退回排款（删除）', icon: 'trash', danger: true, hidden: !auth.canDelete, action: r => returnPayment(r) },
     { key: 'offset', label: '预付核销', icon: 'refresh', hidden: !canOffset, action: r => openOffset(r) },
@@ -772,6 +780,8 @@ function resetFilters() {
   hideSettled.value = true
   sortField.value = ''; sortOrder.value = ''
   payDatePreset.value = ''
+  priorityOnly.value = false
+  numbersFilter.value = ''; numbersText.value = ''
   clearSelection()
   load()
 }
@@ -820,6 +830,67 @@ async function confirmBulkDelete() {
     if (d.skipped?.length) toast.error(`${d.message}\n\n未删除明细：\n` + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0, 15).join('\n'))
   } catch (e) { toast.error(e?.msg || e?.error || '删除失败') }
   finally { bulkDeleting.value = false }
+}
+
+// 批量退回排款（=软删付款 + 来源审批已排款归零，可重新排款；含跳过预付核销项）
+const bulkReturning = ref(false)
+async function bulkReturn() {
+  if (!selectedCount.value) return
+  if (!confirm(`批量退回排款 ${selectedCount.value} 条？\n所选付款将退回、来源审批已排款归零可重新排款；已关联预付核销的将自动跳过。`)) return
+  bulkReturning.value = true
+  try {
+    const body = isCrossPageSelection.value ? { all: true } : { ids: [...selectedIds.value] }
+    const r = await api.post('/payments/bulk-delete', body)
+    clearSelection(); load()
+    const d = r.data || {}
+    let msg = `已退回 ${d.deleted ?? 0} 条排款，来源审批已归零`
+    if (d.skipped?.length) { toast.warn(msg + '\n\n跳过：\n' + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0, 15).join('\n')) }
+    else toast.success(msg)
+  } catch (e) { toast.error(e?.msg || e?.error || '退回失败') }
+  finally { bulkReturning.value = false }
+}
+
+// ── 重点付款标记：右键/批量打标、列内角标、一键筛选、一键清除 ──
+const markingPriority = ref(false)
+async function setPriority(ids, value) {
+  if (!ids.length) return
+  markingPriority.value = true
+  try {
+    const r = await api.post('/payments/mark-priority', { ids, value })
+    // 本地即时反映，避免整表重拉
+    const set = new Set(ids)
+    items.value.forEach(p => { if (set.has(p.id)) p.is_priority = value })
+    toast.success(`已${value ? '标记' : '取消'} ${r.data.count} 条重点付款`)
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+  finally { markingPriority.value = false }
+}
+function togglePriorityOne(p) { setPriority([p.id], !p.is_priority) }
+function bulkMarkPriority(value) { setPriority([...selectedIds.value], value) }
+function togglePriorityFilter() { priorityOnly.value = !priorityOnly.value; filters.page = 1; clearSelection(); load() }
+async function clearAllPriority() {
+  if (!confirm('清除当前事业部范围内「全部」重点付款标记？')) return
+  try {
+    const r = await api.post('/payments/mark-priority', { all: true })
+    toast.success(`已清除 ${r.data.count} 个重点标记`)
+    if (priorityOnly.value) priorityOnly.value = false
+    load()
+  } catch (e) { toast.error(e?.msg || e?.error || '清除失败') }
+}
+
+// ── 批量单号筛选：粘贴多单号（任意分隔）→ 归一化为逗号连接 → 后端 in 命中 ──
+const showNumbersBox = ref(false)
+const numbersText = ref('')
+const parsedNumbers = computed(() =>
+  [...new Set(numbersText.value.split(/[\s,+;|，、；／/]+/).map(s => s.trim()).filter(Boolean))])
+function applyNumbers() {
+  numbersFilter.value = parsedNumbers.value.join(',')
+  showNumbersBox.value = false
+  filters.page = 1; clearSelection(); load()
+}
+function clearNumbers() {
+  numbersText.value = ''; numbersFilter.value = ''
+  showNumbersBox.value = false
+  filters.page = 1; clearSelection(); load()
 }
 
 // 批量付款（批量编辑）：默认日期=今天，默认金额=各记录剩余应付=计划金额；卡片内可逐条调整金额
@@ -947,6 +1018,29 @@ async function doBatchPay() {
           <input type="checkbox" :checked="!hideSettled" @change="hideSettled = !hideSettled; filters.page=1; clearSelection(); load()" />
           含已付清
         </label>
+        <!-- 只看重点 + 清除全部标记 -->
+        <button class="filter-toggle prio-toggle" :class="{ active: priorityOnly }" @click="togglePriorityFilter"
+                title="只显示标记为重点的付款">★ 只看重点</button>
+        <button v-if="priorityOnly" class="btn btn-sm" @click="clearAllPriority" title="清除当前事业部范围内全部重点标记">清除全部标记</button>
+        <!-- 批量单号筛选 -->
+        <div class="numfilter-wrap">
+          <button class="btn btn-ghost btn-sm" :class="{ on: !!numbersFilter }" @click="showNumbersBox = !showNumbersBox"
+                  title="粘贴多个单号（空格/换行/+/逗号等任意分隔）批量筛选">
+            🔖 批量单号{{ numbersFilter ? `（${parsedNumbers.length || numbersFilter.split(',').length}）` : '' }}
+          </button>
+          <div v-if="showNumbersBox" class="numfilter-pop">
+            <div class="nf-title">粘贴单号批量筛选 <span>对账单号/G7/审批编号，任意分隔符</span></div>
+            <textarea v-model="numbersText" class="nf-area" rows="6"
+                      placeholder="例如：&#10;ZD202606260055 ZD202606260133&#10;ZD202606260092+ZD202606260134&#10;逗号、空格、换行、+ 都行"></textarea>
+            <div class="nf-foot">
+              <span class="nf-count">识别 {{ parsedNumbers.length }} 个</span>
+              <div style="display:flex;gap:6px">
+                <button class="btn btn-sm" @click="clearNumbers">清除</button>
+                <button class="btn btn-sm btn-primary" :disabled="!parsedNumbers.length" @click="applyNumbers">应用筛选</button>
+              </div>
+            </div>
+          </div>
+        </div>
         <span class="filter-group-lbl">回款日</span>
         <select v-model="payDatePreset" @change="applyPayDatePreset" style="min-width:100px">
           <option value="">全部日期</option>
@@ -978,7 +1072,7 @@ async function doBatchPay() {
         <span v-else-if="payDatePreset && filters.pay_date_start" class="date-range-hint">
           {{ filters.pay_date_start }} ~ {{ filters.pay_date_end }}
         </span>
-        <button v-if="activeFilterCount || filters.q || sortField" class="btn btn-sm clear-all-btn" @click="resetFilters">清除全部筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
+        <button v-if="activeFilterCount || filters.q || sortField || extraFilterCount" class="btn btn-sm clear-all-btn" @click="resetFilters">清除全部筛选<span v-if="activeFilterCount + extraFilterCount">（{{ activeFilterCount + extraFilterCount }}）</span></button>
         <SchemePicker :ctl="schemes" :can-public="auth.canCreate" :is-super-admin="auth.isSuperAdmin" />
         <span class="filter-hint" title="点击列名旁 ⏷ 可按列筛选 / 排序" style="cursor:default">?</span>
       </div>
@@ -1014,7 +1108,7 @@ async function doBatchPay() {
             </template>
             <template v-else>
             <template v-for="p in items" :key="p.id">
-            <tr :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today, 'row-sel': selectedIds.has(p.id) }"
+            <tr :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today, 'row-sel': selectedIds.has(p.id), 'row-priority': p.is_priority }"
                 @contextmenu.prevent="ctx.open($event, p)" @dblclick="onRowDblClick(p, $event)">
               <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(p.id)" @change="toggleRow(p.id)" /></td>
               <td v-if="colVisible('department')">{{ p.department }}</td>
@@ -1039,7 +1133,11 @@ async function doBatchPay() {
               <td v-if="colVisible('total_amount')" class="amt">{{ dash(p.total_amount) }}</td>
               <td v-if="colVisible('paid')" class="amt amt-green">{{ dash(p.total_paid) }}</td>
               <td v-if="colVisible('remaining')" class="amt" :class="parseFloat(p.remaining) > 0 ? 'amt-red' : ''">{{ dash(p.remaining) }}</td>
-              <td v-if="colVisible('status')"><StatusBadge :status="p.status" /></td>
+              <td v-if="colVisible('status')" class="status-cell">
+                <button class="prio-star" :class="{ on: p.is_priority }" @click.stop="togglePriorityOne(p)"
+                        :title="p.is_priority ? '重点付款（点击取消标记）' : '标记为重点付款'">★</button>
+                <StatusBadge :status="p.status" />
+              </td>
               <td v-if="colVisible('overdue')">
                 <span v-if="p.status === 'settled'" class="overdue-tag overdue-ok">—</span>
                 <span v-else-if="p.planned_date && p.planned_date < today"
@@ -1120,6 +1218,9 @@ async function doBatchPay() {
           <button v-if="selectedCount < total" class="bulk-selall" :disabled="selectingAll" @click="selectAllFiltered"
                   :title="`跨页选中当前筛选下全部 ${total} 条（上限 1000，供批量操作）`">{{ selectingAll ? '全选中…' : `选择全部 ${total} 条` }}</button>
           <button v-if="auth.canEdit('installments')" class="bulk-act" :disabled="!isCrossPageSelection && !batchPaySummary.count" @click="openBatchPay">{{ isCrossPageSelection ? `批量付款（${selectedCount} 条）` : `批量付款（可付 ${batchPaySummary.count} 条）` }}</button>
+          <button class="bulk-star" :disabled="markingPriority" @click="bulkMarkPriority(true)" title="标记为重点付款">★ 标记重点</button>
+          <button class="bulk-star-off" :disabled="markingPriority" @click="bulkMarkPriority(false)" title="取消重点标记">取消重点</button>
+          <button v-if="auth.canDelete" class="bulk-return" :disabled="bulkReturning" @click="bulkReturn" title="退回排款（来源审批已排款归零，可重新排款）">{{ bulkReturning ? '退回中…' : `批量退回(${selectedCount})` }}</button>
           <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
           <button v-if="canTransport" class="bulk-act" :disabled="copyingG7" @click="copyG7Numbers($event)"
                   title="复制所选记录的 G7编号（对账单号），「+」连接；Shift+点击改用空格连接">📋 复制单号</button>
@@ -1564,6 +1665,35 @@ async function doBatchPay() {
 .bulk-act:disabled { opacity: .5; cursor: default; }
 .bulk-del { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
 .bulk-del:disabled { opacity: .6; cursor: default; }
+/* 批量退回（橙）/ 标记重点（金）/ 取消重点（描边）*/
+.bulk-return { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--c-warn); color: #fff; }
+.bulk-return:disabled { opacity: .6; cursor: default; }
+.bulk-star { border: none; border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 700; cursor: pointer; background: #f5a623; color: #fff; }
+.bulk-star-off { border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; background: #fff; color: var(--muted); }
+.bulk-star:disabled, .bulk-star-off:disabled { opacity: .5; cursor: default; }
+
+/* 重点付款：状态列内嵌星标（不占独立列）+ 行金色左缘 */
+.status-cell { display: flex; align-items: center; gap: 6px; }
+.prio-star { border: none; background: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 0;
+  color: #d9cfc2; transition: color .12s, transform .12s; flex-shrink: 0; }
+.prio-star:hover { color: #f5a623; transform: scale(1.18); }
+.prio-star.on { color: #f5a623; text-shadow: 0 0 6px rgba(245,166,35,.5); }
+.row-priority td { background: rgba(245,166,35,0.06) !important; }
+.row-priority td:first-child { box-shadow: inset 3px 0 0 #f5a623; }
+.prio-toggle.active { border-color: #f5a623; color: #b8761a; background: rgba(245,166,35,0.12); }
+
+/* 批量单号筛选弹层 */
+.numfilter-wrap { position: relative; }
+.numfilter-wrap .on { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.07); }
+.numfilter-pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 60; width: 320px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 12px; }
+.nf-title { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+.nf-title span { font-weight: 400; color: var(--muted); font-size: 11px; }
+.nf-area { width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; padding: 8px;
+  font-size: 12.5px; font-family: ui-monospace, Menlo, monospace; resize: vertical; }
+.nf-area:focus { outline: none; border-color: var(--primary); }
+.nf-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
+.nf-count { font-size: 12px; color: var(--muted); }
 .bulk-cancel { border: none; background: none; color: var(--muted); font-size: 12.5px; cursor: pointer; }
 .batch-summary { display: flex; gap: 18px; font-size: 13px; color: var(--muted);
   background: rgba(201,99,66,.05); border-radius: 9px; padding: 10px 12px; }

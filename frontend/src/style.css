@@ -39,6 +39,10 @@
   --c-info:          #1565c0;
   --c-info-bg:       rgba(21,101,192,0.08);
   --c-info-bdr:      rgba(21,101,192,0.20);
+  /* 短名别名：历史代码大量使用 var(--danger)/var(--success) 但从未定义，
+     导致 background:var(--danger) 透明、白字不可见（如批量删除按钮）。在此统一补齐。 */
+  --danger:          var(--c-danger);
+  --success:         var(--c-success);
 
   /* ── borders ── */
   --border-soft:     rgba(180,140,110,0.14);

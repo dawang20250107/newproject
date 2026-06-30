@@ -1274,6 +1274,21 @@ def _apply_payment_computed_filters(qs, request):
     return qs, True
 
 
+def _parse_numbers(raw):
+    """把用户粘贴的多单号串按任意分隔符（空格/换行/Tab/+/逗号/分号/顿号/竖线，中英标点）
+    拆成去重列表，供「批量单号筛选」用。空串返回 []。"""
+    if not raw:
+        return []
+    parts = re.split(r'[\s,+;|，、；／/]+', str(raw).strip())
+    seen, out = set(), []
+    for p in parts:
+        p = p.strip()
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
 def _payments_filtered_qs(request):
     """付款列表「筛选后、未分页」queryset（与列表完全同口径）：部门作用域 + 顶部筛选 +
     列头筛选 + 计算列筛选 + 状态筛选 + 排序。返回 (qs, paid_annotated)。
@@ -1303,6 +1318,14 @@ def _payments_filtered_qs(request):
         qs = qs.filter(installments__pay_date__lte=pay_end).distinct()
     if g7_no:
         qs = qs.filter(g7_number__icontains=g7_no)
+    # 重点付款筛选：priority=1 仅看已标记
+    if request.GET.get('priority') == '1':
+        qs = qs.filter(is_priority=True)
+    # 批量单号筛选：numbers=以逗号分隔的单号集合（前端把任意分隔符归一化后传入），
+    # 命中 G7编号(对账单号) 或 审批编号 任一即保留。
+    nums = _parse_numbers(request.GET.get('numbers', ''))
+    if nums:
+        qs = qs.filter(Q(g7_number__in=nums) | Q(approval_number__in=nums))
     if q:
         qs = qs.filter(
             Q(project_desc__icontains=q) | Q(payee__icontains=q) |
@@ -1988,6 +2011,10 @@ def _approvals_filtered_qs(request):
     已拒绝/已撤销虽为终态（archived=True）但仍需可在审批管理查阅，故不再一刀切按
     archived 隐藏。默认只看待审批/审批通过由前端状态列筛选控制（可清除以查看全部）。"""
     qs = dept_filter(ApprovalRecord.objects.all(), request).exclude(status='approved', archived=True).filter(deleted_at__isnull=True)
+    # 批量单号筛选：命中 G7编号(对账单号) 或 审批编号 任一即保留
+    _nums = _parse_numbers(request.GET.get('numbers', ''))
+    if _nums:
+        qs = qs.filter(Q(g7_number__in=_nums) | Q(approval_number__in=_nums))
     # 全局关键字（跨字段模糊）+ 列头精确筛选（filters JSON）+ 列头排序
     kw = request.GET.get('q', '').strip()
     if kw:
@@ -2612,6 +2639,35 @@ def approval_records_bulk_approve(request):
         approved += 1
     return ok({'approved': approved, 'skipped': skipped,
                'message': f'已审批通过 {approved} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})
+
+
+@csrf_exempt
+@pk_required()
+def payments_mark_priority(request):
+    """重点付款打标/清除。
+    POST { ids:[...], value:true/false }：对所选记录设置/取消重点标记；
+    POST { all:true }：一键清除当前部门作用域内全部重点标记。"""
+    if request.method != 'POST':
+        return err('POST only', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    body = parse_body(request)
+    if body.get('all'):
+        # 一键清除全部标记（作用域内）：.update 高效且不触发 save()，is_priority 不影响 dedup_key
+        n = dept_filter(Payment.objects.filter(deleted_at__isnull=True, is_priority=True), request) \
+            .update(is_priority=False)
+        return ok({'count': n, 'value': False})
+    value = bool(body.get('value', True))
+    ids = [int(i) for i in (body.get('ids') or [])]
+    if not ids:
+        return err('ids 必填或传 all:true')
+    if len(ids) > 1000:
+        return err('单次上限 1000 条')
+    n = dept_filter(Payment.objects.filter(pk__in=ids, deleted_at__isnull=True), request) \
+        .update(is_priority=value)
+    return ok({'count': n, 'value': value})
 
 
 @csrf_exempt

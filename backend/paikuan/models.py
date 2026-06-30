@@ -106,6 +106,8 @@ class Payment(models.Model):
     # 用「普通」唯一约束兜底并发去重——MySQL 不支持条件唯一索引(原 partial 约束被静默
     # 丢弃)，但对一个普通列的唯一索引各库都支持，从而在 DB 层堵住并发双击/重复导入。
     dedup_key = models.CharField('业务去重键', max_length=255, null=True, blank=True)
+    # 重点付款标记：财务标星需重点跟进的付款，列内角标展示、可一键筛选/清除，不占独立列。
+    is_priority = models.BooleanField('重点付款', default=False, db_index=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -218,6 +220,7 @@ class Payment(models.Model):
             'notes': self.notes,
             'plan_adjustment': str(self.plan_adjustment) if self.plan_adjustment is not None else None,
             'g7_number': self.g7_number,
+            'is_priority': self.is_priority,
             'prepaid_offset_amount': str(self.prepaid_offset_amount),
             'total_paid': str(total_paid_val),
             'remaining': str(remaining_val),

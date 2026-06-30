@@ -104,6 +104,23 @@ const schemes = useTableSchemes('pk_approvals', {
 function clearAllFilters() {
   Object.keys(colFilters).forEach(k => delete colFilters[k])
   q.value = ''; sortField.value = ''; sortOrder.value = ''
+  numbersFilter.value = ''; numbersText.value = ''
+  page.value = 1; clearSelection(); load()
+}
+// 批量单号筛选
+const numbersFilter = ref('')
+const showNumbersBox = ref(false)
+const numbersText = ref('')
+const parsedNumbers = computed(() =>
+  [...new Set(numbersText.value.split(/[\s,+;|，、；／/]+/).map(s => s.trim()).filter(Boolean))])
+function applyNumbers() {
+  numbersFilter.value = parsedNumbers.value.join(',')
+  showNumbersBox.value = false
+  page.value = 1; clearSelection(); load()
+}
+function clearNumbers() {
+  numbersText.value = ''; numbersFilter.value = ''
+  showNumbersBox.value = false
   page.value = 1; clearSelection(); load()
 }
 function buildParams() {
@@ -111,6 +128,7 @@ function buildParams() {
   if (q.value.trim()) p.q = q.value.trim()
   if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
   if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
+  if (numbersFilter.value) p.numbers = numbersFilter.value
   return p
 }
 let _qTimer = null
@@ -663,7 +681,25 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <div class="topbar"><h1>审批管理</h1><div class="topbar-tools">
     <input v-model="q" class="global-search" placeholder="🔍 申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
     <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
-    <button v-if="activeFilterCount || q || sortField" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters" title="清除全部列筛选 / 搜索 / 排序">清除筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
+    <div class="numfilter-wrap">
+      <button class="btn btn-ghost btn-sm" :class="{ on: !!numbersFilter }" @click="showNumbersBox = !showNumbersBox"
+              title="粘贴多个单号（空格/换行/+/逗号等任意分隔）批量筛选">
+        🔖 批量单号{{ numbersFilter ? `（${numbersFilter.split(',').length}）` : '' }}
+      </button>
+      <div v-if="showNumbersBox" class="numfilter-pop">
+        <div class="nf-title">粘贴单号批量筛选 <span>G7/对账单号/审批编号，任意分隔符</span></div>
+        <textarea v-model="numbersText" class="nf-area" rows="6"
+                  placeholder="例如：&#10;ZD202606260055 ZD202606260133&#10;单号+单号，逗号、空格、换行都行"></textarea>
+        <div class="nf-foot">
+          <span class="nf-count">识别 {{ parsedNumbers.length }} 个</span>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-sm" @click="clearNumbers">清除</button>
+            <button class="btn btn-sm btn-primary" :disabled="!parsedNumbers.length" @click="applyNumbers">应用筛选</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <button v-if="activeFilterCount || q || sortField || numbersFilter" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters" title="清除全部列筛选 / 搜索 / 排序 / 单号">清除筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
     <SchemePicker :ctl="schemes" :can-public="auth.canCreate" :is-super-admin="auth.isSuperAdmin" />
     <span class="tb-sep"></span>
     <button class="btn btn-ghost btn-sm" @click="downloadTemplate">模板</button>
@@ -970,6 +1006,18 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .topbar-tools .global-search { min-width: 180px; flex: 0 1 240px; height: 30px; }
 .tb-sep { width: 1px; align-self: stretch; min-height: 20px; background: var(--border); margin: 0 2px; }
 .clear-all { color: var(--primary); }
+/* 批量单号筛选弹层 */
+.numfilter-wrap { position: relative; }
+.numfilter-wrap .on { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.07); }
+.numfilter-pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 60; width: 320px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 12px; text-align: left; }
+.nf-title { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+.nf-title span { font-weight: 400; color: var(--muted); font-size: 11px; }
+.nf-area { width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; padding: 8px;
+  font-size: 12.5px; font-family: ui-monospace, Menlo, monospace; resize: vertical; }
+.nf-area:focus { outline: none; border-color: var(--primary); }
+.nf-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
+.nf-count { font-size: 12px; color: var(--muted); }
 /* 列头：字段名完整展示，空间不足时换行成两行（不挤压、不截断），漏斗不裁切 */
 .approval-table thead th {
   overflow: visible; white-space: normal; vertical-align: middle;
