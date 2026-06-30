@@ -101,6 +101,11 @@ class Payment(models.Model):
     deleted_at = models.DateTimeField('软删除时间', null=True, blank=True, db_index=True)
     deleted_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
                                    null=True, blank=True, related_name='deleted_payments')
+    # 业务去重键（派生列）：相同审批单号+部门+收款方+计划日期+计划金额 → 同 key。
+    # 占位/空审批单号 或 已软删 的行取 NULL（NULL 在唯一索引中互不相等，故可并存）。
+    # 用「普通」唯一约束兜底并发去重——MySQL 不支持条件唯一索引(原 partial 约束被静默
+    # 丢弃)，但对一个普通列的唯一索引各库都支持，从而在 DB 层堵住并发双击/重复导入。
+    dedup_key = models.CharField('业务去重键', max_length=255, null=True, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -109,19 +114,33 @@ class Payment(models.Model):
         verbose_name = '排款记录'
         ordering = ['-planned_date', '-created_at']
         constraints = [
-            # 业务唯一键：相同审批单号 + 部门 + 收款方 + 计划日期 + 计划金额
-            # 视为重复排款。仅在 approval_number 非空时生效（占位 21 位 0 不算重复）。
-            # 注意：MySQL 不支持条件唯一约束（partial unique index），Django 在
-            # MySQL 上会静默跳过该约束（已用 SILENCED_SYSTEM_CHECKS=['models.W039']
-            # 抑制 warning）。MySQL 生产下并发去重依赖应用层
-            # _find_duplicate_payment + select_for_update；SQLite/PostgreSQL 走 DB 兜底。
-            models.UniqueConstraint(
-                fields=['department', 'approval_number', 'payee',
-                        'planned_date', 'total_amount'],
-                condition=~models.Q(approval_number=''),
-                name='uniq_payment_business_key',
-            ),
+            # 业务去重唯一约束：普通(无条件)唯一索引，各库均生效（含 MySQL）。
+            # 占位/空审批单号 或 已软删 的行 dedup_key=NULL → 唯一索引中互不相等，可并存。
+            # 取代历史的条件唯一约束（MySQL 静默丢弃 + 仅豁免空串、与应用层「全 0 占位也豁免」
+            # 不一致），消除跨库行为差异。
+            models.UniqueConstraint(fields=['dedup_key'], name='uniq_payment_dedup_key'),
         ]
+
+    def compute_dedup_key(self):
+        """派生业务去重键：占位/空审批单号 或 已软删 → None（豁免唯一约束）。
+        金额按 2 位小数规范化，避免 1000 与 1000.00 被判为不同。"""
+        no = self.approval_number or ''
+        if not no or set(no) == {'0'} or self.deleted_at is not None:
+            return None
+        try:
+            amt = Decimal(str(self.total_amount)).quantize(Decimal('0.01'))
+        except Exception:
+            amt = self.total_amount
+        return '|'.join([self.department or '', no, self.payee or '',
+                         str(self.planned_date or ''), str(amt)])
+
+    def save(self, *args, **kwargs):
+        # 每次保存重算去重键（覆盖创建/编辑/软删/还原全路径）。
+        self.dedup_key = self.compute_dedup_key()
+        uf = kwargs.get('update_fields')
+        if uf is not None and 'dedup_key' not in uf:
+            kwargs['update_fields'] = list(uf) + ['dedup_key']
+        super().save(*args, **kwargs)
 
     @property
     def total_paid(self):

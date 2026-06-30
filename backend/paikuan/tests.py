@@ -2660,3 +2660,45 @@ class InfraHardeningTests(TestCase):
         self.assertEqual(ws2.cell(1, 2).value, "'@x")
         self.assertEqual(ws2.cell(1, 3).value, '正常')
         self.assertEqual(ws2.cell(1, 4).value, 123)
+
+
+class PaymentDedupKeyTests(TestCase):
+    """DB 层业务去重键（dedup_key 普通唯一约束）：MySQL 也能堵并发双击/重复导入。"""
+
+    def _mk(self, **over):
+        from datetime import date as _date
+        f = dict(department='运输事业部', approval_number='7' * 21, payee='供应商',
+                 planned_date=_date(2026, 7, 1), total_amount=Decimal('1000'), project_desc='x')
+        f.update(over)
+        return Payment.objects.create(**f)
+
+    def test_db_unique_blocks_same_business_key(self):
+        from django.db import transaction, IntegrityError
+        self._mk()
+        # 相同业务键再插一条 → DB 唯一约束拦截（绕过应用层 check 的并发场景也挡得住）
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self._mk()
+
+    def test_amount_normalized_in_key(self):
+        from django.db import transaction, IntegrityError
+        self._mk(total_amount=Decimal('1000'))
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self._mk(total_amount=Decimal('1000.00'))   # 1000 == 1000.00 同键
+
+    def test_placeholder_approval_number_allows_duplicates(self):
+        self._mk(approval_number='0' * 21)
+        self._mk(approval_number='0' * 21)   # 占位单号 → dedup_key NULL → 可并存
+        self._mk(approval_number='')
+        self.assertEqual(Payment.objects.filter(dedup_key__isnull=True).count(), 3)
+
+    def test_soft_delete_frees_key_for_recreate(self):
+        from django.utils import timezone
+        p = self._mk()
+        self.assertIsNotNone(Payment.objects.get(pk=p.pk).dedup_key)
+        p.deleted_at = timezone.now()
+        p.save(update_fields=['deleted_at'])
+        self.assertIsNone(Payment.objects.get(pk=p.pk).dedup_key)   # 软删释放键
+        p2 = self._mk()                                             # 同业务键可重建
+        self.assertIsNotNone(p2.dedup_key)

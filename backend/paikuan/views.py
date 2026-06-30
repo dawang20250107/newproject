@@ -4913,12 +4913,20 @@ def trash_payments(request):
                 return err('ids 必填或传 all:true')
             targets = list(qs.filter(pk__in=ids))
         count = 0
+        skipped = []
         for p in targets:
             if action == 'restore':
                 approval_id = p.approval_id
                 p.deleted_at = None
                 p.deleted_by = None
-                p.save(update_fields=['deleted_at', 'deleted_by'])
+                try:
+                    # 还原会重算 dedup_key；若同业务键已有在册记录（删除后又新建过），
+                    # 唯一约束会拦下，给出明确提示而非 500。
+                    with transaction.atomic():
+                        p.save(update_fields=['deleted_at', 'deleted_by'])
+                except IntegrityError:
+                    skipped.append({'id': p.id, 'reason': '相同业务键已有在册排款，无法还原'})
+                    continue
                 _reconcile_approval_schedule(approval_id)
             elif action == 'purge':
                 if p.prepaid_offsets.exists():
@@ -4929,7 +4937,7 @@ def trash_payments(request):
                     p.delete()
                     _reconcile_approval_schedule(approval_id)
             count += 1
-        return ok({'count': count, 'action': action})
+        return ok({'count': count, 'action': action, 'skipped': skipped})
     return err('Method not allowed', 405)
 
 
