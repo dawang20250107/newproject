@@ -76,6 +76,8 @@ PAYMENT_FILTER_REGISTRY = {
     'approval_number':    {'type': 'text',   'col': 'approval_number'},
     'g7_number':          {'type': 'text',   'col': 'g7_number'},
     'project_desc':       {'type': 'text',   'col': 'project_desc'},
+    # 来源审批「摘要」：跨表筛选/排序（前向 FK，无需 distinct）
+    'approval_summary':   {'type': 'text',   'col': 'approval__summary'},
     'payee':              {'type': 'text',   'col': 'payee'},
     'notes':              {'type': 'text',   'col': 'notes'},
     'planned_date':       {'type': 'date',   'col': 'planned_date'},
@@ -115,7 +117,7 @@ PAYMENT_FIELD_DEFS = [
     {'key': 'applicant',       'label': '申请人',        'cols': ['applicant']},
     {'key': 'approval_number', 'label': '审批单号',      'cols': ['approval_number']},
     {'key': 'g7_number',       'label': 'G7编号',        'cols': ['g7_number']},
-    {'key': 'project_desc',    'label': '付款事项',      'cols': ['project_desc']},
+    {'key': 'project_desc',    'label': '付款事项',      'cols': ['project_desc', 'approval_summary']},
     {'key': 'payee',           'label': '收款方',        'cols': ['payee']},
     {'key': 'total_amount',    'label': '计划总金额',    'cols': ['total_amount']},
     {'key': 'planned_date',    'label': '计划付款日期',  'cols': ['planned_date']},
@@ -1294,7 +1296,7 @@ def _payments_filtered_qs(request):
     """付款列表「筛选后、未分页」queryset（与列表完全同口径）：部门作用域 + 顶部筛选 +
     列头筛选 + 计算列筛选 + 状态筛选 + 排序。返回 (qs, paid_annotated)。
     供列表分页、跨页全选取 ID、运输单号复制等共用——保证「看到什么就操作/复制什么」。"""
-    qs = Payment.objects.select_related('created_by').prefetch_related('installments', 'plan_items').filter(deleted_at__isnull=True)
+    qs = Payment.objects.select_related('created_by', 'approval').prefetch_related('installments', 'plan_items').filter(deleted_at__isnull=True)
     qs = dept_filter(qs, request)
 
     dept = request.GET.get('dept', '').strip()
@@ -1792,7 +1794,7 @@ def _create_payment(request):
             f'重复排款：已有相同审批单号/收款方/计划日期/金额的排款记录{ref}',
             409, 409,
         )
-    p_fresh = Payment.objects.prefetch_related('installments', 'plan_items').select_related('created_by').get(id=p.id)
+    p_fresh = Payment.objects.prefetch_related('installments', 'plan_items').select_related('created_by', 'approval').get(id=p.id)
     return ok(p_fresh.to_dict())
 
 
@@ -1814,7 +1816,7 @@ def _editable_payment_payload(data, perms):
 @pk_required()
 def payment_detail(request, pk):
     try:
-        p = Payment.objects.select_related('created_by').prefetch_related('installments', 'plan_items').get(id=pk)
+        p = Payment.objects.select_related('created_by', 'approval').prefetch_related('installments', 'plan_items').get(id=pk)
     except Payment.DoesNotExist:
         return err('记录不存在', 404)
 
@@ -1881,7 +1883,7 @@ def payment_detail(request, pk):
             after_snapshot = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
             after_snapshot['installments_summary'] = _installments_summary(p.installments)
             _record_payment_changes(p, before_snapshot, after_snapshot, request, action='update')
-        p_fresh = Payment.objects.prefetch_related('installments', 'plan_items').select_related('created_by').get(id=p.id)
+        p_fresh = Payment.objects.prefetch_related('installments', 'plan_items').select_related('created_by', 'approval').get(id=p.id)
         return ok(apply_view_mask(p_fresh.to_dict(), perms))
 
     if request.method == 'DELETE':
@@ -3268,7 +3270,7 @@ def dashboard(request):
 
     today_payments = [
         apply_view_mask(p.to_dict(), perms)
-        for p in today_qs.select_related('created_by').prefetch_related('installments', 'plan_items')[:50]
+        for p in today_qs.select_related('created_by', 'approval').prefetch_related('installments', 'plan_items')[:50]
     ]
 
     return ok({
@@ -4185,7 +4187,7 @@ def _payment_export_core(request, export_cap=5000):
     # Determine max installment count across the filtered set for dynamic columns.
     can_view_insts = perms is None or perms['view'].get('installments', True)
     can_view_amounts = perms is None or perms['view'].get('total_amount', True)
-    all_payments = list(qs.prefetch_related('installments', 'plan_items').select_related('created_by'))
+    all_payments = list(qs.prefetch_related('installments', 'plan_items').select_related('created_by', 'approval'))
     if can_view_insts and all_payments:
         max_slots = max((p.installments.count() for p in all_payments), default=0)
     else:
@@ -4955,7 +4957,10 @@ def trash_payments(request):
         except ValueError:
             page, size = 1, 50
         total = qs.count()
-        rows = list(qs.order_by('-deleted_at')[(page-1)*size:page*size])
+        # 序列化需读 approval(摘要)/created_by/deleted_by + 计划/付款明细 → 一次性 join/预取防 N+1
+        rows = list(qs.select_related('created_by', 'approval', 'deleted_by')
+                      .prefetch_related('installments', 'plan_items')
+                      .order_by('-deleted_at')[(page-1)*size:page*size])
         return ok({'total': total, 'items': [
             {**p.to_dict(), 'deleted_at': p.deleted_at.isoformat() if p.deleted_at else None,
              'deleted_by_name': p.deleted_by.name if p.deleted_by else None}

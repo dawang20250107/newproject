@@ -204,6 +204,9 @@ class Payment(models.Model):
             'secondary_dept': self.secondary_dept,
             'project_short_name': self.project_short_name,
             'project_desc': self.project_desc,
+            # 来源审批的「摘要」实时值（非快照）：付款管理直接体现审批摘要，审批侧修改即时反映。
+            # 手工/导入的无审批付款则为空串。需配 select_related('approval') 防 N+1。
+            'approval_summary': (self.approval.summary if self.approval else ''),
             'payee': self.payee,
             'total_amount': str(self.total_amount),
             'planned_date': str(self.planned_date) if self.planned_date else None,

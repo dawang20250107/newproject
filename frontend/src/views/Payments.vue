@@ -44,6 +44,7 @@ const COL_DEFS = [
   { key: 'approval_number',    label: '审批单号', perm: () => auth.canView('approval_number') },
   { key: 'g7_number',          label: 'G7编号',   perm: () => true },
   { key: 'project_desc',       label: '付款事项', perm: () => auth.canView('project_desc') },
+  { key: 'approval_summary',   label: '摘要',     perm: () => auth.canView('project_desc') },
   { key: 'payee',              label: '收款方',   perm: () => auth.canView('payee') },
   { key: 'planned_date',       label: '计划日期', perm: () => auth.canView('planned_date') },
   { key: 'total_amount',       label: '计划额',   perm: () => auth.canView('total_amount') },
@@ -181,6 +182,7 @@ const cw = useColWidths('pk_payments', {
   project_desc: 200, payee: 130, department: 70, secondary_dept: 80,
   project_short_name: 100, applicant: 70, approval_number: 110, g7_number: 110,
   planned_date: 90, total_amount: 90, paid: 90, remaining: 90, status: 100, notes: 140,
+  approval_summary: 160,
 })
 
 // ── Excel 风格列头筛选 + 排序 ───────────────────────────────────────────────
@@ -1093,6 +1095,7 @@ async function doBatchPay() {
               <th v-if="colVisible('approval_number')" style="width:8%"><ColumnFilter label="审批单号" field="approval_number" type="text" :model-value="colFilters.approval_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('approval_number',v)" @sort="o=>setSort('approval_number',o)" /></th>
               <th v-if="colVisible('g7_number')" style="width:8%"><ColumnFilter label="G7编号" field="g7_number" type="text" :model-value="colFilters.g7_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('g7_number',v)" @sort="o=>setSort('g7_number',o)" /></th>
               <th v-if="colVisible('project_desc')"><ColumnFilter label="付款事项" field="project_desc" type="text" :model-value="colFilters.project_desc" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_desc',v)" @sort="o=>setSort('project_desc',o)" /></th>
+              <th v-if="colVisible('approval_summary')" :style="cw.thStyle('approval_summary')"><ColumnFilter label="摘要" field="approval_summary" type="text" :model-value="colFilters.approval_summary" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('approval_summary',v)" @sort="o=>setSort('approval_summary',o)" /></th>
               <th v-if="colVisible('payee')" style="width:8%"><ColumnFilter label="收款方" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
               <th v-if="colVisible('planned_date')" style="width:6%"><ColumnFilter label="计划日期" field="planned_date" type="date" :model-value="colFilters.planned_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('planned_date',v)" @sort="o=>setSort('planned_date',o)" /></th>
               <th v-if="colVisible('total_amount')" style="width:8%"><ColumnFilter label="计划额" field="total_amount" type="number" :model-value="colFilters.total_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('total_amount',v)" @sort="o=>setSort('total_amount',o)" /></th>
@@ -1123,6 +1126,8 @@ async function doBatchPay() {
                 @mouseenter="showTip($event, p.project_desc)" @mousemove="moveTip" @mouseleave="hideTip">
                 <span v-if="p.project_no" class="proj-no">{{ p.project_no }}</span>{{ p.project_desc }}
               </td>
+              <td v-if="colVisible('approval_summary')" class="cell-clip"
+                @mouseenter="showTip($event, p.approval_summary)" @mousemove="moveTip" @mouseleave="hideTip">{{ p.approval_summary || '—' }}</td>
               <td v-if="colVisible('payee')" class="cell-clip cell-payee"
                 @mouseenter="showTip($event, p.payee)" @mousemove="moveTip" @mouseleave="hideTip">
                 {{ p.payee }}
