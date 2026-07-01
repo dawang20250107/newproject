@@ -701,7 +701,7 @@ def analytics_project_pnl(request):
         if proj.project_no:
             cond |= Q(project_no=proj.project_no)
         if cond:
-            pq = Payment.objects.filter(cond)
+            pq = Payment.objects.filter(cond, deleted_at__isnull=True)
             if request.pk_role != 'super_admin':
                 pq = pq.filter(department__in=(request.pk_depts or []))
             agg = pq.annotate(paid_sum=_paid_subq()).aggregate(
@@ -823,7 +823,8 @@ def analytics_project_cashflow(request):
 
     # 区间内付款（流出）：PaymentInstallment 按维度键聚合
     outflow_by_key = {}
-    pi_base = PaymentInstallment.objects.filter(pay_date__gte=date_start, pay_date__lte=date_end)
+    pi_base = PaymentInstallment.objects.filter(pay_date__gte=date_start, pay_date__lte=date_end,
+                                                payment__deleted_at__isnull=True)
     if request.pk_role != 'super_admin':
         pi_base = pi_base.filter(payment__department__in=(request.pk_depts or []))
     if dept:

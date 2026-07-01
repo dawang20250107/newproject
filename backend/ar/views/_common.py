@@ -60,14 +60,17 @@ def cash_flow_window(depts, start, end):
             .filter(ar_record__delivery_dept__in=depts, payment_date__gte=start, payment_date__lte=end)
             .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
             .aggregate(x=Sum('amount'))['x'] or Decimal('0'))
+    # 排除已软删除的付款台账（回收站）：删除的付款不构成现金流出
     paid = (PaymentInstallment.objects
-            .filter(payment__department__in=depts, pay_date__gte=start, pay_date__lte=end)
+            .filter(payment__department__in=depts, pay_date__gte=start, pay_date__lte=end,
+                    payment__deleted_at__isnull=True)
             .aggregate(x=Sum('pay_amount'))['x'] or Decimal('0'))
     # 预付核销冲抵：按首个实付日期（否则计划付款日）归期，从实付中扣除
     earliest = Subquery(PaymentInstallment.objects.filter(payment_id=OuterRef('pk'))
                         .order_by('pay_date').values('pay_date')[:1])
     offset = (Payment.objects
-              .filter(department__in=depts, prepaid_offset_amount__gt=0)
+              .filter(department__in=depts, prepaid_offset_amount__gt=0,
+                      deleted_at__isnull=True)
               .annotate(fp=earliest)
               .annotate(ad=Coalesce('fp', 'planned_date'))
               .filter(ad__gte=start, ad__lte=end)

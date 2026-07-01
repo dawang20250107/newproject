@@ -240,7 +240,8 @@ def _collection_actual(depts_q, s, e):
 
 def _payment_actual(depts_q, s, e):
     return (PaymentInstallment.objects
-            .filter(payment__department__in=depts_q, pay_date__gte=s, pay_date__lte=e)
+            .filter(payment__department__in=depts_q, pay_date__gte=s, pay_date__lte=e,
+                    payment__deleted_at__isnull=True)
             .aggregate(x=Sum('pay_amount'))['x'] or Decimal('0'))
 
 

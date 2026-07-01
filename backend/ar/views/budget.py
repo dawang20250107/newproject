@@ -628,7 +628,8 @@ def budget_summary(request):
     # Actual AP payments (from installments subtable)
     ap_total = (PaymentInstallment.objects
                 .filter(pay_date__range=(start_date, end_date),
-                        payment__department__in=depts)
+                        payment__department__in=depts,
+                        payment__deleted_at__isnull=True)
                 .aggregate(total=Sum('pay_amount'))['total'] or Decimal('0'))
 
     budget_coll = bc['total'] or Decimal('0')
@@ -650,7 +651,8 @@ def budget_summary(request):
                 payment_date__range=(start_date, end_date), ar_record__delivery_dept=d
             ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
             ap_d = (PaymentInstallment.objects
-                    .filter(pay_date__range=(start_date, end_date), payment__department=d)
+                    .filter(pay_date__range=(start_date, end_date), payment__department=d,
+                            payment__deleted_at__isnull=True)
                     .aggregate(total=Sum('pay_amount'))['total'] or Decimal('0'))
             by_dept_result.append({
                 'dept': d,
@@ -752,7 +754,8 @@ def budget_project_compare(request):
     # 实际付款：排款实付分期经 项目简称
     for g in (PaymentInstallment.objects
               .filter(pay_date__range=(start_date, end_date),
-                      payment__department__in=depts)
+                      payment__department__in=depts,
+                      payment__deleted_at__isnull=True)
               .exclude(payment__project_short_name='')
               .values('payment__project_short_name').annotate(s=Sum('pay_amount'))):
         _row(g['payment__project_short_name'])['actual_out'] += g['s'] or Decimal('0')
