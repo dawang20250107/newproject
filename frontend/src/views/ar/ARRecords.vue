@@ -205,6 +205,7 @@ const ctxItems = computed(() => {
 const COL_VIS_DEFS = [
   { key: 'r_estimated_amount', label: '预估金额' },
   { key: 'r_actual_invoice_amount', label: '实际开票' },
+  { key: 'r_actual_receivable', label: '实际应收' },
   { key: 'r_tax_amount', label: '税额' },
   { key: 'r_account_diff', label: '账实差额' },
   { key: 'r_outstanding', label: '未收金额' },
@@ -216,8 +217,21 @@ const COL_VIS_DEFS = [
   { key: 'r_notes', label: '备注' },
 ]
 const showColPanel = ref(false)
+// 业务默认列可见性：全部明细默认隐藏「税额」列。一次性应用（合并进已有偏好，不清除
+// 用户其它选择）；用户之后手动显示税额则保留其选择，不再被默认覆盖。
+const AR_COL_DEFAULTS_VER = '1'
 function _loadHiddenCols() {
-  try { return new Set(JSON.parse(localStorage.getItem('ar_hidden_cols') || '[]')) } catch { return new Set() }
+  let stored = null
+  try { stored = JSON.parse(localStorage.getItem('ar_hidden_cols') || 'null') } catch { stored = null }
+  const s = new Set(Array.isArray(stored) ? stored : [])
+  if (localStorage.getItem('ar_hidden_defaults_ver') !== AR_COL_DEFAULTS_VER) {
+    s.add('r_tax_amount')
+    try {
+      localStorage.setItem('ar_hidden_cols', JSON.stringify([...s]))
+      localStorage.setItem('ar_hidden_defaults_ver', AR_COL_DEFAULTS_VER)
+    } catch (_) { /* localStorage 不可用时仅本次会话生效 */ }
+  }
+  return s
 }
 const hiddenCols = ref(_loadHiddenCols())
 function toggleColVis(key) {
@@ -720,6 +734,15 @@ const groupLoading = ref(false)
 const fmtAmt = (v) => fmtCompact(v, { dash: '0.00' })
 // 表格内金额：精确数值、千分位、不带单位（KPI 指标条仍用 fmtAmt 带单位）
 const fmtCell = (v) => fmtMoney(v, '—')
+
+// 开票金额 ≠ 实际应收(预估+账实差额) 的提醒文案。已备注则视为已说明原因（图标降级）。
+function invMismatchTip(rec) {
+  const inv = fmtMoney(rec.actual_invoice_amount)
+  const recv = fmtMoney(rec.actual_receivable)
+  const diff = fmtMoney(Math.abs(parseFloat(rec.actual_invoice_amount || 0) - parseFloat(rec.actual_receivable || 0)))
+  const base = `已开票 ${inv}，与实际应收 ${recv} 不一致（差 ${diff}）。\n请调整「账实差额」使二者相等，或在「备注」中说明原因。`
+  return rec.notes ? `${base}\n已备注：${rec.notes}` : base
+}
 
 // ── 分页跳转 ────────────────────────────────────────────────────────────────
 const jumpPage = ref(1)
@@ -1780,6 +1803,7 @@ function clearFilters() {
               <template v-if="activeTab === 'all'">
                 <th v-if="show('r_estimated_amount')" class="amt"><ColumnFilter label="预估金额" field="estimated_amount" type="number" :model-value="colFilters.estimated_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('estimated_amount',v)" @sort="o=>setSort('estimated_amount',o)" /></th>
                 <th v-if="show('r_actual_invoice_amount')" class="amt"><ColumnFilter label="实际开票" field="actual_invoice_amount" type="number" :model-value="colFilters.actual_invoice_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('actual_invoice_amount',v)" @sort="o=>setSort('actual_invoice_amount',o)" /></th>
+                <th v-if="show('r_actual_receivable')" class="amt" title="实际应收 = 预估金额 + 账实差额；已开票且与开票金额不一致会提醒">实际应收</th>
                 <th v-if="show('r_tax_amount')" class="amt"><ColumnFilter label="税额" field="tax_amount" type="number" :model-value="colFilters.tax_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('tax_amount',v)" @sort="o=>setSort('tax_amount',o)" /></th>
                 <th v-if="show('r_account_diff')" class="amt"><ColumnFilter label="账实差额" field="account_diff_adjustment" type="number" :model-value="colFilters.account_diff_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('account_diff_adjustment',v)" @sort="o=>setSort('account_diff_adjustment',o)" /></th>
                 <th v-if="show('r_outstanding')" class="amt"><ColumnFilter label="未收金额" field="outstanding_amount" type="number" :model-value="colFilters.outstanding_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('outstanding_amount',v)" @sort="o=>setSort('outstanding_amount',o)" /></th>
@@ -1862,6 +1886,10 @@ function clearFilters() {
                 <template v-if="activeTab === 'all'">
                   <td v-if="show('r_estimated_amount')" class="amt fw">{{ fmtCell(rec.estimated_amount) }}</td>
                   <td v-if="show('r_actual_invoice_amount')" class="amt">{{ rec.actual_invoice_amount ? fmtCell(rec.actual_invoice_amount) : '—' }}</td>
+                  <td v-if="show('r_actual_receivable')" class="amt">
+                    {{ fmtCell(rec.actual_receivable) }}
+                    <span v-if="rec.invoice_mismatch" class="inv-warn" :class="rec.notes ? 'noted' : 'todo'" :title="invMismatchTip(rec)">{{ rec.notes ? '📝' : '⚠' }}</span>
+                  </td>
                   <td v-if="show('r_tax_amount')" class="amt text-muted">{{ rec.tax_amount ? fmtCell(rec.tax_amount) : '—' }}</td>
                   <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtCell(rec.account_diff_adjustment) : '—' }}</td>
                   <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
@@ -3202,6 +3230,10 @@ function clearFilters() {
 .amt-warn { color: #e65100; font-weight: 700; }
 .amt-ok { color: #2e7d32; font-weight: 700; }
 .amt-zero { color: var(--muted); }
+/* 开票金额 ≠ 实际应收 提醒角标：未备注=待处理(红)，已备注=已说明(灰) */
+.inv-warn { margin-left: 3px; cursor: help; font-size: 11px; line-height: 1; vertical-align: middle; }
+.inv-warn.todo { filter: none; }
+.inv-warn.noted { opacity: .55; }
 .mode-tag { font-size: 11.5px; padding: 2px 8px; border-radius: 8px; background: rgba(0,0,0,0.05); color: var(--muted); font-weight: 500; }
 
 /* Status pills */

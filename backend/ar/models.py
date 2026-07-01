@@ -643,6 +643,14 @@ class ARRecord(models.Model):
             'tax_amount': str(self.tax_amount) if self.tax_amount is not None else None,
             'invoice_date': str(self.invoice_date) if self.invoice_date else None,
             'account_diff_adjustment': str(self.account_diff_adjustment),
+            # 实际应收 = 预估金额 + 账实差额（应开票的目标金额）
+            'actual_receivable': str((self.estimated_amount or Decimal('0'))
+                                     + (self.account_diff_adjustment or Decimal('0'))),
+            # 已开票且开票金额 ≠ 实际应收 → 提醒（调整账实差额或备注原因）；未开票不提醒
+            'invoice_mismatch': (self.actual_invoice_amount is not None
+                                 and self.actual_invoice_amount
+                                 != (self.estimated_amount or Decimal('0'))
+                                 + (self.account_diff_adjustment or Decimal('0'))),
             'outstanding_amount': str(self.outstanding_amount),
             'due_date': str(self.due_date) if self.due_date else None,
             'target_collection_date': str(self.target_collection_date) if self.target_collection_date else None,

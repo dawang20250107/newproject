@@ -104,6 +104,30 @@ class ARPermissionRegressionTests(TestCase):
         wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=True)
         return [cell.value for cell in wb.active[1]]
 
+    def test_actual_receivable_and_invoice_mismatch(self):
+        proj = self.create_project()
+        # 实际应收 = 预估 + 账实差额；已开票且 ≠ 实际应收 → invoice_mismatch=True
+        r = ARRecord.objects.create(
+            project=proj, operation_year=2026, operation_month=5,
+            estimated_amount=Decimal('1000.00'),
+            account_diff_adjustment=Decimal('60.00'),
+            actual_invoice_amount=Decimal('1000.00'),   # 开票1000 ≠ 实际应收1060
+            invoice_date=date(2026, 5, 31))
+        d = r.to_dict()
+        self.assertEqual(d['actual_receivable'], '1060.00')
+        self.assertTrue(d['invoice_mismatch'])
+        # 开票金额等于实际应收 → 不提醒
+        r.actual_invoice_amount = Decimal('1060.00')
+        r.save()
+        self.assertFalse(r.to_dict()['invoice_mismatch'])
+        # 未开票 → 即使预估≠账面也不提醒；实际应收照常计算
+        r2 = ARRecord.objects.create(
+            project=proj, operation_year=2026, operation_month=6,
+            estimated_amount=Decimal('500.00'), account_diff_adjustment=Decimal('0.00'))
+        self.assertIsNone(r2.actual_invoice_amount)
+        self.assertFalse(r2.to_dict()['invoice_mismatch'])
+        self.assertEqual(r2.to_dict()['actual_receivable'], '500.00')
+
     def test_project_post_invoice_days_update_persists(self):
         """票后等待期(post_invoice_days)编辑后应真正落库——回归 settlement_wait_days
         旧列名残留导致 _ar_visible_payload 把该字段从 PUT 载荷里剥掉的问题。"""
