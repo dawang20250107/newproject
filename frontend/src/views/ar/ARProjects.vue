@@ -16,6 +16,7 @@ import { useTableSchemes } from '../../composables/useTableSchemes.js'
 import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
+import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 
 const toast = useToast()
@@ -113,6 +114,8 @@ function toggleRow(id) {
   if (s.has(id)) { s.delete(id); selectAllMatching.value = false } else s.add(id)
   selectedIds.value = s
 }
+// Excel 式 Shift 区间勾选（系统级复用）
+const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow, onManual: () => { selectAllMatching.value = false } })
 function toggleSelectPage() {
   const s = new Set(selectedIds.value)
   if (pageAllSelected.value) { items.value.forEach(r => s.delete(r.id)); selectAllMatching.value = false }
@@ -662,13 +665,13 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             <tr v-else-if="!items.length">
               <td colspan="16" class="empty-cell"><div class="empty-inner">暂无项目数据，点击「新增项目」开始</div></td>
             </tr>
-            <tr v-for="item in items" :key="item.id" class="data-row"
+            <tr v-for="(item, idx) in items" :key="item.id" class="data-row"
               :class="{ 'row-sel': selectAllMatching || selectedIds.has(item.id) }"
               @dblclick="onRowDblClick(item, $event)"
               @contextmenu.prevent="ctx.open($event, item)">
               <td v-if="auth.canDelete" class="ctr sel-col">
                 <input type="checkbox" :checked="selectAllMatching || selectedIds.has(item.id)"
-                  @change="toggleRow(item.id)" />
+                  @click.prevent.stop="onRowSelClick($event, idx, item.id)" title="按住 Shift 点击可区间勾选" />
               </td>
               <td v-if="showProjectNo || colFilters.project_no">
                 <span class="proj-no-tag">{{ item.project_no }}</span>

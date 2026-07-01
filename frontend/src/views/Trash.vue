@@ -4,6 +4,7 @@ import api from '../api/index.js'
 import { cachedGet } from '../api/refCache.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useToast } from '../composables/useToast.js'
+import { useShiftSelect } from '../composables/useShiftSelect.js'
 
 const auth = useAuthStore()
 const toast = useToast()
@@ -71,6 +72,8 @@ function selectAllAcross() {
   selectedIds.value = new Set(items.value.map(i => i.id))  // 视觉上本页也勾上
 }
 function clearSelection() { allAcross.value = false; selectedIds.value = new Set() }
+// Excel 式 Shift 区间勾选（系统级复用）；区间选择也退出「跨页全选」态
+const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleSel, onManual: () => { allAcross.value = false } })
 
 const busy = ref(false)
 async function doAction(action) {
@@ -86,7 +89,21 @@ async function doAction(action) {
     const n = r.data.count
     const skipped = r.data.skipped || []
     if (n) toast.success(`已${label} ${n} 条` + (allAcross.value && total.value > n ? `（单次上限 ${SELECT_ALL_CAP}，剩余请再次操作）` : ''))
-    // 有跳过（如审批仍关联付款不能彻底删除）→ 明确提示原因，避免「删不掉/又回来」的困惑
+    // 审批彻底删除被关联付款拦下 → 交给用户决定是否级联删除（明确提示，不可撤销）
+    const cascadable = (action === 'purge' && activeTab.value === 'approvals')
+      ? skipped.filter(s => s.linked_payments > 0) : []
+    if (cascadable.length) {
+      const totalPay = cascadable.reduce((a, s) => a + (s.linked_payments || 0), 0)
+      if (confirm(`${cascadable.length} 条审批仍关联 ${totalPay} 笔付款，无法单独彻底删除。\n\n是否【连同这些关联付款（含付款流水）一并彻底删除】？此操作不可撤销。`)) {
+        const r2 = await api.post(`/trash/${activeTab.value}`,
+          { action: 'purge', ids: cascadable.map(s => s.id), cascade: true }, cfg)
+        const n2 = r2.data.count, sk2 = r2.data.skipped || []
+        if (n2) toast.success(`已连同关联付款彻底删除 ${n2} 条审批`)
+        if (sk2.length) toast.warn(`${sk2.length} 条仍未删除：${sk2[0].reason}`)
+        load()
+        return
+      }
+    }
     if (skipped.length) {
       toast.warn(`${skipped.length} 条未${label}：${skipped[0].reason}${skipped.length > 1 ? ' 等' : ''}`)
     } else if (!n) {
@@ -173,8 +190,8 @@ function fmtDate(s) {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="it in items" :key="it.id" :class="{ 'row-sel': selectedIds.has(it.id) }" @click="toggleSel(it.id)" style="cursor:pointer">
-              <td class="sel-col" @click.stop><input type="checkbox" :checked="selectedIds.has(it.id)" @change="toggleSel(it.id)"/></td>
+            <tr v-for="(it, idx) in items" :key="it.id" :class="{ 'row-sel': selectedIds.has(it.id) }" @click="onRowSelClick($event, idx, it.id)" style="cursor:pointer" title="按住 Shift 点击可区间勾选">
+              <td class="sel-col" @click.stop><input type="checkbox" :checked="selectedIds.has(it.id)" @click.prevent.stop="onRowSelClick($event, idx, it.id)"/></td>
               <td v-if="activeTab === 'approvals'">{{ it.applicant }}</td>
               <td>{{ it.department }}</td>
               <td v-if="activeTab === 'approvals'">{{ it.approval_number }}</td>

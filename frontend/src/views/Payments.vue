@@ -16,6 +16,7 @@ import SkeletonRow from '../components/SkeletonRow.vue'
 import SchemePicker from '../components/SchemePicker.vue'
 import { useTableSchemes } from '../composables/useTableSchemes.js'
 import { useColWidths } from '../composables/useColWidths.js'
+import { useShiftSelect } from '../composables/useShiftSelect.js'
 import ContextMenu from '../components/ContextMenu.vue'
 import { useContextMenu } from '../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../utils/clipboard.js'
@@ -832,21 +833,8 @@ const pageAllSelected = computed(() => items.value.length > 0 && items.value.eve
 const selectedCount = computed(() => selectedIds.value.size)
 const hasSelection = computed(() => selectedIds.value.size > 0)
 function toggleRow(id) { const s = new Set(selectedIds.value); s.has(id) ? s.delete(id) : s.add(id); selectedIds.value = s }
-// Excel 式区间勾选：按住 Shift 点击 → 从上次勾选行到当前行整段一并勾选（以当前行的
-// 勾/取消状态为准填充整段）。普通点击照旧单选切换，并记住锚点。
-let lastSelIdx = null
-function onRowSelClick(e, idx, id) {
-  if (e.shiftKey && lastSelIdx !== null && lastSelIdx < items.value.length) {
-    const a = Math.min(lastSelIdx, idx), b = Math.max(lastSelIdx, idx)
-    const turnOn = !selectedIds.value.has(id)   // 目标状态：锚点后当前行若未选则整段选中，否则整段取消
-    const s = new Set(selectedIds.value)
-    for (let i = a; i <= b; i++) { const rid = items.value[i]?.id; if (rid == null) continue; turnOn ? s.add(rid) : s.delete(rid) }
-    selectedIds.value = s
-  } else {
-    toggleRow(id)
-  }
-  lastSelIdx = idx
-}
+// Excel 式 Shift 区间勾选（系统级复用）
+const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow })
 function toggleSelectPage() { const s = new Set(selectedIds.value); if (pageAllSelected.value) items.value.forEach(p => s.delete(p.id)); else items.value.forEach(p => s.add(p.id)); selectedIds.value = s }
 function clearSelection() { selectedIds.value = new Set() }
 // 批量付款只统计「有剩余应付」的记录（默认付款金额=剩余应付=计划金额）

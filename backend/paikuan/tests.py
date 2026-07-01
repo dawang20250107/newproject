@@ -1422,6 +1422,23 @@ class BulkOpsTests(TestCase):
         self.assertEqual(r2['count'], 1)
         self.assertFalse(ApprovalRecord.objects.filter(id=a.id).exists())
 
+    def test_purge_approval_cascade_deletes_linked_payments(self):
+        # 级联彻底删除（用户显式 cascade=true）：连同关联付款(含分期)一并彻底删除
+        a = self._mk_approval(8, '1000')
+        self._post(f'/api/pk/approvals/{a.id}/schedule',
+                   {'planned_date': '2026-07-01', 'total_amount': '1000'})
+        p = Payment.objects.get(approval=a)
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 7, 2),
+                                          pay_amount=Decimal('500'))
+        self._post('/api/pk/payments/bulk-delete', {'ids': [p.id]})
+        self._post('/api/pk/approvals/bulk-delete', {'ids': [a.id]})
+        r = self._post('/api/pk/trash/approvals',
+                       {'action': 'purge', 'ids': [a.id], 'cascade': True}).json()['data']
+        self.assertEqual(r['count'], 1)
+        self.assertFalse(ApprovalRecord.objects.filter(id=a.id).exists())
+        self.assertFalse(Payment.objects.filter(id=p.id).exists())          # 关联付款一并删除
+        self.assertFalse(PaymentInstallment.objects.filter(payment_id=p.id).exists())  # 分期级联删除
+
     def test_trash_requires_ids_or_all(self):
         resp = self._post('/api/pk/trash/approvals', {'action': 'restore'})
         self.assertEqual(resp.status_code, 400)

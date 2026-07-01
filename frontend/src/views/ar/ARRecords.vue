@@ -16,6 +16,7 @@ import SkeletonRow from '../../components/SkeletonRow.vue'
 import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
+import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 // 重型抽屉/弹窗按需加载：仅打开活动抽屉 / 导入预检时才拉取其代码块，
 // 大幅瘦身应收明细主路由块（ActivityPanel 单文件 1.7k 行）。
@@ -85,6 +86,8 @@ function toggleRow(id) {
   if (s.has(id)) { s.delete(id); selectAllMatching.value = false } else s.add(id)
   selectedIds.value = s
 }
+// Excel 式 Shift 区间勾选（系统级复用）；区间选择也退出「跨页全选」态
+const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow, onManual: () => { selectAllMatching.value = false } })
 function toggleSelectPage() {
   const s = new Set(selectedIds.value)
   if (pageAllSelected.value) { items.value.forEach(r => s.delete(r.id)); selectAllMatching.value = false }
@@ -1884,11 +1887,11 @@ function clearFilters() {
                 <template v-else>暂无数据</template>
               </td>
             </tr>
-            <template v-for="rec in items" :key="rec.id">
+            <template v-for="(rec, idx) in items" :key="rec.id">
               <tr :class="['data-row', agingRowClass(rec), (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']"
                 @contextmenu.prevent="ctx.open($event, rec)" @dblclick="onRowDblClick(rec, $event)">
                 <td v-if="auth.canDelete" class="sel-col sticky-col">
-                  <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @change="toggleRow(rec.id)" />
+                  <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @click.prevent.stop="onRowSelClick($event, idx, rec.id)" title="按住 Shift 点击可区间勾选" />
                 </td>
                 <td class="sticky-col" :style="cw.thStyle('short_name')">
                   <div class="proj-name" :title="rec.short_name || rec.customer_name">

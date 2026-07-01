@@ -4971,6 +4971,7 @@ def trash_approvals(request):
             if not ids:
                 return err('ids 必填或传 all:true')
             targets = list(qs.filter(pk__in=ids))
+        cascade = bool(body.get('cascade'))  # 彻底删审批时是否连同关联付款一并删除（用户显式确认）
         count = 0
         skipped = []
         for rec in targets:
@@ -4979,17 +4980,30 @@ def trash_approvals(request):
                 rec.deleted_by = None
                 rec.save(update_fields=['deleted_at', 'deleted_by'])
             elif action == 'purge':
-                # 有关联付款则不能彻底删除审批（否则会遗留孤儿付款/流水）。
-                # 明确给出跳过原因，杜绝「静默跳过 → 记录看似删不掉/又回来」的困惑。
-                n_total = rec.payments.count()
-                if n_total:
+                # 有关联付款默认不能彻底删除审批（否则遗留孤儿付款/流水），明确给出跳过
+                # 原因，杜绝「静默跳过 → 看似删不掉/又回来」。cascade=true 时由用户显式确认
+                # 连同关联付款一并彻底删除。
+                pays = list(rec.payments.all())
+                if pays and not cascade:
                     n_active = rec.payments.filter(deleted_at__isnull=True).count()
                     reason = (f'尚有 {n_active} 笔在册付款关联，请先在付款管理删除后再彻底删除'
                               if n_active else
-                              f'尚有 {n_total} 笔关联付款在回收站，请先到付款管理回收站彻底删除')
-                    skipped.append({'id': rec.id, 'reason': reason})
+                              f'尚有 {len(pays)} 笔关联付款在回收站，请先到付款管理回收站彻底删除')
+                    skipped.append({'id': rec.id, 'reason': reason, 'linked_payments': len(pays)})
                     continue
-                rec.delete()
+                if pays:  # cascade：连同关联付款(含分期)一并删除；有预收核销的付款须先撤销核销
+                    if any(p.prepaid_offsets.exists() for p in pays):
+                        skipped.append({'id': rec.id,
+                                        'reason': '关联付款存在预收核销，请先在预收预付撤销核销后再删除',
+                                        'linked_payments': len(pays)})
+                        continue
+                    with transaction.atomic():
+                        for p in pays:
+                            _record_payment_changes(p, {}, {}, request, action='delete')
+                            p.delete()   # 级联删分期
+                        rec.delete()
+                else:
+                    rec.delete()
             count += 1
         return ok({'count': count, 'action': action, 'skipped': skipped})
     return err('Method not allowed', 405)

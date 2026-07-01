@@ -20,6 +20,7 @@ import { useTableSchemes } from '../composables/useTableSchemes.js'
 import { useToast } from '../composables/useToast.js'
 import { useAsyncExport } from '../composables/useAsyncExport.js'
 import { useRangeSelection } from '../composables/useRangeSelection.js'
+import { useShiftSelect } from '../composables/useShiftSelect.js'
 import { createRequestLane } from '../utils/requestLane.js'
 import { cachedGet } from '../api/refCache.js'
 const toast = useToast()
@@ -243,20 +244,8 @@ const pageAllSelected = computed(() => items.value.length > 0 && items.value.eve
 const selectedCount = computed(() => selectedIds.value.size)
 const hasSelection = computed(() => selectedIds.value.size > 0)
 function toggleRow(id){ const s = new Set(selectedIds.value); s.has(id) ? s.delete(id) : s.add(id); selectedIds.value = s }
-// Excel 式区间勾选：按住 Shift 点击 → 从上次勾选行到当前行整段一并勾选/取消。
-let lastSelIdx = null
-function onRowSelClick(e, idx, id){
-  if (e.shiftKey && lastSelIdx !== null && lastSelIdx < items.value.length) {
-    const a = Math.min(lastSelIdx, idx), b = Math.max(lastSelIdx, idx)
-    const turnOn = !selectedIds.value.has(id)
-    const s = new Set(selectedIds.value)
-    for (let i = a; i <= b; i++) { const rid = items.value[i]?.id; if (rid == null) continue; turnOn ? s.add(rid) : s.delete(rid) }
-    selectedIds.value = s
-  } else {
-    toggleRow(id)
-  }
-  lastSelIdx = idx
-}
+// Excel 式 Shift 区间勾选（系统级复用）
+const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow })
 function toggleSelectPage(){ const s = new Set(selectedIds.value); if (pageAllSelected.value) items.value.forEach(r => s.delete(r.id)); else items.value.forEach(r => s.add(r.id)); selectedIds.value = s }
 function clearSelection(){ selectedIds.value = new Set() }
 // 仅「待审批」可批量通过；汇总只统计可审批记录
