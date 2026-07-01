@@ -163,7 +163,7 @@ const outstandingTotal = ref('0')
 const outstandingCount = ref(0)
 const plannedTotal = ref('0')
 const paidTotal = ref('0')
-const loading = ref(false)
+const loading = ref(true)   // 挂载即进入加载态：直接显示骨架屏，避免方案/数据拉取期间闪现空状态
 const departments = ref([])
 const showModal = ref(false)
 const editItem = ref(null)
@@ -596,9 +596,12 @@ const onScopeChange = () => {
 }
 onMounted(async () => {
   loadDepts()
-  // 有默认方案则套用并由其触发加载；否则常规加载
-  const applied = await schemes.loadAndApplyDefault()
-  if (!applied) load()
+  // 有默认方案则套用并由其 onApply 触发加载；否则常规加载。
+  // 方案接口异常也要兜底加载数据，避免卡在骨架屏（loading 初始为 true）。
+  try {
+    const applied = await schemes.loadAndApplyDefault()
+    if (!applied) load()
+  } catch { load() }
   window.addEventListener('pk:depts-changed', onScopeChange)
 })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
@@ -1079,7 +1082,6 @@ async function doBatchPay() {
       </div>
 
       <EmptyState v-if="loadErr" :error="loadErr" />
-      <EmptyState v-else-if="!loading && !items.length" :variant="activeFilterCount ? 'search' : 'empty'" :text="activeFilterCount ? '没有符合当前筛选条件的付款记录' : '暂无付款记录'" />
 
       <div v-if="!loadErr" class="table-wrap pk-pay-tbl page-scroll" :ref="rangeSel.setRoot">
         <table>
@@ -1108,6 +1110,11 @@ async function doBatchPay() {
             <template v-if="loading">
               <SkeletonRow v-for="n in 8" :key="n" :cols="10" />
             </template>
+            <tr v-else-if="!items.length" class="empty-row">
+              <td :colspan="99" class="empty-cell">
+                <EmptyState :variant="activeFilterCount ? 'search' : 'empty'" :text="activeFilterCount ? '没有符合当前筛选条件的付款记录' : '暂无付款记录'" />
+              </td>
+            </tr>
             <template v-else>
             <template v-for="p in items" :key="p.id">
             <tr :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today, 'row-sel': selectedIds.has(p.id), 'row-priority': p.is_priority }"
@@ -1578,6 +1585,8 @@ async function doBatchPay() {
 .pk-pay-tbl table { table-layout: fixed; }
 .pk-pay-tbl th, .pk-pay-tbl td { padding: var(--td-py) var(--td-px); font-size: var(--td-fs); }
 .pk-pay-tbl td:not(.ops-cell) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+/* 空状态整行：跨列居中，取消定宽/裁剪，表头留在顶部、提示紧贴其下（不再把表头挤到页面中间） */
+.pk-pay-tbl td.empty-cell { max-width: none; overflow: visible; white-space: normal; text-align: center; padding: 20px 8px; }
 /* Excel 式区域选择高亮（useRangeSelection 直接给 td 加类） */
 .pk-pay-tbl td.cell-range-sel { background: rgba(21,101,192,0.14) !important; box-shadow: inset 0 0 0 1px rgba(21,101,192,0.28); }
 .pk-pay-tbl tbody { user-select: none; }

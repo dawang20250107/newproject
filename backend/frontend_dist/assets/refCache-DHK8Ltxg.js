@@ -1,0 +1,1 @@
+import{m as e}from"./index-PdsTD6iR.js";var t=new Map;function n(n,r=300*1e3){let i=Date.now(),a=t.get(n);if(a&&i-a.t<r)return a.p;let o=e.get(n).catch(e=>{throw t.delete(n),e});return t.set(n,{p:o,t:i}),o}export{n as t};

@@ -33,7 +33,7 @@ const total = ref(0)
 const totalAmount = ref(0)
 const totalScheduled = ref(0)
 const totalRemaining = ref(0)
-const loading = ref(false)
+const loading = ref(true)   // 挂载即进入加载态：直接显示骨架屏，避免方案/数据拉取期间闪现空状态
 const depts = ref([])
 const fileRef = ref(null)
 const importing = ref(false)
@@ -668,8 +668,14 @@ onMounted(async ()=>{
   loadDepts()
   // 有默认方案则套用并由其触发加载；否则套用「默认只看待审批 + 审批通过」状态筛选后加载。
   // （已拒绝/已撤销仍在库可查，清除状态筛选即可查看全部）
-  const applied = await schemes.loadAndApplyDefault()
-  if (!applied) {
+  // 方案接口异常也兜底加载数据，避免卡在骨架屏（loading 初始为 true）
+  try {
+    const applied = await schemes.loadAndApplyDefault()
+    if (!applied) {
+      colFilters.status = { op: 'in', value: ['pending', 'approved'] }
+      load()
+    }
+  } catch {
     colFilters.status = { op: 'in', value: ['pending', 'approved'] }
     load()
   }
@@ -717,7 +723,6 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <input ref="transportFileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onTransportImport" />
   <div class="card approval-card fh-fill">
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
-  <EmptyState v-else-if="!loading && !items.length" :variant="activeFilterCount || q ? 'search' : 'empty'" :text="activeFilterCount || q ? '没有符合当前筛选条件的审批记录' : '暂无审批记录，点击「新增」创建第一条记录'" />
   <div v-if="!loadErr" class="table-wrap page-scroll" :ref="rangeSel.setRoot"><table class="approval-table">
     <colgroup>
       <col class="cg-sel" /><!-- 选择 -->
@@ -755,6 +760,11 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <template v-if="loading">
         <SkeletonRow v-for="n in 8" :key="n" :cols="14" />
       </template>
+      <tr v-else-if="!items.length" class="empty-row">
+        <td :colspan="14" class="empty-cell">
+          <EmptyState :variant="activeFilterCount || q ? 'search' : 'empty'" :text="activeFilterCount || q ? '没有符合当前筛选条件的审批记录' : '暂无审批记录，点击「新增」创建第一条记录'" />
+        </td>
+      </tr>
       <template v-else>
       <template v-for="i in items" :key="i.id">
       <tr :class="{ 'row-sel': selectedIds.has(i.id) }" @contextmenu.prevent="ctx.open($event, i)" @dblclick="onRowDblClick(i, $event)">
@@ -1043,6 +1053,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 行高/内边距对齐全局表格（付款管理），保证两个页面观感一致 */
 /* 紧凑排版：数据量大，行间距固定收紧（固定行高 + 单行省略，超出鼠标悬停 title 展示） */
 .approval-table th, .approval-table td { padding: var(--td-py) var(--td-px); height: var(--td-h); box-sizing: border-box; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--td-fs); line-height: 1.4; }
+/* 空状态整行：跨列居中、取消定高/裁剪，表头留顶部、提示紧贴其下 */
+.approval-table td.empty-cell { height: auto; white-space: normal; overflow: visible; text-align: center; padding: 20px 8px; }
 .approval-table th.sel-col, .approval-table td.sel-col { text-align: center; overflow: visible; padding: 4px 4px; }
 .approval-table th.sel-col input, .approval-table td.sel-col input { cursor: pointer; }
 /* 审批状态色码徽章：badge 显示颜色，transparent overlay select 捕获交互 */
