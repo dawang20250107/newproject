@@ -2435,8 +2435,8 @@ def approval_records_bulk_schedule(request):
         ids = [int(i) for i in ids]
     except (ValueError, TypeError):
         return err('ids 必须为整数列表')
-    if len(ids) > 1000:
-        return err('单次批量排款上限 1000 条，请缩小选择范围')
+    if len(ids) > 5000:
+        return err('单次批量排款上限 5000 条，请缩小选择范围')
     planned_date = body.get('planned_date') or datetime.date.today().isoformat()
     qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids, archived=False), request)
     recs = {r.id: r for r in qs}
@@ -2474,7 +2474,7 @@ def approval_records_bulk_schedule(request):
 @pk_required()
 def approval_records_bulk_delete(request):
     """批量删除审批记录（含单选）。已关联付款管理（已排款）的记录不删，避免悬空排款。
-    始终受部门作用域与删除权限约束；单次上限 1000 条。"""
+    始终受部门作用域与删除权限约束；单次上限 5000 条。"""
     if request.method != 'POST':
         return err('POST only', 405)
     perms = get_request_perms(request)
@@ -2491,8 +2491,8 @@ def approval_records_bulk_delete(request):
         ids = [int(i) for i in ids]
     except (ValueError, TypeError):
         return err('ids 必须为整数列表')
-    if len(ids) > 1000:
-        return err('单次删除上限 1000 条，请缩小选择范围')
+    if len(ids) > 5000:
+        return err('单次删除上限 5000 条，请缩小选择范围')
     qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids), request)
     now = timezone.now()
     actor = getattr(request, 'pk_user', None)
@@ -2604,7 +2604,7 @@ def approval_records_bulk_return_schedule(request):
 def approval_records_bulk_approve(request):
     """批量审批通过（含单选）：把所选「待审批」记录置为审批通过。
     与单条审批同口径：仅审批职务可操作（is_approver），受部门作用域约束；
-    非「待审批」状态（已通过/已拒绝/已撤销/已归档）逐条跳过，不报错。单次上限 1000 条。"""
+    非「待审批」状态（已通过/已拒绝/已撤销/已归档）逐条跳过，不报错。单次上限 5000 条。"""
     if request.method != 'POST':
         return err('POST only', 405)
     perms = get_request_perms(request)
@@ -2621,8 +2621,8 @@ def approval_records_bulk_approve(request):
         ids = [int(i) for i in ids]
     except (ValueError, TypeError):
         return err('ids 必须为整数列表')
-    if len(ids) > 1000:
-        return err('单次审批上限 1000 条，请缩小选择范围')
+    if len(ids) > 5000:
+        return err('单次审批上限 5000 条，请缩小选择范围')
     qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids), request)
     recs = {r.id: r for r in qs}
     approved, skipped = 0, []
@@ -2666,8 +2666,8 @@ def payments_mark_priority(request):
     ids = [int(i) for i in (body.get('ids') or [])]
     if not ids:
         return err('ids 必填或传 all:true')
-    if len(ids) > 1000:
-        return err('单次上限 1000 条')
+    if len(ids) > 5000:
+        return err('单次上限 5000 条')
     n = dept_filter(Payment.objects.filter(pk__in=ids, deleted_at__isnull=True), request) \
         .update(is_priority=value)
     return ok({'count': n, 'value': value})
@@ -2677,7 +2677,7 @@ def payments_mark_priority(request):
 @pk_required()
 def payments_bulk_delete(request):
     """批量删除付款管理记录（含单选）。已关联预付核销的记录不删（同单条删除口径）。
-    始终受部门作用域与删除权限约束；单次上限 1000 条。"""
+    始终受部门作用域与删除权限约束；单次上限 5000 条。"""
     if request.method != 'POST':
         return err('POST only', 405)
     perms = get_request_perms(request)
@@ -2694,8 +2694,8 @@ def payments_bulk_delete(request):
         ids = [int(i) for i in ids]
     except (ValueError, TypeError):
         return err('ids 必须为整数列表')
-    if len(ids) > 1000:
-        return err('单次删除上限 1000 条，请缩小选择范围')
+    if len(ids) > 5000:
+        return err('单次删除上限 5000 条，请缩小选择范围')
     qs = dept_filter(Payment.objects.filter(pk__in=ids, deleted_at__isnull=True), request)
     now = timezone.now()
     actor = getattr(request, 'pk_user', None)
@@ -2760,8 +2760,8 @@ def payments_bulk_pay(request):
         ids = [int(i) for i in ids]
     except (ValueError, TypeError):
         return err('ids 必须为整数列表')
-    if len(ids) > 1000:
-        return err('单次批量付款上限 1000 条，请缩小选择范围')
+    if len(ids) > 5000:
+        return err('单次批量付款上限 5000 条，请缩小选择范围')
     pay_date = body.get('pay_date') or datetime.date.today().isoformat()
     notes = (body.get('notes') or '批量付款').strip()[:200]
     qs = dept_filter(Payment.objects.filter(pk__in=ids), request)
@@ -4828,7 +4828,7 @@ def export_download(request, pk):
 
 
 # 跨页全选上限：与各批量操作的单次上限对齐（批量删除/审批/排款/付款均为 1000）。
-SELECT_ALL_CAP = 1000
+SELECT_ALL_CAP = 5000   # 跨页「全选筛选结果」批量操作上限（批量删除/标记/退回等）
 # 运输单号复制上限：与导出上限对齐，足够覆盖整批对账。
 G7_COPY_CAP = 5000
 

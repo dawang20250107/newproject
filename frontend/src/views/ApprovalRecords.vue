@@ -7,6 +7,7 @@ import { useContextMenu } from '../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../utils/clipboard.js'
 import { todayCST } from '../constants.js'
 import { downloadBlob } from '../utils/download.js'
+import { fmtMoney } from '../utils/format.js'
 import EmptyState from '../components/EmptyState.vue'
 import ProjectShortNamePicker from '../components/ProjectShortNamePicker.vue'
 import ImportResultModal from '../components/ImportResultModal.vue'
@@ -770,16 +771,16 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
           </select>
         </div>
       </td>
-      <td class="amt" :title="i.amount">{{i.amount}}</td>
+      <td class="amt" :title="fmtMoney(i.amount)">{{ fmtMoney(i.amount) }}</td>
       <td class="amt sched-c plan-cell" :title="parseFloat(i.scheduled_amount) > 0 ? '点击展开排款批次明细（排款管理）' : ''"
           @click="parseFloat(i.scheduled_amount) > 0 && toggleAprSchedDetail(i)">
         <template v-if="parseFloat(i.scheduled_amount) > 0">
-          {{ i.scheduled_amount }}
+          {{ fmtMoney(i.scheduled_amount) }}
           <span class="plan-caret">{{ isAprSchedExpanded(i.id) ? '▲' : '▼' }}</span>
         </template>
         <span v-else>—</span>
       </td>
-      <td class="amt remain-c" :class="{ 'remain-zero': parseFloat(i.remaining_amount) <= 0 }">{{ parseFloat(i.remaining_amount) > 0 ? i.remaining_amount : '—' }}</td>
+      <td class="amt remain-c" :class="{ 'remain-zero': parseFloat(i.remaining_amount) <= 0 }" :title="parseFloat(i.remaining_amount) > 0 ? fmtMoney(i.remaining_amount) : ''">{{ parseFloat(i.remaining_amount) > 0 ? fmtMoney(i.remaining_amount) : '—' }}</td>
       <td class="payee" :title="i.payee">{{i.payee}}</td>
       <td class="notes-cell" :title="i.notes">{{ i.notes || '—' }}</td>
       </tr>
@@ -836,7 +837,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <div v-if="!loading && items.length && hasSelection && !showBatchSched && !showDelConfirm && (auth.canDelete || auth.canCreate)" class="bulk-bar">
       <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
       <button v-if="selectedCount < total" class="bulk-selall" :disabled="selectingAll" @click="selectAllFiltered"
-              :title="`跨页选中当前筛选下全部 ${total} 条（上限 1000，供批量操作）`">{{ selectingAll ? '全选中…' : `选择全部 ${total} 条` }}</button>
+              :title="`跨页选中当前筛选下全部 ${total} 条（上限 5000，供批量操作）`">{{ selectingAll ? '全选中…' : `选择全部 ${total} 条` }}</button>
       <button v-if="auth.canCreate" class="bulk-approve" :disabled="bulkApproving || (!isCrossPageSelection && !selectedApprovable.length)" @click="bulkApprove">{{ bulkApproving ? '审批中…' : (isCrossPageSelection ? '批量通过' : `批量通过（待审 ${selectedApprovable.length} 条）`) }}</button>
       <button v-if="auth.canCreate" class="bulk-act" :disabled="!isCrossPageSelection && !batchSchedSummary.count" @click="openBatchSchedule">{{ isCrossPageSelection ? `批量排款（${selectedCount} 条）` : `批量排款（可排 ${batchSchedSummary.count} 条）` }}</button>
       <button v-if="auth.canCreate && (isCrossPageSelection || selectedWithSchedule.length)" class="bulk-return" :disabled="bulkReturning" @click="bulkReturnSchedule">{{ bulkReturning ? '退回中…' : (isCrossPageSelection ? '批量退回排款' : `批量退回排款（${selectedWithSchedule.length} 条）`) }}</button>
@@ -1060,7 +1061,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .status-cell.st-approved .status-badge { color: #1b5e20; background: rgba(46,125,50,0.18); border-color: rgba(46,125,50,0.6); }
 .status-cell.st-rejected .status-badge { color: #b71c1c; background: rgba(198,40,40,0.14); border-color: rgba(198,40,40,0.55); }
 .status-cell.st-canceled .status-badge { color: #5f5f5f; background: rgba(120,120,120,0.15); border-color: rgba(120,120,120,0.5); }
-.g7-cell { color: var(--muted); font-size: 11.5px; }
+.g7-cell { color: var(--muted); }
 /* 行悬停高亮：宽表跨 14 列时帮助视线锁定整行（明细行/选中行不参与/不被覆盖） */
 .approval-table tbody tr:not(.apr-plan-detail-row):hover td { background: rgba(201,99,66,0.045); }
 .approval-table tr.row-sel td,
@@ -1090,7 +1091,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .del-input:focus { border-color: var(--danger); outline: none; }
 .btn-danger-solid { border: none; border-radius: 8px; padding: 8px 18px; font-size: 14px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
 .btn-danger-solid:disabled { opacity: .5; cursor: default; }
-.meta-cell { color: var(--muted); font-size: 12.5px; }
+.meta-cell { color: var(--muted); }
 .sched-prepaid-hint { font-size: 12.5px; color: #8a6d1a; background: rgba(255,213,79,0.14);
   border: 1px solid rgba(255,193,7,0.35); border-radius: 9px; padding: 9px 12px; margin-bottom: 12px; line-height: 1.7; }
 .sched-prepaid-hint b { color: #6d4c00; }
@@ -1131,14 +1132,14 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 编辑图标按钮：与同行操作按钮等高，emoji 居中 */
 .ops-btns .icon-btn { padding: 4px 7px; line-height: 1; }
 .ops-btns .icon-btn:disabled { opacity: .4; cursor: default; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .amt-h { text-align: right; }
 .sched-c { color: #2e7d32; font-weight: 600; }
 .remain-c { color: #e65100; font-weight: 600; }
 .remain-c.remain-zero { color: var(--muted); font-weight: 400; }
 .summary, .payee { max-width: 100%; }
-.notes-cell { color: var(--muted); font-size: 12px; }
+.notes-cell { color: var(--muted); }
 .approval-table select { width: 100%; min-width: 0; max-width: 100%; height: 26px; font-size: 12px; padding: 0 20px 0 6px; background-position: right 6px center; }
 .pg-jump { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); margin-left: 8px; }
 .pg-jump-input { width: 46px; text-align: center; padding: 2px 4px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }

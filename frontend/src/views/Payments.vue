@@ -1092,7 +1092,7 @@ async function doBatchPay() {
               <th v-if="colVisible('applicant')" style="width:4%"><ColumnFilter label="申请人" field="applicant" type="text" :model-value="colFilters.applicant" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('applicant',v)" @sort="o=>setSort('applicant',o)" /></th>
               <th v-if="colVisible('approval_number')" style="width:8%"><ColumnFilter label="审批单号" field="approval_number" type="text" :model-value="colFilters.approval_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('approval_number',v)" @sort="o=>setSort('approval_number',o)" /></th>
               <th v-if="colVisible('g7_number')" style="width:8%"><ColumnFilter label="G7编号" field="g7_number" type="text" :model-value="colFilters.g7_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('g7_number',v)" @sort="o=>setSort('g7_number',o)" /></th>
-              <th v-if="colVisible('project_desc')"><ColumnFilter label="付款事项" field="project_desc" type="text" :model-value="colFilters.project_desc" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_desc',v)" @sort="o=>setSort('project_desc',o)" /></th>
+              <th v-if="colVisible('project_desc')" :style="cw.thStyle('project_desc')"><ColumnFilter label="付款事项" field="project_desc" type="text" :model-value="colFilters.project_desc" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_desc',v)" @sort="o=>setSort('project_desc',o)" /></th>
               <th v-if="colVisible('payee')" style="width:8%"><ColumnFilter label="收款方" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
               <th v-if="colVisible('planned_date')" style="width:6%"><ColumnFilter label="计划日期" field="planned_date" type="date" :model-value="colFilters.planned_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('planned_date',v)" @sort="o=>setSort('planned_date',o)" /></th>
               <th v-if="colVisible('total_amount')" style="width:8%"><ColumnFilter label="计划额" field="total_amount" type="number" :model-value="colFilters.total_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('total_amount',v)" @sort="o=>setSort('total_amount',o)" /></th>
@@ -1113,12 +1113,12 @@ async function doBatchPay() {
             <tr :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today, 'row-sel': selectedIds.has(p.id), 'row-priority': p.is_priority }"
                 @contextmenu.prevent="ctx.open($event, p)" @dblclick="onRowDblClick(p, $event)">
               <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(p.id)" @change="toggleRow(p.id)" /></td>
-              <td v-if="colVisible('department')">{{ p.department }}</td>
-              <td v-if="colVisible('secondary_dept')" class="cell-clip">{{ p.secondary_dept || '—' }}</td>
+              <td v-if="colVisible('department')" class="cell-clip" :title="p.department">{{ p.department }}</td>
+              <td v-if="colVisible('secondary_dept')" class="cell-clip" :title="p.secondary_dept">{{ p.secondary_dept || '—' }}</td>
               <td v-if="colVisible('project_short_name')" class="cell-clip" :title="p.project_short_name">{{ p.project_short_name || '—' }}</td>
-              <td v-if="colVisible('applicant')">{{ p.applicant || '—' }}</td>
-              <td v-if="colVisible('approval_number')">{{ p.approval_number || '—' }}</td>
-              <td v-if="colVisible('g7_number')" style="color:var(--muted);font-size:11.5px">{{ p.g7_number || '—' }}</td>
+              <td v-if="colVisible('applicant')" class="cell-clip" :title="p.applicant">{{ p.applicant || '—' }}</td>
+              <td v-if="colVisible('approval_number')" class="cell-clip" :title="p.approval_number">{{ p.approval_number || '—' }}</td>
+              <td v-if="colVisible('g7_number')" class="cell-clip cell-muted" :title="p.g7_number">{{ p.g7_number || '—' }}</td>
               <td v-if="colVisible('project_desc')" class="cell-clip cell-desc"
                 @mouseenter="showTip($event, p.project_desc)" @mousemove="moveTip" @mouseleave="hideTip">
                 <span v-if="p.project_no" class="proj-no">{{ p.project_no }}</span>{{ p.project_desc }}
@@ -1132,9 +1132,9 @@ async function doBatchPay() {
                 <span v-if="p.plan_count > 1" class="plan-badge">×{{ p.plan_count }}批</span>
                 <span class="plan-caret">{{ expandedRows.has(p.id) ? '▲' : '▼' }}</span>
               </td>
-              <td v-if="colVisible('total_amount')" class="amt">{{ dash(p.total_amount) }}</td>
-              <td v-if="colVisible('paid')" class="amt amt-green">{{ dash(p.total_paid) }}</td>
-              <td v-if="colVisible('remaining')" class="amt" :class="parseFloat(p.remaining) > 0 ? 'amt-red' : ''">{{ dash(p.remaining) }}</td>
+              <td v-if="colVisible('total_amount')" class="amt" :title="dash(p.total_amount)">{{ dash(p.total_amount) }}</td>
+              <td v-if="colVisible('paid')" class="amt amt-green" :title="dash(p.total_paid)">{{ dash(p.total_paid) }}</td>
+              <td v-if="colVisible('remaining')" class="amt" :class="parseFloat(p.remaining) > 0 ? 'amt-red' : ''" :title="dash(p.remaining)">{{ dash(p.remaining) }}</td>
               <td v-if="colVisible('status')" class="status-cell">
                 <span class="status-wrap">
                   <button class="prio-star" :class="{ on: p.is_priority }" @click.stop="togglePriorityOne(p)"
@@ -1222,7 +1222,7 @@ async function doBatchPay() {
         <div v-if="!loading && items.length && hasSelection && !showBatchPay && !showDelConfirm && (auth.canDelete || auth.canEdit('installments'))" class="bulk-bar">
           <span class="bulk-n">已选 <strong>{{ selectedCount }}</strong> 条</span>
           <button v-if="selectedCount < total" class="bulk-selall" :disabled="selectingAll" @click="selectAllFiltered"
-                  :title="`跨页选中当前筛选下全部 ${total} 条（上限 1000，供批量操作）`">{{ selectingAll ? '全选中…' : `选择全部 ${total} 条` }}</button>
+                  :title="`跨页选中当前筛选下全部 ${total} 条（上限 5000，供批量操作）`">{{ selectingAll ? '全选中…' : `选择全部 ${total} 条` }}</button>
           <button v-if="auth.canEdit('installments')" class="bulk-act" :disabled="!isCrossPageSelection && !batchPaySummary.count" @click="openBatchPay">{{ isCrossPageSelection ? `批量付款（${selectedCount} 条）` : `批量付款（可付 ${batchPaySummary.count} 条）` }}</button>
           <button class="bulk-star" :disabled="markingPriority" @click="bulkMarkPriority(true)" title="标记为重点付款">★ 标记重点</button>
           <button class="bulk-star-off" :disabled="markingPriority" @click="bulkMarkPriority(false)" title="取消重点标记">取消重点</button>
@@ -1745,6 +1745,10 @@ async function doBatchPay() {
 
 /* truncated long cells + hover tooltip card */
 .cell-clip { cursor: default; }
+/* 统一弱化色列（G7编号等），字号随全表 --td-fs，不再单独缩小，保证字体统一 */
+.cell-muted { color: var(--muted); }
+/* 金额列：右对齐 + 等宽数字，数值完整展示、位数对齐；超长仍可 hover(title) 查看 */
+.pk-pay-tbl td.amt { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .proj-no { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 5px; background: rgba(201,99,66,0.1); color: var(--primary); font-size: 11px; font-weight: 600; }
 .cell-tooltip {
   position: fixed;
