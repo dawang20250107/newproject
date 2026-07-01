@@ -8,7 +8,7 @@ import { useToast } from '../composables/useToast.js'
 const auth = useAuthStore()
 const toast = useToast()
 
-const SELECT_ALL_CAP = 1000  // 与后端单次处理上限对齐
+const SELECT_ALL_CAP = 5000  // 与后端单次处理上限对齐
 const activeTab = ref('approvals') // 'approvals' | 'payments'
 const loading = ref(false)
 const items = ref([])
@@ -29,7 +29,11 @@ const pageAllSelected = computed(() =>
 const selectedCount = computed(() => allAcross.value ? total.value : selectedIds.value.size)
 const hasMorePages = computed(() => total.value > items.value.length)
 
+// 单调递增请求序号：只采纳「最新一次」请求的响应，丢弃过期响应，
+// 杜绝快速切换事业部/标签时旧响应后到覆盖新数据（表现为「卡在某个事业部」）。
+let reqSeq = 0
 async function load() {
+  const seq = ++reqSeq
   loading.value = true
   selectedIds.value = new Set()
   allAcross.value = false
@@ -37,12 +41,14 @@ async function load() {
     const params = { page: page.value, size }
     if (deptFilter.value) params.dept = deptFilter.value
     const r = await api.get(`/trash/${activeTab.value}`, { params })
+    if (seq !== reqSeq) return   // 已有更新的请求在途，丢弃本次过期响应
     items.value = r.data.items || []
     total.value = r.data.total || 0
   } catch (e) {
+    if (seq !== reqSeq) return
     toast.error(e?.msg || '加载失败')
   } finally {
-    loading.value = false
+    if (seq === reqSeq) loading.value = false
   }
 }
 

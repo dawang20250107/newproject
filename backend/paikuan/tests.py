@@ -76,6 +76,21 @@ class PaymentPermissionRegressionTests(TestCase):
         self.assertEqual(len(dd['installments']), 1)
         self.assertEqual(dd['total_paid'], '300.00')    # 口径一致
 
+    def test_soft_deleted_payment_hidden_from_flow(self):
+        # 付款台账软删除后，其分期实付须一并从「付款流水」隐藏（回收站仍可还原）
+        p = self.create_payment(total='1000.00')
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 6, 2),
+                                          pay_amount=Decimal('300.00'))
+        flow = self.client.get('/api/pk/payments/installments', **self.auth()).json()['data']
+        self.assertTrue(any(it['payment_id'] == p.id for it in flow['items']))
+        # 软删除该付款
+        from django.utils import timezone
+        p.deleted_at = timezone.now()
+        p.save(update_fields=['deleted_at'])
+        flow2 = self.client.get('/api/pk/payments/installments', **self.auth()).json()['data']
+        self.assertFalse(any(it['payment_id'] == p.id for it in flow2['items']))
+        self.assertEqual(flow2['total'], 0)
+
     def test_prepaid_balance_lookup_for_payment(self):
         """排款页按项目编号查预付余额：匹配项目返回未核销合计，未匹配返回空。"""
         from ar.models import ARProject, AdvanceRecord

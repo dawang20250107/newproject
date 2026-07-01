@@ -1963,7 +1963,8 @@ def payment_installments(request):
     if denied:
         return denied
 
-    qs = PaymentInstallment.objects.select_related('payment').all()
+    # 排除已软删除付款记录的分期：付款台账删除后，其付款流水须一并隐藏（回收站可还原）
+    qs = PaymentInstallment.objects.select_related('payment').filter(payment__deleted_at__isnull=True)
     # Dept visibility: mirror dept_filter but via related field payment__department
     if request.pk_role != 'super_admin':
         qs = qs.filter(payment__department__in=request.pk_depts or [])

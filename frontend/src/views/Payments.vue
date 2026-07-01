@@ -832,6 +832,21 @@ const pageAllSelected = computed(() => items.value.length > 0 && items.value.eve
 const selectedCount = computed(() => selectedIds.value.size)
 const hasSelection = computed(() => selectedIds.value.size > 0)
 function toggleRow(id) { const s = new Set(selectedIds.value); s.has(id) ? s.delete(id) : s.add(id); selectedIds.value = s }
+// Excel 式区间勾选：按住 Shift 点击 → 从上次勾选行到当前行整段一并勾选（以当前行的
+// 勾/取消状态为准填充整段）。普通点击照旧单选切换，并记住锚点。
+let lastSelIdx = null
+function onRowSelClick(e, idx, id) {
+  if (e.shiftKey && lastSelIdx !== null && lastSelIdx < items.value.length) {
+    const a = Math.min(lastSelIdx, idx), b = Math.max(lastSelIdx, idx)
+    const turnOn = !selectedIds.value.has(id)   // 目标状态：锚点后当前行若未选则整段选中，否则整段取消
+    const s = new Set(selectedIds.value)
+    for (let i = a; i <= b; i++) { const rid = items.value[i]?.id; if (rid == null) continue; turnOn ? s.add(rid) : s.delete(rid) }
+    selectedIds.value = s
+  } else {
+    toggleRow(id)
+  }
+  lastSelIdx = idx
+}
 function toggleSelectPage() { const s = new Set(selectedIds.value); if (pageAllSelected.value) items.value.forEach(p => s.delete(p.id)); else items.value.forEach(p => s.add(p.id)); selectedIds.value = s }
 function clearSelection() { selectedIds.value = new Set() }
 // 批量付款只统计「有剩余应付」的记录（默认付款金额=剩余应付=计划金额）
@@ -1143,10 +1158,10 @@ async function doBatchPay() {
               </td>
             </tr>
             <template v-else>
-            <template v-for="p in items" :key="p.id">
+            <template v-for="(p, idx) in items" :key="p.id">
             <tr :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today, 'row-sel': selectedIds.has(p.id), 'row-priority': p.is_priority }"
                 @contextmenu.prevent="ctx.open($event, p)" @dblclick="onRowDblClick(p, $event)">
-              <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(p.id)" @change="toggleRow(p.id)" /></td>
+              <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(p.id)" @click.prevent.stop="onRowSelClick($event, idx, p.id)" title="按住 Shift 点击可区间勾选" /></td>
               <td v-if="colVisible('department')" class="cell-clip" :title="p.department">{{ p.department }}</td>
               <td v-if="colVisible('secondary_dept')" class="cell-clip" :title="p.secondary_dept">{{ p.secondary_dept || '—' }}</td>
               <td v-if="colVisible('project_short_name')" class="cell-clip" :title="p.project_short_name">{{ p.project_short_name || '—' }}</td>

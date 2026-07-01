@@ -243,6 +243,20 @@ const pageAllSelected = computed(() => items.value.length > 0 && items.value.eve
 const selectedCount = computed(() => selectedIds.value.size)
 const hasSelection = computed(() => selectedIds.value.size > 0)
 function toggleRow(id){ const s = new Set(selectedIds.value); s.has(id) ? s.delete(id) : s.add(id); selectedIds.value = s }
+// Excel 式区间勾选：按住 Shift 点击 → 从上次勾选行到当前行整段一并勾选/取消。
+let lastSelIdx = null
+function onRowSelClick(e, idx, id){
+  if (e.shiftKey && lastSelIdx !== null && lastSelIdx < items.value.length) {
+    const a = Math.min(lastSelIdx, idx), b = Math.max(lastSelIdx, idx)
+    const turnOn = !selectedIds.value.has(id)
+    const s = new Set(selectedIds.value)
+    for (let i = a; i <= b; i++) { const rid = items.value[i]?.id; if (rid == null) continue; turnOn ? s.add(rid) : s.delete(rid) }
+    selectedIds.value = s
+  } else {
+    toggleRow(id)
+  }
+  lastSelIdx = idx
+}
 function toggleSelectPage(){ const s = new Set(selectedIds.value); if (pageAllSelected.value) items.value.forEach(r => s.delete(r.id)); else items.value.forEach(r => s.add(r.id)); selectedIds.value = s }
 function clearSelection(){ selectedIds.value = new Set() }
 // 仅「待审批」可批量通过；汇总只统计可审批记录
@@ -766,9 +780,9 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         </td>
       </tr>
       <template v-else>
-      <template v-for="i in items" :key="i.id">
+      <template v-for="(i, idx) in items" :key="i.id">
       <tr :class="{ 'row-sel': selectedIds.has(i.id) }" @contextmenu.prevent="ctx.open($event, i)" @dblclick="onRowDblClick(i, $event)">
-      <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(i.id)" @change="toggleRow(i.id)" /></td>
+      <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(i.id)" @click.prevent.stop="onRowSelClick($event, idx, i.id)" title="按住 Shift 点击可区间勾选" /></td>
       <td :title="i.applicant">{{i.applicant}}</td><td :title="i.department">{{i.department}}</td>
       <td class="meta-cell" :title="i.secondary_dept">{{ i.secondary_dept || '—' }}</td>
       <td class="meta-cell" :title="i.project_short_name">{{ i.project_short_name || '—' }}</td>
