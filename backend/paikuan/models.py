@@ -117,6 +117,10 @@ class Payment(models.Model):
         db_table = 'paikuan_payments'
         verbose_name = '排款记录'
         ordering = ['-planned_date', '-created_at']
+        indexes = [
+            # 列表默认口径：软删过滤 + 按计划日期排序（覆盖最常见的分页扫描）
+            models.Index(fields=['deleted_at', 'planned_date'], name='pay_active_planned_idx'),
+        ]
         constraints = [
             # 业务去重唯一约束：普通(无条件)唯一索引，各库均生效（含 MySQL）。
             # 占位/空审批单号 或 已软删 的行 dedup_key=NULL → 唯一索引中互不相等，可并存。
@@ -175,10 +179,22 @@ class Payment(models.Model):
             return 'partial'
         return 'pending'
 
-    def to_dict(self):
-        insts = list(self.installments.all())
-        plan_items = list(self.plan_items.all())
-        total_paid_val = sum(i.pay_amount for i in insts)
+    def to_dict(self, light=False):
+        # light=True（列表轻量态）：分批(plan_items)/分期(installments) 明细不内嵌，
+        # 改由前端展开行时懒加载；已付取子查询注解 _paid、批次数取 _plan_cnt，从而无需
+        # 预取两张子表，显著减小列表查询与响应体。已付/剩余/状态口径与完整态完全一致。
+        if light:
+            _p = getattr(self, '_paid', None)
+            # 子查询 Sum 返回未定标 Decimal（如 300），量化到 2 位与完整态(逐笔求和)一致
+            total_paid_val = (_p if _p is not None else Decimal('0')).quantize(Decimal('0.01'))
+            _pc = getattr(self, '_plan_cnt', None)
+            plan_count = _pc if _pc is not None else 0
+            insts, plan_items = [], []
+        else:
+            insts = list(self.installments.all())
+            plan_items = list(self.plan_items.all())
+            total_paid_val = sum(i.pay_amount for i in insts)
+            plan_count = len(plan_items)
         covered = total_paid_val + (self.prepaid_offset_amount or Decimal('0'))
         plan = self.plan_adjustment if self.plan_adjustment is not None else self.total_amount
         remaining_val = max(Decimal('0'), plan - covered)
@@ -197,7 +213,7 @@ class Payment(models.Model):
             'approval_number': self.approval_number,
             'project_no': self.project_no,
             'approval_id': self.approval_id,
-            'plan_count': len(plan_items),
+            'plan_count': plan_count,
             'plan_items': [
                 {'id': pi.id, 'seq': pi.seq, 'planned_date': str(pi.planned_date),
                  'amount': str(pi.amount), 'notes': pi.notes}

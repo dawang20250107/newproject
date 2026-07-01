@@ -55,6 +55,27 @@ class PaymentPermissionRegressionTests(TestCase):
             notes='',
         )
 
+    def test_light_list_defers_detail_lazy_load(self):
+        # 列表轻量态：不内嵌分批/分期明细，但 已付/剩余/状态/批次数 口径与完整态一致；
+        # 明细由 GET /payments/<id> 懒加载补齐。
+        p = self.create_payment(total='1000.00')
+        PaymentPlanItem.objects.create(payment=p, seq=1, planned_date=date(2026, 6, 1),
+                                       amount=Decimal('1000.00'), notes='批1')
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 6, 2),
+                                          pay_amount=Decimal('300.00'))
+        row = next(x for x in self.client.get('/api/pk/payments', **self.auth())
+                   .json()['data']['items'] if x['id'] == p.id)
+        self.assertEqual(row['total_paid'], '300.00')   # 子查询注解已付
+        self.assertEqual(row['remaining'], '700.00')
+        self.assertEqual(row['status'], 'partial')
+        self.assertEqual(row['plan_count'], 1)          # 批次数注解
+        self.assertEqual(row['plan_items'], [])         # 明细不内嵌（懒加载）
+        self.assertEqual(row['installments'], [])
+        dd = self.client.get(f'/api/pk/payments/{p.id}', **self.auth()).json()['data']
+        self.assertEqual(len(dd['plan_items']), 1)      # 详情态明细齐全
+        self.assertEqual(len(dd['installments']), 1)
+        self.assertEqual(dd['total_paid'], '300.00')    # 口径一致
+
     def test_prepaid_balance_lookup_for_payment(self):
         """排款页按项目编号查预付余额：匹配项目返回未核销合计，未匹配返回空。"""
         from ar.models import ARProject, AdvanceRecord

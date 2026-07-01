@@ -89,7 +89,17 @@ function resetCols() {
 function dash(v) { return v === null || v === undefined ? '—' : fmt(v) }
 
 // ── 行明细展开：计划明细（分批排款）+ 付款明细（分期实付）─────────────────────
+// 列表为轻量态（不含明细），展开时按需拉 GET /payments/<id> 补齐 plan_items/installments。
 const expandedRows = ref(new Set())
+async function hydrateRowDetail(id) {
+  const p = items.value.find(x => x.id === id)
+  if (!p) return
+  try {
+    const res = await api.get(`/payments/${id}`)
+    p.plan_items = res.data.plan_items || []
+    p.installments = res.data.installments || []
+  } catch { /* 拉取失败保持展开，显示空明细即可 */ }
+}
 function toggleRowDetail(id) {
   const s = new Set(expandedRows.value)
   if (s.has(id)) {
@@ -98,6 +108,7 @@ function toggleRowDetail(id) {
     if (planEdit.id === `new:${id}` || rowOwnsPlanEdit(id)) cancelEditPlan()
   } else {
     s.add(id)
+    hydrateRowDetail(id)   // 展开即补拉明细
   }
   expandedRows.value = s
 }
@@ -582,6 +593,10 @@ async function load() {
     plannedTotal.value = res.data.planned_total ?? '0'
     paidTotal.value = res.data.paid_total ?? '0'
     loading.value = false
+    // 轻量列表不含明细：为仍展开的行补拉分批/分期明细，保持展开态内容正确
+    if (expandedRows.value.size) {
+      for (const id of expandedRows.value) hydrateRowDetail(id)
+    }
   } catch (e) {
     // 被新请求取消：保持 loading，交由接管的新请求收尾
     if (e?.__canceled || sig.aborted) return

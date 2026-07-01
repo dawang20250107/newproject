@@ -12,7 +12,7 @@ from urllib.parse import quote
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction, IntegrityError
-from django.db.models import F, Q, Sum, Count, Case, When, ExpressionWrapper, Value, OuterRef, Subquery
+from django.db.models import F, Q, Sum, Count, Case, When, ExpressionWrapper, Value, OuterRef, Subquery, IntegerField
 from django.db.models import DecimalField as DjDecimalField
 from django.db.models.functions import Coalesce, Greatest
 from django.conf import settings
@@ -641,6 +641,23 @@ def _paid_subq():
 def _paid_expr():
     """Annotation expression for total paid amount (from installments subtable)."""
     return _paid_subq()
+
+
+def _plan_count_subq():
+    """Correlated subquery: number of plan-item batches per Payment row（供轻量列表取批次数，
+    免预取 plan_items 子表）。"""
+    return Coalesce(
+        Subquery(
+            PaymentPlanItem.objects
+                .filter(payment_id=OuterRef('pk'))
+                .values('payment_id')
+                .annotate(c=Count('id'))
+                .values('c'),
+            output_field=IntegerField(),
+        ),
+        Value(0),
+        output_field=IntegerField(),
+    )
 
 
 def _paid_subq_windowed(pay_start, pay_end):
@@ -1385,8 +1402,9 @@ def _list_payments(request):
     outstanding_count = summary['outstanding_count'] or 0
 
     perms = get_request_perms(request)
-    page_slice = qs[(page - 1) * size: page * size]
     if pay_window_active:
+        # 付款日期窗口：需逐行遍历分期算「窗口内实付」→ 保留预取、返回完整明细。
+        page_slice = qs[(page - 1) * size: page * size]
         ws = _safe_iso_date(pay_start) if pay_start else None
         we = _safe_iso_date(pay_end) if pay_end else None
         items = []
@@ -1400,7 +1418,12 @@ def _list_payments(request):
                 d['total_paid'] = str(win)
             items.append(d)
     else:
-        items = [apply_view_mask(p.to_dict(), perms) for p in page_slice]
+        # 轻量列表：分批/分期明细不内嵌（前端展开行时懒加载 GET /payments/<id>）。
+        # 去掉两张子表预取，改用子查询注解已付/批次数 → 查询更省、响应体更小、渲染更快。
+        page_slice = (qs.prefetch_related(None)
+                        .annotate(_paid=_paid_subq(), _plan_cnt=_plan_count_subq())
+                        [(page - 1) * size: page * size])
+        items = [apply_view_mask(p.to_dict(light=True), perms) for p in page_slice]
     return ok({
         'items': items, 'total': total, 'page': page, 'size': size,
         'outstanding_total': str(outstanding_total),
