@@ -2054,6 +2054,23 @@ class TransportReconciliationTests(TestCase):
                 .values_list('ext_bill_no', flat=True)),
             {'ZD-KEEP-1', 'ZD-KEEP-2'})
 
+    def test_summary_total_row_is_skipped(self):
+        # 原表末尾「合计」行：序号=合计、对账单号=「681 条」、金额=全表总额。
+        # 它有非空对账单号+有效金额，若不识别会被当成一条巨额付款导入。必须跳过。
+        rows = [self._row(1, 'ZD-REAL-1', '甲', 1000),
+                self._row(2, 'ZD-REAL-2', '乙', 2000)]
+        total_row = self._row('合计', '681 条', '', 4640755.9, status='')
+        rows.append(total_row)
+        d = self._import(rows).json()['data']
+        self.assertEqual(d['created'], 2)                 # 仅两条真实单
+        self.assertEqual(d.get('summary_rows'), 1)        # 合计行被识别并跳过
+        # 巨额合计金额没有入库
+        self.assertFalse(ApprovalRecord.objects.filter(
+            ext_source='transport', amount=Decimal('4640755.9')).exists())
+        self.assertFalse(ApprovalRecord.objects.filter(
+            ext_source='transport', ext_bill_no='681 条').exists())
+        self.assertEqual(ApprovalRecord.objects.filter(ext_source='transport').count(), 2)
+
     def test_import_dedup_by_bill_no(self):
         # 文件内重复 + 二次导入重复，均按对账单号去重
         rows = [self._row(1, 'ZD202606260001', 'A', 100), self._row(2, 'ZD202606260001', 'A', 100),

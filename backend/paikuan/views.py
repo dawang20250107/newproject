@@ -4295,6 +4295,9 @@ TRANSPORT_AMOUNT_COL = '实际对账金额'  # 取绝对值作为申请金额（
 TRANSPORT_STATUS_COL = '状态'       # 导出时改写为「已结算」的列
 TRANSPORT_SEQ_COL = '序号'          # 导出时按输出行重排为 1,2,3…（不沿用原表零散序号）
 TRANSPORT_SETTLED_LABEL = '已结算'
+# 汇总/合计行标记：运输原表末尾常有一行「合计」（序号=合计、对账单号=「681 条」、
+# 金额=全表总额）。它不是真实对账单，若不识别会被当成一条巨额付款导入。
+TRANSPORT_SUMMARY_MARKERS = ('合计', '总计', '小计', '合 计')
 # 运输对账单正常应为「已通过」（对账通过、待我方付款）。下列源状态不可导入：
 #   已结算/已完成类 → 源系统已结算，再导入排款会重复付款；
 #   作废/取消/驳回类 → 单据已失效，不应付款。
@@ -4334,7 +4337,7 @@ def _transport_analyze(rows, existing_bills):
         'missing_standard': [h for h in TRANSPORT_HEADERS if h not in pos],
         'total': 0,
         'ok': [], 'settled': [], 'voided': [],
-        'dup_in_file': [], 'dup_in_system': [], 'bad': [],
+        'dup_in_file': [], 'dup_in_system': [], 'bad': [], 'summary_rows': [],
     }
     if report['missing_required']:
         return report
@@ -4346,6 +4349,16 @@ def _transport_analyze(rows, existing_bills):
     seen = set()
     for rn, row in enumerate(rows[1:], start=2):
         if row is None or all(v is None or str(v).strip() == '' for v in row):
+            continue
+        # 合计/汇总行识别：序号或对账单号含「合计/总计/小计」，或对账单号形如「681 条」
+        # （条数统计而非真实单号）。这类行跳过——不计入总数、不导入，避免全表总额被当成
+        # 一条巨额付款。真实对账单号形如 ZD202605310006，绝不含「条」或「合计」。
+        seq_probe = str(cell(row, TRANSPORT_SEQ_COL) or '').strip()
+        bill_probe = str(cell(row, TRANSPORT_KEY_COL) or '').strip()
+        if (any(m in seq_probe for m in TRANSPORT_SUMMARY_MARKERS)
+                or any(m in bill_probe for m in TRANSPORT_SUMMARY_MARKERS)
+                or re.match(r'^\d[\d,]*\s*条$', bill_probe)):
+            report.setdefault('summary_rows', []).append({'row': rn, 'bill_no': bill_probe})
             continue
         report['total'] += 1
         bill_no = str(cell(row, TRANSPORT_KEY_COL) or '').strip()
@@ -4443,6 +4456,7 @@ def transport_import_precheck(request):
         'dup_in_file': report['dup_in_file'],
         'dup_in_system': report['dup_in_system'],
         'bad': report['bad'],
+        'summary_rows': report['summary_rows'],
         'extra_columns': report['extra_columns'],
         'missing_standard': report['missing_standard'],
     })
@@ -4500,6 +4514,9 @@ def transport_import(request):
             f'第{v["row"]}行: 对账单 {v["bill_no"]} 源状态「{v["src_status"]}」已作废/取消，跳过')
     for b in report['bad']:
         results['errors'].append(f'第{b["row"]}行: 对账单 {b["bill_no"] or "(空)"} {b["reason"]}，已跳过')
+    for s in report['summary_rows']:
+        results['errors'].append(f'第{s["row"]}行: 合计/汇总行（对账单号「{s["bill_no"]}」），已跳过')
+    results['summary_rows'] = len(report['summary_rows'])
 
     parts = [f'成功导入 {results["created"]} 条（已建为「审批通过」记录，请在审批管理排款）']
     if results['duplicates']:
@@ -4508,6 +4525,8 @@ def transport_import(request):
         parts.append(f'跳过源已结算 {results["already_settled"]} 条（防重复付款）')
     if results['voided']:
         parts.append(f'跳过源已作废/取消 {results["voided"]} 条')
+    if report['summary_rows']:
+        parts.append(f'跳过合计行 {len(report["summary_rows"])} 条')
     if report['bad']:
         parts.append(f'跳过异常 {len(report["bad"])} 条')
     results['message'] = '；'.join(parts)
