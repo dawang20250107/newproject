@@ -1905,9 +1905,9 @@ function clearFilters() {
 
                 <!-- all -->
                 <template v-if="activeTab === 'all'">
-                  <td v-if="show('r_estimated_amount')" class="amt fw">{{ fmtCell(rec.estimated_amount) }}</td>
+                  <td v-if="show('r_estimated_amount')" class="amt">{{ fmtCell(rec.estimated_amount) }}</td>
                   <td v-if="show('r_actual_invoice_amount')" class="amt">{{ rec.actual_invoice_amount ? fmtCell(rec.actual_invoice_amount) : '—' }}</td>
-                  <td v-if="show('r_actual_receivable')" class="amt">
+                  <td v-if="show('r_actual_receivable')" class="amt fw">
                     {{ fmtCell(rec.actual_receivable) }}
                     <span v-if="rec.invoice_mismatch" class="inv-warn" :class="rec.notes ? 'noted' : 'todo'" :title="invMismatchTip(rec)">{{ rec.notes ? '📝' : '⚠' }}</span>
                   </td>
