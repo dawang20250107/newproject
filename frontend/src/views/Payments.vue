@@ -54,8 +54,20 @@ const COL_DEFS = [
   { key: 'plan_adjustment',    label: '计划调整', perm: () => auth.canView('plan_adjustment') },
   { key: 'notes',              label: '备注',     perm: () => true },
 ]
+// 业务默认列可见性：默认隐藏「G7编号」「计划调整」（一次性应用，合并进用户已有偏好，
+// 不清除其它选择；用户之后手动显示则保留其选择）。
+const PK_COL_DEFAULTS_VER = '1'
 const hiddenCols = ref(new Set())
-try { hiddenCols.value = new Set(JSON.parse(localStorage.getItem('pk_pay_hidden_cols') || '[]')) } catch {}
+try {
+  const raw = localStorage.getItem('pk_pay_hidden_cols')
+  const s = new Set(Array.isArray(JSON.parse(raw || 'null')) ? JSON.parse(raw) : [])
+  if (localStorage.getItem('pk_pay_col_defaults_ver') !== PK_COL_DEFAULTS_VER) {
+    s.add('g7_number'); s.add('plan_adjustment')
+    localStorage.setItem('pk_pay_hidden_cols', JSON.stringify([...s]))
+    localStorage.setItem('pk_pay_col_defaults_ver', PK_COL_DEFAULTS_VER)
+  }
+  hiddenCols.value = s
+} catch {}
 // 新增列默认隐藏过渡：历史用户首次见到二级部门/项目简称列即默认显示（不在隐藏集合则显示）
 const showColSettings = ref(false)
 function colVisible(key) {
@@ -180,7 +192,7 @@ const filters = reactive({
 const cw = useColWidths('pk_payments', {
   project_desc: 200, payee: 130, department: 70, secondary_dept: 80,
   project_short_name: 100, applicant: 70, approval_number: 110, g7_number: 110,
-  planned_date: 90, total_amount: 90, paid: 90, remaining: 90, status: 100, notes: 140,
+  planned_date: 88, total_amount: 96, paid: 92, remaining: 92, status: 96, notes: 84,
 })
 
 // ── Excel 风格列头筛选 + 排序 ───────────────────────────────────────────────
@@ -1583,6 +1595,8 @@ async function doBatchPay() {
 /* 付款管理：固定布局，不超出卡片宽度（table-layout:fixed 已防横向溢出，无需 overflow-x:hidden） */
 .table-wrap.pk-pay-tbl { padding-bottom: 70px; }
 .pk-pay-tbl table { table-layout: fixed; }
+/* 列多、字段密：本表用更紧凑的字号/横向内边距，尽量让各列内容完整展示 */
+.pk-pay-tbl { --td-fs: 12px; --td-px: 6px; }
 .pk-pay-tbl th, .pk-pay-tbl td { padding: var(--td-py) var(--td-px); font-size: var(--td-fs); }
 .pk-pay-tbl td:not(.ops-cell) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
 /* 空状态整行：跨列居中，取消定宽/裁剪，表头留在顶部、提示紧贴其下（不再把表头挤到页面中间） */

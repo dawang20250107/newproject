@@ -730,15 +730,15 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <col style="width:7%" /><!-- 所属事业部 -->
       <col style="width:7%" /><!-- 二级部门 -->
       <col style="width:8%" /><!-- 项目简称 -->
-      <col style="width:9%" /><!-- 审批编号 -->
-      <col style="width:9%" /><!-- G7编号 -->
-      <col style="width:12%" /><!-- 摘要 -->
+      <col style="width:12%" /><!-- 审批编号（放宽，尽量完整展示 ZD…对账单号/长编号） -->
+      <col style="width:8%" /><!-- G7编号 -->
+      <col style="width:13%" /><!-- 摘要 -->
       <col class="cg-status" /><!-- 审批状态（缩小） -->
       <col style="width:7%" /><!-- 申请金额 -->
       <col style="width:7%" /><!-- 已排金额 -->
       <col style="width:7%" /><!-- 未排金额 -->
       <col style="width:10%" /><!-- 收款主体 -->
-      <col style="width:11%" /><!-- 备注（末列） -->
+      <col style="width:8%" /><!-- 备注（末列，压缩） -->
     </colgroup>
     <thead><tr>
       <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
@@ -1052,6 +1052,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-table col.cg-status { width: 88px; }
 /* 行高/内边距对齐全局表格（付款管理），保证两个页面观感一致 */
 /* 紧凑排版：数据量大，行间距固定收紧（固定行高 + 单行省略，超出鼠标悬停 title 展示） */
+/* 列多、字段密：本表用更紧凑的字号/横向内边距，尽量让各列内容完整展示 */
+.approval-table { --td-fs: 12px; --td-px: 6px; }
 .approval-table th, .approval-table td { padding: var(--td-py) var(--td-px); height: var(--td-h); box-sizing: border-box; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--td-fs); line-height: 1.4; }
 /* 空状态整行：跨列居中、取消定高/裁剪，表头留顶部、提示紧贴其下 */
 .approval-table td.empty-cell { height: auto; white-space: normal; overflow: visible; text-align: center; padding: 20px 8px; }
