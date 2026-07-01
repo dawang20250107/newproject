@@ -511,9 +511,12 @@ const payRangePreset = ref('')
 const PAY_RANGE_PRESETS = [
   { key: 'today', label: '今天' },
   { key: 'week', label: '本周' },
+  { key: 'last_week', label: '上周' },
   { key: 'month', label: '本月' },
+  { key: 'last_month', label: '上月' },
   { key: 'quarter', label: '本季度' },
   { key: 'year', label: '本年' },
+  { key: 'last_year', label: '去年' },
   { key: '', label: '全部' },
 ]
 // 快捷区间按 UTC+8（北京时间）计算，与 todayCST() 等系统函数口径一致。
@@ -528,9 +531,27 @@ function setPayRange(key) {
     const dow = (base.getUTCDay() + 6) % 7
     const s = new Date(base); s.setUTCDate(base.getUTCDate() - dow); start = iso(s)
   }
+  else if (key === 'last_week') {
+    // 上周：本周一往前 7 天（上周一）～ 本周一前 1 天（上周日）
+    const dow = (base.getUTCDay() + 6) % 7
+    const thisMon = new Date(base); thisMon.setUTCDate(base.getUTCDate() - dow)
+    const lastMon = new Date(thisMon); lastMon.setUTCDate(thisMon.getUTCDate() - 7)
+    const lastSun = new Date(thisMon); lastSun.setUTCDate(thisMon.getUTCDate() - 1)
+    start = iso(lastMon); end = iso(lastSun)
+  }
   else if (key === 'month') start = iso(new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 1)))
+  else if (key === 'last_month') {
+    // 上月：上月 1 号 ～ 上月最后一天（本月 0 号）
+    start = iso(new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() - 1, 1)))
+    end = iso(new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 0)))
+  }
   else if (key === 'quarter') start = iso(new Date(Date.UTC(base.getUTCFullYear(), Math.floor(base.getUTCMonth() / 3) * 3, 1)))
   else if (key === 'year') start = iso(new Date(Date.UTC(base.getUTCFullYear(), 0, 1)))
+  else if (key === 'last_year') {
+    // 去年：去年 1 月 1 日 ～ 去年 12 月 31 日
+    start = iso(new Date(Date.UTC(base.getUTCFullYear() - 1, 0, 1)))
+    end = iso(new Date(Date.UTC(base.getUTCFullYear() - 1, 11, 31)))
+  }
   payFilters.pay_start = start
   payFilters.pay_end = end
   loadPayments(true)
