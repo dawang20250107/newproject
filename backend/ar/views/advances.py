@@ -885,7 +885,8 @@ def advance_writeoffs(request, pk):
             if rec.direction != '预付':
                 return err('仅「预付」核销可关联排款记录')
             try:
-                payment_obj = Payment.objects.get(pk=int(payment_id))
+                # 已软删除（回收站）的排款不可关联核销：冲抵会打乱资金池/待付口径
+                payment_obj = Payment.objects.get(pk=int(payment_id), deleted_at__isnull=True)
             except (Payment.DoesNotExist, ValueError, TypeError):
                 return err('排款记录不存在', 404)
             if request.pk_role != 'super_admin' and payment_obj.department not in request.pk_depts:

@@ -75,9 +75,11 @@ def cashflow(request):
 
     # AP payments from installments subtable, grouped by month + department
     paid_map = defaultdict(lambda: defaultdict(Decimal))
+    # 排除已软删除的付款台账（回收站）：删除的付款不构成现金流出
     inst_qs = (PaymentInstallment.objects
                .filter(pay_date__gte=start_date, pay_date__lte=end_date,
-                       payment__department__in=depts)
+                       payment__department__in=depts,
+                       payment__deleted_at__isnull=True)
                .annotate(ym=TruncMonth('pay_date'))
                .values('ym', 'payment__department')
                .annotate(paid=Sum('pay_amount')))
@@ -93,7 +95,8 @@ def cashflow(request):
             .order_by('pay_date').values('pay_date')[:1]
     )
     po_qs = (Payment.objects
-             .filter(department__in=depts, prepaid_offset_amount__gt=0)
+             .filter(department__in=depts, prepaid_offset_amount__gt=0,
+                     deleted_at__isnull=True)
              .annotate(first_pay_date=earliest_inst_date)
              .annotate(attr_ym=TruncMonth(Coalesce('first_pay_date', 'planned_date')))
              .filter(attr_ym__gte=start_date, attr_ym__lte=end_date)

@@ -211,6 +211,10 @@ async function handleUpload(evt) {
   } finally { uploading.value = false }
 }
 
+// 保证 editBus 中每个事业部的输入网格已初始化，避免模板 editGrid[bu][key] 读到 undefined。
+// 切换/选择事业部时 editBus 先于异步 loadTargets 变化，否则会崩 "reading 'rev'"。
+// flush:'pre'（默认）确保本回调在 DOM 重渲染前执行 → 模板访问时网格已就绪。
+watch(editBus, (bus) => { (bus || []).forEach(initBuGrid) }, { immediate: true })
 watch(targetYear, loadTargets)
 watch([reportYear, reportMonth, selectedBu], loadMetrics)
 

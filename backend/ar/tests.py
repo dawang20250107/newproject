@@ -104,6 +104,49 @@ class ARPermissionRegressionTests(TestCase):
         wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=True)
         return [cell.value for cell in wb.active[1]]
 
+    def test_cashflow_excludes_soft_deleted_payments(self):
+        """现金流分析（驾驶舱同源接口）：已软删除付款的实付分期不得计入现金流出。"""
+        from paikuan.models import Payment, PaymentInstallment
+        from django.utils import timezone
+        admin = self.make_user('13900000399', 'finance_director', role='super_admin')
+        p = Payment.objects.create(
+            department=self.dept, project_desc='现金流测试', payee='供应商X',
+            total_amount=Decimal('800'), planned_date=date(2026, 6, 1))
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 6, 10),
+                                          pay_amount=Decimal('800'))
+        params = {'start_year': 2026, 'start_month': 6, 'end_year': 2026, 'end_month': 6}
+        d = self.client.get('/api/pk/ar/cashflow', params, **self.auth(admin)).json()['data']
+        self.assertEqual(d['totals']['paid'], [800.0])       # 在册付款计入流出
+        # 软删除该付款 → 流出归零（回收站中的付款不构成现金流出）
+        p.deleted_at = timezone.now()
+        p.save(update_fields=['deleted_at'])
+        d2 = self.client.get('/api/pk/ar/cashflow', params, **self.auth(admin)).json()['data']
+        self.assertEqual(d2['totals']['paid'], [0.0])
+
+    def test_actual_receivable_and_invoice_mismatch(self):
+        proj = self.create_project()
+        # 实际应收 = 预估 + 账实差额；已开票且 ≠ 实际应收 → invoice_mismatch=True
+        r = ARRecord.objects.create(
+            project=proj, operation_year=2026, operation_month=5,
+            estimated_amount=Decimal('1000.00'),
+            account_diff_adjustment=Decimal('60.00'),
+            actual_invoice_amount=Decimal('1000.00'),   # 开票1000 ≠ 实际应收1060
+            invoice_date=date(2026, 5, 31))
+        d = r.to_dict()
+        self.assertEqual(d['actual_receivable'], '1060.00')
+        self.assertTrue(d['invoice_mismatch'])
+        # 开票金额等于实际应收 → 不提醒
+        r.actual_invoice_amount = Decimal('1060.00')
+        r.save()
+        self.assertFalse(r.to_dict()['invoice_mismatch'])
+        # 未开票 → 即使预估≠账面也不提醒；实际应收照常计算
+        r2 = ARRecord.objects.create(
+            project=proj, operation_year=2026, operation_month=6,
+            estimated_amount=Decimal('500.00'), account_diff_adjustment=Decimal('0.00'))
+        self.assertIsNone(r2.actual_invoice_amount)
+        self.assertFalse(r2.to_dict()['invoice_mismatch'])
+        self.assertEqual(r2.to_dict()['actual_receivable'], '500.00')
+
     def test_project_post_invoice_days_update_persists(self):
         """票后等待期(post_invoice_days)编辑后应真正落库——回归 settlement_wait_days
         旧列名残留导致 _ar_visible_payload 把该字段从 PUT 载荷里剥掉的问题。"""

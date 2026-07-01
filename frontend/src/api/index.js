@@ -27,6 +27,10 @@ api.interceptors.request.use(cfg => {
 api.interceptors.response.use(
   res => res.data,
   async err => {
+    // 被竞态车道取消的请求：不是真错误，回传统一标记供调用方静默忽略
+    if (axios.isCancel?.(err) || err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') {
+      return Promise.reject({ __canceled: true })
+    }
     if (err.response?.status === 401) {
       localStorage.removeItem('pk_token')
       localStorage.removeItem('pk_user')

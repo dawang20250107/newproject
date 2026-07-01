@@ -34,7 +34,7 @@ def _pool_actual_flows(dept, start, end):
         .values('direction').annotate(s=Sum('advance_amount')))
     adv_map = {r['direction']: _dec(r['s']) for r in adv}
     paid = _dec(PaymentInstallment.objects.filter(
-        payment__department=dept,
+        payment__department=dept, payment__deleted_at__isnull=True,
         pay_date__gt=start, pay_date__lte=end).aggregate(s=Sum('pay_amount'))['s'])
     # 预付核销冲抵：现金已在预付发生时流出，核销时不再是现金事件 → 从实付中扣除
     prepaid_offset = _dec(AdvanceWriteoff.objects.filter(
@@ -73,7 +73,7 @@ def _pool_metrics(dept, cfg, today):
     #    total_amount/prepaid_offset_amount 不在 GROUP BY 里——SQLite 容忍，
     #    生产 MySQL 报 1054 Unknown column in 'having clause'。
     #    子查询版无 GROUP BY，过滤走 WHERE，两种库都安全（与付款列表口径同源）──
-    pay_qs = (Payment.objects.filter(department=dept)
+    pay_qs = (Payment.objects.filter(department=dept, deleted_at__isnull=True)
               .annotate(paid_sum=_paid_subq())
               .annotate(plan=Coalesce('plan_adjustment', 'total_amount'))
               .annotate(rem=F('plan') - F('paid_sum') - F('prepaid_offset_amount'))

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount, provide } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, provide, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
@@ -11,14 +11,17 @@ import { useToast } from '../../composables/useToast.js'
 import SortTh from '../../components/ar/SortTh.vue'
 import FilterPanel from '../../components/ar/FilterPanel.vue'
 import { describeCondition, STATUS_OPTS, RECON_OPTS, INVOICE_OPTS, RESP_OPTS } from '../../composables/arConditions.js'
-import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
 import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
+import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
-import ActivityPanel from '../../components/ar/ActivityPanel.vue'
+// 重型抽屉/弹窗按需加载：仅打开活动抽屉 / 导入预检时才拉取其代码块，
+// 大幅瘦身应收明细主路由块（ActivityPanel 单文件 1.7k 行）。
+const ActivityPanel = defineAsyncComponent(() => import('../../components/ar/ActivityPanel.vue'))
+const ImportPrecheckModal = defineAsyncComponent(() => import('../../components/ImportPrecheckModal.vue'))
 
 const route = useRoute()
 const router = useRouter()
@@ -83,6 +86,8 @@ function toggleRow(id) {
   if (s.has(id)) { s.delete(id); selectAllMatching.value = false } else s.add(id)
   selectedIds.value = s
 }
+// Excel 式 Shift 区间勾选（系统级复用）；区间选择也退出「跨页全选」态
+const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow, onManual: () => { selectAllMatching.value = false } })
 function toggleSelectPage() {
   const s = new Set(selectedIds.value)
   if (pageAllSelected.value) { items.value.forEach(r => s.delete(r.id)); selectAllMatching.value = false }
@@ -203,6 +208,7 @@ const ctxItems = computed(() => {
 const COL_VIS_DEFS = [
   { key: 'r_estimated_amount', label: '预估金额' },
   { key: 'r_actual_invoice_amount', label: '实际开票' },
+  { key: 'r_actual_receivable', label: '实际应收' },
   { key: 'r_tax_amount', label: '税额' },
   { key: 'r_account_diff', label: '账实差额' },
   { key: 'r_outstanding', label: '未收金额' },
@@ -214,8 +220,21 @@ const COL_VIS_DEFS = [
   { key: 'r_notes', label: '备注' },
 ]
 const showColPanel = ref(false)
+// 业务默认列可见性：全部明细默认隐藏「税额」列。一次性应用（合并进已有偏好，不清除
+// 用户其它选择）；用户之后手动显示税额则保留其选择，不再被默认覆盖。
+const AR_COL_DEFAULTS_VER = '1'
 function _loadHiddenCols() {
-  try { return new Set(JSON.parse(localStorage.getItem('ar_hidden_cols') || '[]')) } catch { return new Set() }
+  let stored = null
+  try { stored = JSON.parse(localStorage.getItem('ar_hidden_cols') || 'null') } catch { stored = null }
+  const s = new Set(Array.isArray(stored) ? stored : [])
+  if (localStorage.getItem('ar_hidden_defaults_ver') !== AR_COL_DEFAULTS_VER) {
+    s.add('r_tax_amount')
+    try {
+      localStorage.setItem('ar_hidden_cols', JSON.stringify([...s]))
+      localStorage.setItem('ar_hidden_defaults_ver', AR_COL_DEFAULTS_VER)
+    } catch (_) { /* localStorage 不可用时仅本次会话生效 */ }
+  }
+  return s
 }
 const hiddenCols = ref(_loadHiddenCols())
 function toggleColVis(key) {
@@ -495,9 +514,12 @@ const payRangePreset = ref('')
 const PAY_RANGE_PRESETS = [
   { key: 'today', label: '今天' },
   { key: 'week', label: '本周' },
+  { key: 'last_week', label: '上周' },
   { key: 'month', label: '本月' },
+  { key: 'last_month', label: '上月' },
   { key: 'quarter', label: '本季度' },
   { key: 'year', label: '本年' },
+  { key: 'last_year', label: '去年' },
   { key: '', label: '全部' },
 ]
 // 快捷区间按 UTC+8（北京时间）计算，与 todayCST() 等系统函数口径一致。
@@ -512,9 +534,27 @@ function setPayRange(key) {
     const dow = (base.getUTCDay() + 6) % 7
     const s = new Date(base); s.setUTCDate(base.getUTCDate() - dow); start = iso(s)
   }
+  else if (key === 'last_week') {
+    // 上周：本周一往前 7 天（上周一）～ 本周一前 1 天（上周日）
+    const dow = (base.getUTCDay() + 6) % 7
+    const thisMon = new Date(base); thisMon.setUTCDate(base.getUTCDate() - dow)
+    const lastMon = new Date(thisMon); lastMon.setUTCDate(thisMon.getUTCDate() - 7)
+    const lastSun = new Date(thisMon); lastSun.setUTCDate(thisMon.getUTCDate() - 1)
+    start = iso(lastMon); end = iso(lastSun)
+  }
   else if (key === 'month') start = iso(new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 1)))
+  else if (key === 'last_month') {
+    // 上月：上月 1 号 ～ 上月最后一天（本月 0 号）
+    start = iso(new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() - 1, 1)))
+    end = iso(new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 0)))
+  }
   else if (key === 'quarter') start = iso(new Date(Date.UTC(base.getUTCFullYear(), Math.floor(base.getUTCMonth() / 3) * 3, 1)))
   else if (key === 'year') start = iso(new Date(Date.UTC(base.getUTCFullYear(), 0, 1)))
+  else if (key === 'last_year') {
+    // 去年：去年 1 月 1 日 ～ 去年 12 月 31 日
+    start = iso(new Date(Date.UTC(base.getUTCFullYear() - 1, 0, 1)))
+    end = iso(new Date(Date.UTC(base.getUTCFullYear() - 1, 11, 31)))
+  }
   payFilters.pay_start = start
   payFilters.pay_end = end
   loadPayments(true)
@@ -718,6 +758,15 @@ const groupLoading = ref(false)
 const fmtAmt = (v) => fmtCompact(v, { dash: '0.00' })
 // 表格内金额：精确数值、千分位、不带单位（KPI 指标条仍用 fmtAmt 带单位）
 const fmtCell = (v) => fmtMoney(v, '—')
+
+// 开票金额 ≠ 实际应收(预估+账实差额) 的提醒文案。已备注则视为已说明原因（图标降级）。
+function invMismatchTip(rec) {
+  const inv = fmtMoney(rec.actual_invoice_amount)
+  const recv = fmtMoney(rec.actual_receivable)
+  const diff = fmtMoney(Math.abs(parseFloat(rec.actual_invoice_amount || 0) - parseFloat(rec.actual_receivable || 0)))
+  const base = `已开票 ${inv}，与实际应收 ${recv} 不一致（差 ${diff}）。\n请调整「账实差额」使二者相等，或在「备注」中说明原因。`
+  return rec.notes ? `${base}\n已备注：${rec.notes}` : base
+}
 
 // ── 分页跳转 ────────────────────────────────────────────────────────────────
 const jumpPage = ref(1)
@@ -1778,6 +1827,7 @@ function clearFilters() {
               <template v-if="activeTab === 'all'">
                 <th v-if="show('r_estimated_amount')" class="amt"><ColumnFilter label="预估金额" field="estimated_amount" type="number" :model-value="colFilters.estimated_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('estimated_amount',v)" @sort="o=>setSort('estimated_amount',o)" /></th>
                 <th v-if="show('r_actual_invoice_amount')" class="amt"><ColumnFilter label="实际开票" field="actual_invoice_amount" type="number" :model-value="colFilters.actual_invoice_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('actual_invoice_amount',v)" @sort="o=>setSort('actual_invoice_amount',o)" /></th>
+                <th v-if="show('r_actual_receivable')" class="amt" title="实际应收 = 预估金额 + 账实差额；已开票且与开票金额不一致会提醒">实际应收</th>
                 <th v-if="show('r_tax_amount')" class="amt"><ColumnFilter label="税额" field="tax_amount" type="number" :model-value="colFilters.tax_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('tax_amount',v)" @sort="o=>setSort('tax_amount',o)" /></th>
                 <th v-if="show('r_account_diff')" class="amt"><ColumnFilter label="账实差额" field="account_diff_adjustment" type="number" :model-value="colFilters.account_diff_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('account_diff_adjustment',v)" @sort="o=>setSort('account_diff_adjustment',o)" /></th>
                 <th v-if="show('r_outstanding')" class="amt"><ColumnFilter label="未收金额" field="outstanding_amount" type="number" :model-value="colFilters.outstanding_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('outstanding_amount',v)" @sort="o=>setSort('outstanding_amount',o)" /></th>
@@ -1837,11 +1887,11 @@ function clearFilters() {
                 <template v-else>暂无数据</template>
               </td>
             </tr>
-            <template v-for="rec in items" :key="rec.id">
+            <template v-for="(rec, idx) in items" :key="rec.id">
               <tr :class="['data-row', agingRowClass(rec), (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']"
                 @contextmenu.prevent="ctx.open($event, rec)" @dblclick="onRowDblClick(rec, $event)">
                 <td v-if="auth.canDelete" class="sel-col sticky-col">
-                  <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @change="toggleRow(rec.id)" />
+                  <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @click.prevent.stop="onRowSelClick($event, idx, rec.id)" title="按住 Shift 点击可区间勾选" />
                 </td>
                 <td class="sticky-col" :style="cw.thStyle('short_name')">
                   <div class="proj-name" :title="rec.short_name || rec.customer_name">
@@ -1858,8 +1908,12 @@ function clearFilters() {
 
                 <!-- all -->
                 <template v-if="activeTab === 'all'">
-                  <td v-if="show('r_estimated_amount')" class="amt fw">{{ fmtCell(rec.estimated_amount) }}</td>
+                  <td v-if="show('r_estimated_amount')" class="amt">{{ fmtCell(rec.estimated_amount) }}</td>
                   <td v-if="show('r_actual_invoice_amount')" class="amt">{{ rec.actual_invoice_amount ? fmtCell(rec.actual_invoice_amount) : '—' }}</td>
+                  <td v-if="show('r_actual_receivable')" class="amt fw">
+                    {{ fmtCell(rec.actual_receivable) }}
+                    <span v-if="rec.invoice_mismatch" class="inv-warn" :class="rec.notes ? 'noted' : 'todo'" :title="invMismatchTip(rec)">{{ rec.notes ? '📝' : '⚠' }}</span>
+                  </td>
                   <td v-if="show('r_tax_amount')" class="amt text-muted">{{ rec.tax_amount ? fmtCell(rec.tax_amount) : '—' }}</td>
                   <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtCell(rec.account_diff_adjustment) : '—' }}</td>
                   <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
@@ -2710,7 +2764,7 @@ function clearFilters() {
                   <i v-if="payRec" class="field-hint">未收上限 {{ fmtCell(payRec.outstanding_amount) }}</i>
                 </span>
                 <input v-model="payForm.amount" type="number" step="0.01" :max="payRec?.outstanding_amount" autofocus />
-                <i v-if="payRec && parseFloat(payForm.amount) > parseFloat(payRec.outstanding_amount)" class="field-warn">超过未收 {{ fmtCell(payRec.outstanding_amount) }}，将被拒绝（多收部分请到「预收预付」录入）</i>
+                <i v-if="payRec && parseFloat(payForm.amount) > parseFloat(payRec.outstanding_amount)" class="field-warn">超过未收 {{ fmtCell(payRec.outstanding_amount) }}，将被拒绝（多收部分请核实原因，并到差额调整录入或「预收预付」录入）</i>
               </label>
               <label class="form-field span2">
                 <span>{{ payForm.source === '内部往来' ? '核销日期' : '回款日期' }} <em>*</em></span>
@@ -3200,6 +3254,10 @@ function clearFilters() {
 .amt-warn { color: #e65100; font-weight: 700; }
 .amt-ok { color: #2e7d32; font-weight: 700; }
 .amt-zero { color: var(--muted); }
+/* 开票金额 ≠ 实际应收 提醒角标：未备注=待处理(红)，已备注=已说明(灰) */
+.inv-warn { margin-left: 3px; cursor: help; font-size: 11px; line-height: 1; vertical-align: middle; }
+.inv-warn.todo { filter: none; }
+.inv-warn.noted { opacity: .55; }
 .mode-tag { font-size: 11.5px; padding: 2px 8px; border-radius: 8px; background: rgba(0,0,0,0.05); color: var(--muted); font-weight: 500; }
 
 /* Status pills */
