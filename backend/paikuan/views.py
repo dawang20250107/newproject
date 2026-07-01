@@ -2525,7 +2525,8 @@ def approval_records_bulk_delete(request):
         if not can_write_dept(request, rec.department):
             skipped.append({'id': rec.id, 'reason': '无权操作该部门'})
             continue
-        if rec.payments.exists():
+        # 仅「在册（未软删）付款」阻止软删审批；付款已在回收站则允许审批一并进回收站。
+        if rec.payments.filter(deleted_at__isnull=True).exists():
             skipped.append({'id': rec.id, 'reason': '已关联付款管理（已排款），不能删除；请先在付款管理删除对应排款'})
             continue
         rec.deleted_at = now
@@ -4971,17 +4972,26 @@ def trash_approvals(request):
                 return err('ids 必填或传 all:true')
             targets = list(qs.filter(pk__in=ids))
         count = 0
+        skipped = []
         for rec in targets:
             if action == 'restore':
                 rec.deleted_at = None
                 rec.deleted_by = None
                 rec.save(update_fields=['deleted_at', 'deleted_by'])
             elif action == 'purge':
-                if rec.payments.exists():
+                # 有关联付款则不能彻底删除审批（否则会遗留孤儿付款/流水）。
+                # 明确给出跳过原因，杜绝「静默跳过 → 记录看似删不掉/又回来」的困惑。
+                n_total = rec.payments.count()
+                if n_total:
+                    n_active = rec.payments.filter(deleted_at__isnull=True).count()
+                    reason = (f'尚有 {n_active} 笔在册付款关联，请先在付款管理删除后再彻底删除'
+                              if n_active else
+                              f'尚有 {n_total} 笔关联付款在回收站，请先到付款管理回收站彻底删除')
+                    skipped.append({'id': rec.id, 'reason': reason})
                     continue
                 rec.delete()
             count += 1
-        return ok({'count': count, 'action': action})
+        return ok({'count': count, 'action': action, 'skipped': skipped})
     return err('Method not allowed', 405)
 
 

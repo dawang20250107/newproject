@@ -1397,6 +1397,31 @@ class BulkOpsTests(TestCase):
         self.assertEqual(resp.json()['data']['count'], 3)
         self.assertEqual(ApprovalRecord.objects.filter(id__in=ids).count(), 0)  # 物理删除
 
+    def test_purge_approval_blocked_until_linked_payment_purged(self):
+        # 删除链路：审批已排款(有关联付款) → 彻底删审批须先删付款，否则明确跳过，
+        # 杜绝「审批删不掉/看似又回来」。删掉付款后审批可彻底删除。
+        a = self._mk_approval(7, '1000')
+        self._post(f'/api/pk/approvals/{a.id}/schedule',
+                   {'planned_date': '2026-07-01', 'total_amount': '1000'})
+        p = Payment.objects.get(approval=a)
+        # 先软删付款（审批已排款归零后才能软删审批），再软删审批
+        self._post('/api/pk/payments/bulk-delete', {'ids': [p.id]})
+        self._post('/api/pk/approvals/bulk-delete', {'ids': [a.id]})
+        self.assertIsNotNone(ApprovalRecord.objects.get(id=a.id).deleted_at)
+        self.assertIsNotNone(Payment.objects.get(id=p.id).deleted_at)
+        # 彻底删除审批 → 被明确跳过（仍关联回收站中的付款），审批未被物理删除
+        r = self._post('/api/pk/trash/approvals', {'action': 'purge', 'ids': [a.id]}).json()['data']
+        self.assertEqual(r['count'], 0)
+        self.assertEqual(len(r['skipped']), 1)
+        self.assertTrue(ApprovalRecord.objects.filter(id=a.id).exists())
+        # 彻底删除付款 → 成功
+        self._post('/api/pk/trash/payments', {'action': 'purge', 'ids': [p.id]})
+        self.assertFalse(Payment.objects.filter(id=p.id).exists())
+        # 再彻底删除审批 → 成功（已无关联付款），链路彻底
+        r2 = self._post('/api/pk/trash/approvals', {'action': 'purge', 'ids': [a.id]}).json()['data']
+        self.assertEqual(r2['count'], 1)
+        self.assertFalse(ApprovalRecord.objects.filter(id=a.id).exists())
+
     def test_trash_requires_ids_or_all(self):
         resp = self._post('/api/pk/trash/approvals', {'action': 'restore'})
         self.assertEqual(resp.status_code, 400)

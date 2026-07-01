@@ -84,7 +84,14 @@ async function doAction(action) {
     const cfg = deptFilter.value ? { params: { dept: deptFilter.value } } : {}
     const r = await api.post(`/trash/${activeTab.value}`, body, cfg)
     const n = r.data.count
-    toast.success(`已${label} ${n} 条` + (allAcross.value && total.value > n ? `（单次上限 ${SELECT_ALL_CAP}，剩余请再次操作）` : ''))
+    const skipped = r.data.skipped || []
+    if (n) toast.success(`已${label} ${n} 条` + (allAcross.value && total.value > n ? `（单次上限 ${SELECT_ALL_CAP}，剩余请再次操作）` : ''))
+    // 有跳过（如审批仍关联付款不能彻底删除）→ 明确提示原因，避免「删不掉/又回来」的困惑
+    if (skipped.length) {
+      toast.warn(`${skipped.length} 条未${label}：${skipped[0].reason}${skipped.length > 1 ? ' 等' : ''}`)
+    } else if (!n) {
+      toast.warn(`没有可${label}的记录`)
+    }
     load()
   } catch (e) {
     toast.error(e?.msg || '操作失败')
