@@ -2036,6 +2036,24 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(rec.ext_raw['对账单号'], 'ZD202606260055')
         self.assertEqual(rec.ext_raw['实际对账金额'], -4828.5)  # 原始负数逐字保留
 
+    def test_missing_bill_no_row_is_skipped(self):
+        # 对账单号是唯一必需键：无对账单号的行不得进入审批管理（回归防护）
+        rows = [self._row(1, 'ZD-KEEP-1', '甲', 1000),
+                self._row(2, '', '乙', 2000),        # 有金额/对象，但无对账单号
+                self._row(3, '   ', '丙', 3000),     # 对账单号仅空白字符
+                self._row(4, 'ZD-KEEP-2', '丁', 4000)]
+        d = self._import(rows).json()['data']
+        self.assertEqual(d['created'], 2)             # 仅两条有对账单号的入库
+        # 审批管理里不存在任何空对账单号的运输记录
+        self.assertFalse(
+            ApprovalRecord.objects.filter(ext_source='transport', ext_bill_no='').exists())
+        self.assertEqual(
+            ApprovalRecord.objects.filter(ext_source='transport').count(), 2)
+        self.assertEqual(
+            set(ApprovalRecord.objects.filter(ext_source='transport')
+                .values_list('ext_bill_no', flat=True)),
+            {'ZD-KEEP-1', 'ZD-KEEP-2'})
+
     def test_import_dedup_by_bill_no(self):
         # 文件内重复 + 二次导入重复，均按对账单号去重
         rows = [self._row(1, 'ZD202606260001', 'A', 100), self._row(2, 'ZD202606260001', 'A', 100),
