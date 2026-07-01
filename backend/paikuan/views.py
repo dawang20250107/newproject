@@ -12,7 +12,7 @@ from urllib.parse import quote
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction, IntegrityError
-from django.db.models import F, Q, Sum, Count, Case, When, ExpressionWrapper, Value, OuterRef, Subquery, IntegerField
+from django.db.models import F, Q, Sum, Count, Case, When, ExpressionWrapper, Value, OuterRef, Subquery, IntegerField, Exists
 from django.db.models import DecimalField as DjDecimalField
 from django.db.models.functions import Coalesce, Greatest
 from django.conf import settings
@@ -641,6 +641,22 @@ def _paid_subq():
 def _paid_expr():
     """Annotation expression for total paid amount (from installments subtable)."""
     return _paid_subq()
+
+
+def _has_prepaid_subq(request):
+    """Exists 子查询：该付款的项目（按项目编号/项目简称）或收款方（散单预付）是否存在
+    未核销「预付」余额——与 prepaid_balance 接口同口径，按用户可见部门作用域过滤。
+    供列表行级「核销提醒」：出纳付款前忘核销预付、重复支付的高发场景。"""
+    from ar.models import AdvanceRecord
+    adv = AdvanceRecord.objects.filter(direction='预付', balance_amount__gt=0)
+    if request.pk_role != 'super_admin':
+        adv = adv.filter(delivery_dept__in=request.pk_depts or [])
+    adv = adv.filter(
+        Q(project__isnull=False, project__project_no=OuterRef('project_no'))
+        | Q(project__isnull=False, project__short_name=OuterRef('project_short_name'))
+        | Q(project__isnull=True, counterparty__iexact=OuterRef('payee'))
+    )
+    return Exists(adv)
 
 
 def _plan_count_subq():
@@ -1404,7 +1420,7 @@ def _list_payments(request):
     perms = get_request_perms(request)
     if pay_window_active:
         # 付款日期窗口：需逐行遍历分期算「窗口内实付」→ 保留预取、返回完整明细。
-        page_slice = qs[(page - 1) * size: page * size]
+        page_slice = qs.annotate(_has_prepaid=_has_prepaid_subq(request))[(page - 1) * size: page * size]
         ws = _safe_iso_date(pay_start) if pay_start else None
         we = _safe_iso_date(pay_end) if pay_end else None
         items = []
@@ -1421,7 +1437,8 @@ def _list_payments(request):
         # 轻量列表：分批/分期明细不内嵌（前端展开行时懒加载 GET /payments/<id>）。
         # 去掉两张子表预取，改用子查询注解已付/批次数 → 查询更省、响应体更小、渲染更快。
         page_slice = (qs.prefetch_related(None)
-                        .annotate(_paid=_paid_subq(), _plan_cnt=_plan_count_subq())
+                        .annotate(_paid=_paid_subq(), _plan_cnt=_plan_count_subq(),
+                                  _has_prepaid=_has_prepaid_subq(request))
                         [(page - 1) * size: page * size])
         items = [apply_view_mask(p.to_dict(light=True), perms) for p in page_slice]
     return ok({

@@ -239,6 +239,8 @@ class Payment(models.Model):
             'plan_adjustment': str(self.plan_adjustment) if self.plan_adjustment is not None else None,
             'g7_number': self.g7_number,
             'is_priority': self.is_priority,
+            # 核销提醒：项目/收款方存在未核销「预付」余额（列表 Exists 注解；无注解时 False）
+            'has_prepaid_balance': bool(getattr(self, '_has_prepaid', False)),
             'prepaid_offset_amount': str(self.prepaid_offset_amount),
             'total_paid': str(total_paid_val),
             'remaining': str(remaining_val),

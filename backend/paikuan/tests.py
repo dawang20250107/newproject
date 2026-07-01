@@ -113,6 +113,33 @@ class PaymentPermissionRegressionTests(TestCase):
                                 {'project_no': 'NOPE'}, **self.auth())
         self.assertFalse(resp2.json()['data']['matched'])
 
+    def test_list_flags_prepaid_balance_for_offset_reminder(self):
+        """核销提醒：列表行级标记 has_prepaid_balance——项目(项目编号)或收款方(散单预付)
+        存在未核销预付余额的付款为 True，无匹配为 False。防出纳忘核销重复支付。"""
+        from ar.models import ARProject, AdvanceRecord
+        proj = ARProject.objects.create(
+            customer_name='C', short_name='预付项目B', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='GYL-TEST-0002')
+        AdvanceRecord.objects.create(
+            direction='预付', project=proj, delivery_dept=self.dept, counterparty='供应商B',
+            occur_year=2026, occur_month=3, occur_date=date(2026, 3, 1),
+            advance_amount=Decimal('5000'))
+        # 散单预付（未挂项目）：按收款方精确匹配
+        AdvanceRecord.objects.create(
+            direction='预付', project=None, delivery_dept=self.dept, counterparty='散单供应商',
+            occur_year=2026, occur_month=4, occur_date=date(2026, 4, 1),
+            advance_amount=Decimal('2000'))
+        mk = dict(created_by=self.user, department=self.dept, approval_number='',
+                  project_desc='X', total_amount=Decimal('1000'), planned_date=date(2026, 6, 1))
+        p_proj = Payment.objects.create(**{**mk, 'payee': '甲', 'project_no': 'GYL-TEST-0002'})
+        p_payee = Payment.objects.create(**{**mk, 'payee': '散单供应商'})
+        p_none = Payment.objects.create(**{**mk, 'payee': '无关供应商'})
+        rows = {x['id']: x for x in
+                self.client.get('/api/pk/payments', **self.auth()).json()['data']['items']}
+        self.assertTrue(rows[p_proj.id]['has_prepaid_balance'])    # 项目编号命中
+        self.assertTrue(rows[p_payee.id]['has_prepaid_balance'])   # 散单收款方命中
+        self.assertFalse(rows[p_none.id]['has_prepaid_balance'])   # 无匹配
+
     def test_payment_create_persists_project_no(self):
         from paikuan.views import default_job_config
         JobPermission.objects.update_or_create(

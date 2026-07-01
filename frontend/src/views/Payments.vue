@@ -722,6 +722,7 @@ function onSaved(p) {
 // 该排款项目若有「预付」未核销余额，可直接在此冲抵：选预付 → 金额+日期 →
 // 生成核销并自动更新本排款的预付冲抵额（待付 = 计划 − 已付 − 冲抵）。
 const showOffset = ref(false)
+const canWoPrepaid = computed(() => auth.canAction('wo_prepaid'))
 const offsetTarget = ref(null)        // payment row
 const offsetItems = ref([])           // 可用预付列表
 const offsetLoading = ref(false)
@@ -957,11 +958,13 @@ function openBatchPay() {
     batchPayRows.value = selectedPayable.value.map(p => {
       const rem = remOf(p)
       return { id: p.id, label: [p.payee, p.project_short_name || p.project_desc].filter(Boolean).join(' · ') || `#${p.id}`,
-               remaining: rem, amount: rem }
+               remaining: rem, amount: rem, hasPrepaid: !!p.has_prepaid_balance }
     })
   }
   showBatchPay.value = true
 }
+// 核销提醒：所选待付记录中，项目/收款方存在未核销预付余额的行（付款前提示先核销，防重复支付）
+const batchPayPrepaidRows = computed(() => batchPayRows.value.filter(r => r.hasPrepaid))
 function batchPayResetAll() { batchPayRows.value.forEach(r => { r.amount = r.remaining }) }
 async function doBatchPay() {
   if (batchPayBusy.value) return
@@ -1171,7 +1174,12 @@ async function doBatchPay() {
               </td>
               <td v-if="colVisible('total_amount')" class="amt" :title="dash(p.total_amount)">{{ dash(p.total_amount) }}</td>
               <td v-if="colVisible('paid')" class="amt amt-green" :title="dash(p.total_paid)">{{ dash(p.total_paid) }}</td>
-              <td v-if="colVisible('remaining')" class="amt" :class="parseFloat(p.remaining) > 0 ? 'amt-red' : ''" :title="dash(p.remaining)">{{ dash(p.remaining) }}</td>
+              <td v-if="colVisible('remaining')" class="amt" :class="parseFloat(p.remaining) > 0 ? 'amt-red' : ''" :title="dash(p.remaining)">
+                <span v-if="p.has_prepaid_balance && parseFloat(p.remaining) > 0" class="offset-hint"
+                      title="该项目/收款方存在未核销「预付」余额——付款前请先核销，避免重复支付（点击去核销）"
+                      @click.stop="canWoPrepaid ? openOffset(p) : toast.warn('无预付核销权限，请联系财务核销后再付款')">核销</span>
+                {{ dash(p.remaining) }}
+              </td>
               <td v-if="colVisible('status')" class="status-cell">
                 <span class="status-wrap">
                   <button class="prio-star" :class="{ on: p.is_priority }" @click.stop="togglePriorityOne(p)"
@@ -1511,6 +1519,9 @@ async function doBatchPay() {
               <p style="font-size:12px;color:var(--muted);margin:10px 0 12px">
                 跨页批量付款：各记录按各自「剩余应付（=计划金额 − 已付 − 预付冲抵）」登记付款明细，已结清（无剩余）的记录自动跳过。
               </p>
+              <div class="pay-offset-warn">
+                ⚠ 跨页付款不逐条核对预付余额：如相关项目/收款方可能有未核销「预付」，请先核销（台账「剩余」列的「核销」角标），或改为本页勾选后付款。
+              </div>
             </template>
             <template v-else>
               <div class="batch-summary">
@@ -1520,6 +1531,11 @@ async function doBatchPay() {
               <p style="font-size:12px;color:var(--muted);margin:10px 0 12px">
                 默认按各记录「剩余应付（=计划金额 − 已付 − 预付冲抵）」各登记一笔付款明细，可逐条调小做分次付款（不得超过剩余应付）；已结清（无剩余）的记录已自动排除。
               </p>
+              <div v-if="batchPayPrepaidRows.length" class="pay-offset-warn">
+                ⚠ <b>{{ batchPayPrepaidRows.length }} 条记录存在未核销「预付」余额</b>——直接付款可能重复支付！
+                建议先取消，在台账「剩余」列点「核销」角标完成核销后再付款。<br/>
+                <span class="pow-list">涉及：{{ batchPayPrepaidRows.slice(0, 3).map(r => r.label).join('、') }}{{ batchPayPrepaidRows.length > 3 ? ` 等 ${batchPayPrepaidRows.length} 条` : '' }}</span>
+              </div>
             </template>
             <label class="batch-field" style="margin-bottom:10px"><span>付款日期*</span><input v-model="batchPayForm.pay_date" type="date" /></label>
             <template v-if="!isCrossPageSelection">
@@ -1532,7 +1548,7 @@ async function doBatchPay() {
               </div>
               <div class="batch-rows">
                 <div v-for="r in batchPayRows" :key="r.id" class="batch-row" :class="{ 'row-bad': payRowError(r) }">
-                  <span class="batch-row-label" :title="r.label">{{ r.label }}</span>
+                  <span class="batch-row-label" :title="r.label"><span v-if="r.hasPrepaid" class="brl-offset" title="存在未核销预付余额，付款前请先核销">核</span>{{ r.label }}</span>
                   <span class="batch-row-rem">剩余 {{ r.remaining.toFixed(2) }}</span>
                   <div class="batch-amt-wrap">
                     <input v-model="r.amount" type="number" step="0.01" min="0" :max="r.remaining"
@@ -1790,6 +1806,23 @@ async function doBatchPay() {
 .cell-muted { color: var(--muted); }
 /* 金额列：右对齐 + 等宽数字，数值完整展示、位数对齐；超长仍可 hover(title) 查看 */
 .pk-pay-tbl td.amt { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* 核销提醒角标：该行项目/收款方存在未核销预付余额，点击直达核销弹窗（防重复支付） */
+.offset-hint {
+  display: inline-block; margin-right: 4px; padding: 0 5px; border-radius: 5px;
+  font-size: 10.5px; font-weight: 700; cursor: pointer; vertical-align: middle;
+  color: #b8761a; background: rgba(245,166,35,0.16); border: 1px solid rgba(245,166,35,0.4);
+}
+.offset-hint:hover { background: rgba(245,166,35,0.3); }
+/* 批量付款卡片内的核销警示 */
+.pay-offset-warn {
+  margin: 0 0 12px; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.6;
+  color: #8a5a00; background: rgba(245,166,35,0.1); border: 1px solid rgba(245,166,35,0.35);
+}
+.pay-offset-warn .pow-list { color: var(--muted); font-size: 11.5px; }
+.brl-offset {
+  display: inline-block; margin-right: 4px; padding: 0 4px; border-radius: 4px;
+  font-size: 10px; font-weight: 700; color: #b8761a; background: rgba(245,166,35,0.16);
+}
 .proj-no { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 5px; background: rgba(201,99,66,0.1); color: var(--primary); font-size: 11px; font-weight: 600; }
 .cell-tooltip {
   position: fixed;
