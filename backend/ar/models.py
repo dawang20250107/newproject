@@ -470,7 +470,7 @@ class ARRecord(models.Model):
             raise ValidationError(
                 f'未收回金额不能为负：预估上账 {_f(base)} + 账实差额 {_f(adj)} '
                 f'− 累计回款 {_f(total_paid)} = {_f(outstanding)}。'
-                f'请核对预估上账金额或账实差额调整。'
+                f'请核实原因：如确有多收，请到「差额调整」录入，或将多收部分到「预收预付」录入。'
             )
         self.outstanding_amount = outstanding
         self.tax_amount = self._compute_tax()

@@ -2740,7 +2740,7 @@ function clearFilters() {
                   <i v-if="payRec" class="field-hint">未收上限 {{ fmtCell(payRec.outstanding_amount) }}</i>
                 </span>
                 <input v-model="payForm.amount" type="number" step="0.01" :max="payRec?.outstanding_amount" autofocus />
-                <i v-if="payRec && parseFloat(payForm.amount) > parseFloat(payRec.outstanding_amount)" class="field-warn">超过未收 {{ fmtCell(payRec.outstanding_amount) }}，将被拒绝（多收部分请到「预收预付」录入）</i>
+                <i v-if="payRec && parseFloat(payForm.amount) > parseFloat(payRec.outstanding_amount)" class="field-warn">超过未收 {{ fmtCell(payRec.outstanding_amount) }}，将被拒绝（多收部分请核实原因，并到差额调整录入或「预收预付」录入）</i>
               </label>
               <label class="form-field span2">
                 <span>{{ payForm.source === '内部往来' ? '核销日期' : '回款日期' }} <em>*</em></span>
