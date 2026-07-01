@@ -1412,13 +1412,14 @@ def _list_payments(request):
 
 def _clean_approval_number(raw):
     """清洗并校验审批编号：剔除空格、不可打印/控制/零宽等字符（导入 Excel 常见脏数据），
-    清洗后空值占位为 21 个 0，其余须为 1–100 位数字。返回 (cleaned, error)。"""
+    清洗后空值占位为 21 个 0，其余须为 1–100 位「字母/数字/短横」（放宽纯数字限制，
+    以兼容运输对账单号 ZD… 等含字母的编号）。返回 (cleaned, error)。"""
     s = ''.join(ch for ch in str(raw if raw is not None else '')
                 if ch.isprintable() and not ch.isspace())
     if not s:
         return '0' * 21, None
-    if not re.fullmatch(r'\d{1,100}', s):
-        return None, '审批编号清洗后须为1–100位数字（不填将自动占位为21个0）'
+    if not re.fullmatch(r'[0-9A-Za-z\-]{1,100}', s):
+        return None, '审批编号清洗后须为1–100位字母/数字/短横（不填将自动占位为21个0）'
     return s, None
 
 
@@ -4286,7 +4287,7 @@ TRANSPORT_SOURCE = 'transport'
 TRANSPORT_DEPT = '运输事业部'
 # 运输对账单原表头（顺序即导出列顺序，必须与来源系统完全一致）
 TRANSPORT_HEADERS = [
-    '序号', '所属组织', '对账单号', '运单号', '收支方式', '对账对象', '联系电话',
+    '序号', '所属组织', '对账单号', '运单号', '项目名称', '收支方式', '对账对象', '联系电话',
     '实际对账金额', '对账时间', '状态', '创建人', '创建时间', '备注', '单据类别',
     '账单调整', '对账金额', '结算方式', '实对网货服务费合计', '实对网货费用合计', '开户人',
 ]
@@ -4390,13 +4391,19 @@ def _transport_analyze(rows, existing_bills):
         raw = {h: (_transport_json_safe(row[i]) if i < len(row) else None) for h, i in pos.items()}
         report['ok'].append({
             'row': rn, 'bill_no': bill_no, 'src_status': src_status,
-            # 字段映射（运输原表列 → 我方记录字段）：
-            #   收支方式 → 收款主体(payee)、对账对象 → 摘要(summary)、运单号 → 备注(notes)
-            # 各列均按目标字段 max_length 截断，杜绝超长源值导致入库失败。
+            # 字段映射（运输原表列 → 我方记录字段），各列按目标字段 max_length 截断：
+            #   对账单号 → 审批编号(approval_number，唯一键/复制/批量筛选主键)
+            #   运单号   → G7编号(g7_number，可多张以「/」拼接)
+            #   项目名称 → 项目简称(project_short_name)
+            #   备注     → 备注(notes)
+            #   收支方式 → 收款主体(payee)、对账对象 → 摘要(summary)
+            'approval_number': bill_no[:21],
+            'g7': str(cell(row, '运单号') or '').strip()[:255],
+            'project_short_name': str(cell(row, '项目名称') or '').strip()[:100],
+            'notes': str(cell(row, '备注') or '').strip()[:500],
             'payee': (str(cell(row, '收支方式') or '').strip() or bill_no)[:200],
             'summary': (str(cell(row, '对账对象') or '').strip() or f'运输对账 {bill_no}')[:500],
             'org': str(cell(row, '所属组织') or '').strip(),
-            'notes': str(cell(row, '运单号') or '').strip()[:500],
             'amount': amount, 'raw': raw,
         })
         seen.add(bill_no)
@@ -4486,7 +4493,9 @@ def transport_import(request):
                 ApprovalRecord.objects.create(
                     created_by_id=request.pk_uid, applicant=importer,
                     department=TRANSPORT_DEPT, secondary_dept=item['org'],
-                    approval_number='', g7_number=bill_no[:21],
+                    approval_number=item['approval_number'],  # 审批编号 ← 对账单号
+                    g7_number=item['g7'],                     # G7编号 ← 运单号
+                    project_short_name=item['project_short_name'],  # 项目简称 ← 项目名称
                     summary=item['summary'][:500], notes=item['notes'],
                     amount=item['amount'], payee=item['payee'], status='approved',
                     ext_source=TRANSPORT_SOURCE, ext_bill_no=bill_no, ext_raw=item['raw'],
@@ -4844,8 +4853,9 @@ def payments_select_ids(request):
 
 @pk_required()
 def transport_g7_numbers(request):
-    """运输专用：返回所选(ids)/当前筛选口径下付款记录的 G7编号（=对账单号）去重列表，
-    供前端以「+」或空格连接复制到剪贴板。跨页全量，不受分页限制。上限 G7_COPY_CAP。"""
+    """运输专用：返回所选(ids)/当前筛选口径下付款记录的 审批编号（=对账单号）去重列表，
+    供前端以「+」或空格连接复制到剪贴板。跨页全量，不受分页限制。上限 G7_COPY_CAP。
+    注：运输映射调整后「单号」对应审批编号（对账单号），不再取 G7编号（现为运单号）。"""
     if request.method != 'GET':
         return err('Method not allowed', 405)
     perms = get_request_perms(request)
@@ -4863,12 +4873,13 @@ def transport_g7_numbers(request):
         qs, _ = _payments_filtered_qs(request)
     # 保序去重（清空排序以规避 DISTINCT/ORDER BY 跨库差异；顺序对拼接用途不敏感）
     seen, nums = set(), []
-    for g7 in qs.order_by().values_list('g7_number', flat=True).iterator():
-        g7 = (g7 or '').strip()
-        if not g7 or g7 in seen:
+    for no in qs.order_by().values_list('approval_number', flat=True).iterator():
+        no = (no or '').strip()
+        # 跳过空/占位（全 0）审批编号
+        if not no or set(no) == {'0'} or no in seen:
             continue
-        seen.add(g7)
-        nums.append(g7)
+        seen.add(no)
+        nums.append(no)
         if len(nums) >= G7_COPY_CAP:
             break
     return ok({'numbers': nums, 'count': len(nums), 'capped': len(nums) >= G7_COPY_CAP})

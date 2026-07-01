@@ -509,7 +509,7 @@ async function exportTransport() {
   finally { exportingTransport.value = false }
 }
 
-// 运输专用 G7编号（= 原表对账单号）批量复制到剪贴板 —— 服务端取数，跨页全量。
+// 运输专用 对账单号（= 审批编号）批量复制到剪贴板 —— 服务端取数，跨页全量。
 // 来源：有勾选取勾选（跨页 ids），否则取当前筛选口径全部；后端去重。
 // 普通点击用「+」连接，Shift+点击用空格连接。
 const copyingG7 = ref(false)
@@ -527,7 +527,7 @@ async function copyG7Numbers(e) {
     }
     const res = await api.get('/payments/transport/g7-numbers', { params, timeout: 60000 })
     const nums = res.data?.numbers || []
-    if (!nums.length) { toast.warn('当前范围内没有 G7 编号（对账单号）可复制'); return }
+    if (!nums.length) { toast.warn('当前范围内没有对账单号（审批编号）可复制'); return }
     const ok = await copyText(nums.join(sep))
     if (!ok) { toast.error('复制失败，请手动复制'); return }
     let msg = `已复制 ${nums.length} 个对账单号（${sep === '+' ? '+ 连接' : '空格连接'}）`
@@ -985,7 +985,7 @@ async function doBatchPay() {
             <span v-else style="margin-right:4px">🚚</span>{{ exportingTransport ? '导出中…' : (selectedCount ? `运输导出(${selectedCount})` : '运输导出') }}
           </button>
           <button class="btn btn-ghost btn-sm tp-btn" :disabled="copyingG7" @click="copyG7Numbers($event)"
-                  :title="(selectedCount ? `复制勾选 ${selectedCount} 条的` : '复制当前筛选全部') + ' G7编号（= 对账单号），跨页全量；以「+」连接，Shift+点击改用空格连接'">
+                  :title="(selectedCount ? `复制勾选 ${selectedCount} 条的` : '复制当前筛选全部') + ' 对账单号（= 审批编号），跨页全量；以「+」连接，Shift+点击改用空格连接'">
             <span v-if="copyingG7" class="btn-spin"></span>
             <span v-else style="margin-right:2px">📋</span>{{ copyingG7 ? '复制中…' : '复制单号' }}
           </button>
@@ -1229,7 +1229,7 @@ async function doBatchPay() {
           <button v-if="auth.canDelete" class="bulk-return" :disabled="bulkReturning" @click="bulkReturn" title="退回排款（来源审批已排款归零，可重新排款）">{{ bulkReturning ? '退回中…' : `批量退回(${selectedCount})` }}</button>
           <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
           <button v-if="canTransport" class="bulk-act" :disabled="copyingG7" @click="copyG7Numbers($event)"
-                  title="复制所选记录的 G7编号（对账单号），「+」连接；Shift+点击改用空格连接">📋 复制单号</button>
+                  title="复制所选记录的 对账单号（审批编号），「+」连接；Shift+点击改用空格连接">📋 复制单号</button>
           <button class="bulk-cancel" @click="clearSelection">取消</button>
         </div>
       </Teleport>

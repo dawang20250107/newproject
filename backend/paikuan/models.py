@@ -95,7 +95,9 @@ class Payment(models.Model):
     planned_date = models.DateField('计划付款日期', db_index=True)
     notes = models.TextField('备注', blank=True, default='')
     plan_adjustment = models.DecimalField('计划调整金额', max_digits=15, decimal_places=2, null=True, blank=True)
-    g7_number = models.CharField('G7编号', max_length=21, blank=True, default='', db_index=True)
+    # G7编号：运输事业部导入时承载「运单号」，可能是多张运单以「/」拼接（可达 180+ 字符），
+    # 故放宽长度；检索/复制/批量筛选的主键改用「审批编号」，此列不再建索引（避免超长索引）。
+    g7_number = models.CharField('G7编号', max_length=255, blank=True, default='')
     # 系统自动维护：等于所有关联 AdvanceWriteoff.amount 之和，现金流视图从 paid 中扣除此金额防双重计
     prepaid_offset_amount = models.DecimalField('预付核销冲抵金额', max_digits=15, decimal_places=2, default=Decimal('0'))
     deleted_at = models.DateTimeField('软删除时间', null=True, blank=True, db_index=True)
@@ -283,7 +285,9 @@ class ApprovalRecord(models.Model):
     secondary_dept = models.CharField('二级部门', max_length=100, blank=True, default='', db_index=True)
     project_short_name = models.CharField('项目简称', max_length=100, blank=True, default='', db_index=True)
     approval_number = models.CharField('审批编号', max_length=21, db_index=True)
-    g7_number = models.CharField('G7编号', max_length=21, blank=True, default='', db_index=True)
+    # G7编号：运输事业部导入时承载「运单号」，可能是多张运单以「/」拼接（可达 180+ 字符），
+    # 故放宽长度；检索/复制/批量筛选的主键改用「审批编号」，此列不再建索引（避免超长索引）。
+    g7_number = models.CharField('G7编号', max_length=255, blank=True, default='')
     summary = models.CharField('摘要', max_length=500)
     # 备注：手工登记可填；运输事业部导入时承载原表「备注」列原文
     notes = models.CharField('备注', max_length=500, blank=True, default='')

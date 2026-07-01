@@ -92,7 +92,7 @@ class PaymentPermissionRegressionTests(TestCase):
             self.assertEqual(resp.json()['data']['project_no'], 'GYL-TEST-0002')
 
     def test_payment_approval_number_cleaned_and_validated(self):
-        """审批单号：清洗（去空格/不可打印字符）后校验 1–100 位数字；空则占位 21 个 0。"""
+        """审批单号：清洗（去空格/不可打印字符）后校验 1–100 位字母/数字/短横；空则占位 21 个 0。"""
         from paikuan.views import _parse_payment_fields, _clean_approval_number
 
         def parse(no):
@@ -100,7 +100,7 @@ class PaymentPermissionRegressionTests(TestCase):
                 'department': self.dept, 'approval_number': no, 'project_desc': 'D',
                 'payee': 'P', 'total_amount': '5000', 'planned_date': '2026-06-01'})
 
-        # 带空格/零宽字符 → 清洗为纯数字后通过
+        # 带空格/零宽字符 → 清洗后通过
         fields, error = parse('  123 456​789  ')
         self.assertIsNone(error, error)
         self.assertEqual(fields['approval_number'], '123456789')
@@ -108,8 +108,12 @@ class PaymentPermissionRegressionTests(TestCase):
         fields, error = parse('   ')
         self.assertIsNone(error, error)
         self.assertEqual(fields['approval_number'], '0' * 21)
-        # 含字母 → 拒绝
-        _, error = parse('12A3')
+        # 含字母 → 放宽后通过（兼容运输对账单号 ZD…）
+        fields, error = parse('ZD202606300061')
+        self.assertIsNone(error, error)
+        self.assertEqual(fields['approval_number'], 'ZD202606300061')
+        # 含非法字符（中文/符号）→ 仍拒绝
+        _, error = parse('单12@3')
         self.assertIsNotNone(error)
         # 边界：100 位通过、101 位拒绝
         self.assertIsNone(_clean_approval_number('1' * 100)[1])
@@ -160,7 +164,7 @@ class PaymentPermissionRegressionTests(TestCase):
         auth = self._admin_auth()
         rows = [
             [self.dept, '采购A', '供应商甲', '2026-06-01', '123456', '10000'],  # ok → 被 AI 标注
-            [self.dept, '采购B', '供应商乙', '2026-06-02', '12A3', '20000'],    # 审批编号含字母→规则错
+            [self.dept, '采购B', '供应商乙', '2026-06-02', '12@3', '20000'],    # 审批编号含非法符号→规则错
             [self.dept, '采购C', '供应商丙', '2026-06-03', '789', '30000'],     # 完全通过 → okRows
         ]
 
@@ -344,7 +348,7 @@ class ApprovalImportTests(TestCase):
         headers = ['申请人*', '所属事业部*', '审批编号*', '摘要', '申请金额*', '收款主体', '审批状态*']
         rows = [
             ['李四', self.dept, '2' * 21, '', 5000, '', '待审批'],       # ok
-            ['王五', self.dept, '12A3', '', 6000, '', '待审批'],         # 审批编号含字母 → 非数字
+            ['王五', self.dept, '12@3', '', 6000, '', '待审批'],         # 审批编号含非法符号 → 拒绝
             ['赵六', '不存在事业部', '3' * 21, '', 7000, '', '待审批'],   # 部门无效
             ['示例张三', self.dept, '4' * 21, '示例摘要', 9, '', '待审批'],  # 示例行静默跳过
         ]
@@ -362,7 +366,7 @@ class ApprovalImportTests(TestCase):
         headers = ['申请人*', '所属事业部*', '审批编号*', '摘要', '申请金额*', '收款主体', '审批状态*']
         rows = [
             ['李四', self.dept, '2' * 21, '摘要', 5000, '甲', '待审批'],   # ok → 被 AI 标注
-            ['王五', self.dept, '12A3', '', 6000, '乙', '待审批'],          # 审批编号非数字 → 规则错
+            ['王五', self.dept, '12@3', '', 6000, '乙', '待审批'],          # 审批编号含非法符号 → 规则错
             ['赵六', self.dept, '789', '', 7000, '丙', '待审批'],           # 完全通过 → okRows
         ]
 
@@ -1979,17 +1983,18 @@ class TransportReconciliationTests(TestCase):
         return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
 
     # 运输系统导出的原始表头（与生产一致）
-    HEADERS = ['序号', '所属组织', '对账单号', '运单号', '收支方式', '对账对象', '联系电话',
+    HEADERS = ['序号', '所属组织', '对账单号', '运单号', '项目名称', '收支方式', '对账对象', '联系电话',
                '实际对账金额', '对账时间', '状态', '创建人', '创建时间', '备注', '单据类别',
                '账单调整', '对账金额', '结算方式', '实对网货服务费合计', '实对网货费用合计', '开户人']
 
-    def _row(self, seq, bill_no, payee, amount, status='已通过',
-             summary='对账摘要', remark='YD20260626'):
-        # amount 传正数，原表里存为负数（来源系统口径）
-        # 字段映射：收支方式→收款主体(payee)、对账对象→摘要(summary)、运单号→备注(notes)
-        return [seq, '运输项目一部', bill_no, remark, payee, summary, '', -abs(amount),
+    def _row(self, seq, bill_no, payee, amount, status='已通过', summary='对账摘要',
+             waybill='YD20260626', project='测试项目', note='税后利润 100'):
+        # amount 传正数，原表里存为负数（来源系统口径）。字段映射：
+        # 对账单号→审批编号、运单号→G7编号、项目名称→项目简称、备注→备注、
+        # 收支方式→收款主体(payee)、对账对象→摘要(summary)
+        return [seq, '运输项目一部', bill_no, waybill, project, payee, summary, '', -abs(amount),
                 '2026-06-26 10:47:20', status, '谭雯雯', '2026-06-26 10:51:24',
-                '税后利润 2592.27 税后利润率 30.19%', '车辆', '', -abs(amount),
+                note, '车辆', '', -abs(amount),
                 '银行转账', '', '', '']
 
     def _xlsx(self, rows):
@@ -2030,9 +2035,10 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(rec.payee, '安仕吉-浓香酒')          # 收款主体 ← 收支方式
         self.assertEqual(rec.summary, '对账摘要')             # 摘要 ← 对账对象
         self.assertEqual(rec.amount, Decimal('4828.5'))   # 取绝对值
-        self.assertEqual(rec.approval_number, '')          # 审批编号留空
-        self.assertEqual(rec.g7_number, 'ZD202606260055')  # G7编号 ← 对账单号
-        self.assertEqual(rec.notes, 'YD20260626')          # 备注 ← 运单号
+        self.assertEqual(rec.approval_number, 'ZD202606260055')  # 审批编号 ← 对账单号
+        self.assertEqual(rec.g7_number, 'YD20260626')      # G7编号 ← 运单号
+        self.assertEqual(rec.project_short_name, '测试项目')  # 项目简称 ← 项目名称
+        self.assertEqual(rec.notes, '税后利润 100')          # 备注 ← 备注
         self.assertEqual(rec.ext_raw['对账单号'], 'ZD202606260055')
         self.assertEqual(rec.ext_raw['实际对账金额'], -4828.5)  # 原始负数逐字保留
 
@@ -2094,8 +2100,8 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(self._schedule(rb, 2000).status_code, 200)
         pa = Payment.objects.get(approval=ra)
         pb = Payment.objects.get(approval=rb)
-        # 备注随审批排款带入付款台账（运输事业部即运单号）
-        self.assertEqual(pa.notes, 'YD20260626')
+        # 备注随审批排款带入付款台账（运输事业部即原表备注列）
+        self.assertEqual(pa.notes, '税后利润 100')
         # 结算 A：付清 → status=settled
         PaymentInstallment.objects.create(payment=pa, seq=1, pay_date=date(2026, 6, 27),
                                            pay_amount=Decimal('1000'))
@@ -2158,7 +2164,7 @@ class TransportReconciliationTests(TestCase):
         self.assertTrue(d['errors'])
 
     def test_g7_numbers_copy_filter_and_ids(self):
-        # 导入 + 排款 → 两条运输付款；G7编号=对账单号，跨页复制接口取全量/勾选
+        # 导入 + 排款 → 两条运输付款；审批编号=对账单号，跨页复制接口取全量/勾选
         self._import([self._row(1, 'ZD202606260040', '甲', 100),
                       self._row(2, 'ZD202606260041', '乙', 200)])
         ra = ApprovalRecord.objects.get(ext_bill_no='ZD202606260040')
