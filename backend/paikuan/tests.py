@@ -1449,15 +1449,54 @@ class BulkOpsTests(TestCase):
         self.assertEqual(r2['count'], 1)
         self.assertFalse(ApprovalRecord.objects.filter(id=a.id).exists())
 
+    def test_return_protects_paid_installments(self):
+        """退回排款保护已支付：有实付分期的排款不可整单退回（单条/批量/审批侧均拦截），
+        只能按批次撤销未付部分；退回后实付保持不变、审批已排款同步回退。"""
+        a = self._mk_approval(9, '1000')
+        self._post(f'/api/pk/approvals/{a.id}/schedule',
+                   {'planned_date': '2026-07-01', 'total_amount': '400'})
+        self._post(f'/api/pk/approvals/{a.id}/schedule',
+                   {'planned_date': '2026-07-15', 'total_amount': '600'})
+        p = Payment.objects.get(approval=a)
+        self.assertEqual(p.plan_items.count(), 2)
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 7, 2),
+                                          pay_amount=Decimal('400'))
+        # ① 单条整单退回 → 409 拦截
+        r = self.client.delete(f'/api/pk/payments/{p.id}', **self.auth())
+        self.assertEqual(r.status_code, 409)
+        # ② 批量退回 → 跳过并给原因
+        d = self._post('/api/pk/payments/bulk-delete', {'ids': [p.id]}).json()['data']
+        self.assertEqual(d['deleted'], 0)
+        self.assertIn('实付', d['skipped'][0]['reason'])
+        # ③ 审批侧批量退回 → 跳过
+        d2 = self._post('/api/pk/approvals/bulk-return-schedule', {'ids': [a.id]}).json()['data']
+        self.assertEqual(d2['returned'], 0)
+        self.assertIn('实付', d2['skipped'][0]['reason'])
+        # ④ 部分退回：撤销未付的第二批（600）→ 放行；保留 400 = 已付 400
+        second = p.plan_items.order_by('-seq').first()
+        r4 = self.client.delete(f'/api/pk/payments/{p.id}/plan-items/{second.id}', **self.auth())
+        self.assertEqual(r4.status_code, 200, r4.content)
+        p.refresh_from_db(); a.refresh_from_db()
+        self.assertEqual(p.total_amount, Decimal('400'))       # 汇总回落
+        self.assertEqual(a.scheduled_amount, Decimal('400'))   # 审批已排款同步回退
+        self.assertEqual(p.installments.count(), 1)            # 实付分毫未动
+        self.assertEqual(p.total_paid, Decimal('400'))
+        # ⑤ 再撤销剩下覆盖已付的批次 → 拦截（最后一批 / 低于已付均不放行）
+        last = p.plan_items.first()
+        r5 = self.client.delete(f'/api/pk/payments/{p.id}/plan-items/{last.id}', **self.auth())
+        self.assertEqual(r5.status_code, 400)
+
     def test_purge_approval_cascade_deletes_linked_payments(self):
-        # 级联彻底删除（用户显式 cascade=true）：连同关联付款(含分期)一并彻底删除
+        # 级联彻底删除（用户显式 cascade=true）：连同关联付款(含分期)一并彻底删除。
+        # 注：有实付的付款如今不可整单退回（保护实付），需先删付款明细；此处直接构造
+        # 「回收站中带分期的付款」数据态，验证彻底删除仍会级联清掉分期。
         a = self._mk_approval(8, '1000')
         self._post(f'/api/pk/approvals/{a.id}/schedule',
                    {'planned_date': '2026-07-01', 'total_amount': '1000'})
         p = Payment.objects.get(approval=a)
+        self._post('/api/pk/payments/bulk-delete', {'ids': [p.id]})
         PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 7, 2),
                                           pay_amount=Decimal('500'))
-        self._post('/api/pk/payments/bulk-delete', {'ids': [p.id]})
         self._post('/api/pk/approvals/bulk-delete', {'ids': [a.id]})
         r = self._post('/api/pk/trash/approvals',
                        {'action': 'purge', 'ids': [a.id], 'cascade': True}).json()['data']

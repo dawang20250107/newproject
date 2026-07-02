@@ -1936,6 +1936,13 @@ def payment_detail(request, pk):
         if p.prepaid_offsets.exists():
             return err('该排款已关联预付核销，不能直接删除；'
                        '请先到「预收预付」删除对应核销记录后再删本排款', 409, 409)
+        # 已有实付分期的排款不可整单退回/删除——实付是真实现金事件，整删会连同实付
+        # 一起消失（台账/流水/现金流失真）。多批排款请按批次勾选退回未付部分；
+        # 确需作废整条时先在编辑弹窗删除全部付款明细。
+        if p.installments.exists():
+            n = p.installments.count()
+            return err(f'该排款已有 {n} 笔实付合计 {p.total_paid} 元，不能整单退回/删除；'
+                       f'请退回未支付的计划批次（部分退回），或先删除全部付款明细', 409, 409)
         approval_id = p.approval_id   # 删除前留存：级联清空计划批次后据此把审批回退为可排款
         with transaction.atomic():
             _record_payment_changes(p, {}, {}, request, action='delete')
@@ -2620,7 +2627,7 @@ def approval_records_bulk_return_schedule(request):
         if not can_write_dept(request, rec.department):
             skipped.append({'id': rec.id, 'reason': '无权操作该部门'})
             continue
-        payment = Payment.objects.filter(approval=rec).first()
+        payment = Payment.objects.filter(approval=rec, deleted_at__isnull=True).first()
         if not payment:
             skipped.append({'id': rec.id, 'reason': '未找到关联排款记录'})
             continue
@@ -2628,9 +2635,19 @@ def approval_records_bulk_return_schedule(request):
             skipped.append({'id': rec.id,
                             'reason': '排款已关联预付核销，不能退回；请先删除核销记录'})
             continue
+        # 已有实付分期不可整单退回（实付是真实现金事件，退回会连实付一起消失）
+        if payment.installments.exists():
+            n = payment.installments.count()
+            skipped.append({'id': rec.id,
+                            'reason': f'排款已有 {n} 笔实付合计 {payment.total_paid} 元，不能整单退回；'
+                                      f'请到付款管理按批次勾选退回未付部分'})
+            continue
         with transaction.atomic():
             _record_payment_changes(payment, {}, {}, request, action='delete')
-            payment.delete()
+            # 软删除（进回收站可还原），与付款管理批量退回同口径；原实现为硬删除
+            payment.deleted_at = timezone.now()
+            payment.deleted_by = getattr(request, 'pk_user', None)
+            payment.save(update_fields=['deleted_at', 'deleted_by'])
             _reconcile_approval_schedule(rec.id)
         returned += 1
     return ok({
@@ -2742,12 +2759,20 @@ def payments_bulk_delete(request):
     now = timezone.now()
     actor = getattr(request, 'pk_user', None)
     deleted, skipped = 0, []
-    for p in list(qs.prefetch_related('prepaid_offsets')):
+    for p in list(qs.prefetch_related('prepaid_offsets', 'installments')):
         if not can_write_dept(request, p.department):
             skipped.append({'id': p.id, 'reason': '无权操作该部门'})
             continue
         if p.prepaid_offsets.exists():
             skipped.append({'id': p.id, 'reason': '已关联预付核销，不能删除；请先删除对应核销记录'})
+            continue
+        # 已有实付分期不可整单退回/删除（实付是真实现金事件）：请按批次部分退回
+        insts = list(p.installments.all())
+        if insts:
+            paid_amt = sum(i.pay_amount for i in insts)
+            skipped.append({'id': p.id,
+                            'reason': f'已有 {len(insts)} 笔实付合计 {paid_amt} 元，不能整单退回；'
+                                      f'请右键该记录按批次勾选退回未付部分'})
             continue
         approval_id = p.approval_id
         with transaction.atomic():

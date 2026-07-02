@@ -658,8 +658,16 @@ async function copyWholeRow(p) {
   const ok = await copyRowTSV(p, ROW_COPY_COLS, { header: true })
   ok ? toast.success('已复制整行（含表头，可粘贴到 Excel）') : toast.error('复制失败')
 }
+function payLabel(p) {
+  return [p.payee, p.project_short_name || p.project_desc].filter(Boolean).join(' · ') || `#${p.id}`
+}
 async function returnPayment(p) {
-  const label = [p.payee, p.project_short_name || p.project_desc].filter(Boolean).join(' · ') || `#${p.id}`
+  // 多批排款 / 已有实付或预付冲抵 → 按批次勾选退回（保护已支付的现金记录）
+  const paid = parseFloat(p.total_paid) || 0
+  const offset = parseFloat(p.prepaid_offset_amount) || 0
+  if (paid > 0 || offset > 0 || (p.plan_count || 0) > 1) { openReturnDialog(p); return }
+  // 快捷路径：单批且无实付 → 整单退回
+  const label = payLabel(p)
   const approvalHint = p.approval_id ? `\n来源审批已排款将归零（¥${p.total_amount}），可重新排款。` : ''
   if (!confirm(`退回排款「${label}」（计划 ¥${p.total_amount}）？${approvalHint}\n此操作不可撤销。`)) return
   try {
@@ -667,6 +675,60 @@ async function returnPayment(p) {
     toast.success('已退回排款，来源审批已排款同步归零')
     load()
   } catch (e) { toast.error(e?.msg || e?.error || '退回失败') }
+}
+
+// ── 部分退回弹窗：多批/已付的排款按批次勾选退回，已支付部分受保护 ────────────────
+const returnDlg = ref(null)   // { p, label, batches, paid, offset, loading, busy }
+async function openReturnDialog(p) {
+  returnDlg.value = { p, label: payLabel(p), batches: [], paid: 0, offset: 0, loading: true, busy: false }
+  try {
+    const res = await api.get(`/payments/${p.id}`)
+    const d = res.data
+    returnDlg.value.paid = parseFloat(d.total_paid) || 0
+    returnDlg.value.offset = parseFloat(d.prepaid_offset_amount) || 0
+    returnDlg.value.batches = (d.plan_items || []).map(pi =>
+      ({ id: pi.id, seq: pi.seq, planned_date: pi.planned_date, notes: pi.notes,
+         amount: parseFloat(pi.amount) || 0, checked: false }))
+  } catch (e) { toast.error(e?.msg || e?.error || '加载排款明细失败'); returnDlg.value = null; return }
+  returnDlg.value.loading = false
+}
+const returnChecked = computed(() => returnDlg.value?.batches.filter(b => b.checked) || [])
+const returnKeepTotal = computed(() =>
+  (returnDlg.value?.batches || []).filter(b => !b.checked).reduce((s, b) => s + b.amount, 0))
+const returnIsFull = computed(() => !!returnDlg.value && returnDlg.value.batches.length > 0
+  && returnChecked.value.length === returnDlg.value.batches.length)
+const returnFloor = computed(() => (returnDlg.value?.paid || 0) + (returnDlg.value?.offset || 0))
+const returnError = computed(() => {
+  const d = returnDlg.value
+  if (!d || d.loading) return ''
+  if (!returnChecked.value.length) return '请勾选要退回的计划批次'
+  if (returnIsFull.value && returnFloor.value > 0)
+    return `已付+冲抵合计 ${returnFloor.value.toFixed(2)} 元，不能全部退回——请保留足以覆盖已付的批次`
+  if (!returnIsFull.value && returnKeepTotal.value < returnFloor.value - 1e-6)
+    return `退回后保留计划 ${returnKeepTotal.value.toFixed(2)} 低于已付+冲抵 ${returnFloor.value.toFixed(2)}，请少勾选一些`
+  return ''
+})
+async function doReturnBatches() {
+  const d = returnDlg.value
+  if (!d || d.busy || returnError.value) return
+  d.busy = true
+  try {
+    if (returnIsFull.value) {
+      // 全部勾选且无已付/冲抵 → 整单退回（审批已排款归零）
+      await api.delete(`/payments/${d.p.id}`)
+      toast.success('已整单退回排款，来源审批已排款同步归零')
+    } else {
+      let okN = 0, failMsg = ''
+      for (const b of returnChecked.value) {
+        try { await api.delete(`/payments/${d.p.id}/plan-items/${b.id}`); okN++ }
+        catch (e) { failMsg = e?.msg || e?.error || '撤销失败'; break }
+      }
+      if (failMsg) toast.error(`已退回 ${okN} 批后中断：${failMsg}`)
+      else toast.success(`已退回 ${okN} 批计划，来源审批已排款同步回退；已支付部分保持不变`)
+    }
+    returnDlg.value = null
+    load()
+  } finally { if (returnDlg.value) returnDlg.value.busy = false }
 }
 
 const ctxItems = computed(() => {
@@ -873,7 +935,7 @@ async function confirmBulkDelete() {
 const bulkReturning = ref(false)
 async function bulkReturn() {
   if (!selectedCount.value) return
-  if (!confirm(`批量退回排款 ${selectedCount.value} 条？\n所选付款将退回、来源审批已排款归零可重新排款；已关联预付核销的将自动跳过。`)) return
+  if (!confirm(`批量退回排款 ${selectedCount.value} 条？\n所选付款将退回、来源审批已排款归零可重新排款。\n已有实付或已关联预付核销的记录将自动跳过（对其请右键单条按批次勾选退回未付部分）。`)) return
   bulkReturning.value = true
   try {
     const body = isCrossPageSelection.value ? { all: true } : { ids: [...selectedIds.value] }
@@ -1565,6 +1627,40 @@ async function doBatchPay() {
             <button class="btn btn-ghost" @click="showBatchPay = false">取消</button>
             <button class="btn btn-primary" :disabled="batchPayBusy || (!isCrossPageSelection && !batchPayValid)" @click="doBatchPay">{{ batchPayBusy ? '付款中…' : (isCrossPageSelection ? `确认付款 ${selectedCount} 条` : `确认付款 ${batchPayRows.length} 条`) }}</button>
           </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 部分退回排款：多批/已付的排款按批次勾选退回，已支付部分受保护 -->
+    <Teleport to="body">
+      <div v-if="returnDlg" class="overlay">
+        <div class="modal" style="width:520px">
+          <div class="modal-header"><h3>退回排款（按批次）</h3><button class="modal-close" @click="returnDlg = null">×</button></div>
+          <div v-if="returnDlg.loading" style="padding:20px;text-align:center;color:var(--muted)">加载排款明细…</div>
+          <template v-else>
+            <p style="font-size:12.5px;color:var(--muted);margin:0 0 8px">「{{ returnDlg.label }}」</p>
+            <div v-if="returnFloor > 0" class="pay-offset-warn">
+              该排款已支付 <b>{{ returnDlg.paid.toFixed(2) }}</b> 元<template v-if="returnDlg.offset">、预付冲抵 <b>{{ returnDlg.offset.toFixed(2) }}</b> 元</template>——
+              <b>已支付部分不会被退回</b>。请勾选要退回的未付计划批次；退回后保留的计划合计不得低于已付+冲抵。
+            </div>
+            <p v-else style="font-size:12px;color:var(--muted);margin:0 0 8px">该排款分 {{ returnDlg.batches.length }} 批，请勾选要退回的批次（全选＝整单退回，审批已排款归零）。</p>
+            <div class="batch-rows" style="max-height:260px">
+              <label v-for="b in returnDlg.batches" :key="b.id" class="batch-row" style="cursor:pointer">
+                <input type="checkbox" v-model="b.checked" style="flex-shrink:0" />
+                <span class="batch-row-label">第{{ b.seq }}批 · {{ b.planned_date }}<span v-if="b.notes" style="color:var(--muted)"> · {{ b.notes }}</span></span>
+                <span class="batch-row-rem">¥{{ b.amount.toFixed(2) }}</span>
+              </label>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:12px">
+              <span :style="{ color: returnError ? 'var(--danger)' : 'var(--muted)' }">
+                {{ returnError || `将退回 ${returnChecked.length} 批 ¥${returnChecked.reduce((s, b) => s + b.amount, 0).toFixed(2)}；保留计划 ¥${returnKeepTotal.toFixed(2)}` }}
+              </span>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+              <button class="btn btn-ghost" @click="returnDlg = null">取消</button>
+              <button class="btn btn-primary" :disabled="returnDlg.busy || !!returnError" @click="doReturnBatches">{{ returnDlg.busy ? '退回中…' : (returnIsFull ? '整单退回' : `退回所选 ${returnChecked.length} 批`) }}</button>
+            </div>
+          </template>
         </div>
       </div>
     </Teleport>
