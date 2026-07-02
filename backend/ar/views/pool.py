@@ -356,6 +356,9 @@ def cash_pool_transfers(request):
                        f'若提示字段/列不存在，请在服务器运行环境执行 '
                        f'python manage.py migrate 后重启服务', 500)
     if request.method == 'POST':
+        denied = _page_denied(request, 'ar_cashflow')
+        if denied:
+            return denied
         data = _parse_body(request)
         f, t, amount, tr_date_d, bad = _validate_transfer_payload(data)
         if bad:
@@ -403,6 +406,9 @@ def cash_pool_transfer_review(request, pk):
     不能审批自己发起的申请。批准时以审批日为实际生效日并校验余额充足。"""
     if request.method != 'POST':
         return err('Method not allowed', 405)
+    denied = _page_denied(request, 'ar_cashflow')
+    if denied:
+        return denied
     try:
         tr = CashPoolTransfer.objects.get(pk=pk)
     except CashPoolTransfer.DoesNotExist:
@@ -457,6 +463,9 @@ def cash_pool_transfer_detail(request, pk):
     """删除调拨：待审批的申请发起人可撤回；已生效/已拒绝的仅超管可删（余额回退）。"""
     if request.method != 'DELETE':
         return err('Method not allowed', 405)
+    denied = _page_denied(request, 'ar_cashflow')
+    if denied:
+        return denied
     try:
         tr = CashPoolTransfer.objects.get(pk=pk)
     except CashPoolTransfer.DoesNotExist:

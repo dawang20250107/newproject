@@ -115,7 +115,7 @@ function toggleRow(id) {
   selectedIds.value = s
 }
 // Excel 式 Shift 区间勾选（系统级复用）
-const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow, onManual: () => { selectAllMatching.value = false } })
+const { onRowSelClick, resetAnchor } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow, onManual: () => { selectAllMatching.value = false } })
 function toggleSelectPage() {
   const s = new Set(selectedIds.value)
   if (pageAllSelected.value) { items.value.forEach(r => s.delete(r.id)); selectAllMatching.value = false }
@@ -249,6 +249,7 @@ async function load(reset = false) {
   try {
     const res = await ar.listProjects(buildParams())
     items.value = res.data.items
+    resetAnchor()   // 数据集已更换：清 Shift 区间锚点
     total.value = res.data.total
   } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
   } finally { loading.value = false }

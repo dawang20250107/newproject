@@ -263,6 +263,11 @@ def cw_required(roles=None):
                 return err('账号已停用', 401, 401)
             if not user.is_approved:
                 return err('账号待审批，请联系管理员', 403, 403)
+            # 改密码即踢旧会话（与 pk_required 同口径）：token 签发早于最近改密 → 失效
+            if user.pwd_changed_at:
+                iat = payload.get('iat')
+                if iat and int(iat) < int(user.pwd_changed_at.timestamp()):
+                    return err('密码已修改，请重新登录', 401, 401)
             request.pk_user = user
             request.pk_uid = user.id
             request.pk_role = user.role

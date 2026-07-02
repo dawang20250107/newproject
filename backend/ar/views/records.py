@@ -749,6 +749,8 @@ def ar_record_import(request):
     f = request.FILES.get('file')
     if not f:
         return err('请上传文件')
+    if getattr(f, 'size', 0) > 5 * 1024 * 1024:
+        return err('文件过大，请确认文件不超过5MB')
     try:
         wb = openpyxl.load_workbook(f, data_only=True)
         ws = wb.active
@@ -2144,7 +2146,9 @@ def ar_records_bulk_assign_collector(request):
         ids = [int(i) for i in (data.get('ids') or []) if str(i).isdigit()]
         if not ids:
             return err('请指定要操作的记录')
-        qs = ARRecord.objects.filter(id__in=ids)
+        # ids 分支同样必须限定部门作用域，否则可跨部门改写任意记录的催收负责人
+        qs = _ar_dept_filter(ARRecord.objects.filter(id__in=ids), request,
+                             shared_field='project__is_shared')
     count = qs.update(collector=collector)
     return ok({'updated': count, 'collector': collector})
 

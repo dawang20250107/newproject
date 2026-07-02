@@ -1064,7 +1064,9 @@ def payment_plan_items(request, pk):
                if approval_id else None)
         p = Payment.objects.select_for_update().get(pk=pk)
         if rec:
-            current = (PaymentPlanItem.objects.filter(payment__approval_id=approval_id)
+            # 只计在册付款的批次：回收站付款的批次不占用剩余可排额度
+            current = (PaymentPlanItem.objects.filter(payment__approval_id=approval_id,
+                                                      payment__deleted_at__isnull=True)
                        .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
             remaining = (rec.amount or Decimal('0')) - current
             if amount > remaining:
@@ -1949,11 +1951,15 @@ def payment_detail(request, pk):
             n = p.installments.count()
             return err(f'该排款已有 {n} 笔实付合计 {p.total_paid} 元，不能整单退回/删除；'
                        f'请退回未支付的计划批次（部分退回），或先删除全部付款明细', 409, 409)
-        approval_id = p.approval_id   # 删除前留存：级联清空计划批次后据此把审批回退为可排款
+        approval_id = p.approval_id
         with transaction.atomic():
             _record_payment_changes(p, {}, {}, request, action='delete')
-            p.delete()
-            # 整条排款删除 → 该审批已排款归零、归档回退，可重新排款
+            # 软删除进回收站（可还原），与批量删除/退回同口径；原实现为硬删除，
+            # 单条删除与其它路径行为不一致且不可恢复
+            p.deleted_at = timezone.now()
+            p.deleted_by = getattr(request, 'pk_user', None)
+            p.save(update_fields=['deleted_at', 'deleted_by'])
+            # 整条排款退回 → 该审批已排款归零、归档回退，可重新排款
             _reconcile_approval_schedule(approval_id)
         return ok({'deleted': pk})
 
@@ -1978,8 +1984,25 @@ def payment_change_logs(request, pk):
         return ok({'items': [l.to_dict() for l in logs], 'payment_id': pk, 'deleted': True})
     if not dept_filter(Payment.objects.filter(id=pk), request).exists():
         return err('无权访问', 403, 403)
+    # 页面权限 + 字段掩码：变更日志记录了金额/分期等原文（old_value/new_value），
+    # 不加掩码会让被 apply_view_mask 隐藏的字段值经日志绕行泄露
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
     logs = PaymentChangeLog.objects.filter(payment_id_snapshot=pk).order_by('-at')[:200]
-    return ok({'items': [l.to_dict() for l in logs], 'payment_id': pk, 'deleted': False})
+    items = []
+    if perms is not None:
+        view = perms['view']
+        hidden = {f['key'] for f in PAYMENT_FIELD_DEFS if not view.get(f['key'], True)}
+    else:
+        hidden = set()
+    for l in logs:
+        d = l.to_dict()
+        if d.get('field_name') in hidden:
+            d['old_value'] = d['new_value'] = '***'
+        items.append(d)
+    return ok({'items': items, 'payment_id': pk, 'deleted': False})
 
 
 @csrf_exempt
@@ -2036,7 +2059,9 @@ def payment_installments(request):
     items = []
     for inst in qs[(page - 1) * size: page * size]:
         p = inst.payment
-        items.append({
+        # 与列表同口径的字段掩码：流水行带出的付款字段（收款方/事项/单号等）
+        # 也须按职务视图权限隐藏，避免经流水页绕过 apply_view_mask
+        items.append(apply_view_mask({
             'id': inst.id,
             'payment_id': p.id,
             'seq': inst.seq,
@@ -2051,7 +2076,7 @@ def payment_installments(request):
             'approval_number': p.approval_number,
             'g7_number': p.g7_number,
             'planned_date': str(p.planned_date) if p.planned_date else None,
-        })
+        }, perms))
 
     return ok({
         'items': items, 'total': total, 'page': page, 'size': size,
@@ -2316,7 +2341,9 @@ def _schedule_one(request, rec, planned_date, total_amount):
                 return None, '记录已归档', 409
             # 已排款以「关联付款管理的计划批次之和」为正源（兼容历史 scheduled_amount
             # 漂移与旧记录收养：收养时已 _ensure_plan_item 物化首条批次，此处即可如实计入）
-            already = (PaymentPlanItem.objects.filter(payment__approval_id=rec_locked.pk)
+            # 只计在册付款的批次：退回（软删）后的批次不占额度，否则重排满额被误拒
+            already = (PaymentPlanItem.objects.filter(payment__approval_id=rec_locked.pk,
+                                                      payment__deleted_at__isnull=True)
                        .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
             remaining = (rec_locked.amount or Decimal('0')) - already
             if total_amount > remaining:
@@ -2598,7 +2625,7 @@ def approval_schedule_detail(request, pk):
     if request.pk_role != 'super_admin' and rec.department not in (request.pk_depts or []):
         return err('无权访问', 403)
     payment = (Payment.objects.prefetch_related('plan_items', 'installments')
-               .filter(approval=rec).first())
+               .filter(approval=rec, deleted_at__isnull=True).first())
     if not payment:
         return ok({'payment_id': None, 'plan_items': [], 'total_paid': '0',
                    'total_amount': '0', 'can_edit': False})
@@ -2853,24 +2880,27 @@ def payments_bulk_pay(request):
     notes = (body.get('notes') or '批量付款').strip()[:200]
     qs = dept_filter(Payment.objects.filter(pk__in=ids, deleted_at__isnull=True), request)
     paid_cnt, total, skipped = 0, Decimal('0'), []
-    for p in list(qs.prefetch_related('installments')):
-        if not can_write_dept(request, p.department):
-            skipped.append({'id': p.id, 'reason': '无权操作该部门'})
+    for row in list(qs.only('id', 'department')):
+        if not can_write_dept(request, row.department):
+            skipped.append({'id': row.id, 'reason': '无权操作该部门'})
             continue
-        remaining = p.remaining  # 剩余应付（=计划金额 − 已付 − 预付冲抵）
-        amount = amount_map.get(p.id, remaining) if p.id in amount_map else remaining
-        if amount is None:
-            skipped.append({'id': p.id, 'reason': '金额格式有误'})
-            continue
-        if amount <= 0:
-            skipped.append({'id': p.id, 'reason': '本次付款金额必须大于0'})
-            continue
-        if amount > remaining:
-            skipped.append({'id': p.id, 'reason': f'本次付款 {amount} 超过剩余应付 {remaining}'})
-            continue
-        before = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
-        before['installments_summary'] = _installments_summary(p.installments)
+        # 锁内校验剩余应付（TOCTOU 防护）：锁行 → 以最新分期重算 remaining → 再登记，
+        # 否则并发双击/重复提交会以同一份过期快照双重付款
         with transaction.atomic():
+            p = Payment.objects.select_for_update().get(pk=row.id)
+            remaining = p.remaining  # 剩余应付（=计划金额 − 已付 − 预付冲抵），锁内新鲜值
+            amount = amount_map.get(p.id, remaining) if p.id in amount_map else remaining
+            if amount is None:
+                skipped.append({'id': p.id, 'reason': '金额格式有误'})
+                continue
+            if amount <= 0:
+                skipped.append({'id': p.id, 'reason': '本次付款金额必须大于0'})
+                continue
+            if amount > remaining:
+                skipped.append({'id': p.id, 'reason': f'本次付款 {amount} 超过剩余应付 {remaining}'})
+                continue
+            before = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
+            before['installments_summary'] = _installments_summary(p.installments)
             last = p.installments.order_by('-seq').first()
             seq = (last.seq + 1) if last else 1
             PaymentInstallment.objects.create(payment=p, seq=seq, pay_date=pay_date,
@@ -3476,7 +3506,8 @@ def stats(request):
             'count': v['count'],
             'carry': str(carry),               # 前期结转未付
             'carry_count': v['carry_count'],
-            'outstanding': str((t - pd) + carry),  # 本期未付 + 前期结转
+            # 本期未付（扣预付冲抵，与 remaining/全局 total_outstanding 同口径）+ 前期结转
+            'outstanding': str((t - pd - v.get('offset', D(0))) + carry),
             'completion_rate': round(float(pd / t * 100), 1) if t else 0.0,
         })
     # 按「应付合计（本期计划 + 前期结转）」降序，结转大的部门优先呈现。
@@ -4221,7 +4252,8 @@ def _payment_export_core(request, export_cap=5000):
     except ImportError:
         return err('服务器缺少 openpyxl 依赖', 500)
 
-    qs = Payment.objects.select_related('created_by').all()
+    # 排除回收站付款：导出不含已删除记录（同步与异步导出共用本函数口径）
+    qs = Payment.objects.select_related('created_by').filter(deleted_at__isnull=True)
     qs = dept_filter(qs, request)
     qs = qs.prefetch_related('installments', 'plan_items')
 
@@ -5127,12 +5159,14 @@ def trash_payments(request):
                 try:
                     # 还原会重算 dedup_key；若同业务键已有在册记录（删除后又新建过），
                     # 唯一约束会拦下，给出明确提示而非 500。
+                    # 对账须与还原同事务：_reconcile 内部 select_for_update 在自动提交
+                    # 模式下会在 MySQL 抛 TransactionManagementError（SQLite 静默容忍）。
                     with transaction.atomic():
                         p.save(update_fields=['deleted_at', 'deleted_by'])
+                        _reconcile_approval_schedule(approval_id)
                 except IntegrityError:
                     skipped.append({'id': p.id, 'reason': '相同业务键已有在册排款，无法还原'})
                     continue
-                _reconcile_approval_schedule(approval_id)
             elif action == 'purge':
                 if p.prepaid_offsets.exists():
                     continue

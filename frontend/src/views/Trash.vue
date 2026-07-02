@@ -45,6 +45,13 @@ async function load() {
     if (seq !== reqSeq) return   // 已有更新的请求在途，丢弃本次过期响应
     items.value = r.data.items || []
     total.value = r.data.total || 0
+    resetAnchor()
+    // 末页整页被还原/删除后本页为空但仍有数据 → 自动回退一页，避免死在空页
+    if (!items.value.length && total.value > 0 && page.value > 1) {
+      page.value -= 1
+      load()
+      return
+    }
   } catch (e) {
     if (seq !== reqSeq) return
     toast.error(e?.msg || '加载失败')
@@ -73,7 +80,7 @@ function selectAllAcross() {
 }
 function clearSelection() { allAcross.value = false; selectedIds.value = new Set() }
 // Excel 式 Shift 区间勾选（系统级复用）；区间选择也退出「跨页全选」态
-const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleSel, onManual: () => { allAcross.value = false } })
+const { onRowSelClick, resetAnchor } = useShiftSelect({ items, selectedIds, toggleSingle: toggleSel, onManual: () => { allAcross.value = false } })
 
 const busy = ref(false)
 async function doAction(action) {

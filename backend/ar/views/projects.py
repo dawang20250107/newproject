@@ -398,6 +398,8 @@ def project_import(request):
     f = request.FILES.get('file')
     if not f:
         return err('请上传文件')
+    if getattr(f, 'size', 0) > 5 * 1024 * 1024:
+        return err('文件过大，请确认文件不超过5MB')
     try:
         wb = openpyxl.load_workbook(f, data_only=True)
         ws = wb.active

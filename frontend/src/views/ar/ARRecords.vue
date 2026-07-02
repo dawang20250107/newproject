@@ -87,7 +87,7 @@ function toggleRow(id) {
   selectedIds.value = s
 }
 // Excel 式 Shift 区间勾选（系统级复用）；区间选择也退出「跨页全选」态
-const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow, onManual: () => { selectAllMatching.value = false } })
+const { onRowSelClick, resetAnchor } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow, onManual: () => { selectAllMatching.value = false } })
 function toggleSelectPage() {
   const s = new Set(selectedIds.value)
   if (pageAllSelected.value) { items.value.forEach(r => s.delete(r.id)); selectAllMatching.value = false }
@@ -787,6 +787,7 @@ async function load(reset = false) {
       ar.recordsKpi(buildParams(reqParams())),
     ])
     items.value = recs.data.items
+    resetAnchor()   // 数据集已更换：清 Shift 区间锚点
     total.value = recs.data.total
     summaryData.value = recs.data.summary
     kpiData.value = kpi.data

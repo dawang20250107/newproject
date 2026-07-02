@@ -537,6 +537,8 @@ def advance_import(request):
     f = request.FILES.get('file')
     if not f:
         return err('请上传文件')
+    if getattr(f, 'size', 0) > 5 * 1024 * 1024:
+        return err('文件过大，请确认文件不超过5MB')
     try:
         wb = openpyxl.load_workbook(f, data_only=True)
         ws = wb.active
@@ -1599,6 +1601,22 @@ def advance_writeoff_detail(request, pk, wid):
                 available = (ar.outstanding_amount or Decimal('0')) + (wo.ar_payment.amount or Decimal('0'))
                 if new_amount > available:
                     return err(f'冲抵金额 {new_amount:,.2f} 超过该应收可冲抵额 {available:,.2f}')
+            # 预付侧同 create 口径：改大金额不得使 已付+累计冲抵 超过排款计划（待付为负）
+            if wo.payment_id:
+                pay_obj = wo.payment
+                plan = (pay_obj.plan_adjustment if pay_obj.plan_adjustment is not None
+                        else pay_obj.total_amount) or Decimal('0')
+                paid_amt = pay_obj.total_paid
+                offset_other = (pay_obj.prepaid_offset_amount or Decimal('0')) - (wo.amount or Decimal('0'))
+                room = plan - paid_amt - offset_other
+                if new_amount > room:
+                    return err(f'冲抵金额 {new_amount:,.2f} 超过该排款剩余待付 {room:,.2f}'
+                               f'（计划 {plan} − 已付 {paid_amt} − 其它已冲抵 {offset_other}）')
+            # 预收/预付余额上限：其余核销不变时，本笔可用 = 当前未核销余额 + 本笔原额
+            adv_avail = ((wo.advance_record.balance_amount or Decimal('0'))
+                         + (wo.amount or Decimal('0')))
+            if new_amount > adv_avail:
+                return err(f'核销金额 {new_amount:,.2f} 超过可核销余额 {adv_avail:,.2f}')
             wo.amount = new_amount
         if 'writeoff_date' in data:
             wo.writeoff_date = _normalize_date(data['writeoff_date']) or wo.writeoff_date

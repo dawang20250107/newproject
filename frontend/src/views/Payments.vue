@@ -589,6 +589,7 @@ async function load() {
     const res = await api.get('/payments', { params: buildParams(), signal: sig })
     items.value = res.data.items
     total.value = res.data.total
+    resetAnchor()   // 数据集已更换：清 Shift 区间锚点，防旧锚点区间选错行
     outstandingTotal.value = res.data.outstanding_total ?? '0'
     outstandingCount.value = res.data.outstanding_count ?? 0
     plannedTotal.value = res.data.planned_total ?? '0'
@@ -680,17 +681,22 @@ async function returnPayment(p) {
 // ── 部分退回弹窗：多批/已付的排款按批次勾选退回，已支付部分受保护 ────────────────
 const returnDlg = ref(null)   // { p, label, batches, paid, offset, loading, busy }
 async function openReturnDialog(p) {
-  returnDlg.value = { p, label: payLabel(p), batches: [], paid: 0, offset: 0, loading: true, busy: false }
+  const dlg = { p, label: payLabel(p), batches: [], paid: 0, offset: 0, loading: true, busy: false }
+  returnDlg.value = dlg
   try {
     const res = await api.get(`/payments/${p.id}`)
+    if (returnDlg.value !== dlg) return   // 加载期间弹窗已被关闭/替换 → 丢弃过期响应
     const d = res.data
     returnDlg.value.paid = parseFloat(d.total_paid) || 0
     returnDlg.value.offset = parseFloat(d.prepaid_offset_amount) || 0
     returnDlg.value.batches = (d.plan_items || []).map(pi =>
       ({ id: pi.id, seq: pi.seq, planned_date: pi.planned_date, notes: pi.notes,
          amount: parseFloat(pi.amount) || 0, checked: false }))
-  } catch (e) { toast.error(e?.msg || e?.error || '加载排款明细失败'); returnDlg.value = null; return }
-  returnDlg.value.loading = false
+  } catch (e) {
+    if (returnDlg.value !== dlg) return
+    toast.error(e?.msg || e?.error || '加载排款明细失败'); returnDlg.value = null; return
+  }
+  if (returnDlg.value === dlg) returnDlg.value.loading = false
 }
 const returnChecked = computed(() => returnDlg.value?.batches.filter(b => b.checked) || [])
 const returnKeepTotal = computed(() =>
@@ -728,6 +734,8 @@ async function doReturnBatches() {
     }
     returnDlg.value = null
     load()
+  } catch (e) {
+    toast.error(e?.msg || e?.error || '退回失败')
   } finally { if (returnDlg.value) returnDlg.value.busy = false }
 }
 
@@ -899,7 +907,7 @@ const selectedCount = computed(() => selectedIds.value.size)
 const hasSelection = computed(() => selectedIds.value.size > 0)
 function toggleRow(id) { const s = new Set(selectedIds.value); s.has(id) ? s.delete(id) : s.add(id); selectedIds.value = s }
 // Excel 式 Shift 区间勾选（系统级复用）
-const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow })
+const { onRowSelClick, resetAnchor } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow })
 function toggleSelectPage() { const s = new Set(selectedIds.value); if (pageAllSelected.value) items.value.forEach(p => s.delete(p.id)); else items.value.forEach(p => s.add(p.id)); selectedIds.value = s }
 function clearSelection() { selectedIds.value = new Set() }
 // 批量付款只统计「有剩余应付」的记录（默认付款金额=剩余应付=计划金额）
@@ -1205,7 +1213,7 @@ async function doBatchPay() {
           </thead>
           <tbody>
             <template v-if="loading">
-              <SkeletonRow v-for="n in 8" :key="n" :cols="10" />
+              <SkeletonRow v-for="n in 8" :key="n" :cols="16" />
             </template>
             <tr v-else-if="!items.length" class="empty-row">
               <td :colspan="99" class="empty-cell">

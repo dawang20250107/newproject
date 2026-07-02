@@ -151,17 +151,20 @@ const aprPlanEdit = reactive({ approval_id: null, id: null, planned_date: '', am
 function isAprSchedExpanded(id) { return aprSchedExpanded.value.has(id) }
 
 async function toggleAprSchedDetail(rec) {
+  // 展开状态先落地再异步取数：若在 await 之后才赋值，快速展开第二行会用
+  // 过期快照覆盖，导致第一行被收起（互相顶掉）
   const s = new Set(aprSchedExpanded.value)
   if (s.has(rec.id)) {
     s.delete(rec.id)
     if (aprPlanEdit.approval_id === rec.id) cancelAprPlanEdit()
-  } else {
-    s.add(rec.id)
-    if (!aprSchedCache.value[rec.id] || aprSchedCache.value[rec.id].error) {
-      await loadAprSchedDetail(rec.id)
-    }
+    aprSchedExpanded.value = s
+    return
   }
+  s.add(rec.id)
   aprSchedExpanded.value = s
+  if (!aprSchedCache.value[rec.id] || aprSchedCache.value[rec.id].error) {
+    await loadAprSchedDetail(rec.id)
+  }
 }
 
 async function loadAprSchedDetail(aprid) {
@@ -245,7 +248,7 @@ const selectedCount = computed(() => selectedIds.value.size)
 const hasSelection = computed(() => selectedIds.value.size > 0)
 function toggleRow(id){ const s = new Set(selectedIds.value); s.has(id) ? s.delete(id) : s.add(id); selectedIds.value = s }
 // Excel 式 Shift 区间勾选（系统级复用）
-const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow })
+const { onRowSelClick, resetAnchor } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow })
 function toggleSelectPage(){ const s = new Set(selectedIds.value); if (pageAllSelected.value) items.value.forEach(r => s.delete(r.id)); else items.value.forEach(r => s.add(r.id)); selectedIds.value = s }
 function clearSelection(){ selectedIds.value = new Set() }
 // 仅「待审批」可批量通过；汇总只统计可审批记录
@@ -425,7 +428,7 @@ async function load(){
   const sig = listLane.signal()
   try{
     const r=await api.get('/approvals',{params:buildParams(), signal: sig})
-    items.value=r.data.items; total.value=r.data.total
+    items.value=r.data.items; total.value=r.data.total; resetAnchor()
     totalAmount.value=r.data.total_amount || 0; totalScheduled.value=r.data.total_scheduled || 0
     totalRemaining.value=r.data.total_remaining || 0
     loading.value=false
