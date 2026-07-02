@@ -672,7 +672,9 @@ async function returnPayment(p) {
 const ctxItems = computed(() => {
   const p = ctx.menu.payload
   if (!p) return []
-  const canOffset = auth.canAction('wo_prepaid') && (p.project_short_name || p.project_no)
+  // 仅按操作权限闸口：核销匹配支持「挂项目预付」与「散单预付按收款方匹配」，
+  // 不再要求该行必有项目简称/项目编号（旧条件会让无项目字段的行看似"没有核销权限"）
+  const canOffset = auth.canAction('wo_prepaid')
   return [
     { key: 'detail', label: expandedRows.value.has(p.id) ? '收起明细' : '展开计划/付款明细', icon: 'eye', action: r => toggleRowDetail(r.id) },
     { key: 'priority', label: p.is_priority ? '取消重点标记' : '标记为重点付款', icon: 'star', action: r => togglePriorityOne(r) },
@@ -1428,7 +1430,7 @@ async function doBatchPay() {
           </div>
           <div v-if="offsetLoading" style="font-size:12.5px;color:var(--muted);padding:10px 0">查询可用预付…</div>
           <div v-else-if="!offsetItems.length" style="font-size:12.5px;color:var(--muted);padding:10px 0">
-            该项目暂无可核销的「预付」余额——预付须先在「预收预付」录入并挂到该项目
+            暂无可核销的「预付」余额——预付须先在「预收预付」录入：挂到该项目，或散单预付的「往来单位」与本排款「收款方」一致即可匹配
           </div>
           <div v-else class="po-list">
             <label v-for="a in offsetItems" :key="a.id" class="po-opt" :class="{ on: offsetForm.advance_id === a.id }">
