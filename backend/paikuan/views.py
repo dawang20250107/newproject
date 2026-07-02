@@ -1046,7 +1046,8 @@ def payment_plan_items(request, pk):
     if perms is not None and not perms.get('can_create'):
         return err('无排款操作权限', 403, 403)
     try:
-        p = Payment.objects.get(pk=pk)
+        # 回收站中的付款不可追加批次（批次会挂到不可见记录上）
+        p = Payment.objects.get(pk=pk, deleted_at__isnull=True)
     except Payment.DoesNotExist:
         return err('排款记录不存在', 404)
     if not can_write_dept(request, p.department):
@@ -1123,6 +1124,8 @@ def payment_plan_item_detail(request, pk, iid):
             p = Payment.objects.select_for_update().get(pk=pk)
         except Payment.DoesNotExist:
             return err('排款记录不存在', 404)
+        if p.deleted_at is not None:
+            return err('该排款在回收站中，不能调整批次；请先在回收站还原', 409, 409)
         if not can_write_dept(request, p.department):
             return err('无权操作该部门', 403, 403)
         try:
@@ -1871,6 +1874,9 @@ def payment_detail(request, pk):
         return ok(apply_view_mask(p.to_dict(), perms))
 
     if request.method == 'PUT':
+        # 回收站中的付款不可编辑（不可见的改动会随还原一起出现）：请先还原再编辑
+        if p.deleted_at is not None:
+            return err('该排款在回收站中，不能编辑；请先在回收站还原', 409, 409)
         # Record-level access: super_admin or write access to this department.
         if not can_write_dept(request, p.department):
             return err('无权编辑此记录', 403, 403)
@@ -2177,6 +2183,9 @@ def approval_record_detail(request, pk):
     if not can_write_dept(request, rec.department):
         return err('无权操作该部门', 403, 403)
     if request.method == 'PUT':
+        # 回收站中的审批不可修改（不可见的改动会随还原一起出现）：请先还原再编辑
+        if rec.deleted_at is not None:
+            return err('该记录在回收站中，不能修改；请先在回收站还原', 409, 409)
         data = parse_body(request)
         # 归档即终态（已排款 / 已拒绝 / 已撤销）：金额/状态等不可再改。
         # 例外：二级部门/项目简称是补录性元数据（历史数据默认空白，允许操作栏补录），
@@ -2257,15 +2266,18 @@ def _schedule_one(request, rec, planned_date, total_amount):
                       f'（申请 {rec.amount} − 已排 {rec.scheduled_amount}）。'
                       f'如需超额请先修改审批记录的申请金额'), 400
     # 一条审批 ↔ 一条付款管理汇总记录（经 approval 静默ID打通）：
-    # 首次排款建汇总记录+首条计划明细；再次排款只追加计划明细，汇总派生刷新
-    existing = Payment.objects.filter(approval=rec).first()
+    # 首次排款建汇总记录+首条计划明细；再次排款只追加计划明细，汇总派生刷新。
+    # 必须排除已软删除（回收站）的付款：退回排款后再次排款若命中回收站里的旧记录，
+    # 新批次会追加到一条不可见的付款上——台账看不到、审批对账也不计入，排款凭空消失。
+    existing = Payment.objects.filter(approval=rec, deleted_at__isnull=True).first()
     if existing is None and rec.approval_number and set(rec.approval_number) != {'0'}:
         # 自动收养：本审批在静默ID链路上线前用旧模式排过款（独立记录、未挂链）。
         # 业务键唯一匹配时挂上链转为追加批次，历史数据自愈；多条匹配（旧模式
-        # 分批生成了多条）时不猜，保持独立。占位审批号(全0)不收养，避免误挂。
+        # 分批生成了多条）时不猜，保持独立。占位审批号(全0)不收养，避免误挂；
+        # 回收站中的旧记录同样不收养（收养即把新排款挂到不可见记录上）。
         cand = Payment.objects.filter(
             approval__isnull=True, approval_number=rec.approval_number,
-            payee=rec.payee, department=rec.department)
+            payee=rec.payee, department=rec.department, deleted_at__isnull=True)
         if cand.count() == 1:
             existing = cand.first()
             existing.approval = rec
@@ -2363,7 +2375,8 @@ def approval_record_schedule(request, pk):
         if not perms.get('can_create'):
             return err('无新增排款权限', 403, 403)
     try:
-        rec = ApprovalRecord.objects.get(pk=pk, archived=False)
+        # 排除回收站中的审批：软删记录不可排款（还原后才可操作）
+        rec = ApprovalRecord.objects.get(pk=pk, archived=False, deleted_at__isnull=True)
     except ApprovalRecord.DoesNotExist:
         return err('记录不存在', 404)
     if not can_write_dept(request, rec.department):
@@ -2390,11 +2403,17 @@ def approval_budget_check(request):
     budget 取自 AR PaymentBudget（按 delivery_dept + expected_date 月份合计）。
     scheduled 取自 PaymentPlanItem（按 department + planned_date 月份合计）。
     """
+    # 页面权限 + 部门作用域：预算/已排款合计是部门敏感数据，仅限可见部门查询
+    perms = get_request_perms(request)
+    if perms is not None and not perms['pages'].get('approval_records', True):
+        return err('无访问权限', 403, 403)
     dept = request.GET.get('dept', '').strip()
     month = request.GET.get('month', '').strip()  # yyyy-mm
     amount_str = request.GET.get('amount', '0').strip()
     if not dept or not month:
         return err('dept 和 month 必填')
+    if request.pk_role != 'super_admin' and dept not in (request.pk_depts or []):
+        return err('无权查询该部门', 403, 403)
     try:
         year, mon = int(month[:4]), int(month[5:7])
         proposed = Decimal(amount_str) if amount_str else Decimal('0')
@@ -2486,7 +2505,8 @@ def approval_records_bulk_schedule(request):
     if len(ids) > 5000:
         return err('单次批量排款上限 5000 条，请缩小选择范围')
     planned_date = body.get('planned_date') or datetime.date.today().isoformat()
-    qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids, archived=False), request)
+    qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids, archived=False,
+                                                   deleted_at__isnull=True), request)
     recs = {r.id: r for r in qs}
     scheduled, total, skipped = 0, Decimal('0'), []
     for rid in ids:
@@ -2541,7 +2561,7 @@ def approval_records_bulk_delete(request):
         return err('ids 必须为整数列表')
     if len(ids) > 5000:
         return err('单次删除上限 5000 条，请缩小选择范围')
-    qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids), request)
+    qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids, deleted_at__isnull=True), request)
     now = timezone.now()
     actor = getattr(request, 'pk_user', None)
     deleted, skipped = 0, []
@@ -2621,7 +2641,7 @@ def approval_records_bulk_return_schedule(request):
         return err('ids 必须为整数列表')
     if len(ids) > 200:
         return err('单次批量退回上限 200 条，请缩小选择范围')
-    qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids), request)
+    qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids, deleted_at__isnull=True), request)
     returned, skipped = 0, []
     for rec in list(qs):
         if not can_write_dept(request, rec.department):
@@ -2682,7 +2702,7 @@ def approval_records_bulk_approve(request):
         return err('ids 必须为整数列表')
     if len(ids) > 5000:
         return err('单次审批上限 5000 条，请缩小选择范围')
-    qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids), request)
+    qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids, deleted_at__isnull=True), request)
     recs = {r.id: r for r in qs}
     approved, skipped = 0, []
     for rid in ids:
@@ -2831,7 +2851,7 @@ def payments_bulk_pay(request):
         return err('单次批量付款上限 5000 条，请缩小选择范围')
     pay_date = body.get('pay_date') or datetime.date.today().isoformat()
     notes = (body.get('notes') or '批量付款').strip()[:200]
-    qs = dept_filter(Payment.objects.filter(pk__in=ids), request)
+    qs = dept_filter(Payment.objects.filter(pk__in=ids, deleted_at__isnull=True), request)
     paid_cnt, total, skipped = 0, Decimal('0'), []
     for p in list(qs.prefetch_related('installments')):
         if not can_write_dept(request, p.department):
@@ -3317,7 +3337,9 @@ def dashboard(request):
     today = timezone.localdate()
     show_amount = perms is None or perms['view'].get('total_amount', True)
 
-    base = dept_filter(Payment.objects.all(), request).annotate(paid=_paid_expr())
+    # 排除回收站付款：已删除的付款不计入首页统计
+    base = (dept_filter(Payment.objects.filter(deleted_at__isnull=True), request)
+            .annotate(paid=_paid_expr()))
 
     def money(v):
         return str(v if v is not None else Decimal('0')) if show_amount else None
@@ -3374,8 +3396,8 @@ def stats(request):
     except ValueError:
         year, month = today.year, today.month
 
-    # 部门作用域 + 可选部门筛选先建基集，本期与前期结转共用同一过滤口径。
-    base = dept_filter(Payment.objects.all(), request)
+    # 部门作用域 + 可选部门筛选先建基集，本期与前期结转共用同一过滤口径；排除回收站。
+    base = dept_filter(Payment.objects.filter(deleted_at__isnull=True), request)
     depts_param = request.GET.get('depts', '').strip()
     if depts_param:
         selected = [d.strip() for d in depts_param.split(',') if d.strip()]
@@ -4629,8 +4651,8 @@ def _transport_export_core(request, export_cap=5000):
     except ImportError:
         return err('服务器缺少 openpyxl 依赖', 500)
 
-    # 运输付款 = 来源审批为运输导入的付款记录（经手动排款流转而来）
-    qs = Payment.objects.filter(approval__ext_source=TRANSPORT_SOURCE)
+    # 运输付款 = 来源审批为运输导入的付款记录（经手动排款流转而来）；排除回收站
+    qs = Payment.objects.filter(approval__ext_source=TRANSPORT_SOURCE, deleted_at__isnull=True)
     qs = dept_filter(qs, request)
     qs = qs.select_related('approval').prefetch_related('installments')
 
@@ -4935,7 +4957,7 @@ def transport_g7_numbers(request):
             ids = [int(x) for x in ids_raw.split(',') if x.strip()]
         except ValueError:
             return err('ids 参数格式有误')
-        qs = dept_filter(Payment.objects.filter(pk__in=ids), request)
+        qs = dept_filter(Payment.objects.filter(pk__in=ids, deleted_at__isnull=True), request)
     else:
         qs, _ = _payments_filtered_qs(request)
     # 保序去重（清空排序以规避 DISTINCT/ORDER BY 跨库差异；顺序对拼接用途不敏感）

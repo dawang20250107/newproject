@@ -1449,6 +1449,36 @@ class BulkOpsTests(TestCase):
         self.assertEqual(r2['count'], 1)
         self.assertFalse(ApprovalRecord.objects.filter(id=a.id).exists())
 
+    def test_reschedule_after_return_creates_new_payment(self):
+        """退回排款后再次排款：必须新建付款记录，不得把新批次追加到回收站里的旧付款
+        （否则排款凭空消失——台账不可见、审批对账不计入）。"""
+        a = self._mk_approval(6, '1000')
+        self._post(f'/api/pk/approvals/{a.id}/schedule',
+                   {'planned_date': '2026-07-01', 'total_amount': '400'})
+        p1 = Payment.objects.get(approval=a)
+        self._post('/api/pk/payments/bulk-delete', {'ids': [p1.id]})   # 退回（软删）
+        a.refresh_from_db()
+        self.assertEqual(a.scheduled_amount, Decimal('0'))
+        # 再次排款 → 新建记录，而非追加到回收站旧记录
+        r = self._post(f'/api/pk/approvals/{a.id}/schedule',
+                       {'planned_date': '2026-07-10', 'total_amount': '500'})
+        self.assertEqual(r.status_code, 200, r.content)
+        live = Payment.objects.filter(approval=a, deleted_at__isnull=True)
+        self.assertEqual(live.count(), 1)
+        p2 = live.first()
+        self.assertNotEqual(p2.id, p1.id)                    # 新记录
+        self.assertEqual(p2.total_amount, Decimal('500'))
+        p1.refresh_from_db()
+        self.assertEqual(p1.plan_items.count(), 1)           # 旧记录批次未被污染
+        a.refresh_from_db()
+        self.assertEqual(a.scheduled_amount, Decimal('500'))
+        # 回收站中的审批不可排款
+        a2 = self._mk_approval(5, '800')
+        self._post('/api/pk/approvals/bulk-delete', {'ids': [a2.id]})
+        r2 = self._post(f'/api/pk/approvals/{a2.id}/schedule',
+                        {'planned_date': '2026-07-01', 'total_amount': '100'})
+        self.assertEqual(r2.status_code, 404)
+
     def test_return_protects_paid_installments(self):
         """退回排款保护已支付：有实付分期的排款不可整单退回（单条/批量/审批侧均拦截），
         只能按批次撤销未付部分；退回后实付保持不变、审批已排款同步回退。"""
