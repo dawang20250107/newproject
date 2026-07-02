@@ -104,6 +104,44 @@ class ARPermissionRegressionTests(TestCase):
         wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=True)
         return [cell.value for cell in wb.active[1]]
 
+    def test_wo_prepaid_action_bypasses_advance_page_gate(self):
+        """出纳仅获「预付核销」操作权限（预收预付页面关闭）时，仍可从付款台账
+        创建/反向核销——显式操作权限越过页面闸口；无该权限的岗位维持页面拦截。"""
+        from paikuan.models import Payment
+        cfg = default_job_config('cashier')
+        cfg['pages']['ar_advance'] = False          # 页面关闭（复现"无权访问此模块"前提）
+        cfg['actions']['wo_prepaid'] = True         # 显式授予核销
+        JobPermission.objects.create(job_title='cashier', config=cfg)
+        _invalidate_perm_cache()
+        cashier = self.make_user('13900000411', 'cashier')
+        adv = AdvanceRecord.objects.create(
+            direction='预付', project=None, delivery_dept=self.dept, counterparty='供应商X',
+            occur_year=2026, occur_month=5, occur_date=date(2026, 5, 1),
+            advance_amount=Decimal('1000'))
+        pay = Payment.objects.create(
+            department=self.dept, project_desc='核销测试', payee='供应商X',
+            total_amount=Decimal('800'), planned_date=date(2026, 6, 1))
+        # 创建核销（付款台账入口同款调用）→ 放行
+        r = self.json_post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
+                           {'amount': '300', 'writeoff_date': '2026-06-05',
+                            'payment_id': pay.id}, cashier)
+        self.assertEqual(r.status_code, 200, r.content)
+        adv.refresh_from_db(); pay.refresh_from_db()
+        self.assertEqual(adv.balance_amount, Decimal('700'))
+        self.assertEqual(pay.prepaid_offset_amount, Decimal('300'))
+        # 反向核销 → 同样放行，余额恢复
+        wid = adv.writeoffs.first().id
+        r2 = self.client.delete(f'/api/pk/ar/advances/{adv.id}/writeoffs/{wid}',
+                                **self.auth(cashier))
+        self.assertEqual(r2.status_code, 200, r2.content)
+        adv.refresh_from_db()
+        self.assertEqual(adv.balance_amount, Decimal('1000'))
+        # 对照组：结算会计 wo_prepaid 显式 False 且预收预付页面开着 → 操作权限拒绝
+        acct = self.make_user('13900000412', 'settlement_accountant')
+        r3 = self.json_post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
+                            {'amount': '100', 'writeoff_date': '2026-06-06'}, acct)
+        self.assertEqual(r3.status_code, 403)
+
     def test_cashflow_excludes_soft_deleted_payments(self):
         """现金流分析（驾驶舱同源接口）：已软删除付款的实付分期不得计入现金流出。"""
         from paikuan.models import Payment, PaymentInstallment

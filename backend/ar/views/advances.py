@@ -845,26 +845,26 @@ def advance_export(request):
 @csrf_exempt
 @pk_required()
 def advance_writeoffs(request, pk):
-    denied = _page_denied(request, 'ar_advance')
-    if denied:
-        return denied
     try:
         rec = AdvanceRecord.objects.select_related('project').get(pk=pk)
     except AdvanceRecord.DoesNotExist:
         return err('记录不存在', 404)
     if request.pk_role != 'super_admin' and rec.delivery_dept not in request.pk_depts:
         return err('无权访问', 403)
-    denied = _ar_field_denied(request, 'adv_writeoff')
-    if denied:
-        return denied
+    # 显式授予对应核销操作权限（如出纳的 wo_prepaid）的岗位，可从付款台账直达核销，
+    # 无需「预收预付」页面权限；未显式授予时维持原「页面 + 字段」闸口。
+    _wo_action = 'wo_receive' if rec.direction == '预收' else 'wo_prepaid'
+    if not _action_granted(request, _wo_action):
+        denied = _page_denied(request, 'ar_advance') or _ar_field_denied(request, 'adv_writeoff')
+        if denied:
+            return denied
 
     if request.method == 'GET':
         return ok([w.to_dict() for w in
                    rec.writeoffs.select_related('payment').order_by('writeoff_no')])
 
     if request.method == 'POST':
-        denied = _action_denied(request,
-                                'wo_receive' if rec.direction == '预收' else 'wo_prepaid')
+        denied = _action_denied(request, _wo_action)
         if denied:
             return denied
         data = _parse_body(request)
@@ -1569,9 +1569,6 @@ def advance_offset_workbench(request):
 @csrf_exempt
 @pk_required()
 def advance_writeoff_detail(request, pk, wid):
-    denied = _page_denied(request, 'ar_advance')
-    if denied:
-        return denied
     try:
         wo = AdvanceWriteoff.objects.select_related('advance_record__project').get(
             pk=wid, advance_record_id=pk)
@@ -1579,11 +1576,12 @@ def advance_writeoff_detail(request, pk, wid):
         return err('核销记录不存在', 404)
     if request.pk_role != 'super_admin' and wo.advance_record.delivery_dept not in request.pk_depts:
         return err('无权访问', 403)
-    denied = _ar_field_denied(request, 'adv_writeoff')
-    if denied:
-        return denied
-
+    # 与 advance_writeoffs 同则：显式授予核销操作权限（出纳反向核销）越过页面/字段闸口
     _wo_action = 'wo_receive' if wo.advance_record.direction == '预收' else 'wo_prepaid'
+    if not _action_granted(request, _wo_action):
+        denied = _page_denied(request, 'ar_advance') or _ar_field_denied(request, 'adv_writeoff')
+        if denied:
+            return denied
     if request.method == 'PUT':
         denied = _action_denied(request, _wo_action)
         if denied:

@@ -481,6 +481,19 @@ def _action_denied(request, action_key):
     return _write_denied(request)
 
 
+def _action_granted(request, action_key):
+    """该操作权限是否被「显式」授予（actions[key] is True）。
+
+    与 _action_denied 的区别：不含旧配置回退写权限的兼容分支——仅显式勾选才算。
+    用于「操作权限可越过页面闸口」的场景（如出纳从付款台账核销预付，无需开通
+    「预收预付」页面），显式授予才放行，避免兼容回退意外扩大页面访问面。"""
+    perms = get_request_perms(request)
+    if perms is None:
+        return True
+    acts = perms.get('actions')
+    return isinstance(acts, dict) and acts.get(action_key) is True
+
+
 def _delete_denied(request):
     perms = get_request_perms(request)
     if perms is not None and not perms.get('can_delete', False):
