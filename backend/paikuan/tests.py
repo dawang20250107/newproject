@@ -91,6 +91,30 @@ class PaymentPermissionRegressionTests(TestCase):
         self.assertFalse(any(it['payment_id'] == p.id for it in flow2['items']))
         self.assertEqual(flow2['total'], 0)
 
+    def test_locate_numbers_and_summary_endpoint(self):
+        """全局单号直达 /locate 按部门作用域统计命中；/payments/summary 与列表同口径。"""
+        p = self.create_payment(total='1000.00')
+        p.approval_number = 'LOC12345'
+        p.save(update_fields=['approval_number'])
+        d = self.client.get('/api/pk/locate', {'numbers': 'LOC12345,NOPE1'}, **self.auth()).json()['data']
+        self.assertEqual(d['payments'], 1)
+        self.assertEqual(d['approvals'], 0)
+        s = self.client.get('/api/pk/payments/summary', **self.auth()).json()['data']
+        self.assertEqual(s['planned_total'], '1000')  # Sum 未定标（与列表原口径一致）
+        # 列表 summary=0 仍返回行，但不算聚合
+        lst = self.client.get('/api/pk/payments', {'summary': '0'}, **self.auth()).json()['data']
+        self.assertEqual(lst['total'], 1)
+
+    def test_export_follows_selected_cols(self):
+        """导出跟随可见列：cols 白名单只导所选列；含 paid 才带分期明细列。"""
+        import openpyxl as _px
+        self.create_payment(total='800.00')
+        r = self.client.get('/api/pk/payments/export', {'cols': 'department,payee'}, **self.auth())
+        self.assertEqual(r.status_code, 200)
+        wb = _px.load_workbook(io.BytesIO(r.content))
+        hdr = [c.value for c in wb.active[1]]
+        self.assertEqual(hdr, ['部门', '收款方'])
+
     def test_prepaid_balance_lookup_for_payment(self):
         """排款页按项目编号查预付余额：匹配项目返回未核销合计，未匹配返回空。"""
         from ar.models import ARProject, AdvanceRecord
@@ -2199,6 +2223,7 @@ class TransportReconciliationTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         d = resp.json()['data']
         self.assertEqual(d['created'], 1)
+        self.assertEqual(len(d['created_ids']), 1)   # 一键排款直达
         # 进的是审批管理，建为「已通过」审批记录（非付款记录）
         self.assertEqual(Payment.objects.filter(approval__ext_source='transport').count(), 0)
         rec = ApprovalRecord.objects.get(ext_bill_no='ZD202606260055')

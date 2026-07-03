@@ -1,7 +1,18 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import api from '../api/index.js'
 import EmptyState from '../components/EmptyState.vue'
+import { useAuthStore } from '../stores/auth.js'
+
+const router = useRouter()
+const auth = useAuthStore()
+// 以当前选中职务的「生效权限」临时预览界面（数据仍按超管本人权限返回）
+function previewRole() {
+  if (!current.value) return
+  auth.startPreview(current.value.label, current.value.config)
+  router.push('/dashboard')
+}
 
 const loading = ref(true)
 const saving = ref(false)
@@ -129,6 +140,10 @@ async function save() {
           按职务精确控制：页面访问 · 字段查看 · 字段编辑 · 新增 / 删除
         </div>
       </div>
+      <button class="btn btn-ghost btn-sm" :disabled="!current" @click="previewRole"
+              title="以该职务的界面权限临时浏览系统（页面/按钮/字段显隐即时生效；数据仍按您本人权限返回），顶部横幅可随时退出">
+        👁 预览此职务视角
+      </button>
     </div>
 
     <EmptyState v-if="loading" loading />

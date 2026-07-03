@@ -3,7 +3,7 @@
 // 付款管理与审批管理共用，避免各自用 alert 截断只显示部分错误。
 // result 形如 { created, skipped, errors:[...], message? } 或 { error: '整文件失败原因' }。
 defineProps({ result: { type: Object, default: null } })
-defineEmits(['close'])
+defineEmits(['close', 'action'])
 </script>
 
 <template>
@@ -51,7 +51,8 @@ defineEmits(['close'])
       </template>
 
       <div class="modal-footer">
-        <button class="btn btn-primary" @click="$emit('close')">我知道了</button>
+        <button v-if="result?.action" class="btn btn-primary" @click="$emit('action', result.action)">{{ result.action.label }}</button>
+        <button class="btn" :class="result?.action ? 'btn-ghost' : 'btn-primary'" @click="$emit('close')">我知道了</button>
       </div>
     </div>
   </div>

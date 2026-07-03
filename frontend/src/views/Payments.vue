@@ -2,6 +2,7 @@
 import { confirmDlg } from '../composables/confirm.js'
 import { resultDlg } from '../composables/bulkResult.js'
 import { ref, onMounted, onBeforeUnmount, reactive, computed, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useToast } from '../composables/useToast.js'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
@@ -28,6 +29,7 @@ import { createRequestLane } from '../utils/requestLane.js'
 import { cachedGet } from '../api/refCache.js'
 
 const toast = useToast()
+const route = useRoute()
 const auth = useAuthStore()
 const { exporting: bgExporting, startExport } = useAsyncExport()
 // Excel 式区域选择 + 复制（忽略首列复选框）
@@ -522,11 +524,16 @@ async function onPrecheckApply({ mode, rows, okRows }) {
   }
 }
 
+// 导出跟随台账可见列：把当前显示的列键传给后端（'paid' 可见时含分期明细列）
+function visibleExportCols() {
+  return COL_DEFS.filter(c => colVisible(c.key)).map(c => c.key).join(',')
+}
 async function exportExcel() {
   exportingXlsx.value = true
   try {
     const params = buildParams()
     delete params.page; delete params.size
+    params.cols = visibleExportCols()
     const blob = await api.get('/payments/export', { params, responseType: 'blob', timeout: 60000 })
     const date = new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '月') + '日'
     triggerDownload(blob, `排款记录_${date}.xlsx`)
@@ -535,6 +542,7 @@ async function exportExcel() {
     const msg = e?.msg || e?.error || ''
     if (/超出导出上限|后台导出|导出超过/.test(msg)) {
       const params = buildParams(); delete params.page; delete params.size
+      params.cols = visibleExportCols()
       startExport('payments', params)
     } else {
       toast.error(msg || '导出失败，请稍后重试')
@@ -615,20 +623,33 @@ async function selectAllFiltered() {
 
 const triggerDownload = downloadBlob
 
+// 底部合计（与列表同筛选口径）非阻塞拉取；latest-wins 防过期覆盖
+let _sumSeq = 0
+async function loadSummary() {
+  const seq = ++_sumSeq
+  try {
+    const p = buildParams(); delete p.page; delete p.size
+    const r = await api.get('/payments/summary', { params: p })
+    if (seq !== _sumSeq) return
+    outstandingTotal.value = r.data.outstanding_total ?? '0'
+    outstandingCount.value = r.data.outstanding_count ?? 0
+    plannedTotal.value = r.data.planned_total ?? '0'
+    paidTotal.value = r.data.paid_total ?? '0'
+  } catch (_) { /* 合计失败不阻塞列表 */ }
+}
+
 async function load() {
   loading.value = true
   loadErr.value = ''
   const sig = listLane.signal()
   try {
-    const res = await api.get('/payments', { params: buildParams(), signal: sig })
+    // 汇总懒加载：列表带 summary=0 跳过聚合（首屏更快），合计另行非阻塞拉取
+    const res = await api.get('/payments', { params: { ...buildParams(), summary: '0' }, signal: sig })
     items.value = res.data.items
     total.value = res.data.total
     resetAnchor()   // 数据集已更换：清 Shift 区间锚点，防旧锚点区间选错行
-    outstandingTotal.value = res.data.outstanding_total ?? '0'
-    outstandingCount.value = res.data.outstanding_count ?? 0
-    plannedTotal.value = res.data.planned_total ?? '0'
-    paidTotal.value = res.data.paid_total ?? '0'
     loading.value = false
+    loadSummary()
     // 轻量列表不含明细：为仍展开的行补拉分批/分期明细，保持展开态内容正确
     if (expandedRows.value.size) {
       for (const id of expandedRows.value) hydrateRowDetail(id)
@@ -659,6 +680,8 @@ const onScopeChange = () => {
 }
 onMounted(async () => {
   loadDepts()
+  // 全局单号直达带入：?numbers=a,b,c → 应用批量单号筛选
+  if (route.query.numbers) numbersFilter.value = String(route.query.numbers)
   // 有默认方案则套用并由其 onApply 触发加载；否则常规加载。
   // 方案接口异常也要兜底加载数据，避免卡在骨架屏（loading 初始为 true）。
   try {
@@ -920,7 +943,7 @@ function resetFilters() {
   sortField.value = ''; sortOrder.value = ''
   payDatePreset.value = ''
   priorityOnly.value = false
-  numbersFilter.value = ''; numbersText.value = ''
+  numbersFilter.value = ''
   clearSelection()
   load()
 }
@@ -1018,21 +1041,19 @@ async function clearAllPriority() {
   } catch (e) { toast.error(e?.msg || e?.error || '清除失败') }
 }
 
-// ── 批量单号筛选：粘贴多单号（任意分隔）→ 归一化为逗号连接 → 后端 in 命中 ──
-const showNumbersBox = ref(false)
-const numbersText = ref('')
-const parsedNumbers = computed(() =>
-  [...new Set(numbersText.value.split(/[\s,+;|，、；／/]+/).map(s => s.trim()).filter(Boolean))])
-function applyNumbers() {
-  numbersFilter.value = parsedNumbers.value.join(',')
-  showNumbersBox.value = false
-  filters.page = 1; clearSelection(); load()
-}
+// ── 批量单号筛选：入口已并入侧边栏「单号直达」（支持任意分隔符批量），
+//    本页保留 numbersFilter 状态，经路由参数 ?numbers= 注入，chips 可单点移除 ──
 function clearNumbers() {
-  numbersText.value = ''; numbersFilter.value = ''
-  showNumbersBox.value = false
+  numbersFilter.value = ''
   filters.page = 1; clearSelection(); load()
 }
+watch(() => route.query.numbers, (v) => {
+  const nums = String(v || '').trim()
+  if (nums && nums !== numbersFilter.value) {
+    numbersFilter.value = nums
+    filters.page = 1; clearSelection(); load()
+  }
+}, { immediate: false })
 
 // 批量付款（批量编辑）：默认日期=今天，默认金额=各记录剩余应付=计划金额；卡片内可逐条调整金额
 const showBatchPay = ref(false)
@@ -1165,25 +1186,6 @@ async function doBatchPay() {
         <button class="filter-toggle prio-toggle" :class="{ active: priorityOnly }" @click="togglePriorityFilter"
                 title="只显示标记为重点的付款">★ 只看重点</button>
         <button v-if="priorityOnly" class="btn btn-sm" @click="clearAllPriority" title="清除当前事业部范围内全部重点标记">清除全部标记</button>
-        <!-- 批量单号筛选 -->
-        <div class="numfilter-wrap">
-          <button class="btn btn-ghost btn-sm" :class="{ on: !!numbersFilter }" @click="showNumbersBox = !showNumbersBox"
-                  title="粘贴多个单号（空格/换行/+/逗号等任意分隔）批量筛选">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px;vertical-align:-1px"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>批量单号{{ numbersFilter ? `（${parsedNumbers.length || numbersFilter.split(',').length}）` : '' }}
-          </button>
-          <div v-if="showNumbersBox" class="numfilter-pop">
-            <div class="nf-title">粘贴单号批量筛选 <span>对账单号/G7/审批编号，任意分隔符</span></div>
-            <textarea v-model="numbersText" class="nf-area" rows="6"
-                      placeholder="例如：&#10;ZD202606260055 ZD202606260133&#10;ZD202606260092+ZD202606260134&#10;逗号、空格、换行、+ 都行"></textarea>
-            <div class="nf-foot">
-              <span class="nf-count">识别 {{ parsedNumbers.length }} 个</span>
-              <div style="display:flex;gap:6px">
-                <button class="btn btn-sm" @click="clearNumbers">清除</button>
-                <button class="btn btn-sm btn-primary" :disabled="!parsedNumbers.length" @click="applyNumbers">应用筛选</button>
-              </div>
-            </div>
-          </div>
-        </div>
         <span class="filter-group-lbl">回款日</span>
         <select v-model="payDatePreset" @change="applyPayDatePreset" style="min-width:100px">
           <option value="">全部日期</option>

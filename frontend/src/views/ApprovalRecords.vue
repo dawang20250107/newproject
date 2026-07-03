@@ -2,6 +2,7 @@
 import { confirmDlg } from '../composables/confirm.js'
 import { resultDlg } from '../composables/bulkResult.js'
 import { ref, reactive, onMounted, onBeforeUnmount, computed, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import ContextMenu from '../components/ContextMenu.vue'
@@ -26,6 +27,7 @@ import { useShiftSelect } from '../composables/useShiftSelect.js'
 import { createRequestLane } from '../utils/requestLane.js'
 import { cachedGet } from '../api/refCache.js'
 const toast = useToast()
+const route = useRoute()
 const { exporting: bgExporting, startExport } = useAsyncExport()
 // Excel 式区域选择 + 复制（忽略首列复选框）
 const rangeSel = useRangeSelection({ ignoreCols: [0], onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
@@ -125,7 +127,7 @@ const filterChips = computed(() => {
   Object.entries(colFilters).forEach(([field, f]) => {
     if (f) chips.push({ key: 'col:' + field, text: `${_APR_LABELS[field] || field}: ${describeFilterVal(f)}`, clear: () => setColFilter(field, null) })
   })
-  if (numbersFilter.value) chips.push({ key: 'nums', text: `批量单号(${numbersFilter.value.split(',').length})`, clear: () => { numbersFilter.value = ''; numbersText.value = ''; page.value = 1; load() } })
+  if (numbersFilter.value) chips.push({ key: 'nums', text: `批量单号(${numbersFilter.value.split(',').length})`, clear: () => { numbersFilter.value = ''; page.value = 1; load() } })
   if (q.value) chips.push({ key: 'q', text: `关键字: ${q.value}`, clear: () => { q.value = ''; page.value = 1; load() } })
   return chips
 })
@@ -133,25 +135,19 @@ const filterChips = computed(() => {
 function clearAllFilters() {
   Object.keys(colFilters).forEach(k => delete colFilters[k])
   q.value = ''; sortField.value = ''; sortOrder.value = ''
-  numbersFilter.value = ''; numbersText.value = ''
+  numbersFilter.value = ''
   page.value = 1; clearSelection(); load()
 }
-// 批量单号筛选
+// 批量单号筛选：入口已并入侧边栏「单号直达」；本页保留状态，经 ?numbers= 注入
 const numbersFilter = ref('')
-const showNumbersBox = ref(false)
-const numbersText = ref('')
-const parsedNumbers = computed(() =>
-  [...new Set(numbersText.value.split(/[\s,+;|，、；／/]+/).map(s => s.trim()).filter(Boolean))])
-function applyNumbers() {
-  numbersFilter.value = parsedNumbers.value.join(',')
-  showNumbersBox.value = false
-  page.value = 1; clearSelection(); load()
-}
-function clearNumbers() {
-  numbersText.value = ''; numbersFilter.value = ''
-  showNumbersBox.value = false
-  page.value = 1; clearSelection(); load()
-}
+if (route.query.numbers) numbersFilter.value = String(route.query.numbers)
+watch(() => route.query.numbers, (v) => {
+  const nums = String(v || '').trim()
+  if (nums && nums !== numbersFilter.value) {
+    numbersFilter.value = nums
+    page.value = 1; clearSelection(); load()
+  }
+})
 function buildParams() {
   const p = { page: page.value, size: size.value }
   if (q.value.trim()) p.q = q.value.trim()
@@ -621,6 +617,20 @@ async function onImport(e){
 // 运输事业部对账单导入：先预检（逐类详列将导入/各类跳过/列漂移）→ 用户确认 → 落库
 const transportPrecheck = ref(null)   // 预检报告（非空时弹出预检弹窗）
 const transportFile = ref(null)       // 暂存待导入文件，确认后提交
+// 运输导入 → 一键排款：对本次导入的审批全部按「计划日期=今天」排款（金额=申请额）
+async function quickScheduleImported(ids){
+  if(!ids?.length) return
+  if(!(await confirmDlg(`将本次导入的 ${ids.length} 条审批全部排款（计划日期=今天、金额=申请金额）？\n排款后进入付款管理，可再逐条调整批次。`))) return
+  try{
+    const r=await api.post('/approvals/bulk-schedule',{ ids, planned_date: todayCST() })
+    const d=r.data||{}
+    importResult.value=null
+    if(d.skipped?.length) resultDlg({ title:'一键排款结果', okLine:d.message, skipped:d.skipped })
+    else toast.success(d.message||'已全部排款')
+    load()
+  }catch(err){ toast.error(err?.msg||err?.error||'排款失败') }
+}
+
 function triggerTransportImport(){ importResult.value=null; precheckResult.value=null; transportPrecheck.value=null; transportFileRef.value.click() }
 async function onTransportImport(e){
   const f=e.target.files?.[0]; if(!f){ return }
@@ -646,7 +656,8 @@ async function confirmTransportImport(){
       headers:{'Content-Type':'multipart/form-data'}, timeout:120000,
     })).data||{}
     transportPrecheck.value=null; transportFile.value=null
-    importResult.value={ created:d.created||0, skipped:d.skipped||0, errors:d.errors||[], message:d.message }
+    importResult.value={ created:d.created||0, skipped:d.skipped||0, errors:d.errors||[], message:d.message,
+                         action: (d.created_ids||[]).length ? { label: `一键排款 ${d.created_ids.length} 条（计划日期今天）`, ids: d.created_ids } : null }
     if(d.created>0) load()
   }catch(err){
     transportPrecheck.value=null; transportFile.value=null
@@ -721,24 +732,6 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <div class="topbar"><h1>审批管理</h1><div class="topbar-tools">
     <input v-model="q" class="global-search" placeholder="🔍 申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
     <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
-    <div class="numfilter-wrap">
-      <button class="btn btn-ghost btn-sm" :class="{ on: !!numbersFilter }" @click="showNumbersBox = !showNumbersBox"
-              title="粘贴多个单号（空格/换行/+/逗号等任意分隔）批量筛选">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px;vertical-align:-1px"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>批量单号{{ numbersFilter ? `（${numbersFilter.split(',').length}）` : '' }}
-      </button>
-      <div v-if="showNumbersBox" class="numfilter-pop">
-        <div class="nf-title">粘贴单号批量筛选 <span>G7/对账单号/审批编号，任意分隔符</span></div>
-        <textarea v-model="numbersText" class="nf-area" rows="6"
-                  placeholder="例如：&#10;ZD202606260055 ZD202606260133&#10;单号+单号，逗号、空格、换行都行"></textarea>
-        <div class="nf-foot">
-          <span class="nf-count">识别 {{ parsedNumbers.length }} 个</span>
-          <div style="display:flex;gap:6px">
-            <button class="btn btn-sm" @click="clearNumbers">清除</button>
-            <button class="btn btn-sm btn-primary" :disabled="!parsedNumbers.length" @click="applyNumbers">应用筛选</button>
-          </div>
-        </div>
-      </div>
-    </div>
     <button v-if="activeFilterCount || q || sortField || numbersFilter" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters" title="清除全部列筛选 / 搜索 / 排序 / 单号">清除筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
     <SchemePicker :ctl="schemes" :can-public="auth.canCreate" :is-super-admin="auth.isSuperAdmin" />
     <span class="tb-sep"></span>
@@ -1031,7 +1024,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <input v-model="delConfirmText" class="del-input" :placeholder="`输入 ${delConfirmCount}`" @keyup.enter="confirmBulkDelete"/>
   </div><div class="modal-footer"><button class="btn btn-ghost" @click="showDelConfirm=false">取消</button><button class="btn-danger-solid" :disabled="!delConfirmOk || bulkDeleting" @click="confirmBulkDelete">{{ bulkDeleting ? '删除中…' : '确认删除' }}</button></div></div></div></Teleport>
 
-  <ImportResultModal :result="importResult" @close="importResult = null" />
+  <ImportResultModal :result="importResult" @close="importResult = null" @action="a => quickScheduleImported(a.ids)" />
   <ImportPrecheckModal :report="precheckResult" :busy="precheckBusy"
     @close="precheckResult = null" @apply="onPrecheckApply" />
   <TransportPrecheckModal :report="transportPrecheck" :busy="importingTransport"

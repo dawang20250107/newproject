@@ -9,6 +9,7 @@ import ConfirmHost from './components/ConfirmHost.vue'
 import ResultHost from './components/ResultHost.vue'
 import ErrorBoundary from './components/ErrorBoundary.vue'
 import { useAuthStore } from './stores/auth.js'
+import { useRouter } from 'vue-router'
 
 const route = useRoute()
 const auth = useAuthStore()
@@ -36,6 +37,9 @@ function onNavHover(hovering) {
   if (hovering) clearAutoTimer()    // pause countdown while pointer rests on nav
   else scheduleAutoCollapse()       // restart a fresh countdown when it leaves
 }
+
+const _router = useRouter()
+function exitPreview() { auth.stopPreview(); _router.push('/permissions') }
 
 // Keep permissions fresh (super_admin may have changed them since last login).
 onMounted(() => {
@@ -115,6 +119,11 @@ function onNavCollapse(v) {
 
     <!-- 超管重置临时密码后：强制改密，覆盖全屏不可跳过 -->
     <ChangePasswordModal v-if="auth.isLoggedIn && auth.mustChangePassword" forced />
+    <!-- 权限预览横幅：超管以某职务视角浏览时常驻置顶，可一键退出 -->
+    <div v-if="auth.previewJob" class="preview-banner">
+      👁 正在预览「{{ auth.previewJob }}」的界面视角（数据仍按您本人权限返回）
+      <button class="pv-exit" @click="exitPreview">退出预览</button>
+    </div>
     <Toast />
     <ConfirmHost />
     <ResultHost />
