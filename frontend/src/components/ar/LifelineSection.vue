@@ -165,7 +165,7 @@ onBeforeUnmount(() => { emit('register', props.stage, null) })
 </template>
 
 <style scoped>
-.ls { border: 1px solid rgba(180,140,110,.2); border-radius: 12px; background: #fff; overflow: hidden; transition: box-shadow .15s; }
+.ls { border: 1px solid rgba(180,140,110,.2); border-radius: 12px; background: var(--row-bg); overflow: hidden; transition: box-shadow .15s; }
 .ls:hover { box-shadow: 0 2px 10px rgba(60,30,10,.06); }
 .ls-urgent { border-color: rgba(198,40,40,.35); }
 
@@ -177,10 +177,10 @@ onBeforeUnmount(() => { emit('register', props.stage, null) })
   display: flex; align-items: center; justify-content: center; font-size: 13px;
   background: #f0e6dc; color: #a8917e;
 }
-.ls-node-done { background: linear-gradient(145deg, #66bb6a, #2e7d32); color: #fff; }
-.ls-node-active { background: linear-gradient(145deg, #e07848, #c96342); color: #fff; }
+.ls-node-done { background: linear-gradient(145deg, #66bb6a, var(--c-success)); color: #fff; }
+.ls-node-active { background: linear-gradient(145deg, #e07848, var(--primary)); color: #fff; }
 .ls-node-partial { background: linear-gradient(145deg, #ffb74d, #f57c00); color: #fff; }
-.ls-node-urgent { background: linear-gradient(145deg, #ef5350, #c62828); color: #fff; }
+.ls-node-urgent { background: linear-gradient(145deg, #ef5350, var(--c-danger)); color: #fff; }
 .ls-title { font-size: 13.5px; font-weight: 800; color: #5a4636; flex-shrink: 0; }
 .ls-state {
   font-size: 10.5px; font-weight: 700; padding: 1px 8px; border-radius: 8px;
@@ -210,11 +210,11 @@ onBeforeUnmount(() => { emit('register', props.stage, null) })
 .ls-img-cell:hover .ls-img-del { opacity: 1; }
 .ls-file { display: flex; align-items: center; gap: 8px; background: #fbf7f1; border: 1px solid rgba(180,140,110,.16); border-radius: 8px; padding: 6px 10px; }
 .ls-file-ico { font-size: 15px; flex-shrink: 0; }
-.ls-file-name { flex: 1; min-width: 0; font-size: 12px; color: #1565c0; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ls-file-name { flex: 1; min-width: 0; font-size: 12px; color: var(--c-info); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ls-file-name:hover { text-decoration: underline; }
 .ls-file-meta { font-size: 10px; color: #a8917e; flex-shrink: 0; }
 .ls-file-del { border: none; background: none; color: #c0ad9d; font-size: 11px; cursor: pointer; flex-shrink: 0; }
-.ls-file-del:hover { color: #c62828; }
+.ls-file-del:hover { color: var(--c-danger); }
 .ls-dz { border: 1.5px dashed rgba(180,140,110,.35); border-radius: 8px; padding: 8px; text-align: center; font-size: 11px; color: #a8917e; cursor: pointer; transition: all .15s; position: relative; }
 .ls-dz:hover, .ls-dz-over { background: rgba(201,99,66,.05); border-color: var(--ac); color: var(--ac); }
 .ls-dz-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
@@ -225,7 +225,7 @@ onBeforeUnmount(() => { emit('register', props.stage, null) })
 .ls-act-dot {
   width: 24px; height: 24px; flex-shrink: 0; border-radius: 50%;
   display: flex; align-items: center; justify-content: center; font-size: 12px;
-  background: #fff; border: 2px solid var(--sc); box-shadow: 0 0 0 2px #fff, 0 1px 3px rgba(60,30,10,.1);
+  background: var(--row-bg); border: 2px solid var(--sc); box-shadow: 0 0 0 2px #fff, 0 1px 3px rgba(60,30,10,.1);
 }
 .ls-act-main { flex: 1; min-width: 0; background: #fbf7f1; border: 1px solid rgba(180,140,110,.15); border-left: 3px solid var(--sc); border-radius: 8px; padding: 6px 10px; }
 .ls-act-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -238,9 +238,9 @@ onBeforeUnmount(() => { emit('register', props.stage, null) })
 .ls-act-fu { font-size: 10.5px; color: #a8917e; margin-top: 2px; }
 .ls-edit-ta { width: 100%; border: 1px solid rgba(201,99,66,.4); border-radius: 6px; padding: 5px 8px; font-size: 12.5px; color: #5a4636; resize: vertical; font-family: inherit; box-sizing: border-box; outline: none; margin-top: 4px; }
 .ls-edit-foot { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; margin-top: 5px; }
-.ls-sel { border: 1px solid rgba(180,140,110,.28); border-radius: 6px; font-size: 11.5px; padding: 3px 6px; color: #5a4636; background: #fff; outline: none; font-family: inherit; }
+.ls-sel { border: 1px solid rgba(180,140,110,.28); border-radius: 6px; font-size: 11.5px; padding: 3px 6px; color: #5a4636; background: var(--row-bg); outline: none; font-family: inherit; }
 .ls-save { padding: 3px 12px; border: none; border-radius: 6px; background: var(--ac); color: #fff; font-size: 11.5px; font-weight: 700; cursor: pointer; margin-left: auto; }
-.ls-cancel { padding: 3px 10px; border: 1px solid rgba(180,140,110,.3); border-radius: 6px; background: #fff; font-size: 11.5px; cursor: pointer; color: #8a7665; }
+.ls-cancel { padding: 3px 10px; border: 1px solid rgba(180,140,110,.3); border-radius: 6px; background: var(--row-bg); font-size: 11.5px; cursor: pointer; color: #8a7665; }
 
 .ls-compose { border: 1px dashed rgba(201,99,66,.4); background: none; color: var(--ac); font-size: 11.5px; padding: 6px; border-radius: 8px; cursor: pointer; font-weight: 600; transition: background .12s; }
 .ls-compose:hover { background: rgba(201,99,66,.05); }

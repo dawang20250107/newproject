@@ -88,6 +88,6 @@ function onCancel() {
   border-radius: 8px; font-size: 14px; box-sizing: border-box; }
 .cp-field input:focus { border-color: var(--primary); outline: none; }
 .cp-weak { font-size: 11.5px; color: var(--danger); }
-.cp-ok { font-size: 11.5px; color: #2e7d32; }
+.cp-ok { font-size: 11.5px; color: var(--c-success); }
 .cp-error { font-size: 13px; color: var(--danger); margin: 4px 0 0; }
 </style>

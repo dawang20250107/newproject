@@ -469,7 +469,7 @@ onMounted(load)
 
 /* ── 报告正文 ── */
 .report {
-  background: #fff; border: 1px solid #ddd;
+  background: var(--row-bg); border: 1px solid #ddd;
   padding: 32px 38px 28px; max-width: 1080px; margin: 0 auto;
   box-shadow: 0 2px 8px rgba(0,0,0,.08);
 }
@@ -564,7 +564,7 @@ onMounted(load)
   font-size: 12.5px; line-height: 1.7; color: #1a1a1a; padding: 8px 10px;
   resize: none; outline: none; font-family: inherit; min-height: 56px; overflow: hidden;
 }
-.rp-note-ta:focus { border-color: var(--primary); background: #fff; }
+.rp-note-ta:focus { border-color: var(--primary); background: var(--row-bg); }
 .rp-note-ta::placeholder { color: #bbb; }
 
 /* 签字栏 */

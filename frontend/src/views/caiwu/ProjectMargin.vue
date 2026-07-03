@@ -259,10 +259,10 @@ onMounted(() => {
             <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#9b8070" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/></svg>
             <i>项目数</i><b>{{ summary.project_count }}</b></span>
           <span class="bb-item">
-            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#2e7d32" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="var(--c-success)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
             <i>收入合计</i><b>{{ fmt(summary.total_revenue) }}</b></span>
           <span class="bb-item">
-            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#c62828" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V9"/><path d="M7 14l5-5 5 5"/><path d="M5 4h14"/></svg>
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="var(--c-danger)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V9"/><path d="M7 14l5-5 5 5"/><path d="M5 4h14"/></svg>
             <i>成本合计</i><b>{{ fmt(summary.total_cost) }}</b></span>
           <span class="bb-item" :class="summary.total_margin >= 0 ? 'ok' : 'warn'">
             <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#7a614c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10.5h18"/></svg>
@@ -271,7 +271,7 @@ onMounted(() => {
             <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#9b8070" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="2.4"/><circle cx="17" cy="17" r="2.4"/><path d="M18 6L6 18"/></svg>
             <i>毛利率</i><b>{{ summary.margin_rate === null ? '—' : summary.margin_rate + '%' }}</b></span>
           <span v-if="mode === 'direct' && summary.unalloc_cost" class="bb-item">
-            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#e65100" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="var(--c-warn)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>
             <i>未分摊池</i><b>{{ fmt(summary.unalloc_cost) }}</b></span>
         </div>
         <div class="bb-pager">
@@ -299,7 +299,7 @@ onMounted(() => {
 .pm-sel:hover, .pm-sel:focus { background: rgba(201,99,66,0.09); color: var(--primary); }
 .pm-modes { display: inline-flex; background: rgba(0,0,0,0.05); border-radius: 9px; padding: 3px; }
 .pm-mode { border: none; background: none; padding: 5px 14px; border-radius: 7px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
-.pm-mode.on { background: #fff; color: var(--primary); font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+.pm-mode.on { background: var(--row-bg); color: var(--primary); font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
 
 .pm-warn {
   background: rgba(245,127,23,0.08); border: 1px solid rgba(245,127,23,0.3);
@@ -340,8 +340,8 @@ onMounted(() => {
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .ctr { text-align: center; }
 .fw { font-weight: 600; }
-.text-ok { color: #2e7d32; font-weight: 600; }
-.text-danger { color: #c62828; font-weight: 600; }
+.text-ok { color: var(--c-success); font-weight: 600; }
+.text-danger { color: var(--c-danger); font-weight: 600; }
 .text-muted { color: var(--muted); }
 .empty-cell { text-align: center; padding: 36px !important; color: var(--muted); }
 .section-sub { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 8px; }

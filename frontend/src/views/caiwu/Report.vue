@@ -321,7 +321,7 @@ onMounted(() => {
 .value-neg { color: var(--danger) !important; }
 .sub { font-size: 10.5px; color: var(--muted); margin-top: 7px; line-height: 1.4; }
 .mom-badge { flex-shrink: 0; display: inline-block; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px; }
-.mom-up { background: rgba(46,125,50,.10); color: #2e7d32; }
+.mom-up { background: rgba(46,125,50,.10); color: var(--c-success); }
 .mom-down { background: rgba(198,40,40,.10); color: var(--danger); }
 .mom-neutral { background: rgba(120,120,120,.08); color: var(--muted); font-weight: 400; }
 
@@ -343,7 +343,7 @@ onMounted(() => {
 .mx-total { background: #faf2ec; }
 .mx-table thead .mx-total { background: #efe2d8; }
 .mx-table tbody td { padding: 6px 10px; border-bottom: 1px solid rgba(0,0,0,0.035); }
-.mx-name { position: sticky; left: 0; z-index: 2; background: #fff; white-space: nowrap; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.mx-name { position: sticky; left: 0; z-index: 2; background: var(--row-bg); white-space: nowrap; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
 .mx-row.d0 .mx-name { font-weight: 700; color: var(--text); }
 .mx-row.d1 .mx-name { color: #555; }
 .mx-row.d2 .mx-name { color: var(--muted); font-size: 11.5px; }

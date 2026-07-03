@@ -820,7 +820,7 @@ const ctxMatrixItems = computed(() => {
       <div class="kpi-grid kpi-3">
         <div v-for="c in heroCards" :key="c.key" class="kpi-card" :class="{ 'kpi-muted': c.muted }">
           <div class="label">{{ c.label }}<span v-if="c.hint" class="lbl-hint" :title="c.hint">ⓘ</span></div>
-          <div class="value" :style="`color:${c.neg ? '#c62828' : c.color}`">{{ fmtMoney(c.value) }}</div>
+          <div class="value" :style="`color:${c.neg ? 'var(--c-danger)' : c.color}`">{{ fmtMoney(c.value) }}</div>
           <div class="kpi-meta">
             <span v-if="c.rate != null" class="rate-chip" :style="`color:${rateColor(c.rate)};border-color:${rateColor(c.rate)}55`">达成 {{ fmtRate(c.rate) }}</span>
             <span v-if="c.sub" class="kpi-sub-tag">{{ c.sub }}</span>
@@ -1312,10 +1312,10 @@ const ctxMatrixItems = computed(() => {
 .cfa-global-acts { display: flex; gap: 6px; flex-shrink: 0; }
 .cfa-global-btn {
   border: none; border-radius: 9px; padding: 7px 13px; cursor: pointer; font-size: 12.5px; font-weight: 700;
-  color: #fff; background: linear-gradient(135deg, #c96342, #e8855a); box-shadow: 0 3px 10px rgba(201,99,66,0.35);
+  color: #fff; background: linear-gradient(135deg, var(--primary), #e8855a); box-shadow: 0 3px 10px rgba(201,99,66,0.35);
 }
 .cfa-global-btn:disabled { opacity: .5; cursor: not-allowed; }
-.cfa-global-ghost { border: 1px solid rgba(0,0,0,0.12); background: #fff; border-radius: 9px; padding: 7px 12px; cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.cfa-global-ghost { border: 1px solid rgba(0,0,0,0.12); background: var(--row-bg); border-radius: 9px; padding: 7px 12px; cursor: pointer; font-size: 12.5px; color: var(--muted); }
 
 .kpi-4 { grid-template-columns: repeat(4, 1fr) !important; }
 @media (max-width: 960px) { .kpi-4 { grid-template-columns: repeat(2, 1fr) !important; } }
@@ -1387,7 +1387,7 @@ const ctxMatrixItems = computed(() => {
 .al-ask:hover { background: rgba(122,159,212,.18); }
 .al-action {
   flex-shrink: 0; border: 1px solid rgba(46,125,50,.35); background: rgba(46,125,50,.08);
-  color: #2e7d32; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px;
+  color: var(--c-success); font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px;
   cursor: pointer; opacity: 0; transition: opacity .15s; white-space: nowrap;
 }
 .alert-item:hover .al-action { opacity: 1; }
@@ -1395,9 +1395,9 @@ const ctxMatrixItems = computed(() => {
 .al-go { color: var(--muted); font-weight: 700; opacity: 0; transition: opacity .15s; flex-shrink: 0; }
 .alert-item.actionable:hover .al-go { opacity: 1; }
 .al-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
-.al-high .al-dot { background: #c62828; box-shadow: 0 0 0 3px rgba(198,40,40,.14); }
-.al-mid .al-dot { background: #e65100; box-shadow: 0 0 0 3px rgba(230,81,0,.12); }
-.al-ok .al-dot { background: #2e7d32; box-shadow: 0 0 0 3px rgba(46,125,50,.12); }
+.al-high .al-dot { background: var(--c-danger); box-shadow: 0 0 0 3px rgba(198,40,40,.14); }
+.al-mid .al-dot { background: var(--c-warn); box-shadow: 0 0 0 3px rgba(230,81,0,.12); }
+.al-ok .al-dot { background: var(--c-success); box-shadow: 0 0 0 3px rgba(46,125,50,.12); }
 .al-high { color: #b71c1c; font-weight: 600; }
 .engine-line {
   margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(0,0,0,0.06);
@@ -1424,9 +1424,9 @@ const ctxMatrixItems = computed(() => {
 .matrix-table .bu { font-weight: 700; color: var(--text); }
 .matrix-table .strong { font-weight: 700; }
 .matrix-table .muted { color: var(--muted); }
-.matrix-table .neg { color: #c62828; }
-.matrix-table .mom-up { color: #2e7d32; }
-.matrix-table .mom-down { color: #c62828; }
+.matrix-table .neg { color: var(--c-danger); }
+.matrix-table .mom-up { color: var(--c-success); }
+.matrix-table .mom-down { color: var(--c-danger); }
 .matrix-table .mom-neutral { color: var(--muted); }
 .row-loss { background: rgba(198,40,40,0.045); }
 .row-loss:hover { background: rgba(198,40,40,0.075) !important; }
@@ -1437,7 +1437,7 @@ const ctxMatrixItems = computed(() => {
 .drillable:hover .drill-hint { opacity: 1; }
 .share-th { min-width: 110px; }
 .share-cell { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
-.share-bar { height: 8px; border-radius: 4px; background: linear-gradient(90deg, #c96342, #e8a05a); min-width: 2px; }
+.share-bar { height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--primary), #e8a05a); min-width: 2px; }
 .share-num { min-width: 32px; text-align: right; color: var(--muted); font-weight: 600; }
 
 .mini-empty { display: flex; align-items: center; justify-content: center; height: 280px; color: var(--muted); font-size: 13px; }
@@ -1447,8 +1447,8 @@ const ctxMatrixItems = computed(() => {
   display: inline-block; font-size: 11px; font-weight: 600;
   padding: 2px 7px; border-radius: 10px;
 }
-.mom-up { background: rgba(46,125,50,.10); color: #2e7d32; }
-.mom-down { background: rgba(198,40,40,.10); color: #c62828; }
+.mom-up { background: rgba(46,125,50,.10); color: var(--c-success); }
+.mom-down { background: rgba(198,40,40,.10); color: var(--c-danger); }
 .mom-neutral { background: rgba(120,120,120,.08); color: var(--muted); font-weight: 400; }
 
 .chart-grid {
@@ -1471,7 +1471,7 @@ const ctxMatrixItems = computed(() => {
 .ai-pro-tag {
   font-size: 10px; font-weight: 800; letter-spacing: .05em;
   padding: 1px 6px; border-radius: 6px; color: #fff;
-  background: linear-gradient(135deg, #c96342, #e8855a);
+  background: linear-gradient(135deg, var(--primary), #e8855a);
 }
 .ai-bar-scope { font-size: 12px; color: var(--muted); margin-top: 1px; }
 .ai-time-hint { color: var(--primary); font-weight: 600; }
@@ -1482,7 +1482,7 @@ const ctxMatrixItems = computed(() => {
 .cfa-title-btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 7px 14px; border: none; border-radius: 22px; cursor: pointer;
-  background: linear-gradient(135deg, #c96342, #e8855a 60%, #e8a84a);
+  background: linear-gradient(135deg, var(--primary), #e8855a 60%, #e8a84a);
   color: #fff; font-size: 13px; font-weight: 700;
   box-shadow: 0 4px 16px rgba(201,99,66,0.4);
   transition: transform .15s, box-shadow .15s, filter .15s;
@@ -1510,7 +1510,7 @@ const ctxMatrixItems = computed(() => {
 .cfa-tabs, .cfa-global, .cfa-auto, .cfa-input-row { width: 100%; max-width: 940px; margin-inline: auto; }
 .cfa-glow {
   position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
-  background: linear-gradient(180deg, #c96342, #e8a05a, #7a9fd4);
+  background: linear-gradient(180deg, var(--primary), #e8a05a, #7a9fd4);
   background-size: 100% 300%; animation: cfaGlow 6s ease infinite;
 }
 @keyframes cfaGlow { 0%,100% { background-position: 0 0; } 50% { background-position: 0 100%; } }
@@ -1546,11 +1546,11 @@ const ctxMatrixItems = computed(() => {
 .cfa-msg { margin-bottom: 16px; display: flex; }
 .cfa-msg.user { justify-content: flex-end; }
 .cfa-bubble { max-width: 84%; border-radius: 14px; padding: 12px 15px; font-size: 14px; line-height: 1.75; }
-.cfa-user { background: linear-gradient(135deg, #c96342, #e8855a); color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
+.cfa-user { background: linear-gradient(135deg, var(--primary), #e8855a); color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
 .cfa-asst { background: rgba(255,255,255,0.92); border: 1px solid rgba(0,0,0,0.06); color: var(--text); border-bottom-left-radius: 4px; }
 .cfa-tools { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
 .cfa-tool { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; font-size: 12px; color: var(--primary); font-weight: 600; background: rgba(201,99,66,0.08); border-radius: 8px; padding: 5px 9px; }
-.cfa-tool.done { color: #2e7d32; background: rgba(46,125,50,0.08); }
+.cfa-tool.done { color: var(--c-success); background: rgba(46,125,50,0.08); }
 .cfa-tool.fail { color: #b3261e; background: rgba(179,38,30,0.08); }
 .cfa-tool-run { letter-spacing: 1px; animation: cfaBlink 1.1s infinite; }
 .cfa-tool-ms { font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -1598,14 +1598,14 @@ const ctxMatrixItems = computed(() => {
 .cfa-switch { flex-shrink: 0; position: relative; width: 38px; height: 22px; border-radius: 11px;
   background: rgba(0,0,0,0.2); transition: background .18s; }
 .cfa-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
-  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.28); transition: transform .18s; }
+  border-radius: 50%; background: var(--row-bg); box-shadow: 0 1px 3px rgba(0,0,0,0.28); transition: transform .18s; }
 .cfa-auto.on .cfa-switch { background: var(--primary); }
 .cfa-auto.on .cfa-switch::after { transform: translateX(16px); }
 .cfa-input-row { display: flex; gap: 8px; align-items: flex-end; padding: 8px 16px 16px; border-top: 1px solid rgba(201,99,66,0.12); }
 .cfa-input {
   flex: 1; resize: none; max-height: 120px; min-height: 38px;
   border: 1px solid rgba(0,0,0,0.12); border-radius: 11px; padding: 9px 12px;
-  font-size: 13px; font-family: inherit; line-height: 1.5; outline: none; background: #fff;
+  font-size: 13px; font-family: inherit; line-height: 1.5; outline: none; background: var(--row-bg);
 }
 .cfa-input:focus { border-color: var(--primary); }
 .cfa-send {
@@ -1637,20 +1637,20 @@ const ctxMatrixItems = computed(() => {
 .cfa-act { border: 1px solid rgba(201,99,66,0.3); background: rgba(201,99,66,0.06); color: var(--primary); border-radius: 7px; font-size: 11.5px; padding: 3px 9px; cursor: pointer; font-weight: 600; }
 .cfa-act:disabled { opacity: .5; cursor: default; }
 .cfa-drill-lbl { font-size: 11px; color: var(--muted); margin-left: 4px; }
-.cfa-drill { border: 1px solid rgba(0,0,0,0.12); background: #fff; color: var(--muted); border-radius: 7px; font-size: 11.5px; padding: 3px 9px; cursor: pointer; }
+.cfa-drill { border: 1px solid rgba(0,0,0,0.12); background: var(--row-bg); color: var(--muted); border-radius: 7px; font-size: 11.5px; padding: 3px 9px; cursor: pointer; }
 .cfa-drill:hover { color: var(--primary); border-color: var(--primary); }
 
 /* knowledge base */
 .cfa-kb-add { background: rgba(255,255,255,0.7); border: 1px solid rgba(0,0,0,0.08); border-radius: 12px; padding: 10px; margin-bottom: 14px; }
 .cfa-kb-add-row { display: flex; gap: 6px; margin-top: 8px; }
-.cfa-kb-sel { height: 34px; border: 1px solid rgba(0,0,0,0.12); border-radius: 9px; background: #fff; font-size: 12px; color: var(--text); padding: 0 8px; }
+.cfa-kb-sel { height: 34px; border: 1px solid rgba(0,0,0,0.12); border-radius: 9px; background: var(--row-bg); font-size: 12px; color: var(--text); padding: 0 8px; }
 .cfa-kb-add-row .cfa-send { flex: 1; }
 .cfa-kb-empty { text-align: center; color: var(--muted); font-size: 12.5px; line-height: 1.7; padding: 24px 8px; }
 .cfa-kb-item { background: rgba(255,255,255,0.85); border: 1px solid rgba(0,0,0,0.07); border-radius: 11px; padding: 10px 12px; margin-bottom: 10px; }
 .cfa-kb-item.pinned { border-color: rgba(201,99,66,0.35); background: rgba(201,99,66,0.04); }
 .cfa-kb-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
 .cfa-kb-kind { font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 6px; color: #fff; background: #7a9fd4; }
-.cfa-kb-kind.insight { background: #2e7d32; }
+.cfa-kb-kind.insight { background: var(--c-success); }
 .cfa-kb-kind.rule { background: #8a4b34; }
 .cfa-kb-scope { font-size: 11px; color: var(--muted); }
 .cfa-kb-ai { font-size: 10px; color: var(--primary); border: 1px solid rgba(201,99,66,0.3); border-radius: 5px; padding: 0 5px; }
@@ -1668,7 +1668,7 @@ const ctxMatrixItems = computed(() => {
 /* ── P4 大屏复盘 ─────────────────────────────────────────────────────────────── */
 .present-btn {
   border: 1px solid rgba(21,101,192,.35); background: rgba(21,101,192,.06);
-  color: #1565c0; font-size: 12px; font-weight: 700; padding: 5px 12px;
+  color: var(--c-info); font-size: 12px; font-weight: 700; padding: 5px 12px;
   border-radius: 8px; cursor: pointer; margin-left: 8px;
 }
 .present-btn:hover { background: rgba(21,101,192,.14); }
@@ -1744,5 +1744,5 @@ const ctxMatrixItems = computed(() => {
 .present-fade-enter-from, .present-fade-leave-to { opacity: 0; }
 
 /* P4 alert toast */
-.p4-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #2e7d32; color: #fff; padding: 8px 20px; border-radius: 20px; font-size: 13px; z-index: 8000; pointer-events: none; }
+.p4-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--c-success); color: #fff; padding: 8px 20px; border-radius: 20px; font-size: 13px; z-index: 8000; pointer-events: none; }
 </style>

@@ -61,19 +61,19 @@ defineEmits(['close'])
 .imp-hero { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 14px 0 8px; text-align: center; }
 .imp-emoji { font-size: 44px; }
 .imp-msg { font-size: 14px; line-height: 1.6; }
-.imp-hero-err .imp-msg { color: #c62828; }
+.imp-hero-err .imp-msg { color: var(--c-danger); }
 .imp-summary { display: flex; gap: 14px; margin-bottom: 16px; }
 .imp-stat { flex: 1; text-align: center; padding: 16px 10px; border-radius: 14px; border: 1px solid var(--border); background: rgba(255,253,250,0.6); }
 .imp-stat-ok { background: rgba(46,125,50,0.08); border-color: rgba(46,125,50,0.25); }
 .imp-stat-skip { background: rgba(245,127,23,0.09); border-color: rgba(245,127,23,0.3); }
 .imp-num { font-size: 30px; font-weight: 800; line-height: 1; }
-.imp-stat-ok .imp-num { color: #2e7d32; }
-.imp-stat-skip .imp-num { color: #e65100; }
+.imp-stat-ok .imp-num { color: var(--c-success); }
+.imp-stat-skip .imp-num { color: var(--c-warn); }
 .imp-lbl { font-size: 12px; color: var(--muted); margin-top: 6px; letter-spacing: 0.03em; }
 .imp-errbox { border-radius: 12px; border: 1px solid rgba(245,127,23,0.3); background: rgba(245,127,23,0.06); overflow: hidden; }
-.imp-errtitle { display: flex; align-items: center; gap: 7px; padding: 10px 14px; font-size: 12.5px; font-weight: 600; color: #e65100; background: rgba(245,127,23,0.1); }
+.imp-errtitle { display: flex; align-items: center; gap: 7px; padding: 10px 14px; font-size: 12.5px; font-weight: 600; color: var(--c-warn); background: rgba(245,127,23,0.1); }
 .imp-errtitle svg { flex-shrink: 0; }
 .imp-errlist { margin: 0; padding: 8px 14px 10px 30px; max-height: min(52vh, 440px); overflow-y: auto; font-size: 12.5px; line-height: 1.7; color: #b35309; }
-.imp-allok { text-align: center; color: #2e7d32; font-size: 13.5px; padding: 6px 0 4px; }
+.imp-allok { text-align: center; color: var(--c-success); font-size: 13.5px; padding: 6px 0 4px; }
 .imp-msg-banner { font-size: 13px; color: #5a4030; background: rgba(201,99,66,0.07); border: 1px solid rgba(201,99,66,0.18); border-radius: 8px; padding: 8px 14px; margin-bottom: 12px; line-height: 1.5; }
 </style>

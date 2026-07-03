@@ -163,12 +163,12 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           </div>
           <div class="fc-kpi risk">
             <div class="t">坏账风险（逾期90天+）</div>
-            <div class="v" :style="{ color: cash.baddebt_risk > 0 ? '#c62828' : '#2e7d32' }">{{ fmtWan(cash.baddebt_risk) }}</div>
+            <div class="v" :style="{ color: cash.baddebt_risk > 0 ? 'var(--c-danger)' : 'var(--c-success)' }">{{ fmtWan(cash.baddebt_risk) }}</div>
             <div class="s">需重点催收</div>
           </div>
           <div class="fc-kpi" :class="summary.profit_gap < 0 ? 'risk' : 'good'">
             <div class="t">全年净利预测</div>
-            <div class="v" :style="{ color: summary.proj_profit < 0 ? '#c62828' : '#2e7d32' }">{{ fmtWan(summary.proj_profit) }}</div>
+            <div class="v" :style="{ color: summary.proj_profit < 0 ? 'var(--c-danger)' : 'var(--c-success)' }">{{ fmtWan(summary.proj_profit) }}</div>
             <div class="s">目标 {{ fmtWan(summary.profit_target) }} · 缺口 {{ fmtWan(summary.profit_gap) }}</div>
           </div>
         </div>
@@ -188,7 +188,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               <div v-for="r in landingRows" :key="r.key" class="land-row">
                 <div class="land-head">
                   <span class="land-label">{{ r.label }}</span>
-                  <span class="land-rate" :style="{ color: (r.rate ?? 0) >= 100 ? '#2e7d32' : '#c62828' }">
+                  <span class="land-rate" :style="{ color: (r.rate ?? 0) >= 100 ? 'var(--c-success)' : 'var(--c-danger)' }">
                     预测达成 {{ fmtPct(r.rate) }}
                   </span>
                 </div>
@@ -204,7 +204,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                     <span class="bv">{{ fmtWan(r.target) }}</span>
                   </div>
                 </div>
-                <div class="land-gap" :style="{ color: r.gap < 0 ? '#c62828' : '#2e7d32' }">
+                <div class="land-gap" :style="{ color: r.gap < 0 ? 'var(--c-danger)' : 'var(--c-success)' }">
                   缺口 {{ fmtWan(r.gap) }}（YTD {{ fmtWan(r.ytd) }}）
                 </div>
               </div>
@@ -218,11 +218,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           <div class="wf-grid">
             <div class="wf-controls">
               <div class="wf-slider">
-                <div class="wf-slabel">收入增长 <b :style="{ color: wf.revPct >= 0 ? '#2e7d32' : '#c62828' }">{{ wf.revPct > 0 ? '+' : '' }}{{ wf.revPct }}%</b></div>
+                <div class="wf-slabel">收入增长 <b :style="{ color: wf.revPct >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ wf.revPct > 0 ? '+' : '' }}{{ wf.revPct }}%</b></div>
                 <input type="range" min="-20" max="20" step="1" v-model.number="wf.revPct" />
               </div>
               <div class="wf-slider">
-                <div class="wf-slabel">毛利率提升 <b :style="{ color: wf.gmPt >= 0 ? '#2e7d32' : '#c62828' }">{{ wf.gmPt > 0 ? '+' : '' }}{{ wf.gmPt }}pt</b></div>
+                <div class="wf-slabel">毛利率提升 <b :style="{ color: wf.gmPt >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ wf.gmPt > 0 ? '+' : '' }}{{ wf.gmPt }}pt</b></div>
                 <input type="range" min="-5" max="15" step="0.5" v-model.number="wf.gmPt" />
               </div>
               <button class="wf-reset" @click="wf.revPct = 0; wf.gmPt = 0">复位</button>
@@ -230,17 +230,17 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             <div v-if="wfResult" class="wf-out">
               <div class="wf-out-main">
                 <div class="wf-out-t">推演全年净利</div>
-                <div class="wf-out-v" :style="{ color: wfResult.profit < 0 ? '#c62828' : '#2e7d32' }">{{ fmtWan(wfResult.profit) }}</div>
+                <div class="wf-out-v" :style="{ color: wfResult.profit < 0 ? 'var(--c-danger)' : 'var(--c-success)' }">{{ fmtWan(wfResult.profit) }}</div>
                 <div class="wf-out-s">
                   净利率 {{ fmtPct(wfResult.netMargin) }} · 较基线
-                  <b :style="{ color: wfResult.deltaVsBase >= 0 ? '#2e7d32' : '#c62828' }">{{ wfResult.deltaVsBase >= 0 ? '+' : '' }}{{ fmtWan(wfResult.deltaVsBase) }}</b>
+                  <b :style="{ color: wfResult.deltaVsBase >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ wfResult.deltaVsBase >= 0 ? '+' : '' }}{{ fmtWan(wfResult.deltaVsBase) }}</b>
                 </div>
                 <div class="wf-out-s">目标达成 {{ fmtPct(wfResult.rate) }} · 缺口 {{ fmtWan(wfResult.gap) }}</div>
               </div>
               <div v-if="breakeven" class="wf-hint">
                 <div>💡 当前收入假设下：</div>
-                <div>· 毛利率再提升 <b style="color:#e65100">{{ breakeven.toZero > 0 ? '+' + breakeven.toZero : breakeven.toZero }}pt</b> 可扭亏为零</div>
-                <div v-if="breakeven.toTarget != null">· 提升 <b style="color:#1565c0">{{ breakeven.toTarget > 0 ? '+' + breakeven.toTarget : breakeven.toTarget }}pt</b> 可达年度目标</div>
+                <div>· 毛利率再提升 <b style="color:var(--c-warn)">{{ breakeven.toZero > 0 ? '+' + breakeven.toZero : breakeven.toZero }}pt</b> 可扭亏为零</div>
+                <div v-if="breakeven.toTarget != null">· 提升 <b style="color:var(--c-info)">{{ breakeven.toTarget > 0 ? '+' + breakeven.toTarget : breakeven.toTarget }}pt</b> 可达年度目标</div>
               </div>
             </div>
           </div>
@@ -254,15 +254,15 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 <style scoped>
 .fc-panel { padding: 4px 0; }
 .fc-filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-.fc-filters select { padding: 6px 10px; border: 1px solid rgba(180,140,110,.28); border-radius: 8px; background: #fff; color: #5f4d3d; font-size: 13px; }
+.fc-filters select { padding: 6px 10px; border: 1px solid rgba(180,140,110,.28); border-radius: 8px; background: var(--row-bg); color: #5f4d3d; font-size: 13px; }
 .fc-hint { font-size: 11.5px; color: #9b8070; }
 
 .fc-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
 @media (max-width: 820px) { .fc-kpis { grid-template-columns: repeat(2, 1fr); } }
 .fc-kpi { padding: 12px 14px; border-radius: 12px; background: rgba(255,255,255,.7); border: 1px solid rgba(180,140,110,.16); border-left: 3px solid #9b8070; }
-.fc-kpi.cash { border-left-color: #1565c0; }
+.fc-kpi.cash { border-left-color: var(--c-info); }
 .fc-kpi.risk { border-left-color: #e53935; }
-.fc-kpi.good { border-left-color: #2e7d32; }
+.fc-kpi.good { border-left-color: var(--c-success); }
 .fc-kpi .t { font-size: 12px; color: #9b8070; }
 .fc-kpi .v { font-size: 21px; font-weight: 800; color: #5f4d3d; margin: 2px 0; }
 .fc-kpi .s { font-size: 11px; color: #8a7665; }
@@ -293,8 +293,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 @media (max-width: 720px) { .wf-grid { grid-template-columns: 1fr; } }
 .wf-controls { display: flex; flex-direction: column; gap: 16px; justify-content: center; }
 .wf-slider .wf-slabel { font-size: 12.5px; color: #6b5a4a; margin-bottom: 6px; }
-.wf-slider input[type=range] { width: 100%; accent-color: #c96342; }
-.wf-reset { align-self: flex-start; border: 1px solid rgba(180,140,110,.3); background: #fff; color: #8a7665; font-size: 12px; padding: 4px 14px; border-radius: 8px; cursor: pointer; }
+.wf-slider input[type=range] { width: 100%; accent-color: var(--primary); }
+.wf-reset { align-self: flex-start; border: 1px solid rgba(180,140,110,.3); background: var(--row-bg); color: #8a7665; font-size: 12px; padding: 4px 14px; border-radius: 8px; cursor: pointer; }
 .wf-out { display: flex; flex-direction: column; gap: 10px; }
 .wf-out-main { background: rgba(255,255,255,.7); border: 1px solid rgba(180,140,110,.16); border-radius: 12px; padding: 12px 14px; }
 .wf-out-t { font-size: 12px; color: #9b8070; }

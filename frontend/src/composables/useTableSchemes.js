@@ -7,6 +7,7 @@
 import { ref, computed } from 'vue'
 import api from '../api/index.js'
 import { useToast } from './useToast.js'
+import { confirmDlg } from './confirm.js'
 import { useAuthStore } from '../stores/auth.js'
 
 // extra（可选）：页面专属状态的存取钩子 { get: () => ({...}), set: (payload) => {...} }，
@@ -75,7 +76,7 @@ export function useTableSchemes(module, { colFilters, sortField, sortOrder, onAp
   }
 
   async function remove(s) {
-    if (!confirm(`删除方案「${s.name}」？${s.scope === 'public' ? '（公共方案，团队成员将不再可见）' : ''}`)) return
+    if (!(await confirmDlg(`删除方案「${s.name}」？${s.scope === 'public' ? '（公共方案，团队成员将不再可见）' : ''}`))) return
     try {
       await api.delete(`/list-schemes/${s.id}`)
       await load()

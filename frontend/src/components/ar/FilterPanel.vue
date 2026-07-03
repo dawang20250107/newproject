@@ -164,7 +164,7 @@ function addGroup() {
 }
 .fp-match { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 6px; }
 .seg {
-  border: 1px solid var(--border); background: #fff; cursor: pointer;
+  border: 1px solid var(--border); background: var(--row-bg); cursor: pointer;
   font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 7px; color: var(--muted);
 }
 .seg.on { border-color: var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); }
@@ -195,13 +195,13 @@ function addGroup() {
 .fp-group-body { padding: 2px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
 .fp-sub {
   display: flex; align-items: center; gap: 6px;
-  padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border); background: #fff;
+  padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--row-bg);
 }
 .fp-sub.date { background: rgba(122,159,212,0.06); border-color: rgba(122,159,212,0.35); }
 .fp-sub.amt  { background: rgba(201,99,66,0.05); border-color: rgba(201,99,66,0.35); }
 
 .fp-x { margin-left: auto; border: none; background: transparent; cursor: pointer; color: var(--muted); font-size: 11px; font-weight: 700; }
-.fp-x:hover { color: #c62828; }
+.fp-x:hover { color: var(--c-danger); }
 .fp-add-sm {
   align-self: flex-start; margin-top: 2px;
   border: 1px dashed var(--primary); border-radius: 7px; padding: 3px 10px;
@@ -222,12 +222,12 @@ function addGroup() {
 .fp-add.on, .fp-add:hover { background: rgba(201,99,66,0.07); }
 .fp-add.ghost:hover { background: rgba(120,120,120,0.06); color: var(--text); }
 .fp-clear { border: none; background: transparent; cursor: pointer; color: var(--muted); font-size: 12px; }
-.fp-clear:hover { color: #c62828; }
+.fp-clear:hover { color: var(--c-danger); }
 .fp-backdrop { position: fixed; inset: 0; z-index: 60; }
 .fp-menu {
   position: fixed; z-index: 61;
   min-width: 240px; max-height: 320px; overflow-y: auto; padding: 8px;
-  border-radius: 12px; background: #fff; border: 1px solid var(--border); box-shadow: 0 12px 32px rgba(0,0,0,0.16);
+  border-radius: 12px; background: var(--row-bg); border: 1px solid var(--border); box-shadow: 0 12px 32px rgba(0,0,0,0.16);
   display: grid; grid-template-columns: 1fr 1fr; gap: 2px 6px;
 }
 .fp-menu-grp { grid-column: 1 / -1; font-size: 11px; color: var(--muted); font-weight: 700; padding: 7px 8px 3px; }

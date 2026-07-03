@@ -1,4 +1,5 @@
 <script setup>
+import { confirmDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useToast } from '../../composables/useToast.js'
@@ -338,7 +339,7 @@ async function save() {
   finally { saving.value = false }
 }
 async function removeRec(rec) {
-  if (!confirm(`确认删除该${dirLabel.value}记录（${rec.counterparty}）？核销记录将一并删除。`)) return
+  if (!(await confirmDlg(`确认删除该${dirLabel.value}记录（${rec.counterparty}）？核销记录将一并删除。`))) return
   try { await ar.deleteAdvance(rec.id); await load() }
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
@@ -393,7 +394,7 @@ async function addWriteoff() {
   finally { woSaving.value = false }
 }
 async function delWriteoff(w) {
-  if (!confirm('确认删除该核销记录？')) return
+  if (!(await confirmDlg('确认删除该核销记录？'))) return
   try {
     await ar.deleteWriteoff(woRec.value.id, w.id)
     await refreshWriteoffs(); await load()
@@ -432,7 +433,7 @@ async function addInstallment() {
   finally { instBusy.value = false }
 }
 async function delInstallment(i) {
-  if (!confirm(`删除第${i.install_no}笔收付 ${i.amount} 元？总额与未核销余额将随之回退。`)) return
+  if (!(await confirmDlg(`删除第${i.install_no}笔收付 ${i.amount} 元？总额与未核销余额将随之回退。`))) return
   instBusy.value = true
   try {
     const res = await ar.deleteAdvInstallment(instRec.value.id, i.id)
@@ -607,7 +608,7 @@ async function saveSupplier() {
   finally { supplierSaving.value = false }
 }
 async function removeSupplier(s) {
-  if (!confirm(`确认删除供应商「${s.name}」？`)) return
+  if (!(await confirmDlg(`确认删除供应商「${s.name}」？`))) return
   try { await ar.deleteSupplier(s.id); await loadSuppliers() }
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
@@ -855,9 +856,9 @@ onMounted(async () => {
             </select>
           </template>
           <span v-if="diffSummary" class="tl-stat">
-            {{ diffSummary.count }} 项 · 预收 <b style="color:#2e7d32">{{ fmtAmt(diffSummary.in_total) }}</b> ·
+            {{ diffSummary.count }} 项 · 预收 <b style="color:var(--c-success)">{{ fmtAmt(diffSummary.in_total) }}</b> ·
             预付 <b style="color:#ef6c00">{{ fmtAmt(diffSummary.out_total) }}</b> ·
-            差异 <b :style="{ color: parseFloat(diffSummary.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(diffSummary.diff) }}</b>
+            差异 <b :style="{ color: parseFloat(diffSummary.diff) >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ fmtAmt(diffSummary.diff) }}</b>
           </span>
           <div style="flex:1"></div>
           <button v-if="diffView === 'project'" class="btn btn-ghost btn-sm" @click="toggleDiffAll">
@@ -892,9 +893,9 @@ onMounted(async () => {
                     <span class="dt-name" :title="r.project">{{ r.project }}</span>
                     <span class="dt-dept">{{ (r.dept || '—').replace('事业部', '') }}</span>
                   </td>
-                  <td class="dt-amt" style="color:#2e7d32">{{ parseFloat(r.in_total) ? fmtAmt(r.in_total) : '—' }}</td>
+                  <td class="dt-amt" style="color:var(--c-success)">{{ parseFloat(r.in_total) ? fmtAmt(r.in_total) : '—' }}</td>
                   <td class="dt-amt" style="color:#ef6c00">{{ parseFloat(r.out_total) ? fmtAmt(r.out_total) : '—' }}</td>
-                  <td class="dt-amt fw" :style="{ color: parseFloat(r.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(r.diff) }}</td>
+                  <td class="dt-amt fw" :style="{ color: parseFloat(r.diff) >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ fmtAmt(r.diff) }}</td>
                   <td v-if="diffView === 'project'" class="dt-notes" :title="r.notes">{{ r.notes || '—' }}</td>
                   <td class="dt-caret">{{ diffExpanded.has(r.project) ? '▲' : '▼' }}</td>
                 </tr>
@@ -1105,7 +1106,7 @@ onMounted(async () => {
             <tr v-if="!instList.length"><td :colspan="(canCreate || canInstAction) ? 5 : 4" class="empty">暂无收付明细</td></tr>
             <tr v-for="i in instList" :key="i.id">
               <td>{{ i.install_no }}</td>
-              <td class="amt" :style="{ color: parseFloat(i.amount) < 0 ? '#c62828' : 'inherit' }">{{ fmtAmt(i.amount) }}</td>
+              <td class="amt" :style="{ color: parseFloat(i.amount) < 0 ? 'var(--c-danger)' : 'inherit' }">{{ fmtAmt(i.amount) }}</td>
               <td>{{ i.occur_date }}</td>
               <td>{{ i.notes || '—' }}</td>
               <td v-if="canCreate || canInstAction"><button class="lnk danger" :disabled="instBusy" @click="delInstallment(i)">删除</button></td>
@@ -1236,7 +1237,7 @@ onMounted(async () => {
 .kpi-sub { font-size: 11px; font-weight: 600; color: var(--muted); margin-left: 5px; }
 .kpi.accent { background: rgba(201,99,66,.06); }
 .kpi.accent .kpi-v { color: var(--primary); }
-.kpi.warn .kpi-v { color: #c62828; }
+.kpi.warn .kpi-v { color: var(--c-danger); }
 
 .filter-row { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
 .spacer { flex: 1; min-width: 8px; }
@@ -1274,13 +1275,13 @@ onMounted(async () => {
 .nowrap { white-space: nowrap; }
 
 .status-pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; }
-.pill-ok { background: rgba(46,125,50,.12); color: #2e7d32; }
-.pill-blue { background: rgba(21,101,192,.12); color: #1565c0; }
+.pill-ok { background: rgba(46,125,50,.12); color: var(--c-success); }
+.pill-blue { background: rgba(21,101,192,.12); color: var(--c-info); }
 .pill-muted { background: rgba(120,120,120,.1); color: var(--muted); }
-.pill-danger { background: rgba(198,40,40,.12); color: #c62828; }
+.pill-danger { background: rgba(198,40,40,.12); color: var(--c-danger); }
 
 .lnk { background: none; border: none; color: var(--primary); cursor: pointer; font-size: 13px; padding: 2px 6px; }
-.lnk.danger { color: #c62828; }
+.lnk.danger { color: var(--c-danger); }
 
 .pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
 .pg-jump{display:inline-flex;align-items:center;gap:4px;font-size:13px;color:var(--muted);margin-left:8px}
@@ -1302,7 +1303,7 @@ onMounted(async () => {
 .fld { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .fld.full { grid-column: 1 / -1; }
 .fld span { color: var(--muted); }
-.fld em { color: #c62828; font-style: normal; }
+.fld em { color: var(--c-danger); font-style: normal; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 
 /* project combobox */
@@ -1312,7 +1313,7 @@ onMounted(async () => {
   border: none; background: none; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 0 4px; }
 .combo-list {
   position: absolute; z-index: 10; top: calc(100% + 4px); left: 0; right: 0;
-  background: #fff; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--row-bg); border: 1px solid var(--border); border-radius: 9px;
   box-shadow: 0 10px 30px rgba(100,60,30,0.18); max-height: 220px; overflow-y: auto;
   list-style: none; margin: 0; padding: 4px;
 }
@@ -1333,7 +1334,7 @@ onMounted(async () => {
 .wo-offset-tip { font-size: 11px; color: var(--primary); opacity: 0.8; width: 100%; padding-left: 2px; }
 .wo-inputs { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .offset-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; background: rgba(27,110,53,0.1); color: #1b6e35; font-size: 11px; font-weight: 600; }
-.offset-badge.pay-badge { background: rgba(21,101,192,0.1); color: #1565c0; }
+.offset-badge.pay-badge { background: rgba(21,101,192,0.1); color: var(--c-info); }
 
 /* supplier modal */
 .sup-modal { max-width: 460px; }
@@ -1341,7 +1342,7 @@ onMounted(async () => {
 .sf-two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .sf-fld { display: flex; flex-direction: column; gap: 4px; }
 .sf-lbl { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
-.sf-lbl em { color: #c62828; font-style: normal; }
+.sf-lbl em { color: var(--c-danger); font-style: normal; }
 .sf-hint { font-size: 11px; color: var(--muted); }
 .sup-type-row { display: flex; gap: 10px; margin-top: 6px; }
 .sup-type-btn {
@@ -1381,22 +1382,22 @@ td.dt-notes { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 .diff-detail-row td { background: rgba(250,246,241,.7); padding: 6px 10px; }
 .diff-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 @media (max-width: 760px) { .diff-detail { grid-template-columns: 1fr; } }
-.dd-col { background: #fff; border: 1px solid rgba(180,140,110,.14); border-radius: 8px; padding: 5px 10px; }
+.dd-col { background: var(--row-bg); border: 1px solid rgba(180,140,110,.14); border-radius: 8px; padding: 5px 10px; }
 .dd-head { font-size: 11px; font-weight: 700; margin-bottom: 2px; }
-.dd-head.in { color: #2e7d32; } .dd-head.out { color: #ef6c00; }
+.dd-head.in { color: var(--c-success); } .dd-head.out { color: #ef6c00; }
 .dd-empty { font-size: 11.5px; color: var(--muted); padding: 2px 0; }
 .dd-item { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 2.5px 0;
   border-top: 1px dashed rgba(180,140,110,.12); line-height: 1.5; }
 .dd-item:first-of-type { border-top: none; }
 .dd-date { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 74px; }
 .dd-amt { font-variant-numeric: tabular-nums; min-width: 78px; text-align: right; }
-.dd-amt.in { color: #2e7d32; } .dd-amt.out { color: #ef6c00; }
+.dd-amt.in { color: var(--c-success); } .dd-amt.out { color: #ef6c00; }
 .dd-party { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-.dd-bal { font-style: normal; font-size: 10.5px; color: #1565c0; background: rgba(21,101,192,.07);
+.dd-bal { font-style: normal; font-size: 10.5px; color: var(--c-info); background: rgba(21,101,192,.07);
   border-radius: 5px; padding: 0 6px; white-space: nowrap; }
 
-.amt-pos { color: #2e7d32; }
-.amt-neg { color: #c62828; }
+.amt-pos { color: var(--c-success); }
+.amt-neg { color: var(--c-danger); }
 
 /* ── 收付差异 · 视角切换条（按项目 / 按月 / 按周） ── */
 .diff-viewbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }

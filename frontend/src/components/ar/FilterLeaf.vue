@@ -86,7 +86,7 @@ function patch() { emit('change') }
 .fl-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex: 1; min-width: 0; }
 .fl-field { font-weight: 700; font-size: 13px; min-width: 56px; }
 .fl-sel, .fl-date, .fl-num, .fl-inp {
-  border: 1px solid var(--border); border-radius: 7px; padding: 6px 10px; font-size: 13.5px; background: #fff;
+  border: 1px solid var(--border); border-radius: 7px; padding: 6px 10px; font-size: 13.5px; background: var(--row-bg);
   height: 34px; box-sizing: border-box;
 }
 .fl-sel { min-width: 120px; }
@@ -94,9 +94,9 @@ function patch() { emit('change') }
 .fl-num { width: 96px; } .fl-inp { min-width: 150px; flex: 1; } .fl-dash { color: var(--muted); }
 .fl-neg {
   border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-size: 11px;
-  font-weight: 700; cursor: pointer; background: #fff; color: var(--muted);
+  font-weight: 700; cursor: pointer; background: var(--row-bg); color: var(--muted);
 }
-.fl-neg.on { border-color: #c62828; color: #c62828; background: rgba(198,40,40,0.06); }
+.fl-neg.on { border-color: var(--c-danger); color: var(--c-danger); background: rgba(198,40,40,0.06); }
 .fl-x { margin-left: auto; border: none; background: transparent; cursor: pointer; color: var(--muted); font-size: 12px; }
-.fl-x:hover { color: #c62828; }
+.fl-x:hover { color: var(--c-danger); }
 </style>

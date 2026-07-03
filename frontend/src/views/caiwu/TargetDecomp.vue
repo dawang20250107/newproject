@@ -199,7 +199,7 @@ onMounted(load)
         </div>
         <div class="tds-item">
           <div class="tds-label">预测缺口</div>
-          <div class="tds-val" :style="`color:${data.summary.total_gap > 0 ? '#c62828' : '#2e7d32'}`">
+          <div class="tds-val" :style="`color:${data.summary.total_gap > 0 ? 'var(--c-danger)' : 'var(--c-success)'}`">
             {{ data.summary.total_gap != null ? (data.summary.total_gap > 0 ? '-' : '+') + wan(Math.abs(data.summary.total_gap)) : '—' }}
           </div>
         </div>
@@ -276,7 +276,7 @@ onMounted(load)
                 <td>{{ wan(row.ytd_actual_revenue) }}</td>
                 <td><span :style="`color:${rateColor(row.ytd_achieved)};font-weight:700`">{{ fmtRate(row.ytd_achieved) }}</span></td>
                 <td>{{ wan(row.projected) }}</td>
-                <td :style="`color:${row.gap > 0 ? '#c62828' : '#2e7d32'}`">
+                <td :style="`color:${row.gap > 0 ? 'var(--c-danger)' : 'var(--c-success)'}`">
                   {{ row.gap != null ? (row.gap > 0 ? '缺口 ' : '超额 ') + wan(Math.abs(row.gap)) : '—' }}
                 </td>
               </tr>

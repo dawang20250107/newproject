@@ -143,7 +143,7 @@ const renderedHtml = computed(() => renderMarkdown(props.text))
   position: absolute; inset: -2px;
   border-radius: 22px;
   padding: 2px;
-  background: linear-gradient(120deg, #c96342, #e8a05a, #7a9fd4, #c96342);
+  background: linear-gradient(120deg, var(--primary), #e8a05a, #7a9fd4, var(--primary));
   background-size: 300% 300%;
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
@@ -223,7 +223,7 @@ const renderedHtml = computed(() => renderMarkdown(props.text))
   50% { opacity: 1; transform: translateY(-4px); }
 }
 
-.ai-err { text-align: center; color: #c62828; font-size: 13px; padding: 30px 10px; }
+.ai-err { text-align: center; color: var(--c-danger); font-size: 13px; padding: 30px 10px; }
 .ai-err-inline { padding: 14px 10px 4px; text-align: left; opacity: .9; }
 
 .ai-content { font-size: 13.5px; line-height: 1.85; color: var(--text); }

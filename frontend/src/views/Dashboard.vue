@@ -75,17 +75,17 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
         </div>
         <div class="kpi-card">
           <div class="label">待付款记录</div>
-          <div class="value" style="color:#c62828">{{ data.pending_count }}</div>
+          <div class="value" style="color:var(--c-danger)">{{ data.pending_count }}</div>
           <div v-if="showAmount" class="sub">{{ fmt(data.pending_amount) }}</div>
         </div>
         <div class="kpi-card">
           <div class="label">部分付款中</div>
-          <div class="value" style="color:#f57f17">{{ data.partial_count }}</div>
+          <div class="value" style="color:var(--amber-deep)">{{ data.partial_count }}</div>
           <div v-if="showAmount" class="sub">{{ fmt(data.partial_amount) }}</div>
         </div>
         <div :class="['kpi-card', data.overdue_count > 0 ? 'overdue-kpi-card' : '']">
           <div class="label">已逾期未付</div>
-          <div :class="['value', data.overdue_count > 0 ? 'kpi-value-pulse' : '']" style="color:#c62828">
+          <div :class="['value', data.overdue_count > 0 ? 'kpi-value-pulse' : '']" style="color:var(--c-danger)">
             {{ data.overdue_count }}
           </div>
           <div v-if="showAmount" class="sub">{{ fmt(data.overdue_amount) }}</div>
@@ -143,7 +143,7 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
   top: 24px;
   left: 50%;
   transform: translateX(-50%);
-  background: linear-gradient(135deg, #c96342, #e8855a 55%, #e8a84a);
+  background: linear-gradient(135deg, var(--primary), #e8855a 55%, #e8a84a);
   background-size: 200% 100%;
   color: #fff;
   padding: 16px 34px;
@@ -177,14 +177,14 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
   display: flex; align-items: center; gap: 10px;
   background: rgba(198,40,40,0.08);
   border: 1px solid rgba(198,40,40,0.22);
-  border-left: 4px solid #c62828;
+  border-left: 4px solid var(--c-danger);
   border-radius: 10px;
   padding: 11px 16px;
   margin-bottom: 16px;
   color: #b71c1c;
   font-size: 13.5px;
 }
-.overdue-alert svg { flex-shrink: 0; color: #c62828; }
+.overdue-alert svg { flex-shrink: 0; color: var(--c-danger); }
 
 /* Today's payment plan — compact, tidy row/column density */
 .today-table { width: 100%; font-size: 13px; table-layout: fixed; }

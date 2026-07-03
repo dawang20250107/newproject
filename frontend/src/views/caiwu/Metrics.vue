@@ -497,7 +497,7 @@ onMounted(load)
 .tgt-grid .col-diff { min-width: 60px; }
 .tgt-grid tbody tr:hover { background: rgba(180,140,110,.04); }
 .row-err { background: rgba(198,40,40,.04) !important; }
-.row-err .col-bu { color: #c62828; }
+.row-err .col-bu { color: var(--c-danger); }
 .t-input {
   /* 自适应宽度：最小 62px，可随内容增长，确保较长数值（如 12345.67）完整可见 */
   width: 62px; min-width: 62px; max-width: 96px; padding: 4px 5px; text-align: right;
@@ -514,8 +514,8 @@ onMounted(load)
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 .col-diff-val { font-size: 12px; font-weight: 700; }
-.diff-ok { color: #2e7d32; }
-.diff-err { color: #c62828; font-weight: 800; }
+.diff-ok { color: var(--c-success); }
+.diff-err { color: var(--c-danger); font-weight: 800; }
 .auto-fill-row {
   display: flex; align-items: center; justify-content: space-between;
   flex-wrap: wrap; gap: 8px; margin-top: 14px;
@@ -523,8 +523,8 @@ onMounted(load)
 }
 .auto-fill-btns { display: flex; gap: 6px; flex-wrap: wrap; }
 .save-msg { font-size: 12px; font-weight: 700; }
-.save-ok { color: #2e7d32; }
-.save-err { color: #c62828; }
+.save-ok { color: var(--c-success); }
+.save-err { color: var(--c-danger); }
 
 /* ── 三大指标可折叠表头 ──────────────────────────────────────────────── */
 .sec-toggle {
@@ -560,11 +560,11 @@ onMounted(load)
 .total-row .col-bu { color: var(--primary); }
 .num-strong { font-weight: 700; color: var(--text); }
 .rate-pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; }
-.rate-good { background: rgba(46,125,50,.12); color: #2e7d32; }
-.rate-warn { background: rgba(245,127,23,.14); color: #e65100; }
-.rate-bad  { background: rgba(198,40,40,.12); color: #c62828; }
+.rate-good { background: rgba(46,125,50,.12); color: var(--c-success); }
+.rate-warn { background: rgba(245,127,23,.14); color: var(--c-warn); }
+.rate-bad  { background: rgba(198,40,40,.12); color: var(--c-danger); }
 .rate-na   { background: rgba(120,120,120,.08); color: var(--muted); font-weight: 500; }
-.chg-up   { color: #2e7d32; font-weight: 600; }
-.chg-down { color: #c62828; font-weight: 600; }
+.chg-up   { color: var(--c-success); font-weight: 600; }
+.chg-down { color: var(--c-danger); font-weight: 600; }
 .chg-na   { color: var(--muted); }
 </style>

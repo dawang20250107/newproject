@@ -1,4 +1,5 @@
 <script setup>
+import { confirmDlg } from '../composables/confirm.js'
 import { ref, reactive, onMounted, computed } from 'vue'
 import ContextMenu from '../components/ContextMenu.vue'
 import { useContextMenu } from '../composables/useContextMenu.js'
@@ -187,7 +188,7 @@ async function saveEdit() {
 }
 
 async function deactivate(u) {
-  if (!confirm(`确认删除用户「${u.name}」？此操作不可撤销。`)) return
+  if (!(await confirmDlg(`确认删除用户「${u.name}」？此操作不可撤销。`))) return
   const typed = window.prompt(`请输入用户名「${u.name}」以确认删除：`)
   if (typed !== u.name) { toast.warn('输入不匹配，已取消'); return }
   try {
@@ -260,7 +261,7 @@ async function approve(u) {
 }
 
 async function reject(u) {
-  if (!confirm(`确定拒绝「${u.name}」的注册申请？拒绝后该申请将被删除。`)) return
+  if (!(await confirmDlg(`确定拒绝「${u.name}」的注册申请？拒绝后该申请将被删除。`))) return
   try {
     await api.post(`/users/${u.id}/reject`, {})
     load()
@@ -398,7 +399,7 @@ async function reject(u) {
                   <span v-else style="color:var(--muted)">—</span>
                 </td>
                 <td>
-                  <span :style="u.is_active?'color:#2e7d32;font-weight:600':'color:#c62828'">
+                  <span :style="u.is_active?'color:var(--c-success);font-weight:600':'color:var(--c-danger)'">
                     {{ u.is_active ? '● 启用' : '○ 停用' }}
                   </span>
                 </td>
@@ -493,7 +494,7 @@ async function reject(u) {
 .pending-badge {
   display: flex; align-items: center; gap: 6px;
   padding: 7px 14px; border-radius: 20px;
-  background: rgba(245,127,23,0.12); color: #e65100;
+  background: rgba(245,127,23,0.12); color: var(--c-warn);
   font-size: 13px; font-weight: 600;
   border: 1px solid rgba(245,127,23,0.25);
   animation: pulse 2s ease-in-out infinite;
@@ -503,7 +504,7 @@ async function reject(u) {
 .tab-count {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; border-radius: 50%;
-  background: rgba(245,127,23,0.2); color: #e65100;
+  background: rgba(245,127,23,0.2); color: var(--c-warn);
   font-size: 10px; font-weight: 700; margin-left: 4px;
 }
 
@@ -519,14 +520,14 @@ async function reject(u) {
 .pending-info { display: flex; align-items: flex-start; gap: 12px; flex: 1; min-width: 0; }
 .pa-avatar {
   width: 40px; height: 40px; border-radius: 12px; flex-shrink: 0;
-  background: linear-gradient(135deg, #e8a84a, #c96342);
+  background: linear-gradient(135deg, #e8a84a, var(--primary));
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 700; font-size: 17px;
 }
 .pa-name { font-weight: 700; font-size: 14px; }
 .pa-sub { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; margin-top: 2px; }
 .pa-chip {
-  background: rgba(21,101,192,0.1); color: #1565c0;
+  background: rgba(21,101,192,0.1); color: var(--c-info);
   border-radius: 10px; padding: 1px 7px; font-size: 11px; font-weight: 600;
 }
 .pa-depts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
@@ -572,7 +573,7 @@ async function reject(u) {
 
 .table-avatar {
   width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
-  background: linear-gradient(135deg, #c96342, #a84e32);
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 700; font-size: 12px;
 }

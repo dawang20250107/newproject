@@ -53,16 +53,16 @@ const message = computed(() => {
       <circle cx="24" cy="24" r="19" stroke="var(--border)" stroke-width="4"/>
       <path d="M43 24a19 19 0 0 0-19-19" stroke="url(#esg)" stroke-width="4" stroke-linecap="round"/>
       <defs><linearGradient id="esg" x1="24" y1="5" x2="43" y2="24" gradientUnits="userSpaceOnUse">
-        <stop stop-color="#e0845c"/><stop offset="1" stop-color="#c96342"/>
+        <stop stop-color="var(--primary-light)"/><stop offset="1" stop-color="var(--primary)"/>
       </linearGradient></defs>
     </svg>
 
     <!-- 错误：警示三角 + 圆底 -->
     <svg v-else-if="kind === 'error'" class="estate-art" viewBox="0 0 80 64" fill="none">
       <ellipse cx="40" cy="56" rx="30" ry="4" fill="rgba(198,40,40,0.08)"/>
-      <path d="M40 14 64 50H16L40 14Z" fill="rgba(198,40,40,0.07)" stroke="#c62828" stroke-width="2.4" stroke-linejoin="round"/>
-      <path d="M40 30v10" stroke="#c62828" stroke-width="3" stroke-linecap="round"/>
-      <circle cx="40" cy="45.5" r="1.9" fill="#c62828"/>
+      <path d="M40 14 64 50H16L40 14Z" fill="rgba(198,40,40,0.07)" stroke="var(--c-danger)" stroke-width="2.4" stroke-linejoin="round"/>
+      <path d="M40 30v10" stroke="var(--c-danger)" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="40" cy="45.5" r="1.9" fill="var(--c-danger)"/>
     </svg>
 
     <!-- 无搜索结果：放大镜 + 虚线 -->
@@ -107,7 +107,7 @@ const message = computed(() => {
 .estate-emoji { font-size: 42px; margin-bottom: 12px; line-height: 1; }
 .estate-text { font-size: 14px; line-height: 1.6; max-width: 360px; }
 .estate-sm .estate-text { font-size: 13px; }
-.estate-error .estate-text { color: #c62828; }
+.estate-error .estate-text { color: var(--c-danger); }
 .estate-actions { margin-top: 14px; }
 
 /* 加载旋转 */

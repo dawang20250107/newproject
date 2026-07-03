@@ -43,6 +43,13 @@ function cycleDensity() {
   applyDensity(next)
 }
 
+const isDark = ref(document.documentElement.classList.contains('dark'))
+function toggleTheme() {
+  isDark.value = !isDark.value
+  document.documentElement.classList.toggle('dark', isDark.value)
+  try { localStorage.setItem('kx_theme', isDark.value ? 'dark' : 'light') } catch (_) { /* ignore */ }
+}
+
 function logout() {
   emit('close-mobile')
   auth.logout()
@@ -127,7 +134,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
           <defs>
             <linearGradient id="navgrad" x1="1.5" y1="1.5" x2="34.5" y2="34.5" gradientUnits="userSpaceOnUse">
               <stop offset="0%" stop-color="#e8855a"/>
-              <stop offset="100%" stop-color="#c96342"/>
+              <stop offset="100%" stop-color="var(--primary)"/>
             </linearGradient>
           </defs>
         </svg>
@@ -520,6 +527,11 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
             :title="perfLite ? '性能模式已开启（点击恢复完整视觉）' : '滚动卡顿？点击开启性能模式'">
             ⚡
           </button>
+          <button class="footer-btn theme-btn" @click="toggleTheme"
+            :title="isDark ? '深色模式（点击切换为浅色）' : '浅色模式（点击切换为深色）'">
+            <svg v-if="isDark" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M2 12h2.5M19.5 12H22M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg>
+            <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>
+          </button>
         </div>
       </template>
       <template v-else>
@@ -583,7 +595,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 /* ── toast ── */
 .pwd-ok-toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-  background: #2e7d32; color: #fff; padding: 8px 20px;
+  background: var(--c-success); color: #fff; padding: 8px 20px;
   border-radius: 20px; font-size: 13px; z-index: 9999; pointer-events: none;
   box-shadow: 0 4px 16px rgba(0,0,0,0.25);
 }
@@ -686,7 +698,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
   content: '';
   position: absolute; left: 0; top: 18%; bottom: 18%;
   width: 3.5px; border-radius: 0 3px 3px 0;
-  background: linear-gradient(180deg, #f09870, #c96342);
+  background: linear-gradient(180deg, #f09870, var(--primary));
   box-shadow: 0 0 8px rgba(201,99,66,0.48);
 }
 
@@ -719,14 +731,14 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 .user-info { display: flex; align-items: center; gap: 9px; overflow: hidden; }
 .user-avatar {
   width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
-  background: linear-gradient(135deg, #d4714e, #a84e32);
+  background: linear-gradient(135deg, #d4714e, var(--primary-dark));
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 700; font-size: 14px;
   box-shadow: 0 2px 10px rgba(201,99,66,0.26), inset 0 0 0 1px rgba(255,255,255,0.1);
 }
 .user-avatar-sm {
   width: 34px; height: 34px; border-radius: 9px; margin: 0 auto;
-  background: linear-gradient(135deg, #d4714e, #a84e32);
+  background: linear-gradient(135deg, #d4714e, var(--primary-dark));
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 700; font-size: 14px;
   position: relative;
@@ -771,7 +783,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 .user-avatar-sm.is-scoped { box-shadow: 0 0 0 2px rgba(245,127,23,0.5); }
 .user-avatar-sm .scope-dot {
   position: absolute; top: -2px; right: -2px; width: 8px; height: 8px;
-  border-radius: 50%; background: #f57f17; border: 1.5px solid #1e0d05;
+  border-radius: 50%; background: var(--amber-deep); border: 1.5px solid #1e0d05;
 }
 
 /* ═══════════════════════════════════════════════════
@@ -805,7 +817,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
   border: 1.5px solid rgba(196,168,152,0.32);
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
-.dept-pop-item.checked .dept-check { background: #c96342; border-color: #c96342; color: #fff; }
+.dept-pop-item.checked .dept-check { background: var(--primary); border-color: var(--primary); color: #fff; }
 .dept-pop-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding-top: 7px; margin-top: 5px;
@@ -820,7 +832,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
   transition: all 0.13s;
 }
 .dept-mini-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
-.dept-mini-btn.primary { background: #c96342; color: #fff; border-color: #c96342; }
+.dept-mini-btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
 .dept-mini-btn.primary:hover { background: #d97252; }
 .dept-mini-btn.ghost { background: transparent; }
 

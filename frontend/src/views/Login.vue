@@ -165,7 +165,7 @@ function toggleDept(d) {
             <defs>
               <linearGradient id="lgK" x1="3" y1="3" x2="61" y2="61" gradientUnits="userSpaceOnUse">
                 <stop offset="0%" stop-color="#e8855a"/>
-                <stop offset="100%" stop-color="#c96342"/>
+                <stop offset="100%" stop-color="var(--primary)"/>
               </linearGradient>
             </defs>
           </svg>
@@ -196,7 +196,7 @@ function toggleDept(d) {
             <defs>
               <linearGradient id="mbK" x1="1.5" y1="1.5" x2="34.5" y2="34.5" gradientUnits="userSpaceOnUse">
                 <stop offset="0%" stop-color="#e8855a"/>
-                <stop offset="100%" stop-color="#c96342"/>
+                <stop offset="100%" stop-color="var(--primary)"/>
               </linearGradient>
             </defs>
           </svg>
@@ -239,7 +239,7 @@ function toggleDept(d) {
           <!-- rejected -->
           <div v-else class="pending-state">
             <div class="pending-icon">⚠️</div>
-            <h3 style="color:#c62828">申请未通过</h3>
+            <h3 style="color:var(--c-danger)">申请未通过</h3>
             <p>很抱歉，您的注册申请未获通过，或账号已被停用。</p>
             <p class="pending-hint">如有疑问请联系管理员</p>
             <button class="btn btn-primary mt" style="width:100%;justify-content:center" @click="switchMode('login')">
@@ -352,9 +352,9 @@ function toggleDept(d) {
 /* extra background orbs for login page */
 .login-bg { position: fixed; inset: 0; pointer-events: none; }
 .login-orb { position: absolute; border-radius: 50%; filter: blur(80px); }
-.lo1 { width:650px; height:650px; background:radial-gradient(circle,#c96342,transparent); top:-200px; left:-200px; opacity:0.25; animation: orb1 20s ease-in-out infinite; }
+.lo1 { width:650px; height:650px; background:radial-gradient(circle,var(--primary),transparent); top:-200px; left:-200px; opacity:0.25; animation: orb1 20s ease-in-out infinite; }
 .lo2 { width:450px; height:450px; background:radial-gradient(circle,#e8a84a,transparent); bottom:-150px; right:-100px; opacity:0.2; animation: orb2 16s ease-in-out infinite; }
-.lo3 { width:350px; height:350px; background:radial-gradient(circle,#c96342,transparent); top:40%; left:45%; opacity:0.12; animation: orb3 18s ease-in-out infinite; }
+.lo3 { width:350px; height:350px; background:radial-gradient(circle,var(--primary),transparent); top:40%; left:45%; opacity:0.12; animation: orb3 18s ease-in-out infinite; }
 
 @keyframes orb1 { 0%,100%{transform:translate(0,0)scale(1)}33%{transform:translate(50px,70px)scale(1.07)}66%{transform:translate(-30px,40px)scale(0.96)} }
 @keyframes orb2 { 0%,100%{transform:translate(0,0)scale(1)}40%{transform:translate(-60px,-40px)scale(1.09)}70%{transform:translate(25px,60px)scale(0.93)} }
@@ -406,7 +406,7 @@ function toggleDept(d) {
 .brand-sub { font-size: 13px; color: rgba(201,99,66,0.9); letter-spacing: 0.2em; font-weight: 600; }
 .brand-features { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
 .feature { display: flex; align-items: center; gap: 10px; font-size: 13px; color: rgba(232,212,196,0.75); }
-.f-dot { width: 6px; height: 6px; border-radius: 50%; background: linear-gradient(135deg, #e8855a, #c96342); flex-shrink: 0; }
+.f-dot { width: 6px; height: 6px; border-radius: 50%; background: linear-gradient(135deg, #e8855a, var(--primary)); flex-shrink: 0; }
 
 /* card panel */
 .login-card {
@@ -440,7 +440,7 @@ function toggleDept(d) {
 .lf-group label { font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: 0.03em; display: flex; align-items: center; gap: 4px; }
 .lf-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 
-.req { color: #c62828; }
+.req { color: var(--c-danger); }
 .hint-text { color: rgba(155,128,112,0.6); font-weight: 400; font-size: 11px; }
 
 .input-wrap { position: relative; }
@@ -532,15 +532,15 @@ function toggleDept(d) {
   font-size: 30px; animation: float 2s ease-in-out infinite;
 }
 .live-dot {
-  width: 7px; height: 7px; border-radius: 50%; background: #2e7d32;
+  width: 7px; height: 7px; border-radius: 50%; background: var(--c-success);
   display: inline-block; animation: livepulse 1.4s ease-in-out infinite;
 }
 @keyframes livepulse { 0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(46,125,50,0.4)} 50%{opacity:0.5;box-shadow:0 0 0 5px rgba(46,125,50,0)} }
 
 /* success check */
 .success-check { margin: 0 auto 18px; width: 52px; height: 52px; animation: checkPop 0.5s cubic-bezier(0.34,1.7,0.5,1) both; }
-.sc-circle { stroke: #2e7d32; stroke-width: 2.5; stroke-dasharray: 151; stroke-dashoffset: 151; animation: scCircle 0.5s ease forwards; }
-.sc-check  { stroke: #2e7d32; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 40; stroke-dashoffset: 40; animation: scCheck 0.35s 0.45s ease forwards; }
+.sc-circle { stroke: var(--c-success); stroke-width: 2.5; stroke-dasharray: 151; stroke-dashoffset: 151; animation: scCircle 0.5s ease forwards; }
+.sc-check  { stroke: var(--c-success); stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 40; stroke-dashoffset: 40; animation: scCheck 0.35s 0.45s ease forwards; }
 @keyframes scCircle { to { stroke-dashoffset: 0; } }
 @keyframes scCheck  { to { stroke-dashoffset: 0; } }
 @keyframes checkPop { 0% { transform: scale(0.3); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
@@ -548,7 +548,7 @@ function toggleDept(d) {
 /* approved celebration */
 .approved-state { position: relative; }
 .approved-title {
-  color: #2e7d32; font-size: 23px !important;
+  color: var(--c-success); font-size: 23px !important;
   animation: joyPop 0.55s cubic-bezier(0.34,1.7,0.5,1) both;
 }
 .approved-sub { animation: slideUpJoy 0.5s 0.15s both; }

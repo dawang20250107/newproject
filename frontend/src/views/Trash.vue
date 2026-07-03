@@ -1,4 +1,6 @@
 <script setup>
+import { confirmDlg } from '../composables/confirm.js'
+import { resultDlg } from '../composables/bulkResult.js'
 import { ref, computed, onMounted } from 'vue'
 import api from '../api/index.js'
 import { cachedGet } from '../api/refCache.js'
@@ -86,7 +88,7 @@ const busy = ref(false)
 async function doAction(action) {
   if (!selectedCount.value) { toast.warn('请先选择记录'); return }
   const label = action === 'restore' ? '还原' : '彻底删除'
-  if (action === 'purge' && !confirm(`彻底删除 ${selectedCount.value} 条记录？此操作不可撤销。`)) return
+  if (action === 'purge' && !(await confirmDlg(`彻底删除 ${selectedCount.value} 条记录？此操作不可撤销。`))) return
   busy.value = true
   try {
     const body = allAcross.value ? { action, all: true } : { action, ids: [...selectedIds.value] }
@@ -101,7 +103,7 @@ async function doAction(action) {
       ? skipped.filter(s => s.linked_payments > 0) : []
     if (cascadable.length) {
       const totalPay = cascadable.reduce((a, s) => a + (s.linked_payments || 0), 0)
-      if (confirm(`${cascadable.length} 条审批仍关联 ${totalPay} 笔付款，无法单独彻底删除。\n\n是否【连同这些关联付款（含付款流水）一并彻底删除】？此操作不可撤销。`)) {
+      if (await confirmDlg(`${cascadable.length} 条审批仍关联 ${totalPay} 笔付款，无法单独彻底删除。\n\n是否【连同这些关联付款（含付款流水）一并彻底删除】？此操作不可撤销。`)) {
         const r2 = await api.post(`/trash/${activeTab.value}`,
           { action: 'purge', ids: cascadable.map(s => s.id), cascade: true }, cfg)
         const n2 = r2.data.count, sk2 = r2.data.skipped || []
@@ -112,7 +114,7 @@ async function doAction(action) {
       }
     }
     if (skipped.length) {
-      toast.warn(`${skipped.length} 条未${label}：${skipped[0].reason}${skipped.length > 1 ? ' 等' : ''}`)
+      resultDlg({ title: `${label}结果`, okLine: n ? `已${label} ${n} 条` : '', skipped })
     } else if (!n) {
       toast.warn(`没有可${label}的记录`)
     }
@@ -231,9 +233,9 @@ function fmtDate(s) {
 .trash-tabs { display: flex; gap: 4px; background: rgba(0,0,0,0.05); border-radius: 10px; padding: 3px; }
 .ttab { border: none; background: none; padding: 5px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
   color: var(--muted); cursor: pointer; transition: all 0.16s; }
-.ttab.active { background: #fff; color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+.ttab.active { background: var(--row-bg); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
 .trash-dept { height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px;
-  background: #fff; font-size: 13px; color: var(--text); cursor: pointer; }
+  background: var(--row-bg); font-size: 13px; color: var(--text); cursor: pointer; }
 .trash-dept:focus { outline: none; border-color: var(--primary); }
 .trash-actions { display: flex; gap: 8px; margin-left: auto; }
 .tact-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px;

@@ -1,4 +1,5 @@
 <script setup>
+import { confirmDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import ar from '../../api/ar.js'
 import { useAuthStore } from '../../stores/auth.js'
@@ -126,7 +127,7 @@ const canCancel = t => t.status === 'pending'
   && (auth.isSuperAdmin || t.created_by_id === auth.user?.id)
 
 async function approveTransfer(t) {
-  if (!confirm(`批准调拨：${t.from_dept} → ${t.to_dept} ¥${t.amount}？批准后立即生效（生效日=今天），两池余额随之变动。`)) return
+  if (!(await confirmDlg(`批准调拨：${t.from_dept} → ${t.to_dept} ¥${t.amount}？批准后立即生效（生效日=今天），两池余额随之变动。`))) return
   try { await ar.reviewPoolTransfer(t.id, { action: 'approve' }); await load() }
   catch (e) { alert(e?.msg || '审批失败') }
 }
@@ -140,7 +141,7 @@ async function removeTransfer(t) {
   const tip = t.status === 'pending'
     ? `撤回调拨申请：${t.from_dept} → ${t.to_dept} ¥${t.amount}？`
     : `删除已生效的调拨记录：${t.from_dept} → ${t.to_dept} ¥${t.amount}？两池账面余额将回退。`
-  if (!confirm(tip)) return
+  if (!(await confirmDlg(tip))) return
   try { await ar.deletePoolTransfer(t.id); await load() }
   catch (e) { alert(e?.msg || '删除失败') }
 }
@@ -167,7 +168,7 @@ async function saveCfgRow(row) {
   if (!row.initial_date) { alert('期初基准日必填'); return }
   if (row.saved && (row.initial_date !== row.origDate
       || String(row.initial_amount || 0) !== String(row.origAmount || 0))) {
-    if (!confirm(`「${row.delivery_dept}」已有期初基准（${row.origDate} / ¥${row.origAmount}）。\n修改期初基准日或期初金额将重算该池全部历史余额，历史调拨与预警状态也会随之变化。确认修改？`)) return
+    if (!(await confirmDlg(`「${row.delivery_dept}」已有期初基准（${row.origDate} / ¥${row.origAmount}）。\n修改期初基准日或期初金额将重算该池全部历史余额，历史调拨与预警状态也会随之变化。确认修改？`))) return
   }
   cfgSaving.value = true
   try {
@@ -331,15 +332,15 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                  :viewBox="`0 0 ${spark(p).W} ${spark(p).H}`" width="110" height="32">
               <line v-if="spark(p).zero != null"
                     x1="6" :y1="spark(p).zero" :x2="spark(p).W-4" :y2="spark(p).zero"
-                    stroke="#c62828" stroke-width="1" stroke-dasharray="3,3" opacity=".5" />
+                    stroke="var(--c-danger)" stroke-width="1" stroke-dasharray="3,3" opacity=".5" />
               <path :d="spark(p).area"
                     :fill="spark(p).danger ? 'rgba(198,40,40,.09)' : 'rgba(201,99,66,.1)'" />
               <path :d="spark(p).line" fill="none"
-                    :stroke="spark(p).danger ? '#c62828' : '#c96342'"
+                    :stroke="spark(p).danger ? 'var(--c-danger)' : 'var(--primary)'"
                     stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
               <circle v-for="(pt,i) in spark(p).pts" :key="i"
                       :cx="pt[0]" :cy="pt[1]" r="2.2"
-                      :fill="spark(p).danger ? '#c62828' : '#c96342'" />
+                      :fill="spark(p).danger ? 'var(--c-danger)' : 'var(--primary)'" />
             </svg>
 
             <!-- 健康 KPI 小标签 -->
@@ -390,11 +391,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   <div class="pd-row out"><i>30 / 60 / 90天待付</i><b>{{ wan(p.committed.d30) }} / {{ wan(p.committed.d60) }} / {{ wan(p.committed.d90) }}</b></div>
                   <div class="pd-row"><i>在途：已批待排 / 审批中</i><b>{{ wan(p.pipeline.approved) }} / {{ wan(p.pipeline.pending) }}</b></div>
                   <div v-if="parseFloat(p.pipeline.transfer_out_pending)" class="pd-row out">
-                    <i>待批调拨出款申请</i><b style="color:#e65100">{{ wan(p.pipeline.transfer_out_pending) }}</b>
+                    <i>待批调拨出款申请</i><b style="color:var(--c-warn)">{{ wan(p.pipeline.transfer_out_pending) }}</b>
                   </div>
                   <div class="pd-col-head" style="margin-top:10px">预期回款</div>
                   <div class="pd-row in"><i>30 / 60 / 90天内</i><b>{{ wan(p.expected_in.d30) }} / {{ wan(p.expected_in.d60) }} / {{ wan(p.expected_in.d90) }}</b></div>
-                  <div class="pd-row"><i>逾期应收在外</i><b style="color:#e65100">{{ wan(p.expected_in.overdue_outstanding) }}</b></div>
+                  <div class="pd-row"><i>逾期应收在外</i><b style="color:var(--c-warn)">{{ wan(p.expected_in.overdue_outstanding) }}</b></div>
                 </div>
 
                 <!-- 项目维度 -->
@@ -665,7 +666,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 }
 .pess-toggle:hover { background: rgba(255,255,255,.09); }
 .pess-toggle.on { background: rgba(201,99,66,.22); border-color: rgba(201,99,66,.5); color: #ffd8b8; }
-.pess-toggle input { accent-color: #c96342; cursor: pointer; }
+.pess-toggle input { accent-color: var(--primary); cursor: pointer; }
 .cpb-btn {
   padding: 6px 14px; border: 1px solid rgba(201,99,66,.35); border-radius: 20px;
   background: rgba(255,255,255,.06); font-size: 12px; font-weight: 600; color: #e8d0b8;
@@ -695,8 +696,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   transition: width .7s cubic-bezier(.2,.8,.3,1);
   flex-shrink: 0;
 }
-.rsv-fill.w-ok { background: linear-gradient(90deg, #c96342, #e8855a); }
-.rsv-fill.w-warn { background: linear-gradient(90deg, #e65100, #ffb74d); }
+.rsv-fill.w-ok { background: linear-gradient(90deg, var(--primary), #e8855a); }
+.rsv-fill.w-warn { background: linear-gradient(90deg, var(--c-warn), #ffb74d); }
 .rsv-fill.w-danger { background: linear-gradient(90deg, #b71c1c, #e57373); }
 .rsv-warn-mark {
   position: absolute; top: -3px; bottom: -3px; width: 2px;
@@ -741,8 +742,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   transition: height .8s cubic-bezier(.2,.8,.3,1);
   border-radius: 0 0 5px 5px;
 }
-.pool-tube-fill.w-ok { background: linear-gradient(180deg, #e8855a, #a84e32); }
-.pool-tube-fill.w-warn { background: linear-gradient(180deg, #ffb74d, #e65100); }
+.pool-tube-fill.w-ok { background: linear-gradient(180deg, #e8855a, var(--primary-dark)); }
+.pool-tube-fill.w-warn { background: linear-gradient(180deg, #ffb74d, var(--c-warn)); }
 .pool-tube-fill.w-danger { background: linear-gradient(180deg, #e57373, #b71c1c); }
 .ptf-wave {
   position: absolute; top: -4px; left: 0; width: 200%; height: 5px;

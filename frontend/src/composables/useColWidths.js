@@ -34,6 +34,13 @@ export function useColWidths(storageKey, defaults = {}) {
   }
 
   // @mousedown on resize handle
+  // 方案云同步：整组覆盖列宽（应用方案时恢复）
+  function setAll(map) {
+    if (!map || typeof map !== 'object') return
+    Object.entries(map).forEach(([k, v]) => { if (typeof v === 'number' && v > 20) widths[k] = v })
+    _save()
+  }
+
   function startDrag(e, field) {
     e.preventDefault()
     const th = e.currentTarget.closest('th') || e.target.closest('th')
@@ -59,5 +66,5 @@ export function useColWidths(storageKey, defaults = {}) {
     localStorage.removeItem(STORE_KEY)
   }
 
-  return { widths, thStyle, startDrag, reset }
+  return { widths, setAll, thStyle, startDrag, reset }
 }

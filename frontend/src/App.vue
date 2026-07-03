@@ -5,6 +5,8 @@ import AppNav from './components/AppNav.vue'
 import WelcomeOverlay from './components/WelcomeOverlay.vue'
 import ChangePasswordModal from './components/ChangePasswordModal.vue'
 import Toast from './components/Toast.vue'
+import ConfirmHost from './components/ConfirmHost.vue'
+import ResultHost from './components/ResultHost.vue'
 import ErrorBoundary from './components/ErrorBoundary.vue'
 import { useAuthStore } from './stores/auth.js'
 
@@ -114,5 +116,7 @@ function onNavCollapse(v) {
     <!-- 超管重置临时密码后：强制改密，覆盖全屏不可跳过 -->
     <ChangePasswordModal v-if="auth.isLoggedIn && auth.mustChangePassword" forced />
     <Toast />
+    <ConfirmHost />
+    <ResultHost />
   </div>
 </template>

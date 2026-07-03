@@ -1,4 +1,5 @@
 <script setup>
+import { confirmDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, onMounted, onBeforeUnmount, provide, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
@@ -381,7 +382,7 @@ async function addAdjustment() {
   finally { adjBusy.value = false }
 }
 async function removeAdjustment(a) {
-  if (!confirm(`删除调整「${a.reason || '未填原因'}：${a.amount}」？差额合计与未收金额将随之回退。`)) return
+  if (!(await confirmDlg(`删除调整「${a.reason || '未填原因'}：${a.amount}」？差额合计与未收金额将随之回退。`))) return
   adjBusy.value = true
   try {
     const res = await ar.deleteAdjustment(editRec.value.id, a.id)
@@ -657,7 +658,7 @@ function toggleDunSelectPage() {
 async function createDunningTasks() {
   const ids = [...dunSelected.value]
   if (!ids.length) return
-  if (!confirm(`将为 ${ids.length} 条逾期应收生成催款任务（出现在财务驾驶舱·决策行动），确定？`)) return
+  if (!(await confirmDlg(`将为 ${ids.length} 条逾期应收生成催款任务（出现在财务驾驶舱·决策行动），确定？`))) return
   dunCreating.value = true
   try {
     const res = await ar.createDunning({ ids })
@@ -725,7 +726,7 @@ async function saveCurrentScheme() {
   } catch (e) { toast.error(e?.msg || e?.error || '保存失败') }
 }
 async function deleteScheme(s) {
-  if (!confirm(`删除方案「${s.name}」？${s.scope === 'public' ? '（公共方案，团队成员将不再可见）' : ''}`)) return
+  if (!(await confirmDlg(`删除方案「${s.name}」？${s.scope === 'public' ? '（公共方案，团队成员将不再可见）' : ''}`))) return
   try {
     await ar.deleteFilterScheme(s.id)
     await loadSchemes()   // 默认方案随级联清理，重拉即同步
@@ -806,7 +807,7 @@ async function loadHealth() {
 async function fixStaleRecords() {
   const ids = (healthData.value?.stale || []).map(r => r.id)
   if (!ids.length) return
-  if (!confirm(`将按现规则重算 ${ids.length} 条未收金额不一致的记录，确定继续？`)) return
+  if (!(await confirmDlg(`将按现规则重算 ${ids.length} 条未收金额不一致的记录，确定继续？`))) return
   healthFixing.value = true
   try {
     const res = await ar.recomputeRecords(ids)
@@ -1083,7 +1084,7 @@ async function doBatchInvoice() {
   finally { batchActing.value = false }
 }
 async function undoBatchInvoice(ev) {
-  if (!confirm(`撤销 ${ev.invoice_date} 的开票 ${ev.amount} 元？各记录开票额将整体回退。`)) return
+  if (!(await confirmDlg(`撤销 ${ev.invoice_date} 的开票 ${ev.amount} 元？各记录开票额将整体回退。`))) return
   batchActing.value = true
   try {
     const res = await ar.batchInvoiceUndo(batchTarget.value.batch_no, { event_id: ev.id })
@@ -1109,7 +1110,7 @@ async function doBatchPay() {
   finally { batchActing.value = false }
 }
 async function undoBatchPay(b, ev) {
-  if (!confirm(`撤销 ${ev.payment_date} 的批次回款 ${ev.total} 元（分摊 ${ev.count} 笔）？\n各记录未收金额将整体恢复。`)) return
+  if (!(await confirmDlg(`撤销 ${ev.payment_date} 的批次回款 ${ev.total} 元（分摊 ${ev.count} 笔）？\n各记录未收金额将整体恢复。`))) return
   batchActing.value = true
   try {
     const res = await ar.batchPaymentUndo(b.batch_no, { payment_ids: ev.payment_ids })
@@ -1148,7 +1149,7 @@ async function saveRec() {
 
 async function deleteRec(rec) {
   const amt = parseFloat(rec.estimated_amount || 0).toFixed(2)
-  if (!confirm(`确定删除「${rec.short_name || rec.customer_name}」${rec.operation_date || (rec.operation_year + '年' + rec.operation_month + '月')}的应收记录（${amt} 元）？同期可能存在多条记录，请确认。`)) return
+  if (!(await confirmDlg(`确定删除「${rec.short_name || rec.customer_name}」${rec.operation_date || (rec.operation_year + '年' + rec.operation_month + '月')}的应收记录（${amt} 元）？同期可能存在多条记录，请确认。`))) return
   try { await ar.deleteRecord(rec.id); await load() }
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
@@ -1190,7 +1191,7 @@ function streamRows(rec) {
 }
 // 从展开流水里删除一笔差额调整（与编辑弹窗里的 removeAdjustment 等价，但作用于列表行）
 async function deleteLedgerAdj(rec, a) {
-  if (!confirm(`删除调整「${a.reason || '未填原因'}：${a.amount}」？差额合计与未收金额将随之回退。`)) return
+  if (!(await confirmDlg(`删除调整「${a.reason || '未填原因'}：${a.amount}」？差额合计与未收金额将随之回退。`))) return
   try {
     await ar.deleteAdjustment(rec.id, a.id)
     await load()
@@ -1362,7 +1363,7 @@ async function deletePayment(rec, pay) {
     : pay.source === '内部往来'
       ? `确定删除该笔内部往来核销（${pay.amount} 元 · 往来部门 ${pay.counterparty_dept || '—'}）？\n本应收未收金额相应回升。`
       : `确定删除第${pay.payment_no}次回款 ${pay.amount} 元？`
-  if (!confirm(tip)) return
+  if (!(await confirmDlg(tip))) return
   try { await ar.deletePayment(rec.id, pay.id); await load() }
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
@@ -2128,7 +2129,7 @@ function clearFilters() {
             <input v-model="dunFilters.q" placeholder="搜项目 / 客户 / 对接人" class="search-input" @input="onDunSearch" />
             <button v-if="auth.isSuperAdmin" class="aging-cfg-btn" title="配置账龄分桶边界" @click="openAgingCfg">⚙ 账龄分桶</button>
             <span v-if="dunSummary" class="text-sm-muted" style="margin-left:auto">
-              当前范围逾期 <strong>{{ dunSummary.count }}</strong> 笔 / <strong style="color:#c62828">{{ fmtAmt(dunSummary.amount) }}</strong>
+              当前范围逾期 <strong>{{ dunSummary.count }}</strong> 笔 / <strong style="color:var(--c-danger)">{{ fmtAmt(dunSummary.amount) }}</strong>
             </span>
           </div>
 
@@ -2198,7 +2199,7 @@ function clearFilters() {
                 <td class="ctr"><span class="ym-chip">{{ r.operation_date || (r.operation_year + "/" + String(r.operation_month).padStart(2, "0")) }}</span></td>
                 <td class="ctr text-sm-muted">{{ r.due_date }}</td>
                 <td class="ctr"><span class="od-badge" :class="overdueClass(r.overdue_days)">{{ r.overdue_days }}天</span></td>
-                <td class="amt fw" style="color:#c62828">{{ fmtAmt(r.outstanding_amount) }}</td>
+                <td class="amt fw" style="color:var(--c-danger)">{{ fmtAmt(r.outstanding_amount) }}</td>
                 <td class="ctr text-sm-muted">{{ r.sales_contact || '—' }}</td>
                 <td class="ctr text-sm-muted">{{ r.last_payment_date || '—' }}</td>
                 <td class="ctr">
@@ -2269,7 +2270,7 @@ function clearFilters() {
               <tr v-else-if="!payItems.length"><td colspan="8" class="empty-cell">暂无回款记录</td></tr>
               <tr v-for="p in payItems" :key="p.id" class="data-row">
                 <td class="ctr text-sm-muted">{{ p.payment_date }}</td>
-                <td class="amt fw" :style="{ color: p.source === '内部往来' ? '#6a1b9a' : '#2e7d32' }">{{ fmtCell(p.amount) }}</td>
+                <td class="amt fw" :style="{ color: p.source === '内部往来' ? '#6a1b9a' : 'var(--c-success)' }">{{ fmtCell(p.amount) }}</td>
                 <td class="ctr">
                   <span v-if="p.source === '内部往来'" class="pay-src pay-src-internal" :title="`往来部门：${p.counterparty_dept || '—'}（不计现金）`">内部往来 · {{ p.counterparty_dept || '—' }}</span>
                   <span v-else-if="p.source === '预收抵扣'" class="pay-src">预收抵扣</span>
@@ -2327,7 +2328,7 @@ function clearFilters() {
                 <td class="ctr text-sm-muted">{{ r.count }}</td>
                 <td class="amt">{{ fmtAmt(r.estimated) }}</td>
                 <td class="amt">{{ fmtAmt(r.invoiced) }}</td>
-                <td class="amt" style="color:#2e7d32">{{ fmtAmt(r.collected) }}</td>
+                <td class="amt" style="color:var(--c-success)">{{ fmtAmt(r.collected) }}</td>
                 <td class="amt" :class="parseFloat(r.outstanding) > 0 ? 'amt-warn' : 'amt-zero'">{{ fmtAmt(r.outstanding) }}</td>
               </tr>
             </tbody>
@@ -2337,7 +2338,7 @@ function clearFilters() {
                 <td class="ctr">{{ groupTotals.count }}</td>
                 <td class="amt fw">{{ fmtAmt(groupTotals.estimated) }}</td>
                 <td class="amt fw">{{ fmtAmt(groupTotals.invoiced) }}</td>
-                <td class="amt fw" style="color:#2e7d32">{{ fmtAmt(groupTotals.collected) }}</td>
+                <td class="amt fw" style="color:var(--c-success)">{{ fmtAmt(groupTotals.collected) }}</td>
                 <td class="amt fw" :class="groupTotals.outstanding > 0 ? 'amt-warn' : 'amt-zero'">{{ fmtAmt(groupTotals.outstanding) }}</td>
               </tr>
             </tfoot>
@@ -2605,13 +2606,13 @@ function clearFilters() {
               </div>
             </template>
             <template v-else>
-              <p style="font-size:13px;color:#2e7d32;font-weight:600;margin-bottom:10px">✓ {{ batchPayResult.message }}</p>
+              <p style="font-size:13px;color:var(--c-success);font-weight:600;margin-bottom:10px">✓ {{ batchPayResult.message }}</p>
               <table class="bp-mtable">
                 <thead><tr><th>项目</th><th>运作日期</th><th class="r">本次分摊</th><th class="r">分摊后未收</th></tr></thead>
                 <tbody>
                   <tr v-for="a in batchPayResult.allocations" :key="a.record_id">
                     <td>{{ a.short_name }}</td><td>{{ a.operation_date || '—' }}</td>
-                    <td class="r" style="color:#2e7d32;font-weight:600">+{{ fmtCell(a.allocated) }}</td>
+                    <td class="r" style="color:var(--c-success);font-weight:600">+{{ fmtCell(a.allocated) }}</td>
                     <td class="r" :class="parseFloat(a.outstanding_after) > 0 ? 'bp-out' : 'bp-ok'">
                       {{ parseFloat(a.outstanding_after) > 0 ? fmtCell(a.outstanding_after) : '✓ 结清' }}
                     </td>
@@ -2671,13 +2672,13 @@ function clearFilters() {
               </div>
             </template>
             <template v-else>
-              <p style="font-size:13px;color:#2e7d32;font-weight:600;margin-bottom:10px">✓ {{ woResult.message }}</p>
+              <p style="font-size:13px;color:var(--c-success);font-weight:600;margin-bottom:10px">✓ {{ woResult.message }}</p>
               <table class="bp-mtable">
                 <thead><tr><th>项目</th><th>运作日期</th><th class="r">本次冲抵</th><th class="r">冲抵后未收</th></tr></thead>
                 <tbody>
                   <tr v-for="a in woResult.allocations" :key="a.record_id">
                     <td>{{ a.short_name }}</td><td>{{ a.operation_date || '—' }}</td>
-                    <td class="r" style="color:#2e7d32;font-weight:600">+{{ fmtCell(a.allocated) }}</td>
+                    <td class="r" style="color:var(--c-success);font-weight:600">+{{ fmtCell(a.allocated) }}</td>
                     <td class="r" :class="parseFloat(a.outstanding_after) > 0 ? 'bp-out' : 'bp-ok'">
                       {{ parseFloat(a.outstanding_after) > 0 ? fmtCell(a.outstanding_after) : '✓ 结清' }}
                     </td>
@@ -2949,7 +2950,7 @@ function clearFilters() {
 .health-text strong { color: #92400e; }
 .health-btn {
   flex-shrink: 0; padding: 6px 14px; border-radius: 8px; font-size: 12.5px; font-weight: 600;
-  border: 1px solid rgba(180,83,9,0.4); background: #fff; color: #b45309; cursor: pointer;
+  border: 1px solid rgba(180,83,9,0.4); background: var(--row-bg); color: #b45309; cursor: pointer;
   transition: all 0.14s;
 }
 .health-btn:hover { background: #b45309; color: #fff; }
@@ -2959,13 +2960,13 @@ function clearFilters() {
   font-size: 13px; font-weight: 600; margin-bottom: 8px;
 }
 .health-hint { font-size: 12px; color: var(--muted); margin-bottom: 8px; line-height: 1.6; }
-.danger-text { color: #c62828; }
+.danger-text { color: var(--c-danger); }
 .health-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .health-table th, .health-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
 .health-table th { color: var(--muted); font-weight: 600; }
 .health-table td.r, .health-table th.r { text-align: right; font-variant-numeric: tabular-nums; }
 .health-table td.muted { color: var(--muted); }
-.health-table td.ok { color: #2e7d32; font-weight: 600; }
+.health-table td.ok { color: var(--c-success); font-weight: 600; }
 .btn-sm { padding: 5px 12px; font-size: 12px; }
 .act-btn {
   padding: 6px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 500;
@@ -3039,7 +3040,7 @@ function clearFilters() {
   background: rgba(0,0,0,0.08); color: var(--muted); font-size: 9px; cursor: pointer;
   display: flex; align-items: center; justify-content: center; line-height: 1;
 }
-.qs-clear:hover { background: rgba(198,40,40,0.12); color: #c62828; }
+.qs-clear:hover { background: rgba(198,40,40,0.12); color: var(--c-danger); }
 .fb-trigger-wrap { position: relative; }
 .fb-trigger {
   display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 9px;
@@ -3052,7 +3053,7 @@ function clearFilters() {
 .fb-pop {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 51;
   width: 540px; max-width: 94vw;            /* 容器自身定宽，不依赖内部组件 */
-  background: #fff; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--row-bg); border: 1px solid var(--border); border-radius: 12px;
   box-shadow: 0 16px 44px rgba(0,0,0,0.18);
   /* 不可 overflow:hidden，否则会裁掉「添加条件」弹出的菜单 */
 }
@@ -3090,11 +3091,11 @@ function clearFilters() {
 .focus-seg.on { background: var(--card, #fff); color: var(--primary); box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
 /* 汇总区：时段合计单行紧凑条 */
 .period-bar { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; white-space: nowrap; }
-.period-lbl { flex-shrink: 0; font-size: 10.5px; font-weight: 700; color: #2e7d32; padding: 1px 6px; border-radius: 4px; background: rgba(46,125,50,0.12); margin-right: 3px; }
+.period-lbl { flex-shrink: 0; font-size: 10.5px; font-weight: 700; color: var(--c-success); padding: 1px 6px; border-radius: 4px; background: rgba(46,125,50,0.12); margin-right: 3px; }
 .pd-k { font-size: 11px; color: var(--muted); font-weight: 500; }
 .pd-num { font-size: 12px; font-weight: 600; color: var(--text); }
-.pd-num.ok { color: #2e7d32; }
-.pd-num.warn { color: #e65100; }
+.pd-num.ok { color: var(--c-success); }
+.pd-num.warn { color: var(--c-warn); }
 .pd-num.adj { color: #6a5acd; font-weight: 500; }
 .pd-sep { color: var(--muted); opacity: 0.4; }
 .pd-sep.pipe { margin: 0 4px; opacity: 0.25; }
@@ -3106,15 +3107,15 @@ function clearFilters() {
 .kpi-cmp { font-size: 11px; color: var(--muted); display: inline-flex; align-items: baseline; gap: 3px; white-space: nowrap; }
 .kpi-cmp b { font-weight: 600; color: var(--text); }
 .kpi-cmp-rng { font-size: 9px; opacity: 0.6; }
-.kpi-item.ok .kpi-v { color: #2e7d32; }
-.kpi-item.warn .kpi-v { color: #e65100; }
-.kpi-item.danger .kpi-v { color: #c62828; }
+.kpi-item.ok .kpi-v { color: var(--c-success); }
+.kpi-item.warn .kpi-v { color: var(--c-warn); }
+.kpi-item.danger .kpi-v { color: var(--c-danger); }
 .kpi-progress { display: flex; align-items: center; gap: 10px; min-width: 240px; }
 .kpi-track { flex: 1; height: 8px; background: rgba(0,0,0,0.08); border-radius: 99px; overflow: hidden; min-width: 90px; }
 .kpi-fill { height: 100%; border-radius: 99px; transition: width 0.5s ease; }
-.fill-blue { background: linear-gradient(90deg, #1565c0, #42a5f5); }
-.fill-amber { background: linear-gradient(90deg, #e65100, #ffa726); }
-.fill-green { background: linear-gradient(90deg, #2e7d32, #66bb6a); }
+.fill-blue { background: linear-gradient(90deg, var(--c-info), #42a5f5); }
+.fill-amber { background: linear-gradient(90deg, var(--c-warn), #ffa726); }
+.fill-green { background: linear-gradient(90deg, var(--c-success), #66bb6a); }
 .kpi-pct { font-size: 15px; font-weight: 800; color: var(--text); min-width: 44px; text-align: right; }
 
 /* 筛选合计 / 区间合计 strip */
@@ -3122,8 +3123,8 @@ function clearFilters() {
 .tot-label { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--primary); text-transform: uppercase; }
 .tot-item { display: inline-flex; align-items: baseline; gap: 5px; font-size: 15px; font-weight: 700; color: var(--text); }
 .tot-item i { font-style: normal; font-size: 12px; font-weight: 400; color: var(--muted); }
-.tot-item.tot-warn { color: #e65100; }
-.tot-item.tot-green { color: #2e7d32; }
+.tot-item.tot-warn { color: var(--c-warn); }
+.tot-item.tot-green { color: var(--c-success); }
 .pay-range-lbl { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .pay-range-chip {
   font-size: 12px; padding: 3px 10px; border-radius: 13px; cursor: pointer;
@@ -3179,7 +3180,7 @@ function clearFilters() {
   font-variant-numeric: tabular-nums;
 }
 .sum-foot-lbl { white-space: nowrap; color: var(--primary); }
-.rec-table tfoot .amt-warn { color: #e65100; }
+.rec-table tfoot .amt-warn { color: var(--c-warn); }
 .rec-table tfoot .amt-muted { color: var(--muted); font-weight: 600; }
 
 /* ══ 账龄分段行着色（4 段递进，替换旧 row-overdue 单一样式）══ */
@@ -3194,12 +3195,12 @@ function clearFilters() {
   display: flex; align-items: center; gap: 5px;
   padding: 4px 9px; font-size: 12px; font-weight: 500;
   border: 1.5px solid var(--border); border-radius: 6px;
-  background: #fff; color: var(--text); cursor: pointer; white-space: nowrap;
+  background: var(--row-bg); color: var(--text); cursor: pointer; white-space: nowrap;
 }
 .preset-btn:hover, .preset-btn.on { border-color: var(--primary); color: var(--primary); }
 .preset-drop {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 200;
-  background: #fff; border: 1.5px solid var(--border); border-radius: 10px;
+  background: var(--row-bg); border: 1.5px solid var(--border); border-radius: 10px;
   box-shadow: 0 6px 20px rgba(0,0,0,0.12); min-width: 240px; padding: 8px 0;
 }
 .preset-backdrop { position: fixed; inset: 0; z-index: 199; }
@@ -3218,7 +3219,7 @@ function clearFilters() {
 .preset-scope-lbl { font-size: 11px; color: var(--muted); }
 .preset-scope-seg {
   flex: 1; padding: 4px 6px; font-size: 11px; border: 1px solid var(--border);
-  border-radius: 6px; background: #fff; color: var(--muted); cursor: pointer; white-space: nowrap;
+  border-radius: 6px; background: var(--row-bg); color: var(--muted); cursor: pointer; white-space: nowrap;
 }
 .preset-scope-seg.on { border-color: var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); font-weight: 600; }
 .preset-scope-seg:disabled { opacity: .4; cursor: not-allowed; }
@@ -3232,8 +3233,8 @@ function clearFilters() {
 }
 .preset-item:hover { background: rgba(201,99,66,0.05); }
 .preset-star { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 0 2px; line-height: 1; }
-.preset-star.on { color: #f5a623; }
-.preset-star:hover { color: #f5a623; }
+.preset-star.on { color: var(--amber); }
+.preset-star:hover { color: var(--amber); }
 .preset-name { flex: 1; font-weight: 500; }
 .preset-count { font-size: 11px; color: var(--muted); }
 .preset-del { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 12px; }
@@ -3252,8 +3253,8 @@ function clearFilters() {
 .fw { font-weight: 700; }
 .text-muted { color: var(--muted); }
 .text-sm-muted { font-size: 12px; color: var(--muted); }
-.amt-warn { color: #e65100; font-weight: 700; }
-.amt-ok { color: #2e7d32; font-weight: 700; }
+.amt-warn { color: var(--c-warn); font-weight: 700; }
+.amt-ok { color: var(--c-success); font-weight: 700; }
 .amt-zero { color: var(--muted); }
 /* 开票金额 ≠ 实际应收 提醒角标：未备注=待处理(红)，已备注=已说明(灰) */
 .inv-warn { margin-left: 3px; cursor: help; font-size: 11px; line-height: 1; vertical-align: middle; }
@@ -3263,25 +3264,25 @@ function clearFilters() {
 
 /* Status pills */
 .status-pill { font-size: 11.5px; padding: 3px 9px; border-radius: 20px; font-weight: 600; white-space: nowrap; }
-.pill-ok     { background: rgba(46,125,50,0.1);  color: #2e7d32; }
-.pill-warn   { background: rgba(245,127,23,0.12); color: #e65100; }
-.pill-danger { background: rgba(198,40,40,0.1);  color: #c62828; }
-.pill-blue   { background: rgba(21,101,192,0.1); color: #1565c0; }
+.pill-ok     { background: rgba(46,125,50,0.1);  color: var(--c-success); }
+.pill-warn   { background: rgba(245,127,23,0.12); color: var(--c-warn); }
+.pill-danger { background: rgba(198,40,40,0.1);  color: var(--c-danger); }
+.pill-blue   { background: rgba(21,101,192,0.1); color: var(--c-info); }
 .pill-muted  { background: rgba(0,0,0,0.06);     color: var(--muted); }
 
 /* 开票批次号 badge */
-.batch-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px; background: rgba(33,150,243,0.12); color: #1565c0; border: 1px solid rgba(33,150,243,0.2); white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
+.batch-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px; background: rgba(33,150,243,0.12); color: var(--c-info); border: 1px solid rgba(33,150,243,0.2); white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
 
 /* ══ 差额调整明细管理器 ══ */
 .adj-box .adj-total { font-style: normal; font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 8px; }
 .adj-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
 .adj-item { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border: 1px solid rgba(120,120,120,0.14); border-radius: 8px; background: rgba(255,255,255,0.6); font-size: 12.5px; }
 .adj-item b { font-variant-numeric: tabular-nums; min-width: 76px; }
-.adj-pos { color: #2e7d32; } .adj-neg { color: #c62828; }
+.adj-pos { color: var(--c-success); } .adj-neg { color: var(--c-danger); }
 .adj-reason { flex: 1; color: var(--text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .adj-item em { font-style: normal; font-size: 11px; color: var(--muted); }
 .adj-del { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 12px; }
-.adj-del:hover { color: #c62828; }
+.adj-del:hover { color: var(--c-danger); }
 .adj-empty { font-size: 12px; color: var(--muted); padding: 6px 0; }
 .adj-add { display: flex; gap: 6px; margin-top: 4px; }
 .adj-add .adj-amt-inp { width: 120px; }
@@ -3299,47 +3300,47 @@ function clearFilters() {
 .ow-stat { display: flex; flex-direction: column; }
 .ow-stat i { font-style: normal; font-size: 10.5px; color: var(--muted); }
 .ow-stat b { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--text); }
-.ow-stat b.ok { color: #2e7d32; }
-.ow-stat b.warn { color: #e65100; }
+.ow-stat b.ok { color: var(--c-success); }
+.ow-stat b.warn { color: var(--c-warn); }
 .ow-advances { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.ow-adv-chip { font-size: 11.5px; color: #2e7d32; background: rgba(46,125,50,0.08); border: 1px solid rgba(46,125,50,0.22); border-radius: 9px; padding: 3px 10px; }
+.ow-adv-chip { font-size: 11.5px; color: var(--c-success); background: rgba(46,125,50,0.08); border: 1px solid rgba(46,125,50,0.22); border-radius: 9px; padding: 3px 10px; }
 .ow-adv-chip b { font-variant-numeric: tabular-nums; margin-left: 6px; }
-.ow-table { width: 100%; border-collapse: collapse; font-size: 12.5px; background: #fff; border-radius: 8px; overflow: hidden; }
+.ow-table { width: 100%; border-collapse: collapse; font-size: 12.5px; background: var(--row-bg); border-radius: 8px; overflow: hidden; }
 .ow-table th { background: rgba(46,125,50,0.06); color: var(--muted); font-weight: 600; padding: 7px 10px; text-align: left; white-space: nowrap; }
 .ow-table td { padding: 7px 10px; border-top: 1px solid rgba(120,120,120,0.08); cursor: pointer; }
 .ow-table tr.row-sel td { background: rgba(46,125,50,0.07); }
 .ow-table .amt { text-align: right; font-variant-numeric: tabular-nums; }
-.count-offset { background: rgba(21,101,192,0.13); color: #1565c0; }
+.count-offset { background: rgba(21,101,192,0.13); color: var(--c-info); }
 .wo-adv-pick { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; }
 .wo-adv-opt { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; cursor: pointer; font-size: 12.5px; }
-.wo-adv-opt.on { border-color: #2e7d32; background: rgba(46,125,50,0.06); }
-.wo-adv-opt b { margin-left: auto; color: #2e7d32; font-variant-numeric: tabular-nums; }
+.wo-adv-opt.on { border-color: var(--c-success); background: rgba(46,125,50,0.06); }
+.wo-adv-opt b { margin-left: auto; color: var(--c-success); font-variant-numeric: tabular-nums; }
 
 /* 批次开票事件 */
 .bi-events { margin-bottom: 10px; padding: 7px 10px; background: rgba(21,101,192,.04);
   border: 1px solid rgba(21,101,192,.18); border-radius: 8px; }
-.bi-events-head { font-size: 11.5px; font-weight: 700; color: #1565c0; margin-bottom: 3px; }
+.bi-events-head { font-size: 11.5px; font-weight: 700; color: var(--c-info); margin-bottom: 3px; }
 .bi-events-head i { font-style: normal; font-weight: 400; font-size: 10.5px; color: var(--muted); margin-left: 8px; }
 .bi-ev-row { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 3px 0; }
 .bie-date { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 78px; }
-.bie-amt { color: #1565c0; font-variant-numeric: tabular-nums; min-width: 80px; }
+.bie-amt { color: var(--c-info); font-variant-numeric: tabular-nums; min-width: 80px; }
 .bie-tax { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .bie-note { flex: 1; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bie-undo { border: 1px solid rgba(198,40,40,.4); color: #c62828; background: none; border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.bie-undo { border: 1px solid rgba(198,40,40,.4); color: var(--c-danger); background: none; border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .bie-undo:hover:not(:disabled) { background: rgba(198,40,40,.08); }
 .bi-add { border: 1px dashed rgba(201,99,66,.4); border-radius: 10px; padding: 10px 12px; }
 .bi-add-head { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
 .bi-room { font-size: 11px; font-weight: 400; color: var(--muted); }
-.bi-room b { color: #e65100; font-variant-numeric: tabular-nums; }
+.bi-room b { color: var(--c-warn); font-variant-numeric: tabular-nums; }
 
 /* ══ 合并开票批次工作台 ══ */
 .batch-panel { margin-top: 12px; border: 1px solid rgba(33,150,243,0.22); border-radius: 12px; background: rgba(33,150,243,0.03); overflow: hidden; }
 .bp-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px; }
-.bp-title { font-size: 13px; font-weight: 700; color: #1565c0; }
+.bp-title { font-size: 13px; font-weight: 700; color: var(--c-info); }
 .bp-title i { font-style: normal; font-size: 11px; background: rgba(33,150,243,0.14); border-radius: 9px; padding: 1px 7px; margin-left: 6px; }
 .bp-tip { font-size: 11.5px; color: var(--muted); flex: 1; }
 .bp-toggle { border: none; background: none; font-size: 11.5px; color: var(--muted); cursor: pointer; }
-.bp-toggle:hover { color: #1565c0; }
+.bp-toggle:hover { color: var(--c-info); }
 .bp-empty { padding: 12px 14px; font-size: 12.5px; color: var(--muted); text-align: center; }
 .bp-list { display: flex; flex-direction: column; }
 .bp-item { border-top: 1px solid rgba(33,150,243,0.12); }
@@ -3358,48 +3359,48 @@ function clearFilters() {
 .bm-opt > div { flex: 1; }
 /* 表单内联提示 / 警示 + 非现金标记 + 跨项目核销警示 */
 .field-hint { font-style: normal; font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 6px; }
-.field-warn { display: block; margin-top: 4px; font-size: 11.5px; color: #c62828; }
+.field-warn { display: block; margin-top: 4px; font-size: 11.5px; color: var(--c-danger); }
 .noncash-dot { color: #6a1b9a; font-weight: 700; margin-left: 1px; cursor: help; }
-.wo-incompat { margin-top: 8px; padding: 7px 10px; border-radius: 8px; background: rgba(198,40,40,0.08); color: #c62828; font-size: 11.5px; line-height: 1.6; }
+.wo-incompat { margin-top: 8px; padding: 7px 10px; border-radius: 8px; background: rgba(198,40,40,0.08); color: var(--c-danger); font-size: 11.5px; line-height: 1.6; }
 .wo-incompat-item { display: inline-block; margin: 0 4px; font-weight: 600; }
 .bm-opt b { display: block; font-size: 13px; color: var(--text); }
 .bm-opt i { display: block; font-style: normal; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 .bp-amt { display: flex; flex-direction: column; min-width: 86px; }
 .bp-amt i { font-style: normal; font-size: 10.5px; color: var(--muted); }
 .bp-amt b { font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--text); }
-.bp-amt.ok b { color: #2e7d32; }
-.bp-amt.warn b { color: #e65100; }
+.bp-amt.ok b { color: var(--c-success); }
+.bp-amt.warn b { color: var(--c-warn); }
 .bp-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-.bp-btn { border: 1px solid rgba(33,150,243,0.4); background: #fff; color: #1565c0; font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+.bp-btn { border: 1px solid rgba(33,150,243,0.4); background: var(--row-bg); color: var(--c-info); font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
 .bp-btn:hover { background: rgba(33,150,243,0.08); }
-.bp-btn.primary { background: #1565c0; color: #fff; border-color: #1565c0; }
+.bp-btn.primary { background: var(--c-info); color: #fff; border-color: var(--c-info); }
 .bp-btn.primary:hover { filter: brightness(1.1); }
 .bp-caret { font-size: 11px; color: var(--muted); }
 .bp-members { padding: 0 14px 12px; overflow-x: auto; }
 .bp-colls { margin-bottom: 8px; padding: 7px 10px; background: rgba(46,125,50,.04); border: 1px solid rgba(46,125,50,.16); border-radius: 8px; }
-.bp-colls-head { font-size: 11.5px; font-weight: 700; color: #2e7d32; margin-bottom: 3px; }
+.bp-colls-head { font-size: 11.5px; font-weight: 700; color: var(--c-success); margin-bottom: 3px; }
 .bp-colls-head i { font-style: normal; font-weight: 400; font-size: 10.5px; color: var(--muted); margin-left: 8px; }
 .bp-coll-row { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 3px 0; }
 .bpc-date { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 78px; }
-.bpc-amt { color: #2e7d32; font-variant-numeric: tabular-nums; min-width: 80px; }
+.bpc-amt { color: var(--c-success); font-variant-numeric: tabular-nums; min-width: 80px; }
 .bpc-n { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .bpc-note { flex: 1; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bpc-undo { border: 1px solid rgba(198,40,40,.4); color: #c62828; background: none; border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.bpc-undo { border: 1px solid rgba(198,40,40,.4); color: var(--c-danger); background: none; border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .bpc-undo:hover:not(:disabled) { background: rgba(198,40,40,.08); }
-.bp-mtable { width: 100%; border-collapse: collapse; font-size: 12px; background: #fff; border-radius: 8px; overflow: hidden; }
+.bp-mtable { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--row-bg); border-radius: 8px; overflow: hidden; }
 .bp-mtable th { background: rgba(33,150,243,0.07); color: var(--muted); font-weight: 600; padding: 6px 10px; text-align: left; white-space: nowrap; }
 .bp-mtable td { padding: 6px 10px; border-top: 1px solid rgba(120,120,120,0.08); white-space: nowrap; }
 .bp-mtable .r { text-align: right; font-variant-numeric: tabular-nums; }
-.bp-diff { color: #e65100; font-weight: 600; }
+.bp-diff { color: var(--c-warn); font-weight: 600; }
 .bp-adj-n { font-style: normal; font-size: 10px; color: var(--muted); margin-left: 3px; }
-.bp-out { color: #e65100; font-weight: 600; }
-.bp-ok { color: #2e7d32; font-weight: 700; }
+.bp-out { color: var(--c-warn); font-weight: 600; }
+.bp-ok { color: var(--c-success); font-weight: 700; }
 
 /* Payment rows */
 .pay-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 7px; border: 1px solid var(--border); background: rgba(255,252,250,0.8); cursor: pointer; transition: all 0.14s; font-size: 12.5px; }
 .pay-toggle:hover { border-color: var(--primary); }
 .pay-count { font-size: 11px; font-weight: 700; min-width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 50%; }
-.count-has { background: rgba(46,125,50,0.15); color: #2e7d32; }
+.count-has { background: rgba(46,125,50,0.15); color: var(--c-success); }
 .count-none { background: rgba(0,0,0,0.06); color: var(--muted); }
 .add-pay-btn { margin-left: 6px; font-size: 12px; padding: 3px 9px; border-radius: 7px; border: 1px solid rgba(201,99,66,0.3); background: rgba(201,99,66,0.07); color: var(--primary); cursor: pointer; transition: all 0.14s; }
 .add-pay-btn:hover { background: var(--primary); color: #fff; }
@@ -3407,15 +3408,15 @@ function clearFilters() {
 .pay-empty { text-align: center; color: var(--muted); font-size: 12.5px; }
 .pay-detail { display: flex; align-items: center; gap: 14px; padding-left: 20px; }
 .pay-no { font-size: 11px; color: var(--muted); }
-.pay-amt { font-weight: 700; color: #2e7d32; }
+.pay-amt { font-weight: 700; color: var(--c-success); }
 .pay-date { font-size: 12px; color: var(--muted); }
 .pay-src { font-size: 11px; font-weight: 600; color: #1b6e35; background: rgba(27,110,53,0.1); padding: 1px 7px; border-radius: 999px; }
 .pay-src-internal { color: #6a1b9a; background: rgba(106,27,154,0.1); }
-.pay-src-bank { color: #1565c0; background: rgba(21,101,192,0.1); }
+.pay-src-bank { color: var(--c-info); background: rgba(21,101,192,0.1); }
 .pay-src-adj { color: #6a5acd; background: rgba(106,90,205,0.12); }
-.pay-amt.adj-pos { color: #2e7d32; } .pay-amt.adj-neg { color: #c62828; }
+.pay-amt.adj-pos { color: var(--c-success); } .pay-amt.adj-neg { color: var(--c-danger); }
 .pay-notes { font-size: 12px; color: var(--muted); font-style: italic; }
-.pay-del { margin-left: auto; font-size: 11.5px; color: #c62828; background: none; border: none; cursor: pointer; }
+.pay-del { margin-left: auto; font-size: 11.5px; color: var(--c-danger); background: none; border: none; cursor: pointer; }
 .pay-del:hover { text-decoration: underline; }
 /* 内部往来核销：列表次数徽标 + 录入弹窗类型切换 */
 .count-internal { background: rgba(106,27,154,0.13); color: #6a1b9a; }
@@ -3432,39 +3433,39 @@ function clearFilters() {
 .adv-hint { margin-bottom: 14px; padding: 10px 12px; border: 1px solid rgba(56,142,60,0.28);
   background: rgba(76,175,80,0.08); border-radius: 12px; }
 .adv-hint-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text); flex-wrap: wrap; }
-.adv-hint-tag { padding: 1px 8px; border-radius: 999px; background: #2e7d32; color: #fff; font-size: 11px; font-weight: 600; }
-.adv-hint-head b { color: #2e7d32; }
+.adv-hint-tag { padding: 1px 8px; border-radius: 999px; background: var(--c-success); color: #fff; font-size: 11px; font-weight: 600; }
+.adv-hint-head b { color: var(--c-success); }
 .adv-hint-link { margin-left: auto; border: none; background: none; color: var(--primary); cursor: pointer; font-size: 12px; padding: 0; }
 .adv-hint-link:hover { text-decoration: underline; }
 .adv-hint-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 .adv-hint-list li { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
 .adv-hint-list .adv-cp { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .adv-hint-list .adv-bal { font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; }
-.adv-hint-list .adv-od { color: #c62828; font-size: 11px; }
+.adv-hint-list .adv-od { color: var(--c-danger); font-size: 11px; }
 .adv-hint-note { margin-top: 8px; font-size: 11px; color: var(--muted); line-height: 1.5; }
 .adv-hint-list li.on { background: rgba(76,175,80,0.12); border-radius: 6px; }
 .adv-mt { flex: none; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px; }
-.adv-mt.mt-proj { background: rgba(56,142,60,0.14); color: #2e7d32; }
-.adv-mt.mt-cust { background: rgba(21,101,192,0.14); color: #1565c0; }
-.adv-use-btn { margin-left: auto; border: 1px solid #2e7d32; background: none; color: #2e7d32; border-radius: 6px; font-size: 11px; padding: 1px 8px; cursor: pointer; white-space: nowrap; }
+.adv-mt.mt-proj { background: rgba(56,142,60,0.14); color: var(--c-success); }
+.adv-mt.mt-cust { background: rgba(21,101,192,0.14); color: var(--c-info); }
+.adv-use-btn { margin-left: auto; border: 1px solid var(--c-success); background: none; color: var(--c-success); border-radius: 6px; font-size: 11px; padding: 1px 8px; cursor: pointer; white-space: nowrap; }
 .adv-use-btn:hover { background: rgba(46,125,50,0.1); }
 .adv-wo-form { margin-top: 10px; padding: 9px 10px; border: 1px solid rgba(46,125,50,0.35); background: rgba(76,175,80,0.06); border-radius: 9px; }
 .adv-wo-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); margin-bottom: 6px; flex-wrap: wrap; }
 .adv-wo-row:last-of-type { margin-bottom: 0; }
-.adv-wo-row b { color: #2e7d32; }
+.adv-wo-row b { color: var(--c-success); }
 .adv-wo-amt { width: 130px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; font-size: 13px; }
 .btn-xs { padding: 4px 10px; font-size: 12px; }
 .adv-wo-tip { margin-top: 7px; font-size: 11px; color: var(--muted); line-height: 1.5; }
 
 /* 导入结果弹窗 */
-.imp-ok { color: #2e7d32; }
-.imp-fail { color: #c62828; }
+.imp-ok { color: var(--c-success); }
+.imp-fail { color: var(--c-danger); }
 .imp-body { max-height: calc(82vh - 130px); overflow-y: auto; padding-right: 4px; scrollbar-width: thin; }
 .imp-body::-webkit-scrollbar { width: 6px; }
 .imp-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .imp-section { margin-bottom: 16px; }
 .imp-sec-label { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 6px; padding: 4px 10px; border-radius: 6px; background: rgba(0,0,0,0.04); }
-.imp-sec-label.imp-sec-warn { background: rgba(230,81,0,0.08); color: #e65100; }
+.imp-sec-label.imp-sec-warn { background: rgba(230,81,0,0.08); color: var(--c-warn); }
 .imp-sec-list { list-style: none; margin: 0; padding: 0 0 0 10px; display: flex; flex-direction: column; gap: 4px; }
 .imp-sec-list li { font-size: 12.5px; color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-all; border-bottom: 1px dashed rgba(0,0,0,0.06); padding-bottom: 4px; }
 .imp-sec-list li:last-child { border-bottom: none; }
@@ -3473,22 +3474,22 @@ function clearFilters() {
 
 /* 催款工作台 */
 .dun-buckets { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
-.dun-bucket { flex: 1; min-width: 130px; text-align: left; padding: 10px 14px; border: 1.5px solid var(--border); border-radius: 10px; background: #fff; cursor: pointer; transition: all .15s; }
-.dun-bucket:hover { border-color: #e65100; }
-.dun-bucket.on { border-color: #e65100; background: rgba(230,81,0,0.06); box-shadow: 0 0 0 2px rgba(230,81,0,0.12); }
+.dun-bucket { flex: 1; min-width: 130px; text-align: left; padding: 10px 14px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--row-bg); cursor: pointer; transition: all .15s; }
+.dun-bucket:hover { border-color: var(--c-warn); }
+.dun-bucket.on { border-color: var(--c-warn); background: rgba(230,81,0,0.06); box-shadow: 0 0 0 2px rgba(230,81,0,0.12); }
 .dun-bucket.empty { opacity: .55; }
 .db-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .db-count { font-size: 15px; font-weight: 700; color: var(--text); }
-.db-amt { font-size: 13px; font-weight: 600; color: #c62828; margin-top: 2px; }
+.db-amt { font-size: 13px; font-weight: 600; color: var(--c-danger); margin-top: 2px; }
 .dun-contacts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .dc-label { font-size: 12px; color: var(--muted); flex-shrink: 0; }
-.dc-chip { padding: 4px 10px; border: 1px solid var(--border); border-radius: 14px; background: #fff; font-size: 12px; color: var(--text); cursor: pointer; transition: all .15s; }
-.dc-chip:hover { border-color: #e65100; }
-.dc-chip.on { border-color: #e65100; background: rgba(230,81,0,0.08); color: #e65100; font-weight: 600; }
+.dc-chip { padding: 4px 10px; border: 1px solid var(--border); border-radius: 14px; background: var(--row-bg); font-size: 12px; color: var(--text); cursor: pointer; transition: all .15s; }
+.dc-chip:hover { border-color: var(--c-warn); }
+.dc-chip.on { border-color: var(--c-warn); background: rgba(230,81,0,0.08); color: var(--c-warn); font-weight: 600; }
 .od-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; }
-.od-badge.od-warn { background: rgba(230,81,0,0.1); color: #e65100; }
-.od-badge.od-danger { background: rgba(198,40,40,0.1); color: #c62828; }
-.dun-has-action { font-size: 12px; color: #2e7d32; font-weight: 600; }
+.od-badge.od-warn { background: rgba(230,81,0,0.1); color: var(--c-warn); }
+.od-badge.od-danger { background: rgba(198,40,40,0.1); color: var(--c-danger); }
+.dun-has-action { font-size: 12px; color: var(--c-success); font-weight: 600; }
 
 /* 分页跳转 */
 .pg-jump { display:inline-flex;align-items:center;gap:4px;font-size:13px;color:var(--muted);margin-left:8px; }
@@ -3573,7 +3574,7 @@ function clearFilters() {
 .col-vis-wrap { position: relative; }
 .col-vis-drop {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 200;
-  min-width: 160px; background: #fff; border: 1.5px solid var(--border);
+  min-width: 160px; background: var(--row-bg); border: 1.5px solid var(--border);
   border-radius: 10px; box-shadow: 0 6px 20px rgba(0,0,0,0.12);
   padding: 8px 4px;
 }
@@ -3595,7 +3596,7 @@ function clearFilters() {
 .due-soon-badge {
   display: inline-block; margin-left: 5px; font-size: 10px; font-weight: 700;
   padding: 1px 6px; border-radius: 8px; vertical-align: middle;
-  background: rgba(230,81,0,0.14); color: #e65100;
+  background: rgba(230,81,0,0.14); color: var(--c-warn);
   animation: pulse-warn 2s ease-in-out infinite;
 }
 @keyframes pulse-warn {
@@ -3612,7 +3613,7 @@ function clearFilters() {
 /* ── 账龄配置按钮 ─────────────────────────────────────────────────── */
 .aging-cfg-btn {
   margin-left: auto; padding: 3px 10px; font-size: 12px; font-weight: 500;
-  border: 1px solid var(--border); border-radius: 7px; background: #fff; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 7px; background: var(--row-bg); color: var(--muted);
   cursor: pointer; transition: all .14s;
 }
 .aging-cfg-btn:hover { border-color: var(--primary); color: var(--primary); }

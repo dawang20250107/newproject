@@ -1,4 +1,5 @@
 <script setup>
+import { confirmDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS } from '../../constants.js'
@@ -170,7 +171,7 @@ async function save() {
 }
 
 async function remove(item) {
-  if (!confirm(`确定删除合同「${item.name}」？\n（仅删除合同及其关联关系，不影响客户与项目本体）`)) return
+  if (!(await confirmDlg(`确定删除合同「${item.name}」？\n（仅删除合同及其关联关系，不影响客户与项目本体）`))) return
   try { await ar.deleteContract(item.id); load() }
   catch (e) { alert(e?.msg || '删除失败') }
 }
@@ -405,7 +406,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .empty-cell { padding: 44px !important; text-align: center; color: var(--muted); }
 .mono { font-family: monospace; font-size: 11.5px; }
 .dept-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; background: rgba(201,99,66,0.1); color: var(--primary); font-weight: 600; white-space: nowrap; }
-.cnt-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; background: rgba(21,101,192,0.1); color: #1565c0; font-weight: 700; }
+.cnt-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; background: rgba(21,101,192,0.1); color: var(--c-info); font-weight: 700; }
 .text-muted { color: var(--muted); }
 .text-sm { font-size: 12px; }
 .ctr { text-align: center; }
@@ -413,7 +414,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .row-actions { display: flex; gap: 4px; justify-content: center; }
 .icon-btn { padding: 4px 10px; border-radius: 7px; border: 1px solid var(--border); background: rgba(255,252,250,0.7); color: var(--muted); cursor: pointer; font-size: 12px; }
 .icon-btn:hover { border-color: var(--primary); color: var(--primary); }
-.icon-btn-danger:hover { border-color: #c62828; color: #c62828; }
+.icon-btn-danger:hover { border-color: var(--c-danger); color: var(--c-danger); }
 
 .pagination { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 16px 0 4px; flex-shrink: 0; }
 .page-btn { padding: 5px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,252,250,0.7); font-size: 13px; cursor: pointer; }
@@ -426,7 +427,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .link-title { font-weight: 700; font-size: 13px; color: var(--text); }
 .link-sub { font-size: 11.5px; color: var(--muted); }
 .add-row { display: flex; gap: 8px; margin-bottom: 8px; }
-.add-sel { flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; background: #fff; }
+.add-sel { flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; background: var(--row-bg); }
 .link-empty { font-size: 12px; color: var(--muted); padding: 6px 0; }
 .link-chip { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; background: rgba(255,255,255,0.6); flex-wrap: wrap; }
 .chip-name { font-weight: 600; font-size: 12.5px; }
@@ -434,7 +435,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .chip-share { width: 72px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
 .chip-primary { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 3px; }
 .chip-x { margin-left: auto; width: 20px; height: 20px; border: none; border-radius: 50%; background: rgba(0,0,0,0.06); color: var(--muted); cursor: pointer; font-size: 11px; }
-.chip-x:hover { background: rgba(198,40,40,0.12); color: #c62828; }
+.chip-x:hover { background: rgba(198,40,40,0.12); color: var(--c-danger); }
 .proj-results { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; max-height: 180px; overflow: auto; }
 .proj-result { padding: 7px 10px; font-size: 12.5px; cursor: pointer; border-bottom: 1px solid rgba(0,0,0,0.04); }
 .proj-result:hover { background: rgba(201,99,66,0.06); }

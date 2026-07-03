@@ -1,4 +1,5 @@
 <script setup>
+import { confirmDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, onMounted, defineAsyncComponent, nextTick } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { yearCST, todayCST, DEPARTMENTS } from '../../constants.js'
@@ -123,7 +124,7 @@ const bulkDeleting = ref(false)
 async function bulkDeleteCustomers() {
   const n = selected.value.size
   if (!n) return showToast('请先勾选客户')
-  if (!confirm(`确定删除选中的 ${n} 个客户？\n名下仍有项目或合同关联的客户会被自动跳过（不会误删）。`)) return
+  if (!(await confirmDlg(`确定删除选中的 ${n} 个客户？\n名下仍有项目或合同关联的客户会被自动跳过（不会误删）。`))) return
   bulkDeleting.value = true
   try {
     const res = await ar.bulkDeleteCustomers({ ids: [...selected.value] })
@@ -285,7 +286,7 @@ async function editCustomerRow(c) {
   } catch (e) { showToast(e?.error || '加载客户失败') }
 }
 async function deleteCustomerRow(c) {
-  if (!confirm(`确定删除客户「${c.name}」？若名下仍有项目或应收，系统将拒绝删除。`)) return
+  if (!(await confirmDlg(`确定删除客户「${c.name}」？若名下仍有项目或应收，系统将拒绝删除。`))) return
   try {
     await ar.deleteCustomer(c.id)
     showToast('✓ 已删除')
@@ -540,7 +541,7 @@ onMounted(async () => {
 .cu-table td.date { color: #9b8070; font-size: 12px; white-space: nowrap; }
 .cu-table td.dept-cell { font-size: 12px; color: #6b5a4a; }
 .cu-pager { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 14px 0 4px; }
-.cu-pager .page-btn { padding: 5px 14px; border: 1px solid #d4b896; border-radius: 8px; background: #fff; color: #4a3728; font-size: 13px; cursor: pointer; }
+.cu-pager .page-btn { padding: 5px 14px; border: 1px solid #d4b896; border-radius: 8px; background: var(--row-bg); color: #4a3728; font-size: 13px; cursor: pointer; }
 .cu-pager .page-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
 .cu-pager .page-btn:disabled { opacity: .4; cursor: default; }
 .cu-pager .page-info { font-size: 12.5px; color: #9b8070; }
@@ -557,11 +558,11 @@ onMounted(async () => {
   background: linear-gradient(120deg, rgba(21,101,192,.08), rgba(46,125,50,.06));
   border: 1px solid rgba(21,101,192,.22); border-radius: 10px; }
 .bb-count { font-size: 13px; color: #3a2c1d; }
-.bb-count b { color: #1565c0; }
+.bb-count b { color: var(--c-info); }
 .bb-label { font-size: 12px; color: #9b8070; margin-left: 4px; }
-.bb-sel { padding: 5px 10px; border: 1px solid #d4b896; border-radius: 7px; background: #fff; font-size: 13px; }
+.bb-sel { padding: 5px 10px; border: 1px solid #d4b896; border-radius: 7px; background: var(--row-bg); font-size: 13px; }
 .bb-del { margin-left: auto; padding: 5px 12px; border: 1px solid rgba(198,40,40,.45); border-radius: 7px;
-  background: rgba(198,40,40,.06); color: #c62828; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+  background: rgba(198,40,40,.06); color: var(--c-danger); font-size: 12.5px; font-weight: 700; cursor: pointer; }
 .bb-del:hover:not(:disabled) { background: rgba(198,40,40,.13); }
 .bb-del:disabled { opacity: .5; cursor: not-allowed; }
 .chk-col { width: 36px; }
@@ -589,21 +590,21 @@ onMounted(async () => {
 .name { font-weight: 600; color: #4a3728; }
 .contact { font-weight: 400; font-size: 12px; color: #9b8070; margin-left: 6px; }
 .strong { font-weight: 700; }
-.overdue { color: #c62828; font-weight: 700; }
+.overdue { color: var(--c-danger); font-weight: 700; }
 .muted { color: #c9b8a8; }
 .empty { text-align: center; color: #9e9e9e; padding: 40px; }
 .btn-link { background: none; border: none; color: var(--primary); cursor: pointer; font-size: 12.5px; }
 
 .st-pill { display: inline-block; padding: 1px 8px; border-radius: 9px; font-size: 11px; font-weight: 600; }
-.st-on { background: #e8f5e9; color: #2e7d32; }
-.st-pause { background: #fff3e0; color: #e65100; }
+.st-on { background: #e8f5e9; color: var(--c-success); }
+.st-pause { background: #fff3e0; color: var(--c-warn); }
 .st-end { background: #f3f3f3; color: #9e9e9e; }
-.proj-st-sel { font-size: 11px; border: 1px solid #d4b896; border-radius: 7px; padding: 1px 4px; cursor: pointer; background: #fff; }
-.proj-st-sel.st-on { color: #2e7d32; } .proj-st-sel.st-pause { color: #e65100; } .proj-st-sel.st-end { color: #9e9e9e; }
+.proj-st-sel { font-size: 11px; border: 1px solid #d4b896; border-radius: 7px; padding: 1px 4px; cursor: pointer; background: var(--row-bg); }
+.proj-st-sel.st-on { color: var(--c-success); } .proj-st-sel.st-pause { color: var(--c-warn); } .proj-st-sel.st-end { color: #9e9e9e; }
 .em-push { display: flex; align-items: flex-start; gap: 6px; font-size: 11.5px; color: #6b5a4a; margin: 10px 0 4px; line-height: 1.4; cursor: pointer; }
 .em-push input { margin-top: 2px; }
 .lvl { display: inline-block; min-width: 18px; padding: 1px 7px; border-radius: 9px; font-size: 11px; font-weight: 700; color: #fff; }
-.lvl-S { background: #6a1b9a; } .lvl-A { background: #2e7d32; } .lvl-B { background: #1565c0; } .lvl-C { background: #e65100; } .lvl-D { background: #9e9e9e; }
+.lvl-S { background: #6a1b9a; } .lvl-A { background: var(--c-success); } .lvl-B { background: var(--c-info); } .lvl-C { background: var(--c-warn); } .lvl-D { background: #9e9e9e; }
 
 /* 抽屉 */
 .drawer-mask { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 3000; display: flex; justify-content: flex-end; }
@@ -616,12 +617,12 @@ onMounted(async () => {
 .dw-close { border: none; background: none; font-size: 18px; color: #9b8070; cursor: pointer; line-height: 1; }
 .dw-loading, .dw-empty { text-align: center; color: #9e9e9e; padding: 30px; }
 
-.dw-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 16px 0; background: #fff; border: 1px solid #eee2d4; border-radius: 10px; overflow: hidden; }
+.dw-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 16px 0; background: var(--row-bg); border: 1px solid #eee2d4; border-radius: 10px; overflow: hidden; }
 .dw-kpi { padding: 12px; text-align: center; border-right: 1px solid #f0e8de; }
 .dw-kpi:last-child { border-right: none; }
 .k-label { font-size: 11px; color: #9b8070; margin-bottom: 4px; }
 .k-val { font-size: 17px; font-weight: 800; color: #2d2010; }
-.k-val.green { color: #2e7d32; } .k-val.red { color: #c62828; }
+.k-val.green { color: var(--c-success); } .k-val.red { color: var(--c-danger); }
 
 .dw-section-title { font-size: 14px; font-weight: 700; color: #4a3728; margin: 18px 0 8px; }
 .tip { font-size: 11px; font-weight: 400; color: #9b8070; margin-left: 6px; }
@@ -638,7 +639,7 @@ onMounted(async () => {
 
 /* 编辑弹窗 */
 .edit-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 4000; display: flex; align-items: center; justify-content: center; }
-.edit-modal { background: #fff; border-radius: 14px; padding: 24px; width: 440px; max-width: 95vw; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+.edit-modal { background: var(--row-bg); border-radius: 14px; padding: 24px; width: 440px; max-width: 95vw; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
 .em-title { font-size: 16px; font-weight: 700; color: #4a3728; margin-bottom: 14px; }
 .em-label { display: block; font-size: 12px; color: #9b8070; margin: 8px 0 4px; }
 .em-input, .em-textarea { width: 100%; padding: 7px 10px; border: 1px solid #d4b896; border-radius: 7px; font-size: 13px; box-sizing: border-box; }
@@ -646,7 +647,7 @@ onMounted(async () => {
 .em-row { display: flex; gap: 10px; }
 .em-actions { display: flex; gap: 8px; margin-top: 16px; }
 
-.cu-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #2e7d32; color: #fff; padding: 8px 20px; border-radius: 20px; font-size: 13px; z-index: 8000; }
+.cu-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--c-success); color: #fff; padding: 8px 20px; border-radius: 20px; font-size: 13px; z-index: 8000; }
 .drawer-enter-active, .drawer-leave-active { transition: opacity .2s; }
 .drawer-enter-active .drawer, .drawer-leave-active .drawer { transition: transform .25s ease; }
 .drawer-enter-from, .drawer-leave-to { opacity: 0; }

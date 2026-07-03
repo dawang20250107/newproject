@@ -1,4 +1,5 @@
 <script setup>
+import { confirmDlg } from '../../composables/confirm.js'
 import { ref, computed, onMounted } from 'vue'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS } from '../../constants.js'
@@ -68,7 +69,7 @@ async function add() {
 }
 
 async function del(k) {
-  if (!confirm('确定删除这条知识？')) return
+  if (!(await confirmDlg('确定删除这条知识？'))) return
   try { await api.delete(`/cockpit/knowledge/${k.id}`); items.value = items.value.filter(x => x.id !== k.id) }
   catch (e) { alert(e?.msg || '删除失败') }
 }
@@ -239,7 +240,7 @@ onMounted(load)
 .kp-tool-title { font-size: 14px; font-weight: 700; color: var(--text); }
 .kp-tool-sub { font-size: 11.5px; color: var(--muted); margin: 2px 0 10px; }
 .kp-import-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
-.kp-sel { height: 32px; border: 1px solid rgba(0,0,0,0.12); border-radius: 8px; background: #fff; font-size: 12.5px; color: var(--text); padding: 0 9px; }
+.kp-sel { height: 32px; border: 1px solid rgba(0,0,0,0.12); border-radius: 8px; background: var(--row-bg); font-size: 12.5px; color: var(--text); padding: 0 9px; }
 .kp-textarea { width: 100%; resize: vertical; border: 1px solid rgba(0,0,0,0.12); border-radius: 9px; padding: 8px 11px; font-size: 13px; font-family: inherit; line-height: 1.5; outline: none; box-sizing: border-box; }
 .kp-textarea:focus { border-color: var(--primary); }
 
@@ -258,7 +259,7 @@ onMounted(load)
 .kp-item.pinned { border-color: rgba(201,99,66,0.35); background: rgba(201,99,66,0.04); }
 .kp-meta { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
 .kp-kind { font-size: 10.5px; font-weight: 700; padding: 1px 8px; border-radius: 6px; color: #fff; background: #7a9fd4; }
-.kp-kind.insight { background: #2e7d32; }
+.kp-kind.insight { background: var(--c-success); }
 .kp-kind.rule { background: #8a4b34; }
 .kp-scope { font-size: 11.5px; color: var(--muted); font-weight: 600; }
 .kp-src { font-size: 10px; padding: 0 6px; border-radius: 5px; border: 1px solid rgba(0,0,0,0.12); color: var(--muted); }

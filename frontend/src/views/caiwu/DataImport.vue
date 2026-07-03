@@ -1,4 +1,5 @@
 <script setup>
+import { confirmDlg } from '../../composables/confirm.js'
 import { ref, computed, onMounted } from 'vue'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
@@ -91,7 +92,7 @@ async function doDelete(batch) {
   const msg = batch.status === 'published'
     ? `确认删除已发布批次「${batch.business_unit} ${batch.year}年${batch.month}月 部门明细表」？\n删除后报表和图表将不再包含这部分数据。`
     : '确认删除此草稿批次？'
-  if (!confirm(msg)) return
+  if (!(await confirmDlg(msg))) return
   try {
     await api.delete(`/batches/${batch.id}`)
     batches.value = batches.value.filter(b => b.id !== batch.id)
@@ -156,7 +157,7 @@ async function doUpload() {
 }
 
 async function doPublish(batchId) {
-  if (!confirm('确认发布此批次？发布后将替换同事业部同月份的旧数据。')) return
+  if (!(await confirmDlg('确认发布此批次？发布后将替换同事业部同月份的旧数据。'))) return
   publishing.value = true
   try {
     await api.put(`/batches/${batchId}/publish`)
@@ -541,7 +542,7 @@ onMounted(() => {
 @media (max-width: 560px) { .fmt-guide { grid-template-columns: 1fr; } }
 .fg-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 12px; background: rgba(255,253,250,0.7); border: 1px solid var(--border); }
 .fg-ico { flex-shrink: 0; width: 46px; height: 46px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; letter-spacing: 0.02em; color: #fff; }
-.fg-xlsx { background: linear-gradient(135deg, #c96342, #e8855a); }
+.fg-xlsx { background: linear-gradient(135deg, var(--primary), #e8855a); }
 .fg-title { font-size: 14px; font-weight: 700; color: var(--text); }
 .fg-desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
@@ -568,7 +569,7 @@ onMounted(() => {
 .hq-note strong { color: #0d4789; }
 .up-file-name { font-weight: 600; word-break: break-all; }
 .up-type-tag { flex-shrink: 0; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 10px; color: #fff; }
-.up-type-tag.pl { background: #1565c0; }
+.up-type-tag.pl { background: var(--c-info); }
 .up-type-tag.dept { background: var(--primary); }
 
 /* Warning banner */
@@ -614,8 +615,8 @@ td.amt, th.amt { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .ss-head-right { display: flex; gap: 8px; align-items: center; }
 .ss-summary { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
-.ss-summary-warn { display: inline-flex; align-items: center; gap: 5px; color: #c62828; font-weight: 600; }
-.ss-summary-ok { display: inline-flex; align-items: center; gap: 5px; color: #2e7d32; font-weight: 600; }
+.ss-summary-warn { display: inline-flex; align-items: center; gap: 5px; color: var(--c-danger); font-weight: 600; }
+.ss-summary-ok { display: inline-flex; align-items: center; gap: 5px; color: var(--c-success); font-weight: 600; }
 
 /* ── 状态灯（红=未提交 / 绿=已提交 / 黄=草稿中）─────────────────────────── */
 .light-dot {
@@ -623,8 +624,8 @@ td.amt, th.amt { text-align: right; font-variant-numeric: tabular-nums; }
   display: inline-block;
 }
 .light-red   { background: #e53935; box-shadow: 0 0 0 3px rgba(229,57,53,0.16); }
-.light-green { background: #2e7d32; box-shadow: 0 0 0 3px rgba(46,125,50,0.14); }
-.light-amber { background: #f57f17; box-shadow: 0 0 0 3px rgba(245,127,23,0.16); }
+.light-green { background: var(--c-success); box-shadow: 0 0 0 3px rgba(46,125,50,0.14); }
+.light-amber { background: var(--amber-deep); box-shadow: 0 0 0 3px rgba(245,127,23,0.16); }
 
 /* 月度提交状态：紧凑事业部灯网格 */
 .light-grid {
@@ -650,8 +651,8 @@ td.amt, th.amt { text-align: right; font-variant-numeric: tabular-nums; }
 .batch-row:hover { background: rgba(201,99,66,0.035); }
 .br-bu { font-size: 13.5px; flex-shrink: 0; }
 .br-status { font-size: 12px; font-weight: 600; flex-shrink: 0; }
-.br-status.st-ok { color: #2e7d32; }
-.br-status.st-no { color: #c62828; }
+.br-status.st-ok { color: var(--c-success); }
+.br-status.st-no { color: var(--c-danger); }
 .br-meta { font-size: 12px; color: var(--muted); flex-shrink: 0; }
 .br-type {
   font-size: 10px; padding: 1px 7px; border-radius: 8px;

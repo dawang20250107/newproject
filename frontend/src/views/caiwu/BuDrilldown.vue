@@ -69,7 +69,7 @@ onMounted(load)
         <div>
           <div class="dd-title">{{ bu }}<span class="dd-period">{{ year }}年{{ month }}月 · 经营下钻</span></div>
           <div v-if="netProfit != null" class="dd-sub">
-            经营净利 <b :style="{ color: netProfit < 0 ? '#c62828' : '#2e7d32' }">{{ fmtWan(netProfit) }}</b>
+            经营净利 <b :style="{ color: netProfit < 0 ? 'var(--c-danger)' : 'var(--c-success)' }">{{ fmtWan(netProfit) }}</b>
             <template v-if="bfSummary"> · 应收未收 {{ fmtWan(bfSummary.outstanding) }} · 逾期率 {{ fmtPct(bfSummary.overdue_rate) }}</template>
           </div>
         </div>
@@ -110,8 +110,8 @@ onMounted(load)
                     <span class="tdot" :style="{ background: tagColor(r.tag) }"></span>{{ r.label }}
                   </td>
                   <td class="num">{{ fmtWan(r.revenue) }}</td>
-                  <td class="num" :style="{ color: (r.margin_rate ?? 99) < 5 ? '#e65100' : '#2e7d32' }">{{ fmtPct(r.margin_rate) }}</td>
-                  <td class="num" :style="{ color: (r.overdue_rate ?? 0) > 30 ? '#c62828' : '#6b5a4a' }">{{ fmtPct(r.overdue_rate) }}</td>
+                  <td class="num" :style="{ color: (r.margin_rate ?? 99) < 5 ? 'var(--c-warn)' : 'var(--c-success)' }">{{ fmtPct(r.margin_rate) }}</td>
+                  <td class="num" :style="{ color: (r.overdue_rate ?? 0) > 30 ? 'var(--c-danger)' : '#6b5a4a' }">{{ fmtPct(r.overdue_rate) }}</td>
                 </tr>
                 <tr v-if="!topProjects.length"><td colspan="4" class="empty">暂无项目损益数据</td></tr>
               </tbody>
@@ -153,10 +153,10 @@ onMounted(load)
 .dd-table td.l { text-align: left; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dd-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .dd-table tr.calc td { font-weight: 700; background: rgba(180,140,110,.05); }
-.dd-table tr.neg td.num { color: #c62828; }
+.dd-table tr.neg td.num { color: var(--c-danger); }
 .dd-table td.mom { text-align: right; font-size: 11px; color: #b3a08f; }
-.dd-table td.mom.up { color: #2e7d32; }
-.dd-table td.mom.down { color: #c62828; }
+.dd-table td.mom.up { color: var(--c-success); }
+.dd-table td.mom.down { color: var(--c-danger); }
 .dd-table tr.clickable { cursor: pointer; }
 .dd-table tr.clickable:hover td { background: rgba(201,99,66,.06); }
 .tdot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }

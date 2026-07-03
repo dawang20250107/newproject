@@ -429,7 +429,7 @@ onBeforeUnmount(() => {
 .colf-op, .colf-in {
   width: 100%; box-sizing: border-box; padding: 6px 8px;
   border: 1px solid var(--border); border-radius: 6px; font-size: 12px;
-  background: #fff; color: var(--text);
+  background: var(--row-bg); color: var(--text);
 }
 .colf-ops { display: flex; flex-wrap: wrap; gap: 4px; }
 .colf-ops button {

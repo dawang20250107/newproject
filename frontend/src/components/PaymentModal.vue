@@ -392,7 +392,7 @@ async function submit() {
         <div v-if="vis('total_amount')" class="form-group">
           <label>计划总金额 (元) *</label>
           <input v-model="form.total_amount" type="number" min="0" step="0.01" placeholder="0.00" :disabled="!editable('total_amount') || multiPlan" />
-          <span v-if="multiPlan" class="hint-text" style="color:#1565c0">含 {{ payment?.plan_count }} 批计划，总额=各批之和；调整请在台账行展开「计划明细」操作</span>
+          <span v-if="multiPlan" class="hint-text" style="color:var(--c-info)">含 {{ payment?.plan_count }} 批计划，总额=各批之和；调整请在台账行展开「计划明细」操作</span>
         </div>
       </div>
 
@@ -491,9 +491,9 @@ async function submit() {
   font-size: 12px; border-radius: 6px; padding: 3px 9px;
   white-space: nowrap;
 }
-.saving  { background: rgba(21,101,192,0.1); color: #1565c0; }
-.saved   { background: rgba(46,125,50,0.1); color: #2e7d32; }
-.save-err { background: rgba(198,40,40,0.1); color: #c62828; }
+.saving  { background: rgba(21,101,192,0.1); color: var(--c-info); }
+.saved   { background: rgba(46,125,50,0.1); color: var(--c-success); }
+.save-err { background: rgba(198,40,40,0.1); color: var(--c-danger); }
 
 .prepaid-offset-tip {
   margin: 6px 0 2px;
@@ -502,14 +502,14 @@ async function submit() {
   border-left: 3px solid #f57c00;
   border-radius: 4px;
   font-size: 12px;
-  color: #e65100;
+  color: var(--c-warn);
 }
 .offset-icon { margin-right: 4px; }
 
 .save-spin {
   width: 10px; height: 10px; border-radius: 50%;
   border: 1.5px solid rgba(21,101,192,0.3);
-  border-top-color: #1565c0;
+  border-top-color: var(--c-info);
   animation: spin 0.7s linear infinite;
   display: inline-block; flex-shrink: 0;
 }
@@ -540,7 +540,7 @@ async function submit() {
 .inst-notes-grp { flex: 1; min-width: 100px; }
 .inst-del {
   padding: 4px 10px; margin-bottom: 0; align-self: flex-end;
-  border-color: rgba(198,40,40,0.4); color: #c62828;
+  border-color: rgba(198,40,40,0.4); color: var(--c-danger);
   background: rgba(198,40,40,0.04);
 }
 .inst-del:hover { background: rgba(198,40,40,0.1); }
@@ -552,20 +552,20 @@ async function submit() {
   padding: 8px 14px; border-radius: 8px; margin-bottom: 14px;
   background: rgba(46, 125, 50, 0.07);
   border: 1px solid rgba(46, 125, 50, 0.18);
-  font-size: 13px; color: #2e7d32;
+  font-size: 13px; color: var(--c-success);
   transition: background 0.2s, border-color 0.2s;
 }
 .pay-summary.pay-over {
   background: rgba(198, 40, 40, 0.07);
   border-color: rgba(198, 40, 40, 0.25);
-  color: #c62828;
+  color: var(--c-danger);
 }
 .pay-sep { opacity: 0.45; }
 .pay-warn { font-weight: 700; margin-left: 6px; }
-.pay-ok { color: #2e7d32; opacity: 0.75; margin-left: 6px; }
-.input-warn { border-color: #f57f17 !important; background: rgba(245,127,23,0.04) !important; }
-.field-err { font-size: 11px; color: #f57f17; margin-top: 3px; display: block; }
-.field-hint { font-size: 11px; color: #1565c0; margin-top: 3px; display: block; }
+.pay-ok { color: var(--c-success); opacity: 0.75; margin-left: 6px; }
+.input-warn { border-color: var(--amber-deep) !important; background: rgba(245,127,23,0.04) !important; }
+.field-err { font-size: 11px; color: var(--amber-deep); margin-top: 3px; display: block; }
+.field-hint { font-size: 11px; color: var(--c-info); margin-top: 3px; display: block; }
 .lbl-tip { font-size: 11px; color: var(--muted); font-weight: 400; }
 .prepaid-hint { margin-top: 7px; padding: 8px 10px; border: 1px solid rgba(201,99,66,0.3);
   background: rgba(201,99,66,0.07); border-radius: 9px; font-size: 12px; color: var(--text); line-height: 1.5; }
@@ -578,18 +578,18 @@ async function submit() {
   background: rgba(21,101,192,0.04); border-radius: 10px; font-size: 12px; }
 .supplier-match-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
 .supplier-tag { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700;
-  background: rgba(21,101,192,0.12); color: #1565c0; }
+  background: rgba(21,101,192,0.12); color: var(--c-info); }
 .supplier-dept { color: var(--muted); font-size: 11px; }
-.prepaid-bal { color: #1565c0; font-weight: 700; }
+.prepaid-bal { color: var(--c-info); font-weight: 700; }
 .no-bal { color: var(--muted); font-size: 11px; }
 .adv-list-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .adv-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 5px 0;
   border-top: 1px dashed rgba(21,101,192,0.12); font-size: 12px; }
 .adv-date { color: var(--muted); min-width: 80px; }
-.adv-bal { font-weight: 700; color: #1565c0; }
+.adv-bal { font-weight: 700; color: var(--c-info); }
 .adv-notes { color: var(--muted); flex: 1; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
 .adv-hint { color: var(--muted); font-size: 11px; }
-.wo-success { padding: 5px 8px; border-radius: 7px; background: rgba(46,125,50,0.1); color: #2e7d32;
+.wo-success { padding: 5px 8px; border-radius: 7px; background: rgba(46,125,50,0.1); color: var(--c-success);
   font-size: 12px; font-weight: 600; margin-bottom: 6px; }
 .wo-inline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px;
   padding: 8px 10px; background: rgba(21,101,192,0.06); border-radius: 8px; }
@@ -601,7 +601,7 @@ async function submit() {
 .btn-xs { padding: 3px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;
   border: 1px solid var(--border); background: var(--card); color: var(--text); }
 .btn-xs:hover { background: rgba(120,120,120,0.1); }
-.btn-offset { border-color: #1565c0; color: #1565c0; background: rgba(21,101,192,0.06); }
+.btn-offset { border-color: var(--c-info); color: var(--c-info); background: rgba(21,101,192,0.06); }
 .btn-offset:hover { background: rgba(21,101,192,0.12); }
 .btn-primary-xs { border-color: var(--primary); background: var(--primary); color: #fff; }
 .btn-primary-xs:hover { opacity: 0.88; }

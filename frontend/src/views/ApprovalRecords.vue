@@ -1,4 +1,6 @@
 <script setup>
+import { confirmDlg } from '../composables/confirm.js'
+import { resultDlg } from '../composables/bulkResult.js'
 import { ref, reactive, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
@@ -103,6 +105,31 @@ const schemes = useTableSchemes('pk_approvals', {
   colFilters, sortField, sortOrder,
   onApply: () => { page.value = 1; clearSelection(); load() },
 })
+
+// ── 筛选条件 chips ───────────────────────────────────────────────────────────
+const _OP_LABEL = { contains: '含 ', not_contains: '不含 ', eq: '= ', ne: '≠ ', gt: '> ', gte: '≥ ',
+                    lt: '< ', lte: '≤ ', startswith: '开头 ', endswith: '结尾 ', empty: '为空', not_empty: '非空' }
+function describeFilterVal(f) {
+  if (!f) return ''
+  if (f.op === 'empty' || f.op === 'not_empty') return _OP_LABEL[f.op]
+  if (Array.isArray(f.value)) return f.value.join('/')
+  if (f.value2 !== undefined && f.value2 !== null && f.value2 !== '') return `${f.value}~${f.value2}`
+  return (_OP_LABEL[f.op] || '') + (f.value ?? '')
+}
+const _APR_LABELS = { applicant: '申请人', department: '事业部', secondary_dept: '二级部门',
+  project_short_name: '项目简称', approval_number: '审批编号', g7_number: 'G7编号', summary: '摘要',
+  status: '状态', amount: '申请金额', scheduled_amount: '已排金额', remaining_amount: '未排金额',
+  payee: '收款主体', notes: '备注' }
+const filterChips = computed(() => {
+  const chips = []
+  Object.entries(colFilters).forEach(([field, f]) => {
+    if (f) chips.push({ key: 'col:' + field, text: `${_APR_LABELS[field] || field}: ${describeFilterVal(f)}`, clear: () => setColFilter(field, null) })
+  })
+  if (numbersFilter.value) chips.push({ key: 'nums', text: `批量单号(${numbersFilter.value.split(',').length})`, clear: () => { numbersFilter.value = ''; numbersText.value = ''; page.value = 1; load() } })
+  if (q.value) chips.push({ key: 'q', text: `关键字: ${q.value}`, clear: () => { q.value = ''; page.value = 1; load() } })
+  return chips
+})
+
 function clearAllFilters() {
   Object.keys(colFilters).forEach(k => delete colFilters[k])
   q.value = ''; sortField.value = ''; sortOrder.value = ''
@@ -215,7 +242,7 @@ async function removeAprPlanItem(aprid, pi) {
     toast.warn('最后一批计划不可单独撤回——如需退回全部排款，请使用「退回全部排款」')
     return
   }
-  if (!confirm(`撤回第${pi.seq}批排款（${pi.planned_date} · ¥${pi.amount}）？\n来源审批已排款同步扣减，可继续补排。`)) return
+  if (!(await confirmDlg(`撤回第${pi.seq}批排款（${pi.planned_date} · ¥${pi.amount}）？\n来源审批已排款同步扣减，可继续补排。`))) return
   try {
     const res = await api.delete(`/payments/${payment_id}/plan-items/${pi.id}`)
     toast.success(res.data?.message || '已撤回')
@@ -225,12 +252,12 @@ async function removeAprPlanItem(aprid, pi) {
 }
 
 async function returnFullSchedule(rec) {
-  if (!confirm(`退回「${rec.payee || rec.applicant}」全部排款（¥${rec.scheduled_amount}）？\n关联付款管理记录将删除，审批已排款归零，可重新排款。`)) return
+  if (!(await confirmDlg(`退回「${rec.payee || rec.applicant}」全部排款（¥${rec.scheduled_amount}）？\n关联付款管理记录将删除，审批已排款归零，可重新排款。`))) return
   try {
     const r = await api.post('/approvals/bulk-return-schedule', { ids: [rec.id] })
     const d = r.data || {}
     if (d.skipped?.length) {
-      toast.warn(d.message + '\n' + d.skipped.map(s => s.reason).join('\n'))
+      resultDlg({ title: '批量退回排款结果', okLine: d.message, skipped: d.skipped })
     } else {
       toast.success(d.message || '已退回排款')
     }
@@ -276,7 +303,7 @@ async function confirmBulkDelete(){
     const r = await api.post('/approvals/bulk-delete', { ids: [...selectedIds.value] })
     showDelConfirm.value = false; clearSelection(); load()
     const d = r.data || {}
-    if (d.skipped?.length) toast.warn(`${d.message}\n\n未删除明细：\n` + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n'))
+    if (d.skipped?.length) resultDlg({ title: '批量删除结果', okLine: d.message, skipped: d.skipped })
   } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
   finally{ bulkDeleting.value = false }
 }
@@ -284,7 +311,7 @@ async function confirmBulkDelete(){
 // 单条删除（右键菜单）：复用批量删除端点，已排款记录后端自动跳过
 async function deleteOne(rec){
   const label = [rec.payee, rec.summary || rec.applicant].filter(Boolean).join(' · ') || `#${rec.id}`
-  if (!confirm(`确定删除审批记录「${label}」（¥${rec.amount}）？\n已排款（已关联付款管理）的记录将自动跳过；删除不可恢复。`)) return
+  if (!(await confirmDlg(`确定删除审批记录「${label}」（¥${rec.amount}）？\n已排款（已关联付款管理）的记录将自动跳过；删除不可恢复。`))) return
   try{
     const r = await api.post('/approvals/bulk-delete', { ids: [rec.id] })
     const d = r.data || {}
@@ -298,7 +325,7 @@ const bulkReturning = ref(false)
 async function bulkReturnSchedule(){
   // 跨页：发送全部已选 id，后端对无已排款的记录自动跳过（单次上限 200）
   if (!selectedCount.value){ toast.warn('请先选择记录'); return }
-  if (!confirm(`批量退回所选 ${selectedCount.value} 条记录的排款？\n无已排款的记录自动跳过；关联付款管理记录将删除，已排款归零，可重新排款。`)) return
+  if (!(await confirmDlg(`批量退回所选 ${selectedCount.value} 条记录的排款？\n无已排款的记录自动跳过；关联付款管理记录将删除，已排款归零，可重新排款。`))) return
   bulkReturning.value = true
   try {
     const ids = [...selectedIds.value]
@@ -309,7 +336,7 @@ async function bulkReturnSchedule(){
     aprSchedExpanded.value = new Set([...aprSchedExpanded.value].filter(id => !selectedIds.value.has(id)))
     clearSelection(); load()
     let msg = d.message || '批量退回完成'
-    if (d.skipped?.length) { msg += '\n\n跳过明细：\n' + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n'); toast.warn(msg) }
+    if (d.skipped?.length) { resultDlg({ title: '批量操作结果', okLine: msg, skipped: d.skipped }); msg = '' }
     else toast.success(msg)
   } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
   finally{ bulkReturning.value = false }
@@ -319,14 +346,14 @@ async function bulkReturnSchedule(){
 const bulkApproving = ref(false)
 async function bulkApprove(){
   if (!selectedCount.value){ toast.warn('请先选择记录'); return }
-  if (!confirm(`确认将所选 ${selectedCount.value} 条记录批量审批通过？\n非「待审批」状态将自动跳过。`)) return
+  if (!(await confirmDlg(`确认将所选 ${selectedCount.value} 条记录批量审批通过？\n非「待审批」状态将自动跳过。`))) return
   bulkApproving.value = true
   try{
     const r = await api.post('/approvals/bulk-approve', { ids: [...selectedIds.value] })
     clearSelection(); load()
     const d = r.data || {}
     let msg = d.message || '批量审批完成'
-    if (d.skipped?.length) { msg += '\n\n跳过明细：\n' + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n'); toast.warn(msg) }
+    if (d.skipped?.length) { resultDlg({ title: '批量操作结果', okLine: msg, skipped: d.skipped }); msg = '' }
     else toast.success(msg)
   } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
   finally{ bulkApproving.value = false }
@@ -403,7 +430,7 @@ async function doBatchSchedule(){
     showBatchSched.value = false; clearSelection(); load()
     const d = r.data || {}
     let msg = d.message || '批量排款完成'
-    if (d.skipped?.length) { msg += '\n\n跳过明细：\n' + d.skipped.map(s => `#${s.id} ${s.reason}`).slice(0,15).join('\n'); toast.warn(msg) }
+    if (d.skipped?.length) { resultDlg({ title: '批量操作结果', okLine: msg, skipped: d.skipped }); msg = '' }
     else toast.success(msg)
   } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
   finally{ batchSchedBusy.value = false }
@@ -697,7 +724,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <div class="numfilter-wrap">
       <button class="btn btn-ghost btn-sm" :class="{ on: !!numbersFilter }" @click="showNumbersBox = !showNumbersBox"
               title="粘贴多个单号（空格/换行/+/逗号等任意分隔）批量筛选">
-        🔖 批量单号{{ numbersFilter ? `（${numbersFilter.split(',').length}）` : '' }}
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px;vertical-align:-1px"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>批量单号{{ numbersFilter ? `（${numbersFilter.split(',').length}）` : '' }}
       </button>
       <div v-if="showNumbersBox" class="numfilter-pop">
         <div class="nf-title">粘贴单号批量筛选 <span>G7/对账单号/审批编号，任意分隔符</span></div>
@@ -729,6 +756,11 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <input ref="transportFileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onTransportImport" />
   <div class="card approval-card fh-fill">
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
+  <div v-if="filterChips.length" class="chips-row">
+    <span v-for="c in filterChips" :key="c.key" class="fchip">
+      {{ c.text }}<button class="fchip-x" :aria-label="`移除筛选 ${c.text}`" @click="c.clear()">×</button>
+    </span>
+  </div>
   <div v-if="!loadErr" class="table-wrap page-scroll" :ref="rangeSel.setRoot"><table class="approval-table">
     <colgroup>
       <col class="cg-sel" /><!-- 选择 -->
@@ -903,8 +935,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <Teleport to="body"><div v-if="showSchedule" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>排款（支持分批）</h3></div><div class="modal-body">
     <div class="sched-progress">
       <span>申请金额 <b>{{ current?.amount }}</b></span>
-      <span>已排款 <b style="color:#2e7d32">{{ current?.scheduled_amount || 0 }}</b></span>
-      <span>剩余可排 <b style="color:#e65100">{{ current?.remaining_amount ?? current?.amount }}</b></span>
+      <span>已排款 <b style="color:var(--c-success)">{{ current?.scheduled_amount || 0 }}</b></span>
+      <span>剩余可排 <b style="color:var(--c-warn)">{{ current?.remaining_amount ?? current?.amount }}</b></span>
     </div>
     <p style="font-size:12px;color:var(--muted);margin:0 0 10px">
       本次金额小于剩余可排时为分批排款：本次先流转付款管理，记录留在审批管理可继续排；排满申请金额自动归档。
@@ -961,7 +993,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <template v-else>
       <div class="sched-progress">
         <span>可排记录 <b>{{ batchSchedRows.length }}</b> 条</span>
-        <span>合计金额 <b style="color:#2e7d32">{{ batchSchedTotal.toFixed(2) }}</b> 元</span>
+        <span>合计金额 <b style="color:var(--c-success)">{{ batchSchedTotal.toFixed(2) }}</b> 元</span>
       </div>
       <p style="font-size:12px;color:var(--muted);margin:0 0 10px">
         默认按各记录「剩余可排（首次=申请金额）」各排一笔流转付款管理，可逐条调小做分批排款（不得超过剩余可排）；所选中非「审批通过/已归档」的记录已自动排除。
@@ -1098,7 +1130,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .bulk-n { font-size: 13px; color: var(--text); }
 .bulk-selall { border: 1px solid var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); border-radius: 8px; padding: 5px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
 .bulk-selall:disabled { opacity: .5; cursor: default; }
-.bulk-approve { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: #2e7d32; color: #fff; }
+.bulk-approve { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--c-success); color: #fff; }
 .bulk-approve:disabled { opacity: .5; cursor: default; }
 .bulk-act { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--primary); color: #fff; }
 .bulk-act:disabled { opacity: .5; cursor: default; }
@@ -1146,7 +1178,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .batch-row-err { font-size: 10.5px; color: var(--danger); white-space: nowrap; line-height: 1.2; }
 .batch-err-banner { font-size: 12px; color: var(--danger); background: rgba(198,40,40,0.07);
   border: 1px solid rgba(198,40,40,0.22); border-radius: 7px; padding: 6px 10px; margin-bottom: 8px; }
-.sched-sub { font-size: 10.5px; color: #2e7d32; font-weight: 600; margin-top: 1px; }
+.sched-sub { font-size: 10.5px; color: var(--c-success); font-weight: 600; margin-top: 1px; }
 .ops-btns { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
 .ops-btns .btn { padding: 4px 8px; font-size: 12px; white-space: nowrap; }
 /* 编辑图标按钮：与同行操作按钮等高，emoji 居中 */
@@ -1155,8 +1187,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .amt-h { text-align: right; }
-.sched-c { color: #2e7d32; font-weight: 600; }
-.remain-c { color: #e65100; font-weight: 600; }
+.sched-c { color: var(--c-success); font-weight: 600; }
+.remain-c { color: var(--c-warn); font-weight: 600; }
 .remain-c.remain-zero { color: var(--muted); font-weight: 400; }
 .summary, .payee { max-width: 100%; }
 .notes-cell { color: var(--muted); }
@@ -1167,20 +1199,20 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-table td.plan-cell { cursor: pointer; user-select: none; }
 .plan-caret { font-size: 9px; color: var(--muted); margin-left: 3px; }
 /* 批量退回按钮 */
-.bulk-return { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: #e65100; color: #fff; }
+.bulk-return { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--c-warn); color: #fff; }
 .bulk-return:disabled { opacity: .5; cursor: default; }
 /* 排款批次明细展开行 */
 .apr-plan-detail-row td { padding: 0; }
 .apr-plan-detail { background: #faf8f6; border-top: 1px solid var(--border); padding: 10px 16px 12px; }
 .apd-head { font-size: 12px; color: var(--muted); margin-bottom: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.apd-head i { font-style: normal; color: #1565c0; font-size: 11px; }
+.apd-head i { font-style: normal; color: var(--c-info); font-size: 11px; }
 .apd-loading, .apd-error, .apd-empty { font-size: 12.5px; color: var(--muted); padding: 6px 0; }
 .apd-error { color: var(--danger); }
 .apd-item { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid rgba(0,0,0,0.05); }
 .apd-item:last-child { border-bottom: none; }
 .apd-seq { font-size: 11.5px; color: var(--muted); min-width: 40px; }
 .apd-date { font-size: 13px; min-width: 90px; font-variant-numeric: tabular-nums; }
-.apd-amt { font-size: 13px; min-width: 90px; color: #2e7d32; font-variant-numeric: tabular-nums; }
+.apd-amt { font-size: 13px; min-width: 90px; color: var(--c-success); font-variant-numeric: tabular-nums; }
 .apd-note { font-size: 12px; color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .apd-edit, .apd-del { border: 1px solid var(--border); background: var(--card); border-radius: 6px; padding: 3px 9px; font-size: 12px; cursor: pointer; }
 .apd-edit:hover { border-color: var(--primary); color: var(--primary); }
@@ -1192,6 +1224,11 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .apd-save { border: none; background: var(--primary); color: #fff; border-radius: 6px; padding: 3px 12px; font-size: 12px; cursor: pointer; }
 .apd-save:disabled { opacity: .5; cursor: default; }
 .apd-cancel { border: 1px solid var(--border); background: none; border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; color: var(--muted); }
-.apd-return-all { margin-left: auto; border: 1px solid #e65100; background: rgba(230,81,0,0.08); color: #e65100; border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; font-weight: 600; }
-.apd-return-all:hover { background: #e65100; color: #fff; }
+.apd-return-all { margin-left: auto; border: 1px solid var(--c-warn); background: rgba(230,81,0,0.08); color: var(--c-warn); border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; font-weight: 600; }
+.apd-return-all:hover { background: var(--c-warn); color: #fff; }
+.chips-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.fchip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px 2px 9px; border-radius: 20px;
+  background: var(--surface-tint); border: 1px solid var(--border); font-size: 11.5px; color: var(--text-2); }
+.fchip-x { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 13px; line-height: 1; padding: 0 2px; }
+.fchip-x:hover { color: var(--c-danger); }
 </style>
