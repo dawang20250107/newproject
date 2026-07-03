@@ -1598,7 +1598,7 @@ const ctxMatrixItems = computed(() => {
 .cfa-switch { flex-shrink: 0; position: relative; width: 38px; height: 22px; border-radius: 11px;
   background: rgba(0,0,0,0.2); transition: background .18s; }
 .cfa-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
-  border-radius: 50%; background: var(--row-bg); box-shadow: 0 1px 3px rgba(0,0,0,0.28); transition: transform .18s; }
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.28); transition: transform .18s; }
 .cfa-auto.on .cfa-switch { background: var(--primary); }
 .cfa-auto.on .cfa-switch::after { transform: translateX(16px); }
 .cfa-input-row { display: flex; gap: 8px; align-items: flex-end; padding: 8px 16px 16px; border-top: 1px solid rgba(201,99,66,0.12); }

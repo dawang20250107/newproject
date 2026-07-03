@@ -48,6 +48,7 @@ function toggleTheme() {
   isDark.value = !isDark.value
   document.documentElement.classList.toggle('dark', isDark.value)
   try { localStorage.setItem('kx_theme', isDark.value ? 'dark' : 'light') } catch (_) { /* ignore */ }
+  window.dispatchEvent(new Event('kx-theme'))   // 通知图表等按主题重建
 }
 
 function logout() {
