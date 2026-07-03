@@ -565,7 +565,8 @@ class CaiwuUnifiedPermissionTests(TestCase):
         self.assertEqual(after.status_code, 403, self.jj(after))
 
 
-@override_settings(ALLOWED_HOSTS=['testserver', 'localhost', '127.0.0.1'])
+@override_settings(ALLOWED_HOSTS=['testserver', 'localhost', '127.0.0.1'],
+                   DEEPSEEK_API_KEY='test-key')  # AI 已 mock；补 key 使无密钥环境（CI/沙箱）确定性通过
 class CaiwuMetricsAndTargetsTests(TestCase):
     """指标管理 / 财务驾驶舱：目标录入校验 + 完成情况取数（达成率/环比/同比/YTD）。"""
     databases = {'default'}

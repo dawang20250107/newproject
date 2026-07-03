@@ -1689,14 +1689,24 @@ class AdvanceModuleTests(TestCase):
 
     def test_offset_with_standalone_advance(self):
         admin = self.make_user('13911100015', 'finance_director', role='super_admin')
+        # 散单预收匹配纪律（与批量核销一致）：仅能冲抵「客户名称＝往来单位」的应收
         proj = ARProject.objects.create(
-            customer_name='合同R', short_name='项目R', delivery_dept=self.dept,
+            customer_name='ACME', short_name='项目R', delivery_dept=self.dept,
             sales_contact='S', project_manager='M')
         ar = self._ar_record(proj, 100000)
+        other_proj = ARProject.objects.create(
+            customer_name='别家客户', short_name='项目R2', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M')
+        ar_other = self._ar_record(other_proj, 50000)
         adv = AdvanceRecord.objects.create(   # 散单预收，无项目
             direction='预收', delivery_dept=self.dept, counterparty='ACME',
             occur_year=2026, occur_month=3, occur_date=date(2026, 3, 1),
             advance_amount=Decimal('60000'))
+        # 跨客户冲抵 → 拒绝（防 A 客户预收错核到 B 客户应收）
+        bad = self.post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
+                        {'amount': 1000, 'writeoff_date': '2026-03-20',
+                         'ar_record_id': ar_other.id}, admin)
+        self.assertEqual(bad.status_code, 400)
         w = self.post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
                       {'amount': 60000, 'writeoff_date': '2026-03-20',
                        'ar_record_id': ar.id}, admin)

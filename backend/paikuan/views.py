@@ -876,11 +876,24 @@ def login(request):
                'must_change_password': user.must_change_password})
 
 
+
+_REG_STATUS_HITS: dict = {}   # ip -> [timestamps]（进程内轻量限流，重启即清）
 @csrf_exempt
 def registration_status(request):
-    """Public polling endpoint so a pending registrant can detect approval."""
+    """Public polling endpoint so a pending registrant can detect approval.
+    公开端点按 IP 限流（10 次/分钟）：防手机号枚举与轮询滥用。"""
     if request.method != 'GET':
         return err('Method not allowed', 405)
+    ip = ((request.META.get('HTTP_X_FORWARDED_FOR', '').split(',')[0].strip()
+           or request.META.get('REMOTE_ADDR', ''))[:64])
+    now_ts = time.time()
+    hits = [t for t in _REG_STATUS_HITS.get(ip, []) if now_ts - t < 60]
+    if len(hits) >= 10:
+        return err('查询过于频繁，请稍后再试', 429, 429)
+    hits.append(now_ts)
+    if len(_REG_STATUS_HITS) > 10000:   # 界外兜底：防字典无界增长
+        _REG_STATUS_HITS.clear()
+    _REG_STATUS_HITS[ip] = hits
     phone = (request.GET.get('phone') or '').strip()
     if not phone:
         return err('缺少手机号')
@@ -1943,25 +1956,30 @@ def payment_detail(request, pk):
         if new_dept != p.department and not can_write_dept(request, new_dept):
             return err('无权操作目标部门', 403, 403)
         parsed_insts = fields.pop('installments')  # None means "keep existing"
-        # 多批计划的汇总为派生值：直接改总额/计划日会失真，须经计划批次操作
-        plan_n = p.plan_items.count()
-        if plan_n > 1:
-            from decimal import Decimal as _D
-            if _D(str(fields.get('total_amount', p.total_amount))) != p.total_amount:
-                return err('该排款含多批计划（来自审批分批排款），计划总金额=各批之和，'
-                           '不能直接修改；请在排款明细中撤销/追加批次')
-            if str(fields.get('planned_date', p.planned_date)) != str(p.planned_date):
-                return err('该排款含多批计划，计划日期=最后一次排款批次日期，不能直接修改')
-        # 单批且来源审批：改后的计划额=该审批已排款，不得超过审批申请金额（防经台账超额排款）
-        if plan_n <= 1 and p.approval_id:
-            new_total = Decimal(str(fields.get('total_amount', p.total_amount)))
-            _rec = ApprovalRecord.objects.filter(pk=p.approval_id).first()
-            if _rec and new_total > (_rec.amount or Decimal('0')):
-                return err(f'计划额 {new_total} 超过来源审批申请金额 {_rec.amount}；'
-                           f'如需超额请先修改审批记录的申请金额', 400, 400)
-        before_snapshot = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
-        before_snapshot['installments_summary'] = _installments_summary(p.installments)
         with transaction.atomic():
+            # 锁内以最新数据重跑全部护栏（消除 TOCTOU：并发追加批次/改批次会使锁外
+            # 快照过期）。锁序与排款/批次操作一致：先审批后付款，避免 AB-BA 死锁。
+            if p.approval_id:   # 归属审批 FK 一经建立不可变，锁外读安全
+                ApprovalRecord.objects.select_for_update().filter(pk=p.approval_id).first()
+            p = Payment.objects.select_for_update().get(pk=pk)
+            # 多批计划的汇总为派生值：直接改总额/计划日会失真，须经计划批次操作
+            plan_n = p.plan_items.count()
+            if plan_n > 1:
+                from decimal import Decimal as _D
+                if _D(str(fields.get('total_amount', p.total_amount))) != p.total_amount:
+                    return err('该排款含多批计划（来自审批分批排款），计划总金额=各批之和，'
+                               '不能直接修改；请在排款明细中撤销/追加批次')
+                if str(fields.get('planned_date', p.planned_date)) != str(p.planned_date):
+                    return err('该排款含多批计划，计划日期=最后一次排款批次日期，不能直接修改')
+            # 单批且来源审批：改后的计划额=该审批已排款，不得超过审批申请金额（防经台账超额排款）
+            if plan_n <= 1 and p.approval_id:
+                new_total = Decimal(str(fields.get('total_amount', p.total_amount)))
+                _rec = ApprovalRecord.objects.filter(pk=p.approval_id).first()
+                if _rec and new_total > (_rec.amount or Decimal('0')):
+                    return err(f'计划额 {new_total} 超过来源审批申请金额 {_rec.amount}；'
+                               f'如需超额请先修改审批记录的申请金额', 400, 400)
+            before_snapshot = {f: getattr(p, f) for f in _PAYMENT_FIELD_LABELS}
+            before_snapshot['installments_summary'] = _installments_summary(p.installments)
             for k, v in fields.items():
                 setattr(p, k, v)
             p.updated_by_id = request.pk_uid

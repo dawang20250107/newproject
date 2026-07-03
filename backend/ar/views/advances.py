@@ -542,6 +542,9 @@ def advance_import(request):
     try:
         wb = openpyxl.load_workbook(f, data_only=True)
         ws = wb.active
+        # 防解压炸弹：5MB 压缩包也可能展开出海量单元格，先做总量护栏
+        if (ws.max_row or 0) * (ws.max_column or 0) > 400_000:
+            return err('表格过大（超过 40 万单元格），请拆分后再导入')
     except Exception as e:
         return err(f'无法读取Excel: {e}')
 
@@ -711,6 +714,9 @@ def advance_import_precheck(request):
     try:
         wb = openpyxl.load_workbook(f, data_only=True)
         ws = wb.active
+        # 防解压炸弹：5MB 压缩包也可能展开出海量单元格，先做总量护栏
+        if (ws.max_row or 0) * (ws.max_column or 0) > 400_000:
+            return err('表格过大（超过 40 万单元格），请拆分后再导入')
     except Exception as e:
         return err(f'无法读取Excel: {e}')
 
@@ -942,6 +948,13 @@ def _resolve_offset_ar_record(request, advance, ar_record_id, amount):
         return None, err('无权操作该应收明细所属部门', 403)
     if advance.project_id and ar.project_id != advance.project_id:
         return None, err('所选应收明细与预收所属项目不一致，无法冲抵')
+    # 散单预收（未挂项目）：应收客户名称须与预收往来单位一致——与批量核销同一匹配纪律，
+    # 否则 A 客户的预收可被错核到 B 客户的应收上
+    if not advance.project_id:
+        cust = ((ar.project.customer_name if ar.project_id else '') or '').strip()
+        cp = (advance.counterparty or '').strip()
+        if not cust or not cp or cust.lower() != cp.lower():
+            return None, err(f'散单预收仅能冲抵「客户名称＝往来单位（{cp or "未填"}）」的应收明细')
     outstanding = ar.outstanding_amount or Decimal('0')
     if amount > outstanding:
         return None, err(f'冲抵金额 {amount:,.2f} 超过该应收未收余额 {outstanding:,.2f}')

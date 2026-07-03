@@ -403,6 +403,9 @@ def project_import(request):
     try:
         wb = openpyxl.load_workbook(f, data_only=True)
         ws = wb.active
+        # 防解压炸弹：5MB 压缩包也可能展开出海量单元格，先做总量护栏
+        if (ws.max_row or 0) * (ws.max_column or 0) > 400_000:
+            return err('表格过大（超过 40 万单元格），请拆分后再导入')
     except Exception as e:
         return err(f'无法读取Excel: {e}')
 
@@ -596,6 +599,9 @@ def project_import_precheck(request):
     try:
         wb = openpyxl.load_workbook(f, data_only=True)
         ws = wb.active
+        # 防解压炸弹：5MB 压缩包也可能展开出海量单元格，先做总量护栏
+        if (ws.max_row or 0) * (ws.max_column or 0) > 400_000:
+            return err('表格过大（超过 40 万单元格），请拆分后再导入')
     except Exception as e:
         return err(f'无法读取Excel: {e}')
 
