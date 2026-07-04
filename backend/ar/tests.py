@@ -142,6 +142,28 @@ class ARPermissionRegressionTests(TestCase):
                             {'amount': '100', 'writeoff_date': '2026-06-06'}, acct)
         self.assertEqual(r3.status_code, 403)
 
+    def test_record_export_vis_cols_keeps_project_columns(self):
+        """回归：vis_cols（列显隐白名单，仅含 r_* 键）不得误删 p_* 项目侧列。
+        历史缺陷：税额默认隐藏后所有导出都带 vis_cols → 项目简称/客户名称整排消失。"""
+        admin = self.make_user('13900000466', 'finance_director', role='super_admin')
+        proj = self.create_project(short_name='导出列项目')
+        ARRecord.objects.create(project=proj, operation_year=2026, operation_month=6,
+                                estimated_amount=Decimal('1000'),
+                                account_diff_adjustment=Decimal('60'))
+        vis = 'r_estimated_amount,r_actual_invoice_amount,r_actual_receivable,r_account_diff,r_outstanding,r_due_date,r_reconciliation,r_payments,r_invoice_date,r_invoice_status,r_notes'
+        r = self.client.get('/api/pk/ar/records/export', {'vis_cols': vis}, **self.auth(admin))
+        self.assertEqual(r.status_code, 200, r.content)
+        hdr = self.headers_from_xlsx(r)
+        for must in ('项目简称', '客户名称', '交付部门', '开票模式'):   # p_* 列不受 vis_cols 影响
+            self.assertIn(must, hdr, hdr)
+        self.assertIn('实际应收', hdr)          # UI/导出对齐的新列
+        self.assertNotIn('税额', hdr)           # 未勾选的 r_* 列按白名单剔除
+        # 数值正确：实际应收 = 预估 + 账实差额
+        import openpyxl as _px
+        wb = _px.load_workbook(io.BytesIO(r.content))
+        row = [c.value for c in wb.active[2]]
+        self.assertEqual(row[hdr.index('实际应收')], 1060.0)
+
     def test_cashflow_excludes_soft_deleted_payments(self):
         """现金流分析（驾驶舱同源接口）：已软删除付款的实付分期不得计入现金流出。"""
         from paikuan.models import Payment, PaymentInstallment

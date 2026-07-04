@@ -1159,6 +1159,8 @@ def ar_record_export(request):
         ('r_estimated_amount', '预估上账金额', lambda rec, st: float(rec.estimated_amount)),
         ('r_actual_invoice_amount', '实际开票金额',
          lambda rec, st: float(rec.actual_invoice_amount) if rec.actual_invoice_amount is not None else ''),
+        ('r_actual_receivable', '实际应收',
+         lambda rec, st: float((rec.estimated_amount or 0) + (rec.account_diff_adjustment or 0))),
         ('r_tax_amount', '税额', lambda rec, st: float(rec.tax_amount) if rec.tax_amount is not None else ''),
         ('r_invoice_date', '开票日期', lambda rec, st: str(rec.invoice_date) if rec.invoice_date else ''),
         ('p_invoice_config', '开票模式', lambda rec, st: rec.project.invoice_mode),
@@ -1193,7 +1195,11 @@ def ar_record_export(request):
         ('r_notes', '备注', lambda rec, st: rec.notes),
     ])
     if vis_set:
-        columns = [(pk, hd, fn) for pk, hd, fn in columns if pk is None or pk in vis_set]
+        # vis_cols 只包含前端「列显示设置」面板管理的 r_* 键；p_*（项目侧列）不在面板中，
+        # 不得被此白名单误删（历史缺陷：税额默认隐藏后所有导出都带 vis_cols，
+        # 项目简称/客户名称等整排消失）。p_* 仍由 ar_view 权限单独约束。
+        columns = [(pk, hd, fn) for pk, hd, fn in columns
+                   if pk is None or not pk.startswith('r_') or pk in vis_set]
     _header_row(ws, [header for _, header, _ in columns], color='1B6E35')
     for rec in qs:
         st = rec.status_dict(today)
