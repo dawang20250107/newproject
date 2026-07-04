@@ -1,5 +1,3 @@
-// 主题初始化：跟随记忆偏好（默认浅色）
-if (localStorage.getItem('kx_theme') === 'dark') document.documentElement.classList.add('dark')
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'

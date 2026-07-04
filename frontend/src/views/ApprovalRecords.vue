@@ -138,8 +138,16 @@ function clearAllFilters() {
   numbersFilter.value = ''
   page.value = 1; clearSelection(); load()
 }
-// 批量单号筛选：入口已并入侧边栏「单号直达」；本页保留状态，经 ?numbers= 注入
+// 单号筛选（筛选栏内联输入）：任意分隔符批量粘贴，回车应用；chips 可移除
 const numbersFilter = ref('')
+const numbersInput = ref('')
+function applyNumbersInput() {
+  const nums = [...new Set(numbersInput.value.split(/[\s,+;|，、；／/]+/).map(x => x.trim()).filter(Boolean))]
+  if (!nums.length) return
+  numbersFilter.value = nums.join(',')
+  numbersInput.value = ''
+  page.value = 1; clearSelection(); load()
+}
 if (route.query.numbers) numbersFilter.value = String(route.query.numbers)
 watch(() => route.query.numbers, (v) => {
   const nums = String(v || '').trim()
@@ -732,6 +740,9 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <div class="topbar"><h1>审批管理</h1><div class="topbar-tools">
     <input v-model="q" class="global-search" placeholder="🔍 申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
     <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
+    <input v-model="numbersInput" class="num-inline" :class="{ on: !!numbersFilter }"
+           :placeholder="numbersFilter ? `单号筛选中(${numbersFilter.split(',').length})…` : '单号筛选·支持批量粘贴'"
+           title="粘贴一个或一批单号（空格/换行/+/逗号等任意分隔）回车筛选；命中 审批编号/对账单号/G7" @keyup.enter="applyNumbersInput" />
     <button v-if="activeFilterCount || q || sortField || numbersFilter" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters" title="清除全部列筛选 / 搜索 / 排序 / 单号">清除筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
     <SchemePicker :ctl="schemes" :can-public="auth.canCreate" :is-super-admin="auth.isSuperAdmin" />
     <span class="tb-sep"></span>
@@ -1219,6 +1230,11 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .apd-cancel { border: 1px solid var(--border); background: none; border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; color: var(--muted); }
 .apd-return-all { margin-left: auto; border: 1px solid var(--c-warn); background: rgba(230,81,0,0.08); color: var(--c-warn); border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; font-weight: 600; }
 .apd-return-all:hover { background: var(--c-warn); color: #fff; }
+.num-inline { width: 168px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 12px; background: var(--row-bg); color: var(--text); flex-shrink: 0; }
+.num-inline::placeholder { color: var(--muted-light); }
+.num-inline:focus { border-color: var(--primary); outline: none; }
+.num-inline.on { border-color: var(--primary); background: var(--surface-tint); }
 .chips-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
 .fchip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px 2px 9px; border-radius: 20px;
   background: var(--surface-tint); border: 1px solid var(--border); font-size: 11.5px; color: var(--text-2); }

@@ -65,7 +65,7 @@
   --radius-lg:       20px;
 
   /* ── layout ── */
-  --nav-w:           224px;
+  --nav-w:           206px;
   --nav-w-collapsed: 68px;
   --blur:            blur(20px) saturate(180%);
 
@@ -74,7 +74,7 @@
   --amber-text:      #b8761a;
   --amber-deep:      #f57f17;
 
-  /* ── table row surfaces（深色模式整体翻转）── */
+  /* ── table row surfaces ── */
   --row-bg:          #fff;
   --row-hover:       #f4f1ec;
   --row-sel:         #f3ebe6;
@@ -85,48 +85,6 @@
   --td-py:           6px;
   --td-px:           10px;
   --td-fs:           13px;
-}
-
-/* ════════ 深色模式（导航底部主题开关驱动 html.dark；跟随记忆偏好）════════ */
-html.dark {
-  --bg:              #171310;
-  --bg2:             #100d0b;
-  --surface-1:       rgba(34,29,25,0.92);
-  --surface-2:       rgba(41,35,30,0.98);
-  --surface-tint:    rgba(224,132,92,0.09);
-  --primary-glow:    rgba(224,132,92,0.35);
-  --text:            #f0e7dd;
-  --text-2:          #cdb9a7;
-  --muted:           #a18b7a;
-  --muted-light:     #6e5f53;
-  --c-success:       #7cc47f;
-  --c-success-bg:    rgba(124,196,127,0.13);
-  --c-success-bdr:   rgba(124,196,127,0.30);
-  --c-danger:        #ef6f6c;
-  --c-danger-bg:     rgba(239,111,108,0.13);
-  --c-danger-bdr:    rgba(239,111,108,0.30);
-  --c-warn:          #ffa04d;
-  --c-warn-bg:       rgba(255,160,77,0.13);
-  --c-warn-bdr:      rgba(255,160,77,0.30);
-  --c-info:          #6fb1f5;
-  --c-info-bg:       rgba(111,177,245,0.13);
-  --c-info-bdr:      rgba(111,177,245,0.30);
-  --amber:           #f7b955;
-  --amber-text:      #e8a94a;
-  --border-soft:     rgba(255,255,255,0.07);
-  --border:          rgba(255,255,255,0.12);
-  --border-strong:   rgba(255,255,255,0.20);
-  --glass:           rgba(32,27,23,0.78);
-  --glass-border:    rgba(255,255,255,0.09);
-  --glass-shadow:    0 6px 28px rgba(0,0,0,0.45), 0 1px 0 rgba(255,255,255,0.05) inset;
-  --shadow-sm:       0 1px 5px rgba(0,0,0,0.35);
-  --shadow-md:       0 6px 24px rgba(0,0,0,0.42);
-  --shadow-lg:       0 18px 56px rgba(0,0,0,0.55);
-  --row-bg:          #221d19;
-  --row-hover:       #2b2520;
-  --row-sel:         #322a24;
-  --thead-bg:        #29231e;
-  color-scheme: dark;
 }
 
 /* 键盘可达性：焦点可见（仅键盘触发，鼠标点击不出框） */

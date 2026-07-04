@@ -23,16 +23,13 @@ const chartEl = ref(null)
 let instance = null
 let resizeObserver = null
 
-// 深色模式：随 html.dark 使用 echarts 内置 dark 主题（文字/轴自动可读），
-// 背景强制透明以贴合站内暖色深底；主题切换事件触发重建。
-const isDark = () => document.documentElement.classList.contains('dark')
-const withBase = (opt) => ({ backgroundColor: 'transparent', ...opt, animation: false })
+const withBase = (opt) => ({ ...opt, animation: false })
 
 function initChart() {
   if (!chartEl.value) return
   resizeObserver?.disconnect()
   instance?.dispose()
-  instance = echarts.init(chartEl.value, isDark() ? 'dark' : null, { renderer: 'canvas' })
+  instance = echarts.init(chartEl.value, null, { renderer: 'canvas' })
   // 关闭入场动画：低配设备上图表渲染更轻快（非侵入，不改传入 option）
   instance.setOption(withBase(props.option))
   resizeObserver = new ResizeObserver(() => instance?.resize())
@@ -43,13 +40,9 @@ watch(() => props.option, (val) => {
   if (instance) instance.setOption(withBase(val), { notMerge: true })
 }, { deep: true })
 
-onMounted(() => {
-  initChart()
-  window.addEventListener('kx-theme', initChart)
-})
+onMounted(initChart)
 
 onUnmounted(() => {
-  window.removeEventListener('kx-theme', initChart)
   resizeObserver?.disconnect()
   instance?.dispose()
 })

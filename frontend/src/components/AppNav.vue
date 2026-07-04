@@ -43,46 +43,6 @@ function cycleDensity() {
   applyDensity(next)
 }
 
-// ── 全局单号直达：粘贴单号（支持任意连接符批量）→ 定位到审批/付款 ─────────────
-import api from '../api/index.js'
-const jumpText = ref('')
-const jumpBusy = ref(false)
-const jumpRes = ref(null)   // { count, approvals, payments, numbers }
-function _normNumbers(raw) {
-  return [...new Set(String(raw || '').split(/[\s,+;|，、；／/]+/).map(x => x.trim()).filter(Boolean))]
-}
-async function doJump() {
-  const nums = _normNumbers(jumpText.value)
-  if (!nums.length || jumpBusy.value) return
-  jumpBusy.value = true
-  jumpRes.value = null
-  try {
-    const r = await api.get('/locate', { params: { numbers: nums.join(',') } })
-    const d = r.data || {}
-    const res = { ...d, numbers: nums.join(',') }
-    const a = d.approvals || 0, pmt = d.payments || 0
-    // 只有一侧命中 → 直达；两侧都有/都无 → 展示选择
-    if (a > 0 && pmt === 0) return _go('/approvals', res)
-    if (pmt > 0 && a === 0) return _go('/payments', res)
-    jumpRes.value = res
-  } catch (e) { jumpRes.value = { error: e?.msg || e?.error || '查询失败' } }
-  finally { jumpBusy.value = false }
-}
-function _go(path, res) {
-  jumpRes.value = null
-  jumpText.value = ''
-  router.push({ path, query: { numbers: res.numbers, _t: Date.now() } })
-  emit('close-mobile')
-}
-
-const isDark = ref(document.documentElement.classList.contains('dark'))
-function toggleTheme() {
-  isDark.value = !isDark.value
-  document.documentElement.classList.toggle('dark', isDark.value)
-  try { localStorage.setItem('kx_theme', isDark.value ? 'dark' : 'light') } catch (_) { /* ignore */ }
-  window.dispatchEvent(new Event('kx-theme'))   // 通知图表等按主题重建
-}
-
 function logout() {
   emit('close-mobile')
   auth.logout()
@@ -175,27 +135,6 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
       <Transition name="label-fade">
         <span v-if="!effectiveCollapsed" class="brand-name">KXT 财务系统</span>
       </Transition>
-    </div>
-
-    <!-- 全局单号直达：粘贴一个或一批单号（空格/换行/+/逗号等任意分隔）回车定位 -->
-    <div v-if="!effectiveCollapsed" class="nav-jump">
-      <input v-model="jumpText" class="nav-jump-input" placeholder="单号直达（支持批量粘贴）"
-             :disabled="jumpBusy" @keyup.enter="doJump" @keyup.esc="jumpText = ''; jumpRes = null"
-             aria-label="全局单号直达" />
-      <div v-if="jumpRes" class="nav-jump-pop">
-        <div v-if="jumpRes.error" class="njp-err">{{ jumpRes.error }}</div>
-        <template v-else>
-          <div class="njp-title">{{ jumpRes.count }} 个单号的命中结果</div>
-          <button class="njp-item" :disabled="!jumpRes.approvals" @click="_go('/approvals', jumpRes)">
-            审批管理 <b>{{ jumpRes.approvals ?? '无权限' }}</b> 条
-          </button>
-          <button class="njp-item" :disabled="!jumpRes.payments" @click="_go('/payments', jumpRes)">
-            付款管理 <b>{{ jumpRes.payments ?? '无权限' }}</b> 条
-          </button>
-          <div v-if="!jumpRes.approvals && !jumpRes.payments" class="njp-none">未找到匹配记录（按你的部门可见范围）</div>
-          <button class="njp-close" @click="jumpRes = null">关闭</button>
-        </template>
-      </div>
     </div>
 
     <!-- Nav links -->
@@ -581,11 +520,6 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
             :title="perfLite ? '性能模式已开启（点击恢复完整视觉）' : '滚动卡顿？点击开启性能模式'">
             ⚡
           </button>
-          <button class="footer-btn theme-btn" @click="toggleTheme"
-            :title="isDark ? '深色模式（点击切换为浅色）' : '浅色模式（点击切换为深色）'">
-            <svg v-if="isDark" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M2 12h2.5M19.5 12H22M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg>
-            <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>
-          </button>
         </div>
       </template>
       <template v-else>
@@ -716,7 +650,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
   overflow: hidden;
 }
 .nav-sl-text {
-  font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.07em;
   color: rgba(196,168,152,0.38); text-transform: uppercase;
   white-space: nowrap; flex-shrink: 0;
 }
@@ -729,7 +663,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 /* Nav items */
 .nav-item {
   display: flex; align-items: center;
-  padding: 0; height: 42px;
+  padding: 0; height: 40px;
   border-radius: 9px;
   color: rgba(200,174,158,0.7);
   font-size: 13.5px; font-weight: 500;
@@ -803,6 +737,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 
 /* Footer action row */
 .footer-actions { display: flex; gap: 5px; }
+/* 图标工具按钮定宽，把弹性空间留给「改密/退出」文字按钮，杜绝文字被压缩/裁切 */
+.footer-btn.density-btn, .footer-btn.perf-btn { flex: 0 0 32px; padding: 7px 0; }
 .footer-btn {
   display: flex; align-items: center; justify-content: center; gap: 5px;
   flex: 1; padding: 7px 6px; border-radius: 8px;
@@ -935,23 +871,4 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
   .collapse-btn { display: none; }
 }
 
-/* 全局单号直达 */
-.nav-jump { position: relative; padding: 4px 12px 8px; }
-.nav-jump-input { width: 100%; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border);
-  background: var(--surface-tint); color: var(--text); font-size: 12px; }
-.nav-jump-input::placeholder { color: var(--muted-light); }
-.nav-jump-input:focus { border-color: var(--primary); outline: none; }
-.nav-jump-pop { position: absolute; left: 12px; right: 12px; top: 100%; z-index: 300;
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
-  box-shadow: var(--shadow-md); padding: 8px; }
-.njp-title { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
-.njp-item { display: flex; justify-content: space-between; width: 100%; border: 1px solid var(--border);
-  background: none; border-radius: 7px; padding: 6px 9px; margin-bottom: 5px; font-size: 12.5px;
-  color: var(--text-2); cursor: pointer; }
-.njp-item b { color: var(--primary); }
-.njp-item:hover:not(:disabled) { border-color: var(--primary); }
-.njp-item:disabled { opacity: .5; cursor: default; }
-.njp-none { font-size: 11.5px; color: var(--muted); padding: 2px 0 4px; }
-.njp-err { font-size: 12px; color: var(--c-danger); }
-.njp-close { border: none; background: none; color: var(--muted); font-size: 11px; cursor: pointer; width: 100%; text-align: center; }
 </style>

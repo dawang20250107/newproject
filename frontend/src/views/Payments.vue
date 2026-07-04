@@ -1041,8 +1041,16 @@ async function clearAllPriority() {
   } catch (e) { toast.error(e?.msg || e?.error || '清除失败') }
 }
 
-// ── 批量单号筛选：入口已并入侧边栏「单号直达」（支持任意分隔符批量），
-//    本页保留 numbersFilter 状态，经路由参数 ?numbers= 注入，chips 可单点移除 ──
+// ── 单号筛选（筛选栏内联输入）：粘贴一个或一批单号（空格/换行/+/逗号等任意分隔）
+//    回车应用；生效状态以 chips 呈现可单点移除；亦可经路由 ?numbers= 注入 ──
+const numbersInput = ref('')
+function applyNumbersInput() {
+  const nums = [...new Set(numbersInput.value.split(/[\s,+;|，、；／/]+/).map(x => x.trim()).filter(Boolean))]
+  if (!nums.length) return
+  numbersFilter.value = nums.join(',')
+  numbersInput.value = ''
+  filters.page = 1; clearSelection(); load()
+}
 function clearNumbers() {
   numbersFilter.value = ''
   filters.page = 1; clearSelection(); load()
@@ -1186,6 +1194,9 @@ async function doBatchPay() {
         <button class="filter-toggle prio-toggle" :class="{ active: priorityOnly }" @click="togglePriorityFilter"
                 title="只显示标记为重点的付款">★ 只看重点</button>
         <button v-if="priorityOnly" class="btn btn-sm" @click="clearAllPriority" title="清除当前事业部范围内全部重点标记">清除全部标记</button>
+        <input v-model="numbersInput" class="num-inline" :class="{ on: !!numbersFilter }"
+               :placeholder="numbersFilter ? `单号筛选中(${numbersFilter.split(',').length})…` : '单号筛选·支持批量粘贴'"
+               title="粘贴一个或一批单号（空格/换行/+/逗号等任意分隔）回车筛选；命中 审批编号/对账单号/G7" @keyup.enter="applyNumbersInput" />
         <span class="filter-group-lbl">回款日</span>
         <select v-model="payDatePreset" @change="applyPayDatePreset" style="min-width:100px">
           <option value="">全部日期</option>
@@ -1896,6 +1907,13 @@ async function doBatchPay() {
 .row-priority td { background: rgba(245,166,35,0.06) !important; }
 .row-priority td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
 .prio-toggle.active { border-color: var(--amber); color: var(--amber-text); background: rgba(245,166,35,0.12); }
+
+/* 单号内联筛选输入 */
+.num-inline { width: 168px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 12px; background: var(--row-bg); color: var(--text); flex-shrink: 0; }
+.num-inline::placeholder { color: var(--muted-light); }
+.num-inline:focus { border-color: var(--primary); outline: none; }
+.num-inline.on { border-color: var(--primary); background: var(--surface-tint); }
 
 /* 筛选 chips */
 .chips-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
