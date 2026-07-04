@@ -20,12 +20,6 @@ const auth = useAuthStore()
 const effectiveCollapsed = computed(() => props.mobileOpen ? false : props.collapsed)
 
 // 性能模式：关停毛玻璃/动画等装饰效果，解决低配电脑滚动闪屏
-const perfLite = ref(document.documentElement.classList.contains('perf-lite'))
-function togglePerfLite() {
-  perfLite.value = !perfLite.value
-  document.documentElement.classList.toggle('perf-lite', perfLite.value)
-  localStorage.setItem('pk_perf_lite', perfLite.value ? '1' : '0')
-}
 
 // 表格密度切换：compact → comfortable → spacious，持久化
 const DENSITIES = ['compact', 'comfortable', 'spacious']
@@ -516,10 +510,6 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
               <line x1="3" y1="18" x2="21" y2="18"/>
             </svg>
           </button>
-          <button class="footer-btn perf-btn" :class="{ on: perfLite }" @click="togglePerfLite"
-            :title="perfLite ? '性能模式已开启（点击恢复完整视觉）' : '滚动卡顿？点击开启性能模式'">
-            ⚡
-          </button>
         </div>
       </template>
       <template v-else>
@@ -738,7 +728,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 /* Footer action row */
 .footer-actions { display: flex; gap: 5px; }
 /* 图标工具按钮定宽，把弹性空间留给「改密/退出」文字按钮，杜绝文字被压缩/裁切 */
-.footer-btn.density-btn, .footer-btn.perf-btn { flex: 0 0 32px; padding: 7px 0; }
+.footer-btn.density-btn { flex: 0 0 32px; padding: 7px 0; }
 .footer-btn {
   display: flex; align-items: center; justify-content: center; gap: 5px;
   flex: 1; padding: 7px 6px; border-radius: 8px;
@@ -750,8 +740,6 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 .footer-btn.pwd-btn:hover { background: rgba(255,255,255,0.09); color: rgba(255,248,244,0.9); border-color: rgba(255,255,255,0.12); }
 .footer-btn.density-btn { flex: none; width: 30px; padding: 6px; }
 .footer-btn.density-btn:hover { background: rgba(255,255,255,0.09); color: rgba(255,248,244,0.9); border-color: rgba(255,255,255,0.12); }
-.footer-btn.perf-btn { flex: none; width: 30px; padding: 6px; font-size: 13px; }
-.footer-btn.perf-btn.on { border-color: #ffd54f; color: #ffd54f; background: rgba(255,213,79,0.1); }
 .footer-btn.icon-only { width: 34px; flex: none; margin: 0 auto; padding: 8px; }
 
 /* Dept trigger */
