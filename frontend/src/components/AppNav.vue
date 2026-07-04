@@ -604,7 +604,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
    BRAND
 ═══════════════════════════════════════════════════ */
 .sidebar-brand {
-  padding: 20px 14px 16px;
+  padding: 18px 14px 14px;
   display: flex; align-items: center; gap: 11px;
   min-height: 64px; flex-shrink: 0;
   position: relative;
@@ -612,7 +612,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 .sidebar-brand::after {
   content: '';
   position: absolute; bottom: 0; left: 14px; right: 14px; height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(201,99,66,0.28) 40%, rgba(201,99,66,0.14) 70%, transparent);
+  background: linear-gradient(90deg, transparent, rgba(201,99,66,0.22) 40%, rgba(201,99,66,0.10) 70%, transparent);
 }
 .brand-mark {
   width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
@@ -628,63 +628,73 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
    NAV LINKS
 ═══════════════════════════════════════════════════ */
 .nav-links {
-  flex: 1; padding: 10px 8px 8px;
-  display: flex; flex-direction: column; gap: 1px;
+  flex: 1; padding: 8px 8px 8px;
+  display: flex; flex-direction: column; gap: 2px;
   overflow-y: auto; overflow-x: hidden;
+  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.14) transparent;
 }
+.nav-links::-webkit-scrollbar { width: 5px; }
+.nav-links::-webkit-scrollbar-track { background: transparent; }
+.nav-links::-webkit-scrollbar-thumb { background: transparent; border-radius: 3px; }
+.nav-links:hover::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); }
 
-/* Section labels */
+/* Section labels — 干净眉题：不裁切、不位移，展开态纯文字，收起态化为细分隔线 */
 .nav-section-label {
-  margin-top: 10px; padding: 0 4px 6px;
+  margin: 14px 0 4px; padding: 0 10px;
   display: flex; align-items: center; gap: 8px;
-  overflow: hidden;
+  min-height: 16px;
 }
 .nav-sl-text {
-  font-size: 11px; font-weight: 700; letter-spacing: 0.07em;
-  color: rgba(196,168,152,0.38); text-transform: uppercase;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.05em;
+  color: rgba(206,180,162,0.5);
   white-space: nowrap; flex-shrink: 0;
 }
-.nav-sl-line {
-  flex: 1; height: 1px; min-width: 4px;
-  background: linear-gradient(90deg, rgba(201,99,66,0.2), rgba(201,99,66,0.05) 60%, transparent);
+.nav-sl-line { display: none; }
+.sidebar.collapsed .nav-section-label { margin: 8px 0 4px; padding: 0 16px; }
+.sidebar.collapsed .nav-sl-line {
+  display: block; flex: 1; height: 1px;
+  background: rgba(255,255,255,0.08);
 }
-.sidebar.collapsed .nav-sl-line { background: rgba(255,255,255,0.07); }
 
 /* Nav items */
 .nav-item {
   display: flex; align-items: center;
-  padding: 0; height: 40px;
-  border-radius: 9px;
-  color: rgba(200,174,158,0.7);
+  padding: 0; height: 38px;
+  border-radius: 8px;
+  color: rgba(212,188,172,0.78);
   font-size: 13.5px; font-weight: 500;
-  transition: background 0.17s, color 0.17s, transform 0.17s;
+  transition: background 0.15s ease, color 0.15s ease;
   text-decoration: none;
   white-space: nowrap; overflow: hidden;
   position: relative;
 }
 .nav-item:hover {
-  background: rgba(255,255,255,0.062);
-  color: rgba(255,248,244,0.9);
-  transform: translateX(1px);
+  background: rgba(255,255,255,0.055);
+  color: rgba(255,248,244,0.94);
 }
 .nav-item.active {
-  background: rgba(201,99,66,0.15);
+  background: rgba(201,99,66,0.14);
   color: #fff;
-  box-shadow: 0 2px 14px rgba(201,99,66,0.12);
+  font-weight: 600;
 }
 .nav-item.active::before {
   content: '';
-  position: absolute; left: 0; top: 18%; bottom: 18%;
-  width: 3.5px; border-radius: 0 3px 3px 0;
+  position: absolute; left: 0; top: 22%; bottom: 22%;
+  width: 3px; border-radius: 0 3px 3px 0;
   background: linear-gradient(180deg, #f09870, var(--primary));
-  box-shadow: 0 0 8px rgba(201,99,66,0.48);
 }
+.nav-item:focus-visible { outline: 2px solid rgba(240,152,112,0.7); outline-offset: -2px; }
+/* 收起态：图标严格居中，激活态化为居中药丸 */
+.sidebar.collapsed .nav-item { justify-content: center; }
+.sidebar.collapsed .nav-icon { width: auto; }
+.sidebar.collapsed .nav-item.active::before { display: none; }
+.sidebar.collapsed .nav-item.active { background: rgba(201,99,66,0.2); }
 
 .nav-icon {
   flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
-  width: 42px; height: 42px;
-  transition: color 0.17s;
+  width: 42px; height: 38px;
+  transition: color 0.15s ease;
 }
 .nav-item.active .nav-icon { color: #e89570; }
 .nav-item:hover:not(.active) .nav-icon { color: rgba(255,230,210,0.85); }
@@ -727,8 +737,6 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 
 /* Footer action row */
 .footer-actions { display: flex; gap: 5px; }
-/* 图标工具按钮定宽，把弹性空间留给「改密/退出」文字按钮，杜绝文字被压缩/裁切 */
-.footer-btn.density-btn { flex: 0 0 32px; padding: 7px 0; }
 .footer-btn {
   display: flex; align-items: center; justify-content: center; gap: 5px;
   flex: 1; padding: 7px 6px; border-radius: 8px;
@@ -839,10 +847,10 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 /* ═══════════════════════════════════════════════════
    TRANSITIONS
 ═══════════════════════════════════════════════════ */
-.label-fade-enter-active { transition: opacity 0.22s 0.12s, transform 0.22s 0.12s; }
-.label-fade-leave-active { transition: opacity 0.16s, transform 0.16s; }
-.label-fade-enter-from { opacity: 0; transform: translateX(-8px); }
-.label-fade-leave-to   { opacity: 0; transform: translateX(-8px); }
+.label-fade-enter-active { transition: opacity 0.2s 0.14s; }
+.label-fade-leave-active { transition: opacity 0.12s; }
+.label-fade-enter-from,
+.label-fade-leave-to { opacity: 0; }
 
 /* ═══════════════════════════════════════════════════
    MOBILE OFF-CANVAS DRAWER
