@@ -13,7 +13,7 @@ def cashflow(request):
         return denied
 
     # Date range — accept day-level start_date/end_date; fall back to year/month
-    today = datetime.date.today()
+    today = timezone.localdate()
     start_date_raw = (request.GET.get('start_date') or '').strip()
     end_date_raw = (request.GET.get('end_date') or '').strip()
     if start_date_raw and end_date_raw:

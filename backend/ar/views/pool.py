@@ -184,7 +184,7 @@ def cash_pool(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     depts = _pool_visible_depts(request)
     try:
         cfgs = {c.delivery_dept: c for c in CashPoolConfig.objects.filter(delivery_dept__in=depts)}
@@ -255,7 +255,7 @@ def cash_pool_config(request):
             init_d = datetime.date.fromisoformat(str(initial_date)[:10])
         except (ValueError, TypeError):
             return err('期初基准日格式错误')
-        if init_d > datetime.date.today():
+        if init_d > timezone.localdate():
             return err('期初基准日不能晚于今天（期初是已发生的账面事实）')
         try:
             initial_amount = Decimal(str(data.get('initial_amount', 0) or 0))
@@ -297,12 +297,12 @@ def _validate_transfer_payload(data):
         return None, None, None, None, err('金额格式错误')
     if amount <= 0:
         return None, None, None, None, err('调拨金额必须大于0')
-    tr_date = _normalize_date(data.get('transfer_date')) or str(datetime.date.today())
+    tr_date = _normalize_date(data.get('transfer_date')) or str(timezone.localdate())
     try:
         tr_date_d = datetime.date.fromisoformat(str(tr_date)[:10])
     except (ValueError, TypeError):
         return None, None, None, None, err('调拨日期格式错误')
-    if tr_date_d > datetime.date.today():
+    if tr_date_d > timezone.localdate():
         return None, None, None, None, err('调拨日期不能晚于今天（调拨以实际发生日入账）')
     return f, t, amount, tr_date_d, None
 
@@ -325,7 +325,7 @@ def _transfer_guards(f, t, tr_date_d, lock=False):
 
 def _transfer_overdraft_err(f, cfg_f, amount):
     """不允许透支调拨：调出额不得超过调出池当前账面余额。"""
-    balance = _pool_balance(f, cfg_f, datetime.date.today())
+    balance = _pool_balance(f, cfg_f, timezone.localdate())
     if amount > balance:
         return err(f'调出池「{f}」当前可用余额 {balance:,.2f} 元，'
                    f'不足以调出 {amount:,.2f} 元（不允许透支调拨）')
@@ -438,7 +438,7 @@ def cash_pool_transfer_review(request, pk):
     if action != 'approve':
         return err("action 须为 'approve' 或 'reject'")
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     with transaction.atomic():
         cfg_f, cfg_t, bad = _transfer_guards(tr.from_dept, tr.to_dept, today, lock=True)
         if bad:

@@ -21,7 +21,7 @@ def ar_invoice_batches(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
     qs = _apply_record_filters(qs, request)
     qs = _apply_conditions(qs, request, today)
@@ -417,7 +417,7 @@ def _gen_batch_no(qs):
         if n:
             names.add(n)
     base = (list(names)[0][:8] if len(names) == 1 else '多户') or '开票'
-    prefix = f'{base}-{datetime.date.today().strftime("%y%m%d")}'
+    prefix = f'{base}-{timezone.localdate().strftime("%y%m%d")}'
     seq = ARRecord.objects.filter(invoice_batch_no__startswith=prefix)\
         .values('invoice_batch_no').distinct().count() + 1
     return f'{prefix}-{seq:02d}'
@@ -497,7 +497,7 @@ def ar_records_batch_assign(request):
     ids = data.get('ids')
 
     if all_flag:
-        today = datetime.date.today()
+        today = timezone.localdate()
         qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
         qs = _apply_record_filters(qs, request)
         qs = _apply_record_state_filters(qs, request, today)

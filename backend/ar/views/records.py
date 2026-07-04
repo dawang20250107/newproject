@@ -122,7 +122,7 @@ def ar_records(request):
         return denied
 
     if request.method == 'GET':
-        today = datetime.date.today()
+        today = timezone.localdate()
         # Listing queryset — select_related for efficient to_dict() rendering
         qs = _ar_dept_filter(ARRecord.objects.select_related('project', 'created_by'), request,
                              shared_field='project__is_shared')
@@ -425,7 +425,7 @@ def ar_records(request):
         except Exception as e:
             return err(str(e))
         return ok(apply_ar_view_mask(
-            rec.to_dict(today=datetime.date.today(), include_payments=True),
+            rec.to_dict(today=timezone.localdate(), include_payments=True),
             get_request_perms(request), 'record'))
 
     return err('Method not allowed', 405)
@@ -449,7 +449,7 @@ def ar_record_detail(request, pk):
         if perms and perms.get('ar_shared_only') and not rec.project.is_shared:
             return err('无权访问', 403)
 
-    today = datetime.date.today()
+    today = timezone.localdate()
 
     if request.method == 'GET':
         return ok(apply_ar_view_mask(rec.to_dict(today=today, include_payments=True),
@@ -491,7 +491,7 @@ def ar_record_detail(request, pk):
                 ARAdjustment.objects.create(
                     ar_record=rec, amount=delta,
                     reason=(data.get('adjustment_reason') or '').strip() or '人工调整（按合计修改）',
-                    adjust_date=_normalize_date(data.get('adjust_date')) or datetime.date.today(),
+                    adjust_date=_normalize_date(data.get('adjust_date')) or timezone.localdate(),
                     created_by=_PU.objects.filter(id=request.pk_uid).first())
                 rec.account_diff_adjustment = new_total
         if 'tax_amount' in data:
@@ -1117,7 +1117,7 @@ def ar_record_export(request):
     denied = _page_denied(request, 'ar_records')
     if denied:
         return denied
-    today = datetime.date.today()
+    today = timezone.localdate()
     # 可见列控制：前端传 vis_cols 参数（逗号分隔的 perm key），空=全部
     vis_raw = request.GET.get('vis_cols', '')
     vis_set = set(vis_raw.split(',')) if vis_raw.strip() else set()
@@ -1216,7 +1216,7 @@ def ar_records_kpi(request):
     denied = _page_denied(request, 'ar_records')
     if denied:
         return denied
-    today = datetime.date.today()
+    today = timezone.localdate()
     qs = _apply_record_filters(
         _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared'), request)
     qs = _apply_conditions(qs, request, today)
@@ -1425,7 +1425,7 @@ def ar_records_group_summary(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
     qs = _apply_record_filters(qs, request)
     qs = _apply_record_state_filters(qs, request, today)
@@ -1600,7 +1600,7 @@ def ar_collection_workbench(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     qs = _overdue_qs(request, today)
     dept = request.GET.get('dept', '').strip()
     if dept:
@@ -1714,7 +1714,7 @@ def ar_collection_dunning(request):
     if len(id_list) > 200:
         return err('单次最多生成200条催款任务')
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     # 走 _overdue_qs 复核：只允许对可见范围内、确实逾期未收的记录生成任务
     recs = list(_overdue_qs(request, today).filter(pk__in=id_list))
     existing = _open_dunning_actions({r.id for r in recs})
@@ -1873,7 +1873,7 @@ def ar_adjustments(request, pk):
             with transaction.atomic():
                 ARAdjustment.objects.create(
                     ar_record=rec, amount=amount, reason=reason[:200],
-                    adjust_date=_normalize_date(data.get('adjust_date')) or datetime.date.today(),
+                    adjust_date=_normalize_date(data.get('adjust_date')) or timezone.localdate(),
                     created_by=PaikuanUser.objects.filter(id=request.pk_uid).first())
         except ValidationError as e:
             return err(str(e.message if hasattr(e, 'message') else e), 400)
@@ -2144,7 +2144,7 @@ def ar_records_bulk_assign_collector(request):
     data = _parse_body(request)
     collector = (data.get('collector') or '').strip()[:100]
     if data.get('all'):
-        today = datetime.date.today()
+        today = timezone.localdate()
         qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
         qs = _apply_record_filters(qs, request)
         qs = _apply_record_state_filters(qs, request, today)
@@ -2182,7 +2182,7 @@ def ar_records_bulk_delete(request):
         return denied
 
     body = _parse_body(request)
-    today = datetime.date.today()
+    today = timezone.localdate()
     base = _ar_dept_filter(ARRecord.objects.select_related('project'), request,
                            shared_field='project__is_shared')
 

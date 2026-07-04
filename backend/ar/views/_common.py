@@ -650,7 +650,7 @@ def _apply_record_state_filters(qs, request, today=None):
     computes its own status breakdown from the unfiltered (by-state) set.
     """
     if today is None:
-        today = datetime.date.today()
+        today = timezone.localdate()
     eomonth_today = datetime.date(today.year, today.month,
                                   calendar.monthrange(today.year, today.month)[1])
 
@@ -1077,7 +1077,7 @@ def _apply_conditions(qs, request, today=None):
     except (ValueError, AssertionError):
         return qs
     if today is None:
-        today = datetime.date.today()
+        today = timezone.localdate()
     eomonth_today = datetime.date(today.year, today.month,
                                   calendar.monthrange(today.year, today.month)[1])
     match_any = (request.GET.get('match') or 'all').strip() == 'any'

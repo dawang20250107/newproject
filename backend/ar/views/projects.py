@@ -760,7 +760,7 @@ def project_stats(request):
     a_count = level_map.get('A级', 0) + level_map.get('A', 0)
 
     # Month-over-month new signings by contract_date
-    today = datetime.date.today()
+    today = timezone.localdate()
     this_start = datetime.date(today.year, today.month, 1)
     if today.month == 1:
         last_start = datetime.date(today.year - 1, 12, 1)

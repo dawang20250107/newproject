@@ -77,7 +77,7 @@ def advances(request):
         return denied
 
     if request.method == 'GET':
-        today = datetime.date.today()
+        today = timezone.localdate()
         qs = _advance_dept_filter(
             AdvanceRecord.objects.select_related('project', 'created_by'), request)
         qs = _apply_advance_filters(qs, request)
@@ -190,7 +190,7 @@ def _advance_create(request, data):
     except Exception as e:
         return err(str(e))
     return ok(apply_ar_view_mask(
-        rec.to_dict(today=datetime.date.today(), include_writeoffs=True),
+        rec.to_dict(today=timezone.localdate(), include_writeoffs=True),
         get_request_perms(request), 'advance'))
 
 
@@ -210,7 +210,7 @@ def advance_detail(request, pk):
         perms = get_request_perms(request)
         if perms and perms.get('ar_shared_only') and not (rec.project and rec.project.is_shared):
             return err('无权访问', 403)
-    today = datetime.date.today()
+    today = timezone.localdate()
 
     if request.method == 'GET':
         return ok(apply_ar_view_mask(rec.to_dict(today=today, include_writeoffs=True),
@@ -251,7 +251,7 @@ def advance_detail(request, pk):
                         AdvanceInstallment.objects.create(
                             advance_record=rec,
                             install_no=(last_inst.install_no + 1) if last_inst else 1,
-                            amount=delta, occur_date=rec.occur_date or datetime.date.today(),
+                            amount=delta, occur_date=rec.occur_date or timezone.localdate(),
                             notes='人工调整（按总额修改）')
                 except ValidationError as e:
                     return err(str(e.message if hasattr(e, 'message') else e), 400)
@@ -283,7 +283,7 @@ def advances_kpi(request):
     denied = _page_denied(request, 'ar_advance')
     if denied:
         return denied
-    today = datetime.date.today()
+    today = timezone.localdate()
     qs = _apply_advance_filters(
         _advance_dept_filter(AdvanceRecord.objects.all(), request), request)
 
@@ -386,7 +386,7 @@ def advances_available(request):
     direction = (request.GET.get('direction', '预收').strip() or '预收')
     if direction not in ADVANCE_DIRECTIONS:
         return err('方向无效，应为 预收 或 预付')
-    today = datetime.date.today()
+    today = timezone.localdate()
     qs = _advance_dept_filter(
         AdvanceRecord.objects.select_related('project'), request)
     qs = qs.filter(direction=direction, balance_amount__gt=0)
@@ -808,7 +808,7 @@ def advance_export(request):
     denied = _page_denied(request, 'ar_advance')
     if denied:
         return denied
-    today = datetime.date.today()
+    today = timezone.localdate()
     qs = _apply_advance_filters(
         _advance_dept_filter(AdvanceRecord.objects.select_related('project'), request), request)
     # 导出与列表口径一致：同样应用列头排序

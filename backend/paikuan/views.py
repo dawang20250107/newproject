@@ -1238,7 +1238,7 @@ def _payment_status_bucket_q(status):
                  paid__lt=F('total_amount') - F('prepaid_offset_amount'),
                  plan_adjustment__isnull=True)
     if status == 'overdue':
-        return Q(planned_date__lt=datetime.date.today()) & _not_settled_q('paid')
+        return Q(planned_date__lt=timezone.localdate()) & _not_settled_q('paid')
     if status == 'adjusted':
         return Q(plan_adjustment__isnull=False,
                  paid__lt=F('plan_adjustment') - F('prepaid_offset_amount'))
@@ -1311,7 +1311,7 @@ def _apply_payment_computed_filters(qs, request):
     ov = spec.get('overdue')
     if isinstance(ov, dict) and ov.get('op') == 'in':
         vals = {str(x) for x in (ov.get('value') or [])}
-        overdue_q = Q(planned_date__lt=datetime.date.today()) & _not_settled_q('paid')
+        overdue_q = Q(planned_date__lt=timezone.localdate()) & _not_settled_q('paid')
         if '是' in vals and '否' not in vals:
             qs = qs.filter(overdue_q)
         elif '否' in vals and '是' not in vals:
@@ -1616,7 +1616,7 @@ def _parse_payment_fields(data, payment=None):
                 return None, f'第{idx}次付款日期无效（{pay_date}），请使用 YYYY-MM-DD 格式'
             # 付款明细是已发生的现金事件：未来日期会让这笔钱既不算已付现金流、
             # 又被从刚性待付中扣掉，资金池两头都看不见
-            if pay_date_d > datetime.date.today():
+            if pay_date_d > timezone.localdate():
                 return None, f'第{idx}次付款日期（{pay_date}）不能晚于今天——实际付款以发生日入账；计划性付款请用「计划付款日期」'
             total_paid += amt
             parsed_insts.append({
@@ -2602,7 +2602,7 @@ def approval_records_bulk_schedule(request):
         return err('ids 必须为整数列表')
     if len(ids) > 5000:
         return err('单次批量排款上限 5000 条，请缩小选择范围')
-    planned_date = body.get('planned_date') or datetime.date.today().isoformat()
+    planned_date = body.get('planned_date') or timezone.localdate().isoformat()
     qs = dept_filter(ApprovalRecord.objects.filter(pk__in=ids, archived=False,
                                                    deleted_at__isnull=True), request)
     recs = {r.id: r for r in qs}
@@ -2947,7 +2947,7 @@ def payments_bulk_pay(request):
         return err('ids 必须为整数列表')
     if len(ids) > 5000:
         return err('单次批量付款上限 5000 条，请缩小选择范围')
-    pay_date = body.get('pay_date') or datetime.date.today().isoformat()
+    pay_date = body.get('pay_date') or timezone.localdate().isoformat()
     notes = (body.get('notes') or '批量付款').strip()[:200]
     qs = dept_filter(Payment.objects.filter(pk__in=ids, deleted_at__isnull=True), request)
     paid_cnt, total, skipped = 0, Decimal('0'), []

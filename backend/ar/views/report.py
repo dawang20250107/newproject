@@ -418,7 +418,7 @@ def periodic_report(request):
     denied = _page_denied(request, 'ar_analytics')
     if denied:
         return denied
-    today = datetime.date.today()
+    today = timezone.localdate()
     data, e = _compute_report(request, today)
     if e:
         return err(e['error'])
@@ -582,7 +582,7 @@ def periodic_report_export(request):
     denied = _page_denied(request, 'ar_analytics')
     if denied:
         return denied
-    today = datetime.date.today()
+    today = timezone.localdate()
     data, e = _compute_report(request, today)
     if e:
         return err(e['error'])

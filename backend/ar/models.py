@@ -2,6 +2,7 @@ import calendar
 import datetime
 import os
 from decimal import Decimal, ROUND_HALF_UP
+from django.utils import timezone
 
 from django.db import models, transaction
 from django.db.models import Sum
@@ -110,7 +111,7 @@ class ARProject(models.Model):
         # 部门无对应简码（如导入时无法确定部门的草稿项目）回退用 'XX'，
         # 保证项目编号始终能生成、不致 500；草稿完善时改对部门会换正式编号前缀。
         dept_code = self.DEPT_PROJECT_PREFIX.get(self.delivery_dept, '') or 'XX'
-        prefix = f'{dept_code}-{datetime.date.today().strftime("%Y%m%d")}-'
+        prefix = f'{dept_code}-{timezone.localdate().strftime("%Y%m%d")}-'
         with transaction.atomic():
             # 取当天该部门已有编号的最大序号 +1。用解析后的整数求最大值（而非字符串
             # 排序），对历史遗留的非定长编号也稳健。
@@ -259,7 +260,7 @@ class Contract(models.Model):
         部门取项目编号同款部门简码；无对应简码时省略部门段（P-日期-序号）。"""
         dept_code = ARProject.DEPT_PROJECT_PREFIX.get(self.delivery_dept, '')
         mid = f'{dept_code}-' if dept_code else ''
-        prefix = f'P-{mid}{datetime.date.today().strftime("%Y%m%d")}-'
+        prefix = f'P-{mid}{timezone.localdate().strftime("%Y%m%d")}-'
         with transaction.atomic():
             existing = (Contract.objects.filter(contract_no__startswith=prefix)
                         .select_for_update().values_list('contract_no', flat=True))
@@ -517,7 +518,7 @@ class ARRecord(models.Model):
         责任链：对账逾期(非销售责任) → 开票逾期(开票人责任) → 票后/回款逾期(销售对接人责任)。
         不开票项目跳过开票环节，对账后直接进入回款责任。
         """
-        today = today or datetime.date.today()
+        today = today or timezone.localdate()
         outstanding = self.outstanding_amount or Decimal('0')
         inv_date = _as_date(self.invoice_date)
         recon_date = _as_date(self.reconciliation_date)
@@ -605,7 +606,7 @@ class ARRecord(models.Model):
         return '已开票'
 
     def status_dict(self, today=None):
-        today = today or datetime.date.today()
+        today = today or timezone.localdate()
         eomonth_today = _eomonth(today.year, today.month)
         outstanding = self.outstanding_amount or Decimal('0')
         due = self.due_date
@@ -937,7 +938,7 @@ class AdvanceRecord(models.Model):
 
     def aging_dict(self, today=None):
         """挂账账龄：未核销余额从款项日期起的挂账天数；超预计核销日期则逾期。"""
-        today = today or datetime.date.today()
+        today = today or timezone.localdate()
         if (self.balance_amount or Decimal('0')) <= 0:
             return {'pending_days': 0, 'is_overdue': False, 'overdue_days': 0}
         base_date = _as_date(self.occur_date)

@@ -32,7 +32,7 @@ def customers(request):
     if request.method == 'GET':
         from django.db.models.functions import Coalesce
         from django.db.models import Exists, OuterRef
-        today = datetime.date.today()
+        today = timezone.localdate()
         # 客户按事业部隔离 + 顶部全局范围（?depts）一并生效，与项目/应收口径一致；
         # _ar_dept_filter 对无授权部门的用户返回空集（杜绝「无部门=看全部」漏洞）。
         qs = _ar_dept_filter(Customer.objects.all(), request, dept_field='delivery_dept')
@@ -322,7 +322,7 @@ def customer_detail(request, pk):
 
     if request.method == 'GET':
         d = c.to_dict()
-        today = datetime.date.today()
+        today = timezone.localdate()
         # 该客户的项目 + 每个项目的应收聚合（部门作用域；ar_shared_only 仅见共享业务）
         proj_qs = _ar_dept_filter(
             ARProject.objects.filter(customer_id=pk), request,

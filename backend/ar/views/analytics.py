@@ -15,7 +15,7 @@ def analytics_aging(request):
     if denied:
         return denied
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     eomonth_today = datetime.date(today.year, today.month,
                                   calendar.monthrange(today.year, today.month)[1])
 
@@ -70,7 +70,7 @@ def analytics_collection_rate(request):
     if denied:
         return denied
 
-    year = _int_param(request, 'year', datetime.date.today().year)
+    year = _int_param(request, 'year', timezone.localdate().year)
     qs = _ar_dept_filter(ARRecord.objects.filter(operation_year=year), request,
                          shared_field='project__is_shared')
     dept = request.GET.get('dept', '').strip()
@@ -152,7 +152,7 @@ def analytics_status_dist(request):
     if denied:
         return denied
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     eomonth_today = datetime.date(today.year, today.month,
                                   calendar.monthrange(today.year, today.month)[1])
     qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
@@ -194,7 +194,7 @@ def analytics_by_pm(request):
     if denied:
         return denied
 
-    year = _int_param(request, 'year', datetime.date.today().year)
+    year = _int_param(request, 'year', timezone.localdate().year)
     qs = _ar_dept_filter(ARRecord.objects.filter(operation_year=year), request,
                          shared_field='project__is_shared')
     dept = request.GET.get('dept', '').strip()
@@ -251,7 +251,7 @@ def analytics_unit_economics(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
     try:
-        year = int(request.GET.get('year') or datetime.date.today().year)
+        year = int(request.GET.get('year') or timezone.localdate().year)
     except (TypeError, ValueError):
         return err('年份无效')
     month = None
@@ -414,7 +414,7 @@ def analytics_business_finance(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
     try:
-        year = int(request.GET.get('year') or datetime.date.today().year)
+        year = int(request.GET.get('year') or timezone.localdate().year)
     except (TypeError, ValueError):
         return err('年份无效')
     month = None
@@ -429,7 +429,7 @@ def analytics_business_finance(request):
     if group_by not in ('project', 'customer'):
         group_by = 'project'
     dept = (request.GET.get('dept') or '').strip()
-    today = datetime.date.today()
+    today = timezone.localdate()
 
     # ── 盈利侧：ProjectMargin 按项目聚合（沿用 unit-economics 口径）──────────────
     from caiwu.models import ProjectMargin
@@ -604,10 +604,10 @@ def analytics_project_pnl(request):
     if not name:
         return err('缺少项目名')
     try:
-        year = int(request.GET.get('year') or datetime.date.today().year)
+        year = int(request.GET.get('year') or timezone.localdate().year)
     except (TypeError, ValueError):
         return err('年份无效')
-    today = datetime.date.today()
+    today = timezone.localdate()
 
     # ── 盈利侧：ProjectMargin 按月 ──────────────────────────────────────────────
     from caiwu.models import ProjectMargin
@@ -776,9 +776,9 @@ def analytics_project_cashflow(request):
     if group_by not in _CASHFLOW_DIMS:
         group_by = 'project'
     try:
-        year = int(request.GET.get('year') or datetime.date.today().year)
+        year = int(request.GET.get('year') or timezone.localdate().year)
     except (TypeError, ValueError):
-        year = datetime.date.today().year
+        year = timezone.localdate().year
 
     # Date range: explicit start/end overrides year-based default
     _ds_raw = _normalize_date(request.GET.get('date_start'))
@@ -899,7 +899,7 @@ def analytics_forecast(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
     try:
-        year = int(request.GET.get('year') or datetime.date.today().year)
+        year = int(request.GET.get('year') or timezone.localdate().year)
     except (TypeError, ValueError):
         return err('年份无效')
     dept = (request.GET.get('dept') or '').strip()
@@ -907,7 +907,7 @@ def analytics_forecast(request):
         horizon = min(max(int(request.GET.get('horizon') or 6), 3), 12)
     except (TypeError, ValueError):
         horizon = 6
-    today = datetime.date.today()
+    today = timezone.localdate()
 
     base = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
     if dept:
@@ -1017,7 +1017,7 @@ def analytics_by_dept(request):
     denied = _page_denied(request, 'ar_analytics')
     if denied:
         return denied
-    today = datetime.date.today()
+    today = timezone.localdate()
     month_start = today.replace(day=1)
     month_end = today.replace(day=calendar.monthrange(today.year, today.month)[1])
 
@@ -1098,7 +1098,7 @@ def analytics_by_dept(request):
 @pk_required()
 def analytics_target_decomp(request):
     """年度目标 → 各事业部分解 → 各月目标/实际/完成率。"""
-    year = _int_param(request, 'year', datetime.date.today().year)
+    year = _int_param(request, 'year', timezone.localdate().year)
 
     from caiwu.models import FinancialTarget, FinancialEntry, ImportBatch, L1Category
     from django.db.models import Sum as _Sum
@@ -1131,7 +1131,7 @@ def analytics_target_decomp(request):
     for r in agg_qs:
         actuals.setdefault(r['batch__business_unit'], {})[r['batch__month']] = float(r['amount'] or 0)
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     elapsed = today.month if today.year == year else (12 if today.year > year else 0)
 
     all_bus = sorted(set(annual_by_bu) | set(monthly_by_bu) | set(actuals))
@@ -1208,7 +1208,7 @@ def analytics_aging_by_customer(request):
     if denied:
         return denied
 
-    today = datetime.date.today()
+    today = timezone.localdate()
 
     qs = _ar_dept_filter(
         ARRecord.objects.filter(outstanding_amount__gt=0), request,

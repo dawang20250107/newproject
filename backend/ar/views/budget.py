@@ -16,7 +16,7 @@ def _budget_list_create(request, Model, page_key):
         dept = request.GET.get('dept', '').strip()
         if dept:
             qs = qs.filter(delivery_dept=dept)
-        _today = datetime.date.today()
+        _today = timezone.localdate()
         _ds, _de = _parse_budget_date_range(request, _today)
         qs = qs.filter(expected_date__gte=_ds, expected_date__lte=_de)
         page = max(1, int(request.GET.get('page', 1) or 1))
@@ -514,7 +514,7 @@ def _budget_export(request, Model, kind):
     dept = request.GET.get('dept', '').strip()
     if dept:
         qs = qs.filter(delivery_dept=dept)
-    _today = datetime.date.today()
+    _today = timezone.localdate()
     _ds, _de = _parse_budget_date_range(request, _today)
     qs = qs.filter(expected_date__gte=_ds, expected_date__lte=_de)
     if qs.count() > 5000:
@@ -590,7 +590,7 @@ def budget_summary(request):
     if denied:
         return denied
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     start_date, end_date = _parse_budget_date_range(request, today)
 
     if request.pk_role == 'super_admin':
@@ -701,7 +701,7 @@ def budget_project_compare(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     start_date, end_date = _parse_budget_date_range(request, today)
 
     if request.pk_role == 'super_admin':
