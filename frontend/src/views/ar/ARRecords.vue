@@ -143,9 +143,72 @@ function toggleFullscreen() {
     document.exitFullscreen?.().then(() => { isFullscreen.value = false }).catch(() => {})
   }
 }
-// 模板表达式访问不到 window，打印必须经由组件方法转调
+// 打印：不直接打印交互式页面（勾选框/筛选图标/角标会一起打出来），
+// 而是克隆当前可见表格、剥离全部交互元素后，注入干净报表版式经隐藏 iframe 打印。
 function printTable() {
-  window.print()
+  const scope = document.querySelector('.ar-view')
+  const src = scope && [...scope.querySelectorAll('table')].find(t => t.offsetParent !== null)
+  if (!src) return
+  const tbl = src.cloneNode(true)
+  // 剥离交互元素：勾选列、列宽拖柄、筛选/排序按钮、行内按钮输入框、各类角标与提醒符号
+  tbl.querySelectorAll(
+    '.sel-col, .col-rh, .colf-btn, button, input, .due-soon-badge, .rec-badge, .inv-warn, .row-acts'
+  ).forEach(el => el.remove())
+  // 表头筛选组件还原为纯文字列名
+  tbl.querySelectorAll('.colf').forEach(colf => {
+    const label = colf.querySelector('.colf-label')?.textContent?.trim() || ''
+    colf.replaceWith(document.createTextNode(label))
+  })
+  // 去掉屏显内联样式（冻结列宽/sticky 偏移），交给打印版式自动布局
+  tbl.querySelectorAll('[style]').forEach(el => el.removeAttribute('style'))
+  tbl.removeAttribute('style')
+
+  const tabLabel = TABS.find(t => t.key === activeTab.value)?.label || ''
+  const now = new Date()
+  const p2 = n => String(n).padStart(2, '0')
+  const stamp = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}`
+  const meta = total.value
+    ? `本页 ${items.value.length} 条 / 共 ${total.value} 条　·　打印时间 ${stamp}`
+    : `打印时间 ${stamp}`
+  const title = `应收账款${tabLabel ? ' · ' + tabLabel : ''}`
+
+  const html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>${title}</title><style>
+    @page { size: A4 landscape; margin: 10mm 12mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #1a1a1a; font: 9pt/1.45 "Microsoft YaHei", "PingFang SC", "Helvetica Neue", sans-serif; }
+    .p-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #1a1a1a; padding-bottom: 6px; margin-bottom: 10px; }
+    .p-head h1 { margin: 0; font-size: 14pt; letter-spacing: 0.06em; }
+    .p-meta { font-size: 8pt; color: #555; }
+    table { width: 100%; border-collapse: collapse; font-size: 8.5pt; }
+    thead { display: table-header-group; }
+    tr { break-inside: avoid; }
+    th { background: #efedea; border: 0.5pt solid #999; padding: 4px 6px; font-weight: 700; text-align: left; white-space: nowrap; }
+    td { border: 0.5pt solid #c2c2c2; padding: 3px 6px; vertical-align: middle; }
+    tbody tr:nth-child(even) td { background: #f8f7f5; }
+    th.amt, td.amt { text-align: right; font-variant-numeric: tabular-nums; }
+    th.ctr, td.ctr { text-align: center; }
+    td.fw { font-weight: 700; }
+    .text-muted { color: #767676; }
+    .proj-sub { font-size: 7.5pt; color: #767676; }
+    tfoot td { font-weight: 700; background: #efedea; border-top: 1.2pt solid #333; }
+    .empty-cell { text-align: center; color: #999; padding: 18px; }
+  </style></head><body>
+    <div class="p-head"><h1>${title}</h1><div class="p-meta">${meta}</div></div>
+    ${tbl.outerHTML}
+  </body></html>`
+
+  const frame = document.createElement('iframe')
+  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden'
+  frame.srcdoc = html
+  frame.onload = () => {
+    const win = frame.contentWindow
+    win.addEventListener('afterprint', () => setTimeout(() => frame.remove(), 200))
+    win.focus()
+    win.print()
+  }
+  document.body.appendChild(frame)
+  // 兜底回收：部分浏览器不派发 afterprint
+  setTimeout(() => { if (frame.parentNode) frame.remove() }, 120000)
 }
 // 监听 ESC 退出全屏
 if (typeof document !== 'undefined') {
