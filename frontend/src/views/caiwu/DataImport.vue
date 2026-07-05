@@ -1,6 +1,7 @@
 <script setup>
 import { confirmDlg } from '../../composables/confirm.js'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch, defineAsyncComponent } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import api from '../../api/caiwu.js'
@@ -12,6 +13,26 @@ import { copyText } from '../../utils/clipboard.js'
 import { useToast } from '../../composables/useToast.js'
 
 const auth = useCaiwuAuth()
+
+// ── 页签：财务数据 / 内部往来核对（内往并入数据加工，组件按需懒加载）────────────
+const InternalRecon = defineAsyncComponent(() => import('./InternalRecon.vue'))
+const route = useRoute()
+const router = useRouter()
+const canData = computed(() => auth.canPage('data'))
+const canInternal = computed(() => auth.canPage('internal'))
+// 权限钳制：无内往权限不进内往页签；无数据权限（仅内往）固定内往页签
+const clampTab = (t) => {
+  if (t === 'internal') return canInternal.value ? 'internal' : 'data'
+  return canData.value ? 'data' : 'internal'
+}
+const mainTab = ref(clampTab(route.query.tab === 'internal' ? 'internal' : 'data'))
+watch(mainTab, (t) => {
+  router.replace({ query: { ...route.query, tab: t === 'internal' ? 'internal' : undefined } })
+})
+watch(() => route.query.tab, (t) => {
+  mainTab.value = clampTab(t === 'internal' ? 'internal' : 'data')
+})
+
 const batches = ref([])
 const loading = ref(false)
 const loadErr = ref('')
@@ -245,6 +266,15 @@ onMounted(() => {
 
 <template>
   <div>
+    <!-- 页签：财务数据 / 内部往来核对（两个权限都有才显示切换）-->
+    <div v-if="canData && canInternal" class="di-tabs">
+      <button :class="['di-tab', mainTab === 'data' ? 'active' : '']" @click="mainTab = 'data'">财务数据</button>
+      <button :class="['di-tab', mainTab === 'internal' ? 'active' : '']" @click="mainTab = 'internal'">内部往来核对</button>
+    </div>
+
+    <InternalRecon v-if="mainTab === 'internal'" />
+
+    <template v-else>
     <div class="topbar">
       <div>
         <h1>数据加工</h1>
@@ -525,6 +555,7 @@ onMounted(() => {
 
     <!-- 右键上下文菜单（批次列表）-->
     <ContextMenu :ctx="ctx" :items="ctxItems" />
+    </template>
   </div>
 </template>
 
@@ -569,6 +600,15 @@ onMounted(() => {
   color: var(--muted); font-size: 13px; transition: all .18s; text-align: center;
 }
 .up-drop:hover, .up-drop.dropping { border-color: var(--primary); background: rgba(201,99,66,0.06); color: var(--primary); }
+.di-tabs {
+  display: flex; gap: 4px; padding: 3px; margin-bottom: 14px;
+  background: rgba(0, 0, 0, 0.04); border-radius: 10px; width: fit-content;
+}
+.di-tab {
+  border: 0; background: none; padding: 6px 20px; font-size: 12.5px; font-weight: 600;
+  color: var(--muted); border-radius: 8px; cursor: pointer; transition: all .15s;
+}
+.di-tab.active { background: var(--card, #fff); color: var(--text); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1); }
 .up-drop.filled { border-style: solid; border-color: var(--primary); background: rgba(201,99,66,0.06); color: var(--text); }
 .hq-note {
   display: flex; align-items: flex-start; gap: 7px;

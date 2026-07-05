@@ -336,21 +336,6 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         </Transition>
       </router-link>
 
-      <router-link v-if="auth.canPage('caiwu_internal')" to="/caiwu/internal" class="nav-item"
-        :class="{ active: route.path === '/caiwu/internal' }"
-        :title="effectiveCollapsed ? '内部往来' : undefined"
-        @click="onNavClick">
-        <span class="nav-icon">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M17 3l4 4-4 4"/><path d="M21 7H7"/>
-            <path d="M7 21l-4-4 4-4"/><path d="M3 17h14"/>
-          </svg>
-        </span>
-        <Transition name="label-fade">
-          <span v-if="!effectiveCollapsed" class="nav-label">内部往来</span>
-        </Transition>
-      </router-link>
-
       <router-link v-if="auth.canPage('caiwu_charts')" to="/caiwu/project-margin" class="nav-item"
         :class="{ active: route.path === '/caiwu/project-margin' }"
         :title="effectiveCollapsed ? '项目毛利' : undefined"
@@ -379,7 +364,9 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         </Transition>
       </router-link>
 
-      <router-link v-if="auth.canPage('caiwu_data')" to="/caiwu/data" class="nav-item"
+      <router-link v-if="auth.canPage('caiwu_data') || auth.canPage('caiwu_internal')"
+        :to="auth.canPage('caiwu_data') ? '/caiwu/data' : { path: '/caiwu/data', query: { tab: 'internal' } }"
+        class="nav-item"
         :class="{ active: route.path === '/caiwu/data' }"
         :title="effectiveCollapsed ? '数据加工' : undefined"
         @click="onNavClick">

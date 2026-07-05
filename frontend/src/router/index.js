@@ -28,7 +28,8 @@ const routes = [
   { path: '/caiwu/cockpit', component: () => import('../views/caiwu/Cockpit.vue'), meta: { page: 'caiwu_cockpit' } },
   { path: '/caiwu/knowledge', component: () => import('../views/caiwu/KnowledgeBase.vue'), meta: { page: 'caiwu_cockpit' } },
   { path: '/caiwu/metrics', component: () => import('../views/caiwu/Metrics.vue'), meta: { page: 'caiwu_metrics' } },
-  { path: '/caiwu/internal', component: () => import('../views/caiwu/InternalRecon.vue'), meta: { page: 'caiwu_internal', fullHeight: true } },
+  // 内部往来已并入数据加工页签；旧链接重定向保持可用
+  { path: '/caiwu/internal', redirect: { path: '/caiwu/data', query: { tab: 'internal' } } },
   { path: '/caiwu/settings', component: () => import('../views/caiwu/Settings.vue'), meta: { role: 'super_admin' } },
   // Admin
   { path: '/users', component: () => import('../views/Users.vue'), meta: { role: 'super_admin', fullHeight: true } },
@@ -63,7 +64,11 @@ router.beforeEach((to, _from, next) => {
   if (to.meta.public) return next()
   if (!auth.isLoggedIn) return next('/login')
   if (to.meta.role === 'super_admin' && !auth.isSuperAdmin) return next(firstAllowedPage(auth))
-  if (to.meta.page && !canVisit(auth, to.meta.page)) return next(firstAllowedPage(auth))
+  if (to.meta.page && !canVisit(auth, to.meta.page)) {
+    // 数据加工页承载「内部往来」页签：仅有内往权限的用户按页签放行
+    if (to.path === '/caiwu/data' && to.query.tab === 'internal' && auth.canPage('caiwu_internal')) return next()
+    return next(firstAllowedPage(auth))
+  }
   next()
 })
 
