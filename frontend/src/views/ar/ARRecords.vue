@@ -143,6 +143,10 @@ function toggleFullscreen() {
     document.exitFullscreen?.().then(() => { isFullscreen.value = false }).catch(() => {})
   }
 }
+// 模板表达式访问不到 window，打印必须经由组件方法转调
+function printTable() {
+  window.print()
+}
 // 监听 ESC 退出全屏
 if (typeof document !== 'undefined') {
   document.addEventListener('fullscreenchange', () => {
@@ -1539,7 +1543,7 @@ function clearFilters() {
             <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />
           </label>
           <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">↓ 导出</button>
-          <button class="btn btn-ghost btn-sm" @click="() => window.print()" title="打印当前表格">⎙ 打印</button>
+          <button class="btn btn-ghost btn-sm" @click="printTable" title="打印当前表格">⎙ 打印</button>
           <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate">+ 新增应收</button>
         </div>
       </div>
@@ -3623,8 +3627,16 @@ function clearFilters() {
   .ar-head, .filter-chipbar, .bulk-bar, .bottom-bar,
   .segment-ctrl, .metrics-bar, .health-alert,
   .row-acts, .col-rh, button, .modal-overlay { display: none !important; }
+  /* 屏显是 overflow:hidden 的 flex 链（视口内滚动），打印要整链放开成普通文档流，
+     否则输出被裁成可视区一页 */
+  .ar-view, .ar-view > .card, .ar-view > .card > .ar-pane,
+  .ar-pane.pane-flex > .pane-scroll, .dt-scroll, .table-wrap {
+    display: block !important; overflow: visible !important;
+    height: auto !important; max-height: none !important; flex: none !important;
+  }
   .card { box-shadow: none !important; border: none !important; padding: 0 !important; }
-  .dt-scroll { max-height: none !important; overflow: visible !important; }
+  /* 打印无滚动条，表头 sticky 反而会在分页处重叠内容 */
+  .rec-table thead th { position: static !important; }
   .rec-table th, .rec-table td { font-size: 9pt !important; padding: 3px 6px !important; }
   body { background: white !important; }
 }

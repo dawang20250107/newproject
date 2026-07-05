@@ -855,3 +855,18 @@ body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
 .data-row, .drillable, .pcf-row, .cmp-row, .pm-row, .row {
   cursor: context-menu;
 }
+
+/* ── 打印（全局）─────────────────────────────────────────────────────────
+   组件内 scoped 的 @media print 只能隐藏组件自身元素；导航栏/背景层/主区
+   布局在全局层，这里统一处理，否则打印会带出侧边栏、左侧留白、
+   且 full-height-view 的 overflow:hidden + 100vh 会把内容裁成一页。 */
+@media print {
+  .sidebar, .mobile-nav-toggle, .mobile-nav-backdrop, .bg-layer { display: none !important; }
+  .layout { display: block !important; min-height: auto !important; }
+  .main-content, .main-public {
+    margin-left: 0 !important; padding: 0 !important;
+    overflow: visible !important; height: auto !important;
+  }
+  .main-content.full-height-view { display: block !important; }
+  body { background: #fff !important; }
+}
