@@ -7,6 +7,7 @@ from openpyxl import Workbook
 from caiwu.models import (
     BUSINESS_UNITS,
     FinancialEntry,
+    InternalBalance,
     InternalBatch,
     InternalEntry,
     FinancialTarget,
@@ -1419,7 +1420,115 @@ class InternalReconTests(TestCase):
         d = res.json()['data']
         idx = d['units'].index('劳务事业部')
         self.assertIsNotNone(d['batches'][idx])
-        bid = d['batches'][idx]['id']
+        bid = d['batches'][idx]['detail']['id']
         res = self.client.delete(f'/api/cw/internal/batches/{bid}', **self.auth())
         self.assertEqual(res.status_code, 200)
         self.assertEqual(InternalEntry.objects.count(), 0)
+
+    @staticmethod
+    def _kingdee_detail_xlsx(rows):
+        """真实金蝶「明细分类账」形制：标题行 + 账簿行 + 两行复合表头 + 账簿列。"""
+        import io
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['明细分类账'])
+        ws.append(['账簿 : 卡行通集团主账簿; 四川迭黎信息技术有限公司主账簿;'])
+        ws.append(['序号', '左树科目编码', '左树科目名称', '账簿', '期间', '记账日期',
+                   '业务日期', '凭证字号', '摘要', '核算维度', '借方', '贷方', '余额', ''])
+        ws.append(['', '', '', '', '', '', '', '', '', '', '', '', '方向', '金额'])
+        for r in rows:
+            ws.append(r)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        buf.name = 'detail.xlsx'
+        return buf
+
+    def test_kingdee_multibook_detail_autosplit(self):
+        """真实形制：账簿列自动拆主体、公司全称映射、期初余额行跳过、期间按记账日期。"""
+        f = self._kingdee_detail_xlsx([
+            [1.0, '2241.04', '内部往来', '卡行通集团主账簿', '', '', '', '', '期初余额',
+             '组织机构:四川阔展物流有限公司', '', '', '借', 2176795.72],
+            [2.0, '2241.04', '内部往来', '卡行通集团主账簿', '2026年5期', '2026-05-01', '2026-05-01',
+             '记0007', '阔展收停车费', '组织机构:四川阔展物流有限公司', 72.57, '', '借', 2176868.29],
+            [3.0, '2241.04', '内部往来', '四川迭黎信息技术有限公司主账簿', '2026年5期', '2026-05-02',
+             '2026-05-02', '记0009', '总部代付', '组织机构:卡行通集团', '', 500, '贷', 500],
+        ])
+        res = self.client.post('/api/cw/internal/upload', {'file': f}, **self.auth())
+        self.assertEqual(res.status_code, 200, res.content)
+        d = res.json()['data']
+        self.assertEqual(d['kind'], 'detail')
+        self.assertEqual(d['rows'], 2)
+        bus = sorted(b['business_unit'] for b in d['batches'])
+        self.assertEqual(bus, ['劳务事业部', '集团总部'])
+        e1 = InternalEntry.objects.get(business_unit='集团总部')
+        self.assertEqual(e1.counterparty, '阔展事业部')
+        self.assertEqual((e1.year, e1.month), (2026, 5))
+        e2 = InternalEntry.objects.get(business_unit='劳务事业部')
+        self.assertEqual(e2.counterparty, '集团总部')
+
+    @staticmethod
+    def _kingdee_balance_xlsx(rows):
+        """真实金蝶「核算维度余额表」形制：两行复合表头（组头+借/贷子头）。"""
+        import io
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['核算维度余额表'])
+        ws.append(['账簿 : 卡行通集团主账簿;'])
+        ws.append(['序号', '组织机构名称', '科目编码', '科目名称', '币种', '账簿名称',
+                   '年初余额', '', '期初余额', '', '本期发生额', '', '本年累计', '', '期末余额', ''])
+        ws.append(['', '', '', '', '', '',
+                   '借方金额', '贷方金额', '借方金额', '贷方金额', '借方金额', '贷方金额',
+                   '借方金额', '贷方金额', '借方金额', '贷方金额'])
+        for r in rows:
+            ws.append(r)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        buf.name = 'balance.xlsx'
+        return buf
+
+    def test_kingdee_balance_parent_child_dedup_and_mode(self):
+        """余额表：父科目 2241 与子科目 2241.04 同现仅留子行；矩阵切换期末余额口径。"""
+        f = self._kingdee_balance_xlsx([
+            [1.0, '成都宁创物流有限公司', '2241', '其他应付款', '人民币', '卡行通集团主账簿',
+             '', '', 1859886.12, '', 3874267.83, 2188867.22, '', '', 3545286.73, ''],
+            [2.0, '成都宁创物流有限公司', '2241.04', '内部往来', '人民币', '卡行通集团主账簿',
+             '', '', 1859886.12, '', 3874267.83, 2188867.22, '', '', 3545286.73, ''],
+        ])
+        res = self.client.post('/api/cw/internal/upload',
+                               {'file': f, 'year': 2026, 'month': 5}, **self.auth())
+        self.assertEqual(res.status_code, 200, res.content)
+        d = res.json()['data']
+        self.assertEqual(d['kind'], 'balance')
+        self.assertEqual(d['rows'], 1)                       # 父行去重
+        bal = InternalBalance.objects.get()
+        self.assertEqual(bal.business_unit, '集团总部')
+        self.assertEqual(bal.counterparty, '供应链事业部')
+        self.assertEqual(float(bal.closing), 3545286.73)
+        self.assertEqual(float(bal.opening), 1859886.12)
+        # 矩阵切换为期末余额口径
+        res = self.client.get('/api/cw/internal/matrix?year=2026&month=5', **self.auth())
+        d = res.json()['data']
+        self.assertEqual(d['mode'], 'balance')
+        pair = next(p for p in d['pairs'] if {p['a'], p['b']} == {'集团总部', '供应链事业部'})
+        self.assertAlmostEqual(abs(pair['diff']), 3545286.73, places=2)
+
+    def test_pair_includes_balance_summary(self):
+        f = self._kingdee_balance_xlsx([
+            [1.0, '四川迭黎信息技术有限公司', '2241.04', '内部往来', '人民币', '卡行通集团主账簿',
+             '', '', 100, '', 50, 30, '', '', 120, ''],
+            [2.0, '卡行通集团', '2241.04', '内部往来', '人民币', '四川迭黎信息技术有限公司主账簿',
+             '', '', '', 100, 30, 50, '', '', '', 120],
+        ])
+        res = self.client.post('/api/cw/internal/upload',
+                               {'file': f, 'year': 2026, 'month': 5}, **self.auth())
+        self.assertEqual(res.status_code, 200, res.content)
+        res = self.client.get(
+            '/api/cw/internal/pair?year=2026&month=5&a=集团总部&b=劳务事业部', **self.auth())
+        d = res.json()['data']
+        self.assertIsNotNone(d['balance'])
+        self.assertAlmostEqual(d['balance']['closing_diff'], 0.0, places=2)
+        self.assertAlmostEqual(d['balance']['opening_diff'], 0.0, places=2)

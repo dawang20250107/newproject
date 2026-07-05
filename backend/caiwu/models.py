@@ -365,6 +365,7 @@ class InternalBatch(models.Model):
     business_unit = models.CharField('记账主体', max_length=32, db_index=True)
     year = models.IntegerField('年')
     month = models.IntegerField('月')
+    kind = models.CharField('数据类型', max_length=10, default='detail')  # detail=明细分类账 / balance=核算维度余额表
     filename = models.CharField('文件名', max_length=200, blank=True, default='')
     row_count = models.IntegerField('明细行数', default=0)
     uploaded_by = models.CharField('上传人', max_length=64, blank=True, default='')
@@ -378,7 +379,7 @@ class InternalBatch(models.Model):
     def to_dict(self):
         return {
             'id': self.id, 'business_unit': self.business_unit,
-            'year': self.year, 'month': self.month,
+            'year': self.year, 'month': self.month, 'kind': self.kind,
             'filename': self.filename, 'row_count': self.row_count,
             'uploaded_by': self.uploaded_by,
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -426,4 +427,36 @@ class InternalEntry(models.Model):
             'summary': self.summary,
             'debit': float(self.debit or 0), 'credit': float(self.credit or 0),
             'side': self.side, 'signed': float(self.signed),
+        }
+
+
+class InternalBalance(models.Model):
+    """内部往来余额行（来自金蝶「核算维度余额表」，组织机构 × 账簿）。
+    余额口径核对含期初遗留差异，是矩阵层的首选口径；signed 均为 借-贷（债权为正）。"""
+    batch = models.ForeignKey(InternalBatch, on_delete=models.CASCADE, related_name='balances')
+    business_unit = models.CharField('记账主体', max_length=32, db_index=True)
+    counterparty = models.CharField('对方主体', max_length=32, blank=True, default='', db_index=True)
+    counterparty_raw = models.CharField('对方原文', max_length=200, blank=True, default='')
+    year = models.IntegerField('年')
+    month = models.IntegerField('月')
+    subject_code = models.CharField('科目编码', max_length=32, blank=True, default='')
+    subject_name = models.CharField('科目名称', max_length=100, blank=True, default='')
+    opening = models.DecimalField('期初(借-贷)', max_digits=18, decimal_places=2, default=0)
+    debit = models.DecimalField('本期借方', max_digits=18, decimal_places=2, default=0)
+    credit = models.DecimalField('本期贷方', max_digits=18, decimal_places=2, default=0)
+    closing = models.DecimalField('期末(借-贷)', max_digits=18, decimal_places=2, default=0)
+
+    class Meta:
+        app_label = 'caiwu'
+        db_table = 'caiwu_internal_balance'
+        indexes = [models.Index(fields=['business_unit', 'counterparty', 'year', 'month'])]
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'business_unit': self.business_unit,
+            'counterparty': self.counterparty, 'counterparty_raw': self.counterparty_raw,
+            'subject_code': self.subject_code, 'subject_name': self.subject_name,
+            'opening': float(self.opening or 0),
+            'debit': float(self.debit or 0), 'credit': float(self.credit or 0),
+            'closing': float(self.closing or 0),
         }

@@ -117,8 +117,7 @@ function onUpDrop(e) {
   upFile.value = f
 }
 async function doUpload() {
-  if (!upBu.value) { toast.error('请选择记账主体'); return }
-  if (!upFile.value) { toast.error('请选择金蝶导出的明细账文件'); return }
+  if (!upFile.value) { toast.error('请选择金蝶导出的文件'); return }
   uploading.value = true
   upResult.value = null
   try {
@@ -157,25 +156,30 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
     <div class="ir-head">
       <div class="ir-title">
         <h1>内部往来核对</h1>
-        <span class="ir-sub">金蝶核算维度明细账 · 镜像核对 · 差异定位</span>
+        <span class="ir-sub">金蝶明细分类账 / 核算维度余额表 · 镜像核对 · 差异定位</span>
       </div>
       <div class="ir-ctrl">
         <select v-model.number="year" class="ir-sel"><option v-for="y in YEARS" :key="y" :value="y">{{ y }} 年</option></select>
         <select v-model.number="month" class="ir-sel"><option v-for="m in 12" :key="m" :value="m">{{ m }} 月</option></select>
-        <button v-if="auth.canUpload" class="btn btn-primary btn-sm" @click="openUpload('')">↑ 上传明细账</button>
+        <button v-if="auth.canUpload" class="btn btn-primary btn-sm" @click="openUpload('')">↑ 上传金蝶数据</button>
       </div>
     </div>
 
-    <!-- ── 覆盖条：各主体上传状态 ───────────────────────────────────────── -->
+    <!-- ── 覆盖条：各主体上传状态（明细/余额两种数据分别标记）──────────────── -->
     <div class="ir-cover">
       <div v-for="(bu, i) in units" :key="bu"
-        :class="['cov-chip', uploadedSet.has(bu) ? 'on' : '']"
-        :title="batches[i] ? `${batches[i].row_count} 行 · ${batches[i].uploaded_by || '—'} 上传` : '未上传，点击上传'"
+        :class="['cov-chip', batches[i] ? 'on' : '']"
+        :title="batches[i] ? '' : '未上传，点击上传'"
         @click="auth.canUpload && openUpload(bu)">
         <span class="cov-dot"></span>{{ shortName(bu) }}
-        <span v-if="batches[i]" class="cov-n">{{ batches[i].row_count }}</span>
-        <button v-if="batches[i] && auth.canDelete" class="cov-x" title="删除该主体本期数据"
-          @click.stop="delBatch(batches[i])">✕</button>
+        <template v-for="k in ['balance', 'detail']" :key="k">
+          <span v-if="batches[i]?.[k]" class="cov-tag"
+            :title="`${k === 'balance' ? '余额表' : '明细账'} ${batches[i][k].row_count} 行 · ${batches[i][k].uploaded_by || '—'} 上传`">
+            {{ k === 'balance' ? '余' : '明' }}{{ batches[i][k].row_count }}
+            <button v-if="auth.canDelete" class="cov-x" title="删除这份数据"
+              @click.stop="delBatch(batches[i][k])">✕</button>
+          </span>
+        </template>
       </div>
     </div>
 
@@ -184,7 +188,10 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
       <div class="kpi"><div class="kpi-l">内往应收合计</div><div class="kpi-v">{{ fmt(kpi.total_ar) }}</div></div>
       <div class="kpi"><div class="kpi-l">内往应付合计</div><div class="kpi-v">{{ fmt(kpi.total_ap) }}</div></div>
       <div class="kpi" :class="kpi.total_diff > 0.005 ? 'warn' : 'ok'">
-        <div class="kpi-l">镜像差异总额</div><div class="kpi-v">{{ fmt(kpi.total_diff) }}</div>
+        <div class="kpi-l">镜像差异总额
+          <span class="mode-badge" :title="matrix?.mode === 'balance' ? '按期末余额核对（含期初遗留差异）' : '按本期发生净额核对（上传余额表可切换为期末口径）'">
+            {{ matrix?.mode === 'balance' ? '期末余额口径' : '本期发生口径' }}</span>
+        </div><div class="kpi-v">{{ fmt(kpi.total_diff) }}</div>
       </div>
       <div class="kpi"><div class="kpi-l">核平 / 往来对</div>
         <div class="kpi-v">{{ kpi.pairs_ok ?? 0 }} <span class="kpi-dim">/ {{ kpi.pairs_total ?? 0 }}</span></div>
@@ -203,7 +210,7 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
     <!-- ── 矩阵 ────────────────────────────────────────────────────────── -->
     <div v-if="activeTab === 'matrix'" class="card ir-body">
       <EmptyState v-if="!loading && !hasAnyData" icon="⇄"
-        text="本期间尚无内往数据 —— 在金蝶总账 → 核算维度明细账（核算维度选「往来单位」），按主体导出后上传" />
+        text="本期间尚无内往数据 —— 上传金蝶「明细分类账」或「核算维度余额表」（支持全部账簿一次性导出）" />
       <template v-else>
         <div class="mx-scroll">
           <table class="mx-tbl">
@@ -291,6 +298,13 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
             <div class="prs-v prs-small">{{ !pairData.a_uploaded ? pairData.a : pairData.b }} 未上传本期数据</div></div>
         </div>
 
+        <div v-if="pairData.balance" class="pr-bal">
+          <span class="pr-bal-t">余额镜像（{{ shortName(pairData.a) }} ⇄ {{ shortName(pairData.b) }}）</span>
+          <span>期初差异 <b :class="Math.abs(pairData.balance.opening_diff) < 0.005 ? 'ok-t' : 'diff-t'">{{ fmtDiff(pairData.balance.opening_diff) }}</b></span>
+          <span>期末差异 <b :class="Math.abs(pairData.balance.closing_diff) < 0.005 ? 'ok-t' : 'diff-t'">{{ fmtDiff(pairData.balance.closing_diff) }}</b></span>
+          <span class="pr-bal-d">{{ shortName(pairData.a) }} 期末 {{ fmt(pairData.balance.a.closing) }} ｜ {{ shortName(pairData.b) }} 期末 {{ fmt(pairData.balance.b.closing) }}</span>
+          <span v-if="Math.abs(pairData.balance.opening_diff) > 0.005" class="pr-bal-hint">⚠ 期初已有差异：本期明细全配平也无法核平期末，需追溯以前期间</span>
+        </div>
         <div class="pr-cols">
           <div v-for="side in ['a', 'b']" :key="side" class="pr-col">
             <div class="pr-col-head">
@@ -330,11 +344,13 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
     <div v-if="showUpload" class="modal-overlay" @click.self="showUpload = false">
       <div class="modal ir-up-modal">
         <h3>上传内部往来明细账</h3>
-        <p class="ir-up-tip">金蝶云星空 → 总账 → <b>核算维度明细账</b>，核算维度选「<b>往来单位</b>」，
-          按记账主体（各事业部/总部账簿）分别导出 xlsx 上传。同主体同期间重复上传将整体替换。</p>
+        <p class="ir-up-tip">支持两种金蝶导出（可勾选全部账簿一次性导出，系统按「账簿」列自动拆分主体）：<br/>
+          ① <b>明细分类账</b>（总账→明细分类账，核算维度=组织机构）→ 两两明细比对；期间按记账日期自动拆分<br/>
+          ② <b>核算维度余额表</b>（总账→核算维度余额表）→ 差异矩阵按期末余额口径（含期初遗留差异），期间取下方所选年月<br/>
+          同主体同期间重复上传将整体替换。</p>
         <div class="ir-up-row">
           <select v-model="upBu" class="ir-sel">
-            <option value="" disabled>选择记账主体</option>
+            <option value="">记账主体：自动识别（推荐）</option>
             <option v-for="u in units" :key="u" :value="u">{{ u }}</option>
           </select>
           <span class="ir-up-period">{{ year }} 年 {{ month }} 月</span>
@@ -346,7 +362,11 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
           <span v-else>点击选择或拖入金蝶导出的明细账（.xlsx）</span>
         </label>
         <div v-if="upResult" class="ir-up-res">
-          <div class="ir-up-ok">✓ 已导入 {{ upResult.rows }} 行（跳过小计/空行 {{ upResult.skipped }} 行）</div>
+          <div class="ir-up-ok">✓ 已识别为「{{ upResult.kind === 'balance' ? '核算维度余额表' : '明细分类账' }}」，
+            导入 {{ upResult.rows }} 行（跳过小计/空行 {{ upResult.skipped }} 行）</div>
+          <div v-if="upResult.batches?.length" class="ir-up-batches">
+            <span v-for="bt in upResult.batches" :key="bt.id" class="ir-up-bt">{{ bt.business_unit }} · {{ bt.year }}-{{ String(bt.month).padStart(2, '0') }} · {{ bt.row_count }} 行</span>
+          </div>
           <div v-if="upResult.unmatched?.length" class="ir-up-warn">
             <b>{{ upResult.unmatched.length }} 类往来单位未能识别为内部主体</b>（按外部往来处理，不参与核对）：
             <div class="ir-up-un"><span v-for="u in upResult.unmatched" :key="u.raw">{{ u.raw }} ×{{ u.count }}</span></div>
@@ -386,6 +406,24 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
 .cov-chip.on { color: var(--text); border-color: rgba(46, 125, 50, 0.35); background: rgba(76, 175, 80, 0.07); }
 .cov-chip.on .cov-dot { background: #43a047; }
 .cov-n { font-size: 10.5px; color: var(--muted); }
+.cov-tag {
+  display: inline-flex; align-items: center; gap: 3px; padding: 0 6px;
+  font-size: 10px; border-radius: 999px; background: rgba(0, 0, 0, 0.05); color: var(--muted);
+}
+.mode-badge {
+  margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 9.5px;
+  background: rgba(201, 99, 66, 0.1); color: var(--primary); font-weight: 600; letter-spacing: 0.02em;
+}
+.pr-bal {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  margin-bottom: 12px; padding: 8px 14px; font-size: 12px;
+  border: 1px dashed var(--border); border-radius: 10px; background: rgba(0, 0, 0, 0.015);
+}
+.pr-bal-t { font-weight: 700; }
+.pr-bal-d { color: var(--muted); }
+.pr-bal-hint { color: #9c6b00; }
+.ir-up-batches { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.ir-up-bt { padding: 1px 8px; background: rgba(76, 175, 80, 0.1); color: #2e7d32; border-radius: 999px; font-size: 11px; }
 .cov-x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 10px; padding: 0 1px; }
 .cov-x:hover { color: #c62828; }
 
