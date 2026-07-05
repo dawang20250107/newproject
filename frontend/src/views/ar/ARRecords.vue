@@ -217,10 +217,21 @@ function buildPrintDoc(allCount) {
       : `打印时间 ${stamp}`)
   const title = `应收账款${tabLabel ? ' · ' + tabLabel : ''}`
 
+  // 可见的打印预览窗口（不用隐藏 iframe：部分浏览器对隐藏 iframe 的打印排版
+  // 不可靠，会打出空页/碎字）。预览页自动调起打印，也可手动点「打印」。
   const html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>${title}</title><style>
     @page { size: A4 landscape; margin: 10mm 12mm; }
     * { box-sizing: border-box; }
     body { margin: 0; color: #1a1a1a; font: 9pt/1.45 "Microsoft YaHei", "PingFang SC", "Helvetica Neue", sans-serif; }
+    .p-toolbar { position: sticky; top: 0; display: flex; align-items: center; gap: 12px;
+      padding: 10px 16px; background: #2b2b2b; color: #eee; font-size: 13px; }
+    .p-toolbar button { font: inherit; padding: 6px 18px; border: 0; border-radius: 6px; cursor: pointer; }
+    .p-toolbar .go { background: #c96342; color: #fff; font-weight: 600; }
+    .p-toolbar .close { background: #555; color: #eee; }
+    .p-tip { opacity: 0.75; }
+    .sheet { max-width: 1123px; margin: 0 auto; padding: 24px 28px; background: #fff; }
+    @media screen { body { background: #8a8a8a; } .sheet { margin: 16px auto; box-shadow: 0 2px 14px rgba(0,0,0,0.35); } }
+    @media print { .p-toolbar { display: none !important; } .sheet { max-width: none; margin: 0; padding: 0; box-shadow: none; } }
     .p-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #1a1a1a; padding-bottom: 6px; margin-bottom: 10px; }
     .p-head h1 { margin: 0; font-size: 14pt; letter-spacing: 0.06em; }
     .p-meta { font-size: 8pt; color: #555; }
@@ -240,25 +251,27 @@ function buildPrintDoc(allCount) {
     tfoot td { font-weight: 700; background: #efedea; border-top: 1.2pt solid #333; }
     .empty-cell { text-align: center; color: #999; padding: 18px; }
   </style></head><body>
-    <div class="p-head"><h1>${title}</h1><div class="p-meta">${meta}</div></div>
-    ${tbl.outerHTML}
+    <div class="p-toolbar">
+      <button class="go" onclick="window.print()">🖨 打印</button>
+      <button class="close" onclick="window.close()">关闭</button>
+      <span class="p-tip">预览无误后点「打印」（纸张方向请选横向）；此工具条不会被打印</span>
+    </div>
+    <div class="sheet">
+      <div class="p-head"><h1>${title}</h1><div class="p-meta">${meta}</div></div>
+      ${tbl.outerHTML}
+    </div>
+    ${'<scr' + 'ipt>'}window.addEventListener('load', function () { setTimeout(function () { window.print() }, 300) })${'</scr' + 'ipt>'}
   </body></html>`
 
-  const frame = document.createElement('iframe')
-  // 必须给 iframe 真实的 A4 横向视口（1123×794 ≈ 297×210mm @96dpi）并移出屏幕外：
-  // 0×0 视口会让部分浏览器按 0 宽排版——表格被挤成一条竖线，打出几十页纸边碎字；
-  // visibility:hidden 在部分浏览器会导致打印空白页。
-  frame.style.cssText = 'position:fixed;left:-12000px;top:0;width:1123px;height:794px;border:0'
-  frame.srcdoc = html
-  frame.onload = () => {
-    const win = frame.contentWindow
-    win.addEventListener('afterprint', () => setTimeout(() => frame.remove(), 200))
-    win.focus()
-    win.print()
+  const win = window.open('', '_blank')
+  if (!win) {
+    toast.error('浏览器拦截了打印预览窗口，请允许本站的弹出窗口后重试')
+    return
   }
-  document.body.appendChild(frame)
-  // 兜底回收：部分浏览器不派发 afterprint
-  setTimeout(() => { if (frame.parentNode) frame.remove() }, 120000)
+  win.document.open()
+  win.document.write(html)
+  win.document.close()
+  win.focus()
 }
 // 监听 ESC 退出全屏
 if (typeof document !== 'undefined') {
