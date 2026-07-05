@@ -1615,20 +1615,65 @@ class AgentIntelligenceTests(TestCase):
         self.assertEqual(len(r2), 1)
         self.assertEqual(b2, '')
 
-    def test_web_skills_degrade_without_config(self):
+    def test_web_skills_and_bing_parser(self):
+        from unittest import mock
         from caiwu import agent_skills
+        from caiwu.views import _parse_bing_html
         ws = agent_skills.get_skill('web_search')
         wf = agent_skills.get_skill('web_fetch')
         self.assertTrue(ws and ws['tool'])
         self.assertTrue(wf and wf['tool'])
-        res = ws['handler'](None, {'query': '物流行业趋势'})
-        self.assertFalse(res['ok'])
-        self.assertIn('未配置', res['error'])
+        self.assertIsNotNone(agent_skills.get_skill('peer_research'))
+        # 必应结果页解析（离线）：标准 b_algo 块 -> title/url/snippet
+        html = ('<ol><li class="b_algo"><h2><a href="https://example.com/a" h="x">'
+                '满帮集团<strong>财报</strong></a></h2><div class="b_caption">'
+                '<p>2025年毛利率18%，同比提升2个点</p></div></li>'
+                '<li class="b_algo"><h2><a href="/relative">坏链接</a></h2></li>'
+                '<li class="b_algo"><h2><a href="https://example.com/b">行业报告</a></h2>'
+                '<p>公路货运运价指数持续回落</p></li></ol>')
+        rows = _parse_bing_html(html)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]['url'], 'https://example.com/a')
+        self.assertEqual(rows[0]['title'], '满帮集团 财报')
+        self.assertIn('毛利率18%', rows[0]['snippet'])
+        # 搜索入口：未配置 API 源时走内置必应（mock 掉网络）
+        with mock.patch('caiwu.views._bing_search', return_value=rows) as mb:
+            res = ws['handler'](None, {'query': '物流行业趋势'})
+        self.assertTrue(res['ok'])
+        self.assertEqual(len(res['data']['results']), 2)
+        mb.assert_called_once()
         # SSRF 防护：内网/回环地址拒绝抓取
         res = wf['handler'](None, {'url': 'http://127.0.0.1:8000/admin'})
         self.assertFalse(res['ok'])
         res = wf['handler'](None, {'url': 'file:///etc/passwd'})
         self.assertFalse(res['ok'])
+
+    def test_peer_research_pipeline_saves_and_dedups(self):
+        from unittest import mock
+        from caiwu.models import CockpitKnowledge
+        from caiwu import agent_research
+        results = [{'title': '行业报告', 'url': 'https://example.com/r', 'snippet': '运价回落'}]
+        distilled = ('[{"title":"运价趋势","content":"2026年上半年公路整车运价指数同比下降4.2%，'
+                     '低货量与运力过剩并存（来源：中国物流与采购联合会，2026-06）"}]')
+        with mock.patch('caiwu.views._web_search_provider', return_value=results), \
+             mock.patch('caiwu.views._skill_web_fetch',
+                        return_value={'ok': True, 'data': {'url': 'u', 'text': '正文', 'note': ''}}), \
+             mock.patch('caiwu.views._deepseek_chat', return_value=distilled):
+            r1 = agent_research.research_topic('公路货运 运价 趋势')
+            self.assertEqual(len(r1['saved']), 1)
+            self.assertEqual(CockpitKnowledge.objects.count(), 1)
+            k = CockpitKnowledge.objects.get()
+            self.assertEqual(k.source, 'ai')
+            self.assertIn('行业调研', k.title)
+            # 二次调研同样内容 -> 查重跳过，不重复入库
+            r2 = agent_research.research_topic('公路货运 运价 趋势')
+            self.assertEqual(len(r2['saved']), 0)
+            self.assertEqual(r2['skipped_dup'], 1)
+            self.assertEqual(CockpitKnowledge.objects.count(), 1)
+        # 搜索失败不抛：返回 note（自动任务不中断）
+        with mock.patch('caiwu.views._web_search_provider', side_effect=RuntimeError('网络不可达')):
+            r3 = agent_research.research_topic('任意主题')
+            self.assertIn('搜索失败', r3['note'])
 
     def test_ai_feedback_endpoint(self):
         from caiwu.models import AiFeedback
