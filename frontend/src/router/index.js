@@ -28,6 +28,7 @@ const routes = [
   { path: '/caiwu/cockpit', component: () => import('../views/caiwu/Cockpit.vue'), meta: { page: 'caiwu_cockpit' } },
   { path: '/caiwu/knowledge', component: () => import('../views/caiwu/KnowledgeBase.vue'), meta: { page: 'caiwu_cockpit' } },
   { path: '/caiwu/metrics', component: () => import('../views/caiwu/Metrics.vue'), meta: { page: 'caiwu_metrics' } },
+  { path: '/caiwu/internal', component: () => import('../views/caiwu/InternalRecon.vue'), meta: { page: 'caiwu_internal', fullHeight: true } },
   { path: '/caiwu/settings', component: () => import('../views/caiwu/Settings.vue'), meta: { role: 'super_admin' } },
   // Admin
   { path: '/users', component: () => import('../views/Users.vue'), meta: { role: 'super_admin', fullHeight: true } },

@@ -357,3 +357,73 @@ class CockpitKnowledge(models.Model):
             'created_by': self.created_by.name if self.created_by_id else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class InternalBatch(models.Model):
+    """内部往来核对：一次上传 = 某记账主体（事业部/总部）某期间的金蝶内往明细。
+    同 (主体, 年, 月) 重复上传时整体替换，保证期间数据幂等。"""
+    business_unit = models.CharField('记账主体', max_length=32, db_index=True)
+    year = models.IntegerField('年')
+    month = models.IntegerField('月')
+    filename = models.CharField('文件名', max_length=200, blank=True, default='')
+    row_count = models.IntegerField('明细行数', default=0)
+    uploaded_by = models.CharField('上传人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('上传时间', auto_now_add=True)
+
+    class Meta:
+        app_label = 'caiwu'
+        db_table = 'caiwu_internal_batch'
+        indexes = [models.Index(fields=['year', 'month'])]
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'business_unit': self.business_unit,
+            'year': self.year, 'month': self.month,
+            'filename': self.filename, 'row_count': self.row_count,
+            'uploaded_by': self.uploaded_by,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class InternalEntry(models.Model):
+    """内部往来明细行（来自金蝶核算维度明细账，核算维度=往来单位）。
+    side 由科目性质推导：资产类(1xxx，应收侧)借增；负债类(2xxx，应付侧)贷增。
+    signed = 我方对对方的净头寸贡献（应收为正、应付为负），镜像核对时
+    A 对 B 的 signed 合计 + B 对 A 的 signed 合计 应为 0。"""
+    batch = models.ForeignKey(InternalBatch, on_delete=models.CASCADE, related_name='entries')
+    business_unit = models.CharField('记账主体', max_length=32, db_index=True)
+    counterparty = models.CharField('对方主体', max_length=32, blank=True, default='', db_index=True)  # 映射后的 BU；空=未识别
+    counterparty_raw = models.CharField('对方原文', max_length=200, blank=True, default='')
+    year = models.IntegerField('年')
+    month = models.IntegerField('月')
+    biz_date = models.DateField('日期', null=True, blank=True)
+    voucher_no = models.CharField('凭证字号', max_length=64, blank=True, default='')
+    subject_code = models.CharField('科目编码', max_length=32, blank=True, default='')
+    subject_name = models.CharField('科目名称', max_length=100, blank=True, default='')
+    summary = models.CharField('摘要', max_length=300, blank=True, default='')
+    debit = models.DecimalField('借方', max_digits=18, decimal_places=2, default=0)
+    credit = models.DecimalField('贷方', max_digits=18, decimal_places=2, default=0)
+    side = models.CharField('方向', max_length=4, default='ar')  # ar=应收侧 / ap=应付侧
+
+    class Meta:
+        app_label = 'caiwu'
+        db_table = 'caiwu_internal_entry'
+        indexes = [models.Index(fields=['business_unit', 'counterparty', 'year', 'month'])]
+
+    @property
+    def signed(self):
+        """对对方的净头寸贡献（债权为正）：借-贷 对两类科目均成立——
+        资产类借增（应收 +）；负债类贷增（应付贷方 → 债权 −）。"""
+        return (self.debit or 0) - (self.credit or 0)
+
+    def to_dict(self):
+        return {
+            'id': self.id, 'business_unit': self.business_unit,
+            'counterparty': self.counterparty, 'counterparty_raw': self.counterparty_raw,
+            'date': self.biz_date.isoformat() if self.biz_date else '',
+            'voucher_no': self.voucher_no,
+            'subject_code': self.subject_code, 'subject_name': self.subject_name,
+            'summary': self.summary,
+            'debit': float(self.debit or 0), 'credit': float(self.credit or 0),
+            'side': self.side, 'signed': float(self.signed),
+        }

@@ -128,6 +128,7 @@ PAGE_KEYS = [
     'dashboard', 'payments', 'approval_records', 'stats',
     'ar_projects', 'ar_records', 'ar_advance', 'ar_analytics', 'ar_cashflow', 'ar_budget',
     'caiwu_report', 'caiwu_data', 'caiwu_charts', 'caiwu_metrics', 'caiwu_cockpit',
+    'caiwu_internal',
 ]
 
 # Caiwu report/chart element permission keys (mirrored from caiwu.views.PERM_FIELD_DEFS)
@@ -279,7 +280,7 @@ def default_job_config(job):
     # Non-caiwu pages True for most roles; caiwu pages default to off
     _non_cw_pages = {k: True for k in PAGE_KEYS if not k.startswith('caiwu_')}
     pages_all = {**_non_cw_pages, 'caiwu_report': False, 'caiwu_data': False, 'caiwu_charts': False,
-                 'caiwu_metrics': False, 'caiwu_cockpit': False}
+                 'caiwu_metrics': False, 'caiwu_cockpit': False, 'caiwu_internal': False}
     ar_pages_all = {k: True for k in ('ar_projects', 'ar_records', 'ar_advance', 'ar_analytics', 'ar_cashflow', 'ar_budget')}
     ar_pages_cashier = {k: (k in ('ar_records', 'ar_advance', 'ar_cashflow', 'ar_budget')) for k in ar_pages_all}
     # Reusable caiwu capability blocks
@@ -297,7 +298,7 @@ def default_job_config(job):
     }
     if job == 'finance_director':
         pages = {**pages_all, 'caiwu_report': True, 'caiwu_data': True, 'caiwu_charts': True,
-                 'caiwu_metrics': True, 'caiwu_cockpit': True}
+                 'caiwu_metrics': True, 'caiwu_cockpit': True, 'caiwu_internal': True}
         return {'pages': pages, 'view': _all_fields(True),
                 'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
                 'can_create': True, 'can_delete': True, 'ar_shared_only': False,
@@ -305,7 +306,7 @@ def default_job_config(job):
                 **_cw_full}
     if job == 'finance_bp':
         pages = {**pages_all, 'caiwu_report': True, 'caiwu_data': True, 'caiwu_charts': True,
-                 'caiwu_metrics': True, 'caiwu_cockpit': True}
+                 'caiwu_metrics': True, 'caiwu_cockpit': True, 'caiwu_internal': True}
         return {'pages': pages, 'view': _all_fields(True),
                 'edit': _all_fields(True), 'ar_view': _all_ar_fields(True),
                 'can_create': True, 'can_delete': False, 'ar_shared_only': False,
@@ -334,7 +335,7 @@ def default_job_config(job):
     if job == 'general_manager':
         # 总经理：全量查看，无编辑/创建；财务分析只读
         pages = {**pages_all, 'caiwu_report': True, 'caiwu_data': False, 'caiwu_charts': True,
-                 'caiwu_metrics': True, 'caiwu_cockpit': True}
+                 'caiwu_metrics': True, 'caiwu_cockpit': True, 'caiwu_internal': True}
         return {'pages': pages, 'view': _all_fields(True),
                 'edit': _all_fields(False), 'ar_view': _all_ar_fields(True),
                 'can_create': False, 'can_delete': False, 'ar_shared_only': False,
@@ -3765,6 +3766,7 @@ def permissions(request):
             {'key': 'caiwu_charts',      'label': '财务分析·图表'},
             {'key': 'caiwu_metrics',     'label': '财务分析·指标管理'},
             {'key': 'caiwu_cockpit',     'label': '财务分析·驾驶舱'},
+            {'key': 'caiwu_internal',    'label': '财务分析·内部往来'},
         ],
         'jobs': jobs,
     })

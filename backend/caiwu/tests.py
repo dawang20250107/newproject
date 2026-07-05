@@ -7,6 +7,8 @@ from openpyxl import Workbook
 from caiwu.models import (
     BUSINESS_UNITS,
     FinancialEntry,
+    InternalBatch,
+    InternalEntry,
     FinancialTarget,
     ImportBatch,
     L1Category,
@@ -1291,3 +1293,133 @@ class CaiwuControlIntegrityTests(TestCase):
         s = resp.json()['data']['summary']
         self.assertIsNone(s['report_revenue'])
         self.assertIsNone(s['revenue_diff'])
+
+
+class InternalReconTests(TestCase):
+    """内部往来核对：金蝶明细账解析、镜像矩阵、两两自动配对。"""
+    databases = {'default'}
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = PaikuanUser(
+            phone='13900000077', name='内往管理员', role='super_admin',
+            job_title='finance_director', departments=[], is_active=True, is_approved=True)
+        cls.admin.set_password('Test123456')
+        cls.admin.save()
+
+    def setUp(self):
+        self.client = Client()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {_make_token(self.admin)}'}
+
+    @staticmethod
+    def _ledger_xlsx(rows):
+        """构造金蝶「核算维度明细账（往来单位）」样式的 xlsx。"""
+        import io
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['核算维度明细账'])                       # 标题行（干扰行）
+        ws.append(['日期', '凭证字号', '往来单位', '科目编码', '科目名称', '摘要', '借方', '贷方'])
+        for r in rows:
+            ws.append(r)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        buf.name = 'ledger.xlsx'
+        return buf
+
+    def _upload(self, bu, rows, year=2026, month=6):
+        f = self._ledger_xlsx(rows)
+        return self.client.post('/api/cw/internal/upload',
+                                {'bu': bu, 'year': year, 'month': month, 'file': f},
+                                **self.auth())
+
+    def test_upload_parse_and_counterparty_mapping(self):
+        res = self._upload('劳务事业部', [
+            ['2026-06-05', '记-1', '青岛运输事业部有限公司', '1221.01', '其他应收款', '代付运费', 1000, 0],
+            ['2026-06-08', '记-2', '集团总部', '2241.01', '其他应付款', '总部借款', 0, 500],
+            ['2026-06-09', '记-3', '不认识的公司', '1221.01', '其他应收款', '外部往来', 200, 0],
+            ['', '', '', '', '', '本期合计', 1200, 500],       # 小计行须跳过
+        ])
+        self.assertEqual(res.status_code, 200, res.content)
+        d = res.json()['data']
+        self.assertEqual(d['rows'], 3)
+        self.assertEqual(d['skipped'], 1)
+        self.assertEqual(d['unmatched'], [{'raw': '不认识的公司', 'count': 1}])
+        ents = {e.counterparty_raw: e for e in InternalEntry.objects.all()}
+        self.assertEqual(ents['青岛运输事业部有限公司'].counterparty, '运输事业部')
+        self.assertEqual(ents['青岛运输事业部有限公司'].side, 'ar')
+        self.assertEqual(ents['集团总部'].counterparty, '集团总部')
+        self.assertEqual(ents['集团总部'].side, 'ap')
+        self.assertEqual(ents['不认识的公司'].counterparty, '')
+
+    def test_reupload_replaces_batch(self):
+        self._upload('劳务事业部', [['2026-06-05', '记-1', '运输事业部', '1221', '', '费用', 100, 0]])
+        self._upload('劳务事业部', [['2026-06-06', '记-2', '运输事业部', '1221', '', '费用2', 300, 0]])
+        self.assertEqual(InternalBatch.objects.count(), 1)
+        self.assertEqual(InternalEntry.objects.count(), 1)
+        self.assertEqual(float(InternalEntry.objects.get().debit), 300)
+
+    def test_matrix_mirror_and_diff(self):
+        # 劳务对运输应收 1000；运输只入账 800 应付 → 差异 200
+        self._upload('劳务事业部', [
+            ['2026-06-05', '记-1', '运输事业部', '1221.01', '', '代付运费', 1000, 0]])
+        self._upload('运输事业部', [
+            ['2026-06-05', '记-9', '劳务事业部', '2241.01', '', '代付运费', 0, 800]])
+        res = self.client.get('/api/cw/internal/matrix?year=2026&month=6', **self.auth())
+        self.assertEqual(res.status_code, 200, res.content)
+        d = res.json()['data']
+        pair = next(p for p in d['pairs']
+                    if {p['a'], p['b']} == {'劳务事业部', '运输事业部'})
+        self.assertAlmostEqual(abs(pair['diff']), 200.0, places=2)
+        self.assertTrue(pair['both_uploaded'])
+        self.assertAlmostEqual(d['kpi']['total_diff'], 200.0, places=2)
+        self.assertEqual(sorted(d['uploaded']), ['劳务事业部', '运输事业部'])
+
+    def test_pair_auto_match_marks_equal_amounts(self):
+        self._upload('劳务事业部', [
+            ['2026-06-05', '记-1', '运输事业部', '1221.01', '', '代付A', 1000, 0],
+            ['2026-06-10', '记-2', '运输事业部', '1221.01', '', '代付B', 250, 0],
+        ])
+        self._upload('运输事业部', [
+            ['2026-06-06', '记-8', '劳务事业部', '2241.01', '', '代付A', 0, 1000],
+            ['2026-06-20', '记-9', '劳务事业部', '2241.01', '', '代付C', 0, 88],
+        ])
+        res = self.client.get(
+            '/api/cw/internal/pair?year=2026&month=6&a=劳务事业部&b=运输事业部', **self.auth())
+        self.assertEqual(res.status_code, 200, res.content)
+        d = res.json()['data']
+        self.assertEqual(d['matched_pairs'], 1)
+        self.assertAlmostEqual(d['matched_amount'], 1000.0, places=2)
+        a_matched = [r for r in d['a_rows'] if r['match']]
+        b_matched = [r for r in d['b_rows'] if r['match']]
+        self.assertEqual(len(a_matched), 1)
+        self.assertEqual(a_matched[0]['summary'], '代付A')
+        self.assertEqual(a_matched[0]['match'], b_matched[0]['match'])
+        # 差异 = 1250 应收 - 1088 应付镜像 = 162
+        self.assertAlmostEqual(d['diff'], 162.0, places=2)
+
+    def test_same_sign_rows_do_not_match(self):
+        # 双方都挂应收（同号）→ 不能互相配对
+        self._upload('劳务事业部', [
+            ['2026-06-05', '记-1', '运输事业部', '1221.01', '', '费用', 500, 0]])
+        self._upload('运输事业部', [
+            ['2026-06-06', '记-8', '劳务事业部', '1221.02', '', '费用', 500, 0]])
+        res = self.client.get(
+            '/api/cw/internal/pair?year=2026&month=6&a=劳务事业部&b=运输事业部', **self.auth())
+        d = res.json()['data']
+        self.assertEqual(d['matched_pairs'], 0)
+        self.assertAlmostEqual(d['diff'], 1000.0, places=2)
+
+    def test_batches_coverage_and_delete(self):
+        self._upload('劳务事业部', [['2026-06-05', '记-1', '运输事业部', '1221', '', '费用', 100, 0]])
+        res = self.client.get('/api/cw/internal/batches?year=2026&month=6', **self.auth())
+        d = res.json()['data']
+        idx = d['units'].index('劳务事业部')
+        self.assertIsNotNone(d['batches'][idx])
+        bid = d['batches'][idx]['id']
+        res = self.client.delete(f'/api/cw/internal/batches/{bid}', **self.auth())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(InternalEntry.objects.count(), 0)

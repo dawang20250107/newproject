@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views
+from . import views, views_internal
 
 urlpatterns = [
     # auth
@@ -66,4 +66,11 @@ urlpatterns = [
     path('charts/trend', views.chart_trend),
     path('charts/waterfall', views.chart_waterfall),
     path('charts/ai-analysis', views.chart_ai_analysis),
+
+    # 内部往来核对（金蝶补位）
+    path('internal/upload', views_internal.internal_upload),
+    path('internal/batches', views_internal.internal_batches),
+    path('internal/batches/<int:bid>', views_internal.internal_batch_detail),
+    path('internal/matrix', views_internal.internal_matrix),
+    path('internal/pair', views_internal.internal_pair),
 ]

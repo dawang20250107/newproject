@@ -270,7 +270,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
       </router-link>
 
       <!-- ── 财务分析 section ───────────────────── -->
-      <div v-if="auth.canPage('caiwu_report') || auth.canPage('caiwu_data') || auth.canPage('caiwu_charts') || auth.canPage('caiwu_metrics') || auth.canPage('caiwu_cockpit') || auth.isSuperAdmin"
+      <div v-if="auth.canPage('caiwu_report') || auth.canPage('caiwu_data') || auth.canPage('caiwu_charts') || auth.canPage('caiwu_metrics') || auth.canPage('caiwu_cockpit') || auth.canPage('caiwu_internal') || auth.isSuperAdmin"
            class="nav-section-label">
         <Transition name="label-fade">
           <span v-if="!effectiveCollapsed" class="nav-sl-text">财务分析</span>
@@ -333,6 +333,21 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         </span>
         <Transition name="label-fade">
           <span v-if="!effectiveCollapsed" class="nav-label">财务报表</span>
+        </Transition>
+      </router-link>
+
+      <router-link v-if="auth.canPage('caiwu_internal')" to="/caiwu/internal" class="nav-item"
+        :class="{ active: route.path === '/caiwu/internal' }"
+        :title="effectiveCollapsed ? '内部往来' : undefined"
+        @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17 3l4 4-4 4"/><path d="M21 7H7"/>
+            <path d="M7 21l-4-4 4-4"/><path d="M3 17h14"/>
+          </svg>
+        </span>
+        <Transition name="label-fade">
+          <span v-if="!effectiveCollapsed" class="nav-label">内部往来</span>
         </Transition>
       </router-link>
 

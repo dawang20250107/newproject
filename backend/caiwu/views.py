@@ -87,6 +87,7 @@ PAGE_DEFS = [
     {'key': 'charts',  'label': '报表分析'},
     {'key': 'metrics', 'label': '指标管理'},
     {'key': 'cockpit', 'label': '财务驾驶舱'},
+    {'key': 'internal', 'label': '内部往来'},
 ]
 PAGE_KEYS = [p['key'] for p in PAGE_DEFS]
 
@@ -106,6 +107,7 @@ def _caiwu_perms_from_pk(pk):
             'charts':  bool(pk_pages.get('caiwu_charts',  False)),
             'metrics': bool(pk_pages.get('caiwu_metrics', False)),
             'cockpit': bool(pk_pages.get('caiwu_cockpit', False)),
+            'internal': bool(pk_pages.get('caiwu_internal', False)),
         },
         'view':        dict(pk.get('caiwu_view', {k: True for k in CAIWU_FIELD_KEYS})),
         'can_upload':  bool(pk.get('caiwu_upload',  False)),

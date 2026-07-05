@@ -13,6 +13,7 @@ const CAIWU_PAGE_MAP = {
   charts: 'caiwu_charts',
   metrics: 'caiwu_metrics',
   cockpit: 'caiwu_cockpit',
+  internal: 'caiwu_internal',
 }
 // Pages that were super_admin-only in the standalone caiwu app.
 const ADMIN_ONLY_PAGES = ['settings', 'users', 'permissions']
