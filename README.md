@@ -65,6 +65,8 @@ python manage.py test ar       # 指定业务域
    | `DEEPSEEK_API_KEY` | 财务分析 AI（缺省则 AI 功能不可用，其余正常） |
    | `DEEPSEEK_FALLBACK_MODEL`（可选） | 主模型异常时的降级模型，默认 `deepseek-chat` |
    | `SEARCH_PROVIDER` / `SEARCH_API_KEY`（可选） | AI 联网搜索默认内置必应中国抓取、**无需配置**；如需更稳定可切 `bocha`（博查）或 `serper`（Google） |
+   | `AI_DAILY_TOKEN_BUDGET`（可选） | AI 每日 token 预算，默认 500 万；达到后当日 AI 暂停、次日恢复；0=不限 |
+   | `AI_PRICE_IN_PER_M` / `AI_PRICE_OUT_PER_M`（可选） | 成本估算单价（元/百万 tokens），仅用于用量页折算 |
    | `SENTRY_DSN`（可选） | 错误上报；`PROMETHEUS_ENABLED`（可选）开 /metrics |
 3. **前端产物**：`cd frontend && npm run build`（产物写入 `backend/frontend_dist/`，需一并提交/部署）。
 4. **发布后验证**：访问 `/healthz`（存活）与 `/readyz`（数据库连通）均应返回 200；登录后抽查付款管理列表可加载。
@@ -73,9 +75,9 @@ python manage.py test ar       # 指定业务域
    python manage.py pk_housekeeping     # 回收站清理等幂等维护
    python manage.py pk_aging_digest    # 账龄/逾期摘要（文本输出，可接邮件/机器人）
    ```
-   同行/行业自动调研（建议每周，AI 搜索→提炼→查重→沉淀知识库，内置搜索无需 Key）：
+   同行/行业调研（按需手动执行或在驾驶舱对话里说「帮我调研XX」触发；不必挂定时）：
    ```bash
-   python manage.py agent_research
+   python manage.py agent_research   # AI 搜索→提炼→查重→沉淀知识库，内置搜索无需 Key
    ```
    AI 助手回归评测（改提示词/换模型后手动跑，只读）：
    ```bash

@@ -21,10 +21,18 @@ DEEPSEEK_PRO_MODEL = os.environ.get('DEEPSEEK_PRO_MODEL', 'deepseek-reasoner')
 DEEPSEEK_FALLBACK_MODEL = os.environ.get('DEEPSEEK_FALLBACK_MODEL', 'deepseek-chat')
 DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1'
 
-# 联网搜索（Agent 参考同行/行业研究用）：不配置则相关技能优雅降级为「未配置」。
+# 联网搜索（Agent 参考同行/行业研究用）：默认内置必应中国抓取（无需配置）；
 # SEARCH_PROVIDER: 'bocha'（博查，国内直连）或 'serper'（Google via serper.dev）
 SEARCH_PROVIDER = os.environ.get('SEARCH_PROVIDER', '')
 SEARCH_API_KEY = os.environ.get('SEARCH_API_KEY', '')
+
+# ── AI Token 成本控制 ─────────────────────────────────────────────────────────
+# 全组织每日 token 预算（输入+输出合计）：达到后当日 AI 功能暂停、次日自动恢复；
+# 0 = 不限。默认 500 万 tokens/日（按 DeepSeek 定价上限约几十元/日）。
+AI_DAILY_TOKEN_BUDGET = int(os.environ.get('AI_DAILY_TOKEN_BUDGET', 5_000_000))
+# 成本估算单价（元/百万 tokens，仅用于用量页折算展示，不影响计量）
+AI_PRICE_IN_PER_M = float(os.environ.get('AI_PRICE_IN_PER_M', 2.0))
+AI_PRICE_OUT_PER_M = float(os.environ.get('AI_PRICE_OUT_PER_M', 8.0))
 
 # 生产判定：设置了 MYSQL_ADDRESS 即视为生产（与下方 DATABASES 选择同一信号）。
 _IS_PROD = bool(os.environ.get('MYSQL_ADDRESS'))

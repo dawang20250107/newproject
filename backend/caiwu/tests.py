@@ -703,7 +703,7 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.mk(2026, 5, 200, 130)
         captured = {}
 
-        def fake_chat(messages, timeout=90, model=None, max_tokens=1800):
+        def fake_chat(messages, timeout=90, model=None, max_tokens=1800, **kw):
             captured['model'] = model
             captured['max_tokens'] = max_tokens
             captured['prompt'] = messages[-1]['content']
@@ -740,7 +740,7 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.mk(2026, 5, 200, 130)
         captured = {}
 
-        def fake_stream(messages, model=None, max_tokens=1800, timeout=300):
+        def fake_stream(messages, model=None, max_tokens=1800, timeout=300, **kw):
             captured['model'] = model
             captured['max_tokens'] = max_tokens
             yield ('reasoning', '先看全集团达成')
@@ -776,7 +776,7 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.mk(2026, 5, 200, 130)
         captured = {}
 
-        def fake_stream_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800):
+        def fake_stream_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800, **kw):
             captured['model'] = model
             captured['messages'] = messages
             yield ('answer', '根据数据，本月利润达标。')
@@ -838,7 +838,7 @@ class CaiwuMetricsAndTargetsTests(TestCase):
 
         captured = {}
 
-        def fake_stream_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800):
+        def fake_stream_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800, **kw):
             captured['messages'] = messages
             yield ('answer', 'ok')
             yield ('final', {'content': 'ok', 'tool_calls': None})
@@ -861,7 +861,7 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         """AI 自我提炼：把一段分析提炼成知识入库（来源标记 ai）。"""
         from unittest import mock
 
-        def fake_chat(messages, timeout=90, model=None, max_tokens=1800):
+        def fake_chat(messages, timeout=90, model=None, max_tokens=1800, **kw):
             return '{"title":"应收风险","content":"逾期集中在大东，需加强催收。"}'
 
         with mock.patch('caiwu.views._deepseek_chat', fake_chat):
@@ -888,7 +888,7 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         from unittest import mock
         from django.core.files.uploadedfile import SimpleUploadedFile
 
-        def fake_chat(messages, timeout=90, model=None, max_tokens=1800):
+        def fake_chat(messages, timeout=90, model=None, max_tokens=1800, **kw):
             return '[{"title":"背景A","content":"要点A"},{"title":"背景B","content":"要点B"}]'
 
         f = SimpleUploadedFile('doc.md', '# 标题\n这里是一些经营文档内容'.encode('utf-8'))
@@ -906,7 +906,7 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.mk(2026, 5, 200, 130)
         calls = {'n': 0}
 
-        def fake_stream_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800):
+        def fake_stream_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800, **kw):
             calls['n'] += 1
             if calls['n'] == 1:
                 yield ('final', {'content': '', 'tool_calls': [{'id': 'c1', 'function': {
@@ -940,11 +940,11 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         from unittest import mock
         self.mk(2026, 5, 200, 130)
 
-        def fake_stream_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800):
+        def fake_stream_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800, **kw):
             yield ('final', {'content': '', 'tool_calls': [{'id': 'r1', 'function': {
                 'name': 'generate_report', 'arguments': '{"period":"month"}'}}]})
 
-        def fake_stream(messages, model=None, max_tokens=1800, timeout=300):
+        def fake_stream(messages, model=None, max_tokens=1800, timeout=300, **kw):
             yield ('answer', '【正文】本月经营稳健。')
 
         with mock.patch('caiwu.views._deepseek_stream_raw', fake_stream_raw), \
@@ -966,7 +966,7 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         from unittest import mock
         self.mk(2026, 5, 200, 130)
 
-        def fake_stream_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800):
+        def fake_stream_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800, **kw):
             yield ('reasoning', '先看收入…')
             yield ('answer', '本月')
             yield ('answer', '利润')
@@ -1050,7 +1050,7 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.mk(2026, 5, 200, 130)
         calls = {'n': 0}
 
-        def fake_stream_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800):
+        def fake_stream_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800, **kw):
             calls['n'] += 1
             if calls['n'] <= 5:   # 连续 5 步各调一次查询工具（旧上限 4 会被卡住）
                 yield ('final', {'content': '', 'tool_calls': [{'id': f'c{calls["n"]}', 'function': {
@@ -1111,7 +1111,7 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         from unittest import mock
         self.mk(2026, 5, 200, 130)
 
-        def fake_stream(messages, model=None, max_tokens=1800, timeout=300):
+        def fake_stream(messages, model=None, max_tokens=1800, timeout=300, **kw):
             # 快模型只产出正文（无 reasoning_content）
             yield ('answer', '本月经营')
             yield ('answer', '稳健。')
@@ -1688,3 +1688,72 @@ class AgentIntelligenceTests(TestCase):
         r = self.client.post('/api/cw/cockpit/ai-feedback', data=json.dumps({'rating': 5}),
                              content_type='application/json', **self.auth())
         self.assertEqual(r.status_code, 400)
+
+
+class AiCostControlTests(TestCase):
+    """Token 成本可控：用量计量聚合、每日预算闸门、用量端点。"""
+    databases = {'default'}
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = PaikuanUser(
+            phone='13900000099', name='成本管理员', role='super_admin',
+            job_title='finance_director', departments=[], is_active=True, is_approved=True)
+        cls.admin.set_password('Test123456')
+        cls.admin.save()
+
+    def setUp(self):
+        self.client = Client()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {_make_token(self.admin)}'}
+
+    def test_usage_recording_aggregates(self):
+        from caiwu.models import AiUsage
+        from caiwu.views import _record_ai_usage
+        _record_ai_usage('chat', 'deepseek-chat', {'prompt_tokens': 1000, 'completion_tokens': 200})
+        _record_ai_usage('chat', 'deepseek-chat', {'prompt_tokens': 500, 'completion_tokens': 100})
+        _record_ai_usage('report', 'deepseek-reasoner', {'prompt_tokens': 300, 'completion_tokens': 900})
+        _record_ai_usage('chat', 'deepseek-chat', None)          # 无 usage 不计
+        self.assertEqual(AiUsage.objects.count(), 2)             # 日×用途×模型 聚合
+        row = AiUsage.objects.get(kind='chat')
+        self.assertEqual(row.prompt_tokens, 1500)
+        self.assertEqual(row.completion_tokens, 300)
+        self.assertEqual(row.calls, 2)
+
+    @override_settings(AI_DAILY_TOKEN_BUDGET=1000, DEEPSEEK_API_KEY='test-key')
+    def test_budget_gate_blocks_when_exhausted(self):
+        from caiwu.views import _record_ai_usage
+        _record_ai_usage('chat', 'deepseek-chat', {'prompt_tokens': 900, 'completion_tokens': 200})
+        # 对话端点：开流前即 429（不会真的调模型）
+        r = self.client.post('/api/cw/cockpit/ai-chat/stream', data=json.dumps({
+            'year': 2026, 'month': 5, 'bu': '',
+            'messages': [{'role': 'user', 'content': '5月利润多少'}],
+        }), content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 429)
+        self.assertIn('额度已用完', r.json()['error'])
+        # 调研技能：同样拦截
+        from caiwu import agent_skills
+        res = agent_skills.get_skill('peer_research')['handler'](None, {'topic': '行业动态'})
+        self.assertFalse(res['ok'])
+        self.assertIn('额度已用完', res['error'])
+
+    @override_settings(AI_DAILY_TOKEN_BUDGET=1000, DEEPSEEK_API_KEY='test-key')
+    def test_budget_gate_allows_under_budget(self):
+        from caiwu.views import _record_ai_usage, _ai_budget_denied
+        _record_ai_usage('chat', 'deepseek-chat', {'prompt_tokens': 100, 'completion_tokens': 50})
+        self.assertIsNone(_ai_budget_denied())
+
+    @override_settings(AI_DAILY_TOKEN_BUDGET=5_000_000,
+                       AI_PRICE_IN_PER_M=2.0, AI_PRICE_OUT_PER_M=8.0)
+    def test_usage_endpoint(self):
+        from caiwu.views import _record_ai_usage
+        _record_ai_usage('chat', 'deepseek-chat',
+                         {'prompt_tokens': 1_000_000, 'completion_tokens': 250_000})
+        r = self.client.get('/api/cw/cockpit/ai-usage', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()['data']
+        self.assertEqual(d['today']['total'], 1_250_000)
+        self.assertAlmostEqual(d['today']['cost_est'], 4.0, places=2)   # 2 + 0.25*8
+        self.assertEqual(d['remaining'], 3_750_000)
+        self.assertEqual(d['by_kind'][0]['kind'], 'chat')

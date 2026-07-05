@@ -479,3 +479,18 @@ class AiFeedback(models.Model):
         app_label = 'caiwu'
         db_table = 'caiwu_ai_feedback'
         ordering = ['-created_at']
+
+
+class AiUsage(models.Model):
+    """AI 用量计量（按 日×用途×模型 聚合行，表恒小）：token 成本可控的数据基座。"""
+    date = models.DateField('日期', db_index=True)
+    kind = models.CharField('用途', max_length=20, default='other')   # chat/report/analysis/chart/distill/research/other
+    model = models.CharField('模型', max_length=40, blank=True, default='')
+    prompt_tokens = models.BigIntegerField('输入tokens', default=0)
+    completion_tokens = models.BigIntegerField('输出tokens', default=0)
+    calls = models.IntegerField('调用次数', default=0)
+
+    class Meta:
+        app_label = 'caiwu'
+        db_table = 'caiwu_ai_usage'
+        unique_together = [('date', 'kind', 'model')]

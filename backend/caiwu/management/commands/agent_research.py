@@ -21,6 +21,10 @@ class Command(BaseCommand):
         if not settings.DEEPSEEK_API_KEY:
             self.stderr.write('未配置 DEEPSEEK_API_KEY，无法提炼情报')
             raise SystemExit(2)
+        from caiwu.views import _ai_budget_denied
+        if _ai_budget_denied() is not None:
+            self.stderr.write('今日 AI 额度已用完，调研中止（明日恢复或调高 AI_DAILY_TOKEN_BUDGET）')
+            raise SystemExit(3)
         from caiwu.agent_research import run_research
         topics = [t.strip() for t in (opts['topics'] or '').split(',') if t.strip()] or None
         total_saved = 0

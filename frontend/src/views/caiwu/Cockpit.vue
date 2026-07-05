@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, nextTick, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted, nextTick, watch, defineAsyncComponent } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { useAuthStore } from '../../stores/auth.js'
@@ -230,6 +230,7 @@ async function sendChat(text) {
     chatStreaming.value = false
     if (!asst.content) asst.content = chatErr.value ? `⚠ ${chatErr.value}` : '（未返回内容）'
     scrollChatSoon()
+    loadAiUsage()
     if (autoDistill.value && !chatErr.value && asst.content && asst.content.length > 40) {
       silentDistill(asst.content)
     }
@@ -308,6 +309,18 @@ async function distillToKb(content, idx) {
   finally { distillingIdx.value = -1 }
 }
 function openKb() { panelTab.value = 'kb'; loadKb() }
+
+// ── 今日 AI 用量/预算（token 成本可控）────────────────────────────────────────
+const aiUsage = ref(null)
+const quotaPct = computed(() => {
+  const u = aiUsage.value
+  if (!u || !u.budget) return 0
+  return Math.round(u.today.total / u.budget * 100)
+})
+async function loadAiUsage() {
+  try { const res = await api.get('/cockpit/ai-usage'); aiUsage.value = res.data } catch { /* 静默 */ }
+}
+watch(chatOpen, (v) => { if (v) loadAiUsage() })
 
 // ── AI 回答评价（👍/👎）：沉淀为改进素材与评测样本 ───────────────────────────
 async function rateAnswer(m, idx, rating) {
@@ -1039,6 +1052,19 @@ const ctxMatrixItems = computed(() => {
             </div>
           </div>
 
+          <!-- 今日 AI 额度（token 成本可控）-->
+          <div v-if="aiUsage" class="cfa-quota" :class="{ warn: quotaPct >= 80, full: quotaPct >= 100 }"
+            :title="aiUsage.price_note">
+            <div class="cfa-quota-bar"><i :style="{ width: Math.min(100, quotaPct) + '%' }"></i></div>
+            <span class="cfa-quota-txt">
+              今日 {{ (aiUsage.today.total / 10000).toFixed(1) }}万
+              <template v-if="aiUsage.budget"> / {{ (aiUsage.budget / 10000).toFixed(0) }}万 tokens</template>
+              <template v-else> tokens</template>
+              · ≈¥{{ aiUsage.today.cost_est }}
+              <template v-if="quotaPct >= 100">　额度已用完，明日恢复</template>
+            </span>
+          </div>
+
           <!-- 对话 / 知识库 切换 -->
           <div class="cfa-tabs">
             <button :class="['cfa-tab', panelTab === 'chat' ? 'on' : '']" @click="panelTab = 'chat'">💬 对话</button>
@@ -1543,6 +1569,16 @@ const ctxMatrixItems = computed(() => {
 }
 @keyframes cfaGlow { 0%,100% { background-position: 0 0; } 50% { background-position: 0 100%; } }
 
+.cfa-quota {
+  display: flex; align-items: center; gap: 9px; padding: 5px 16px;
+  border-bottom: 1px solid rgba(0,0,0,0.05); background: rgba(0,0,0,0.015);
+}
+.cfa-quota-bar { flex: 1; height: 5px; border-radius: 3px; background: rgba(0,0,0,0.07); overflow: hidden; }
+.cfa-quota-bar i { display: block; height: 100%; border-radius: 3px; background: #7cb682; transition: width .4s; }
+.cfa-quota.warn .cfa-quota-bar i { background: #f5a623; }
+.cfa-quota.full .cfa-quota-bar i { background: #c62828; }
+.cfa-quota-txt { font-size: 10.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cfa-quota.full .cfa-quota-txt { color: #c62828; }
 .cfa-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 16px 18px 13px; border-bottom: 1px solid rgba(201,99,66,0.12);

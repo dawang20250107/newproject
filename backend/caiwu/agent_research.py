@@ -79,7 +79,7 @@ def research_topic(topic, save=True, created_by=None, max_fetch=2):
         raw = _deepseek_chat(
             [{'role': 'system', 'content': _DISTILL_SYSTEM},
              {'role': 'user', 'content': f'调研主题：{topic}\n今天：{today}\n\n' + '\n'.join(material)[:12000]}],
-            timeout=120, max_tokens=1500)
+            timeout=120, max_tokens=1500, kind='research')
     except Exception as ex:
         out['note'] = f'提炼失败：{str(ex)[:100]}'
         return out
