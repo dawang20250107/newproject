@@ -182,12 +182,55 @@ const chatMessages = ref([])      // {role:'user'|'assistant', content, reasonin
 const chatStreaming = ref(false)
 const chatErr = ref('')
 const chatBodyRef = ref(null)
-const SUGGESTIONS = [
-  '生成本月集团经营分析报告',
-  '生成今年的年度经营分析报告',
-  '哪个事业部在拖累集团利润？为什么？',
-  '本月回款和收入是否匹配？应收风险在哪？',
-]
+// 建议问题：按当前范围差异化——集团看全局与横向，事业部看各自的刀口问题
+const SUGGESTIONS = computed(() => {
+  const m = `${month.value}月`
+  const byBu = {
+    '': [
+      `生成${m}集团经营分析报告`,
+      '哪个事业部在拖累集团利润？为什么？',
+      `${m}回款和收入是否匹配？应收风险在哪？`,
+      '对比行业同行，我们的盈利水平处于什么位置？',
+    ],
+    '集团总部': [
+      `总部${m}费用结构分析：哪些费用在涨？`,
+      '总部费用分摊后各事业部的真实盈利如何？',
+      `总部${m}预算执行与超支预警`,
+      '内部往来挂账对集团合并利润的影响？',
+    ],
+    '运输事业部': [
+      `分析运输${m}毛利变动：量、价、油价各贡献多少？`,
+      '近期油价走势对运输成本和利润意味着什么？',
+      `运输${m}回款质量与逾期风险在哪几个客户？`,
+      '调研一下公路货运行业最新运价与同行动态',
+    ],
+    '劳务事业部': [
+      `劳务${m}人效与用工成本分析`,
+      '社保成本率的变化对劳务毛利影响多大？',
+      `劳务${m}目标缺口多少？给出追赶方案`,
+      '灵活用工行业政策最近有什么新动向？',
+    ],
+    '供应链事业部': [
+      `供应链${m}经营分析：毛利与资金占用`,
+      `供应链${m}回款与内部往来挂账情况`,
+      '供应链物流行业有什么趋势和机会？',
+      `生成供应链${m}经营分析报告`,
+    ],
+    '多式联运事业部': [
+      `多式联运${m}经营分析与目标达成`,
+      '多式联运的成本结构和毛利动因是什么？',
+      `多式联运${m}回款与应收风险`,
+      '多式联运行业政策与市场有什么新变化？',
+    ],
+  }
+  const bu = selectedBu.value
+  return byBu[bu] || [
+    `分析${bu}${m}经营情况：目标达成与缺口`,
+    `${bu}${m}毛利变动的主要动因是什么？`,
+    `${bu}${m}回款质量与应收风险`,
+    `生成${bu}${m}经营分析报告`,
+  ]
+})
 
 function scrollChatSoon() {
   nextTick(() => { const el = chatBodyRef.value; if (el) el.scrollTop = el.scrollHeight })
@@ -1153,15 +1196,13 @@ const ctxMatrixItems = computed(() => {
             </div>
           </div>
 
-          <label v-show="panelTab === 'chat'" class="cfa-auto" :class="{ on: autoDistill }">
-            <span class="cfa-auto-txt">
-              <b>🪄 自动沉淀</b>
-              <i>每轮回答要点自动入库 · 越用越懂你的业务</i>
-            </span>
-            <input type="checkbox" v-model="autoDistill" class="cfa-switch-input" />
-            <span class="cfa-switch" aria-hidden="true"></span>
-          </label>
           <div v-show="panelTab === 'chat'" class="cfa-input-row">
+            <label class="cfa-auto-mini" :class="{ on: autoDistill }"
+              title="自动沉淀：每轮回答要点自动提炼入知识库，越用越懂你的业务">
+              <input type="checkbox" v-model="autoDistill" class="cfa-switch-input" />
+              <span class="cfa-switch cfa-switch-sm" aria-hidden="true"></span>
+              <span class="cfa-auto-mini-txt">🪄 自动沉淀</span>
+            </label>
             <textarea v-model="chatInput" class="cfa-input" rows="1"
               placeholder="问问经营情况…（Enter 发送，Shift+Enter 换行）"
               :disabled="chatStreaming"
@@ -1542,7 +1583,7 @@ const ctxMatrixItems = computed(() => {
   box-shadow: 0 30px 80px rgba(60,28,12,0.36), 0 2px 8px rgba(60,28,12,0.18);
 }
 /* 居中可读列：对话流/工具条/输入区收束到一列，长答案更耐看 */
-.cfa-auto, .cfa-input-row { width: 100%; max-width: 940px; margin-inline: auto; }
+.cfa-input-row { width: 100%; max-width: 940px; margin-inline: auto; }
 .cfa-glow {
   position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
   background: linear-gradient(180deg, var(--primary), #e8a05a, #7a9fd4);
@@ -1631,22 +1672,22 @@ const ctxMatrixItems = computed(() => {
 .cfa-md :deep(.md-table tbody tr:nth-child(even)) { background: rgba(0,0,0,0.02); }
 
 /* 自动沉淀：胶囊开关（默认开），替代原裸 checkbox */
-.cfa-auto {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  margin: 8px 16px 0; padding: 8px 12px; border-radius: 11px; cursor: pointer;
-  background: rgba(0,0,0,0.025); border: 1px solid rgba(0,0,0,0.07); transition: all .16s;
+.cfa-auto-mini {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  cursor: pointer; flex-shrink: 0; padding-bottom: 1px; opacity: 0.75; transition: opacity .15s;
 }
-.cfa-auto.on { background: rgba(201,99,66,0.07); border-color: rgba(201,99,66,0.28); }
-.cfa-auto-txt { display: flex; flex-direction: column; gap: 1px; line-height: 1.3; }
-.cfa-auto-txt b { font-size: 12px; font-weight: 700; color: var(--text); }
-.cfa-auto-txt i { font-size: 10.5px; color: var(--muted); font-style: normal; }
+.cfa-auto-mini:hover, .cfa-auto-mini.on { opacity: 1; }
+.cfa-auto-mini-txt { font-size: 9.5px; color: var(--muted); white-space: nowrap; }
+.cfa-auto-mini.on .cfa-auto-mini-txt { color: var(--primary); font-weight: 600; }
 .cfa-switch-input { position: absolute; opacity: 0; width: 0; height: 0; }
 .cfa-switch { flex-shrink: 0; position: relative; width: 38px; height: 22px; border-radius: 11px;
   background: rgba(0,0,0,0.2); transition: background .18s; }
 .cfa-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
   border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.28); transition: transform .18s; }
-.cfa-auto.on .cfa-switch { background: var(--primary); }
-.cfa-auto.on .cfa-switch::after { transform: translateX(16px); }
+.cfa-auto-mini.on .cfa-switch { background: var(--primary); }
+.cfa-auto-mini.on .cfa-switch-sm::after { transform: translateX(12px); }
+.cfa-switch-sm { width: 30px; height: 17px; border-radius: 9px; }
+.cfa-switch-sm::after { width: 13px; height: 13px; }
 .cfa-input-row { display: flex; gap: 8px; align-items: flex-end; padding: 8px 16px 16px; border-top: 1px solid rgba(201,99,66,0.12); }
 .cfa-input {
   flex: 1; resize: none; max-height: 120px; min-height: 38px;
