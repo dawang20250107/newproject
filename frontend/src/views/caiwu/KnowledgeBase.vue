@@ -122,6 +122,28 @@ onMounted(load)
         <h1>经营知识库</h1>
         <div class="cw-hero-sub">业财融合助手的长期记忆 · 沉淀越多，助手越懂业务、判断越贴合经营</div>
       </div>
+      <!-- 筛选收进 hero 右上：不占独立行 -->
+      <div class="cw-hero-ctrl kp-flt">
+        <input v-model="q" class="kp-search" placeholder="🔍 搜索知识…" />
+        <select v-model="fScope" class="kp-sel">
+          <option value="">范围</option>
+          <option value="全集团">全集团</option>
+          <option v-for="b in accessibleBus" :key="b" :value="b">{{ b }}</option>
+        </select>
+        <select v-model="fKind" class="kp-sel">
+          <option value="">类型</option>
+          <option value="background">背景</option>
+          <option value="rule">口径/规则</option>
+          <option value="insight">洞察</option>
+        </select>
+        <select v-model="fSource" class="kp-sel">
+          <option value="">来源</option>
+          <option value="user">人工</option>
+          <option value="ai">AI提炼</option>
+        </select>
+        <label class="kp-group-toggle"><input type="checkbox" v-model="grouped" /> 分组</label>
+        <span class="kp-count">{{ filtered.length }} / {{ items.length }} 条</span>
+      </div>
     </div>
 
     <!-- 导入 + 新增 -->
@@ -164,29 +186,6 @@ onMounted(load)
           <button class="btn btn-primary btn-sm" :disabled="!addContent.trim()" @click="add">添加</button>
         </div>
       </div>
-    </div>
-
-    <!-- 筛选 -->
-    <div class="kp-filterbar">
-      <input v-model="q" class="kp-search" placeholder="🔍 搜索知识内容…" />
-      <select v-model="fScope" class="kp-sel">
-        <option value="">全部范围</option>
-        <option value="全集团">全集团</option>
-        <option v-for="b in accessibleBus" :key="b" :value="b">{{ b }}</option>
-      </select>
-      <select v-model="fKind" class="kp-sel">
-        <option value="">全部类型</option>
-        <option value="background">背景</option>
-        <option value="rule">口径/规则</option>
-        <option value="insight">洞察</option>
-      </select>
-      <select v-model="fSource" class="kp-sel">
-        <option value="">全部来源</option>
-        <option value="user">人工</option>
-        <option value="ai">AI提炼</option>
-      </select>
-      <label class="kp-group-toggle"><input type="checkbox" v-model="grouped" /> 按事业部分组</label>
-      <span class="kp-count">{{ filtered.length }} / {{ items.length }} 条</span>
     </div>
 
     <EmptyState v-if="loading && !items.length" loading />
@@ -243,13 +242,13 @@ onMounted(load)
 .kp-textarea { width: 100%; resize: vertical; border: 1px solid rgba(0,0,0,0.12); border-radius: 9px; padding: 8px 11px; font-size: 13px; font-family: inherit; line-height: 1.5; outline: none; box-sizing: border-box; }
 .kp-textarea:focus { border-color: var(--primary); }
 
-.kp-filterbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
-/* 筛选条走紧凑规格：小高度小字号，不与内容抢空间 */
-.kp-filterbar .kp-sel { height: 26px; font-size: 11.5px; padding: 0 7px; border-radius: 7px; color: var(--muted); }
-.kp-filterbar .kp-sel:focus, .kp-filterbar .kp-sel:hover { color: var(--text); border-color: var(--primary); }
-.kp-search { flex: 0 1 240px; min-width: 150px; height: 28px; border: 1px solid rgba(0,0,0,0.12); border-radius: 8px; padding: 0 10px; font-size: 12.5px; outline: none; }
-.kp-search:focus { border-color: var(--primary); }
-.kp-count { font-size: 11px; color: var(--muted); margin-left: auto; }
+/* 筛选收进 hero 右上：小框框规格，不占独立行 */
+.kp-flt { gap: 6px; justify-content: flex-end; }
+.kp-flt .kp-sel { height: 26px; font-size: 11.5px; padding: 0 7px; border-radius: 7px; color: var(--muted); max-width: 108px; }
+.kp-flt .kp-sel:focus, .kp-flt .kp-sel:hover { color: var(--text); border-color: var(--primary); }
+.kp-search { width: 168px; height: 26px; border: 1px solid rgba(0,0,0,0.12); border-radius: 8px; padding: 0 10px; font-size: 12px; outline: none; background: var(--row-bg); }
+.kp-search:focus { border-color: var(--primary); width: 220px; transition: width .15s; }
+.kp-count { font-size: 11px; color: var(--muted); }
 
 .kp-group-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); cursor: pointer; }
 .kp-empty { text-align: center; padding: 60px 20px; }
