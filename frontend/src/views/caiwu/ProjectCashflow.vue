@@ -85,6 +85,15 @@ const PRESETS = [
   { k: 'd30', l: '近 30 天', f: () => lastNDays(30) },
   { k: 'd90', l: '近 90 天', f: () => lastNDays(90) },
 ]
+// 按月直选（跟随所选年份）：页面主要按月度看，单列一组
+const MONTH_PRESETS = Array.from({ length: 12 }, (_, i) => ({
+  k: `m${i + 1}`, l: `${i + 1} 月`,
+  f: () => ({
+    date_start: `${filters.year}-${pad2(i + 1)}-01`,
+    date_end: `${filters.year}-${pad2(i + 1)}-${pad2(lastDayOfMonth(filters.year, i))}`,
+  }),
+}))
+const ALL_PRESETS = [...PRESETS, ...MONTH_PRESETS]
 const rangePreset = ref('')   // '' 全年 | 预设key | 'custom'
 
 function applyPreset(p) {
@@ -102,7 +111,7 @@ function onRangeChange() {
     if (!filters.date_start) { filters.date_start = `${filters.year}-01-01`; filters.date_end = `${filters.year}-12-31` }
     load(); return
   }
-  const p = PRESETS.find(x => x.k === v)
+  const p = ALL_PRESETS.find(x => x.k === v)
   if (p) applyPreset(p)
 }
 function onDateEdit() { rangePreset.value = 'custom'; load() }
@@ -258,7 +267,12 @@ onMounted(() => {
         </select>
         <select v-model="rangePreset" style="min-width:100px" @change="onRangeChange">
           <option value="">全年</option>
-          <option v-for="p in PRESETS" :key="p.k" :value="p.k">{{ p.l }}</option>
+          <optgroup label="常用区间">
+            <option v-for="p in PRESETS" :key="p.k" :value="p.k">{{ p.l }}</option>
+          </optgroup>
+          <optgroup :label="`按月（${filters.year} 年）`">
+            <option v-for="p in MONTH_PRESETS" :key="p.k" :value="p.k">{{ p.l }}</option>
+          </optgroup>
           <option value="custom">自定义…</option>
         </select>
         <template v-if="filters.useCustomDate">

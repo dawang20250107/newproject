@@ -243,10 +243,13 @@ onMounted(load)
 .kp-textarea { width: 100%; resize: vertical; border: 1px solid rgba(0,0,0,0.12); border-radius: 9px; padding: 8px 11px; font-size: 13px; font-family: inherit; line-height: 1.5; outline: none; box-sizing: border-box; }
 .kp-textarea:focus { border-color: var(--primary); }
 
-.kp-filterbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
-.kp-search { flex: 1; min-width: 180px; height: 34px; border: 1px solid rgba(0,0,0,0.12); border-radius: 9px; padding: 0 12px; font-size: 13px; outline: none; }
+.kp-filterbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+/* 筛选条走紧凑规格：小高度小字号，不与内容抢空间 */
+.kp-filterbar .kp-sel { height: 26px; font-size: 11.5px; padding: 0 7px; border-radius: 7px; color: var(--muted); }
+.kp-filterbar .kp-sel:focus, .kp-filterbar .kp-sel:hover { color: var(--text); border-color: var(--primary); }
+.kp-search { flex: 0 1 240px; min-width: 150px; height: 28px; border: 1px solid rgba(0,0,0,0.12); border-radius: 8px; padding: 0 10px; font-size: 12.5px; outline: none; }
 .kp-search:focus { border-color: var(--primary); }
-.kp-count { font-size: 12px; color: var(--muted); margin-left: auto; }
+.kp-count { font-size: 11px; color: var(--muted); margin-left: auto; }
 
 .kp-group-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); cursor: pointer; }
 .kp-empty { text-align: center; padding: 60px 20px; }
