@@ -540,15 +540,7 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
 .ring-txt span { font-size: 10px; color: var(--muted); letter-spacing: 0.05em; }
 
 .hero-ctrl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.period-pill {
-  display: inline-flex; align-items: center; border: 1px solid var(--border);
-  border-radius: 999px; background: var(--card, #fff); overflow: hidden;
-}
-.period-pill select {
-  border: 0; background: none; padding: 6px 12px; font-size: 12.5px;
-  font-weight: 600; color: var(--text); cursor: pointer; appearance: none; outline: none;
-}
-.pp-sep { width: 1px; height: 16px; background: var(--border); }
+/* period-pill / pp-sep 已提为全局共用样式（style.css），此处不再定义 */
 .warn-chip {
   padding: 3px 10px; border-radius: 999px; font-size: 11px;
   background: rgba(245, 166, 35, 0.13); color: #8a5f00; cursor: help;

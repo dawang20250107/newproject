@@ -174,12 +174,17 @@ onMounted(() => {
 
 <template>
   <div>
-    <div class="topbar" style="align-items:flex-start">
-      <h1>财务报表</h1>
-      <div class="ctrl-row" style="justify-content:flex-end">
-        <select v-model="year" class="sel-yr" @change="load">
-          <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
-        </select>
+    <div class="cw-hero">
+      <div>
+        <div class="cw-eyebrow">FINANCIAL REPORT · 月度矩阵</div>
+        <h1>财务报表</h1>
+      </div>
+      <div class="cw-hero-ctrl">
+        <div class="period-pill">
+          <select v-model="year" @change="load">
+            <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+          </select>
+        </div>
         <select v-if="accessibleBus.length > 1" v-model="selectedBu" class="sel-bu" @change="load">
           <option value="">全部事业部</option>
           <option v-for="bu in accessibleBus" :key="bu" :value="bu">{{ bu }}</option>

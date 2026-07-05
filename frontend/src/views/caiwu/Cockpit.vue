@@ -777,21 +777,27 @@ const ctxMatrixItems = computed(() => {
 
 <template>
   <div>
-    <div class="topbar" style="align-items:flex-start">
-      <div class="cockpit-title-wrap">
-        <h1>财务驾驶舱</h1>
-        <button class="cfa-title-btn" :class="{ on: chatOpen }" @click="chatOpen = true" title="业财融合 AI 助手">
-          <AiMark light :size="18" class="cfa-title-orb" /> 业财 AI 助手 <span class="ai-pro-tag">PRO</span>
-        </button>
-        <button class="present-btn" @click="openPresent" title="大屏复盘模式">🖥 大屏复盘</button>
+    <div class="cw-hero">
+      <div>
+        <div class="cw-eyebrow">FINANCE COCKPIT · 业财融合</div>
+        <div class="cockpit-title-wrap">
+          <h1>财务驾驶舱</h1>
+          <button class="cfa-title-btn" :class="{ on: chatOpen }" @click="chatOpen = true" title="业财融合 AI 助手">
+            <AiMark light :size="18" class="cfa-title-orb" /> 业财 AI 助手 <span class="ai-pro-tag">PRO</span>
+          </button>
+          <button class="present-btn" @click="openPresent" title="大屏复盘模式">🖥 大屏复盘</button>
+        </div>
       </div>
-      <div v-show="mainTab === 'overview'" class="ctrl-row" style="justify-content:flex-end">
-        <select v-model="year" class="sel-yr" @change="load">
-          <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
-        </select>
-        <select v-model="month" class="sel-mo" @change="load">
-          <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
-        </select>
+      <div v-show="mainTab === 'overview'" class="cw-hero-ctrl">
+        <div class="period-pill">
+          <select v-model="year" @change="load">
+            <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+          </select>
+          <span class="pp-sep"></span>
+          <select v-model="month" @change="load">
+            <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
+          </select>
+        </div>
         <select v-if="accessibleBus.length > 1" v-model="selectedBu" class="sel-bu" @change="load">
           <option value="">全集团</option>
           <option v-for="bu in accessibleBus" :key="bu" :value="bu">{{ bu }}</option>

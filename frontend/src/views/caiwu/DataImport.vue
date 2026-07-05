@@ -275,14 +275,13 @@ onMounted(() => {
     <InternalRecon v-if="mainTab === 'internal'" />
 
     <template v-else>
-    <div class="topbar">
+    <div class="cw-hero">
       <div>
+        <div class="cw-eyebrow">DATA PIPELINE · 采集加工</div>
         <h1>数据加工</h1>
-        <div style="font-size:13px;color:var(--muted);margin-top:2px">
-          上传金蝶部门明细表 · 核对利润指标 · 发布到报表
-        </div>
+        <div class="cw-hero-sub">上传金蝶部门明细表 · 核对利润指标 · 发布到报表</div>
       </div>
-      <div style="display:flex;gap:8px">
+      <div class="cw-hero-ctrl">
         <button class="btn btn-ghost btn-sm" @click="downloadTemplate">下载KXT模板</button>
         <button v-if="auth.canUpload" class="btn btn-primary btn-sm" @click="openUpload">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>

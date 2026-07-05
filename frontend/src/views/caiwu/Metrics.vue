@@ -303,9 +303,12 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="topbar" style="align-items:flex-start">
-      <h1>指标管理</h1>
-      <div class="ctrl-row" style="justify-content:flex-end">
+    <div class="cw-hero">
+      <div>
+        <div class="cw-eyebrow">TARGETS & METRICS · 目标追踪</div>
+        <h1>指标管理</h1>
+      </div>
+      <div class="cw-hero-ctrl">
         <select v-if="accessibleBus.length > 1" v-model="selectedBu" class="sel-bu" @change="loadMetrics">
           <option value="">全部事业部</option>
           <option v-for="bu in accessibleBus" :key="bu" :value="bu">{{ bu }}</option>
