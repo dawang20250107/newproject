@@ -63,6 +63,8 @@ python manage.py test ar       # 指定业务域
    | `JWT_SECRET` | 登录令牌签名密钥 |
    | `MYSQL_ADDRESS` / `MYSQL_USERNAME` / `MYSQL_PASSWORD` | 生产库（未设则回落 SQLite 开发库） |
    | `DEEPSEEK_API_KEY` | 财务分析 AI（缺省则 AI 功能不可用，其余正常） |
+   | `DEEPSEEK_FALLBACK_MODEL`（可选） | 主模型异常时的降级模型，默认 `deepseek-chat` |
+   | `SEARCH_PROVIDER` / `SEARCH_API_KEY`（可选） | AI 联网搜索（`bocha`＝博查 或 `serper`＝Google）；缺省则联网研究技能提示未配置 |
    | `SENTRY_DSN`（可选） | 错误上报；`PROMETHEUS_ENABLED`（可选）开 /metrics |
 3. **前端产物**：`cd frontend && npm run build`（产物写入 `backend/frontend_dist/`，需一并提交/部署）。
 4. **发布后验证**：访问 `/healthz`（存活）与 `/readyz`（数据库连通）均应返回 200；登录后抽查付款管理列表可加载。
@@ -70,6 +72,10 @@ python manage.py test ar       # 指定业务域
    ```bash
    python manage.py pk_housekeeping     # 回收站清理等幂等维护
    python manage.py pk_aging_digest    # 账龄/逾期摘要（文本输出，可接邮件/机器人）
+   ```
+   AI 助手回归评测（改提示词/换模型后手动跑，只读）：
+   ```bash
+   python manage.py eval_agent --year 2026 --month 5   # 黄金问题集 + 数字对账器
    ```
 
 ## 角色操作速查

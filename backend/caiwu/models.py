@@ -460,3 +460,22 @@ class InternalBalance(models.Model):
             'debit': float(self.debit or 0), 'credit': float(self.credit or 0),
             'closing': float(self.closing or 0),
         }
+
+
+class AiFeedback(models.Model):
+    """AI 助手回答的用户评价（👍/👎），沉淀为改进素材与评测样本。"""
+    user = models.ForeignKey('paikuan.PaikuanUser', null=True, blank=True,
+                             on_delete=models.SET_NULL, related_name='ai_feedback')
+    rating = models.SmallIntegerField('评价')            # 1=👍 / -1=👎
+    question = models.TextField('用户提问', blank=True, default='')
+    answer = models.TextField('AI 回答', blank=True, default='')
+    comment = models.CharField('补充说明', max_length=300, blank=True, default='')
+    scope = models.CharField('分析范围', max_length=32, blank=True, default='')
+    year = models.IntegerField('年', null=True, blank=True)
+    month = models.IntegerField('月', null=True, blank=True)
+    created_at = models.DateTimeField('时间', auto_now_add=True)
+
+    class Meta:
+        app_label = 'caiwu'
+        db_table = 'caiwu_ai_feedback'
+        ordering = ['-created_at']

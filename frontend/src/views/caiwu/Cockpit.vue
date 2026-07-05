@@ -309,6 +309,24 @@ async function distillToKb(content, idx) {
 }
 function openKb() { panelTab.value = 'kb'; loadKb() }
 
+// ── AI 回答评价（👍/👎）：沉淀为改进素材与评测样本 ───────────────────────────
+async function rateAnswer(m, idx, rating) {
+  if (m.fb === rating) return
+  m.fb = rating
+  // 找到该回答之前最近的用户提问
+  let q = ''
+  for (let j = idx - 1; j >= 0; j--) {
+    if (chatMessages.value[j]?.role === 'user') { q = chatMessages.value[j].content; break }
+  }
+  try {
+    await api.post('/cockpit/ai-feedback', {
+      rating, question: q, answer: m.content,
+      scope: selectedBu.value || '全集团', year: year.value, month: month.value,
+    })
+    showToast(rating === 1 ? '✓ 已记录，感谢反馈' : '✓ 已记录，会用于改进回答质量')
+  } catch { m.fb = undefined }
+}
+
 // ── 下钻导航（从对话跳到明细页，带上当前事业部+期间）────────────────────────
 function drillTo(path) {
   chatOpen.value = false
@@ -1073,11 +1091,15 @@ const ctxMatrixItems = computed(() => {
                     <div v-if="m.content" class="cfa-md" v-html="renderMarkdown(m.content)"></div>
                     <span v-else-if="chatStreaming && i === chatMessages.length - 1 && !m.reasoning && !(m.toolSteps && m.toolSteps.length)" class="cfa-typing">思考中<i>.</i><i>.</i><i>.</i></span>
                   </div>
-                  <!-- 答案动作：提炼入库 + 下钻 -->
+                  <!-- 答案动作：提炼入库 + 评价 + 下钻 -->
                   <div v-if="m.content && !(chatStreaming && i === chatMessages.length - 1)" class="cfa-actions">
                     <button class="cfa-act" :disabled="distillingIdx === i" @click="distillToKb(m.content, i)">
                       {{ distillingIdx === i ? '提炼中…' : '📌 提炼入库' }}
                     </button>
+                    <button class="cfa-fb" :class="{ on: m.fb === 1 }" title="回答准确有用"
+                      @click="rateAnswer(m, i, 1)">👍</button>
+                    <button class="cfa-fb" :class="{ on: m.fb === -1 }" title="回答有误或没帮助（会记录用于改进）"
+                      @click="rateAnswer(m, i, -1)">👎</button>
                     <span class="cfa-drill-lbl">下钻 →</span>
                     <button class="cfa-drill" @click="drillTo('/caiwu/report')">报表</button>
                     <button class="cfa-drill" @click="drillTo('/caiwu/project-margin')">项目毛利</button>
@@ -1641,6 +1663,9 @@ const ctxMatrixItems = computed(() => {
 .cfa-asst-wrap { width: 100%; }
 .cfa-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0 0 2px; }
 .cfa-act { border: 1px solid rgba(201,99,66,0.3); background: rgba(201,99,66,0.06); color: var(--primary); border-radius: 7px; font-size: 11.5px; padding: 3px 9px; cursor: pointer; font-weight: 600; }
+.cfa-fb { border: 1px solid rgba(0,0,0,0.1); background: none; border-radius: 7px; font-size: 12px; padding: 2px 7px; cursor: pointer; opacity: 0.55; transition: all .12s; }
+.cfa-fb:hover { opacity: 1; border-color: var(--primary); }
+.cfa-fb.on { opacity: 1; border-color: var(--primary); background: rgba(201,99,66,0.08); }
 .cfa-act:disabled { opacity: .5; cursor: default; }
 .cfa-drill-lbl { font-size: 11px; color: var(--muted); margin-left: 4px; }
 .cfa-drill { border: 1px solid rgba(0,0,0,0.12); background: var(--row-bg); color: var(--muted); border-radius: 7px; font-size: 11.5px; padding: 3px 9px; cursor: pointer; }
