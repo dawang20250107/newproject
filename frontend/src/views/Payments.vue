@@ -26,6 +26,7 @@ import { copyText, copyRowTSV } from '../utils/clipboard.js'
 import { useAsyncExport } from '../composables/useAsyncExport.js'
 import { useRangeSelection } from '../composables/useRangeSelection.js'
 import { createRequestLane } from '../utils/requestLane.js'
+import { useFileDrop } from '../composables/useFileDrop.js'
 import { cachedGet } from '../api/refCache.js'
 
 const toast = useToast()
@@ -474,6 +475,20 @@ async function onImportFile(e) {
   const file = e.target.files[0]
   if (!file) return
   e.target.value = ''
+  await importPayFile(file)
+}
+
+// 桌面拖拽导入：拖入 Excel/CSV 即走与「导入」按钮相同的预检+导入链路
+const { dragging: dropDragging } = useFileDrop(({ file, reason, name }) => {
+  if (!file) {
+    if (reason === 'ext') toast.error(`不支持的文件类型：${name}（请拖入 .xlsx / .xls / .csv）`)
+    return
+  }
+  if (importing.value) { toast.error('正在导入中，请稍候'); return }
+  importPayFile(file)
+}, { exts: ['.xlsx', '.xls', '.csv'] })
+
+async function importPayFile(file) {
   importing.value = true
   importResult.value = null
   precheckResult.value = null
@@ -1126,6 +1141,14 @@ async function doBatchPay() {
 
 <template>
   <div>
+    <!-- 桌面拖拽导入遮罩 -->
+    <div v-if="dropDragging" class="drop-overlay">
+      <div class="drop-box">
+        <div class="drop-icon">📥</div>
+        <div class="drop-title">松开鼠标，导入付款台账</div>
+        <div class="drop-sub">支持 .xlsx / .xls / .csv，与「导入」按钮同一校验流程</div>
+      </div>
+    </div>
     <div class="topbar">
       <div style="display:flex;align-items:center;gap:14px">
         <h1>付款管理</h1>

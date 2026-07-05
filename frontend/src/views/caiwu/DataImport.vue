@@ -23,6 +23,15 @@ const upBu = ref('')
 const upYear = ref(lastMonthCST().year)
 const upMonth = ref(lastMonthCST().month)
 const upFile = ref(null)
+const upDropping = ref(false)
+function onUpDrop(e) {
+  upDropping.value = false
+  const f = Array.from(e.dataTransfer?.files || [])[0]
+  if (!f) return
+  if (!/\.(xlsx|json)$/i.test(f.name)) { uploadErr.value = `不支持的文件类型：${f.name}（请拖入 .xlsx 或 .json）`; return }
+  uploadErr.value = ''
+  upFile.value = f
+}
 const uploading = ref(false)
 const uploadErr = ref('')
 const uploadResult = ref(null)   // {batch, row_count, fmt, warnings, pl_check}
@@ -382,8 +391,10 @@ onMounted(() => {
               <span>集团总部口径：将<strong>自动剔除「财务金融」部门</strong>（供应链金融属独立业务条线，其收入/成本/费用均不计入集团总部报表）。</span>
             </div>
 
-            <!-- File drop zone -->
-            <label class="up-drop" :class="{ filled: upFile }">
+            <!-- File drop zone：点击选择或直接从桌面拖入 -->
+            <label class="up-drop" :class="{ filled: upFile, dropping: upDropping }"
+              @dragover.prevent="upDropping = true" @dragleave="upDropping = false"
+              @drop.prevent="onUpDrop">
               <input type="file" accept=".xlsx,.json" @change="e => upFile = e.target.files[0]" hidden />
               <template v-if="upFile">
                 <span class="up-file-name">{{ upFile.name }}</span>
@@ -391,7 +402,7 @@ onMounted(() => {
               </template>
               <template v-else>
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                <span>点击选择部门明细表文件（.xlsx，或 .json 数组格式）</span>
+                <span>点击选择或拖入部门明细表文件（.xlsx，或 .json 数组格式）</span>
               </template>
             </label>
 
@@ -557,7 +568,7 @@ onMounted(() => {
   border: 1.5px dashed rgba(201,99,66,0.35); background: rgba(201,99,66,0.03);
   color: var(--muted); font-size: 13px; transition: all .18s; text-align: center;
 }
-.up-drop:hover { border-color: var(--primary); background: rgba(201,99,66,0.06); color: var(--primary); }
+.up-drop:hover, .up-drop.dropping { border-color: var(--primary); background: rgba(201,99,66,0.06); color: var(--primary); }
 .up-drop.filled { border-style: solid; border-color: var(--primary); background: rgba(201,99,66,0.06); color: var(--text); }
 .hq-note {
   display: flex; align-items: flex-start; gap: 7px;

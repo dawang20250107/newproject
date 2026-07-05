@@ -22,6 +22,7 @@ export default defineConfig({
           if (!id.includes('node_modules')) return
           if (id.includes('echarts') || id.includes('zrender')) return 'echarts'
           if (id.includes('html2canvas')) return 'html2canvas'
+          if (id.includes('jspdf') || id.includes('fflate')) return 'jspdf'
           if (/[\\/]node_modules[\\/](@vue|vue|vue-router|pinia)[\\/]/.test(id)) return 'vendor-vue'
           if (id.includes('axios')) return 'vendor-axios'
           return 'vendor'

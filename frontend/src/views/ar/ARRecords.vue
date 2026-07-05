@@ -18,6 +18,7 @@ import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useShiftSelect } from '../../composables/useShiftSelect.js'
+import { useFileDrop } from '../../composables/useFileDrop.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 // 重型抽屉/弹窗按需加载：仅打开活动抽屉 / 导入预检时才拉取其代码块，
 // 大幅瘦身应收明细主路由块（ActivityPanel 单文件 1.7k 行）。
@@ -188,10 +189,11 @@ async function printTable() {
     printing.value = false
   }
 }
-function buildPrintDoc(allCount) {
+// 克隆当前可见表格并剥离全部交互元素，供打印/图片/PDF 导出共用
+function buildCleanTable() {
   const scope = document.querySelector('.ar-view')
   const src = scope && [...scope.querySelectorAll('table')].find(t => t.offsetParent !== null)
-  if (!src) return
+  if (!src) return null
   const tbl = src.cloneNode(true)
   // 剥离交互元素：勾选列、列宽拖柄、筛选/排序按钮、行内按钮输入框、各类角标与提醒符号
   tbl.querySelectorAll(
@@ -202,20 +204,115 @@ function buildPrintDoc(allCount) {
     const label = colf.querySelector('.colf-label')?.textContent?.trim() || ''
     colf.replaceWith(document.createTextNode(label))
   })
-  // 去掉屏显内联样式（冻结列宽/sticky 偏移），交给打印版式自动布局
+  // 去掉屏显内联样式与 scoped 样式标记（冻结列宽/sticky/悬停不进导出版式）
   tbl.querySelectorAll('[style]').forEach(el => el.removeAttribute('style'))
   tbl.removeAttribute('style')
-
+  const stripScoped = (el) => {
+    for (const n of (el.getAttributeNames?.() || [])) {
+      if (n.startsWith('data-v-')) el.removeAttribute(n)
+    }
+  }
+  stripScoped(tbl)
+  tbl.querySelectorAll('*').forEach(stripScoped)
+  return tbl
+}
+function exportTitleMeta(allCount, stampPrefix = '') {
   const tabLabel = TABS.find(t => t.key === activeTab.value)?.label || ''
   const now = new Date()
   const p2 = n => String(n).padStart(2, '0')
-  const stamp = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}`
+  const stamp = `${stampPrefix}${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}`
   const meta = allCount != null
-    ? `全部 ${allCount} 条　·　打印时间 ${stamp}`
+    ? `全部 ${allCount} 条　·　${stamp}`
     : (total.value
-      ? `本页 ${items.value.length} 条 / 共 ${total.value} 条　·　打印时间 ${stamp}`
-      : `打印时间 ${stamp}`)
-  const title = `应收账款${tabLabel ? ' · ' + tabLabel : ''}`
+      ? `本页 ${items.value.length} 条 / 共 ${total.value} 条　·　${stamp}`
+      : stamp)
+  return { title: `应收账款${tabLabel ? ' · ' + tabLabel : ''}`, meta }
+}
+// 报表通用表格样式（px 版，供图片/PDF 画布渲染；打印文档用 pt 版）
+const EXPORT_TABLE_CSS = `
+  .xp-root { background: #fff; color: #1a1a1a; font: 12px/1.5 "Microsoft YaHei", "PingFang SC", sans-serif; padding: 26px 30px; }
+  .xp-root .p-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #1a1a1a; padding-bottom: 8px; margin-bottom: 12px; }
+  .xp-root .p-head h1 { margin: 0; font-size: 19px; letter-spacing: 0.06em; }
+  .xp-root .p-meta { font-size: 11px; color: #555; }
+  .xp-root table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  .xp-root th { background: #efedea; border: 1px solid #999; padding: 5px 7px; font-weight: 700; text-align: left; }
+  .xp-root td { border: 1px solid #c2c2c2; padding: 4px 7px; vertical-align: middle; word-break: break-word; }
+  .xp-root tbody tr:nth-child(even) td { background: #f8f7f5; }
+  .xp-root th.amt, .xp-root td.amt { text-align: right; font-variant-numeric: tabular-nums; }
+  .xp-root td.amt, .xp-root td.ctr { white-space: nowrap; }
+  .xp-root th.ctr, .xp-root td.ctr { text-align: center; }
+  .xp-root td.fw { font-weight: 700; }
+  .xp-root .text-muted { color: #767676; }
+  .xp-root .proj-sub { font-size: 10px; color: #767676; }
+  .xp-root tfoot td { font-weight: 700; background: #efedea; border-top: 2px solid #333; }
+  .xp-root .empty-cell { text-align: center; color: #999; padding: 20px; }
+`
+// 把干净表格渲染到屏幕外容器并画成 canvas（图片 / PDF 共用）
+async function renderExportCanvas() {
+  const tbl = buildCleanTable()
+  if (!tbl) return null
+  const { title, meta } = exportTitleMeta(null)
+  const holder = document.createElement('div')
+  holder.style.cssText = 'position:absolute;left:-100000px;top:0;width:1500px'
+  const style = document.createElement('style')
+  style.textContent = EXPORT_TABLE_CSS
+  const root = document.createElement('div')
+  root.className = 'xp-root'
+  const head = document.createElement('div')
+  head.className = 'p-head'
+  const h1 = document.createElement('h1'); h1.textContent = title
+  const pm = document.createElement('div'); pm.className = 'p-meta'; pm.textContent = meta
+  head.appendChild(h1); head.appendChild(pm)
+  root.appendChild(head); root.appendChild(tbl)
+  holder.appendChild(style); holder.appendChild(root)
+  document.body.appendChild(holder)
+  try {
+    const { default: html2canvas } = await import('html2canvas')
+    return await html2canvas(root, { scale: 2, backgroundColor: '#ffffff', logging: false })
+  } finally { holder.remove() }
+}
+async function exportImage() {
+  exporting.value = true
+  try {
+    const canvas = await renderExportCanvas()
+    if (!canvas) { toast.error('当前页面没有可导出的表格'); return }
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/png'))
+    downloadBlob(blob, `应收账款明细_${todayCST()}.png`)
+  } catch (e) { toast.error(e?.msg || e?.error || '图片导出失败')
+  } finally { exporting.value = false }
+}
+async function exportPdf() {
+  exporting.value = true
+  try {
+    const canvas = await renderExportCanvas()
+    if (!canvas) { toast.error('当前页面没有可导出的表格'); return }
+    const { jsPDF } = await import('jspdf')
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
+    const pw = 297, ph = 210, margin = 8
+    const availW = pw - margin * 2, availH = ph - margin * 2
+    const imgH = canvas.height * availW / canvas.width
+    const img = canvas.toDataURL('image/jpeg', 0.92)
+    let heightLeft = imgH
+    let first = true
+    while (heightLeft > 0) {
+      if (!first) pdf.addPage()
+      const position = margin - (imgH - heightLeft)
+      pdf.addImage(img, 'JPEG', margin, position, availW, imgH)
+      // 上下页边距盖白：长图跨页切片时防止相邻页内容渗进边距
+      pdf.setFillColor(255, 255, 255)
+      pdf.rect(0, 0, pw, margin, 'F')
+      pdf.rect(0, ph - margin, pw, margin, 'F')
+      heightLeft -= availH
+      first = false
+    }
+    pdf.save(`应收账款明细_${todayCST()}.pdf`)
+  } catch (e) { toast.error(e?.msg || e?.error || 'PDF 导出失败')
+  } finally { exporting.value = false }
+}
+function buildPrintDoc(allCount) {
+  const tbl = buildCleanTable()
+  if (!tbl) return
+  const { title, meta } = exportTitleMeta(allCount, '打印时间 ')
 
   // 可见的打印预览窗口（不用隐藏 iframe：部分浏览器对隐藏 iframe 的打印排版
   // 不可靠，会打出空页/碎字）。预览页自动调起打印，也可手动点「打印」。
@@ -1507,6 +1604,10 @@ async function downloadTemplate() {
 
 async function handleImport(e) {
   const f = e.target.files?.[0]; if (!f) return
+  try { await importFromFile(f) } finally { if (fileInput.value) fileInput.value.value = '' }
+}
+
+async function importFromFile(f) {
   pendingFile.value = f
   precheckResult.value = null
   importing.value = true
@@ -1518,7 +1619,7 @@ async function handleImport(e) {
     await doImport(f)
   } catch (err) {
     importResult.value = { ok: false, title: '导入失败', sections: [{ label: '错误信息', items: [err?.msg || err?.error || err?.message || '服务器错误，请联系管理员'] }] }
-  } finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
+  } finally { importing.value = false }
 }
 
 async function doImport(f) {
@@ -1589,6 +1690,23 @@ const onScopeChange = () => {
   else load(true)
   void before
 }
+// ── 导出下拉菜单 ──────────────────────────────────────────────────────────
+const expOpen = ref(false)
+const closeExpMenu = () => { expOpen.value = false }
+
+// ── 桌面拖拽导入：拖入 Excel 即走与「↑ 导入」完全相同的预检+导入链路 ─────────
+const { dragging: dropDragging } = useFileDrop(({ file, reason, name }) => {
+  if (!file) {
+    if (reason === 'ext') toast.error(`不支持的文件类型：${name}（请拖入 .xlsx / .xls）`)
+    return
+  }
+  if (importing.value) { toast.error('正在导入中，请稍候'); return }
+  importFromFile(file)
+}, { exts: ['.xlsx', '.xls'] })
+
+onMounted(() => document.addEventListener('click', closeExpMenu))
+onBeforeUnmount(() => document.removeEventListener('click', closeExpMenu))
+
 onMounted(async () => {
   // 路由跳转带入的筛选（来自现金流/分析/项目台账等）→ 转成条件
   const fromRoute = route.query.status || route.query.project_id || route.query.dept
@@ -1624,6 +1742,14 @@ function clearFilters() {
 
 <template>
   <div class="ar-view">
+    <!-- 桌面拖拽导入遮罩：从桌面拖入文件时出现，松手即导入 -->
+    <div v-if="dropDragging" class="drop-overlay">
+      <div class="drop-box">
+        <div class="drop-icon">📥</div>
+        <div class="drop-title">松开鼠标，导入应收明细</div>
+        <div class="drop-sub">支持 .xlsx / .xls，与「↑ 导入」按钮同一校验流程</div>
+      </div>
+    </div>
     <div class="ar-head">
       <!-- 行1：标题 + 主操作（模板/导入/导出/新增）-->
       <div class="ar-head-top">
@@ -1668,7 +1794,16 @@ function clearFilters() {
             {{ importing ? '导入中…' : '↑ 导入' }}
             <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />
           </label>
-          <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">↓ 导出</button>
+          <div class="exp-dd">
+            <button class="btn btn-ghost btn-sm" :disabled="exporting" @click.stop="expOpen = !expOpen">
+              {{ exporting ? '导出中…' : '↓ 导出' }} <span class="exp-caret">▾</span>
+            </button>
+            <div v-if="expOpen" class="exp-menu" @click.stop>
+              <button @click="expOpen = false; exportData()"><b>Excel</b><i>全部筛选结果 · 含全部明细列</i></button>
+              <button @click="expOpen = false; exportPdf()"><b>PDF</b><i>当前表格 · 报表版式</i></button>
+              <button @click="expOpen = false; exportImage()"><b>图片 PNG</b><i>当前表格 · 高清长图</i></button>
+            </div>
+          </div>
           <button class="btn btn-ghost btn-sm" :disabled="printing" @click="printTable" title="打印当前表格（多页时可选打印全部）">{{ printing ? '打印准备中…' : '⎙ 打印' }}</button>
           <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate">+ 新增应收</button>
         </div>
@@ -3747,6 +3882,24 @@ function clearFilters() {
   cursor: pointer; transition: all .14s;
 }
 .aging-cfg-btn:hover { border-color: var(--primary); color: var(--primary); }
+
+/* ── 导出下拉 ──────────────────────────────────────────────────────── */
+.exp-dd { position: relative; display: inline-block; }
+.exp-caret { font-size: 9px; opacity: 0.6; margin-left: 1px; }
+.exp-menu {
+  position: absolute; right: 0; top: calc(100% + 5px); z-index: 60;
+  min-width: 210px; padding: 5px; display: flex; flex-direction: column; gap: 1px;
+  background: var(--card, #fff); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 8px 26px rgba(0, 0, 0, 0.14);
+}
+.exp-menu button {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 7px 11px; border: 0; background: none; cursor: pointer;
+  border-radius: 7px; text-align: left; font: inherit;
+}
+.exp-menu button:hover { background: rgba(201, 99, 66, 0.08); }
+.exp-menu b { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.exp-menu i { font-style: normal; font-size: 10.5px; color: var(--muted); }
 
 /* ── 打印布局 ──────────────────────────────────────────────────────── */
 @media print {

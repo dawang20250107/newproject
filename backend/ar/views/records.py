@@ -1204,6 +1204,9 @@ def ar_record_export(request):
     for rec in qs:
         st = rec.status_dict(today)
         ws.append([getter(rec, st) for _, _, getter in columns])
+    _style_export_ws(ws, money_headers=(
+        '预估上账金额', '实际开票金额', '实际应收', '税额', '账实差额调整',
+        '未回款金额', '已回款合计', '预收冲抵金额', '内部往来金额'))
     return _export_response(wb, '应收账款明细.xlsx')
 
 

@@ -26,7 +26,29 @@ import { useRangeSelection } from '../composables/useRangeSelection.js'
 import { useShiftSelect } from '../composables/useShiftSelect.js'
 import { createRequestLane } from '../utils/requestLane.js'
 import { cachedGet } from '../api/refCache.js'
+import { useFileDrop } from '../composables/useFileDrop.js'
 const toast = useToast()
+
+// ── 桌面拖拽导入：普通导入 / 运输导入 双落区 ────────────────────────────────
+// 窗口级 onDrop 兜底不导入（避免误判类型），必须落在具体区域上才生效。
+const { dragging: dropDragging, pick: dropPick, reset: dropReset } = useFileDrop(
+  () => {}, { exts: ['.xlsx', '.xls', '.csv'] })
+const dropHover = ref('')
+function onZoneDrop(kind, e) {
+  const { file, reason, name } = dropPick(e)
+  dropReset(); dropHover.value = ''
+  if (!file) {
+    if (reason === 'ext') toast.error(`不支持的文件类型：${name}（请拖入 .xlsx / .xls / .csv）`)
+    return
+  }
+  if (kind === 'transport') {
+    if (importingTransport.value) { toast.error('正在导入中，请稍候'); return }
+    importTransportFile(file)
+  } else {
+    if (importing.value) { toast.error('正在导入中，请稍候'); return }
+    importApprovalFile(file)
+  }
+}
 const route = useRoute()
 const { exporting: bgExporting, startExport } = useAsyncExport()
 // Excel 式区域选择 + 复制（忽略首列复选框）
@@ -599,6 +621,10 @@ function triggerImport(){ importResult.value=null; precheckResult.value=null; fi
 async function onImport(e){
   const f=e.target.files?.[0]; if(!f){ return }
   e.target.value=''
+  await importApprovalFile(f)
+}
+
+async function importApprovalFile(f){
   importing.value=true; importResult.value=null; precheckResult.value=null
   try{
     const fd=new FormData(); fd.append('file',f)
@@ -643,6 +669,10 @@ function triggerTransportImport(){ importResult.value=null; precheckResult.value
 async function onTransportImport(e){
   const f=e.target.files?.[0]; if(!f){ return }
   e.target.value=''
+  await importTransportFile(f)
+}
+
+async function importTransportFile(f){
   importingTransport.value=true; importResult.value=null; precheckResult.value=null
   try{
     const fd=new FormData(); fd.append('file',f)
@@ -737,6 +767,25 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 </script>
 
 <template><div>
+  <!-- 桌面拖拽导入遮罩：两种导入类型 → 双落区，拖到哪个区域走哪条链路 -->
+  <div v-if="dropDragging" class="drop-overlay">
+    <div class="drop-zones">
+      <div :class="['drop-zone', dropHover === 'normal' ? 'hover' : '']"
+        @dragover.prevent="dropHover = 'normal'" @dragleave="dropHover = ''"
+        @drop.stop.prevent="onZoneDrop('normal', $event)">
+        <div class="drop-icon">📥</div>
+        <div class="drop-title">导入审批记录</div>
+        <div class="drop-sub">常规审批 Excel（含预检）</div>
+      </div>
+      <div v-if="canTransport" :class="['drop-zone', dropHover === 'transport' ? 'hover' : '']"
+        @dragover.prevent="dropHover = 'transport'" @dragleave="dropHover = ''"
+        @drop.stop.prevent="onZoneDrop('transport', $event)">
+        <div class="drop-icon">🚚</div>
+        <div class="drop-title">运输导入</div>
+        <div class="drop-sub">运输系统对账单原始表</div>
+      </div>
+    </div>
+  </div>
   <div class="topbar"><h1>审批管理</h1><div class="topbar-tools">
     <input v-model="q" class="global-search" placeholder="🔍 申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
     <button class="btn btn-ghost btn-sm" @click="search">搜索</button>

@@ -870,3 +870,25 @@ body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
   .main-content.full-height-view { display: block !important; }
   body { background: #fff !important; }
 }
+
+/* ── 桌面拖拽导入遮罩（useFileDrop，各列表页共用）───────────────────────── */
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 1000; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(30, 22, 17, 0.42); backdrop-filter: blur(2px);
+}
+.drop-box {
+  text-align: center; padding: 38px 64px;
+  background: var(--card, #fff); border: 2px dashed var(--primary, #c96342);
+  border-radius: 18px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+.drop-icon { font-size: 40px; margin-bottom: 10px; }
+.drop-title { font-size: 17px; font-weight: 700; color: var(--text); }
+.drop-sub { margin-top: 6px; font-size: 12px; color: var(--muted); }
+.drop-zones { display: flex; gap: 18px; }
+.drop-zone {
+  pointer-events: auto; text-align: center; padding: 34px 46px;
+  background: var(--card, #fff); border: 2px dashed var(--border, #ccc);
+  border-radius: 16px; transition: border-color .12s, transform .12s;
+}
+.drop-zone.hover, .drop-zone:hover { border-color: var(--primary, #c96342); transform: scale(1.02); }

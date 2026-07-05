@@ -609,6 +609,40 @@ def _header_row(ws, headers, color='1565C0'):
         cell.alignment = Alignment(horizontal='center')
 
 
+def _disp_len(s):
+    """Excel 列宽估算：CJK 字符按 2 个单位计。"""
+    return sum(2 if ord(ch) > 127 else 1 for ch in str(s))
+
+
+def _style_export_ws(ws, money_headers=(), width_scan_rows=300):
+    """导出工作表通用美化：冻结表头、自动筛选、全表细边框、
+    金额列千分位格式、按内容自适应列宽（扫描前 N 行估宽）。"""
+    from openpyxl.styles import Border, Side
+    from openpyxl.utils import get_column_letter
+    headers = [c.value for c in ws[1]]
+    n_cols = len(headers)
+    if not n_cols or ws.max_row < 1:
+        return
+    thin = Side(style='thin', color='C9C9C9')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    money_idx = {i for i, h in enumerate(headers, 1) if h in set(money_headers)}
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=n_cols):
+        for cell in row:
+            cell.border = border
+            if cell.row > 1 and cell.column in money_idx and isinstance(cell.value, (int, float)):
+                cell.number_format = '#,##0.00'
+    for i, h in enumerate(headers, 1):
+        w = _disp_len(h or '')
+        for r in range(2, min(ws.max_row, width_scan_rows + 1) + 1):
+            v = ws.cell(row=r, column=i).value
+            if v is not None:
+                w = max(w, _disp_len(v))
+        ws.column_dimensions[get_column_letter(i)].width = min(max(w + 2, 9), 42)
+    ws.row_dimensions[1].height = 22
+    ws.freeze_panes = 'A2'
+    ws.auto_filter.ref = f'A1:{get_column_letter(n_cols)}{max(ws.max_row, 1)}'
+
+
 # ── 共享：AR 记录过滤 / 状态 / 排序 / 条件助手（records、budget 等域共用）──
 def _apply_record_filters(qs, request):
     """Shared dimension filters for AR records (used by list + kpi)."""
