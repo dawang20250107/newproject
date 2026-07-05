@@ -1,6 +1,6 @@
 <script setup>
 import { confirmDlg } from '../../composables/confirm.js'
-import { ref, reactive, computed, onMounted, onBeforeUnmount, provide, defineAsyncComponent } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, provide, defineAsyncComponent, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
@@ -145,7 +145,50 @@ function toggleFullscreen() {
 }
 // 打印：不直接打印交互式页面（勾选框/筛选图标/角标会一起打出来），
 // 而是克隆当前可见表格、剥离全部交互元素后，注入干净报表版式经隐藏 iframe 打印。
-function printTable() {
+// 数据 Tab 且不止一页时可选「打印全部」：按当前筛选分页拉全量，临时换入表格
+// 渲染后克隆（复用列显隐/格式化的唯一渲染路径），打印文档生成后立即还原。
+const PRINT_ALL_MAX = 3000
+const printing = ref(false)
+async function fetchAllForPrint() {
+  const all = []
+  const want = Math.min(total.value, PRINT_ALL_MAX)
+  for (let p = 1; all.length < want; p++) {
+    const res = await ar.listRecords(buildParams({ ...scopedParams(), include_payments: 1, page: p, size: 200 }))
+    const batch = res.data.items || []
+    all.push(...batch)
+    if (!batch.length) break
+  }
+  return all.slice(0, want)
+}
+async function printTable() {
+  if (printing.value) return
+  let allRows = null
+  if (isDataTab.value && total.value > items.value.length) {
+    if (await confirmDlg({
+      title: '打印范围',
+      message: `当前筛选共 ${total.value} 条，本页显示 ${items.value.length} 条`,
+      detail: ['「打印全部」按当前筛选拉取全部记录后打印', '「仅本页」只打印当前页显示的行'],
+      confirmText: '打印全部',
+      cancelText: '仅本页',
+    })) {
+      if (total.value > PRINT_ALL_MAX) {
+        toast.error(`记录超过 ${PRINT_ALL_MAX} 条，打印件过厚，请先缩小筛选范围（全量数据建议用导出）`)
+        return
+      }
+      printing.value = true
+      try { allRows = await fetchAllForPrint() }
+      catch (e) { toast.error(e?.msg || e?.error || '拉取全部记录失败'); printing.value = false; return }
+    }
+  }
+  const restore = allRows ? items.value : null
+  if (allRows) { items.value = allRows; await nextTick() }
+  try { buildPrintDoc(allRows ? allRows.length : null) }
+  finally {
+    if (restore) { items.value = restore; resetAnchor() }
+    printing.value = false
+  }
+}
+function buildPrintDoc(allCount) {
   const scope = document.querySelector('.ar-view')
   const src = scope && [...scope.querySelectorAll('table')].find(t => t.offsetParent !== null)
   if (!src) return
@@ -167,9 +210,11 @@ function printTable() {
   const now = new Date()
   const p2 = n => String(n).padStart(2, '0')
   const stamp = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}`
-  const meta = total.value
-    ? `本页 ${items.value.length} 条 / 共 ${total.value} 条　·　打印时间 ${stamp}`
-    : `打印时间 ${stamp}`
+  const meta = allCount != null
+    ? `全部 ${allCount} 条　·　打印时间 ${stamp}`
+    : (total.value
+      ? `本页 ${items.value.length} 条 / 共 ${total.value} 条　·　打印时间 ${stamp}`
+      : `打印时间 ${stamp}`)
   const title = `应收账款${tabLabel ? ' · ' + tabLabel : ''}`
 
   const html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>${title}</title><style>
@@ -1606,7 +1651,7 @@ function clearFilters() {
             <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />
           </label>
           <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">↓ 导出</button>
-          <button class="btn btn-ghost btn-sm" @click="printTable" title="打印当前表格">⎙ 打印</button>
+          <button class="btn btn-ghost btn-sm" :disabled="printing" @click="printTable" title="打印当前表格（多页时可选打印全部）">{{ printing ? '打印准备中…' : '⎙ 打印' }}</button>
           <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate">+ 新增应收</button>
         </div>
       </div>
