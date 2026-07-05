@@ -4,7 +4,7 @@ import api from '../../api/caiwu.js'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { useToast } from '../../composables/useToast.js'
 import { confirmDlg } from '../../composables/confirm.js'
-import { fmtMoney } from '../../utils/format.js'
+import { fmtMoney, fmtCompact } from '../../utils/format.js'
 import EmptyState from '../../components/EmptyState.vue'
 
 const auth = useCaiwuAuth()
@@ -18,8 +18,8 @@ const YEARS = Array.from({ length: 6 }, (_, i) => now.getFullYear() - 4 + i)
 
 // ── 数据 ────────────────────────────────────────────────────────────────────
 const loading = ref(false)
-const matrix = ref(null)       // { units, uploaded, cells, pairs, kpi }
-const batches = ref([])        // 与 units 对齐的批次数组（null=未上传）
+const matrix = ref(null)       // { units, uploaded, cells, pairs, kpi, mode }
+const batches = ref([])        // 与 units 对齐；元素 {detail?, balance?}|null
 const units = computed(() => matrix.value?.units || [])
 const activeTab = ref('matrix')   // matrix | pair
 
@@ -42,7 +42,7 @@ const kpi = computed(() => matrix.value?.kpi || {})
 const uploadedSet = computed(() => new Set(matrix.value?.uploaded || []))
 const hasAnyData = computed(() => (matrix.value?.uploaded || []).length > 0)
 
-// 矩阵格颜色：按该无序对差异强度着色
+// ── 矩阵着色与十字高亮 ────────────────────────────────────────────────────────
 const pairDiffMap = computed(() => {
   const m = {}
   for (const p of matrix.value?.pairs || []) {
@@ -57,7 +57,28 @@ function cellCls(a, b) {
   if (!p.both_uploaded) return 'c-partial'
   return Math.abs(p.diff) < 0.005 ? 'c-ok' : 'c-diff'
 }
+// 差异格背景：单色（红）按差异强度做明度渐变（sequential）
+const maxAbsDiff = computed(() => Math.max(
+  1, ...(matrix.value?.pairs || []).filter(p => p.both_uploaded).map(p => Math.abs(p.diff))))
+function cellStyle(a, b) {
+  const p = cellPair(a, b)
+  if (!p || !p.both_uploaded || Math.abs(p.diff) < 0.005) return null
+  const t = Math.min(1, Math.abs(p.diff) / maxAbsDiff.value)
+  return { background: `rgba(198, 40, 40, ${(0.06 + 0.2 * t).toFixed(3)})` }
+}
+const hoverRC = ref({ r: -1, c: -1 })
+function setHover(r, c) { hoverRC.value = { r, c } }
+function clearHover() { hoverRC.value = { r: -1, c: -1 } }
+
 const shortName = (u) => u.replace('事业部', '').replace('集团', '')
+const initialOf = (u) => shortName(u).slice(0, 1)
+// 排行条：差异绝对值相对最大差异的占比
+function rankBarPct(p) {
+  return Math.max(3, Math.round(Math.abs(p.diff) / maxAbsDiff.value * 100))
+}
+// 核平进度环（r=19 → 周长 ≈ 119.4）
+const ringPct = computed(() =>
+  kpi.value.pairs_total ? kpi.value.pairs_ok / kpi.value.pairs_total : 0)
 
 // ── 两两比对 ────────────────────────────────────────────────────────────────
 const pairA = ref('')
@@ -98,6 +119,14 @@ const bShown = computed(() => filterRows(pairData.value?.b_rows))
 // 区分「无明细数据」与「差异为零」：两侧都没有明细行时不显示 0.00（会被误读为核平）
 const pairHasDetail = computed(() =>
   (pairData.value?.a_rows?.length || 0) + (pairData.value?.b_rows?.length || 0) > 0)
+// 自动配对金额覆盖率（相对两侧明细绝对额较大的一侧）
+const matchCoverage = computed(() => {
+  const d = pairData.value
+  if (!d || !pairHasDetail.value) return 0
+  const sumAbs = rows => rows.reduce((s, r) => s + Math.abs(r.signed || 0), 0)
+  const base = Math.max(sumAbs(d.a_rows), sumAbs(d.b_rows))
+  return base ? Math.min(1, d.matched_amount / base) : 0
+})
 
 // ── 上传 ────────────────────────────────────────────────────────────────────
 const showUpload = ref(false)
@@ -140,7 +169,7 @@ async function doUpload() {
 }
 async function delBatch(b) {
   if (!b) return
-  if (!(await confirmDlg(`删除「${b.business_unit}」${b.year}年${b.month}月的内往数据（${b.row_count} 行）？删除后矩阵与比对将不含该主体。`))) return
+  if (!(await confirmDlg(`删除「${b.business_unit}」${b.year}年${b.month}月的${b.kind === 'balance' ? '余额' : '明细'}数据（${b.row_count} 行）？删除后矩阵与比对将不含该数据。`))) return
   try {
     await api.delete(`/internal/batches/${b.id}`)
     toast.success('已删除')
@@ -151,127 +180,172 @@ async function delBatch(b) {
 
 const fmt = (v) => fmtMoney(v, '0.00')
 const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
+const compact = (v) => fmtCompact(v, { dash: '0' })
 </script>
 
 <template>
   <div class="ir-view">
-    <!-- ── 页头：标题 + 期间 + 上传 ─────────────────────────────────────── -->
-    <div class="ir-head">
-      <div class="ir-title">
-        <h1>内部往来核对</h1>
-        <span class="ir-sub">金蝶明细分类账 / 核算维度余额表 · 镜像核对 · 差异定位</span>
+    <!-- ══ 指挥舱横幅：期间 · 差异总额 · 核平进度环 ═══════════════════════ -->
+    <header class="hero">
+      <div class="hero-main">
+        <div class="hero-title">
+          <div class="hero-eyebrow">INTERCOMPANY · 镜像核对</div>
+          <h1>内部往来核对</h1>
+          <div class="hero-mode">
+            <span class="mode-pill" :class="matrix?.mode === 'balance' ? 'is-bal' : 'is-det'"
+              :title="matrix?.mode === 'balance' ? '按期末余额核对（含期初遗留差异）' : '按本期发生净额核对：上传余额表可切换为期末口径'">
+              {{ matrix?.mode === 'balance' ? '◉ 期末余额口径' : '◎ 本期发生口径' }}
+            </span>
+          </div>
+        </div>
+        <div class="hero-stats">
+          <div class="hs">
+            <div class="hs-l">内往应收</div>
+            <div class="hs-v" :title="fmt(kpi.total_ar)">{{ compact(kpi.total_ar) }}</div>
+          </div>
+          <div class="hs">
+            <div class="hs-l">内往应付</div>
+            <div class="hs-v" :title="fmt(kpi.total_ap)">{{ compact(kpi.total_ap) }}</div>
+          </div>
+          <div class="hs hs-hero" :class="kpi.total_diff > 0.005 ? 'is-diff' : 'is-ok'">
+            <div class="hs-l">镜像差异总额</div>
+            <div class="hs-v hs-big" :title="fmt(kpi.total_diff)">{{ fmtDiff(kpi.total_diff) }}</div>
+            <div class="hs-foot">{{ kpi.total_diff > 0.005 ? '待核差异，点矩阵红格定位' : (kpi.pairs_total ? '全部核平' : '暂无双边数据') }}</div>
+          </div>
+          <div class="hs hs-ring">
+            <svg viewBox="0 0 44 44" class="ring" aria-hidden="true">
+              <circle cx="22" cy="22" r="19" class="ring-bg" />
+              <circle cx="22" cy="22" r="19" class="ring-fg"
+                :stroke-dasharray="`${(ringPct * 119.4).toFixed(1)} 119.4`"
+                transform="rotate(-90 22 22)" />
+            </svg>
+            <div class="ring-txt">
+              <b>{{ kpi.pairs_ok ?? 0 }}<i>/{{ kpi.pairs_total ?? 0 }}</i></b>
+              <span>核平对</span>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="ir-ctrl">
-        <select v-model.number="year" class="ir-sel"><option v-for="y in YEARS" :key="y" :value="y">{{ y }} 年</option></select>
-        <select v-model.number="month" class="ir-sel"><option v-for="m in 12" :key="m" :value="m">{{ m }} 月</option></select>
+      <div class="hero-ctrl">
+        <div class="period-pill">
+          <select v-model.number="year"><option v-for="y in YEARS" :key="y" :value="y">{{ y }} 年</option></select>
+          <span class="pp-sep"></span>
+          <select v-model.number="month"><option v-for="m in 12" :key="m" :value="m">{{ m }} 月</option></select>
+        </div>
         <button v-if="auth.canUpload" class="btn btn-primary btn-sm" @click="openUpload('')">↑ 上传金蝶数据</button>
+        <span v-if="kpi.unmatched_rows" class="warn-chip" title="维度原文无法识别为集团内主体的行（按外部往来处理，不参与核对）">
+          ⚠ 未识别 {{ kpi.unmatched_rows }} 行</span>
       </div>
-    </div>
+    </header>
 
-    <!-- ── 覆盖条：各主体上传状态（明细/余额两种数据分别标记）──────────────── -->
-    <div class="ir-cover">
-      <div v-for="(bu, i) in units" :key="bu"
-        :class="['cov-chip', batches[i] ? 'on' : '']"
-        :title="batches[i] ? '' : '未上传，点击上传'"
+    <!-- ══ 主体带：七主体上传状态卡 ══════════════════════════════════════ -->
+    <div class="entities">
+      <button v-for="(bu, i) in units" :key="bu"
+        :class="['ent', batches[i] ? 'on' : '']"
+        :title="batches[i] ? bu : `${bu}：未上传，点击上传`"
         @click="auth.canUpload && openUpload(bu)">
-        <span class="cov-dot"></span>{{ shortName(bu) }}
-        <template v-for="k in ['balance', 'detail']" :key="k">
-          <span v-if="batches[i]?.[k]" class="cov-tag"
-            :title="`${k === 'balance' ? '余额表' : '明细账'} ${batches[i][k].row_count} 行 · ${batches[i][k].uploaded_by || '—'} 上传`">
-            {{ k === 'balance' ? '余' : '明' }}{{ batches[i][k].row_count }}
-            <button v-if="auth.canDelete" class="cov-x" title="删除这份数据"
-              @click.stop="delBatch(batches[i][k])">✕</button>
+        <span class="ent-avatar" :class="{ lit: batches[i] }">{{ initialOf(bu) }}</span>
+        <span class="ent-body">
+          <span class="ent-name">{{ shortName(bu) }}</span>
+          <span class="ent-tags">
+            <template v-if="batches[i]">
+              <span v-for="k in ['balance', 'detail']" :key="k">
+                <span v-if="batches[i][k]" class="ent-tag" :class="k === 'balance' ? 't-bal' : 't-det'"
+                  :title="`${k === 'balance' ? '余额表' : '明细账'} ${batches[i][k].row_count} 行 · ${batches[i][k].uploaded_by || '—'} 上传`">
+                  {{ k === 'balance' ? '余' : '明' }} {{ batches[i][k].row_count }}
+                  <i v-if="auth.canDelete" class="ent-x" title="删除这份数据"
+                    @click.stop="delBatch(batches[i][k])">✕</i>
+                </span>
+              </span>
+            </template>
+            <span v-else class="ent-tag t-none">未上传</span>
           </span>
-        </template>
-      </div>
+        </span>
+      </button>
     </div>
 
-    <!-- ── KPI ─────────────────────────────────────────────────────────── -->
-    <div class="ir-kpis">
-      <div class="kpi"><div class="kpi-l">内往应收合计</div><div class="kpi-v">{{ fmt(kpi.total_ar) }}</div></div>
-      <div class="kpi"><div class="kpi-l">内往应付合计</div><div class="kpi-v">{{ fmt(kpi.total_ap) }}</div></div>
-      <div class="kpi" :class="kpi.total_diff > 0.005 ? 'warn' : 'ok'">
-        <div class="kpi-l">镜像差异总额
-          <span class="mode-badge" :title="matrix?.mode === 'balance' ? '按期末余额核对（含期初遗留差异）' : '按本期发生净额核对（上传余额表可切换为期末口径）'">
-            {{ matrix?.mode === 'balance' ? '期末余额口径' : '本期发生口径' }}</span>
-        </div><div class="kpi-v">{{ fmt(kpi.total_diff) }}</div>
-      </div>
-      <div class="kpi"><div class="kpi-l">核平 / 往来对</div>
-        <div class="kpi-v">{{ kpi.pairs_ok ?? 0 }} <span class="kpi-dim">/ {{ kpi.pairs_total ?? 0 }}</span></div>
-      </div>
-      <div class="kpi" :class="kpi.unmatched_rows ? 'warn' : ''">
-        <div class="kpi-l">未识别往来单位行</div><div class="kpi-v">{{ kpi.unmatched_rows ?? 0 }}</div>
-      </div>
-    </div>
-
-    <!-- ── Tab ─────────────────────────────────────────────────────────── -->
+    <!-- ══ Tab ══════════════════════════════════════════════════════════ -->
     <div class="ir-tabs">
       <button :class="['ir-tab', activeTab === 'matrix' ? 'active' : '']" @click="activeTab = 'matrix'">差异矩阵</button>
       <button :class="['ir-tab', activeTab === 'pair' ? 'active' : '']" @click="activeTab = 'pair'">两两比对</button>
     </div>
 
-    <!-- ── 矩阵 ────────────────────────────────────────────────────────── -->
+    <!-- ══ 矩阵面板 ══════════════════════════════════════════════════════ -->
     <div v-if="activeTab === 'matrix'" class="card ir-body">
       <EmptyState v-if="!loading && !hasAnyData" icon="⇄"
         text="本期间尚无内往数据 —— 上传金蝶「明细分类账」或「核算维度余额表」（支持全部账簿一次性导出）" />
       <template v-else>
-        <div class="mx-scroll">
-          <table class="mx-tbl">
-            <thead>
-              <tr>
-                <th class="mx-corner">记账方 ＼ 对方</th>
-                <th v-for="b in units" :key="b" :class="{ dim: !uploadedSet.has(b) }">{{ shortName(b) }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(a, ai) in units" :key="a">
-                <th :class="{ dim: !uploadedSet.has(a) }">{{ shortName(a) }}
-                  <span v-if="!uploadedSet.has(a)" class="mx-miss">未上传</span>
-                </th>
-                <td v-for="(b, bi) in units" :key="b"
-                  :class="['mx-cell', a === b ? 'diag' : cellCls(a, b)]"
-                  :title="a === b ? '' : `${a} 账上对 ${b} 净头寸（应收+ / 应付−）；点击查看两两明细`"
-                  @click="a !== b && openPair(a, b)">
-                  <template v-if="a !== b">
-                    <span v-if="matrix?.cells?.[ai]?.[bi]" class="mx-v">{{ fmt(matrix.cells[ai][bi]) }}</span>
-                    <span v-else class="mx-zero">—</span>
-                  </template>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div class="mx-legend">
-          <span><i class="lg lg-ok"></i>已核平</span>
-          <span><i class="lg lg-diff"></i>存在差异</span>
-          <span><i class="lg lg-partial"></i>单边数据（对方未上传）</span>
-          <span class="lg-note">格内数值 = 行主体账上对列主体的净头寸（应收为正、应付为负）</span>
+        <div class="mx-wrap">
+          <div class="mx-scroll" @mouseleave="clearHover">
+            <table class="mx-tbl">
+              <thead>
+                <tr>
+                  <th class="mx-corner"><span>记账方</span><span class="mx-corner2">对方</span></th>
+                  <th v-for="(b, bi) in units" :key="b"
+                    :class="{ dim: !uploadedSet.has(b), hl: hoverRC.c === bi }">
+                    <span class="mx-hd"><i class="mx-avatar">{{ initialOf(b) }}</i>{{ shortName(b) }}</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(a, ai) in units" :key="a">
+                  <th :class="{ dim: !uploadedSet.has(a), hl: hoverRC.r === ai }">
+                    <span class="mx-hd"><i class="mx-avatar">{{ initialOf(a) }}</i>{{ shortName(a) }}</span>
+                    <span v-if="!uploadedSet.has(a)" class="mx-miss">未上传</span>
+                  </th>
+                  <td v-for="(b, bi) in units" :key="b"
+                    :class="['mx-cell', a === b ? 'diag' : cellCls(a, b),
+                             { 'hl-cross': a !== b && (hoverRC.r === ai || hoverRC.c === bi) }]"
+                    :style="a !== b ? cellStyle(a, b) : null"
+                    :title="a === b ? '' : `${a} 账上对 ${b} 净头寸 ${fmt(matrix?.cells?.[ai]?.[bi] || 0)}（应收+ / 应付−）\n点击进入两两明细比对`"
+                    @mouseenter="setHover(ai, bi)"
+                    @click="a !== b && openPair(a, b)">
+                    <template v-if="a !== b">
+                      <span v-if="matrix?.cells?.[ai]?.[bi]" class="mx-v">{{ compact(matrix.cells[ai][bi]) }}</span>
+                      <span v-else class="mx-zero">·</span>
+                    </template>
+                    <span v-else class="mx-diag-i">{{ initialOf(a) }}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="mx-legend">
+            <span class="lg-item"><i class="lg lg-ok"></i>✓ 核平</span>
+            <span class="lg-item"><i class="lg lg-diff"></i>差异（越深差异越大）</span>
+            <span class="lg-item"><i class="lg lg-partial"></i>单边数据</span>
+            <span class="lg-note">格内 = 行主体账上对列主体的净头寸（应收 + / 应付 −），单位随金额自动万/亿</span>
+          </div>
         </div>
 
-        <!-- 差异对排行 -->
-        <div v-if="(matrix?.pairs || []).length" class="dp-list">
-          <div class="dp-head">往来对差异排行<span class="dp-sub">按差异绝对值降序 · 点击行进入明细比对</span></div>
-          <table class="dp-tbl">
-            <thead><tr><th>往来对</th><th class="amt">A 方净额</th><th class="amt">B 方净额</th><th class="amt">镜像差异</th><th class="ctr">状态</th></tr></thead>
-            <tbody>
-              <tr v-for="p in matrix.pairs" :key="p.a + p.b" class="dp-row" @click="openPair(p.a, p.b)">
-                <td><b>{{ shortName(p.a) }}</b> ⇄ <b>{{ shortName(p.b) }}</b></td>
-                <td class="amt">{{ fmt(p.a_net) }}</td>
-                <td class="amt">{{ fmt(p.b_net) }}</td>
-                <td class="amt" :class="Math.abs(p.diff) < 0.005 ? 'ok-t' : 'diff-t'">{{ fmtDiff(p.diff) }}</td>
-                <td class="ctr">
-                  <span v-if="!p.both_uploaded" class="st st-partial">单边</span>
-                  <span v-else-if="Math.abs(p.diff) < 0.005" class="st st-ok">✓ 核平</span>
-                  <span v-else class="st st-diff">差异</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+        <!-- 差异对排行：条形 = 差异绝对值占最大差异比例 -->
+        <div v-if="(matrix?.pairs || []).length" class="rank">
+          <div class="rank-head">
+            <span class="rank-title">往来对差异排行</span>
+            <span class="rank-sub">按差异绝对值降序 · 点击进入明细比对</span>
+          </div>
+          <div class="rank-list">
+            <button v-for="(p, i) in matrix.pairs" :key="p.a + p.b" class="rk" @click="openPair(p.a, p.b)">
+              <span class="rk-no">{{ i + 1 }}</span>
+              <span class="rk-pair"><b>{{ shortName(p.a) }}</b><i class="rk-arr">⇄</i><b>{{ shortName(p.b) }}</b></span>
+              <span class="rk-bar-track">
+                <span class="rk-bar" :class="!p.both_uploaded ? 'b-partial' : (Math.abs(p.diff) < 0.005 ? 'b-ok' : 'b-diff')"
+                  :style="{ width: rankBarPct(p) + '%' }"></span>
+              </span>
+              <span class="rk-amt" :class="Math.abs(p.diff) < 0.005 ? 'ok-t' : 'diff-t'"
+                :title="`A方 ${fmt(p.a_net)} ｜ B方 ${fmt(p.b_net)}`">{{ fmtDiff(p.diff) }}</span>
+              <span class="rk-st">
+                <span v-if="!p.both_uploaded" class="st st-partial">◐ 单边</span>
+                <span v-else-if="Math.abs(p.diff) < 0.005" class="st st-ok">✓ 核平</span>
+                <span v-else class="st st-diff">✕ 差异</span>
+              </span>
+            </button>
+          </div>
         </div>
       </template>
     </div>
 
-    <!-- ── 两两比对 ─────────────────────────────────────────────────────── -->
+    <!-- ══ 两两比对（对账工作台）══════════════════════════════════════════ -->
     <div v-else class="card ir-body">
       <div class="pr-bar">
         <select v-model="pairA" class="ir-sel"><option value="" disabled>选择 A 方</option>
@@ -289,33 +363,65 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
         text="选择两个主体开始比对 —— 金额相等且方向互镜的明细自动配对标记，剩余未配对行即差异来源" />
 
       <template v-if="pairData">
-        <div class="pr-sum">
-          <div class="prs"><div class="prs-l">{{ shortName(pairData.a) }} 方净额（本期明细）</div>
-            <div class="prs-v">{{ pairHasDetail ? fmt(pairData.a_net) : '—' }}</div></div>
-          <div class="prs"><div class="prs-l">{{ shortName(pairData.b) }} 方净额（本期明细）</div>
-            <div class="prs-v">{{ pairHasDetail ? fmt(pairData.b_net) : '—' }}</div></div>
-          <div class="prs" :class="!pairHasDetail ? '' : (Math.abs(pairData.diff) < 0.005 ? 'ok' : 'warn')">
-            <div class="prs-l">镜像差异（本期明细）</div>
-            <div class="prs-v">{{ pairHasDetail ? fmtDiff(pairData.diff) : '—' }}</div></div>
-          <div class="prs"><div class="prs-l">自动配对</div>
-            <div class="prs-v">{{ pairData.matched_pairs }} <span class="kpi-dim">对 · {{ fmt(pairData.matched_amount) }}</span></div></div>
-          <div v-if="!pairData.a_uploaded || !pairData.b_uploaded" class="prs warn">
-            <div class="prs-l">提示</div>
-            <div class="prs-v prs-small">{{ [!pairData.a_uploaded ? pairData.a : '', !pairData.b_uploaded ? pairData.b : ''].filter(Boolean).join('、') }} 未上传本期明细账（矩阵的余额口径不受影响）</div></div>
+        <!-- 恒等式流：期初差 + 本期明细差 = 期末差 -->
+        <div v-if="pairData.balance" class="flow">
+          <div class="flow-chip" :class="Math.abs(pairData.balance.opening_diff) < 0.005 ? 'f-ok' : 'f-diff'">
+            <span class="f-l">期初差异</span>
+            <span class="f-v">{{ fmtDiff(pairData.balance.opening_diff) }}</span>
+          </div>
+          <span class="flow-op">＋</span>
+          <div class="flow-chip" :class="!pairHasDetail ? 'f-na' : (Math.abs(pairData.diff) < 0.005 ? 'f-ok' : 'f-diff')">
+            <span class="f-l">本期明细差</span>
+            <span class="f-v">{{ pairHasDetail ? fmtDiff(pairData.diff) : '—' }}</span>
+          </div>
+          <span class="flow-op">＝</span>
+          <div class="flow-chip f-strong" :class="Math.abs(pairData.balance.closing_diff) < 0.005 ? 'f-ok' : 'f-diff'">
+            <span class="f-l">期末差异</span>
+            <span class="f-v">{{ fmtDiff(pairData.balance.closing_diff) }}</span>
+          </div>
+          <span class="flow-note">
+            {{ shortName(pairData.a) }} 期末 {{ fmt(pairData.balance.a.closing) }} ｜
+            {{ shortName(pairData.b) }} 期末 {{ fmt(pairData.balance.b.closing) }}
+            <template v-if="Math.abs(pairData.balance.opening_diff) > 0.005">
+              　⚠ 期初已有差异：本期明细全配平也无法核平期末，需追溯以前期间
+            </template>
+          </span>
         </div>
 
-        <div v-if="pairData.balance" class="pr-bal">
-          <span class="pr-bal-t">余额镜像（{{ shortName(pairData.a) }} ⇄ {{ shortName(pairData.b) }}）</span>
-          <span>期初差异 <b :class="Math.abs(pairData.balance.opening_diff) < 0.005 ? 'ok-t' : 'diff-t'">{{ fmtDiff(pairData.balance.opening_diff) }}</b></span>
-          <span>期末差异 <b :class="Math.abs(pairData.balance.closing_diff) < 0.005 ? 'ok-t' : 'diff-t'">{{ fmtDiff(pairData.balance.closing_diff) }}</b></span>
-          <span class="pr-bal-d">{{ shortName(pairData.a) }} 期末 {{ fmt(pairData.balance.a.closing) }} ｜ {{ shortName(pairData.b) }} 期末 {{ fmt(pairData.balance.b.closing) }}</span>
-          <span v-if="Math.abs(pairData.balance.opening_diff) > 0.005" class="pr-bal-hint">⚠ 期初已有差异：本期明细全配平也无法核平期末，需追溯以前期间</span>
+        <!-- 明细摘要 + 配对覆盖 -->
+        <div class="pr-sum">
+          <div class="prs">
+            <div class="prs-l">{{ shortName(pairData.a) }} 方净额（本期明细）</div>
+            <div class="prs-v">{{ pairHasDetail ? fmt(pairData.a_net) : '—' }}</div>
+          </div>
+          <div class="prs">
+            <div class="prs-l">{{ shortName(pairData.b) }} 方净额（本期明细）</div>
+            <div class="prs-v">{{ pairHasDetail ? fmt(pairData.b_net) : '—' }}</div>
+          </div>
+          <div class="prs" :class="!pairHasDetail ? '' : (Math.abs(pairData.diff) < 0.005 ? 'ok' : 'warn')">
+            <div class="prs-l">镜像差异（本期明细）</div>
+            <div class="prs-v">{{ pairHasDetail ? fmtDiff(pairData.diff) : '—' }}</div>
+          </div>
+          <div class="prs prs-match">
+            <div class="prs-l">自动配对 {{ pairData.matched_pairs }} 对 · {{ fmt(pairData.matched_amount) }}</div>
+            <div class="match-track" :title="`按金额覆盖 ${Math.round(matchCoverage * 100)}%`">
+              <div class="match-fill" :style="{ width: Math.round(matchCoverage * 100) + '%' }"></div>
+            </div>
+            <div class="prs-foot">金额覆盖 {{ Math.round(matchCoverage * 100) }}%</div>
+          </div>
+          <div v-if="!pairData.a_uploaded || !pairData.b_uploaded" class="prs warn">
+            <div class="prs-l">提示</div>
+            <div class="prs-v prs-small">{{ [!pairData.a_uploaded ? pairData.a : '', !pairData.b_uploaded ? pairData.b : ''].filter(Boolean).join('、') }} 未上传本期明细账（矩阵的余额口径不受影响）</div>
+          </div>
         </div>
+
+        <!-- 双栏台账 -->
         <div class="pr-cols">
-          <div v-for="side in ['a', 'b']" :key="side" class="pr-col">
+          <div v-for="side in ['a', 'b']" :key="side" class="pr-col" :class="side === 'a' ? 'col-a' : 'col-b'">
             <div class="pr-col-head">
-              <b>{{ side === 'a' ? pairData.a : pairData.b }}</b> 账上 · 对
-              {{ side === 'a' ? shortName(pairData.b) : shortName(pairData.a) }}
+              <span class="pr-col-avatar">{{ initialOf(side === 'a' ? pairData.a : pairData.b) }}</span>
+              <b>{{ side === 'a' ? pairData.a : pairData.b }}</b>
+              <span class="pr-col-vs">账上 · 对 {{ side === 'a' ? shortName(pairData.b) : shortName(pairData.a) }}</span>
               <span class="pr-cnt">{{ (side === 'a' ? aShown : bShown).length }} 行</span>
             </div>
             <div class="pr-scroll">
@@ -332,7 +438,7 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
                     <td class="amt">{{ r.credit ? fmt(r.credit) : '' }}</td>
                     <td class="ctr">
                       <span v-if="r.match" class="mk mk-ok" :title="`配对组 #${r.match}：两侧金额相等且方向互镜`">✓ #{{ r.match }}</span>
-                      <span v-else class="mk mk-no" title="对方账上找不到金额相等、方向互镜的记录">无对应</span>
+                      <span v-else class="mk mk-no" title="对方账上找不到金额相等、方向互镜的记录">✕ 无对应</span>
                     </td>
                   </tr>
                   <tr v-if="!(side === 'a' ? aShown : bShown).length">
@@ -346,10 +452,10 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
       </template>
     </div>
 
-    <!-- ── 上传弹窗 ─────────────────────────────────────────────────────── -->
+    <!-- ══ 上传弹窗 ══════════════════════════════════════════════════════ -->
     <div v-if="showUpload" class="modal-overlay" @click.self="showUpload = false">
       <div class="modal ir-up-modal">
-        <h3>上传内部往来明细账</h3>
+        <h3>上传内部往来数据</h3>
         <p class="ir-up-tip">支持两种金蝶导出（可勾选全部账簿一次性导出，系统按「账簿」列自动拆分主体）：<br/>
           ① <b>明细分类账</b>（总账→明细分类账，核算维度=组织机构）→ 两两明细比对；期间按记账日期自动拆分<br/>
           ② <b>核算维度余额表</b>（总账→核算维度余额表）→ 差异矩阵按期末余额口径（含期初遗留差异），期间取下方所选年月<br/>
@@ -365,7 +471,7 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
           @dragover.prevent="upDropping = true" @dragleave="upDropping = false" @drop.prevent="onUpDrop">
           <input type="file" accept=".xlsx,.xls" hidden @change="onUpPick" />
           <span v-if="upFile">{{ upFile.name }}</span>
-          <span v-else>点击选择或拖入金蝶导出的明细账（.xlsx）</span>
+          <span v-else>点击选择或拖入金蝶导出的文件（.xlsx）</span>
         </label>
         <div v-if="upResult" class="ir-up-res">
           <div class="ir-up-ok">✓ 已识别为「{{ upResult.kind === 'balance' ? '核算维度余额表' : '明细分类账' }}」，
@@ -388,134 +494,234 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
 </template>
 
 <style scoped>
-.ir-view { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 10px; }
+.ir-view { display: flex; flex-direction: column; gap: 12px; }
 
-/* 页头 */
-.ir-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.ir-title h1 { margin: 0; font-size: 20px; }
-.ir-sub { font-size: 11.5px; color: var(--muted); letter-spacing: 0.03em; }
-.ir-ctrl { display: flex; align-items: center; gap: 8px; }
-.ir-sel {
-  padding: 5px 9px; font-size: 12.5px; border: 1px solid var(--border);
-  border-radius: 8px; background: var(--card, #fff); color: var(--text); cursor: pointer;
+/* ══ 指挥舱横幅 ═══════════════════════════════════════════════════════ */
+.hero {
+  display: flex; align-items: stretch; justify-content: space-between; gap: 18px;
+  padding: 18px 22px 16px; border-radius: 16px;
+  background:
+    radial-gradient(560px 200px at 8% -40%, rgba(201, 99, 66, 0.10), transparent 68%),
+    radial-gradient(420px 180px at 96% 130%, rgba(91, 122, 153, 0.08), transparent 70%),
+    var(--card, #fff);
+  border: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.hero-main { display: flex; align-items: stretch; gap: 28px; flex-wrap: wrap; min-width: 0; }
+.hero-eyebrow {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.18em;
+  color: var(--primary); opacity: 0.75; margin-bottom: 3px;
+}
+.hero-title h1 { margin: 0; font-size: 21px; letter-spacing: 0.02em; line-height: 1.2; }
+.hero-mode { margin-top: 7px; }
+.mode-pill {
+  display: inline-block; padding: 2.5px 11px; border-radius: 999px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.03em;
+}
+.mode-pill.is-bal { background: rgba(46, 125, 50, 0.1); color: #2e7d32; }
+.mode-pill.is-det { background: rgba(201, 99, 66, 0.1); color: var(--primary); }
+
+.hero-stats { display: flex; align-items: stretch; gap: 0; }
+.hs { padding: 4px 22px; display: flex; flex-direction: column; justify-content: center; }
+.hs + .hs { border-left: 1px solid var(--border); }
+.hs-l { font-size: 10.5px; color: var(--muted); letter-spacing: 0.06em; margin-bottom: 2px; }
+.hs-v { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.15; }
+.hs-big { font-size: 25px; letter-spacing: -0.01em; }
+.hs-hero.is-diff .hs-v { color: #c62828; }
+.hs-hero.is-ok .hs-v { color: #2e7d32; }
+.hs-foot { font-size: 10px; color: var(--muted); margin-top: 2px; }
+.hs-ring { flex-direction: row; align-items: center; gap: 10px; }
+.ring { width: 52px; height: 52px; }
+.ring-bg { fill: none; stroke: rgba(0, 0, 0, 0.07); stroke-width: 4.5; }
+.ring-fg { fill: none; stroke: #2e7d32; stroke-width: 4.5; stroke-linecap: round; transition: stroke-dasharray 0.6s cubic-bezier(0.3, 0, 0.2, 1); }
+.ring-txt { display: flex; flex-direction: column; line-height: 1.2; }
+.ring-txt b { font-size: 16px; font-variant-numeric: tabular-nums; }
+.ring-txt b i { font-style: normal; font-size: 11.5px; color: var(--muted); font-weight: 500; }
+.ring-txt span { font-size: 10px; color: var(--muted); letter-spacing: 0.05em; }
+
+.hero-ctrl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.period-pill {
+  display: inline-flex; align-items: center; border: 1px solid var(--border);
+  border-radius: 999px; background: var(--card, #fff); overflow: hidden;
+}
+.period-pill select {
+  border: 0; background: none; padding: 6px 12px; font-size: 12.5px;
+  font-weight: 600; color: var(--text); cursor: pointer; appearance: none; outline: none;
+}
+.pp-sep { width: 1px; height: 16px; background: var(--border); }
+.warn-chip {
+  padding: 3px 10px; border-radius: 999px; font-size: 11px;
+  background: rgba(245, 166, 35, 0.13); color: #8a5f00; cursor: help;
 }
 
-/* 覆盖条 */
-.ir-cover { display: flex; gap: 7px; flex-wrap: wrap; }
-.cov-chip {
-  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
-  font-size: 12px; border: 1px solid var(--border); border-radius: 999px;
-  color: var(--muted); background: var(--card, #fff); cursor: pointer; transition: all .13s;
+/* ══ 主体带 ═══════════════════════════════════════════════════════════ */
+.entities { display: flex; gap: 8px; flex-wrap: wrap; }
+.ent {
+  display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px 7px 8px;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--card, #fff);
+  cursor: pointer; text-align: left; font: inherit; transition: border-color .13s, transform .13s, box-shadow .13s;
 }
-.cov-chip:hover { border-color: var(--primary); }
-.cov-chip .cov-dot { width: 7px; height: 7px; border-radius: 50%; background: #cfc8c2; }
-.cov-chip.on { color: var(--text); border-color: rgba(46, 125, 50, 0.35); background: rgba(76, 175, 80, 0.07); }
-.cov-chip.on .cov-dot { background: #43a047; }
-.cov-n { font-size: 10.5px; color: var(--muted); }
-.cov-tag {
-  display: inline-flex; align-items: center; gap: 3px; padding: 0 6px;
-  font-size: 10px; border-radius: 999px; background: rgba(0, 0, 0, 0.05); color: var(--muted);
+.ent:hover { border-color: var(--primary); transform: translateY(-1px); box-shadow: 0 3px 10px rgba(0, 0, 0, 0.06); }
+.ent-avatar {
+  width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center;
+  font-size: 12.5px; font-weight: 700; color: #b5aca4;
+  background: rgba(0, 0, 0, 0.045);
 }
-.mode-badge {
-  margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 9.5px;
-  background: rgba(201, 99, 66, 0.1); color: var(--primary); font-weight: 600; letter-spacing: 0.02em;
+.ent-avatar.lit { color: #fff; background: linear-gradient(135deg, #c96342, #b04f31); }
+.ent-body { display: flex; flex-direction: column; gap: 2px; }
+.ent-name { font-size: 12px; font-weight: 600; color: var(--text); line-height: 1.1; }
+.ent.on .ent-name { color: var(--text); }
+.ent:not(.on) .ent-name { color: var(--muted); }
+.ent-tags { display: flex; gap: 4px; }
+.ent-tag {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 0.5px 7px; border-radius: 999px; font-size: 9.5px; font-weight: 600;
 }
-.pr-bal {
-  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
-  margin-bottom: 12px; padding: 8px 14px; font-size: 12px;
-  border: 1px dashed var(--border); border-radius: 10px; background: rgba(0, 0, 0, 0.015);
-}
-.pr-bal-t { font-weight: 700; }
-.pr-bal-d { color: var(--muted); }
-.pr-bal-hint { color: #9c6b00; }
-.ir-up-batches { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
-.ir-up-bt { padding: 1px 8px; background: rgba(76, 175, 80, 0.1); color: #2e7d32; border-radius: 999px; font-size: 11px; }
-.cov-x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 10px; padding: 0 1px; }
-.cov-x:hover { color: #c62828; }
+.t-bal { background: rgba(46, 125, 50, 0.1); color: #2e7d32; }
+.t-det { background: rgba(91, 122, 153, 0.12); color: #44607c; }
+.t-none { background: rgba(0, 0, 0, 0.04); color: #b5aca4; font-weight: 500; }
+.ent-x { font-style: normal; cursor: pointer; opacity: 0.55; padding: 0 1px; }
+.ent-x:hover { opacity: 1; color: #c62828; }
 
-/* KPI */
-.ir-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
-.kpi { padding: 10px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--card, #fff); }
-.kpi-l { font-size: 11px; color: var(--muted); letter-spacing: 0.04em; }
-.kpi-v { margin-top: 2px; font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.kpi-dim { font-size: 12px; font-weight: 500; color: var(--muted); }
-.kpi.warn { border-color: rgba(198, 40, 40, 0.35); background: rgba(198, 40, 40, 0.045); }
-.kpi.warn .kpi-v { color: #c62828; }
-.kpi.ok { border-color: rgba(46, 125, 50, 0.3); }
-.kpi.ok .kpi-v { color: #2e7d32; }
-
-.ir-tabs { flex-shrink: 0; display: flex; gap: 4px; padding: 3px; background: rgba(0, 0, 0, 0.04); border-radius: 10px; width: fit-content; }
-.ir-tab {
-  border: 0; background: none; padding: 6px 20px; font-size: 12.5px; font-weight: 600;
-  color: var(--muted); border-radius: 8px; cursor: pointer; transition: all .15s;
-}
+/* ══ Tab ═════════════════════════════════════════════════════════════ */
+.ir-tabs { display: flex; gap: 4px; padding: 3px; background: rgba(0, 0, 0, 0.04); border-radius: 10px; width: fit-content; }
+.ir-tab { border: 0; background: none; padding: 6px 22px; font-size: 12.5px; font-weight: 600; color: var(--muted); border-radius: 8px; cursor: pointer; transition: all .15s; }
 .ir-tab.active { background: var(--card, #fff); color: var(--text); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1); }
-.ir-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px; }
 
-/* 矩阵 */
-.mx-scroll { overflow-x: auto; }
-.mx-tbl { border-collapse: collapse; width: 100%; font-size: 12px; }
-.mx-tbl th, .mx-tbl td { border: 1px solid var(--border); padding: 7px 9px; text-align: right; }
-.mx-tbl thead th { background: var(--thead-bg, #f4f1ef); text-align: center; font-size: 11.5px; white-space: nowrap; }
-.mx-tbl tbody th { background: var(--thead-bg, #f4f1ef); text-align: left; font-size: 11.5px; white-space: nowrap; }
-.mx-corner { font-size: 10.5px; color: var(--muted); font-weight: 500; }
+.ir-body { padding: 16px 18px; }
+.ir-sel { padding: 5px 9px; font-size: 12.5px; border: 1px solid var(--border); border-radius: 8px; background: var(--card, #fff); color: var(--text); cursor: pointer; }
+
+/* ══ 矩阵 ═════════════════════════════════════════════════════════════ */
+.mx-wrap { display: flex; flex-direction: column; gap: 8px; }
+.mx-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; }
+.mx-tbl { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 12px; }
+.mx-tbl th, .mx-tbl td { padding: 0; border-bottom: 1px solid rgba(0, 0, 0, 0.05); }
+.mx-tbl thead th { background: var(--thead-bg, #f4f1ef); padding: 8px 10px; font-size: 11px; white-space: nowrap; text-align: center; transition: background .12s; }
+.mx-tbl tbody th { background: var(--thead-bg, #f4f1ef); padding: 8px 12px; font-size: 11px; white-space: nowrap; text-align: left; transition: background .12s; }
+.mx-tbl thead th.hl, .mx-tbl tbody th.hl { background: rgba(201, 99, 66, 0.13); }
+.mx-corner { position: relative; min-width: 96px; }
+.mx-corner span { position: absolute; left: 10px; bottom: 4px; font-size: 9.5px; color: var(--muted); font-weight: 500; }
+.mx-corner .mx-corner2 { left: auto; right: 10px; top: 4px; bottom: auto; }
+.mx-hd { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; }
+.mx-avatar {
+  width: 17px; height: 17px; border-radius: 5px; display: inline-grid; place-items: center;
+  font-style: normal; font-size: 9.5px; font-weight: 700; color: #fff;
+  background: linear-gradient(135deg, #c9a08e, #b08a77);
+}
+.mx-tbl th.dim .mx-avatar { background: rgba(0, 0, 0, 0.12); }
 .mx-tbl th.dim { color: #b5aca4; }
-.mx-miss { margin-left: 4px; font-size: 9.5px; color: #b5aca4; font-weight: 400; }
-.mx-cell { cursor: pointer; font-variant-numeric: tabular-nums; transition: box-shadow .1s; }
-.mx-cell:hover { box-shadow: inset 0 0 0 2px var(--primary); }
-.mx-cell.diag { background: repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(0,0,0,0.025) 4px, rgba(0,0,0,0.025) 8px); cursor: default; }
-.mx-cell.c-ok { background: rgba(76, 175, 80, 0.09); }
-.mx-cell.c-diff { background: rgba(198, 40, 40, 0.09); }
-.mx-cell.c-partial { background: rgba(245, 166, 35, 0.10); }
-.mx-zero { color: #c9c2bb; }
-.mx-legend { display: flex; gap: 16px; align-items: center; margin-top: 8px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
-.lg { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+.mx-miss { margin-left: 5px; font-size: 9px; color: #b5aca4; font-weight: 400; }
+.mx-cell {
+  cursor: pointer; text-align: right; padding: 9px 11px !important;
+  font-variant-numeric: tabular-nums; transition: box-shadow .1s, background .12s; position: relative;
+}
+.mx-cell:hover { box-shadow: inset 0 0 0 2px var(--primary); border-radius: 6px; }
+.mx-cell.hl-cross { background: rgba(201, 99, 66, 0.045); }
+.mx-cell.diag {
+  background: repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(0, 0, 0, 0.025) 4px, rgba(0, 0, 0, 0.025) 8px);
+  cursor: default; text-align: center;
+}
+.mx-diag-i { font-size: 10px; color: rgba(0, 0, 0, 0.14); font-weight: 700; }
+.mx-cell.c-ok { background: rgba(76, 175, 80, 0.10); }
+.mx-cell.c-partial { background: rgba(245, 166, 35, 0.11); }
+.mx-v { font-weight: 600; color: var(--text); }
+.mx-zero { color: #d5cec7; }
+.mx-legend { display: flex; gap: 16px; align-items: center; font-size: 11px; color: var(--muted); flex-wrap: wrap; padding: 0 2px; }
+.lg-item { display: inline-flex; align-items: center; }
+.lg { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; }
 .lg-ok { background: rgba(76, 175, 80, 0.35); }
-.lg-diff { background: rgba(198, 40, 40, 0.35); }
+.lg-diff { background: linear-gradient(90deg, rgba(198, 40, 40, 0.15), rgba(198, 40, 40, 0.5)); }
 .lg-partial { background: rgba(245, 166, 35, 0.4); }
 .lg-note { margin-left: auto; }
 
-/* 差异对排行 */
-.dp-list { margin-top: 18px; }
-.dp-head { font-size: 13px; font-weight: 700; margin-bottom: 6px; }
-.dp-sub { margin-left: 8px; font-size: 11px; color: var(--muted); font-weight: 400; }
-.dp-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.dp-tbl th { text-align: left; font-size: 11px; color: var(--muted); padding: 5px 9px; border-bottom: 1px solid var(--border); }
-.dp-tbl td { padding: 7px 9px; border-bottom: 1px solid rgba(0,0,0,0.05); }
-.dp-tbl .amt { text-align: right; font-variant-numeric: tabular-nums; }
-.dp-tbl .ctr { text-align: center; }
-.dp-row { cursor: pointer; }
-.dp-row:hover td { background: rgba(201, 99, 66, 0.05); }
+/* ══ 差异对排行 ═══════════════════════════════════════════════════════ */
+.rank { margin-top: 20px; }
+.rank-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.rank-title { font-size: 13px; font-weight: 700; }
+.rank-sub { font-size: 11px; color: var(--muted); }
+.rank-list { display: flex; flex-direction: column; gap: 3px; }
+.rk {
+  display: grid; grid-template-columns: 26px 172px 1fr 130px 74px;
+  align-items: center; gap: 12px; padding: 7px 12px;
+  border: 1px solid transparent; border-radius: 10px; background: none;
+  font: inherit; text-align: left; cursor: pointer; transition: background .12s, border-color .12s;
+}
+.rk:hover { background: rgba(201, 99, 66, 0.05); border-color: rgba(201, 99, 66, 0.2); }
+.rk-no { font-size: 11px; font-weight: 700; color: #c9c2bb; text-align: center; }
+.rk-pair { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rk-arr { font-style: normal; color: var(--muted); margin: 0 5px; font-size: 11px; }
+.rk-bar-track { height: 8px; border-radius: 4px; background: rgba(0, 0, 0, 0.05); overflow: hidden; }
+.rk-bar { display: block; height: 100%; border-radius: 4px; transition: width .45s cubic-bezier(0.3, 0, 0.2, 1); }
+.b-diff { background: rgba(198, 40, 40, 0.55); }
+.b-ok { background: rgba(76, 175, 80, 0.5); }
+.b-partial { background: rgba(245, 166, 35, 0.55); }
+.rk-amt { text-align: right; font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ok-t { color: #2e7d32; }
-.diff-t { color: #c62828; font-weight: 700; }
-.st { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; }
+.diff-t { color: #c62828; }
+.rk-st { text-align: right; }
+.st { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 10.5px; white-space: nowrap; }
 .st-ok { background: rgba(76, 175, 80, 0.12); color: #2e7d32; }
 .st-diff { background: rgba(198, 40, 40, 0.1); color: #c62828; }
-.st-partial { background: rgba(245, 166, 35, 0.14); color: #9c6b00; }
+.st-partial { background: rgba(245, 166, 35, 0.14); color: #8a5f00; }
 
-/* 两两比对 */
-.pr-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+/* ══ 两两比对 ═════════════════════════════════════════════════════════ */
+.pr-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
 .pr-swap { border: 1px solid var(--border); background: var(--card, #fff); border-radius: 8px; padding: 4px 9px; cursor: pointer; font-size: 14px; }
 .pr-swap:hover { border-color: var(--primary); color: var(--primary); }
 .pr-flt { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); cursor: pointer; }
 .pr-kw { flex: 1; min-width: 160px; max-width: 260px; padding: 5px 10px; font-size: 12px; border: 1px solid var(--border); border-radius: 8px; }
-.pr-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 12px; }
-.prs { padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; }
+
+/* 恒等式流 */
+.flow {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 16px; margin-bottom: 12px;
+  border: 1px dashed var(--border); border-radius: 12px; background: rgba(0, 0, 0, 0.015);
+}
+.flow-chip { display: flex; flex-direction: column; padding: 5px 14px; border-radius: 10px; background: var(--card, #fff); border: 1px solid var(--border); }
+.flow-chip.f-strong { border-width: 1.5px; }
+.flow-chip.f-ok { border-color: rgba(46, 125, 50, 0.4); }
+.flow-chip.f-ok .f-v { color: #2e7d32; }
+.flow-chip.f-diff { border-color: rgba(198, 40, 40, 0.4); }
+.flow-chip.f-diff .f-v { color: #c62828; }
+.flow-chip.f-na .f-v { color: var(--muted); }
+.f-l { font-size: 9.5px; color: var(--muted); letter-spacing: 0.05em; }
+.f-v { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.flow-op { font-size: 15px; color: var(--muted); font-weight: 600; }
+.flow-note { font-size: 11px; color: var(--muted); margin-left: 6px; line-height: 1.5; }
+
+/* 明细摘要卡 */
+.pr-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin-bottom: 14px; }
+.prs { padding: 9px 13px; border: 1px solid var(--border); border-radius: 12px; }
 .prs-l { font-size: 10.5px; color: var(--muted); }
-.prs-v { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.prs-small { font-size: 12px; }
+.prs-v { font-size: 15.5px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 1px; }
+.prs-small { font-size: 12px; line-height: 1.45; }
+.prs-foot { font-size: 10px; color: var(--muted); margin-top: 3px; }
 .prs.warn { border-color: rgba(198, 40, 40, 0.35); }
 .prs.warn .prs-v { color: #c62828; }
+.prs.ok { border-color: rgba(46, 125, 50, 0.35); }
 .prs.ok .prs-v { color: #2e7d32; }
-.pr-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+.match-track { height: 7px; border-radius: 4px; background: rgba(0, 0, 0, 0.06); overflow: hidden; margin-top: 7px; }
+.match-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, #7cb682, #2e7d32); transition: width .5s cubic-bezier(0.3, 0, 0.2, 1); }
+
+/* 双栏台账 */
+.pr-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
 @media (max-width: 1100px) { .pr-cols { grid-template-columns: 1fr; } }
-.pr-col { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-.pr-col-head { padding: 8px 12px; font-size: 12.5px; background: var(--thead-bg, #f4f1ef); border-bottom: 1px solid var(--border); }
-.pr-cnt { float: right; font-size: 11px; color: var(--muted); }
+.pr-col { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+.pr-col.col-a { box-shadow: inset 0 3px 0 rgba(201, 99, 66, 0.55); }
+.pr-col.col-b { box-shadow: inset 0 3px 0 rgba(91, 122, 153, 0.55); }
+.pr-col-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; font-size: 12.5px; background: var(--thead-bg, #f4f1ef); border-bottom: 1px solid var(--border); }
+.pr-col-avatar {
+  width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center;
+  font-size: 11px; font-weight: 700; color: #fff; flex-shrink: 0;
+}
+.col-a .pr-col-avatar { background: linear-gradient(135deg, #c96342, #b04f31); }
+.col-b .pr-col-avatar { background: linear-gradient(135deg, #5b7a99, #44607c); }
+.pr-col-vs { color: var(--muted); font-size: 11.5px; }
+.pr-cnt { margin-left: auto; font-size: 11px; color: var(--muted); }
 .pr-scroll { max-height: 520px; overflow: auto; }
 .pr-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
-.pr-tbl th { position: sticky; top: 0; background: var(--card, #fff); font-size: 10.5px; color: var(--muted); text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); z-index: 2; }
-.pr-tbl td { padding: 5px 8px; border-bottom: 1px solid rgba(0,0,0,0.045); }
+.pr-tbl th { position: sticky; top: 0; background: var(--card, #fff); font-size: 10.5px; color: var(--muted); text-align: left; padding: 6px 9px; border-bottom: 1px solid var(--border); z-index: 2; }
+.pr-tbl td { padding: 5.5px 9px; border-bottom: 1px solid rgba(0, 0, 0, 0.045); }
 .pr-tbl .amt { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pr-tbl .ctr { text-align: center; }
 .nowrap { white-space: nowrap; }
@@ -526,9 +732,9 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
 .mk { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10.5px; white-space: nowrap; }
 .mk-ok { background: rgba(76, 175, 80, 0.13); color: #2e7d32; }
 .mk-no { background: rgba(198, 40, 40, 0.1); color: #c62828; }
-.pr-empty { text-align: center; color: var(--muted); padding: 22px; }
+.pr-empty { text-align: center; color: var(--muted); padding: 24px; }
 
-/* 上传弹窗 */
+/* ══ 上传弹窗 ═════════════════════════════════════════════════════════ */
 .ir-up-modal { width: min(560px, 92vw); }
 .ir-up-tip { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 6px 0 12px; }
 .ir-up-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
@@ -543,7 +749,18 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
 .up-drop.filled { border-style: solid; border-color: var(--primary); color: var(--text); }
 .ir-up-res { margin-top: 10px; font-size: 12px; }
 .ir-up-ok { color: #2e7d32; }
-.ir-up-warn { margin-top: 6px; color: #9c6b00; line-height: 1.5; }
+.ir-up-batches { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.ir-up-bt { padding: 1px 8px; background: rgba(76, 175, 80, 0.1); color: #2e7d32; border-radius: 999px; font-size: 11px; }
+.ir-up-warn { margin-top: 6px; color: #8a5f00; line-height: 1.5; }
 .ir-up-un { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
 .ir-up-un span { padding: 1px 8px; background: rgba(245, 166, 35, 0.12); border-radius: 999px; font-size: 11px; }
+
+/* 窄屏 */
+@media (max-width: 900px) {
+  .hero { flex-direction: column; }
+  .hero-stats { flex-wrap: wrap; }
+  .hs { padding: 4px 14px; }
+  .rk { grid-template-columns: 22px 130px 1fr 108px; }
+  .rk-st { display: none; }
+}
 </style>
