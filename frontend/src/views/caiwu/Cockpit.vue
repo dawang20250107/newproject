@@ -1040,54 +1040,35 @@ const ctxMatrixItems = computed(() => {
           <div class="cfa-glow"></div>
           <div class="cfa-head">
             <div class="cfa-head-l">
-              <AiMark :size="30" class="cfa-head-orb" />
-              <div>
-                <div class="cfa-title">业财融合 · 经营问答<span class="ai-pro-tag">PRO</span></div>
-                <div class="cfa-scope">{{ aiScopeLabel }} · 全事业部财务+业务数据</div>
-              </div>
+              <AiMark :size="22" class="cfa-head-orb" />
+              <div class="cfa-title">业财融合助手<span class="ai-pro-tag">PRO</span>
+                <span class="cfa-scope-in">{{ aiScopeLabel }}</span></div>
             </div>
             <div class="cfa-head-acts">
+              <button class="cfa-global-btn cfa-global-top" :disabled="aiLoading || !hasData"
+                :title="`${aiScopeLabel} · CFO 视角深度诊断`" @click="runAiAnalysis">
+                {{ aiLoading ? '⏳ 分析中…' : '✨ 一键全局经营分析' }}
+              </button>
+              <button v-if="hasAnalysis" class="cfa-global-ghost" @click="viewAnalysis">查看</button>
               <button v-if="panelTab === 'chat' && chatMessages.length" class="cfa-mini" title="清空对话" @click="resetChat">清空</button>
               <button class="cfa-x" title="收起" @click="chatOpen = false">×</button>
             </div>
           </div>
 
-          <!-- 今日 AI 额度（token 成本可控）-->
-          <div v-if="aiUsage" class="cfa-quota" :class="{ warn: quotaPct >= 80, full: quotaPct >= 100 }"
-            :title="aiUsage.price_note">
-            <div class="cfa-quota-bar"><i :style="{ width: Math.min(100, quotaPct) + '%' }"></i></div>
-            <span class="cfa-quota-txt">
-              今日 {{ (aiUsage.today.total / 10000).toFixed(1) }}万
-              <template v-if="aiUsage.budget"> / {{ (aiUsage.budget / 10000).toFixed(0) }}万 tokens</template>
-              <template v-else> tokens</template>
-              · ≈¥{{ aiUsage.today.cost_est }}
-              <template v-if="quotaPct >= 100">　额度已用完，明日恢复</template>
-            </span>
-          </div>
-
-          <!-- 对话 / 知识库 切换 -->
-          <div class="cfa-tabs">
+          <!-- 页签 + 今日额度：一条超薄工具条，空间让给输出 -->
+          <div class="cfa-strip">
             <button :class="['cfa-tab', panelTab === 'chat' ? 'on' : '']" @click="panelTab = 'chat'">💬 对话</button>
             <button :class="['cfa-tab', panelTab === 'kb' ? 'on' : '']" @click="openKb">📚 知识库</button>
-            <span class="cfa-tab-hint">{{ panelTab === 'kb' ? '助手会记住这些、越用越懂业务' : '答案可一键提炼入库' }}</span>
+            <template v-if="aiUsage">
+              <div class="cfa-quota-bar" :class="{ warn: quotaPct >= 80, full: quotaPct >= 100 }"
+                :title="aiUsage.price_note"><i :style="{ width: Math.min(100, quotaPct) + '%' }"></i></div>
+              <span class="cfa-quota-txt" :class="{ full: quotaPct >= 100 }">
+                {{ (aiUsage.today.total / 10000).toFixed(1) }}<template v-if="aiUsage.budget">/{{ (aiUsage.budget / 10000).toFixed(0) }}</template>万tk
+                ≈¥{{ aiUsage.today.cost_est }}<template v-if="quotaPct >= 100">　额度已用完，明日恢复</template>
+              </span>
+            </template>
           </div>
 
-          <!-- 一键全局经营分析（深度报告）—— 醒目入口，并入 AI 助手 -->
-          <div v-show="panelTab === 'chat'" class="cfa-global">
-            <div class="cfa-global-l">
-              <span class="cfa-global-orb">🧭</span>
-              <div>
-                <div class="cfa-global-title">全局经营分析<span class="ai-pro-tag">PRO</span></div>
-                <div class="cfa-global-sub">{{ aiScopeLabel }} · CFO 视角深度诊断</div>
-              </div>
-            </div>
-            <div class="cfa-global-acts">
-              <button v-if="hasAnalysis" class="cfa-global-ghost" @click="viewAnalysis">查看</button>
-              <button class="cfa-global-btn" :disabled="aiLoading || !hasData" @click="runAiAnalysis">
-                {{ aiLoading ? '分析中…' : (hasAnalysis ? '↻ 重新生成' : '✨ 一键生成') }}
-              </button>
-            </div>
-          </div>
 
           <!-- ══ 对话 ══ -->
           <div v-show="panelTab === 'chat'" ref="chatBodyRef" class="cfa-body">
@@ -1561,7 +1542,7 @@ const ctxMatrixItems = computed(() => {
   box-shadow: 0 30px 80px rgba(60,28,12,0.36), 0 2px 8px rgba(60,28,12,0.18);
 }
 /* 居中可读列：对话流/工具条/输入区收束到一列，长答案更耐看 */
-.cfa-tabs, .cfa-global, .cfa-auto, .cfa-input-row { width: 100%; max-width: 940px; margin-inline: auto; }
+.cfa-auto, .cfa-input-row { width: 100%; max-width: 940px; margin-inline: auto; }
 .cfa-glow {
   position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
   background: linear-gradient(180deg, var(--primary), #e8a05a, #7a9fd4);
@@ -1569,36 +1550,37 @@ const ctxMatrixItems = computed(() => {
 }
 @keyframes cfaGlow { 0%,100% { background-position: 0 0; } 50% { background-position: 0 100%; } }
 
-.cfa-quota {
-  display: flex; align-items: center; gap: 9px; padding: 5px 16px;
-  border-bottom: 1px solid rgba(0,0,0,0.05); background: rgba(0,0,0,0.015);
+.cfa-strip {
+  display: flex; align-items: center; gap: 8px; padding: 5px 14px;
+  border-bottom: 1px solid rgba(0,0,0,0.05); width: 100%; max-width: 940px; margin-inline: auto;
 }
-.cfa-quota-bar { flex: 1; height: 5px; border-radius: 3px; background: rgba(0,0,0,0.07); overflow: hidden; }
+.cfa-quota-bar { flex: 1; min-width: 60px; height: 4px; border-radius: 3px; background: rgba(0,0,0,0.07); overflow: hidden; margin-left: 8px; }
 .cfa-quota-bar i { display: block; height: 100%; border-radius: 3px; background: #7cb682; transition: width .4s; }
-.cfa-quota.warn .cfa-quota-bar i { background: #f5a623; }
-.cfa-quota.full .cfa-quota-bar i { background: #c62828; }
-.cfa-quota-txt { font-size: 10.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.cfa-quota.full .cfa-quota-txt { color: #c62828; }
+.cfa-quota-bar.warn i { background: #f5a623; }
+.cfa-quota-bar.full i { background: #c62828; }
+.cfa-quota-txt { font-size: 10px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cfa-quota-txt.full { color: #c62828; }
+.cfa-scope-in { margin-left: 8px; font-size: 11px; color: var(--muted); font-weight: 500; }
+.cfa-global-top { padding: 5px 14px; font-size: 12px; white-space: nowrap; }
 .cfa-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 18px 13px; border-bottom: 1px solid rgba(201,99,66,0.12);
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 14px; border-bottom: 1px solid rgba(201,99,66,0.12);
 }
-.cfa-head-l { display: flex; align-items: center; gap: 11px; }
-.cfa-head-orb { font-size: 24px; filter: drop-shadow(0 0 6px rgba(201,99,66,0.45)); }
-.cfa-title { font-size: 15px; font-weight: 800; color: var(--text); display: flex; align-items: center; gap: 6px; }
-.cfa-scope { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.cfa-head-l { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cfa-head-orb { font-size: 18px; filter: drop-shadow(0 0 5px rgba(201,99,66,0.45)); flex-shrink: 0; }
+.cfa-title { font-size: 13.5px; font-weight: 800; color: var(--text); display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; }
 .cfa-head-acts { display: flex; align-items: center; gap: 6px; }
 .cfa-mini { background: none; border: 1px solid rgba(0,0,0,0.12); border-radius: 7px; font-size: 12px; color: var(--muted); padding: 3px 9px; cursor: pointer; }
 .cfa-mini:hover { color: var(--primary); border-color: var(--primary); }
 .cfa-x { background: none; border: none; font-size: 24px; line-height: 1; color: var(--muted); cursor: pointer; padding: 0 4px; }
 
-.cfa-body { flex: 1; overflow-y: auto; padding: 22px 16px 10px; display: flex; flex-direction: column; align-items: center; }
+.cfa-body { flex: 1; overflow-y: auto; padding: 12px 16px 10px; display: flex; flex-direction: column; align-items: center; }
 .cfa-body > * { width: 100%; max-width: 940px; }
 
-.cfa-empty { text-align: center; padding: 8vh 8px 24px; max-width: 760px; margin: 0 auto; }
-.cfa-empty-orb { font-size: 56px; margin-bottom: 12px; filter: drop-shadow(0 4px 12px rgba(201,99,66,0.3)); }
-.cfa-empty-title { font-size: 21px; font-weight: 800; color: var(--text); }
-.cfa-empty-sub { font-size: 14px; color: var(--muted); margin: 9px 0 22px; line-height: 1.7; }
+.cfa-empty { text-align: center; padding: 5vh 8px 20px; max-width: 760px; margin: 0 auto; }
+.cfa-empty-orb { font-size: 44px; margin-bottom: 10px; filter: drop-shadow(0 4px 12px rgba(201,99,66,0.3)); }
+.cfa-empty-title { font-size: 19px; font-weight: 800; color: var(--text); }
+.cfa-empty-sub { font-size: 13px; color: var(--muted); margin: 8px 0 18px; line-height: 1.65; }
 .cfa-sugs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .cfa-sug {
   text-align: left; padding: 10px 13px; border-radius: 11px; cursor: pointer;
@@ -1690,8 +1672,7 @@ const ctxMatrixItems = computed(() => {
 }
 
 /* tabs */
-.cfa-tabs { display: flex; align-items: center; gap: 6px; padding: 8px 16px 0; }
-.cfa-tab { border: none; background: rgba(0,0,0,0.05); border-radius: 8px 8px 0 0; padding: 6px 14px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.cfa-tab { border: none; background: rgba(0,0,0,0.05); border-radius: 999px; padding: 3px 12px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
 .cfa-tab.on { background: rgba(201,99,66,0.1); color: var(--primary); font-weight: 700; }
 .cfa-tab-hint { font-size: 10.5px; color: var(--muted); margin-left: auto; }
 
