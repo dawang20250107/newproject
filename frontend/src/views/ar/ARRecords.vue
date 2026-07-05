@@ -224,13 +224,15 @@ function buildPrintDoc(allCount) {
     .p-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #1a1a1a; padding-bottom: 6px; margin-bottom: 10px; }
     .p-head h1 { margin: 0; font-size: 14pt; letter-spacing: 0.06em; }
     .p-meta { font-size: 8pt; color: #555; }
-    table { width: 100%; border-collapse: collapse; font-size: 8.5pt; }
+    table { width: 100%; border-collapse: collapse; font-size: 8.5pt; table-layout: auto; }
     thead { display: table-header-group; }
     tr { break-inside: avoid; }
-    th { background: #efedea; border: 0.5pt solid #999; padding: 4px 6px; font-weight: 700; text-align: left; white-space: nowrap; }
-    td { border: 0.5pt solid #c2c2c2; padding: 3px 6px; vertical-align: middle; }
+    th { background: #efedea; border: 0.5pt solid #999; padding: 4px 6px; font-weight: 700; text-align: left; }
+    td { border: 0.5pt solid #c2c2c2; padding: 3px 6px; vertical-align: middle; word-break: break-word; }
+    th, td { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
     tbody tr:nth-child(even) td { background: #f8f7f5; }
     th.amt, td.amt { text-align: right; font-variant-numeric: tabular-nums; }
+    td.amt, td.ctr { white-space: nowrap; }
     th.ctr, td.ctr { text-align: center; }
     td.fw { font-weight: 700; }
     .text-muted { color: #767676; }
@@ -243,7 +245,10 @@ function buildPrintDoc(allCount) {
   </body></html>`
 
   const frame = document.createElement('iframe')
-  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden'
+  // 必须给 iframe 真实的 A4 横向视口（1123×794 ≈ 297×210mm @96dpi）并移出屏幕外：
+  // 0×0 视口会让部分浏览器按 0 宽排版——表格被挤成一条竖线，打出几十页纸边碎字；
+  // visibility:hidden 在部分浏览器会导致打印空白页。
+  frame.style.cssText = 'position:fixed;left:-12000px;top:0;width:1123px;height:794px;border:0'
   frame.srcdoc = html
   frame.onload = () => {
     const win = frame.contentWindow
