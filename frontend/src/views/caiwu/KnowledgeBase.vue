@@ -116,12 +116,11 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="topbar">
+    <div class="cw-hero">
       <div>
+        <div class="cw-eyebrow">KNOWLEDGE BASE · 长期记忆</div>
         <h1>经营知识库</h1>
-        <div style="font-size:13px;color:var(--muted);margin-top:2px">
-          业财融合助手的长期记忆 · 沉淀越多，助手越懂业务、判断越贴合经营
-        </div>
+        <div class="cw-hero-sub">业财融合助手的长期记忆 · 沉淀越多，助手越懂业务、判断越贴合经营</div>
       </div>
     </div>
 

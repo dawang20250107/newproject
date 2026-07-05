@@ -232,9 +232,12 @@ onMounted(() => {
 <template>
   <div class="pcf-wrap">
     <!-- 标题行：h1 + 维度 tab，对齐付款管理风格 -->
-    <div class="topbar">
-      <div style="display:flex;align-items:center;gap:14px">
-        <h1>项目现金流</h1>
+    <div class="cw-hero cw-hero-slim">
+      <div style="display:flex;align-items:center;gap:16px">
+        <div>
+          <div class="cw-eyebrow">PROJECT CASHFLOW · 收支纵览</div>
+          <h1>项目现金流</h1>
+        </div>
         <div class="tab-bar">
           <button v-for="d in DIMS" :key="d.v" class="tab-btn" :class="{ active: groupBy === d.v }"
             @click="setDim(d.v)">{{ d.l }}</button>

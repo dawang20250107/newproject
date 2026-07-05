@@ -921,3 +921,5 @@ body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
 }
 .period-pill select:last-child { min-width: 68px; }
 .pp-sep { width: 1px; height: 16px; background: var(--border); flex-shrink: 0; }
+.cw-hero-slim { padding: 12px 20px; margin-bottom: 12px; flex-shrink: 0; }
+.cw-hero-slim h1 { font-size: 19px; }

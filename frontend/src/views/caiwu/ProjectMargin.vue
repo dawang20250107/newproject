@@ -142,18 +142,24 @@ onMounted(() => {
 <template>
   <div>
     <!-- 标题行：标题居左，筛选项全部并入同一行靠右，去掉独立的整行筛选框 -->
-    <div class="topbar pm-topbar">
-      <h1>项目毛利</h1>
-      <div class="pm-controls">
+    <div class="cw-hero">
+      <div>
+        <div class="cw-eyebrow">PROJECT MARGIN · 业财融合</div>
+        <h1>项目毛利</h1>
+      </div>
+      <div class="cw-hero-ctrl">
         <select v-model="bu" class="pm-sel" @change="load">
           <option v-for="b in accessibleBus" :key="b" :value="b">{{ b }}</option>
         </select>
-        <select v-model.number="year" class="pm-sel" @change="load">
-          <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
-        </select>
-        <select v-model.number="month" class="pm-sel" @change="load">
-          <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
-        </select>
+        <div class="period-pill">
+          <select v-model.number="year" @change="load">
+            <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+          </select>
+          <span class="pp-sep"></span>
+          <select v-model.number="month" @change="load">
+            <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
+          </select>
+        </div>
         <div class="pm-modes" :title="mode === 'direct' ? '未挂项目成本单列为「未分摊池」' : '未挂成本按各项目收入比例分摊'">
           <button :class="['pm-mode', mode === 'direct' ? 'on' : '']"
                   @click="mode = 'direct'; load()">直接口径</button>
