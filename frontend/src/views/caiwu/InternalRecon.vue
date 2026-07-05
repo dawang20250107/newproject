@@ -95,6 +95,9 @@ function filterRows(rows) {
 }
 const aShown = computed(() => filterRows(pairData.value?.a_rows))
 const bShown = computed(() => filterRows(pairData.value?.b_rows))
+// 区分「无明细数据」与「差异为零」：两侧都没有明细行时不显示 0.00（会被误读为核平）
+const pairHasDetail = computed(() =>
+  (pairData.value?.a_rows?.length || 0) + (pairData.value?.b_rows?.length || 0) > 0)
 
 // ── 上传 ────────────────────────────────────────────────────────────────────
 const showUpload = ref(false)
@@ -287,15 +290,18 @@ const fmtDiff = (v) => (Math.abs(v) < 0.005 ? '0.00' : fmtMoney(v))
 
       <template v-if="pairData">
         <div class="pr-sum">
-          <div class="prs"><div class="prs-l">{{ shortName(pairData.a) }} 方净额</div><div class="prs-v">{{ fmt(pairData.a_net) }}</div></div>
-          <div class="prs"><div class="prs-l">{{ shortName(pairData.b) }} 方净额</div><div class="prs-v">{{ fmt(pairData.b_net) }}</div></div>
-          <div class="prs" :class="Math.abs(pairData.diff) < 0.005 ? 'ok' : 'warn'">
-            <div class="prs-l">镜像差异</div><div class="prs-v">{{ fmtDiff(pairData.diff) }}</div></div>
+          <div class="prs"><div class="prs-l">{{ shortName(pairData.a) }} 方净额（本期明细）</div>
+            <div class="prs-v">{{ pairHasDetail ? fmt(pairData.a_net) : '—' }}</div></div>
+          <div class="prs"><div class="prs-l">{{ shortName(pairData.b) }} 方净额（本期明细）</div>
+            <div class="prs-v">{{ pairHasDetail ? fmt(pairData.b_net) : '—' }}</div></div>
+          <div class="prs" :class="!pairHasDetail ? '' : (Math.abs(pairData.diff) < 0.005 ? 'ok' : 'warn')">
+            <div class="prs-l">镜像差异（本期明细）</div>
+            <div class="prs-v">{{ pairHasDetail ? fmtDiff(pairData.diff) : '—' }}</div></div>
           <div class="prs"><div class="prs-l">自动配对</div>
             <div class="prs-v">{{ pairData.matched_pairs }} <span class="kpi-dim">对 · {{ fmt(pairData.matched_amount) }}</span></div></div>
           <div v-if="!pairData.a_uploaded || !pairData.b_uploaded" class="prs warn">
             <div class="prs-l">提示</div>
-            <div class="prs-v prs-small">{{ !pairData.a_uploaded ? pairData.a : pairData.b }} 未上传本期数据</div></div>
+            <div class="prs-v prs-small">{{ [!pairData.a_uploaded ? pairData.a : '', !pairData.b_uploaded ? pairData.b : ''].filter(Boolean).join('、') }} 未上传本期明细账（矩阵的余额口径不受影响）</div></div>
         </div>
 
         <div v-if="pairData.balance" class="pr-bal">

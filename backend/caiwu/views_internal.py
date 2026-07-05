@@ -228,6 +228,8 @@ def _detect_balance_sheet(ws):
             cm['code'] = head['科目编码']
         if '科目名称' in head:
             cm['name'] = head['科目名称']
+        if '币种' in head:
+            cm['ccy'] = head['币种']
         # 组头（合并单元格只在起始列有值）→ 借/贷子列 = 组起始列 / +1
         groups = {}
         for ci in range(1, min(ws.max_column + 1, 40)):
@@ -284,9 +286,23 @@ def _parse_balance(ws, data_start, cm, year, month):
         zd, zc = g('close_d', 'close_c')
         raw_rows.append({
             'bu': bu, 'cp': cp, 'cp_raw': org_raw, 'code': code,
+            'ccy': str(ws.cell(row=ri, column=cm['ccy']).value or '').strip() if 'ccy' in cm else '',
             'name': str(ws.cell(row=ri, column=cm['name']).value or '').strip() if 'name' in cm else '',
             'opening': od - oc, 'debit': cd, 'credit': cc, 'closing': zd - zc,
         })
+    # 多币种防双计：金蝶启用外币核算时同一余额会输出「人民币」与「综合本位币」两行，
+    # 直接加总会翻倍——有人民币行时丢弃对应的综合本位币行；纯外币行不参与镜像核对。
+    has_rmb = {(r['bu'], r['cp_raw'], r['code']) for r in raw_rows if r['ccy'] == '人民币'}
+    kept = []
+    for r in raw_rows:
+        if r['ccy'] not in ('', '人民币', '综合本位币'):
+            skipped += 1
+            continue
+        if r['ccy'] == '综合本位币' and (r['bu'], r['cp_raw'], r['code']) in has_rmb:
+            skipped += 1
+            continue
+        kept.append(r)
+    raw_rows = kept
     # 父子科目去重（2241 与 2241.04 同现时仅保留子科目）
     out = []
     for r in raw_rows:

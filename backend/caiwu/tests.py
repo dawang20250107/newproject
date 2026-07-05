@@ -1516,6 +1516,22 @@ class InternalReconTests(TestCase):
         pair = next(p for p in d['pairs'] if {p['a'], p['b']} == {'集团总部', '供应链事业部'})
         self.assertAlmostEqual(abs(pair['diff']), 3545286.73, places=2)
 
+    def test_balance_multicurrency_no_double_count(self):
+        """人民币 + 综合本位币 同现仅计人民币行；纯外币行不参与核对。"""
+        f = self._kingdee_balance_xlsx([
+            [1.0, '成都宁创物流有限公司', '2241.04', '内部往来', '人民币', '卡行通集团主账簿',
+             '', '', 100, '', 50, 30, '', '', 120, ''],
+            [2.0, '成都宁创物流有限公司', '2241.04', '内部往来', '综合本位币', '卡行通集团主账簿',
+             '', '', 100, '', 50, 30, '', '', 120, ''],
+            [3.0, '成都宁创物流有限公司', '2241.04', '内部往来', '美元', '卡行通集团主账簿',
+             '', '', 10, '', 5, 3, '', '', 12, ''],
+        ])
+        res = self.client.post('/api/cw/internal/upload',
+                               {'file': f, 'year': 2026, 'month': 5}, **self.auth())
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json()['data']['rows'], 1)
+        self.assertEqual(float(InternalBalance.objects.get().closing), 120)
+
     def test_pair_includes_balance_summary(self):
         f = self._kingdee_balance_xlsx([
             [1.0, '四川迭黎信息技术有限公司', '2241.04', '内部往来', '人民币', '卡行通集团主账簿',
