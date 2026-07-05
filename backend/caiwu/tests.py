@@ -445,7 +445,9 @@ class CaiwuCalculationLogicTests(TestCase):
 
         ds, cm = _detect_project_ledger(ws)
         self.assertIsNotNone(ds)
-        agg = _parse_project_ledger(ws, ds, cm)
+        by_period = _parse_project_ledger(ws, ds, cm, fallback_ym=(2026, 5))
+        self.assertEqual(list(by_period.keys()), [(2026, 5)])   # 单月文件仍单期间
+        agg = by_period[(2026, 5)]
         self.assertEqual(agg['甲']['revenue'], Decimal('1000'))
         self.assertEqual(agg['甲']['cost'], Decimal('300'))
         self.assertEqual(agg['乙']['revenue'], Decimal('500'))
@@ -1757,3 +1759,111 @@ class AiCostControlTests(TestCase):
         self.assertAlmostEqual(d['today']['cost_est'], 4.0, places=2)   # 2 + 0.25*8
         self.assertEqual(d['remaining'], 3_750_000)
         self.assertEqual(d['by_kind'][0]['kind'], 'chat')
+
+
+class MultiPeriodImportTests(TestCase):
+    """多月导入拆分（项目毛利）与多期防呆（部门明细表）。"""
+    databases = {'default'}
+
+    @classmethod
+    def setUpTestData(cls):
+        L1Category.objects.get_or_create(name='主营业务收入', defaults={'sort_order': 1, 'sign': 1})
+        cls.admin = PaikuanUser(
+            phone='13900000111', name='导入管理员', role='super_admin',
+            job_title='finance_director', departments=[], is_active=True, is_approved=True)
+        cls.admin.set_password('Test123456')
+        cls.admin.save()
+
+    def setUp(self):
+        self.client = Client()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {_make_token(self.admin)}'}
+
+    @staticmethod
+    def _pm_xlsx(rows):
+        import io
+        wb = Workbook()
+        ws = wb.active
+        ws.append(['核算维度明细账'])
+        ws.append(['账簿 : X主账簿; 开始期间 : 2026年1期; 结束期间 : 2026年6期;'])
+        ws.append(['序号', '项目名称', '科目编码', '科目名称', '会计期间',
+                   '记账日期', '业务日期', '凭证字号', '摘要', '币种', '借方', '贷方'])
+        ws.append(['', '', '', '', '', '', '', '', '', '', '', ''])
+        for r in rows:
+            ws.append(r)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        buf.name = 'pm.xlsx'
+        return buf
+
+    def test_project_margin_multimonth_split(self):
+        """多月明细账按会计期间拆分入库（修复：此前全量糅进表单单月）。"""
+        from caiwu.models import ProjectMargin
+        f = self._pm_xlsx([
+            [1, '甲', '6001.01', '主营收入', '2026年1期', '2026-01-10', None, '记1', '收入', '人民币', 0, 1000],
+            [2, '甲', '6401.01', '成本', '2026年2期', '2026-02-11', None, '记2', '成本', '人民币', 300, 0],
+            [3, '乙', '6001.01', '主营收入', '2026年3期', '2026-03-12', None, '记3', '收入', '人民币', 0, 500],
+            [4, '甲', '6001.01', '主营收入', '2026年1期', '2026-01-31', None, None, '本期合计', '人民币', 0, 1000],
+        ])
+        r = self.client.post('/api/cw/project-margin/upload',
+                             {'bu': '劳务事业部', 'year': 2026, 'month': 1, 'file': f},
+                             **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()['data']
+        self.assertEqual(len(d['periods']), 3)
+        months = sorted((p['year'], p['month']) for p in d['periods'])
+        self.assertEqual(months, [(2026, 1), (2026, 2), (2026, 3)])
+        self.assertEqual(ProjectMargin.objects.filter(month=1).count(), 1)
+        self.assertEqual(float(ProjectMargin.objects.get(month=2, project_name='甲').cost), 300)
+        # 重传仅替换文件内期间：3月之外的既有 4 月数据不受影响
+        ProjectMargin.objects.create(business_unit='劳务事业部', year=2026, month=4,
+                                     project_name='丙', revenue=9)
+        f2 = self._pm_xlsx([
+            [1, '甲', '6001.01', '主营收入', '2026年1期', '2026-01-10', None, '记1', '收入', '人民币', 0, 2000],
+        ])
+        r = self.client.post('/api/cw/project-margin/upload',
+                             {'bu': '劳务事业部', 'year': 2026, 'month': 1, 'file': f2},
+                             **self.auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(float(ProjectMargin.objects.get(month=1, project_name='甲').revenue), 2000)
+        self.assertTrue(ProjectMargin.objects.filter(month=4, project_name='丙').exists())
+        self.assertTrue(ProjectMargin.objects.filter(month=2).exists())   # 未在新文件中→保留
+
+    def test_project_margin_batches_list_and_delete(self):
+        from caiwu.models import ProjectMargin
+        ProjectMargin.objects.create(business_unit='劳务事业部', year=2026, month=5,
+                                     project_name='甲', revenue=1)
+        ProjectMargin.objects.create(business_unit='劳务事业部', year=2026, month=5,
+                                     project_name='乙', revenue=2)
+        r = self.client.get('/api/cw/project-margin/batches', **self.auth())
+        self.assertEqual(r.status_code, 200)
+        b = r.json()['data']['batches']
+        self.assertEqual(len(b), 1)
+        self.assertEqual(b[0]['project_count'], 2)
+        r = self.client.delete('/api/cw/project-margin/batches?bu=劳务事业部&year=2026&month=5',
+                               **self.auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(ProjectMargin.objects.count(), 0)
+
+    def test_dept_ledger_rejects_foreign_periods(self):
+        """部门明细表（月批次制）：文件含表单之外的会计期间 → 明确拒绝。"""
+        import io
+        wb = Workbook()
+        ws = wb.active
+        ws.append(['核算维度明细账'])
+        ws.append(['账簿'])
+        ws.append(['序号', '部门名称', '科目编码', '科目名称', '会计期间', '摘要', '借方', '贷方'])
+        ws.append([1, '一部', '6001.01', '主营业务收入', '2026年4期', '收入', 0, 100])
+        ws.append([2, '一部', '6001.01', '主营业务收入', '2026年5期', '收入', 0, 200])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        buf.name = 'dept.xlsx'
+        r = self.client.post('/api/cw/batches/upload',
+                             {'bu': '劳务事业部', 'year': 2026, 'month': 5, 'file': buf},
+                             **self.auth())
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertIn('2026年4月', r.json()['error'])
+        self.assertIn('按单月导出', r.json()['error'])

@@ -11,6 +11,7 @@ import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import { useToast } from '../../composables/useToast.js'
+import { confirmDlg } from '../../composables/confirm.js'
 
 const auth = useCaiwuAuth()
 const route = useRoute()
@@ -122,11 +123,39 @@ async function onPickFile(e) {
     fd.append('file', file)
     const res = await api.post('/project-margin/upload', fd,
       { headers: { 'Content-Type': 'multipart/form-data' } })
-    alert(`导入成功：${bu.value} ${year.value}年${month.value}月，共 ${res.data.project_count} 个项目`)
+    const ps = res.data.periods || []
+    const detail = ps.map(x => `${x.year}年${x.month}月(${x.project_count}项目)`).join('、')
+    toast.success(ps.length > 1
+      ? `✓ 已按会计期间拆分导入 ${ps.length} 个月：${detail}（同期间整体替换）`
+      : `✓ 导入成功：${bu.value} ${detail || `${year.value}年${month.value}月`}`)
+    // 多月导入后跳到文件内首个期间查看
+    if (ps.length) { year.value = ps[0].year; month.value = ps[0].month }
     await load()
+    if (showBatches.value) await loadBatches()
   } catch (err) {
-    alert(err?.msg || '导入失败')
+    toast.error(err?.msg || '导入失败')
   } finally { uploading.value = false; e.target.value = '' }
+}
+
+// ── 批次管理（对齐数据加工：可查看/删除已导入的 事业部×期间 批次）────────────
+const showBatches = ref(false)
+const batches = ref([])
+const batchesLoading = ref(false)
+async function loadBatches() {
+  batchesLoading.value = true
+  try { const res = await api.get('/project-margin/batches'); batches.value = res.data.batches }
+  catch (err) { toast.error(err?.msg || '加载失败') }
+  finally { batchesLoading.value = false }
+}
+function openBatches() { showBatches.value = true; loadBatches() }
+async function delBatch(b) {
+  if (!(await confirmDlg(`删除「${b.business_unit}」${b.year}年${b.month}月的项目毛利数据（${b.project_count} 个项目）？删除后可重新导入。`))) return
+  try {
+    await api.delete(`/project-margin/batches?bu=${encodeURIComponent(b.business_unit)}&year=${b.year}&month=${b.month}`)
+    toast.success('已删除')
+    await loadBatches()
+    if (b.business_unit === bu.value && b.year === year.value && b.month === month.value) await load()
+  } catch (err) { toast.error(err?.msg || '删除失败') }
 }
 
 onMounted(() => {
@@ -166,10 +195,12 @@ onMounted(() => {
           <button :class="['pm-mode', mode === 'allocated' ? 'on' : '']"
                   @click="mode = 'allocated'; load()">分摊口径</button>
         </div>
-        <label v-if="auth.canUpload" class="btn btn-ghost btn-sm" :class="{ disabled: uploading }" style="cursor:pointer">
+        <label v-if="auth.canUpload" class="btn btn-ghost btn-sm" :class="{ disabled: uploading }" style="cursor:pointer"
+          title="金蝶「核算维度明细账（按项目）」；多月导出将按会计期间自动拆分入库，同期间整体替换">
           {{ uploading ? '导入中…' : '↑ 导入' }}
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="onPickFile" />
         </label>
+        <button class="btn btn-ghost btn-sm" @click="openBatches">📦 批次</button>
       </div>
     </div>
 
@@ -291,6 +322,31 @@ onMounted(() => {
 
     <!-- 右键上下文菜单 -->
     <ContextMenu :ctx="ctx" :items="ctxItems" />
+
+    <!-- 批次管理：查看/删除已导入的 事业部×期间（对齐数据加工体验） -->
+    <div v-if="showBatches" class="modal-overlay" @click.self="showBatches = false">
+      <div class="modal pm-batches-modal">
+        <h3>已导入批次</h3>
+        <p class="pm-b-tip">同一「事业部×月份」重复导入会整体替换；多月文件按会计期间自动拆为多个批次。</p>
+        <div v-if="batchesLoading" class="pm-b-empty">加载中…</div>
+        <div v-else-if="!batches.length" class="pm-b-empty">暂无已导入数据</div>
+        <table v-else class="pm-b-tbl">
+          <thead><tr><th>事业部</th><th>期间</th><th class="amt">项目数</th><th>最近上传</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="b in batches" :key="b.business_unit + b.year + b.month">
+              <td>{{ b.business_unit }}</td>
+              <td>{{ b.year }}-{{ String(b.month).padStart(2, '0') }}</td>
+              <td class="amt">{{ b.project_count }}</td>
+              <td class="pm-b-time">{{ (b.uploaded_at || '').slice(0, 16).replace('T', ' ') || '—' }}</td>
+              <td class="pm-b-act">
+                <button v-if="auth.canDelete" class="pm-b-del" @click="delBatch(b)">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="modal-actions"><button class="btn btn-ghost" @click="showBatches = false">关闭</button></div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -351,4 +407,18 @@ onMounted(() => {
 .text-muted { color: var(--muted); }
 .empty-cell { text-align: center; padding: 36px !important; color: var(--muted); }
 .section-sub { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 8px; }
+
+/* ── 批次管理弹窗 ─────────────────────────────────────────────────── */
+.pm-batches-modal { width: min(560px, 92vw); }
+.pm-b-tip { font-size: 12px; color: var(--muted); margin: 4px 0 10px; line-height: 1.6; }
+.pm-b-empty { text-align: center; color: var(--muted); padding: 26px; font-size: 12.5px; }
+.pm-b-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.pm-b-tbl th { text-align: left; font-size: 11px; color: var(--muted); padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.pm-b-tbl td { padding: 6px 8px; border-bottom: 1px solid rgba(0,0,0,0.05); }
+.pm-b-tbl .amt { text-align: right; font-variant-numeric: tabular-nums; }
+.pm-b-time { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.pm-b-act { text-align: right; }
+.pm-b-del { border: 1px solid rgba(198,40,40,0.3); background: none; color: #c62828; border-radius: 7px; font-size: 11.5px; padding: 2px 10px; cursor: pointer; }
+.pm-b-del:hover { background: rgba(198,40,40,0.07); }
 </style>
+

@@ -37,6 +37,7 @@ urlpatterns = [
     # 项目毛利（业财融合）
     path('project-margin', views.project_margin),
     path('project-margin/upload', views.project_margin_upload),
+    path('project-margin/batches', views.project_margin_batches),
 
     # 指标管理 & 财务驾驶舱
     path('targets', views.targets),

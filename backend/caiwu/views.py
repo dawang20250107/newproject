@@ -884,9 +884,26 @@ def _detect_dept_ledger(ws):
                 cm['debit'] = ci
             elif v == '贷方':
                 cm['credit'] = ci
+            elif v in ('会计期间', '期间'):
+                cm['period'] = ci
+            elif v in ('记账日期', '日期'):
+                cm.setdefault('date', ci)
         if all(k in cm for k in ('dept', 'name', 'debit', 'credit', 'summary')):
             return ri + 1, cm
     return None, {}
+
+
+def _ledger_periods_found(ws, data_start, cm, limit=None):
+    """扫描明细账各行的期间集合（会计期间列→记账日期兜底）。返回 {(y,m), ...}。"""
+    found = set()
+    for ri in range(data_start, (limit or ws.max_row) + 1):
+        summ = str(ws.cell(row=ri, column=cm.get('summary', 0)).value or '').strip() if cm.get('summary') else ''
+        if summ in _LEDGER_SUMMARY_ROWS:
+            continue
+        ym = _row_period(ws, ri, cm, None)
+        if ym:
+            found.add(ym)
+    return found
 
 
 # ── 项目核算明细账（按项目维度）→ 项目毛利 ─────────────────────────────────────
@@ -903,7 +920,8 @@ _PM_UNALLOCATED = {'无', '', '（无）', '(无)', '未指定'}
 
 def _detect_project_ledger(ws):
     """识别金蝶「核算维度明细账（按项目）」：维度列为「项目名称」。
-    返回 (data_start, col_map{project,code,name,summary,debit,credit}) 或 (None, {})。"""
+    返回 (data_start, col_map{project,code,name,summary,debit,credit[,period,date]})
+    或 (None, {})。period/date 用于多月导出按行拆期间。"""
     for ri in range(1, min(8, ws.max_row + 1)):
         cm = {}
         for ci in range(1, min(ws.max_column + 1, 20)):
@@ -920,13 +938,36 @@ def _detect_project_ledger(ws):
                 cm['debit'] = ci
             elif v == '贷方':
                 cm['credit'] = ci
+            elif v in ('会计期间', '期间'):
+                cm['period'] = ci
+            elif v in ('记账日期', '日期'):
+                cm.setdefault('date', ci)
         if all(k in cm for k in ('project', 'code', 'debit', 'credit', 'summary')):
             return ri + 1, cm
     return None, {}
 
 
-def _parse_project_ledger(ws, data_start, cm):
-    """汇总项目核算明细账 → {project_name: {revenue, cost, sales_exp, mgmt_exp}}。
+def _row_period(ws, ri, cm, fallback_ym):
+    """行期间：会计期间「2026年5期」→ 记账日期 → 兜底表单年月。返回 (y, m) 或 None。"""
+    import re as _re
+    if 'period' in cm:
+        mm = _re.search(r'(\d{4})\s*年\s*(\d{1,2})\s*期',
+                        str(ws.cell(row=ri, column=cm['period']).value or ''))
+        if mm:
+            return int(mm.group(1)), int(mm.group(2))
+    if 'date' in cm:
+        v = ws.cell(row=ri, column=cm['date']).value
+        if isinstance(v, datetime.datetime) or isinstance(v, datetime.date):
+            return v.year, v.month
+        mm = _re.match(r'(\d{4})-(\d{1,2})-', str(v or ''))
+        if mm:
+            return int(mm.group(1)), int(mm.group(2))
+    return fallback_ym
+
+
+def _parse_project_ledger(ws, data_start, cm, fallback_ym=None):
+    """汇总项目核算明细账 → {(year, month): {project: {revenue, cost, sales_exp, mgmt_exp}}}。
+    多月导出按行上的「会计期间/记账日期」自动拆分（修复：此前全量糅进表单选的单月）；
     跳过 期初/合计/累计 等小计行与「结转损益」；按科目前缀归类、按方向取净额。"""
     def _dec(ri, col):
         try:
@@ -945,12 +986,16 @@ def _parse_project_ledger(ws, data_start, cm):
         cat = _PM_CAT_BY_PREFIX.get(code.split('.')[0])
         if not cat:
             continue
+        ym = _row_period(ws, ri, cm, fallback_ym)
+        if not ym:
+            continue
         project = str(ws.cell(row=ri, column=cm['project']).value or '').strip()
         debit = _dec(ri, cm['debit'])
         credit = _dec(ri, cm['credit'])
         net = (credit - debit) if cat == 'revenue' else (debit - credit)
-        bucket = agg.setdefault(project, {'revenue': Decimal('0'), 'cost': Decimal('0'),
-                                          'sales_exp': Decimal('0'), 'mgmt_exp': Decimal('0')})
+        bucket = agg.setdefault(ym, {}).setdefault(
+            project, {'revenue': Decimal('0'), 'cost': Decimal('0'),
+                      'sales_exp': Decimal('0'), 'mgmt_exp': Decimal('0')})
         bucket[cat] += net
     return agg
 
@@ -1343,6 +1388,14 @@ def batch_upload(request):
         is_kxt = (row1_vals[:5] == EXCEL_HEADERS or row1_vals[:4] == ['一级科目', '二级项目部', '三级科目明细', '金额(元)'])
 
         if ledger_start is not None:
+            # 多期防呆：部门明细表是「月批次+发布」制，不能把跨月流水糅进单月批次。
+            # 文件行上的会计期间与表单所选年月不一致（或含多个月）时明确拒绝。
+            found = _ledger_periods_found(ws, ledger_start, ledger_cm)
+            wrong = sorted(p for p in found if p != (year, month))
+            if wrong:
+                lst = '、'.join(f'{y}年{m}月' for y, m in wrong[:8])
+                return err(f'文件包含所选期间（{year}年{month}月）之外的会计期间：{lst}。'
+                           '部门明细表按月批次管理，请在金蝶按单月导出后再上传')
             parsed_rows, errors = _parse_dept_ledger_rows(ws, ledger_start, ledger_cm, bu, l1_map, l2_map, l3_map)
             fmt = 'kingdee_ledger'
         elif is_kxt:
@@ -1562,25 +1615,67 @@ def project_margin_upload(request):
     if data_start is None:
         return err('无法识别为「核算维度明细账（按项目）」：需含「项目名称」「科目编码」「借方」「贷方」「摘要」列')
 
-    agg = _parse_project_ledger(ws, data_start, cm)
+    # 多月导出按「会计期间/记账日期」逐行拆分；表单年月仅作无期间信息时的兜底
+    agg = _parse_project_ledger(ws, data_start, cm, fallback_ym=(year, month))
     rows = []
-    for project, b in agg.items():
-        if all(v == 0 for v in b.values()):
-            continue
-        rows.append(ProjectMargin(
-            business_unit=bu, year=year, month=month, project_name=project or '无',
-            revenue=b['revenue'], cost=b['cost'],
-            sales_exp=b['sales_exp'], mgmt_exp=b['mgmt_exp'],
-            uploaded_by=request.pk_user,
-        ))
+    periods = []
+    for (y, m), projects in sorted(agg.items()):
+        n = 0
+        for project, b in projects.items():
+            if all(v == 0 for v in b.values()):
+                continue
+            rows.append(ProjectMargin(
+                business_unit=bu, year=y, month=m, project_name=project or '无',
+                revenue=b['revenue'], cost=b['cost'],
+                sales_exp=b['sales_exp'], mgmt_exp=b['mgmt_exp'],
+                uploaded_by=request.pk_user,
+            ))
+            n += 1
+        if n:
+            periods.append({'year': y, 'month': m, 'project_count': n})
     if not rows:
         return err('未解析到任何项目的收入/成本数据（请确认导出含 6001/6401 等科目）')
 
     with transaction.atomic(using='default'):
-        ProjectMargin.objects.filter(business_unit=bu, year=year, month=month).delete()
+        for pd in periods:
+            ProjectMargin.objects.filter(business_unit=bu, year=pd['year'],
+                                         month=pd['month']).delete()
         ProjectMargin.objects.bulk_create(rows)
 
-    return ok({'business_unit': bu, 'year': year, 'month': month, 'project_count': len(rows)})
+    return ok({'business_unit': bu, 'periods': periods,
+               'year': periods[0]['year'], 'month': periods[0]['month'],
+               'project_count': sum(p['project_count'] for p in periods)})
+
+
+@cw_required()
+def project_margin_batches(request):
+    """GET 已导入批次（事业部×期间，含项目数/上传信息）；DELETE ?bu&year&month 删除一批。"""
+    denied = _page_denied(request, 'charts')
+    if denied:
+        return denied
+    if request.method == 'DELETE':
+        if not _can_delete(request):
+            return err('无删除权限', 403)
+        bu = (request.GET.get('bu') or '').strip()
+        if bu not in VALID_BUSINESS_UNITS or not _can_access_bu(request, bu):
+            return err('无权操作该事业部数据', 403)
+        try:
+            y, m = int(request.GET.get('year', '')), int(request.GET.get('month', ''))
+        except Exception:
+            return err('年份或月份无效')
+        n, _detail = ProjectMargin.objects.filter(business_unit=bu, year=y, month=m).delete()
+        return ok({'deleted': n})
+    qs = _bu_filter(ProjectMargin.objects.all(), request)
+    from django.db.models import Count, Max
+    rows = (qs.values('business_unit', 'year', 'month')
+            .annotate(project_count=Count('id'), uploaded_at=Max('uploaded_at'))
+            .order_by('-year', '-month', 'business_unit'))
+    out = []
+    for r in rows:
+        out.append({'business_unit': r['business_unit'], 'year': r['year'],
+                    'month': r['month'], 'project_count': r['project_count'],
+                    'uploaded_at': r['uploaded_at'].isoformat() if r['uploaded_at'] else None})
+    return ok({'batches': out})
 
 
 def _allocate_unalloc(rows, unalloc):
