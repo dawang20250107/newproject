@@ -27,6 +27,7 @@ import { useAsyncExport } from '../composables/useAsyncExport.js'
 import { useRangeSelection } from '../composables/useRangeSelection.js'
 import { createRequestLane } from '../utils/requestLane.js'
 import { useFileDrop } from '../composables/useFileDrop.js'
+import { useEscClearSelection } from '../composables/useEscClearSelection.js'
 import { cachedGet } from '../api/refCache.js'
 
 const toast = useToast()
@@ -983,6 +984,7 @@ function toggleRow(id) { const s = new Set(selectedIds.value); s.has(id) ? s.del
 const { onRowSelClick, resetAnchor } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow })
 function toggleSelectPage() { const s = new Set(selectedIds.value); if (pageAllSelected.value) items.value.forEach(p => s.delete(p.id)); else items.value.forEach(p => s.add(p.id)); selectedIds.value = s }
 function clearSelection() { selectedIds.value = new Set() }
+useEscClearSelection(() => selectedIds.value.size > 0, clearSelection)   // ESC 退出勾选
 // 批量付款只统计「有剩余应付」的记录（默认付款金额=剩余应付=计划金额）
 const selectedPayable = computed(() => items.value.filter(p => selectedIds.value.has(p.id) && remOf(p) > 0))
 const batchPaySummary = computed(() => ({

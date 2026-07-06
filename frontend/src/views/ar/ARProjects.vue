@@ -18,6 +18,7 @@ import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useShiftSelect } from '../../composables/useShiftSelect.js'
+import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 
 const toast = useToast()
@@ -137,6 +138,7 @@ function toggleSelectPage() {
   selectedIds.value = s
 }
 function clearSelection() { selectedIds.value = new Set(); selectAllMatching.value = false }
+useEscClearSelection(() => hasSelection.value, clearSelection)   // ESC 退出勾选
 function bulkDelete() {
   if (!selectedCount.value) return
   delConfirmText.value = ''

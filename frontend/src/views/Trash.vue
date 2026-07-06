@@ -7,6 +7,7 @@ import { cachedGet } from '../api/refCache.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useToast } from '../composables/useToast.js'
 import { useShiftSelect } from '../composables/useShiftSelect.js'
+import { useEscClearSelection } from '../composables/useEscClearSelection.js'
 
 const auth = useAuthStore()
 const toast = useToast()
@@ -81,6 +82,7 @@ function selectAllAcross() {
   selectedIds.value = new Set(items.value.map(i => i.id))  // 视觉上本页也勾上
 }
 function clearSelection() { allAcross.value = false; selectedIds.value = new Set() }
+useEscClearSelection(() => allAcross.value || selectedIds.value.size > 0, clearSelection)   // ESC 退出勾选
 // Excel 式 Shift 区间勾选（系统级复用）；区间选择也退出「跨页全选」态
 const { onRowSelClick, resetAnchor } = useShiftSelect({ items, selectedIds, toggleSingle: toggleSel, onManual: () => { allAcross.value = false } })
 

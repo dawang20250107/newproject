@@ -19,6 +19,7 @@ import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { useFileDrop } from '../../composables/useFileDrop.js'
+import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 // 重型抽屉/弹窗按需加载：仅打开活动抽屉 / 导入预检时才拉取其代码块，
 // 大幅瘦身应收明细主路由块（ActivityPanel 单文件 1.7k 行）。
@@ -110,6 +111,7 @@ function toggleSelectPage() {
   selectedIds.value = s
 }
 function clearSelection() { selectedIds.value = new Set(); selectAllMatching.value = false }
+useEscClearSelection(() => hasSelection.value, clearSelection)   // ESC 退出勾选
 function bulkDelete() {
   const n = selectedCount.value
   if (!n) return

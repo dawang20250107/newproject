@@ -27,6 +27,7 @@ import { useShiftSelect } from '../composables/useShiftSelect.js'
 import { createRequestLane } from '../utils/requestLane.js'
 import { cachedGet } from '../api/refCache.js'
 import { useFileDrop } from '../composables/useFileDrop.js'
+import { useEscClearSelection } from '../composables/useEscClearSelection.js'
 const toast = useToast()
 
 // ── 桌面拖拽导入：普通导入 / 运输导入 双落区 ────────────────────────────────
@@ -304,6 +305,7 @@ function toggleRow(id){ const s = new Set(selectedIds.value); s.has(id) ? s.dele
 const { onRowSelClick, resetAnchor } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow })
 function toggleSelectPage(){ const s = new Set(selectedIds.value); if (pageAllSelected.value) items.value.forEach(r => s.delete(r.id)); else items.value.forEach(r => s.add(r.id)); selectedIds.value = s }
 function clearSelection(){ selectedIds.value = new Set() }
+useEscClearSelection(() => selectedIds.value.size > 0, clearSelection)   // ESC 退出勾选
 // 仅「待审批」可批量通过；汇总只统计可审批记录
 const selectedApprovable = computed(() => items.value.filter(i => selectedIds.value.has(i.id) && i.status === 'pending'))
 // 仅「审批通过且未归档」可排款；批量排款汇总只统计可排记录（默认金额=剩余可排=申请金额）
