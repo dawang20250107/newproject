@@ -118,10 +118,19 @@ async function loadBatches() {
 // 紧凑日期时间（月日 时:分）
 const fmtDt = (s) => fmtDateTime(s)
 
+// 批次列表的事业部筛选（'' = 全部）
+const batchBuFilter = ref('')
+const batchBus = computed(() => {
+  const present = new Set(batches.value.map(b => b.business_unit))
+  return BUSINESS_UNITS.filter(bu => present.has(bu))
+})
 // 批次按事业部归类（组内按 期间新→旧、类型 排序；组按事业部固定顺序）
 const batchGroups = computed(() => {
   const map = {}
-  for (const b of batches.value) (map[b.business_unit] = map[b.business_unit] || []).push(b)
+  const src = batchBuFilter.value
+    ? batches.value.filter(b => b.business_unit === batchBuFilter.value)
+    : batches.value
+  for (const b of src) (map[b.business_unit] = map[b.business_unit] || []).push(b)
   const order = [...BUSINESS_UNITS]
   return Object.keys(map)
     .sort((a, b) => ((order.indexOf(a) + 1) || 99) - ((order.indexOf(b) + 1) || 99))
@@ -362,9 +371,19 @@ onMounted(() => {
     <div v-else class="card compact-card">
       <div class="ss-head">
         <div class="section-title" style="margin:0">导入批次</div>
-        <span v-if="batches.length" class="ss-summary">共 {{ batches.length }} 个批次</span>
+        <select v-if="batchBus.length > 1" v-model="batchBuFilter" class="batch-bu-flt" title="按事业部筛选批次">
+          <option value="">全部事业部</option>
+          <option v-for="bu in batchBus" :key="bu" :value="bu">{{ bu }}</option>
+        </select>
+        <span v-if="batches.length" class="ss-summary">
+          {{ batchBuFilter ? `${batchGroups.reduce((n, g) => n + g.rows.length, 0)} / ` : '共 ' }}{{ batches.length }} 个批次
+        </span>
       </div>
-      <div v-if="!batches.length" class="empty">
+      <div v-if="batches.length && !batchGroups.length" class="empty">
+        <div class="icon">🔍</div>
+        <div>{{ batchBuFilter }} 暂无导入批次</div>
+      </div>
+      <div v-else-if="!batches.length" class="empty">
         <div class="icon">📂</div>
         <div>暂无导入记录</div>
         <div style="font-size:12px;color:var(--muted);margin-top:6px">上传金蝶导出的部门明细表，或使用KXT模板手动填报</div>
@@ -724,6 +743,12 @@ td.amt, th.amt { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ── 导入批次：紧凑行 ───────────────────────────────────────────────────── */
 .batch-list { display: flex; flex-direction: column; }
+.batch-bu-flt {
+  height: 26px; font-size: 11.5px; padding: 0 7px; border-radius: 7px;
+  border: 1px solid rgba(0,0,0,0.12); background: var(--row-bg); color: var(--muted);
+  margin-left: 10px; cursor: pointer;
+}
+.batch-bu-flt:hover, .batch-bu-flt:focus { color: var(--text); border-color: var(--primary); }
 .bu-group-head {
   display: flex; align-items: baseline; gap: 10px; padding: 10px 4px 5px;
   border-bottom: 1px solid rgba(201, 99, 66, 0.15); margin-bottom: 2px;
