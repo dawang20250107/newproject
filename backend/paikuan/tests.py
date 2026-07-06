@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from django.test import Client, TestCase
 
-from ar.models import ARProject
+from ar.models import ARProject, AdvanceRecord, AdvanceWriteoff
 from paikuan.models import (ApprovalRecord, JobPermission, PaikuanUser, Payment,
                             PaymentInstallment, PaymentPlanItem)
 from paikuan.views import DEPARTMENTS, default_job_config, make_token, _invalidate_perm_cache
@@ -1761,6 +1761,159 @@ class BulkOpsTests(TestCase):
         self.assertEqual(len(d['skipped']), 1)
         p1.refresh_from_db()
         self.assertEqual(p1.installments.count(), 0)
+
+
+class ForceDeleteScopeTests(TestCase):
+    """审批-排款-台账 删除链路的 force 强删/强退与 payments/bulk-delete 的 all 范围口径。
+    回归 c2e6557：①all:true 必须按当前筛选（如 dept）限定范围，不能波及筛选外的记录；
+    ②force 绕过"已有实付"拦截，但绝不绕过"已关联预付核销"这条硬性资金安全线。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        self.dept2 = '集团总部'
+        admin = PaikuanUser(phone='13900004000', name='ForceAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept, self.dept2],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def _post(self, url, payload, query=''):
+        return self.client.post(url + query, data=json.dumps(payload),
+                                content_type='application/json', **self.auth())
+
+    def _mk_approval(self, num, amount, dept=None):
+        return ApprovalRecord.objects.create(
+            applicant='张三', department=dept or self.dept, approval_number=str(num) * 21,
+            summary='采购', amount=Decimal(amount), payee=f'供应商{num}', status='approved')
+
+    def _schedule_payment(self, num, amount, dept=None):
+        a = self._mk_approval(num, amount, dept=dept)
+        self._post('/api/pk/approvals/bulk-schedule',
+                   {'ids': [a.id], 'planned_date': '2026-07-01'})
+        return Payment.objects.get(approval=a)
+
+    def test_bulk_delete_all_scoped_to_dept_filter(self):
+        # 3 条运输事业部 + 2 条集团总部；all:true 附带 dept 筛选 → 只删筛选内的 3 条
+        for i in range(3):
+            self._schedule_payment(i, '1000', dept=self.dept)
+        for i in range(3, 5):
+            self._schedule_payment(i, '1000', dept=self.dept2)
+        resp = self._post('/api/pk/payments/bulk-delete', {'all': True}, query=f'?dept={self.dept}')
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()['data']['deleted'], 3)
+        self.assertEqual(Payment.objects.filter(department=self.dept, deleted_at__isnull=False).count(), 3)
+        self.assertEqual(Payment.objects.filter(department=self.dept2, deleted_at__isnull=False).count(), 0)
+
+    def test_payment_delete_force_bypasses_installments_but_not_prepaid(self):
+        p = self._schedule_payment(1, '1000')
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 7, 2),
+                                          pay_amount=Decimal('1000'))
+        # 未强制 → 409 拦截
+        r = self.client.delete(f'/api/pk/payments/{p.id}', **self.auth())
+        self.assertEqual(r.status_code, 409)
+        # 强制 → 放行（软删）
+        r2 = self.client.delete(f'/api/pk/payments/{p.id}?force=1', **self.auth())
+        self.assertEqual(r2.status_code, 200, r2.content)
+        self.assertIsNotNone(Payment.objects.get(id=p.id).deleted_at)
+        # 关联预付核销的排款：即便 force 也不可删（硬性资金安全线）
+        p2 = self._schedule_payment(2, '2000')
+        proj = ARProject.objects.create(
+            customer_name='C', short_name='P', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='GYL-FORCE-001')
+        adv = AdvanceRecord.objects.create(
+            direction='预付', project=proj, delivery_dept=self.dept,
+            counterparty='供应商', occur_year=2026, occur_month=6,
+            occur_date=date(2026, 6, 1), advance_amount=Decimal('2000'))
+        AdvanceWriteoff.objects.create(
+            advance_record=adv, writeoff_no=1, amount=Decimal('2000'),
+            writeoff_date=date(2026, 6, 5), payment=p2)
+        r3 = self.client.delete(f'/api/pk/payments/{p2.id}?force=1', **self.auth())
+        self.assertEqual(r3.status_code, 409, r3.content)
+        self.assertIn('预付核销', r3.json().get('error', ''))
+        self.assertIsNone(Payment.objects.get(id=p2.id).deleted_at)
+
+    def test_payments_bulk_delete_force_bypasses_installments_but_not_prepaid(self):
+        p1 = self._schedule_payment(1, '1000')
+        PaymentInstallment.objects.create(payment=p1, seq=1, pay_date=date(2026, 7, 2),
+                                          pay_amount=Decimal('1000'))
+        p2 = self._schedule_payment(2, '2000')
+        proj = ARProject.objects.create(
+            customer_name='C', short_name='P', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='GYL-FORCE-002')
+        adv = AdvanceRecord.objects.create(
+            direction='预付', project=proj, delivery_dept=self.dept,
+            counterparty='供应商', occur_year=2026, occur_month=6,
+            occur_date=date(2026, 6, 1), advance_amount=Decimal('2000'))
+        AdvanceWriteoff.objects.create(
+            advance_record=adv, writeoff_no=1, amount=Decimal('2000'),
+            writeoff_date=date(2026, 6, 5), payment=p2)
+        # 未强制：两条都跳过
+        d = self._post('/api/pk/payments/bulk-delete', {'ids': [p1.id, p2.id]}).json()['data']
+        self.assertEqual(d['deleted'], 0)
+        self.assertEqual(len(d['skipped']), 2)
+        # 强制：仅实付分期的那条放行；预付核销那条依旧跳过
+        d2 = self._post('/api/pk/payments/bulk-delete', {'ids': [p1.id, p2.id], 'force': True}).json()['data']
+        self.assertEqual(d2['deleted'], 1)
+        self.assertEqual(len(d2['skipped']), 1)
+        self.assertEqual(d2['skipped'][0]['id'], p2.id)
+        p1.refresh_from_db(); p2.refresh_from_db()
+        self.assertIsNotNone(p1.deleted_at)
+        self.assertIsNone(p2.deleted_at)
+
+    def test_approval_bulk_delete_force_cascades_soft_delete_payment(self):
+        p = self._schedule_payment(1, '1000')
+        a = p.approval
+        # 未强制：已关联排款，跳过审批删除
+        d = self._post('/api/pk/approvals/bulk-delete', {'ids': [a.id]}).json()['data']
+        self.assertEqual(d['deleted'], 0)
+        self.assertTrue(d['skipped'][0]['has_payments'])
+        self.assertIsNone(ApprovalRecord.objects.get(id=a.id).deleted_at)
+        # 强制：级联软删关联排款，再软删审批本身，全链路进回收站（可还原）
+        d2 = self._post('/api/pk/approvals/bulk-delete', {'ids': [a.id], 'force': True}).json()['data']
+        self.assertEqual(d2['deleted'], 1)
+        a.refresh_from_db(); p.refresh_from_db()
+        self.assertIsNotNone(a.deleted_at)
+        self.assertIsNotNone(p.deleted_at)
+
+    def test_approval_bulk_delete_force_blocked_by_prepaid_offsets(self):
+        p = self._schedule_payment(1, '2000')
+        a = p.approval
+        proj = ARProject.objects.create(
+            customer_name='C', short_name='P', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='GYL-FORCE-003')
+        adv = AdvanceRecord.objects.create(
+            direction='预付', project=proj, delivery_dept=self.dept,
+            counterparty='供应商', occur_year=2026, occur_month=6,
+            occur_date=date(2026, 6, 1), advance_amount=Decimal('2000'))
+        AdvanceWriteoff.objects.create(
+            advance_record=adv, writeoff_no=1, amount=Decimal('2000'),
+            writeoff_date=date(2026, 6, 5), payment=p)
+        d = self._post('/api/pk/approvals/bulk-delete', {'ids': [a.id], 'force': True}).json()['data']
+        self.assertEqual(d['deleted'], 0)
+        self.assertIn('预付核销', d['skipped'][0]['reason'])
+        a.refresh_from_db(); p.refresh_from_db()
+        self.assertIsNone(a.deleted_at)
+        self.assertIsNone(p.deleted_at)
+
+    def test_approval_bulk_return_schedule_force_bypasses_installments(self):
+        p = self._schedule_payment(1, '1000')
+        a = p.approval
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 7, 2),
+                                          pay_amount=Decimal('1000'))
+        d = self._post('/api/pk/approvals/bulk-return-schedule', {'ids': [a.id]}).json()['data']
+        self.assertEqual(d['returned'], 0)
+        self.assertTrue(d['skipped'][0]['has_installments'])
+        d2 = self._post('/api/pk/approvals/bulk-return-schedule',
+                        {'ids': [a.id], 'force': True}).json()['data']
+        self.assertEqual(d2['returned'], 1)
+        a.refresh_from_db(); p.refresh_from_db()
+        self.assertEqual(a.scheduled_amount, Decimal('0'))
+        self.assertIsNotNone(p.deleted_at)
 
 
 class ColumnFilterTests(TestCase):

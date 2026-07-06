@@ -1020,15 +1020,21 @@ async function confirmBulkDelete() {
     const r = await api.post('/payments/bulk-delete', { ids: [...selectedIds.value] })
     const d = r.data || {}
     const instSkipped = (d.skipped || []).filter(s => s.has_installments)
-    if (instSkipped.length && !d.deleted) {
+    // 混合批次（部分无实付已正常删除、部分因实付被跳过）时 d.deleted>0，
+    // 不能再用 `&& !d.deleted` 门槛——否则强制重试入口不出现，用户只看得到跳过列表。
+    if (instSkipped.length) {
       if (await confirmDlg({ title: '部分记录有实付，是否强制删除？',
         message: `${instSkipped.length} 条排款已有实付分期。强制删除将移入回收站（可还原），实付记录暂时隐藏。`,
         confirmText: '强制删除', danger: true })) {
-        const r2 = await api.post('/payments/bulk-delete', { ids: [...selectedIds.value], force: true })
+        const r2 = await api.post('/payments/bulk-delete', { ids: instSkipped.map(s => s.id), force: true })
         showDelConfirm.value = false; clearSelection(); load()
         const d2 = r2.data || {}
-        if (d2.skipped?.length) resultDlg({ title: '批量删除结果', okLine: d2.message, skipped: d2.skipped })
-        else toast.success(d2.message || '已强制删除')
+        const totalDeleted = (d.deleted || 0) + (d2.deleted || 0)
+        if (d2.skipped?.length) resultDlg({ title: '批量删除结果', okLine: `已删除 ${totalDeleted} 条`, skipped: d2.skipped })
+        else toast.success(`已删除 ${totalDeleted} 条`)
+      } else {
+        showDelConfirm.value = false; clearSelection(); load()
+        if (d.skipped?.length) resultDlg({ title: '批量删除结果', okLine: d.message, skipped: d.skipped })
       }
     } else {
       showDelConfirm.value = false; clearSelection(); load()
@@ -1045,20 +1051,35 @@ async function bulkReturn() {
   if (!(await confirmDlg(`批量退回排款 ${selectedCount.value} 条？\n所选付款将退回、来源审批已排款归零可重新排款。\n已有实付或已关联预付核销的记录将自动跳过。`))) return
   bulkReturning.value = true
   try {
-    const body = isCrossPageSelection.value ? { all: true } : { ids: [...selectedIds.value] }
+    // 始终发送具体 ids（而非 all:true）：selectedIds 无论是手动跨页勾选、还是「选择全部
+    // N 条」填充，都已是具体 id 集合；all:true 会让后端按「当前筛选」重新取数，但本次
+    // 请求不带任何筛选 query string（axios 拦截器只自动注入 depts），一旦用户是手动
+    // 跨页勾选（而非点了「选择全部」），all:true 会把退回范围从「所选几条」扩大为
+    // 「部门内全部未删记录」——这是一次真实复现过的越权范围缺陷，改回按 id 精确匹配。
+    const body = { ids: [...selectedIds.value] }
     const r = await api.post('/payments/bulk-delete', body)
     const d = r.data || {}
     const instSkipped = (d.skipped || []).filter(s => s.has_installments)
-    if (instSkipped.length && !d.deleted) {
+    // 注意：不能再加 `&& !d.deleted` ——混合批次（部分无实付已正常退回、部分因实付
+    // 被跳过）时 d.deleted>0，若以此为条件会让强制重试入口整体不出现，用户只能看到
+    // 跳过列表而无法继续操作。只要有 has_installments 的跳过项就提供强制重试。
+    if (instSkipped.length) {
       if (await confirmDlg({ title: '部分记录有实付，是否强制退回？',
         message: `${instSkipped.length} 条排款已有实付分期。强制退回将移入回收站（可还原），实付记录暂时隐藏。`,
         confirmText: '强制退回', danger: true })) {
-        const r2 = await api.post('/payments/bulk-delete', { ...body, force: true })
+        const r2 = await api.post('/payments/bulk-delete', { ids: instSkipped.map(s => s.id), force: true })
         clearSelection(); load()
         const d2 = r2.data || {}
-        if (d2.skipped?.length) resultDlg({ title: '批量退回结果', okLine: d2.message, skipped: d2.skipped })
-        else toast.success(d2.message || '已强制退回')
-      } else { clearSelection(); load() }
+        const totalDeleted = (d.deleted || 0) + (d2.deleted || 0)
+        const msg = `已退回 ${totalDeleted} 条排款，来源审批已归零`
+        if (d2.skipped?.length) resultDlg({ title: '批量退回结果', okLine: msg, skipped: d2.skipped })
+        else toast.success(msg)
+      } else {
+        clearSelection(); load()
+        let msg = `已退回 ${d.deleted ?? 0} 条排款，来源审批已归零`
+        if (d.skipped?.length) resultDlg({ title: '批量退回结果', okLine: msg, skipped: d.skipped })
+        else toast.success(msg)
+      }
     } else {
       clearSelection(); load()
       let msg = `已退回 ${d.deleted ?? 0} 条排款，来源审批已归零`

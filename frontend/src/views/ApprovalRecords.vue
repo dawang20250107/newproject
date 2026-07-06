@@ -341,15 +341,19 @@ async function confirmBulkDelete(){
     const r = await api.post('/approvals/bulk-delete', { ids: [...selectedIds.value] })
     const d = r.data || {}
     const paySkipped = (d.skipped || []).filter(s => s.has_payments)
-    if (paySkipped.length && !d.deleted) {
+    if (paySkipped.length) {
       if (await confirmDlg({ title: '部分记录已关联排款，是否强制删除？',
         message: `${paySkipped.length} 条审批已关联排款。强制删除将把审批及其排款一并移入回收站（可还原）。`,
         confirmText: '强制删除', danger: true })) {
-        const r2 = await api.post('/approvals/bulk-delete', { ids: [...selectedIds.value], force: true })
+        const r2 = await api.post('/approvals/bulk-delete', { ids: paySkipped.map(s => s.id), force: true })
         showDelConfirm.value = false; clearSelection(); load()
         const d2 = r2.data || {}
-        if (d2.skipped?.length) resultDlg({ title: '批量删除结果', okLine: d2.message, skipped: d2.skipped })
-        else toast.success(d2.message || '已强制删除')
+        const totalDeleted = (d.deleted || 0) + (d2.deleted || 0)
+        if (d2.skipped?.length) resultDlg({ title: '批量删除结果', okLine: `共删除 ${totalDeleted} 条。${d2.message || ''}`, skipped: d2.skipped })
+        else toast.success(`共删除 ${totalDeleted} 条`)
+      } else {
+        showDelConfirm.value = false; clearSelection(); load()
+        if (d.skipped?.length) resultDlg({ title: '批量删除结果', okLine: d.message, skipped: d.skipped })
       }
     } else {
       showDelConfirm.value = false; clearSelection(); load()
@@ -382,17 +386,25 @@ async function bulkReturnSchedule(){
     const r = await api.post('/approvals/bulk-return-schedule', { ids })
     const d = r.data || {}
     const instSkipped = (d.skipped || []).filter(s => s.has_installments)
-    if (instSkipped.length && !d.returned) {
+    if (instSkipped.length) {
       if (await confirmDlg({ title: '部分排款有实付，是否强制退回？',
         message: `${instSkipped.length} 条排款已有实付分期。强制退回将移入回收站（可还原），实付记录暂时隐藏。`,
         confirmText: '强制退回', danger: true })) {
-        const r2 = await api.post('/approvals/bulk-return-schedule', { ids, force: true })
+        const r2 = await api.post('/approvals/bulk-return-schedule', { ids: instSkipped.map(s => s.id), force: true })
         const d2 = r2.data || {}
+        const totalReturned = (d.returned || 0) + (d2.returned || 0)
         ids.forEach(id => { delete aprSchedCache.value[id] })
         aprSchedExpanded.value = new Set([...aprSchedExpanded.value].filter(id => !selectedIds.value.has(id)))
         clearSelection(); load()
-        if (d2.skipped?.length) resultDlg({ title: '批量操作结果', okLine: d2.message, skipped: d2.skipped })
-        else toast.success(d2.message || '已强制退回')
+        if (d2.skipped?.length) resultDlg({ title: '批量操作结果', okLine: `共退回 ${totalReturned} 条。${d2.message || ''}`, skipped: d2.skipped })
+        else toast.success(`共退回 ${totalReturned} 条`)
+      } else {
+        ids.forEach(id => { delete aprSchedCache.value[id] })
+        aprSchedExpanded.value = new Set([...aprSchedExpanded.value].filter(id => !selectedIds.value.has(id)))
+        clearSelection(); load()
+        let msg = d.message || '批量退回完成'
+        if (d.skipped?.length) resultDlg({ title: '批量操作结果', okLine: msg, skipped: d.skipped })
+        else toast.success(msg)
       }
     } else {
       ids.forEach(id => { delete aprSchedCache.value[id] })
