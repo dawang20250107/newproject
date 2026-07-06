@@ -1050,6 +1050,65 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.assertTrue(answer)   # 兜底提示非空
         self.assertEqual(events[-1]['type'], 'done')
 
+    def test_chat_stream_auto_continues_truncated_answer(self):
+        """答案因 token 上限被截断（finish_reason=='length'）时，自动接着写完而非中断，
+        根治"回答一般就中断不输出"。"""
+        from unittest import mock
+        self.mk(2026, 5, 200, 130)
+        calls = {'n': 0}
+
+        def fake_stream_raw(messages, tools=None, model=None, timeout=120, max_tokens=2000, **kw):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                # 第一段：被截断（length）
+                yield ('answer', '本月经营分析（上）：收入达标，')
+                yield ('final', {'content': '本月经营分析（上）：收入达标，',
+                                 'tool_calls': None, 'finish_reason': 'length'})
+            else:
+                # 续写段：正常收尾（stop）
+                yield ('answer', '利润率环比改善，建议保持。')
+                yield ('final', {'content': '利润率环比改善，建议保持。',
+                                 'tool_calls': None, 'finish_reason': 'stop'})
+
+        with mock.patch('caiwu.views._deepseek_stream_raw', fake_stream_raw):
+            resp = self.client.post(
+                '/api/cw/cockpit/ai-chat/stream',
+                data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu,
+                                 'messages': [{'role': 'user', 'content': '写一份本月经营分析'}]}),
+                content_type='application/json', **self.auth())
+            body = b''.join(resp.streaming_content).decode('utf-8')
+        events = [json.loads(fr[5:].strip()) for fr in body.split('\n\n') if fr.strip().startswith('data:')]
+        answer = ''.join(e['delta'] for e in events if e['type'] == 'answer')
+        # 两段拼接成完整答案
+        self.assertIn('收入达标', answer)
+        self.assertIn('建议保持', answer)
+        self.assertGreaterEqual(calls['n'], 2)   # 触发了续写
+        self.assertEqual(events[-1]['type'], 'done')
+
+    def test_chat_stream_truncation_continue_has_guard(self):
+        """续写有兜底上限：即便模型持续回报 length 也不会无限续写，最终收口 done。"""
+        from unittest import mock
+        self.mk(2026, 5, 200, 130)
+        calls = {'n': 0}
+
+        def fake_stream_raw(messages, tools=None, model=None, timeout=120, max_tokens=2000, **kw):
+            calls['n'] += 1
+            yield ('answer', f'第{calls["n"]}段…')
+            yield ('final', {'content': f'第{calls["n"]}段…',
+                             'tool_calls': None, 'finish_reason': 'length'})
+
+        with mock.patch('caiwu.views._deepseek_stream_raw', fake_stream_raw):
+            resp = self.client.post(
+                '/api/cw/cockpit/ai-chat/stream',
+                data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu,
+                                 'messages': [{'role': 'user', 'content': '写一份很长的分析'}]}),
+                content_type='application/json', **self.auth())
+            body = b''.join(resp.streaming_content).decode('utf-8')
+        events = [json.loads(fr[5:].strip()) for fr in body.split('\n\n') if fr.strip().startswith('data:')]
+        # 首答 1 次 + 续写上限 3 次 = 4，不会失控
+        self.assertLessEqual(calls['n'], 4)
+        self.assertEqual(events[-1]['type'], 'done')
+
     def test_chat_stream_falls_back_when_primary_rejects_tools(self):
         """PRO 模型在首个 token 前失败（如某端点该模型不支持 tools）→ 自动降级到
         DEEPSEEK_FALLBACK_MODEL 重试并正常作答，助手不整体报错。"""

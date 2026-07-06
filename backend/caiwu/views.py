@@ -3741,14 +3741,22 @@ def _cockpit_chat_prepare(request):
         messages.append({'role': 'system', 'content':
                          f'你具备以下可调用技能（function-calling）：{brief}。\n'
                          '工具路由策略：\n'
-                         '· 内部数据——【经营数据上下文】仅覆盖当前期间与范围；问到其它月份/年份或'
-                         '其它事业部的业绩、应收回款、项目毛利、业财归因、全年预测时，先调用对应的'
-                         ' query_* 技能取数再作答，切勿凭空臆测数字；跨期间/跨事业部对比可分多次调用'
-                         '逐步取齐再综合。\n'
+                         '· 先看上下文——【经营数据上下文】已含"当前期间×当前范围"的财报业绩、应收回款、'
+                         '项目毛利、业财归因四域数据；问的就是当前期间当前范围时，直接据此作答，无需调用任何'
+                         '工具。只有当问题超出这个"当前期间×当前范围"时才取数。\n'
+                         '· 选对技能（按语义精确匹配，别张冠李戴）：\n'
+                         '  - 财报/财务报表/报表/经营业绩/收入·成本·利润/目标达成/同比环比/趋势 → query_financials\n'
+                         '  - 应收/未收/回款/逾期/账龄 → query_receivables\n'
+                         '  - 项目毛利/项目盈亏/亏损项目/Top项目 → query_project_margin\n'
+                         '  - 业财归因/薄利/又薄又难收/优质项目分类 → query_bf_fusion\n'
+                         '  - 全年落地预测/年化推全年/利润缺口/坏账风险 → query_forecast\n'
+                         '  跨期间/跨事业部对比可分多次调用逐步取齐再综合；切勿凭空臆测数字。\n'
                          '· 外部信息——涉及同行、行业、市场、政策的问题：优先看知识库中已沉淀的行业'
                          '情报；不足以回答时自动调用 peer_research（用户要求调研/系统性了解某行业时）'
                          '或 web_search+web_fetch（查单个具体事实时），无需征求同意，联网开箱即用。\n'
-                         '· 沉淀——生成报告用 generate_report；有留存价值的结论用 save_knowledge。\n'
+                         '· 沉淀——用户要"报告/完整分析报告"用 generate_report；有留存价值的结论用 save_knowledge。\n'
+                         '· 收口——取到数据后必须给出完整成文的分析与结论，不要只抛数据或半途停笔；'
+                         '内容较长时一次写完，不要自行截断。\n'
                          '其余经营问答正常作答即可。'})
     messages += history
     scope = '全集团' if len(bus) > 1 else (bus[0] if bus else '全集团')
@@ -3775,48 +3783,74 @@ def cockpit_ai_chat_stream(request):
     from caiwu import agent_skills
     tool_model = settings.DEEPSEEK_AGENT_MODEL   # 默认 PRO 模型驱动 function-calling
 
+    # 单步预算调大：答案含多事业部对比表 + reasoner 的思维链会与正文竞争 token 额度，
+    # 2000 太小会「答到一半就断」；给足额度并在下方对 finish_reason=='length' 自动续写。
+    STEP_MAX_TOKENS = 8000
+
     def gen():
         import time
         yield _sse_event({'type': 'meta', 'scope': scope, 'model': tool_model})
         uid = getattr(request, 'pk_uid', None)
+        holder = {'msg': None, 'emitted': False}
+
+        def stream_model(convo, model, tools_arg):
+            """真流式跑一次模型：逐字 yield SSE，最终 msg 存入 holder['msg']。"""
+            for kind, payload in _deepseek_stream_raw(convo, tools=tools_arg, model=model,
+                                                      timeout=120, max_tokens=STEP_MAX_TOKENS,
+                                                      kind='chat'):
+                if kind == 'final':
+                    holder['msg'] = payload
+                    return
+                holder['emitted'] = True
+                yield _sse_event({'type': kind, 'delta': payload})
+
         try:
             tools = agent_skills.agent_tools()
             convo = list(messages)
             max_steps = 12   # 工具调用循环上限：支持「先查A期再查B期再综合」的跨期间多步取数
             for _step in range(max_steps):
                 # 真流式：边逐字推送 reasoning/answer，边累积 tool_calls。
-                # 韧性：主模型在吐出首个 token 前失败（超时/限流/网络）→ 自动降级
-                # 备用模型重试一次，保证助手可用性而非整体 5xx。
-                msg = None
-                emitted = False
+                # 韧性：主模型在吐出首个 token 前失败（超时/限流/网络/不支持 tools）→
+                # 自动降级备用模型重试一次，保证助手可用性而非整体 5xx。
+                holder['msg'] = None
+                holder['emitted'] = False
                 try:
-                    for kind, payload in _deepseek_stream_raw(convo, tools=tools, model=tool_model,
-                                                              timeout=120, max_tokens=2000,
-                                                              kind='chat'):
-                        if kind == 'final':
-                            msg = payload
-                            break
-                        emitted = True
-                        yield _sse_event({'type': kind, 'delta': payload})
+                    yield from stream_model(convo, tool_model, tools)
                 except Exception as first_ex:
                     fb = settings.DEEPSEEK_FALLBACK_MODEL
-                    if emitted or not fb or fb == tool_model:
+                    if holder['emitted'] or not fb or fb == tool_model:
                         raise
                     logger.warning('agent primary model failed pre-token, fallback to %s: %s',
                                    fb, str(first_ex)[:120])
                     yield _sse_event({'type': 'meta', 'scope': scope, 'model': fb, 'fallback': True})
-                    for kind, payload in _deepseek_stream_raw(convo, tools=tools, model=fb,
-                                                              timeout=120, max_tokens=2000,
-                                                              kind='chat'):
-                        if kind == 'final':
-                            msg = payload
-                            break
-                        yield _sse_event({'type': kind, 'delta': payload})
+                    holder['emitted'] = False
+                    yield from stream_model(convo, fb, tools)
+                msg = holder['msg']
                 tool_calls = (msg or {}).get('tool_calls')
                 if not tool_calls:
                     # 正文已在上面真流式推送完毕；若模型一字未出则补位
-                    if not (msg and msg.get('content')):
+                    content = (msg or {}).get('content') or ''
+                    if not content:
                         yield _sse_event({'type': 'answer', 'delta': '（未返回内容）'})
+                        yield _sse_event({'type': 'done'})
+                        return
+                    # 答案因 token 上限被截断（finish_reason=='length'）→ 自动接着写完，
+                    # 根治「回答一般就中断不输出」。续写不再挂 tools，纯续正文，最多 3 轮。
+                    cont = list(convo)
+                    cont.append({'role': 'assistant', 'content': content})
+                    guard = 0
+                    while (msg or {}).get('finish_reason') == 'length' and guard < 3:
+                        guard += 1
+                        cont.append({'role': 'user',
+                                     'content': '接着上文继续写完，从被截断处续写、不要重复已写内容，也不要重新开头。'})
+                        holder['msg'] = None
+                        try:
+                            yield from stream_model(cont, tool_model, None)
+                        except Exception as cont_ex:
+                            logger.warning('agent continuation failed: %s', str(cont_ex)[:120])
+                            break
+                        msg = holder['msg']
+                        cont.append({'role': 'assistant', 'content': (msg or {}).get('content') or ''})
                     yield _sse_event({'type': 'done'})
                     return
                 convo.append({'role': 'assistant', 'content': msg.get('content') or '',
@@ -3864,7 +3898,7 @@ def cockpit_ai_chat_stream(request):
             wrapup_content = ''
             try:
                 for kind, payload in _deepseek_stream_raw(convo, tools=None, model=tool_model,
-                                                          timeout=120, max_tokens=1500,
+                                                          timeout=120, max_tokens=STEP_MAX_TOKENS,
                                                           kind='chat'):
                     if kind == 'final':
                         wrapup_content = (payload or {}).get('content') or ''
@@ -4278,8 +4312,10 @@ def _compute_cockpit_rows(bus, year, month):
 
 @agent_skills.register_skill(
     'query_financials', '查询经营业绩',
-    '查询指定期间/事业部的财务业绩：收入·成本·利润、目标达成、同比环比、12个月趋势。'
-    '当用户问到当前上下文未覆盖的期间或事业部时调用',
+    '财报/财务报表/经营业绩/收入·成本·利润/目标达成/同比环比/12个月趋势的取数入口——'
+    '用户说"看财报/财务报表/报表/业绩/收入利润/达成情况"均调此技能。'
+    '仅当所问期间或事业部超出【经营数据上下文】覆盖范围时才需调用；上下文已含的当前期间'
+    '直接依据上下文作答即可。注意：项目层面的毛利/盈亏请改用 query_project_margin。',
     {'year': '年份，如2026（可选，默认当前对话期间）',
      'month': '月份1-12（可选，默认当前对话期间）',
      'bu': '事业部名称（可选，默认当前范围；无权访问将被忽略）'},
@@ -4926,6 +4962,7 @@ def _deepseek_stream_raw(messages, tools=None, model=None, max_tokens=1800, time
     resp.raise_for_status()
     content_parts = []
     usage = None
+    finish_reason = None
     tc_acc = {}   # index -> {'id','type','function':{'name','arguments'}}（分片增量拼接）
     for raw in resp.iter_lines(decode_unicode=False):
         if not raw:
@@ -4943,9 +4980,12 @@ def _deepseek_stream_raw(messages, tools=None, model=None, max_tokens=1800, time
         if obj.get('usage'):
             usage = obj['usage']       # 末块只带 usage、choices 为空
         try:
-            delta = obj['choices'][0]['delta']
+            choice0 = obj['choices'][0]
+            delta = choice0['delta']
         except (KeyError, IndexError):
             continue
+        if choice0.get('finish_reason'):
+            finish_reason = choice0['finish_reason']   # 'stop'|'length'|'tool_calls'
         rc = delta.get('reasoning_content')
         if rc:
             yield ('reasoning', rc)
@@ -4966,7 +5006,8 @@ def _deepseek_stream_raw(messages, tools=None, model=None, max_tokens=1800, time
                 slot['function']['arguments'] += fn['arguments']
     tool_calls = [tc_acc[i] for i in sorted(tc_acc)] if tc_acc else None
     _record_ai_usage(kind, use_model, usage)
-    yield ('final', {'content': ''.join(content_parts), 'tool_calls': tool_calls})
+    yield ('final', {'content': ''.join(content_parts), 'tool_calls': tool_calls,
+                     'finish_reason': finish_reason})
 
 
 def _deepseek_stream(messages, model=None, max_tokens=1800, timeout=300, kind='other'):
