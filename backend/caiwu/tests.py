@@ -1195,8 +1195,52 @@ class CaiwuMetricsAndTargetsTests(TestCase):
             self.assertEqual(q.status_code, 200, q.content)
             self.assertIsInstance(q.json()['data'], str)
 
+    def test_query_financials_uses_gross_profit_caliber(self):
+        """经营业绩取数以【经营毛利】为主口径（集团分析报告口径），净利作参考。"""
+        self.mk(2026, 5, 200, 130)
+        r = self.client.post(
+            '/api/cw/cockpit/skills/run',
+            data=json.dumps({'name': 'query_financials',
+                             'args': {'year': 2026, 'month': 5, 'bu': self.bu}}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        text = r.json()['data']
+        self.assertIn('经营毛利', text)                       # 主口径出现
+        self.assertIn('经营毛利为主', text)                   # 概览抬头点明口径
+        self.assertIn('收入/经营毛利', text)                  # 12月趋势按毛利口径
+
+    def test_web_research_disabled_by_default(self):
+        """未配置搜索 Key 时联网检索默认关闭：三项联网技能不对外暴露、不可经入口执行，
+        非联网技能不受影响。"""
+        self.mk(2026, 5, 200, 130)
+        names = [s['name'] for s in
+                 self.client.get('/api/cw/cockpit/skills', **self.auth()).json()['data']['skills']]
+        for n in ('web_search', 'peer_research', 'web_fetch'):
+            self.assertNotIn(n, names)
+        # 非联网技能仍在
+        self.assertIn('query_financials', names)
+        self.assertIn('save_knowledge', names)
+        # 统一入口拒绝执行被门控的联网技能
+        run = self.client.post(
+            '/api/cw/cockpit/skills/run',
+            data=json.dumps({'name': 'web_search', 'args': {'query': '物流行业'}}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(run.status_code, 403, run.content)
+
+    @override_settings(ENABLE_WEB_RESEARCH=True)
+    def test_web_research_exposed_when_enabled(self):
+        """显式开启联网检索后，三项联网技能重新对外暴露并可执行。"""
+        self.mk(2026, 5, 200, 130)
+        names = [s['name'] for s in
+                 self.client.get('/api/cw/cockpit/skills', **self.auth()).json()['data']['skills']]
+        for n in ('web_search', 'peer_research', 'web_fetch'):
+            self.assertIn(n, names)
+        from caiwu import agent_skills
+        tool_names = [t['function']['name'] for t in agent_skills.agent_tools()]
+        self.assertIn('web_search', tool_names)
+
     def test_chat_multi_step_tool_calls(self):
-        """跨期间多步取数：模型连续调用查询技能 >4 步后再综合作答（循环上限已提到 6）。"""
+        """跨期间多步取数：模型连续调用查询技能 >4 步后再综合作答（循环上限已提到 12）。"""
         from unittest import mock
         self.mk(2026, 5, 200, 130)
         calls = {'n': 0}

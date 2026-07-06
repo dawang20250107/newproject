@@ -18,6 +18,10 @@ class Command(BaseCommand):
                             help='逗号分隔的调研主题；缺省用内置主题组')
 
     def handle(self, *args, **opts):
+        if not getattr(settings, 'ENABLE_WEB_RESEARCH', False):
+            self.stderr.write('联网检索未开启（ENABLE_WEB_RESEARCH 未启用）；如需自动调研，'
+                              '请配置搜索 Key 或设 ENABLE_WEB_RESEARCH=1')
+            raise SystemExit(4)
         if not settings.DEEPSEEK_API_KEY:
             self.stderr.write('未配置 DEEPSEEK_API_KEY，无法提炼情报')
             raise SystemExit(2)

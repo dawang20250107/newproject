@@ -30,6 +30,17 @@ DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1'
 # SEARCH_PROVIDER: 'bocha'（博查，国内直连）或 'serper'（Google via serper.dev）
 SEARCH_PROVIDER = os.environ.get('SEARCH_PROVIDER', '')
 SEARCH_API_KEY = os.environ.get('SEARCH_API_KEY', '')
+# 联网检索/同行调研总开关：控制助手是否暴露 web_search/web_fetch/peer_research 三项
+# 联网技能并对外声称具备联网能力。缺省仅在配置了搜索 Key 时开启；未配置即关闭，
+# 避免"没配 Key 却弹出调研/联网却取不到数"。可用 ENABLE_WEB_RESEARCH=1 在内置必应
+# 抓取可用的环境强制开启，或 =0 强制关闭。
+_web_flag = os.environ.get('ENABLE_WEB_RESEARCH', '').strip().lower()
+if _web_flag in ('1', 'true', 'yes', 'on'):
+    ENABLE_WEB_RESEARCH = True
+elif _web_flag in ('0', 'false', 'no', 'off'):
+    ENABLE_WEB_RESEARCH = False
+else:
+    ENABLE_WEB_RESEARCH = bool(SEARCH_API_KEY)   # 缺省：配了搜索 Key 才开
 
 # ── AI Token 成本控制 ─────────────────────────────────────────────────────────
 # 全组织每日 token 预算（输入+输出合计）：达到后当日 AI 功能暂停、次日自动恢复；

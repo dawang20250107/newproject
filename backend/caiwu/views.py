@@ -3095,6 +3095,8 @@ def cockpit(request):
         'overview': overview,
         'bus': bu_rows,
         'trend': trend,
+        # 联网检索总开关：供前端决定是否展示"行业/同行调研"类建议问题
+        'web_research': bool(getattr(settings, 'ENABLE_WEB_RESEARCH', False)),
     })
 
 
@@ -3107,20 +3109,27 @@ def _fmt_signed_pct(v):
 
 
 def _cockpit_data_lines(year, month, bus, bu_rows, ov_m, ov_y, actuals):
-    """全集团 + 各事业部 + 12个月趋势的数据明细行（财务侧），供报告 prompt 与对话上下文复用。"""
+    """全集团 + 各事业部 + 12个月趋势的数据明细行（财务侧），供报告 prompt 与对话上下文复用。
+    利润口径以【经营毛利】为主（集团分析报告口径），经营净利=经营毛利−集团管理费用，附作参考。"""
     L = []
-    L.append('【全集团合并概览】')
+    L.append('【全集团合并概览】（利润口径：经营毛利为主，经营净利作参考）')
     L.append(f'  当月收入：{_fmt_wan(ov_m["actual_revenue"])}'
              f'（达成率{_fmt_rate(ov_m["revenue_rate"])}，环比{_fmt_signed_pct(ov_m.get("revenue_mom"))}，'
              f'同比{_fmt_signed_pct(ov_m.get("revenue_yoy"))}）')
-    L.append(f'  当月利润：{_fmt_wan(ov_m["actual_profit"])}'
+    L.append(f'  当月经营毛利：{_fmt_wan(ov_m.get("actual_gross_profit"))}'
+             f'（达成率{_fmt_rate(ov_m.get("gross_profit_rate"))}，环比{_fmt_signed_pct(ov_m.get("gross_profit_mom"))}，'
+             f'同比{_fmt_signed_pct(ov_m.get("gross_profit_yoy"))}）')
+    L.append(f'  当月经营净利（参考）：{_fmt_wan(ov_m["actual_profit"])}'
              f'（达成率{_fmt_rate(ov_m["profit_rate"])}，环比{_fmt_signed_pct(ov_m.get("profit_mom"))}，'
              f'同比{_fmt_signed_pct(ov_m.get("profit_yoy"))}）')
     L.append(f'  年度累计收入：{_fmt_wan(ov_y["actual_revenue"])}（年度目标达成率{_fmt_rate(ov_y["revenue_rate"])}）')
-    L.append(f'  年度累计利润：{_fmt_wan(ov_y["actual_profit"])}（年度目标达成率{_fmt_rate(ov_y["profit_rate"])}）')
+    L.append(f'  年度累计经营毛利：{_fmt_wan(ov_y.get("actual_gross_profit"))}'
+             f'（年度目标达成率{_fmt_rate(ov_y.get("gross_profit_rate"))}）')
+    L.append(f'  年度累计经营净利（参考）：{_fmt_wan(ov_y["actual_profit"])}'
+             f'（年度目标达成率{_fmt_rate(ov_y["profit_rate"])}）')
 
     L.append('')
-    L.append('【各事业部表现（当月 / 年度累计）】')
+    L.append('【各事业部表现（当月 / 年度累计，利润列为经营毛利，括注经营净利参考）】')
     shown = 0
     for r in bu_rows:
         m, y = r['month'], r['ytd']
@@ -3132,21 +3141,23 @@ def _cockpit_data_lines(year, month, bus, bu_rows, ov_m, ov_y, actuals):
             f'  {r["business_unit"]}：'
             f'当月收入{_fmt_wan(m["actual_revenue"])}(达成{_fmt_rate(m["revenue_rate"])}，'
             f'环比{_fmt_signed_pct(m.get("revenue_mom"))}，同比{_fmt_signed_pct(m.get("revenue_yoy"))})；'
-            f'当月利润{_fmt_wan(m["actual_profit"])}(达成{_fmt_rate(m["profit_rate"])})；'
+            f'当月经营毛利{_fmt_wan(m.get("actual_gross_profit"))}(达成{_fmt_rate(m.get("gross_profit_rate"))}，'
+            f'净利{_fmt_wan(m["actual_profit"])})；'
             f'YTD收入{_fmt_wan(y["actual_revenue"])}(达成{_fmt_rate(y["revenue_rate"])})，'
-            f'YTD利润{_fmt_wan(y["actual_profit"])}(达成{_fmt_rate(y["profit_rate"])})'
+            f'YTD经营毛利{_fmt_wan(y.get("actual_gross_profit"))}(达成{_fmt_rate(y.get("gross_profit_rate"))}，'
+            f'净利{_fmt_wan(y["actual_profit"])})'
         )
     if shown == 0:
         L.append('  （所选范围内各事业部均无已发布数据）')
 
     L.append('')
-    L.append('【近12个月全集团趋势（实际收入/实际利润）】')
+    L.append('【近12个月全集团趋势（实际收入/经营毛利）】')
     tr = []
     for mo in range(1, 13):
-        rev_a, prof_a, _gross_a = _period_group(actuals, bus, year, mo)
-        if rev_a is None and prof_a is None:
+        rev_a, _prof_a, gross_a = _period_group(actuals, bus, year, mo)
+        if rev_a is None and gross_a is None:
             continue
-        tr.append(f'{mo}月:收入{_fmt_wan(rev_a)}/利润{_fmt_wan(prof_a)}')
+        tr.append(f'{mo}月:收入{_fmt_wan(rev_a)}/毛利{_fmt_wan(gross_a)}')
     L.append('  ' + ('；'.join(tr) if tr else '无'))
     return '\n'.join(L)
 
@@ -3170,7 +3181,8 @@ def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
     if single_bu:
         bu_name = bus[0]
         header = (f'你正在为「{bu_name}」事业部管理层解读 {year}年{month}月 的经营数据。'
-                  f'口径：已发布部门明细表，收入=主营业务收入，利润=经营净利。')
+                  f'口径：已发布部门明细表，收入=主营业务收入，利润以经营毛利为主口径'
+                  f'（经营净利=经营毛利−集团管理费用，作参考）。')
         body = f"""请站在「{bu_name}」事业部管理视角，输出一份综合经营分析报告，包含：
 
 1. **事业部经营总览**：本月与年度累计的收入/利润规模、目标达成进度、环比同比趋势综合研判。
@@ -3184,7 +3196,8 @@ def _build_cockpit_prompt(year, month, bus, bu_rows, ov_m, ov_y, actuals):
     else:
         header = (f'你正在为集团管理层解读 {year}年{month}月 的「财务驾驶舱」。'
                   f'以下是全集团及各事业部的经营数据（口径：已发布部门明细表，'
-                  f'收入=主营业务收入，利润=经营净利；集团总部为成本中心，本身无收入）。')
+                  f'收入=主营业务收入，利润以经营毛利为主口径，经营净利=经营毛利−集团管理费用作参考；'
+                  f'集团总部为成本中心，本身无收入）。')
         body = """请站在全集团高度，输出一份综合、全面的经营分析报告，包含：
 
 1. **集团经营总览**：本月与年度累计的整体经营态势——收入/利润规模、目标达成进度、环比同比趋势的综合研判。
@@ -3216,7 +3229,9 @@ def _build_report_messages(year, month, bus, period):
         head = f'你正在为集团管理层撰写 {year}年{month}月 月度经营分析报告。'
         focus = ('请输出月度经营分析报告：1)当月经营总览；2)事业部横向对比；3)目标达成与缺口；'
                  '4)风险预警；5)下月行动建议。篇幅 800-1200 字。')
-    prompt = (f'{head}\n口径：已发布部门明细表，收入=主营业务收入，利润=经营净利；集团总部为成本中心。\n\n'
+    prompt = (f'{head}\n口径：已发布部门明细表，收入=主营业务收入，利润以经营毛利为主口径'
+              f'（经营净利=经营毛利−集团管理费用，作参考）；集团总部为成本中心。'
+              f'达成/趋势/对比等"利润"表述一律以经营毛利为准。\n\n'
               f'{data}\n\n{focus}\n要求：专业、有数据支撑、有洞察、分点清晰，避免空话套话。')
     return [{'role': 'system', 'content': _COCKPIT_AI_SYSTEM}, {'role': 'user', 'content': prompt}]
 
@@ -3377,7 +3392,9 @@ _COCKPIT_CHAT_SYSTEM = (
     '⑩有长期留存价值的研究结论（行业基准值、同行打法、结构性判断）主动沉淀进知识库，'
     '让判断可延续、可积累。\n'
     '# 口径基准\n'
-    '财务=已发布部门明细表（收入=主营业务收入，利润=经营净利，集团总部为成本中心）。\n'
+    '财务=已发布部门明细表（收入=主营业务收入；利润以【经营毛利】为主口径——集团分析报告口径，'
+    '凡"利润/达成/趋势/环比同比/事业部对比"等表述默认指经营毛利；经营净利=经营毛利−集团管理费用，'
+    '仅在明确需要或用户点名"净利"时作参考，不要默认用净利；集团总部为成本中心）。\n'
     + _CFO_METHODOLOGY
 )
 
@@ -3737,7 +3754,17 @@ def _cockpit_chat_prepare(request):
         messages.append({'role': 'system', 'content': history_brief})
     from caiwu import agent_skills
     brief = agent_skills.skills_brief()
+    web_on = bool(getattr(settings, 'ENABLE_WEB_RESEARCH', False))
     if brief:
+        ext_line = (
+            '· 外部信息——涉及同行、行业、市场、政策的问题：优先看知识库中已沉淀的行业'
+            '情报；不足以回答时自动调用 peer_research（用户要求调研/系统性了解某行业时）'
+            '或 web_search+web_fetch（查单个具体事实时），无需征求同意，联网开箱即用。\n'
+            if web_on else
+            '· 外部信息——本环境未开启联网检索：涉及同行/行业/市场/政策等外部信息时，'
+            '只依据知识库已沉淀的情报作答；知识库也没有就如实说明"当前无法联网获取、'
+            '建议线下补充"，切勿臆造外部数字或编造来源，也不要声称能联网或去调研。\n'
+        )
         messages.append({'role': 'system', 'content':
                          f'你具备以下可调用技能（function-calling）：{brief}。\n'
                          '工具路由策略：\n'
@@ -3751,9 +3778,7 @@ def _cockpit_chat_prepare(request):
                          '  - 业财归因/薄利/又薄又难收/优质项目分类 → query_bf_fusion\n'
                          '  - 全年落地预测/年化推全年/利润缺口/坏账风险 → query_forecast\n'
                          '  跨期间/跨事业部对比可分多次调用逐步取齐再综合；切勿凭空臆测数字。\n'
-                         '· 外部信息——涉及同行、行业、市场、政策的问题：优先看知识库中已沉淀的行业'
-                         '情报；不足以回答时自动调用 peer_research（用户要求调研/系统性了解某行业时）'
-                         '或 web_search+web_fetch（查单个具体事实时），无需征求同意，联网开箱即用。\n'
+                         + ext_line +
                          '· 沉淀——用户要"报告/完整分析报告"用 generate_report；有留存价值的结论用 save_knowledge。\n'
                          '· 收口——取到数据后必须给出完整成文的分析与结论，不要只抛数据或半途停笔；'
                          '内容较长时一次写完，不要自行截断。\n'
@@ -4451,7 +4476,7 @@ def _web_search_provider(query, count=6):
     '搜索互联网获取外部信息：同行/竞对动态、行业数据、政策法规、市场行情。'
     '仅在内部数据无法回答（需要外部信息）时调用；结果需在回答中标注来源',
     {'query': '搜索关键词(必填)，用中文，聚焦一个主题'},
-    tool=True)
+    tool=True, gate='web')
 def _skill_web_search(request, args):
     q = (args.get('query') or '').strip()[:120]
     if not q:
@@ -4503,7 +4528,7 @@ def _html_to_text(html):
     '当用户要求"调研同行/行业/市场"或"了解一下XX行业最新情况"时调用；'
     '完成后基于沉淀的情报作答',
     {'topic': '调研主题(必填)，如「网络货运行业最新政策与运价趋势」'},
-    tool=True)
+    tool=True, gate='web')
 def _skill_peer_research(request, args):
     topic = (args.get('topic') or '').strip()[:80]
     if not topic:
@@ -4524,7 +4549,7 @@ def _skill_peer_research(request, args):
     'web_fetch', '抓取网页',
     '抓取一个网页并提取正文文本（用于细读 web_search 找到的来源，如同行财报、行业报告）',
     {'url': '网页地址(必填)，须为 web_search 结果中的链接'},
-    tool=True)
+    tool=True, gate='web')
 def _skill_web_fetch(request, args):
     url = (args.get('url') or '').strip()
     if not url:
@@ -4628,9 +4653,12 @@ def cockpit_skill_run(request):
     if denied:
         return denied
     body = _parse_json(request)
-    skill = agent_skills.get_skill(body.get('name'))
+    name = body.get('name')
+    skill = agent_skills.get_skill(name)
     if not skill:
         return err('技能不存在', 404)
+    if not agent_skills.skill_enabled(name):
+        return err('该技能未启用（联网检索功能已关闭）', 403, 403)
     try:
         res = skill['handler'](request, body.get('args') or {})
     except Exception as ex:
