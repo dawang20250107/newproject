@@ -32,6 +32,7 @@ urlpatterns = [
     path('batches/upload', views.batch_upload),
     path('batches/submission-status', views.batch_submission_status),
     path('batches/<int:bid>/publish', views.batch_publish),
+    path('batches/<int:bid>/unpublish', views.batch_unpublish),
     path('batches/<int:bid>', views.batch_detail),
 
     # 项目毛利（业财融合）

@@ -118,6 +118,32 @@ async function loadBatches() {
 // 紧凑日期时间（月日 时:分）
 const fmtDt = (s) => fmtDateTime(s)
 
+// 批次按事业部归类（组内按 期间新→旧、类型 排序；组按事业部固定顺序）
+const batchGroups = computed(() => {
+  const map = {}
+  for (const b of batches.value) (map[b.business_unit] = map[b.business_unit] || []).push(b)
+  const order = [...BUSINESS_UNITS]
+  return Object.keys(map)
+    .sort((a, b) => ((order.indexOf(a) + 1) || 99) - ((order.indexOf(b) + 1) || 99))
+    .map(bu => {
+      const rows = map[bu].sort((x, y) =>
+        (y.year - x.year) || (y.month - x.month) || x.batch_type.localeCompare(y.batch_type))
+      return { bu, rows, published: rows.filter(r => r.status === 'published').length }
+    })
+})
+
+async function doUnpublish(batch) {
+  if (!(await confirmDlg(
+    `撤回「${batch.business_unit} ${batch.year}年${batch.month}月」的发布？\n撤回后报表/驾驶舱立即不再显示该期间数据（重新发布即恢复）；撤回的草稿可以删除。`))) return
+  try {
+    const res = await api.put(`/batches/${batch.id}/unpublish`)
+    const i = batches.value.findIndex(b => b.id === batch.id)
+    if (i >= 0) batches.value[i] = res.data
+    toast.success('已撤回发布，批次回到草稿状态')
+    await loadSubmissionStatus()
+  } catch (e) { toast.error(e?.msg || e?.error || '撤回失败') }
+}
+
 async function doDelete(batch) {
   const msg = batch.status === 'published'
     ? `确认删除已发布批次「${batch.business_unit} ${batch.year}年${batch.month}月 部门明细表」？\n删除后报表和图表将不再包含这部分数据。`
@@ -344,11 +370,14 @@ onMounted(() => {
         <div style="font-size:12px;color:var(--muted);margin-top:6px">上传金蝶导出的部门明细表，或使用KXT模板手动填报</div>
       </div>
       <div v-else class="batch-list">
-        <div v-for="b in batches" :key="b.id" class="batch-row" @contextmenu.prevent="ctx.open($event, b)">
+        <template v-for="g in batchGroups" :key="g.bu">
+        <div class="bu-group-head">
+          <strong>{{ g.bu }}</strong>
+          <span class="bu-group-n">{{ g.rows.length }} 批 · 已发布 {{ g.published }}</span>
+        </div>
+        <div v-for="b in g.rows" :key="b.id" class="batch-row" @contextmenu.prevent="ctx.open($event, b)">
           <!-- 状态灯：红灯=未提交(草稿)，绿灯=已提交(已发布) -->
           <span class="light-dot" :class="batchLight(b).cls" :title="batchLight(b).label"></span>
-          <!-- 事业部 -->
-          <strong class="br-bu">{{ b.business_unit }}</strong>
           <!-- 状态文字 -->
           <span class="br-status" :class="b.status === 'published' ? 'st-ok' : 'st-no'">{{ batchLight(b).label }}</span>
           <!-- 次要信息：年月 · 类型 · 行数 -->
@@ -358,11 +387,14 @@ onMounted(() => {
           <!-- 操作（紧凑） -->
           <span class="br-actions">
             <button v-if="b.status === 'draft' && auth.canPublish" class="btn btn-ghost btn-sm" @click="doPublish(b.id)">发布</button>
+            <button v-if="b.status === 'published' && auth.canPublish" class="btn btn-ghost btn-sm"
+              title="撤回后报表不再显示该期间数据，批次回到草稿可删除" @click="doUnpublish(b)">撤回</button>
             <button v-if="b.status === 'published' && auth.canUpload" class="btn btn-ghost btn-sm" @click="openReplace(b)">替换</button>
-            <button v-if="auth.canDelete" class="btn btn-danger btn-sm" @click="doDelete(b)">删除</button>
-            <span v-if="b.status === 'published' && !auth.canUpload && !auth.canDelete" style="color:var(--muted);font-size:12px">—</span>
+            <button v-if="auth.canDelete && (b.status === 'draft' || auth.isAdmin)" class="btn btn-danger btn-sm"
+              :title="b.status === 'published' ? '超管强删；常规路径：先撤回再删除' : ''" @click="doDelete(b)">删除</button>
           </span>
         </div>
+        </template>
       </div>
     </div>
 
@@ -692,6 +724,12 @@ td.amt, th.amt { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ── 导入批次：紧凑行 ───────────────────────────────────────────────────── */
 .batch-list { display: flex; flex-direction: column; }
+.bu-group-head {
+  display: flex; align-items: baseline; gap: 10px; padding: 10px 4px 5px;
+  border-bottom: 1px solid rgba(201, 99, 66, 0.15); margin-bottom: 2px;
+}
+.bu-group-head strong { font-size: 13px; color: var(--primary); letter-spacing: 0.02em; }
+.bu-group-n { font-size: 11px; color: var(--muted); }
 .batch-row {
   display: flex; align-items: center; gap: 10px;
   padding: 7px 4px; border-bottom: 1px solid var(--border);

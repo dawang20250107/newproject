@@ -1492,6 +1492,31 @@ def batch_publish(request, bid):
 
 
 @cw_required()
+def batch_unpublish(request, bid):
+    """PUT — 撤回发布：published → draft。报表/驾驶舱立即不再引用该批次数据，
+    直到重新发布；撤回后的草稿可被删除（发布-撤回-删除 流程闭环）。"""
+    if request.method != 'PUT':
+        return err('方法不允许', 405)
+    if not _can_publish(request):
+        return err('权限不足', 403)
+    with transaction.atomic(using='default'):
+        try:
+            batch = ImportBatch.objects.select_for_update().get(id=bid)
+        except ImportBatch.DoesNotExist:
+            return err('批次不存在', 404)
+        if not _can_access_bu(request, batch.business_unit):
+            return err('您无权操作该事业部数据', 403)
+        if batch.status != ImportBatch.STATUS_PUBLISHED:
+            return err('该批次未发布，无需撤回')
+        batch.status = ImportBatch.STATUS_DRAFT
+        batch.published_at = None
+        batch.save(update_fields=['status', 'published_at'])
+    logger.info('batch-unpublish uid=%s bid=%s bu=%s %s-%s', request.pk_uid, bid,
+                batch.business_unit, batch.year, batch.month)
+    return ok(batch.to_dict())
+
+
+@cw_required()
 def batch_detail(request, bid):
     try:
         batch = ImportBatch.objects.get(id=bid)
