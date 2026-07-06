@@ -3758,9 +3758,10 @@ def _cockpit_chat_prepare(request):
 @cw_required()
 def cockpit_ai_chat_stream(request):
     """POST /cockpit/ai-chat/stream — 业财融合经营问答（多轮对话，SSE 流式，工具调用循环）。
-    工具调用需走 DEEPSEEK_MODEL（支持 tools 的对话模型），DEEPSEEK_PRO_MODEL（如
-    deepseek-reasoner）不支持 function-calling，故不在此循环中使用，仅供其它无需
-    调用工具的单次分析端点（如群组经营分析）使用。
+    默认以 DEEPSEEK_AGENT_MODEL（缺省=PRO 模型）驱动工具调用与作答：DeepSeek V3.1
+    起 reasoner/思考模式已支持 function-calling，用最强推理跑多步取数与综合。
+    若所连端点在该模型上不支持 tools（首个 token 前报错），自动降级到
+    DEEPSEEK_FALLBACK_MODEL（支持 tools 的基础对话模型）保证可用性。
     入参：{year, month, bu, messages:[{role,content}...]}（末条为用户提问）。"""
     if request.method != 'POST':
         return err('方法不允许', 405)
@@ -3772,7 +3773,7 @@ def cockpit_ai_chat_stream(request):
         return e
     messages, scope = prep
     from caiwu import agent_skills
-    tool_model = settings.DEEPSEEK_MODEL   # function-calling 走支持 tools 的对话模型
+    tool_model = settings.DEEPSEEK_AGENT_MODEL   # 默认 PRO 模型驱动 function-calling
 
     def gen():
         import time

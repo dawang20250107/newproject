@@ -17,7 +17,12 @@ DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
 # 更强的模型，用于「财务驾驶舱」全集团高度的综合分析（推理量更大）。
 # 生产可经环境变量切到 V4 Pro 等更强模型，如 DEEPSEEK_PRO_MODEL=deepseek-reasoner。
 DEEPSEEK_PRO_MODEL = os.environ.get('DEEPSEEK_PRO_MODEL', 'deepseek-reasoner')
-# 主模型异常（超时/限流）时的降级模型：默认退回基础对话模型，保证助手可用性。
+# 业财融合助手工具调用循环所用模型：默认走 PRO 模型（DeepSeek V3.1 起 reasoner/
+# 思考模式已支持 function-calling），让助手以最强推理驱动多步取数与作答。
+# 若某部署所连端点在该模型上不支持 tools，会自动降级到 DEEPSEEK_FALLBACK_MODEL。
+DEEPSEEK_AGENT_MODEL = os.environ.get('DEEPSEEK_AGENT_MODEL', '') or DEEPSEEK_PRO_MODEL
+# 主模型异常（超时/限流/不支持 tools）时的降级模型：默认退回支持 tools 的基础
+# 对话模型，保证助手可用性。
 DEEPSEEK_FALLBACK_MODEL = os.environ.get('DEEPSEEK_FALLBACK_MODEL', 'deepseek-chat')
 DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1'
 

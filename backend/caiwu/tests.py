@@ -804,6 +804,12 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.assertEqual(types[-1], 'done')
         answer = ''.join(e['delta'] for e in events if e['type'] == 'answer')
         self.assertEqual(answer, '根据数据，本月利润达标。')
+        # 工具调用循环默认以 PRO（Agent）模型驱动，用最强推理干大活
+        self.assertEqual(captured['model'], settings.DEEPSEEK_AGENT_MODEL)
+        self.assertEqual(settings.DEEPSEEK_AGENT_MODEL, settings.DEEPSEEK_PRO_MODEL)
+        # meta 事件回报的模型与实际调用一致，前端可展示
+        meta = next(e for e in events if e['type'] == 'meta')
+        self.assertEqual(meta['model'], settings.DEEPSEEK_AGENT_MODEL)
         # 含 system 人设 + 数据上下文 + 完整对话历史（末条为用户提问）
         msgs = captured['messages']
         self.assertEqual(msgs[0]['role'], 'system')
@@ -1042,6 +1048,38 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         events = [json.loads(fr[5:].strip()) for fr in body.split('\n\n') if fr.strip().startswith('data:')]
         answer = ''.join(e['delta'] for e in events if e['type'] == 'answer')
         self.assertTrue(answer)   # 兜底提示非空
+        self.assertEqual(events[-1]['type'], 'done')
+
+    def test_chat_stream_falls_back_when_primary_rejects_tools(self):
+        """PRO 模型在首个 token 前失败（如某端点该模型不支持 tools）→ 自动降级到
+        DEEPSEEK_FALLBACK_MODEL 重试并正常作答，助手不整体报错。"""
+        from unittest import mock
+        from django.conf import settings
+        self.mk(2026, 5, 200, 130)
+        seen = {'models': []}
+
+        def fake_stream_raw(messages, tools=None, model=None, timeout=120, max_tokens=2000, **kw):
+            seen['models'].append(model)
+            if model == settings.DEEPSEEK_AGENT_MODEL:
+                raise RuntimeError('该模型不支持 tools（400）')
+            yield ('answer', '已降级作答：本月利润达标。')
+            yield ('final', {'content': '已降级作答：本月利润达标。', 'tool_calls': None})
+
+        with mock.patch('caiwu.views._deepseek_stream_raw', fake_stream_raw):
+            resp = self.client.post(
+                '/api/cw/cockpit/ai-chat/stream',
+                data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu,
+                                 'messages': [{'role': 'user', 'content': '利润如何'}]}),
+                content_type='application/json', **self.auth())
+            body = b''.join(resp.streaming_content).decode('utf-8')
+        events = [json.loads(fr[5:].strip()) for fr in body.split('\n\n') if fr.strip().startswith('data:')]
+        # 先试 PRO 模型，失败后降级到 FALLBACK 模型
+        self.assertEqual(seen['models'][0], settings.DEEPSEEK_AGENT_MODEL)
+        self.assertIn(settings.DEEPSEEK_FALLBACK_MODEL, seen['models'])
+        # 回报一个 fallback meta 事件，前端可提示已降级
+        self.assertTrue(any(e['type'] == 'meta' and e.get('fallback') for e in events))
+        answer = ''.join(e['delta'] for e in events if e['type'] == 'answer')
+        self.assertIn('本月利润达标', answer)
         self.assertEqual(events[-1]['type'], 'done')
 
     def test_agent_skills_list_and_run(self):
