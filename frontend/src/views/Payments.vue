@@ -663,6 +663,7 @@ async function load() {
     items.value = res.data.items
     total.value = res.data.total
     resetAnchor()   // 数据集已更换：清 Shift 区间锚点，防旧锚点区间选错行
+    rangeSel.clear()   // 同时清单元格选区：旧矩形坐标在新数据上会复制错行
     loading.value = false
     loadSummary()
     // 轻量列表不含明细：为仍展开的行补拉分批/分期明细，保持展开态内容正确

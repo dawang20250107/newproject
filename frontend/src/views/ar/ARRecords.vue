@@ -80,19 +80,32 @@ const delConfirmText = ref('')
 const delConfirmCount = ref(0)
 const delConfirmOk = computed(() => delConfirmText.value.trim() === String(delConfirmCount.value))
 const pageAllSelected = computed(() =>
-  items.value.length > 0 && items.value.every(r => selectedIds.value.has(r.id)))
+  items.value.length > 0 && (selectAllMatching.value
+    || items.value.every(r => selectedIds.value.has(r.id))))
 const selectedCount = computed(() => selectAllMatching.value ? total.value : selectedIds.value.size)
 const hasSelection = computed(() => selectAllMatching.value || selectedIds.value.size > 0)
 function toggleRow(id) {
   const s = new Set(selectedIds.value)
-  if (s.has(id)) { s.delete(id); selectAllMatching.value = false } else s.add(id)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
   selectedIds.value = s
 }
-// Excel 式 Shift 区间勾选（系统级复用）；区间选择也退出「跨页全选」态
-const { onRowSelClick, resetAnchor } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow, onManual: () => { selectAllMatching.value = false } })
-function toggleSelectPage() {
+// 跨页全选态下的任何手动改选：退出全选并把本页勾选落地，之后按真实集合精修。
+// 修复：全选态翻页后行不在 selectedIds 中，点击勾选框绑定值不变、视觉无反应。
+function exitSelectAllToPage() {
+  if (!selectAllMatching.value) return
+  selectAllMatching.value = false
   const s = new Set(selectedIds.value)
-  if (pageAllSelected.value) { items.value.forEach(r => s.delete(r.id)); selectAllMatching.value = false }
+  items.value.forEach(r => s.add(r.id))
+  selectedIds.value = s
+  toast.success('已退出「跨页全选」，改为手动勾选（本页已保留）')
+}
+// Excel 式 Shift 区间勾选（系统级复用）；任意手动改选先退出「跨页全选」态
+const { onRowSelClick, resetAnchor } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow, onManual: exitSelectAllToPage })
+function toggleSelectPage() {
+  exitSelectAllToPage()
+  const s = new Set(selectedIds.value)
+  if (pageAllSelected.value) items.value.forEach(r => s.delete(r.id))
   else items.value.forEach(r => s.add(r.id))
   selectedIds.value = s
 }

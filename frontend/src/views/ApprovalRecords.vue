@@ -481,7 +481,7 @@ async function load(){
   const sig = listLane.signal()
   try{
     const r=await api.get('/approvals',{params:buildParams(), signal: sig})
-    items.value=r.data.items; total.value=r.data.total; resetAnchor()
+    items.value=r.data.items; total.value=r.data.total; resetAnchor(); rangeSel.clear()
     totalAmount.value=r.data.total_amount || 0; totalScheduled.value=r.data.total_scheduled || 0
     totalRemaining.value=r.data.total_remaining || 0
     loading.value=false

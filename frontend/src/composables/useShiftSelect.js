@@ -10,9 +10,12 @@
 export function useShiftSelect({ items, selectedIds, toggleSingle, onManual }) {
   let lastIdx = null
   function onRowSelClick(e, idx, id) {
+    // 任意手动改选（单击或区间）都先触发 onManual——各表借此退出「跨页全选」态
+    // 并把本页勾选落地进 selectedIds，之后的切换全部基于真实集合，
+    // 视觉勾选态与内部状态才能保持一致（修复：全选态翻页后勾选框点击无反应）。
+    if (onManual) onManual()
     const list = (items && items.value) || []
     if (e.shiftKey && lastIdx !== null && lastIdx < list.length) {
-      if (onManual) onManual()
       const a = Math.min(lastIdx, idx), b = Math.max(lastIdx, idx)
       const turnOn = !selectedIds.value.has(id)   // 目标状态：当前行未选则整段选中，否则整段取消
       const s = new Set(selectedIds.value)

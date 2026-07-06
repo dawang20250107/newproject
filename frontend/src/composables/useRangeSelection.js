@@ -128,6 +128,11 @@ export function useRangeSelection(opts = {}) {
 
   function onKeyDown(e) {
     if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
+      // 焦点在输入控件里时绝不接管：Chromium 下 input/textarea 内部选区
+      // 不体现在 window.getSelection()，否则残留的单元格选区会劫持用户
+      // 在筛选框里的 Ctrl+C，把剪贴板覆盖成表格数据
+      const ae = document.activeElement
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return
       // 仅当有区域选区、且当前没有原生文本选择时才接管
       if (anchor && focus && (cellCount() > 1) && !window.getSelection()?.toString()) {
         copy()

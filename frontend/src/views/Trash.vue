@@ -186,7 +186,7 @@ function fmtDate(s) {
         <table class="trash-tbl">
           <thead>
             <tr>
-              <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="allAcross && total > items.length" @change="toggleAll"/></th>
+              <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="selectedIds.size > 0 && !pageAllSelected" @change="toggleAll"/></th>
               <th v-if="activeTab === 'approvals'">申请人</th>
               <th>部门</th>
               <th v-if="activeTab === 'approvals'">审批编号</th>
