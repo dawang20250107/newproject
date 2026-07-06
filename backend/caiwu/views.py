@@ -3397,6 +3397,78 @@ _COCKPIT_CHAT_SYSTEM = (
 )
 
 
+def _build_payment_summary(bus, year, month):
+    """业财融合「资金支出」侧（排款管理系统）：本期计划付款/实付/待付 + 状态与事业部分布
+    + 待付 Top + 审批侧待办。按事业部作用域、排除回收站；口径与付款管理列表一致
+    （待付=计划−已付−预付核销冲抵）。最佳努力，异常或无数据返回空串。"""
+    try:
+        from decimal import Decimal as _D
+        from paikuan.models import Payment, PaymentInstallment, ApprovalRecord
+        # 本期计划付款：计划付款日期落在本月、未软删、事业部在作用域内
+        pays = list(Payment.objects.filter(
+            deleted_at__isnull=True, department__in=bus,
+            planned_date__year=year, planned_date__month=month
+        ).prefetch_related('installments'))
+        # 本月实付（按实付日期归属本月），事业部作用域、排除回收站付款
+        insts = PaymentInstallment.objects.filter(
+            payment__deleted_at__isnull=True, payment__department__in=bus,
+            pay_date__year=year, pay_date__month=month)
+        paid_this_month = insts.aggregate(s=Sum('pay_amount'))['s'] or _D('0')
+        paid_cnt = insts.count()
+        # 审批侧待办（当前快照，不限本月）
+        appr = ApprovalRecord.objects.filter(deleted_at__isnull=True, department__in=bus)
+        pending_appr = appr.filter(status='pending').count()
+        pending_appr_amt = appr.filter(status='pending').aggregate(s=Sum('amount'))['s'] or _D('0')
+        to_schedule = appr.filter(status='approved', archived=False)
+        to_schedule_cnt = to_schedule.count()
+
+        if not pays and not paid_cnt and not pending_appr and not to_schedule_cnt:
+            return ''
+
+        plan_total = sum((p.total_amount for p in pays), _D('0'))
+        paid_total = sum((p.total_paid for p in pays), _D('0'))
+        remain_total = sum((p.remaining for p in pays), _D('0'))
+        offset_total = sum((p.prepaid_offset_amount or _D('0') for p in pays), _D('0'))
+        st = {'settled': 0, 'partial': 0, 'pending': 0, 'adjusted': 0}
+        for p in pays:
+            st[p.status] = st.get(p.status, 0) + 1
+
+        lines = ['【排款付款（资金支出侧，排款管理系统，本期=计划付款日期落在本月）】']
+        lines.append(
+            f'  本期计划付款：{_fmt_wan(plan_total)}（{len(pays)}笔）；'
+            f'已付{_fmt_wan(paid_total)}；预付核销冲抵{_fmt_wan(offset_total)}；'
+            f'待付{_fmt_wan(remain_total)}')
+        lines.append(
+            f'  付款状态分布：已结清{st["settled"]}笔、部分付{st["partial"]}笔、'
+            f'未付{st["pending"]}笔、计划调整{st["adjusted"]}笔')
+        lines.append(f'  本月实际付款（按付款日期）：{_fmt_wan(paid_this_month)}（{paid_cnt}笔）')
+        # 各事业部计划/待付
+        if len(bus) > 1:
+            by_dept = {}
+            for p in pays:
+                d = by_dept.setdefault(p.department, [_D('0'), _D('0'), 0])
+                d[0] += p.total_amount
+                d[1] += p.remaining
+                d[2] += 1
+            if by_dept:
+                lines.append('  分事业部（计划/待付/笔数）：' + '；'.join(
+                    f'{d}:{_fmt_wan(v[0])}/{_fmt_wan(v[1])}/{v[2]}笔'
+                    for d, v in sorted(by_dept.items(), key=lambda kv: -kv[1][1])))
+        # 待付 Top（剩余最大、未付清）
+        top = sorted([p for p in pays if p.remaining > 0], key=lambda p: -p.remaining)[:5]
+        if top:
+            lines.append('  待付 Top：' + '；'.join(
+                f'{p.payee or p.project_short_name or p.approval_number or "—"}'
+                f'（{p.department}）待付{_fmt_wan(p.remaining)}' for p in top))
+        # 审批侧待办
+        lines.append(
+            f'  审批待办：待审批{pending_appr}笔（申请{_fmt_wan(pending_appr_amt)}）；'
+            f'已通过待排款{to_schedule_cnt}笔')
+        return '\n'.join(lines)
+    except Exception:
+        return ''
+
+
 def _build_ar_business_summary(bus, year, month):
     """业财融合「业」侧：应收未收 / 逾期账龄 / 本期回款（按交付部门）+ 逾期 Top 项目。
     最佳努力，异常或无数据返回空串。"""
@@ -3670,6 +3742,9 @@ def _build_cockpit_data_pack(year, month, bus, bu_rows, ov_m, ov_y, actuals):
     bf = _build_bf_fusion_summary(bus, year, month)
     if bf:
         parts += ['', bf]
+    pay = _build_payment_summary(bus, year, month)
+    if pay:
+        parts += ['', pay]
     return '\n'.join(parts)
 
 
@@ -3757,14 +3832,15 @@ def _cockpit_chat_prepare(request):
                          f'你具备以下可调用技能（function-calling）：{brief}。\n'
                          '工具路由策略：\n'
                          '· 先看上下文——【经营数据上下文】已含"当前期间×当前范围"的财报业绩、应收回款、'
-                         '项目毛利、业财归因四域数据；问的就是当前期间当前范围时，直接据此作答，无需调用任何'
-                         '工具。只有当问题超出这个"当前期间×当前范围"时才取数。\n'
+                         '项目毛利、业财归因、排款付款五域数据；问的就是当前期间当前范围时，直接据此作答，'
+                         '无需调用任何工具。只有当问题超出这个"当前期间×当前范围"时才取数。\n'
                          '· 选对技能（按语义精确匹配，别张冠李戴）：\n'
                          '  - 财报/财务报表/报表/经营业绩/收入·成本·利润/目标达成/同比环比/趋势 → query_financials\n'
                          '  - 应收/未收/回款/逾期/账龄 → query_receivables\n'
                          '  - 项目毛利/项目盈亏/亏损项目/Top项目 → query_project_margin\n'
                          '  - 业财归因/薄利/又薄又难收/优质项目分类 → query_bf_fusion\n'
                          '  - 全年落地预测/年化推全年/利润缺口/坏账风险 → query_forecast\n'
+                         '  - 排款/付款/待付/欠付/在审批/待排款/付款进度（资金支出侧） → query_payments\n'
                          '  跨期间/跨事业部对比可分多次调用逐步取齐再综合；切勿凭空臆测数字。\n'
                          '· 外部信息——涉及同行、行业、市场、政策等外部信息时：优先看知识库已沉淀的情报，'
                          '不足以回答就调用 web_search 搜索、必要时 web_fetch 细读来源，无需征求同意，'
@@ -4393,6 +4469,21 @@ def _skill_query_forecast(request, args):
     year, month, bus = _resolve_query_args(request, args)
     text = _build_forecast_summary(bus, year, month)
     return {'ok': True, 'data': text or '（该年度尚无已发布数据，无法做全年预测）'}
+
+
+@agent_skills.register_skill(
+    'query_payments', '查询排款付款',
+    '查询指定期间/事业部的资金支付链路（排款管理系统）：本期计划付款、实际付款、'
+    '待付/欠付、按状态与事业部分布、待付Top、以及审批侧待办（待审批、已通过待排款）。'
+    '用户问"排了多少款/付了多少/还有多少没付/多少在审批/待付大户"等资金支出问题时调用',
+    {'year': '年份（可选，默认当前对话期间）',
+     'month': '月份1-12（可选，默认当前对话期间）',
+     'bu': '事业部名称（可选，默认当前范围；无权访问将被忽略）'},
+    tool=True)
+def _skill_query_payments(request, args):
+    year, month, bus = _resolve_query_args(request, args)
+    text = _build_payment_summary(bus, year, month)
+    return {'ok': True, 'data': text or '（该期间/范围无排款付款数据）'}
 
 
 # ── 联网研究技能：参考同行 / 行业研判 ─────────────────────────────────────────

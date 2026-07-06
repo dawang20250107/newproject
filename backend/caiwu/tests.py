@@ -1195,6 +1195,45 @@ class CaiwuMetricsAndTargetsTests(TestCase):
             self.assertEqual(q.status_code, 200, q.content)
             self.assertIsInstance(q.json()['data'], str)
 
+    def test_query_payments_summarizes_cash_out_chain(self):
+        """新增取数：query_payments 覆盖排款管理系统（资金支出链路）——本期计划/实付/待付、
+        状态分布、审批待办，按事业部作用域，且注入当前期对话上下文。"""
+        from datetime import date as _date
+        from decimal import Decimal as _D
+        from paikuan.models import Payment, PaymentInstallment, ApprovalRecord
+        # 本期（2026-05）在本事业部排一笔 5000、已付 2000（部分付）
+        p = Payment.objects.create(
+            department=self.bu, applicant='张三', project_desc='采购付款',
+            payee='供应商A', total_amount=_D('5000'), planned_date=_date(2026, 5, 15))
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=_date(2026, 5, 20),
+                                          pay_amount=_D('2000'))
+        # 一笔待审批
+        ApprovalRecord.objects.create(
+            applicant='李四', department=self.bu, approval_number='9' * 21,
+            summary='采购', amount=_D('3000'), payee='供应商B', status='pending')
+        # 另一事业部的付款不应进入本事业部查询（作用域隔离）
+        Payment.objects.create(
+            department=BUSINESS_UNITS[2], applicant='王五', project_desc='越权',
+            payee='供应商C', total_amount=_D('9999'), planned_date=_date(2026, 5, 10))
+
+        r = self.client.post(
+            '/api/cw/cockpit/skills/run',
+            data=json.dumps({'name': 'query_payments',
+                             'args': {'year': 2026, 'month': 5, 'bu': self.bu}}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        text = r.json()['data']
+        self.assertIn('排款付款', text)
+        self.assertIn('本期计划付款', text)
+        self.assertIn('待付', text)
+        self.assertIn('审批待办', text)
+        self.assertIn('部分付', text)                 # 状态分布含部分付
+        self.assertNotIn('9999', text)                # 他部门金额不泄漏
+        # 该技能进入 function-calling 工具集与技能清单
+        names = [s['name'] for s in
+                 self.client.get('/api/cw/cockpit/skills', **self.auth()).json()['data']['skills']]
+        self.assertIn('query_payments', names)
+
     def test_query_financials_uses_gross_profit_caliber(self):
         """经营业绩取数以【经营毛利】为主口径（集团分析报告口径），净利作参考。"""
         self.mk(2026, 5, 200, 130)
