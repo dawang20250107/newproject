@@ -992,6 +992,58 @@ class CaiwuMetricsAndTargetsTests(TestCase):
                          ['本月', '利润', '达标。'])
         self.assertEqual(types[-1], 'done')
 
+    def test_chat_stream_max_steps_wraps_up_instead_of_aborting(self):
+        """工具调用循环用尽步数上限后不再直接吐出「处理步骤过多」中断，而是去掉 tools
+        强制模型基于已取数据收口作答；仅当收口调用本身也没有内容时才兜底提示。"""
+        from unittest import mock
+        self.mk(2026, 5, 200, 130)
+
+        def fake_stream_raw(messages, tools=None, model=None, timeout=120, max_tokens=2000, **kw):
+            if tools is None:
+                # 收口调用：不再挂 tools，模型只能总结作答
+                yield ('answer', '已根据已获取数据给出阶段性结论。')
+                yield ('final', {'content': '已根据已获取数据给出阶段性结论。', 'tool_calls': None})
+                return
+            yield ('final', {'content': '', 'tool_calls': [{'id': 'c1', 'function': {
+                'name': 'search_knowledge', 'arguments': '{"query":"x"}'}}]})
+
+        with mock.patch('caiwu.views._deepseek_stream_raw', fake_stream_raw):
+            resp = self.client.post(
+                '/api/cw/cockpit/ai-chat/stream',
+                data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu,
+                                 'messages': [{'role': 'user', 'content': '把近半年所有维度都分析一遍'}]}),
+                content_type='application/json', **self.auth())
+            body = b''.join(resp.streaming_content).decode('utf-8')
+        events = [json.loads(fr[5:].strip()) for fr in body.split('\n\n') if fr.strip().startswith('data:')]
+        answer = ''.join(e['delta'] for e in events if e['type'] == 'answer')
+        self.assertIn('已根据已获取数据给出阶段性结论', answer)
+        self.assertNotIn('处理步骤过多', answer)
+        self.assertEqual(events[-1]['type'], 'done')
+
+    def test_chat_stream_max_steps_fallback_when_wrapup_empty(self):
+        """收口调用也没能产出任何内容时，仍需给用户一个可读的兜底提示，而不是空响应。"""
+        from unittest import mock
+        self.mk(2026, 5, 200, 130)
+
+        def fake_stream_raw(messages, tools=None, model=None, timeout=120, max_tokens=2000, **kw):
+            if tools is None:
+                yield ('final', {'content': '', 'tool_calls': None})
+                return
+            yield ('final', {'content': '', 'tool_calls': [{'id': 'c1', 'function': {
+                'name': 'search_knowledge', 'arguments': '{"query":"x"}'}}]})
+
+        with mock.patch('caiwu.views._deepseek_stream_raw', fake_stream_raw):
+            resp = self.client.post(
+                '/api/cw/cockpit/ai-chat/stream',
+                data=json.dumps({'year': 2026, 'month': 5, 'bu': self.bu,
+                                 'messages': [{'role': 'user', 'content': '把近半年所有维度都分析一遍'}]}),
+                content_type='application/json', **self.auth())
+            body = b''.join(resp.streaming_content).decode('utf-8')
+        events = [json.loads(fr[5:].strip()) for fr in body.split('\n\n') if fr.strip().startswith('data:')]
+        answer = ''.join(e['delta'] for e in events if e['type'] == 'answer')
+        self.assertTrue(answer)   # 兜底提示非空
+        self.assertEqual(events[-1]['type'], 'done')
+
     def test_agent_skills_list_and_run(self):
         """Agent 技能：列表含基础技能，且可执行 写入/检索/清理 知识库。"""
         r = self.client.get('/api/cw/cockpit/skills', **self.auth())

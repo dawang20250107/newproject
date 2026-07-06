@@ -3757,7 +3757,10 @@ def _cockpit_chat_prepare(request):
 
 @cw_required()
 def cockpit_ai_chat_stream(request):
-    """POST /cockpit/ai-chat/stream — 业财融合经营问答（多轮对话，SSE 流式，PRO 模型）。
+    """POST /cockpit/ai-chat/stream — 业财融合经营问答（多轮对话，SSE 流式，工具调用循环）。
+    工具调用需走 DEEPSEEK_MODEL（支持 tools 的对话模型），DEEPSEEK_PRO_MODEL（如
+    deepseek-reasoner）不支持 function-calling，故不在此循环中使用，仅供其它无需
+    调用工具的单次分析端点（如群组经营分析）使用。
     入参：{year, month, bu, messages:[{role,content}...]}（末条为用户提问）。"""
     if request.method != 'POST':
         return err('方法不允许', 405)
@@ -3778,7 +3781,7 @@ def cockpit_ai_chat_stream(request):
         try:
             tools = agent_skills.agent_tools()
             convo = list(messages)
-            max_steps = 6   # 工具调用循环上限：支持「先查A期再查B期再综合」的跨期间多步取数
+            max_steps = 12   # 工具调用循环上限：支持「先查A期再查B期再综合」的跨期间多步取数
             for _step in range(max_steps):
                 # 真流式：边逐字推送 reasoning/answer，边累积 tool_calls。
                 # 韧性：主模型在吐出首个 token 前失败（超时/限流/网络）→ 自动降级
@@ -3852,7 +3855,27 @@ def cockpit_ai_chat_stream(request):
                 if terminal_done:
                     yield _sse_event({'type': 'done'})
                     return
-            yield _sse_event({'type': 'answer', 'delta': '（处理步骤过多，请把问题说得更具体些）'})
+            # 步数用尽仍未收敛：不直接中断，强制模型基于已取数据收口给出结论
+            # （不再挂 tools，模型无法再发起工具调用，只能总结作答）。
+            convo.append({'role': 'user',
+                          'content': '已达到本轮工具调用上限，请直接基于以上已获取的数据给出当前能得出的结论，'
+                                     '并说明还有哪些信息未能取到、建议如何补充提问。'})
+            wrapup_content = ''
+            try:
+                for kind, payload in _deepseek_stream_raw(convo, tools=None, model=tool_model,
+                                                          timeout=120, max_tokens=1500,
+                                                          kind='chat'):
+                    if kind == 'final':
+                        wrapup_content = (payload or {}).get('content') or ''
+                        break
+                    if kind == 'answer':
+                        wrapup_content += payload
+                    yield _sse_event({'type': kind, 'delta': payload})
+            except Exception as wrapup_ex:
+                logger.warning('agent wrap-up call failed: %s', str(wrapup_ex)[:120])
+            if not wrapup_content:
+                yield _sse_event({'type': 'answer',
+                                  'delta': '（处理步骤较多，已取数据不足以给出结论，请把问题拆分得更具体些）'})
             yield _sse_event({'type': 'done'})
         except Exception as ex:
             logger.error(f'Cockpit chat stream error: {ex}')
