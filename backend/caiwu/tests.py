@@ -1209,34 +1209,41 @@ class CaiwuMetricsAndTargetsTests(TestCase):
         self.assertIn('经营毛利为主', text)                   # 概览抬头点明口径
         self.assertIn('收入/经营毛利', text)                  # 12月趋势按毛利口径
 
-    def test_web_research_disabled_by_default(self):
-        """未配置搜索 Key 时联网检索默认关闭：三项联网技能不对外暴露、不可经入口执行，
-        非联网技能不受影响。"""
+    def test_web_search_always_on_peer_research_gated_off_by_default(self):
+        """联网检索（web_search/web_fetch）常开，供行业趋势等外部信息查询；
+        同行"一键调研"（peer_research）默认关闭，不暴露、不可经入口执行。"""
         self.mk(2026, 5, 200, 130)
         names = [s['name'] for s in
                  self.client.get('/api/cw/cockpit/skills', **self.auth()).json()['data']['skills']]
-        for n in ('web_search', 'peer_research', 'web_fetch'):
-            self.assertNotIn(n, names)
-        # 非联网技能仍在
-        self.assertIn('query_financials', names)
-        self.assertIn('save_knowledge', names)
-        # 统一入口拒绝执行被门控的联网技能
-        run = self.client.post(
+        # 常规联网技能始终可用
+        self.assertIn('web_search', names)
+        self.assertIn('web_fetch', names)
+        # 同行一键调研默认关闭
+        self.assertNotIn('peer_research', names)
+        # 统一入口：常规联网技能可执行，peer_research 被拒
+        from unittest import mock
+        with mock.patch('caiwu.views._bing_search', return_value=[]):
+            ok_run = self.client.post(
+                '/api/cw/cockpit/skills/run',
+                data=json.dumps({'name': 'web_search', 'args': {'query': '物流行业趋势'}}),
+                content_type='application/json', **self.auth())
+        self.assertEqual(ok_run.status_code, 200, ok_run.content)
+        pr = self.client.post(
             '/api/cw/cockpit/skills/run',
-            data=json.dumps({'name': 'web_search', 'args': {'query': '物流行业'}}),
+            data=json.dumps({'name': 'peer_research', 'args': {'topic': '公路货运'}}),
             content_type='application/json', **self.auth())
-        self.assertEqual(run.status_code, 403, run.content)
+        self.assertEqual(pr.status_code, 403, pr.content)
 
-    @override_settings(ENABLE_WEB_RESEARCH=True)
-    def test_web_research_exposed_when_enabled(self):
-        """显式开启联网检索后，三项联网技能重新对外暴露并可执行。"""
+    @override_settings(ENABLE_PEER_RESEARCH=True)
+    def test_peer_research_exposed_when_enabled(self):
+        """显式开启后，同行一键调研重新对外暴露并进入 function-calling 工具集。"""
         self.mk(2026, 5, 200, 130)
         names = [s['name'] for s in
                  self.client.get('/api/cw/cockpit/skills', **self.auth()).json()['data']['skills']]
-        for n in ('web_search', 'peer_research', 'web_fetch'):
-            self.assertIn(n, names)
+        self.assertIn('peer_research', names)
         from caiwu import agent_skills
         tool_names = [t['function']['name'] for t in agent_skills.agent_tools()]
+        self.assertIn('peer_research', tool_names)
         self.assertIn('web_search', tool_names)
 
     def test_chat_multi_step_tool_calls(self):

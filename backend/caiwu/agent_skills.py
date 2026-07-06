@@ -33,12 +33,12 @@ def register_skill(name, label, desc, params=None, tool=False, terminal=False,
 
 
 def _gate_open(gate):
-    """技能门控判定：无门控恒开；'web' 门控随 settings.ENABLE_WEB_RESEARCH 开合。"""
+    """技能门控判定：无门控恒开；'peer_research' 门控随 settings.ENABLE_PEER_RESEARCH 开合。"""
     if not gate:
         return True
     from django.conf import settings
-    if gate == 'web':
-        return bool(getattr(settings, 'ENABLE_WEB_RESEARCH', False))
+    if gate == 'peer_research':
+        return bool(getattr(settings, 'ENABLE_PEER_RESEARCH', False))
     return True
 
 

@@ -30,17 +30,12 @@ DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1'
 # SEARCH_PROVIDER: 'bocha'（博查，国内直连）或 'serper'（Google via serper.dev）
 SEARCH_PROVIDER = os.environ.get('SEARCH_PROVIDER', '')
 SEARCH_API_KEY = os.environ.get('SEARCH_API_KEY', '')
-# 联网检索/同行调研总开关：控制助手是否暴露 web_search/web_fetch/peer_research 三项
-# 联网技能并对外声称具备联网能力。缺省仅在配置了搜索 Key 时开启；未配置即关闭，
-# 避免"没配 Key 却弹出调研/联网却取不到数"。可用 ENABLE_WEB_RESEARCH=1 在内置必应
-# 抓取可用的环境强制开启，或 =0 强制关闭。
-_web_flag = os.environ.get('ENABLE_WEB_RESEARCH', '').strip().lower()
-if _web_flag in ('1', 'true', 'yes', 'on'):
-    ENABLE_WEB_RESEARCH = True
-elif _web_flag in ('0', 'false', 'no', 'off'):
-    ENABLE_WEB_RESEARCH = False
-else:
-    ENABLE_WEB_RESEARCH = bool(SEARCH_API_KEY)   # 缺省：配了搜索 Key 才开
+# 联网检索：web_search / web_fetch 常开（内置必应中国抓取，无需 Key），用于行业趋势、
+# 政策、同行财报等外部信息的即时查询——正常经营问答需要联网时开箱即用。
+# 同行"一键调研"流水线（peer_research：搜索→读源→AI 提炼→查重→自动沉淀知识库）是
+# 可选的重功能，默认关闭；需要时置 ENABLE_PEER_RESEARCH=1 开启。
+ENABLE_PEER_RESEARCH = (os.environ.get('ENABLE_PEER_RESEARCH', '').strip().lower()
+                        in ('1', 'true', 'yes', 'on'))
 
 # ── AI Token 成本控制 ─────────────────────────────────────────────────────────
 # 全组织每日 token 预算（输入+输出合计）：达到后当日 AI 功能暂停、次日自动恢复；

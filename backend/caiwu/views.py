@@ -3095,8 +3095,6 @@ def cockpit(request):
         'overview': overview,
         'bus': bu_rows,
         'trend': trend,
-        # 联网检索总开关：供前端决定是否展示"行业/同行调研"类建议问题
-        'web_research': bool(getattr(settings, 'ENABLE_WEB_RESEARCH', False)),
     })
 
 
@@ -3754,17 +3752,7 @@ def _cockpit_chat_prepare(request):
         messages.append({'role': 'system', 'content': history_brief})
     from caiwu import agent_skills
     brief = agent_skills.skills_brief()
-    web_on = bool(getattr(settings, 'ENABLE_WEB_RESEARCH', False))
     if brief:
-        ext_line = (
-            '· 外部信息——涉及同行、行业、市场、政策的问题：优先看知识库中已沉淀的行业'
-            '情报；不足以回答时自动调用 peer_research（用户要求调研/系统性了解某行业时）'
-            '或 web_search+web_fetch（查单个具体事实时），无需征求同意，联网开箱即用。\n'
-            if web_on else
-            '· 外部信息——本环境未开启联网检索：涉及同行/行业/市场/政策等外部信息时，'
-            '只依据知识库已沉淀的情报作答；知识库也没有就如实说明"当前无法联网获取、'
-            '建议线下补充"，切勿臆造外部数字或编造来源，也不要声称能联网或去调研。\n'
-        )
         messages.append({'role': 'system', 'content':
                          f'你具备以下可调用技能（function-calling）：{brief}。\n'
                          '工具路由策略：\n'
@@ -3778,7 +3766,9 @@ def _cockpit_chat_prepare(request):
                          '  - 业财归因/薄利/又薄又难收/优质项目分类 → query_bf_fusion\n'
                          '  - 全年落地预测/年化推全年/利润缺口/坏账风险 → query_forecast\n'
                          '  跨期间/跨事业部对比可分多次调用逐步取齐再综合；切勿凭空臆测数字。\n'
-                         + ext_line +
+                         '· 外部信息——涉及同行、行业、市场、政策等外部信息时：优先看知识库已沉淀的情报，'
+                         '不足以回答就调用 web_search 搜索、必要时 web_fetch 细读来源，无需征求同意，'
+                         '联网开箱即用；引用外部信息务必标注来源与时间，取不到再如实说明、不臆造。\n'
                          '· 沉淀——用户要"报告/完整分析报告"用 generate_report；有留存价值的结论用 save_knowledge。\n'
                          '· 收口——取到数据后必须给出完整成文的分析与结论，不要只抛数据或半途停笔；'
                          '内容较长时一次写完，不要自行截断。\n'
@@ -4476,7 +4466,7 @@ def _web_search_provider(query, count=6):
     '搜索互联网获取外部信息：同行/竞对动态、行业数据、政策法规、市场行情。'
     '仅在内部数据无法回答（需要外部信息）时调用；结果需在回答中标注来源',
     {'query': '搜索关键词(必填)，用中文，聚焦一个主题'},
-    tool=True, gate='web')
+    tool=True)
 def _skill_web_search(request, args):
     q = (args.get('query') or '').strip()[:120]
     if not q:
@@ -4528,7 +4518,7 @@ def _html_to_text(html):
     '当用户要求"调研同行/行业/市场"或"了解一下XX行业最新情况"时调用；'
     '完成后基于沉淀的情报作答',
     {'topic': '调研主题(必填)，如「网络货运行业最新政策与运价趋势」'},
-    tool=True, gate='web')
+    tool=True, gate='peer_research')
 def _skill_peer_research(request, args):
     topic = (args.get('topic') or '').strip()[:80]
     if not topic:
@@ -4549,7 +4539,7 @@ def _skill_peer_research(request, args):
     'web_fetch', '抓取网页',
     '抓取一个网页并提取正文文本（用于细读 web_search 找到的来源，如同行财报、行业报告）',
     {'url': '网页地址(必填)，须为 web_search 结果中的链接'},
-    tool=True, gate='web')
+    tool=True)
 def _skill_web_fetch(request, args):
     url = (args.get('url') or '').strip()
     if not url:
