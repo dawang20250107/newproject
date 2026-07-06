@@ -2016,13 +2016,11 @@ def payment_detail(request, pk):
         if p.prepaid_offsets.exists():
             return err('该排款已关联预付核销，不能直接删除；'
                        '请先到「预收预付」删除对应核销记录后再删本排款', 409, 409)
-        # 已有实付分期的排款不可整单退回/删除——实付是真实现金事件，整删会连同实付
-        # 一起消失（台账/流水/现金流失真）。多批排款请按批次勾选退回未付部分；
-        # 确需作废整条时先在编辑弹窗删除全部付款明细。
-        if p.installments.exists():
+        force = request.GET.get('force') == '1'
+        if p.installments.exists() and not force:
             n = p.installments.count()
             return err(f'该排款已有 {n} 笔实付合计 {p.total_paid} 元，不能整单退回/删除；'
-                       f'请退回未支付的计划批次（部分退回），或先删除全部付款明细', 409, 409)
+                       f'如需强制删除（进回收站可还原），请确认强制操作', 409, 409)
         approval_id = p.approval_id
         with transaction.atomic():
             _record_payment_changes(p, {}, {}, request, action='delete')
@@ -2651,6 +2649,7 @@ def approval_records_bulk_delete(request):
         if not perms.get('can_delete'):
             return err('无删除权限', 403, 403)
     body = parse_body(request)
+    force = bool(body.get('force'))
     ids = body.get('ids') or []
     if not isinstance(ids, list) or not ids:
         return err('请提供要删除的记录 ids')
@@ -2668,9 +2667,28 @@ def approval_records_bulk_delete(request):
         if not can_write_dept(request, rec.department):
             skipped.append({'id': rec.id, 'reason': '无权操作该部门'})
             continue
-        # 仅「在册（未软删）付款」阻止软删审批；付款已在回收站则允许审批一并进回收站。
-        if rec.payments.filter(deleted_at__isnull=True).exists():
-            skipped.append({'id': rec.id, 'reason': '已关联付款管理（已排款），不能删除；请先在付款管理删除对应排款'})
+        active_payments = list(rec.payments.filter(deleted_at__isnull=True))
+        if active_payments:
+            if not force:
+                skipped.append({'id': rec.id, 'has_payments': True,
+                                'reason': '已关联付款管理（已排款），不能删除；'
+                                          '如需强制删除（连同排款一并进回收站可还原），请确认强制操作'})
+                continue
+            if any(p.prepaid_offsets.exists() for p in active_payments):
+                skipped.append({'id': rec.id,
+                                'reason': '关联排款存在预付核销，不能强制删除；请先撤销核销'})
+                continue
+            with transaction.atomic():
+                for p in active_payments:
+                    _record_payment_changes(p, {}, {}, request, action='delete')
+                    p.deleted_at = now
+                    p.deleted_by = actor
+                    p.save(update_fields=['deleted_at', 'deleted_by'])
+                _reconcile_approval_schedule(rec.id)
+                rec.deleted_at = now
+                rec.deleted_by = actor
+                rec.save(update_fields=['deleted_at', 'deleted_by'])
+            deleted += 1
             continue
         rec.deleted_at = now
         rec.deleted_by = actor
@@ -2731,6 +2749,7 @@ def approval_records_bulk_return_schedule(request):
         if not perms.get('can_create'):
             return err('无排款管理权限', 403, 403)
     body = parse_body(request)
+    force = bool(body.get('force'))
     ids = body.get('ids') or []
     if not isinstance(ids, list) or not ids:
         return err('请提供要退回排款的审批记录 ids')
@@ -2754,12 +2773,11 @@ def approval_records_bulk_return_schedule(request):
             skipped.append({'id': rec.id,
                             'reason': '排款已关联预付核销，不能退回；请先删除核销记录'})
             continue
-        # 已有实付分期不可整单退回（实付是真实现金事件，退回会连实付一起消失）
-        if payment.installments.exists():
+        if payment.installments.exists() and not force:
             n = payment.installments.count()
-            skipped.append({'id': rec.id,
+            skipped.append({'id': rec.id, 'has_installments': True,
                             'reason': f'排款已有 {n} 笔实付合计 {payment.total_paid} 元，不能整单退回；'
-                                      f'请到付款管理按批次勾选退回未付部分'})
+                                      f'如需强制退回（进回收站可还原），请确认强制操作'})
             continue
         with transaction.atomic():
             _record_payment_changes(payment, {}, {}, request, action='delete')
@@ -2865,16 +2883,25 @@ def payments_bulk_delete(request):
     if perms is not None and not perms.get('can_delete'):
         return err('无删除权限', 403, 403)
     body = parse_body(request)
-    ids = body.get('ids') or []
-    if not isinstance(ids, list) or not ids:
-        return err('请提供要删除的记录 ids')
-    try:
-        ids = [int(i) for i in ids]
-    except (ValueError, TypeError):
-        return err('ids 必须为整数列表')
-    if len(ids) > 5000:
-        return err('单次删除上限 5000 条，请缩小选择范围')
-    qs = dept_filter(Payment.objects.filter(pk__in=ids, deleted_at__isnull=True), request)
+    force = bool(body.get('force'))
+    if body.get('all'):
+        qs, _ = _payments_filtered_qs(request)
+        count = qs.count()
+        if count == 0:
+            return ok({'deleted': 0, 'skipped': [], 'message': '当前筛选无可删除记录'})
+        if count > 5000:
+            return err('当前筛选结果超 5000 条，请缩小筛选范围后重试')
+    else:
+        ids = body.get('ids') or []
+        if not isinstance(ids, list) or not ids:
+            return err('请提供要删除的记录 ids')
+        try:
+            ids = [int(i) for i in ids]
+        except (ValueError, TypeError):
+            return err('ids 必须为整数列表')
+        if len(ids) > 5000:
+            return err('单次删除上限 5000 条，请缩小选择范围')
+        qs = dept_filter(Payment.objects.filter(pk__in=ids, deleted_at__isnull=True), request)
     now = timezone.now()
     actor = getattr(request, 'pk_user', None)
     deleted, skipped = 0, []
@@ -2885,13 +2912,12 @@ def payments_bulk_delete(request):
         if p.prepaid_offsets.exists():
             skipped.append({'id': p.id, 'reason': '已关联预付核销，不能删除；请先删除对应核销记录'})
             continue
-        # 已有实付分期不可整单退回/删除（实付是真实现金事件）：请按批次部分退回
         insts = list(p.installments.all())
-        if insts:
+        if insts and not force:
             paid_amt = sum(i.pay_amount for i in insts)
-            skipped.append({'id': p.id,
+            skipped.append({'id': p.id, 'has_installments': True,
                             'reason': f'已有 {len(insts)} 笔实付合计 {paid_amt} 元，不能整单退回；'
-                                      f'请右键该记录按批次勾选退回未付部分'})
+                                      f'如需强制退回（进回收站可还原），请确认强制操作'})
             continue
         approval_id = p.approval_id
         with transaction.atomic():

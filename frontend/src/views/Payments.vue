@@ -778,12 +778,12 @@ const returnKeepTotal = computed(() =>
 const returnIsFull = computed(() => !!returnDlg.value && returnDlg.value.batches.length > 0
   && returnChecked.value.length === returnDlg.value.batches.length)
 const returnFloor = computed(() => (returnDlg.value?.paid || 0) + (returnDlg.value?.offset || 0))
+const returnNeedsForce = computed(() => returnIsFull.value && returnFloor.value > 0)
 const returnError = computed(() => {
   const d = returnDlg.value
   if (!d || d.loading) return ''
   if (!returnChecked.value.length) return '请勾选要退回的计划批次'
-  if (returnIsFull.value && returnFloor.value > 0)
-    return `已付+冲抵合计 ${returnFloor.value.toFixed(2)} 元，不能全部退回——请保留足以覆盖已付的批次`
+  if (returnNeedsForce.value) return ''
   if (!returnIsFull.value && returnKeepTotal.value < returnFloor.value - 1e-6)
     return `退回后保留计划 ${returnKeepTotal.value.toFixed(2)} 低于已付+冲抵 ${returnFloor.value.toFixed(2)}，请少勾选一些`
   return ''
@@ -791,11 +791,15 @@ const returnError = computed(() => {
 async function doReturnBatches() {
   const d = returnDlg.value
   if (!d || d.busy || returnError.value) return
+  if (returnNeedsForce.value) {
+    if (!(await confirmDlg({ title: '强制整单退回',
+      message: `该排款已有实付+冲抵合计 ${returnFloor.value.toFixed(2)} 元。\n强制退回将把整条排款移入回收站（可还原），实付记录暂时隐藏。`,
+      confirmText: '强制退回', danger: true }))) return
+  }
   d.busy = true
   try {
     if (returnIsFull.value) {
-      // 全部勾选且无已付/冲抵 → 整单退回（审批已排款归零）
-      await api.delete(`/payments/${d.p.id}`)
+      await api.delete(`/payments/${d.p.id}`, { params: returnNeedsForce.value ? { force: 1 } : {} })
       toast.success('已整单退回排款，来源审批已排款同步归零')
     } else {
       let okN = 0, failMsg = ''
@@ -934,12 +938,19 @@ async function doOffset() {
 }
 
 async function onDelete(p) {
-  if (!(await confirmDlg(`确定删除「${p.project_desc}」？此操作不可撤销。`))) return
+  if (!(await confirmDlg(`确定删除「${p.project_desc}」？删除后进入回收站可还原。`))) return
   try {
     await api.delete(`/payments/${p.id}`)
     load()
   } catch (e) {
-    toast.error(e?.msg || '删除失败')
+    if (e?.code === 409 && (parseFloat(p.total_paid) > 0)) {
+      if (await confirmDlg({ title: '该排款已有实付，是否强制删除？',
+        message: '强制删除将把排款移入回收站（可还原），实付记录暂时隐藏。',
+        confirmText: '强制删除', danger: true })) {
+        try { await api.delete(`/payments/${p.id}`, { params: { force: 1 } }); load() }
+        catch (e2) { toast.error(e2?.msg || '强制删除失败') }
+      }
+    } else { toast.error(e?.msg || '删除失败') }
   }
 }
 
@@ -1007,9 +1018,22 @@ async function confirmBulkDelete() {
   bulkDeleting.value = true
   try {
     const r = await api.post('/payments/bulk-delete', { ids: [...selectedIds.value] })
-    showDelConfirm.value = false; clearSelection(); load()
     const d = r.data || {}
-    if (d.skipped?.length) resultDlg({ title: '批量删除结果', okLine: d.message, skipped: d.skipped })
+    const instSkipped = (d.skipped || []).filter(s => s.has_installments)
+    if (instSkipped.length && !d.deleted) {
+      if (await confirmDlg({ title: '部分记录有实付，是否强制删除？',
+        message: `${instSkipped.length} 条排款已有实付分期。强制删除将移入回收站（可还原），实付记录暂时隐藏。`,
+        confirmText: '强制删除', danger: true })) {
+        const r2 = await api.post('/payments/bulk-delete', { ids: [...selectedIds.value], force: true })
+        showDelConfirm.value = false; clearSelection(); load()
+        const d2 = r2.data || {}
+        if (d2.skipped?.length) resultDlg({ title: '批量删除结果', okLine: d2.message, skipped: d2.skipped })
+        else toast.success(d2.message || '已强制删除')
+      }
+    } else {
+      showDelConfirm.value = false; clearSelection(); load()
+      if (d.skipped?.length) resultDlg({ title: '批量删除结果', okLine: d.message, skipped: d.skipped })
+    }
   } catch (e) { toast.error(e?.msg || e?.error || '删除失败') }
   finally { bulkDeleting.value = false }
 }
@@ -1018,16 +1042,29 @@ async function confirmBulkDelete() {
 const bulkReturning = ref(false)
 async function bulkReturn() {
   if (!selectedCount.value) return
-  if (!(await confirmDlg(`批量退回排款 ${selectedCount.value} 条？\n所选付款将退回、来源审批已排款归零可重新排款。\n已有实付或已关联预付核销的记录将自动跳过（对其请右键单条按批次勾选退回未付部分）。`))) return
+  if (!(await confirmDlg(`批量退回排款 ${selectedCount.value} 条？\n所选付款将退回、来源审批已排款归零可重新排款。\n已有实付或已关联预付核销的记录将自动跳过。`))) return
   bulkReturning.value = true
   try {
     const body = isCrossPageSelection.value ? { all: true } : { ids: [...selectedIds.value] }
     const r = await api.post('/payments/bulk-delete', body)
-    clearSelection(); load()
     const d = r.data || {}
-    let msg = `已退回 ${d.deleted ?? 0} 条排款，来源审批已归零`
-    if (d.skipped?.length) { resultDlg({ title: '批量退回结果', okLine: msg, skipped: d.skipped }) }
-    else toast.success(msg)
+    const instSkipped = (d.skipped || []).filter(s => s.has_installments)
+    if (instSkipped.length && !d.deleted) {
+      if (await confirmDlg({ title: '部分记录有实付，是否强制退回？',
+        message: `${instSkipped.length} 条排款已有实付分期。强制退回将移入回收站（可还原），实付记录暂时隐藏。`,
+        confirmText: '强制退回', danger: true })) {
+        const r2 = await api.post('/payments/bulk-delete', { ...body, force: true })
+        clearSelection(); load()
+        const d2 = r2.data || {}
+        if (d2.skipped?.length) resultDlg({ title: '批量退回结果', okLine: d2.message, skipped: d2.skipped })
+        else toast.success(d2.message || '已强制退回')
+      } else { clearSelection(); load() }
+    } else {
+      clearSelection(); load()
+      let msg = `已退回 ${d.deleted ?? 0} 条排款，来源审批已归零`
+      if (d.skipped?.length) resultDlg({ title: '批量退回结果', okLine: msg, skipped: d.skipped })
+      else toast.success(msg)
+    }
   } catch (e) { toast.error(e?.msg || e?.error || '退回失败') }
   finally { bulkReturning.value = false }
 }
@@ -1741,13 +1778,13 @@ async function doBatchPay() {
               </label>
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:12px">
-              <span :style="{ color: returnError ? 'var(--danger)' : 'var(--muted)' }">
-                {{ returnError || `将退回 ${returnChecked.length} 批 ¥${returnChecked.reduce((s, b) => s + b.amount, 0).toFixed(2)}；保留计划 ¥${returnKeepTotal.toFixed(2)}` }}
+              <span :style="{ color: returnError ? 'var(--danger)' : returnNeedsForce ? 'var(--c-warn)' : 'var(--muted)' }">
+                {{ returnError || (returnNeedsForce ? `已付+冲抵 ${returnFloor.toFixed(2)} 元，将强制整单退回（进回收站可还原）` : `将退回 ${returnChecked.length} 批 ¥${returnChecked.reduce((s, b) => s + b.amount, 0).toFixed(2)}；保留计划 ¥${returnKeepTotal.toFixed(2)}`) }}
               </span>
             </div>
             <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
               <button class="btn btn-ghost" @click="returnDlg = null">取消</button>
-              <button class="btn btn-primary" :disabled="returnDlg.busy || !!returnError" @click="doReturnBatches">{{ returnDlg.busy ? '退回中…' : (returnIsFull ? '整单退回' : `退回所选 ${returnChecked.length} 批`) }}</button>
+              <button :class="returnNeedsForce ? 'btn-danger-solid' : 'btn btn-primary'" :disabled="returnDlg.busy || !!returnError" @click="doReturnBatches">{{ returnDlg.busy ? '退回中…' : (returnNeedsForce ? '强制整单退回' : returnIsFull ? '整单退回' : `退回所选 ${returnChecked.length} 批`) }}</button>
             </div>
           </template>
         </div>

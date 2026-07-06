@@ -283,8 +283,18 @@ async function returnFullSchedule(rec) {
   try {
     const r = await api.post('/approvals/bulk-return-schedule', { ids: [rec.id] })
     const d = r.data || {}
-    if (d.skipped?.length) {
-      resultDlg({ title: '批量退回排款结果', okLine: d.message, skipped: d.skipped })
+    const instSkipped = (d.skipped || []).filter(s => s.has_installments)
+    if (instSkipped.length && !d.returned) {
+      if (await confirmDlg({ title: '排款已有实付，是否强制退回？',
+        message: '强制退回将把排款移入回收站（可还原），实付记录暂时隐藏。',
+        confirmText: '强制退回', danger: true })) {
+        const r2 = await api.post('/approvals/bulk-return-schedule', { ids: [rec.id], force: true })
+        const d2 = r2.data || {}
+        if (d2.skipped?.length) resultDlg({ title: '退回排款结果', okLine: d2.message, skipped: d2.skipped })
+        else toast.success(d2.message || '已强制退回排款')
+      }
+    } else if (d.skipped?.length) {
+      resultDlg({ title: '退回排款结果', okLine: d.message, skipped: d.skipped })
     } else {
       toast.success(d.message || '已退回排款')
     }
@@ -329,9 +339,22 @@ async function confirmBulkDelete(){
   bulkDeleting.value = true
   try{
     const r = await api.post('/approvals/bulk-delete', { ids: [...selectedIds.value] })
-    showDelConfirm.value = false; clearSelection(); load()
     const d = r.data || {}
-    if (d.skipped?.length) resultDlg({ title: '批量删除结果', okLine: d.message, skipped: d.skipped })
+    const paySkipped = (d.skipped || []).filter(s => s.has_payments)
+    if (paySkipped.length && !d.deleted) {
+      if (await confirmDlg({ title: '部分记录已关联排款，是否强制删除？',
+        message: `${paySkipped.length} 条审批已关联排款。强制删除将把审批及其排款一并移入回收站（可还原）。`,
+        confirmText: '强制删除', danger: true })) {
+        const r2 = await api.post('/approvals/bulk-delete', { ids: [...selectedIds.value], force: true })
+        showDelConfirm.value = false; clearSelection(); load()
+        const d2 = r2.data || {}
+        if (d2.skipped?.length) resultDlg({ title: '批量删除结果', okLine: d2.message, skipped: d2.skipped })
+        else toast.success(d2.message || '已强制删除')
+      }
+    } else {
+      showDelConfirm.value = false; clearSelection(); load()
+      if (d.skipped?.length) resultDlg({ title: '批量删除结果', okLine: d.message, skipped: d.skipped })
+    }
   } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
   finally{ bulkDeleting.value = false }
 }
@@ -339,19 +362,18 @@ async function confirmBulkDelete(){
 // 单条删除（右键菜单）：复用批量删除端点，已排款记录后端自动跳过
 async function deleteOne(rec){
   const label = [rec.payee, rec.summary || rec.applicant].filter(Boolean).join(' · ') || `#${rec.id}`
-  if (!(await confirmDlg(`确定删除审批记录「${label}」（¥${rec.amount}）？\n已排款（已关联付款管理）的记录将自动跳过；删除不可恢复。`))) return
+  if (!(await confirmDlg(`确定删除审批记录「${label}」（¥${rec.amount}）？\n已排款的记录将连同排款一并进回收站（可还原）。`))) return
   try{
-    const r = await api.post('/approvals/bulk-delete', { ids: [rec.id] })
+    const r = await api.post('/approvals/bulk-delete', { ids: [rec.id], force: true })
     const d = r.data || {}
     if (d.deleted > 0){ toast.success('已删除'); load() }
-    else { toast.warn(d.skipped?.[0]?.reason || '未删除（可能已排款，请先在付款管理删除对应排款）') }
+    else { toast.warn(d.skipped?.[0]?.reason || '未删除') }
   } catch(e){ toast.error(e?.msg || e?.error || '删除失败') }
 }
 
 // 批量退回排款：退回所选有已排款记录的排款，已排款归零可重新排款
 const bulkReturning = ref(false)
 async function bulkReturnSchedule(){
-  // 跨页：发送全部已选 id，后端对无已排款的记录自动跳过（单次上限 200）
   if (!selectedCount.value){ toast.warn('请先选择记录'); return }
   if (!(await confirmDlg(`批量退回所选 ${selectedCount.value} 条记录的排款？\n无已排款的记录自动跳过；关联付款管理记录将删除，已排款归零，可重新排款。`))) return
   bulkReturning.value = true
@@ -359,13 +381,27 @@ async function bulkReturnSchedule(){
     const ids = [...selectedIds.value]
     const r = await api.post('/approvals/bulk-return-schedule', { ids })
     const d = r.data || {}
-    // 清除已退回审批的展开缓存
-    ids.forEach(id => { delete aprSchedCache.value[id] })
-    aprSchedExpanded.value = new Set([...aprSchedExpanded.value].filter(id => !selectedIds.value.has(id)))
-    clearSelection(); load()
-    let msg = d.message || '批量退回完成'
-    if (d.skipped?.length) { resultDlg({ title: '批量操作结果', okLine: msg, skipped: d.skipped }); msg = '' }
-    else toast.success(msg)
+    const instSkipped = (d.skipped || []).filter(s => s.has_installments)
+    if (instSkipped.length && !d.returned) {
+      if (await confirmDlg({ title: '部分排款有实付，是否强制退回？',
+        message: `${instSkipped.length} 条排款已有实付分期。强制退回将移入回收站（可还原），实付记录暂时隐藏。`,
+        confirmText: '强制退回', danger: true })) {
+        const r2 = await api.post('/approvals/bulk-return-schedule', { ids, force: true })
+        const d2 = r2.data || {}
+        ids.forEach(id => { delete aprSchedCache.value[id] })
+        aprSchedExpanded.value = new Set([...aprSchedExpanded.value].filter(id => !selectedIds.value.has(id)))
+        clearSelection(); load()
+        if (d2.skipped?.length) resultDlg({ title: '批量操作结果', okLine: d2.message, skipped: d2.skipped })
+        else toast.success(d2.message || '已强制退回')
+      }
+    } else {
+      ids.forEach(id => { delete aprSchedCache.value[id] })
+      aprSchedExpanded.value = new Set([...aprSchedExpanded.value].filter(id => !selectedIds.value.has(id)))
+      clearSelection(); load()
+      let msg = d.message || '批量退回完成'
+      if (d.skipped?.length) resultDlg({ title: '批量操作结果', okLine: msg, skipped: d.skipped })
+      else toast.success(msg)
+    }
   } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
   finally{ bulkReturning.value = false }
 }
