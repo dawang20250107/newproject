@@ -200,7 +200,7 @@ function fmtDate(s) {
           </thead>
           <tbody>
             <tr v-for="(it, idx) in items" :key="it.id" :class="{ 'row-sel': selectedIds.has(it.id) }" @click="onRowSelClick($event, idx, it.id)" style="cursor:pointer" title="按住 Shift 点击可区间勾选">
-              <td class="sel-col" @click.stop><input type="checkbox" :checked="selectedIds.has(it.id)" @click.prevent.stop="onRowSelClick($event, idx, it.id)"/></td>
+              <td class="sel-col" @click.stop><input type="checkbox" :checked="selectedIds.has(it.id)" @click.stop="onRowSelClick($event, idx, it.id)"/></td>
               <td v-if="activeTab === 'approvals'">{{ it.applicant }}</td>
               <td>{{ it.department }}</td>
               <td v-if="activeTab === 'approvals'">{{ it.approval_number }}</td>

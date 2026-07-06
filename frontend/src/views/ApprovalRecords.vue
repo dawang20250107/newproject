@@ -859,7 +859,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <template v-else>
       <template v-for="(i, idx) in items" :key="i.id">
       <tr :class="{ 'row-sel': selectedIds.has(i.id) }" @contextmenu.prevent="ctx.open($event, i)" @dblclick="onRowDblClick(i, $event)">
-      <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(i.id)" @click.prevent.stop="onRowSelClick($event, idx, i.id)" title="按住 Shift 点击可区间勾选" /></td>
+      <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(i.id)" @click.stop="onRowSelClick($event, idx, i.id)" title="按住 Shift 点击可区间勾选" /></td>
       <td :title="i.applicant">{{i.applicant}}</td><td :title="i.department">{{i.department}}</td>
       <td class="meta-cell" :title="i.secondary_dept">{{ i.secondary_dept || '—' }}</td>
       <td class="meta-cell" :title="i.project_short_name">{{ i.project_short_name || '—' }}</td>

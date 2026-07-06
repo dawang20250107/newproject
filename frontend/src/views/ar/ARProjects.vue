@@ -687,7 +687,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               @contextmenu.prevent="ctx.open($event, item)">
               <td v-if="auth.canDelete" class="ctr sel-col">
                 <input type="checkbox" :checked="selectAllMatching || selectedIds.has(item.id)"
-                  @click.prevent.stop="onRowSelClick($event, idx, item.id)" title="按住 Shift 点击可区间勾选" />
+                  @click.stop="onRowSelClick($event, idx, item.id)" title="按住 Shift 点击可区间勾选" />
               </td>
               <td v-if="showProjectNo || colFilters.project_no">
                 <span class="proj-no-tag">{{ item.project_no }}</span>

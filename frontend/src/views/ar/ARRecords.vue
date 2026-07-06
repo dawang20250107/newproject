@@ -2171,7 +2171,7 @@ function clearFilters() {
               <tr :class="['data-row', agingRowClass(rec), (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']"
                 @contextmenu.prevent="ctx.open($event, rec)" @dblclick="onRowDblClick(rec, $event)">
                 <td v-if="auth.canDelete" class="sel-col sticky-col">
-                  <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @click.prevent.stop="onRowSelClick($event, idx, rec.id)" title="按住 Shift 点击可区间勾选" />
+                  <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @click.stop="onRowSelClick($event, idx, rec.id)" title="按住 Shift 点击可区间勾选" />
                 </td>
                 <td class="sticky-col" :style="cw.thStyle('short_name')">
                   <div class="proj-name" :title="rec.short_name || rec.customer_name">
