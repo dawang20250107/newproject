@@ -1953,3 +1953,79 @@ class BatchUnpublishFlowTests(TestCase):
         # 当前默认职务无，若未来放开将命中 409 文案）。
         r = self.client.delete(f'/api/cw/batches/{b.id}', **self.auth())
         self.assertEqual(r.status_code, 200)   # 超管强删放行
+
+
+class DeptlessLedgerImportTests(TestCase):
+    """无部门维度明细账导入（自营等不分部门记账的主体）+ 诊断式报错。"""
+    databases = {'default'}
+
+    @classmethod
+    def setUpTestData(cls):
+        for name, sort_order, is_calculated, sign, is_profit_driver in L1_SEEDS:
+            L1Category.objects.update_or_create(
+                name=name, defaults={'sort_order': sort_order, 'is_calculated': is_calculated,
+                                     'sign': sign, 'is_profit_driver': is_profit_driver})
+        cls.admin = PaikuanUser(phone='13900000333', name='导入员', role='super_admin',
+                                job_title='finance_director', departments=[],
+                                is_active=True, is_approved=True)
+        cls.admin.set_password('Test123456')
+        cls.admin.save()
+
+    def setUp(self):
+        self.client = Client()
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {_make_token(self.admin)}'}
+
+    @staticmethod
+    def _xlsx(header, rows, titles=('核算维度明细账', '账簿 : X主账簿')):
+        import io
+        wb = Workbook()
+        ws = wb.active
+        for t in titles:
+            ws.append([t])
+        ws.append(header)
+        for r in rows:
+            ws.append(r)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        buf.name = 'ledger.xlsx'
+        return buf
+
+    def test_deptless_ledger_imports_to_unassigned_dept(self):
+        """真实场景（自营导出无「部门名称」列）：可导入，整册归入未指定部门。"""
+        f = self._xlsx(
+            ['序号', '科目编码', '科目名称', '会计期间', '记账日期', '业务日期', '凭证字号', '摘要', '币种', '借方', '贷方'],
+            [[1, '6001.01.01', '运输', '', '', '', '', '期初余额', '人民币', '', ''],
+             [2, '6001.01.01', '运输', '2026年3期', '2026-03-31', '2026-03-31', '记 0164', '计提3月收入', '人民币', '', 663947.09],
+             [3, '6001.01.01', '运输', '2026年3期', '2026-03-31', '', '', '本期合计', '人民币', '', 663947.09]])
+        r = self.client.post('/api/cw/batches/upload',
+                             {'bu': '自营事业部', 'year': 2026, 'month': 3, 'file': f},
+                             **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        batch = ImportBatch.objects.get()
+        self.assertEqual(batch.business_unit, '自营事业部')
+        entries = list(FinancialEntry.objects.filter(batch=batch))
+        self.assertTrue(entries)
+        self.assertTrue(all((e.l2.name if e.l2_id else '') == '未指定部门' for e in entries))
+        self.assertEqual(float(sum(e.amount for e in entries)), 663947.09)
+
+    def test_project_ledger_redirected_to_project_margin(self):
+        """含「项目名称」维度的明细账 → 明确指路项目毛利页，不误吞。"""
+        f = self._xlsx(
+            ['序号', '项目名称', '科目编码', '科目名称', '会计期间', '摘要', '借方', '贷方'],
+            [[1, '甲项目', '6001.01', '主营收入', '2026年3期', '收入', '', 100]])
+        r = self.client.post('/api/cw/batches/upload',
+                             {'bu': '自营事业部', 'year': 2026, 'month': 3, 'file': f},
+                             **self.auth())
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertIn('项目毛利', r.json()['error'])
+
+    def test_unrecognized_file_gets_diagnostic_error(self):
+        f = self._xlsx(['甲', '乙', '丙'], [[1, 2, 3]], titles=('随便什么表',))
+        r = self.client.post('/api/cw/batches/upload',
+                             {'bu': '自营事业部', 'year': 2026, 'month': 3, 'file': f},
+                             **self.auth())
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('缺少', r.json()['error'])

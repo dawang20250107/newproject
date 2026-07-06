@@ -864,9 +864,33 @@ def _parse_kingdee_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map):
 
 # ── 金蝶 核算维度明细账（部门明细表）解析 ─────────────────────────────────────
 
+def _diagnose_ledger_headers(ws):
+    """识别失败时的诊断文案：扫描前 12 行表头，说清已识别哪些列、缺哪列、该去哪导。"""
+    known = {'部门名称': 'dept', '科目名称': 'name', '科目编码': 'code', '摘要': 'summary',
+             '借方': 'debit', '贷方': 'credit', '项目名称': 'project', '会计期间': 'period'}
+    found = set()
+    for ri in range(1, min(13, ws.max_row + 1)):
+        for ci in range(1, min(ws.max_column + 1, 40)):
+            v = str(ws.cell(row=ri, column=ci).value or '').strip()
+            if v in known:
+                found.add(v)
+    if '项目名称' in found:
+        return ('该文件是「按项目」维度的明细账（含"项目名称"列），请到'
+                '「项目毛利」页面导入；数据加工只收部门维度或无维度的明细账')
+    if found >= {'科目名称', '摘要', '借方', '贷方'}:
+        return '文件缺少必需列，未通过识别。已识别到：' + '、'.join(sorted(found))
+    missing = [k for k in ('科目名称', '摘要', '借方', '贷方') if k not in found]
+    return ('无法识别文件格式。已识别到列：' + ('、'.join(sorted(found)) or '（无）')
+            + '；缺少：' + '、'.join(missing)
+            + '。支持：① 金蝶核算维度明细账（导出需含 科目名称/摘要/借方/贷方，'
+              '「部门名称」可选——无部门维度整册归入未指定部门）② KXT模板')
+
+
 def _detect_dept_ledger(ws):
     """Detect Kingdee 核算维度明细账 layout. Returns (data_start, col_map) or (None, {}).
-    col_map keys: dept, code, name, debit, credit, summary
+    col_map keys: dept(可选), code, name, debit, credit, summary
+    部门列可选：未勾选「部门」核算维度导出的账簿（如不分部门记账的小主体）
+    整册归入「未指定部门」。但含「项目名称」维度的导出属于项目毛利口径，不在此匹配。
     """
     for ri in range(1, min(8, ws.max_row + 1)):
         cm = {}
@@ -888,7 +912,9 @@ def _detect_dept_ledger(ws):
                 cm['period'] = ci
             elif v in ('记账日期', '日期'):
                 cm.setdefault('date', ci)
-        if all(k in cm for k in ('dept', 'name', 'debit', 'credit', 'summary')):
+            elif v == '项目名称':
+                cm['_project'] = ci   # 项目维度明细账 → 属于项目毛利导入，不在此匹配
+        if all(k in cm for k in ('name', 'debit', 'credit', 'summary')) and '_project' not in cm:
             return ri + 1, cm
     return None, {}
 
@@ -1047,7 +1073,8 @@ def _parse_dept_ledger_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map):
         name = str(ws.cell(row=ri, column=cm['name']).value or '').strip()
         if not code and not name:
             continue
-        dept = str(ws.cell(row=ri, column=cm['dept']).value or '').strip()
+        dept = (str(ws.cell(row=ri, column=cm['dept']).value or '').strip()
+                if 'dept' in cm else '') or '未指定部门'
         # 集团总部口径：剔除财务金融等独立业务部门（整段不计入报表）
         if _is_excluded_dept(bu, dept):
             continue
@@ -1404,11 +1431,7 @@ def batch_upload(request):
         else:
             data_start, cm = _detect_kingdee_format(ws)
             if data_start is None:
-                return err(
-                    '无法识别文件格式。支持：\n'
-                    '① 金蝶核算维度明细账（部门明细表，含"部门名称""科目编码""借方""贷方"列）\n'
-                    '② KXT模板（借方/贷方两列）'
-                )
+                return err(_diagnose_ledger_headers(ws))
             parsed_rows, errors = _parse_kingdee_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map)
             fmt = 'kingdee'
 
@@ -1638,7 +1661,9 @@ def project_margin_upload(request):
 
     data_start, cm = _detect_project_ledger(ws)
     if data_start is None:
-        return err('无法识别为「核算维度明细账（按项目）」：需含「项目名称」「科目编码」「借方」「贷方」「摘要」列')
+        return err('无法识别为「核算维度明细账（按项目）」：需含「项目名称」「科目编码」「借方」「贷方」「摘要」列。'
+                   '若导出的是部门维度（含「部门名称」）或无维度明细账，请到「数据加工」页面上传；'
+                   '导出时请在金蝶核算维度里勾选「项目」')
 
     # 多月导出按「会计期间/记账日期」逐行拆分；表单年月仅作无期间信息时的兜底
     agg = _parse_project_ledger(ws, data_start, cm, fallback_ym=(year, month))
