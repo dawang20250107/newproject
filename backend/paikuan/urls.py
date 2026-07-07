@@ -11,6 +11,7 @@ urlpatterns = [
     # 钉钉审批同步：连通性/模板、按人查询、同步落库、刷新状态
     path('dingtalk/test', dingtalk_sync.dingtalk_test),
     path('dingtalk/resolve-user', dingtalk_sync.dingtalk_resolve_user),
+    path('dingtalk/templates', dingtalk_sync.dingtalk_templates),
     path('dingtalk/query', dingtalk_sync.dingtalk_query),
     path('dingtalk/sync', dingtalk_sync.dingtalk_sync),
     path('dingtalk/refresh', dingtalk_sync.dingtalk_refresh),

@@ -251,6 +251,30 @@ class SyncEndpointTests(TestCase):
                        {'userid': 'U-x', 'start': '2026-03-01', 'end': '2026-03-31', 'status': 'todo'})
         self.assertEqual(r.status_code, 400, r.content)
 
+    @mock.patch('paikuan.dingtalk_client.templates_by_user',
+                return_value=[{'process_code': 'PC_报销', 'name': '差旅费报销单'},
+                              {'process_code': 'PC_考勤', 'name': '考勤'}])
+    @mock.patch('paikuan.dingtalk_client.list_process_codes', return_value=[])
+    def test_templates_endpoint_returns_union(self, m_codes, m_by_user):
+        r = self._post('/api/pk/dingtalk/templates', {'userid': 'U-guo'})
+        d = r.json()['data']
+        self.assertEqual(d['count'], 2)
+        self.assertIn('PC_报销', [t['process_code'] for t in d['templates']])
+
+    @mock.patch('paikuan.dingtalk_client.templates_by_user',
+                return_value=[{'process_code': 'PC_报销', 'name': '报销'},
+                              {'process_code': 'PC_考勤', 'name': '考勤'}])
+    @mock.patch('paikuan.dingtalk_client.list_process_codes', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.list_instance_ids', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.get_instance')
+    def test_query_respects_process_codes_filter(self, m_get, m_list, m_codes, m_by_user):
+        # 只勾选报销 → 只对该模板拉实例，考勤模板不被查询
+        self._post('/api/pk/dingtalk/query',
+                   {'userid': 'U-guo', 'start': '2026-03-01', 'end': '2026-03-31',
+                    'status': 'originated', 'process_codes': ['PC_报销']})
+        called_codes = {c.args[0] for c in m_list.call_args_list}
+        self.assertEqual(called_codes, {'PC_报销'})
+
     @mock.patch('paikuan.dingtalk_client.user_detail', return_value={'name': '郭勇'})
     @mock.patch('paikuan.dingtalk_client.userid_by_mobile', return_value='U-guoyong')
     def test_resolve_user_by_mobile(self, m_uid, m_det):

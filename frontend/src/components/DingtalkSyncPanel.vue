@@ -41,6 +41,35 @@ function setQuick(k) {
   else if (k === 'q') { const qm = Math.floor((m - 1) / 3) * 3 + 1; range.start = `${y}-${String(qm).padStart(2, '0')}-01`; range.end = t }
 }
 
+// ── 可见模板（勾选后再查，避免全表扫描超时；也用于确认"报销"是否在可见范围）──────
+const templates = ref([])          // [{process_code, name}]
+const tplSel = ref(new Set())      // 勾选的 process_code
+const tplLoading = ref(false)
+const tplErr = ref('')
+const tplFilter = ref('')
+const tplShown = computed(() => {
+  const q = tplFilter.value.trim()
+  return q ? templates.value.filter(t => (t.name || t.process_code).includes(q)) : templates.value
+})
+const tplSelCount = computed(() => tplSel.value.size)
+async function loadTemplates(userid) {
+  tplLoading.value = true; tplErr.value = ''; templates.value = []
+  try {
+    const r = await api.post('/dingtalk/templates', { userid }, { timeout: 60000 })
+    templates.value = r.data?.templates || []
+    tplSel.value = new Set(templates.value.map(t => t.process_code))   // 默认全选
+  } catch (e) { tplErr.value = e?.msg || e?.error || '获取模板失败' }
+  finally { tplLoading.value = false }
+}
+function toggleTpl(code) {
+  const s = new Set(tplSel.value)
+  s.has(code) ? s.delete(code) : s.add(code)
+  tplSel.value = s
+}
+function tplSelectAll(on) {
+  tplSel.value = on ? new Set(templates.value.map(t => t.process_code)) : new Set()
+}
+
 // ── 结果 ──────────────────────────────────────────────────────────────────
 const loading = ref(false)
 const loadErr = ref('')
@@ -68,12 +97,12 @@ async function resolvePerson() {
     const r = await api.post('/dingtalk/resolve-user', body)
     const users = r.data?.users || []
     if (!users.length) { toast.error('钉钉通讯录未找到该人员'); return null }
-    if (users.length === 1) { picked.value = users[0]; return users[0] }
+    if (users.length === 1) { picked.value = users[0]; await loadTemplates(users[0].userid); return users[0] }
     candidates.value = users; return null   // 多个同名 → 交用户选
   } catch (e) { toast.error(e?.msg || e?.error || '查询人员失败'); return null }
   finally { resolving.value = false }
 }
-function pickCandidate(u) { picked.value = u; candidates.value = []; runQuery() }
+async function pickCandidate(u) { picked.value = u; candidates.value = []; await loadTemplates(u.userid); runQuery() }
 function copyUid() {
   if (!picked.value) return
   navigator.clipboard?.writeText(picked.value.userid).then(() => toast.success('已复制 userid')).catch(() => {})
@@ -82,11 +111,13 @@ function copyUid() {
 async function runQuery() {
   let user = picked.value
   if (!user) { user = await resolvePerson(); if (!user) return }
+  if (templates.value.length && !tplSel.value.size) { toast.error('请至少勾选一个审批模板'); return }
   loading.value = true; loadErr.value = ''; sel.value = new Set()
   try {
-    // 查询要遍历该员工可见的全部模板并逐条拉详情，耗时较长，单独放宽超时到 90s
+    // 只查勾选的模板并逐条拉详情，耗时较长，单独放宽超时到 90s
     const r = await api.post('/dingtalk/query', {
       userid: user.userid, start: range.start, end: range.end, status: status.value,
+      process_codes: [...tplSel.value],
     }, { timeout: 90000 })
     items.value = r.data?.items || []
     capped.value = !!r.data?.capped
@@ -185,7 +216,7 @@ async function refreshStatus() {
             <button :class="{ on: personMode === 'name' }" @click="personMode = 'name'; picked = null">姓名</button>
           </div>
           <input v-model="personInput" class="inp" :placeholder="personMode === 'mobile' ? '钉钉手机号' : '姓名（可能多个同名）'"
-                 @keyup.enter="picked = null; runQuery()" @input="picked = null" />
+                 @keyup.enter="runQuery()" @input="picked = null" />
           <span v-if="picked" class="picked" :title="'userid: ' + picked.userid">✓ {{ picked.name }} <code class="uid" @click="copyUid">{{ picked.userid }}</code></span>
         </div>
         <!-- 同名候选 -->
@@ -203,10 +234,36 @@ async function refreshStatus() {
           <button v-for="q in QUICK" :key="q.k" class="quick" @click="setQuick(q.k)">{{ q.l }}</button>
         </div>
       </div>
-      <button class="go" :disabled="loading || resolving" @click="picked = null; runQuery()">
+      <button class="go" :disabled="loading || resolving" @click="runQuery()">
         {{ loading || resolving ? '查询中…' : '查询' }}
       </button>
       <button class="quick test" :disabled="testing" @click="testConnection">{{ testing ? '检测中…' : '测试连接' }}</button>
+    </div>
+
+    <!-- 可见模板勾选（勾选后再查，避免全表扫描超时；也用于确认"报销"是否可见）-->
+    <div v-if="picked" class="dt-tpls">
+      <div class="tpls-head">
+        <span class="tpls-lbl">审批模板</span>
+        <span v-if="tplLoading" class="tpls-info">加载模板中…</span>
+        <template v-else>
+          <span class="tpls-info">可见 <b>{{ templates.length }}</b> 个 · 已选 <b>{{ tplSelCount }}</b></span>
+          <button class="tpls-op" @click="tplSelectAll(true)">全选</button>
+          <button class="tpls-op" @click="tplSelectAll(false)">全不选</button>
+          <input v-model="tplFilter" class="tpls-filter" placeholder="筛选模板名，如 报销" />
+          <span class="grow"></span>
+          <span class="tpls-tip">勾选越少查得越快；缩小时间范围也能提速</span>
+        </template>
+      </div>
+      <div v-if="tplErr" class="tpls-err">⚠️ {{ tplErr }}</div>
+      <div v-else-if="!tplLoading" class="tpls-grid">
+        <label v-for="t in tplShown" :key="t.process_code" class="tplitem" :class="{ on: tplSel.has(t.process_code) }">
+          <input type="checkbox" class="cbx" :checked="tplSel.has(t.process_code)" @change="toggleTpl(t.process_code)" />
+          <span class="tplname">{{ t.name || t.process_code }}</span>
+        </label>
+        <div v-if="!tplShown.length" class="tpls-empty">
+          无匹配模板{{ tplFilter ? '（换个关键词）' : '' }}。若「报销」不在列表里，说明该模板对此人不可见或应用未授权。
+        </div>
+      </div>
     </div>
 
     <!-- 状态页签 -->
@@ -356,6 +413,24 @@ async function refreshStatus() {
 .diag code { background: var(--surface-2, rgba(160,120,80,.1)); padding: 1px 6px; border-radius: 5px; font-size: 12px; margin: 0 2px; }
 .diag-hint { margin-top: 4px; color: var(--text-2, #6b5a49); }
 .diag-tpl { margin-top: 4px; }
+/* 模板勾选区 */
+.dt-tpls { padding: 12px 18px; border-bottom: 1px solid var(--border, #eadfd2); background: var(--panel-2, #faf6f0); }
+.tpls-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.tpls-lbl { font-size: 13px; font-weight: 700; color: var(--text, #4a3322); }
+.tpls-info { font-size: 12.5px; color: var(--muted, #9b8070); }
+.tpls-info b { color: var(--primary, #1565c0); }
+.tpls-op { border: 1px solid var(--border, #eadfd2); background: var(--panel, #fff); border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; color: var(--text, #4a3322); font-family: inherit; }
+.tpls-op:hover { border-color: var(--primary, #1565c0); color: var(--primary, #1565c0); }
+.tpls-filter { border: 1px solid var(--border, #eadfd2); border-radius: 6px; padding: 3px 9px; font-size: 12.5px; width: 150px; font-family: inherit; background: var(--panel, #fff); color: inherit; }
+.tpls-tip { font-size: 11.5px; color: var(--muted, #9b8070); }
+.tpls-err { font-size: 12.5px; color: var(--danger, #d64545); }
+.tpls-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 12px; max-height: 168px; overflow-y: auto; }
+.tplitem { display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px; color: var(--text, #4a3322); border: 1px solid transparent; }
+.tplitem:hover { background: var(--panel, #fff); }
+.tplitem.on { background: var(--primary-weak, #e8f1fb); border-color: var(--primary-border, #c3ddf5); }
+.tplname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tpls-empty { grid-column: 1 / -1; font-size: 12.5px; color: var(--muted, #9b8070); padding: 6px 2px; line-height: 1.6; }
+
 .dt-tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border, #eadfd2); }
 .dt-tab { border: none; background: none; padding: 11px 16px; font-size: 14px; font-weight: 650; color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; border-bottom: 2.5px solid transparent; margin-bottom: -1px; }
 .dt-tab.on { color: var(--primary, #1565c0); border-bottom-color: var(--primary, #1565c0); }

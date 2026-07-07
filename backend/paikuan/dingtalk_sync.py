@@ -240,17 +240,59 @@ def dingtalk_resolve_user(request):
     return err('请提供手机号或姓名')
 
 
+def _gather_templates(userid):
+    """并集：手动配置(DINGTALK_PROCESS_CODES/管理员) ∪ 被查人可见（新版 workflow 接口）。
+    返回 (templates, api_err)；配置项优先保留自定义名称。"""
+    templates = dc.list_process_codes()
+    seen = {t['process_code'] for t in templates}
+    api_err = ''
+    try:
+        for t in dc.templates_by_user(userid):
+            if t['process_code'] not in seen:
+                seen.add(t['process_code'])
+                templates.append(t)
+    except DingTalkError as ex:
+        api_err = str(ex)
+        logger.warning('templates_by_user(%s) failed: %s', userid, ex)
+    return templates, api_err
+
+
+@csrf_exempt
+@pk_required()
+def dingtalk_templates(request):
+    """POST {userid} → 该员工可见的审批模板列表（供前端勾选后再查，避免全表扫描超时）。
+    这一步很轻（不拉实例），也用来确认「报销」等模板是否在可见范围内。"""
+    denied = _page_denied(request)
+    if denied:
+        return denied
+    body = parse_body(request)
+    userid = (body.get('userid') or '').strip()
+    if not userid:
+        return err('缺少 userid')
+    try:
+        templates, api_err = _gather_templates(userid)
+    except DingTalkError as ex:
+        return err(str(ex), 502, 502)
+    if not templates:
+        if api_err:
+            return err('获取该员工可见审批模板失败：' + api_err
+                       + '（多为应用未开通「审批」相关权限，或「可用范围」未设为全部员工）', 502, 502)
+        return err('该员工名下无可见审批模板，或应用「可用范围」未设为全部员工', 400)
+    return ok({'templates': templates, 'count': len(templates)})
+
+
 @csrf_exempt
 @pk_required()
 def dingtalk_query(request):
-    """POST {userid, start, end, status:todo|done|originated} →
-    该员工在时间区间内、跨全部模板的审批列表（含系统同步状态）。"""
+    """POST {userid, start, end, status:todo|done|originated, process_codes?:[...]} →
+    该员工在时间区间内、跨所选模板（默认全部可见模板）的审批列表（含系统同步状态）。"""
     denied = _page_denied(request)
     if denied:
         return denied
     body = parse_body(request)
     userid = (body.get('userid') or '').strip()
     status = (body.get('status') or 'todo').strip()
+    picked = body.get('process_codes') or []
     if not userid:
         return err('缺少 userid')
     if status not in ('todo', 'done', 'originated'):
@@ -261,21 +303,12 @@ def dingtalk_query(request):
         return err('时间范围无效（YYYY-MM-DD）')
 
     try:
-        # 模板来源三级兜底：① 手动配置的 DINGTALK_PROCESS_CODES / 管理员可见模板；
-        # ② 都没有时，用"被查这个人自己可见的模板"（无需配管理员 userid，基础版即可）。
-        # 模板来源取并集：手动配置 + 被查人可见（新旧接口并集）。
-        # 单一来源都有盲区（旧接口常缺报销），并集最全；配置项优先保留其自定义名称。
-        templates = dc.list_process_codes()
-        seen_codes = {t['process_code'] for t in templates}
-        tpl_api_err = ''
-        try:
-            for t in dc.templates_by_user(userid):
-                if t['process_code'] not in seen_codes:
-                    seen_codes.add(t['process_code'])
-                    templates.append(t)
-        except DingTalkError as ex:
-            tpl_api_err = str(ex)
-            logger.warning('templates_by_user(%s) failed: %s', userid, ex)
+        templates, tpl_api_err = _gather_templates(userid)
+        if picked:   # 前端只勾选了部分模板 → 只查这些（大幅提速、避免超时）
+            sel = set(picked)
+            have = {t['process_code'] for t in templates}
+            templates = [t for t in templates if t['process_code'] in sel]
+            templates += [{'process_code': c, 'name': c} for c in picked if c not in have]
         if not templates:
             if tpl_api_err:
                 # 接口报错（多为权限/可见范围）——把钉钉原话透出来，便于对症开权限
