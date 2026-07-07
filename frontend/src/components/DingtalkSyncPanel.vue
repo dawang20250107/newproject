@@ -61,26 +61,6 @@ function loadManual() {
 const manualTpls = ref(loadManual())
 const manualCodes = computed(() => new Set(manualTpls.value.map(t => t.process_code)))
 function saveManual() { localStorage.setItem(MANUAL_KEY, JSON.stringify(manualTpls.value)) }
-const manualCode = ref('')
-const manualName = ref('')
-function addManual() {
-  let code = manualCode.value.trim()
-  // 容错：允许直接粘贴含 processCode= 的后台链接
-  const m = code.match(/processCode=([A-Za-z0-9_-]+)/)
-  if (m) code = m[1]
-  if (!code) { toast.error('请填写 processCode'); return }
-  if (manualCodes.value.has(code)) { toast.error('该模板已添加'); return }
-  const name = manualName.value.trim() || code
-  manualTpls.value = [...manualTpls.value, { process_code: code, name }]
-  saveManual()
-  // 并入当前列表并自动勾选
-  if (!templates.value.some(t => t.process_code === code)) {
-    templates.value = [...templates.value, { process_code: code, name, manual: true }]
-  }
-  tplSel.value = new Set([...tplSel.value, code])
-  manualCode.value = ''; manualName.value = ''
-  toast.success('已添加模板')
-}
 function removeManual(code) {
   manualTpls.value = manualTpls.value.filter(t => t.process_code !== code); saveManual()
   templates.value = templates.value.filter(t => t.process_code !== code)
@@ -112,6 +92,57 @@ function toggleTpl(code) {
 }
 function tplSelectAll(on) {
   tplSel.value = on ? new Set(templates.value.map(t => t.process_code)) : new Set()
+}
+
+// ── 从员工导入模板：报销单等"仅可审批/管理"的模板，本人可发起清单里没有，
+//    但发起它的员工清单里有。解析一个会发起该审批的员工 → 列出其可发起模板 →
+//    勾选加入本地模板库（长期生效）。全程无需 processCode，纯 App 可用。────────────
+const importOpen = ref(false)
+const importMode = ref('name')
+const importInput = ref('')
+const importResolving = ref(false)
+const importCands = ref([])
+const importUser = ref(null)
+const importTpls = ref([])
+const importLoading = ref(false)
+const importFilter = ref('')
+const importShown = computed(() => {
+  const q = importFilter.value.trim()
+  return q ? importTpls.value.filter(t => (t.name || t.process_code).includes(q)) : importTpls.value
+})
+async function importFetchTpls(userid) {
+  importLoading.value = true; importTpls.value = []
+  try {
+    const r = await api.post('/dingtalk/templates', { userid }, { timeout: 60000 })
+    importTpls.value = r.data?.templates || []
+  } catch (e) { toast.error(e?.msg || e?.error || '获取该员工模板失败') }
+  finally { importLoading.value = false }
+}
+async function importResolve() {
+  const val = importInput.value.trim()
+  if (!val) { toast.error('请输入该员工的手机号或姓名'); return }
+  importResolving.value = true; importCands.value = []; importUser.value = null; importTpls.value = []
+  try {
+    const body = importMode.value === 'mobile' ? { mobile: val } : { name: val }
+    const r = await api.post('/dingtalk/resolve-user', body)
+    const users = r.data?.users || []
+    if (!users.length) { toast.error('钉钉通讯录未找到该人员'); return }
+    if (users.length === 1) { importUser.value = users[0]; await importFetchTpls(users[0].userid) }
+    else importCands.value = users
+  } catch (e) { toast.error(e?.msg || e?.error || '查询人员失败') }
+  finally { importResolving.value = false }
+}
+async function importPickCand(u) { importUser.value = u; importCands.value = []; await importFetchTpls(u.userid) }
+function isInCatalog(code) { return templates.value.some(t => t.process_code === code) }
+function addImported(t) {
+  if (isInCatalog(t.process_code)) { toast.error('该模板已在列表中'); return }
+  if (!manualCodes.value.has(t.process_code)) {
+    manualTpls.value = [...manualTpls.value, { process_code: t.process_code, name: t.name || t.process_code }]
+    saveManual()
+  }
+  templates.value = [...templates.value, { ...t, manual: true }]
+  tplSel.value = new Set([...tplSel.value, t.process_code])
+  toast.success(`已加入「${t.name || t.process_code}」`)
 }
 
 // ── 结果 ──────────────────────────────────────────────────────────────────
@@ -310,13 +341,44 @@ async function refreshStatus() {
           仅「可审批/管理」的费用报销单需在下方手动添加。
         </div>
       </div>
-      <!-- 手动添加模板：覆盖官方接口取不到的（可审批/管理范围）模板 -->
+      <!-- 补充模板：官方接口只返回"可发起"模板，报销单等"仅可审批/管理"的需在此补入 -->
       <div v-if="!tplLoading" class="tpls-add">
-        <span class="add-lbl">手动添加模板</span>
-        <input v-model="manualCode" class="add-inp code" placeholder="粘贴 processCode 或后台链接" @keyup.enter="addManual" />
-        <input v-model="manualName" class="add-inp name" placeholder="备注名（选填，如 差旅费报销单）" @keyup.enter="addManual" />
-        <button class="add-btn" @click="addManual">添加</button>
-        <a class="add-help" href="https://open.dingtalk.com/document/orgapp/how-to-get-processcode" target="_blank" rel="noopener">如何获取 processCode？</a>
+        <span class="add-lbl">缺模板（如报销）？</span>
+        <button class="add-btn ghost" :class="{ on: importOpen }" @click="importOpen = !importOpen">
+          从员工导入 ▾
+        </button>
+        <span class="add-hint">选一个会「发起」该审批的员工，从他的模板里勾选加入（无需 processCode）</span>
+      </div>
+
+      <!-- 从员工导入模板 -->
+      <div v-if="importOpen && !tplLoading" class="tpls-import">
+        <div class="imp-row">
+          <div class="seg sm">
+            <button :class="{ on: importMode === 'name' }" @click="importMode = 'name'">姓名</button>
+            <button :class="{ on: importMode === 'mobile' }" @click="importMode = 'mobile'">手机号</button>
+          </div>
+          <input v-model="importInput" class="add-inp code" :placeholder="importMode === 'mobile' ? '会发起报销的员工手机号' : '会发起报销的员工姓名'" @keyup.enter="importResolve" />
+          <button class="add-btn" :disabled="importResolving" @click="importResolve">{{ importResolving ? '查找中…' : '查找' }}</button>
+          <span v-if="importUser" class="imp-user">✓ {{ importUser.name }}</span>
+        </div>
+        <div v-if="importCands.length" class="cands">
+          <span class="cands-lbl">多个同名，请选择：</span>
+          <button v-for="u in importCands" :key="u.userid" class="cand" @click="importPickCand(u)">{{ u.name }}</button>
+        </div>
+        <div v-if="importLoading" class="imp-tip">加载该员工可发起模板中…</div>
+        <template v-else-if="importUser">
+          <div class="imp-bar">
+            <span class="imp-tip">该员工可发起 {{ importTpls.length }} 个模板，点「＋」加入：</span>
+            <input v-model="importFilter" class="tpls-filter" placeholder="筛选，如 报销" />
+          </div>
+          <div class="imp-grid">
+            <div v-for="t in importShown" :key="t.process_code" class="impitem" :class="{ dim: isInCatalog(t.process_code) }">
+              <span class="tplname">{{ t.name || t.process_code }}</span>
+              <button class="imp-add" :disabled="isInCatalog(t.process_code)" @click="addImported(t)">{{ isInCatalog(t.process_code) ? '已加' : '＋' }}</button>
+            </div>
+            <div v-if="!importShown.length" class="imp-tip">无匹配模板</div>
+          </div>
+        </template>
       </div>
     </div>
 
@@ -487,12 +549,26 @@ async function refreshStatus() {
 .tpls-empty { grid-column: 1 / -1; font-size: 12.5px; color: var(--muted, #9b8070); padding: 6px 2px; line-height: 1.6; }
 .tpls-add { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border, #eadfd2); }
 .add-lbl { font-size: 12.5px; font-weight: 650; color: var(--text, #4a3322); }
+.add-hint { font-size: 11.5px; color: var(--muted, #9b8070); }
 .add-inp { border: 1px solid var(--border, #eadfd2); border-radius: 6px; padding: 4px 9px; font-size: 12.5px; font-family: inherit; background: var(--panel, #fff); color: inherit; }
-.add-inp.code { width: 210px; } .add-inp.name { width: 180px; }
+.add-inp.code { width: 240px; }
 .add-btn { border: none; background: var(--primary, #1565c0); color: #fff; border-radius: 6px; padding: 5px 14px; font-size: 12.5px; font-weight: 650; cursor: pointer; font-family: inherit; }
 .add-btn:hover { filter: brightness(1.05); }
-.add-help { font-size: 11.5px; color: var(--primary, #1565c0); text-decoration: none; }
-.add-help:hover { text-decoration: underline; }
+.add-btn.ghost { background: var(--panel, #fff); color: var(--primary, #1565c0); border: 1px solid var(--primary, #1565c0); }
+.add-btn.ghost.on { background: var(--primary-weak, #e8f1fb); }
+
+.tpls-import { margin-top: 10px; padding: 12px; border: 1px dashed var(--primary-border, #c3ddf5); border-radius: 8px; background: var(--panel, #fff); }
+.imp-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.seg.sm button { padding: 4px 10px; font-size: 12px; }
+.imp-user { font-size: 12.5px; color: var(--ok, #2e9e6b); font-weight: 650; }
+.imp-bar { display: flex; align-items: center; gap: 10px; margin: 10px 0 6px; flex-wrap: wrap; }
+.imp-tip { font-size: 12px; color: var(--muted, #9b8070); }
+.imp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px 10px; max-height: 200px; overflow-y: auto; }
+.impitem { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid var(--border, #eadfd2); border-radius: 6px; font-size: 12.5px; }
+.impitem.dim { opacity: .5; }
+.impitem .tplname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.imp-add { flex: none; width: 26px; height: 22px; border: none; border-radius: 5px; background: var(--primary, #1565c0); color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; }
+.imp-add:disabled { background: var(--border, #eadfd2); color: var(--muted, #9b8070); cursor: default; }
 
 .dt-tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border, #eadfd2); }
 .dt-tab { border: none; background: none; padding: 11px 16px; font-size: 14px; font-weight: 650; color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; border-bottom: 2.5px solid transparent; margin-bottom: -1px; }
