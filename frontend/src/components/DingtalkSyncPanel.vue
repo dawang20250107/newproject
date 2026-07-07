@@ -52,14 +52,58 @@ const tplShown = computed(() => {
   return q ? templates.value.filter(t => (t.name || t.process_code).includes(q)) : templates.value
 })
 const tplSelCount = computed(() => tplSel.value.size)
+// 手动添加的模板（processCode 从钉钉后台"编辑模板"URL 获取）。持久化到本地，长期生效——
+// 用于覆盖官方接口取不到的模板（如仅"可审批/管理"而非"可发起"的费用报销单）。
+const MANUAL_KEY = 'dt_manual_tpls'
+function loadManual() {
+  try { return JSON.parse(localStorage.getItem(MANUAL_KEY) || '[]') } catch { return [] }
+}
+const manualTpls = ref(loadManual())
+const manualCodes = computed(() => new Set(manualTpls.value.map(t => t.process_code)))
+function saveManual() { localStorage.setItem(MANUAL_KEY, JSON.stringify(manualTpls.value)) }
+const manualCode = ref('')
+const manualName = ref('')
+function addManual() {
+  let code = manualCode.value.trim()
+  // 容错：允许直接粘贴含 processCode= 的后台链接
+  const m = code.match(/processCode=([A-Za-z0-9_-]+)/)
+  if (m) code = m[1]
+  if (!code) { toast.error('请填写 processCode'); return }
+  if (manualCodes.value.has(code)) { toast.error('该模板已添加'); return }
+  const name = manualName.value.trim() || code
+  manualTpls.value = [...manualTpls.value, { process_code: code, name }]
+  saveManual()
+  // 并入当前列表并自动勾选
+  if (!templates.value.some(t => t.process_code === code)) {
+    templates.value = [...templates.value, { process_code: code, name, manual: true }]
+  }
+  tplSel.value = new Set([...tplSel.value, code])
+  manualCode.value = ''; manualName.value = ''
+  toast.success('已添加模板')
+}
+function removeManual(code) {
+  manualTpls.value = manualTpls.value.filter(t => t.process_code !== code); saveManual()
+  templates.value = templates.value.filter(t => t.process_code !== code)
+  const s = new Set(tplSel.value); s.delete(code); tplSel.value = s
+}
+function mergeManual(list) {
+  const have = new Set(list.map(t => t.process_code))
+  const extra = manualTpls.value.filter(t => !have.has(t.process_code))
+                               .map(t => ({ ...t, manual: true }))
+  return [...list, ...extra]
+}
 async function loadTemplates(userid) {
   tplLoading.value = true; tplErr.value = ''; templates.value = []
   try {
     const r = await api.post('/dingtalk/templates', { userid }, { timeout: 60000 })
-    templates.value = r.data?.templates || []
+    templates.value = mergeManual(r.data?.templates || [])
     tplSel.value = new Set(templates.value.map(t => t.process_code))   // 默认全选
-  } catch (e) { tplErr.value = e?.msg || e?.error || '获取模板失败' }
-  finally { tplLoading.value = false }
+  } catch (e) {
+    tplErr.value = e?.msg || e?.error || '获取模板失败'
+    // 接口失败也保留手动模板，至少能查这些
+    templates.value = mergeManual([])
+    tplSel.value = new Set(templates.value.map(t => t.process_code))
+  } finally { tplLoading.value = false }
 }
 function toggleTpl(code) {
   const s = new Set(tplSel.value)
@@ -259,10 +303,20 @@ async function refreshStatus() {
         <label v-for="t in tplShown" :key="t.process_code" class="tplitem" :class="{ on: tplSel.has(t.process_code) }">
           <input type="checkbox" class="cbx" :checked="tplSel.has(t.process_code)" @change="toggleTpl(t.process_code)" />
           <span class="tplname">{{ t.name || t.process_code }}</span>
+          <span v-if="t.manual" class="tplmanual" title="手动添加，点击移除" @click.prevent="removeManual(t.process_code)">手动 ✕</span>
         </label>
         <div v-if="!tplShown.length" class="tpls-empty">
-          无匹配模板{{ tplFilter ? '（换个关键词）' : '' }}。若「报销」不在列表里，说明该模板对此人不可见或应用未授权。
+          无匹配模板{{ tplFilter ? '（换个关键词）' : '' }}。官方接口只返回「可发起」模板，
+          仅「可审批/管理」的费用报销单需在下方手动添加。
         </div>
+      </div>
+      <!-- 手动添加模板：覆盖官方接口取不到的（可审批/管理范围）模板 -->
+      <div v-if="!tplLoading" class="tpls-add">
+        <span class="add-lbl">手动添加模板</span>
+        <input v-model="manualCode" class="add-inp code" placeholder="粘贴 processCode 或后台链接" @keyup.enter="addManual" />
+        <input v-model="manualName" class="add-inp name" placeholder="备注名（选填，如 差旅费报销单）" @keyup.enter="addManual" />
+        <button class="add-btn" @click="addManual">添加</button>
+        <a class="add-help" href="https://open.dingtalk.com/document/orgapp/how-to-get-processcode" target="_blank" rel="noopener">如何获取 processCode？</a>
       </div>
     </div>
 
@@ -429,7 +483,16 @@ async function refreshStatus() {
 .tplitem:hover { background: var(--panel, #fff); }
 .tplitem.on { background: var(--primary-weak, #e8f1fb); border-color: var(--primary-border, #c3ddf5); }
 .tplname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tplmanual { flex: none; font-size: 10.5px; color: var(--danger, #d64545); background: var(--danger-weak, #fdeaea); padding: 0 5px; border-radius: 8px; cursor: pointer; }
 .tpls-empty { grid-column: 1 / -1; font-size: 12.5px; color: var(--muted, #9b8070); padding: 6px 2px; line-height: 1.6; }
+.tpls-add { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border, #eadfd2); }
+.add-lbl { font-size: 12.5px; font-weight: 650; color: var(--text, #4a3322); }
+.add-inp { border: 1px solid var(--border, #eadfd2); border-radius: 6px; padding: 4px 9px; font-size: 12.5px; font-family: inherit; background: var(--panel, #fff); color: inherit; }
+.add-inp.code { width: 210px; } .add-inp.name { width: 180px; }
+.add-btn { border: none; background: var(--primary, #1565c0); color: #fff; border-radius: 6px; padding: 5px 14px; font-size: 12.5px; font-weight: 650; cursor: pointer; font-family: inherit; }
+.add-btn:hover { filter: brightness(1.05); }
+.add-help { font-size: 11.5px; color: var(--primary, #1565c0); text-decoration: none; }
+.add-help:hover { text-decoration: underline; }
 
 .dt-tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border, #eadfd2); }
 .dt-tab { border: none; background: none; padding: 11px 16px; font-size: 14px; font-weight: 650; color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; border-bottom: 2.5px solid transparent; margin-bottom: -1px; }
