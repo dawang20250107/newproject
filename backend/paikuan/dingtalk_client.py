@@ -172,11 +172,22 @@ def list_process_codes():
     admin = (getattr(settings, 'DINGTALK_ADMIN_USERID', '') or '').strip()
     if not admin:
         return []
-    out = []
+    out, seen, cursor = [], set(), 0
     try:
-        data = _post('/topapi/process/listbyuserid', {'userid': admin})
-        for p in ((data.get('result') or {}).get('process_list') or []):
-            out.append({'process_code': p.get('process_code'), 'name': p.get('name', '')})
+        for _ in range(50):   # 分页兜底：最多 50 页
+            data = _post('/topapi/process/listbyuserid',
+                         {'userid': admin, 'cursor': cursor, 'size': 100})
+            res = data.get('result') or {}
+            plist = res.get('process_list') or []
+            for p in plist:
+                code = p.get('process_code')
+                if code and code not in seen:
+                    seen.add(code)
+                    out.append({'process_code': code, 'name': p.get('name', '')})
+            nxt = res.get('next_cursor')
+            if nxt is None or not plist:
+                break
+            cursor = nxt
     except DingTalkError as ex:
         logger.warning('list_process_codes API failed: %s', ex)
     return out
