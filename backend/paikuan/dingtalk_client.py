@@ -196,8 +196,8 @@ def list_process_codes():
 def templates_by_user(userid):
     """列出某 userid 可见的审批模板 [{process_code,name}]（新版 workflow 接口，分页）。
     新版覆盖更全，报销等模板旧接口常缺、这里能列到。分页兼容 nextToken / offset 两种。"""
-    # nextToken 必填：首页传空串，后续页用上一页返回的 nextToken。
-    out, seen, next_token = [], set(), ''
+    # nextToken 必填且不能为空：首页传 '0'，后续页用上一页返回的 nextToken。
+    out, seen, next_token = [], set(), '0'
     for _ in range(50):
         data = _new('GET', '/v1.0/workflow/processes/userVisibilities/templates',
                     params={'userId': userid, 'nextToken': next_token, 'maxResults': 100})
