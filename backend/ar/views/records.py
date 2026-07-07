@@ -1063,9 +1063,10 @@ def ar_record_import(request):
                     reason=p['diff_reason'][:200] or '导入差额调整',
                     adjust_date=rec.operation_date, created_by=user)
             if p['pay_amount'] and p['pay_date']:
+                # 导入回款默认方式为银行转账，与历史迁移口径一致（避免导入行方式为空）
                 ARPayment.objects.create(ar_record=rec, payment_no=1,
                                          amount=p['pay_amount'], payment_date=p['pay_date'],
-                                         notes='导入回款')
+                                         method=ARPayment.DEFAULT_METHOD, notes='导入回款')
             created += 1
         if reject_errors:
             transaction.set_rollback(True)
@@ -1321,6 +1322,9 @@ def _payment_ledger_qs(request):
     source = request.GET.get('source', '').strip()
     if source:
         qs = qs.filter(source=source)
+    method = request.GET.get('method', '').strip()
+    if method:
+        qs = qs.filter(method=method)
     q = request.GET.get('q', '').strip()
     if q:
         qs = qs.filter(
@@ -1340,6 +1344,8 @@ def _payment_ledger_row(p):
         'payment_date': str(p.payment_date) if p.payment_date else None,
         'amount': str(p.amount),
         'source': p.source,
+        'method': p.method,
+        'account': p.account,
         'counterparty_dept': p.counterparty_dept,
         'notes': p.notes,
         'project_no': proj.project_no,
@@ -1391,13 +1397,13 @@ def ar_payment_ledger_export(request):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '回款流水'
-    headers = ['回款日期', '回款金额', '来源', '往来部门', '项目编号', '项目简称',
-               '交付部门', '运作年', '运作月', '回款序号', '备注']
+    headers = ['回款日期', '回款金额', '来源', '回款方式', '收款账户', '往来部门',
+               '项目编号', '项目简称', '交付部门', '运作年', '运作月', '回款序号', '备注']
     _header_row(ws, headers, color='1B6E35')
     for p in qs:
         r = _payment_ledger_row(p)
-        ws.append([r['payment_date'], float(p.amount), r['source'], r['counterparty_dept'],
-                   r['project_no'], r['short_name'], r['delivery_dept'],
+        ws.append([r['payment_date'], float(p.amount), r['source'], r['method'], r['account'],
+                   r['counterparty_dept'], r['project_no'], r['short_name'], r['delivery_dept'],
                    r['operation_year'], r['operation_month'], r['payment_no'], r['notes']])
     return _export_response(wb, '回款流水.xlsx')
 
@@ -1805,11 +1811,17 @@ def ar_payments(request, pk):
             return err('预收抵扣由预收核销自动生成，请在「预收预付」页操作')
         if source not in ('回款', '内部往来'):
             return err('回款来源无效')
+        # 回款方式（现金/微信/银行转账/承兑汇票）+ 收款账户：仅对「回款」有意义。
+        method, account = '', ''
         if source == '内部往来':
             if counterparty not in VALID_DEPARTMENTS:
                 return err('内部往来核销须选择有效的往来事业部')
         else:
             counterparty = ''   # 现金回款不带往来部门
+            method = (data.get('method') or ARPayment.DEFAULT_METHOD).strip()
+            if method not in ARPayment.METHOD_VALUES:
+                return err('回款方式无效（现金/微信/银行转账/承兑汇票）')
+            account = (data.get('account') or '').strip()[:50]
         try:
             with transaction.atomic():
                 last = rec.payments.select_for_update().order_by('-payment_no').first()
@@ -1820,6 +1832,8 @@ def ar_payments(request, pk):
                     amount=amount,
                     payment_date=pay_date,
                     source=source,
+                    method=method,
+                    account=account,
                     counterparty_dept=counterparty,
                     notes=data.get('notes', '').strip(),
                 )
@@ -1979,6 +1993,14 @@ def ar_payment_detail(request, pk, ppk):
             if cp not in VALID_DEPARTMENTS:
                 return err('内部往来核销须选择有效的往来事业部')
             pay.counterparty_dept = cp
+        # 回款方式/账户仅对「回款」有意义
+        if 'method' in data and pay.source == '回款':
+            mv = (data['method'] or '').strip()
+            if mv not in ARPayment.METHOD_VALUES:
+                return err('回款方式无效（现金/微信/银行转账/承兑汇票）')
+            pay.method = mv
+        if 'account' in data and pay.source == '回款':
+            pay.account = (data['account'] or '').strip()[:50]
         if 'notes' in data:
             pay.notes = data['notes'].strip()
         try:

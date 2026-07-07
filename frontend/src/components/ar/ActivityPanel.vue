@@ -8,7 +8,7 @@ import { confirmDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import ar from '../../api/ar.js'
 import { useToast } from '../../composables/useToast.js'
-import { todayCST, DEPARTMENTS } from '../../constants.js'
+import { todayCST, DEPARTMENTS, COLLECTION_METHODS, DEFAULT_COLLECTION_METHOD } from '../../constants.js'
 import { copyText } from '../../utils/clipboard.js'
 
 const props = defineProps({
@@ -203,22 +203,27 @@ function setToday(field) { if (props.canWrite) saveFieldValue(field, todayCST())
 
 // ── 回款 ─────────────────────────────────────────────────────────────────────
 const DEPT_OPTS = computed(() => DEPARTMENTS.filter(d => d !== props.rec.delivery_dept))
-const payForm   = reactive({ amount: '', payment_date: '', source: '回款', counterparty_dept: '', notes: '' })
+// 回款方式（仅现金回款有意义）：现金/微信/银行转账/承兑汇票，默认银行转账
+const PAY_METHODS = COLLECTION_METHODS
+const payForm   = reactive({ amount: '', payment_date: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', counterparty_dept: '', notes: '' })
 const addingPay = ref(false)
 
 async function submitPayment() {
   if (!(Number(payForm.amount) > 0))                                   { toast.error('请填写金额'); return }
   if (!payForm.payment_date)                                            { toast.error('请选择日期'); return }
   if (payForm.source === '内部往来' && !payForm.counterparty_dept)     { toast.error('请选择往来事业部'); return }
+  if (payForm.source === '回款' && !payForm.method)                    { toast.error('请选择回款方式'); return }
   addingPay.value = true
   try {
     await ar.addPayment(props.rec.id, {
       amount: payForm.amount, payment_date: payForm.payment_date, source: payForm.source,
+      method: payForm.source === '回款' ? payForm.method : '',
+      account: payForm.source === '回款' ? payForm.account : '',
       counterparty_dept: payForm.source === '内部往来' ? payForm.counterparty_dept : '',
       notes: payForm.notes,
     })
     await refreshRecordAndPayments()
-    payForm.amount = ''; payForm.notes = ''; payForm.counterparty_dept = ''
+    payForm.amount = ''; payForm.notes = ''; payForm.counterparty_dept = ''; payForm.account = ''
     toast.success(payForm.source === '内部往来' ? '已登记内部往来核销' : '已登记回款')
   } catch (e) { toast.error(errMsg(e)) }
   finally { addingPay.value = false }
@@ -228,7 +233,7 @@ async function settleRemaining() {
   if (!(await confirmDlg(`登记一笔 ¥${fmtAmt(outstanding.value)} 的回款，结清全部余款？`))) return
   addingPay.value = true
   try {
-    await ar.addPayment(props.rec.id, { amount: outstanding.value, payment_date: todayCST(), source: '回款', notes: '结清余款' })
+    await ar.addPayment(props.rec.id, { amount: outstanding.value, payment_date: todayCST(), source: '回款', method: payForm.method, account: payForm.account, notes: '结清余款' })
     await refreshRecordAndPayments()
     toast.success('已结清余款')
   } catch (e) { toast.error(errMsg(e)) }
@@ -784,6 +789,7 @@ function onKey(e) {
                     <span class="pay-amt">¥{{ fmtAmt(p.amount) }}</span>
                     <span class="pay-date">{{ p.payment_date }}</span>
                     <span class="pay-src" :class="{ 'pay-src-other': p.source !== '回款' }">{{ p.source }}</span>
+                    <span v-if="p.source === '回款'" class="pay-method">{{ p.method || '银行转账' }}{{ p.account ? '·' + p.account : '' }}</span>
                     <span v-if="p.counterparty_dept" class="pay-cp">↔ {{ p.counterparty_dept }}</span>
                     <button v-if="canCollect && p.source !== '预收抵扣'" class="pay-del" @click="deletePayment(p)">🗑</button>
                   </div>
@@ -792,7 +798,7 @@ function onKey(e) {
                 <!-- 登记表单 -->
                 <div v-if="canCollect && outstanding > 0" class="pay-form">
                   <div class="pay-srcs">
-                    <button class="pay-src-tab" :class="{ on: payForm.source === '回款' }" @click="payForm.source = '回款'">💵 现金回款</button>
+                    <button class="pay-src-tab" :class="{ on: payForm.source === '回款' }" @click="payForm.source = '回款'">💰 回款</button>
                     <button class="pay-src-tab" :class="{ on: payForm.source === '内部往来' }" @click="payForm.source = '内部往来'">↔ 内部往来</button>
                   </div>
                   <div class="pay-add">
@@ -803,6 +809,13 @@ function onKey(e) {
                       <option v-for="d in DEPT_OPTS" :key="d" :value="d">{{ d }}</option>
                     </select>
                     <button class="pay-btn" :disabled="addingPay" @click="submitPayment">{{ addingPay ? '…' : '登记' }}</button>
+                  </div>
+                  <!-- 回款方式（现金/微信/银行转账/承兑汇票）+ 收款账户（选填，为后期具体账户预留） -->
+                  <div v-if="payForm.source === '回款'" class="pay-add pay-add-method">
+                    <select v-model="payForm.method" class="pay-inp pay-inp-method">
+                      <option v-for="m in PAY_METHODS" :key="m" :value="m">{{ m }}</option>
+                    </select>
+                    <input v-model="payForm.account" type="text" maxlength="50" class="pay-inp pay-inp-acct" placeholder="收款账户（选填，如 结算001）" />
                   </div>
                 </div>
                 <button v-if="canCollect && outstanding > 0" class="pay-settle" :disabled="addingPay" @click="settleRemaining">
@@ -1526,6 +1539,7 @@ function onKey(e) {
 .pay-src  { font-size: 9.5px; font-weight: 700; padding: 2px 8px; border-radius: 20px; color: #2e9e5b; background: rgba(46,158,91,.1); border: 1px solid rgba(46,158,91,.2); margin-left: auto; }
 .pay-src-other { color: var(--c-warn); background: rgba(230,81,0,.09); border-color: rgba(230,81,0,.18); }
 .pay-cp  { font-size: 10px; color: #9b8070; }
+.pay-method { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 20px; color: #1565c0; background: rgba(21,101,192,.09); border: 1px solid rgba(21,101,192,.18); }
 .pay-del { border: none; background: none; font-size: 12px; cursor: pointer; opacity: .55; flex-shrink: 0; transition: opacity .12s; }
 .pay-del:hover { opacity: 1; }
 .pay-empty { font-size: 11.5px; color: #c4b3a5; text-align: center; padding: 6px 0; margin: 4px 14px 0; }

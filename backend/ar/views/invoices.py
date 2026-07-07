@@ -362,6 +362,10 @@ def ar_invoice_batch_payment(request, batch_no):
     if not pay_date:
         return err('回款日期无效（格式 2026-01-20）')
     user_notes = (data.get('notes') or '').strip()
+    method = (data.get('method') or ARPayment.DEFAULT_METHOD).strip()
+    if method not in ARPayment.METHOD_VALUES:
+        return err('回款方式无效（现金/微信/银行转账/承兑汇票）')
+    account = (data.get('account') or '').strip()[:50]
 
     with transaction.atomic():
         members = list(_batch_members_qs(request, batch_no).select_for_update())
@@ -389,7 +393,8 @@ def ar_invoice_batch_payment(request, batch_no):
             last = r.payments.order_by('-payment_no').first()
             ARPayment.objects.create(
                 ar_record=r, payment_no=(last.payment_no + 1) if last else 1,
-                amount=alloc, payment_date=pay_date, notes=note)
+                amount=alloc, payment_date=pay_date, method=method, account=account,
+                notes=note)
             r.refresh_from_db()
             allocations.append({
                 'record_id': r.id, 'short_name': r.project.short_name,

@@ -6,6 +6,11 @@ export const DEPARTMENTS = [
 // Financial-analysis (caiwu) module uses the same org units under this name.
 export const BUSINESS_UNITS = DEPARTMENTS
 
+// 应收回款方式（仅 source='回款' 有意义）：现金/微信/银行转账/承兑汇票，默认银行转账。
+// 单一真源，供 ActivityPanel.vue 与 ARRecords.vue 共用，避免两处硬编码漂移。
+export const COLLECTION_METHODS = ['现金', '微信', '银行转账', '承兑汇票']
+export const DEFAULT_COLLECTION_METHOD = '银行转账'
+
 export const ROLE_LABELS = {
   super_admin: '超级管理员',
   manager: '财务经理',

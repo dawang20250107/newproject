@@ -688,6 +688,12 @@ class ARPayment(models.Model):
     资金池统计须排除（见 NON_CASH_PAYMENT_SOURCES），避免重复计现金。
     """
     SOURCE_CHOICES = [('回款', '回款'), ('预收抵扣', '预收抵扣'), ('内部往来', '内部往来')]
+    # 回款方式（仅 source='回款' 的实际收款有意义）：现金/微信/银行转账/承兑汇票。
+    # 非回款来源（预收抵扣/内部往来）留空。历史「现金回款」统一迁移为「银行转账」。
+    METHOD_CHOICES = [('现金', '现金'), ('微信', '微信'),
+                      ('银行转账', '银行转账'), ('承兑汇票', '承兑汇票')]
+    METHOD_VALUES = frozenset(m[0] for m in METHOD_CHOICES)
+    DEFAULT_METHOD = '银行转账'
 
     ar_record = models.ForeignKey(ARRecord, on_delete=models.CASCADE,
                                   related_name='payments', db_index=True)
@@ -696,6 +702,11 @@ class ARPayment(models.Model):
     payment_date = models.DateField('回款日期', db_index=True)
     source = models.CharField('回款来源', max_length=8, choices=SOURCE_CHOICES,
                               default='回款', db_index=True)
+    # 回款方式：仅对 source='回款' 有意义；非回款来源留空。
+    method = models.CharField('回款方式', max_length=12, choices=METHOD_CHOICES,
+                              blank=True, default='', db_index=True)
+    # 收款账户（选填，为后期「微信-结算001」等具体账户预留）：仅对 source='回款' 有意义。
+    account = models.CharField('收款账户', max_length=50, blank=True, default='')
     # 内部往来核销专用：往来事业部（系统部门之一）。其它来源留空。
     counterparty_dept = models.CharField('往来部门', max_length=50, blank=True,
                                          default='', db_index=True)
@@ -711,6 +722,14 @@ class ARPayment(models.Model):
             models.Index(fields=['payment_date']),
         ]
 
+    def save(self, *args, **kwargs):
+        # 方式/账户仅对「回款」有意义：非回款来源（预收抵扣/内部往来）一律留空，
+        # 防止绕过视图的 ORM 写入残留脏方式，保证按方式分组/筛选不串桶。
+        if self.source != '回款':
+            self.method = ''
+            self.account = ''
+        super().save(*args, **kwargs)
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -719,6 +738,8 @@ class ARPayment(models.Model):
             'amount': str(self.amount),
             'payment_date': str(self.payment_date),
             'source': self.source,
+            'method': self.method,
+            'account': self.account,
             'counterparty_dept': self.counterparty_dept,
             'notes': self.notes,
             'created_at': self.created_at.isoformat() if self.created_at else None,
