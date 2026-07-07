@@ -181,11 +181,12 @@ def list_process_codes():
 
 def templates_by_user(userid):
     """列出某 userid 可见的审批模板 [{process_code,name}]（分页）。
-    供"按被查人自动取模板"兜底——无需单独配管理员 userid。"""
-    out, seen, cursor = [], set(), 0
+    供"按被查人自动取模板"兜底——无需单独配管理员 userid。
+    注意：process/listbyuserid 的分页参数是 offset/size（非 cursor）。"""
+    out, seen, offset, size = [], set(), 0, 100
     for _ in range(50):   # 分页兜底：最多 50 页
         data = _post('/topapi/process/listbyuserid',
-                     {'userid': userid, 'cursor': cursor, 'size': 100})
+                     {'userid': userid, 'offset': offset, 'size': size})
         res = data.get('result') or {}
         plist = res.get('process_list') or []
         for p in plist:
@@ -193,10 +194,9 @@ def templates_by_user(userid):
             if code and code not in seen:
                 seen.add(code)
                 out.append({'process_code': code, 'name': p.get('name', '')})
-        nxt = res.get('next_cursor')
-        if nxt is None or not plist:
+        if len(plist) < size:   # 不足一页 = 到底
             break
-        cursor = nxt
+        offset += size
     return out
 
 
