@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 
 
 class DingTalkError(Exception):
-    pass
+    def __init__(self, msg, code=None):
+        super().__init__(msg)
+        self.code = code
 
 
 _TOKEN_LOCK = threading.Lock()
@@ -28,27 +30,49 @@ def _base():
     return getattr(settings, 'DINGTALK_BASE_URL', 'https://oapi.dingtalk.com')
 
 
+def _fetch_token_new(key, secret):
+    """新版开放平台 oauth2（Client ID/Secret）。返回 (token, ttl秒)。"""
+    r = requests.post('https://api.dingtalk.com/v1.0/oauth2/accessToken',
+                      json={'appKey': key, 'appSecret': secret}, timeout=10)
+    data = r.json()
+    if data.get('accessToken'):
+        return data['accessToken'], int(data.get('expireIn', 7200))
+    raise DingTalkError(data.get('message') or data.get('errmsg') or str(data))
+
+
+def _fetch_token_old(key, secret):
+    """旧版 gettoken（AppKey/AppSecret）。返回 (token, ttl秒)。"""
+    r = requests.get(f'{_base()}/gettoken',
+                     params={'appkey': key, 'appsecret': secret}, timeout=10)
+    data = r.json()
+    if data.get('errcode') == 0 and data.get('access_token'):
+        return data['access_token'], int(data.get('expires_in', 7200))
+    raise DingTalkError(data.get('errmsg') or str(data))
+
+
 def access_token():
-    """获取并缓存 access_token（进程内缓存，提前 5 分钟过期）。"""
+    """获取并缓存 access_token（进程内缓存，提前 5 分钟过期）。
+    先试新版 oauth2 端点（新开放平台应用），失败再试旧版 gettoken——两者拿到的
+    access_token 可通用于新旧 API。凭证做 strip，规避环境变量里的换行/空格。"""
     now = time.time()
     with _TOKEN_LOCK:
         if _TOKEN_CACHE['token'] and now < _TOKEN_CACHE['exp']:
             return _TOKEN_CACHE['token']
-    key, secret = settings.DINGTALK_APP_KEY, settings.DINGTALK_APP_SECRET
+    key = (settings.DINGTALK_APP_KEY or '').strip()
+    secret = (settings.DINGTALK_APP_SECRET or '').strip()
     if not (key and secret):
         raise DingTalkError('钉钉未配置（缺少 AppKey/AppSecret）')
-    try:
-        r = requests.get(f'{_base()}/gettoken',
-                         params={'appkey': key, 'appsecret': secret}, timeout=10)
-        data = r.json()
-    except Exception as ex:
-        raise DingTalkError(f'获取钉钉 token 失败：{str(ex)[:120]}')
-    if data.get('errcode') != 0 or not data.get('access_token'):
-        raise DingTalkError(f'获取钉钉 token 失败：{data.get("errmsg") or data}')
-    with _TOKEN_LOCK:
-        _TOKEN_CACHE['token'] = data['access_token']
-        _TOKEN_CACHE['exp'] = now + max(60, int(data.get('expires_in', 7200)) - 300)
-    return _TOKEN_CACHE['token']
+    errs = []
+    for fn in (_fetch_token_new, _fetch_token_old):
+        try:
+            token, ttl = fn(key, secret)
+            with _TOKEN_LOCK:
+                _TOKEN_CACHE['token'] = token
+                _TOKEN_CACHE['exp'] = now + max(60, ttl - 300)
+            return token
+        except Exception as ex:
+            errs.append(str(ex)[:120])
+    raise DingTalkError('获取钉钉 token 失败：' + '；'.join(errs))
 
 
 def _post(path, body):
@@ -60,8 +84,9 @@ def _post(path, body):
         raise
     except Exception as ex:
         raise DingTalkError(f'钉钉接口调用失败：{str(ex)[:120]}')
-    if data.get('errcode') not in (0, None):
-        raise DingTalkError(f'{path} 返回错误：{data.get("errmsg") or data}')
+    ec = data.get('errcode')
+    if ec not in (0, None):
+        raise DingTalkError(f'{data.get("errmsg") or data}', code=ec)
     return data
 
 
@@ -74,9 +99,13 @@ def userid_by_mobile(mobile):
     try:
         data = _post('/topapi/v2/user/getbymobile', {'mobile': mobile})
     except DingTalkError as ex:
-        # 手机号不存在时钉钉返回 errcode!=0，视为查无此人而非硬错
-        logger.info('dingtalk getbymobile miss: %s', ex)
-        return None
+        # 仅"该手机号不在通讯录"才当查无此人（errcode 60121 等）；
+        # token/权限/网络等配置类错误必须上抛，避免掩盖成"找不到该人"。
+        s = str(ex)
+        if ex.code in (60121, 60011) or '找不到' in s or '不存在' in s:
+            logger.info('dingtalk getbymobile miss: %s', ex)
+            return None
+        raise
     return (data.get('result') or {}).get('userid')
 
 

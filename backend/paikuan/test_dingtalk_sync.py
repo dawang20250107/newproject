@@ -176,3 +176,20 @@ class SyncEndpointTests(TestCase):
         d = r.json()['data']
         self.assertTrue(d['connected'])
         self.assertEqual(d['templates'][0]['process_code'], 'PC1')
+
+    @mock.patch('paikuan.dingtalk_client._post')
+    def test_mobile_config_error_surfaces_not_masked(self, m_post):
+        # token/凭证类错误必须暴露（502），不能被吞成"查无此人"
+        from paikuan.dingtalk_client import DingTalkError
+        m_post.side_effect = DingTalkError('不合法的appKey或appSecret')
+        r = self._post('/api/pk/dingtalk/resolve-user', {'mobile': '13800001234'})
+        self.assertEqual(r.status_code, 502, r.content)
+
+    @mock.patch('paikuan.dingtalk_client._post')
+    def test_mobile_not_in_contacts_returns_empty(self, m_post):
+        # 手机号不在通讯录（60121）→ 视为查无此人，返回空列表而非报错
+        from paikuan.dingtalk_client import DingTalkError
+        m_post.side_effect = DingTalkError('找不到该用户', code=60121)
+        r = self._post('/api/pk/dingtalk/resolve-user', {'mobile': '13800000000'})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['data']['users'], [])
