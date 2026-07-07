@@ -196,14 +196,11 @@ def list_process_codes():
 def templates_by_user(userid):
     """列出某 userid 可见的审批模板 [{process_code,name}]（新版 workflow 接口，分页）。
     新版覆盖更全，报销等模板旧接口常缺、这里能列到。分页兼容 nextToken / offset 两种。"""
-    out, seen, next_token, offset = [], set(), None, 0
+    # nextToken 必填：首页传空串，后续页用上一页返回的 nextToken。
+    out, seen, next_token = [], set(), ''
     for _ in range(50):
-        params = {'userId': userid, 'maxResults': 100}
-        if next_token is not None:
-            params['nextToken'] = next_token
-        else:
-            params['offset'] = offset
-        data = _new('GET', '/v1.0/workflow/processes/userVisibilities/templates', params=params)
+        data = _new('GET', '/v1.0/workflow/processes/userVisibilities/templates',
+                    params={'userId': userid, 'nextToken': next_token, 'maxResults': 100})
         res = data.get('result')
         # 兼容 result 为 dict（含分页）或直接为模板数组两种返回形态
         if isinstance(res, list):
@@ -217,11 +214,8 @@ def templates_by_user(userid):
                 seen.add(code)
                 out.append({'process_code': code, 'name': p.get('name', '')})
         next_token = res.get('nextToken')
-        if next_token:
-            continue
-        if len(plist) < 100:   # offset 分页：不足一页即到底
+        if not next_token:
             break
-        offset += 100
     return out
 
 
@@ -229,14 +223,13 @@ def templates_by_user(userid):
 def list_instance_ids(process_code, start_ms, end_ms, userid=None):
     """按模板+时间区间(+发起人)拉审批实例 ID（新版 instanceIds/query，nextToken 翻页）。
     userid 传入时按「发起人」过滤（userIds，最多 10 个）。"""
-    ids, next_token = [], None
+    # nextToken 必填：首页传 0，后续页用返回的 nextToken（Long 游标）。
+    ids, next_token = [], 0
     for _ in range(500):   # 上限兜底
         body = {'processCode': process_code, 'startTime': int(start_ms),
-                'endTime': int(end_ms), 'maxResults': 20}
+                'endTime': int(end_ms), 'nextToken': next_token, 'maxResults': 20}
         if userid:
             body['userIds'] = [userid]
-        if next_token is not None:
-            body['nextToken'] = next_token
         data = _new('POST', '/v1.0/workflow/processes/instanceIds/query', json_body=body)
         res = data.get('result') or {}
         ids.extend(res.get('list') or [])
