@@ -50,6 +50,7 @@ urlpatterns = [
     path('cockpit/ai-analysis', views.cockpit_ai_analysis),
     path('cockpit/ai-analysis/stream', views.cockpit_ai_analysis_stream),
     path('cockpit/ai-chat/stream', views.cockpit_ai_chat_stream),
+    path('cockpit/chat', views.cockpit_chat),
     path('cockpit/knowledge', views.cockpit_knowledge),
     path('cockpit/knowledge/distill', views.cockpit_knowledge_distill),
     path('cockpit/knowledge/import', views.cockpit_knowledge_import),

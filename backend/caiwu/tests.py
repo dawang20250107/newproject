@@ -1195,6 +1195,53 @@ class CaiwuMetricsAndTargetsTests(TestCase):
             self.assertEqual(q.status_code, 200, q.content)
             self.assertIsInstance(q.json()['data'], str)
 
+    def test_cockpit_chat_persist_sync_and_isolation(self):
+        """对话云端留存：PUT 覆盖保存 → GET 取回；清洗越界/脏数据；DELETE 清空；按账号隔离。"""
+        from caiwu.models import CockpitChat
+        # 初始为空
+        r0 = self.client.get('/api/cw/cockpit/chat', **self.auth())
+        self.assertEqual(r0.status_code, 200, r0.content)
+        self.assertEqual(r0.json()['data']['messages'], [])
+        # 保存：混入脏数据（错误 role/空内容/超长/多余字段），只应保留合法精简项
+        payload = {'messages': [
+            {'role': 'user', 'content': '本月利润如何', 'evil': 'x'},
+            {'role': 'assistant', 'content': 'A' * 30000, 'toolSteps': [
+                {'label': '查询经营业绩', 'name': 'query_financials', 'ms': 12, 'ok': True}], 'fb': 1},
+            {'role': 'system', 'content': '应被丢弃'},
+            {'role': 'user', 'content': ''},
+        ]}
+        rp = self.client.put('/api/cw/cockpit/chat', data=json.dumps(payload),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(rp.status_code, 200, rp.content)
+        self.assertEqual(rp.json()['data']['saved'], 2)     # 仅 2 条合法
+        rg = self.client.get('/api/cw/cockpit/chat', **self.auth()).json()['data']['messages']
+        self.assertEqual(len(rg), 2)
+        self.assertEqual(rg[0]['role'], 'user')
+        self.assertEqual(rg[1]['role'], 'assistant')
+        self.assertEqual(len(rg[1]['content']), 20000)      # 超长被裁剪
+        self.assertEqual(rg[1]['toolSteps'][0]['name'], 'query_financials')
+        self.assertEqual(rg[1]['fb'], 1)
+        self.assertNotIn('evil', rg[0])                     # 多余字段被剔除
+        # 条数上限 60
+        many = {'messages': [{'role': 'user', 'content': f'q{i}'} for i in range(80)]}
+        self.client.put('/api/cw/cockpit/chat', data=json.dumps(many),
+                        content_type='application/json', **self.auth())
+        self.assertEqual(len(self.client.get('/api/cw/cockpit/chat', **self.auth())
+                             .json()['data']['messages']), 60)
+        # 按账号隔离：另一个账号看不到
+        other = PaikuanUser(phone='13900007777', name='Other', role='super_admin',
+                            job_title='finance_director', departments=[], is_active=True, is_approved=True)
+        other.set_password('Test123456')
+        other.save()
+        oauth = {'HTTP_AUTHORIZATION': f'Bearer {_make_token(other)}'}
+        self.assertEqual(self.client.get('/api/cw/cockpit/chat', **oauth).json()['data']['messages'], [])
+        # DELETE 清空
+        rd = self.client.delete('/api/cw/cockpit/chat', **self.auth())
+        self.assertEqual(rd.status_code, 200, rd.content)
+        self.assertEqual(self.client.get('/api/cw/cockpit/chat', **self.auth())
+                         .json()['data']['messages'], [])
+        self.assertFalse(CockpitChat.objects.filter(user_id=self.admin.id).exists())
+
     def test_query_payments_summarizes_cash_out_chain(self):
         """新增取数：query_payments 覆盖排款管理系统（资金支出链路）——本期计划/实付/待付、
         状态分布、审批待办，按事业部作用域，且注入当前期对话上下文。"""

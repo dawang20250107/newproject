@@ -359,6 +359,20 @@ class CockpitKnowledge(models.Model):
         }
 
 
+class CockpitChat(models.Model):
+    """业财融合助手的对话留存：每个账号一条，保存其当前对话消息数组（JSON），
+    实现跨设备按账号同步——刷新/换电脑不丢，直到用户主动清空。
+    仅存精简后的消息（role/content/toolSteps/fb），不含流式中间态。"""
+    user = models.OneToOneField('paikuan.PaikuanUser', on_delete=models.CASCADE,
+                                related_name='cockpit_chat')
+    messages = models.JSONField('对话消息', default=list, blank=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        app_label = 'caiwu'
+        db_table = 'caiwu_cockpit_chat'
+
+
 class InternalBatch(models.Model):
     """内部往来核对：一次上传 = 某记账主体（事业部/总部）某期间的金蝶内往明细。
     同 (主体, 年, 月) 重复上传时整体替换，保证期间数据幂等。"""

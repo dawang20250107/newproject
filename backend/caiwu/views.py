@@ -17,7 +17,7 @@ import jwt
 from caiwu.models import (
     L1Category, L2Category, L3Category,
     ImportBatch, FinancialEntry, FinancialTarget, ProjectMargin, CockpitKnowledge,
-    BUSINESS_UNITS, VALID_BUSINESS_UNITS, JOB_TITLES,
+    CockpitChat, BUSINESS_UNITS, VALID_BUSINESS_UNITS, JOB_TITLES,
 )
 from paikuan.models import PaikuanUser, JobPermission as PaikuanJobPermission
 
@@ -4051,6 +4051,67 @@ def cockpit_knowledge(request):
             content=content[:2000], source=(body.get('source') or 'user'),
             pinned=bool(body.get('pinned')), created_by=request.pk_user)
         return ok(k.to_dict())
+    return err('方法不允许', 405)
+
+
+# 服务端对话留存单账号上限（与前端一致），双保险防止异常体积
+_CHAT_MAX_MSGS = 60
+_CHAT_MSG_MAX_LEN = 20000
+
+
+def _sanitize_chat_messages(raw):
+    """清洗前端上送的对话消息：仅保留 role/content(+toolSteps/fb)，裁剪条数与长度，
+    杜绝把任意结构塞进库。返回可入库的精简列表。"""
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for m in raw[-_CHAT_MAX_MSGS:]:
+        if not isinstance(m, dict):
+            continue
+        role = m.get('role')
+        if role not in ('user', 'assistant'):
+            continue
+        content = m.get('content')
+        if not isinstance(content, str) or not content:
+            continue
+        item = {'role': role, 'content': content[:_CHAT_MSG_MAX_LEN]}
+        steps = m.get('toolSteps')
+        if isinstance(steps, list) and steps:
+            slim_steps = []
+            for s in steps[:20]:
+                if isinstance(s, dict):
+                    slim_steps.append({'label': str(s.get('label') or '')[:40],
+                                       'name': str(s.get('name') or '')[:40],
+                                       'ms': s.get('ms') if isinstance(s.get('ms'), int) else None,
+                                       'ok': s.get('ok') if isinstance(s.get('ok'), bool) else None})
+            if slim_steps:
+                item['toolSteps'] = slim_steps
+        if m.get('fb') in (1, -1):
+            item['fb'] = m['fb']
+        out.append(item)
+    return out
+
+
+@cw_required()
+def cockpit_chat(request):
+    """业财融合助手对话的按账号云端留存（跨设备同步）。
+    GET 取回本账号已保存的对话；PUT 覆盖保存；DELETE 清空。"""
+    denied = _page_denied(request, 'cockpit')
+    if denied:
+        return denied
+    if request.method == 'GET':
+        row = CockpitChat.objects.filter(user_id=request.pk_uid).first()
+        return ok({'messages': (row.messages if row else []),
+                   'updated_at': row.updated_at.isoformat() if row else None})
+    if request.method == 'PUT':
+        body = _parse_json(request)
+        msgs = _sanitize_chat_messages(body.get('messages'))
+        row, _ = CockpitChat.objects.update_or_create(
+            user_id=request.pk_uid, defaults={'messages': msgs})
+        return ok({'saved': len(msgs), 'updated_at': row.updated_at.isoformat()})
+    if request.method == 'DELETE':
+        CockpitChat.objects.filter(user_id=request.pk_uid).delete()
+        return ok({'cleared': True})
     return err('方法不允许', 405)
 
 

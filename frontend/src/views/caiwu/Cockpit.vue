@@ -282,35 +282,49 @@ async function sendChat(text) {
   }
 }
 
-// ── 对话持久化：刷新/重进不丢，直到用户点「清空」──────────────────────────────
-// 按登录用户隔离，避免同一浏览器换人登录后串到别人的对话。
+// ── 对话持久化：按账号云端同步（跨设备），localStorage 仅作秒开缓存/离线兜底 ──────
+// 本地缓存键按登录用户隔离，避免同一浏览器换人登录后串到别人的对话。
 function chatKey() { return `cfa_chat_v1_${auth.user?.id ?? auth.user?.phone ?? 'anon'}` }
-function persistChat() {
-  try {
-    // 仅存最近 60 条、剥离流式临时态，控制体积；隐私模式/超额静默失败
-    const slim = chatMessages.value.slice(-60).map(m => {
-      const o = { role: m.role, content: m.content }
-      if (m.toolSteps && m.toolSteps.length) o.toolSteps = m.toolSteps
-      if (m.fb) o.fb = m.fb
-      return o
-    })
-    localStorage.setItem(chatKey(), JSON.stringify(slim))
-  } catch { /* 忽略 */ }
+function slimMessages() {
+  // 仅取最近 60 条、剥离流式临时态，控制体积（与后端上限一致）
+  return chatMessages.value.slice(-60).map(m => {
+    const o = { role: m.role, content: m.content }
+    if (m.toolSteps && m.toolSteps.length) o.toolSteps = m.toolSteps
+    if (m.fb) o.fb = m.fb
+    return o
+  })
 }
-function restoreChat() {
+function writeLocal(slim) { try { localStorage.setItem(chatKey(), JSON.stringify(slim)) } catch { /* 忽略 */ } }
+function readLocal() {
+  try { const raw = localStorage.getItem(chatKey()); const a = raw ? JSON.parse(raw) : null; return Array.isArray(a) ? a : [] }
+  catch { return [] }
+}
+const normMsg = (m) => ({ reasoning: '', toolSteps: [], ...m })
+function persistChat() {
+  const slim = slimMessages()
+  writeLocal(slim)                                              // 本地秒存（同设备刷新即时可见）
+  api.put('/cockpit/chat', { messages: slim }).catch(() => {})  // 云端同步（失败静默，下轮再试）
+}
+async function restoreChat() {
+  const local = readLocal()
+  if (local.length) chatMessages.value = local.map(normMsg)     // 先用本地缓存秒开
   try {
-    const raw = localStorage.getItem(chatKey())
-    if (!raw) return
-    const arr = JSON.parse(raw)
-    if (Array.isArray(arr) && arr.length) {
-      chatMessages.value = arr.map(m => ({ reasoning: '', toolSteps: [], ...m }))
+    const res = await api.get('/cockpit/chat')                  // 再拉云端（权威，跨设备）
+    const server = res?.data?.messages
+    if (Array.isArray(server) && server.length) {
+      chatMessages.value = server.map(normMsg)
+      writeLocal(slimMessages())
+    } else if (local.length) {
+      // 云端空、本地有（首次上线迁移）→ 把本地历史上传，避免看起来"被清空"
+      api.put('/cockpit/chat', { messages: slimMessages() }).catch(() => {})
     }
-  } catch { /* 忽略 */ }
+  } catch { /* 离线/异常：保留本地缓存 */ }
 }
 function resetChat() {
   chatMessages.value = []
   chatErr.value = ''
   try { localStorage.removeItem(chatKey()) } catch { /* 忽略 */ }
+  api.delete('/cockpit/chat').catch(() => {})                   // 云端一并清除
 }
 
 // ── 导出对话：Markdown 文档 / 长图 ───────────────────────────────────────────
