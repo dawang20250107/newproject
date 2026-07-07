@@ -191,6 +191,7 @@ def dingtalk_test(request):
         'secret_masked': (secret[:4] + '****' + secret[-4:]) if len(secret) >= 8 else '(空或过短)',
         'corp_id_set': bool(corp),
         'process_codes_set': bool((settings.DINGTALK_PROCESS_CODES or '').strip()),
+        'admin_userid_set': bool((settings.DINGTALK_ADMIN_USERID or '').strip()),
     }
     try:
         dc.access_token()
@@ -198,12 +199,19 @@ def dingtalk_test(request):
         return ok({'connected': False, 'error': str(ex), 'config': config,
                    'hint': 'AppKey 应为 Client ID（如 ding 开头），不是 AppID（形如 uuid）；'
                            '并确认 Secret 未被截断（长度通常 64）、环境变量已生效并重启。'})
+    templates, tpl_err = [], ''
     try:
         templates = dc.list_process_codes()
     except DingTalkError as ex:
-        return ok({'connected': True, 'templates': [], 'template_error': str(ex), 'config': config})
-    return ok({'connected': True, 'templates': templates, 'config': config,
-               'note': '未列出模板时，请在环境变量 DINGTALK_PROCESS_CODES 配置要同步的模板 process_code'})
+        tpl_err = str(ex)
+    result = {'connected': True, 'templates': templates, 'config': config}
+    if tpl_err:
+        result['template_error'] = tpl_err
+    if not templates:
+        result['hint'] = ('未获取到模板。请：① 应用「可用范围」改为全部员工；'
+                          '② 配置 DINGTALK_ADMIN_USERID（一个超级管理员的 userid——用本页手机号查该管理员即可复制 userid）后重启；'
+                          '或直接在 DINGTALK_PROCESS_CODES 手动配置要同步的模板 process_code。')
+    return ok(result)
 
 
 @csrf_exempt

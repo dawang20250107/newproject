@@ -160,7 +160,8 @@ async function refreshStatus() {
       <div v-if="diag.config" class="diag-cfg">
         服务器读到：AppKey=<code>{{ diag.config.app_key }}</code> ·
         Secret 长度 <code>{{ diag.config.secret_len }}</code>（<code>{{ diag.config.secret_masked }}</code>） ·
-        模板配置 <code>{{ diag.config.process_codes_set ? '已配' : '未配' }}</code>
+        管理员 userid <code>{{ diag.config.admin_userid_set ? '已配' : '未配' }}</code> ·
+        模板清单 <code>{{ diag.config.process_codes_set ? '已配' : '未配' }}</code>
       </div>
       <div v-if="diag.hint" class="diag-hint">💡 {{ diag.hint }}</div>
       <div v-if="diag.connected" class="diag-tpl">
