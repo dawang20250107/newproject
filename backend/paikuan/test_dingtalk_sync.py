@@ -131,10 +131,11 @@ class SyncEndpointTests(TestCase):
         rec.refresh_from_db()
         self.assertEqual(rec.status, 'approved')
 
+    @mock.patch('paikuan.dingtalk_client.templates_by_user', return_value=[])
     @mock.patch('paikuan.dingtalk_client.list_process_codes')
     @mock.patch('paikuan.dingtalk_client.list_instance_ids')
     @mock.patch('paikuan.dingtalk_client.get_instance')
-    def test_query_filters_by_task_and_marks_synced(self, m_get, m_list, m_codes):
+    def test_query_filters_by_task_and_marks_synced(self, m_get, m_list, m_codes, m_by_user):
         m_codes.return_value = [{'process_code': 'PC1', 'name': '付款审批'}]
         m_list.return_value = ['INST-2']
         m_get.return_value = DETAIL_PAY
@@ -156,11 +157,12 @@ class SyncEndpointTests(TestCase):
                         {'userid': 'U-me', 'start': '2026-06-01', 'end': '2026-06-30', 'status': 'done'})
         self.assertEqual(r2.json()['data']['count'], 0)
 
+    @mock.patch('paikuan.dingtalk_client.templates_by_user', return_value=[])
     @mock.patch('paikuan.dingtalk_client.list_process_codes',
                 return_value=[{'process_code': 'PC1', 'name': '付款审批'}])
     @mock.patch('paikuan.dingtalk_client.list_instance_ids', return_value=[])
     @mock.patch('paikuan.dingtalk_client.get_instance')
-    def test_query_originator_filter_only_for_originated(self, m_get, m_list, m_codes):
+    def test_query_originator_filter_only_for_originated(self, m_get, m_list, m_codes, m_by_user):
         # todo/done：审批人口径，不能按发起人过滤（listids userid_list=发起人）
         self._post('/api/pk/dingtalk/query',
                    {'userid': 'U-me', 'start': '2026-06-01', 'end': '2026-06-30', 'status': 'todo'})

@@ -46,6 +46,8 @@ const loading = ref(false)
 const loadErr = ref('')
 const items = ref([])
 const capped = ref(false)
+const scanned = ref([])        // 本次查询实际扫描的模板名（用于确认报销等是否已覆盖）
+const queried = ref(false)     // 是否已发起过一次查询
 const sel = ref(new Set())
 const selCount = computed(() => sel.value.size)
 const DING = {
@@ -88,6 +90,8 @@ async function runQuery() {
     }, { timeout: 90000 })
     items.value = r.data?.items || []
     capped.value = !!r.data?.capped
+    scanned.value = r.data?.templates_scanned || []
+    queried.value = true
   } catch (e) { loadErr.value = e?.msg || e?.error || '查询失败'; items.value = [] }
   finally { loading.value = false }
 }
@@ -232,7 +236,13 @@ async function refreshStatus() {
         <div class="hint-t">按人查询钉钉审批</div>
         <div class="hint-s">输入手机号或姓名、选时间范围，查出该员工在钉钉里的待处理 / 已处理审批，勾选后同步进「审批管理」。</div>
       </div>
-      <div v-else-if="!items.length" class="empty">该员工在此范围内无「{{ STATUS.find(s => s.v === status).l }}」的审批</div>
+      <div v-else-if="!items.length" class="empty">
+        <div>该员工在此范围内无「{{ STATUS.find(s => s.v === status).l }}」的审批</div>
+        <div v-if="scanned.length" class="scanned">
+          已扫描 {{ scanned.length }} 个模板：<span v-for="(t, i) in scanned" :key="i" class="tplchip">{{ t }}</span>
+          <div class="scanned-tip">若这里没有你要的模板（如「报销」），说明该模板对此人不可见 / 应用未授权，请换用发起该审批的本人查询，或联系钉钉管理员在应用可用范围内放开。</div>
+        </div>
+      </div>
       <div v-else class="tablewrap">
         <table>
           <thead>
@@ -364,6 +374,10 @@ async function refreshStatus() {
 .empty.hint .hint-i { font-size: 40px; margin-bottom: 10px; }
 .empty.hint .hint-t { font-size: 16px; font-weight: 700; color: var(--text, #4a3322); }
 .empty.hint .hint-s { max-width: 460px; margin: 8px auto 0; line-height: 1.6; }
+.scanned { margin-top: 14px; max-width: 620px; margin-left: auto; margin-right: auto; font-size: 12px; }
+.scanned .tplchip { display: inline-block; margin: 3px 4px 0 0; padding: 1px 7px; border-radius: 10px;
+  background: var(--chip-bg, #f0e9e0); color: var(--text, #6a5641); }
+.scanned .scanned-tip { margin-top: 10px; line-height: 1.6; color: var(--muted, #9b8070); }
 .tablewrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 thead th { text-align: left; padding: 10px 12px; font-size: 11.5px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--muted, #9b8070); background: var(--surface-2, rgba(160,120,80,.06)); white-space: nowrap; position: sticky; top: 0; z-index: 1; }

@@ -179,24 +179,70 @@ def list_process_codes():
         return []
 
 
-def templates_by_user(userid):
-    """列出某 userid 可见的审批模板 [{process_code,name}]（分页）。
-    供"按被查人自动取模板"兜底——无需单独配管理员 userid。
-    注意：process/listbyuserid 的分页参数是 offset/size（非 cursor）。"""
-    out, seen, offset, size = [], set(), 0, 100
-    for _ in range(50):   # 分页兜底：最多 50 页
+def _templates_old(userid):
+    """旧版 topapi/process/listbyuserid（offset/size 分页）。覆盖有盲区（如报销常缺）。"""
+    out, offset, size = [], 0, 100
+    for _ in range(50):
         data = _post('/topapi/process/listbyuserid',
                      {'userid': userid, 'offset': offset, 'size': size})
         res = data.get('result') or {}
         plist = res.get('process_list') or []
         for p in plist:
-            code = p.get('process_code')
-            if code and code not in seen:
-                seen.add(code)
-                out.append({'process_code': code, 'name': p.get('name', '')})
-        if len(plist) < size:   # 不足一页 = 到底
+            if p.get('process_code'):
+                out.append({'process_code': p['process_code'], 'name': p.get('name', '')})
+        if len(plist) < size:
             break
         offset += size
+    return out
+
+
+def _templates_new(userid):
+    """新版 workflow/processes/userVisibilities/templates（nextToken 分页）。
+    覆盖更全，报销等模板通常只在这里能列到。"""
+    out, next_token = [], None
+    for _ in range(50):
+        params = {'userId': userid, 'maxResults': 100}
+        if next_token is not None:
+            params['nextToken'] = next_token
+        try:
+            r = requests.get(
+                'https://api.dingtalk.com/v1.0/workflow/processes/userVisibilities/templates',
+                headers={'x-acs-dingtalk-access-token': access_token()},
+                params=params, timeout=15)
+            data = r.json()
+        except DingTalkError:
+            raise
+        except Exception as ex:
+            raise DingTalkError(f'新版模板接口调用失败：{str(ex)[:120]}')
+        res = data.get('result')
+        if res is None:
+            raise DingTalkError(data.get('message') or data.get('errmsg') or '新版模板接口无 result')
+        plist = res.get('processList') or res.get('templateList') or []
+        for p in plist:
+            code = p.get('processCode') or p.get('process_code')
+            if code:
+                out.append({'process_code': code, 'name': p.get('name', '')})
+        next_token = res.get('nextToken')
+        if not next_token or not plist:
+            break
+    return out
+
+
+def templates_by_user(userid):
+    """列出某 userid 可见的审批模板 [{process_code,name}]，新旧接口取并集。
+    新版接口覆盖更全（报销等），旧版兜底；任一失败不影响另一。"""
+    out, seen, errs = [], set(), []
+    for fn in (_templates_new, _templates_old):
+        try:
+            for t in fn(userid):
+                if t['process_code'] not in seen:
+                    seen.add(t['process_code'])
+                    out.append(t)
+        except DingTalkError as ex:
+            errs.append(f'{fn.__name__}:{ex}')
+            logger.warning('templates via %s failed: %s', fn.__name__, ex)
+    if not out and errs:
+        raise DingTalkError('；'.join(errs))
     return out
 
 

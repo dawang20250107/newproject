@@ -263,14 +263,19 @@ def dingtalk_query(request):
     try:
         # 模板来源三级兜底：① 手动配置的 DINGTALK_PROCESS_CODES / 管理员可见模板；
         # ② 都没有时，用"被查这个人自己可见的模板"（无需配管理员 userid，基础版即可）。
+        # 模板来源取并集：手动配置 + 被查人可见（新旧接口并集）。
+        # 单一来源都有盲区（旧接口常缺报销），并集最全；配置项优先保留其自定义名称。
         templates = dc.list_process_codes()
+        seen_codes = {t['process_code'] for t in templates}
         tpl_api_err = ''
-        if not templates:
-            try:
-                templates = dc.templates_by_user(userid)
-            except DingTalkError as ex:
-                tpl_api_err = str(ex)
-                logger.warning('templates_by_user(%s) failed: %s', userid, ex)
+        try:
+            for t in dc.templates_by_user(userid):
+                if t['process_code'] not in seen_codes:
+                    seen_codes.add(t['process_code'])
+                    templates.append(t)
+        except DingTalkError as ex:
+            tpl_api_err = str(ex)
+            logger.warning('templates_by_user(%s) failed: %s', userid, ex)
         if not templates:
             if tpl_api_err:
                 # 接口报错（多为权限/可见范围）——把钉钉原话透出来，便于对症开权限
@@ -346,7 +351,9 @@ def dingtalk_query(request):
         return err(str(ex), 502, 502)
 
     items.sort(key=lambda x: x['create_time'], reverse=True)
-    return ok({'items': items, 'count': len(items), 'capped': capped})
+    scanned = [t.get('name') or t['process_code'] for t in templates]
+    return ok({'items': items, 'count': len(items), 'capped': capped,
+               'templates_scanned': scanned, 'templates_count': len(templates)})
 
 
 def _upsert(detail, actor):
