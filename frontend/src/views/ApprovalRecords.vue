@@ -6,6 +6,7 @@ import { useRoute } from 'vue-router'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import ContextMenu from '../components/ContextMenu.vue'
+import DingtalkSyncPanel from '../components/DingtalkSyncPanel.vue'
 import { useContextMenu } from '../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../utils/clipboard.js'
 import { todayCST } from '../constants.js'
@@ -108,6 +109,7 @@ const STATUS_OPTS = [
   { value: 'pending', label: '待审批' }, { value: 'approved', label: '审批通过' },
   { value: 'rejected', label: '已拒绝' }, { value: 'canceled', label: '已撤销' },
 ]
+const subtab = ref('list')         // 'list' 审批列表 | 'dingtalk' 钉钉同步
 const q = ref('')                  // 顶部全局关键字（跨字段模糊）
 const colFilters = reactive({})    // field -> {op, value}
 const sortField = ref('')
@@ -836,7 +838,14 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       </div>
     </div>
   </div>
-  <div class="topbar"><h1>审批管理</h1><div class="topbar-tools">
+  <div class="topbar">
+    <div class="tb-left"><h1>审批管理</h1>
+      <div class="subtabs">
+        <button :class="{ on: subtab === 'list' }" @click="subtab = 'list'">审批列表</button>
+        <button :class="{ on: subtab === 'dingtalk' }" @click="subtab = 'dingtalk'">🔗 钉钉同步</button>
+      </div>
+    </div>
+    <div class="topbar-tools" v-show="subtab === 'list'">
     <input v-model="q" class="global-search" placeholder="🔍 申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
     <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
     <input v-model="numbersInput" class="num-inline" :class="{ on: !!numbersFilter }"
@@ -857,7 +866,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   </div></div>
   <input ref="fileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImport" />
   <input ref="transportFileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onTransportImport" />
-  <div class="card approval-card fh-fill">
+  <DingtalkSyncPanel v-if="subtab === 'dingtalk'" @synced="load()" />
+  <div v-show="subtab === 'list'" class="card approval-card fh-fill">
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
   <div v-if="filterChips.length" class="chips-row">
     <span v-for="c in filterChips" :key="c.key" class="fchip">
@@ -1154,6 +1164,12 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 吸底 bottom-bar(36px) 占位：滚动区底部留白，最后一行不被遮挡 */
 .table-wrap.page-scroll { padding-bottom: 40px; }
 /* 搜索 + 方案 + 导入导出 收纳进页头右侧，腾出整行垂直空间给表格 */
+.tb-left { display: flex; align-items: center; gap: 16px; }
+.subtabs { display: inline-flex; gap: 2px; background: var(--surface-2, rgba(160,120,80,.08)); border-radius: 9px; padding: 3px; }
+.subtabs button { border: none; background: none; padding: 6px 14px; border-radius: 7px; font-size: 13.5px; font-weight: 600;
+  color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; transition: all .14s; }
+.subtabs button:hover { color: var(--text, #4a3322); }
+.subtabs button.on { background: var(--card-bg, #fff); color: var(--primary, #1565c0); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
 .topbar-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .topbar-tools .global-search { min-width: 180px; flex: 0 1 240px; height: 30px; }
 .tb-sep { width: 1px; align-self: stretch; min-height: 20px; background: var(--border); margin: 0 2px; }
