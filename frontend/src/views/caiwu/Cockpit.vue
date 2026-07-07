@@ -677,7 +677,7 @@ const buActualOption = computed(() => {
     series: [
       { name: '收入', type: 'bar', data: bus.map(b => b.month.actual_revenue), itemStyle: { color: '#2e7d32', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
         label: topLabel(p => axisMoney(p.value)), labelLayout: HIDE_OVERLAP },
-      { name: '利润', type: 'bar', data: bus.map(b => b.month.actual_profit), itemStyle: { color: '#1565c0', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
+      { name: '经营毛利', type: 'bar', data: bus.map(b => b.month.actual_gross_profit), itemStyle: { color: '#00897b', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
         label: topLabel(p => axisMoney(p.value)), labelLayout: HIDE_OVERLAP },
     ],
   }
@@ -704,7 +704,7 @@ const buRateOption = computed(() => {
       { name: 'YTD收入达成', type: 'bar', data: bus.map(b => b.ytd.revenue_rate), itemStyle: { color: '#66bb6a', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
         label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP,
         markLine: { silent: true, symbol: 'none', lineStyle: { color: '#c96342', type: 'dashed' }, data: [{ yAxis: 100, label: { formatter: '100%', color: '#c96342', fontSize: 10 } }] } },
-      { name: 'YTD利润达成', type: 'bar', data: bus.map(b => b.ytd.profit_rate), itemStyle: { color: '#42a5f5', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
+      { name: 'YTD毛利达成', type: 'bar', data: bus.map(b => b.ytd.gross_profit_rate), itemStyle: { color: '#26a69a', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
         label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP },
     ],
   }
@@ -760,7 +760,7 @@ const ratioPills = computed(() => {
     { label: '成本率', value: fmtPctVal(d.costRatio) },
     { label: '费用率', value: fmtPctVal(d.expenseRatio) },
     { label: 'YTD收入', value: wan(y?.actual_revenue) },
-    { label: 'YTD净利', value: wan(y?.actual_profit) },
+    { label: 'YTD毛利', value: wan(y?.actual_gross_profit) },
   ]
 })
 
@@ -796,11 +796,13 @@ const buMatrix = computed(() => {
     return {
       bu: b.business_unit, rev, gross, prof,
       grossMargin: pct(gross, rev), netMargin: pct(prof, rev),
-      revRate: m.revenue_rate, profRate: m.profit_rate,
+      // 利润口径以经营毛利为主（贡献/引擎/信号均用毛利）；净利仅作对照展示
+      revRate: m.revenue_rate, profRate: m.profit_rate, grossRate: m.gross_profit_rate,
       revMom: m.revenue_mom, revYoy: m.revenue_yoy,
       ytdRev: y.actual_revenue, ytdRate: y.revenue_rate, ytdProf: y.actual_profit,
+      ytdGross: y.actual_gross_profit,
       share: groupRev ? pct(rev, groupRev) : null,
-      loss: (prof ?? 0) < 0,
+      loss: (prof ?? 0) < 0, grossLoss: (gross ?? 0) < 0,
       hasData: rev != null || prof != null,
     }
   }).filter(r => r.hasData)
@@ -827,23 +829,23 @@ const revStructOption = computed(() => {
   }
 })
 
-// 利润贡献（横向分歧条：正绿负红，直观看谁在拖累）
+// 毛利贡献（横向分歧条：正绿负红，直观看谁在拖累集团毛利）
 const profitContribOption = computed(() => {
-  const rows = [...buMatrix.value].filter(r => r.prof != null).sort((a, b) => a.prof - b.prof)
+  const rows = [...buMatrix.value].filter(r => r.gross != null).sort((a, b) => a.gross - b.gross)
   if (!rows.length) return null
   const names = rows.map(r => r.bu)
   return {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
-      formatter: p => `${p[0].name}<br/>经营净利：${wan(p[0].value)} 元` },
+      formatter: p => `${p[0].name}<br/>经营毛利：${wan(p[0].value)} 元` },
     grid: { top: 8, right: 64, bottom: 8, left: 16, containLabel: true },
     xAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => axisMoney(v) },
       splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } } },
     yAxis: { type: 'category', data: names, axisLabel: { color: '#6b5a4a', width: 96, overflow: 'truncate' } },
     series: [{
       type: 'bar', barMaxWidth: 22,
-      data: rows.map(r => ({ value: r.prof,
-        itemStyle: { color: r.prof >= 0 ? '#2e7d32' : '#c62828', borderRadius: r.prof >= 0 ? [0, 4, 4, 0] : [4, 0, 0, 4] },
-        label: { position: r.prof >= 0 ? 'right' : 'left' } })),
+      data: rows.map(r => ({ value: r.gross,
+        itemStyle: { color: r.gross >= 0 ? '#2e7d32' : '#c62828', borderRadius: r.gross >= 0 ? [0, 4, 4, 0] : [4, 0, 0, 4] },
+        label: { position: r.gross >= 0 ? 'right' : 'left' } })),
       label: { show: true, fontSize: 10.5, fontWeight: 600, color: '#6b5a4a', formatter: p => axisMoney(p.value) },
       labelLayout: HIDE_OVERLAP,
     }],
@@ -862,7 +864,7 @@ const alerts = computed(() => {
   const list = []
   const d = derived.value
   // ── 集团级 ────────────────────────────────────────────────
-  if (d?.netMargin != null && d.netMargin < 0) list.push({ level: 'high', group: true, text: `集团整体净利率为负（${d.netMargin.toFixed(1)}%），盈利承压` })
+  if (d?.grossMargin != null && d.grossMargin < 0) list.push({ level: 'high', group: true, text: `集团整体毛利率为负（${d.grossMargin.toFixed(1)}%），主营亏损` })
   // ── 业财融合：薄利 / 回款风险（来自业财损益摘要）──────────
   const bf = bfSummary.value
   if (bf) {
@@ -885,8 +887,8 @@ const alerts = computed(() => {
       text: `坏账风险 ${wan(fc.baddebt_risk)}（逾期90天+未收），需重点催收` })
   }
   // ── 事业部级（可点击下钻）────────────────────────────────
-  rows.filter(r => r.loss).forEach(r => list.push({ level: 'high', bu: r.bu, text: `${r.bu} 当月经营净利为负（${wan(r.prof)}）` }))
-  rows.filter(r => !r.loss && r.profRate != null && r.profRate < 80).forEach(r => list.push({ level: 'mid', bu: r.bu, text: `${r.bu} 净利达成偏低（${r.profRate.toFixed(0)}%）` }))
+  rows.filter(r => r.grossLoss).forEach(r => list.push({ level: 'high', bu: r.bu, text: `${r.bu} 当月经营毛利为负（${wan(r.gross)}）` }))
+  rows.filter(r => !r.grossLoss && r.grossRate != null && r.grossRate < 80).forEach(r => list.push({ level: 'mid', bu: r.bu, text: `${r.bu} 毛利达成偏低（${r.grossRate.toFixed(0)}%）` }))
   rows.filter(r => r.revMom != null && r.revMom <= -10).forEach(r => list.push({ level: 'mid', bu: r.bu, text: `${r.bu} 收入环比下滑 ${Math.abs(r.revMom).toFixed(0)}%` }))
   const top = rows[0]
   if (top && top.share != null && top.share > 50) list.push({ level: 'mid', group: true, bu: top.bu, text: `收入高度集中：${top.bu} 占集团 ${top.share.toFixed(0)}%，依赖单一事业部` })
@@ -903,10 +905,10 @@ function onSignal(a) {
 
 // 增长引擎 / 主要拖累（用于结论提示）
 const engineLine = computed(() => {
-  const rows = buMatrix.value.filter(r => r.prof != null)
+  const rows = buMatrix.value.filter(r => r.gross != null)
   if (!rows.length) return null
-  const eng = [...rows].sort((a, b) => (b.prof) - (a.prof))[0]
-  const drag = [...rows].sort((a, b) => (a.prof) - (b.prof))[0]
+  const eng = [...rows].sort((a, b) => (b.gross) - (a.gross))[0]
+  const drag = [...rows].sort((a, b) => (a.gross) - (b.gross))[0]
   return { eng, drag, sameOne: eng === drag }
 })
 
@@ -1046,8 +1048,8 @@ const ctxMatrixItems = computed(() => {
             </li>
           </ul>
           <div v-if="engineLine" class="engine-line">
-            🚀 增长引擎 <b>{{ engineLine.eng.bu }}</b>（净利 {{ wan(engineLine.eng.prof) }}）
-            <template v-if="!engineLine.sameOne">　🪨 主要拖累 <b>{{ engineLine.drag.bu }}</b>（净利 {{ wan(engineLine.drag.prof) }}）</template>
+            🚀 增长引擎 <b>{{ engineLine.eng.bu }}</b>（毛利 {{ wan(engineLine.eng.gross) }}）
+            <template v-if="!engineLine.sameOne">　🪨 主要拖累 <b>{{ engineLine.drag.bu }}</b>（毛利 {{ wan(engineLine.drag.gross) }}）</template>
           </div>
         </div>
       </div>
@@ -1109,7 +1111,7 @@ const ctxMatrixItems = computed(() => {
         </div>
       </div>
 
-      <!-- ════ ZONE 5 · 收入构成 + 利润贡献 ══════════════════════════════════════ -->
+      <!-- ════ ZONE 5 · 收入构成 + 毛利贡献 ══════════════════════════════════════ -->
       <div class="chart-grid">
         <div class="card">
           <div class="section-title" style="margin-bottom:8px">收入构成 · 各事业部占比</div>
@@ -1117,16 +1119,16 @@ const ctxMatrixItems = computed(() => {
           <div v-else class="mini-empty">暂无收入数据</div>
         </div>
         <div class="card">
-          <div class="section-title" style="margin-bottom:8px">利润贡献 · 谁在贡献 / 拖累</div>
+          <div class="section-title" style="margin-bottom:8px">毛利贡献 · 谁在贡献 / 拖累</div>
           <BaseChart v-if="profitContribOption" :option="profitContribOption" height="300px" />
-          <div v-else class="mini-empty">暂无利润数据</div>
+          <div v-else class="mini-empty">暂无毛利数据</div>
         </div>
       </div>
 
-      <!-- ════ ZONE 6 · 各事业部当月收入利润 + YTD 达成率 ════════════════════════ -->
+      <!-- ════ ZONE 6 · 各事业部当月收入毛利 + YTD 达成率 ════════════════════════ -->
       <div class="chart-grid">
         <div class="card">
-          <div class="section-title" style="margin-bottom:8px">各事业部当月收入 / 利润</div>
+          <div class="section-title" style="margin-bottom:8px">各事业部当月收入 / 经营毛利</div>
           <BaseChart :option="buActualOption" height="300px" />
         </div>
         <div class="card">
@@ -1396,8 +1398,8 @@ const ctxMatrixItems = computed(() => {
                 </div>
               </div>
               <div v-if="engineLine" class="pp-engine">
-                🚀 增长引擎：{{ engineLine.eng.bu }}（净利 {{ wan(engineLine.eng.prof) }}）
-                <template v-if="!engineLine.sameOne">　🪨 主要拖累：{{ engineLine.drag.bu }}（净利 {{ wan(engineLine.drag.prof) }}）</template>
+                🚀 增长引擎：{{ engineLine.eng.bu }}（毛利 {{ wan(engineLine.eng.gross) }}）
+                <template v-if="!engineLine.sameOne">　🪨 主要拖累：{{ engineLine.drag.bu }}（毛利 {{ wan(engineLine.drag.gross) }}）</template>
               </div>
             </template>
             <!-- 行动 -->
