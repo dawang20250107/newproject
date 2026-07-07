@@ -5,6 +5,7 @@ from unittest import mock
 
 from django.test import Client, TestCase
 
+from paikuan import dingtalk_client as client
 from paikuan import dingtalk_sync as sync
 from paikuan.models import ApprovalRecord, PaikuanUser
 from paikuan.views import make_token
@@ -85,6 +86,59 @@ class MappingTests(TestCase):
         self.assertEqual(sync.classify(done, 'U-me'), 'done')
         orig = {'originator_userid': 'U-me', 'tasks': []}
         self.assertEqual(sync.classify(orig, 'U-me'), 'originated')
+
+
+class ClientV1Tests(TestCase):
+    """新版 v1.0 workflow 接口：实例详情归一、实例ID分页与发起人过滤、模板解析。"""
+
+    @mock.patch('paikuan.dingtalk_client._new')
+    def test_get_instance_normalizes_camelcase(self, m_new):
+        m_new.return_value = {'result': {
+            'businessId': 'B123', 'title': '差旅费报销单', 'originatorUserId': 'U-guo',
+            'originatorDeptName': '劳务事业部', 'status': 'COMPLETED', 'result': 'agree',
+            'createTime': '2026-03-17T10:00Z',
+            'formComponentValues': [
+                {'name': '总报销金额(元)', 'value': '600.00', 'componentType': 'MoneyField'}],
+            'tasks': [{'userId': 'U-appr', 'status': 'COMPLETED', 'result': 'agree'}],
+        }}
+        d = client.get_instance('INST-9')
+        self.assertEqual(d['_instance_id'], 'INST-9')
+        self.assertEqual(d['business_id'], 'B123')
+        self.assertEqual(d['originator_userid'], 'U-guo')
+        self.assertEqual(d['form_component_values'][0]['component_type'], 'MoneyField')
+        self.assertEqual(d['tasks'][0]['userid'], 'U-appr')
+        self.assertEqual(d['tasks'][0]['task_status'], 'COMPLETED')
+        # 归一后可直接喂给映射层
+        self.assertEqual(sync.instance_to_fields(d)['amount'], Decimal('600.00'))
+        self.assertEqual(sync.classify(d, 'U-appr'), 'done')
+
+    @mock.patch('paikuan.dingtalk_client._new')
+    def test_list_instance_ids_paginates_and_filters_originator(self, m_new):
+        m_new.side_effect = [
+            {'result': {'list': ['A', 'B'], 'nextToken': 't2'}},
+            {'result': {'list': ['C'], 'nextToken': None}},
+        ]
+        ids = client.list_instance_ids('PC1', 1000, 2000, userid='U-me')
+        self.assertEqual(ids, ['A', 'B', 'C'])
+        first_body = m_new.call_args_list[0].kwargs['json_body']
+        self.assertEqual(first_body['userIds'], ['U-me'])
+        self.assertEqual(first_body['processCode'], 'PC1')
+        self.assertEqual(m_new.call_args_list[1].kwargs['json_body']['nextToken'], 't2')
+
+    @mock.patch('paikuan.dingtalk_client._new')
+    def test_list_instance_ids_no_originator_omits_userids(self, m_new):
+        m_new.return_value = {'result': {'list': ['A'], 'nextToken': None}}
+        client.list_instance_ids('PC1', 1000, 2000, userid=None)
+        self.assertNotIn('userIds', m_new.call_args.kwargs['json_body'])
+
+    @mock.patch('paikuan.dingtalk_client._new')
+    def test_templates_by_user_parses_processlist(self, m_new):
+        m_new.return_value = {'result': {'processList': [
+            {'processCode': 'PC_A', 'name': '差旅费报销单'},
+            {'processCode': 'PC_B', 'name': '付款审批'}], 'nextToken': None}}
+        tpls = client.templates_by_user('U-guo')
+        self.assertEqual([t['process_code'] for t in tpls], ['PC_A', 'PC_B'])
+        self.assertEqual(tpls[0]['name'], '差旅费报销单')
 
 
 class SyncEndpointTests(TestCase):

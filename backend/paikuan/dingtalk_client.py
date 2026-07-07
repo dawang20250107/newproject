@@ -90,6 +90,29 @@ def _post(path, body):
     return data
 
 
+_API_NEW = 'https://api.dingtalk.com'
+
+
+def _new(method, path, params=None, json_body=None):
+    """新版 OpenAPI（api.dingtalk.com，x-acs-dingtalk-access-token 头）。
+    成功返回解析后的 dict；HTTP≥400 或 success=false 抛 DingTalkError（含钉钉 message）。"""
+    try:
+        r = requests.request(
+            method, f'{_API_NEW}{path}',
+            headers={'x-acs-dingtalk-access-token': access_token(),
+                     'Content-Type': 'application/json'},
+            params=params, json=json_body, timeout=15)
+        data = r.json() if r.content else {}
+    except DingTalkError:
+        raise
+    except Exception as ex:
+        raise DingTalkError(f'钉钉接口调用失败：{str(ex)[:120]}')
+    if r.status_code >= 400 or data.get('success') is False:
+        raise DingTalkError(data.get('message') or data.get('errmsg') or f'HTTP {r.status_code}',
+                            code=data.get('code'))
+    return data
+
+
 # ── 人员 ────────────────────────────────────────────────────────────────────
 def userid_by_mobile(mobile):
     """手机号 → userid（唯一）。查不到返回 None。"""
@@ -123,21 +146,12 @@ def user_detail(userid):
 
 def users_by_name(name):
     """姓名 → 候选人列表 [{userid,name}]（可能多个同名，交前端选择）。
-    用新版通讯录搜索接口（服务端搜索，避免遍历全员超时）。"""
+    新版通讯录搜索接口（服务端搜索，避免遍历全员超时）。"""
     name = (name or '').strip()
     if not name:
         return []
-    try:
-        r = requests.post(
-            'https://api.dingtalk.com/v1.0/contact/users/search',
-            headers={'x-acs-dingtalk-access-token': access_token(),
-                     'Content-Type': 'application/json'},
-            json={'queryWord': name, 'offset': 0, 'size': 10}, timeout=12)
-        data = r.json()
-    except DingTalkError:
-        raise
-    except Exception as ex:
-        raise DingTalkError(f'姓名搜索失败：{str(ex)[:120]}')
+    data = _new('POST', '/v1.0/contact/users/search',
+                json_body={'queryWord': name, 'offset': 0, 'size': 10})
     uids = data.get('list')
     if uids is None:
         raise DingTalkError(data.get('message') or data.get('errmsg')
@@ -179,95 +193,86 @@ def list_process_codes():
         return []
 
 
-def _templates_old(userid):
-    """旧版 topapi/process/listbyuserid（offset/size 分页）。覆盖有盲区（如报销常缺）。"""
-    out, offset, size = [], 0, 100
-    for _ in range(50):
-        data = _post('/topapi/process/listbyuserid',
-                     {'userid': userid, 'offset': offset, 'size': size})
-        res = data.get('result') or {}
-        plist = res.get('process_list') or []
-        for p in plist:
-            if p.get('process_code'):
-                out.append({'process_code': p['process_code'], 'name': p.get('name', '')})
-        if len(plist) < size:
-            break
-        offset += size
-    return out
-
-
-def _templates_new(userid):
-    """新版 workflow/processes/userVisibilities/templates（nextToken 分页）。
-    覆盖更全，报销等模板通常只在这里能列到。"""
-    out, next_token = [], None
+def templates_by_user(userid):
+    """列出某 userid 可见的审批模板 [{process_code,name}]（新版 workflow 接口，分页）。
+    新版覆盖更全，报销等模板旧接口常缺、这里能列到。分页兼容 nextToken / offset 两种。"""
+    out, seen, next_token, offset = [], set(), None, 0
     for _ in range(50):
         params = {'userId': userid, 'maxResults': 100}
         if next_token is not None:
             params['nextToken'] = next_token
-        try:
-            r = requests.get(
-                'https://api.dingtalk.com/v1.0/workflow/processes/userVisibilities/templates',
-                headers={'x-acs-dingtalk-access-token': access_token()},
-                params=params, timeout=15)
-            data = r.json()
-        except DingTalkError:
-            raise
-        except Exception as ex:
-            raise DingTalkError(f'新版模板接口调用失败：{str(ex)[:120]}')
+        else:
+            params['offset'] = offset
+        data = _new('GET', '/v1.0/workflow/processes/userVisibilities/templates', params=params)
         res = data.get('result')
-        if res is None:
-            raise DingTalkError(data.get('message') or data.get('errmsg') or '新版模板接口无 result')
-        plist = res.get('processList') or res.get('templateList') or []
+        # 兼容 result 为 dict（含分页）或直接为模板数组两种返回形态
+        if isinstance(res, list):
+            plist, res = res, {}
+        else:
+            res = res or {}
+            plist = res.get('processList') or res.get('templateList') or res.get('list') or []
         for p in plist:
             code = p.get('processCode') or p.get('process_code')
-            if code:
+            if code and code not in seen:
+                seen.add(code)
                 out.append({'process_code': code, 'name': p.get('name', '')})
         next_token = res.get('nextToken')
-        if not next_token or not plist:
+        if next_token:
+            continue
+        if len(plist) < 100:   # offset 分页：不足一页即到底
             break
+        offset += 100
     return out
 
 
-def templates_by_user(userid):
-    """列出某 userid 可见的审批模板 [{process_code,name}]，新旧接口取并集。
-    新版接口覆盖更全（报销等），旧版兜底；任一失败不影响另一。"""
-    out, seen, errs = [], set(), []
-    for fn in (_templates_new, _templates_old):
-        try:
-            for t in fn(userid):
-                if t['process_code'] not in seen:
-                    seen.add(t['process_code'])
-                    out.append(t)
-        except DingTalkError as ex:
-            errs.append(f'{fn.__name__}:{ex}')
-            logger.warning('templates via %s failed: %s', fn.__name__, ex)
-    if not out and errs:
-        raise DingTalkError('；'.join(errs))
-    return out
-
-
-# ── 审批实例 ──────────────────────────────────────────────────────────────────
+# ── 审批实例（新版 workflow 接口）──────────────────────────────────────────────
 def list_instance_ids(process_code, start_ms, end_ms, userid=None):
-    """按模板+时间区间(+发起人/参与人)拉审批实例 ID（自动翻页）。"""
-    ids, cursor = [], 0
-    while True:
-        body = {'process_code': process_code, 'start_time': int(start_ms),
-                'end_time': int(end_ms), 'cursor': cursor, 'size': 20}
+    """按模板+时间区间(+发起人)拉审批实例 ID（新版 instanceIds/query，nextToken 翻页）。
+    userid 传入时按「发起人」过滤（userIds，最多 10 个）。"""
+    ids, next_token = [], None
+    for _ in range(500):   # 上限兜底
+        body = {'processCode': process_code, 'startTime': int(start_ms),
+                'endTime': int(end_ms), 'maxResults': 20}
         if userid:
-            body['userid_list'] = userid
-        data = _post('/topapi/processinstance/listids', body)
+            body['userIds'] = [userid]
+        if next_token is not None:
+            body['nextToken'] = next_token
+        data = _new('POST', '/v1.0/workflow/processes/instanceIds/query', json_body=body)
         res = data.get('result') or {}
         ids.extend(res.get('list') or [])
-        nxt = res.get('next_cursor')
-        if nxt is None:
+        next_token = res.get('nextToken')
+        if not next_token:
             break
-        cursor = nxt
     return ids
 
 
+def _norm_instance(r, instance_id):
+    """新版实例详情（camelCase）归一为下游映射用的 snake_case 结构。"""
+    return {
+        '_instance_id': instance_id,
+        'business_id': r.get('businessId') or '',
+        'title': r.get('title') or '',
+        'originator_userid': r.get('originatorUserId') or '',
+        'originator_dept_name': r.get('originatorDeptName') or '',
+        'status': r.get('status') or '',
+        'result': r.get('result') or '',
+        'create_time': r.get('createTime') or '',
+        'form_component_values': [
+            {'name': c.get('name', ''), 'value': c.get('value', ''),
+             'component_type': c.get('componentType', '')}
+            for c in (r.get('formComponentValues') or []) if isinstance(c, dict)
+        ],
+        'tasks': [
+            {'userid': t.get('userId', ''), 'task_status': t.get('status', ''),
+             'result': t.get('result', '')}
+            for t in (r.get('tasks') or []) if isinstance(t, dict)
+        ],
+    }
+
+
 def get_instance(instance_id):
-    """拉单个审批实例详情（原始 result dict）。"""
-    data = _post('/topapi/processinstance/get', {'process_instance_id': instance_id})
-    res = data.get('process_instance') or data.get('result') or {}
-    res['_instance_id'] = instance_id
-    return res
+    """拉单个审批实例详情（新版 processInstances），归一为下游可用的 dict。"""
+    data = _new('GET', '/v1.0/workflow/processInstances',
+                params={'processInstanceId': instance_id})
+    res = data.get('result') or data.get('processInstance') or {}
+    return _norm_instance(res, instance_id)
