@@ -38,6 +38,10 @@ DINGTALK_CALLBACK_TOKEN = os.environ.get('DINGTALK_CALLBACK_TOKEN', '')   # 敏�
 # 回调明文尾部校验用 key：企业内部应用事件订阅=AppKey；个别后台用 CorpId，则显式配此项覆盖。
 DINGTALK_CALLBACK_KEY = os.environ.get('DINGTALK_CALLBACK_KEY', '') or DINGTALK_APP_KEY
 DINGTALK_BASE_URL = 'https://oapi.dingtalk.com'
+# 要纳入同步的审批模板：逗号分隔，支持 "code:名称,code:名称" 或纯 code。
+# 财务口径通常纳入全部相关审批模板；留空时尝试用 DINGTALK_ADMIN_USERID 枚举其可见模板。
+DINGTALK_PROCESS_CODES = os.environ.get('DINGTALK_PROCESS_CODES', '')
+DINGTALK_ADMIN_USERID = os.environ.get('DINGTALK_ADMIN_USERID', '')
 
 # 联网搜索（Agent 参考同行/行业研究用）：默认内置必应中国抓取（无需配置）；
 # SEARCH_PROVIDER: 'bocha'（博查，国内直连）或 'serper'（Google via serper.dev）

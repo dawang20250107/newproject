@@ -2,11 +2,18 @@ from django.urls import path
 from paikuan import views
 from paikuan import views_schemes
 from paikuan import dingtalk
+from paikuan import dingtalk_sync
 
 urlpatterns = [
     path('version', views.version),
     # 钉钉审批流对接：事件订阅 HTTP 回调（URL 验证 + 审批结果回写）
     path('dingtalk/callback', dingtalk.dingtalk_callback),
+    # 钉钉审批同步：连通性/模板、按人查询、同步落库、刷新状态
+    path('dingtalk/test', dingtalk_sync.dingtalk_test),
+    path('dingtalk/resolve-user', dingtalk_sync.dingtalk_resolve_user),
+    path('dingtalk/query', dingtalk_sync.dingtalk_query),
+    path('dingtalk/sync', dingtalk_sync.dingtalk_sync),
+    path('dingtalk/refresh', dingtalk_sync.dingtalk_refresh),
     # 通用列表筛选方案（表格方案基座）：私有/公共 + 默认，按 module 区分列表页
     path('list-schemes', views_schemes.list_schemes),
     path('list-schemes/set-default', views_schemes.list_scheme_default),
