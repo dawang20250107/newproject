@@ -9,6 +9,16 @@ import { todayCST } from '../constants.js'
 const emit = defineEmits(['synced'])
 const toast = useToast()
 
+// ── 连接自检（凭证/模板配置核对）────────────────────────────────────────────
+const testing = ref(false)
+const diag = ref(null)
+async function testConnection() {
+  testing.value = true
+  try { diag.value = (await api.get('/dingtalk/test')).data }
+  catch (e) { diag.value = { connected: false, error: e?.msg || e?.error || '请求失败' } }
+  finally { testing.value = false }
+}
+
 // ── 查询条件 ──────────────────────────────────────────────────────────────
 const personMode = ref('mobile')          // 'mobile' | 'name'
 const personInput = ref('')
@@ -136,6 +146,25 @@ async function refreshStatus() {
 
 <template>
   <div class="dt card fh-fill">
+    <!-- 连接自检 -->
+    <div v-if="diag" class="diag" :class="{ bad: !diag.connected }">
+      <div class="diag-line">
+        <b>{{ diag.connected ? '✓ 钉钉已连通' : '✗ 连接失败' }}</b>
+        <span v-if="diag.error" class="diag-err">{{ diag.error }}</span>
+        <button class="diag-x" @click="diag = null">✕</button>
+      </div>
+      <div v-if="diag.config" class="diag-cfg">
+        服务器读到：AppKey=<code>{{ diag.config.app_key }}</code> ·
+        Secret 长度 <code>{{ diag.config.secret_len }}</code>（<code>{{ diag.config.secret_masked }}</code>） ·
+        模板配置 <code>{{ diag.config.process_codes_set ? '已配' : '未配' }}</code>
+      </div>
+      <div v-if="diag.hint" class="diag-hint">💡 {{ diag.hint }}</div>
+      <div v-if="diag.connected" class="diag-tpl">
+        可同步模板：<template v-if="diag.templates && diag.templates.length"><code v-for="t in diag.templates" :key="t.process_code">{{ t.name || t.process_code }}</code></template>
+        <span v-else class="diag-err">未列出 —— 请在 DINGTALK_PROCESS_CODES 配置模板 process_code<span v-if="diag.template_error">（{{ diag.template_error }}）</span></span>
+      </div>
+    </div>
+
     <!-- 查询条 -->
     <div class="dt-query">
       <div class="qf">
@@ -167,6 +196,7 @@ async function refreshStatus() {
       <button class="go" :disabled="loading || resolving" @click="picked = null; runQuery()">
         {{ loading || resolving ? '查询中…' : '查询' }}
       </button>
+      <button class="quick test" :disabled="testing" @click="testConnection">{{ testing ? '检测中…' : '测试连接' }}</button>
     </div>
 
     <!-- 状态页签 -->
@@ -298,6 +328,16 @@ async function refreshStatus() {
 .go { margin-left: auto; background: var(--primary, #1565c0); color: #fff; border: none; padding: 9px 24px; border-radius: 9px; font-size: 14px; font-weight: 700; cursor: pointer; font-family: inherit; }
 .go:disabled { opacity: .6; cursor: default; }
 
+.quick.test { border-color: var(--primary, #1565c0); color: var(--primary, #1565c0); }
+.diag { margin: 12px 16px 0; padding: 11px 14px; border-radius: 10px; font-size: 12.5px; line-height: 1.7;
+  background: color-mix(in srgb, var(--success, #2e9e5b) 8%, transparent); border: 1px solid color-mix(in srgb, var(--success, #2e9e5b) 25%, transparent); }
+.diag.bad { background: color-mix(in srgb, var(--danger, #d64545) 8%, transparent); border-color: color-mix(in srgb, var(--danger, #d64545) 28%, transparent); }
+.diag-line { display: flex; align-items: center; gap: 10px; } .diag-line b { font-size: 13.5px; }
+.diag-err { color: var(--danger, #d64545); }
+.diag-x { margin-left: auto; border: none; background: none; color: var(--muted, #9b8070); cursor: pointer; font-size: 15px; }
+.diag code { background: var(--surface-2, rgba(160,120,80,.1)); padding: 1px 6px; border-radius: 5px; font-size: 12px; margin: 0 2px; }
+.diag-hint { margin-top: 4px; color: var(--text-2, #6b5a49); }
+.diag-tpl { margin-top: 4px; }
 .dt-tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border, #eadfd2); }
 .dt-tab { border: none; background: none; padding: 11px 16px; font-size: 14px; font-weight: 650; color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; border-bottom: 2.5px solid transparent; margin-bottom: -1px; }
 .dt-tab.on { color: var(--primary, #1565c0); border-bottom-color: var(--primary, #1565c0); }

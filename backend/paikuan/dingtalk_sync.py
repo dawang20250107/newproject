@@ -176,16 +176,33 @@ def _ms(date_str, end=False):
 @csrf_exempt
 @pk_required()
 def dingtalk_test(request):
-    """GET 测试钉钉连通性并列出可同步的审批模板（供配置核对）。"""
+    """GET 测试钉钉连通性 + 回显服务器实际读到的配置（脱敏），并列出可同步模板。
+    凭证被拒时据此自查：AppKey 是否填成了 AppID、Secret 长度是否被截断等。"""
+    from django.conf import settings
     denied = _page_denied(request)
     if denied:
         return denied
+    key = (settings.DINGTALK_APP_KEY or '').strip()
+    secret = (settings.DINGTALK_APP_SECRET or '').strip()
+    corp = (settings.DINGTALK_CORP_ID or '').strip()
+    config = {
+        'app_key': key or '(未配置)',
+        'secret_len': len(secret),
+        'secret_masked': (secret[:4] + '****' + secret[-4:]) if len(secret) >= 8 else '(空或过短)',
+        'corp_id_set': bool(corp),
+        'process_codes_set': bool((settings.DINGTALK_PROCESS_CODES or '').strip()),
+    }
     try:
         dc.access_token()
+    except DingTalkError as ex:
+        return ok({'connected': False, 'error': str(ex), 'config': config,
+                   'hint': 'AppKey 应为 Client ID（如 ding 开头），不是 AppID（形如 uuid）；'
+                           '并确认 Secret 未被截断（长度通常 64）、环境变量已生效并重启。'})
+    try:
         templates = dc.list_process_codes()
     except DingTalkError as ex:
-        return err(str(ex), 502, 502)
-    return ok({'connected': True, 'templates': templates,
+        return ok({'connected': True, 'templates': [], 'template_error': str(ex), 'config': config})
+    return ok({'connected': True, 'templates': templates, 'config': config,
                'note': '未列出模板时，请在环境变量 DINGTALK_PROCESS_CODES 配置要同步的模板 process_code'})
 
 
