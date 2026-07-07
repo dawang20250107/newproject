@@ -172,24 +172,31 @@ def list_process_codes():
     admin = (getattr(settings, 'DINGTALK_ADMIN_USERID', '') or '').strip()
     if not admin:
         return []
-    out, seen, cursor = [], set(), 0
     try:
-        for _ in range(50):   # 分页兜底：最多 50 页
-            data = _post('/topapi/process/listbyuserid',
-                         {'userid': admin, 'cursor': cursor, 'size': 100})
-            res = data.get('result') or {}
-            plist = res.get('process_list') or []
-            for p in plist:
-                code = p.get('process_code')
-                if code and code not in seen:
-                    seen.add(code)
-                    out.append({'process_code': code, 'name': p.get('name', '')})
-            nxt = res.get('next_cursor')
-            if nxt is None or not plist:
-                break
-            cursor = nxt
+        return templates_by_user(admin)
     except DingTalkError as ex:
         logger.warning('list_process_codes API failed: %s', ex)
+        return []
+
+
+def templates_by_user(userid):
+    """列出某 userid 可见的审批模板 [{process_code,name}]（分页）。
+    供"按被查人自动取模板"兜底——无需单独配管理员 userid。"""
+    out, seen, cursor = [], set(), 0
+    for _ in range(50):   # 分页兜底：最多 50 页
+        data = _post('/topapi/process/listbyuserid',
+                     {'userid': userid, 'cursor': cursor, 'size': 100})
+        res = data.get('result') or {}
+        plist = res.get('process_list') or []
+        for p in plist:
+            code = p.get('process_code')
+            if code and code not in seen:
+                seen.add(code)
+                out.append({'process_code': code, 'name': p.get('name', '')})
+        nxt = res.get('next_cursor')
+        if nxt is None or not plist:
+            break
+        cursor = nxt
     return out
 
 

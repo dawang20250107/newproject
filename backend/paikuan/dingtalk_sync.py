@@ -208,9 +208,10 @@ def dingtalk_test(request):
     if tpl_err:
         result['template_error'] = tpl_err
     if not templates:
-        result['hint'] = ('未获取到模板。请：① 应用「可用范围」改为全部员工；'
-                          '② 配置 DINGTALK_ADMIN_USERID（一个超级管理员的 userid——用本页手机号查该管理员即可复制 userid）后重启；'
-                          '或直接在 DINGTALK_PROCESS_CODES 手动配置要同步的模板 process_code。')
+        result['hint'] = ('此处未列出全局模板不影响使用：查询时会自动改用「被查那个人自己可见的模板」，'
+                          '基础版无需配管理员。若想在这里预列全局模板，可选配 DINGTALK_ADMIN_USERID '
+                          '（超级管理员 userid，用本页手机号查该管理员即可复制），或在 DINGTALK_PROCESS_CODES 手动配置。'
+                          '前提：应用「可用范围」需设为全部员工，否则查不到他人。')
     return ok(result)
 
 
@@ -259,9 +260,17 @@ def dingtalk_query(request):
         return err('时间范围无效（YYYY-MM-DD）')
 
     try:
+        # 模板来源三级兜底：① 手动配置的 DINGTALK_PROCESS_CODES / 管理员可见模板；
+        # ② 都没有时，用"被查这个人自己可见的模板"（无需配管理员 userid，基础版即可）。
         templates = dc.list_process_codes()
         if not templates:
-            return err('未配置任何审批模板（DINGTALK_PROCESS_CODES 为空且无法枚举），无法查询', 400)
+            try:
+                templates = dc.templates_by_user(userid)
+            except DingTalkError as ex:
+                logger.warning('templates_by_user(%s) failed: %s', userid, ex)
+        if not templates:
+            return err('未获取到可查询的审批模板：该员工名下无可见审批模板，'
+                       '或应用「可用范围」未设为全部员工。可在 DINGTALK_PROCESS_CODES 手动配置后重试', 400)
         name_by_code = {t['process_code']: t.get('name', '') for t in templates}
         inst_ids = []
         for t in templates:

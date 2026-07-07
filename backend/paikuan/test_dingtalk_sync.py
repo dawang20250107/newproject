@@ -156,6 +156,31 @@ class SyncEndpointTests(TestCase):
                         {'userid': 'U-me', 'start': '2026-06-01', 'end': '2026-06-30', 'status': 'done'})
         self.assertEqual(r2.json()['data']['count'], 0)
 
+    @mock.patch('paikuan.dingtalk_client.templates_by_user')
+    @mock.patch('paikuan.dingtalk_client.list_process_codes', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.list_instance_ids')
+    @mock.patch('paikuan.dingtalk_client.get_instance')
+    def test_query_falls_back_to_person_templates(self, m_get, m_list, m_codes, m_by_user):
+        # 全局模板空 → 自动改用被查人自己可见的模板（基础版无需配管理员）
+        m_by_user.return_value = [{'process_code': 'PCX', 'name': '差旅费报销单'}]
+        m_list.return_value = ['INST-1']
+        m_get.return_value = DETAIL_REIMB
+        r = self._post('/api/pk/dingtalk/query',
+                       {'userid': 'U-guoyong', 'start': '2026-03-01', 'end': '2026-03-31',
+                        'status': 'originated'})   # 郭勇是发起人
+        self.assertEqual(r.status_code, 200, r.content)
+        m_by_user.assert_called_once_with('U-guoyong')
+        d = r.json()['data']
+        self.assertEqual(d['count'], 1)
+        self.assertEqual(d['items'][0]['template'], '差旅费报销单')
+
+    @mock.patch('paikuan.dingtalk_client.templates_by_user', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.list_process_codes', return_value=[])
+    def test_query_no_templates_returns_error(self, m_codes, m_by_user):
+        r = self._post('/api/pk/dingtalk/query',
+                       {'userid': 'U-x', 'start': '2026-03-01', 'end': '2026-03-31', 'status': 'todo'})
+        self.assertEqual(r.status_code, 400, r.content)
+
     @mock.patch('paikuan.dingtalk_client.user_detail', return_value={'name': '郭勇'})
     @mock.patch('paikuan.dingtalk_client.userid_by_mobile', return_value='U-guoyong')
     def test_resolve_user_by_mobile(self, m_uid, m_det):
