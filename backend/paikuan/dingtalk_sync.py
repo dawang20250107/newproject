@@ -333,8 +333,11 @@ def dingtalk_query(request):
                 return []
 
         inst_ids = []
+        found_by_code = {}   # 每个模板拉到的实例数（未按口径过滤前）——用于诊断
         with ThreadPoolExecutor(max_workers=8) as pool:
             for pairs in pool.map(_ids_for, templates):
+                if pairs:
+                    found_by_code[pairs[0][1]] = found_by_code.get(pairs[0][1], 0) + len(pairs)
                 inst_ids.extend(pairs)
         capped = len(inst_ids) > _QUERY_CAP
         inst_ids = inst_ids[:_QUERY_CAP]
@@ -353,6 +356,7 @@ def dingtalk_query(request):
                 return iid, code, None
 
         items = []
+        matched_by_code = {}   # 每个模板符合当前口径的条数——用于诊断
         with ThreadPoolExecutor(max_workers=8) as pool:
             details = list(pool.map(_detail, inst_ids))
         for iid, code, detail in details:
@@ -361,6 +365,7 @@ def dingtalk_query(request):
             role = classify(detail, userid)
             if role != status:
                 continue
+            matched_by_code[code] = matched_by_code.get(code, 0) + 1
             f = instance_to_fields(detail)
             rec = synced.get(iid)
             sys_status = map_status(detail.get('status'), detail.get('result'))
@@ -385,8 +390,15 @@ def dingtalk_query(request):
 
     items.sort(key=lambda x: x['create_time'], reverse=True)
     scanned = [t.get('name') or t['process_code'] for t in templates]
+    # 逐模板诊断：拉到的实例数(found) 与 符合当前口径的条数(matched)——空结果时定位卡点
+    tpl_stats = [{
+        'name': name_by_code.get(c) or c, 'process_code': c,
+        'found': found_by_code.get(c, 0), 'matched': matched_by_code.get(c, 0),
+    } for c in [t['process_code'] for t in templates]]
+    tpl_stats.sort(key=lambda x: (-x['found'], -x['matched']))
     return ok({'items': items, 'count': len(items), 'capped': capped,
-               'templates_scanned': scanned, 'templates_count': len(templates)})
+               'templates_scanned': scanned, 'templates_count': len(templates),
+               'template_stats': tpl_stats})
 
 
 def _upsert(detail, actor):

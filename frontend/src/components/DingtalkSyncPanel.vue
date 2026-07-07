@@ -77,12 +77,12 @@ async function loadTemplates(userid) {
   try {
     const r = await api.post('/dingtalk/templates', { userid }, { timeout: 60000 })
     templates.value = mergeManual(r.data?.templates || [])
-    tplSel.value = new Set(templates.value.map(t => t.process_code))   // 默认全选
+    applyDefaultSel()
   } catch (e) {
     tplErr.value = e?.msg || e?.error || '获取模板失败'
     // 接口失败也保留手动模板，至少能查这些
     templates.value = mergeManual([])
-    tplSel.value = new Set(templates.value.map(t => t.process_code))
+    applyDefaultSel()
   } finally { tplLoading.value = false }
 }
 function toggleTpl(code) {
@@ -92,6 +92,11 @@ function toggleTpl(code) {
 }
 function tplSelectAll(on) {
   tplSel.value = on ? new Set(templates.value.map(t => t.process_code)) : new Set()
+}
+// 默认选择：导入过模板就只选这几条（用户明确要的少量模板）；否则全选（首次可用）。
+function applyDefaultSel() {
+  const manual = templates.value.filter(t => t.manual).map(t => t.process_code)
+  tplSel.value = new Set(manual.length ? manual : templates.value.map(t => t.process_code))
 }
 
 // ── 从员工导入模板：报销单等"仅可审批/管理"的模板，本人可发起清单里没有，
@@ -151,6 +156,7 @@ const loadErr = ref('')
 const items = ref([])
 const capped = ref(false)
 const scanned = ref([])        // 本次查询实际扫描的模板名（用于确认报销等是否已覆盖）
+const tplStats = ref([])       // 逐模板命中诊断 [{name, found, matched}]
 const queried = ref(false)     // 是否已发起过一次查询
 const sel = ref(new Set())
 const selCount = computed(() => sel.value.size)
@@ -197,6 +203,7 @@ async function runQuery() {
     items.value = r.data?.items || []
     capped.value = !!r.data?.capped
     scanned.value = r.data?.templates_scanned || []
+    tplStats.value = r.data?.template_stats || []
     queried.value = true
   } catch (e) { loadErr.value = e?.msg || e?.error || '查询失败'; items.value = [] }
   finally { loading.value = false }
@@ -411,9 +418,21 @@ async function refreshStatus() {
       </div>
       <div v-else-if="!items.length" class="empty">
         <div>该员工在此范围内无「{{ STATUS.find(s => s.v === status).l }}」的审批</div>
-        <div v-if="scanned.length" class="scanned">
-          已扫描 {{ scanned.length }} 个模板：<span v-for="(t, i) in scanned" :key="i" class="tplchip">{{ t }}</span>
-          <div class="scanned-tip">若这里没有你要的模板（如「报销」），说明该模板对此人不可见 / 应用未授权，请换用发起该审批的本人查询，或联系钉钉管理员在应用可用范围内放开。</div>
+        <!-- 逐模板诊断：拉到多少实例、其中符合当前口径多少 → 一眼看穿卡在哪 -->
+        <div v-if="tplStats.length" class="diag">
+          <div class="diag-h">本次查询逐模板情况</div>
+          <table class="diag-t">
+            <thead><tr><th>模板</th><th>时间段内实例</th><th>符合「{{ STATUS.find(s => s.v === status).l }}」</th></tr></thead>
+            <tbody>
+              <tr v-for="t in tplStats" :key="t.process_code" :class="{ hot: t.found > 0 }">
+                <td>{{ t.name }}</td><td class="c">{{ t.found }}</td><td class="c">{{ t.matched }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="scanned-tip">
+            · 某模板「实例=0」：该模板在此时间段无单据，或应用无权读取其实例 → 换时间段，或确认应用「审批」读权限。<br>
+            · 「实例&gt;0 但符合=0」：单据存在，只是不属于当前口径 → 换标签页（发起用查提报人、待处理/已处理用查审批人）。
+          </div>
         </div>
       </div>
       <div v-else class="tablewrap">
@@ -592,6 +611,14 @@ async function refreshStatus() {
 .scanned .tplchip { display: inline-block; margin: 3px 4px 0 0; padding: 1px 7px; border-radius: 10px;
   background: var(--chip-bg, #f0e9e0); color: var(--text, #6a5641); }
 .scanned .scanned-tip { margin-top: 10px; line-height: 1.6; color: var(--muted, #9b8070); }
+.diag { margin: 16px auto 0; max-width: 560px; text-align: left; }
+.diag-h { font-size: 12.5px; font-weight: 700; color: var(--text, #4a3322); margin-bottom: 6px; }
+.diag-t { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.diag-t th, .diag-t td { border: 1px solid var(--border, #eadfd2); padding: 4px 8px; }
+.diag-t th { background: var(--panel-2, #faf6f0); font-weight: 650; color: var(--muted, #9b8070); }
+.diag-t td.c { text-align: center; }
+.diag-t tr.hot td { background: var(--primary-weak, #e8f1fb); }
+.diag .scanned-tip { margin-top: 10px; line-height: 1.7; color: var(--muted, #9b8070); font-size: 11.5px; }
 .tablewrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 thead th { text-align: left; padding: 10px 12px; font-size: 11.5px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--muted, #9b8070); background: var(--surface-2, rgba(160,120,80,.06)); white-space: nowrap; position: sticky; top: 0; z-index: 1; }
