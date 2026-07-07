@@ -15,6 +15,7 @@ import { fmtCompact } from '../../utils/format.js'
 import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney, topLabel, endLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
 import { streamAiAnalysis } from '../../utils/aiStream.js'
 import { renderMarkdown } from '../../utils/markdown.js'
+import { downloadBlob } from '../../utils/download.js'
 import EmptyState from '../../components/EmptyState.vue'
 import AiMark from '../../components/AiMark.vue'
 
@@ -272,6 +273,7 @@ async function sendChat(text) {
   } finally {
     chatStreaming.value = false
     if (!asst.content) asst.content = chatErr.value ? `⚠ ${chatErr.value}` : '（未返回内容）'
+    persistChat()          // 每轮结束落地，刷新不丢
     scrollChatSoon()
     loadAiUsage()
     if (autoDistill.value && !chatErr.value && asst.content && asst.content.length > 40) {
@@ -280,7 +282,81 @@ async function sendChat(text) {
   }
 }
 
-function resetChat() { chatMessages.value = []; chatErr.value = '' }
+// ── 对话持久化：刷新/重进不丢，直到用户点「清空」──────────────────────────────
+// 按登录用户隔离，避免同一浏览器换人登录后串到别人的对话。
+function chatKey() { return `cfa_chat_v1_${auth.user?.id ?? auth.user?.phone ?? 'anon'}` }
+function persistChat() {
+  try {
+    // 仅存最近 60 条、剥离流式临时态，控制体积；隐私模式/超额静默失败
+    const slim = chatMessages.value.slice(-60).map(m => {
+      const o = { role: m.role, content: m.content }
+      if (m.toolSteps && m.toolSteps.length) o.toolSteps = m.toolSteps
+      if (m.fb) o.fb = m.fb
+      return o
+    })
+    localStorage.setItem(chatKey(), JSON.stringify(slim))
+  } catch { /* 忽略 */ }
+}
+function restoreChat() {
+  try {
+    const raw = localStorage.getItem(chatKey())
+    if (!raw) return
+    const arr = JSON.parse(raw)
+    if (Array.isArray(arr) && arr.length) {
+      chatMessages.value = arr.map(m => ({ reasoning: '', toolSteps: [], ...m }))
+    }
+  } catch { /* 忽略 */ }
+}
+function resetChat() {
+  chatMessages.value = []
+  chatErr.value = ''
+  try { localStorage.removeItem(chatKey()) } catch { /* 忽略 */ }
+}
+
+// ── 导出对话：Markdown 文档 / 长图 ───────────────────────────────────────────
+function exportStamp() {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`
+}
+function chatToMarkdown() {
+  const lines = [`# 业财融合助手对话`, '', `> 范围：${aiScopeLabel.value}　导出：${exportStamp()}`, '']
+  for (const m of chatMessages.value) {
+    if (m.role === 'user') lines.push(`## 🙋 提问`, '', m.content, '')
+    else if (m.content) lines.push(`## 🤖 助手`, '', m.content, '')
+  }
+  return lines.join('\n')
+}
+function exportChatMd() {
+  if (!chatMessages.value.length) return
+  const blob = new Blob([chatToMarkdown()], { type: 'text/markdown;charset=utf-8' })
+  downloadBlob(blob, `业财融合对话_${exportStamp()}.md`)
+  showToast('✓ 已导出 Markdown')
+}
+const exportingImg = ref(false)
+async function exportChatImage() {
+  if (!chatMessages.value.length || exportingImg.value) return
+  exportingImg.value = true
+  try {
+    const { default: html2canvas } = await import('html2canvas')
+    await nextTick()
+    const el = chatBodyRef.value
+    if (!el) throw new Error('无对话内容')
+    const dark = document.documentElement.classList.contains('dark')
+    const canvas = await html2canvas(el, {
+      scale: 2, backgroundColor: dark ? '#0f172a' : '#ffffff', useCORS: true, logging: false,
+      height: el.scrollHeight, windowHeight: el.scrollHeight,
+    })
+    canvas.toBlob(blob => {
+      if (blob) downloadBlob(blob, `业财融合对话_${exportStamp()}.png`)
+      showToast('✓ 已导出图片')
+      exportingImg.value = false
+    }, 'image/png')
+  } catch (e) {
+    showToast('图片导出失败：' + (e?.message || e))
+    exportingImg.value = false
+  }
+}
 
 // ── 主动洞察闭环：信号/项目 一键带上下文追问 AI ──────────────────────────────
 async function askAi(question) {
@@ -380,6 +456,7 @@ async function rateAnswer(m, idx, rating) {
       scope: selectedBu.value || '全集团', year: year.value, month: month.value,
     })
     showToast(rating === 1 ? '✓ 已记录，感谢反馈' : '✓ 已记录，会用于改进回答质量')
+    persistChat()
   } catch { m.fb = undefined }
 }
 
@@ -819,7 +896,7 @@ const engineLine = computed(() => {
   return { eng, drag, sameOne: eng === drag }
 })
 
-onMounted(load)
+onMounted(() => { restoreChat(); load() })
 
 // ── 右键上下文菜单（事业部矩阵表）────────────────────────────────────────────
 const ctxMatrix = useContextMenu()
@@ -1093,7 +1170,9 @@ const ctxMatrixItems = computed(() => {
                 {{ aiLoading ? '⏳ 分析中…' : '✨ 一键全局经营分析' }}
               </button>
               <button v-if="hasAnalysis" class="cfa-global-ghost" @click="viewAnalysis">查看</button>
-              <button v-if="panelTab === 'chat' && chatMessages.length" class="cfa-mini" title="清空对话" @click="resetChat">清空</button>
+              <button v-if="panelTab === 'chat' && chatMessages.length" class="cfa-mini" title="导出为 Markdown 文档" @click="exportChatMd">⬇MD</button>
+              <button v-if="panelTab === 'chat' && chatMessages.length" class="cfa-mini" :disabled="exportingImg" title="导出为长图" @click="exportChatImage">{{ exportingImg ? '…' : '⬇图片' }}</button>
+              <button v-if="panelTab === 'chat' && chatMessages.length" class="cfa-mini" title="清除对话（清空后不再保留）" @click="resetChat">清空</button>
               <button class="cfa-x" title="收起" @click="chatOpen = false">×</button>
             </div>
           </div>
