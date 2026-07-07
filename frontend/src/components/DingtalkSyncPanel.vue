@@ -82,9 +82,10 @@ async function runQuery() {
   if (!user) { user = await resolvePerson(); if (!user) return }
   loading.value = true; loadErr.value = ''; sel.value = new Set()
   try {
+    // 查询要遍历该员工可见的全部模板并逐条拉详情，耗时较长，单独放宽超时到 90s
     const r = await api.post('/dingtalk/query', {
       userid: user.userid, start: range.start, end: range.end, status: status.value,
-    })
+    }, { timeout: 90000 })
     items.value = r.data?.items || []
     capped.value = !!r.data?.capped
   } catch (e) { loadErr.value = e?.msg || e?.error || '查询失败'; items.value = [] }
@@ -122,7 +123,7 @@ function openPreview() { if (selCount.value) previewOpen.value = true }
 async function doSync() {
   syncing.value = true
   try {
-    const r = await api.post('/dingtalk/sync', { instance_ids: [...sel.value] })
+    const r = await api.post('/dingtalk/sync', { instance_ids: [...sel.value] }, { timeout: 90000 })
     const d = r.data || {}
     previewOpen.value = false
     if (d.skipped?.length) resultDlg({ title: '同步结果', okLine: d.message, skipped: d.skipped })
@@ -137,7 +138,7 @@ async function refreshStatus() {
   if (!(await confirmDlg(`对所选 ${selCount.value} 条已同步记录，从钉钉重新拉取最新状态并回写？未同步的会自动跳过。`))) return
   syncing.value = true
   try {
-    const r = await api.post('/dingtalk/refresh', { instance_ids: [...sel.value] })
+    const r = await api.post('/dingtalk/refresh', { instance_ids: [...sel.value] }, { timeout: 90000 })
     const d = r.data || {}
     if (d.skipped?.length) resultDlg({ title: '刷新结果', okLine: d.message, skipped: d.skipped })
     else toast.success(d.message || '已刷新')

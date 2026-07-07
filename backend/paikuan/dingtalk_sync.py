@@ -12,6 +12,7 @@
 import datetime
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, InvalidOperation
 
 from django.utils import timezone
@@ -283,14 +284,20 @@ def dingtalk_query(request):
         # - todo/done（该员工作为审批人）→ 不能按发起人过滤（否则只剩自发自审的空集），
         #   改为拉时间区间内全部实例，再按该员工的审批任务分类。
         originator = userid if status == 'originated' else None
+
+        # ① 并发拉各模板的实例 ID（几十个模板串行会超时；单模板失败不拖累整体）
+        def _ids_for(t):
+            try:
+                return [(iid, t['process_code']) for iid in
+                        dc.list_instance_ids(t['process_code'], start_ms, end_ms, originator)]
+            except DingTalkError as ex:
+                logger.warning('listids %s failed: %s', t.get('process_code'), ex)
+                return []
+
         inst_ids = []
-        for t in templates:
-            for iid in dc.list_instance_ids(t['process_code'], start_ms, end_ms, originator):
-                inst_ids.append((iid, t['process_code']))
-                if len(inst_ids) > _QUERY_CAP:
-                    break
-            if len(inst_ids) > _QUERY_CAP:
-                break
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for pairs in pool.map(_ids_for, templates):
+                inst_ids.extend(pairs)
         capped = len(inst_ids) > _QUERY_CAP
         inst_ids = inst_ids[:_QUERY_CAP]
 
@@ -298,9 +305,21 @@ def dingtalk_query(request):
         synced = {r.dingtalk_instance_id: r for r in ApprovalRecord.objects.filter(
             dingtalk_instance_id__in=[i for i, _ in inst_ids], deleted_at__isnull=True)}
 
+        # ② 并发拉实例详情（逐条串行是超时主因）
+        def _detail(pair):
+            iid, code = pair
+            try:
+                return iid, code, dc.get_instance(iid)
+            except DingTalkError as ex:
+                logger.warning('get_instance %s failed: %s', iid, ex)
+                return iid, code, None
+
         items = []
-        for iid, code in inst_ids:
-            detail = dc.get_instance(iid)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            details = list(pool.map(_detail, inst_ids))
+        for iid, code, detail in details:
+            if detail is None:
+                continue
             role = classify(detail, userid)
             if role != status:
                 continue
@@ -362,18 +381,27 @@ def dingtalk_sync(request):
         return err('单次同步上限 200 条，请缩小选择范围')
     actor = getattr(request, 'pk_user', None)
     created, updated, skipped = 0, 0, []
-    try:
-        for iid in ids:
-            detail = dc.get_instance(iid)
-            try:
-                kind, _ = _upsert(detail, actor)
-                created += (kind == 'created')
-                updated += (kind == 'updated')
-            except Exception as ex:   # 单条落库失败不影响整体
-                logger.error('dingtalk sync upsert failed %s: %s', iid, ex)
-                skipped.append({'id': iid, 'reason': str(ex)[:120]})
-    except DingTalkError as ex:
-        return err(str(ex), 502, 502)
+
+    # 先并发拉详情（网络重头），落库放主线程串行（避免子线程用 ORM 连接）
+    def _fetch(iid):
+        try:
+            return iid, dc.get_instance(iid), None
+        except DingTalkError as ex:
+            return iid, None, str(ex)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        fetched = list(pool.map(_fetch, ids))
+    for iid, detail, ferr in fetched:
+        if ferr:
+            skipped.append({'id': iid, 'reason': ferr[:120]})
+            continue
+        try:
+            kind, _ = _upsert(detail, actor)
+            created += (kind == 'created')
+            updated += (kind == 'updated')
+        except Exception as ex:   # 单条落库失败不影响整体
+            logger.error('dingtalk sync upsert failed %s: %s', iid, ex)
+            skipped.append({'id': iid, 'reason': str(ex)[:120]})
     return ok({'created': created, 'updated': updated, 'skipped': skipped,
                'message': f'新建 {created} 条、更新 {updated} 条'
                           + (f'、跳过 {len(skipped)} 条' if skipped else '')})
@@ -393,22 +421,29 @@ def dingtalk_refresh(request):
     if len(ids) > 200:
         return err('单次刷新上限 200 条')
     updated, skipped = 0, []
-    try:
-        recs = {r.dingtalk_instance_id: r for r in ApprovalRecord.objects.filter(
-            dingtalk_instance_id__in=ids, deleted_at__isnull=True)}
-        for iid in ids:
-            rec = recs.get(iid)
-            if not rec:
-                skipped.append({'id': iid, 'reason': '系统内无该同步记录'})
-                continue
-            detail = dc.get_instance(iid)
-            new_status = map_status(detail.get('status'), detail.get('result'))
-            new_amount = extract_amount(detail)
-            if rec.status != new_status or rec.amount != new_amount:
-                rec.status, rec.amount = new_status, new_amount
-                rec.save(update_fields=['status', 'amount', 'updated_at'])
-                updated += 1
-    except DingTalkError as ex:
-        return err(str(ex), 502, 502)
+    recs = {r.dingtalk_instance_id: r for r in ApprovalRecord.objects.filter(
+        dingtalk_instance_id__in=ids, deleted_at__isnull=True)}
+    todo = [iid for iid in ids if recs.get(iid)]
+    skipped = [{'id': iid, 'reason': '系统内无该同步记录'} for iid in ids if not recs.get(iid)]
+
+    def _fetch(iid):
+        try:
+            return iid, dc.get_instance(iid), None
+        except DingTalkError as ex:
+            return iid, None, str(ex)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        fetched = list(pool.map(_fetch, todo))
+    for iid, detail, ferr in fetched:
+        if ferr:
+            skipped.append({'id': iid, 'reason': ferr[:120]})
+            continue
+        rec = recs[iid]
+        new_status = map_status(detail.get('status'), detail.get('result'))
+        new_amount = extract_amount(detail)
+        if rec.status != new_status or rec.amount != new_amount:
+            rec.status, rec.amount = new_status, new_amount
+            rec.save(update_fields=['status', 'amount', 'updated_at'])
+            updated += 1
     return ok({'updated': updated, 'skipped': skipped,
                'message': f'刷新更新 {updated} 条' + (f'、跳过 {len(skipped)} 条' if skipped else '')})
