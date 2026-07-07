@@ -278,9 +278,14 @@ def dingtalk_query(request):
             return err('未获取到可查询的审批模板：该员工名下无可见审批模板，'
                        '或应用「可用范围」未设为全部员工。可在 DINGTALK_PROCESS_CODES 手动配置后重试', 400)
         name_by_code = {t['process_code']: t.get('name', '') for t in templates}
+        # 关键：listids 的 userid_list 过滤的是「发起人」。
+        # - originated（该员工发起）→ 按发起人过滤，精准高效；
+        # - todo/done（该员工作为审批人）→ 不能按发起人过滤（否则只剩自发自审的空集），
+        #   改为拉时间区间内全部实例，再按该员工的审批任务分类。
+        originator = userid if status == 'originated' else None
         inst_ids = []
         for t in templates:
-            for iid in dc.list_instance_ids(t['process_code'], start_ms, end_ms, userid):
+            for iid in dc.list_instance_ids(t['process_code'], start_ms, end_ms, originator):
                 inst_ids.append((iid, t['process_code']))
                 if len(inst_ids) > _QUERY_CAP:
                     break

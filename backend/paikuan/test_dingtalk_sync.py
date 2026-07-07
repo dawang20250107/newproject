@@ -156,6 +156,20 @@ class SyncEndpointTests(TestCase):
                         {'userid': 'U-me', 'start': '2026-06-01', 'end': '2026-06-30', 'status': 'done'})
         self.assertEqual(r2.json()['data']['count'], 0)
 
+    @mock.patch('paikuan.dingtalk_client.list_process_codes',
+                return_value=[{'process_code': 'PC1', 'name': '付款审批'}])
+    @mock.patch('paikuan.dingtalk_client.list_instance_ids', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.get_instance')
+    def test_query_originator_filter_only_for_originated(self, m_get, m_list, m_codes):
+        # todo/done：审批人口径，不能按发起人过滤（listids userid_list=发起人）
+        self._post('/api/pk/dingtalk/query',
+                   {'userid': 'U-me', 'start': '2026-06-01', 'end': '2026-06-30', 'status': 'todo'})
+        self.assertIsNone(m_list.call_args.args[3])          # userid 不下传
+        # originated：按发起人精准过滤
+        self._post('/api/pk/dingtalk/query',
+                   {'userid': 'U-me', 'start': '2026-06-01', 'end': '2026-06-30', 'status': 'originated'})
+        self.assertEqual(m_list.call_args.args[3], 'U-me')
+
     @mock.patch('paikuan.dingtalk_client.templates_by_user')
     @mock.patch('paikuan.dingtalk_client.list_process_codes', return_value=[])
     @mock.patch('paikuan.dingtalk_client.list_instance_ids')
