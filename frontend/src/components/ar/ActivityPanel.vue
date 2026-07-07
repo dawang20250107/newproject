@@ -8,7 +8,7 @@ import { confirmDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import ar from '../../api/ar.js'
 import { useToast } from '../../composables/useToast.js'
-import { todayCST, DEPARTMENTS, COLLECTION_METHODS, DEFAULT_COLLECTION_METHOD } from '../../constants.js'
+import { todayCST, DEPARTMENTS, COLLECTION_METHODS, DEFAULT_COLLECTION_METHOD, DRAFT_METHOD, DRAFT_STATUSES, DEFAULT_DRAFT_STATUS } from '../../constants.js'
 import { copyText } from '../../utils/clipboard.js'
 
 const props = defineProps({
@@ -205,7 +205,8 @@ function setToday(field) { if (props.canWrite) saveFieldValue(field, todayCST())
 const DEPT_OPTS = computed(() => DEPARTMENTS.filter(d => d !== props.rec.delivery_dept))
 // 回款方式（仅现金回款有意义）：现金/微信/银行转账/承兑汇票，默认银行转账
 const PAY_METHODS = COLLECTION_METHODS
-const payForm   = reactive({ amount: '', payment_date: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', counterparty_dept: '', notes: '' })
+const DRAFT_ST = DRAFT_STATUSES
+const payForm   = reactive({ amount: '', payment_date: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, counterparty_dept: '', notes: '' })
 const addingPay = ref(false)
 
 async function submitPayment() {
@@ -219,21 +220,32 @@ async function submitPayment() {
       amount: payForm.amount, payment_date: payForm.payment_date, source: payForm.source,
       method: payForm.source === '回款' ? payForm.method : '',
       account: payForm.source === '回款' ? payForm.account : '',
+      draft_status: (payForm.source === '回款' && payForm.method === DRAFT_METHOD) ? payForm.draft_status : '',
       counterparty_dept: payForm.source === '内部往来' ? payForm.counterparty_dept : '',
       notes: payForm.notes,
     })
     await refreshRecordAndPayments()
     payForm.amount = ''; payForm.notes = ''; payForm.counterparty_dept = ''; payForm.account = ''
+    payForm.draft_status = DEFAULT_DRAFT_STATUS
     toast.success(payForm.source === '内部往来' ? '已登记内部往来核销' : '已登记回款')
   } catch (e) { toast.error(errMsg(e)) }
   finally { addingPay.value = false }
+}
+// 承兑汇票兑付到账：未承兑 → 已承兑（进资金池可动用现金）
+async function markDraftAccepted(p) {
+  if (!(await confirmDlg(`确认这笔承兑汇票（¥${fmtAmt(p.amount)}）已兑付到账？\n标记「已承兑」后将计入资金池可动用现金。`))) return
+  try {
+    await ar.updatePayment(props.rec.id, p.id, { draft_status: '已承兑' })
+    await refreshRecordAndPayments()
+    toast.success('已标记为已承兑')
+  } catch (e) { toast.error(errMsg(e)) }
 }
 async function settleRemaining() {
   if (!(outstanding.value > 0)) return
   if (!(await confirmDlg(`登记一笔 ¥${fmtAmt(outstanding.value)} 的回款，结清全部余款？`))) return
   addingPay.value = true
   try {
-    await ar.addPayment(props.rec.id, { amount: outstanding.value, payment_date: todayCST(), source: '回款', method: payForm.method, account: payForm.account, notes: '结清余款' })
+    await ar.addPayment(props.rec.id, { amount: outstanding.value, payment_date: todayCST(), source: '回款', method: payForm.method, account: payForm.account, draft_status: payForm.method === DRAFT_METHOD ? payForm.draft_status : '', notes: '结清余款' })
     await refreshRecordAndPayments()
     toast.success('已结清余款')
   } catch (e) { toast.error(errMsg(e)) }
@@ -790,7 +802,9 @@ function onKey(e) {
                     <span class="pay-date">{{ p.payment_date }}</span>
                     <span class="pay-src" :class="{ 'pay-src-other': p.source !== '回款' }">{{ p.source }}</span>
                     <span v-if="p.source === '回款'" class="pay-method">{{ p.method || '银行转账' }}{{ p.account ? '·' + p.account : '' }}</span>
+                    <span v-if="p.source === '回款' && p.method === '承兑汇票'" class="pay-draft" :class="{ pending: p.draft_status !== '已承兑' }">{{ p.draft_status === '已承兑' ? '已承兑' : '未承兑' }}</span>
                     <span v-if="p.counterparty_dept" class="pay-cp">↔ {{ p.counterparty_dept }}</span>
+                    <button v-if="canCollect && p.source === '回款' && p.method === '承兑汇票' && p.draft_status !== '已承兑'" class="pay-accept" title="兑付到账后标记已承兑（计入资金池）" @click="markDraftAccepted(p)">✓兑付</button>
                     <button v-if="canCollect && p.source !== '预收抵扣'" class="pay-del" @click="deletePayment(p)">🗑</button>
                   </div>
                 </div>
@@ -814,6 +828,9 @@ function onKey(e) {
                   <div v-if="payForm.source === '回款'" class="pay-add pay-add-method">
                     <select v-model="payForm.method" class="pay-inp pay-inp-method">
                       <option v-for="m in PAY_METHODS" :key="m" :value="m">{{ m }}</option>
+                    </select>
+                    <select v-if="payForm.method === '承兑汇票'" v-model="payForm.draft_status" class="pay-inp pay-inp-method" title="未承兑=持票未兑付（不计资金池）；已承兑=已兑付到账（计入资金池）">
+                      <option v-for="s in DRAFT_ST" :key="s" :value="s">{{ s }}</option>
                     </select>
                     <input v-model="payForm.account" type="text" maxlength="50" class="pay-inp pay-inp-acct" placeholder="收款账户（选填，如 结算001）" />
                   </div>
@@ -1540,6 +1557,10 @@ function onKey(e) {
 .pay-src-other { color: var(--c-warn); background: rgba(230,81,0,.09); border-color: rgba(230,81,0,.18); }
 .pay-cp  { font-size: 10px; color: #9b8070; }
 .pay-method { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 20px; color: #1565c0; background: rgba(21,101,192,.09); border: 1px solid rgba(21,101,192,.18); }
+.pay-draft { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 20px; color: #2e7d32; background: rgba(46,125,50,.1); border: 1px solid rgba(46,125,50,.2); }
+.pay-draft.pending { color: #b26a00; background: rgba(230,145,0,.1); border-color: rgba(230,145,0,.22); }
+.pay-accept { border: 1px solid rgba(46,125,50,.35); background: rgba(46,125,50,.08); color: #2e7d32; font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 7px; cursor: pointer; flex-shrink: 0; }
+.pay-accept:hover { background: rgba(46,125,50,.16); }
 .pay-del { border: none; background: none; font-size: 12px; cursor: pointer; opacity: .55; flex-shrink: 0; transition: opacity .12s; }
 .pay-del:hover { opacity: 1; }
 .pay-empty { font-size: 11.5px; color: #c4b3a5; text-align: center; padding: 6px 0; margin: 4px 14px 0; }

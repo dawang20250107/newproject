@@ -366,6 +366,11 @@ def ar_invoice_batch_payment(request, batch_no):
     if method not in ARPayment.METHOD_VALUES:
         return err('回款方式无效（现金/微信/银行转账/承兑汇票）')
     account = (data.get('account') or '').strip()[:50]
+    draft_status = ''
+    if method == ARPayment.DRAFT_METHOD:
+        draft_status = (data.get('draft_status') or ARPayment.DEFAULT_DRAFT_STATUS).strip()
+        if draft_status not in ARPayment.DRAFT_STATUS_VALUES:
+            return err('承兑状态无效（未承兑/已承兑）')
 
     with transaction.atomic():
         members = list(_batch_members_qs(request, batch_no).select_for_update())
@@ -394,7 +399,7 @@ def ar_invoice_batch_payment(request, batch_no):
             ARPayment.objects.create(
                 ar_record=r, payment_no=(last.payment_no + 1) if last else 1,
                 amount=alloc, payment_date=pay_date, method=method, account=account,
-                notes=note)
+                draft_status=draft_status, notes=note)
             r.refresh_from_db()
             allocations.append({
                 'record_id': r.id, 'short_name': r.project.short_name,

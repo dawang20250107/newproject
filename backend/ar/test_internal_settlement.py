@@ -244,6 +244,68 @@ class CollectionMethodTests(TestCase):
                                 'depts': self.dept}, **self.auth())
         self.assertEqual(resp.json()['data']['totals']['collected'][0], 500.0)
 
+    def test_draft_status_default_persist_and_validate(self):
+        # 承兑汇票默认「未承兑」；可指定「已承兑」；非四选一状态被拒
+        d = self._post_pay({'amount': 100, 'payment_date': '2026-03-10',
+                            'source': '回款', 'method': '承兑汇票'}).json()['data']
+        self.assertEqual(d['draft_status'], '未承兑')     # 默认
+        d2 = self._post_pay({'amount': 100, 'payment_date': '2026-03-11', 'source': '回款',
+                            'method': '承兑汇票', 'draft_status': '已承兑'}).json()['data']
+        self.assertEqual(d2['draft_status'], '已承兑')
+        r = self._post_pay({'amount': 50, 'payment_date': '2026-03-12', 'source': '回款',
+                           'method': '承兑汇票', 'draft_status': '部分承兑'})
+        self.assertEqual(r.status_code, 400, r.content)
+        # 非承兑汇票方式：承兑状态强制留空（即便客户端塞值）
+        d3 = self._post_pay({'amount': 60, 'payment_date': '2026-03-13', 'source': '回款',
+                            'method': '银行转账', 'draft_status': '已承兑'}).json()['data']
+        self.assertEqual(d3['draft_status'], '')
+
+    def test_accepted_draft_counts_as_pool_cash(self):
+        """已承兑的承兑汇票视同现金进资金池；未承兑不进。PUT 兑付后即计入。"""
+        from django.utils import timezone
+        from ar.models import CashPoolConfig
+        from ar.views.pool import _pool_balance
+        cfg = CashPoolConfig.objects.create(
+            delivery_dept=self.dept, initial_date=date(2026, 3, 1),
+            initial_amount=Decimal('1000'))
+        # 一笔已承兑（进池）、一笔未承兑（不进池）
+        self._post_pay({'amount': 300, 'payment_date': '2026-03-12', 'source': '回款',
+                        'method': '承兑汇票', 'draft_status': '已承兑'})
+        pend = self._post_pay({'amount': 200, 'payment_date': '2026-03-12', 'source': '回款',
+                              'method': '承兑汇票', 'draft_status': '未承兑'}).json()['data']
+        today = timezone.localdate()
+        self.assertEqual(_pool_balance(self.dept, cfg, today), Decimal('1300'))  # 期初1000+已承兑300
+        # 把未承兑那笔改为已承兑 → 兑付到账，进池
+        e = self.client.put(f'/api/pk/ar/records/{self.rec.id}/payments/{pend["id"]}',
+                            data=json.dumps({'draft_status': '已承兑'}),
+                            content_type='application/json', **self.auth())
+        self.assertEqual(e.status_code, 200, e.content)
+        self.assertEqual(e.json()['data']['draft_status'], '已承兑')
+        self.assertEqual(_pool_balance(self.dept, cfg, today), Decimal('1500'))  # 两笔都进池
+        # 现金流分析始终计入两笔（承兑无论是否兑付都是已实现现金流入）
+        resp = self.client.get('/api/pk/ar/cashflow',
+                               {'start_date': '2026-03-01', 'end_date': '2026-03-31',
+                                'depts': self.dept}, **self.auth())
+        self.assertEqual(resp.json()['data']['totals']['collected'][0], 500.0)
+
+    def test_draft_status_invariant_no_empty_on_draft_method(self):
+        """不变式：承兑汇票行的承兑状态恒为未承兑/已承兑，绝不为空——即便经方式往返、
+        或直改 method 为承兑汇票而未带状态，save() 兜底为未承兑。"""
+        from ar.models import ARPayment
+        # 直接 ORM 造一条 method=承兑汇票 但 draft_status='' 的行 → save() 兜底未承兑
+        p = ARPayment(ar_record=self.rec, payment_no=1, amount=Decimal('100'),
+                      payment_date=date(2026, 3, 1), source='回款', method='承兑汇票')
+        p.save()
+        p.refresh_from_db()
+        self.assertEqual(p.draft_status, '未承兑')
+        # PUT 把银行转账改为承兑汇票、不带 draft_status → 兜底未承兑（非空）
+        pid = self._post_pay({'amount': 50, 'payment_date': '2026-03-02',
+                             'source': '回款', 'method': '银行转账'}).json()['data']['id']
+        e = self.client.put(f'/api/pk/ar/records/{self.rec.id}/payments/{pid}',
+                            data=json.dumps({'method': '承兑汇票'}),
+                            content_type='application/json', **self.auth())
+        self.assertEqual(e.json()['data']['draft_status'], '未承兑')
+
     def test_ledger_filter_by_method_and_export_columns(self):
         self._post_pay({'amount': 100, 'payment_date': '2026-03-10', 'source': '回款', 'method': '微信'})
         self._post_pay({'amount': 200, 'payment_date': '2026-03-11', 'source': '回款', 'method': '现金'})

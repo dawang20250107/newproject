@@ -1325,6 +1325,9 @@ def _payment_ledger_qs(request):
     method = request.GET.get('method', '').strip()
     if method:
         qs = qs.filter(method=method)
+    draft_status = request.GET.get('draft_status', '').strip()
+    if draft_status:
+        qs = qs.filter(draft_status=draft_status)
     q = request.GET.get('q', '').strip()
     if q:
         qs = qs.filter(
@@ -1346,6 +1349,7 @@ def _payment_ledger_row(p):
         'source': p.source,
         'method': p.method,
         'account': p.account,
+        'draft_status': p.draft_status,
         'counterparty_dept': p.counterparty_dept,
         'notes': p.notes,
         'project_no': proj.project_no,
@@ -1397,14 +1401,15 @@ def ar_payment_ledger_export(request):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '回款流水'
-    headers = ['回款日期', '回款金额', '来源', '回款方式', '收款账户', '往来部门',
+    headers = ['回款日期', '回款金额', '来源', '回款方式', '收款账户', '承兑状态', '往来部门',
                '项目编号', '项目简称', '交付部门', '运作年', '运作月', '回款序号', '备注']
     _header_row(ws, headers, color='1B6E35')
     for p in qs:
         r = _payment_ledger_row(p)
         ws.append([r['payment_date'], float(p.amount), r['source'], r['method'], r['account'],
-                   r['counterparty_dept'], r['project_no'], r['short_name'], r['delivery_dept'],
-                   r['operation_year'], r['operation_month'], r['payment_no'], r['notes']])
+                   r['draft_status'], r['counterparty_dept'], r['project_no'], r['short_name'],
+                   r['delivery_dept'], r['operation_year'], r['operation_month'],
+                   r['payment_no'], r['notes']])
     return _export_response(wb, '回款流水.xlsx')
 
 
@@ -1811,8 +1816,8 @@ def ar_payments(request, pk):
             return err('预收抵扣由预收核销自动生成，请在「预收预付」页操作')
         if source not in ('回款', '内部往来'):
             return err('回款来源无效')
-        # 回款方式（现金/微信/银行转账/承兑汇票）+ 收款账户：仅对「回款」有意义。
-        method, account = '', ''
+        # 回款方式（现金/微信/银行转账/承兑汇票）+ 收款账户 + 承兑状态：仅对「回款」有意义。
+        method, account, draft_status = '', '', ''
         if source == '内部往来':
             if counterparty not in VALID_DEPARTMENTS:
                 return err('内部往来核销须选择有效的往来事业部')
@@ -1822,6 +1827,10 @@ def ar_payments(request, pk):
             if method not in ARPayment.METHOD_VALUES:
                 return err('回款方式无效（现金/微信/银行转账/承兑汇票）')
             account = (data.get('account') or '').strip()[:50]
+            if method == ARPayment.DRAFT_METHOD:
+                draft_status = (data.get('draft_status') or ARPayment.DEFAULT_DRAFT_STATUS).strip()
+                if draft_status not in ARPayment.DRAFT_STATUS_VALUES:
+                    return err('承兑状态无效（未承兑/已承兑）')
         try:
             with transaction.atomic():
                 last = rec.payments.select_for_update().order_by('-payment_no').first()
@@ -1834,6 +1843,7 @@ def ar_payments(request, pk):
                     source=source,
                     method=method,
                     account=account,
+                    draft_status=draft_status,
                     counterparty_dept=counterparty,
                     notes=data.get('notes', '').strip(),
                 )
@@ -2001,6 +2011,13 @@ def ar_payment_detail(request, pk, ppk):
             pay.method = mv
         if 'account' in data and pay.source == '回款':
             pay.account = (data['account'] or '').strip()[:50]
+        # 承兑状态仅对承兑汇票有意义（承兑汇票兑付后改「已承兑」即进资金池）。
+        # 以本次生效后的方式判定，兼容「同时改方式与承兑状态」。
+        if 'draft_status' in data and pay.method == ARPayment.DRAFT_METHOD:
+            ds = (data['draft_status'] or '').strip()
+            if ds not in ARPayment.DRAFT_STATUS_VALUES:
+                return err('承兑状态无效（未承兑/已承兑）')
+            pay.draft_status = ds
         if 'notes' in data:
             pay.notes = data['notes'].strip()
         try:

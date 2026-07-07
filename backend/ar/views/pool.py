@@ -30,7 +30,7 @@ def _pool_actual_flows(dept, start, end):
         ar_record__delivery_dept=dept,
         payment_date__gt=start, payment_date__lte=end)
         .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
-        .exclude(method__in=NON_CASH_POOL_METHODS)
+        .exclude(pending_draft_q())        # 未兑付承兑汇票不算可动用现金；已兑付则计入
         .aggregate(s=Sum('amount'))['s'])
     adv = (AdvanceRecord.objects.filter(
         delivery_dept=dept, occur_date__gt=start, occur_date__lte=end)

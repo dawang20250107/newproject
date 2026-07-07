@@ -10,6 +10,11 @@ export const BUSINESS_UNITS = DEPARTMENTS
 // 单一真源，供 ActivityPanel.vue 与 ARRecords.vue 共用，避免两处硬编码漂移。
 export const COLLECTION_METHODS = ['现金', '微信', '银行转账', '承兑汇票']
 export const DEFAULT_COLLECTION_METHOD = '银行转账'
+// 承兑状态（仅回款方式=承兑汇票时有意义）：未承兑=持票未兑付（非可动用现金）；
+// 已承兑=已兑付到账（视同现金进资金池）。新登记默认未承兑。
+export const DRAFT_METHOD = '承兑汇票'
+export const DRAFT_STATUSES = ['未承兑', '已承兑']
+export const DEFAULT_DRAFT_STATUS = '未承兑'
 
 export const ROLE_LABELS = {
   super_admin: '超级管理员',

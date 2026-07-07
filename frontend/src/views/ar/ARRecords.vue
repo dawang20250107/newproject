@@ -3,7 +3,7 @@ import { confirmDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, onMounted, onBeforeUnmount, provide, defineAsyncComponent, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
-import { DEPARTMENTS, yearCST, monthCST, todayCST, COLLECTION_METHODS, DEFAULT_COLLECTION_METHOD } from '../../constants.js'
+import { DEPARTMENTS, yearCST, monthCST, todayCST, COLLECTION_METHODS, DEFAULT_COLLECTION_METHOD, DRAFT_STATUSES, DEFAULT_DRAFT_STATUS } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact, fmtMoney } from '../../utils/format.js'
 import { downloadBlob } from '../../utils/download.js'
@@ -657,7 +657,8 @@ function onProjectKeywordInput() {
 }
 const showPayModal = ref(false)
 const payRec = ref(null)
-const payForm = reactive({ amount: '', payment_date: '', notes: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', counterparty_dept: '' })
+const DRAFT_ST = DRAFT_STATUSES
+const payForm = reactive({ amount: '', payment_date: '', notes: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, counterparty_dept: '' })
 const paySaving = ref(false)
 // 录入回款时联动：该项目可用预收（只读提示，便于判断是否以预收冲抵应收）
 const payAdvance = ref(null)
@@ -744,7 +745,7 @@ function onQuickSearch() {
 function clearQuickQ() { quickQ.value = ''; clearTimeout(quickTimer); applyQuickQ() }
 
 // ── 回款流水 (payment ledger) ───────────────────────────────────────────────
-const payFilters = reactive({ pay_start: '', pay_end: '', dept: '', q: '', source: '', method: '' })
+const payFilters = reactive({ pay_start: '', pay_end: '', dept: '', q: '', source: '', method: '', draft_status: '' })
 const payItems = ref([])
 const paySummary = ref(null)
 const payTotal = ref(0)
@@ -1275,7 +1276,7 @@ const showBatchPay = ref(false)
 const batchTarget = ref(null)
 const batchInvForm = reactive({ invoice_date: todayCST(), amount: '', tax_amount: '', notes: '' })
 const PAY_METHODS = COLLECTION_METHODS
-const batchPayForm = reactive({ amount: '', payment_date: todayCST(), method: DEFAULT_COLLECTION_METHOD, account: '', notes: '' })
+const batchPayForm = reactive({ amount: '', payment_date: todayCST(), method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, notes: '' })
 const batchActing = ref(false)
 const batchPayResult = ref(null)   // 分摊结果回执
 
@@ -1338,7 +1339,7 @@ async function undoBatchInvoice(ev) {
 }
 function openBatchPay(b) {
   batchTarget.value = b
-  Object.assign(batchPayForm, { amount: '', payment_date: todayCST(), method: DEFAULT_COLLECTION_METHOD, account: '', notes: '' })
+  Object.assign(batchPayForm, { amount: '', payment_date: todayCST(), method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, notes: '' })
   batchPayResult.value = null
   fetchBatchDetail(b.batch_no).catch(() => {})
   showBatchPay.value = true
@@ -1418,7 +1419,7 @@ function ledgerRows(rec) {
   const pays = (rec.payments || []).map(p => ({
     key: 'p' + p.id, kind: 'pay', date: p.payment_date || '',
     amount: parseFloat(p.amount) || 0, source: p.source || '回款',
-    method: p.method, account: p.account,
+    method: p.method, account: p.account, draft_status: p.draft_status,
     counterparty_dept: p.counterparty_dept, notes: p.notes, raw: p,
   }))
   const adjs = (rec.adjustments || []).map(a => ({
@@ -1530,7 +1531,7 @@ async function doBatchWriteoff() {
 
 function openAddPayment(rec) {
   payRec.value = rec
-  Object.assign(payForm, { amount: '', payment_date: todayCST(), notes: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', counterparty_dept: '' })
+  Object.assign(payForm, { amount: '', payment_date: todayCST(), notes: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, counterparty_dept: '' })
   payAdvance.value = null
   advWoSel.value = null
   showPayModal.value = true
@@ -1594,15 +1595,27 @@ async function savePayment() {
   }
   paySaving.value = true
   try {
-    // 方式/账户仅对「回款」有意义；内部往来核销不带方式
+    // 方式/账户/承兑状态仅对「回款」有意义；内部往来核销不带方式；承兑状态仅承兑汇票有效
+    const isColl = payForm.source === '回款'
     const payload = { ...payForm,
-      method: payForm.source === '回款' ? payForm.method : '',
-      account: payForm.source === '回款' ? payForm.account : '' }
+      method: isColl ? payForm.method : '',
+      account: isColl ? payForm.account : '',
+      draft_status: (isColl && payForm.method === '承兑汇票') ? payForm.draft_status : '' }
     await ar.addPayment(payRec.value.id, payload)
     toast.success(payForm.source === '内部往来' ? '内部往来核销已保存' : '回款已保存')
     showPayModal.value = false; await load()
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { paySaving.value = false }
+}
+
+// 承兑汇票兑付到账：未承兑 → 已承兑（计入资金池可动用现金）
+async function markDraftAccepted(rec, pay) {
+  if (!(await confirmDlg(`确认这笔承兑汇票（¥${pay.amount}）已兑付到账？\n标记「已承兑」后将计入资金池可动用现金。`))) return
+  try {
+    await ar.updatePayment(rec.id, pay.id, { draft_status: '已承兑' })
+    await load()
+    toast.success('已标记为已承兑')
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
 async function deletePayment(rec, pay) {
@@ -2308,9 +2321,11 @@ function clearFilters() {
                       <span class="pay-date">{{ row.date || '—' }}</span>
                       <span v-if="row.source === '预收抵扣'" class="pay-src" title="由预收核销生成；删除即反向核销，预收余额恢复">预收抵扣</span>
                       <span v-else-if="row.source === '内部往来'" class="pay-src pay-src-internal" :title="`事业部间内部往来核销（不计现金）· 往来部门：${row.counterparty_dept || '—'}`">内部往来 · {{ row.counterparty_dept || '—' }}</span>
-                      <span v-else class="pay-src pay-src-bank" :title="`回款方式：${row.method || '银行转账'}${row.account ? ' · ' + row.account : ''}（计入现金/资金池）`">{{ row.method || '银行转账' }}<template v-if="row.account"> · {{ row.account }}</template></span>
+                      <span v-else class="pay-src pay-src-bank" :title="`回款方式：${row.method || '银行转账'}${row.account ? ' · ' + row.account : ''}`">{{ row.method || '银行转账' }}<template v-if="row.account"> · {{ row.account }}</template></span>
+                      <span v-if="row.source === '回款' && row.method === '承兑汇票'" class="pay-draft-tag" :class="{ pending: row.draft_status !== '已承兑' }" :title="row.draft_status === '已承兑' ? '已兑付到账，计入资金池' : '持票未兑付，不计资金池可动用现金'">{{ row.draft_status === '已承兑' ? '已承兑' : '未承兑' }}</span>
                       <span class="pay-amt">{{ fmtCell(row.amount) }}</span>
                       <span v-if="row.notes" class="pay-notes">{{ row.notes }}</span>
+                      <button v-if="auth.canAction('ar_collect') && row.source === '回款' && row.method === '承兑汇票' && row.draft_status !== '已承兑'" class="pay-accept-tag" title="兑付到账后标记已承兑（计入资金池）" @click="markDraftAccepted(rec, row.raw)">✓兑付</button>
                       <button v-if="row.source === '预收抵扣' ? auth.canAction('wo_receive') : auth.canDelete" class="pay-del" @click="deletePayment(rec, row.raw)">
                         {{ row.source === '预收抵扣' ? '撤销核销' : '删除' }}</button>
                     </div>
@@ -2526,9 +2541,13 @@ function clearFilters() {
               <option value="预收抵扣">预收抵扣</option>
               <option value="内部往来">内部往来</option>
             </select>
-            <select v-model="payFilters.method" class="sel-bu" @change="loadPayments(true)" title="按回款方式筛选（仅回款）">
+            <select v-model="payFilters.method" class="sel-bu" @change="payFilters.draft_status = ''; loadPayments(true)" title="按回款方式筛选（仅回款）">
               <option value="">全部方式</option>
               <option v-for="m in PAY_METHODS" :key="m" :value="m">{{ m }}</option>
+            </select>
+            <select v-if="payFilters.method === '承兑汇票'" v-model="payFilters.draft_status" class="sel-bu" @change="loadPayments(true)" title="按承兑状态筛选">
+              <option value="">全部承兑状态</option>
+              <option v-for="s in DRAFT_ST" :key="s" :value="s">{{ s }}</option>
             </select>
             <input v-model="payFilters.q" placeholder="搜索项目" class="search-input" @input="loadPayments(true)" />
             <button class="btn btn-ghost btn-sm" :disabled="payExporting" @click="exportPayments">↓ 导出</button>
@@ -2568,7 +2587,7 @@ function clearFilters() {
                   <span v-else class="text-sm-muted">回款</span>
                 </td>
                 <td class="ctr text-sm-muted">
-                  <template v-if="p.source === '回款'">{{ p.method || '银行转账' }}<template v-if="p.account"> · {{ p.account }}</template></template>
+                  <template v-if="p.source === '回款'">{{ p.method || '银行转账' }}<template v-if="p.account"> · {{ p.account }}</template><span v-if="p.method === '承兑汇票'" class="pay-draft-tag" :class="{ pending: p.draft_status !== '已承兑' }">{{ p.draft_status === '已承兑' ? '已承兑' : '未承兑' }}</span></template>
                   <template v-else>—</template>
                 </td>
                 <td>
@@ -2900,6 +2919,12 @@ function clearFilters() {
                     <option v-for="m in PAY_METHODS" :key="m" :value="m">{{ m }}</option>
                   </select>
                 </label>
+                <label v-if="batchPayForm.method === '承兑汇票'" class="form-field">
+                  <span>承兑状态*</span>
+                  <select v-model="batchPayForm.draft_status" title="未承兑=持票未兑付（不计资金池）；已承兑=已兑付到账（计入资金池）">
+                    <option v-for="s in DRAFT_ST" :key="s" :value="s">{{ s }}</option>
+                  </select>
+                </label>
                 <label class="form-field">
                   <span>收款账户（选填）</span>
                   <input v-model="batchPayForm.account" maxlength="50" placeholder="如：结算001" />
@@ -3081,6 +3106,12 @@ function clearFilters() {
                 <span>回款方式 <em>*</em></span>
                 <select v-model="payForm.method">
                   <option v-for="m in PAY_METHODS" :key="m" :value="m">{{ m }}</option>
+                </select>
+              </label>
+              <label v-if="payForm.source === '回款' && payForm.method === '承兑汇票'" class="form-field">
+                <span>承兑状态 <em>*</em></span>
+                <select v-model="payForm.draft_status" title="未承兑=持票未兑付（不计资金池）；已承兑=已兑付到账（计入资金池）">
+                  <option v-for="s in DRAFT_ST" :key="s" :value="s">{{ s }}</option>
                 </select>
               </label>
               <label v-if="payForm.source === '回款'" class="form-field">
@@ -3728,6 +3759,10 @@ function clearFilters() {
 .pay-src { font-size: 11px; font-weight: 600; color: #1b6e35; background: rgba(27,110,53,0.1); padding: 1px 7px; border-radius: 999px; }
 .pay-src-internal { color: #6a1b9a; background: rgba(106,27,154,0.1); }
 .pay-src-bank { color: var(--c-info); background: rgba(21,101,192,0.1); }
+.pay-draft-tag { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 6px; margin-left: 5px; border-radius: 10px; color: #2e7d32; background: rgba(46,125,50,.12); }
+.pay-draft-tag.pending { color: #b26a00; background: rgba(230,145,0,.12); }
+.pay-accept-tag { border: 1px solid rgba(46,125,50,.4); background: rgba(46,125,50,.08); color: #2e7d32; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 6px; cursor: pointer; margin-left: 6px; }
+.pay-accept-tag:hover { background: rgba(46,125,50,.18); }
 .pay-src-adj { color: #6a5acd; background: rgba(106,90,205,0.12); }
 .pay-amt.adj-pos { color: var(--c-success); } .pay-amt.adj-neg { color: var(--c-danger); }
 .pay-notes { font-size: 12px; color: var(--muted); font-style: italic; }

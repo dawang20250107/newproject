@@ -677,11 +677,16 @@ class ARRecord(models.Model):
 # 非现金回款来源：冲减应收未收，但不构成现金事件，现金流/资金池口径须排除。
 NON_CASH_PAYMENT_SOURCES = ('预收抵扣', '内部往来')
 
-# 非「可动用现金」的回款方式（与 source 正交，仅作用于 source='回款'）：承兑汇票在
-# 贴现/到期前不是货币资金，故【资金池账面余额/资金预警/透支调拨】须排除；但它仍是
-# 一笔已实现的经营活动现金流入，【现金流分析】照常计入。切勿混入 NON_CASH_PAYMENT_SOURCES
-# （那是按 source 排除的口径，会污染语义且无法表达方式维度）。
-NON_CASH_POOL_METHODS = ('承兑汇票',)
+# 资金池「可动用现金」口径：未兑付的承兑汇票（method='承兑汇票' 且 draft_status!='已承兑'）
+# 在贴现/到期前不是货币资金，故【资金池账面余额/资金预警/透支调拨】须排除；一旦兑付
+# （draft_status='已承兑'）即视同现金计入。承兑汇票无论是否兑付都是已实现现金流入，
+# 【现金流分析】照常计入。此为方式×状态口径，与按 source 排除的 NON_CASH_PAYMENT_SOURCES
+# 正交，切勿混入后者（会污染语义且无法表达方式/状态维度）。
+def pending_draft_q():
+    """未兑付承兑汇票的过滤条件（资金池可动用现金须排除）。放在函数里以延迟 Q 求值、
+    避免模型模块顶层依赖 Q 的导入顺序。"""
+    from django.db.models import Q
+    return Q(method='承兑汇票') & ~Q(draft_status='已承兑')
 
 
 class ARPayment(models.Model):
@@ -700,6 +705,13 @@ class ARPayment(models.Model):
                       ('银行转账', '银行转账'), ('承兑汇票', '承兑汇票')]
     METHOD_VALUES = frozenset(m[0] for m in METHOD_CHOICES)
     DEFAULT_METHOD = '银行转账'
+    # 承兑状态（仅 method='承兑汇票' 有意义）：未承兑=持票未兑付，非可动用现金；
+    # 已承兑=已兑付到账，视同现金进资金池。新登记默认未承兑。
+    DRAFT_METHOD = '承兑汇票'
+    DRAFT_STATUS_CHOICES = [('未承兑', '未承兑'), ('已承兑', '已承兑')]
+    DRAFT_STATUS_VALUES = frozenset(s[0] for s in DRAFT_STATUS_CHOICES)
+    DEFAULT_DRAFT_STATUS = '未承兑'
+    ACCEPTED_DRAFT_STATUS = '已承兑'
 
     ar_record = models.ForeignKey(ARRecord, on_delete=models.CASCADE,
                                   related_name='payments', db_index=True)
@@ -713,6 +725,10 @@ class ARPayment(models.Model):
                               blank=True, default='', db_index=True)
     # 收款账户（选填，为后期「微信-结算001」等具体账户预留）：仅对 source='回款' 有意义。
     account = models.CharField('收款账户', max_length=50, blank=True, default='')
+    # 承兑状态：仅 method='承兑汇票' 有意义。未承兑=持票未兑付（非可动用现金）；
+    # 已承兑=已兑付到账（视同现金进资金池）。其它方式留空。
+    draft_status = models.CharField('承兑状态', max_length=6, choices=DRAFT_STATUS_CHOICES,
+                                    blank=True, default='', db_index=True)
     # 内部往来核销专用：往来事业部（系统部门之一）。其它来源留空。
     counterparty_dept = models.CharField('往来部门', max_length=50, blank=True,
                                          default='', db_index=True)
@@ -734,6 +750,13 @@ class ARPayment(models.Model):
         if self.source != '回款':
             self.method = ''
             self.account = ''
+        # 承兑状态与方式绑定的不变式：非承兑汇票一律留空；承兑汇票则必为
+        # 未承兑/已承兑之一——空值兜底为「未承兑」，杜绝方式往返/直改 method 产生的
+        # draft_status='' 脏态（否则台账精确筛选漏行、导出列空，与资金池口径不一致）。
+        if self.method != self.DRAFT_METHOD:
+            self.draft_status = ''
+        elif not self.draft_status:
+            self.draft_status = self.DEFAULT_DRAFT_STATUS
         super().save(*args, **kwargs)
 
     def to_dict(self):
@@ -746,6 +769,7 @@ class ARPayment(models.Model):
             'source': self.source,
             'method': self.method,
             'account': self.account,
+            'draft_status': self.draft_status,
             'counterparty_dept': self.counterparty_dept,
             'notes': self.notes,
             'created_at': self.created_at.isoformat() if self.created_at else None,
