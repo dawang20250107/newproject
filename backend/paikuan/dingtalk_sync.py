@@ -263,12 +263,18 @@ def dingtalk_query(request):
         # 模板来源三级兜底：① 手动配置的 DINGTALK_PROCESS_CODES / 管理员可见模板；
         # ② 都没有时，用"被查这个人自己可见的模板"（无需配管理员 userid，基础版即可）。
         templates = dc.list_process_codes()
+        tpl_api_err = ''
         if not templates:
             try:
                 templates = dc.templates_by_user(userid)
             except DingTalkError as ex:
+                tpl_api_err = str(ex)
                 logger.warning('templates_by_user(%s) failed: %s', userid, ex)
         if not templates:
+            if tpl_api_err:
+                # 接口报错（多为权限/可见范围）——把钉钉原话透出来，便于对症开权限
+                return err('获取该员工可见审批模板失败：' + tpl_api_err
+                           + '（多为应用未开通「审批」相关权限，或「可用范围」未设为全部员工）', 502, 502)
             return err('未获取到可查询的审批模板：该员工名下无可见审批模板，'
                        '或应用「可用范围」未设为全部员工。可在 DINGTALK_PROCESS_CODES 手动配置后重试', 400)
         name_by_code = {t['process_code']: t.get('name', '') for t in templates}
