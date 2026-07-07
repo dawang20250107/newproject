@@ -26,6 +26,19 @@ DEEPSEEK_AGENT_MODEL = os.environ.get('DEEPSEEK_AGENT_MODEL', '') or DEEPSEEK_PR
 DEEPSEEK_FALLBACK_MODEL = os.environ.get('DEEPSEEK_FALLBACK_MODEL', 'deepseek-chat')
 DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1'
 
+# 钉钉审批流对接：仅从环境变量读取，源码不内置任何密钥。
+# 未配置时回调接口返回 503「未配置」，不影响其余功能。
+DINGTALK_APP_KEY = os.environ.get('DINGTALK_APP_KEY', '')
+DINGTALK_APP_SECRET = os.environ.get('DINGTALK_APP_SECRET', '')          # 敏感，仅环境变量
+DINGTALK_CORP_ID = os.environ.get('DINGTALK_CORP_ID', '')
+DINGTALK_PROCESS_CODE = os.environ.get('DINGTALK_PROCESS_CODE', '')       # 审批模板 process_code
+# 事件订阅回调加解密（钉钉后台"事件订阅"里生成）：
+DINGTALK_AES_KEY = os.environ.get('DINGTALK_AES_KEY', '')                 # 敏感，仅环境变量
+DINGTALK_CALLBACK_TOKEN = os.environ.get('DINGTALK_CALLBACK_TOKEN', '')   # 敏感，仅环境变量
+# 回调明文尾部校验用 key：企业内部应用事件订阅=AppKey；个别后台用 CorpId，则显式配此项覆盖。
+DINGTALK_CALLBACK_KEY = os.environ.get('DINGTALK_CALLBACK_KEY', '') or DINGTALK_APP_KEY
+DINGTALK_BASE_URL = 'https://oapi.dingtalk.com'
+
 # 联网搜索（Agent 参考同行/行业研究用）：默认内置必应中国抓取（无需配置）；
 # SEARCH_PROVIDER: 'bocha'（博查，国内直连）或 'serper'（Google via serper.dev）
 SEARCH_PROVIDER = os.environ.get('SEARCH_PROVIDER', '')

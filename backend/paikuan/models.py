@@ -326,6 +326,9 @@ class ApprovalRecord(models.Model):
     ext_bill_no = models.CharField('外部对账单号', max_length=64, blank=True, default='', db_index=True)
     # 原始行快照：{原表头: 原值} 全列逐字保存，导出时按原格式还原
     ext_raw = models.JSONField('外部原始行', default=dict, blank=True)
+    # 钉钉审批实例 ID：发起钉钉审批后回填，供事件回调按此关联并回写审批结果。
+    dingtalk_instance_id = models.CharField('钉钉审批实例ID', max_length=64, blank=True,
+                                            default='', db_index=True)
     deleted_at = models.DateTimeField('软删除时间', null=True, blank=True, db_index=True)
     deleted_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
                                    null=True, blank=True, related_name='deleted_approval_records')

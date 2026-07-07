@@ -1,9 +1,12 @@
 from django.urls import path
 from paikuan import views
 from paikuan import views_schemes
+from paikuan import dingtalk
 
 urlpatterns = [
     path('version', views.version),
+    # 钉钉审批流对接：事件订阅 HTTP 回调（URL 验证 + 审批结果回写）
+    path('dingtalk/callback', dingtalk.dingtalk_callback),
     # 通用列表筛选方案（表格方案基座）：私有/公共 + 默认，按 module 区分列表页
     path('list-schemes', views_schemes.list_schemes),
     path('list-schemes/set-default', views_schemes.list_scheme_default),
