@@ -121,60 +121,34 @@ def user_detail(userid):
     }
 
 
-def _dept_ids_all():
-    """遍历部门树，返回全部部门 id（含根 1）。缓存 10 分钟。"""
-    ids, queue = [1], [1]
-    while queue:
-        pid = queue.pop()
-        data = _post('/topapi/v2/department/listsub', {'dept_id': pid})
-        for d in (data.get('result') or []):
-            ids.append(d['dept_id'])
-            queue.append(d['dept_id'])
-    return ids
-
-
-_USER_DIR = {'exp': 0.0, 'rows': []}    # [{userid,name,dept}]
-_USER_DIR_LOCK = threading.Lock()
-
-
-def _user_directory():
-    """全员通讯录（userid/name/dept 简表），缓存 10 分钟，供姓名搜索。"""
-    now = time.time()
-    with _USER_DIR_LOCK:
-        if _USER_DIR['rows'] and now < _USER_DIR['exp']:
-            return _USER_DIR['rows']
-    rows = []
-    for dept_id in _dept_ids_all():
-        cursor = 0
-        while True:
-            data = _post('/topapi/v2/user/list',
-                         {'dept_id': dept_id, 'cursor': cursor, 'size': 100})
-            res = data.get('result') or {}
-            for u in (res.get('list') or []):
-                rows.append({'userid': u.get('userid'), 'name': u.get('name', ''),
-                             'dept': dept_id})
-            if not res.get('has_more'):
-                break
-            cursor = res.get('next_cursor', 0)
-    # 去重（一人多部门）
-    seen, uniq = set(), []
-    for r in rows:
-        if r['userid'] and r['userid'] not in seen:
-            seen.add(r['userid'])
-            uniq.append(r)
-    with _USER_DIR_LOCK:
-        _USER_DIR['rows'] = uniq
-        _USER_DIR['exp'] = now + 600
-    return uniq
-
-
 def users_by_name(name):
-    """姓名 → 候选人列表 [{userid,name}]（可能多个同名，交前端选择）。"""
+    """姓名 → 候选人列表 [{userid,name}]（可能多个同名，交前端选择）。
+    用新版通讯录搜索接口（服务端搜索，避免遍历全员超时）。"""
     name = (name or '').strip()
     if not name:
         return []
-    return [{'userid': r['userid'], 'name': r['name']}
-            for r in _user_directory() if name in (r['name'] or '')]
+    try:
+        r = requests.post(
+            'https://api.dingtalk.com/v1.0/contact/users/search',
+            headers={'x-acs-dingtalk-access-token': access_token(),
+                     'Content-Type': 'application/json'},
+            json={'queryWord': name, 'offset': 0, 'size': 10}, timeout=12)
+        data = r.json()
+    except DingTalkError:
+        raise
+    except Exception as ex:
+        raise DingTalkError(f'姓名搜索失败：{str(ex)[:120]}')
+    uids = data.get('list')
+    if uids is None:
+        raise DingTalkError(data.get('message') or data.get('errmsg')
+                            or '姓名搜索失败（需通讯录搜索权限）')
+    out = []
+    for uid in uids[:10]:
+        try:
+            out.append({'userid': uid, 'name': user_detail(uid).get('name') or uid})
+        except DingTalkError:
+            out.append({'userid': uid, 'name': uid})
+    return out
 
 
 # ── 审批模板 ──────────────────────────────────────────────────────────────────

@@ -72,6 +72,10 @@ async function resolvePerson() {
   finally { resolving.value = false }
 }
 function pickCandidate(u) { picked.value = u; candidates.value = []; runQuery() }
+function copyUid() {
+  if (!picked.value) return
+  navigator.clipboard?.writeText(picked.value.userid).then(() => toast.success('已复制 userid')).catch(() => {})
+}
 
 async function runQuery() {
   let user = picked.value
@@ -176,7 +180,7 @@ async function refreshStatus() {
           </div>
           <input v-model="personInput" class="inp" :placeholder="personMode === 'mobile' ? '钉钉手机号' : '姓名（可能多个同名）'"
                  @keyup.enter="picked = null; runQuery()" @input="picked = null" />
-          <span v-if="picked" class="picked">✓ {{ picked.name }}</span>
+          <span v-if="picked" class="picked" :title="'userid: ' + picked.userid">✓ {{ picked.name }} <code class="uid" @click="copyUid">{{ picked.userid }}</code></span>
         </div>
         <!-- 同名候选 -->
         <div v-if="candidates.length" class="cands">
@@ -318,6 +322,8 @@ async function refreshStatus() {
 .inp-date { width: 140px; }
 .person .inp { width: 210px; }
 .picked { font-size: 12.5px; font-weight: 700; color: var(--success, #2e9e5b); }
+.picked .uid { font-weight: 500; background: var(--surface-2, rgba(160,120,80,.1)); color: var(--muted, #9b8070); padding: 1px 6px; border-radius: 5px; cursor: pointer; font-size: 11.5px; }
+.picked .uid:hover { color: var(--primary, #1565c0); }
 .cands { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 2px; }
 .cands-lbl { font-size: 12px; color: var(--muted, #9b8070); }
 .cand { border: 1px solid var(--primary, #1565c0); background: color-mix(in srgb, var(--primary, #1565c0) 8%, transparent); color: var(--primary, #1565c0); font-size: 12.5px; padding: 5px 11px; border-radius: 7px; cursor: pointer; font-family: inherit; }
