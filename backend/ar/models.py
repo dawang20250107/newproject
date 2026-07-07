@@ -677,6 +677,12 @@ class ARRecord(models.Model):
 # 非现金回款来源：冲减应收未收，但不构成现金事件，现金流/资金池口径须排除。
 NON_CASH_PAYMENT_SOURCES = ('预收抵扣', '内部往来')
 
+# 非「可动用现金」的回款方式（与 source 正交，仅作用于 source='回款'）：承兑汇票在
+# 贴现/到期前不是货币资金，故【资金池账面余额/资金预警/透支调拨】须排除；但它仍是
+# 一笔已实现的经营活动现金流入，【现金流分析】照常计入。切勿混入 NON_CASH_PAYMENT_SOURCES
+# （那是按 source 排除的口径，会污染语义且无法表达方式维度）。
+NON_CASH_POOL_METHODS = ('承兑汇票',)
+
 
 class ARPayment(models.Model):
     """回款子表 — 每次回款一行，不限次数。

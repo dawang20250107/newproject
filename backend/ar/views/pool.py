@@ -23,12 +23,15 @@ def _pool_visible_depts(request):
 
 
 def _pool_actual_flows(dept, start, end):
-    """(start, end] 区间的实际现金流（口径与现金流分析一致）。
+    """(start, end] 区间的实际现金流。回款口径与现金流分析基本一致，但资金池是「可动用
+    货币资金」口径：承兑汇票在贴现/到期前不是可动用现金，故额外排除（现金流分析仍计入）。
     返回 (collected, adv_recv, paid, prepaid_offset, adv_paid, t_in, t_out)。"""
     collected = _dec(ARPayment.objects.filter(
         ar_record__delivery_dept=dept,
         payment_date__gt=start, payment_date__lte=end)
-        .exclude(source__in=NON_CASH_PAYMENT_SOURCES).aggregate(s=Sum('amount'))['s'])
+        .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
+        .exclude(method__in=NON_CASH_POOL_METHODS)
+        .aggregate(s=Sum('amount'))['s'])
     adv = (AdvanceRecord.objects.filter(
         delivery_dept=dept, occur_date__gt=start, occur_date__lte=end)
         .values('direction').annotate(s=Sum('advance_amount')))

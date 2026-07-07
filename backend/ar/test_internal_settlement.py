@@ -222,6 +222,28 @@ class CollectionMethodTests(TestCase):
         t = resp.json()['data']['totals']
         self.assertEqual(t['collected'][0], 500.0)   # 承兑也计入
 
+    def test_acceptance_draft_excluded_from_pool_but_in_cashflow(self):
+        """承兑汇票口径：不算「可动用现金」→ 资金池账面余额排除；但仍是已实现现金流入
+        → 现金流分析照常计入。"""
+        from django.utils import timezone
+        from ar.models import CashPoolConfig
+        from ar.views.pool import _pool_balance
+        cfg = CashPoolConfig.objects.create(
+            delivery_dept=self.dept, initial_date=date(2026, 3, 1),
+            initial_amount=Decimal('1000'))
+        self._post_pay({'amount': 300, 'payment_date': '2026-03-12',
+                        'source': '回款', 'method': '银行转账'})
+        self._post_pay({'amount': 200, 'payment_date': '2026-03-12',
+                        'source': '回款', 'method': '承兑汇票'})
+        # 资金池可动用现金：期初1000 + 银行转账300；承兑汇票200 不计入
+        bal = _pool_balance(self.dept, cfg, timezone.localdate())
+        self.assertEqual(bal, Decimal('1300'))
+        # 现金流分析仍计入承兑：collected = 500
+        resp = self.client.get('/api/pk/ar/cashflow',
+                               {'start_date': '2026-03-01', 'end_date': '2026-03-31',
+                                'depts': self.dept}, **self.auth())
+        self.assertEqual(resp.json()['data']['totals']['collected'][0], 500.0)
+
     def test_ledger_filter_by_method_and_export_columns(self):
         self._post_pay({'amount': 100, 'payment_date': '2026-03-10', 'source': '回款', 'method': '微信'})
         self._post_pay({'amount': 200, 'payment_date': '2026-03-11', 'source': '回款', 'method': '现金'})
