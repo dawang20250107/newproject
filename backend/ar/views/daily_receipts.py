@@ -20,38 +20,60 @@ def _visible_depts(request):
     return allowed
 
 
-def _clean_payload(request, data):
-    """校验并规整收款表单，返回 (fields_dict, project_obj, err_response)。"""
+def _clean_payload(request, data, rec=None):
+    """校验并规整收款表单，返回 (fields_dict, project_obj, advance_obj, err_response)。
+    rec：编辑时传入当前记录，用于把本笔原先占用的预付余额加回来做上限校验。"""
     dept = (data.get('delivery_dept') or '').strip()
     if dept not in VALID_DEPARTMENTS:
-        return None, None, err('无效的事业部')
+        return None, None, None, err('无效的事业部')
     # 非超管只能录本部门
     if request.pk_role != 'super_admin' and dept not in (request.pk_depts or []):
-        return None, None, err('只能录入本部门的收款', 403, 403)
+        return None, None, None, err('只能录入本部门的收款', 403, 403)
     rdate = _normalize_date(data.get('receipt_date'))
     if not rdate:
-        return None, None, err('收款日期必填（YYYY-MM-DD）')
+        return None, None, None, err('收款日期必填（YYYY-MM-DD）')
     try:
         rdate_d = datetime.date.fromisoformat(str(rdate)[:10])
     except (ValueError, TypeError):
-        return None, None, err('收款日期格式错误')
+        return None, None, None, err('收款日期格式错误')
     if rdate_d > timezone.localdate():
-        return None, None, err('收款日期不能晚于今天')
+        return None, None, None, err('收款日期不能晚于今天')
     try:
         amount = Decimal(str(data.get('amount') or 0))
     except (InvalidOperation, ValueError):
-        return None, None, err('金额格式错误')
+        return None, None, None, err('金额格式错误')
     if amount <= 0:
-        return None, None, err('收款金额必须大于 0')
+        return None, None, None, err('收款金额必须大于 0')
     source = (data.get('source') or '').strip()
     if not source:
-        return None, None, err('收款来源必填')
+        return None, None, None, err('收款来源必填')
     project = None
     pid = data.get('project_id')
     if pid:
         project = ARProject.objects.filter(id=pid).first()
         if not project:
-            return None, None, err('所选项目不存在')
+            return None, None, None, err('所选项目不存在')
+    # 关联预付（仅「预付退款」）：退款回冲该预付未核销余额
+    advance = None
+    aid = data.get('advance_id')
+    if aid:
+        if source != DailyReceipt.SOURCE_REFUND:
+            return None, None, None, err('仅「预付退款」可关联预付记录')
+        advance = AdvanceRecord.objects.filter(id=aid, direction='预付').first()
+        if not advance:
+            return None, None, None, err('所选预付记录不存在或非预付方向', 404)
+        if request.pk_role != 'super_admin' and advance.delivery_dept not in (request.pk_depts or []):
+            return None, None, None, err('无权关联其他部门的预付', 403, 403)
+        if advance.delivery_dept != dept:
+            return None, None, None, err(
+                f'预付所属部门「{advance.delivery_dept}」与收款部门「{dept}」不一致，不能关联')
+        # 退款上限 = 该预付当前未核销余额 +（编辑时）本笔原先对同一预付的占用（将被替换）
+        available = advance.balance_amount or Decimal('0')
+        if rec is not None and rec.advance_record_id == advance.id:
+            available += (rec.amount or Decimal('0'))
+        if amount > available:
+            return None, None, None, err(
+                f'退款金额 {amount} 超过该预付未核销余额 {available}，请核对')
     fields = {
         'delivery_dept': dept, 'receipt_date': rdate_d, 'amount': amount,
         'source': source[:40], 'method': (data.get('method') or '').strip()[:20],
@@ -59,7 +81,7 @@ def _clean_payload(request, data):
         'payer': (data.get('payer') or '').strip()[:100],
         'notes': (data.get('notes') or '').strip(),
     }
-    return fields, project, None
+    return fields, project, advance, None
 
 
 def _filtered_qs(request):
@@ -86,6 +108,40 @@ def _filtered_qs(request):
                        | Q(source__icontains=kw) | Q(project__short_name__icontains=kw)
                        | Q(project__customer_name__icontains=kw))
     return qs
+
+
+def _recompute_advances(ids):
+    """退款关联变动后，重算相关预付的未核销余额（去重、忽略 None）。"""
+    for aid in {i for i in ids if i}:
+        adv = AdvanceRecord.objects.filter(pk=aid).first()
+        if adv:
+            adv.recompute_derived(save=True)
+
+
+@csrf_exempt
+@pk_required()
+def daily_receipt_advances(request):
+    """GET → 可关联的预付记录（direction=预付、未核销余额>0、本可见部门），供「预付退款」关联。
+    独立于「预收预付」页面权限，按日常收款页面授权即可选。"""
+    denied = _page_denied(request, _PAGE)
+    if denied:
+        return denied
+    qs = (AdvanceRecord.objects.filter(direction='预付', balance_amount__gt=0,
+                                       delivery_dept__in=_visible_depts(request))
+          .select_related('project'))
+    dept = (request.GET.get('dept') or '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+    kw = (request.GET.get('q') or '').strip()
+    if kw:
+        qs = qs.filter(Q(counterparty__icontains=kw) | Q(project__short_name__icontains=kw))
+    items = [{
+        'id': a.id, 'counterparty': a.counterparty,
+        'occur_date': str(a.occur_date) if a.occur_date else '',
+        'balance': str(a.balance_amount), 'delivery_dept': a.delivery_dept,
+        'project_short_name': a.project.short_name if a.project_id else '',
+    } for a in qs.order_by('-occur_date', '-id')[:50]]
+    return ok({'items': items})
 
 
 @csrf_exempt
@@ -141,10 +197,18 @@ def daily_receipts(request):
         if denied:
             return denied
         data = _parse_body(request)
-        fields, project, bad = _clean_payload(request, data)
+        fields, project, advance, bad = _clean_payload(request, data)
         if bad:
             return bad
-        rec = DailyReceipt.objects.create(project=project, created_by=request.pk_user, **fields)
+        try:
+            with transaction.atomic():
+                rec = DailyReceipt.objects.create(
+                    project=project, advance_record=advance,
+                    created_by=request.pk_user, **fields)
+                if advance is not None:
+                    advance.recompute_derived(save=True)   # 余额兜底校验（非负约束）在此
+        except ValidationError as e:
+            return err(str(getattr(e, 'message', e)))
         return ok(rec.to_dict())
 
     return err('Method not allowed', 405)
@@ -169,20 +233,33 @@ def daily_receipt_detail(request, pk):
         if denied:
             return denied
         data = _parse_body(request)
-        fields, project, bad = _clean_payload(request, data)
+        fields, project, advance, bad = _clean_payload(request, data, rec=rec)
         if bad:
             return bad
-        for k, v in fields.items():
-            setattr(rec, k, v)
-        rec.project = project
-        rec.save()
+        old_adv_id = rec.advance_record_id
+        try:
+            with transaction.atomic():
+                for k, v in fields.items():
+                    setattr(rec, k, v)
+                rec.project = project
+                rec.advance_record = advance
+                rec.save()
+                # 先算新关联（含非负兜底），再回算旧关联（解绑/改绑后余额回升）
+                new_id = advance.id if advance is not None else None
+                _recompute_advances([new_id])
+                if old_adv_id and old_adv_id != new_id:
+                    _recompute_advances([old_adv_id])
+        except ValidationError as e:
+            return err(str(getattr(e, 'message', e)))
         return ok(rec.to_dict())
 
     if request.method == 'DELETE':
         denied = _write_denied(request)
         if denied:
             return denied
+        adv_id = rec.advance_record_id
         rec.delete()
+        _recompute_advances([adv_id])   # 删退款 → 预付余额回升
         return ok({'deleted': pk})
 
     return err('Method not allowed', 405)
@@ -204,8 +281,11 @@ def daily_receipts_bulk_delete(request):
     qs = DailyReceipt.objects.filter(id__in=ids)
     if request.pk_role != 'super_admin':
         qs = qs.filter(delivery_dept__in=(request.pk_depts or []))
+    adv_ids = list(qs.exclude(advance_record__isnull=True)
+                   .values_list('advance_record_id', flat=True))
     n = qs.count()
     qs.delete()
+    _recompute_advances(adv_ids)        # 删退款 → 相关预付余额回升
     return ok({'deleted': n})
 
 

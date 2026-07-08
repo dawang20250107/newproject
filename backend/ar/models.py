@@ -927,6 +927,9 @@ class AdvanceRecord(models.Model):
     advance_amount = models.DecimalField('预收/预付金额', max_digits=15, decimal_places=2, default=0)
     expected_writeoff_date = models.DateField('预计核销日期', null=True, blank=True, db_index=True)
     written_off_amount = models.DecimalField('已核销金额', max_digits=15, decimal_places=2, default=0)
+    # 已退款金额：仅对预付有意义——供应商退回预付的现金（记在「日常收款·预付退款」并回关本笔），
+    # 与核销并列冲减未核销余额；退款是现金事件（在日常收款侧计流入），核销不是。
+    refunded_amount = models.DecimalField('已退款金额', max_digits=15, decimal_places=2, default=0)
     balance_amount = models.DecimalField('未核销余额', max_digits=15, decimal_places=2, default=0)
     notes = models.TextField('备注', blank=True, default='')
     created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
@@ -951,25 +954,29 @@ class AdvanceRecord(models.Model):
         ]
 
     def recompute_derived(self, save=True):
-        """未核销余额口径：预收/预付金额 − 累计核销。"""
+        """未核销余额口径：预收/预付金额 − 累计核销 − 累计退款（预付退款回冲）。"""
         base = self.advance_amount or Decimal('0')
         total_wo = Decimal('0')
+        total_refund = Decimal('0')
         if self.pk:
             total_wo = self.writeoffs.aggregate(s=Sum('amount'))['s'] or Decimal('0')
-        balance = base - total_wo
+            total_refund = self.refunds.aggregate(s=Sum('amount'))['s'] or Decimal('0')
+        balance = base - total_wo - total_refund
         if balance < Decimal('0'):
             def _f(v):
                 return f'{v:,.2f}'
             raise ValidationError(
-                f'未核销余额不能为负：预收/预付金额 {_f(base)} − 累计核销 {_f(total_wo)} '
-                f'= {_f(balance)}。请核对金额或核销记录。'
+                f'未核销余额不能为负：金额 {_f(base)} − 累计核销 {_f(total_wo)} '
+                f'− 累计退款 {_f(total_refund)} = {_f(balance)}。请核对金额、核销或退款记录。'
             )
         q = Decimal('0.01')
         self.written_off_amount = total_wo.quantize(q, rounding=ROUND_HALF_UP)
+        self.refunded_amount = total_refund.quantize(q, rounding=ROUND_HALF_UP)
         self.balance_amount = balance.quantize(q, rounding=ROUND_HALF_UP)
         if save:
             AdvanceRecord.objects.filter(pk=self.pk).update(
                 written_off_amount=self.written_off_amount,
+                refunded_amount=self.refunded_amount,
                 balance_amount=self.balance_amount,
             )
 
@@ -982,8 +989,13 @@ class AdvanceRecord(models.Model):
     @property
     def writeoff_status(self):
         if (self.balance_amount or Decimal('0')) <= 0:
+            # 全靠退款清零、无核销 → 标「已退款」，与「已核销」区分
+            if ((self.written_off_amount or Decimal('0')) <= 0
+                    and (self.refunded_amount or Decimal('0')) > 0):
+                return '已退款'
             return '已核销'
-        if (self.written_off_amount or Decimal('0')) > 0:
+        if ((self.written_off_amount or Decimal('0')) > 0
+                or (self.refunded_amount or Decimal('0')) > 0):
             return '部分核销'
         return '未核销'
 
@@ -1016,6 +1028,7 @@ class AdvanceRecord(models.Model):
             'advance_amount': str(self.advance_amount),
             'expected_writeoff_date': str(self.expected_writeoff_date) if self.expected_writeoff_date else None,
             'written_off_amount': str(self.written_off_amount),
+            'refunded_amount': str(self.refunded_amount),
             'balance_amount': str(self.balance_amount),
             'writeoff_status': self.writeoff_status,
             'notes': self.notes,
@@ -1496,6 +1509,10 @@ class DailyReceipt(models.Model):
     # 关联项目（仅来源=项目收款时选，供项目现金流归集）
     project = models.ForeignKey(ARProject, on_delete=models.SET_NULL, null=True, blank=True,
                                 related_name='daily_receipts', db_index=True)
+    # 关联预付（仅来源=预付退款时选）：退款回冲该预付的未核销余额，形成闭环。
+    # 退款本身是现金流入（本表全额计入现金流/资金池），关联只影响预付资产台账，不影响现金。
+    advance_record = models.ForeignKey(AdvanceRecord, on_delete=models.SET_NULL, null=True, blank=True,
+                                       related_name='refunds', db_index=True)
     # 方式：预设「现金/微信/银行转账」或任意自定义文本
     method = models.CharField('收款方式', max_length=20, blank=True, default='')
     account = models.CharField('收款账户', max_length=50, blank=True, default='')
@@ -1521,6 +1538,10 @@ class DailyReceipt(models.Model):
             'project_id': self.project_id,
             'project_name': (self.project.short_name or self.project.customer_name) if self.project else '',
             'project_short_name': self.project.short_name if self.project else '',
+            'advance_record_id': self.advance_record_id,
+            'advance_label': (f'{self.advance_record.counterparty or "预付"}'
+                              f'（{self.advance_record.occur_date}）'
+                              if self.advance_record_id else ''),
             'method': self.method,
             'account': self.account,
             'payer': self.payer,

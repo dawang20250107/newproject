@@ -146,23 +146,45 @@ const methodPresets = ref(['现金', '微信', '银行转账'])
 const formOpen = ref(false)
 const editingId = ref(null)
 const saving = ref(false)
-const form = reactive({ delivery_dept: '', receipt_date: todayCST(), amount: '', source: '项目收款', project_id: '', method: '现金', account: '', payer: '', notes: '' })
+const form = reactive({ delivery_dept: '', receipt_date: todayCST(), amount: '', source: '项目收款', project_id: '', advance_id: '', method: '现金', account: '', payer: '', notes: '' })
 const isProjectSource = computed(() => form.source === '项目收款')
+const isRefundSource = computed(() => form.source === '预付退款')
 const projectKw = ref('')   // 关联项目模糊搜索输入的显示值
 function onProjInput(v) { projectKw.value = v; form.project_id = '' }        // 改动清 id，待选中再设
 function onProjPicked(p) { projectKw.value = p.short_name || p.customer_name || ''; form.project_id = p.id }
-watch(() => form.source, v => { if (v !== '项目收款') { form.project_id = ''; projectKw.value = '' } })
+watch(() => form.source, v => {
+  if (v !== '项目收款') { form.project_id = ''; projectKw.value = '' }
+  if (v !== '预付退款') form.advance_id = ''
+  else loadRefundAdvances()
+})
+// 预付退款可关联的预付（回冲其未核销余额）——独立于「预收预付」页面权限
+const refundAdvances = ref([])
+async function loadRefundAdvances() {
+  try {
+    const d = (await ar.listRefundableAdvances({ dept: form.delivery_dept || undefined })).data
+    refundAdvances.value = d.items || []
+  } catch { refundAdvances.value = [] }
+}
+watch(() => form.delivery_dept, () => { if (isRefundSource.value) { form.advance_id = ''; loadRefundAdvances() } })
 function openCreate() {
   editingId.value = null
-  projectKw.value = ''
-  Object.assign(form, { delivery_dept: filter.dept || depts.value[0] || '', receipt_date: todayCST(), amount: '', source: '项目收款', project_id: '', method: '现金', account: '', payer: '', notes: '' })
+  projectKw.value = ''; refundAdvances.value = []
+  Object.assign(form, { delivery_dept: filter.dept || depts.value[0] || '', receipt_date: todayCST(), amount: '', source: '项目收款', project_id: '', advance_id: '', method: '现金', account: '', payer: '', notes: '' })
   formOpen.value = true
 }
 function openEdit(r) {
   editingId.value = r.id
   projectKw.value = r.project_short_name || r.project_name || ''
-  Object.assign(form, { delivery_dept: r.delivery_dept, receipt_date: r.receipt_date, amount: r.amount, source: r.source, project_id: r.project_id || '', method: r.method, account: r.account, payer: r.payer, notes: r.notes })
+  Object.assign(form, { delivery_dept: r.delivery_dept, receipt_date: r.receipt_date, amount: r.amount, source: r.source, project_id: r.project_id || '', advance_id: r.advance_record_id || '', method: r.method, account: r.account, payer: r.payer, notes: r.notes })
   formOpen.value = true
+  if (r.source === '预付退款') {
+    loadRefundAdvances().then(() => {
+      // 已关联的预付若余额已为0不在候选里，补一条占位以正常回显
+      if (r.advance_record_id && !refundAdvances.value.some(a => a.id === r.advance_record_id)) {
+        refundAdvances.value.unshift({ id: r.advance_record_id, counterparty: r.advance_label || '原关联预付', occur_date: '', balance: r.amount })
+      }
+    })
+  }
 }
 async function save() {
   if (!form.delivery_dept) { toast.error('请选择事业部'); return }
@@ -170,7 +192,8 @@ async function save() {
   if (!form.source.trim()) { toast.error('请填写收款来源'); return }
   saving.value = true
   try {
-    const body = { ...form, project_id: isProjectSource.value ? (form.project_id || null) : null }
+    const body = { ...form, project_id: isProjectSource.value ? (form.project_id || null) : null,
+                   advance_id: isRefundSource.value ? (form.advance_id || null) : null }
     if (editingId.value) await ar.updateDailyReceipt(editingId.value, body); else await ar.createDailyReceipt(body)
     toast.success('已保存'); formOpen.value = false; load()
   } catch (e) { toast.error(e?.msg || e?.error || '保存失败') } finally { saving.value = false }
@@ -246,7 +269,7 @@ async function exportXlsx(selectedOnly = false) {
             <td class="cb" @click.stop><input type="checkbox" :checked="selectedIds.has(r.id)" @click="onRowSelClick(r, idx, $event)" /></td>
             <td class="when">{{ r.receipt_date }}</td>
             <td>{{ r.delivery_dept }}</td>
-            <td><span class="src">{{ r.source }}</span></td>
+            <td><span class="src">{{ r.source }}</span><span v-if="r.advance_record_id" class="adv-tag" :title="'已回冲预付：' + r.advance_label">↩冲预付</span></td>
             <td class="proj">{{ r.project_name || '—' }}</td>
             <td><span v-if="r.method" class="mtd">{{ r.method }}</span><span v-else class="dim">—</span></td>
             <td class="dim">{{ r.account || '—' }}</td>
@@ -307,6 +330,14 @@ async function exportXlsx(selectedOnly = false) {
               <ProjectShortNamePicker :modelValue="projectKw" placeholder="模糊搜索项目台账（留空=不关联）"
                                       @update:modelValue="onProjInput" @picked="onProjPicked" />
             </div>
+            <div v-if="isRefundSource" class="frow"><label>关联预付 <span class="hint">选填 · 选中后回冲该预付未核销余额</span></label>
+              <select v-model="form.advance_id" class="inp">
+                <option value="">不关联（仅记为现金流入，不回冲预付）</option>
+                <option v-for="a in refundAdvances" :key="a.id" :value="a.id">
+                  {{ a.counterparty || '预付' }}<span v-if="a.occur_date"> · {{ a.occur_date }}</span> · 余额 {{ money(a.balance) }}{{ a.project_short_name ? ' · ' + a.project_short_name : '' }}
+                </option>
+              </select>
+            </div>
             <div class="frow"><label>收款方式</label>
               <PillPicker v-model="form.method" :presets="methodPresets" placeholder="自定义方式，如 支付宝" />
             </div>
@@ -363,6 +394,8 @@ async function exportXlsx(selectedOnly = false) {
 .amt { font-variant-numeric: tabular-nums; font-weight: 800; color: var(--primary, #1565c0); }
 .src { background: var(--primary-weak, #e8f1fb); color: var(--primary, #1565c0); border-radius: 8px; padding: 2px 9px; font-size: 12px; font-weight: 600; }
 .mtd { background: var(--surface-2, rgba(160,120,80,.12)); color: var(--text, #6a5641); border-radius: 7px; padding: 1px 8px; font-size: 12px; }
+.adv-tag { margin-left: 6px; font-size: 10.5px; color: var(--c-success, #2e7d32); background: rgba(46,125,50,.1); border-radius: 6px; padding: 1px 6px; white-space: nowrap; }
+.hint { font-weight: 400; font-size: 11px; color: var(--muted, #999); }
 .proj { color: var(--text, #4a3322); } .dim, .when { color: var(--muted, #7a6550); }
 .sumcell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; color: var(--muted, #7a6550); }
 input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary, #1565c0); cursor: pointer; }

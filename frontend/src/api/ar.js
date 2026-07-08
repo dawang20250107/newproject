@@ -213,6 +213,7 @@ const ar = {
   deleteDailyReceipt: id => api.delete(`/ar/daily-receipts/${id}`),
   bulkDeleteDailyReceipts: ids => api.post('/ar/daily-receipts/bulk-delete', { ids }),
   exportDailyReceipts: p => api.get('/ar/daily-receipts/export', { params: p, responseType: 'blob' }),
+  listRefundableAdvances: p => api.get('/ar/daily-receipts/advances', { params: p }),
 }
 
 export default ar

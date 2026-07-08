@@ -7,7 +7,7 @@ from django.test import Client, TestCase
 
 from paikuan.models import PaikuanUser
 from paikuan.views import make_token, _invalidate_perm_cache
-from ar.models import ARProject, CashPoolConfig, DailyReceipt
+from ar.models import ARProject, CashPoolConfig, DailyReceipt, AdvanceRecord
 
 
 class DailyReceiptTests(TestCase):
@@ -95,6 +95,58 @@ class DailyReceiptTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn('spreadsheet', r['Content-Type'])
         self.assertTrue(len(r.content) > 100)
+
+    def _prepaid(self, amount='1000', dept=None):
+        return AdvanceRecord.objects.create(
+            direction='预付', delivery_dept=dept or self.dept, counterparty='供应商X',
+            occur_year=2026, occur_month=5, occur_date=datetime.date(2026, 5, 1),
+            advance_amount=Decimal(amount))
+
+    def test_prepaid_refund_reduces_advance_balance(self):
+        """预付退款关联预付：回冲其未核销余额；退款本身仍全额计入现金流入。"""
+        adv = self._prepaid('1000')
+        self.assertEqual(adv.balance_amount, Decimal('1000'))
+        r = self._post('/api/pk/ar/daily-receipts', {
+            'delivery_dept': self.dept, 'receipt_date': '2026-06-10', 'amount': '300',
+            'source': '预付退款', 'method': '银行转账', 'advance_id': adv.id}, self.admin)
+        self.assertEqual(r.status_code, 200, r.content)
+        adv.refresh_from_db()
+        self.assertEqual(adv.balance_amount, Decimal('700'))     # 1000 − 300 退款
+        self.assertEqual(adv.refunded_amount, Decimal('300'))
+        # 退款仍是现金流入：日常收款合计含这 300
+        g = self.client.get('/api/pk/ar/daily-receipts', **self._auth(self.admin)).json()['data']
+        self.assertEqual(Decimal(g['total']), Decimal('300'))
+        # 删除退款 → 预付余额回升
+        rid = r.json()['data']['id']
+        self.client.delete(f'/api/pk/ar/daily-receipts/{rid}', **self._auth(self.admin))
+        adv.refresh_from_db()
+        self.assertEqual(adv.balance_amount, Decimal('1000'))
+        self.assertEqual(adv.refunded_amount, Decimal('0'))
+
+    def test_prepaid_refund_over_balance_rejected(self):
+        adv = self._prepaid('500')
+        r = self._post('/api/pk/ar/daily-receipts', {
+            'delivery_dept': self.dept, 'receipt_date': '2026-06-10', 'amount': '800',
+            'source': '预付退款', 'advance_id': adv.id}, self.admin)
+        self.assertEqual(r.status_code, 400, r.content)
+        adv.refresh_from_db()
+        self.assertEqual(adv.balance_amount, Decimal('500'))     # 未被扣减
+
+    def test_advance_link_only_for_refund_source(self):
+        adv = self._prepaid('500')
+        r = self._post('/api/pk/ar/daily-receipts', {
+            'delivery_dept': self.dept, 'receipt_date': '2026-06-10', 'amount': '100',
+            'source': '项目收款', 'advance_id': adv.id}, self.admin)
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_refundable_advances_picker(self):
+        adv = self._prepaid('1000')
+        self._prepaid('0.00')   # 余额0，不应出现
+        g = self.client.get('/api/pk/ar/daily-receipts/advances',
+                            **self._auth(self.admin)).json()['data']
+        ids = [a['id'] for a in g['items']]
+        self.assertIn(adv.id, ids)
+        self.assertEqual(len(ids), 1)   # 仅余额>0 的预付
 
     def test_counts_into_cashflow(self):
         DailyReceipt.objects.create(delivery_dept=self.dept, receipt_date=datetime.date(2026, 6, 15),
