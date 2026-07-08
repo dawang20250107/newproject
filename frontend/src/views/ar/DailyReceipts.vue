@@ -11,6 +11,7 @@ import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import PillPicker from '../../components/PillPicker.vue'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -67,6 +68,15 @@ const total = ref('0')
 const count = ref(0)
 const byMethod = ref({})
 const bySource = ref({})
+// 收款方式分类汇总（底部）：金额降序 + 占比 + 配色
+const METHOD_COLORS = ['#1565c0', '#2e9e6b', '#c47d0a', '#8e24aa', '#00897b', '#d64545', '#5c6bc0']
+const methodStats = computed(() => {
+  const tot = Number(total.value) || 0
+  return Object.entries(byMethod.value)
+    .map(([m, v]) => ({ method: m || '未填', amount: Number(v), pct: tot ? Number(v) / tot * 100 : 0 }))
+    .sort((a, b) => b.amount - a.amount)
+    .map((x, i) => ({ ...x, color: METHOD_COLORS[i % METHOD_COLORS.length] }))
+})
 
 async function load() {
   loading.value = true
@@ -179,27 +189,25 @@ function resetFilters() { filter.source = ''; filter.method = ''; filter.dept = 
 
 <template>
   <div class="dr fh-fill">
-    <!-- 顶部：标题 + 筛选（紧凑，留大空间给表格）-->
+    <!-- 顶部：标题+筛选一行，时间快选独占一行 -->
     <div class="dr-top">
       <div class="dr-head">
         <div class="dr-title">日常收款<span class="dr-sub">计入现金流与资金池</span></div>
         <span class="grow"></span>
-        <input v-model="filter.q" class="inp search" placeholder="搜付款方 / 摘要 / 项目" @keyup.enter="load" />
-        <button v-if="canWrite" class="btn-hero" @click="openCreate"><span>＋</span> 新增收款</button>
-      </div>
-      <div class="dr-filters">
-        <div class="preset-chips">
-          <button v-for="p in DATE_PRESETS" :key="p.k" class="pchip" :class="{ on: activePreset === p.k }" @click="applyPreset(p.k)">{{ p.l }}</button>
-          <span class="fdiv"></span>
-          <input v-model="filter.start" type="date" class="inp inp-date" @change="load" />
-          <span class="tilde">~</span>
-          <input v-model="filter.end" type="date" class="inp inp-date" @change="load" />
-        </div>
-        <span class="grow"></span>
         <select v-model="filter.dept" class="inp mini"><option value="">全部事业部</option><option v-for="d in depts" :key="d" :value="d">{{ d }}</option></select>
         <select v-model="filter.source" class="inp mini"><option value="">全部来源</option><option v-for="s in Object.keys(bySource)" :key="s" :value="s">{{ s }}</option></select>
         <select v-model="filter.method" class="inp mini"><option value="">全部方式</option><option v-for="m in Object.keys(byMethod)" :key="m" :value="m">{{ m }}</option></select>
-        <button class="btn ghost sm" @click="resetFilters">重置</button>
+        <input v-model="filter.q" class="inp search" placeholder="搜付款方 / 摘要 / 项目" @keyup.enter="load" />
+        <button v-if="canWrite" class="btn-hero" @click="openCreate"><span>＋</span> 新增收款</button>
+      </div>
+      <!-- 时间维度：单行，超宽横向滚动 -->
+      <div class="dr-timebar">
+        <button v-for="p in DATE_PRESETS" :key="p.k" class="pchip" :class="{ on: activePreset === p.k }" @click="applyPreset(p.k)">{{ p.l }}</button>
+        <span class="fdiv"></span>
+        <input v-model="filter.start" type="date" class="inp inp-date" @change="load" />
+        <span class="tilde">~</span>
+        <input v-model="filter.end" type="date" class="inp inp-date" @change="load" />
+        <button class="btn ghost sm reset" @click="resetFilters">重置</button>
       </div>
     </div>
 
@@ -244,11 +252,23 @@ function resetFilters() { filter.source = ''; filter.method = ''; filter.dept = 
         <span class="grow"></span>
       </template>
       <template v-else>
-        <span class="f-item">共 <b>{{ count }}</b> 笔</span>
-        <span class="f-div"></span>
-        <span class="f-item">区间合计 <b class="hl">{{ money(total) }}</b></span>
-        <span class="grow"></span>
-        <span v-for="(v, m) in byMethod" :key="m" class="f-chip">{{ m }} {{ fmtCompact(v) }}</span>
+        <span class="f-total">
+          <span class="ft-lbl">区间合计</span>
+          <b class="ft-val">{{ money(total) }}</b>
+          <span class="ft-cnt">{{ count }} 笔</span>
+        </span>
+        <!-- 收款方式分类汇总：占比条 + 图例 -->
+        <div v-if="methodStats.length" class="f-methods">
+          <div class="mstack">
+            <i v-for="s in methodStats" :key="s.method" :style="{ width: s.pct + '%', background: s.color }" :title="`${s.method} ${money(s.amount)} · ${s.pct.toFixed(0)}%`"></i>
+          </div>
+          <div class="mlegend">
+            <span v-for="s in methodStats" :key="s.method" class="mleg">
+              <i :style="{ background: s.color }"></i>{{ s.method }}
+              <b>{{ fmtCompact(s.amount) }}</b><em>{{ s.pct.toFixed(0) }}%</em>
+            </span>
+          </div>
+        </div>
       </template>
     </div>
 
@@ -265,13 +285,13 @@ function resetFilters() { filter.source = ''; filter.method = ''; filter.dept = 
               <div class="frow"><label>收款日期 <i>*</i></label><input v-model="form.receipt_date" type="date" class="inp" /></div>
             </div>
             <div class="frow"><label>收款来源 <i>*</i></label>
-              <div class="seg-wrap"><button v-for="s in sourcePresets" :key="s" class="preset" :class="{ on: form.source === s }" @click="form.source = s">{{ s }}</button><input v-model="form.source" class="inp custom" placeholder="或自定义来源" /></div>
+              <PillPicker v-model="form.source" :presets="sourcePresets" placeholder="自定义来源，如 政府补贴" />
             </div>
             <div v-if="isProjectSource" class="frow"><label>关联项目</label>
               <select v-model="form.project_id" class="inp"><option value="">（不关联）</option><option v-for="p in projects" :key="p.id" :value="p.id">{{ p.short_name || p.customer_name }}</option></select>
             </div>
             <div class="frow"><label>收款方式</label>
-              <div class="seg-wrap"><button v-for="m in methodPresets" :key="m" class="preset" :class="{ on: form.method === m }" @click="form.method = m">{{ m }}</button><input v-model="form.method" class="inp custom" placeholder="或自定义方式" /></div>
+              <PillPicker v-model="form.method" :presets="methodPresets" placeholder="自定义方式，如 支付宝" />
             </div>
             <div class="grid2">
               <div class="frow"><label>收款金额 <i>*</i></label><input v-model="form.amount" type="number" step="0.01" class="inp big-amt" placeholder="0.00" /></div>
@@ -297,13 +317,14 @@ function resetFilters() { filter.source = ''; filter.method = ''; filter.dept = 
 .grow { flex: 1; }
 .btn-hero { border: none; background: linear-gradient(135deg, var(--primary, #1565c0), color-mix(in srgb, var(--primary, #1565c0) 78%, #000)); color: #fff; border-radius: 10px; padding: 9px 18px; font-size: 14px; font-weight: 750; cursor: pointer; font-family: inherit; box-shadow: 0 6px 18px -7px color-mix(in srgb, var(--primary, #1565c0) 60%, transparent); display: inline-flex; align-items: center; gap: 7px; transition: transform .16s; }
 .btn-hero:hover { transform: translateY(-1px); } .btn-hero span { font-size: 17px; }
-.dr-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.preset-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.pchip { border: 1px solid var(--border, #e2d6c6); background: var(--card-bg, #fff); color: var(--text, #6a5641); border-radius: 20px; padding: 4px 12px; font-size: 12.5px; cursor: pointer; font-family: inherit; transition: .14s; }
+.dr-timebar { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
+.dr-timebar::-webkit-scrollbar { height: 5px; } .dr-timebar::-webkit-scrollbar-thumb { background: var(--border, #d8c9b8); border-radius: 3px; }
+.pchip { flex: none; border: 1px solid var(--border, #e2d6c6); background-color: var(--card-bg, #fff); color: var(--text, #6a5641); border-radius: 20px; padding: 5px 13px; font-size: 12.5px; cursor: pointer; font-family: inherit; transition: .14s; white-space: nowrap; }
 .pchip:hover { border-color: var(--primary, #1565c0); color: var(--primary, #1565c0); }
 .pchip.on { background: var(--primary, #1565c0); border-color: var(--primary, #1565c0); color: #fff; font-weight: 650; box-shadow: 0 4px 12px -4px color-mix(in srgb, var(--primary, #1565c0) 55%, transparent); }
-.fdiv { width: 1px; height: 18px; background: var(--border, #e2d6c6); margin: 0 3px; }
-.tilde { color: var(--muted, #9b8070); }
+.fdiv { flex: none; width: 1px; height: 18px; background: var(--border, #e2d6c6); margin: 0 3px; }
+.tilde { flex: none; color: var(--muted, #9b8070); }
+.dr-timebar .inp-date { flex: none; } .dr-timebar .reset { flex: none; margin-left: 4px; }
 .inp { border: 1px solid var(--border, #d8c9b8); border-radius: 8px; padding: 6px 10px; font-size: 13px; font-family: inherit; background-color: var(--card-bg, #fff); color: var(--text, #4a3322); outline: none; width: auto; transition: .14s; }
 .inp:focus { border-color: var(--primary, #1565c0); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary, #1565c0) 14%, transparent); }
 .inp-date { width: 138px; } .search { width: 200px; } .inp.mini { font-size: 12.5px; padding: 6px 26px 6px 9px; }
@@ -329,11 +350,20 @@ function resetFilters() { filter.source = ''; filter.method = ''; filter.dept = 
 .sumcell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; color: var(--muted, #7a6550); }
 input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary, #1565c0); cursor: pointer; }
 /* 底部汇总栏 */
-.dr-footer { flex: none; display: flex; align-items: center; gap: 12px; padding: 11px 20px; border-top: 1px solid var(--border, #eadfd2); background: var(--glass, rgba(255,254,251,.7)); backdrop-filter: blur(6px); }
-.f-item { font-size: 13.5px; color: var(--text, #4a3322); } .f-item b { font-weight: 800; }
+.dr-footer { flex: none; display: flex; align-items: center; gap: 18px; padding: 10px 20px; border-top: 1px solid var(--border, #eadfd2); background: var(--glass, rgba(255,254,251,.7)); backdrop-filter: blur(6px); min-height: 30px; }
 .hl { color: var(--primary, #1565c0); }
-.f-div { width: 1px; height: 18px; background: var(--border, #eadfd2); }
-.f-chip { font-size: 12px; background: var(--surface-2, rgba(160,120,80,.1)); color: var(--text, #6a5641); border-radius: 12px; padding: 2px 10px; }
+.f-total { display: flex; align-items: baseline; gap: 8px; flex: none; }
+.ft-lbl { font-size: 11.5px; font-weight: 700; letter-spacing: .04em; color: var(--muted, #9b8070); text-transform: uppercase; }
+.ft-val { font-size: 20px; font-weight: 850; color: var(--primary, #1565c0); font-variant-numeric: tabular-nums; }
+.ft-cnt { font-size: 12px; color: var(--muted, #9b8070); }
+.f-methods { display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0; }
+.mstack { display: flex; height: 9px; width: 150px; flex: none; border-radius: 5px; overflow: hidden; background: var(--surface-2, rgba(160,120,80,.14)); }
+.mstack i { height: 100%; }
+.mlegend { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; min-width: 0; }
+.mleg { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--text, #6a5641); }
+.mleg i { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+.mleg b { font-weight: 800; color: var(--text, #4a3322); font-variant-numeric: tabular-nums; }
+.mleg em { font-style: normal; color: var(--muted, #9b8070); font-size: 11.5px; }
 .f-sel { font-size: 13.5px; color: var(--text, #4a3322); } .f-sel b { font-weight: 800; }
 .f-btn { border: 1px solid var(--border, #d8c9b8); background-color: var(--card-bg, #fff); color: var(--text, #4a3322); border-radius: 8px; padding: 5px 14px; font-size: 13px; font-weight: 650; cursor: pointer; font-family: inherit; }
 .f-btn.del { border-color: var(--danger, #d64545); color: var(--danger, #d64545); }
