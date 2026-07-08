@@ -211,6 +211,7 @@ const ar = {
   createDailyReceipt: d => api.post('/ar/daily-receipts', d),
   updateDailyReceipt: (id, d) => api.put(`/ar/daily-receipts/${id}`, d),
   deleteDailyReceipt: id => api.delete(`/ar/daily-receipts/${id}`),
+  bulkDeleteDailyReceipts: ids => api.post('/ar/daily-receipts/bulk-delete', { ids }),
 }
 
 export default ar

@@ -157,5 +157,26 @@ def daily_receipt_detail(request, pk):
     return err('Method not allowed', 405)
 
 
+@csrf_exempt
+@pk_required()
+def daily_receipts_bulk_delete(request):
+    """POST {ids:[...]} → 批量删除收款（仅本人可见部门；超管不限）。"""
+    denied = _page_denied(request, _PAGE)
+    if denied:
+        return denied
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    ids = _parse_body(request).get('ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请选择要删除的记录')
+    qs = DailyReceipt.objects.filter(id__in=ids)
+    if request.pk_role != 'super_admin':
+        qs = qs.filter(delivery_dept__in=(request.pk_depts or []))
+    n = qs.count()
+    qs.delete()
+    return ok({'deleted': n})
+
+
 # 再导出本域全部公开名，使 `from ar.views import daily_receipts` 等引用可用。
 __all__ = [n for n in dir() if not n.startswith('__')]

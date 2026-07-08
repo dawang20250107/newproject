@@ -76,6 +76,17 @@ class DailyReceiptTests(TestCase):
         after = _pool_balance(self.dept, cfg, today)
         self.assertEqual(after - base, Decimal('500'))   # 日常收款增加资金池余额
 
+    def test_bulk_delete(self):
+        ids = []
+        for i in range(3):
+            r = self._post('/api/pk/ar/daily-receipts', {
+                'delivery_dept': self.dept, 'receipt_date': '2026-06-10', 'amount': '100',
+                'source': '项目收款'}, self.admin)
+            ids.append(r.json()['data']['id'])
+        r = self._post('/api/pk/ar/daily-receipts/bulk-delete', {'ids': ids[:2]}, self.admin)
+        self.assertEqual(r.json()['data']['deleted'], 2)
+        self.assertEqual(DailyReceipt.objects.count(), 1)
+
     def test_counts_into_cashflow(self):
         DailyReceipt.objects.create(delivery_dept=self.dept, receipt_date=datetime.date(2026, 6, 15),
                                     amount=Decimal('700'), source='预付退款', method='银行转账')
