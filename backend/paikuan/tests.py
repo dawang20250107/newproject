@@ -762,6 +762,27 @@ class PaymentChainIntegrityTests(TestCase):
             content_type='application/json', **self.auth())
         self.assertEqual(resp.status_code, 400, resp.content)
 
+    # ── 8b. 不带 installments 的编辑：把计划下调到低于「已付+冲抵」应被拒绝 ──
+    def test_plan_downgrade_below_paid_plus_offset_rejected(self):
+        """回归：仅改 plan_adjustment（payload 不含 installments）走 else 分支时，
+        校验须计入 prepaid_offset_amount，否则会假结清 + 冲抵在现金流被双重计。"""
+        from paikuan.models import PaymentInstallment
+        p = self._pay(total='1000')
+        # 已付 0、预付核销冲抵 500（模拟信号）：covered=500
+        Payment.objects.filter(pk=p.pk).update(prepaid_offset_amount=Decimal('500'))
+        # 把有效计划下调到 400（< 已付0+冲抵500）→ 必须拒绝（不带 installments 字段）
+        resp = self.client.put(
+            f'/api/pk/payments/{p.id}',
+            data=json.dumps({'plan_adjustment': '400'}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400, resp.content)
+        # 下调到 600（≥ 冲抵500）应放行
+        ok_resp = self.client.put(
+            f'/api/pk/payments/{p.id}',
+            data=json.dumps({'plan_adjustment': '600'}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(ok_resp.status_code, 200, ok_resp.content)
+
     # ── 9. 跨部门预付核销被拒绝 ─────────────────────────────────────────
     def test_cross_dept_prepaid_writeoff_blocked(self):
         from ar.models import ARProject, AdvanceRecord

@@ -1649,11 +1649,17 @@ def _parse_payment_fields(data, payment=None):
                 '请核实金额后再提交'
             )
     else:
+        # 不带 installments 的编辑（如仅改计划/调整额）：同样按 covered=已付+冲抵 校验，
+        # 与上面的 if 分支对齐。否则把计划下调到 已付≤计划<已付+冲抵 时会假结清，
+        # 且那笔冲抵（现金已在预付时流出）会在现金流/资金池被再计一次。
         paid_check = payment.total_paid if payment is not None else Decimal('0')
-        if paid_check > effective_plan:
+        existing_offset = ((payment.prepaid_offset_amount or Decimal('0'))
+                           if payment is not None else Decimal('0'))
+        if paid_check + existing_offset > effective_plan:
             label = '计划调整金额' if fields['plan_adjustment'] is not None else '计划总金额'
+            extra = f' + 预付核销冲抵（{existing_offset}元）' if existing_offset > 0 else ''
             return None, (
-                f'实付总额（{paid_check}元）超出{label}（{effective_plan}元），'
+                f'实付总额（{paid_check}元）{extra}超出{label}（{effective_plan}元），'
                 '请核实金额后再提交'
             )
 
@@ -2420,6 +2426,13 @@ def _schedule_one(request, rec, planned_date, total_amount):
             rec_locked = ApprovalRecord.objects.select_for_update().get(pk=rec.pk)
             if rec_locked.archived:
                 return None, '记录已归档', 409
+            # 锁内重查在册付款，覆盖锁前读取的 existing 快照：否则两个并发「首次排款」会各以
+            # 过期的 existing=None 各建一条 Payment（总额仍被 already 限住不超额，但一审批挂出
+            # 多条排款、结构重复）。锁序为先审批行锁，故此处读到的是已提交的最新在册记录。
+            existing = (Payment.objects.filter(approval=rec_locked, deleted_at__isnull=True)
+                        .order_by('id').first()) or existing
+            if existing is not None and existing.deleted_at is not None:
+                existing = None   # 锁前收养的候选若已被并发软删，不再追加到不可见记录
             # 已排款以「关联付款管理的计划批次之和」为正源（兼容历史 scheduled_amount
             # 漂移与旧记录收养：收养时已 _ensure_plan_item 物化首条批次，此处即可如实计入）
             # 只计在册付款的批次：退回（软删）后的批次不占额度，否则重排满额被误拒
