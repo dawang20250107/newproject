@@ -915,6 +915,15 @@ def advance_writeoffs(request, pk):
                            f'（计划 {plan} − 已付 {paid} − 已冲抵 {offset_now}）')
         try:
             with transaction.atomic():
+                # 预付核销关联排款时:锁定该排款行并在锁内复检未软删——与「排款软删(也锁本行)」
+                # 串行,防并发把核销落到刚被软删的排款上(资金池按 deleted_at 排除该冲抵,
+                # 预付余额却被信号扣一块,口径裂开)。
+                if payment_obj is not None:
+                    try:
+                        payment_obj = Payment.objects.select_for_update().get(
+                            pk=payment_obj.pk, deleted_at__isnull=True)
+                    except Payment.DoesNotExist:
+                        return err('排款记录不存在或已被删除，无法关联核销', 404)
                 last = rec.writeoffs.select_for_update().order_by('-writeoff_no').first()
                 next_no = (last.writeoff_no + 1) if last else 1
                 wo = AdvanceWriteoff.objects.create(

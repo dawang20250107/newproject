@@ -1742,7 +1742,21 @@ def _find_duplicate_payment(fields, exclude_id=None):
     """
     no = fields.get('approval_number') or ''
     if not no or set(no) == {'0'}:
-        return None
+        # 空/占位(全0)单号无法用单号维度查重(NULL/占位互不相等)。补充口径:同部门+
+        # 收款方+计划日期+计划金额、且同为空/占位单号的在册记录视为重复,收敛无去重面。
+        # 收款方为空时信息不足以判重,放行(避免误杀)。
+        payee = (fields.get('payee') or '').strip()
+        if not payee:
+            return None
+        supp = Payment.objects.filter(
+            department=fields['department'], payee=fields['payee'],
+            planned_date=fields['planned_date'], total_amount=fields['total_amount'],
+            deleted_at__isnull=True,
+        ).filter(Q(approval_number='') | Q(approval_number__isnull=True)
+                 | Q(approval_number__regex=r'^0+$'))
+        if exclude_id:
+            supp = supp.exclude(id=exclude_id)
+        return supp.first()
     # 仅与「在册」记录比对：软删记录已移入回收站、用户不可见，否则会以一条看不见的
     # 记录把合法重建判为重复（409），让财务陷入死胡同。与全局软删口径一致。
     qs = Payment.objects.filter(
@@ -2034,12 +2048,23 @@ def payment_detail(request, pk):
             return err('该排款已关联预付核销，不能直接删除；'
                        '请先到「预收预付」删除对应核销记录后再删本排款', 409, 409)
         force = request.GET.get('force') == '1'
-        if p.installments.exists() and not force:
+        if p.installments.exists():
             n = p.installments.count()
-            return err(f'该排款已有 {n} 笔实付合计 {p.total_paid} 元，不能整单退回/删除；'
-                       f'如需强制删除（进回收站可还原），请确认强制操作', 409, 409)
+            # 已有真实付现的排款:仅超管可强制退回/删除(防「退回→重排→重付」双付通道)
+            if request.pk_role != 'super_admin':
+                return err(f'该排款已有 {n} 笔实付合计 {p.total_paid} 元，仅超级管理员可强制退回/删除；'
+                           f'如需退回请先撤销实付分期，或联系超管', 403, 403)
+            if not force:
+                return err(f'该排款已有 {n} 笔实付合计 {p.total_paid} 元，不能整单退回/删除；'
+                           f'如需强制删除（进回收站可还原），请确认强制操作', 409, 409)
         approval_id = p.approval_id
         with transaction.atomic():
+            # 锁定排款行并在锁内复检核销:与「核销创建(也锁本排款行)」串行,防并发下
+            # 核销挂到刚被软删的排款上——那样资金池按 deleted_at 排除该冲抵、预付余额却被扣一块
+            p = Payment.objects.select_for_update().get(pk=p.pk)
+            if p.prepaid_offsets.exists():
+                return err('该排款已关联预付核销，不能直接删除；'
+                           '请先到「预收预付」删除对应核销记录后再删本排款', 409, 409)
             _record_payment_changes(p, {}, {}, request, action='delete')
             # 软删除进回收站（可还原），与批量删除/退回同口径；原实现为硬删除，
             # 单条删除与其它路径行为不一致且不可恢复
@@ -2797,19 +2822,33 @@ def approval_records_bulk_return_schedule(request):
             skipped.append({'id': rec.id,
                             'reason': '排款已关联预付核销，不能退回；请先删除核销记录'})
             continue
-        if payment.installments.exists() and not force:
+        if payment.installments.exists():
             n = payment.installments.count()
-            skipped.append({'id': rec.id, 'has_installments': True,
-                            'reason': f'排款已有 {n} 笔实付合计 {payment.total_paid} 元，不能整单退回；'
-                                      f'如需强制退回（进回收站可还原），请确认强制操作'})
-            continue
+            if request.pk_role != 'super_admin':
+                skipped.append({'id': rec.id, 'has_installments': True,
+                                'reason': f'排款已有 {n} 笔实付合计 {payment.total_paid} 元，仅超级管理员可强制退回；'
+                                          f'请先撤销实付分期'})
+                continue
+            if not force:
+                skipped.append({'id': rec.id, 'has_installments': True,
+                                'reason': f'排款已有 {n} 笔实付合计 {payment.total_paid} 元，不能整单退回；'
+                                          f'如需强制退回（进回收站可还原），请确认强制操作'})
+                continue
         with transaction.atomic():
-            _record_payment_changes(payment, {}, {}, request, action='delete')
-            # 软删除（进回收站可还原），与付款管理批量退回同口径；原实现为硬删除
-            payment.deleted_at = timezone.now()
-            payment.deleted_by = getattr(request, 'pk_user', None)
-            payment.save(update_fields=['deleted_at', 'deleted_by'])
-            _reconcile_approval_schedule(rec.id)
+            # 锁内复检核销:与并发「核销创建(锁本行)」串行,防核销挂到刚软删的排款
+            locked = Payment.objects.select_for_update().get(pk=payment.pk)
+            offset_now = locked.prepaid_offsets.exists()
+            if not offset_now:
+                _record_payment_changes(locked, {}, {}, request, action='delete')
+                # 软删除（进回收站可还原），与付款管理批量退回同口径；原实现为硬删除
+                locked.deleted_at = timezone.now()
+                locked.deleted_by = getattr(request, 'pk_user', None)
+                locked.save(update_fields=['deleted_at', 'deleted_by'])
+                _reconcile_approval_schedule(rec.id)
+        if offset_now:
+            skipped.append({'id': rec.id,
+                            'reason': '排款已关联预付核销，不能退回；请先删除核销记录'})
+            continue
         returned += 1
     return ok({
         'returned': returned,
@@ -2937,19 +2976,32 @@ def payments_bulk_delete(request):
             skipped.append({'id': p.id, 'reason': '已关联预付核销，不能删除；请先删除对应核销记录'})
             continue
         insts = list(p.installments.all())
-        if insts and not force:
+        if insts:
             paid_amt = sum(i.pay_amount for i in insts)
-            skipped.append({'id': p.id, 'has_installments': True,
-                            'reason': f'已有 {len(insts)} 笔实付合计 {paid_amt} 元，不能整单退回；'
-                                      f'如需强制退回（进回收站可还原），请确认强制操作'})
-            continue
+            if request.pk_role != 'super_admin':
+                skipped.append({'id': p.id, 'has_installments': True,
+                                'reason': f'已有 {len(insts)} 笔实付合计 {paid_amt} 元，仅超级管理员可强制退回；'
+                                          f'请先撤销实付分期'})
+                continue
+            if not force:
+                skipped.append({'id': p.id, 'has_installments': True,
+                                'reason': f'已有 {len(insts)} 笔实付合计 {paid_amt} 元，不能整单退回；'
+                                          f'如需强制退回（进回收站可还原），请确认强制操作'})
+                continue
         approval_id = p.approval_id
         with transaction.atomic():
-            _record_payment_changes(p, {}, {}, request, action='delete')
-            p.deleted_at = now
-            p.deleted_by = actor
-            p.save(update_fields=['deleted_at', 'deleted_by'])
-            _reconcile_approval_schedule(approval_id)
+            # 锁内复检核销:与并发「核销创建(锁本行)」串行,防核销挂到刚软删的排款
+            locked = Payment.objects.select_for_update().get(pk=p.pk)
+            offset_now = locked.prepaid_offsets.exists()
+            if not offset_now:
+                _record_payment_changes(locked, {}, {}, request, action='delete')
+                locked.deleted_at = now
+                locked.deleted_by = actor
+                locked.save(update_fields=['deleted_at', 'deleted_by'])
+                _reconcile_approval_schedule(approval_id)
+        if offset_now:
+            skipped.append({'id': p.id, 'reason': '已关联预付核销，不能删除；请先删除对应核销记录'})
+            continue
         deleted += 1
     return ok({'deleted': deleted, 'skipped': skipped,
                'message': f'已移入回收站 {deleted} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})

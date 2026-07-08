@@ -783,6 +783,22 @@ class PaymentChainIntegrityTests(TestCase):
             content_type='application/json', **self.auth())
         self.assertEqual(ok_resp.status_code, 200, ok_resp.content)
 
+    # ── 8c. 空/占位审批单号的补充查重 ───────────────────────────────────
+    def test_empty_approval_number_supplementary_dedup(self):
+        """空单号无法用单号维度查重；补充口径按 部门+收款方+计划日+金额 拦重复。"""
+        body = {'department': self.dept, 'project_desc': 'P', 'payee': '供应商Z',
+                'total_amount': '1000', 'planned_date': '2026-06-01', 'approval_number': ''}
+        r1 = self.client.post('/api/pk/payments', data=json.dumps(body),
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r1.status_code, 200, r1.content)
+        r2 = self.client.post('/api/pk/payments', data=json.dumps(body),
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r2.status_code, 409, r2.content)   # 同键空单号 → 拦
+        r3 = self.client.post('/api/pk/payments',
+                              data=json.dumps({**body, 'total_amount': '1200'}),
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r3.status_code, 200, r3.content)   # 改金额 → 放行
+
     # ── 9. 跨部门预付核销被拒绝 ─────────────────────────────────────────
     def test_cross_dept_prepaid_writeoff_blocked(self):
         from ar.models import ARProject, AdvanceRecord
@@ -1857,6 +1873,26 @@ class ForceDeleteScopeTests(TestCase):
         self.assertEqual(r3.status_code, 409, r3.content)
         self.assertIn('预付核销', r3.json().get('error', ''))
         self.assertIsNone(Payment.objects.get(id=p2.id).deleted_at)
+
+    def test_force_delete_paid_payment_requires_super_admin(self):
+        """已有实付的排款:仅超管可强制退回/删除(策略B),防「退回→重排→重付」双付。"""
+        _invalidate_perm_cache()
+        op = PaikuanUser(phone='13900004009', name='FinOp', role='operator',
+                         job_title='finance_director', departments=[self.dept],
+                         is_active=True, is_approved=True)
+        op.set_password('Test123456'); op.save()
+        op_auth = {'HTTP_AUTHORIZATION': f'Bearer {make_token(op)}'}
+        p = self._schedule_payment(7, '1000')
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 7, 2),
+                                          pay_amount=Decimal('1000'))
+        # 非超管(有删除权限的财务总监岗)强删已付排款 → 403
+        r = self.client.delete(f'/api/pk/payments/{p.id}?force=1', **op_auth)
+        self.assertEqual(r.status_code, 403, r.content)
+        self.assertIsNone(Payment.objects.get(id=p.id).deleted_at)
+        # 超管强删同一笔 → 放行(软删)
+        r2 = self.client.delete(f'/api/pk/payments/{p.id}?force=1', **self.auth())
+        self.assertEqual(r2.status_code, 200, r2.content)
+        self.assertIsNotNone(Payment.objects.get(id=p.id).deleted_at)
 
     def test_payments_bulk_delete_force_bypasses_installments_but_not_prepaid(self):
         p1 = self._schedule_payment(1, '1000')
