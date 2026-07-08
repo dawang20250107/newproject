@@ -79,6 +79,30 @@ class MappingTests(TestCase):
              'value': '[{"费用项目":"交通","金额":"120.50"},{"费用项目":"住宿","金额":"300"}]'}]}
         self.assertEqual(sync.extract_amount(d), Decimal('420.50'))
 
+    def test_amount_table_row_takes_single_column(self):
+        # 一行含 不含税金额 + 价税合计 → 只取价税合计，不重复累加
+        d = {'form_component_values': [
+            {'name': '发票明细', 'component_type': 'TableField',
+             'value': '[{"不含税金额":"100","税额":"13","价税合计":"113"},'
+                      '{"不含税金额":"200","税额":"26","价税合计":"226"}]'}]}
+        self.assertEqual(sync.extract_amount(d), Decimal('339'))    # 113+226，非 452
+
+    def test_amount_prefers_actual_paid_over_gross(self):
+        # 报销金额(毛额) 与 实付金额(净额) 并存 → 取实付
+        d = {'form_component_values': [
+            {'name': '报销金额', 'value': '5000', 'component_type': 'MoneyField'},
+            {'name': '抵扣借款', 'value': '-1500', 'component_type': 'MoneyField'},
+            {'name': '实付金额', 'value': '3500', 'component_type': 'MoneyField'}]}
+        self.assertEqual(sync.extract_amount(d), Decimal('3500'))
+
+    def test_amount_grand_total_non_money_component(self):
+        # 合计做成计算/数字控件（非 MoneyField、名字无"金额"）也应被识别为总额
+        d = {'form_component_values': [
+            {'name': '差旅费', 'value': '1000', 'component_type': 'MoneyField'},
+            {'name': '餐饮费', 'value': '500', 'component_type': 'MoneyField'},
+            {'name': '费用合计', 'value': '1500', 'component_type': 'NumberField'}]}
+        self.assertEqual(sync.extract_amount(d), Decimal('1500'))
+
     def test_build_summary_picks_reason(self):
         d = {'form_component_values': [
             {'name': '事由', 'value': '出差北京'},

@@ -481,7 +481,10 @@ onMounted(() => { loadTemplates(); loadSchemes() })   // 开面板即加载模�
               <td>{{ i.applicant }}<div class="sub">{{ i.department }}</div></td>
               <td class="r amt">¥{{ Number(i.amount).toLocaleString('zh-CN', { minimumFractionDigits: 2 }) }}</td>
               <td class="payee">{{ i.payee }}</td>
-              <td><span class="pill" :class="'p-' + DING[i.ding_status][0]"><i></i>{{ DING[i.ding_status][1] }}</span></td>
+              <td>
+                <span class="pill" :class="'p-' + DING[i.ding_status][0]"><i></i>{{ DING[i.ding_status][1] }}</span>
+                <span v-if="i.stale" class="stale-b" title="本次刷新失败，展示的是上次存档，数据可能已变化">旧</span>
+              </td>
               <td class="when">{{ (i.create_time || '').replace('T', ' ').slice(0, 16) }}</td>
               <td>
                 <span v-if="!i.synced" class="sync no">● 未同步</span>
@@ -612,6 +615,7 @@ onMounted(() => { loadTemplates(); loadSchemes() })   // 开面板即加载模�
 .sc-sel b { color: var(--primary, #1565c0); }
 .sc-goto { border: none; background: none; color: var(--primary, #1565c0); font-size: 12px; cursor: pointer; font-family: inherit; margin-left: 4px; }
 .sumcell { max-width: 220px; font-size: 12.5px; color: var(--muted, #7a6550); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stale-b { margin-left: 5px; font-size: 10.5px; color: var(--warn, #c47d0a); background: color-mix(in srgb, var(--warn, #c47d0a) 14%, transparent); padding: 0 5px; border-radius: 8px; }
 .rowdetail { border: 1px solid var(--border, #d8c9b8); background: var(--card-bg, #fff); color: var(--primary, #1565c0); font-size: 12px; padding: 3px 10px; border-radius: 6px; cursor: pointer; font-family: inherit; }
 .rowdetail:hover { border-color: var(--primary, #1565c0); }
 /* 单据详情弹窗 */

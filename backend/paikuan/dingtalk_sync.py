@@ -77,12 +77,32 @@ def _form_pairs(detail):
     return out
 
 
-_TOTAL_KEYS = ('合计', '总计', '总额', '总金额', '总', '价税合计', '实付', '付款金额', '报销金额')
+# 金额字段优先级（从高到低）：实付类 > 合计/总额类 > 报销/申请/金额类。
+# 取"实付"优先，避免"报销金额(含抵扣前)"盖过"实付金额(实际打款)"。
+_PAY_KEYS = ('实付金额', '实付', '实发金额', '实发', '付款金额', '应付金额', '打款金额', '实际报销')
+_SUM_KEYS = ('价税合计', '合计金额', '费用合计', '合计', '总计', '总金额', '总额')
+_GROSS_KEYS = ('报销金额', '申请金额', '金额')
+# 行内金额列优先级：一行只取一个金额列（避免"金额"与"价税合计"重复相加）
+_ROW_TOTAL_KEYS = ('价税合计', '合计', '总额', '总金额', '金额')
+
+
+def _amount_candidates(detail):
+    """收集所有"金额型"字段 [(name, Decimal)]：MoneyField、名字含"金额"、
+    或名字含合计/总额类关键字（后者兼容"合计"被做成计算/数字控件而非 MoneyField 的表单）。"""
+    out = []
+    for name, value, ctype in _form_pairs(detail):
+        looks_money = (ctype == 'MoneyField' or '金额' in name
+                       or any(k in name for k in _SUM_KEYS))
+        if looks_money:
+            n = _num(value)
+            if n is not None:
+                out.append((name, n))
+    return out
 
 
 def _table_amount_sum(detail):
-    """从明细控件(TableField)里对"金额"列求和（best-effort）。value 是 JSON 数组字符串，
-    元素为 {子控件label: 值}。仅当没有独立金额字段时兜底用。"""
+    """从明细控件(TableField)按行求和：每行只取一个金额列（按 _ROW_TOTAL_KEYS 优先级），
+    避免同一行"不含税金额"与"价税合计"被重复累加。仅当没有独立金额字段时兜底用。"""
     import json as _json
     total = Decimal('0')
     hit = False
@@ -98,30 +118,33 @@ def _table_amount_sum(detail):
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            for k, v in row.items():
-                if '金额' in str(k) or '价税' in str(k):
-                    n = _num(v)
-                    if n is not None:
-                        total += n
-                        hit = True
+            picked = None
+            for key in _ROW_TOTAL_KEYS:           # 按优先级取一列
+                for k, v in row.items():
+                    if key in str(k):
+                        n = _num(v)
+                        if n is not None:
+                            picked = n
+                            break
+                if picked is not None:
+                    break
+            if picked is not None:
+                total += picked
+                hit = True
     return total if hit else None
 
 
 def extract_amount(detail):
-    """从表单抠总金额：优先"合计/总额"类字段 → 其次 MoneyField/含金额字段取最大 →
-    再兜底明细表金额列求和 → 否则 0。尽量对齐钉钉单据上的"总金额"。"""
-    money = []
-    for name, value, ctype in _form_pairs(detail):
-        if ctype == 'MoneyField' or '金额' in name:
-            n = _num(value)
-            if n is not None:
-                money.append((name, n))
+    """从表单抠应付总金额，尽量对齐钉钉单据"实付/合计"：
+    候选金额字段里按 实付 → 合计/总额 → 报销/申请/金额 三档取，命中高档即返回（同档取最大）；
+    都不命中则取候选最大；无候选则兜底明细表求和；再无则 0。"""
+    money = _amount_candidates(detail)
     if money:
-        totals = [n for name, n in money if any(k in name for k in _TOTAL_KEYS)]
-        if totals:
-            return max(totals)
+        for tier in (_PAY_KEYS, _SUM_KEYS, _GROSS_KEYS):
+            hits = [n for name, n in money if any(k in name for k in tier)]
+            if hits:
+                return max(hits)
         return max(n for _, n in money)
-    # 无独立金额字段 → 尝试明细表求和
     s = _table_amount_sum(detail)
     return s if s is not None else Decimal('0')
 
@@ -531,6 +554,9 @@ def dingtalk_query(request):
                 'sync_rec_no': rec.approval_number if rec else '',
                 'sync_stale': bool(rec) and rec.status != sys_status,
                 'cached': iid in cache and iid not in fetched,
+                # 进行中实例本次刷新失败 → 用的是旧存档，标记为"数据可能陈旧"
+                'stale': (iid in cache and iid not in fetched
+                          and not cache[iid].is_terminal()),
             })
     except DingTalkError as ex:
         return err(str(ex), 502, 502)
