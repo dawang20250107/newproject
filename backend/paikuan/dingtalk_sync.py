@@ -322,7 +322,9 @@ def dingtalk_query(request):
     body = parse_body(request)
     userid = (body.get('userid') or '').strip()
     status = (body.get('status') or 'todo').strip()
-    picked = body.get('process_codes') or []
+    # 前端传 templates:[{process_code,name}]（推荐）或 process_codes:[code]。
+    picked_tpls = body.get('templates') or []
+    picked_codes = body.get('process_codes') or []
     if not userid:
         return err('缺少 userid')
     if status not in ('todo', 'done', 'originated'):
@@ -333,21 +335,26 @@ def dingtalk_query(request):
         return err('时间范围无效（YYYY-MM-DD）')
 
     try:
-        templates, tpl_api_err = _gather_templates()
-        if picked:   # 前端只勾选了部分模板 → 只查这些（大幅提速、避免超时）
-            sel = set(picked)
-            have = {t['process_code'] for t in templates}
-            templates = [t for t in templates if t['process_code'] in sel]
-            # dict.fromkeys 去重保序：重复 code 只补一次，避免同实例被查两遍出重复行
-            templates += [{'process_code': c, 'name': c}
-                          for c in dict.fromkeys(picked) if c not in have]
+        tpl_api_err = ''
+        if picked_tpls or picked_codes:
+            # 已指定模板 → 直接用，跳过"拉企业全部模板"（否则每次查询都重拉全量目录=超时主因）
+            seen, templates = set(), []
+            for t in picked_tpls:
+                c = (t.get('process_code') or '').strip()
+                if c and c not in seen:
+                    seen.add(c); templates.append({'process_code': c, 'name': t.get('name') or c})
+            for c in picked_codes:
+                c = (c or '').strip()
+                if c and c not in seen:
+                    seen.add(c); templates.append({'process_code': c, 'name': c})
+        else:
+            templates, tpl_api_err = _gather_templates()
         if not templates:
             if tpl_api_err:
                 # 接口报错（多为权限/可见范围）——把钉钉原话透出来，便于对症开权限
                 return err('获取审批模板失败：' + tpl_api_err
                            + '（多为应用未开通「工作流模板读」权限，或「可用范围」未设为全部员工）', 502, 502)
-            return err('未获取到可查询的审批模板，请先在上方勾选模板，'
-                       '或确认应用已开通「工作流模板读」权限', 400)
+            return err('请先在上方勾选要查询的审批模板', 400)
         name_by_code = {t['process_code']: t.get('name', '') for t in templates}
         # listids 的 userIds 过滤的是「发起人」，statuses 过滤实例状态：
         # - originated（他发起）→ 按发起人过滤，精准高效；
@@ -373,7 +380,7 @@ def dingtalk_query(request):
 
         inst_ids = []
         found_by_code = {}   # 每个模板拉到的实例数（未按口径过滤前）——用于诊断
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=12) as pool:
             for pairs in pool.map(_ids_for, templates):
                 if pairs:
                     found_by_code[pairs[0][1]] = found_by_code.get(pairs[0][1], 0) + len(pairs)
@@ -399,7 +406,7 @@ def dingtalk_query(request):
 
         items = []
         matched_by_code = {}   # 每个模板符合当前口径的条数——用于诊断
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=12) as pool:
             details = list(pool.map(_detail, inst_ids))
         for iid, code, detail in details:
             if detail is None:
@@ -493,7 +500,7 @@ def dingtalk_sync(request):
         except DingTalkError as ex:
             return iid, None, str(ex)
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=12) as pool:
         fetched = list(pool.map(_fetch, ids))
     for iid, detail, ferr in fetched:
         if ferr:
@@ -536,7 +543,7 @@ def dingtalk_refresh(request):
         except DingTalkError as ex:
             return iid, None, str(ex)
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=12) as pool:
         fetched = list(pool.map(_fetch, todo))
     for iid, detail, ferr in fetched:
         if ferr:

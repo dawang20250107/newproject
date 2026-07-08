@@ -131,13 +131,15 @@ function copyUid() {
 async function runQuery() {
   let user = picked.value
   if (!user) { user = await resolvePerson(); if (!user) return }
-  if (templates.value.length && !tplSel.value.size) { toast.error('请至少勾选一个审批模板'); return }
+  if (!tplSel.value.size) { toast.error('请先勾选要查询的审批模板（如：报销）'); return }
   loading.value = true; loadErr.value = ''; sel.value = new Set()
   try {
-    // 只查勾选的模板并逐条拉详情，耗时较长，单独放宽超时到 90s
+    // 只查勾选的模板（连名称一起传，后端无需重拉全量模板目录），单独放宽超时到 90s
+    const picks = templates.value.filter(t => tplSel.value.has(t.process_code))
+      .map(t => ({ process_code: t.process_code, name: t.name || t.process_code }))
     const r = await api.post('/dingtalk/query', {
       userid: user.userid, start: range.start, end: range.end, status: status.value,
-      process_codes: [...tplSel.value],
+      templates: picks,
     }, { timeout: 90000 })
     items.value = r.data?.items || []
     capped.value = !!r.data?.capped
@@ -268,18 +270,17 @@ onMounted(loadTemplates)   // 开面板即加载企业全部审批模板
       <div class="tpls-head">
         <span class="tpls-lbl">审批模板</span>
         <span v-if="tplLoading" class="tpls-info">加载企业全部模板中…</span>
-        <template v-else>
-          <span class="tpls-info">共 <b>{{ templates.length }}</b> 个 · 已选 <b>{{ tplSelCount }}</b></span>
-          <button class="tpls-op" @click="selectFinance">只选财务类</button>
-          <button class="tpls-op" @click="tplSelectAll(true)">{{ tplFilter ? '选中筛选项' : '全选' }}</button>
-          <button class="tpls-op" @click="tplSelectAll(false)">全不选</button>
-          <input v-model="tplFilter" class="tpls-filter" placeholder="筛选模板名，如 报销" />
-          <span class="grow"></span>
-          <button class="tpls-op refresh" :disabled="tplLoading" @click="templates = []; loadTemplates()">↻ 刷新</button>
-        </template>
+        <span v-else class="tpls-info">共 <b>{{ templates.length }}</b> 个 · 已选 <b>{{ tplSelCount }}</b></span>
+        <button class="tpls-op" :disabled="tplLoading" @click="selectFinance">只选财务类</button>
+        <button class="tpls-op" :disabled="tplLoading" @click="tplSelectAll(true)">{{ tplFilter ? '选中筛选项' : '全选' }}</button>
+        <button class="tpls-op" :disabled="tplLoading" @click="tplSelectAll(false)">全不选</button>
+        <input v-model="tplFilter" class="tpls-filter" placeholder="筛选模板名，如 报销" />
+        <span class="grow"></span>
+        <button class="tpls-op refresh" :disabled="tplLoading" @click="templates = []; loadTemplates()">↻ 刷新</button>
       </div>
-      <div v-if="tplErr" class="tpls-err">⚠️ {{ tplErr }}</div>
-      <div v-else-if="!tplLoading" class="tpls-scroll">
+      <div v-if="tplLoading" class="tpls-empty">⏳ 正在加载企业全部审批模板…</div>
+      <div v-else-if="tplErr" class="tpls-err">⚠️ {{ tplErr }} <button class="tpls-op" @click="templates = []; loadTemplates()">重试</button></div>
+      <div v-else class="tpls-scroll">
         <div v-for="g in tplGroups" :key="g.dir" class="tpls-group">
           <div class="grp-h">{{ g.dir }}<span class="grp-n">{{ g.items.length }}</span></div>
           <div class="tpls-grid">
