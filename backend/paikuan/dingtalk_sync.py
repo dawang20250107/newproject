@@ -137,16 +137,23 @@ def _table_amount_sum(detail):
 def extract_amount(detail):
     """从表单抠应付总金额，尽量对齐钉钉单据"实付/合计"：
     候选金额字段里按 实付 → 合计/总额 → 报销/申请/金额 三档取，命中高档即返回（同档取最大）；
-    都不命中则取候选最大；无候选则兜底明细表求和；再无则 0。"""
+    都不命中则取候选最大；顶层取不到(空或为0)时兜底明细表(TableField)按行求和。"""
     money = _amount_candidates(detail)
+    best = None
     if money:
         for tier in (_PAY_KEYS, _SUM_KEYS, _GROSS_KEYS):
             hits = [n for name, n in money if any(k in name for k in tier)]
             if hits:
-                return max(hits)
-        return max(n for _, n in money)
-    s = _table_amount_sum(detail)
-    return s if s is not None else Decimal('0')
+                best = max(hits)
+                break
+        if best is None:
+            best = max(n for _, n in money)
+    # 顶层没有金额字段、或取到 0（金额常只在明细表里）→ 兜底明细表求和
+    if best is None or best == 0:
+        s = _table_amount_sum(detail)
+        if s is not None and s != 0:
+            return s
+    return best if best is not None else Decimal('0')
 
 
 def build_summary(detail):

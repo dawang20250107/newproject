@@ -298,6 +298,40 @@ async function openDetail(item) {
 }
 function money(v) { return '¥' + Number(v || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 }) }
 
+// ── 单据字段格式化（把钉钉各控件值渲染成人看得懂的样子）──────────────────────
+function tryJSON(v) { try { return JSON.parse(v) } catch { return null } }
+// 明细表(TableField)：value 是 JSON 数组字符串 → 解析成 {列: 行数组} 的表
+function parseTable(fld) {
+  const rows = Array.isArray(fld.value) ? fld.value : tryJSON(fld.value)
+  if (!Array.isArray(rows) || !rows.length) return null
+  const cols = []
+  rows.forEach(r => Object.keys(r || {}).forEach(k => { if (!cols.includes(k)) cols.push(k) }))
+  return { cols, rows }
+}
+const MONEY_COL = /金额|价税|合计|费用|款|单价|总额/
+function fmtCell(col, val) {
+  if (val == null || val === '') return '—'
+  if (MONEY_COL.test(col) && !isNaN(Number(String(val).replace(/,/g, ''))))
+    return money(String(val).replace(/,/g, ''))
+  return String(val)
+}
+// 普通字段的显示值（图片/附件/多选/人员等做友好处理）
+function fldDisplay(fld) {
+  const t = fld.type || ''
+  const v = fld.value
+  if (v == null || v === '') return '—'
+  if (t === 'MoneyField') return money(v)
+  if (t === 'DDPhotoField') { const a = tryJSON(v); return Array.isArray(a) ? `🖼 ${a.length} 张图片` : String(v) }
+  if (t === 'DDAttachment') { const a = tryJSON(v); return Array.isArray(a) ? `📎 ${a.length} 个附件` : String(v) }
+  if (t === 'DDMultiSelectField' || t === 'InnerContactField') {
+    const a = tryJSON(v); return Array.isArray(a) ? a.join('、') : String(v)
+  }
+  if (t === 'AddressField') { const o = tryJSON(v); if (o && typeof o === 'object') return [o.province, o.city, o.district, o.detail].filter(Boolean).join('') || String(v) }
+  return String(v)
+}
+const fldIsTable = (fld) => (fld.type === 'TableField') || (typeof fld.value === 'string' && /^\s*\[\s*{/.test(fld.value))
+const fldIsWide = (fld) => fldIsTable(fld) || String(fldDisplay(fld)).length > 24
+
 onMounted(() => { loadTemplates(); loadSchemes() })   // 开面板即加载模板 + 我的方案
 </script>
 
@@ -333,54 +367,42 @@ onMounted(() => { loadTemplates(); loadSchemes() })   // 开面板即加载模�
       <button class="quick test" :disabled="testing" @click="testConnection">{{ testing ? '检测中…' : '测试连接' }}</button>
     </div>
 
-    <!-- ══ 查询条 ══ -->
-    <div v-show="subview === 'query'" class="dt-query">
-      <div class="qf">
-        <label>查询人员</label>
-        <div class="person">
-          <div class="seg">
-            <button :class="{ on: personMode === 'mobile' }" @click="personMode = 'mobile'; picked = null">手机号</button>
-            <button :class="{ on: personMode === 'name' }" @click="personMode = 'name'; picked = null">姓名</button>
-          </div>
-          <input v-model="personInput" class="inp" :placeholder="personMode === 'mobile' ? '钉钉手机号' : '姓名（可能多个同名）'"
-                 @keyup.enter="runQuery()" @input="picked = null" />
-          <span v-if="picked" class="picked" :title="'userid: ' + picked.userid">✓ {{ picked.name }} <code class="uid" @click="copyUid">{{ picked.userid }}</code></span>
-        </div>
-        <!-- 同名候选 -->
-        <div v-if="candidates.length" class="cands">
-          <span class="cands-lbl">多个同名，请选择：</span>
-          <button v-for="u in candidates" :key="u.userid" class="cand" @click="pickCandidate(u)">{{ u.name }}</button>
-        </div>
+    <!-- ══ 查询条（人员 / 时间 / 方案 同一行，尽量给结果留空间）══ -->
+    <div v-show="subview === 'query'" class="dt-bar">
+      <div class="seg">
+        <button :class="{ on: personMode === 'mobile' }" @click="personMode = 'mobile'; picked = null">手机号</button>
+        <button :class="{ on: personMode === 'name' }" @click="personMode = 'name'; picked = null">姓名</button>
       </div>
-      <div class="qf">
-        <label>时间范围</label>
-        <div class="daterow">
-          <input v-model="range.start" type="date" class="inp inp-date" />
-          <span class="sep">→</span>
-          <input v-model="range.end" type="date" class="inp inp-date" />
-          <button v-for="q in QUICK" :key="q.k" class="quick" @click="setQuick(q.k)">{{ q.l }}</button>
-        </div>
-      </div>
+      <input v-model="personInput" class="inp person-inp" :placeholder="personMode === 'mobile' ? '钉钉手机号' : '姓名'"
+             @keyup.enter="runQuery()" @input="picked = null" />
+      <span v-if="picked" class="picked" :title="'userid: ' + picked.userid">✓ {{ picked.name }}</span>
+
+      <span class="bar-sep"></span>
+      <input v-model="range.start" type="date" class="inp inp-date" />
+      <span class="sep">→</span>
+      <input v-model="range.end" type="date" class="inp inp-date" />
+      <select class="inp preset-sel" @change="setQuick($event.target.value); $event.target.selectedIndex = 0">
+        <option value="">快捷…</option>
+        <option v-for="q in QUICK" :key="q.k" :value="q.k">{{ q.l }}</option>
+      </select>
+
+      <span class="bar-sep"></span>
+      <span class="sc-lbl">方案</span>
+      <button v-for="s in schemes" :key="s.id" class="sc-chip" :class="{ on: curSchemeId === s.id }" @click="applyScheme(s)">
+        {{ s.name }}<span class="sc-x" title="删除" @click.stop="deleteScheme(s)">✕</span>
+      </button>
+      <button class="sc-save" title="把当前勾选的模板+口径存为方案" @click="saveScheme">＋存方案</button>
+      <span class="tpl-hint" @click="subview = 'templates'">模板 <b>{{ tplSelCount }}</b> →</span>
+
+      <span class="grow"></span>
       <button class="go" :disabled="loading || resolving" @click="runQuery()">
         {{ loading || resolving ? '查询中…' : '查询' }}
       </button>
     </div>
-
-    <!-- 方案 + 已选模板速览（查询页）-->
-    <div v-show="subview === 'query'" class="dt-schemes">
-      <span class="sc-lbl">方案</span>
-      <template v-if="schemes.length">
-        <button v-for="s in schemes" :key="s.id" class="sc-chip" :class="{ on: curSchemeId === s.id }" @click="applyScheme(s)">
-          {{ s.name }}<span class="sc-x" title="删除" @click.stop="deleteScheme(s)">✕</span>
-        </button>
-      </template>
-      <span v-else class="sc-empty">暂无保存的方案</span>
-      <button class="sc-save" @click="saveScheme">＋ 存为方案</button>
-      <span class="grow"></span>
-      <span class="sc-sel">
-        已选 <b>{{ tplSelCount }}</b> 个模板
-        <button class="sc-goto" @click="subview = 'templates'">去调整 →</button>
-      </span>
+    <!-- 同名候选 -->
+    <div v-show="subview === 'query' && candidates.length" class="dt-cands">
+      <span class="cands-lbl">多个同名，请选择：</span>
+      <button v-for="u in candidates" :key="u.userid" class="cand" @click="pickCandidate(u)">{{ u.name }}</button>
     </div>
 
     <!-- ══ 审批模板配置（企业全部表单，勾选后再查）══ -->
@@ -566,11 +588,21 @@ onMounted(() => { loadTemplates(); loadSchemes() })   // 开面板即加载模�
 
               <div class="ding-sec">表单内容</div>
               <div class="ding-form">
-                <div v-for="(fld, idx) in detail.form" :key="idx" class="ding-fld"
-                     :class="{ wide: fld.type === 'TableField' || String(fld.value).length > 30 }">
+                <div v-for="(fld, idx) in detail.form" :key="idx" class="ding-fld" :class="{ wide: fldIsWide(fld) }">
                   <label>{{ fld.name }}</label>
-                  <span v-if="fld.type === 'MoneyField'" class="fv-money">{{ money(fld.value) }}</span>
-                  <span v-else class="fv">{{ fld.value || '—' }}</span>
+                  <!-- 明细表：渲染成子表格 -->
+                  <div v-if="fldIsTable(fld) && parseTable(fld)" class="ding-subtable-wrap">
+                    <table class="ding-subtable">
+                      <thead><tr><th v-for="c in parseTable(fld).cols" :key="c">{{ c }}</th></tr></thead>
+                      <tbody>
+                        <tr v-for="(row, ri) in parseTable(fld).rows" :key="ri">
+                          <td v-for="c in parseTable(fld).cols" :key="c" :class="{ r: MONEY_COL.test(c) }">{{ fmtCell(c, row[c]) }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <span v-else-if="fld.type === 'MoneyField'" class="fv-money">{{ money(fld.value) }}</span>
+                  <span v-else class="fv">{{ fldDisplay(fld) }}</span>
                 </div>
                 <div v-if="!detail.form.length" class="ding-empty">无表单字段</div>
               </div>
@@ -640,6 +672,11 @@ onMounted(() => { loadTemplates(); loadSchemes() })   // 开面板即加载模�
 .ding-fld .fv { font-size: 13px; color: var(--text, #4a3322); white-space: pre-wrap; word-break: break-word; }
 .ding-fld .fv-money { font-size: 14px; font-weight: 700; color: var(--primary, #1565c0); }
 .ding-empty { color: var(--muted, #9b8070); font-size: 12.5px; grid-column: 1 / -1; }
+.ding-subtable-wrap { overflow-x: auto; margin-top: 3px; }
+.ding-subtable { border-collapse: collapse; font-size: 12px; width: 100%; }
+.ding-subtable th, .ding-subtable td { border: 1px solid var(--border, #eadfd2); padding: 3px 8px; white-space: nowrap; }
+.ding-subtable th { background: var(--panel-2, #faf6f0); color: var(--muted, #9b8070); font-weight: 600; }
+.ding-subtable td.r { text-align: right; font-variant-numeric: tabular-nums; }
 .ding-flow { list-style: none; margin: 0; padding: 0; }
 .ding-flow li { display: flex; align-items: center; gap: 9px; padding: 7px 0; font-size: 12.5px; border-bottom: 1px dashed var(--border, #f0e6d8); }
 .fl-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--muted, #9b8070); }
@@ -649,6 +686,19 @@ onMounted(() => { loadTemplates(); loadSchemes() })   // 开面板即加载模�
 .fl-res { font-weight: 700; } .fl-res.ok { color: var(--success, #2e9e5b); } .fl-res.no { color: var(--danger, #d64545); }
 .fl-date { color: var(--muted, #9b8070); font-size: 11.5px; }
 .ding-st.p-ok, .ding-st.p-bad, .ding-st.p-run, .ding-st.p-cancel { border-radius: 10px; }
+/* 紧凑单行查询条 */
+.dt-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--border, #eadfd2); }
+.dt-bar .inp { padding: 6px 9px; font-size: 13px; }
+.dt-bar .person-inp { width: 150px; }
+.dt-bar .inp-date { width: 132px; }
+.dt-bar .preset-sel { width: 78px; cursor: pointer; }
+.dt-bar .bar-sep { width: 1px; align-self: stretch; background: var(--border, #eadfd2); margin: 2px 4px; }
+.dt-bar .picked { font-size: 12.5px; font-weight: 700; color: var(--success, #2e9e5b); white-space: nowrap; }
+.dt-bar .sc-lbl { font-size: 12px; font-weight: 700; color: var(--muted, #9b8070); }
+.dt-bar .tpl-hint { font-size: 12px; color: var(--primary, #1565c0); cursor: pointer; white-space: nowrap; }
+.dt-bar .tpl-hint b { font-size: 13px; }
+.dt-bar .go { margin-left: 0; padding: 7px 20px; }
+.dt-cands { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--border, #eadfd2); background: var(--panel-2, #faf6f0); }
 .dt-query { display: flex; gap: 18px; align-items: flex-end; flex-wrap: wrap; padding: 16px 18px; border-bottom: 1px solid var(--border, #eadfd2); }
 .qf { display: flex; flex-direction: column; gap: 7px; }
 .qf > label { font-size: 11.5px; font-weight: 700; letter-spacing: .04em; color: var(--muted, #9b8070); text-transform: uppercase; }
