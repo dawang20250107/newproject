@@ -1400,7 +1400,7 @@ async function doBatchPay() {
               <td v-if="colVisible('overdue')">
                 <span v-if="p.status === 'settled'" class="overdue-tag overdue-ok">—</span>
                 <span v-else-if="p.planned_date && p.planned_date < today"
-                      class="overdue-tag overdue-bad">逾期 {{ daysOverdue(p.planned_date) }} 天</span>
+                      class="overdue-tag overdue-bad" :title="`逾期 ${daysOverdue(p.planned_date)} 天`">逾期{{ daysOverdue(p.planned_date) }}天</span>
                 <span v-else-if="p.planned_date === today" class="overdue-tag overdue-today">今日到期</span>
                 <span v-else class="overdue-tag overdue-ok">未到期</span>
               </td>
@@ -1892,7 +1892,8 @@ async function doBatchPay() {
 .pk-pay-tbl thead :deep(.colf) { align-items: center; }
 /* 换行时两行字数尽量均衡，避免头重脚轻 */
 .pk-pay-tbl thead :deep(.colf-label) { white-space: normal; text-wrap: balance; }
-.global-search { min-width: 300px; flex: 0 1 380px; }
+/* 可收缩：导航展开、内容变窄时优先压缩搜索框而不是把整行挤成两行 */
+.global-search { min-width: 130px; flex: 1 1 200px; }
 .clear-all-btn { background: var(--bg2); border: none; color: var(--primary); }
 .filter-hint { font-size: 11.5px; color: var(--muted); margin-left: auto; white-space: nowrap; }
 /* 操作列：不裁剪，按钮正常显示，更紧凑 */
@@ -2053,8 +2054,8 @@ async function doBatchPay() {
 
 /* Overdue column tag */
 .overdue-tag {
-  display: inline-block; font-size: 11.5px; padding: 2px 8px;
-  border-radius: 9px; white-space: nowrap;
+  display: inline-block; font-size: 10.5px; padding: 2px 5px;
+  border-radius: 8px; white-space: nowrap; letter-spacing: -.2px;
 }
 .overdue-ok    { color: var(--muted); background: transparent; }
 .overdue-today { color: #b35309; background: rgba(245,127,23,0.12); font-weight: 600; }
