@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 # 通用字段匹配关键字（按优先级）
 _PAYEE_KEYS = ['收款方', '收款单位', '收款账户', '收款账号', '收款人', '供应商名称', '供应商', '收款方名称']
 _APPLICANT_KEYS = ['申请人', '创建人', '经办人']
-_QUERY_CAP = 300   # 单次查询实例上限，超出提示缩小范围
+_QUERY_CAP = 300    # 命中结果上限（返回给前端的条数），超出提示缩小范围
+_FETCH_CAP = 1000   # 拉实例详情安全阀：待处理/已处理需拉详情后分类，限制单次拉取量
 
 
 # ── 通用映射 ──────────────────────────────────────────────────────────────────
@@ -337,7 +338,9 @@ def dingtalk_query(request):
             sel = set(picked)
             have = {t['process_code'] for t in templates}
             templates = [t for t in templates if t['process_code'] in sel]
-            templates += [{'process_code': c, 'name': c} for c in picked if c not in have]
+            # dict.fromkeys 去重保序：重复 code 只补一次，避免同实例被查两遍出重复行
+            templates += [{'process_code': c, 'name': c}
+                          for c in dict.fromkeys(picked) if c not in have]
         if not templates:
             if tpl_api_err:
                 # 接口报错（多为权限/可见范围）——把钉钉原话透出来，便于对症开权限
@@ -375,8 +378,11 @@ def dingtalk_query(request):
                 if pairs:
                     found_by_code[pairs[0][1]] = found_by_code.get(pairs[0][1], 0) + len(pairs)
                 inst_ids.extend(pairs)
-        capped = len(inst_ids) > _QUERY_CAP
-        inst_ids = inst_ids[:_QUERY_CAP]
+        # 待处理/已处理无法按审批人过滤，需拉详情后分类；原始池可能很大。
+        # 对"拉详情"设安全阀 _FETCH_CAP（避免超时/超量），对"命中结果"另设 _QUERY_CAP，
+        # 二者分开——避免命中项被原始池提前截断而漏报（原始池只在超 _FETCH_CAP 时才截）。
+        raw_capped = len(inst_ids) > _FETCH_CAP
+        inst_ids = inst_ids[:_FETCH_CAP]
 
         # 已同步集合（一次查库）
         synced = {r.dingtalk_instance_id: r for r in ApprovalRecord.objects.filter(
@@ -398,9 +404,16 @@ def dingtalk_query(request):
         for iid, code, detail in details:
             if detail is None:
                 continue
-            role = classify(detail, userid)
-            if role != status:
-                continue
+            if status == 'originated':
+                # 上游已按「发起人」过滤，凡该人发起的一律保留——避免他"既发起又参与审批"
+                # 被 classify 误判成 done/todo 而丢失。
+                if detail.get('originator_userid') != userid:
+                    continue
+                role = 'originated'
+            else:
+                role = classify(detail, userid)
+                if role != status:
+                    continue
             matched_by_code[code] = matched_by_code.get(code, 0) + 1
             f = instance_to_fields(detail)
             rec = synced.get(iid)
@@ -424,7 +437,10 @@ def dingtalk_query(request):
     except DingTalkError as ex:
         return err(str(ex), 502, 502)
 
+    # 先按时间排序，再对"命中结果"截断（保留最近的），命中项不会被原始池截断误伤
     items.sort(key=lambda x: x['create_time'], reverse=True)
+    capped = raw_capped or len(items) > _QUERY_CAP
+    items = items[:_QUERY_CAP]
     scanned = [t.get('name') or t['process_code'] for t in templates]
     # 逐模板诊断：拉到的实例数(found) 与 符合当前口径的条数(matched)——空结果时定位卡点
     tpl_stats = [{

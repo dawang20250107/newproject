@@ -319,6 +319,41 @@ class SyncEndpointTests(TestCase):
         called_codes = {c.args[0] for c in m_list.call_args_list}
         self.assertEqual(called_codes, {'PC_报销'})
 
+    @mock.patch('paikuan.dingtalk_client.all_templates', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.list_process_codes',
+                return_value=[{'process_code': 'PC1', 'name': '报销'}])
+    @mock.patch('paikuan.dingtalk_client.list_instance_ids', return_value=['INST-Z'])
+    @mock.patch('paikuan.dingtalk_client.get_instance')
+    def test_originated_keeps_self_approved(self, m_get, m_list, m_codes, m_all):
+        # 他既发起又审批通过：classify 会判 done，但「该员工发起」口径必须保留
+        m_get.return_value = {
+            '_instance_id': 'INST-Z', 'business_id': 'B', 'title': '本人报销',
+            'originator_userid': 'U-me', 'status': 'COMPLETED', 'result': 'agree',
+            'form_component_values': [], 'tasks': [],
+            'operation_records': [{'userid': 'U-me', 'type': 'EXECUTE_TASK_NORMAL', 'result': 'AGREE'}],
+            'approver_userids': ['U-me'],
+        }
+        self.assertEqual(sync.classify(m_get.return_value, 'U-me'), 'done')   # 单独看是 done
+        r = self._post('/api/pk/dingtalk/query',
+                       {'userid': 'U-me', 'start': '2026-03-01', 'end': '2026-03-31',
+                        'status': 'originated'})
+        d = r.json()['data']
+        self.assertEqual(d['count'], 1)          # 仍出现在「该员工发起」
+        self.assertEqual(d['items'][0]['task'], 'originated')
+
+    @mock.patch('paikuan.dingtalk_client.all_templates', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.list_process_codes', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.list_instance_ids', return_value=['INST-1'])
+    @mock.patch('paikuan.dingtalk_client.get_instance', return_value=DETAIL_REIMB)
+    def test_query_dedups_duplicate_process_codes(self, m_get, m_list, m_codes, m_all):
+        # 传入重复 process_code（且不在已取模板集）→ 只查一次、不产生重复行
+        r = self._post('/api/pk/dingtalk/query',
+                       {'userid': 'U-guoyong', 'start': '2026-03-01', 'end': '2026-03-31',
+                        'status': 'originated', 'process_codes': ['PCDUP', 'PCDUP']})
+        called = [c.args[0] for c in m_list.call_args_list]
+        self.assertEqual(called, ['PCDUP'])            # 只调一次
+        self.assertEqual(r.json()['data']['count'], 1)  # 单行，无重复
+
     @mock.patch('paikuan.dingtalk_client.user_detail', return_value={'name': '郭勇'})
     @mock.patch('paikuan.dingtalk_client.userid_by_mobile', return_value='U-guoyong')
     def test_resolve_user_by_mobile(self, m_uid, m_det):
