@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import api from '../api/index.js'
 import { useToast } from '../composables/useToast.js'
 import { confirmDlg } from '../composables/confirm.js'
@@ -41,49 +41,41 @@ function setQuick(k) {
   else if (k === 'q') { const qm = Math.floor((m - 1) / 3) * 3 + 1; range.start = `${y}-${String(qm).padStart(2, '0')}-01`; range.end = t }
 }
 
-// ── 可见模板（勾选后再查，避免全表扫描超时；也用于确认"报销"是否在可见范围）──────
-const templates = ref([])          // [{process_code, name}]
+// ── 审批模板（企业全部表单，勾选后再查）─────────────────────────────────────────
+// 走 /dingtalk/templates（userId 省略 → 钉钉返回企业下全部表单，覆盖报销等审批人
+// 不可发起的模板）。开面板即加载，与选人解耦。财务相关模板默认预选。
+const templates = ref([])          // [{process_code, name, dir_name}]
 const tplSel = ref(new Set())      // 勾选的 process_code
 const tplLoading = ref(false)
 const tplErr = ref('')
 const tplFilter = ref('')
+const FINANCE_KW = /报销|付款|费用|请款|借款|备用金|采购|货款|结算|差旅|招待|电汇|打款/
 const tplShown = computed(() => {
   const q = tplFilter.value.trim()
   return q ? templates.value.filter(t => (t.name || t.process_code).includes(q)) : templates.value
 })
+// 按钉钉分组(dir_name)聚合展示
+const tplGroups = computed(() => {
+  const g = new Map()
+  for (const t of tplShown.value) {
+    const k = t.dir_name || '未分组'
+    if (!g.has(k)) g.set(k, [])
+    g.get(k).push(t)
+  }
+  return [...g.entries()].map(([dir, items]) => ({ dir, items }))
+})
 const tplSelCount = computed(() => tplSel.value.size)
-// 手动添加的模板（processCode 从钉钉后台"编辑模板"URL 获取）。持久化到本地，长期生效——
-// 用于覆盖官方接口取不到的模板（如仅"可审批/管理"而非"可发起"的费用报销单）。
-const MANUAL_KEY = 'dt_manual_tpls'
-function loadManual() {
-  try { return JSON.parse(localStorage.getItem(MANUAL_KEY) || '[]') } catch { return [] }
-}
-const manualTpls = ref(loadManual())
-const manualCodes = computed(() => new Set(manualTpls.value.map(t => t.process_code)))
-function saveManual() { localStorage.setItem(MANUAL_KEY, JSON.stringify(manualTpls.value)) }
-function removeManual(code) {
-  manualTpls.value = manualTpls.value.filter(t => t.process_code !== code); saveManual()
-  templates.value = templates.value.filter(t => t.process_code !== code)
-  const s = new Set(tplSel.value); s.delete(code); tplSel.value = s
-}
-function mergeManual(list) {
-  const have = new Set(list.map(t => t.process_code))
-  const extra = manualTpls.value.filter(t => !have.has(t.process_code))
-                               .map(t => ({ ...t, manual: true }))
-  return [...list, ...extra]
-}
-async function loadTemplates(userid) {
-  tplLoading.value = true; tplErr.value = ''; templates.value = []
+async function loadTemplates() {
+  if (templates.value.length || tplLoading.value) return
+  tplLoading.value = true; tplErr.value = ''
   try {
-    const r = await api.post('/dingtalk/templates', { userid }, { timeout: 60000 })
-    templates.value = mergeManual(r.data?.templates || [])
-    applyDefaultSel()
-  } catch (e) {
-    tplErr.value = e?.msg || e?.error || '获取模板失败'
-    // 接口失败也保留手动模板，至少能查这些
-    templates.value = mergeManual([])
-    applyDefaultSel()
-  } finally { tplLoading.value = false }
+    const r = await api.post('/dingtalk/templates', {}, { timeout: 60000 })
+    templates.value = r.data?.templates || []
+    // 默认预选财务相关模板；没有命中则不预选，交用户勾选（避免默认全选一大片）
+    const fin = templates.value.filter(t => FINANCE_KW.test(t.name || '')).map(t => t.process_code)
+    tplSel.value = new Set(fin)
+  } catch (e) { tplErr.value = e?.msg || e?.error || '获取模板失败' }
+  finally { tplLoading.value = false }
 }
 function toggleTpl(code) {
   const s = new Set(tplSel.value)
@@ -91,63 +83,10 @@ function toggleTpl(code) {
   tplSel.value = s
 }
 function tplSelectAll(on) {
-  tplSel.value = on ? new Set(templates.value.map(t => t.process_code)) : new Set()
+  tplSel.value = on ? new Set(tplShown.value.map(t => t.process_code)) : new Set()
 }
-// 默认选择：导入过模板就只选这几条（用户明确要的少量模板）；否则全选（首次可用）。
-function applyDefaultSel() {
-  const manual = templates.value.filter(t => t.manual).map(t => t.process_code)
-  tplSel.value = new Set(manual.length ? manual : templates.value.map(t => t.process_code))
-}
-
-// ── 从员工导入模板：报销单等"仅可审批/管理"的模板，本人可发起清单里没有，
-//    但发起它的员工清单里有。解析一个会发起该审批的员工 → 列出其可发起模板 →
-//    勾选加入本地模板库（长期生效）。全程无需 processCode，纯 App 可用。────────────
-const importOpen = ref(false)
-const importMode = ref('name')
-const importInput = ref('')
-const importResolving = ref(false)
-const importCands = ref([])
-const importUser = ref(null)
-const importTpls = ref([])
-const importLoading = ref(false)
-const importFilter = ref('')
-const importShown = computed(() => {
-  const q = importFilter.value.trim()
-  return q ? importTpls.value.filter(t => (t.name || t.process_code).includes(q)) : importTpls.value
-})
-async function importFetchTpls(userid) {
-  importLoading.value = true; importTpls.value = []
-  try {
-    const r = await api.post('/dingtalk/templates', { userid }, { timeout: 60000 })
-    importTpls.value = r.data?.templates || []
-  } catch (e) { toast.error(e?.msg || e?.error || '获取该员工模板失败') }
-  finally { importLoading.value = false }
-}
-async function importResolve() {
-  const val = importInput.value.trim()
-  if (!val) { toast.error('请输入该员工的手机号或姓名'); return }
-  importResolving.value = true; importCands.value = []; importUser.value = null; importTpls.value = []
-  try {
-    const body = importMode.value === 'mobile' ? { mobile: val } : { name: val }
-    const r = await api.post('/dingtalk/resolve-user', body)
-    const users = r.data?.users || []
-    if (!users.length) { toast.error('钉钉通讯录未找到该人员'); return }
-    if (users.length === 1) { importUser.value = users[0]; await importFetchTpls(users[0].userid) }
-    else importCands.value = users
-  } catch (e) { toast.error(e?.msg || e?.error || '查询人员失败') }
-  finally { importResolving.value = false }
-}
-async function importPickCand(u) { importUser.value = u; importCands.value = []; await importFetchTpls(u.userid) }
-function isInCatalog(code) { return templates.value.some(t => t.process_code === code) }
-function addImported(t) {
-  if (isInCatalog(t.process_code)) { toast.error('该模板已在列表中'); return }
-  if (!manualCodes.value.has(t.process_code)) {
-    manualTpls.value = [...manualTpls.value, { process_code: t.process_code, name: t.name || t.process_code }]
-    saveManual()
-  }
-  templates.value = [...templates.value, { ...t, manual: true }]
-  tplSel.value = new Set([...tplSel.value, t.process_code])
-  toast.success(`已加入「${t.name || t.process_code}」`)
+function selectFinance() {
+  tplSel.value = new Set(templates.value.filter(t => FINANCE_KW.test(t.name || '')).map(t => t.process_code))
 }
 
 // ── 结果 ──────────────────────────────────────────────────────────────────
@@ -178,12 +117,12 @@ async function resolvePerson() {
     const r = await api.post('/dingtalk/resolve-user', body)
     const users = r.data?.users || []
     if (!users.length) { toast.error('钉钉通讯录未找到该人员'); return null }
-    if (users.length === 1) { picked.value = users[0]; await loadTemplates(users[0].userid); return users[0] }
+    if (users.length === 1) { picked.value = users[0]; return users[0] }
     candidates.value = users; return null   // 多个同名 → 交用户选
   } catch (e) { toast.error(e?.msg || e?.error || '查询人员失败'); return null }
   finally { resolving.value = false }
 }
-async function pickCandidate(u) { picked.value = u; candidates.value = []; await loadTemplates(u.userid); runQuery() }
+function pickCandidate(u) { picked.value = u; candidates.value = []; runQuery() }
 function copyUid() {
   if (!picked.value) return
   navigator.clipboard?.writeText(picked.value.userid).then(() => toast.success('已复制 userid')).catch(() => {})
@@ -264,6 +203,8 @@ async function refreshStatus() {
   } catch (e) { toast.error(e?.msg || e?.error || '刷新失败') }
   finally { syncing.value = false }
 }
+
+onMounted(loadTemplates)   // 开面板即加载企业全部审批模板
 </script>
 
 <template>
@@ -322,70 +263,35 @@ async function refreshStatus() {
       <button class="quick test" :disabled="testing" @click="testConnection">{{ testing ? '检测中…' : '测试连接' }}</button>
     </div>
 
-    <!-- 可见模板勾选（勾选后再查，避免全表扫描超时；也用于确认"报销"是否可见）-->
-    <div v-if="picked" class="dt-tpls">
+    <!-- 审批模板勾选（企业全部表单，勾选后再查）-->
+    <div class="dt-tpls">
       <div class="tpls-head">
         <span class="tpls-lbl">审批模板</span>
-        <span v-if="tplLoading" class="tpls-info">加载模板中…</span>
+        <span v-if="tplLoading" class="tpls-info">加载企业全部模板中…</span>
         <template v-else>
-          <span class="tpls-info">可见 <b>{{ templates.length }}</b> 个 · 已选 <b>{{ tplSelCount }}</b></span>
-          <button class="tpls-op" @click="tplSelectAll(true)">全选</button>
+          <span class="tpls-info">共 <b>{{ templates.length }}</b> 个 · 已选 <b>{{ tplSelCount }}</b></span>
+          <button class="tpls-op" @click="selectFinance">只选财务类</button>
+          <button class="tpls-op" @click="tplSelectAll(true)">{{ tplFilter ? '选中筛选项' : '全选' }}</button>
           <button class="tpls-op" @click="tplSelectAll(false)">全不选</button>
           <input v-model="tplFilter" class="tpls-filter" placeholder="筛选模板名，如 报销" />
           <span class="grow"></span>
-          <span class="tpls-tip">勾选越少查得越快；缩小时间范围也能提速</span>
+          <button class="tpls-op refresh" :disabled="tplLoading" @click="templates = []; loadTemplates()">↻ 刷新</button>
         </template>
       </div>
       <div v-if="tplErr" class="tpls-err">⚠️ {{ tplErr }}</div>
-      <div v-else-if="!tplLoading" class="tpls-grid">
-        <label v-for="t in tplShown" :key="t.process_code" class="tplitem" :class="{ on: tplSel.has(t.process_code) }">
-          <input type="checkbox" class="cbx" :checked="tplSel.has(t.process_code)" @change="toggleTpl(t.process_code)" />
-          <span class="tplname">{{ t.name || t.process_code }}</span>
-          <span v-if="t.manual" class="tplmanual" title="手动添加，点击移除" @click.prevent="removeManual(t.process_code)">手动 ✕</span>
-        </label>
-        <div v-if="!tplShown.length" class="tpls-empty">
-          无匹配模板{{ tplFilter ? '（换个关键词）' : '' }}。官方接口只返回「可发起」模板，
-          仅「可审批/管理」的费用报销单需在下方手动添加。
-        </div>
-      </div>
-      <!-- 补充模板：官方接口只返回"可发起"模板，报销单等"仅可审批/管理"的需在此补入 -->
-      <div v-if="!tplLoading" class="tpls-add">
-        <span class="add-lbl">缺模板（如报销）？</span>
-        <button class="add-btn ghost" :class="{ on: importOpen }" @click="importOpen = !importOpen">
-          从员工导入 ▾
-        </button>
-        <span class="add-hint">选一个会「发起」该审批的员工，从他的模板里勾选加入（无需 processCode）</span>
-      </div>
-
-      <!-- 从员工导入模板 -->
-      <div v-if="importOpen && !tplLoading" class="tpls-import">
-        <div class="imp-row">
-          <div class="seg sm">
-            <button :class="{ on: importMode === 'name' }" @click="importMode = 'name'">姓名</button>
-            <button :class="{ on: importMode === 'mobile' }" @click="importMode = 'mobile'">手机号</button>
-          </div>
-          <input v-model="importInput" class="add-inp code" :placeholder="importMode === 'mobile' ? '会发起报销的员工手机号' : '会发起报销的员工姓名'" @keyup.enter="importResolve" />
-          <button class="add-btn" :disabled="importResolving" @click="importResolve">{{ importResolving ? '查找中…' : '查找' }}</button>
-          <span v-if="importUser" class="imp-user">✓ {{ importUser.name }}</span>
-        </div>
-        <div v-if="importCands.length" class="cands">
-          <span class="cands-lbl">多个同名，请选择：</span>
-          <button v-for="u in importCands" :key="u.userid" class="cand" @click="importPickCand(u)">{{ u.name }}</button>
-        </div>
-        <div v-if="importLoading" class="imp-tip">加载该员工可发起模板中…</div>
-        <template v-else-if="importUser">
-          <div class="imp-bar">
-            <span class="imp-tip">该员工可发起 {{ importTpls.length }} 个模板，点「＋」加入：</span>
-            <input v-model="importFilter" class="tpls-filter" placeholder="筛选，如 报销" />
-          </div>
-          <div class="imp-grid">
-            <div v-for="t in importShown" :key="t.process_code" class="impitem" :class="{ dim: isInCatalog(t.process_code) }">
+      <div v-else-if="!tplLoading" class="tpls-scroll">
+        <div v-for="g in tplGroups" :key="g.dir" class="tpls-group">
+          <div class="grp-h">{{ g.dir }}<span class="grp-n">{{ g.items.length }}</span></div>
+          <div class="tpls-grid">
+            <label v-for="t in g.items" :key="t.process_code" class="tplitem" :class="{ on: tplSel.has(t.process_code) }">
+              <input type="checkbox" class="cbx" :checked="tplSel.has(t.process_code)" @change="toggleTpl(t.process_code)" />
               <span class="tplname">{{ t.name || t.process_code }}</span>
-              <button class="imp-add" :disabled="isInCatalog(t.process_code)" @click="addImported(t)">{{ isInCatalog(t.process_code) ? '已加' : '＋' }}</button>
-            </div>
-            <div v-if="!importShown.length" class="imp-tip">无匹配模板</div>
+            </label>
           </div>
-        </template>
+        </div>
+        <div v-if="!tplShown.length" class="tpls-empty">
+          {{ tplFilter ? '无匹配模板，换个关键词' : '未获取到审批模板，点右上「刷新」重试，或确认应用已开通「工作流模板读」权限、可用范围为全部员工' }}
+        </div>
       </div>
     </div>
 
@@ -557,37 +463,18 @@ async function refreshStatus() {
 .tpls-op { border: 1px solid var(--border, #eadfd2); background: var(--panel, #fff); border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; color: var(--text, #4a3322); font-family: inherit; }
 .tpls-op:hover { border-color: var(--primary, #1565c0); color: var(--primary, #1565c0); }
 .tpls-filter { border: 1px solid var(--border, #eadfd2); border-radius: 6px; padding: 3px 9px; font-size: 12.5px; width: 150px; font-family: inherit; background: var(--panel, #fff); color: inherit; }
-.tpls-tip { font-size: 11.5px; color: var(--muted, #9b8070); }
+.tpls-op.refresh { color: var(--muted, #9b8070); }
 .tpls-err { font-size: 12.5px; color: var(--danger, #d64545); }
-.tpls-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 12px; max-height: 168px; overflow-y: auto; }
+.tpls-scroll { max-height: 210px; overflow-y: auto; }
+.tpls-group + .tpls-group { margin-top: 8px; }
+.grp-h { font-size: 11.5px; font-weight: 700; color: var(--muted, #9b8070); margin: 4px 0 4px; display: flex; align-items: center; gap: 6px; }
+.grp-n { background: var(--chip-bg, #f0e9e0); color: var(--text, #6a5641); border-radius: 8px; padding: 0 6px; font-size: 10.5px; font-weight: 600; }
+.tpls-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 4px 12px; }
 .tplitem { display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px; color: var(--text, #4a3322); border: 1px solid transparent; }
 .tplitem:hover { background: var(--panel, #fff); }
 .tplitem.on { background: var(--primary-weak, #e8f1fb); border-color: var(--primary-border, #c3ddf5); }
 .tplname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tplmanual { flex: none; font-size: 10.5px; color: var(--danger, #d64545); background: var(--danger-weak, #fdeaea); padding: 0 5px; border-radius: 8px; cursor: pointer; }
-.tpls-empty { grid-column: 1 / -1; font-size: 12.5px; color: var(--muted, #9b8070); padding: 6px 2px; line-height: 1.6; }
-.tpls-add { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border, #eadfd2); }
-.add-lbl { font-size: 12.5px; font-weight: 650; color: var(--text, #4a3322); }
-.add-hint { font-size: 11.5px; color: var(--muted, #9b8070); }
-.add-inp { border: 1px solid var(--border, #eadfd2); border-radius: 6px; padding: 4px 9px; font-size: 12.5px; font-family: inherit; background: var(--panel, #fff); color: inherit; }
-.add-inp.code { width: 240px; }
-.add-btn { border: none; background: var(--primary, #1565c0); color: #fff; border-radius: 6px; padding: 5px 14px; font-size: 12.5px; font-weight: 650; cursor: pointer; font-family: inherit; }
-.add-btn:hover { filter: brightness(1.05); }
-.add-btn.ghost { background: var(--panel, #fff); color: var(--primary, #1565c0); border: 1px solid var(--primary, #1565c0); }
-.add-btn.ghost.on { background: var(--primary-weak, #e8f1fb); }
-
-.tpls-import { margin-top: 10px; padding: 12px; border: 1px dashed var(--primary-border, #c3ddf5); border-radius: 8px; background: var(--panel, #fff); }
-.imp-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.seg.sm button { padding: 4px 10px; font-size: 12px; }
-.imp-user { font-size: 12.5px; color: var(--ok, #2e9e6b); font-weight: 650; }
-.imp-bar { display: flex; align-items: center; gap: 10px; margin: 10px 0 6px; flex-wrap: wrap; }
-.imp-tip { font-size: 12px; color: var(--muted, #9b8070); }
-.imp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px 10px; max-height: 200px; overflow-y: auto; }
-.impitem { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid var(--border, #eadfd2); border-radius: 6px; font-size: 12.5px; }
-.impitem.dim { opacity: .5; }
-.impitem .tplname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.imp-add { flex: none; width: 26px; height: 22px; border: none; border-radius: 5px; background: var(--primary, #1565c0); color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; }
-.imp-add:disabled { background: var(--border, #eadfd2); color: var(--muted, #9b8070); cursor: default; }
+.tpls-empty { font-size: 12.5px; color: var(--muted, #9b8070); padding: 10px 2px; line-height: 1.6; }
 
 .dt-tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border, #eadfd2); }
 .dt-tab { border: none; background: none; padding: 11px 16px; font-size: 14px; font-weight: 650; color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; border-bottom: 2.5px solid transparent; margin-bottom: -1px; }

@@ -137,13 +137,31 @@ def instance_to_fields(detail, name_resolver=None):
     }
 
 
+# 新版 operationRecords：处理动作类型与结果
+_ACTED_TYPES = {'EXECUTE_TASK_NORMAL', 'EXECUTE_TASK_AGENT',
+                'APPEND_TASK_BEFORE', 'APPEND_TASK_AFTER', 'REDIRECT_TASK'}
+_ACTED_RESULTS = {'AGREE', 'REFUSE'}
+
+
 def classify(detail, userid):
-    """该 userid 在这条审批里的角色：todo(待他处理) / done(已处理) / originated(他发起)。"""
+    """该 userid 在这条审批里的角色：todo(待他处理) / done(已处理) / originated(他发起)。
+    优先用 tasks（旧结构/若返回）；新版无 tasks 时用 operationRecords + approverUserIds 推断。"""
     tasks = [t for t in (detail.get('tasks') or []) if t.get('userid') == userid]
-    if any((t.get('task_status') or '').upper() in ('RUNNING', 'NEW', 'PENDING') for t in tasks):
-        return 'todo'
-    if tasks:   # 有任务且都非进行中 = 已处理
+    if tasks:
+        if any((t.get('task_status') or '').upper() in ('RUNNING', 'NEW', 'PENDING') for t in tasks):
+            return 'todo'
+        return 'done'   # 有任务且都非进行中 = 已处理
+    # 新版：他有过"审批动作(同意/拒绝)"记录 → 已处理
+    acted = any(o.get('userid') == userid
+                and (o.get('type') or '').upper() in _ACTED_TYPES
+                and (o.get('result') or '').upper() in _ACTED_RESULTS
+                for o in (detail.get('operation_records') or []))
+    if acted:
         return 'done'
+    # 他在当前审批人名单里且实例仍在审批中 → 待处理
+    if userid in (detail.get('approver_userids') or []) and \
+            (detail.get('status') or '').upper() == 'RUNNING':
+        return 'todo'
     if detail.get('originator_userid') == userid:
         return 'originated'
     return 'other'
@@ -172,6 +190,20 @@ def _ms(date_str, end=False):
     t = datetime.time(23, 59, 59) if end else datetime.time(0, 0, 0)
     dt = timezone.make_aware(datetime.datetime.combine(d, t))
     return int(dt.timestamp() * 1000)
+
+
+_MAX_WINDOW_MS = 110 * 24 * 3600 * 1000   # 钉钉限制单次≤120天，留余量按110天分段
+
+
+def _time_segments(start_ms, end_ms):
+    """把 [start,end] 切成 ≤110 天的窗口（钉钉 instanceIds 单次≤120 天限制）。"""
+    segs, s = [], int(start_ms)
+    end_ms = int(end_ms)
+    while s < end_ms:
+        e = min(s + _MAX_WINDOW_MS, end_ms)
+        segs.append((s, e))
+        s = e
+    return segs or [(int(start_ms), end_ms)]
 
 
 @csrf_exempt
@@ -240,44 +272,41 @@ def dingtalk_resolve_user(request):
     return err('请提供手机号或姓名')
 
 
-def _gather_templates(userid):
-    """并集：手动配置(DINGTALK_PROCESS_CODES/管理员) ∪ 被查人可见（新版 workflow 接口）。
+def _gather_templates():
+    """并集：手动配置(DINGTALK_PROCESS_CODES/管理员) ∪ 企业下全部审批模板（userId 省略）。
+    用「企业全部模板」而非某人可发起模板，才能覆盖审批人不可发起的报销等表单。
     返回 (templates, api_err)；配置项优先保留自定义名称。"""
     templates = dc.list_process_codes()
     seen = {t['process_code'] for t in templates}
     api_err = ''
     try:
-        for t in dc.templates_by_user(userid):
+        for t in dc.all_templates():
             if t['process_code'] not in seen:
                 seen.add(t['process_code'])
                 templates.append(t)
     except DingTalkError as ex:
         api_err = str(ex)
-        logger.warning('templates_by_user(%s) failed: %s', userid, ex)
+        logger.warning('all_templates failed: %s', ex)
     return templates, api_err
 
 
 @csrf_exempt
 @pk_required()
 def dingtalk_templates(request):
-    """POST {userid} → 该员工可见的审批模板列表（供前端勾选后再查，避免全表扫描超时）。
-    这一步很轻（不拉实例），也用来确认「报销」等模板是否在可见范围内。"""
+    """GET/POST → 企业下全部审批模板（含分组名 dir_name），供前端勾选后再查。
+    这一步很轻（不拉实例），也用来确认「报销」等模板是否在授权范围内。"""
     denied = _page_denied(request)
     if denied:
         return denied
-    body = parse_body(request)
-    userid = (body.get('userid') or '').strip()
-    if not userid:
-        return err('缺少 userid')
     try:
-        templates, api_err = _gather_templates(userid)
+        templates, api_err = _gather_templates()
     except DingTalkError as ex:
         return err(str(ex), 502, 502)
     if not templates:
         if api_err:
-            return err('获取该员工可见审批模板失败：' + api_err
-                       + '（多为应用未开通「审批」相关权限，或「可用范围」未设为全部员工）', 502, 502)
-        return err('该员工名下无可见审批模板，或应用「可用范围」未设为全部员工', 400)
+            return err('获取审批模板失败：' + api_err
+                       + '（多为应用未开通「工作流模板读」权限，或「可用范围」未设为全部员工）', 502, 502)
+        return err('未获取到任何审批模板，请确认应用已开通「工作流模板读」权限且可用范围为全部员工', 400)
     return ok({'templates': templates, 'count': len(templates)})
 
 
@@ -303,7 +332,7 @@ def dingtalk_query(request):
         return err('时间范围无效（YYYY-MM-DD）')
 
     try:
-        templates, tpl_api_err = _gather_templates(userid)
+        templates, tpl_api_err = _gather_templates()
         if picked:   # 前端只勾选了部分模板 → 只查这些（大幅提速、避免超时）
             sel = set(picked)
             have = {t['process_code'] for t in templates}
@@ -312,22 +341,29 @@ def dingtalk_query(request):
         if not templates:
             if tpl_api_err:
                 # 接口报错（多为权限/可见范围）——把钉钉原话透出来，便于对症开权限
-                return err('获取该员工可见审批模板失败：' + tpl_api_err
-                           + '（多为应用未开通「审批」相关权限，或「可用范围」未设为全部员工）', 502, 502)
-            return err('未获取到可查询的审批模板：该员工名下无可见审批模板，'
-                       '或应用「可用范围」未设为全部员工。可在 DINGTALK_PROCESS_CODES 手动配置后重试', 400)
+                return err('获取审批模板失败：' + tpl_api_err
+                           + '（多为应用未开通「工作流模板读」权限，或「可用范围」未设为全部员工）', 502, 502)
+            return err('未获取到可查询的审批模板，请先在上方勾选模板，'
+                       '或确认应用已开通「工作流模板读」权限', 400)
         name_by_code = {t['process_code']: t.get('name', '') for t in templates}
-        # 关键：listids 的 userid_list 过滤的是「发起人」。
-        # - originated（该员工发起）→ 按发起人过滤，精准高效；
-        # - todo/done（该员工作为审批人）→ 不能按发起人过滤（否则只剩自发自审的空集），
-        #   改为拉时间区间内全部实例，再按该员工的审批任务分类。
+        # listids 的 userIds 过滤的是「发起人」，statuses 过滤实例状态：
+        # - originated（他发起）→ 按发起人过滤，精准高效；
+        # - todo（待他审批）→ 只可能在 RUNNING 实例，按状态收窄再按审批人名单分类；
+        # - done（他已审批）→ 状态不定（他处理完实例可能仍在流转），全量拉后按操作记录分类。
         originator = userid if status == 'originated' else None
+        status_filter = ['RUNNING'] if status == 'todo' else None
 
-        # ① 并发拉各模板的实例 ID（几十个模板串行会超时；单模板失败不拖累整体）
+        # ① 并发拉各模板的实例 ID（按≤110天分段，规避钉钉120天限制；单模板失败不拖累整体）
         def _ids_for(t):
             try:
-                return [(iid, t['process_code']) for iid in
-                        dc.list_instance_ids(t['process_code'], start_ms, end_ms, originator)]
+                seen, out = set(), []   # 跨分段去重：相邻窗口边界实例可能被两段各返回一次
+                for s_ms, e_ms in _time_segments(start_ms, end_ms):
+                    for iid in dc.list_instance_ids(
+                            t['process_code'], s_ms, e_ms, originator, status_filter):
+                        if iid not in seen:
+                            seen.add(iid)
+                            out.append((iid, t['process_code']))
+                return out
             except DingTalkError as ex:
                 logger.warning('listids %s failed: %s', t.get('process_code'), ex)
                 return []

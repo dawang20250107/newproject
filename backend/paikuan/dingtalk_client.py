@@ -193,14 +193,16 @@ def list_process_codes():
         return []
 
 
-def templates_by_user(userid):
-    """列出某 userid 可见的审批模板 [{process_code,name}]（新版 workflow 接口，分页）。
-    新版覆盖更全，报销等模板旧接口常缺、这里能列到。分页兼容 nextToken / offset 两种。"""
-    # nextToken 必填且不能为空：首页传 '0'，后续页用上一页返回的 nextToken。
+def templates_by_user(userid=None):
+    """列出审批模板 [{process_code,name,dir_name}]（新版 workflow 接口，nextToken 分页）。
+    userId 省略（userid=None）→ 返回「企业下全部表单」（覆盖报销等审批人不可发起的模板）；
+    传入 → 该用户「可发起」范围。首页 nextToken 传 '0'。"""
     out, seen, next_token = [], set(), '0'
-    for _ in range(50):
-        data = _new('GET', '/v1.0/workflow/processes/userVisibilities/templates',
-                    params={'userId': userid, 'nextToken': next_token, 'maxResults': 100})
+    for _ in range(200):   # 分页兜底（全企业模板可能较多）
+        params = {'nextToken': next_token, 'maxResults': 100}
+        if userid:
+            params['userId'] = userid
+        data = _new('GET', '/v1.0/workflow/processes/userVisibilities/templates', params=params)
         res = data.get('result')
         # 兼容 result 为 dict（含分页）或直接为模板数组两种返回形态
         if isinstance(res, list):
@@ -212,24 +214,32 @@ def templates_by_user(userid):
             code = p.get('processCode') or p.get('process_code')
             if code and code not in seen:
                 seen.add(code)
-                out.append({'process_code': code, 'name': p.get('name', '')})
+                out.append({'process_code': code, 'name': p.get('name', ''),
+                            'dir_name': p.get('dirName') or p.get('dir_name') or ''})
         next_token = res.get('nextToken')
         if not next_token:
             break
     return out
 
 
+def all_templates():
+    """企业下全部审批模板（userId 省略）。报销等模板务必用此拿全。"""
+    return templates_by_user(None)
+
+
 # ── 审批实例（新版 workflow 接口）──────────────────────────────────────────────
-def list_instance_ids(process_code, start_ms, end_ms, userid=None):
-    """按模板+时间区间(+发起人)拉审批实例 ID（新版 instanceIds/query，nextToken 翻页）。
-    userid 传入时按「发起人」过滤（userIds，最多 10 个）。"""
-    # nextToken 必填：首页传 0，后续页用返回的 nextToken（Long 游标）。
-    ids, next_token = [], 0
-    for _ in range(500):   # 上限兜底
+def list_instance_ids(process_code, start_ms, end_ms, userid=None, statuses=None):
+    """按模板+时间区间(+发起人/+状态)拉审批实例 ID（新版 instanceIds/query，nextToken 翻页）。
+    userid：按「发起人」过滤（userIds，最多 10 个）。statuses：RUNNING/TERMINATED/COMPLETED 过滤。
+    注意：钉钉限制单次时间跨度≤120 天，超范围需由上层分段调用。"""
+    ids, next_token = [], 0   # nextToken 必填：首页 0（Long 游标）
+    for _ in range(2000):     # 上限兜底
         body = {'processCode': process_code, 'startTime': int(start_ms),
                 'endTime': int(end_ms), 'nextToken': next_token, 'maxResults': 20}
         if userid:
             body['userIds'] = [userid]
+        if statuses:
+            body['statuses'] = list(statuses)
         data = _new('POST', '/v1.0/workflow/processes/instanceIds/query', json_body=body)
         res = data.get('result') or {}
         ids.extend(res.get('list') or [])
@@ -240,7 +250,8 @@ def list_instance_ids(process_code, start_ms, end_ms, userid=None):
 
 
 def _norm_instance(r, instance_id):
-    """新版实例详情（camelCase）归一为下游映射用的 snake_case 结构。"""
+    """新版实例详情（camelCase）归一为下游映射用的 snake_case 结构。
+    新版用 operationRecords + approverUserIds 表达处理轨迹（无 tasks 数组），一并归一。"""
     return {
         '_instance_id': instance_id,
         'business_id': r.get('businessId') or '',
@@ -250,11 +261,20 @@ def _norm_instance(r, instance_id):
         'status': r.get('status') or '',
         'result': r.get('result') or '',
         'create_time': r.get('createTime') or '',
+        'finish_time': r.get('finishTime') or '',
+        'approver_userids': r.get('approverUserIds') or [],
+        'cc_userids': r.get('ccUserIds') or [],
         'form_component_values': [
             {'name': c.get('name', ''), 'value': c.get('value', ''),
              'component_type': c.get('componentType', '')}
             for c in (r.get('formComponentValues') or []) if isinstance(c, dict)
         ],
+        'operation_records': [
+            {'userid': o.get('userId', ''), 'type': (o.get('type') or ''),
+             'result': (o.get('result') or ''), 'date': o.get('date', '')}
+            for o in (r.get('operationRecords') or []) if isinstance(o, dict)
+        ],
+        # 新版通常无 tasks；若返回则一并归一（向后兼容）
         'tasks': [
             {'userid': t.get('userId', ''), 'task_status': t.get('status', ''),
              'result': t.get('result', '')}

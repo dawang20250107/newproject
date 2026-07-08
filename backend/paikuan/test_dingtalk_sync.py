@@ -134,11 +134,53 @@ class ClientV1Tests(TestCase):
     @mock.patch('paikuan.dingtalk_client._new')
     def test_templates_by_user_parses_processlist(self, m_new):
         m_new.return_value = {'result': {'processList': [
-            {'processCode': 'PC_A', 'name': '差旅费报销单'},
+            {'processCode': 'PC_A', 'name': '差旅费报销单', 'dirName': '财务审批'},
             {'processCode': 'PC_B', 'name': '付款审批'}], 'nextToken': None}}
         tpls = client.templates_by_user('U-guo')
         self.assertEqual([t['process_code'] for t in tpls], ['PC_A', 'PC_B'])
         self.assertEqual(tpls[0]['name'], '差旅费报销单')
+        self.assertEqual(tpls[0]['dir_name'], '财务审批')
+        self.assertEqual(m_new.call_args.kwargs['params']['userId'], 'U-guo')
+
+    @mock.patch('paikuan.dingtalk_client._new')
+    def test_all_templates_omits_userid(self, m_new):
+        # userId 省略 → 钉钉返回企业下全部表单（覆盖报销等审批人不可发起的模板）
+        m_new.return_value = {'result': {'processList': [
+            {'processCode': 'PC_报销', 'name': '差旅费报销单'}], 'nextToken': None}}
+        tpls = client.all_templates()
+        self.assertEqual(tpls[0]['process_code'], 'PC_报销')
+        self.assertNotIn('userId', m_new.call_args.kwargs['params'])
+
+    @mock.patch('paikuan.dingtalk_client._new')
+    def test_list_instance_ids_passes_statuses(self, m_new):
+        m_new.return_value = {'result': {'list': ['A'], 'nextToken': None}}
+        client.list_instance_ids('PC1', 1000, 2000, statuses=['RUNNING'])
+        self.assertEqual(m_new.call_args.kwargs['json_body']['statuses'], ['RUNNING'])
+
+    @mock.patch('paikuan.dingtalk_client._new')
+    def test_norm_instance_maps_operation_records(self, m_new):
+        # 新版无 tasks，用 operationRecords + approverUserIds 表达处理轨迹
+        m_new.return_value = {'result': {
+            'title': '报销', 'status': 'RUNNING', 'originatorUserId': 'U-emp',
+            'approverUserIds': ['U-fin', 'U-mgr'],
+            'operationRecords': [
+                {'userId': 'U-mgr', 'type': 'EXECUTE_TASK_NORMAL', 'result': 'AGREE'}],
+        }}
+        d = client.get_instance('INST-X')
+        self.assertEqual(d['approver_userids'], ['U-fin', 'U-mgr'])
+        self.assertEqual(d['operation_records'][0]['userid'], 'U-mgr')
+        # U-mgr 已同意 → done；U-fin 在审批人名单且实例 RUNNING → todo
+        self.assertEqual(sync.classify(d, 'U-mgr'), 'done')
+        self.assertEqual(sync.classify(d, 'U-fin'), 'todo')
+        self.assertEqual(sync.classify(d, 'U-emp'), 'originated')
+
+    def test_time_segments_splits_over_120_days(self):
+        day = 24 * 3600 * 1000
+        segs = sync._time_segments(0, 200 * day)
+        self.assertEqual(len(segs), 2)                       # 200天 → 110 + 90
+        self.assertEqual(segs[0], (0, 110 * day))
+        self.assertEqual(segs[-1][1], 200 * day)             # 末段覆盖到结束
+        self.assertEqual(len(sync._time_segments(0, 30 * day)), 1)
 
 
 class SyncEndpointTests(TestCase):
@@ -185,11 +227,11 @@ class SyncEndpointTests(TestCase):
         rec.refresh_from_db()
         self.assertEqual(rec.status, 'approved')
 
-    @mock.patch('paikuan.dingtalk_client.templates_by_user', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.all_templates', return_value=[])
     @mock.patch('paikuan.dingtalk_client.list_process_codes')
     @mock.patch('paikuan.dingtalk_client.list_instance_ids')
     @mock.patch('paikuan.dingtalk_client.get_instance')
-    def test_query_filters_by_task_and_marks_synced(self, m_get, m_list, m_codes, m_by_user):
+    def test_query_filters_by_task_and_marks_synced(self, m_get, m_list, m_codes, m_all):
         m_codes.return_value = [{'process_code': 'PC1', 'name': '付款审批'}]
         m_list.return_value = ['INST-2']
         m_get.return_value = DETAIL_PAY
@@ -211,63 +253,65 @@ class SyncEndpointTests(TestCase):
                         {'userid': 'U-me', 'start': '2026-06-01', 'end': '2026-06-30', 'status': 'done'})
         self.assertEqual(r2.json()['data']['count'], 0)
 
-    @mock.patch('paikuan.dingtalk_client.templates_by_user', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.all_templates', return_value=[])
     @mock.patch('paikuan.dingtalk_client.list_process_codes',
                 return_value=[{'process_code': 'PC1', 'name': '付款审批'}])
     @mock.patch('paikuan.dingtalk_client.list_instance_ids', return_value=[])
     @mock.patch('paikuan.dingtalk_client.get_instance')
-    def test_query_originator_filter_only_for_originated(self, m_get, m_list, m_codes, m_by_user):
-        # todo/done：审批人口径，不能按发起人过滤（listids userid_list=发起人）
+    def test_query_originator_filter_only_for_originated(self, m_get, m_list, m_codes, m_all):
+        # todo：审批人口径，不能按发起人过滤（listids userIds=发起人）
         self._post('/api/pk/dingtalk/query',
                    {'userid': 'U-me', 'start': '2026-06-01', 'end': '2026-06-30', 'status': 'todo'})
         self.assertIsNone(m_list.call_args.args[3])          # userid 不下传
+        self.assertEqual(m_list.call_args.args[4], ['RUNNING'])  # todo 收窄到 RUNNING
         # originated：按发起人精准过滤
         self._post('/api/pk/dingtalk/query',
                    {'userid': 'U-me', 'start': '2026-06-01', 'end': '2026-06-30', 'status': 'originated'})
         self.assertEqual(m_list.call_args.args[3], 'U-me')
+        self.assertIsNone(m_list.call_args.args[4])          # originated 不限状态
 
-    @mock.patch('paikuan.dingtalk_client.templates_by_user')
+    @mock.patch('paikuan.dingtalk_client.all_templates')
     @mock.patch('paikuan.dingtalk_client.list_process_codes', return_value=[])
     @mock.patch('paikuan.dingtalk_client.list_instance_ids')
     @mock.patch('paikuan.dingtalk_client.get_instance')
-    def test_query_falls_back_to_person_templates(self, m_get, m_list, m_codes, m_by_user):
-        # 全局模板空 → 自动改用被查人自己可见的模板（基础版无需配管理员）
-        m_by_user.return_value = [{'process_code': 'PCX', 'name': '差旅费报销单'}]
+    def test_query_uses_all_company_templates(self, m_get, m_list, m_codes, m_all):
+        # 配置为空 → 用「企业全部模板」（覆盖报销等审批人不可发起的表单）
+        m_all.return_value = [{'process_code': 'PCX', 'name': '差旅费报销单'}]
         m_list.return_value = ['INST-1']
         m_get.return_value = DETAIL_REIMB
         r = self._post('/api/pk/dingtalk/query',
                        {'userid': 'U-guoyong', 'start': '2026-03-01', 'end': '2026-03-31',
                         'status': 'originated'})   # 郭勇是发起人
         self.assertEqual(r.status_code, 200, r.content)
-        m_by_user.assert_called_once_with('U-guoyong')
+        m_all.assert_called_once_with()
         d = r.json()['data']
         self.assertEqual(d['count'], 1)
         self.assertEqual(d['items'][0]['template'], '差旅费报销单')
 
-    @mock.patch('paikuan.dingtalk_client.templates_by_user', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.all_templates', return_value=[])
     @mock.patch('paikuan.dingtalk_client.list_process_codes', return_value=[])
-    def test_query_no_templates_returns_error(self, m_codes, m_by_user):
+    def test_query_no_templates_returns_error(self, m_codes, m_all):
         r = self._post('/api/pk/dingtalk/query',
                        {'userid': 'U-x', 'start': '2026-03-01', 'end': '2026-03-31', 'status': 'todo'})
         self.assertEqual(r.status_code, 400, r.content)
 
-    @mock.patch('paikuan.dingtalk_client.templates_by_user',
-                return_value=[{'process_code': 'PC_报销', 'name': '差旅费报销单'},
+    @mock.patch('paikuan.dingtalk_client.all_templates',
+                return_value=[{'process_code': 'PC_报销', 'name': '差旅费报销单', 'dir_name': '财务审批'},
                               {'process_code': 'PC_考勤', 'name': '考勤'}])
     @mock.patch('paikuan.dingtalk_client.list_process_codes', return_value=[])
-    def test_templates_endpoint_returns_union(self, m_codes, m_by_user):
-        r = self._post('/api/pk/dingtalk/templates', {'userid': 'U-guo'})
+    def test_templates_endpoint_returns_all_company(self, m_codes, m_all):
+        r = self._post('/api/pk/dingtalk/templates', {})   # 无需 userid
         d = r.json()['data']
         self.assertEqual(d['count'], 2)
         self.assertIn('PC_报销', [t['process_code'] for t in d['templates']])
 
-    @mock.patch('paikuan.dingtalk_client.templates_by_user',
+    @mock.patch('paikuan.dingtalk_client.all_templates',
                 return_value=[{'process_code': 'PC_报销', 'name': '报销'},
                               {'process_code': 'PC_考勤', 'name': '考勤'}])
     @mock.patch('paikuan.dingtalk_client.list_process_codes', return_value=[])
     @mock.patch('paikuan.dingtalk_client.list_instance_ids', return_value=[])
     @mock.patch('paikuan.dingtalk_client.get_instance')
-    def test_query_respects_process_codes_filter(self, m_get, m_list, m_codes, m_by_user):
+    def test_query_respects_process_codes_filter(self, m_get, m_list, m_codes, m_all):
         # 只勾选报销 → 只对该模板拉实例，考勤模板不被查询
         self._post('/api/pk/dingtalk/query',
                    {'userid': 'U-guo', 'start': '2026-03-01', 'end': '2026-03-31',
