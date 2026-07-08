@@ -1827,7 +1827,7 @@ const ctxMatrixItems = computed(() => {
 /* knowledge base */
 .cfa-kb-add { background: rgba(255,255,255,0.7); border: 1px solid rgba(0,0,0,0.08); border-radius: 12px; padding: 10px; margin-bottom: 14px; }
 .cfa-kb-add-row { display: flex; gap: 6px; margin-top: 8px; }
-.cfa-kb-sel { height: 34px; border: 1px solid rgba(0,0,0,0.12); border-radius: 9px; background: var(--row-bg); font-size: 12px; color: var(--text); padding: 0 8px; }
+.cfa-kb-sel { height: 34px; border: 1px solid rgba(0,0,0,0.12); border-radius: 9px; background-color: var(--row-bg); font-size: 12px; color: var(--text); padding: 0 28px 0 8px; }
 .cfa-kb-add-row .cfa-send { flex: 1; }
 .cfa-kb-empty { text-align: center; color: var(--muted); font-size: 12.5px; line-height: 1.7; padding: 24px 8px; }
 .cfa-kb-item { background: rgba(255,255,255,0.85); border: 1px solid rgba(0,0,0,0.07); border-radius: 11px; padding: 10px 12px; margin-bottom: 10px; }

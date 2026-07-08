@@ -253,9 +253,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
 <style scoped>
 .fc-panel { padding: 4px 0; }
-.fc-filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-.fc-filters select { padding: 6px 10px; border: 1px solid rgba(180,140,110,.28); border-radius: 8px; background: var(--row-bg); color: #5f4d3d; font-size: 13px; }
-.fc-hint { font-size: 11.5px; color: #9b8070; }
+.fc-filters { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-bottom: 16px; padding: 11px 14px; border-radius: 12px; background: var(--glass, rgba(255,254,251,.6)); border: 1px solid var(--glass-border, rgba(180,140,110,.2)); }
+.fc-filters select { padding: 7px 30px 7px 12px; border: 1px solid rgba(180,140,110,.32); border-radius: 9px; background-color: var(--card-bg, #fff); color: #5f4d3d; font-size: 13px; font-weight: 600; width: auto; transition: border-color .14s, box-shadow .14s; }
+.fc-filters select:hover { border-color: var(--primary); }
+.fc-hint { font-size: 11.5px; color: #9b8070; margin-left: auto; }
 
 .fc-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
 @media (max-width: 820px) { .fc-kpis { grid-template-columns: repeat(2, 1fr); } }

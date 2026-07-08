@@ -313,6 +313,21 @@ input:focus, textarea:focus, select:focus {
   background: #fffcfa;
   box-shadow: 0 0 0 3px rgba(201,99,66,0.12), 0 1px 6px rgba(100,60,30,0.07);
 }
+/* 原生下拉的默认三角是「平庸框」的主要观感来源：统一换成克制的自定义 caret，
+   并去掉浏览器默认样式。设置了自有 background 简写的组件会覆盖此图（保留其外观）。 */
+select {
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  padding-right: 34px; cursor: pointer;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239b8070' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>");
+  background-repeat: no-repeat; background-position: right 11px center;
+}
+select:hover { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }
+select:focus { background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23c96342' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>"); background-repeat: no-repeat; background-position: right 11px center; }
+/* 日期输入的原生指示图标在浅色主题下对比弱、显土：轻微提亮 */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="month"]::-webkit-calendar-picker-indicator { opacity: .55; cursor: pointer; transition: opacity .15s; }
+input[type="date"]:hover::-webkit-calendar-picker-indicator,
+input[type="month"]:hover::-webkit-calendar-picker-indicator { opacity: .9; }
 input:focus-visible, textarea:focus-visible, select:focus-visible {
   outline: none;
 }
@@ -624,7 +639,7 @@ tr.overdue-row td:first-child { border-left: 3px solid var(--c-danger); }
   width: auto; min-width: 0;
   padding: 5px 28px 5px 10px; height: 32px;
   font-size: 12.5px; border-radius: var(--radius-sm);
-  background: rgba(255,254,251,0.92);
+  background-color: rgba(255,254,251,0.92);   /* 用 -color 保留全局自定义 caret */
 }
 .ctrl-sep { width: 1px; height: 20px; background: var(--border); flex-shrink: 0; }
 .search-input {

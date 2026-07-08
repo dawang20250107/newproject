@@ -234,7 +234,7 @@ onMounted(load)
 .ap-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .ap-title { font-size: 16px; font-weight: 700; color: #4a3728; }
 .ap-controls { display: flex; gap: 8px; align-items: center; }
-.ap-sel { padding: 4px 8px; border: 1px solid #d4b896; border-radius: 6px; background: #faf8f5; font-size: 13px; color: #4a3728; }
+.ap-sel { padding: 4px 28px 4px 8px; border: 1px solid #d4b896; border-radius: 6px; background-color: #faf8f5; font-size: 13px; color: #4a3728; }
 .ap-btn-add { padding: 5px 14px; background: var(--c-success); color: #fff; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; }
 .ap-btn-add:hover { background: #1b5e20; }
 .ap-btn-cancel { padding: 5px 14px; background: #e8e0d8; color: #4a3728; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; }

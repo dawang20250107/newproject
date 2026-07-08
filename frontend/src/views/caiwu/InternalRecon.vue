@@ -581,7 +581,7 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
 .ir-tab.active { background: var(--card, #fff); color: var(--text); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1); }
 
 .ir-body { padding: 16px 18px; }
-.ir-sel { padding: 5px 9px; font-size: 12.5px; border: 1px solid var(--border); border-radius: 8px; background: var(--card, #fff); color: var(--text); cursor: pointer; }
+.ir-sel { padding: 5px 28px 5px 9px; font-size: 12.5px; border: 1px solid var(--border); border-radius: 8px; background-color: var(--card, #fff); color: var(--text); cursor: pointer; }
 
 /* ══ 矩阵 ═════════════════════════════════════════════════════════════ */
 .mx-wrap { display: flex; flex-direction: column; gap: 8px; }

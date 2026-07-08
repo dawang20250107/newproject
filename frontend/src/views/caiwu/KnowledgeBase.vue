@@ -238,7 +238,7 @@ onMounted(load)
 .kp-tool-title { font-size: 14px; font-weight: 700; color: var(--text); }
 .kp-tool-sub { font-size: 11.5px; color: var(--muted); margin: 2px 0 10px; }
 .kp-import-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
-.kp-sel { height: 32px; border: 1px solid rgba(0,0,0,0.12); border-radius: 8px; background: var(--row-bg); font-size: 12.5px; color: var(--text); padding: 0 9px; }
+.kp-sel { height: 32px; border: 1px solid rgba(0,0,0,0.12); border-radius: 8px; background-color: var(--row-bg); font-size: 12.5px; color: var(--text); padding: 0 28px 0 9px; }
 .kp-textarea { width: 100%; resize: vertical; border: 1px solid rgba(0,0,0,0.12); border-radius: 9px; padding: 8px 11px; font-size: 13px; font-family: inherit; line-height: 1.5; outline: none; box-sizing: border-box; }
 .kp-textarea:focus { border-color: var(--primary); }
 

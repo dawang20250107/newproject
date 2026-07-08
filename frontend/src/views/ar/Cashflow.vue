@@ -549,12 +549,13 @@ const deptBalanceOption = computed(() => {
 .cfb-div   { width: 1px; height: 24px; background: var(--border); margin: 0 4px; flex-shrink: 0; }
 .cfb-sel, .cfb-date {
   height: 30px; padding: 0 10px; border: 1px solid transparent;
-  background: var(--surface-tint); border-radius: var(--radius-xs);
+  background-color: var(--surface-tint); border-radius: var(--radius-xs);
   font-size: 12.5px; color: var(--text); cursor: pointer; outline: none;
   transition: background .15s, color .15s, border-color .15s, box-shadow .15s;
 }
+.cfb-sel { padding-right: 28px; }   /* 给全局自定义 caret 留位 */
 .cfb-sel:hover, .cfb-sel:focus, .cfb-date:hover, .cfb-date:focus {
-  background: color-mix(in srgb, var(--primary) 9%, transparent);
+  background-color: color-mix(in srgb, var(--primary) 9%, transparent);
   color: var(--primary); border-color: var(--border-strong);
 }
 .cfb-sel:focus, .cfb-date:focus { box-shadow: 0 0 0 3px var(--primary-glow); }
