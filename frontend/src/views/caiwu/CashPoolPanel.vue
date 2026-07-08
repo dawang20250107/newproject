@@ -374,8 +374,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   <div class="pd-row in"><i>＋ 回款</i><b>{{ wan(p.parts.collected) }}</b></div>
                   <div v-if="parseFloat(p.parts.daily_receipts)" class="pd-row in"><i>＋ 日常收款</i><b>{{ wan(p.parts.daily_receipts) }}</b></div>
                   <div class="pd-row in"><i>＋ 预收款</i><b>{{ wan(p.parts.advance_received) }}</b></div>
-                  <div class="pd-row out"><i>− 实付（已扣预付冲抵）</i><b>{{ wan(p.parts.paid) }}</b></div>
+                  <div class="pd-row out"><i>− 实付分期</i><b>{{ wan(p.parts.paid) }}</b></div>
                   <div class="pd-row out"><i>− 预付款</i><b>{{ wan(p.parts.advance_paid) }}</b></div>
+                  <div v-if="parseFloat(p.parts.prepaid_offset)" class="pd-row memo">
+                    <i>（预付核销 {{ wan(p.parts.prepaid_offset) }}）</i><b>非现金·不计</b>
+                  </div>
                   <div v-if="parseFloat(p.parts.transfer_in) || parseFloat(p.parts.transfer_out)" class="pd-row">
                     <i>± 调拨（已生效）</i>
                     <b>+{{ wan(p.parts.transfer_in) }} / −{{ wan(p.parts.transfer_out) }}</b>
@@ -500,7 +503,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   二者口径不同，<b>不应直接相等</b>。单个事业部尤其明显——调拨改变池余额，但不进入现金流分析。
                 </li>
                 <li><b>现金流入</b> ＝ 应收回款 ＋ 日常收款 ＋ 预收款。<b>预收冲抵</b>不计现金流入——现金在预收入账时已计入，冲抵只是账务确认。<b>承兑汇票</b>回款不计入可动用现金（贴现/到期前非货币资金），故不进池子余额，但仍计入「现金流分析」的经营活动现金流入。</li>
-                <li><b>现金流出</b> ＝ 实付分期 ＋ 预付款 − <b>预付冲抵</b>。预付发生时已流出，冲抵时无新现金事件。</li>
+                <li><b>现金流出</b> ＝ 实付分期 ＋ 预付款。<b>预付核销冲抵</b>不计现金流出——预付的现金在预付发生（occur_date）时已作为「预付款」流出，核销只是把这笔预付资产结转到某张应付上，本身无新现金事件（与预收冲抵对称）。实付分期与预付冲抵是计划的两块互不重叠部分（已付＋冲抵＝已覆盖），故实付分期即本期真实付现。</li>
                 <li><b>刚性待付</b> ＝ 付款管理中已审批待付余额（计划金额 − 已付 − 预付冲抵），按计划付款日分 30/60/90 天窗口。</li>
                 <li><b>在途支出</b> ＝ 审批记录中「已批待排 / 审批中」金额 ＋ 待审批调拨出款申请。尚未排款，金额存在不确定性。</li>
                 <li><b>资金预警线</b> ＝ 超管手动设定的最低安全余额；未设定时按「未来 N 天刚性待付」动态推算。余额低于预警线即「告急」。</li>
@@ -822,6 +825,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .pd-row b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .pd-row.in b { color: var(--c-success); }
 .pd-row.out b { color: var(--c-danger); }
+.pd-row.memo { opacity: 0.6; font-size: 10.5px; }
+.pd-row.memo i, .pd-row.memo b { color: var(--text-2); font-weight: 500; }
 .pd-negtip { font-size: 10.5px; color: var(--c-danger); background: var(--c-danger-bg); border-radius: var(--radius-xs); padding: 4px 8px; margin-top: 4px; }
 
 /* 项目维度 */

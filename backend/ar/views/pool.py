@@ -43,9 +43,10 @@ def _pool_actual_flows(dept, start, end):
     paid = _dec(PaymentInstallment.objects.filter(
         payment__department=dept, payment__deleted_at__isnull=True,
         pay_date__gt=start, pay_date__lte=end).aggregate(s=Sum('pay_amount'))['s'])
-    # 预付核销冲抵：现金已在预付发生时流出，核销时不再是现金事件 → 从实付中扣除。
-    # 按实际核销日归期；软删除（回收站）的排款其实付已从 paid 排除，冲抵亦须一并排除，
-    # 否则 -(p-po) 会凭空加回 po 虚增池余额。
+    # 预付核销冲抵（仅作展示备注，不参与现金余额）：预付的现金在 occur_date 已作为
+    # advance_paid 流出；核销只是把这笔预付资产结转到某张应付上，本身没有任何新的
+    # 现金进出——与预收核销对称（预收核销亦不进现金）。实付分期(paid)与预付冲抵是计划
+    # 的两块互不重叠部分（covered=已付+冲抵），故 paid 已是「本期真实付现」，无需再动。
     prepaid_offset = _dec(AdvanceWriteoff.objects.filter(
         payment__department=dept, payment__deleted_at__isnull=True,
         writeoff_date__gt=start, writeoff_date__lte=end).aggregate(s=Sum('amount'))['s'])
@@ -63,9 +64,10 @@ def _pool_actual_flows(dept, start, end):
 
 
 def _pool_balance(dept, cfg, today):
-    """池子当前账面余额 = 期初 + (期初日, 今天] 的净现金流。"""
+    """池子当前账面余额 = 期初 + (期初日, 今天] 的净现金流。
+    预付核销(po)不进现金：预付已在 occur_date 作为 ap 流出，核销无新现金事件。"""
     c, ar_, p, po, ap, ti, to_, daily = _pool_actual_flows(dept, cfg.initial_date, today)
-    return cfg.initial_amount + c + ar_ + daily - (p - po) - ap + ti - to_
+    return cfg.initial_amount + c + ar_ + daily - p - ap + ti - to_
 
 
 def _pool_metrics(dept, cfg, today):
@@ -73,7 +75,8 @@ def _pool_metrics(dept, cfg, today):
     start = cfg.initial_date
 
     c, ar_, p, po, ap, ti, to_, daily = _pool_actual_flows(dept, start, today)
-    balance = (cfg.initial_amount + c + ar_ + daily - (p - po) - ap + ti - to_)
+    # 预付核销(po)不进现金——见 _pool_balance；此处仅把 po 作为展示备注透出。
+    balance = (cfg.initial_amount + c + ar_ + daily - p - ap + ti - to_)
 
     # ── 刚性流出：付款管理已审批待付（remaining>0），按计划日期分窗。
     #    已用预付核销冲抵的部分不再需要现金，故一并扣除（与余额口径对称）。
@@ -155,7 +158,7 @@ def _pool_metrics(dept, cfg, today):
     c9, ar9, p9, po9, ap9, ti9, to9, daily9 = _pool_actual_flows(dept, s90, today)
     span = max(1, (today - s90).days)
     in90 = c9 + ar9 + daily9
-    out90 = (p9 - po9) + ap9
+    out90 = p9 + ap9   # 预付核销(po9)非现金，不计入流出
     runway = float(balance) / (float(out90) / span) if out90 > 0 and balance > 0 else None
     health = {
         'runway_days': round(runway) if runway is not None else None,
@@ -172,7 +175,8 @@ def _pool_metrics(dept, cfg, today):
             'initial': str(cfg.initial_amount),
             'collected': str(c), 'advance_received': str(ar_),
             'daily_receipts': str(daily),
-            'paid': str(p - po), 'advance_paid': str(ap),
+            'paid': str(p), 'advance_paid': str(ap),
+            'prepaid_offset': str(po),   # 展示备注：本期预付核销（非现金，不计入余额）
             'transfer_in': str(ti), 'transfer_out': str(to_),
         },
         'warning': {'amount': str(warn_amount), 'status': status, 'mode': warn_mode},

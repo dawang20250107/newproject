@@ -1636,16 +1636,26 @@ def _parse_payment_fields(data, payment=None):
                       else fields['total_amount'])
     if fields['installments'] is not None:
         paid_check = sum((i['pay_amount'] for i in fields['installments']), Decimal('0'))
-    elif payment is not None:
-        paid_check = payment.total_paid
+        # 实付分期与预付核销冲抵是计划的两块互不重叠部分（covered=已付+冲抵）。提交分期时
+        # 须保证 已付+已冲抵 ≤ 计划——否则二者重叠，会在现金流/资金池里把同一笔钱按
+        # 「实付」和「预付」双重计现金（核销冲抵对应的现金已在预付发生时流出）。
+        existing_offset = ((payment.prepaid_offset_amount or Decimal('0'))
+                           if payment is not None else Decimal('0'))
+        if paid_check + existing_offset > effective_plan:
+            label = '计划调整金额' if fields['plan_adjustment'] is not None else '计划总金额'
+            extra = f' + 预付核销冲抵（{existing_offset}元）' if existing_offset > 0 else ''
+            return None, (
+                f'实付总额（{paid_check}元）{extra}超出{label}（{effective_plan}元），'
+                '请核实金额后再提交'
+            )
     else:
-        paid_check = Decimal('0')
-    if paid_check > effective_plan:
-        label = '计划调整金额' if fields['plan_adjustment'] is not None else '计划总金额'
-        return None, (
-            f'实付总额（{paid_check}元）超出{label}（{effective_plan}元），'
-            '请核实金额后再提交'
-        )
+        paid_check = payment.total_paid if payment is not None else Decimal('0')
+        if paid_check > effective_plan:
+            label = '计划调整金额' if fields['plan_adjustment'] is not None else '计划总金额'
+            return None, (
+                f'实付总额（{paid_check}元）超出{label}（{effective_plan}元），'
+                '请核实金额后再提交'
+            )
 
     if not fields['department']:
         return None, '部门必填'

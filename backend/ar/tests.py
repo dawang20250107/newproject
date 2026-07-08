@@ -183,30 +183,32 @@ class ARPermissionRegressionTests(TestCase):
         d2 = self.client.get('/api/pk/ar/cashflow', params, **self.auth(admin)).json()['data']
         self.assertEqual(d2['totals']['paid'], [0.0])
 
-    def test_cashflow_prepaid_offset_uses_actual_writeoff_date(self):
-        """预付核销的扣减必须归到「实际核销日」所在月，而非首期实付日/计划付款日。
-        回归：核销发生在 7 月，6 月的实付不应被 7 月才发生的核销事件提前扣掉。"""
+    def test_cashflow_prepaid_offset_is_noncash_not_deducted(self):
+        """预付核销为非现金结转：现金流出=实付分期+预付款，绝不从实付里扣冲抵。
+        情形——5 月预付 1000（现金流出）；6 月应付 1300，付现 300 + 预付核销 1000。
+        真实现金：5 月 −1000、6 月 −300。冲抵的 1000 不得把 6 月的 300 真实付现抹掉。"""
         from paikuan.models import Payment, PaymentInstallment
         admin = self.make_user('13900000388', 'finance_director', role='super_admin')
-        # 计划 1000：6 月实付 600（现金），7 月才用预付核销 300
-        p = Payment.objects.create(
-            department=self.dept, project_desc='核销归期', payee='供应商Y',
-            total_amount=Decimal('1000'), planned_date=date(2026, 6, 1))
-        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 6, 10),
-                                          pay_amount=Decimal('600'))
         adv = AdvanceRecord.objects.create(
             direction='预付', project=None, delivery_dept=self.dept, counterparty='供应商Y',
             occur_year=2026, occur_month=5, occur_date=date(2026, 5, 1),
             advance_amount=Decimal('1000'))
+        p = Payment.objects.create(
+            department=self.dept, project_desc='混合结算', payee='供应商Y',
+            total_amount=Decimal('1300'), planned_date=date(2026, 6, 1))
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 6, 10),
+                                          pay_amount=Decimal('300'))
         AdvanceWriteoff.objects.create(advance_record=adv, writeoff_no=1,
-                                       amount=Decimal('300'),
-                                       writeoff_date=date(2026, 7, 20), payment=p)
-        params = {'start_year': 2026, 'start_month': 6, 'end_year': 2026, 'end_month': 7}
+                                       amount=Decimal('1000'),
+                                       writeoff_date=date(2026, 6, 15), payment=p)
+        params = {'start_year': 2026, 'start_month': 5, 'end_year': 2026, 'end_month': 6}
         d = self.client.get('/api/pk/ar/cashflow', params, **self.auth(admin)).json()['data']
-        i6, i7 = d['months'].index('2026-06'), d['months'].index('2026-07')
-        # 6 月实付保持 600（核销尚未发生，不得提前扣减）；核销归 7 月
-        self.assertEqual(d['totals']['paid'][i6], 600.0)
-        self.assertEqual(d['totals']['paid'][i7], 0.0)
+        i5, i6 = d['months'].index('2026-05'), d['months'].index('2026-06')
+        # 5 月：预付款流出 1000；6 月：实付分期 300（不被 1000 冲抵抹掉）
+        self.assertEqual(d['totals']['advance_paid'][i5], 1000.0)
+        self.assertEqual(d['totals']['paid'][i6], 300.0)
+        self.assertEqual(d['totals']['outflow'][i5], 1000.0)
+        self.assertEqual(d['totals']['outflow'][i6], 300.0)
 
     def test_actual_receivable_and_invoice_mismatch(self):
         proj = self.create_project()
@@ -2597,6 +2599,30 @@ class CashPoolTests(TestCase):
         self.assertEqual(Decimal(pool['projection']['d30']), Decimal('10025'))
         self.assertEqual(Decimal(pool['projection']['d30_with_pipeline']), Decimal('9325'))
         self.assertEqual(pool['warning']['status'], 'ok')
+
+    def test_prepaid_writeoff_is_noncash_pool_balance_unchanged(self):
+        """预付核销为非现金结转：核销不得改变资金池余额——现金已在预付发生时流出，
+        核销只是把预付资产结转到应付上。旧口径 -(p-po) 会凭空加回 po 虚增余额。"""
+        from ar.views.pool import _pool_balance
+        from ar.models import CashPoolConfig
+        from paikuan.models import Payment as PkPayment
+        cfg = CashPoolConfig.objects.create(
+            delivery_dept='劳务事业部', initial_date=self.today - self.td(days=60),
+            initial_amount=Decimal('10000'))
+        adv = AdvanceRecord.objects.create(
+            delivery_dept='劳务事业部', direction='预付', occur_year=2026, occur_month=5,
+            occur_date=self.today - self.td(days=30), advance_amount=Decimal('1000'))
+        pay = PkPayment.objects.create(
+            department='劳务事业部', project_desc='核销', payee='供应商',
+            total_amount=Decimal('1000'), planned_date=self.today - self.td(days=5))
+        before = _pool_balance('劳务事业部', cfg, self.today)     # 已含 −1000 预付现金流出
+        self.assertEqual(before, Decimal('9000'))                 # 10000 − 1000 预付
+        AdvanceWriteoff.objects.create(
+            advance_record=adv, writeoff_no=1, amount=Decimal('1000'),
+            writeoff_date=self.today - self.td(days=5), payment=pay)
+        after = _pool_balance('劳务事业部', cfg, self.today)
+        self.assertEqual(after, before)                           # 核销 0 现金，余额不变
+        self.assertEqual(after, Decimal('9000'))
 
     def test_dept_scoping_and_transfer_permission(self):
         self._config()

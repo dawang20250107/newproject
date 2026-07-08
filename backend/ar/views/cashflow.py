@@ -99,21 +99,10 @@ def cashflow(request):
         dept = row['payment__department']
         paid_map[dept][ym] += row['paid'] or Decimal('0')
 
-    # 扣除预付核销冲抵：按「实际核销日」(AdvanceWriteoff.writeoff_date) 逐笔归月。
-    # 现金在预付发生时（occur_date 计入 advance_paid）已流出，核销只是把预付应用到应付，
-    # 本身不是现金事件 → 从实付中扣回防双重计。时间口径必须用实际核销日，
-    # 不能用 planned_date（计划/未来日，非实际）或首期实付日，且与资金池口径一致。
-    po_qs = (AdvanceWriteoff.objects
-             .filter(payment__department__in=depts, payment__deleted_at__isnull=True,
-                     writeoff_date__gte=start_date, writeoff_date__lte=end_date)
-             .annotate(ym=TruncMonth('writeoff_date'))
-             .values('ym', 'payment__department')
-             .annotate(offset=Sum('amount')))
-    for row in po_qs:
-        ym = row['ym'].strftime('%Y-%m')
-        dept = row['payment__department']
-        paid_map[dept][ym] = max(Decimal('0'),
-                                 paid_map[dept].get(ym, Decimal('0')) - (row['offset'] or Decimal('0')))
+    # 预付核销冲抵不从实付中扣：实付分期(installments)记录的是本期「真实付现」，与预付
+    # 冲抵是计划的两块互不重叠部分（covered=已付+冲抵）；预付现金已在 occur_date 作为
+    # advance_paid 计出，核销只是账务结转、无新现金事件。故 paid 保持为实付分期之和，
+    # 与预收核销对称（预收核销由'预收抵扣'非现金来源排除，同样不进现金）。
 
     # 预收(流入) / 预付(流出) by occur_date month — advances move cash on occur_date
     adv_recv_map = defaultdict(lambda: defaultdict(Decimal))

@@ -52,7 +52,7 @@ def cash_flow_window(depts, start, end):
     周期报表「现金流情况」、预算管理「净现金流」共用，确保三处口径一致）：
 
       流入 = 现金回款（剔除非现金来源：预收抵扣/内部往来）+ 预收
-      流出 = 实付（扣除预付核销冲抵）+ 预付
+      流出 = 实付分期 + 预付（预付核销为非现金结转，不计入）
       净额 = 流入 − 流出
 
     返回 Decimal 字典；金额格式化由各调用方按需处理。"""
@@ -65,14 +65,9 @@ def cash_flow_window(depts, start, end):
             .filter(payment__department__in=depts, pay_date__gte=start, pay_date__lte=end,
                     payment__deleted_at__isnull=True)
             .aggregate(x=Sum('pay_amount'))['x'] or Decimal('0'))
-    # 预付核销冲抵：按「实际核销日」(AdvanceWriteoff.writeoff_date) 归期，从实付中扣除。
-    # 现金在预付发生时（occur_date 计入 advance_paid）已流出，核销只是把预付应用到应付、
-    # 非现金事件 → 防双重计。时间口径用实际核销日，不用计划付款日等非实际时间；与资金池一致。
-    offset = (AdvanceWriteoff.objects
-              .filter(payment__department__in=depts, payment__deleted_at__isnull=True,
-                      writeoff_date__gte=start, writeoff_date__lte=end)
-              .aggregate(x=Sum('amount'))['x'] or Decimal('0'))
-    paid = max(Decimal('0'), paid - offset)
+    # 预付核销冲抵不从实付中扣：实付分期即本期真实付现，预付冲抵是计划的另一块
+    # （covered=已付+冲抵，互不重叠）；预付现金已在 occur_date 作为 advance_paid 计出，
+    # 核销无新现金事件。与预收核销对称（预收核销由'预收抵扣'非现金来源排除）。
     adv_recv = adv_paid = Decimal('0')
     for r in (AdvanceRecord.objects
               .filter(delivery_dept__in=depts, occur_date__gte=start, occur_date__lte=end)
