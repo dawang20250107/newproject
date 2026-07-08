@@ -126,7 +126,8 @@ PAYMENT_FIELD_DEFS = [
 FIELD_KEYS = [f['key'] for f in PAYMENT_FIELD_DEFS]
 PAGE_KEYS = [
     'dashboard', 'payments', 'approval_records', 'stats',
-    'ar_projects', 'ar_records', 'ar_advance', 'ar_analytics', 'ar_cashflow', 'ar_budget',
+    'ar_projects', 'ar_records', 'ar_advance', 'ar_daily_receipts', 'ar_analytics',
+    'ar_cashflow', 'ar_budget',
     'caiwu_report', 'caiwu_data', 'caiwu_charts', 'caiwu_metrics', 'caiwu_cockpit',
     'caiwu_internal',
 ]
@@ -281,8 +282,8 @@ def default_job_config(job):
     _non_cw_pages = {k: True for k in PAGE_KEYS if not k.startswith('caiwu_')}
     pages_all = {**_non_cw_pages, 'caiwu_report': False, 'caiwu_data': False, 'caiwu_charts': False,
                  'caiwu_metrics': False, 'caiwu_cockpit': False, 'caiwu_internal': False}
-    ar_pages_all = {k: True for k in ('ar_projects', 'ar_records', 'ar_advance', 'ar_analytics', 'ar_cashflow', 'ar_budget')}
-    ar_pages_cashier = {k: (k in ('ar_records', 'ar_advance', 'ar_cashflow', 'ar_budget')) for k in ar_pages_all}
+    ar_pages_all = {k: True for k in ('ar_projects', 'ar_records', 'ar_advance', 'ar_daily_receipts', 'ar_analytics', 'ar_cashflow', 'ar_budget')}
+    ar_pages_cashier = {k: (k in ('ar_records', 'ar_advance', 'ar_daily_receipts', 'ar_cashflow', 'ar_budget')) for k in ar_pages_all}
     # Reusable caiwu capability blocks
     _cw_full = {
         'caiwu_view': _all_caiwu_fields(True),
@@ -3784,6 +3785,7 @@ def permissions(request):
             {'key': 'ar_projects',       'label': '项目台账'},
             {'key': 'ar_records',        'label': '应收明细'},
             {'key': 'ar_advance',        'label': '预收预付'},
+            {'key': 'ar_daily_receipts', 'label': '日常收款'},
             {'key': 'ar_analytics',      'label': '应收分析'},
             {'key': 'ar_cashflow',       'label': '现金流分析'},
             {'key': 'ar_budget',         'label': '预算管理'},

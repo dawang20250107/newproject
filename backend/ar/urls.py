@@ -125,6 +125,10 @@ urlpatterns = [
     path('pool/transfers/<int:pk>', views.cash_pool_transfer_detail),
     path('pool/transfers/<int:pk>/review', views.cash_pool_transfer_review),
 
+    # 日常收款 (daily receipts)
+    path('daily-receipts', views.daily_receipts),
+    path('daily-receipts/<int:pk>', views.daily_receipt_detail),
+
     # Budget
     path('budget/collection', views.budget_collection),
     path('budget/collection/template', views.budget_collection_template),

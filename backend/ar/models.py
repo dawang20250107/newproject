@@ -1478,6 +1478,58 @@ class AgingBucketConfig(models.Model):
         }
 
 
+class DailyReceipt(models.Model):
+    """日常收款 — 与应收回款/预收并行的一般性现金流入台账（每笔一行）。
+    覆盖不挂在具体应收明细下的收款：本月项目收款（可选项目）、预付退款、其他自定义来源。
+    收款方式为可动用现金（现金/微信/银行转账/自定义），故全额计入【现金流分析】与
+    【资金池】的流入——见 pool.py / cashflow.py 对本表的聚合。"""
+    SOURCE_PROJECT = '项目收款'
+    SOURCE_REFUND = '预付退款'
+    SOURCE_PRESETS = ['项目收款', '预付退款']          # 前端预设，另允许自定义文本
+    METHOD_PRESETS = ['现金', '微信', '银行转账']        # 另允许自定义文本
+
+    receipt_date = models.DateField('收款日期', db_index=True)
+    delivery_dept = models.CharField('事业部', max_length=50, db_index=True)
+    amount = models.DecimalField('收款金额', max_digits=15, decimal_places=2)
+    # 来源：预设「项目收款/预付退款」或任意自定义文本
+    source = models.CharField('收款来源', max_length=40, db_index=True)
+    # 关联项目（仅来源=项目收款时选，供项目现金流归集）
+    project = models.ForeignKey(ARProject, on_delete=models.SET_NULL, null=True, blank=True,
+                                related_name='daily_receipts', db_index=True)
+    # 方式：预设「现金/微信/银行转账」或任意自定义文本
+    method = models.CharField('收款方式', max_length=20, blank=True, default='')
+    account = models.CharField('收款账户', max_length=50, blank=True, default='')
+    payer = models.CharField('付款方', max_length=100, blank=True, default='')
+    notes = models.TextField('摘要/备注', blank=True, default='')
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='daily_receipts')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ar_daily_receipts'
+        ordering = ['-receipt_date', '-id']
+        indexes = [models.Index(fields=['delivery_dept', 'receipt_date'])]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'receipt_date': str(self.receipt_date) if self.receipt_date else None,
+            'delivery_dept': self.delivery_dept,
+            'amount': str(self.amount),
+            'source': self.source,
+            'project_id': self.project_id,
+            'project_name': (self.project.short_name or self.project.customer_name) if self.project else '',
+            'project_short_name': self.project.short_name if self.project else '',
+            'method': self.method,
+            'account': self.account,
+            'payer': self.payer,
+            'notes': self.notes,
+            'created_by_name': self.created_by.name if self.created_by else '',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 import uuid as _uuid
 
 

@@ -33,7 +33,7 @@ from ar.models import (ARProject, ARRecord, ARPayment, ARAdjustment,
                        AdvanceRecord, AdvanceWriteoff, AdvanceInstallment,
                        Supplier, Customer,
                        Contract, ContractParty, ContractProject, ActionItem,
-                       CashPoolConfig, CashPoolTransfer)
+                       CashPoolConfig, CashPoolTransfer, DailyReceipt)
 from paikuan.models import Payment, PaymentInstallment, ApprovalRecord
 
 # ── AR page keys (must match PAGE_KEYS in paikuan/views.py) ───────────────────

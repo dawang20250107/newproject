@@ -25,12 +25,16 @@ def _pool_visible_depts(request):
 def _pool_actual_flows(dept, start, end):
     """(start, end] 区间的实际现金流。回款口径与现金流分析基本一致，但资金池是「可动用
     货币资金」口径：承兑汇票在贴现/到期前不是可动用现金，故额外排除（现金流分析仍计入）。
-    返回 (collected, adv_recv, paid, prepaid_offset, adv_paid, t_in, t_out)。"""
+    返回 (collected, adv_recv, paid, prepaid_offset, adv_paid, t_in, t_out, daily)。"""
     collected = _dec(ARPayment.objects.filter(
         ar_record__delivery_dept=dept,
         payment_date__gt=start, payment_date__lte=end)
         .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
         .exclude(pending_draft_q())        # 未兑付承兑汇票不算可动用现金；已兑付则计入
+        .aggregate(s=Sum('amount'))['s'])
+    # 日常收款：项目收款/预付退款/自定义来源，均为可动用现金 → 计入资金池流入
+    daily = _dec(DailyReceipt.objects.filter(
+        delivery_dept=dept, receipt_date__gt=start, receipt_date__lte=end)
         .aggregate(s=Sum('amount'))['s'])
     adv = (AdvanceRecord.objects.filter(
         delivery_dept=dept, occur_date__gt=start, occur_date__lte=end)
@@ -53,21 +57,21 @@ def _pool_actual_flows(dept, start, end):
         transfer_date__gt=start, transfer_date__lte=end)
         .aggregate(s=Sum('amount'))['s'])
     return (collected, adv_map.get('预收', Decimal('0')), paid, prepaid_offset,
-            adv_map.get('预付', Decimal('0')), t_in, t_out)
+            adv_map.get('预付', Decimal('0')), t_in, t_out, daily)
 
 
 def _pool_balance(dept, cfg, today):
     """池子当前账面余额 = 期初 + (期初日, 今天] 的净现金流。"""
-    c, ar_, p, po, ap, ti, to_ = _pool_actual_flows(dept, cfg.initial_date, today)
-    return cfg.initial_amount + c + ar_ - (p - po) - ap + ti - to_
+    c, ar_, p, po, ap, ti, to_, daily = _pool_actual_flows(dept, cfg.initial_date, today)
+    return cfg.initial_amount + c + ar_ + daily - (p - po) - ap + ti - to_
 
 
 def _pool_metrics(dept, cfg, today):
     """单个池子的全部指标：账面余额、资金预警线、刚性/在途流出、预期流入、余额预测。"""
     start = cfg.initial_date
 
-    c, ar_, p, po, ap, ti, to_ = _pool_actual_flows(dept, start, today)
-    balance = (cfg.initial_amount + c + ar_ - (p - po) - ap + ti - to_)
+    c, ar_, p, po, ap, ti, to_, daily = _pool_actual_flows(dept, start, today)
+    balance = (cfg.initial_amount + c + ar_ + daily - (p - po) - ap + ti - to_)
 
     # ── 刚性流出：付款管理已审批待付（remaining>0），按计划日期分窗。
     #    已用预付核销冲抵的部分不再需要现金，故一并扣除（与余额口径对称）。
@@ -146,9 +150,9 @@ def _pool_metrics(dept, cfg, today):
     # ── 健康指标：近90天口径 ─────────────────────────────────────────────────
     t90 = today - datetime.timedelta(days=90)
     s90 = max(start, t90)
-    c9, ar9, p9, po9, ap9, ti9, to9 = _pool_actual_flows(dept, s90, today)
+    c9, ar9, p9, po9, ap9, ti9, to9, daily9 = _pool_actual_flows(dept, s90, today)
     span = max(1, (today - s90).days)
-    in90 = c9 + ar9
+    in90 = c9 + ar9 + daily9
     out90 = (p9 - po9) + ap9
     runway = float(balance) / (float(out90) / span) if out90 > 0 and balance > 0 else None
     health = {
@@ -165,6 +169,7 @@ def _pool_metrics(dept, cfg, today):
         'parts': {
             'initial': str(cfg.initial_amount),
             'collected': str(c), 'advance_received': str(ar_),
+            'daily_receipts': str(daily),
             'paid': str(p - po), 'advance_paid': str(ap),
             'transfer_in': str(ti), 'transfer_out': str(to_),
         },

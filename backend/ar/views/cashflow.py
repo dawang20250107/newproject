@@ -73,6 +73,17 @@ def cashflow(request):
         dept = row['ar_record__delivery_dept']
         coll_map[dept][ym] += row['collected'] or Decimal('0')
 
+    # 日常收款（项目收款/预付退款/自定义）：可动用现金，计入现金流入
+    daily_map = defaultdict(lambda: defaultdict(Decimal))
+    dr_qs = (DailyReceipt.objects
+             .filter(receipt_date__gte=start_date, receipt_date__lte=end_date,
+                     delivery_dept__in=depts)
+             .annotate(ym=TruncMonth('receipt_date'))
+             .values('ym', 'delivery_dept')
+             .annotate(s=Sum('amount')))
+    for row in dr_qs:
+        daily_map[row['delivery_dept']][row['ym'].strftime('%Y-%m')] += row['s'] or Decimal('0')
+
     # AP payments from installments subtable, grouped by month + department
     paid_map = defaultdict(lambda: defaultdict(Decimal))
     # 排除已软删除的付款台账（回收站）：删除的付款不构成现金流出
@@ -148,6 +159,7 @@ def cashflow(request):
     # Build per-dept series + total
     by_dept = []
     total_coll = defaultdict(Decimal)
+    total_daily = defaultdict(Decimal)
     total_paid = defaultdict(Decimal)
     total_adv_recv = defaultdict(Decimal)
     total_adv_paid = defaultdict(Decimal)
@@ -157,13 +169,14 @@ def cashflow(request):
 
     for dept in depts:
         series_coll = [float(coll_map[dept].get(ym, 0)) for ym in month_keys]
+        series_daily = [float(daily_map[dept].get(ym, 0)) for ym in month_keys]
         series_paid = [float(paid_map[dept].get(ym, 0)) for ym in month_keys]
         series_arecv = [float(adv_recv_map[dept].get(ym, 0)) for ym in month_keys]
         series_apaid = [float(adv_paid_map[dept].get(ym, 0)) for ym in month_keys]
         series_bcoll = [float(budget_coll_map[dept].get(ym, 0)) for ym in month_keys]
         series_bpaid = [float(budget_paid_map[dept].get(ym, 0)) for ym in month_keys]
-        # 流入 = 回款 + 预收；流出 = 付款 + 预付
-        inflow = [series_coll[i] + series_arecv[i] for i in range(len(month_keys))]
+        # 流入 = 回款 + 日常收款 + 预收；流出 = 付款 + 预付
+        inflow = [series_coll[i] + series_daily[i] + series_arecv[i] for i in range(len(month_keys))]
         outflow = [series_paid[i] + series_apaid[i] for i in range(len(month_keys))]
         alert_months = [month_keys[i] for i in range(len(month_keys))
                         if outflow[i] > inflow[i] > 0]
@@ -172,6 +185,7 @@ def cashflow(request):
         by_dept.append({
             'dept': dept,
             'collected': series_coll,
+            'daily_receipts': series_daily,
             'paid': series_paid,
             'advance_received': series_arecv,
             'advance_paid': series_apaid,
@@ -181,6 +195,7 @@ def cashflow(request):
         })
         for i, ym in enumerate(month_keys):
             total_coll[ym] += coll_map[dept].get(ym, Decimal('0'))
+            total_daily[ym] += daily_map[dept].get(ym, Decimal('0'))
             total_paid[ym] += paid_map[dept].get(ym, Decimal('0'))
             total_adv_recv[ym] += adv_recv_map[dept].get(ym, Decimal('0'))
             total_adv_paid[ym] += adv_paid_map[dept].get(ym, Decimal('0'))
@@ -188,10 +203,11 @@ def cashflow(request):
             total_bpaid[ym] += budget_paid_map[dept].get(ym, Decimal('0'))
 
     collected_arr = [float(total_coll.get(ym, 0)) for ym in month_keys]
+    daily_arr = [float(total_daily.get(ym, 0)) for ym in month_keys]
     paid_arr = [float(total_paid.get(ym, 0)) for ym in month_keys]
     adv_recv_arr = [float(total_adv_recv.get(ym, 0)) for ym in month_keys]
     adv_paid_arr = [float(total_adv_paid.get(ym, 0)) for ym in month_keys]
-    inflow_arr = [round(collected_arr[i] + adv_recv_arr[i], 2) for i in range(len(month_keys))]
+    inflow_arr = [round(collected_arr[i] + daily_arr[i] + adv_recv_arr[i], 2) for i in range(len(month_keys))]
     outflow_arr = [round(paid_arr[i] + adv_paid_arr[i], 2) for i in range(len(month_keys))]
     net_arr = [round(inflow_arr[i] - outflow_arr[i], 2) for i in range(len(month_keys))]
 
@@ -212,6 +228,7 @@ def cashflow(request):
         'by_dept': by_dept,
         'totals': {
             'collected': collected_arr,
+            'daily_receipts': daily_arr,
             'paid': paid_arr,
             'advance_received': adv_recv_arr,
             'advance_paid': adv_paid_arr,

@@ -205,6 +205,12 @@ const ar = {
   createPoolTransfer: d => api.post('/ar/pool/transfers', d),
   deletePoolTransfer: id => api.delete(`/ar/pool/transfers/${id}`),
   reviewPoolTransfer: (id, d) => api.post(`/ar/pool/transfers/${id}/review`, d),
+
+  // 日常收款 (daily receipts)
+  listDailyReceipts: p => api.get('/ar/daily-receipts', { params: p }),
+  createDailyReceipt: d => api.post('/ar/daily-receipts', d),
+  updateDailyReceipt: (id, d) => api.put(`/ar/daily-receipts/${id}`, d),
+  deleteDailyReceipt: id => api.delete(`/ar/daily-receipts/${id}`),
 }
 
 export default ar

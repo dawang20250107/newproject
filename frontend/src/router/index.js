@@ -15,6 +15,7 @@ const routes = [
   { path: '/ar/contracts', component: () => import('../views/ar/ARContracts.vue'), meta: { page: 'ar_projects', fullHeight: true } },
   { path: '/ar/records', component: () => import('../views/ar/ARRecords.vue'), meta: { page: 'ar_records', fullHeight: true } },
   { path: '/ar/advances', component: () => import('../views/ar/Advances.vue'), meta: { page: 'ar_advance', fullHeight: true } },
+  { path: '/ar/daily-receipts', component: () => import('../views/ar/DailyReceipts.vue'), meta: { page: 'ar_daily_receipts', fullHeight: true } },
   { path: '/ar/budget', component: () => import('../views/ar/Budget.vue'), meta: { page: 'ar_budget', fullHeight: true } },
   // 应收分析 / 现金流分析 / 报表分析 已并入财务驾驶舱（/caiwu/cockpit）的 Tab，旧独立路由下线
   { path: '/ar/analytics', redirect: '/caiwu/cockpit' },

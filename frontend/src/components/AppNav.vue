@@ -189,7 +189,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
       </router-link>
 
       <!-- ── 应收账款 section ───────────────────── -->
-      <div v-if="auth.canPage('ar_projects') || auth.canPage('ar_records') || auth.canPage('ar_analytics') || auth.canPage('ar_cashflow') || auth.canPage('ar_budget')"
+      <div v-if="auth.canPage('ar_projects') || auth.canPage('ar_records') || auth.canPage('ar_advance') || auth.canPage('ar_daily_receipts') || auth.canPage('ar_analytics') || auth.canPage('ar_cashflow') || auth.canPage('ar_budget')"
            class="nav-section-label">
         <Transition name="label-fade">
           <span v-if="!effectiveCollapsed" class="nav-sl-text">应收账款</span>
@@ -252,6 +252,20 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         </span>
         <Transition name="label-fade">
           <span v-if="!effectiveCollapsed" class="nav-label">预收预付</span>
+        </Transition>
+      </router-link>
+
+      <router-link v-if="auth.canPage('ar_daily_receipts')" to="/ar/daily-receipts" class="nav-item"
+        :class="{ active: route.path === '/ar/daily-receipts' }"
+        :title="effectiveCollapsed ? '日常收款' : undefined"
+        @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><circle cx="7" cy="15" r="1.4"/>
+          </svg>
+        </span>
+        <Transition name="label-fade">
+          <span v-if="!effectiveCollapsed" class="nav-label">日常收款</span>
         </Transition>
       </router-link>
 
