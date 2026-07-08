@@ -372,6 +372,8 @@ function saveState() {
       personMode: personMode.value, personInput: personInput.value, picked: picked.value,
       range: { start: range.start, end: range.end }, status: status.value,
       curSchemeId: curSchemeId.value, tpls: picks,
+      // 结果也存下：刷新/重进界面直接显示上次记录，无需再打钉钉（点「查询」才刷新）
+      items: items.value.slice(0, 500), queried: queried.value,
     }))
   } catch { /* ignore */ }
 }
@@ -385,10 +387,12 @@ if (_saved) {   // 先同步恢复标量输入（在 watch 注册前）
   curSchemeId.value = _saved.curSchemeId ?? null
   if (_saved.tpls?.length) _hasRestoredSel = true
 }
+// 先恢复上次结果（在 watch 注册前，避免被空 items 覆盖）
+if (_saved?.items?.length) { items.value = _saved.items; queried.value = !!_saved.queried }
 watch([
   () => [...tplSel.value].join(','), () => personMode.value, () => personInput.value,
   () => picked.value && picked.value.userid, () => range.start, () => range.end,
-  () => status.value, () => curSchemeId.value,
+  () => status.value, () => curSchemeId.value, () => items.value.length,
 ], saveState)
 
 onMounted(async () => {
@@ -399,7 +403,7 @@ onMounted(async () => {
     tplSel.value = new Set(_saved.tpls.map(t => t.process_code))
   }
   loadSchemes()
-  // 不自动查询——进入页面全部手动点「查询」（勾选/人员/时间已恢复，点一下即可）
+  // 不自动查询——上次结果已从本地恢复；要拉钉钉最新数据点「查询」即可
 })
 </script>
 
@@ -852,7 +856,7 @@ onMounted(async () => {
 .tplname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tpls-empty { font-size: 12.5px; color: var(--muted, #9b8070); padding: 10px 2px; line-height: 1.6; }
 
-.dt-tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border, #eadfd2); }
+.dt-tabs { display: flex; gap: 4px; padding: 2px 14px 0; border-bottom: 1px solid var(--border, #eadfd2); }
 .dt-tab { border: none; background: none; padding: 11px 16px; font-size: 14px; font-weight: 650; color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; border-bottom: 2.5px solid transparent; margin-bottom: -1px; }
 .dt-tab.on { color: var(--primary, #1565c0); border-bottom-color: var(--primary, #1565c0); }
 .pill.sm { font-size: 11px; padding: 2px 7px; }
@@ -889,9 +893,11 @@ onMounted(async () => {
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 thead th { text-align: left; padding: 10px 12px; font-size: 11.5px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--muted, #9b8070); background: var(--surface-2, rgba(160,120,80,.06)); white-space: nowrap; position: sticky; top: 0; z-index: 1; }
 thead th.r, td.r { text-align: right; } .cbcol { width: 38px; }
-tbody td { padding: 11px 12px; border-top: 1px solid var(--border, #eadfd2); white-space: nowrap; vertical-align: middle; }
-tbody tr:hover { background: var(--surface-2, rgba(160,120,80,.05)); }
-tbody tr.sel { background: color-mix(in srgb, var(--primary, #1565c0) 8%, transparent); }
+tbody td { padding: 10px 12px; border-top: 1px solid var(--border, #eadfd2); white-space: nowrap; vertical-align: middle; }
+tbody tr:nth-child(even) { background: color-mix(in srgb, var(--muted, #9b8070) 4%, transparent); }
+tbody tr:hover { background: var(--surface-2, rgba(160,120,80,.08)); cursor: default; }
+tbody tr.sel { background: color-mix(in srgb, var(--primary, #1565c0) 9%, transparent) !important; }
+td.amt { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text, #4a3322); }
 .ttlcell { white-space: normal; min-width: 220px; } .ttl { font-weight: 650; color: var(--text, #4a3322); }
 .sub { font-size: 12px; color: var(--muted, #9b8070); margin-top: 1px; }
 .tpl { color: var(--primary, #1565c0); font-weight: 600; }

@@ -769,6 +769,8 @@ def dingtalk_status_sync(request):
 def _upsert(detail, actor):
     """按 dingtalk_instance_id 落库：存在则更新，否则新建。返回 ('created'|'updated', rec)。"""
     f = instance_to_fields(detail)
+    # 摘要用业务内容(报销内容/事由等)，与查询列表「摘要」列一致；取不到再退回标题
+    f['summary'] = build_summary(detail) or f['summary']
     iid = f['dingtalk_instance_id']
     rec = ApprovalRecord.objects.filter(dingtalk_instance_id=iid, deleted_at__isnull=True).first()
     if rec:

@@ -294,6 +294,22 @@ class SyncEndpointTests(TestCase):
         self.assertEqual(ApprovalRecord.objects.filter(dingtalk_instance_id='INST-1').count(), 1)
 
     @mock.patch('paikuan.dingtalk_client.get_instance')
+    def test_sync_summary_uses_business_content(self, m_get):
+        # 转审批记录的摘要 = 业务内容(报销内容)，与查询列表一致，而非钉钉标题
+        m_get.return_value = {
+            '_instance_id': 'INST-9', 'business_id': 'B9', 'title': '郭勇提交的差旅费报销单',
+            'status': 'COMPLETED', 'result': 'agree', 'originator_userid': 'U',
+            'operation_records': [], 'approver_userids': [],
+            'form_component_values': [
+                {'name': '报销明细', 'component_type': 'TableField',
+                 'value': '[{"rowValue":[{"label":"报销内容","value":"零食有鸣项目备用金报销"},'
+                          '{"label":"报销金额(元)","value":"3500"}]}]'}]}
+        self._post('/api/pk/dingtalk/sync', {'instance_ids': ['INST-9']})
+        rec = ApprovalRecord.objects.get(dingtalk_instance_id='INST-9')
+        self.assertIn('零食有鸣', rec.summary)
+        self.assertEqual(rec.amount, Decimal('3500'))
+
+    @mock.patch('paikuan.dingtalk_client.get_instance')
     def test_refresh_writes_back_status_change(self, m_get):
         # 先建一条 pending 的同步记录
         m_get.return_value = DETAIL_PAY
