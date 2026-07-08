@@ -183,6 +183,31 @@ class ARPermissionRegressionTests(TestCase):
         d2 = self.client.get('/api/pk/ar/cashflow', params, **self.auth(admin)).json()['data']
         self.assertEqual(d2['totals']['paid'], [0.0])
 
+    def test_cashflow_prepaid_offset_uses_actual_writeoff_date(self):
+        """预付核销的扣减必须归到「实际核销日」所在月，而非首期实付日/计划付款日。
+        回归：核销发生在 7 月，6 月的实付不应被 7 月才发生的核销事件提前扣掉。"""
+        from paikuan.models import Payment, PaymentInstallment
+        admin = self.make_user('13900000388', 'finance_director', role='super_admin')
+        # 计划 1000：6 月实付 600（现金），7 月才用预付核销 300
+        p = Payment.objects.create(
+            department=self.dept, project_desc='核销归期', payee='供应商Y',
+            total_amount=Decimal('1000'), planned_date=date(2026, 6, 1))
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 6, 10),
+                                          pay_amount=Decimal('600'))
+        adv = AdvanceRecord.objects.create(
+            direction='预付', project=None, delivery_dept=self.dept, counterparty='供应商Y',
+            occur_year=2026, occur_month=5, occur_date=date(2026, 5, 1),
+            advance_amount=Decimal('1000'))
+        AdvanceWriteoff.objects.create(advance_record=adv, writeoff_no=1,
+                                       amount=Decimal('300'),
+                                       writeoff_date=date(2026, 7, 20), payment=p)
+        params = {'start_year': 2026, 'start_month': 6, 'end_year': 2026, 'end_month': 7}
+        d = self.client.get('/api/pk/ar/cashflow', params, **self.auth(admin)).json()['data']
+        i6, i7 = d['months'].index('2026-06'), d['months'].index('2026-07')
+        # 6 月实付保持 600（核销尚未发生，不得提前扣减）；核销归 7 月
+        self.assertEqual(d['totals']['paid'][i6], 600.0)
+        self.assertEqual(d['totals']['paid'][i7], 0.0)
+
     def test_actual_receivable_and_invoice_mismatch(self):
         proj = self.create_project()
         # 实际应收 = 预估 + 账实差额；已开票且 ≠ 实际应收 → invoice_mismatch=True

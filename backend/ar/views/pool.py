@@ -43,9 +43,11 @@ def _pool_actual_flows(dept, start, end):
     paid = _dec(PaymentInstallment.objects.filter(
         payment__department=dept, payment__deleted_at__isnull=True,
         pay_date__gt=start, pay_date__lte=end).aggregate(s=Sum('pay_amount'))['s'])
-    # 预付核销冲抵：现金已在预付发生时流出，核销时不再是现金事件 → 从实付中扣除
+    # 预付核销冲抵：现金已在预付发生时流出，核销时不再是现金事件 → 从实付中扣除。
+    # 按实际核销日归期；软删除（回收站）的排款其实付已从 paid 排除，冲抵亦须一并排除，
+    # 否则 -(p-po) 会凭空加回 po 虚增池余额。
     prepaid_offset = _dec(AdvanceWriteoff.objects.filter(
-        payment__department=dept,
+        payment__department=dept, payment__deleted_at__isnull=True,
         writeoff_date__gt=start, writeoff_date__lte=end).aggregate(s=Sum('amount'))['s'])
     # 调拨：只有已生效（approved）的才是真实现金事件；待审批/已拒绝不动余额
     t_in = _dec(CashPoolTransfer.objects.filter(

@@ -99,23 +99,19 @@ def cashflow(request):
         dept = row['payment__department']
         paid_map[dept][ym] += row['paid'] or Decimal('0')
 
-    # 扣除预付核销冲抵：按最早实付日期（首个 installment 付款日期，否则 planned_date）归月
-    from django.db.models import OuterRef, Subquery
-    earliest_inst_date = Subquery(
-        PaymentInstallment.objects.filter(payment_id=OuterRef('pk'))
-            .order_by('pay_date').values('pay_date')[:1]
-    )
-    po_qs = (Payment.objects
-             .filter(department__in=depts, prepaid_offset_amount__gt=0,
-                     deleted_at__isnull=True)
-             .annotate(first_pay_date=earliest_inst_date)
-             .annotate(attr_ym=TruncMonth(Coalesce('first_pay_date', 'planned_date')))
-             .filter(attr_ym__gte=start_date, attr_ym__lte=end_date)
-             .values('attr_ym', 'department')
-             .annotate(offset=Sum('prepaid_offset_amount')))
+    # 扣除预付核销冲抵：按「实际核销日」(AdvanceWriteoff.writeoff_date) 逐笔归月。
+    # 现金在预付发生时（occur_date 计入 advance_paid）已流出，核销只是把预付应用到应付，
+    # 本身不是现金事件 → 从实付中扣回防双重计。时间口径必须用实际核销日，
+    # 不能用 planned_date（计划/未来日，非实际）或首期实付日，且与资金池口径一致。
+    po_qs = (AdvanceWriteoff.objects
+             .filter(payment__department__in=depts, payment__deleted_at__isnull=True,
+                     writeoff_date__gte=start_date, writeoff_date__lte=end_date)
+             .annotate(ym=TruncMonth('writeoff_date'))
+             .values('ym', 'payment__department')
+             .annotate(offset=Sum('amount')))
     for row in po_qs:
-        ym = row['attr_ym'].strftime('%Y-%m')
-        dept = row['department']
+        ym = row['ym'].strftime('%Y-%m')
+        dept = row['payment__department']
         paid_map[dept][ym] = max(Decimal('0'),
                                  paid_map[dept].get(ym, Decimal('0')) - (row['offset'] or Decimal('0')))
 

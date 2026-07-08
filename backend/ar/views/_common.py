@@ -65,16 +65,13 @@ def cash_flow_window(depts, start, end):
             .filter(payment__department__in=depts, pay_date__gte=start, pay_date__lte=end,
                     payment__deleted_at__isnull=True)
             .aggregate(x=Sum('pay_amount'))['x'] or Decimal('0'))
-    # 预付核销冲抵：按首个实付日期（否则计划付款日）归期，从实付中扣除
-    earliest = Subquery(PaymentInstallment.objects.filter(payment_id=OuterRef('pk'))
-                        .order_by('pay_date').values('pay_date')[:1])
-    offset = (Payment.objects
-              .filter(department__in=depts, prepaid_offset_amount__gt=0,
-                      deleted_at__isnull=True)
-              .annotate(fp=earliest)
-              .annotate(ad=Coalesce('fp', 'planned_date'))
-              .filter(ad__gte=start, ad__lte=end)
-              .aggregate(x=Sum('prepaid_offset_amount'))['x'] or Decimal('0'))
+    # 预付核销冲抵：按「实际核销日」(AdvanceWriteoff.writeoff_date) 归期，从实付中扣除。
+    # 现金在预付发生时（occur_date 计入 advance_paid）已流出，核销只是把预付应用到应付、
+    # 非现金事件 → 防双重计。时间口径用实际核销日，不用计划付款日等非实际时间；与资金池一致。
+    offset = (AdvanceWriteoff.objects
+              .filter(payment__department__in=depts, payment__deleted_at__isnull=True,
+                      writeoff_date__gte=start, writeoff_date__lte=end)
+              .aggregate(x=Sum('amount'))['x'] or Decimal('0'))
     paid = max(Decimal('0'), paid - offset)
     adv_recv = adv_paid = Decimal('0')
     for r in (AdvanceRecord.objects
