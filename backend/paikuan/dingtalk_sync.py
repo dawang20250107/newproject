@@ -77,20 +77,42 @@ def _form_pairs(detail):
     return out
 
 
+import json as _json
+
 # 金额字段优先级（从高到低）：实付类 > 合计/总额类 > 报销/申请/金额类。
 # 取"实付"优先，避免"报销金额(含抵扣前)"盖过"实付金额(实际打款)"。
 _PAY_KEYS = ('实付金额', '实付', '实发金额', '实发', '付款金额', '应付金额', '打款金额', '实际报销')
-_SUM_KEYS = ('价税合计', '合计金额', '费用合计', '合计', '总计', '总金额', '总额')
+# "总报销金额/报销合计"等汇总字段排在合计档，优先于逐条"报销金额"
+_SUM_KEYS = ('总报销金额', '报销合计', '价税合计', '合计金额', '费用合计', '合计', '总计', '总金额', '总额')
 _GROSS_KEYS = ('报销金额', '申请金额', '金额')
 # 行内金额列优先级：一行只取一个金额列（避免"金额"与"价税合计"重复相加）
-_ROW_TOTAL_KEYS = ('价税合计', '合计', '总额', '总金额', '金额')
+_ROW_TOTAL_KEYS = ('价税合计', '合计', '总额', '总金额', '报销金额', '金额')
+
+
+def _as_rows(value):
+    """把值解析成"明细行数组"[dict,...]；不是明细数组则返回 None。
+    兼容 value 已是 list，或为 JSON 数组字符串（钉钉报销/明细控件常见）。"""
+    v = value
+    if isinstance(v, str):
+        s = v.strip()
+        if not (s.startswith('[') and s.endswith(']')):
+            return None
+        try:
+            v = _json.loads(s)
+        except (ValueError, TypeError):
+            return None
+    if isinstance(v, list) and any(isinstance(r, dict) for r in v):
+        return v
+    return None
 
 
 def _amount_candidates(detail):
-    """收集所有"金额型"字段 [(name, Decimal)]：MoneyField、名字含"金额"、
-    或名字含合计/总额类关键字（后者兼容"合计"被做成计算/数字控件而非 MoneyField 的表单）。"""
+    """收集所有"标量金额字段" [(name, Decimal)]：MoneyField、名字含"金额"、或名字含合计/
+    总额类关键字。跳过"明细数组"字段（其 value 是 JSON 串，交给表求和，避免抠成乱码金额）。"""
     out = []
     for name, value, ctype in _form_pairs(detail):
+        if _as_rows(value) is not None:
+            continue
         looks_money = (ctype == 'MoneyField' or '金额' in name
                        or any(k in name for k in _SUM_KEYS))
         if looks_money:
@@ -101,18 +123,18 @@ def _amount_candidates(detail):
 
 
 def _table_amount_sum(detail):
-    """从明细控件(TableField)按行求和：每行只取一个金额列（按 _ROW_TOTAL_KEYS 优先级），
-    避免同一行"不含税金额"与"价税合计"被重复累加。仅当没有独立金额字段时兜底用。"""
-    import json as _json
+    """明细控件按行求和：每行只取一个金额列（按 _ROW_TOTAL_KEYS 优先级），避免同一行
+    "不含税金额"与"价税合计"重复累加。明细识别按"值是JSON数组"或 componentType=TableField，
+    兼容钉钉报销单把明细做成特殊控件的情形。"""
     total = Decimal('0')
     hit = False
     for _name, value, ctype in _form_pairs(detail):
-        if ctype != 'TableField':
-            continue
-        try:
-            rows = _json.loads(value) if isinstance(value, str) else value
-        except (ValueError, TypeError):
-            continue
+        rows = _as_rows(value)
+        if rows is None and ctype == 'TableField':
+            try:
+                rows = _json.loads(value) if isinstance(value, str) else value
+            except (ValueError, TypeError):
+                rows = None
         if not isinstance(rows, list):
             continue
         for row in rows:

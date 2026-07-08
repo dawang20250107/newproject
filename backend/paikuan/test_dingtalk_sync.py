@@ -95,6 +95,27 @@ class MappingTests(TestCase):
             {'name': '实付金额', 'value': '3500', 'component_type': 'MoneyField'}]}
         self.assertEqual(sync.extract_amount(d), Decimal('3500'))
 
+    def test_amount_reimbursement_total_field(self):
+        # 其他行政费用报销单：明细是 JSON 数组字段 + 独立"总报销金额(元)" → 取总报销金额
+        d = {'form_component_values': [
+            {'name': '报销明细', 'component_type': 'TableField',
+             'value': '[{"报销内容":"宿舍6-8月租","报销金额(元)":"2400.00"}]'},
+            {'name': '总报销金额(元)', 'value': '2400.00', 'component_type': 'MoneyField'}]}
+        self.assertEqual(sync.extract_amount(d), Decimal('2400.00'))
+
+    def test_amount_reimbursement_detail_only(self):
+        # 只有明细数组、无独立总额字段 → 明细按"报销金额"列求和
+        d = {'form_component_values': [
+            {'name': '费用明细', 'component_type': 'TextField',   # 类型不标准，靠"值是JSON数组"识别
+             'value': '[{"报销内容":"A","报销金额(元)":"1000"},{"报销内容":"B","报销金额(元)":"800"}]'}]}
+        self.assertEqual(sync.extract_amount(d), Decimal('1800'))
+
+    def test_amount_json_array_not_mangled(self):
+        # 明细 JSON 串不能被抠成乱码数字（回归：曾把 JSON 抠成大整数）
+        d = {'form_component_values': [
+            {'name': '报销明细', 'value': '[{"报销金额(元)":"50.00"}]', 'component_type': 'TextField'}]}
+        self.assertEqual(sync.extract_amount(d), Decimal('50.00'))
+
     def test_amount_grand_total_non_money_component(self):
         # 合计做成计算/数字控件（非 MoneyField、名字无"金额"）也应被识别为总额
         d = {'form_component_values': [
