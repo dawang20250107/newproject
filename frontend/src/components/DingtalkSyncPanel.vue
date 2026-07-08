@@ -312,12 +312,22 @@ function money(v) { return '¥' + Number(v || 0).toLocaleString('zh-CN', { minim
 
 // ── 单据字段格式化（把钉钉各控件值渲染成人看得懂的样子）──────────────────────
 function tryJSON(v) { try { return JSON.parse(v) } catch { return null } }
-// 明细表(TableField)：value 是 JSON 数组字符串 → 解析成 {列: 行数组} 的表
+// 钉钉明细行两种形态：{列:值} 或 {rowValue:[{label,value,key}]} → 统一展平成 {列:值}
+function flattenRow(r) {
+  if (r && Array.isArray(r.rowValue)) {
+    const o = {}
+    for (const c of r.rowValue) if (c && c.label != null) o[String(c.label)] = c.value
+    return o
+  }
+  return r || {}
+}
+// 明细表(TableField)：value 是 JSON 数组字符串 → 解析成 {cols, rows} 的表
 function parseTable(fld) {
-  const rows = Array.isArray(fld.value) ? fld.value : tryJSON(fld.value)
+  let rows = Array.isArray(fld.value) ? fld.value : tryJSON(fld.value)
   if (!Array.isArray(rows) || !rows.length) return null
+  rows = rows.map(flattenRow)
   const cols = []
-  rows.forEach(r => Object.keys(r || {}).forEach(k => { if (!cols.includes(k)) cols.push(k) }))
+  rows.forEach(r => Object.keys(r).forEach(k => { if (!cols.includes(k)) cols.push(k) }))
   return { cols, rows }
 }
 const MONEY_COL = /金额|价税|合计|费用|款|单价|总额/
@@ -865,7 +875,7 @@ onMounted(async () => {
 .diag-t td.c { text-align: center; }
 .diag-t tr.hot td { background: var(--primary-weak, #e8f1fb); }
 .diag .scanned-tip { margin-top: 10px; line-height: 1.7; color: var(--muted, #9b8070); font-size: 11.5px; }
-.tablewrap { overflow-x: auto; }
+.tablewrap { overflow-x: auto; padding-bottom: 76px; }   /* 给悬浮批量条留出空间，避免遮住末行 */
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 thead th { text-align: left; padding: 10px 12px; font-size: 11.5px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--muted, #9b8070); background: var(--surface-2, rgba(160,120,80,.06)); white-space: nowrap; position: sticky; top: 0; z-index: 1; }
 thead th.r, td.r { text-align: right; } .cbcol { width: 38px; }

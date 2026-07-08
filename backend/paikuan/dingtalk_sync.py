@@ -89,8 +89,23 @@ _GROSS_KEYS = ('报销金额', '申请金额', '金额')
 _ROW_TOTAL_KEYS = ('价税合计', '合计', '总额', '总金额', '报销金额', '金额')
 
 
+def _flatten_row(row):
+    """把一行明细规整成 {列名: 值}。兼容两种形态：
+    ① {列名: 值}；② 钉钉明细控件 {'rowValue':[{'label','value','key'}, ...]}。"""
+    if not isinstance(row, dict):
+        return {}
+    rv = row.get('rowValue')
+    if isinstance(rv, list):
+        out = {}
+        for cell in rv:
+            if isinstance(cell, dict) and cell.get('label') is not None:
+                out[str(cell.get('label'))] = cell.get('value')
+        return out
+    return row
+
+
 def _as_rows(value):
-    """把值解析成"明细行数组"[dict,...]；不是明细数组则返回 None。
+    """把值解析成"明细行数组"[dict,...]（已展平为 {列名:值}）；不是明细数组则返回 None。
     兼容 value 已是 list，或为 JSON 数组字符串（钉钉报销/明细控件常见）。"""
     v = value
     if isinstance(v, str):
@@ -102,7 +117,7 @@ def _as_rows(value):
         except (ValueError, TypeError):
             return None
     if isinstance(v, list) and any(isinstance(r, dict) for r in v):
-        return v
+        return [_flatten_row(r) for r in v if isinstance(r, dict)]
     return None
 
 
@@ -129,12 +144,7 @@ def _table_amount_sum(detail):
     total = Decimal('0')
     hit = False
     for _name, value, ctype in _form_pairs(detail):
-        rows = _as_rows(value)
-        if rows is None and ctype == 'TableField':
-            try:
-                rows = _json.loads(value) if isinstance(value, str) else value
-            except (ValueError, TypeError):
-                rows = None
+        rows = _as_rows(value)   # 已展平 rowValue → {列名:值}
         if not isinstance(rows, list):
             continue
         for row in rows:
@@ -178,21 +188,42 @@ def extract_amount(detail):
     return best if best is not None else Decimal('0')
 
 
+_SUMMARY_KEYS = ('事由', '报销内容', '摘要', '事项', '用途', '说明', '费用类型',
+                 '报销类型', '付款事由', '采购内容', '备注', '内容')
+
+
 def build_summary(detail):
-    """行内"摘要"：挑几个常见关键字段拼一句，便于列表一眼看懂（不含金额，金额单列）。"""
-    keys = ['事由', '摘要', '事项', '用途', '说明', '费用类型', '报销类型', '备注', '付款事由', '采购内容']
-    parts = []
-    seen = set()
-    for k in keys:
+    """行内"摘要"：挑几个常见关键字段拼一句，便于列表一眼看懂（不含金额，金额单列）。
+    先看顶层字段；报销单关键内容常在明细表(rowValue)里，故也扫明细行的"报销内容/事由"等。"""
+    parts, seen = [], set()
+
+    def _add(v):
+        v = str(v).strip()
+        if v and v not in seen and len(parts) < 2:
+            seen.add(v)
+            parts.append(v)
+
+    for k in _SUMMARY_KEYS:
         for name, value, _ in _form_pairs(detail):
-            v = str(value).strip()
-            if k in name and v and v not in seen:
-                seen.add(v)
-                parts.append(v)
-            if len(parts) >= 2:
-                break
+            if k in name and _as_rows(value) is None:   # 跳过明细数组本身
+                _add(value)
         if len(parts) >= 2:
             break
+    # 顶层没取到 → 从明细表行里找
+    if not parts:
+        for _name, value, _ in _form_pairs(detail):
+            rows = _as_rows(value)
+            if not rows:
+                continue
+            for row in rows:
+                for k in _SUMMARY_KEYS:
+                    for col, cv in row.items():
+                        if k in str(col):
+                            _add(cv)
+                if len(parts) >= 2:
+                    break
+            if parts:
+                break
     return ' / '.join(parts)[:200]
 
 

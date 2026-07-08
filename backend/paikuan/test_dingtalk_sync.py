@@ -116,6 +116,19 @@ class MappingTests(TestCase):
             {'name': '报销明细', 'value': '[{"报销金额(元)":"50.00"}]', 'component_type': 'TextField'}]}
         self.assertEqual(sync.extract_amount(d), Decimal('50.00'))
 
+    def test_amount_and_summary_rowvalue_detail(self):
+        # 真实钉钉报销明细：TableField 值是 [{"rowValue":[{label,value,key},...]}]
+        detail_json = ('[{"rowValue":[{"label":"申请时间","value":"2026-06-28","key":"DDDateField-1"},'
+                       '{"label":"报销内容","value":"零食有鸣项目备用金报销","key":"TextField-1"},'
+                       '{"label":"报销金额(元)","value":"3500.00","key":"DDMoneyField-1"}]},'
+                       '{"rowValue":[{"label":"报销内容","value":"物料","key":"TextField-2"},'
+                       '{"label":"报销金额(元)","value":"1500.00","key":"DDMoneyField-2"}]}]')
+        d = {'form_component_values': [
+            {'name': '报销明细', 'value': detail_json, 'component_type': 'TableField'},
+            {'name': '收款账号', 'value': '罗敏', 'component_type': 'RecipientAccountField'}]}
+        self.assertEqual(sync.extract_amount(d), Decimal('5000.00'))     # 3500+1500
+        self.assertIn('零食有鸣', sync.build_summary(d))                  # 摘要取明细"报销内容"
+
     def test_amount_grand_total_non_money_component(self):
         # 合计做成计算/数字控件（非 MoneyField、名字无"金额"）也应被识别为总额
         d = {'form_component_values': [
