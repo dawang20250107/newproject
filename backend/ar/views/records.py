@@ -1994,6 +1994,13 @@ def ar_payment_detail(request, pk, ppk):
             amount = _dec(data['amount'])
             if amount <= 0:
                 return err('金额必须大于0')
+            # 上限预校验:改大后不得让应收未收为负。可用额 = 当前未收 + 本笔原额(本笔将被替换)。
+            # 与新增回款/核销同口径;缺此校验会写入「回款虚增+未收虚高」的坏账(见下方事务包裹)。
+            room = (pay.ar_record.outstanding_amount or Decimal('0')) + (pay.amount or Decimal('0'))
+            if amount > room:
+                return err(f'回款金额 {amount} 超过该应收可回款上限 {room}'
+                           f'（当前未收 {pay.ar_record.outstanding_amount} + 本笔原额 {pay.amount}）；'
+                           f'如确有多收，请到「差额调整」或「预收预付」录入')
             pay.amount = amount
         if 'payment_date' in data:
             pay.payment_date = _normalize_date(data['payment_date']) or pay.payment_date
@@ -2021,7 +2028,10 @@ def ar_payment_detail(request, pk, ppk):
         if 'notes' in data:
             pay.notes = data['notes'].strip()
         try:
-            pay.save()
+            # 事务包裹:save 的金额 UPDATE 与 post_save 信号(recompute 应收未收)须同生共死。
+            # 否则 autocommit 下金额 UPDATE 先落库、信号再抛错,会留下「金额已改、未收陈旧」的坏账。
+            with transaction.atomic():
+                pay.save()
         except ValidationError as e:
             return err(str(e.message if hasattr(e, 'message') else e), 400)
         return ok(pay.to_dict())

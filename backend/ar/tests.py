@@ -1595,6 +1595,31 @@ class AdvanceModuleTests(TestCase):
             project=proj, operation_year=year, operation_month=month,
             estimated_amount=Decimal(str(est)))
 
+    def test_edit_payment_over_outstanding_rejected_no_corruption(self):
+        """编辑回款金额改大到超过应收:必须拒绝,且不得留下「金额已改、未收陈旧」的坏账。"""
+        admin = self.make_user('13911100099', 'finance_director', role='super_admin')
+        proj = self.create_project()
+        ar = self._ar_record(proj, 1000)
+        pay = ARPayment.objects.create(ar_record=ar, payment_no=1, amount=Decimal('300'),
+                                       payment_date=date(2026, 3, 10), source='回款')
+        ar.refresh_from_db()
+        self.assertEqual(ar.outstanding_amount, Decimal('700'))
+        # 改到 1200(> 上限 700+300=1000) → 400,且金额与未收都不变
+        r = self.client.put(f'/api/pk/ar/records/{ar.id}/payments/{pay.id}',
+                            data=json.dumps({'amount': '1200'}),
+                            content_type='application/json', **self.auth(admin))
+        self.assertEqual(r.status_code, 400, r.content)
+        pay.refresh_from_db(); ar.refresh_from_db()
+        self.assertEqual(pay.amount, Decimal('300'))
+        self.assertEqual(ar.outstanding_amount, Decimal('700'))   # 未被污染
+        # 改到 1000(=上限) → 放行,未收归 0
+        r2 = self.client.put(f'/api/pk/ar/records/{ar.id}/payments/{pay.id}',
+                             data=json.dumps({'amount': '1000'}),
+                             content_type='application/json', **self.auth(admin))
+        self.assertEqual(r2.status_code, 200, r2.content)
+        ar.refresh_from_db()
+        self.assertEqual(ar.outstanding_amount, Decimal('0'))
+
     def test_writeoff_offsets_ar_record_and_reverses_on_delete(self):
         admin = self.make_user('13911100010', 'finance_director', role='super_admin')
         proj = self.create_project()
@@ -2724,6 +2749,36 @@ class AuditHardeningTests(TestCase):
         d = next(r for r in res2.json()['data']['rows'] if r['dept'] == '运输事业部')
         self.assertEqual(d['estimated'], 1000.0)
         self.assertEqual(d['collected'], 300.0)
+
+    def test_project_cashflow_inflow_excludes_noncash_sources(self):
+        """项目现金流「流入」须排除非现金来源(预收抵扣/内部往来),否则虚增现金流入。"""
+        proj = ARProject.objects.create(customer_name='现金客户', short_name='现金项目',
+                                        delivery_dept='运输事业部', sales_contact='甲',
+                                        project_manager='乙')
+        rec = ARRecord.objects.create(project=proj, operation_year=self.today.year,
+                                      operation_month=1, estimated_amount=Decimal('1000'))
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('300'),
+                                 payment_date=self.today, source='回款')
+        ARPayment.objects.create(ar_record=rec, payment_no=2, amount=Decimal('200'),
+                                 payment_date=self.today, source='预收抵扣')   # 非现金
+        res = self.client.get(f'/api/pk/ar/analytics/project-cashflow?year={self.today.year}',
+                              **self.auth(self.admin))
+        row = next(r for r in res.json()['data']['rows'] if r['project'] == '现金项目')
+        self.assertEqual(row['inflow'], 300.0)   # 仅回款计入,预收抵扣不计
+
+    def test_by_dept_month_target_no_double_count_within_month_overdue(self):
+        """本月内已逾期的应收:month_target=当期未到期+逾期,同一笔不得双计。"""
+        today = self.today
+        proj = ARProject.objects.create(customer_name='目标客户', short_name='目标项目',
+                                        delivery_dept='运输事业部', sales_contact='甲',
+                                        project_manager='乙')
+        rec = ARRecord.objects.create(project=proj, operation_year=today.year,
+                                      operation_month=today.month, estimated_amount=Decimal('1000'))
+        # 到期日=本月月初(≤今天):是「本月内(已)到期」,不能既进 overdue 又进 current
+        ARRecord.objects.filter(pk=rec.pk).update(due_date=today.replace(day=1))
+        res = self.client.get('/api/pk/ar/analytics/by-dept', **self.auth(self.admin))
+        d = next(r for r in res.json()['data']['rows'] if r['dept'] == '运输事业部')
+        self.assertEqual(d['month_target'], 1000.0)   # 修复前会因重叠算成 2000
 
     # ── 3. approval_export 三连：页面闸口 / 行数上限存在性由代码保证，测闸口 ──
     def test_approval_export_requires_page_permission(self):

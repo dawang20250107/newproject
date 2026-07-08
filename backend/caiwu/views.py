@@ -1783,9 +1783,13 @@ def project_margin(request):
     total_cost = sum(r['cost'] for r in rows)
     # 收入是否按项目核算：若各项目收入几乎为 0、收入全在未挂池 → 本事业部不适用项目毛利
     revenue_by_project = total_rev > 0
-    # direct 口径下，未挂池成本不进各项目，但计入整体合计的"未分摊成本"
+    # direct 口径下，未挂池成本不进各项目，但计入整体合计的"未分摊成本"；
+    # allocated 下未挂成本已按收入比例摊入各项目(total_cost 已含)，故不再另加。
     grand_cost = total_cost + (unalloc['cost'] if mode == 'direct' else 0)
-    grand_rev = total_rev + (unalloc['revenue'] if mode == 'direct' else 0)
+    # 未挂池「收入」两种模式都应保留在合计里:_allocate_unalloc 只摊成本、从不摊收入，
+    # 故 allocated 下未挂收入不在任何项目行内，必须在合计单独加回——否则 allocated 的
+    # 总收入/毛利/毛利率比 direct 偏小，且与下方对账口径 ledger_rev 自相矛盾。
+    grand_rev = total_rev + unalloc['revenue']
     grand_margin = grand_rev - grand_cost
     summary = {
         'project_count': len(rows),

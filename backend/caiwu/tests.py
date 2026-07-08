@@ -547,6 +547,27 @@ class CaiwuUnifiedPermissionTests(TestCase):
                                 content_type='application/json', **self.hdr(self.cashier))
         self.assertEqual(chat.status_code, 403, self.jj(chat))
 
+    def test_project_margin_allocated_keeps_unpooled_revenue(self):
+        """allocated 模式必须保留未挂池收入:总收入/总毛利与 direct 一致(仅成本按收入分摊)。"""
+        from caiwu.models import ProjectMargin
+        y, mo = 2026, 7
+        ProjectMargin.objects.create(business_unit=self.bu, year=y, month=mo,
+                                     project_name='项目A', revenue=Decimal('1000'), cost=Decimal('600'))
+        ProjectMargin.objects.create(business_unit=self.bu, year=y, month=mo,
+                                     project_name='无', revenue=Decimal('200'), cost=Decimal('100'))
+
+        def summ(mode):
+            r = self.client.get('/api/cw/project-margin',
+                                {'bu': self.bu, 'year': y, 'month': mo, 'mode': mode},
+                                **self.hdr(self.fin))
+            self.assertEqual(r.status_code, 200, self.jj(r))
+            return self.jj(r)['data']['summary']
+        direct, alloc = summ('direct'), summ('allocated')
+        self.assertEqual(direct['total_revenue'], 1200.0)
+        self.assertEqual(alloc['total_revenue'], 1200.0)   # 修复前 allocated 会丢未挂收入→1000
+        self.assertEqual(direct['total_margin'], 500.0)
+        self.assertEqual(alloc['total_margin'], 500.0)     # 两模式毛利一致
+
     def test_paikuan_permission_edit_invalidates_caiwu_cache(self):
         # finance_director starts with caiwu_report access
         before = self.client.get('/api/cw/report',

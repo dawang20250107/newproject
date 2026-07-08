@@ -809,12 +809,14 @@ def analytics_project_cashflow(request):
         outstanding_by_key[key]['outstanding'] += float(r['outstanding'] or 0)
         outstanding_by_key[key]['estimated'] += float(r['estimated'] or 0)
 
-    # 区间内回款（流入）
+    # 区间内回款（现金流入）：排除非现金来源（预收抵扣/内部往来）——它们冲减应收但非现金进账，
+    # 计入会虚增现金流入。与现金流分析口径一致（承兑汇票仍计入经营现金流入）。
     inflow_by_key = {}
     for r in (ARPayment.objects
               .filter(ar_record__in=ar_base,
                       payment_date__gte=date_start,
                       payment_date__lte=date_end)
+              .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
               .filter(**{f'{arp_key}__isnull': False})
               .exclude(**{arp_key: ''})
               .values(arp_key)
@@ -1046,7 +1048,9 @@ def analytics_by_dept(request):
         row['collected'] = (collected_by_dept.get(d) or {}).get('collected') or 0
     overdue = _bydept(base.filter(outstanding_amount__gt=0, due_date__lt=today),
                       od_amt=Sum('outstanding_amount'), od_est=Sum('estimated_amount'), od_cnt=Count('id'))
-    current = _bydept(base.filter(outstanding_amount__gt=0, due_date__gte=month_start, due_date__lte=month_end),
+    # 当期未到期须从「今天」起算(而非月初):本月内已逾期的部分已计入 overdue,
+    # 若 current 用 month_start 会与 overdue 重叠,令 month_target=cur_est+od_est 把本月内逾期双计。
+    current = _bydept(base.filter(outstanding_amount__gt=0, due_date__gte=today, due_date__lte=month_end),
                       cur_est=Sum('estimated_amount'), cur_cnt=Count('id'))
 
     rows = []
