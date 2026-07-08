@@ -478,14 +478,14 @@ def dingtalk_query(request):
         return denied
     body = parse_body(request)
     userid = (body.get('userid') or '').strip()
-    status = (body.get('status') or 'todo').strip()
+    status = (body.get('status') or 'all').strip()   # all=一次查回待处理/已处理/发起三口径
     # 前端传 templates:[{process_code,name}]（推荐）或 process_codes:[code]。
     picked_tpls = body.get('templates') or []
     picked_codes = body.get('process_codes') or []
     if not userid:
         return err('缺少 userid')
-    if status not in ('todo', 'done', 'originated'):
-        return err('status 无效（todo/done/originated）')
+    if status not in ('todo', 'done', 'originated', 'all'):
+        return err('status 无效（todo/done/originated/all）')
     try:
         start_ms, end_ms = _ms(body['start']), _ms(body['end'], end=True)
     except Exception:
@@ -517,6 +517,7 @@ def dingtalk_query(request):
         # - originated（他发起）→ 按发起人过滤，精准高效；
         # - todo（待他审批）→ 只可能在 RUNNING 实例，按状态收窄再按审批人名单分类；
         # - done（他已审批）→ 状态不定（他处理完实例可能仍在流转），全量拉后按操作记录分类。
+        # all（三口径一次查）→ 全量拉（发起也在其中），逐条分类到 todo/done/originated
         originator = userid if status == 'originated' else None
         status_filter = ['RUNNING'] if status == 'todo' else None
 
@@ -595,6 +596,11 @@ def dingtalk_query(request):
                 if detail.get('originator_userid') != userid:
                     continue
                 role = 'originated'
+            elif status == 'all':
+                # 三口径一次查：逐条分类，保留他相关的 待处理/已处理/发起
+                role = classify(detail, userid)
+                if role not in ('todo', 'done', 'originated'):
+                    continue
             else:
                 role = classify(detail, userid)
                 if role != status:
@@ -706,9 +712,10 @@ def is_dingtalk_no(s):
 @csrf_exempt
 @pk_required()
 def dingtalk_status_sync(request):
-    """POST {record_ids:[...]} → 对审批管理里"审批编号为21位钉钉编号"的记录，
-    定位钉钉实例（记录已存 instance_id，或按编号在本地存档匹配）后拉最新状态回写。
-    非21位编号、或找不到对应实例的记录，均跳过并给出原因。"""
+    """POST {record_ids:[...], refresh?:bool} → 对审批管理里"审批编号为21位钉钉编号"的记录，
+    以本地钉钉存档(DingtalkInstance)的状态回写。存档随查询不断累积/更新，此处直接读库、
+    不打钉钉（快）。refresh=true 时对已存档但需要强制刷新的可再打钉钉（可选）。
+    非21位编号、或本地无存档的记录，均跳过并给出原因。"""
     denied = _write_denied(request)
     if denied:
         return denied
@@ -716,55 +723,41 @@ def dingtalk_status_sync(request):
     ids = body.get('record_ids') or []
     if not isinstance(ids, list) or not ids:
         return err('请提供要同步的记录')
-    if len(ids) > 200:
-        return err('单次上限 200 条，请缩小选择范围')
+    if len(ids) > 500:
+        return err('单次上限 500 条，请缩小选择范围')
     recs = list(ApprovalRecord.objects.filter(id__in=ids, deleted_at__isnull=True))
-    # 编号 → 实例ID 映射（来自本地存档）
     biz = [r.approval_number for r in recs if is_dingtalk_no(r.approval_number)]
-    cache_map = ({c.business_id: c.instance_id for c in
-                  DingtalkInstance.objects.filter(business_id__in=biz).exclude(instance_id='')}
-                 if biz else {})
+    iids = [(r.dingtalk_instance_id or '').strip() for r in recs if (r.dingtalk_instance_id or '').strip()]
+    by_biz = {c.business_id: c for c in
+              DingtalkInstance.objects.filter(business_id__in=biz).exclude(business_id='')} if biz else {}
+    by_iid = {c.instance_id: c for c in
+              DingtalkInstance.objects.filter(instance_id__in=iids)} if iids else {}
 
-    tasks, skipped = [], []
+    updated, unchanged, skipped = 0, 0, []
     for r in recs:
         if not is_dingtalk_no(r.approval_number):
             skipped.append({'id': r.id, 'no': r.approval_number or '(空)',
                             'reason': '审批编号非21位钉钉标准格式，已跳过'})
             continue
-        iid = (r.dingtalk_instance_id or '').strip() or cache_map.get(r.approval_number)
-        if not iid:
+        c = by_iid.get((r.dingtalk_instance_id or '').strip()) or by_biz.get(r.approval_number)
+        if not c:
             skipped.append({'id': r.id, 'no': r.approval_number,
-                            'reason': '未找到对应钉钉实例，请先在「钉钉同步」页查询过该单据'})
+                            'reason': '本地无该单据存档，请先在「钉钉同步」页查询一次（会自动入库）'})
             continue
-        tasks.append((r, iid))
-
-    def _fetch(pair):
-        r, iid = pair
-        try:
-            return r, iid, dc.get_instance(iid), None
-        except DingTalkError as ex:
-            return r, iid, None, str(ex)
-
-    updated, ok_count = 0, 0
-    with ThreadPoolExecutor(max_workers=12) as pool:
-        results = list(pool.map(_fetch, tasks))
-    for r, iid, detail, ferr in results:
-        if ferr:
-            skipped.append({'id': r.id, 'no': r.approval_number, 'reason': ferr[:120]})
-            continue
-        ok_count += 1
-        new_status = map_status(detail.get('status'), detail.get('result'))
+        new_status = c.sys_status or map_status(c.ding_status, c.ding_result)
         fields = []
-        if r.status != new_status:
+        if new_status and r.status != new_status:
             r.status = new_status
             fields.append('status')
-            updated += 1
-        if not (r.dingtalk_instance_id or '').strip():   # 顺带回填实例ID，下次直连
-            r.dingtalk_instance_id = iid
+        if not (r.dingtalk_instance_id or '').strip() and c.instance_id:
+            r.dingtalk_instance_id = c.instance_id
             fields.append('dingtalk_instance_id')
+        if 'status' in fields:
+            updated += 1
+        else:
+            unchanged += 1
         if fields:
             r.save(update_fields=fields + ['updated_at'])
-    unchanged = ok_count - updated
     msg = f'状态更新 {updated} 条'
     if unchanged:
         msg += f'、无变化 {unchanged} 条'

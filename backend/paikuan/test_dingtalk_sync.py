@@ -464,12 +464,8 @@ class SyncEndpointTests(TestCase):
         self.assertEqual(DingtalkInstance.objects.filter(instance_id='INST-1').count(), 1)
 
     @mock.patch('paikuan.dingtalk_client.get_instance')
-    def test_status_sync_by_instance_id_and_cache(self, m_get):
-        # 记录A：已存 instance_id → 直连；记录B：仅21位编号 → 按存档匹配；记录C：非21位 → 跳过
-        m_get.side_effect = lambda iid: {
-            '_instance_id': iid, 'business_id': '', 'title': 't', 'status': 'COMPLETED',
-            'result': 'agree', 'form_component_values': [], 'operation_records': [],
-            'approver_userids': [], 'originator_userid': ''}
+    def test_status_sync_from_local_archive(self, m_get):
+        # 状态同步只读本地存档，不打钉钉：A按instance_id、B按编号匹配存档；C非21位跳过
         a = ApprovalRecord.objects.create(applicant='甲', department='运输事业部',
             approval_number='202603171454000116103', summary='s', amount=Decimal('1'),
             payee='p', status='pending', dingtalk_instance_id='IID-A')
@@ -478,30 +474,45 @@ class SyncEndpointTests(TestCase):
             payee='p', status='pending')
         c = ApprovalRecord.objects.create(applicant='丙', department='运输事业部',
             approval_number='NOTDING', summary='s', amount=Decimal('1'), payee='p', status='pending')
+        DingtalkInstance.objects.create(instance_id='IID-A', process_code='PC',
+            business_id='202603171454000116103', ding_status='COMPLETED', sys_status='approved')
         DingtalkInstance.objects.create(instance_id='IID-B', process_code='PC',
-            business_id='202603171454000116104', ding_status='RUNNING')
+            business_id='202603171454000116104', ding_status='COMPLETED', sys_status='approved')
         r = self._post('/api/pk/dingtalk/status-sync', {'record_ids': [a.id, b.id, c.id]})
         d = r.json()['data']
-        self.assertEqual(d['updated'], 2)                       # A、B 由 pending → approved
+        self.assertEqual(d['updated'], 2)
+        self.assertEqual(m_get.call_count, 0)                   # 不打钉钉
         a.refresh_from_db(); b.refresh_from_db(); c.refresh_from_db()
         self.assertEqual(a.status, 'approved')
         self.assertEqual(b.status, 'approved')
-        self.assertEqual(b.dingtalk_instance_id, 'IID-B')       # 顺带回填实例ID
-        self.assertEqual(c.status, 'pending')                   # 非21位未动
-        reasons = ' '.join(s['reason'] for s in d['skipped'])
-        self.assertIn('非21位', reasons)
+        self.assertEqual(b.dingtalk_instance_id, 'IID-B')       # 按编号匹配后回填实例ID
+        self.assertEqual(c.status, 'pending')
+        self.assertIn('非21位', ' '.join(s['reason'] for s in d['skipped']))
 
-    @mock.patch('paikuan.dingtalk_client.get_instance')
-    def test_status_sync_unresolvable_skipped(self, m_get):
-        # 21位编号但无 instance_id 且存档里没有 → 跳过并提示
+    def test_status_sync_no_archive_skipped(self):
+        # 21位编号但本地无存档 → 跳过并提示先去钉钉同步页查询
         rec = ApprovalRecord.objects.create(applicant='丁', department='运输事业部',
             approval_number='202603171454000116999', summary='s', amount=Decimal('1'),
             payee='p', status='pending')
         r = self._post('/api/pk/dingtalk/status-sync', {'record_ids': [rec.id]})
         d = r.json()['data']
         self.assertEqual(d['updated'], 0)
-        self.assertEqual(m_get.call_count, 0)
-        self.assertIn('未找到对应钉钉实例', d['skipped'][0]['reason'])
+        self.assertIn('本地无该单据存档', d['skipped'][0]['reason'])
+
+    @mock.patch('paikuan.dingtalk_client.all_templates', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.list_process_codes', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.list_instance_ids', return_value=['INST-2'])
+    @mock.patch('paikuan.dingtalk_client.get_instance', return_value=DETAIL_PAY)
+    def test_query_all_calibers_at_once(self, m_get, m_list, m_codes, m_all):
+        # status=all：一次查回三口径，逐条带 task 角色（DETAIL_PAY 里 U-me 有 RUNNING 任务→todo）
+        r = self._post('/api/pk/dingtalk/query',
+                       {'userid': 'U-me', 'start': '2026-06-01', 'end': '2026-06-30',
+                        'status': 'all', 'process_codes': ['PC1']})
+        d = r.json()['data']
+        self.assertEqual(d['count'], 1)
+        self.assertEqual(d['items'][0]['task'], 'todo')
+        # all 口径不按发起人过滤（否则拿不到"待他审批"的）
+        self.assertIsNone(m_list.call_args.args[3])
 
     @mock.patch('paikuan.dingtalk_client.user_detail', return_value={'name': '郭勇'})
     @mock.patch('paikuan.dingtalk_client.userid_by_mobile', return_value='U-guoyong')

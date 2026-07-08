@@ -132,7 +132,7 @@ const DING = {
   pending: ['run', '审批中'], canceled: ['cancel', '已撤销'],
 }
 const stats = computed(() => {
-  const s = items.value
+  const s = displayItems.value
   return { total: s.length, unsynced: s.filter(i => !i.synced).length, synced: s.filter(i => i.synced).length }
 })
 
@@ -165,8 +165,9 @@ async function runQuery() {
     // 只查勾选的模板（连名称一起传，后端无需重拉全量模板目录），单独放宽超时到 90s
     const picks = templates.value.filter(t => tplSel.value.has(t.process_code))
       .map(t => ({ process_code: t.process_code, name: t.name || t.process_code }))
+    // 一次查回三口径（待处理/已处理/发起），前端按页签本地筛选，切页签不再重查
     const r = await api.post('/dingtalk/query', {
-      userid: user.userid, start: range.start, end: range.end, status: status.value,
+      userid: user.userid, start: range.start, end: range.end, status: 'all',
       templates: picks,
     }, { timeout: 90000 })
     items.value = r.data?.items || []
@@ -174,26 +175,30 @@ async function runQuery() {
     scanned.value = r.data?.templates_scanned || []
     tplStats.value = r.data?.template_stats || []
     queried.value = true
-    queriedStatus.value = status.value    // 记录本次结果对应的口径
   } catch (e) { loadErr.value = e?.msg || e?.error || '查询失败'; items.value = [] }
   finally { loading.value = false }
 }
-// 切换口径只改选择、不自动查询——避免反复触发慢查询；结果与所选口径不一致时给出提示
-const queriedStatus = ref('')
-const statusStale = computed(() => queried.value && items.value.length > 0 && status.value !== queriedStatus.value)
-function onStatusTab(v) { status.value = v }
+// 当前页签下的结果（本地筛选，不重查）
+const displayItems = computed(() => items.value.filter(i => i.task === status.value))
+const roleCount = computed(() => {
+  const c = { todo: 0, done: 0, originated: 0 }
+  items.value.forEach(i => { if (c[i.task] != null) c[i.task]++ })
+  return c
+})
+function onStatusTab(v) { status.value = v }   // 只切页签，不查询
 
 // ── 勾选 ──────────────────────────────────────────────────────────────────
 function toggle(id) { const s = new Set(sel.value); s.has(id) ? s.delete(id) : s.add(id); sel.value = s }
-const pageAllSel = computed(() => items.value.length > 0 && items.value.every(i => sel.value.has(i.instance_id)))
+const pageAllSel = computed(() => displayItems.value.length > 0 && displayItems.value.every(i => sel.value.has(i.instance_id)))
 function toggleAll() {
-  const s = new Set()
-  if (!pageAllSel.value) items.value.forEach(i => s.add(i.instance_id))
+  const s = new Set(sel.value)
+  if (pageAllSel.value) displayItems.value.forEach(i => s.delete(i.instance_id))
+  else displayItems.value.forEach(i => s.add(i.instance_id))
   sel.value = s
 }
 function selQuick(kind) {
   const s = new Set()
-  items.value.forEach(i => {
+  displayItems.value.forEach(i => {
     if (kind === 'unsync' && !i.synced) s.add(i.instance_id)
     else if (kind === 'stale' && i.sync_stale) s.add(i.instance_id)
     else if (kind === 'today' && (i.create_time || '').slice(0, 10) === todayCST()) s.add(i.instance_id)
@@ -208,6 +213,7 @@ const previewOpen = ref(false)
 const syncing = ref(false)
 const newCount = computed(() => selectedItems.value.filter(i => !i.synced).length)
 const updCount = computed(() => selectedItems.value.filter(i => i.synced).length)
+const approvedCount = computed(() => selectedItems.value.filter(i => i.ding_status === 'approved').length)
 
 function openPreview() { if (selCount.value) previewOpen.value = true }
 async function doSync() {
@@ -393,7 +399,7 @@ onMounted(async () => {
     tplSel.value = new Set(_saved.tpls.map(t => t.process_code))
   }
   loadSchemes()
-  if (picked.value && tplSel.value.size) runQuery()   // 复现上次查询结果
+  // 不自动查询——进入页面全部手动点「查询」（勾选/人员/时间已恢复，点一下即可）
 })
 </script>
 
@@ -498,16 +504,15 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- 状态页签（切换只改口径，不自动查询；需手动点查询刷新）-->
+    <!-- 状态页签（一次查回三口径，切页签只本地筛选、不再重查）-->
     <div v-show="subview === 'query'" class="dt-tabs">
-      <button v-for="s in STATUS" :key="s.v" :class="['dt-tab', { on: status === s.v }]" @click="onStatusTab(s.v)">{{ s.l }}</button>
-      <span v-if="statusStale" class="tab-stale">当前结果为「{{ STATUS.find(s => s.v === queriedStatus)?.l }}」，点「查询」刷新为「{{ STATUS.find(s => s.v === status)?.l }}」
-        <button class="tab-refresh" @click="runQuery()">立即查询</button>
-      </span>
+      <button v-for="s in STATUS" :key="s.v" :class="['dt-tab', { on: status === s.v }]" @click="onStatusTab(s.v)">
+        {{ s.l }}<span v-if="queried" class="tab-n">{{ roleCount[s.v] }}</span>
+      </button>
     </div>
 
     <!-- 汇总条 + 快捷选 -->
-    <div v-if="items.length && subview === 'query'" class="dt-summary">
+    <div v-if="displayItems.length && subview === 'query'" class="dt-summary">
       <span class="s">共 <b>{{ stats.total }}</b> 条</span>
       <span class="s acc">未同步 <b>{{ stats.unsynced }}</b></span>
       <span class="s ok">已同步 <b>{{ stats.synced }}</b></span>
@@ -523,13 +528,13 @@ onMounted(async () => {
     <div v-show="subview === 'query'" class="dt-body">
       <div v-if="loadErr" class="empty err">⚠️ {{ loadErr }}</div>
       <div v-else-if="loading" class="empty">⏳ 正在从钉钉拉取…</div>
-      <div v-else-if="!picked && !items.length" class="empty hint">
+      <div v-else-if="!queried" class="empty hint">
         <div class="hint-i">🔗</div>
         <div class="hint-t">按人查询钉钉审批</div>
-        <div class="hint-s">输入手机号或姓名、选时间范围，查出该员工在钉钉里的待处理 / 已处理审批，勾选后同步进「审批管理」。</div>
+        <div class="hint-s">输入手机号或姓名、选时间范围、勾选模板，点「查询」——一次查回该员工的待处理 / 已处理 / 发起，切页签即时看，勾选后可转为审批记录供排款。</div>
       </div>
-      <div v-else-if="!items.length" class="empty">
-        <div>该员工在此范围内无「{{ STATUS.find(s => s.v === status).l }}」的审批</div>
+      <div v-else-if="!displayItems.length" class="empty">
+        <div>该员工在此范围内无「{{ STATUS.find(s => s.v === status).l }}」的审批<span v-if="items.length">（其他口径共 {{ items.length }} 条，切页签查看）</span></div>
         <!-- 逐模板诊断：拉到多少实例、其中符合当前口径多少 → 一眼看穿卡在哪 -->
         <div v-if="tplStats.length" class="diag">
           <div class="diag-h">本次查询逐模板情况</div>
@@ -557,7 +562,7 @@ onMounted(async () => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="i in items" :key="i.instance_id" :class="{ sel: sel.has(i.instance_id) }"
+            <tr v-for="i in displayItems" :key="i.instance_id" :class="{ sel: sel.has(i.instance_id) }"
                 @dblclick="openDetail(i)" title="双击查看单据详情">
               <td><input type="checkbox" class="cbx" :checked="sel.has(i.instance_id)" @change="toggle(i.instance_id)" /></td>
               <td class="ttlcell">
@@ -589,31 +594,35 @@ onMounted(async () => {
     <Transition name="bb">
       <div v-if="selCount" class="batchbar">
         <span class="n">已选 <b>{{ selCount }}</b> 条</span>
-        <button class="bb primary" :disabled="syncing" @click="openPreview">同步至审批管理</button>
+        <button class="bb primary" :disabled="syncing" @click="openPreview">转为审批记录（供排款）</button>
         <button class="bb ghost" :disabled="syncing" @click="refreshStatus">刷新选中状态</button>
         <button class="bb x" @click="clearSel">✕</button>
       </div>
     </Transition>
 
-    <!-- 同步预览弹窗 -->
+    <!-- 转为审批记录预览弹窗 -->
     <Teleport to="body">
       <div v-if="previewOpen" class="scrim" @click.self="previewOpen = false">
         <div class="modal">
           <div class="m-head">
-            <h3>同步至审批管理 · 预览</h3>
-            <p>按钉钉实例 ID 去重：已存在的更新状态/金额，其余新建。</p>
+            <h3>转为审批记录 · 预览</h3>
+            <p>把所选钉钉审批转成「审批管理」记录供排款。按实例去重：已存在的更新，其余新建。</p>
           </div>
           <div class="m-body">
             <div class="conflict">
               <span>ℹ</span>
-              <span>共 <b>{{ selCount }}</b> 条：<b>{{ newCount }}</b> 条新建、<b>{{ updCount }}</b> 条更新。字段映射：申请人 / 部门 / 金额 / 收款方 / 摘要按通用规则从钉钉表单提取，原始表单整单留存。</span>
+              <span>共 <b>{{ selCount }}</b> 条：<b>{{ newCount }}</b> 新建、<b>{{ updCount }}</b> 更新。
+                其中 <b>{{ approvedCount }}</b> 条钉钉「已通过」→ 转入即为<b>审批通过</b>、可直接排款；
+                其余（审批中/拒绝）转入对应状态，通过后再排款。
+                字段：申请人/部门/金额/收款方/摘要自动映射，原始表单整单留存。</span>
             </div>
             <table class="mtable">
-              <thead><tr><th>钉钉审批</th><th class="r">金额</th><th>处理</th></tr></thead>
+              <thead><tr><th>钉钉审批</th><th class="r">金额</th><th>钉钉状态</th><th>处理</th></tr></thead>
               <tbody>
                 <tr v-for="i in selectedItems" :key="i.instance_id">
-                  <td><div class="ttl">{{ i.title }}</div><div class="sub">{{ i.applicant }} · {{ i.department }}</div></td>
+                  <td><div class="ttl">{{ i.title }}</div><div class="sub">{{ i.applicant }} · {{ i.department }} · {{ i.payee }}</div></td>
                   <td class="r amt">¥{{ Number(i.amount).toLocaleString('zh-CN', { minimumFractionDigits: 2 }) }}</td>
+                  <td><span class="pill sm" :class="'p-' + DING[i.ding_status][0]">{{ DING[i.ding_status][1] }}</span></td>
                   <td><span class="tag" :class="i.synced ? 'upd' : 'new'">{{ i.synced ? '更新' : '新建' }}</span></td>
                 </tr>
               </tbody>
@@ -621,7 +630,7 @@ onMounted(async () => {
           </div>
           <div class="m-foot">
             <button class="btn" @click="previewOpen = false">取消</button>
-            <button class="btn primary" :disabled="syncing" @click="doSync">{{ syncing ? '同步中…' : `确认同步 ${selCount} 条` }}</button>
+            <button class="btn primary" :disabled="syncing" @click="doSync">{{ syncing ? '转入中…' : `确认转入 ${selCount} 条` }}</button>
           </div>
         </div>
       </div>
@@ -846,8 +855,9 @@ onMounted(async () => {
 .dt-tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border, #eadfd2); }
 .dt-tab { border: none; background: none; padding: 11px 16px; font-size: 14px; font-weight: 650; color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; border-bottom: 2.5px solid transparent; margin-bottom: -1px; }
 .dt-tab.on { color: var(--primary, #1565c0); border-bottom-color: var(--primary, #1565c0); }
-.tab-stale { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--warn, #c47d0a); margin-left: 12px; align-self: center; }
-.tab-refresh { border: 1px solid var(--warn, #c47d0a); background: none; color: var(--warn, #c47d0a); border-radius: 6px; padding: 2px 10px; font-size: 12px; cursor: pointer; font-family: inherit; }
+.pill.sm { font-size: 11px; padding: 2px 7px; }
+.tab-n { margin-left: 5px; font-size: 11px; background: var(--surface-2, rgba(160,120,80,.12)); color: inherit; border-radius: 9px; padding: 0 6px; }
+.dt-tab.on .tab-n { background: var(--primary, #1565c0); color: #fff; }
 
 .dt-summary { display: flex; align-items: center; gap: 15px; padding: 10px 16px; border-bottom: 1px solid var(--border, #eadfd2); flex-wrap: wrap; }
 .dt-summary .s { font-size: 13px; color: var(--text, #4a3322); }
