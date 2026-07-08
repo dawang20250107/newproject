@@ -174,10 +174,14 @@ async function runQuery() {
     scanned.value = r.data?.templates_scanned || []
     tplStats.value = r.data?.template_stats || []
     queried.value = true
+    queriedStatus.value = status.value    // 记录本次结果对应的口径
   } catch (e) { loadErr.value = e?.msg || e?.error || '查询失败'; items.value = [] }
   finally { loading.value = false }
 }
-function onStatusTab(v) { status.value = v; if (picked.value) runQuery() }
+// 切换口径只改选择、不自动查询——避免反复触发慢查询；结果与所选口径不一致时给出提示
+const queriedStatus = ref('')
+const statusStale = computed(() => queried.value && items.value.length > 0 && status.value !== queriedStatus.value)
+function onStatusTab(v) { status.value = v }
 
 // ── 勾选 ──────────────────────────────────────────────────────────────────
 function toggle(id) { const s = new Set(sel.value); s.has(id) ? s.delete(id) : s.add(id); sel.value = s }
@@ -282,6 +286,7 @@ async function deleteScheme(s) {
 const detailOpen = ref(false)
 const detail = ref(null)
 const detailLoading = ref(false)
+const showRaw = ref(false)
 const DFLOW = {   // 操作类型 → 中文 + 色
   START_PROCESS_INSTANCE: ['发起', 'st'], EXECUTE_TASK_NORMAL: ['审批', 'ap'],
   EXECUTE_TASK_AGENT: ['代审批', 'ap'], FINISH_PROCESS_INSTANCE: ['结束', 'fi'],
@@ -483,9 +488,12 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- 状态页签 -->
+    <!-- 状态页签（切换只改口径，不自动查询；需手动点查询刷新）-->
     <div v-show="subview === 'query'" class="dt-tabs">
       <button v-for="s in STATUS" :key="s.v" :class="['dt-tab', { on: status === s.v }]" @click="onStatusTab(s.v)">{{ s.l }}</button>
+      <span v-if="statusStale" class="tab-stale">当前结果为「{{ STATUS.find(s => s.v === queriedStatus)?.l }}」，点「查询」刷新为「{{ STATUS.find(s => s.v === status)?.l }}」
+        <button class="tab-refresh" @click="runQuery()">立即查询</button>
+      </span>
     </div>
 
     <!-- 汇总条 + 快捷选 -->
@@ -665,6 +673,22 @@ onMounted(async () => {
                 </li>
                 <li v-if="!detail.flow.length" class="ding-empty">无审批流水</li>
               </ol>
+
+              <!-- 调试：钉钉原始字段（名/类型/值）——金额或摘要不对时，把这块发我可精确定位 -->
+              <div class="ding-sec dbg-h">
+                字段调试 <button class="dbg-t" @click="showRaw = !showRaw">{{ showRaw ? '收起' : '展开' }}</button>
+              </div>
+              <div v-if="showRaw" class="dbg-wrap">
+                <table class="dbg-t2">
+                  <thead><tr><th>字段名</th><th>类型</th><th>原始值</th></tr></thead>
+                  <tbody>
+                    <tr v-for="(fld, idx) in detail.form" :key="idx">
+                      <td>{{ fld.name }}</td><td class="mono">{{ fld.type || '—' }}</td>
+                      <td class="mono">{{ String(fld.value).slice(0, 120) || '(空)' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </template>
         </div>
@@ -712,6 +736,13 @@ onMounted(async () => {
 .ding-meta span { font-size: 13.5px; color: var(--text, #4a3322); font-weight: 600; }
 .ding-meta .amt-big span { font-size: 18px; font-weight: 800; color: var(--primary, #1565c0); }
 .ding-sec { font-size: 12px; font-weight: 800; color: var(--muted, #9b8070); margin: 18px 0 8px; padding-bottom: 5px; border-bottom: 1px dashed var(--border, #eadfd2); }
+.dbg-h { display: flex; align-items: center; gap: 8px; }
+.dbg-t { border: 1px solid var(--border, #eadfd2); background: none; color: var(--muted, #9b8070); border-radius: 5px; padding: 1px 8px; font-size: 11px; cursor: pointer; font-family: inherit; }
+.dbg-wrap { overflow-x: auto; }
+.dbg-t2 { border-collapse: collapse; font-size: 11.5px; width: 100%; }
+.dbg-t2 th, .dbg-t2 td { border: 1px solid var(--border, #eadfd2); padding: 3px 7px; text-align: left; vertical-align: top; }
+.dbg-t2 th { background: var(--panel-2, #faf6f0); color: var(--muted, #9b8070); }
+.dbg-t2 .mono { font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; }
 .ding-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; }
 .ding-fld { display: flex; flex-direction: column; gap: 2px; }
 .ding-fld.wide { grid-column: 1 / -1; }
@@ -805,6 +836,8 @@ onMounted(async () => {
 .dt-tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border, #eadfd2); }
 .dt-tab { border: none; background: none; padding: 11px 16px; font-size: 14px; font-weight: 650; color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; border-bottom: 2.5px solid transparent; margin-bottom: -1px; }
 .dt-tab.on { color: var(--primary, #1565c0); border-bottom-color: var(--primary, #1565c0); }
+.tab-stale { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--warn, #c47d0a); margin-left: 12px; align-self: center; }
+.tab-refresh { border: 1px solid var(--warn, #c47d0a); background: none; color: var(--warn, #c47d0a); border-radius: 6px; padding: 2px 10px; font-size: 12px; cursor: pointer; font-family: inherit; }
 
 .dt-summary { display: flex; align-items: center; gap: 15px; padding: 10px 16px; border-bottom: 1px solid var(--border, #eadfd2); flex-wrap: wrap; }
 .dt-summary .s { font-size: 13px; color: var(--text, #4a3322); }

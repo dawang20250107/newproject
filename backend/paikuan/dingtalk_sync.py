@@ -394,6 +394,12 @@ def _gather_templates():
     return templates, api_err
 
 
+def _cache_usable(c):
+    """本地存档是否可直接复用：终态 + raw 含表单数据（避免早期空存档误当有效）。"""
+    return bool(c and c.is_terminal() and isinstance(c.raw, dict)
+                and c.raw.get('form_component_values'))
+
+
 def _cache_upsert(iid, code, tname, detail):
     """把一条钉钉实例详情落到本地存档（供重复查询直读 + 详情弹窗渲染）。"""
     f = instance_to_fields(detail)
@@ -517,11 +523,11 @@ def dingtalk_query(request):
         synced = {r.dingtalk_instance_id: r for r in ApprovalRecord.objects.filter(
             dingtalk_instance_id__in=ids_only, deleted_at__isnull=True)}
 
-        # ② 本地存档命中：终态实例直接读本地，只对"未缓存/进行中"的去钉钉拉详情（省时）
+        # ② 本地存档命中：终态且"存档含表单数据"才直接读本地；进行中/未缓存/存档无表单
+        #    （历史空存档）都去钉钉重拉，避免早期空存档导致金额/摘要恒为 0/空。
         cache = {c.instance_id: c for c in DingtalkInstance.objects.filter(instance_id__in=ids_only)}
-        cached_hits = sum(1 for iid in ids_only if iid in cache and cache[iid].is_terminal())
-        to_fetch = [(iid, code) for iid, code in inst_ids
-                    if iid not in cache or not cache[iid].is_terminal()]
+        cached_hits = sum(1 for iid in ids_only if _cache_usable(cache.get(iid)))
+        to_fetch = [(iid, code) for iid, code in inst_ids if not _cache_usable(cache.get(iid))]
 
         def _detail(pair):
             iid, code = pair
@@ -621,7 +627,7 @@ def dingtalk_instance(request):
         return err('缺少 instance_id')
     c = DingtalkInstance.objects.filter(instance_id=iid).first()
     detail = None
-    if c and c.is_terminal() and isinstance(c.raw, dict) and c.raw:
+    if _cache_usable(c):        # 终态且含表单 → 直读存档；空存档一律重拉
         detail = c.raw
     else:
         try:
