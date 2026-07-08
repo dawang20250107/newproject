@@ -12,6 +12,7 @@ import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import PillPicker from '../../components/PillPicker.vue'
+import ProjectShortNamePicker from '../../components/ProjectShortNamePicker.vue'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -146,22 +147,21 @@ const editingId = ref(null)
 const saving = ref(false)
 const form = reactive({ delivery_dept: '', receipt_date: todayCST(), amount: '', source: '项目收款', project_id: '', method: '现金', account: '', payer: '', notes: '' })
 const isProjectSource = computed(() => form.source === '项目收款')
-const projects = ref([])
-async function loadProjects() {
-  if (!form.delivery_dept) { projects.value = []; return }
-  try { const d = (await ar.listProjects({ delivery_dept: form.delivery_dept, page_size: 500 })).data || {}; projects.value = d.items || d.results || [] } catch { projects.value = [] }
-}
-watch(() => form.delivery_dept, () => { if (isProjectSource.value) loadProjects() })
-watch(() => form.source, v => { if (v === '项目收款') loadProjects(); else form.project_id = '' })
+const projectKw = ref('')   // 关联项目模糊搜索输入的显示值
+function onProjInput(v) { projectKw.value = v; form.project_id = '' }        // 改动清 id，待选中再设
+function onProjPicked(p) { projectKw.value = p.short_name || p.customer_name || ''; form.project_id = p.id }
+watch(() => form.source, v => { if (v !== '项目收款') { form.project_id = ''; projectKw.value = '' } })
 function openCreate() {
   editingId.value = null
+  projectKw.value = ''
   Object.assign(form, { delivery_dept: filter.dept || depts.value[0] || '', receipt_date: todayCST(), amount: '', source: '项目收款', project_id: '', method: '现金', account: '', payer: '', notes: '' })
-  formOpen.value = true; if (isProjectSource.value) loadProjects()
+  formOpen.value = true
 }
 function openEdit(r) {
   editingId.value = r.id
+  projectKw.value = r.project_short_name || r.project_name || ''
   Object.assign(form, { delivery_dept: r.delivery_dept, receipt_date: r.receipt_date, amount: r.amount, source: r.source, project_id: r.project_id || '', method: r.method, account: r.account, payer: r.payer, notes: r.notes })
-  formOpen.value = true; if (isProjectSource.value) loadProjects()
+  formOpen.value = true
 }
 async function save() {
   if (!form.delivery_dept) { toast.error('请选择事业部'); return }
@@ -288,7 +288,8 @@ function resetFilters() { filter.source = ''; filter.method = ''; filter.dept = 
               <PillPicker v-model="form.source" :presets="sourcePresets" placeholder="自定义来源，如 政府补贴" />
             </div>
             <div v-if="isProjectSource" class="frow"><label>关联项目</label>
-              <select v-model="form.project_id" class="inp"><option value="">（不关联）</option><option v-for="p in projects" :key="p.id" :value="p.id">{{ p.short_name || p.customer_name }}</option></select>
+              <ProjectShortNamePicker :modelValue="projectKw" placeholder="模糊搜索项目台账（留空=不关联）"
+                                      @update:modelValue="onProjInput" @picked="onProjPicked" />
             </div>
             <div class="frow"><label>收款方式</label>
               <PillPicker v-model="form.method" :presets="methodPresets" placeholder="自定义方式，如 支付宝" />
