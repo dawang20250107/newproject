@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import api from '../api/index.js'
 import { useToast } from '../composables/useToast.js'
 import { confirmDlg } from '../composables/confirm.js'
@@ -71,6 +71,8 @@ const tplLoading = ref(false)
 const tplErr = ref('')
 const tplFilter = ref('')
 const FINANCE_KW = /报销|付款|费用|请款|借款|备用金|采购|货款|结算|差旅|招待|电汇|打款/
+const DEFAULT_TPL = '其他行政费用报销单'   // 默认只勾这一个
+let _hasRestoredSel = false                // 有本地持久化选择时不套用默认
 const tplShown = computed(() => {
   const q = tplFilter.value.trim()
   return q ? templates.value.filter(t => (t.name || t.process_code).includes(q)) : templates.value
@@ -92,11 +94,16 @@ async function loadTemplates() {
   try {
     const r = await api.post('/dingtalk/templates', {}, { timeout: 60000 })
     templates.value = r.data?.templates || []
-    // 默认预选财务相关模板；没有命中则不预选，交用户勾选（避免默认全选一大片）
-    const fin = templates.value.filter(t => FINANCE_KW.test(t.name || '')).map(t => t.process_code)
-    tplSel.value = new Set(fin)
+    if (!_hasRestoredSel) defaultSelect()   // 无持久化选择时才套默认
   } catch (e) { tplErr.value = e?.msg || e?.error || '获取模板失败' }
   finally { tplLoading.value = false }
+}
+// 默认只勾"其他行政费用报销单"；找不到则退而求其次勾第一个含"报销"的
+function defaultSelect() {
+  const t = templates.value.find(x => (x.name || '') === DEFAULT_TPL)
+    || templates.value.find(x => (x.name || '').includes(DEFAULT_TPL))
+    || templates.value.find(x => (x.name || '').includes('报销'))
+  tplSel.value = new Set(t ? [t.process_code] : [])
 }
 function toggleTpl(code) {
   const s = new Set(tplSel.value)
@@ -332,7 +339,47 @@ function fldDisplay(fld) {
 const fldIsTable = (fld) => (fld.type === 'TableField') || (typeof fld.value === 'string' && /^\s*\[\s*{/.test(fld.value))
 const fldIsWide = (fld) => fldIsTable(fld) || String(fldDisplay(fld)).length > 24
 
-onMounted(() => { loadTemplates(); loadSchemes() })   // 开面板即加载模板 + 我的方案
+// ── 状态持久化：勾选模板/人员/时间/口径/方案 存本地，重进界面自动恢复并复现上次查询 ──
+const STATE_KEY = 'dt_query_state_v1'
+function saveState() {
+  try {
+    const picks = templates.value.filter(t => tplSel.value.has(t.process_code))
+      .map(t => ({ process_code: t.process_code, name: t.name || t.process_code }))
+    const have = new Set(picks.map(p => p.process_code))
+    for (const c of tplSel.value) if (!have.has(c)) picks.push({ process_code: c, name: c })
+    localStorage.setItem(STATE_KEY, JSON.stringify({
+      personMode: personMode.value, personInput: personInput.value, picked: picked.value,
+      range: { start: range.start, end: range.end }, status: status.value,
+      curSchemeId: curSchemeId.value, tpls: picks,
+    }))
+  } catch { /* ignore */ }
+}
+const _saved = (() => { try { return JSON.parse(localStorage.getItem(STATE_KEY) || 'null') } catch { return null } })()
+if (_saved) {   // 先同步恢复标量输入（在 watch 注册前）
+  personMode.value = _saved.personMode || 'mobile'
+  personInput.value = _saved.personInput || ''
+  picked.value = _saved.picked || null
+  if (_saved.range) { range.start = _saved.range.start || range.start; range.end = _saved.range.end || range.end }
+  status.value = _saved.status || 'todo'
+  curSchemeId.value = _saved.curSchemeId ?? null
+  if (_saved.tpls?.length) _hasRestoredSel = true
+}
+watch([
+  () => [...tplSel.value].join(','), () => personMode.value, () => personInput.value,
+  () => picked.value && picked.value.userid, () => range.start, () => range.end,
+  () => status.value, () => curSchemeId.value,
+], saveState)
+
+onMounted(async () => {
+  await loadTemplates()
+  if (_saved?.tpls?.length) {   // 恢复勾选（含方案带入、当前企业列表里没有的也并进来）
+    const have = new Set(templates.value.map(t => t.process_code))
+    for (const t of _saved.tpls) if (!have.has(t.process_code)) templates.value.push({ ...t, dir_name: t.dir_name || '已选' })
+    tplSel.value = new Set(_saved.tpls.map(t => t.process_code))
+  }
+  loadSchemes()
+  if (picked.value && tplSel.value.size) runQuery()   // 复现上次查询结果
+})
 </script>
 
 <template>
@@ -734,7 +781,7 @@ onMounted(() => { loadTemplates(); loadSchemes() })   // 开面板即加载模�
 .diag-hint { margin-top: 4px; color: var(--text-2, #6b5a49); }
 .diag-tpl { margin-top: 4px; }
 /* 模板勾选区 */
-.dt-tpls { padding: 12px 18px; border-bottom: 1px solid var(--border, #eadfd2); background: var(--panel-2, #faf6f0); }
+.dt-tpls { padding: 12px 18px; border-bottom: 1px solid var(--border, #eadfd2); background: var(--panel-2, #faf6f0); flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .tpls-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .tpls-lbl { font-size: 13px; font-weight: 700; color: var(--text, #4a3322); }
 .tpls-info { font-size: 12.5px; color: var(--muted, #9b8070); }
@@ -744,7 +791,7 @@ onMounted(() => { loadTemplates(); loadSchemes() })   // 开面板即加载模�
 .tpls-filter { border: 1px solid var(--border, #eadfd2); border-radius: 6px; padding: 3px 9px; font-size: 12.5px; width: 150px; font-family: inherit; background: var(--panel, #fff); color: inherit; }
 .tpls-op.refresh { color: var(--muted, #9b8070); }
 .tpls-err { font-size: 12.5px; color: var(--danger, #d64545); }
-.tpls-scroll { max-height: 210px; overflow-y: auto; }
+.tpls-scroll { flex: 1; min-height: 120px; overflow-y: auto; }
 .tpls-group + .tpls-group { margin-top: 8px; }
 .grp-h { font-size: 11.5px; font-weight: 700; color: var(--muted, #9b8070); margin: 4px 0 4px; display: flex; align-items: center; gap: 6px; }
 .grp-n { background: var(--chip-bg, #f0e9e0); color: var(--text, #6a5641); border-radius: 8px; padding: 0 6px; font-size: 10.5px; font-weight: 600; }
