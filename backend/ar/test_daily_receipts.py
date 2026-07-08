@@ -87,6 +87,15 @@ class DailyReceiptTests(TestCase):
         self.assertEqual(r.json()['data']['deleted'], 2)
         self.assertEqual(DailyReceipt.objects.count(), 1)
 
+    def test_export_xlsx(self):
+        DailyReceipt.objects.create(delivery_dept=self.dept, receipt_date=datetime.date(2026, 6, 15),
+                                    amount=Decimal('300'), source='项目收款', method='现金')
+        r = self.client.get('/api/pk/ar/daily-receipts/export?start_date=2026-06-01&end_date=2026-06-30',
+                            **self._auth(self.admin))
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('spreadsheet', r['Content-Type'])
+        self.assertTrue(len(r.content) > 100)
+
     def test_counts_into_cashflow(self):
         DailyReceipt.objects.create(delivery_dept=self.dept, receipt_date=datetime.date(2026, 6, 15),
                                     amount=Decimal('700'), source='预付退款', method='银行转账')

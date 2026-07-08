@@ -13,6 +13,7 @@ import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import PillPicker from '../../components/PillPicker.vue'
 import ProjectShortNamePicker from '../../components/ProjectShortNamePicker.vue'
+import { downloadBlob } from '../../utils/download.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -185,6 +186,19 @@ async function bulkDelete() {
   catch (e) { toast.error(e?.msg || e?.error || '删除失败') }
 }
 function resetFilters() { filter.source = ''; filter.method = ''; filter.dept = ''; filter.q = ''; applyPreset('thismonth') }
+const exporting = ref(false)
+async function exportXlsx(selectedOnly = false) {
+  if (!items.value.length && !selectedOnly) { toast.warn('无可导出的数据'); return }
+  exporting.value = true
+  try {
+    const p = { start_date: filter.start, end_date: filter.end, source: filter.source || undefined, method: filter.method || undefined, q: filter.q || undefined, depts: filter.dept || undefined }
+    if (selectedOnly && hasSel.value) p.ids = [...selectedIds.value].join(',')
+    const res = await ar.exportDailyReceipts(p)
+    const tag = selectedOnly ? `选中${selCount.value}笔` : `${filter.start}_${filter.end}`
+    downloadBlob(res, `日常收款_${tag}.xlsx`)
+  } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
+  finally { exporting.value = false }
+}
 </script>
 
 <template>
@@ -198,6 +212,7 @@ function resetFilters() { filter.source = ''; filter.method = ''; filter.dept = 
         <select v-model="filter.source" class="inp mini"><option value="">全部来源</option><option v-for="s in Object.keys(bySource)" :key="s" :value="s">{{ s }}</option></select>
         <select v-model="filter.method" class="inp mini"><option value="">全部方式</option><option v-for="m in Object.keys(byMethod)" :key="m" :value="m">{{ m }}</option></select>
         <input v-model="filter.q" class="inp search" placeholder="搜付款方 / 摘要 / 项目" @keyup.enter="load" />
+        <button class="btn ghost sm" :disabled="exporting" @click="exportXlsx(false)">{{ exporting ? '导出中…' : '⬇ 导出' }}</button>
         <button v-if="canWrite" class="btn-hero" @click="openCreate"><span>＋</span> 新增收款</button>
       </div>
       <!-- 时间维度：单行，超宽横向滚动 -->
@@ -247,6 +262,7 @@ function resetFilters() { filter.source = ''; filter.method = ''; filter.dept = 
     <div class="dr-footer">
       <template v-if="hasSel">
         <span class="f-sel">已选 <b>{{ selCount }}</b> 笔 · 合计 <b class="hl">{{ money(selSum) }}</b></span>
+        <button class="f-btn" :disabled="exporting" @click="exportXlsx(true)">导出选中</button>
         <button v-if="canWrite" class="f-btn del" @click="bulkDelete">批量删除</button>
         <button class="f-btn" @click="clearSel">取消选择</button>
         <span class="grow"></span>

@@ -127,6 +127,7 @@ urlpatterns = [
 
     # 日常收款 (daily receipts)
     path('daily-receipts', views.daily_receipts),
+    path('daily-receipts/export', views.daily_receipts_export),
     path('daily-receipts/bulk-delete', views.daily_receipts_bulk_delete),
     path('daily-receipts/<int:pk>', views.daily_receipt_detail),
 

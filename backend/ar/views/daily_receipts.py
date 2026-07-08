@@ -62,6 +62,58 @@ def _clean_payload(request, data):
     return fields, project, None
 
 
+def _filtered_qs(request):
+    """按可见部门 + 来源/方式/项目/日期/搜索过滤（列表与导出共用）。"""
+    qs = DailyReceipt.objects.filter(delivery_dept__in=_visible_depts(request)).select_related('project')
+    src = (request.GET.get('source') or '').strip()
+    if src:
+        qs = qs.filter(source=src)
+    method = (request.GET.get('method') or '').strip()
+    if method:
+        qs = qs.filter(method=method)
+    pid = (request.GET.get('project_id') or '').strip()
+    if pid.isdigit():
+        qs = qs.filter(project_id=int(pid))
+    s = _normalize_date(request.GET.get('start_date'))
+    e = _normalize_date(request.GET.get('end_date'))
+    if s:
+        qs = qs.filter(receipt_date__gte=s)
+    if e:
+        qs = qs.filter(receipt_date__lte=e)
+    kw = (request.GET.get('q') or '').strip()
+    if kw:
+        qs = qs.filter(Q(payer__icontains=kw) | Q(notes__icontains=kw)
+                       | Q(source__icontains=kw) | Q(project__short_name__icontains=kw)
+                       | Q(project__customer_name__icontains=kw))
+    return qs
+
+
+@csrf_exempt
+@pk_required()
+def daily_receipts_export(request):
+    """GET → 导出当前筛选（或 ?ids= 选中）的收款为 Excel。"""
+    denied = _page_denied(request, _PAGE)
+    if denied:
+        return denied
+    qs = _filtered_qs(request)
+    ids = (request.GET.get('ids') or '').strip()
+    if ids:
+        id_list = [int(x) for x in ids.split(',') if x.strip().isdigit()]
+        qs = qs.filter(id__in=id_list)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '日常收款'
+    headers = ['收款日期', '事业部', '收款来源', '关联项目', '收款方式', '收款账户',
+               '付款方', '收款金额(元)', '摘要/备注']
+    _header_row(ws, headers)
+    for r in qs.order_by('-receipt_date', '-id'):
+        proj = (r.project.short_name or r.project.customer_name) if r.project else ''
+        ws.append([str(r.receipt_date), r.delivery_dept, r.source, proj, r.method,
+                   r.account, r.payer, float(r.amount), r.notes])
+    _style_export_ws(ws, money_headers=('收款金额(元)',))
+    return _export_response(wb, f'日常收款_{timezone.localdate()}.xlsx')
+
+
 @csrf_exempt
 @pk_required()
 def daily_receipts(request):
@@ -71,28 +123,7 @@ def daily_receipts(request):
         return denied
 
     if request.method == 'GET':
-        depts = _visible_depts(request)
-        qs = DailyReceipt.objects.filter(delivery_dept__in=depts).select_related('project', 'created_by')
-        src = (request.GET.get('source') or '').strip()
-        if src:
-            qs = qs.filter(source=src)
-        method = (request.GET.get('method') or '').strip()
-        if method:
-            qs = qs.filter(method=method)
-        pid = (request.GET.get('project_id') or '').strip()
-        if pid.isdigit():
-            qs = qs.filter(project_id=int(pid))
-        s = _normalize_date(request.GET.get('start_date'))
-        e = _normalize_date(request.GET.get('end_date'))
-        if s:
-            qs = qs.filter(receipt_date__gte=s)
-        if e:
-            qs = qs.filter(receipt_date__lte=e)
-        kw = (request.GET.get('q') or '').strip()
-        if kw:
-            qs = qs.filter(Q(payer__icontains=kw) | Q(notes__icontains=kw)
-                           | Q(source__icontains=kw) | Q(project__short_name__icontains=kw)
-                           | Q(project__customer_name__icontains=kw))
+        qs = _filtered_qs(request).select_related('created_by')
         total = _dec(qs.aggregate(s=Sum('amount'))['s'])
         by_method = {r['method'] or '未填': str(_dec(r['s'])) for r in
                      qs.values('method').annotate(s=Sum('amount'))}
