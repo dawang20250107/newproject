@@ -103,6 +103,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 const totals = computed(() => cfData.value?.totals)
 const _sum = arr => (arr || []).reduce((a, b) => a + b, 0)
 const sumColl = computed(() => _sum(totals.value?.collected))
+const sumDaily = computed(() => _sum(totals.value?.daily_receipts))
 const sumPaid = computed(() => _sum(totals.value?.paid))
 const sumAdvRecv = computed(() => _sum(totals.value?.advance_received))
 const sumAdvPaid = computed(() => _sum(totals.value?.advance_paid))
@@ -158,10 +159,12 @@ const mLabels = () => (cfData.value?.months || []).map(ym => ym.slice(5) + '月'
 const bridgeOption = computed(() => {
   if (!cfData.value) return null
   const t = cfData.value.totals
-  const inflowC = _sum(t.collected), inflowA = _sum(t.advance_received)
+  const inflowC = _sum(t.collected), inflowA = _sum(t.advance_received), inflowD = _sum(t.daily_receipts)
   const outflowP = _sum(t.paid), outflowA = _sum(t.advance_paid)
   const steps = [
-    { name: '实收回款', d: inflowC }, { name: '预收款', d: inflowA },
+    { name: '实收回款', d: inflowC },
+    ...(inflowD ? [{ name: '日常收款', d: inflowD }] : []),
+    { name: '预收款', d: inflowA },
     { name: '实付付款', d: -outflowP }, { name: '预付款', d: -outflowA },
   ]
   const cats = steps.map(s => s.name).concat('期末净现金')
@@ -241,6 +244,8 @@ const breathOption = computed(() => {
       { name: '实收', type: 'bar', stack: 'in', barMaxWidth: 26, data: t.collected,
         itemStyle: { color: gradBar('#81c784', '#2e7d32') },
         markArea: alertBands.length ? { silent: true, data: alertBands } : undefined },
+      { name: '日常收款', type: 'bar', stack: 'in', barMaxWidth: 26, data: t.daily_receipts || [],
+        itemStyle: { color: gradBar('#a5d6a7', '#66bb6a') } },
       { name: '预收', type: 'bar', stack: 'in', barMaxWidth: 26, data: t.advance_received || [],
         itemStyle: { color: gradBar('#c8e6c9', '#81c784'), borderRadius: [4, 4, 0, 0] } },
       { name: '实付', type: 'bar', stack: 'out', barMaxWidth: 26, data: neg(t.paid),
@@ -312,7 +317,7 @@ const runwayOption = computed(() => {
 const deptBalanceOption = computed(() => {
   if (!showDeptComparison.value) return null
   const rows = cfData.value.by_dept.map(d => {
-    const inflow = _sum(d.collected) + _sum(d.advance_received)
+    const inflow = _sum(d.collected) + _sum(d.daily_receipts) + _sum(d.advance_received)
     const outflow = _sum(d.paid) + _sum(d.advance_paid)
     return { dept: d.dept, inflow, outflow, net: inflow - outflow }
   }).filter(r => r.inflow > 0 || r.outflow > 0)
@@ -396,6 +401,11 @@ const deptBalanceOption = computed(() => {
             <div class="ck-label">预收</div>
             <div class="ck-value">{{ fmtWan(sumAdvRecv) }}</div>
             <div class="ck-sub">客户预付款</div>
+          </div>
+          <div v-if="sumDaily" class="ck-card ck-coll-soft">
+            <div class="ck-label">日常收款</div>
+            <div class="ck-value">{{ fmtWan(sumDaily) }}</div>
+            <div class="ck-sub">项目收款/退款等</div>
           </div>
           <div class="ck-card ck-coll">
             <div class="ck-label">实收</div>
