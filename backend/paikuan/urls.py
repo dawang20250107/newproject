@@ -14,6 +14,7 @@ urlpatterns = [
     path('dingtalk/templates', dingtalk_sync.dingtalk_templates),
     path('dingtalk/query', dingtalk_sync.dingtalk_query),
     path('dingtalk/instance', dingtalk_sync.dingtalk_instance),
+    path('dingtalk/status-sync', dingtalk_sync.dingtalk_status_sync),
     path('dingtalk/sync', dingtalk_sync.dingtalk_sync),
     path('dingtalk/refresh', dingtalk_sync.dingtalk_refresh),
     # 通用列表筛选方案（表格方案基座）：私有/公共 + 默认，按 module 区分列表页

@@ -429,6 +429,46 @@ class SyncEndpointTests(TestCase):
         # 落档后二次读取直接命中本地（终态）
         self.assertEqual(DingtalkInstance.objects.filter(instance_id='INST-1').count(), 1)
 
+    @mock.patch('paikuan.dingtalk_client.get_instance')
+    def test_status_sync_by_instance_id_and_cache(self, m_get):
+        # 记录A：已存 instance_id → 直连；记录B：仅21位编号 → 按存档匹配；记录C：非21位 → 跳过
+        m_get.side_effect = lambda iid: {
+            '_instance_id': iid, 'business_id': '', 'title': 't', 'status': 'COMPLETED',
+            'result': 'agree', 'form_component_values': [], 'operation_records': [],
+            'approver_userids': [], 'originator_userid': ''}
+        a = ApprovalRecord.objects.create(applicant='甲', department='运输事业部',
+            approval_number='202603171454000116103', summary='s', amount=Decimal('1'),
+            payee='p', status='pending', dingtalk_instance_id='IID-A')
+        b = ApprovalRecord.objects.create(applicant='乙', department='运输事业部',
+            approval_number='202603171454000116104', summary='s', amount=Decimal('1'),
+            payee='p', status='pending')
+        c = ApprovalRecord.objects.create(applicant='丙', department='运输事业部',
+            approval_number='NOTDING', summary='s', amount=Decimal('1'), payee='p', status='pending')
+        DingtalkInstance.objects.create(instance_id='IID-B', process_code='PC',
+            business_id='202603171454000116104', ding_status='RUNNING')
+        r = self._post('/api/pk/dingtalk/status-sync', {'record_ids': [a.id, b.id, c.id]})
+        d = r.json()['data']
+        self.assertEqual(d['updated'], 2)                       # A、B 由 pending → approved
+        a.refresh_from_db(); b.refresh_from_db(); c.refresh_from_db()
+        self.assertEqual(a.status, 'approved')
+        self.assertEqual(b.status, 'approved')
+        self.assertEqual(b.dingtalk_instance_id, 'IID-B')       # 顺带回填实例ID
+        self.assertEqual(c.status, 'pending')                   # 非21位未动
+        reasons = ' '.join(s['reason'] for s in d['skipped'])
+        self.assertIn('非21位', reasons)
+
+    @mock.patch('paikuan.dingtalk_client.get_instance')
+    def test_status_sync_unresolvable_skipped(self, m_get):
+        # 21位编号但无 instance_id 且存档里没有 → 跳过并提示
+        rec = ApprovalRecord.objects.create(applicant='丁', department='运输事业部',
+            approval_number='202603171454000116999', summary='s', amount=Decimal('1'),
+            payee='p', status='pending')
+        r = self._post('/api/pk/dingtalk/status-sync', {'record_ids': [rec.id]})
+        d = r.json()['data']
+        self.assertEqual(d['updated'], 0)
+        self.assertEqual(m_get.call_count, 0)
+        self.assertIn('未找到对应钉钉实例', d['skipped'][0]['reason'])
+
     @mock.patch('paikuan.dingtalk_client.user_detail', return_value={'name': '郭勇'})
     @mock.patch('paikuan.dingtalk_client.userid_by_mobile', return_value='U-guoyong')
     def test_resolve_user_by_mobile(self, m_uid, m_det):

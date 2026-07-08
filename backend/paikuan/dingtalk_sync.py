@@ -629,6 +629,84 @@ def dingtalk_instance(request):
     })
 
 
+_DING_NO_RE = re.compile(r'^\d{21}$')
+
+
+def is_dingtalk_no(s):
+    """审批编号是否为 21 位标准钉钉编号（businessId）。"""
+    return bool(_DING_NO_RE.match((s or '').strip()))
+
+
+@csrf_exempt
+@pk_required()
+def dingtalk_status_sync(request):
+    """POST {record_ids:[...]} → 对审批管理里"审批编号为21位钉钉编号"的记录，
+    定位钉钉实例（记录已存 instance_id，或按编号在本地存档匹配）后拉最新状态回写。
+    非21位编号、或找不到对应实例的记录，均跳过并给出原因。"""
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    body = parse_body(request)
+    ids = body.get('record_ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请提供要同步的记录')
+    if len(ids) > 200:
+        return err('单次上限 200 条，请缩小选择范围')
+    recs = list(ApprovalRecord.objects.filter(id__in=ids, deleted_at__isnull=True))
+    # 编号 → 实例ID 映射（来自本地存档）
+    biz = [r.approval_number for r in recs if is_dingtalk_no(r.approval_number)]
+    cache_map = ({c.business_id: c.instance_id for c in
+                  DingtalkInstance.objects.filter(business_id__in=biz).exclude(instance_id='')}
+                 if biz else {})
+
+    tasks, skipped = [], []
+    for r in recs:
+        if not is_dingtalk_no(r.approval_number):
+            skipped.append({'id': r.id, 'no': r.approval_number or '(空)',
+                            'reason': '审批编号非21位钉钉标准格式，已跳过'})
+            continue
+        iid = (r.dingtalk_instance_id or '').strip() or cache_map.get(r.approval_number)
+        if not iid:
+            skipped.append({'id': r.id, 'no': r.approval_number,
+                            'reason': '未找到对应钉钉实例，请先在「钉钉同步」页查询过该单据'})
+            continue
+        tasks.append((r, iid))
+
+    def _fetch(pair):
+        r, iid = pair
+        try:
+            return r, iid, dc.get_instance(iid), None
+        except DingTalkError as ex:
+            return r, iid, None, str(ex)
+
+    updated, ok_count = 0, 0
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(_fetch, tasks))
+    for r, iid, detail, ferr in results:
+        if ferr:
+            skipped.append({'id': r.id, 'no': r.approval_number, 'reason': ferr[:120]})
+            continue
+        ok_count += 1
+        new_status = map_status(detail.get('status'), detail.get('result'))
+        fields = []
+        if r.status != new_status:
+            r.status = new_status
+            fields.append('status')
+            updated += 1
+        if not (r.dingtalk_instance_id or '').strip():   # 顺带回填实例ID，下次直连
+            r.dingtalk_instance_id = iid
+            fields.append('dingtalk_instance_id')
+        if fields:
+            r.save(update_fields=fields + ['updated_at'])
+    unchanged = ok_count - updated
+    msg = f'状态更新 {updated} 条'
+    if unchanged:
+        msg += f'、无变化 {unchanged} 条'
+    if skipped:
+        msg += f'、跳过 {len(skipped)} 条'
+    return ok({'updated': updated, 'unchanged': unchanged, 'skipped': skipped, 'message': msg})
+
+
 def _upsert(detail, actor):
     """按 dingtalk_instance_id 落库：存在则更新，否则新建。返回 ('created'|'updated', rec)。"""
     f = instance_to_fields(detail)

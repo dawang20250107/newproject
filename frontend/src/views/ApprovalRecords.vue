@@ -377,6 +377,27 @@ async function deleteOne(rec){
   } catch(e){ toast.error(e?.msg || e?.error || '删除失败') }
 }
 
+// 钉钉状态同步（右键单条 / 批量）：仅对"审批编号为21位标准钉钉编号"的记录，
+// 定位钉钉实例后拉最新状态回写到本系统。非21位或无法定位的自动跳过并给出原因。
+const isDingtalkNo = (s) => /^\d{21}$/.test(String(s || '').trim())
+const dingSyncing = ref(false)
+async function dingtalkStatusSync(ids){
+  if (!ids.length){ toast.warn('请先选择记录'); return }
+  dingSyncing.value = true
+  try{
+    const r = await api.post('/dingtalk/status-sync', { record_ids: ids }, { timeout: 90000 })
+    const d = r.data || {}
+    if (d.skipped?.length) resultDlg({ title: '钉钉状态同步', okLine: d.message, skipped: d.skipped })
+    else toast.success(d.message || '已同步')
+    await load()
+  } catch(e){ toast.error(e?.msg || e?.error || '同步失败') }
+  finally { dingSyncing.value = false }
+}
+// 批量：仅同步选中里编号合规的记录（不合规后端也会跳过并报告）
+const selectedDingSyncable = computed(() =>
+  items.value.filter(i => selectedIds.value.has(i.id) && isDingtalkNo(i.approval_number)))
+function bulkDingtalkSync(){ dingtalkStatusSync([...selectedIds.value]) }
+
 // 批量退回排款：退回所选有已排款记录的排款，已排款归零可重新排款
 const bulkReturning = ref(false)
 async function bulkReturnSchedule(){
@@ -605,6 +626,12 @@ const ctxItems = computed(() => {
     {
       key: 'status', label: '改状态', icon: 'status', hidden: !auth.canCreate,
       children: APR_STATUSES.map(s => ({ key: 'st-' + s.v, label: s.l, icon: 'status', active: i.status === s.v, action: r => updateStatus(r, s.v) })),
+    },
+    {
+      key: 'ding-sync', label: '钉钉状态同步', icon: 'status', hidden: !auth.canCreate,
+      disabled: !isDingtalkNo(i.approval_number),
+      hint: isDingtalkNo(i.approval_number) ? '' : '审批编号非21位钉钉编号',
+      action: r => dingtalkStatusSync([r.id]),
     },
     { key: 'edit', label: '编辑审批记录', icon: 'edit', shortcut: 'E', hidden: !auth.canCreate, disabled: i.archived, action: r => openEdit(r) },
     { key: 'meta', label: '补录二级部门 / 项目', icon: 'cell', action: r => openMeta(r) },
@@ -1002,6 +1029,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <button v-if="auth.canCreate" class="bulk-approve" :disabled="bulkApproving || (!isCrossPageSelection && !selectedApprovable.length)" @click="bulkApprove">{{ bulkApproving ? '审批中…' : (isCrossPageSelection ? '批量通过' : `批量通过（待审 ${selectedApprovable.length} 条）`) }}</button>
       <button v-if="auth.canCreate" class="bulk-act" :disabled="!isCrossPageSelection && !batchSchedSummary.count" @click="openBatchSchedule">{{ isCrossPageSelection ? `批量排款（${selectedCount} 条）` : `批量排款（可排 ${batchSchedSummary.count} 条）` }}</button>
       <button v-if="auth.canCreate && (isCrossPageSelection || selectedWithSchedule.length)" class="bulk-return" :disabled="bulkReturning" @click="bulkReturnSchedule">{{ bulkReturning ? '退回中…' : (isCrossPageSelection ? '批量退回排款' : `批量退回排款（${selectedWithSchedule.length} 条）`) }}</button>
+      <button v-if="auth.canCreate && (isCrossPageSelection || selectedDingSyncable.length)" class="bulk-ding" :disabled="dingSyncing" @click="bulkDingtalkSync">{{ dingSyncing ? '同步中…' : (isCrossPageSelection ? '钉钉状态同步' : `钉钉状态同步（${selectedDingSyncable.length} 条）`) }}</button>
       <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">{{ bulkDeleting ? '删除中…' : `批量删除(${selectedCount})` }}</button>
       <button class="bulk-cancel" @click="clearSelection">取消</button>
     </div>
@@ -1320,6 +1348,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 批量退回按钮 */
 .bulk-return { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--c-warn); color: #fff; }
 .bulk-return:disabled { opacity: .5; cursor: default; }
+.bulk-ding { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: #1565c0; color: #fff; }
+.bulk-ding:disabled { opacity: .5; cursor: default; }
 /* 排款批次明细展开行 */
 .apr-plan-detail-row td { padding: 0; }
 .apr-plan-detail { background: #faf8f6; border-top: 1px solid var(--border); padding: 10px 16px 12px; }
