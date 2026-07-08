@@ -13,6 +13,7 @@ from .views import ok, err, parse_body, pk_required, get_request_perms
 _MODULE_PAGE = {
     'pk_payments': 'payments',
     'pk_approvals': 'approval_records',
+    'dingtalk_query': 'approval_records',   # 钉钉同步查询方案（模板/口径快照），复用审批页权限
     'ar_projects': 'ar_projects',
     'ar_customers': 'ar_projects',   # 客户列表沿用项目页权限
     'ar_advances': 'ar_advance',

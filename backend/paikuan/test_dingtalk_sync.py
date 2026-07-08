@@ -7,7 +7,7 @@ from django.test import Client, TestCase
 
 from paikuan import dingtalk_client as client
 from paikuan import dingtalk_sync as sync
-from paikuan.models import ApprovalRecord, PaikuanUser
+from paikuan.models import ApprovalRecord, DingtalkInstance, PaikuanUser
 from paikuan.views import make_token
 
 # 报销单形态（对照上传的 PDF）
@@ -64,6 +64,29 @@ class MappingTests(TestCase):
             {'name': '总金额', 'value': '350', 'component_type': 'MoneyField'},
             {'name': '明细金额', 'value': '250', 'component_type': 'MoneyField'}]}
         self.assertEqual(sync.extract_amount(d), Decimal('350'))
+
+    def test_amount_prefers_heji_keyword(self):
+        d = {'form_component_values': [
+            {'name': '差旅费', 'value': '100', 'component_type': 'MoneyField'},
+            {'name': '住宿费', 'value': '800', 'component_type': 'MoneyField'},
+            {'name': '合计', 'value': '900', 'component_type': 'MoneyField'}]}
+        self.assertEqual(sync.extract_amount(d), Decimal('900'))
+
+    def test_amount_falls_back_to_table_sum(self):
+        # 无独立金额字段 → 明细表金额列求和
+        d = {'form_component_values': [
+            {'name': '费用明细', 'component_type': 'TableField',
+             'value': '[{"费用项目":"交通","金额":"120.50"},{"费用项目":"住宿","金额":"300"}]'}]}
+        self.assertEqual(sync.extract_amount(d), Decimal('420.50'))
+
+    def test_build_summary_picks_reason(self):
+        d = {'form_component_values': [
+            {'name': '事由', 'value': '出差北京'},
+            {'name': '费用类型', 'value': '差旅费'},
+            {'name': '报销金额', 'value': '600', 'component_type': 'MoneyField'}]}
+        s = sync.build_summary(d)
+        self.assertIn('出差北京', s)
+        self.assertIn('差旅费', s)
 
     def test_status_mapping_all_cases(self):
         self.assertEqual(sync.map_status('COMPLETED', 'agree'), 'approved')
@@ -353,6 +376,34 @@ class SyncEndpointTests(TestCase):
         called = [c.args[0] for c in m_list.call_args_list]
         self.assertEqual(called, ['PCDUP'])            # 只调一次
         self.assertEqual(r.json()['data']['count'], 1)  # 单行，无重复
+
+    @mock.patch('paikuan.dingtalk_client.all_templates', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.list_process_codes', return_value=[])
+    @mock.patch('paikuan.dingtalk_client.list_instance_ids', return_value=['INST-1'])
+    @mock.patch('paikuan.dingtalk_client.get_instance', return_value=DETAIL_REIMB)
+    def test_query_caches_terminal_and_skips_refetch(self, m_get, m_list, m_codes, m_all):
+        body = {'userid': 'U-guoyong', 'start': '2026-03-01', 'end': '2026-03-31',
+                'status': 'originated', 'process_codes': ['PC1']}
+        r1 = self._post('/api/pk/dingtalk/query', body)
+        self.assertEqual(r1.json()['data']['count'], 1)
+        self.assertEqual(m_get.call_count, 1)                 # 首次拉一次
+        self.assertEqual(DingtalkInstance.objects.count(), 1)  # 已落档
+        # 第二次同样查询：终态(COMPLETED)实例走本地存档，不再拉钉钉
+        r2 = self._post('/api/pk/dingtalk/query', body)
+        self.assertEqual(r2.json()['data']['count'], 1)
+        self.assertEqual(m_get.call_count, 1)                 # 仍是 1，未重复拉
+        self.assertEqual(r2.json()['data']['cache_hits'], 1)
+
+    @mock.patch('paikuan.dingtalk_client.get_instance', return_value=DETAIL_REIMB)
+    def test_instance_detail_endpoint(self, m_get):
+        r = self._post('/api/pk/dingtalk/instance', {'instance_id': 'INST-1'})
+        d = r.json()['data']
+        self.assertEqual(d['instance_id'], 'INST-1')
+        self.assertEqual(d['applicant'], '郭勇')
+        self.assertEqual(d['amount'], '600.00')
+        self.assertTrue(any(fld['name'] == '收款账号' for fld in d['form']))
+        # 落档后二次读取直接命中本地（终态）
+        self.assertEqual(DingtalkInstance.objects.filter(instance_id='INST-1').count(), 1)
 
     @mock.patch('paikuan.dingtalk_client.user_detail', return_value={'name': '郭勇'})
     @mock.patch('paikuan.dingtalk_client.userid_by_mobile', return_value='U-guoyong')

@@ -575,3 +575,37 @@ class ExportJob(models.Model):
             'finished_at': self.finished_at.isoformat() if self.finished_at else None,
             'ready': self.status == 'done',
         }
+
+
+class DingtalkInstance(models.Model):
+    """钉钉审批实例本地存档（缓存）：查询命中后落库，重复查询直接读本地——
+    终态(COMPLETED/TERMINATED)永不再拉，进行中(RUNNING)按时效刷新，大幅省查询时间。
+    raw 存归一后的完整详情（表单控件值 + 操作记录 + 审批人），供"钉钉样式"详情弹窗渲染。"""
+    instance_id = models.CharField('钉钉实例ID', max_length=64, unique=True)
+    process_code = models.CharField('模板code', max_length=64, db_index=True)
+    template_name = models.CharField('模板名', max_length=200, blank=True, default='')
+    business_id = models.CharField('审批编号', max_length=64, blank=True, default='')
+    title = models.CharField('标题', max_length=500, blank=True, default='')
+    summary = models.CharField('摘要', max_length=500, blank=True, default='')
+    applicant = models.CharField('申请人', max_length=100, blank=True, default='')
+    department = models.CharField('部门', max_length=100, blank=True, default='')
+    originator_userid = models.CharField('发起人userid', max_length=64, blank=True, default='', db_index=True)
+    amount = models.DecimalField('金额', max_digits=16, decimal_places=2, default=0)
+    payee = models.CharField('收款方', max_length=200, blank=True, default='')
+    ding_status = models.CharField('钉钉状态', max_length=20, blank=True, default='', db_index=True)
+    ding_result = models.CharField('钉钉结果', max_length=20, blank=True, default='')
+    sys_status = models.CharField('系统状态', max_length=20, blank=True, default='')
+    create_time = models.CharField('发起时间', max_length=32, blank=True, default='')
+    approver_userids = models.JSONField('审批人userid', default=list, blank=True)
+    raw = models.JSONField('完整详情(归一)', default=dict, blank=True)
+    fetched_at = models.DateTimeField('抓取时间', auto_now=True, db_index=True)
+    created_at = models.DateTimeField('首次入库', auto_now_add=True)
+
+    class Meta:
+        db_table = 'pk_dingtalk_instances'
+        indexes = [
+            models.Index(fields=['process_code', 'ding_status']),
+        ]
+
+    def is_terminal(self):
+        return (self.ding_status or '').upper() in ('COMPLETED', 'TERMINATED', 'CANCELED')

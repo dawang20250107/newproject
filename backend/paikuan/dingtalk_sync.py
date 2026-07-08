@@ -20,7 +20,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 from paikuan import dingtalk_client as dc
 from paikuan.dingtalk_client import DingTalkError
-from paikuan.models import ApprovalRecord
+from paikuan.models import ApprovalRecord, DingtalkInstance
 from paikuan.views import (DEPARTMENTS, err, get_request_perms, ok, parse_body,
                            pk_required)
 
@@ -77,20 +77,71 @@ def _form_pairs(detail):
     return out
 
 
+_TOTAL_KEYS = ('合计', '总计', '总额', '总金额', '总', '价税合计', '实付', '付款金额', '报销金额')
+
+
+def _table_amount_sum(detail):
+    """从明细控件(TableField)里对"金额"列求和（best-effort）。value 是 JSON 数组字符串，
+    元素为 {子控件label: 值}。仅当没有独立金额字段时兜底用。"""
+    import json as _json
+    total = Decimal('0')
+    hit = False
+    for _name, value, ctype in _form_pairs(detail):
+        if ctype != 'TableField':
+            continue
+        try:
+            rows = _json.loads(value) if isinstance(value, str) else value
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            for k, v in row.items():
+                if '金额' in str(k) or '价税' in str(k):
+                    n = _num(v)
+                    if n is not None:
+                        total += n
+                        hit = True
+    return total if hit else None
+
+
 def extract_amount(detail):
-    """从表单抠总金额：优先"含总的金额字段"，否则所有 MoneyField/含"金额"字段取最大，否则 0。"""
+    """从表单抠总金额：优先"合计/总额"类字段 → 其次 MoneyField/含金额字段取最大 →
+    再兜底明细表金额列求和 → 否则 0。尽量对齐钉钉单据上的"总金额"。"""
     money = []
     for name, value, ctype in _form_pairs(detail):
         if ctype == 'MoneyField' or '金额' in name:
             n = _num(value)
             if n is not None:
                 money.append((name, n))
-    if not money:
-        return Decimal('0')
-    totals = [n for name, n in money if '总' in name]
-    if totals:
-        return max(totals)
-    return max(n for _, n in money)
+    if money:
+        totals = [n for name, n in money if any(k in name for k in _TOTAL_KEYS)]
+        if totals:
+            return max(totals)
+        return max(n for _, n in money)
+    # 无独立金额字段 → 尝试明细表求和
+    s = _table_amount_sum(detail)
+    return s if s is not None else Decimal('0')
+
+
+def build_summary(detail):
+    """行内"摘要"：挑几个常见关键字段拼一句，便于列表一眼看懂（不含金额，金额单列）。"""
+    keys = ['事由', '摘要', '事项', '用途', '说明', '费用类型', '报销类型', '备注', '付款事由', '采购内容']
+    parts = []
+    seen = set()
+    for k in keys:
+        for name, value, _ in _form_pairs(detail):
+            v = str(value).strip()
+            if k in name and v and v not in seen:
+                seen.add(v)
+                parts.append(v)
+            if len(parts) >= 2:
+                break
+        if len(parts) >= 2:
+            break
+    return ' / '.join(parts)[:200]
 
 
 def extract_payee(detail, applicant):
@@ -291,6 +342,23 @@ def _gather_templates():
     return templates, api_err
 
 
+def _cache_upsert(iid, code, tname, detail):
+    """把一条钉钉实例详情落到本地存档（供重复查询直读 + 详情弹窗渲染）。"""
+    f = instance_to_fields(detail)
+    DingtalkInstance.objects.update_or_create(instance_id=iid, defaults={
+        'process_code': code, 'template_name': tname,
+        'business_id': f['approval_number'], 'title': f['summary'],
+        'summary': build_summary(detail), 'applicant': f['applicant'],
+        'department': f['department'],
+        'originator_userid': detail.get('originator_userid', ''),
+        'amount': f['amount'], 'payee': f['payee'],
+        'ding_status': detail.get('status', ''), 'ding_result': detail.get('result', ''),
+        'sys_status': f['status'], 'create_time': detail.get('create_time', ''),
+        'approver_userids': detail.get('approver_userids') or [],
+        'raw': detail,
+    })
+
+
 @csrf_exempt
 @pk_required()
 def dingtalk_templates(request):
@@ -391,25 +459,46 @@ def dingtalk_query(request):
         raw_capped = len(inst_ids) > _FETCH_CAP
         inst_ids = inst_ids[:_FETCH_CAP]
 
+        ids_only = [i for i, _ in inst_ids]
+        code_by_iid = dict(inst_ids)   # iid → process_code
         # 已同步集合（一次查库）
         synced = {r.dingtalk_instance_id: r for r in ApprovalRecord.objects.filter(
-            dingtalk_instance_id__in=[i for i, _ in inst_ids], deleted_at__isnull=True)}
+            dingtalk_instance_id__in=ids_only, deleted_at__isnull=True)}
 
-        # ② 并发拉实例详情（逐条串行是超时主因）
+        # ② 本地存档命中：终态实例直接读本地，只对"未缓存/进行中"的去钉钉拉详情（省时）
+        cache = {c.instance_id: c for c in DingtalkInstance.objects.filter(instance_id__in=ids_only)}
+        cached_hits = sum(1 for iid in ids_only if iid in cache and cache[iid].is_terminal())
+        to_fetch = [(iid, code) for iid, code in inst_ids
+                    if iid not in cache or not cache[iid].is_terminal()]
+
         def _detail(pair):
             iid, code = pair
             try:
-                return iid, code, dc.get_instance(iid)
+                return iid, dc.get_instance(iid)
             except DingTalkError as ex:
                 logger.warning('get_instance %s failed: %s', iid, ex)
-                return iid, code, None
+                return iid, None
+
+        fetched = {}
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            for iid, detail in pool.map(_detail, to_fetch):
+                if detail is not None:
+                    fetched[iid] = detail
+        # 落档（主线程串行写库；子线程只做 HTTP）
+        for iid, detail in fetched.items():
+            _cache_upsert(iid, code_by_iid.get(iid, ''), name_by_code.get(code_by_iid.get(iid, ''), ''), detail)
+
+        def _raw(iid):
+            if iid in fetched:
+                return fetched[iid]
+            c = cache.get(iid)
+            return c.raw if c and isinstance(c.raw, dict) and c.raw else None
 
         items = []
         matched_by_code = {}   # 每个模板符合当前口径的条数——用于诊断
-        with ThreadPoolExecutor(max_workers=12) as pool:
-            details = list(pool.map(_detail, inst_ids))
-        for iid, code, detail in details:
-            if detail is None:
+        for iid, code in inst_ids:
+            detail = _raw(iid)
+            if not detail:
                 continue
             if status == 'originated':
                 # 上游已按「发起人」过滤，凡该人发起的一律保留——避免他"既发起又参与审批"
@@ -429,6 +518,7 @@ def dingtalk_query(request):
                 'instance_id': iid,
                 'template': name_by_code.get(code, code),
                 'title': f['summary'],
+                'summary': build_summary(detail),
                 'approval_number': f['approval_number'],
                 'applicant': f['applicant'],
                 'department': f['department'],
@@ -440,6 +530,7 @@ def dingtalk_query(request):
                 'synced': bool(rec),
                 'sync_rec_no': rec.approval_number if rec else '',
                 'sync_stale': bool(rec) and rec.status != sys_status,
+                'cached': iid in cache and iid not in fetched,
             })
     except DingTalkError as ex:
         return err(str(ex), 502, 502)
@@ -457,7 +548,59 @@ def dingtalk_query(request):
     tpl_stats.sort(key=lambda x: (-x['found'], -x['matched']))
     return ok({'items': items, 'count': len(items), 'capped': capped,
                'templates_scanned': scanned, 'templates_count': len(templates),
-               'template_stats': tpl_stats})
+               'template_stats': tpl_stats,
+               'cache_hits': cached_hits, 'fetched': len(fetched)})
+
+
+@csrf_exempt
+@pk_required()
+def dingtalk_instance(request):
+    """POST {instance_id} → 单条审批完整详情（钉钉样式弹窗用）。优先读本地存档，
+    未存档或进行中则实时拉取并落档。返回：表头信息 + 表单字段 + 审批流水。"""
+    denied = _page_denied(request)
+    if denied:
+        return denied
+    body = parse_body(request)
+    iid = (body.get('instance_id') or '').strip()
+    if not iid:
+        return err('缺少 instance_id')
+    c = DingtalkInstance.objects.filter(instance_id=iid).first()
+    detail = None
+    if c and c.is_terminal() and isinstance(c.raw, dict) and c.raw:
+        detail = c.raw
+    else:
+        try:
+            detail = dc.get_instance(iid)
+        except DingTalkError as ex:
+            if c and isinstance(c.raw, dict) and c.raw:
+                detail = c.raw   # 拉取失败回退本地存档
+            else:
+                return err(str(ex), 502, 502)
+        else:
+            _cache_upsert(iid, c.process_code if c else (detail.get('process_code') or ''),
+                          c.template_name if c else '', detail)
+    f = instance_to_fields(detail)
+    form = [{'name': n, 'value': v, 'type': ct} for n, v, ct in _form_pairs(detail)]
+    flow = [{'userid': o.get('userid', ''), 'type': o.get('type', ''),
+             'result': o.get('result', ''), 'date': o.get('date', '')}
+            for o in (detail.get('operation_records') or [])]
+    return ok({
+        'instance_id': iid,
+        'title': f['summary'],
+        'template': (c.template_name if c else '') or detail.get('process_code', ''),
+        'approval_number': f['approval_number'],
+        'applicant': f['applicant'],
+        'department': f['department'],
+        'amount': str(f['amount']),
+        'payee': f['payee'],
+        'ding_status': detail.get('status', ''),
+        'sys_status': f['status'],
+        'result': detail.get('result', ''),
+        'create_time': detail.get('create_time', ''),
+        'finish_time': detail.get('finish_time', ''),
+        'form': form,
+        'flow': flow,
+    })
 
 
 def _upsert(detail, actor):

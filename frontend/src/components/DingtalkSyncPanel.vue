@@ -32,14 +32,35 @@ const STATUS = [
 function monthStart() { const d = todayCST(); return d.slice(0, 8) + '01' }
 const range = reactive({ start: monthStart(), end: todayCST() })
 const QUICK = [
-  { k: 'month', l: '本月' }, { k: 'q', l: '本季度' }, { k: 'd30', l: '近30天' },
+  { k: 'month', l: '本月' }, { k: 'lastmonth', l: '上月' }, { k: 'q', l: '本季度' },
+  { k: 'lastq', l: '上季度' }, { k: 'halfy', l: '近半年' }, { k: 'year', l: '本年' },
+  { k: 'd7', l: '近7天' }, { k: 'd30', l: '近30天' }, { k: 'd90', l: '近90天' },
 ]
+function ymd(d) { return d.toISOString().slice(0, 10) }
 function setQuick(k) {
   const t = todayCST(); const [y, m] = t.split('-').map(Number)
+  const back = (days) => { const d = new Date(t); d.setDate(d.getDate() - days); return ymd(d) }
   if (k === 'month') { range.start = `${t.slice(0, 8)}01`; range.end = t }
-  else if (k === 'd30') { const d = new Date(t); d.setDate(d.getDate() - 30); range.start = d.toISOString().slice(0, 10); range.end = t }
+  else if (k === 'lastmonth') {
+    const d = new Date(y, m - 2, 1); range.start = ymd(new Date(d.getTime() - d.getTimezoneOffset() * 60000))
+    const e = new Date(y, m - 1, 0); range.end = ymd(new Date(e.getTime() - e.getTimezoneOffset() * 60000))
+  }
   else if (k === 'q') { const qm = Math.floor((m - 1) / 3) * 3 + 1; range.start = `${y}-${String(qm).padStart(2, '0')}-01`; range.end = t }
+  else if (k === 'lastq') {
+    let qm = Math.floor((m - 1) / 3) * 3 + 1 - 3, yy = y
+    if (qm <= 0) { qm += 12; yy -= 1 }
+    range.start = `${yy}-${String(qm).padStart(2, '0')}-01`
+    const e = new Date(yy, qm + 2, 0); range.end = ymd(new Date(e.getTime() - e.getTimezoneOffset() * 60000))
+  }
+  else if (k === 'halfy') { range.start = back(182); range.end = t }
+  else if (k === 'year') { range.start = `${y}-01-01`; range.end = t }
+  else if (k === 'd7') { range.start = back(7); range.end = t }
+  else if (k === 'd30') { range.start = back(30); range.end = t }
+  else if (k === 'd90') { range.start = back(90); range.end = t }
 }
+
+// ── 子页签：查询 / 模板 ─────────────────────────────────────────────────────
+const subview = ref('query')   // 'query' | 'templates'
 
 // ── 审批模板（企业全部表单，勾选后再查）─────────────────────────────────────────
 // 走 /dingtalk/templates（userId 省略 → 钉钉返回企业下全部表单，覆盖报销等审批人
@@ -206,7 +227,78 @@ async function refreshStatus() {
   finally { syncing.value = false }
 }
 
-onMounted(loadTemplates)   // 开面板即加载企业全部审批模板
+// ── 查询方案（按账号保存：模板选择 + 口径）——复用通用 list-schemes 基座 ──────────
+const SCHEME_MODULE = 'dingtalk_query'
+const schemes = ref([])
+const curSchemeId = ref(null)
+async function loadSchemes() {
+  try { schemes.value = (await api.get('/list-schemes', { params: { module: SCHEME_MODULE } })).data?.items || [] }
+  catch { schemes.value = [] }
+}
+async function saveScheme() {
+  if (!tplSel.value.size) { toast.error('请先勾选要保存的模板'); return }
+  const name = (window.prompt('保存为方案，请输入名称（如：报销+付款）') || '').trim()
+  if (!name) return
+  const picks = templates.value.filter(t => tplSel.value.has(t.process_code))
+    .map(t => ({ process_code: t.process_code, name: t.name || t.process_code }))
+  try {
+    await api.post('/list-schemes', {
+      module: SCHEME_MODULE, name, scope: 'private',
+      payload: { templates: picks, status: status.value },
+    })
+    toast.success('方案已保存'); await loadSchemes()
+  } catch (e) { toast.error(e?.msg || e?.error || '保存失败') }
+}
+function applyScheme(s) {
+  if (!s) { curSchemeId.value = null; return }
+  curSchemeId.value = s.id
+  const p = s.payload || {}
+  const have = new Set(templates.value.map(t => t.process_code))
+  for (const t of (p.templates || [])) {
+    if (!have.has(t.process_code)) templates.value.push({ ...t, dir_name: t.dir_name || '方案' })
+  }
+  tplSel.value = new Set((p.templates || []).map(t => t.process_code))
+  if (p.status) status.value = p.status
+  toast.success(`已载入方案「${s.name}」`)
+  if (picked.value) runQuery()
+}
+async function deleteScheme(s) {
+  if (!(await confirmDlg(`删除方案「${s.name}」？`))) return
+  try {
+    await api.delete(`/list-schemes/${s.id}`)
+    if (curSchemeId.value === s.id) curSchemeId.value = null
+    toast.success('已删除'); await loadSchemes()
+  } catch (e) { toast.error(e?.msg || e?.error || '删除失败') }
+}
+
+// ── 单据详情（钉钉样式弹窗）──────────────────────────────────────────────────
+const detailOpen = ref(false)
+const detail = ref(null)
+const detailLoading = ref(false)
+const DFLOW = {   // 操作类型 → 中文 + 色
+  START_PROCESS_INSTANCE: ['发起', 'st'], EXECUTE_TASK_NORMAL: ['审批', 'ap'],
+  EXECUTE_TASK_AGENT: ['代审批', 'ap'], FINISH_PROCESS_INSTANCE: ['结束', 'fi'],
+  TERMINATE_PROCESS_INSTANCE: ['撤销', 'te'], REDIRECT_PROCESS: ['退回', 'te'],
+  PROCESS_CC: ['抄送', 'cc'], ADD_REMARK: ['评论', 'cc'],
+  APPEND_TASK_BEFORE: ['前加签', 'ap'], APPEND_TASK_AFTER: ['后加签', 'ap'],
+  REDIRECT_TASK: ['转交', 'cc'],
+}
+function flowLabel(t) { return (DFLOW[t] || [t || '处理', 'ap'])[0] }
+function flowCls(t) { return 'fl-' + (DFLOW[t] || ['', 'ap'])[1] }
+function flowResult(r) {
+  return { AGREE: '同意', REFUSE: '拒绝', NONE: '' }[(r || '').toUpperCase()] || ''
+}
+async function openDetail(item) {
+  detailOpen.value = true; detail.value = null; detailLoading.value = true
+  try {
+    detail.value = (await api.post('/dingtalk/instance',
+      { instance_id: item.instance_id }, { timeout: 60000 })).data
+  } catch (e) { toast.error(e?.msg || e?.error || '获取详情失败'); detailOpen.value = false }
+  finally { detailLoading.value = false }
+}
+function money(v) { return '¥' + Number(v || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 }) }
+
+onMounted(() => { loadTemplates(); loadSchemes() })   // 开面板即加载模板 + 我的方案
 </script>
 
 <template>
@@ -231,8 +323,18 @@ onMounted(loadTemplates)   // 开面板即加载企业全部审批模板
       </div>
     </div>
 
-    <!-- 查询条 -->
-    <div class="dt-query">
+    <!-- 子页签：查询 / 模板 -->
+    <div class="dt-subtabs">
+      <button :class="['sub', { on: subview === 'query' }]" @click="subview = 'query'">查询同步</button>
+      <button :class="['sub', { on: subview === 'templates' }]" @click="subview = 'templates'">
+        模板配置<span v-if="tplSelCount" class="sub-n">{{ tplSelCount }}</span>
+      </button>
+      <span class="grow"></span>
+      <button class="quick test" :disabled="testing" @click="testConnection">{{ testing ? '检测中…' : '测试连接' }}</button>
+    </div>
+
+    <!-- ══ 查询条 ══ -->
+    <div v-show="subview === 'query'" class="dt-query">
       <div class="qf">
         <label>查询人员</label>
         <div class="person">
@@ -262,11 +364,27 @@ onMounted(loadTemplates)   // 开面板即加载企业全部审批模板
       <button class="go" :disabled="loading || resolving" @click="runQuery()">
         {{ loading || resolving ? '查询中…' : '查询' }}
       </button>
-      <button class="quick test" :disabled="testing" @click="testConnection">{{ testing ? '检测中…' : '测试连接' }}</button>
     </div>
 
-    <!-- 审批模板勾选（企业全部表单，勾选后再查）-->
-    <div class="dt-tpls">
+    <!-- 方案 + 已选模板速览（查询页）-->
+    <div v-show="subview === 'query'" class="dt-schemes">
+      <span class="sc-lbl">方案</span>
+      <template v-if="schemes.length">
+        <button v-for="s in schemes" :key="s.id" class="sc-chip" :class="{ on: curSchemeId === s.id }" @click="applyScheme(s)">
+          {{ s.name }}<span class="sc-x" title="删除" @click.stop="deleteScheme(s)">✕</span>
+        </button>
+      </template>
+      <span v-else class="sc-empty">暂无保存的方案</span>
+      <button class="sc-save" @click="saveScheme">＋ 存为方案</button>
+      <span class="grow"></span>
+      <span class="sc-sel">
+        已选 <b>{{ tplSelCount }}</b> 个模板
+        <button class="sc-goto" @click="subview = 'templates'">去调整 →</button>
+      </span>
+    </div>
+
+    <!-- ══ 审批模板配置（企业全部表单，勾选后再查）══ -->
+    <div v-show="subview === 'templates'" class="dt-tpls">
       <div class="tpls-head">
         <span class="tpls-lbl">审批模板</span>
         <span v-if="tplLoading" class="tpls-info">加载企业全部模板中…</span>
@@ -297,12 +415,12 @@ onMounted(loadTemplates)   // 开面板即加载企业全部审批模板
     </div>
 
     <!-- 状态页签 -->
-    <div class="dt-tabs">
+    <div v-show="subview === 'query'" class="dt-tabs">
       <button v-for="s in STATUS" :key="s.v" :class="['dt-tab', { on: status === s.v }]" @click="onStatusTab(s.v)">{{ s.l }}</button>
     </div>
 
     <!-- 汇总条 + 快捷选 -->
-    <div v-if="items.length" class="dt-summary">
+    <div v-if="items.length && subview === 'query'" class="dt-summary">
       <span class="s">共 <b>{{ stats.total }}</b> 条</span>
       <span class="s acc">未同步 <b>{{ stats.unsynced }}</b></span>
       <span class="s ok">已同步 <b>{{ stats.synced }}</b></span>
@@ -315,7 +433,7 @@ onMounted(loadTemplates)   // 开面板即加载企业全部审批模板
     </div>
 
     <!-- 结果表 -->
-    <div class="dt-body">
+    <div v-show="subview === 'query'" class="dt-body">
       <div v-if="loadErr" class="empty err">⚠️ {{ loadErr }}</div>
       <div v-else-if="loading" class="empty">⏳ 正在从钉钉拉取…</div>
       <div v-else-if="!picked && !items.length" class="empty hint">
@@ -347,17 +465,19 @@ onMounted(loadTemplates)   // 开面板即加载企业全部审批模板
           <thead>
             <tr>
               <th class="cbcol"><input type="checkbox" class="cbx" :checked="pageAllSel" @change="toggleAll" /></th>
-              <th>审批标题 / 编号</th><th>发起人</th><th class="r">金额</th><th>收款方</th>
+              <th>审批标题 / 编号</th><th>摘要</th><th>发起人</th><th class="r">金额</th><th>收款方</th>
               <th>钉钉状态</th><th>发起时间</th><th>同步状态</th><th></th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="i in items" :key="i.instance_id" :class="{ sel: sel.has(i.instance_id) }">
+            <tr v-for="i in items" :key="i.instance_id" :class="{ sel: sel.has(i.instance_id) }"
+                @dblclick="openDetail(i)" title="双击查看单据详情">
               <td><input type="checkbox" class="cbx" :checked="sel.has(i.instance_id)" @change="toggle(i.instance_id)" /></td>
               <td class="ttlcell">
                 <div class="ttl">{{ i.title }}</div>
                 <div class="sub"><span class="tpl">{{ i.template }}</span> · {{ i.approval_number || '—' }}</div>
               </td>
+              <td class="sumcell">{{ i.summary || '—' }}</td>
               <td>{{ i.applicant }}<div class="sub">{{ i.department }}</div></td>
               <td class="r amt">¥{{ Number(i.amount).toLocaleString('zh-CN', { minimumFractionDigits: 2 }) }}</td>
               <td class="payee">{{ i.payee }}</td>
@@ -368,7 +488,7 @@ onMounted(loadTemplates)   // 开面板即加载企业全部审批模板
                 <span v-else-if="i.sync_stale" class="sync upd">◑ 待刷新 <span class="rec">{{ i.sync_rec_no }}</span></span>
                 <span v-else class="sync yes">✓ 已同步 <span class="rec">{{ i.sync_rec_no }}</span></span>
               </td>
-              <td></td>
+              <td><button class="rowdetail" @click.stop="openDetail(i)">详情</button></td>
             </tr>
           </tbody>
         </table>
@@ -416,11 +536,115 @@ onMounted(loadTemplates)   // 开面板即加载企业全部审批模板
         </div>
       </div>
     </Teleport>
+
+    <!-- 单据详情弹窗（钉钉样式）-->
+    <Teleport to="body">
+      <div v-if="detailOpen" class="scrim" @click.self="detailOpen = false">
+        <div class="ding-modal">
+          <div v-if="detailLoading" class="ding-loading">⏳ 加载单据详情…</div>
+          <template v-else-if="detail">
+            <div class="ding-head">
+              <div class="ding-title">
+                <span class="ding-tpl">{{ detail.template }}</span>
+                <span class="ding-st" :class="'p-' + (DING[detail.sys_status] || ['run'])[0]">{{ (DING[detail.sys_status] || ['', detail.ding_status])[1] }}</span>
+              </div>
+              <h3>{{ detail.title }}</h3>
+              <button class="diag-x" @click="detailOpen = false">✕</button>
+            </div>
+            <div class="ding-body">
+              <div class="ding-meta">
+                <div><label>申请人</label><span>{{ detail.applicant }}</span></div>
+                <div><label>部门</label><span>{{ detail.department }}</span></div>
+                <div><label>审批编号</label><span>{{ detail.approval_number || '—' }}</span></div>
+                <div><label>发起时间</label><span>{{ (detail.create_time || '').replace('T', ' ').slice(0, 16) || '—' }}</span></div>
+                <div class="amt-big"><label>金额</label><span>{{ money(detail.amount) }}</span></div>
+                <div><label>收款方</label><span>{{ detail.payee || '—' }}</span></div>
+              </div>
+
+              <div class="ding-sec">表单内容</div>
+              <div class="ding-form">
+                <div v-for="(fld, idx) in detail.form" :key="idx" class="ding-fld"
+                     :class="{ wide: fld.type === 'TableField' || String(fld.value).length > 30 }">
+                  <label>{{ fld.name }}</label>
+                  <span v-if="fld.type === 'MoneyField'" class="fv-money">{{ money(fld.value) }}</span>
+                  <span v-else class="fv">{{ fld.value || '—' }}</span>
+                </div>
+                <div v-if="!detail.form.length" class="ding-empty">无表单字段</div>
+              </div>
+
+              <div class="ding-sec">审批流水</div>
+              <ol class="ding-flow">
+                <li v-for="(op, idx) in detail.flow" :key="idx">
+                  <span class="fl-dot" :class="flowCls(op.type)"></span>
+                  <span class="fl-act" :class="flowCls(op.type)">{{ flowLabel(op.type) }}</span>
+                  <span class="fl-user">{{ op.userid }}</span>
+                  <span v-if="flowResult(op.result)" class="fl-res" :class="op.result === 'AGREE' ? 'ok' : 'no'">{{ flowResult(op.result) }}</span>
+                  <span class="fl-date">{{ (op.date || '').replace('T', ' ').slice(0, 16) }}</span>
+                </li>
+                <li v-if="!detail.flow.length" class="ding-empty">无审批流水</li>
+              </ol>
+            </div>
+          </template>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
 .dt { display: flex; flex-direction: column; min-height: 0; padding: 0; }
+/* 子页签 */
+.dt-subtabs { display: flex; align-items: center; gap: 4px; padding: 8px 14px 0; border-bottom: 1px solid var(--border, #eadfd2); }
+.dt-subtabs .sub { border: none; background: none; padding: 9px 16px; font-size: 14px; font-weight: 700; color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; border-bottom: 2.5px solid transparent; margin-bottom: -1px; display: flex; align-items: center; gap: 6px; }
+.dt-subtabs .sub.on { color: var(--primary, #1565c0); border-bottom-color: var(--primary, #1565c0); }
+.dt-subtabs .sub-n { background: var(--primary, #1565c0); color: #fff; font-size: 11px; border-radius: 9px; padding: 0 6px; font-weight: 700; }
+.dt-subtabs .grow { flex: 1; }
+/* 方案条 */
+.dt-schemes { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 10px 18px; border-bottom: 1px solid var(--border, #eadfd2); background: var(--panel-2, #faf6f0); }
+.sc-lbl { font-size: 12px; font-weight: 700; color: var(--muted, #9b8070); }
+.sc-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border, #d8c9b8); background: var(--card-bg, #fff); color: var(--text, #4a3322); font-size: 12.5px; padding: 4px 9px; border-radius: 14px; cursor: pointer; font-family: inherit; }
+.sc-chip.on { border-color: var(--primary, #1565c0); color: var(--primary, #1565c0); background: var(--primary-weak, #e8f1fb); }
+.sc-chip .sc-x { color: var(--muted, #9b8070); font-size: 11px; }
+.sc-chip .sc-x:hover { color: var(--danger, #d64545); }
+.sc-empty { font-size: 12px; color: var(--muted, #9b8070); }
+.sc-save { border: 1px dashed var(--primary, #1565c0); background: none; color: var(--primary, #1565c0); font-size: 12.5px; padding: 4px 11px; border-radius: 14px; cursor: pointer; font-family: inherit; }
+.sc-sel { font-size: 12px; color: var(--muted, #9b8070); }
+.sc-sel b { color: var(--primary, #1565c0); }
+.sc-goto { border: none; background: none; color: var(--primary, #1565c0); font-size: 12px; cursor: pointer; font-family: inherit; margin-left: 4px; }
+.sumcell { max-width: 220px; font-size: 12.5px; color: var(--muted, #7a6550); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rowdetail { border: 1px solid var(--border, #d8c9b8); background: var(--card-bg, #fff); color: var(--primary, #1565c0); font-size: 12px; padding: 3px 10px; border-radius: 6px; cursor: pointer; font-family: inherit; }
+.rowdetail:hover { border-color: var(--primary, #1565c0); }
+/* 单据详情弹窗 */
+.ding-modal { background: var(--card-bg, #fff); border-radius: 14px; width: min(680px, 94vw); max-height: 88vh; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+.ding-loading { padding: 60px; text-align: center; color: var(--muted, #9b8070); }
+.ding-head { position: relative; padding: 18px 20px 14px; border-bottom: 1px solid var(--border, #eadfd2); background: linear-gradient(180deg, var(--primary-weak, #e8f1fb), transparent); }
+.ding-title { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.ding-tpl { font-size: 12px; font-weight: 700; color: var(--primary, #1565c0); background: var(--card-bg, #fff); padding: 2px 9px; border-radius: 10px; }
+.ding-st { font-size: 11.5px; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+.ding-head h3 { margin: 0; font-size: 17px; color: var(--text, #4a3322); padding-right: 30px; }
+.ding-body { padding: 16px 20px 22px; overflow-y: auto; }
+.ding-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 20px; margin-bottom: 6px; }
+.ding-meta > div { display: flex; flex-direction: column; gap: 2px; }
+.ding-meta label { font-size: 11px; color: var(--muted, #9b8070); }
+.ding-meta span { font-size: 13.5px; color: var(--text, #4a3322); font-weight: 600; }
+.ding-meta .amt-big span { font-size: 18px; font-weight: 800; color: var(--primary, #1565c0); }
+.ding-sec { font-size: 12px; font-weight: 800; color: var(--muted, #9b8070); margin: 18px 0 8px; padding-bottom: 5px; border-bottom: 1px dashed var(--border, #eadfd2); }
+.ding-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; }
+.ding-fld { display: flex; flex-direction: column; gap: 2px; }
+.ding-fld.wide { grid-column: 1 / -1; }
+.ding-fld label { font-size: 11px; color: var(--muted, #9b8070); }
+.ding-fld .fv { font-size: 13px; color: var(--text, #4a3322); white-space: pre-wrap; word-break: break-word; }
+.ding-fld .fv-money { font-size: 14px; font-weight: 700; color: var(--primary, #1565c0); }
+.ding-empty { color: var(--muted, #9b8070); font-size: 12.5px; grid-column: 1 / -1; }
+.ding-flow { list-style: none; margin: 0; padding: 0; }
+.ding-flow li { display: flex; align-items: center; gap: 9px; padding: 7px 0; font-size: 12.5px; border-bottom: 1px dashed var(--border, #f0e6d8); }
+.fl-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--muted, #9b8070); }
+.fl-dot.fl-ap { background: var(--primary, #1565c0); } .fl-dot.fl-st { background: #6b7280; } .fl-dot.fl-fi { background: var(--success, #2e9e5b); } .fl-dot.fl-te { background: var(--danger, #d64545); } .fl-dot.fl-cc { background: #b08968; }
+.fl-act { font-weight: 700; color: var(--text, #4a3322); min-width: 44px; }
+.fl-user { color: var(--muted, #7a6550); flex: 1; }
+.fl-res { font-weight: 700; } .fl-res.ok { color: var(--success, #2e9e5b); } .fl-res.no { color: var(--danger, #d64545); }
+.fl-date { color: var(--muted, #9b8070); font-size: 11.5px; }
+.ding-st.p-ok, .ding-st.p-bad, .ding-st.p-run, .ding-st.p-cancel { border-radius: 10px; }
 .dt-query { display: flex; gap: 18px; align-items: flex-end; flex-wrap: wrap; padding: 16px 18px; border-bottom: 1px solid var(--border, #eadfd2); }
 .qf { display: flex; flex-direction: column; gap: 7px; }
 .qf > label { font-size: 11.5px; font-weight: 700; letter-spacing: .04em; color: var(--muted, #9b8070); text-transform: uppercase; }
