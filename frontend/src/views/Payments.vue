@@ -710,7 +710,20 @@ onMounted(async () => {
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 
 function openAdd() { editItem.value = null; showModal.value = true }
-function openEdit(p) { editItem.value = p; showModal.value = true }
+async function openEdit(p) {
+  // 列表为轻量态（不含明细）。编辑前必须补拉完整 plan_items/installments，
+  // 否则弹窗内 installments 为空：① 显示不出已付款记录；② 保存时后端全量替换会清空历史付款。
+  let full = p
+  try {
+    const res = await api.get(`/payments/${p.id}`)
+    full = { ...p, plan_items: res.data.plan_items || [], installments: res.data.installments || [] }
+    // 回填列表行，保持展开明细/汇总与弹窗一致
+    const row = items.value.find(x => x.id === p.id)
+    if (row) { row.plan_items = full.plan_items; row.installments = full.installments }
+  } catch { /* 拉取失败仍打开，退化为轻量行数据 */ }
+  editItem.value = full
+  showModal.value = true
+}
 
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
 const ctx = useContextMenu()
