@@ -12,6 +12,7 @@ import BaseChart from '../../components/ar/BaseChart.vue'
 import ProjectPnlCard from '../caiwu/ProjectPnlCard.vue'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
+import DateRangeChips from '../../components/DateRangeChips.vue'
 import { useToast } from '../../composables/useToast.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
@@ -550,12 +551,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
     <!-- Polished filter bar -->
     <div class="bgt-filterbar">
-      <div class="fbg">
-        <svg class="fb-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-        <span class="fb-label">日期</span>
-        <input type="date" v-model="dateStart" class="fb-sel fb-date" @change="loadAll" />
-        <span class="fb-sep">~</span>
-        <input type="date" v-model="dateEnd" class="fb-sel fb-date" @change="loadAll" />
+      <div class="fbg fbg-grow">
+        <DateRangeChips v-model:start="dateStart" v-model:end="dateEnd"
+                        label="日期" initial="thismonth"
+                        :presets="['thismonth', 'lastmonth', 'thisquarter', 'lastquarter', 'thisyear', 'lastyear']"
+                        @change="loadAll" />
       </div>
       <div class="fb-divider"></div>
       <div class="fbg">
@@ -1041,6 +1041,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   flex-wrap: nowrap; overflow-x: auto;
 }
 .fbg { display: flex; align-items: center; gap: 7px; padding: 5px 10px; }
+.fbg-grow { flex: 1; min-width: 0; }
 .fb-icon { color: var(--muted); flex-shrink: 0; }
 .fb-label { font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap; }
 .fb-divider { width: 1px; height: 24px; background: rgba(0,0,0,0.09); margin: 0 4px; flex-shrink: 0; }

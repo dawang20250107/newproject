@@ -10,7 +10,14 @@ watch(() => confirmState.visible, async (v) => {
 })
 function onKey(e) {
   if (e.key === 'Escape') { e.stopPropagation(); _settle(false) }
-  else if (e.key === 'Enter') { e.stopPropagation(); _settle(true) }
+  else if (e.key === 'Enter') {
+    e.stopPropagation()
+    // 危险操作:Enter 全局兜底会绕过「默认聚焦取消」的防误确认设计——
+    // 焦点在取消按钮上时按回车应触发取消而不是确认;只有焦点明确在确认按钮上才放行
+    if (confirmState.danger && e.target === safeBtn.value) { _settle(false); return }
+    if (confirmState.danger && !(e.target instanceof HTMLButtonElement)) return
+    _settle(true)
+  }
 }
 </script>
 

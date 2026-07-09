@@ -267,13 +267,17 @@ async function load(reset = false) {
     items.value = res.data.items
     resetAnchor()   // 数据集已更换：清 Shift 区间锚点
     total.value = res.data.total
+    loadStats()     // 统计条与列表同口径:筛选/搜索变化时同步刷新(不阻塞列表)
   } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
   } finally { loading.value = false }
 }
 
 async function loadStats() {
   try {
-    const res = await ar.projectStats({ dept: statDept.value })
+    // 统计条与列表同筛选口径(搜索/列头筛选联动);statDept 作为额外收窄叠加
+    const p = { ...buildParams(), dept: statDept.value || undefined }
+    delete p.page; delete p.size
+    const res = await ar.projectStats(p)
     stats.value = res.data
   } catch { stats.value = null }
 }

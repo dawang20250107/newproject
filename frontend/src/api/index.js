@@ -50,7 +50,18 @@ api.interceptors.response.use(
         errData.msg = errData.error
       }
     } else if (!errData) {
-      errData = { msg: err.message || '网络错误' }
+      // 无响应体:网络层错误中文化(超时/断网/网关),不把英文原文抛给用户
+      let msg = '网络错误，请稍后重试'
+      if (err.code === 'ECONNABORTED' || /timeout/i.test(err.message || '')) {
+        msg = '请求超时，请检查网络后重试'
+      } else if (!err.response) {
+        msg = '无法连接服务器，请检查网络'
+      } else if (err.response.status === 404) {
+        msg = '接口不存在（404），请刷新页面或联系管理员'
+      } else if (err.response.status >= 500) {
+        msg = `服务器开小差了（${err.response.status}），请稍后重试`
+      }
+      errData = { msg }
     }
     return Promise.reject(errData || err)
   }

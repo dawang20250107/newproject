@@ -687,8 +687,11 @@ async function doSchedule(){
   schedBusy.value = true
   try{
     const res = await api.post(`/approvals/${current.value.id}/schedule`, scheduleForm)
+    const no = current.value?.approval_number || ''
     showSchedule.value=false; load()
-    toast.success(res.data?.message || '排款成功')
+    // 排款成功直达付款页(按单号预筛),消除「切页+手动搜单号」的绕路
+    toast.success(res.data?.message || '排款成功', 3000,
+                  no && !/^0+$/.test(no) ? { label: '去付款页查看', to: `/payments?numbers=${no}` } : undefined)
   } catch(e){ toast.error(e?.msg || e?.error || '操作失败') }
   finally{ schedBusy.value = false }
 }

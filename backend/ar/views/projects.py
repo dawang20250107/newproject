@@ -740,10 +740,10 @@ def project_stats(request):
     denied = _page_denied(request, 'ar_projects')
     if denied:
         return denied
-    qs = _ar_dept_filter(ARProject.objects.all(), request, shared_field='is_shared')
-    dept = request.GET.get('dept', '').strip()
-    if dept:
-        qs = qs.filter(delivery_dept=dept)
+    # 与列表同一筛选口径（q/列头筛选/部门等）:统计条随筛选联动,避免「列表已收窄、
+    # 上方统计仍是全量」的口径打架
+    qs = _apply_project_list_filters(
+        _ar_dept_filter(ARProject.objects.all(), request, shared_field='is_shared'), request)
 
     total = qs.count()
     draft_count = qs.filter(is_draft=True).count()

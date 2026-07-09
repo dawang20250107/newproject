@@ -873,8 +873,8 @@ const alerts = computed(() => {
     const lowM = t.low_margin?.count || 0
     if (critical > 0) list.push({ level: 'high', tab: 'bf',
       text: `${critical} 个项目「又薄又难收」（低毛利+回款差），吞噬利润` })
-    if (bf.overdue > 0 && bf.overdue_rate != null && bf.overdue_rate >= 20) list.push({ level: 'high', tab: 'bf',
-      text: `逾期未收 ${wan(bf.overdue)}，逾期率 ${bf.overdue_rate.toFixed(0)}%，回款承压` })
+    if (bf.overdue > 0 && bf.overdue_rate != null && bf.overdue_rate >= 20) list.push({ level: 'high', to: '/ar/records?status=overdue',
+      text: `逾期未收 ${wan(bf.overdue)}，逾期率 ${bf.overdue_rate.toFixed(0)}%，回款承压 →` })
     if (lowM > 0) list.push({ level: 'mid', tab: 'bf',
       text: `${lowM} 个项目「赚收入不赚钱」，规模大但毛利薄` })
   }
@@ -883,8 +883,8 @@ const alerts = computed(() => {
   if (fc) {
     if (fc.profit_gap != null && fc.profit_gap < 0) list.push({ level: 'high', tab: 'forecast',
       text: `按当前节奏，全年净利预测 ${wan(fc.proj_profit)}，缺口 ${wan(fc.profit_gap)}（预测达成 ${fc.profit_rate != null ? fc.profit_rate.toFixed(0) + '%' : '—'}）` })
-    if (fc.baddebt_risk > 0) list.push({ level: 'mid', tab: 'forecast',
-      text: `坏账风险 ${wan(fc.baddebt_risk)}（逾期90天+未收），需重点催收` })
+    if (fc.baddebt_risk > 0) list.push({ level: 'mid', to: '/ar/records?status=overdue',
+      text: `坏账风险 ${wan(fc.baddebt_risk)}（逾期90天+未收），点击去催收 →` })
   }
   // ── 事业部级（可点击下钻）────────────────────────────────
   rows.filter(r => r.grossLoss).forEach(r => list.push({ level: 'high', bu: r.bu, text: `${r.bu} 当月经营毛利为负（${wan(r.gross)}）` }))
@@ -897,9 +897,10 @@ const alerts = computed(() => {
   if (!scoped.length) scoped.push({ level: 'ok', text: '未发现显著经营风险，各事业部运行平稳' })
   return scoped.slice(0, 9)
 })
-// 信号点击：BU 信号→下钻该事业部；业财信号→切到业财损益 Tab
+// 信号点击：BU 信号→下钻该事业部；带 to→跳转明细页（如逾期应收直达催收）；业财信号→切 Tab
 function onSignal(a) {
-  if (a.bu) openDrill(a.bu)
+  if (a.to) router.push(a.to)
+  else if (a.bu) openDrill(a.bu)
   else if (a.tab) mainTab.value = a.tab
 }
 

@@ -5,6 +5,7 @@ import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import ContextMenu from '../../components/ContextMenu.vue'
+import DateRangeChips from '../../components/DateRangeChips.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useToast } from '../../composables/useToast.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
@@ -373,13 +374,12 @@ const deptBalanceOption = computed(() => {
         </select>
       </div>
       <div class="cfb-div"></div>
-      <!-- Date range group — day precision -->
-      <div class="cfb-group">
-        <svg class="cfb-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-        <span class="cfb-lbl">区间</span>
-        <input v-model="filters.start_date" type="date" class="cfb-date" @change="load" />
-        <span class="cfb-to">至</span>
-        <input v-model="filters.end_date" type="date" class="cfb-date" @change="load" />
+      <!-- Date range group — 预设区间条 + 自定义(day precision) -->
+      <div class="cfb-group cfb-group-grow">
+        <DateRangeChips v-model:start="filters.start_date" v-model:end="filters.end_date"
+                        label="区间" initial="thismonth"
+                        :presets="['thismonth', 'lastmonth', 'thisquarter', 'lastquarter', 'halfyear', 'thisyear', 'lastyear', 'year1']"
+                        @change="load" />
       </div>
       <div v-if="loading" class="cfb-loading">
         <span class="cfb-spin">↻</span> 加载中
@@ -554,6 +554,7 @@ const deptBalanceOption = computed(() => {
   flex-wrap: nowrap; overflow-x: auto;
 }
 .cfb-group { display: flex; align-items: center; gap: 7px; padding: 5px 10px; }
+.cfb-group-grow { flex: 1; min-width: 0; }
 .cfb-icon  { color: var(--muted); flex-shrink: 0; }
 .cfb-lbl   { font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap; }
 .cfb-div   { width: 1px; height: 24px; background: var(--border); margin: 0 4px; flex-shrink: 0; }

@@ -389,7 +389,7 @@ async function save() {
   finally { saving.value = false }
 }
 async function removeRec(rec) {
-  if (!(await confirmDlg(`确认删除该${dirLabel.value}记录（${rec.counterparty}）？核销记录将一并删除。`))) return
+  if (!(await confirmDlg(`确认删除该${dirLabel.value}记录（${rec.counterparty}）？\n若该记录已有核销或退款关联，系统将拦截——需先在「核销」明细删除核销、或在日常收款解除退款关联。`))) return
   try { await ar.deleteAdvance(rec.id); await load() }
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }

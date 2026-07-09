@@ -1153,7 +1153,7 @@ def payment_plan_item_detail(request, pk, iid):
 
         if request.method == 'DELETE':
             if p.plan_items.count() <= 1:
-                return err('最后一批计划不可单独撤销——如需作废整条排款请使用删除记录')
+                return err('最后一批计划不可单独撤销；如需作废整条排款，请使用付款管理行菜单的「退回排款」（或审批管理的「退回全部排款」）')
             after = (p.total_amount or Decimal('0')) - item.amount
             if after < paid:
                 return err(f'撤销后计划合计 {after} 将低于 已付+冲抵 {paid}，不能撤销；'
@@ -2405,7 +2405,7 @@ def approval_record_detail(request, pk):
                 # 下限=在册已排款：改到更低会倒挂（剩余可排为负、未排合计失真），须先退回排款批次
                 if new_amount < _live_scheduled:
                     return err(f'申请金额不能低于在册已排款 {_live_scheduled} 元；'
-                               f'请先在排款管理退回相应批次后再下调金额')
+                               f'请点击本行「已排金额」展开排款批次明细，撤回相应批次后再下调金额')
                 rec.amount = new_amount
                 changed.append('amount')
             if 'status' in data and data['status'] in {'pending', 'approved', 'rejected', 'canceled'}:
@@ -2421,7 +2421,7 @@ def approval_record_detail(request, pk):
                 if (new_status != rec.status and rec.status == 'approved'
                         and _live_scheduled > 0):
                     return err(f'该审批已有在册排款 {_live_scheduled} 元，不能直接变更状态；'
-                               f'请先在排款管理退回排款批次，再执行本操作', 409, 409)
+                               f'请点击本行「已排金额」展开排款批次明细退回排款，再执行本操作', 409, 409)
                 rec.status = new_status
                 changed.append('status')
                 if rec.status in {'rejected', 'canceled'} and not rec.archived:
