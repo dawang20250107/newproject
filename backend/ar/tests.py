@@ -1595,6 +1595,26 @@ class AdvanceModuleTests(TestCase):
             project=proj, operation_year=year, operation_month=month,
             estimated_amount=Decimal(str(est)))
 
+    def test_advance_list_actual_date_range_filter_and_summary(self):
+        """预收预付按实际收付日(款项日期)区间筛选:列表/汇总/KPI 同口径联动;
+        occur_date 为空的存量行按发生年月落月兜底,不被日期筛选悄悄排除。"""
+        admin = self.make_user('13911100095', 'finance_director', role='super_admin')
+        mk = lambda amt, y, m, od: AdvanceRecord.objects.create(
+            direction='预收', delivery_dept=self.dept, counterparty='客户T',
+            occur_year=y, occur_month=m, occur_date=od, advance_amount=Decimal(amt))
+        mk('100', 2026, 5, date(2026, 5, 10))    # 区间内(有日期)
+        mk('200', 2026, 6, None)                 # 区间内(无日期,按 2026-06 落月)
+        mk('400', 2026, 8, date(2026, 8, 1))     # 区间外
+        params = {'direction': '预收', 'start_date': '2026-05-01', 'end_date': '2026-06-30'}
+        r = self.client.get('/api/pk/ar/advances', params, **self.auth(admin)).json()['data']
+        self.assertEqual(r['total'], 2)                                   # 列表随区间
+        s = r['summary']['预收']
+        self.assertEqual(s['count'], 2)                                   # 筛选汇总随区间
+        self.assertEqual(Decimal(s['advance_amount']), Decimal('300'))    # 100+200,不含区间外400
+        k = self.client.get('/api/pk/ar/advances/kpi', params, **self.auth(admin)).json()['data']
+        self.assertEqual(k['预收']['count'], 2)                           # KPI 同口径
+        self.assertEqual(k['预收']['advance_amount'], 300.0)
+
     def test_payment_future_date_rejected(self):
         """回款日期不得晚于今天:未来日期会提前美化当期回款/现金流/账龄。"""
         admin = self.make_user('13911100098', 'finance_director', role='super_admin')

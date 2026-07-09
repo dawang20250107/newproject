@@ -44,6 +44,25 @@ def _apply_advance_filters(qs, request):
     month = request.GET.get('month', '').strip()
     if month:
         qs = qs.filter(occur_month=int(month))
+    # 实际收付时间区间（款项日期 occur_date，现金事件日）：列表/KPI/汇总/导出共用。
+    # 存量行 occur_date 可能为空（仅有发生年月）——按 (occur_year, occur_month) 落月兜底，
+    # 避免这些记录被日期筛选悄悄排除、区间合计凭空变小。
+    s_raw = _normalize_date(request.GET.get('start_date'))
+    e_raw = _normalize_date(request.GET.get('end_date'))
+    if s_raw or e_raw:
+        dated = Q(occur_date__isnull=False)
+        undated = Q(occur_date__isnull=True)
+        if s_raw:
+            sd = datetime.date.fromisoformat(str(s_raw)[:10])
+            dated &= Q(occur_date__gte=sd)
+            undated &= (Q(occur_year__gt=sd.year)
+                        | Q(occur_year=sd.year, occur_month__gte=sd.month))
+        if e_raw:
+            ed = datetime.date.fromisoformat(str(e_raw)[:10])
+            dated &= Q(occur_date__lte=ed)
+            undated &= (Q(occur_year__lt=ed.year)
+                        | Q(occur_year=ed.year, occur_month__lte=ed.month))
+        qs = qs.filter(dated | undated)
     counterparty = request.GET.get('counterparty', '').strip()
     if counterparty:
         qs = qs.filter(counterparty__icontains=counterparty)
@@ -100,6 +119,7 @@ def advances(request):
             agg = d_qs.aggregate(
                 amt=Sum('advance_amount'),
                 wo=Sum('written_off_amount'),
+                rf=Sum('refunded_amount'),
                 bal=Sum('balance_amount', filter=Q(balance_amount__gt=0)),
             )
             overdue = (d_qs.filter(balance_amount__gt=0,
@@ -109,6 +129,7 @@ def advances(request):
                 'count': d_qs.count(),
                 'advance_amount': str(agg['amt'] or 0),
                 'written_off': str(agg['wo'] or 0),
+                'refunded': str(agg['rf'] or 0),
                 'balance': str(agg['bal'] or 0),
                 'overdue_balance': str(overdue),
             }
@@ -304,9 +325,11 @@ def advances_kpi(request):
     def _block(direction):
         d_qs = qs.filter(direction=direction)
         agg = d_qs.aggregate(amt=Sum('advance_amount'), wo=Sum('written_off_amount'),
+                             rf=Sum('refunded_amount'),
                              bal=Sum('balance_amount', filter=Q(balance_amount__gt=0)))
         total_amt = float(agg['amt'] or 0)
         wo = float(agg['wo'] or 0)
+        rf = float(agg['rf'] or 0)
         bal = float(agg['bal'] or 0)
         pending = d_qs.filter(balance_amount__gt=0).count()
         overdue_qs = d_qs.filter(balance_amount__gt=0, expected_writeoff_date__lt=today)
@@ -315,8 +338,10 @@ def advances_kpi(request):
             'count': d_qs.count(),
             'advance_amount': total_amt,
             'written_off': wo,
+            'refunded': rf,
             'balance': bal,
-            'writeoff_rate': round(wo / total_amt * 100, 1) if total_amt else 100.0,
+            # 核销进度按「已核销+已退款」占比:退款也消耗预付余额,只算核销会让进度虚低
+            'writeoff_rate': round((wo + rf) / total_amt * 100, 1) if total_amt else 100.0,
             'pending_count': pending,
             'overdue_count': overdue_qs.count(),
             'overdue_balance': overdue_amt,

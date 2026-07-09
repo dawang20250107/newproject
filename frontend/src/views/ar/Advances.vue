@@ -27,14 +27,63 @@ const projectFilter = ref(null)        // { id, label } or null
 const items = ref([])
 const total = ref(0)
 const kpi = ref(null)
+const listSummary = ref(null)   // 筛选汇总（当前方向，随筛选/区间联动，来自列表接口）
 const loading = ref(false)
 const loadErr = ref('')
 const page = ref(1)
 const size = 50
 
-// 顶部全局关键字 + 与列头无重复的页级控件（年/月/核销状态）。
+// 顶部全局关键字 + 与列头无重复的页级控件（实际收付时间区间/核销状态）。
 // 部门改由列头「交付部门」筛选，dept 不再出现于工具栏。
-const filters = reactive({ year: '', month: '', writeoff_status: '', q: '' })
+// 时间维度按「款项日期」（实际收付现金事件日）筛选；默认不限（台账余额是全周期视角），
+// KPI/列表汇总/导出随区间联动（后端同一 _apply_advance_filters）。
+const filters = reactive({ start_date: '', end_date: '', writeoff_status: '', q: '' })
+
+// ── 实际收付时间预设（与日常收款同款交互）────────────────────────────────────
+const DATE_PRESETS = [
+  { k: 'all', l: '全部' },
+  { k: 'thismonth', l: '本月' }, { k: 'lastmonth', l: '上月' },
+  { k: 'thisquarter', l: '本季度' }, { k: 'lastquarter', l: '上季度' },
+  { k: 'halfyear', l: '近半年' }, { k: 'thisyear', l: '本年' }, { k: 'lastyear', l: '去年' },
+  { k: 'year1', l: '近一年' }, { k: 'd30', l: '近30天' }, { k: 'd90', l: '近90天' },
+]
+function _ymd(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+function computePreset(k) {
+  const t = new Date(), y = t.getFullYear(), m = t.getMonth(), d = t.getDate()
+  const back = n => { const x = new Date(t); x.setDate(d - n); return x }
+  const mk = (a, b) => ({ start: _ymd(a), end: _ymd(b) })
+  switch (k) {
+    case 'all': return { start: '', end: '' }
+    case 'thismonth': return mk(new Date(y, m, 1), t)
+    case 'lastmonth': return mk(new Date(y, m - 1, 1), new Date(y, m, 0))
+    case 'thisquarter': return mk(new Date(y, Math.floor(m / 3) * 3, 1), t)
+    case 'lastquarter': { const qm = Math.floor(m / 3) * 3 - 3; return mk(new Date(y, qm, 1), new Date(y, qm + 3, 0)) }
+    case 'halfyear': return mk(back(182), t)
+    case 'thisyear': return mk(new Date(y, 0, 1), t)
+    case 'lastyear': return mk(new Date(y - 1, 0, 1), new Date(y - 1, 11, 31))
+    case 'year1': return mk(back(365), t)
+    case 'd30': return mk(back(29), t)
+    case 'd90': return mk(back(89), t)
+  }
+  return { start: '', end: '' }
+}
+const activePreset = ref('all')
+let _applyingPreset = false
+function applyPreset(k) {
+  _applyingPreset = true
+  const r = computePreset(k)
+  filters.start_date = r.start; filters.end_date = r.end
+  _applyingPreset = false
+  activePreset.value = k
+  load(true)
+}
+watch([() => filters.start_date, () => filters.end_date],
+      () => { if (!_applyingPreset) activePreset.value = '' }, { flush: 'sync' })
+// KPI 区间提示：让「页面汇总=当前筛选汇总」这一点对用户可见
+const rangeLabel = computed(() => {
+  if (!filters.start_date && !filters.end_date) return '全部期间'
+  return `${filters.start_date || '…'} ~ ${filters.end_date || '…'}`
+})
 
 // ── Excel 风格列头筛选 + 排序 ───────────────────────────────────────────────
 const colFilters = reactive({})          // field -> {op, value}
@@ -111,6 +160,7 @@ async function load(reset = false) {
     items.value = res.data.items
     total.value = res.data.total
     kpi.value = k.data[direction.value]
+    listSummary.value = (res.data.summary || {})[direction.value] || null
   } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
   } finally { loading.value = false }
 }
@@ -727,11 +777,12 @@ onMounted(async () => {
       <button :class="['dir-tab', { active: direction === 'suppliers' }]" @click="switchDir('suppliers')">供应商池</button>
     </div>
 
-    <!-- KPI (advances only) -->
+    <!-- KPI (advances only)：随时间区间/筛选联动的「筛选汇总」 -->
     <div v-if="isAdvanceMode && kpi" class="kpi-row">
-      <div class="kpi"><div class="kpi-k">{{ dirLabel }}笔数</div><div class="kpi-v">{{ kpi.count }} 笔</div></div>
+      <div class="kpi"><div class="kpi-k">{{ dirLabel }}笔数<span class="kpi-range">{{ rangeLabel }}</span></div><div class="kpi-v">{{ kpi.count }} 笔</div></div>
       <div v-if="show('adv_amount')" class="kpi"><div class="kpi-k">{{ dirLabel }}金额</div><div class="kpi-v">{{ fmtAmt(kpi.advance_amount) }}</div></div>
       <div v-if="show('adv_writeoff')" class="kpi"><div class="kpi-k">已核销</div><div class="kpi-v">{{ fmtAmt(kpi.written_off) }}<span class="kpi-sub">{{ kpi.writeoff_rate }}%</span></div></div>
+      <div v-if="show('adv_writeoff') && !isReceive && Number(kpi.refunded) > 0" class="kpi"><div class="kpi-k">已退款</div><div class="kpi-v">{{ fmtAmt(kpi.refunded) }}</div></div>
       <div v-if="show('adv_writeoff')" class="kpi accent"><div class="kpi-k">未核销余额</div><div class="kpi-v">{{ fmtAmt(kpi.balance) }}</div></div>
       <div v-if="show('adv_writeoff')" class="kpi warn"><div class="kpi-k">逾期挂账</div><div class="kpi-v">{{ fmtAmt(kpi.overdue_balance) }}<span class="kpi-sub">{{ kpi.overdue_count }} 笔</span></div></div>
     </div>
@@ -741,14 +792,6 @@ onMounted(async () => {
       <div class="card fh-fill">
         <div class="filter-row">
           <input v-model="filters.q" class="inp sm global-search" placeholder="🔍 全局搜索：往来单位 / 项目 / 编号 / 备注…" @input="onQInput" />
-          <select v-model="filters.year" class="sel sm" @change="onFilterChange">
-            <option value="">年</option>
-            <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
-          </select>
-          <select v-model="filters.month" class="sel sm" @change="onFilterChange">
-            <option value="">月</option>
-            <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
-          </select>
           <select v-model="filters.writeoff_status" class="sel sm" @change="onFilterChange">
             <option value="">核销状态</option>
             <option value="未核销">未核销</option>
@@ -767,6 +810,22 @@ onMounted(async () => {
           </label>
           <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">{{ exporting ? '导出中…' : '导出' }}</button>
           <button v-if="canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增{{ dirLabel }}</button>
+        </div>
+
+        <!-- 实际收付时间（款项日期）区间：KPI / 列表 / 汇总 / 导出全部随之联动 -->
+        <div class="adv-timebar">
+          <span class="tb-lbl">收付时间</span>
+          <div class="tb-presets">
+            <button v-for="p in DATE_PRESETS" :key="p.k" class="pchip" :class="{ on: activePreset === p.k }"
+                    @click="applyPreset(p.k)">{{ p.l }}</button>
+          </div>
+          <div class="tb-range">
+            <input v-model="filters.start_date" type="date" class="inp sm tb-date" @change="onFilterChange" />
+            <span class="tb-sep">~</span>
+            <input v-model="filters.end_date" type="date" class="inp sm tb-date" @change="onFilterChange" />
+            <button v-if="filters.start_date || filters.end_date" class="btn btn-ghost btn-sm"
+                    @click="applyPreset('all')">清除</button>
+          </div>
         </div>
 
         <div class="table-scroll page-scroll">
@@ -819,6 +878,18 @@ onMounted(async () => {
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <!-- 筛选汇总：与当前时间区间/搜索/列头筛选完全同口径（来自列表接口） -->
+        <div v-if="listSummary" class="adv-sumbar">
+          <span class="sb-k">筛选合计</span>
+          <span class="sb-i">{{ listSummary.count }} 笔</span>
+          <span v-if="show('adv_amount')" class="sb-i">{{ dirLabel }}金额 <b>{{ fmtAmt(listSummary.advance_amount) }}</b></span>
+          <span v-if="show('adv_writeoff')" class="sb-i">已核销 <b>{{ fmtAmt(listSummary.written_off) }}</b></span>
+          <span v-if="show('adv_writeoff') && !isReceive && Number(listSummary.refunded) > 0" class="sb-i">已退款 <b>{{ fmtAmt(listSummary.refunded) }}</b></span>
+          <span v-if="show('adv_writeoff')" class="sb-i">未核销余额 <b class="sb-accent">{{ fmtAmt(listSummary.balance) }}</b></span>
+          <span v-if="show('adv_writeoff') && Number(listSummary.overdue_balance) > 0" class="sb-i">逾期挂账 <b class="sb-warn">{{ fmtAmt(listSummary.overdue_balance) }}</b></span>
+          <span class="sb-range">{{ rangeLabel }}</span>
         </div>
 
         <div class="pager" v-if="totalPages > 1">
@@ -1235,6 +1306,30 @@ onMounted(async () => {
 .kpi-k { font-size: 11px; color: var(--muted); }
 .kpi-v { font-size: 16px; font-weight: 800; color: var(--text); margin-top: 2px; line-height: 1.2; }
 .kpi-sub { font-size: 11px; font-weight: 600; color: var(--muted); margin-left: 5px; }
+.kpi-range { font-size: 10.5px; font-weight: 400; color: var(--muted); margin-left: 6px; opacity: .8; }
+
+/* 实际收付时间区间条（款项日期）*/
+.adv-timebar { display: flex; align-items: center; gap: 10px; padding: 6px 0 10px; flex-wrap: nowrap; min-width: 0; }
+.tb-lbl { font-size: 12px; font-weight: 700; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+.tb-presets { display: flex; gap: 5px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+.tb-presets::-webkit-scrollbar { display: none; }
+.pchip { padding: 3px 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--card);
+  color: var(--text); font-size: 12px; cursor: pointer; white-space: nowrap; transition: all .15s; flex-shrink: 0; }
+.pchip:hover { border-color: var(--primary); color: var(--primary); }
+.pchip.on { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+.tb-range { display: flex; align-items: center; gap: 6px; flex-shrink: 0; margin-left: auto; }
+.tb-date { width: 132px; }
+.tb-sep { color: var(--muted); font-size: 12px; }
+
+/* 筛选合计栏（与当前筛选同口径）*/
+.adv-sumbar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 8px 12px; margin-top: 8px; border-radius: 9px; font-size: 12.5px;
+  background: var(--card); border: 1px solid var(--border); color: var(--text-2, var(--muted)); }
+.sb-k { font-weight: 700; color: var(--muted); }
+.sb-i b { font-variant-numeric: tabular-nums; color: var(--text); margin-left: 3px; }
+.sb-accent { color: var(--primary) !important; }
+.sb-warn { color: var(--c-danger) !important; }
+.sb-range { margin-left: auto; font-size: 11px; color: var(--muted); opacity: .8; }
 .kpi.accent { background: rgba(201,99,66,.06); }
 .kpi.accent .kpi-v { color: var(--primary); }
 .kpi.warn .kpi-v { color: var(--c-danger); }
