@@ -2,7 +2,7 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import api from '../api/index.js'
 import { useToast } from '../composables/useToast.js'
-import { confirmDlg } from '../composables/confirm.js'
+import { confirmDlg, promptDlg } from '../composables/confirm.js'
 import { resultDlg } from '../composables/bulkResult.js'
 import { todayCST } from '../constants.js'
 
@@ -254,7 +254,8 @@ async function loadSchemes() {
 }
 async function saveScheme() {
   if (!tplSel.value.size) { toast.error('请先勾选要保存的模板'); return }
-  const name = (window.prompt('保存为方案，请输入名称（如：报销+付款）') || '').trim()
+  const name = ((await promptDlg({ title: '保存为方案', inputLabel: '方案名称',
+    placeholder: '如：报销+付款', confirmText: '保存' })) || '').trim()
   if (!name) return
   const picks = templates.value.filter(t => tplSel.value.has(t.process_code))
     .map(t => ({ process_code: t.process_code, name: t.name || t.process_code }))

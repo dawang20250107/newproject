@@ -188,9 +188,12 @@ async function saveEdit() {
 }
 
 async function deactivate(u) {
-  if (!(await confirmDlg(`确认删除用户「${u.name}」？此操作不可撤销。`))) return
-  const typed = window.prompt(`请输入用户名「${u.name}」以确认删除：`)
-  if (typed !== u.name) { toast.warn('输入不匹配，已取消'); return }
+  // 输入式确认(一步到位):须原样输入用户名,替代原「confirm+prompt」两连弹
+  if (!(await confirmDlg({
+    title: '删除用户（不可撤销）', danger: true,
+    message: `确认删除用户「${u.name}」？其登录与权限将立即失效。`,
+    requireText: u.name, confirmText: '删除用户',
+  }))) return
   try {
     await api.delete(`/users/${u.id}`)
     deletedIds.add(u.id)                                    // never let it reappear

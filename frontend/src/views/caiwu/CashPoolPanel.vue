@@ -1,5 +1,5 @@
 <script setup>
-import { confirmDlg } from '../../composables/confirm.js'
+import { confirmDlg, promptDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import ar from '../../api/ar.js'
 import { useAuthStore } from '../../stores/auth.js'
@@ -134,7 +134,12 @@ async function approveTransfer(t) {
   catch (e) { toast.error(e?.msg || '审批失败') }
 }
 async function rejectTransfer(t) {
-  const notes = prompt(`拒绝调拨申请：${t.from_dept} → ${t.to_dept} ¥${t.amount}\n请填写拒绝原因（将反馈给申请人）：`)
+  const notes = await promptDlg({
+    title: '拒绝调拨申请', danger: true,
+    message: `${t.from_dept} → ${t.to_dept} ¥${t.amount}`,
+    inputLabel: '拒绝原因（将反馈给申请人）', placeholder: '如：本月调出池资金紧张',
+    confirmText: '确认拒绝',
+  })
   if (notes === null) return
   try { await ar.reviewPoolTransfer(t.id, { action: 'reject', review_notes: notes }); await load() }
   catch (e) { toast.error(e?.msg || '审批失败') }

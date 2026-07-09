@@ -11,6 +11,9 @@ export const confirmState = reactive({
   danger: false,     // 危险操作：红色主按钮
   requireText: '',   // 可选：输入式确认——须原样输入该词（如「删除」）确认按钮才可用
   typed: '',         // 输入式确认的当前输入
+  inputMode: false,  // 可选：自由文本收集（promptDlg）——确认时把输入值 resolve 给调用方
+  inputLabel: '',    // 自由文本输入的标签
+  inputPlaceholder: '',
   confirmText: '确定',
   cancelText: '取消',
   _resolve: null,
@@ -38,6 +41,31 @@ export function confirmDlg(opts) {
     confirmState.danger = danger
     confirmState.requireText = o.requireText || ''
     confirmState.typed = ''
+    confirmState.inputMode = false
+    confirmState.inputLabel = ''
+    confirmState.inputPlaceholder = ''
+    confirmState.confirmText = o.confirmText || '确定'
+    confirmState.cancelText = o.cancelText || '取消'
+    confirmState._resolve = resolve
+    confirmState.visible = true
+  })
+}
+
+// 自由文本收集弹窗（替代原生 prompt()）：确认返回输入字符串，取消返回 null。
+// 用法：const notes = await promptDlg({ title:'拒绝原因', message:'将反馈给申请人', inputLabel:'原因' })
+export function promptDlg(opts) {
+  const o = typeof opts === 'string' ? { message: opts } : (opts || {})
+  return new Promise(resolve => {
+    if (confirmState._resolve) confirmState._resolve(false)
+    confirmState.title = o.title || '请输入'
+    confirmState.message = o.message || ''
+    confirmState.detail = Array.isArray(o.detail) ? o.detail : []
+    confirmState.danger = !!o.danger
+    confirmState.requireText = ''
+    confirmState.typed = o.initial || ''
+    confirmState.inputMode = true
+    confirmState.inputLabel = o.inputLabel || ''
+    confirmState.inputPlaceholder = o.placeholder || ''
     confirmState.confirmText = o.confirmText || '确定'
     confirmState.cancelText = o.cancelText || '取消'
     confirmState._resolve = resolve
@@ -47,7 +75,10 @@ export function confirmDlg(opts) {
 
 export function _settle(val) {
   const r = confirmState._resolve
+  const inputMode = confirmState.inputMode
+  const typed = confirmState.typed
   confirmState.visible = false
   confirmState._resolve = null
-  if (r) r(val)
+  confirmState.inputMode = false
+  if (r) r(inputMode ? (val ? typed : null) : val)
 }

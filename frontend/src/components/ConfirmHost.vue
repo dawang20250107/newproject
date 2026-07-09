@@ -6,7 +6,11 @@ import { confirmState, _settle } from '../composables/confirm.js'
 
 const safeBtn = ref(null)
 watch(() => confirmState.visible, async (v) => {
-  if (v) { await nextTick(); safeBtn.value && safeBtn.value.focus() }
+  if (!v) return
+  await nextTick()
+  // 自由文本收集：焦点直接进输入框;其余默认聚焦「取消」防手快回车误确认
+  if (confirmState.inputMode) document.querySelector('.cfm-free-inp')?.focus()
+  else safeBtn.value && safeBtn.value.focus()
 })
 // 输入式确认：须原样输入指定词，确认按钮才可用（彻底删除等最高危操作）
 const typeOk = () => !confirmState.requireText || confirmState.typed === confirmState.requireText
@@ -42,6 +46,12 @@ function onKey(e) {
           <input v-model="confirmState.typed" class="cfm-type-inp"
                  :placeholder="confirmState.requireText" autocomplete="off" />
         </div>
+        <div v-else-if="confirmState.inputMode" class="cfm-type">
+          <label v-if="confirmState.inputLabel">{{ confirmState.inputLabel }}</label>
+          <input v-model="confirmState.typed" class="cfm-type-inp cfm-free-inp"
+                 :placeholder="confirmState.inputPlaceholder" autocomplete="off"
+                 @keyup.enter.stop="_settle(true)" />
+        </div>
         <div class="cfm-actions">
           <button ref="safeBtn" class="btn btn-ghost" @click="_settle(false)">{{ confirmState.cancelText }}</button>
           <button class="btn" :class="confirmState.danger ? 'cfm-danger-btn' : 'btn-primary'"
@@ -75,6 +85,7 @@ function onKey(e) {
 .cfm-type-inp { display: block; width: 100%; margin-top: 6px; padding: 7px 10px;
   border: 1px solid var(--c-danger); border-radius: 8px; font-size: 13px;
   background: var(--card); color: var(--text); }
+.cfm-free-inp { border-color: var(--border); }
 .cfm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .cfm-actions .btn:disabled { opacity: .45; cursor: not-allowed; }
 .cfm-danger-btn { background: var(--c-danger); color: #fff; border: none; }
