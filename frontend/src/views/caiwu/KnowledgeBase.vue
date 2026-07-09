@@ -5,6 +5,8 @@ import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS } from '../../constants.js'
 import api from '../../api/caiwu.js'
 import EmptyState from '../../components/EmptyState.vue'
+import { useToast } from '../../composables/useToast.js'
+const toast = useToast()
 
 const auth = useCaiwuAuth()
 const items = ref([])
@@ -65,17 +67,17 @@ async function add() {
     await api.post('/cockpit/knowledge', { content, scope: addScope.value || '全集团', kind: addKind.value })
     addContent.value = ''
     await load()
-  } catch (e) { alert(e?.msg || '添加失败') }
+  } catch (e) { toast.error(e?.msg || '添加失败') }
 }
 
 async function del(k) {
   if (!(await confirmDlg('确定删除这条知识？'))) return
   try { await api.delete(`/cockpit/knowledge/${k.id}`); items.value = items.value.filter(x => x.id !== k.id) }
-  catch (e) { alert(e?.msg || '删除失败') }
+  catch (e) { toast.error(e?.msg || '删除失败') }
 }
 async function togglePin(k) {
   try { const r = await api.put(`/cockpit/knowledge/${k.id}`, { pinned: !k.pinned }); Object.assign(k, r.data); await load() }
-  catch (e) { alert(e?.msg || '操作失败') }
+  catch (e) { toast.error(e?.msg || '操作失败') }
 }
 
 // 行内编辑
@@ -86,7 +88,7 @@ async function saveEdit(k) {
   const content = editText.value.trim()
   if (!content) return
   try { const r = await api.put(`/cockpit/knowledge/${k.id}`, { content }); Object.assign(k, r.data); editId.value = null }
-  catch (e) { alert(e?.msg || '保存失败') }
+  catch (e) { toast.error(e?.msg || '保存失败') }
 }
 
 // 文件导入
@@ -105,9 +107,9 @@ async function onPickFile(e) {
     fd.append('mode', importMode.value)
     const res = await api.post('/cockpit/knowledge/import', fd,
       { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180000 })
-    alert(`✓ 已从「${res.data.file}」导入 ${res.data.created} 条知识（${importMode.value === 'distill' ? 'AI提炼' : '原文'}）`)
+    toast.success(`✓ 已从「${res.data.file}」导入 ${res.data.created} 条知识（${importMode.value === 'distill' ? 'AI提炼' : '原文'}）`)
     await load()
-  } catch (err) { alert(err?.msg || '导入失败') }
+  } catch (err) { toast.error(err?.msg || '导入失败') }
   finally { importing.value = false; e.target.value = '' }
 }
 

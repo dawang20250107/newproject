@@ -3,6 +3,8 @@ import { ref, computed, onMounted, nextTick } from 'vue'
 import ar from '../../api/ar.js'
 import { downloadBlob } from '../../utils/download.js'
 import { todayCST, yearCST, monthCST } from '../../constants.js'
+import { useToast } from '../../composables/useToast.js'
+const toast = useToast()
 
 const data = ref(null)
 const loading = ref(false)
@@ -172,7 +174,7 @@ async function exportExcel() {
     const blob = await ar.exportPeriodicReport(buildParams(), narrative.value)
     downloadBlob(blob, `${meta.value.title}.xlsx`)
   } catch (e) {
-    alert(e?.msg || '导出失败')
+    toast.error(e?.msg || '导出失败')
   } finally { exporting.value = false }
 }
 
@@ -189,7 +191,7 @@ async function exportImage() {
       exporting.value = false
     }, 'image/png')
   } catch (e) {
-    alert('图片导出失败：' + (e?.message || e))
+    toast.error('图片导出失败：' + (e?.message || e))
     exporting.value = false
   }
 }

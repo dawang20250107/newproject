@@ -3642,12 +3642,7 @@ function clearFilters() {
 .mode-tag { font-size: 11.5px; padding: 2px 8px; border-radius: 8px; background: rgba(0,0,0,0.05); color: var(--muted); font-weight: 500; }
 
 /* Status pills */
-.status-pill { font-size: 11.5px; padding: 3px 9px; border-radius: 20px; font-weight: 600; white-space: nowrap; }
-.pill-ok     { background: rgba(46,125,50,0.1);  color: var(--c-success); }
-.pill-warn   { background: rgba(245,127,23,0.12); color: var(--c-warn); }
-.pill-danger { background: rgba(198,40,40,0.1);  color: var(--c-danger); }
-.pill-blue   { background: rgba(21,101,192,0.1); color: var(--c-info); }
-.pill-muted  { background: rgba(0,0,0,0.06);     color: var(--muted); }
+/* 状态徽章基准与语义色变体统一走全局 style.css 的 .status-pill/.pill-*（勿在页内复制） */
 
 /* 开票批次号 badge */
 .batch-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px; background: rgba(33,150,243,0.12); color: var(--c-info); border: 1px solid rgba(33,150,243,0.2); white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis; cursor: default; }

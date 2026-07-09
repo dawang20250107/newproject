@@ -235,7 +235,7 @@ async function exportXlsx(selectedOnly = false) {
         <select v-model="filter.source" class="inp mini"><option value="">全部来源</option><option v-for="s in Object.keys(bySource)" :key="s" :value="s">{{ s }}</option></select>
         <select v-model="filter.method" class="inp mini"><option value="">全部方式</option><option v-for="m in Object.keys(byMethod)" :key="m" :value="m">{{ m }}</option></select>
         <input v-model="filter.q" class="inp search" placeholder="搜付款方 / 摘要 / 项目" @keyup.enter="load" />
-        <button class="btn ghost sm" :disabled="exporting" @click="exportXlsx(false)">{{ exporting ? '导出中…' : '⬇ 导出' }}</button>
+        <button class="btn ghost sm" :disabled="exporting" @click="exportXlsx(false)">{{ exporting ? '导出中…' : '导出' }}</button>
         <button v-if="canWrite" class="btn-hero" @click="openCreate"><span>＋</span> 新增收款</button>
       </div>
       <!-- 时间维度：单行，超宽横向滚动 -->

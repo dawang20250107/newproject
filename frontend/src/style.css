@@ -296,6 +296,17 @@ button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .btn-sm { padding: 5px 11px; font-size: 12px; border-radius: var(--radius-sm); }
 .btn:disabled { opacity: 0.42; cursor: not-allowed; filter: none !important; transform: none !important; box-shadow: none !important; }
 
+/* ── 状态徽章（全局唯一基准）：各页勿再自定义 .status-pill 尺寸，只加语义色变体 ── */
+.status-pill {
+  display: inline-block; font-size: 11.5px; font-weight: 600;
+  padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+}
+.pill-ok     { background: var(--c-success-bg); color: var(--c-success); }
+.pill-warn   { background: var(--c-warn-bg);    color: var(--c-warn); }
+.pill-danger { background: var(--c-danger-bg);  color: var(--c-danger); }
+.pill-blue   { background: var(--c-info-bg);    color: var(--c-info); }
+.pill-muted  { background: rgba(0,0,0,0.06);    color: var(--muted); }
+
 /* ── inputs ──────────────────────────────────────────────────────────────── */
 input, textarea, select {
   font-family: inherit; font-size: 14px; outline: none;

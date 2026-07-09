@@ -113,7 +113,7 @@ async function onPickFile(e) {
   const file = e.target.files?.[0]
   if (!file) return
   if (uploading.value) { e.target.value = ''; return }
-  if (!bu.value) { alert('请先选择事业部'); e.target.value = ''; return }
+  if (!bu.value) { toast.error('请先选择事业部'); e.target.value = ''; return }
   uploading.value = true
   try {
     const fd = new FormData()

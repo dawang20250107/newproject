@@ -162,7 +162,7 @@ async function doDelete(batch) {
     await api.delete(`/batches/${batch.id}`)
     batches.value = batches.value.filter(b => b.id !== batch.id)
     await loadSubmissionStatus()
-  } catch (e) { alert(e?.error || '删除失败') }
+  } catch (e) { toast.error(e?.error || '删除失败') }
 }
 
 // Re-upload to replace an existing batch's period (entries can't be edited
@@ -231,9 +231,9 @@ async function doPublish(batchId) {
     upFile.value = null
     await loadBatches()
     await loadSubmissionStatus()
-    alert('发布成功！数据已生效，可在报表页查看。')
+    toast.success('发布成功！数据已生效，可在报表页查看。')
   } catch (e) {
-    alert(e?.error || '发布失败')
+    toast.error(e?.error || '发布失败')
   } finally { publishing.value = false }
 }
 
@@ -246,7 +246,7 @@ async function downloadTemplate() {
     a.download = '财务数据导入模板.xlsx'
     a.click()
     URL.revokeObjectURL(url)
-  } catch (e) { alert(e?.error || '下载失败') }
+  } catch (e) { toast.error(e?.error || '下载失败') }
 }
 
 // ── 未提交/未完整事业部统计（用于紧凑提示「N 个未提交」）──────────────────────

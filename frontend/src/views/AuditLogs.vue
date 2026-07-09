@@ -84,9 +84,9 @@ async function prune() {
   pruning.value = true
   try {
     const res = await api.post('/audit-logs/prune', { keep_days: 180 })
-    alert(`已清理 ${res.data.deleted} 条历史日志`)
+    toast.error(`已清理 ${res.data.deleted} 条历史日志`)
     await load(true)
-  } catch (e) { alert(e?.msg || '清理失败') }
+  } catch (e) { toast.error(e?.msg || '清理失败') }
   finally { pruning.value = false }
 }
 function toggleExpand(id) { expanded.value[id] = !expanded.value[id] }

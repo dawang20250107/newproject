@@ -1378,8 +1378,7 @@ onMounted(async () => {
 .sel-col input { cursor: pointer; accent-color: var(--primary); }
 .row-sel { background: rgba(201,99,66,.07) !important; }
 .sumbar-sel { border-color: var(--primary); background: rgba(201,99,66,.05); }
-.btn-danger { border: 1px solid rgba(198,40,40,.5); color: var(--c-danger); background: rgba(198,40,40,.06); }
-.btn-danger:hover { background: rgba(198,40,40,.12); }
+/* 危险按钮统一走全局 .btn-danger（style.css），页内不再复制 */
 .kpi.accent { background: rgba(201,99,66,.06); }
 .kpi.accent .kpi-v { color: var(--primary); }
 .kpi.warn .kpi-v { color: var(--c-danger); }
@@ -1419,11 +1418,7 @@ onMounted(async () => {
 .empty { text-align: center; color: var(--muted); padding: 28px 0; }
 .nowrap { white-space: nowrap; }
 
-.status-pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; }
-.pill-ok { background: rgba(46,125,50,.12); color: var(--c-success); }
-.pill-blue { background: rgba(21,101,192,.12); color: var(--c-info); }
-.pill-muted { background: rgba(120,120,120,.1); color: var(--muted); }
-.pill-danger { background: rgba(198,40,40,.12); color: var(--c-danger); }
+/* 状态徽章基准与语义色变体统一走全局 style.css 的 .status-pill/.pill-*（勿在页内复制） */
 
 .lnk { background: none; border: none; color: var(--primary); cursor: pointer; font-size: 13px; padding: 2px 6px; }
 .lnk.danger { color: var(--c-danger); }

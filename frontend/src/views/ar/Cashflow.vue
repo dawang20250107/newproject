@@ -74,7 +74,7 @@ const ctxItems = computed(() => {
 
 async function load() {
   if (!filters.start_date || !filters.end_date) return
-  if (filters.end_date < filters.start_date) { alert('结束日期不能早于起始日期'); return }
+  if (filters.end_date < filters.start_date) { toast.error('结束日期不能早于起始日期'); return }
   loading.value = true
   try {
     const params = {
@@ -402,7 +402,7 @@ const deptBalanceOption = computed(() => {
       </div>
       <button class="btn btn-ghost btn-sm" :disabled="exporting || loading" @click="exportXlsx"
               title="导出当前区间与部门范围的月度现金流与分部门明细">
-        {{ exporting ? '导出中…' : '⬇ 导出' }}
+        {{ exporting ? '导出中…' : '导出' }}
       </button>
     </div>
 

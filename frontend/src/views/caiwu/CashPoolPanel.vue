@@ -4,6 +4,8 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'v
 import ar from '../../api/ar.js'
 import { useAuthStore } from '../../stores/auth.js'
 import { todayCST } from '../../constants.js'
+import { useToast } from '../../composables/useToast.js'
+const toast = useToast()
 
 const auth = useAuthStore()
 const data = ref(null)
@@ -105,15 +107,15 @@ const myDepts = computed(() => auth.user?.departments || [])
 const trStatusLabel = { pending: '待审批', approved: '已生效', rejected: '已拒绝' }
 
 async function saveTransfer() {
-  if (!trForm.from_dept || !trForm.to_dept || !(parseFloat(trForm.amount) > 0)) { alert('调出/调入/金额必填'); return }
+  if (!trForm.from_dept || !trForm.to_dept || !(parseFloat(trForm.amount) > 0)) { toast.error('调出/调入/金额必填'); return }
   trSaving.value = true
   try {
     const res = await ar.createPoolTransfer({ ...trForm })
     showTransfer.value = false
     Object.assign(trForm, { from_dept: '', to_dept: '', amount: '', transfer_date: todayCST(), expected_return_date: '', notes: '' })
-    if (res.data?.status === 'pending') alert('调拨申请已提交，待调出方事业部（或超管）审批后生效')
+    if (res.data?.status === 'pending') toast.success('调拨申请已提交，待调出方事业部（或超管）审批后生效')
     await load()
-  } catch (e) { alert(e?.msg || '调拨失败') }
+  } catch (e) { toast.error(e?.msg || '调拨失败') }
   finally { trSaving.value = false }
 }
 
@@ -129,13 +131,13 @@ const canCancel = t => t.status === 'pending'
 async function approveTransfer(t) {
   if (!(await confirmDlg(`批准调拨：${t.from_dept} → ${t.to_dept} ¥${t.amount}？批准后立即生效（生效日=今天），两池余额随之变动。`))) return
   try { await ar.reviewPoolTransfer(t.id, { action: 'approve' }); await load() }
-  catch (e) { alert(e?.msg || '审批失败') }
+  catch (e) { toast.error(e?.msg || '审批失败') }
 }
 async function rejectTransfer(t) {
   const notes = prompt(`拒绝调拨申请：${t.from_dept} → ${t.to_dept} ¥${t.amount}\n请填写拒绝原因（将反馈给申请人）：`)
   if (notes === null) return
   try { await ar.reviewPoolTransfer(t.id, { action: 'reject', review_notes: notes }); await load() }
-  catch (e) { alert(e?.msg || '审批失败') }
+  catch (e) { toast.error(e?.msg || '审批失败') }
 }
 async function removeTransfer(t) {
   const tip = t.status === 'pending'
@@ -143,7 +145,7 @@ async function removeTransfer(t) {
     : `删除已生效的调拨记录：${t.from_dept} → ${t.to_dept} ¥${t.amount}？两池账面余额将回退。`
   if (!(await confirmDlg(tip))) return
   try { await ar.deletePoolTransfer(t.id); await load() }
-  catch (e) { alert(e?.msg || '删除失败') }
+  catch (e) { toast.error(e?.msg || '删除失败') }
 }
 
 const showConfig = ref(false)
@@ -165,7 +167,7 @@ async function openConfig() {
   showConfig.value = true
 }
 async function saveCfgRow(row) {
-  if (!row.initial_date) { alert('期初基准日必填'); return }
+  if (!row.initial_date) { toast.error('期初基准日必填'); return }
   if (row.saved && (row.initial_date !== row.origDate
       || String(row.initial_amount || 0) !== String(row.origAmount || 0))) {
     if (!(await confirmDlg(`「${row.delivery_dept}」已有期初基准（${row.origDate} / ¥${row.origAmount}）。\n修改期初基准日或期初金额将重算该池全部历史余额，历史调拨与预警状态也会随之变化。确认修改？`))) return
@@ -181,7 +183,7 @@ async function saveCfgRow(row) {
     row.origDate = row.initial_date
     row.origAmount = row.initial_amount
     await load()
-  } catch (e) { alert(e?.msg || '保存失败') }
+  } catch (e) { toast.error(e?.msg || '保存失败') }
   finally { cfgSaving.value = false }
 }
 

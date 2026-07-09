@@ -5,6 +5,8 @@ import { useAuthStore } from '../stores/auth.js'
 import { DEPARTMENTS as DEPT_CONST } from '../constants.js'
 import { fmtMoney } from '../utils/format.js'
 import ProjectShortNamePicker from './ProjectShortNamePicker.vue'
+import { useToast } from '../composables/useToast.js'
+const toast = useToast()
 
 const props = defineProps({
   payment: { type: Object, default: null },
@@ -197,8 +199,8 @@ function cancelSupplierWo() {
   supplierWoAdv.value = null; supplierWoAmt.value = ''; supplierWoNotes.value = ''
 }
 async function doSupplierWriteoff() {
-  if (!(parseFloat(supplierWoAmt.value) > 0)) { alert('核销金额必须大于0'); return }
-  if (!supplierWoDate.value) { alert('请填写核销日期'); return }
+  if (!(parseFloat(supplierWoAmt.value) > 0)) { toast.error('核销金额必须大于0'); return }
+  if (!supplierWoDate.value) { toast.error('请填写核销日期'); return }
   supplierWoSaving.value = true
   try {
     await api.post(`/ar/advances/${supplierWoAdv.value.id}/writeoffs`, {
@@ -215,7 +217,7 @@ async function doSupplierWriteoff() {
     const items = res.data?.items || []
     matchedSupplier.value = items.length > 0 ? items[0] : null
     setTimeout(() => { supplierWoResult.value = '' }, 4000)
-  } catch (e) { alert(e?.msg || '核销失败') }
+  } catch (e) { toast.error(e?.msg || '核销失败') }
   finally { supplierWoSaving.value = false }
 }
 

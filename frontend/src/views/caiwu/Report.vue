@@ -142,7 +142,7 @@ async function exportReport() {
     if (selectedBu.value) params.bu = selectedBu.value
     const res = await api.get('/report/export', { params, responseType: 'blob' })
     downloadBlob(res, `财务报表_${year.value}年.xlsx`)
-  } catch (e) { alert(e?.msg || e?.error || '导出失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
   finally { exporting.value = false }
 }
 

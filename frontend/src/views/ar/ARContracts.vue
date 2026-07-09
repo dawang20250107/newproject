@@ -145,7 +145,7 @@ async function openEdit(item) {
 }
 
 async function save() {
-  if (!form.name.trim()) { alert('请填写合同名称'); return }
+  if (!form.name.trim()) { toast.error('请填写合同名称'); return }
   saving.value = true
   try {
     const payload = {
@@ -166,14 +166,14 @@ async function save() {
     showModal.value = false
     load(editItem.value ? false : true)
   } catch (e) {
-    alert(e?.msg || e?.error || '保存失败，请检查必填项与部门权限')
+    toast.error(e?.msg || e?.error || '保存失败，请检查必填项与部门权限')
   } finally { saving.value = false }
 }
 
 async function remove(item) {
   if (!(await confirmDlg(`确定删除合同「${item.name}」？\n（仅删除合同及其关联关系，不影响客户与项目本体）`))) return
   try { await ar.deleteContract(item.id); load() }
-  catch (e) { alert(e?.msg || '删除失败') }
+  catch (e) { toast.error(e?.msg || '删除失败') }
 }
 
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────

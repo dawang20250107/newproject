@@ -4,6 +4,8 @@ import { ref, onMounted } from 'vue'
 import { BUSINESS_UNITS } from '../../constants.js'
 import api from '../../api/caiwu.js'
 import EmptyState from '../../components/EmptyState.vue'
+import { useToast } from '../../composables/useToast.js'
+const toast = useToast()
 
 const tab = ref('l1')  // 'l1' | 'l2' | 'l3'
 
@@ -38,7 +40,7 @@ async function saveL1() {
 async function deleteL1(id) {
   if (!(await confirmDlg('确认删除该一级科目？'))) return
   try { await api.delete(`/categories/l1/${id}`); await loadL1() }
-  catch (e) { alert(e?.error || '删除失败') }
+  catch (e) { toast.error(e?.error || '删除失败') }
 }
 
 function openL1Form(cat = null) {
@@ -75,7 +77,7 @@ async function saveL2() {
 async function deleteL2(id) {
   if (!(await confirmDlg('确认删除？'))) return
   try { await api.delete(`/categories/l2/${id}`); await loadL2() }
-  catch (e) { alert(e?.error || '删除失败') }
+  catch (e) { toast.error(e?.error || '删除失败') }
 }
 
 // ── L3 categories ───────────────────────────────────────
@@ -104,7 +106,7 @@ async function saveL3() {
 async function deleteL3(id) {
   if (!(await confirmDlg('确认删除？'))) return
   try { await api.delete(`/categories/l3/${id}`); await loadL3() }
-  catch (e) { alert(e?.error || '删除失败') }
+  catch (e) { toast.error(e?.error || '删除失败') }
 }
 
 function switchTab(t) {
