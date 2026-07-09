@@ -1595,6 +1595,47 @@ class AdvanceModuleTests(TestCase):
             project=proj, operation_year=year, operation_month=month,
             estimated_amount=Decimal(str(est)))
 
+    def test_advances_bulk_delete_guards_and_scope(self):
+        """批量删除:有核销的跳过(原因含核销);非本部门不删;其余删除。"""
+        admin = self.make_user('13911100094', 'finance_director', role='super_admin')
+        op = self.make_user('13911100093', 'finance_director', departments=['运输事业部'])
+        a = AdvanceRecord.objects.create(direction='预收', delivery_dept=self.dept,
+            counterparty='甲', occur_year=2026, occur_month=5, advance_amount=Decimal('100'))
+        b = AdvanceRecord.objects.create(direction='预收', delivery_dept=self.dept,
+            counterparty='乙', occur_year=2026, occur_month=5, advance_amount=Decimal('200'))
+        AdvanceWriteoff.objects.create(advance_record=b, writeoff_no=1,
+                                       amount=Decimal('50'), writeoff_date=date(2026, 5, 20))
+        c = AdvanceRecord.objects.create(direction='预收', delivery_dept='运输事业部',
+            counterparty='丙', occur_year=2026, occur_month=5, advance_amount=Decimal('300'))
+        # 超管批删 a/b/c:a 删除、b 跳过(有核销)、c 删除
+        r = self.post('/api/pk/ar/advances/bulk-delete', {'ids': [a.id, b.id, c.id]}, admin)
+        d = r.json()['data']
+        self.assertEqual(d['deleted'], 2, r.content)
+        self.assertEqual(len(d['skipped']), 1)
+        self.assertIn('核销', d['skipped'][0]['reason'])
+        self.assertTrue(AdvanceRecord.objects.filter(pk=b.id).exists())
+        # 非本部门(op 只在运输)批删劳务的 b → 部门作用域过滤,0 删除
+        r2 = self.post('/api/pk/ar/advances/bulk-delete', {'ids': [b.id]}, op)
+        self.assertEqual(r2.json()['data']['deleted'], 0)
+
+    def test_cashflow_export_endpoint(self):
+        """现金流导出:与 cashflow 同参数,返回 Excel 且内容非空。"""
+        from paikuan.models import Payment, PaymentInstallment
+        admin = self.make_user('13911100092', 'finance_director', role='super_admin')
+        proj = self.create_project()
+        ar = self._ar_record(proj, 1000)
+        ARPayment.objects.create(ar_record=ar, payment_no=1, amount=Decimal('400'),
+                                 payment_date=date(2026, 6, 10), source='回款')
+        p = Payment.objects.create(department=self.dept, project_desc='X', payee='Y',
+                                   total_amount=Decimal('300'), planned_date=date(2026, 6, 1))
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 6, 12),
+                                          pay_amount=Decimal('300'))
+        r = self.client.get('/api/pk/ar/cashflow/export?start_date=2026-06-01&end_date=2026-06-30',
+                            **self.auth(admin))
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn('spreadsheet', r['Content-Type'])
+        self.assertTrue(len(r.content) > 100)
+
     def test_advance_list_actual_date_range_filter_and_summary(self):
         """预收预付按实际收付日(款项日期)区间筛选:列表/汇总/KPI 同口径联动;
         occur_date 为空的存量行按发生年月落月兜底,不被日期筛选悄悄排除。"""

@@ -9,6 +9,7 @@ import DateRangeChips from '../../components/DateRangeChips.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useToast } from '../../composables/useToast.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { downloadBlob } from '../../utils/download.js'
 import { fmtCompact } from '../../utils/format.js'
 import { HIDE_OVERLAP } from '../../utils/chartTheme.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
@@ -96,6 +97,21 @@ async function load() {
 const onScopeChange = () => {
   if (filters.dept && !accessibleDepts.value.includes(filters.dept)) filters.dept = ''
   load()
+}
+
+// 导出 Excel：与页面完全同参数（区间+部门作用域），后端同口径共用 _cashflow_payload
+const exporting = ref(false)
+async function exportXlsx() {
+  if (exporting.value || !filters.start_date || !filters.end_date) return
+  exporting.value = true
+  try {
+    const params = { start_date: filters.start_date, end_date: filters.end_date }
+    if (filters.dept) params.depts = filters.dept
+    else if (accessibleDepts.value.length) params.depts = accessibleDepts.value.join(',')
+    const res = await ar.exportCashflow(params)
+    downloadBlob(res.data, `现金流分析_${filters.start_date}_${filters.end_date}.xlsx`)
+  } catch (e) { toast.error(e?.error || '导出失败，请重试') }
+  finally { exporting.value = false }
 }
 onMounted(() => { load(); window.addEventListener('pk:depts-changed', onScopeChange) })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
@@ -384,6 +400,10 @@ const deptBalanceOption = computed(() => {
       <div v-if="loading" class="cfb-loading">
         <span class="cfb-spin">↻</span> 加载中
       </div>
+      <button class="btn btn-ghost btn-sm" :disabled="exporting || loading" @click="exportXlsx"
+              title="导出当前区间与部门范围的月度现金流与分部门明细">
+        {{ exporting ? '导出中…' : '⬇ 导出' }}
+      </button>
     </div>
 
     <!-- KPI cards: 三组（收款 / 付款 / 现金流），每组 预算 → 预收/预付 → 实收/实付 -->

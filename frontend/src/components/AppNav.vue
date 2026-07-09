@@ -350,6 +350,21 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         </Transition>
       </router-link>
 
+      <router-link v-if="auth.canPage('caiwu_report')" to="/caiwu/close" class="nav-item"
+        :class="{ active: route.path === '/caiwu/close' }"
+        :title="effectiveCollapsed ? '关账清单' : undefined"
+        @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 11l3 3L22 4"/>
+            <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+          </svg>
+        </span>
+        <Transition name="label-fade">
+          <span v-if="!effectiveCollapsed" class="nav-label">关账清单</span>
+        </Transition>
+      </router-link>
+
       <router-link v-if="auth.canPage('caiwu_charts')" to="/caiwu/project-margin" class="nav-item"
         :class="{ active: route.path === '/caiwu/project-margin' }"
         :title="effectiveCollapsed ? '项目毛利' : undefined"

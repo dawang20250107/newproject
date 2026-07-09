@@ -23,6 +23,7 @@ const routes = [
   { path: '/caiwu/charts', redirect: '/caiwu/cockpit' },
   // 财务分析 (caiwu) module
   { path: '/caiwu/report', component: () => import('../views/caiwu/Report.vue'), meta: { page: 'caiwu_report' } },
+  { path: '/caiwu/close', component: () => import('../views/caiwu/CloseChecklist.vue'), meta: { page: 'caiwu_report' } },
   { path: '/caiwu/data', component: () => import('../views/caiwu/DataImport.vue'), meta: { page: 'caiwu_data' } },
   { path: '/caiwu/project-margin', component: () => import('../views/caiwu/ProjectMargin.vue'), meta: { page: 'caiwu_charts', fullHeight: true } },
   { path: '/caiwu/project-cashflow', component: () => import('../views/caiwu/ProjectCashflow.vue'), meta: { page: 'ar_analytics', fullHeight: true } },

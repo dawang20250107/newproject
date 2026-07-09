@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views, views_internal
+from . import views, views_close, views_internal
 
 urlpatterns = [
     # auth
@@ -78,4 +78,7 @@ urlpatterns = [
     path('internal/batches/<int:bid>', views_internal.internal_batch_detail),
     path('internal/matrix', views_internal.internal_matrix),
     path('internal/pair', views_internal.internal_pair),
+
+    # 月末关账清单（红绿灯聚合，只读）
+    path('close-checklist', views_close.close_checklist),
 ]

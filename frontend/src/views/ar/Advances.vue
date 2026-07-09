@@ -13,6 +13,8 @@ import ColumnFilter from '../../components/ColumnFilter.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
 import SchemePicker from '../../components/SchemePicker.vue'
 import { useTableSchemes } from '../../composables/useTableSchemes.js'
+import { useShiftSelect } from '../../composables/useShiftSelect.js'
+import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
 import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
@@ -28,6 +30,31 @@ const items = ref([])
 const total = ref(0)
 const kpi = ref(null)
 const listSummary = ref(null)   // 筛选汇总（当前方向，随筛选/区间联动，来自列表接口）
+
+// ── 多选与批量操作（与日常收款同款交互）─────────────────────────────────────
+const selectedIds = ref(new Set())
+const selCount = computed(() => selectedIds.value.size)
+const hasSel = computed(() => selCount.value > 0)
+const pageAll = computed(() => items.value.length > 0 && items.value.every(r => selectedIds.value.has(r.id)))
+function toggleRow(id) { const s = new Set(selectedIds.value); s.has(id) ? s.delete(id) : s.add(id); selectedIds.value = s }
+function toggleAll() { const s = new Set(selectedIds.value); if (pageAll.value) items.value.forEach(r => s.delete(r.id)); else items.value.forEach(r => s.add(r.id)); selectedIds.value = s }
+function clearSel() { selectedIds.value = new Set() }
+const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow })
+useEscClearSelection(() => hasSel.value, clearSel)
+const selSum = computed(() => items.value.filter(r => selectedIds.value.has(r.id))
+  .reduce((s, r) => s + (parseFloat(r.advance_amount) || 0), 0))
+async function bulkDelete() {
+  if (!hasSel.value) return
+  if (!(await confirmDlg(`批量删除选中的 ${selCount.value} 笔${dirLabel.value}（金额合计 ${fmtAmt(selSum.value)}）？\n` +
+                         `已有核销或退款关联的记录会自动跳过；此操作不可撤销。`, { danger: true }))) return
+  try {
+    const d = (await ar.bulkDeleteAdvances([...selectedIds.value])).data || {}
+    const skipped = d.skipped || []
+    if (skipped.length) toast.success(`已删除 ${d.deleted} 条，跳过 ${skipped.length} 条（${skipped[0].reason}）`)
+    else toast.success(`已删除 ${d.deleted} 条`)
+    clearSel(); load(true)
+  } catch (e) { toast.error(e?.error || '批量删除失败') }
+}
 const loading = ref(false)
 const loadErr = ref('')
 const page = ref(1)
@@ -161,6 +188,9 @@ async function load(reset = false) {
     total.value = res.data.total
     kpi.value = k.data[direction.value]
     listSummary.value = (res.data.summary || {})[direction.value] || null
+    // 选中集只保留仍在当前列表中的行（翻页/切方向/筛选后清掉不可见的陈旧选中）
+    const live = new Set(items.value.map(r => r.id))
+    selectedIds.value = new Set([...selectedIds.value].filter(id => live.has(id)))
   } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
   } finally { loading.value = false }
 }
@@ -832,6 +862,7 @@ onMounted(async () => {
           <table class="data-table">
             <thead>
               <tr>
+                <th v-if="canDelete" class="sel-col"><input type="checkbox" :checked="pageAll" @change="toggleAll" title="全选本页" /></th>
                 <th v-if="show('adv_counterparty')"><ColumnFilter label="往来单位" field="counterparty" type="text" :model-value="colFilters.counterparty" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('counterparty',v)" @sort="o=>setSort('counterparty',o)" /></th>
                 <th class="proj-dept-th">
                   <ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" />
@@ -855,7 +886,12 @@ onMounted(async () => {
                 <td colspan="10" class="empty">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer;font-size:13px;text-decoration:underline" @click="load()">重试</button></td>
               </tr>
               <tr v-else-if="!items.length"><td colspan="10" class="empty">暂无{{ dirLabel }}记录</td></tr>
-              <tr v-for="r in items" :key="r.id" @contextmenu.prevent="ctxRec.open($event, r)" @dblclick="onRowDblClick(r, $event)">
+              <tr v-for="r in items" :key="r.id" :class="{ 'row-sel': selectedIds.has(r.id) }"
+                  @contextmenu.prevent="ctxRec.open($event, r)" @dblclick="onRowDblClick(r, $event)">
+                <td v-if="canDelete" class="sel-col">
+                  <input type="checkbox" :checked="selectedIds.has(r.id)"
+                         @click="onRowSelClick($event, r.id)" @change.prevent />
+                </td>
                 <td v-if="show('adv_counterparty')">{{ r.counterparty || '—' }}</td>
                 <td>
                   <div v-if="r.short_name" class="proj-name">{{ r.short_name }}</div>
@@ -880,8 +916,16 @@ onMounted(async () => {
           </table>
         </div>
 
+        <!-- 选中态操作条：有选中时替换筛选合计栏 -->
+        <div v-if="hasSel" class="adv-sumbar sumbar-sel">
+          <span class="sb-k">已选 {{ selCount }} 笔</span>
+          <span class="sb-i">金额合计 <b>{{ fmtAmt(selSum) }}</b></span>
+          <button class="btn btn-danger btn-sm" @click="bulkDelete">批量删除</button>
+          <button class="btn btn-ghost btn-sm" @click="clearSel">取消选择</button>
+          <span class="sb-range">Shift 可区间选 · Esc 取消</span>
+        </div>
         <!-- 筛选汇总：与当前时间区间/搜索/列头筛选完全同口径（来自列表接口） -->
-        <div v-if="listSummary" class="adv-sumbar">
+        <div v-else-if="listSummary" class="adv-sumbar">
           <span class="sb-k">筛选合计</span>
           <span class="sb-i">{{ listSummary.count }} 笔</span>
           <span v-if="show('adv_amount')" class="sb-i">{{ dirLabel }}金额 <b>{{ fmtAmt(listSummary.advance_amount) }}</b></span>
@@ -1330,6 +1374,12 @@ onMounted(async () => {
 .sb-accent { color: var(--primary) !important; }
 .sb-warn { color: var(--c-danger) !important; }
 .sb-range { margin-left: auto; font-size: 11px; color: var(--muted); opacity: .8; }
+.sel-col { width: 34px; text-align: center; }
+.sel-col input { cursor: pointer; accent-color: var(--primary); }
+.row-sel { background: rgba(201,99,66,.07) !important; }
+.sumbar-sel { border-color: var(--primary); background: rgba(201,99,66,.05); }
+.btn-danger { border: 1px solid rgba(198,40,40,.5); color: var(--c-danger); background: rgba(198,40,40,.06); }
+.btn-danger:hover { background: rgba(198,40,40,.12); }
 .kpi.accent { background: rgba(201,99,66,.06); }
 .kpi.accent .kpi-v { color: var(--primary); }
 .kpi.warn .kpi-v { color: var(--c-danger); }

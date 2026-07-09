@@ -72,6 +72,7 @@ urlpatterns = [
 
     # 预收预付 (advances)
     path('advances', views.advances),
+    path('advances/bulk-delete', views.advances_bulk_delete),
     path('advances/kpi', views.advances_kpi),
     path('advances/summary', views.advances_summary),
     path('advances/available', views.advances_available),
@@ -113,6 +114,7 @@ urlpatterns = [
 
     # Cashflow comparison
     path('cashflow', views.cashflow),
+    path('cashflow/export', views.cashflow_export),
 
     # 周期报表（周报 / 月报）
     path('periodic-report', views.periodic_report),

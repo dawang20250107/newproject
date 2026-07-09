@@ -314,6 +314,46 @@ def advance_detail(request, pk):
 
 @csrf_exempt
 @pk_required()
+def advances_bulk_delete(request):
+    """POST {ids:[...]} → 批量删除预收预付（部门作用域内）。
+    与单删同一道资金安全线：有核销或退款关联的记录跳过并回传原因。"""
+    if request.method != 'POST':
+        return err('POST only', 405)
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    denied = _delete_denied(request)
+    if denied:
+        return denied
+    ids = _parse_body(request).get('ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请选择要删除的记录')
+    try:
+        ids = [int(i) for i in ids]
+    except (ValueError, TypeError):
+        return err('ids 必须为整数列表')
+    if len(ids) > 1000:
+        return err('单次删除上限 1000 条，请缩小选择范围')
+    qs = _advance_dept_filter(AdvanceRecord.objects.filter(pk__in=ids), request)
+    deleted, skipped = 0, []
+    for rec in list(qs):
+        if rec.writeoffs.exists():
+            skipped.append({'id': rec.id,
+                            'reason': '已有核销，不能删除；请先删除其全部核销记录'})
+            continue
+        if rec.refunds.exists():
+            skipped.append({'id': rec.id,
+                            'reason': '已有预付退款关联（日常收款），不能删除；'
+                                      '请先在日常收款解除关联或删除对应退款'})
+            continue
+        rec.delete()
+        deleted += 1
+    return ok({'deleted': deleted, 'skipped': skipped,
+               'message': f'已删除 {deleted} 条' + (f'；跳过 {len(skipped)} 条' if skipped else '')})
+
+
+@csrf_exempt
+@pk_required()
 def advances_kpi(request):
     denied = _page_denied(request, 'ar_advance')
     if denied:

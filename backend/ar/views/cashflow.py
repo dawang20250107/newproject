@@ -5,13 +5,10 @@ from ._common import *  # noqa: F401,F403
 # Cashflow comparison (AR collected vs AP paid)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@csrf_exempt
-@pk_required()
-def cashflow(request):
-    denied = _page_denied(request, 'ar_cashflow')
-    if denied:
-        return denied
-
+def _cashflow_payload(request):
+    """组装现金流分析的完整 payload（dict）。参数解析/口径与 cashflow 视图完全一致——
+    cashflow（JSON）与 cashflow_export（Excel）共用本函数，保证两处口径永不分叉。
+    参数非法时返回 err(...) 的 HttpResponse，调用方原样透传。"""
     # Date range — accept day-level start_date/end_date; fall back to year/month
     today = timezone.localdate()
     start_date_raw = (request.GET.get('start_date') or '').strip()
@@ -207,7 +204,7 @@ def cashflow(request):
         running += v
         cumulative.append(round(running, 2))
 
-    return ok({
+    return {
         'months': month_keys,
         'depts': depts,
         'by_dept': by_dept,
@@ -228,7 +225,57 @@ def cashflow(request):
         'has_alert': has_alert,
         'start_date': str(start_date),
         'end_date': str(end_date),
-    })
+    }
+
+
+@csrf_exempt
+@pk_required()
+def cashflow(request):
+    denied = _page_denied(request, 'ar_cashflow')
+    if denied:
+        return denied
+    payload = _cashflow_payload(request)
+    if isinstance(payload, HttpResponse):
+        return payload
+    return ok(payload)
+
+
+@csrf_exempt
+@pk_required()
+def cashflow_export(request):
+    """GET → 现金流分析导出 Excel。参数与口径同 cashflow（共用 _cashflow_payload）。"""
+    denied = _page_denied(request, 'ar_cashflow')
+    if denied:
+        return denied
+    payload = _cashflow_payload(request)
+    if isinstance(payload, HttpResponse):
+        return payload
+
+    money_cols = ('回款', '日常收款', '预收', '流入合计', '实付', '预付',
+                  '流出合计', '净现金流', '累计净现金流')
+    months = payload['months']
+    t = payload['totals']
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '月度现金流'
+    _header_row(ws, ['月份', '回款', '日常收款', '预收', '流入合计',
+                     '实付', '预付', '流出合计', '净现金流', '累计净现金流'])
+    for i, ym in enumerate(months):
+        ws.append([ym, t['collected'][i], t['daily_receipts'][i], t['advance_received'][i],
+                   t['inflow'][i], t['paid'][i], t['advance_paid'][i], t['outflow'][i],
+                   t['net'][i], t['cumulative_net'][i]])
+    _style_export_ws(ws, money_headers=money_cols)
+
+    ws2 = wb.create_sheet('分部门')
+    _header_row(ws2, ['部门', '月份', '回款', '日常收款', '预收', '实付', '预付'])
+    for d in payload['by_dept']:
+        for i, ym in enumerate(months):
+            ws2.append([d['dept'], ym, d['collected'][i], d['daily_receipts'][i],
+                        d['advance_received'][i], d['paid'][i], d['advance_paid'][i]])
+    _style_export_ws(ws2, money_headers=money_cols)
+
+    return _export_response(wb, f"现金流分析_{payload['start_date']}_{payload['end_date']}.xlsx")
 
 
 

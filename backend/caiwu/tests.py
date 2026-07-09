@@ -547,6 +547,29 @@ class CaiwuUnifiedPermissionTests(TestCase):
                                 content_type='application/json', **self.hdr(self.cashier))
         self.assertEqual(chat.status_code, 403, self.jj(chat))
 
+    def test_close_checklist(self):
+        """月末关账清单:聚合各模块红绿灯,财务总监可访问,含全部检查项。"""
+        from caiwu.models import ProjectMargin
+        ProjectMargin.objects.create(business_unit=self.bu, year=2026, month=6,
+                                     project_name='P', revenue=Decimal('100'), cost=Decimal('60'))
+        r = self.client.get('/api/cw/close-checklist', {'year': 2026, 'month': 6},
+                            **self.hdr(self.fin))
+        self.assertEqual(r.status_code, 200, self.jj(r))
+        d = self.jj(r)['data']
+        keys = {i['key'] for i in d['items']}
+        for must in ('dept_report', 'project_margin', 'internal', 'budget',
+                     'cashflow', 'ar_overdue', 'pay_overdue', 'trash'):
+            self.assertIn(must, keys)
+        self.assertEqual(d['summary']['total'], len(d['items']))
+        # 每项都有状态与直达链接
+        for i in d['items']:
+            self.assertIn(i['status'], ('ok', 'warn', 'todo'))
+            self.assertTrue(i['link'].startswith('/'))
+        # 无财务分析权限者 403
+        r2 = self.client.get('/api/cw/close-checklist', {'year': 2026, 'month': 6},
+                             **self.hdr(self.cashier))
+        self.assertEqual(r2.status_code, 403)
+
     def test_project_margin_allocated_keeps_unpooled_revenue(self):
         """allocated 模式必须保留未挂池收入:总收入/总毛利与 direct 一致(仅成本按收入分摊)。"""
         from caiwu.models import ProjectMargin
