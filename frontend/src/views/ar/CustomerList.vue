@@ -12,6 +12,8 @@ import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { useToast } from '../../composables/useToast.js'
+const toast = useToast()
 
 // 项目损益卡（复用 P1 组件）— 点客户项目即下钻全链路损益
 const ProjectPnlCard = defineAsyncComponent(() => import('../caiwu/ProjectPnlCard.vue'))
@@ -66,9 +68,6 @@ const saving = ref(false)
 const pnlName = ref('')
 const year = ref(yearCST())
 
-const toast = ref('')
-let toastTimer = null
-function showToast(m) { toast.value = m; clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.value = '', 2200) }
 
 const wan = v => (v == null || v === '') ? '—' : (Number(v) / 1e4).toFixed(1) + '万'
 const LEVELS = ['S级', 'A级', 'B级', 'C级', 'D级']
@@ -99,23 +98,23 @@ async function syncFromProjects() {
   syncing.value = true
   try {
     const res = await ar.syncCustomersFromProjects()
-    showToast(res.data?.message || '✓ 已同步')
+    toast.success(res.data?.message || '已同步')
     await load(true)
-  } catch (e) { showToast(e?.error || '同步失败') }
+  } catch (e) { toast.error(e?.error || '同步失败') }
   finally { syncing.value = false }
 }
 
 // 创建时间显示（只显示日期）
 const fmtDate = v => v ? String(v).slice(0, 10) : '—'
 async function applyBulkLevel() {
-  if (!selected.value.size) return showToast('请先勾选客户')
+  if (!selected.value.size) return toast.error('请先勾选客户')
   bulkSaving.value = true
   try {
     const res = await ar.bulkTagCustomerLevel({ ids: [...selected.value], level: bulkLevel.value })
-    showToast(res.data?.message || '✓ 已更新')
+    toast.success(res.data?.message || '已更新')
     clearSel()
     await load()
-  } catch (e) { showToast(e?.error || '批量打标失败') }
+  } catch (e) { toast.error(e?.error || '批量打标失败') }
   finally { bulkSaving.value = false }
 }
 
@@ -123,19 +122,19 @@ async function applyBulkLevel() {
 const bulkDeleting = ref(false)
 async function bulkDeleteCustomers() {
   const n = selected.value.size
-  if (!n) return showToast('请先勾选客户')
+  if (!n) return toast.error('请先勾选客户')
   if (!(await confirmDlg(`确定删除选中的 ${n} 个客户？\n名下仍有项目或合同关联的客户会被自动跳过（不会误删）。`))) return
   bulkDeleting.value = true
   try {
     const res = await ar.bulkDeleteCustomers({ ids: [...selected.value] })
     const d = res.data
-    showToast(d?.message || `已删除 ${d?.deleted ?? 0} 个客户`)
+    toast.success(d?.message || `已删除 ${d?.deleted ?? 0} 个客户`)
     if (d?.skipped_reasons?.length) {
-      showToast(`以下客户被保护跳过：${d.skipped_reasons.join('；')}`)
+      toast.error(`以下客户被保护跳过：${d.skipped_reasons.join('；')}`)
     }
     clearSel()
     await load(true)
-  } catch (e) { showToast(e?.error || e?.msg || '批量删除失败') }
+  } catch (e) { toast.error(e?.error || e?.msg || '批量删除失败') }
   finally { bulkDeleting.value = false }
 }
 
@@ -201,7 +200,7 @@ async function openDetail(c) {
       const closeBtn = drawerEl.querySelector('.dw-close')
       if (closeBtn) closeBtn.focus()
     }
-  } catch (e) { showToast(e?.error || '加载失败') }
+  } catch (e) { toast.error(e?.error || '加载失败') }
   finally { detailLoading.value = false }
 }
 function closeDrawer() { drawerOpen.value = false; detail.value = null }
@@ -228,25 +227,25 @@ function openEditFromDetail() {
 async function changeProjStatus(p) {
   try {
     await ar.updateProject(p.id, { status: p.status })
-    showToast(`✓ 项目「${p.short_name}」状态改为${p.status}`)
-  } catch (e) { showToast(e?.error || '改状态失败') }
+    toast.success(`✓ 项目「${p.short_name}」状态改为${p.status}`)
+  } catch (e) { toast.error(e?.error || '改状态失败') }
 }
 async function saveCustomer() {
-  if (!editForm.name.trim()) return showToast('客户名称不能为空')
-  if (!editForm.id && !editForm.delivery_dept) return showToast('请选择客户所属事业部（客户按事业部隔离）')
+  if (!editForm.name.trim()) return toast.error('客户名称不能为空')
+  if (!editForm.id && !editForm.delivery_dept) return toast.error('请选择客户所属事业部（客户按事业部隔离）')
   saving.value = true
   try {
     if (editForm.id) {
       await ar.updateCustomer(editForm.id, editForm)
       if (detail.value && detail.value.id === editForm.id) Object.assign(detail.value, { name: editForm.name, level: editForm.level, status: editForm.status, contact: editForm.contact, customer_date: editForm.customer_date, notes: editForm.notes })
-      showToast(editForm.push_status ? '✓ 已保存并下发状态到名下项目' : '✓ 已保存')
+      toast.success(editForm.push_status ? '已保存并下发状态到名下项目' : '已保存')
     } else {
       await ar.createCustomer(editForm)
-      showToast('✓ 已创建')
+      toast.success('已创建')
     }
     showEdit.value = false
     await load()
-  } catch (e) { showToast(e?.error || '保存失败') }
+  } catch (e) { toast.error(e?.error || '保存失败') }
   finally { saving.value = false }
 }
 
@@ -271,11 +270,11 @@ const ROW_COPY_COLS = [
 ]
 async function copyField(val, label) {
   const ok = await copyText(val)
-  showToast(ok ? `✓ 已复制：${label}` : '复制失败')
+  toast.success(ok ? `✓ 已复制：${label}` : '复制失败')
 }
 async function copyWholeRow(c) {
   const ok = await copyRowTSV(c, ROW_COPY_COLS, { header: true })
-  showToast(ok ? '✓ 已复制整行（含表头，可粘贴到 Excel）' : '复制失败')
+  toast.success(ok ? '已复制整行（含表头，可粘贴到 Excel）' : '复制失败')
 }
 // 从行直接编辑：拉取完整客户后填表（行数据缺 notes/customer_date 等字段）
 async function editCustomerRow(c) {
@@ -283,15 +282,15 @@ async function editCustomerRow(c) {
     const d = (await ar.getCustomer(c.id)).data
     Object.assign(editForm, { id: d.id, name: d.name, delivery_dept: d.delivery_dept || '', level: d.level || '', status: d.status || '运作中', contact: d.contact || '', customer_date: d.customer_date || '', notes: d.notes || '', push_status: false })
     showEdit.value = true
-  } catch (e) { showToast(e?.error || '加载客户失败') }
+  } catch (e) { toast.error(e?.error || '加载客户失败') }
 }
 async function deleteCustomerRow(c) {
   if (!(await confirmDlg(`确定删除客户「${c.name}」？若名下仍有项目或应收，系统将拒绝删除。`))) return
   try {
     await ar.deleteCustomer(c.id)
-    showToast('✓ 已删除')
+    toast.success('已删除')
     await load()
-  } catch (e) { showToast(e?.error || e?.msg || '删除失败（可能名下仍有项目）') }
+  } catch (e) { toast.error(e?.error || e?.msg || '删除失败（可能名下仍有项目）') }
 }
 const ctxItems = computed(() => {
   const c = ctx.menu.payload
@@ -531,7 +530,6 @@ onMounted(async () => {
       </div>
     </Teleport>
 
-    <Transition name="toast"><div v-if="toast" class="cu-toast">{{ toast }}</div></Transition>
   </div>
 </template>
 

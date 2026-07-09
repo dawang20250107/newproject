@@ -8,6 +8,7 @@ import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import { useToast } from '../../composables/useToast.js'
+import { useModalEsc } from '../../composables/useModalEsc.js'
 
 const auth = useAuthStore()
 const toast = useToast()
@@ -226,6 +227,8 @@ const onScopeChange = () => {
   page.value = 1
   load()
 }
+useModalEsc([() => showModal.value, () => (showModal.value = false)])
+
 onMounted(() => {
   load(); loadCustomers()
   window.addEventListener('pk:depts-changed', onScopeChange)

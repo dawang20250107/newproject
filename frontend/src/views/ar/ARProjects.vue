@@ -20,6 +20,7 @@ import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { useModalEsc } from '../../composables/useModalEsc.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -539,6 +540,11 @@ async function promoteDrafts() {
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { promotingDrafts.value = false }
 }
+
+useModalEsc(
+  [() => showModal.value, () => (showModal.value = false)],
+  [() => showDelConfirm.value, () => (showDelConfirm.value = false)],
+)
 
 onMounted(async () => {
   if (auth.perms?.ar_shared_only) filters.is_shared = '1'

@@ -29,6 +29,7 @@ import { createRequestLane } from '../utils/requestLane.js'
 import { useFileDrop } from '../composables/useFileDrop.js'
 import { useEscClearSelection } from '../composables/useEscClearSelection.js'
 import { cachedGet } from '../api/refCache.js'
+import { useModalEsc } from '../composables/useModalEsc.js'
 
 const toast = useToast()
 const route = useRoute()
@@ -695,6 +696,17 @@ const onScopeChange = () => {
   filters.page = 1
   load()
 }
+// 弹窗 Esc 关闭：替代此前的 tabindex+keyup.esc 死键方案（焦点不在弹窗上时失效）
+useModalEsc(
+  [() => showColSettings.value, () => (showColSettings.value = false)],
+  [() => showModal.value, () => (showModal.value = false)],
+  [() => showOffset.value, () => (showOffset.value = false)],
+  [() => !!returnDlg.value, () => (returnDlg.value = null)],
+  [() => showBatchPay.value, () => (showBatchPay.value = false)],
+  [() => showDelConfirm.value, () => (showDelConfirm.value = false)],
+  [() => logsOpen.value, () => (logsOpen.value = false)],
+)
+
 onMounted(async () => {
   loadDepts()
   // 全局单号直达带入：?numbers=a,b,c → 应用批量单号筛选

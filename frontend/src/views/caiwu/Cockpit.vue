@@ -18,6 +18,8 @@ import { renderMarkdown } from '../../utils/markdown.js'
 import { downloadBlob } from '../../utils/download.js'
 import EmptyState from '../../components/EmptyState.vue'
 import AiMark from '../../components/AiMark.vue'
+import { useToast } from '../../composables/useToast.js'
+const toast = useToast()
 
 // 驾驶舱内嵌分析面板（懒加载，首次切到对应 Tab 才载入）
 const ChartsPanel = defineAsyncComponent(() => import('./Charts.vue'))
@@ -345,7 +347,7 @@ function exportChatMd() {
   if (!chatMessages.value.length) return
   const blob = new Blob([chatToMarkdown()], { type: 'text/markdown;charset=utf-8' })
   downloadBlob(blob, `业财融合对话_${exportStamp()}.md`)
-  showToast('✓ 已导出 Markdown')
+  toast.success('已导出 Markdown')
 }
 const exportingImg = ref(false)
 async function exportChatImage() {
@@ -363,11 +365,11 @@ async function exportChatImage() {
     })
     canvas.toBlob(blob => {
       if (blob) downloadBlob(blob, `业财融合对话_${exportStamp()}.png`)
-      showToast('✓ 已导出图片')
+      toast.success('已导出图片')
       exportingImg.value = false
     }, 'image/png')
   } catch (e) {
-    showToast('图片导出失败：' + (e?.message || e))
+    toast.error('图片导出失败：' + (e?.message || e))
     exportingImg.value = false
   }
 }
@@ -395,13 +397,6 @@ const kbLoading = ref(false)
 const kbInput = ref('')
 const kbScope = ref('')                // '' = 全集团
 const kbKind = ref('background')
-const toast = ref('')
-let toastTimer = null
-function showToast(msg) {
-  toast.value = msg
-  clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => { toast.value = '' }, 2200)
-}
 
 async function loadKb() {
   kbLoading.value = true
@@ -419,16 +414,16 @@ async function addKb() {
     })
     kbInput.value = ''
     await loadKb()
-    showToast('已加入知识库')
-  } catch (e) { showToast(e?.msg || '添加失败') }
+    toast.error('已加入知识库')
+  } catch (e) { toast.error(e?.msg || '添加失败') }
 }
 async function delKb(id) {
   try { await api.delete(`/cockpit/knowledge/${id}`); kbItems.value = kbItems.value.filter(k => k.id !== id) }
-  catch (e) { showToast(e?.msg || '删除失败') }
+  catch (e) { toast.error(e?.msg || '删除失败') }
 }
 async function togglePin(k) {
   try { const res = await api.put(`/cockpit/knowledge/${k.id}`, { pinned: !k.pinned }); Object.assign(k, res.data); await loadKb() }
-  catch (e) { showToast(e?.msg || '操作失败') }
+  catch (e) { toast.error(e?.msg || '操作失败') }
 }
 const distillingIdx = ref(-1)
 async function distillToKb(content, idx) {
@@ -436,9 +431,9 @@ async function distillToKb(content, idx) {
   distillingIdx.value = idx
   try {
     await api.post('/cockpit/knowledge/distill', { text: content, scope: selectedBu.value || '全集团' })
-    showToast('✓ 已提炼并存入知识库')
+    toast.success('已提炼并存入知识库')
     if (panelTab.value === 'kb') await loadKb()
-  } catch (e) { showToast(e?.msg || '提炼失败') }
+  } catch (e) { toast.error(e?.msg || '提炼失败') }
   finally { distillingIdx.value = -1 }
 }
 function openKb() { panelTab.value = 'kb'; loadKb() }
@@ -469,7 +464,7 @@ async function rateAnswer(m, idx, rating) {
       rating, question: q, answer: m.content,
       scope: selectedBu.value || '全集团', year: year.value, month: month.value,
     })
-    showToast(rating === 1 ? '✓ 已记录，感谢反馈' : '✓ 已记录，会用于改进回答质量')
+    toast.success(rating === 1 ? '已记录，感谢反馈' : '已记录，会用于改进回答质量')
     persistChat()
   } catch { m.fb = undefined }
 }
@@ -493,7 +488,7 @@ const autoDistill = ref(true)
 async function silentDistill(content) {
   try {
     await api.post('/cockpit/knowledge/distill', { text: content, scope: selectedBu.value || '全集团' })
-    showToast('💡 已自动沉淀要点入库')
+    toast.error('💡 已自动沉淀要点入库')
   } catch (e) { /* silent */ }
 }
 
@@ -933,10 +928,10 @@ const ctxMatrixItems = computed(() => {
     {
       key: 'copy', label: '复制', icon: 'copy',
       children: [
-        { key: 'copy-row', label: '整行', icon: 'cell', action: () => copyRowTSV(r, MATRIX_COPY_COLS, { header: true }).then(() => showToast('已复制')) },
+        { key: 'copy-row', label: '整行', icon: 'cell', action: () => copyRowTSV(r, MATRIX_COPY_COLS, { header: true }).then(() => toast.success('已复制')) },
         { divider: true },
-        { key: 'copy-bu', label: '事业部名称', icon: 'copy', action: () => copyText(r.bu).then(() => showToast('已复制')) },
-        { key: 'copy-prof', label: '净利润', icon: 'copy', action: () => copyText(wan(r.prof)).then(() => showToast('已复制')) },
+        { key: 'copy-bu', label: '事业部名称', icon: 'copy', action: () => copyText(r.bu).then(() => toast.success('已复制')) },
+        { key: 'copy-prof', label: '净利润', icon: 'copy', action: () => copyText(wan(r.prof)).then(() => toast.success('已复制')) },
       ],
     },
   ]
@@ -1307,10 +1302,6 @@ const ctxMatrixItems = computed(() => {
               {{ chatStreaming ? '…' : '发送' }}
             </button>
           </div>
-
-          <Transition name="cfa-toast">
-            <div v-if="toast" class="cfa-toast">{{ toast }}</div>
-          </Transition>
           </div><!-- /.cfa-card -->
         </div>
       </Transition>

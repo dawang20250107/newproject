@@ -22,6 +22,7 @@ import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { useFileDrop } from '../../composables/useFileDrop.js'
 import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { useModalEsc } from '../../composables/useModalEsc.js'
 // 重型抽屉/弹窗按需加载：仅打开活动抽屉 / 导入预检时才拉取其代码块，
 // 大幅瘦身应收明细主路由块（ActivityPanel 单文件 1.7k 行）。
 const ActivityPanel = defineAsyncComponent(() => import('../../components/ar/ActivityPanel.vue'))
@@ -1747,6 +1748,20 @@ const { dragging: dropDragging } = useFileDrop(({ file, reason, name }) => {
   if (importing.value) { toast.error('正在导入中，请稍候'); return }
   importFromFile(file)
 }, { exts: ['.xlsx', '.xls'] })
+
+// 弹窗 Esc 关闭（后声明=上层优先关）：覆盖本页全部 overlay 弹窗
+useModalEsc(
+  [() => showModal.value, () => (showModal.value = false)],
+  [() => showBatchModal.value, () => (showBatchModal.value = false)],
+  [() => showPayModal.value, () => (showPayModal.value = false)],
+  [() => showBatchInvoice.value, () => (showBatchInvoice.value = false)],
+  [() => showBatchPay.value, () => (showBatchPay.value = false)],
+  [() => showWoModal.value, () => (showWoModal.value = false)],
+  [() => showCollectorAssign.value, () => (showCollectorAssign.value = false)],
+  [() => showAgingCfgModal.value, () => (showAgingCfgModal.value = false)],
+  [() => showHealthModal.value, () => (showHealthModal.value = false)],
+  [() => showDelConfirm.value, () => (showDelConfirm.value = false)],
+)
 
 onMounted(() => document.addEventListener('click', closeExpMenu))
 onBeforeUnmount(() => document.removeEventListener('click', closeExpMenu))

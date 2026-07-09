@@ -2,6 +2,8 @@
 import { confirmDlg } from '../../composables/confirm.js'
 import { ref, computed, onMounted } from 'vue'
 import ar from '../../api/ar.js'
+import { useToast } from '../../composables/useToast.js'
+const toast = useToast()
 
 const props = defineProps({
   embedded: Boolean,
@@ -15,8 +17,6 @@ const loading = ref(false)
 const err = ref('')
 const filterStatus = ref('')
 const filterBu = ref('')
-const toast = ref('')
-let toastTimer = null
 
 const editItem = ref(null)   // item being edited in modal
 const editForm = ref({})
@@ -24,11 +24,6 @@ const showForm = ref(false)  // new-item form
 
 const newForm = ref({ title: '', description: '', bu: '', priority: 'medium', assignee: '', due_date: '' })
 
-function showToast(msg) {
-  toast.value = msg
-  clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => { toast.value = '' }, 2200)
-}
 
 async function load() {
   loading.value = true; err.value = ''
@@ -49,14 +44,14 @@ async function load() {
 
 async function createItem() {
   const t = newForm.value.title.trim()
-  if (!t) return showToast('标题不能为空')
+  if (!t) return toast.error('标题不能为空')
   try {
     await ar.createAction({ ...newForm.value, bu: newForm.value.bu || props.selectedBu })
     showForm.value = false
     newForm.value = { title: '', description: '', bu: '', priority: 'medium', assignee: '', due_date: '' }
     await load()
-    showToast('✓ 已创建')
-  } catch (e) { showToast(e?.error || '创建失败') }
+    toast.success('已创建')
+  } catch (e) { toast.error(e?.error || '创建失败') }
 }
 
 function startEdit(item) {
@@ -69,8 +64,8 @@ async function saveEdit() {
     await ar.updateAction(editItem.value.id, editForm.value)
     editItem.value = null
     await load()
-    showToast('✓ 已保存')
-  } catch (e) { showToast(e?.error || '保存失败') }
+    toast.success('已保存')
+  } catch (e) { toast.error(e?.error || '保存失败') }
 }
 
 async function setStatus(item, status) {
@@ -78,7 +73,7 @@ async function setStatus(item, status) {
     await ar.updateAction(item.id, { status })
     item.status = status
     await load()
-  } catch (e) { showToast(e?.error || '更新失败') }
+  } catch (e) { toast.error(e?.error || '更新失败') }
 }
 
 async function deleteItem(item) {
@@ -86,8 +81,8 @@ async function deleteItem(item) {
   try {
     await ar.deleteAction(item.id)
     await load()
-    showToast('已删除')
-  } catch (e) { showToast(e?.error || '删除失败') }
+    toast.success('已删除')
+  } catch (e) { toast.error(e?.error || '删除失败') }
 }
 
 const PRIORITY_LABEL = { high: '高', medium: '中', low: '低' }
@@ -225,7 +220,6 @@ onMounted(load)
       </div>
     </Teleport>
 
-    <div v-if="toast" class="ap-toast">{{ toast }}</div>
   </div>
 </template>
 

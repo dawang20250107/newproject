@@ -17,6 +17,7 @@ import { useToast } from '../../composables/useToast.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { useModalEsc } from '../../composables/useModalEsc.js'
 const toast = useToast()
 
 const auth = useAuthStore()
@@ -526,6 +527,8 @@ async function exportData(type) {
   } catch (e) { toast.error(e?.response?.data?.msg || e?.msg || e?.error || '操作失败')
   } finally { exporting.value = false }
 }
+
+useModalEsc([() => showModal.value, () => (showModal.value = false)])
 
 onMounted(loadAll)
 onMounted(loadProjects)

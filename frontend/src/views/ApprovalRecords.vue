@@ -30,6 +30,7 @@ import { createRequestLane } from '../utils/requestLane.js'
 import { cachedGet } from '../api/refCache.js'
 import { useFileDrop } from '../composables/useFileDrop.js'
 import { useEscClearSelection } from '../composables/useEscClearSelection.js'
+import { useModalEsc } from '../composables/useModalEsc.js'
 const toast = useToast()
 
 // ── 桌面拖拽导入：普通导入 / 运输导入 双落区 ────────────────────────────────
@@ -836,6 +837,15 @@ const onScopeChange = () => {
   page.value = 1
   load()
 }
+// 弹窗 Esc 关闭（后声明=上层优先关）
+useModalEsc(
+  [() => showCreate.value, () => (showCreate.value = false)],
+  [() => showSchedule.value, () => (showSchedule.value = false)],
+  [() => showMeta.value, () => (showMeta.value = false)],
+  [() => showBatchSched.value, () => (showBatchSched.value = false)],
+  [() => showDelConfirm.value, () => (showDelConfirm.value = false)],
+)
+
 onMounted(async ()=>{
   loadDepts()
   // 有默认方案则套用并由其触发加载；否则套用「默认只看待审批 + 审批通过」状态筛选后加载。

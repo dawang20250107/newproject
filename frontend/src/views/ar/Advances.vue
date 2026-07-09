@@ -19,6 +19,7 @@ import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { useModalEsc } from '../../composables/useModalEsc.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -774,6 +775,16 @@ const ctxSupItems = computed(() => {
     { key: 'del', label: '删除', icon: 'trash', danger: true, hidden: !canDelete.value, action: x => removeSupplier(x) },
   ]
 })
+
+// 弹窗 Esc 关闭：嵌套的项目选择层放最后（先关内层再关外层）
+useModalEsc(
+  [() => showModal.value, () => (showModal.value = false)],
+  [() => showWoModal.value, () => (showWoModal.value = false)],
+  [() => showInstModal.value, () => (showInstModal.value = false)],
+  [() => showSupplierModal.value, () => (showSupplierModal.value = false)],
+  [() => showProjList.value, () => (showProjList.value = false)],
+  [() => showSupplierProjList.value, () => (showSupplierProjList.value = false)],
+)
 
 onMounted(async () => {
   const q = route.query || {}
