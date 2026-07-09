@@ -699,6 +699,12 @@ onMounted(async () => {
   loadDepts()
   // 全局单号直达带入：?numbers=a,b,c → 应用批量单号筛选
   if (route.query.numbers) numbersFilter.value = String(route.query.numbers)
+  // 状态直达带入：?status=overdue（工作台逾期告警等入口跳转）→ 应用计划状态筛选
+  if (route.query.status) {
+    const wanted = String(route.query.status).split(',')
+      .filter(s => PAY_STATUS_OPTS.some(o => o.value === s))
+    if (wanted.length) { statusSel.value = wanted; hideSettled.value = false }
+  }
   // 有默认方案则套用并由其 onApply 触发加载；否则常规加载。
   // 方案接口异常也要兜底加载数据，避免卡在骨架屏（loading 初始为 true）。
   try {

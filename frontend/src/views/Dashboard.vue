@@ -83,17 +83,18 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
           <div class="value" style="color:var(--amber-deep)">{{ data.partial_count }}</div>
           <div v-if="showAmount" class="sub">{{ fmt(data.partial_amount) }}</div>
         </div>
-        <div :class="['kpi-card', data.overdue_count > 0 ? 'overdue-kpi-card' : '']">
+        <router-link :to="data.overdue_count > 0 ? '/payments?status=overdue' : '/payments'"
+                     :class="['kpi-card', 'kpi-link', data.overdue_count > 0 ? 'overdue-kpi-card' : '']">
           <div class="label">已逾期未付</div>
           <div :class="['value', data.overdue_count > 0 ? 'kpi-value-pulse' : '']" style="color:var(--c-danger)">
             {{ data.overdue_count }}
           </div>
           <div v-if="showAmount" class="sub">{{ fmt(data.overdue_amount) }}</div>
-        </div>
+        </router-link>
       </div>
 
-      <!-- overdue alert banner -->
-      <div v-if="data.overdue_count > 0" class="overdue-alert">
+      <!-- overdue alert banner：点击直达付款管理（已套逾期筛选）-->
+      <router-link v-if="data.overdue_count > 0" to="/payments?status=overdue" class="overdue-alert">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
           <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
@@ -101,9 +102,9 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
         <span>
           当前有 <strong>{{ data.overdue_count }}</strong> 笔排款已逾期未付
           <template v-if="showAmount">，合计 <strong>{{ fmt(data.overdue_amount) }}</strong></template>
-          ，请及时跟进处理。
+          ，点击查看并跟进处理 →
         </span>
-      </div>
+      </router-link>
 
       <div class="card fh-fill">
         <div class="section-title">今日计划付款 ({{ data.today_count }} 笔)</div>
@@ -185,6 +186,10 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
   font-size: 13.5px;
 }
 .overdue-alert svg { flex-shrink: 0; color: var(--c-danger); }
+a.overdue-alert { text-decoration: none; cursor: pointer; transition: background .15s, transform .1s; }
+a.overdue-alert:hover { background: rgba(198,40,40,0.13); transform: translateX(2px); }
+.kpi-link { text-decoration: none; color: inherit; display: block; cursor: pointer; transition: transform .12s, box-shadow .12s; }
+.kpi-link:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,.08); }
 
 /* Today's payment plan — compact, tidy row/column density */
 .today-table { width: 100%; font-size: 13px; table-layout: fixed; }
