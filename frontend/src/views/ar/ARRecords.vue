@@ -13,6 +13,7 @@ import SortTh from '../../components/ar/SortTh.vue'
 import FilterPanel from '../../components/ar/FilterPanel.vue'
 import { describeCondition, STATUS_OPTS, RECON_OPTS, INVOICE_OPTS, RESP_OPTS } from '../../composables/arConditions.js'
 import ColumnFilter from '../../components/ColumnFilter.vue'
+import DateRangeChips from '../../components/DateRangeChips.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
 import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
@@ -558,6 +559,15 @@ const cw = useColWidths('ar_records', {
 const colFilters = reactive({})    // field -> {op, value}
 const sortField = ref('')
 const sortOrder = ref('')          // 'asc' | 'desc' | ''
+// 运作日期区间预设条 → 写入列头筛选管线（operation_date between），与手动列筛选同源
+const opDateStart = ref('')
+const opDateEnd = ref('')
+function applyOpDateRange() {
+  if (!opDateStart.value && !opDateEnd.value) delete colFilters.operation_date
+  else colFilters.operation_date = { op: 'between', value: [opDateStart.value || '', opDateEnd.value || ''] }
+  clearSelection()
+  load(true)
+}
 // 部门枚举选项复用页面既有可访问部门列表
 function setColFilter(field, val) {
   if (val == null) delete colFilters[field]
@@ -1949,6 +1959,11 @@ function clearFilters() {
 
     <!-- Tab + table card -->
     <div class="card" :class="['density-' + density, { 'data-reloading': loading && items.length, 'pane-mode': activeTab === 'dunning' || activeTab === 'payments' }]">
+      <!-- 运作日期区间预设条：写入列头筛选管线（operation_date between），列表/汇总/导出全联动 -->
+      <div v-if="isDataTab" class="arr-timebar">
+        <DateRangeChips v-model:start="opDateStart" v-model:end="opDateEnd"
+                        label="运作日期" initial="all" @change="applyOpDateRange" />
+      </div>
       <!-- 合并指标条：左侧=本Tab进度/重点；右侧=当前筛选全集合计 -->
       <div v-if="isDataTab && (kpiData || summaryData)" class="metrics-bar">
         <!-- 聚焦待办切换（金蝶查询模式）：默认仅看本环节待处理，可一键看全部 -->
@@ -3429,6 +3444,7 @@ function clearFilters() {
 
 /* KPI bar */
 .metrics-bar { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; overflow-x: auto; margin-bottom: 4px; padding: 5px 10px; background: rgba(0,0,0,0.02); border-radius: 8px; flex-shrink: 0; }
+.arr-timebar { padding: 2px 0 6px; flex-shrink: 0; }
 .metrics-div { width: 1px; align-self: stretch; min-height: 20px; background: rgba(0,0,0,0.1); margin: 0 2px; }
 /* 聚焦待办切换（金蝶查询模式）：紧凑分段开关 */
 .focus-toggle { display: inline-flex; flex-shrink: 0; padding: 2px; gap: 2px; background: rgba(0,0,0,0.05); border-radius: 8px; }

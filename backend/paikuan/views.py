@@ -2204,6 +2204,19 @@ def _approvals_filtered_qs(request):
     已拒绝/已撤销虽为终态（archived=True）但仍需可在审批管理查阅，故不再一刀切按
     archived 隐藏。默认只看待审批/审批通过由前端状态列筛选控制（可清除以查看全部）。"""
     qs = dept_filter(ApprovalRecord.objects.all(), request).exclude(status='approved', archived=True).filter(deleted_at__isnull=True)
+    # 登记时间区间（created_at，审批进入系统的实际时间）：与其他台账的时间预设条同款
+    _sd = (request.GET.get('start_date') or '').strip()
+    _ed = (request.GET.get('end_date') or '').strip()
+    if _sd:
+        try:
+            qs = qs.filter(created_at__date__gte=datetime.date.fromisoformat(_sd[:10]))
+        except ValueError:
+            pass
+    if _ed:
+        try:
+            qs = qs.filter(created_at__date__lte=datetime.date.fromisoformat(_ed[:10]))
+        except ValueError:
+            pass
     # 批量单号筛选：命中 G7编号(对账单号) 或 审批编号 任一即保留
     _nums = _parse_numbers(request.GET.get('numbers', ''))
     if _nums:

@@ -9,6 +9,8 @@ export const confirmState = reactive({
   message: '',
   detail: [],        // 可选：逐行明细（数组）
   danger: false,     // 危险操作：红色主按钮
+  requireText: '',   // 可选：输入式确认——须原样输入该词（如「删除」）确认按钮才可用
+  typed: '',         // 输入式确认的当前输入
   confirmText: '确定',
   cancelText: '取消',
   _resolve: null,
@@ -34,6 +36,8 @@ export function confirmDlg(opts) {
     confirmState.message = message
     confirmState.detail = detail
     confirmState.danger = danger
+    confirmState.requireText = o.requireText || ''
+    confirmState.typed = ''
     confirmState.confirmText = o.confirmText || '确定'
     confirmState.cancelText = o.cancelText || '取消'
     confirmState._resolve = resolve

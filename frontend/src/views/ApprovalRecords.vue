@@ -18,6 +18,7 @@ import ImportResultModal from '../components/ImportResultModal.vue'
 import ImportPrecheckModal from '../components/ImportPrecheckModal.vue'
 import TransportPrecheckModal from '../components/TransportPrecheckModal.vue'
 import ColumnFilter from '../components/ColumnFilter.vue'
+import DateRangeChips from '../components/DateRangeChips.vue'
 import SkeletonRow from '../components/SkeletonRow.vue'
 import SchemePicker from '../components/SchemePicker.vue'
 import { useTableSchemes } from '../composables/useTableSchemes.js'
@@ -161,6 +162,7 @@ function clearAllFilters() {
   Object.keys(colFilters).forEach(k => delete colFilters[k])
   q.value = ''; sortField.value = ''; sortOrder.value = ''
   numbersFilter.value = ''
+  dateStart.value = ''; dateEnd.value = ''
   page.value = 1; clearSelection(); load()
 }
 // 单号筛选（筛选栏内联输入）：任意分隔符批量粘贴，回车应用；chips 可移除
@@ -181,12 +183,18 @@ watch(() => route.query.numbers, (v) => {
     page.value = 1; clearSelection(); load()
   }
 })
+// 登记时间区间（created_at 实际进入系统时间）：预设条 + 自定义,与其他台账一致
+const dateStart = ref('')
+const dateEnd = ref('')
+function onRangeChange() { page.value = 1; clearSelection(); load() }
 function buildParams() {
   const p = { page: page.value, size: size.value }
   if (q.value.trim()) p.q = q.value.trim()
   if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
   if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
   if (numbersFilter.value) p.numbers = numbersFilter.value
+  if (dateStart.value) p.start_date = dateStart.value
+  if (dateEnd.value) p.end_date = dateEnd.value
   return p
 }
 let _qTimer = null
@@ -898,6 +906,11 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <input ref="transportFileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onTransportImport" />
   <DingtalkSyncPanel v-if="subtab === 'dingtalk'" @synced="load()" />
   <div v-show="subtab === 'list'" class="card approval-card fh-fill">
+  <!-- 登记时间区间：与其他台账同款预设条；列表/汇总/导出随之联动 -->
+  <div class="apr-timebar">
+    <DateRangeChips v-model:start="dateStart" v-model:end="dateEnd"
+                    label="登记时间" initial="all" @change="onRangeChange" />
+  </div>
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
   <div v-if="filterChips.length" class="chips-row">
     <span v-for="c in filterChips" :key="c.key" class="fchip">
@@ -1190,6 +1203,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .tp-btn { border-color: rgba(201,99,66,0.4); color: var(--primary); }
 .tp-btn:hover:not(:disabled) { background: rgba(201,99,66,0.08); border-color: var(--primary); }
 .err-banner { background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: #856404; display: flex; align-items: center; gap: 8px; }
+.apr-timebar { padding: 2px 0 8px; }
 .approval-card { padding: 12px; }
 /* 固定视口布局：卡片底部为吸底合计条预留空间 */
 /* 吸底 bottom-bar(36px) 占位：滚动区底部留白，最后一行不被遮挡 */

@@ -90,7 +90,24 @@ const busy = ref(false)
 async function doAction(action) {
   if (!selectedCount.value) { toast.warn('请先选择记录'); return }
   const label = action === 'restore' ? '还原' : '彻底删除'
-  if (action === 'purge' && !(await confirmDlg(`彻底删除 ${selectedCount.value} 条记录？此操作不可撤销。`))) return
+  if (action === 'purge') {
+    // 影响面前置展示 + 输入式确认：彻底删除不可恢复，必须让操作者看清删的是多少钱
+    const sel = items.value.filter(i => selectedIds.value.has(i.id))
+    const amtSum = sel.reduce((a, i) => a + (parseFloat(activeTab.value === 'approvals' ? i.amount : i.total_amount) || 0), 0)
+    const paidSum = activeTab.value === 'payments'
+      ? sel.reduce((a, i) => a + (parseFloat(i.total_paid) || 0), 0) : 0
+    const detail = [
+      allAcross.value ? `范围：当前筛选下全部 ${total.value} 条（跨页全选）` : `范围：勾选的 ${selectedCount.value} 条`,
+      `金额合计：¥${amtSum.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}` + (allAcross.value ? '（仅当前页可见部分）' : ''),
+    ]
+    if (paidSum > 0) detail.push(`⚠ 其中已实付 ¥${paidSum.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}：彻删将连同付款流水一并抹除，审计痕迹不可恢复`)
+    detail.push('彻底删除后无法通过任何方式找回。')
+    if (!(await confirmDlg({
+      title: '彻底删除（不可恢复）', danger: true,
+      message: `即将彻底删除 ${allAcross.value ? total.value : selectedCount.value} 条${activeTab.value === 'approvals' ? '审批' : '付款'}记录`,
+      detail, requireText: '删除', confirmText: '彻底删除',
+    }))) return
+  }
   busy.value = true
   try {
     const body = allAcross.value ? { action, all: true } : { action, ids: [...selectedIds.value] }
@@ -105,7 +122,13 @@ async function doAction(action) {
       ? skipped.filter(s => s.linked_payments > 0) : []
     if (cascadable.length) {
       const totalPay = cascadable.reduce((a, s) => a + (s.linked_payments || 0), 0)
-      if (await confirmDlg(`${cascadable.length} 条审批仍关联 ${totalPay} 笔付款，无法单独彻底删除。\n\n是否【连同这些关联付款（含付款流水）一并彻底删除】？此操作不可撤销。`)) {
+      if (await confirmDlg({
+        title: '级联彻底删除（不可恢复）', danger: true,
+        message: `${cascadable.length} 条审批仍关联 ${totalPay} 笔付款，无法单独彻底删除`,
+        detail: ['继续将【连同这些关联付款（含全部付款流水）】一并彻底删除',
+                 '付款的实付分期记录也会被永久抹除，审计痕迹不可恢复'],
+        requireText: '级联删除', confirmText: '级联彻底删除',
+      })) {
         const r2 = await api.post(`/trash/${activeTab.value}`,
           { action: 'purge', ids: cascadable.map(s => s.id), cascade: true }, cfg)
         const n2 = r2.data.count, sk2 = r2.data.skipped || []

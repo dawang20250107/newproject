@@ -783,6 +783,22 @@ class PaymentChainIntegrityTests(TestCase):
             content_type='application/json', **self.auth())
         self.assertEqual(ok_resp.status_code, 200, ok_resp.content)
 
+    # ── 8b1. 审批列表登记时间区间 ────────────────────────────────────────
+    def test_approval_list_created_date_range(self):
+        """?start_date/end_date 按登记时间(created_at)过滤列表。"""
+        from django.utils import timezone as _tz
+        a = ApprovalRecord.objects.create(applicant='早', department=self.dept,
+            approval_number='', summary='S', amount=Decimal('1'), payee='P', status='pending')
+        ApprovalRecord.objects.filter(pk=a.pk).update(
+            created_at=_tz.now() - _tz.timedelta(days=40))
+        ApprovalRecord.objects.create(applicant='近', department=self.dept,
+            approval_number='', summary='S', amount=Decimal('2'), payee='P', status='pending')
+        recent = (_tz.localdate() - _tz.timedelta(days=7)).isoformat()
+        r = self.client.get(f'/api/pk/approvals?start_date={recent}', **self.auth()).json()['data']
+        names = {i['applicant'] for i in r['items']}
+        self.assertIn('近', names)
+        self.assertNotIn('早', names)
+
     # ── 8b2. 审批真实单号防重 ───────────────────────────────────────────
     def test_approval_create_duplicate_number_rejected(self):
         """同一 21 位真实单号重复登记 → 409(在途支出双计+钉钉回写错配的源头)。"""
