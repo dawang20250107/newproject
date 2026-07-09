@@ -379,6 +379,10 @@ def ar_invoice_batch_payment(request, batch_no):
         if draft_status not in ARPayment.DRAFT_STATUS_VALUES:
             return err('承兑状态无效（未承兑/已承兑）')
 
+    # 多收自动转预收：一张发票到一笔钱、金额>批次未收时,超出部分按客户建预收记录,
+    # 不再要求财务手工拆两笔录入(超出部分是真实到账现金,预收在 occur_date 计现金流入)
+    overflow_to_advance = bool(data.get('overflow_to_advance'))
+    advance_created = None
     with transaction.atomic():
         members = list(_batch_members_qs(request, batch_no).select_for_update())
         if not members:
@@ -387,10 +391,27 @@ def ar_invoice_batch_payment(request, batch_no):
         total_outstanding = sum(r.outstanding_amount for r in open_recs)
         if not open_recs:
             return err('该批次已全部回款结清，无未收余额可分摊')
-        if amount > total_outstanding:
+        overflow = amount - total_outstanding
+        if overflow > 0 and not overflow_to_advance:
             return err(f'回款金额 {amount} 超过批次未收合计 {total_outstanding}。'
-                       f'请按 {total_outstanding} 录入本批次回款，'
-                       f'超出的 {amount - total_outstanding} 元到「预收预付」录入为该客户预收款')
+                       f'可勾选「超出部分自动转预收」一键处理（超出 {overflow} 元将按客户'
+                       f'建为预收款），或按 {total_outstanding} 录入本批次回款', 409, 409)
+        if overflow > 0:
+            # 归属客户须唯一：多客户批次无法确定预收挂谁，拒绝并提示手工处理
+            custs = {(r.project.customer_name or '').strip() for r in open_recs if r.project_id}
+            custs.discard('')
+            if len(custs) != 1:
+                return err('批次内客户不唯一，超出部分无法自动建预收；'
+                           '请按批次未收金额录入回款，超出部分到「预收预付」手工录入')
+            cust = next(iter(custs))
+            dept0 = open_recs[0].delivery_dept
+            pd_d = datetime.date.fromisoformat(str(pay_date)[:10])
+            advance_created = AdvanceRecord.objects.create(
+                direction='预收', delivery_dept=dept0, counterparty=cust,
+                occur_year=pd_d.year, occur_month=pd_d.month, occur_date=pd_d,
+                advance_amount=overflow,
+                notes=f'批次回款[{batch_no}]多收自动转预收（到账 {amount}，冲应收 {total_outstanding}）')
+            amount = total_outstanding   # 分摊部分只冲到未收合计
 
         remaining = amount
         allocations = []
@@ -416,10 +437,15 @@ def ar_invoice_batch_payment(request, batch_no):
             remaining -= alloc
 
     settled = sum(1 for a in allocations if Decimal(a['outstanding_after']) <= 0)
+    msg = (f'批次「{batch_no}」回款 {amount} 已按运作日期先进先出分摊到 '
+           f'{len(allocations)} 条记录（{settled} 条就此结清）')
+    if advance_created is not None:
+        msg += f'；多收 {advance_created.advance_amount} 已自动建为「{advance_created.counterparty}」的预收款'
     return ok({
         'batch_no': batch_no, 'amount': str(amount), 'allocations': allocations,
-        'message': (f'批次「{batch_no}」回款 {amount} 已按运作日期先进先出分摊到 '
-                    f'{len(allocations)} 条记录（{settled} 条就此结清）'),
+        'advance_id': advance_created.id if advance_created else None,
+        'advance_amount': str(advance_created.advance_amount) if advance_created else None,
+        'message': msg,
     })
 
 

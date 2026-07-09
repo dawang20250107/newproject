@@ -3720,13 +3720,34 @@ class InvoiceBatchWorkbenchTests(TestCase):
         self.assertEqual(self.r2.outstanding_amount, Decimal('0'))
         self.assertEqual(self.r3.outstanding_amount, Decimal('0'))
 
+    def test_batch_payment_overflow_to_advance(self):
+        """多收自动转预收:到账>批次未收且勾选时,超出部分按客户建预收,应收冲至结清。"""
+        total_out = float(self.r1.outstanding_amount + self.r2.outstanding_amount
+                          + self.r3.outstanding_amount)
+        pay = total_out + 800.0
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/payment',
+                                data=json.dumps({'amount': str(pay),
+                                                 'payment_date': str(date.today()),
+                                                 'overflow_to_advance': True}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(Decimal(d['advance_amount']), Decimal('800'))
+        adv = AdvanceRecord.objects.get(pk=d['advance_id'])
+        self.assertEqual(adv.direction, '预收')
+        self.assertEqual(adv.advance_amount, Decimal('800'))
+        self.assertIn('多收自动转预收', adv.notes)
+        for r in (self.r1, self.r2, self.r3):
+            r.refresh_from_db()
+            self.assertEqual(r.outstanding_amount, Decimal('0'))   # 应收全结清
+
     def test_batch_payment_over_outstanding_rejected(self):
         resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/payment',
                                 data=json.dumps({'amount': '99999',
                                                  'payment_date': str(date.today())}),
                                 content_type='application/json', **self.auth())
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn('预收', resp.json()['error'])
+        self.assertEqual(resp.status_code, 409)   # 未勾选转预收 → 可操作的冲突提示
+        self.assertIn('转预收', resp.json()['error'])
 
     def test_batch_not_found(self):
         resp = self.client.get('/api/pk/ar/records/invoice-batches/不存在', **self.auth())

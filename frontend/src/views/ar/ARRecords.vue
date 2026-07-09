@@ -1286,7 +1286,7 @@ const showBatchPay = ref(false)
 const batchTarget = ref(null)
 const batchInvForm = reactive({ invoice_date: todayCST(), amount: '', tax_amount: '', notes: '' })
 const PAY_METHODS = COLLECTION_METHODS
-const batchPayForm = reactive({ amount: '', payment_date: todayCST(), method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, notes: '' })
+const batchPayForm = reactive({ amount: '', payment_date: todayCST(), method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, notes: '', overflow_to_advance: false })
 const batchActing = ref(false)
 const batchPayResult = ref(null)   // 分摊结果回执
 
@@ -1349,7 +1349,7 @@ async function undoBatchInvoice(ev) {
 }
 function openBatchPay(b) {
   batchTarget.value = b
-  Object.assign(batchPayForm, { amount: '', payment_date: todayCST(), method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, notes: '' })
+  Object.assign(batchPayForm, { amount: '', payment_date: todayCST(), method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, notes: '', overflow_to_advance: false })
   batchPayResult.value = null
   fetchBatchDetail(b.batch_no).catch(() => {})
   showBatchPay.value = true
@@ -2948,6 +2948,19 @@ function clearFilters() {
                   <span>备注（选填）</span>
                   <input v-model="batchPayForm.notes" placeholder="如：建行到账，回单号xxx" />
                 </label>
+                <label class="form-field span2 bp-overflow"
+                       :class="{ hot: parseFloat(batchPayForm.amount) > parseFloat(batchTarget?.outstanding || 0) }">
+                  <span style="display:flex;align-items:center;gap:7px">
+                    <input v-model="batchPayForm.overflow_to_advance" type="checkbox"
+                           style="width:auto;accent-color:var(--primary)" />
+                    到账超过批次未收时，超出部分自动转为该客户的<strong>预收款</strong>
+                  </span>
+                  <em v-if="parseFloat(batchPayForm.amount) > parseFloat(batchTarget?.outstanding || 0)"
+                      class="bp-overflow-hint">
+                    本次到账将超出未收 {{ (parseFloat(batchPayForm.amount) - parseFloat(batchTarget?.outstanding || 0)).toFixed(2) }} 元
+                    —— {{ batchPayForm.overflow_to_advance ? '超出部分将自动建为预收（可在预收预付页核销）' : '勾选上方选项一键处理，否则将被拒绝' }}
+                  </em>
+                </label>
               </div>
             </template>
             <template v-else>
@@ -3445,6 +3458,10 @@ function clearFilters() {
 /* KPI bar */
 .metrics-bar { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; overflow-x: auto; margin-bottom: 4px; padding: 5px 10px; background: rgba(0,0,0,0.02); border-radius: 8px; flex-shrink: 0; }
 .arr-timebar { padding: 2px 0 6px; flex-shrink: 0; }
+.bp-overflow { font-size: 12.5px; color: var(--text-2); padding: 8px 10px; border-radius: 8px;
+  border: 1px dashed var(--border); transition: border-color .15s, background .15s; }
+.bp-overflow.hot { border-color: var(--amber-deep, #f57f17); background: rgba(245,127,23,.05); }
+.bp-overflow-hint { display: block; margin-top: 5px; font-style: normal; font-size: 12px; color: #b35309; }
 .metrics-div { width: 1px; align-self: stretch; min-height: 20px; background: rgba(0,0,0,0.1); margin: 0 2px; }
 /* 聚焦待办切换（金蝶查询模式）：紧凑分段开关 */
 .focus-toggle { display: inline-flex; flex-shrink: 0; padding: 2px; gap: 2px; background: rgba(0,0,0,0.05); border-radius: 8px; }
