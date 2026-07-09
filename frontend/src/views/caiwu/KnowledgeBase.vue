@@ -84,11 +84,15 @@ async function togglePin(k) {
 const editId = ref(null)
 const editText = ref('')
 function startEdit(k) { editId.value = k.id; editText.value = k.content }
+let _kbSaving = false
 async function saveEdit(k) {
+  if (_kbSaving) return   // 防双击重复提交
   const content = editText.value.trim()
   if (!content) return
-  try { const r = await api.put(`/cockpit/knowledge/${k.id}`, { content }); Object.assign(k, r.data); editId.value = null }
+  _kbSaving = true
+  try { const r = await api.put(`/cockpit/knowledge/${k.id}`, { content }); Object.assign(k, r.data); editId.value = null; toast.success('已保存') }
   catch (e) { toast.error(e?.msg || '保存失败') }
+  finally { _kbSaving = false }
 }
 
 // 文件导入

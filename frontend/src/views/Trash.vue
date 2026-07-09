@@ -199,7 +199,7 @@ function fmtDate(s) {
       </template>
     </div>
 
-    <div class="trash-card">
+    <div class="trash-card fh-fill">
       <div v-if="loading" class="trash-loading">加载中…</div>
       <div v-else-if="!items.length" class="trash-empty">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" style="color:var(--muted-light)">
@@ -208,6 +208,7 @@ function fmtDate(s) {
         <p>回收站为空</p>
       </div>
       <template v-else>
+        <div class="table-wrap page-scroll">
         <table class="trash-tbl">
           <thead>
             <tr>
@@ -238,6 +239,7 @@ function fmtDate(s) {
             </tr>
           </tbody>
         </table>
+        </div>
         <div class="trash-footer">
           <span class="trash-count">共 {{ total }} 条</span>
           <div class="trash-pg" v-if="total > size">

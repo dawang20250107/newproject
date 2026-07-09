@@ -168,9 +168,12 @@ function toggleEditDept(d) {
   else editForm.value.departments.splice(idx, 1)
 }
 
+const saving = ref(false)
 async function saveEdit() {
+  if (saving.value) return   // 防双击重复提交
   error.value = ''
   if (!editForm.value.name.trim()) { error.value = '姓名不能为空'; return }
+  saving.value = true
   try {
     const payload = {
       name: editForm.value.name,
@@ -184,7 +187,7 @@ async function saveEdit() {
     load()
   } catch (e) {
     error.value = e?.error || '操作失败'
-  }
+  }  finally { saving.value = false }
 }
 
 async function deactivate(u) {
@@ -483,7 +486,7 @@ async function reject(u) {
 
         <div class="modal-footer">
           <button class="btn btn-ghost" @click="showEditModal=false">取消</button>
-          <button class="btn btn-primary" @click="saveEdit">保存</button>
+          <button class="btn btn-primary" :disabled="saving" @click="saveEdit">{{ saving ? '保存中…' : '保存' }}</button>
         </div>
       </div>
     </div>

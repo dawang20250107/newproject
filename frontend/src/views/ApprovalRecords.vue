@@ -884,7 +884,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       </div>
     </div>
     <div class="topbar-tools" v-show="subtab === 'list'">
-    <input v-model="q" class="global-search" placeholder="🔍 申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
+    <input v-model="q" class="global-search" placeholder="申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
     <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
     <input v-model="numbersInput" class="num-inline" :class="{ on: !!numbersFilter }"
            :placeholder="numbersFilter ? `单号筛选中(${numbersFilter.split(',').length})…` : '单号筛选·支持批量粘贴'"
@@ -1241,7 +1241,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 换行时两行字数尽量均衡（text-wrap:balance），避免 4+1 这种头重脚轻 */
 .approval-table thead :deep(.colf-label) { white-space: normal; text-wrap: balance; }
 /* 表头随表体滚动吸顶（不透明背景，避免行透出） */
-.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 
 /* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
 .bb-hint { font-size: 11px; color: var(--muted); margin-left: 8px; opacity: 0.8; white-space: nowrap; cursor: help; }
@@ -1305,8 +1305,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .del-tip { font-size: 13px; color: var(--text); margin: 0 0 8px; }
 .del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; box-sizing: border-box; }
 .del-input:focus { border-color: var(--danger); outline: none; }
-.btn-danger-solid { border: none; border-radius: 8px; padding: 8px 18px; font-size: 14px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
-.btn-danger-solid:disabled { opacity: .5; cursor: default; }
+/* 实心危险按钮统一走全局 .btn-danger-solid（style.css） */
 .meta-cell { color: var(--muted); }
 .sched-prepaid-hint { font-size: 12.5px; color: #8a6d1a; background: rgba(255,213,79,0.14);
   border: 1px solid rgba(255,193,7,0.35); border-radius: 9px; padding: 9px 12px; margin-bottom: 12px; line-height: 1.7; }

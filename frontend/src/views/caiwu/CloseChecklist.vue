@@ -143,6 +143,7 @@ function goto(item) { if (item.link) router.push(item.link) }
 .st-ok   .cc-status { background: rgba(46,125,50,.1); color: var(--c-success); }
 .cc-value { font-size: 13px; color: var(--text-2, var(--text)); margin-top: 2px; }
 .cc-detail { font-size: 12px; color: var(--muted); margin-top: 1px; }
+@media (hover: none) { .cc-go { opacity: 1 !important; } }
 .cc-go { font-size: 12.5px; color: var(--primary); white-space: nowrap;
   opacity: 0; transition: opacity .12s; flex-shrink: 0; }
 </style>

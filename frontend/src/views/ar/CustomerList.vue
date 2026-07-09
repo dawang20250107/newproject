@@ -340,7 +340,7 @@ onMounted(async () => {
     <!-- 筛选 -->
     <div class="filter-strip">
       <div class="search-box">
-        <input v-model="filters.q" class="search-input" placeholder="🔍 全局搜索：客户名称 / 联系人 / 备注"
+        <input v-model="filters.q" class="search-input" placeholder="全局搜索：客户名称 / 联系人 / 备注"
                @input="onSearchInput" @keyup.enter="load(true)" />
         <button v-if="filters.q" class="search-clear" @click="filters.q=''; load(true)">✕</button>
       </div>
@@ -570,9 +570,9 @@ onMounted(async () => {
 .row.sel td { background: rgba(21,101,192,.06); }
 
 .cu-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.cu-table th { background: #f3ede6; color: #6b5a4a; padding: 9px 14px; font-weight: 600; white-space: nowrap; text-align: right; overflow: visible; }
+.cu-table th { background: var(--thead-bg); color: #6b5a4a; padding: 9px 14px; font-weight: 600; white-space: nowrap; text-align: right; overflow: visible; }
 /* 固定视口：表头吸顶，仅表体内部滚动 */
-.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f3ede6; }
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 .cu-pager { flex-shrink: 0; }
 .cu-table th.l { text-align: left; }
 .cu-table th.ctr { text-align: center; }
@@ -586,7 +586,7 @@ onMounted(async () => {
 .cu-table td.l { text-align: left; }
 .cu-table td.ctr { text-align: center; }
 .row { cursor: pointer; }
-.row:hover td { background: #faf5ef; }
+.row:hover td { background: var(--row-hover); }
 .name { font-weight: 600; color: #4a3728; }
 .contact { font-weight: 400; font-size: 12px; color: #9b8070; margin-left: 6px; }
 .strong { font-weight: 700; }
@@ -627,12 +627,12 @@ onMounted(async () => {
 .dw-section-title { font-size: 14px; font-weight: 700; color: #4a3728; margin: 18px 0 8px; }
 .tip { font-size: 11px; font-weight: 400; color: #9b8070; margin-left: 6px; }
 .dw-proj-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.dw-proj-table th { background: #f3ede6; color: #6b5a4a; padding: 7px 10px; font-weight: 600; text-align: right; }
+.dw-proj-table th { background: var(--thead-bg); color: #6b5a4a; padding: 7px 10px; font-weight: 600; text-align: right; }
 .dw-proj-table th.l { text-align: left; }
 .dw-proj-table td { padding: 8px 10px; border-bottom: 1px solid #f3ece2; text-align: right; }
 .dw-proj-table td.l { text-align: left; font-weight: 600; color: #4a3728; }
 .proj-row { cursor: pointer; }
-.proj-row:hover td { background: #faf5ef; }
+.proj-row:hover td { background: var(--row-hover); }
 .drill { font-size: 11px; color: var(--primary); margin-left: 6px; opacity: 0; transition: opacity .15s; }
 .proj-row:hover .drill { opacity: 1; }
 .dept { color: #9b8070; }
@@ -669,9 +669,9 @@ onMounted(async () => {
 .cu-table th:hover .col-rh { opacity: 0.35; }
 
 /* 冻结首列 */
-.sticky-col { position: sticky; left: 0; z-index: 3; background: #f3ede6; }
+.sticky-col { position: sticky; left: 0; z-index: 3; background: var(--thead-bg); }
 .cu-table tbody tr td.sticky-col { background: #fdfbf8; }
-.cu-table tbody tr:hover td.sticky-col { background: #faf5ef; }
+.cu-table tbody tr:hover td.sticky-col { background: var(--row-hover); }
 /* 选中态用实色，避免右滚时透出下层内容 */
 .cu-table tbody tr.sel td.sticky-col { background: #eef2f7; }
 </style>

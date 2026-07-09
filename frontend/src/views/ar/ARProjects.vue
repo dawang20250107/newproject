@@ -1052,7 +1052,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 /* 列头允许筛选漏斗按钮溢出展示，不被裁切 */
 .proj-table thead th { overflow: visible; }
 /* 固定视口：表头吸顶，仅表体内部滚动（用不透明色，避免滚动内容透出） */
-.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f5f2ee; }
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 /* 单元格强制单行：行高不随列宽变化，从设计上杜绝「滚动条↔换行↔高度」回流抖动。
    两行结构的单元格（客户名+简称）每行各自单行截断，整体高度仍恒定。 */
 .proj-table td { padding: 5px 7px; vertical-align: middle; white-space: nowrap; }
@@ -1119,8 +1119,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .del-tip { font-size: 13px; color: var(--text); margin: 0 0 8px; }
 .del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; box-sizing: border-box; }
 .del-input:focus { border-color: var(--danger); outline: none; }
-.btn-danger-solid { border: none; border-radius: 8px; padding: 8px 18px; font-size: 14px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
-.btn-danger-solid:disabled { opacity: .5; cursor: default; }
+/* 实心危险按钮统一走全局 .btn-danger-solid（style.css） */
 
 .row-actions { display: flex; gap: 4px; justify-content: center; }
 .icon-btn {

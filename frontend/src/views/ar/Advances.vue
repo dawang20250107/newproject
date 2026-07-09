@@ -821,7 +821,7 @@ onMounted(async () => {
     <template v-if="isAdvanceMode">
       <div class="card fh-fill">
         <div class="filter-row">
-          <input v-model="filters.q" class="inp sm global-search" placeholder="🔍 全局搜索：往来单位 / 项目 / 编号 / 备注…" @input="onQInput" />
+          <input v-model="filters.q" class="inp sm global-search" placeholder="全局搜索：往来单位 / 项目 / 编号 / 备注…" @input="onQInput" />
           <select v-model="filters.writeoff_status" class="sel sm" @change="onFilterChange">
             <option value="">核销状态</option>
             <option value="未核销">未核销</option>
@@ -1060,7 +1060,7 @@ onMounted(async () => {
             <option value="">全部部门</option>
             <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
           </select>
-          <input v-model="supplierFilters.q" class="inp sm" placeholder="🔍 搜索供应商名称 / 联系人" @input="onSupplierQInput" />
+          <input v-model="supplierFilters.q" class="inp sm" placeholder="搜索供应商名称 / 联系人" @input="onSupplierQInput" />
           <div class="spacer"></div>
           <button v-if="canCreate" class="btn btn-primary btn-sm" @click="openCreateSupplier">+ 新增供应商</button>
         </div>
@@ -1397,7 +1397,7 @@ onMounted(async () => {
 /* fixed-viewport: scroll wrappers fill the card; sticky header stays put */
 .table-scroll.page-scroll { overflow: auto; }
 .table-scroll.page-scroll thead th,
-.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 .pager { flex-shrink: 0; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 760px; }
 .data-table.compact { min-width: 0; }
@@ -1407,7 +1407,7 @@ onMounted(async () => {
 .data-table thead th { overflow: visible; }
 /* 项目简称 + 部门 两个列头筛选并排 */
 .proj-dept-th { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.global-search { width: 360px; min-width: 300px; max-width: 100%; flex: 0 1 360px; }
+.global-search { width: 360px; min-width: 160px; flex: 1 1 300px; max-width: 100%; flex: 0 1 360px; }
 .filter-hint { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .data-table th.amt, .data-table td.amt { text-align: right; }
 .data-table th.ctr, .data-table td.ctr { text-align: center; }

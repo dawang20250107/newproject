@@ -237,7 +237,7 @@ a.overdue-alert:hover { background: rgba(198,40,40,0.13); transform: translateX(
 .card.fh-fill { padding-bottom: 4px; }
 .card.fh-fill .section-title { flex-shrink: 0; }
 /* 表头吸顶，滚动时列名常驻 */
-.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 /* 表格底部保护：滚动区末端留出空间，最后一行不贴边/不被遮挡 */
 .table-wrap.page-scroll { padding-bottom: 28px; }
 </style>

@@ -1283,7 +1283,7 @@ async function doBatchPay() {
 
     <div v-if="activeTab === 'ledger'" class="card fh-fill" style="margin-bottom:16px">
       <div class="filter-bar">
-        <input v-model="filters.q" class="global-search" placeholder="🔍 全局搜索：事项 / 收款方 / 单号 / 申请人 / G7…" @keyup.enter="search" />
+        <input v-model="filters.q" class="global-search" placeholder="全局搜索：事项 / 收款方 / 单号 / 申请人 / G7…" @keyup.enter="search" />
         <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
         <select v-model="payDeptFilter" @change="search" style="min-width:90px">
           <option value="">全部事业部</option>
@@ -1878,7 +1878,7 @@ async function doBatchPay() {
 /* 付款流水 table */
 .flow-tbl { width: 100%; table-layout: fixed; }
 .flow-tbl th, .flow-tbl td { padding: 8px 8px; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.flow-row:hover { background: rgba(21,101,192,0.03); }
+.flow-row:hover { background: var(--row-hover); }
 
 .date-range-hint {
   font-size: 11.5px; color: var(--muted); white-space: nowrap; flex-shrink: 0;
@@ -1888,11 +1888,11 @@ async function doBatchPay() {
 
 /* 固定视口布局：卡片在底部为吸底合计条预留空间，表头随滚动吸顶 */
 .card.fh-fill { padding-bottom: 40px; }
-.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 
 /* 付款管理：固定布局，不超出卡片宽度（table-layout:fixed 已防横向溢出，无需 overflow-x:hidden） */
 .table-wrap.pk-pay-tbl { padding-bottom: 70px; }
-.pk-pay-tbl table { table-layout: fixed; }
+.pk-pay-tbl table { table-layout: fixed;; min-width: 1100px; }
 /* 列多、字段密：本表用更紧凑的字号/横向内边距，尽量让各列内容完整展示 */
 .pk-pay-tbl { --td-fs: 12px; --td-px: 6px; }
 .pk-pay-tbl th, .pk-pay-tbl td { padding: var(--td-py) var(--td-px); font-size: var(--td-fs); }
@@ -2068,8 +2068,7 @@ async function doBatchPay() {
 .del-tip { font-size: 13px; color: var(--text); margin: 0 0 8px; }
 .del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; box-sizing: border-box; }
 .del-input:focus { border-color: var(--danger); outline: none; }
-.btn-danger-solid { border: none; border-radius: 8px; padding: 8px 18px; font-size: 14px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
-.btn-danger-solid:disabled { opacity: .5; cursor: default; }
+/* 实心危险按钮统一走全局 .btn-danger-solid（style.css） */
 
 /* Overdue column tag */
 .overdue-tag {

@@ -180,7 +180,7 @@ body {
    鼠标滚轮只滚表格行、不再整页上下翻。padding 去掉底部，底部交给内容填满
    （吸底 bottom-bar 高 36px 已 fixed 固定占位）。 */
 .main-content.full-height-view {
-  overflow: hidden; padding-bottom: 0; height: 100vh;
+  overflow: hidden; padding-bottom: 0; height: 100vh; height: 100dvh;
   display: flex; flex-direction: column;
 }
 /* 视图根元素（router-view 单根）填满锁定视口，成为纵向 flex 容器 */
@@ -306,6 +306,16 @@ button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .pill-danger { background: var(--c-danger-bg);  color: var(--c-danger); }
 .pill-blue   { background: var(--c-info-bg);    color: var(--c-info); }
 .pill-muted  { background: rgba(0,0,0,0.06);    color: var(--muted); }
+
+/* 实心危险按钮（确认删除等最终执行钮）：全局唯一定义，各页勿再复制 */
+.btn-danger-solid {
+  border: none; border-radius: 10px; padding: 8px 18px;
+  font-size: 14px; font-weight: 700; cursor: pointer;
+  background: var(--c-danger); color: #fff;
+  transition: filter 0.15s, transform 0.12s;
+}
+.btn-danger-solid:hover:not(:disabled) { filter: brightness(1.08); }
+.btn-danger-solid:disabled { opacity: .5; cursor: default; }
 
 /* ── inputs ──────────────────────────────────────────────────────────────── */
 input, textarea, select {
@@ -887,6 +897,8 @@ body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
    布局在全局层，这里统一处理，否则打印会带出侧边栏、左侧留白、
    且 full-height-view 的 overflow:hidden + 100vh 会把内容裁成一页。 */
 @media print {
+  .bottom-bar { display: none !important; }
+  thead th { position: static !important; }
   .sidebar, .mobile-nav-toggle, .mobile-nav-backdrop, .bg-layer { display: none !important; }
   .layout { display: block !important; min-height: auto !important; }
   .main-content, .main-public {

@@ -340,7 +340,7 @@ onMounted(() => {
 .mx-wrap { overflow: auto; max-height: calc(100vh - 300px); border: 1px solid rgba(0,0,0,0.06); border-radius: 10px; }
 .mx-table { border-collapse: separate; border-spacing: 0; font-size: 12px; min-width: 100%; }
 .mx-table thead th {
-  position: sticky; top: 0; z-index: 3; background: #f4efeb; color: var(--muted);
+  position: sticky; top: 0; z-index: 3; background: var(--thead-bg); color: var(--muted);
   font-weight: 700; padding: 7px 10px; white-space: nowrap; border-bottom: 1px solid rgba(0,0,0,0.08);
 }
 .mx-name-h { position: sticky; left: 0; z-index: 4; text-align: left; }

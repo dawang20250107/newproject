@@ -3373,7 +3373,7 @@ function clearFilters() {
 /* 逾期看板/回款流水标签页：pager 紧贴底部，不需要卡片底部预留空间 */
 .ar-view > .card.pane-mode { padding-bottom: 4px; }
 /* 表头吸顶，长表滚动时列名常驻 */
-.pane-flex .pane-scroll .rec-table thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.pane-flex .pane-scroll .rec-table thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 .pane-flex .pane-scroll .rec-table thead .sel-col { z-index: 6; }
 
 /* 页头：三行结构——标题+主操作 / Tab 栏 / 筛选工具栏，各占一行互不挤压 */
@@ -3525,7 +3525,7 @@ function clearFilters() {
 .rec-table td { padding: 5px 10px; vertical-align: middle; font-size: 12.5px; }
 /* 表格填满卡片剩余高度（由 flex: 1 on .table-wrap 驱动），overflow:auto 使只有表格内滚 */
 .dt-scroll { height: 100%; overflow: auto; }
-.dt-scroll .rec-table thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.dt-scroll .rec-table thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 .dt-scroll .rec-table thead .sel-col { z-index: 6; }
 /* 选择列 */
 .sel-col { width: 30px; text-align: center; padding-left: 8px !important; padding-right: 4px !important; }
@@ -3546,8 +3546,7 @@ function clearFilters() {
 .del-tip { font-size: 13px; color: var(--text); margin: 0 0 8px; }
 .del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; }
 .del-input:focus { border-color: var(--danger); outline: none; }
-.btn-danger-solid { border: none; border-radius: 8px; padding: 8px 18px; font-size: 14px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
-.btn-danger-solid:disabled { opacity: .5; cursor: default; }
+/* 实心危险按钮统一走全局 .btn-danger-solid（style.css） */
 .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.04); }
 .row-overdue { background: rgba(198,40,40,0.04); }
 
@@ -3894,7 +3893,7 @@ function clearFilters() {
   position: sticky;
   left: 0;
   z-index: 3;
-  background: #f4f1ef;
+  background: var(--thead-bg);
 }
 /* 冻结首列必须用「不透明」背景：卡片是半透明玻璃(--card 0.62)，
    若用 inherit / 半透明色，右滚时下层单元格会透过冻结列显形。
@@ -3904,7 +3903,7 @@ function clearFilters() {
 .rec-table tbody tr.age-31-60  td.sticky-col { background: #f7e8d3; }
 .rec-table tbody tr.age-61-90  td.sticky-col { background: #f6e2dd; }
 .rec-table tbody tr.age-90plus td.sticky-col { background: #f0ddd8; }
-.dt-scroll .rec-table thead th.sticky-col { z-index: 7; background: #f4f1ef; }
+.dt-scroll .rec-table thead th.sticky-col { z-index: 7; background: var(--thead-bg); }
 /* 行悬停 / 选中时首列随行色变化（同样用实色） */
 .rec-table tbody tr:hover td.sticky-col { background: #f4ece6; }
 .rec-table tbody tr.row-sel td.sticky-col,

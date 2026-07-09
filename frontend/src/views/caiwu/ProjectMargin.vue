@@ -379,7 +379,7 @@ onMounted(() => {
 
 /* 固定视口：表头吸顶 + 为吸底栏预留空间 */
 .fh-fill { padding-bottom: 40px; }
-.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 
 .pm-table { width: 100%; font-size: 13px; }
 .pm-table th.ctr, .pm-table td.ctr { width: 44px; }

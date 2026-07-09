@@ -11,7 +11,10 @@ export function useEscClearSelection(hasSelection, clear) {
     if (e.key !== 'Escape') return
     const ae = document.activeElement
     if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return
-    if (document.querySelector('.modal-overlay, .colf-pop, .ctxm, .drop-overlay')) return
+    // 豁免清单须覆盖全站所有弹层类名：漏一个,该弹窗开着时按 Esc 就会误清底下表格的勾选
+    if (document.querySelector(
+      '.modal-overlay, .overlay, .modal-mask, .edit-mask, .drawer-mask, .scrim, '
+      + '.cfm-overlay, .colf-pop, .ctxm, .drop-overlay, .logs-overlay')) return
     if (document.querySelector('.cell-range-sel')) return
     if (!hasSelection()) return
     clear()

@@ -359,7 +359,7 @@ async function exportXlsx(selectedOnly = false) {
 .dr { display: flex; flex-direction: column; min-height: 0; height: 100%; padding: 0; }
 /* 顶部紧凑区 */
 .dr-top { flex: none; padding: 14px 20px 10px; border-bottom: 1px solid var(--border, #eadfd2); background: var(--glass, rgba(255,254,251,.6)); display: flex; flex-direction: column; gap: 10px; }
-.dr-head { display: flex; align-items: center; gap: 12px; }
+.dr-head { display: flex; align-items: center; gap: 12px;; flex-wrap: wrap; }
 .dr-title { font-size: 19px; font-weight: 850; letter-spacing: -.01em; color: var(--text, #4a3322); }
 .dr-sub { font-size: 12px; font-weight: 500; color: var(--muted, #9b8070); margin-left: 10px; }
 .grow { flex: 1; }
@@ -375,7 +375,7 @@ async function exportXlsx(selectedOnly = false) {
 .dr-timebar .inp-date { flex: none; } .dr-timebar .reset { flex: none; margin-left: 4px; }
 .inp { border: 1px solid var(--border, #d8c9b8); border-radius: 8px; padding: 6px 10px; font-size: 13px; font-family: inherit; background-color: var(--card-bg, #fff); color: var(--text, #4a3322); outline: none; width: auto; transition: .14s; }
 .inp:focus { border-color: var(--primary, #1565c0); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary, #1565c0) 14%, transparent); }
-.inp-date { width: 138px; } .search { width: 200px; } .inp.mini { font-size: 12.5px; padding: 6px 26px 6px 9px; }
+.inp-date { width: 138px; } .search { width: 200px;; flex: 1 1 160px; min-width: 120px; width: auto; } .inp.mini { font-size: 12.5px; padding: 6px 26px 6px 9px; }
 .btn { border: 1px solid var(--border, #d8c9b8); background-color: var(--card-bg, #fff); color: var(--text, #4a3322); border-radius: 8px; padding: 6px 13px; font-size: 13px; font-weight: 650; cursor: pointer; font-family: inherit; }
 .btn.ghost { background: none; } .btn.sm { padding: 6px 12px; }
 .btn.primary { background: var(--primary, #1565c0); color: #fff; border-color: var(--primary, #1565c0); }
