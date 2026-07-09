@@ -229,6 +229,11 @@ def advance_detail(request, pk):
             # 已有核销时翻转会让两侧台账互相矛盾
             if rec.writeoffs.exists():
                 return err('该记录已有核销，不能修改预收/预付方向；请先删除其全部核销记录')
+            # 退款只属于预付语义：已有「预付退款」回冲的记录翻成预收会让
+            # refunded_amount 挂在预收上、余额仍被退款冲减，台账语义错乱
+            if rec.refunds.exists():
+                return err('该记录已有预付退款关联（日常收款），不能修改方向；'
+                           '请先在日常收款解除关联或删除对应退款')
             rec.direction = data['direction']
         if 'counterparty' in data:
             rec.counterparty = (data['counterparty'] or '').strip()
@@ -271,6 +276,15 @@ def advance_detail(request, pk):
         denied = _delete_denied(request)
         if denied:
             return denied
+        # 删除守卫（与排款侧「有核销不能删」同纪律）：
+        # · 有核销：级联删核销会连锁改写排款冲抵/应收回款，静默解开已入账的核销；
+        # · 有退款：DailyReceipt.advance_record 为 SET_NULL，删除后退款现金流入仍计入
+        #   资金池，而本记录的预付流出随删除消失 → 池余额单边虚增，退款成无主记录。
+        if rec.writeoffs.exists():
+            return err('该记录已有核销，不能删除；请先删除其全部核销记录', 409, 409)
+        if rec.refunds.exists():
+            return err('该记录已有预付退款关联（日常收款），不能删除；'
+                       '请先在日常收款解除关联或删除对应退款', 409, 409)
         rec.delete()
         return ok({'deleted': pk})
 
@@ -638,8 +652,19 @@ def advance_import(request):
     # ══ 阶段二：全部通过 → 一次性写入（整体事务，任一失败回滚）═══════════════════════
     created = 0
     try:
+        skipped_dup = 0
         with transaction.atomic():
             for p in plan:
+                # 业务防重键:方向+部门+往来单位+发生年月+金额+款项日期——同一文件重复导入
+                # 或文件内重复行不再重复建账(金额/现金流/余额翻倍)。同键确需多笔时,
+                # 请在备注或款项日期上做出区分后再导。
+                if AdvanceRecord.objects.filter(
+                        direction=p['direction'], delivery_dept=p['dept'],
+                        counterparty=p['counterparty'], occur_year=p['year'],
+                        occur_month=p['month'], advance_amount=p['advance_amount'],
+                        occur_date=p['occur_date']).exists():
+                    skipped_dup += 1
+                    continue
                 rec = AdvanceRecord(
                     project=p['proj'], delivery_dept=p['dept'], direction=p['direction'],
                     counterparty=p['counterparty'], occur_year=p['year'], occur_month=p['month'],
@@ -669,7 +694,9 @@ def advance_import(request):
             'message': '导入未执行（写入阶段出错，已整体回滚，不会出现半截数据）。',
         })
 
-    return ok({'created': created, 'updated': 0, 'skipped': 0, 'errors': []})
+    return ok({'created': created, 'updated': 0, 'skipped': skipped_dup,
+               'errors': ([f'跳过 {skipped_dup} 行重复记录（方向+部门+往来单位+发生年月+金额+日期 已存在）']
+                          if skipped_dup else [])})
 
 
 _ADVANCE_AI_SYS = (
@@ -915,6 +942,9 @@ def advance_writeoffs(request, pk):
                            f'（计划 {plan} − 已付 {paid} − 已冲抵 {offset_now}）')
         try:
             with transaction.atomic():
+                # 锁预收/预付行:与并发退款/另一笔核销串行,防两边校验双双通过后合计超额
+                # (信号重算的非负校验在锁内成为可靠兜底)
+                rec = AdvanceRecord.objects.select_for_update().get(pk=rec.pk)
                 # 预付核销关联排款时:锁定该排款行并在锁内复检未软删——与「排款软删(也锁本行)」
                 # 串行,防并发把核销落到刚被软删的排款上(资金池按 deleted_at 排除该冲抵,
                 # 预付余额却被信号扣一块,口径裂开)。
@@ -1112,6 +1142,11 @@ def advance_batch_writeoff(request, pk):
     if not wo_date:
         return err('核销日期无效（格式 2026-01-20）')
 
+    # 散单预收（未挂项目）须有往来单位才能定位客户——空值会让客户匹配整段短路，
+    # 任意客户的应收都能被冲（与单笔核销 _resolve_offset_ar_record 同口径拒绝）
+    if not adv.project_id and not (adv.counterparty or '').strip():
+        return err('该预收未关联项目且往来单位为空，无法确认归属客户；'
+                   '请先补录往来单位后再批量冲抵')
     recs = list(ARRecord.objects.select_related('project')
                 .filter(pk__in=ids).order_by('operation_date', 'id'))
     if len(recs) != len(set(ids)):
@@ -1611,41 +1646,50 @@ def advance_writeoff_detail(request, pk, wid):
         if denied:
             return denied
         data = _parse_body(request)
-        new_amount = None
-        if 'amount' in data:
-            new_amount = _dec(data['amount'])
-            if new_amount <= 0:
-                return err('核销金额必须大于0')
-            # 若该核销已生成「预收抵扣」回款，新金额不得超过应收可冲抵额
-            # （当前未收余额 + 本笔已冲抵额）。
-            if wo.ar_payment_id:
-                ar = wo.ar_payment.ar_record
-                available = (ar.outstanding_amount or Decimal('0')) + (wo.ar_payment.amount or Decimal('0'))
-                if new_amount > available:
-                    return err(f'冲抵金额 {new_amount:,.2f} 超过该应收可冲抵额 {available:,.2f}')
-            # 预付侧同 create 口径：改大金额不得使 已付+累计冲抵 超过排款计划（待付为负）
-            if wo.payment_id:
-                pay_obj = wo.payment
-                plan = (pay_obj.plan_adjustment if pay_obj.plan_adjustment is not None
-                        else pay_obj.total_amount) or Decimal('0')
-                paid_amt = pay_obj.total_paid
-                offset_other = (pay_obj.prepaid_offset_amount or Decimal('0')) - (wo.amount or Decimal('0'))
-                room = plan - paid_amt - offset_other
-                if new_amount > room:
-                    return err(f'冲抵金额 {new_amount:,.2f} 超过该排款剩余待付 {room:,.2f}'
-                               f'（计划 {plan} − 已付 {paid_amt} − 其它已冲抵 {offset_other}）')
-            # 预收/预付余额上限：其余核销不变时，本笔可用 = 当前未核销余额 + 本笔原额
-            adv_avail = ((wo.advance_record.balance_amount or Decimal('0'))
-                         + (wo.amount or Decimal('0')))
-            if new_amount > adv_avail:
-                return err(f'核销金额 {new_amount:,.2f} 超过可核销余额 {adv_avail:,.2f}')
-            wo.amount = new_amount
-        if 'writeoff_date' in data:
-            wo.writeoff_date = _normalize_date(data['writeoff_date']) or wo.writeoff_date
-        if 'notes' in data:
-            wo.notes = (data['notes'] or '').strip()
         try:
+            # 全部上限校验搬进锁内：锁预收/预付行 + 关联排款行，与并发核销/退款/编辑串行。
+            # 无锁校验会让两笔并发编辑各自通过「剩余待付/可核销余额」检查后合计超额。
             with transaction.atomic():
+                adv_locked = AdvanceRecord.objects.select_for_update().get(pk=wo.advance_record_id)
+                pay_obj = None
+                if wo.payment_id:
+                    from paikuan.models import Payment as _Payment
+                    pay_obj = _Payment.objects.select_for_update().get(pk=wo.payment_id)
+                new_amount = None
+                if 'amount' in data:
+                    new_amount = _dec(data['amount'])
+                    if new_amount <= 0:
+                        return err('核销金额必须大于0')
+                    # 若该核销已生成「预收抵扣」回款，新金额不得超过应收可冲抵额
+                    # （当前未收余额 + 本笔已冲抵额）。
+                    if wo.ar_payment_id:
+                        ar = wo.ar_payment.ar_record
+                        available = (ar.outstanding_amount or Decimal('0')) + (wo.ar_payment.amount or Decimal('0'))
+                        if new_amount > available:
+                            return err(f'冲抵金额 {new_amount:,.2f} 超过该应收可冲抵额 {available:,.2f}')
+                    # 预付侧同 create 口径：改大金额不得使 已付+累计冲抵 超过排款计划（待付为负）
+                    if pay_obj is not None:
+                        plan = (pay_obj.plan_adjustment if pay_obj.plan_adjustment is not None
+                                else pay_obj.total_amount) or Decimal('0')
+                        paid_amt = pay_obj.total_paid
+                        offset_other = (pay_obj.prepaid_offset_amount or Decimal('0')) - (wo.amount or Decimal('0'))
+                        room = plan - paid_amt - offset_other
+                        if new_amount > room:
+                            return err(f'冲抵金额 {new_amount:,.2f} 超过该排款剩余待付 {room:,.2f}'
+                                       f'（计划 {plan} − 已付 {paid_amt} − 其它已冲抵 {offset_other}）')
+                    # 预收/预付余额上限：其余核销不变时，本笔可用 = 当前未核销余额 + 本笔原额
+                    adv_avail = ((adv_locked.balance_amount or Decimal('0'))
+                                 + (wo.amount or Decimal('0')))
+                    if new_amount > adv_avail:
+                        return err(f'核销金额 {new_amount:,.2f} 超过可核销余额 {adv_avail:,.2f}')
+                    wo.amount = new_amount
+                if 'writeoff_date' in data:
+                    _nd = _normalize_date(data['writeoff_date'])
+                    if not _nd:
+                        return err('核销日期无效（格式 2026-01-20）')
+                    wo.writeoff_date = _nd
+                if 'notes' in data:
+                    wo.notes = (data['notes'] or '').strip()
                 if wo.ar_payment_id and (new_amount is not None or 'writeoff_date' in data):
                     pay = wo.ar_payment
                     if new_amount is not None:

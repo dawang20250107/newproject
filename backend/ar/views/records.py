@@ -1808,6 +1808,9 @@ def ar_payments(request, pk):
         pay_date = _normalize_date(data.get('payment_date'))
         if not pay_date:
             return err('日期无效')
+        # 回款是已发生的现金事件:未来日期会提前美化当期回款/现金流/账龄
+        if datetime.date.fromisoformat(str(pay_date)[:10]) > timezone.localdate():
+            return err('回款日期不能晚于今天——回款以实际收款日入账')
         # 来源：'回款'（现金）或 '内部往来'（事业部间核销，不计现金）。
         # '预收抵扣' 仅由预收核销自动生成，禁止经此接口手工录入。
         source = (data.get('source') or '回款').strip()
@@ -2003,7 +2006,10 @@ def ar_payment_detail(request, pk, ppk):
                            f'如确有多收，请到「差额调整」或「预收预付」录入')
             pay.amount = amount
         if 'payment_date' in data:
-            pay.payment_date = _normalize_date(data['payment_date']) or pay.payment_date
+            _nd = _normalize_date(data['payment_date'])
+            if _nd and datetime.date.fromisoformat(str(_nd)[:10]) > timezone.localdate():
+                return err('回款日期不能晚于今天——回款以实际收款日入账')
+            pay.payment_date = _nd or pay.payment_date
         # 往来部门仅对内部往来核销有意义，且必须是有效事业部
         if 'counterparty_dept' in data and pay.source == '内部往来':
             cp = (data['counterparty_dept'] or '').strip()

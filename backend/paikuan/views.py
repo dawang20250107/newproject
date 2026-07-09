@@ -2280,10 +2280,21 @@ def approval_records(request):
             return err('申请人不能为空')
         if amount <= 0:
             return err('申请金额必须大于0')
-        # 审批编号：清洗后校验 1–100 位数字；空则自动占位 21 个 0
+        # 审批编号：清洗后校验数字；空则自动占位 21 个 0；台账列宽 21 位
         approval_number, err_no = _clean_approval_number(approval_number)
         if err_no:
             return err(err_no)
+        if len(approval_number) > 21:
+            return err('审批编号最长 21 位（钉钉标准单号或占位）')
+        # 真实单号（非全0占位）防重：同一单号重复登记会让在途支出双计、
+        # 钉钉状态回写按单号匹配时也会错写到多条记录
+        if approval_number and set(approval_number) != {'0'}:
+            dup = ApprovalRecord.objects.filter(
+                approval_number=approval_number, deleted_at__isnull=True).first()
+            if dup:
+                return err(f'审批编号 {approval_number} 已存在（记录 #{dup.id}，'
+                           f'{dup.department}·{dup.applicant}·¥{dup.amount}），不能重复登记',
+                           409, 409)
         if department not in VALID_DEPARTMENTS:
             return err('所属事业部无效')
         if status not in {'pending', 'approved', 'rejected', 'canceled'}:
@@ -2320,67 +2331,104 @@ def approval_record_detail(request, pk):
     if not can_write_dept(request, rec.department):
         return err('无权操作该部门', 403, 403)
     if request.method == 'PUT':
-        # 回收站中的审批不可修改（不可见的改动会随还原一起出现）：请先还原再编辑
-        if rec.deleted_at is not None:
-            return err('该记录在回收站中，不能修改；请先在回收站还原', 409, 409)
         data = parse_body(request)
-        # 归档即终态（已排款 / 已拒绝 / 已撤销）：金额/状态等不可再改。
-        # 例外：二级部门/项目简称是补录性元数据（历史数据默认空白，允许操作栏补录），
-        # 仅改这两个字段不影响审批标的与资金池在途口径
-        meta_only = bool(data) and set(data.keys()) <= {'secondary_dept', 'project_short_name'}
-        if rec.archived and not meta_only:
-            return err('该审批记录已归档（已排款或已拒绝/已撤销），不可修改；如需变更请新建记录'
-                       '（二级部门/项目简称两个补录字段除外）', 409, 409)
-        # 写入能力闸口：与新建一致（防止只读岗位改写审批台账）
-        if perms is not None and not (perms.get('can_create') or is_approver(request)):
-            return err('无编辑权限', 403, 403)
-        if 'secondary_dept' in data:
-            rec.secondary_dept = (data.get('secondary_dept') or '').strip()[:100]
-        if 'project_short_name' in data:
-            psn = (data.get('project_short_name') or '').strip()[:100]
-            err_psn = _validate_project_short_name(psn, rec.department)
-            if err_psn:
-                return err(err_psn)
-            rec.project_short_name = psn
-        for k in ('applicant', 'summary', 'payee'):
-            if k in data:
-                setattr(rec, k, (data.get(k) or '').strip())
-        if 'notes' in data:
-            rec.notes = (data.get('notes') or '').strip()[:500]
-        if 'department' in data and data['department'] in VALID_DEPARTMENTS:
-            if not can_write_dept(request, data['department']):
-                return err('无权操作目标事业部', 403, 403)
-            rec.department = data['department']
-        if 'approval_number' in data:
-            cleaned_no, err_no = _clean_approval_number(data['approval_number'])
-            if err_no:
-                return err(err_no)
-            rec.approval_number = cleaned_no
-        if 'g7_number' in data:
-            rec.g7_number = (data.get('g7_number') or '').strip()[:21]
-        if 'amount' in data:
-            try:
-                new_amount = Decimal(str(data['amount'] or '0'))
-            except (InvalidOperation, ValueError, TypeError):
-                return err('申请金额格式错误')
-            if new_amount <= 0:
-                return err('申请金额必须大于0')
-            # 金额是审批的标的：已审批通过的记录改金额会让资金池「在途支出」
-            # 被悄悄改写，须先退回待审批再改
-            if new_amount != rec.amount and rec.status != 'pending':
-                return err('仅「待审批」状态可修改金额；已审批的记录请先退回待审批再修改')
-            rec.amount = new_amount
-        if 'status' in data and data['status'] in {'pending', 'approved', 'rejected', 'canceled'}:
-            new_status = data['status']
-            # 仅审批权限职务可设置 approved/rejected；任何登记人均可取消自己的申请
-            if new_status in {'approved', 'rejected'} and not is_approver(request):
-                return err('当前职务无权审批/拒绝该记录', 403, 403)
-            if new_status == 'canceled' and not is_approver(request) and rec.created_by_id != request.pk_uid:
-                return err('仅原申请人或审批人可撤销', 403, 403)
-            rec.status = new_status
-            if rec.status in {'rejected', 'canceled'}:
-                rec.archived = True
-        rec.save()
+        # 全程在审批行锁内校验与写入：与排款/对账（_schedule_one/_reconcile 均锁审批行）
+        # 串行。无锁的整行 save() 会用过期快照覆盖并发对账刚写好的 scheduled_amount/
+        # archived；改用显式 update_fields 只写本次改动的列。
+        with transaction.atomic():
+            rec = ApprovalRecord.objects.select_for_update().get(pk=pk)
+            # 回收站中的审批不可修改（不可见的改动会随还原一起出现）：请先还原再编辑
+            if rec.deleted_at is not None:
+                return err('该记录在回收站中，不能修改；请先在回收站还原', 409, 409)
+            # 归档即终态（已排款 / 已拒绝 / 已撤销）：金额/状态等不可再改。
+            # 例外：二级部门/项目简称是补录性元数据（历史数据默认空白，允许操作栏补录），
+            # 仅改这两个字段不影响审批标的与资金池在途口径
+            meta_only = bool(data) and set(data.keys()) <= {'secondary_dept', 'project_short_name'}
+            if rec.archived and not meta_only:
+                return err('该审批记录已归档（已排款或已拒绝/已撤销），不可修改；如需变更请新建记录'
+                           '（二级部门/项目简称两个补录字段除外）', 409, 409)
+            # 写入能力闸口：与新建一致（防止只读岗位改写审批台账）
+            if perms is not None and not (perms.get('can_create') or is_approver(request)):
+                return err('无编辑权限', 403, 403)
+            changed = []
+            if 'secondary_dept' in data:
+                rec.secondary_dept = (data.get('secondary_dept') or '').strip()[:100]
+                changed.append('secondary_dept')
+            if 'project_short_name' in data:
+                psn = (data.get('project_short_name') or '').strip()[:100]
+                err_psn = _validate_project_short_name(psn, rec.department)
+                if err_psn:
+                    return err(err_psn)
+                rec.project_short_name = psn
+                changed.append('project_short_name')
+            for k in ('applicant', 'summary', 'payee'):
+                if k in data:
+                    setattr(rec, k, (data.get(k) or '').strip())
+                    changed.append(k)
+            if 'notes' in data:
+                rec.notes = (data.get('notes') or '').strip()[:500]
+                changed.append('notes')
+            if 'department' in data and data['department'] in VALID_DEPARTMENTS:
+                if not can_write_dept(request, data['department']):
+                    return err('无权操作目标事业部', 403, 403)
+                rec.department = data['department']
+                changed.append('department')
+            if 'approval_number' in data:
+                cleaned_no, err_no = _clean_approval_number(data['approval_number'])
+                if err_no:
+                    return err(err_no)
+                # 审批台账单号列宽 21 位（钉钉标准/占位）；超长在 MySQL strict 直接 500
+                if len(cleaned_no) > 21:
+                    return err('审批编号最长 21 位（钉钉标准单号或占位）')
+                rec.approval_number = cleaned_no
+                changed.append('approval_number')
+            if 'g7_number' in data:
+                rec.g7_number = (data.get('g7_number') or '').strip()[:21]
+                changed.append('g7_number')
+            # 在册已排款（正源=关联在册付款的计划批次之和）：金额下调与状态回退的共同下限。
+            # 在锁内计算——并发排款也锁本审批行，读到的必为最新已提交批次。
+            _live_scheduled = (PaymentPlanItem.objects
+                               .filter(payment__approval_id=rec.pk,
+                                       payment__deleted_at__isnull=True)
+                               .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+            if 'amount' in data:
+                try:
+                    new_amount = Decimal(str(data['amount'] or '0'))
+                except (InvalidOperation, ValueError, TypeError):
+                    return err('申请金额格式错误')
+                if new_amount <= 0:
+                    return err('申请金额必须大于0')
+                # 金额是审批的标的：已审批通过的记录改金额会让资金池「在途支出」
+                # 被悄悄改写，须先退回待审批再改
+                if new_amount != rec.amount and rec.status != 'pending':
+                    return err('仅「待审批」状态可修改金额；已审批的记录请先退回待审批再修改')
+                # 下限=在册已排款：改到更低会倒挂（剩余可排为负、未排合计失真），须先退回排款批次
+                if new_amount < _live_scheduled:
+                    return err(f'申请金额不能低于在册已排款 {_live_scheduled} 元；'
+                               f'请先在排款管理退回相应批次后再下调金额')
+                rec.amount = new_amount
+                changed.append('amount')
+            if 'status' in data and data['status'] in {'pending', 'approved', 'rejected', 'canceled'}:
+                new_status = data['status']
+                # 仅审批权限职务可设置 approved/rejected；任何登记人均可取消自己的申请
+                if new_status in {'approved', 'rejected'} and not is_approver(request):
+                    return err('当前职务无权审批/拒绝该记录', 403, 403)
+                if new_status == 'canceled' and not is_approver(request) and rec.created_by_id != request.pk_uid:
+                    return err('仅原申请人或审批人可撤销', 403, 403)
+                # 已有在册排款的审批不可离开 approved 态：退回待审批会解锁金额编辑造成倒挂，
+                # 改为已拒绝/已撤销则被拒的审批仍挂着可付款的排款（可对被拒事项付现）。
+                # 一律先退回排款批次，再变更状态。
+                if (new_status != rec.status and rec.status == 'approved'
+                        and _live_scheduled > 0):
+                    return err(f'该审批已有在册排款 {_live_scheduled} 元，不能直接变更状态；'
+                               f'请先在排款管理退回排款批次，再执行本操作', 409, 409)
+                rec.status = new_status
+                changed.append('status')
+                if rec.status in {'rejected', 'canceled'} and not rec.archived:
+                    rec.archived = True
+                    changed.append('archived')
+            if changed:
+                rec.save(update_fields=changed + ['updated_at'])
         return ok(rec.to_dict())
     return err('Method not allowed', 405)
 
@@ -2726,6 +2774,15 @@ def approval_records_bulk_delete(request):
             if any(p.prepaid_offsets.exists() for p in active_payments):
                 skipped.append({'id': rec.id,
                                 'reason': '关联排款存在预付核销，不能强制删除；请先撤销核销'})
+                continue
+            # 策略B：关联排款已有实付分期（真实付现）时，仅超管可强制连删——
+            # 与付款侧单删/批量删/批量退回同一道防双付闸口
+            if (request.pk_role != 'super_admin'
+                    and any(p.installments.exists() for p in active_payments)):
+                paid_amt = sum((p.total_paid for p in active_payments), Decimal('0'))
+                skipped.append({'id': rec.id, 'has_installments': True,
+                                'reason': f'关联排款已有实付合计 {paid_amt} 元，仅超级管理员可强制删除；'
+                                          f'请先撤销实付分期'})
                 continue
             with transaction.atomic():
                 for p in active_payments:
@@ -3287,6 +3344,7 @@ def approval_import(request):
 
     created = skipped = 0
     errors = []
+    _seen_nos = set()   # 本文件内已出现的真实单号（防同文件重复行）
     for r in range(2, max_row + 1):
         view = _approval_row_view(cv, r)
         # 整行空白：略过（容忍尾部空行）；模板示例行：静默跳过
@@ -3297,6 +3355,18 @@ def approval_import(request):
         fields, error = _parse_approval_fields(view, request)
         if error:
             skipped += 1; errors.append(f'第{r}行: {error}'); continue
+        # 真实单号防重（同手工新建口径）：库内已有 + 本文件内重复 都拦——
+        # 同一 Excel 重复导入/同文件重复行会让在途支出整表翻倍
+        no = fields['approval_number']
+        if no and set(no) != {'0'}:
+            if len(no) > 21:
+                skipped += 1; errors.append(f'第{r}行: 审批编号超过21位'); continue
+            if (no in _seen_nos or ApprovalRecord.objects.filter(
+                    approval_number=no, deleted_at__isnull=True).exists()):
+                skipped += 1
+                errors.append(f'第{r}行: 审批编号 {no} 已存在（库内或本文件前面行），跳过防重复')
+                continue
+            _seen_nos.add(no)
         ApprovalRecord.objects.create(created_by_id=request.pk_uid, **fields)
         created += 1
     return ok({'created': created, 'skipped': skipped, 'errors': errors})
@@ -3452,12 +3522,24 @@ def approval_import_apply(request):
 
     created = skipped = 0
     errors = []
+    _seen_nos = set()
     for r in rows:
         rn = r.get('row', '?')
         data = dict(r.get('data') or r)
         fields, error = _parse_approval_fields(data, request)
         if error:
             skipped += 1; errors.append(f'第{rn}行: {error}'); continue
+        # 真实单号防重（与 approval_import/手工新建同口径）
+        no = fields['approval_number']
+        if no and set(no) != {'0'}:
+            if len(no) > 21:
+                skipped += 1; errors.append(f'第{rn}行: 审批编号超过21位'); continue
+            if (no in _seen_nos or ApprovalRecord.objects.filter(
+                    approval_number=no, deleted_at__isnull=True).exists()):
+                skipped += 1
+                errors.append(f'第{rn}行: 审批编号 {no} 已存在（库内或本批前面行），跳过防重复')
+                continue
+            _seen_nos.add(no)
         ApprovalRecord.objects.create(created_by_id=request.pk_uid, **fields)
         created += 1
     msg = (f'全部 {created} 条成功导入' if created and not skipped
@@ -4893,6 +4975,28 @@ def trash_payments(request):
         for p in targets:
             if action == 'restore':
                 approval_id = p.approval_id
+                # 父审批仍在回收站时不可单独还原付款：会出现「在册付款挂在不可见审批下」
+                # 的悬挂态（付款台账可见、审批列表不可见，对账口径漂移）。请先还原审批。
+                if approval_id and ApprovalRecord.objects.filter(
+                        pk=approval_id, deleted_at__isnull=False).exists():
+                    skipped.append({'id': p.id,
+                                    'reason': '其来源审批仍在审批回收站，请先还原审批再还原付款'})
+                    continue
+                # 还原后可能造成该审批超排（回收站期间已重新排款排满）：以批次之和复核
+                if approval_id:
+                    _appr = ApprovalRecord.objects.filter(pk=approval_id).first()
+                    if _appr is not None:
+                        _others = (PaymentPlanItem.objects
+                                   .filter(payment__approval_id=approval_id,
+                                           payment__deleted_at__isnull=True)
+                                   .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+                        _mine = (p.plan_items.aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+                        if _others + _mine > (_appr.amount or Decimal('0')):
+                            skipped.append({'id': p.id,
+                                            'reason': f'还原后该审批累计排款 {_others + _mine} 将超过'
+                                                      f'申请金额 {_appr.amount}（回收站期间已重新排款），'
+                                                      f'请先退回在册批次或调整后再还原'})
+                            continue
                 p.deleted_at = None
                 p.deleted_by = None
                 try:

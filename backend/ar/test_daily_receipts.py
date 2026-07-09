@@ -148,6 +148,25 @@ class DailyReceiptTests(TestCase):
         self.assertIn(adv.id, ids)
         self.assertEqual(len(ids), 1)   # 仅余额>0 的预付
 
+    def test_advance_with_refund_cannot_be_deleted_or_flipped(self):
+        """有退款关联的预付:不可删除(退款成无主、池余额单边虚增)、不可改方向。"""
+        adv = self._prepaid('1000')
+        r = self._post('/api/pk/ar/daily-receipts', {
+            'delivery_dept': self.dept, 'receipt_date': '2026-06-10', 'amount': '300',
+            'source': '预付退款', 'advance_id': adv.id}, self.admin)
+        self.assertEqual(r.status_code, 200, r.content)
+        # 删除 → 409
+        d = self.client.delete(f'/api/pk/ar/advances/{adv.id}', **self._auth(self.admin))
+        self.assertEqual(d.status_code, 409, d.content)
+        # 改方向 → 400
+        import json as _j
+        p = self.client.put(f'/api/pk/ar/advances/{adv.id}',
+                            data=_j.dumps({'direction': '预收'}),
+                            content_type='application/json', **self._auth(self.admin))
+        self.assertEqual(p.status_code, 400, p.content)
+        adv.refresh_from_db()
+        self.assertEqual(adv.direction, '预付')
+
     def test_counts_into_cashflow(self):
         DailyReceipt.objects.create(delivery_dept=self.dept, receipt_date=datetime.date(2026, 6, 15),
                                     amount=Decimal('700'), source='预付退款', method='银行转账')

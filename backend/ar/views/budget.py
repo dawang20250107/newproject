@@ -620,10 +620,12 @@ def budget_summary(request):
         expected_date__range=(start_date, end_date),
         delivery_dept__in=depts).aggregate(total=Sum('amount'))
 
-    # Actual AR collections (from ARPayment)
+    # Actual AR collections (from ARPayment)——排除非现金来源(预收抵扣/内部往来):
+    # 回款预算是现金口径,与周期报表 _collection_actual 同口径,否则同一「回款达成率」两页两个数
     ac = ARPayment.objects.filter(
         payment_date__range=(start_date, end_date),
-        ar_record__delivery_dept__in=depts).aggregate(total=Sum('amount'))
+        ar_record__delivery_dept__in=depts).exclude(
+        source__in=NON_CASH_PAYMENT_SOURCES).aggregate(total=Sum('amount'))
 
     # Actual AP payments (from installments subtable)
     ap_total = (PaymentInstallment.objects
@@ -649,7 +651,8 @@ def budget_summary(request):
             ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
             ac_d = ARPayment.objects.filter(
                 payment_date__range=(start_date, end_date), ar_record__delivery_dept=d
-            ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+            ).exclude(source__in=NON_CASH_PAYMENT_SOURCES
+                      ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
             ap_d = (PaymentInstallment.objects
                     .filter(pay_date__range=(start_date, end_date), payment__department=d,
                             payment__deleted_at__isnull=True)
@@ -662,8 +665,9 @@ def budget_summary(request):
                 'actual_payment': float(ap_d),
             })
 
-    # 净现金流——与「现金流分析」「周期报表」同一口径（剔除非现金回款、扣预付冲抵、含预收/预付），
-    # 避免预算页与驾驶舱算出的净现金流不一致。收/付达成率仍用上方毛额口径（与收/付预算同口径对照）。
+    # 净现金流——与「现金流分析」「周期报表」同一口径（剔除非现金回款、含预收/预付、
+    # 预付核销为非现金不扣），避免预算页与驾驶舱算出的净现金流不一致。
+    # 收/付达成率同为现金口径（回款排除非现金来源，付款=实付分期）。
     cw = cash_flow_window(depts, start_date, end_date)
 
     return ok({

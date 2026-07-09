@@ -505,6 +505,33 @@ class SyncEndpointTests(TestCase):
         self.assertEqual(c.status, 'pending')
         self.assertIn('非21位', ' '.join(s['reason'] for s in d['skipped']))
 
+    def test_status_sync_scheduled_or_archived_not_overwritten(self):
+        """已排款/已归档的审批不接受钉钉状态回写(防被拒审批仍挂可付款排款/倒挂)。"""
+        # 已排款(approved, scheduled>0):钉钉说 rejected → 跳过不改
+        a = ApprovalRecord.objects.create(applicant='甲', department='运输事业部',
+            approval_number='202603171454000117001', summary='s', amount=Decimal('1000'),
+            payee='p', status='approved', scheduled_amount=Decimal('400'),
+            dingtalk_instance_id='IID-S')
+        DingtalkInstance.objects.create(instance_id='IID-S', process_code='PC',
+            business_id='202603171454000117001', ding_status='COMPLETED', sys_status='rejected')
+        r = self._post('/api/pk/dingtalk/status-sync', {'record_ids': [a.id]})
+        d = r.json()['data']
+        self.assertEqual(d['updated'], 0)
+        self.assertIn('已排款/已归档', d['skipped'][0]['reason'])
+        a.refresh_from_db()
+        self.assertEqual(a.status, 'approved')
+        # 未排款 pending → rejected:放行且同步归档
+        b = ApprovalRecord.objects.create(applicant='乙', department='运输事业部',
+            approval_number='202603171454000117002', summary='s', amount=Decimal('1'),
+            payee='p', status='pending', dingtalk_instance_id='IID-T')
+        DingtalkInstance.objects.create(instance_id='IID-T', process_code='PC',
+            business_id='202603171454000117002', ding_status='COMPLETED', sys_status='rejected')
+        r2 = self._post('/api/pk/dingtalk/status-sync', {'record_ids': [b.id]})
+        self.assertEqual(r2.json()['data']['updated'], 1)
+        b.refresh_from_db()
+        self.assertEqual(b.status, 'rejected')
+        self.assertTrue(b.archived)   # 终态同步归档,不留 rejected 且未归档的非法态
+
     def test_status_sync_no_archive_skipped(self):
         # 21位编号但本地无存档 → 跳过并提示先去钉钉同步页查询
         rec = ApprovalRecord.objects.create(applicant='丁', department='运输事业部',

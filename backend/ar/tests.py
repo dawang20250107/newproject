@@ -1595,6 +1595,41 @@ class AdvanceModuleTests(TestCase):
             project=proj, operation_year=year, operation_month=month,
             estimated_amount=Decimal(str(est)))
 
+    def test_payment_future_date_rejected(self):
+        """回款日期不得晚于今天:未来日期会提前美化当期回款/现金流/账龄。"""
+        admin = self.make_user('13911100098', 'finance_director', role='super_admin')
+        proj = self.create_project()
+        ar = self._ar_record(proj, 1000)
+        future = (date.today() + timedelta(days=3)).isoformat()
+        r = self.post(f'/api/pk/ar/records/{ar.id}/payments',
+                      {'amount': '100', 'payment_date': future}, admin)
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertIn('不能晚于今天', r.json().get('error', ''))
+        # 今天 → 放行
+        r2 = self.post(f'/api/pk/ar/records/{ar.id}/payments',
+                       {'amount': '100', 'payment_date': str(date.today())}, admin)
+        self.assertEqual(r2.status_code, 200, r2.content)
+
+    def test_collection_logs_cross_dept_denied(self):
+        """催收日志(旧兼容垫片):跨部门读写须 403——回归漏掉部门作用域+写权限的越权洞。"""
+        admin = self.make_user('13911100097', 'finance_director', role='super_admin')
+        other_op = self.make_user('13911100096', 'finance_director',
+                                  departments=['运输事业部'])   # 只授权运输
+        proj = self.create_project()          # 劳务事业部的项目
+        ar = self._ar_record(proj, 1000)
+        # 跨部门 POST → 403
+        r = self.post(f'/api/pk/ar/records/{ar.id}/collection-logs',
+                      {'log_type': 'call', 'note': 'x'}, other_op)
+        self.assertEqual(r.status_code, 403, r.content)
+        # 本部门(超管) → 放行
+        r2 = self.post(f'/api/pk/ar/records/{ar.id}/collection-logs',
+                       {'log_type': 'call', 'note': '正常跟进'}, admin)
+        self.assertEqual(r2.status_code, 200, r2.content)
+        # 跨部门 GET 明细 → 403
+        r3 = self.client.get(f'/api/pk/ar/records/{ar.id}/collection-logs',
+                             **self.auth(other_op))
+        self.assertEqual(r3.status_code, 403, r3.content)
+
     def test_edit_payment_over_outstanding_rejected_no_corruption(self):
         """编辑回款金额改大到超过应收:必须拒绝,且不得留下「金额已改、未收陈旧」的坏账。"""
         admin = self.make_user('13911100099', 'finance_director', role='super_admin')
@@ -3599,8 +3634,10 @@ class InvoiceBatchWorkbenchTests(TestCase):
     def test_batch_payment_fifo_allocation(self):
         # 回款 3200：先结清 r1(1000)，再结清 r2(2500口径中的2200... 注意未收=上账+差额)
         # r1 未收1000，r2 未收2500，r3 未收3000；3200 → r1全收1000 + r2收2200（剩300）
+        # 回款日期须为实际收款日（不得晚于今天），用相对日期避免撞未来日期闸
         resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/payment',
-                                data=json.dumps({'amount': '3200', 'payment_date': '2026-07-20',
+                                data=json.dumps({'amount': '3200',
+                                                 'payment_date': str(date.today() - timedelta(days=2)),
                                                  'notes': '建行到账'}),
                                 content_type='application/json', **self.auth())
         self.assertEqual(resp.status_code, 200, resp.content)
@@ -3614,7 +3651,8 @@ class InvoiceBatchWorkbenchTests(TestCase):
         self.assertTrue(self.r1.payments.filter(notes__contains='PF-001').exists())
         # 第二次回款 300+3000=3300 全部结清
         resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/payment',
-                                data=json.dumps({'amount': '3300', 'payment_date': '2026-08-05'}),
+                                data=json.dumps({'amount': '3300',
+                                                 'payment_date': str(date.today())}),
                                 content_type='application/json', **self.auth())
         self.assertEqual(resp.status_code, 200, resp.content)
         self.r2.refresh_from_db(); self.r3.refresh_from_db()
@@ -3623,7 +3661,8 @@ class InvoiceBatchWorkbenchTests(TestCase):
 
     def test_batch_payment_over_outstanding_rejected(self):
         resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/payment',
-                                data=json.dumps({'amount': '99999', 'payment_date': '2026-07-20'}),
+                                data=json.dumps({'amount': '99999',
+                                                 'payment_date': str(date.today())}),
                                 content_type='application/json', **self.auth())
         self.assertEqual(resp.status_code, 400)
         self.assertIn('预收', resp.json()['error'])

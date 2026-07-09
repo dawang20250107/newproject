@@ -113,8 +113,19 @@ def _handle_event(event):
             logger.info('dingtalk event: no ApprovalRecord for instance %s', instance_id)
             return
         if rec.status != status:
+            # 已归档/已排款的记录不接受回调降级(同 dingtalk_status_sync 闸口):
+            # approved(已排款)→rejected 会留下被拒却可付款的排款,须先退回排款人工处理
+            from decimal import Decimal as _D
+            if rec.archived or (rec.scheduled_amount or _D('0')) > 0:
+                logger.warning('dingtalk event: rec #%s already scheduled/archived, '
+                               'skip status overwrite %s → %s', rec.id, rec.status, status)
+                return
             rec.status = status
-            rec.save(update_fields=['status'])
+            fields = ['status']
+            if status in ('rejected', 'canceled') and not rec.archived:
+                rec.archived = True
+                fields.append('archived')
+            rec.save(update_fields=fields)
             logger.info('dingtalk approval %s → %s (rec #%s)', instance_id, status, rec.id)
     except Exception as ex:   # noqa: BLE001 — 回调必须稳，业务失败只记录
         logger.error('dingtalk event handling failed: %s', ex)

@@ -242,7 +242,10 @@ def ar_invoice_batch_invoice(request, batch_no):
             diff_alloc_total = sum(a for r, a in plan if r.project.invoice_mode == '差额')
             for r, alloc in plan:
                 r.actual_invoice_amount = (r.actual_invoice_amount or Decimal('0')) + alloc
-                r.invoice_date = inv_date
+                # 开票日期保留「首次开票日」:票后等待期(post_invoice_status)按 invoice_date
+                # 实时推算,二次开票覆写会把首开日冲掉、系统性延后票后逾期判定
+                if not r.invoice_date:
+                    r.invoice_date = inv_date
                 if (manual_tax is not None and r.project.invoice_mode == '差额'
                         and diff_alloc_total > 0):
                     share = (manual_tax * alloc / diff_alloc_total).quantize(Decimal('0.01'))
@@ -289,18 +292,19 @@ def ar_invoice_batch_invoice_undo(request, batch_no):
     if denied:
         return denied
     data = _parse_body(request)
-    try:
-        ev = BatchInvoiceEvent.objects.get(pk=int(data.get('event_id') or 0),
-                                           batch_no=batch_no)
-    except (BatchInvoiceEvent.DoesNotExist, ValueError, TypeError):
-        return err('开票事件不存在（可能已撤销）', 404)
-
     member_ids = set(_batch_members_qs(request, batch_no).values_list('id', flat=True))
     if not member_ids:
         return err('批次不存在或无权访问', 404)
-    diff_total = sum(Decimal(a['amount']) for a in ev.allocations or [])
     try:
         with transaction.atomic():
+            # 锁事件行:两个并发撤销同一事件时第二个在此拿不到行(已删)→404,
+            # 防止回退被执行两次(开票额被双倍扣减)
+            try:
+                ev = (BatchInvoiceEvent.objects.select_for_update()
+                      .get(pk=int(data.get('event_id') or 0), batch_no=batch_no))
+            except (BatchInvoiceEvent.DoesNotExist, ValueError, TypeError):
+                return err('开票事件不存在（可能已撤销）', 404)
+            diff_total = sum(Decimal(a['amount']) for a in ev.allocations or [])
             for a in (ev.allocations or []):
                 rid, amt = a['record_id'], Decimal(a['amount'])
                 if rid not in member_ids:
@@ -361,6 +365,9 @@ def ar_invoice_batch_payment(request, batch_no):
     pay_date = _normalize_date(data.get('payment_date'))
     if not pay_date:
         return err('回款日期无效（格式 2026-01-20）')
+    # 回款是已发生的现金事件:未来日期会让当期回款/现金流/账龄被提前美化
+    if datetime.date.fromisoformat(str(pay_date)[:10]) > timezone.localdate():
+        return err('回款日期不能晚于今天——回款以实际收款日入账')
     user_notes = (data.get('notes') or '').strip()
     method = (data.get('method') or ARPayment.DEFAULT_METHOD).strip()
     if method not in ARPayment.METHOD_VALUES:
@@ -524,6 +531,20 @@ def ar_records_batch_assign(request):
 
     if auto and not batch_no:
         batch_no = _gen_batch_no(qs)
+
+    # 改号/清号守护:目标记录当前所属批次若已有开票事件或批次回款,脱离批次会让这些
+    # 事件孤儿化(撤销时按批次找不到成员 → 永久无法撤销、历史断链)。须先撤销事件。
+    old_batches = {b for b in qs.exclude(invoice_batch_no='')
+                   .exclude(invoice_batch_no=batch_no)
+                   .values_list('invoice_batch_no', flat=True).distinct()}
+    if old_batches:
+        locked = {b for b in old_batches
+                  if BatchInvoiceEvent.objects.filter(batch_no=b).exists()
+                  or ARPayment.objects.filter(notes__startswith=f'批次回款[{b}]').exists()}
+        if locked:
+            return err(f'批次「{"、".join(sorted(locked))}」已有开票或批次回款事件，'
+                       f'成员记录不能改挂/脱离批次（否则历史事件无法撤销）；'
+                       f'请先在批次详情撤销相关事件', 409, 409)
     updated = qs.update(invoice_batch_no=batch_no)
 
     action = f'设置批次号为「{batch_no}」' if batch_no else '清空批次号'

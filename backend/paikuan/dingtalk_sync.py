@@ -747,8 +747,20 @@ def dingtalk_status_sync(request):
         new_status = c.sys_status or map_status(c.ding_status, c.ding_result)
         fields = []
         if new_status and r.status != new_status:
+            # 已归档或已有排款的审批不可被钉钉回写降级/回退:
+            # approved(已排款)→rejected/pending 会留下「被拒/待审批却挂着可付款排款」,
+            # 与人工编辑同一道闸(先退回排款批次再变更状态)。
+            if r.archived or (r.scheduled_amount or Decimal('0')) > 0:
+                skipped.append({'id': r.id, 'no': r.approval_number,
+                                'reason': f'钉钉状态为「{new_status}」但本地已排款/已归档,'
+                                          f'不自动改写;如需变更请先退回排款批次后人工处理'})
+                continue
             r.status = new_status
             fields.append('status')
+            # 终态同步归档,与人工编辑口径一致(否则出现 rejected 且未归档的非法态)
+            if new_status in ('rejected', 'canceled') and not r.archived:
+                r.archived = True
+                fields.append('archived')
         if not (r.dingtalk_instance_id or '').strip() and c.instance_id:
             r.dingtalk_instance_id = c.instance_id
             fields.append('dingtalk_instance_id')
@@ -767,20 +779,36 @@ def dingtalk_status_sync(request):
 
 
 def _upsert(detail, actor):
-    """按 dingtalk_instance_id 落库：存在则更新，否则新建。返回 ('created'|'updated', rec)。"""
+    """按 dingtalk_instance_id（其次 21 位审批编号）落库：存在则更新，否则新建。
+    返回 ('created'|'updated'|'skipped', rec)。"""
     f = instance_to_fields(detail)
     # 摘要用业务内容(报销内容/事由等)，与查询列表「摘要」列一致；取不到再退回标题
     f['summary'] = build_summary(detail) or f['summary']
     iid = f['dingtalk_instance_id']
     rec = ApprovalRecord.objects.filter(dingtalk_instance_id=iid, deleted_at__isnull=True).first()
+    if rec is None and is_dingtalk_no(f.get('approval_number') or ''):
+        # 防重复建账：财务先 Excel 导入/手工建过同单号（instance_id 为空）时，
+        # 同步应挂到该记录而非再建一条（否则在途支出合计双计）
+        rec = (ApprovalRecord.objects
+               .filter(approval_number=f['approval_number'], deleted_at__isnull=True)
+               .order_by('id').first())
+        if rec is not None and not (rec.dingtalk_instance_id or '').strip():
+            rec.dingtalk_instance_id = iid
+            rec.save(update_fields=['dingtalk_instance_id', 'updated_at'])
     if rec:
-        rec.status = f['status']
-        rec.amount = f['amount']
+        # 已归档/已排款的记录金额与状态不可被钉钉覆盖：会绕过编辑保护直接制造
+        # 「已排款>申请金额」倒挂或状态降级。仅补摘要/原始数据等非标的字段。
+        locked = rec.archived or (rec.scheduled_amount or Decimal('0')) > 0
+        fields = ['summary', 'payee', 'ext_raw', 'updated_at']
         rec.summary = f['summary']
         rec.payee = f['payee']
         rec.ext_raw = f['ext_raw']
-        rec.save(update_fields=['status', 'amount', 'summary', 'payee', 'ext_raw', 'updated_at'])
-        return 'updated', rec
+        if not locked:
+            rec.status = f['status']
+            rec.amount = f['amount']
+            fields = ['status', 'amount'] + fields
+        rec.save(update_fields=fields)
+        return ('updated' if not locked else 'skipped'), rec
     rec = ApprovalRecord.objects.create(created_by=actor, **f)
     return 'created', rec
 
@@ -860,9 +888,21 @@ def dingtalk_refresh(request):
         rec = recs[iid]
         new_status = map_status(detail.get('status'), detail.get('result'))
         new_amount = extract_amount(detail)
+        # 已归档/已排款的记录不接受钉钉覆盖金额与状态(同 _upsert/status_sync 闸口):
+        # 覆盖会绕过编辑保护直接制造倒挂或状态降级
+        if rec.archived or (rec.scheduled_amount or Decimal('0')) > 0:
+            if rec.status != new_status or rec.amount != new_amount:
+                skipped.append({'id': iid,
+                                'reason': '本地已排款/已归档,金额与状态不自动改写;'
+                                          '如需变更请先退回排款批次后人工处理'})
+            continue
         if rec.status != new_status or rec.amount != new_amount:
             rec.status, rec.amount = new_status, new_amount
-            rec.save(update_fields=['status', 'amount', 'updated_at'])
+            fields = ['status', 'amount', 'updated_at']
+            if new_status in ('rejected', 'canceled') and not rec.archived:
+                rec.archived = True
+                fields.append('archived')
+            rec.save(update_fields=fields)
             updated += 1
     return ok({'updated': updated, 'skipped': skipped,
                'message': f'刷新更新 {updated} 条' + (f'、跳过 {len(skipped)} 条' if skipped else '')})

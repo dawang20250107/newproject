@@ -783,6 +783,24 @@ class PaymentChainIntegrityTests(TestCase):
             content_type='application/json', **self.auth())
         self.assertEqual(ok_resp.status_code, 200, ok_resp.content)
 
+    # ── 8b2. 审批真实单号防重 ───────────────────────────────────────────
+    def test_approval_create_duplicate_number_rejected(self):
+        """同一 21 位真实单号重复登记 → 409(在途支出双计+钉钉回写错配的源头)。"""
+        body = {'applicant': '张三', 'department': self.dept, 'summary': 'S',
+                'amount': '100', 'payee': 'P', 'approval_number': '9' * 21}
+        r1 = self.client.post('/api/pk/approvals', data=json.dumps(body),
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r1.status_code, 200, r1.content)
+        r2 = self.client.post('/api/pk/approvals', data=json.dumps(body),
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r2.status_code, 409, r2.content)
+        # 空单号(占位)不受此限:可多次登记
+        blank = {**body, 'approval_number': ''}
+        for _ in range(2):
+            self.assertEqual(self.client.post('/api/pk/approvals', data=json.dumps(blank),
+                                              content_type='application/json',
+                                              **self.auth()).status_code, 200)
+
     # ── 8c. 空/占位审批单号的补充查重 ───────────────────────────────────
     def test_empty_approval_number_supplementary_dedup(self):
         """空单号无法用单号维度查重；补充口径按 部门+收款方+计划日+金额 拦重复。"""
@@ -998,6 +1016,63 @@ class PartialScheduleTests(TestCase):
         return self.client.post(f'/api/pk/approvals/{self.rec.id}/schedule',
                                 data=json.dumps({'planned_date': day, 'total_amount': amount}),
                                 content_type='application/json', **self.auth())
+
+    def test_scheduled_approval_status_and_amount_locked_until_returned(self):
+        """已在册排款的审批:①不可离开 approved 态(退回待审批/拒绝/撤销均拦);
+        ②金额不可下调到低于在册已排款(倒挂)。须先退回排款批次。"""
+        self._sched('4000', '2026-07-01')   # 部分排款 4000/10000,archived=False
+        # 改回待审批 → 409(否则解锁金额编辑造成倒挂)
+        r1 = self.client.put(f'/api/pk/approvals/{self.rec.id}',
+                             data=json.dumps({'status': 'pending'}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r1.status_code, 409, r1.content)
+        # 改为已拒绝 → 409(被拒审批不能挂着可付款的排款)
+        r2 = self.client.put(f'/api/pk/approvals/{self.rec.id}',
+                             data=json.dumps({'status': 'rejected'}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r2.status_code, 409, r2.content)
+        self.rec.refresh_from_db()
+        self.assertEqual(self.rec.status, 'approved')
+        # 退回排款(强删在册排款)后,状态变更放行
+        pay = Payment.objects.get(approval=self.rec)
+        d = self.client.delete(f'/api/pk/payments/{pay.id}?force=1', **self.auth())
+        self.assertEqual(d.status_code, 200, d.content)
+        r3 = self.client.put(f'/api/pk/approvals/{self.rec.id}',
+                             data=json.dumps({'status': 'pending'}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r3.status_code, 200, r3.content)
+        # 现在是 pending 且无在册排款 → 金额可自由改
+        r4 = self.client.put(f'/api/pk/approvals/{self.rec.id}',
+                             data=json.dumps({'amount': '3000'}),
+                             content_type='application/json', **self.auth())
+        self.assertEqual(r4.status_code, 200, r4.content)
+
+    def test_approval_bulk_delete_paid_payment_super_admin_only(self):
+        """策略B补全:审批批量强删连带排款时,排款已有实付分期须仅超管可强删。"""
+        self._sched('4000', '2026-07-01')
+        pay = Payment.objects.get(approval=self.rec)
+        PaymentInstallment.objects.create(payment=pay, seq=1,
+                                          pay_date=date(2026, 7, 2), pay_amount=Decimal('4000'))
+        # 非超管(有删除权限的财务总监岗)强删 → 跳过
+        _invalidate_perm_cache()
+        op = PaikuanUser(phone='13900002099', name='SchedOp', role='operator',
+                         job_title='finance_director', departments=[self.dept],
+                         is_active=True, is_approved=True)
+        op.set_password('Test123456'); op.save()
+        op_auth = {'HTTP_AUTHORIZATION': f'Bearer {make_token(op)}'}
+        r = self.client.post('/api/pk/approvals/bulk-delete',
+                             data=json.dumps({'ids': [self.rec.id], 'force': True}),
+                             content_type='application/json', **op_auth)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['data']['deleted'], 0)
+        self.assertTrue(r.json()['data']['skipped'])
+        self.rec.refresh_from_db()
+        self.assertIsNone(self.rec.deleted_at)
+        # 超管强删 → 放行(软删可还原)
+        r2 = self.client.post('/api/pk/approvals/bulk-delete',
+                              data=json.dumps({'ids': [self.rec.id], 'force': True}),
+                              content_type='application/json', **self.auth())
+        self.assertEqual(r2.json()['data']['deleted'], 1, r2.content)
 
     def test_partial_schedules_until_archive(self):
         # 第一批 4000 → 留在审批管理

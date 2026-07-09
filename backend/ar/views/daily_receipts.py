@@ -202,6 +202,13 @@ def daily_receipts(request):
             return bad
         try:
             with transaction.atomic():
+                if advance is not None:
+                    # 锁预付行并在锁内复验上限：与并发核销/另一笔退款串行——
+                    # 无锁时两笔各自校验通过、合计超额，CheckConstraint 只查写入列值拦不住
+                    advance = AdvanceRecord.objects.select_for_update().get(pk=advance.pk)
+                    if fields['amount'] > (advance.balance_amount or Decimal('0')):
+                        return err(f'退款金额 {fields["amount"]} 超过该预付未核销余额 '
+                                   f'{advance.balance_amount}，请核对')
                 rec = DailyReceipt.objects.create(
                     project=project, advance_record=advance,
                     created_by=request.pk_user, **fields)
@@ -239,6 +246,16 @@ def daily_receipt_detail(request, pk):
         old_adv_id = rec.advance_record_id
         try:
             with transaction.atomic():
+                if advance is not None:
+                    # 锁预付行并复验上限（本笔原先对同一预付的占用加回后比较），
+                    # 与并发核销/退款串行，防合计超额
+                    advance = AdvanceRecord.objects.select_for_update().get(pk=advance.pk)
+                    available = advance.balance_amount or Decimal('0')
+                    if old_adv_id == advance.id:
+                        available += (rec.amount or Decimal('0'))
+                    if fields['amount'] > available:
+                        return err(f'退款金额 {fields["amount"]} 超过该预付未核销余额 '
+                                   f'{available}，请核对')
                 for k, v in fields.items():
                     setattr(rec, k, v)
                 rec.project = project
@@ -258,8 +275,9 @@ def daily_receipt_detail(request, pk):
         if denied:
             return denied
         adv_id = rec.advance_record_id
-        rec.delete()
-        _recompute_advances([adv_id])   # 删退款 → 预付余额回升
+        with transaction.atomic():
+            rec.delete()
+            _recompute_advances([adv_id])   # 删退款 → 预付余额回升（同事务防 stale）
         return ok({'deleted': pk})
 
     return err('Method not allowed', 405)
@@ -283,9 +301,10 @@ def daily_receipts_bulk_delete(request):
         qs = qs.filter(delivery_dept__in=(request.pk_depts or []))
     adv_ids = list(qs.exclude(advance_record__isnull=True)
                    .values_list('advance_record_id', flat=True))
-    n = qs.count()
-    qs.delete()
-    _recompute_advances(adv_ids)        # 删退款 → 相关预付余额回升
+    with transaction.atomic():
+        n = qs.count()
+        qs.delete()
+        _recompute_advances(adv_ids)    # 删退款 → 相关预付余额回升（同事务防 stale）
     return ok({'deleted': n})
 
 

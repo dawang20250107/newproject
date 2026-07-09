@@ -36,14 +36,25 @@ def _activity_to_log_dict(a):
     }
 
 
+def _record_dept_denied(request, pk):
+    """404/部门作用域校验(与 activity._get_record_or_403 同口径):
+    旧兼容垫片曾漏掉这道闸,导致跨部门可读写他部门催收日志。"""
+    try:
+        rec = ARRecord.objects.only('id', 'delivery_dept').get(pk=pk)
+    except ARRecord.DoesNotExist:
+        return err('记录不存在', 404)
+    if request.pk_role != 'super_admin' and rec.delivery_dept not in (request.pk_depts or []):
+        return err('无权访问', 403, 403)
+    return None
+
+
 @csrf_exempt
 @pk_required()
 def ar_collection_logs(request, pk):
     """GET: list dunning activities for an AR record; POST: add one."""
-    try:
-        ARRecord.objects.only('id').get(pk=pk)
-    except ARRecord.DoesNotExist:
-        return err('记录不存在', 404)
+    denied = _record_dept_denied(request, pk)
+    if denied:
+        return denied
     denied = _page_denied(request, 'ar_records')
     if denied:
         return denied
@@ -56,6 +67,9 @@ def ar_collection_logs(request, pk):
         return ok({'items': [_activity_to_log_dict(a) for a in acts]})
 
     if request.method == 'POST':
+        denied = _write_denied(request)
+        if denied:
+            return denied
         data = _parse_body(request)
         log_type = (data.get('log_type') or 'call').strip()
         if log_type not in _LEGACY_LOG_TYPES:
@@ -87,6 +101,9 @@ def ar_collection_logs(request, pk):
 @pk_required()
 def ar_collection_log_detail(request, pk, lid):
     """PUT: edit; DELETE: remove a dunning activity (legacy log shape)."""
+    denied = _record_dept_denied(request, pk)
+    if denied:
+        return denied
     try:
         obj = (ARActivity.objects
                .select_related('created_by')

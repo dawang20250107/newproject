@@ -536,13 +536,14 @@ def _xlsx_report(data):
     r = section(ws, r, '四、现金流情况')
     r = hdr(ws, r, ['项目', '本期金额', '本年累计'])
     cp = data['cash']['period']
-    r = row(ws, r, ['一、经营活动现金流入', cp['inflow'], Y], bold=True)
-    r = row(ws, r, ['　现金回款', cp['collected'], Y])
-    r = row(ws, r, ['　预收款', cp['advance_received'], Y])
-    r = row(ws, r, ['二、经营活动现金流出', cp['outflow'], Y], bold=True)
-    r = row(ws, r, ['　实付款项（扣预付冲抵）', cp['paid'], Y])
-    r = row(ws, r, ['　预付款', cp['advance_paid'], Y])
-    r = row(ws, r, ['三、经营活动净现金流', cp['net'], Y], bold=True)
+    cy = data['cash']['ytd']
+    r = row(ws, r, ['一、经营活动现金流入', cp['inflow'], cy['inflow']], bold=True)
+    r = row(ws, r, ['　现金回款', cp['collected'], cy['collected']])
+    r = row(ws, r, ['　预收款', cp['advance_received'], cy['advance_received']])
+    r = row(ws, r, ['二、经营活动现金流出', cp['outflow'], cy['outflow']], bold=True)
+    r = row(ws, r, ['　实付款项', cp['paid'], cy['paid']])
+    r = row(ws, r, ['　预付款', cp['advance_paid'], cy['advance_paid']])
+    r = row(ws, r, ['三、经营活动净现金流', cp['net'], cy['net']], bold=True)
 
     # 六、汇报说明（手工填写，随导出带出）
     nv = data.get('narrative') or {}
