@@ -993,6 +993,9 @@ watch(() => filters.q, () => {
 })
 
 function search() { filters.page = 1; clearSelection(); load() }
+// 输入即防抖搜索(350ms),与 AR 系列一致;Enter 仍立即触发
+let _searchTimer = null
+watch(() => filters.q, () => { clearTimeout(_searchTimer); _searchTimer = setTimeout(search, 350) })
 function resetFilters() {
   Object.assign(filters, { q: '', pay_date_start: '', pay_date_end: '', page: 1 })
   Object.keys(colFilters).forEach(k => delete colFilters[k])

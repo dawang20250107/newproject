@@ -15,6 +15,7 @@ import SchemePicker from '../../components/SchemePicker.vue'
 import { useTableSchemes } from '../../composables/useTableSchemes.js'
 import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
+import Amt from '../../components/Amt.vue'
 import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
@@ -821,11 +822,11 @@ onMounted(async () => {
     <!-- KPI (advances only)：随时间区间/筛选联动的「筛选汇总」 -->
     <div v-if="isAdvanceMode && kpi" class="kpi-row">
       <div class="kpi"><div class="kpi-k">{{ dirLabel }}笔数<span class="kpi-range">{{ rangeLabel }}</span></div><div class="kpi-v">{{ kpi.count }} 笔</div></div>
-      <div v-if="show('adv_amount')" class="kpi"><div class="kpi-k">{{ dirLabel }}金额</div><div class="kpi-v">{{ fmtAmt(kpi.advance_amount) }}</div></div>
-      <div v-if="show('adv_writeoff')" class="kpi"><div class="kpi-k">已核销</div><div class="kpi-v">{{ fmtAmt(kpi.written_off) }}<span class="kpi-sub">{{ kpi.writeoff_rate }}%</span></div></div>
-      <div v-if="show('adv_writeoff') && !isReceive && Number(kpi.refunded) > 0" class="kpi"><div class="kpi-k">已退款</div><div class="kpi-v">{{ fmtAmt(kpi.refunded) }}</div></div>
-      <div v-if="show('adv_writeoff')" class="kpi accent"><div class="kpi-k">未核销余额</div><div class="kpi-v">{{ fmtAmt(kpi.balance) }}</div></div>
-      <div v-if="show('adv_writeoff')" class="kpi warn"><div class="kpi-k">逾期挂账</div><div class="kpi-v">{{ fmtAmt(kpi.overdue_balance) }}<span class="kpi-sub">{{ kpi.overdue_count }} 笔</span></div></div>
+      <div v-if="show('adv_amount')" class="kpi"><div class="kpi-k">{{ dirLabel }}金额</div><div class="kpi-v"><Amt :v="kpi.advance_amount" :fmt="fmtAmt" /></div></div>
+      <div v-if="show('adv_writeoff')" class="kpi"><div class="kpi-k">已核销</div><div class="kpi-v"><Amt :v="kpi.written_off" :fmt="fmtAmt" /><span class="kpi-sub">{{ kpi.writeoff_rate }}%</span></div></div>
+      <div v-if="show('adv_writeoff') && !isReceive && Number(kpi.refunded) > 0" class="kpi"><div class="kpi-k">已退款</div><div class="kpi-v"><Amt :v="kpi.refunded" :fmt="fmtAmt" /></div></div>
+      <div v-if="show('adv_writeoff')" class="kpi accent"><div class="kpi-k">未核销余额</div><div class="kpi-v"><Amt :v="kpi.balance" :fmt="fmtAmt" /></div></div>
+      <div v-if="show('adv_writeoff')" class="kpi warn"><div class="kpi-k">逾期挂账</div><div class="kpi-v"><Amt :v="kpi.overdue_balance" :fmt="fmtAmt" /><span class="kpi-sub">{{ kpi.overdue_count }} 笔</span></div></div>
     </div>
 
     <!-- ── Advance list (预收/预付) ── -->
@@ -930,7 +931,7 @@ onMounted(async () => {
         <!-- 选中态操作条：有选中时替换筛选合计栏 -->
         <div v-if="hasSel" class="adv-sumbar sumbar-sel">
           <span class="sb-k">已选 {{ selCount }} 笔</span>
-          <span class="sb-i">金额合计 <b>{{ fmtAmt(selSum) }}</b></span>
+          <span class="sb-i">金额合计 <b><Amt :v="selSum" :fmt="fmtAmt" /></b></span>
           <button class="btn btn-danger btn-sm" @click="bulkDelete">批量删除</button>
           <button class="btn btn-ghost btn-sm" @click="clearSel">取消选择</button>
           <span class="sb-range">Shift 可区间选 · Esc 取消</span>
@@ -939,11 +940,11 @@ onMounted(async () => {
         <div v-else-if="listSummary" class="adv-sumbar">
           <span class="sb-k">筛选合计</span>
           <span class="sb-i">{{ listSummary.count }} 笔</span>
-          <span v-if="show('adv_amount')" class="sb-i">{{ dirLabel }}金额 <b>{{ fmtAmt(listSummary.advance_amount) }}</b></span>
-          <span v-if="show('adv_writeoff')" class="sb-i">已核销 <b>{{ fmtAmt(listSummary.written_off) }}</b></span>
-          <span v-if="show('adv_writeoff') && !isReceive && Number(listSummary.refunded) > 0" class="sb-i">已退款 <b>{{ fmtAmt(listSummary.refunded) }}</b></span>
-          <span v-if="show('adv_writeoff')" class="sb-i">未核销余额 <b class="sb-accent">{{ fmtAmt(listSummary.balance) }}</b></span>
-          <span v-if="show('adv_writeoff') && Number(listSummary.overdue_balance) > 0" class="sb-i">逾期挂账 <b class="sb-warn">{{ fmtAmt(listSummary.overdue_balance) }}</b></span>
+          <span v-if="show('adv_amount')" class="sb-i">{{ dirLabel }}金额 <b><Amt :v="listSummary.advance_amount" :fmt="fmtAmt" /></b></span>
+          <span v-if="show('adv_writeoff')" class="sb-i">已核销 <b><Amt :v="listSummary.written_off" :fmt="fmtAmt" /></b></span>
+          <span v-if="show('adv_writeoff') && !isReceive && Number(listSummary.refunded) > 0" class="sb-i">已退款 <b><Amt :v="listSummary.refunded" :fmt="fmtAmt" /></b></span>
+          <span v-if="show('adv_writeoff')" class="sb-i">未核销余额 <b class="sb-accent"><Amt :v="listSummary.balance" :fmt="fmtAmt" /></b></span>
+          <span v-if="show('adv_writeoff') && Number(listSummary.overdue_balance) > 0" class="sb-i">逾期挂账 <b class="sb-warn"><Amt :v="listSummary.overdue_balance" :fmt="fmtAmt" /></b></span>
           <span class="sb-range">{{ rangeLabel }}</span>
         </div>
 

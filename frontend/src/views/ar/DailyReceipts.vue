@@ -14,6 +14,7 @@ import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import PillPicker from '../../components/PillPicker.vue'
 import ProjectShortNamePicker from '../../components/ProjectShortNamePicker.vue'
 import { downloadBlob } from '../../utils/download.js'
+import Amt from '../../components/Amt.vue'
 import { useModalEsc } from '../../composables/useModalEsc.js'
 
 const toast = useToast()
@@ -277,7 +278,7 @@ async function exportXlsx(selectedOnly = false) {
             <td><span v-if="r.method" class="mtd">{{ r.method }}</span><span v-else class="dim">—</span></td>
             <td class="dim">{{ r.account || '—' }}</td>
             <td>{{ r.payer || '—' }}</td>
-            <td class="r amt">{{ money(r.amount) }}</td>
+            <td class="r amt"><Amt :v="r.amount" :fmt="money" /></td>
             <td class="sumcell" :title="r.notes">{{ r.notes || '—' }}</td>
           </tr>
         </tbody>
@@ -287,7 +288,7 @@ async function exportXlsx(selectedOnly = false) {
     <!-- 底部汇总栏 -->
     <div class="dr-footer">
       <template v-if="hasSel">
-        <span class="f-sel">已选 <b>{{ selCount }}</b> 笔 · 合计 <b class="hl">{{ money(selSum) }}</b></span>
+        <span class="f-sel">已选 <b>{{ selCount }}</b> 笔 · 合计 <b class="hl"><Amt :v="selSum" :fmt="money" /></b></span>
         <button class="f-btn" :disabled="exporting" @click="exportXlsx(true)">导出选中</button>
         <button v-if="canWrite" class="f-btn del" @click="bulkDelete">批量删除</button>
         <button class="f-btn" @click="clearSel">取消选择</button>
@@ -296,7 +297,7 @@ async function exportXlsx(selectedOnly = false) {
       <template v-else>
         <span class="f-total">
           <span class="ft-lbl">区间合计</span>
-          <b class="ft-val">{{ money(total) }}</b>
+          <b class="ft-val"><Amt :v="total" :fmt="money" /></b>
           <span class="ft-cnt">{{ count }} 笔</span>
         </span>
         <!-- 收款方式分类汇总：占比条 + 图例 -->
@@ -337,7 +338,7 @@ async function exportXlsx(selectedOnly = false) {
               <select v-model="form.advance_id" class="inp">
                 <option value="">不关联（仅记为现金流入，不回冲预付）</option>
                 <option v-for="a in refundAdvances" :key="a.id" :value="a.id">
-                  {{ a.counterparty || '预付' }}<span v-if="a.occur_date"> · {{ a.occur_date }}</span> · 余额 {{ money(a.balance) }}{{ a.project_short_name ? ' · ' + a.project_short_name : '' }}
+                  {{ a.counterparty || '预付' }}<span v-if="a.occur_date"> · {{ a.occur_date }}</span> · 余额 <Amt :v="a.balance" :fmt="money" />{{ a.project_short_name ? ' · ' + a.project_short_name : '' }}
                 </option>
               </select>
             </div>

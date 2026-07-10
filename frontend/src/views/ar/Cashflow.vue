@@ -13,6 +13,7 @@ import { downloadBlob } from '../../utils/download.js'
 import { fmtCompact } from '../../utils/format.js'
 import { HIDE_OVERLAP } from '../../utils/chartTheme.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
+import Amt from '../../components/Amt.vue'
 
 defineProps({ embedded: { type: Boolean, default: false } })
 
@@ -414,22 +415,22 @@ const deptBalanceOption = computed(() => {
         <div class="kpi-group-cards">
           <div class="ck-card ck-coll-soft">
             <div class="ck-label">收款预算</div>
-            <div class="ck-value">{{ fmtWan(sumBudgetColl) }}</div>
+            <div class="ck-value"><Amt :v="sumBudgetColl" :fmt="fmtWan" /></div>
             <div class="ck-sub">收款目标</div>
           </div>
           <div class="ck-card ck-coll-soft">
             <div class="ck-label">预收</div>
-            <div class="ck-value">{{ fmtWan(sumAdvRecv) }}</div>
+            <div class="ck-value"><Amt :v="sumAdvRecv" :fmt="fmtWan" /></div>
             <div class="ck-sub">客户预付款</div>
           </div>
           <div v-if="sumDaily" class="ck-card ck-coll-soft">
             <div class="ck-label">日常收款</div>
-            <div class="ck-value">{{ fmtWan(sumDaily) }}</div>
+            <div class="ck-value"><Amt :v="sumDaily" :fmt="fmtWan" /></div>
             <div class="ck-sub">项目收款/退款等</div>
           </div>
           <div class="ck-card ck-coll">
             <div class="ck-label">实收</div>
-            <div class="ck-value">{{ fmtWan(sumColl) }}</div>
+            <div class="ck-value"><Amt :v="sumColl" :fmt="fmtWan" /></div>
             <div class="ck-sub" v-if="collAchieve !== null">
               <span :class="collAchieve >= 100 ? 'ach-ok' : 'ach-off'">达成 {{ collAchieve.toFixed(1) }}%</span>
             </div>
@@ -443,17 +444,17 @@ const deptBalanceOption = computed(() => {
         <div class="kpi-group-cards">
           <div class="ck-card ck-pay-soft">
             <div class="ck-label">付款预算</div>
-            <div class="ck-value">{{ fmtWan(sumBudgetPaid) }}</div>
+            <div class="ck-value"><Amt :v="sumBudgetPaid" :fmt="fmtWan" /></div>
             <div class="ck-sub">付款目标</div>
           </div>
           <div class="ck-card ck-pay-soft">
             <div class="ck-label">预付</div>
-            <div class="ck-value">{{ fmtWan(sumAdvPaid) }}</div>
+            <div class="ck-value"><Amt :v="sumAdvPaid" :fmt="fmtWan" /></div>
             <div class="ck-sub">付供应商</div>
           </div>
           <div class="ck-card ck-pay">
             <div class="ck-label">实付</div>
-            <div class="ck-value">{{ fmtWan(sumPaid) }}</div>
+            <div class="ck-value"><Amt :v="sumPaid" :fmt="fmtWan" /></div>
             <div class="ck-sub" v-if="payAchieve !== null">
               <span :class="payAchieve >= 100 ? 'ach-ok' : 'ach-off'">达成 {{ payAchieve.toFixed(1) }}%</span>
             </div>
@@ -468,14 +469,14 @@ const deptBalanceOption = computed(() => {
           <div class="ck-card" :class="netTotal >= 0 ? 'ck-net-pos' : 'ck-net-neg'">
             <div class="ck-label">净现金流</div>
             <div class="ck-value" :class="netTotal >= 0 ? 'v-pos' : 'v-neg'">
-              {{ netTotal >= 0 ? '+' : '' }}{{ fmtWan(netTotal) }}
+              {{ netTotal >= 0 ? '+' : '' }}<Amt :v="netTotal" :fmt="fmtWan" />
             </div>
             <div class="ck-sub">流入 − 流出</div>
           </div>
           <div class="ck-card" :class="endCumulative >= 0 ? 'ck-net-pos' : 'ck-net-neg'">
             <div class="ck-label">期末累计</div>
             <div class="ck-value" :class="endCumulative >= 0 ? 'v-pos' : 'v-neg'">
-              {{ endCumulative >= 0 ? '+' : '' }}{{ fmtWan(endCumulative) }}
+              {{ endCumulative >= 0 ? '+' : '' }}<Amt :v="endCumulative" :fmt="fmtWan" />
             </div>
             <div class="ck-sub">资金池终值</div>
           </div>
