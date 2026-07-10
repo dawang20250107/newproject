@@ -229,7 +229,8 @@ async function submitPayment() {
     await refreshRecordAndPayments()
     payForm.amount = ''; payForm.notes = ''; payForm.counterparty_dept = ''; payForm.account = ''
     payForm.draft_status = DEFAULT_DRAFT_STATUS
-    toast.success(payForm.source === '内部往来' ? '已登记内部往来核销' : '已登记回款')
+    if (outstanding.value <= 0) toast.success('🎉 本笔应收已全部收齐！')
+    else toast.success(payForm.source === '内部往来' ? '已登记内部往来核销' : '已登记回款')
   } catch (e) { toast.error(errMsg(e)) }
   finally { addingPay.value = false }
 }
@@ -249,7 +250,7 @@ async function settleRemaining() {
   try {
     await ar.addPayment(props.rec.id, { amount: outstanding.value, payment_date: todayCST(), source: '回款', method: payForm.method, account: payForm.account, draft_status: payForm.method === DRAFT_METHOD ? payForm.draft_status : '', notes: '结清余款' })
     await refreshRecordAndPayments()
-    toast.success('已结清余款')
+    toast.success('🎉 已结清余款，本笔应收全部收齐！')
   } catch (e) { toast.error(errMsg(e)) }
   finally { addingPay.value = false }
 }
@@ -343,6 +344,7 @@ async function submitCompose() {
     emit('field-saved', { id: props.rec.id, activity_count: (props.rec.activity_count || 0) + 1 })
     compose.note = ''; compose.follow_up_date = ''
     toast.success(`已记录到「${STAGE_LABEL[composeStage.value]}」`)
+    nextTick(() => composeTa.value?.focus())   // 焦点留在输入框，连续录入不用回鼠标
   } catch (e) { toast.error(errMsg(e)) }
   finally { adding.value = false }
 }
@@ -713,8 +715,9 @@ function onKey(e) {
                     <button class="pay-src-tab" :class="{ on: payForm.source === '内部往来' }" @click="payForm.source = '内部往来'">↔ 内部往来</button>
                   </div>
                   <div class="pay-add">
-                    <input v-model="payForm.amount" type="number" step="0.01" class="pay-inp pay-inp-amt" :placeholder="payForm.source === '内部往来' ? '核销金额' : '回款金额'" />
-                    <input v-model="payForm.payment_date" type="date" class="pay-inp" />
+                    <input v-model="payForm.amount" type="number" step="0.01" class="pay-inp pay-inp-amt"
+                      :placeholder="payForm.source === '内部往来' ? '核销金额' : '回款金额'" @keyup.enter="submitPayment" />
+                    <input v-model="payForm.payment_date" type="date" class="pay-inp" @keyup.enter="submitPayment" />
                     <select v-if="payForm.source === '内部往来'" v-model="payForm.counterparty_dept" class="pay-inp pay-inp-dept">
                       <option value="" disabled>往来事业部</option>
                       <option v-for="d in DEPT_OPTS" :key="d" :value="d">{{ d }}</option>

@@ -14,7 +14,8 @@ export function useEscClearSelection(hasSelection, clear) {
     // 豁免清单须覆盖全站所有弹层类名：漏一个,该弹窗开着时按 Esc 就会误清底下表格的勾选
     if (document.querySelector(
       '.modal-overlay, .overlay, .modal-mask, .edit-mask, .drawer-mask, .scrim, '
-      + '.cfm-overlay, .colf-pop, .ctxm, .drop-overlay, .logs-overlay')) return
+      + '.cfm-overlay, .colf-pop, .ctxm, .drop-overlay, .logs-overlay, '
+      + '.ap-backdrop, .lt-overlay')) return
     if (document.querySelector('.cell-range-sel')) return
     if (!hasSelection()) return
     clear()

@@ -116,6 +116,9 @@ function toggleSelectPage() {
 }
 function clearSelection() { selectedIds.value = new Set(); selectAllMatching.value = false }
 useEscClearSelection(() => hasSelection.value, clearSelection)   // ESC 退出勾选
+// 作战台的勾选同样 Esc 一键退出（弹窗/输入态由组合式内部让路）
+useEscClearSelection(() => activeTab.value === 'dunning' && dunSelected.value.size > 0,
+  () => { dunSelected.value = new Set() })
 function bulkDelete() {
   const n = selectedCount.value
   if (!n) return
@@ -695,6 +698,9 @@ function onRowDblClick(rec, e) {
 }
 
 function onPanelFieldSaved(data) {
+  // 从作战台打开的工作台里发生了保存（回款/字段/跟进）→ 关闭时静默刷新看板，
+  // 使未收金额/最近回款/分桶汇总与刚才的操作保持一致。
+  if (activeTab.value === 'dunning') dunPanelDirty = true
   const idx = items.value.findIndex(r => r.id === data.id)
   if (idx === -1) return
   const row = items.value[idx]
@@ -704,6 +710,12 @@ function onPanelFieldSaved(data) {
     if (k === 'id') continue
     row[k] = data[k]
   }
+}
+let dunPanelDirty = false
+function onPanelClose() {
+  panelRec.value = null
+  if (dunPanelDirty && activeTab.value === 'dunning') loadDunning()
+  dunPanelDirty = false
 }
 
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
@@ -873,6 +885,18 @@ function onDunSearch() {
   clearTimeout(dunQTimer)
   dunQTimer = setTimeout(() => loadDunning(true), 300)
 }
+// 搜索框内按 Esc 直接清空并复位（输入态的 Esc 归输入框，不冒泡到面板/清选）
+function clearDunSearch() {
+  if (!dunFilters.q) return
+  dunFilters.q = ''
+  loadDunning(true)
+}
+// 一键撤掉光谱段/责任人筛选，回到全量视角
+function clearDunFacets() {
+  dunFilters.bucket = ''
+  dunFilters.contact = ''
+  loadDunning(true)
+}
 // 翻页/改每页条数即清空勾选：勾选与「全选本页」一致按页计，避免跨页带入旧选导致「已选 N」与所见不符
 function onDunPager() {
   dunSelected.value = new Set()
@@ -950,18 +974,44 @@ async function copyDunText(r) {
   if (await copyText(text)) toast.success('催款话术已复制，可直接粘贴发送')
   else toast.error('复制失败，请手动复制')
 }
-// 单条建任务：与批量走同一端点（ids 单元素），点⚡即建，✓已建即时回显
+// 单条建任务：与批量走同一端点（ids 单元素），点⚡即建，✓已建即时回显。
+// 成功后就地更新该行（不整表重载），避免表格闪动和滚动位置跳失。
 const dunTaskingId = ref(0)
 async function createOneDunTask(r) {
   if (r.open_action_id || dunTaskingId.value) return
   dunTaskingId.value = r.id
   try {
     const res = await ar.createDunning({ ids: [r.id] })
-    if (res.data.created) toast.success(`已生成催款任务，负责人 ${r.sales_contact || '未指定'}（驾驶舱·决策行动）`)
-    else toast.error('该记录已有未关闭的催款任务')
-    await loadDunning()
+    if (res.data.created) {
+      r.open_action_id = true
+      const s = new Set(dunSelected.value); s.delete(r.id); dunSelected.value = s
+      toast.success(`已生成催款任务，负责人 ${r.sales_contact || '未指定'}（驾驶舱·决策行动）`)
+    } else {
+      r.open_action_id = true   // 后端判定已有未关闭任务 → 同步回显 ✓已建
+      toast.error('该记录已有未关闭的催款任务')
+    }
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { dunTaskingId.value = 0 }
+}
+// 双击作战台行 → 直接打开该应收的催款工作台（先取全量记录再开，字段完整）。
+// 与主表同一套防误触：点在勾选框/按钮/链接上不触发。
+const dunOpeningId = ref(0)
+async function openDunPanel(r, e) {
+  if (e.target.closest('input, button, select, textarea, a')) return
+  if (dunOpeningId.value) return
+  window.getSelection?.()?.removeAllRanges?.()
+  dunOpeningId.value = r.id
+  try {
+    const res = await ar.getRecord(r.id)
+    panelRec.value = res.data
+  } catch (err) { toast.error(err?.msg || err?.error || '打开失败') }
+  finally { dunOpeningId.value = 0 }
+}
+// 责任人 chips 单行横向滚动：把纵向滚轮转成横向位移，不用按住 Shift
+function onContactsWheel(e) {
+  if (!e.deltaY) return
+  e.preventDefault()
+  e.currentTarget.scrollLeft += e.deltaY
 }
 // 记跟进：轻弹窗直写催收跟进日志（统一入 ARActivity dunning 时间线）
 const DUN_LOG_TYPES = [
@@ -972,12 +1022,14 @@ const DUN_LOG_TYPES = [
   { v: 'other', label: '📝 其他' },
 ]
 const dunFollow = reactive({ open: false, rec: null, log_type: 'call', note: '', follow_up_date: '', saving: false })
+const dunFuTa = ref(null)
 function openDunFollow(r) {
   dunFollow.rec = r
   dunFollow.log_type = 'call'
   dunFollow.note = ''
   dunFollow.follow_up_date = ''
   dunFollow.open = true
+  nextTick(() => dunFuTa.value?.focus())
 }
 async function saveDunFollow() {
   if (!dunFollow.note.trim()) { toast.error('请填写跟进内容'); return }
@@ -2532,7 +2584,10 @@ function clearFilters() {
               <option value="">全部事业部</option>
               <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
             </select>
-            <input v-model="dunFilters.q" placeholder="搜项目 / 客户 / 对接人" class="search-input" @input="onDunSearch" />
+            <input v-model="dunFilters.q" placeholder="搜项目 / 客户 / 对接人" class="search-input"
+                   @input="onDunSearch" @keydown.esc.stop="clearDunSearch" />
+            <button v-if="dunFilters.bucket || dunFilters.contact" class="dun-clear"
+                    title="撤掉账龄段/责任人筛选" @click="clearDunFacets">✕ 清除筛选</button>
             <button v-if="auth.isSuperAdmin" class="aging-cfg-btn" title="配置账龄分桶边界" @click="openAgingCfg">⚙ 账龄分桶</button>
             <span v-if="dunSummary" class="text-sm-muted" style="margin-left:auto;white-space:nowrap">
               当前范围逾期 <strong>{{ dunSummary.count }}</strong> 笔 / <strong style="color:var(--c-danger)">{{ fmtAmt(dunSummary.amount) }}</strong>
@@ -2552,7 +2607,7 @@ function clearFilters() {
           </div>
 
           <!-- 责任人聚合 chips（单行横向滚动，点击筛选） -->
-          <div v-if="dunContacts.length" class="dun-contacts">
+          <div v-if="dunContacts.length" class="dun-contacts" @wheel="onContactsWheel">
             <span class="dc-label">按销售对接人：</span>
             <button v-for="c in dunContacts" :key="c.sales_contact"
               class="dc-chip" :class="{ on: dunFilters.contact === c.sales_contact }"
@@ -2591,7 +2646,8 @@ function clearFilters() {
             <tbody>
               <tr v-if="dunLoading && !dunItems.length"><td :colspan="auth.canArWrite ? 8 : 7" class="empty-cell">⏳ 加载中…</td></tr>
               <tr v-else-if="!dunItems.length"><td :colspan="auth.canArWrite ? 8 : 7" class="empty-cell">🎉 当前范围内没有逾期应收</td></tr>
-              <tr v-for="r in dunItems" :key="r.id" class="data-row dun-row" :class="'dun-sev' + dunSev(r.overdue_days)">
+              <tr v-for="r in dunItems" :key="r.id" class="data-row dun-row" :class="'dun-sev' + dunSev(r.overdue_days)"
+                  title="双击打开催款工作台" @dblclick="openDunPanel(r, $event)">
                 <td v-if="auth.canArWrite" class="sel-col">
                   <input type="checkbox" :disabled="!!r.open_action_id"
                          :checked="dunSelected.has(r.id)" @change="toggleDunRow(r.id)" />
@@ -3153,7 +3209,7 @@ function clearFilters() {
 
       <!-- 催款工作台面板 -->
       <ActivityPanel v-if="panelRec" :key="panelRec.id" :rec="panelRec" :can-write="auth.canArWrite" :can-collect="auth.canAction('ar_collect')"
-        @close="panelRec = null" @field-saved="onPanelFieldSaved" />
+        @close="onPanelClose" @field-saved="onPanelFieldSaved" />
 
       <!-- Payment Modal — 录入态：点遮罩不关闭，仅按钮可退出 -->
       <div v-if="showPayModal" class="modal-overlay">
@@ -3400,8 +3456,9 @@ function clearFilters() {
               <button v-for="t in DUN_LOG_TYPES" :key="t.v" class="fu-type"
                       :class="{ on: dunFollow.log_type === t.v }" @click="dunFollow.log_type = t.v">{{ t.label }}</button>
             </div>
-            <textarea v-model="dunFollow.note" rows="4" class="fu-note"
-                      placeholder="跟进内容（必填）：与谁沟通、对方口径/承诺、下一步动作…"></textarea>
+            <textarea ref="dunFuTa" v-model="dunFollow.note" rows="4" class="fu-note"
+                      placeholder="跟进内容（必填）：与谁沟通、对方口径/承诺、下一步动作…（Ctrl+Enter 保存）"
+                      @keydown.ctrl.enter.prevent="saveDunFollow"></textarea>
             <label class="fu-next">
               下次跟进日期（选填）
               <input v-model="dunFollow.follow_up_date" type="date" />
@@ -4003,7 +4060,11 @@ function clearFilters() {
 .dc-chip { flex-shrink: 0; padding: 4px 10px; border: 1px solid var(--border); border-radius: 14px; background: var(--row-bg); font-size: 12px; color: var(--text); cursor: pointer; transition: all .15s; }
 .dc-chip:hover { border-color: var(--c-warn); }
 .dc-chip.on { border-color: var(--c-warn); background: rgba(230,81,0,0.08); color: var(--c-warn); font-weight: 600; }
-/* 表格：行首严重度色边（四级），紧凑行高 */
+.dun-clear { border: 1px solid rgba(198,40,40,.3); background: rgba(198,40,40,.05); color: var(--c-danger);
+  font-size: 12px; padding: 4px 10px; border-radius: 7px; cursor: pointer; transition: all .12s; white-space: nowrap; }
+.dun-clear:hover { background: rgba(198,40,40,.1); }
+/* 表格：行首严重度色边（四级），紧凑行高；整行可双击直达催款工作台 */
+.dun-table tbody tr.dun-row { cursor: pointer; }
 .dun-table tbody td { padding-top: 7px; padding-bottom: 7px; }
 .dun-row.dun-sev0 > td:first-child { box-shadow: inset 3px 0 0 #d9930d; }
 .dun-row.dun-sev1 > td:first-child { box-shadow: inset 3px 0 0 #e6742e; }
