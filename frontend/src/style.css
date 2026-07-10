@@ -93,6 +93,23 @@
 /* 勾选列整格热区（useInteractionFeel 全局代理点击）：手型提示整格可点 */
 td.sel-col, th.sel-col { cursor: pointer; }
 
+/* Excel 式区域选择高亮（useRangeSelection 全站共用；原散在各页 scoped，收归全局） */
+td.cell-range-sel { background: rgba(21,101,192,0.14) !important; box-shadow: inset 0 0 0 1px rgba(21,101,192,0.28); }
+
+/* 宽表横向可滚提示：两侧边缘阴影，滚到尽头随遮罩自动隐去（纯 CSS，
+   background-attachment 技巧：遮罩随内容滚动(local)、阴影钉在容器(scroll)） */
+.table-wrap, .table-scroll {
+  background:
+    linear-gradient(90deg, var(--card, #fff) 35%, rgba(255,255,255,0)) left center / 26px 100% no-repeat,
+    linear-gradient(270deg, var(--card, #fff) 35%, rgba(255,255,255,0)) right center / 26px 100% no-repeat,
+    radial-gradient(farthest-side at 0 50%, rgba(40,20,8,.15), transparent) left center / 12px 100% no-repeat,
+    radial-gradient(farthest-side at 100% 50%, rgba(40,20,8,.15), transparent) right center / 12px 100% no-repeat;
+  background-attachment: local, local, scroll, scroll;
+}
+
+/* 区域选择挂载容器：拖选期间禁用原生文本选择（电子表格式交互） */
+.range-root tbody { user-select: none; }
+
 html.density-compact {
   --td-h:   28px;
   --td-py:  3px;

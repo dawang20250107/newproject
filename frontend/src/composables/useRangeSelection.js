@@ -126,18 +126,55 @@ export function useRangeSelection(opts = {}) {
     return ok
   }
 
+  // ── 键盘（Excel 式）：方向键移动焦点格，Shift+方向扩展选区 ────────────────
+  const ARROWS = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }
+
+  function stepCell(from, dr, dc) {
+    const rows = Array.from(from.tbody.rows)
+    let { r, c } = from
+    if (dr) {
+      // 纵向：跳过详情展开等标记行，越界则停在原地
+      let nr = r + dr
+      while (rows[nr]?.hasAttribute('data-skiprange')) nr += dr
+      if (nr < 0 || nr >= rows.length) return null
+      r = nr
+    }
+    if (dc) {
+      // 横向：跳过忽略列（勾选/操作列），并保证目标行确实有这个格
+      let nc = c + dc
+      while (ignoreCols.has(nc)) nc += dc
+      const row = rows[r]
+      if (nc < 0 || !row || nc >= row.cells.length) return null
+      c = nc
+    }
+    return { r, c, tbody: from.tbody }
+  }
+
   function onKeyDown(e) {
+    // 焦点在输入控件里时绝不接管：Chromium 下 input/textarea 内部选区
+    // 不体现在 window.getSelection()，否则残留的单元格选区会劫持用户
+    // 在筛选框里的 Ctrl+C，把剪贴板覆盖成表格数据
+    const ae = document.activeElement
+    const typing = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)
+
     if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
-      // 焦点在输入控件里时绝不接管：Chromium 下 input/textarea 内部选区
-      // 不体现在 window.getSelection()，否则残留的单元格选区会劫持用户
-      // 在筛选框里的 Ctrl+C，把剪贴板覆盖成表格数据
-      const ae = document.activeElement
-      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return
-      // 仅当有区域选区、且当前没有原生文本选择时才接管
-      if (anchor && focus && (cellCount() > 1) && !window.getSelection()?.toString()) {
+      if (typing) return
+      // 有选区（单格即可）、且当前没有原生文本选择时才接管
+      if (anchor && focus && !window.getSelection()?.toString()) {
         copy()
         e.preventDefault()
       }
+    } else if (ARROWS[e.key] && anchor && focus && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const [dr, dc] = ARROWS[e.key]
+      const next = stepCell(focus, dr, dc)
+      if (next) {
+        focus = next
+        if (!e.shiftKey) anchor = next        // 无 Shift = 移动；Shift = 扩选
+        applyHighlight()
+        focus.tbody.rows[focus.r]?.cells[focus.c]
+          ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      }
+      e.preventDefault()   // 选区激活期间方向键属于表格，不滚页面；Esc 可退出
     } else if (e.key === 'Escape') {
       anchor = focus = null
       clearHighlight()

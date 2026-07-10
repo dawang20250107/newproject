@@ -1921,8 +1921,7 @@ async function doBatchPay() {
 .pk-pay-tbl td:not(.ops-cell) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
 /* 空状态整行：跨列居中，取消定宽/裁剪，表头留在顶部、提示紧贴其下（不再把表头挤到页面中间） */
 .pk-pay-tbl td.empty-cell { max-width: none; overflow: visible; white-space: normal; text-align: center; padding: 20px 8px; }
-/* Excel 式区域选择高亮（useRangeSelection 直接给 td 加类） */
-.pk-pay-tbl td.cell-range-sel { background: rgba(21,101,192,0.14) !important; box-shadow: inset 0 0 0 1px rgba(21,101,192,0.28); }
+/* Excel 式区域选择高亮已收归全局 style.css（td.cell-range-sel） */
 .pk-pay-tbl tbody { user-select: none; }
 /* 列头：字段名完整展示，空间不足时换行成两行（不挤压、不截断），漏斗不裁切 */
 .pk-pay-tbl thead th {

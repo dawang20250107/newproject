@@ -19,6 +19,7 @@ import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
+import { useRangeSelection } from '../../composables/useRangeSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import { useModalEsc } from '../../composables/useModalEsc.js'
 import Pager from '../../components/Pager.vue'
@@ -141,6 +142,8 @@ function toggleSelectPage() {
 }
 function clearSelection() { selectedIds.value = new Set(); selectAllMatching.value = false }
 useEscClearSelection(() => hasSelection.value, clearSelection)   // ESC 退出勾选
+// Excel 式单元格区域选择（拖选/Shift 扩选/方向键移动/Ctrl+C 复制为 TSV）
+const rangeSel = useRangeSelection({ ignoreCols: [0], onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
 function bulkDelete() {
   if (!selectedCount.value) return
   delConfirmText.value = ''
@@ -659,7 +662,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
     <!-- Table card -->
     <div class="card fh-fill" :class="{ 'data-reloading': loading && items.length }">
-      <div class="table-wrap page-scroll">
+      <div class="table-wrap page-scroll range-root" :ref="rangeSel.setRoot">
         <table class="proj-table">
           <thead>
             <tr>

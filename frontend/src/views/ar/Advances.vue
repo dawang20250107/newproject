@@ -15,6 +15,7 @@ import SchemePicker from '../../components/SchemePicker.vue'
 import { useTableSchemes } from '../../composables/useTableSchemes.js'
 import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
+import { useRangeSelection } from '../../composables/useRangeSelection.js'
 import Amt from '../../components/Amt.vue'
 import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
@@ -44,6 +45,8 @@ function toggleAll() { const s = new Set(selectedIds.value); if (pageAll.value) 
 function clearSel() { selectedIds.value = new Set() }
 const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow })
 useEscClearSelection(() => hasSel.value, clearSel)
+// Excel 式单元格区域选择（拖选/Shift 扩选/方向键移动/Ctrl+C 复制为 TSV）
+const rangeSel = useRangeSelection({ ignoreCols: [0], onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
 const selSum = computed(() => items.value.filter(r => selectedIds.value.has(r.id))
   .reduce((s, r) => s + (parseFloat(r.advance_amount) || 0), 0))
 async function bulkDelete() {
@@ -871,7 +874,7 @@ onMounted(async () => {
           </div>
         </div>
 
-        <div class="table-scroll page-scroll">
+        <div class="table-scroll page-scroll range-root" :ref="rangeSel.setRoot">
           <table class="data-table">
             <thead>
               <tr>

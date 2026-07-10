@@ -1299,8 +1299,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .approval-table tbody tr:not(.apr-plan-detail-row):hover td { background: rgba(201,99,66,0.045); }
 .approval-table tr.row-sel td,
 .approval-table tbody tr.row-sel:hover td { background: rgba(201,99,66,0.09); }
-/* Excel 式区域选择高亮（直接由 useRangeSelection 给 td 加类，不逐格绑定） */
-.approval-table td.cell-range-sel { background: rgba(21,101,192,0.14) !important; box-shadow: inset 0 0 0 1px rgba(21,101,192,0.28); }
+/* Excel 式区域选择高亮已收归全局 style.css（td.cell-range-sel） */
 /* 拖拽选区时禁用原生文本选择（电子表格式交互）；行内 input 仍可正常编辑 */
 .approval-table tbody { user-select: none; }
 /* 批量操作条：固定浮动在视口底部居中，全选后无需下拉即可操作 */

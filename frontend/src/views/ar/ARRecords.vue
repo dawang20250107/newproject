@@ -21,6 +21,7 @@ import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useShiftSelect } from '../../composables/useShiftSelect.js'
+import { useRangeSelection } from '../../composables/useRangeSelection.js'
 import { useFileDrop } from '../../composables/useFileDrop.js'
 import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
@@ -116,6 +117,8 @@ function toggleSelectPage() {
 }
 function clearSelection() { selectedIds.value = new Set(); selectAllMatching.value = false }
 useEscClearSelection(() => hasSelection.value, clearSelection)   // ESC 退出勾选
+// Excel 式单元格区域选择（拖选/Shift 扩选/方向键移动/Ctrl+C 复制为 TSV）
+const rangeSel = useRangeSelection({ ignoreCols: [0], onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
 // 作战台的勾选同样 Esc 一键退出（弹窗/输入态由组合式内部让路）
 useEscClearSelection(() => activeTab.value === 'dunning' && dunSelected.value.size > 0,
   () => { dunSelected.value = new Set() })
@@ -2263,7 +2266,7 @@ function clearFilters() {
         </template>
       </div>
 
-      <div v-if="isDataTab" class="table-wrap dt-scroll" style="margin-top:12px">
+      <div v-if="isDataTab" class="table-wrap dt-scroll range-root" style="margin-top:12px" :ref="rangeSel.setRoot">
         <table class="rec-table">
           <thead>
             <tr>
