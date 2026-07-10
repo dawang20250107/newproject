@@ -16,6 +16,7 @@ import { describeCondition, STATUS_OPTS, RECON_OPTS, INVOICE_OPTS, RESP_OPTS } f
 import ColumnFilter from '../../components/ColumnFilter.vue'
 import DateRangeChips from '../../components/DateRangeChips.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
+import Pager from '../../components/Pager.vue'
 import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
@@ -719,7 +720,7 @@ const TABS = [
   { key: 'batch', label: '批次管理' },
   { key: 'collection', label: '回款跟踪' },
   { key: 'offset', label: '预收核销' },
-  { key: 'dunning', label: '逾期看板' },
+  { key: 'dunning', label: '催款作战台' },
   { key: 'payments', label: '回款流水' },
   { key: 'summary', label: '汇总' },
 ]
@@ -842,7 +843,7 @@ function enterPayments() {
   setPayRange('month')   // 内部已 loadPayments(true)
 }
 
-// ── 逾期看板 / 催款工作台 (overdue board / collection workbench) ─────────────
+// ── 催款作战台（逾期看板 / collection workbench）────────────────────────────
 const dunFilters = reactive({ dept: '', q: '', bucket: '', contact: '' })
 const dunBuckets = ref([])
 const dunContacts = ref([])
@@ -850,6 +851,7 @@ const dunItems = ref([])
 const dunSummary = ref(null)
 const dunTotal = ref(0)
 const dunPage = ref(1)
+const dunSize = ref(size)
 const dunLoading = ref(false)
 const dunSelected = ref(new Set())
 const dunCreating = ref(false)
@@ -859,7 +861,7 @@ async function loadDunning(reset = false) {
   if (reset) { dunPage.value = 1; dunSelected.value = new Set() }
   dunLoading.value = true
   try {
-    const res = await ar.collectionWorkbench({ ...dunFilters, page: dunPage.value, size })
+    const res = await ar.collectionWorkbench({ ...dunFilters, page: dunPage.value, size: dunSize.value })
     dunBuckets.value = res.data.buckets
     dunContacts.value = res.data.by_contact
     dunItems.value = res.data.items
@@ -871,21 +873,10 @@ function onDunSearch() {
   clearTimeout(dunQTimer)
   dunQTimer = setTimeout(() => loadDunning(true), 300)
 }
-// 翻页即清空勾选：勾选与「全选本页」一致按页计，避免跨页带入旧选导致「已选 N」与所见不符
-function dunChangePage(delta) {
-  dunPage.value += delta
+// 翻页/改每页条数即清空勾选：勾选与「全选本页」一致按页计，避免跨页带入旧选导致「已选 N」与所见不符
+function onDunPager() {
   dunSelected.value = new Set()
   loadDunning()
-}
-const dunJumpPage = ref('')
-function dunDoJump() {
-  const p = parseInt(dunJumpPage.value)
-  const maxPage = Math.ceil(dunTotal.value / size)
-  if (!p || p < 1 || p > maxPage) return
-  dunPage.value = p
-  dunSelected.value = new Set()
-  loadDunning()
-  dunJumpPage.value = ''
 }
 function toggleDunBucket(key) {
   dunFilters.bucket = dunFilters.bucket === key ? '' : key
@@ -925,8 +916,84 @@ async function createDunningTasks() {
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { dunCreating.value = false }
 }
-// 逾期天数着色：≤30 橙、>30 红
-const overdueClass = d => (d > 30 ? 'od-danger' : 'od-warn')
+
+// ── 作战台视觉与行内催办三连（复制话术 / 记跟进 / 单条建任务）────────────────
+// 逾期天数四级严重度（对齐默认账龄桶 30/60/90），驱动行色边、徽标与账龄微条
+const dunSev = d => (d > 90 ? 3 : d > 60 ? 2 : d > 30 ? 1 : 0)
+// 账龄微条：以 120 天为满格，扫一眼即知每笔「烧」了多久
+const dunBarPct = d => Math.min(100, Math.round(((d || 0) / 120) * 100))
+// 🔥 优先催办 Top3：金额 × 逾期天数加权，仅本页内标记（少于 5 条无区分意义）
+const dunTop3 = computed(() => {
+  if (dunItems.value.length < 5) return new Set()
+  return new Set([...dunItems.value]
+    .sort((a, b) => Number(b.outstanding_amount) * Math.max(b.overdue_days, 1)
+                  - Number(a.outstanding_amount) * Math.max(a.overdue_days, 1))
+    .slice(0, 3).map(r => r.id))
+})
+// 账龄光谱条：段宽随金额占比伸缩（空段收成细条），风险资金分布一眼可见
+const segGrow = (b) => {
+  const total = dunBuckets.value.reduce((s, x) => s + Number(x.amount || 0), 0)
+  if (!total || !Number(b.amount)) return 0.06
+  return Math.max(Number(b.amount) / total, 0.12)
+}
+// 复制催款话术：生成可直接粘贴给客户/对接群的标准催款文案
+async function copyDunText(r) {
+  const ym = r.operation_date || `${r.operation_year}/${String(r.operation_month).padStart(2, '0')}`
+  const text = [
+    `【催款提醒】${r.customer_name}`,
+    `项目：${r.short_name || r.customer_name}（${ym} 账期）`,
+    `应收到期日：${r.due_date}，已逾期 ${r.overdue_days} 天`,
+    `未结算金额：¥${fmtMoney(r.outstanding_amount)}`,
+    `请贵司尽快安排结算；如款项已在途，烦请回传汇款凭证，谢谢配合。`,
+    `—— ${r.delivery_dept}`,
+  ].join('\n')
+  if (await copyText(text)) toast.success('催款话术已复制，可直接粘贴发送')
+  else toast.error('复制失败，请手动复制')
+}
+// 单条建任务：与批量走同一端点（ids 单元素），点⚡即建，✓已建即时回显
+const dunTaskingId = ref(0)
+async function createOneDunTask(r) {
+  if (r.open_action_id || dunTaskingId.value) return
+  dunTaskingId.value = r.id
+  try {
+    const res = await ar.createDunning({ ids: [r.id] })
+    if (res.data.created) toast.success(`已生成催款任务，负责人 ${r.sales_contact || '未指定'}（驾驶舱·决策行动）`)
+    else toast.error('该记录已有未关闭的催款任务')
+    await loadDunning()
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+  finally { dunTaskingId.value = 0 }
+}
+// 记跟进：轻弹窗直写催收跟进日志（统一入 ARActivity dunning 时间线）
+const DUN_LOG_TYPES = [
+  { v: 'call', label: '📞 电话' },
+  { v: 'email', label: '✉️ 邮件' },
+  { v: 'visit', label: '🏢 拜访' },
+  { v: 'meeting', label: '🤝 会议' },
+  { v: 'other', label: '📝 其他' },
+]
+const dunFollow = reactive({ open: false, rec: null, log_type: 'call', note: '', follow_up_date: '', saving: false })
+function openDunFollow(r) {
+  dunFollow.rec = r
+  dunFollow.log_type = 'call'
+  dunFollow.note = ''
+  dunFollow.follow_up_date = ''
+  dunFollow.open = true
+}
+async function saveDunFollow() {
+  if (!dunFollow.note.trim()) { toast.error('请填写跟进内容'); return }
+  dunFollow.saving = true
+  try {
+    await ar.addCollectionLog(dunFollow.rec.id, {
+      log_type: dunFollow.log_type,
+      note: dunFollow.note.trim(),
+      follow_up_date: dunFollow.follow_up_date || null,
+      contact_person: dunFollow.rec.sales_contact || '',
+    })
+    toast.success('跟进已记录，可在该应收的动态时间线查看')
+    dunFollow.open = false
+  } catch (e) { toast.error(e?.msg || e?.error || '保存失败') }
+  finally { dunFollow.saving = false }
+}
 
 // ── 账龄分段行着色 ────────────────────────────────────────────────────────────
 // 4 段账龄桶，颜色随逾期天数递进（1-30淡黄 → 31-60橙 → 61-90淡红 → >90深红）
@@ -1762,6 +1829,7 @@ useModalEsc(
   [() => showAgingCfgModal.value, () => (showAgingCfgModal.value = false)],
   [() => showHealthModal.value, () => (showHealthModal.value = false)],
   [() => showDelConfirm.value, () => (showDelConfirm.value = false)],
+  [() => dunFollow.open, () => (dunFollow.open = false)],
 )
 
 defineOptions({ name: 'ARRecordsPage' })
@@ -2454,38 +2522,39 @@ function clearFilters() {
         </div>
       </div>
 
-      <!-- ══ 逾期看板（原催款工作台）══ -->
+      <!-- ══ 催款作战台（逾期看板）══ -->
       <div v-if="activeTab === 'dunning'" class="ar-pane pane-flex">
         <div class="pane-head">
           <!-- 标题并入筛选行，省去单独的提示条占行 -->
           <div class="filter-strip" style="margin-top:4px">
-            <span class="bp-title" style="white-space:nowrap">⏰ 逾期看板</span>
+            <span class="bp-title" style="white-space:nowrap">⏰ 催款作战台</span>
             <select v-model="dunFilters.dept" class="sel-bu" @change="loadDunning(true)">
               <option value="">全部事业部</option>
               <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
             </select>
             <input v-model="dunFilters.q" placeholder="搜项目 / 客户 / 对接人" class="search-input" @input="onDunSearch" />
             <button v-if="auth.isSuperAdmin" class="aging-cfg-btn" title="配置账龄分桶边界" @click="openAgingCfg">⚙ 账龄分桶</button>
-            <span v-if="dunSummary" class="text-sm-muted" style="margin-left:auto">
+            <span v-if="dunSummary" class="text-sm-muted" style="margin-left:auto;white-space:nowrap">
               当前范围逾期 <strong>{{ dunSummary.count }}</strong> 笔 / <strong style="color:var(--c-danger)">{{ fmtAmt(dunSummary.amount) }}</strong>
             </span>
           </div>
 
-          <!-- 账龄分桶卡片（点击筛选） -->
-          <div class="dun-buckets">
-            <button v-for="b in dunBuckets" :key="b.key"
-              class="dun-bucket" :class="{ on: dunFilters.bucket === b.key, empty: !b.count }"
+          <!-- 账龄光谱条：段宽=金额占比、颜色随账龄加深，点击段=筛选该账龄（替代四张大卡） -->
+          <div class="dun-spec">
+            <button v-for="(b, i) in dunBuckets" :key="b.key"
+              class="ds-seg" :class="['ds-s' + i, { on: dunFilters.bucket === b.key, dim: dunFilters.bucket && dunFilters.bucket !== b.key, empty: !b.count }]"
+              :style="{ flexGrow: segGrow(b) }"
+              :title="`逾期${b.label}：${b.count} 笔 / ${fmtAmt(b.amount)}（点击筛选）`"
               @click="toggleDunBucket(b.key)">
-              <div class="db-label">逾期{{ b.label }}</div>
-              <div class="db-count">{{ b.count }} 笔</div>
-              <div class="db-amt">{{ fmtAmt(b.amount) }}</div>
+              <span class="ds-label">逾期{{ b.label }}</span>
+              <span class="ds-meta">{{ b.count }}笔 · {{ fmtAmt(b.amount) }}</span>
             </button>
           </div>
 
-          <!-- 责任人聚合 chips（点击筛选） -->
+          <!-- 责任人聚合 chips（单行横向滚动，点击筛选） -->
           <div v-if="dunContacts.length" class="dun-contacts">
             <span class="dc-label">按销售对接人：</span>
-            <button v-for="c in dunContacts.slice(0, 12)" :key="c.sales_contact"
+            <button v-for="c in dunContacts" :key="c.sales_contact"
               class="dc-chip" :class="{ on: dunFilters.contact === c.sales_contact }"
               :title="`最长逾期 ${c.max_overdue_days} 天`"
               @click="toggleDunContact(c.sales_contact)">
@@ -2504,57 +2573,60 @@ function clearFilters() {
         </div>
 
         <div class="table-wrap pane-scroll">
-          <table class="rec-table">
+          <table class="rec-table dun-table">
             <thead>
               <tr>
                 <th v-if="auth.canArWrite" class="sel-col">
                   <input type="checkbox" :checked="dunPageAllSelected" @change="toggleDunSelectPage" />
                 </th>
                 <th>项目 / 客户</th>
-                <th class="ctr">交付部门</th>
-                <th class="ctr">运作日期</th>
-                <th class="ctr">应收日期</th>
-                <th class="ctr">逾期天数</th>
+                <th class="ctr">账期 → 到期</th>
+                <th class="ctr">账龄</th>
                 <th class="amt">未收金额</th>
                 <th class="ctr">销售对接人</th>
                 <th class="ctr">最近回款</th>
-                <th class="ctr">催款任务</th>
+                <th class="ctr">催办</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="dunLoading && !dunItems.length"><td :colspan="auth.canArWrite ? 10 : 9" class="empty-cell">⏳ 加载中…</td></tr>
-              <tr v-else-if="!dunItems.length"><td :colspan="auth.canArWrite ? 10 : 9" class="empty-cell">🎉 当前范围内没有逾期应收</td></tr>
-              <tr v-for="r in dunItems" :key="r.id" class="data-row">
+              <tr v-if="dunLoading && !dunItems.length"><td :colspan="auth.canArWrite ? 8 : 7" class="empty-cell">⏳ 加载中…</td></tr>
+              <tr v-else-if="!dunItems.length"><td :colspan="auth.canArWrite ? 8 : 7" class="empty-cell">🎉 当前范围内没有逾期应收</td></tr>
+              <tr v-for="r in dunItems" :key="r.id" class="data-row dun-row" :class="'dun-sev' + dunSev(r.overdue_days)">
                 <td v-if="auth.canArWrite" class="sel-col">
                   <input type="checkbox" :disabled="!!r.open_action_id"
                          :checked="dunSelected.has(r.id)" @change="toggleDunRow(r.id)" />
                 </td>
                 <td>
-                  <div class="proj-name">{{ r.short_name || r.customer_name }}</div>
-                  <div class="proj-sub">{{ r.customer_name }}</div>
+                  <div class="proj-name">
+                    <span v-if="dunTop3.has(r.id)" class="dun-fire" title="本页优先催办（金额 × 逾期天数加权 Top3）">🔥</span>{{ r.short_name || r.customer_name }}
+                  </div>
+                  <div class="proj-sub">{{ r.customer_name }}<span class="dun-dept"> · {{ r.delivery_dept }}</span></div>
                 </td>
-                <td class="ctr text-sm-muted">{{ r.delivery_dept }}</td>
-                <td class="ctr"><span class="ym-chip">{{ r.operation_date || (r.operation_year + "/" + String(r.operation_month).padStart(2, "0")) }}</span></td>
-                <td class="ctr text-sm-muted">{{ r.due_date }}</td>
-                <td class="ctr"><span class="od-badge" :class="overdueClass(r.overdue_days)">{{ r.overdue_days }}天</span></td>
-                <td class="amt fw" style="color:var(--c-danger)">{{ fmtAmt(r.outstanding_amount) }}</td>
+                <td class="ctr">
+                  <span class="ym-chip">{{ r.operation_date || (r.operation_year + "/" + String(r.operation_month).padStart(2, "0")) }}</span>
+                  <div class="dun-due">到期 {{ r.due_date }}</div>
+                </td>
+                <td class="ctr">
+                  <span class="od-badge" :class="'od-s' + dunSev(r.overdue_days)">{{ r.overdue_days }}天</span>
+                  <div class="od-bar"><i :class="'ob-s' + dunSev(r.overdue_days)" :style="{ width: dunBarPct(r.overdue_days) + '%' }" /></div>
+                </td>
+                <td class="amt dun-amt">{{ fmtAmt(r.outstanding_amount) }}</td>
                 <td class="ctr text-sm-muted">{{ r.sales_contact || '—' }}</td>
                 <td class="ctr text-sm-muted">{{ r.last_payment_date || '—' }}</td>
-                <td class="ctr">
+                <td class="ctr dun-acts">
+                  <button class="dun-act" title="复制催款话术，可直接粘贴给客户/对接群" @click="copyDunText(r)">📋</button>
+                  <button v-if="auth.canArWrite" class="dun-act" title="记一条催收跟进" @click="openDunFollow(r)">✍</button>
                   <span v-if="r.open_action_id" class="dun-has-action" title="已有未关闭的催款行动项">✓ 已建</span>
-                  <span v-else class="text-sm-muted">—</span>
+                  <button v-else-if="auth.canArWrite" class="dun-act dun-act-hot" :disabled="dunTaskingId === r.id"
+                          title="立即生成催款任务（驾驶舱·决策行动）" @click="createOneDunTask(r)">⚡</button>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
 
-        <div class="pagination pane-pager">
-          <button v-if="dunTotal > size" :disabled="dunPage <= 1" class="page-btn" @click="dunChangePage(-1)">‹ 上一页</button>
-          <span class="page-info"><template v-if="dunTotal > size">第 {{ dunPage }} / {{ Math.ceil(dunTotal / size) }} 页 · </template>共 {{ dunTotal }} 条</span>
-          <button v-if="dunTotal > size" :disabled="dunPage * size >= dunTotal" class="page-btn" @click="dunChangePage(1)">下一页 ›</button>
-          <span v-if="dunTotal > size" class="pg-jump">跳至<input v-model.number="dunJumpPage" class="pg-jump-input" type="number" min="1" :max="Math.ceil(dunTotal / size)" @keyup.enter="dunDoJump" />页<button class="page-btn" @click="dunDoJump">Go</button></span>
-        </div>
+        <Pager v-model:page="dunPage" v-model:size="dunSize" :total="dunTotal"
+               storage-key="ar_dunning" @change="onDunPager" />
       </div>
 
       <!-- ══ 回款流水 ══ -->
@@ -3310,6 +3382,40 @@ function clearFilters() {
         </div>
       </div>
 
+      <!-- 催收跟进快速记录（作战台行内 ✍，直写该应收的 dunning 动态时间线） -->
+      <div v-if="dunFollow.open" class="modal-overlay" @click.self="dunFollow.open = false">
+        <div class="modal-box" style="max-width:440px">
+          <div class="modal-header">
+            <div>
+              <h3>记跟进 · {{ dunFollow.rec?.short_name || dunFollow.rec?.customer_name }}</h3>
+              <div class="text-sm-muted" style="margin-top:2px">
+                {{ dunFollow.rec?.customer_name }} · 逾期 {{ dunFollow.rec?.overdue_days }} 天 ·
+                未收 <strong style="color:var(--c-danger)">{{ fmtAmt(dunFollow.rec?.outstanding_amount) }}</strong>
+              </div>
+            </div>
+            <button class="modal-close" @click="dunFollow.open = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="fu-types">
+              <button v-for="t in DUN_LOG_TYPES" :key="t.v" class="fu-type"
+                      :class="{ on: dunFollow.log_type === t.v }" @click="dunFollow.log_type = t.v">{{ t.label }}</button>
+            </div>
+            <textarea v-model="dunFollow.note" rows="4" class="fu-note"
+                      placeholder="跟进内容（必填）：与谁沟通、对方口径/承诺、下一步动作…"></textarea>
+            <label class="fu-next">
+              下次跟进日期（选填）
+              <input v-model="dunFollow.follow_up_date" type="date" />
+            </label>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" @click="dunFollow.open = false">取消</button>
+            <button class="btn btn-primary" :disabled="dunFollow.saving" @click="saveDunFollow">
+              {{ dunFollow.saving ? '保存中…' : '保存跟进' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- 批量删除二次输入确认 -->
       <div v-if="showDelConfirm" class="modal-overlay" @click.self="showDelConfirm = false">
         <div class="modal-box" style="max-width:420px">
@@ -3872,23 +3978,72 @@ function clearFilters() {
 .imp-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 12px 0; }
 
 /* 催款工作台 */
-.dun-buckets { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
-.dun-bucket { flex: 1; min-width: 130px; text-align: left; padding: 10px 14px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--row-bg); cursor: pointer; transition: all .15s; }
-.dun-bucket:hover { border-color: var(--c-warn); }
-.dun-bucket.on { border-color: var(--c-warn); background: rgba(230,81,0,0.06); box-shadow: 0 0 0 2px rgba(230,81,0,0.12); }
-.dun-bucket.empty { opacity: .55; }
-.db-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
-.db-count { font-size: 15px; font-weight: 700; color: var(--text); }
-.db-amt { font-size: 13px; font-weight: 600; color: var(--c-danger); margin-top: 2px; }
-.dun-contacts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+/* ── 催款作战台 ──────────────────────────────────────────────────────────
+   账龄光谱条：一条横向堆叠带替代四张大卡（省 ~60px 纵向空间）。
+   段宽 flex-grow=金额占比（脚本 segGrow），颜色琥珀→深红随账龄加深。 */
+.dun-spec { display: flex; gap: 3px; margin-top: 10px; height: 46px; flex-shrink: 0; }
+.ds-seg { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 1px;
+  flex-basis: 0; min-width: 56px; padding: 4px 12px; border: none; border-radius: 9px; cursor: pointer;
+  color: #fff; text-align: left; overflow: hidden; white-space: nowrap;
+  transition: flex-grow .3s ease, filter .15s, opacity .15s, box-shadow .15s, transform .12s; }
+.ds-s0 { background: linear-gradient(135deg, #e8a84a, #d9930d); }
+.ds-s1 { background: linear-gradient(135deg, #ec8542, #e6742e); }
+.ds-s2 { background: linear-gradient(135deg, #de5c48, #d84a3a); }
+.ds-s3 { background: linear-gradient(135deg, #c03030, #8f1616); }
+.ds-seg:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.ds-seg.on { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--text); }
+.ds-seg.dim { opacity: .42; }
+.ds-seg.empty { opacity: .3; }
+.ds-label { font-size: 11px; font-weight: 700; opacity: .92; letter-spacing: .02em; overflow: hidden; text-overflow: ellipsis; }
+.ds-meta { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+/* 责任人 chips：单行横向滚动，不再换行占高 */
+.dun-contacts { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; overflow-x: auto;
+  margin-top: 8px; padding-bottom: 3px; scrollbar-width: thin; flex-shrink: 0; }
 .dc-label { font-size: 12px; color: var(--muted); flex-shrink: 0; }
-.dc-chip { padding: 4px 10px; border: 1px solid var(--border); border-radius: 14px; background: var(--row-bg); font-size: 12px; color: var(--text); cursor: pointer; transition: all .15s; }
+.dc-chip { flex-shrink: 0; padding: 4px 10px; border: 1px solid var(--border); border-radius: 14px; background: var(--row-bg); font-size: 12px; color: var(--text); cursor: pointer; transition: all .15s; }
 .dc-chip:hover { border-color: var(--c-warn); }
 .dc-chip.on { border-color: var(--c-warn); background: rgba(230,81,0,0.08); color: var(--c-warn); font-weight: 600; }
-.od-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; }
-.od-badge.od-warn { background: rgba(230,81,0,0.1); color: var(--c-warn); }
-.od-badge.od-danger { background: rgba(198,40,40,0.1); color: var(--c-danger); }
+/* 表格：行首严重度色边（四级），紧凑行高 */
+.dun-table tbody td { padding-top: 7px; padding-bottom: 7px; }
+.dun-row.dun-sev0 > td:first-child { box-shadow: inset 3px 0 0 #d9930d; }
+.dun-row.dun-sev1 > td:first-child { box-shadow: inset 3px 0 0 #e6742e; }
+.dun-row.dun-sev2 > td:first-child { box-shadow: inset 3px 0 0 #d84a3a; }
+.dun-row.dun-sev3 > td:first-child { box-shadow: inset 3px 0 0 #8f1616; }
+.dun-fire { margin-right: 3px; font-size: 12px; }
+.dun-dept { color: var(--muted); }
+.dun-due { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.dun-amt { font-weight: 700; color: var(--c-danger); font-size: 13.5px; }
+/* 账龄徽标四级配色 + 微条（120 天满格） */
+.od-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.od-badge.od-s0 { background: rgba(217,147,13,0.12); color: #b47c0a; }
+.od-badge.od-s1 { background: rgba(230,116,46,0.13); color: #d3641f; }
+.od-badge.od-s2 { background: rgba(216,74,58,0.13); color: #c73a2a; }
+.od-badge.od-s3 { background: rgba(143,22,22,0.15); color: #8f1616; }
+.od-bar { width: 64px; height: 3px; border-radius: 2px; background: rgba(0,0,0,0.08); margin: 4px auto 0; overflow: hidden; }
+.od-bar i { display: block; height: 100%; border-radius: 2px; transition: width .3s ease; }
+.od-bar .ob-s0 { background: #d9930d; }
+.od-bar .ob-s1 { background: #e6742e; }
+.od-bar .ob-s2 { background: #d84a3a; }
+.od-bar .ob-s3 { background: #8f1616; }
+/* 行内催办三连（复制话术 / 记跟进 / 建任务） */
+.dun-acts { white-space: nowrap; }
+.dun-act { border: 1px solid var(--border); background: var(--card); border-radius: 7px;
+  padding: 3px 7px; margin: 0 2px; cursor: pointer; font-size: 13px; line-height: 1; transition: all .12s; }
+.dun-act:hover { border-color: var(--primary); background: rgba(201,99,66,0.07); transform: translateY(-1px); }
+.dun-act:disabled { opacity: .5; cursor: wait; transform: none; }
+.dun-act-hot { border-color: rgba(201,99,66,0.45); }
 .dun-has-action { font-size: 12px; color: var(--c-success); font-weight: 600; }
+/* 记跟进弹窗 */
+.fu-types { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.fu-type { padding: 5px 11px; border: 1px solid var(--border); border-radius: 16px; background: var(--row-bg);
+  font-size: 12.5px; color: var(--text); cursor: pointer; transition: all .12s; }
+.fu-type:hover { border-color: var(--primary); }
+.fu-type.on { border-color: var(--primary); background: rgba(201,99,66,0.09); color: var(--primary); font-weight: 600; }
+.fu-note { width: 100%; resize: vertical; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 13px; background: var(--card); color: var(--text); font-family: inherit; }
+.fu-next { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+.fu-next input { padding: 4px 8px; border: 1px solid var(--border); border-radius: 7px; font-size: 12.5px;
+  background: var(--card); color: var(--text); }
 
 /* 分页跳转 */
 .pg-jump { display:inline-flex;align-items:center;gap:4px;font-size:13px;color:var(--muted);margin-left:8px; }
