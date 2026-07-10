@@ -101,6 +101,18 @@ const onScopeChange = () => {
 }
 
 // 导出 Excel：与页面完全同参数（区间+部门作用域），后端同口径共用 _cashflow_payload
+// 图表下钻:点击月度图任一柱/点 → 月度明细表定位并高亮该月
+const hiYm = ref('')
+function drillMonth(p) {
+  const ym = p?.name || p?.axisValueLabel
+  if (!ym || !cfData.value?.months?.includes(ym)) return
+  hiYm.value = ym
+  requestAnimationFrame(() => {
+    document.querySelector(`[data-ym="${ym}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  })
+  setTimeout(() => { if (hiYm.value === ym) hiYm.value = '' }, 2600)
+}
+
 const exporting = ref(false)
 async function exportXlsx() {
   if (exporting.value || !filters.start_date || !filters.end_date) return
@@ -491,7 +503,7 @@ const deptBalanceOption = computed(() => {
         <div class="section-title">现金流量桥
           <span class="section-sub">实收 + 预收 − 实付 − 预付 = 期末净现金</span>
         </div>
-        <BaseChart v-if="bridgeOption" :option="bridgeOption" height="300px" />
+        <BaseChart v-if="bridgeOption" :option="bridgeOption" height="300px" @click="drillMonth" />
         <div v-else class="chart-empty">{{ loading ? '加载中…' : '暂无数据' }}</div>
       </div>
 
@@ -500,7 +512,7 @@ const deptBalanceOption = computed(() => {
         <div class="section-title">现金呼吸图
           <span class="section-sub">上方流入 · 下方流出 · 蓝线为月净额 · 红带=当月入不敷出</span>
         </div>
-        <BaseChart v-if="breathOption" :option="breathOption" height="340px" />
+        <BaseChart v-if="breathOption" :option="breathOption" height="340px" @click="drillMonth" />
         <div v-else class="chart-empty">{{ loading ? '加载中…' : '暂无数据' }}</div>
       </div>
 
@@ -539,8 +551,8 @@ const deptBalanceOption = computed(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(ym, i) in cfData.months" :key="ym"
-                :class="{ 'row-alert': cfData.totals.outflow[i] > cfData.totals.inflow[i] && cfData.totals.inflow[i] > 0 }"
+            <tr v-for="(ym, i) in cfData.months" :key="ym" :data-ym="ym"
+                :class="{ 'row-alert': cfData.totals.outflow[i] > cfData.totals.inflow[i] && cfData.totals.inflow[i] > 0, 'row-drill': hiYm === ym }"
                 @contextmenu.prevent="ctx.open($event, { ym, collected: cfData.totals.collected[i], paid: cfData.totals.paid[i], budget_collection: cfData.totals.budget_collection[i], budget_payment: cfData.totals.budget_payment[i], net: cfData.totals.net[i], cumulative_net: cfData.totals.cumulative_net[i] })">
               <td class="fw">{{ ym }}</td>
               <td class="amt text-coll">{{ fmtWan(cfData.totals.collected[i]) }}</td>
@@ -671,4 +683,5 @@ const deptBalanceOption = computed(() => {
 .text-pay    { color: var(--c-warn); }
 .text-danger { color: var(--c-danger); font-weight: 600; }
 .text-ok     { color: var(--c-success); font-weight: 600; }
+.row-drill { background: rgba(201,99,66,.14) !important; transition: background .4s; }
 </style>

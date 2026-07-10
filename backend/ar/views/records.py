@@ -522,9 +522,107 @@ def ar_record_detail(request, pk):
         denied = _delete_denied(request)
         if denied:
             return denied
-        rec.delete()
-        return ok({'deleted': pk})
+        force = request.GET.get('force') == '1'
+        blocked = _ar_record_delete_guard(rec, request, force)
+        if blocked:
+            return blocked
+        _soft_delete_ar_record(rec, request)
+        return ok({'deleted': pk, 'message': '已移入回收站，可在回收站还原'})
 
+    return err('Method not allowed', 405)
+
+
+def _ar_record_delete_guard(rec, request, force):
+    """应收删除守卫（与付款侧同纪律）。返回 err response 或 None（放行）。
+    · 有「预收抵扣」回款：一律拦——删除会让预收核销悬空（预收余额已被消耗而应收不可见）；
+    · 有其它真实回款：默认拦；仅超管可强制（软删可还原），防回款现金历史被随手抹出报表。"""
+    if rec.payments.filter(source='预收抵扣').exists():
+        return err('该应收有「预收抵扣」回款（来自预收核销），不能删除；'
+                   '请先到「预收预付」撤销对应核销后再删', 409, 409)
+    pay_cnt = rec.payments.count()
+    if pay_cnt:
+        paid = rec.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0')
+        if request.pk_role != 'super_admin':
+            return err(f'该应收已有 {pay_cnt} 笔回款合计 {paid} 元，仅超级管理员可强制删除；'
+                       f'如需删除请先撤销回款，或联系超管', 403, 403)
+        if not force:
+            return err(f'该应收已有 {pay_cnt} 笔回款合计 {paid} 元，不能直接删除；'
+                       f'如需强制删除（进回收站可还原），请确认强制操作', 409, 409)
+    return None
+
+
+def _soft_delete_ar_record(rec, request):
+    """软删进回收站：回款/调整随记录一并隐匿（现金聚合已按 deleted_at 排除），
+    催款任务自动置为已忽略（与硬删时的 post_delete 信号同语义）。"""
+    from ar.signals import _close_dunning_actions
+    rec.deleted_at = timezone.now()
+    rec.deleted_by = getattr(request, 'pk_user', None)
+    rec.save(update_fields=['deleted_at', 'deleted_by', 'updated_at'])
+    _close_dunning_actions(rec.pk, '系统自动忽略：关联应收记录已移入回收站', status='dismissed')
+
+
+@csrf_exempt
+@pk_required()
+def ar_records_trash(request):
+    """回收站 — 应收记录。GET 列表；POST {action:'restore'|'purge', ids|all}。
+    还原：清除删除标记并重算未收；彻底删除：级联删回款/调整（有预收抵扣仍拦截）。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    qs = _ar_dept_filter(
+        ARRecord.all_objects.filter(deleted_at__isnull=False).select_related('project'),
+        request, shared_field='project__is_shared')
+
+    if request.method == 'GET':
+        try:
+            page = max(1, int(request.GET.get('page', 1)))
+            size = min(100, max(1, int(request.GET.get('size', 50))))
+        except ValueError:
+            page, size = 1, 50
+        total = qs.count()
+        rows = list(qs.order_by('-deleted_at')[(page - 1) * size:page * size])
+        return ok({'total': total, 'items': [
+            {**r.to_dict(),
+             'deleted_at': r.deleted_at.isoformat() if r.deleted_at else None,
+             'deleted_by_name': r.deleted_by.name if r.deleted_by else None}
+            for r in rows
+        ]})
+
+    if request.method == 'POST':
+        denied = _delete_denied(request)
+        if denied:
+            return denied
+        body = _parse_body(request)
+        action = body.get('action', 'restore')
+        if body.get('all'):
+            targets = list(qs.order_by('-deleted_at')[:1000])
+        else:
+            try:
+                ids = [int(i) for i in (body.get('ids') or [])]
+            except (ValueError, TypeError):
+                return err('ids 必须为整数列表')
+            if not ids:
+                return err('ids 必填或传 all:true')
+            targets = list(qs.filter(pk__in=ids))
+        count, skipped = 0, []
+        for rec in targets:
+            if action == 'restore':
+                rec.deleted_at = None
+                rec.deleted_by = None
+                with transaction.atomic():
+                    rec.save(update_fields=['deleted_at', 'deleted_by', 'updated_at'])
+                    rec.recompute_derived(save=True)   # 回款/调整未动，重算兜底一致性
+            elif action == 'purge':
+                if rec.payments.filter(source='预收抵扣').exists():
+                    skipped.append({'id': rec.id,
+                                    'reason': '有预收抵扣回款，请先撤销对应核销再彻底删除'})
+                    continue
+                with transaction.atomic():
+                    rec.delete()   # 级联删回款/调整（真实硬删，审计不可恢复）
+            else:
+                return err("action 须为 'restore' 或 'purge'")
+            count += 1
+        return ok({'count': count, 'action': action, 'skipped': skipped})
     return err('Method not allowed', 405)
 
 
@@ -2268,10 +2366,23 @@ def ar_records_bulk_delete(request):
         return ok({'deleted': 0})
     if count > 5000:
         return err('单次删除上限 5000 条，请先缩小筛选范围')
-    # 取 id 后用主键集删除：避免子查询/JOIN 在 delete 级联时的边界问题
-    del_ids = list(qs.values_list('id', flat=True))
-    ARRecord.objects.filter(pk__in=del_ids).delete()  # 级联删除关联回款
-    return ok({'deleted': len(del_ids)})
+    # 软删进回收站（可还原）：逐条过删除守卫（预收抵扣一律拦；有回款仅超管可 force）
+    force = bool(body.get('force'))
+    deleted, skipped = 0, []
+    for rec in list(qs.prefetch_related('payments')):
+        blocked = _ar_record_delete_guard(rec, request, force)
+        if blocked:
+            try:
+                reason = json.loads(blocked.content).get('error', '')[:120]
+            except Exception:
+                reason = '删除被拦截'
+            skipped.append({'id': rec.id, 'reason': reason})
+            continue
+        _soft_delete_ar_record(rec, request)
+        deleted += 1
+    return ok({'deleted': deleted, 'skipped': skipped,
+               'message': f'已移入回收站 {deleted} 条'
+                          + (f'；跳过 {len(skipped)} 条' if skipped else '')})
 
 
 

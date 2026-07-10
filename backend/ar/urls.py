@@ -50,6 +50,7 @@ urlpatterns = [
     path('records/recompute', views.ar_records_recompute_bulk),
     path('records/bulk-assign-collector', views.ar_records_bulk_assign_collector),
     path('records/bulk-delete', views.ar_records_bulk_delete),
+    path('records/trash', views.ar_records_trash),
     path('records/<int:pk>', views.ar_record_detail),
     path('records/<int:pk>/recompute', views.ar_record_recompute),
     path('records/<int:pk>/payments', views.ar_payments),

@@ -57,7 +57,8 @@ def cash_flow_window(depts, start, end):
 
     返回 Decimal 字典；金额格式化由各调用方按需处理。"""
     coll = (ARPayment.objects
-            .filter(ar_record__delivery_dept__in=depts, payment_date__gte=start, payment_date__lte=end)
+            .filter(ar_record__delivery_dept__in=depts, payment_date__gte=start, payment_date__lte=end,
+                    ar_record__deleted_at__isnull=True)
             .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
             .aggregate(x=Sum('amount'))['x'] or Decimal('0'))
     # 排除已软删除的付款台账（回收站）：删除的付款不构成现金流出

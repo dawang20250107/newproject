@@ -59,7 +59,8 @@ def _cashflow_payload(request):
     # 排除非现金来源（预收抵扣/内部往来）：其不构成现金流入，计入会虚增现金。
     ar_coll = (ARPayment.objects
                .filter(payment_date__gte=start_date, payment_date__lte=end_date,
-                       ar_record__delivery_dept__in=depts)
+                       ar_record__delivery_dept__in=depts,
+                       ar_record__deleted_at__isnull=True)
                .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
                .annotate(ym=TruncMonth('payment_date'))
                .values('ym', 'ar_record__delivery_dept')

@@ -27,7 +27,7 @@ def _pool_actual_flows(dept, start, end):
     货币资金」口径：承兑汇票在贴现/到期前不是可动用现金，故额外排除（现金流分析仍计入）。
     返回 (collected, adv_recv, paid, prepaid_offset, adv_paid, t_in, t_out, daily)。"""
     collected = _dec(ARPayment.objects.filter(
-        ar_record__delivery_dept=dept,
+        ar_record__delivery_dept=dept, ar_record__deleted_at__isnull=True,
         payment_date__gt=start, payment_date__lte=end)
         .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
         .exclude(pending_draft_q())        # 未兑付承兑汇票不算可动用现金；已兑付则计入

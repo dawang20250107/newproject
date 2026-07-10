@@ -381,6 +381,13 @@ def _as_date(v):
         return None
 
 
+class ARRecordActiveManager(models.Manager):
+    """默认管理器：过滤软删除。全站既有 ARRecord.objects 查询自动排除回收站记录，
+    杜绝逐处补 deleted_at 过滤的遗漏面；回收站/还原用 all_objects。"""
+    def get_queryset(self):
+        return super().get_queryset().filter(deleted_at__isnull=True)
+
+
 class ARRecord(models.Model):
     """应收账款明细 — 每项目每月一条"""
     project = models.ForeignKey(ARProject, on_delete=models.CASCADE,
@@ -416,9 +423,20 @@ class ARRecord(models.Model):
                                    null=True, blank=True, related_name='created_ar_records')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # 软删除（回收站）：删除进回收站可还原，杜绝硬删连带抹掉回款现金历史
+    deleted_at = models.DateTimeField('删除时间', null=True, blank=True, db_index=True)
+    deleted_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='deleted_ar_records')
+
+    # 默认管理器过滤软删；all_objects 供回收站/还原。base_manager 必须不过滤
+    # （FK 解析用 base_manager，否则 payment.ar_record 指向回收站记录时会 DoesNotExist）
+    objects = ARRecordActiveManager()
+    all_objects = models.Manager()
 
     class Meta:
         db_table = 'ar_records'
+        base_manager_name = 'all_objects'
+        default_manager_name = 'objects'
         ordering = ['-operation_date']
         indexes = [
             models.Index(fields=['delivery_dept', 'due_date']),

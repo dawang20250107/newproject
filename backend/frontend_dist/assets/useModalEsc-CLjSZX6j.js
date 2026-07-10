@@ -1,0 +1,1 @@
+import{N as e,j as t}from"./vendor-vue-DXZlUuH1.js";function n(...n){function r(e){if(e.key===`Escape`&&!document.querySelector(`.cfm-overlay, .ctxm, .colf-pop`))for(let t=n.length-1;t>=0;t--){let[r,i]=n[t];if(r()){e.stopPropagation(),i();return}}}e(()=>document.addEventListener(`keydown`,r)),t(()=>document.removeEventListener(`keydown`,r))}export{n as t};

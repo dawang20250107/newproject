@@ -624,6 +624,7 @@ def budget_summary(request):
     # 回款预算是现金口径,与周期报表 _collection_actual 同口径,否则同一「回款达成率」两页两个数
     ac = ARPayment.objects.filter(
         payment_date__range=(start_date, end_date),
+        ar_record__deleted_at__isnull=True,
         ar_record__delivery_dept__in=depts).exclude(
         source__in=NON_CASH_PAYMENT_SOURCES).aggregate(total=Sum('amount'))
 
@@ -650,7 +651,8 @@ def budget_summary(request):
                 expected_date__range=(start_date, end_date), delivery_dept=d
             ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
             ac_d = ARPayment.objects.filter(
-                payment_date__range=(start_date, end_date), ar_record__delivery_dept=d
+                payment_date__range=(start_date, end_date), ar_record__delivery_dept=d,
+                ar_record__deleted_at__isnull=True,
             ).exclude(source__in=NON_CASH_PAYMENT_SOURCES
                       ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
             ap_d = (PaymentInstallment.objects
@@ -750,6 +752,7 @@ def budget_project_compare(request):
     for g in (ARPayment.objects
               .filter(payment_date__range=(start_date, end_date),
                       ar_record__delivery_dept__in=depts,
+                      ar_record__deleted_at__isnull=True,
                       ar_record__project__short_name__isnull=False)
               .exclude(ar_record__project__short_name='')
               .values('ar_record__project__short_name').annotate(s=Sum('amount'))):

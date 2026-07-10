@@ -1,4 +1,5 @@
 <script setup>
+import { onActivated } from 'vue'
 import { confirmDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, onMounted, onBeforeUnmount, provide, defineAsyncComponent, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -1762,6 +1763,12 @@ useModalEsc(
   [() => showHealthModal.value, () => (showHealthModal.value = false)],
   [() => showDelConfirm.value, () => (showDelConfirm.value = false)],
 )
+
+defineOptions({ name: 'ARRecordsPage' })
+// keep-alive 返回本页:DOM 秒开,数据静默刷新(items 未清,列表不闪骨架)。
+// 首次挂载 onMounted 已加载,跳过首个 activated 防双载
+let _kaFirst = true
+onActivated(() => { if (_kaFirst) { _kaFirst = false; return } load() })
 
 onMounted(() => document.addEventListener('click', closeExpMenu))
 onBeforeUnmount(() => document.removeEventListener('click', closeExpMenu))

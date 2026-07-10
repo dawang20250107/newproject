@@ -1,4 +1,5 @@
 <script setup>
+import { onActivated } from 'vue'
 import { confirmDlg } from '../composables/confirm.js'
 import { resultDlg } from '../composables/bulkResult.js'
 import { ref, reactive, onMounted, onBeforeUnmount, computed, watch } from 'vue'
@@ -845,6 +846,12 @@ useModalEsc(
   [() => showBatchSched.value, () => (showBatchSched.value = false)],
   [() => showDelConfirm.value, () => (showDelConfirm.value = false)],
 )
+
+defineOptions({ name: 'ApprovalRecordsPage' })
+// keep-alive 返回本页:DOM 秒开,数据静默刷新(items 未清,列表不闪骨架)。
+// 首次挂载 onMounted 已加载,跳过首个 activated 防双载
+let _kaFirst = true
+onActivated(() => { if (_kaFirst) { _kaFirst = false; return } load() })
 
 onMounted(async ()=>{
   loadDepts()

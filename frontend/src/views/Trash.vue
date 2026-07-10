@@ -13,7 +13,9 @@ const auth = useAuthStore()
 const toast = useToast()
 
 const SELECT_ALL_CAP = 5000  // 与后端单次处理上限对齐
-const activeTab = ref('approvals') // 'approvals' | 'payments'
+const activeTab = ref('approvals') // 'approvals' | 'payments' | 'records'
+// 各页签的回收站接口:审批/付款在 /trash/*;应收在 AR 域 /ar/records/trash
+const TRASH_URL = { approvals: '/trash/approvals', payments: '/trash/payments', records: '/ar/records/trash' }
 const loading = ref(false)
 const items = ref([])
 const total = ref(0)
@@ -44,7 +46,7 @@ async function load() {
   try {
     const params = { page: page.value, size }
     if (deptFilter.value) params.dept = deptFilter.value
-    const r = await api.get(`/trash/${activeTab.value}`, { params })
+    const r = await api.get(TRASH_URL[activeTab.value], { params })
     if (seq !== reqSeq) return   // 已有更新的请求在途，丢弃本次过期响应
     items.value = r.data.items || []
     total.value = r.data.total || 0
@@ -93,7 +95,7 @@ async function doAction(action) {
   if (action === 'purge') {
     // 影响面前置展示 + 输入式确认：彻底删除不可恢复，必须让操作者看清删的是多少钱
     const sel = items.value.filter(i => selectedIds.value.has(i.id))
-    const amtSum = sel.reduce((a, i) => a + (parseFloat(activeTab.value === 'approvals' ? i.amount : i.total_amount) || 0), 0)
+    const amtSum = sel.reduce((a, i) => a + (parseFloat(activeTab.value === 'approvals' ? i.amount : (activeTab.value === 'records' ? i.estimated_amount : i.total_amount)) || 0), 0)
     const paidSum = activeTab.value === 'payments'
       ? sel.reduce((a, i) => a + (parseFloat(i.total_paid) || 0), 0) : 0
     const detail = [
@@ -104,7 +106,7 @@ async function doAction(action) {
     detail.push('彻底删除后无法通过任何方式找回。')
     if (!(await confirmDlg({
       title: '彻底删除（不可恢复）', danger: true,
-      message: `即将彻底删除 ${allAcross.value ? total.value : selectedCount.value} 条${activeTab.value === 'approvals' ? '审批' : '付款'}记录`,
+      message: `即将彻底删除 ${allAcross.value ? total.value : selectedCount.value} 条${({approvals:'审批',payments:'付款',records:'应收'})[activeTab.value]}记录`,
       detail, requireText: '删除', confirmText: '彻底删除',
     }))) return
   }
@@ -113,7 +115,7 @@ async function doAction(action) {
     const body = allAcross.value ? { action, all: true } : { action, ids: [...selectedIds.value] }
     // dept 作为 query 参数传给后端，使跨页 all 操作同样限定在当前事业部筛选内
     const cfg = deptFilter.value ? { params: { dept: deptFilter.value } } : {}
-    const r = await api.post(`/trash/${activeTab.value}`, body, cfg)
+    const r = await api.post(TRASH_URL[activeTab.value], body, cfg)
     const n = r.data.count
     const skipped = r.data.skipped || []
     if (n) toast.success(`已${label} ${n} 条` + (allAcross.value && total.value > n ? `（单次上限 ${SELECT_ALL_CAP}，剩余请再次操作）` : ''))
@@ -129,7 +131,7 @@ async function doAction(action) {
                  '付款的实付分期记录也会被永久抹除，审计痕迹不可恢复'],
         requireText: '级联删除', confirmText: '级联彻底删除',
       })) {
-        const r2 = await api.post(`/trash/${activeTab.value}`,
+        const r2 = await api.post(TRASH_URL[activeTab.value],
           { action: 'purge', ids: cascadable.map(s => s.id), cascade: true }, cfg)
         const n2 = r2.data.count, sk2 = r2.data.skipped || []
         if (n2) toast.success(`已连同关联付款彻底删除 ${n2} 条审批`)
@@ -168,6 +170,7 @@ function fmtDate(s) {
       <div class="trash-tabs">
         <button :class="['ttab', activeTab === 'approvals' ? 'active' : '']" @click="switchTab('approvals')">审批管理</button>
         <button :class="['ttab', activeTab === 'payments' ? 'active' : '']" @click="switchTab('payments')">付款管理</button>
+        <button :class="['ttab', activeTab === 'records' ? 'active' : '']" @click="switchTab('records')">应收记录</button>
       </div>
       <select v-model="deptFilter" class="trash-dept" @change="onDeptChange" title="按事业部筛选">
         <option value="">全部事业部</option>
@@ -219,6 +222,9 @@ function fmtDate(s) {
               <th v-if="activeTab === 'approvals'">摘要</th>
               <th v-if="activeTab === 'payments'">付款事项</th>
               <th v-if="activeTab === 'payments'">收款方</th>
+              <th v-if="activeTab === 'records'">项目</th>
+              <th v-if="activeTab === 'records'">运作日期</th>
+              <th v-if="activeTab === 'records'">未收</th>
               <th>金额</th>
               <th>删除时间</th>
               <th>删除人</th>
@@ -233,7 +239,10 @@ function fmtDate(s) {
               <td v-if="activeTab === 'approvals'" class="ellipsis" :title="it.summary">{{ it.summary }}</td>
               <td v-if="activeTab === 'payments'" class="ellipsis" :title="it.project_desc">{{ it.project_desc }}</td>
               <td v-if="activeTab === 'payments'" class="ellipsis">{{ it.payee }}</td>
-              <td class="mono">{{ activeTab === 'approvals' ? it.amount : it.total_amount }}</td>
+              <td v-if="activeTab === 'records'" class="ellipsis" :title="it.short_name || it.customer_name">{{ it.short_name || it.customer_name }}</td>
+              <td v-if="activeTab === 'records'" class="mono">{{ it.operation_date || (it.operation_year + '-' + String(it.operation_month).padStart(2, '0')) }}</td>
+              <td v-if="activeTab === 'records'" class="mono">{{ it.outstanding_amount }}</td>
+              <td class="mono">{{ activeTab === 'approvals' ? it.amount : (activeTab === 'records' ? it.estimated_amount : it.total_amount) }}</td>
               <td class="mono muted">{{ fmtDate(it.deleted_at) }}</td>
               <td class="muted">{{ it.deleted_by_name || '-' }}</td>
             </tr>

@@ -1,1 +1,0 @@
-import{A as e,M as t}from"./vendor-vue-CnpyQldD.js";function n(...n){function r(e){if(e.key===`Escape`&&!document.querySelector(`.cfm-overlay, .ctxm, .colf-pop`))for(let t=n.length-1;t>=0;t--){let[r,i]=n[t];if(r()){e.stopPropagation(),i();return}}}t(()=>document.addEventListener(`keydown`,r)),e(()=>document.removeEventListener(`keydown`,r))}export{n as t};

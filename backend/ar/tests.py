@@ -672,14 +672,20 @@ class ARPermissionRegressionTests(TestCase):
         r3 = ARRecord.objects.create(project=project, operation_year=2026, operation_month=7,
                                      estimated_amount=Decimal('300.00'))
 
-        # 显式 ids 删除 r1（级联其回款）
+        # 显式 ids 删除 r1：有回款 → 不带 force 被守卫跳过；超管带 force → 软删进回收站
         resp = self.client.post('/api/pk/ar/records/bulk-delete',
                                 data=_json.dumps({'ids': [r1.id]}),
                                 content_type='application/json', **self.auth(admin))
         self.assertEqual(resp.status_code, 200, resp.content)
-        self.assertEqual(resp.json()['data']['deleted'], 1)
-        self.assertFalse(ARRecord.objects.filter(pk=r1.id).exists())
-        self.assertEqual(ARPayment.objects.filter(ar_record_id=r1.id).count(), 0)
+        self.assertEqual(resp.json()['data']['deleted'], 0)          # 守卫拦截
+        self.assertEqual(len(resp.json()['data']['skipped']), 1)
+        resp = self.client.post('/api/pk/ar/records/bulk-delete',
+                                data=_json.dumps({'ids': [r1.id], 'force': True}),
+                                content_type='application/json', **self.auth(admin))
+        self.assertEqual(resp.json()['data']['deleted'], 1, resp.content)
+        self.assertFalse(ARRecord.objects.filter(pk=r1.id).exists())   # 台账不可见
+        self.assertTrue(ARRecord.all_objects.filter(pk=r1.id).exists())  # 回收站保留
+        self.assertEqual(ARPayment.objects.filter(ar_record_id=r1.id).count(), 1)  # 回款保留可还原
 
         # all + 条件：删除 预估>150 的全部（r2/r3），r 不在条件外
         conds = _json.dumps([{'t': 'amt', 'field': 'estimated_amount', 'op': 'gt', 'value': 150}])
@@ -1655,6 +1661,52 @@ class AdvanceModuleTests(TestCase):
         k = self.client.get('/api/pk/ar/advances/kpi', params, **self.auth(admin)).json()['data']
         self.assertEqual(k['预收']['count'], 2)                           # KPI 同口径
         self.assertEqual(k['预收']['advance_amount'], 300.0)
+
+    def test_ar_record_soft_delete_trash_and_guards(self):
+        """应收软删除:回收站可还原;有回款仅超管可 force;预收抵扣一律拦;
+        软删后列表/未收聚合/现金流全部排除。"""
+        admin = self.make_user('13911100091', 'finance_director', role='super_admin')
+        op = self.make_user('13911100090', 'finance_director')   # 非超管、有删除权限
+        proj = self.create_project()
+        rec = self._ar_record(proj, 1000)
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('400'),
+                                 payment_date=date(2026, 6, 10), source='回款')
+        # 非超管删有回款的应收 → 403
+        r = self.client.delete(f'/api/pk/ar/records/{rec.id}', **self.auth(op))
+        self.assertEqual(r.status_code, 403, r.content)
+        # 超管不带 force → 409;带 force → 软删
+        r2 = self.client.delete(f'/api/pk/ar/records/{rec.id}', **self.auth(admin))
+        self.assertEqual(r2.status_code, 409, r2.content)
+        r3 = self.client.delete(f'/api/pk/ar/records/{rec.id}?force=1', **self.auth(admin))
+        self.assertEqual(r3.status_code, 200, r3.content)
+        self.assertFalse(ARRecord.objects.filter(pk=rec.id).exists())        # 默认管理器不可见
+        self.assertTrue(ARRecord.all_objects.filter(pk=rec.id).exists())     # 数据仍在
+        self.assertTrue(ARPayment.objects.filter(ar_record_id=rec.id).exists())  # 回款保留
+        # 现金流排除软删记录的回款
+        cf = self.client.get('/api/pk/ar/cashflow?start_date=2026-06-01&end_date=2026-06-30',
+                             **self.auth(admin)).json()['data']
+        self.assertEqual(cf['totals']['collected'], [0.0])
+        # 回收站列表可见 → 还原 → 回到台账,未收重算正确
+        t = self.client.get('/api/pk/ar/records/trash', **self.auth(admin)).json()['data']
+        self.assertEqual(t['total'], 1)
+        rr = self.post('/api/pk/ar/records/trash', {'action': 'restore', 'ids': [rec.id]}, admin)
+        self.assertEqual(rr.json()['data']['count'], 1, rr.content)
+        rec2 = ARRecord.objects.get(pk=rec.id)
+        self.assertEqual(rec2.outstanding_amount, Decimal('600'))
+        cf2 = self.client.get('/api/pk/ar/cashflow?start_date=2026-06-01&end_date=2026-06-30',
+                              **self.auth(admin)).json()['data']
+        self.assertEqual(cf2['totals']['collected'], [400.0])
+        # 预收抵扣拦截:核销生成抵扣回款后,连超管 force 也不能删
+        adv = AdvanceRecord.objects.create(
+            direction='预收', project=proj, delivery_dept=self.dept, counterparty='Contract A',
+            occur_year=2026, occur_month=5, occur_date=date(2026, 5, 1),
+            advance_amount=Decimal('300'))
+        w = self.post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
+                      {'amount': '100', 'writeoff_date': '2026-06-15', 'ar_record_id': rec.id}, admin)
+        self.assertEqual(w.status_code, 200, w.content)
+        r4 = self.client.delete(f'/api/pk/ar/records/{rec.id}?force=1', **self.auth(admin))
+        self.assertEqual(r4.status_code, 409, r4.content)
+        self.assertIn('预收抵扣', r4.json().get('error', ''))
 
     def test_payment_future_date_rejected(self):
         """回款日期不得晚于今天:未来日期会提前美化当期回款/现金流/账龄。"""
