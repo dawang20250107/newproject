@@ -21,6 +21,7 @@ import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import { useModalEsc } from '../../composables/useModalEsc.js'
+import Pager from '../../components/Pager.vue'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -30,10 +31,10 @@ const stats = ref(null)
 const loading = ref(false)
 const loadErr = ref('')
 const page = ref(1)
-const size = 50
+const size = ref(50)
 const jumpPage = ref(1)
 function doJump() {
-  const tp = Math.ceil(total.value / size)
+  const tp = Math.ceil(total.value / size.value)
   const p = Math.max(1, Math.min(tp, jumpPage.value || 1))
   page.value = p; load()
 }
@@ -70,7 +71,7 @@ const statDept = computed(() => {
   return (sel && Array.isArray(sel.value) && sel.value.length === 1) ? sel.value[0] : ''
 })
 function buildParams() {
-  const p = { page: page.value, size }
+  const p = { page: page.value, size: size.value }
   if (filters.q.trim()) p.q = filters.q.trim()
   if (filters.is_shared) p.is_shared = filters.is_shared
   if (filters.is_draft) p.is_draft = filters.is_draft
@@ -743,12 +744,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           </tbody>
         </table>
       </div>
-      <div v-if="total > size" class="pagination">
-        <button :disabled="page <= 1" class="page-btn" @click="page--; load()">‹ 上一页</button>
-        <span class="page-info">第 {{ page }} 页 · 共 {{ total }} 条</span>
-        <button :disabled="page * size >= total" class="page-btn" @click="page++; load()">下一页 ›</button>
-        <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" :placeholder="`1-${Math.ceil(total / size)}`" class="pg-jump-input" @keyup.enter="doJump" />页</span>
-      </div>
+      <Pager v-model:page="page" v-model:size="size" :total="total" storage-key="ar_projects" @change="load()" />
     </div>
     </div><!-- /projTab list -->
 

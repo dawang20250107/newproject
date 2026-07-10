@@ -842,8 +842,9 @@ body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
   }
 }
 
-/* Mobile filter bar */
-@media (max-width: 640px) {
+/* Mobile/中屏 filter bar——断点按「内容有效宽」校准:视口宽扣除 206px 导航后,
+   900px 视口的内容区≈694px,此时筛选栏已需要换行收紧(原 640 只覆盖真手机) */
+@media (max-width: 900px) {
   .filter-bar, .filter-row, .filter-strip {
     flex-wrap: wrap;
     gap: 6px !important;
@@ -863,17 +864,6 @@ body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
   }
 }
 
-/* Payments KPI mobile compact */
-@media (max-width: 640px) {
-  .pk-kpi-row, .pk-kpi-bar {
-    flex-wrap: wrap !important;
-    gap: 8px !important;
-  }
-  .pk-kpi-row > *, .pk-kpi-bar > * {
-    flex: 0 0 calc(50% - 4px) !important;
-    min-width: 0 !important;
-  }
-}
 
 /* Mobile sticky first column */
 @media (max-width: 640px) {

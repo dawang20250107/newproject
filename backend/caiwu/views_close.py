@@ -64,19 +64,19 @@ def close_checklist(request):
         items.append({'key': key, 'label': label, 'status': status,
                       'value': value, 'detail': detail, 'link': link})
 
-    # ── 1/2. 部门明细表 & 利润表 提交发布 ─────────────────────────────────────
-    for key, label, btype in (('dept_report', '部门明细表发布', ImportBatch.TYPE_DEPT),
-                              ('pl_report', '手工利润表发布', ImportBatch.TYPE_PL)):
-        pub = set(ImportBatch.objects.filter(
-            year=year, month=month, batch_type=btype,
-            status=ImportBatch.STATUS_PUBLISHED, business_unit__in=bus)
-            .values_list('business_unit', flat=True))
-        missing = [b for b in bus if b not in pub]
-        add(key, label,
-            'ok' if not missing else 'todo',
-            f'{len(pub)}/{len(bus)} 个事业部已发布',
-            '/caiwu/data',
-            '未发布：' + '、'.join(missing) if missing else '全部就绪')
+    # ── 1. 部门明细表提交发布 ─────────────────────────────────────────────────
+    # 注：TYPE_PL(手工利润表)为遗留常量——上传路径只建部门明细表，利润表校验由
+    # _compute_pl_check 从明细表推算，系统中不存在「上传利润表」操作，故不设此检查项
+    pub = set(ImportBatch.objects.filter(
+        year=year, month=month, batch_type=ImportBatch.TYPE_DEPT,
+        status=ImportBatch.STATUS_PUBLISHED, business_unit__in=bus)
+        .values_list('business_unit', flat=True))
+    missing = [b for b in bus if b not in pub]
+    add('dept_report', '部门明细表发布',
+        'ok' if not missing else 'todo',
+        f'{len(pub)}/{len(bus)} 个事业部已发布',
+        '/caiwu/data',
+        '未发布：' + '、'.join(missing) if missing else '全部就绪')
 
     # ── 3. 项目毛利导入 ───────────────────────────────────────────────────────
     pm_bus = set(ProjectMargin.objects.filter(year=year, month=month, business_unit__in=bus)

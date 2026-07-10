@@ -8,6 +8,7 @@ import { useAuthStore } from '../stores/auth.js'
 import { useToast } from '../composables/useToast.js'
 import { useShiftSelect } from '../composables/useShiftSelect.js'
 import { useEscClearSelection } from '../composables/useEscClearSelection.js'
+import Pager from '../components/Pager.vue'
 
 const auth = useAuthStore()
 const toast = useToast()
@@ -20,7 +21,7 @@ const loading = ref(false)
 const items = ref([])
 const total = ref(0)
 const page = ref(1)
-const size = 50
+const size = ref(50)
 const selectedIds = ref(new Set())
 const allAcross = ref(false)   // 跨页全选：作用于全部软删记录
 const deptFilter = ref('')     // 页内事业部筛选（'' = 全部）
@@ -44,7 +45,7 @@ async function load() {
   selectedIds.value = new Set()
   allAcross.value = false
   try {
-    const params = { page: page.value, size }
+    const params = { page: page.value, size: size.value }
     if (deptFilter.value) params.dept = deptFilter.value
     const r = await api.get(TRASH_URL[activeTab.value], { params })
     if (seq !== reqSeq) return   // 已有更新的请求在途，丢弃本次过期响应
@@ -251,11 +252,7 @@ function fmtDate(s) {
         </div>
         <div class="trash-footer">
           <span class="trash-count">共 {{ total }} 条</span>
-          <div class="trash-pg" v-if="total > size">
-            <button :disabled="page === 1" @click="page--; load()">上一页</button>
-            <span>{{ page }}</span>
-            <button :disabled="page * size >= total" @click="page++; load()">下一页</button>
-          </div>
+          <Pager v-model:page="page" v-model:size="size" :total="total" storage-key="trash" @change="load()" />
         </div>
       </template>
     </div>

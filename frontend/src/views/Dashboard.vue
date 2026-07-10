@@ -222,7 +222,7 @@ a.overdue-alert:hover { background: rgba(198,40,40,0.13); transform: translateX(
 .kpi-grid { gap: 10px; margin-bottom: 12px; }
 .kpi-card { padding: 13px 16px; }
 .kpi-card .label { margin-bottom: 5px; }
-.kpi-card .value { font-size: 24px; }
+.kpi-card .value { font-size: 28px; }
 .kpi-card .sub { margin-top: 3px; }
 .overdue-alert { padding: 9px 14px; margin-bottom: 12px; }
 .card { padding: 12px 14px; }

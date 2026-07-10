@@ -21,6 +21,7 @@ import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import { useModalEsc } from '../../composables/useModalEsc.js'
+import Pager from '../../components/Pager.vue'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -60,7 +61,7 @@ async function bulkDelete() {
 const loading = ref(false)
 const loadErr = ref('')
 const page = ref(1)
-const size = 50
+const size = ref(50)
 
 // 顶部全局关键字 + 与列头无重复的页级控件（实际收付时间区间/核销状态）。
 // 部门改由列头「交付部门」筛选，dept 不再出现于工具栏。
@@ -137,7 +138,7 @@ const schemes = useTableSchemes('ar_advances', {
   onApply: () => { load(true) },
 })
 function buildParams() {
-  const p = { direction: direction.value, ...filters, page: page.value, size }
+  const p = { direction: direction.value, ...filters, page: page.value, size: size.value }
   if (projectFilter.value) p.project_id = projectFilter.value.id
   if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
   if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
@@ -330,11 +331,11 @@ const diffBusy = computed(() => diffView.value === 'project' ? diffLoading.value
 function onFilterChange() { load(true) }
 let qTimer = null
 function onQInput() { clearTimeout(qTimer); qTimer = setTimeout(() => load(true), 300) }
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size)))
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size.value)))
 function go(p) { if (p < 1 || p > totalPages.value) return; page.value = p; load() }
 const jumpPage = ref(1)
 function doJump() {
-  const tp = Math.ceil(total.value / size)
+  const tp = Math.ceil(total.value / size.value)
   const p = Math.max(1, Math.min(tp, jumpPage.value || 1))
   page.value = p; load()
 }
@@ -948,12 +949,7 @@ onMounted(async () => {
           <span class="sb-range">{{ rangeLabel }}</span>
         </div>
 
-        <div class="pager" v-if="totalPages > 1">
-          <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="go(page - 1)">上一页</button>
-          <span>{{ page }} / {{ totalPages }}（共 {{ total }} 条）</span>
-          <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="go(page + 1)">下一页</button>
-          <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" :placeholder="`1-${totalPages}`" class="pg-jump-input" @keyup.enter="doJump" />页</span>
-        </div>
+        <Pager v-model:page="page" v-model:size="size" :total="total" storage-key="ar_advances" @change="load()" />
       </div>
     </template>
 
@@ -1360,7 +1356,7 @@ onMounted(async () => {
 .kpi-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .kpi { flex: 1; min-width: 108px; background: var(--card); border: 1px solid var(--border); border-radius: 9px; padding: 8px 11px; }
 .kpi-k { font-size: 11px; color: var(--muted); }
-.kpi-v { font-size: 16px; font-weight: 800; color: var(--text); margin-top: 2px; line-height: 1.2; }
+.kpi-v { font-size: 20px; font-weight: 800; color: var(--text); margin-top: 2px; line-height: 1.2; }
 .kpi-sub { font-size: 11px; font-weight: 600; color: var(--muted); margin-left: 5px; }
 .kpi-range { font-size: 10.5px; font-weight: 400; color: var(--muted); margin-left: 6px; opacity: .8; }
 

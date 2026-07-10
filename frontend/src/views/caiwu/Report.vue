@@ -316,7 +316,7 @@ onMounted(() => {
   background: rgba(201,99,66,.12); color: var(--primary);
 }
 .kpi-tag-year { background: rgba(100,116,139,.14); color: #64748b; }
-.kpi-5 :deep(.value) { font-size: 21px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.kpi-5 :deep(.value) { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.2; }
 .value-year { font-size: 15.5px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; color: #475569; }
 .kpi-row-year { margin-top: 6px; padding-top: 6px; border-top: 1px dashed rgba(0,0,0,.08); }
 

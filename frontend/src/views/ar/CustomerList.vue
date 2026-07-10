@@ -13,6 +13,7 @@ import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import { useToast } from '../../composables/useToast.js'
+import Pager from '../../components/Pager.vue'
 const toast = useToast()
 
 // 项目损益卡（复用 P1 组件）— 点客户项目即下钻全链路损益
@@ -26,7 +27,7 @@ const total = ref(0)
 const loading = ref(false)
 const loadErr = ref('')
 const page = ref(1)
-const size = 50
+const size = ref(50)
 const filters = reactive({ q: '', level: '', dept: '', status: '' })
 const STATUSES = ['运作中', '中断', '结束']
 const statusClass = s => ({ '运作中': 'st-on', '中断': 'st-pause', '结束': 'st-end' }[s] || 'st-on')
@@ -143,7 +144,7 @@ async function load(reset = false) {
   loading.value = true
   loadErr.value = ''
   try {
-    const params = { ...filters, page: page.value, size, sort: sortKey.value, dir: sortDir.value }
+    const params = { ...filters, page: page.value, size: size.value, sort: sortKey.value, dir: sortDir.value }
     if (Object.keys(colFilters).length) params.filters = JSON.stringify(colFilters)
     const res = await ar.listCustomers(params)
     items.value = res.data.items
@@ -151,7 +152,7 @@ async function load(reset = false) {
   } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
   } finally { loading.value = false }
 }
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size)))
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size.value)))
 function go(p) { if (p < 1 || p > totalPages.value) return; page.value = p; load() }
 const jumpPage = ref(1)
 function doJump() {
@@ -406,12 +407,7 @@ onMounted(async () => {
           </tbody>
         </table>
       </div>
-      <div v-if="total > size" class="cu-pager">
-        <button :disabled="page <= 1" class="page-btn" @click="go(page - 1)">‹ 上一页</button>
-        <span class="page-info">第 {{ page }} / {{ totalPages }} 页 · 共 {{ total }} 个客户</span>
-        <button :disabled="page >= totalPages" class="page-btn" @click="go(page + 1)">下一页 ›</button>
-        <span class="pg-jump">跳至<input v-model.number="jumpPage" class="pg-jump-input" type="number" min="1" :max="totalPages" :placeholder="`1-${totalPages}`" @keyup.enter="doJump" />页<button class="page-btn" @click="doJump">Go</button></span>
-      </div>
+      <Pager v-model:page="page" v-model:size="size" :total="total" storage-key="ar_customers" @change="load()" />
     </div>
 
     <!-- 客户详情抽屉 -->
