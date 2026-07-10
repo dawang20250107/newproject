@@ -90,6 +90,9 @@
 /* 键盘可达性：焦点可见（仅键盘触发，鼠标点击不出框） */
 :focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; border-radius: 4px; }
 
+/* 勾选列整格热区（useInteractionFeel 全局代理点击）：手型提示整格可点 */
+td.sel-col, th.sel-col { cursor: pointer; }
+
 html.density-compact {
   --td-h:   28px;
   --td-py:  3px;

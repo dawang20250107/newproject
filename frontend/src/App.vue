@@ -10,10 +10,14 @@ import ResultHost from './components/ResultHost.vue'
 import ErrorBoundary from './components/ErrorBoundary.vue'
 import { useAuthStore } from './stores/auth.js'
 import { useRouter } from 'vue-router'
+import { useInteractionFeel } from './composables/useInteractionFeel.js'
 
 const route = useRoute()
 const auth = useAuthStore()
 const showNav = computed(() => auth.isLoggedIn && !route.meta.public)
+
+// 全局操作手感：/ 聚焦搜索、搜索框 Esc 清空、勾选列整格热区、数字框聚焦全选
+useInteractionFeel()
 
 const AUTO_COLLAPSE_MS = 10000
 // User's explicit choice, if any: 'collapsed' | 'expanded' | null (never toggled).

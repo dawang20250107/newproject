@@ -232,8 +232,10 @@ function fmtDate(s) {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(it, idx) in items" :key="it.id" :class="{ 'row-sel': selectedIds.has(it.id) }" @click="onRowSelClick($event, idx, it.id)" style="cursor:pointer" title="按住 Shift 点击可区间勾选">
-              <td class="sel-col" @click.stop><input type="checkbox" :checked="selectedIds.has(it.id)" @click.stop="onRowSelClick($event, idx, it.id)"/></td>
+            <!-- 整行即热区（data-no-selzone 豁免全局勾选列热区，避免双重切换）：
+                 格子空白点击冒泡到行=切换勾选；勾选框自身点击截断防止双触发 -->
+            <tr v-for="(it, idx) in items" :key="it.id" data-no-selzone :class="{ 'row-sel': selectedIds.has(it.id) }" @click="onRowSelClick($event, idx, it.id)" style="cursor:pointer" title="按住 Shift 点击可区间勾选">
+              <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(it.id)" @click.stop="onRowSelClick($event, idx, it.id)"/></td>
               <td v-if="activeTab === 'approvals'">{{ it.applicant }}</td>
               <td>{{ it.department }}</td>
               <td v-if="activeTab === 'approvals'">{{ it.approval_number }}</td>

@@ -2560,7 +2560,8 @@ function clearFilters() {
                 <th>项目</th><th>运作日期</th><th>应收到期</th><th class="amt">上账</th><th class="amt">未收</th>
               </tr></thead>
               <tbody>
-                <tr v-for="r in g.records" :key="r.id" :class="{ 'row-sel': (owSel[g.customer] || new Set()).has(r.id) }" @click="owToggle(g.customer, r.id)">
+                <tr v-for="r in g.records" :key="r.id" data-no-selzone
+                    :class="{ 'row-sel': (owSel[g.customer] || new Set()).has(r.id) }" @click="owToggle(g.customer, r.id)">
                   <td class="sel-col"><input type="checkbox" :checked="(owSel[g.customer] || new Set()).has(r.id)" @click.stop @change="owToggle(g.customer, r.id)" /></td>
                   <td>{{ r.short_name }}</td>
                   <td>{{ r.operation_date || '—' }}</td>

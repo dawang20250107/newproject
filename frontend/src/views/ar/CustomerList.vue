@@ -394,7 +394,8 @@ onMounted(async () => {
             </tr>
             <tr v-else-if="!loading && !items.length"><td colspan="9" class="empty">暂无客户数据</td></tr>
             <tr v-for="c in items" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)" @dblclick="onRowDblClick(c, $event)" @contextmenu.prevent="ctx.open($event, c)">
-              <td class="ctr chk-col sticky-col" @click.stop><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
+              <!-- 勾选格整格热区：点空白处也切换勾选（点中框本身走 change，防双触发） -->
+              <td class="ctr chk-col sticky-col" @click.stop="$event.target.tagName !== 'INPUT' && toggleSel(c.id)"><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
               <td class="l name sticky-col" :style="cw.thStyle('name')" :title="c.name + (c.contact ? ' · ' + c.contact : '')">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
               <td class="ctr"><span class="st-pill" :class="statusClass(c.status)">{{ c.status || '运作中' }}</span></td>
               <td class="ctr"><span v-if="c.level" class="lvl" :class="levelClass(c.level)">{{ c.level }}</span><span v-else class="muted">—</span></td>
