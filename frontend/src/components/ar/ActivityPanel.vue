@@ -10,6 +10,8 @@ import ar from '../../api/ar.js'
 import { useToast } from '../../composables/useToast.js'
 import { todayCST, DEPARTMENTS, COLLECTION_METHODS, DEFAULT_COLLECTION_METHOD, DRAFT_METHOD, DRAFT_STATUSES, DEFAULT_DRAFT_STATUS } from '../../constants.js'
 import { copyText } from '../../utils/clipboard.js'
+import ActThread from './ActThread.vue'
+import AttFiles from './AttFiles.vue'
 
 const props = defineProps({
   rec:        { type: Object, required: true },
@@ -266,72 +268,21 @@ async function refreshRecordAndPayments() {
   payments.value = Array.isArray(payRes.data) ? payRes.data : []
 }
 
-// ── 活动管理 ─────────────────────────────────────────────────────────────────
-const ACT_ICON = { call: '📞', email: '📧', visit: '🚶', meeting: '💬', system: '⚙️', note: '📝', other: '💡' }
-const STATUS_COLOR = { in_progress: '#1565c0', pending: '#e8830c', resolved: '#2e7d32', no_response: '#9e9e9e' }
+// ── 活动管理（时间线的编辑/删除/状态轮换在 ActThread 内完成，这里只同步数据源）─
 const STATUSES = [
   { v: 'in_progress', l: '跟进中' }, { v: 'pending', l: '待回复' },
   { v: 'resolved',    l: '已解决' }, { v: 'no_response', l: '无响应' },
 ]
+function onActUpdated(act) {
+  const i = allActivities.value.findIndex(a => a.id === act.id)
+  if (i !== -1) allActivities.value[i] = act
+}
+function onActDeleted(act) {
+  allActivities.value = allActivities.value.filter(a => a.id !== act.id)
+  emit('field-saved', { id: props.rec.id, activity_count: Math.max(0, (props.rec.activity_count || 1) - 1) })
+}
 
-const editActId  = ref(null)
-const editActBuf = reactive({ note: '', status: 'in_progress', follow_up_date: '' })
-
-function startActEdit(act) {
-  editActId.value  = act.id
-  editActBuf.note  = act.note || ''
-  editActBuf.status = act.status || 'in_progress'
-  editActBuf.follow_up_date = act.follow_up_date || ''
-}
-async function commitActEdit(act) {
-  if (!editActBuf.note.trim()) return
-  try {
-    const res = await ar.updateActivity(props.rec.id, act.id, {
-      note: editActBuf.note, status: editActBuf.status,
-      follow_up_date: editActBuf.follow_up_date || null,
-    })
-    const i = allActivities.value.findIndex(a => a.id === act.id)
-    if (i !== -1) allActivities.value[i] = res.data
-    editActId.value = null
-    toast.success('已更新')
-  } catch (e) { toast.error(errMsg(e)) }
-}
-async function deleteAct(act) {
-  if (!(await confirmDlg(`删除这条${act.act_type_display || ''}记录？`))) return
-  try {
-    await ar.deleteActivity(props.rec.id, act.id)
-    allActivities.value = allActivities.value.filter(a => a.id !== act.id)
-    emit('field-saved', { id: props.rec.id, activity_count: Math.max(0, (props.rec.activity_count || 1) - 1) })
-    toast.success('已删除')
-  } catch (e) { toast.error(errMsg(e)) }
-}
-async function toggleActStatus(act) {
-  const order = ['in_progress', 'pending', 'resolved', 'no_response']
-  const next  = order[(order.indexOf(act.status) + 1) % order.length]
-  try {
-    const res = await ar.updateActivity(props.rec.id, act.id, { note: act.note, status: next })
-    const i   = allActivities.value.findIndex(a => a.id === act.id)
-    if (i !== -1) allActivities.value[i] = res.data
-  } catch (e) { toast.error(errMsg(e)) }
-}
-function fmtActTime(iso) { return iso ? iso.replace('T', ' ').slice(0, 16) : '' }
-
-// ── 附件 ─────────────────────────────────────────────────────────────────────
-function fileIcon(att) {
-  const ext = (att.file_name || '').split('.').pop().toLowerCase()
-  if (ext === 'pdf') return '📄'
-  if (['xlsx','xls','csv'].includes(ext)) return '📊'
-  if (['docx','doc'].includes(ext)) return '📝'
-  return '📎'
-}
-function fmtSize(b) {
-  if (b == null) return ''
-  if (b < 1024)    return b + 'B'
-  if (b < 1048576) return (b / 1024).toFixed(1) + 'KB'
-  return (b / 1048576).toFixed(1) + 'MB'
-}
-const dragOverStage = ref('')
-
+// ── 附件（展示/收集在 AttFiles 内完成，上传删除留在这里同步计数与数组）────────
 async function uploadTo(file, stage) {
   if (!file) return
   const ext = '.' + file.name.split('.').pop().toLowerCase()
@@ -441,6 +392,28 @@ async function copyLetter() {
   ok ? toast.success('催款函已复制') : toast.error('复制失败')
 }
 
+// 催款话术：与「催款作战台」同一套标准文案，轻量场景（微信/群）比催款函更顺手
+async function copyDunMsg() {
+  const r = props.rec
+  const ym = r.operation_date || (r.operation_year ? `${r.operation_year}/${String(r.operation_month || 0).padStart(2, '0')}` : '')
+  const text = [
+    `【催款提醒】${r.customer_name || ''}`,
+    `项目：${r.short_name || r.customer_name || '—'}${ym ? `（${ym} 账期）` : ''}`,
+    r.due_date ? `应收到期日：${r.due_date}${overdueDays.value > 0 ? `，已逾期 ${overdueDays.value} 天` : ''}` : '',
+    `未结算金额：¥${fmtFull(outstanding.value)}`,
+    `请贵司尽快安排结算；如款项已在途，烦请回传汇款凭证，谢谢配合。`,
+    r.delivery_dept ? `—— ${r.delivery_dept}` : '',
+  ].filter(Boolean).join('\n')
+  const ok = await copyText(text)
+  ok ? toast.success('催款话术已复制，可直接粘贴发送') : toast.error('复制失败')
+}
+
+// 逾期严重度四级（对齐作战台 30/60/90），驱动面板顶部的严重度色线
+const sevLevel = computed(() => {
+  const d = overdueDays.value
+  return d > 90 ? 3 : d > 60 ? 2 : d > 30 ? 1 : 0
+})
+
 async function copySummary() {
   const r = props.rec
   const invDone = !!(r.invoice_date || Number(r.actual_invoice_amount) > 0)
@@ -483,9 +456,9 @@ function onPaste(e) {
 }
 function onKey(e) {
   if (e.key !== 'Escape') return
+  // 时间线行内编辑的 Esc 由 ActThread 内部处理并阻断冒泡，不会走到这里
   if (showLetter.value)   { showLetter.value = false; return }
   if (editingField.value) { editingField.value = ''; return }
-  if (editActId.value)    { editActId.value = null; return }
   close()
 }
 </script>
@@ -494,6 +467,9 @@ function onKey(e) {
   <Teleport to="body">
     <div class="ap-backdrop" :class="{ 'ap-open': visible }" @click.self="close"></div>
     <div class="ap-panel" :class="{ 'ap-open': visible }">
+
+      <!-- 逾期严重度色线（与催款作战台同一套 30/60/90 分级配色） -->
+      <div v-if="overdueDays > 0" class="ap-sevline" :class="'ap-sev' + sevLevel"></div>
 
       <!-- ═══ 头部 ═══ -->
       <div class="ap-header">
@@ -626,52 +602,12 @@ function onKey(e) {
                   </div>
                 </div>
                 <!-- 活动列表 -->
-                <div v-if="actsByStage.reconciliation.length" class="nd-acts">
-                  <div v-for="act in actsByStage.reconciliation" :key="act.id" class="act-item"
-                    :style="`--sc:${STATUS_COLOR[act.status] || '#888'}`">
-                    <span class="act-dot">{{ ACT_ICON[act.act_type] || '💬' }}</span>
-                    <div class="act-main">
-                      <div class="act-top">
-                        <span class="act-who">{{ act.created_by_name || '—' }}</span>
-                        <button class="act-st" @click="act.can_edit && toggleActStatus(act)">{{ act.status_display }}</button>
-                        <span class="act-time">{{ fmtActTime(act.created_at) }}</span>
-                        <template v-if="act.can_edit && editActId !== act.id">
-                          <button class="act-ico" @click="startActEdit(act)">✏️</button>
-                          <button class="act-ico act-ico-del" @click="deleteAct(act)">🗑</button>
-                        </template>
-                      </div>
-                      <template v-if="editActId === act.id">
-                        <textarea v-model="editActBuf.note" class="act-edit-ta" rows="2"></textarea>
-                        <div class="act-edit-foot">
-                          <select v-model="editActBuf.status" class="act-sel"><option v-for="s in STATUSES" :key="s.v" :value="s.v">{{ s.l }}</option></select>
-                          <input v-model="editActBuf.follow_up_date" type="date" class="act-sel" />
-                          <button class="act-save" @click="commitActEdit(act)">保存</button>
-                          <button class="act-cancel" @click="editActId = null">取消</button>
-                        </div>
-                      </template>
-                      <template v-else>
-                        <div class="act-note">{{ act.note }}</div>
-                        <div v-if="act.follow_up_date" class="act-fu">📅 计划跟进 {{ act.follow_up_date }}</div>
-                      </template>
-                    </div>
-                  </div>
-                </div>
+                <ActThread v-if="actsByStage.reconciliation.length" :rec-id="rec.id" :acts="actsByStage.reconciliation"
+                  @updated="onActUpdated" @deleted="onActDeleted" />
                 <!-- 附件 -->
-                <div v-if="attsByStage.reconciliation.length || canWrite" class="nd-atts">
-                  <div v-for="att in attsByStage.reconciliation.filter(a => !a.is_image)" :key="att.id" class="att-file">
-                    <span>{{ fileIcon(att) }}</span>
-                    <a :href="att.download_url" target="_blank" class="att-fname">{{ att.file_name }}</a>
-                    <span class="att-meta">{{ fmtSize(att.file_size) }}</span>
-                    <button v-if="canWrite" class="att-del" @click="deleteAtt(att)">✕</button>
-                  </div>
-                  <div v-if="canWrite" class="att-dz" :class="{ over: dragOverStage === 'reconciliation' }"
-                    @dragover.prevent="dragOverStage = 'reconciliation'" @dragleave="dragOverStage = ''"
-                    @drop.prevent="e => { dragOverStage = ''; uploadTo(e.dataTransfer?.files?.[0], 'reconciliation') }">
-                    ⬆ 上传附件
-                    <input type="file" class="att-dz-inp" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,.xlsx,.xls,.docx,.doc,.txt,.csv"
-                      @change="e => { uploadTo(e.target.files[0], 'reconciliation'); e.target.value = '' }" />
-                  </div>
-                </div>
+                <AttFiles v-if="attsByStage.reconciliation.length || canWrite" :atts="attsByStage.reconciliation"
+                  :can-write="canWrite" label="⬆ 上传附件"
+                  @upload="f => uploadTo(f, 'reconciliation')" @del="deleteAtt" />
                 <button v-if="canWrite" class="nd-compose-btn" @click="focusCompose('reconciliation')">＋ 记录对账跟进</button>
               </template>
 
@@ -733,51 +669,12 @@ function onKey(e) {
                   <button v-if="canWrite" class="nd-skip-toggle" @click="saveFieldValue('invoice_mode', '不开票')">⏭ 标记为无需开票，跳过此步</button>
                 </template>
                 <!-- 活动列表 -->
-                <div v-if="!invoiceSkipped && actsByStage.invoice.length" class="nd-acts">
-                  <div v-for="act in actsByStage.invoice" :key="act.id" class="act-item" :style="`--sc:${STATUS_COLOR[act.status] || '#888'}`">
-                    <span class="act-dot">{{ ACT_ICON[act.act_type] || '💬' }}</span>
-                    <div class="act-main">
-                      <div class="act-top">
-                        <span class="act-who">{{ act.created_by_name || '—' }}</span>
-                        <button class="act-st" @click="act.can_edit && toggleActStatus(act)">{{ act.status_display }}</button>
-                        <span class="act-time">{{ fmtActTime(act.created_at) }}</span>
-                        <template v-if="act.can_edit && editActId !== act.id">
-                          <button class="act-ico" @click="startActEdit(act)">✏️</button>
-                          <button class="act-ico act-ico-del" @click="deleteAct(act)">🗑</button>
-                        </template>
-                      </div>
-                      <template v-if="editActId === act.id">
-                        <textarea v-model="editActBuf.note" class="act-edit-ta" rows="2"></textarea>
-                        <div class="act-edit-foot">
-                          <select v-model="editActBuf.status" class="act-sel"><option v-for="s in STATUSES" :key="s.v" :value="s.v">{{ s.l }}</option></select>
-                          <input v-model="editActBuf.follow_up_date" type="date" class="act-sel" />
-                          <button class="act-save" @click="commitActEdit(act)">保存</button>
-                          <button class="act-cancel" @click="editActId = null">取消</button>
-                        </div>
-                      </template>
-                      <template v-else>
-                        <div class="act-note">{{ act.note }}</div>
-                        <div v-if="act.follow_up_date" class="act-fu">📅 计划跟进 {{ act.follow_up_date }}</div>
-                      </template>
-                    </div>
-                  </div>
-                </div>
+                <ActThread v-if="!invoiceSkipped && actsByStage.invoice.length" :rec-id="rec.id" :acts="actsByStage.invoice"
+                  @updated="onActUpdated" @deleted="onActDeleted" />
                 <!-- 附件 -->
-                <div v-if="!invoiceSkipped && (attsByStage.invoice.length || canWrite)" class="nd-atts">
-                  <div v-for="att in attsByStage.invoice.filter(a => !a.is_image)" :key="att.id" class="att-file">
-                    <span>{{ fileIcon(att) }}</span>
-                    <a :href="att.download_url" target="_blank" class="att-fname">{{ att.file_name }}</a>
-                    <span class="att-meta">{{ fmtSize(att.file_size) }}</span>
-                    <button v-if="canWrite" class="att-del" @click="deleteAtt(att)">✕</button>
-                  </div>
-                  <div v-if="canWrite" class="att-dz" :class="{ over: dragOverStage === 'invoice' }"
-                    @dragover.prevent="dragOverStage = 'invoice'" @dragleave="dragOverStage = ''"
-                    @drop.prevent="e => { dragOverStage = ''; uploadTo(e.dataTransfer?.files?.[0], 'invoice') }">
-                    ⬆ 上传发票附件
-                    <input type="file" class="att-dz-inp" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,.xlsx,.xls,.docx,.doc,.txt,.csv"
-                      @change="e => { uploadTo(e.target.files[0], 'invoice'); e.target.value = '' }" />
-                  </div>
-                </div>
+                <AttFiles v-if="!invoiceSkipped && (attsByStage.invoice.length || canWrite)" :atts="attsByStage.invoice"
+                  :can-write="canWrite" label="⬆ 上传发票附件"
+                  @upload="f => uploadTo(f, 'invoice')" @del="deleteAtt" />
                 <button v-if="canWrite && !invoiceSkipped" class="nd-compose-btn" @click="focusCompose('invoice')">＋ 记录开票跟进</button>
               </template>
 
@@ -839,51 +736,12 @@ function onKey(e) {
                   ✓ 一键结清余款 ¥{{ fmtAmt(outstanding) }}
                 </button>
                 <!-- 活动列表 -->
-                <div v-if="actsByStage.collection.length" class="nd-acts">
-                  <div v-for="act in actsByStage.collection" :key="act.id" class="act-item" :style="`--sc:${STATUS_COLOR[act.status] || '#888'}`">
-                    <span class="act-dot">{{ ACT_ICON[act.act_type] || '💬' }}</span>
-                    <div class="act-main">
-                      <div class="act-top">
-                        <span class="act-who">{{ act.created_by_name || '—' }}</span>
-                        <button class="act-st" @click="act.can_edit && toggleActStatus(act)">{{ act.status_display }}</button>
-                        <span class="act-time">{{ fmtActTime(act.created_at) }}</span>
-                        <template v-if="act.can_edit && editActId !== act.id">
-                          <button class="act-ico" @click="startActEdit(act)">✏️</button>
-                          <button class="act-ico act-ico-del" @click="deleteAct(act)">🗑</button>
-                        </template>
-                      </div>
-                      <template v-if="editActId === act.id">
-                        <textarea v-model="editActBuf.note" class="act-edit-ta" rows="2"></textarea>
-                        <div class="act-edit-foot">
-                          <select v-model="editActBuf.status" class="act-sel"><option v-for="s in STATUSES" :key="s.v" :value="s.v">{{ s.l }}</option></select>
-                          <input v-model="editActBuf.follow_up_date" type="date" class="act-sel" />
-                          <button class="act-save" @click="commitActEdit(act)">保存</button>
-                          <button class="act-cancel" @click="editActId = null">取消</button>
-                        </div>
-                      </template>
-                      <template v-else>
-                        <div class="act-note">{{ act.note }}</div>
-                        <div v-if="act.follow_up_date" class="act-fu">📅 计划跟进 {{ act.follow_up_date }}</div>
-                      </template>
-                    </div>
-                  </div>
-                </div>
+                <ActThread v-if="actsByStage.collection.length" :rec-id="rec.id" :acts="actsByStage.collection"
+                  @updated="onActUpdated" @deleted="onActDeleted" />
                 <!-- 附件 -->
-                <div v-if="attsByStage.collection.length || canWrite" class="nd-atts">
-                  <div v-for="att in attsByStage.collection.filter(a => !a.is_image)" :key="att.id" class="att-file">
-                    <span>{{ fileIcon(att) }}</span>
-                    <a :href="att.download_url" target="_blank" class="att-fname">{{ att.file_name }}</a>
-                    <span class="att-meta">{{ fmtSize(att.file_size) }}</span>
-                    <button v-if="canWrite" class="att-del" @click="deleteAtt(att)">✕</button>
-                  </div>
-                  <div v-if="canWrite" class="att-dz" :class="{ over: dragOverStage === 'collection' }"
-                    @dragover.prevent="dragOverStage = 'collection'" @dragleave="dragOverStage = ''"
-                    @drop.prevent="e => { dragOverStage = ''; uploadTo(e.dataTransfer?.files?.[0], 'collection') }">
-                    ⬆ 上传回款凭证
-                    <input type="file" class="att-dz-inp" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,.xlsx,.xls,.docx,.doc,.txt,.csv"
-                      @change="e => { uploadTo(e.target.files[0], 'collection'); e.target.value = '' }" />
-                  </div>
-                </div>
+                <AttFiles v-if="attsByStage.collection.length || canWrite" :atts="attsByStage.collection"
+                  :can-write="canWrite" label="⬆ 上传回款凭证"
+                  @upload="f => uploadTo(f, 'collection')" @del="deleteAtt" />
                 <button v-if="canWrite" class="nd-compose-btn" @click="focusCompose('collection')">＋ 记录回款跟进</button>
               </template>
             </div>
@@ -918,61 +776,23 @@ function onKey(e) {
                   </span>
                 </div>
               </div>
-              <!-- 冷热度 + 催款函 -->
+              <!-- 冷热度 + 话术 + 催款函 -->
               <div class="dun-meta">
                 <span v-if="daysSinceLastDun != null" class="dun-last" :class="{ cold: daysSinceLastDun >= 7 }">
                   <template v-if="daysSinceLastDun === 0">🔥 今天已跟进</template>
                   <template v-else>{{ daysSinceLastDun >= 7 ? '🥶' : '🕓' }} 上次跟进 {{ daysSinceLastDun }} 天前{{ daysSinceLastDun >= 7 ? ' · 建议再跟进' : '' }}</template>
                 </span>
-                <button class="dun-letter-btn" @click="genDunningLetter">📄 生成催款函</button>
+                <button class="dun-letter-btn" style="margin-left:auto" title="标准催款文案，适合微信/群直接粘贴" @click="copyDunMsg">📋 复制话术</button>
+                <button class="dun-letter-btn" style="margin-left:0" title="正式催款函草稿，可编辑后复制" @click="genDunningLetter">📄 催款函</button>
               </div>
               <!-- 催款动态 -->
-              <div v-if="actsByStage.dunning.length" class="nd-acts">
-                <div v-for="act in actsByStage.dunning" :key="act.id" class="act-item" :style="`--sc:${STATUS_COLOR[act.status] || '#888'}`">
-                  <span class="act-dot">{{ ACT_ICON[act.act_type] || '💬' }}</span>
-                  <div class="act-main">
-                    <div class="act-top">
-                      <span class="act-who">{{ act.created_by_name || '—' }}</span>
-                      <button class="act-st" @click="act.can_edit && toggleActStatus(act)">{{ act.status_display }}</button>
-                      <span class="act-time">{{ fmtActTime(act.created_at) }}</span>
-                      <template v-if="act.can_edit && editActId !== act.id">
-                        <button class="act-ico" @click="startActEdit(act)">✏️</button>
-                        <button class="act-ico act-ico-del" @click="deleteAct(act)">🗑</button>
-                      </template>
-                    </div>
-                    <template v-if="editActId === act.id">
-                      <textarea v-model="editActBuf.note" class="act-edit-ta" rows="2"></textarea>
-                      <div class="act-edit-foot">
-                        <select v-model="editActBuf.status" class="act-sel"><option v-for="s in STATUSES" :key="s.v" :value="s.v">{{ s.l }}</option></select>
-                        <input v-model="editActBuf.follow_up_date" type="date" class="act-sel" />
-                        <button class="act-save" @click="commitActEdit(act)">保存</button>
-                        <button class="act-cancel" @click="editActId = null">取消</button>
-                      </div>
-                    </template>
-                    <template v-else>
-                      <div class="act-note">{{ act.note }}</div>
-                      <div v-if="act.follow_up_date" class="act-fu">📅 计划跟进 {{ act.follow_up_date }}</div>
-                    </template>
-                  </div>
-                </div>
-              </div>
+              <ActThread v-if="actsByStage.dunning.length" :rec-id="rec.id" :acts="actsByStage.dunning"
+                @updated="onActUpdated" @deleted="onActDeleted" />
               <div v-else class="dun-empty">暂无催款跟进记录</div>
               <!-- 催款附件 -->
-              <div v-if="attsByStage.dunning.length || canWrite" class="nd-atts">
-                <div v-for="att in attsByStage.dunning.filter(a => !a.is_image)" :key="att.id" class="att-file">
-                  <span>{{ fileIcon(att) }}</span>
-                  <a :href="att.download_url" target="_blank" class="att-fname">{{ att.file_name }}</a>
-                  <span class="att-meta">{{ fmtSize(att.file_size) }}</span>
-                  <button v-if="canWrite" class="att-del" @click="deleteAtt(att)">✕</button>
-                </div>
-                <div v-if="canWrite" class="att-dz" :class="{ over: dragOverStage === 'dunning' }"
-                  @dragover.prevent="dragOverStage = 'dunning'" @dragleave="dragOverStage = ''"
-                  @drop.prevent="e => { dragOverStage = ''; uploadTo(e.dataTransfer?.files?.[0], 'dunning') }">
-                  ⬆ 上传催款相关附件
-                  <input type="file" class="att-dz-inp" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,.xlsx,.xls,.docx,.doc,.txt,.csv"
-                    @change="e => { uploadTo(e.target.files[0], 'dunning'); e.target.value = '' }" />
-                </div>
-              </div>
+              <AttFiles v-if="attsByStage.dunning.length || canWrite" :atts="attsByStage.dunning"
+                :can-write="canWrite" label="⬆ 上传催款相关附件"
+                @upload="f => uploadTo(f, 'dunning')" @del="deleteAtt" />
             </div>
           </section>
 
@@ -1021,7 +841,14 @@ function onKey(e) {
       <div v-if="canWrite && !loading" class="ap-compose">
         <div class="ap-cmp-row1">
           <button v-for="t in ACT_TYPES" :key="t.v" class="ap-cmp-type" :class="{ on: compose.act_type === t.v }" :title="t.t" @click="compose.act_type = t.v">{{ t.l }}</button>
-          <span class="ap-cmp-target">记入 <b :style="{ color: NODE_ACCENT[composeStage] || 'var(--primary)' }">{{ STAGE_LABEL[composeStage] }}</b></span>
+          <!-- 记入哪个阶段：可直接点切，不必先去点上方节点 -->
+          <span class="ap-cmp-target">记入</span>
+          <div class="ap-cmp-stages">
+            <button v-for="(lab, st) in STAGE_LABEL" :key="st" class="ap-cmp-stage"
+              :class="{ on: composeStage === st }"
+              :style="composeStage === st ? { borderColor: NODE_ACCENT[st], color: NODE_ACCENT[st] } : {}"
+              @click="composeStage = st">{{ lab }}</button>
+          </div>
         </div>
         <div class="ap-cmp-phrases">
           <button v-for="p in QUICK_PHRASES" :key="p" class="ap-cmp-phrase" @click="insertPhrase(p)">{{ p }}</button>
@@ -1071,9 +898,16 @@ function onKey(e) {
 }
 .ap-panel.ap-open { transform: translateX(0); }
 
+/* 逾期严重度色线（30/60/90 分级，配色与催款作战台一致） */
+.ap-sevline { height: 3px; flex-shrink: 0; }
+.ap-sev0 { background: linear-gradient(90deg, #e8a84a, #d9930d); }
+.ap-sev1 { background: linear-gradient(90deg, #ec8542, #e6742e); }
+.ap-sev2 { background: linear-gradient(90deg, #de5c48, #d84a3a); }
+.ap-sev3 { background: linear-gradient(90deg, #c03030, #8f1616); }
+
 /* ── 头部 ── */
 .ap-header {
-  padding: 14px 18px 12px;
+  padding: 10px 16px 9px;
   border-bottom: 1px solid rgba(160,120,80,.18);
   background: linear-gradient(160deg, #fdf0e0 0%, #faf5ee 60%, #f8f5f0 100%);
   flex-shrink: 0;
@@ -1104,8 +938,8 @@ function onKey(e) {
 .ap-close:hover { background: rgba(201,99,66,.1); border-color: rgba(201,99,66,.4); color: var(--primary); }
 
 /* 金额进度 */
-.ap-money { margin-top: 10px; }
-.ap-money-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
+.ap-money { margin-top: 7px; }
+.ap-money-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
 .ap-m-left { display: flex; align-items: baseline; gap: 5px; }
 .ap-m-est { font-size: 11px; color: #9b8070; font-weight: 600; }
 .ap-m-est-val { font-size: 15px; font-weight: 900; color: #3d2a1a; letter-spacing: -.3px; }
@@ -1162,7 +996,7 @@ function onKey(e) {
 .ai-note-ta { flex: 1; border: 1.5px solid rgba(201,99,66,.4); border-radius: 6px; padding: 5px 8px; font-size: 12px; color: #4a3322; resize: vertical; font-family: inherit; outline: none; box-sizing: border-box; }
 
 /* ── 主体滚动区 ── */
-.ap-body { flex: 1; overflow-y: auto; padding: 10px 14px 6px; display: flex; flex-direction: column; gap: 8px; scroll-behavior: smooth; }
+.ap-body { flex: 1; overflow-y: auto; padding: 8px 12px 6px; display: flex; flex-direction: column; gap: 7px; scroll-behavior: smooth; }
 /* 滚动容器内每个块都锁定自然高度：.lc-detail / .dun-section / 审计区都带
    overflow:hidden，若被 flex 压缩，自动最小尺寸会塌缩为 0 进而裁切内容
    （表现为"工作台内容被压缩看不见"）。统一禁止收缩，超出由 .ap-body 滚动。 */
@@ -1185,7 +1019,7 @@ function onKey(e) {
   background: var(--row-bg);
   border-radius: 18px;
   border: 1px solid rgba(160,120,80,.16);
-  padding: 10px 12px 12px;
+  padding: 8px 10px 10px;
   box-shadow: 0 2px 12px rgba(40,20,8,.06), 0 1px 3px rgba(40,20,8,.04);
   flex-shrink: 0;
   gap: 0;
@@ -1215,7 +1049,7 @@ function onKey(e) {
 .lc-node {
   flex: 1;
   display: flex; flex-direction: column; align-items: center;
-  gap: 4px; padding: 8px 6px 10px;
+  gap: 4px; padding: 6px 6px 8px;
   border: 2px solid transparent;
   border-radius: 16px;
   background: #faf7f3;
@@ -1255,7 +1089,7 @@ function onKey(e) {
 
 /* 图标圆 */
 .lc-dot {
-  width: 36px; height: 36px; border-radius: 50%;
+  width: 32px; height: 32px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   font-size: 15px; font-weight: 700;
   background: #ece7e1; color: #a8917e;
@@ -1441,86 +1275,12 @@ function onKey(e) {
 .kf-batch-hint b { font-weight: 800; }
 
 /* ════════════════════════════════════════════════════
-   ACTIVITY TIMELINE
+   ACTIVITY TIMELINE + 附件
+   外观样式已随组件抽到 ActThread.vue / AttFiles.vue，
+   这里只保留容器在各区块中的落位间距（作用于子组件根节点）。
    ════════════════════════════════════════════════════ */
-.nd-acts {
-  display: flex; flex-direction: column; gap: 0;
-  margin: 8px 14px 0;
-  position: relative;
-}
-.nd-acts::before {
-  content: ''; position: absolute;
-  left: 13px; top: 14px; bottom: 14px; width: 2px;
-  background: linear-gradient(180deg, rgba(160,120,80,.2) 0%, rgba(160,120,80,.05) 100%);
-  border-radius: 2px;
-}
-.act-item {
-  display: flex; gap: 10px;
-  padding-bottom: 10px; position: relative;
-}
-.act-item:last-child { padding-bottom: 0; }
-
-.act-dot {
-  width: 28px; height: 28px; flex-shrink: 0; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center; font-size: 13px;
-  background: var(--row-bg);
-  border: 2px solid var(--sc, #888);
-  box-shadow: 0 0 0 3px #fff, 0 2px 8px rgba(0,0,0,.1);
-  z-index: 1; position: relative;
-}
-.act-main {
-  flex: 1; min-width: 0;
-  background: #faf7f3;
-  border: 1px solid rgba(160,120,80,.14);
-  border-left: 3px solid var(--sc, #888);
-  border-radius: 10px;
-  padding: 8px 11px;
-  box-shadow: 0 1px 4px rgba(40,20,8,.05);
-  transition: box-shadow .14s;
-}
-.act-main:hover { box-shadow: 0 3px 10px rgba(40,20,8,.08); }
-.act-top { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-.act-who { font-size: 11.5px; font-weight: 800; color: #4a3322; }
-.act-st {
-  border: none; font-size: 9.5px; font-weight: 700; cursor: pointer;
-  padding: 2px 8px; border-radius: 20px;
-  color: var(--sc); background: color-mix(in srgb, var(--sc) 12%, transparent);
-  transition: opacity .12s;
-}
-.act-st:hover { opacity: .8; }
-.act-time { font-size: 10px; color: #c4b3a5; margin-left: auto; font-variant-numeric: tabular-nums; }
-.act-ico  { border: none; background: none; font-size: 11px; cursor: pointer; padding: 2px 3px; border-radius: 4px; opacity: .6; transition: opacity .12s; }
-.act-ico:hover { opacity: 1; background: rgba(0,0,0,.05); }
-.act-note { font-size: 12.5px; color: #4a3322; white-space: pre-wrap; word-break: break-word; line-height: 1.55; margin-top: 4px; }
-.act-fu   { font-size: 10.5px; color: #a8917e; margin-top: 3px; font-weight: 600; }
-.act-edit-ta { width: 100%; border: 1.5px solid rgba(201,99,66,.4); border-radius: 7px; padding: 5px 8px; font-size: 12.5px; color: #4a3322; resize: vertical; font-family: inherit; box-sizing: border-box; outline: none; margin-top: 5px; }
-.act-edit-foot { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
-.act-sel  { border: 1.5px solid rgba(160,120,80,.28); border-radius: 7px; font-size: 11.5px; padding: 3px 7px; color: #4a3322; background: var(--row-bg); outline: none; font-family: inherit; }
-.act-save { padding: 3px 13px; border: none; border-radius: 7px; background: var(--ac, var(--primary)); color: #fff; font-size: 11.5px; font-weight: 700; cursor: pointer; margin-left: auto; }
-.act-cancel { padding: 3px 10px; border: 1.5px solid rgba(160,120,80,.28); border-radius: 7px; background: var(--row-bg); font-size: 11.5px; cursor: pointer; color: #9b8070; }
-
-/* 附件区 */
-.nd-atts { display: flex; flex-direction: column; gap: 5px; margin: 6px 14px 0; }
-.att-file {
-  display: flex; align-items: center; gap: 8px;
-  background: #faf7f3; border: 1px solid rgba(160,120,80,.15);
-  border-radius: 9px; padding: 6px 10px;
-}
-.att-fname { flex: 1; min-width: 0; font-size: 11.5px; color: var(--c-info); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.att-fname:hover { text-decoration: underline; }
-.att-meta { font-size: 10px; color: #a8917e; flex-shrink: 0; }
-.att-del  { border: none; background: none; color: #c4b3a5; font-size: 11px; cursor: pointer; flex-shrink: 0; transition: color .12s; }
-.att-del:hover { color: var(--c-danger); }
-.att-dz {
-  border: 2px dashed rgba(160,120,80,.28); border-radius: 10px;
-  padding: 9px; text-align: center; font-size: 11px; color: #b0987e;
-  cursor: pointer; position: relative; transition: all .16s;
-}
-.att-dz:hover, .att-dz.over {
-  background: color-mix(in srgb, var(--ac, var(--primary)) 5%, transparent);
-  border-color: var(--ac, var(--primary)); color: var(--ac, var(--primary));
-}
-.att-dz-inp { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.nd-acts { margin: 8px 14px 0; }
+.nd-atts { margin: 6px 14px 0; }
 
 /* "记录跟进" 快捷按钮 */
 .nd-compose-btn {
@@ -1605,7 +1365,7 @@ function onKey(e) {
 }
 .dun-head {
   width: 100%; display: flex; align-items: center; gap: 9px;
-  padding: 11px 14px; border: none; background: none; cursor: pointer;
+  padding: 9px 13px; border: none; background: none; cursor: pointer;
   font-family: inherit; transition: background .14s;
 }
 .dun-head:hover { background: rgba(201,99,66,.03); }
@@ -1643,7 +1403,7 @@ function onKey(e) {
   border-radius: 16px; background: var(--row-bg); overflow: hidden;
   box-shadow: 0 2px 10px rgba(40,20,8,.04);
 }
-.ap-audit-head { width: 100%; display: flex; align-items: center; gap: 9px; padding: 11px 14px; border: none; background: none; cursor: pointer; font-family: inherit; }
+.ap-audit-head { width: 100%; display: flex; align-items: center; gap: 9px; padding: 9px 13px; border: none; background: none; cursor: pointer; font-family: inherit; }
 .ap-audit-head:hover { background: rgba(201,99,66,.03); }
 .ap-audit-ico   { font-size: 14px; }
 .ap-audit-title { font-size: 13px; font-weight: 800; color: #3d2a1a; }
@@ -1683,11 +1443,11 @@ function onKey(e) {
    COMPOSE BAR
    ════════════════════════════════════════════════════ */
 .ap-compose {
-  padding: 10px 16px 13px;
+  padding: 8px 14px 10px;
   border-top: 1px solid rgba(160,120,80,.16);
   background: rgba(255,253,250,.96);
   flex-shrink: 0;
-  display: flex; flex-direction: column; gap: 7px;
+  display: flex; flex-direction: column; gap: 6px;
   box-shadow: 0 -4px 16px rgba(40,20,8,.06);
 }
 .ap-cmp-row1 { display: flex; gap: 5px; align-items: center; }
@@ -1699,8 +1459,16 @@ function onKey(e) {
 }
 .ap-cmp-type:hover { border-color: rgba(201,99,66,.5); background: var(--row-bg); }
 .ap-cmp-type.on { border-color: var(--primary); background: rgba(201,99,66,.1); transform: translateY(-1px); box-shadow: 0 2px 8px rgba(201,99,66,.15); }
-.ap-cmp-target { margin-left: auto; font-size: 11px; color: #b0987e; }
-.ap-cmp-target b { font-weight: 800; font-size: 11.5px; }
+.ap-cmp-target { margin-left: auto; font-size: 11px; color: #b0987e; flex-shrink: 0; }
+/* 记入阶段可点切换 chips */
+.ap-cmp-stages { display: flex; gap: 3px; }
+.ap-cmp-stage {
+  border: 1.5px solid rgba(160,120,80,.22); background: rgba(255,255,255,.8);
+  border-radius: 20px; padding: 2px 9px; font-size: 10.5px; font-weight: 700;
+  color: #9b8070; cursor: pointer; transition: all .14s; line-height: 1.5;
+}
+.ap-cmp-stage:hover { border-color: rgba(201,99,66,.5); color: var(--primary); }
+.ap-cmp-stage.on { background: var(--row-bg); box-shadow: 0 1px 5px rgba(40,20,8,.08); }
 .ap-cmp-phrases { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 1px; scrollbar-width: none; }
 .ap-cmp-phrases::-webkit-scrollbar { display: none; }
 .ap-cmp-phrase {
