@@ -103,6 +103,12 @@ watch([form, installments], async () => {
 }, { deep: true })
 
 async function autosave() {
+  // 后端 PUT 对 installments 是整单替换，而 buildPayload 会过滤掉「日期/金额不完整」
+  // 的分期。用户清空某条既有实付的金额准备重输、停顿超过防抖时长时，若照常自动保存，
+  // 这条真实付款记录会被静默删除。既有分期(带 id)处于不完整状态 → 本轮跳过，
+  // 等用户补完或显式保存；通过删除按钮移除的行不在数组里，删除仍可正常自动保存。
+  const editingExisting = installments.value.some(i => i.id && !(i.pay_date && parseFloat(i.pay_amount) > 0))
+  if (editingExisting) { saveStatus.value = ''; return }
   try {
     await api.put(`/payments/${props.payment.id}`, buildPayload())
     saveStatus.value = 'saved'

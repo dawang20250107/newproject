@@ -2343,10 +2343,17 @@ def ar_records_bulk_delete(request):
                            shared_field='project__is_shared')
 
     if body.get('all'):
-        # 与列表完全相同的筛选口径（conditions/match 走查询串）
+        # 与列表完全相同的筛选口径（conditions/match + Excel 列头筛选 filters 都走查询串）。
+        # 此前漏并入 filters：用户用列头筛选缩到 30 条勾「全选筛选集」，实际删除范围
+        # 会大于所见列表——删除类操作绝不允许比看到的多
         qs = _apply_record_filters(base, request)
         qs = _apply_record_state_filters(qs, request, today)
         qs = _apply_conditions(qs, request, today)
+        _fq, _fq_distinct = build_filter_q(request.GET.get('filters', ''), ARRECORD_FILTER_REGISTRY)
+        if _fq:
+            qs = qs.filter(_fq)
+            if _fq_distinct:
+                qs = qs.distinct()
     else:
         ids = body.get('ids') or []
         if not isinstance(ids, list) or not ids:

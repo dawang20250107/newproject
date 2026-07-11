@@ -133,7 +133,7 @@ async function confirmBulkDelete() {
   if (!delConfirmOk.value) return
   bulkDeleting.value = true
   try {
-    if (selectAllMatching.value) await ar.bulkDeleteRecords({ all: true }, scopedParams())
+    if (selectAllMatching.value) await ar.bulkDeleteRecords({ all: true }, buildParams(scopedParams()))
     else await ar.bulkDeleteRecords({ ids: [...selectedIds.value] })
     showDelConfirm.value = false
     clearSelection()
@@ -508,7 +508,7 @@ async function doBulkAssignCollector() {
   try {
     let res
     if (selectAllMatching.value) {
-      res = await ar.bulkAssignCollector({ all: true, collector: collectorInput.value.trim() }, scopedParams())
+      res = await ar.bulkAssignCollector({ all: true, collector: collectorInput.value.trim() }, buildParams(scopedParams()))
     } else {
       res = await ar.bulkAssignCollector({ ids: [...selectedIds.value], collector: collectorInput.value.trim() })
     }
@@ -2270,7 +2270,7 @@ function clearFilters() {
         <table class="rec-table">
           <thead>
             <tr>
-              <th v-if="auth.canDelete" class="sel-col sticky-col">
+              <th v-if="auth.canDelete || auth.canArWrite" class="sel-col sticky-col">
                 <input type="checkbox" :checked="pageAllSelected"
                   :indeterminate.prop="hasSelection && !pageAllSelected"
                   title="全选本页" @change="toggleSelectPage" />
@@ -2351,7 +2351,7 @@ function clearFilters() {
             <template v-for="(rec, idx) in items" :key="rec.id">
               <tr :class="['data-row', agingRowClass(rec), (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']"
                 @contextmenu.prevent="ctx.open($event, rec)" @dblclick="onRowDblClick(rec, $event)">
-                <td v-if="auth.canDelete" class="sel-col sticky-col">
+                <td v-if="auth.canDelete || auth.canArWrite" class="sel-col sticky-col">
                   <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @click.stop="onRowSelClick($event, idx, rec.id)" title="按住 Shift 点击可区间勾选" />
                 </td>
                 <td class="sticky-col" :style="cw.thStyle('short_name')">

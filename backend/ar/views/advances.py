@@ -690,8 +690,14 @@ def advance_import(request):
         if request.pk_role != 'super_admin' and dept not in request.pk_depts:
             errors.append(f'第{ri}行: 无权操作部门"{dept}"')
             continue
-        year = int(_cv(ri, '发生年*') or 0)
-        month = int(_cv(ri, '发生月*') or 0)
+        # Excel 数字单元格常以 "2026.0" 形态到达，裸 int() 会 ValueError 整个请求 500；
+        # 与应收导入同口径：int(float(...)) + 兜底报行号错误
+        try:
+            year = int(float(_cv(ri, '发生年*') or 0))
+            month = int(float(_cv(ri, '发生月*') or 0))
+        except (ValueError, TypeError):
+            errors.append(f'第{ri}行: 发生年月无效（年={_cv(ri, "发生年*") or "空"} 月={_cv(ri, "发生月*") or "空"}）')
+            continue
         if not (year and 1 <= month <= 12):
             errors.append(f'第{ri}行: 发生年月无效（年={_cv(ri, "发生年*") or "空"} 月={_cv(ri, "发生月*") or "空"}），运作月需 1-12')
             continue

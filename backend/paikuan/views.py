@@ -1547,7 +1547,7 @@ def _parse_payment_fields(data, payment=None):
     fields['project_short_name'] = (get('project_short_name') or '').strip()[:100]
     fields['applicant'] = (get('applicant') or '').strip()[:100]
     fields['approval_number'] = get('approval_number') or ''
-    fields['g7_number'] = (get('g7_number') or '').strip()[:21]
+    fields['g7_number'] = (get('g7_number') or '').strip()[:255]
     fields['project_no'] = (get('project_no') or '').strip()[:20]
     fields['project_desc'] = (get('project_desc') or '').strip()
     fields['payee'] = (get('payee') or '').strip()
@@ -1951,7 +1951,7 @@ def _editable_payment_payload(data, perms):
     # 'installments' is a virtual key — always include it when its permission is granted
     if 'installments' in editable_cols and 'installments' in data:
         editable_cols.add('installments')
-    return {k: v for k, v in data.items() if k in editable_cols or k == 'installments'}
+    return {k: v for k, v in data.items() if k in editable_cols}
 
 
 @csrf_exempt
@@ -2283,7 +2283,7 @@ def approval_records(request):
         secondary_dept = (data.get('secondary_dept') or '').strip()[:100]
         project_short_name = (data.get('project_short_name') or '').strip()[:100]
         approval_number = (data.get('approval_number') or '').strip()
-        g7_number_val = (data.get('g7_number') or '').strip()[:21]
+        g7_number_val = (data.get('g7_number') or '').strip()[:255]
         summary = (data.get('summary') or '').strip()
         notes = (data.get('notes') or '').strip()[:500]
         payee = (data.get('payee') or '').strip()
@@ -2396,7 +2396,7 @@ def approval_record_detail(request, pk):
                 rec.approval_number = cleaned_no
                 changed.append('approval_number')
             if 'g7_number' in data:
-                rec.g7_number = (data.get('g7_number') or '').strip()[:21]
+                rec.g7_number = (data.get('g7_number') or '').strip()[:255]
                 changed.append('g7_number')
             # 在册已排款（正源=关联在册付款的计划批次之和）：金额下调与状态回退的共同下限。
             # 在锁内计算——并发排款也锁本审批行，读到的必为最新已提交批次。
@@ -3324,7 +3324,7 @@ def _parse_approval_fields(data, request):
         return None, err_psn
     return {
         'applicant': applicant, 'department': dept, 'approval_number': no,
-        'g7_number': (data.get('g7_number') or '')[:21],
+        'g7_number': (data.get('g7_number') or '')[:255],
         'secondary_dept': (data.get('secondary_dept') or '')[:100], 'project_short_name': psn,
         'summary': data.get('summary') or '', 'amount': amount, 'payee': data.get('payee') or '',
         'status': 'pending',
@@ -3572,25 +3572,10 @@ def _approval_export_core(request, export_cap=5000):
     perms = get_request_perms(request)
     if perms is not None and not perms['pages'].get('approval_records', True):
         return err('无访问权限', 403, 403)
-    # 与列表同口径：仅隐藏「审批通过且已排满」的归档记录，已拒绝/已撤销仍可导出
-    qs = dept_filter(ApprovalRecord.objects.all(), request).exclude(status='approved', archived=True).filter(deleted_at__isnull=True)
-    # 全局关键字 + 列头筛选 + 排序：导出与列表口径一致
-    kw = request.GET.get('q', '').strip()
-    if kw:
-        qs = qs.filter(
-            Q(applicant__icontains=kw) | Q(department__icontains=kw) |
-            Q(secondary_dept__icontains=kw) | Q(project_short_name__icontains=kw) |
-            Q(approval_number__icontains=kw) | Q(g7_number__icontains=kw) |
-            Q(summary__icontains=kw) | Q(payee__icontains=kw)
-        )
-    fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), APPROVAL_FILTER_REGISTRY)
-    if fq:
-        qs = qs.filter(fq)
-        if fq_distinct:
-            qs = qs.distinct()
-    _sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), APPROVAL_FILTER_REGISTRY)
-    if _sort_by:
-        qs = qs.order_by(_sort_by)
+    # 与列表完全同口径：直接复用 _approvals_filtered_qs（登记日期区间/批量单号 numbers/
+    # 全局关键字/列头+计算列筛选/排序）。此前手工重建漏掉日期区间与 numbers，
+    # 「看到什么就导出什么」被打破。
+    qs = _approvals_filtered_qs(request)
     if qs.count() > export_cap:
         return err(f'导出超过{export_cap}行，请缩小筛选范围或使用后台导出')
 
@@ -4314,6 +4299,11 @@ def _payment_clean_view(data):
         'approval_number': data.get('approval_number') or '',
         'g7_number': data.get('g7_number') or '',
         'notes': data.get('notes') or '',
+        # 申请人/二级部门/计划调整金额此前被清洗视图丢弃：走「预检→确认导入」的行
+        # 这三列会静默变空，而直接导入路径能正确落库——两条路径必须同口径
+        'applicant': data.get('applicant') or '',
+        'secondary_dept': data.get('secondary_dept') or '',
+        'plan_adjustment': str(data.get('plan_adjustment') or ''),
         'installments': data.get('installments') or [],
     }
 
@@ -4525,49 +4515,10 @@ def _payment_export_core(request, export_cap=5000):
     except ImportError:
         return err('服务器缺少 openpyxl 依赖', 500)
 
-    # 排除回收站付款：导出不含已删除记录（同步与异步导出共用本函数口径）
-    qs = Payment.objects.select_related('created_by').filter(deleted_at__isnull=True)
-    qs = dept_filter(qs, request)
-    qs = qs.prefetch_related('installments', 'plan_items')
-
-    dept = request.GET.get('dept', '').strip()
-    status_q = request.GET.get('status', '').strip()
-    hide_settled = request.GET.get('hide_settled') == '1'
-    start = request.GET.get('start_date', '').strip()
-    end = request.GET.get('end_date', '').strip()
-    q_str = request.GET.get('q', '').strip()
-
-    if dept:
-        qs = qs.filter(department=dept)
-    if start:
-        qs = qs.filter(planned_date__gte=start)
-    if end:
-        qs = qs.filter(planned_date__lte=end)
-    if q_str:
-        qs = qs.filter(
-            Q(project_desc__icontains=q_str) | Q(payee__icontains=q_str) |
-            Q(approval_number__icontains=q_str) | Q(g7_number__icontains=q_str) |
-            Q(department__icontains=q_str) | Q(applicant__icontains=q_str)
-        )
-    # 付款日期窗口：导出须与列表视图一致（此前漏掉该筛选，导出会忽略付款日期范围）。
-    pay_start = request.GET.get('pay_date_start', '').strip()
-    pay_end = request.GET.get('pay_date_end', '').strip()
-    if pay_start:
-        qs = qs.filter(installments__pay_date__gte=pay_start).distinct()
-    if pay_end:
-        qs = qs.filter(installments__pay_date__lte=pay_end).distinct()
-    # 列头精确筛选 + 排序：导出与列表口径一致（筛了再导出）
-    fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), PAYMENT_FILTER_REGISTRY)
-    if fq:
-        qs = qs.filter(fq)
-        if fq_distinct:
-            qs = qs.distinct()
-    _sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), PAYMENT_FILTER_REGISTRY)
-    if _sort_by:
-        qs = qs.order_by(_sort_by)
-    # 计算列（已付/剩余/逾期）筛选与排序：导出与列表口径一致
-    qs, _paid_annotated = _apply_payment_computed_filters(qs, request)
-    qs = _apply_payment_status_filter(qs, status_q, _paid_annotated, hide_settled=hide_settled)
+    # 与列表完全同口径：直接复用 _payments_filtered_qs（部门作用域/顶部筛选/付款日期窗口/
+    # G7单号/批量单号 numbers/重点 priority/列头筛选/计算列/状态），杜绝导出与列表筛选漂移。
+    # 此前手工重建筛选漏掉 g7_number、numbers、priority——粘贴单号筛出 N 行后导出会拿到全量。
+    qs, _paid_annotated = _payments_filtered_qs(request)
 
     # Reject rather than silently truncate: a truncated export is worse than no export.
     total_count = qs.count()

@@ -89,7 +89,7 @@ onMounted(load)
                   <td class="l">{{ r.l1_name }}</td>
                   <td class="num">{{ fmtWan(r.amount) }}</td>
                   <td class="mom" :class="{ up: r.mom > 0, down: r.mom < 0 }">
-                    <template v-if="r.mom != null">{{ r.mom > 0 ? '+' : '' }}{{ (r.mom * 100).toFixed(0) }}%</template>
+                    <template v-if="r.mom != null">{{ r.mom > 0 ? '+' : '' }}{{ r.mom.toFixed(0) }}%</template>
                   </td>
                 </tr>
                 <tr v-if="!subjectRows.length"><td colspan="3" class="empty">暂无已发布科目数据</td></tr>

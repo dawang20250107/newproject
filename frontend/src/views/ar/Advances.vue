@@ -902,11 +902,11 @@ onMounted(async () => {
                 <td colspan="10" class="empty">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer;font-size:13px;text-decoration:underline" @click="load()">重试</button></td>
               </tr>
               <tr v-else-if="!items.length"><td colspan="10" class="empty">暂无{{ dirLabel }}记录</td></tr>
-              <tr v-for="r in items" :key="r.id" :class="{ 'row-sel': selectedIds.has(r.id) }"
+              <tr v-for="(r, idx) in items" :key="r.id" :class="{ 'row-sel': selectedIds.has(r.id) }"
                   @contextmenu.prevent="ctxRec.open($event, r)" @dblclick="onRowDblClick(r, $event)">
                 <td v-if="canDelete" class="sel-col">
                   <input type="checkbox" :checked="selectedIds.has(r.id)"
-                         @click="onRowSelClick($event, r.id)" @change.prevent />
+                         @click="onRowSelClick($event, idx, r.id)" @change.prevent />
                 </td>
                 <td v-if="show('adv_counterparty')">{{ r.counterparty || '—' }}</td>
                 <td>

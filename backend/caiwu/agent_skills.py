@@ -80,5 +80,7 @@ def skills_brief():
     """一句话技能概览，注入对话系统提示，让助手知道自己有哪些能力。"""
     if not _REGISTRY:
         return ''
+    # 只列可被模型调用的技能（tool=True 且门控开）：把 forget_knowledge 这类
+    # 破坏性非工具技能写进系统提示，等于诱导模型去调用它
     return '；'.join(f"{s['label']}（{s['name']}）"
-                    for s in _REGISTRY.values() if _gate_open(s.get('gate')))
+                    for s in _REGISTRY.values() if s.get('tool') and _gate_open(s.get('gate')))

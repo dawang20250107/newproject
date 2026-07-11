@@ -122,7 +122,7 @@ async function exportXlsx() {
     if (filters.dept) params.depts = filters.dept
     else if (accessibleDepts.value.length) params.depts = accessibleDepts.value.join(',')
     const res = await ar.exportCashflow(params)
-    downloadBlob(res.data, `现金流分析_${filters.start_date}_${filters.end_date}.xlsx`)
+    downloadBlob(res, `现金流分析_${filters.start_date}_${filters.end_date}.xlsx`)
   } catch (e) { toast.error(e?.error || '导出失败，请重试') }
   finally { exporting.value = false }
 }

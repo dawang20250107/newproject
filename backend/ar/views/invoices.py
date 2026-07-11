@@ -411,6 +411,11 @@ def ar_invoice_batch_payment(request, batch_no):
                 occur_year=pd_d.year, occur_month=pd_d.month, occur_date=pd_d,
                 advance_amount=overflow,
                 notes=f'批次回款[{batch_no}]多收自动转预收（到账 {amount}，冲应收 {total_outstanding}）')
+            # 预收总额是派生列（signals 按收付明细之和重算）：与 _advance_create 一致，
+            # 必须同步生成首笔明细，否则该预收在明细口径下总额为 0、后续追加即被冲掉
+            AdvanceInstallment.objects.create(
+                advance_record=advance_created, install_no=1, amount=overflow,
+                occur_date=pd_d, notes='批次回款多收转预收')
             amount = total_outstanding   # 分摊部分只冲到未收合计
 
         remaining = amount

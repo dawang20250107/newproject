@@ -40,6 +40,13 @@ function onPick(e) {
 
 <template>
   <div class="nd-atts">
+    <!-- 图片附件缩略图网格（粘贴截图/上传的凭证图，点击看大图） -->
+    <div v-if="atts.some(a => a.is_image)" class="att-imgs">
+      <div v-for="att in atts.filter(a => a.is_image)" :key="att.id" class="att-img-cell" :title="att.file_name">
+        <a :href="att.download_url" target="_blank"><img :src="att.thumb_url || att.download_url" class="att-img" :alt="att.file_name" /></a>
+        <button v-if="canWrite" class="att-img-del" title="删除" @click="emit('del', att)">✕</button>
+      </div>
+    </div>
     <div v-for="att in atts.filter(a => !a.is_image)" :key="att.id" class="att-file">
       <span>{{ fileIcon(att) }}</span>
       <a :href="att.download_url" target="_blank" class="att-fname">{{ att.file_name }}</a>
@@ -56,6 +63,12 @@ function onPick(e) {
 
 <style scoped>
 .nd-atts { display: flex; flex-direction: column; gap: 5px; }
+.att-imgs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.att-img-cell { position: relative; aspect-ratio: 1; border-radius: 7px; overflow: hidden; border: 1px solid rgba(160,120,80,.2); }
+.att-img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
+.att-img-del { position: absolute; top: 2px; right: 2px; width: 17px; height: 17px; border: none; border-radius: 50%;
+  background: rgba(0,0,0,.5); color: #fff; font-size: 9px; cursor: pointer; opacity: 0; transition: opacity .12s; line-height: 17px; padding: 0; }
+.att-img-cell:hover .att-img-del { opacity: 1; }
 .att-file {
   display: flex; align-items: center; gap: 8px;
   background: #faf7f3; border: 1px solid rgba(160,120,80,.15);

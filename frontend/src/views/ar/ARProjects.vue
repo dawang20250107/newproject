@@ -447,8 +447,14 @@ async function completeDraft(item) {
     post_invoice_days: item.post_invoice_days || 0,
     invoice_mode: item.invoice_mode || '全额', invoice_type: item.invoice_type || '专票',
     tax_rate: item.tax_rate || '0.06', notes: item.notes || '',
+    cycle_start_day: item.cycle_start_day || 1,
+    customer_id: item.customer_id || '',
     _complete_draft: true,
   })
+  // 与 openEdit/openCreate 同步重置合同联动状态：否则上一次编辑残留的
+  // 关联合同/搜索结果会被带进草稿补全表单，保存时误挂到该草稿项目上
+  linkedContracts.value = []
+  ctQuery.value = ''; ctResults.value = []
   showModal.value = true
 }
 

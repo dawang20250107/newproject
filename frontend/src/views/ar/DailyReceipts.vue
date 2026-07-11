@@ -270,7 +270,7 @@ async function exportXlsx(selectedOnly = false) {
         <tbody>
           <tr v-for="(r, idx) in items" :key="r.id" :class="{ sel: selectedIds.has(r.id) }"
               @contextmenu.prevent="ctx.open($event, r)" @dblclick="canWrite && openEdit(r)">
-            <td class="cb" @click.stop><input type="checkbox" :checked="selectedIds.has(r.id)" @click="onRowSelClick(r, idx, $event)" /></td>
+            <td class="cb" @click.stop><input type="checkbox" :checked="selectedIds.has(r.id)" @click="onRowSelClick($event, idx, r.id)" /></td>
             <td class="when">{{ r.receipt_date }}</td>
             <td>{{ r.delivery_dept }}</td>
             <td><span class="src">{{ r.source }}</span><span v-if="r.advance_record_id" class="adv-tag" :title="'已回冲预付：' + r.advance_label">↩冲预付</span></td>

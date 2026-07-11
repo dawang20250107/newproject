@@ -395,6 +395,11 @@ def permission_detail(request, job):
     existing['pages']['caiwu_report'] = bool(cfg.get('pages', {}).get('report', True))
     existing['pages']['caiwu_data']   = bool(cfg.get('pages', {}).get('data',   True))
     existing['pages']['caiwu_charts'] = bool(cfg.get('pages', {}).get('charts', True))
+    # metrics/cockpit/internal 三页开关此前保存时被丢弃（GET 返回 6 页、PUT 只写 3 页），
+    # 管理员在权限页勾选后一保存即回弹。默认值与 _caiwu_perms_from_pk 的读取默认一致（False）
+    existing['pages']['caiwu_metrics']  = bool(cfg.get('pages', {}).get('metrics',  False))
+    existing['pages']['caiwu_cockpit']  = bool(cfg.get('pages', {}).get('cockpit',  False))
+    existing['pages']['caiwu_internal'] = bool(cfg.get('pages', {}).get('internal', False))
     existing['caiwu_upload']  = bool(cfg.get('can_upload', False))
     existing['caiwu_publish'] = bool(cfg.get('can_publish', False))
     existing['caiwu_delete']  = bool(cfg.get('can_delete', False))
@@ -2946,10 +2951,11 @@ def targets_upload(request):
                 continue
             try:
                 wan_val = cell.value
+                # 空单元格 = 不修改该格既有目标（而非写 0）：否则只填了自己事业部的
+                # 部分模板一上传，其余事业部的全年目标会被静默清零
                 if wan_val is None:
-                    amount = Decimal('0')
-                else:
-                    amount = Decimal(str(float(wan_val))) * 10000
+                    continue
+                amount = Decimal(str(float(wan_val))) * 10000
             except (InvalidOperation, ValueError, TypeError):
                 continue
             key = (bu, month_no)
@@ -3960,6 +3966,11 @@ def cockpit_ai_chat_stream(request):
                     except Exception:
                         a = {}
                     sk = agent_skills.get_skill(name)
+                    # 准入校验：只执行「注册为工具且门控开启」的技能。模型（或注入的
+                    # 提示词）报出任意技能名都不能越过这道闸——尤其 forget_knowledge
+                    # 这类破坏性技能从未注册为 tool，绝不能被对话触发执行
+                    if sk and not (sk.get('tool') and agent_skills.skill_enabled(name)):
+                        sk = None
                     yield _sse_event({'type': 'tool', 'name': name,
                                       'label': sk['label'] if sk else (name or '技能')})
                     t0 = time.monotonic()   # 可观测性：记录每步工具名/参数/耗时/成败

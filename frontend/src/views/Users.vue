@@ -144,9 +144,11 @@ function toggleApproveDept(uid, d) {
   else arr.splice(i, 1)
 }
 
-onMounted(async () => {
-  const applied = await schemes.loadAndApplyDefault()
-  if (!applied) load()
+onMounted(() => {
+  // 数据加载与默认方案互不依赖：本页筛选为纯客户端（schemes.onApply 为空），
+  // 之前 applied=true 时跳过 load() 会导致设过默认方案的用户列表永远为空
+  load()
+  schemes.loadAndApplyDefault()
 })
 
 function openEdit(u) {

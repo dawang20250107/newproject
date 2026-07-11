@@ -114,8 +114,10 @@ async function loadTargets() {
   loadingTargets.value = true; loadErr.value = ''
   try {
     const res = await api.get('/targets', { params: { year: targetYear.value } })
-    // 重置当前可编辑事业部的网格，避免切换年份后残留上一年的数据
-    for (const bu of editBus.value) {
+    // 重置全部已存在的网格（不只当前可编辑的）：先选中单个事业部再切年份时，
+    // 其他事业部的网格若只按 editBus 重置会残留上一年数值，切回「全部」后
+    // 一键保存会把旧年份数字写进新年份，造成目标数据污染
+    for (const bu of new Set([...Object.keys(editGrid), ...editBus.value])) {
       editGrid[bu] = { rev: Array(13).fill(''), prof: Array(13).fill(''), gross: Array(13).fill('') }
     }
     for (const t of (res.data?.targets || [])) {

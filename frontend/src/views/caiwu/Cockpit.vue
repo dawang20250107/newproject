@@ -1141,7 +1141,7 @@ const ctxMatrixItems = computed(() => {
       <component v-if="mainTab !== 'overview' && panelComp" :is="panelComp" embedded :key="mainTab"
         :selected-bu="selectedBu"
         @ask-ai="onAskProject"
-        @count-change="c => { actionCounts.value = c }" />
+        @count-change="c => Object.assign(actionCounts, c)" />
     </KeepAlive>
 
     <!-- 三级下钻：事业部科目+项目 → 项目损益卡 -->
