@@ -69,16 +69,24 @@ const presentPage = ref(0)
 const PRESENT_PAGES = ['规模', '盈利', '业财', '预测', '目标', '行动']
 function nextPresentPage() { presentPage.value = (presentPage.value + 1) % PRESENT_PAGES.length }
 function prevPresentPage() { presentPage.value = (presentPage.value - 1 + PRESENT_PAGES.length) % PRESENT_PAGES.length }
+const presentAuto = ref(false)
+let presentTimer = null
+function togglePresentAuto() {
+  presentAuto.value = !presentAuto.value
+  clearInterval(presentTimer)
+  if (presentAuto.value) presentTimer = setInterval(nextPresentPage, 15000)   // 15s 轮播
+}
 function openPresent() { presentPage.value = 0; presentMode.value = true }
 // 大屏复盘键盘控制挂到 window：overlay div 未获焦时其 @keydown 收不到事件
 function onPresentKey(e) {
   if (!presentMode.value) return
-  if (e.key === 'Escape') presentMode.value = false
+  if (e.key === 'Escape') { presentMode.value = false; presentAuto.value = false; clearInterval(presentTimer) }
   else if (e.key === 'ArrowRight') nextPresentPage()
   else if (e.key === 'ArrowLeft') prevPresentPage()
+  else if (e.key === 'a' || e.key === 'A') togglePresentAuto()
 }
 onMounted(() => window.addEventListener('keydown', onPresentKey))
-onBeforeUnmount(() => window.removeEventListener('keydown', onPresentKey))
+onBeforeUnmount(() => { window.removeEventListener('keydown', onPresentKey); clearInterval(presentTimer) })
 
 // ── P4 信号转行动项 ──────────────────────────────────────────────────────────
 const alertToast = ref('')
@@ -1328,7 +1336,8 @@ const ctxMatrixItems = computed(() => {
                 :class="['pp', presentPage === i ? 'active' : '']"
                 @click="presentPage = i">{{ p }}</span>
             </div>
-            <button class="present-close" @click="presentMode = false">✕ 退出</button>
+            <button class="present-auto" :class="{ on: presentAuto }" title="自动轮播（15s/页，快捷键 A）" @click="togglePresentAuto">{{ presentAuto ? '⏸ 停止轮播' : '▶ 自动轮播' }}</button>
+            <button class="present-close" @click="presentMode = false; presentAuto = false">✕ 退出</button>
           </div>
           <div class="present-body">
             <!-- 规模 -->
@@ -1872,6 +1881,9 @@ const ctxMatrixItems = computed(() => {
 .pp { font-size: 13px; padding: 4px 12px; border-radius: 16px; cursor: pointer; color: #8b949e; transition: all .15s; }
 .pp.active { background: #1f6feb; color: #fff; font-weight: 700; }
 .pp:hover:not(.active) { background: #21262d; color: #e6edf3; }
+.present-auto { border: 1px solid #30363d; background: none; color: #8b949e; padding: 5px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; margin-right: 8px; }
+.present-auto:hover { color: #58a6ff; border-color: #58a6ff; }
+.present-auto.on { color: #3fb950; border-color: #3fb950; }
 .present-close { border: 1px solid #30363d; background: none; color: #8b949e; padding: 5px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; }
 .present-close:hover { color: #ff7b72; border-color: #ff7b72; }
 

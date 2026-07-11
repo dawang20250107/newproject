@@ -728,12 +728,18 @@ onMounted(async () => {
       .filter(s => PAY_STATUS_OPTS.some(o => o.value === s))
     if (wanted.length) { statusSel.value = wanted; hideSettled.value = false }
   }
+  // 工作台「今日计划付款」卡直达：按计划日=今天过滤
+  if (route.query.planned === 'today') {
+    const t = todayCST()
+    colFilters.planned_date = { op: 'between', value: [t, t] }
+    hideSettled.value = false
+  }
   // 有默认方案则套用并由其 onApply 触发加载；否则常规加载。
   // 方案接口异常也要兜底加载数据，避免卡在骨架屏（loading 初始为 true）。
   try {
     // URL 带直达筛选（status/numbers）时跳过默认方案：深链意图优先，
     // 否则方案 onApply 会把刚设好的逾期/单号筛选覆盖掉
-    const deepLinked = !!(route.query.status || route.query.numbers)
+    const deepLinked = !!(route.query.status || route.query.numbers || route.query.planned)
     const applied = deepLinked ? false : await schemes.loadAndApplyDefault()
     if (!applied) load()
   } catch { load() }
@@ -1180,6 +1186,14 @@ watch(() => route.query.numbers, (v) => {
   }
 }, { immediate: false })
 // 状态直达同样要在 keep-alive 复活时生效：工作台「已逾期未付」再次点击也能套上筛选
+watch(() => route.query.planned, (v) => {
+  if (v === 'today') {
+    const t = todayCST()
+    colFilters.planned_date = { op: 'between', value: [t, t] }
+    hideSettled.value = false
+    filters.page = 1; clearSelection(); load()
+  }
+}, { immediate: false })
 watch(() => route.query.status, (v) => {
   const wanted = String(v || '').split(',')
     .filter(x => PAY_STATUS_OPTS.some(o => o.value === x))

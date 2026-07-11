@@ -17,8 +17,10 @@ const props = defineProps({
   rec:        { type: Object, required: true },
   canWrite:   { type: Boolean, default: false },
   canCollect: { type: Boolean, default: false },
+  hasPrev:    { type: Boolean, default: false },
+  hasNext:    { type: Boolean, default: false },
 })
-const emit = defineEmits(['close', 'field-saved'])
+const emit = defineEmits(['close', 'field-saved', 'nav'])
 
 const toast = useToast()
 const errMsg = e => e?.msg || e?.error || '操作失败'
@@ -457,6 +459,13 @@ function onPaste(e) {
   }
 }
 function onKey(e) {
+  // J/K 连续过单：焦点不在输入控件时才响应
+  const ae = document.activeElement
+  const typing = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)
+  if (!typing && !showLetter.value) {
+    if (e.key === 'j' || e.key === 'J') { if (props.hasNext) emit('nav', 1); return }
+    if (e.key === 'k' || e.key === 'K') { if (props.hasPrev) emit('nav', -1); return }
+  }
   if (e.key !== 'Escape') return
   // 时间线行内编辑的 Esc 由 ActThread 内部处理并阻断冒泡，不会走到这里
   if (showLetter.value)   { showLetter.value = false; return }
@@ -481,6 +490,8 @@ function onKey(e) {
             <span v-if="rec.customer_name && rec.customer_name !== rec.short_name" class="ap-sub">{{ rec.customer_name }}</span>
           </div>
           <div class="ap-hbtns">
+            <button class="ap-icobtn" :disabled="!hasPrev" title="上一条 (K)" @click="emit('nav', -1)">‹</button>
+            <button class="ap-icobtn" :disabled="!hasNext" title="下一条 (J)" @click="emit('nav', 1)">›</button>
             <button class="ap-icobtn" :class="{ on: infoOpen }" title="概要信息" @click="infoOpen = !infoOpen">ℹ</button>
             <button class="ap-icobtn" title="复制催收摘要" @click="copySummary">📋</button>
             <button class="ap-close" title="关闭 (Esc)" @click="close">✕</button>
@@ -691,7 +702,7 @@ function onKey(e) {
                 <!-- 进度 -->
                 <div class="pay-prog">
                   <div class="pay-prog-bar"><div class="pay-prog-fill" :style="{ width: paidPct * 100 + '%' }"></div></div>
-                  <div class="pay-prog-txt"><span>已收 ¥{{ fmtAmt(paid) }}</span><span>待收 ¥{{ fmtAmt(outstanding) }}</span></div>
+                  <div class="pay-prog-txt"><span>已收 ¥{{ fmtAmt(paid) }}</span><button v-if="outstanding > 0" type="button" class="pay-fill-chip" title="点击填入未收余额" @click="payForm.amount = outstanding.toFixed(2)">待收 ¥{{ fmtAmt(outstanding) }} ↩</button><span v-else>待收 ¥0</span></div>
                 </div>
                 <!-- 明细 -->
                 <div v-if="payments.length" class="pay-list">
@@ -930,7 +941,8 @@ function onKey(e) {
   width: 28px; height: 28px; border-radius: 8px; font-size: 12px;
   cursor: pointer; transition: all .14s; color: #7a6050;
 }
-.ap-icobtn:hover, .ap-icobtn.on {
+.ap-icobtn:disabled { opacity: .3; cursor: default; }
+.ap-icobtn:hover:not(:disabled), .ap-icobtn.on {
   background: rgba(201,99,66,.1); border-color: rgba(201,99,66,.4); color: var(--primary);
 }
 .ap-close {
@@ -1306,6 +1318,8 @@ function onKey(e) {
   transition: width .5s cubic-bezier(.4,0,.2,1);
 }
 .pay-prog-txt { display: flex; justify-content: space-between; font-size: 11px; color: #9b8070; font-weight: 700; }
+.pay-fill-chip { border: 1px solid rgba(46,158,91,.4); background: rgba(46,158,91,.08); color: #1b5e20; font: inherit; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 10px; cursor: pointer; transition: all .12s; }
+.pay-fill-chip:hover { background: rgba(46,158,91,.16); }
 .pay-list  { display: flex; flex-direction: column; gap: 5px; margin: 8px 14px 0; }
 .pay-item  {
   display: flex; align-items: center; gap: 8px;

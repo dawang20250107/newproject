@@ -1014,6 +1014,23 @@ async function openDunPanel(r, e) {
   } catch (err) { toast.error(err?.msg || err?.error || '打开失败') }
   finally { dunOpeningId.value = 0 }
 }
+// 连续处理：按当前 Tab 的列表在面板内切上/下一条（催收逐户过单）
+function _panelList() { return activeTab.value === 'dunning' ? dunItems.value : items.value }
+const panelIndex = computed(() => {
+  if (!panelRec.value) return -1
+  return _panelList().findIndex(r => r.id === panelRec.value.id)
+})
+const panelHasPrev = computed(() => panelIndex.value > 0)
+const panelHasNext = computed(() => panelIndex.value >= 0 && panelIndex.value < _panelList().length - 1)
+async function navPanel(dir) {
+  const list = _panelList()
+  const nx = list[panelIndex.value + dir]
+  if (!nx) return
+  try {
+    const res = await ar.getRecord(nx.id)
+    panelRec.value = res.data
+  } catch (err) { toast.error(err?.msg || err?.error || '打开失败') }
+}
 // 责任人 chips 单行横向滚动：把纵向滚轮转成横向位移，不用按住 Shift
 function onContactsWheel(e) {
   if (!e.deltaY) return
@@ -1028,10 +1045,22 @@ const DUN_LOG_TYPES = [
   { v: 'meeting', label: '🤝 会议' },
   { v: 'other', label: '📝 其他' },
 ]
-const dunFollow = reactive({ open: false, rec: null, log_type: 'call', note: '', follow_up_date: '', saving: false })
+const dunFollow = reactive({ open: false, bulk: false, rec: null, log_type: 'call', note: '', follow_up_date: '', saving: false })
 const dunFuTa = ref(null)
 function openDunFollow(r) {
+  dunFollow.bulk = false
   dunFollow.rec = r
+  dunFollow.log_type = 'call'
+  dunFollow.note = ''
+  dunFollow.follow_up_date = ''
+  dunFollow.open = true
+  nextTick(() => dunFuTa.value?.focus())
+}
+// a3: 批量记跟进——对勾选的多条逾期应收写同一条跟进
+function openDunFollowBulk() {
+  if (!dunSelected.value.size) return
+  dunFollow.bulk = true
+  dunFollow.rec = null
   dunFollow.log_type = 'call'
   dunFollow.note = ''
   dunFollow.follow_up_date = ''
@@ -1042,13 +1071,24 @@ async function saveDunFollow() {
   if (!dunFollow.note.trim()) { toast.error('请填写跟进内容'); return }
   dunFollow.saving = true
   try {
-    await ar.addCollectionLog(dunFollow.rec.id, {
-      log_type: dunFollow.log_type,
-      note: dunFollow.note.trim(),
-      follow_up_date: dunFollow.follow_up_date || null,
-      contact_person: dunFollow.rec.sales_contact || '',
-    })
-    toast.success('跟进已记录，可在该应收的动态时间线查看')
+    if (dunFollow.bulk) {
+      const ids = [...dunSelected.value]
+      const payload = { log_type: dunFollow.log_type, note: dunFollow.note.trim(), follow_up_date: dunFollow.follow_up_date || null }
+      const results = await Promise.allSettled(ids.map(id => ar.addCollectionLog(id, payload)))
+      const ok = results.filter(r => r.status === 'fulfilled').length
+      const fail = results.length - ok
+      toast.success(`已为 ${ok} 条记录跟进${fail ? `，${fail} 条失败` : ''}`)
+      dunSelected.value = new Set()
+      await loadDunning()
+    } else {
+      await ar.addCollectionLog(dunFollow.rec.id, {
+        log_type: dunFollow.log_type,
+        note: dunFollow.note.trim(),
+        follow_up_date: dunFollow.follow_up_date || null,
+        contact_person: dunFollow.rec.sales_contact || '',
+      })
+      toast.success('跟进已记录，可在该应收的动态时间线查看')
+    }
     dunFollow.open = false
   } catch (e) { toast.error(e?.msg || e?.error || '保存失败') }
   finally { dunFollow.saving = false }
@@ -1258,6 +1298,7 @@ function switchTab(key) {
   const prev = activeTab.value
   if (key === prev) return
   activeTab.value = key
+  try { localStorage.setItem('ar_active_tab', key) } catch { /* 隐私模式 */ }
   if (key === 'payments') enterPayments()
   else if (key === 'summary') loadGroupSummary()
   else if (key === 'dunning') loadDunning(true)
@@ -1933,7 +1974,20 @@ onMounted(async () => {
     // 无默认方案 → 默认只看「未结清」（先聚焦没收完的）；可点掉该条件看全部
     conditions.value.push({ t: 'dim', field: 'status', value: 'outstanding' })
   }
-  load()
+  // 恢复上次停留的 Tab（路由带筛选意图时以路由为准，不覆盖）
+  let savedTab = null
+  if (!fromRoute) { try { savedTab = localStorage.getItem('ar_active_tab') } catch { /* ignore */ } }
+  if (savedTab && savedTab !== 'all' && TABS.some(t => t.key === savedTab)) {
+    activeTab.value = savedTab
+    if (savedTab === 'payments') enterPayments()
+    else if (savedTab === 'summary') loadGroupSummary()
+    else if (savedTab === 'dunning') loadDunning(true)
+    else if (savedTab === 'offset') loadOffsetWorkbench()
+    else if (savedTab === 'batch') loadBatches()
+    else { if (FOCUS_TABS.includes(savedTab)) pendingOnly.value = true; load() }
+  } else {
+    load()
+  }
   window.addEventListener('pk:depts-changed', onScopeChange)
 })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
@@ -2648,6 +2702,7 @@ function clearFilters() {
             <button class="btn btn-primary btn-sm" :disabled="dunCreating" @click="createDunningTasks">
               {{ dunCreating ? '生成中…' : '⚡ 生成催款任务' }}
             </button>
+            <button class="btn btn-ghost btn-sm" @click="openDunFollowBulk">✍ 批量记跟进</button>
             <span class="text-sm-muted">生成后出现在 财务驾驶舱 → 决策行动，负责人默认为销售对接人</span>
           </div>
         </div>
@@ -3234,6 +3289,7 @@ function clearFilters() {
 
       <!-- 催款工作台面板 -->
       <ActivityPanel v-if="panelRec" :key="panelRec.id" :rec="panelRec" :can-write="auth.canArWrite" :can-collect="auth.canAction('ar_collect')"
+        :has-prev="panelHasPrev" :has-next="panelHasNext" @nav="navPanel"
         @close="onPanelClose" @field-saved="onPanelFieldSaved" />
 
       <!-- Payment Modal — 录入态：点遮罩不关闭，仅按钮可退出 -->
@@ -3467,7 +3523,11 @@ function clearFilters() {
       <div v-if="dunFollow.open" class="modal-overlay" @click.self="dunFollow.open = false">
         <div class="modal-box" style="max-width:440px">
           <div class="modal-header">
-            <div>
+            <div v-if="dunFollow.bulk">
+              <h3>批量记跟进 · {{ dunSelected.size }} 条</h3>
+              <div class="text-sm-muted" style="margin-top:2px">同一条跟进将写入所选每条逾期应收的动态时间线</div>
+            </div>
+            <div v-else>
               <h3>记跟进 · {{ dunFollow.rec?.short_name || dunFollow.rec?.customer_name }}</h3>
               <div class="text-sm-muted" style="margin-top:2px">
                 {{ dunFollow.rec?.customer_name }} · 逾期 {{ dunFollow.rec?.overdue_days }} 天 ·

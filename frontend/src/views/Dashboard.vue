@@ -68,21 +68,21 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
 
     <template v-else-if="data">
       <div class="kpi-grid">
-        <div class="kpi-card">
+        <router-link to="/payments?planned=today" class="kpi-card kpi-link">
           <div class="label">今日计划付款</div>
           <div class="value">{{ data.today_count }}</div>
           <div v-if="showAmount" class="sub">共 {{ fmt(data.today_amount) }}</div>
-        </div>
-        <div class="kpi-card">
+        </router-link>
+        <router-link to="/payments?status=pending" class="kpi-card kpi-link">
           <div class="label">待付款记录</div>
           <div class="value" style="color:var(--c-danger)">{{ data.pending_count }}</div>
           <div v-if="showAmount" class="sub">{{ fmt(data.pending_amount) }}</div>
-        </div>
-        <div class="kpi-card">
+        </router-link>
+        <router-link to="/payments?status=partial" class="kpi-card kpi-link">
           <div class="label">部分付款中</div>
           <div class="value" style="color:var(--amber-deep)">{{ data.partial_count }}</div>
           <div v-if="showAmount" class="sub">{{ fmt(data.partial_amount) }}</div>
-        </div>
+        </router-link>
         <router-link :to="data.overdue_count > 0 ? '/payments?status=overdue' : '/payments'"
                      :class="['kpi-card', 'kpi-link', data.overdue_count > 0 ? 'overdue-kpi-card' : '']">
           <div class="label">已逾期未付</div>
