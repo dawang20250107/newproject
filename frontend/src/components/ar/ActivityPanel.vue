@@ -210,7 +210,9 @@ const DEPT_OPTS = computed(() => DEPARTMENTS.filter(d => d !== props.rec.deliver
 // 回款方式（仅现金回款有意义）：现金/微信/银行转账/承兑汇票，默认银行转账
 const PAY_METHODS = COLLECTION_METHODS
 const DRAFT_ST = DRAFT_STATUSES
-const payForm   = reactive({ amount: '', payment_date: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, counterparty_dept: '', notes: '' })
+const payForm   = reactive({ amount: '', payment_date: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, counterparty_dept: '', notes: '', overflow_to_advance: false })
+// b2: 现金回款金额超过未收余额（多收）
+const payOverflow = computed(() => payForm.source === '回款' && Number(payForm.amount) > outstanding.value + 0.005)
 const addingPay = ref(false)
 
 async function submitPayment() {
@@ -226,11 +228,12 @@ async function submitPayment() {
       account: payForm.source === '回款' ? payForm.account : '',
       draft_status: (payForm.source === '回款' && payForm.method === DRAFT_METHOD) ? payForm.draft_status : '',
       counterparty_dept: payForm.source === '内部往来' ? payForm.counterparty_dept : '',
+      overflow_to_advance: payOverflow.value && payForm.overflow_to_advance,
       notes: payForm.notes,
     })
     await refreshRecordAndPayments()
     payForm.amount = ''; payForm.notes = ''; payForm.counterparty_dept = ''; payForm.account = ''
-    payForm.draft_status = DEFAULT_DRAFT_STATUS
+    payForm.draft_status = DEFAULT_DRAFT_STATUS; payForm.overflow_to_advance = false
     if (outstanding.value <= 0) toast.success('🎉 本笔应收已全部收齐！')
     else toast.success(payForm.source === '内部往来' ? '已登记内部往来核销' : '已登记回款')
   } catch (e) { toast.error(errMsg(e)) }
@@ -745,6 +748,10 @@ function onKey(e) {
                     </select>
                     <input v-model="payForm.account" type="text" maxlength="50" class="pay-inp pay-inp-acct" placeholder="收款账户（选填，如 结算001）" />
                   </div>
+                  <label v-if="payOverflow" class="pay-overflow">
+                    <input type="checkbox" v-model="payForm.overflow_to_advance" />
+                    金额超过未收 ¥{{ fmtAmt(outstanding) }}，超出 ¥{{ fmtAmt(Number(payForm.amount) - outstanding) }} 转为该客户预收
+                  </label>
                 </div>
                 <button v-if="canCollect && outstanding > 0" class="pay-settle" :disabled="addingPay" @click="settleRemaining">
                   ✓ 一键结清余款 ¥{{ fmtAmt(outstanding) }}
@@ -1511,4 +1518,5 @@ function onKey(e) {
 }
 .ap-cmp-btn:hover:not(:disabled) { filter: brightness(1.07); box-shadow: 0 5px 18px rgba(201,99,66,.35); }
 .ap-cmp-btn:disabled { opacity: .45; cursor: default; box-shadow: none; }
+.pay-overflow { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--c-warn, #e65100); margin-top: 2px; cursor: pointer; }
 </style>

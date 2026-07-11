@@ -466,8 +466,13 @@ async function refreshWriteoffs() {
   const res = await ar.listWriteoffs(woRec.value.id)
   woList.value = res.data
 }
+const woAmountOver = computed(() => {
+  const a = parseFloat(woForm.amount)
+  return !isNaN(a) && a > Number(woRec.value?.balance_amount || 0) + 0.005
+})
 async function addWriteoff() {
   if (!(parseFloat(woForm.amount) > 0)) { toast.error('核销金额必须大于0'); return }
+  if (woAmountOver.value) { toast.error('核销金额不能超过未核销余额'); return }
   woSaving.value = true
   try {
     const payload = { ...woForm }
@@ -1208,11 +1213,15 @@ onMounted(async () => {
             <span v-if="woForm.ar_record_id" class="wo-offset-tip">↳ 核销后自动生成「预收抵扣」回款，冲减应收未收余额（不计现金）</span>
           </div>
           <div class="wo-inputs">
-            <input v-model="woForm.amount" type="number" step="0.01" class="inp" placeholder="核销金额(元)" />
+            <input v-model="woForm.amount" type="number" step="0.01" class="inp" placeholder="核销金额(元)"
+                   :class="{ 'inp-bad': woAmountOver }" />
+            <button v-if="Number(woRec.balance_amount) > 0" type="button" class="wo-fill-chip"
+                    title="填入未核销余额" @click="woForm.amount = Number(woRec.balance_amount).toFixed(2)">全额 ¥{{ fmtAmt(woRec.balance_amount) }}</button>
             <input v-model="woForm.writeoff_date" type="date" class="inp" />
             <input v-model="woForm.notes" class="inp" placeholder="备注" />
-            <button class="btn btn-primary btn-sm" :disabled="woSaving" @click="addWriteoff">{{ woSaving ? '…' : '新增核销' }}</button>
+            <button class="btn btn-primary btn-sm" :disabled="woSaving || woAmountOver" @click="addWriteoff">{{ woSaving ? '…' : '新增核销' }}</button>
           </div>
+          <div v-if="woAmountOver" class="wo-over-tip">核销金额不能超过未核销余额 ¥{{ fmtAmt(woRec.balance_amount) }}</div>
         </div>
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="showWoModal = false">关闭</button>
@@ -1563,4 +1572,9 @@ td.dt-notes { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 .tl-hint { font-size: 11px; color: var(--muted); }
 .tl-stat { font-size: 12px; color: var(--text); font-weight: 600; }
 .tl-stat b { font-weight: 800; }
+.wo-fill-chip { border: 1px solid rgba(46,158,91,.4); background: rgba(46,158,91,.08); color: #1b5e20;
+  font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 14px; cursor: pointer; white-space: nowrap; transition: all .12s; }
+.wo-fill-chip:hover { background: rgba(46,158,91,.16); }
+.inp.inp-bad { border-color: var(--c-danger); }
+.wo-over-tip { font-size: 12px; color: var(--c-danger); margin-top: 6px; }
 </style>

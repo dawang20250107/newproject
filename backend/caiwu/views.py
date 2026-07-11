@@ -2975,6 +2975,59 @@ def targets_upload(request):
     # 月度未填齐时也拦截"月度合计已超年度"的部分上传。
     TOLERANCE = Decimal('1.00')
     from collections import defaultdict
+
+    _FIELD_LABEL = {'target_revenue': '收入', 'target_profit': '经营净利', 'target_gross_profit': '经营毛利'}
+
+    # dry-run 预览：解析+校验后返回逐格「旧值→新值」变更清单（特别标出「将被清零」），
+    # 不落库。前端二次确认后带 confirm=1 再提交写入——低频高危操作先看清再落。
+    if request.POST.get('preview') in ('1', 'true', 'True'):
+        old_map = {}
+        for t in FinancialTarget.objects.filter(year=year, business_unit__in=accessible):
+            old_map[(t.business_unit, t.month)] = {
+                'target_revenue': t.target_revenue,
+                'target_profit': t.target_profit,
+                'target_gross_profit': t.target_gross_profit,
+            }
+        # 复用写入路径的年度=月度校验（预览即暴露错误，避免确认后才被拒）
+        _merged = defaultdict(lambda: defaultdict(dict))
+        for (bu, mo), fields in parsed.items():
+            for field, val in fields.items():
+                _merged[bu][mo][field] = val
+        for (bu, mo), old in old_map.items():
+            for field, val in old.items():
+                _merged[bu].setdefault(mo, {}).setdefault(field, val)
+        for bu, mp in _merged.items():
+            if 0 not in mp:
+                continue
+            months_present = [m for m in range(1, 13) if m in mp]
+            full = len(months_present) == 12
+            for col_field, label in _FIELD_LABEL.items():
+                annual = mp[0].get(col_field, Decimal('0'))
+                if annual == 0:
+                    continue
+                ssum = sum(mp[m].get(col_field, Decimal('0')) for m in months_present)
+                diff = ssum - annual
+                if full and abs(diff) > TOLERANCE:
+                    return err(f'{bu}：月度{label}合计与年度目标不符（差额 {float(diff)/10000:+.2f} 万元）')
+                if not full and diff > TOLERANCE:
+                    return err(f'{bu}：已填月度{label}合计已超过年度目标（超出 {float(diff)/10000:+.2f} 万元）')
+        changes = []
+        for (bu, mo), fields in parsed.items():
+            old = old_map.get((bu, mo), {})
+            for field, new_val in fields.items():
+                old_val = old.get(field, Decimal('0')) or Decimal('0')
+                if abs((new_val or Decimal('0')) - old_val) < Decimal('0.01'):
+                    continue
+                changes.append({
+                    'bu': bu, 'month': mo, 'field': _FIELD_LABEL.get(field, field),
+                    'old_wan': round(float(old_val) / 10000, 2),
+                    'new_wan': round(float(new_val or 0) / 10000, 2),
+                    'is_clear': (new_val or Decimal('0')) == 0 and old_val > 0,
+                })
+        changes.sort(key=lambda c: (c['bu'], c['month'], c['field']))
+        return ok({'preview': True, 'changes': changes, 'count': len(changes),
+                   'clear_count': sum(1 for c in changes if c['is_clear'])})
+
     saved = 0
     with transaction.atomic():
         merged = defaultdict(lambda: defaultdict(dict))  # {bu: {month: {field: val}}}

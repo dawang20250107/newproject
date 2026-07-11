@@ -1251,6 +1251,23 @@ function openBatchPay() {
 // 核销提醒：所选待付记录中，项目/收款方存在未核销预付余额的行（付款前提示先核销，防重复支付）
 const batchPayPrepaidRows = computed(() => batchPayRows.value.filter(r => r.hasPrepaid))
 function batchPayResetAll() { batchPayRows.value.forEach(r => { r.amount = r.remaining }) }
+// c2: 从 Excel 粘贴一列金额，自当前行按顺序向下填充（多退少补提示行数不符）
+function onBatchAmtPaste(e, row) {
+  const text = e.clipboardData?.getData('text') || ''
+  const nums = text.trim().split(/[\r\n\t]+/).map(x => x.trim().replace(/,/g, '')).filter(x => x !== '')
+  if (nums.length < 2) return   // 单值：默认粘贴
+  e.preventDefault()
+  const start = batchPayRows.value.indexOf(row)
+  if (start < 0) return
+  let filled = 0
+  for (let i = 0; i < nums.length && start + i < batchPayRows.value.length; i++) {
+    const n = parseFloat(nums[i])
+    if (!isNaN(n)) { batchPayRows.value[start + i].amount = String(n); filled++ }
+  }
+  const rowsLeft = batchPayRows.value.length - start
+  if (nums.length > rowsLeft) toast.warn(`粘贴了 ${nums.length} 个值，但自此仅 ${rowsLeft} 行，多出的未使用`)
+  else toast.success(`已填充 ${filled} 行金额`)
+}
 async function doBatchPay() {
   if (batchPayBusy.value) return
   if (!isCrossPageSelection.value && !batchPayValid.value) return
@@ -1827,6 +1844,7 @@ async function doBatchPay() {
               <div class="batch-rows-head">
                 <span>本次付款金额（共 {{ batchPayRows.length }} 条）</span>
                 <button type="button" class="batch-reset" @click="batchPayResetAll">全部设为剩余应付</button>
+                <span class="batch-paste-hint" title="在任一金额框粘贴 Excel 一列数字，按顺序自当前行向下填充">📋 可粘贴一列金额</span>
               </div>
               <div v-if="batchPayErrCount" class="batch-err-banner">
                 ⚠ {{ batchPayErrCount }} 行金额有误，请修正后再提交
@@ -1837,7 +1855,8 @@ async function doBatchPay() {
                   <span class="batch-row-rem">剩余 {{ r.remaining.toFixed(2) }}</span>
                   <div class="batch-amt-wrap">
                     <input v-model="r.amount" type="number" step="0.01" min="0" :max="r.remaining"
-                           class="batch-row-amt" :class="{ bad: !!payRowError(r) }"/>
+                           class="batch-row-amt" :class="{ bad: !!payRowError(r) }"
+                           @paste="onBatchAmtPaste($event, r)"/>
                     <span v-if="+r.amount >= 10000 && !payRowError(r)" class="amt-hint">= {{ fmt(r.amount) }}</span>
                     <span v-if="payRowError(r)" class="batch-row-err">{{ payRowError(r) }}</span>
                   </div>
@@ -2106,6 +2125,7 @@ async function doBatchPay() {
 .batch-rows-head { display: flex; align-items: center; justify-content: space-between;
   font-size: 12px; color: var(--muted); margin: 0 0 6px; }
 .batch-reset { border: none; background: none; color: var(--primary); font-size: 12px; cursor: pointer; padding: 0; }
+.batch-paste-hint { font-size: 11px; color: var(--muted); margin-left: 8px; }
 .batch-rows { max-height: 42vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 9px; }
 .batch-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-bottom: 1px solid var(--border); }
 .batch-row:last-child { border-bottom: none; }

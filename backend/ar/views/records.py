@@ -2039,6 +2039,19 @@ def ar_payments(request, pk):
                 draft_status = (data.get('draft_status') or ARPayment.DEFAULT_DRAFT_STATUS).strip()
                 if draft_status not in ARPayment.DRAFT_STATUS_VALUES:
                     return err('承兑状态无效（未承兑/已承兑）')
+        # b2: 单条回款超收——超出未收部分可一键转为该客户预收（与批次回款同口径）
+        overflow_advance = None
+        create_amount = amount
+        if source == '回款':
+            outstanding = rec.outstanding_amount or Decimal('0')
+            overflow = amount - outstanding
+            if overflow > Decimal('0.005'):
+                if data.get('overflow_to_advance') in (True, 'true', '1', 1):
+                    create_amount = outstanding   # 本笔只冲到未收；超出转预收
+                else:
+                    return err(f'回款 {amount} 超过未收 {outstanding}。可勾选「超出部分转预收」'
+                               f'（超出 {overflow} 元将按客户建为预收），或按 {outstanding} 录入',
+                               409, 409)
         try:
             with transaction.atomic():
                 last = rec.payments.select_for_update().order_by('-payment_no').first()
@@ -2046,7 +2059,7 @@ def ar_payments(request, pk):
                 pay = ARPayment.objects.create(
                     ar_record=rec,
                     payment_no=next_no,
-                    amount=amount,
+                    amount=create_amount,
                     payment_date=pay_date,
                     source=source,
                     method=method,
@@ -2055,9 +2068,26 @@ def ar_payments(request, pk):
                     counterparty_dept=counterparty,
                     notes=data.get('notes', '').strip(),
                 )
+                if create_amount < amount:
+                    # 超出部分建为客户预收（总额=明细之和，须同步首笔明细，与 H20 一致）
+                    cust = (rec.project.customer_name or '').strip()
+                    if not cust:
+                        raise ValidationError('该应收未挂客户名，无法自动转预收；请手工到「预收预付」录入')
+                    pd_d = datetime.date.fromisoformat(str(pay_date)[:10])
+                    overflow_advance = AdvanceRecord.objects.create(
+                        direction='预收', delivery_dept=rec.delivery_dept, counterparty=cust,
+                        occur_year=pd_d.year, occur_month=pd_d.month, occur_date=pd_d,
+                        advance_amount=(amount - create_amount),
+                        notes=f'回款多收自动转预收（到账 {amount}，冲应收 {create_amount}）')
+                    AdvanceInstallment.objects.create(
+                        advance_record=overflow_advance, install_no=1,
+                        amount=(amount - create_amount), occur_date=pd_d, notes='回款多收转预收')
         except ValidationError as e:
             return err(str(e.message if hasattr(e, 'message') else e), 400)
-        return ok(pay.to_dict())
+        _resp = pay.to_dict()
+        if overflow_advance is not None:
+            _resp['overflow_advance'] = {'id': overflow_advance.id, 'amount': str(overflow_advance.advance_amount)}
+        return ok(_resp)
 
     return err('Method not allowed', 405)
 

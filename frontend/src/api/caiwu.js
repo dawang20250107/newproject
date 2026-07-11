@@ -52,10 +52,11 @@ api.interceptors.response.use(
 api.downloadTargetsTemplate = (year) =>
   api.get('/targets/template', { params: { year }, responseType: 'blob' })
 
-api.uploadTargets = (year, file) => {
+api.uploadTargets = (year, file, preview = false) => {
   const fd = new FormData()
   fd.append('year', year)
   fd.append('file', file)
+  if (preview) fd.append('preview', '1')
   return api.post('/targets/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
 }
 

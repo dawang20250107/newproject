@@ -103,6 +103,22 @@ function monthSum(bu, key) {
     .reduce((s, v) => s + (parseFloat(v) || 0), 0)
 }
 function annualVal(bu, key) { return parseFloat(editGrid[bu]?.[key]?.[12]) || 0 }
+
+// Excel 整行粘贴：解析 制表符/逗号/多空格 分隔的一行数字，从当前格起横向填充
+// （最多填到 12 月），一次粘贴替代逐格手输；只粘一个值时走浏览器默认行为。
+function onGridPaste(e, bu, key, startIdx) {
+  const text = e.clipboardData?.getData('text') || ''
+  const parts = text.trim().split(/[\t,]|\s{2,}/).map(x => x.trim()).filter(x => x !== '')
+  if (parts.length < 2) return   // 单值：默认粘贴
+  e.preventDefault()
+  let filled = 0
+  for (let i = 0; i < parts.length && startIdx + i < 12; i++) {
+    const n = parseFloat(String(parts[i]).replace(/,/g, ''))
+    if (!isNaN(n)) { editGrid[bu][key][startIdx + i] = String(n); filled++ }
+  }
+  const over = parts.length - (12 - startIdx)
+  toast.success(`已填充 ${filled} 个月` + (over > 0 ? `（超出 ${over} 个值未使用）` : ''))
+}
 function delta(bu, key) { return monthSum(bu, key) - annualVal(bu, key) }
 function deltaOk(bu, key) { return Math.abs(delta(bu, key)) < 0.01 }
 
@@ -199,18 +215,41 @@ async function exportTargets() {
   finally { exporting.value = false }
 }
 
+const uploadPreview = reactive({ open: false, file: null, changes: [], count: 0, clearCount: 0, committing: false })
 async function handleUpload(evt) {
   const file = evt.target.files?.[0]; evt.target.value = ''
   if (!file) return
   uploading.value = true; uploadMsg.value = ''
   try {
-    const res = await api.uploadTargets(targetYear.value, file)
-    uploadOk.value = true
-    uploadMsg.value = `导入成功，已更新 ${res.data?.saved ?? 0} 条记录`
-    await load()
+    // 先 dry-run 预览变更（不落库）
+    const res = await api.uploadTargets(targetYear.value, file, true)
+    const d = res.data || {}
+    if (!d.count) {
+      uploadOk.value = true; uploadMsg.value = '文件已解析，但与现有目标无差异，无需更新'
+      return
+    }
+    uploadPreview.file = file
+    uploadPreview.changes = d.changes || []
+    uploadPreview.count = d.count
+    uploadPreview.clearCount = d.clear_count || 0
+    uploadPreview.open = true
   } catch (e) {
     uploadOk.value = false; uploadMsg.value = e?.msg || e?.error || '导入失败'
   } finally { uploading.value = false }
+}
+const MONTH_NAME = m => (m === 0 ? '年度' : `${m}月`)
+async function commitUpload() {
+  uploadPreview.committing = true
+  try {
+    const res = await api.uploadTargets(targetYear.value, uploadPreview.file, false)
+    uploadOk.value = true
+    uploadMsg.value = `导入成功，已更新 ${res.data?.saved ?? 0} 条记录`
+    uploadPreview.open = false
+    await load()
+  } catch (e) {
+    uploadOk.value = false; uploadMsg.value = e?.msg || e?.error || '导入失败'
+    uploadPreview.open = false
+  } finally { uploadPreview.committing = false }
 }
 
 // 保证 editBus 中每个事业部的输入网格已初始化，避免模板 editGrid[bu][key] 读到 undefined。
@@ -383,7 +422,8 @@ onMounted(load)
                   <td class="col-bu">{{ bu }}</td>
                   <td v-for="(_, mi) in MONTH_LABELS" :key="mi">
                     <input v-model="editGrid[bu][g.key][mi]" :disabled="!canEdit"
-                           type="number" step="0.01" class="t-input" />
+                           type="number" step="0.01" class="t-input"
+                           @paste="onGridPaste($event, bu, g.key, mi)" />
                   </td>
                   <td class="col-sum-val">{{ monthSum(bu,g.key) ? (+monthSum(bu,g.key).toFixed(2)).toLocaleString() : '—' }}</td>
                   <td>
@@ -472,6 +512,42 @@ onMounted(load)
       </template>
     <ContextMenu :ctx="ctxMetrics" :items="ctxMetricsItems" />
     </template>
+
+    <!-- d1: 目标上传两步确认——先看变更 diff 再落库 -->
+    <div v-if="uploadPreview.open" class="modal-overlay" @click.self="uploadPreview.open = false">
+      <div class="modal-box" style="max-width:560px">
+        <div class="modal-header">
+          <div>
+            <h3>确认导入 {{ targetYear }} 年目标</h3>
+            <div class="text-sm-muted" style="margin-top:2px">
+              共 <strong>{{ uploadPreview.count }}</strong> 处变更
+              <span v-if="uploadPreview.clearCount" style="color:var(--c-danger)"> · 其中 {{ uploadPreview.clearCount }} 处将被清零</span>
+              ——确认无误后才写入
+            </div>
+          </div>
+          <button class="modal-close" @click="uploadPreview.open = false">✕</button>
+        </div>
+        <div class="modal-body" style="max-height:52vh;overflow:auto">
+          <table class="diff-tbl">
+            <thead><tr><th>事业部</th><th>期间</th><th>指标</th><th class="r">原值(万)</th><th class="r">新值(万)</th></tr></thead>
+            <tbody>
+              <tr v-for="(c, i) in uploadPreview.changes" :key="i" :class="{ 'row-clear': c.is_clear }">
+                <td>{{ c.bu }}</td><td>{{ MONTH_NAME(c.month) }}</td><td>{{ c.field }}</td>
+                <td class="r">{{ c.old_wan.toLocaleString() }}</td>
+                <td class="r"><strong>{{ c.new_wan.toLocaleString() }}</strong>
+                  <span v-if="c.is_clear" class="clear-tag">清零</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" @click="uploadPreview.open = false">取消</button>
+          <button class="btn btn-primary" :disabled="uploadPreview.committing" @click="commitUpload">
+            {{ uploadPreview.committing ? '写入中…' : `确认写入 ${uploadPreview.count} 处` }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -572,4 +648,10 @@ onMounted(load)
 .chg-up   { color: var(--c-success); font-weight: 600; }
 .chg-down { color: var(--c-danger); font-weight: 600; }
 .chg-na   { color: var(--muted); }
+.diff-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.diff-tbl th, .diff-tbl td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+.diff-tbl th { color: var(--muted); font-weight: 600; font-size: 12px; position: sticky; top: 0; background: var(--card); }
+.diff-tbl .r { text-align: right; font-variant-numeric: tabular-nums; }
+.diff-tbl tr.row-clear { background: rgba(198,40,40,.06); }
+.clear-tag { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 700; color: #fff; background: var(--c-danger); padding: 1px 5px; border-radius: 4px; }
 </style>

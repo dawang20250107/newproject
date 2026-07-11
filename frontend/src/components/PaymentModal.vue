@@ -6,6 +6,7 @@ import { DEPARTMENTS as DEPT_CONST, todayCST } from '../constants.js'
 import { fmtMoney } from '../utils/format.js'
 import ProjectShortNamePicker from './ProjectShortNamePicker.vue'
 import { useToast } from '../composables/useToast.js'
+import { confirmDlg } from '../composables/confirm.js'
 const toast = useToast()
 
 const props = defineProps({
@@ -21,6 +22,8 @@ function editable(key) { return auth.canEdit(key) }
 const loading = ref(false)
 const error = ref('')
 const saveStatus = ref('')
+let _autoSaved = false        // 本次会话是否已发生过自动保存
+let _originalPayload = null   // 打开编辑时的原始 payload（用于取消撤销）
 const autoSaveErr = ref('')
 let saveTimer = null
 let isResetting = false
@@ -90,6 +93,9 @@ function resetForm() {
   let opts = myDepts ? allDepts.filter(d => myDepts.includes(d)) : allDepts
   if (!isNew && p?.department && !opts.includes(p.department)) opts = [p.department, ...opts]
   deptOptions.value = opts
+  // c5: 捕获打开编辑时的原始快照，供「取消」时一键撤销自动保存
+  _autoSaved = false
+  _originalPayload = p?.id ? buildPayload() : null
   nextTick(() => { isResetting = false })
 }
 
@@ -111,6 +117,7 @@ async function autosave() {
   if (editingExisting) { saveStatus.value = ''; return }
   try {
     await api.put(`/payments/${props.payment.id}`, buildPayload())
+    _autoSaved = true
     saveStatus.value = 'saved'
     autoSaveErr.value = ''
     setTimeout(() => { if (saveStatus.value === 'saved') saveStatus.value = '' }, 2200)
@@ -228,6 +235,19 @@ async function doSupplierWriteoff() {
   finally { supplierWoSaving.value = false }
 }
 
+async function handleCancel() {
+  // c5: 编辑态自动保存后「取消」实为无操作会误导——若已自动保存，提供一键撤销回原状
+  if (props.payment?.id && _autoSaved && _originalPayload) {
+    if (await confirmDlg('本次修改已自动保存。是否撤销、恢复到打开编辑时的状态？')) {
+      try {
+        await api.put(`/payments/${props.payment.id}`, _originalPayload)
+        toast.success('已撤销本次修改，恢复到打开时的状态')
+        emit('saved')
+      } catch { toast.error('撤销失败，请手动核对该记录') }
+    }
+  }
+  emit('close')
+}
 function buildPayload() {
   const payload = {}
   const includeAll = !props.payment?.id
@@ -295,7 +315,7 @@ async function submit() {
               ⚠ {{ autoSaveErr || '自动保存失败' }}
             </span>
           </Transition>
-          <button class="modal-close" @click="emit('close')">×</button>
+          <button class="modal-close" @click="handleCancel">×</button>
         </div>
       </div>
 
@@ -485,7 +505,7 @@ async function submit() {
       </div>
 
       <div class="modal-footer">
-        <button class="btn btn-ghost" @click="emit('close')">取消</button>
+        <button class="btn btn-ghost" @click="handleCancel">取消</button>
         <button class="btn btn-primary" :disabled="loading" @click="submit">
           <span v-if="loading" class="save-spin btn-spin"></span>
           {{ loading ? '保存中…' : '保存' }}
