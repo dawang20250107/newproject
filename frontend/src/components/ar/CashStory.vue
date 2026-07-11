@@ -14,10 +14,14 @@ const props = defineProps({
   cumulativeEnd: { type: Number, default: null },
   months: { type: Array, default: () => [] },    // [{ym, label, inflow, outflow, net}] 仅有效月
   totalMonths: { type: Number, default: 0 },
+  budgetColl: { type: Number, default: 0 },      // 收款预算（有则显示达成对照）
+  budgetPay: { type: Number, default: 0 },
+  collAchieve: { type: Number, default: null },  // 实收/收款预算 %
+  payAchieve: { type: Number, default: null },
 })
 const emit = defineEmits(['month-click'])
 
-const fmtWan = v => fmtCompact(v, { smallRound: true, dash: '0' })
+const fmtWan = v => fmtCompact(v, { smallRound: true, dash: '0', trim: true })
 const sign = v => (v >= 0 ? '+' : '−') + fmtWan(Math.abs(v))
 
 const inTotal = computed(() => props.inflows.reduce((a, s) => a + s.value, 0))
@@ -69,6 +73,16 @@ function segColor(s) {
         {{ sign(net) }}<small>{{ net >= 0 ? '净造血' : '净失血' }}</small>
       </span>
     </div>
+    <div v-if="collAchieve != null || payAchieve != null" class="cs-budget">
+      <span v-if="collAchieve != null" class="cs-bd">
+        收款达成 <b :class="collAchieve >= 100 ? 'pos' : 'warn'">{{ collAchieve.toFixed(0) }}%</b>
+        <small>预算 {{ fmtWan(budgetColl) }}</small>
+      </span>
+      <span v-if="payAchieve != null" class="cs-bd">
+        付款执行 <b :class="payAchieve > 100 ? 'warn' : ''">{{ payAchieve.toFixed(0) }}%</b>
+        <small>预算 {{ fmtWan(budgetPay) }}</small>
+      </span>
+    </div>
     <div v-if="conclusion || cumulativeEnd != null" class="cs-conclusion">
       {{ conclusion }}<template v-if="cumulativeEnd != null"><template v-if="conclusion">；</template>期末资金池
         <b :class="cumulativeEnd >= 0 ? 'pos' : 'neg'">{{ sign(cumulativeEnd) }}</b></template>
@@ -79,6 +93,7 @@ function segColor(s) {
       <div class="cs-bar-row">
         <span class="cs-bar-lbl">流入</span>
         <div class="cs-bar">
+          <div v-if="!inSegs.length" class="cs-seg-none">本期无流入</div>
           <div v-for="s in inSegs" :key="s.name" class="cs-seg"
                :style="{ width: s.pct + '%', background: segColor(s) }"
                :title="`${s.name} ${fmtWan(s.value)}`">
@@ -89,6 +104,7 @@ function segColor(s) {
       <div class="cs-bar-row">
         <span class="cs-bar-lbl">流出</span>
         <div class="cs-bar">
+          <div v-if="!outSegs.length" class="cs-seg-none">本期无流出</div>
           <div v-for="s in outSegs" :key="s.name" class="cs-seg"
                :style="{ width: s.pct + '%', background: segColor(s) }"
                :title="`${s.name} ${fmtWan(s.value)}`">
@@ -106,7 +122,9 @@ function segColor(s) {
     <!-- ③ 有效月迷你行 -->
     <div v-if="months.length" class="cs-months">
       <div class="cs-months-head">发生现金流的月份（{{ months.length }}/{{ totalMonths }}）· 点击定位明细</div>
-      <button v-for="m in months" :key="m.ym" class="cs-month" @click="emit('month-click', m.ym)">
+      <button v-for="m in months" :key="m.ym" class="cs-month"
+              :title="`${m.label}：流入 ${fmtWan(m.inflow)} · 流出 ${fmtWan(m.outflow)} · 净 ${sign(m.net)}`"
+              @click="emit('month-click', m.ym)">
         <span class="cs-m-lbl">{{ m.label }}</span>
         <span class="cs-m-bars">
           <i class="mi" :style="{ width: (m.inflow / monthMax) * 100 + '%' }"></i>
@@ -142,6 +160,23 @@ function segColor(s) {
 .cs-net small { font-size: 13px; font-weight: 700; opacity: 0.85; }
 .cs-conclusion { margin-top: 10px; font-size: 12.5px; color: var(--muted); line-height: 1.7; }
 .cs-conclusion b { font-weight: 800; }
+.warn { color: #e65100; }
+
+/* 预算达成对照 chips */
+.cs-budget { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
+.cs-bd {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  font-size: 12px; color: var(--muted);
+  padding: 4px 10px; border-radius: 9px; background: rgba(180,140,110,0.07);
+}
+.cs-bd b { font-size: 14px; font-weight: 800; }
+.cs-bd small { font-size: 11px; opacity: 0.8; }
+
+.cs-seg-none {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  font-size: 11.5px; color: var(--muted);
+  background: repeating-linear-gradient(45deg, rgba(0,0,0,.03) 0 8px, transparent 8px 16px);
+}
 
 /* ② 资金流条 */
 .cs-flow { margin-top: 16px; }

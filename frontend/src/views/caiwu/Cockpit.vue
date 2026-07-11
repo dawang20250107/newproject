@@ -13,6 +13,9 @@ import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
 import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney, topLabel, endLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
+import { densityOf } from '../../utils/chartDensity.js'
+import PaceStory from '../../components/caiwu/PaceStory.vue'
+import BuGlance from '../../components/caiwu/BuGlance.vue'
 import { streamAiAnalysis } from '../../utils/aiStream.js'
 import { renderMarkdown } from '../../utils/markdown.js'
 import { downloadBlob } from '../../utils/download.js'
@@ -526,6 +529,26 @@ function chgClass(v) { return v == null || v === 0 ? 'mom-neutral' : (v > 0 ? 'm
 const grad = (c1, c2, horiz = false) => ({ type: 'linear', x: 0, y: 0, x2: horiz ? 1 : 0, y2: horiz ? 0 : 1,
   colorStops: [{ offset: 0, color: c1 }, { offset: 1, color: c2 }] })
 
+// ── 数据密度感知（与现金流同一套语言）：数据少讲结论，数据多讲结构 ────────────
+// 趋势稀疏（已发布 ≤2 个月，年初常态）→ 经营节奏卡；事业部 ≤2 → 事业部速览。
+const trendActive = computed(() =>
+  (data.value?.trend || []).filter(m =>
+    (m.actual_revenue || 0) !== 0 || (m.actual_gross_profit || 0) !== 0 || (m.actual_profit || 0) !== 0))
+const trendDensity = computed(() => densityOf(trendActive.value.length))
+const paceData = computed(() => {
+  const rows = trendActive.value
+  if (!rows.length) return null
+  return {
+    rows: rows.map(m => ({
+      label: `${m.month}月`,
+      rev: m.actual_revenue || 0, gross: m.actual_gross_profit || 0, prof: m.actual_profit || 0,
+      margin: m.actual_revenue ? (m.actual_profit / m.actual_revenue) * 100 : null,
+      target: m.target_revenue,
+    })),
+    totalMonths: (data.value?.trend || []).length || 12,
+  }
+})
+
 // ── 经营趋势全景：收入规模柱 + 目标线 + 毛利率/净利率双色区域线
 // 正值段绿/蓝渐变填充，负值段红色区域 + 警告标记 + 盈亏平衡参考线
 const panoramaOption = computed(() => {
@@ -835,6 +858,14 @@ const buMatrix = computed(() => {
   return rows
 })
 
+// 事业部 ≤2 时：构成饼图/贡献条/双柱图撑不起对比，切「事业部速览」叙事行
+const buDensity = computed(() => densityOf(buMatrix.value.length))
+const buGlanceData = computed(() => {
+  const rows = buMatrix.value
+  if (!rows.length) return null
+  return { rows, timeProgress: timeProgressPct.value }
+})
+
 const COMP_COLORS = ['#2e7d32', '#1565c0', '#00897b', '#f57f17', '#6a1b9a', '#c96342', '#5c6bc0', '#26a69a']
 
 // 收入构成（环形）
@@ -1084,10 +1115,12 @@ const ctxMatrixItems = computed(() => {
       <!-- ════ ZONE 3 · 经营趋势全景 + 目标达成子弹图组 ══════════════════════════ -->
       <div class="zone-2col zone-pano">
         <div class="card">
-          <div class="section-title" style="margin-bottom:8px">经营趋势全景（{{ data.year }}年）
-            <span class="tip">收入柱 · 正值绿/蓝渐变 · 负值红区预警</span>
+          <div class="section-title" style="margin-bottom:8px">
+            {{ trendDensity === 'sparse' ? '经营节奏' : `经营趋势全景（${data.year}年）` }}
+            <span class="tip">{{ trendDensity === 'sparse' ? '已发布月份较少 · 逐月讲结论' : '收入柱 · 正值绿/蓝渐变 · 负值红区预警' }}</span>
           </div>
-          <BaseChart v-if="panoramaOption" :option="panoramaOption" height="320px" />
+          <PaceStory v-if="trendDensity === 'sparse' && paceData" v-bind="paceData" />
+          <BaseChart v-else-if="panoramaOption" :option="panoramaOption" height="320px" />
           <div v-else class="mini-empty">暂无趋势数据</div>
         </div>
         <div class="card">
@@ -1138,6 +1171,15 @@ const ctxMatrixItems = computed(() => {
         </div>
       </div>
 
+      <!-- ════ ZONE 5+6 · 事业部 ≤2 时：四张结构图 → 一张事业部速览（叙事行）════ -->
+      <div v-if="buDensity === 'sparse' && buGlanceData" class="card">
+        <div class="section-title" style="margin-bottom:8px">事业部速览 · {{ data.year }}年{{ data.month }}月
+          <span class="tip">事业部较少 · 直接讲数与节奏 · 点击行下钻</span>
+        </div>
+        <BuGlance v-bind="buGlanceData" @drill="openDrill" />
+      </div>
+
+      <template v-else>
       <!-- ════ ZONE 5 · 收入构成 + 毛利贡献 ══════════════════════════════════════ -->
       <div class="chart-grid">
         <div class="card">
@@ -1165,6 +1207,7 @@ const ctxMatrixItems = computed(() => {
           <div v-else class="mini-empty">暂无事业部数据</div>
         </div>
       </div>
+      </template>
       </div>
     </template>
     </template>

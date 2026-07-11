@@ -1,0 +1,1 @@
+function e(e){let t=Math.max(0,...e.map(e=>e?.length||0)),n=[];for(let r=0;r<t;r++)e.some(e=>e&&Math.abs(e[r]||0)>1e-9)&&n.push(r);return n}function t(e,t={}){let{sparseMax:n=2}=t;return e?e<=n?`sparse`:`dense`:`empty`}export{t as n,e as t};

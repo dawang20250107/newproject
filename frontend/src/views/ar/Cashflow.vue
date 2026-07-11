@@ -194,6 +194,8 @@ const storyData = computed(() => {
   return {
     inflows, outflows, net: netTotal.value, cumulativeEnd: endCumulative.value,
     months: rows, totalMonths: months.length,
+    budgetColl: sumBudgetColl.value, budgetPay: sumBudgetPaid.value,
+    collAchieve: collAchieve.value, payAchieve: payAchieve.value,
   }
 })
 
