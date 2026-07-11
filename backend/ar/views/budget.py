@@ -667,6 +667,44 @@ def budget_summary(request):
                 'actual_payment': float(ap_d),
             })
 
+    # 逐月序列（预算燃尽跑道）：预算/实际按月分桶，前端画累计燃尽曲线。
+    # 口径与上方合计一致：回款排除非现金来源，付款=实付分期。
+    def _by_month(qs, date_field, amount_field):
+        out = {}
+        for r in qs.annotate(_m=TruncMonth(date_field)).values('_m').annotate(_t=Sum(amount_field)):
+            if r['_m']:
+                out[r['_m'].strftime('%Y-%m')] = float(r['_t'] or 0)
+        return out
+
+    bc_m = _by_month(CollectionBudget.objects.filter(
+        expected_date__range=(start_date, end_date), delivery_dept__in=depts),
+        'expected_date', 'amount')
+    bp_m = _by_month(PaymentBudget.objects.filter(
+        expected_date__range=(start_date, end_date), delivery_dept__in=depts),
+        'expected_date', 'amount')
+    ac_m = _by_month(ARPayment.objects.filter(
+        payment_date__range=(start_date, end_date),
+        ar_record__deleted_at__isnull=True,
+        ar_record__delivery_dept__in=depts).exclude(source__in=NON_CASH_PAYMENT_SOURCES),
+        'payment_date', 'amount')
+    ap_m = _by_month(PaymentInstallment.objects.filter(
+        pay_date__range=(start_date, end_date),
+        payment__department__in=depts, payment__deleted_at__isnull=True),
+        'pay_date', 'pay_amount')
+
+    by_month = []
+    cur = start_date.replace(day=1)
+    while cur <= end_date:
+        ym = cur.strftime('%Y-%m')
+        by_month.append({
+            'ym': ym,
+            'budget_collection': bc_m.get(ym, 0.0),
+            'actual_collection': ac_m.get(ym, 0.0),
+            'budget_payment': bp_m.get(ym, 0.0),
+            'actual_payment': ap_m.get(ym, 0.0),
+        })
+        cur = (cur + datetime.timedelta(days=32)).replace(day=1)
+
     # 净现金流——与「现金流分析」「周期报表」同一口径（剔除非现金回款、含预收/预付、
     # 预付核销为非现金不扣），避免预算页与驾驶舱算出的净现金流不一致。
     # 收/付达成率同为现金口径（回款排除非现金来源，付款=实付分期）。
@@ -684,6 +722,7 @@ def budget_summary(request):
         'payment_gap': str(budget_paid - actual_paid),
         'has_alert': actual_paid > actual_coll,
         'by_dept': by_dept_result,
+        'by_month': by_month,
         # 现金净流量（统一口径）
         'cash_inflow': str(cw['inflow']),
         'cash_outflow': str(cw['outflow']),

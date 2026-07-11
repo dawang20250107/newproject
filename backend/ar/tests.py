@@ -4790,3 +4790,46 @@ class BatchPaymentUndoTests(TestCase):
         self.assertEqual(Decimal(d2['collections'][0]['total']), Decimal('500'))
 
 
+
+class BudgetSummaryByMonthTests(TestCase):
+    """预算摘要 by_month：逐月预算/实际分桶（预算燃尽跑道数据源）。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900001900', name='BurnAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_by_month_buckets(self):
+        # 5月/6月各一笔收款预算；6月一笔实收
+        CollectionBudget.objects.create(short_name='P1', delivery_dept=self.dept,
+                                        expected_date=date(2026, 5, 10), amount=Decimal('1000'))
+        CollectionBudget.objects.create(short_name='P2', delivery_dept=self.dept,
+                                        expected_date=date(2026, 6, 20), amount=Decimal('2000'))
+        proj = ARProject.objects.create(customer_name='C', short_name='P1', delivery_dept=self.dept,
+                                        sales_contact='S', project_manager='M', project_no='BURN-1')
+        rec = ARRecord.objects.create(project=proj, operation_year=2026, operation_month=5,
+                                      estimated_amount=Decimal('3000'),
+                                      actual_invoice_amount=Decimal('3000'),
+                                      invoice_date=date(2026, 5, 31))
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('600'),
+                                 payment_date=date(2026, 6, 15), source='bank')
+
+        resp = self.client.get('/api/pk/ar/budget/summary',
+                               {'date_start': '2026-05-01', 'date_end': '2026-07-31'},
+                               **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        bm = {m['ym']: m for m in d['by_month']}
+        self.assertEqual(list(bm.keys()), ['2026-05', '2026-06', '2026-07'])
+        self.assertEqual(bm['2026-05']['budget_collection'], 1000.0)
+        self.assertEqual(bm['2026-06']['budget_collection'], 2000.0)
+        self.assertEqual(bm['2026-06']['actual_collection'], 600.0)
+        self.assertEqual(bm['2026-07']['budget_collection'], 0.0)

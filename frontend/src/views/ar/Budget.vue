@@ -210,6 +210,80 @@ const deptCompareOption = computed(() => {
   }
 })
 
+// ── 预算燃尽跑道（预算板块专属图）─────────────────────────────────────────────
+// 回答预算的第一问题「预算池烧得快不快」：收款=burn-up（累计实收向预算爬坡），
+// 付款=burn-down（预算余额逐月递减）；实/虚线对比即「快/慢于匀速」，
+// 付款余额跌破 0 的段落转红（超烧预警）。单月区间画不出跑道，自动隐藏。
+const burnOption = computed(() => {
+  const bm = summary.value?.by_month
+  if (!bm || bm.length < 2) return null
+  const budgetColl = bm.reduce((a, m) => a + (m.budget_collection || 0), 0)
+  const budgetPay = bm.reduce((a, m) => a + (m.budget_payment || 0), 0)
+  if (!budgetColl && !budgetPay) return null
+  const lbls = bm.map(m => m.ym.slice(5) + '月')
+  const n = bm.length
+  let cc = 0, cp = 0
+  const collCum = bm.map(m => (cc += (m.actual_collection || 0)))
+  const payRemain = bm.map(m => (cp += (m.actual_payment || 0), budgetPay - cp))
+  const collPace = bm.map((_, i) => (budgetColl * (i + 1)) / n)
+  const payPace = bm.map((_, i) => budgetPay * (1 - (i + 1) / n))
+  const payNeg = payRemain.map(v => (v < 0 ? v : null))
+  const series = []
+  if (budgetColl) {
+    series.push(
+      { name: '累计实收', type: 'line', smooth: true, z: 10, data: collCum,
+        symbol: 'circle', symbolSize: 6, lineStyle: { color: '#2e7d32', width: 3 },
+        itemStyle: { color: '#2e7d32' },
+        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [{ offset: 0, color: 'rgba(46,125,50,.18)' }, { offset: 1, color: 'rgba(46,125,50,.02)' }] } },
+        markLine: { silent: true, symbol: 'none',
+          lineStyle: { color: '#2e7d32', type: 'dashed', width: 1.5 },
+          label: { formatter: `收款预算 ${fmtAmt(budgetColl)}`, color: '#2e7d32', fontSize: 10, position: 'insideEndTop' },
+          data: [{ yAxis: budgetColl }] } },
+      { name: '收款匀速基准', type: 'line', data: collPace, symbol: 'none',
+        itemStyle: { color: 'rgba(46,125,50,.5)' },
+        lineStyle: { type: 'dashed', color: 'rgba(46,125,50,.5)', width: 1.5 } })
+  }
+  if (budgetPay) {
+    series.push(
+      { name: '付款预算余额', type: 'line', smooth: true, z: 10, data: payRemain,
+        symbol: 'circle', symbolSize: 6, lineStyle: { color: '#e65100', width: 3 },
+        itemStyle: { color: '#e65100' },
+        markLine: { silent: true, symbol: 'none',
+          lineStyle: { color: 'rgba(198,40,40,.55)', type: 'dashed' },
+          label: { formatter: '烧穿线', color: '#c62828', fontSize: 10, position: 'insideEndBottom' },
+          data: [{ yAxis: 0 }] } },
+      { name: '付款匀速基准', type: 'line', data: payPace, symbol: 'none',
+        itemStyle: { color: 'rgba(230,81,0,.5)' },
+        lineStyle: { type: 'dashed', color: 'rgba(230,81,0,.5)', width: 1.5 } })
+    if (payNeg.some(v => v != null)) {
+      series.push({ name: '超烧', type: 'line', smooth: true, z: 11, data: payNeg, symbol: 'none',
+        connectNulls: false, lineStyle: { color: '#c62828', width: 4 },
+        areaStyle: { color: 'rgba(198,40,40,.14)' } })
+    }
+  }
+  return {
+    tooltip: { confine: true, trigger: 'axis',
+      backgroundColor: 'rgba(255,255,255,0.97)', borderColor: 'rgba(0,0,0,0.08)', textStyle: { fontSize: 12 },
+      formatter(ps) {
+        let h = `<div style="font-weight:700;margin-bottom:5px">${ps[0]?.axisValueLabel}</div>`
+        ps.forEach(p => {
+          if (p.value == null || p.seriesName === '超烧') return
+          h += `<div style="display:flex;gap:8px"><span style="color:${p.color}">●</span><span style="flex:1">${p.seriesName}</span><b>${fmtAmt(p.value)}</b></div>`
+        })
+        return h
+      } },
+    legend: { bottom: 0, icon: 'roundRect', itemWidth: 14, itemHeight: 8, textStyle: { fontSize: 11 },
+      data: series.map(s => s.name).filter(nm => nm !== '超烧') },
+    grid: { top: 28, right: 24, bottom: 40, left: 16, containLabel: true },
+    xAxis: { type: 'category', data: lbls, axisLabel: { fontSize: 11, color: '#888' },
+      axisLine: { lineStyle: { color: 'rgba(0,0,0,0.06)' } }, axisTick: { show: false } },
+    yAxis: { type: 'value', axisLabel: { formatter: v => fmtAmt(v), fontSize: 11, color: '#888' },
+      splitLine: { lineStyle: { color: 'rgba(0,0,0,0.06)' } } },
+    series,
+  }
+})
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // 亿/万 两级单位（无空格），万元以下两位小数；空值显示 0.00（保持原表现）
@@ -711,6 +785,14 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         </div>
       </div>
 
+      <!-- 预算燃尽跑道（跨月区间才有跑道，单月自动隐藏） -->
+      <div v-if="burnOption" class="card" style="margin-top:16px;padding:20px">
+        <div class="section-title">预算燃尽跑道
+          <span class="section-sub">绿实线=累计实收爬向预算 · 橙实线=付款预算余额递减 · 虚线=匀速基准 · 跌破烧穿线转红</span>
+        </div>
+        <BaseChart :option="burnOption" height="280px" />
+      </div>
+
       <!-- Per-dept comparison (only when user has access to multiple depts and no specific dept selected) -->
       <div v-if="summary?.by_dept?.length > 1" class="card" style="margin-top:16px;padding:20px">
         <div class="section-title">各事业部对比</div>
@@ -1031,6 +1113,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 </template>
 
 <style scoped>
+.section-sub { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 8px; }
+
 /* ── Fixed-viewport layout: header/tabs stay put, tab body scrolls ── */
 .bgt-body { /* .page-scroll (global) handles flex-grow + overflow */ }
 .topbar,

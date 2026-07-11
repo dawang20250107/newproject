@@ -29,6 +29,7 @@ const topData = ref(null)
 const statusData = ref(null)
 const pmData = ref(null)
 const deptData = ref(null)
+const custAgingData = ref(null)
 
 // 亿/万 两级单位（无空格，一位小数），万元以下取整；空值显示「0」
 const fmtWan = (v) => fmtCompact(v, { decimals: 1, smallRound: true, dash: '0' })
@@ -44,13 +45,14 @@ const deptColor = (d) => DEPT_COLORS[d] || '#9b8070'
 
 async function loadAll() {
   const params = { dept: selectedDept.value }
-  const [a, c, t, s, p, bd] = await Promise.allSettled([
+  const [a, c, t, s, p, bd, ca] = await Promise.allSettled([
     ar.aging(params),
     ar.collectionRate({ year: selectedYear.value, ...params }),
     ar.outstandingTop({ ...params, n: 10 }),
     ar.statusDist(params),
     ar.analyticsByPm({ year: selectedYear.value, ...params }),
     ar.analyticsByDept(params),
+    ar.agingByCustomer(params),
   ])
   if (a.status === 'fulfilled') agingData.value = a.value.data
   if (c.status === 'fulfilled') collRateData.value = c.value.data
@@ -58,6 +60,7 @@ async function loadAll() {
   if (s.status === 'fulfilled') statusData.value = s.value.data
   if (p.status === 'fulfilled') pmData.value = p.value.data
   if (bd.status === 'fulfilled') deptData.value = bd.value.data
+  if (ca.status === 'fulfilled') custAgingData.value = ca.value.data
 }
 
 // 事业部应收全景矩阵（仅有数据的部门排前，零值部门置后）
@@ -97,6 +100,72 @@ const dueTargetOption = computed(() => {
 
 // ── ECharts options ───────────────────────────────────────────────────────────
 const agingColors = ['#2e7d32', '#f9a825', '#fb8c00', '#e53935', '#8e24aa']
+
+// ── 客户压款地图（应收板块专属图）：矩形树图，面积=未收金额，颜色=账龄严重度 ────
+// 回答应收的第一问题「钱压在谁手里、压了多久」：大块=压款大户，深红=拖得久。
+// 严重度 = 各账龄桶加权（未到期0 / 1-30天1 / 31-60天2 / 61-90天3 / 90+天4）÷ 4。
+const SEVERITY_COLORS = ['#2e7d32', '#f9a825', '#fb8c00', '#e53935', '#b71c1c']
+function severityColor(s) {
+  if (s <= 0.02) return SEVERITY_COLORS[0]
+  if (s <= 0.25) return SEVERITY_COLORS[1]
+  if (s <= 0.5) return SEVERITY_COLORS[2]
+  if (s <= 0.75) return SEVERITY_COLORS[3]
+  return SEVERITY_COLORS[4]
+}
+const custMapOption = computed(() => {
+  const items = custAgingData.value?.items || []
+  if (!items.length) return null
+  const TOP = 30
+  const rows = items.slice(0, TOP).map(it => {
+    const total = parseFloat(it.total) || 0
+    const buckets = [parseFloat(it.not_due), parseFloat(it.b1_30), parseFloat(it.b31_60), parseFloat(it.b61_90), parseFloat(it.b90plus)].map(v => v || 0)
+    const sev = total ? (buckets[1] * 1 + buckets[2] * 2 + buckets[3] * 3 + buckets[4] * 4) / (total * 4) : 0
+    const overdue = total - buckets[0]
+    return { it, total, buckets, sev, overdue }
+  }).filter(r => r.total > 0)
+  if (!rows.length) return null
+  const rest = items.slice(TOP)
+  const restTotal = rest.reduce((a, it) => a + (parseFloat(it.total) || 0), 0)
+  const data = rows.map(r => ({
+    name: r.it.customer_name, value: r.total,
+    _sev: r.sev, _buckets: r.buckets, _overdue: r.overdue, _count: r.it.count,
+    itemStyle: { color: severityColor(r.sev) },
+  }))
+  if (restTotal > 0) data.push({
+    name: `其他 ${rest.length} 家`, value: restTotal, _rest: true,
+    itemStyle: { color: 'rgba(155,128,112,0.45)' },
+  })
+  const BUCKET_LABELS = ['未到期', '逾期1-30天', '逾期31-60天', '逾期61-90天', '逾期90天+']
+  return {
+    tooltip: { confine: true,
+      backgroundColor: 'rgba(255,255,255,0.97)', borderColor: 'rgba(0,0,0,0.08)', borderWidth: 1,
+      textStyle: { fontSize: 12, color: '#3a2f28' }, padding: [8, 12],
+      extraCssText: 'box-shadow:0 4px 16px rgba(0,0,0,0.10);border-radius:8px;',
+      formatter: p => {
+        const d = p.data
+        if (!d || d._rest) return `${p.name}<br/>未收合计：<b>${fmtWan(p.value)}</b>`
+        let h = `<b>${p.name}</b>　${d._count} 笔<br/>未收合计：<b>${fmtWan(p.value)}</b>`
+        if (d._overdue > 0) h += `　<span style="color:#c62828">逾期 ${fmtWan(d._overdue)}</span>`
+        d._buckets.forEach((v, i) => { if (v > 0) h += `<br/>${BUCKET_LABELS[i]}：${fmtWan(v)}` })
+        h += '<br/><span style="color:#9b8070">点击查看该客户台账 →</span>'
+        return h
+      } },
+    series: [{
+      type: 'treemap', roam: false, nodeClick: false,
+      breadcrumb: { show: false }, top: 4, left: 0, right: 0, bottom: 4,
+      label: { show: true, fontSize: 11.5, lineHeight: 15,
+        formatter: p => `${p.name}\n${fmtWan(p.value)}` },
+      itemStyle: { borderColor: '#fff', borderWidth: 2, gapWidth: 2 },
+      emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.25)' } },
+      data,
+    }],
+  }
+})
+function onCustMapClick(p) {
+  const d = p?.data
+  if (!d || d._rest || !p.name) return
+  router.push({ path: '/ar/records', query: { q: p.name } })
+}
 const grad = (c1, c2, horiz = false) => ({ type: 'linear', x: 0, y: 0, x2: horiz ? 1 : 0, y2: horiz ? 0 : 1,
   colorStops: [{ offset: 0, color: c1 }, { offset: 1, color: c2 }] })
 
@@ -517,6 +586,13 @@ const ctxDetailItems = computed(() => {
           <span class="tip">绿=当期到期 · 红=逾期已沉淀 · 看清每个事业部的回款盘子与风险占比</span>
         </div>
         <BaseChart :option="dueTargetOption" height="300px" />
+      </div>
+      <!-- 客户压款地图（应收板块专属图）：面积=未收金额 · 颜色=账龄严重度 -->
+      <div v-if="custMapOption" class="card" style="grid-column:span 2">
+        <div class="section-title">客户压款地图
+          <span class="tip">大块=压款大户 · 越红=拖得越久（绿=未到期 → 深红=90天+）· 点击客户直达台账</span>
+        </div>
+        <BaseChart :option="custMapOption" height="380px" @click="onCustMapClick" />
       </div>
       <div class="card">
         <div class="section-title">应收账龄漏斗 <span class="tip">点击下钻 · 越往下越该催</span></div>

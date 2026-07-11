@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, defineAsyncComponent } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { useAuthStore } from '../../stores/auth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
@@ -41,6 +41,7 @@ const ProjectPnlCard = defineAsyncComponent(() => import('./ProjectPnlCard.vue')
 const auth = useCaiwuAuth()
 const pkAuth = useAuthStore()
 const router = useRouter()
+const route = useRoute()
 
 // ── 顶部主 Tab ───────────────────────────────────────────────────────────────
 const mainTab = ref('overview')
@@ -992,7 +993,13 @@ const engineLine = computed(() => {
   return { eng, drag, sameOne: eng === drag }
 })
 
-onMounted(() => { restoreChat(); load() })
+onMounted(() => {
+  restoreChat()
+  // ?tab= 直达指定分析 Tab（如报表矩阵「净利归因」跳转 tab=charts）
+  const qt = route.query.tab
+  if (qt && MAIN_TABS.value.some(t => t.key === qt)) mainTab.value = qt
+  load()
+})
 
 // ── 右键上下文菜单（事业部矩阵表）────────────────────────────────────────────
 const ctxMatrix = useContextMenu()

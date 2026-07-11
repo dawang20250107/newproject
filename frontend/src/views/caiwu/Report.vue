@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import LevelToggle from '../../components/caiwu/report/LevelToggle.vue'
@@ -149,25 +149,47 @@ async function exportReport() {
 const toast = useToast()
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
 const ctxReport = useContextMenu()
+// 归因直达：矩阵里看到某月异动 → 一键跳到图表分析「因素分析瀑布」并预填对比期，
+// 不必再手动切页选期。参数经 sessionStorage 传递（图表分析是驾驶舱内嵌 Tab）。
+function gotoAttribution(mi) {
+  const mlist = months.value
+  const m = mlist[mi]
+  if (!m) return
+  let cy = year.value, cm = m - 1
+  if (cm === 0) { cm = 12; cy -= 1 }
+  sessionStorage.setItem('cw:wf-prefill', JSON.stringify({
+    bu: selectedBu.value || '', year: year.value, month: m, cmpYear: cy, cmpMonth: cm,
+  }))
+  router.push({ path: '/caiwu/cockpit', query: { tab: 'charts' } })
+}
+
 const ctxReportItems = computed(() => {
   const r = ctxReport.menu.payload
   if (!r) return []
-  return [
-    {
-      key: 'copy', label: '复制', icon: 'copy',
-      children: [
-        { key: 'copy-name', label: '科目名称', icon: 'cell', action: row => copyText(row.name).then(ok => ok ? toast.success('已复制：' + row.name) : toast.error('复制失败')) },
-        { key: 'copy-total', label: '合计金额', icon: 'cell', action: row => copyText(fmt(row.total)).then(ok => ok ? toast.success('已复制：' + fmt(row.total)) : toast.error('复制失败')) },
-        { key: 'copy-row', label: '整行（含各月，可贴 Excel）', icon: 'cell', action: row => {
-            const cells = [row.name, ...row.values.map(v => v ?? ''), row.total ?? '']
-            copyText(cells.join('\t')).then(ok => ok ? toast.success('已复制整行，可粘贴进 Excel') : toast.error('复制失败'))
-          } },
-      ],
-    },
-  ]
+  const items = []
+  if (r._mi != null) {
+    const m = months.value[r._mi]
+    items.push(
+      { key: 'attr', label: `净利归因：${m}月 vs 上月`, icon: 'chart', action: () => gotoAttribution(r._mi) },
+      { divider: true },
+    )
+  }
+  items.push({
+    key: 'copy', label: '复制', icon: 'copy',
+    children: [
+      { key: 'copy-name', label: '科目名称', icon: 'cell', action: row => copyText(row.name).then(ok => ok ? toast.success('已复制：' + row.name) : toast.error('复制失败')) },
+      { key: 'copy-total', label: '合计金额', icon: 'cell', action: row => copyText(fmt(row.total)).then(ok => ok ? toast.success('已复制：' + fmt(row.total)) : toast.error('复制失败')) },
+      { key: 'copy-row', label: '整行（含各月，可贴 Excel）', icon: 'cell', action: row => {
+          const cells = [row.name, ...row.values.map(v => v ?? ''), row.total ?? '']
+          copyText(cells.join('\t')).then(ok => ok ? toast.success('已复制整行，可粘贴进 Excel') : toast.error('复制失败'))
+        } },
+    ],
+  })
+  return items
 })
 
 const route = useRoute()
+const router = useRouter()
 onMounted(() => {
   const qb = route.query.bu, qy = +route.query.year
   if (qb && BUSINESS_UNITS.includes(qb)) selectedBu.value = qb
@@ -271,7 +293,8 @@ onMounted(() => {
             <tbody>
               <tr v-for="r in flatRows" :key="r.key" :class="['mx-row', `d${r.depth}`, { calc: r.calc, 'has-pct': r.pct }]" @contextmenu.prevent="ctxReport.open($event, r)">
                 <td class="mx-name" :style="`padding-left:${10 + r.depth * 16}px`">{{ r.name }}</td>
-                <td v-for="(v, i) in r.values" :key="i" class="mx-num" :class="{ neg: v < 0, zero: !v }">
+                <td v-for="(v, i) in r.values" :key="i" class="mx-num" :class="{ neg: v < 0, zero: !v }"
+                    @contextmenu.prevent.stop="ctxReport.open($event, { ...r, _mi: i })">
                   <div class="mx-amt">{{ v ? fmt(v) : '–' }}</div>
                   <div v-if="r.pct && v" class="mx-pct">{{ r.pct[i] != null ? r.pct[i].toFixed(1) + '%' : '—' }}</div>
                 </td>

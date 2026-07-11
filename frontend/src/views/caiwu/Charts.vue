@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import TrendLineChart from '../../components/caiwu/charts/TrendLineChart.vue'
@@ -105,8 +105,27 @@ watch(trendYear, () => {
   if (canTrend.value) loadTrend()
 })
 
+// 归因直达：报表矩阵右键「净利归因」跳转时经 sessionStorage 预填对比期并滚动定位
+const wfCard = ref(null)
+function consumeWfPrefill() {
+  try {
+    const raw = sessionStorage.getItem('cw:wf-prefill')
+    if (!raw) return false
+    sessionStorage.removeItem('cw:wf-prefill')
+    const p = JSON.parse(raw)
+    if (!p.year || !p.month) return false
+    wfYear.value = p.year; wfMonth.value = p.month
+    wfCmpYear.value = p.cmpYear; wfCmpMonth.value = p.cmpMonth
+    if (p.bu) globalBu.value = p.bu   // 触发 watch(globalBu) 自动加载
+    nextTick(() => wfCard.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+    return !!p.bu
+  } catch { return false }
+}
+
 onMounted(() => {
   globalBu.value = ''   // 默认全集团
+  const loadedByWatch = consumeWfPrefill()
+  if (loadedByWatch) return   // globalBu 变更的 watch 已触发加载，避免双请求
   if (canTrend.value) loadTrend()
   if (canWaterfall.value) loadWaterfall()
 })
@@ -159,7 +178,7 @@ onMounted(() => {
     </div>
 
     <!-- ── Waterfall Chart ───────────────────────────────── -->
-    <div v-if="canWaterfall" class="card">
+    <div v-if="canWaterfall" ref="wfCard" class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
         <div class="section-title" style="margin:0">因素分析（瀑布图）</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">

@@ -2011,10 +2011,11 @@ onBeforeUnmount(() => document.removeEventListener('click', closeExpMenu))
 
 onMounted(async () => {
   // 路由跳转带入的筛选（来自现金流/分析/项目台账等）→ 转成条件
-  const fromRoute = route.query.status || route.query.project_id || route.query.dept
+  const fromRoute = route.query.status || route.query.project_id || route.query.dept || route.query.q
   if (route.query.status) conditions.value.push({ t: 'dim', field: 'status', value: route.query.status })
   if (route.query.project_id) conditions.value.push({ t: 'dim', field: 'project_id', value: route.query.project_id })
   if (route.query.dept) conditions.value.push({ t: 'dim', field: 'dept', value: route.query.dept })
+  if (route.query.q) { conditions.value.push({ t: 'dim', field: 'q', value: route.query.q }); quickQ.value = route.query.q }  // 客户压款地图等跳转带入模糊搜索
   loadAgingCfg()   // 账龄边界驱动作战台严重度/行色/微条，尽早加载
   // 拉取筛选方案；无路由带入时自动套用用户设的「默认方案」（对标金蝶默认过滤方案）
   await loadSchemes()
