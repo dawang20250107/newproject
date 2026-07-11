@@ -690,6 +690,9 @@ def advance_import(request):
         if request.pk_role != 'super_admin' and dept not in request.pk_depts:
             errors.append(f'第{ri}行: 无权操作部门"{dept}"')
             continue
+        if not counterparty:
+            errors.append(f'第{ri}行: 往来单位必填（按对手方归集，缺失将无法批量核销）')
+            continue
         # Excel 数字单元格常以 "2026.0" 形态到达，裸 int() 会 ValueError 整个请求 500；
         # 与应收导入同口径：int(float(...)) + 兜底报行号错误
         try:
@@ -1298,6 +1301,9 @@ def advance_diff_summary(request):
     denied = _page_denied(request, 'ar_advance')
     if denied:
         return denied
+    denied = _ar_field_denied(request, 'adv_amount')   # 金额分析端点须有金额查看权
+    if denied:
+        return denied
     if request.method != 'GET':
         return err('Method not allowed', 405)
     dept = (request.GET.get('dept') or '').strip()
@@ -1565,6 +1571,9 @@ def advance_diff_timeline(request):
     denied = _page_denied(request, 'ar_advance')
     if denied:
         return denied
+    denied = _ar_field_denied(request, 'adv_amount')   # 金额分析端点须有金额查看权
+    if denied:
+        return denied
     if request.method != 'GET':
         return err('Method not allowed', 405)
     return ok(_compute_diff_timeline(request))
@@ -1575,6 +1584,9 @@ def advance_diff_timeline(request):
 def advance_diff_timeline_export(request):
     """GET /advances/diff-timeline/export — 收付差异时间维度导出 Excel（时间汇总 + 项目明细两表）。"""
     denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    denied = _ar_field_denied(request, 'adv_amount')   # 金额分析端点须有金额查看权
     if denied:
         return denied
     if request.method != 'GET':

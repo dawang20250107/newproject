@@ -186,9 +186,12 @@ async function load(reset = false) {
   loadErr.value = ''
   try {
     const params = buildParams()
+    // KPI 与筛选合计须同口径：复用列表参数但去掉分页，带上项目过滤与列头筛选，
+    // 否则顶部 KPI 反映的是更宽的范围，与底部「筛选合计」对不上
+    const kpiParams = { ...params }; delete kpiParams.page; delete kpiParams.size
     const [res, k] = await Promise.all([
       ar.listAdvances(params),
-      ar.advancesKpi({ direction: direction.value, ...filters }),
+      ar.advancesKpi(kpiParams),
     ])
     items.value = res.data.items
     total.value = res.data.total

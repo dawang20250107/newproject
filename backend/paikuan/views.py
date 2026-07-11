@@ -2185,7 +2185,11 @@ def payment_installments(request):
     total = qs.count()
     total_amount_val = qs.aggregate(s=Sum('pay_amount'))['s'] or Decimal('0')
 
-    can_view_amounts = perms is None or perms['view'].get('total_amount', True)
+    # 付款流水展示的是分期实付额(pay_amount)——属 installments 字段组，
+    # 须同时具备 total_amount 与 installments 查看权，否则隐藏了明细的职务
+    # 仍能经流水页看到每笔实付金额
+    can_view_amounts = perms is None or (
+        perms['view'].get('total_amount', True) and perms['view'].get('installments', True))
 
     items = []
     for inst in qs[(page - 1) * size: page * size]:

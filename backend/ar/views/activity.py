@@ -387,7 +387,8 @@ def ar_record_quick_edit(request, pk):
     if not updated:
         return err('没有可更新的字段')
     # Use update() to avoid triggering full save/recompute
-    ARRecord.objects.filter(pk=pk).update(**{k: getattr(rec, k) for k in updated})
+    # .update() 绕过 auto_now，须显式刷新 updated_at，否则修改痕迹不更新
+    ARRecord.objects.filter(pk=pk).update(updated_at=timezone.now(), **{k: getattr(rec, k) for k in updated})
     return ok(updated)
 
 

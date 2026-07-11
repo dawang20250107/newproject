@@ -616,7 +616,9 @@ class ARRecord(models.Model):
     def invoice_status(self):
         if (self.outstanding_amount or Decimal('0')) <= 0:
             return '已结清'
-        if not self.actual_invoice_amount:
+        # 用 is None 判断而非真值：与 KPI/分组汇总的 actual_invoice_amount__isnull 查询
+        # 同口径，否则 0 元开票的记录属性说「未开票」、查询说「已开票」，两处打架
+        if self.actual_invoice_amount is None:
             return '未开票'
         total_paid = self.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0')
         if total_paid > 0:
