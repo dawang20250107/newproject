@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import ar from '../../api/ar.js'
 import { downloadBlob } from '../../utils/download.js'
 import { todayCST, yearCST, monthCST } from '../../constants.js'
@@ -30,6 +30,38 @@ const narrative = ref({
   plan: '',      // 下期工作重点
   support: '',   // 需协调 / 支持事项
 })
+// d3: 汇报说明自动草稿——按「期间+范围」为键存 localStorage（防抖保存、切回自动恢复），
+// 财务写得最久的四段长文本不再因切换期间/误刷新而白写
+const _draftKey = () => `pr_narrative:${periodType.value}:${selYear.value}-${selMonth.value}` +
+  (periodType.value === 'weekly' ? `-w${selWeekIdx.value}` : '') + `:${scopeValue.value || 'all'}`
+let _draftTimer = null
+let _restoring = false
+function _saveDraft() {
+  clearTimeout(_draftTimer)
+  _draftTimer = setTimeout(() => {
+    try {
+      const v = narrative.value
+      if (v.summary || v.risk || v.plan || v.support) {
+        localStorage.setItem(_draftKey(), JSON.stringify(v))
+      } else {
+        localStorage.removeItem(_draftKey())   // 全空=清草稿
+      }
+    } catch { /* 隐私模式 */ }
+  }, 400)
+}
+function _restoreDraft() {
+  _restoring = true
+  try {
+    const raw = localStorage.getItem(_draftKey())
+    const v = raw ? JSON.parse(raw) : null
+    narrative.value = { summary: '', risk: '', plan: '', support: '', ...(v || {}) }
+  } catch { narrative.value = { summary: '', risk: '', plan: '', support: '' } }
+  nextTick(() => { _restoring = false })
+}
+watch(narrative, () => { if (!_restoring) _saveDraft() }, { deep: true })
+watch([periodType, selYear, selMonth, selWeekIdx, scopeValue], _restoreDraft)
+onMounted(_restoreDraft)
+
 const narrativeFields = [
   { key: 'summary', label: '经营分析（得 / 失 / 策略）', ph: '本期经营亮点、未达成项及应对策略…' },
   { key: 'risk', label: '风险与异常提示', ph: '逾期、资金缺口、重大异常事项…' },

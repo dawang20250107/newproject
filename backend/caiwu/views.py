@@ -1362,6 +1362,21 @@ def _compute_pl_check(parsed_rows):
     return {'kpis': kpis, 'l1_summary': l1_summary, 'l2_summary': l2_summary}
 
 
+def _prev_published_kpis(bu, year, month):
+    """d6: 取上一个月已发布部门明细批次的 pl_check KPI（供发布前对账对比）。"""
+    py, pm = (year - 1, 12) if month == 1 else (year, month - 1)
+    prev = ImportBatch.objects.filter(
+        business_unit=bu, year=py, month=pm,
+        batch_type=ImportBatch.TYPE_DEPT, status=ImportBatch.STATUS_PUBLISHED).first()
+    if not prev:
+        return None
+    rows = [{'l1_name': e.l1.name, 'l2_name': (e.l2.name if e.l2 else None), 'amount': float(e.amount)}
+            for e in prev.entries.select_related('l1', 'l2')]
+    if not rows:
+        return None
+    return {'year': py, 'month': pm, 'kpis': _compute_pl_check(rows).get('kpis', [])}
+
+
 @cw_required()
 def batch_upload(request):
     if request.method != 'POST':
@@ -1468,12 +1483,14 @@ def batch_upload(request):
             for r in parsed_rows
         ])
 
+    prev_kpis = _prev_published_kpis(bu, year, month) if batch_type == ImportBatch.TYPE_DEPT else None
     return ok({
         'batch': batch.to_dict(),
         'row_count': len(parsed_rows),
         'fmt': fmt,
         'warnings': warnings,
         'pl_check': pl_check,
+        'prev_kpis': prev_kpis,
     })
 
 
@@ -1786,9 +1803,15 @@ def project_margin(request):
     if mode == 'allocated':
         rows = _allocate_unalloc(rows, unalloc)
 
+    for r in rows:
+        # 净贡献口径：毛利再扣销售/管理费用，让「赚收入不赚钱」的项目扣完费用后现形
+        r['net_contribution'] = round(r['margin'] - r.get('sales_exp', 0) - r.get('mgmt_exp', 0), 2)
+        r['net_rate'] = round(r['net_contribution'] / r['revenue'] * 100, 1) if r['revenue'] else None
     rows.sort(key=lambda r: r['margin'], reverse=True)
     total_rev = sum(r['revenue'] for r in rows)
     total_cost = sum(r['cost'] for r in rows)
+    total_sales = sum(r.get('sales_exp', 0) for r in rows)
+    total_mgmt = sum(r.get('mgmt_exp', 0) for r in rows)
     # 收入是否按项目核算：若各项目收入几乎为 0、收入全在未挂池 → 本事业部不适用项目毛利
     revenue_by_project = total_rev > 0
     # direct 口径下，未挂池成本不进各项目，但计入整体合计的"未分摊成本"；
@@ -1799,12 +1822,19 @@ def project_margin(request):
     # 总收入/毛利/毛利率比 direct 偏小，且与下方对账口径 ledger_rev 自相矛盾。
     grand_rev = total_rev + unalloc['revenue']
     grand_margin = grand_rev - grand_cost
+    grand_sales = total_sales + (unalloc['sales_exp'] if mode == 'direct' else 0)
+    grand_mgmt = total_mgmt + (unalloc['mgmt_exp'] if mode == 'direct' else 0)
+    grand_net = round(grand_margin - grand_sales - grand_mgmt, 2)
     summary = {
         'project_count': len(rows),
         'total_revenue': round(grand_rev, 2),
         'total_cost': round(grand_cost, 2),
         'total_margin': round(grand_margin, 2),
         'margin_rate': round(grand_margin / grand_rev * 100, 1) if grand_rev else None,
+        'total_sales_exp': round(grand_sales, 2),
+        'total_mgmt_exp': round(grand_mgmt, 2),
+        'total_net_contribution': grand_net,
+        'net_rate': round(grand_net / grand_rev * 100, 1) if grand_rev else None,
         'unalloc_cost': round(unalloc['cost'], 2),
         'unalloc_revenue': round(unalloc['revenue'], 2),
         'has_data': qs.exists(),

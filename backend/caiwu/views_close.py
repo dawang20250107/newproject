@@ -16,7 +16,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from caiwu.models import BUSINESS_UNITS, ImportBatch, InternalBatch, ProjectMargin
-from caiwu.views import cw_required, ok, err, _page_denied, _can_access_bu
+from caiwu.views import cw_required, ok, err, _page_denied, _can_access_bu, _parse_json
 from caiwu.views_internal import _positions
 
 
@@ -216,8 +216,49 @@ def close_checklist(request):
         f'{trash_cnt} 条软删记录待还原或彻底删除' if trash_cnt else '回收站已清空',
         '/trash', '关账前确认回收站里没有该还原的记录')
 
+    # d7: 附加逐项批注（负责人/说明/本月确认）
+    from caiwu.models import CloseChecklistNote
+    note_map = {n.item_key: n.to_dict() for n in
+                CloseChecklistNote.objects.filter(year=year, month=month)}
+    for it in items:
+        it['note_meta'] = note_map.get(it['key'])
+
     n_ok = sum(1 for i in items if i['status'] == 'ok')
     n_todo = sum(1 for i in items if i['status'] == 'todo')
     n_warn = len(items) - n_ok - n_todo
+    n_confirmed = sum(1 for i in items if (i.get('note_meta') or {}).get('confirmed'))
     return ok({'year': year, 'month': month, 'items': items,
-               'summary': {'ok': n_ok, 'warn': n_warn, 'todo': n_todo, 'total': len(items)}})
+               'summary': {'ok': n_ok, 'warn': n_warn, 'todo': n_todo, 'total': len(items),
+                           'confirmed': n_confirmed}})
+
+
+@csrf_exempt
+@cw_required()
+def close_checklist_note(request):
+    """PUT ?year=&month= body{item_key, owner?, note?, confirmed?} — d7 设置某项批注。"""
+    denied = _page_denied(request, 'report')
+    if denied:
+        return denied
+    if request.method != 'PUT':
+        return err('方法不允许', 405)
+    from caiwu.models import CloseChecklistNote
+    body = _parse_json(request)
+    try:
+        year = int(request.GET.get('year', '') or body.get('year'))
+        month = int(request.GET.get('month', '') or body.get('month'))
+    except (TypeError, ValueError):
+        return err('年份或月份无效')
+    key = (body.get('item_key') or '').strip()[:64]
+    if not key:
+        return err('缺少 item_key')
+    obj, _ = CloseChecklistNote.objects.get_or_create(year=year, month=month, item_key=key)
+    if 'owner' in body:
+        obj.owner = (body.get('owner') or '').strip()[:100]
+    if 'note' in body:
+        obj.note = (body.get('note') or '').strip()[:500]
+    if 'confirmed' in body:
+        obj.confirmed = bool(body.get('confirmed'))
+    from paikuan.models import PaikuanUser
+    obj.updated_by = PaikuanUser.objects.filter(id=getattr(request, 'pk_uid', None)).first()
+    obj.save()
+    return ok(obj.to_dict())

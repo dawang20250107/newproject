@@ -2,8 +2,10 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../../api/caiwu.js'
+import { useToast } from '../../composables/useToast.js'
 
 const router = useRouter()
+const toast = useToast()
 
 // 默认核对「上一个自然月」：关账通常发生在次月初
 const now = new Date()
@@ -29,6 +31,18 @@ async function load() {
     data.value = null
   } finally { loading.value = false }
 }
+// d7: 逐项批注（负责人/说明/本月确认）——月末例会当走查单用
+const savingKey = ref('')
+async function saveNote(it, patch) {
+  savingKey.value = it.key
+  try {
+    const res = await api.put('/close-checklist/note',
+      { item_key: it.key, year: year.value, month: month.value, ...patch })
+    it.note_meta = res.data
+  } catch (e) { toast.error(e?.error || '保存失败') }
+  finally { savingKey.value = '' }
+}
+function toggleConfirm(it) { saveNote(it, { confirmed: !(it.note_meta && it.note_meta.confirmed) }) }
 onMounted(load)
 
 const STATUS_META = {
@@ -87,17 +101,27 @@ function goto(item) { if (item.link) router.push(item.link) }
     </div>
 
     <div v-if="data" class="cc-list">
-      <div v-for="it in sortedItems" :key="it.key" class="cc-item" :class="meta(it.status).cls"
-           @click="goto(it)" role="button" :title="'前往处理：' + it.link">
-        <span class="cc-light">{{ meta(it.status).icon }}</span>
-        <div class="cc-main">
+      <div v-for="it in sortedItems" :key="it.key" class="cc-item" :class="[meta(it.status).cls, { 'cc-confirmed': it.note_meta && it.note_meta.confirmed }]">
+        <span class="cc-light" @click="goto(it)" role="button" :title="'前往处理：' + it.link">{{ meta(it.status).icon }}</span>
+        <div class="cc-main" @click="goto(it)" role="button">
           <div class="cc-label">{{ it.label }}
             <span class="cc-status">{{ meta(it.status).label }}</span>
+            <span v-if="it.note_meta && it.note_meta.confirmed" class="cc-confirmed-tag">本月已确认</span>
           </div>
           <div class="cc-value">{{ it.value }}</div>
           <div v-if="it.detail" class="cc-detail">{{ it.detail }}</div>
         </div>
-        <span class="cc-go">前往处理 →</span>
+        <div class="cc-note" @click.stop>
+          <input :value="it.note_meta?.owner || ''" placeholder="负责人" class="cc-note-owner"
+                 @change="saveNote(it, { owner: $event.target.value })" />
+          <input :value="it.note_meta?.note || ''" placeholder="处理说明（本月接受原因等）" class="cc-note-txt"
+                 @change="saveNote(it, { note: $event.target.value })" />
+          <button class="cc-confirm-btn" :class="{ on: it.note_meta && it.note_meta.confirmed }"
+                  :disabled="savingKey === it.key" @click="toggleConfirm(it)">
+            {{ it.note_meta && it.note_meta.confirmed ? '✓ 已确认' : '标记本月确认' }}
+          </button>
+        </div>
+        <span class="cc-go" @click="goto(it)" role="button">前往 →</span>
       </div>
     </div>
   </div>
@@ -146,4 +170,14 @@ function goto(item) { if (item.link) router.push(item.link) }
 @media (hover: none) { .cc-go { opacity: 1 !important; } }
 .cc-go { font-size: 12.5px; color: var(--primary); white-space: nowrap;
   opacity: 0; transition: opacity .12s; flex-shrink: 0; }
+.cc-item { flex-wrap: wrap; }
+.cc-confirmed { opacity: .6; }
+.cc-confirmed-tag { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 700; color: var(--c-success); background: var(--c-success-bg); padding: 1px 6px; border-radius: 4px; }
+.cc-note { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; width: 100%; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.cc-note-owner { width: 90px; }
+.cc-note-txt { flex: 1; min-width: 160px; }
+.cc-note input { border: 1px solid var(--border); border-radius: 7px; padding: 4px 9px; font-size: 12.5px; background: var(--card); color: var(--text); }
+.cc-confirm-btn { border: 1px solid var(--border); background: var(--card); color: var(--muted); font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 7px; cursor: pointer; transition: all .12s; }
+.cc-confirm-btn:hover { border-color: var(--c-success); color: var(--c-success); }
+.cc-confirm-btn.on { background: var(--c-success-bg); border-color: var(--c-success); color: var(--c-success); }
 </style>

@@ -81,4 +81,5 @@ urlpatterns = [
 
     # 月末关账清单（红绿灯聚合，只读）
     path('close-checklist', views_close.close_checklist),
+    path('close-checklist/note', views_close.close_checklist_note),
 ]

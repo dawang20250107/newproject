@@ -221,8 +221,35 @@ async function doUpload() {
   } finally { uploading.value = false }
 }
 
+function fmtWanCn(v) {
+  const n = Number(v) || 0
+  return (n / 1e4).toLocaleString('zh-CN', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '万'
+}
 async function doPublish(batchId) {
-  if (!(await confirmDlg('确认发布此批次？发布后将替换同事业部同月份的旧数据。'))) return
+  // d6: 发布前对账——在确认框回显本批 pl_check KPI，若有上月已发布数据则并列对比（差异标注）
+  const detail = []
+  const cur = uploadResult.value?.pl_check?.kpis || []
+  const prev = uploadResult.value?.prev_kpis
+  if (cur.length) {
+    const prevMap = {}
+    ;(prev?.kpis || []).forEach(k => { prevMap[k.name] = k.amount })
+    for (const k of cur) {
+      let line = `${k.name}：${fmtWanCn(k.amount)}`
+      if (prev && prevMap[k.name] !== undefined) {
+        const d = k.amount - prevMap[k.name]
+        const pct = prevMap[k.name] ? (d / Math.abs(prevMap[k.name]) * 100) : 0
+        line += `　vs ${prev.year}年${prev.month}月 ${d >= 0 ? '+' : ''}${fmtWanCn(d)}` +
+                (Math.abs(pct) >= 20 ? `（环比 ${d >= 0 ? '+' : ''}${pct.toFixed(0)}% ⚠）` : '')
+      }
+      detail.push(line)
+    }
+  }
+  if (!(await confirmDlg({
+    title: '确认发布此批次',
+    message: '发布后将替换同事业部同月份的旧数据（不可直接撤销，需手动撤回）。请核对下方 KPI：',
+    detail: detail.length ? detail : ['（无利润表 KPI 可核对）'],
+    confirmText: '确认发布',
+  }))) return
   publishing.value = true
   try {
     await api.put(`/batches/${batchId}/publish`)

@@ -771,7 +771,8 @@ def ar_record_import_precheck(request):
         return str(v).strip() if v is not None else ''
 
     DATA_COLS = ('项目简称*', '交付部门', '运作日期*', '运作年*', '运作月*',
-                 '预估上账金额', '实际开票金额', '开票日期', '回款金额', '回款时间', '备注')
+                 '预估上账金额', '实际开票金额', '开票日期', '账实差额调整',
+                 '目标回款日期', '回款金额', '回款时间', '备注')
 
     allowed_depts = None if request.pk_role == 'super_admin' else request.pk_depts
     report_rows, ai_input = [], []
@@ -813,15 +814,37 @@ def ar_record_import_precheck(request):
                 else:
                     if not (row_vals['运作年*'] or row_vals['运作月*']):
                         rule_issue = '缺少「运作日期」，请补填（如 2026-05-01）'
+            _amts = {}
             if not rule_issue:
                 for amt_col, lbl in (('预估上账金额', '预估上账金额'), ('实际开票金额', '实际开票金额'),
-                                     ('回款金额', '回款金额')):
-                    raw = row_vals[amt_col]
+                                     ('账实差额调整', '账实差额调整'), ('回款金额', '回款金额')):
+                    raw = row_vals.get(amt_col)
                     if raw:
                         try:
-                            Decimal(str(raw).replace(',', '').replace('，', ''))
+                            _amts[amt_col] = Decimal(str(raw).replace(',', '').replace('，', ''))
                         except Exception:
                             rule_issue = f'「{lbl}」"{raw}"不是有效数字'; break
+            # 与 import 阶段一同口径：日期格式 / 回款一致性 / 超收——保证「预检绿灯=导入必过」
+            if not rule_issue:
+                for dcol, lbl, ex in (('开票日期', '开票日期', '2026-01-15'),
+                                      ('目标回款日期', '目标回款日期', '2026-02-15'),
+                                      ('回款时间', '回款时间', '2026-01-20')):
+                    draw = _cv_raw(ri, dcol)
+                    if draw not in (None, '') and _normalize_date(draw) is None:
+                        rule_issue = f'「{lbl}」"{draw}"格式无效，请用 {ex} 格式'; break
+            if not rule_issue:
+                _pay = _amts.get('回款金额')
+                _pay_date = _normalize_date(_cv_raw(ri, '回款时间'))
+                if _pay and _pay > 0 and not _pay_date:
+                    rule_issue = '填了「回款金额」却没填「回款时间」，请补填或清空回款金额'
+                elif _pay_date and not (_pay and _pay > 0):
+                    rule_issue = '填了「回款时间」却没填有效「回款金额」，请补填或清空回款时间'
+                elif _pay and _pay > 0:
+                    _base = (_amts.get('预估上账金额') or Decimal('0')) + (_amts.get('账实差额调整') or Decimal('0'))
+                    if _pay > _base:
+                        rule_issue = (f'回款金额 {_pay} 元 > 预估上账'
+                                      + ('（含账实差额）' if _amts.get('账实差额调整') else '')
+                                      + f' {_base} 元，未收将为负，导入会被拒——请核对金额或用账实差额调整')
 
         dept_hint = row_vals['交付部门']
         op_date_str = str(_cv_raw(ri, '运作日期*') or '').strip() or f"{row_vals['运作年*']}-{row_vals['运作月*']}"

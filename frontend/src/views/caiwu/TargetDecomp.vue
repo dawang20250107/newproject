@@ -3,7 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import ar from '../../api/ar.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 import EmptyState from '../../components/EmptyState.vue'
-import { yearCST } from '../../constants.js'
+import { yearCST , monthCST} from '../../constants.js'
 import { fmtCompact } from '../../utils/format.js'
 import { valueAxis, catAxis, TOOLTIP } from '../../utils/chartTheme.js'
 import ContextMenu from '../../components/ContextMenu.vue'
@@ -42,6 +42,15 @@ async function load() {
   } finally { loading.value = false }
 }
 
+// d5: 达成率落后时间进度预警——当年时间进度=已过月份/12；落后 >10 点的事业部标红提醒
+const timeProgress = computed(() => year.value === yearCST() ? Math.round(monthCST() / 12 * 100) : 100)
+const lagWarnings = computed(() => {
+  const tp = timeProgress.value
+  return (data.value?.rows || [])
+    .filter(r => r.ytd_achieved != null && (tp - r.ytd_achieved) > 10)
+    .map(r => ({ bu: r.bu, gap: Math.round(tp - r.ytd_achieved), ytd: r.ytd_achieved }))
+    .sort((a, b) => b.gap - a.gap)
+})
 watch(() => props.selectedBu, load)
 
 // ── 完成率矩阵（行=事业部 × 列=月/季，OKR 式红绿看板）────────────────────────
@@ -180,6 +189,17 @@ onMounted(load)
     <EmptyState v-if="loading" loading />
     <EmptyState v-else-if="err" :error="err" />
     <template v-else-if="data">
+      <!-- d5: 达成率落后时间进度预警 -->
+      <div v-if="lagWarnings.length" class="td-lag-warn">
+        <span class="td-lag-ico">⚠</span>
+        <span class="td-lag-txt">
+          时间进度已 <strong>{{ timeProgress }}%</strong>，
+          <strong>{{ lagWarnings.length }}</strong> 个事业部达成率明显落后：
+          <span v-for="(w, i) in lagWarnings" :key="w.bu" class="td-lag-item">
+            {{ w.bu }}（达成 {{ fmtRate(w.ytd) }}，落后 {{ w.gap }} 点）<template v-if="i < lagWarnings.length - 1">、</template>
+          </span>
+        </span>
+      </div>
       <!-- Summary strip -->
       <div class="td-summary">
         <div class="tds-item">
@@ -389,4 +409,9 @@ onMounted(load)
   .td-summary { flex-wrap: wrap; }
   .tds-item { flex: 0 0 50%; border-bottom: 1px solid var(--border-soft); }
 }
+.td-lag-warn { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 12px;
+  padding: 10px 14px; border-radius: 10px; background: rgba(198,40,40,.07); border: 1px solid rgba(198,40,40,.2);
+  border-left: 4px solid var(--c-danger); font-size: 13px; color: #a02418; }
+.td-lag-ico { flex-shrink: 0; font-size: 15px; }
+.td-lag-item { font-weight: 600; }
 </style>

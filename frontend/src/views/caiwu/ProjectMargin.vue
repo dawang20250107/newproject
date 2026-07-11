@@ -48,6 +48,7 @@ const ROW_COPY_COLS = [
   { key: 'cost', label: '成本', format: v => fmt(v) },
   { key: 'margin', label: '毛利', format: v => fmt(v) },
   { key: 'margin_rate', label: '毛利率', format: v => (v === null ? '' : v + '%') },
+  { key: 'net_contribution', label: '净贡献', format: v => fmt(v) },
 ]
 async function copyField(val, label) {
   const ok = await copyText(val)
@@ -249,10 +250,11 @@ onMounted(() => {
                 <th class="amt">主营成本</th>
                 <th class="amt">毛利</th>
                 <th class="amt">毛利率</th>
+                <th class="amt" title="净贡献 = 毛利 − 销售费用 − 管理费用">净贡献</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!rows.length && !showPool"><td colspan="6" class="empty-cell">本事业部本期无已挂项目的数据</td></tr>
+              <tr v-if="!rows.length && !showPool"><td colspan="7" class="empty-cell">本事业部本期无已挂项目的数据</td></tr>
               <tr v-for="(r, i) in rows" :key="r.project_name" class="pm-row" @click="openPnl(r)" @contextmenu.prevent="ctx.open($event, r)">
                 <td class="ctr text-muted">{{ i + 1 }}</td>
                 <td class="fw pm-name" :title="r.project_name">{{ r.project_name }}<span class="pm-drill">损益 ›</span></td>
@@ -262,6 +264,8 @@ onMounted(() => {
                 <td class="amt" :class="r.margin_rate !== null && r.margin_rate < 0 ? 'text-danger' : ''">
                   {{ r.margin_rate === null ? '—' : r.margin_rate + '%' }}
                 </td>
+                <td class="amt" :class="r.net_contribution >= 0 ? 'text-ok' : 'text-danger'"
+                    :title="r.net_rate !== null ? '净贡献率 ' + r.net_rate + '%' : ''">{{ fmt(r.net_contribution) }}</td>
               </tr>
               <!-- 直接口径：未挂项目池单列一行，使各列与合计对齐 -->
               <tr v-if="showPool" class="pm-pool-row">
@@ -270,6 +274,7 @@ onMounted(() => {
                 <td class="amt">{{ fmt(summary.unalloc_revenue) }}</td>
                 <td class="amt">{{ fmt(summary.unalloc_cost) }}</td>
                 <td class="amt text-muted">{{ fmt(summary.unalloc_revenue - summary.unalloc_cost) }}</td>
+                <td class="amt text-muted">—</td>
                 <td class="amt text-muted">—</td>
               </tr>
             </tbody>
@@ -281,6 +286,8 @@ onMounted(() => {
                 <td class="amt fw">{{ fmt(summary.total_cost) }}</td>
                 <td class="amt fw" :class="summary.total_margin >= 0 ? 'text-ok' : 'text-danger'"><span class="caret">{{ summary.total_margin >= 0 ? '▲' : '▼' }}</span>{{ fmt(summary.total_margin) }}</td>
                 <td class="amt fw">{{ summary.margin_rate === null ? '—' : summary.margin_rate + '%' }}</td>
+                <td class="amt fw" :class="summary.total_net_contribution >= 0 ? 'text-ok' : 'text-danger'"
+                    :title="summary.net_rate !== null ? '净贡献率 ' + summary.net_rate + '%' : ''">{{ fmt(summary.total_net_contribution) }}</td>
               </tr>
             </tfoot>
           </table>

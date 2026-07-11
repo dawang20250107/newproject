@@ -508,3 +508,26 @@ class AiUsage(models.Model):
         app_label = 'caiwu'
         db_table = 'caiwu_ai_usage'
         unique_together = [('date', 'kind', 'model')]
+
+
+class CloseChecklistNote(models.Model):
+    """月末关账清单逐项批注（d7）：对某年月某检查项标记 负责人 + 处理说明 + 本月已确认。
+    warn/todo 项常是「已知晓、本月接受」的状态，标记后已确认项灰显，月末例会当走查单用。"""
+    year = models.PositiveIntegerField('年')
+    month = models.PositiveIntegerField('月')
+    item_key = models.CharField('检查项 key', max_length=64)
+    owner = models.CharField('负责人', max_length=100, blank=True, default='')
+    note = models.CharField('处理说明', max_length=500, blank=True, default='')
+    confirmed = models.BooleanField('本月已确认', default=False)
+    updated_by = models.ForeignKey('paikuan.PaikuanUser', null=True, blank=True,
+                                   on_delete=models.SET_NULL, related_name='close_checklist_notes')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'caiwu_close_checklist_note'
+        unique_together = ('year', 'month', 'item_key')
+
+    def to_dict(self):
+        return {'owner': self.owner, 'note': self.note, 'confirmed': self.confirmed,
+                'updated_by': self.updated_by.name if self.updated_by else None,
+                'updated_at': self.updated_at.isoformat() if self.updated_at else None}
