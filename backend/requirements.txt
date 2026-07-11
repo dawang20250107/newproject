@@ -6,7 +6,12 @@ gevent==24.2.1
 PyMySQL==1.1.1
 openpyxl==3.1.5
 requests>=2.31
+# 钉钉审批事件订阅回调的 AES-256-CBC 加解密
+cryptography>=41.0
 # 知识库文件导入（PDF / Word）；未安装时接口会优雅提示，文本/Excel 不依赖它们
 pypdf>=4.2
 python-docx>=1.1
 Pillow>=10.0
+# 可观测性（可选）：未安装/未配置 SENTRY_DSN 时 settings 静默跳过，不影响启动
+sentry-sdk>=2.0
+django-prometheus>=2.3

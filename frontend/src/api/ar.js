@@ -23,6 +23,7 @@ const ar = {
   listPaymentLedger: p => api.get('/ar/records/payments', { params: p }),
   exportPaymentLedger: p => api.get('/ar/records/payments/export', { params: p, responseType: 'blob' }),
   collectionWorkbench: p => api.get('/ar/records/collection', { params: p }),
+  exportCollectionWorkbench: p => api.get('/ar/records/collection/export', { params: p, responseType: 'blob' }),
   createDunning: d => api.post('/ar/records/collection/dunning', d),
   // 筛选方案（私有/公共团队共享）
   listFilterSchemes: p => api.get('/ar/filter-schemes', { params: p }),
@@ -205,6 +206,17 @@ const ar = {
   createPoolTransfer: d => api.post('/ar/pool/transfers', d),
   deletePoolTransfer: id => api.delete(`/ar/pool/transfers/${id}`),
   reviewPoolTransfer: (id, d) => api.post(`/ar/pool/transfers/${id}/review`, d),
+
+  // 日常收款 (daily receipts)
+  listDailyReceipts: p => api.get('/ar/daily-receipts', { params: p }),
+  createDailyReceipt: d => api.post('/ar/daily-receipts', d),
+  updateDailyReceipt: (id, d) => api.put(`/ar/daily-receipts/${id}`, d),
+  deleteDailyReceipt: id => api.delete(`/ar/daily-receipts/${id}`),
+  bulkDeleteDailyReceipts: ids => api.post('/ar/daily-receipts/bulk-delete', { ids }),
+  exportDailyReceipts: p => api.get('/ar/daily-receipts/export', { params: p, responseType: 'blob' }),
+  listRefundableAdvances: p => api.get('/ar/daily-receipts/advances', { params: p }),
+  exportCashflow: p => api.get('/ar/cashflow/export', { params: p, responseType: 'blob' }),
+  bulkDeleteAdvances: ids => api.post('/ar/advances/bulk-delete', { ids }),
 }
 
 export default ar

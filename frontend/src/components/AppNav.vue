@@ -20,11 +20,21 @@ const auth = useAuthStore()
 const effectiveCollapsed = computed(() => props.mobileOpen ? false : props.collapsed)
 
 // 性能模式：关停毛玻璃/动画等装饰效果，解决低配电脑滚动闪屏
-const perfLite = ref(document.documentElement.classList.contains('perf-lite'))
-function togglePerfLite() {
-  perfLite.value = !perfLite.value
-  document.documentElement.classList.toggle('perf-lite', perfLite.value)
-  localStorage.setItem('pk_perf_lite', perfLite.value ? '1' : '0')
+
+// 表格密度切换：compact → comfortable → spacious，持久化
+const DENSITIES = ['compact', 'comfortable', 'spacious']
+const DENSITY_LABELS = { compact: '紧凑', comfortable: '适中', spacious: '宽松' }
+const density = ref(localStorage.getItem('pk_density') || 'comfortable')
+function applyDensity(d) {
+  DENSITIES.forEach(v => document.documentElement.classList.remove(`density-${v}`))
+  if (d !== 'comfortable') document.documentElement.classList.add(`density-${d}`)
+}
+applyDensity(density.value)
+function cycleDensity() {
+  const next = DENSITIES[(DENSITIES.indexOf(density.value) + 1) % DENSITIES.length]
+  density.value = next
+  localStorage.setItem('pk_density', next)
+  applyDensity(next)
 }
 
 function logout() {
@@ -111,7 +121,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
           <defs>
             <linearGradient id="navgrad" x1="1.5" y1="1.5" x2="34.5" y2="34.5" gradientUnits="userSpaceOnUse">
               <stop offset="0%" stop-color="#e8855a"/>
-              <stop offset="100%" stop-color="#c96342"/>
+              <stop offset="100%" stop-color="var(--primary)"/>
             </linearGradient>
           </defs>
         </svg>
@@ -179,7 +189,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
       </router-link>
 
       <!-- ── 应收账款 section ───────────────────── -->
-      <div v-if="auth.canPage('ar_projects') || auth.canPage('ar_records') || auth.canPage('ar_analytics') || auth.canPage('ar_cashflow') || auth.canPage('ar_budget')"
+      <div v-if="auth.canPage('ar_projects') || auth.canPage('ar_records') || auth.canPage('ar_advance') || auth.canPage('ar_daily_receipts') || auth.canPage('ar_analytics') || auth.canPage('ar_cashflow') || auth.canPage('ar_budget')"
            class="nav-section-label">
         <Transition name="label-fade">
           <span v-if="!effectiveCollapsed" class="nav-sl-text">应收账款</span>
@@ -245,6 +255,20 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         </Transition>
       </router-link>
 
+      <router-link v-if="auth.canPage('ar_daily_receipts')" to="/ar/daily-receipts" class="nav-item"
+        :class="{ active: route.path === '/ar/daily-receipts' }"
+        :title="effectiveCollapsed ? '日常收款' : undefined"
+        @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><circle cx="7" cy="15" r="1.4"/>
+          </svg>
+        </span>
+        <Transition name="label-fade">
+          <span v-if="!effectiveCollapsed" class="nav-label">日常收款</span>
+        </Transition>
+      </router-link>
+
       <router-link v-if="auth.canPage('ar_budget')" to="/ar/budget" class="nav-item"
         :class="{ active: route.path === '/ar/budget' }"
         :title="effectiveCollapsed ? '预算管理' : undefined"
@@ -260,7 +284,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
       </router-link>
 
       <!-- ── 财务分析 section ───────────────────── -->
-      <div v-if="auth.canPage('caiwu_report') || auth.canPage('caiwu_data') || auth.canPage('caiwu_charts') || auth.canPage('caiwu_metrics') || auth.canPage('caiwu_cockpit') || auth.isSuperAdmin"
+      <div v-if="auth.canPage('caiwu_report') || auth.canPage('caiwu_data') || auth.canPage('caiwu_charts') || auth.canPage('caiwu_metrics') || auth.canPage('caiwu_cockpit') || auth.canPage('caiwu_internal') || auth.isSuperAdmin"
            class="nav-section-label">
         <Transition name="label-fade">
           <span v-if="!effectiveCollapsed" class="nav-sl-text">财务分析</span>
@@ -326,6 +350,21 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         </Transition>
       </router-link>
 
+      <router-link v-if="auth.canPage('caiwu_report')" to="/caiwu/close" class="nav-item"
+        :class="{ active: route.path === '/caiwu/close' }"
+        :title="effectiveCollapsed ? '关账清单' : undefined"
+        @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 11l3 3L22 4"/>
+            <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+          </svg>
+        </span>
+        <Transition name="label-fade">
+          <span v-if="!effectiveCollapsed" class="nav-label">关账清单</span>
+        </Transition>
+      </router-link>
+
       <router-link v-if="auth.canPage('caiwu_charts')" to="/caiwu/project-margin" class="nav-item"
         :class="{ active: route.path === '/caiwu/project-margin' }"
         :title="effectiveCollapsed ? '项目毛利' : undefined"
@@ -354,7 +393,9 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
         </Transition>
       </router-link>
 
-      <router-link v-if="auth.canPage('caiwu_data')" to="/caiwu/data" class="nav-item"
+      <router-link v-if="auth.canPage('caiwu_data') || auth.canPage('caiwu_internal')"
+        :to="auth.canPage('caiwu_data') ? '/caiwu/data' : { path: '/caiwu/data', query: { tab: 'internal' } }"
+        class="nav-item"
         :class="{ active: route.path === '/caiwu/data' }"
         :title="effectiveCollapsed ? '数据加工' : undefined"
         @click="onNavClick">
@@ -436,6 +477,20 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
           <span v-if="!effectiveCollapsed" class="nav-label">审计日志</span>
         </Transition>
       </router-link>
+
+      <router-link v-if="auth.canDelete" to="/trash" class="nav-item"
+        :class="{ active: route.path === '/trash' }"
+        :title="effectiveCollapsed ? '回收站' : undefined"
+        @click="onNavClick">
+        <span class="nav-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
+          </svg>
+        </span>
+        <Transition name="label-fade">
+          <span v-if="!effectiveCollapsed" class="nav-label">回收站</span>
+        </Transition>
+      </router-link>
     </div>
 
     <!-- Footer -->
@@ -478,9 +533,13 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
             </svg>
             退出
           </button>
-          <button class="footer-btn perf-btn" :class="{ on: perfLite }" @click="togglePerfLite"
-            :title="perfLite ? '性能模式已开启（点击恢复完整视觉）' : '滚动卡顿？点击开启性能模式'">
-            ⚡
+          <button class="footer-btn density-btn" @click="cycleDensity"
+            :title="`表格密度：${DENSITY_LABELS[density]}（点击切换）`">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round">
+              <line x1="3" y1="6" x2="21" y2="6"/>
+              <line x1="3" y1="12" x2="21" y2="12"/>
+              <line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
           </button>
         </div>
       </template>
@@ -545,7 +604,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 /* ── toast ── */
 .pwd-ok-toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-  background: #2e7d32; color: #fff; padding: 8px 20px;
+  background: var(--c-success); color: #fff; padding: 8px 20px;
   border-radius: 20px; font-size: 13px; z-index: 9999; pointer-events: none;
   box-shadow: 0 4px 16px rgba(0,0,0,0.25);
 }
@@ -576,7 +635,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
    BRAND
 ═══════════════════════════════════════════════════ */
 .sidebar-brand {
-  padding: 20px 14px 16px;
+  padding: 18px 14px 14px;
   display: flex; align-items: center; gap: 11px;
   min-height: 64px; flex-shrink: 0;
   position: relative;
@@ -584,7 +643,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 .sidebar-brand::after {
   content: '';
   position: absolute; bottom: 0; left: 14px; right: 14px; height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(201,99,66,0.28) 40%, rgba(201,99,66,0.14) 70%, transparent);
+  background: linear-gradient(90deg, transparent, rgba(201,99,66,0.22) 40%, rgba(201,99,66,0.10) 70%, transparent);
 }
 .brand-mark {
   width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
@@ -600,63 +659,73 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
    NAV LINKS
 ═══════════════════════════════════════════════════ */
 .nav-links {
-  flex: 1; padding: 10px 8px 8px;
-  display: flex; flex-direction: column; gap: 1px;
+  flex: 1; padding: 8px 8px 8px;
+  display: flex; flex-direction: column; gap: 2px;
   overflow-y: auto; overflow-x: hidden;
+  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.14) transparent;
 }
+.nav-links::-webkit-scrollbar { width: 5px; }
+.nav-links::-webkit-scrollbar-track { background: transparent; }
+.nav-links::-webkit-scrollbar-thumb { background: transparent; border-radius: 3px; }
+.nav-links:hover::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); }
 
-/* Section labels */
+/* Section labels — 干净眉题：不裁切、不位移，展开态纯文字，收起态化为细分隔线 */
 .nav-section-label {
-  margin-top: 10px; padding: 0 4px 6px;
+  margin: 14px 0 4px; padding: 0 10px;
   display: flex; align-items: center; gap: 8px;
-  overflow: hidden;
+  min-height: 16px;
 }
 .nav-sl-text {
-  font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
-  color: rgba(196,168,152,0.38); text-transform: uppercase;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.05em;
+  color: rgba(206,180,162,0.5);
   white-space: nowrap; flex-shrink: 0;
 }
-.nav-sl-line {
-  flex: 1; height: 1px; min-width: 4px;
-  background: linear-gradient(90deg, rgba(201,99,66,0.2), rgba(201,99,66,0.05) 60%, transparent);
+.nav-sl-line { display: none; }
+.sidebar.collapsed .nav-section-label { margin: 8px 0 4px; padding: 0 16px; }
+.sidebar.collapsed .nav-sl-line {
+  display: block; flex: 1; height: 1px;
+  background: rgba(255,255,255,0.08);
 }
-.sidebar.collapsed .nav-sl-line { background: rgba(255,255,255,0.07); }
 
 /* Nav items */
 .nav-item {
   display: flex; align-items: center;
-  padding: 0; height: 42px;
-  border-radius: 9px;
-  color: rgba(200,174,158,0.7);
+  padding: 0; height: 38px;
+  border-radius: 8px;
+  color: rgba(212,188,172,0.78);
   font-size: 13.5px; font-weight: 500;
-  transition: background 0.17s, color 0.17s, transform 0.17s;
+  transition: background 0.15s ease, color 0.15s ease;
   text-decoration: none;
   white-space: nowrap; overflow: hidden;
   position: relative;
 }
 .nav-item:hover {
-  background: rgba(255,255,255,0.062);
-  color: rgba(255,248,244,0.9);
-  transform: translateX(1px);
+  background: rgba(255,255,255,0.055);
+  color: rgba(255,248,244,0.94);
 }
 .nav-item.active {
-  background: rgba(201,99,66,0.15);
+  background: rgba(201,99,66,0.14);
   color: #fff;
-  box-shadow: 0 2px 14px rgba(201,99,66,0.12);
+  font-weight: 600;
 }
 .nav-item.active::before {
   content: '';
-  position: absolute; left: 0; top: 18%; bottom: 18%;
-  width: 3.5px; border-radius: 0 3px 3px 0;
-  background: linear-gradient(180deg, #f09870, #c96342);
-  box-shadow: 0 0 8px rgba(201,99,66,0.48);
+  position: absolute; left: 0; top: 22%; bottom: 22%;
+  width: 3px; border-radius: 0 3px 3px 0;
+  background: linear-gradient(180deg, #f09870, var(--primary));
 }
+.nav-item:focus-visible { outline: 2px solid rgba(240,152,112,0.7); outline-offset: -2px; }
+/* 收起态：图标严格居中，激活态化为居中药丸 */
+.sidebar.collapsed .nav-item { justify-content: center; }
+.sidebar.collapsed .nav-icon { width: auto; }
+.sidebar.collapsed .nav-item.active::before { display: none; }
+.sidebar.collapsed .nav-item.active { background: rgba(201,99,66,0.2); }
 
 .nav-icon {
   flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
-  width: 42px; height: 42px;
-  transition: color 0.17s;
+  width: 42px; height: 38px;
+  transition: color 0.15s ease;
 }
 .nav-item.active .nav-icon { color: #e89570; }
 .nav-item:hover:not(.active) .nav-icon { color: rgba(255,230,210,0.85); }
@@ -681,14 +750,14 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 .user-info { display: flex; align-items: center; gap: 9px; overflow: hidden; }
 .user-avatar {
   width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
-  background: linear-gradient(135deg, #d4714e, #a84e32);
+  background: linear-gradient(135deg, #d4714e, var(--primary-dark));
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 700; font-size: 14px;
   box-shadow: 0 2px 10px rgba(201,99,66,0.26), inset 0 0 0 1px rgba(255,255,255,0.1);
 }
 .user-avatar-sm {
   width: 34px; height: 34px; border-radius: 9px; margin: 0 auto;
-  background: linear-gradient(135deg, #d4714e, #a84e32);
+  background: linear-gradient(135deg, #d4714e, var(--primary-dark));
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 700; font-size: 14px;
   position: relative;
@@ -708,8 +777,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 }
 .footer-btn.logout-btn:hover { background: rgba(220,70,50,0.16); color: #ff8a7a; border-color: rgba(220,70,50,0.24); }
 .footer-btn.pwd-btn:hover { background: rgba(255,255,255,0.09); color: rgba(255,248,244,0.9); border-color: rgba(255,255,255,0.12); }
-.footer-btn.perf-btn { flex: none; width: 30px; padding: 6px; font-size: 13px; }
-.footer-btn.perf-btn.on { border-color: #ffd54f; color: #ffd54f; background: rgba(255,213,79,0.1); }
+.footer-btn.density-btn { flex: none; width: 30px; padding: 6px; }
+.footer-btn.density-btn:hover { background: rgba(255,255,255,0.09); color: rgba(255,248,244,0.9); border-color: rgba(255,255,255,0.12); }
 .footer-btn.icon-only { width: 34px; flex: none; margin: 0 auto; padding: 8px; }
 
 /* Dept trigger */
@@ -731,7 +800,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 .user-avatar-sm.is-scoped { box-shadow: 0 0 0 2px rgba(245,127,23,0.5); }
 .user-avatar-sm .scope-dot {
   position: absolute; top: -2px; right: -2px; width: 8px; height: 8px;
-  border-radius: 50%; background: #f57f17; border: 1.5px solid #1e0d05;
+  border-radius: 50%; background: var(--amber-deep); border: 1.5px solid #1e0d05;
 }
 
 /* ═══════════════════════════════════════════════════
@@ -746,7 +815,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
   backdrop-filter: blur(24px);
   z-index: 200;
 }
-.dept-pop.pop-collapsed { left: calc(100% + 8px); right: auto; bottom: 14px; width: 240px; }
+/* 折叠态弹层用 fixed 逃离 .sidebar 的 overflow:hidden 裁剪（此前弹层在盒子外被整体裁掉不可见） */
+.dept-pop.pop-collapsed { position: fixed; left: calc(var(--nav-w-collapsed) + 8px); right: auto; bottom: 14px; width: 240px; z-index: 200; }
 .dept-pop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 .dept-pop-title { font-size: 13px; font-weight: 700; color: #fff; }
 .dept-pop-tools { display: flex; gap: 4px; }
@@ -765,7 +835,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
   border: 1.5px solid rgba(196,168,152,0.32);
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
-.dept-pop-item.checked .dept-check { background: #c96342; border-color: #c96342; color: #fff; }
+.dept-pop-item.checked .dept-check { background: var(--primary); border-color: var(--primary); color: #fff; }
 .dept-pop-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding-top: 7px; margin-top: 5px;
@@ -780,7 +850,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
   transition: all 0.13s;
 }
 .dept-mini-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
-.dept-mini-btn.primary { background: #c96342; color: #fff; border-color: #c96342; }
+.dept-mini-btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
 .dept-mini-btn.primary:hover { background: #d97252; }
 .dept-mini-btn.ghost { background: transparent; }
 
@@ -809,10 +879,10 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 /* ═══════════════════════════════════════════════════
    TRANSITIONS
 ═══════════════════════════════════════════════════ */
-.label-fade-enter-active { transition: opacity 0.22s 0.12s, transform 0.22s 0.12s; }
-.label-fade-leave-active { transition: opacity 0.16s, transform 0.16s; }
-.label-fade-enter-from { opacity: 0; transform: translateX(-8px); }
-.label-fade-leave-to   { opacity: 0; transform: translateX(-8px); }
+.label-fade-enter-active { transition: opacity 0.2s 0.14s; }
+.label-fade-leave-active { transition: opacity 0.12s; }
+.label-fade-enter-from,
+.label-fade-leave-to { opacity: 0; }
 
 /* ═══════════════════════════════════════════════════
    MOBILE OFF-CANVAS DRAWER
@@ -828,4 +898,5 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
   .sidebar.mobile-open { transform: translateX(0); }
   .collapse-btn { display: none; }
 }
+
 </style>

@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views
+from . import views, views_close, views_internal
 
 urlpatterns = [
     # auth
@@ -32,11 +32,13 @@ urlpatterns = [
     path('batches/upload', views.batch_upload),
     path('batches/submission-status', views.batch_submission_status),
     path('batches/<int:bid>/publish', views.batch_publish),
+    path('batches/<int:bid>/unpublish', views.batch_unpublish),
     path('batches/<int:bid>', views.batch_detail),
 
     # 项目毛利（业财融合）
     path('project-margin', views.project_margin),
     path('project-margin/upload', views.project_margin_upload),
+    path('project-margin/batches', views.project_margin_batches),
 
     # 指标管理 & 财务驾驶舱
     path('targets', views.targets),
@@ -48,10 +50,13 @@ urlpatterns = [
     path('cockpit/ai-analysis', views.cockpit_ai_analysis),
     path('cockpit/ai-analysis/stream', views.cockpit_ai_analysis_stream),
     path('cockpit/ai-chat/stream', views.cockpit_ai_chat_stream),
+    path('cockpit/chat', views.cockpit_chat),
     path('cockpit/knowledge', views.cockpit_knowledge),
     path('cockpit/knowledge/distill', views.cockpit_knowledge_distill),
     path('cockpit/knowledge/import', views.cockpit_knowledge_import),
     path('cockpit/knowledge/<int:kid>', views.cockpit_knowledge_detail),
+    path('cockpit/ai-feedback', views.cockpit_ai_feedback),
+    path('cockpit/ai-usage', views.cockpit_ai_usage),
     path('cockpit/skills', views.cockpit_skills),
     path('cockpit/skills/run', views.cockpit_skill_run),
 
@@ -66,4 +71,15 @@ urlpatterns = [
     path('charts/trend', views.chart_trend),
     path('charts/waterfall', views.chart_waterfall),
     path('charts/ai-analysis', views.chart_ai_analysis),
+
+    # 内部往来核对（金蝶补位）
+    path('internal/upload', views_internal.internal_upload),
+    path('internal/batches', views_internal.internal_batches),
+    path('internal/batches/<int:bid>', views_internal.internal_batch_detail),
+    path('internal/matrix', views_internal.internal_matrix),
+    path('internal/pair', views_internal.internal_pair),
+
+    # 月末关账清单（红绿灯聚合，只读）
+    path('close-checklist', views_close.close_checklist),
+    path('close-checklist/note', views_close.close_checklist_note),
 ]

@@ -204,7 +204,7 @@ function iconSvg(name) {
 .ctxm-backdrop { position: fixed; inset: 0; z-index: 600; }
 .ctxm {
   position: fixed; z-index: 601;
-  background: #fff; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--row-bg); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 10px 32px rgba(0,0,0,0.18); min-width: 168px; padding: 5px 0;
   user-select: none;
 }
@@ -228,8 +228,8 @@ function iconSvg(name) {
 }
 .ctxm-check { flex-shrink: 0; margin-left: 12px; color: var(--primary); }
 .ctxm-caret { flex-shrink: 0; margin-left: 8px; color: var(--muted); }
-.ctxm-danger { color: #c62828; }
-.ctxm-danger .ctxm-ico { color: #c62828; }
+.ctxm-danger { color: var(--c-danger); }
+.ctxm-danger .ctxm-ico { color: var(--c-danger); }
 .ctxm-danger:hover { background: rgba(198,40,40,0.08); }
 .ctxm-divider { height: 1px; background: var(--border); margin: 4px 0; }
 .ctxm-has-sub { cursor: default; }

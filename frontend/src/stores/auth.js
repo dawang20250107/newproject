@@ -101,6 +101,9 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('pk_user')
     localStorage.removeItem('pk_perms')
     localStorage.removeItem('pk_active_depts')
+    // 钉钉同步面板缓存的审批实例(含金额/收款方/申请人)也须随登出清除，
+    // 否则共用工作机上下一个使用者能看到上一个人查询过的敏感明细
+    localStorage.removeItem('dt_query_state_v1')
   }
 
   // 超管重置临时密码后，登录响应带 must_change_password → 强制改密
@@ -130,7 +133,25 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   // Refresh user + permissions from server (perms may change while logged in).
+  // ── 权限预览（超管专用）：临时以某职务的界面权限浏览系统 ─────────────────────
+  // 仅换前端 perms（按钮/页面/字段显隐）；数据仍按登录者本人权限返回。不落 localStorage。
+  const previewJob = ref('')
+  let _realPerms = null
+  function startPreview(jobLabel, cfg) {
+    if (!isSuperAdmin.value || !cfg) return
+    if (!previewJob.value) _realPerms = perms.value
+    previewJob.value = jobLabel
+    perms.value = { ...cfg, is_admin: false }
+  }
+  function stopPreview() {
+    if (!previewJob.value) return
+    previewJob.value = ''
+    perms.value = _realPerms
+    _realPerms = null
+  }
+
   async function refresh() {
+    if (previewJob.value) return   // 预览中不让 /me 覆盖临时权限
     try {
       const res = await api.get('/me')
       if (res.data?.user) {
@@ -155,6 +176,7 @@ export const useAuthStore = defineStore('auth', () => {
   return {
     token, user, perms, isLoggedIn, role, isSuperAdmin, isAdmin,
     canView, canEdit, canPage, canArView, canCreate, canArWrite, canDelete, canWrite, canAction,
+    previewJob, startPreview, stopPreview,
     activeDepts, allowedDepts, effectiveDepts, isDeptScoped, setActiveDepts,
     login, register, logout, setAuth, setPerms, refresh,
     mustChangePassword, changePassword,

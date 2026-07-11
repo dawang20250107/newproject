@@ -1,6 +1,8 @@
 <script setup>
+import { confirmDlg } from '../composables/confirm.js'
 import { ref, reactive, computed, onMounted } from 'vue'
 import api from '../api/index.js'
+import { downloadBlob } from '../utils/download.js'
 import ContextMenu from '../components/ContextMenu.vue'
 import { useContextMenu } from '../composables/useContextMenu.js'
 import { useToast } from '../composables/useToast.js'
@@ -78,14 +80,23 @@ function onSearch() {
   clearTimeout(qTimer)
   qTimer = setTimeout(() => load(true), 300)
 }
+const exporting = ref(false)
+async function exportCsv() {
+  exporting.value = true
+  try {
+    const res = await api.get('/audit-logs/export', { params: buildParams(), responseType: 'blob' })
+    downloadBlob(res, '审计日志.csv')
+  } catch (e) { toast.error(e?.msg || '导出失败') }
+  finally { exporting.value = false }
+}
 async function prune() {
-  if (!confirm('将删除 180 天前的审计日志，确定？')) return
+  if (!(await confirmDlg('将删除 180 天前的审计日志，确定？'))) return
   pruning.value = true
   try {
     const res = await api.post('/audit-logs/prune', { keep_days: 180 })
-    alert(`已清理 ${res.data.deleted} 条历史日志`)
+    toast.success(`已清理 ${res.data.deleted} 条历史日志`)
     await load(true)
-  } catch (e) { alert(e?.msg || '清理失败') }
+  } catch (e) { toast.error(e?.msg || '清理失败') }
   finally { pruning.value = false }
 }
 function toggleExpand(id) { expanded.value[id] = !expanded.value[id] }
@@ -173,6 +184,7 @@ onMounted(async () => {
         <span class="audit-sub">系统自动记录的全部写操作（谁 / 何时 / 做了什么 / 结果），共 {{ total }} 条</span>
       </div>
       <div class="ctrl-row">
+        <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportCsv">⬇ 导出CSV</button>
         <button class="btn btn-ghost btn-sm" :disabled="pruning" @click="prune">🧹 清理180天前</button>
       </div>
     </div>
@@ -200,7 +212,7 @@ onMounted(async () => {
           </thead>
           <tbody>
             <template v-if="loading && !items.length">
-              <SkeletonRow v-for="n in 8" :key="n" :cols="6" />
+              <SkeletonRow v-for="n in 8" :key="n" :cols="8" />
             </template>
             <tr v-else-if="!items.length"><td colspan="8" class="empty-cell">暂无审计记录</td></tr>
             <template v-for="l in items" :key="l.id">
@@ -264,20 +276,20 @@ onMounted(async () => {
 .time-cell, .ip-cell { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .path-cell { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text); word-break: break-all; }
 .method-badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; }
-.m-post { background: rgba(21,101,192,0.1); color: #1565c0; }
-.m-put { background: rgba(230,81,0,0.1); color: #e65100; }
-.m-del { background: rgba(198,40,40,0.1); color: #c62828; }
+.m-post { background: rgba(21,101,192,0.1); color: var(--c-info); }
+.m-put { background: rgba(230,81,0,0.1); color: var(--c-warn); }
+.m-del { background: rgba(198,40,40,0.1); color: var(--c-danger); }
 .op-label { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; white-space: nowrap; }
 .mod-chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(0,0,0,0.05); color: var(--muted); }
 .st-badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 6px; }
-.st-ok { background: rgba(46,125,50,0.1); color: #2e7d32; }
-.st-fail { background: rgba(198,40,40,0.12); color: #c62828; }
-.exp-btn { padding: 2px 10px; border: 1px solid var(--border); border-radius: 6px; background: #fff; font-size: 12px; cursor: pointer; color: var(--text); }
-.exp-btn:hover { border-color: #1565c0; color: #1565c0; }
+.st-ok { background: rgba(46,125,50,0.1); color: var(--c-success); }
+.st-fail { background: rgba(198,40,40,0.12); color: var(--c-danger); }
+.exp-btn { padding: 2px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--row-bg); font-size: 12px; cursor: pointer; color: var(--text); }
+.exp-btn:hover { border-color: var(--c-info); color: var(--c-info); }
 .payload-row td { background: rgba(0,0,0,0.02); }
 .payload-pre { margin: 0; font-size: 12px; max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 .pagination { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; flex-shrink: 0; }
-.page-btn { padding: 5px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; font-size: 13px; cursor: pointer; }
+.page-btn { padding: 5px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--row-bg); font-size: 13px; cursor: pointer; }
 .page-btn:disabled { opacity: .4; cursor: default; }
 .page-info { font-size: 13px; color: var(--muted); }
 .pg-jump{display:inline-flex;align-items:center;gap:4px;font-size:13px;color:var(--muted);margin-left:8px}

@@ -399,11 +399,11 @@ const ctxDetailItems = computed(() => {
     <div class="topbar" :class="{ 'topbar-embedded': embedded }">
       <h1 v-if="!embedded">应收分析</h1>
       <div class="ctrl-row">
-        <select v-model="selectedDept" class="sel-bu" @change="loadAll">
+        <select v-model="selectedDept" class="sel-bu">
           <option value="">全部事业部</option>
           <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
         </select>
-        <select v-model="selectedYear" class="sel-yr" @change="loadAll">
+        <select v-model="selectedYear" class="sel-yr">
           <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
         </select>
       </div>
@@ -433,19 +433,19 @@ const ctxDetailItems = computed(() => {
 
     <!-- Stats summary (clickable → drill-down) -->
     <div v-if="statusData" class="kpi-grid kpi-4" style="margin-bottom:16px">
-      <div class="kpi-card clickable" style="border-left:3px solid #c62828" @click="openDetail('overdue', '逾期明细')">
+      <div class="kpi-card clickable" style="border-left:3px solid var(--c-danger)" @click="openDetail('overdue', '逾期明细')">
         <div class="label">逾期 <span class="drill-hint">点击查看</span></div>
-        <div class="value" style="color:#c62828">{{ statusData.overdue?.count || 0 }}</div>
+        <div class="value" style="color:var(--c-danger)">{{ statusData.overdue?.count || 0 }}</div>
         <div class="sub">{{ statusData.overdue?.amount ? fmtWan(statusData.overdue.amount) + ' 未收' : '—' }}</div>
       </div>
-      <div class="kpi-card clickable" style="border-left:3px solid #1565c0" @click="openDetail('current', '当期明细')">
+      <div class="kpi-card clickable" style="border-left:3px solid var(--c-info)" @click="openDetail('current', '当期明细')">
         <div class="label">当期 <span class="drill-hint">点击查看</span></div>
-        <div class="value" style="color:#1565c0">{{ statusData.current?.count || 0 }}</div>
+        <div class="value" style="color:var(--c-info)">{{ statusData.current?.count || 0 }}</div>
         <div class="sub">{{ statusData.current?.amount ? fmtWan(statusData.current.amount) : '—' }}</div>
       </div>
-      <div class="kpi-card clickable" style="border-left:3px solid #2e7d32" @click="openDetail('not_due', '未到期明细')">
+      <div class="kpi-card clickable" style="border-left:3px solid var(--c-success)" @click="openDetail('not_due', '未到期明细')">
         <div class="label">未到期 <span class="drill-hint">点击查看</span></div>
-        <div class="value" style="color:#2e7d32">{{ statusData.not_due?.count || 0 }}</div>
+        <div class="value" style="color:var(--c-success)">{{ statusData.not_due?.count || 0 }}</div>
         <div class="sub">{{ statusData.not_due?.amount ? fmtWan(statusData.not_due.amount) : '—' }}</div>
       </div>
       <div class="kpi-card clickable" style="border-left:3px solid var(--muted)" @click="openDetail('settled', '已结清明细')">
@@ -564,8 +564,8 @@ const ctxDetailItems = computed(() => {
                 <td class="amt ok">{{ fmtWan(d.collected) }}</td>
                 <td class="amt warn">{{ fmtWan(d.outstanding) }}</td>
                 <td class="ctr">
-                  <span class="rate-pill" :class="d.rate >= 80 ? 'rate-ok' : d.rate >= 50 ? 'rate-mid' : 'rate-low'">
-                    {{ d.rate.toFixed(1) }}%
+                  <span class="rate-pill" :class="(d.rate || 0) >= 80 ? 'rate-ok' : (d.rate || 0) >= 50 ? 'rate-mid' : 'rate-low'">
+                    {{ Number(d.rate || 0).toFixed(1) }}%
                   </span>
                 </td>
               </tr>
@@ -642,9 +642,9 @@ const ctxDetailItems = computed(() => {
 .ar-matrix td { text-align: right; padding: 9px 12px; border-bottom: 1px solid rgba(0,0,0,0.045); color: var(--text); }
 .ar-matrix .ctr { text-align: center; }
 .ar-matrix .muted { color: var(--muted); }
-.ar-matrix .ok { color: #2e7d32; }
-.ar-matrix .warn { color: #e65100; font-weight: 600; }
-.ar-matrix .danger { color: #c62828; font-weight: 600; }
+.ar-matrix .ok { color: var(--c-success); }
+.ar-matrix .warn { color: var(--c-warn); font-weight: 600; }
+.ar-matrix .danger { color: var(--c-danger); font-weight: 600; }
 .ar-matrix .strong { font-weight: 800; }
 .ar-matrix tbody tr:hover { background: rgba(201,99,66,0.04); }
 .ar-matrix .row-zero { opacity: 0.5; }
@@ -653,9 +653,9 @@ const ctxDetailItems = computed(() => {
 .bar-mini { height: 7px; border-radius: 4px; min-width: 2px; opacity: 0.85; }
 .mtx-total td { border-top: 2px solid rgba(0,0,0,0.12); font-weight: 800; background: rgba(0,0,0,0.02); }
 .rate-pill { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 10px; }
-.rate-ok { background: rgba(46,125,50,.12); color: #2e7d32; }
-.rate-mid { background: rgba(230,81,0,.12); color: #e65100; }
-.rate-low { background: rgba(198,40,40,.12); color: #c62828; }
+.rate-ok { background: rgba(46,125,50,.12); color: var(--c-success); }
+.rate-mid { background: rgba(230,81,0,.12); color: var(--c-warn); }
+.rate-low { background: rgba(198,40,40,.12); color: var(--c-danger); }
 
 .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 900px) { .charts-grid { grid-template-columns: 1fr; } .charts-grid .card[style*='span 2'] { grid-column: span 1; } }
@@ -677,20 +677,20 @@ const ctxDetailItems = computed(() => {
 }
 .urge-left { display: flex; align-items: center; gap: 12px; }
 .urge-icon { font-size: 24px; }
-.urge-title { font-weight: 700; color: #c62828; font-size: 14px; }
-.urge-sub { font-size: 12.5px; color: #c62828; opacity: .9; margin-top: 2px; }
+.urge-title { font-weight: 700; color: var(--c-danger); font-size: 14px; }
+.urge-sub { font-size: 12.5px; color: var(--c-danger); opacity: .9; margin-top: 2px; }
 .urge-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .urge-key { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.urge-key-label { font-size: 11px; color: #c62828; font-weight: 600; }
+.urge-key-label { font-size: 11px; color: var(--c-danger); font-weight: 600; }
 .urge-chip {
   display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px;
   padding: 3px 10px; border-radius: 12px; background: rgba(255,255,255,.6);
-  border: 1px solid rgba(198,40,40,.3); color: #c62828; cursor: pointer; transition: all .14s;
+  border: 1px solid rgba(198,40,40,.3); color: var(--c-danger); cursor: pointer; transition: all .14s;
 }
-.urge-chip:hover { background: #c62828; color: #fff; }
+.urge-chip:hover { background: var(--c-danger); color: #fff; }
 .urge-chip b { font-weight: 700; }
 .urge-btn {
-  padding: 7px 16px; border-radius: 9px; border: none; background: #c62828; color: #fff;
+  padding: 7px 16px; border-radius: 9px; border: none; background: var(--c-danger); color: #fff;
   font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: filter .14s;
 }
 .urge-btn:hover { filter: brightness(1.08); }
@@ -705,12 +705,12 @@ const ctxDetailItems = computed(() => {
 .pm-table .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .pm-table .fw { font-weight: 600; }
 .pm-table .text-muted { color: var(--muted); }
-.pm-table .ok { color: #2e7d32; font-weight: 600; }
-.pm-table .warn { color: #e65100; font-weight: 600; }
+.pm-table .ok { color: var(--c-success); font-weight: 600; }
+.pm-table .warn { color: var(--c-warn); font-weight: 600; }
 .rate-pill { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11.5px; font-weight: 700; }
-.rate-ok  { background: rgba(46,125,50,0.1); color: #2e7d32; }
-.rate-mid { background: rgba(245,127,23,0.1); color: #e65100; }
-.rate-low { background: rgba(198,40,40,0.1); color: #c62828; }
+.rate-ok  { background: rgba(46,125,50,0.1); color: var(--c-success); }
+.rate-mid { background: rgba(245,127,23,0.1); color: var(--c-warn); }
+.rate-low { background: rgba(198,40,40,0.1); color: var(--c-danger); }
 
 /* detail modal table */
 .detail-table { width: 100%; }
@@ -720,13 +720,13 @@ const ctxDetailItems = computed(() => {
 .detail-table .amt { text-align: right; }
 .dt-name { font-weight: 600; font-size: 13px; }
 .dt-no { font-family: monospace; font-size: 11px; color: var(--muted); }
-.dt-warn { color: #e65100; font-weight: 700; }
+.dt-warn { color: var(--c-warn); font-weight: 700; }
 .dt-zero { color: var(--muted); }
 .dt-muted { color: var(--muted); font-size: 12px; }
 .dt-pill { font-size: 11px; padding: 2px 8px; border-radius: 12px; font-weight: 600; }
-.dt-danger { background: rgba(198,40,40,.1); color: #c62828; }
-.dt-blue { background: rgba(21,101,192,.1); color: #1565c0; }
-.dt-ok { background: rgba(46,125,50,.1); color: #2e7d32; }
+.dt-danger { background: rgba(198,40,40,.1); color: var(--c-danger); }
+.dt-blue { background: rgba(21,101,192,.1); color: var(--c-info); }
+.dt-ok { background: rgba(46,125,50,.1); color: var(--c-success); }
 .dt-mut { background: rgba(0,0,0,.06); color: var(--muted); }
 
 /* ar toast */

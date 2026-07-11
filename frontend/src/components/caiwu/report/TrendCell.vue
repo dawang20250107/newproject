@@ -59,7 +59,7 @@ const spark = computed(() => {
 .col-mom { width: 64px; padding: 5px 12px; text-align: right; white-space: nowrap; }
 .col-trend { width: 64px; padding: 5px 12px; text-align: center; }
 .mom-pill { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.mom-up   { color: #2e7d32; }
+.mom-up   { color: var(--c-success); }
 .mom-down { color: var(--danger); }
 .mom-na   { color: var(--muted); font-weight: 400; }
 .spark { vertical-align: middle; }

@@ -39,6 +39,10 @@
   --c-info:          #1565c0;
   --c-info-bg:       rgba(21,101,192,0.08);
   --c-info-bdr:      rgba(21,101,192,0.20);
+  /* 短名别名：历史代码大量使用 var(--danger)/var(--success) 但从未定义，
+     导致 background:var(--danger) 透明、白字不可见（如批量删除按钮）。在此统一补齐。 */
+  --danger:          var(--c-danger);
+  --success:         var(--c-success);
 
   /* ── borders ── */
   --border-soft:     rgba(180,140,110,0.14);
@@ -61,9 +65,70 @@
   --radius-lg:       20px;
 
   /* ── layout ── */
-  --nav-w:           224px;
+  --nav-w:           206px;
   --nav-w-collapsed: 68px;
   --blur:            blur(20px) saturate(180%);
+
+  /* ── accent: amber（重点标记/核销提醒/星标）── */
+  --amber:           #f5a623;
+  --amber-text:      #b8761a;
+  --amber-deep:      #f57f17;
+
+  /* ── table row surfaces ── */
+  --row-bg:          #fff;
+  --row-hover:       #f4f1ec;
+  --row-sel:         #f3ebe6;
+  --thead-bg:        #f8f4f0;
+
+  /* ── table density (comfortable default) ── */
+  --td-h:            36px;
+  --td-py:           6px;
+  --td-px:           10px;
+  --td-fs:           13px;
+}
+
+/* 键盘可达性：焦点可见（仅键盘触发，鼠标点击不出框） */
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; border-radius: 4px; }
+
+/* 勾选列整格热区（useInteractionFeel 全局代理点击）：手型提示整格可点 */
+td.sel-col, th.sel-col { cursor: pointer; }
+
+/* Excel 式区域选择高亮（useRangeSelection 全站共用；原散在各页 scoped，收归全局） */
+td.cell-range-sel { background: rgba(21,101,192,0.14) !important; box-shadow: inset 0 0 0 1px rgba(21,101,192,0.28); }
+
+/* 宽表横向可滚提示：两侧边缘阴影，滚到尽头随遮罩自动隐去（纯 CSS，
+   background-attachment 技巧：遮罩随内容滚动(local)、阴影钉在容器(scroll)） */
+.table-wrap, .table-scroll {
+  background:
+    linear-gradient(90deg, var(--card, #fff) 35%, rgba(255,255,255,0)) left center / 26px 100% no-repeat,
+    linear-gradient(270deg, var(--card, #fff) 35%, rgba(255,255,255,0)) right center / 26px 100% no-repeat,
+    radial-gradient(farthest-side at 0 50%, rgba(40,20,8,.15), transparent) left center / 12px 100% no-repeat,
+    radial-gradient(farthest-side at 100% 50%, rgba(40,20,8,.15), transparent) right center / 12px 100% no-repeat;
+  background-attachment: local, local, scroll, scroll;
+}
+
+/* 区域选择挂载容器：拖选期间禁用原生文本选择（电子表格式交互） */
+.range-root tbody { user-select: none; }
+
+/* f1: 选区统计浮动条（useRangeSelection 单例维护）：仿 Excel 底部求和 */
+.range-stats-bar { position: fixed; left: 50%; bottom: 46px; transform: translateX(-50%) translateY(8px);
+  background: var(--text); color: var(--card, #fff); font-size: 12.5px; font-weight: 600;
+  padding: 7px 18px; border-radius: 20px; box-shadow: 0 6px 24px rgba(0,0,0,.22);
+  z-index: 900; pointer-events: none; opacity: 0; transition: opacity .15s, transform .15s;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.range-stats-bar.on { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+html.density-compact {
+  --td-h:   28px;
+  --td-py:  3px;
+  --td-px:  8px;
+  --td-fs:  12.5px;
+}
+html.density-spacious {
+  --td-h:   46px;
+  --td-py:  11px;
+  --td-px:  14px;
+  --td-fs:  13.5px;
 }
 
 /* 始终保留文档滚动条占位，避免「滚动条出现/消失→内容宽度变化→自适应表格重新换行→
@@ -143,7 +208,7 @@ body {
    鼠标滚轮只滚表格行、不再整页上下翻。padding 去掉底部，底部交给内容填满
    （吸底 bottom-bar 高 36px 已 fixed 固定占位）。 */
 .main-content.full-height-view {
-  overflow: hidden; padding-bottom: 0; height: 100vh;
+  overflow: hidden; padding-bottom: 0; height: 100vh; height: 100dvh;
   display: flex; flex-direction: column;
 }
 /* 视图根元素（router-view 单根）填满锁定视口，成为纵向 flex 容器 */
@@ -206,6 +271,14 @@ body {
   outline-offset: 2px;
 }
 
+/* ── 全局按钮一致性兜底 ──────────────────────────────────────────────────────
+   系统里既有标准 .btn，也有大量自定义类名按钮（.bulk-act/.bulk-del/.footer-btn/
+   .page-btn 等）。这里用低优先级的元素选择器统一「禁用光标」与「键盘焦点轮廓」，
+   不覆盖各自更具体的视觉样式，只补齐操作手感与无障碍的一致性。 */
+button { font-family: inherit; }
+button:disabled { cursor: not-allowed; }
+button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
 .btn-primary {
   background: var(--grad); color: #fff;
   box-shadow: 0 3px 12px var(--primary-glow);
@@ -251,6 +324,27 @@ body {
 .btn-sm { padding: 5px 11px; font-size: 12px; border-radius: var(--radius-sm); }
 .btn:disabled { opacity: 0.42; cursor: not-allowed; filter: none !important; transform: none !important; box-shadow: none !important; }
 
+/* ── 状态徽章（全局唯一基准）：各页勿再自定义 .status-pill 尺寸，只加语义色变体 ── */
+.status-pill {
+  display: inline-block; font-size: 11.5px; font-weight: 600;
+  padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+}
+.pill-ok     { background: var(--c-success-bg); color: var(--c-success); }
+.pill-warn   { background: var(--c-warn-bg);    color: var(--c-warn); }
+.pill-danger { background: var(--c-danger-bg);  color: var(--c-danger); }
+.pill-blue   { background: var(--c-info-bg);    color: var(--c-info); }
+.pill-muted  { background: rgba(0,0,0,0.06);    color: var(--muted); }
+
+/* 实心危险按钮（确认删除等最终执行钮）：全局唯一定义，各页勿再复制 */
+.btn-danger-solid {
+  border: none; border-radius: 10px; padding: 8px 18px;
+  font-size: 14px; font-weight: 700; cursor: pointer;
+  background: var(--c-danger); color: #fff;
+  transition: filter 0.15s, transform 0.12s;
+}
+.btn-danger-solid:hover:not(:disabled) { filter: brightness(1.08); }
+.btn-danger-solid:disabled { opacity: .5; cursor: default; }
+
 /* ── inputs ──────────────────────────────────────────────────────────────── */
 input, textarea, select {
   font-family: inherit; font-size: 14px; outline: none;
@@ -268,6 +362,21 @@ input:focus, textarea:focus, select:focus {
   background: #fffcfa;
   box-shadow: 0 0 0 3px rgba(201,99,66,0.12), 0 1px 6px rgba(100,60,30,0.07);
 }
+/* 原生下拉的默认三角是「平庸框」的主要观感来源：统一换成克制的自定义 caret，
+   并去掉浏览器默认样式。设置了自有 background 简写的组件会覆盖此图（保留其外观）。 */
+select {
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  padding-right: 34px; cursor: pointer;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239b8070' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>");
+  background-repeat: no-repeat; background-position: right 11px center;
+}
+select:hover { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }
+select:focus { background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23c96342' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>"); background-repeat: no-repeat; background-position: right 11px center; }
+/* 日期输入的原生指示图标在浅色主题下对比弱、显土：轻微提亮 */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="month"]::-webkit-calendar-picker-indicator { opacity: .55; cursor: pointer; transition: opacity .15s; }
+input[type="date"]:hover::-webkit-calendar-picker-indicator,
+input[type="month"]:hover::-webkit-calendar-picker-indicator { opacity: .9; }
 input:focus-visible, textarea:focus-visible, select:focus-visible {
   outline: none;
 }
@@ -579,7 +688,7 @@ tr.overdue-row td:first-child { border-left: 3px solid var(--c-danger); }
   width: auto; min-width: 0;
   padding: 5px 28px 5px 10px; height: 32px;
   font-size: 12.5px; border-radius: var(--radius-sm);
-  background: rgba(255,254,251,0.92);
+  background-color: rgba(255,254,251,0.92);   /* 用 -color 保留全局自定义 caret */
 }
 .ctrl-sep { width: 1px; height: 20px; background: var(--border); flex-shrink: 0; }
 .search-input {
@@ -644,7 +753,13 @@ tr.overdue-row td:first-child { border-left: 3px solid var(--c-danger); }
   transition: left 0.46s cubic-bezier(0.45, 0, 0.15, 1);
 }
 body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
-@media (max-width: 768px) { .bottom-bar { left: 0; } }
+@media (max-width: 768px) {
+  .bottom-bar { left: 0; }
+  /* 手机端：财务合计横向可滚动，避免金额被裁切；分页器收紧 */
+  .bb-summary { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .bb-summary::-webkit-scrollbar { display: none; }
+  .bottom-bar .page-info { font-size: 10px; }
+}
 
 .bb-summary { display: flex; align-items: center; gap: 14px; min-width: 0; overflow: hidden; }
 .bb-item { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; font-size: 11.5px; flex-shrink: 0; }
@@ -755,8 +870,9 @@ body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
   }
 }
 
-/* Mobile filter bar */
-@media (max-width: 640px) {
+/* Mobile/中屏 filter bar——断点按「内容有效宽」校准:视口宽扣除 206px 导航后,
+   900px 视口的内容区≈694px,此时筛选栏已需要换行收紧(原 640 只覆盖真手机) */
+@media (max-width: 900px) {
   .filter-bar, .filter-row, .filter-strip {
     flex-wrap: wrap;
     gap: 6px !important;
@@ -776,17 +892,6 @@ body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
   }
 }
 
-/* Payments KPI mobile compact */
-@media (max-width: 640px) {
-  .pk-kpi-row, .pk-kpi-bar {
-    flex-wrap: wrap !important;
-    gap: 8px !important;
-  }
-  .pk-kpi-row > *, .pk-kpi-bar > * {
-    flex: 0 0 calc(50% - 4px) !important;
-    min-width: 0 !important;
-  }
-}
 
 /* Mobile sticky first column */
 @media (max-width: 640px) {
@@ -804,3 +909,73 @@ body.nav-collapsed .bottom-bar { left: var(--nav-w-collapsed); }
 .data-row, .drillable, .pcf-row, .cmp-row, .pm-row, .row {
   cursor: context-menu;
 }
+
+/* ── 打印（全局）─────────────────────────────────────────────────────────
+   组件内 scoped 的 @media print 只能隐藏组件自身元素；导航栏/背景层/主区
+   布局在全局层，这里统一处理，否则打印会带出侧边栏、左侧留白、
+   且 full-height-view 的 overflow:hidden + 100vh 会把内容裁成一页。 */
+@media print {
+  .bottom-bar { display: none !important; }
+  thead th { position: static !important; }
+  .sidebar, .mobile-nav-toggle, .mobile-nav-backdrop, .bg-layer { display: none !important; }
+  .layout { display: block !important; min-height: auto !important; }
+  .main-content, .main-public {
+    margin-left: 0 !important; padding: 0 !important;
+    overflow: visible !important; height: auto !important;
+  }
+  .main-content.full-height-view { display: block !important; }
+  body { background: #fff !important; }
+}
+
+/* ── 桌面拖拽导入遮罩（useFileDrop，各列表页共用）───────────────────────── */
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 1000; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(30, 22, 17, 0.42); backdrop-filter: blur(2px);
+}
+.drop-box {
+  text-align: center; padding: 38px 64px;
+  background: var(--card, #fff); border: 2px dashed var(--primary, #c96342);
+  border-radius: 18px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+.drop-icon { font-size: 40px; margin-bottom: 10px; }
+.drop-title { font-size: 17px; font-weight: 700; color: var(--text); }
+.drop-sub { margin-top: 6px; font-size: 12px; color: var(--muted); }
+.drop-zones { display: flex; gap: 18px; }
+.drop-zone {
+  pointer-events: auto; text-align: center; padding: 34px 46px;
+  background: var(--card, #fff); border: 2px dashed var(--border, #ccc);
+  border-radius: 16px; transition: border-color .12s, transform .12s;
+}
+.drop-zone.hover, .drop-zone:hover { border-color: var(--primary, #c96342); transform: scale(1.02); }
+
+/* ── caiwu 设计语言：hero 横幅 / 眉题 / 期间胶囊（内部往来页首创，各页共用）── */
+.cw-hero {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  flex-wrap: wrap; padding: 16px 22px; margin-bottom: 14px;
+  border: 1px solid var(--border); border-radius: 16px;
+  background:
+    radial-gradient(560px 200px at 8% -40%, rgba(201, 99, 66, 0.10), transparent 68%),
+    radial-gradient(420px 180px at 96% 130%, rgba(91, 122, 153, 0.08), transparent 70%),
+    var(--card, #fff);
+}
+.cw-hero h1 { margin: 0; font-size: 21px; line-height: 1.2; letter-spacing: 0.02em; }
+.cw-eyebrow {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.18em;
+  color: var(--primary); opacity: 0.75; margin-bottom: 3px;
+}
+.cw-hero-sub { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+.cw-hero-ctrl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.period-pill {
+  display: inline-flex; align-items: center; border: 1px solid var(--border);
+  border-radius: 999px; background: var(--card, #fff); overflow: hidden;
+}
+.period-pill select {
+  border: 0; background: none; padding: 6px 14px; font-size: 12.5px;
+  font-weight: 600; color: var(--text); cursor: pointer; outline: none;
+  min-width: 78px; text-align: center;
+}
+.period-pill select:last-child { min-width: 68px; }
+.pp-sep { width: 1px; height: 16px; background: var(--border); flex-shrink: 0; }
+.cw-hero-slim { padding: 12px 20px; margin-bottom: 12px; flex-shrink: 0; }
+.cw-hero-slim h1 { font-size: 19px; }

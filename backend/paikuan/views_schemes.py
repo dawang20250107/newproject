@@ -13,6 +13,7 @@ from .views import ok, err, parse_body, pk_required, get_request_perms
 _MODULE_PAGE = {
     'pk_payments': 'payments',
     'pk_approvals': 'approval_records',
+    'dingtalk_query': 'approval_records',   # 钉钉同步查询方案（模板/口径快照），复用审批页权限
     'ar_projects': 'ar_projects',
     'ar_customers': 'ar_projects',   # 客户列表沿用项目页权限
     'ar_advances': 'ar_advance',
@@ -95,7 +96,11 @@ def list_schemes(request):
             return err('无效的可见范围')
         if scope == 'public' and not _can_create_public(request):
             return err('仅有写入权限的用户可创建公共方案', 403, 403)
-        if ListScheme.objects.filter(owner_id=request.pk_uid).count() >= _SCHEME_LIMIT:
+        # 仅对"新建"计数限制；同名再保存是更新既有方案（不新增行），不应被上限挡住
+        is_update = ListScheme.objects.filter(
+            owner_id=request.pk_uid, module=module, scope=scope, name=name).exists()
+        if not is_update and ListScheme.objects.filter(
+                owner_id=request.pk_uid).count() >= _SCHEME_LIMIT:
             return err(f'方案数量已达上限（{_SCHEME_LIMIT}），请先删除部分方案')
         user = PaikuanUser.objects.filter(id=request.pk_uid).first()
         obj, _created = ListScheme.objects.update_or_create(

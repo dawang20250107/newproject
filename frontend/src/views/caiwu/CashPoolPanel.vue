@@ -1,8 +1,12 @@
 <script setup>
+import { confirmDlg, promptDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import ar from '../../api/ar.js'
 import { useAuthStore } from '../../stores/auth.js'
 import { todayCST } from '../../constants.js'
+import { useToast } from '../../composables/useToast.js'
+import EmptyState from '../../components/EmptyState.vue'
+const toast = useToast()
 
 const auth = useAuthStore()
 const data = ref(null)
@@ -103,16 +107,32 @@ const canRequestTransfer = computed(() => auth.canArWrite && !auth.isSuperAdmin)
 const myDepts = computed(() => auth.user?.departments || [])
 const trStatusLabel = { pending: '待审批', approved: '已生效', rejected: '已拒绝' }
 
+// e1: 调出方池实时校验——调出后余额、低于预警线提示、超余额阻断、调出调入互斥
+const trFromPool = computed(() => configured.value.find(p => p.dept === trForm.from_dept) || null)
+const trAfterBalance = computed(() => {
+  if (!trFromPool.value) return null
+  const a = parseFloat(trForm.amount)
+  return isNaN(a) ? null : (parseFloat(trFromPool.value.balance) || 0) - a
+})
+const trOverdraw = computed(() => trAfterBalance.value !== null && trAfterBalance.value < -0.005)
+const trBelowWarn = computed(() => {
+  if (trAfterBalance.value === null || !trFromPool.value) return false
+  const w = parseFloat(trFromPool.value.warning?.amount)
+  return w > 0 && trAfterBalance.value < w
+})
+const trSameDept = computed(() => !!trForm.from_dept && trForm.from_dept === trForm.to_dept)
 async function saveTransfer() {
-  if (!trForm.from_dept || !trForm.to_dept || !(parseFloat(trForm.amount) > 0)) { alert('调出/调入/金额必填'); return }
+  if (!trForm.from_dept || !trForm.to_dept || !(parseFloat(trForm.amount) > 0)) { toast.error('调出/调入/金额必填'); return }
+  if (trSameDept.value) { toast.error('调出方与调入方不能是同一事业部'); return }
+  if (trOverdraw.value) { toast.error(`调出金额超过 ${trForm.from_dept} 池内余额 ${wan(trFromPool.value.balance)}`); return }
   trSaving.value = true
   try {
     const res = await ar.createPoolTransfer({ ...trForm })
     showTransfer.value = false
     Object.assign(trForm, { from_dept: '', to_dept: '', amount: '', transfer_date: todayCST(), expected_return_date: '', notes: '' })
-    if (res.data?.status === 'pending') alert('调拨申请已提交，待调出方事业部（或超管）审批后生效')
+    if (res.data?.status === 'pending') toast.success('调拨申请已提交，待调出方事业部（或超管）审批后生效')
     await load()
-  } catch (e) { alert(e?.msg || '调拨失败') }
+  } catch (e) { toast.error(e?.msg || '调拨失败') }
   finally { trSaving.value = false }
 }
 
@@ -126,23 +146,28 @@ const canCancel = t => t.status === 'pending'
   && (auth.isSuperAdmin || t.created_by_id === auth.user?.id)
 
 async function approveTransfer(t) {
-  if (!confirm(`批准调拨：${t.from_dept} → ${t.to_dept} ¥${t.amount}？批准后立即生效（生效日=今天），两池余额随之变动。`)) return
+  if (!(await confirmDlg(`批准调拨：${t.from_dept} → ${t.to_dept} ¥${t.amount}？批准后立即生效（生效日=今天），两池余额随之变动。`))) return
   try { await ar.reviewPoolTransfer(t.id, { action: 'approve' }); await load() }
-  catch (e) { alert(e?.msg || '审批失败') }
+  catch (e) { toast.error(e?.msg || '审批失败') }
 }
 async function rejectTransfer(t) {
-  const notes = prompt(`拒绝调拨申请：${t.from_dept} → ${t.to_dept} ¥${t.amount}\n请填写拒绝原因（将反馈给申请人）：`)
+  const notes = await promptDlg({
+    title: '拒绝调拨申请', danger: true,
+    message: `${t.from_dept} → ${t.to_dept} ¥${t.amount}`,
+    inputLabel: '拒绝原因（将反馈给申请人）', placeholder: '如：本月调出池资金紧张',
+    confirmText: '确认拒绝',
+  })
   if (notes === null) return
   try { await ar.reviewPoolTransfer(t.id, { action: 'reject', review_notes: notes }); await load() }
-  catch (e) { alert(e?.msg || '审批失败') }
+  catch (e) { toast.error(e?.msg || '审批失败') }
 }
 async function removeTransfer(t) {
   const tip = t.status === 'pending'
     ? `撤回调拨申请：${t.from_dept} → ${t.to_dept} ¥${t.amount}？`
     : `删除已生效的调拨记录：${t.from_dept} → ${t.to_dept} ¥${t.amount}？两池账面余额将回退。`
-  if (!confirm(tip)) return
+  if (!(await confirmDlg(tip))) return
   try { await ar.deletePoolTransfer(t.id); await load() }
-  catch (e) { alert(e?.msg || '删除失败') }
+  catch (e) { toast.error(e?.msg || '删除失败') }
 }
 
 const showConfig = ref(false)
@@ -164,10 +189,10 @@ async function openConfig() {
   showConfig.value = true
 }
 async function saveCfgRow(row) {
-  if (!row.initial_date) { alert('期初基准日必填'); return }
+  if (!row.initial_date) { toast.error('期初基准日必填'); return }
   if (row.saved && (row.initial_date !== row.origDate
       || String(row.initial_amount || 0) !== String(row.origAmount || 0))) {
-    if (!confirm(`「${row.delivery_dept}」已有期初基准（${row.origDate} / ¥${row.origAmount}）。\n修改期初基准日或期初金额将重算该池全部历史余额，历史调拨与预警状态也会随之变化。确认修改？`)) return
+    if (!(await confirmDlg(`「${row.delivery_dept}」已有期初基准（${row.origDate} / ¥${row.origAmount}）。\n修改期初基准日或期初金额将重算该池全部历史余额，历史调拨与预警状态也会随之变化。确认修改？`))) return
   }
   cfgSaving.value = true
   try {
@@ -180,7 +205,7 @@ async function saveCfgRow(row) {
     row.origDate = row.initial_date
     row.origAmount = row.initial_amount
     await load()
-  } catch (e) { alert(e?.msg || '保存失败') }
+  } catch (e) { toast.error(e?.msg || '保存失败') }
   finally { cfgSaving.value = false }
 }
 
@@ -225,8 +250,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
 <template>
   <div class="cp-panel">
-    <div v-if="loading && !data" class="cp-empty">加载中…</div>
-    <div v-else-if="err" class="cp-empty err">{{ err }}</div>
+    <EmptyState v-if="loading && !data" loading />
+    <EmptyState v-else-if="err" :error="err" />
     <template v-else-if="data">
 
       <!-- ══ 命令条 ══ -->
@@ -331,15 +356,15 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                  :viewBox="`0 0 ${spark(p).W} ${spark(p).H}`" width="110" height="32">
               <line v-if="spark(p).zero != null"
                     x1="6" :y1="spark(p).zero" :x2="spark(p).W-4" :y2="spark(p).zero"
-                    stroke="#c62828" stroke-width="1" stroke-dasharray="3,3" opacity=".5" />
+                    stroke="var(--c-danger)" stroke-width="1" stroke-dasharray="3,3" opacity=".5" />
               <path :d="spark(p).area"
                     :fill="spark(p).danger ? 'rgba(198,40,40,.09)' : 'rgba(201,99,66,.1)'" />
               <path :d="spark(p).line" fill="none"
-                    :stroke="spark(p).danger ? '#c62828' : '#c96342'"
+                    :stroke="spark(p).danger ? 'var(--c-danger)' : 'var(--primary)'"
                     stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
               <circle v-for="(pt,i) in spark(p).pts" :key="i"
                       :cx="pt[0]" :cy="pt[1]" r="2.2"
-                      :fill="spark(p).danger ? '#c62828' : '#c96342'" />
+                      :fill="spark(p).danger ? 'var(--c-danger)' : 'var(--primary)'" />
             </svg>
 
             <!-- 健康 KPI 小标签 -->
@@ -371,9 +396,13 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   <div class="pd-col-head">收支构成</div>
                   <div class="pd-row"><i>期初（{{ p.config.initial_date }}）</i><b>{{ wan(p.parts.initial) }}</b></div>
                   <div class="pd-row in"><i>＋ 回款</i><b>{{ wan(p.parts.collected) }}</b></div>
+                  <div v-if="parseFloat(p.parts.daily_receipts)" class="pd-row in"><i>＋ 日常收款</i><b>{{ wan(p.parts.daily_receipts) }}</b></div>
                   <div class="pd-row in"><i>＋ 预收款</i><b>{{ wan(p.parts.advance_received) }}</b></div>
-                  <div class="pd-row out"><i>− 实付（已扣预付冲抵）</i><b>{{ wan(p.parts.paid) }}</b></div>
+                  <div class="pd-row out"><i>− 实付分期</i><b>{{ wan(p.parts.paid) }}</b></div>
                   <div class="pd-row out"><i>− 预付款</i><b>{{ wan(p.parts.advance_paid) }}</b></div>
+                  <div v-if="parseFloat(p.parts.prepaid_offset)" class="pd-row memo">
+                    <i>（预付核销 {{ wan(p.parts.prepaid_offset) }}）</i><b>非现金·不计</b>
+                  </div>
                   <div v-if="parseFloat(p.parts.transfer_in) || parseFloat(p.parts.transfer_out)" class="pd-row">
                     <i>± 调拨（已生效）</i>
                     <b>+{{ wan(p.parts.transfer_in) }} / −{{ wan(p.parts.transfer_out) }}</b>
@@ -390,11 +419,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   <div class="pd-row out"><i>30 / 60 / 90天待付</i><b>{{ wan(p.committed.d30) }} / {{ wan(p.committed.d60) }} / {{ wan(p.committed.d90) }}</b></div>
                   <div class="pd-row"><i>在途：已批待排 / 审批中</i><b>{{ wan(p.pipeline.approved) }} / {{ wan(p.pipeline.pending) }}</b></div>
                   <div v-if="parseFloat(p.pipeline.transfer_out_pending)" class="pd-row out">
-                    <i>待批调拨出款申请</i><b style="color:#e65100">{{ wan(p.pipeline.transfer_out_pending) }}</b>
+                    <i>待批调拨出款申请</i><b style="color:var(--c-warn)">{{ wan(p.pipeline.transfer_out_pending) }}</b>
                   </div>
                   <div class="pd-col-head" style="margin-top:10px">预期回款</div>
                   <div class="pd-row in"><i>30 / 60 / 90天内</i><b>{{ wan(p.expected_in.d30) }} / {{ wan(p.expected_in.d60) }} / {{ wan(p.expected_in.d90) }}</b></div>
-                  <div class="pd-row"><i>逾期应收在外</i><b style="color:#e65100">{{ wan(p.expected_in.overdue_outstanding) }}</b></div>
+                  <div class="pd-row"><i>逾期应收在外</i><b style="color:var(--c-warn)">{{ wan(p.expected_in.overdue_outstanding) }}</b></div>
                 </div>
 
                 <!-- 项目维度 -->
@@ -497,8 +526,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   现金流分析是<b>选定区间的流量</b>（不含期初基准，不含内部调拨）。
                   二者口径不同，<b>不应直接相等</b>。单个事业部尤其明显——调拨改变池余额，但不进入现金流分析。
                 </li>
-                <li><b>现金流入</b> ＝ 应收回款 ＋ 预收款。<b>预收冲抵</b>不计现金流入——现金在预收入账时已计入，冲抵只是账务确认。</li>
-                <li><b>现金流出</b> ＝ 实付分期 ＋ 预付款 − <b>预付冲抵</b>。预付发生时已流出，冲抵时无新现金事件。</li>
+                <li><b>现金流入</b> ＝ 应收回款 ＋ 日常收款 ＋ 预收款。<b>预收冲抵</b>不计现金流入——现金在预收入账时已计入，冲抵只是账务确认。<b>承兑汇票</b>回款不计入可动用现金（贴现/到期前非货币资金），故不进池子余额，但仍计入「现金流分析」的经营活动现金流入。</li>
+                <li><b>现金流出</b> ＝ 实付分期 ＋ 预付款。<b>预付核销冲抵</b>不计现金流出——预付的现金在预付发生（occur_date）时已作为「预付款」流出，核销只是把这笔预付资产结转到某张应付上，本身无新现金事件（与预收冲抵对称）。实付分期与预付冲抵是计划的两块互不重叠部分（已付＋冲抵＝已覆盖），故实付分期即本期真实付现。</li>
                 <li><b>刚性待付</b> ＝ 付款管理中已审批待付余额（计划金额 − 已付 − 预付冲抵），按计划付款日分 30/60/90 天窗口。</li>
                 <li><b>在途支出</b> ＝ 审批记录中「已批待排 / 审批中」金额 ＋ 待审批调拨出款申请。尚未排款，金额存在不确定性。</li>
                 <li><b>资金预警线</b> ＝ 超管手动设定的最低安全余额；未设定时按「未来 N 天刚性待付」动态推算。余额低于预警线即「告急」。</li>
@@ -536,12 +565,19 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   <label class="tr-label">调入方</label>
                   <select v-model="trForm.to_dept" class="tr-sel">
                     <option value="">请选择</option>
-                    <option v-for="p in configured" :key="p.dept" :value="p.dept">{{ p.dept }}</option>
+                    <option v-for="p in configured.filter(x => x.dept !== trForm.from_dept)" :key="p.dept" :value="p.dept">{{ p.dept }}</option>
                   </select>
                 </div>
                 <div class="tr-field">
                   <label class="tr-label">金额（元）</label>
-                  <input v-model="trForm.amount" type="number" min="0" placeholder="0.00" class="tr-inp" />
+                  <input v-model="trForm.amount" type="number" min="0" placeholder="0.00" class="tr-inp"
+                         :class="{ 'tr-inp-bad': trOverdraw }" />
+                  <div v-if="trAfterBalance !== null" class="tr-after"
+                       :class="{ bad: trOverdraw, warn: !trOverdraw && trBelowWarn }">
+                    调出后余额 {{ wan(trAfterBalance) }}
+                    <template v-if="trOverdraw">——超过池内余额，无法调出</template>
+                    <template v-else-if="trBelowWarn">⚠ 低于预警线 {{ wan(trFromPool.warning.amount) }}</template>
+                  </div>
                 </div>
                 <div v-if="auth.isSuperAdmin" class="tr-field">
                   <label class="tr-label">调拨日期</label>
@@ -665,7 +701,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 }
 .pess-toggle:hover { background: rgba(255,255,255,.09); }
 .pess-toggle.on { background: rgba(201,99,66,.22); border-color: rgba(201,99,66,.5); color: #ffd8b8; }
-.pess-toggle input { accent-color: #c96342; cursor: pointer; }
+.pess-toggle input { accent-color: var(--primary); cursor: pointer; }
 .cpb-btn {
   padding: 6px 14px; border: 1px solid rgba(201,99,66,.35); border-radius: 20px;
   background: rgba(255,255,255,.06); font-size: 12px; font-weight: 600; color: #e8d0b8;
@@ -695,8 +731,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   transition: width .7s cubic-bezier(.2,.8,.3,1);
   flex-shrink: 0;
 }
-.rsv-fill.w-ok { background: linear-gradient(90deg, #c96342, #e8855a); }
-.rsv-fill.w-warn { background: linear-gradient(90deg, #e65100, #ffb74d); }
+.rsv-fill.w-ok { background: linear-gradient(90deg, var(--primary), #e8855a); }
+.rsv-fill.w-warn { background: linear-gradient(90deg, var(--c-warn), #ffb74d); }
 .rsv-fill.w-danger { background: linear-gradient(90deg, #b71c1c, #e57373); }
 .rsv-warn-mark {
   position: absolute; top: -3px; bottom: -3px; width: 2px;
@@ -741,8 +777,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   transition: height .8s cubic-bezier(.2,.8,.3,1);
   border-radius: 0 0 5px 5px;
 }
-.pool-tube-fill.w-ok { background: linear-gradient(180deg, #e8855a, #a84e32); }
-.pool-tube-fill.w-warn { background: linear-gradient(180deg, #ffb74d, #e65100); }
+.pool-tube-fill.w-ok { background: linear-gradient(180deg, #e8855a, var(--primary-dark)); }
+.pool-tube-fill.w-warn { background: linear-gradient(180deg, #ffb74d, var(--c-warn)); }
 .pool-tube-fill.w-danger { background: linear-gradient(180deg, #e57373, #b71c1c); }
 .ptf-wave {
   position: absolute; top: -4px; left: 0; width: 200%; height: 5px;
@@ -820,6 +856,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .pd-row b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .pd-row.in b { color: var(--c-success); }
 .pd-row.out b { color: var(--c-danger); }
+.pd-row.memo { opacity: 0.6; font-size: 10.5px; }
+.pd-row.memo i, .pd-row.memo b { color: var(--text-2); font-weight: 500; }
 .pd-negtip { font-size: 10.5px; color: var(--c-danger); background: var(--c-danger-bg); border-radius: var(--radius-xs); padding: 4px 8px; margin-top: 4px; }
 
 /* 项目维度 */
@@ -960,4 +998,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   .tr-grid { grid-template-columns: 1fr; }
   .tr-arrow-center { display: none; }
 }
+.tr-inp-bad { border-color: var(--c-danger) !important; }
+.tr-after { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+.tr-after.warn { color: var(--c-warn); font-weight: 600; }
+.tr-after.bad { color: var(--c-danger); font-weight: 700; }
 </style>

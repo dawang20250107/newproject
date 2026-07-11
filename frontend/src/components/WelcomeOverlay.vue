@@ -116,9 +116,9 @@ onMounted(() => {
   position: absolute; border-radius: 50%;
   opacity: 0.18; pointer-events: none;
 }
-.p1 { width:120px; height:120px; background:radial-gradient(circle,#c96342,transparent); top:-30px; left:-30px; animation:pfloat 6s ease-in-out infinite; }
+.p1 { width:120px; height:120px; background:radial-gradient(circle,var(--primary),transparent); top:-30px; left:-30px; animation:pfloat 6s ease-in-out infinite; }
 .p2 { width:80px; height:80px; background:radial-gradient(circle,#e8a84a,transparent); bottom:-20px; right:-20px; animation:pfloat 8s ease-in-out infinite reverse; }
-.p3 { width:60px; height:60px; background:radial-gradient(circle,#c96342,transparent); bottom:60px; left:20px; animation:pfloat 7s ease-in-out infinite; opacity:0.12; }
+.p3 { width:60px; height:60px; background:radial-gradient(circle,var(--primary),transparent); bottom:60px; left:20px; animation:pfloat 7s ease-in-out infinite; opacity:0.12; }
 .p4 { width:50px; height:50px; background:radial-gradient(circle,#d4946a,transparent); top:60px; right:20px; animation:pfloat 5s ease-in-out infinite reverse; opacity:0.14; }
 
 @keyframes pfloat {
@@ -162,9 +162,9 @@ onMounted(() => {
 }
 
 .welcome-name {
-  font-size: 36px; font-weight: 800; color: #1a1208;
+  font-size: 36px; font-weight: 800; color: var(--text);
   letter-spacing: -0.02em; line-height: 1.1;
-  background: linear-gradient(135deg, #c96342, #1a1208 60%);
+  background: linear-gradient(135deg, var(--primary), var(--text) 60%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -182,8 +182,8 @@ onMounted(() => {
   border-radius: 20px; font-size: 12px; font-weight: 600;
   letter-spacing: 0.04em;
 }
-.role-badge { background: rgba(201,99,66,0.12); color: #c96342; }
-.job-badge  { background: rgba(21,101,192,0.1); color: #1565c0; }
+.role-badge { background: rgba(201,99,66,0.12); color: var(--primary); }
+.job-badge  { background: rgba(21,101,192,0.1); color: var(--c-info); }
 
 .welcome-date {
   font-size: 13px; color: #9b8070; margin-bottom: 10px;
@@ -203,7 +203,7 @@ onMounted(() => {
 }
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #c96342, #e8855a);
+  background: linear-gradient(90deg, var(--primary), #e8855a);
   border-radius: 2px;
   transition: width 0.04s linear;
   box-shadow: 0 0 8px rgba(201,99,66,0.4);

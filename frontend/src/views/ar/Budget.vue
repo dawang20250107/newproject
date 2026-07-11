@@ -1,4 +1,5 @@
 <script setup>
+import { confirmDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
@@ -11,10 +12,12 @@ import BaseChart from '../../components/ar/BaseChart.vue'
 import ProjectPnlCard from '../caiwu/ProjectPnlCard.vue'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
+import DateRangeChips from '../../components/DateRangeChips.vue'
 import { useToast } from '../../composables/useToast.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { useModalEsc } from '../../composables/useModalEsc.js'
 const toast = useToast()
 
 const auth = useAuthStore()
@@ -370,7 +373,7 @@ async function save() {
 }
 
 async function remove(type, item) {
-  if (!confirm(`确定删除「${item.short_name}」的${type === 'collection' ? '收款' : '付款'}预算？`)) return
+  if (!(await confirmDlg(`确定删除「${item.short_name}」的${type === 'collection' ? '收款' : '付款'}预算？`))) return
   try {
     if (type === 'collection') await ar.deleteCollectionBudget(item.id)
     else await ar.deletePaymentBudget(item.id)
@@ -525,6 +528,8 @@ async function exportData(type) {
   } finally { exporting.value = false }
 }
 
+useModalEsc([() => showModal.value, () => (showModal.value = false)])
+
 onMounted(loadAll)
 onMounted(loadProjects)
 
@@ -549,12 +554,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
     <!-- Polished filter bar -->
     <div class="bgt-filterbar">
-      <div class="fbg">
-        <svg class="fb-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-        <span class="fb-label">日期</span>
-        <input type="date" v-model="dateStart" class="fb-sel fb-date" @change="loadAll" />
-        <span class="fb-sep">~</span>
-        <input type="date" v-model="dateEnd" class="fb-sel fb-date" @change="loadAll" />
+      <div class="fbg fbg-grow">
+        <DateRangeChips v-model:start="dateStart" v-model:end="dateEnd"
+                        label="日期" initial="thismonth"
+                        :presets="['thismonth', 'lastmonth', 'thisquarter', 'lastquarter', 'thisyear', 'lastyear']"
+                        @change="loadAll" />
       </div>
       <div class="fb-divider"></div>
       <div class="fbg">
@@ -733,7 +737,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           <span class="k">净现金 计划 vs 实际</span>
           <span class="v">
             <i class="muted">{{ fmtAmt(compareData.summary.budget_net) }}</i> vs
-            <b :style="{ color: parseFloat(compareData.summary.actual_net) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(compareData.summary.actual_net) }}</b>
+            <b :style="{ color: parseFloat(compareData.summary.actual_net) >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ fmtAmt(compareData.summary.actual_net) }}</b>
           </span>
         </div>
         <div class="cmp-kpi-sep"></div>
@@ -798,7 +802,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                     <div class="cmp-fill out" :class="{ over: r.out_rate > 100 }" :style="`width:${barPct(r.actual_out, r.budget_out)}%`"></div>
                   </div>
                 </td>
-                <td class="amt fw" :style="{ color: parseFloat(r.actual_net) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(r.actual_net) }}</td>
+                <td class="amt fw" :style="{ color: parseFloat(r.actual_net) >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ fmtAmt(r.actual_net) }}</td>
                 <td>
                   <span v-for="t in r.tags" :key="t" class="cmp-tag"
                     :style="{ background: TAG_STYLE[t]?.bg, color: TAG_STYLE[t]?.c }">{{ t }}</span>
@@ -1040,6 +1044,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   flex-wrap: nowrap; overflow-x: auto;
 }
 .fbg { display: flex; align-items: center; gap: 7px; padding: 5px 10px; }
+.fbg-grow { flex: 1; min-width: 0; }
 .fb-icon { color: var(--muted); flex-shrink: 0; }
 .fb-label { font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap; }
 .fb-divider { width: 1px; height: 24px; background: rgba(0,0,0,0.09); margin: 0 4px; flex-shrink: 0; }
@@ -1064,18 +1069,18 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   display: flex; align-items: center; gap: 10px;
   padding: 10px 16px; margin-bottom: 16px;
   background: rgba(198,40,40,.05);
-  border-left: 3.5px solid #c62828;
+  border-left: 3.5px solid var(--c-danger);
   border-radius: 0 10px 10px 0;
 }
 .ast-pulse {
   position: absolute; inset: 0;
   background: linear-gradient(90deg, rgba(198,40,40,.06) 0%, transparent 60%);
 }
-.ast-icon { color: #c62828; flex-shrink: 0; z-index: 1; display: flex; }
+.ast-icon { color: var(--c-danger); flex-shrink: 0; z-index: 1; display: flex; }
 .ast-body { display: flex; align-items: center; gap: 0; flex-wrap: wrap; z-index: 1; }
-.ast-title { font-weight: 700; color: #c62828; font-size: 13px; }
+.ast-title { font-weight: 700; color: var(--c-danger); font-size: 13px; }
 .ast-sep    { margin: 0 6px; color: rgba(198,40,40,.4); font-size: 12px; }
-.ast-desc   { font-size: 12px; color: #c62828; opacity: .82; }
+.ast-desc   { font-size: 12px; color: var(--c-danger); opacity: .82; }
 
 /* Segment control */
 .segment-ctrl { display: inline-flex; gap: 0; padding: 4px; background: rgba(0,0,0,0.04); border-radius: 12px; }
@@ -1091,10 +1096,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .progress-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .progress-label { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--text); }
 .progress-meta { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
-.progress-pct-tag { background: rgba(21,101,192,0.1); color: #1565c0; font-weight: 700; font-size: 13px; padding: 2px 8px; border-radius: 8px; }
+.progress-pct-tag { background: rgba(21,101,192,0.1); color: var(--c-info); font-weight: 700; font-size: 13px; padding: 2px 8px; border-radius: 8px; }
 .progress-track { height: 8px; background: rgba(0,0,0,0.07); border-radius: 99px; overflow: hidden; }
 .progress-fill { height: 100%; border-radius: 99px; transition: width 0.6s cubic-bezier(0.25,0.46,0.45,0.94); }
-.progress-fill-time { background: linear-gradient(90deg, #1565c0, #42a5f5); }
+.progress-fill-time { background: linear-gradient(90deg, var(--c-info), #42a5f5); }
 .progress-sublabel { margin-top: 8px; font-size: 12px; color: var(--muted); }
 
 /* Comparison grid */
@@ -1108,14 +1113,14 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   transition: box-shadow 0.2s, transform 0.2s;
 }
 .compare-card:hover { box-shadow: 0 8px 32px rgba(0,0,0,0.10); transform: translateY(-2px); }
-.compare-card-coll { border-top: 3px solid #2e7d32; }
-.compare-card-pay  { border-top: 3px solid #f57f17; }
+.compare-card-coll { border-top: 3px solid var(--c-success); }
+.compare-card-pay  { border-top: 3px solid var(--amber-deep); }
 .compare-icon {
   width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
 }
-.compare-card-coll .compare-icon { background: rgba(46,125,50,0.1); color: #2e7d32; }
-.compare-card-pay  .compare-icon { background: rgba(245,127,23,0.1); color: #f57f17; }
+.compare-card-coll .compare-icon { background: rgba(46,125,50,0.1); color: var(--c-success); }
+.compare-card-pay  .compare-icon { background: rgba(245,127,23,0.1); color: var(--amber-deep); }
 
 .compare-content { flex: 1; min-width: 0; }
 .compare-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin-bottom: 12px; }
@@ -1123,9 +1128,9 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .compare-actual, .compare-budget { flex: 1; }
 .cn-label { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
 .cn-value { font-size: 22px; font-weight: 800; line-height: 1; }
-.cn-coll   { color: #2e7d32; }
-.cn-pay    { color: #e65100; }
-.cn-danger { color: #c62828; }
+.cn-coll   { color: var(--c-success); }
+.cn-pay    { color: var(--c-warn); }
+.cn-danger { color: var(--c-danger); }
 .cn-muted  { color: var(--muted); font-size: 18px; font-weight: 600; }
 .compare-sep { font-size: 12px; color: var(--muted); flex-shrink: 0; padding-top: 16px; }
 
@@ -1138,9 +1143,9 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   height: 100%; border-radius: 99px; position: absolute; top: 0; left: 0;
   transition: width 0.7s cubic-bezier(0.25,0.46,0.45,0.94);
 }
-.fill-coll    { background: linear-gradient(90deg, #2e7d32, #66bb6a); }
-.fill-pay     { background: linear-gradient(90deg, #e65100, #ffa726); }
-.fill-danger  { background: linear-gradient(90deg, #c62828, #ef5350); }
+.fill-coll    { background: linear-gradient(90deg, var(--c-success), #66bb6a); }
+.fill-pay     { background: linear-gradient(90deg, var(--c-warn), #ffa726); }
+.fill-danger  { background: linear-gradient(90deg, var(--c-danger), #ef5350); }
 .time-marker {
   position: absolute; top: -4px; width: 2px; height: 18px; background: rgba(21,101,192,0.6);
   border-radius: 2px; transform: translateX(-50%);
@@ -1148,10 +1153,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 }
 .compare-bar-labels { display: flex; justify-content: space-between; align-items: center; }
 .bar-achievement { font-size: 13px; font-weight: 700; color: var(--text); }
-.ach-over { color: #2e7d32; }
+.ach-over { color: var(--c-success); }
 .bar-gap { font-size: 12px; color: var(--muted); }
-.gap-behind { color: #e65100; }
-.gap-ok { color: #2e7d32; }
+.gap-behind { color: var(--c-warn); }
+.gap-ok { color: var(--c-success); }
 
 /* Bottom grid */
 .bottom-grid { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; }
@@ -1160,14 +1165,14 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .net-card { display: flex; flex-direction: column; gap: 8px; }
 .net-label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
 .net-value { font-size: 32px; font-weight: 800; line-height: 1; }
-.net-pos { color: #2e7d32; }
-.net-neg { color: #c62828; }
+.net-pos { color: var(--c-success); }
+.net-neg { color: var(--c-danger); }
 .net-sub { font-size: 12px; color: var(--muted); }
 .net-breakdown { display: flex; flex-direction: column; gap: 5px; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
 .nb-item { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); }
 .nb-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.nb-coll { background: #2e7d32; }
-.nb-pay  { background: #f57f17; }
+.nb-coll { background: var(--c-success); }
+.nb-pay  { background: var(--amber-deep); }
 
 /* List header */
 .list-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; gap: 12px; flex-wrap: wrap; }
@@ -1195,8 +1200,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .amt { text-align: right; }
 .text-muted { color: var(--muted); }
 .text-sm { font-size: 12.5px; }
-.coll-amt { color: #2e7d32; }
-.pay-amt  { color: #e65100; }
+.coll-amt { color: var(--c-success); }
+.pay-amt  { color: var(--c-warn); }
 
 .row-acts { display: flex; gap: 4px; justify-content: center; }
 .icon-btn { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255,252,250,0.7); display: flex; align-items: center; justify-content: center; color: var(--muted); cursor: pointer; transition: all 0.13s; }
@@ -1212,15 +1217,15 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .cmp-kpi .v { font-size: 14.5px; font-variant-numeric: tabular-nums; color: var(--text); }
 .cmp-kpi .v i { font-style: normal; }
 .cmp-kpi .v .muted, .cmp-kpi .muted { color: var(--muted); }
-.cmp-kpi .ok { color: #2e7d32; } .cmp-kpi .bad { color: #c62828; } .cmp-kpi .warn { color: #e65100; }
+.cmp-kpi .ok { color: var(--c-success); } .cmp-kpi .bad { color: var(--c-danger); } .cmp-kpi .warn { color: var(--c-warn); }
 .cmp-kpi .r { font-size: 12px; font-weight: 800; }
 .cmp-kpi-sep { width: 1px; height: 34px; background: rgba(180,140,110,.2); flex-shrink: 0; }
 .cmp-chips { display: flex; gap: 8px; padding: 0 16px; flex-wrap: wrap; }
 .cmp-chip { font-size: 11.5px; font-weight: 700; padding: 3px 11px; border-radius: 11px; }
-.cmp-chip.ok { background: rgba(46,125,50,.1); color: #2e7d32; }
-.cmp-chip.warn { background: rgba(230,81,0,.1); color: #e65100; }
-.cmp-chip.bad { background: rgba(198,40,40,.1); color: #c62828; }
-.cmp-chip.blue { background: rgba(21,101,192,.08); color: #1565c0; }
+.cmp-chip.ok { background: rgba(46,125,50,.1); color: var(--c-success); }
+.cmp-chip.warn { background: rgba(230,81,0,.1); color: var(--c-warn); }
+.cmp-chip.bad { background: rgba(198,40,40,.1); color: var(--c-danger); }
+.cmp-chip.blue { background: rgba(21,101,192,.08); color: var(--c-info); }
 
 .cmp-search { border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; width: 210px; background: rgba(255,255,255,.8); }
 .cmp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -1234,14 +1239,14 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .cmp-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .cmp-bar-line { display: flex; align-items: center; gap: 8px; }
 .cmp-bar-line b { font-variant-numeric: tabular-nums; }
-.cmp-bar-line .ok { color: #2e7d32; } .cmp-bar-line .bad { color: #c62828; }
+.cmp-bar-line .ok { color: var(--c-success); } .cmp-bar-line .bad { color: var(--c-danger); }
 .cmp-rate { font-size: 11px; font-weight: 800; color: var(--muted); }
-.cmp-rate.ok { color: #2e7d32; } .cmp-rate.warn { color: #e65100; } .cmp-rate.bad { color: #c62828; }
+.cmp-rate.ok { color: var(--c-success); } .cmp-rate.warn { color: var(--c-warn); } .cmp-rate.bad { color: var(--c-danger); }
 .cmp-track { position: relative; height: 5px; border-radius: 3px; background: rgba(120,120,120,.12); margin-top: 5px; overflow: visible; }
 .cmp-fill { height: 100%; border-radius: 3px; transition: width .4s ease; }
-.cmp-fill.in { background: linear-gradient(90deg, #66bb6a, #2e7d32); }
+.cmp-fill.in { background: linear-gradient(90deg, #66bb6a, var(--c-success)); }
 .cmp-fill.out { background: linear-gradient(90deg, #ffb74d, #ef6c00); }
-.cmp-fill.out.over { background: linear-gradient(90deg, #ef5350, #c62828); }
+.cmp-fill.out.over { background: linear-gradient(90deg, #ef5350, var(--c-danger)); }
 .cmp-tick { position: absolute; top: -3px; bottom: -3px; width: 2px; background: rgba(60,60,60,.45); border-radius: 1px; }
 .cmp-tag { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 9px; margin: 1px 3px 1px 0; white-space: nowrap; }
 .muted { color: var(--muted); }
@@ -1254,7 +1259,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .dc-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .dc-icon { width: 38px; height: 38px; border-radius: 10px; display: flex; align-items: center; justify-content: center;
   font-size: 18px; font-weight: 800; flex-shrink: 0; }
-.dc-icon.coll { background: rgba(46,125,50,.1); color: #2e7d32; }
+.dc-icon.coll { background: rgba(46,125,50,.1); color: var(--c-success); }
 .dc-icon.pay { background: rgba(230,81,0,.1); color: #ef6c00; }
 .dc-title { font-size: 15px; font-weight: 800; color: var(--text); }
 .dc-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }

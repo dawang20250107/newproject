@@ -2,9 +2,12 @@
 import { ref, watch, nextTick, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
-import { DEPARTMENTS as DEPT_CONST } from '../constants.js'
+import { DEPARTMENTS as DEPT_CONST, todayCST } from '../constants.js'
 import { fmtMoney } from '../utils/format.js'
 import ProjectShortNamePicker from './ProjectShortNamePicker.vue'
+import { useToast } from '../composables/useToast.js'
+import { confirmDlg } from '../composables/confirm.js'
+const toast = useToast()
 
 const props = defineProps({
   payment: { type: Object, default: null },
@@ -19,6 +22,8 @@ function editable(key) { return auth.canEdit(key) }
 const loading = ref(false)
 const error = ref('')
 const saveStatus = ref('')
+let _autoSaved = false        // 本次会话是否已发生过自动保存
+let _originalPayload = null   // 打开编辑时的原始 payload（用于取消撤销）
 const autoSaveErr = ref('')
 let saveTimer = null
 let isResetting = false
@@ -88,6 +93,9 @@ function resetForm() {
   let opts = myDepts ? allDepts.filter(d => myDepts.includes(d)) : allDepts
   if (!isNew && p?.department && !opts.includes(p.department)) opts = [p.department, ...opts]
   deptOptions.value = opts
+  // c5: 捕获打开编辑时的原始快照，供「取消」时一键撤销自动保存
+  _autoSaved = false
+  _originalPayload = p?.id ? buildPayload() : null
   nextTick(() => { isResetting = false })
 }
 
@@ -101,8 +109,15 @@ watch([form, installments], async () => {
 }, { deep: true })
 
 async function autosave() {
+  // 后端 PUT 对 installments 是整单替换，而 buildPayload 会过滤掉「日期/金额不完整」
+  // 的分期。用户清空某条既有实付的金额准备重输、停顿超过防抖时长时，若照常自动保存，
+  // 这条真实付款记录会被静默删除。既有分期(带 id)处于不完整状态 → 本轮跳过，
+  // 等用户补完或显式保存；通过删除按钮移除的行不在数组里，删除仍可正常自动保存。
+  const editingExisting = installments.value.some(i => i.id && !(i.pay_date && parseFloat(i.pay_amount) > 0))
+  if (editingExisting) { saveStatus.value = ''; return }
   try {
     await api.put(`/payments/${props.payment.id}`, buildPayload())
+    _autoSaved = true
     saveStatus.value = 'saved'
     autoSaveErr.value = ''
     setTimeout(() => { if (saveStatus.value === 'saved') saveStatus.value = '' }, 2200)
@@ -191,14 +206,15 @@ watch(() => form.value.payee, (payee) => {
 function selectSupplierAdv(adv) {
   supplierWoAdv.value = adv
   supplierWoAmt.value = adv.balance_amount
-  if (!supplierWoDate.value) supplierWoDate.value = new Date().toISOString().slice(0, 10)
+  if (!supplierWoDate.value) supplierWoDate.value = todayCST()
 }
 function cancelSupplierWo() {
   supplierWoAdv.value = null; supplierWoAmt.value = ''; supplierWoNotes.value = ''
 }
 async function doSupplierWriteoff() {
-  if (!(parseFloat(supplierWoAmt.value) > 0)) { alert('核销金额必须大于0'); return }
-  if (!supplierWoDate.value) { alert('请填写核销日期'); return }
+  if (!auth.canAction('wo_prepaid')) { toast.error('无预付核销权限'); return }
+  if (!(parseFloat(supplierWoAmt.value) > 0)) { toast.error('核销金额必须大于0'); return }
+  if (!supplierWoDate.value) { toast.error('请填写核销日期'); return }
   supplierWoSaving.value = true
   try {
     await api.post(`/ar/advances/${supplierWoAdv.value.id}/writeoffs`, {
@@ -215,10 +231,23 @@ async function doSupplierWriteoff() {
     const items = res.data?.items || []
     matchedSupplier.value = items.length > 0 ? items[0] : null
     setTimeout(() => { supplierWoResult.value = '' }, 4000)
-  } catch (e) { alert(e?.msg || '核销失败') }
+  } catch (e) { toast.error(e?.msg || '核销失败') }
   finally { supplierWoSaving.value = false }
 }
 
+async function handleCancel() {
+  // c5: 编辑态自动保存后「取消」实为无操作会误导——若已自动保存，提供一键撤销回原状
+  if (props.payment?.id && _autoSaved && _originalPayload) {
+    if (await confirmDlg('本次修改已自动保存。是否撤销、恢复到打开编辑时的状态？')) {
+      try {
+        await api.put(`/payments/${props.payment.id}`, _originalPayload)
+        toast.success('已撤销本次修改，恢复到打开时的状态')
+        emit('saved')
+      } catch { toast.error('撤销失败，请手动核对该记录') }
+    }
+  }
+  emit('close')
+}
 function buildPayload() {
   const payload = {}
   const includeAll = !props.payment?.id
@@ -286,7 +315,7 @@ async function submit() {
               ⚠ {{ autoSaveErr || '自动保存失败' }}
             </span>
           </Transition>
-          <button class="modal-close" @click="emit('close')">×</button>
+          <button class="modal-close" @click="handleCancel">×</button>
         </div>
       </div>
 
@@ -334,9 +363,9 @@ async function submit() {
             :class="{ 'input-warn': approvalNoInvalid }" />
           <span v-if="approvalNoInvalid" class="field-err">需为数字（最多100位），空格/不可见字符将自动清除</span>
         </div>
-        <div class="form-group">
-          <label>G7编号 <span class="hint-text">选填，最多21位</span></label>
-          <input v-model="form.g7_number" placeholder="选填，G7系统编号" maxlength="21" />
+        <div v-if="vis('g7_number')" class="form-group">
+          <label>G7编号 <span class="hint-text">选填，最多255位</span></label>
+          <input v-model="form.g7_number" placeholder="选填，G7系统编号" maxlength="255" :disabled="!editable('g7_number')" />
         </div>
       </div>
 
@@ -371,8 +400,9 @@ async function submit() {
                 <span class="adv-date">{{ adv.occur_date || '—' }}</span>
                 <span class="adv-bal">¥{{ parseFloat(adv.balance_amount).toLocaleString('zh-CN', {minimumFractionDigits: 2}) }}</span>
                 <span class="adv-notes">{{ adv.notes || '' }}</span>
-                <button v-if="payment?.id && supplierWoAdv?.id !== adv.id"
+                <button v-if="payment?.id && supplierWoAdv?.id !== adv.id && auth.canAction('wo_prepaid')"
                         class="btn-xs btn-offset" @click="selectSupplierAdv(adv)">用此预付核销</button>
+                <span v-else-if="payment?.id && !auth.canAction('wo_prepaid')" class="adv-hint">（无预付核销权限）</span>
                 <span v-else-if="!payment?.id" class="adv-hint">（保存排款后可核销）</span>
               </div>
               <div v-if="supplierWoAdv" class="wo-inline">
@@ -392,7 +422,7 @@ async function submit() {
         <div v-if="vis('total_amount')" class="form-group">
           <label>计划总金额 (元) *</label>
           <input v-model="form.total_amount" type="number" min="0" step="0.01" placeholder="0.00" :disabled="!editable('total_amount') || multiPlan" />
-          <span v-if="multiPlan" class="hint-text" style="color:#1565c0">含 {{ payment?.plan_count }} 批计划，总额=各批之和；调整请在台账行展开「计划明细」操作</span>
+          <span v-if="multiPlan" class="hint-text" style="color:var(--c-info)">含 {{ payment?.plan_count }} 批计划，总额=各批之和；调整请在台账行展开「计划明细」操作</span>
         </div>
       </div>
 
@@ -475,7 +505,7 @@ async function submit() {
       </div>
 
       <div class="modal-footer">
-        <button class="btn btn-ghost" @click="emit('close')">取消</button>
+        <button class="btn btn-ghost" @click="handleCancel">取消</button>
         <button class="btn btn-primary" :disabled="loading" @click="submit">
           <span v-if="loading" class="save-spin btn-spin"></span>
           {{ loading ? '保存中…' : '保存' }}
@@ -491,9 +521,9 @@ async function submit() {
   font-size: 12px; border-radius: 6px; padding: 3px 9px;
   white-space: nowrap;
 }
-.saving  { background: rgba(21,101,192,0.1); color: #1565c0; }
-.saved   { background: rgba(46,125,50,0.1); color: #2e7d32; }
-.save-err { background: rgba(198,40,40,0.1); color: #c62828; }
+.saving  { background: rgba(21,101,192,0.1); color: var(--c-info); }
+.saved   { background: rgba(46,125,50,0.1); color: var(--c-success); }
+.save-err { background: rgba(198,40,40,0.1); color: var(--c-danger); }
 
 .prepaid-offset-tip {
   margin: 6px 0 2px;
@@ -502,14 +532,14 @@ async function submit() {
   border-left: 3px solid #f57c00;
   border-radius: 4px;
   font-size: 12px;
-  color: #e65100;
+  color: var(--c-warn);
 }
 .offset-icon { margin-right: 4px; }
 
 .save-spin {
   width: 10px; height: 10px; border-radius: 50%;
   border: 1.5px solid rgba(21,101,192,0.3);
-  border-top-color: #1565c0;
+  border-top-color: var(--c-info);
   animation: spin 0.7s linear infinite;
   display: inline-block; flex-shrink: 0;
 }
@@ -540,7 +570,7 @@ async function submit() {
 .inst-notes-grp { flex: 1; min-width: 100px; }
 .inst-del {
   padding: 4px 10px; margin-bottom: 0; align-self: flex-end;
-  border-color: rgba(198,40,40,0.4); color: #c62828;
+  border-color: rgba(198,40,40,0.4); color: var(--c-danger);
   background: rgba(198,40,40,0.04);
 }
 .inst-del:hover { background: rgba(198,40,40,0.1); }
@@ -552,20 +582,20 @@ async function submit() {
   padding: 8px 14px; border-radius: 8px; margin-bottom: 14px;
   background: rgba(46, 125, 50, 0.07);
   border: 1px solid rgba(46, 125, 50, 0.18);
-  font-size: 13px; color: #2e7d32;
+  font-size: 13px; color: var(--c-success);
   transition: background 0.2s, border-color 0.2s;
 }
 .pay-summary.pay-over {
   background: rgba(198, 40, 40, 0.07);
   border-color: rgba(198, 40, 40, 0.25);
-  color: #c62828;
+  color: var(--c-danger);
 }
 .pay-sep { opacity: 0.45; }
 .pay-warn { font-weight: 700; margin-left: 6px; }
-.pay-ok { color: #2e7d32; opacity: 0.75; margin-left: 6px; }
-.input-warn { border-color: #f57f17 !important; background: rgba(245,127,23,0.04) !important; }
-.field-err { font-size: 11px; color: #f57f17; margin-top: 3px; display: block; }
-.field-hint { font-size: 11px; color: #1565c0; margin-top: 3px; display: block; }
+.pay-ok { color: var(--c-success); opacity: 0.75; margin-left: 6px; }
+.input-warn { border-color: var(--amber-deep) !important; background: rgba(245,127,23,0.04) !important; }
+.field-err { font-size: 11px; color: var(--amber-deep); margin-top: 3px; display: block; }
+.field-hint { font-size: 11px; color: var(--c-info); margin-top: 3px; display: block; }
 .lbl-tip { font-size: 11px; color: var(--muted); font-weight: 400; }
 .prepaid-hint { margin-top: 7px; padding: 8px 10px; border: 1px solid rgba(201,99,66,0.3);
   background: rgba(201,99,66,0.07); border-radius: 9px; font-size: 12px; color: var(--text); line-height: 1.5; }
@@ -578,18 +608,18 @@ async function submit() {
   background: rgba(21,101,192,0.04); border-radius: 10px; font-size: 12px; }
 .supplier-match-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
 .supplier-tag { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700;
-  background: rgba(21,101,192,0.12); color: #1565c0; }
+  background: rgba(21,101,192,0.12); color: var(--c-info); }
 .supplier-dept { color: var(--muted); font-size: 11px; }
-.prepaid-bal { color: #1565c0; font-weight: 700; }
+.prepaid-bal { color: var(--c-info); font-weight: 700; }
 .no-bal { color: var(--muted); font-size: 11px; }
 .adv-list-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .adv-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 5px 0;
   border-top: 1px dashed rgba(21,101,192,0.12); font-size: 12px; }
 .adv-date { color: var(--muted); min-width: 80px; }
-.adv-bal { font-weight: 700; color: #1565c0; }
+.adv-bal { font-weight: 700; color: var(--c-info); }
 .adv-notes { color: var(--muted); flex: 1; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
 .adv-hint { color: var(--muted); font-size: 11px; }
-.wo-success { padding: 5px 8px; border-radius: 7px; background: rgba(46,125,50,0.1); color: #2e7d32;
+.wo-success { padding: 5px 8px; border-radius: 7px; background: rgba(46,125,50,0.1); color: var(--c-success);
   font-size: 12px; font-weight: 600; margin-bottom: 6px; }
 .wo-inline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px;
   padding: 8px 10px; background: rgba(21,101,192,0.06); border-radius: 8px; }
@@ -601,7 +631,7 @@ async function submit() {
 .btn-xs { padding: 3px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;
   border: 1px solid var(--border); background: var(--card); color: var(--text); }
 .btn-xs:hover { background: rgba(120,120,120,0.1); }
-.btn-offset { border-color: #1565c0; color: #1565c0; background: rgba(21,101,192,0.06); }
+.btn-offset { border-color: var(--c-info); color: var(--c-info); background: rgba(21,101,192,0.06); }
 .btn-offset:hover { background: rgba(21,101,192,0.12); }
 .btn-primary-xs { border-color: var(--primary); background: var(--primary); color: #fff; }
 .btn-primary-xs:hover { opacity: 0.88; }

@@ -1,9 +1,22 @@
 from django.urls import path
 from paikuan import views
 from paikuan import views_schemes
+from paikuan import dingtalk
+from paikuan import dingtalk_sync
 
 urlpatterns = [
     path('version', views.version),
+    # 钉钉审批流对接：事件订阅 HTTP 回调（URL 验证 + 审批结果回写）
+    path('dingtalk/callback', dingtalk.dingtalk_callback),
+    # 钉钉审批同步：连通性/模板、按人查询、同步落库、刷新状态
+    path('dingtalk/test', dingtalk_sync.dingtalk_test),
+    path('dingtalk/resolve-user', dingtalk_sync.dingtalk_resolve_user),
+    path('dingtalk/templates', dingtalk_sync.dingtalk_templates),
+    path('dingtalk/query', dingtalk_sync.dingtalk_query),
+    path('dingtalk/instance', dingtalk_sync.dingtalk_instance),
+    path('dingtalk/status-sync', dingtalk_sync.dingtalk_status_sync),
+    path('dingtalk/sync', dingtalk_sync.dingtalk_sync),
+    path('dingtalk/refresh', dingtalk_sync.dingtalk_refresh),
     # 通用列表筛选方案（表格方案基座）：私有/公共 + 默认，按 module 区分列表页
     path('list-schemes', views_schemes.list_schemes),
     path('list-schemes/set-default', views_schemes.list_scheme_default),
@@ -13,8 +26,11 @@ urlpatterns = [
     path('registration-status', views.registration_status),
     path('me', views.me),
     path('me/password', views.change_password),
+    path('locate', views.locate_numbers),
     path('payments', views.payments),
+    path('payments/summary', views.payments_summary),
     path('payments/bulk-delete', views.payments_bulk_delete),
+    path('payments/mark-priority', views.payments_mark_priority),
     path('payments/bulk-pay', views.payments_bulk_pay),
     path('payments/prepaid-balance', views.prepaid_balance),
     path('payments/installments', views.payment_installments),
@@ -23,20 +39,32 @@ urlpatterns = [
     path('payments/import/precheck', views.payment_import_precheck),
     path('payments/import/apply', views.payment_import_apply),
     path('payments/export', views.payment_export),
+    # 跨页全选：返回当前筛选口径下的全部付款记录 ID（供跨页批量操作）
+    path('payments/select-ids', views.payments_select_ids),
+    # 运输事业部对账单导出（付款管理侧）：已排款付款记录 → 原表格式零误差还原
+    path('payments/transport/export', views.transport_export),
+    # 运输专用：当前筛选/勾选的 G7编号（对账单号）去重列表 → 前端复制到剪贴板
+    path('payments/transport/g7-numbers', views.transport_g7_numbers),
     path('payments/<int:pk>', views.payment_detail),
     path('payments/<int:pk>/logs', views.payment_change_logs),
     path('payments/<int:pk>/offsets', views.payment_offsets),
     path('payments/<int:pk>/plan-items', views.payment_plan_items),
     path('payments/<int:pk>/plan-items/<int:iid>', views.payment_plan_item_detail),
     path('approvals', views.approval_records),
+    # 跨页全选：返回当前筛选口径下的全部审批记录 ID（供跨页批量操作）
+    path('approvals/select-ids', views.approvals_select_ids),
     path('approvals/bulk-delete', views.approval_records_bulk_delete),
     path('approvals/bulk-approve', views.approval_records_bulk_approve),
+    path('approvals/budget-check', views.approval_budget_check),
     path('approvals/bulk-schedule', views.approval_records_bulk_schedule),
     path('approvals/bulk-return-schedule', views.approval_records_bulk_return_schedule),
     path('approvals/template', views.approval_template),
     path('approvals/import', views.approval_import),
     path('approvals/import/precheck', views.approval_import_precheck),
     path('approvals/import/apply', views.approval_import_apply),
+    # 运输事业部对账单导入（审批管理侧）：原表 → 「已通过」审批记录
+    path('approvals/transport/import/precheck', views.transport_import_precheck),
+    path('approvals/transport/import', views.transport_import),
     path('approvals/export', views.approval_export),
     path('approvals/<int:pk>', views.approval_record_detail),
     path('approvals/<int:pk>/schedule', views.approval_record_schedule),
@@ -50,6 +78,14 @@ urlpatterns = [
     path('permissions', views.permissions),
     path('permissions/<str:job>', views.permission_detail),
     path('departments', views.departments),
+    path('trash/approvals', views.trash_approvals),
+    path('trash/payments', views.trash_payments),
+    # 异步导出（大数据量后台任务）
+    path('exports', views.export_create),
+    path('exports/list', views.export_list),
+    path('exports/<int:pk>', views.export_status),
+    path('exports/<int:pk>/download', views.export_download),
     path('audit-logs', views.audit_logs),
+    path('audit-logs/export', views.audit_logs_export),
     path('audit-logs/prune', views.audit_logs_prune),
 ]

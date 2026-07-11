@@ -142,7 +142,7 @@ async function exportReport() {
     if (selectedBu.value) params.bu = selectedBu.value
     const res = await api.get('/report/export', { params, responseType: 'blob' })
     downloadBlob(res, `财务报表_${year.value}年.xlsx`)
-  } catch (e) { alert(e?.msg || e?.error || '导出失败') }
+  } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
   finally { exporting.value = false }
 }
 
@@ -174,12 +174,17 @@ onMounted(() => {
 
 <template>
   <div>
-    <div class="topbar" style="align-items:flex-start">
-      <h1>财务报表</h1>
-      <div class="ctrl-row" style="justify-content:flex-end">
-        <select v-model="year" class="sel-yr" @change="load">
-          <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
-        </select>
+    <div class="cw-hero">
+      <div>
+        <div class="cw-eyebrow">FINANCIAL REPORT · 月度矩阵</div>
+        <h1>财务报表</h1>
+      </div>
+      <div class="cw-hero-ctrl">
+        <div class="period-pill">
+          <select v-model="year" @change="load">
+            <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+          </select>
+        </div>
         <select v-if="accessibleBus.length > 1" v-model="selectedBu" class="sel-bu" @change="load">
           <option value="">全部事业部</option>
           <option v-for="bu in accessibleBus" :key="bu" :value="bu">{{ bu }}</option>
@@ -311,7 +316,7 @@ onMounted(() => {
   background: rgba(201,99,66,.12); color: var(--primary);
 }
 .kpi-tag-year { background: rgba(100,116,139,.14); color: #64748b; }
-.kpi-5 :deep(.value) { font-size: 21px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.kpi-5 :deep(.value) { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.2; }
 .value-year { font-size: 15.5px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; color: #475569; }
 .kpi-row-year { margin-top: 6px; padding-top: 6px; border-top: 1px dashed rgba(0,0,0,.08); }
 
@@ -321,7 +326,7 @@ onMounted(() => {
 .value-neg { color: var(--danger) !important; }
 .sub { font-size: 10.5px; color: var(--muted); margin-top: 7px; line-height: 1.4; }
 .mom-badge { flex-shrink: 0; display: inline-block; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px; }
-.mom-up { background: rgba(46,125,50,.10); color: #2e7d32; }
+.mom-up { background: rgba(46,125,50,.10); color: var(--c-success); }
 .mom-down { background: rgba(198,40,40,.10); color: var(--danger); }
 .mom-neutral { background: rgba(120,120,120,.08); color: var(--muted); font-weight: 400; }
 
@@ -335,7 +340,7 @@ onMounted(() => {
 .mx-wrap { overflow: auto; max-height: calc(100vh - 300px); border: 1px solid rgba(0,0,0,0.06); border-radius: 10px; }
 .mx-table { border-collapse: separate; border-spacing: 0; font-size: 12px; min-width: 100%; }
 .mx-table thead th {
-  position: sticky; top: 0; z-index: 3; background: #f4efeb; color: var(--muted);
+  position: sticky; top: 0; z-index: 3; background: var(--thead-bg); color: var(--muted);
   font-weight: 700; padding: 7px 10px; white-space: nowrap; border-bottom: 1px solid rgba(0,0,0,0.08);
 }
 .mx-name-h { position: sticky; left: 0; z-index: 4; text-align: left; }
@@ -343,7 +348,7 @@ onMounted(() => {
 .mx-total { background: #faf2ec; }
 .mx-table thead .mx-total { background: #efe2d8; }
 .mx-table tbody td { padding: 6px 10px; border-bottom: 1px solid rgba(0,0,0,0.035); }
-.mx-name { position: sticky; left: 0; z-index: 2; background: #fff; white-space: nowrap; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.mx-name { position: sticky; left: 0; z-index: 2; background: var(--row-bg); white-space: nowrap; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
 .mx-row.d0 .mx-name { font-weight: 700; color: var(--text); }
 .mx-row.d1 .mx-name { color: #555; }
 .mx-row.d2 .mx-name { color: var(--muted); font-size: 11.5px; }

@@ -16,7 +16,7 @@ def _budget_list_create(request, Model, page_key):
         dept = request.GET.get('dept', '').strip()
         if dept:
             qs = qs.filter(delivery_dept=dept)
-        _today = datetime.date.today()
+        _today = timezone.localdate()
         _ds, _de = _parse_budget_date_range(request, _today)
         qs = qs.filter(expected_date__gte=_ds, expected_date__lte=_de)
         page = max(1, int(request.GET.get('page', 1) or 1))
@@ -514,7 +514,7 @@ def _budget_export(request, Model, kind):
     dept = request.GET.get('dept', '').strip()
     if dept:
         qs = qs.filter(delivery_dept=dept)
-    _today = datetime.date.today()
+    _today = timezone.localdate()
     _ds, _de = _parse_budget_date_range(request, _today)
     qs = qs.filter(expected_date__gte=_ds, expected_date__lte=_de)
     if qs.count() > 5000:
@@ -590,7 +590,7 @@ def budget_summary(request):
     if denied:
         return denied
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     start_date, end_date = _parse_budget_date_range(request, today)
 
     if request.pk_role == 'super_admin':
@@ -620,15 +620,19 @@ def budget_summary(request):
         expected_date__range=(start_date, end_date),
         delivery_dept__in=depts).aggregate(total=Sum('amount'))
 
-    # Actual AR collections (from ARPayment)
+    # Actual AR collections (from ARPayment)——排除非现金来源(预收抵扣/内部往来):
+    # 回款预算是现金口径,与周期报表 _collection_actual 同口径,否则同一「回款达成率」两页两个数
     ac = ARPayment.objects.filter(
         payment_date__range=(start_date, end_date),
-        ar_record__delivery_dept__in=depts).aggregate(total=Sum('amount'))
+        ar_record__deleted_at__isnull=True,
+        ar_record__delivery_dept__in=depts).exclude(
+        source__in=NON_CASH_PAYMENT_SOURCES).aggregate(total=Sum('amount'))
 
     # Actual AP payments (from installments subtable)
     ap_total = (PaymentInstallment.objects
                 .filter(pay_date__range=(start_date, end_date),
-                        payment__department__in=depts)
+                        payment__department__in=depts,
+                        payment__deleted_at__isnull=True)
                 .aggregate(total=Sum('pay_amount'))['total'] or Decimal('0'))
 
     budget_coll = bc['total'] or Decimal('0')
@@ -647,10 +651,13 @@ def budget_summary(request):
                 expected_date__range=(start_date, end_date), delivery_dept=d
             ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
             ac_d = ARPayment.objects.filter(
-                payment_date__range=(start_date, end_date), ar_record__delivery_dept=d
-            ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+                payment_date__range=(start_date, end_date), ar_record__delivery_dept=d,
+                ar_record__deleted_at__isnull=True,
+            ).exclude(source__in=NON_CASH_PAYMENT_SOURCES
+                      ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
             ap_d = (PaymentInstallment.objects
-                    .filter(pay_date__range=(start_date, end_date), payment__department=d)
+                    .filter(pay_date__range=(start_date, end_date), payment__department=d,
+                            payment__deleted_at__isnull=True)
                     .aggregate(total=Sum('pay_amount'))['total'] or Decimal('0'))
             by_dept_result.append({
                 'dept': d,
@@ -660,8 +667,9 @@ def budget_summary(request):
                 'actual_payment': float(ap_d),
             })
 
-    # 净现金流——与「现金流分析」「周期报表」同一口径（剔除非现金回款、扣预付冲抵、含预收/预付），
-    # 避免预算页与驾驶舱算出的净现金流不一致。收/付达成率仍用上方毛额口径（与收/付预算同口径对照）。
+    # 净现金流——与「现金流分析」「周期报表」同一口径（剔除非现金回款、含预收/预付、
+    # 预付核销为非现金不扣），避免预算页与驾驶舱算出的净现金流不一致。
+    # 收/付达成率同为现金口径（回款排除非现金来源，付款=实付分期）。
     cw = cash_flow_window(depts, start_date, end_date)
 
     return ok({
@@ -699,7 +707,7 @@ def budget_project_compare(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     start_date, end_date = _parse_budget_date_range(request, today)
 
     if request.pk_role == 'super_admin':
@@ -744,6 +752,7 @@ def budget_project_compare(request):
     for g in (ARPayment.objects
               .filter(payment_date__range=(start_date, end_date),
                       ar_record__delivery_dept__in=depts,
+                      ar_record__deleted_at__isnull=True,
                       ar_record__project__short_name__isnull=False)
               .exclude(ar_record__project__short_name='')
               .values('ar_record__project__short_name').annotate(s=Sum('amount'))):
@@ -752,7 +761,8 @@ def budget_project_compare(request):
     # 实际付款：排款实付分期经 项目简称
     for g in (PaymentInstallment.objects
               .filter(pay_date__range=(start_date, end_date),
-                      payment__department__in=depts)
+                      payment__department__in=depts,
+                      payment__deleted_at__isnull=True)
               .exclude(payment__project_short_name='')
               .values('payment__project_short_name').annotate(s=Sum('pay_amount'))):
         _row(g['payment__project_short_name'])['actual_out'] += g['s'] or Decimal('0')

@@ -32,7 +32,7 @@ def customers(request):
     if request.method == 'GET':
         from django.db.models.functions import Coalesce
         from django.db.models import Exists, OuterRef
-        today = datetime.date.today()
+        today = timezone.localdate()
         # 客户按事业部隔离 + 顶部全局范围（?depts）一并生效，与项目/应收口径一致；
         # _ar_dept_filter 对无授权部门的用户返回空集（杜绝「无部门=看全部」漏洞）。
         qs = _ar_dept_filter(Customer.objects.all(), request, dept_field='delivery_dept')
@@ -322,7 +322,7 @@ def customer_detail(request, pk):
 
     if request.method == 'GET':
         d = c.to_dict()
-        today = datetime.date.today()
+        today = timezone.localdate()
         # 该客户的项目 + 每个项目的应收聚合（部门作用域；ar_shared_only 仅见共享业务）
         proj_qs = _ar_dept_filter(
             ARProject.objects.filter(customer_id=pk), request,
@@ -330,14 +330,20 @@ def customer_detail(request, pk):
         proj_ids = [p.id for p in proj_qs]
         rec_qs = _ar_dept_filter(
             ARRecord.objects.filter(project_id__in=proj_ids), request)
-        per_proj = {pid: {'invoiced': 0.0, 'outstanding': 0.0, 'overdue': 0.0, 'records': 0}
+        per_proj = {pid: {'invoiced': 0.0, 'outstanding': 0.0, 'overdue': 0.0,
+                          'collected': 0.0, 'records': 0}
                     for pid in proj_ids}
         for r in rec_qs.values('project_id').annotate(
                 inv=Sum('actual_invoice_amount'), out_amt=Sum('outstanding_amount'),
+                est=Sum('estimated_amount'), adj=Sum('account_diff_adjustment'),
                 cnt=Count('id')):
             pp = per_proj[r['project_id']]
             pp['invoiced'] = float(r['inv'] or 0)
             pp['outstanding'] = float(r['out_amt'] or 0)
+            # 已回款 = 实际应收(预估+账实差额) − 未收:与 outstanding 单源一致。
+            # 不能用 开票−未收:未开票已回款会算成0,部分开票时甚至为负
+            pp['collected'] = round(float(r['est'] or 0) + float(r['adj'] or 0)
+                                    - float(r['out_amt'] or 0), 2)
             pp['records'] = r['cnt']
         for r in (rec_qs.filter(due_date__lt=today, outstanding_amount__gt=0)
                   .values('project_id').annotate(ov=Sum('outstanding_amount'))):
@@ -351,7 +357,8 @@ def customer_detail(request, pk):
                 'delivery_dept': p.delivery_dept, 'business_mode': p.business_mode,
                 'status': p.status,
                 'invoiced': pp.get('invoiced', 0.0), 'outstanding': pp.get('outstanding', 0.0),
-                'overdue': pp.get('overdue', 0.0), 'records': pp.get('records', 0),
+                'overdue': pp.get('overdue', 0.0), 'collected': pp.get('collected', 0.0),
+                'records': pp.get('records', 0),
             })
         d['projects'] = projects
         d['stats'] = {
@@ -359,8 +366,9 @@ def customer_detail(request, pk):
             'invoiced': round(sum(p['invoiced'] for p in projects), 2),
             'outstanding': round(sum(p['outstanding'] for p in projects), 2),
             'overdue': round(sum(p['overdue'] for p in projects), 2),
+            # 已回款 = Σ(实际应收 − 未收),与应收台账单源一致(勿用 开票−未收)
+            'collected': round(sum(p['collected'] for p in projects), 2),
         }
-        d['stats']['collected'] = round(d['stats']['invoiced'] - d['stats']['outstanding'], 2)
         return ok(d)
 
     if request.method == 'PUT':

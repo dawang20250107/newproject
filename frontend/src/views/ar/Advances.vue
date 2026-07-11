@@ -1,4 +1,5 @@
 <script setup>
+import { confirmDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useToast } from '../../composables/useToast.js'
@@ -8,14 +9,21 @@ import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
 import { downloadBlob } from '../../utils/download.js'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
+import SelCell from '../../components/SelCell.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
 import SchemePicker from '../../components/SchemePicker.vue'
 import { useTableSchemes } from '../../composables/useTableSchemes.js'
+import { useShiftSelect } from '../../composables/useShiftSelect.js'
+import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
+import { useRangeSelection } from '../../composables/useRangeSelection.js'
+import Amt from '../../components/Amt.vue'
 import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { useModalEsc } from '../../composables/useModalEsc.js'
+import Pager from '../../components/Pager.vue'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -26,14 +34,90 @@ const projectFilter = ref(null)        // { id, label } or null
 const items = ref([])
 const total = ref(0)
 const kpi = ref(null)
+const listSummary = ref(null)   // 筛选汇总（当前方向，随筛选/区间联动，来自列表接口）
+
+// ── 多选与批量操作（与日常收款同款交互）─────────────────────────────────────
+const selectedIds = ref(new Set())
+const selCount = computed(() => selectedIds.value.size)
+const hasSel = computed(() => selCount.value > 0)
+const pageAll = computed(() => items.value.length > 0 && items.value.every(r => selectedIds.value.has(r.id)))
+function toggleRow(id) { const s = new Set(selectedIds.value); s.has(id) ? s.delete(id) : s.add(id); selectedIds.value = s }
+function toggleAll() { const s = new Set(selectedIds.value); if (pageAll.value) items.value.forEach(r => s.delete(r.id)); else items.value.forEach(r => s.add(r.id)); selectedIds.value = s }
+function clearSel() { selectedIds.value = new Set() }
+const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow })
+useEscClearSelection(() => hasSel.value, clearSel)
+// Excel 式单元格区域选择（拖选/Shift 扩选/方向键移动/Ctrl+C 复制为 TSV）
+const rangeSel = useRangeSelection({ ignoreCols: () => (canDelete.value ? [0] : []), onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
+const selSum = computed(() => items.value.filter(r => selectedIds.value.has(r.id))
+  .reduce((s, r) => s + (parseFloat(r.advance_amount) || 0), 0))
+async function bulkDelete() {
+  if (!hasSel.value) return
+  if (!(await confirmDlg(`批量删除选中的 ${selCount.value} 笔${dirLabel.value}（金额合计 ${fmtAmt(selSum.value)}）？\n` +
+                         `已有核销或退款关联的记录会自动跳过；此操作不可撤销。`, { danger: true }))) return
+  try {
+    const d = (await ar.bulkDeleteAdvances([...selectedIds.value])).data || {}
+    const skipped = d.skipped || []
+    if (skipped.length) toast.success(`已删除 ${d.deleted} 条，跳过 ${skipped.length} 条（${skipped[0].reason}）`)
+    else toast.success(`已删除 ${d.deleted} 条`)
+    clearSel(); load(true)
+  } catch (e) { toast.error(e?.error || '批量删除失败') }
+}
 const loading = ref(false)
 const loadErr = ref('')
 const page = ref(1)
-const size = 50
+const size = ref(50)
 
-// 顶部全局关键字 + 与列头无重复的页级控件（年/月/核销状态）。
+// 顶部全局关键字 + 与列头无重复的页级控件（实际收付时间区间/核销状态）。
 // 部门改由列头「交付部门」筛选，dept 不再出现于工具栏。
-const filters = reactive({ year: '', month: '', writeoff_status: '', q: '' })
+// 时间维度按「款项日期」（实际收付现金事件日）筛选；默认不限（台账余额是全周期视角），
+// KPI/列表汇总/导出随区间联动（后端同一 _apply_advance_filters）。
+const filters = reactive({ start_date: '', end_date: '', writeoff_status: '', q: '' })
+
+// ── 实际收付时间预设（与日常收款同款交互）────────────────────────────────────
+const DATE_PRESETS = [
+  { k: 'all', l: '全部' },
+  { k: 'thismonth', l: '本月' }, { k: 'lastmonth', l: '上月' },
+  { k: 'thisquarter', l: '本季度' }, { k: 'lastquarter', l: '上季度' },
+  { k: 'halfyear', l: '近半年' }, { k: 'thisyear', l: '本年' }, { k: 'lastyear', l: '去年' },
+  { k: 'year1', l: '近一年' }, { k: 'd30', l: '近30天' }, { k: 'd90', l: '近90天' },
+]
+function _ymd(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+function computePreset(k) {
+  const t = new Date(), y = t.getFullYear(), m = t.getMonth(), d = t.getDate()
+  const back = n => { const x = new Date(t); x.setDate(d - n); return x }
+  const mk = (a, b) => ({ start: _ymd(a), end: _ymd(b) })
+  switch (k) {
+    case 'all': return { start: '', end: '' }
+    case 'thismonth': return mk(new Date(y, m, 1), t)
+    case 'lastmonth': return mk(new Date(y, m - 1, 1), new Date(y, m, 0))
+    case 'thisquarter': return mk(new Date(y, Math.floor(m / 3) * 3, 1), t)
+    case 'lastquarter': { const qm = Math.floor(m / 3) * 3 - 3; return mk(new Date(y, qm, 1), new Date(y, qm + 3, 0)) }
+    case 'halfyear': return mk(back(182), t)
+    case 'thisyear': return mk(new Date(y, 0, 1), t)
+    case 'lastyear': return mk(new Date(y - 1, 0, 1), new Date(y - 1, 11, 31))
+    case 'year1': return mk(back(365), t)
+    case 'd30': return mk(back(29), t)
+    case 'd90': return mk(back(89), t)
+  }
+  return { start: '', end: '' }
+}
+const activePreset = ref('all')
+let _applyingPreset = false
+function applyPreset(k) {
+  _applyingPreset = true
+  const r = computePreset(k)
+  filters.start_date = r.start; filters.end_date = r.end
+  _applyingPreset = false
+  activePreset.value = k
+  load(true)
+}
+watch([() => filters.start_date, () => filters.end_date],
+      () => { if (!_applyingPreset) activePreset.value = '' }, { flush: 'sync' })
+// KPI 区间提示：让「页面汇总=当前筛选汇总」这一点对用户可见
+const rangeLabel = computed(() => {
+  if (!filters.start_date && !filters.end_date) return '全部期间'
+  return `${filters.start_date || '…'} ~ ${filters.end_date || '…'}`
+})
 
 // ── Excel 风格列头筛选 + 排序 ───────────────────────────────────────────────
 const colFilters = reactive({})          // field -> {op, value}
@@ -58,7 +142,7 @@ const schemes = useTableSchemes('ar_advances', {
   onApply: () => { load(true) },
 })
 function buildParams() {
-  const p = { direction: direction.value, ...filters, page: page.value, size }
+  const p = { direction: direction.value, ...filters, page: page.value, size: size.value }
   if (projectFilter.value) p.project_id = projectFilter.value.id
   if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
   if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
@@ -103,13 +187,20 @@ async function load(reset = false) {
   loadErr.value = ''
   try {
     const params = buildParams()
+    // KPI 与筛选合计须同口径：复用列表参数但去掉分页，带上项目过滤与列头筛选，
+    // 否则顶部 KPI 反映的是更宽的范围，与底部「筛选合计」对不上
+    const kpiParams = { ...params }; delete kpiParams.page; delete kpiParams.size
     const [res, k] = await Promise.all([
       ar.listAdvances(params),
-      ar.advancesKpi({ direction: direction.value, ...filters }),
+      ar.advancesKpi(kpiParams),
     ])
     items.value = res.data.items
     total.value = res.data.total
     kpi.value = k.data[direction.value]
+    listSummary.value = (res.data.summary || {})[direction.value] || null
+    // 选中集只保留仍在当前列表中的行（翻页/切方向/筛选后清掉不可见的陈旧选中）
+    const live = new Set(items.value.map(r => r.id))
+    selectedIds.value = new Set([...selectedIds.value].filter(id => live.has(id)))
   } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
   } finally { loading.value = false }
 }
@@ -247,11 +338,11 @@ const diffBusy = computed(() => diffView.value === 'project' ? diffLoading.value
 function onFilterChange() { load(true) }
 let qTimer = null
 function onQInput() { clearTimeout(qTimer); qTimer = setTimeout(() => load(true), 300) }
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size)))
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size.value)))
 function go(p) { if (p < 1 || p > totalPages.value) return; page.value = p; load() }
 const jumpPage = ref(1)
 function doJump() {
-  const tp = Math.ceil(total.value / size)
+  const tp = Math.ceil(total.value / size.value)
   const p = Math.max(1, Math.min(tp, jumpPage.value || 1))
   page.value = p; load()
 }
@@ -338,7 +429,7 @@ async function save() {
   finally { saving.value = false }
 }
 async function removeRec(rec) {
-  if (!confirm(`确认删除该${dirLabel.value}记录（${rec.counterparty}）？核销记录将一并删除。`)) return
+  if (!(await confirmDlg(`确认删除该${dirLabel.value}记录（${rec.counterparty}）？\n若该记录已有核销或退款关联，系统将拦截——需先在「核销」明细删除核销、或在日常收款解除退款关联。`))) return
   try { await ar.deleteAdvance(rec.id); await load() }
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
@@ -376,8 +467,13 @@ async function refreshWriteoffs() {
   const res = await ar.listWriteoffs(woRec.value.id)
   woList.value = res.data
 }
+const woAmountOver = computed(() => {
+  const a = parseFloat(woForm.amount)
+  return !isNaN(a) && a > Number(woRec.value?.balance_amount || 0) + 0.005
+})
 async function addWriteoff() {
   if (!(parseFloat(woForm.amount) > 0)) { toast.error('核销金额必须大于0'); return }
+  if (woAmountOver.value) { toast.error('核销金额不能超过未核销余额'); return }
   woSaving.value = true
   try {
     const payload = { ...woForm }
@@ -393,7 +489,7 @@ async function addWriteoff() {
   finally { woSaving.value = false }
 }
 async function delWriteoff(w) {
-  if (!confirm('确认删除该核销记录？')) return
+  if (!(await confirmDlg('确认删除该核销记录？'))) return
   try {
     await ar.deleteWriteoff(woRec.value.id, w.id)
     await refreshWriteoffs(); await load()
@@ -432,7 +528,7 @@ async function addInstallment() {
   finally { instBusy.value = false }
 }
 async function delInstallment(i) {
-  if (!confirm(`删除第${i.install_no}笔收付 ${i.amount} 元？总额与未核销余额将随之回退。`)) return
+  if (!(await confirmDlg(`删除第${i.install_no}笔收付 ${i.amount} 元？总额与未核销余额将随之回退。`))) return
   instBusy.value = true
   try {
     const res = await ar.deleteAdvInstallment(instRec.value.id, i.id)
@@ -607,7 +703,7 @@ async function saveSupplier() {
   finally { supplierSaving.value = false }
 }
 async function removeSupplier(s) {
-  if (!confirm(`确认删除供应商「${s.name}」？`)) return
+  if (!(await confirmDlg(`确认删除供应商「${s.name}」？`))) return
   try { await ar.deleteSupplier(s.id); await loadSuppliers() }
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
@@ -694,6 +790,16 @@ const ctxSupItems = computed(() => {
   ]
 })
 
+// 弹窗 Esc 关闭：嵌套的项目选择层放最后（先关内层再关外层）
+useModalEsc(
+  [() => showModal.value, () => (showModal.value = false)],
+  [() => showWoModal.value, () => (showWoModal.value = false)],
+  [() => showInstModal.value, () => (showInstModal.value = false)],
+  [() => showSupplierModal.value, () => (showSupplierModal.value = false)],
+  [() => showProjList.value, () => (showProjList.value = false)],
+  [() => showSupplierProjList.value, () => (showSupplierProjList.value = false)],
+)
+
 onMounted(async () => {
   const q = route.query || {}
   if (q.direction === '预收' || q.direction === '预付') direction.value = q.direction
@@ -726,28 +832,21 @@ onMounted(async () => {
       <button :class="['dir-tab', { active: direction === 'suppliers' }]" @click="switchDir('suppliers')">供应商池</button>
     </div>
 
-    <!-- KPI (advances only) -->
+    <!-- KPI (advances only)：随时间区间/筛选联动的「筛选汇总」 -->
     <div v-if="isAdvanceMode && kpi" class="kpi-row">
-      <div class="kpi"><div class="kpi-k">{{ dirLabel }}笔数</div><div class="kpi-v">{{ kpi.count }} 笔</div></div>
-      <div v-if="show('adv_amount')" class="kpi"><div class="kpi-k">{{ dirLabel }}金额</div><div class="kpi-v">{{ fmtAmt(kpi.advance_amount) }}</div></div>
-      <div v-if="show('adv_writeoff')" class="kpi"><div class="kpi-k">已核销</div><div class="kpi-v">{{ fmtAmt(kpi.written_off) }}<span class="kpi-sub">{{ kpi.writeoff_rate }}%</span></div></div>
-      <div v-if="show('adv_writeoff')" class="kpi accent"><div class="kpi-k">未核销余额</div><div class="kpi-v">{{ fmtAmt(kpi.balance) }}</div></div>
-      <div v-if="show('adv_writeoff')" class="kpi warn"><div class="kpi-k">逾期挂账</div><div class="kpi-v">{{ fmtAmt(kpi.overdue_balance) }}<span class="kpi-sub">{{ kpi.overdue_count }} 笔</span></div></div>
+      <div class="kpi"><div class="kpi-k">{{ dirLabel }}笔数<span class="kpi-range">{{ rangeLabel }}</span></div><div class="kpi-v">{{ kpi.count }} 笔</div></div>
+      <div v-if="show('adv_amount')" class="kpi"><div class="kpi-k">{{ dirLabel }}金额</div><div class="kpi-v"><Amt :v="kpi.advance_amount" :fmt="fmtAmt" /></div></div>
+      <div v-if="show('adv_writeoff')" class="kpi"><div class="kpi-k">已核销</div><div class="kpi-v"><Amt :v="kpi.written_off" :fmt="fmtAmt" /><span class="kpi-sub">{{ kpi.writeoff_rate }}%</span></div></div>
+      <div v-if="show('adv_writeoff') && !isReceive && Number(kpi.refunded) > 0" class="kpi"><div class="kpi-k">已退款</div><div class="kpi-v"><Amt :v="kpi.refunded" :fmt="fmtAmt" /></div></div>
+      <div v-if="show('adv_writeoff')" class="kpi accent"><div class="kpi-k">未核销余额</div><div class="kpi-v"><Amt :v="kpi.balance" :fmt="fmtAmt" /></div></div>
+      <div v-if="show('adv_writeoff')" class="kpi warn"><div class="kpi-k">逾期挂账</div><div class="kpi-v"><Amt :v="kpi.overdue_balance" :fmt="fmtAmt" /><span class="kpi-sub">{{ kpi.overdue_count }} 笔</span></div></div>
     </div>
 
     <!-- ── Advance list (预收/预付) ── -->
     <template v-if="isAdvanceMode">
       <div class="card fh-fill">
         <div class="filter-row">
-          <input v-model="filters.q" class="inp sm global-search" placeholder="🔍 全局搜索：往来单位 / 项目 / 编号 / 备注…" @input="onQInput" />
-          <select v-model="filters.year" class="sel sm" @change="onFilterChange">
-            <option value="">年</option>
-            <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
-          </select>
-          <select v-model="filters.month" class="sel sm" @change="onFilterChange">
-            <option value="">月</option>
-            <option v-for="m in months" :key="m" :value="m">{{ m }}月</option>
-          </select>
+          <input v-model="filters.q" class="inp sm global-search" placeholder="全局搜索：往来单位 / 项目 / 编号 / 备注…" @input="onQInput" />
           <select v-model="filters.writeoff_status" class="sel sm" @change="onFilterChange">
             <option value="">核销状态</option>
             <option value="未核销">未核销</option>
@@ -768,10 +867,27 @@ onMounted(async () => {
           <button v-if="canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增{{ dirLabel }}</button>
         </div>
 
-        <div class="table-scroll page-scroll">
+        <!-- 实际收付时间（款项日期）区间：KPI / 列表 / 汇总 / 导出全部随之联动 -->
+        <div class="adv-timebar">
+          <span class="tb-lbl">收付时间</span>
+          <div class="tb-presets">
+            <button v-for="p in DATE_PRESETS" :key="p.k" class="pchip" :class="{ on: activePreset === p.k }"
+                    @click="applyPreset(p.k)">{{ p.l }}</button>
+          </div>
+          <div class="tb-range">
+            <input v-model="filters.start_date" type="date" class="inp sm tb-date" @change="onFilterChange" />
+            <span class="tb-sep">~</span>
+            <input v-model="filters.end_date" type="date" class="inp sm tb-date" @change="onFilterChange" />
+            <button v-if="filters.start_date || filters.end_date" class="btn btn-ghost btn-sm"
+                    @click="applyPreset('all')">清除</button>
+          </div>
+        </div>
+
+        <div class="table-scroll page-scroll range-root" :ref="rangeSel.setRoot">
           <table class="data-table">
             <thead>
               <tr>
+                <th v-if="canDelete" class="sel-col"><input type="checkbox" :checked="pageAll" @change="toggleAll" title="全选本页" /></th>
                 <th v-if="show('adv_counterparty')"><ColumnFilter label="往来单位" field="counterparty" type="text" :model-value="colFilters.counterparty" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('counterparty',v)" @sort="o=>setSort('counterparty',o)" /></th>
                 <th class="proj-dept-th">
                   <ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" />
@@ -795,7 +911,9 @@ onMounted(async () => {
                 <td colspan="10" class="empty">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer;font-size:13px;text-decoration:underline" @click="load()">重试</button></td>
               </tr>
               <tr v-else-if="!items.length"><td colspan="10" class="empty">暂无{{ dirLabel }}记录</td></tr>
-              <tr v-for="r in items" :key="r.id" @contextmenu.prevent="ctxRec.open($event, r)" @dblclick="onRowDblClick(r, $event)">
+              <tr v-for="(r, idx) in items" :key="r.id" :class="{ 'row-sel': selectedIds.has(r.id) }"
+                  @contextmenu.prevent="ctxRec.open($event, r)" @dblclick="onRowDblClick(r, $event)">
+                <SelCell v-if="canDelete" :idx="idx" :id="r.id" :checked="selectedIds.has(r.id)" :on-sel="onRowSelClick" />
                 <td v-if="show('adv_counterparty')">{{ r.counterparty || '—' }}</td>
                 <td>
                   <div v-if="r.short_name" class="proj-name">{{ r.short_name }}</div>
@@ -820,12 +938,27 @@ onMounted(async () => {
           </table>
         </div>
 
-        <div class="pager" v-if="totalPages > 1">
-          <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="go(page - 1)">上一页</button>
-          <span>{{ page }} / {{ totalPages }}（共 {{ total }} 条）</span>
-          <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="go(page + 1)">下一页</button>
-          <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" :placeholder="`1-${totalPages}`" class="pg-jump-input" @keyup.enter="doJump" />页</span>
+        <!-- 选中态操作条：有选中时替换筛选合计栏 -->
+        <div v-if="hasSel" class="adv-sumbar sumbar-sel">
+          <span class="sb-k">已选 {{ selCount }} 笔</span>
+          <span class="sb-i">金额合计 <b><Amt :v="selSum" :fmt="fmtAmt" /></b></span>
+          <button class="btn btn-danger btn-sm" @click="bulkDelete">批量删除</button>
+          <button class="btn btn-ghost btn-sm" @click="clearSel">取消选择</button>
+          <span class="sb-range">Shift 可区间选 · Esc 取消</span>
         </div>
+        <!-- 筛选汇总：与当前时间区间/搜索/列头筛选完全同口径（来自列表接口） -->
+        <div v-else-if="listSummary" class="adv-sumbar">
+          <span class="sb-k">筛选合计</span>
+          <span class="sb-i">{{ listSummary.count }} 笔</span>
+          <span v-if="show('adv_amount')" class="sb-i">{{ dirLabel }}金额 <b><Amt :v="listSummary.advance_amount" :fmt="fmtAmt" /></b></span>
+          <span v-if="show('adv_writeoff')" class="sb-i">已核销 <b><Amt :v="listSummary.written_off" :fmt="fmtAmt" /></b></span>
+          <span v-if="show('adv_writeoff') && !isReceive && Number(listSummary.refunded) > 0" class="sb-i">已退款 <b><Amt :v="listSummary.refunded" :fmt="fmtAmt" /></b></span>
+          <span v-if="show('adv_writeoff')" class="sb-i">未核销余额 <b class="sb-accent"><Amt :v="listSummary.balance" :fmt="fmtAmt" /></b></span>
+          <span v-if="show('adv_writeoff') && Number(listSummary.overdue_balance) > 0" class="sb-i">逾期挂账 <b class="sb-warn"><Amt :v="listSummary.overdue_balance" :fmt="fmtAmt" /></b></span>
+          <span class="sb-range">{{ rangeLabel }}</span>
+        </div>
+
+        <Pager v-model:page="page" v-model:size="size" :total="total" storage-key="ar_advances" @change="load()" />
       </div>
     </template>
 
@@ -855,9 +988,9 @@ onMounted(async () => {
             </select>
           </template>
           <span v-if="diffSummary" class="tl-stat">
-            {{ diffSummary.count }} 项 · 预收 <b style="color:#2e7d32">{{ fmtAmt(diffSummary.in_total) }}</b> ·
+            {{ diffSummary.count }} 项 · 预收 <b style="color:var(--c-success)">{{ fmtAmt(diffSummary.in_total) }}</b> ·
             预付 <b style="color:#ef6c00">{{ fmtAmt(diffSummary.out_total) }}</b> ·
-            差异 <b :style="{ color: parseFloat(diffSummary.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(diffSummary.diff) }}</b>
+            差异 <b :style="{ color: parseFloat(diffSummary.diff) >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ fmtAmt(diffSummary.diff) }}</b>
           </span>
           <div style="flex:1"></div>
           <button v-if="diffView === 'project'" class="btn btn-ghost btn-sm" @click="toggleDiffAll">
@@ -892,9 +1025,9 @@ onMounted(async () => {
                     <span class="dt-name" :title="r.project">{{ r.project }}</span>
                     <span class="dt-dept">{{ (r.dept || '—').replace('事业部', '') }}</span>
                   </td>
-                  <td class="dt-amt" style="color:#2e7d32">{{ parseFloat(r.in_total) ? fmtAmt(r.in_total) : '—' }}</td>
+                  <td class="dt-amt" style="color:var(--c-success)">{{ parseFloat(r.in_total) ? fmtAmt(r.in_total) : '—' }}</td>
                   <td class="dt-amt" style="color:#ef6c00">{{ parseFloat(r.out_total) ? fmtAmt(r.out_total) : '—' }}</td>
-                  <td class="dt-amt fw" :style="{ color: parseFloat(r.diff) >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtAmt(r.diff) }}</td>
+                  <td class="dt-amt fw" :style="{ color: parseFloat(r.diff) >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ fmtAmt(r.diff) }}</td>
                   <td v-if="diffView === 'project'" class="dt-notes" :title="r.notes">{{ r.notes || '—' }}</td>
                   <td class="dt-caret">{{ diffExpanded.has(r.project) ? '▲' : '▼' }}</td>
                 </tr>
@@ -944,7 +1077,7 @@ onMounted(async () => {
             <option value="">全部部门</option>
             <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
           </select>
-          <input v-model="supplierFilters.q" class="inp sm" placeholder="🔍 搜索供应商名称 / 联系人" @input="onSupplierQInput" />
+          <input v-model="supplierFilters.q" class="inp sm" placeholder="搜索供应商名称 / 联系人" @input="onSupplierQInput" />
           <div class="spacer"></div>
           <button v-if="canCreate" class="btn btn-primary btn-sm" @click="openCreateSupplier">+ 新增供应商</button>
         </div>
@@ -1078,11 +1211,15 @@ onMounted(async () => {
             <span v-if="woForm.ar_record_id" class="wo-offset-tip">↳ 核销后自动生成「预收抵扣」回款，冲减应收未收余额（不计现金）</span>
           </div>
           <div class="wo-inputs">
-            <input v-model="woForm.amount" type="number" step="0.01" class="inp" placeholder="核销金额(元)" />
+            <input v-model="woForm.amount" type="number" step="0.01" class="inp" placeholder="核销金额(元)"
+                   :class="{ 'inp-bad': woAmountOver }" />
+            <button v-if="Number(woRec.balance_amount) > 0" type="button" class="wo-fill-chip"
+                    title="填入未核销余额" @click="woForm.amount = Number(woRec.balance_amount).toFixed(2)">全额 ¥{{ fmtAmt(woRec.balance_amount) }}</button>
             <input v-model="woForm.writeoff_date" type="date" class="inp" />
             <input v-model="woForm.notes" class="inp" placeholder="备注" />
-            <button class="btn btn-primary btn-sm" :disabled="woSaving" @click="addWriteoff">{{ woSaving ? '…' : '新增核销' }}</button>
+            <button class="btn btn-primary btn-sm" :disabled="woSaving || woAmountOver" @click="addWriteoff">{{ woSaving ? '…' : '新增核销' }}</button>
           </div>
+          <div v-if="woAmountOver" class="wo-over-tip">核销金额不能超过未核销余额 ¥{{ fmtAmt(woRec.balance_amount) }}</div>
         </div>
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="showWoModal = false">关闭</button>
@@ -1105,7 +1242,7 @@ onMounted(async () => {
             <tr v-if="!instList.length"><td :colspan="(canCreate || canInstAction) ? 5 : 4" class="empty">暂无收付明细</td></tr>
             <tr v-for="i in instList" :key="i.id">
               <td>{{ i.install_no }}</td>
-              <td class="amt" :style="{ color: parseFloat(i.amount) < 0 ? '#c62828' : 'inherit' }">{{ fmtAmt(i.amount) }}</td>
+              <td class="amt" :style="{ color: parseFloat(i.amount) < 0 ? 'var(--c-danger)' : 'inherit' }">{{ fmtAmt(i.amount) }}</td>
               <td>{{ i.occur_date }}</td>
               <td>{{ i.notes || '—' }}</td>
               <td v-if="canCreate || canInstAction"><button class="lnk danger" :disabled="instBusy" @click="delInstallment(i)">删除</button></td>
@@ -1232,11 +1369,40 @@ onMounted(async () => {
 .kpi-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .kpi { flex: 1; min-width: 108px; background: var(--card); border: 1px solid var(--border); border-radius: 9px; padding: 8px 11px; }
 .kpi-k { font-size: 11px; color: var(--muted); }
-.kpi-v { font-size: 16px; font-weight: 800; color: var(--text); margin-top: 2px; line-height: 1.2; }
+.kpi-v { font-size: 20px; font-weight: 800; color: var(--text); margin-top: 2px; line-height: 1.2; }
 .kpi-sub { font-size: 11px; font-weight: 600; color: var(--muted); margin-left: 5px; }
+.kpi-range { font-size: 10.5px; font-weight: 400; color: var(--muted); margin-left: 6px; opacity: .8; }
+
+/* 实际收付时间区间条（款项日期）*/
+.adv-timebar { display: flex; align-items: center; gap: 10px; padding: 6px 0 10px; flex-wrap: nowrap; min-width: 0; }
+.tb-lbl { font-size: 12px; font-weight: 700; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+.tb-presets { display: flex; gap: 5px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+.tb-presets::-webkit-scrollbar { display: none; }
+.pchip { padding: 3px 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--card);
+  color: var(--text); font-size: 12px; cursor: pointer; white-space: nowrap; transition: all .15s; flex-shrink: 0; }
+.pchip:hover { border-color: var(--primary); color: var(--primary); }
+.pchip.on { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+.tb-range { display: flex; align-items: center; gap: 6px; flex-shrink: 0; margin-left: auto; }
+.tb-date { width: 132px; }
+.tb-sep { color: var(--muted); font-size: 12px; }
+
+/* 筛选合计栏（与当前筛选同口径）*/
+.adv-sumbar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 8px 12px; margin-top: 8px; border-radius: 9px; font-size: 12.5px;
+  background: var(--card); border: 1px solid var(--border); color: var(--text-2, var(--muted)); }
+.sb-k { font-weight: 700; color: var(--muted); }
+.sb-i b { font-variant-numeric: tabular-nums; color: var(--text); margin-left: 3px; }
+.sb-accent { color: var(--primary) !important; }
+.sb-warn { color: var(--c-danger) !important; }
+.sb-range { margin-left: auto; font-size: 11px; color: var(--muted); opacity: .8; }
+.sel-col { width: 34px; text-align: center; }
+.sel-col input { cursor: pointer; accent-color: var(--primary); }
+.row-sel { background: rgba(201,99,66,.07) !important; }
+.sumbar-sel { border-color: var(--primary); background: rgba(201,99,66,.05); }
+/* 危险按钮统一走全局 .btn-danger（style.css），页内不再复制 */
 .kpi.accent { background: rgba(201,99,66,.06); }
 .kpi.accent .kpi-v { color: var(--primary); }
-.kpi.warn .kpi-v { color: #c62828; }
+.kpi.warn .kpi-v { color: var(--c-danger); }
 
 .filter-row { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
 .spacer { flex: 1; min-width: 8px; }
@@ -1252,7 +1418,7 @@ onMounted(async () => {
 /* fixed-viewport: scroll wrappers fill the card; sticky header stays put */
 .table-scroll.page-scroll { overflow: auto; }
 .table-scroll.page-scroll thead th,
-.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 .pager { flex-shrink: 0; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 760px; }
 .data-table.compact { min-width: 0; }
@@ -1262,7 +1428,7 @@ onMounted(async () => {
 .data-table thead th { overflow: visible; }
 /* 项目简称 + 部门 两个列头筛选并排 */
 .proj-dept-th { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.global-search { width: 360px; min-width: 300px; max-width: 100%; flex: 0 1 360px; }
+.global-search { width: 360px; min-width: 160px; flex: 1 1 300px; max-width: 100%; flex: 0 1 360px; }
 .filter-hint { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .data-table th.amt, .data-table td.amt { text-align: right; }
 .data-table th.ctr, .data-table td.ctr { text-align: center; }
@@ -1273,14 +1439,10 @@ onMounted(async () => {
 .empty { text-align: center; color: var(--muted); padding: 28px 0; }
 .nowrap { white-space: nowrap; }
 
-.status-pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; }
-.pill-ok { background: rgba(46,125,50,.12); color: #2e7d32; }
-.pill-blue { background: rgba(21,101,192,.12); color: #1565c0; }
-.pill-muted { background: rgba(120,120,120,.1); color: var(--muted); }
-.pill-danger { background: rgba(198,40,40,.12); color: #c62828; }
+/* 状态徽章基准与语义色变体统一走全局 style.css 的 .status-pill/.pill-*（勿在页内复制） */
 
 .lnk { background: none; border: none; color: var(--primary); cursor: pointer; font-size: 13px; padding: 2px 6px; }
-.lnk.danger { color: #c62828; }
+.lnk.danger { color: var(--c-danger); }
 
 .pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
 .pg-jump{display:inline-flex;align-items:center;gap:4px;font-size:13px;color:var(--muted);margin-left:8px}
@@ -1302,7 +1464,7 @@ onMounted(async () => {
 .fld { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .fld.full { grid-column: 1 / -1; }
 .fld span { color: var(--muted); }
-.fld em { color: #c62828; font-style: normal; }
+.fld em { color: var(--c-danger); font-style: normal; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 
 /* project combobox */
@@ -1312,7 +1474,7 @@ onMounted(async () => {
   border: none; background: none; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 0 4px; }
 .combo-list {
   position: absolute; z-index: 10; top: calc(100% + 4px); left: 0; right: 0;
-  background: #fff; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--row-bg); border: 1px solid var(--border); border-radius: 9px;
   box-shadow: 0 10px 30px rgba(100,60,30,0.18); max-height: 220px; overflow-y: auto;
   list-style: none; margin: 0; padding: 4px;
 }
@@ -1333,7 +1495,7 @@ onMounted(async () => {
 .wo-offset-tip { font-size: 11px; color: var(--primary); opacity: 0.8; width: 100%; padding-left: 2px; }
 .wo-inputs { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .offset-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; background: rgba(27,110,53,0.1); color: #1b6e35; font-size: 11px; font-weight: 600; }
-.offset-badge.pay-badge { background: rgba(21,101,192,0.1); color: #1565c0; }
+.offset-badge.pay-badge { background: rgba(21,101,192,0.1); color: var(--c-info); }
 
 /* supplier modal */
 .sup-modal { max-width: 460px; }
@@ -1341,7 +1503,7 @@ onMounted(async () => {
 .sf-two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .sf-fld { display: flex; flex-direction: column; gap: 4px; }
 .sf-lbl { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
-.sf-lbl em { color: #c62828; font-style: normal; }
+.sf-lbl em { color: var(--c-danger); font-style: normal; }
 .sf-hint { font-size: 11px; color: var(--muted); }
 .sup-type-row { display: flex; gap: 10px; margin-top: 6px; }
 .sup-type-btn {
@@ -1381,22 +1543,22 @@ td.dt-notes { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 .diff-detail-row td { background: rgba(250,246,241,.7); padding: 6px 10px; }
 .diff-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 @media (max-width: 760px) { .diff-detail { grid-template-columns: 1fr; } }
-.dd-col { background: #fff; border: 1px solid rgba(180,140,110,.14); border-radius: 8px; padding: 5px 10px; }
+.dd-col { background: var(--row-bg); border: 1px solid rgba(180,140,110,.14); border-radius: 8px; padding: 5px 10px; }
 .dd-head { font-size: 11px; font-weight: 700; margin-bottom: 2px; }
-.dd-head.in { color: #2e7d32; } .dd-head.out { color: #ef6c00; }
+.dd-head.in { color: var(--c-success); } .dd-head.out { color: #ef6c00; }
 .dd-empty { font-size: 11.5px; color: var(--muted); padding: 2px 0; }
 .dd-item { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 2.5px 0;
   border-top: 1px dashed rgba(180,140,110,.12); line-height: 1.5; }
 .dd-item:first-of-type { border-top: none; }
 .dd-date { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 74px; }
 .dd-amt { font-variant-numeric: tabular-nums; min-width: 78px; text-align: right; }
-.dd-amt.in { color: #2e7d32; } .dd-amt.out { color: #ef6c00; }
+.dd-amt.in { color: var(--c-success); } .dd-amt.out { color: #ef6c00; }
 .dd-party { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-.dd-bal { font-style: normal; font-size: 10.5px; color: #1565c0; background: rgba(21,101,192,.07);
+.dd-bal { font-style: normal; font-size: 10.5px; color: var(--c-info); background: rgba(21,101,192,.07);
   border-radius: 5px; padding: 0 6px; white-space: nowrap; }
 
-.amt-pos { color: #2e7d32; }
-.amt-neg { color: #c62828; }
+.amt-pos { color: var(--c-success); }
+.amt-neg { color: var(--c-danger); }
 
 /* ── 收付差异 · 视角切换条（按项目 / 按月 / 按周） ── */
 .diff-viewbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
@@ -1408,4 +1570,9 @@ td.dt-notes { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 .tl-hint { font-size: 11px; color: var(--muted); }
 .tl-stat { font-size: 12px; color: var(--text); font-weight: 600; }
 .tl-stat b { font-weight: 800; }
+.wo-fill-chip { border: 1px solid rgba(46,158,91,.4); background: rgba(46,158,91,.08); color: #1b5e20;
+  font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 14px; cursor: pointer; white-space: nowrap; transition: all .12s; }
+.wo-fill-chip:hover { background: rgba(46,158,91,.16); }
+.inp.inp-bad { border-color: var(--c-danger); }
+.wo-over-tip { font-size: 12px; color: var(--c-danger); margin-top: 6px; }
 </style>

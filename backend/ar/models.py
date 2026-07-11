@@ -2,6 +2,7 @@ import calendar
 import datetime
 import os
 from decimal import Decimal, ROUND_HALF_UP
+from django.utils import timezone
 
 from django.db import models, transaction
 from django.db.models import Sum
@@ -110,7 +111,7 @@ class ARProject(models.Model):
         # 部门无对应简码（如导入时无法确定部门的草稿项目）回退用 'XX'，
         # 保证项目编号始终能生成、不致 500；草稿完善时改对部门会换正式编号前缀。
         dept_code = self.DEPT_PROJECT_PREFIX.get(self.delivery_dept, '') or 'XX'
-        prefix = f'{dept_code}-{datetime.date.today().strftime("%Y%m%d")}-'
+        prefix = f'{dept_code}-{timezone.localdate().strftime("%Y%m%d")}-'
         with transaction.atomic():
             # 取当天该部门已有编号的最大序号 +1。用解析后的整数求最大值（而非字符串
             # 排序），对历史遗留的非定长编号也稳健。
@@ -259,7 +260,7 @@ class Contract(models.Model):
         部门取项目编号同款部门简码；无对应简码时省略部门段（P-日期-序号）。"""
         dept_code = ARProject.DEPT_PROJECT_PREFIX.get(self.delivery_dept, '')
         mid = f'{dept_code}-' if dept_code else ''
-        prefix = f'P-{mid}{datetime.date.today().strftime("%Y%m%d")}-'
+        prefix = f'P-{mid}{timezone.localdate().strftime("%Y%m%d")}-'
         with transaction.atomic():
             existing = (Contract.objects.filter(contract_no__startswith=prefix)
                         .select_for_update().values_list('contract_no', flat=True))
@@ -380,6 +381,13 @@ def _as_date(v):
         return None
 
 
+class ARRecordActiveManager(models.Manager):
+    """默认管理器：过滤软删除。全站既有 ARRecord.objects 查询自动排除回收站记录，
+    杜绝逐处补 deleted_at 过滤的遗漏面；回收站/还原用 all_objects。"""
+    def get_queryset(self):
+        return super().get_queryset().filter(deleted_at__isnull=True)
+
+
 class ARRecord(models.Model):
     """应收账款明细 — 每项目每月一条"""
     project = models.ForeignKey(ARProject, on_delete=models.CASCADE,
@@ -415,9 +423,20 @@ class ARRecord(models.Model):
                                    null=True, blank=True, related_name='created_ar_records')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # 软删除（回收站）：删除进回收站可还原，杜绝硬删连带抹掉回款现金历史
+    deleted_at = models.DateTimeField('删除时间', null=True, blank=True, db_index=True)
+    deleted_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='deleted_ar_records')
+
+    # 默认管理器过滤软删；all_objects 供回收站/还原。base_manager 必须不过滤
+    # （FK 解析用 base_manager，否则 payment.ar_record 指向回收站记录时会 DoesNotExist）
+    objects = ARRecordActiveManager()
+    all_objects = models.Manager()
 
     class Meta:
         db_table = 'ar_records'
+        base_manager_name = 'all_objects'
+        default_manager_name = 'objects'
         ordering = ['-operation_date']
         indexes = [
             models.Index(fields=['delivery_dept', 'due_date']),
@@ -470,7 +489,7 @@ class ARRecord(models.Model):
             raise ValidationError(
                 f'未收回金额不能为负：预估上账 {_f(base)} + 账实差额 {_f(adj)} '
                 f'− 累计回款 {_f(total_paid)} = {_f(outstanding)}。'
-                f'请核对预估上账金额或账实差额调整。'
+                f'请核实原因：如确有多收，请到「差额调整」录入，或将多收部分到「预收预付」录入。'
             )
         self.outstanding_amount = outstanding
         self.tax_amount = self._compute_tax()
@@ -517,7 +536,7 @@ class ARRecord(models.Model):
         责任链：对账逾期(非销售责任) → 开票逾期(开票人责任) → 票后/回款逾期(销售对接人责任)。
         不开票项目跳过开票环节，对账后直接进入回款责任。
         """
-        today = today or datetime.date.today()
+        today = today or timezone.localdate()
         outstanding = self.outstanding_amount or Decimal('0')
         inv_date = _as_date(self.invoice_date)
         recon_date = _as_date(self.reconciliation_date)
@@ -597,7 +616,9 @@ class ARRecord(models.Model):
     def invoice_status(self):
         if (self.outstanding_amount or Decimal('0')) <= 0:
             return '已结清'
-        if not self.actual_invoice_amount:
+        # 用 is None 判断而非真值：与 KPI/分组汇总的 actual_invoice_amount__isnull 查询
+        # 同口径，否则 0 元开票的记录属性说「未开票」、查询说「已开票」，两处打架
+        if self.actual_invoice_amount is None:
             return '未开票'
         total_paid = self.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0')
         if total_paid > 0:
@@ -605,7 +626,7 @@ class ARRecord(models.Model):
         return '已开票'
 
     def status_dict(self, today=None):
-        today = today or datetime.date.today()
+        today = today or timezone.localdate()
         eomonth_today = _eomonth(today.year, today.month)
         outstanding = self.outstanding_amount or Decimal('0')
         due = self.due_date
@@ -643,6 +664,14 @@ class ARRecord(models.Model):
             'tax_amount': str(self.tax_amount) if self.tax_amount is not None else None,
             'invoice_date': str(self.invoice_date) if self.invoice_date else None,
             'account_diff_adjustment': str(self.account_diff_adjustment),
+            # 实际应收 = 预估金额 + 账实差额（应开票的目标金额）
+            'actual_receivable': str((self.estimated_amount or Decimal('0'))
+                                     + (self.account_diff_adjustment or Decimal('0'))),
+            # 已开票且开票金额 ≠ 实际应收 → 提醒（调整账实差额或备注原因）；未开票不提醒
+            'invoice_mismatch': (self.actual_invoice_amount is not None
+                                 and self.actual_invoice_amount
+                                 != (self.estimated_amount or Decimal('0'))
+                                 + (self.account_diff_adjustment or Decimal('0'))),
             'outstanding_amount': str(self.outstanding_amount),
             'due_date': str(self.due_date) if self.due_date else None,
             'target_collection_date': str(self.target_collection_date) if self.target_collection_date else None,
@@ -668,6 +697,17 @@ class ARRecord(models.Model):
 # 非现金回款来源：冲减应收未收，但不构成现金事件，现金流/资金池口径须排除。
 NON_CASH_PAYMENT_SOURCES = ('预收抵扣', '内部往来')
 
+# 资金池「可动用现金」口径：未兑付的承兑汇票（method='承兑汇票' 且 draft_status!='已承兑'）
+# 在贴现/到期前不是货币资金，故【资金池账面余额/资金预警/透支调拨】须排除；一旦兑付
+# （draft_status='已承兑'）即视同现金计入。承兑汇票无论是否兑付都是已实现现金流入，
+# 【现金流分析】照常计入。此为方式×状态口径，与按 source 排除的 NON_CASH_PAYMENT_SOURCES
+# 正交，切勿混入后者（会污染语义且无法表达方式/状态维度）。
+def pending_draft_q():
+    """未兑付承兑汇票的过滤条件（资金池可动用现金须排除）。放在函数里以延迟 Q 求值、
+    避免模型模块顶层依赖 Q 的导入顺序。"""
+    from django.db.models import Q
+    return Q(method='承兑汇票') & ~Q(draft_status='已承兑')
+
 
 class ARPayment(models.Model):
     """回款子表 — 每次回款一行，不限次数。
@@ -679,6 +719,19 @@ class ARPayment(models.Model):
     资金池统计须排除（见 NON_CASH_PAYMENT_SOURCES），避免重复计现金。
     """
     SOURCE_CHOICES = [('回款', '回款'), ('预收抵扣', '预收抵扣'), ('内部往来', '内部往来')]
+    # 回款方式（仅 source='回款' 的实际收款有意义）：现金/微信/银行转账/承兑汇票。
+    # 非回款来源（预收抵扣/内部往来）留空。历史「现金回款」统一迁移为「银行转账」。
+    METHOD_CHOICES = [('现金', '现金'), ('微信', '微信'),
+                      ('银行转账', '银行转账'), ('承兑汇票', '承兑汇票')]
+    METHOD_VALUES = frozenset(m[0] for m in METHOD_CHOICES)
+    DEFAULT_METHOD = '银行转账'
+    # 承兑状态（仅 method='承兑汇票' 有意义）：未承兑=持票未兑付，非可动用现金；
+    # 已承兑=已兑付到账，视同现金进资金池。新登记默认未承兑。
+    DRAFT_METHOD = '承兑汇票'
+    DRAFT_STATUS_CHOICES = [('未承兑', '未承兑'), ('已承兑', '已承兑')]
+    DRAFT_STATUS_VALUES = frozenset(s[0] for s in DRAFT_STATUS_CHOICES)
+    DEFAULT_DRAFT_STATUS = '未承兑'
+    ACCEPTED_DRAFT_STATUS = '已承兑'
 
     ar_record = models.ForeignKey(ARRecord, on_delete=models.CASCADE,
                                   related_name='payments', db_index=True)
@@ -687,6 +740,15 @@ class ARPayment(models.Model):
     payment_date = models.DateField('回款日期', db_index=True)
     source = models.CharField('回款来源', max_length=8, choices=SOURCE_CHOICES,
                               default='回款', db_index=True)
+    # 回款方式：仅对 source='回款' 有意义；非回款来源留空。
+    method = models.CharField('回款方式', max_length=12, choices=METHOD_CHOICES,
+                              blank=True, default='', db_index=True)
+    # 收款账户（选填，为后期「微信-结算001」等具体账户预留）：仅对 source='回款' 有意义。
+    account = models.CharField('收款账户', max_length=50, blank=True, default='')
+    # 承兑状态：仅 method='承兑汇票' 有意义。未承兑=持票未兑付（非可动用现金）；
+    # 已承兑=已兑付到账（视同现金进资金池）。其它方式留空。
+    draft_status = models.CharField('承兑状态', max_length=6, choices=DRAFT_STATUS_CHOICES,
+                                    blank=True, default='', db_index=True)
     # 内部往来核销专用：往来事业部（系统部门之一）。其它来源留空。
     counterparty_dept = models.CharField('往来部门', max_length=50, blank=True,
                                          default='', db_index=True)
@@ -702,6 +764,21 @@ class ARPayment(models.Model):
             models.Index(fields=['payment_date']),
         ]
 
+    def save(self, *args, **kwargs):
+        # 方式/账户仅对「回款」有意义：非回款来源（预收抵扣/内部往来）一律留空，
+        # 防止绕过视图的 ORM 写入残留脏方式，保证按方式分组/筛选不串桶。
+        if self.source != '回款':
+            self.method = ''
+            self.account = ''
+        # 承兑状态与方式绑定的不变式：非承兑汇票一律留空；承兑汇票则必为
+        # 未承兑/已承兑之一——空值兜底为「未承兑」，杜绝方式往返/直改 method 产生的
+        # draft_status='' 脏态（否则台账精确筛选漏行、导出列空，与资金池口径不一致）。
+        if self.method != self.DRAFT_METHOD:
+            self.draft_status = ''
+        elif not self.draft_status:
+            self.draft_status = self.DEFAULT_DRAFT_STATUS
+        super().save(*args, **kwargs)
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -710,6 +787,9 @@ class ARPayment(models.Model):
             'amount': str(self.amount),
             'payment_date': str(self.payment_date),
             'source': self.source,
+            'method': self.method,
+            'account': self.account,
+            'draft_status': self.draft_status,
             'counterparty_dept': self.counterparty_dept,
             'notes': self.notes,
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -867,6 +947,9 @@ class AdvanceRecord(models.Model):
     advance_amount = models.DecimalField('预收/预付金额', max_digits=15, decimal_places=2, default=0)
     expected_writeoff_date = models.DateField('预计核销日期', null=True, blank=True, db_index=True)
     written_off_amount = models.DecimalField('已核销金额', max_digits=15, decimal_places=2, default=0)
+    # 已退款金额：仅对预付有意义——供应商退回预付的现金（记在「日常收款·预付退款」并回关本笔），
+    # 与核销并列冲减未核销余额；退款是现金事件（在日常收款侧计流入），核销不是。
+    refunded_amount = models.DecimalField('已退款金额', max_digits=15, decimal_places=2, default=0)
     balance_amount = models.DecimalField('未核销余额', max_digits=15, decimal_places=2, default=0)
     notes = models.TextField('备注', blank=True, default='')
     created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
@@ -891,25 +974,29 @@ class AdvanceRecord(models.Model):
         ]
 
     def recompute_derived(self, save=True):
-        """未核销余额口径：预收/预付金额 − 累计核销。"""
+        """未核销余额口径：预收/预付金额 − 累计核销 − 累计退款（预付退款回冲）。"""
         base = self.advance_amount or Decimal('0')
         total_wo = Decimal('0')
+        total_refund = Decimal('0')
         if self.pk:
             total_wo = self.writeoffs.aggregate(s=Sum('amount'))['s'] or Decimal('0')
-        balance = base - total_wo
+            total_refund = self.refunds.aggregate(s=Sum('amount'))['s'] or Decimal('0')
+        balance = base - total_wo - total_refund
         if balance < Decimal('0'):
             def _f(v):
                 return f'{v:,.2f}'
             raise ValidationError(
-                f'未核销余额不能为负：预收/预付金额 {_f(base)} − 累计核销 {_f(total_wo)} '
-                f'= {_f(balance)}。请核对金额或核销记录。'
+                f'未核销余额不能为负：金额 {_f(base)} − 累计核销 {_f(total_wo)} '
+                f'− 累计退款 {_f(total_refund)} = {_f(balance)}。请核对金额、核销或退款记录。'
             )
         q = Decimal('0.01')
         self.written_off_amount = total_wo.quantize(q, rounding=ROUND_HALF_UP)
+        self.refunded_amount = total_refund.quantize(q, rounding=ROUND_HALF_UP)
         self.balance_amount = balance.quantize(q, rounding=ROUND_HALF_UP)
         if save:
             AdvanceRecord.objects.filter(pk=self.pk).update(
                 written_off_amount=self.written_off_amount,
+                refunded_amount=self.refunded_amount,
                 balance_amount=self.balance_amount,
             )
 
@@ -922,14 +1009,19 @@ class AdvanceRecord(models.Model):
     @property
     def writeoff_status(self):
         if (self.balance_amount or Decimal('0')) <= 0:
+            # 全靠退款清零、无核销 → 标「已退款」，与「已核销」区分
+            if ((self.written_off_amount or Decimal('0')) <= 0
+                    and (self.refunded_amount or Decimal('0')) > 0):
+                return '已退款'
             return '已核销'
-        if (self.written_off_amount or Decimal('0')) > 0:
+        if ((self.written_off_amount or Decimal('0')) > 0
+                or (self.refunded_amount or Decimal('0')) > 0):
             return '部分核销'
         return '未核销'
 
     def aging_dict(self, today=None):
         """挂账账龄：未核销余额从款项日期起的挂账天数；超预计核销日期则逾期。"""
-        today = today or datetime.date.today()
+        today = today or timezone.localdate()
         if (self.balance_amount or Decimal('0')) <= 0:
             return {'pending_days': 0, 'is_overdue': False, 'overdue_days': 0}
         base_date = _as_date(self.occur_date)
@@ -956,6 +1048,7 @@ class AdvanceRecord(models.Model):
             'advance_amount': str(self.advance_amount),
             'expected_writeoff_date': str(self.expected_writeoff_date) if self.expected_writeoff_date else None,
             'written_off_amount': str(self.written_off_amount),
+            'refunded_amount': str(self.refunded_amount),
             'balance_amount': str(self.balance_amount),
             'writeoff_status': self.writeoff_status,
             'notes': self.notes,
@@ -1415,6 +1508,66 @@ class AgingBucketConfig(models.Model):
             'bucket2': self.bucket2,
             'bucket3': self.bucket3,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class DailyReceipt(models.Model):
+    """日常收款 — 与应收回款/预收并行的一般性现金流入台账（每笔一行）。
+    覆盖不挂在具体应收明细下的收款：本月项目收款（可选项目）、预付退款、其他自定义来源。
+    收款方式为可动用现金（现金/微信/银行转账/自定义），故全额计入【现金流分析】与
+    【资金池】的流入——见 pool.py / cashflow.py 对本表的聚合。"""
+    SOURCE_PROJECT = '项目收款'
+    SOURCE_REFUND = '预付退款'
+    SOURCE_PRESETS = ['项目收款', '预付退款']          # 前端预设，另允许自定义文本
+    METHOD_PRESETS = ['现金', '微信', '银行转账']        # 另允许自定义文本
+
+    receipt_date = models.DateField('收款日期', db_index=True)
+    delivery_dept = models.CharField('事业部', max_length=50, db_index=True)
+    amount = models.DecimalField('收款金额', max_digits=15, decimal_places=2)
+    # 来源：预设「项目收款/预付退款」或任意自定义文本
+    source = models.CharField('收款来源', max_length=40, db_index=True)
+    # 关联项目（仅来源=项目收款时选，供项目现金流归集）
+    project = models.ForeignKey(ARProject, on_delete=models.SET_NULL, null=True, blank=True,
+                                related_name='daily_receipts', db_index=True)
+    # 关联预付（仅来源=预付退款时选）：退款回冲该预付的未核销余额，形成闭环。
+    # 退款本身是现金流入（本表全额计入现金流/资金池），关联只影响预付资产台账，不影响现金。
+    advance_record = models.ForeignKey(AdvanceRecord, on_delete=models.SET_NULL, null=True, blank=True,
+                                       related_name='refunds', db_index=True)
+    # 方式：预设「现金/微信/银行转账」或任意自定义文本
+    method = models.CharField('收款方式', max_length=20, blank=True, default='')
+    account = models.CharField('收款账户', max_length=50, blank=True, default='')
+    payer = models.CharField('付款方', max_length=100, blank=True, default='')
+    notes = models.TextField('摘要/备注', blank=True, default='')
+    created_by = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='daily_receipts')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ar_daily_receipts'
+        ordering = ['-receipt_date', '-id']
+        indexes = [models.Index(fields=['delivery_dept', 'receipt_date'])]
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'receipt_date': str(self.receipt_date) if self.receipt_date else None,
+            'delivery_dept': self.delivery_dept,
+            'amount': str(self.amount),
+            'source': self.source,
+            'project_id': self.project_id,
+            'project_name': (self.project.short_name or self.project.customer_name) if self.project else '',
+            'project_short_name': self.project.short_name if self.project else '',
+            'advance_record_id': self.advance_record_id,
+            'advance_label': (f'{self.advance_record.counterparty or "预付"}'
+                              f'（{self.advance_record.occur_date}）'
+                              if self.advance_record_id else ''),
+            'method': self.method,
+            'account': self.account,
+            'payer': self.payer,
+            'notes': self.notes,
+            'created_by_name': self.created_by.name if self.created_by else '',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
         }
 
 

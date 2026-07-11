@@ -1,5 +1,7 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { confirmDlg } from '../../composables/confirm.js'
+import { ref, computed, onMounted, watch, defineAsyncComponent } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import api from '../../api/caiwu.js'
@@ -11,6 +13,26 @@ import { copyText } from '../../utils/clipboard.js'
 import { useToast } from '../../composables/useToast.js'
 
 const auth = useCaiwuAuth()
+
+// ── 页签：财务数据 / 内部往来核对（内往并入数据加工，组件按需懒加载）────────────
+const InternalRecon = defineAsyncComponent(() => import('./InternalRecon.vue'))
+const route = useRoute()
+const router = useRouter()
+const canData = computed(() => auth.canPage('data'))
+const canInternal = computed(() => auth.canPage('internal'))
+// 权限钳制：无内往权限不进内往页签；无数据权限（仅内往）固定内往页签
+const clampTab = (t) => {
+  if (t === 'internal') return canInternal.value ? 'internal' : 'data'
+  return canData.value ? 'data' : 'internal'
+}
+const mainTab = ref(clampTab(route.query.tab === 'internal' ? 'internal' : 'data'))
+watch(mainTab, (t) => {
+  router.replace({ query: { ...route.query, tab: t === 'internal' ? 'internal' : undefined } })
+})
+watch(() => route.query.tab, (t) => {
+  mainTab.value = clampTab(t === 'internal' ? 'internal' : 'data')
+})
+
 const batches = ref([])
 const loading = ref(false)
 const loadErr = ref('')
@@ -22,6 +44,15 @@ const upBu = ref('')
 const upYear = ref(lastMonthCST().year)
 const upMonth = ref(lastMonthCST().month)
 const upFile = ref(null)
+const upDropping = ref(false)
+function onUpDrop(e) {
+  upDropping.value = false
+  const f = Array.from(e.dataTransfer?.files || [])[0]
+  if (!f) return
+  if (!/\.(xlsx|json)$/i.test(f.name)) { uploadErr.value = `不支持的文件类型：${f.name}（请拖入 .xlsx 或 .json）`; return }
+  uploadErr.value = ''
+  upFile.value = f
+}
 const uploading = ref(false)
 const uploadErr = ref('')
 const uploadResult = ref(null)   // {batch, row_count, fmt, warnings, pl_check}
@@ -87,16 +118,51 @@ async function loadBatches() {
 // 紧凑日期时间（月日 时:分）
 const fmtDt = (s) => fmtDateTime(s)
 
+// 批次列表的事业部筛选（'' = 全部）
+const batchBuFilter = ref('')
+const batchBus = computed(() => {
+  const present = new Set(batches.value.map(b => b.business_unit))
+  return BUSINESS_UNITS.filter(bu => present.has(bu))
+})
+// 批次按事业部归类（组内按 期间新→旧、类型 排序；组按事业部固定顺序）
+const batchGroups = computed(() => {
+  const map = {}
+  const src = batchBuFilter.value
+    ? batches.value.filter(b => b.business_unit === batchBuFilter.value)
+    : batches.value
+  for (const b of src) (map[b.business_unit] = map[b.business_unit] || []).push(b)
+  const order = [...BUSINESS_UNITS]
+  return Object.keys(map)
+    .sort((a, b) => ((order.indexOf(a) + 1) || 99) - ((order.indexOf(b) + 1) || 99))
+    .map(bu => {
+      const rows = map[bu].sort((x, y) =>
+        (y.year - x.year) || (y.month - x.month) || x.batch_type.localeCompare(y.batch_type))
+      return { bu, rows, published: rows.filter(r => r.status === 'published').length }
+    })
+})
+
+async function doUnpublish(batch) {
+  if (!(await confirmDlg(
+    `撤回「${batch.business_unit} ${batch.year}年${batch.month}月」的发布？\n撤回后报表/驾驶舱立即不再显示该期间数据（重新发布即恢复）；撤回的草稿可以删除。`))) return
+  try {
+    const res = await api.put(`/batches/${batch.id}/unpublish`)
+    const i = batches.value.findIndex(b => b.id === batch.id)
+    if (i >= 0) batches.value[i] = res.data
+    toast.success('已撤回发布，批次回到草稿状态')
+    await loadSubmissionStatus()
+  } catch (e) { toast.error(e?.msg || e?.error || '撤回失败') }
+}
+
 async function doDelete(batch) {
   const msg = batch.status === 'published'
     ? `确认删除已发布批次「${batch.business_unit} ${batch.year}年${batch.month}月 部门明细表」？\n删除后报表和图表将不再包含这部分数据。`
     : '确认删除此草稿批次？'
-  if (!confirm(msg)) return
+  if (!(await confirmDlg(msg))) return
   try {
     await api.delete(`/batches/${batch.id}`)
     batches.value = batches.value.filter(b => b.id !== batch.id)
     await loadSubmissionStatus()
-  } catch (e) { alert(e?.error || '删除失败') }
+  } catch (e) { toast.error(e?.error || '删除失败') }
 }
 
 // Re-upload to replace an existing batch's period (entries can't be edited
@@ -155,8 +221,35 @@ async function doUpload() {
   } finally { uploading.value = false }
 }
 
+function fmtWanCn(v) {
+  const n = Number(v) || 0
+  return (n / 1e4).toLocaleString('zh-CN', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '万'
+}
 async function doPublish(batchId) {
-  if (!confirm('确认发布此批次？发布后将替换同事业部同月份的旧数据。')) return
+  // d6: 发布前对账——在确认框回显本批 pl_check KPI，若有上月已发布数据则并列对比（差异标注）
+  const detail = []
+  const cur = uploadResult.value?.pl_check?.kpis || []
+  const prev = uploadResult.value?.prev_kpis
+  if (cur.length) {
+    const prevMap = {}
+    ;(prev?.kpis || []).forEach(k => { prevMap[k.name] = k.amount })
+    for (const k of cur) {
+      let line = `${k.name}：${fmtWanCn(k.amount)}`
+      if (prev && prevMap[k.name] !== undefined) {
+        const d = k.amount - prevMap[k.name]
+        const pct = prevMap[k.name] ? (d / Math.abs(prevMap[k.name]) * 100) : 0
+        line += `　vs ${prev.year}年${prev.month}月 ${d >= 0 ? '+' : ''}${fmtWanCn(d)}` +
+                (Math.abs(pct) >= 20 ? `（环比 ${d >= 0 ? '+' : ''}${pct.toFixed(0)}% ⚠）` : '')
+      }
+      detail.push(line)
+    }
+  }
+  if (!(await confirmDlg({
+    title: '确认发布此批次',
+    message: '发布后将替换同事业部同月份的旧数据（不可直接撤销，需手动撤回）。请核对下方 KPI：',
+    detail: detail.length ? detail : ['（无利润表 KPI 可核对）'],
+    confirmText: '确认发布',
+  }))) return
   publishing.value = true
   try {
     await api.put(`/batches/${batchId}/publish`)
@@ -165,9 +258,9 @@ async function doPublish(batchId) {
     upFile.value = null
     await loadBatches()
     await loadSubmissionStatus()
-    alert('发布成功！数据已生效，可在报表页查看。')
+    toast.success('发布成功！数据已生效，可在报表页查看。')
   } catch (e) {
-    alert(e?.error || '发布失败')
+    toast.error(e?.error || '发布失败')
   } finally { publishing.value = false }
 }
 
@@ -180,7 +273,7 @@ async function downloadTemplate() {
     a.download = '财务数据导入模板.xlsx'
     a.click()
     URL.revokeObjectURL(url)
-  } catch (e) { alert(e?.error || '下载失败') }
+  } catch (e) { toast.error(e?.error || '下载失败') }
 }
 
 // ── 未提交/未完整事业部统计（用于紧凑提示「N 个未提交」）──────────────────────
@@ -235,14 +328,22 @@ onMounted(() => {
 
 <template>
   <div>
-    <div class="topbar">
+    <!-- 页签：财务数据 / 内部往来核对（两个权限都有才显示切换）-->
+    <div v-if="canData && canInternal" class="di-tabs">
+      <button :class="['di-tab', mainTab === 'data' ? 'active' : '']" @click="mainTab = 'data'">财务数据</button>
+      <button :class="['di-tab', mainTab === 'internal' ? 'active' : '']" @click="mainTab = 'internal'">内部往来核对</button>
+    </div>
+
+    <InternalRecon v-if="mainTab === 'internal'" />
+
+    <template v-else>
+    <div class="cw-hero">
       <div>
+        <div class="cw-eyebrow">DATA PIPELINE · 采集加工</div>
         <h1>数据加工</h1>
-        <div style="font-size:13px;color:var(--muted);margin-top:2px">
-          上传金蝶部门明细表 · 核对利润指标 · 发布到报表
-        </div>
+        <div class="cw-hero-sub">上传金蝶部门明细表 · 核对利润指标 · 发布到报表</div>
       </div>
-      <div style="display:flex;gap:8px">
+      <div class="cw-hero-ctrl">
         <button class="btn btn-ghost btn-sm" @click="downloadTemplate">下载KXT模板</button>
         <button v-if="auth.canUpload" class="btn btn-primary btn-sm" @click="openUpload">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -297,19 +398,32 @@ onMounted(() => {
     <div v-else class="card compact-card">
       <div class="ss-head">
         <div class="section-title" style="margin:0">导入批次</div>
-        <span v-if="batches.length" class="ss-summary">共 {{ batches.length }} 个批次</span>
+        <select v-if="batchBus.length > 1" v-model="batchBuFilter" class="batch-bu-flt" title="按事业部筛选批次">
+          <option value="">全部事业部</option>
+          <option v-for="bu in batchBus" :key="bu" :value="bu">{{ bu }}</option>
+        </select>
+        <span v-if="batches.length" class="ss-summary">
+          {{ batchBuFilter ? `${batchGroups.reduce((n, g) => n + g.rows.length, 0)} / ` : '共 ' }}{{ batches.length }} 个批次
+        </span>
       </div>
-      <div v-if="!batches.length" class="empty">
+      <div v-if="batches.length && !batchGroups.length" class="empty">
+        <div class="icon">🔍</div>
+        <div>{{ batchBuFilter }} 暂无导入批次</div>
+      </div>
+      <div v-else-if="!batches.length" class="empty">
         <div class="icon">📂</div>
         <div>暂无导入记录</div>
         <div style="font-size:12px;color:var(--muted);margin-top:6px">上传金蝶导出的部门明细表，或使用KXT模板手动填报</div>
       </div>
       <div v-else class="batch-list">
-        <div v-for="b in batches" :key="b.id" class="batch-row" @contextmenu.prevent="ctx.open($event, b)">
+        <template v-for="g in batchGroups" :key="g.bu">
+        <div class="bu-group-head">
+          <strong>{{ g.bu }}</strong>
+          <span class="bu-group-n">{{ g.rows.length }} 批 · 已发布 {{ g.published }}</span>
+        </div>
+        <div v-for="b in g.rows" :key="b.id" class="batch-row" @contextmenu.prevent="ctx.open($event, b)">
           <!-- 状态灯：红灯=未提交(草稿)，绿灯=已提交(已发布) -->
           <span class="light-dot" :class="batchLight(b).cls" :title="batchLight(b).label"></span>
-          <!-- 事业部 -->
-          <strong class="br-bu">{{ b.business_unit }}</strong>
           <!-- 状态文字 -->
           <span class="br-status" :class="b.status === 'published' ? 'st-ok' : 'st-no'">{{ batchLight(b).label }}</span>
           <!-- 次要信息：年月 · 类型 · 行数 -->
@@ -319,11 +433,14 @@ onMounted(() => {
           <!-- 操作（紧凑） -->
           <span class="br-actions">
             <button v-if="b.status === 'draft' && auth.canPublish" class="btn btn-ghost btn-sm" @click="doPublish(b.id)">发布</button>
+            <button v-if="b.status === 'published' && auth.canPublish" class="btn btn-ghost btn-sm"
+              title="撤回后报表不再显示该期间数据，批次回到草稿可删除" @click="doUnpublish(b)">撤回</button>
             <button v-if="b.status === 'published' && auth.canUpload" class="btn btn-ghost btn-sm" @click="openReplace(b)">替换</button>
-            <button v-if="auth.canDelete" class="btn btn-danger btn-sm" @click="doDelete(b)">删除</button>
-            <span v-if="b.status === 'published' && !auth.canUpload && !auth.canDelete" style="color:var(--muted);font-size:12px">—</span>
+            <button v-if="auth.canDelete && (b.status === 'draft' || auth.isAdmin)" class="btn btn-danger btn-sm"
+              :title="b.status === 'published' ? '超管强删；常规路径：先撤回再删除' : ''" @click="doDelete(b)">删除</button>
           </span>
         </div>
+        </template>
       </div>
     </div>
 
@@ -381,8 +498,10 @@ onMounted(() => {
               <span>集团总部口径：将<strong>自动剔除「财务金融」部门</strong>（供应链金融属独立业务条线，其收入/成本/费用均不计入集团总部报表）。</span>
             </div>
 
-            <!-- File drop zone -->
-            <label class="up-drop" :class="{ filled: upFile }">
+            <!-- File drop zone：点击选择或直接从桌面拖入 -->
+            <label class="up-drop" :class="{ filled: upFile, dropping: upDropping }"
+              @dragover.prevent="upDropping = true" @dragleave="upDropping = false"
+              @drop.prevent="onUpDrop">
               <input type="file" accept=".xlsx,.json" @change="e => upFile = e.target.files[0]" hidden />
               <template v-if="upFile">
                 <span class="up-file-name">{{ upFile.name }}</span>
@@ -390,7 +509,7 @@ onMounted(() => {
               </template>
               <template v-else>
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                <span>点击选择部门明细表文件（.xlsx，或 .json 数组格式）</span>
+                <span>点击选择或拖入部门明细表文件（.xlsx，或 .json 数组格式）</span>
               </template>
             </label>
 
@@ -513,6 +632,7 @@ onMounted(() => {
 
     <!-- 右键上下文菜单（批次列表）-->
     <ContextMenu :ctx="ctx" :items="ctxItems" />
+    </template>
   </div>
 </template>
 
@@ -541,7 +661,7 @@ onMounted(() => {
 @media (max-width: 560px) { .fmt-guide { grid-template-columns: 1fr; } }
 .fg-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 12px; background: rgba(255,253,250,0.7); border: 1px solid var(--border); }
 .fg-ico { flex-shrink: 0; width: 46px; height: 46px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; letter-spacing: 0.02em; color: #fff; }
-.fg-xlsx { background: linear-gradient(135deg, #c96342, #e8855a); }
+.fg-xlsx { background: linear-gradient(135deg, var(--primary), #e8855a); }
 .fg-title { font-size: 14px; font-weight: 700; color: var(--text); }
 .fg-desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
@@ -556,7 +676,16 @@ onMounted(() => {
   border: 1.5px dashed rgba(201,99,66,0.35); background: rgba(201,99,66,0.03);
   color: var(--muted); font-size: 13px; transition: all .18s; text-align: center;
 }
-.up-drop:hover { border-color: var(--primary); background: rgba(201,99,66,0.06); color: var(--primary); }
+.up-drop:hover, .up-drop.dropping { border-color: var(--primary); background: rgba(201,99,66,0.06); color: var(--primary); }
+.di-tabs {
+  display: flex; gap: 4px; padding: 3px; margin-bottom: 14px;
+  background: rgba(0, 0, 0, 0.04); border-radius: 10px; width: fit-content;
+}
+.di-tab {
+  border: 0; background: none; padding: 6px 20px; font-size: 12.5px; font-weight: 600;
+  color: var(--muted); border-radius: 8px; cursor: pointer; transition: all .15s;
+}
+.di-tab.active { background: var(--card, #fff); color: var(--text); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1); }
 .up-drop.filled { border-style: solid; border-color: var(--primary); background: rgba(201,99,66,0.06); color: var(--text); }
 .hq-note {
   display: flex; align-items: flex-start; gap: 7px;
@@ -568,7 +697,7 @@ onMounted(() => {
 .hq-note strong { color: #0d4789; }
 .up-file-name { font-weight: 600; word-break: break-all; }
 .up-type-tag { flex-shrink: 0; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 10px; color: #fff; }
-.up-type-tag.pl { background: #1565c0; }
+.up-type-tag.pl { background: var(--c-info); }
 .up-type-tag.dept { background: var(--primary); }
 
 /* Warning banner */
@@ -614,8 +743,8 @@ td.amt, th.amt { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .ss-head-right { display: flex; gap: 8px; align-items: center; }
 .ss-summary { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
-.ss-summary-warn { display: inline-flex; align-items: center; gap: 5px; color: #c62828; font-weight: 600; }
-.ss-summary-ok { display: inline-flex; align-items: center; gap: 5px; color: #2e7d32; font-weight: 600; }
+.ss-summary-warn { display: inline-flex; align-items: center; gap: 5px; color: var(--c-danger); font-weight: 600; }
+.ss-summary-ok { display: inline-flex; align-items: center; gap: 5px; color: var(--c-success); font-weight: 600; }
 
 /* ── 状态灯（红=未提交 / 绿=已提交 / 黄=草稿中）─────────────────────────── */
 .light-dot {
@@ -623,8 +752,8 @@ td.amt, th.amt { text-align: right; font-variant-numeric: tabular-nums; }
   display: inline-block;
 }
 .light-red   { background: #e53935; box-shadow: 0 0 0 3px rgba(229,57,53,0.16); }
-.light-green { background: #2e7d32; box-shadow: 0 0 0 3px rgba(46,125,50,0.14); }
-.light-amber { background: #f57f17; box-shadow: 0 0 0 3px rgba(245,127,23,0.16); }
+.light-green { background: var(--c-success); box-shadow: 0 0 0 3px rgba(46,125,50,0.14); }
+.light-amber { background: var(--amber-deep); box-shadow: 0 0 0 3px rgba(245,127,23,0.16); }
 
 /* 月度提交状态：紧凑事业部灯网格 */
 .light-grid {
@@ -641,6 +770,18 @@ td.amt, th.amt { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ── 导入批次：紧凑行 ───────────────────────────────────────────────────── */
 .batch-list { display: flex; flex-direction: column; }
+.batch-bu-flt {
+  height: 26px; font-size: 11.5px; padding: 0 7px; border-radius: 7px;
+  border: 1px solid rgba(0,0,0,0.12); background: var(--row-bg); color: var(--muted);
+  margin-left: 10px; cursor: pointer;
+}
+.batch-bu-flt:hover, .batch-bu-flt:focus { color: var(--text); border-color: var(--primary); }
+.bu-group-head {
+  display: flex; align-items: baseline; gap: 10px; padding: 10px 4px 5px;
+  border-bottom: 1px solid rgba(201, 99, 66, 0.15); margin-bottom: 2px;
+}
+.bu-group-head strong { font-size: 13px; color: var(--primary); letter-spacing: 0.02em; }
+.bu-group-n { font-size: 11px; color: var(--muted); }
 .batch-row {
   display: flex; align-items: center; gap: 10px;
   padding: 7px 4px; border-bottom: 1px solid var(--border);
@@ -650,8 +791,8 @@ td.amt, th.amt { text-align: right; font-variant-numeric: tabular-nums; }
 .batch-row:hover { background: rgba(201,99,66,0.035); }
 .br-bu { font-size: 13.5px; flex-shrink: 0; }
 .br-status { font-size: 12px; font-weight: 600; flex-shrink: 0; }
-.br-status.st-ok { color: #2e7d32; }
-.br-status.st-no { color: #c62828; }
+.br-status.st-ok { color: var(--c-success); }
+.br-status.st-no { color: var(--c-danger); }
 .br-meta { font-size: 12px; color: var(--muted); flex-shrink: 0; }
 .br-type {
   font-size: 10px; padding: 1px 7px; border-radius: 8px;

@@ -244,7 +244,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           </div>
           <div class="bf-kpi risk">
             <div class="t">逾期未收</div>
-            <div class="v" :style="{ color: summary.overdue > 0 ? '#c62828' : '#2e7d32' }">{{ fmtWan(summary.overdue) }}</div>
+            <div class="v" :style="{ color: summary.overdue > 0 ? 'var(--c-danger)' : 'var(--c-success)' }">{{ fmtWan(summary.overdue) }}</div>
             <div class="s">逾期占比 {{ fmtPct(summary.overdue_rate) }}</div>
           </div>
           <div class="bf-kpi link">
@@ -292,9 +292,9 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                     <td class="l" :title="isCustomer ? r.label : r.label + '（点击看损益卡）'">{{ r.label }}</td>
                     <td v-if="!isCustomer" class="dim">{{ r.customer || '—' }}</td>
                     <td class="num">{{ fmtWan(r.revenue) }}</td>
-                    <td class="num" :style="{ color: (r.margin_rate ?? 99) < 5 ? '#e65100' : '#2e7d32' }">{{ fmtPct(r.margin_rate) }}</td>
+                    <td class="num" :style="{ color: (r.margin_rate ?? 99) < 5 ? 'var(--c-warn)' : 'var(--c-success)' }">{{ fmtPct(r.margin_rate) }}</td>
                     <td class="num">{{ fmtWan(r.outstanding) }}</td>
-                    <td class="num" :style="{ color: (r.overdue_rate ?? 0) > 30 ? '#c62828' : '#6b5a4a' }">{{ fmtPct(r.overdue_rate) }}</td>
+                    <td class="num" :style="{ color: (r.overdue_rate ?? 0) > 30 ? 'var(--c-danger)' : '#6b5a4a' }">{{ fmtPct(r.overdue_rate) }}</td>
                     <td><span class="pill" :style="{ color: tagOf(r.tag).color, borderColor: tagOf(r.tag).color + '55' }">{{ r.tag_label }}</span></td>
                   </tr>
                   <tr v-if="!rows.length"><td :colspan="isCustomer ? 6 : 7" class="empty">暂无数据</td></tr>
@@ -321,11 +321,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .bf-filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
 .bf-filters select {
   padding: 6px 10px; border: 1px solid rgba(180,140,110,.28); border-radius: 8px;
-  background: #fff; color: #5f4d3d; font-size: 13px;
+  background: var(--row-bg); color: #5f4d3d; font-size: 13px;
 }
 .seg { display: inline-flex; border: 1px solid rgba(180,140,110,.28); border-radius: 8px; overflow: hidden; }
-.seg button { padding: 6px 14px; border: none; background: #fff; color: #8a7665; font-size: 13px; cursor: pointer; }
-.seg button.on { background: linear-gradient(120deg, #c96342, #b5532f); color: #fff; }
+.seg button { padding: 6px 14px; border: none; background: var(--row-bg); color: #8a7665; font-size: 13px; cursor: pointer; }
+.seg button.on { background: linear-gradient(120deg, var(--primary), #b5532f); color: #fff; }
 .bf-hint { font-size: 11.5px; color: #9b8070; }
 .bf-notice {
   margin-bottom: 12px; padding: 9px 12px; border-radius: 10px; font-size: 12.5px; color: #8a6d3b;
@@ -339,7 +339,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .bf-kpi .v { font-size: 22px; font-weight: 800; color: #5f4d3d; margin: 2px 0; }
 .bf-kpi .s { font-size: 11px; color: #8a7665; }
 .bf-kpi.profit { border-left: 3px solid #00897b; }
-.bf-kpi.cash { border-left: 3px solid #1565c0; }
+.bf-kpi.cash { border-left: 3px solid var(--c-info); }
 .bf-kpi.risk { border-left: 3px solid #e53935; }
 .bf-kpi.link { border-left: 3px solid #9b8070; }
 
@@ -400,7 +400,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .pnl-kpi .v { font-size: 20px; font-weight: 800; color: #5f4d3d; margin: 2px 0; }
 .pnl-kpi .s { font-size: 11px; color: #8a7665; }
 .pnl-kpi.profit { border-left: 3px solid #00897b; }
-.pnl-kpi.cash { border-left: 3px solid #1565c0; }
+.pnl-kpi.cash { border-left: 3px solid var(--c-info); }
 .pnl-kpi.risk { border-left: 3px solid #e53935; }
 .pnl-block-title { font-size: 13.5px; font-weight: 700; color: #5f4d3d; margin: 6px 0 6px; }
 .pnl-block-title .tip { font-size: 11px; font-weight: 400; color: #9b8070; margin-left: 8px; }
@@ -410,8 +410,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 12.5px;
   border-left: 2px solid rgba(180,140,110,.25); padding-left: 14px; position: relative;
 }
-.flow-item .dot { position: absolute; left: -5px; width: 8px; height: 8px; border-radius: 50%; background: #2e7d32; }
+.flow-item .dot { position: absolute; left: -5px; width: 8px; height: 8px; border-radius: 50%; background: var(--c-success); }
 .flow-item .fdate { color: #6b5a4a; font-variant-numeric: tabular-nums; min-width: 88px; }
-.flow-item .famt { color: #2e7d32; font-weight: 700; min-width: 72px; }
+.flow-item .famt { color: var(--c-success); font-weight: 700; min-width: 72px; }
 .flow-item .fsrc { color: #8a7665; }
 </style>

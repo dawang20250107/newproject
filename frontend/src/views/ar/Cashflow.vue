@@ -5,12 +5,15 @@ import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import ContextMenu from '../../components/ContextMenu.vue'
+import DateRangeChips from '../../components/DateRangeChips.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useToast } from '../../composables/useToast.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { downloadBlob } from '../../utils/download.js'
 import { fmtCompact } from '../../utils/format.js'
 import { HIDE_OVERLAP } from '../../utils/chartTheme.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
+import Amt from '../../components/Amt.vue'
 
 defineProps({ embedded: { type: Boolean, default: false } })
 
@@ -72,7 +75,7 @@ const ctxItems = computed(() => {
 
 async function load() {
   if (!filters.start_date || !filters.end_date) return
-  if (filters.end_date < filters.start_date) { alert('结束日期不能早于起始日期'); return }
+  if (filters.end_date < filters.start_date) { toast.error('结束日期不能早于起始日期'); return }
   loading.value = true
   try {
     const params = {
@@ -96,6 +99,36 @@ const onScopeChange = () => {
   if (filters.dept && !accessibleDepts.value.includes(filters.dept)) filters.dept = ''
   load()
 }
+
+// 导出 Excel：与页面完全同参数（区间+部门作用域），后端同口径共用 _cashflow_payload
+// 图表下钻:点击月度图任一柱/点 → 月度明细表定位并高亮该月
+const hiYm = ref('')
+function drillMonth(p) {
+  const label = p?.name || p?.axisValueLabel
+  if (!label) return
+  // 呼吸图类目是「MM月」、桥图是步骤名，台账行 key 是「YYYY-MM」：按月份后缀映射
+  const ym = (cfData.value?.months || []).find(m => m === label || m.slice(5) + '月' === label)
+  if (!ym) return
+  hiYm.value = ym
+  requestAnimationFrame(() => {
+    document.querySelector(`[data-ym="${ym}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  })
+  setTimeout(() => { if (hiYm.value === ym) hiYm.value = '' }, 2600)
+}
+
+const exporting = ref(false)
+async function exportXlsx() {
+  if (exporting.value || !filters.start_date || !filters.end_date) return
+  exporting.value = true
+  try {
+    const params = { start_date: filters.start_date, end_date: filters.end_date }
+    if (filters.dept) params.depts = filters.dept
+    else if (accessibleDepts.value.length) params.depts = accessibleDepts.value.join(',')
+    const res = await ar.exportCashflow(params)
+    downloadBlob(res, `现金流分析_${filters.start_date}_${filters.end_date}.xlsx`)
+  } catch (e) { toast.error(e?.error || '导出失败，请重试') }
+  finally { exporting.value = false }
+}
 onMounted(() => { load(); window.addEventListener('pk:depts-changed', onScopeChange) })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 
@@ -103,6 +136,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 const totals = computed(() => cfData.value?.totals)
 const _sum = arr => (arr || []).reduce((a, b) => a + b, 0)
 const sumColl = computed(() => _sum(totals.value?.collected))
+const sumDaily = computed(() => _sum(totals.value?.daily_receipts))
 const sumPaid = computed(() => _sum(totals.value?.paid))
 const sumAdvRecv = computed(() => _sum(totals.value?.advance_received))
 const sumAdvPaid = computed(() => _sum(totals.value?.advance_paid))
@@ -158,10 +192,12 @@ const mLabels = () => (cfData.value?.months || []).map(ym => ym.slice(5) + '月'
 const bridgeOption = computed(() => {
   if (!cfData.value) return null
   const t = cfData.value.totals
-  const inflowC = _sum(t.collected), inflowA = _sum(t.advance_received)
+  const inflowC = _sum(t.collected), inflowA = _sum(t.advance_received), inflowD = _sum(t.daily_receipts)
   const outflowP = _sum(t.paid), outflowA = _sum(t.advance_paid)
   const steps = [
-    { name: '实收回款', d: inflowC }, { name: '预收款', d: inflowA },
+    { name: '实收回款', d: inflowC },
+    ...(inflowD ? [{ name: '日常收款', d: inflowD }] : []),
+    { name: '预收款', d: inflowA },
     { name: '实付付款', d: -outflowP }, { name: '预付款', d: -outflowA },
   ]
   const cats = steps.map(s => s.name).concat('期末净现金')
@@ -241,6 +277,8 @@ const breathOption = computed(() => {
       { name: '实收', type: 'bar', stack: 'in', barMaxWidth: 26, data: t.collected,
         itemStyle: { color: gradBar('#81c784', '#2e7d32') },
         markArea: alertBands.length ? { silent: true, data: alertBands } : undefined },
+      { name: '日常收款', type: 'bar', stack: 'in', barMaxWidth: 26, data: t.daily_receipts || [],
+        itemStyle: { color: gradBar('#a5d6a7', '#66bb6a') } },
       { name: '预收', type: 'bar', stack: 'in', barMaxWidth: 26, data: t.advance_received || [],
         itemStyle: { color: gradBar('#c8e6c9', '#81c784'), borderRadius: [4, 4, 0, 0] } },
       { name: '实付', type: 'bar', stack: 'out', barMaxWidth: 26, data: neg(t.paid),
@@ -312,7 +350,7 @@ const runwayOption = computed(() => {
 const deptBalanceOption = computed(() => {
   if (!showDeptComparison.value) return null
   const rows = cfData.value.by_dept.map(d => {
-    const inflow = _sum(d.collected) + _sum(d.advance_received)
+    const inflow = _sum(d.collected) + _sum(d.daily_receipts) + _sum(d.advance_received)
     const outflow = _sum(d.paid) + _sum(d.advance_paid)
     return { dept: d.dept, inflow, outflow, net: inflow - outflow }
   }).filter(r => r.inflow > 0 || r.outflow > 0)
@@ -368,17 +406,20 @@ const deptBalanceOption = computed(() => {
         </select>
       </div>
       <div class="cfb-div"></div>
-      <!-- Date range group — day precision -->
-      <div class="cfb-group">
-        <svg class="cfb-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-        <span class="cfb-lbl">区间</span>
-        <input v-model="filters.start_date" type="date" class="cfb-date" @change="load" />
-        <span class="cfb-to">至</span>
-        <input v-model="filters.end_date" type="date" class="cfb-date" @change="load" />
+      <!-- Date range group — 预设区间条 + 自定义(day precision) -->
+      <div class="cfb-group cfb-group-grow">
+        <DateRangeChips v-model:start="filters.start_date" v-model:end="filters.end_date"
+                        label="区间" initial="thismonth"
+                        :presets="['thismonth', 'lastmonth', 'thisquarter', 'lastquarter', 'halfyear', 'thisyear', 'lastyear', 'year1']"
+                        @change="load" />
       </div>
       <div v-if="loading" class="cfb-loading">
         <span class="cfb-spin">↻</span> 加载中
       </div>
+      <button class="btn btn-ghost btn-sm" :disabled="exporting || loading" @click="exportXlsx"
+              title="导出当前区间与部门范围的月度现金流与分部门明细">
+        {{ exporting ? '导出中…' : '导出' }}
+      </button>
     </div>
 
     <!-- KPI cards: 三组（收款 / 付款 / 现金流），每组 预算 → 预收/预付 → 实收/实付 -->
@@ -389,17 +430,22 @@ const deptBalanceOption = computed(() => {
         <div class="kpi-group-cards">
           <div class="ck-card ck-coll-soft">
             <div class="ck-label">收款预算</div>
-            <div class="ck-value">{{ fmtWan(sumBudgetColl) }}</div>
+            <div class="ck-value"><Amt :v="sumBudgetColl" :fmt="fmtWan" /></div>
             <div class="ck-sub">收款目标</div>
           </div>
           <div class="ck-card ck-coll-soft">
             <div class="ck-label">预收</div>
-            <div class="ck-value">{{ fmtWan(sumAdvRecv) }}</div>
+            <div class="ck-value"><Amt :v="sumAdvRecv" :fmt="fmtWan" /></div>
             <div class="ck-sub">客户预付款</div>
+          </div>
+          <div v-if="sumDaily" class="ck-card ck-coll-soft">
+            <div class="ck-label">日常收款</div>
+            <div class="ck-value"><Amt :v="sumDaily" :fmt="fmtWan" /></div>
+            <div class="ck-sub">项目收款/退款等</div>
           </div>
           <div class="ck-card ck-coll">
             <div class="ck-label">实收</div>
-            <div class="ck-value">{{ fmtWan(sumColl) }}</div>
+            <div class="ck-value"><Amt :v="sumColl" :fmt="fmtWan" /></div>
             <div class="ck-sub" v-if="collAchieve !== null">
               <span :class="collAchieve >= 100 ? 'ach-ok' : 'ach-off'">达成 {{ collAchieve.toFixed(1) }}%</span>
             </div>
@@ -413,17 +459,17 @@ const deptBalanceOption = computed(() => {
         <div class="kpi-group-cards">
           <div class="ck-card ck-pay-soft">
             <div class="ck-label">付款预算</div>
-            <div class="ck-value">{{ fmtWan(sumBudgetPaid) }}</div>
+            <div class="ck-value"><Amt :v="sumBudgetPaid" :fmt="fmtWan" /></div>
             <div class="ck-sub">付款目标</div>
           </div>
           <div class="ck-card ck-pay-soft">
             <div class="ck-label">预付</div>
-            <div class="ck-value">{{ fmtWan(sumAdvPaid) }}</div>
+            <div class="ck-value"><Amt :v="sumAdvPaid" :fmt="fmtWan" /></div>
             <div class="ck-sub">付供应商</div>
           </div>
           <div class="ck-card ck-pay">
             <div class="ck-label">实付</div>
-            <div class="ck-value">{{ fmtWan(sumPaid) }}</div>
+            <div class="ck-value"><Amt :v="sumPaid" :fmt="fmtWan" /></div>
             <div class="ck-sub" v-if="payAchieve !== null">
               <span :class="payAchieve >= 100 ? 'ach-ok' : 'ach-off'">达成 {{ payAchieve.toFixed(1) }}%</span>
             </div>
@@ -438,14 +484,14 @@ const deptBalanceOption = computed(() => {
           <div class="ck-card" :class="netTotal >= 0 ? 'ck-net-pos' : 'ck-net-neg'">
             <div class="ck-label">净现金流</div>
             <div class="ck-value" :class="netTotal >= 0 ? 'v-pos' : 'v-neg'">
-              {{ netTotal >= 0 ? '+' : '' }}{{ fmtWan(netTotal) }}
+              {{ netTotal >= 0 ? '+' : '' }}<Amt :v="netTotal" :fmt="fmtWan" />
             </div>
             <div class="ck-sub">流入 − 流出</div>
           </div>
           <div class="ck-card" :class="endCumulative >= 0 ? 'ck-net-pos' : 'ck-net-neg'">
             <div class="ck-label">期末累计</div>
             <div class="ck-value" :class="endCumulative >= 0 ? 'v-pos' : 'v-neg'">
-              {{ endCumulative >= 0 ? '+' : '' }}{{ fmtWan(endCumulative) }}
+              {{ endCumulative >= 0 ? '+' : '' }}<Amt :v="endCumulative" :fmt="fmtWan" />
             </div>
             <div class="ck-sub">资金池终值</div>
           </div>
@@ -460,7 +506,7 @@ const deptBalanceOption = computed(() => {
         <div class="section-title">现金流量桥
           <span class="section-sub">实收 + 预收 − 实付 − 预付 = 期末净现金</span>
         </div>
-        <BaseChart v-if="bridgeOption" :option="bridgeOption" height="300px" />
+        <BaseChart v-if="bridgeOption" :option="bridgeOption" height="300px" @click="drillMonth" />
         <div v-else class="chart-empty">{{ loading ? '加载中…' : '暂无数据' }}</div>
       </div>
 
@@ -469,7 +515,7 @@ const deptBalanceOption = computed(() => {
         <div class="section-title">现金呼吸图
           <span class="section-sub">上方流入 · 下方流出 · 蓝线为月净额 · 红带=当月入不敷出</span>
         </div>
-        <BaseChart v-if="breathOption" :option="breathOption" height="340px" />
+        <BaseChart v-if="breathOption" :option="breathOption" height="340px" @click="drillMonth" />
         <div v-else class="chart-empty">{{ loading ? '加载中…' : '暂无数据' }}</div>
       </div>
 
@@ -508,8 +554,8 @@ const deptBalanceOption = computed(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(ym, i) in cfData.months" :key="ym"
-                :class="{ 'row-alert': cfData.totals.outflow[i] > cfData.totals.inflow[i] && cfData.totals.inflow[i] > 0 }"
+            <tr v-for="(ym, i) in cfData.months" :key="ym" :data-ym="ym"
+                :class="{ 'row-alert': cfData.totals.outflow[i] > cfData.totals.inflow[i] && cfData.totals.inflow[i] > 0, 'row-drill': hiYm === ym }"
                 @contextmenu.prevent="ctx.open($event, { ym, collected: cfData.totals.collected[i], paid: cfData.totals.paid[i], budget_collection: cfData.totals.budget_collection[i], budget_payment: cfData.totals.budget_payment[i], net: cfData.totals.net[i], cumulative_net: cfData.totals.cumulative_net[i] })">
               <td class="fw">{{ ym }}</td>
               <td class="amt text-coll">{{ fmtWan(cfData.totals.collected[i]) }}</td>
@@ -544,17 +590,19 @@ const deptBalanceOption = computed(() => {
   flex-wrap: nowrap; overflow-x: auto;
 }
 .cfb-group { display: flex; align-items: center; gap: 7px; padding: 5px 10px; }
+.cfb-group-grow { flex: 1; min-width: 0; }
 .cfb-icon  { color: var(--muted); flex-shrink: 0; }
 .cfb-lbl   { font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap; }
 .cfb-div   { width: 1px; height: 24px; background: var(--border); margin: 0 4px; flex-shrink: 0; }
 .cfb-sel, .cfb-date {
   height: 30px; padding: 0 10px; border: 1px solid transparent;
-  background: var(--surface-tint); border-radius: var(--radius-xs);
+  background-color: var(--surface-tint); border-radius: var(--radius-xs);
   font-size: 12.5px; color: var(--text); cursor: pointer; outline: none;
   transition: background .15s, color .15s, border-color .15s, box-shadow .15s;
 }
+.cfb-sel { padding-right: 28px; }   /* 给全局自定义 caret 留位 */
 .cfb-sel:hover, .cfb-sel:focus, .cfb-date:hover, .cfb-date:focus {
-  background: color-mix(in srgb, var(--primary) 9%, transparent);
+  background-color: color-mix(in srgb, var(--primary) 9%, transparent);
   color: var(--primary); border-color: var(--border-strong);
 }
 .cfb-sel:focus, .cfb-date:focus { box-shadow: 0 0 0 3px var(--primary-glow); }
@@ -638,4 +686,5 @@ const deptBalanceOption = computed(() => {
 .text-pay    { color: var(--c-warn); }
 .text-danger { color: var(--c-danger); font-weight: 600; }
 .text-ok     { color: var(--c-success); font-weight: 600; }
+.row-drill { background: rgba(201,99,66,.14) !important; transition: background .4s; }
 </style>

@@ -119,36 +119,36 @@ function apply(mode) {
 .pc-summary { display: flex; gap: 16px; align-items: center; padding: 10px 2px 14px; flex-wrap: wrap; }
 .pc-stat { font-size: 13px; color: var(--muted); }
 .pc-stat b { font-size: 18px; color: var(--text); margin: 0 2px; }
-.pc-stat.ok b { color: #2e7d32; }
-.pc-stat.bad b { color: #c62828; }
-.pc-stat.warn b { color: #e65100; }
-.pc-stat.ai b { color: #1565c0; }
+.pc-stat.ok b { color: var(--c-success); }
+.pc-stat.bad b { color: var(--c-danger); }
+.pc-stat.warn b { color: var(--c-warn); }
+.pc-stat.ai b { color: var(--c-info); }
 .pc-ai-off { font-size: 11.5px; color: var(--muted); background: rgba(0,0,0,.05); padding: 3px 9px; border-radius: 8px; }
 .pc-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 2px; }
-.pc-allok { text-align: center; color: #2e7d32; font-size: 14px; padding: 28px 8px; }
+.pc-allok { text-align: center; color: var(--c-success); font-size: 14px; padding: 28px 8px; }
 .pc-row { border: 1px solid var(--border); border-radius: 12px; padding: 11px 13px; background: rgba(255,253,250,.6); }
 .pc-row.error { border-color: rgba(198,40,40,.35); background: rgba(198,40,40,.04); }
 .pc-row.warn { border-color: rgba(230,81,0,.4); background: rgba(245,127,23,.05); }
 .pc-row-head { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; flex-wrap: wrap; }
 .pc-rn { font-size: 12px; font-weight: 700; color: var(--muted); }
 .pc-tag { font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 8px; }
-.pc-tag-error { color: #c62828; background: rgba(198,40,40,.1); }
-.pc-tag-warn { color: #e65100; background: rgba(245,127,23,.12); }
-.pc-tag-review { color: #1565c0; background: rgba(21,101,192,.1); }
+.pc-tag-error { color: var(--c-danger); background: rgba(198,40,40,.1); }
+.pc-tag-warn { color: var(--c-warn); background: rgba(245,127,23,.12); }
+.pc-tag-review { color: var(--c-info); background: rgba(21,101,192,.1); }
 .pc-fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 12px; }
 .pc-fields label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
 .pc-fields label.wide { grid-column: 1 / -1; }
-.pc-fields input { border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; font-size: 13px; color: var(--text); background: #fff; }
+.pc-fields input { border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; font-size: 13px; color: var(--text); background: var(--row-bg); }
 .pc-fields input:focus { border-color: var(--primary); outline: none; }
 .pc-ro-val { border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; font-size: 13px; color: var(--text); background: #f7f5f3; display: block; }
 .pc-ai-list { margin-top: 9px; display: flex; flex-direction: column; gap: 5px; }
 .pc-ai { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 6px 9px; border-radius: 8px; background: rgba(21,101,192,.06); }
 .pc-ai.high { background: rgba(198,40,40,.08); }
-.pc-ai-sev { flex-shrink: 0; font-size: 10.5px; font-weight: 700; color: #1565c0; background: rgba(21,101,192,.12); padding: 1px 7px; border-radius: 7px; }
-.pc-ai.high .pc-ai-sev { color: #c62828; background: rgba(198,40,40,.14); }
+.pc-ai-sev { flex-shrink: 0; font-size: 10.5px; font-weight: 700; color: var(--c-info); background: rgba(21,101,192,.12); padding: 1px 7px; border-radius: 7px; }
+.pc-ai.high .pc-ai-sev { color: var(--c-danger); background: rgba(198,40,40,.14); }
 .pc-ai-txt { flex: 1; color: #4a4030; line-height: 1.5; }
 .pc-ai-txt i { color: var(--muted); font-style: normal; }
-.pc-adopt { flex-shrink: 0; border: 1px solid var(--primary); background: #fff; color: var(--primary); border-radius: 7px; font-size: 11.5px; font-weight: 600; padding: 3px 11px; cursor: pointer; }
+.pc-adopt { flex-shrink: 0; border: 1px solid var(--primary); background: var(--row-bg); color: var(--primary); border-radius: 7px; font-size: 11.5px; font-weight: 600; padding: 3px 11px; cursor: pointer; }
 .pc-adopt:hover { background: rgba(201,99,66,.08); }
 .pc-overflow { text-align: center; font-size: 12px; color: #b35309; background: rgba(245,127,23,.08); border: 1px dashed rgba(245,127,23,.4); border-radius: 10px; padding: 10px; }
 .pc-footer { display: flex; align-items: center; gap: 10px; }

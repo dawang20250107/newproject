@@ -1,7 +1,18 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import api from '../api/index.js'
 import EmptyState from '../components/EmptyState.vue'
+import { useAuthStore } from '../stores/auth.js'
+
+const router = useRouter()
+const auth = useAuthStore()
+// 以当前选中职务的「生效权限」临时预览界面（数据仍按超管本人权限返回）
+function previewRole() {
+  if (!current.value) return
+  auth.startPreview(current.value.label, current.value.config)
+  router.push('/dashboard')
+}
 
 const loading = ref(true)
 const saving = ref(false)
@@ -129,6 +140,10 @@ async function save() {
           按职务精确控制：页面访问 · 字段查看 · 字段编辑 · 新增 / 删除
         </div>
       </div>
+      <button class="btn btn-ghost btn-sm" :disabled="!current" @click="previewRole"
+              title="以该职务的界面权限临时浏览系统（页面/按钮/字段显隐即时生效；数据仍按您本人权限返回），顶部横幅可随时退出">
+        👁 预览此职务视角
+      </button>
     </div>
 
     <EmptyState v-if="loading" loading />
@@ -352,10 +367,10 @@ async function save() {
   color: var(--primary); font-weight: 600;
 }
 .perm-chip.on .dot { background: var(--primary); box-shadow: 0 0 8px rgba(201,99,66,0.5); }
-.perm-chip.danger.on { border-color: #c62828; background: rgba(198,40,40,0.08); color: #c62828; }
-.perm-chip.danger.on .dot { background: #c62828; box-shadow: 0 0 8px rgba(198,40,40,0.5); }
-.perm-chip.alt.on { border-color: #1565c0; background: rgba(21,101,192,0.08); color: #1565c0; }
-.perm-chip.alt.on .dot { background: #1565c0; box-shadow: 0 0 8px rgba(21,101,192,0.5); }
+.perm-chip.danger.on { border-color: var(--c-danger); background: rgba(198,40,40,0.08); color: var(--c-danger); }
+.perm-chip.danger.on .dot { background: var(--c-danger); box-shadow: 0 0 8px rgba(198,40,40,0.5); }
+.perm-chip.alt.on { border-color: var(--c-info); background: rgba(21,101,192,0.08); color: var(--c-info); }
+.perm-chip.alt.on .dot { background: var(--c-info); box-shadow: 0 0 8px rgba(21,101,192,0.5); }
 
 .perm-table { width: 100%; }
 /* sticky header while card scrolls (fixed-viewport layout) */
@@ -372,7 +387,7 @@ async function save() {
 .mini:hover { border-color: var(--primary); color: var(--primary); }
 .cb { width: 18px; height: 18px; accent-color: var(--primary); cursor: pointer; }
 
-.saved-tag { color: #2e7d32; font-size: 13px; font-weight: 600; }
+.saved-tag { color: var(--c-success); font-size: 13px; font-weight: 600; }
 .save-spin {
   width: 12px; height: 12px; border-radius: 50%;
   border: 2px solid rgba(255,255,255,0.4); border-top-color: white;
@@ -385,6 +400,6 @@ async function save() {
 .hint-card {
   margin-top: 16px; padding: 14px 18px; border-radius: 12px;
   background: rgba(21,101,192,0.06); border: 1px solid rgba(21,101,192,0.15);
-  font-size: 12.5px; color: #1565c0; line-height: 1.7;
+  font-size: 12.5px; color: var(--c-info); line-height: 1.7;
 }
 </style>

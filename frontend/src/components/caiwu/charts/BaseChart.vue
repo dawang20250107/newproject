@@ -23,17 +23,21 @@ const chartEl = ref(null)
 let instance = null
 let resizeObserver = null
 
+const withBase = (opt) => ({ ...opt, animation: false })
+
 function initChart() {
   if (!chartEl.value) return
+  resizeObserver?.disconnect()
+  instance?.dispose()
   instance = echarts.init(chartEl.value, null, { renderer: 'canvas' })
   // 关闭入场动画：低配设备上图表渲染更轻快（非侵入，不改传入 option）
-  instance.setOption({ ...props.option, animation: false })
+  instance.setOption(withBase(props.option))
   resizeObserver = new ResizeObserver(() => instance?.resize())
   resizeObserver.observe(chartEl.value)
 }
 
 watch(() => props.option, (val) => {
-  if (instance) instance.setOption({ ...val, animation: false }, { notMerge: true })
+  if (instance) instance.setOption(withBase(val), { notMerge: true })
 }, { deep: true })
 
 onMounted(initChart)

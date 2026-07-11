@@ -41,14 +41,19 @@ def _generate_thumb(src_abs, thumb_abs):
 def _get_record_or_403(request, pk):
     """Return (record, err_response). Handles 404 + dept access check."""
     try:
-        rec = ARRecord.objects.only(
-            'id', 'delivery_dept', 'activity_count', 'attachment_count'
+        rec = ARRecord.objects.select_related('project').only(
+            'id', 'delivery_dept', 'activity_count', 'attachment_count',
+            'project__is_shared'
         ).get(pk=pk)
     except ARRecord.DoesNotExist:
         return None, err('记录不存在', 404)
     if request.pk_role != 'super_admin':
         if rec.delivery_dept not in request.pk_depts:
             return None, err('无权访问', 403)
+    # 共享受限用户只能触达共享项目的记录动态/附件（与回款/调整同口径）
+    _perms = get_request_perms(request)
+    if _perms and _perms.get('ar_shared_only') and not (rec.project and rec.project.is_shared):
+        return None, err('无权访问', 403)
     return rec, None
 
 
@@ -224,6 +229,11 @@ def ar_attachment_list(request, pk):
     if stage not in dict(ARActivity.STAGE_CHOICES):
         stage = 'general'
     activity_id = request.POST.get('activity_id') or None
+    if activity_id is not None:
+        # 校验为数字且确属本记录的动态：否则非数字 500、或被挂到别的记录动态上
+        if not str(activity_id).isdigit() or not ARActivity.objects.filter(
+                pk=activity_id, ar_record_id=pk).exists():
+            activity_id = None
 
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
     mime_type = mimetypes.guess_type(original_name)[0] or 'application/octet-stream'
@@ -377,7 +387,8 @@ def ar_record_quick_edit(request, pk):
     if not updated:
         return err('没有可更新的字段')
     # Use update() to avoid triggering full save/recompute
-    ARRecord.objects.filter(pk=pk).update(**{k: getattr(rec, k) for k in updated})
+    # .update() 绕过 auto_now，须显式刷新 updated_at，否则修改痕迹不更新
+    ARRecord.objects.filter(pk=pk).update(updated_at=timezone.now(), **{k: getattr(rec, k) for k in updated})
     return ok(updated)
 
 

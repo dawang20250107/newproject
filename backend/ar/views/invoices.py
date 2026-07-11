@@ -21,7 +21,7 @@ def ar_invoice_batches(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
     qs = _apply_record_filters(qs, request)
     qs = _apply_conditions(qs, request, today)
@@ -242,7 +242,10 @@ def ar_invoice_batch_invoice(request, batch_no):
             diff_alloc_total = sum(a for r, a in plan if r.project.invoice_mode == '差额')
             for r, alloc in plan:
                 r.actual_invoice_amount = (r.actual_invoice_amount or Decimal('0')) + alloc
-                r.invoice_date = inv_date
+                # 开票日期保留「首次开票日」:票后等待期(post_invoice_status)按 invoice_date
+                # 实时推算,二次开票覆写会把首开日冲掉、系统性延后票后逾期判定
+                if not r.invoice_date:
+                    r.invoice_date = inv_date
                 if (manual_tax is not None and r.project.invoice_mode == '差额'
                         and diff_alloc_total > 0):
                     share = (manual_tax * alloc / diff_alloc_total).quantize(Decimal('0.01'))
@@ -289,18 +292,42 @@ def ar_invoice_batch_invoice_undo(request, batch_no):
     if denied:
         return denied
     data = _parse_body(request)
-    try:
-        ev = BatchInvoiceEvent.objects.get(pk=int(data.get('event_id') or 0),
-                                           batch_no=batch_no)
-    except (BatchInvoiceEvent.DoesNotExist, ValueError, TypeError):
-        return err('开票事件不存在（可能已撤销）', 404)
-
     member_ids = set(_batch_members_qs(request, batch_no).values_list('id', flat=True))
     if not member_ids:
         return err('批次不存在或无权访问', 404)
-    diff_total = sum(Decimal(a['amount']) for a in ev.allocations or [])
+    # dry-run 预览：不落库，返回将回退的每条记录+前后开票金额，供确认弹窗核对
+    if data.get('preview') in (True, 'true', '1', 1):
+        ev = BatchInvoiceEvent.objects.filter(pk=int(data.get('event_id') or 0), batch_no=batch_no).first()
+        if not ev:
+            return err('开票事件不存在（可能已撤销）', 404)
+        _cur = dict(ARRecord.objects.filter(pk__in=[a['record_id'] for a in (ev.allocations or [])])
+                    .values_list('id', 'actual_invoice_amount'))
+        prows = []
+        for a in (ev.allocations or []):
+            before = float(_cur.get(a['record_id']) or 0)
+            revert = float(a['amount'])
+            prows.append({'short_name': a.get('short_name') or '', 'revert': revert,
+                          'before': before, 'after': max(0.0, round(before - revert, 2))})
+        return ok({'preview': True, 'rows': prows, 'count': len(prows),
+                   'total_revert': round(sum(x['revert'] for x in prows), 2),
+                   'tax_revert': float(ev.tax_amount or 0)})
     try:
         with transaction.atomic():
+            # 锁事件行:两个并发撤销同一事件时第二个在此拿不到行(已删)→404,
+            # 防止回退被执行两次(开票额被双倍扣减)
+            try:
+                ev = (BatchInvoiceEvent.objects.select_for_update()
+                      .get(pk=int(data.get('event_id') or 0), batch_no=batch_no))
+            except (BatchInvoiceEvent.DoesNotExist, ValueError, TypeError):
+                return err('开票事件不存在（可能已撤销）', 404)
+            # 撤销税额回退分母须与开票时一致：只累计「差额模式」记录的分摊额。
+            # 此前用全部分摊额作分母，混批(全额+差额)时回退不足、残留税额
+            _alloc_list = ev.allocations or []
+            _mode_map = dict(ARRecord.objects.filter(
+                pk__in=[a['record_id'] for a in _alloc_list]
+            ).values_list('id', 'project__invoice_mode'))
+            diff_total = sum(Decimal(a['amount']) for a in _alloc_list
+                             if _mode_map.get(a['record_id']) == '差额')
             for a in (ev.allocations or []):
                 rid, amt = a['record_id'], Decimal(a['amount'])
                 if rid not in member_ids:
@@ -361,8 +388,24 @@ def ar_invoice_batch_payment(request, batch_no):
     pay_date = _normalize_date(data.get('payment_date'))
     if not pay_date:
         return err('回款日期无效（格式 2026-01-20）')
+    # 回款是已发生的现金事件:未来日期会让当期回款/现金流/账龄被提前美化
+    if datetime.date.fromisoformat(str(pay_date)[:10]) > timezone.localdate():
+        return err('回款日期不能晚于今天——回款以实际收款日入账')
     user_notes = (data.get('notes') or '').strip()
+    method = (data.get('method') or ARPayment.DEFAULT_METHOD).strip()
+    if method not in ARPayment.METHOD_VALUES:
+        return err('回款方式无效（现金/微信/银行转账/承兑汇票）')
+    account = (data.get('account') or '').strip()[:50]
+    draft_status = ''
+    if method == ARPayment.DRAFT_METHOD:
+        draft_status = (data.get('draft_status') or ARPayment.DEFAULT_DRAFT_STATUS).strip()
+        if draft_status not in ARPayment.DRAFT_STATUS_VALUES:
+            return err('承兑状态无效（未承兑/已承兑）')
 
+    # 多收自动转预收：一张发票到一笔钱、金额>批次未收时,超出部分按客户建预收记录,
+    # 不再要求财务手工拆两笔录入(超出部分是真实到账现金,预收在 occur_date 计现金流入)
+    overflow_to_advance = bool(data.get('overflow_to_advance'))
+    advance_created = None
     with transaction.atomic():
         members = list(_batch_members_qs(request, batch_no).select_for_update())
         if not members:
@@ -371,10 +414,32 @@ def ar_invoice_batch_payment(request, batch_no):
         total_outstanding = sum(r.outstanding_amount for r in open_recs)
         if not open_recs:
             return err('该批次已全部回款结清，无未收余额可分摊')
-        if amount > total_outstanding:
+        overflow = amount - total_outstanding
+        if overflow > 0 and not overflow_to_advance:
             return err(f'回款金额 {amount} 超过批次未收合计 {total_outstanding}。'
-                       f'请按 {total_outstanding} 录入本批次回款，'
-                       f'超出的 {amount - total_outstanding} 元到「预收预付」录入为该客户预收款')
+                       f'可勾选「超出部分自动转预收」一键处理（超出 {overflow} 元将按客户'
+                       f'建为预收款），或按 {total_outstanding} 录入本批次回款', 409, 409)
+        if overflow > 0:
+            # 归属客户须唯一：多客户批次无法确定预收挂谁，拒绝并提示手工处理
+            custs = {(r.project.customer_name or '').strip() for r in open_recs if r.project_id}
+            custs.discard('')
+            if len(custs) != 1:
+                return err('批次内客户不唯一，超出部分无法自动建预收；'
+                           '请按批次未收金额录入回款，超出部分到「预收预付」手工录入')
+            cust = next(iter(custs))
+            dept0 = open_recs[0].delivery_dept
+            pd_d = datetime.date.fromisoformat(str(pay_date)[:10])
+            advance_created = AdvanceRecord.objects.create(
+                direction='预收', delivery_dept=dept0, counterparty=cust,
+                occur_year=pd_d.year, occur_month=pd_d.month, occur_date=pd_d,
+                advance_amount=overflow,
+                notes=f'批次回款[{batch_no}]多收自动转预收（到账 {amount}，冲应收 {total_outstanding}）')
+            # 预收总额是派生列（signals 按收付明细之和重算）：与 _advance_create 一致，
+            # 必须同步生成首笔明细，否则该预收在明细口径下总额为 0、后续追加即被冲掉
+            AdvanceInstallment.objects.create(
+                advance_record=advance_created, install_no=1, amount=overflow,
+                occur_date=pd_d, notes='批次回款多收转预收')
+            amount = total_outstanding   # 分摊部分只冲到未收合计
 
         remaining = amount
         allocations = []
@@ -389,7 +454,8 @@ def ar_invoice_batch_payment(request, batch_no):
             last = r.payments.order_by('-payment_no').first()
             ARPayment.objects.create(
                 ar_record=r, payment_no=(last.payment_no + 1) if last else 1,
-                amount=alloc, payment_date=pay_date, notes=note)
+                amount=alloc, payment_date=pay_date, method=method, account=account,
+                draft_status=draft_status, notes=note)
             r.refresh_from_db()
             allocations.append({
                 'record_id': r.id, 'short_name': r.project.short_name,
@@ -399,10 +465,15 @@ def ar_invoice_batch_payment(request, batch_no):
             remaining -= alloc
 
     settled = sum(1 for a in allocations if Decimal(a['outstanding_after']) <= 0)
+    msg = (f'批次「{batch_no}」回款 {amount} 已按运作日期先进先出分摊到 '
+           f'{len(allocations)} 条记录（{settled} 条就此结清）')
+    if advance_created is not None:
+        msg += f'；多收 {advance_created.advance_amount} 已自动建为「{advance_created.counterparty}」的预收款'
     return ok({
         'batch_no': batch_no, 'amount': str(amount), 'allocations': allocations,
-        'message': (f'批次「{batch_no}」回款 {amount} 已按运作日期先进先出分摊到 '
-                    f'{len(allocations)} 条记录（{settled} 条就此结清）'),
+        'advance_id': advance_created.id if advance_created else None,
+        'advance_amount': str(advance_created.advance_amount) if advance_created else None,
+        'message': msg,
     })
 
 
@@ -417,10 +488,17 @@ def _gen_batch_no(qs):
         if n:
             names.add(n)
     base = (list(names)[0][:8] if len(names) == 1 else '多户') or '开票'
-    prefix = f'{base}-{datetime.date.today().strftime("%y%m%d")}'
-    seq = ARRecord.objects.filter(invoice_batch_no__startswith=prefix)\
-        .values('invoice_batch_no').distinct().count() + 1
-    return f'{prefix}-{seq:02d}'
+    prefix = f'{base}-{timezone.localdate().strftime("%y%m%d")}'
+    # 取现存同前缀批次号的最大序号 +1（而非计数 +1）：批次被取消/改名后计数会
+    # 与现存号撞车，把新记录静默并进旧批次、打乱其开票金额分摊。解析 -NN 后缀取 max
+    existing = (ARRecord.objects.filter(invoice_batch_no__startswith=f'{prefix}-')
+                .values_list('invoice_batch_no', flat=True).distinct())
+    max_seq = 0
+    for bn in existing:
+        tail = bn.rsplit('-', 1)[-1]
+        if tail.isdigit():
+            max_seq = max(max_seq, int(tail))
+    return f'{prefix}-{max_seq + 1:02d}'
 
 
 @csrf_exempt
@@ -465,6 +543,11 @@ def ar_invoice_batch_payment_undo(request, batch_no):
         if p.source == '预收抵扣':
             return err(f'回款 #{p.id} 为预收抵扣，请走「撤销核销」')
     total = sum(p.amount or Decimal('0') for p in pays)
+    if data.get('preview') in (True, 'true', '1', 1):
+        prows = [{'record_id': p.ar_record_id, 'amount': float(p.amount or 0),
+                  'pay_date': str(p.payment_date), 'method': p.method or ''} for p in pays]
+        return ok({'preview': True, 'rows': prows, 'count': len(prows),
+                   'total_revert': float(total)})
     with transaction.atomic():
         ARPayment.objects.filter(pk__in=ids).delete()
     return ok({'undone': len(pays), 'total': str(total),
@@ -497,11 +580,21 @@ def ar_records_batch_assign(request):
     ids = data.get('ids')
 
     if all_flag:
-        today = datetime.date.today()
+        today = timezone.localdate()
         qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
         qs = _apply_record_filters(qs, request)
         qs = _apply_record_state_filters(qs, request, today)
         qs = _apply_conditions(qs, request, today)
+        # 与 bulk_delete 同口径补 Excel 列头筛选 filters：否则「全选打批次」范围
+        # 会大于所见列表，未被筛中的记录被并入批次、后续开票金额按 FIFO 摊错。
+        # 局部导入：这两个名字定义在 records 域，不在本模块 _common 基座里
+        from paikuan.list_filters import build_filter_q
+        from .records import ARRECORD_FILTER_REGISTRY
+        _fq, _fq_distinct = build_filter_q(request.GET.get('filters', ''), ARRECORD_FILTER_REGISTRY)
+        if _fq:
+            qs = qs.filter(_fq)
+            if _fq_distinct:
+                qs = qs.distinct()
         if qs.count() > 5000:
             return err('选中记录超过5000条，请缩小筛选范围后再批量操作')
     else:
@@ -514,6 +607,20 @@ def ar_records_batch_assign(request):
 
     if auto and not batch_no:
         batch_no = _gen_batch_no(qs)
+
+    # 改号/清号守护:目标记录当前所属批次若已有开票事件或批次回款,脱离批次会让这些
+    # 事件孤儿化(撤销时按批次找不到成员 → 永久无法撤销、历史断链)。须先撤销事件。
+    old_batches = {b for b in qs.exclude(invoice_batch_no='')
+                   .exclude(invoice_batch_no=batch_no)
+                   .values_list('invoice_batch_no', flat=True).distinct()}
+    if old_batches:
+        locked = {b for b in old_batches
+                  if BatchInvoiceEvent.objects.filter(batch_no=b).exists()
+                  or ARPayment.objects.filter(notes__startswith=f'批次回款[{b}]').exists()}
+        if locked:
+            return err(f'批次「{"、".join(sorted(locked))}」已有开票或批次回款事件，'
+                       f'成员记录不能改挂/脱离批次（否则历史事件无法撤销）；'
+                       f'请先在批次详情撤销相关事件', 409, 409)
     updated = qs.update(invoice_batch_no=batch_no)
 
     action = f'设置批次号为「{batch_no}」' if batch_no else '清空批次号'

@@ -1,4 +1,5 @@
 <script setup>
+import { confirmDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS } from '../../constants.js'
@@ -7,6 +8,7 @@ import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import { useToast } from '../../composables/useToast.js'
+import { useModalEsc } from '../../composables/useModalEsc.js'
 
 const auth = useAuthStore()
 const toast = useToast()
@@ -29,6 +31,7 @@ const form = reactive({
 const parties = ref([])
 // 关联项目：[{project_id, project_no, short_name, is_primary}]
 const projects = ref([])
+const detailLoadFailed = ref(false)   // 编辑时关联明细是否加载失败
 
 // 客户池（一次性加载，供下拉添加）
 const customers = ref([])
@@ -129,6 +132,7 @@ async function openEdit(item) {
   parties.value = []
   projects.value = []
   projQuery.value = ''; projResults.value = []
+  detailLoadFailed.value = false
   showModal.value = true
   // 拉取关联明细
   try {
@@ -140,11 +144,12 @@ async function openEdit(item) {
     projects.value = (d.projects || []).map(p => ({
       project_id: p.project_id, project_no: p.project_no,
       short_name: p.short_name, is_primary: p.is_primary }))
-  } catch { /* 保持空 */ }
+  } catch { detailLoadFailed.value = true }   // 明细拉取失败：标记以阻止空数组误覆盖
 }
 
 async function save() {
-  if (!form.name.trim()) { alert('请填写合同名称'); return }
+  if (!form.name.trim()) { toast.error('请填写合同名称'); return }
+  if (detailLoadFailed.value) { toast.error('关联明细加载失败，请关闭后重新打开再保存，以免清空既有客户/项目关联'); return }
   saving.value = true
   try {
     const payload = {
@@ -165,14 +170,14 @@ async function save() {
     showModal.value = false
     load(editItem.value ? false : true)
   } catch (e) {
-    alert(e?.msg || e?.error || '保存失败，请检查必填项与部门权限')
+    toast.error(e?.msg || e?.error || '保存失败，请检查必填项与部门权限')
   } finally { saving.value = false }
 }
 
 async function remove(item) {
-  if (!confirm(`确定删除合同「${item.name}」？\n（仅删除合同及其关联关系，不影响客户与项目本体）`)) return
+  if (!(await confirmDlg(`确定删除合同「${item.name}」？\n（仅删除合同及其关联关系，不影响客户与项目本体）`))) return
   try { await ar.deleteContract(item.id); load() }
-  catch (e) { alert(e?.msg || '删除失败') }
+  catch (e) { toast.error(e?.msg || '删除失败') }
 }
 
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
@@ -225,6 +230,8 @@ const onScopeChange = () => {
   page.value = 1
   load()
 }
+useModalEsc([() => showModal.value, () => (showModal.value = false)])
+
 onMounted(() => {
   load(); loadCustomers()
   window.addEventListener('pk:depts-changed', onScopeChange)
@@ -397,7 +404,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .ct-table { width: 100%; font-size: 12.5px; }
 .ct-table th { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 9px 12px; background: rgba(0,0,0,0.025); border-bottom: 1px solid rgba(0,0,0,0.06); white-space: nowrap; }
 /* 固定视口：表头吸顶，仅表体内部滚动（用不透明色，避免滚动内容透出） */
-.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f5f2ee; }
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 .ct-table td { padding: 9px 12px; vertical-align: middle; }
 .ct-table .data-row:hover { background: rgba(201,99,66,0.04); }
 .ct-table .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.035); }
@@ -405,7 +412,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .empty-cell { padding: 44px !important; text-align: center; color: var(--muted); }
 .mono { font-family: monospace; font-size: 11.5px; }
 .dept-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; background: rgba(201,99,66,0.1); color: var(--primary); font-weight: 600; white-space: nowrap; }
-.cnt-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; background: rgba(21,101,192,0.1); color: #1565c0; font-weight: 700; }
+.cnt-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; background: rgba(21,101,192,0.1); color: var(--c-info); font-weight: 700; }
 .text-muted { color: var(--muted); }
 .text-sm { font-size: 12px; }
 .ctr { text-align: center; }
@@ -413,7 +420,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .row-actions { display: flex; gap: 4px; justify-content: center; }
 .icon-btn { padding: 4px 10px; border-radius: 7px; border: 1px solid var(--border); background: rgba(255,252,250,0.7); color: var(--muted); cursor: pointer; font-size: 12px; }
 .icon-btn:hover { border-color: var(--primary); color: var(--primary); }
-.icon-btn-danger:hover { border-color: #c62828; color: #c62828; }
+.icon-btn-danger:hover { border-color: var(--c-danger); color: var(--c-danger); }
 
 .pagination { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 16px 0 4px; flex-shrink: 0; }
 .page-btn { padding: 5px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,252,250,0.7); font-size: 13px; cursor: pointer; }
@@ -426,7 +433,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .link-title { font-weight: 700; font-size: 13px; color: var(--text); }
 .link-sub { font-size: 11.5px; color: var(--muted); }
 .add-row { display: flex; gap: 8px; margin-bottom: 8px; }
-.add-sel { flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; background: #fff; }
+.add-sel { flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; background: var(--row-bg); }
 .link-empty { font-size: 12px; color: var(--muted); padding: 6px 0; }
 .link-chip { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; background: rgba(255,255,255,0.6); flex-wrap: wrap; }
 .chip-name { font-weight: 600; font-size: 12.5px; }
@@ -434,7 +441,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .chip-share { width: 72px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
 .chip-primary { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 3px; }
 .chip-x { margin-left: auto; width: 20px; height: 20px; border: none; border-radius: 50%; background: rgba(0,0,0,0.06); color: var(--muted); cursor: pointer; font-size: 11px; }
-.chip-x:hover { background: rgba(198,40,40,0.12); color: #c62828; }
+.chip-x:hover { background: rgba(198,40,40,0.12); color: var(--c-danger); }
 .proj-results { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; max-height: 180px; overflow: auto; }
 .proj-result { padding: 7px 10px; font-size: 12.5px; cursor: pointer; border-bottom: 1px solid rgba(0,0,0,0.04); }
 .proj-result:hover { background: rgba(201,99,66,0.06); }

@@ -11,6 +11,7 @@ import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import { useToast } from '../../composables/useToast.js'
+import { confirmDlg } from '../../composables/confirm.js'
 
 const auth = useCaiwuAuth()
 const route = useRoute()
@@ -47,6 +48,7 @@ const ROW_COPY_COLS = [
   { key: 'cost', label: '成本', format: v => fmt(v) },
   { key: 'margin', label: '毛利', format: v => fmt(v) },
   { key: 'margin_rate', label: '毛利率', format: v => (v === null ? '' : v + '%') },
+  { key: 'net_contribution', label: '净贡献', format: v => fmt(v) },
 ]
 async function copyField(val, label) {
   const ok = await copyText(val)
@@ -112,7 +114,7 @@ async function onPickFile(e) {
   const file = e.target.files?.[0]
   if (!file) return
   if (uploading.value) { e.target.value = ''; return }
-  if (!bu.value) { alert('请先选择事业部'); e.target.value = ''; return }
+  if (!bu.value) { toast.error('请先选择事业部'); e.target.value = ''; return }
   uploading.value = true
   try {
     const fd = new FormData()
@@ -122,11 +124,39 @@ async function onPickFile(e) {
     fd.append('file', file)
     const res = await api.post('/project-margin/upload', fd,
       { headers: { 'Content-Type': 'multipart/form-data' } })
-    alert(`导入成功：${bu.value} ${year.value}年${month.value}月，共 ${res.data.project_count} 个项目`)
+    const ps = res.data.periods || []
+    const detail = ps.map(x => `${x.year}年${x.month}月(${x.project_count}项目)`).join('、')
+    toast.success(ps.length > 1
+      ? `✓ 已按会计期间拆分导入 ${ps.length} 个月：${detail}（同期间整体替换）`
+      : `✓ 导入成功：${bu.value} ${detail || `${year.value}年${month.value}月`}`)
+    // 多月导入后跳到文件内首个期间查看
+    if (ps.length) { year.value = ps[0].year; month.value = ps[0].month }
     await load()
+    if (showBatches.value) await loadBatches()
   } catch (err) {
-    alert(err?.msg || '导入失败')
+    toast.error(err?.msg || '导入失败')
   } finally { uploading.value = false; e.target.value = '' }
+}
+
+// ── 批次管理（对齐数据加工：可查看/删除已导入的 事业部×期间 批次）────────────
+const showBatches = ref(false)
+const batches = ref([])
+const batchesLoading = ref(false)
+async function loadBatches() {
+  batchesLoading.value = true
+  try { const res = await api.get('/project-margin/batches'); batches.value = res.data.batches }
+  catch (err) { toast.error(err?.msg || '加载失败') }
+  finally { batchesLoading.value = false }
+}
+function openBatches() { showBatches.value = true; loadBatches() }
+async function delBatch(b) {
+  if (!(await confirmDlg(`删除「${b.business_unit}」${b.year}年${b.month}月的项目毛利数据（${b.project_count} 个项目）？删除后可重新导入。`))) return
+  try {
+    await api.delete(`/project-margin/batches?bu=${encodeURIComponent(b.business_unit)}&year=${b.year}&month=${b.month}`)
+    toast.success('已删除')
+    await loadBatches()
+    if (b.business_unit === bu.value && b.year === year.value && b.month === month.value) await load()
+  } catch (err) { toast.error(err?.msg || '删除失败') }
 }
 
 onMounted(() => {
@@ -142,28 +172,36 @@ onMounted(() => {
 <template>
   <div>
     <!-- 标题行：标题居左，筛选项全部并入同一行靠右，去掉独立的整行筛选框 -->
-    <div class="topbar pm-topbar">
-      <h1>项目毛利</h1>
-      <div class="pm-controls">
+    <div class="cw-hero">
+      <div>
+        <div class="cw-eyebrow">PROJECT MARGIN · 业财融合</div>
+        <h1>项目毛利</h1>
+      </div>
+      <div class="cw-hero-ctrl">
         <select v-model="bu" class="pm-sel" @change="load">
           <option v-for="b in accessibleBus" :key="b" :value="b">{{ b }}</option>
         </select>
-        <select v-model.number="year" class="pm-sel" @change="load">
-          <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
-        </select>
-        <select v-model.number="month" class="pm-sel" @change="load">
-          <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
-        </select>
+        <div class="period-pill">
+          <select v-model.number="year" @change="load">
+            <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+          </select>
+          <span class="pp-sep"></span>
+          <select v-model.number="month" @change="load">
+            <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
+          </select>
+        </div>
         <div class="pm-modes" :title="mode === 'direct' ? '未挂项目成本单列为「未分摊池」' : '未挂成本按各项目收入比例分摊'">
           <button :class="['pm-mode', mode === 'direct' ? 'on' : '']"
                   @click="mode = 'direct'; load()">直接口径</button>
           <button :class="['pm-mode', mode === 'allocated' ? 'on' : '']"
                   @click="mode = 'allocated'; load()">分摊口径</button>
         </div>
-        <label v-if="auth.canUpload" class="btn btn-ghost btn-sm" :class="{ disabled: uploading }" style="cursor:pointer">
+        <label v-if="auth.canUpload" class="btn btn-ghost btn-sm" :class="{ disabled: uploading }" style="cursor:pointer"
+          title="金蝶「核算维度明细账（按项目）」；多月导出将按会计期间自动拆分入库，同期间整体替换">
           {{ uploading ? '导入中…' : '↑ 导入' }}
           <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="onPickFile" />
         </label>
+        <button class="btn btn-ghost btn-sm" @click="openBatches">📦 批次</button>
       </div>
     </div>
 
@@ -212,10 +250,11 @@ onMounted(() => {
                 <th class="amt">主营成本</th>
                 <th class="amt">毛利</th>
                 <th class="amt">毛利率</th>
+                <th class="amt" title="净贡献 = 毛利 − 销售费用 − 管理费用">净贡献</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!rows.length && !showPool"><td colspan="6" class="empty-cell">本事业部本期无已挂项目的数据</td></tr>
+              <tr v-if="!rows.length && !showPool"><td colspan="7" class="empty-cell">本事业部本期无已挂项目的数据</td></tr>
               <tr v-for="(r, i) in rows" :key="r.project_name" class="pm-row" @click="openPnl(r)" @contextmenu.prevent="ctx.open($event, r)">
                 <td class="ctr text-muted">{{ i + 1 }}</td>
                 <td class="fw pm-name" :title="r.project_name">{{ r.project_name }}<span class="pm-drill">损益 ›</span></td>
@@ -225,6 +264,8 @@ onMounted(() => {
                 <td class="amt" :class="r.margin_rate !== null && r.margin_rate < 0 ? 'text-danger' : ''">
                   {{ r.margin_rate === null ? '—' : r.margin_rate + '%' }}
                 </td>
+                <td class="amt" :class="r.net_contribution >= 0 ? 'text-ok' : 'text-danger'"
+                    :title="r.net_rate !== null ? '净贡献率 ' + r.net_rate + '%' : ''">{{ fmt(r.net_contribution) }}</td>
               </tr>
               <!-- 直接口径：未挂项目池单列一行，使各列与合计对齐 -->
               <tr v-if="showPool" class="pm-pool-row">
@@ -233,6 +274,7 @@ onMounted(() => {
                 <td class="amt">{{ fmt(summary.unalloc_revenue) }}</td>
                 <td class="amt">{{ fmt(summary.unalloc_cost) }}</td>
                 <td class="amt text-muted">{{ fmt(summary.unalloc_revenue - summary.unalloc_cost) }}</td>
+                <td class="amt text-muted">—</td>
                 <td class="amt text-muted">—</td>
               </tr>
             </tbody>
@@ -244,6 +286,8 @@ onMounted(() => {
                 <td class="amt fw">{{ fmt(summary.total_cost) }}</td>
                 <td class="amt fw" :class="summary.total_margin >= 0 ? 'text-ok' : 'text-danger'"><span class="caret">{{ summary.total_margin >= 0 ? '▲' : '▼' }}</span>{{ fmt(summary.total_margin) }}</td>
                 <td class="amt fw">{{ summary.margin_rate === null ? '—' : summary.margin_rate + '%' }}</td>
+                <td class="amt fw" :class="summary.total_net_contribution >= 0 ? 'text-ok' : 'text-danger'"
+                    :title="summary.net_rate !== null ? '净贡献率 ' + summary.net_rate + '%' : ''">{{ fmt(summary.total_net_contribution) }}</td>
               </tr>
             </tfoot>
           </table>
@@ -259,10 +303,10 @@ onMounted(() => {
             <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#9b8070" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/></svg>
             <i>项目数</i><b>{{ summary.project_count }}</b></span>
           <span class="bb-item">
-            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#2e7d32" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="var(--c-success)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
             <i>收入合计</i><b>{{ fmt(summary.total_revenue) }}</b></span>
           <span class="bb-item">
-            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#c62828" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V9"/><path d="M7 14l5-5 5 5"/><path d="M5 4h14"/></svg>
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="var(--c-danger)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V9"/><path d="M7 14l5-5 5 5"/><path d="M5 4h14"/></svg>
             <i>成本合计</i><b>{{ fmt(summary.total_cost) }}</b></span>
           <span class="bb-item" :class="summary.total_margin >= 0 ? 'ok' : 'warn'">
             <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#7a614c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10.5h18"/></svg>
@@ -271,7 +315,7 @@ onMounted(() => {
             <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#9b8070" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="2.4"/><circle cx="17" cy="17" r="2.4"/><path d="M18 6L6 18"/></svg>
             <i>毛利率</i><b>{{ summary.margin_rate === null ? '—' : summary.margin_rate + '%' }}</b></span>
           <span v-if="mode === 'direct' && summary.unalloc_cost" class="bb-item">
-            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#e65100" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="var(--c-warn)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>
             <i>未分摊池</i><b>{{ fmt(summary.unalloc_cost) }}</b></span>
         </div>
         <div class="bb-pager">
@@ -285,6 +329,31 @@ onMounted(() => {
 
     <!-- 右键上下文菜单 -->
     <ContextMenu :ctx="ctx" :items="ctxItems" />
+
+    <!-- 批次管理：查看/删除已导入的 事业部×期间（对齐数据加工体验） -->
+    <div v-if="showBatches" class="modal-overlay" @click.self="showBatches = false">
+      <div class="modal pm-batches-modal">
+        <h3>已导入批次</h3>
+        <p class="pm-b-tip">同一「事业部×月份」重复导入会整体替换；多月文件按会计期间自动拆为多个批次。</p>
+        <div v-if="batchesLoading" class="pm-b-empty">加载中…</div>
+        <div v-else-if="!batches.length" class="pm-b-empty">暂无已导入数据</div>
+        <table v-else class="pm-b-tbl">
+          <thead><tr><th>事业部</th><th>期间</th><th class="amt">项目数</th><th>最近上传</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="b in batches" :key="b.business_unit + b.year + b.month">
+              <td>{{ b.business_unit }}</td>
+              <td>{{ b.year }}-{{ String(b.month).padStart(2, '0') }}</td>
+              <td class="amt">{{ b.project_count }}</td>
+              <td class="pm-b-time">{{ (b.uploaded_at || '').slice(0, 16).replace('T', ' ') || '—' }}</td>
+              <td class="pm-b-act">
+                <button v-if="auth.canDelete" class="pm-b-del" @click="delBatch(b)">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="modal-actions"><button class="btn btn-ghost" @click="showBatches = false">关闭</button></div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -299,7 +368,7 @@ onMounted(() => {
 .pm-sel:hover, .pm-sel:focus { background: rgba(201,99,66,0.09); color: var(--primary); }
 .pm-modes { display: inline-flex; background: rgba(0,0,0,0.05); border-radius: 9px; padding: 3px; }
 .pm-mode { border: none; background: none; padding: 5px 14px; border-radius: 7px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
-.pm-mode.on { background: #fff; color: var(--primary); font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+.pm-mode.on { background: var(--row-bg); color: var(--primary); font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
 
 .pm-warn {
   background: rgba(245,127,23,0.08); border: 1px solid rgba(245,127,23,0.3);
@@ -317,7 +386,7 @@ onMounted(() => {
 
 /* 固定视口：表头吸顶 + 为吸底栏预留空间 */
 .fh-fill { padding-bottom: 40px; }
-.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 
 .pm-table { width: 100%; font-size: 13px; }
 .pm-table th.ctr, .pm-table td.ctr { width: 44px; }
@@ -340,9 +409,23 @@ onMounted(() => {
 .amt { text-align: right; font-variant-numeric: tabular-nums; }
 .ctr { text-align: center; }
 .fw { font-weight: 600; }
-.text-ok { color: #2e7d32; font-weight: 600; }
-.text-danger { color: #c62828; font-weight: 600; }
+.text-ok { color: var(--c-success); font-weight: 600; }
+.text-danger { color: var(--c-danger); font-weight: 600; }
 .text-muted { color: var(--muted); }
 .empty-cell { text-align: center; padding: 36px !important; color: var(--muted); }
 .section-sub { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 8px; }
+
+/* ── 批次管理弹窗 ─────────────────────────────────────────────────── */
+.pm-batches-modal { width: min(560px, 92vw); }
+.pm-b-tip { font-size: 12px; color: var(--muted); margin: 4px 0 10px; line-height: 1.6; }
+.pm-b-empty { text-align: center; color: var(--muted); padding: 26px; font-size: 12.5px; }
+.pm-b-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.pm-b-tbl th { text-align: left; font-size: 11px; color: var(--muted); padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.pm-b-tbl td { padding: 6px 8px; border-bottom: 1px solid rgba(0,0,0,0.05); }
+.pm-b-tbl .amt { text-align: right; font-variant-numeric: tabular-nums; }
+.pm-b-time { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.pm-b-act { text-align: right; }
+.pm-b-del { border: 1px solid rgba(198,40,40,0.3); background: none; color: #c62828; border-radius: 7px; font-size: 11.5px; padding: 2px 10px; cursor: pointer; }
+.pm-b-del:hover { background: rgba(198,40,40,0.07); }
 </style>
+

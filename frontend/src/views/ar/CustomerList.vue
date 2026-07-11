@@ -1,4 +1,5 @@
 <script setup>
+import { confirmDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, onMounted, defineAsyncComponent, nextTick } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { yearCST, todayCST, DEPARTMENTS } from '../../constants.js'
@@ -10,7 +11,11 @@ import { useTableSchemes } from '../../composables/useTableSchemes.js'
 import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
+import { useModalEsc } from '../../composables/useModalEsc.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { useToast } from '../../composables/useToast.js'
+import Pager from '../../components/Pager.vue'
+const toast = useToast()
 
 // 项目损益卡（复用 P1 组件）— 点客户项目即下钻全链路损益
 const ProjectPnlCard = defineAsyncComponent(() => import('../caiwu/ProjectPnlCard.vue'))
@@ -23,7 +28,7 @@ const total = ref(0)
 const loading = ref(false)
 const loadErr = ref('')
 const page = ref(1)
-const size = 50
+const size = ref(50)
 const filters = reactive({ q: '', level: '', dept: '', status: '' })
 const STATUSES = ['运作中', '中断', '结束']
 const statusClass = s => ({ '运作中': 'st-on', '中断': 'st-pause', '结束': 'st-end' }[s] || 'st-on')
@@ -58,6 +63,10 @@ const drawerOpen = ref(false)
 
 // 编辑/新建
 const showEdit = ref(false)
+useModalEsc(
+  [() => drawerOpen.value, () => closeDrawer()],
+  [() => showEdit.value, () => (showEdit.value = false)],
+)
 const editForm = reactive({ id: null, name: '', delivery_dept: '', level: '', status: '运作中', contact: '', customer_date: '', notes: '', push_status: false })
 const saving = ref(false)
 
@@ -65,9 +74,6 @@ const saving = ref(false)
 const pnlName = ref('')
 const year = ref(yearCST())
 
-const toast = ref('')
-let toastTimer = null
-function showToast(m) { toast.value = m; clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.value = '', 2200) }
 
 const wan = v => (v == null || v === '') ? '—' : (Number(v) / 1e4).toFixed(1) + '万'
 const LEVELS = ['S级', 'A级', 'B级', 'C级', 'D级']
@@ -98,23 +104,23 @@ async function syncFromProjects() {
   syncing.value = true
   try {
     const res = await ar.syncCustomersFromProjects()
-    showToast(res.data?.message || '✓ 已同步')
+    toast.success(res.data?.message || '已同步')
     await load(true)
-  } catch (e) { showToast(e?.error || '同步失败') }
+  } catch (e) { toast.error(e?.error || '同步失败') }
   finally { syncing.value = false }
 }
 
 // 创建时间显示（只显示日期）
 const fmtDate = v => v ? String(v).slice(0, 10) : '—'
 async function applyBulkLevel() {
-  if (!selected.value.size) return showToast('请先勾选客户')
+  if (!selected.value.size) return toast.error('请先勾选客户')
   bulkSaving.value = true
   try {
     const res = await ar.bulkTagCustomerLevel({ ids: [...selected.value], level: bulkLevel.value })
-    showToast(res.data?.message || '✓ 已更新')
+    toast.success(res.data?.message || '已更新')
     clearSel()
     await load()
-  } catch (e) { showToast(e?.error || '批量打标失败') }
+  } catch (e) { toast.error(e?.error || '批量打标失败') }
   finally { bulkSaving.value = false }
 }
 
@@ -122,19 +128,19 @@ async function applyBulkLevel() {
 const bulkDeleting = ref(false)
 async function bulkDeleteCustomers() {
   const n = selected.value.size
-  if (!n) return showToast('请先勾选客户')
-  if (!confirm(`确定删除选中的 ${n} 个客户？\n名下仍有项目或合同关联的客户会被自动跳过（不会误删）。`)) return
+  if (!n) return toast.error('请先勾选客户')
+  if (!(await confirmDlg(`确定删除选中的 ${n} 个客户？\n名下仍有项目或合同关联的客户会被自动跳过（不会误删）。`))) return
   bulkDeleting.value = true
   try {
     const res = await ar.bulkDeleteCustomers({ ids: [...selected.value] })
     const d = res.data
-    showToast(d?.message || `已删除 ${d?.deleted ?? 0} 个客户`)
+    toast.success(d?.message || `已删除 ${d?.deleted ?? 0} 个客户`)
     if (d?.skipped_reasons?.length) {
-      showToast(`以下客户被保护跳过：${d.skipped_reasons.join('；')}`)
+      toast.error(`以下客户被保护跳过：${d.skipped_reasons.join('；')}`)
     }
     clearSel()
     await load(true)
-  } catch (e) { showToast(e?.error || e?.msg || '批量删除失败') }
+  } catch (e) { toast.error(e?.error || e?.msg || '批量删除失败') }
   finally { bulkDeleting.value = false }
 }
 
@@ -143,7 +149,7 @@ async function load(reset = false) {
   loading.value = true
   loadErr.value = ''
   try {
-    const params = { ...filters, page: page.value, size, sort: sortKey.value, dir: sortDir.value }
+    const params = { ...filters, page: page.value, size: size.value, sort: sortKey.value, dir: sortDir.value }
     if (Object.keys(colFilters).length) params.filters = JSON.stringify(colFilters)
     const res = await ar.listCustomers(params)
     items.value = res.data.items
@@ -151,7 +157,7 @@ async function load(reset = false) {
   } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
   } finally { loading.value = false }
 }
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size)))
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size.value)))
 function go(p) { if (p < 1 || p > totalPages.value) return; page.value = p; load() }
 const jumpPage = ref(1)
 function doJump() {
@@ -200,7 +206,7 @@ async function openDetail(c) {
       const closeBtn = drawerEl.querySelector('.dw-close')
       if (closeBtn) closeBtn.focus()
     }
-  } catch (e) { showToast(e?.error || '加载失败') }
+  } catch (e) { toast.error(e?.error || '加载失败') }
   finally { detailLoading.value = false }
 }
 function closeDrawer() { drawerOpen.value = false; detail.value = null }
@@ -227,25 +233,25 @@ function openEditFromDetail() {
 async function changeProjStatus(p) {
   try {
     await ar.updateProject(p.id, { status: p.status })
-    showToast(`✓ 项目「${p.short_name}」状态改为${p.status}`)
-  } catch (e) { showToast(e?.error || '改状态失败') }
+    toast.success(`✓ 项目「${p.short_name}」状态改为${p.status}`)
+  } catch (e) { toast.error(e?.error || '改状态失败') }
 }
 async function saveCustomer() {
-  if (!editForm.name.trim()) return showToast('客户名称不能为空')
-  if (!editForm.id && !editForm.delivery_dept) return showToast('请选择客户所属事业部（客户按事业部隔离）')
+  if (!editForm.name.trim()) return toast.error('客户名称不能为空')
+  if (!editForm.id && !editForm.delivery_dept) return toast.error('请选择客户所属事业部（客户按事业部隔离）')
   saving.value = true
   try {
     if (editForm.id) {
       await ar.updateCustomer(editForm.id, editForm)
       if (detail.value && detail.value.id === editForm.id) Object.assign(detail.value, { name: editForm.name, level: editForm.level, status: editForm.status, contact: editForm.contact, customer_date: editForm.customer_date, notes: editForm.notes })
-      showToast(editForm.push_status ? '✓ 已保存并下发状态到名下项目' : '✓ 已保存')
+      toast.success(editForm.push_status ? '已保存并下发状态到名下项目' : '已保存')
     } else {
       await ar.createCustomer(editForm)
-      showToast('✓ 已创建')
+      toast.success('已创建')
     }
     showEdit.value = false
     await load()
-  } catch (e) { showToast(e?.error || '保存失败') }
+  } catch (e) { toast.error(e?.error || '保存失败') }
   finally { saving.value = false }
 }
 
@@ -270,11 +276,11 @@ const ROW_COPY_COLS = [
 ]
 async function copyField(val, label) {
   const ok = await copyText(val)
-  showToast(ok ? `✓ 已复制：${label}` : '复制失败')
+  toast.success(ok ? `✓ 已复制：${label}` : '复制失败')
 }
 async function copyWholeRow(c) {
   const ok = await copyRowTSV(c, ROW_COPY_COLS, { header: true })
-  showToast(ok ? '✓ 已复制整行（含表头，可粘贴到 Excel）' : '复制失败')
+  toast.success(ok ? '已复制整行（含表头，可粘贴到 Excel）' : '复制失败')
 }
 // 从行直接编辑：拉取完整客户后填表（行数据缺 notes/customer_date 等字段）
 async function editCustomerRow(c) {
@@ -282,15 +288,15 @@ async function editCustomerRow(c) {
     const d = (await ar.getCustomer(c.id)).data
     Object.assign(editForm, { id: d.id, name: d.name, delivery_dept: d.delivery_dept || '', level: d.level || '', status: d.status || '运作中', contact: d.contact || '', customer_date: d.customer_date || '', notes: d.notes || '', push_status: false })
     showEdit.value = true
-  } catch (e) { showToast(e?.error || '加载客户失败') }
+  } catch (e) { toast.error(e?.error || '加载客户失败') }
 }
 async function deleteCustomerRow(c) {
-  if (!confirm(`确定删除客户「${c.name}」？若名下仍有项目或应收，系统将拒绝删除。`)) return
+  if (!(await confirmDlg(`确定删除客户「${c.name}」？若名下仍有项目或应收，系统将拒绝删除。`))) return
   try {
     await ar.deleteCustomer(c.id)
-    showToast('✓ 已删除')
+    toast.success('已删除')
     await load()
-  } catch (e) { showToast(e?.error || e?.msg || '删除失败（可能名下仍有项目）') }
+  } catch (e) { toast.error(e?.error || e?.msg || '删除失败（可能名下仍有项目）') }
 }
 const ctxItems = computed(() => {
   const c = ctx.menu.payload
@@ -339,7 +345,7 @@ onMounted(async () => {
     <!-- 筛选 -->
     <div class="filter-strip">
       <div class="search-box">
-        <input v-model="filters.q" class="search-input" placeholder="🔍 全局搜索：客户名称 / 联系人 / 备注"
+        <input v-model="filters.q" class="search-input" placeholder="全局搜索：客户名称 / 联系人 / 备注"
                @input="onSearchInput" @keyup.enter="load(true)" />
         <button v-if="filters.q" class="search-clear" @click="filters.q=''; load(true)">✕</button>
       </div>
@@ -393,7 +399,8 @@ onMounted(async () => {
             </tr>
             <tr v-else-if="!loading && !items.length"><td colspan="9" class="empty">暂无客户数据</td></tr>
             <tr v-for="c in items" :key="c.id" class="row" :class="{ sel: selected.has(c.id) }" @click="openDetail(c)" @dblclick="onRowDblClick(c, $event)" @contextmenu.prevent="ctx.open($event, c)">
-              <td class="ctr chk-col sticky-col" @click.stop><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
+              <!-- 勾选格整格热区：点空白处也切换勾选（点中框本身走 change，防双触发） -->
+              <td class="ctr chk-col sticky-col" @click.stop="$event.target.tagName !== 'INPUT' && toggleSel(c.id)"><input type="checkbox" :checked="selected.has(c.id)" @change="toggleSel(c.id)" /></td>
               <td class="l name sticky-col" :style="cw.thStyle('name')" :title="c.name + (c.contact ? ' · ' + c.contact : '')">{{ c.name }}<span v-if="c.contact" class="contact">· {{ c.contact }}</span></td>
               <td class="ctr"><span class="st-pill" :class="statusClass(c.status)">{{ c.status || '运作中' }}</span></td>
               <td class="ctr"><span v-if="c.level" class="lvl" :class="levelClass(c.level)">{{ c.level }}</span><span v-else class="muted">—</span></td>
@@ -406,12 +413,7 @@ onMounted(async () => {
           </tbody>
         </table>
       </div>
-      <div v-if="total > size" class="cu-pager">
-        <button :disabled="page <= 1" class="page-btn" @click="go(page - 1)">‹ 上一页</button>
-        <span class="page-info">第 {{ page }} / {{ totalPages }} 页 · 共 {{ total }} 个客户</span>
-        <button :disabled="page >= totalPages" class="page-btn" @click="go(page + 1)">下一页 ›</button>
-        <span class="pg-jump">跳至<input v-model.number="jumpPage" class="pg-jump-input" type="number" min="1" :max="totalPages" :placeholder="`1-${totalPages}`" @keyup.enter="doJump" />页<button class="page-btn" @click="doJump">Go</button></span>
-      </div>
+      <Pager v-model:page="page" v-model:size="size" :total="total" storage-key="ar_customers" @change="load()" />
     </div>
 
     <!-- 客户详情抽屉 -->
@@ -530,7 +532,6 @@ onMounted(async () => {
       </div>
     </Teleport>
 
-    <Transition name="toast"><div v-if="toast" class="cu-toast">{{ toast }}</div></Transition>
   </div>
 </template>
 
@@ -540,7 +541,7 @@ onMounted(async () => {
 .cu-table td.date { color: #9b8070; font-size: 12px; white-space: nowrap; }
 .cu-table td.dept-cell { font-size: 12px; color: #6b5a4a; }
 .cu-pager { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 14px 0 4px; }
-.cu-pager .page-btn { padding: 5px 14px; border: 1px solid #d4b896; border-radius: 8px; background: #fff; color: #4a3728; font-size: 13px; cursor: pointer; }
+.cu-pager .page-btn { padding: 5px 14px; border: 1px solid #d4b896; border-radius: 8px; background: var(--row-bg); color: #4a3728; font-size: 13px; cursor: pointer; }
 .cu-pager .page-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
 .cu-pager .page-btn:disabled { opacity: .4; cursor: default; }
 .cu-pager .page-info { font-size: 12.5px; color: #9b8070; }
@@ -557,11 +558,11 @@ onMounted(async () => {
   background: linear-gradient(120deg, rgba(21,101,192,.08), rgba(46,125,50,.06));
   border: 1px solid rgba(21,101,192,.22); border-radius: 10px; }
 .bb-count { font-size: 13px; color: #3a2c1d; }
-.bb-count b { color: #1565c0; }
+.bb-count b { color: var(--c-info); }
 .bb-label { font-size: 12px; color: #9b8070; margin-left: 4px; }
-.bb-sel { padding: 5px 10px; border: 1px solid #d4b896; border-radius: 7px; background: #fff; font-size: 13px; }
+.bb-sel { padding: 5px 10px; border: 1px solid #d4b896; border-radius: 7px; background: var(--row-bg); font-size: 13px; }
 .bb-del { margin-left: auto; padding: 5px 12px; border: 1px solid rgba(198,40,40,.45); border-radius: 7px;
-  background: rgba(198,40,40,.06); color: #c62828; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+  background: rgba(198,40,40,.06); color: var(--c-danger); font-size: 12.5px; font-weight: 700; cursor: pointer; }
 .bb-del:hover:not(:disabled) { background: rgba(198,40,40,.13); }
 .bb-del:disabled { opacity: .5; cursor: not-allowed; }
 .chk-col { width: 36px; }
@@ -569,9 +570,9 @@ onMounted(async () => {
 .row.sel td { background: rgba(21,101,192,.06); }
 
 .cu-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.cu-table th { background: #f3ede6; color: #6b5a4a; padding: 9px 14px; font-weight: 600; white-space: nowrap; text-align: right; overflow: visible; }
+.cu-table th { background: var(--thead-bg); color: #6b5a4a; padding: 9px 14px; font-weight: 600; white-space: nowrap; text-align: right; overflow: visible; }
 /* 固定视口：表头吸顶，仅表体内部滚动 */
-.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f3ede6; }
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 .cu-pager { flex-shrink: 0; }
 .cu-table th.l { text-align: left; }
 .cu-table th.ctr { text-align: center; }
@@ -585,25 +586,25 @@ onMounted(async () => {
 .cu-table td.l { text-align: left; }
 .cu-table td.ctr { text-align: center; }
 .row { cursor: pointer; }
-.row:hover td { background: #faf5ef; }
+.row:hover td { background: var(--row-hover); }
 .name { font-weight: 600; color: #4a3728; }
 .contact { font-weight: 400; font-size: 12px; color: #9b8070; margin-left: 6px; }
 .strong { font-weight: 700; }
-.overdue { color: #c62828; font-weight: 700; }
+.overdue { color: var(--c-danger); font-weight: 700; }
 .muted { color: #c9b8a8; }
 .empty { text-align: center; color: #9e9e9e; padding: 40px; }
 .btn-link { background: none; border: none; color: var(--primary); cursor: pointer; font-size: 12.5px; }
 
 .st-pill { display: inline-block; padding: 1px 8px; border-radius: 9px; font-size: 11px; font-weight: 600; }
-.st-on { background: #e8f5e9; color: #2e7d32; }
-.st-pause { background: #fff3e0; color: #e65100; }
+.st-on { background: #e8f5e9; color: var(--c-success); }
+.st-pause { background: #fff3e0; color: var(--c-warn); }
 .st-end { background: #f3f3f3; color: #9e9e9e; }
-.proj-st-sel { font-size: 11px; border: 1px solid #d4b896; border-radius: 7px; padding: 1px 4px; cursor: pointer; background: #fff; }
-.proj-st-sel.st-on { color: #2e7d32; } .proj-st-sel.st-pause { color: #e65100; } .proj-st-sel.st-end { color: #9e9e9e; }
+.proj-st-sel { font-size: 11px; border: 1px solid #d4b896; border-radius: 7px; padding: 1px 4px; cursor: pointer; background: var(--row-bg); }
+.proj-st-sel.st-on { color: var(--c-success); } .proj-st-sel.st-pause { color: var(--c-warn); } .proj-st-sel.st-end { color: #9e9e9e; }
 .em-push { display: flex; align-items: flex-start; gap: 6px; font-size: 11.5px; color: #6b5a4a; margin: 10px 0 4px; line-height: 1.4; cursor: pointer; }
 .em-push input { margin-top: 2px; }
 .lvl { display: inline-block; min-width: 18px; padding: 1px 7px; border-radius: 9px; font-size: 11px; font-weight: 700; color: #fff; }
-.lvl-S { background: #6a1b9a; } .lvl-A { background: #2e7d32; } .lvl-B { background: #1565c0; } .lvl-C { background: #e65100; } .lvl-D { background: #9e9e9e; }
+.lvl-S { background: #6a1b9a; } .lvl-A { background: var(--c-success); } .lvl-B { background: var(--c-info); } .lvl-C { background: var(--c-warn); } .lvl-D { background: #9e9e9e; }
 
 /* 抽屉 */
 .drawer-mask { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 3000; display: flex; justify-content: flex-end; }
@@ -616,29 +617,29 @@ onMounted(async () => {
 .dw-close { border: none; background: none; font-size: 18px; color: #9b8070; cursor: pointer; line-height: 1; }
 .dw-loading, .dw-empty { text-align: center; color: #9e9e9e; padding: 30px; }
 
-.dw-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 16px 0; background: #fff; border: 1px solid #eee2d4; border-radius: 10px; overflow: hidden; }
+.dw-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 16px 0; background: var(--row-bg); border: 1px solid #eee2d4; border-radius: 10px; overflow: hidden; }
 .dw-kpi { padding: 12px; text-align: center; border-right: 1px solid #f0e8de; }
 .dw-kpi:last-child { border-right: none; }
 .k-label { font-size: 11px; color: #9b8070; margin-bottom: 4px; }
 .k-val { font-size: 17px; font-weight: 800; color: #2d2010; }
-.k-val.green { color: #2e7d32; } .k-val.red { color: #c62828; }
+.k-val.green { color: var(--c-success); } .k-val.red { color: var(--c-danger); }
 
 .dw-section-title { font-size: 14px; font-weight: 700; color: #4a3728; margin: 18px 0 8px; }
 .tip { font-size: 11px; font-weight: 400; color: #9b8070; margin-left: 6px; }
 .dw-proj-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.dw-proj-table th { background: #f3ede6; color: #6b5a4a; padding: 7px 10px; font-weight: 600; text-align: right; }
+.dw-proj-table th { background: var(--thead-bg); color: #6b5a4a; padding: 7px 10px; font-weight: 600; text-align: right; }
 .dw-proj-table th.l { text-align: left; }
 .dw-proj-table td { padding: 8px 10px; border-bottom: 1px solid #f3ece2; text-align: right; }
 .dw-proj-table td.l { text-align: left; font-weight: 600; color: #4a3728; }
 .proj-row { cursor: pointer; }
-.proj-row:hover td { background: #faf5ef; }
+.proj-row:hover td { background: var(--row-hover); }
 .drill { font-size: 11px; color: var(--primary); margin-left: 6px; opacity: 0; transition: opacity .15s; }
 .proj-row:hover .drill { opacity: 1; }
 .dept { color: #9b8070; }
 
 /* 编辑弹窗 */
 .edit-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 4000; display: flex; align-items: center; justify-content: center; }
-.edit-modal { background: #fff; border-radius: 14px; padding: 24px; width: 440px; max-width: 95vw; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+.edit-modal { background: var(--row-bg); border-radius: 14px; padding: 24px; width: 440px; max-width: 95vw; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
 .em-title { font-size: 16px; font-weight: 700; color: #4a3728; margin-bottom: 14px; }
 .em-label { display: block; font-size: 12px; color: #9b8070; margin: 8px 0 4px; }
 .em-input, .em-textarea { width: 100%; padding: 7px 10px; border: 1px solid #d4b896; border-radius: 7px; font-size: 13px; box-sizing: border-box; }
@@ -646,7 +647,7 @@ onMounted(async () => {
 .em-row { display: flex; gap: 10px; }
 .em-actions { display: flex; gap: 8px; margin-top: 16px; }
 
-.cu-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #2e7d32; color: #fff; padding: 8px 20px; border-radius: 20px; font-size: 13px; z-index: 8000; }
+.cu-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--c-success); color: #fff; padding: 8px 20px; border-radius: 20px; font-size: 13px; z-index: 8000; }
 .drawer-enter-active, .drawer-leave-active { transition: opacity .2s; }
 .drawer-enter-active .drawer, .drawer-leave-active .drawer { transition: transform .25s ease; }
 .drawer-enter-from, .drawer-leave-to { opacity: 0; }
@@ -668,9 +669,9 @@ onMounted(async () => {
 .cu-table th:hover .col-rh { opacity: 0.35; }
 
 /* 冻结首列 */
-.sticky-col { position: sticky; left: 0; z-index: 3; background: #f3ede6; }
+.sticky-col { position: sticky; left: 0; z-index: 3; background: var(--thead-bg); }
 .cu-table tbody tr td.sticky-col { background: #fdfbf8; }
-.cu-table tbody tr:hover td.sticky-col { background: #faf5ef; }
+.cu-table tbody tr:hover td.sticky-col { background: var(--row-hover); }
 /* 选中态用实色，避免右滚时透出下层内容 */
 .cu-table tbody tr.sel td.sticky-col { background: #eef2f7; }
 </style>

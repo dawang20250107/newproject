@@ -104,6 +104,136 @@ class ARPermissionRegressionTests(TestCase):
         wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=True)
         return [cell.value for cell in wb.active[1]]
 
+    def test_wo_prepaid_action_bypasses_advance_page_gate(self):
+        """出纳仅获「预付核销」操作权限（预收预付页面关闭）时，仍可从付款台账
+        创建/反向核销——显式操作权限越过页面闸口；无该权限的岗位维持页面拦截。"""
+        from paikuan.models import Payment
+        cfg = default_job_config('cashier')
+        cfg['pages']['ar_advance'] = False          # 页面关闭（复现"无权访问此模块"前提）
+        cfg['actions']['wo_prepaid'] = True         # 显式授予核销
+        JobPermission.objects.create(job_title='cashier', config=cfg)
+        _invalidate_perm_cache()
+        cashier = self.make_user('13900000411', 'cashier')
+        adv = AdvanceRecord.objects.create(
+            direction='预付', project=None, delivery_dept=self.dept, counterparty='供应商X',
+            occur_year=2026, occur_month=5, occur_date=date(2026, 5, 1),
+            advance_amount=Decimal('1000'))
+        pay = Payment.objects.create(
+            department=self.dept, project_desc='核销测试', payee='供应商X',
+            total_amount=Decimal('800'), planned_date=date(2026, 6, 1))
+        # 创建核销（付款台账入口同款调用）→ 放行
+        r = self.json_post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
+                           {'amount': '300', 'writeoff_date': '2026-06-05',
+                            'payment_id': pay.id}, cashier)
+        self.assertEqual(r.status_code, 200, r.content)
+        adv.refresh_from_db(); pay.refresh_from_db()
+        self.assertEqual(adv.balance_amount, Decimal('700'))
+        self.assertEqual(pay.prepaid_offset_amount, Decimal('300'))
+        # 反向核销 → 同样放行，余额恢复
+        wid = adv.writeoffs.first().id
+        r2 = self.client.delete(f'/api/pk/ar/advances/{adv.id}/writeoffs/{wid}',
+                                **self.auth(cashier))
+        self.assertEqual(r2.status_code, 200, r2.content)
+        adv.refresh_from_db()
+        self.assertEqual(adv.balance_amount, Decimal('1000'))
+        # 对照组：结算会计 wo_prepaid 显式 False 且预收预付页面开着 → 操作权限拒绝
+        acct = self.make_user('13900000412', 'settlement_accountant')
+        r3 = self.json_post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
+                            {'amount': '100', 'writeoff_date': '2026-06-06'}, acct)
+        self.assertEqual(r3.status_code, 403)
+
+    def test_record_export_vis_cols_keeps_project_columns(self):
+        """回归：vis_cols（列显隐白名单，仅含 r_* 键）不得误删 p_* 项目侧列。
+        历史缺陷：税额默认隐藏后所有导出都带 vis_cols → 项目简称/客户名称整排消失。"""
+        admin = self.make_user('13900000466', 'finance_director', role='super_admin')
+        proj = self.create_project(short_name='导出列项目')
+        ARRecord.objects.create(project=proj, operation_year=2026, operation_month=6,
+                                estimated_amount=Decimal('1000'),
+                                account_diff_adjustment=Decimal('60'))
+        vis = 'r_estimated_amount,r_actual_invoice_amount,r_actual_receivable,r_account_diff,r_outstanding,r_due_date,r_reconciliation,r_payments,r_invoice_date,r_invoice_status,r_notes'
+        r = self.client.get('/api/pk/ar/records/export', {'vis_cols': vis}, **self.auth(admin))
+        self.assertEqual(r.status_code, 200, r.content)
+        hdr = self.headers_from_xlsx(r)
+        for must in ('项目简称', '客户名称', '交付部门', '开票模式'):   # p_* 列不受 vis_cols 影响
+            self.assertIn(must, hdr, hdr)
+        self.assertIn('实际应收', hdr)          # UI/导出对齐的新列
+        self.assertNotIn('税额', hdr)           # 未勾选的 r_* 列按白名单剔除
+        # 数值正确：实际应收 = 预估 + 账实差额
+        import openpyxl as _px
+        wb = _px.load_workbook(io.BytesIO(r.content))
+        row = [c.value for c in wb.active[2]]
+        self.assertEqual(row[hdr.index('实际应收')], 1060.0)
+
+    def test_cashflow_excludes_soft_deleted_payments(self):
+        """现金流分析（驾驶舱同源接口）：已软删除付款的实付分期不得计入现金流出。"""
+        from paikuan.models import Payment, PaymentInstallment
+        from django.utils import timezone
+        admin = self.make_user('13900000399', 'finance_director', role='super_admin')
+        p = Payment.objects.create(
+            department=self.dept, project_desc='现金流测试', payee='供应商X',
+            total_amount=Decimal('800'), planned_date=date(2026, 6, 1))
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 6, 10),
+                                          pay_amount=Decimal('800'))
+        params = {'start_year': 2026, 'start_month': 6, 'end_year': 2026, 'end_month': 6}
+        d = self.client.get('/api/pk/ar/cashflow', params, **self.auth(admin)).json()['data']
+        self.assertEqual(d['totals']['paid'], [800.0])       # 在册付款计入流出
+        # 软删除该付款 → 流出归零（回收站中的付款不构成现金流出）
+        p.deleted_at = timezone.now()
+        p.save(update_fields=['deleted_at'])
+        d2 = self.client.get('/api/pk/ar/cashflow', params, **self.auth(admin)).json()['data']
+        self.assertEqual(d2['totals']['paid'], [0.0])
+
+    def test_cashflow_prepaid_offset_is_noncash_not_deducted(self):
+        """预付核销为非现金结转：现金流出=实付分期+预付款，绝不从实付里扣冲抵。
+        情形——5 月预付 1000（现金流出）；6 月应付 1300，付现 300 + 预付核销 1000。
+        真实现金：5 月 −1000、6 月 −300。冲抵的 1000 不得把 6 月的 300 真实付现抹掉。"""
+        from paikuan.models import Payment, PaymentInstallment
+        admin = self.make_user('13900000388', 'finance_director', role='super_admin')
+        adv = AdvanceRecord.objects.create(
+            direction='预付', project=None, delivery_dept=self.dept, counterparty='供应商Y',
+            occur_year=2026, occur_month=5, occur_date=date(2026, 5, 1),
+            advance_amount=Decimal('1000'))
+        p = Payment.objects.create(
+            department=self.dept, project_desc='混合结算', payee='供应商Y',
+            total_amount=Decimal('1300'), planned_date=date(2026, 6, 1))
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 6, 10),
+                                          pay_amount=Decimal('300'))
+        AdvanceWriteoff.objects.create(advance_record=adv, writeoff_no=1,
+                                       amount=Decimal('1000'),
+                                       writeoff_date=date(2026, 6, 15), payment=p)
+        params = {'start_year': 2026, 'start_month': 5, 'end_year': 2026, 'end_month': 6}
+        d = self.client.get('/api/pk/ar/cashflow', params, **self.auth(admin)).json()['data']
+        i5, i6 = d['months'].index('2026-05'), d['months'].index('2026-06')
+        # 5 月：预付款流出 1000；6 月：实付分期 300（不被 1000 冲抵抹掉）
+        self.assertEqual(d['totals']['advance_paid'][i5], 1000.0)
+        self.assertEqual(d['totals']['paid'][i6], 300.0)
+        self.assertEqual(d['totals']['outflow'][i5], 1000.0)
+        self.assertEqual(d['totals']['outflow'][i6], 300.0)
+
+    def test_actual_receivable_and_invoice_mismatch(self):
+        proj = self.create_project()
+        # 实际应收 = 预估 + 账实差额；已开票且 ≠ 实际应收 → invoice_mismatch=True
+        r = ARRecord.objects.create(
+            project=proj, operation_year=2026, operation_month=5,
+            estimated_amount=Decimal('1000.00'),
+            account_diff_adjustment=Decimal('60.00'),
+            actual_invoice_amount=Decimal('1000.00'),   # 开票1000 ≠ 实际应收1060
+            invoice_date=date(2026, 5, 31))
+        d = r.to_dict()
+        self.assertEqual(d['actual_receivable'], '1060.00')
+        self.assertTrue(d['invoice_mismatch'])
+        # 开票金额等于实际应收 → 不提醒
+        r.actual_invoice_amount = Decimal('1060.00')
+        r.save()
+        self.assertFalse(r.to_dict()['invoice_mismatch'])
+        # 未开票 → 即使预估≠账面也不提醒；实际应收照常计算
+        r2 = ARRecord.objects.create(
+            project=proj, operation_year=2026, operation_month=6,
+            estimated_amount=Decimal('500.00'), account_diff_adjustment=Decimal('0.00'))
+        self.assertIsNone(r2.actual_invoice_amount)
+        self.assertFalse(r2.to_dict()['invoice_mismatch'])
+        self.assertEqual(r2.to_dict()['actual_receivable'], '500.00')
+
     def test_project_post_invoice_days_update_persists(self):
         """票后等待期(post_invoice_days)编辑后应真正落库——回归 settlement_wait_days
         旧列名残留导致 _ar_visible_payload 把该字段从 PUT 载荷里剥掉的问题。"""
@@ -542,14 +672,20 @@ class ARPermissionRegressionTests(TestCase):
         r3 = ARRecord.objects.create(project=project, operation_year=2026, operation_month=7,
                                      estimated_amount=Decimal('300.00'))
 
-        # 显式 ids 删除 r1（级联其回款）
+        # 显式 ids 删除 r1：有回款 → 不带 force 被守卫跳过；超管带 force → 软删进回收站
         resp = self.client.post('/api/pk/ar/records/bulk-delete',
                                 data=_json.dumps({'ids': [r1.id]}),
                                 content_type='application/json', **self.auth(admin))
         self.assertEqual(resp.status_code, 200, resp.content)
-        self.assertEqual(resp.json()['data']['deleted'], 1)
-        self.assertFalse(ARRecord.objects.filter(pk=r1.id).exists())
-        self.assertEqual(ARPayment.objects.filter(ar_record_id=r1.id).count(), 0)
+        self.assertEqual(resp.json()['data']['deleted'], 0)          # 守卫拦截
+        self.assertEqual(len(resp.json()['data']['skipped']), 1)
+        resp = self.client.post('/api/pk/ar/records/bulk-delete',
+                                data=_json.dumps({'ids': [r1.id], 'force': True}),
+                                content_type='application/json', **self.auth(admin))
+        self.assertEqual(resp.json()['data']['deleted'], 1, resp.content)
+        self.assertFalse(ARRecord.objects.filter(pk=r1.id).exists())   # 台账不可见
+        self.assertTrue(ARRecord.all_objects.filter(pk=r1.id).exists())  # 回收站保留
+        self.assertEqual(ARPayment.objects.filter(ar_record_id=r1.id).count(), 1)  # 回款保留可还原
 
         # all + 条件：删除 预估>150 的全部（r2/r3），r 不在条件外
         conds = _json.dumps([{'t': 'amt', 'field': 'estimated_amount', 'op': 'gt', 'value': 150}])
@@ -1465,6 +1601,173 @@ class AdvanceModuleTests(TestCase):
             project=proj, operation_year=year, operation_month=month,
             estimated_amount=Decimal(str(est)))
 
+    def test_advances_bulk_delete_guards_and_scope(self):
+        """批量删除:有核销的跳过(原因含核销);非本部门不删;其余删除。"""
+        admin = self.make_user('13911100094', 'finance_director', role='super_admin')
+        op = self.make_user('13911100093', 'finance_director', departments=['运输事业部'])
+        a = AdvanceRecord.objects.create(direction='预收', delivery_dept=self.dept,
+            counterparty='甲', occur_year=2026, occur_month=5, advance_amount=Decimal('100'))
+        b = AdvanceRecord.objects.create(direction='预收', delivery_dept=self.dept,
+            counterparty='乙', occur_year=2026, occur_month=5, advance_amount=Decimal('200'))
+        AdvanceWriteoff.objects.create(advance_record=b, writeoff_no=1,
+                                       amount=Decimal('50'), writeoff_date=date(2026, 5, 20))
+        c = AdvanceRecord.objects.create(direction='预收', delivery_dept='运输事业部',
+            counterparty='丙', occur_year=2026, occur_month=5, advance_amount=Decimal('300'))
+        # 超管批删 a/b/c:a 删除、b 跳过(有核销)、c 删除
+        r = self.post('/api/pk/ar/advances/bulk-delete', {'ids': [a.id, b.id, c.id]}, admin)
+        d = r.json()['data']
+        self.assertEqual(d['deleted'], 2, r.content)
+        self.assertEqual(len(d['skipped']), 1)
+        self.assertIn('核销', d['skipped'][0]['reason'])
+        self.assertTrue(AdvanceRecord.objects.filter(pk=b.id).exists())
+        # 非本部门(op 只在运输)批删劳务的 b → 部门作用域过滤,0 删除
+        r2 = self.post('/api/pk/ar/advances/bulk-delete', {'ids': [b.id]}, op)
+        self.assertEqual(r2.json()['data']['deleted'], 0)
+
+    def test_cashflow_export_endpoint(self):
+        """现金流导出:与 cashflow 同参数,返回 Excel 且内容非空。"""
+        from paikuan.models import Payment, PaymentInstallment
+        admin = self.make_user('13911100092', 'finance_director', role='super_admin')
+        proj = self.create_project()
+        ar = self._ar_record(proj, 1000)
+        ARPayment.objects.create(ar_record=ar, payment_no=1, amount=Decimal('400'),
+                                 payment_date=date(2026, 6, 10), source='回款')
+        p = Payment.objects.create(department=self.dept, project_desc='X', payee='Y',
+                                   total_amount=Decimal('300'), planned_date=date(2026, 6, 1))
+        PaymentInstallment.objects.create(payment=p, seq=1, pay_date=date(2026, 6, 12),
+                                          pay_amount=Decimal('300'))
+        r = self.client.get('/api/pk/ar/cashflow/export?start_date=2026-06-01&end_date=2026-06-30',
+                            **self.auth(admin))
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn('spreadsheet', r['Content-Type'])
+        self.assertTrue(len(r.content) > 100)
+
+    def test_advance_list_actual_date_range_filter_and_summary(self):
+        """预收预付按实际收付日(款项日期)区间筛选:列表/汇总/KPI 同口径联动;
+        occur_date 为空的存量行按发生年月落月兜底,不被日期筛选悄悄排除。"""
+        admin = self.make_user('13911100095', 'finance_director', role='super_admin')
+        mk = lambda amt, y, m, od: AdvanceRecord.objects.create(
+            direction='预收', delivery_dept=self.dept, counterparty='客户T',
+            occur_year=y, occur_month=m, occur_date=od, advance_amount=Decimal(amt))
+        mk('100', 2026, 5, date(2026, 5, 10))    # 区间内(有日期)
+        mk('200', 2026, 6, None)                 # 区间内(无日期,按 2026-06 落月)
+        mk('400', 2026, 8, date(2026, 8, 1))     # 区间外
+        params = {'direction': '预收', 'start_date': '2026-05-01', 'end_date': '2026-06-30'}
+        r = self.client.get('/api/pk/ar/advances', params, **self.auth(admin)).json()['data']
+        self.assertEqual(r['total'], 2)                                   # 列表随区间
+        s = r['summary']['预收']
+        self.assertEqual(s['count'], 2)                                   # 筛选汇总随区间
+        self.assertEqual(Decimal(s['advance_amount']), Decimal('300'))    # 100+200,不含区间外400
+        k = self.client.get('/api/pk/ar/advances/kpi', params, **self.auth(admin)).json()['data']
+        self.assertEqual(k['预收']['count'], 2)                           # KPI 同口径
+        self.assertEqual(k['预收']['advance_amount'], 300.0)
+
+    def test_ar_record_soft_delete_trash_and_guards(self):
+        """应收软删除:回收站可还原;有回款仅超管可 force;预收抵扣一律拦;
+        软删后列表/未收聚合/现金流全部排除。"""
+        admin = self.make_user('13911100091', 'finance_director', role='super_admin')
+        op = self.make_user('13911100090', 'finance_director')   # 非超管、有删除权限
+        proj = self.create_project()
+        rec = self._ar_record(proj, 1000)
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('400'),
+                                 payment_date=date(2026, 6, 10), source='回款')
+        # 非超管删有回款的应收 → 403
+        r = self.client.delete(f'/api/pk/ar/records/{rec.id}', **self.auth(op))
+        self.assertEqual(r.status_code, 403, r.content)
+        # 超管不带 force → 409;带 force → 软删
+        r2 = self.client.delete(f'/api/pk/ar/records/{rec.id}', **self.auth(admin))
+        self.assertEqual(r2.status_code, 409, r2.content)
+        r3 = self.client.delete(f'/api/pk/ar/records/{rec.id}?force=1', **self.auth(admin))
+        self.assertEqual(r3.status_code, 200, r3.content)
+        self.assertFalse(ARRecord.objects.filter(pk=rec.id).exists())        # 默认管理器不可见
+        self.assertTrue(ARRecord.all_objects.filter(pk=rec.id).exists())     # 数据仍在
+        self.assertTrue(ARPayment.objects.filter(ar_record_id=rec.id).exists())  # 回款保留
+        # 现金流排除软删记录的回款
+        cf = self.client.get('/api/pk/ar/cashflow?start_date=2026-06-01&end_date=2026-06-30',
+                             **self.auth(admin)).json()['data']
+        self.assertEqual(cf['totals']['collected'], [0.0])
+        # 回收站列表可见 → 还原 → 回到台账,未收重算正确
+        t = self.client.get('/api/pk/ar/records/trash', **self.auth(admin)).json()['data']
+        self.assertEqual(t['total'], 1)
+        rr = self.post('/api/pk/ar/records/trash', {'action': 'restore', 'ids': [rec.id]}, admin)
+        self.assertEqual(rr.json()['data']['count'], 1, rr.content)
+        rec2 = ARRecord.objects.get(pk=rec.id)
+        self.assertEqual(rec2.outstanding_amount, Decimal('600'))
+        cf2 = self.client.get('/api/pk/ar/cashflow?start_date=2026-06-01&end_date=2026-06-30',
+                              **self.auth(admin)).json()['data']
+        self.assertEqual(cf2['totals']['collected'], [400.0])
+        # 预收抵扣拦截:核销生成抵扣回款后,连超管 force 也不能删
+        adv = AdvanceRecord.objects.create(
+            direction='预收', project=proj, delivery_dept=self.dept, counterparty='Contract A',
+            occur_year=2026, occur_month=5, occur_date=date(2026, 5, 1),
+            advance_amount=Decimal('300'))
+        w = self.post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
+                      {'amount': '100', 'writeoff_date': '2026-06-15', 'ar_record_id': rec.id}, admin)
+        self.assertEqual(w.status_code, 200, w.content)
+        r4 = self.client.delete(f'/api/pk/ar/records/{rec.id}?force=1', **self.auth(admin))
+        self.assertEqual(r4.status_code, 409, r4.content)
+        self.assertIn('预收抵扣', r4.json().get('error', ''))
+
+    def test_payment_future_date_rejected(self):
+        """回款日期不得晚于今天:未来日期会提前美化当期回款/现金流/账龄。"""
+        admin = self.make_user('13911100098', 'finance_director', role='super_admin')
+        proj = self.create_project()
+        ar = self._ar_record(proj, 1000)
+        future = (date.today() + timedelta(days=3)).isoformat()
+        r = self.post(f'/api/pk/ar/records/{ar.id}/payments',
+                      {'amount': '100', 'payment_date': future}, admin)
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertIn('不能晚于今天', r.json().get('error', ''))
+        # 今天 → 放行
+        r2 = self.post(f'/api/pk/ar/records/{ar.id}/payments',
+                       {'amount': '100', 'payment_date': str(date.today())}, admin)
+        self.assertEqual(r2.status_code, 200, r2.content)
+
+    def test_collection_logs_cross_dept_denied(self):
+        """催收日志(旧兼容垫片):跨部门读写须 403——回归漏掉部门作用域+写权限的越权洞。"""
+        admin = self.make_user('13911100097', 'finance_director', role='super_admin')
+        other_op = self.make_user('13911100096', 'finance_director',
+                                  departments=['运输事业部'])   # 只授权运输
+        proj = self.create_project()          # 劳务事业部的项目
+        ar = self._ar_record(proj, 1000)
+        # 跨部门 POST → 403
+        r = self.post(f'/api/pk/ar/records/{ar.id}/collection-logs',
+                      {'log_type': 'call', 'note': 'x'}, other_op)
+        self.assertEqual(r.status_code, 403, r.content)
+        # 本部门(超管) → 放行
+        r2 = self.post(f'/api/pk/ar/records/{ar.id}/collection-logs',
+                       {'log_type': 'call', 'note': '正常跟进'}, admin)
+        self.assertEqual(r2.status_code, 200, r2.content)
+        # 跨部门 GET 明细 → 403
+        r3 = self.client.get(f'/api/pk/ar/records/{ar.id}/collection-logs',
+                             **self.auth(other_op))
+        self.assertEqual(r3.status_code, 403, r3.content)
+
+    def test_edit_payment_over_outstanding_rejected_no_corruption(self):
+        """编辑回款金额改大到超过应收:必须拒绝,且不得留下「金额已改、未收陈旧」的坏账。"""
+        admin = self.make_user('13911100099', 'finance_director', role='super_admin')
+        proj = self.create_project()
+        ar = self._ar_record(proj, 1000)
+        pay = ARPayment.objects.create(ar_record=ar, payment_no=1, amount=Decimal('300'),
+                                       payment_date=date(2026, 3, 10), source='回款')
+        ar.refresh_from_db()
+        self.assertEqual(ar.outstanding_amount, Decimal('700'))
+        # 改到 1200(> 上限 700+300=1000) → 400,且金额与未收都不变
+        r = self.client.put(f'/api/pk/ar/records/{ar.id}/payments/{pay.id}',
+                            data=json.dumps({'amount': '1200'}),
+                            content_type='application/json', **self.auth(admin))
+        self.assertEqual(r.status_code, 400, r.content)
+        pay.refresh_from_db(); ar.refresh_from_db()
+        self.assertEqual(pay.amount, Decimal('300'))
+        self.assertEqual(ar.outstanding_amount, Decimal('700'))   # 未被污染
+        # 改到 1000(=上限) → 放行,未收归 0
+        r2 = self.client.put(f'/api/pk/ar/records/{ar.id}/payments/{pay.id}',
+                             data=json.dumps({'amount': '1000'}),
+                             content_type='application/json', **self.auth(admin))
+        self.assertEqual(r2.status_code, 200, r2.content)
+        ar.refresh_from_db()
+        self.assertEqual(ar.outstanding_amount, Decimal('0'))
+
     def test_writeoff_offsets_ar_record_and_reverses_on_delete(self):
         admin = self.make_user('13911100010', 'finance_director', role='super_admin')
         proj = self.create_project()
@@ -1608,14 +1911,24 @@ class AdvanceModuleTests(TestCase):
 
     def test_offset_with_standalone_advance(self):
         admin = self.make_user('13911100015', 'finance_director', role='super_admin')
+        # 散单预收匹配纪律（与批量核销一致）：仅能冲抵「客户名称＝往来单位」的应收
         proj = ARProject.objects.create(
-            customer_name='合同R', short_name='项目R', delivery_dept=self.dept,
+            customer_name='ACME', short_name='项目R', delivery_dept=self.dept,
             sales_contact='S', project_manager='M')
         ar = self._ar_record(proj, 100000)
+        other_proj = ARProject.objects.create(
+            customer_name='别家客户', short_name='项目R2', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M')
+        ar_other = self._ar_record(other_proj, 50000)
         adv = AdvanceRecord.objects.create(   # 散单预收，无项目
             direction='预收', delivery_dept=self.dept, counterparty='ACME',
             occur_year=2026, occur_month=3, occur_date=date(2026, 3, 1),
             advance_amount=Decimal('60000'))
+        # 跨客户冲抵 → 拒绝（防 A 客户预收错核到 B 客户应收）
+        bad = self.post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
+                        {'amount': 1000, 'writeoff_date': '2026-03-20',
+                         'ar_record_id': ar_other.id}, admin)
+        self.assertEqual(bad.status_code, 400)
         w = self.post(f'/api/pk/ar/advances/{adv.id}/writeoffs',
                       {'amount': 60000, 'writeoff_date': '2026-03-20',
                        'ar_record_id': ar.id}, admin)
@@ -2460,6 +2773,30 @@ class CashPoolTests(TestCase):
         self.assertEqual(Decimal(pool['projection']['d30_with_pipeline']), Decimal('9325'))
         self.assertEqual(pool['warning']['status'], 'ok')
 
+    def test_prepaid_writeoff_is_noncash_pool_balance_unchanged(self):
+        """预付核销为非现金结转：核销不得改变资金池余额——现金已在预付发生时流出，
+        核销只是把预付资产结转到应付上。旧口径 -(p-po) 会凭空加回 po 虚增余额。"""
+        from ar.views.pool import _pool_balance
+        from ar.models import CashPoolConfig
+        from paikuan.models import Payment as PkPayment
+        cfg = CashPoolConfig.objects.create(
+            delivery_dept='劳务事业部', initial_date=self.today - self.td(days=60),
+            initial_amount=Decimal('10000'))
+        adv = AdvanceRecord.objects.create(
+            delivery_dept='劳务事业部', direction='预付', occur_year=2026, occur_month=5,
+            occur_date=self.today - self.td(days=30), advance_amount=Decimal('1000'))
+        pay = PkPayment.objects.create(
+            department='劳务事业部', project_desc='核销', payee='供应商',
+            total_amount=Decimal('1000'), planned_date=self.today - self.td(days=5))
+        before = _pool_balance('劳务事业部', cfg, self.today)     # 已含 −1000 预付现金流出
+        self.assertEqual(before, Decimal('9000'))                 # 10000 − 1000 预付
+        AdvanceWriteoff.objects.create(
+            advance_record=adv, writeoff_no=1, amount=Decimal('1000'),
+            writeoff_date=self.today - self.td(days=5), payment=pay)
+        after = _pool_balance('劳务事业部', cfg, self.today)
+        self.assertEqual(after, before)                           # 核销 0 现金，余额不变
+        self.assertEqual(after, Decimal('9000'))
+
     def test_dept_scoping_and_transfer_permission(self):
         self._config()
         res = self.client.get('/api/pk/ar/pool', **self.auth(self.cashier))
@@ -2560,6 +2897,36 @@ class AuditHardeningTests(TestCase):
         d = next(r for r in res2.json()['data']['rows'] if r['dept'] == '运输事业部')
         self.assertEqual(d['estimated'], 1000.0)
         self.assertEqual(d['collected'], 300.0)
+
+    def test_project_cashflow_inflow_excludes_noncash_sources(self):
+        """项目现金流「流入」须排除非现金来源(预收抵扣/内部往来),否则虚增现金流入。"""
+        proj = ARProject.objects.create(customer_name='现金客户', short_name='现金项目',
+                                        delivery_dept='运输事业部', sales_contact='甲',
+                                        project_manager='乙')
+        rec = ARRecord.objects.create(project=proj, operation_year=self.today.year,
+                                      operation_month=1, estimated_amount=Decimal('1000'))
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('300'),
+                                 payment_date=self.today, source='回款')
+        ARPayment.objects.create(ar_record=rec, payment_no=2, amount=Decimal('200'),
+                                 payment_date=self.today, source='预收抵扣')   # 非现金
+        res = self.client.get(f'/api/pk/ar/analytics/project-cashflow?year={self.today.year}',
+                              **self.auth(self.admin))
+        row = next(r for r in res.json()['data']['rows'] if r['project'] == '现金项目')
+        self.assertEqual(row['inflow'], 300.0)   # 仅回款计入,预收抵扣不计
+
+    def test_by_dept_month_target_no_double_count_within_month_overdue(self):
+        """本月内已逾期的应收:month_target=当期未到期+逾期,同一笔不得双计。"""
+        today = self.today
+        proj = ARProject.objects.create(customer_name='目标客户', short_name='目标项目',
+                                        delivery_dept='运输事业部', sales_contact='甲',
+                                        project_manager='乙')
+        rec = ARRecord.objects.create(project=proj, operation_year=today.year,
+                                      operation_month=today.month, estimated_amount=Decimal('1000'))
+        # 到期日=本月月初(≤今天):是「本月内(已)到期」,不能既进 overdue 又进 current
+        ARRecord.objects.filter(pk=rec.pk).update(due_date=today.replace(day=1))
+        res = self.client.get('/api/pk/ar/analytics/by-dept', **self.auth(self.admin))
+        d = next(r for r in res.json()['data']['rows'] if r['dept'] == '运输事业部')
+        self.assertEqual(d['month_target'], 1000.0)   # 修复前会因重叠算成 2000
 
     # ── 3. approval_export 三连：页面闸口 / 行数上限存在性由代码保证，测闸口 ──
     def test_approval_export_requires_page_permission(self):
@@ -3380,8 +3747,10 @@ class InvoiceBatchWorkbenchTests(TestCase):
     def test_batch_payment_fifo_allocation(self):
         # 回款 3200：先结清 r1(1000)，再结清 r2(2500口径中的2200... 注意未收=上账+差额)
         # r1 未收1000，r2 未收2500，r3 未收3000；3200 → r1全收1000 + r2收2200（剩300）
+        # 回款日期须为实际收款日（不得晚于今天），用相对日期避免撞未来日期闸
         resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/payment',
-                                data=json.dumps({'amount': '3200', 'payment_date': '2026-07-20',
+                                data=json.dumps({'amount': '3200',
+                                                 'payment_date': str(date.today() - timedelta(days=2)),
                                                  'notes': '建行到账'}),
                                 content_type='application/json', **self.auth())
         self.assertEqual(resp.status_code, 200, resp.content)
@@ -3395,19 +3764,42 @@ class InvoiceBatchWorkbenchTests(TestCase):
         self.assertTrue(self.r1.payments.filter(notes__contains='PF-001').exists())
         # 第二次回款 300+3000=3300 全部结清
         resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/payment',
-                                data=json.dumps({'amount': '3300', 'payment_date': '2026-08-05'}),
+                                data=json.dumps({'amount': '3300',
+                                                 'payment_date': str(date.today())}),
                                 content_type='application/json', **self.auth())
         self.assertEqual(resp.status_code, 200, resp.content)
         self.r2.refresh_from_db(); self.r3.refresh_from_db()
         self.assertEqual(self.r2.outstanding_amount, Decimal('0'))
         self.assertEqual(self.r3.outstanding_amount, Decimal('0'))
 
+    def test_batch_payment_overflow_to_advance(self):
+        """多收自动转预收:到账>批次未收且勾选时,超出部分按客户建预收,应收冲至结清。"""
+        total_out = float(self.r1.outstanding_amount + self.r2.outstanding_amount
+                          + self.r3.outstanding_amount)
+        pay = total_out + 800.0
+        resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/payment',
+                                data=json.dumps({'amount': str(pay),
+                                                 'payment_date': str(date.today()),
+                                                 'overflow_to_advance': True}),
+                                content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(Decimal(d['advance_amount']), Decimal('800'))
+        adv = AdvanceRecord.objects.get(pk=d['advance_id'])
+        self.assertEqual(adv.direction, '预收')
+        self.assertEqual(adv.advance_amount, Decimal('800'))
+        self.assertIn('多收自动转预收', adv.notes)
+        for r in (self.r1, self.r2, self.r3):
+            r.refresh_from_db()
+            self.assertEqual(r.outstanding_amount, Decimal('0'))   # 应收全结清
+
     def test_batch_payment_over_outstanding_rejected(self):
         resp = self.client.post('/api/pk/ar/records/invoice-batches/PF-001/payment',
-                                data=json.dumps({'amount': '99999', 'payment_date': '2026-07-20'}),
+                                data=json.dumps({'amount': '99999',
+                                                 'payment_date': str(date.today())}),
                                 content_type='application/json', **self.auth())
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn('预收', resp.json()['error'])
+        self.assertEqual(resp.status_code, 409)   # 未勾选转预收 → 可操作的冲突提示
+        self.assertIn('转预收', resp.json()['error'])
 
     def test_batch_not_found(self):
         resp = self.client.get('/api/pk/ar/records/invoice-batches/不存在', **self.auth())

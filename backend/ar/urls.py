@@ -34,6 +34,7 @@ urlpatterns = [
     path('records/payments', views.ar_payment_ledger),
     path('records/payments/export', views.ar_payment_ledger_export),
     path('records/collection', views.ar_collection_workbench),
+    path('records/collection/export', views.ar_collection_workbench_export),
     path('records/collection/dunning', views.ar_collection_dunning),
     path('records/invoice-batches', views.ar_invoice_batches),
     path('records/invoice-batches/<str:batch_no>', views.ar_invoice_batch_detail),
@@ -50,6 +51,7 @@ urlpatterns = [
     path('records/recompute', views.ar_records_recompute_bulk),
     path('records/bulk-assign-collector', views.ar_records_bulk_assign_collector),
     path('records/bulk-delete', views.ar_records_bulk_delete),
+    path('records/trash', views.ar_records_trash),
     path('records/<int:pk>', views.ar_record_detail),
     path('records/<int:pk>/recompute', views.ar_record_recompute),
     path('records/<int:pk>/payments', views.ar_payments),
@@ -72,6 +74,7 @@ urlpatterns = [
 
     # 预收预付 (advances)
     path('advances', views.advances),
+    path('advances/bulk-delete', views.advances_bulk_delete),
     path('advances/kpi', views.advances_kpi),
     path('advances/summary', views.advances_summary),
     path('advances/available', views.advances_available),
@@ -113,6 +116,7 @@ urlpatterns = [
 
     # Cashflow comparison
     path('cashflow', views.cashflow),
+    path('cashflow/export', views.cashflow_export),
 
     # 周期报表（周报 / 月报）
     path('periodic-report', views.periodic_report),
@@ -124,6 +128,13 @@ urlpatterns = [
     path('pool/transfers', views.cash_pool_transfers),
     path('pool/transfers/<int:pk>', views.cash_pool_transfer_detail),
     path('pool/transfers/<int:pk>/review', views.cash_pool_transfer_review),
+
+    # 日常收款 (daily receipts)
+    path('daily-receipts', views.daily_receipts),
+    path('daily-receipts/export', views.daily_receipts_export),
+    path('daily-receipts/bulk-delete', views.daily_receipts_bulk_delete),
+    path('daily-receipts/advances', views.daily_receipt_advances),
+    path('daily-receipts/<int:pk>', views.daily_receipt_detail),
 
     # Budget
     path('budget/collection', views.budget_collection),

@@ -1,5 +1,19 @@
 # Change Log
 
+## 2026-06-27
+
+### Paikuan system
+
+- 表格密度切换（紧凑/适中/宽松），CSS 变量驱动、localStorage 持久化、侧边栏一键循环。
+- 排款超预算预警：排款弹窗实时联动本月预算余量，超支橙色警示（`/approvals/budget-check`）。
+- 软删 + 回收站：审批/付款批量删除改软删，新增回收站页可还原/彻底删除（`/trash/*`）。
+- 统一空/错/加载状态插画体系：EmptyState 升级为 SVG 线性插画（空/错误/加载/无结果/无权限）。
+- 大数据量异步导出：同步导出超 5000 行自动转后台任务，完成后自动下载（`/exports/*`）。
+- 定时维护命令（供外部 cron 调用）：
+  - `python manage.py pk_housekeeping` — 回收站自动清理（默认 30 天）+ 导出任务清理（默认 7 天）。
+  - `python manage.py pk_aging_digest` — 逾期未付 + 本月预算预警日报（支持 `--json`）。
+  - 建议 crontab：`0 3 * * * … pk_housekeeping`，`30 8 * * 1-5 … pk_aging_digest`。
+
 ## 2026-05-26
 
 ### Paikuan system

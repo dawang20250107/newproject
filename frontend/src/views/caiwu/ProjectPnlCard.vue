@@ -111,7 +111,7 @@ const monthlyOption = computed(() => {
           </div>
           <div class="pnl-kpi risk">
             <div class="t">逾期未收</div>
-            <div class="v" :style="{ color: data.totals.overdue > 0 ? '#c62828' : '#2e7d32' }">{{ fmtWan(data.totals.overdue) }}</div>
+            <div class="v" :style="{ color: data.totals.overdue > 0 ? 'var(--c-danger)' : 'var(--c-success)' }">{{ fmtWan(data.totals.overdue) }}</div>
             <div class="s">逾期占比 {{ fmtPct(data.totals.overdue_rate) }}</div>
           </div>
         </div>
@@ -124,11 +124,11 @@ const monthlyOption = computed(() => {
         <div v-if="data.payment_side" class="pnl-block-title">付款侧（排款台账）<span class="tip">{{ data.payment_side.count }} 笔排款</span></div>
         <div v-if="data.payment_side" class="pnl-payside">
           <span><i>计划付款</i><b>{{ fmtWan(data.payment_side.planned) }}</b></span>
-          <span><i>已付</i><b style="color:#c62828">−{{ fmtWan(data.payment_side.paid) }}</b></span>
+          <span><i>已付</i><b style="color:var(--c-danger)">−{{ fmtWan(data.payment_side.paid) }}</b></span>
           <span v-if="data.payment_side.prepaid_offset > 0"><i>预付冲抵</i><b>{{ fmtWan(data.payment_side.prepaid_offset) }}</b></span>
           <span><i>待付</i><b>{{ fmtWan(data.payment_side.remaining) }}</b></span>
           <span><i>项目净现金（回款−已付）</i>
-            <b :style="{ color: data.payment_side.net_cash >= 0 ? '#2e7d32' : '#c62828' }">{{ fmtWan(data.payment_side.net_cash) }}</b></span>
+            <b :style="{ color: data.payment_side.net_cash >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ fmtWan(data.payment_side.net_cash) }}</b></span>
         </div>
 
         <div class="pnl-block-title">回款流水<span class="tip">{{ data.payments?.length || 0 }} 笔</span></div>
@@ -174,7 +174,7 @@ const monthlyOption = computed(() => {
 .pnl-kpi .v { font-size: 20px; font-weight: 800; color: #5f4d3d; margin: 2px 0; }
 .pnl-kpi .s { font-size: 11px; color: #8a7665; }
 .pnl-kpi.profit { border-left: 3px solid #00897b; }
-.pnl-kpi.cash { border-left: 3px solid #1565c0; }
+.pnl-kpi.cash { border-left: 3px solid var(--c-info); }
 .pnl-kpi.risk { border-left: 3px solid #e53935; }
 .pnl-block-title { font-size: 13.5px; font-weight: 700; color: #5f4d3d; margin: 6px 0 6px; }
 .pnl-block-title .tip { font-size: 11px; font-weight: 400; color: #9b8070; margin-left: 8px; }
@@ -184,9 +184,9 @@ const monthlyOption = computed(() => {
   display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 12.5px;
   border-left: 2px solid rgba(180,140,110,.25); padding-left: 14px; position: relative;
 }
-.flow-item .dot { position: absolute; left: -5px; width: 8px; height: 8px; border-radius: 50%; background: #2e7d32; }
+.flow-item .dot { position: absolute; left: -5px; width: 8px; height: 8px; border-radius: 50%; background: var(--c-success); }
 .flow-item .fdate { color: #6b5a4a; font-variant-numeric: tabular-nums; min-width: 88px; }
-.flow-item .famt { color: #2e7d32; font-weight: 700; min-width: 72px; }
+.flow-item .famt { color: var(--c-success); font-weight: 700; min-width: 72px; }
 .flow-item .fsrc { color: #8a7665; }
 .pill { display: inline-block; padding: 1px 8px; border: 1px solid; border-radius: 10px; font-size: 11px; white-space: nowrap; }
 .pnl-payside { display: flex; flex-wrap: wrap; gap: 14px 22px; padding: 10px 12px;

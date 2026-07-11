@@ -1,8 +1,11 @@
 <script setup>
+import { confirmDlg } from '../../composables/confirm.js'
 import { ref, onMounted } from 'vue'
 import { BUSINESS_UNITS } from '../../constants.js'
 import api from '../../api/caiwu.js'
 import EmptyState from '../../components/EmptyState.vue'
+import { useToast } from '../../composables/useToast.js'
+const toast = useToast()
 
 const tab = ref('l1')  // 'l1' | 'l2' | 'l3'
 
@@ -35,9 +38,9 @@ async function saveL1() {
 }
 
 async function deleteL1(id) {
-  if (!confirm('确认删除该一级科目？')) return
+  if (!(await confirmDlg('确认删除该一级科目？'))) return
   try { await api.delete(`/categories/l1/${id}`); await loadL1() }
-  catch (e) { alert(e?.error || '删除失败') }
+  catch (e) { toast.error(e?.error || '删除失败') }
 }
 
 function openL1Form(cat = null) {
@@ -72,9 +75,9 @@ async function saveL2() {
 }
 
 async function deleteL2(id) {
-  if (!confirm('确认删除？')) return
+  if (!(await confirmDlg('确认删除？'))) return
   try { await api.delete(`/categories/l2/${id}`); await loadL2() }
-  catch (e) { alert(e?.error || '删除失败') }
+  catch (e) { toast.error(e?.error || '删除失败') }
 }
 
 // ── L3 categories ───────────────────────────────────────
@@ -101,9 +104,9 @@ async function saveL3() {
 }
 
 async function deleteL3(id) {
-  if (!confirm('确认删除？')) return
+  if (!(await confirmDlg('确认删除？'))) return
   try { await api.delete(`/categories/l3/${id}`); await loadL3() }
-  catch (e) { alert(e?.error || '删除失败') }
+  catch (e) { toast.error(e?.error || '删除失败') }
 }
 
 function switchTab(t) {
@@ -336,7 +339,7 @@ onMounted(() => { loadL1() })
 /* 错误提示条（紧凑）*/
 .error-banner {
   margin-bottom: 10px; padding: 7px 11px; border-radius: 8px;
-  font-size: 13px; color: var(--danger, #c62828);
+  font-size: 13px; color: var(--danger, var(--c-danger));
   background: rgba(198,40,40,0.08); border: 1px solid rgba(198,40,40,0.18);
 }
 

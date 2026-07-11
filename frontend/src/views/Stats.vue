@@ -92,12 +92,12 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
         </div>
         <div class="kpi-card">
           <div class="label">已付金额</div>
-          <div class="value" style="color:#2e7d32">{{ fmt(data.total_paid) }}</div>
+          <div class="value" style="color:var(--c-success)">{{ fmt(data.total_paid) }}</div>
           <div class="sub">完成率 {{ data.completion_rate }}%</div>
         </div>
         <div class="kpi-card">
           <div class="label">本期未付</div>
-          <div class="value" :style="parseFloat(data.total_remaining)>0?'color:#c62828':''">{{ fmt(data.total_remaining) }}</div>
+          <div class="value" :style="parseFloat(data.total_remaining)>0?'color:var(--c-danger)':''">{{ fmt(data.total_remaining) }}</div>
           <div class="sub">累计应付未付 {{ fmt(data.total_outstanding) }}</div>
         </div>
         <div class="kpi-card">
@@ -269,7 +269,7 @@ const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
   cursor: pointer;
   transition: all 0.16s;
 }
-.dept-chip-clear:hover { border-color: #c62828; color: #c62828; }
+.dept-chip-clear:hover { border-color: var(--c-danger); color: var(--c-danger); }
 .amt-carry { color: #b26a00; font-weight: 600; }
 .carry-badge {
   display: inline-block;

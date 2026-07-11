@@ -1,6 +1,11 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { confirmDlg } from '../../composables/confirm.js'
+import { ref, computed, onMounted, watch } from 'vue'
 import ar from '../../api/ar.js'
+import { useToast } from '../../composables/useToast.js'
+import { todayCST } from '../../constants.js'
+import EmptyState from '../../components/EmptyState.vue'
+const toast = useToast()
 
 const props = defineProps({
   embedded: Boolean,
@@ -14,8 +19,6 @@ const loading = ref(false)
 const err = ref('')
 const filterStatus = ref('')
 const filterBu = ref('')
-const toast = ref('')
-let toastTimer = null
 
 const editItem = ref(null)   // item being edited in modal
 const editForm = ref({})
@@ -23,11 +26,6 @@ const showForm = ref(false)  // new-item form
 
 const newForm = ref({ title: '', description: '', bu: '', priority: 'medium', assignee: '', due_date: '' })
 
-function showToast(msg) {
-  toast.value = msg
-  clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => { toast.value = '' }, 2200)
-}
 
 async function load() {
   loading.value = true; err.value = ''
@@ -48,14 +46,14 @@ async function load() {
 
 async function createItem() {
   const t = newForm.value.title.trim()
-  if (!t) return showToast('标题不能为空')
+  if (!t) return toast.error('标题不能为空')
   try {
     await ar.createAction({ ...newForm.value, bu: newForm.value.bu || props.selectedBu })
     showForm.value = false
     newForm.value = { title: '', description: '', bu: '', priority: 'medium', assignee: '', due_date: '' }
     await load()
-    showToast('✓ 已创建')
-  } catch (e) { showToast(e?.error || '创建失败') }
+    toast.success('已创建')
+  } catch (e) { toast.error(e?.error || '创建失败') }
 }
 
 function startEdit(item) {
@@ -68,8 +66,8 @@ async function saveEdit() {
     await ar.updateAction(editItem.value.id, editForm.value)
     editItem.value = null
     await load()
-    showToast('✓ 已保存')
-  } catch (e) { showToast(e?.error || '保存失败') }
+    toast.success('已保存')
+  } catch (e) { toast.error(e?.error || '保存失败') }
 }
 
 async function setStatus(item, status) {
@@ -77,16 +75,16 @@ async function setStatus(item, status) {
     await ar.updateAction(item.id, { status })
     item.status = status
     await load()
-  } catch (e) { showToast(e?.error || '更新失败') }
+  } catch (e) { toast.error(e?.error || '更新失败') }
 }
 
 async function deleteItem(item) {
-  if (!confirm(`确认删除「${item.title}」？`)) return
+  if (!(await confirmDlg(`确认删除「${item.title}」？`))) return
   try {
     await ar.deleteAction(item.id)
     await load()
-    showToast('已删除')
-  } catch (e) { showToast(e?.error || '删除失败') }
+    toast.success('已删除')
+  } catch (e) { toast.error(e?.error || '删除失败') }
 }
 
 const PRIORITY_LABEL = { high: '高', medium: '中', low: '低' }
@@ -110,6 +108,8 @@ function nextStatusLabel(item) {
 }
 
 onMounted(load)
+// 驾驶舱切换事业部后行动项范围随之刷新（组件被 KeepAlive 缓存，onMounted 只跑一次）
+watch(() => props.selectedBu, load)
 </script>
 
 <template>
@@ -153,8 +153,8 @@ onMounted(load)
       </div>
     </div>
 
-    <div v-if="loading" class="ap-empty">加载中…</div>
-    <div v-else-if="err" class="ap-empty err">{{ err }}</div>
+    <EmptyState v-if="loading" loading />
+    <EmptyState v-else-if="err" :error="err" />
 
     <!-- kanban columns -->
     <div v-else class="ap-kanban">
@@ -171,7 +171,7 @@ onMounted(load)
           <div v-if="item.description" class="apc-desc">{{ item.description }}</div>
           <div class="apc-meta">
             <span v-if="item.assignee">👤 {{ item.assignee }}</span>
-            <span v-if="item.due_date" :class="{ overdue: new Date(item.due_date) < new Date() && item.status !== 'done' }">
+            <span v-if="item.due_date" :class="{ overdue: item.due_date < todayCST() && item.status !== 'done' }">
               📅 {{ item.due_date }}
             </span>
           </div>
@@ -224,7 +224,6 @@ onMounted(load)
       </div>
     </Teleport>
 
-    <div v-if="toast" class="ap-toast">{{ toast }}</div>
   </div>
 </template>
 
@@ -233,16 +232,16 @@ onMounted(load)
 .ap-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .ap-title { font-size: 16px; font-weight: 700; color: #4a3728; }
 .ap-controls { display: flex; gap: 8px; align-items: center; }
-.ap-sel { padding: 4px 8px; border: 1px solid #d4b896; border-radius: 6px; background: #faf8f5; font-size: 13px; color: #4a3728; }
-.ap-btn-add { padding: 5px 14px; background: #2e7d32; color: #fff; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.ap-sel { padding: 4px 28px 4px 8px; border: 1px solid #d4b896; border-radius: 6px; background-color: #faf8f5; font-size: 13px; color: #4a3728; }
+.ap-btn-add { padding: 5px 14px; background: var(--c-success); color: #fff; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; }
 .ap-btn-add:hover { background: #1b5e20; }
 .ap-btn-cancel { padding: 5px 14px; background: #e8e0d8; color: #4a3728; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; }
 
 .ap-count-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
 .ap-chip { padding: 3px 10px; border-radius: 12px; font-size: 12px; }
-.ap-chip-open { background: #fce4e4; color: #c62828; }
-.ap-chip-in_progress { background: #fff3e0; color: #e65100; }
-.ap-chip-done { background: #e8f5e9; color: #2e7d32; }
+.ap-chip-open { background: #fce4e4; color: var(--c-danger); }
+.ap-chip-in_progress { background: #fff3e0; color: var(--c-warn); }
+.ap-chip-done { background: #e8f5e9; color: var(--c-success); }
 .ap-chip-dismissed { background: #f3f3f3; color: #9e9e9e; }
 
 .ap-form { padding: 14px; margin-bottom: 14px; background: #fefcf9; border: 1px solid #e2d5c3; border-radius: 10px; }
@@ -257,32 +256,32 @@ onMounted(load)
 .ap-col-count { background: #e2d5c3; border-radius: 10px; padding: 0 7px; font-size: 11px; }
 .ap-col-empty { color: #9e9e9e; font-size: 13px; text-align: center; padding: 20px 0; }
 
-.ap-card { background: #fff; border-radius: 8px; padding: 10px; margin-bottom: 8px; border: 1px solid #e8ddd0; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+.ap-card { background: var(--row-bg); border-radius: 8px; padding: 10px; margin-bottom: 8px; border: 1px solid #e8ddd0; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
 .ap-card-dim { opacity: 0.6; }
 .apc-top { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
 .apc-priority { font-size: 11px; font-weight: 700; }
-.apc-bu { font-size: 11px; background: #e3f2fd; color: #1565c0; border-radius: 4px; padding: 0 6px; }
+.apc-bu { font-size: 11px; background: #e3f2fd; color: var(--c-info); border-radius: 4px; padding: 0 6px; }
 .apc-cat { font-size: 11px; }
 .apc-title { font-size: 13px; font-weight: 600; color: #2d2010; margin-bottom: 4px; line-height: 1.4; }
 .apc-desc { font-size: 12px; color: #6b5a4a; margin-bottom: 6px; }
 .apc-meta { font-size: 11px; color: #8a7060; display: flex; gap: 10px; margin-bottom: 6px; }
-.overdue { color: #c62828 !important; font-weight: 700; }
+.overdue { color: var(--c-danger) !important; font-weight: 700; }
 .apc-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.apc-btn-status { font-size: 11px; padding: 2px 8px; background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; border-radius: 4px; cursor: pointer; white-space: nowrap; }
-.apc-btn-edit { font-size: 11px; padding: 2px 8px; background: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; border-radius: 4px; cursor: pointer; }
-.apc-btn-del { font-size: 11px; padding: 2px 8px; background: #fce4e4; color: #c62828; border: 1px solid #ef9a9a; border-radius: 4px; cursor: pointer; }
+.apc-btn-status { font-size: 11px; padding: 2px 8px; background: #e8f5e9; color: var(--c-success); border: 1px solid #a5d6a7; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+.apc-btn-edit { font-size: 11px; padding: 2px 8px; background: #e3f2fd; color: var(--c-info); border: 1px solid #90caf9; border-radius: 4px; cursor: pointer; }
+.apc-btn-del { font-size: 11px; padding: 2px 8px; background: #fce4e4; color: var(--c-danger); border: 1px solid #ef9a9a; border-radius: 4px; cursor: pointer; }
 
 .ap-dismissed { margin-top: 16px; color: #9e9e9e; font-size: 13px; }
 .ap-dismissed summary { cursor: pointer; margin-bottom: 6px; }
 
 .ap-empty { text-align: center; padding: 40px; color: #9e9e9e; }
-.ap-empty.err { color: #c62828; }
+.ap-empty.err { color: var(--c-danger); }
 
 .ap-modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 4000; display: flex; align-items: center; justify-content: center; }
-.ap-modal { background: #fff; border-radius: 14px; padding: 24px; width: 440px; max-width: 95vw; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+.ap-modal { background: var(--row-bg); border-radius: 14px; padding: 24px; width: 440px; max-width: 95vw; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
 .ap-modal-title { font-size: 16px; font-weight: 700; color: #4a3728; margin-bottom: 16px; }
 
-.ap-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #2e7d32; color: #fff; padding: 8px 20px; border-radius: 20px; font-size: 13px; z-index: 5000; pointer-events: none; }
+.ap-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--c-success); color: #fff; padding: 8px 20px; border-radius: 20px; font-size: 13px; z-index: 5000; pointer-events: none; }
 
 .muted { color: #9b8070; }
 @media (max-width: 768px) {

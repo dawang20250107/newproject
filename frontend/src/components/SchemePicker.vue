@@ -86,13 +86,13 @@ function openDrop() {
 .sp-wrap { position: relative; }
 .sp-btn {
   display: flex; align-items: center; gap: 5px; padding: 4px 9px; font-size: 12px; font-weight: 500;
-  border: 1.5px solid var(--border); border-radius: 6px; background: #fff; color: var(--text); cursor: pointer; white-space: nowrap;
+  border: 1.5px solid var(--border); border-radius: 6px; background: var(--row-bg); color: var(--text); cursor: pointer; white-space: nowrap;
 }
 .sp-btn:hover, .sp-btn.on { border-color: var(--primary); color: var(--primary); }
 .sp-badge { background: var(--primary); color: #fff; border-radius: 8px; padding: 0 5px; font-size: 10px; font-weight: 700; }
 .sp-drop {
   position: fixed; z-index: 4500;
-  background: #fff; border: 1.5px solid var(--border); border-radius: 10px;
+  background: var(--row-bg); border: 1.5px solid var(--border); border-radius: 10px;
   box-shadow: 0 6px 20px rgba(0,0,0,0.12); width: 264px; padding: 8px 0;
   overflow-y: auto; overscroll-behavior: contain;
 }
@@ -104,7 +104,7 @@ function openDrop() {
 .sp-save-btn:disabled { opacity: .45; cursor: default; }
 .sp-scope-row { display: flex; align-items: center; gap: 5px; padding: 7px 10px; border-bottom: 1px solid var(--border); }
 .sp-scope-lbl { font-size: 11px; color: var(--muted); }
-.sp-scope-seg { flex: 1; padding: 4px 6px; font-size: 11px; border: 1px solid var(--border); border-radius: 6px; background: #fff; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.sp-scope-seg { flex: 1; padding: 4px 6px; font-size: 11px; border: 1px solid var(--border); border-radius: 6px; background: var(--row-bg); color: var(--muted); cursor: pointer; white-space: nowrap; }
 .sp-scope-seg.on { border-color: var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); font-weight: 600; }
 .sp-scope-seg:disabled { opacity: .4; cursor: not-allowed; }
 .sp-grp { font-size: 11px; color: var(--muted); font-weight: 700; padding: 8px 12px 3px; }
@@ -114,7 +114,7 @@ function openDrop() {
 .sp-item { display: flex; align-items: center; gap: 6px; padding: 7px 12px; cursor: pointer; font-size: 13px; }
 .sp-item:hover { background: rgba(201,99,66,0.05); }
 .sp-star { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 0 2px; line-height: 1; }
-.sp-star.on, .sp-star:hover { color: #f5a623; }
+.sp-star.on, .sp-star:hover { color: var(--amber); }
 .sp-name { flex: 1; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sp-owner { font-size: 11px; color: var(--muted); }
 .sp-del { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 12px; }

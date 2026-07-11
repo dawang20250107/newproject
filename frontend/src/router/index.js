@@ -15,6 +15,7 @@ const routes = [
   { path: '/ar/contracts', component: () => import('../views/ar/ARContracts.vue'), meta: { page: 'ar_projects', fullHeight: true } },
   { path: '/ar/records', component: () => import('../views/ar/ARRecords.vue'), meta: { page: 'ar_records', fullHeight: true } },
   { path: '/ar/advances', component: () => import('../views/ar/Advances.vue'), meta: { page: 'ar_advance', fullHeight: true } },
+  { path: '/ar/daily-receipts', component: () => import('../views/ar/DailyReceipts.vue'), meta: { page: 'ar_daily_receipts', fullHeight: true } },
   { path: '/ar/budget', component: () => import('../views/ar/Budget.vue'), meta: { page: 'ar_budget', fullHeight: true } },
   // 应收分析 / 现金流分析 / 报表分析 已并入财务驾驶舱（/caiwu/cockpit）的 Tab，旧独立路由下线
   { path: '/ar/analytics', redirect: '/caiwu/cockpit' },
@@ -22,17 +23,21 @@ const routes = [
   { path: '/caiwu/charts', redirect: '/caiwu/cockpit' },
   // 财务分析 (caiwu) module
   { path: '/caiwu/report', component: () => import('../views/caiwu/Report.vue'), meta: { page: 'caiwu_report' } },
+  { path: '/caiwu/close', component: () => import('../views/caiwu/CloseChecklist.vue'), meta: { page: 'caiwu_report' } },
   { path: '/caiwu/data', component: () => import('../views/caiwu/DataImport.vue'), meta: { page: 'caiwu_data' } },
   { path: '/caiwu/project-margin', component: () => import('../views/caiwu/ProjectMargin.vue'), meta: { page: 'caiwu_charts', fullHeight: true } },
   { path: '/caiwu/project-cashflow', component: () => import('../views/caiwu/ProjectCashflow.vue'), meta: { page: 'ar_analytics', fullHeight: true } },
   { path: '/caiwu/cockpit', component: () => import('../views/caiwu/Cockpit.vue'), meta: { page: 'caiwu_cockpit' } },
   { path: '/caiwu/knowledge', component: () => import('../views/caiwu/KnowledgeBase.vue'), meta: { page: 'caiwu_cockpit' } },
   { path: '/caiwu/metrics', component: () => import('../views/caiwu/Metrics.vue'), meta: { page: 'caiwu_metrics' } },
+  // 内部往来已并入数据加工页签；旧链接重定向保持可用
+  { path: '/caiwu/internal', redirect: { path: '/caiwu/data', query: { tab: 'internal' } } },
   { path: '/caiwu/settings', component: () => import('../views/caiwu/Settings.vue'), meta: { role: 'super_admin' } },
   // Admin
   { path: '/users', component: () => import('../views/Users.vue'), meta: { role: 'super_admin', fullHeight: true } },
   { path: '/permissions', component: () => import('../views/Permissions.vue'), meta: { role: 'super_admin', fullHeight: true } },
   { path: '/audit', component: () => import('../views/AuditLogs.vue'), meta: { role: 'super_admin', fullHeight: true } },
+  { path: '/trash', component: () => import('../views/Trash.vue'), meta: { page: 'trash', fullHeight: true } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
@@ -42,6 +47,7 @@ const router = createRouter({
 })
 
 function canVisit(auth, page) {
+  if (page === 'trash') return auth.canDelete
   if (!auth.canPage(page)) return false
   // 月度统计 is entirely amount-based; hide it from users who can't view amounts.
   if (page === 'stats' && !auth.canView('total_amount')) return false
@@ -60,7 +66,11 @@ router.beforeEach((to, _from, next) => {
   if (to.meta.public) return next()
   if (!auth.isLoggedIn) return next('/login')
   if (to.meta.role === 'super_admin' && !auth.isSuperAdmin) return next(firstAllowedPage(auth))
-  if (to.meta.page && !canVisit(auth, to.meta.page)) return next(firstAllowedPage(auth))
+  if (to.meta.page && !canVisit(auth, to.meta.page)) {
+    // 数据加工页承载「内部往来」页签：仅有内往权限的用户按页签放行
+    if (to.path === '/caiwu/data' && to.query.tab === 'internal' && auth.canPage('caiwu_internal')) return next()
+    return next(firstAllowedPage(auth))
+  }
   next()
 })
 

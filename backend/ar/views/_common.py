@@ -27,13 +27,13 @@ from paikuan.views import (pk_required, ok, err, DEPARTMENTS, VALID_DEPARTMENTS,
                            AR_RECORD_FIELD_DEFS, AR_ADVANCE_FIELD_DEFS, _paid_subq,
                            _ai_review_records)
 from ar.models import (ARProject, ARRecord, ARPayment, ARAdjustment,
-                       NON_CASH_PAYMENT_SOURCES,
+                       NON_CASH_PAYMENT_SOURCES, pending_draft_q,
                        BatchInvoiceEvent,
                        CollectionBudget, PaymentBudget,
                        AdvanceRecord, AdvanceWriteoff, AdvanceInstallment,
                        Supplier, Customer,
                        Contract, ContractParty, ContractProject, ActionItem,
-                       CashPoolConfig, CashPoolTransfer)
+                       CashPoolConfig, CashPoolTransfer, DailyReceipt)
 from paikuan.models import Payment, PaymentInstallment, ApprovalRecord
 
 # ── AR page keys (must match PAGE_KEYS in paikuan/views.py) ───────────────────
@@ -52,27 +52,23 @@ def cash_flow_window(depts, start, end):
     周期报表「现金流情况」、预算管理「净现金流」共用，确保三处口径一致）：
 
       流入 = 现金回款（剔除非现金来源：预收抵扣/内部往来）+ 预收
-      流出 = 实付（扣除预付核销冲抵）+ 预付
+      流出 = 实付分期 + 预付（预付核销为非现金结转，不计入）
       净额 = 流入 − 流出
 
     返回 Decimal 字典；金额格式化由各调用方按需处理。"""
     coll = (ARPayment.objects
-            .filter(ar_record__delivery_dept__in=depts, payment_date__gte=start, payment_date__lte=end)
+            .filter(ar_record__delivery_dept__in=depts, payment_date__gte=start, payment_date__lte=end,
+                    ar_record__deleted_at__isnull=True)
             .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
             .aggregate(x=Sum('amount'))['x'] or Decimal('0'))
+    # 排除已软删除的付款台账（回收站）：删除的付款不构成现金流出
     paid = (PaymentInstallment.objects
-            .filter(payment__department__in=depts, pay_date__gte=start, pay_date__lte=end)
+            .filter(payment__department__in=depts, pay_date__gte=start, pay_date__lte=end,
+                    payment__deleted_at__isnull=True)
             .aggregate(x=Sum('pay_amount'))['x'] or Decimal('0'))
-    # 预付核销冲抵：按首个实付日期（否则计划付款日）归期，从实付中扣除
-    earliest = Subquery(PaymentInstallment.objects.filter(payment_id=OuterRef('pk'))
-                        .order_by('pay_date').values('pay_date')[:1])
-    offset = (Payment.objects
-              .filter(department__in=depts, prepaid_offset_amount__gt=0)
-              .annotate(fp=earliest)
-              .annotate(ad=Coalesce('fp', 'planned_date'))
-              .filter(ad__gte=start, ad__lte=end)
-              .aggregate(x=Sum('prepaid_offset_amount'))['x'] or Decimal('0'))
-    paid = max(Decimal('0'), paid - offset)
+    # 预付核销冲抵不从实付中扣：实付分期即本期真实付现，预付冲抵是计划的另一块
+    # （covered=已付+冲抵，互不重叠）；预付现金已在 occur_date 作为 advance_paid 计出，
+    # 核销无新现金事件。与预收核销对称（预收核销由'预收抵扣'非现金来源排除）。
     adv_recv = adv_paid = Decimal('0')
     for r in (AdvanceRecord.objects
               .filter(delivery_dept__in=depts, occur_date__gte=start, occur_date__lte=end)
@@ -478,6 +474,19 @@ def _action_denied(request, action_key):
     return _write_denied(request)
 
 
+def _action_granted(request, action_key):
+    """该操作权限是否被「显式」授予（actions[key] is True）。
+
+    与 _action_denied 的区别：不含旧配置回退写权限的兼容分支——仅显式勾选才算。
+    用于「操作权限可越过页面闸口」的场景（如出纳从付款台账核销预付，无需开通
+    「预收预付」页面），显式授予才放行，避免兼容回退意外扩大页面访问面。"""
+    perms = get_request_perms(request)
+    if perms is None:
+        return True
+    acts = perms.get('actions')
+    return isinstance(acts, dict) and acts.get(action_key) is True
+
+
 def _delete_denied(request):
     perms = get_request_perms(request)
     if perms is not None and not perms.get('can_delete', False):
@@ -567,18 +576,11 @@ def _visible_ar_export_cols(request, columns):
     return [col for col in columns if col[0] is None or ar_view.get(col[0], True)]
 
 
-_XL_FORMULA_CHARS = ('=', '+', '-', '@', '\t', '\r')
-
-
 def _export_response(wb, filename):
-    # Excel 公式注入防护（与排款导出口径一致）：全部工作表的文本单元格，
-    # 以 =+-@ 等开头的前置单引号转义。集中在导出总出口做，覆盖所有 AR 导出。
-    for ws in wb.worksheets:
-        for row in ws.iter_rows():
-            for cell in row:
-                v = cell.value
-                if isinstance(v, str) and v and v[0] in _XL_FORMULA_CHARS:
-                    cell.value = "'" + v
+    # Excel 公式注入防护：集中在导出总出口做，覆盖所有 AR 导出
+    # （全系统共享单一实现 wxcloudrun.excel_safe）。
+    from wxcloudrun.excel_safe import sanitize_workbook
+    sanitize_workbook(wb)
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -598,6 +600,40 @@ def _header_row(ws, headers, color='1565C0'):
         cell.fill = fill
         cell.font = font
         cell.alignment = Alignment(horizontal='center')
+
+
+def _disp_len(s):
+    """Excel 列宽估算：CJK 字符按 2 个单位计。"""
+    return sum(2 if ord(ch) > 127 else 1 for ch in str(s))
+
+
+def _style_export_ws(ws, money_headers=(), width_scan_rows=300):
+    """导出工作表通用美化：冻结表头、自动筛选、全表细边框、
+    金额列千分位格式、按内容自适应列宽（扫描前 N 行估宽）。"""
+    from openpyxl.styles import Border, Side
+    from openpyxl.utils import get_column_letter
+    headers = [c.value for c in ws[1]]
+    n_cols = len(headers)
+    if not n_cols or ws.max_row < 1:
+        return
+    thin = Side(style='thin', color='C9C9C9')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    money_idx = {i for i, h in enumerate(headers, 1) if h in set(money_headers)}
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=n_cols):
+        for cell in row:
+            cell.border = border
+            if cell.row > 1 and cell.column in money_idx and isinstance(cell.value, (int, float)):
+                cell.number_format = '#,##0.00'
+    for i, h in enumerate(headers, 1):
+        w = _disp_len(h or '')
+        for r in range(2, min(ws.max_row, width_scan_rows + 1) + 1):
+            v = ws.cell(row=r, column=i).value
+            if v is not None:
+                w = max(w, _disp_len(v))
+        ws.column_dimensions[get_column_letter(i)].width = min(max(w + 2, 9), 42)
+    ws.row_dimensions[1].height = 22
+    ws.freeze_panes = 'A2'
+    ws.auto_filter.ref = f'A1:{get_column_letter(n_cols)}{max(ws.max_row, 1)}'
 
 
 # ── 共享：AR 记录过滤 / 状态 / 排序 / 条件助手（records、budget 等域共用）──
@@ -641,7 +677,7 @@ def _apply_record_state_filters(qs, request, today=None):
     computes its own status breakdown from the unfiltered (by-state) set.
     """
     if today is None:
-        today = datetime.date.today()
+        today = timezone.localdate()
     eomonth_today = datetime.date(today.year, today.month,
                                   calendar.monthrange(today.year, today.month)[1])
 
@@ -1068,7 +1104,7 @@ def _apply_conditions(qs, request, today=None):
     except (ValueError, AssertionError):
         return qs
     if today is None:
-        today = datetime.date.today()
+        today = timezone.localdate()
     eomonth_today = datetime.date(today.year, today.month,
                                   calendar.monthrange(today.year, today.month)[1])
     match_any = (request.GET.get('match') or 'all').strip() == 'any'

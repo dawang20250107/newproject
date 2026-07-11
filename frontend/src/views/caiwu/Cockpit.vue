@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, nextTick, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, defineAsyncComponent } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { useAuthStore } from '../../stores/auth.js'
@@ -15,8 +15,11 @@ import { fmtCompact } from '../../utils/format.js'
 import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney, topLabel, endLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
 import { streamAiAnalysis } from '../../utils/aiStream.js'
 import { renderMarkdown } from '../../utils/markdown.js'
+import { downloadBlob } from '../../utils/download.js'
 import EmptyState from '../../components/EmptyState.vue'
 import AiMark from '../../components/AiMark.vue'
+import { useToast } from '../../composables/useToast.js'
+const toast = useToast()
 
 // 驾驶舱内嵌分析面板（懒加载，首次切到对应 Tab 才载入）
 const ChartsPanel = defineAsyncComponent(() => import('./Charts.vue'))
@@ -66,7 +69,24 @@ const presentPage = ref(0)
 const PRESENT_PAGES = ['规模', '盈利', '业财', '预测', '目标', '行动']
 function nextPresentPage() { presentPage.value = (presentPage.value + 1) % PRESENT_PAGES.length }
 function prevPresentPage() { presentPage.value = (presentPage.value - 1 + PRESENT_PAGES.length) % PRESENT_PAGES.length }
+const presentAuto = ref(false)
+let presentTimer = null
+function togglePresentAuto() {
+  presentAuto.value = !presentAuto.value
+  clearInterval(presentTimer)
+  if (presentAuto.value) presentTimer = setInterval(nextPresentPage, 15000)   // 15s 轮播
+}
 function openPresent() { presentPage.value = 0; presentMode.value = true }
+// 大屏复盘键盘控制挂到 window：overlay div 未获焦时其 @keydown 收不到事件
+function onPresentKey(e) {
+  if (!presentMode.value) return
+  if (e.key === 'Escape') { presentMode.value = false; presentAuto.value = false; clearInterval(presentTimer) }
+  else if (e.key === 'ArrowRight') nextPresentPage()
+  else if (e.key === 'ArrowLeft') prevPresentPage()
+  else if (e.key === 'a' || e.key === 'A') togglePresentAuto()
+}
+onMounted(() => window.addEventListener('keydown', onPresentKey))
+onBeforeUnmount(() => { window.removeEventListener('keydown', onPresentKey); clearInterval(presentTimer) })
 
 // ── P4 信号转行动项 ──────────────────────────────────────────────────────────
 const alertToast = ref('')
@@ -182,12 +202,55 @@ const chatMessages = ref([])      // {role:'user'|'assistant', content, reasonin
 const chatStreaming = ref(false)
 const chatErr = ref('')
 const chatBodyRef = ref(null)
-const SUGGESTIONS = [
-  '生成本月集团经营分析报告',
-  '生成今年的年度经营分析报告',
-  '哪个事业部在拖累集团利润？为什么？',
-  '本月回款和收入是否匹配？应收风险在哪？',
-]
+// 建议问题：按当前范围差异化——集团看全局与横向，事业部看各自的刀口问题
+const SUGGESTIONS = computed(() => {
+  const m = `${month.value}月`
+  const byBu = {
+    '': [
+      `生成${m}集团经营分析报告`,
+      '哪个事业部在拖累集团利润？为什么？',
+      `${m}回款和收入是否匹配？应收风险在哪？`,
+      '对比行业同行，我们的盈利水平处于什么位置？',
+    ],
+    '集团总部': [
+      `总部${m}费用结构分析：哪些费用在涨？`,
+      '总部费用分摊后各事业部的真实盈利如何？',
+      `总部${m}预算执行与超支预警`,
+      '内部往来挂账对集团合并利润的影响？',
+    ],
+    '运输事业部': [
+      `分析运输${m}毛利变动：量、价、油价各贡献多少？`,
+      '近期油价走势对运输成本和利润意味着什么？',
+      `运输${m}回款质量与逾期风险在哪几个客户？`,
+      '调研一下公路货运行业最新运价与同行动态',
+    ],
+    '劳务事业部': [
+      `劳务${m}人效与用工成本分析`,
+      '社保成本率的变化对劳务毛利影响多大？',
+      `劳务${m}目标缺口多少？给出追赶方案`,
+      '灵活用工行业政策最近有什么新动向？',
+    ],
+    '供应链事业部': [
+      `供应链${m}经营分析：毛利与资金占用`,
+      `供应链${m}回款与内部往来挂账情况`,
+      '供应链物流行业有什么趋势和机会？',
+      `生成供应链${m}经营分析报告`,
+    ],
+    '多式联运事业部': [
+      `多式联运${m}经营分析与目标达成`,
+      '多式联运的成本结构和毛利动因是什么？',
+      `多式联运${m}回款与应收风险`,
+      '多式联运行业政策与市场有什么新变化？',
+    ],
+  }
+  const bu = selectedBu.value
+  return byBu[bu] || [
+    `分析${bu}${m}经营情况：目标达成与缺口`,
+    `${bu}${m}毛利变动的主要动因是什么？`,
+    `${bu}${m}回款质量与应收风险`,
+    `生成${bu}${m}经营分析报告`,
+  ]
+})
 
 function scrollChatSoon() {
   nextTick(() => { const el = chatBodyRef.value; if (el) el.scrollTop = el.scrollHeight })
@@ -229,14 +292,104 @@ async function sendChat(text) {
   } finally {
     chatStreaming.value = false
     if (!asst.content) asst.content = chatErr.value ? `⚠ ${chatErr.value}` : '（未返回内容）'
+    persistChat()          // 每轮结束落地，刷新不丢
     scrollChatSoon()
+    loadAiUsage()
     if (autoDistill.value && !chatErr.value && asst.content && asst.content.length > 40) {
       silentDistill(asst.content)
     }
   }
 }
 
-function resetChat() { chatMessages.value = []; chatErr.value = '' }
+// ── 对话持久化：按账号云端同步（跨设备），localStorage 仅作秒开缓存/离线兜底 ──────
+// 本地缓存键按登录用户隔离，避免同一浏览器换人登录后串到别人的对话。
+function chatKey() { return `cfa_chat_v1_${auth.user?.id ?? auth.user?.phone ?? 'anon'}` }
+function slimMessages() {
+  // 仅取最近 60 条、剥离流式临时态，控制体积（与后端上限一致）
+  return chatMessages.value.slice(-60).map(m => {
+    const o = { role: m.role, content: m.content }
+    if (m.toolSteps && m.toolSteps.length) o.toolSteps = m.toolSteps
+    if (m.fb) o.fb = m.fb
+    return o
+  })
+}
+function writeLocal(slim) { try { localStorage.setItem(chatKey(), JSON.stringify(slim)) } catch { /* 忽略 */ } }
+function readLocal() {
+  try { const raw = localStorage.getItem(chatKey()); const a = raw ? JSON.parse(raw) : null; return Array.isArray(a) ? a : [] }
+  catch { return [] }
+}
+const normMsg = (m) => ({ reasoning: '', toolSteps: [], ...m })
+function persistChat() {
+  const slim = slimMessages()
+  writeLocal(slim)                                              // 本地秒存（同设备刷新即时可见）
+  api.put('/cockpit/chat', { messages: slim }).catch(() => {})  // 云端同步（失败静默，下轮再试）
+}
+async function restoreChat() {
+  const local = readLocal()
+  if (local.length) chatMessages.value = local.map(normMsg)     // 先用本地缓存秒开
+  try {
+    const res = await api.get('/cockpit/chat')                  // 再拉云端（权威，跨设备）
+    const server = res?.data?.messages
+    if (Array.isArray(server) && server.length) {
+      chatMessages.value = server.map(normMsg)
+      writeLocal(slimMessages())
+    } else if (local.length) {
+      // 云端空、本地有（首次上线迁移）→ 把本地历史上传，避免看起来"被清空"
+      api.put('/cockpit/chat', { messages: slimMessages() }).catch(() => {})
+    }
+  } catch { /* 离线/异常：保留本地缓存 */ }
+}
+function resetChat() {
+  chatMessages.value = []
+  chatErr.value = ''
+  try { localStorage.removeItem(chatKey()) } catch { /* 忽略 */ }
+  api.delete('/cockpit/chat').catch(() => {})                   // 云端一并清除
+}
+
+// ── 导出对话：Markdown 文档 / 长图 ───────────────────────────────────────────
+function exportStamp() {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`
+}
+function chatToMarkdown() {
+  const lines = [`# 业财融合助手对话`, '', `> 范围：${aiScopeLabel.value}　导出：${exportStamp()}`, '']
+  for (const m of chatMessages.value) {
+    if (m.role === 'user') lines.push(`## 🙋 提问`, '', m.content, '')
+    else if (m.content) lines.push(`## 🤖 助手`, '', m.content, '')
+  }
+  return lines.join('\n')
+}
+function exportChatMd() {
+  if (!chatMessages.value.length) return
+  const blob = new Blob([chatToMarkdown()], { type: 'text/markdown;charset=utf-8' })
+  downloadBlob(blob, `业财融合对话_${exportStamp()}.md`)
+  toast.success('已导出 Markdown')
+}
+const exportingImg = ref(false)
+async function exportChatImage() {
+  if (!chatMessages.value.length || exportingImg.value) return
+  exportingImg.value = true
+  try {
+    const { default: html2canvas } = await import('html2canvas')
+    await nextTick()
+    const el = chatBodyRef.value
+    if (!el) throw new Error('无对话内容')
+    const dark = document.documentElement.classList.contains('dark')
+    const canvas = await html2canvas(el, {
+      scale: 2, backgroundColor: dark ? '#0f172a' : '#ffffff', useCORS: true, logging: false,
+      height: el.scrollHeight, windowHeight: el.scrollHeight,
+    })
+    canvas.toBlob(blob => {
+      if (blob) { downloadBlob(blob, `业财融合对话_${exportStamp()}.png`); toast.success('已导出图片') }
+      else toast.error('图片生成失败，请重试')
+      exportingImg.value = false
+    }, 'image/png')
+  } catch (e) {
+    toast.error('图片导出失败：' + (e?.message || e))
+    exportingImg.value = false
+  }
+}
 
 // ── 主动洞察闭环：信号/项目 一键带上下文追问 AI ──────────────────────────────
 async function askAi(question) {
@@ -261,13 +414,6 @@ const kbLoading = ref(false)
 const kbInput = ref('')
 const kbScope = ref('')                // '' = 全集团
 const kbKind = ref('background')
-const toast = ref('')
-let toastTimer = null
-function showToast(msg) {
-  toast.value = msg
-  clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => { toast.value = '' }, 2200)
-}
 
 async function loadKb() {
   kbLoading.value = true
@@ -285,16 +431,16 @@ async function addKb() {
     })
     kbInput.value = ''
     await loadKb()
-    showToast('已加入知识库')
-  } catch (e) { showToast(e?.msg || '添加失败') }
+    toast.success('已加入知识库')
+  } catch (e) { toast.error(e?.msg || '添加失败') }
 }
 async function delKb(id) {
   try { await api.delete(`/cockpit/knowledge/${id}`); kbItems.value = kbItems.value.filter(k => k.id !== id) }
-  catch (e) { showToast(e?.msg || '删除失败') }
+  catch (e) { toast.error(e?.msg || '删除失败') }
 }
 async function togglePin(k) {
   try { const res = await api.put(`/cockpit/knowledge/${k.id}`, { pinned: !k.pinned }); Object.assign(k, res.data); await loadKb() }
-  catch (e) { showToast(e?.msg || '操作失败') }
+  catch (e) { toast.error(e?.msg || '操作失败') }
 }
 const distillingIdx = ref(-1)
 async function distillToKb(content, idx) {
@@ -302,12 +448,43 @@ async function distillToKb(content, idx) {
   distillingIdx.value = idx
   try {
     await api.post('/cockpit/knowledge/distill', { text: content, scope: selectedBu.value || '全集团' })
-    showToast('✓ 已提炼并存入知识库')
+    toast.success('已提炼并存入知识库')
     if (panelTab.value === 'kb') await loadKb()
-  } catch (e) { showToast(e?.msg || '提炼失败') }
+  } catch (e) { toast.error(e?.msg || '提炼失败') }
   finally { distillingIdx.value = -1 }
 }
 function openKb() { panelTab.value = 'kb'; loadKb() }
+
+// ── 今日 AI 用量/预算（token 成本可控）────────────────────────────────────────
+const aiUsage = ref(null)
+const quotaPct = computed(() => {
+  const u = aiUsage.value
+  if (!u || !u.budget) return 0
+  return Math.round(u.today.total / u.budget * 100)
+})
+async function loadAiUsage() {
+  try { const res = await api.get('/cockpit/ai-usage'); aiUsage.value = res.data } catch { /* 静默 */ }
+}
+watch(chatOpen, (v) => { if (v) loadAiUsage() })
+
+// ── AI 回答评价（👍/👎）：沉淀为改进素材与评测样本 ───────────────────────────
+async function rateAnswer(m, idx, rating) {
+  if (m.fb === rating) return
+  m.fb = rating
+  // 找到该回答之前最近的用户提问
+  let q = ''
+  for (let j = idx - 1; j >= 0; j--) {
+    if (chatMessages.value[j]?.role === 'user') { q = chatMessages.value[j].content; break }
+  }
+  try {
+    await api.post('/cockpit/ai-feedback', {
+      rating, question: q, answer: m.content,
+      scope: selectedBu.value || '全集团', year: year.value, month: month.value,
+    })
+    toast.success(rating === 1 ? '已记录，感谢反馈' : '已记录，会用于改进回答质量')
+    persistChat()
+  } catch { m.fb = undefined }
+}
 
 // ── 下钻导航（从对话跳到明细页，带上当前事业部+期间）────────────────────────
 function drillTo(path) {
@@ -328,7 +505,7 @@ const autoDistill = ref(true)
 async function silentDistill(content) {
   try {
     await api.post('/cockpit/knowledge/distill', { text: content, scope: selectedBu.value || '全集团' })
-    showToast('💡 已自动沉淀要点入库')
+    toast.success('💡 已自动沉淀要点入库')
   } catch (e) { /* silent */ }
 }
 
@@ -512,7 +689,7 @@ const buActualOption = computed(() => {
     series: [
       { name: '收入', type: 'bar', data: bus.map(b => b.month.actual_revenue), itemStyle: { color: '#2e7d32', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
         label: topLabel(p => axisMoney(p.value)), labelLayout: HIDE_OVERLAP },
-      { name: '利润', type: 'bar', data: bus.map(b => b.month.actual_profit), itemStyle: { color: '#1565c0', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
+      { name: '经营毛利', type: 'bar', data: bus.map(b => b.month.actual_gross_profit), itemStyle: { color: '#00897b', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
         label: topLabel(p => axisMoney(p.value)), labelLayout: HIDE_OVERLAP },
     ],
   }
@@ -539,7 +716,7 @@ const buRateOption = computed(() => {
       { name: 'YTD收入达成', type: 'bar', data: bus.map(b => b.ytd.revenue_rate), itemStyle: { color: '#66bb6a', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
         label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP,
         markLine: { silent: true, symbol: 'none', lineStyle: { color: '#c96342', type: 'dashed' }, data: [{ yAxis: 100, label: { formatter: '100%', color: '#c96342', fontSize: 10 } }] } },
-      { name: 'YTD利润达成', type: 'bar', data: bus.map(b => b.ytd.profit_rate), itemStyle: { color: '#42a5f5', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
+      { name: 'YTD毛利达成', type: 'bar', data: bus.map(b => b.ytd.gross_profit_rate), itemStyle: { color: '#26a69a', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
         label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP },
     ],
   }
@@ -595,7 +772,7 @@ const ratioPills = computed(() => {
     { label: '成本率', value: fmtPctVal(d.costRatio) },
     { label: '费用率', value: fmtPctVal(d.expenseRatio) },
     { label: 'YTD收入', value: wan(y?.actual_revenue) },
-    { label: 'YTD净利', value: wan(y?.actual_profit) },
+    { label: 'YTD毛利', value: wan(y?.actual_gross_profit) },
   ]
 })
 
@@ -631,11 +808,13 @@ const buMatrix = computed(() => {
     return {
       bu: b.business_unit, rev, gross, prof,
       grossMargin: pct(gross, rev), netMargin: pct(prof, rev),
-      revRate: m.revenue_rate, profRate: m.profit_rate,
+      // 利润口径以经营毛利为主（贡献/引擎/信号均用毛利）；净利仅作对照展示
+      revRate: m.revenue_rate, profRate: m.profit_rate, grossRate: m.gross_profit_rate,
       revMom: m.revenue_mom, revYoy: m.revenue_yoy,
       ytdRev: y.actual_revenue, ytdRate: y.revenue_rate, ytdProf: y.actual_profit,
+      ytdGross: y.actual_gross_profit,
       share: groupRev ? pct(rev, groupRev) : null,
-      loss: (prof ?? 0) < 0,
+      loss: (prof ?? 0) < 0, grossLoss: (gross ?? 0) < 0,
       hasData: rev != null || prof != null,
     }
   }).filter(r => r.hasData)
@@ -662,23 +841,23 @@ const revStructOption = computed(() => {
   }
 })
 
-// 利润贡献（横向分歧条：正绿负红，直观看谁在拖累）
+// 毛利贡献（横向分歧条：正绿负红，直观看谁在拖累集团毛利）
 const profitContribOption = computed(() => {
-  const rows = [...buMatrix.value].filter(r => r.prof != null).sort((a, b) => a.prof - b.prof)
+  const rows = [...buMatrix.value].filter(r => r.gross != null).sort((a, b) => a.gross - b.gross)
   if (!rows.length) return null
   const names = rows.map(r => r.bu)
   return {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
-      formatter: p => `${p[0].name}<br/>经营净利：${wan(p[0].value)} 元` },
+      formatter: p => `${p[0].name}<br/>经营毛利：${wan(p[0].value)} 元` },
     grid: { top: 8, right: 64, bottom: 8, left: 16, containLabel: true },
     xAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => axisMoney(v) },
       splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } } },
     yAxis: { type: 'category', data: names, axisLabel: { color: '#6b5a4a', width: 96, overflow: 'truncate' } },
     series: [{
       type: 'bar', barMaxWidth: 22,
-      data: rows.map(r => ({ value: r.prof,
-        itemStyle: { color: r.prof >= 0 ? '#2e7d32' : '#c62828', borderRadius: r.prof >= 0 ? [0, 4, 4, 0] : [4, 0, 0, 4] },
-        label: { position: r.prof >= 0 ? 'right' : 'left' } })),
+      data: rows.map(r => ({ value: r.gross,
+        itemStyle: { color: r.gross >= 0 ? '#2e7d32' : '#c62828', borderRadius: r.gross >= 0 ? [0, 4, 4, 0] : [4, 0, 0, 4] },
+        label: { position: r.gross >= 0 ? 'right' : 'left' } })),
       label: { show: true, fontSize: 10.5, fontWeight: 600, color: '#6b5a4a', formatter: p => axisMoney(p.value) },
       labelLayout: HIDE_OVERLAP,
     }],
@@ -697,7 +876,7 @@ const alerts = computed(() => {
   const list = []
   const d = derived.value
   // ── 集团级 ────────────────────────────────────────────────
-  if (d?.netMargin != null && d.netMargin < 0) list.push({ level: 'high', group: true, text: `集团整体净利率为负（${d.netMargin.toFixed(1)}%），盈利承压` })
+  if (d?.grossMargin != null && d.grossMargin < 0) list.push({ level: 'high', group: true, text: `集团整体毛利率为负（${d.grossMargin.toFixed(1)}%），主营亏损` })
   // ── 业财融合：薄利 / 回款风险（来自业财损益摘要）──────────
   const bf = bfSummary.value
   if (bf) {
@@ -706,8 +885,8 @@ const alerts = computed(() => {
     const lowM = t.low_margin?.count || 0
     if (critical > 0) list.push({ level: 'high', tab: 'bf',
       text: `${critical} 个项目「又薄又难收」（低毛利+回款差），吞噬利润` })
-    if (bf.overdue > 0 && bf.overdue_rate != null && bf.overdue_rate >= 20) list.push({ level: 'high', tab: 'bf',
-      text: `逾期未收 ${wan(bf.overdue)}，逾期率 ${bf.overdue_rate.toFixed(0)}%，回款承压` })
+    if (bf.overdue > 0 && bf.overdue_rate != null && bf.overdue_rate >= 20) list.push({ level: 'high', to: '/ar/records?status=overdue',
+      text: `逾期未收 ${wan(bf.overdue)}，逾期率 ${bf.overdue_rate.toFixed(0)}%，回款承压 →` })
     if (lowM > 0) list.push({ level: 'mid', tab: 'bf',
       text: `${lowM} 个项目「赚收入不赚钱」，规模大但毛利薄` })
   }
@@ -716,12 +895,12 @@ const alerts = computed(() => {
   if (fc) {
     if (fc.profit_gap != null && fc.profit_gap < 0) list.push({ level: 'high', tab: 'forecast',
       text: `按当前节奏，全年净利预测 ${wan(fc.proj_profit)}，缺口 ${wan(fc.profit_gap)}（预测达成 ${fc.profit_rate != null ? fc.profit_rate.toFixed(0) + '%' : '—'}）` })
-    if (fc.baddebt_risk > 0) list.push({ level: 'mid', tab: 'forecast',
-      text: `坏账风险 ${wan(fc.baddebt_risk)}（逾期90天+未收），需重点催收` })
+    if (fc.baddebt_risk > 0) list.push({ level: 'mid', to: '/ar/records?status=overdue',
+      text: `坏账风险 ${wan(fc.baddebt_risk)}（逾期90天+未收），点击去催收 →` })
   }
   // ── 事业部级（可点击下钻）────────────────────────────────
-  rows.filter(r => r.loss).forEach(r => list.push({ level: 'high', bu: r.bu, text: `${r.bu} 当月经营净利为负（${wan(r.prof)}）` }))
-  rows.filter(r => !r.loss && r.profRate != null && r.profRate < 80).forEach(r => list.push({ level: 'mid', bu: r.bu, text: `${r.bu} 净利达成偏低（${r.profRate.toFixed(0)}%）` }))
+  rows.filter(r => r.grossLoss).forEach(r => list.push({ level: 'high', bu: r.bu, text: `${r.bu} 当月经营毛利为负（${wan(r.gross)}）` }))
+  rows.filter(r => !r.grossLoss && r.grossRate != null && r.grossRate < 80).forEach(r => list.push({ level: 'mid', bu: r.bu, text: `${r.bu} 毛利达成偏低（${r.grossRate.toFixed(0)}%）` }))
   rows.filter(r => r.revMom != null && r.revMom <= -10).forEach(r => list.push({ level: 'mid', bu: r.bu, text: `${r.bu} 收入环比下滑 ${Math.abs(r.revMom).toFixed(0)}%` }))
   const top = rows[0]
   if (top && top.share != null && top.share > 50) list.push({ level: 'mid', group: true, bu: top.bu, text: `收入高度集中：${top.bu} 占集团 ${top.share.toFixed(0)}%，依赖单一事业部` })
@@ -730,22 +909,23 @@ const alerts = computed(() => {
   if (!scoped.length) scoped.push({ level: 'ok', text: '未发现显著经营风险，各事业部运行平稳' })
   return scoped.slice(0, 9)
 })
-// 信号点击：BU 信号→下钻该事业部；业财信号→切到业财损益 Tab
+// 信号点击：BU 信号→下钻该事业部；带 to→跳转明细页（如逾期应收直达催收）；业财信号→切 Tab
 function onSignal(a) {
-  if (a.bu) openDrill(a.bu)
+  if (a.to) router.push(a.to)
+  else if (a.bu) openDrill(a.bu)
   else if (a.tab) mainTab.value = a.tab
 }
 
 // 增长引擎 / 主要拖累（用于结论提示）
 const engineLine = computed(() => {
-  const rows = buMatrix.value.filter(r => r.prof != null)
+  const rows = buMatrix.value.filter(r => r.gross != null)
   if (!rows.length) return null
-  const eng = [...rows].sort((a, b) => (b.prof) - (a.prof))[0]
-  const drag = [...rows].sort((a, b) => (a.prof) - (b.prof))[0]
+  const eng = [...rows].sort((a, b) => (b.gross) - (a.gross))[0]
+  const drag = [...rows].sort((a, b) => (a.gross) - (b.gross))[0]
   return { eng, drag, sameOne: eng === drag }
 })
 
-onMounted(load)
+onMounted(() => { restoreChat(); load() })
 
 // ── 右键上下文菜单（事业部矩阵表）────────────────────────────────────────────
 const ctxMatrix = useContextMenu()
@@ -765,10 +945,10 @@ const ctxMatrixItems = computed(() => {
     {
       key: 'copy', label: '复制', icon: 'copy',
       children: [
-        { key: 'copy-row', label: '整行', icon: 'cell', action: () => copyRowTSV(r, MATRIX_COPY_COLS, { header: true }).then(() => showToast('已复制')) },
+        { key: 'copy-row', label: '整行', icon: 'cell', action: () => copyRowTSV(r, MATRIX_COPY_COLS, { header: true }).then(() => toast.success('已复制')) },
         { divider: true },
-        { key: 'copy-bu', label: '事业部名称', icon: 'copy', action: () => copyText(r.bu).then(() => showToast('已复制')) },
-        { key: 'copy-prof', label: '净利润', icon: 'copy', action: () => copyText(wan(r.prof)).then(() => showToast('已复制')) },
+        { key: 'copy-bu', label: '事业部名称', icon: 'copy', action: () => copyText(r.bu).then(() => toast.success('已复制')) },
+        { key: 'copy-prof', label: '净利润', icon: 'copy', action: () => copyText(wan(r.prof)).then(() => toast.success('已复制')) },
       ],
     },
   ]
@@ -777,21 +957,27 @@ const ctxMatrixItems = computed(() => {
 
 <template>
   <div>
-    <div class="topbar" style="align-items:flex-start">
-      <div class="cockpit-title-wrap">
-        <h1>财务驾驶舱</h1>
-        <button class="cfa-title-btn" :class="{ on: chatOpen }" @click="chatOpen = true" title="业财融合 AI 助手">
-          <AiMark light :size="18" class="cfa-title-orb" /> 业财 AI 助手 <span class="ai-pro-tag">PRO</span>
-        </button>
-        <button class="present-btn" @click="openPresent" title="大屏复盘模式">🖥 大屏复盘</button>
+    <div class="cw-hero">
+      <div>
+        <div class="cw-eyebrow">FINANCE COCKPIT · 业财融合</div>
+        <div class="cockpit-title-wrap">
+          <h1>财务驾驶舱</h1>
+          <button class="cfa-title-btn" :class="{ on: chatOpen }" @click="chatOpen = true" title="业财融合 AI 助手">
+            <AiMark light :size="18" class="cfa-title-orb" /> 业财 AI 助手 <span class="ai-pro-tag">PRO</span>
+          </button>
+          <button class="present-btn" @click="openPresent" title="大屏复盘模式">🖥 大屏复盘</button>
+        </div>
       </div>
-      <div v-show="mainTab === 'overview'" class="ctrl-row" style="justify-content:flex-end">
-        <select v-model="year" class="sel-yr" @change="load">
-          <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
-        </select>
-        <select v-model="month" class="sel-mo" @change="load">
-          <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
-        </select>
+      <div v-show="mainTab === 'overview'" class="cw-hero-ctrl">
+        <div class="period-pill">
+          <select v-model="year" @change="load">
+            <option v-for="y in years" :key="y" :value="y">{{ y }} 年</option>
+          </select>
+          <span class="pp-sep"></span>
+          <select v-model="month" @change="load">
+            <option v-for="m in months" :key="m" :value="m">{{ m }} 月</option>
+          </select>
+        </div>
         <select v-if="accessibleBus.length > 1" v-model="selectedBu" class="sel-bu" @change="load">
           <option value="">全集团</option>
           <option v-for="bu in accessibleBus" :key="bu" :value="bu">{{ bu }}</option>
@@ -820,7 +1006,7 @@ const ctxMatrixItems = computed(() => {
       <div class="kpi-grid kpi-3">
         <div v-for="c in heroCards" :key="c.key" class="kpi-card" :class="{ 'kpi-muted': c.muted }">
           <div class="label">{{ c.label }}<span v-if="c.hint" class="lbl-hint" :title="c.hint">ⓘ</span></div>
-          <div class="value" :style="`color:${c.neg ? '#c62828' : c.color}`">{{ fmtMoney(c.value) }}</div>
+          <div class="value" :style="`color:${c.neg ? 'var(--c-danger)' : c.color}`">{{ fmtMoney(c.value) }}</div>
           <div class="kpi-meta">
             <span v-if="c.rate != null" class="rate-chip" :style="`color:${rateColor(c.rate)};border-color:${rateColor(c.rate)}55`">达成 {{ fmtRate(c.rate) }}</span>
             <span v-if="c.sub" class="kpi-sub-tag">{{ c.sub }}</span>
@@ -875,8 +1061,8 @@ const ctxMatrixItems = computed(() => {
             </li>
           </ul>
           <div v-if="engineLine" class="engine-line">
-            🚀 增长引擎 <b>{{ engineLine.eng.bu }}</b>（净利 {{ wan(engineLine.eng.prof) }}）
-            <template v-if="!engineLine.sameOne">　🪨 主要拖累 <b>{{ engineLine.drag.bu }}</b>（净利 {{ wan(engineLine.drag.prof) }}）</template>
+            🚀 增长引擎 <b>{{ engineLine.eng.bu }}</b>（毛利 {{ wan(engineLine.eng.gross) }}）
+            <template v-if="!engineLine.sameOne">　🪨 主要拖累 <b>{{ engineLine.drag.bu }}</b>（毛利 {{ wan(engineLine.drag.gross) }}）</template>
           </div>
         </div>
       </div>
@@ -938,7 +1124,7 @@ const ctxMatrixItems = computed(() => {
         </div>
       </div>
 
-      <!-- ════ ZONE 5 · 收入构成 + 利润贡献 ══════════════════════════════════════ -->
+      <!-- ════ ZONE 5 · 收入构成 + 毛利贡献 ══════════════════════════════════════ -->
       <div class="chart-grid">
         <div class="card">
           <div class="section-title" style="margin-bottom:8px">收入构成 · 各事业部占比</div>
@@ -946,16 +1132,16 @@ const ctxMatrixItems = computed(() => {
           <div v-else class="mini-empty">暂无收入数据</div>
         </div>
         <div class="card">
-          <div class="section-title" style="margin-bottom:8px">利润贡献 · 谁在贡献 / 拖累</div>
+          <div class="section-title" style="margin-bottom:8px">毛利贡献 · 谁在贡献 / 拖累</div>
           <BaseChart v-if="profitContribOption" :option="profitContribOption" height="300px" />
-          <div v-else class="mini-empty">暂无利润数据</div>
+          <div v-else class="mini-empty">暂无毛利数据</div>
         </div>
       </div>
 
-      <!-- ════ ZONE 6 · 各事业部当月收入利润 + YTD 达成率 ════════════════════════ -->
+      <!-- ════ ZONE 6 · 各事业部当月收入毛利 + YTD 达成率 ════════════════════════ -->
       <div class="chart-grid">
         <div class="card">
-          <div class="section-title" style="margin-bottom:8px">各事业部当月收入 / 利润</div>
+          <div class="section-title" style="margin-bottom:8px">各事业部当月收入 / 经营毛利</div>
           <BaseChart :option="buActualOption" height="300px" />
         </div>
         <div class="card">
@@ -972,7 +1158,7 @@ const ctxMatrixItems = computed(() => {
       <component v-if="mainTab !== 'overview' && panelComp" :is="panelComp" embedded :key="mainTab"
         :selected-bu="selectedBu"
         @ask-ai="onAskProject"
-        @count-change="c => { actionCounts.value = c }" />
+        @count-change="c => Object.assign(actionCounts, c)" />
     </KeepAlive>
 
     <!-- 三级下钻：事业部科目+项目 → 项目损益卡 -->
@@ -1003,41 +1189,37 @@ const ctxMatrixItems = computed(() => {
           <div class="cfa-glow"></div>
           <div class="cfa-head">
             <div class="cfa-head-l">
-              <AiMark :size="30" class="cfa-head-orb" />
-              <div>
-                <div class="cfa-title">业财融合 · 经营问答<span class="ai-pro-tag">PRO</span></div>
-                <div class="cfa-scope">{{ aiScopeLabel }} · 全事业部财务+业务数据</div>
-              </div>
+              <AiMark :size="22" class="cfa-head-orb" />
+              <div class="cfa-title">业财融合助手<span class="ai-pro-tag">PRO</span>
+                <span class="cfa-scope-in">{{ aiScopeLabel }}</span></div>
             </div>
             <div class="cfa-head-acts">
-              <button v-if="panelTab === 'chat' && chatMessages.length" class="cfa-mini" title="清空对话" @click="resetChat">清空</button>
+              <button class="cfa-global-btn cfa-global-top" :disabled="aiLoading || !hasData"
+                :title="`${aiScopeLabel} · CFO 视角深度诊断`" @click="runAiAnalysis">
+                {{ aiLoading ? '⏳ 分析中…' : '✨ 一键全局经营分析' }}
+              </button>
+              <button v-if="hasAnalysis" class="cfa-global-ghost" @click="viewAnalysis">查看</button>
+              <button v-if="panelTab === 'chat' && chatMessages.length" class="cfa-mini" title="导出为 Markdown 文档" @click="exportChatMd">⬇MD</button>
+              <button v-if="panelTab === 'chat' && chatMessages.length" class="cfa-mini" :disabled="exportingImg" title="导出为长图" @click="exportChatImage">{{ exportingImg ? '…' : '⬇图片' }}</button>
+              <button v-if="panelTab === 'chat' && chatMessages.length" class="cfa-mini" title="清除对话（清空后不再保留）" @click="resetChat">清空</button>
               <button class="cfa-x" title="收起" @click="chatOpen = false">×</button>
             </div>
           </div>
 
-          <!-- 对话 / 知识库 切换 -->
-          <div class="cfa-tabs">
+          <!-- 页签 + 今日额度：一条超薄工具条，空间让给输出 -->
+          <div class="cfa-strip">
             <button :class="['cfa-tab', panelTab === 'chat' ? 'on' : '']" @click="panelTab = 'chat'">💬 对话</button>
             <button :class="['cfa-tab', panelTab === 'kb' ? 'on' : '']" @click="openKb">📚 知识库</button>
-            <span class="cfa-tab-hint">{{ panelTab === 'kb' ? '助手会记住这些、越用越懂业务' : '答案可一键提炼入库' }}</span>
+            <template v-if="aiUsage">
+              <div class="cfa-quota-bar" :class="{ warn: quotaPct >= 80, full: quotaPct >= 100 }"
+                :title="aiUsage.price_note"><i :style="{ width: Math.min(100, quotaPct) + '%' }"></i></div>
+              <span class="cfa-quota-txt" :class="{ full: quotaPct >= 100 }">
+                {{ (aiUsage.today.total / 10000).toFixed(1) }}<template v-if="aiUsage.budget">/{{ (aiUsage.budget / 10000).toFixed(0) }}</template>万tk
+                ≈¥{{ aiUsage.today.cost_est }}<template v-if="quotaPct >= 100">　额度已用完，明日恢复</template>
+              </span>
+            </template>
           </div>
 
-          <!-- 一键全局经营分析（深度报告）—— 醒目入口，并入 AI 助手 -->
-          <div v-show="panelTab === 'chat'" class="cfa-global">
-            <div class="cfa-global-l">
-              <span class="cfa-global-orb">🧭</span>
-              <div>
-                <div class="cfa-global-title">全局经营分析<span class="ai-pro-tag">PRO</span></div>
-                <div class="cfa-global-sub">{{ aiScopeLabel }} · CFO 视角深度诊断</div>
-              </div>
-            </div>
-            <div class="cfa-global-acts">
-              <button v-if="hasAnalysis" class="cfa-global-ghost" @click="viewAnalysis">查看</button>
-              <button class="cfa-global-btn" :disabled="aiLoading || !hasData" @click="runAiAnalysis">
-                {{ aiLoading ? '分析中…' : (hasAnalysis ? '↻ 重新生成' : '✨ 一键生成') }}
-              </button>
-            </div>
-          </div>
 
           <!-- ══ 对话 ══ -->
           <div v-show="panelTab === 'chat'" ref="chatBodyRef" class="cfa-body">
@@ -1067,11 +1249,15 @@ const ctxMatrixItems = computed(() => {
                     <div v-if="m.content" class="cfa-md" v-html="renderMarkdown(m.content)"></div>
                     <span v-else-if="chatStreaming && i === chatMessages.length - 1 && !m.reasoning && !(m.toolSteps && m.toolSteps.length)" class="cfa-typing">思考中<i>.</i><i>.</i><i>.</i></span>
                   </div>
-                  <!-- 答案动作：提炼入库 + 下钻 -->
+                  <!-- 答案动作：提炼入库 + 评价 + 下钻 -->
                   <div v-if="m.content && !(chatStreaming && i === chatMessages.length - 1)" class="cfa-actions">
                     <button class="cfa-act" :disabled="distillingIdx === i" @click="distillToKb(m.content, i)">
                       {{ distillingIdx === i ? '提炼中…' : '📌 提炼入库' }}
                     </button>
+                    <button class="cfa-fb" :class="{ on: m.fb === 1 }" title="回答准确有用"
+                      @click="rateAnswer(m, i, 1)">👍</button>
+                    <button class="cfa-fb" :class="{ on: m.fb === -1 }" title="回答有误或没帮助（会记录用于改进）"
+                      @click="rateAnswer(m, i, -1)">👎</button>
                     <span class="cfa-drill-lbl">下钻 →</span>
                     <button class="cfa-drill" @click="drillTo('/caiwu/report')">报表</button>
                     <button class="cfa-drill" @click="drillTo('/caiwu/project-margin')">项目毛利</button>
@@ -1118,15 +1304,13 @@ const ctxMatrixItems = computed(() => {
             </div>
           </div>
 
-          <label v-show="panelTab === 'chat'" class="cfa-auto" :class="{ on: autoDistill }">
-            <span class="cfa-auto-txt">
-              <b>🪄 自动沉淀</b>
-              <i>每轮回答要点自动入库 · 越用越懂你的业务</i>
-            </span>
-            <input type="checkbox" v-model="autoDistill" class="cfa-switch-input" />
-            <span class="cfa-switch" aria-hidden="true"></span>
-          </label>
           <div v-show="panelTab === 'chat'" class="cfa-input-row">
+            <label class="cfa-auto-mini" :class="{ on: autoDistill }"
+              title="自动沉淀：每轮回答要点自动提炼入知识库，越用越懂你的业务">
+              <input type="checkbox" v-model="autoDistill" class="cfa-switch-input" />
+              <span class="cfa-switch cfa-switch-sm" aria-hidden="true"></span>
+              <span class="cfa-auto-mini-txt">🪄 自动沉淀</span>
+            </label>
             <textarea v-model="chatInput" class="cfa-input" rows="1"
               placeholder="问问经营情况…（Enter 发送，Shift+Enter 换行）"
               :disabled="chatStreaming"
@@ -1135,10 +1319,6 @@ const ctxMatrixItems = computed(() => {
               {{ chatStreaming ? '…' : '发送' }}
             </button>
           </div>
-
-          <Transition name="cfa-toast">
-            <div v-if="toast" class="cfa-toast">{{ toast }}</div>
-          </Transition>
           </div><!-- /.cfa-card -->
         </div>
       </Transition>
@@ -1147,7 +1327,7 @@ const ctxMatrixItems = computed(() => {
     <!-- ── P4 大屏复盘模式 ─────────────────────────────────────────────────────── -->
     <Teleport to="body">
       <Transition name="present-fade">
-        <div v-if="presentMode" class="present-overlay" @keydown.esc="presentMode = false" tabindex="0">
+        <div v-if="presentMode" class="present-overlay" tabindex="0">
           <div class="present-header">
             <div class="present-logo">📊 财务驾驶舱 · 经营复盘</div>
             <div class="present-scope">{{ selectedBu || '全集团' }} · {{ year }}年{{ month }}月</div>
@@ -1156,7 +1336,8 @@ const ctxMatrixItems = computed(() => {
                 :class="['pp', presentPage === i ? 'active' : '']"
                 @click="presentPage = i">{{ p }}</span>
             </div>
-            <button class="present-close" @click="presentMode = false">✕ 退出</button>
+            <button class="present-auto" :class="{ on: presentAuto }" title="自动轮播（15s/页，快捷键 A）" @click="togglePresentAuto">{{ presentAuto ? '⏸ 停止轮播' : '▶ 自动轮播' }}</button>
+            <button class="present-close" @click="presentMode = false; presentAuto = false">✕ 退出</button>
           </div>
           <div class="present-body">
             <!-- 规模 -->
@@ -1227,8 +1408,8 @@ const ctxMatrixItems = computed(() => {
                 </div>
               </div>
               <div v-if="engineLine" class="pp-engine">
-                🚀 增长引擎：{{ engineLine.eng.bu }}（净利 {{ wan(engineLine.eng.prof) }}）
-                <template v-if="!engineLine.sameOne">　🪨 主要拖累：{{ engineLine.drag.bu }}（净利 {{ wan(engineLine.drag.prof) }}）</template>
+                🚀 增长引擎：{{ engineLine.eng.bu }}（毛利 {{ wan(engineLine.eng.gross) }}）
+                <template v-if="!engineLine.sameOne">　🪨 主要拖累：{{ engineLine.drag.bu }}（毛利 {{ wan(engineLine.drag.gross) }}）</template>
               </div>
             </template>
             <!-- 行动 -->
@@ -1312,10 +1493,10 @@ const ctxMatrixItems = computed(() => {
 .cfa-global-acts { display: flex; gap: 6px; flex-shrink: 0; }
 .cfa-global-btn {
   border: none; border-radius: 9px; padding: 7px 13px; cursor: pointer; font-size: 12.5px; font-weight: 700;
-  color: #fff; background: linear-gradient(135deg, #c96342, #e8855a); box-shadow: 0 3px 10px rgba(201,99,66,0.35);
+  color: #fff; background: var(--grad); box-shadow: 0 3px 10px rgba(201,99,66,0.35);
 }
 .cfa-global-btn:disabled { opacity: .5; cursor: not-allowed; }
-.cfa-global-ghost { border: 1px solid rgba(0,0,0,0.12); background: #fff; border-radius: 9px; padding: 7px 12px; cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.cfa-global-ghost { border: 1px solid rgba(0,0,0,0.12); background: var(--row-bg); border-radius: 9px; padding: 7px 12px; cursor: pointer; font-size: 12.5px; color: var(--muted); }
 
 .kpi-4 { grid-template-columns: repeat(4, 1fr) !important; }
 @media (max-width: 960px) { .kpi-4 { grid-template-columns: repeat(2, 1fr) !important; } }
@@ -1387,7 +1568,7 @@ const ctxMatrixItems = computed(() => {
 .al-ask:hover { background: rgba(122,159,212,.18); }
 .al-action {
   flex-shrink: 0; border: 1px solid rgba(46,125,50,.35); background: rgba(46,125,50,.08);
-  color: #2e7d32; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px;
+  color: var(--c-success); font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px;
   cursor: pointer; opacity: 0; transition: opacity .15s; white-space: nowrap;
 }
 .alert-item:hover .al-action { opacity: 1; }
@@ -1395,9 +1576,9 @@ const ctxMatrixItems = computed(() => {
 .al-go { color: var(--muted); font-weight: 700; opacity: 0; transition: opacity .15s; flex-shrink: 0; }
 .alert-item.actionable:hover .al-go { opacity: 1; }
 .al-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
-.al-high .al-dot { background: #c62828; box-shadow: 0 0 0 3px rgba(198,40,40,.14); }
-.al-mid .al-dot { background: #e65100; box-shadow: 0 0 0 3px rgba(230,81,0,.12); }
-.al-ok .al-dot { background: #2e7d32; box-shadow: 0 0 0 3px rgba(46,125,50,.12); }
+.al-high .al-dot { background: var(--c-danger); box-shadow: 0 0 0 3px rgba(198,40,40,.14); }
+.al-mid .al-dot { background: var(--c-warn); box-shadow: 0 0 0 3px rgba(230,81,0,.12); }
+.al-ok .al-dot { background: var(--c-success); box-shadow: 0 0 0 3px rgba(46,125,50,.12); }
 .al-high { color: #b71c1c; font-weight: 600; }
 .engine-line {
   margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(0,0,0,0.06);
@@ -1424,9 +1605,9 @@ const ctxMatrixItems = computed(() => {
 .matrix-table .bu { font-weight: 700; color: var(--text); }
 .matrix-table .strong { font-weight: 700; }
 .matrix-table .muted { color: var(--muted); }
-.matrix-table .neg { color: #c62828; }
-.matrix-table .mom-up { color: #2e7d32; }
-.matrix-table .mom-down { color: #c62828; }
+.matrix-table .neg { color: var(--c-danger); }
+.matrix-table .mom-up { color: var(--c-success); }
+.matrix-table .mom-down { color: var(--c-danger); }
 .matrix-table .mom-neutral { color: var(--muted); }
 .row-loss { background: rgba(198,40,40,0.045); }
 .row-loss:hover { background: rgba(198,40,40,0.075) !important; }
@@ -1437,7 +1618,7 @@ const ctxMatrixItems = computed(() => {
 .drillable:hover .drill-hint { opacity: 1; }
 .share-th { min-width: 110px; }
 .share-cell { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
-.share-bar { height: 8px; border-radius: 4px; background: linear-gradient(90deg, #c96342, #e8a05a); min-width: 2px; }
+.share-bar { height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--primary), var(--primary-light)); min-width: 2px; }
 .share-num { min-width: 32px; text-align: right; color: var(--muted); font-weight: 600; }
 
 .mini-empty { display: flex; align-items: center; justify-content: center; height: 280px; color: var(--muted); font-size: 13px; }
@@ -1447,8 +1628,8 @@ const ctxMatrixItems = computed(() => {
   display: inline-block; font-size: 11px; font-weight: 600;
   padding: 2px 7px; border-radius: 10px;
 }
-.mom-up { background: rgba(46,125,50,.10); color: #2e7d32; }
-.mom-down { background: rgba(198,40,40,.10); color: #c62828; }
+.mom-up { background: rgba(46,125,50,.10); color: var(--c-success); }
+.mom-down { background: rgba(198,40,40,.10); color: var(--c-danger); }
 .mom-neutral { background: rgba(120,120,120,.08); color: var(--muted); font-weight: 400; }
 
 .chart-grid {
@@ -1471,7 +1652,7 @@ const ctxMatrixItems = computed(() => {
 .ai-pro-tag {
   font-size: 10px; font-weight: 800; letter-spacing: .05em;
   padding: 1px 6px; border-radius: 6px; color: #fff;
-  background: linear-gradient(135deg, #c96342, #e8855a);
+  background: var(--grad);
 }
 .ai-bar-scope { font-size: 12px; color: var(--muted); margin-top: 1px; }
 .ai-time-hint { color: var(--primary); font-weight: 600; }
@@ -1482,7 +1663,7 @@ const ctxMatrixItems = computed(() => {
 .cfa-title-btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 7px 14px; border: none; border-radius: 22px; cursor: pointer;
-  background: linear-gradient(135deg, #c96342, #e8855a 60%, #e8a84a);
+  background: linear-gradient(135deg, var(--primary), var(--primary-light) 60%, var(--amber));
   color: #fff; font-size: 13px; font-weight: 700;
   box-shadow: 0 4px 16px rgba(201,99,66,0.4);
   transition: transform .15s, box-shadow .15s, filter .15s;
@@ -1507,34 +1688,45 @@ const ctxMatrixItems = computed(() => {
   box-shadow: 0 30px 80px rgba(60,28,12,0.36), 0 2px 8px rgba(60,28,12,0.18);
 }
 /* 居中可读列：对话流/工具条/输入区收束到一列，长答案更耐看 */
-.cfa-tabs, .cfa-global, .cfa-auto, .cfa-input-row { width: 100%; max-width: 940px; margin-inline: auto; }
+.cfa-input-row { width: 100%; max-width: 940px; margin-inline: auto; }
 .cfa-glow {
   position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
-  background: linear-gradient(180deg, #c96342, #e8a05a, #7a9fd4);
+  background: linear-gradient(180deg, var(--primary), var(--primary-light), #7a9fd4);
   background-size: 100% 300%; animation: cfaGlow 6s ease infinite;
 }
 @keyframes cfaGlow { 0%,100% { background-position: 0 0; } 50% { background-position: 0 100%; } }
 
-.cfa-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 18px 13px; border-bottom: 1px solid rgba(201,99,66,0.12);
+.cfa-strip {
+  display: flex; align-items: center; gap: 8px; padding: 5px 14px;
+  border-bottom: 1px solid rgba(0,0,0,0.05); width: 100%; max-width: 940px; margin-inline: auto;
 }
-.cfa-head-l { display: flex; align-items: center; gap: 11px; }
-.cfa-head-orb { font-size: 24px; filter: drop-shadow(0 0 6px rgba(201,99,66,0.45)); }
-.cfa-title { font-size: 15px; font-weight: 800; color: var(--text); display: flex; align-items: center; gap: 6px; }
-.cfa-scope { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.cfa-quota-bar { flex: 1; min-width: 60px; height: 4px; border-radius: 3px; background: rgba(0,0,0,0.07); overflow: hidden; margin-left: 8px; }
+.cfa-quota-bar i { display: block; height: 100%; border-radius: 3px; background: #7cb682; transition: width .4s; }
+.cfa-quota-bar.warn i { background: #f5a623; }
+.cfa-quota-bar.full i { background: #c62828; }
+.cfa-quota-txt { font-size: 10px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cfa-quota-txt.full { color: #c62828; }
+.cfa-scope-in { margin-left: 8px; font-size: 11px; color: var(--muted); font-weight: 500; }
+.cfa-global-top { padding: 5px 14px; font-size: 12px; white-space: nowrap; }
+.cfa-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 14px; border-bottom: 1px solid rgba(201,99,66,0.12);
+}
+.cfa-head-l { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cfa-head-orb { font-size: 18px; filter: drop-shadow(0 0 5px rgba(201,99,66,0.45)); flex-shrink: 0; }
+.cfa-title { font-size: 13.5px; font-weight: 800; color: var(--text); display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; }
 .cfa-head-acts { display: flex; align-items: center; gap: 6px; }
 .cfa-mini { background: none; border: 1px solid rgba(0,0,0,0.12); border-radius: 7px; font-size: 12px; color: var(--muted); padding: 3px 9px; cursor: pointer; }
 .cfa-mini:hover { color: var(--primary); border-color: var(--primary); }
 .cfa-x { background: none; border: none; font-size: 24px; line-height: 1; color: var(--muted); cursor: pointer; padding: 0 4px; }
 
-.cfa-body { flex: 1; overflow-y: auto; padding: 22px 16px 10px; display: flex; flex-direction: column; align-items: center; }
+.cfa-body { flex: 1; overflow-y: auto; padding: 12px 16px 10px; display: flex; flex-direction: column; align-items: center; }
 .cfa-body > * { width: 100%; max-width: 940px; }
 
-.cfa-empty { text-align: center; padding: 8vh 8px 24px; max-width: 760px; margin: 0 auto; }
-.cfa-empty-orb { font-size: 56px; margin-bottom: 12px; filter: drop-shadow(0 4px 12px rgba(201,99,66,0.3)); }
-.cfa-empty-title { font-size: 21px; font-weight: 800; color: var(--text); }
-.cfa-empty-sub { font-size: 14px; color: var(--muted); margin: 9px 0 22px; line-height: 1.7; }
+.cfa-empty { text-align: center; padding: 5vh 8px 20px; max-width: 760px; margin: 0 auto; }
+.cfa-empty-orb { font-size: 44px; margin-bottom: 10px; filter: drop-shadow(0 4px 12px rgba(201,99,66,0.3)); }
+.cfa-empty-title { font-size: 19px; font-weight: 800; color: var(--text); }
+.cfa-empty-sub { font-size: 13px; color: var(--muted); margin: 8px 0 18px; line-height: 1.65; }
 .cfa-sugs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .cfa-sug {
   text-align: left; padding: 10px 13px; border-radius: 11px; cursor: pointer;
@@ -1546,11 +1738,11 @@ const ctxMatrixItems = computed(() => {
 .cfa-msg { margin-bottom: 16px; display: flex; }
 .cfa-msg.user { justify-content: flex-end; }
 .cfa-bubble { max-width: 84%; border-radius: 14px; padding: 12px 15px; font-size: 14px; line-height: 1.75; }
-.cfa-user { background: linear-gradient(135deg, #c96342, #e8855a); color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
+.cfa-user { background: var(--grad); color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
 .cfa-asst { background: rgba(255,255,255,0.92); border: 1px solid rgba(0,0,0,0.06); color: var(--text); border-bottom-left-radius: 4px; }
 .cfa-tools { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
 .cfa-tool { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; font-size: 12px; color: var(--primary); font-weight: 600; background: rgba(201,99,66,0.08); border-radius: 8px; padding: 5px 9px; }
-.cfa-tool.done { color: #2e7d32; background: rgba(46,125,50,0.08); }
+.cfa-tool.done { color: var(--c-success); background: rgba(46,125,50,0.08); }
 .cfa-tool.fail { color: #b3261e; background: rgba(179,38,30,0.08); }
 .cfa-tool-run { letter-spacing: 1px; animation: cfaBlink 1.1s infinite; }
 .cfa-tool-ms { font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -1585,27 +1777,27 @@ const ctxMatrixItems = computed(() => {
 .cfa-md :deep(.md-table tbody tr:nth-child(even)) { background: rgba(0,0,0,0.02); }
 
 /* 自动沉淀：胶囊开关（默认开），替代原裸 checkbox */
-.cfa-auto {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  margin: 8px 16px 0; padding: 8px 12px; border-radius: 11px; cursor: pointer;
-  background: rgba(0,0,0,0.025); border: 1px solid rgba(0,0,0,0.07); transition: all .16s;
+.cfa-auto-mini {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  cursor: pointer; flex-shrink: 0; padding-bottom: 1px; opacity: 0.75; transition: opacity .15s;
 }
-.cfa-auto.on { background: rgba(201,99,66,0.07); border-color: rgba(201,99,66,0.28); }
-.cfa-auto-txt { display: flex; flex-direction: column; gap: 1px; line-height: 1.3; }
-.cfa-auto-txt b { font-size: 12px; font-weight: 700; color: var(--text); }
-.cfa-auto-txt i { font-size: 10.5px; color: var(--muted); font-style: normal; }
+.cfa-auto-mini:hover, .cfa-auto-mini.on { opacity: 1; }
+.cfa-auto-mini-txt { font-size: 9.5px; color: var(--muted); white-space: nowrap; }
+.cfa-auto-mini.on .cfa-auto-mini-txt { color: var(--primary); font-weight: 600; }
 .cfa-switch-input { position: absolute; opacity: 0; width: 0; height: 0; }
 .cfa-switch { flex-shrink: 0; position: relative; width: 38px; height: 22px; border-radius: 11px;
   background: rgba(0,0,0,0.2); transition: background .18s; }
 .cfa-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
   border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.28); transition: transform .18s; }
-.cfa-auto.on .cfa-switch { background: var(--primary); }
-.cfa-auto.on .cfa-switch::after { transform: translateX(16px); }
+.cfa-auto-mini.on .cfa-switch { background: var(--primary); }
+.cfa-auto-mini.on .cfa-switch-sm::after { transform: translateX(12px); }
+.cfa-switch-sm { width: 30px; height: 17px; border-radius: 9px; }
+.cfa-switch-sm::after { width: 13px; height: 13px; }
 .cfa-input-row { display: flex; gap: 8px; align-items: flex-end; padding: 8px 16px 16px; border-top: 1px solid rgba(201,99,66,0.12); }
 .cfa-input {
   flex: 1; resize: none; max-height: 120px; min-height: 38px;
   border: 1px solid rgba(0,0,0,0.12); border-radius: 11px; padding: 9px 12px;
-  font-size: 13px; font-family: inherit; line-height: 1.5; outline: none; background: #fff;
+  font-size: 13px; font-family: inherit; line-height: 1.5; outline: none; background: var(--row-bg);
 }
 .cfa-input:focus { border-color: var(--primary); }
 .cfa-send {
@@ -1626,8 +1818,7 @@ const ctxMatrixItems = computed(() => {
 }
 
 /* tabs */
-.cfa-tabs { display: flex; align-items: center; gap: 6px; padding: 8px 16px 0; }
-.cfa-tab { border: none; background: rgba(0,0,0,0.05); border-radius: 8px 8px 0 0; padding: 6px 14px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.cfa-tab { border: none; background: rgba(0,0,0,0.05); border-radius: 999px; padding: 3px 12px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
 .cfa-tab.on { background: rgba(201,99,66,0.1); color: var(--primary); font-weight: 700; }
 .cfa-tab-hint { font-size: 10.5px; color: var(--muted); margin-left: auto; }
 
@@ -1635,22 +1826,25 @@ const ctxMatrixItems = computed(() => {
 .cfa-asst-wrap { width: 100%; }
 .cfa-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0 0 2px; }
 .cfa-act { border: 1px solid rgba(201,99,66,0.3); background: rgba(201,99,66,0.06); color: var(--primary); border-radius: 7px; font-size: 11.5px; padding: 3px 9px; cursor: pointer; font-weight: 600; }
+.cfa-fb { border: 1px solid rgba(0,0,0,0.1); background: none; border-radius: 7px; font-size: 12px; padding: 2px 7px; cursor: pointer; opacity: 0.55; transition: all .12s; }
+.cfa-fb:hover { opacity: 1; border-color: var(--primary); }
+.cfa-fb.on { opacity: 1; border-color: var(--primary); background: rgba(201,99,66,0.08); }
 .cfa-act:disabled { opacity: .5; cursor: default; }
 .cfa-drill-lbl { font-size: 11px; color: var(--muted); margin-left: 4px; }
-.cfa-drill { border: 1px solid rgba(0,0,0,0.12); background: #fff; color: var(--muted); border-radius: 7px; font-size: 11.5px; padding: 3px 9px; cursor: pointer; }
+.cfa-drill { border: 1px solid rgba(0,0,0,0.12); background: var(--row-bg); color: var(--muted); border-radius: 7px; font-size: 11.5px; padding: 3px 9px; cursor: pointer; }
 .cfa-drill:hover { color: var(--primary); border-color: var(--primary); }
 
 /* knowledge base */
 .cfa-kb-add { background: rgba(255,255,255,0.7); border: 1px solid rgba(0,0,0,0.08); border-radius: 12px; padding: 10px; margin-bottom: 14px; }
 .cfa-kb-add-row { display: flex; gap: 6px; margin-top: 8px; }
-.cfa-kb-sel { height: 34px; border: 1px solid rgba(0,0,0,0.12); border-radius: 9px; background: #fff; font-size: 12px; color: var(--text); padding: 0 8px; }
+.cfa-kb-sel { height: 34px; border: 1px solid rgba(0,0,0,0.12); border-radius: 9px; background-color: var(--row-bg); font-size: 12px; color: var(--text); padding: 0 28px 0 8px; }
 .cfa-kb-add-row .cfa-send { flex: 1; }
 .cfa-kb-empty { text-align: center; color: var(--muted); font-size: 12.5px; line-height: 1.7; padding: 24px 8px; }
 .cfa-kb-item { background: rgba(255,255,255,0.85); border: 1px solid rgba(0,0,0,0.07); border-radius: 11px; padding: 10px 12px; margin-bottom: 10px; }
 .cfa-kb-item.pinned { border-color: rgba(201,99,66,0.35); background: rgba(201,99,66,0.04); }
 .cfa-kb-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
 .cfa-kb-kind { font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 6px; color: #fff; background: #7a9fd4; }
-.cfa-kb-kind.insight { background: #2e7d32; }
+.cfa-kb-kind.insight { background: var(--c-success); }
 .cfa-kb-kind.rule { background: #8a4b34; }
 .cfa-kb-scope { font-size: 11px; color: var(--muted); }
 .cfa-kb-ai { font-size: 10px; color: var(--primary); border: 1px solid rgba(201,99,66,0.3); border-radius: 5px; padding: 0 5px; }
@@ -1668,7 +1862,7 @@ const ctxMatrixItems = computed(() => {
 /* ── P4 大屏复盘 ─────────────────────────────────────────────────────────────── */
 .present-btn {
   border: 1px solid rgba(21,101,192,.35); background: rgba(21,101,192,.06);
-  color: #1565c0; font-size: 12px; font-weight: 700; padding: 5px 12px;
+  color: var(--c-info); font-size: 12px; font-weight: 700; padding: 5px 12px;
   border-radius: 8px; cursor: pointer; margin-left: 8px;
 }
 .present-btn:hover { background: rgba(21,101,192,.14); }
@@ -1687,6 +1881,9 @@ const ctxMatrixItems = computed(() => {
 .pp { font-size: 13px; padding: 4px 12px; border-radius: 16px; cursor: pointer; color: #8b949e; transition: all .15s; }
 .pp.active { background: #1f6feb; color: #fff; font-weight: 700; }
 .pp:hover:not(.active) { background: #21262d; color: #e6edf3; }
+.present-auto { border: 1px solid #30363d; background: none; color: #8b949e; padding: 5px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; margin-right: 8px; }
+.present-auto:hover { color: #58a6ff; border-color: #58a6ff; }
+.present-auto.on { color: #3fb950; border-color: #3fb950; }
 .present-close { border: 1px solid #30363d; background: none; color: #8b949e; padding: 5px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; }
 .present-close:hover { color: #ff7b72; border-color: #ff7b72; }
 
@@ -1744,5 +1941,5 @@ const ctxMatrixItems = computed(() => {
 .present-fade-enter-from, .present-fade-leave-to { opacity: 0; }
 
 /* P4 alert toast */
-.p4-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #2e7d32; color: #fff; padding: 8px 20px; border-radius: 20px; font-size: 13px; z-index: 8000; pointer-events: none; }
+.p4-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--c-success); color: #fff; padding: 8px 20px; border-radius: 20px; font-size: 13px; z-index: 8000; pointer-events: none; }
 </style>

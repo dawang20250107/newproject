@@ -1,8 +1,10 @@
 <script setup>
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import ar from '../../api/ar.js'
 import { downloadBlob } from '../../utils/download.js'
 import { todayCST, yearCST, monthCST } from '../../constants.js'
+import { useToast } from '../../composables/useToast.js'
+const toast = useToast()
 
 const data = ref(null)
 const loading = ref(false)
@@ -28,6 +30,38 @@ const narrative = ref({
   plan: '',      // 下期工作重点
   support: '',   // 需协调 / 支持事项
 })
+// d3: 汇报说明自动草稿——按「期间+范围」为键存 localStorage（防抖保存、切回自动恢复），
+// 财务写得最久的四段长文本不再因切换期间/误刷新而白写
+const _draftKey = () => `pr_narrative:${periodType.value}:${selYear.value}-${selMonth.value}` +
+  (periodType.value === 'weekly' ? `-w${selWeekIdx.value}` : '') + `:${scopeValue.value || 'all'}`
+let _draftTimer = null
+let _restoring = false
+function _saveDraft() {
+  clearTimeout(_draftTimer)
+  _draftTimer = setTimeout(() => {
+    try {
+      const v = narrative.value
+      if (v.summary || v.risk || v.plan || v.support) {
+        localStorage.setItem(_draftKey(), JSON.stringify(v))
+      } else {
+        localStorage.removeItem(_draftKey())   // 全空=清草稿
+      }
+    } catch { /* 隐私模式 */ }
+  }, 400)
+}
+function _restoreDraft() {
+  _restoring = true
+  try {
+    const raw = localStorage.getItem(_draftKey())
+    const v = raw ? JSON.parse(raw) : null
+    narrative.value = { summary: '', risk: '', plan: '', support: '', ...(v || {}) }
+  } catch { narrative.value = { summary: '', risk: '', plan: '', support: '' } }
+  nextTick(() => { _restoring = false })
+}
+watch(narrative, () => { if (!_restoring) _saveDraft() }, { deep: true })
+watch([periodType, selYear, selMonth, selWeekIdx, scopeValue], _restoreDraft)
+onMounted(_restoreDraft)
+
 const narrativeFields = [
   { key: 'summary', label: '经营分析（得 / 失 / 策略）', ph: '本期经营亮点、未达成项及应对策略…' },
   { key: 'risk', label: '风险与异常提示', ph: '逾期、资金缺口、重大异常事项…' },
@@ -79,7 +113,7 @@ function fmtMD(d) { return `${d.getUTCMonth() + 1}/${d.getUTCDate()}` }
 // 自动定位到包含 today 的那一周（仅在当前月时有效）
 function autoSelectWeek() {
   if (periodType.value !== 'weekly') return
-  const now = new Date()
+  const now = new Date(Date.now() + 8 * 3600 * 1000)   // CST 今日（与全站日期口径一致）
   const y = now.getUTCFullYear(), m = now.getUTCMonth() + 1
   if (selYear.value !== y || selMonth.value !== m) return
   const todayStr = now.toISOString().slice(0, 10)
@@ -172,7 +206,7 @@ async function exportExcel() {
     const blob = await ar.exportPeriodicReport(buildParams(), narrative.value)
     downloadBlob(blob, `${meta.value.title}.xlsx`)
   } catch (e) {
-    alert(e?.msg || '导出失败')
+    toast.error(e?.msg || '导出失败')
   } finally { exporting.value = false }
 }
 
@@ -189,7 +223,7 @@ async function exportImage() {
       exporting.value = false
     }, 'image/png')
   } catch (e) {
-    alert('图片导出失败：' + (e?.message || e))
+    toast.error('图片导出失败：' + (e?.message || e))
     exporting.value = false
   }
 }
@@ -469,7 +503,7 @@ onMounted(load)
 
 /* ── 报告正文 ── */
 .report {
-  background: #fff; border: 1px solid #ddd;
+  background: var(--row-bg); border: 1px solid #ddd;
   padding: 32px 38px 28px; max-width: 1080px; margin: 0 auto;
   box-shadow: 0 2px 8px rgba(0,0,0,.08);
 }
@@ -564,7 +598,7 @@ onMounted(load)
   font-size: 12.5px; line-height: 1.7; color: #1a1a1a; padding: 8px 10px;
   resize: none; outline: none; font-family: inherit; min-height: 56px; overflow: hidden;
 }
-.rp-note-ta:focus { border-color: var(--primary); background: #fff; }
+.rp-note-ta:focus { border-color: var(--primary); background: var(--row-bg); }
 .rp-note-ta::placeholder { color: #bbb; }
 
 /* 签字栏 */

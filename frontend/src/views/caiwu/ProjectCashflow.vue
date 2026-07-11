@@ -85,6 +85,15 @@ const PRESETS = [
   { k: 'd30', l: '近 30 天', f: () => lastNDays(30) },
   { k: 'd90', l: '近 90 天', f: () => lastNDays(90) },
 ]
+// 按月直选（跟随所选年份）：页面主要按月度看，单列一组
+const MONTH_PRESETS = Array.from({ length: 12 }, (_, i) => ({
+  k: `m${i + 1}`, l: `${i + 1} 月`,
+  f: () => ({
+    date_start: `${filters.year}-${pad2(i + 1)}-01`,
+    date_end: `${filters.year}-${pad2(i + 1)}-${pad2(lastDayOfMonth(filters.year, i))}`,
+  }),
+}))
+const ALL_PRESETS = [...PRESETS, ...MONTH_PRESETS]
 const rangePreset = ref('')   // '' 全年 | 预设key | 'custom'
 
 function applyPreset(p) {
@@ -102,7 +111,7 @@ function onRangeChange() {
     if (!filters.date_start) { filters.date_start = `${filters.year}-01-01`; filters.date_end = `${filters.year}-12-31` }
     load(); return
   }
-  const p = PRESETS.find(x => x.k === v)
+  const p = ALL_PRESETS.find(x => x.k === v)
   if (p) applyPreset(p)
 }
 function onDateEdit() { rangePreset.value = 'custom'; load() }
@@ -232,9 +241,12 @@ onMounted(() => {
 <template>
   <div class="pcf-wrap">
     <!-- 标题行：h1 + 维度 tab，对齐付款管理风格 -->
-    <div class="topbar">
-      <div style="display:flex;align-items:center;gap:14px">
-        <h1>项目现金流</h1>
+    <div class="cw-hero cw-hero-slim">
+      <div style="display:flex;align-items:center;gap:16px">
+        <div>
+          <div class="cw-eyebrow">PROJECT CASHFLOW · 收支纵览</div>
+          <h1>项目现金流</h1>
+        </div>
         <div class="tab-bar">
           <button v-for="d in DIMS" :key="d.v" class="tab-btn" :class="{ active: groupBy === d.v }"
             @click="setDim(d.v)">{{ d.l }}</button>
@@ -255,7 +267,12 @@ onMounted(() => {
         </select>
         <select v-model="rangePreset" style="min-width:100px" @change="onRangeChange">
           <option value="">全年</option>
-          <option v-for="p in PRESETS" :key="p.k" :value="p.k">{{ p.l }}</option>
+          <optgroup label="常用区间">
+            <option v-for="p in PRESETS" :key="p.k" :value="p.k">{{ p.l }}</option>
+          </optgroup>
+          <optgroup :label="`按月（${filters.year} 年）`">
+            <option v-for="p in MONTH_PRESETS" :key="p.k" :value="p.k">{{ p.l }}</option>
+          </optgroup>
           <option value="custom">自定义…</option>
         </select>
         <template v-if="filters.useCustomDate">
@@ -339,11 +356,11 @@ onMounted(() => {
             <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#9b8070" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/></svg>
             <i>合计</i><b>{{ rows.length }}</b> 个{{ isProjDim ? '项目' : '二级部门' }}</span>
           <span class="bb-item ok">
-            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#2e7d32" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="var(--c-success)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
             <i>回款流入</i><b>{{ fmtWan(totals.inflow) }}</b></span>
           <span class="bb-item">
-            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#c62828" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V9"/><path d="M7 14l5-5 5 5"/><path d="M5 4h14"/></svg>
-            <i>付款流出</i><b style="color:#c62828">{{ fmtWan(totals.outflow) }}</b></span>
+            <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="var(--c-danger)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V9"/><path d="M7 14l5-5 5 5"/><path d="M5 4h14"/></svg>
+            <i>付款流出</i><b style="color:var(--c-danger)">{{ fmtWan(totals.outflow) }}</b></span>
           <span class="bb-item">
             <svg class="bb-ico" viewBox="0 0 24 24" fill="none" stroke="#7a614c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10.5h18"/></svg>
             <i>净现金</i><b :style="{ color: netColor(totals.net) }"><span class="bb-caret">{{ totals.net >= 0 ? '▲' : '▼' }}</span>{{ fmtWan(totals.net) }}</b></span>
@@ -379,7 +396,7 @@ onMounted(() => {
 /* 维度 tab（对齐付款管理 .tab-bar / .tab-btn）*/
 .tab-bar { display: flex; gap: 2px; background: rgba(0,0,0,0.05); border-radius: 10px; padding: 3px; }
 .tab-btn { border: none; background: none; padding: 5px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; }
-.tab-btn.active { background: #fff; color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
+.tab-btn.active { background: var(--row-bg); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
 
 /* 搜索小框：内嵌在 filter-bar 右侧，宽度自适应 */
 .pcf-search-wrap {
@@ -388,12 +405,12 @@ onMounted(() => {
   border-radius: 8px; padding: 0 10px; height: 32px; min-width: 140px;
   transition: border-color .15s, width .18s;
 }
-.pcf-search-wrap:focus-within { border-color: rgba(201,99,66,.5); background: #fff; min-width: 200px; }
+.pcf-search-wrap:focus-within { border-color: rgba(201,99,66,.5); background: var(--row-bg); min-width: 200px; }
 .pcf-search { flex: 1 1 auto; min-width: 0; border: none; background: transparent; font-size: 13px; color: var(--text); outline: none; }
 .pcf-search::placeholder { color: var(--muted); }
 
 .pcf-empty { padding: 40px; text-align: center; color: var(--muted); font-size: 13px; }
-.pcf-empty.err { color: #c62828; }
+.pcf-empty.err { color: var(--c-danger); }
 
 /* 固定视口：fh-fill + page-scroll（全局 full-height-view 链路），表头吸顶实色 */
 .fh-fill { padding-bottom: 40px; }
@@ -410,9 +427,9 @@ onMounted(() => {
 }
 .amt { font-variant-numeric: tabular-nums; }
 .sortable { cursor: pointer; }
-.sortable:hover { color: var(--primary, #c96342); }
+.sortable:hover { color: var(--primary, var(--primary)); }
 /* 排序列表头用实色，防滚动时数据透出 */
-.pcf-table thead th.sorted { background: #f0e6e1; color: var(--primary, #c96342); }
+.pcf-table thead th.sorted { background: #f0e6e1; color: var(--primary, var(--primary)); }
 .sort-arr { font-size: 10px; }
 
 .pcf-row { cursor: pointer; }
@@ -444,9 +461,9 @@ onMounted(() => {
 
 /* 吸底栏小图标 */
 .bb-ico { width: 13px; height: 13px; align-self: center; flex-shrink: 0; }
-.green { color: #2e7d32; }
-.red { color: #c62828; }
-.amber { color: #e65100; }
+.green { color: var(--c-success); }
+.red { color: var(--c-danger); }
+.amber { color: var(--c-warn); }
 .muted { color: var(--muted); }
 .fw { font-weight: 700; }
 

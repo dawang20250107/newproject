@@ -68,32 +68,33 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
 
     <template v-else-if="data">
       <div class="kpi-grid">
-        <div class="kpi-card">
+        <router-link to="/payments?planned=today" class="kpi-card kpi-link">
           <div class="label">今日计划付款</div>
           <div class="value">{{ data.today_count }}</div>
           <div v-if="showAmount" class="sub">共 {{ fmt(data.today_amount) }}</div>
-        </div>
-        <div class="kpi-card">
+        </router-link>
+        <router-link to="/payments?status=pending" class="kpi-card kpi-link">
           <div class="label">待付款记录</div>
-          <div class="value" style="color:#c62828">{{ data.pending_count }}</div>
+          <div class="value" style="color:var(--c-danger)">{{ data.pending_count }}</div>
           <div v-if="showAmount" class="sub">{{ fmt(data.pending_amount) }}</div>
-        </div>
-        <div class="kpi-card">
+        </router-link>
+        <router-link to="/payments?status=partial" class="kpi-card kpi-link">
           <div class="label">部分付款中</div>
-          <div class="value" style="color:#f57f17">{{ data.partial_count }}</div>
+          <div class="value" style="color:var(--amber-deep)">{{ data.partial_count }}</div>
           <div v-if="showAmount" class="sub">{{ fmt(data.partial_amount) }}</div>
-        </div>
-        <div :class="['kpi-card', data.overdue_count > 0 ? 'overdue-kpi-card' : '']">
+        </router-link>
+        <router-link :to="data.overdue_count > 0 ? '/payments?status=overdue' : '/payments'"
+                     :class="['kpi-card', 'kpi-link', data.overdue_count > 0 ? 'overdue-kpi-card' : '']">
           <div class="label">已逾期未付</div>
-          <div :class="['value', data.overdue_count > 0 ? 'kpi-value-pulse' : '']" style="color:#c62828">
+          <div :class="['value', data.overdue_count > 0 ? 'kpi-value-pulse' : '']" style="color:var(--c-danger)">
             {{ data.overdue_count }}
           </div>
           <div v-if="showAmount" class="sub">{{ fmt(data.overdue_amount) }}</div>
-        </div>
+        </router-link>
       </div>
 
-      <!-- overdue alert banner -->
-      <div v-if="data.overdue_count > 0" class="overdue-alert">
+      <!-- overdue alert banner：点击直达付款管理（已套逾期筛选）-->
+      <router-link v-if="data.overdue_count > 0" to="/payments?status=overdue" class="overdue-alert">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
           <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
@@ -101,9 +102,9 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
         <span>
           当前有 <strong>{{ data.overdue_count }}</strong> 笔排款已逾期未付
           <template v-if="showAmount">，合计 <strong>{{ fmt(data.overdue_amount) }}</strong></template>
-          ，请及时跟进处理。
+          ，点击查看并跟进处理 →
         </span>
-      </div>
+      </router-link>
 
       <div class="card fh-fill">
         <div class="section-title">今日计划付款 ({{ data.today_count }} 笔)</div>
@@ -143,7 +144,7 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
   top: 24px;
   left: 50%;
   transform: translateX(-50%);
-  background: linear-gradient(135deg, #c96342, #e8855a 55%, #e8a84a);
+  background: linear-gradient(135deg, var(--primary), #e8855a 55%, #e8a84a);
   background-size: 200% 100%;
   color: #fff;
   padding: 16px 34px;
@@ -177,14 +178,18 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
   display: flex; align-items: center; gap: 10px;
   background: rgba(198,40,40,0.08);
   border: 1px solid rgba(198,40,40,0.22);
-  border-left: 4px solid #c62828;
+  border-left: 4px solid var(--c-danger);
   border-radius: 10px;
   padding: 11px 16px;
   margin-bottom: 16px;
   color: #b71c1c;
   font-size: 13.5px;
 }
-.overdue-alert svg { flex-shrink: 0; color: #c62828; }
+.overdue-alert svg { flex-shrink: 0; color: var(--c-danger); }
+a.overdue-alert { text-decoration: none; cursor: pointer; transition: background .15s, transform .1s; }
+a.overdue-alert:hover { background: rgba(198,40,40,0.13); transform: translateX(2px); }
+.kpi-link { text-decoration: none; color: inherit; display: block; cursor: pointer; transition: transform .12s, box-shadow .12s; }
+.kpi-link:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,.08); }
 
 /* Today's payment plan — compact, tidy row/column density */
 .today-table { width: 100%; font-size: 13px; table-layout: fixed; }
@@ -217,7 +222,7 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
 .kpi-grid { gap: 10px; margin-bottom: 12px; }
 .kpi-card { padding: 13px 16px; }
 .kpi-card .label { margin-bottom: 5px; }
-.kpi-card .value { font-size: 24px; }
+.kpi-card .value { font-size: 28px; }
 .kpi-card .sub { margin-top: 3px; }
 .overdue-alert { padding: 9px 14px; margin-bottom: 12px; }
 .card { padding: 12px 14px; }
@@ -232,7 +237,7 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
 .card.fh-fill { padding-bottom: 4px; }
 .card.fh-fill .section-title { flex-shrink: 0; }
 /* 表头吸顶，滚动时列名常驻 */
-.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 /* 表格底部保护：滚动区末端留出空间，最后一行不贴边/不被遮挡 */
 .table-wrap.page-scroll { padding-bottom: 28px; }
 </style>

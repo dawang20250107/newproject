@@ -5,11 +5,19 @@ import AppNav from './components/AppNav.vue'
 import WelcomeOverlay from './components/WelcomeOverlay.vue'
 import ChangePasswordModal from './components/ChangePasswordModal.vue'
 import Toast from './components/Toast.vue'
+import ConfirmHost from './components/ConfirmHost.vue'
+import ResultHost from './components/ResultHost.vue'
+import ErrorBoundary from './components/ErrorBoundary.vue'
 import { useAuthStore } from './stores/auth.js'
+import { useRouter } from 'vue-router'
+import { useInteractionFeel } from './composables/useInteractionFeel.js'
 
 const route = useRoute()
 const auth = useAuthStore()
 const showNav = computed(() => auth.isLoggedIn && !route.meta.public)
+
+// 全局操作手感：/ 聚焦搜索、搜索框 Esc 清空、勾选列整格热区、数字框聚焦全选
+useInteractionFeel()
 
 const AUTO_COLLAPSE_MS = 10000
 // User's explicit choice, if any: 'collapsed' | 'expanded' | null (never toggled).
@@ -33,6 +41,9 @@ function onNavHover(hovering) {
   if (hovering) clearAutoTimer()    // pause countdown while pointer rests on nav
   else scheduleAutoCollapse()       // restart a fresh countdown when it leaves
 }
+
+const _router = useRouter()
+function exitPreview() { auth.stopPreview(); _router.push('/permissions') }
 
 // Keep permissions fresh (super_admin may have changed them since last login).
 onMounted(() => {
@@ -100,7 +111,14 @@ function onNavCollapse(v) {
       <AppNav v-if="showNav" :collapsed="navCollapsed" :mobile-open="mobileNavOpen"
         @update:collapsed="onNavCollapse" @close-mobile="mobileNavOpen = false" @hover="onNavHover" />
       <main :class="showNav ? ['main-content', navCollapsed ? 'nav-collapsed' : '', route.meta.fullHeight ? 'full-height-view' : ''] : 'main-public'">
-        <router-view />
+        <router-view v-slot="{ Component }">
+          <ErrorBoundary :key="route.path">
+            <!-- 最重的三个台账页 keep-alive:返回秒开(DOM 缓存),数据由页面 onActivated 后台刷新 -->
+            <KeepAlive :include="['PaymentsPage', 'ARRecordsPage', 'ApprovalRecordsPage']" :max="3">
+              <component :is="Component" />
+            </KeepAlive>
+          </ErrorBoundary>
+        </router-view>
       </main>
     </div>
 
@@ -108,6 +126,13 @@ function onNavCollapse(v) {
 
     <!-- 超管重置临时密码后：强制改密，覆盖全屏不可跳过 -->
     <ChangePasswordModal v-if="auth.isLoggedIn && auth.mustChangePassword" forced />
+    <!-- 权限预览横幅：超管以某职务视角浏览时常驻置顶，可一键退出 -->
+    <div v-if="auth.previewJob" class="preview-banner">
+      👁 正在预览「{{ auth.previewJob }}」的界面视角（数据仍按您本人权限返回）
+      <button class="pv-exit" @click="exitPreview">退出预览</button>
+    </div>
     <Toast />
+    <ConfirmHost />
+    <ResultHost />
   </div>
 </template>

@@ -103,6 +103,22 @@ function monthSum(bu, key) {
     .reduce((s, v) => s + (parseFloat(v) || 0), 0)
 }
 function annualVal(bu, key) { return parseFloat(editGrid[bu]?.[key]?.[12]) || 0 }
+
+// Excel 整行粘贴：解析 制表符/逗号/多空格 分隔的一行数字，从当前格起横向填充
+// （最多填到 12 月），一次粘贴替代逐格手输；只粘一个值时走浏览器默认行为。
+function onGridPaste(e, bu, key, startIdx) {
+  const text = e.clipboardData?.getData('text') || ''
+  const parts = text.trim().split(/[\t,]|\s{2,}/).map(x => x.trim()).filter(x => x !== '')
+  if (parts.length < 2) return   // 单值：默认粘贴
+  e.preventDefault()
+  let filled = 0
+  for (let i = 0; i < parts.length && startIdx + i < 12; i++) {
+    const n = parseFloat(String(parts[i]).replace(/,/g, ''))
+    if (!isNaN(n)) { editGrid[bu][key][startIdx + i] = String(n); filled++ }
+  }
+  const over = parts.length - (12 - startIdx)
+  toast.success(`已填充 ${filled} 个月` + (over > 0 ? `（超出 ${over} 个值未使用）` : ''))
+}
 function delta(bu, key) { return monthSum(bu, key) - annualVal(bu, key) }
 function deltaOk(bu, key) { return Math.abs(delta(bu, key)) < 0.01 }
 
@@ -114,8 +130,10 @@ async function loadTargets() {
   loadingTargets.value = true; loadErr.value = ''
   try {
     const res = await api.get('/targets', { params: { year: targetYear.value } })
-    // 重置当前可编辑事业部的网格，避免切换年份后残留上一年的数据
-    for (const bu of editBus.value) {
+    // 重置全部已存在的网格（不只当前可编辑的）：先选中单个事业部再切年份时，
+    // 其他事业部的网格若只按 editBus 重置会残留上一年数值，切回「全部」后
+    // 一键保存会把旧年份数字写进新年份，造成目标数据污染
+    for (const bu of new Set([...Object.keys(editGrid), ...editBus.value])) {
       editGrid[bu] = { rev: Array(13).fill(''), prof: Array(13).fill(''), gross: Array(13).fill('') }
     }
     for (const t of (res.data?.targets || [])) {
@@ -197,20 +215,47 @@ async function exportTargets() {
   finally { exporting.value = false }
 }
 
+const uploadPreview = reactive({ open: false, file: null, changes: [], count: 0, clearCount: 0, committing: false })
 async function handleUpload(evt) {
   const file = evt.target.files?.[0]; evt.target.value = ''
   if (!file) return
   uploading.value = true; uploadMsg.value = ''
   try {
-    const res = await api.uploadTargets(targetYear.value, file)
-    uploadOk.value = true
-    uploadMsg.value = `导入成功，已更新 ${res.data?.saved ?? 0} 条记录`
-    await load()
+    // 先 dry-run 预览变更（不落库）
+    const res = await api.uploadTargets(targetYear.value, file, true)
+    const d = res.data || {}
+    if (!d.count) {
+      uploadOk.value = true; uploadMsg.value = '文件已解析，但与现有目标无差异，无需更新'
+      return
+    }
+    uploadPreview.file = file
+    uploadPreview.changes = d.changes || []
+    uploadPreview.count = d.count
+    uploadPreview.clearCount = d.clear_count || 0
+    uploadPreview.open = true
   } catch (e) {
     uploadOk.value = false; uploadMsg.value = e?.msg || e?.error || '导入失败'
   } finally { uploading.value = false }
 }
+const MONTH_NAME = m => (m === 0 ? '年度' : `${m}月`)
+async function commitUpload() {
+  uploadPreview.committing = true
+  try {
+    const res = await api.uploadTargets(targetYear.value, uploadPreview.file, false)
+    uploadOk.value = true
+    uploadMsg.value = `导入成功，已更新 ${res.data?.saved ?? 0} 条记录`
+    uploadPreview.open = false
+    await load()
+  } catch (e) {
+    uploadOk.value = false; uploadMsg.value = e?.msg || e?.error || '导入失败'
+    uploadPreview.open = false
+  } finally { uploadPreview.committing = false }
+}
 
+// 保证 editBus 中每个事业部的输入网格已初始化，避免模板 editGrid[bu][key] 读到 undefined。
+// 切换/选择事业部时 editBus 先于异步 loadTargets 变化，否则会崩 "reading 'rev'"。
+// flush:'pre'（默认）确保本回调在 DOM 重渲染前执行 → 模板访问时网格已就绪。
+watch(editBus, (bus) => { (bus || []).forEach(initBuGrid) }, { immediate: true })
 watch(targetYear, loadTargets)
 watch([reportYear, reportMonth, selectedBu], loadMetrics)
 
@@ -299,9 +344,12 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="topbar" style="align-items:flex-start">
-      <h1>指标管理</h1>
-      <div class="ctrl-row" style="justify-content:flex-end">
+    <div class="cw-hero">
+      <div>
+        <div class="cw-eyebrow">TARGETS & METRICS · 目标追踪</div>
+        <h1>指标管理</h1>
+      </div>
+      <div class="cw-hero-ctrl">
         <select v-if="accessibleBus.length > 1" v-model="selectedBu" class="sel-bu" @change="loadMetrics">
           <option value="">全部事业部</option>
           <option v-for="bu in accessibleBus" :key="bu" :value="bu">{{ bu }}</option>
@@ -374,7 +422,8 @@ onMounted(load)
                   <td class="col-bu">{{ bu }}</td>
                   <td v-for="(_, mi) in MONTH_LABELS" :key="mi">
                     <input v-model="editGrid[bu][g.key][mi]" :disabled="!canEdit"
-                           type="number" step="0.01" class="t-input" />
+                           type="number" step="0.01" class="t-input"
+                           @paste="onGridPaste($event, bu, g.key, mi)" />
                   </td>
                   <td class="col-sum-val">{{ monthSum(bu,g.key) ? (+monthSum(bu,g.key).toFixed(2)).toLocaleString() : '—' }}</td>
                   <td>
@@ -463,6 +512,42 @@ onMounted(load)
       </template>
     <ContextMenu :ctx="ctxMetrics" :items="ctxMetricsItems" />
     </template>
+
+    <!-- d1: 目标上传两步确认——先看变更 diff 再落库 -->
+    <div v-if="uploadPreview.open" class="modal-overlay" @click.self="uploadPreview.open = false">
+      <div class="modal-box" style="max-width:560px">
+        <div class="modal-header">
+          <div>
+            <h3>确认导入 {{ targetYear }} 年目标</h3>
+            <div class="text-sm-muted" style="margin-top:2px">
+              共 <strong>{{ uploadPreview.count }}</strong> 处变更
+              <span v-if="uploadPreview.clearCount" style="color:var(--c-danger)"> · 其中 {{ uploadPreview.clearCount }} 处将被清零</span>
+              ——确认无误后才写入
+            </div>
+          </div>
+          <button class="modal-close" @click="uploadPreview.open = false">✕</button>
+        </div>
+        <div class="modal-body" style="max-height:52vh;overflow:auto">
+          <table class="diff-tbl">
+            <thead><tr><th>事业部</th><th>期间</th><th>指标</th><th class="r">原值(万)</th><th class="r">新值(万)</th></tr></thead>
+            <tbody>
+              <tr v-for="(c, i) in uploadPreview.changes" :key="i" :class="{ 'row-clear': c.is_clear }">
+                <td>{{ c.bu }}</td><td>{{ MONTH_NAME(c.month) }}</td><td>{{ c.field }}</td>
+                <td class="r">{{ c.old_wan.toLocaleString() }}</td>
+                <td class="r"><strong>{{ c.new_wan.toLocaleString() }}</strong>
+                  <span v-if="c.is_clear" class="clear-tag">清零</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" @click="uploadPreview.open = false">取消</button>
+          <button class="btn btn-primary" :disabled="uploadPreview.committing" @click="commitUpload">
+            {{ uploadPreview.committing ? '写入中…' : `确认写入 ${uploadPreview.count} 处` }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -493,7 +578,7 @@ onMounted(load)
 .tgt-grid .col-diff { min-width: 60px; }
 .tgt-grid tbody tr:hover { background: rgba(180,140,110,.04); }
 .row-err { background: rgba(198,40,40,.04) !important; }
-.row-err .col-bu { color: #c62828; }
+.row-err .col-bu { color: var(--c-danger); }
 .t-input {
   /* 自适应宽度：最小 62px，可随内容增长，确保较长数值（如 12345.67）完整可见 */
   width: 62px; min-width: 62px; max-width: 96px; padding: 4px 5px; text-align: right;
@@ -510,8 +595,8 @@ onMounted(load)
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 .col-diff-val { font-size: 12px; font-weight: 700; }
-.diff-ok { color: #2e7d32; }
-.diff-err { color: #c62828; font-weight: 800; }
+.diff-ok { color: var(--c-success); }
+.diff-err { color: var(--c-danger); font-weight: 800; }
 .auto-fill-row {
   display: flex; align-items: center; justify-content: space-between;
   flex-wrap: wrap; gap: 8px; margin-top: 14px;
@@ -519,8 +604,8 @@ onMounted(load)
 }
 .auto-fill-btns { display: flex; gap: 6px; flex-wrap: wrap; }
 .save-msg { font-size: 12px; font-weight: 700; }
-.save-ok { color: #2e7d32; }
-.save-err { color: #c62828; }
+.save-ok { color: var(--c-success); }
+.save-err { color: var(--c-danger); }
 
 /* ── 三大指标可折叠表头 ──────────────────────────────────────────────── */
 .sec-toggle {
@@ -556,11 +641,17 @@ onMounted(load)
 .total-row .col-bu { color: var(--primary); }
 .num-strong { font-weight: 700; color: var(--text); }
 .rate-pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; }
-.rate-good { background: rgba(46,125,50,.12); color: #2e7d32; }
-.rate-warn { background: rgba(245,127,23,.14); color: #e65100; }
-.rate-bad  { background: rgba(198,40,40,.12); color: #c62828; }
+.rate-good { background: rgba(46,125,50,.12); color: var(--c-success); }
+.rate-warn { background: rgba(245,127,23,.14); color: var(--c-warn); }
+.rate-bad  { background: rgba(198,40,40,.12); color: var(--c-danger); }
 .rate-na   { background: rgba(120,120,120,.08); color: var(--muted); font-weight: 500; }
-.chg-up   { color: #2e7d32; font-weight: 600; }
-.chg-down { color: #c62828; font-weight: 600; }
+.chg-up   { color: var(--c-success); font-weight: 600; }
+.chg-down { color: var(--c-danger); font-weight: 600; }
 .chg-na   { color: var(--muted); }
+.diff-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.diff-tbl th, .diff-tbl td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+.diff-tbl th { color: var(--muted); font-weight: 600; font-size: 12px; position: sticky; top: 0; background: var(--card); }
+.diff-tbl .r { text-align: right; font-variant-numeric: tabular-nums; }
+.diff-tbl tr.row-clear { background: rgba(198,40,40,.06); }
+.clear-tag { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 700; color: #fff; background: var(--c-danger); padding: 1px 5px; border-radius: 4px; }
 </style>

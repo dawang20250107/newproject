@@ -122,7 +122,7 @@ def ar_records(request):
         return denied
 
     if request.method == 'GET':
-        today = datetime.date.today()
+        today = timezone.localdate()
         # Listing queryset — select_related for efficient to_dict() rendering
         qs = _ar_dept_filter(ARRecord.objects.select_related('project', 'created_by'), request,
                              shared_field='project__is_shared')
@@ -134,8 +134,14 @@ def ar_records(request):
         qs = _apply_colfilter_sort(qs, request)
 
         include_payments = request.GET.get('include_payments', '') in ('1', 'true')
-        page = max(1, int(request.GET.get('page', 1) or 1))
-        size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
+        try:
+            page = max(1, int(request.GET.get('page', 1) or 1))
+        except (ValueError, TypeError):
+            page = 1
+        try:
+            size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
+        except (ValueError, TypeError):
+            size = 50
 
         # Aggregate queryset — plain queryset (no select_related) avoids any
         # accidental extra JOINs and keeps results consistent with the group-summary
@@ -425,7 +431,7 @@ def ar_records(request):
         except Exception as e:
             return err(str(e))
         return ok(apply_ar_view_mask(
-            rec.to_dict(today=datetime.date.today(), include_payments=True),
+            rec.to_dict(today=timezone.localdate(), include_payments=True),
             get_request_perms(request), 'record'))
 
     return err('Method not allowed', 405)
@@ -449,7 +455,7 @@ def ar_record_detail(request, pk):
         if perms and perms.get('ar_shared_only') and not rec.project.is_shared:
             return err('无权访问', 403)
 
-    today = datetime.date.today()
+    today = timezone.localdate()
 
     if request.method == 'GET':
         return ok(apply_ar_view_mask(rec.to_dict(today=today, include_payments=True),
@@ -491,7 +497,7 @@ def ar_record_detail(request, pk):
                 ARAdjustment.objects.create(
                     ar_record=rec, amount=delta,
                     reason=(data.get('adjustment_reason') or '').strip() or '人工调整（按合计修改）',
-                    adjust_date=_normalize_date(data.get('adjust_date')) or datetime.date.today(),
+                    adjust_date=_normalize_date(data.get('adjust_date')) or timezone.localdate(),
                     created_by=_PU.objects.filter(id=request.pk_uid).first())
                 rec.account_diff_adjustment = new_total
         if 'tax_amount' in data:
@@ -522,9 +528,116 @@ def ar_record_detail(request, pk):
         denied = _delete_denied(request)
         if denied:
             return denied
-        rec.delete()
-        return ok({'deleted': pk})
+        force = request.GET.get('force') == '1'
+        blocked = _ar_record_delete_guard(rec, request, force)
+        if blocked:
+            return blocked
+        _soft_delete_ar_record(rec, request)
+        return ok({'deleted': pk, 'message': '已移入回收站，可在回收站还原'})
 
+    return err('Method not allowed', 405)
+
+
+def _ar_record_delete_guard(rec, request, force):
+    """应收删除守卫（与付款侧同纪律）。返回 err response 或 None（放行）。
+    · 有「预收抵扣」回款：一律拦——删除会让预收核销悬空（预收余额已被消耗而应收不可见）；
+    · 有其它真实回款：默认拦；仅超管可强制（软删可还原），防回款现金历史被随手抹出报表。"""
+    if rec.payments.filter(source='预收抵扣').exists():
+        return err('该应收有「预收抵扣」回款（来自预收核销），不能删除；'
+                   '请先到「预收预付」撤销对应核销后再删', 409, 409)
+    pay_cnt = rec.payments.count()
+    if pay_cnt:
+        paid = rec.payments.aggregate(s=Sum('amount'))['s'] or Decimal('0')
+        if request.pk_role != 'super_admin':
+            return err(f'该应收已有 {pay_cnt} 笔回款合计 {paid} 元，仅超级管理员可强制删除；'
+                       f'如需删除请先撤销回款，或联系超管', 403, 403)
+        if not force:
+            return err(f'该应收已有 {pay_cnt} 笔回款合计 {paid} 元，不能直接删除；'
+                       f'如需强制删除（进回收站可还原），请确认强制操作', 409, 409)
+    return None
+
+
+def _soft_delete_ar_record(rec, request):
+    """软删进回收站：回款/调整随记录一并隐匿（现金聚合已按 deleted_at 排除），
+    催款任务自动置为已忽略（与硬删时的 post_delete 信号同语义）。"""
+    from ar.signals import _close_dunning_actions
+    rec.deleted_at = timezone.now()
+    rec.deleted_by = getattr(request, 'pk_user', None)
+    rec.save(update_fields=['deleted_at', 'deleted_by', 'updated_at'])
+    _close_dunning_actions(rec.pk, '系统自动忽略：关联应收记录已移入回收站', status='dismissed')
+
+
+@csrf_exempt
+@pk_required()
+def ar_records_trash(request):
+    """回收站 — 应收记录。GET 列表；POST {action:'restore'|'purge', ids|all}。
+    还原：清除删除标记并重算未收；彻底删除：级联删回款/调整（有预收抵扣仍拦截）。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    qs = _ar_dept_filter(
+        ARRecord.all_objects.filter(deleted_at__isnull=False).select_related('project'),
+        request, shared_field='project__is_shared')
+
+    if request.method == 'GET':
+        try:
+            page = max(1, int(request.GET.get('page', 1)))
+            size = min(100, max(1, int(request.GET.get('size', 50))))
+        except ValueError:
+            page, size = 1, 50
+        total = qs.count()
+        rows = list(qs.order_by('-deleted_at')[(page - 1) * size:page * size])
+        # 与主列表同口径套字段级权限掩码：否则被隐藏「预估上账/未收金额」的用户
+        # 在回收站能看到已删记录的全部金额明文
+        perms = get_request_perms(request)
+        return ok({'total': total, 'items': [
+            {**apply_ar_view_mask(r.to_dict(), perms, 'record'),
+             'deleted_at': r.deleted_at.isoformat() if r.deleted_at else None,
+             'deleted_by_name': r.deleted_by.name if r.deleted_by else None}
+            for r in rows
+        ]})
+
+    if request.method == 'POST':
+        denied = _delete_denied(request)
+        if denied:
+            return denied
+        body = _parse_body(request)
+        action = body.get('action', 'restore')
+        if body.get('all'):
+            targets = list(qs.order_by('-deleted_at')[:1000])
+        else:
+            try:
+                ids = [int(i) for i in (body.get('ids') or [])]
+            except (ValueError, TypeError):
+                return err('ids 必须为整数列表')
+            if not ids:
+                return err('ids 必填或传 all:true')
+            targets = list(qs.filter(pk__in=ids))
+        count, skipped = 0, []
+        for rec in targets:
+            if action == 'restore':
+                rec.deleted_at = None
+                rec.deleted_by = None
+                with transaction.atomic():
+                    rec.save(update_fields=['deleted_at', 'deleted_by', 'updated_at'])
+                    rec.recompute_derived(save=True)   # 回款/调整未动，重算兜底一致性
+            elif action == 'purge':
+                if rec.payments.filter(source='预收抵扣').exists():
+                    skipped.append({'id': rec.id,
+                                    'reason': '有预收抵扣回款，请先撤销对应核销再彻底删除'})
+                    continue
+                # 带真实回款现金历史的记录彻底硬删仅限超管：与软删「有回款仅超管可 force」
+                # 同一纪律，否则普通删除权限者可绕过该约束级联抹掉现金历史且不可恢复
+                if request.pk_role != 'super_admin' and rec.payments.exists():
+                    skipped.append({'id': rec.id,
+                                    'reason': '该记录含真实回款，仅超级管理员可彻底删除'})
+                    continue
+                with transaction.atomic():
+                    rec.delete()   # 级联删回款/调整（真实硬删，审计不可恢复）
+            else:
+                return err("action 须为 'restore' 或 'purge'")
+            count += 1
+        return ok({'count': count, 'action': action, 'skipped': skipped})
     return err('Method not allowed', 405)
 
 
@@ -616,6 +729,9 @@ def ar_record_import_precheck(request):
     try:
         wb = openpyxl.load_workbook(f, data_only=True)
         ws = wb.active
+        # 防解压炸弹：5MB 压缩包也可能展开出海量单元格，先做总量护栏
+        if (ws.max_row or 0) * (ws.max_column or 0) > 400_000:
+            return err('表格过大（超过 40 万单元格），请拆分后再导入')
     except Exception as e:
         return err(f'无法读取Excel: {e}')
 
@@ -655,7 +771,8 @@ def ar_record_import_precheck(request):
         return str(v).strip() if v is not None else ''
 
     DATA_COLS = ('项目简称*', '交付部门', '运作日期*', '运作年*', '运作月*',
-                 '预估上账金额', '实际开票金额', '开票日期', '回款金额', '回款时间', '备注')
+                 '预估上账金额', '实际开票金额', '开票日期', '账实差额调整',
+                 '目标回款日期', '回款金额', '回款时间', '备注')
 
     allowed_depts = None if request.pk_role == 'super_admin' else request.pk_depts
     report_rows, ai_input = [], []
@@ -697,15 +814,37 @@ def ar_record_import_precheck(request):
                 else:
                     if not (row_vals['运作年*'] or row_vals['运作月*']):
                         rule_issue = '缺少「运作日期」，请补填（如 2026-05-01）'
+            _amts = {}
             if not rule_issue:
                 for amt_col, lbl in (('预估上账金额', '预估上账金额'), ('实际开票金额', '实际开票金额'),
-                                     ('回款金额', '回款金额')):
-                    raw = row_vals[amt_col]
+                                     ('账实差额调整', '账实差额调整'), ('回款金额', '回款金额')):
+                    raw = row_vals.get(amt_col)
                     if raw:
                         try:
-                            Decimal(str(raw).replace(',', '').replace('，', ''))
+                            _amts[amt_col] = Decimal(str(raw).replace(',', '').replace('，', ''))
                         except Exception:
                             rule_issue = f'「{lbl}」"{raw}"不是有效数字'; break
+            # 与 import 阶段一同口径：日期格式 / 回款一致性 / 超收——保证「预检绿灯=导入必过」
+            if not rule_issue:
+                for dcol, lbl, ex in (('开票日期', '开票日期', '2026-01-15'),
+                                      ('目标回款日期', '目标回款日期', '2026-02-15'),
+                                      ('回款时间', '回款时间', '2026-01-20')):
+                    draw = _cv_raw(ri, dcol)
+                    if draw not in (None, '') and _normalize_date(draw) is None:
+                        rule_issue = f'「{lbl}」"{draw}"格式无效，请用 {ex} 格式'; break
+            if not rule_issue:
+                _pay = _amts.get('回款金额')
+                _pay_date = _normalize_date(_cv_raw(ri, '回款时间'))
+                if _pay and _pay > 0 and not _pay_date:
+                    rule_issue = '填了「回款金额」却没填「回款时间」，请补填或清空回款金额'
+                elif _pay_date and not (_pay and _pay > 0):
+                    rule_issue = '填了「回款时间」却没填有效「回款金额」，请补填或清空回款时间'
+                elif _pay and _pay > 0:
+                    _base = (_amts.get('预估上账金额') or Decimal('0')) + (_amts.get('账实差额调整') or Decimal('0'))
+                    if _pay > _base:
+                        rule_issue = (f'回款金额 {_pay} 元 > 预估上账'
+                                      + ('（含账实差额）' if _amts.get('账实差额调整') else '')
+                                      + f' {_base} 元，未收将为负，导入会被拒——请核对金额或用账实差额调整')
 
         dept_hint = row_vals['交付部门']
         op_date_str = str(_cv_raw(ri, '运作日期*') or '').strip() or f"{row_vals['运作年*']}-{row_vals['运作月*']}"
@@ -749,9 +888,14 @@ def ar_record_import(request):
     f = request.FILES.get('file')
     if not f:
         return err('请上传文件')
+    if getattr(f, 'size', 0) > 5 * 1024 * 1024:
+        return err('文件过大，请确认文件不超过5MB')
     try:
         wb = openpyxl.load_workbook(f, data_only=True)
         ws = wb.active
+        # 防解压炸弹：5MB 压缩包也可能展开出海量单元格，先做总量护栏
+        if (ws.max_row or 0) * (ws.max_column or 0) > 400_000:
+            return err('表格过大（超过 40 万单元格），请拆分后再导入')
     except Exception as e:
         return err(f'无法读取Excel: {e}')
 
@@ -1033,31 +1177,41 @@ def ar_record_import(request):
                 }
             bucket[key]['count'] += 1
 
-            rec = ARRecord(project=proj, operation_date=p['op_date'], created_by=user)
-            if p['est'] is not None and _can_ar_view(request, 'r_estimated_amount'):
-                rec.estimated_amount = p['est']
-            if _can_ar_view(request, 'r_actual_invoice_amount'):
-                rec.actual_invoice_amount = p['actual']
-            if _can_ar_view(request, 'r_tax_amount'):
-                rec.tax_amount = p['tax']
-            if _can_ar_view(request, 'r_invoice_date'):
-                rec.invoice_date = p['inv_date']
-            if p['tgt_date'] and _can_ar_view(request, 'r_due_date'):
-                rec.target_collection_date = p['tgt_date']
-            if _can_ar_view(request, 'r_notes'):
-                rec.notes = p['notes']
-            rec.save()
-            # 差额走调整明细（合计由信号派生）；须在回款写入前生效，
-            # 否则回款校验「未收不为负」时差额还没计入
-            if p['diff'] and _can_ar_view(request, 'r_account_diff'):
-                ARAdjustment.objects.create(
-                    ar_record=rec, amount=p['diff'],
-                    reason=p['diff_reason'][:200] or '导入差额调整',
-                    adjust_date=rec.operation_date, created_by=user)
-            if p['pay_amount'] and p['pay_date']:
-                ARPayment.objects.create(ar_record=rec, payment_no=1,
-                                         amount=p['pay_amount'], payment_date=p['pay_date'],
-                                         notes='导入回款')
+            # 行级 savepoint 捕获校验异常：字段级掩码可能把 est 丢成 0，若该行带回款
+            # 会触发信号「未收不为负」ValidationError。此前未捕获 → 整个导入 500 且
+            # 看不出是哪行。转为收集行号错误，走既有「有错整表回滚」策略给出明确提示。
+            try:
+                with transaction.atomic():
+                    rec = ARRecord(project=proj, operation_date=p['op_date'], created_by=user)
+                    if p['est'] is not None and _can_ar_view(request, 'r_estimated_amount'):
+                        rec.estimated_amount = p['est']
+                    if _can_ar_view(request, 'r_actual_invoice_amount'):
+                        rec.actual_invoice_amount = p['actual']
+                    if _can_ar_view(request, 'r_tax_amount'):
+                        rec.tax_amount = p['tax']
+                    if _can_ar_view(request, 'r_invoice_date'):
+                        rec.invoice_date = p['inv_date']
+                    if p['tgt_date'] and _can_ar_view(request, 'r_due_date'):
+                        rec.target_collection_date = p['tgt_date']
+                    if _can_ar_view(request, 'r_notes'):
+                        rec.notes = p['notes']
+                    rec.save()
+                    # 差额走调整明细（合计由信号派生）；须在回款写入前生效，
+                    # 否则回款校验「未收不为负」时差额还没计入
+                    if p['diff'] and _can_ar_view(request, 'r_account_diff'):
+                        ARAdjustment.objects.create(
+                            ar_record=rec, amount=p['diff'],
+                            reason=p['diff_reason'][:200] or '导入差额调整',
+                            adjust_date=rec.operation_date, created_by=user)
+                    if p['pay_amount'] and p['pay_date']:
+                        # 导入回款默认方式为银行转账，与历史迁移口径一致
+                        ARPayment.objects.create(ar_record=rec, payment_no=1,
+                                                 amount=p['pay_amount'], payment_date=p['pay_date'],
+                                                 method=ARPayment.DEFAULT_METHOD, notes='导入回款')
+            except ValidationError as _ve:
+                _msg = _ve.messages[0] if getattr(_ve, 'messages', None) else str(_ve)
+                reject_errors.append(f'第{p["ri"]}行：{_msg}（可能因无金额查看权限导致回款超出应收）')
+                continue
             created += 1
         if reject_errors:
             transaction.set_rollback(True)
@@ -1109,7 +1263,7 @@ def ar_record_export(request):
     denied = _page_denied(request, 'ar_records')
     if denied:
         return denied
-    today = datetime.date.today()
+    today = timezone.localdate()
     # 可见列控制：前端传 vis_cols 参数（逗号分隔的 perm key），空=全部
     vis_raw = request.GET.get('vis_cols', '')
     vis_set = set(vis_raw.split(',')) if vis_raw.strip() else set()
@@ -1151,6 +1305,8 @@ def ar_record_export(request):
         ('r_estimated_amount', '预估上账金额', lambda rec, st: float(rec.estimated_amount)),
         ('r_actual_invoice_amount', '实际开票金额',
          lambda rec, st: float(rec.actual_invoice_amount) if rec.actual_invoice_amount is not None else ''),
+        ('r_actual_receivable', '实际应收',
+         lambda rec, st: float((rec.estimated_amount or 0) + (rec.account_diff_adjustment or 0))),
         ('r_tax_amount', '税额', lambda rec, st: float(rec.tax_amount) if rec.tax_amount is not None else ''),
         ('r_invoice_date', '开票日期', lambda rec, st: str(rec.invoice_date) if rec.invoice_date else ''),
         ('p_invoice_config', '开票模式', lambda rec, st: rec.project.invoice_mode),
@@ -1185,11 +1341,18 @@ def ar_record_export(request):
         ('r_notes', '备注', lambda rec, st: rec.notes),
     ])
     if vis_set:
-        columns = [(pk, hd, fn) for pk, hd, fn in columns if pk is None or pk in vis_set]
+        # vis_cols 只包含前端「列显示设置」面板管理的 r_* 键；p_*（项目侧列）不在面板中，
+        # 不得被此白名单误删（历史缺陷：税额默认隐藏后所有导出都带 vis_cols，
+        # 项目简称/客户名称等整排消失）。p_* 仍由 ar_view 权限单独约束。
+        columns = [(pk, hd, fn) for pk, hd, fn in columns
+                   if pk is None or not pk.startswith('r_') or pk in vis_set]
     _header_row(ws, [header for _, header, _ in columns], color='1B6E35')
     for rec in qs:
         st = rec.status_dict(today)
         ws.append([getter(rec, st) for _, _, getter in columns])
+    _style_export_ws(ws, money_headers=(
+        '预估上账金额', '实际开票金额', '实际应收', '税额', '账实差额调整',
+        '未回款金额', '已回款合计', '预收冲抵金额', '内部往来金额'))
     return _export_response(wb, '应收账款明细.xlsx')
 
 
@@ -1202,7 +1365,7 @@ def ar_records_kpi(request):
     denied = _page_denied(request, 'ar_records')
     if denied:
         return denied
-    today = datetime.date.today()
+    today = timezone.localdate()
     qs = _apply_record_filters(
         _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared'), request)
     qs = _apply_conditions(qs, request, today)
@@ -1304,6 +1467,12 @@ def _payment_ledger_qs(request):
     source = request.GET.get('source', '').strip()
     if source:
         qs = qs.filter(source=source)
+    method = request.GET.get('method', '').strip()
+    if method:
+        qs = qs.filter(method=method)
+    draft_status = request.GET.get('draft_status', '').strip()
+    if draft_status:
+        qs = qs.filter(draft_status=draft_status)
     q = request.GET.get('q', '').strip()
     if q:
         qs = qs.filter(
@@ -1323,6 +1492,9 @@ def _payment_ledger_row(p):
         'payment_date': str(p.payment_date) if p.payment_date else None,
         'amount': str(p.amount),
         'source': p.source,
+        'method': p.method,
+        'account': p.account,
+        'draft_status': p.draft_status,
         'counterparty_dept': p.counterparty_dept,
         'notes': p.notes,
         'project_no': proj.project_no,
@@ -1374,14 +1546,19 @@ def ar_payment_ledger_export(request):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '回款流水'
-    headers = ['回款日期', '回款金额', '来源', '往来部门', '项目编号', '项目简称',
-               '交付部门', '运作年', '运作月', '回款序号', '备注']
+    headers = ['回款日期', '回款金额', '来源', '回款方式', '收款账户', '承兑状态', '往来部门',
+               '项目编号', '项目简称', '交付部门', '运作年', '运作月', '回款序号', '备注']
     _header_row(ws, headers, color='1B6E35')
     for p in qs:
         r = _payment_ledger_row(p)
-        ws.append([r['payment_date'], float(p.amount), r['source'], r['counterparty_dept'],
-                   r['project_no'], r['short_name'], r['delivery_dept'],
-                   r['operation_year'], r['operation_month'], r['payment_no'], r['notes']])
+        ws.append([r['payment_date'], float(p.amount), r['source'], r['method'], r['account'],
+                   r['draft_status'], r['counterparty_dept'], r['project_no'], r['short_name'],
+                   r['delivery_dept'], r['operation_year'], r['operation_month'],
+                   r['payment_no'], r['notes']])
+    from wxcloudrun.excel_style import apply_money_format, append_total_row
+    apply_money_format(ws, money_headers=('回款金额',))
+    append_total_row(ws, money_headers=('回款金额',))
+    ws.freeze_panes = 'A2'
     return _export_response(wb, '回款流水.xlsx')
 
 
@@ -1411,7 +1588,7 @@ def ar_records_group_summary(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
     qs = _apply_record_filters(qs, request)
     qs = _apply_record_state_filters(qs, request, today)
@@ -1531,13 +1708,21 @@ def ar_records_group_summary(request):
 # 催款工作台 (collection workbench) — 逾期分桶 + 责任人聚合 + 一键生成催款行动项
 # ══════════════════════════════════════════════════════════════════════════════
 
-_DUNNING_BUCKETS = [
-    ('d7',   '1-7天',    1,  7),
-    ('d30',  '8-30天',   8,  30),
-    ('d60',  '31-60天',  31, 60),
-    ('d90',  '61-90天',  61, 90),
-    ('d90p', '90天以上', 91, None),
-]
+def _dunning_buckets():
+    """a5: 催款作战台账龄分桶——复用超管可配置的 AgingBucketConfig 边界
+    （默认 30/60/90），与账龄分析同一套口径。此前写死 1-7/8-30/31-60/61-90/90+，
+    超管改边界后作战台不跟随、两处数字对不上。首段固定拆出 1-7 天（新逾期须
+    高频跟进），其余按配置边界切分。"""
+    from ..models import AgingBucketConfig
+    cfg = AgingBucketConfig.get_or_default()
+    b1, b2, b3 = cfg['bucket1'], cfg['bucket2'], cfg['bucket3']
+    buckets = [('d7', '1-7天', 1, min(7, b1))]
+    if b1 > 7:
+        buckets.append(('d30', f'8-{b1}天', 8, b1))
+    buckets.append(('d60', f'{b1 + 1}-{b2}天', b1 + 1, b2))
+    buckets.append(('d90', f'{b2 + 1}-{b3}天', b2 + 1, b3))
+    buckets.append(('d90p', f'{b3}天以上', b3 + 1, None))
+    return buckets
 
 
 def _overdue_qs(request, today):
@@ -1586,7 +1771,7 @@ def ar_collection_workbench(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     qs = _overdue_qs(request, today)
     dept = request.GET.get('dept', '').strip()
     if dept:
@@ -1601,7 +1786,7 @@ def ar_collection_workbench(request):
 
     # 分桶统计（基于 dept/q 筛选后的全量逾期集，不随 bucket/contact 细分变化）
     buckets = []
-    for key, label, lo, hi in _DUNNING_BUCKETS:
+    for key, label, lo, hi in _dunning_buckets():
         agg = qs.filter(_bucket_cond(today, lo, hi)).aggregate(
             count=Count('id'), amount=Sum('outstanding_amount'))
         buckets.append({'key': key, 'label': label,
@@ -1625,7 +1810,7 @@ def ar_collection_workbench(request):
     items_qs = qs
     bucket = request.GET.get('bucket', '').strip()
     if bucket:
-        spec = next((b for b in _DUNNING_BUCKETS if b[0] == bucket), None)
+        spec = next((b for b in _dunning_buckets() if b[0] == bucket), None)
         if spec:
             items_qs = items_qs.filter(_bucket_cond(today, spec[2], spec[3]))
     contact = request.GET.get('contact', '').strip()
@@ -1678,6 +1863,82 @@ def ar_collection_workbench(request):
 
 @csrf_exempt
 @pk_required()
+def ar_collection_workbench_export(request):
+    """催款作战台 · 导出逾期清单（按当前 dept/q/bucket/contact 筛选，含最近跟进摘要）。
+    催收周会用：一份即拿到逾期天数/未收/对接人/最近回款/最近跟进，无需去全部明细手工拼。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    denied = _ar_field_denied(request, 'r_outstanding')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+
+    today = timezone.localdate()
+    qs = _overdue_qs(request, today)
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+    q = request.GET.get('q', '').strip()
+    if q:
+        qs = qs.filter(
+            Q(project__short_name__icontains=q) |
+            Q(project__customer_name__icontains=q) |
+            Q(project__project_no__icontains=q) |
+            Q(project__sales_contact__icontains=q))
+    bucket = request.GET.get('bucket', '').strip()
+    if bucket:
+        spec = next((b for b in _dunning_buckets() if b[0] == bucket), None)
+        if spec:
+            qs = qs.filter(_bucket_cond(today, spec[2], spec[3]))
+    contact = request.GET.get('contact', '').strip()
+    if contact:
+        qs = qs.filter(project__sales_contact='' if contact == '（未填写）' else contact)
+
+    rows = list(qs.annotate(last_pay=Max('payments__payment_date')).order_by('due_date', 'id')[:5000])
+
+    # 最近一条催款跟进摘要（批量一次取，避免逐行查询）
+    from ..models import ARActivity
+    latest_note = {}
+    for a in (ARActivity.objects.filter(ar_record_id__in=[r.id for r in rows], stage='dunning')
+              .order_by('ar_record_id', '-created_at')
+              .values('ar_record_id', 'note', 'created_at')):
+        latest_note.setdefault(a['ar_record_id'], a['note'])
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '逾期清单'
+    headers = ['项目简称', '客户', '交付部门', '销售对接人', '运作年月', '应收到期',
+               '逾期天数', '未收金额', '最近回款', '最近跟进摘要']
+    ws.append(headers)
+    for rec in rows:
+        proj = rec.project
+        ws.append([
+            proj.short_name, proj.customer_name, rec.delivery_dept, proj.sales_contact or '',
+            f'{rec.operation_year}/{str(rec.operation_month).zfill(2)}', str(rec.due_date),
+            (today - rec.due_date).days, float(rec.outstanding_amount),
+            str(rec.last_pay) if rec.last_pay else '',
+            (latest_note.get(rec.id) or '')[:200],
+        ])
+    from wxcloudrun.excel_style import style_header_row, apply_money_format, append_total_row, append_filter_snapshot
+    style_header_row(ws)
+    apply_money_format(ws, money_headers=('未收金额',))
+    append_total_row(ws, money_headers=('未收金额',))
+    ws.freeze_panes = 'A2'
+    from openpyxl.utils import get_column_letter
+    for i, _ in enumerate(headers, 1):
+        ws.column_dimensions[get_column_letter(i)].width = 14
+    ws.column_dimensions['J'].width = 40
+    append_filter_snapshot(wb, [
+        ('部门', dept), ('关键字', q), ('账龄段', bucket), ('销售对接人', contact),
+        ('导出行数', len(rows)),
+    ])
+    return _export_response(wb, '催款作战台_逾期清单.xlsx')
+
+
+@csrf_exempt
+@pk_required()
 def ar_collection_dunning(request):
     """批量生成催款行动项：每条逾期应收一条；已有未关闭催款任务的记录自动跳过。
     生成的行动项出现在财务驾驶舱「决策行动」Tab（category=collection）。"""
@@ -1700,7 +1961,7 @@ def ar_collection_dunning(request):
     if len(id_list) > 200:
         return err('单次最多生成200条催款任务')
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     # 走 _overdue_qs 复核：只允许对可见范围内、确实逾期未收的记录生成任务
     recs = list(_overdue_qs(request, today).filter(pk__in=id_list))
     existing = _open_dunning_actions({r.id for r in recs})
@@ -1761,6 +2022,9 @@ def ar_payments(request, pk):
         allowed = request.pk_depts
         if rec.delivery_dept not in allowed:
             return err('无权访问', 403)
+    _perms = get_request_perms(request)
+    if _perms and _perms.get('ar_shared_only') and not (rec.project and rec.project.is_shared):
+        return err('无权访问', 403)
     denied = _ar_field_denied(request, 'r_payments')
     if denied:
         return denied
@@ -1780,6 +2044,9 @@ def ar_payments(request, pk):
         pay_date = _normalize_date(data.get('payment_date'))
         if not pay_date:
             return err('日期无效')
+        # 回款是已发生的现金事件:未来日期会提前美化当期回款/现金流/账龄
+        if datetime.date.fromisoformat(str(pay_date)[:10]) > timezone.localdate():
+            return err('回款日期不能晚于今天——回款以实际收款日入账')
         # 来源：'回款'（现金）或 '内部往来'（事业部间核销，不计现金）。
         # '预收抵扣' 仅由预收核销自动生成，禁止经此接口手工录入。
         source = (data.get('source') or '回款').strip()
@@ -1788,11 +2055,34 @@ def ar_payments(request, pk):
             return err('预收抵扣由预收核销自动生成，请在「预收预付」页操作')
         if source not in ('回款', '内部往来'):
             return err('回款来源无效')
+        # 回款方式（现金/微信/银行转账/承兑汇票）+ 收款账户 + 承兑状态：仅对「回款」有意义。
+        method, account, draft_status = '', '', ''
         if source == '内部往来':
             if counterparty not in VALID_DEPARTMENTS:
                 return err('内部往来核销须选择有效的往来事业部')
         else:
             counterparty = ''   # 现金回款不带往来部门
+            method = (data.get('method') or ARPayment.DEFAULT_METHOD).strip()
+            if method not in ARPayment.METHOD_VALUES:
+                return err('回款方式无效（现金/微信/银行转账/承兑汇票）')
+            account = (data.get('account') or '').strip()[:50]
+            if method == ARPayment.DRAFT_METHOD:
+                draft_status = (data.get('draft_status') or ARPayment.DEFAULT_DRAFT_STATUS).strip()
+                if draft_status not in ARPayment.DRAFT_STATUS_VALUES:
+                    return err('承兑状态无效（未承兑/已承兑）')
+        # b2: 单条回款超收——超出未收部分可一键转为该客户预收（与批次回款同口径）
+        overflow_advance = None
+        create_amount = amount
+        if source == '回款':
+            outstanding = rec.outstanding_amount or Decimal('0')
+            overflow = amount - outstanding
+            if overflow > Decimal('0.005'):
+                if data.get('overflow_to_advance') in (True, 'true', '1', 1):
+                    create_amount = outstanding   # 本笔只冲到未收；超出转预收
+                else:
+                    return err(f'回款 {amount} 超过未收 {outstanding}。可勾选「超出部分转预收」'
+                               f'（超出 {overflow} 元将按客户建为预收），或按 {outstanding} 录入',
+                               409, 409)
         try:
             with transaction.atomic():
                 last = rec.payments.select_for_update().order_by('-payment_no').first()
@@ -1800,15 +2090,35 @@ def ar_payments(request, pk):
                 pay = ARPayment.objects.create(
                     ar_record=rec,
                     payment_no=next_no,
-                    amount=amount,
+                    amount=create_amount,
                     payment_date=pay_date,
                     source=source,
+                    method=method,
+                    account=account,
+                    draft_status=draft_status,
                     counterparty_dept=counterparty,
                     notes=data.get('notes', '').strip(),
                 )
+                if create_amount < amount:
+                    # 超出部分建为客户预收（总额=明细之和，须同步首笔明细，与 H20 一致）
+                    cust = (rec.project.customer_name or '').strip()
+                    if not cust:
+                        raise ValidationError('该应收未挂客户名，无法自动转预收；请手工到「预收预付」录入')
+                    pd_d = datetime.date.fromisoformat(str(pay_date)[:10])
+                    overflow_advance = AdvanceRecord.objects.create(
+                        direction='预收', delivery_dept=rec.delivery_dept, counterparty=cust,
+                        occur_year=pd_d.year, occur_month=pd_d.month, occur_date=pd_d,
+                        advance_amount=(amount - create_amount),
+                        notes=f'回款多收自动转预收（到账 {amount}，冲应收 {create_amount}）')
+                    AdvanceInstallment.objects.create(
+                        advance_record=overflow_advance, install_no=1,
+                        amount=(amount - create_amount), occur_date=pd_d, notes='回款多收转预收')
         except ValidationError as e:
             return err(str(e.message if hasattr(e, 'message') else e), 400)
-        return ok(pay.to_dict())
+        _resp = pay.to_dict()
+        if overflow_advance is not None:
+            _resp['overflow_advance'] = {'id': overflow_advance.id, 'amount': str(overflow_advance.advance_amount)}
+        return ok(_resp)
 
     return err('Method not allowed', 405)
 
@@ -1836,6 +2146,9 @@ def ar_adjustments(request, pk):
         return err('记录不存在', 404)
     if request.pk_role != 'super_admin' and rec.delivery_dept not in request.pk_depts:
         return err('无权访问', 403)
+    _perms = get_request_perms(request)
+    if _perms and _perms.get('ar_shared_only') and not (rec.project and rec.project.is_shared):
+        return err('无权访问', 403)
     denied = _ar_field_denied(request, 'r_account_diff')
     if denied:
         return denied
@@ -1859,7 +2172,7 @@ def ar_adjustments(request, pk):
             with transaction.atomic():
                 ARAdjustment.objects.create(
                     ar_record=rec, amount=amount, reason=reason[:200],
-                    adjust_date=_normalize_date(data.get('adjust_date')) or datetime.date.today(),
+                    adjust_date=_normalize_date(data.get('adjust_date')) or timezone.localdate(),
                     created_by=PaikuanUser.objects.filter(id=request.pk_uid).first())
         except ValidationError as e:
             return err(str(e.message if hasattr(e, 'message') else e), 400)
@@ -1881,11 +2194,14 @@ def ar_adjustment_detail(request, pk, aid):
     if denied:
         return denied
     try:
-        adj = ARAdjustment.objects.select_related('ar_record').get(pk=aid, ar_record_id=pk)
+        adj = ARAdjustment.objects.select_related('ar_record', 'ar_record__project').get(pk=aid, ar_record_id=pk)
     except ARAdjustment.DoesNotExist:
         return err('调整明细不存在', 404)
     rec = adj.ar_record
     if request.pk_role != 'super_admin' and rec.delivery_dept not in request.pk_depts:
+        return err('无权访问', 403)
+    _perms = get_request_perms(request)
+    if _perms and _perms.get('ar_shared_only') and not (rec.project and rec.project.is_shared):
         return err('无权访问', 403)
     denied = _ar_field_denied(request, 'r_account_diff')
     if denied:
@@ -1953,19 +2269,47 @@ def ar_payment_detail(request, pk, ppk):
             amount = _dec(data['amount'])
             if amount <= 0:
                 return err('金额必须大于0')
+            # 上限预校验:改大后不得让应收未收为负。可用额 = 当前未收 + 本笔原额(本笔将被替换)。
+            # 与新增回款/核销同口径;缺此校验会写入「回款虚增+未收虚高」的坏账(见下方事务包裹)。
+            room = (pay.ar_record.outstanding_amount or Decimal('0')) + (pay.amount or Decimal('0'))
+            if amount > room:
+                return err(f'回款金额 {amount} 超过该应收可回款上限 {room}'
+                           f'（当前未收 {pay.ar_record.outstanding_amount} + 本笔原额 {pay.amount}）；'
+                           f'如确有多收，请到「差额调整」或「预收预付」录入')
             pay.amount = amount
         if 'payment_date' in data:
-            pay.payment_date = _normalize_date(data['payment_date']) or pay.payment_date
+            _nd = _normalize_date(data['payment_date'])
+            if _nd and datetime.date.fromisoformat(str(_nd)[:10]) > timezone.localdate():
+                return err('回款日期不能晚于今天——回款以实际收款日入账')
+            pay.payment_date = _nd or pay.payment_date
         # 往来部门仅对内部往来核销有意义，且必须是有效事业部
         if 'counterparty_dept' in data and pay.source == '内部往来':
             cp = (data['counterparty_dept'] or '').strip()
             if cp not in VALID_DEPARTMENTS:
                 return err('内部往来核销须选择有效的往来事业部')
             pay.counterparty_dept = cp
+        # 回款方式/账户仅对「回款」有意义
+        if 'method' in data and pay.source == '回款':
+            mv = (data['method'] or '').strip()
+            if mv not in ARPayment.METHOD_VALUES:
+                return err('回款方式无效（现金/微信/银行转账/承兑汇票）')
+            pay.method = mv
+        if 'account' in data and pay.source == '回款':
+            pay.account = (data['account'] or '').strip()[:50]
+        # 承兑状态仅对承兑汇票有意义（承兑汇票兑付后改「已承兑」即进资金池）。
+        # 以本次生效后的方式判定，兼容「同时改方式与承兑状态」。
+        if 'draft_status' in data and pay.method == ARPayment.DRAFT_METHOD:
+            ds = (data['draft_status'] or '').strip()
+            if ds not in ARPayment.DRAFT_STATUS_VALUES:
+                return err('承兑状态无效（未承兑/已承兑）')
+            pay.draft_status = ds
         if 'notes' in data:
             pay.notes = data['notes'].strip()
         try:
-            pay.save()
+            # 事务包裹:save 的金额 UPDATE 与 post_save 信号(recompute 应收未收)须同生共死。
+            # 否则 autocommit 下金额 UPDATE 先落库、信号再抛错,会留下「金额已改、未收陈旧」的坏账。
+            with transaction.atomic():
+                pay.save()
         except ValidationError as e:
             return err(str(e.message if hasattr(e, 'message') else e), 400)
         return ok(pay.to_dict())
@@ -2130,7 +2474,7 @@ def ar_records_bulk_assign_collector(request):
     data = _parse_body(request)
     collector = (data.get('collector') or '').strip()[:100]
     if data.get('all'):
-        today = datetime.date.today()
+        today = timezone.localdate()
         qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
         qs = _apply_record_filters(qs, request)
         qs = _apply_record_state_filters(qs, request, today)
@@ -2144,7 +2488,9 @@ def ar_records_bulk_assign_collector(request):
         ids = [int(i) for i in (data.get('ids') or []) if str(i).isdigit()]
         if not ids:
             return err('请指定要操作的记录')
-        qs = ARRecord.objects.filter(id__in=ids)
+        # ids 分支同样必须限定部门作用域，否则可跨部门改写任意记录的催收负责人
+        qs = _ar_dept_filter(ARRecord.objects.filter(id__in=ids), request,
+                             shared_field='project__is_shared')
     count = qs.update(collector=collector)
     return ok({'updated': count, 'collector': collector})
 
@@ -2166,15 +2512,22 @@ def ar_records_bulk_delete(request):
         return denied
 
     body = _parse_body(request)
-    today = datetime.date.today()
+    today = timezone.localdate()
     base = _ar_dept_filter(ARRecord.objects.select_related('project'), request,
                            shared_field='project__is_shared')
 
     if body.get('all'):
-        # 与列表完全相同的筛选口径（conditions/match 走查询串）
+        # 与列表完全相同的筛选口径（conditions/match + Excel 列头筛选 filters 都走查询串）。
+        # 此前漏并入 filters：用户用列头筛选缩到 30 条勾「全选筛选集」，实际删除范围
+        # 会大于所见列表——删除类操作绝不允许比看到的多
         qs = _apply_record_filters(base, request)
         qs = _apply_record_state_filters(qs, request, today)
         qs = _apply_conditions(qs, request, today)
+        _fq, _fq_distinct = build_filter_q(request.GET.get('filters', ''), ARRECORD_FILTER_REGISTRY)
+        if _fq:
+            qs = qs.filter(_fq)
+            if _fq_distinct:
+                qs = qs.distinct()
     else:
         ids = body.get('ids') or []
         if not isinstance(ids, list) or not ids:
@@ -2194,10 +2547,23 @@ def ar_records_bulk_delete(request):
         return ok({'deleted': 0})
     if count > 5000:
         return err('单次删除上限 5000 条，请先缩小筛选范围')
-    # 取 id 后用主键集删除：避免子查询/JOIN 在 delete 级联时的边界问题
-    del_ids = list(qs.values_list('id', flat=True))
-    ARRecord.objects.filter(pk__in=del_ids).delete()  # 级联删除关联回款
-    return ok({'deleted': len(del_ids)})
+    # 软删进回收站（可还原）：逐条过删除守卫（预收抵扣一律拦；有回款仅超管可 force）
+    force = bool(body.get('force'))
+    deleted, skipped = 0, []
+    for rec in list(qs.prefetch_related('payments')):
+        blocked = _ar_record_delete_guard(rec, request, force)
+        if blocked:
+            try:
+                reason = json.loads(blocked.content).get('error', '')[:120]
+            except Exception:
+                reason = '删除被拦截'
+            skipped.append({'id': rec.id, 'reason': reason})
+            continue
+        _soft_delete_ar_record(rec, request)
+        deleted += 1
+    return ok({'deleted': deleted, 'skipped': skipped,
+               'message': f'已移入回收站 {deleted} 条'
+                          + (f'；跳过 {len(skipped)} 条' if skipped else '')})
 
 
 

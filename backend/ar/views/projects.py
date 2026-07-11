@@ -398,9 +398,14 @@ def project_import(request):
     f = request.FILES.get('file')
     if not f:
         return err('请上传文件')
+    if getattr(f, 'size', 0) > 5 * 1024 * 1024:
+        return err('文件过大，请确认文件不超过5MB')
     try:
         wb = openpyxl.load_workbook(f, data_only=True)
         ws = wb.active
+        # 防解压炸弹：5MB 压缩包也可能展开出海量单元格，先做总量护栏
+        if (ws.max_row or 0) * (ws.max_column or 0) > 400_000:
+            return err('表格过大（超过 40 万单元格），请拆分后再导入')
     except Exception as e:
         return err(f'无法读取Excel: {e}')
 
@@ -594,6 +599,9 @@ def project_import_precheck(request):
     try:
         wb = openpyxl.load_workbook(f, data_only=True)
         ws = wb.active
+        # 防解压炸弹：5MB 压缩包也可能展开出海量单元格，先做总量护栏
+        if (ws.max_row or 0) * (ws.max_column or 0) > 400_000:
+            return err('表格过大（超过 40 万单元格），请拆分后再导入')
     except Exception as e:
         return err(f'无法读取Excel: {e}')
 
@@ -732,10 +740,10 @@ def project_stats(request):
     denied = _page_denied(request, 'ar_projects')
     if denied:
         return denied
-    qs = _ar_dept_filter(ARProject.objects.all(), request, shared_field='is_shared')
-    dept = request.GET.get('dept', '').strip()
-    if dept:
-        qs = qs.filter(delivery_dept=dept)
+    # 与列表同一筛选口径（q/列头筛选/部门等）:统计条随筛选联动,避免「列表已收窄、
+    # 上方统计仍是全量」的口径打架
+    qs = _apply_project_list_filters(
+        _ar_dept_filter(ARProject.objects.all(), request, shared_field='is_shared'), request)
 
     total = qs.count()
     draft_count = qs.filter(is_draft=True).count()
@@ -752,7 +760,7 @@ def project_stats(request):
     a_count = level_map.get('A级', 0) + level_map.get('A', 0)
 
     # Month-over-month new signings by contract_date
-    today = datetime.date.today()
+    today = timezone.localdate()
     this_start = datetime.date(today.year, today.month, 1)
     if today.month == 1:
         last_start = datetime.date(today.year - 1, 12, 1)

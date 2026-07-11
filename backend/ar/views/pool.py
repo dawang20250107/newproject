@@ -23,22 +23,32 @@ def _pool_visible_depts(request):
 
 
 def _pool_actual_flows(dept, start, end):
-    """(start, end] 区间的实际现金流（口径与现金流分析一致）。
-    返回 (collected, adv_recv, paid, prepaid_offset, adv_paid, t_in, t_out)。"""
+    """(start, end] 区间的实际现金流。回款口径与现金流分析基本一致，但资金池是「可动用
+    货币资金」口径：承兑汇票在贴现/到期前不是可动用现金，故额外排除（现金流分析仍计入）。
+    返回 (collected, adv_recv, paid, prepaid_offset, adv_paid, t_in, t_out, daily)。"""
     collected = _dec(ARPayment.objects.filter(
-        ar_record__delivery_dept=dept,
+        ar_record__delivery_dept=dept, ar_record__deleted_at__isnull=True,
         payment_date__gt=start, payment_date__lte=end)
-        .exclude(source__in=NON_CASH_PAYMENT_SOURCES).aggregate(s=Sum('amount'))['s'])
+        .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
+        .exclude(pending_draft_q())        # 未兑付承兑汇票不算可动用现金；已兑付则计入
+        .aggregate(s=Sum('amount'))['s'])
+    # 日常收款：项目收款/预付退款/自定义来源，均为可动用现金 → 计入资金池流入
+    daily = _dec(DailyReceipt.objects.filter(
+        delivery_dept=dept, receipt_date__gt=start, receipt_date__lte=end)
+        .aggregate(s=Sum('amount'))['s'])
     adv = (AdvanceRecord.objects.filter(
         delivery_dept=dept, occur_date__gt=start, occur_date__lte=end)
         .values('direction').annotate(s=Sum('advance_amount')))
     adv_map = {r['direction']: _dec(r['s']) for r in adv}
     paid = _dec(PaymentInstallment.objects.filter(
-        payment__department=dept,
+        payment__department=dept, payment__deleted_at__isnull=True,
         pay_date__gt=start, pay_date__lte=end).aggregate(s=Sum('pay_amount'))['s'])
-    # 预付核销冲抵：现金已在预付发生时流出，核销时不再是现金事件 → 从实付中扣除
+    # 预付核销冲抵（仅作展示备注，不参与现金余额）：预付的现金在 occur_date 已作为
+    # advance_paid 流出；核销只是把这笔预付资产结转到某张应付上，本身没有任何新的
+    # 现金进出——与预收核销对称（预收核销亦不进现金）。实付分期(paid)与预付冲抵是计划
+    # 的两块互不重叠部分（covered=已付+冲抵），故 paid 已是「本期真实付现」，无需再动。
     prepaid_offset = _dec(AdvanceWriteoff.objects.filter(
-        payment__department=dept,
+        payment__department=dept, payment__deleted_at__isnull=True,
         writeoff_date__gt=start, writeoff_date__lte=end).aggregate(s=Sum('amount'))['s'])
     # 调拨：只有已生效（approved）的才是真实现金事件；待审批/已拒绝不动余额
     t_in = _dec(CashPoolTransfer.objects.filter(
@@ -50,21 +60,23 @@ def _pool_actual_flows(dept, start, end):
         transfer_date__gt=start, transfer_date__lte=end)
         .aggregate(s=Sum('amount'))['s'])
     return (collected, adv_map.get('预收', Decimal('0')), paid, prepaid_offset,
-            adv_map.get('预付', Decimal('0')), t_in, t_out)
+            adv_map.get('预付', Decimal('0')), t_in, t_out, daily)
 
 
 def _pool_balance(dept, cfg, today):
-    """池子当前账面余额 = 期初 + (期初日, 今天] 的净现金流。"""
-    c, ar_, p, po, ap, ti, to_ = _pool_actual_flows(dept, cfg.initial_date, today)
-    return cfg.initial_amount + c + ar_ - (p - po) - ap + ti - to_
+    """池子当前账面余额 = 期初 + (期初日, 今天] 的净现金流。
+    预付核销(po)不进现金：预付已在 occur_date 作为 ap 流出，核销无新现金事件。"""
+    c, ar_, p, po, ap, ti, to_, daily = _pool_actual_flows(dept, cfg.initial_date, today)
+    return cfg.initial_amount + c + ar_ + daily - p - ap + ti - to_
 
 
 def _pool_metrics(dept, cfg, today):
     """单个池子的全部指标：账面余额、资金预警线、刚性/在途流出、预期流入、余额预测。"""
     start = cfg.initial_date
 
-    c, ar_, p, po, ap, ti, to_ = _pool_actual_flows(dept, start, today)
-    balance = (cfg.initial_amount + c + ar_ - (p - po) - ap + ti - to_)
+    c, ar_, p, po, ap, ti, to_, daily = _pool_actual_flows(dept, start, today)
+    # 预付核销(po)不进现金——见 _pool_balance；此处仅把 po 作为展示备注透出。
+    balance = (cfg.initial_amount + c + ar_ + daily - p - ap + ti - to_)
 
     # ── 刚性流出：付款管理已审批待付（remaining>0），按计划日期分窗。
     #    已用预付核销冲抵的部分不再需要现金，故一并扣除（与余额口径对称）。
@@ -73,7 +85,7 @@ def _pool_metrics(dept, cfg, today):
     #    total_amount/prepaid_offset_amount 不在 GROUP BY 里——SQLite 容忍，
     #    生产 MySQL 报 1054 Unknown column in 'having clause'。
     #    子查询版无 GROUP BY，过滤走 WHERE，两种库都安全（与付款列表口径同源）──
-    pay_qs = (Payment.objects.filter(department=dept)
+    pay_qs = (Payment.objects.filter(department=dept, deleted_at__isnull=True)
               .annotate(paid_sum=_paid_subq())
               .annotate(plan=Coalesce('plan_adjustment', 'total_amount'))
               .annotate(rem=F('plan') - F('paid_sum') - F('prepaid_offset_amount'))
@@ -143,10 +155,10 @@ def _pool_metrics(dept, cfg, today):
     # ── 健康指标：近90天口径 ─────────────────────────────────────────────────
     t90 = today - datetime.timedelta(days=90)
     s90 = max(start, t90)
-    c9, ar9, p9, po9, ap9, ti9, to9 = _pool_actual_flows(dept, s90, today)
+    c9, ar9, p9, po9, ap9, ti9, to9, daily9 = _pool_actual_flows(dept, s90, today)
     span = max(1, (today - s90).days)
-    in90 = c9 + ar9
-    out90 = (p9 - po9) + ap9
+    in90 = c9 + ar9 + daily9
+    out90 = p9 + ap9   # 预付核销(po9)非现金，不计入流出
     runway = float(balance) / (float(out90) / span) if out90 > 0 and balance > 0 else None
     health = {
         'runway_days': round(runway) if runway is not None else None,
@@ -162,7 +174,9 @@ def _pool_metrics(dept, cfg, today):
         'parts': {
             'initial': str(cfg.initial_amount),
             'collected': str(c), 'advance_received': str(ar_),
-            'paid': str(p - po), 'advance_paid': str(ap),
+            'daily_receipts': str(daily),
+            'paid': str(p), 'advance_paid': str(ap),
+            'prepaid_offset': str(po),   # 展示备注：本期预付核销（非现金，不计入余额）
             'transfer_in': str(ti), 'transfer_out': str(to_),
         },
         'warning': {'amount': str(warn_amount), 'status': status, 'mode': warn_mode},
@@ -184,7 +198,7 @@ def cash_pool(request):
     if request.method != 'GET':
         return err('Method not allowed', 405)
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     depts = _pool_visible_depts(request)
     try:
         cfgs = {c.delivery_dept: c for c in CashPoolConfig.objects.filter(delivery_dept__in=depts)}
@@ -255,7 +269,7 @@ def cash_pool_config(request):
             init_d = datetime.date.fromisoformat(str(initial_date)[:10])
         except (ValueError, TypeError):
             return err('期初基准日格式错误')
-        if init_d > datetime.date.today():
+        if init_d > timezone.localdate():
             return err('期初基准日不能晚于今天（期初是已发生的账面事实）')
         try:
             initial_amount = Decimal(str(data.get('initial_amount', 0) or 0))
@@ -297,12 +311,12 @@ def _validate_transfer_payload(data):
         return None, None, None, None, err('金额格式错误')
     if amount <= 0:
         return None, None, None, None, err('调拨金额必须大于0')
-    tr_date = _normalize_date(data.get('transfer_date')) or str(datetime.date.today())
+    tr_date = _normalize_date(data.get('transfer_date')) or str(timezone.localdate())
     try:
         tr_date_d = datetime.date.fromisoformat(str(tr_date)[:10])
     except (ValueError, TypeError):
         return None, None, None, None, err('调拨日期格式错误')
-    if tr_date_d > datetime.date.today():
+    if tr_date_d > timezone.localdate():
         return None, None, None, None, err('调拨日期不能晚于今天（调拨以实际发生日入账）')
     return f, t, amount, tr_date_d, None
 
@@ -325,7 +339,7 @@ def _transfer_guards(f, t, tr_date_d, lock=False):
 
 def _transfer_overdraft_err(f, cfg_f, amount):
     """不允许透支调拨：调出额不得超过调出池当前账面余额。"""
-    balance = _pool_balance(f, cfg_f, datetime.date.today())
+    balance = _pool_balance(f, cfg_f, timezone.localdate())
     if amount > balance:
         return err(f'调出池「{f}」当前可用余额 {balance:,.2f} 元，'
                    f'不足以调出 {amount:,.2f} 元（不允许透支调拨）')
@@ -356,6 +370,9 @@ def cash_pool_transfers(request):
                        f'若提示字段/列不存在，请在服务器运行环境执行 '
                        f'python manage.py migrate 后重启服务', 500)
     if request.method == 'POST':
+        denied = _page_denied(request, 'ar_cashflow')
+        if denied:
+            return denied
         data = _parse_body(request)
         f, t, amount, tr_date_d, bad = _validate_transfer_payload(data)
         if bad:
@@ -403,6 +420,9 @@ def cash_pool_transfer_review(request, pk):
     不能审批自己发起的申请。批准时以审批日为实际生效日并校验余额充足。"""
     if request.method != 'POST':
         return err('Method not allowed', 405)
+    denied = _page_denied(request, 'ar_cashflow')
+    if denied:
+        return denied
     try:
         tr = CashPoolTransfer.objects.get(pk=pk)
     except CashPoolTransfer.DoesNotExist:
@@ -432,7 +452,7 @@ def cash_pool_transfer_review(request, pk):
     if action != 'approve':
         return err("action 须为 'approve' 或 'reject'")
 
-    today = datetime.date.today()
+    today = timezone.localdate()
     with transaction.atomic():
         cfg_f, cfg_t, bad = _transfer_guards(tr.from_dept, tr.to_dept, today, lock=True)
         if bad:
@@ -457,6 +477,9 @@ def cash_pool_transfer_detail(request, pk):
     """删除调拨：待审批的申请发起人可撤回；已生效/已拒绝的仅超管可删（余额回退）。"""
     if request.method != 'DELETE':
         return err('Method not allowed', 405)
+    denied = _page_denied(request, 'ar_cashflow')
+    if denied:
+        return denied
     try:
         tr = CashPoolTransfer.objects.get(pk=pk)
     except CashPoolTransfer.DoesNotExist:

@@ -1,24 +1,36 @@
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount, provide } from 'vue'
+import { onActivated } from 'vue'
+import { confirmDlg } from '../../composables/confirm.js'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, provide, defineAsyncComponent, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
-import { DEPARTMENTS, yearCST, monthCST, todayCST } from '../../constants.js'
+import { DEPARTMENTS, yearCST, monthCST, todayCST, COLLECTION_METHODS, DEFAULT_COLLECTION_METHOD, DRAFT_STATUSES, DEFAULT_DRAFT_STATUS } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact, fmtMoney } from '../../utils/format.js'
 import { downloadBlob } from '../../utils/download.js'
 import { useServerSort } from '../../composables/useServerSort.js'
 import { useToast } from '../../composables/useToast.js'
 import SortTh from '../../components/ar/SortTh.vue'
+import SelCell from '../../components/SelCell.vue'
 import FilterPanel from '../../components/ar/FilterPanel.vue'
 import { describeCondition, STATUS_OPTS, RECON_OPTS, INVOICE_OPTS, RESP_OPTS } from '../../composables/arConditions.js'
-import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
+import DateRangeChips from '../../components/DateRangeChips.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
+import Pager from '../../components/Pager.vue'
 import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
+import { useShiftSelect } from '../../composables/useShiftSelect.js'
+import { useRangeSelection } from '../../composables/useRangeSelection.js'
+import { useFileDrop } from '../../composables/useFileDrop.js'
+import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
-import ActivityPanel from '../../components/ar/ActivityPanel.vue'
+import { useModalEsc } from '../../composables/useModalEsc.js'
+// 重型抽屉/弹窗按需加载：仅打开活动抽屉 / 导入预检时才拉取其代码块，
+// 大幅瘦身应收明细主路由块（ActivityPanel 单文件 1.7k 行）。
+const ActivityPanel = defineAsyncComponent(() => import('../../components/ar/ActivityPanel.vue'))
+const ImportPrecheckModal = defineAsyncComponent(() => import('../../components/ImportPrecheckModal.vue'))
 
 const route = useRoute()
 const router = useRouter()
@@ -75,21 +87,42 @@ const delConfirmText = ref('')
 const delConfirmCount = ref(0)
 const delConfirmOk = computed(() => delConfirmText.value.trim() === String(delConfirmCount.value))
 const pageAllSelected = computed(() =>
-  items.value.length > 0 && items.value.every(r => selectedIds.value.has(r.id)))
+  items.value.length > 0 && (selectAllMatching.value
+    || items.value.every(r => selectedIds.value.has(r.id))))
 const selectedCount = computed(() => selectAllMatching.value ? total.value : selectedIds.value.size)
 const hasSelection = computed(() => selectAllMatching.value || selectedIds.value.size > 0)
 function toggleRow(id) {
   const s = new Set(selectedIds.value)
-  if (s.has(id)) { s.delete(id); selectAllMatching.value = false } else s.add(id)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
   selectedIds.value = s
 }
-function toggleSelectPage() {
+// 跨页全选态下的任何手动改选：退出全选并把本页勾选落地，之后按真实集合精修。
+// 修复：全选态翻页后行不在 selectedIds 中，点击勾选框绑定值不变、视觉无反应。
+function exitSelectAllToPage() {
+  if (!selectAllMatching.value) return
+  selectAllMatching.value = false
   const s = new Set(selectedIds.value)
-  if (pageAllSelected.value) { items.value.forEach(r => s.delete(r.id)); selectAllMatching.value = false }
+  items.value.forEach(r => s.add(r.id))
+  selectedIds.value = s
+  toast.success('已退出「跨页全选」，改为手动勾选（本页已保留）')
+}
+// Excel 式 Shift 区间勾选（系统级复用）；任意手动改选先退出「跨页全选」态
+const { onRowSelClick, resetAnchor } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow, onManual: exitSelectAllToPage })
+function toggleSelectPage() {
+  exitSelectAllToPage()
+  const s = new Set(selectedIds.value)
+  if (pageAllSelected.value) items.value.forEach(r => s.delete(r.id))
   else items.value.forEach(r => s.add(r.id))
   selectedIds.value = s
 }
 function clearSelection() { selectedIds.value = new Set(); selectAllMatching.value = false }
+useEscClearSelection(() => hasSelection.value, clearSelection)   // ESC 退出勾选
+// Excel 式单元格区域选择（拖选/Shift 扩选/方向键移动/Ctrl+C 复制为 TSV）
+const rangeSel = useRangeSelection({ ignoreCols: () => ((auth.canDelete || auth.canArWrite) ? [0] : []), onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
+// 作战台的勾选同样 Esc 一键退出（弹窗/输入态由组合式内部让路）
+useEscClearSelection(() => activeTab.value === 'dunning' && dunSelected.value.size > 0,
+  () => { dunSelected.value = new Set() })
 function bulkDelete() {
   const n = selectedCount.value
   if (!n) return
@@ -101,7 +134,7 @@ async function confirmBulkDelete() {
   if (!delConfirmOk.value) return
   bulkDeleting.value = true
   try {
-    if (selectAllMatching.value) await ar.bulkDeleteRecords({ all: true }, scopedParams())
+    if (selectAllMatching.value) await ar.bulkDeleteRecords({ all: true }, buildParams(scopedParams()))
     else await ar.bulkDeleteRecords({ ids: [...selectedIds.value] })
     showDelConfirm.value = false
     clearSelection()
@@ -137,12 +170,236 @@ function toggleFullscreen() {
     document.exitFullscreen?.().then(() => { isFullscreen.value = false }).catch(() => {})
   }
 }
-// 监听 ESC 退出全屏
-if (typeof document !== 'undefined') {
-  document.addEventListener('fullscreenchange', () => {
-    isFullscreen.value = !!document.fullscreenElement
-  })
+// 打印：不直接打印交互式页面（勾选框/筛选图标/角标会一起打出来），
+// 而是克隆当前可见表格、剥离全部交互元素后，注入干净报表版式经隐藏 iframe 打印。
+// 数据 Tab 且不止一页时可选「打印全部」：按当前筛选分页拉全量，临时换入表格
+// 渲染后克隆（复用列显隐/格式化的唯一渲染路径），打印文档生成后立即还原。
+const PRINT_ALL_MAX = 3000
+const printing = ref(false)
+async function fetchAllForPrint() {
+  const all = []
+  const want = Math.min(total.value, PRINT_ALL_MAX)
+  for (let p = 1; all.length < want; p++) {
+    const res = await ar.listRecords(buildParams({ ...scopedParams(), include_payments: 1, page: p, size: 200 }))
+    const batch = res.data.items || []
+    all.push(...batch)
+    if (!batch.length) break
+  }
+  return all.slice(0, want)
 }
+async function printTable() {
+  if (printing.value) return
+  let allRows = null
+  if (isDataTab.value && total.value > items.value.length) {
+    if (await confirmDlg({
+      title: '打印范围',
+      message: `当前筛选共 ${total.value} 条，本页显示 ${items.value.length} 条`,
+      detail: ['「打印全部」按当前筛选拉取全部记录后打印', '「仅本页」只打印当前页显示的行'],
+      confirmText: '打印全部',
+      cancelText: '仅本页',
+    })) {
+      if (total.value > PRINT_ALL_MAX) {
+        toast.error(`记录超过 ${PRINT_ALL_MAX} 条，打印件过厚，请先缩小筛选范围（全量数据建议用导出）`)
+        return
+      }
+      printing.value = true
+      try { allRows = await fetchAllForPrint() }
+      catch (e) { toast.error(e?.msg || e?.error || '拉取全部记录失败'); printing.value = false; return }
+    }
+  }
+  const restore = allRows ? items.value : null
+  if (allRows) { items.value = allRows; await nextTick() }
+  try { buildPrintDoc(allRows ? allRows.length : null) }
+  finally {
+    if (restore) { items.value = restore; resetAnchor() }
+    printing.value = false
+  }
+}
+// 克隆当前可见表格并剥离全部交互元素，供打印/图片/PDF 导出共用
+function buildCleanTable() {
+  const scope = document.querySelector('.ar-view')
+  const src = scope && [...scope.querySelectorAll('table')].find(t => t.offsetParent !== null)
+  if (!src) return null
+  const tbl = src.cloneNode(true)
+  // 剥离交互元素：勾选列、列宽拖柄、筛选/排序按钮、行内按钮输入框、各类角标与提醒符号
+  tbl.querySelectorAll(
+    '.sel-col, .col-rh, .colf-btn, button, input, .due-soon-badge, .rec-badge, .inv-warn, .row-acts'
+  ).forEach(el => el.remove())
+  // 表头筛选组件还原为纯文字列名
+  tbl.querySelectorAll('.colf').forEach(colf => {
+    const label = colf.querySelector('.colf-label')?.textContent?.trim() || ''
+    colf.replaceWith(document.createTextNode(label))
+  })
+  // 去掉屏显内联样式与 scoped 样式标记（冻结列宽/sticky/悬停不进导出版式）
+  tbl.querySelectorAll('[style]').forEach(el => el.removeAttribute('style'))
+  tbl.removeAttribute('style')
+  const stripScoped = (el) => {
+    for (const n of (el.getAttributeNames?.() || [])) {
+      if (n.startsWith('data-v-')) el.removeAttribute(n)
+    }
+  }
+  stripScoped(tbl)
+  tbl.querySelectorAll('*').forEach(stripScoped)
+  return tbl
+}
+function exportTitleMeta(allCount, stampPrefix = '') {
+  const tabLabel = TABS.find(t => t.key === activeTab.value)?.label || ''
+  const now = new Date()
+  const p2 = n => String(n).padStart(2, '0')
+  const stamp = `${stampPrefix}${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}`
+  const meta = allCount != null
+    ? `全部 ${allCount} 条　·　${stamp}`
+    : (total.value
+      ? `本页 ${items.value.length} 条 / 共 ${total.value} 条　·　${stamp}`
+      : stamp)
+  return { title: `应收账款${tabLabel ? ' · ' + tabLabel : ''}`, meta }
+}
+// 报表通用表格样式（px 版，供图片/PDF 画布渲染；打印文档用 pt 版）
+const EXPORT_TABLE_CSS = `
+  .xp-root { background: #fff; color: #1a1a1a; font: 12px/1.5 "Microsoft YaHei", "PingFang SC", sans-serif; padding: 26px 30px; }
+  .xp-root .p-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #1a1a1a; padding-bottom: 8px; margin-bottom: 12px; }
+  .xp-root .p-head h1 { margin: 0; font-size: 19px; letter-spacing: 0.06em; }
+  .xp-root .p-meta { font-size: 11px; color: #555; }
+  .xp-root table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  .xp-root th { background: #efedea; border: 1px solid #999; padding: 5px 7px; font-weight: 700; text-align: left; }
+  .xp-root td { border: 1px solid #c2c2c2; padding: 4px 7px; vertical-align: middle; word-break: break-word; }
+  .xp-root tbody tr:nth-child(even) td { background: #f8f7f5; }
+  .xp-root th.amt, .xp-root td.amt { text-align: right; font-variant-numeric: tabular-nums; }
+  .xp-root td.amt, .xp-root td.ctr { white-space: nowrap; }
+  .xp-root th.ctr, .xp-root td.ctr { text-align: center; }
+  .xp-root td.fw { font-weight: 700; }
+  .xp-root .text-muted { color: #767676; }
+  .xp-root .proj-sub { font-size: 10px; color: #767676; }
+  .xp-root tfoot td { font-weight: 700; background: #efedea; border-top: 2px solid #333; }
+  .xp-root .empty-cell { text-align: center; color: #999; padding: 20px; }
+`
+// 把干净表格渲染到屏幕外容器并画成 canvas（图片 / PDF 共用）
+async function renderExportCanvas() {
+  const tbl = buildCleanTable()
+  if (!tbl) return null
+  const { title, meta } = exportTitleMeta(null)
+  const holder = document.createElement('div')
+  holder.style.cssText = 'position:absolute;left:-100000px;top:0;width:1500px'
+  const style = document.createElement('style')
+  style.textContent = EXPORT_TABLE_CSS
+  const root = document.createElement('div')
+  root.className = 'xp-root'
+  const head = document.createElement('div')
+  head.className = 'p-head'
+  const h1 = document.createElement('h1'); h1.textContent = title
+  const pm = document.createElement('div'); pm.className = 'p-meta'; pm.textContent = meta
+  head.appendChild(h1); head.appendChild(pm)
+  root.appendChild(head); root.appendChild(tbl)
+  holder.appendChild(style); holder.appendChild(root)
+  document.body.appendChild(holder)
+  try {
+    const { default: html2canvas } = await import('html2canvas')
+    return await html2canvas(root, { scale: 2, backgroundColor: '#ffffff', logging: false })
+  } finally { holder.remove() }
+}
+async function exportImage() {
+  exporting.value = true
+  try {
+    const canvas = await renderExportCanvas()
+    if (!canvas) { toast.error('当前页面没有可导出的表格'); return }
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/png'))
+    downloadBlob(blob, `应收账款明细_${todayCST()}.png`)
+  } catch (e) { toast.error(e?.msg || e?.error || '图片导出失败')
+  } finally { exporting.value = false }
+}
+async function exportPdf() {
+  exporting.value = true
+  try {
+    const canvas = await renderExportCanvas()
+    if (!canvas) { toast.error('当前页面没有可导出的表格'); return }
+    const { jsPDF } = await import('jspdf')
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
+    const pw = 297, ph = 210, margin = 8
+    const availW = pw - margin * 2, availH = ph - margin * 2
+    const imgH = canvas.height * availW / canvas.width
+    const img = canvas.toDataURL('image/jpeg', 0.92)
+    let heightLeft = imgH
+    let first = true
+    while (heightLeft > 0) {
+      if (!first) pdf.addPage()
+      const position = margin - (imgH - heightLeft)
+      pdf.addImage(img, 'JPEG', margin, position, availW, imgH)
+      // 上下页边距盖白：长图跨页切片时防止相邻页内容渗进边距
+      pdf.setFillColor(255, 255, 255)
+      pdf.rect(0, 0, pw, margin, 'F')
+      pdf.rect(0, ph - margin, pw, margin, 'F')
+      heightLeft -= availH
+      first = false
+    }
+    pdf.save(`应收账款明细_${todayCST()}.pdf`)
+  } catch (e) { toast.error(e?.msg || e?.error || 'PDF 导出失败')
+  } finally { exporting.value = false }
+}
+function buildPrintDoc(allCount) {
+  const tbl = buildCleanTable()
+  if (!tbl) return
+  const { title, meta } = exportTitleMeta(allCount, '打印时间 ')
+
+  // 可见的打印预览窗口（不用隐藏 iframe：部分浏览器对隐藏 iframe 的打印排版
+  // 不可靠，会打出空页/碎字）。预览页自动调起打印，也可手动点「打印」。
+  const html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>${title}</title><style>
+    @page { size: A4 landscape; margin: 10mm 12mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #1a1a1a; font: 9pt/1.45 "Microsoft YaHei", "PingFang SC", "Helvetica Neue", sans-serif; }
+    .p-toolbar { position: sticky; top: 0; display: flex; align-items: center; gap: 12px;
+      padding: 10px 16px; background: #2b2b2b; color: #eee; font-size: 13px; }
+    .p-toolbar button { font: inherit; padding: 6px 18px; border: 0; border-radius: 6px; cursor: pointer; }
+    .p-toolbar .go { background: #c96342; color: #fff; font-weight: 600; }
+    .p-toolbar .close { background: #555; color: #eee; }
+    .p-tip { opacity: 0.75; }
+    .sheet { max-width: 1123px; margin: 0 auto; padding: 24px 28px; background: #fff; }
+    @media screen { body { background: #8a8a8a; } .sheet { margin: 16px auto; box-shadow: 0 2px 14px rgba(0,0,0,0.35); } }
+    @media print { .p-toolbar { display: none !important; } .sheet { max-width: none; margin: 0; padding: 0; box-shadow: none; } }
+    .p-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #1a1a1a; padding-bottom: 6px; margin-bottom: 10px; }
+    .p-head h1 { margin: 0; font-size: 14pt; letter-spacing: 0.06em; }
+    .p-meta { font-size: 8pt; color: #555; }
+    table { width: 100%; border-collapse: collapse; font-size: 8.5pt; table-layout: auto; }
+    thead { display: table-header-group; }
+    tr { break-inside: avoid; }
+    th { background: #efedea; border: 0.5pt solid #999; padding: 4px 6px; font-weight: 700; text-align: left; }
+    td { border: 0.5pt solid #c2c2c2; padding: 3px 6px; vertical-align: middle; word-break: break-word; }
+    th, td { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+    tbody tr:nth-child(even) td { background: #f8f7f5; }
+    th.amt, td.amt { text-align: right; font-variant-numeric: tabular-nums; }
+    td.amt, td.ctr { white-space: nowrap; }
+    th.ctr, td.ctr { text-align: center; }
+    td.fw { font-weight: 700; }
+    .text-muted { color: #767676; }
+    .proj-sub { font-size: 7.5pt; color: #767676; }
+    tfoot td { font-weight: 700; background: #efedea; border-top: 1.2pt solid #333; }
+    .empty-cell { text-align: center; color: #999; padding: 18px; }
+  </style></head><body>
+    <div class="p-toolbar">
+      <button class="go" onclick="window.print()">🖨 打印</button>
+      <button class="close" onclick="window.close()">关闭</button>
+      <span class="p-tip">预览无误后点「打印」（纸张方向请选横向）；此工具条不会被打印</span>
+    </div>
+    <div class="sheet">
+      <div class="p-head"><h1>${title}</h1><div class="p-meta">${meta}</div></div>
+      ${tbl.outerHTML}
+    </div>
+    ${'<scr' + 'ipt>'}window.addEventListener('load', function () { setTimeout(function () { window.print() }, 300) })${'</scr' + 'ipt>'}
+  </body></html>`
+
+  const win = window.open('', '_blank')
+  if (!win) {
+    toast.error('浏览器拦截了打印预览窗口，请允许本站的弹出窗口后重试')
+    return
+  }
+  win.document.open()
+  win.document.write(html)
+  win.document.close()
+  win.focus()
+}
+// 监听 ESC 退出全屏：注册/清理成对，避免 keep-alive 复用或路由重建时累积监听
+function onFullscreenChange() { isFullscreen.value = !!document.fullscreenElement }
+onMounted(() => document.addEventListener('fullscreenchange', onFullscreenChange))
+onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFullscreenChange))
 
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
 const ctx = useContextMenu()
@@ -203,6 +460,7 @@ const ctxItems = computed(() => {
 const COL_VIS_DEFS = [
   { key: 'r_estimated_amount', label: '预估金额' },
   { key: 'r_actual_invoice_amount', label: '实际开票' },
+  { key: 'r_actual_receivable', label: '实际应收' },
   { key: 'r_tax_amount', label: '税额' },
   { key: 'r_account_diff', label: '账实差额' },
   { key: 'r_outstanding', label: '未收金额' },
@@ -214,8 +472,21 @@ const COL_VIS_DEFS = [
   { key: 'r_notes', label: '备注' },
 ]
 const showColPanel = ref(false)
+// 业务默认列可见性：全部明细默认隐藏「税额」列。一次性应用（合并进已有偏好，不清除
+// 用户其它选择）；用户之后手动显示税额则保留其选择，不再被默认覆盖。
+const AR_COL_DEFAULTS_VER = '1'
 function _loadHiddenCols() {
-  try { return new Set(JSON.parse(localStorage.getItem('ar_hidden_cols') || '[]')) } catch { return new Set() }
+  let stored = null
+  try { stored = JSON.parse(localStorage.getItem('ar_hidden_cols') || 'null') } catch { stored = null }
+  const s = new Set(Array.isArray(stored) ? stored : [])
+  if (localStorage.getItem('ar_hidden_defaults_ver') !== AR_COL_DEFAULTS_VER) {
+    s.add('r_tax_amount')
+    try {
+      localStorage.setItem('ar_hidden_cols', JSON.stringify([...s]))
+      localStorage.setItem('ar_hidden_defaults_ver', AR_COL_DEFAULTS_VER)
+    } catch (_) { /* localStorage 不可用时仅本次会话生效 */ }
+  }
+  return s
 }
 const hiddenCols = ref(_loadHiddenCols())
 function toggleColVis(key) {
@@ -236,7 +507,7 @@ async function doBulkAssignCollector() {
   try {
     let res
     if (selectAllMatching.value) {
-      res = await ar.bulkAssignCollector({ all: true, collector: collectorInput.value.trim() }, scopedParams())
+      res = await ar.bulkAssignCollector({ all: true, collector: collectorInput.value.trim() }, buildParams(scopedParams()))
     } else {
       res = await ar.bulkAssignCollector({ ids: [...selectedIds.value], collector: collectorInput.value.trim() })
     }
@@ -253,11 +524,14 @@ async function doBulkAssignCollector() {
 const showAgingCfgModal = ref(false)
 const agingCfgForm = reactive({ bucket1: 30, bucket2: 60, bucket3: 90 })
 const agingCfgSaving = ref(false)
-async function openAgingCfg() {
+async function loadAgingCfg() {
   try {
     const res = await ar.getAgingConfig()
     Object.assign(agingCfgForm, res.data)
-  } catch (_) {}
+  } catch (_) { /* 取不到用默认 30/60/90 */ }
+}
+async function openAgingCfg() {
+  await loadAgingCfg()
   showAgingCfgModal.value = true
 }
 async function saveAgingCfg() {
@@ -296,6 +570,15 @@ const cw = useColWidths('ar_records', {
 const colFilters = reactive({})    // field -> {op, value}
 const sortField = ref('')
 const sortOrder = ref('')          // 'asc' | 'desc' | ''
+// 运作日期区间预设条 → 写入列头筛选管线（operation_date between），与手动列筛选同源
+const opDateStart = ref('')
+const opDateEnd = ref('')
+function applyOpDateRange() {
+  if (!opDateStart.value && !opDateEnd.value) delete colFilters.operation_date
+  else colFilters.operation_date = { op: 'between', value: [opDateStart.value || '', opDateEnd.value || ''] }
+  clearSelection()
+  load(true)
+}
 // 部门枚举选项复用页面既有可访问部门列表
 function setColFilter(field, val) {
   if (val == null) delete colFilters[field]
@@ -362,7 +645,7 @@ async function addAdjustment() {
   finally { adjBusy.value = false }
 }
 async function removeAdjustment(a) {
-  if (!confirm(`删除调整「${a.reason || '未填原因'}：${a.amount}」？差额合计与未收金额将随之回退。`)) return
+  if (!(await confirmDlg(`删除调整「${a.reason || '未填原因'}：${a.amount}」？差额合计与未收金额将随之回退。`))) return
   adjBusy.value = true
   try {
     const res = await ar.deleteAdjustment(editRec.value.id, a.id)
@@ -395,7 +678,8 @@ function onProjectKeywordInput() {
 }
 const showPayModal = ref(false)
 const payRec = ref(null)
-const payForm = reactive({ amount: '', payment_date: '', notes: '', source: '回款', counterparty_dept: '' })
+const DRAFT_ST = DRAFT_STATUSES
+const payForm = reactive({ amount: '', payment_date: '', notes: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, counterparty_dept: '' })
 const paySaving = ref(false)
 // 录入回款时联动：该项目可用预收（只读提示，便于判断是否以预收冲抵应收）
 const payAdvance = ref(null)
@@ -419,6 +703,9 @@ function onRowDblClick(rec, e) {
 }
 
 function onPanelFieldSaved(data) {
+  // 从作战台打开的工作台里发生了保存（回款/字段/跟进）→ 关闭时静默刷新看板，
+  // 使未收金额/最近回款/分桶汇总与刚才的操作保持一致。
+  if (activeTab.value === 'dunning') dunPanelDirty = true
   const idx = items.value.findIndex(r => r.id === data.id)
   if (idx === -1) return
   const row = items.value[idx]
@@ -428,6 +715,12 @@ function onPanelFieldSaved(data) {
     if (k === 'id') continue
     row[k] = data[k]
   }
+}
+let dunPanelDirty = false
+function onPanelClose() {
+  panelRec.value = null
+  if (dunPanelDirty && activeTab.value === 'dunning') loadDunning()
+  dunPanelDirty = false
 }
 
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
@@ -444,7 +737,7 @@ const TABS = [
   { key: 'batch', label: '批次管理' },
   { key: 'collection', label: '回款跟踪' },
   { key: 'offset', label: '预收核销' },
-  { key: 'dunning', label: '逾期看板' },
+  { key: 'dunning', label: '催款作战台' },
   { key: 'payments', label: '回款流水' },
   { key: 'summary', label: '汇总' },
 ]
@@ -457,6 +750,34 @@ const hasAnyFilter = computed(() =>
   conditions.value.length > 0 || Object.keys(colFilters).length > 0 || !!sortField.value)
 // chip 文案统一由 describeCondition 生成（与面板单一来源）
 const chipText = describeCondition
+// f4: 列头筛选(colFilters) chip 化——与条件 chip 同栏展示、可逐个移除，
+// 消除「列在别的 Tab 生效但当前不渲染 → 数据被隐形过滤」的困惑
+const COL_FILTER_LABELS = {
+  short_name: '项目', operation_date: '运作日期', estimated_amount: '预估金额',
+  actual_invoice_amount: '实际开票', tax_amount: '税额', reconciliation_status: '对账状态',
+  reconciliation_date: '对账日期', invoice_status: '开票状态', invoice_date: '开票日期',
+  invoice_batch_no: '批次号', due_date: '应收到期', target_collection_date: '目标回款',
+  outstanding_amount: '未收金额', status: '回款状态', notes: '备注',
+  account_diff_adjustment: '账实差额', responsibility: '责任状态',
+}
+const _OP_TEXT = { eq: '等于', contains: '包含', gt: '>', lt: '<', gte: '≥', lte: '≤', between: '区间', empty: '为空', not_empty: '非空' }
+function colFilterText(field, c) {
+  const lbl = COL_FILTER_LABELS[field] || field
+  const op = _OP_TEXT[c.op] || c.op || ''
+  let v = c.value
+  if (Array.isArray(v)) v = v.filter(x => x !== '' && x != null).join(' ~ ')
+  if (c.op === 'empty') return `${lbl} 为空`
+  if (c.op === 'not_empty') return `${lbl} 非空`
+  return `${lbl} ${op} ${v ?? ''}`.trim()
+}
+const colFilterChips = computed(() => Object.entries(colFilters)
+  .filter(([, c]) => c && c.op)
+  .map(([field, c]) => ({ field, text: colFilterText(field, c) })))
+function removeColFilter(field) {
+  delete colFilters[field]
+  if (field === 'operation_date') { opDateStart.value = ''; opDateEnd.value = '' }
+  onFilterChange()
+}
 function removeCondition(i) {
   const l = conditions.value.slice(); l.splice(i, 1)
   conditions.value = l; onFilterChange()
@@ -482,7 +803,7 @@ function onQuickSearch() {
 function clearQuickQ() { quickQ.value = ''; clearTimeout(quickTimer); applyQuickQ() }
 
 // ── 回款流水 (payment ledger) ───────────────────────────────────────────────
-const payFilters = reactive({ pay_start: '', pay_end: '', dept: '', q: '', source: '' })
+const payFilters = reactive({ pay_start: '', pay_end: '', dept: '', q: '', source: '', method: '', draft_status: '' })
 const payItems = ref([])
 const paySummary = ref(null)
 const payTotal = ref(0)
@@ -495,9 +816,12 @@ const payRangePreset = ref('')
 const PAY_RANGE_PRESETS = [
   { key: 'today', label: '今天' },
   { key: 'week', label: '本周' },
+  { key: 'last_week', label: '上周' },
   { key: 'month', label: '本月' },
+  { key: 'last_month', label: '上月' },
   { key: 'quarter', label: '本季度' },
   { key: 'year', label: '本年' },
+  { key: 'last_year', label: '去年' },
   { key: '', label: '全部' },
 ]
 // 快捷区间按 UTC+8（北京时间）计算，与 todayCST() 等系统函数口径一致。
@@ -512,9 +836,27 @@ function setPayRange(key) {
     const dow = (base.getUTCDay() + 6) % 7
     const s = new Date(base); s.setUTCDate(base.getUTCDate() - dow); start = iso(s)
   }
+  else if (key === 'last_week') {
+    // 上周：本周一往前 7 天（上周一）～ 本周一前 1 天（上周日）
+    const dow = (base.getUTCDay() + 6) % 7
+    const thisMon = new Date(base); thisMon.setUTCDate(base.getUTCDate() - dow)
+    const lastMon = new Date(thisMon); lastMon.setUTCDate(thisMon.getUTCDate() - 7)
+    const lastSun = new Date(thisMon); lastSun.setUTCDate(thisMon.getUTCDate() - 1)
+    start = iso(lastMon); end = iso(lastSun)
+  }
   else if (key === 'month') start = iso(new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 1)))
+  else if (key === 'last_month') {
+    // 上月：上月 1 号 ～ 上月最后一天（本月 0 号）
+    start = iso(new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() - 1, 1)))
+    end = iso(new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 0)))
+  }
   else if (key === 'quarter') start = iso(new Date(Date.UTC(base.getUTCFullYear(), Math.floor(base.getUTCMonth() / 3) * 3, 1)))
   else if (key === 'year') start = iso(new Date(Date.UTC(base.getUTCFullYear(), 0, 1)))
+  else if (key === 'last_year') {
+    // 去年：去年 1 月 1 日 ～ 去年 12 月 31 日
+    start = iso(new Date(Date.UTC(base.getUTCFullYear() - 1, 0, 1)))
+    end = iso(new Date(Date.UTC(base.getUTCFullYear() - 1, 11, 31)))
+  }
   payFilters.pay_start = start
   payFilters.pay_end = end
   loadPayments(true)
@@ -546,7 +888,7 @@ function enterPayments() {
   setPayRange('month')   // 内部已 loadPayments(true)
 }
 
-// ── 逾期看板 / 催款工作台 (overdue board / collection workbench) ─────────────
+// ── 催款作战台（逾期看板 / collection workbench）────────────────────────────
 const dunFilters = reactive({ dept: '', q: '', bucket: '', contact: '' })
 const dunBuckets = ref([])
 const dunContacts = ref([])
@@ -554,42 +896,56 @@ const dunItems = ref([])
 const dunSummary = ref(null)
 const dunTotal = ref(0)
 const dunPage = ref(1)
+const dunSize = ref(size)
 const dunLoading = ref(false)
 const dunSelected = ref(new Set())
 const dunCreating = ref(false)
 let dunQTimer = null
 
+let _dunSeq = 0
 async function loadDunning(reset = false) {
   if (reset) { dunPage.value = 1; dunSelected.value = new Set() }
   dunLoading.value = true
+  const seq = ++_dunSeq
   try {
-    const res = await ar.collectionWorkbench({ ...dunFilters, page: dunPage.value, size })
+    const res = await ar.collectionWorkbench({ ...dunFilters, page: dunPage.value, size: dunSize.value })
+    if (seq !== _dunSeq) return   // latest-wins：快输入时旧响应不覆盖新结果
     dunBuckets.value = res.data.buckets
     dunContacts.value = res.data.by_contact
     dunItems.value = res.data.items
     dunTotal.value = res.data.total
     dunSummary.value = res.data.summary
-  } finally { dunLoading.value = false }
+  } finally { if (seq === _dunSeq) dunLoading.value = false }
+}
+const dunExporting = ref(false)
+async function exportDunning() {
+  dunExporting.value = true
+  try {
+    const res = await ar.exportCollectionWorkbench({ ...dunFilters })
+    downloadBlob(res, '催款作战台_逾期清单.xlsx')
+  } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
+  finally { dunExporting.value = false }
 }
 function onDunSearch() {
   clearTimeout(dunQTimer)
   dunQTimer = setTimeout(() => loadDunning(true), 300)
 }
-// 翻页即清空勾选：勾选与「全选本页」一致按页计，避免跨页带入旧选导致「已选 N」与所见不符
-function dunChangePage(delta) {
-  dunPage.value += delta
-  dunSelected.value = new Set()
-  loadDunning()
+// 搜索框内按 Esc 直接清空并复位（输入态的 Esc 归输入框，不冒泡到面板/清选）
+function clearDunSearch() {
+  if (!dunFilters.q) return
+  dunFilters.q = ''
+  loadDunning(true)
 }
-const dunJumpPage = ref('')
-function dunDoJump() {
-  const p = parseInt(dunJumpPage.value)
-  const maxPage = Math.ceil(dunTotal.value / size)
-  if (!p || p < 1 || p > maxPage) return
-  dunPage.value = p
+// 一键撤掉光谱段/责任人筛选，回到全量视角
+function clearDunFacets() {
+  dunFilters.bucket = ''
+  dunFilters.contact = ''
+  loadDunning(true)
+}
+// 翻页/改每页条数即清空勾选：勾选与「全选本页」一致按页计，避免跨页带入旧选导致「已选 N」与所见不符
+function onDunPager() {
   dunSelected.value = new Set()
   loadDunning()
-  dunJumpPage.value = ''
 }
 function toggleDunBucket(key) {
   dunFilters.bucket = dunFilters.bucket === key ? '' : key
@@ -617,7 +973,7 @@ function toggleDunSelectPage() {
 async function createDunningTasks() {
   const ids = [...dunSelected.value]
   if (!ids.length) return
-  if (!confirm(`将为 ${ids.length} 条逾期应收生成催款任务（出现在财务驾驶舱·决策行动），确定？`)) return
+  if (!(await confirmDlg(`将为 ${ids.length} 条逾期应收生成催款任务（出现在财务驾驶舱·决策行动），确定？`))) return
   dunCreating.value = true
   try {
     const res = await ar.createDunning({ ids })
@@ -629,17 +985,162 @@ async function createDunningTasks() {
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { dunCreating.value = false }
 }
-// 逾期天数着色：≤30 橙、>30 红
-const overdueClass = d => (d > 30 ? 'od-danger' : 'od-warn')
+
+// ── 作战台视觉与行内催办三连（复制话术 / 记跟进 / 单条建任务）────────────────
+// 逾期天数四级严重度（对齐默认账龄桶 30/60/90），驱动行色边、徽标与账龄微条
+const dunSev = d => (d > agingCfgForm.bucket3 ? 3 : d > agingCfgForm.bucket2 ? 2 : d > agingCfgForm.bucket1 ? 1 : 0)
+// 账龄微条：以「最后一桶边界 ×4/3」为满格，随配置伸缩（默认 90→120 天满格）
+const dunBarPct = d => Math.min(100, Math.round(((d || 0) / (agingCfgForm.bucket3 * 4 / 3 || 120)) * 100))
+// 🔥 优先催办 Top3：金额 × 逾期天数加权，仅本页内标记（少于 5 条无区分意义）
+const dunTop3 = computed(() => {
+  if (dunItems.value.length < 5) return new Set()
+  return new Set([...dunItems.value]
+    .sort((a, b) => Number(b.outstanding_amount) * Math.max(b.overdue_days, 1)
+                  - Number(a.outstanding_amount) * Math.max(a.overdue_days, 1))
+    .slice(0, 3).map(r => r.id))
+})
+// 账龄光谱条：段宽随金额占比伸缩（空段收成细条），风险资金分布一眼可见
+const segGrow = (b) => {
+  const total = dunBuckets.value.reduce((s, x) => s + Number(x.amount || 0), 0)
+  if (!total || !Number(b.amount)) return 0.06
+  return Math.max(Number(b.amount) / total, 0.12)
+}
+// 复制催款话术：生成可直接粘贴给客户/对接群的标准催款文案
+async function copyDunText(r) {
+  const ym = r.operation_date || `${r.operation_year}/${String(r.operation_month).padStart(2, '0')}`
+  const text = [
+    `【催款提醒】${r.customer_name}`,
+    `项目：${r.short_name || r.customer_name}（${ym} 账期）`,
+    `应收到期日：${r.due_date}，已逾期 ${r.overdue_days} 天`,
+    `未结算金额：¥${fmtMoney(r.outstanding_amount)}`,
+    `请贵司尽快安排结算；如款项已在途，烦请回传汇款凭证，谢谢配合。`,
+    `—— ${r.delivery_dept}`,
+  ].join('\n')
+  if (await copyText(text)) toast.success('催款话术已复制，可直接粘贴发送')
+  else toast.error('复制失败，请手动复制')
+}
+// 单条建任务：与批量走同一端点（ids 单元素），点⚡即建，✓已建即时回显。
+// 成功后就地更新该行（不整表重载），避免表格闪动和滚动位置跳失。
+const dunTaskingId = ref(0)
+async function createOneDunTask(r) {
+  if (r.open_action_id || dunTaskingId.value) return
+  dunTaskingId.value = r.id
+  try {
+    const res = await ar.createDunning({ ids: [r.id] })
+    if (res.data.created) {
+      r.open_action_id = true
+      const s = new Set(dunSelected.value); s.delete(r.id); dunSelected.value = s
+      toast.success(`已生成催款任务，负责人 ${r.sales_contact || '未指定'}（驾驶舱·决策行动）`)
+    } else {
+      r.open_action_id = true   // 后端判定已有未关闭任务 → 同步回显 ✓已建
+      toast.error('该记录已有未关闭的催款任务')
+    }
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+  finally { dunTaskingId.value = 0 }
+}
+// 双击作战台行 → 直接打开该应收的催款工作台（先取全量记录再开，字段完整）。
+// 与主表同一套防误触：点在勾选框/按钮/链接上不触发。
+const dunOpeningId = ref(0)
+async function openDunPanel(r, e) {
+  if (e.target.closest('input, button, select, textarea, a')) return
+  if (dunOpeningId.value) return
+  window.getSelection?.()?.removeAllRanges?.()
+  dunOpeningId.value = r.id
+  try {
+    const res = await ar.getRecord(r.id)
+    panelRec.value = res.data
+  } catch (err) { toast.error(err?.msg || err?.error || '打开失败') }
+  finally { dunOpeningId.value = 0 }
+}
+// 连续处理：按当前 Tab 的列表在面板内切上/下一条（催收逐户过单）
+function _panelList() { return activeTab.value === 'dunning' ? dunItems.value : items.value }
+const panelIndex = computed(() => {
+  if (!panelRec.value) return -1
+  return _panelList().findIndex(r => r.id === panelRec.value.id)
+})
+const panelHasPrev = computed(() => panelIndex.value > 0)
+const panelHasNext = computed(() => panelIndex.value >= 0 && panelIndex.value < _panelList().length - 1)
+async function navPanel(dir) {
+  const list = _panelList()
+  const nx = list[panelIndex.value + dir]
+  if (!nx) return
+  try {
+    const res = await ar.getRecord(nx.id)
+    panelRec.value = res.data
+  } catch (err) { toast.error(err?.msg || err?.error || '打开失败') }
+}
+// 责任人 chips 单行横向滚动：把纵向滚轮转成横向位移，不用按住 Shift
+function onContactsWheel(e) {
+  if (!e.deltaY) return
+  e.preventDefault()
+  e.currentTarget.scrollLeft += e.deltaY
+}
+// 记跟进：轻弹窗直写催收跟进日志（统一入 ARActivity dunning 时间线）
+const DUN_LOG_TYPES = [
+  { v: 'call', label: '📞 电话' },
+  { v: 'email', label: '✉️ 邮件' },
+  { v: 'visit', label: '🏢 拜访' },
+  { v: 'meeting', label: '🤝 会议' },
+  { v: 'other', label: '📝 其他' },
+]
+const dunFollow = reactive({ open: false, bulk: false, rec: null, log_type: 'call', note: '', follow_up_date: '', saving: false })
+const dunFuTa = ref(null)
+function openDunFollow(r) {
+  dunFollow.bulk = false
+  dunFollow.rec = r
+  dunFollow.log_type = 'call'
+  dunFollow.note = ''
+  dunFollow.follow_up_date = ''
+  dunFollow.open = true
+  nextTick(() => dunFuTa.value?.focus())
+}
+// a3: 批量记跟进——对勾选的多条逾期应收写同一条跟进
+function openDunFollowBulk() {
+  if (!dunSelected.value.size) return
+  dunFollow.bulk = true
+  dunFollow.rec = null
+  dunFollow.log_type = 'call'
+  dunFollow.note = ''
+  dunFollow.follow_up_date = ''
+  dunFollow.open = true
+  nextTick(() => dunFuTa.value?.focus())
+}
+async function saveDunFollow() {
+  if (!dunFollow.note.trim()) { toast.error('请填写跟进内容'); return }
+  dunFollow.saving = true
+  try {
+    if (dunFollow.bulk) {
+      const ids = [...dunSelected.value]
+      const payload = { log_type: dunFollow.log_type, note: dunFollow.note.trim(), follow_up_date: dunFollow.follow_up_date || null }
+      const results = await Promise.allSettled(ids.map(id => ar.addCollectionLog(id, payload)))
+      const ok = results.filter(r => r.status === 'fulfilled').length
+      const fail = results.length - ok
+      toast.success(`已为 ${ok} 条记录跟进${fail ? `，${fail} 条失败` : ''}`)
+      dunSelected.value = new Set()
+      await loadDunning()
+    } else {
+      await ar.addCollectionLog(dunFollow.rec.id, {
+        log_type: dunFollow.log_type,
+        note: dunFollow.note.trim(),
+        follow_up_date: dunFollow.follow_up_date || null,
+        contact_person: dunFollow.rec.sales_contact || '',
+      })
+      toast.success('跟进已记录，可在该应收的动态时间线查看')
+    }
+    dunFollow.open = false
+  } catch (e) { toast.error(e?.msg || e?.error || '保存失败') }
+  finally { dunFollow.saving = false }
+}
 
 // ── 账龄分段行着色 ────────────────────────────────────────────────────────────
 // 4 段账龄桶，颜色随逾期天数递进（1-30淡黄 → 31-60橙 → 61-90淡红 → >90深红）
 const agingRowClass = rec => {
   if (!rec.is_overdue) return ''
   const d = rec.overdue_days || 0
-  if (d > 90) return 'age-90plus'
-  if (d > 60) return 'age-61-90'
-  if (d > 30) return 'age-31-60'
+  // 与后端可配置账龄分桶同边界（默认 30/60/90），避免行色与光谱段口径打架
+  if (d > agingCfgForm.bucket3) return 'age-90plus'
+  if (d > agingCfgForm.bucket2) return 'age-61-90'
+  if (d > agingCfgForm.bucket1) return 'age-31-60'
   return 'age-1-30'
 }
 
@@ -664,9 +1165,14 @@ async function loadSchemes() {
   } catch { schemes.value = [] }
   finally { schemesLoaded.value = true }
 }
+function syncQuickQFromConditions() {
+  const q = conditions.value.find(c => c.t === 'dim' && c.field === 'q')
+  quickQ.value = q ? (q.value || '') : ''
+}
 function applyScheme(s) {
   conditions.value = JSON.parse(JSON.stringify(s.conditions || []))
   matchMode.value = s.match || 'all'
+  syncQuickQFromConditions()   // 方案含 q 条件时回填搜索框，避免搜索框空白却在过滤
   showPresetDrop.value = false
   onFilterChange()
 }
@@ -685,7 +1191,7 @@ async function saveCurrentScheme() {
   } catch (e) { toast.error(e?.msg || e?.error || '保存失败') }
 }
 async function deleteScheme(s) {
-  if (!confirm(`删除方案「${s.name}」？${s.scope === 'public' ? '（公共方案，团队成员将不再可见）' : ''}`)) return
+  if (!(await confirmDlg(`删除方案「${s.name}」？${s.scope === 'public' ? '（公共方案，团队成员将不再可见）' : ''}`))) return
   try {
     await ar.deleteFilterScheme(s.id)
     await loadSchemes()   // 默认方案随级联清理，重拉即同步
@@ -719,6 +1225,15 @@ const fmtAmt = (v) => fmtCompact(v, { dash: '0.00' })
 // 表格内金额：精确数值、千分位、不带单位（KPI 指标条仍用 fmtAmt 带单位）
 const fmtCell = (v) => fmtMoney(v, '—')
 
+// 开票金额 ≠ 实际应收(预估+账实差额) 的提醒文案。已备注则视为已说明原因（图标降级）。
+function invMismatchTip(rec) {
+  const inv = fmtMoney(rec.actual_invoice_amount)
+  const recv = fmtMoney(rec.actual_receivable)
+  const diff = fmtMoney(Math.abs(parseFloat(rec.actual_invoice_amount || 0) - parseFloat(rec.actual_receivable || 0)))
+  const base = `已开票 ${inv}，与实际应收 ${recv} 不一致（差 ${diff}）。\n请调整「账实差额」使二者相等，或在「备注」中说明原因。`
+  return rec.notes ? `${base}\n已备注：${rec.notes}` : base
+}
+
 // ── 分页跳转 ────────────────────────────────────────────────────────────────
 const jumpPage = ref(1)
 function doJump() {
@@ -727,22 +1242,26 @@ function doJump() {
   page.value = p; load(false)
 }
 
+let _loadSeq = 0
 async function load(reset = false) {
   if (reset) page.value = 1
   loading.value = true
   loadErr.value = ''
+  const seq = ++_loadSeq   // latest-wins：并发/乱序返回时只认最后一次请求
   try {
     const [recs, kpi] = await Promise.all([
       ar.listRecords(buildParams({ ...scopedParams(),
         include_payments: 1, page: page.value, size })),
       ar.recordsKpi(buildParams(reqParams())),
     ])
+    if (seq !== _loadSeq) return   // 已有更新的请求发出，丢弃本次陈旧结果
     items.value = recs.data.items
+    resetAnchor()   // 数据集已更换：清 Shift 区间锚点
     total.value = recs.data.total
     summaryData.value = recs.data.summary
     kpiData.value = kpi.data
-  } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
-  } finally { loading.value = false }
+  } catch (e) { if (seq === _loadSeq) loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
+  } finally { if (seq === _loadSeq) loading.value = false }
   loadHealth()
 }
 
@@ -756,7 +1275,7 @@ async function loadHealth() {
 async function fixStaleRecords() {
   const ids = (healthData.value?.stale || []).map(r => r.id)
   if (!ids.length) return
-  if (!confirm(`将按现规则重算 ${ids.length} 条未收金额不一致的记录，确定继续？`)) return
+  if (!(await confirmDlg(`将按现规则重算 ${ids.length} 条未收金额不一致的记录，确定继续？`))) return
   healthFixing.value = true
   try {
     const res = await ar.recomputeRecords(ids)
@@ -769,15 +1288,18 @@ async function fixStaleRecords() {
   finally { healthFixing.value = false }
 }
 
+let _paySeq = 0
 async function loadPayments(reset = false) {
   if (reset) payPage.value = 1
   payLoading.value = true
+  const seq = ++_paySeq
   try {
     const res = await ar.listPaymentLedger({ ...payFilters, page: payPage.value, size })
+    if (seq !== _paySeq) return
     payItems.value = res.data.items
     payTotal.value = res.data.total
     paySummary.value = res.data.summary
-  } finally { payLoading.value = false }
+  } finally { if (seq === _paySeq) payLoading.value = false }
 }
 
 async function exportPayments() {
@@ -814,6 +1336,7 @@ function switchTab(key) {
   const prev = activeTab.value
   if (key === prev) return
   activeTab.value = key
+  try { localStorage.setItem('ar_active_tab', key) } catch { /* 隐私模式 */ }
   if (key === 'payments') enterPayments()
   else if (key === 'summary') loadGroupSummary()
   else if (key === 'dunning') loadDunning(true)
@@ -981,7 +1504,8 @@ const showBatchInvoice = ref(false)
 const showBatchPay = ref(false)
 const batchTarget = ref(null)
 const batchInvForm = reactive({ invoice_date: todayCST(), amount: '', tax_amount: '', notes: '' })
-const batchPayForm = reactive({ amount: '', payment_date: todayCST(), notes: '' })
+const PAY_METHODS = COLLECTION_METHODS
+const batchPayForm = reactive({ amount: '', payment_date: todayCST(), method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, notes: '', overflow_to_advance: false })
 const batchActing = ref(false)
 const batchPayResult = ref(null)   // 分摊结果回执
 
@@ -1033,7 +1557,16 @@ async function doBatchInvoice() {
   finally { batchActing.value = false }
 }
 async function undoBatchInvoice(ev) {
-  if (!confirm(`撤销 ${ev.invoice_date} 的开票 ${ev.amount} 元？各记录开票额将整体回退。`)) return
+  // 先 dry-run 预览将回退的每条记录（撤销大额事件前先核对）
+  let detail = []
+  try {
+    const pv = await ar.batchInvoiceUndo(batchTarget.value.batch_no, { event_id: ev.id, preview: true })
+    detail = (pv.data?.rows || []).slice(0, 12).map(r => `${r.short_name}：开票额 ${fmtMoney(r.before)} → ${fmtMoney(r.after)}`)
+    if (pv.data?.rows?.length > 12) detail.push(`…等共 ${pv.data.rows.length} 条`)
+    if (pv.data?.tax_revert) detail.push(`税额回退合计 ¥${fmtMoney(pv.data.tax_revert)}`)
+  } catch (e) { toast.error(e?.msg || e?.error || '预览失败'); return }
+  if (!(await confirmDlg({ title: `撤销 ${ev.invoice_date} 的开票 ${ev.amount} 元`,
+    message: '各记录开票额将整体回退，确定继续？', detail, danger: true, confirmText: '确认撤销' }))) return
   batchActing.value = true
   try {
     const res = await ar.batchInvoiceUndo(batchTarget.value.batch_no, { event_id: ev.id })
@@ -1044,7 +1577,7 @@ async function undoBatchInvoice(ev) {
 }
 function openBatchPay(b) {
   batchTarget.value = b
-  Object.assign(batchPayForm, { amount: '', payment_date: todayCST(), notes: '' })
+  Object.assign(batchPayForm, { amount: '', payment_date: todayCST(), method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, notes: '', overflow_to_advance: false })
   batchPayResult.value = null
   fetchBatchDetail(b.batch_no).catch(() => {})
   showBatchPay.value = true
@@ -1059,7 +1592,14 @@ async function doBatchPay() {
   finally { batchActing.value = false }
 }
 async function undoBatchPay(b, ev) {
-  if (!confirm(`撤销 ${ev.payment_date} 的批次回款 ${ev.total} 元（分摊 ${ev.count} 笔）？\n各记录未收金额将整体恢复。`)) return
+  let detail = []
+  try {
+    const pv = await ar.batchPaymentUndo(b.batch_no, { payment_ids: ev.payment_ids, preview: true })
+    detail = (pv.data?.rows || []).slice(0, 12).map(r => `记录#${r.record_id}：回款 ¥${fmtMoney(r.amount)}（${r.pay_date}）将被撤回`)
+    if (pv.data?.rows?.length > 12) detail.push(`…等共 ${pv.data.rows.length} 笔`)
+  } catch (e) { toast.error(e?.msg || e?.error || '预览失败'); return }
+  if (!(await confirmDlg({ title: `撤销 ${ev.payment_date} 的批次回款 ${ev.total} 元`,
+    message: `分摊 ${ev.count} 笔，各记录未收金额将整体恢复，确定继续？`, detail, danger: true, confirmText: '确认撤销' }))) return
   batchActing.value = true
   try {
     const res = await ar.batchPaymentUndo(b.batch_no, { payment_ids: ev.payment_ids })
@@ -1098,7 +1638,7 @@ async function saveRec() {
 
 async function deleteRec(rec) {
   const amt = parseFloat(rec.estimated_amount || 0).toFixed(2)
-  if (!confirm(`确定删除「${rec.short_name || rec.customer_name}」${rec.operation_date || (rec.operation_year + '年' + rec.operation_month + '月')}的应收记录（${amt} 元）？同期可能存在多条记录，请确认。`)) return
+  if (!(await confirmDlg(`确定删除「${rec.short_name || rec.customer_name}」${rec.operation_date || (rec.operation_year + '年' + rec.operation_month + '月')}的应收记录（${amt} 元）？同期可能存在多条记录，请确认。`))) return
   try { await ar.deleteRecord(rec.id); await load() }
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
@@ -1124,6 +1664,7 @@ function ledgerRows(rec) {
   const pays = (rec.payments || []).map(p => ({
     key: 'p' + p.id, kind: 'pay', date: p.payment_date || '',
     amount: parseFloat(p.amount) || 0, source: p.source || '回款',
+    method: p.method, account: p.account, draft_status: p.draft_status,
     counterparty_dept: p.counterparty_dept, notes: p.notes, raw: p,
   }))
   const adjs = (rec.adjustments || []).map(a => ({
@@ -1140,7 +1681,7 @@ function streamRows(rec) {
 }
 // 从展开流水里删除一笔差额调整（与编辑弹窗里的 removeAdjustment 等价，但作用于列表行）
 async function deleteLedgerAdj(rec, a) {
-  if (!confirm(`删除调整「${a.reason || '未填原因'}：${a.amount}」？差额合计与未收金额将随之回退。`)) return
+  if (!(await confirmDlg(`删除调整「${a.reason || '未填原因'}：${a.amount}」？差额合计与未收金额将随之回退。`))) return
   try {
     await ar.deleteAdjustment(rec.id, a.id)
     await load()
@@ -1235,7 +1776,7 @@ async function doBatchWriteoff() {
 
 function openAddPayment(rec) {
   payRec.value = rec
-  Object.assign(payForm, { amount: '', payment_date: todayCST(), notes: '', source: '回款', counterparty_dept: '' })
+  Object.assign(payForm, { amount: '', payment_date: todayCST(), notes: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, counterparty_dept: '' })
   payAdvance.value = null
   advWoSel.value = null
   showPayModal.value = true
@@ -1299,11 +1840,27 @@ async function savePayment() {
   }
   paySaving.value = true
   try {
-    await ar.addPayment(payRec.value.id, payForm)
+    // 方式/账户/承兑状态仅对「回款」有意义；内部往来核销不带方式；承兑状态仅承兑汇票有效
+    const isColl = payForm.source === '回款'
+    const payload = { ...payForm,
+      method: isColl ? payForm.method : '',
+      account: isColl ? payForm.account : '',
+      draft_status: (isColl && payForm.method === '承兑汇票') ? payForm.draft_status : '' }
+    await ar.addPayment(payRec.value.id, payload)
     toast.success(payForm.source === '内部往来' ? '内部往来核销已保存' : '回款已保存')
     showPayModal.value = false; await load()
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { paySaving.value = false }
+}
+
+// 承兑汇票兑付到账：未承兑 → 已承兑（计入资金池可动用现金）
+async function markDraftAccepted(rec, pay) {
+  if (!(await confirmDlg(`确认这笔承兑汇票（¥${pay.amount}）已兑付到账？\n标记「已承兑」后将计入资金池可动用现金。`))) return
+  try {
+    await ar.updatePayment(rec.id, pay.id, { draft_status: '已承兑' })
+    await load()
+    toast.success('已标记为已承兑')
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
 
 async function deletePayment(rec, pay) {
@@ -1312,7 +1869,7 @@ async function deletePayment(rec, pay) {
     : pay.source === '内部往来'
       ? `确定删除该笔内部往来核销（${pay.amount} 元 · 往来部门 ${pay.counterparty_dept || '—'}）？\n本应收未收金额相应回升。`
       : `确定删除第${pay.payment_no}次回款 ${pay.amount} 元？`
-  if (!confirm(tip)) return
+  if (!(await confirmDlg(tip))) return
   try { await ar.deletePayment(rec.id, pay.id); await load() }
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
@@ -1326,6 +1883,10 @@ async function downloadTemplate() {
 
 async function handleImport(e) {
   const f = e.target.files?.[0]; if (!f) return
+  try { await importFromFile(f) } finally { if (fileInput.value) fileInput.value.value = '' }
+}
+
+async function importFromFile(f) {
   pendingFile.value = f
   precheckResult.value = null
   importing.value = true
@@ -1337,7 +1898,7 @@ async function handleImport(e) {
     await doImport(f)
   } catch (err) {
     importResult.value = { ok: false, title: '导入失败', sections: [{ label: '错误信息', items: [err?.msg || err?.error || err?.message || '服务器错误，请联系管理员'] }] }
-  } finally { importing.value = false; if (fileInput.value) fileInput.value.value = '' }
+  } finally { importing.value = false }
 }
 
 async function doImport(f) {
@@ -1405,15 +1966,56 @@ const onScopeChange = () => {
   if (activeTab.value === 'payments') loadPayments(true)
   else if (activeTab.value === 'summary') loadGroupSummary()
   else if (activeTab.value === 'dunning') loadDunning(true)
+  else if (activeTab.value === 'batch') loadBatches()
+  else if (activeTab.value === 'offset') loadOffsetWorkbench()
   else load(true)
   void before
 }
+// ── 导出下拉菜单 ──────────────────────────────────────────────────────────
+const expOpen = ref(false)
+const closeExpMenu = () => { expOpen.value = false }
+
+// ── 桌面拖拽导入：拖入 Excel 即走与「↑ 导入」完全相同的预检+导入链路 ─────────
+const { dragging: dropDragging } = useFileDrop(({ file, reason, name }) => {
+  if (!file) {
+    if (reason === 'ext') toast.error(`不支持的文件类型：${name}（请拖入 .xlsx / .xls）`)
+    return
+  }
+  if (importing.value) { toast.error('正在导入中，请稍候'); return }
+  importFromFile(file)
+}, { exts: ['.xlsx', '.xls'] })
+
+// 弹窗 Esc 关闭（后声明=上层优先关）：覆盖本页全部 overlay 弹窗
+useModalEsc(
+  [() => showModal.value, () => (showModal.value = false)],
+  [() => showBatchModal.value, () => (showBatchModal.value = false)],
+  [() => showPayModal.value, () => (showPayModal.value = false)],
+  [() => showBatchInvoice.value, () => (showBatchInvoice.value = false)],
+  [() => showBatchPay.value, () => (showBatchPay.value = false)],
+  [() => showWoModal.value, () => (showWoModal.value = false)],
+  [() => showCollectorAssign.value, () => (showCollectorAssign.value = false)],
+  [() => showAgingCfgModal.value, () => (showAgingCfgModal.value = false)],
+  [() => showHealthModal.value, () => (showHealthModal.value = false)],
+  [() => showDelConfirm.value, () => (showDelConfirm.value = false)],
+  [() => dunFollow.open, () => (dunFollow.open = false)],
+)
+
+defineOptions({ name: 'ARRecordsPage' })
+// keep-alive 返回本页:DOM 秒开,数据静默刷新(items 未清,列表不闪骨架)。
+// 首次挂载 onMounted 已加载,跳过首个 activated 防双载
+let _kaFirst = true
+onActivated(() => { if (_kaFirst) { _kaFirst = false; return } load() })
+
+onMounted(() => document.addEventListener('click', closeExpMenu))
+onBeforeUnmount(() => document.removeEventListener('click', closeExpMenu))
+
 onMounted(async () => {
   // 路由跳转带入的筛选（来自现金流/分析/项目台账等）→ 转成条件
   const fromRoute = route.query.status || route.query.project_id || route.query.dept
   if (route.query.status) conditions.value.push({ t: 'dim', field: 'status', value: route.query.status })
   if (route.query.project_id) conditions.value.push({ t: 'dim', field: 'project_id', value: route.query.project_id })
   if (route.query.dept) conditions.value.push({ t: 'dim', field: 'dept', value: route.query.dept })
+  loadAgingCfg()   // 账龄边界驱动作战台严重度/行色/微条，尽早加载
   // 拉取筛选方案；无路由带入时自动套用用户设的「默认方案」（对标金蝶默认过滤方案）
   await loadSchemes()
   const def = !fromRoute && defaultSchemeId.value
@@ -1421,11 +2023,25 @@ onMounted(async () => {
   if (def && def.conditions?.length) {
     conditions.value = JSON.parse(JSON.stringify(def.conditions))
     matchMode.value = def.match || 'all'
+    syncQuickQFromConditions()   // 默认方案含 q 时也回填搜索框
   } else if (!conditions.value.some(c => c.t === 'dim' && c.field === 'status')) {
     // 无默认方案 → 默认只看「未结清」（先聚焦没收完的）；可点掉该条件看全部
     conditions.value.push({ t: 'dim', field: 'status', value: 'outstanding' })
   }
-  load()
+  // 恢复上次停留的 Tab（路由带筛选意图时以路由为准，不覆盖）
+  let savedTab = null
+  if (!fromRoute) { try { savedTab = localStorage.getItem('ar_active_tab') } catch { /* ignore */ } }
+  if (savedTab && savedTab !== 'all' && TABS.some(t => t.key === savedTab)) {
+    activeTab.value = savedTab
+    if (savedTab === 'payments') enterPayments()
+    else if (savedTab === 'summary') loadGroupSummary()
+    else if (savedTab === 'dunning') loadDunning(true)
+    else if (savedTab === 'offset') loadOffsetWorkbench()
+    else if (savedTab === 'batch') loadBatches()
+    else { if (FOCUS_TABS.includes(savedTab)) pendingOnly.value = true; load() }
+  } else {
+    load()
+  }
   window.addEventListener('pk:depts-changed', onScopeChange)
 })
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
@@ -1435,6 +2051,7 @@ function clearFilters() {
   quickQ.value = ''
   // 一并清掉 Excel 风格列头筛选 + 列头排序
   Object.keys(colFilters).forEach(k => delete colFilters[k])
+  opDateStart.value = ''; opDateEnd.value = ''   // 复位运作日期区间条，避免时间条仍高亮旧区间
   sortField.value = ''
   sortOrder.value = ''
   onFilterChange()
@@ -1443,6 +2060,14 @@ function clearFilters() {
 
 <template>
   <div class="ar-view">
+    <!-- 桌面拖拽导入遮罩：从桌面拖入文件时出现，松手即导入 -->
+    <div v-if="dropDragging" class="drop-overlay">
+      <div class="drop-box">
+        <div class="drop-icon">📥</div>
+        <div class="drop-title">松开鼠标，导入应收明细</div>
+        <div class="drop-sub">支持 .xlsx / .xls，与「↑ 导入」按钮同一校验流程</div>
+      </div>
+    </div>
     <div class="ar-head">
       <!-- 行1：标题 + 主操作（模板/导入/导出/新增）-->
       <div class="ar-head-top">
@@ -1487,8 +2112,17 @@ function clearFilters() {
             {{ importing ? '导入中…' : '↑ 导入' }}
             <input ref="fileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleImport" />
           </label>
-          <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportData">↓ 导出</button>
-          <button class="btn btn-ghost btn-sm" @click="() => window.print()" title="打印当前表格">⎙ 打印</button>
+          <div class="exp-dd">
+            <button class="btn btn-ghost btn-sm" :disabled="exporting" @click.stop="expOpen = !expOpen">
+              {{ exporting ? '导出中…' : '↓ 导出' }} <span class="exp-caret">▾</span>
+            </button>
+            <div v-if="expOpen" class="exp-menu" @click.stop>
+              <button @click="expOpen = false; exportData()"><b>Excel</b><i>全部筛选结果 · 含全部明细列</i></button>
+              <button @click="expOpen = false; exportPdf()"><b>PDF</b><i>当前表格 · 报表版式</i></button>
+              <button @click="expOpen = false; exportImage()"><b>图片 PNG</b><i>当前表格 · 高清长图</i></button>
+            </div>
+          </div>
+          <button class="btn btn-ghost btn-sm" :disabled="printing" @click="printTable" title="打印当前表格（多页时可选打印全部）">{{ printing ? '打印准备中…' : '⎙ 打印' }}</button>
           <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate">+ 新增应收</button>
         </div>
       </div>
@@ -1527,6 +2161,10 @@ function clearFilters() {
           <span v-for="{ c, i } in chipConditions" :key="i" class="filter-chip" :class="c.t" @click="showFilterPanel = true">
             {{ chipText(c) }}
             <button title="移除" @click.stop="removeCondition(i)">✕</button>
+          </span>
+          <span v-for="fc in colFilterChips" :key="'col-' + fc.field" class="filter-chip col-chip" title="列头筛选">
+            {{ fc.text }}
+            <button title="移除" @click.stop="removeColFilter(fc.field)">✕</button>
           </span>
           <button v-if="hasAnyFilter" class="clear-mini" @click="clearFilters">清空</button>
           <!-- 筛选方案（对标金蝶过滤方案）：服务端存储，私有/公共团队共享 + 默认方案 -->
@@ -1599,6 +2237,11 @@ function clearFilters() {
 
     <!-- Tab + table card -->
     <div class="card" :class="['density-' + density, { 'data-reloading': loading && items.length, 'pane-mode': activeTab === 'dunning' || activeTab === 'payments' }]">
+      <!-- 运作日期区间预设条：写入列头筛选管线（operation_date between），列表/汇总/导出全联动 -->
+      <div v-if="isDataTab" class="arr-timebar">
+        <DateRangeChips v-model:start="opDateStart" v-model:end="opDateEnd"
+                        label="运作日期" initial="all" @change="applyOpDateRange" />
+      </div>
       <!-- 合并指标条：左侧=本Tab进度/重点；右侧=当前筛选全集合计 -->
       <div v-if="isDataTab && (kpiData || summaryData)" class="metrics-bar">
         <!-- 聚焦待办切换（金蝶查询模式）：默认仅看本环节待处理，可一键看全部 -->
@@ -1756,11 +2399,11 @@ function clearFilters() {
         </template>
       </div>
 
-      <div v-if="isDataTab" class="table-wrap dt-scroll" style="margin-top:12px">
+      <div v-if="isDataTab" class="table-wrap dt-scroll range-root" style="margin-top:12px" :ref="rangeSel.setRoot">
         <table class="rec-table">
           <thead>
             <tr>
-              <th v-if="auth.canDelete" class="sel-col sticky-col">
+              <th v-if="auth.canDelete || auth.canArWrite" class="sel-col sticky-col">
                 <input type="checkbox" :checked="pageAllSelected"
                   :indeterminate.prop="hasSelection && !pageAllSelected"
                   title="全选本页" @change="toggleSelectPage" />
@@ -1778,6 +2421,7 @@ function clearFilters() {
               <template v-if="activeTab === 'all'">
                 <th v-if="show('r_estimated_amount')" class="amt"><ColumnFilter label="预估金额" field="estimated_amount" type="number" :model-value="colFilters.estimated_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('estimated_amount',v)" @sort="o=>setSort('estimated_amount',o)" /></th>
                 <th v-if="show('r_actual_invoice_amount')" class="amt"><ColumnFilter label="实际开票" field="actual_invoice_amount" type="number" :model-value="colFilters.actual_invoice_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('actual_invoice_amount',v)" @sort="o=>setSort('actual_invoice_amount',o)" /></th>
+                <th v-if="show('r_actual_receivable')" class="amt" title="实际应收 = 预估金额 + 账实差额；已开票且与开票金额不一致会提醒">实际应收</th>
                 <th v-if="show('r_tax_amount')" class="amt"><ColumnFilter label="税额" field="tax_amount" type="number" :model-value="colFilters.tax_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('tax_amount',v)" @sort="o=>setSort('tax_amount',o)" /></th>
                 <th v-if="show('r_account_diff')" class="amt"><ColumnFilter label="账实差额" field="account_diff_adjustment" type="number" :model-value="colFilters.account_diff_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('account_diff_adjustment',v)" @sort="o=>setSort('account_diff_adjustment',o)" /></th>
                 <th v-if="show('r_outstanding')" class="amt"><ColumnFilter label="未收金额" field="outstanding_amount" type="number" :model-value="colFilters.outstanding_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('outstanding_amount',v)" @sort="o=>setSort('outstanding_amount',o)" /></th>
@@ -1837,12 +2481,11 @@ function clearFilters() {
                 <template v-else>暂无数据</template>
               </td>
             </tr>
-            <template v-for="rec in items" :key="rec.id">
+            <template v-for="(rec, idx) in items" :key="rec.id">
               <tr :class="['data-row', agingRowClass(rec), (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']"
                 @contextmenu.prevent="ctx.open($event, rec)" @dblclick="onRowDblClick(rec, $event)">
-                <td v-if="auth.canDelete" class="sel-col sticky-col">
-                  <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @change="toggleRow(rec.id)" />
-                </td>
+                <SelCell v-if="auth.canDelete || auth.canArWrite" class="sticky-col" :idx="idx" :id="rec.id"
+                  :checked="selectAllMatching || selectedIds.has(rec.id)" :on-sel="onRowSelClick" />
                 <td class="sticky-col" :style="cw.thStyle('short_name')">
                   <div class="proj-name" :title="rec.short_name || rec.customer_name">
                     <span class="proj-name-text">{{ rec.short_name || rec.customer_name }}</span>
@@ -1858,8 +2501,12 @@ function clearFilters() {
 
                 <!-- all -->
                 <template v-if="activeTab === 'all'">
-                  <td v-if="show('r_estimated_amount')" class="amt fw">{{ fmtCell(rec.estimated_amount) }}</td>
+                  <td v-if="show('r_estimated_amount')" class="amt">{{ fmtCell(rec.estimated_amount) }}</td>
                   <td v-if="show('r_actual_invoice_amount')" class="amt">{{ rec.actual_invoice_amount ? fmtCell(rec.actual_invoice_amount) : '—' }}</td>
+                  <td v-if="show('r_actual_receivable')" class="amt fw">
+                    {{ fmtCell(rec.actual_receivable) }}
+                    <span v-if="rec.invoice_mismatch" class="inv-warn" :class="rec.notes ? 'noted' : 'todo'" :title="invMismatchTip(rec)">{{ rec.notes ? '📝' : '⚠' }}</span>
+                  </td>
                   <td v-if="show('r_tax_amount')" class="amt text-muted">{{ rec.tax_amount ? fmtCell(rec.tax_amount) : '—' }}</td>
                   <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtCell(rec.account_diff_adjustment) : '—' }}</td>
                   <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
@@ -1966,9 +2613,11 @@ function clearFilters() {
                       <span class="pay-date">{{ row.date || '—' }}</span>
                       <span v-if="row.source === '预收抵扣'" class="pay-src" title="由预收核销生成；删除即反向核销，预收余额恢复">预收抵扣</span>
                       <span v-else-if="row.source === '内部往来'" class="pay-src pay-src-internal" :title="`事业部间内部往来核销（不计现金）· 往来部门：${row.counterparty_dept || '—'}`">内部往来 · {{ row.counterparty_dept || '—' }}</span>
-                      <span v-else class="pay-src pay-src-bank" title="银行回款（计入现金/资金池）">银行回款</span>
+                      <span v-else class="pay-src pay-src-bank" :title="`回款方式：${row.method || '银行转账'}${row.account ? ' · ' + row.account : ''}`">{{ row.method || '银行转账' }}<template v-if="row.account"> · {{ row.account }}</template></span>
+                      <span v-if="row.source === '回款' && row.method === '承兑汇票'" class="pay-draft-tag" :class="{ pending: row.draft_status !== '已承兑' }" :title="row.draft_status === '已承兑' ? '已兑付到账，计入资金池' : '持票未兑付，不计资金池可动用现金'">{{ row.draft_status === '已承兑' ? '已承兑' : '未承兑' }}</span>
                       <span class="pay-amt">{{ fmtCell(row.amount) }}</span>
                       <span v-if="row.notes" class="pay-notes">{{ row.notes }}</span>
+                      <button v-if="auth.canAction('ar_collect') && row.source === '回款' && row.method === '承兑汇票' && row.draft_status !== '已承兑'" class="pay-accept-tag" title="兑付到账后标记已承兑（计入资金池）" @click="markDraftAccepted(rec, row.raw)">✓兑付</button>
                       <button v-if="row.source === '预收抵扣' ? auth.canAction('wo_receive') : auth.canDelete" class="pay-del" @click="deletePayment(rec, row.raw)">
                         {{ row.source === '预收抵扣' ? '撤销核销' : '删除' }}</button>
                     </div>
@@ -2046,7 +2695,8 @@ function clearFilters() {
                 <th>项目</th><th>运作日期</th><th>应收到期</th><th class="amt">上账</th><th class="amt">未收</th>
               </tr></thead>
               <tbody>
-                <tr v-for="r in g.records" :key="r.id" :class="{ 'row-sel': (owSel[g.customer] || new Set()).has(r.id) }" @click="owToggle(g.customer, r.id)">
+                <tr v-for="r in g.records" :key="r.id" data-no-selzone
+                    :class="{ 'row-sel': (owSel[g.customer] || new Set()).has(r.id) }" @click="owToggle(g.customer, r.id)">
                   <td class="sel-col"><input type="checkbox" :checked="(owSel[g.customer] || new Set()).has(r.id)" @click.stop @change="owToggle(g.customer, r.id)" /></td>
                   <td>{{ r.short_name }}</td>
                   <td>{{ r.operation_date || '—' }}</td>
@@ -2060,38 +2710,43 @@ function clearFilters() {
         </div>
       </div>
 
-      <!-- ══ 逾期看板（原催款工作台）══ -->
+      <!-- ══ 催款作战台（逾期看板）══ -->
       <div v-if="activeTab === 'dunning'" class="ar-pane pane-flex">
         <div class="pane-head">
           <!-- 标题并入筛选行，省去单独的提示条占行 -->
           <div class="filter-strip" style="margin-top:4px">
-            <span class="bp-title" style="white-space:nowrap">⏰ 逾期看板</span>
+            <span class="bp-title" style="white-space:nowrap">⏰ 催款作战台</span>
             <select v-model="dunFilters.dept" class="sel-bu" @change="loadDunning(true)">
               <option value="">全部事业部</option>
               <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
             </select>
-            <input v-model="dunFilters.q" placeholder="搜项目 / 客户 / 对接人" class="search-input" @input="onDunSearch" />
+            <input v-model="dunFilters.q" placeholder="搜项目 / 客户 / 对接人" class="search-input"
+                   @input="onDunSearch" @keydown.esc.stop="clearDunSearch" />
+            <button v-if="dunFilters.bucket || dunFilters.contact" class="dun-clear"
+                    title="撤掉账龄段/责任人筛选" @click="clearDunFacets">✕ 清除筛选</button>
+            <button class="aging-cfg-btn" :disabled="dunExporting" title="按当前筛选导出逾期清单" @click="exportDunning">{{ dunExporting ? '导出中…' : '⬇ 导出清单' }}</button>
             <button v-if="auth.isSuperAdmin" class="aging-cfg-btn" title="配置账龄分桶边界" @click="openAgingCfg">⚙ 账龄分桶</button>
-            <span v-if="dunSummary" class="text-sm-muted" style="margin-left:auto">
-              当前范围逾期 <strong>{{ dunSummary.count }}</strong> 笔 / <strong style="color:#c62828">{{ fmtAmt(dunSummary.amount) }}</strong>
+            <span v-if="dunSummary" class="text-sm-muted" style="margin-left:auto;white-space:nowrap">
+              当前范围逾期 <strong>{{ dunSummary.count }}</strong> 笔 / <strong style="color:var(--c-danger)">{{ fmtAmt(dunSummary.amount) }}</strong>
             </span>
           </div>
 
-          <!-- 账龄分桶卡片（点击筛选） -->
-          <div class="dun-buckets">
-            <button v-for="b in dunBuckets" :key="b.key"
-              class="dun-bucket" :class="{ on: dunFilters.bucket === b.key, empty: !b.count }"
+          <!-- 账龄光谱条：段宽=金额占比、颜色随账龄加深，点击段=筛选该账龄（替代四张大卡） -->
+          <div class="dun-spec">
+            <button v-for="(b, i) in dunBuckets" :key="b.key"
+              class="ds-seg" :class="['ds-s' + i, { on: dunFilters.bucket === b.key, dim: dunFilters.bucket && dunFilters.bucket !== b.key, empty: !b.count }]"
+              :style="{ flexGrow: segGrow(b) }"
+              :title="`逾期${b.label}：${b.count} 笔 / ${fmtAmt(b.amount)}（点击筛选）`"
               @click="toggleDunBucket(b.key)">
-              <div class="db-label">逾期{{ b.label }}</div>
-              <div class="db-count">{{ b.count }} 笔</div>
-              <div class="db-amt">{{ fmtAmt(b.amount) }}</div>
+              <span class="ds-label">逾期{{ b.label }}</span>
+              <span class="ds-meta">{{ b.count }}笔 · {{ fmtAmt(b.amount) }}</span>
             </button>
           </div>
 
-          <!-- 责任人聚合 chips（点击筛选） -->
-          <div v-if="dunContacts.length" class="dun-contacts">
+          <!-- 责任人聚合 chips（单行横向滚动，点击筛选） -->
+          <div v-if="dunContacts.length" class="dun-contacts" @wheel="onContactsWheel">
             <span class="dc-label">按销售对接人：</span>
-            <button v-for="c in dunContacts.slice(0, 12)" :key="c.sales_contact"
+            <button v-for="c in dunContacts" :key="c.sales_contact"
               class="dc-chip" :class="{ on: dunFilters.contact === c.sales_contact }"
               :title="`最长逾期 ${c.max_overdue_days} 天`"
               @click="toggleDunContact(c.sales_contact)">
@@ -2105,62 +2760,67 @@ function clearFilters() {
             <button class="btn btn-primary btn-sm" :disabled="dunCreating" @click="createDunningTasks">
               {{ dunCreating ? '生成中…' : '⚡ 生成催款任务' }}
             </button>
+            <button class="btn btn-ghost btn-sm" @click="openDunFollowBulk">✍ 批量记跟进</button>
             <span class="text-sm-muted">生成后出现在 财务驾驶舱 → 决策行动，负责人默认为销售对接人</span>
           </div>
         </div>
 
         <div class="table-wrap pane-scroll">
-          <table class="rec-table">
+          <table class="rec-table dun-table">
             <thead>
               <tr>
                 <th v-if="auth.canArWrite" class="sel-col">
                   <input type="checkbox" :checked="dunPageAllSelected" @change="toggleDunSelectPage" />
                 </th>
                 <th>项目 / 客户</th>
-                <th class="ctr">交付部门</th>
-                <th class="ctr">运作日期</th>
-                <th class="ctr">应收日期</th>
-                <th class="ctr">逾期天数</th>
+                <th class="ctr">账期 → 到期</th>
+                <th class="ctr">账龄</th>
                 <th class="amt">未收金额</th>
                 <th class="ctr">销售对接人</th>
                 <th class="ctr">最近回款</th>
-                <th class="ctr">催款任务</th>
+                <th class="ctr">催办</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="dunLoading && !dunItems.length"><td :colspan="auth.canArWrite ? 10 : 9" class="empty-cell">⏳ 加载中…</td></tr>
-              <tr v-else-if="!dunItems.length"><td :colspan="auth.canArWrite ? 10 : 9" class="empty-cell">🎉 当前范围内没有逾期应收</td></tr>
-              <tr v-for="r in dunItems" :key="r.id" class="data-row">
+              <tr v-if="dunLoading && !dunItems.length"><td :colspan="auth.canArWrite ? 8 : 7" class="empty-cell">⏳ 加载中…</td></tr>
+              <tr v-else-if="!dunItems.length"><td :colspan="auth.canArWrite ? 8 : 7" class="empty-cell">🎉 当前范围内没有逾期应收</td></tr>
+              <tr v-for="r in dunItems" :key="r.id" class="data-row dun-row" :class="'dun-sev' + dunSev(r.overdue_days)"
+                  title="双击打开催款工作台" @dblclick="openDunPanel(r, $event)">
                 <td v-if="auth.canArWrite" class="sel-col">
                   <input type="checkbox" :disabled="!!r.open_action_id"
                          :checked="dunSelected.has(r.id)" @change="toggleDunRow(r.id)" />
                 </td>
                 <td>
-                  <div class="proj-name">{{ r.short_name || r.customer_name }}</div>
-                  <div class="proj-sub">{{ r.customer_name }}</div>
+                  <div class="proj-name">
+                    <span v-if="dunTop3.has(r.id)" class="dun-fire" title="本页优先催办（金额 × 逾期天数加权 Top3）">🔥</span>{{ r.short_name || r.customer_name }}
+                  </div>
+                  <div class="proj-sub">{{ r.customer_name }}<span class="dun-dept"> · {{ r.delivery_dept }}</span></div>
                 </td>
-                <td class="ctr text-sm-muted">{{ r.delivery_dept }}</td>
-                <td class="ctr"><span class="ym-chip">{{ r.operation_date || (r.operation_year + "/" + String(r.operation_month).padStart(2, "0")) }}</span></td>
-                <td class="ctr text-sm-muted">{{ r.due_date }}</td>
-                <td class="ctr"><span class="od-badge" :class="overdueClass(r.overdue_days)">{{ r.overdue_days }}天</span></td>
-                <td class="amt fw" style="color:#c62828">{{ fmtAmt(r.outstanding_amount) }}</td>
+                <td class="ctr">
+                  <span class="ym-chip">{{ r.operation_date || (r.operation_year + "/" + String(r.operation_month).padStart(2, "0")) }}</span>
+                  <div class="dun-due">到期 {{ r.due_date }}</div>
+                </td>
+                <td class="ctr">
+                  <span class="od-badge" :class="'od-s' + dunSev(r.overdue_days)">{{ r.overdue_days }}天</span>
+                  <div class="od-bar"><i :class="'ob-s' + dunSev(r.overdue_days)" :style="{ width: dunBarPct(r.overdue_days) + '%' }" /></div>
+                </td>
+                <td class="amt dun-amt">{{ fmtAmt(r.outstanding_amount) }}</td>
                 <td class="ctr text-sm-muted">{{ r.sales_contact || '—' }}</td>
                 <td class="ctr text-sm-muted">{{ r.last_payment_date || '—' }}</td>
-                <td class="ctr">
+                <td class="ctr dun-acts">
+                  <button class="dun-act" title="复制催款话术，可直接粘贴给客户/对接群" @click="copyDunText(r)">📋</button>
+                  <button v-if="auth.canArWrite" class="dun-act" title="记一条催收跟进" @click="openDunFollow(r)">✍</button>
                   <span v-if="r.open_action_id" class="dun-has-action" title="已有未关闭的催款行动项">✓ 已建</span>
-                  <span v-else class="text-sm-muted">—</span>
+                  <button v-else-if="auth.canArWrite" class="dun-act dun-act-hot" :disabled="dunTaskingId === r.id"
+                          title="立即生成催款任务（驾驶舱·决策行动）" @click="createOneDunTask(r)">⚡</button>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
 
-        <div class="pagination pane-pager">
-          <button v-if="dunTotal > size" :disabled="dunPage <= 1" class="page-btn" @click="dunChangePage(-1)">‹ 上一页</button>
-          <span class="page-info"><template v-if="dunTotal > size">第 {{ dunPage }} / {{ Math.ceil(dunTotal / size) }} 页 · </template>共 {{ dunTotal }} 条</span>
-          <button v-if="dunTotal > size" :disabled="dunPage * size >= dunTotal" class="page-btn" @click="dunChangePage(1)">下一页 ›</button>
-          <span v-if="dunTotal > size" class="pg-jump">跳至<input v-model.number="dunJumpPage" class="pg-jump-input" type="number" min="1" :max="Math.ceil(dunTotal / size)" @keyup.enter="dunDoJump" />页<button class="page-btn" @click="dunDoJump">Go</button></span>
-        </div>
+        <Pager v-model:page="dunPage" v-model:size="dunSize" :total="dunTotal"
+               storage-key="ar_dunning" @change="onDunPager" />
       </div>
 
       <!-- ══ 回款流水 ══ -->
@@ -2180,9 +2840,17 @@ function clearFilters() {
             </select>
             <select v-model="payFilters.source" class="sel-bu" @change="loadPayments(true)" title="按回款来源筛选">
               <option value="">全部来源</option>
-              <option value="回款">现金回款</option>
+              <option value="回款">回款</option>
               <option value="预收抵扣">预收抵扣</option>
               <option value="内部往来">内部往来</option>
+            </select>
+            <select v-model="payFilters.method" class="sel-bu" @change="payFilters.draft_status = ''; loadPayments(true)" title="按回款方式筛选（仅回款）">
+              <option value="">全部方式</option>
+              <option v-for="m in PAY_METHODS" :key="m" :value="m">{{ m }}</option>
+            </select>
+            <select v-if="payFilters.method === '承兑汇票'" v-model="payFilters.draft_status" class="sel-bu" @change="loadPayments(true)" title="按承兑状态筛选">
+              <option value="">全部承兑状态</option>
+              <option v-for="s in DRAFT_ST" :key="s" :value="s">{{ s }}</option>
             </select>
             <input v-model="payFilters.q" placeholder="搜索项目" class="search-input" @input="loadPayments(true)" />
             <button class="btn btn-ghost btn-sm" :disabled="payExporting" @click="exportPayments">↓ 导出</button>
@@ -2202,6 +2870,7 @@ function clearFilters() {
                 <th class="ctr">回款日期</th>
                 <th class="amt">金额</th>
                 <th class="ctr">来源</th>
+                <th class="ctr">方式/账户</th>
                 <th>项目</th>
                 <th class="ctr">交付部门</th>
                 <th class="ctr">运作日期</th>
@@ -2210,15 +2879,19 @@ function clearFilters() {
               </tr>
             </thead>
             <tbody>
-              <tr v-if="payLoading && !payItems.length"><td colspan="8" class="empty-cell">⏳ 加载中…</td></tr>
-              <tr v-else-if="!payItems.length"><td colspan="8" class="empty-cell">暂无回款记录</td></tr>
+              <tr v-if="payLoading && !payItems.length"><td colspan="9" class="empty-cell">⏳ 加载中…</td></tr>
+              <tr v-else-if="!payItems.length"><td colspan="9" class="empty-cell">暂无回款记录</td></tr>
               <tr v-for="p in payItems" :key="p.id" class="data-row">
                 <td class="ctr text-sm-muted">{{ p.payment_date }}</td>
-                <td class="amt fw" :style="{ color: p.source === '内部往来' ? '#6a1b9a' : '#2e7d32' }">{{ fmtCell(p.amount) }}</td>
+                <td class="amt fw" :style="{ color: p.source === '内部往来' ? '#6a1b9a' : 'var(--c-success)' }">{{ fmtCell(p.amount) }}</td>
                 <td class="ctr">
                   <span v-if="p.source === '内部往来'" class="pay-src pay-src-internal" :title="`往来部门：${p.counterparty_dept || '—'}（不计现金）`">内部往来 · {{ p.counterparty_dept || '—' }}</span>
                   <span v-else-if="p.source === '预收抵扣'" class="pay-src">预收抵扣</span>
-                  <span v-else class="text-sm-muted">现金回款</span>
+                  <span v-else class="text-sm-muted">回款</span>
+                </td>
+                <td class="ctr text-sm-muted">
+                  <template v-if="p.source === '回款'">{{ p.method || '银行转账' }}<template v-if="p.account"> · {{ p.account }}</template><span v-if="p.method === '承兑汇票'" class="pay-draft-tag" :class="{ pending: p.draft_status !== '已承兑' }">{{ p.draft_status === '已承兑' ? '已承兑' : '未承兑' }}</span></template>
+                  <template v-else>—</template>
                 </td>
                 <td>
                   <div class="proj-name">{{ p.short_name || '—' }}</div>
@@ -2272,7 +2945,7 @@ function clearFilters() {
                 <td class="ctr text-sm-muted">{{ r.count }}</td>
                 <td class="amt">{{ fmtAmt(r.estimated) }}</td>
                 <td class="amt">{{ fmtAmt(r.invoiced) }}</td>
-                <td class="amt" style="color:#2e7d32">{{ fmtAmt(r.collected) }}</td>
+                <td class="amt" style="color:var(--c-success)">{{ fmtAmt(r.collected) }}</td>
                 <td class="amt" :class="parseFloat(r.outstanding) > 0 ? 'amt-warn' : 'amt-zero'">{{ fmtAmt(r.outstanding) }}</td>
               </tr>
             </tbody>
@@ -2282,7 +2955,7 @@ function clearFilters() {
                 <td class="ctr">{{ groupTotals.count }}</td>
                 <td class="amt fw">{{ fmtAmt(groupTotals.estimated) }}</td>
                 <td class="amt fw">{{ fmtAmt(groupTotals.invoiced) }}</td>
-                <td class="amt fw" style="color:#2e7d32">{{ fmtAmt(groupTotals.collected) }}</td>
+                <td class="amt fw" style="color:var(--c-success)">{{ fmtAmt(groupTotals.collected) }}</td>
                 <td class="amt fw" :class="groupTotals.outstanding > 0 ? 'amt-warn' : 'amt-zero'">{{ fmtAmt(groupTotals.outstanding) }}</td>
               </tr>
             </tfoot>
@@ -2543,20 +3216,49 @@ function clearFilters() {
                   <span>回款日期*</span>
                   <input v-model="batchPayForm.payment_date" type="date" />
                 </label>
+                <label class="form-field">
+                  <span>回款方式*</span>
+                  <select v-model="batchPayForm.method">
+                    <option v-for="m in PAY_METHODS" :key="m" :value="m">{{ m }}</option>
+                  </select>
+                </label>
+                <label v-if="batchPayForm.method === '承兑汇票'" class="form-field">
+                  <span>承兑状态*</span>
+                  <select v-model="batchPayForm.draft_status" title="未承兑=持票未兑付（不计资金池）；已承兑=已兑付到账（计入资金池）">
+                    <option v-for="s in DRAFT_ST" :key="s" :value="s">{{ s }}</option>
+                  </select>
+                </label>
+                <label class="form-field">
+                  <span>收款账户（选填）</span>
+                  <input v-model="batchPayForm.account" maxlength="50" placeholder="如：结算001" />
+                </label>
                 <label class="form-field span2">
                   <span>备注（选填）</span>
                   <input v-model="batchPayForm.notes" placeholder="如：建行到账，回单号xxx" />
                 </label>
+                <label class="form-field span2 bp-overflow"
+                       :class="{ hot: parseFloat(batchPayForm.amount) > parseFloat(batchTarget?.outstanding || 0) }">
+                  <span style="display:flex;align-items:center;gap:7px">
+                    <input v-model="batchPayForm.overflow_to_advance" type="checkbox"
+                           style="width:auto;accent-color:var(--primary)" />
+                    到账超过批次未收时，超出部分自动转为该客户的<strong>预收款</strong>
+                  </span>
+                  <em v-if="parseFloat(batchPayForm.amount) > parseFloat(batchTarget?.outstanding || 0)"
+                      class="bp-overflow-hint">
+                    本次到账将超出未收 {{ (parseFloat(batchPayForm.amount) - parseFloat(batchTarget?.outstanding || 0)).toFixed(2) }} 元
+                    —— {{ batchPayForm.overflow_to_advance ? '超出部分将自动建为预收（可在预收预付页核销）' : '勾选上方选项一键处理，否则将被拒绝' }}
+                  </em>
+                </label>
               </div>
             </template>
             <template v-else>
-              <p style="font-size:13px;color:#2e7d32;font-weight:600;margin-bottom:10px">✓ {{ batchPayResult.message }}</p>
+              <p style="font-size:13px;color:var(--c-success);font-weight:600;margin-bottom:10px">✓ {{ batchPayResult.message }}</p>
               <table class="bp-mtable">
                 <thead><tr><th>项目</th><th>运作日期</th><th class="r">本次分摊</th><th class="r">分摊后未收</th></tr></thead>
                 <tbody>
                   <tr v-for="a in batchPayResult.allocations" :key="a.record_id">
                     <td>{{ a.short_name }}</td><td>{{ a.operation_date || '—' }}</td>
-                    <td class="r" style="color:#2e7d32;font-weight:600">+{{ fmtCell(a.allocated) }}</td>
+                    <td class="r" style="color:var(--c-success);font-weight:600">+{{ fmtCell(a.allocated) }}</td>
                     <td class="r" :class="parseFloat(a.outstanding_after) > 0 ? 'bp-out' : 'bp-ok'">
                       {{ parseFloat(a.outstanding_after) > 0 ? fmtCell(a.outstanding_after) : '✓ 结清' }}
                     </td>
@@ -2616,13 +3318,13 @@ function clearFilters() {
               </div>
             </template>
             <template v-else>
-              <p style="font-size:13px;color:#2e7d32;font-weight:600;margin-bottom:10px">✓ {{ woResult.message }}</p>
+              <p style="font-size:13px;color:var(--c-success);font-weight:600;margin-bottom:10px">✓ {{ woResult.message }}</p>
               <table class="bp-mtable">
                 <thead><tr><th>项目</th><th>运作日期</th><th class="r">本次冲抵</th><th class="r">冲抵后未收</th></tr></thead>
                 <tbody>
                   <tr v-for="a in woResult.allocations" :key="a.record_id">
                     <td>{{ a.short_name }}</td><td>{{ a.operation_date || '—' }}</td>
-                    <td class="r" style="color:#2e7d32;font-weight:600">+{{ fmtCell(a.allocated) }}</td>
+                    <td class="r" style="color:var(--c-success);font-weight:600">+{{ fmtCell(a.allocated) }}</td>
                     <td class="r" :class="parseFloat(a.outstanding_after) > 0 ? 'bp-out' : 'bp-ok'">
                       {{ parseFloat(a.outstanding_after) > 0 ? fmtCell(a.outstanding_after) : '✓ 结清' }}
                     </td>
@@ -2645,7 +3347,8 @@ function clearFilters() {
 
       <!-- 催款工作台面板 -->
       <ActivityPanel v-if="panelRec" :key="panelRec.id" :rec="panelRec" :can-write="auth.canArWrite" :can-collect="auth.canAction('ar_collect')"
-        @close="panelRec = null" @field-saved="onPanelFieldSaved" />
+        :has-prev="panelHasPrev" :has-next="panelHasNext" @nav="navPanel"
+        @close="onPanelClose" @field-saved="onPanelFieldSaved" />
 
       <!-- Payment Modal — 录入态：点遮罩不关闭，仅按钮可退出 -->
       <div v-if="showPayModal" class="modal-overlay">
@@ -2661,7 +3364,7 @@ function clearFilters() {
             <!-- 类型切换：银行回款（现金）/ 内部往来核销（事业部间，不计现金） -->
             <div class="pay-type-tabs">
               <button type="button" class="pay-type-tab" :class="{ on: payForm.source === '回款' }"
-                      @click="payForm.source = '回款'; payForm.counterparty_dept = ''; advWoSel = null">银行回款</button>
+                      @click="payForm.source = '回款'; payForm.counterparty_dept = ''; advWoSel = null">回款</button>
               <button type="button" class="pay-type-tab" :class="{ on: payForm.source === '内部往来' }"
                       @click="payForm.source = '内部往来'; advWoSel = null">内部往来核销</button>
             </div>
@@ -2710,11 +3413,27 @@ function clearFilters() {
                   <i v-if="payRec" class="field-hint">未收上限 {{ fmtCell(payRec.outstanding_amount) }}</i>
                 </span>
                 <input v-model="payForm.amount" type="number" step="0.01" :max="payRec?.outstanding_amount" autofocus />
-                <i v-if="payRec && parseFloat(payForm.amount) > parseFloat(payRec.outstanding_amount)" class="field-warn">超过未收 {{ fmtCell(payRec.outstanding_amount) }}，将被拒绝（多收部分请到「预收预付」录入）</i>
+                <i v-if="payRec && parseFloat(payForm.amount) > parseFloat(payRec.outstanding_amount)" class="field-warn">超过未收 {{ fmtCell(payRec.outstanding_amount) }}，将被拒绝（多收部分请核实原因，并到差额调整录入或「预收预付」录入）</i>
               </label>
               <label class="form-field span2">
                 <span>{{ payForm.source === '内部往来' ? '核销日期' : '回款日期' }} <em>*</em></span>
                 <input v-model="payForm.payment_date" type="date" />
+              </label>
+              <label v-if="payForm.source === '回款'" class="form-field">
+                <span>回款方式 <em>*</em></span>
+                <select v-model="payForm.method">
+                  <option v-for="m in PAY_METHODS" :key="m" :value="m">{{ m }}</option>
+                </select>
+              </label>
+              <label v-if="payForm.source === '回款' && payForm.method === '承兑汇票'" class="form-field">
+                <span>承兑状态 <em>*</em></span>
+                <select v-model="payForm.draft_status" title="未承兑=持票未兑付（不计资金池）；已承兑=已兑付到账（计入资金池）">
+                  <option v-for="s in DRAFT_ST" :key="s" :value="s">{{ s }}</option>
+                </select>
+              </label>
+              <label v-if="payForm.source === '回款'" class="form-field">
+                <span>收款账户</span>
+                <input v-model="payForm.account" maxlength="50" placeholder="选填，如 结算001" />
               </label>
               <label class="form-field span2">
                 <span>备注</span>
@@ -2858,6 +3577,45 @@ function clearFilters() {
         </div>
       </div>
 
+      <!-- 催收跟进快速记录（作战台行内 ✍，直写该应收的 dunning 动态时间线） -->
+      <div v-if="dunFollow.open" class="modal-overlay" @click.self="dunFollow.open = false">
+        <div class="modal-box" style="max-width:440px">
+          <div class="modal-header">
+            <div v-if="dunFollow.bulk">
+              <h3>批量记跟进 · {{ dunSelected.size }} 条</h3>
+              <div class="text-sm-muted" style="margin-top:2px">同一条跟进将写入所选每条逾期应收的动态时间线</div>
+            </div>
+            <div v-else>
+              <h3>记跟进 · {{ dunFollow.rec?.short_name || dunFollow.rec?.customer_name }}</h3>
+              <div class="text-sm-muted" style="margin-top:2px">
+                {{ dunFollow.rec?.customer_name }} · 逾期 {{ dunFollow.rec?.overdue_days }} 天 ·
+                未收 <strong style="color:var(--c-danger)">{{ fmtAmt(dunFollow.rec?.outstanding_amount) }}</strong>
+              </div>
+            </div>
+            <button class="modal-close" @click="dunFollow.open = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="fu-types">
+              <button v-for="t in DUN_LOG_TYPES" :key="t.v" class="fu-type"
+                      :class="{ on: dunFollow.log_type === t.v }" @click="dunFollow.log_type = t.v">{{ t.label }}</button>
+            </div>
+            <textarea ref="dunFuTa" v-model="dunFollow.note" rows="4" class="fu-note"
+                      placeholder="跟进内容（必填）：与谁沟通、对方口径/承诺、下一步动作…（Ctrl+Enter 保存）"
+                      @keydown.ctrl.enter.prevent="saveDunFollow"></textarea>
+            <label class="fu-next">
+              下次跟进日期（选填）
+              <input v-model="dunFollow.follow_up_date" type="date" />
+            </label>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" @click="dunFollow.open = false">取消</button>
+            <button class="btn btn-primary" :disabled="dunFollow.saving" @click="saveDunFollow">
+              {{ dunFollow.saving ? '保存中…' : '保存跟进' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- 批量删除二次输入确认 -->
       <div v-if="showDelConfirm" class="modal-overlay" @click.self="showDelConfirm = false">
         <div class="modal-box" style="max-width:420px">
@@ -2894,7 +3652,7 @@ function clearFilters() {
 .health-text strong { color: #92400e; }
 .health-btn {
   flex-shrink: 0; padding: 6px 14px; border-radius: 8px; font-size: 12.5px; font-weight: 600;
-  border: 1px solid rgba(180,83,9,0.4); background: #fff; color: #b45309; cursor: pointer;
+  border: 1px solid rgba(180,83,9,0.4); background: var(--row-bg); color: #b45309; cursor: pointer;
   transition: all 0.14s;
 }
 .health-btn:hover { background: #b45309; color: #fff; }
@@ -2904,13 +3662,13 @@ function clearFilters() {
   font-size: 13px; font-weight: 600; margin-bottom: 8px;
 }
 .health-hint { font-size: 12px; color: var(--muted); margin-bottom: 8px; line-height: 1.6; }
-.danger-text { color: #c62828; }
+.danger-text { color: var(--c-danger); }
 .health-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .health-table th, .health-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
 .health-table th { color: var(--muted); font-weight: 600; }
 .health-table td.r, .health-table th.r { text-align: right; font-variant-numeric: tabular-nums; }
 .health-table td.muted { color: var(--muted); }
-.health-table td.ok { color: #2e7d32; font-weight: 600; }
+.health-table td.ok { color: var(--c-success); font-weight: 600; }
 .btn-sm { padding: 5px 12px; font-size: 12px; }
 .act-btn {
   padding: 6px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 500;
@@ -2943,7 +3701,7 @@ function clearFilters() {
 /* 逾期看板/回款流水标签页：pager 紧贴底部，不需要卡片底部预留空间 */
 .ar-view > .card.pane-mode { padding-bottom: 4px; }
 /* 表头吸顶，长表滚动时列名常驻 */
-.pane-flex .pane-scroll .rec-table thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.pane-flex .pane-scroll .rec-table thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 .pane-flex .pane-scroll .rec-table thead .sel-col { z-index: 6; }
 
 /* 页头：三行结构——标题+主操作 / Tab 栏 / 筛选工具栏，各占一行互不挤压 */
@@ -2984,7 +3742,7 @@ function clearFilters() {
   background: rgba(0,0,0,0.08); color: var(--muted); font-size: 9px; cursor: pointer;
   display: flex; align-items: center; justify-content: center; line-height: 1;
 }
-.qs-clear:hover { background: rgba(198,40,40,0.12); color: #c62828; }
+.qs-clear:hover { background: rgba(198,40,40,0.12); color: var(--c-danger); }
 .fb-trigger-wrap { position: relative; }
 .fb-trigger {
   display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 9px;
@@ -2997,7 +3755,7 @@ function clearFilters() {
 .fb-pop {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 51;
   width: 540px; max-width: 94vw;            /* 容器自身定宽，不依赖内部组件 */
-  background: #fff; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--row-bg); border: 1px solid var(--border); border-radius: 12px;
   box-shadow: 0 16px 44px rgba(0,0,0,0.18);
   /* 不可 overflow:hidden，否则会裁掉「添加条件」弹出的菜单 */
 }
@@ -3005,6 +3763,7 @@ function clearFilters() {
 .fb-hint { font-size: 12.5px; color: var(--muted); }
 .filter-chip.date { background: rgba(122,159,212,0.14); color: #3f5a86; }
 .filter-chip.amt  { background: rgba(201,99,66,0.12); color: var(--primary); }
+.filter-chip.col-chip { background: rgba(90,122,153,0.13); color: #4a6a8a; }
 .filter-chip.dim  { background: rgba(120,120,120,0.1); color: var(--text); }
 .filter-chip { cursor: pointer; }
 
@@ -3027,6 +3786,11 @@ function clearFilters() {
 
 /* KPI bar */
 .metrics-bar { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; overflow-x: auto; margin-bottom: 4px; padding: 5px 10px; background: rgba(0,0,0,0.02); border-radius: 8px; flex-shrink: 0; }
+.arr-timebar { padding: 2px 0 6px; flex-shrink: 0; }
+.bp-overflow { font-size: 12.5px; color: var(--text-2); padding: 8px 10px; border-radius: 8px;
+  border: 1px dashed var(--border); transition: border-color .15s, background .15s; }
+.bp-overflow.hot { border-color: var(--amber-deep, #f57f17); background: rgba(245,127,23,.05); }
+.bp-overflow-hint { display: block; margin-top: 5px; font-style: normal; font-size: 12px; color: #b35309; }
 .metrics-div { width: 1px; align-self: stretch; min-height: 20px; background: rgba(0,0,0,0.1); margin: 0 2px; }
 /* 聚焦待办切换（金蝶查询模式）：紧凑分段开关 */
 .focus-toggle { display: inline-flex; flex-shrink: 0; padding: 2px; gap: 2px; background: rgba(0,0,0,0.05); border-radius: 8px; }
@@ -3035,11 +3799,11 @@ function clearFilters() {
 .focus-seg.on { background: var(--card, #fff); color: var(--primary); box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
 /* 汇总区：时段合计单行紧凑条 */
 .period-bar { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; white-space: nowrap; }
-.period-lbl { flex-shrink: 0; font-size: 10.5px; font-weight: 700; color: #2e7d32; padding: 1px 6px; border-radius: 4px; background: rgba(46,125,50,0.12); margin-right: 3px; }
+.period-lbl { flex-shrink: 0; font-size: 10.5px; font-weight: 700; color: var(--c-success); padding: 1px 6px; border-radius: 4px; background: rgba(46,125,50,0.12); margin-right: 3px; }
 .pd-k { font-size: 11px; color: var(--muted); font-weight: 500; }
 .pd-num { font-size: 12px; font-weight: 600; color: var(--text); }
-.pd-num.ok { color: #2e7d32; }
-.pd-num.warn { color: #e65100; }
+.pd-num.ok { color: var(--c-success); }
+.pd-num.warn { color: var(--c-warn); }
 .pd-num.adj { color: #6a5acd; font-weight: 500; }
 .pd-sep { color: var(--muted); opacity: 0.4; }
 .pd-sep.pipe { margin: 0 4px; opacity: 0.25; }
@@ -3051,15 +3815,15 @@ function clearFilters() {
 .kpi-cmp { font-size: 11px; color: var(--muted); display: inline-flex; align-items: baseline; gap: 3px; white-space: nowrap; }
 .kpi-cmp b { font-weight: 600; color: var(--text); }
 .kpi-cmp-rng { font-size: 9px; opacity: 0.6; }
-.kpi-item.ok .kpi-v { color: #2e7d32; }
-.kpi-item.warn .kpi-v { color: #e65100; }
-.kpi-item.danger .kpi-v { color: #c62828; }
+.kpi-item.ok .kpi-v { color: var(--c-success); }
+.kpi-item.warn .kpi-v { color: var(--c-warn); }
+.kpi-item.danger .kpi-v { color: var(--c-danger); }
 .kpi-progress { display: flex; align-items: center; gap: 10px; min-width: 240px; }
 .kpi-track { flex: 1; height: 8px; background: rgba(0,0,0,0.08); border-radius: 99px; overflow: hidden; min-width: 90px; }
 .kpi-fill { height: 100%; border-radius: 99px; transition: width 0.5s ease; }
-.fill-blue { background: linear-gradient(90deg, #1565c0, #42a5f5); }
-.fill-amber { background: linear-gradient(90deg, #e65100, #ffa726); }
-.fill-green { background: linear-gradient(90deg, #2e7d32, #66bb6a); }
+.fill-blue { background: linear-gradient(90deg, var(--c-info), #42a5f5); }
+.fill-amber { background: linear-gradient(90deg, var(--c-warn), #ffa726); }
+.fill-green { background: linear-gradient(90deg, var(--c-success), #66bb6a); }
 .kpi-pct { font-size: 15px; font-weight: 800; color: var(--text); min-width: 44px; text-align: right; }
 
 /* 筛选合计 / 区间合计 strip */
@@ -3067,8 +3831,8 @@ function clearFilters() {
 .tot-label { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--primary); text-transform: uppercase; }
 .tot-item { display: inline-flex; align-items: baseline; gap: 5px; font-size: 15px; font-weight: 700; color: var(--text); }
 .tot-item i { font-style: normal; font-size: 12px; font-weight: 400; color: var(--muted); }
-.tot-item.tot-warn { color: #e65100; }
-.tot-item.tot-green { color: #2e7d32; }
+.tot-item.tot-warn { color: var(--c-warn); }
+.tot-item.tot-green { color: var(--c-success); }
 .pay-range-lbl { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .pay-range-chip {
   font-size: 12px; padding: 3px 10px; border-radius: 13px; cursor: pointer;
@@ -3090,7 +3854,7 @@ function clearFilters() {
 .rec-table td { padding: 5px 10px; vertical-align: middle; font-size: 12.5px; }
 /* 表格填满卡片剩余高度（由 flex: 1 on .table-wrap 驱动），overflow:auto 使只有表格内滚 */
 .dt-scroll { height: 100%; overflow: auto; }
-.dt-scroll .rec-table thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.dt-scroll .rec-table thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 .dt-scroll .rec-table thead .sel-col { z-index: 6; }
 /* 选择列 */
 .sel-col { width: 30px; text-align: center; padding-left: 8px !important; padding-right: 4px !important; }
@@ -3111,8 +3875,7 @@ function clearFilters() {
 .del-tip { font-size: 13px; color: var(--text); margin: 0 0 8px; }
 .del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; }
 .del-input:focus { border-color: var(--danger); outline: none; }
-.btn-danger-solid { border: none; border-radius: 8px; padding: 8px 18px; font-size: 14px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
-.btn-danger-solid:disabled { opacity: .5; cursor: default; }
+/* 实心危险按钮统一走全局 .btn-danger-solid（style.css） */
 .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.04); }
 .row-overdue { background: rgba(198,40,40,0.04); }
 
@@ -3124,7 +3887,7 @@ function clearFilters() {
   font-variant-numeric: tabular-nums;
 }
 .sum-foot-lbl { white-space: nowrap; color: var(--primary); }
-.rec-table tfoot .amt-warn { color: #e65100; }
+.rec-table tfoot .amt-warn { color: var(--c-warn); }
 .rec-table tfoot .amt-muted { color: var(--muted); font-weight: 600; }
 
 /* ══ 账龄分段行着色（4 段递进，替换旧 row-overdue 单一样式）══ */
@@ -3139,12 +3902,12 @@ function clearFilters() {
   display: flex; align-items: center; gap: 5px;
   padding: 4px 9px; font-size: 12px; font-weight: 500;
   border: 1.5px solid var(--border); border-radius: 6px;
-  background: #fff; color: var(--text); cursor: pointer; white-space: nowrap;
+  background: var(--row-bg); color: var(--text); cursor: pointer; white-space: nowrap;
 }
 .preset-btn:hover, .preset-btn.on { border-color: var(--primary); color: var(--primary); }
 .preset-drop {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 200;
-  background: #fff; border: 1.5px solid var(--border); border-radius: 10px;
+  background: var(--row-bg); border: 1.5px solid var(--border); border-radius: 10px;
   box-shadow: 0 6px 20px rgba(0,0,0,0.12); min-width: 240px; padding: 8px 0;
 }
 .preset-backdrop { position: fixed; inset: 0; z-index: 199; }
@@ -3163,7 +3926,7 @@ function clearFilters() {
 .preset-scope-lbl { font-size: 11px; color: var(--muted); }
 .preset-scope-seg {
   flex: 1; padding: 4px 6px; font-size: 11px; border: 1px solid var(--border);
-  border-radius: 6px; background: #fff; color: var(--muted); cursor: pointer; white-space: nowrap;
+  border-radius: 6px; background: var(--row-bg); color: var(--muted); cursor: pointer; white-space: nowrap;
 }
 .preset-scope-seg.on { border-color: var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); font-weight: 600; }
 .preset-scope-seg:disabled { opacity: .4; cursor: not-allowed; }
@@ -3177,8 +3940,8 @@ function clearFilters() {
 }
 .preset-item:hover { background: rgba(201,99,66,0.05); }
 .preset-star { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 0 2px; line-height: 1; }
-.preset-star.on { color: #f5a623; }
-.preset-star:hover { color: #f5a623; }
+.preset-star.on { color: var(--amber); }
+.preset-star:hover { color: var(--amber); }
 .preset-name { flex: 1; font-weight: 500; }
 .preset-count { font-size: 11px; color: var(--muted); }
 .preset-del { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 12px; }
@@ -3197,32 +3960,31 @@ function clearFilters() {
 .fw { font-weight: 700; }
 .text-muted { color: var(--muted); }
 .text-sm-muted { font-size: 12px; color: var(--muted); }
-.amt-warn { color: #e65100; font-weight: 700; }
-.amt-ok { color: #2e7d32; font-weight: 700; }
+.amt-warn { color: var(--c-warn); font-weight: 700; }
+.amt-ok { color: var(--c-success); font-weight: 700; }
 .amt-zero { color: var(--muted); }
+/* 开票金额 ≠ 实际应收 提醒角标：未备注=待处理(红)，已备注=已说明(灰) */
+.inv-warn { margin-left: 3px; cursor: help; font-size: 11px; line-height: 1; vertical-align: middle; }
+.inv-warn.todo { filter: none; }
+.inv-warn.noted { opacity: .55; }
 .mode-tag { font-size: 11.5px; padding: 2px 8px; border-radius: 8px; background: rgba(0,0,0,0.05); color: var(--muted); font-weight: 500; }
 
 /* Status pills */
-.status-pill { font-size: 11.5px; padding: 3px 9px; border-radius: 20px; font-weight: 600; white-space: nowrap; }
-.pill-ok     { background: rgba(46,125,50,0.1);  color: #2e7d32; }
-.pill-warn   { background: rgba(245,127,23,0.12); color: #e65100; }
-.pill-danger { background: rgba(198,40,40,0.1);  color: #c62828; }
-.pill-blue   { background: rgba(21,101,192,0.1); color: #1565c0; }
-.pill-muted  { background: rgba(0,0,0,0.06);     color: var(--muted); }
+/* 状态徽章基准与语义色变体统一走全局 style.css 的 .status-pill/.pill-*（勿在页内复制） */
 
 /* 开票批次号 badge */
-.batch-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px; background: rgba(33,150,243,0.12); color: #1565c0; border: 1px solid rgba(33,150,243,0.2); white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
+.batch-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px; background: rgba(33,150,243,0.12); color: var(--c-info); border: 1px solid rgba(33,150,243,0.2); white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis; cursor: default; }
 
 /* ══ 差额调整明细管理器 ══ */
 .adj-box .adj-total { font-style: normal; font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 8px; }
 .adj-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
 .adj-item { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border: 1px solid rgba(120,120,120,0.14); border-radius: 8px; background: rgba(255,255,255,0.6); font-size: 12.5px; }
 .adj-item b { font-variant-numeric: tabular-nums; min-width: 76px; }
-.adj-pos { color: #2e7d32; } .adj-neg { color: #c62828; }
+.adj-pos { color: var(--c-success); } .adj-neg { color: var(--c-danger); }
 .adj-reason { flex: 1; color: var(--text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .adj-item em { font-style: normal; font-size: 11px; color: var(--muted); }
 .adj-del { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 12px; }
-.adj-del:hover { color: #c62828; }
+.adj-del:hover { color: var(--c-danger); }
 .adj-empty { font-size: 12px; color: var(--muted); padding: 6px 0; }
 .adj-add { display: flex; gap: 6px; margin-top: 4px; }
 .adj-add .adj-amt-inp { width: 120px; }
@@ -3240,47 +4002,47 @@ function clearFilters() {
 .ow-stat { display: flex; flex-direction: column; }
 .ow-stat i { font-style: normal; font-size: 10.5px; color: var(--muted); }
 .ow-stat b { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--text); }
-.ow-stat b.ok { color: #2e7d32; }
-.ow-stat b.warn { color: #e65100; }
+.ow-stat b.ok { color: var(--c-success); }
+.ow-stat b.warn { color: var(--c-warn); }
 .ow-advances { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.ow-adv-chip { font-size: 11.5px; color: #2e7d32; background: rgba(46,125,50,0.08); border: 1px solid rgba(46,125,50,0.22); border-radius: 9px; padding: 3px 10px; }
+.ow-adv-chip { font-size: 11.5px; color: var(--c-success); background: rgba(46,125,50,0.08); border: 1px solid rgba(46,125,50,0.22); border-radius: 9px; padding: 3px 10px; }
 .ow-adv-chip b { font-variant-numeric: tabular-nums; margin-left: 6px; }
-.ow-table { width: 100%; border-collapse: collapse; font-size: 12.5px; background: #fff; border-radius: 8px; overflow: hidden; }
+.ow-table { width: 100%; border-collapse: collapse; font-size: 12.5px; background: var(--row-bg); border-radius: 8px; overflow: hidden; }
 .ow-table th { background: rgba(46,125,50,0.06); color: var(--muted); font-weight: 600; padding: 7px 10px; text-align: left; white-space: nowrap; }
 .ow-table td { padding: 7px 10px; border-top: 1px solid rgba(120,120,120,0.08); cursor: pointer; }
 .ow-table tr.row-sel td { background: rgba(46,125,50,0.07); }
 .ow-table .amt { text-align: right; font-variant-numeric: tabular-nums; }
-.count-offset { background: rgba(21,101,192,0.13); color: #1565c0; }
+.count-offset { background: rgba(21,101,192,0.13); color: var(--c-info); }
 .wo-adv-pick { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; }
 .wo-adv-opt { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; cursor: pointer; font-size: 12.5px; }
-.wo-adv-opt.on { border-color: #2e7d32; background: rgba(46,125,50,0.06); }
-.wo-adv-opt b { margin-left: auto; color: #2e7d32; font-variant-numeric: tabular-nums; }
+.wo-adv-opt.on { border-color: var(--c-success); background: rgba(46,125,50,0.06); }
+.wo-adv-opt b { margin-left: auto; color: var(--c-success); font-variant-numeric: tabular-nums; }
 
 /* 批次开票事件 */
 .bi-events { margin-bottom: 10px; padding: 7px 10px; background: rgba(21,101,192,.04);
   border: 1px solid rgba(21,101,192,.18); border-radius: 8px; }
-.bi-events-head { font-size: 11.5px; font-weight: 700; color: #1565c0; margin-bottom: 3px; }
+.bi-events-head { font-size: 11.5px; font-weight: 700; color: var(--c-info); margin-bottom: 3px; }
 .bi-events-head i { font-style: normal; font-weight: 400; font-size: 10.5px; color: var(--muted); margin-left: 8px; }
 .bi-ev-row { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 3px 0; }
 .bie-date { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 78px; }
-.bie-amt { color: #1565c0; font-variant-numeric: tabular-nums; min-width: 80px; }
+.bie-amt { color: var(--c-info); font-variant-numeric: tabular-nums; min-width: 80px; }
 .bie-tax { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .bie-note { flex: 1; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bie-undo { border: 1px solid rgba(198,40,40,.4); color: #c62828; background: none; border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.bie-undo { border: 1px solid rgba(198,40,40,.4); color: var(--c-danger); background: none; border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .bie-undo:hover:not(:disabled) { background: rgba(198,40,40,.08); }
 .bi-add { border: 1px dashed rgba(201,99,66,.4); border-radius: 10px; padding: 10px 12px; }
 .bi-add-head { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
 .bi-room { font-size: 11px; font-weight: 400; color: var(--muted); }
-.bi-room b { color: #e65100; font-variant-numeric: tabular-nums; }
+.bi-room b { color: var(--c-warn); font-variant-numeric: tabular-nums; }
 
 /* ══ 合并开票批次工作台 ══ */
 .batch-panel { margin-top: 12px; border: 1px solid rgba(33,150,243,0.22); border-radius: 12px; background: rgba(33,150,243,0.03); overflow: hidden; }
 .bp-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px; }
-.bp-title { font-size: 13px; font-weight: 700; color: #1565c0; }
+.bp-title { font-size: 13px; font-weight: 700; color: var(--c-info); }
 .bp-title i { font-style: normal; font-size: 11px; background: rgba(33,150,243,0.14); border-radius: 9px; padding: 1px 7px; margin-left: 6px; }
 .bp-tip { font-size: 11.5px; color: var(--muted); flex: 1; }
 .bp-toggle { border: none; background: none; font-size: 11.5px; color: var(--muted); cursor: pointer; }
-.bp-toggle:hover { color: #1565c0; }
+.bp-toggle:hover { color: var(--c-info); }
 .bp-empty { padding: 12px 14px; font-size: 12.5px; color: var(--muted); text-align: center; }
 .bp-list { display: flex; flex-direction: column; }
 .bp-item { border-top: 1px solid rgba(33,150,243,0.12); }
@@ -3299,48 +4061,48 @@ function clearFilters() {
 .bm-opt > div { flex: 1; }
 /* 表单内联提示 / 警示 + 非现金标记 + 跨项目核销警示 */
 .field-hint { font-style: normal; font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 6px; }
-.field-warn { display: block; margin-top: 4px; font-size: 11.5px; color: #c62828; }
+.field-warn { display: block; margin-top: 4px; font-size: 11.5px; color: var(--c-danger); }
 .noncash-dot { color: #6a1b9a; font-weight: 700; margin-left: 1px; cursor: help; }
-.wo-incompat { margin-top: 8px; padding: 7px 10px; border-radius: 8px; background: rgba(198,40,40,0.08); color: #c62828; font-size: 11.5px; line-height: 1.6; }
+.wo-incompat { margin-top: 8px; padding: 7px 10px; border-radius: 8px; background: rgba(198,40,40,0.08); color: var(--c-danger); font-size: 11.5px; line-height: 1.6; }
 .wo-incompat-item { display: inline-block; margin: 0 4px; font-weight: 600; }
 .bm-opt b { display: block; font-size: 13px; color: var(--text); }
 .bm-opt i { display: block; font-style: normal; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 .bp-amt { display: flex; flex-direction: column; min-width: 86px; }
 .bp-amt i { font-style: normal; font-size: 10.5px; color: var(--muted); }
 .bp-amt b { font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--text); }
-.bp-amt.ok b { color: #2e7d32; }
-.bp-amt.warn b { color: #e65100; }
+.bp-amt.ok b { color: var(--c-success); }
+.bp-amt.warn b { color: var(--c-warn); }
 .bp-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-.bp-btn { border: 1px solid rgba(33,150,243,0.4); background: #fff; color: #1565c0; font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+.bp-btn { border: 1px solid rgba(33,150,243,0.4); background: var(--row-bg); color: var(--c-info); font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
 .bp-btn:hover { background: rgba(33,150,243,0.08); }
-.bp-btn.primary { background: #1565c0; color: #fff; border-color: #1565c0; }
+.bp-btn.primary { background: var(--c-info); color: #fff; border-color: var(--c-info); }
 .bp-btn.primary:hover { filter: brightness(1.1); }
 .bp-caret { font-size: 11px; color: var(--muted); }
 .bp-members { padding: 0 14px 12px; overflow-x: auto; }
 .bp-colls { margin-bottom: 8px; padding: 7px 10px; background: rgba(46,125,50,.04); border: 1px solid rgba(46,125,50,.16); border-radius: 8px; }
-.bp-colls-head { font-size: 11.5px; font-weight: 700; color: #2e7d32; margin-bottom: 3px; }
+.bp-colls-head { font-size: 11.5px; font-weight: 700; color: var(--c-success); margin-bottom: 3px; }
 .bp-colls-head i { font-style: normal; font-weight: 400; font-size: 10.5px; color: var(--muted); margin-left: 8px; }
 .bp-coll-row { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 3px 0; }
 .bpc-date { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 78px; }
-.bpc-amt { color: #2e7d32; font-variant-numeric: tabular-nums; min-width: 80px; }
+.bpc-amt { color: var(--c-success); font-variant-numeric: tabular-nums; min-width: 80px; }
 .bpc-n { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .bpc-note { flex: 1; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bpc-undo { border: 1px solid rgba(198,40,40,.4); color: #c62828; background: none; border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.bpc-undo { border: 1px solid rgba(198,40,40,.4); color: var(--c-danger); background: none; border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .bpc-undo:hover:not(:disabled) { background: rgba(198,40,40,.08); }
-.bp-mtable { width: 100%; border-collapse: collapse; font-size: 12px; background: #fff; border-radius: 8px; overflow: hidden; }
+.bp-mtable { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--row-bg); border-radius: 8px; overflow: hidden; }
 .bp-mtable th { background: rgba(33,150,243,0.07); color: var(--muted); font-weight: 600; padding: 6px 10px; text-align: left; white-space: nowrap; }
 .bp-mtable td { padding: 6px 10px; border-top: 1px solid rgba(120,120,120,0.08); white-space: nowrap; }
 .bp-mtable .r { text-align: right; font-variant-numeric: tabular-nums; }
-.bp-diff { color: #e65100; font-weight: 600; }
+.bp-diff { color: var(--c-warn); font-weight: 600; }
 .bp-adj-n { font-style: normal; font-size: 10px; color: var(--muted); margin-left: 3px; }
-.bp-out { color: #e65100; font-weight: 600; }
-.bp-ok { color: #2e7d32; font-weight: 700; }
+.bp-out { color: var(--c-warn); font-weight: 600; }
+.bp-ok { color: var(--c-success); font-weight: 700; }
 
 /* Payment rows */
 .pay-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 7px; border: 1px solid var(--border); background: rgba(255,252,250,0.8); cursor: pointer; transition: all 0.14s; font-size: 12.5px; }
 .pay-toggle:hover { border-color: var(--primary); }
 .pay-count { font-size: 11px; font-weight: 700; min-width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 50%; }
-.count-has { background: rgba(46,125,50,0.15); color: #2e7d32; }
+.count-has { background: rgba(46,125,50,0.15); color: var(--c-success); }
 .count-none { background: rgba(0,0,0,0.06); color: var(--muted); }
 .add-pay-btn { margin-left: 6px; font-size: 12px; padding: 3px 9px; border-radius: 7px; border: 1px solid rgba(201,99,66,0.3); background: rgba(201,99,66,0.07); color: var(--primary); cursor: pointer; transition: all 0.14s; }
 .add-pay-btn:hover { background: var(--primary); color: #fff; }
@@ -3348,15 +4110,19 @@ function clearFilters() {
 .pay-empty { text-align: center; color: var(--muted); font-size: 12.5px; }
 .pay-detail { display: flex; align-items: center; gap: 14px; padding-left: 20px; }
 .pay-no { font-size: 11px; color: var(--muted); }
-.pay-amt { font-weight: 700; color: #2e7d32; }
+.pay-amt { font-weight: 700; color: var(--c-success); }
 .pay-date { font-size: 12px; color: var(--muted); }
 .pay-src { font-size: 11px; font-weight: 600; color: #1b6e35; background: rgba(27,110,53,0.1); padding: 1px 7px; border-radius: 999px; }
 .pay-src-internal { color: #6a1b9a; background: rgba(106,27,154,0.1); }
-.pay-src-bank { color: #1565c0; background: rgba(21,101,192,0.1); }
+.pay-src-bank { color: var(--c-info); background: rgba(21,101,192,0.1); }
+.pay-draft-tag { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 6px; margin-left: 5px; border-radius: 10px; color: #2e7d32; background: rgba(46,125,50,.12); }
+.pay-draft-tag.pending { color: #b26a00; background: rgba(230,145,0,.12); }
+.pay-accept-tag { border: 1px solid rgba(46,125,50,.4); background: rgba(46,125,50,.08); color: #2e7d32; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 6px; cursor: pointer; margin-left: 6px; }
+.pay-accept-tag:hover { background: rgba(46,125,50,.18); }
 .pay-src-adj { color: #6a5acd; background: rgba(106,90,205,0.12); }
-.pay-amt.adj-pos { color: #2e7d32; } .pay-amt.adj-neg { color: #c62828; }
+.pay-amt.adj-pos { color: var(--c-success); } .pay-amt.adj-neg { color: var(--c-danger); }
 .pay-notes { font-size: 12px; color: var(--muted); font-style: italic; }
-.pay-del { margin-left: auto; font-size: 11.5px; color: #c62828; background: none; border: none; cursor: pointer; }
+.pay-del { margin-left: auto; font-size: 11.5px; color: var(--c-danger); background: none; border: none; cursor: pointer; }
 .pay-del:hover { text-decoration: underline; }
 /* 内部往来核销：列表次数徽标 + 录入弹窗类型切换 */
 .count-internal { background: rgba(106,27,154,0.13); color: #6a1b9a; }
@@ -3373,39 +4139,39 @@ function clearFilters() {
 .adv-hint { margin-bottom: 14px; padding: 10px 12px; border: 1px solid rgba(56,142,60,0.28);
   background: rgba(76,175,80,0.08); border-radius: 12px; }
 .adv-hint-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text); flex-wrap: wrap; }
-.adv-hint-tag { padding: 1px 8px; border-radius: 999px; background: #2e7d32; color: #fff; font-size: 11px; font-weight: 600; }
-.adv-hint-head b { color: #2e7d32; }
+.adv-hint-tag { padding: 1px 8px; border-radius: 999px; background: var(--c-success); color: #fff; font-size: 11px; font-weight: 600; }
+.adv-hint-head b { color: var(--c-success); }
 .adv-hint-link { margin-left: auto; border: none; background: none; color: var(--primary); cursor: pointer; font-size: 12px; padding: 0; }
 .adv-hint-link:hover { text-decoration: underline; }
 .adv-hint-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 .adv-hint-list li { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
 .adv-hint-list .adv-cp { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .adv-hint-list .adv-bal { font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; }
-.adv-hint-list .adv-od { color: #c62828; font-size: 11px; }
+.adv-hint-list .adv-od { color: var(--c-danger); font-size: 11px; }
 .adv-hint-note { margin-top: 8px; font-size: 11px; color: var(--muted); line-height: 1.5; }
 .adv-hint-list li.on { background: rgba(76,175,80,0.12); border-radius: 6px; }
 .adv-mt { flex: none; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px; }
-.adv-mt.mt-proj { background: rgba(56,142,60,0.14); color: #2e7d32; }
-.adv-mt.mt-cust { background: rgba(21,101,192,0.14); color: #1565c0; }
-.adv-use-btn { margin-left: auto; border: 1px solid #2e7d32; background: none; color: #2e7d32; border-radius: 6px; font-size: 11px; padding: 1px 8px; cursor: pointer; white-space: nowrap; }
+.adv-mt.mt-proj { background: rgba(56,142,60,0.14); color: var(--c-success); }
+.adv-mt.mt-cust { background: rgba(21,101,192,0.14); color: var(--c-info); }
+.adv-use-btn { margin-left: auto; border: 1px solid var(--c-success); background: none; color: var(--c-success); border-radius: 6px; font-size: 11px; padding: 1px 8px; cursor: pointer; white-space: nowrap; }
 .adv-use-btn:hover { background: rgba(46,125,50,0.1); }
 .adv-wo-form { margin-top: 10px; padding: 9px 10px; border: 1px solid rgba(46,125,50,0.35); background: rgba(76,175,80,0.06); border-radius: 9px; }
 .adv-wo-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); margin-bottom: 6px; flex-wrap: wrap; }
 .adv-wo-row:last-of-type { margin-bottom: 0; }
-.adv-wo-row b { color: #2e7d32; }
+.adv-wo-row b { color: var(--c-success); }
 .adv-wo-amt { width: 130px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; font-size: 13px; }
 .btn-xs { padding: 4px 10px; font-size: 12px; }
 .adv-wo-tip { margin-top: 7px; font-size: 11px; color: var(--muted); line-height: 1.5; }
 
 /* 导入结果弹窗 */
-.imp-ok { color: #2e7d32; }
-.imp-fail { color: #c62828; }
+.imp-ok { color: var(--c-success); }
+.imp-fail { color: var(--c-danger); }
 .imp-body { max-height: calc(82vh - 130px); overflow-y: auto; padding-right: 4px; scrollbar-width: thin; }
 .imp-body::-webkit-scrollbar { width: 6px; }
 .imp-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .imp-section { margin-bottom: 16px; }
 .imp-sec-label { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 6px; padding: 4px 10px; border-radius: 6px; background: rgba(0,0,0,0.04); }
-.imp-sec-label.imp-sec-warn { background: rgba(230,81,0,0.08); color: #e65100; }
+.imp-sec-label.imp-sec-warn { background: rgba(230,81,0,0.08); color: var(--c-warn); }
 .imp-sec-list { list-style: none; margin: 0; padding: 0 0 0 10px; display: flex; flex-direction: column; gap: 4px; }
 .imp-sec-list li { font-size: 12.5px; color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-all; border-bottom: 1px dashed rgba(0,0,0,0.06); padding-bottom: 4px; }
 .imp-sec-list li:last-child { border-bottom: none; }
@@ -3413,23 +4179,76 @@ function clearFilters() {
 .imp-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 12px 0; }
 
 /* 催款工作台 */
-.dun-buckets { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
-.dun-bucket { flex: 1; min-width: 130px; text-align: left; padding: 10px 14px; border: 1.5px solid var(--border); border-radius: 10px; background: #fff; cursor: pointer; transition: all .15s; }
-.dun-bucket:hover { border-color: #e65100; }
-.dun-bucket.on { border-color: #e65100; background: rgba(230,81,0,0.06); box-shadow: 0 0 0 2px rgba(230,81,0,0.12); }
-.dun-bucket.empty { opacity: .55; }
-.db-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
-.db-count { font-size: 15px; font-weight: 700; color: var(--text); }
-.db-amt { font-size: 13px; font-weight: 600; color: #c62828; margin-top: 2px; }
-.dun-contacts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+/* ── 催款作战台 ──────────────────────────────────────────────────────────
+   账龄光谱条：一条横向堆叠带替代四张大卡（省 ~60px 纵向空间）。
+   段宽 flex-grow=金额占比（脚本 segGrow），颜色琥珀→深红随账龄加深。 */
+.dun-spec { display: flex; gap: 3px; margin-top: 10px; height: 46px; flex-shrink: 0; }
+.ds-seg { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 1px;
+  flex-basis: 0; min-width: 56px; padding: 4px 12px; border: none; border-radius: 9px; cursor: pointer;
+  color: #fff; text-align: left; overflow: hidden; white-space: nowrap;
+  transition: flex-grow .3s ease, filter .15s, opacity .15s, box-shadow .15s, transform .12s; }
+.ds-s0 { background: linear-gradient(135deg, #e8a84a, #d9930d); }
+.ds-s1 { background: linear-gradient(135deg, #ec8542, #e6742e); }
+.ds-s2 { background: linear-gradient(135deg, #de5c48, #d84a3a); }
+.ds-s3 { background: linear-gradient(135deg, #c03030, #8f1616); }
+.ds-seg:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.ds-seg.on { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--text); }
+.ds-seg.dim { opacity: .42; }
+.ds-seg.empty { opacity: .3; }
+.ds-label { font-size: 11px; font-weight: 700; opacity: .92; letter-spacing: .02em; overflow: hidden; text-overflow: ellipsis; }
+.ds-meta { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+/* 责任人 chips：单行横向滚动，不再换行占高 */
+.dun-contacts { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; overflow-x: auto;
+  margin-top: 8px; padding-bottom: 3px; scrollbar-width: thin; flex-shrink: 0; }
 .dc-label { font-size: 12px; color: var(--muted); flex-shrink: 0; }
-.dc-chip { padding: 4px 10px; border: 1px solid var(--border); border-radius: 14px; background: #fff; font-size: 12px; color: var(--text); cursor: pointer; transition: all .15s; }
-.dc-chip:hover { border-color: #e65100; }
-.dc-chip.on { border-color: #e65100; background: rgba(230,81,0,0.08); color: #e65100; font-weight: 600; }
-.od-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; }
-.od-badge.od-warn { background: rgba(230,81,0,0.1); color: #e65100; }
-.od-badge.od-danger { background: rgba(198,40,40,0.1); color: #c62828; }
-.dun-has-action { font-size: 12px; color: #2e7d32; font-weight: 600; }
+.dc-chip { flex-shrink: 0; padding: 4px 10px; border: 1px solid var(--border); border-radius: 14px; background: var(--row-bg); font-size: 12px; color: var(--text); cursor: pointer; transition: all .15s; }
+.dc-chip:hover { border-color: var(--c-warn); }
+.dc-chip.on { border-color: var(--c-warn); background: rgba(230,81,0,0.08); color: var(--c-warn); font-weight: 600; }
+.dun-clear { border: 1px solid rgba(198,40,40,.3); background: rgba(198,40,40,.05); color: var(--c-danger);
+  font-size: 12px; padding: 4px 10px; border-radius: 7px; cursor: pointer; transition: all .12s; white-space: nowrap; }
+.dun-clear:hover { background: rgba(198,40,40,.1); }
+/* 表格：行首严重度色边（四级），紧凑行高；整行可双击直达催款工作台 */
+.dun-table tbody tr.dun-row { cursor: pointer; }
+.dun-table tbody td { padding-top: 7px; padding-bottom: 7px; }
+.dun-row.dun-sev0 > td:first-child { box-shadow: inset 3px 0 0 #d9930d; }
+.dun-row.dun-sev1 > td:first-child { box-shadow: inset 3px 0 0 #e6742e; }
+.dun-row.dun-sev2 > td:first-child { box-shadow: inset 3px 0 0 #d84a3a; }
+.dun-row.dun-sev3 > td:first-child { box-shadow: inset 3px 0 0 #8f1616; }
+.dun-fire { margin-right: 3px; font-size: 12px; }
+.dun-dept { color: var(--muted); }
+.dun-due { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.dun-amt { font-weight: 700; color: var(--c-danger); font-size: 13.5px; }
+/* 账龄徽标四级配色 + 微条（120 天满格） */
+.od-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.od-badge.od-s0 { background: rgba(217,147,13,0.12); color: #b47c0a; }
+.od-badge.od-s1 { background: rgba(230,116,46,0.13); color: #d3641f; }
+.od-badge.od-s2 { background: rgba(216,74,58,0.13); color: #c73a2a; }
+.od-badge.od-s3 { background: rgba(143,22,22,0.15); color: #8f1616; }
+.od-bar { width: 64px; height: 3px; border-radius: 2px; background: rgba(0,0,0,0.08); margin: 4px auto 0; overflow: hidden; }
+.od-bar i { display: block; height: 100%; border-radius: 2px; transition: width .3s ease; }
+.od-bar .ob-s0 { background: #d9930d; }
+.od-bar .ob-s1 { background: #e6742e; }
+.od-bar .ob-s2 { background: #d84a3a; }
+.od-bar .ob-s3 { background: #8f1616; }
+/* 行内催办三连（复制话术 / 记跟进 / 建任务） */
+.dun-acts { white-space: nowrap; }
+.dun-act { border: 1px solid var(--border); background: var(--card); border-radius: 7px;
+  padding: 3px 7px; margin: 0 2px; cursor: pointer; font-size: 13px; line-height: 1; transition: all .12s; }
+.dun-act:hover { border-color: var(--primary); background: rgba(201,99,66,0.07); transform: translateY(-1px); }
+.dun-act:disabled { opacity: .5; cursor: wait; transform: none; }
+.dun-act-hot { border-color: rgba(201,99,66,0.45); }
+.dun-has-action { font-size: 12px; color: var(--c-success); font-weight: 600; }
+/* 记跟进弹窗 */
+.fu-types { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.fu-type { padding: 5px 11px; border: 1px solid var(--border); border-radius: 16px; background: var(--row-bg);
+  font-size: 12.5px; color: var(--text); cursor: pointer; transition: all .12s; }
+.fu-type:hover { border-color: var(--primary); }
+.fu-type.on { border-color: var(--primary); background: rgba(201,99,66,0.09); color: var(--primary); font-weight: 600; }
+.fu-note { width: 100%; resize: vertical; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 13px; background: var(--card); color: var(--text); font-family: inherit; }
+.fu-next { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+.fu-next input { padding: 4px 8px; border: 1px solid var(--border); border-radius: 7px; font-size: 12.5px;
+  background: var(--card); color: var(--text); }
 
 /* 分页跳转 */
 .pg-jump { display:inline-flex;align-items:center;gap:4px;font-size:13px;color:var(--muted);margin-left:8px; }
@@ -3456,7 +4275,7 @@ function clearFilters() {
   position: sticky;
   left: 0;
   z-index: 3;
-  background: #f4f1ef;
+  background: var(--thead-bg);
 }
 /* 冻结首列必须用「不透明」背景：卡片是半透明玻璃(--card 0.62)，
    若用 inherit / 半透明色，右滚时下层单元格会透过冻结列显形。
@@ -3466,7 +4285,7 @@ function clearFilters() {
 .rec-table tbody tr.age-31-60  td.sticky-col { background: #f7e8d3; }
 .rec-table tbody tr.age-61-90  td.sticky-col { background: #f6e2dd; }
 .rec-table tbody tr.age-90plus td.sticky-col { background: #f0ddd8; }
-.dt-scroll .rec-table thead th.sticky-col { z-index: 7; background: #f4f1ef; }
+.dt-scroll .rec-table thead th.sticky-col { z-index: 7; background: var(--thead-bg); }
 /* 行悬停 / 选中时首列随行色变化（同样用实色） */
 .rec-table tbody tr:hover td.sticky-col { background: #f4ece6; }
 .rec-table tbody tr.row-sel td.sticky-col,
@@ -3514,7 +4333,7 @@ function clearFilters() {
 .col-vis-wrap { position: relative; }
 .col-vis-drop {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 200;
-  min-width: 160px; background: #fff; border: 1.5px solid var(--border);
+  min-width: 160px; background: var(--row-bg); border: 1.5px solid var(--border);
   border-radius: 10px; box-shadow: 0 6px 20px rgba(0,0,0,0.12);
   padding: 8px 4px;
 }
@@ -3536,7 +4355,7 @@ function clearFilters() {
 .due-soon-badge {
   display: inline-block; margin-left: 5px; font-size: 10px; font-weight: 700;
   padding: 1px 6px; border-radius: 8px; vertical-align: middle;
-  background: rgba(230,81,0,0.14); color: #e65100;
+  background: rgba(230,81,0,0.14); color: var(--c-warn);
   animation: pulse-warn 2s ease-in-out infinite;
 }
 @keyframes pulse-warn {
@@ -3553,18 +4372,44 @@ function clearFilters() {
 /* ── 账龄配置按钮 ─────────────────────────────────────────────────── */
 .aging-cfg-btn {
   margin-left: auto; padding: 3px 10px; font-size: 12px; font-weight: 500;
-  border: 1px solid var(--border); border-radius: 7px; background: #fff; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 7px; background: var(--row-bg); color: var(--muted);
   cursor: pointer; transition: all .14s;
 }
 .aging-cfg-btn:hover { border-color: var(--primary); color: var(--primary); }
+
+/* ── 导出下拉 ──────────────────────────────────────────────────────── */
+.exp-dd { position: relative; display: inline-block; }
+.exp-caret { font-size: 9px; opacity: 0.6; margin-left: 1px; }
+.exp-menu {
+  position: absolute; right: 0; top: calc(100% + 5px); z-index: 60;
+  min-width: 210px; padding: 5px; display: flex; flex-direction: column; gap: 1px;
+  background: var(--card, #fff); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 8px 26px rgba(0, 0, 0, 0.14);
+}
+.exp-menu button {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 7px 11px; border: 0; background: none; cursor: pointer;
+  border-radius: 7px; text-align: left; font: inherit;
+}
+.exp-menu button:hover { background: rgba(201, 99, 66, 0.08); }
+.exp-menu b { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.exp-menu i { font-style: normal; font-size: 10.5px; color: var(--muted); }
 
 /* ── 打印布局 ──────────────────────────────────────────────────────── */
 @media print {
   .ar-head, .filter-chipbar, .bulk-bar, .bottom-bar,
   .segment-ctrl, .metrics-bar, .health-alert,
   .row-acts, .col-rh, button, .modal-overlay { display: none !important; }
+  /* 屏显是 overflow:hidden 的 flex 链（视口内滚动），打印要整链放开成普通文档流，
+     否则输出被裁成可视区一页 */
+  .ar-view, .ar-view > .card, .ar-view > .card > .ar-pane,
+  .ar-pane.pane-flex > .pane-scroll, .dt-scroll, .table-wrap {
+    display: block !important; overflow: visible !important;
+    height: auto !important; max-height: none !important; flex: none !important;
+  }
   .card { box-shadow: none !important; border: none !important; padding: 0 !important; }
-  .dt-scroll { max-height: none !important; overflow: visible !important; }
+  /* 打印无滚动条，表头 sticky 反而会在分页处重叠内容 */
+  .rec-table thead th { position: static !important; }
   .rec-table th, .rec-table td { font-size: 9pt !important; padding: 3px 6px !important; }
   body { background: white !important; }
 }

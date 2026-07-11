@@ -1,4 +1,5 @@
 <script setup>
+import { confirmDlg } from '../composables/confirm.js'
 import { ref, reactive, onMounted, computed } from 'vue'
 import ContextMenu from '../components/ContextMenu.vue'
 import { useContextMenu } from '../composables/useContextMenu.js'
@@ -11,6 +12,7 @@ import SkeletonRow from '../components/SkeletonRow.vue'
 import SchemePicker from '../components/SchemePicker.vue'
 import { useToast } from '../composables/useToast.js'
 import { useTableSchemes } from '../composables/useTableSchemes.js'
+import { useModalEsc } from '../composables/useModalEsc.js'
 import { useAuthStore } from '../stores/auth.js'
 
 const toast = useToast()
@@ -86,6 +88,7 @@ const users = ref([])
 const loading = ref(false)
 const tab = ref('all')  // 'pending' | 'all'
 const showEditModal = ref(false)
+useModalEsc([() => showEditModal.value, () => (showEditModal.value = false)])
 const editUser = ref(null)
 const error = ref('')
 const approveLoading = ref({})
@@ -104,7 +107,6 @@ const deletedIds = new Set()
 
 const pendingUsers = computed(() => users.value.filter(u => !u.is_approved && u.role !== 'super_admin'))
 const activeUsers  = computed(() => users.value.filter(u => u.is_approved || u.role === 'super_admin'))
-const displayUsers = computed(() => tab.value === 'pending' ? pendingUsers.value : activeUsers.value)
 
 const displayActiveUsers = computed(() => {
   let arr = activeUsers.value.filter(u =>
@@ -143,9 +145,11 @@ function toggleApproveDept(uid, d) {
   else arr.splice(i, 1)
 }
 
-onMounted(async () => {
-  const applied = await schemes.loadAndApplyDefault()
-  if (!applied) load()
+onMounted(() => {
+  // 数据加载与默认方案互不依赖：本页筛选为纯客户端（schemes.onApply 为空），
+  // 之前 applied=true 时跳过 load() 会导致设过默认方案的用户列表永远为空
+  load()
+  schemes.loadAndApplyDefault()
 })
 
 function openEdit(u) {
@@ -167,9 +171,12 @@ function toggleEditDept(d) {
   else editForm.value.departments.splice(idx, 1)
 }
 
+const saving = ref(false)
 async function saveEdit() {
+  if (saving.value) return   // 防双击重复提交
   error.value = ''
   if (!editForm.value.name.trim()) { error.value = '姓名不能为空'; return }
+  saving.value = true
   try {
     const payload = {
       name: editForm.value.name,
@@ -181,15 +188,19 @@ async function saveEdit() {
     await api.put(`/users/${editUser.value.id}`, payload)
     showEditModal.value = false
     load()
+    toast.success('已保存')
   } catch (e) {
     error.value = e?.error || '操作失败'
-  }
+  }  finally { saving.value = false }
 }
 
 async function deactivate(u) {
-  if (!confirm(`确认删除用户「${u.name}」？此操作不可撤销。`)) return
-  const typed = window.prompt(`请输入用户名「${u.name}」以确认删除：`)
-  if (typed !== u.name) { toast.warn('输入不匹配，已取消'); return }
+  // 输入式确认(一步到位):须原样输入用户名,替代原「confirm+prompt」两连弹
+  if (!(await confirmDlg({
+    title: '删除用户（不可撤销）', danger: true,
+    message: `确认删除用户「${u.name}」？其登录与权限将立即失效。`,
+    requireText: u.name, confirmText: '删除用户',
+  }))) return
   try {
     await api.delete(`/users/${u.id}`)
     deletedIds.add(u.id)                                    // never let it reappear
@@ -260,7 +271,7 @@ async function approve(u) {
 }
 
 async function reject(u) {
-  if (!confirm(`确定拒绝「${u.name}」的注册申请？拒绝后该申请将被删除。`)) return
+  if (!(await confirmDlg(`确定拒绝「${u.name}」的注册申请？拒绝后该申请将被删除。`))) return
   try {
     await api.post(`/users/${u.id}/reject`, {})
     load()
@@ -379,7 +390,7 @@ async function reject(u) {
             </thead>
             <tbody>
               <template v-if="loading">
-                <SkeletonRow v-for="n in 8" :key="n" :cols="7" />
+                <SkeletonRow v-for="n in 8" :key="n" :cols="8" />
               </template>
               <template v-else>
               <tr v-for="u in displayActiveUsers" :key="u.id" @contextmenu.prevent="ctx.open($event, u)" @dblclick="onRowDblClick(u, $event)">
@@ -398,7 +409,7 @@ async function reject(u) {
                   <span v-else style="color:var(--muted)">—</span>
                 </td>
                 <td>
-                  <span :style="u.is_active?'color:#2e7d32;font-weight:600':'color:#c62828'">
+                  <span :style="u.is_active?'color:var(--c-success);font-weight:600':'color:var(--c-danger)'">
                     {{ u.is_active ? '● 启用' : '○ 停用' }}
                   </span>
                 </td>
@@ -479,7 +490,7 @@ async function reject(u) {
 
         <div class="modal-footer">
           <button class="btn btn-ghost" @click="showEditModal=false">取消</button>
-          <button class="btn btn-primary" @click="saveEdit">保存</button>
+          <button class="btn btn-primary" :disabled="saving" @click="saveEdit">{{ saving ? '保存中…' : '保存' }}</button>
         </div>
       </div>
     </div>
@@ -493,7 +504,7 @@ async function reject(u) {
 .pending-badge {
   display: flex; align-items: center; gap: 6px;
   padding: 7px 14px; border-radius: 20px;
-  background: rgba(245,127,23,0.12); color: #e65100;
+  background: rgba(245,127,23,0.12); color: var(--c-warn);
   font-size: 13px; font-weight: 600;
   border: 1px solid rgba(245,127,23,0.25);
   animation: pulse 2s ease-in-out infinite;
@@ -503,7 +514,7 @@ async function reject(u) {
 .tab-count {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; border-radius: 50%;
-  background: rgba(245,127,23,0.2); color: #e65100;
+  background: rgba(245,127,23,0.2); color: var(--c-warn);
   font-size: 10px; font-weight: 700; margin-left: 4px;
 }
 
@@ -519,14 +530,14 @@ async function reject(u) {
 .pending-info { display: flex; align-items: flex-start; gap: 12px; flex: 1; min-width: 0; }
 .pa-avatar {
   width: 40px; height: 40px; border-radius: 12px; flex-shrink: 0;
-  background: linear-gradient(135deg, #e8a84a, #c96342);
+  background: linear-gradient(135deg, #e8a84a, var(--primary));
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 700; font-size: 17px;
 }
 .pa-name { font-weight: 700; font-size: 14px; }
 .pa-sub { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; margin-top: 2px; }
 .pa-chip {
-  background: rgba(21,101,192,0.1); color: #1565c0;
+  background: rgba(21,101,192,0.1); color: var(--c-info);
   border-radius: 10px; padding: 1px 7px; font-size: 11px; font-weight: 600;
 }
 .pa-depts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
@@ -566,13 +577,13 @@ async function reject(u) {
 /* 列头筛选漏斗不被裁剪 */
 .table-wrap thead th { overflow: visible; }
 /* sticky header while body scrolls (fixed-viewport layout) */
-.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 .clear-filters-btn { margin-left: auto; align-self: center; }
 .scheme-picker-push { margin-left: auto; }
 
 .table-avatar {
   width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
-  background: linear-gradient(135deg, #c96342, #a84e32);
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 700; font-size: 12px;
 }

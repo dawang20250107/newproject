@@ -66,7 +66,9 @@ def _extract_payload(request):
             return {}
         data = json.loads(body)
     except Exception:
-        return {'_raw': (request.body[:200].decode('utf-8', 'replace') + '…') if request.body else ''}
+        # 非 JSON 体不存原文：form-encoded/畸形 JSON 的登录请求会把明文密码带进日志。
+        # 只记长度与类型，足以定位问题而不落敏感内容。
+        return {'_raw_omitted': True, 'bytes': len(request.body or b''), 'content_type': ctype[:100]}
     data = _sanitize(data)
     # 总量兜底截断：超限时只保留键名清单
     try:

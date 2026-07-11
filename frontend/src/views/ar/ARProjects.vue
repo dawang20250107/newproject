@@ -1,4 +1,5 @@
 <script setup>
+import { confirmDlg } from '../../composables/confirm.js'
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from 'vue'
 import { useToast } from '../../composables/useToast.js'
 import { useAuthStore } from '../../stores/auth.js'
@@ -8,6 +9,7 @@ import { downloadBlob } from '../../utils/download.js'
 import { fmtCompact, fmtMoney } from '../../utils/format.js'
 import { TOOLTIP } from '../../utils/chartTheme.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
+import SelCell from '../../components/SelCell.vue'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
@@ -16,7 +18,12 @@ import { useTableSchemes } from '../../composables/useTableSchemes.js'
 import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
+import { useShiftSelect } from '../../composables/useShiftSelect.js'
+import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
+import { useRangeSelection } from '../../composables/useRangeSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { useModalEsc } from '../../composables/useModalEsc.js'
+import Pager from '../../components/Pager.vue'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -26,10 +33,10 @@ const stats = ref(null)
 const loading = ref(false)
 const loadErr = ref('')
 const page = ref(1)
-const size = 50
+const size = ref(50)
 const jumpPage = ref(1)
 function doJump() {
-  const tp = Math.ceil(total.value / size)
+  const tp = Math.ceil(total.value / size.value)
   const p = Math.max(1, Math.min(tp, jumpPage.value || 1))
   page.value = p; load()
 }
@@ -66,7 +73,7 @@ const statDept = computed(() => {
   return (sel && Array.isArray(sel.value) && sel.value.length === 1) ? sel.value[0] : ''
 })
 function buildParams() {
-  const p = { page: page.value, size }
+  const p = { page: page.value, size: size.value }
   if (filters.q.trim()) p.q = filters.q.trim()
   if (filters.is_shared) p.is_shared = filters.is_shared
   if (filters.is_draft) p.is_draft = filters.is_draft
@@ -101,7 +108,8 @@ const bulkDeleting = ref(false)
 const showDelConfirm = ref(false)
 const delConfirmText = ref('')              // 二次输入待删条数，防误删
 const pageAllSelected = computed(() =>
-  items.value.length > 0 && items.value.every(r => selectedIds.value.has(r.id)))
+  items.value.length > 0 && (selectAllMatching.value
+    || items.value.every(r => selectedIds.value.has(r.id))))
 const selectedCount = computed(() => selectAllMatching.value ? total.value : selectedIds.value.size)
 const hasSelection = computed(() => selectAllMatching.value || selectedIds.value.size > 0)
 const delConfirmOk = computed(() => delConfirmText.value.trim() === String(selectedCount.value))
@@ -110,16 +118,33 @@ const selectedPreview = computed(() =>
   selectAllMatching.value ? [] : items.value.filter(r => selectedIds.value.has(r.id)))
 function toggleRow(id) {
   const s = new Set(selectedIds.value)
-  if (s.has(id)) { s.delete(id); selectAllMatching.value = false } else s.add(id)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
   selectedIds.value = s
 }
-function toggleSelectPage() {
+// 跨页全选态下的任何手动改选：退出全选并把本页勾选落地（修复：全选态翻页后
+// 勾选框绑定值不变、点击视觉无反应）
+function exitSelectAllToPage() {
+  if (!selectAllMatching.value) return
+  selectAllMatching.value = false
   const s = new Set(selectedIds.value)
-  if (pageAllSelected.value) { items.value.forEach(r => s.delete(r.id)); selectAllMatching.value = false }
+  items.value.forEach(r => s.add(r.id))
+  selectedIds.value = s
+  toast.success('已退出「跨页全选」，改为手动勾选（本页已保留）')
+}
+// Excel 式 Shift 区间勾选（系统级复用）；任意手动改选先退出「跨页全选」态
+const { onRowSelClick, resetAnchor } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow, onManual: exitSelectAllToPage })
+function toggleSelectPage() {
+  exitSelectAllToPage()
+  const s = new Set(selectedIds.value)
+  if (pageAllSelected.value) items.value.forEach(r => s.delete(r.id))
   else items.value.forEach(r => s.add(r.id))
   selectedIds.value = s
 }
 function clearSelection() { selectedIds.value = new Set(); selectAllMatching.value = false }
+useEscClearSelection(() => hasSelection.value, clearSelection)   // ESC 退出勾选
+// Excel 式单元格区域选择（拖选/Shift 扩选/方向键移动/Ctrl+C 复制为 TSV）
+const rangeSel = useRangeSelection({ ignoreCols: () => (auth.canDelete ? [0] : []), onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
 function bulkDelete() {
   if (!selectedCount.value) return
   delConfirmText.value = ''
@@ -147,15 +172,20 @@ const form = reactive({
   customer_id: '',
 })
 // 项目台账内联改状态（与客户详情两边改同一字段，自动同步）
-async function changeStatus(item) {
-  try { await ar.updateProject(item.id, { status: item.status }) }
-  catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+async function changeStatus(item, prev) {
+  try { await ar.updateProject(item.id, { status: item.status }); return true }
+  catch (e) {
+    toast.error(e?.msg || e?.error || '操作失败')
+    if (prev !== undefined) item.status = prev   // 失败回滚，避免行内显示与后端不一致
+    return false
+  }
 }
 async function setStatus(item, s) {
   if (item.status === s) return
+  const prev = item.status
   item.status = s
-  await changeStatus(item)
-  toast.success(`✓ 项目「${item.short_name || item.customer_name}」状态改为${s}`)
+  if (await changeStatus(item, prev))   // 仅成功才提示，失败已回滚
+    toast.success(`✓ 项目「${item.short_name || item.customer_name}」状态改为${s}`)
 }
 
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
@@ -246,14 +276,19 @@ async function load(reset = false) {
   try {
     const res = await ar.listProjects(buildParams())
     items.value = res.data.items
+    resetAnchor()   // 数据集已更换：清 Shift 区间锚点
     total.value = res.data.total
+    loadStats()     // 统计条与列表同口径:筛选/搜索变化时同步刷新(不阻塞列表)
   } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
   } finally { loading.value = false }
 }
 
 async function loadStats() {
   try {
-    const res = await ar.projectStats({ dept: statDept.value })
+    // 统计条与列表同筛选口径(搜索/列头筛选联动);statDept 作为额外收窄叠加
+    const p = { ...buildParams(), dept: statDept.value || undefined }
+    delete p.page; delete p.size
+    const res = await ar.projectStats(p)
     stats.value = res.data
   } catch { stats.value = null }
 }
@@ -399,7 +434,7 @@ async function save() {
 }
 
 async function remove(item) {
-  if (!confirm(`确定删除项目「${item.short_name || item.customer_name}」？\n⚠ 该项目下的应收账款明细和回款记录将一并永久删除，不可恢复。`)) return
+  if (!(await confirmDlg(`确定删除项目「${item.short_name || item.customer_name}」？\n⚠ 该项目下的应收账款明细和回款记录将一并永久删除，不可恢复。`))) return
   try { await ar.deleteProject(item.id); reloadAll() }
   catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
 }
@@ -418,8 +453,14 @@ async function completeDraft(item) {
     post_invoice_days: item.post_invoice_days || 0,
     invoice_mode: item.invoice_mode || '全额', invoice_type: item.invoice_type || '专票',
     tax_rate: item.tax_rate || '0.06', notes: item.notes || '',
+    cycle_start_day: item.cycle_start_day || 1,
+    customer_id: item.customer_id || '',
     _complete_draft: true,
   })
+  // 与 openEdit/openCreate 同步重置合同联动状态：否则上一次编辑残留的
+  // 关联合同/搜索结果会被带进草稿补全表单，保存时误挂到该草稿项目上
+  linkedContracts.value = []
+  ctQuery.value = ''; ctResults.value = []
   showModal.value = true
 }
 
@@ -507,7 +548,7 @@ async function promoteDrafts() {
     if (pv.need_dept > 0) tip += `· 缺交付部门 ${pv.need_dept} 个 → 无法自动转，需到台账补部门后再转\n`
     tip += `\n确认转正这 ${pv.ready} 个？（应收数据保留，不会丢）`
     if (pv.ready === 0) { toast.error('暂无可直接转正的草稿，请先补交付部门。'); return }
-    if (!confirm(tip)) return
+    if (!(await confirmDlg(tip))) return
     const res = await ar.promoteDraftProjects({})
     toast.success(res.data?.message || '已转正')
     if (filters.is_draft) filters.is_draft = ''
@@ -515,6 +556,11 @@ async function promoteDrafts() {
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { promotingDrafts.value = false }
 }
+
+useModalEsc(
+  [() => showModal.value, () => (showModal.value = false)],
+  [() => showDelConfirm.value, () => (showDelConfirm.value = false)],
+)
 
 onMounted(async () => {
   if (auth.perms?.ar_shared_only) filters.is_shared = '1'
@@ -628,12 +674,13 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
     <!-- Table card -->
     <div class="card fh-fill" :class="{ 'data-reloading': loading && items.length }">
-      <div class="table-wrap page-scroll">
+      <div class="table-wrap page-scroll range-root" :ref="rangeSel.setRoot">
         <table class="proj-table">
           <thead>
             <tr>
               <th v-if="auth.canDelete" class="ctr sel-col">
                 <input type="checkbox" :checked="pageAllSelected" :disabled="!items.length"
+                  :indeterminate.prop="hasSelection && !pageAllSelected"
                   title="全选本页" @change="toggleSelectPage" />
               </th>
               <th v-if="showProjectNo || colFilters.project_no"><ColumnFilter label="项目编号" field="project_no" type="text" :model-value="colFilters.project_no" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_no',v)" @sort="o=>setSort('project_no',o)" /></th>
@@ -662,14 +709,12 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             <tr v-else-if="!items.length">
               <td colspan="16" class="empty-cell"><div class="empty-inner">暂无项目数据，点击「新增项目」开始</div></td>
             </tr>
-            <tr v-for="item in items" :key="item.id" class="data-row"
+            <tr v-for="(item, idx) in items" :key="item.id" class="data-row"
               :class="{ 'row-sel': selectAllMatching || selectedIds.has(item.id) }"
               @dblclick="onRowDblClick(item, $event)"
               @contextmenu.prevent="ctx.open($event, item)">
-              <td v-if="auth.canDelete" class="ctr sel-col">
-                <input type="checkbox" :checked="selectAllMatching || selectedIds.has(item.id)"
-                  @change="toggleRow(item.id)" />
-              </td>
+              <SelCell v-if="auth.canDelete" class="ctr" :idx="idx" :id="item.id"
+                :checked="selectAllMatching || selectedIds.has(item.id)" :on-sel="onRowSelClick" />
               <td v-if="showProjectNo || colFilters.project_no">
                 <span class="proj-no-tag">{{ item.project_no }}</span>
                 <span v-if="item.is_draft" class="badge-draft" title="导入自动创建，请补充完善">待完善</span>
@@ -712,12 +757,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           </tbody>
         </table>
       </div>
-      <div v-if="total > size" class="pagination">
-        <button :disabled="page <= 1" class="page-btn" @click="page--; load()">‹ 上一页</button>
-        <span class="page-info">第 {{ page }} 页 · 共 {{ total }} 条</span>
-        <button :disabled="page * size >= total" class="page-btn" @click="page++; load()">下一页 ›</button>
-        <span class="pg-jump">到第<input type="number" v-model.number="jumpPage" :min="1" :placeholder="`1-${Math.ceil(total / size)}`" class="pg-jump-input" @keyup.enter="doJump" />页</span>
-      </div>
+      <Pager v-model:page="page" v-model:size="size" :total="total" storage-key="ar_projects" @change="load()" />
     </div>
     </div><!-- /projTab list -->
 
@@ -962,12 +1002,12 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 }
 .pt-tab:hover { color: var(--primary); background: rgba(201,99,66,.05); }
 .pt-tab.on { color: var(--primary); font-weight: 800; }
-.pt-tab.on::after { content: ''; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 3px; border-radius: 3px 3px 0 0; background: linear-gradient(90deg, #c96342, #e8a05a); }
+.pt-tab.on::after { content: ''; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 3px; border-radius: 3px 3px 0 0; background: linear-gradient(90deg, var(--primary), #e8a05a); }
 
 /* ── 客户/项目分析 ──────────────────────────────────────────────────────────── */
 .econ-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
 .econ-dim { display: inline-flex; border: 1px solid rgba(180,140,110,.3); border-radius: 9px; overflow: hidden; }
-.ed-btn { border: none; background: #fff; cursor: pointer; padding: 7px 16px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.ed-btn { border: none; background: var(--row-bg); cursor: pointer; padding: 7px 16px; font-size: 13px; font-weight: 600; color: var(--muted); }
 .ed-btn.on { background: var(--primary); color: #fff; }
 .econ-hint { font-size: 12px; color: var(--muted); margin-left: auto; }
 .econ-kpis { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; margin-bottom: 16px; }
@@ -990,7 +1030,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .econ-table tbody tr:hover { background: rgba(201,99,66,.04); }
 .econ-table .muted { color: var(--muted); }
 .econ-table .strong { font-weight: 700; }
-.econ-table .neg { color: #c62828; }
+.econ-table .neg { color: var(--c-danger); }
 .econ-row-loss { background: rgba(198,40,40,.04); }
 .econ-row-unlinked { color: var(--muted); }
 .econ-name { font-weight: 600; color: var(--text); }
@@ -1006,15 +1046,15 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   box-shadow: 0 2px 12px rgba(0,0,0,0.06); min-width: 88px;
 }
 .stat-pill-gold { border-left: 3px solid #c9a227; }
-.stat-pill-blue { border-left: 3px solid #1565c0; }
+.stat-pill-blue { border-left: 3px solid var(--c-info); }
 .stat-pill-purple { border-left: 3px solid #6a1b9a; }
-.stat-pill-mom { border-left: 3px solid #2e7d32; }
+.stat-pill-mom { border-left: 3px solid var(--c-success); }
 .stat-label { font-size: 11px; color: var(--muted); font-weight: 500; letter-spacing: 0.03em; }
 .stat-value { font-size: 20px; font-weight: 700; color: var(--text); line-height: 1.2; display: flex; align-items: baseline; gap: 6px; }
 .stat-sub { font-size: 12px; font-weight: 500; color: var(--muted); }
 .mom-tag { font-size: 12px; font-weight: 700; }
-.mom-up { color: #2e7d32; }
-.mom-down { color: #c62828; }
+.mom-up { color: var(--c-success); }
+.mom-down { color: var(--c-danger); }
 .mom-flat { color: var(--muted); font-weight: 500; }
 .stat-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; flex-wrap: wrap; }
 /* Table — compact density */
@@ -1027,7 +1067,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 /* 列头允许筛选漏斗按钮溢出展示，不被裁切 */
 .proj-table thead th { overflow: visible; }
 /* 固定视口：表头吸顶，仅表体内部滚动（用不透明色，避免滚动内容透出） */
-.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f5f2ee; }
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 /* 单元格强制单行：行高不随列宽变化，从设计上杜绝「滚动条↔换行↔高度」回流抖动。
    两行结构的单元格（客户名+简称）每行各自单行截断，整体高度仍恒定。 */
 .proj-table td { padding: 5px 7px; vertical-align: middle; white-space: nowrap; }
@@ -1049,21 +1089,21 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .person { font-size: 12.5px; color: var(--text); white-space: nowrap; }
 .badge-shared { font-size: 10px; padding: 1px 7px; border-radius: 8px; background: rgba(106,27,154,0.1); color: #6a1b9a; font-weight: 600; margin-left: 5px; }
 .badge-draft { font-size: 10px; padding: 1px 7px; border-radius: 8px; background: rgba(192,57,43,0.12); color: #c0392b; font-weight: 600; margin-left: 5px; white-space: nowrap; }
-.icon-btn-complete { font-size: 11px; font-weight: 600; color: #1565c0; border-color: rgba(21,101,192,0.3); background: rgba(21,101,192,0.06); width: auto; padding: 0 8px; }
-.icon-btn-complete:hover { border-color: #1565c0; background: rgba(21,101,192,0.12); color: #1565c0; }
-.badge-self { font-size: 12px; padding: 2px 10px; border-radius: 8px; background: rgba(46,125,50,0.1); color: #2e7d32; font-weight: 600; }
+.icon-btn-complete { font-size: 11px; font-weight: 600; color: var(--c-info); border-color: rgba(21,101,192,0.3); background: rgba(21,101,192,0.06); width: auto; padding: 0 8px; }
+.icon-btn-complete:hover { border-color: var(--c-info); background: rgba(21,101,192,0.12); color: var(--c-info); }
+.badge-self { font-size: 12px; padding: 2px 10px; border-radius: 8px; background: rgba(46,125,50,0.1); color: var(--c-success); font-weight: 600; }
 .level-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 10px; font-weight: 700; background: rgba(0,0,0,0.05); color: var(--muted); }
 .level-chip.lv-S级 { background: rgba(201,162,39,0.15); color: #a8851c; }
-.level-chip.lv-A级 { background: rgba(21,101,192,0.12); color: #1565c0; }
-.level-chip.lv-B级 { background: rgba(46,125,50,0.1); color: #2e7d32; }
+.level-chip.lv-A级 { background: rgba(21,101,192,0.12); color: var(--c-info); }
+.level-chip.lv-B级 { background: rgba(46,125,50,0.1); color: var(--c-success); }
 .level-chip.lv-C级 { background: rgba(155,128,112,0.15); color: var(--muted); }
 .level-chip.lv-D级 { background: rgba(100,100,100,0.1); color: #888; }
-.yn-yes { color: #2e7d32; font-weight: 600; }
+.yn-yes { color: var(--c-success); font-weight: 600; }
 .yn-no { color: var(--muted); }
-.days-chip { font-size: 12px; padding: 2px 8px; border-radius: 8px; background: rgba(21,101,192,0.08); color: #1565c0; font-weight: 600; white-space: nowrap; }
+.days-chip { font-size: 12px; padding: 2px 8px; border-radius: 8px; background: rgba(21,101,192,0.08); color: var(--c-info); font-weight: 600; white-space: nowrap; }
 .invoice-mode { font-size: 12px; padding: 2px 8px; border-radius: 8px; font-weight: 600; }
-.mode-full { background: rgba(46,125,50,0.1); color: #2e7d32; }
-.mode-diff { background: rgba(245,127,23,0.1); color: #f57f17; }
+.mode-full { background: rgba(46,125,50,0.1); color: var(--c-success); }
+.mode-diff { background: rgba(245,127,23,0.1); color: var(--amber-deep); }
 .text-muted { color: var(--muted); }
 .text-sm { font-size: 12px; }
 .ctr { text-align: center; }
@@ -1094,8 +1134,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .del-tip { font-size: 13px; color: var(--text); margin: 0 0 8px; }
 .del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; box-sizing: border-box; }
 .del-input:focus { border-color: var(--danger); outline: none; }
-.btn-danger-solid { border: none; border-radius: 8px; padding: 8px 18px; font-size: 14px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
-.btn-danger-solid:disabled { opacity: .5; cursor: default; }
+/* 实心危险按钮统一走全局 .btn-danger-solid（style.css） */
 
 .row-actions { display: flex; gap: 4px; justify-content: center; }
 .icon-btn {
@@ -1104,7 +1143,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   color: var(--muted); cursor: pointer; transition: all 0.14s;
 }
 .icon-btn:hover { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.08); }
-.icon-btn-danger:hover { border-color: #c62828; color: #c62828; background: rgba(198,40,40,0.07); }
+.icon-btn-danger:hover { border-color: var(--c-danger); color: var(--c-danger); background: rgba(198,40,40,0.07); }
 
 .pagination { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 16px 0 4px; flex-shrink: 0; }
 .page-btn { padding: 5px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,252,250,0.7); color: var(--text); font-size: 13px; cursor: pointer; transition: all 0.14s; }
@@ -1140,7 +1179,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   background: rgba(0,0,0,0.08); color: var(--muted); font-size: 10px; cursor: pointer;
   display: flex; align-items: center; justify-content: center; line-height: 1;
 }
-.search-clear:hover { background: rgba(198,40,40,0.12); color: #c62828; }
+.search-clear:hover { background: rgba(198,40,40,0.12); color: var(--c-danger); }
 .filter-reset {
   padding: 8px 14px; border: 1px dashed var(--primary); border-radius: 10px; background: transparent;
   color: var(--primary); font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
@@ -1154,13 +1193,13 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .link-title { font-weight: 700; font-size: 13px; color: var(--text); }
 .link-sub { font-size: 11.5px; color: var(--muted); }
 .add-row { display: flex; gap: 8px; margin-bottom: 8px; }
-.add-sel { flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; background: #fff; }
+.add-sel { flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; background: var(--row-bg); }
 .link-empty { font-size: 12px; color: var(--muted); padding: 4px 0 8px; }
 .link-chip { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; background: rgba(255,255,255,0.6); flex-wrap: wrap; }
 .chip-name { font-weight: 600; font-size: 12.5px; }
 .chip-primary { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 3px; }
 .chip-x { margin-left: auto; width: 20px; height: 20px; border: none; border-radius: 50%; background: rgba(0,0,0,0.06); color: var(--muted); cursor: pointer; font-size: 11px; }
-.chip-x:hover { background: rgba(198,40,40,0.12); color: #c62828; }
+.chip-x:hover { background: rgba(198,40,40,0.12); color: var(--c-danger); }
 .ct-results { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; max-height: 180px; overflow: auto; }
 .ct-result { padding: 7px 10px; font-size: 12.5px; cursor: pointer; border-bottom: 1px solid rgba(0,0,0,0.04); }
 .ct-result:hover { background: rgba(201,99,66,0.06); }
@@ -1168,25 +1207,25 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .mono { font-family: monospace; font-size: 11.5px; }
 
 /* 导入结果弹窗 */
-.imp-ok { color: #2e7d32; }
-.imp-fail { color: #c62828; }
+.imp-ok { color: var(--c-success); }
+.imp-fail { color: var(--c-danger); }
 .imp-body { max-height: calc(82vh - 130px); overflow-y: auto; padding-right: 4px; scrollbar-width: thin; }
 .imp-body::-webkit-scrollbar { width: 6px; }
 .imp-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .imp-section { margin-bottom: 16px; }
 .imp-sec-label { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 6px; padding: 4px 10px; border-radius: 6px; background: rgba(0,0,0,0.04); }
-.imp-sec-label.imp-sec-warn { background: rgba(230,81,0,0.08); color: #e65100; }
+.imp-sec-label.imp-sec-warn { background: rgba(230,81,0,0.08); color: var(--c-warn); }
 .imp-sec-list { list-style: none; margin: 0; padding: 0 0 0 10px; display: flex; flex-direction: column; gap: 4px; }
 .imp-sec-list li { font-size: 12.5px; color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-all; border-bottom: 1px dashed rgba(0,0,0,0.06); padding-bottom: 4px; }
 .imp-sec-list li:last-child { border-bottom: none; }
 .imp-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 12px 0; }
 .lvl-hint { font-size: 10.5px; font-weight: 600; color: #7a9fd4; cursor: help; margin-left: 4px; }
-.proj-st-sel { font-size: 11px; border: 1px solid rgba(180,140,110,.4); border-radius: 7px; padding: 1px 4px; cursor: pointer; background: #fff; }
-.proj-st-sel.st-on { color: #2e7d32; } .proj-st-sel.st-pause { color: #e65100; } .proj-st-sel.st-end { color: #9e9e9e; }
+.proj-st-sel { font-size: 11px; border: 1px solid rgba(180,140,110,.4); border-radius: 7px; padding: 1px 4px; cursor: pointer; background: var(--row-bg); }
+.proj-st-sel.st-on { color: var(--c-success); } .proj-st-sel.st-pause { color: var(--c-warn); } .proj-st-sel.st-end { color: #9e9e9e; }
 .st-pill { display: inline-block; padding: 1px 8px; border-radius: 9px; font-size: 11px; font-weight: 600; }
-.st-on { background: #e8f5e9; color: #2e7d32; } .st-pause { background: #fff3e0; color: #e65100; } .st-end { background: #f3f3f3; color: #9e9e9e; }
+.st-on { background: #e8f5e9; color: var(--c-success); } .st-pause { background: #fff3e0; color: var(--c-warn); } .st-end { background: #f3f3f3; color: #9e9e9e; }
 .stat-draft-row { display: flex; align-items: center; gap: 8px; }
-.draft-clear-btn { font-size: 10.5px; padding: 1px 8px; border: 1px solid rgba(46,125,50,.4); background: rgba(46,125,50,.06); color: #2e7d32; border-radius: 9px; cursor: pointer; white-space: nowrap; }
+.draft-clear-btn { font-size: 10.5px; padding: 1px 8px; border: 1px solid rgba(46,125,50,.4); background: rgba(46,125,50,.06); color: var(--c-success); border-radius: 9px; cursor: pointer; white-space: nowrap; }
 .draft-clear-btn:hover:not(:disabled) { background: rgba(46,125,50,.14); }
 .draft-clear-btn:disabled { opacity: .5; cursor: default; }
 .pg-jump{display:inline-flex;align-items:center;gap:4px;font-size:13px;color:var(--muted);margin-left:8px}

@@ -1,9 +1,12 @@
 <script setup>
+import { confirmDlg } from '../../composables/confirm.js'
 import { ref, computed, onMounted } from 'vue'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS } from '../../constants.js'
 import api from '../../api/caiwu.js'
 import EmptyState from '../../components/EmptyState.vue'
+import { useToast } from '../../composables/useToast.js'
+const toast = useToast()
 
 const auth = useCaiwuAuth()
 const items = ref([])
@@ -64,28 +67,33 @@ async function add() {
     await api.post('/cockpit/knowledge', { content, scope: addScope.value || '全集团', kind: addKind.value })
     addContent.value = ''
     await load()
-  } catch (e) { alert(e?.msg || '添加失败') }
+    toast.success('已加入知识库')
+  } catch (e) { toast.error(e?.msg || '添加失败') }
 }
 
 async function del(k) {
-  if (!confirm('确定删除这条知识？')) return
+  if (!(await confirmDlg('确定删除这条知识？'))) return
   try { await api.delete(`/cockpit/knowledge/${k.id}`); items.value = items.value.filter(x => x.id !== k.id) }
-  catch (e) { alert(e?.msg || '删除失败') }
+  catch (e) { toast.error(e?.msg || '删除失败') }
 }
 async function togglePin(k) {
   try { const r = await api.put(`/cockpit/knowledge/${k.id}`, { pinned: !k.pinned }); Object.assign(k, r.data); await load() }
-  catch (e) { alert(e?.msg || '操作失败') }
+  catch (e) { toast.error(e?.msg || '操作失败') }
 }
 
 // 行内编辑
 const editId = ref(null)
 const editText = ref('')
 function startEdit(k) { editId.value = k.id; editText.value = k.content }
+let _kbSaving = false
 async function saveEdit(k) {
+  if (_kbSaving) return   // 防双击重复提交
   const content = editText.value.trim()
   if (!content) return
-  try { const r = await api.put(`/cockpit/knowledge/${k.id}`, { content }); Object.assign(k, r.data); editId.value = null }
-  catch (e) { alert(e?.msg || '保存失败') }
+  _kbSaving = true
+  try { const r = await api.put(`/cockpit/knowledge/${k.id}`, { content }); Object.assign(k, r.data); editId.value = null; toast.success('已保存') }
+  catch (e) { toast.error(e?.msg || '保存失败') }
+  finally { _kbSaving = false }
 }
 
 // 文件导入
@@ -104,9 +112,9 @@ async function onPickFile(e) {
     fd.append('mode', importMode.value)
     const res = await api.post('/cockpit/knowledge/import', fd,
       { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180000 })
-    alert(`✓ 已从「${res.data.file}」导入 ${res.data.created} 条知识（${importMode.value === 'distill' ? 'AI提炼' : '原文'}）`)
+    toast.success(`✓ 已从「${res.data.file}」导入 ${res.data.created} 条知识（${importMode.value === 'distill' ? 'AI提炼' : '原文'}）`)
     await load()
-  } catch (err) { alert(err?.msg || '导入失败') }
+  } catch (err) { toast.error(err?.msg || '导入失败') }
   finally { importing.value = false; e.target.value = '' }
 }
 
@@ -115,12 +123,33 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="topbar">
+    <div class="cw-hero">
       <div>
+        <div class="cw-eyebrow">KNOWLEDGE BASE · 长期记忆</div>
         <h1>经营知识库</h1>
-        <div style="font-size:13px;color:var(--muted);margin-top:2px">
-          业财融合助手的长期记忆 · 沉淀越多，助手越懂业务、判断越贴合经营
-        </div>
+        <div class="cw-hero-sub">业财融合助手的长期记忆 · 沉淀越多，助手越懂业务、判断越贴合经营</div>
+      </div>
+      <!-- 筛选收进 hero 右上：不占独立行 -->
+      <div class="cw-hero-ctrl kp-flt">
+        <input v-model="q" class="kp-search" placeholder="🔍 搜索知识…" />
+        <select v-model="fScope" class="kp-sel">
+          <option value="">范围</option>
+          <option value="全集团">全集团</option>
+          <option v-for="b in accessibleBus" :key="b" :value="b">{{ b }}</option>
+        </select>
+        <select v-model="fKind" class="kp-sel">
+          <option value="">类型</option>
+          <option value="background">背景</option>
+          <option value="rule">口径/规则</option>
+          <option value="insight">洞察</option>
+        </select>
+        <select v-model="fSource" class="kp-sel">
+          <option value="">来源</option>
+          <option value="user">人工</option>
+          <option value="ai">AI提炼</option>
+        </select>
+        <label class="kp-group-toggle"><input type="checkbox" v-model="grouped" /> 分组</label>
+        <span class="kp-count">{{ filtered.length }} / {{ items.length }} 条</span>
       </div>
     </div>
 
@@ -164,29 +193,6 @@ onMounted(load)
           <button class="btn btn-primary btn-sm" :disabled="!addContent.trim()" @click="add">添加</button>
         </div>
       </div>
-    </div>
-
-    <!-- 筛选 -->
-    <div class="kp-filterbar">
-      <input v-model="q" class="kp-search" placeholder="🔍 搜索知识内容…" />
-      <select v-model="fScope" class="kp-sel">
-        <option value="">全部范围</option>
-        <option value="全集团">全集团</option>
-        <option v-for="b in accessibleBus" :key="b" :value="b">{{ b }}</option>
-      </select>
-      <select v-model="fKind" class="kp-sel">
-        <option value="">全部类型</option>
-        <option value="background">背景</option>
-        <option value="rule">口径/规则</option>
-        <option value="insight">洞察</option>
-      </select>
-      <select v-model="fSource" class="kp-sel">
-        <option value="">全部来源</option>
-        <option value="user">人工</option>
-        <option value="ai">AI提炼</option>
-      </select>
-      <label class="kp-group-toggle"><input type="checkbox" v-model="grouped" /> 按事业部分组</label>
-      <span class="kp-count">{{ filtered.length }} / {{ items.length }} 条</span>
     </div>
 
     <EmptyState v-if="loading && !items.length" loading />
@@ -239,14 +245,17 @@ onMounted(load)
 .kp-tool-title { font-size: 14px; font-weight: 700; color: var(--text); }
 .kp-tool-sub { font-size: 11.5px; color: var(--muted); margin: 2px 0 10px; }
 .kp-import-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
-.kp-sel { height: 32px; border: 1px solid rgba(0,0,0,0.12); border-radius: 8px; background: #fff; font-size: 12.5px; color: var(--text); padding: 0 9px; }
+.kp-sel { height: 32px; border: 1px solid rgba(0,0,0,0.12); border-radius: 8px; background-color: var(--row-bg); font-size: 12.5px; color: var(--text); padding: 0 28px 0 9px; }
 .kp-textarea { width: 100%; resize: vertical; border: 1px solid rgba(0,0,0,0.12); border-radius: 9px; padding: 8px 11px; font-size: 13px; font-family: inherit; line-height: 1.5; outline: none; box-sizing: border-box; }
 .kp-textarea:focus { border-color: var(--primary); }
 
-.kp-filterbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
-.kp-search { flex: 1; min-width: 180px; height: 34px; border: 1px solid rgba(0,0,0,0.12); border-radius: 9px; padding: 0 12px; font-size: 13px; outline: none; }
-.kp-search:focus { border-color: var(--primary); }
-.kp-count { font-size: 12px; color: var(--muted); margin-left: auto; }
+/* 筛选收进 hero 右上：小框框规格，不占独立行 */
+.kp-flt { gap: 6px; justify-content: flex-end; }
+.kp-flt .kp-sel { height: 26px; font-size: 11.5px; padding: 0 7px; border-radius: 7px; color: var(--muted); max-width: 108px; }
+.kp-flt .kp-sel:focus, .kp-flt .kp-sel:hover { color: var(--text); border-color: var(--primary); }
+.kp-search { width: 168px; height: 26px; border: 1px solid rgba(0,0,0,0.12); border-radius: 8px; padding: 0 10px; font-size: 12px; outline: none; background: var(--row-bg); }
+.kp-search:focus { border-color: var(--primary); width: 220px; transition: width .15s; }
+.kp-count { font-size: 11px; color: var(--muted); }
 
 .kp-group-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); cursor: pointer; }
 .kp-empty { text-align: center; padding: 60px 20px; }
@@ -258,7 +267,7 @@ onMounted(load)
 .kp-item.pinned { border-color: rgba(201,99,66,0.35); background: rgba(201,99,66,0.04); }
 .kp-meta { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
 .kp-kind { font-size: 10.5px; font-weight: 700; padding: 1px 8px; border-radius: 6px; color: #fff; background: #7a9fd4; }
-.kp-kind.insight { background: #2e7d32; }
+.kp-kind.insight { background: var(--c-success); }
 .kp-kind.rule { background: #8a4b34; }
 .kp-scope { font-size: 11.5px; color: var(--muted); font-weight: 600; }
 .kp-src { font-size: 10px; padding: 0 6px; border-radius: 5px; border: 1px solid rgba(0,0,0,0.12); color: var(--muted); }

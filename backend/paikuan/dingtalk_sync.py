@@ -1,0 +1,908 @@
+"""钉钉审批同步 —— 取数分类、通用字段映射、同步/刷新落库，以及对外端点。
+
+设计要点：
+- "全部模板"口径：钉钉查询按模板(process_code)，逐模板拉某人的实例，再按任务分
+  待处理/已处理/该员工发起。
+- 模板五花八门（报销/付款/采购…字段各不同），故用"通用最佳努力映射"：
+  审批编号=business_id、标题=title、申请人/部门取发起人或表单同名字段、
+  金额取 MoneyField/含"金额"字段、收款方取常见关键字段，全表单原样存 ext_raw。
+- 落库按 dingtalk_instance_id 去重：已存在→更新状态/金额，否则新建。
+纯映射函数不碰网络，便于单测；端点只做参数校验 + 调 client + 落库。
+"""
+import datetime
+import logging
+import re
+from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal, InvalidOperation
+
+from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
+
+from paikuan import dingtalk_client as dc
+from paikuan.dingtalk_client import DingTalkError
+from paikuan.models import ApprovalRecord, DingtalkInstance
+from paikuan.views import (DEPARTMENTS, err, get_request_perms, ok, parse_body,
+                           pk_required)
+
+logger = logging.getLogger(__name__)
+
+# 通用字段匹配关键字（按优先级）
+_PAYEE_KEYS = ['收款方', '收款单位', '收款账户', '收款账号', '收款人', '供应商名称', '供应商', '收款方名称']
+_APPLICANT_KEYS = ['申请人', '创建人', '经办人']
+_QUERY_CAP = 300    # 命中结果上限（返回给前端的条数），超出提示缩小范围
+_FETCH_CAP = 1000   # 拉实例详情安全阀：待处理/已处理需拉详情后分类，限制单次拉取量
+
+
+# ── 通用映射 ──────────────────────────────────────────────────────────────────
+def match_department(raw):
+    """把钉钉部门串（如"劳务事业部-项目四部"）匹配到系统 7 大事业部之一；匹配不到留空。"""
+    raw = raw or ''
+    for d in DEPARTMENTS:
+        if d in raw:
+            return d
+    return ''
+
+
+def map_status(status, result):
+    """钉钉审批状态 → 系统审批状态。"""
+    status = (status or '').upper()
+    result = (result or '').lower()
+    if status == 'COMPLETED':
+        return 'rejected' if result == 'refuse' else 'approved'
+    if status in ('TERMINATED', 'CANCELED'):
+        return 'canceled'
+    return 'pending'   # NEW / RUNNING
+
+
+def _num(value):
+    """把 "1,455.50" / "600.00元" 之类抠成 Decimal，失败返回 None。"""
+    if value is None:
+        return None
+    s = re.sub(r'[^0-9.\-]', '', str(value))
+    if s in ('', '.', '-'):
+        return None
+    try:
+        return Decimal(s)
+    except InvalidOperation:
+        return None
+
+
+def _form_pairs(detail):
+    """把 form_component_values 摊平成 [(name, value, comp_type)]（跳过空值）。"""
+    out = []
+    for it in (detail.get('form_component_values') or []):
+        if not isinstance(it, dict):
+            continue
+        out.append((it.get('name', '') or '', it.get('value', ''), it.get('component_type', '') or ''))
+    return out
+
+
+import json as _json
+
+# 金额字段优先级（从高到低）：实付类 > 合计/总额类 > 报销/申请/金额类。
+# 取"实付"优先，避免"报销金额(含抵扣前)"盖过"实付金额(实际打款)"。
+_PAY_KEYS = ('实付金额', '实付', '实发金额', '实发', '付款金额', '应付金额', '打款金额', '实际报销')
+# "总报销金额/报销合计"等汇总字段排在合计档，优先于逐条"报销金额"
+_SUM_KEYS = ('总报销金额', '报销合计', '价税合计', '合计金额', '费用合计', '合计', '总计', '总金额', '总额')
+_GROSS_KEYS = ('报销金额', '申请金额', '金额')
+# 行内金额列优先级：一行只取一个金额列（避免"金额"与"价税合计"重复相加）
+_ROW_TOTAL_KEYS = ('价税合计', '合计', '总额', '总金额', '报销金额', '金额')
+
+
+def _flatten_row(row):
+    """把一行明细规整成 {列名: 值}。兼容两种形态：
+    ① {列名: 值}；② 钉钉明细控件 {'rowValue':[{'label','value','key'}, ...]}。"""
+    if not isinstance(row, dict):
+        return {}
+    rv = row.get('rowValue')
+    if isinstance(rv, list):
+        out = {}
+        for cell in rv:
+            if isinstance(cell, dict) and cell.get('label') is not None:
+                out[str(cell.get('label'))] = cell.get('value')
+        return out
+    return row
+
+
+def _as_rows(value):
+    """把值解析成"明细行数组"[dict,...]（已展平为 {列名:值}）；不是明细数组则返回 None。
+    兼容 value 已是 list，或为 JSON 数组字符串（钉钉报销/明细控件常见）。"""
+    v = value
+    if isinstance(v, str):
+        s = v.strip()
+        if not (s.startswith('[') and s.endswith(']')):
+            return None
+        try:
+            v = _json.loads(s)
+        except (ValueError, TypeError):
+            return None
+    if isinstance(v, list) and any(isinstance(r, dict) for r in v):
+        return [_flatten_row(r) for r in v if isinstance(r, dict)]
+    return None
+
+
+def _amount_candidates(detail):
+    """收集所有"标量金额字段" [(name, Decimal)]：MoneyField、名字含"金额"、或名字含合计/
+    总额类关键字。跳过"明细数组"字段（其 value 是 JSON 串，交给表求和，避免抠成乱码金额）。"""
+    out = []
+    for name, value, ctype in _form_pairs(detail):
+        if _as_rows(value) is not None:
+            continue
+        looks_money = (ctype == 'MoneyField' or '金额' in name
+                       or any(k in name for k in _SUM_KEYS))
+        if looks_money:
+            n = _num(value)
+            if n is not None:
+                out.append((name, n))
+    return out
+
+
+def _table_amount_sum(detail):
+    """明细控件按行求和：每行只取一个金额列（按 _ROW_TOTAL_KEYS 优先级），避免同一行
+    "不含税金额"与"价税合计"重复累加。明细识别按"值是JSON数组"或 componentType=TableField，
+    兼容钉钉报销单把明细做成特殊控件的情形。"""
+    total = Decimal('0')
+    hit = False
+    for _name, value, ctype in _form_pairs(detail):
+        rows = _as_rows(value)   # 已展平 rowValue → {列名:值}
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            picked = None
+            for key in _ROW_TOTAL_KEYS:           # 按优先级取一列
+                for k, v in row.items():
+                    if key in str(k):
+                        n = _num(v)
+                        if n is not None:
+                            picked = n
+                            break
+                if picked is not None:
+                    break
+            if picked is not None:
+                total += picked
+                hit = True
+    return total if hit else None
+
+
+def extract_amount(detail):
+    """从表单抠应付总金额，尽量对齐钉钉单据"实付/合计"：
+    候选金额字段里按 实付 → 合计/总额 → 报销/申请/金额 三档取，命中高档即返回（同档取最大）；
+    都不命中则取候选最大；顶层取不到(空或为0)时兜底明细表(TableField)按行求和。"""
+    money = _amount_candidates(detail)
+    best = None
+    if money:
+        for tier in (_PAY_KEYS, _SUM_KEYS, _GROSS_KEYS):
+            hits = [n for name, n in money if any(k in name for k in tier)]
+            if hits:
+                best = max(hits)
+                break
+        if best is None:
+            best = max(n for _, n in money)
+    # 顶层没有金额字段、或取到 0（金额常只在明细表里）→ 兜底明细表求和
+    if best is None or best == 0:
+        s = _table_amount_sum(detail)
+        if s is not None and s != 0:
+            return s
+    return best if best is not None else Decimal('0')
+
+
+_SUMMARY_KEYS = ('事由', '报销内容', '摘要', '事项', '用途', '说明', '费用类型',
+                 '报销类型', '付款事由', '采购内容', '备注', '内容')
+
+
+def build_summary(detail):
+    """行内"摘要"：挑几个常见关键字段拼一句，便于列表一眼看懂（不含金额，金额单列）。
+    先看顶层字段；报销单关键内容常在明细表(rowValue)里，故也扫明细行的"报销内容/事由"等。"""
+    parts, seen = [], set()
+
+    def _add(v):
+        v = str(v).strip()
+        if v and v not in seen and len(parts) < 2:
+            seen.add(v)
+            parts.append(v)
+
+    for k in _SUMMARY_KEYS:
+        for name, value, _ in _form_pairs(detail):
+            if k in name and _as_rows(value) is None:   # 跳过明细数组本身
+                _add(value)
+        if len(parts) >= 2:
+            break
+    # 顶层没取到 → 从明细表行里找
+    if not parts:
+        for _name, value, _ in _form_pairs(detail):
+            rows = _as_rows(value)
+            if not rows:
+                continue
+            for row in rows:
+                for k in _SUMMARY_KEYS:
+                    for col, cv in row.items():
+                        if k in str(col):
+                            _add(cv)
+                if len(parts) >= 2:
+                    break
+            if parts:
+                break
+    return ' / '.join(parts)[:200]
+
+
+def extract_payee(detail, applicant):
+    """收款方：按常见关键字段取；取不到回退为申请人（报销单收款方即本人）。"""
+    pairs = _form_pairs(detail)
+    for key in _PAYEE_KEYS:
+        for name, value, _ in pairs:
+            if key in name and str(value).strip():
+                return str(value).strip()[:200]
+    return (applicant or '')[:200]
+
+
+def _form_field(detail, keys):
+    for key in keys:
+        for name, value, _ in _form_pairs(detail):
+            if key in name and str(value).strip():
+                return str(value).strip()
+    return ''
+
+
+def instance_to_fields(detail, name_resolver=None):
+    """钉钉实例详情 → ApprovalRecord 字段 dict（通用最佳努力）。
+    name_resolver(userid)->name 可选，仅在表单无"申请人"字段时用来解发起人姓名。"""
+    applicant = _form_field(detail, _APPLICANT_KEYS)
+    if not applicant:
+        uid = detail.get('originator_userid') or ''
+        applicant = (name_resolver(uid) if (name_resolver and uid) else uid) or ''
+    dept_raw = (detail.get('originator_dept_name') or _form_field(detail, ['部门']) or '')
+    number = (detail.get('business_id') or '')[:21]
+    title = (detail.get('title') or '').strip() or '钉钉审批'
+    return {
+        'applicant': applicant[:100] or '—',
+        'department': match_department(dept_raw) or '集团总部',
+        'approval_number': number,
+        'summary': title[:500],
+        'amount': extract_amount(detail),
+        'payee': extract_payee(detail, applicant) or '—',
+        'status': map_status(detail.get('status'), detail.get('result')),
+        'secondary_dept': dept_raw[:100],
+        'ext_source': 'dingtalk',
+        'dingtalk_instance_id': detail.get('_instance_id') or detail.get('business_id') or '',
+        'ext_raw': {'title': title, 'business_id': number, 'dept': dept_raw,
+                    'status': detail.get('status'), 'result': detail.get('result'),
+                    'form': [{'name': n, 'value': v} for n, v, _ in _form_pairs(detail)]},
+    }
+
+
+# 新版 operationRecords：处理动作类型与结果
+_ACTED_TYPES = {'EXECUTE_TASK_NORMAL', 'EXECUTE_TASK_AGENT',
+                'APPEND_TASK_BEFORE', 'APPEND_TASK_AFTER', 'REDIRECT_TASK'}
+_ACTED_RESULTS = {'AGREE', 'REFUSE'}
+
+
+def classify(detail, userid):
+    """该 userid 在这条审批里的角色：todo(待他处理) / done(已处理) / originated(他发起)。
+    优先用 tasks（旧结构/若返回）；新版无 tasks 时用 operationRecords + approverUserIds 推断。"""
+    tasks = [t for t in (detail.get('tasks') or []) if t.get('userid') == userid]
+    if tasks:
+        if any((t.get('task_status') or '').upper() in ('RUNNING', 'NEW', 'PENDING') for t in tasks):
+            return 'todo'
+        return 'done'   # 有任务且都非进行中 = 已处理
+    # 新版：他有过"审批动作(同意/拒绝)"记录 → 已处理
+    acted = any(o.get('userid') == userid
+                and (o.get('type') or '').upper() in _ACTED_TYPES
+                and (o.get('result') or '').upper() in _ACTED_RESULTS
+                for o in (detail.get('operation_records') or []))
+    if acted:
+        return 'done'
+    # 他在当前审批人名单里且实例仍在审批中 → 待处理
+    if userid in (detail.get('approver_userids') or []) and \
+            (detail.get('status') or '').upper() == 'RUNNING':
+        return 'todo'
+    if detail.get('originator_userid') == userid:
+        return 'originated'
+    return 'other'
+
+
+# ── 端点 ──────────────────────────────────────────────────────────────────────
+def _page_denied(request):
+    perms = get_request_perms(request)
+    if perms is not None and not perms['pages'].get('approval_records', True):
+        return err('无访问权限', 403, 403)
+    return None
+
+
+def _write_denied(request):
+    perms = get_request_perms(request)
+    if perms is not None:
+        if not perms['pages'].get('approval_records', True):
+            return err('无访问权限', 403, 403)
+        if not perms.get('can_create', True):
+            return err('无创建权限', 403, 403)
+    return None
+
+
+def _ms(date_str, end=False):
+    d = datetime.date.fromisoformat(date_str)
+    t = datetime.time(23, 59, 59) if end else datetime.time(0, 0, 0)
+    dt = timezone.make_aware(datetime.datetime.combine(d, t))
+    return int(dt.timestamp() * 1000)
+
+
+_MAX_WINDOW_MS = 110 * 24 * 3600 * 1000   # 钉钉限制单次≤120天，留余量按110天分段
+
+
+def _time_segments(start_ms, end_ms):
+    """把 [start,end] 切成 ≤110 天的窗口（钉钉 instanceIds 单次≤120 天限制）。"""
+    segs, s = [], int(start_ms)
+    end_ms = int(end_ms)
+    while s < end_ms:
+        e = min(s + _MAX_WINDOW_MS, end_ms)
+        segs.append((s, e))
+        s = e
+    return segs or [(int(start_ms), end_ms)]
+
+
+@csrf_exempt
+@pk_required()
+def dingtalk_test(request):
+    """GET 测试钉钉连通性 + 回显服务器实际读到的配置（脱敏），并列出可同步模板。
+    凭证被拒时据此自查：AppKey 是否填成了 AppID、Secret 长度是否被截断等。"""
+    from django.conf import settings
+    denied = _page_denied(request)
+    if denied:
+        return denied
+    key = (settings.DINGTALK_APP_KEY or '').strip()
+    secret = (settings.DINGTALK_APP_SECRET or '').strip()
+    corp = (settings.DINGTALK_CORP_ID or '').strip()
+    config = {
+        'app_key': key or '(未配置)',
+        'secret_len': len(secret),
+        'secret_masked': (secret[:4] + '****' + secret[-4:]) if len(secret) >= 8 else '(空或过短)',
+        'corp_id_set': bool(corp),
+        'process_codes_set': bool((settings.DINGTALK_PROCESS_CODES or '').strip()),
+        'admin_userid_set': bool((settings.DINGTALK_ADMIN_USERID or '').strip()),
+    }
+    try:
+        dc.access_token()
+    except DingTalkError as ex:
+        return ok({'connected': False, 'error': str(ex), 'config': config,
+                   'hint': 'AppKey 应为 Client ID（如 ding 开头），不是 AppID（形如 uuid）；'
+                           '并确认 Secret 未被截断（长度通常 64）、环境变量已生效并重启。'})
+    templates, tpl_err = [], ''
+    try:
+        templates = dc.list_process_codes()
+    except DingTalkError as ex:
+        tpl_err = str(ex)
+    result = {'connected': True, 'templates': templates, 'config': config}
+    if tpl_err:
+        result['template_error'] = tpl_err
+    if not templates:
+        result['hint'] = ('此处未列出全局模板不影响使用：查询时会自动改用「被查那个人自己可见的模板」，'
+                          '基础版无需配管理员。若想在这里预列全局模板，可选配 DINGTALK_ADMIN_USERID '
+                          '（超级管理员 userid，用本页手机号查该管理员即可复制），或在 DINGTALK_PROCESS_CODES 手动配置。'
+                          '前提：应用「可用范围」需设为全部员工，否则查不到他人。')
+    return ok(result)
+
+
+@csrf_exempt
+@pk_required()
+def dingtalk_resolve_user(request):
+    """POST {mobile} 或 {name} → 候选人列表（手机号唯一；姓名可能多个，交前端选择）。"""
+    denied = _page_denied(request)
+    if denied:
+        return denied
+    body = parse_body(request)
+    mobile = (body.get('mobile') or '').strip()
+    name = (body.get('name') or '').strip()
+    try:
+        if mobile:
+            uid = dc.userid_by_mobile(mobile)
+            if not uid:
+                return ok({'users': []})
+            info = dc.user_detail(uid)
+            return ok({'users': [{'userid': uid, 'name': info.get('name') or mobile}]})
+        if name:
+            return ok({'users': dc.users_by_name(name)})
+    except DingTalkError as ex:
+        return err(str(ex), 502, 502)
+    return err('请提供手机号或姓名')
+
+
+def _gather_templates():
+    """并集：手动配置(DINGTALK_PROCESS_CODES/管理员) ∪ 企业下全部审批模板（userId 省略）。
+    用「企业全部模板」而非某人可发起模板，才能覆盖审批人不可发起的报销等表单。
+    返回 (templates, api_err)；配置项优先保留自定义名称。"""
+    templates = dc.list_process_codes()
+    seen = {t['process_code'] for t in templates}
+    api_err = ''
+    try:
+        for t in dc.all_templates():
+            if t['process_code'] not in seen:
+                seen.add(t['process_code'])
+                templates.append(t)
+    except DingTalkError as ex:
+        api_err = str(ex)
+        logger.warning('all_templates failed: %s', ex)
+    return templates, api_err
+
+
+def _cache_usable(c):
+    """本地存档是否可直接复用：终态 + raw 含表单数据（避免早期空存档误当有效）。"""
+    return bool(c and c.is_terminal() and isinstance(c.raw, dict)
+                and c.raw.get('form_component_values'))
+
+
+def _cache_upsert(iid, code, tname, detail):
+    """把一条钉钉实例详情落到本地存档（供重复查询直读 + 详情弹窗渲染）。"""
+    f = instance_to_fields(detail)
+    DingtalkInstance.objects.update_or_create(instance_id=iid, defaults={
+        'process_code': code, 'template_name': tname,
+        'business_id': f['approval_number'], 'title': f['summary'],
+        'summary': build_summary(detail), 'applicant': f['applicant'],
+        'department': f['department'],
+        'originator_userid': detail.get('originator_userid', ''),
+        'amount': f['amount'], 'payee': f['payee'],
+        'ding_status': detail.get('status', ''), 'ding_result': detail.get('result', ''),
+        'sys_status': f['status'], 'create_time': detail.get('create_time', ''),
+        'approver_userids': detail.get('approver_userids') or [],
+        'raw': detail,
+    })
+
+
+@csrf_exempt
+@pk_required()
+def dingtalk_templates(request):
+    """GET/POST → 企业下全部审批模板（含分组名 dir_name），供前端勾选后再查。
+    这一步很轻（不拉实例），也用来确认「报销」等模板是否在授权范围内。"""
+    denied = _page_denied(request)
+    if denied:
+        return denied
+    try:
+        templates, api_err = _gather_templates()
+    except DingTalkError as ex:
+        return err(str(ex), 502, 502)
+    if not templates:
+        if api_err:
+            return err('获取审批模板失败：' + api_err
+                       + '（多为应用未开通「工作流模板读」权限，或「可用范围」未设为全部员工）', 502, 502)
+        return err('未获取到任何审批模板，请确认应用已开通「工作流模板读」权限且可用范围为全部员工', 400)
+    return ok({'templates': templates, 'count': len(templates)})
+
+
+@csrf_exempt
+@pk_required()
+def dingtalk_query(request):
+    """POST {userid, start, end, status:todo|done|originated, process_codes?:[...]} →
+    该员工在时间区间内、跨所选模板（默认全部可见模板）的审批列表（含系统同步状态）。"""
+    denied = _page_denied(request)
+    if denied:
+        return denied
+    body = parse_body(request)
+    userid = (body.get('userid') or '').strip()
+    status = (body.get('status') or 'all').strip()   # all=一次查回待处理/已处理/发起三口径
+    # 前端传 templates:[{process_code,name}]（推荐）或 process_codes:[code]。
+    picked_tpls = body.get('templates') or []
+    picked_codes = body.get('process_codes') or []
+    if not userid:
+        return err('缺少 userid')
+    if status not in ('todo', 'done', 'originated', 'all'):
+        return err('status 无效（todo/done/originated/all）')
+    try:
+        start_ms, end_ms = _ms(body['start']), _ms(body['end'], end=True)
+    except Exception:
+        return err('时间范围无效（YYYY-MM-DD）')
+
+    try:
+        tpl_api_err = ''
+        if picked_tpls or picked_codes:
+            # 已指定模板 → 直接用，跳过"拉企业全部模板"（否则每次查询都重拉全量目录=超时主因）
+            seen, templates = set(), []
+            for t in picked_tpls:
+                c = (t.get('process_code') or '').strip()
+                if c and c not in seen:
+                    seen.add(c); templates.append({'process_code': c, 'name': t.get('name') or c})
+            for c in picked_codes:
+                c = (c or '').strip()
+                if c and c not in seen:
+                    seen.add(c); templates.append({'process_code': c, 'name': c})
+        else:
+            templates, tpl_api_err = _gather_templates()
+        if not templates:
+            if tpl_api_err:
+                # 接口报错（多为权限/可见范围）——把钉钉原话透出来，便于对症开权限
+                return err('获取审批模板失败：' + tpl_api_err
+                           + '（多为应用未开通「工作流模板读」权限，或「可用范围」未设为全部员工）', 502, 502)
+            return err('请先在上方勾选要查询的审批模板', 400)
+        name_by_code = {t['process_code']: t.get('name', '') for t in templates}
+        # listids 的 userIds 过滤的是「发起人」，statuses 过滤实例状态：
+        # - originated（他发起）→ 按发起人过滤，精准高效；
+        # - todo（待他审批）→ 只可能在 RUNNING 实例，按状态收窄再按审批人名单分类；
+        # - done（他已审批）→ 状态不定（他处理完实例可能仍在流转），全量拉后按操作记录分类。
+        # all（三口径一次查）→ 全量拉（发起也在其中），逐条分类到 todo/done/originated
+        originator = userid if status == 'originated' else None
+        status_filter = ['RUNNING'] if status == 'todo' else None
+
+        # ① 并发拉各模板的实例 ID（按≤110天分段，规避钉钉120天限制；单模板失败不拖累整体）
+        def _ids_for(t):
+            try:
+                seen, out = set(), []   # 跨分段去重：相邻窗口边界实例可能被两段各返回一次
+                for s_ms, e_ms in _time_segments(start_ms, end_ms):
+                    for iid in dc.list_instance_ids(
+                            t['process_code'], s_ms, e_ms, originator, status_filter):
+                        if iid not in seen:
+                            seen.add(iid)
+                            out.append((iid, t['process_code']))
+                return out
+            except DingTalkError as ex:
+                logger.warning('listids %s failed: %s', t.get('process_code'), ex)
+                return []
+
+        inst_ids = []
+        found_by_code = {}   # 每个模板拉到的实例数（未按口径过滤前）——用于诊断
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            for pairs in pool.map(_ids_for, templates):
+                if pairs:
+                    found_by_code[pairs[0][1]] = found_by_code.get(pairs[0][1], 0) + len(pairs)
+                inst_ids.extend(pairs)
+        # 待处理/已处理无法按审批人过滤，需拉详情后分类；原始池可能很大。
+        # 对"拉详情"设安全阀 _FETCH_CAP（避免超时/超量），对"命中结果"另设 _QUERY_CAP，
+        # 二者分开——避免命中项被原始池提前截断而漏报（原始池只在超 _FETCH_CAP 时才截）。
+        raw_capped = len(inst_ids) > _FETCH_CAP
+        inst_ids = inst_ids[:_FETCH_CAP]
+
+        ids_only = [i for i, _ in inst_ids]
+        code_by_iid = dict(inst_ids)   # iid → process_code
+        # 已同步集合（一次查库）
+        synced = {r.dingtalk_instance_id: r for r in ApprovalRecord.objects.filter(
+            dingtalk_instance_id__in=ids_only, deleted_at__isnull=True)}
+
+        # ② 本地存档命中：终态且"存档含表单数据"才直接读本地；进行中/未缓存/存档无表单
+        #    （历史空存档）都去钉钉重拉，避免早期空存档导致金额/摘要恒为 0/空。
+        cache = {c.instance_id: c for c in DingtalkInstance.objects.filter(instance_id__in=ids_only)}
+        cached_hits = sum(1 for iid in ids_only if _cache_usable(cache.get(iid)))
+        to_fetch = [(iid, code) for iid, code in inst_ids if not _cache_usable(cache.get(iid))]
+
+        def _detail(pair):
+            iid, code = pair
+            try:
+                return iid, dc.get_instance(iid)
+            except DingTalkError as ex:
+                logger.warning('get_instance %s failed: %s', iid, ex)
+                return iid, None
+
+        fetched = {}
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            for iid, detail in pool.map(_detail, to_fetch):
+                if detail is not None:
+                    fetched[iid] = detail
+        # 落档（主线程串行写库；子线程只做 HTTP）
+        for iid, detail in fetched.items():
+            _cache_upsert(iid, code_by_iid.get(iid, ''), name_by_code.get(code_by_iid.get(iid, ''), ''), detail)
+
+        def _raw(iid):
+            if iid in fetched:
+                return fetched[iid]
+            c = cache.get(iid)
+            return c.raw if c and isinstance(c.raw, dict) and c.raw else None
+
+        items = []
+        matched_by_code = {}   # 每个模板符合当前口径的条数——用于诊断
+        for iid, code in inst_ids:
+            detail = _raw(iid)
+            if not detail:
+                continue
+            if status == 'originated':
+                # 上游已按「发起人」过滤，凡该人发起的一律保留——避免他"既发起又参与审批"
+                # 被 classify 误判成 done/todo 而丢失。
+                if detail.get('originator_userid') != userid:
+                    continue
+                role = 'originated'
+            elif status == 'all':
+                # 三口径一次查：逐条分类，保留他相关的 待处理/已处理/发起
+                role = classify(detail, userid)
+                if role not in ('todo', 'done', 'originated'):
+                    continue
+            else:
+                role = classify(detail, userid)
+                if role != status:
+                    continue
+            matched_by_code[code] = matched_by_code.get(code, 0) + 1
+            f = instance_to_fields(detail)
+            rec = synced.get(iid)
+            sys_status = map_status(detail.get('status'), detail.get('result'))
+            items.append({
+                'instance_id': iid,
+                'template': name_by_code.get(code, code),
+                'title': f['summary'],
+                'summary': build_summary(detail),
+                'approval_number': f['approval_number'],
+                'applicant': f['applicant'],
+                'department': f['department'],
+                'amount': str(f['amount']),
+                'payee': f['payee'],
+                'ding_status': sys_status,
+                'task': role,
+                'create_time': detail.get('create_time', ''),
+                'synced': bool(rec),
+                'sync_rec_no': rec.approval_number if rec else '',
+                'sync_stale': bool(rec) and rec.status != sys_status,
+                'cached': iid in cache and iid not in fetched,
+                # 进行中实例本次刷新失败 → 用的是旧存档，标记为"数据可能陈旧"
+                'stale': (iid in cache and iid not in fetched
+                          and not cache[iid].is_terminal()),
+            })
+    except DingTalkError as ex:
+        return err(str(ex), 502, 502)
+
+    # 先按时间排序，再对"命中结果"截断（保留最近的），命中项不会被原始池截断误伤
+    items.sort(key=lambda x: x['create_time'], reverse=True)
+    capped = raw_capped or len(items) > _QUERY_CAP
+    items = items[:_QUERY_CAP]
+    scanned = [t.get('name') or t['process_code'] for t in templates]
+    # 逐模板诊断：拉到的实例数(found) 与 符合当前口径的条数(matched)——空结果时定位卡点
+    tpl_stats = [{
+        'name': name_by_code.get(c) or c, 'process_code': c,
+        'found': found_by_code.get(c, 0), 'matched': matched_by_code.get(c, 0),
+    } for c in [t['process_code'] for t in templates]]
+    tpl_stats.sort(key=lambda x: (-x['found'], -x['matched']))
+    return ok({'items': items, 'count': len(items), 'capped': capped,
+               'templates_scanned': scanned, 'templates_count': len(templates),
+               'template_stats': tpl_stats,
+               'cache_hits': cached_hits, 'fetched': len(fetched)})
+
+
+@csrf_exempt
+@pk_required()
+def dingtalk_instance(request):
+    """POST {instance_id} → 单条审批完整详情（钉钉样式弹窗用）。优先读本地存档，
+    未存档或进行中则实时拉取并落档。返回：表头信息 + 表单字段 + 审批流水。"""
+    denied = _page_denied(request)
+    if denied:
+        return denied
+    body = parse_body(request)
+    iid = (body.get('instance_id') or '').strip()
+    if not iid:
+        return err('缺少 instance_id')
+    c = DingtalkInstance.objects.filter(instance_id=iid).first()
+    detail = None
+    if _cache_usable(c):        # 终态且含表单 → 直读存档；空存档一律重拉
+        detail = c.raw
+    else:
+        try:
+            detail = dc.get_instance(iid)
+        except DingTalkError as ex:
+            if c and isinstance(c.raw, dict) and c.raw:
+                detail = c.raw   # 拉取失败回退本地存档
+            else:
+                return err(str(ex), 502, 502)
+        else:
+            _cache_upsert(iid, c.process_code if c else (detail.get('process_code') or ''),
+                          c.template_name if c else '', detail)
+    f = instance_to_fields(detail)
+    form = [{'name': n, 'value': v, 'type': ct} for n, v, ct in _form_pairs(detail)]
+    flow = [{'userid': o.get('userid', ''), 'type': o.get('type', ''),
+             'result': o.get('result', ''), 'date': o.get('date', '')}
+            for o in (detail.get('operation_records') or [])]
+    return ok({
+        'instance_id': iid,
+        'title': f['summary'],
+        'template': (c.template_name if c else '') or detail.get('process_code', ''),
+        'approval_number': f['approval_number'],
+        'applicant': f['applicant'],
+        'department': f['department'],
+        'amount': str(f['amount']),
+        'payee': f['payee'],
+        'ding_status': detail.get('status', ''),
+        'sys_status': f['status'],
+        'result': detail.get('result', ''),
+        'create_time': detail.get('create_time', ''),
+        'finish_time': detail.get('finish_time', ''),
+        'form': form,
+        'flow': flow,
+    })
+
+
+_DING_NO_RE = re.compile(r'^\d{21}$')
+
+
+def is_dingtalk_no(s):
+    """审批编号是否为 21 位标准钉钉编号（businessId）。"""
+    return bool(_DING_NO_RE.match((s or '').strip()))
+
+
+@csrf_exempt
+@pk_required()
+def dingtalk_status_sync(request):
+    """POST {record_ids:[...], refresh?:bool} → 对审批管理里"审批编号为21位钉钉编号"的记录，
+    以本地钉钉存档(DingtalkInstance)的状态回写。存档随查询不断累积/更新，此处直接读库、
+    不打钉钉（快）。refresh=true 时对已存档但需要强制刷新的可再打钉钉（可选）。
+    非21位编号、或本地无存档的记录，均跳过并给出原因。"""
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    body = parse_body(request)
+    ids = body.get('record_ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请提供要同步的记录')
+    if len(ids) > 500:
+        return err('单次上限 500 条，请缩小选择范围')
+    recs = list(ApprovalRecord.objects.filter(id__in=ids, deleted_at__isnull=True))
+    biz = [r.approval_number for r in recs if is_dingtalk_no(r.approval_number)]
+    iids = [(r.dingtalk_instance_id or '').strip() for r in recs if (r.dingtalk_instance_id or '').strip()]
+    by_biz = {c.business_id: c for c in
+              DingtalkInstance.objects.filter(business_id__in=biz).exclude(business_id='')} if biz else {}
+    by_iid = {c.instance_id: c for c in
+              DingtalkInstance.objects.filter(instance_id__in=iids)} if iids else {}
+
+    updated, unchanged, skipped = 0, 0, []
+    for r in recs:
+        if not is_dingtalk_no(r.approval_number):
+            skipped.append({'id': r.id, 'no': r.approval_number or '(空)',
+                            'reason': '审批编号非21位钉钉标准格式，已跳过'})
+            continue
+        c = by_iid.get((r.dingtalk_instance_id or '').strip()) or by_biz.get(r.approval_number)
+        if not c:
+            skipped.append({'id': r.id, 'no': r.approval_number,
+                            'reason': '本地无该单据存档，请先在「钉钉同步」页查询一次（会自动入库）'})
+            continue
+        new_status = c.sys_status or map_status(c.ding_status, c.ding_result)
+        fields = []
+        if new_status and r.status != new_status:
+            # 已归档或已有排款的审批不可被钉钉回写降级/回退:
+            # approved(已排款)→rejected/pending 会留下「被拒/待审批却挂着可付款排款」,
+            # 与人工编辑同一道闸(先退回排款批次再变更状态)。
+            if r.archived or (r.scheduled_amount or Decimal('0')) > 0:
+                skipped.append({'id': r.id, 'no': r.approval_number,
+                                'reason': f'钉钉状态为「{new_status}」但本地已排款/已归档,'
+                                          f'不自动改写;如需变更请先退回排款批次后人工处理'})
+                continue
+            r.status = new_status
+            fields.append('status')
+            # 终态同步归档,与人工编辑口径一致(否则出现 rejected 且未归档的非法态)
+            if new_status in ('rejected', 'canceled') and not r.archived:
+                r.archived = True
+                fields.append('archived')
+        if not (r.dingtalk_instance_id or '').strip() and c.instance_id:
+            r.dingtalk_instance_id = c.instance_id
+            fields.append('dingtalk_instance_id')
+        if 'status' in fields:
+            updated += 1
+        else:
+            unchanged += 1
+        if fields:
+            r.save(update_fields=fields + ['updated_at'])
+    msg = f'状态更新 {updated} 条'
+    if unchanged:
+        msg += f'、无变化 {unchanged} 条'
+    if skipped:
+        msg += f'、跳过 {len(skipped)} 条'
+    return ok({'updated': updated, 'unchanged': unchanged, 'skipped': skipped, 'message': msg})
+
+
+def _upsert(detail, actor):
+    """按 dingtalk_instance_id（其次 21 位审批编号）落库：存在则更新，否则新建。
+    返回 ('created'|'updated'|'skipped', rec)。"""
+    f = instance_to_fields(detail)
+    # 摘要用业务内容(报销内容/事由等)，与查询列表「摘要」列一致；取不到再退回标题
+    f['summary'] = build_summary(detail) or f['summary']
+    iid = f['dingtalk_instance_id']
+    rec = ApprovalRecord.objects.filter(dingtalk_instance_id=iid, deleted_at__isnull=True).first()
+    if rec is None and is_dingtalk_no(f.get('approval_number') or ''):
+        # 防重复建账：财务先 Excel 导入/手工建过同单号（instance_id 为空）时，
+        # 同步应挂到该记录而非再建一条（否则在途支出合计双计）
+        rec = (ApprovalRecord.objects
+               .filter(approval_number=f['approval_number'], deleted_at__isnull=True)
+               .order_by('id').first())
+        if rec is not None and not (rec.dingtalk_instance_id or '').strip():
+            rec.dingtalk_instance_id = iid
+            rec.save(update_fields=['dingtalk_instance_id', 'updated_at'])
+    if rec:
+        # 已归档/已排款的记录金额与状态不可被钉钉覆盖：会绕过编辑保护直接制造
+        # 「已排款>申请金额」倒挂或状态降级。仅补摘要/原始数据等非标的字段。
+        locked = rec.archived or (rec.scheduled_amount or Decimal('0')) > 0
+        fields = ['summary', 'payee', 'ext_raw', 'updated_at']
+        rec.summary = f['summary']
+        rec.payee = f['payee']
+        rec.ext_raw = f['ext_raw']
+        if not locked:
+            rec.status = f['status']
+            rec.amount = f['amount']
+            fields = ['status', 'amount'] + fields
+        rec.save(update_fields=fields)
+        return ('updated' if not locked else 'skipped'), rec
+    rec = ApprovalRecord.objects.create(created_by=actor, **f)
+    return 'created', rec
+
+
+@csrf_exempt
+@pk_required()
+def dingtalk_sync(request):
+    """POST {instance_ids:[...]} → 把所选钉钉审批同步进审批管理（按实例ID去重）。"""
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    body = parse_body(request)
+    ids = body.get('instance_ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请提供要同步的 instance_ids')
+    if len(ids) > 200:
+        return err('单次同步上限 200 条，请缩小选择范围')
+    actor = getattr(request, 'pk_user', None)
+    created, updated, skipped = 0, 0, []
+
+    # 先并发拉详情（网络重头），落库放主线程串行（避免子线程用 ORM 连接）
+    def _fetch(iid):
+        try:
+            return iid, dc.get_instance(iid), None
+        except DingTalkError as ex:
+            return iid, None, str(ex)
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        fetched = list(pool.map(_fetch, ids))
+    for iid, detail, ferr in fetched:
+        if ferr:
+            skipped.append({'id': iid, 'reason': ferr[:120]})
+            continue
+        try:
+            kind, _ = _upsert(detail, actor)
+            created += (kind == 'created')
+            updated += (kind == 'updated')
+        except Exception as ex:   # 单条落库失败不影响整体
+            logger.error('dingtalk sync upsert failed %s: %s', iid, ex)
+            skipped.append({'id': iid, 'reason': str(ex)[:120]})
+    return ok({'created': created, 'updated': updated, 'skipped': skipped,
+               'message': f'新建 {created} 条、更新 {updated} 条'
+                          + (f'、跳过 {len(skipped)} 条' if skipped else '')})
+
+
+@csrf_exempt
+@pk_required()
+def dingtalk_refresh(request):
+    """POST {instance_ids:[...]} → 对已同步记录重新拉取钉钉最新状态并回写。"""
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    body = parse_body(request)
+    ids = body.get('instance_ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('请提供要刷新的 instance_ids')
+    if len(ids) > 200:
+        return err('单次刷新上限 200 条')
+    updated, skipped = 0, []
+    recs = {r.dingtalk_instance_id: r for r in ApprovalRecord.objects.filter(
+        dingtalk_instance_id__in=ids, deleted_at__isnull=True)}
+    todo = [iid for iid in ids if recs.get(iid)]
+    skipped = [{'id': iid, 'reason': '系统内无该同步记录'} for iid in ids if not recs.get(iid)]
+
+    def _fetch(iid):
+        try:
+            return iid, dc.get_instance(iid), None
+        except DingTalkError as ex:
+            return iid, None, str(ex)
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        fetched = list(pool.map(_fetch, todo))
+    for iid, detail, ferr in fetched:
+        if ferr:
+            skipped.append({'id': iid, 'reason': ferr[:120]})
+            continue
+        rec = recs[iid]
+        new_status = map_status(detail.get('status'), detail.get('result'))
+        new_amount = extract_amount(detail)
+        # 已归档/已排款的记录不接受钉钉覆盖金额与状态(同 _upsert/status_sync 闸口):
+        # 覆盖会绕过编辑保护直接制造倒挂或状态降级
+        if rec.archived or (rec.scheduled_amount or Decimal('0')) > 0:
+            if rec.status != new_status or rec.amount != new_amount:
+                skipped.append({'id': iid,
+                                'reason': '本地已排款/已归档,金额与状态不自动改写;'
+                                          '如需变更请先退回排款批次后人工处理'})
+            continue
+        if rec.status != new_status or rec.amount != new_amount:
+            rec.status, rec.amount = new_status, new_amount
+            fields = ['status', 'amount', 'updated_at']
+            if new_status in ('rejected', 'canceled') and not rec.archived:
+                rec.archived = True
+                fields.append('archived')
+            rec.save(update_fields=fields)
+            updated += 1
+    return ok({'updated': updated, 'skipped': skipped,
+               'message': f'刷新更新 {updated} 条' + (f'、跳过 {len(skipped)} 条' if skipped else '')})
