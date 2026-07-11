@@ -429,20 +429,27 @@ const deptBalanceOption = computed(() => {
   }
 })
 
-// ── 5) 桑基资金流向：谁在供血（各事业部流入）→ 资金池 → 钱花去哪（实付/预付）──────
+// ── 5) 桑基资金流向：谁在供血 → 资金池 → 钱花去哪（实付/预付）───────────────────
+// 多事业部：左侧按事业部供血；单事业部/指定部门：左侧按流入构成（实收/日常/预收）。
 // 净流入时右侧多一条「净留存」蓝流；净流出时左侧多一条「消耗存量」红流补平。
 const GREENS = ['#2e7d32', '#43a047', '#66bb6a', '#81c784', '#a5d6a7', '#8bc34a']
 const sankeyOption = computed(() => {
-  if (!showDeptComparison.value || density.value !== 'dense') return null
-  const deptRows = cfData.value.by_dept
-    .map(d => ({ dept: d.dept, inflow: _sum(d.collected) + _sum(d.daily_receipts) + _sum(d.advance_received) }))
-    .filter(r => r.inflow > 0)
-    .sort((a, b) => b.inflow - a.inflow)
-  if (!deptRows.length) return null
+  if (!cfData.value || density.value !== 'dense') return null
+  const sources = showDeptComparison.value
+    ? cfData.value.by_dept
+        .map(d => ({ name: d.dept, value: _sum(d.collected) + _sum(d.daily_receipts) + _sum(d.advance_received) }))
+        .filter(r => r.value > 0)
+        .sort((a, b) => b.value - a.value)
+    : [
+        { name: '实收回款', value: sumColl.value },
+        { name: '日常收款', value: sumDaily.value },
+        { name: '预收款', value: sumAdvRecv.value },
+      ].filter(r => r.value > 0)
+  if (!sources.length) return null
   const nodes = [], links = []
-  deptRows.forEach((r, i) => {
-    nodes.push({ name: r.dept, itemStyle: { color: GREENS[i % GREENS.length] } })
-    links.push({ source: r.dept, target: '资金池', value: r.inflow })
+  sources.forEach((r, i) => {
+    nodes.push({ name: r.name, itemStyle: { color: GREENS[i % GREENS.length] } })
+    links.push({ source: r.name, target: '资金池', value: r.value })
   })
   if (netTotal.value < 0) {
     nodes.push({ name: '消耗存量', itemStyle: { color: '#c62828' } })
@@ -636,10 +643,10 @@ const sankeyOption = computed(() => {
         <div v-else class="chart-empty">{{ loading ? '加载中…' : '暂无数据' }}</div>
       </div>
 
-      <!-- 桑基资金流向：谁在供血 → 资金池 → 钱花去哪（多事业部 + 数据密集时） -->
+      <!-- 桑基资金流向：谁在供血 → 资金池 → 钱花去哪（数据密集时） -->
       <div v-if="sankeyOption" class="card span2">
         <div class="section-title">资金流向
-          <span class="section-sub">左＝谁在供血（各事业部流入）· 右＝钱花去哪 · 蓝＝净留存 / 红＝消耗存量</span>
+          <span class="section-sub">左＝谁在供血（{{ showDeptComparison ? '各事业部流入' : '流入构成' }}）· 右＝钱花去哪 · 蓝＝净留存 / 红＝消耗存量</span>
         </div>
         <BaseChart :option="sankeyOption" height="320px" />
       </div>

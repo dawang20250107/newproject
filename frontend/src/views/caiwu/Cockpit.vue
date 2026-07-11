@@ -16,6 +16,7 @@ import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney, topLabel, endLabe
 import { densityOf } from '../../utils/chartDensity.js'
 import PaceStory from '../../components/caiwu/PaceStory.vue'
 import BuGlance from '../../components/caiwu/BuGlance.vue'
+import WaterfallChart from '../../components/caiwu/charts/WaterfallChart.vue'
 import { streamAiAnalysis } from '../../utils/aiStream.js'
 import { renderMarkdown } from '../../utils/markdown.js'
 import { downloadBlob } from '../../utils/download.js'
@@ -780,6 +781,28 @@ const derived = computed(() => {
   }
 })
 
+// 利润形成瀑布（驾驶舱专属图）：收入 → −成本 → −期间费用 → 经营净利。
+// 回答驾驶舱第一问题「收入怎么变成利润的」；当月 / YTD 两个时间口径对读。
+function pnlWaterfall(rev, gross, prof) {
+  if (rev == null && prof == null) return null
+  const cost = rev != null && gross != null ? rev - gross : 0
+  const expense = gross != null && prof != null ? gross - prof : 0
+  return [
+    { name: '收入', value: rev || 0, type: 'base' },
+    { name: '成本', value: -cost },
+    { name: '期间费用', value: -expense },
+    { name: '经营净利', value: prof || 0, type: 'total' },
+  ]
+}
+const pnlMonthWf = computed(() => {
+  const m = groupMonth.value
+  return m ? pnlWaterfall(m.actual_revenue, m.actual_gross_profit, m.actual_profit) : null
+})
+const pnlYtdWf = computed(() => {
+  const y = groupYtd.value
+  return y ? pnlWaterfall(y.actual_revenue, y.actual_gross_profit, y.actual_profit) : null
+})
+
 // 核心指标带：收入 / 经营毛利 / 经营净利（期间费用并入比率条，不再单列卡片）
 const heroCards = computed(() => {
   const m = groupMonth.value
@@ -1168,6 +1191,26 @@ const ctxMatrixItems = computed(() => {
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- ════ ZONE 4.5 · 利润形成瀑布（当月 vs YTD 对读）════════════════════════ -->
+      <div class="chart-grid">
+        <div class="card">
+          <div class="section-title" style="margin-bottom:8px">利润形成 · 当月
+            <span class="tip">收入 − 成本 − 期间费用 = 经营净利</span>
+          </div>
+          <WaterfallChart v-if="pnlMonthWf" :waterfall="pnlMonthWf" height="260px"
+                          base-tag="" total-tag="" :sort-factors="false" />
+          <div v-else class="mini-empty">暂无当月数据</div>
+        </div>
+        <div class="card">
+          <div class="section-title" style="margin-bottom:8px">利润形成 · YTD 累计
+            <span class="tip">年初至今同口径对读 · 看结构是否恶化</span>
+          </div>
+          <WaterfallChart v-if="pnlYtdWf" :waterfall="pnlYtdWf" height="260px"
+                          base-tag="" total-tag="" :sort-factors="false" />
+          <div v-else class="mini-empty">暂无 YTD 数据</div>
         </div>
       </div>
 

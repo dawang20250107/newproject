@@ -4,6 +4,12 @@ import { computed } from 'vue'
 const props = defineProps({
   waterfall: { type: Array, default: () => [] },
   height: { type: String, default: '380px' },
+  // 参考线标签前缀：月度桥用「起点/终点（3月）」；利润形成等结构瀑布传空串，
+  // 直接显示步骤名（如「收入 186万」「经营净利 +18万」）
+  baseTag: { type: String, default: '起点' },
+  totalTag: { type: String, default: '终点' },
+  // 中间因子是否按值排序（归因桥=true 最负在前；损益结构=false 保持成本→费用语义顺序）
+  sortFactors: { type: Boolean, default: true },
 })
 
 const chartData = computed(() => {
@@ -14,7 +20,7 @@ const chartData = computed(() => {
   const baseItem  = rawItems[0]
   const totalItem = rawItems[rawItems.length - 1]
   const middle    = rawItems.slice(1, -1)
-  middle.sort((a, b) => a.value - b.value)
+  if (props.sortFactors) middle.sort((a, b) => a.value - b.value)
   const items = [baseItem, ...middle, totalItem]
 
   let running = 0
@@ -88,6 +94,11 @@ function shortPeriod(name) {
   return m ? `${m[1]}月` : (name || '')
 }
 
+// 参考线标签：有 tag 前缀 → 「起点（3月）」；空 tag → 直接用步骤名
+function refTag(tag, name) {
+  return tag ? `${tag}（${shortPeriod(name)}）` : `${name} `
+}
+
 function barColorStyle(barType, intensity) {
   if (barType === 'anchor') return {}
   const t = intensity
@@ -101,8 +112,8 @@ function barColorStyle(barType, intensity) {
 
 function fmtAmt(v) {
   const abs = Math.abs(v)
-  if (abs >= 100000000) return (v / 100000000).toFixed(2) + '亿'
-  if (abs >= 10000) return (v / 10000).toFixed(2) + '万'
+  if (abs >= 100000000) return parseFloat((v / 100000000).toFixed(2)) + '亿'
+  if (abs >= 10000) return parseFloat((v / 10000).toFixed(2)) + '万'   // trim 末尾 0：216.00万→216万
   return Math.round(v).toLocaleString('zh-CN')   // <1万：整数千分位（原 1000-9999 显示 0.5000万 的坏分支已移除）
 }
 </script>
@@ -118,10 +129,10 @@ function fmtAmt(v) {
 
       <!-- Start / end reference lines -->
       <div class="wf-ref wf-ref-base" :style="`bottom:${chartData.baseRefPct}%`">
-        <span class="wf-ref-tag">起点（{{ shortPeriod(chartData.baseRefName) }}）{{ fmtAmt(chartData.baseRefValue) }}</span>
+        <span class="wf-ref-tag">{{ refTag(baseTag, chartData.baseRefName) }}{{ fmtAmt(chartData.baseRefValue) }}</span>
       </div>
       <div class="wf-ref wf-ref-total" :style="`bottom:${chartData.totalRefPct}%`">
-        <span class="wf-ref-tag">终点（{{ shortPeriod(chartData.totalRefName) }}）{{ fmtAmt(chartData.totalRefValue) }}</span>
+        <span class="wf-ref-tag">{{ refTag(totalTag, chartData.totalRefName) }}{{ fmtAmt(chartData.totalRefValue) }}</span>
       </div>
 
       <!-- Bar columns -->
