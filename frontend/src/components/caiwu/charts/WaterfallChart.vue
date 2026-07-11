@@ -103,8 +103,7 @@ function fmtAmt(v) {
   const abs = Math.abs(v)
   if (abs >= 100000000) return (v / 100000000).toFixed(2) + '亿'
   if (abs >= 10000) return (v / 10000).toFixed(2) + '万'
-  if (abs >= 1000) return (v / 10000).toFixed(4) + '万'
-  return v.toFixed(0)
+  return Math.round(v).toLocaleString('zh-CN')   // <1万：整数千分位（原 1000-9999 显示 0.5000万 的坏分支已移除）
 }
 </script>
 
