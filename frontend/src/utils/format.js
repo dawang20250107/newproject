@@ -12,11 +12,13 @@
  * @param {boolean} [opts.yi=true] 是否启用「亿」（false 时大额只用万）
  * @param {boolean} [opts.smallRound=false] 万元以下是否取整（否则两位小数）
  * @param {string} [opts.dash='—'] 空值/非数字占位
+ * @param {boolean} [opts.zeroDash=false] 零值是否也用占位符（财务表规范：零值密集网格用短横线，让眼睛只追非零数字）
  */
 export function fmtCompact(v, opts = {}) {
-  const { decimals = 2, space = false, yuan = false, yi = true, smallRound = false, dash = '—' } = opts
+  const { decimals = 2, space = false, yuan = false, yi = true, smallRound = false, dash = '—', zeroDash = false } = opts
   const n = parseFloat(v)
   if (!isFinite(n)) return dash
+  if (zeroDash && n === 0) return '–'
   const abs = Math.abs(n)
   const sp = space ? ' ' : ''
   if (yi && abs >= 1e8) return (n / 1e8).toFixed(decimals) + sp + '亿'

@@ -254,7 +254,7 @@ onMounted(load)
                     :title="cellTitle(c, matrixCols[i].label)">
                   <template v-if="c.past">
                     <div class="tdmx-rate" :style="`color:${rateColor(c.rate)}`">{{ c.rate != null ? c.rate.toFixed(0) + '%' : '—' }}</div>
-                    <div class="tdmx-amt">{{ wan(c.actual) }}</div>
+                    <div class="tdmx-amt" :class="{ 'tdmx-zero': !c.actual }">{{ c.actual ? wan(c.actual) : '–' }}</div>
                   </template>
                   <span v-else class="tdmx-future">·</span>
                 </td>
@@ -414,4 +414,5 @@ onMounted(load)
   border-left: 4px solid var(--c-danger); font-size: 13px; color: #a02418; }
 .td-lag-ico { flex-shrink: 0; font-size: 15px; }
 .td-lag-item { font-weight: 600; }
+.tdmx-amt.tdmx-zero { color: var(--muted-light); }   /* 0=当月无收入，淡化短横线让非零数字更醒目 */
 </style>
