@@ -15,7 +15,7 @@ export function useEscClearSelection(hasSelection, clear) {
     if (document.querySelector(
       '.modal-overlay, .overlay, .modal-mask, .edit-mask, .drawer-mask, .scrim, '
       + '.cfm-overlay, .colf-pop, .ctxm, .drop-overlay, .logs-overlay, '
-      + '.ap-backdrop, .lt-overlay')) return
+      + '.ap-backdrop, .lt-overlay, .rst-overlay, .ai-mask')) return
     if (document.querySelector('.cell-range-sel')) return
     if (!hasSelection()) return
     clear()

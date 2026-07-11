@@ -11,6 +11,7 @@ import { useTableSchemes } from '../../composables/useTableSchemes.js'
 import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
+import { useModalEsc } from '../../composables/useModalEsc.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import { useToast } from '../../composables/useToast.js'
 import Pager from '../../components/Pager.vue'
@@ -62,6 +63,10 @@ const drawerOpen = ref(false)
 
 // 编辑/新建
 const showEdit = ref(false)
+useModalEsc(
+  [() => drawerOpen.value, () => closeDrawer()],
+  [() => showEdit.value, () => (showEdit.value = false)],
+)
 const editForm = reactive({ id: null, name: '', delivery_dept: '', level: '', status: '运作中', contact: '', customer_date: '', notes: '', push_status: false })
 const saving = ref(false)
 

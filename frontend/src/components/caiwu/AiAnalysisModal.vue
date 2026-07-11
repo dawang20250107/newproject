@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch, onUnmounted } from 'vue'
 import { renderMarkdown } from '../../utils/markdown.js'
+import { useModalEsc } from '../../composables/useModalEsc.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -17,6 +18,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['close', 'reanalyze'])
+useModalEsc([() => props.visible, () => emit('close')])
 
 const showReasoning = ref(true)
 // 出现正文后，自动折叠推理过程，聚焦结论（用户仍可手动展开）。

@@ -404,7 +404,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .ct-table { width: 100%; font-size: 12.5px; }
 .ct-table th { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 9px 12px; background: rgba(0,0,0,0.025); border-bottom: 1px solid rgba(0,0,0,0.06); white-space: nowrap; }
 /* 固定视口：表头吸顶，仅表体内部滚动（用不透明色，避免滚动内容透出） */
-.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f5f2ee; }
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 .ct-table td { padding: 9px 12px; vertical-align: middle; }
 .ct-table .data-row:hover { background: rgba(201,99,66,0.04); }
 .ct-table .data-row:not(:last-child) td { border-bottom: 1px solid rgba(0,0,0,0.035); }

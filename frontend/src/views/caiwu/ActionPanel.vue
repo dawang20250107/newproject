@@ -3,6 +3,7 @@ import { confirmDlg } from '../../composables/confirm.js'
 import { ref, computed, onMounted, watch } from 'vue'
 import ar from '../../api/ar.js'
 import { useToast } from '../../composables/useToast.js'
+import { todayCST } from '../../constants.js'
 const toast = useToast()
 
 const props = defineProps({
@@ -169,7 +170,7 @@ watch(() => props.selectedBu, load)
           <div v-if="item.description" class="apc-desc">{{ item.description }}</div>
           <div class="apc-meta">
             <span v-if="item.assignee">👤 {{ item.assignee }}</span>
-            <span v-if="item.due_date" :class="{ overdue: new Date(item.due_date) < new Date() && item.status !== 'done' }">
+            <span v-if="item.due_date" :class="{ overdue: item.due_date < todayCST() && item.status !== 'done' }">
               📅 {{ item.due_date }}
             </span>
           </div>

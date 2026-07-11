@@ -67,6 +67,7 @@ async function add() {
     await api.post('/cockpit/knowledge', { content, scope: addScope.value || '全集团', kind: addKind.value })
     addContent.value = ''
     await load()
+    toast.success('已加入知识库')
   } catch (e) { toast.error(e?.msg || '添加失败') }
 }
 

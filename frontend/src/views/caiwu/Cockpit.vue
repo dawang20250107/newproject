@@ -373,8 +373,8 @@ async function exportChatImage() {
       height: el.scrollHeight, windowHeight: el.scrollHeight,
     })
     canvas.toBlob(blob => {
-      if (blob) downloadBlob(blob, `业财融合对话_${exportStamp()}.png`)
-      toast.success('已导出图片')
+      if (blob) { downloadBlob(blob, `业财融合对话_${exportStamp()}.png`); toast.success('已导出图片') }
+      else toast.error('图片生成失败，请重试')
       exportingImg.value = false
     }, 'image/png')
   } catch (e) {
@@ -423,7 +423,7 @@ async function addKb() {
     })
     kbInput.value = ''
     await loadKb()
-    toast.error('已加入知识库')
+    toast.success('已加入知识库')
   } catch (e) { toast.error(e?.msg || '添加失败') }
 }
 async function delKb(id) {
@@ -497,7 +497,7 @@ const autoDistill = ref(true)
 async function silentDistill(content) {
   try {
     await api.post('/cockpit/knowledge/distill', { text: content, scope: selectedBu.value || '全集团' })
-    toast.error('💡 已自动沉淀要点入库')
+    toast.success('💡 已自动沉淀要点入库')
   } catch (e) { /* silent */ }
 }
 

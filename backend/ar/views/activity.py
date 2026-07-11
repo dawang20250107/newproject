@@ -229,6 +229,11 @@ def ar_attachment_list(request, pk):
     if stage not in dict(ARActivity.STAGE_CHOICES):
         stage = 'general'
     activity_id = request.POST.get('activity_id') or None
+    if activity_id is not None:
+        # 校验为数字且确属本记录的动态：否则非数字 500、或被挂到别的记录动态上
+        if not str(activity_id).isdigit() or not ARActivity.objects.filter(
+                pk=activity_id, ar_record_id=pk).exists():
+            activity_id = None
 
     user = PaikuanUser.objects.filter(id=request.pk_uid).first()
     mime_type = mimetypes.guess_type(original_name)[0] or 'application/octet-stream'

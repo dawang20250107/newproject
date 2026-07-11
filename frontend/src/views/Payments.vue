@@ -999,13 +999,6 @@ async function onDelete(p) {
   }
 }
 
-// At module level (not inside setup, before the function)
-let _qTimer = null
-watch(() => filters.q, () => {
-  clearTimeout(_qTimer)
-  _qTimer = setTimeout(() => { filters.page = 1; clearSelection(); load() }, 350)
-})
-
 function search() { filters.page = 1; clearSelection(); load() }
 // 输入即防抖搜索(350ms),与 AR 系列一致;Enter 仍立即触发
 let _searchTimer = null
@@ -1339,7 +1332,7 @@ async function doBatchPay() {
         <input v-model="numbersInput" class="num-inline" :class="{ on: !!numbersFilter }"
                :placeholder="numbersFilter ? `单号筛选中(${numbersFilter.split(',').length})…` : '单号筛选·支持批量粘贴'"
                title="粘贴一个或一批单号（空格/换行/+/逗号等任意分隔）回车筛选；命中 审批编号/对账单号/G7" @keyup.enter="applyNumbersInput" />
-        <span class="filter-group-lbl">回款日</span>
+        <span class="filter-group-lbl">付款日</span>
         <select v-model="payDatePreset" @change="applyPayDatePreset" style="min-width:100px">
           <option value="">全部日期</option>
           <optgroup label="本期">
@@ -1409,7 +1402,7 @@ async function doBatchPay() {
           </thead>
           <tbody>
             <template v-if="loading">
-              <SkeletonRow v-for="n in 8" :key="n" :cols="16" />
+              <SkeletonRow v-for="n in 8" :key="n" :cols="1 + COL_DEFS.filter(c => colVisible(c.key)).length" />
             </template>
             <tr v-else-if="!items.length" class="empty-row">
               <td :colspan="99" class="empty-cell">
@@ -1420,7 +1413,7 @@ async function doBatchPay() {
             <template v-for="(p, idx) in items" :key="p.id">
             <tr :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today, 'row-sel': selectedIds.has(p.id), 'row-priority': p.is_priority }"
                 @contextmenu.prevent="ctx.open($event, p)" @dblclick="onRowDblClick(p, $event)">
-              <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(p.id)" @click.stop="onRowSelClick($event, idx, p.id)" title="按住 Shift 点击可区间勾选" /></td>
+              <td class="sel-col sticky-col"><input type="checkbox" :checked="selectedIds.has(p.id)" @click.stop="onRowSelClick($event, idx, p.id)" title="按住 Shift 点击可区间勾选" /></td>
               <td v-if="colVisible('department')" class="cell-clip" :title="p.department">{{ p.department }}</td>
               <td v-if="colVisible('secondary_dept')" class="cell-clip" :title="p.secondary_dept">{{ p.secondary_dept || '—' }}</td>
               <td v-if="colVisible('project_short_name')" class="cell-clip" :title="p.project_short_name">{{ p.project_short_name || '—' }}</td>
@@ -2047,6 +2040,8 @@ async function doBatchPay() {
 .prio-star:hover { color: var(--amber); transform: scale(1.18); }
 .prio-star.on { color: var(--amber); text-shadow: 0 0 6px rgba(245,166,35,.5); }
 .row-priority td { background: rgba(245,166,35,0.06) !important; }
+/* 重点行被勾选时，选中底色须压过重点底色，否则批量操作看不出已选中 */
+.pk-pay-tbl tr.row-priority.row-sel td { background: var(--row-sel) !important; }
 .row-priority td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
 .prio-toggle.active { border-color: var(--amber); color: var(--amber-text); background: rgba(245,166,35,0.12); }
 

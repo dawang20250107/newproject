@@ -82,6 +82,8 @@ const methodStats = computed(() => {
     .map((x, i) => ({ ...x, color: METHOD_COLORS[i % METHOD_COLORS.length] }))
 })
 
+let _drTimer = null
+function onSearchInput() { clearTimeout(_drTimer); _drTimer = setTimeout(load, 300) }
 async function load() {
   loading.value = true
   try {
@@ -238,7 +240,7 @@ async function exportXlsx(selectedOnly = false) {
         <select v-model="filter.dept" class="inp mini"><option value="">全部事业部</option><option v-for="d in depts" :key="d" :value="d">{{ d }}</option></select>
         <select v-model="filter.source" class="inp mini"><option value="">全部来源</option><option v-for="s in Object.keys(bySource)" :key="s" :value="s">{{ s }}</option></select>
         <select v-model="filter.method" class="inp mini"><option value="">全部方式</option><option v-for="m in Object.keys(byMethod)" :key="m" :value="m">{{ m }}</option></select>
-        <input v-model="filter.q" class="inp search" placeholder="搜付款方 / 摘要 / 项目" @keyup.enter="load" />
+        <input v-model="filter.q" class="inp search" placeholder="搜付款方 / 摘要 / 项目" @input="onSearchInput" @keyup.enter="load" />
         <button class="btn ghost sm" :disabled="exporting" @click="exportXlsx(false)">{{ exporting ? '导出中…' : '导出' }}</button>
         <button v-if="canWrite" class="btn-hero" @click="openCreate"><span>＋</span> 新增收款</button>
       </div>

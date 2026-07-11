@@ -134,8 +134,14 @@ def ar_records(request):
         qs = _apply_colfilter_sort(qs, request)
 
         include_payments = request.GET.get('include_payments', '') in ('1', 'true')
-        page = max(1, int(request.GET.get('page', 1) or 1))
-        size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
+        try:
+            page = max(1, int(request.GET.get('page', 1) or 1))
+        except (ValueError, TypeError):
+            page = 1
+        try:
+            size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
+        except (ValueError, TypeError):
+            size = 50
 
         # Aggregate queryset — plain queryset (no select_related) avoids any
         # accidental extra JOINs and keeps results consistent with the group-summary

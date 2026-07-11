@@ -84,7 +84,7 @@ async function prune() {
   pruning.value = true
   try {
     const res = await api.post('/audit-logs/prune', { keep_days: 180 })
-    toast.error(`已清理 ${res.data.deleted} 条历史日志`)
+    toast.success(`已清理 ${res.data.deleted} 条历史日志`)
     await load(true)
   } catch (e) { toast.error(e?.msg || '清理失败') }
   finally { pruning.value = false }
@@ -201,7 +201,7 @@ onMounted(async () => {
           </thead>
           <tbody>
             <template v-if="loading && !items.length">
-              <SkeletonRow v-for="n in 8" :key="n" :cols="6" />
+              <SkeletonRow v-for="n in 8" :key="n" :cols="8" />
             </template>
             <tr v-else-if="!items.length"><td colspan="8" class="empty-cell">暂无审计记录</td></tr>
             <template v-for="l in items" :key="l.id">

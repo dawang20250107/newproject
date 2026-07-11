@@ -3,8 +3,10 @@
 import { copyText } from '../utils/clipboard.js'
 import { useToast } from '../composables/useToast.js'
 import { resultState as state } from '../composables/bulkResult.js'
+import { useModalEsc } from '../composables/useModalEsc.js'
 
 const toast = useToast()
+useModalEsc([() => state.visible, () => (state.visible = false)])
 
 async function copyAll() {
   const text = state.skipped.map(s => `#${s.id ?? ''} ${s.reason}`).join('\n')
@@ -15,7 +17,7 @@ async function copyAll() {
 
 <template>
   <Teleport to="body">
-    <div v-if="state.visible" class="rst-overlay" @click.self="state.visible = false" @keydown.esc="state.visible = false" tabindex="-1">
+    <div v-if="state.visible" class="rst-overlay" @click.self="state.visible = false">
       <div class="rst-box" role="dialog" :aria-label="state.title">
         <div class="rst-head">
           <h3>{{ state.title }}</h3>

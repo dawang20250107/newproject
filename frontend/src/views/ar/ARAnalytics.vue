@@ -399,11 +399,11 @@ const ctxDetailItems = computed(() => {
     <div class="topbar" :class="{ 'topbar-embedded': embedded }">
       <h1 v-if="!embedded">应收分析</h1>
       <div class="ctrl-row">
-        <select v-model="selectedDept" class="sel-bu" @change="loadAll">
+        <select v-model="selectedDept" class="sel-bu">
           <option value="">全部事业部</option>
           <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
         </select>
-        <select v-model="selectedYear" class="sel-yr" @change="loadAll">
+        <select v-model="selectedYear" class="sel-yr">
           <option v-for="y in years" :key="y" :value="y">{{ y }}年</option>
         </select>
       </div>
@@ -564,8 +564,8 @@ const ctxDetailItems = computed(() => {
                 <td class="amt ok">{{ fmtWan(d.collected) }}</td>
                 <td class="amt warn">{{ fmtWan(d.outstanding) }}</td>
                 <td class="ctr">
-                  <span class="rate-pill" :class="d.rate >= 80 ? 'rate-ok' : d.rate >= 50 ? 'rate-mid' : 'rate-low'">
-                    {{ d.rate.toFixed(1) }}%
+                  <span class="rate-pill" :class="(d.rate || 0) >= 80 ? 'rate-ok' : (d.rate || 0) >= 50 ? 'rate-mid' : 'rate-low'">
+                    {{ Number(d.rate || 0).toFixed(1) }}%
                   </span>
                 </td>
               </tr>

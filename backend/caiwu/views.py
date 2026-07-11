@@ -1259,6 +1259,9 @@ def _parse_json_rows(data_str, bu, l1_map, l2_map, l3_map):
             return Decimal(0)
 
     for i, row in enumerate(rows, 1):
+        if not isinstance(row, dict):
+            errors.append(f'第{i}行：需为对象，实际为 {type(row).__name__}')
+            continue
         l1_name = str(row.get('l1', '')).strip()
         l2_name = str(row.get('l2', '')).strip()
         l3_name = str(row.get('l3', '')).strip()
@@ -2944,7 +2947,8 @@ def targets_upload(request):
         if bu not in valid_bus:
             continue
         # Columns B-M = months 1-12, N = annual (month=0)
-        slots = [(i + 1, row[i + 1]) for i in range(12)]  # (month 1-12, cell)
+        # 窄表(列不全)时按缺列处理，避免 row[i+1] 越界 500
+        slots = [(i + 1, row[i + 1] if len(row) > i + 1 else None) for i in range(12)]
         slots.append((0, row[13] if len(row) > 13 else None))  # annual
         for month_no, cell in slots:
             if cell is None:
@@ -5110,31 +5114,6 @@ def _deepseek_chat(messages, timeout=90, model=None, max_tokens=1800, kind='othe
     body = resp.json()
     _record_ai_usage(kind, use_model, body.get('usage'))
     return body['choices'][0]['message']['content']
-
-
-def _deepseek_chat_raw(messages, tools=None, model=None, timeout=90, max_tokens=1800,
-                       kind='other'):
-    """调用 DeepSeek（支持 function-calling），返回完整 message dict（含可能的 tool_calls）。"""
-    import requests as req_lib
-    use_model = model or settings.DEEPSEEK_MODEL
-    payload = {
-        'model': use_model,
-        'messages': messages,
-        'temperature': _AI_TEMPERATURE,
-        'max_tokens': max_tokens,
-    }
-    if tools:
-        payload['tools'] = tools
-        payload['tool_choice'] = 'auto'
-    resp = req_lib.post(
-        f'{settings.DEEPSEEK_BASE_URL}/chat/completions',
-        headers={'Authorization': f'Bearer {settings.DEEPSEEK_API_KEY}',
-                 'Content-Type': 'application/json'},
-        json=payload, timeout=timeout)
-    resp.raise_for_status()
-    body = resp.json()
-    _record_ai_usage(kind, use_model, body.get('usage'))
-    return body['choices'][0]['message']
 
 
 def _deepseek_stream_raw(messages, tools=None, model=None, max_tokens=1800, timeout=300,

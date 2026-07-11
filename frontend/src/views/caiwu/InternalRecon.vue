@@ -10,11 +10,11 @@ import EmptyState from '../../components/EmptyState.vue'
 const auth = useCaiwuAuth()
 const toast = useToast()
 
-// ── 期间 ────────────────────────────────────────────────────────────────────
-const now = new Date()
-const year = ref(now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear())
-const month = ref(now.getMonth() === 0 ? 12 : now.getMonth())   // 默认上一个已结账月
-const YEARS = Array.from({ length: 6 }, (_, i) => now.getFullYear() - 4 + i)
+// ── 期间（CST 口径，与全站一致）──────────────────────────────────────────────
+const now = new Date(Date.now() + 8 * 3600 * 1000)
+const year = ref(now.getUTCMonth() === 0 ? now.getUTCFullYear() - 1 : now.getUTCFullYear())
+const month = ref(now.getUTCMonth() === 0 ? 12 : now.getUTCMonth())   // 默认上一个已结账月
+const YEARS = Array.from({ length: 6 }, (_, i) => now.getUTCFullYear() - 4 + i)
 
 // ── 数据 ────────────────────────────────────────────────────────────────────
 const loading = ref(false)

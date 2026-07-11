@@ -9,6 +9,7 @@ import { useToast } from '../composables/useToast.js'
 import { useShiftSelect } from '../composables/useShiftSelect.js'
 import { useEscClearSelection } from '../composables/useEscClearSelection.js'
 import Pager from '../components/Pager.vue'
+import { fmtMoney } from '../utils/format.js'
 
 const auth = useAuthStore()
 const toast = useToast()
@@ -244,8 +245,8 @@ function fmtDate(s) {
               <td v-if="activeTab === 'payments'" class="ellipsis">{{ it.payee }}</td>
               <td v-if="activeTab === 'records'" class="ellipsis" :title="it.short_name || it.customer_name">{{ it.short_name || it.customer_name }}</td>
               <td v-if="activeTab === 'records'" class="mono">{{ it.operation_date || (it.operation_year + '-' + String(it.operation_month).padStart(2, '0')) }}</td>
-              <td v-if="activeTab === 'records'" class="mono">{{ it.outstanding_amount }}</td>
-              <td class="mono">{{ activeTab === 'approvals' ? it.amount : (activeTab === 'records' ? it.estimated_amount : it.total_amount) }}</td>
+              <td v-if="activeTab === 'records'" class="mono">{{ fmtMoney(it.outstanding_amount) }}</td>
+              <td class="mono">{{ fmtMoney(activeTab === 'approvals' ? it.amount : (activeTab === 'records' ? it.estimated_amount : it.total_amount)) }}</td>
               <td class="mono muted">{{ fmtDate(it.deleted_at) }}</td>
               <td class="muted">{{ it.deleted_by_name || '-' }}</td>
             </tr>
@@ -308,7 +309,7 @@ function fmtDate(s) {
 .trash-tbl { width: 100%; border-collapse: collapse; table-layout: auto; }
 .trash-tbl th, .trash-tbl td { padding: var(--td-py) var(--td-px); font-size: var(--td-fs); border-bottom: 1px solid var(--border-soft);
   text-align: left; white-space: nowrap; }
-.trash-tbl th { background: #f4f1ef; font-weight: 600; font-size: 12px; color: var(--text-2); }
+.trash-tbl th { background: var(--thead-bg); font-weight: 600; font-size: 12px; color: var(--text-2); }
 .trash-tbl tr:last-child td { border-bottom: none; }
 .trash-tbl tr.row-sel td { background: rgba(201,99,66,0.06); }
 .sel-col { width: 34px; text-align: center !important; }

@@ -12,6 +12,7 @@ import SkeletonRow from '../components/SkeletonRow.vue'
 import SchemePicker from '../components/SchemePicker.vue'
 import { useToast } from '../composables/useToast.js'
 import { useTableSchemes } from '../composables/useTableSchemes.js'
+import { useModalEsc } from '../composables/useModalEsc.js'
 import { useAuthStore } from '../stores/auth.js'
 
 const toast = useToast()
@@ -87,6 +88,7 @@ const users = ref([])
 const loading = ref(false)
 const tab = ref('all')  // 'pending' | 'all'
 const showEditModal = ref(false)
+useModalEsc([() => showEditModal.value, () => (showEditModal.value = false)])
 const editUser = ref(null)
 const error = ref('')
 const approveLoading = ref({})
@@ -105,7 +107,6 @@ const deletedIds = new Set()
 
 const pendingUsers = computed(() => users.value.filter(u => !u.is_approved && u.role !== 'super_admin'))
 const activeUsers  = computed(() => users.value.filter(u => u.is_approved || u.role === 'super_admin'))
-const displayUsers = computed(() => tab.value === 'pending' ? pendingUsers.value : activeUsers.value)
 
 const displayActiveUsers = computed(() => {
   let arr = activeUsers.value.filter(u =>
@@ -187,6 +188,7 @@ async function saveEdit() {
     await api.put(`/users/${editUser.value.id}`, payload)
     showEditModal.value = false
     load()
+    toast.success('已保存')
   } catch (e) {
     error.value = e?.error || '操作失败'
   }  finally { saving.value = false }
@@ -388,7 +390,7 @@ async function reject(u) {
             </thead>
             <tbody>
               <template v-if="loading">
-                <SkeletonRow v-for="n in 8" :key="n" :cols="7" />
+                <SkeletonRow v-for="n in 8" :key="n" :cols="8" />
               </template>
               <template v-else>
               <tr v-for="u in displayActiveUsers" :key="u.id" @contextmenu.prevent="ctx.open($event, u)" @dblclick="onRowDblClick(u, $event)">
@@ -575,7 +577,7 @@ async function reject(u) {
 /* 列头筛选漏斗不被裁剪 */
 .table-wrap thead th { overflow: visible; }
 /* sticky header while body scrolls (fixed-viewport layout) */
-.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: #f4f1ef; }
+.table-wrap thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 .clear-filters-btn { margin-left: auto; align-self: center; }
 .scheme-picker-push { margin-left: auto; }
 

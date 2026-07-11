@@ -1388,6 +1388,14 @@ def _payments_filtered_qs(request):
     pay_end = request.GET.get('pay_date_end', '').strip()
     g7_no = request.GET.get('g7_number', '').strip()
     q = request.GET.get('q', '').strip()
+    # 日期畸形值直接进 __gte 过滤会让 Django 抛异常 500；与审批列表一样容错忽略
+    def _valid_date(x):
+        try: datetime.date.fromisoformat(x[:10]); return True
+        except (ValueError, TypeError): return False
+    if start and not _valid_date(start): start = ''
+    if end and not _valid_date(end): end = ''
+    if pay_start and not _valid_date(pay_start): pay_start = ''
+    if pay_end and not _valid_date(pay_end): pay_end = ''
 
     if dept:
         qs = qs.filter(department=dept)
@@ -3013,7 +3021,10 @@ def payments_mark_priority(request):
             .update(is_priority=False)
         return ok({'count': n, 'value': False})
     value = bool(body.get('value', True))
-    ids = [int(i) for i in (body.get('ids') or [])]
+    try:
+        ids = [int(i) for i in (body.get('ids') or [])]
+    except (ValueError, TypeError):
+        return err('ids 必须为整数列表')
     if not ids:
         return err('ids 必填或传 all:true')
     if len(ids) > 5000:
@@ -3862,7 +3873,10 @@ def user_detail(request, pk):
                 return err('已审批用户至少需要分配一个部门')
             user.departments = depts
         if 'job_title' in data:
-            user.job_title = data['job_title'] or ''
+            jt = (data['job_title'] or '').strip()
+            if jt and jt not in JOB_TITLES:
+                return err('职务无效')
+            user.job_title = jt
         if 'is_active' in data:
             user.is_active = bool(data['is_active'])
         if data.get('password'):
@@ -4878,7 +4892,10 @@ def trash_approvals(request):
         if body.get('all'):
             targets = list(qs.order_by('-deleted_at')[:SELECT_ALL_CAP])
         else:
-            ids = [int(i) for i in (body.get('ids') or [])]
+            try:
+                ids = [int(i) for i in (body.get('ids') or [])]
+            except (ValueError, TypeError):
+                return err('ids 必须为整数列表')
             if not ids:
                 return err('ids 必填或传 all:true')
             targets = list(qs.filter(pk__in=ids))
@@ -4960,7 +4977,10 @@ def trash_payments(request):
         if body.get('all'):
             targets = list(qs.order_by('-deleted_at')[:SELECT_ALL_CAP])
         else:
-            ids = [int(i) for i in (body.get('ids') or [])]
+            try:
+                ids = [int(i) for i in (body.get('ids') or [])]
+            except (ValueError, TypeError):
+                return err('ids 必须为整数列表')
             if not ids:
                 return err('ids 必填或传 all:true')
             targets = list(qs.filter(pk__in=ids))

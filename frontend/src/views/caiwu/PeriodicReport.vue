@@ -81,7 +81,7 @@ function fmtMD(d) { return `${d.getUTCMonth() + 1}/${d.getUTCDate()}` }
 // 自动定位到包含 today 的那一周（仅在当前月时有效）
 function autoSelectWeek() {
   if (periodType.value !== 'weekly') return
-  const now = new Date()
+  const now = new Date(Date.now() + 8 * 3600 * 1000)   // CST 今日（与全站日期口径一致）
   const y = now.getUTCFullYear(), m = now.getUTCMonth() + 1
   if (selYear.value !== y || selMonth.value !== m) return
   const todayStr = now.toISOString().slice(0, 10)
