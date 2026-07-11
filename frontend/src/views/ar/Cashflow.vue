@@ -12,7 +12,9 @@ import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import { downloadBlob } from '../../utils/download.js'
 import { fmtCompact } from '../../utils/format.js'
 import { HIDE_OVERLAP } from '../../utils/chartTheme.js'
+import { activeIndices, densityOf } from '../../utils/chartDensity.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
+import CashStory from '../../components/ar/CashStory.vue'
 import Amt from '../../components/Amt.vue'
 
 defineProps({ embedded: { type: Boolean, default: false } })
@@ -103,17 +105,19 @@ const onScopeChange = () => {
 // 导出 Excel：与页面完全同参数（区间+部门作用域），后端同口径共用 _cashflow_payload
 // 图表下钻:点击月度图任一柱/点 → 月度明细表定位并高亮该月
 const hiYm = ref('')
-function drillMonth(p) {
-  const label = p?.name || p?.axisValueLabel
-  if (!label) return
-  // 呼吸图类目是「MM月」、桥图是步骤名，台账行 key 是「YYYY-MM」：按月份后缀映射
-  const ym = (cfData.value?.months || []).find(m => m === label || m.slice(5) + '月' === label)
+function drillYm(ym) {
   if (!ym) return
   hiYm.value = ym
   requestAnimationFrame(() => {
     document.querySelector(`[data-ym="${ym}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   })
   setTimeout(() => { if (hiYm.value === ym) hiYm.value = '' }, 2600)
+}
+function drillMonth(p) {
+  const label = p?.name || p?.axisValueLabel
+  if (!label) return
+  // 呼吸图类目是「MM月」、桥图是步骤名，台账行 key 是「YYYY-MM」：按月份后缀映射
+  drillYm((cfData.value?.months || []).find(m => m === label || m.slice(5) + '月' === label))
 }
 
 const exporting = ref(false)
@@ -159,6 +163,40 @@ const alertMonths = computed(() => cfData.value?.totals?.alert_months || [])
 const showDeptComparison = computed(() =>
   !filters.dept && (cfData.value?.by_dept?.length || 0) > 1)
 
+// ── 数据密度感知：稀疏（≤2 个有效月）切资金故事卡，密集走完整图表 ──────────────
+// 小事业部/单月区间的时间轴大图只剩空格子——数据少讲结论，数据多讲结构。
+const activeIdx = computed(() => {
+  const t = totals.value
+  if (!t) return []
+  return activeIndices([t.collected, t.daily_receipts, t.advance_received, t.paid, t.advance_paid])
+})
+const density = computed(() => densityOf(activeIdx.value.length))
+const forceCharts = ref(false)   // 稀疏时用户仍可手动切回图表视图
+
+const storyData = computed(() => {
+  const t = totals.value
+  if (!t) return null
+  const months = cfData.value.months || []
+  const inflows = [
+    { name: '实收回款', value: sumColl.value, color: '#2e7d32' },
+    { name: '日常收款', value: sumDaily.value, color: '#4caf50' },
+    { name: '预收款', value: sumAdvRecv.value, color: '#81c784' },
+  ].filter(s => s.value > 0)
+  const outflows = [
+    { name: '实付付款', value: sumPaid.value, color: '#e65100' },
+    { name: '预付款', value: sumAdvPaid.value, color: '#ffa726' },
+  ].filter(s => s.value > 0)
+  const rows = activeIdx.value.map(i => {
+    const inflow = (t.collected?.[i] || 0) + (t.daily_receipts?.[i] || 0) + (t.advance_received?.[i] || 0)
+    const outflow = (t.paid?.[i] || 0) + (t.advance_paid?.[i] || 0)
+    return { ym: months[i], label: (months[i] || '').slice(5) + '月', inflow, outflow, net: inflow - outflow }
+  })
+  return {
+    inflows, outflows, net: netTotal.value, cumulativeEnd: endCumulative.value,
+    months: rows, totalMonths: months.length,
+  }
+})
+
 // ── Shared chart style tokens ─────────────────────────────────────────────────
 const GRID  = { top: 16, right: 16, bottom: 48, left: 16, containLabel: true }
 const GRIDL = { top: 16, right: 16, bottom: 28, left: 16, containLabel: true }
@@ -194,12 +232,14 @@ const bridgeOption = computed(() => {
   const t = cfData.value.totals
   const inflowC = _sum(t.collected), inflowA = _sum(t.advance_received), inflowD = _sum(t.daily_receipts)
   const outflowP = _sum(t.paid), outflowA = _sum(t.advance_paid)
+  // 零构成不占位：小事业部常只有实收+实付，滤掉 0 值步骤让「桥」保持阶梯感
   const steps = [
     { name: '实收回款', d: inflowC },
-    ...(inflowD ? [{ name: '日常收款', d: inflowD }] : []),
+    { name: '日常收款', d: inflowD },
     { name: '预收款', d: inflowA },
     { name: '实付付款', d: -outflowP }, { name: '预付款', d: -outflowA },
-  ]
+  ].filter(s => s.d)
+  if (!steps.length) return null
   const cats = steps.map(s => s.name).concat('期末净现金')
   const base = [], delta = []
   let run = 0
@@ -255,6 +295,33 @@ const breathOption = computed(() => {
   const alertBands = (cfData.value.months || [])
     .map((ym, i) => (alertSet.has(ym) ? lbls[i] : null)).filter(Boolean)
     .map(l => [{ xAxis: l, itemStyle: { color: 'rgba(198,40,40,0.08)' } }, { xAxis: l }])
+  // 系列按「有数据才进图」动态组装：小事业部常没有预收/预付/日常收款，
+  // 全零系列不画柱也不占图例——图例只剩真实发生的构成
+  const series = []
+  if (_sum(t.collected)) series.push({ name: '实收', type: 'bar', stack: 'in', barMaxWidth: 26, data: t.collected,
+    itemStyle: { color: gradBar('#81c784', '#2e7d32') } })
+  if (_sum(t.daily_receipts)) series.push({ name: '日常收款', type: 'bar', stack: 'in', barMaxWidth: 26, data: t.daily_receipts,
+    itemStyle: { color: gradBar('#a5d6a7', '#66bb6a') } })
+  if (_sum(t.advance_received)) series.push({ name: '预收', type: 'bar', stack: 'in', barMaxWidth: 26, data: t.advance_received,
+    itemStyle: { color: gradBar('#c8e6c9', '#81c784'), borderRadius: [4, 4, 0, 0] } })
+  if (_sum(t.paid)) series.push({ name: '实付', type: 'bar', stack: 'out', barMaxWidth: 26, data: neg(t.paid),
+    itemStyle: { color: gradBar('#e65100', '#ffa726') } })
+  if (_sum(t.advance_paid)) series.push({ name: '预付', type: 'bar', stack: 'out', barMaxWidth: 26, data: neg(t.advance_paid),
+    itemStyle: { color: gradBar('#ffa726', '#ffe0b2'), borderRadius: [0, 0, 4, 4] } })
+  if (alertBands.length && series.length) series[0].markArea = { silent: true, data: alertBands }
+  const netSeries = { name: '净现金流', type: 'line', smooth: true, z: 10, data: t.net,
+    symbol: 'circle', symbolSize: 7, lineStyle: { color: '#1565c0', width: 3 },
+    itemStyle: { color: '#fff', borderColor: '#1565c0', borderWidth: 2.5 },
+    label: { show: true, position: 'top', fontSize: 10.5, fontWeight: 700, color: '#1565c0',
+             textBorderColor: '#fff', textBorderWidth: 3, formatter: p => signWan(p.value) },
+    labelLayout: HIDE_OVERLAP,
+    markLine: { silent: true, symbol: 'none', lineStyle: { color: 'rgba(0,0,0,0.25)' }, data: [{ yAxis: 0 }] } }
+  if (alertBands.length && !series.length) netSeries.markArea = { silent: true, data: alertBands }
+  series.push(netSeries)
+  if (_sum(t.budget_collection)) series.push({ name: '收款预算', type: 'line', smooth: true, data: t.budget_collection, symbol: 'none',
+    lineStyle: { type: 'dashed', color: '#2e7d32', width: 1.5, opacity: 0.6 } })
+  if (_sum(t.budget_payment)) series.push({ name: '付款预算', type: 'line', smooth: true, data: neg(t.budget_payment), symbol: 'none',
+    lineStyle: { type: 'dashed', color: '#e65100', width: 1.5, opacity: 0.6 } })
   return {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TT_STYLE,
       formatter: ps => {
@@ -269,34 +336,11 @@ const breathOption = computed(() => {
         return h
       } },
     legend: { bottom: 4, icon: 'roundRect', itemWidth: 14, itemHeight: 8, textStyle: { fontSize: 11, color: '#555' },
-              data: ['实收', '预收', '实付', '预付', '净现金流', '收款预算', '付款预算'] },
+              data: series.map(s => s.name) },
     grid: GRID,
     xAxis: { type: 'category', data: lbls, axisLine: { lineStyle: SLINE }, axisTick: OLINE, axisLabel: AXLBL },
     yAxis: { type: 'value', axisLabel: { formatter: v => fmtWan(Math.abs(v)), ...AXLBL }, splitLine: { lineStyle: SLINE } },
-    series: [
-      { name: '实收', type: 'bar', stack: 'in', barMaxWidth: 26, data: t.collected,
-        itemStyle: { color: gradBar('#81c784', '#2e7d32') },
-        markArea: alertBands.length ? { silent: true, data: alertBands } : undefined },
-      { name: '日常收款', type: 'bar', stack: 'in', barMaxWidth: 26, data: t.daily_receipts || [],
-        itemStyle: { color: gradBar('#a5d6a7', '#66bb6a') } },
-      { name: '预收', type: 'bar', stack: 'in', barMaxWidth: 26, data: t.advance_received || [],
-        itemStyle: { color: gradBar('#c8e6c9', '#81c784'), borderRadius: [4, 4, 0, 0] } },
-      { name: '实付', type: 'bar', stack: 'out', barMaxWidth: 26, data: neg(t.paid),
-        itemStyle: { color: gradBar('#e65100', '#ffa726') } },
-      { name: '预付', type: 'bar', stack: 'out', barMaxWidth: 26, data: neg(t.advance_paid),
-        itemStyle: { color: gradBar('#ffa726', '#ffe0b2'), borderRadius: [0, 0, 4, 4] } },
-      { name: '净现金流', type: 'line', smooth: true, z: 10, data: t.net,
-        symbol: 'circle', symbolSize: 7, lineStyle: { color: '#1565c0', width: 3 },
-        itemStyle: { color: '#fff', borderColor: '#1565c0', borderWidth: 2.5 },
-        label: { show: true, position: 'top', fontSize: 10.5, fontWeight: 700, color: '#1565c0',
-                 textBorderColor: '#fff', textBorderWidth: 3, formatter: p => signWan(p.value) },
-        labelLayout: HIDE_OVERLAP,
-        markLine: { silent: true, symbol: 'none', lineStyle: { color: 'rgba(0,0,0,0.25)' }, data: [{ yAxis: 0 }] } },
-      { name: '收款预算', type: 'line', smooth: true, data: t.budget_collection, symbol: 'none',
-        lineStyle: { type: 'dashed', color: '#2e7d32', width: 1.5, opacity: 0.6 } },
-      { name: '付款预算', type: 'line', smooth: true, data: neg(t.budget_payment), symbol: 'none',
-        lineStyle: { type: 'dashed', color: '#e65100', width: 1.5, opacity: 0.6 } },
-    ],
+    series,
   }
 })
 
@@ -380,6 +424,55 @@ const deptBalanceOption = computed(() => {
         label: { show: true, formatter: p => p.value[3], position: 'right', fontSize: 11, color: '#5f4d3d' },
         labelLayout: HIDE_OVERLAP },
     ],
+  }
+})
+
+// ── 5) 桑基资金流向：谁在供血（各事业部流入）→ 资金池 → 钱花去哪（实付/预付）──────
+// 净流入时右侧多一条「净留存」蓝流；净流出时左侧多一条「消耗存量」红流补平。
+const GREENS = ['#2e7d32', '#43a047', '#66bb6a', '#81c784', '#a5d6a7', '#8bc34a']
+const sankeyOption = computed(() => {
+  if (!showDeptComparison.value || density.value !== 'dense') return null
+  const deptRows = cfData.value.by_dept
+    .map(d => ({ dept: d.dept, inflow: _sum(d.collected) + _sum(d.daily_receipts) + _sum(d.advance_received) }))
+    .filter(r => r.inflow > 0)
+    .sort((a, b) => b.inflow - a.inflow)
+  if (!deptRows.length) return null
+  const nodes = [], links = []
+  deptRows.forEach((r, i) => {
+    nodes.push({ name: r.dept, itemStyle: { color: GREENS[i % GREENS.length] } })
+    links.push({ source: r.dept, target: '资金池', value: r.inflow })
+  })
+  if (netTotal.value < 0) {
+    nodes.push({ name: '消耗存量', itemStyle: { color: '#c62828' } })
+    links.push({ source: '消耗存量', target: '资金池', value: -netTotal.value })
+  }
+  nodes.push({ name: '资金池', itemStyle: { color: '#8d6e63' } })
+  if (sumPaid.value > 0) {
+    nodes.push({ name: '实付付款', itemStyle: { color: '#e65100' } })
+    links.push({ source: '资金池', target: '实付付款', value: sumPaid.value })
+  }
+  if (sumAdvPaid.value > 0) {
+    nodes.push({ name: '预付款', itemStyle: { color: '#ffa726' } })
+    links.push({ source: '资金池', target: '预付款', value: sumAdvPaid.value })
+  }
+  if (netTotal.value > 0) {
+    nodes.push({ name: '净留存', itemStyle: { color: '#1565c0' } })
+    links.push({ source: '资金池', target: '净留存', value: netTotal.value })
+  }
+  if (links.length <= 1) return null   // 只有一条流时桑基无意义
+  return {
+    tooltip: { ...TT_STYLE,
+      formatter: p => p.dataType === 'edge'
+        ? `${p.data.source} → ${p.data.target}<br/><b>${fmtWan(p.value)}</b>`
+        : `${p.name}<br/><b>${fmtWan(p.value)}</b>` },
+    series: [{
+      type: 'sankey', left: 14, right: 96, top: 14, bottom: 14,
+      nodeWidth: 14, nodeGap: 12, data: nodes, links,
+      label: { fontSize: 11.5, color: '#5f4d3d', formatter: p => `${p.name}  ${fmtWan(p.value)}` },
+      lineStyle: { color: 'gradient', opacity: 0.32, curveness: 0.5 },
+      itemStyle: { borderRadius: 3 },
+      emphasis: { focus: 'adjacency' },
+    }],
   }
 })
 </script>
@@ -501,10 +594,23 @@ const deptBalanceOption = computed(() => {
 
     <!-- Chart grid (creative cash-flow viz suite) -->
     <div class="cockpit-grid">
+      <!-- ── 稀疏模式：资金故事卡——数据少讲结论，数据多讲结构 ─────────────── -->
+      <template v-if="density === 'sparse' && storyData && !forceCharts">
+        <div class="card span2">
+          <div class="section-title">资金故事
+            <span class="section-sub">区间内现金流月份较少，直接讲结论；数据变多后自动切换完整图表</span>
+            <button class="cs-viewswitch" @click="forceCharts = true">仍看图表 ›</button>
+          </div>
+          <CashStory v-bind="storyData" @month-click="drillYm" />
+        </div>
+      </template>
+
+      <template v-else>
       <!-- 招牌图：现金流量桥 -->
       <div class="card span2">
         <div class="section-title">现金流量桥
           <span class="section-sub">实收 + 预收 − 实付 − 预付 = 期末净现金</span>
+          <button v-if="density === 'sparse'" class="cs-viewswitch" @click="forceCharts = false">‹ 返回故事视图</button>
         </div>
         <BaseChart v-if="bridgeOption" :option="bridgeOption" height="300px" @click="drillMonth" />
         <div v-else class="chart-empty">{{ loading ? '加载中…' : '暂无数据' }}</div>
@@ -527,6 +633,15 @@ const deptBalanceOption = computed(() => {
         <BaseChart v-if="runwayOption" :option="runwayOption" height="280px" />
         <div v-else class="chart-empty">{{ loading ? '加载中…' : '暂无数据' }}</div>
       </div>
+
+      <!-- 桑基资金流向：谁在供血 → 资金池 → 钱花去哪（多事业部 + 数据密集时） -->
+      <div v-if="sankeyOption" class="card span2">
+        <div class="section-title">资金流向
+          <span class="section-sub">左＝谁在供血（各事业部流入）· 右＝钱花去哪 · 蓝＝净留存 / 红＝消耗存量</span>
+        </div>
+        <BaseChart :option="sankeyOption" height="320px" />
+      </div>
+      </template>
     </div>
 
     <!-- 事业部现金收支平衡气泡 (multi-dept) -->
@@ -581,6 +696,14 @@ const deptBalanceOption = computed(() => {
 </template>
 
 <style scoped>
+/* 故事视图 ↔ 图表视图 切换（稀疏数据时） */
+.cs-viewswitch {
+  float: right; border: 1px solid rgba(150,120,100,0.3); background: none;
+  border-radius: 8px; padding: 3px 10px; font-size: 11.5px; color: var(--muted);
+  cursor: pointer; transition: color .15s, border-color .15s;
+}
+.cs-viewswitch:hover { color: var(--primary); border-color: var(--primary); }
+
 /* ── 筛选条（玻璃态，对齐系统设计令牌）── */
 .cf-filterbar {
   display: flex; align-items: center;
