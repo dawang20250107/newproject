@@ -104,8 +104,11 @@ const onScopeChange = () => {
 // 图表下钻:点击月度图任一柱/点 → 月度明细表定位并高亮该月
 const hiYm = ref('')
 function drillMonth(p) {
-  const ym = p?.name || p?.axisValueLabel
-  if (!ym || !cfData.value?.months?.includes(ym)) return
+  const label = p?.name || p?.axisValueLabel
+  if (!label) return
+  // 呼吸图类目是「MM月」、桥图是步骤名，台账行 key 是「YYYY-MM」：按月份后缀映射
+  const ym = (cfData.value?.months || []).find(m => m === label || m.slice(5) + '月' === label)
+  if (!ym) return
   hiYm.value = ym
   requestAnimationFrame(() => {
     document.querySelector(`[data-ym="${ym}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })

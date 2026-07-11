@@ -101,6 +101,9 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('pk_user')
     localStorage.removeItem('pk_perms')
     localStorage.removeItem('pk_active_depts')
+    // 钉钉同步面板缓存的审批实例(含金额/收款方/申请人)也须随登出清除，
+    // 否则共用工作机上下一个使用者能看到上一个人查询过的敏感明细
+    localStorage.removeItem('dt_query_state_v1')
   }
 
   // 超管重置临时密码后，登录响应带 must_change_password → 强制改密

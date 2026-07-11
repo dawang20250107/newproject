@@ -12,7 +12,10 @@ import { copyText } from '../utils/clipboard.js'
 //   <div class="page-scroll" :ref="range.setRoot"> <table> … </table> </div>
 //   选项 ignoreCols：忽略的列索引集合（如复选框列、操作列），这些列不参与选区。
 export function useRangeSelection(opts = {}) {
-  const ignoreCols = new Set(opts.ignoreCols || [])
+  // ignoreCols 可传数组或函数：勾选列仅在有删除/写权限时渲染，列位随权限变化，
+  // 传函数可按当前列结构动态返回忽略列（避免无权限用户第一数据列被排除在框选/复制外）
+  const _ignoreSet = () => new Set(typeof opts.ignoreCols === 'function' ? opts.ignoreCols() : (opts.ignoreCols || []))
+  const ignoreCols = { has: c => _ignoreSet().has(c) }
   let root = null
   let anchor = null   // { r, c } —— tr 在 tbody 中的行号、td 的 cellIndex
   let focus = null

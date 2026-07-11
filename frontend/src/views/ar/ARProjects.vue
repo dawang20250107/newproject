@@ -143,7 +143,7 @@ function toggleSelectPage() {
 function clearSelection() { selectedIds.value = new Set(); selectAllMatching.value = false }
 useEscClearSelection(() => hasSelection.value, clearSelection)   // ESC 退出勾选
 // Excel 式单元格区域选择（拖选/Shift 扩选/方向键移动/Ctrl+C 复制为 TSV）
-const rangeSel = useRangeSelection({ ignoreCols: [0], onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
+const rangeSel = useRangeSelection({ ignoreCols: () => (auth.canDelete ? [0] : []), onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
 function bulkDelete() {
   if (!selectedCount.value) return
   delConfirmText.value = ''
@@ -171,15 +171,20 @@ const form = reactive({
   customer_id: '',
 })
 // 项目台账内联改状态（与客户详情两边改同一字段，自动同步）
-async function changeStatus(item) {
-  try { await ar.updateProject(item.id, { status: item.status }) }
-  catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+async function changeStatus(item, prev) {
+  try { await ar.updateProject(item.id, { status: item.status }); return true }
+  catch (e) {
+    toast.error(e?.msg || e?.error || '操作失败')
+    if (prev !== undefined) item.status = prev   // 失败回滚，避免行内显示与后端不一致
+    return false
+  }
 }
 async function setStatus(item, s) {
   if (item.status === s) return
+  const prev = item.status
   item.status = s
-  await changeStatus(item)
-  toast.success(`✓ 项目「${item.short_name || item.customer_name}」状态改为${s}`)
+  if (await changeStatus(item, prev))   // 仅成功才提示，失败已回滚
+    toast.success(`✓ 项目「${item.short_name || item.customer_name}」状态改为${s}`)
 }
 
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────

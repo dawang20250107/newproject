@@ -4,7 +4,7 @@ import ar from '../../api/ar.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 import { yearCST } from '../../constants.js'
 import { fmtCompact } from '../../utils/format.js'
-import { valueAxis, catAxis, gridFor, TOOLTIP } from '../../utils/chartTheme.js'
+import { valueAxis, catAxis, TOOLTIP } from '../../utils/chartTheme.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText } from '../../utils/clipboard.js'
@@ -97,7 +97,7 @@ const overviewOption = computed(() => {
         return `<b>${bu}</b><br/>年度目标：${wan(row.annual_target_revenue)}<br/>YTD实际：${wan(row.ytd_actual_revenue)}（达成${fmtRate(row.ytd_achieved)}）<br/>全年预测：${row.projected != null ? wan(row.projected) : '—'}`
       } },
     legend: { data: ['年度目标', 'YTD实际', '全年预测'], bottom: 0, textStyle: { fontSize: 11 } },
-    ...gridFor({ top: 20, right: 20, bottom: 48, left: 16 }),
+    grid: { top: 20, right: 20, bottom: 48, left: 16, containLabel: true },
     xAxis: { type: 'category', data: bus, axisLabel: { color: '#6b5a4a', fontSize: 11, interval: 0, rotate: bus.length > 6 ? 30 : 0 } },
     yAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => (v / 10000).toFixed(0) + '万' }, splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } } },
     series: [
@@ -128,7 +128,7 @@ const monthlyOption = computed(() => {
         return mo ? `${mo.month}月<br/>目标：${mo.target_revenue != null ? wan(mo.target_revenue) : '—'}<br/>实际：${wan(mo.actual_revenue)}<br/>达成：${fmtRate(mo.achieved)}` : ''
       } },
     legend: { data: ['月目标', '月实际', '达成率'], bottom: 0, textStyle: { fontSize: 11 } },
-    ...gridFor({ top: 24, right: 56, bottom: 48, left: 16 }),
+    grid: { top: 24, right: 56, bottom: 48, left: 16, containLabel: true },
     xAxis: { type: 'category', data: labels, axisLabel: { color: '#6b5a4a', fontSize: 11 } },
     yAxis: [
       { type: 'value', axisLabel: { color: '#9b8070', formatter: v => v.toFixed(0) + '万' }, splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } } },

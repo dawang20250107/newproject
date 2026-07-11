@@ -46,7 +46,7 @@ function clearSel() { selectedIds.value = new Set() }
 const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow })
 useEscClearSelection(() => hasSel.value, clearSel)
 // Excel 式单元格区域选择（拖选/Shift 扩选/方向键移动/Ctrl+C 复制为 TSV）
-const rangeSel = useRangeSelection({ ignoreCols: [0], onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
+const rangeSel = useRangeSelection({ ignoreCols: () => (canDelete.value ? [0] : []), onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
 const selSum = computed(() => items.value.filter(r => selectedIds.value.has(r.id))
   .reduce((s, r) => s + (parseFloat(r.advance_amount) || 0), 0))
 async function bulkDelete() {

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, nextTick, watch, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, defineAsyncComponent } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { useAuthStore } from '../../stores/auth.js'
@@ -70,6 +70,15 @@ const PRESENT_PAGES = ['规模', '盈利', '业财', '预测', '目标', '行动
 function nextPresentPage() { presentPage.value = (presentPage.value + 1) % PRESENT_PAGES.length }
 function prevPresentPage() { presentPage.value = (presentPage.value - 1 + PRESENT_PAGES.length) % PRESENT_PAGES.length }
 function openPresent() { presentPage.value = 0; presentMode.value = true }
+// 大屏复盘键盘控制挂到 window：overlay div 未获焦时其 @keydown 收不到事件
+function onPresentKey(e) {
+  if (!presentMode.value) return
+  if (e.key === 'Escape') presentMode.value = false
+  else if (e.key === 'ArrowRight') nextPresentPage()
+  else if (e.key === 'ArrowLeft') prevPresentPage()
+}
+onMounted(() => window.addEventListener('keydown', onPresentKey))
+onBeforeUnmount(() => window.removeEventListener('keydown', onPresentKey))
 
 // ── P4 信号转行动项 ──────────────────────────────────────────────────────────
 const alertToast = ref('')
@@ -1310,7 +1319,7 @@ const ctxMatrixItems = computed(() => {
     <!-- ── P4 大屏复盘模式 ─────────────────────────────────────────────────────── -->
     <Teleport to="body">
       <Transition name="present-fade">
-        <div v-if="presentMode" class="present-overlay" @keydown.esc="presentMode = false" tabindex="0">
+        <div v-if="presentMode" class="present-overlay" tabindex="0">
           <div class="present-header">
             <div class="present-logo">📊 财务驾驶舱 · 经营复盘</div>
             <div class="present-scope">{{ selectedBu || '全集团' }} · {{ year }}年{{ month }}月</div>

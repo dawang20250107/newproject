@@ -31,6 +31,7 @@ const form = reactive({
 const parties = ref([])
 // 关联项目：[{project_id, project_no, short_name, is_primary}]
 const projects = ref([])
+const detailLoadFailed = ref(false)   // 编辑时关联明细是否加载失败
 
 // 客户池（一次性加载，供下拉添加）
 const customers = ref([])
@@ -131,6 +132,7 @@ async function openEdit(item) {
   parties.value = []
   projects.value = []
   projQuery.value = ''; projResults.value = []
+  detailLoadFailed.value = false
   showModal.value = true
   // 拉取关联明细
   try {
@@ -142,11 +144,12 @@ async function openEdit(item) {
     projects.value = (d.projects || []).map(p => ({
       project_id: p.project_id, project_no: p.project_no,
       short_name: p.short_name, is_primary: p.is_primary }))
-  } catch { /* 保持空 */ }
+  } catch { detailLoadFailed.value = true }   // 明细拉取失败：标记以阻止空数组误覆盖
 }
 
 async function save() {
   if (!form.name.trim()) { toast.error('请填写合同名称'); return }
+  if (detailLoadFailed.value) { toast.error('关联明细加载失败，请关闭后重新打开再保存，以免清空既有客户/项目关联'); return }
   saving.value = true
   try {
     const payload = {

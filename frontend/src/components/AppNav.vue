@@ -815,7 +815,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
   backdrop-filter: blur(24px);
   z-index: 200;
 }
-.dept-pop.pop-collapsed { left: calc(100% + 8px); right: auto; bottom: 14px; width: 240px; }
+/* 折叠态弹层用 fixed 逃离 .sidebar 的 overflow:hidden 裁剪（此前弹层在盒子外被整体裁掉不可见） */
+.dept-pop.pop-collapsed { position: fixed; left: calc(var(--nav-w-collapsed) + 8px); right: auto; bottom: 14px; width: 240px; z-index: 200; }
 .dept-pop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 .dept-pop-title { font-size: 13px; font-weight: 700; color: #fff; }
 .dept-pop-tools { display: flex; gap: 4px; }

@@ -304,7 +304,14 @@ def ar_invoice_batch_invoice_undo(request, batch_no):
                       .get(pk=int(data.get('event_id') or 0), batch_no=batch_no))
             except (BatchInvoiceEvent.DoesNotExist, ValueError, TypeError):
                 return err('开票事件不存在（可能已撤销）', 404)
-            diff_total = sum(Decimal(a['amount']) for a in ev.allocations or [])
+            # 撤销税额回退分母须与开票时一致：只累计「差额模式」记录的分摊额。
+            # 此前用全部分摊额作分母，混批(全额+差额)时回退不足、残留税额
+            _alloc_list = ev.allocations or []
+            _mode_map = dict(ARRecord.objects.filter(
+                pk__in=[a['record_id'] for a in _alloc_list]
+            ).values_list('id', 'project__invoice_mode'))
+            diff_total = sum(Decimal(a['amount']) for a in _alloc_list
+                             if _mode_map.get(a['record_id']) == '差额')
             for a in (ev.allocations or []):
                 rid, amt = a['record_id'], Decimal(a['amount'])
                 if rid not in member_ids:
@@ -466,9 +473,16 @@ def _gen_batch_no(qs):
             names.add(n)
     base = (list(names)[0][:8] if len(names) == 1 else '多户') or '开票'
     prefix = f'{base}-{timezone.localdate().strftime("%y%m%d")}'
-    seq = ARRecord.objects.filter(invoice_batch_no__startswith=prefix)\
-        .values('invoice_batch_no').distinct().count() + 1
-    return f'{prefix}-{seq:02d}'
+    # 取现存同前缀批次号的最大序号 +1（而非计数 +1）：批次被取消/改名后计数会
+    # 与现存号撞车，把新记录静默并进旧批次、打乱其开票金额分摊。解析 -NN 后缀取 max
+    existing = (ARRecord.objects.filter(invoice_batch_no__startswith=f'{prefix}-')
+                .values_list('invoice_batch_no', flat=True).distinct())
+    max_seq = 0
+    for bn in existing:
+        tail = bn.rsplit('-', 1)[-1]
+        if tail.isdigit():
+            max_seq = max(max_seq, int(tail))
+    return f'{prefix}-{max_seq + 1:02d}'
 
 
 @csrf_exempt
@@ -550,6 +564,16 @@ def ar_records_batch_assign(request):
         qs = _apply_record_filters(qs, request)
         qs = _apply_record_state_filters(qs, request, today)
         qs = _apply_conditions(qs, request, today)
+        # 与 bulk_delete 同口径补 Excel 列头筛选 filters：否则「全选打批次」范围
+        # 会大于所见列表，未被筛中的记录被并入批次、后续开票金额按 FIFO 摊错。
+        # 局部导入：这两个名字定义在 records 域，不在本模块 _common 基座里
+        from paikuan.list_filters import build_filter_q
+        from .records import ARRECORD_FILTER_REGISTRY
+        _fq, _fq_distinct = build_filter_q(request.GET.get('filters', ''), ARRECORD_FILTER_REGISTRY)
+        if _fq:
+            qs = qs.filter(_fq)
+            if _fq_distinct:
+                qs = qs.distinct()
         if qs.count() > 5000:
             return err('选中记录超过5000条，请缩小筛选范围后再批量操作')
     else:

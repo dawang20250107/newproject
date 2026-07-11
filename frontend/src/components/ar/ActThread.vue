@@ -82,7 +82,8 @@ const fmtTime = iso => (iso ? iso.replace('T', ' ').slice(0, 16) : '')
           <!-- Esc 取消编辑并阻断冒泡，避免触发面板级 Esc 关闭 -->
           <textarea v-model="buf.note" class="act-edit-ta" rows="2"
                     @keydown.esc.stop="editId = null"></textarea>
-          <div class="act-edit-foot">
+          <!-- 编辑区所有控件的 Esc 都取消编辑并阻断冒泡，不误触面板级 Esc 关闭 -->
+          <div class="act-edit-foot" @keydown.esc.stop="editId = null">
             <select v-model="buf.status" class="act-sel"><option v-for="s in STATUSES" :key="s.v" :value="s.v">{{ s.l }}</option></select>
             <input v-model="buf.follow_up_date" type="date" class="act-sel" />
             <button class="act-save" @click="commitEdit(act)">保存</button>

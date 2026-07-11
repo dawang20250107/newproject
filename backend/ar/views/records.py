@@ -581,8 +581,11 @@ def ar_records_trash(request):
             page, size = 1, 50
         total = qs.count()
         rows = list(qs.order_by('-deleted_at')[(page - 1) * size:page * size])
+        # 与主列表同口径套字段级权限掩码：否则被隐藏「预估上账/未收金额」的用户
+        # 在回收站能看到已删记录的全部金额明文
+        perms = get_request_perms(request)
         return ok({'total': total, 'items': [
-            {**r.to_dict(),
+            {**apply_ar_view_mask(r.to_dict(), perms, 'record'),
              'deleted_at': r.deleted_at.isoformat() if r.deleted_at else None,
              'deleted_by_name': r.deleted_by.name if r.deleted_by else None}
             for r in rows
@@ -616,6 +619,12 @@ def ar_records_trash(request):
                 if rec.payments.filter(source='预收抵扣').exists():
                     skipped.append({'id': rec.id,
                                     'reason': '有预收抵扣回款，请先撤销对应核销再彻底删除'})
+                    continue
+                # 带真实回款现金历史的记录彻底硬删仅限超管：与软删「有回款仅超管可 force」
+                # 同一纪律，否则普通删除权限者可绕过该约束级联抹掉现金历史且不可恢复
+                if request.pk_role != 'super_admin' and rec.payments.exists():
+                    skipped.append({'id': rec.id,
+                                    'reason': '该记录含真实回款，仅超级管理员可彻底删除'})
                     continue
                 with transaction.atomic():
                     rec.delete()   # 级联删回款/调整（真实硬删，审计不可恢复）
@@ -1139,32 +1148,41 @@ def ar_record_import(request):
                 }
             bucket[key]['count'] += 1
 
-            rec = ARRecord(project=proj, operation_date=p['op_date'], created_by=user)
-            if p['est'] is not None and _can_ar_view(request, 'r_estimated_amount'):
-                rec.estimated_amount = p['est']
-            if _can_ar_view(request, 'r_actual_invoice_amount'):
-                rec.actual_invoice_amount = p['actual']
-            if _can_ar_view(request, 'r_tax_amount'):
-                rec.tax_amount = p['tax']
-            if _can_ar_view(request, 'r_invoice_date'):
-                rec.invoice_date = p['inv_date']
-            if p['tgt_date'] and _can_ar_view(request, 'r_due_date'):
-                rec.target_collection_date = p['tgt_date']
-            if _can_ar_view(request, 'r_notes'):
-                rec.notes = p['notes']
-            rec.save()
-            # 差额走调整明细（合计由信号派生）；须在回款写入前生效，
-            # 否则回款校验「未收不为负」时差额还没计入
-            if p['diff'] and _can_ar_view(request, 'r_account_diff'):
-                ARAdjustment.objects.create(
-                    ar_record=rec, amount=p['diff'],
-                    reason=p['diff_reason'][:200] or '导入差额调整',
-                    adjust_date=rec.operation_date, created_by=user)
-            if p['pay_amount'] and p['pay_date']:
-                # 导入回款默认方式为银行转账，与历史迁移口径一致（避免导入行方式为空）
-                ARPayment.objects.create(ar_record=rec, payment_no=1,
-                                         amount=p['pay_amount'], payment_date=p['pay_date'],
-                                         method=ARPayment.DEFAULT_METHOD, notes='导入回款')
+            # 行级 savepoint 捕获校验异常：字段级掩码可能把 est 丢成 0，若该行带回款
+            # 会触发信号「未收不为负」ValidationError。此前未捕获 → 整个导入 500 且
+            # 看不出是哪行。转为收集行号错误，走既有「有错整表回滚」策略给出明确提示。
+            try:
+                with transaction.atomic():
+                    rec = ARRecord(project=proj, operation_date=p['op_date'], created_by=user)
+                    if p['est'] is not None and _can_ar_view(request, 'r_estimated_amount'):
+                        rec.estimated_amount = p['est']
+                    if _can_ar_view(request, 'r_actual_invoice_amount'):
+                        rec.actual_invoice_amount = p['actual']
+                    if _can_ar_view(request, 'r_tax_amount'):
+                        rec.tax_amount = p['tax']
+                    if _can_ar_view(request, 'r_invoice_date'):
+                        rec.invoice_date = p['inv_date']
+                    if p['tgt_date'] and _can_ar_view(request, 'r_due_date'):
+                        rec.target_collection_date = p['tgt_date']
+                    if _can_ar_view(request, 'r_notes'):
+                        rec.notes = p['notes']
+                    rec.save()
+                    # 差额走调整明细（合计由信号派生）；须在回款写入前生效，
+                    # 否则回款校验「未收不为负」时差额还没计入
+                    if p['diff'] and _can_ar_view(request, 'r_account_diff'):
+                        ARAdjustment.objects.create(
+                            ar_record=rec, amount=p['diff'],
+                            reason=p['diff_reason'][:200] or '导入差额调整',
+                            adjust_date=rec.operation_date, created_by=user)
+                    if p['pay_amount'] and p['pay_date']:
+                        # 导入回款默认方式为银行转账，与历史迁移口径一致
+                        ARPayment.objects.create(ar_record=rec, payment_no=1,
+                                                 amount=p['pay_amount'], payment_date=p['pay_date'],
+                                                 method=ARPayment.DEFAULT_METHOD, notes='导入回款')
+            except ValidationError as _ve:
+                _msg = _ve.messages[0] if getattr(_ve, 'messages', None) else str(_ve)
+                reject_errors.append(f'第{p["ri"]}行：{_msg}（可能因无金额查看权限导致回款超出应收）')
+                continue
             created += 1
         if reject_errors:
             transaction.set_rollback(True)
@@ -1887,6 +1905,9 @@ def ar_payments(request, pk):
         allowed = request.pk_depts
         if rec.delivery_dept not in allowed:
             return err('无权访问', 403)
+    _perms = get_request_perms(request)
+    if _perms and _perms.get('ar_shared_only') and not (rec.project and rec.project.is_shared):
+        return err('无权访问', 403)
     denied = _ar_field_denied(request, 'r_payments')
     if denied:
         return denied
@@ -1978,6 +1999,9 @@ def ar_adjustments(request, pk):
         return err('记录不存在', 404)
     if request.pk_role != 'super_admin' and rec.delivery_dept not in request.pk_depts:
         return err('无权访问', 403)
+    _perms = get_request_perms(request)
+    if _perms and _perms.get('ar_shared_only') and not (rec.project and rec.project.is_shared):
+        return err('无权访问', 403)
     denied = _ar_field_denied(request, 'r_account_diff')
     if denied:
         return denied
@@ -2023,11 +2047,14 @@ def ar_adjustment_detail(request, pk, aid):
     if denied:
         return denied
     try:
-        adj = ARAdjustment.objects.select_related('ar_record').get(pk=aid, ar_record_id=pk)
+        adj = ARAdjustment.objects.select_related('ar_record', 'ar_record__project').get(pk=aid, ar_record_id=pk)
     except ARAdjustment.DoesNotExist:
         return err('调整明细不存在', 404)
     rec = adj.ar_record
     if request.pk_role != 'super_admin' and rec.delivery_dept not in request.pk_depts:
+        return err('无权访问', 403)
+    _perms = get_request_perms(request)
+    if _perms and _perms.get('ar_shared_only') and not (rec.project and rec.project.is_shared):
         return err('无权访问', 403)
     denied = _ar_field_denied(request, 'r_account_diff')
     if denied:

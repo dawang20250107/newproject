@@ -579,7 +579,7 @@ onMounted(async () => {
               <td class="r amt">¥{{ Number(i.amount).toLocaleString('zh-CN', { minimumFractionDigits: 2 }) }}</td>
               <td class="payee">{{ i.payee }}</td>
               <td>
-                <span class="pill" :class="'p-' + DING[i.ding_status][0]"><i></i>{{ DING[i.ding_status][1] }}</span>
+                <span class="pill" :class="'p-' + (DING[i.ding_status] || ['run'])[0]"><i></i>{{ (DING[i.ding_status] || ['', i.ding_status || '未知'])[1] }}</span>
                 <span v-if="i.stale" class="stale-b" title="本次刷新失败，展示的是上次存档，数据可能已变化">旧</span>
               </td>
               <td class="when">{{ (i.create_time || '').replace('T', ' ').slice(0, 16) }}</td>
@@ -627,7 +627,7 @@ onMounted(async () => {
                 <tr v-for="i in selectedItems" :key="i.instance_id">
                   <td><div class="ttl">{{ i.title }}</div><div class="sub">{{ i.applicant }} · {{ i.department }} · {{ i.payee }}</div></td>
                   <td class="r amt">¥{{ Number(i.amount).toLocaleString('zh-CN', { minimumFractionDigits: 2 }) }}</td>
-                  <td><span class="pill sm" :class="'p-' + DING[i.ding_status][0]">{{ DING[i.ding_status][1] }}</span></td>
+                  <td><span class="pill sm" :class="'p-' + (DING[i.ding_status] || ['run'])[0]">{{ (DING[i.ding_status] || ['', i.ding_status || '未知'])[1] }}</span></td>
                   <td><span class="tag" :class="i.synced ? 'upd' : 'new'">{{ i.synced ? '更新' : '新建' }}</span></td>
                 </tr>
               </tbody>

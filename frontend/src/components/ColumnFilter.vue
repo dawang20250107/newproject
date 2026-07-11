@@ -224,7 +224,12 @@ const DATE_PRESETS = [
   { k: 'this_quarter', t: '本季' }, { k: 'this_year', t: '本年' },
   { k: 'last30', t: '近30天' }, { k: 'last90', t: '近90天' },
 ]
-function _iso(d) { return d.toISOString().slice(0, 10) }
+function _iso(d) {
+  // 用本地年月日拼接（非 toISOString 的 UTC）：UTC+8 下 toISOString 会把
+  // 本地午夜的日期整体提前一天，与系统「所有日期基准 UTC+8」冲突
+  const p = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
 function presetRange(k) {
   const now = new Date(); const y = now.getFullYear(); const m = now.getMonth()
   if (k === 'this_month') return [_iso(new Date(y, m, 1)), _iso(new Date(y, m + 1, 0))]

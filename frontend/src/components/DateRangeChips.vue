@@ -50,21 +50,23 @@ function _compute(k) {
 }
 
 const active = ref(props.initial)
-let applying = false
+let lastApplied = null
 function apply(k) {
-  applying = true
   const r = _compute(k)
+  lastApplied = `${r.start}|${r.end}`
+  active.value = k
   emit('update:start', r.start)
   emit('update:end', r.end)
-  active.value = k
-  applying = false
   emit('change')
 }
 function onManual(field, v) {
   emit(field === 'start' ? 'update:start' : 'update:end', v)
   emit('change')
 }
-watch(() => [props.start, props.end], () => { if (!applying) active.value = '' })
+// 预设写入的起止到达后保留高亮；任何其它来源(手改/父级清空)的变更才清高亮
+watch(() => [props.start, props.end], ([s, e]) => {
+  if (`${s}|${e}` !== lastApplied) active.value = ''
+})
 </script>
 
 <template>

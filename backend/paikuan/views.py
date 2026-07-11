@@ -856,8 +856,10 @@ def login(request):
     try:
         from paikuan.models import AuditLog
         _cutoff = timezone.now() - datetime.timedelta(minutes=15)
+        # 只统计真正的凭证失败(401)：此前 status_code>=400 会把每次锁定返回的 429
+        # 也计入，锁定期内任何重试都刷新 15 分钟窗口 → 事实上永不解锁
         _failed = AuditLog.objects.filter(
-            path__endswith='/login', status_code__gte=400,
+            path__endswith='/login', status_code=401,
             created_at__gte=_cutoff, user__phone=phone).count()
         if _failed >= 5:
             return err('失败次数过多，账号已临时锁定，请15分钟后再试', 429, 429)
@@ -1232,13 +1234,18 @@ def _payment_status_bucket_q(status):
         return Q(paid=Decimal('0'), plan_adjustment__isnull=True,
                  prepaid_offset_amount=Decimal('0'))
     if status == 'settled':
-        return (Q(paid__gte=F('total_amount') - F('prepaid_offset_amount')) |
+        # 与 to_dict 完全对齐：已付+预付冲抵 ≥ 有效计划(调整额优先)。首子句按
+        # plan_adjustment 分流，否则「上调计划」的行(paid≥总额但<调整额)会被误判已付清
+        return (Q(plan_adjustment__isnull=True,
+                  paid__gte=F('total_amount') - F('prepaid_offset_amount')) |
                 Q(plan_adjustment__isnull=False,
                   paid__gte=F('plan_adjustment') - F('prepaid_offset_amount')))
     if status == 'partial':
-        return Q(paid__gt=Decimal('0'),
-                 paid__lt=F('total_amount') - F('prepaid_offset_amount'),
-                 plan_adjustment__isnull=True)
+        # covered=已付+预付冲抵，>0 且 <计划即部分付款。此前只认 paid>0，
+        # 漏掉「仅预付冲抵未付现金」的行(to_dict 显示部分付款，却任何桶都查不到)
+        return (Q(plan_adjustment__isnull=True) &
+                Q(paid__lt=F('total_amount') - F('prepaid_offset_amount')) &
+                (Q(paid__gt=Decimal('0')) | Q(prepaid_offset_amount__gt=Decimal('0'))))
     if status == 'overdue':
         return Q(planned_date__lt=timezone.localdate()) & _not_settled_q('paid')
     if status == 'adjusted':
@@ -2107,6 +2114,10 @@ def payment_change_logs(request, pk):
     if perms is not None:
         view = perms['view']
         hidden = {f['key'] for f in PAYMENT_FIELD_DEFS if not view.get(f['key'], True)}
+        # plan_items / installments 日志值内嵌金额（如「追加第2批 ¥5000」），
+        # 当金额/明细列被隐藏时这些伪字段日志也须一并掩码，否则金额经日志绕行泄露
+        if not view.get('total_amount', True) or not view.get('installments', True):
+            hidden |= {'plan_items', 'installments'}
     else:
         hidden = set()
     for l in logs:
@@ -2288,7 +2299,12 @@ def approval_records(request):
         notes = (data.get('notes') or '').strip()[:500]
         payee = (data.get('payee') or '').strip()
         status = (data.get('status') or 'pending').strip()
-        amount = Decimal(str(data.get('amount') or '0'))
+        try:
+            amount = Decimal(str(data.get('amount') or '0'))
+            if not amount.is_finite():
+                raise InvalidOperation
+        except (InvalidOperation, ValueError, TypeError):
+            return err('申请金额格式有误')
         if not applicant:
             return err('申请人不能为空')
         if amount <= 0:
@@ -2590,7 +2606,12 @@ def approval_record_schedule(request, pk):
         return err('无权操作该部门', 403, 403)
     data = parse_body(request)
     planned_date = data.get('planned_date')
-    total_amount = Decimal(str(data.get('total_amount') or '0'))
+    try:
+        total_amount = Decimal(str(data.get('total_amount') or '0'))
+        if not total_amount.is_finite():
+            raise InvalidOperation
+    except (InvalidOperation, ValueError, TypeError):
+        return err('金额格式有误')
     if not planned_date or total_amount <= 0:
         return err('计划日期和计划金额必填')
     p, error, status = _schedule_one(request, rec, planned_date, total_amount)
@@ -3121,6 +3142,15 @@ def payments_bulk_pay(request):
     if len(ids) > 5000:
         return err('单次批量付款上限 5000 条，请缩小选择范围')
     pay_date = body.get('pay_date') or timezone.localdate().isoformat()
+    # 与单条编辑同口径：付款日为已发生的现金事件，须合法且不得晚于今天，
+    # 否则畸形字符串会在循环中段抛异常、未来日期让资金池两头看不见这笔钱
+    try:
+        _pd = datetime.date.fromisoformat(str(pay_date)[:10])
+    except (ValueError, TypeError):
+        return err('付款日期格式有误（应为 YYYY-MM-DD）')
+    if _pd > timezone.localdate():
+        return err('付款日期不能晚于今天——实际付款以发生日入账；计划性付款请用「计划付款日期」')
+    pay_date = _pd.isoformat()
     notes = (body.get('notes') or '批量付款').strip()[:200]
     qs = dept_filter(Payment.objects.filter(pk__in=ids, deleted_at__isnull=True), request)
     paid_cnt, total, skipped = 0, Decimal('0'), []

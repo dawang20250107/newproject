@@ -1,6 +1,6 @@
 <script setup>
 import { confirmDlg } from '../../composables/confirm.js'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import ar from '../../api/ar.js'
 import { useToast } from '../../composables/useToast.js'
 const toast = useToast()
@@ -106,6 +106,8 @@ function nextStatusLabel(item) {
 }
 
 onMounted(load)
+// 驾驶舱切换事业部后行动项范围随之刷新（组件被 KeepAlive 缓存，onMounted 只跑一次）
+watch(() => props.selectedBu, load)
 </script>
 
 <template>

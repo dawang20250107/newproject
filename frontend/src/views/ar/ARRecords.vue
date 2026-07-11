@@ -118,7 +118,7 @@ function toggleSelectPage() {
 function clearSelection() { selectedIds.value = new Set(); selectAllMatching.value = false }
 useEscClearSelection(() => hasSelection.value, clearSelection)   // ESC 退出勾选
 // Excel 式单元格区域选择（拖选/Shift 扩选/方向键移动/Ctrl+C 复制为 TSV）
-const rangeSel = useRangeSelection({ ignoreCols: [0], onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
+const rangeSel = useRangeSelection({ ignoreCols: () => ((auth.canDelete || auth.canArWrite) ? [0] : []), onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
 // 作战台的勾选同样 Esc 一键退出（弹窗/输入态由组合式内部让路）
 useEscClearSelection(() => activeTab.value === 'dunning' && dunSelected.value.size > 0,
   () => { dunSelected.value = new Set() })
@@ -395,12 +395,10 @@ function buildPrintDoc(allCount) {
   win.document.close()
   win.focus()
 }
-// 监听 ESC 退出全屏
-if (typeof document !== 'undefined') {
-  document.addEventListener('fullscreenchange', () => {
-    isFullscreen.value = !!document.fullscreenElement
-  })
-}
+// 监听 ESC 退出全屏：注册/清理成对，避免 keep-alive 复用或路由重建时累积监听
+function onFullscreenChange() { isFullscreen.value = !!document.fullscreenElement }
+onMounted(() => document.addEventListener('fullscreenchange', onFullscreenChange))
+onBeforeUnmount(() => document.removeEventListener('fullscreenchange', onFullscreenChange))
 
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
 const ctx = useContextMenu()
@@ -525,11 +523,14 @@ async function doBulkAssignCollector() {
 const showAgingCfgModal = ref(false)
 const agingCfgForm = reactive({ bucket1: 30, bucket2: 60, bucket3: 90 })
 const agingCfgSaving = ref(false)
-async function openAgingCfg() {
+async function loadAgingCfg() {
   try {
     const res = await ar.getAgingConfig()
     Object.assign(agingCfgForm, res.data)
-  } catch (_) {}
+  } catch (_) { /* 取不到用默认 30/60/90 */ }
+}
+async function openAgingCfg() {
+  await loadAgingCfg()
   showAgingCfgModal.value = true
 }
 async function saveAgingCfg() {
@@ -872,17 +873,20 @@ const dunSelected = ref(new Set())
 const dunCreating = ref(false)
 let dunQTimer = null
 
+let _dunSeq = 0
 async function loadDunning(reset = false) {
   if (reset) { dunPage.value = 1; dunSelected.value = new Set() }
   dunLoading.value = true
+  const seq = ++_dunSeq
   try {
     const res = await ar.collectionWorkbench({ ...dunFilters, page: dunPage.value, size: dunSize.value })
+    if (seq !== _dunSeq) return   // latest-wins：快输入时旧响应不覆盖新结果
     dunBuckets.value = res.data.buckets
     dunContacts.value = res.data.by_contact
     dunItems.value = res.data.items
     dunTotal.value = res.data.total
     dunSummary.value = res.data.summary
-  } finally { dunLoading.value = false }
+  } finally { if (seq === _dunSeq) dunLoading.value = false }
 }
 function onDunSearch() {
   clearTimeout(dunQTimer)
@@ -946,9 +950,9 @@ async function createDunningTasks() {
 
 // ── 作战台视觉与行内催办三连（复制话术 / 记跟进 / 单条建任务）────────────────
 // 逾期天数四级严重度（对齐默认账龄桶 30/60/90），驱动行色边、徽标与账龄微条
-const dunSev = d => (d > 90 ? 3 : d > 60 ? 2 : d > 30 ? 1 : 0)
-// 账龄微条：以 120 天为满格，扫一眼即知每笔「烧」了多久
-const dunBarPct = d => Math.min(100, Math.round(((d || 0) / 120) * 100))
+const dunSev = d => (d > agingCfgForm.bucket3 ? 3 : d > agingCfgForm.bucket2 ? 2 : d > agingCfgForm.bucket1 ? 1 : 0)
+// 账龄微条：以「最后一桶边界 ×4/3」为满格，随配置伸缩（默认 90→120 天满格）
+const dunBarPct = d => Math.min(100, Math.round(((d || 0) / (agingCfgForm.bucket3 * 4 / 3 || 120)) * 100))
 // 🔥 优先催办 Top3：金额 × 逾期天数加权，仅本页内标记（少于 5 条无区分意义）
 const dunTop3 = computed(() => {
   if (dunItems.value.length < 5) return new Set()
@@ -1055,9 +1059,10 @@ async function saveDunFollow() {
 const agingRowClass = rec => {
   if (!rec.is_overdue) return ''
   const d = rec.overdue_days || 0
-  if (d > 90) return 'age-90plus'
-  if (d > 60) return 'age-61-90'
-  if (d > 30) return 'age-31-60'
+  // 与后端可配置账龄分桶同边界（默认 30/60/90），避免行色与光谱段口径打架
+  if (d > agingCfgForm.bucket3) return 'age-90plus'
+  if (d > agingCfgForm.bucket2) return 'age-61-90'
+  if (d > agingCfgForm.bucket1) return 'age-31-60'
   return 'age-1-30'
 }
 
@@ -1082,9 +1087,14 @@ async function loadSchemes() {
   } catch { schemes.value = [] }
   finally { schemesLoaded.value = true }
 }
+function syncQuickQFromConditions() {
+  const q = conditions.value.find(c => c.t === 'dim' && c.field === 'q')
+  quickQ.value = q ? (q.value || '') : ''
+}
 function applyScheme(s) {
   conditions.value = JSON.parse(JSON.stringify(s.conditions || []))
   matchMode.value = s.match || 'all'
+  syncQuickQFromConditions()   // 方案含 q 条件时回填搜索框，避免搜索框空白却在过滤
   showPresetDrop.value = false
   onFilterChange()
 }
@@ -1154,23 +1164,26 @@ function doJump() {
   page.value = p; load(false)
 }
 
+let _loadSeq = 0
 async function load(reset = false) {
   if (reset) page.value = 1
   loading.value = true
   loadErr.value = ''
+  const seq = ++_loadSeq   // latest-wins：并发/乱序返回时只认最后一次请求
   try {
     const [recs, kpi] = await Promise.all([
       ar.listRecords(buildParams({ ...scopedParams(),
         include_payments: 1, page: page.value, size })),
       ar.recordsKpi(buildParams(reqParams())),
     ])
+    if (seq !== _loadSeq) return   // 已有更新的请求发出，丢弃本次陈旧结果
     items.value = recs.data.items
     resetAnchor()   // 数据集已更换：清 Shift 区间锚点
     total.value = recs.data.total
     summaryData.value = recs.data.summary
     kpiData.value = kpi.data
-  } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
-  } finally { loading.value = false }
+  } catch (e) { if (seq === _loadSeq) loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
+  } finally { if (seq === _loadSeq) loading.value = false }
   loadHealth()
 }
 
@@ -1197,15 +1210,18 @@ async function fixStaleRecords() {
   finally { healthFixing.value = false }
 }
 
+let _paySeq = 0
 async function loadPayments(reset = false) {
   if (reset) payPage.value = 1
   payLoading.value = true
+  const seq = ++_paySeq
   try {
     const res = await ar.listPaymentLedger({ ...payFilters, page: payPage.value, size })
+    if (seq !== _paySeq) return
     payItems.value = res.data.items
     payTotal.value = res.data.total
     paySummary.value = res.data.summary
-  } finally { payLoading.value = false }
+  } finally { if (seq === _paySeq) payLoading.value = false }
 }
 
 async function exportPayments() {
@@ -1855,6 +1871,8 @@ const onScopeChange = () => {
   if (activeTab.value === 'payments') loadPayments(true)
   else if (activeTab.value === 'summary') loadGroupSummary()
   else if (activeTab.value === 'dunning') loadDunning(true)
+  else if (activeTab.value === 'batch') loadBatches()
+  else if (activeTab.value === 'offset') loadOffsetWorkbench()
   else load(true)
   void before
 }
@@ -1902,6 +1920,7 @@ onMounted(async () => {
   if (route.query.status) conditions.value.push({ t: 'dim', field: 'status', value: route.query.status })
   if (route.query.project_id) conditions.value.push({ t: 'dim', field: 'project_id', value: route.query.project_id })
   if (route.query.dept) conditions.value.push({ t: 'dim', field: 'dept', value: route.query.dept })
+  loadAgingCfg()   // 账龄边界驱动作战台严重度/行色/微条，尽早加载
   // 拉取筛选方案；无路由带入时自动套用用户设的「默认方案」（对标金蝶默认过滤方案）
   await loadSchemes()
   const def = !fromRoute && defaultSchemeId.value
@@ -1909,6 +1928,7 @@ onMounted(async () => {
   if (def && def.conditions?.length) {
     conditions.value = JSON.parse(JSON.stringify(def.conditions))
     matchMode.value = def.match || 'all'
+    syncQuickQFromConditions()   // 默认方案含 q 时也回填搜索框
   } else if (!conditions.value.some(c => c.t === 'dim' && c.field === 'status')) {
     // 无默认方案 → 默认只看「未结清」（先聚焦没收完的）；可点掉该条件看全部
     conditions.value.push({ t: 'dim', field: 'status', value: 'outstanding' })
@@ -1923,6 +1943,7 @@ function clearFilters() {
   quickQ.value = ''
   // 一并清掉 Excel 风格列头筛选 + 列头排序
   Object.keys(colFilters).forEach(k => delete colFilters[k])
+  opDateStart.value = ''; opDateEnd.value = ''   // 复位运作日期区间条，避免时间条仍高亮旧区间
   sortField.value = ''
   sortOrder.value = ''
   onFilterChange()

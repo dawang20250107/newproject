@@ -2,7 +2,7 @@
 import { ref, watch, nextTick, computed } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
-import { DEPARTMENTS as DEPT_CONST } from '../constants.js'
+import { DEPARTMENTS as DEPT_CONST, todayCST } from '../constants.js'
 import { fmtMoney } from '../utils/format.js'
 import ProjectShortNamePicker from './ProjectShortNamePicker.vue'
 import { useToast } from '../composables/useToast.js'
@@ -199,12 +199,13 @@ watch(() => form.value.payee, (payee) => {
 function selectSupplierAdv(adv) {
   supplierWoAdv.value = adv
   supplierWoAmt.value = adv.balance_amount
-  if (!supplierWoDate.value) supplierWoDate.value = new Date().toISOString().slice(0, 10)
+  if (!supplierWoDate.value) supplierWoDate.value = todayCST()
 }
 function cancelSupplierWo() {
   supplierWoAdv.value = null; supplierWoAmt.value = ''; supplierWoNotes.value = ''
 }
 async function doSupplierWriteoff() {
+  if (!auth.canAction('wo_prepaid')) { toast.error('无预付核销权限'); return }
   if (!(parseFloat(supplierWoAmt.value) > 0)) { toast.error('核销金额必须大于0'); return }
   if (!supplierWoDate.value) { toast.error('请填写核销日期'); return }
   supplierWoSaving.value = true
@@ -342,9 +343,9 @@ async function submit() {
             :class="{ 'input-warn': approvalNoInvalid }" />
           <span v-if="approvalNoInvalid" class="field-err">需为数字（最多100位），空格/不可见字符将自动清除</span>
         </div>
-        <div class="form-group">
-          <label>G7编号 <span class="hint-text">选填，最多21位</span></label>
-          <input v-model="form.g7_number" placeholder="选填，G7系统编号" maxlength="21" />
+        <div v-if="vis('g7_number')" class="form-group">
+          <label>G7编号 <span class="hint-text">选填，最多255位</span></label>
+          <input v-model="form.g7_number" placeholder="选填，G7系统编号" maxlength="255" :disabled="!editable('g7_number')" />
         </div>
       </div>
 
@@ -379,8 +380,9 @@ async function submit() {
                 <span class="adv-date">{{ adv.occur_date || '—' }}</span>
                 <span class="adv-bal">¥{{ parseFloat(adv.balance_amount).toLocaleString('zh-CN', {minimumFractionDigits: 2}) }}</span>
                 <span class="adv-notes">{{ adv.notes || '' }}</span>
-                <button v-if="payment?.id && supplierWoAdv?.id !== adv.id"
+                <button v-if="payment?.id && supplierWoAdv?.id !== adv.id && auth.canAction('wo_prepaid')"
                         class="btn-xs btn-offset" @click="selectSupplierAdv(adv)">用此预付核销</button>
+                <span v-else-if="payment?.id && !auth.canAction('wo_prepaid')" class="adv-hint">（无预付核销权限）</span>
                 <span v-else-if="!payment?.id" class="adv-hint">（保存排款后可核销）</span>
               </div>
               <div v-if="supplierWoAdv" class="wo-inline">

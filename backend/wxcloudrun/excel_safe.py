@@ -7,7 +7,11 @@
 导出函数逐格自觉调用——后者一旦新增导出点就会漏。
 """
 
+import re as _re
 _FORMULA_PREFIXES = ('=', '+', '-', '@', '\t', '\r')
+# 应用自建的纯数学聚合公式白名单：只引用单元格区域与算术符，无法外带数据/执行命令。
+# 放行它们，让模板里的 =SUM(B5:M5) 正常计算；其余一律转义（含 =HYPERLINK/=cmd/=WEBSERVICE）。
+_SAFE_FORMULA = _re.compile(r'^=(?:SUM|AVERAGE|ROUND|MIN|MAX|SUBTOTAL|ABS)\([A-Za-z0-9:,.\s+\-*/()]*\)$')
 
 
 def excel_safe(v):
@@ -24,5 +28,7 @@ def sanitize_workbook(wb):
             for cell in row:
                 v = cell.value
                 if isinstance(v, str) and v and v[0] in _FORMULA_PREFIXES:
+                    if v[0] == '=' and _SAFE_FORMULA.match(v):
+                        continue   # 应用自建纯数学聚合公式，安全放行
                     cell.value = "'" + v
     return wb

@@ -694,6 +694,10 @@ const onScopeChange = () => {
   if (sel && Array.isArray(sel.value) && sel.value.some(d => !auth.effectiveDepts.includes(d))) {
     delete colFilters.department
   }
+  // 顶部快选部门同样随 buildParams 下发 dept：越界残留会让请求恒带旧部门→列表恒空
+  if (payDeptFilter.value && !auth.effectiveDepts.includes(payDeptFilter.value)) {
+    payDeptFilter.value = ''
+  }
   filters.page = 1
   load()
 }

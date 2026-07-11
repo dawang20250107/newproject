@@ -4031,12 +4031,14 @@ def cockpit_ai_chat_stream(request):
 # ── 经营知识库（让 Agent 越用越聪明：长期记忆 + 自我提炼）─────────────────────────
 
 def _knowledge_visible_scopes(request, bu):
-    if bu and bu in VALID_BUSINESS_UNITS:
-        return ['全集团', bu]
     if request.pk_role in ('super_admin', 'manager', 'general_manager'):
         visible = list(BUSINESS_UNITS)
     else:
         visible = [b for b in (request.pk_depts or []) if b in VALID_BUSINESS_UNITS]
+    # 仅当用户有权访问该 bu 时才按其收窄；无权时忽略 bu 参数回退到自身可见集，
+    # 杜绝「传 bu=他部门」越权读取无权事业部经营知识
+    if bu and bu in VALID_BUSINESS_UNITS and bu in visible:
+        return ['全集团', bu]
     return ['全集团'] + visible
 
 
@@ -4714,9 +4716,23 @@ def _skill_web_fetch(request, args):
     if _url_is_private(url):
         return {'ok': False, 'error': '该地址不允许抓取'}
     import requests as _rq
+    # 手动跟随重定向并对每一跳都做 SSRF 校验：默认 allow_redirects=True 只校验初始
+    # URL，攻击者可用外网 302 跳转到 127.0.0.1 / 169.254.169.254(云元数据) 绕过
     try:
-        r = _rq.get(url, timeout=15, stream=True,
-                    headers={'User-Agent': 'Mozilla/5.0 (compatible; KXT-Agent/1.0)'})
+        cur = url
+        r = None
+        for _hop in range(5):
+            r = _rq.get(cur, timeout=15, stream=True, allow_redirects=False,
+                        headers={'User-Agent': 'Mozilla/5.0 (compatible; KXT-Agent/1.0)'})
+            if r.status_code in (301, 302, 303, 307, 308) and r.headers.get('location'):
+                cur = _rq.compat.urljoin(cur, r.headers['location'])
+                if _url_is_private(cur):
+                    return {'ok': False, 'error': '该地址不允许抓取（重定向指向内网）'}
+                r.close()
+                continue
+            break
+        else:
+            return {'ok': False, 'error': '重定向次数过多'}
         r.raise_for_status()
         raw = r.raw.read(1_500_000, decode_content=True) or b''
         text = _html_to_text(raw.decode(r.encoding or 'utf-8', errors='replace'))

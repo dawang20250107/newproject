@@ -41,14 +41,19 @@ def _generate_thumb(src_abs, thumb_abs):
 def _get_record_or_403(request, pk):
     """Return (record, err_response). Handles 404 + dept access check."""
     try:
-        rec = ARRecord.objects.only(
-            'id', 'delivery_dept', 'activity_count', 'attachment_count'
+        rec = ARRecord.objects.select_related('project').only(
+            'id', 'delivery_dept', 'activity_count', 'attachment_count',
+            'project__is_shared'
         ).get(pk=pk)
     except ARRecord.DoesNotExist:
         return None, err('记录不存在', 404)
     if request.pk_role != 'super_admin':
         if rec.delivery_dept not in request.pk_depts:
             return None, err('无权访问', 403)
+    # 共享受限用户只能触达共享项目的记录动态/附件（与回款/调整同口径）
+    _perms = get_request_perms(request)
+    if _perms and _perms.get('ar_shared_only') and not (rec.project and rec.project.is_shared):
+        return None, err('无权访问', 403)
     return rec, None
 
 
