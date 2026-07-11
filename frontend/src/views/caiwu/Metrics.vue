@@ -317,6 +317,12 @@ const gapChartOption = computed(() => {
     .map(r => ({ ...r, gap: (r.actual || 0) - r.target }))
     .sort((a, b) => a.gap - b.gap)   // 缺口最大在下，超额在上（横向条自下而上）
   const totalGap = items.reduce((s, r) => s + r.gap, 0)
+  // 合计标题按真实口径命名：只有「未选事业部且可见全部事业部」才叫「集团」；
+  // 部分权限/筛选场景叫「N 个事业部合计」，避免把可见范围合计冒充集团口径。
+  // 图中只有一个事业部时合计=该条本身，不再重复显示。
+  const isGroupScope = !selectedBu.value && accessibleBus.value.length >= BUSINESS_UNITS.length
+  const scopeLabel = isGroupScope ? '集团' : `图内 ${items.length} 个事业部合计`
+  const showTotal = items.length > 1
   return {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
       formatter: ps => {
@@ -325,8 +331,8 @@ const gapChartOption = computed(() => {
           + `${r.gap >= 0 ? '超额' : '缺口'}：<b style="color:${r.gap >= 0 ? '#2e7d32' : '#c62828'}">${r.gap >= 0 ? '+' : '−'}${fmtWan(Math.abs(r.gap))}</b>`
           + `（达成 ${r.rate == null ? '—' : r.rate.toFixed(0) + '%'}）`
       } },
-    title: { text: `集团${scope === 'month' ? '当月' : 'YTD'}净${totalGap >= 0 ? '超额' : '缺口'} ${totalGap >= 0 ? '+' : '−'}${fmtWan(Math.abs(totalGap))}`,
-      right: 8, top: 0, textStyle: { fontSize: 12, fontWeight: 700, color: totalGap >= 0 ? '#2e7d32' : '#c62828' } },
+    title: showTotal ? { text: `${scopeLabel}${scope === 'month' ? '当月' : 'YTD'}净${totalGap >= 0 ? '超额' : '缺口'} ${totalGap >= 0 ? '+' : '−'}${fmtWan(Math.abs(totalGap))}`,
+      right: 8, top: 0, textStyle: { fontSize: 12, fontWeight: 700, color: totalGap >= 0 ? '#2e7d32' : '#c62828' } } : undefined,
     grid: { top: 26, right: 80, bottom: 8, left: 16, containLabel: true },
     // 两端各留 22% 余量：最长条外侧的「±金额（达成%）」标签不再撞上事业部名/出界
     xAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => axisMoney(v) },
