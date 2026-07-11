@@ -669,6 +669,7 @@ const bulletOption = computed(() => {
 // ── per-BU current-month actual (revenue & profit) ───────────────────────────
 const buActualOption = computed(() => {
   const bus = data.value?.bus || []
+  if (!bus.length) return null
   const names = bus.map(b => b.business_unit)
   return {
     tooltip: {
@@ -676,7 +677,7 @@ const buActualOption = computed(() => {
       formatter(params) {
         let s = `<b>${params[0]?.axisValue}</b><br/>`
         params.forEach(p => {
-          const v = p.value == null ? '—' : (Math.abs(p.value) >= 10000 ? (p.value / 10000).toFixed(1) + '万' : p.value.toFixed(0))
+          const v = p.value == null ? '—' : (Math.abs(p.value) >= 1e8 ? (p.value / 1e8).toFixed(2) + '亿' : Math.abs(p.value) >= 1e4 ? (p.value / 1e4).toFixed(1) + '万' : p.value.toFixed(0))
           s += `${p.marker}${p.seriesName}：${v}<br/>`
         })
         return s
@@ -698,6 +699,7 @@ const buActualOption = computed(() => {
 // ── per-BU YTD achievement rate (revenue & profit) ───────────────────────────
 const buRateOption = computed(() => {
   const bus = data.value?.bus || []
+  if (!bus.length) return null
   const names = bus.map(b => b.business_unit)
   return {
     tooltip: {
@@ -1142,11 +1144,13 @@ const ctxMatrixItems = computed(() => {
       <div class="chart-grid">
         <div class="card">
           <div class="section-title" style="margin-bottom:8px">各事业部当月收入 / 经营毛利</div>
-          <BaseChart :option="buActualOption" height="300px" />
+          <BaseChart v-if="buActualOption" :option="buActualOption" height="300px" />
+          <div v-else class="mini-empty">暂无事业部数据</div>
         </div>
         <div class="card">
           <div class="section-title" style="margin-bottom:8px">各事业部 YTD 达成率</div>
-          <BaseChart :option="buRateOption" height="300px" />
+          <BaseChart v-if="buRateOption" :option="buRateOption" height="300px" />
+          <div v-else class="mini-empty">暂无事业部数据</div>
         </div>
       </div>
       </div>

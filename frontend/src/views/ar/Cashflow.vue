@@ -165,7 +165,7 @@ const GRIDL = { top: 16, right: 16, bottom: 28, left: 16, containLabel: true }
 const AXLBL = { fontSize: 11, color: '#888' }
 const SLINE = { color: 'rgba(0,0,0,0.06)' }
 const OLINE = { show: false }
-const TT_STYLE = { backgroundColor: 'rgba(255,255,255,0.97)', borderColor: 'rgba(0,0,0,0.08)', textStyle: { fontSize: 12 } }
+const TT_STYLE = { confine: true, backgroundColor: 'rgba(255,255,255,0.97)', borderColor: 'rgba(0,0,0,0.08)', textStyle: { fontSize: 12 } }
 
 function ttFmt(params) {
   let html = `<div style="font-weight:700;margin-bottom:5px">${params[0].axisValueLabel}</div>`
@@ -535,6 +535,7 @@ const deptBalanceOption = computed(() => {
         <span class="section-sub">X=流入　Y=流出　气泡=净现金额　虚线上方=失血 / 下方=造血 · {{ filters.start_date }} 至 {{ filters.end_date }}</span>
       </div>
       <BaseChart v-if="deptBalanceOption" :option="deptBalanceOption" height="380px" />
+      <div v-else class="chart-empty">{{ loading ? '加载中…' : '暂无数据' }}</div>
     </div>
 
     <!-- Monthly detail table -->

@@ -127,6 +127,7 @@ const comparisonChartOption = computed(() => {
   const ap = parseFloat(summary.value.actual_payment) || 0
   return {
     tooltip: {
+      confine: true,
       trigger: 'axis', axisPointer: { type: 'shadow' },
       backgroundColor: 'rgba(255,255,255,0.97)', borderColor: 'rgba(0,0,0,0.08)', textStyle: { fontSize: 12 },
       formatter(params) {
@@ -176,6 +177,7 @@ const deptCompareOption = computed(() => {
   }
   return {
     tooltip: {
+      confine: true,
       trigger: 'axis', axisPointer: { type: 'shadow' },
       backgroundColor: 'rgba(255,255,255,0.97)', borderColor: 'rgba(0,0,0,0.08)', textStyle: { fontSize: 12 },
     },
@@ -713,6 +715,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
       <div v-if="summary?.by_dept?.length > 1" class="card" style="margin-top:16px;padding:20px">
         <div class="section-title">各事业部对比</div>
         <BaseChart v-if="deptCompareOption" :option="deptCompareOption" height="240px" />
+        <EmptyState v-else icon="📊" text="暂无事业部数据" />
       </div>
 
     </template>

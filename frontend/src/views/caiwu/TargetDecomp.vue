@@ -109,7 +109,7 @@ const overviewOption = computed(() => {
     legend: { data: ['年度目标', 'YTD实际', '全年预测'], bottom: 0, textStyle: { fontSize: 11 } },
     grid: { top: 20, right: 20, bottom: 48, left: 16, containLabel: true },
     xAxis: { type: 'category', data: bus, axisLabel: { color: '#6b5a4a', fontSize: 11, interval: 0, rotate: bus.length > 6 ? 30 : 0 } },
-    yAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => (v / 10000).toFixed(0) + '万' }, splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } } },
+    yAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => v.toFixed(0) + '万' }, splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } } },
     series: [
       { name: '年度目标', type: 'bar', data: targets, barMaxWidth: 28, itemStyle: { color: 'rgba(21,101,192,.25)', borderColor: '#1565c0', borderWidth: 1, borderType: 'dashed', borderRadius: [3, 3, 0, 0] } },
       { name: 'YTD实际', type: 'bar', data: ytd, barMaxWidth: 18, barGap: '-60%',
