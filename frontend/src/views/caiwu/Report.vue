@@ -158,6 +158,10 @@ const ctxReportItems = computed(() => {
       children: [
         { key: 'copy-name', label: '科目名称', icon: 'cell', action: row => copyText(row.name).then(ok => ok ? toast.success('已复制：' + row.name) : toast.error('复制失败')) },
         { key: 'copy-total', label: '合计金额', icon: 'cell', action: row => copyText(fmt(row.total)).then(ok => ok ? toast.success('已复制：' + fmt(row.total)) : toast.error('复制失败')) },
+        { key: 'copy-row', label: '整行（含各月，可贴 Excel）', icon: 'cell', action: row => {
+            const cells = [row.name, ...row.values.map(v => v ?? ''), row.total ?? '']
+            copyText(cells.join('\t')).then(ok => ok ? toast.success('已复制整行，可粘贴进 Excel') : toast.error('复制失败'))
+          } },
       ],
     },
   ]
@@ -221,7 +225,7 @@ onMounted(() => {
           <div class="kpi-row">
             <span class="kpi-tag">当月</span>
             <span class="value" :class="{ 'value-neg': kpi.isNeg, 'value-empty': kpi.amount === null }"
-              :style="kpi.amount === null || kpi.isNeg ? '' : `color:${kpi.momDown ? 'var(--danger)' : kpi.color}`">
+              :style="kpi.amount === null || kpi.isNeg ? '' : `color:${kpi.color}`">
               {{ fmtKpi(kpi.amount) }}
             </span>
           </div>
@@ -322,7 +326,7 @@ onMounted(() => {
 
 .value-empty { color: var(--muted) !important; opacity: .55; }
 .kpi-negative { border-left: 3px solid var(--danger) !important; box-shadow: 0 3px 14px rgba(198,40,40,.22); background: rgba(198,40,40,.04); }
-.kpi-mom-down { border-left: 3px solid rgba(198,40,40,.5); }
+.kpi-mom-down { border-left: 3px solid rgba(245,166,35,.55); }   /* 琥珀=较上月回落(观察)，区别于红色=亏损(问题) */
 .value-neg { color: var(--danger) !important; }
 .sub { font-size: 10.5px; color: var(--muted); margin-top: 7px; line-height: 1.4; }
 .mom-badge { flex-shrink: 0; display: inline-block; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px; }
