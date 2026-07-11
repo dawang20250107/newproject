@@ -12,7 +12,7 @@ import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
-import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney, topLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
+import { axisMoney, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
 import { densityOf } from '../../utils/chartDensity.js'
 import PaceStory from '../../components/caiwu/PaceStory.vue'
 import BuGlance from '../../components/caiwu/BuGlance.vue'
@@ -620,68 +620,19 @@ const bulletOption = computed(() => {
   }
 })
 
-// ── per-BU current-month actual (revenue & profit) ───────────────────────────
-const buActualOption = computed(() => {
+// ── 事业部经营结构 Mekko（密集模式）：柱宽=当月收入占比，柱内=成本/费用/净利 ──
+// 替代原「收入构成饼图」（与矩阵占比列重复）、「各BU当月收入/毛利双柱」（绝对值
+// 把小事业部压扁 + 重复矩阵数字）、「YTD达成率柱」（重复矩阵达成列，射程判断
+// 由目标分解 Tab 的射程图承担）——四图并二。点击事业部下钻。
+const buMekkoData = computed(() => {
   const bus = data.value?.bus || []
   if (!bus.length) return null
-  const names = bus.map(b => b.business_unit)
-  return {
-    tooltip: {
-      trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
-      formatter(params) {
-        let s = `<b>${params[0]?.axisValue}</b><br/>`
-        params.forEach(p => {
-          const v = p.value == null ? '—' : (Math.abs(p.value) >= 1e8 ? (p.value / 1e8).toFixed(2) + '亿' : Math.abs(p.value) >= 1e4 ? (p.value / 1e4).toFixed(1) + '万' : p.value.toFixed(0))
-          s += `${p.marker}${p.seriesName}：${v}<br/>`
-        })
-        return s
-      },
-    },
-    legend: bottomLegend(),
-    grid: gridFor(names),
-    xAxis: catAxis(names),
-    yAxis: valueAxis({ formatter: axisMoney }),
-    series: [
-      { name: '收入', type: 'bar', data: bus.map(b => b.month.actual_revenue), itemStyle: { color: '#2e7d32', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
-        label: topLabel(p => axisMoney(p.value)), labelLayout: HIDE_OVERLAP },
-      { name: '经营毛利', type: 'bar', data: bus.map(b => b.month.actual_gross_profit), itemStyle: { color: '#00897b', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
-        label: topLabel(p => axisMoney(p.value)), labelLayout: HIDE_OVERLAP },
-    ],
-  }
-})
-
-// ── per-BU YTD achievement rate (revenue & profit) ───────────────────────────
-const buRateOption = computed(() => {
-  const bus = data.value?.bus || []
-  if (!bus.length) return null
-  const names = bus.map(b => b.business_unit)
-  const tp = timeProgressPct.value
-  return {
-    tooltip: {
-      trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
-      formatter(params) {
-        let s = `<b>${params[0]?.axisValue}</b><br/>`
-        params.forEach(p => { s += `${p.marker}${p.seriesName}：${p.value == null ? '—' : p.value.toFixed(1) + '%'}<br/>` })
-        return s
-      },
-    },
-    legend: bottomLegend(),
-    grid: gridFor(names, { nameTop: true }),
-    xAxis: catAxis(names),
-    yAxis: valueAxis({ name: '达成率%', formatter: '{value}%' }),
-    series: [
-      { name: 'YTD收入达成', type: 'bar', data: bus.map(b => b.ytd.revenue_rate), itemStyle: { color: '#66bb6a', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
-        label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP,
-        // 双基准：绿实线=年度目标100%，橙虚线=时间进度——年中50%达成属于正常节奏，
-        // 没有时间线对照会被误读为掉队（与「目标达成子弹图」同一套读法）
-        markLine: { silent: true, symbol: 'none', data: [
-          { yAxis: 100, lineStyle: { color: '#2e7d32', type: 'solid', width: 1.5 }, label: { formatter: '目标 100%', color: '#2e7d32', fontSize: 10 } },
-          { yAxis: tp, lineStyle: { color: '#c96342', type: 'dashed', width: 1.5 }, label: { formatter: `时间 ${tp.toFixed(0)}%`, color: '#c96342', fontSize: 10, position: 'insideEndBottom' } },
-        ] } },
-      { name: 'YTD毛利达成', type: 'bar', data: bus.map(b => b.ytd.gross_profit_rate), itemStyle: { color: '#26a69a', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
-        label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP },
-    ],
-  }
+  const rows = bus.map(b => ({
+    label: b.business_unit, rev: b.month.actual_revenue || 0,
+    gross: b.month.actual_gross_profit ?? 0, prof: b.month.actual_profit ?? 0,
+    target: b.month.target_revenue,
+  })).filter(r => r.rev > 0)
+  return rows.length ? rows : null
 })
 
 const hasData = computed(() => (data.value?.bus || []).some(b => b.month.actual_revenue != null || b.month.actual_profit != null))
@@ -791,25 +742,6 @@ const buGlanceData = computed(() => {
   const rows = buMatrix.value
   if (!rows.length) return null
   return { rows, timeProgress: timeProgressPct.value }
-})
-
-const COMP_COLORS = ['#2e7d32', '#1565c0', '#00897b', '#f57f17', '#6a1b9a', '#c96342', '#5c6bc0', '#26a69a']
-
-// 收入构成（环形）
-const revStructOption = computed(() => {
-  const rows = buMatrix.value.filter(r => (r.rev ?? 0) > 0)
-  if (!rows.length) return null
-  const pie = rows.map((r, i) => ({ name: r.bu, value: r.rev, itemStyle: { color: COMP_COLORS[i % COMP_COLORS.length] } }))
-  return {
-    tooltip: { trigger: 'item', ...TOOLTIP, formatter: p => `${p.name}<br/>${wan(p.value)} (${p.percent.toFixed(1)}%)` },
-    legend: { bottom: 0, type: 'scroll', textStyle: { fontSize: 11, color: '#6b5a4a' } },
-    series: [{
-      type: 'pie', radius: ['42%', '68%'], center: ['50%', '44%'], data: pie,
-      label: { formatter: p => `${p.name}\n${p.percent.toFixed(0)}%`, fontSize: 11, lineHeight: 14, color: '#5f4d3d' },
-      labelLine: { length: 8, length2: 8 }, labelLayout: HIDE_OVERLAP,
-      emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.25)' } },
-    }],
-  }
 })
 
 // 毛利贡献（横向分歧条：正绿负红，直观看谁在拖累集团毛利）
@@ -1113,31 +1045,21 @@ const ctxMatrixItems = computed(() => {
       </div>
 
       <template v-else>
-      <!-- ════ ZONE 5 · 收入构成 + 毛利贡献 ══════════════════════════════════════ -->
+      <!-- ════ ZONE 5 · 事业部经营结构 Mekko + 毛利贡献（原四图并二）═══════════════ -->
       <div class="chart-grid">
         <div class="card">
-          <div class="section-title" style="margin-bottom:8px">收入构成 · 各事业部占比</div>
-          <BaseChart v-if="revStructOption" :option="revStructOption" height="300px" />
-          <div v-else class="mini-empty">暂无收入数据</div>
+          <div class="section-title" style="margin-bottom:8px">事业部经营结构 · 规模×利润
+            <span class="tip">柱宽=当月收入占比 · 柱内=每元收入去向 · 顶=净利率</span>
+          </div>
+          <ProfitMekko v-if="buMekkoData" :months="buMekkoData" height="300px"
+                       hint="柱宽 = 当月收入占比 · 悬浮看明细 · 点击事业部可下钻"
+                       @month-click="c => openDrill(c.label)" />
+          <div v-else class="mini-empty">暂无事业部数据</div>
         </div>
         <div class="card">
           <div class="section-title" style="margin-bottom:8px">毛利贡献 · 谁在贡献 / 拖累</div>
           <BaseChart v-if="profitContribOption" :option="profitContribOption" height="300px" />
           <div v-else class="mini-empty">暂无毛利数据</div>
-        </div>
-      </div>
-
-      <!-- ════ ZONE 6 · 各事业部当月收入毛利 + YTD 达成率 ════════════════════════ -->
-      <div class="chart-grid">
-        <div class="card">
-          <div class="section-title" style="margin-bottom:8px">各事业部当月收入 / 经营毛利</div>
-          <BaseChart v-if="buActualOption" :option="buActualOption" height="300px" />
-          <div v-else class="mini-empty">暂无事业部数据</div>
-        </div>
-        <div class="card">
-          <div class="section-title" style="margin-bottom:8px">各事业部 YTD 达成率</div>
-          <BaseChart v-if="buRateOption" :option="buRateOption" height="300px" />
-          <div v-else class="mini-empty">暂无事业部数据</div>
         </div>
       </div>
       </template>
@@ -1351,7 +1273,8 @@ const ctxMatrixItems = computed(() => {
               <div class="pp-title">💰 盈利 — 事业部贡献</div>
               <div class="pp-chart-grid">
                 <BaseChart v-if="profitContribOption" :option="profitContribOption" height="380px" />
-                <BaseChart v-if="revStructOption" :option="revStructOption" height="380px" />
+                <ProfitMekko v-if="buMekkoData" :months="buMekkoData" height="380px"
+                             hint="柱宽 = 当月收入占比" />
               </div>
             </template>
             <!-- 业财 -->

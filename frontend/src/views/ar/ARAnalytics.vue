@@ -5,7 +5,7 @@ import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
-import { valueAxis, catAxis, gridFor, bottomLegend, topLabel, rightLabel, endLabel, insideLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
+import { valueAxis, catAxis, gridFor, bottomLegend, topLabel, rightLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
 import EmptyState from '../../components/EmptyState.vue'
 import BaseChart from '../../components/ar/BaseChart.vue'
 import ContextMenu from '../../components/ContextMenu.vue'
@@ -257,30 +257,6 @@ const topOption = computed(() => {
   }
 })
 
-const statusOption = computed(() => {
-  if (!statusData.value) return null
-  const s = statusData.value
-  const pieData = [
-    { name: '未到期', value: parseFloat(s.not_due?.amount || 0), itemStyle: { color: '#2e7d32' } },
-    { name: '当期', value: parseFloat(s.current?.amount || 0), itemStyle: { color: '#1565c0' } },
-    { name: '已逾期', value: parseFloat(s.overdue?.amount || 0), itemStyle: { color: '#c62828' } },
-    { name: '已结清', value: parseFloat(s.settled?.amount || 0), itemStyle: { color: '#9e9e9e' } },
-  ].filter(d => d.value > 0)
-  return {
-    tooltip: { trigger: 'item', ...TOOLTIP, formatter: p => `${p.name}<br/>${fmtWan(p.value)} 元 (${p.percent.toFixed(1)}%)` },
-    legend: { bottom: 0, type: 'scroll', textStyle: { fontSize: 11, color: '#6b5a4a' } },
-    series: [{
-      type: 'pie', roseType: 'area', radius: ['22%', '72%'], center: ['50%', '46%'],
-      data: pieData,
-      itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
-      label: { formatter: p => `${p.name}\n${fmtWan(p.value)} · ${p.percent.toFixed(0)}%`,
-        fontSize: 11, lineHeight: 14, color: '#5f4d3d' },
-      labelLine: { length: 8, length2: 8 },
-      labelLayout: HIDE_OVERLAP,
-      emphasis: { itemStyle: { shadowBlur: 12, shadowColor: 'rgba(0,0,0,0.3)' } },
-    }],
-  }
-})
 
 function onAgingClick(p) {
   const bucket = agingData.value?.[p.dataIndex]
@@ -594,14 +570,9 @@ const ctxDetailItems = computed(() => {
         </div>
         <BaseChart :option="custMapOption" height="380px" @click="onCustMapClick" />
       </div>
-      <div class="card">
+      <div class="card" style="grid-column:span 2">
         <div class="section-title">应收账龄漏斗 <span class="tip">点击下钻 · 越往下越该催</span></div>
         <BaseChart v-if="agingOption" :option="agingOption" height="280px" @click="onAgingClick" />
-        <EmptyState v-else icon="📊" text="暂无数据" />
-      </div>
-      <div class="card">
-        <div class="section-title">应收状态分布 <span class="tip">南丁格尔玫瑰</span></div>
-        <BaseChart v-if="statusOption" :option="statusOption" height="280px" />
         <EmptyState v-else icon="📊" text="暂无数据" />
       </div>
       <div class="card" style="grid-column:span 2">

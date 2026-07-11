@@ -9,8 +9,9 @@ import { computed } from 'vue'
 import { fmtCompact } from '../../utils/format.js'
 
 const props = defineProps({
-  months: { type: Array, default: () => [] },  // [{label, rev, gross, prof, target}] 仅已发布月
+  months: { type: Array, default: () => [] },  // [{label, rev, gross, prof, target}]，label 可为月份或事业部
   height: { type: String, default: '300px' },
+  hint: { type: String, default: '柱宽 = 当月收入规模 · 悬浮看明细 · 点击月份可下钻' },
 })
 const emit = defineEmits(['month-click'])
 
@@ -85,7 +86,7 @@ function colTitle(c) {
       <span class="mk-lg"><i class="mk-i-exp"></i>期间费用</span>
       <span class="mk-lg"><i class="mk-i-cost"></i>成本</span>
       <span class="mk-lg"><i class="mk-i-loss"></i>亏损月（红框+红字）</span>
-      <span class="mk-hint">柱宽 = 当月收入规模 · 悬浮看明细 · 点击月份可下钻</span>
+      <span class="mk-hint">{{ hint }}</span>
     </div>
   </div>
 </template>

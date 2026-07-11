@@ -23,7 +23,7 @@ const fc = ref(null)
 
 const fmtWan = (v) => fmtCompact(v, { decimals: 1, smallRound: true, dash: '0' })
 const fmtPct = (v) => (v == null ? '—' : `${v.toFixed(1)}%`)
-const fmtMonth = (s) => { const [y, m] = (s || '').split('-'); return `${+m}月` }
+const fmtMonth = (s) => { const m = +String(s || '').split('-')[1]; return m ? `${m}月` : (s || '—') }
 
 // What-if 沙盘假设
 const wf = reactive({ revPct: 0, gmPt: 0 })
