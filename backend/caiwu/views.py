@@ -2294,7 +2294,7 @@ def _write_matrix_sheet(ws, scope_label, year, level, months, rows):
     pct_font = Font(size=9, color='5B7763')
     title_font = Font(bold=True, size=14, color='8A3B22')
     sub_font = Font(size=10, color='9A8170')
-    money_fmt = '#,##0;[Red]-#,##0'
+    money_fmt = '#,##0;[Red]-#,##0;"–"'   # 第三段=零值显示短横线，与屏幕矩阵一致
     pct_fmt = '0.0%'
 
     last_lbl = f'{months[-1]}月' if months else '—'

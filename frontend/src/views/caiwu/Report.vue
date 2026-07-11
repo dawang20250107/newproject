@@ -271,13 +271,13 @@ onMounted(() => {
             <tbody>
               <tr v-for="r in flatRows" :key="r.key" :class="['mx-row', `d${r.depth}`, { calc: r.calc, 'has-pct': r.pct }]" @contextmenu.prevent="ctxReport.open($event, r)">
                 <td class="mx-name" :style="`padding-left:${10 + r.depth * 16}px`">{{ r.name }}</td>
-                <td v-for="(v, i) in r.values" :key="i" class="mx-num" :class="{ neg: v < 0 }">
-                  <div class="mx-amt">{{ fmt(v) }}</div>
-                  <div v-if="r.pct" class="mx-pct">{{ r.pct[i] != null ? r.pct[i].toFixed(1) + '%' : '—' }}</div>
+                <td v-for="(v, i) in r.values" :key="i" class="mx-num" :class="{ neg: v < 0, zero: !v }">
+                  <div class="mx-amt">{{ v ? fmt(v) : '–' }}</div>
+                  <div v-if="r.pct && v" class="mx-pct">{{ r.pct[i] != null ? r.pct[i].toFixed(1) + '%' : '—' }}</div>
                 </td>
-                <td class="mx-num mx-total" :class="{ neg: r.total < 0 }">
-                  <div class="mx-amt">{{ fmt(r.total) }}</div>
-                  <div v-if="r.pct" class="mx-pct">{{ r.totalPct != null ? r.totalPct.toFixed(1) + '%' : '—' }}</div>
+                <td class="mx-num mx-total" :class="{ neg: r.total < 0, zero: !r.total }">
+                  <div class="mx-amt">{{ r.total ? fmt(r.total) : '–' }}</div>
+                  <div v-if="r.pct && r.total" class="mx-pct">{{ r.totalPct != null ? r.totalPct.toFixed(1) + '%' : '—' }}</div>
                 </td>
               </tr>
             </tbody>
@@ -362,6 +362,8 @@ onMounted(() => {
 .mx-row:hover td { background: rgba(201,99,66,0.04); }
 .mx-row:hover .mx-name { background: #fbf1ec; }
 .mx-num.neg { color: var(--danger); }
+.mx-num.zero .mx-amt { color: var(--muted-light); font-weight: 400; }   /* 零值淡化短横线：让眼睛只追非零数字 */
+.mx-row.calc .mx-num.zero .mx-amt { color: #c9b3a5; }
 .mx-total { font-weight: 700; }
 
 /* 费销比：成本/费用/集团管理费 行在金额下方加一行占总收入百分比 */
