@@ -5,6 +5,7 @@ import ar from '../../api/ar.js'
 import { useAuthStore } from '../../stores/auth.js'
 import { todayCST } from '../../constants.js'
 import { useToast } from '../../composables/useToast.js'
+import EmptyState from '../../components/EmptyState.vue'
 const toast = useToast()
 
 const auth = useAuthStore()
@@ -106,8 +107,24 @@ const canRequestTransfer = computed(() => auth.canArWrite && !auth.isSuperAdmin)
 const myDepts = computed(() => auth.user?.departments || [])
 const trStatusLabel = { pending: '待审批', approved: '已生效', rejected: '已拒绝' }
 
+// e1: 调出方池实时校验——调出后余额、低于预警线提示、超余额阻断、调出调入互斥
+const trFromPool = computed(() => configured.value.find(p => p.dept === trForm.from_dept) || null)
+const trAfterBalance = computed(() => {
+  if (!trFromPool.value) return null
+  const a = parseFloat(trForm.amount)
+  return isNaN(a) ? null : (parseFloat(trFromPool.value.balance) || 0) - a
+})
+const trOverdraw = computed(() => trAfterBalance.value !== null && trAfterBalance.value < -0.005)
+const trBelowWarn = computed(() => {
+  if (trAfterBalance.value === null || !trFromPool.value) return false
+  const w = parseFloat(trFromPool.value.warning?.amount)
+  return w > 0 && trAfterBalance.value < w
+})
+const trSameDept = computed(() => !!trForm.from_dept && trForm.from_dept === trForm.to_dept)
 async function saveTransfer() {
   if (!trForm.from_dept || !trForm.to_dept || !(parseFloat(trForm.amount) > 0)) { toast.error('调出/调入/金额必填'); return }
+  if (trSameDept.value) { toast.error('调出方与调入方不能是同一事业部'); return }
+  if (trOverdraw.value) { toast.error(`调出金额超过 ${trForm.from_dept} 池内余额 ${wan(trFromPool.value.balance)}`); return }
   trSaving.value = true
   try {
     const res = await ar.createPoolTransfer({ ...trForm })
@@ -233,8 +250,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
 <template>
   <div class="cp-panel">
-    <div v-if="loading && !data" class="cp-empty">加载中…</div>
-    <div v-else-if="err" class="cp-empty err">{{ err }}</div>
+    <EmptyState v-if="loading && !data" loading />
+    <EmptyState v-else-if="err" :error="err" />
     <template v-else-if="data">
 
       <!-- ══ 命令条 ══ -->
@@ -548,12 +565,19 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   <label class="tr-label">调入方</label>
                   <select v-model="trForm.to_dept" class="tr-sel">
                     <option value="">请选择</option>
-                    <option v-for="p in configured" :key="p.dept" :value="p.dept">{{ p.dept }}</option>
+                    <option v-for="p in configured.filter(x => x.dept !== trForm.from_dept)" :key="p.dept" :value="p.dept">{{ p.dept }}</option>
                   </select>
                 </div>
                 <div class="tr-field">
                   <label class="tr-label">金额（元）</label>
-                  <input v-model="trForm.amount" type="number" min="0" placeholder="0.00" class="tr-inp" />
+                  <input v-model="trForm.amount" type="number" min="0" placeholder="0.00" class="tr-inp"
+                         :class="{ 'tr-inp-bad': trOverdraw }" />
+                  <div v-if="trAfterBalance !== null" class="tr-after"
+                       :class="{ bad: trOverdraw, warn: !trOverdraw && trBelowWarn }">
+                    调出后余额 {{ wan(trAfterBalance) }}
+                    <template v-if="trOverdraw">——超过池内余额，无法调出</template>
+                    <template v-else-if="trBelowWarn">⚠ 低于预警线 {{ wan(trFromPool.warning.amount) }}</template>
+                  </div>
                 </div>
                 <div v-if="auth.isSuperAdmin" class="tr-field">
                   <label class="tr-label">调拨日期</label>
@@ -974,4 +998,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
   .tr-grid { grid-template-columns: 1fr; }
   .tr-arrow-center { display: none; }
 }
+.tr-inp-bad { border-color: var(--c-danger) !important; }
+.tr-after { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+.tr-after.warn { color: var(--c-warn); font-weight: 600; }
+.tr-after.bad { color: var(--c-danger); font-weight: 700; }
 </style>

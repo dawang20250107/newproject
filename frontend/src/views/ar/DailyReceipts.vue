@@ -7,6 +7,7 @@ import { todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
 import ContextMenu from '../../components/ContextMenu.vue'
+import SelCell from '../../components/SelCell.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
@@ -272,7 +273,7 @@ async function exportXlsx(selectedOnly = false) {
         <tbody>
           <tr v-for="(r, idx) in items" :key="r.id" :class="{ sel: selectedIds.has(r.id) }"
               @contextmenu.prevent="ctx.open($event, r)" @dblclick="canWrite && openEdit(r)">
-            <td class="cb" @click.stop><input type="checkbox" :checked="selectedIds.has(r.id)" @click="onRowSelClick($event, idx, r.id)" /></td>
+            <SelCell class="cb" :idx="idx" :id="r.id" :checked="selectedIds.has(r.id)" :on-sel="onRowSelClick" />
             <td class="when">{{ r.receipt_date }}</td>
             <td>{{ r.delivery_dept }}</td>
             <td><span class="src">{{ r.source }}</span><span v-if="r.advance_record_id" class="adv-tag" :title="'已回冲预付：' + r.advance_label">↩冲预付</span></td>

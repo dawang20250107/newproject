@@ -7,6 +7,7 @@ import { useRoute } from 'vue-router'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import ContextMenu from '../components/ContextMenu.vue'
+import SelCell from '../components/SelCell.vue'
 import DingtalkSyncPanel from '../components/DingtalkSyncPanel.vue'
 import { useContextMenu } from '../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../utils/clipboard.js'
@@ -979,7 +980,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <template v-else>
       <template v-for="(i, idx) in items" :key="i.id">
       <tr :class="{ 'row-sel': selectedIds.has(i.id) }" @contextmenu.prevent="ctx.open($event, i)" @dblclick="onRowDblClick(i, $event)">
-      <td class="sel-col"><input type="checkbox" :checked="selectedIds.has(i.id)" @click.stop="onRowSelClick($event, idx, i.id)" title="按住 Shift 点击可区间勾选" /></td>
+      <SelCell :idx="idx" :id="i.id" :checked="selectedIds.has(i.id)" :on-sel="onRowSelClick" />
       <td :title="i.applicant">{{i.applicant}}</td><td :title="i.department">{{i.department}}</td>
       <td class="meta-cell" :title="i.secondary_dept">{{ i.secondary_dept || '—' }}</td>
       <td class="meta-cell" :title="i.project_short_name">{{ i.project_short_name || '—' }}</td>

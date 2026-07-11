@@ -42,6 +42,41 @@ export function useRangeSelection(opts = {}) {
   function clearHighlight() {
     if (!root) return
     root.querySelectorAll('td.cell-range-sel').forEach(td => td.classList.remove('cell-range-sel'))
+    _updateStatsBar()
+  }
+
+  // ── f1: 仿 Excel 底部状态条——选中 N 格 · 数值求和 · 均值（单例浮动 pill）──
+  function _statsBarEl() {
+    let el = document.getElementById('range-stats-bar')
+    if (!el) {
+      el = document.createElement('div')
+      el.id = 'range-stats-bar'
+      el.className = 'range-stats-bar'
+      document.body.appendChild(el)
+    }
+    return el
+  }
+  function _parseNum(txt) {
+    // 解析 ¥1,234.56 / 1234.56 / -5,000 样式；带「万/亿」等单位的展示值不参与求和
+    const t = (txt || '').replace(/[¥￥,\s]/g, '')
+    if (!t || /[^0-9.+-]/.test(t)) return null
+    const n = parseFloat(t)
+    return isNaN(n) ? null : n
+  }
+  function _updateStatsBar() {
+    const el = _statsBarEl()
+    if (!root || !anchor || !focus || cellCount() < 2) { el.classList.remove('on'); return }
+    const tds = root.querySelectorAll('td.cell-range-sel')
+    let sum = 0, n = 0
+    tds.forEach(td => {
+      const v = _parseNum(td.innerText)
+      if (v !== null) { sum += v; n++ }
+    })
+    const fmt = x => x.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    el.textContent = n >= 2
+      ? `选中 ${tds.length} 格 · 求和 ${fmt(sum)} · 均值 ${fmt(sum / n)}（${n} 个数值）`
+      : `选中 ${tds.length} 格 · Ctrl+C 复制`
+    el.classList.add('on')
   }
 
   function applyHighlight() {
@@ -60,6 +95,7 @@ export function useRangeSelection(opts = {}) {
         if (td && !ignoreCols.has(c)) td.classList.add('cell-range-sel')
       }
     }
+    _updateStatsBar()
   }
 
   function onMouseDown(e) {

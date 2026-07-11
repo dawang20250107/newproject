@@ -9,6 +9,7 @@ import { downloadBlob } from '../../utils/download.js'
 import { fmtCompact, fmtMoney } from '../../utils/format.js'
 import { TOOLTIP } from '../../utils/chartTheme.js'
 import BaseChart from '../../components/ar/BaseChart.vue'
+import SelCell from '../../components/SelCell.vue'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
@@ -712,10 +713,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               :class="{ 'row-sel': selectAllMatching || selectedIds.has(item.id) }"
               @dblclick="onRowDblClick(item, $event)"
               @contextmenu.prevent="ctx.open($event, item)">
-              <td v-if="auth.canDelete" class="ctr sel-col">
-                <input type="checkbox" :checked="selectAllMatching || selectedIds.has(item.id)"
-                  @click.stop="onRowSelClick($event, idx, item.id)" title="按住 Shift 点击可区间勾选" />
-              </td>
+              <SelCell v-if="auth.canDelete" class="ctr" :idx="idx" :id="item.id"
+                :checked="selectAllMatching || selectedIds.has(item.id)" :on-sel="onRowSelClick" />
               <td v-if="showProjectNo || colFilters.project_no">
                 <span class="proj-no-tag">{{ item.project_no }}</span>
                 <span v-if="item.is_draft" class="badge-draft" title="导入自动创建，请补充完善">待完善</span>

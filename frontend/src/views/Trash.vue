@@ -154,6 +154,9 @@ async function doAction(action) {
     busy.value = false }
 }
 
+function paidCount(it) {
+  return (it.installments || []).filter(i => Number(i.pay_amount) > 0).length
+}
 function fmtDate(s) {
   if (!s) return '-'
   return s.replace('T', ' ').slice(0, 16)
@@ -241,7 +244,11 @@ function fmtDate(s) {
               <td>{{ it.department }}</td>
               <td v-if="activeTab === 'approvals'">{{ it.approval_number }}</td>
               <td v-if="activeTab === 'approvals'" class="ellipsis" :title="it.summary">{{ it.summary }}</td>
-              <td v-if="activeTab === 'payments'" class="ellipsis" :title="it.project_desc">{{ it.project_desc }}</td>
+              <td v-if="activeTab === 'payments'" class="ellipsis" :title="it.project_desc">
+                {{ it.project_desc }}
+                <span v-if="it.approval_number" class="trash-tag tag-appr" title="关联审批单">关联审批</span>
+                <span v-if="paidCount(it) > 0" class="trash-tag tag-paid" :title="`含 ${paidCount(it)} 笔实付，彻删将连同付款流水一并抹除`">含 {{ paidCount(it) }} 笔实付</span>
+              </td>
               <td v-if="activeTab === 'payments'" class="ellipsis">{{ it.payee }}</td>
               <td v-if="activeTab === 'records'" class="ellipsis" :title="it.short_name || it.customer_name">{{ it.short_name || it.customer_name }}</td>
               <td v-if="activeTab === 'records'" class="mono">{{ it.operation_date || (it.operation_year + '-' + String(it.operation_month).padStart(2, '0')) }}</td>
@@ -324,4 +331,7 @@ function fmtDate(s) {
 .trash-pg button { padding: 3px 10px; border: 1px solid var(--border); border-radius: 6px; background: none;
   cursor: pointer; font-size: 12.5px; }
 .trash-pg button:disabled { opacity: .4; cursor: default; }
+.trash-tag { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; vertical-align: middle; }
+.trash-tag.tag-appr { color: var(--c-info); background: rgba(21,101,192,.1); }
+.trash-tag.tag-paid { color: var(--c-danger); background: rgba(198,40,40,.1); }
 </style>

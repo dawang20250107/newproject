@@ -11,6 +11,7 @@ import { downloadBlob } from '../../utils/download.js'
 import { useServerSort } from '../../composables/useServerSort.js'
 import { useToast } from '../../composables/useToast.js'
 import SortTh from '../../components/ar/SortTh.vue'
+import SelCell from '../../components/SelCell.vue'
 import FilterPanel from '../../components/ar/FilterPanel.vue'
 import { describeCondition, STATUS_OPTS, RECON_OPTS, INVOICE_OPTS, RESP_OPTS } from '../../composables/arConditions.js'
 import ColumnFilter from '../../components/ColumnFilter.vue'
@@ -749,6 +750,34 @@ const hasAnyFilter = computed(() =>
   conditions.value.length > 0 || Object.keys(colFilters).length > 0 || !!sortField.value)
 // chip 文案统一由 describeCondition 生成（与面板单一来源）
 const chipText = describeCondition
+// f4: 列头筛选(colFilters) chip 化——与条件 chip 同栏展示、可逐个移除，
+// 消除「列在别的 Tab 生效但当前不渲染 → 数据被隐形过滤」的困惑
+const COL_FILTER_LABELS = {
+  short_name: '项目', operation_date: '运作日期', estimated_amount: '预估金额',
+  actual_invoice_amount: '实际开票', tax_amount: '税额', reconciliation_status: '对账状态',
+  reconciliation_date: '对账日期', invoice_status: '开票状态', invoice_date: '开票日期',
+  invoice_batch_no: '批次号', due_date: '应收到期', target_collection_date: '目标回款',
+  outstanding_amount: '未收金额', status: '回款状态', notes: '备注',
+  account_diff_adjustment: '账实差额', responsibility: '责任状态',
+}
+const _OP_TEXT = { eq: '等于', contains: '包含', gt: '>', lt: '<', gte: '≥', lte: '≤', between: '区间', empty: '为空', not_empty: '非空' }
+function colFilterText(field, c) {
+  const lbl = COL_FILTER_LABELS[field] || field
+  const op = _OP_TEXT[c.op] || c.op || ''
+  let v = c.value
+  if (Array.isArray(v)) v = v.filter(x => x !== '' && x != null).join(' ~ ')
+  if (c.op === 'empty') return `${lbl} 为空`
+  if (c.op === 'not_empty') return `${lbl} 非空`
+  return `${lbl} ${op} ${v ?? ''}`.trim()
+}
+const colFilterChips = computed(() => Object.entries(colFilters)
+  .filter(([, c]) => c && c.op)
+  .map(([field, c]) => ({ field, text: colFilterText(field, c) })))
+function removeColFilter(field) {
+  delete colFilters[field]
+  if (field === 'operation_date') { opDateStart.value = ''; opDateEnd.value = '' }
+  onFilterChange()
+}
 function removeCondition(i) {
   const l = conditions.value.slice(); l.splice(i, 1)
   conditions.value = l; onFilterChange()
@@ -2133,6 +2162,10 @@ function clearFilters() {
             {{ chipText(c) }}
             <button title="移除" @click.stop="removeCondition(i)">✕</button>
           </span>
+          <span v-for="fc in colFilterChips" :key="'col-' + fc.field" class="filter-chip col-chip" title="列头筛选">
+            {{ fc.text }}
+            <button title="移除" @click.stop="removeColFilter(fc.field)">✕</button>
+          </span>
           <button v-if="hasAnyFilter" class="clear-mini" @click="clearFilters">清空</button>
           <!-- 筛选方案（对标金蝶过滤方案）：服务端存储，私有/公共团队共享 + 默认方案 -->
           <div class="preset-wrap">
@@ -2451,9 +2484,8 @@ function clearFilters() {
             <template v-for="(rec, idx) in items" :key="rec.id">
               <tr :class="['data-row', agingRowClass(rec), (selectAllMatching || selectedIds.has(rec.id)) ? 'row-sel' : '']"
                 @contextmenu.prevent="ctx.open($event, rec)" @dblclick="onRowDblClick(rec, $event)">
-                <td v-if="auth.canDelete || auth.canArWrite" class="sel-col sticky-col">
-                  <input type="checkbox" :checked="selectAllMatching || selectedIds.has(rec.id)" @click.stop="onRowSelClick($event, idx, rec.id)" title="按住 Shift 点击可区间勾选" />
-                </td>
+                <SelCell v-if="auth.canDelete || auth.canArWrite" class="sticky-col" :idx="idx" :id="rec.id"
+                  :checked="selectAllMatching || selectedIds.has(rec.id)" :on-sel="onRowSelClick" />
                 <td class="sticky-col" :style="cw.thStyle('short_name')">
                   <div class="proj-name" :title="rec.short_name || rec.customer_name">
                     <span class="proj-name-text">{{ rec.short_name || rec.customer_name }}</span>
@@ -3731,6 +3763,7 @@ function clearFilters() {
 .fb-hint { font-size: 12.5px; color: var(--muted); }
 .filter-chip.date { background: rgba(122,159,212,0.14); color: #3f5a86; }
 .filter-chip.amt  { background: rgba(201,99,66,0.12); color: var(--primary); }
+.filter-chip.col-chip { background: rgba(90,122,153,0.13); color: #4a6a8a; }
 .filter-chip.dim  { background: rgba(120,120,120,0.1); color: var(--text); }
 .filter-chip { cursor: pointer; }
 

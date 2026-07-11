@@ -11,6 +11,7 @@ import { todayCST } from '../constants.js'
 import { fmtMoney, fmtTime } from '../utils/format.js'
 import { downloadBlob } from '../utils/download.js'
 import StatusBadge from '../components/StatusBadge.vue'
+import SelCell from '../components/SelCell.vue'
 import PaymentModal from '../components/PaymentModal.vue'
 import ImportResultModal from '../components/ImportResultModal.vue'
 import ImportPrecheckModal from '../components/ImportPrecheckModal.vue'
@@ -1453,7 +1454,7 @@ async function doBatchPay() {
             <template v-for="(p, idx) in items" :key="p.id">
             <tr :class="{ 'overdue-row': p.status !== 'settled' && p.planned_date && p.planned_date < today, 'row-sel': selectedIds.has(p.id), 'row-priority': p.is_priority }"
                 @contextmenu.prevent="ctx.open($event, p)" @dblclick="onRowDblClick(p, $event)">
-              <td class="sel-col sticky-col"><input type="checkbox" :checked="selectedIds.has(p.id)" @click.stop="onRowSelClick($event, idx, p.id)" title="按住 Shift 点击可区间勾选" /></td>
+              <SelCell class="sticky-col" :idx="idx" :id="p.id" :checked="selectedIds.has(p.id)" :on-sel="onRowSelClick" />
               <td v-if="colVisible('department')" class="cell-clip" :title="p.department">{{ p.department }}</td>
               <td v-if="colVisible('secondary_dept')" class="cell-clip" :title="p.secondary_dept">{{ p.secondary_dept || '—' }}</td>
               <td v-if="colVisible('project_short_name')" class="cell-clip" :title="p.project_short_name">{{ p.project_short_name || '—' }}</td>

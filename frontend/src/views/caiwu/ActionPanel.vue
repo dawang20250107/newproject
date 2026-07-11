@@ -4,6 +4,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import ar from '../../api/ar.js'
 import { useToast } from '../../composables/useToast.js'
 import { todayCST } from '../../constants.js'
+import EmptyState from '../../components/EmptyState.vue'
 const toast = useToast()
 
 const props = defineProps({
@@ -152,8 +153,8 @@ watch(() => props.selectedBu, load)
       </div>
     </div>
 
-    <div v-if="loading" class="ap-empty">加载中…</div>
-    <div v-else-if="err" class="ap-empty err">{{ err }}</div>
+    <EmptyState v-if="loading" loading />
+    <EmptyState v-else-if="err" :error="err" />
 
     <!-- kanban columns -->
     <div v-else class="ap-kanban">

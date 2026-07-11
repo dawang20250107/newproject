@@ -1685,13 +1685,21 @@ def ar_records_group_summary(request):
 # 催款工作台 (collection workbench) — 逾期分桶 + 责任人聚合 + 一键生成催款行动项
 # ══════════════════════════════════════════════════════════════════════════════
 
-_DUNNING_BUCKETS = [
-    ('d7',   '1-7天',    1,  7),
-    ('d30',  '8-30天',   8,  30),
-    ('d60',  '31-60天',  31, 60),
-    ('d90',  '61-90天',  61, 90),
-    ('d90p', '90天以上', 91, None),
-]
+def _dunning_buckets():
+    """a5: 催款作战台账龄分桶——复用超管可配置的 AgingBucketConfig 边界
+    （默认 30/60/90），与账龄分析同一套口径。此前写死 1-7/8-30/31-60/61-90/90+，
+    超管改边界后作战台不跟随、两处数字对不上。首段固定拆出 1-7 天（新逾期须
+    高频跟进），其余按配置边界切分。"""
+    from ..models import AgingBucketConfig
+    cfg = AgingBucketConfig.get_or_default()
+    b1, b2, b3 = cfg['bucket1'], cfg['bucket2'], cfg['bucket3']
+    buckets = [('d7', '1-7天', 1, min(7, b1))]
+    if b1 > 7:
+        buckets.append(('d30', f'8-{b1}天', 8, b1))
+    buckets.append(('d60', f'{b1 + 1}-{b2}天', b1 + 1, b2))
+    buckets.append(('d90', f'{b2 + 1}-{b3}天', b2 + 1, b3))
+    buckets.append(('d90p', f'{b3}天以上', b3 + 1, None))
+    return buckets
 
 
 def _overdue_qs(request, today):
@@ -1755,7 +1763,7 @@ def ar_collection_workbench(request):
 
     # 分桶统计（基于 dept/q 筛选后的全量逾期集，不随 bucket/contact 细分变化）
     buckets = []
-    for key, label, lo, hi in _DUNNING_BUCKETS:
+    for key, label, lo, hi in _dunning_buckets():
         agg = qs.filter(_bucket_cond(today, lo, hi)).aggregate(
             count=Count('id'), amount=Sum('outstanding_amount'))
         buckets.append({'key': key, 'label': label,
@@ -1779,7 +1787,7 @@ def ar_collection_workbench(request):
     items_qs = qs
     bucket = request.GET.get('bucket', '').strip()
     if bucket:
-        spec = next((b for b in _DUNNING_BUCKETS if b[0] == bucket), None)
+        spec = next((b for b in _dunning_buckets() if b[0] == bucket), None)
         if spec:
             items_qs = items_qs.filter(_bucket_cond(today, spec[2], spec[3]))
     contact = request.GET.get('contact', '').strip()
@@ -1858,7 +1866,7 @@ def ar_collection_workbench_export(request):
             Q(project__sales_contact__icontains=q))
     bucket = request.GET.get('bucket', '').strip()
     if bucket:
-        spec = next((b for b in _DUNNING_BUCKETS if b[0] == bucket), None)
+        spec = next((b for b in _dunning_buckets() if b[0] == bucket), None)
         if spec:
             qs = qs.filter(_bucket_cond(today, spec[2], spec[3]))
     contact = request.GET.get('contact', '').strip()

@@ -261,10 +261,24 @@ async function settleRemaining() {
 }
 async function deletePayment(p) {
   if (!(await confirmDlg(`删除第 ${p.payment_no} 笔回款（¥${p.amount}）？`))) return
+  // f2: 留存快照供「撤销」重建（预收抵扣不可删，其余字段均可重建）
+  const snap = { amount: p.amount, payment_date: p.payment_date, source: p.source,
+                 method: p.method || '', account: p.account || '',
+                 draft_status: p.draft_status || '', counterparty_dept: p.counterparty_dept || '',
+                 notes: p.notes || '' }
   try {
     await ar.deletePayment(props.rec.id, p.id)
     await refreshRecordAndPayments()
-    toast.success('已删除')
+    toast.success(`已删除第 ${p.payment_no} 笔回款`, 3000, {
+      label: '撤销',
+      onClick: async () => {
+        try {
+          await ar.addPayment(props.rec.id, snap)
+          await refreshRecordAndPayments()
+          toast.success('已恢复该笔回款')
+        } catch (e2) { toast.error(errMsg(e2)) }
+      },
+    })
   } catch (e) { toast.error(errMsg(e)) }
 }
 async function refreshRecordAndPayments() {
@@ -286,6 +300,10 @@ function onActUpdated(act) {
 function onActDeleted(act) {
   allActivities.value = allActivities.value.filter(a => a.id !== act.id)
   emit('field-saved', { id: props.rec.id, activity_count: Math.max(0, (props.rec.activity_count || 1) - 1) })
+}
+function onActRestored(act) {
+  allActivities.value.unshift(act)
+  emit('field-saved', { id: props.rec.id, activity_count: (props.rec.activity_count || 0) + 1 })
 }
 
 // ── 附件（展示/收集在 AttFiles 内完成，上传删除留在这里同步计数与数组）────────
@@ -619,7 +637,7 @@ function onKey(e) {
                 </div>
                 <!-- 活动列表 -->
                 <ActThread v-if="actsByStage.reconciliation.length" :rec-id="rec.id" :acts="actsByStage.reconciliation"
-                  @updated="onActUpdated" @deleted="onActDeleted" />
+                  @updated="onActUpdated" @deleted="onActDeleted" @restored="onActRestored" />
                 <!-- 附件 -->
                 <AttFiles v-if="attsByStage.reconciliation.length || canWrite" :atts="attsByStage.reconciliation"
                   :can-write="canWrite" label="⬆ 上传附件"
@@ -686,7 +704,7 @@ function onKey(e) {
                 </template>
                 <!-- 活动列表 -->
                 <ActThread v-if="!invoiceSkipped && actsByStage.invoice.length" :rec-id="rec.id" :acts="actsByStage.invoice"
-                  @updated="onActUpdated" @deleted="onActDeleted" />
+                  @updated="onActUpdated" @deleted="onActDeleted" @restored="onActRestored" />
                 <!-- 附件 -->
                 <AttFiles v-if="!invoiceSkipped && (attsByStage.invoice.length || canWrite)" :atts="attsByStage.invoice"
                   :can-write="canWrite" label="⬆ 上传发票附件"
@@ -758,7 +776,7 @@ function onKey(e) {
                 </button>
                 <!-- 活动列表 -->
                 <ActThread v-if="actsByStage.collection.length" :rec-id="rec.id" :acts="actsByStage.collection"
-                  @updated="onActUpdated" @deleted="onActDeleted" />
+                  @updated="onActUpdated" @deleted="onActDeleted" @restored="onActRestored" />
                 <!-- 附件 -->
                 <AttFiles v-if="attsByStage.collection.length || canWrite" :atts="attsByStage.collection"
                   :can-write="canWrite" label="⬆ 上传回款凭证"
@@ -808,7 +826,7 @@ function onKey(e) {
               </div>
               <!-- 催款动态 -->
               <ActThread v-if="actsByStage.dunning.length" :rec-id="rec.id" :acts="actsByStage.dunning"
-                @updated="onActUpdated" @deleted="onActDeleted" />
+                @updated="onActUpdated" @deleted="onActDeleted" @restored="onActRestored" />
               <div v-else class="dun-empty">暂无催款跟进记录</div>
               <!-- 催款附件 -->
               <AttFiles v-if="attsByStage.dunning.length || canWrite" :atts="attsByStage.dunning"

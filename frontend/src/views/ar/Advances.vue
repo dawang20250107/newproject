@@ -9,6 +9,7 @@ import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
 import { downloadBlob } from '../../utils/download.js'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
+import SelCell from '../../components/SelCell.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
 import SkeletonRow from '../../components/SkeletonRow.vue'
 import SchemePicker from '../../components/SchemePicker.vue'
@@ -912,10 +913,7 @@ onMounted(async () => {
               <tr v-else-if="!items.length"><td colspan="10" class="empty">暂无{{ dirLabel }}记录</td></tr>
               <tr v-for="(r, idx) in items" :key="r.id" :class="{ 'row-sel': selectedIds.has(r.id) }"
                   @contextmenu.prevent="ctxRec.open($event, r)" @dblclick="onRowDblClick(r, $event)">
-                <td v-if="canDelete" class="sel-col">
-                  <input type="checkbox" :checked="selectedIds.has(r.id)"
-                         @click="onRowSelClick($event, idx, r.id)" @change.prevent />
-                </td>
+                <SelCell v-if="canDelete" :idx="idx" :id="r.id" :checked="selectedIds.has(r.id)" :on-sel="onRowSelClick" />
                 <td v-if="show('adv_counterparty')">{{ r.counterparty || '—' }}</td>
                 <td>
                   <div v-if="r.short_name" class="proj-name">{{ r.short_name }}</div>

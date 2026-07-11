@@ -12,7 +12,7 @@ const props = defineProps({
   recId: { type: Number, required: true },
   acts:  { type: Array, default: () => [] },
 })
-const emit = defineEmits(['updated', 'deleted'])
+const emit = defineEmits(['updated', 'deleted', 'restored'])
 const toast = useToast()
 const errMsg = e => e?.msg || e?.error || '操作失败'
 
@@ -45,10 +45,22 @@ async function commitEdit(act) {
 }
 async function del(act) {
   if (!(await confirmDlg(`删除这条${act.act_type_display || ''}记录？`))) return
+  // f2: 留存快照供「撤销」重建（新建动态 id/时间会变，内容完整保留）
+  const snap = { stage: act.stage || 'dunning', act_type: act.act_type, note: act.note,
+                 status: act.status, follow_up_date: act.follow_up_date || null }
   try {
     await ar.deleteActivity(props.recId, act.id)
     emit('deleted', act)
-    toast.success('已删除')
+    toast.success('已删除', 3000, {
+      label: '撤销',
+      onClick: async () => {
+        try {
+          const res = await ar.addActivity(props.recId, snap)
+          emit('restored', res.data)
+          toast.success('已恢复该条跟进')
+        } catch (e2) { toast.error(errMsg(e2)) }
+      },
+    })
   } catch (e) { toast.error(errMsg(e)) }
 }
 async function cycleStatus(act) {

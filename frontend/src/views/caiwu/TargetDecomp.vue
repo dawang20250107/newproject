@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import ar from '../../api/ar.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
+import EmptyState from '../../components/EmptyState.vue'
 import { yearCST } from '../../constants.js'
 import { fmtCompact } from '../../utils/format.js'
 import { valueAxis, catAxis, TOOLTIP } from '../../utils/chartTheme.js'
@@ -176,8 +177,8 @@ onMounted(load)
       </div>
     </div>
 
-    <div v-if="loading" class="td-empty">加载中…</div>
-    <div v-else-if="err" class="td-empty err">{{ err }}</div>
+    <EmptyState v-if="loading" loading />
+    <EmptyState v-else-if="err" :error="err" />
     <template v-else-if="data">
       <!-- Summary strip -->
       <div class="td-summary">
