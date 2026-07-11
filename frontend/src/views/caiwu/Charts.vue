@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, nextTick, watch } from 'vue'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import TrendLineChart from '../../components/caiwu/charts/TrendLineChart.vue'
@@ -105,30 +105,39 @@ watch(trendYear, () => {
   if (canTrend.value) loadTrend()
 })
 
-// 归因直达：报表矩阵右键「净利归因」跳转时经 sessionStorage 预填对比期并滚动定位
+// 归因直达：报表矩阵右键「净利归因」/驾驶舱 Mekko 点击月份 跳转时，
+// 经 sessionStorage 预填对比期并滚动定位。onActivated 覆盖本面板已被
+// KeepAlive 缓存、再次切入的场景。
 const wfCard = ref(null)
 function consumeWfPrefill() {
   try {
     const raw = sessionStorage.getItem('cw:wf-prefill')
-    if (!raw) return false
+    if (!raw) return null
     sessionStorage.removeItem('cw:wf-prefill')
     const p = JSON.parse(raw)
-    if (!p.year || !p.month) return false
+    if (!p.year || !p.month) return null
     wfYear.value = p.year; wfMonth.value = p.month
     wfCmpYear.value = p.cmpYear; wfCmpMonth.value = p.cmpMonth
-    if (p.bu) globalBu.value = p.bu   // 触发 watch(globalBu) 自动加载
+    const target = p.bu || ''
+    const buChanged = target !== globalBu.value
+    if (buChanged) globalBu.value = target       // watch(globalBu) 触发趋势+瀑布加载
+    else if (canWaterfall.value) loadWaterfall() // bu 未变则按新对比期手动加载
     nextTick(() => wfCard.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
-    return !!p.bu
-  } catch { return false }
+    return { buChanged }
+  } catch { return null }
 }
 
 onMounted(() => {
   globalBu.value = ''   // 默认全集团
-  const loadedByWatch = consumeWfPrefill()
-  if (loadedByWatch) return   // globalBu 变更的 watch 已触发加载，避免双请求
+  const pre = consumeWfPrefill()
+  if (pre) {
+    if (!pre.buChanged && canTrend.value) loadTrend()  // 瀑布已按预填加载，补趋势
+    return
+  }
   if (canTrend.value) loadTrend()
   if (canWaterfall.value) loadWaterfall()
 })
+onActivated(() => consumeWfPrefill())   // 二次消费自动为 no-op（key 已移除）
 </script>
 
 <template>
