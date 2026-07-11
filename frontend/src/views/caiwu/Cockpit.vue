@@ -133,7 +133,7 @@ const accessibleBus = computed(() => {
 })
 
 const fmtMoney = (v) => fmtCompact(v, { space: true })
-const wan = (v) => (v == null ? '—' : (v / 10000).toFixed(0) + '万')
+const wan = (v) => (v == null ? '—' : Math.abs(v) >= 1e8 ? (v / 1e8).toFixed(2) + '亿' : (v / 10000).toFixed(0) + '万')
 
 async function load() {
   loading.value = true
@@ -518,9 +518,10 @@ function rateColor(r) {
 }
 function chgLabel(v) {
   if (v == null) return '— '
-  return (v >= 0 ? '▲ +' : '▼ ') + v.toFixed(1) + '%'
+  if (v === 0) return '0.0%'   // 持平：不带涨跌箭头
+  return (v > 0 ? '▲ +' : '▼ ') + v.toFixed(1) + '%'
 }
-function chgClass(v) { return v == null ? 'mom-neutral' : (v >= 0 ? 'mom-up' : 'mom-down') }
+function chgClass(v) { return v == null || v === 0 ? 'mom-neutral' : (v > 0 ? 'mom-up' : 'mom-down') }
 
 const grad = (c1, c2, horiz = false) => ({ type: 'linear', x: 0, y: 0, x2: horiz ? 1 : 0, y2: horiz ? 0 : 1,
   colorStops: [{ offset: 0, color: c1 }, { offset: 1, color: c2 }] })
@@ -650,7 +651,10 @@ const bulletOption = computed(() => {
       type: 'bar', barWidth: 16,
       data: rows.map(r => ({ value: r.ach || 0, itemStyle: { color: barColor(r.ach), borderRadius: 8 } })).reverse(),
       label: { show: true, position: 'right', fontSize: 11, fontWeight: 700, color: '#5f4d3d',
-        formatter: p => (p.value).toFixed(0) + '%' },
+        formatter: p => {
+          const r = rows[rows.length - 1 - p.dataIndex]
+          return r.ach == null ? '未设目标' : r.ach.toFixed(0) + '%'
+        } },
       markArea: { silent: true, data: [
         [{ xAxis: 0, itemStyle: { color: 'rgba(229,57,53,0.05)' } }, { xAxis: 60 }],
         [{ xAxis: 60, itemStyle: { color: 'rgba(249,168,37,0.05)' } }, { xAxis: 90 }],
@@ -701,6 +705,7 @@ const buRateOption = computed(() => {
   const bus = data.value?.bus || []
   if (!bus.length) return null
   const names = bus.map(b => b.business_unit)
+  const tp = timeProgressPct.value
   return {
     tooltip: {
       trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
@@ -717,7 +722,12 @@ const buRateOption = computed(() => {
     series: [
       { name: 'YTD收入达成', type: 'bar', data: bus.map(b => b.ytd.revenue_rate), itemStyle: { color: '#66bb6a', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
         label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP,
-        markLine: { silent: true, symbol: 'none', lineStyle: { color: '#c96342', type: 'dashed' }, data: [{ yAxis: 100, label: { formatter: '100%', color: '#c96342', fontSize: 10 } }] } },
+        // 双基准：绿实线=年度目标100%，橙虚线=时间进度——年中50%达成属于正常节奏，
+        // 没有时间线对照会被误读为掉队（与「目标达成子弹图」同一套读法）
+        markLine: { silent: true, symbol: 'none', data: [
+          { yAxis: 100, lineStyle: { color: '#2e7d32', type: 'solid', width: 1.5 }, label: { formatter: '目标 100%', color: '#2e7d32', fontSize: 10 } },
+          { yAxis: tp, lineStyle: { color: '#c96342', type: 'dashed', width: 1.5 }, label: { formatter: `时间 ${tp.toFixed(0)}%`, color: '#c96342', fontSize: 10, position: 'insideEndBottom' } },
+        ] } },
       { name: 'YTD毛利达成', type: 'bar', data: bus.map(b => b.ytd.gross_profit_rate), itemStyle: { color: '#26a69a', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
         label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP },
     ],
@@ -757,6 +767,7 @@ const heroCards = computed(() => {
       rate: m.revenue_rate, mom: m.revenue_mom, yoy: m.revenue_yoy },
     { key: 'gross', label: '本月经营毛利', value: m.actual_gross_profit, color: '#00897b',
       rate: m.gross_profit_rate, mom: m.gross_profit_mom, yoy: m.gross_profit_yoy,
+      neg: (m.actual_gross_profit ?? 0) < 0,
       sub: `毛利率 ${fmtPctVal(d?.grossMargin)}` },
     { key: 'prof', label: '本月经营净利', value: m.actual_profit, color: '#1565c0',
       rate: m.profit_rate, mom: m.profit_mom, yoy: m.profit_yoy, neg: (m.actual_profit ?? 0) < 0,
@@ -832,7 +843,7 @@ const revStructOption = computed(() => {
   if (!rows.length) return null
   const pie = rows.map((r, i) => ({ name: r.bu, value: r.rev, itemStyle: { color: COMP_COLORS[i % COMP_COLORS.length] } }))
   return {
-    tooltip: { trigger: 'item', ...TOOLTIP, formatter: p => `${p.name}<br/>${wan(p.value)} 元 (${p.percent.toFixed(1)}%)` },
+    tooltip: { trigger: 'item', ...TOOLTIP, formatter: p => `${p.name}<br/>${wan(p.value)} (${p.percent.toFixed(1)}%)` },
     legend: { bottom: 0, type: 'scroll', textStyle: { fontSize: 11, color: '#6b5a4a' } },
     series: [{
       type: 'pie', radius: ['42%', '68%'], center: ['50%', '44%'], data: pie,
@@ -850,7 +861,7 @@ const profitContribOption = computed(() => {
   const names = rows.map(r => r.bu)
   return {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
-      formatter: p => `${p[0].name}<br/>经营毛利：${wan(p[0].value)} 元` },
+      formatter: p => `${p[0].name}<br/>经营毛利：${wan(p[0].value)}` },
     grid: { top: 8, right: 64, bottom: 8, left: 16, containLabel: true },
     xAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => axisMoney(v) },
       splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } } },
@@ -931,12 +942,13 @@ onMounted(() => { restoreChat(); load() })
 
 // ── 右键上下文菜单（事业部矩阵表）────────────────────────────────────────────
 const ctxMatrix = useContextMenu()
+// 复制为裸数值（与报表模块「整行复制」一致），贴进 Excel 可直接参与计算
 const MATRIX_COPY_COLS = [
   { key: 'bu', label: '事业部' },
-  { key: 'rev', label: '本月收入', format: (v) => wan ? wan(v) : String(v) },
-  { key: 'gross', label: '毛利', format: (v) => wan ? wan(v) : String(v) },
-  { key: 'prof', label: '净利润', format: (v) => wan ? wan(v) : String(v) },
-  { key: 'ytdRev', label: 'YTD收入', format: (v) => wan ? wan(v) : String(v) },
+  { key: 'rev', label: '本月收入' },
+  { key: 'gross', label: '经营毛利' },
+  { key: 'prof', label: '经营净利' },
+  { key: 'ytdRev', label: 'YTD收入' },
 ]
 const ctxMatrixItems = computed(() => {
   const r = ctxMatrix.menu.payload
