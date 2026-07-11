@@ -2,6 +2,7 @@
 import { confirmDlg } from '../composables/confirm.js'
 import { ref, reactive, computed, onMounted } from 'vue'
 import api from '../api/index.js'
+import { downloadBlob } from '../utils/download.js'
 import ContextMenu from '../components/ContextMenu.vue'
 import { useContextMenu } from '../composables/useContextMenu.js'
 import { useToast } from '../composables/useToast.js'
@@ -78,6 +79,15 @@ async function load(reset = false) {
 function onSearch() {
   clearTimeout(qTimer)
   qTimer = setTimeout(() => load(true), 300)
+}
+const exporting = ref(false)
+async function exportCsv() {
+  exporting.value = true
+  try {
+    const res = await api.get('/audit-logs/export', { params: buildParams(), responseType: 'blob' })
+    downloadBlob(res, '审计日志.csv')
+  } catch (e) { toast.error(e?.msg || '导出失败') }
+  finally { exporting.value = false }
 }
 async function prune() {
   if (!(await confirmDlg('将删除 180 天前的审计日志，确定？'))) return
@@ -174,6 +184,7 @@ onMounted(async () => {
         <span class="audit-sub">系统自动记录的全部写操作（谁 / 何时 / 做了什么 / 结果），共 {{ total }} 条</span>
       </div>
       <div class="ctrl-row">
+        <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportCsv">⬇ 导出CSV</button>
         <button class="btn btn-ghost btn-sm" :disabled="pruning" @click="prune">🧹 清理180天前</button>
       </div>
     </div>

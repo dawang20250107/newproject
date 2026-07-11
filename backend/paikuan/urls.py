@@ -86,5 +86,6 @@ urlpatterns = [
     path('exports/<int:pk>', views.export_status),
     path('exports/<int:pk>/download', views.export_download),
     path('audit-logs', views.audit_logs),
+    path('audit-logs/export', views.audit_logs_export),
     path('audit-logs/prune', views.audit_logs_prune),
 ]

@@ -295,6 +295,22 @@ def ar_invoice_batch_invoice_undo(request, batch_no):
     member_ids = set(_batch_members_qs(request, batch_no).values_list('id', flat=True))
     if not member_ids:
         return err('批次不存在或无权访问', 404)
+    # dry-run 预览：不落库，返回将回退的每条记录+前后开票金额，供确认弹窗核对
+    if data.get('preview') in (True, 'true', '1', 1):
+        ev = BatchInvoiceEvent.objects.filter(pk=int(data.get('event_id') or 0), batch_no=batch_no).first()
+        if not ev:
+            return err('开票事件不存在（可能已撤销）', 404)
+        _cur = dict(ARRecord.objects.filter(pk__in=[a['record_id'] for a in (ev.allocations or [])])
+                    .values_list('id', 'actual_invoice_amount'))
+        prows = []
+        for a in (ev.allocations or []):
+            before = float(_cur.get(a['record_id']) or 0)
+            revert = float(a['amount'])
+            prows.append({'short_name': a.get('short_name') or '', 'revert': revert,
+                          'before': before, 'after': max(0.0, round(before - revert, 2))})
+        return ok({'preview': True, 'rows': prows, 'count': len(prows),
+                   'total_revert': round(sum(x['revert'] for x in prows), 2),
+                   'tax_revert': float(ev.tax_amount or 0)})
     try:
         with transaction.atomic():
             # 锁事件行:两个并发撤销同一事件时第二个在此拿不到行(已删)→404,
@@ -527,6 +543,11 @@ def ar_invoice_batch_payment_undo(request, batch_no):
         if p.source == '预收抵扣':
             return err(f'回款 #{p.id} 为预收抵扣，请走「撤销核销」')
     total = sum(p.amount or Decimal('0') for p in pays)
+    if data.get('preview') in (True, 'true', '1', 1):
+        prows = [{'record_id': p.ar_record_id, 'amount': float(p.amount or 0),
+                  'pay_date': str(p.payment_date), 'method': p.method or ''} for p in pays]
+        return ok({'preview': True, 'rows': prows, 'count': len(prows),
+                   'total_revert': float(total)})
     with transaction.atomic():
         ARPayment.objects.filter(pk__in=ids).delete()
     return ok({'undone': len(pays), 'total': str(total),

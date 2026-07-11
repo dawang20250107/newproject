@@ -2219,6 +2219,73 @@ def payment_installments(request):
     })
 
 
+@pk_required()
+def payment_installments_export(request):
+    """GET — 付款流水导出 Excel（按分期实付的现金口径，与列表同筛选）。
+    银行流水核对/税务底稿场景：一份即拿到按付款日的实付明细。"""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    perms = get_request_perms(request)
+    denied = _payments_page_denied(request, perms)
+    if denied:
+        return denied
+    can_view_amounts = perms is None or (
+        perms['view'].get('total_amount', True) and perms['view'].get('installments', True))
+    if not can_view_amounts:
+        return err('无金额查看权限，不能导出付款流水', 403, 403)
+
+    qs = PaymentInstallment.objects.select_related('payment').filter(payment__deleted_at__isnull=True)
+    if request.pk_role != 'super_admin':
+        qs = qs.filter(payment__department__in=request.pk_depts or [])
+    dept = request.GET.get('dept', '').strip()
+    start = request.GET.get('pay_date_start', '').strip()
+    end = request.GET.get('pay_date_end', '').strip()
+    g7_no = request.GET.get('g7_number', '').strip()
+    q = request.GET.get('q', '').strip()
+    if dept:
+        qs = qs.filter(payment__department=dept)
+    if start:
+        qs = qs.filter(pay_date__gte=start)
+    if end:
+        qs = qs.filter(pay_date__lte=end)
+    if g7_no:
+        qs = qs.filter(payment__g7_number__icontains=g7_no)
+    if q:
+        qs = qs.filter(
+            Q(payment__project_desc__icontains=q) | Q(payment__payee__icontains=q) |
+            Q(payment__approval_number__icontains=q) | Q(payment__g7_number__icontains=q) |
+            Q(payment__applicant__icontains=q))
+    qs = qs.order_by('-pay_date', '-id')
+    if qs.count() > 20000:
+        return err('付款流水超过 20000 行，请缩小日期范围后再导出')
+
+    from openpyxl import Workbook
+    from wxcloudrun.excel_style import (style_header_row, apply_money_format,
+                                        append_total_row, append_filter_snapshot)
+    from wxcloudrun.excel_safe import excel_safe as _xs
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '付款流水'
+    headers = ['付款日期', '实付金额', '部门', '二级部门', '项目简称', '付款事项',
+               '收款方', '审批编号', 'G7编号', '计划日期', '分期序号', '备注']
+    ws.append(headers)
+    for inst in qs.iterator():
+        p = inst.payment
+        ws.append([str(inst.pay_date), float(inst.pay_amount), p.department, _xs(p.secondary_dept),
+                   _xs(p.project_short_name), _xs(p.project_desc), _xs(p.payee),
+                   _xs(p.approval_number), _xs(p.g7_number),
+                   str(p.planned_date) if p.planned_date else '', inst.seq, _xs(inst.notes)])
+    style_header_row(ws)
+    apply_money_format(ws, money_headers=('实付金额',))
+    append_total_row(ws, money_headers=('实付金额',))
+    ws.freeze_panes = 'A2'
+    append_filter_snapshot(wb, [
+        ('部门', dept), ('付款日期起', start), ('付款日期止', end),
+        ('G7/对账单号', g7_no), ('关键字', q), ('导出行数', qs.count()),
+    ])
+    return _build_excel_response(wb, '付款流水.xlsx')
+
+
 def _approvals_filtered_qs(request):
     """审批列表「筛选后、未分页」queryset（与列表完全同口径）：部门作用域 + 全局关键字 +
     列头筛选 + 计算列注解 + 排序。供列表分页与跨页全选取 ID 共用。
@@ -5146,6 +5213,68 @@ def audit_logs(request):
     size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
     items = [l.to_dict() for l in qs[(page - 1) * size: page * size]]
     return ok({'items': items, 'total': total, 'page': page, 'size': size})
+
+
+def _audit_filtered_qs(request):
+    """审计日志筛选 queryset（列表与导出共用同口径）。"""
+    from paikuan.models import AuditLog
+    qs = AuditLog.objects.all()
+    q = request.GET.get('q', '').strip()
+    if q:
+        qs = qs.filter(Q(path__icontains=q) | Q(user_name__icontains=q))
+    module = request.GET.get('module', '').strip()
+    if module:
+        qs = qs.filter(module=module)
+    method = request.GET.get('method', '').strip().upper()
+    if method:
+        qs = qs.filter(method=method)
+    result = request.GET.get('result', '').strip()
+    if result == 'ok':
+        qs = qs.filter(status_code__lt=400)
+    elif result == 'fail':
+        qs = qs.filter(status_code__gte=400)
+    date_start = request.GET.get('date_start', '').strip()
+    if date_start:
+        qs = qs.filter(created_at__date__gte=date_start)
+    date_end = request.GET.get('date_end', '').strip()
+    if date_end:
+        qs = qs.filter(created_at__date__lte=date_end)
+    fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), AUDITLOG_FILTER_REGISTRY)
+    if fq:
+        qs = qs.filter(fq)
+        if fq_distinct:
+            qs = qs.distinct()
+    sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), AUDITLOG_FILTER_REGISTRY)
+    return qs.order_by(sort_by) if sort_by else qs.order_by('-created_at')
+
+
+@csrf_exempt
+@pk_required(roles=['super_admin'])
+def audit_logs_export(request):
+    """审计日志按当前筛选导出 CSV（内控定期归档合规）。UTF-8 BOM 便于 Excel 直接打开。"""
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    import csv
+    from django.http import StreamingHttpResponse
+    from urllib.parse import quote
+    qs = _audit_filtered_qs(request)[:100000]
+
+    class _Echo:
+        def write(self, v): return v
+    writer = csv.writer(_Echo())
+
+    def _rows():
+        yield '\ufeff'  # BOM
+        yield writer.writerow(['时间', '操作人', '方法', '接口', '模块', '状态码', '来源IP'])
+        for l in qs.iterator():
+            yield writer.writerow([
+                l.created_at.strftime('%Y-%m-%d %H:%M:%S') if l.created_at else '',
+                l.user_name, l.method, l.path, l.module, l.status_code, l.ip])
+    resp = StreamingHttpResponse(_rows(), content_type='text/csv; charset=utf-8')
+    fn = quote('审计日志.csv', safe='')
+    resp['Content-Disposition'] = f"attachment; filename*=UTF-8''{fn}"
+    resp['Cache-Control'] = 'no-store'
+    return resp
 
 
 @csrf_exempt

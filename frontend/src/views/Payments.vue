@@ -338,6 +338,15 @@ async function loadFlow() {
 }
 
 function searchFlow() { flowPage.value = 1; loadFlow() }
+const flowExporting = ref(false)
+async function exportFlow() {
+  flowExporting.value = true
+  try {
+    const res = await api.get('/payments/installments/export', { params: { ...flowFilters }, responseType: 'blob' })
+    triggerDownload(res, '付款流水.xlsx')
+  } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
+  finally { flowExporting.value = false }
+}
 function resetFlowFilters() {
   Object.assign(flowFilters, { q: '', dept: '', pay_date_start: '', pay_date_end: '', g7_number: '' })
   flowDatePreset.value = ''; flowPage.value = 1; loadFlow()
@@ -1615,6 +1624,7 @@ async function doBatchPay() {
         </span>
         <button class="btn btn-ghost btn-sm" @click="searchFlow">筛选</button>
         <button class="btn btn-sm" style="background:var(--bg2);border:none" @click="resetFlowFilters">重置</button>
+        <button class="btn btn-ghost btn-sm" :disabled="flowExporting" style="margin-left:auto" @click="exportFlow">{{ flowExporting ? '导出中…' : '⬇ 导出Excel' }}</button>
       </div>
       <EmptyState v-if="flowLoading" loading />
       <EmptyState v-else-if="!flowItems.length" empty text="暂无付款流水" />

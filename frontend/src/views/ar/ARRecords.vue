@@ -1528,7 +1528,16 @@ async function doBatchInvoice() {
   finally { batchActing.value = false }
 }
 async function undoBatchInvoice(ev) {
-  if (!(await confirmDlg(`撤销 ${ev.invoice_date} 的开票 ${ev.amount} 元？各记录开票额将整体回退。`))) return
+  // 先 dry-run 预览将回退的每条记录（撤销大额事件前先核对）
+  let detail = []
+  try {
+    const pv = await ar.batchInvoiceUndo(batchTarget.value.batch_no, { event_id: ev.id, preview: true })
+    detail = (pv.data?.rows || []).slice(0, 12).map(r => `${r.short_name}：开票额 ${fmtMoney(r.before)} → ${fmtMoney(r.after)}`)
+    if (pv.data?.rows?.length > 12) detail.push(`…等共 ${pv.data.rows.length} 条`)
+    if (pv.data?.tax_revert) detail.push(`税额回退合计 ¥${fmtMoney(pv.data.tax_revert)}`)
+  } catch (e) { toast.error(e?.msg || e?.error || '预览失败'); return }
+  if (!(await confirmDlg({ title: `撤销 ${ev.invoice_date} 的开票 ${ev.amount} 元`,
+    message: '各记录开票额将整体回退，确定继续？', detail, danger: true, confirmText: '确认撤销' }))) return
   batchActing.value = true
   try {
     const res = await ar.batchInvoiceUndo(batchTarget.value.batch_no, { event_id: ev.id })
@@ -1554,7 +1563,14 @@ async function doBatchPay() {
   finally { batchActing.value = false }
 }
 async function undoBatchPay(b, ev) {
-  if (!(await confirmDlg(`撤销 ${ev.payment_date} 的批次回款 ${ev.total} 元（分摊 ${ev.count} 笔）？\n各记录未收金额将整体恢复。`))) return
+  let detail = []
+  try {
+    const pv = await ar.batchPaymentUndo(b.batch_no, { payment_ids: ev.payment_ids, preview: true })
+    detail = (pv.data?.rows || []).slice(0, 12).map(r => `记录#${r.record_id}：回款 ¥${fmtMoney(r.amount)}（${r.pay_date}）将被撤回`)
+    if (pv.data?.rows?.length > 12) detail.push(`…等共 ${pv.data.rows.length} 笔`)
+  } catch (e) { toast.error(e?.msg || e?.error || '预览失败'); return }
+  if (!(await confirmDlg({ title: `撤销 ${ev.payment_date} 的批次回款 ${ev.total} 元`,
+    message: `分摊 ${ev.count} 笔，各记录未收金额将整体恢复，确定继续？`, detail, danger: true, confirmText: '确认撤销' }))) return
   batchActing.value = true
   try {
     const res = await ar.batchPaymentUndo(b.batch_no, { payment_ids: ev.payment_ids })
