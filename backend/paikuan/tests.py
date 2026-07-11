@@ -3005,8 +3005,13 @@ class AsyncExportTests(TestCase):
         self.assertEqual(resp.status_code, 200, getattr(resp, 'content', b''))
         from openpyxl import load_workbook
         ws = load_workbook(io.BytesIO(resp.content), data_only=True).active
-        # 表头 + 3 行数据
-        self.assertEqual(ws.max_row, 4)
+        # 表头 + 3 行数据 + 合计行
+        self.assertEqual(ws.max_row, 5)
+        # 末行为合计，申请金额列 = 3×1000
+        last = list(ws.iter_rows(min_row=ws.max_row, max_row=ws.max_row))[0]
+        headers = [c.value for c in ws[1]]
+        amt = last[headers.index('申请金额')].value
+        self.assertEqual(float(amt), 3000.0)
 
     def test_run_export_job_end_to_end(self):
         # 同线程直接跑 worker 逻辑（不经 threading），验证落库字节

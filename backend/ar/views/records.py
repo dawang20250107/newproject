@@ -1532,6 +1532,10 @@ def ar_payment_ledger_export(request):
                    r['draft_status'], r['counterparty_dept'], r['project_no'], r['short_name'],
                    r['delivery_dept'], r['operation_year'], r['operation_month'],
                    r['payment_no'], r['notes']])
+    from wxcloudrun.excel_style import apply_money_format, append_total_row
+    apply_money_format(ws, money_headers=('回款金额',))
+    append_total_row(ws, money_headers=('回款金额',))
+    ws.freeze_panes = 'A2'
     return _export_response(wb, '回款流水.xlsx')
 
 
@@ -1824,6 +1828,82 @@ def ar_collection_workbench(request):
         'page': page, 'size': size,
         'summary': {'count': sum_agg['count'] or 0, 'amount': str(sum_agg['amount'] or 0)},
     })
+
+
+@csrf_exempt
+@pk_required()
+def ar_collection_workbench_export(request):
+    """催款作战台 · 导出逾期清单（按当前 dept/q/bucket/contact 筛选，含最近跟进摘要）。
+    催收周会用：一份即拿到逾期天数/未收/对接人/最近回款/最近跟进，无需去全部明细手工拼。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    denied = _ar_field_denied(request, 'r_outstanding')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+
+    today = timezone.localdate()
+    qs = _overdue_qs(request, today)
+    dept = request.GET.get('dept', '').strip()
+    if dept:
+        qs = qs.filter(delivery_dept=dept)
+    q = request.GET.get('q', '').strip()
+    if q:
+        qs = qs.filter(
+            Q(project__short_name__icontains=q) |
+            Q(project__customer_name__icontains=q) |
+            Q(project__project_no__icontains=q) |
+            Q(project__sales_contact__icontains=q))
+    bucket = request.GET.get('bucket', '').strip()
+    if bucket:
+        spec = next((b for b in _DUNNING_BUCKETS if b[0] == bucket), None)
+        if spec:
+            qs = qs.filter(_bucket_cond(today, spec[2], spec[3]))
+    contact = request.GET.get('contact', '').strip()
+    if contact:
+        qs = qs.filter(project__sales_contact='' if contact == '（未填写）' else contact)
+
+    rows = list(qs.annotate(last_pay=Max('payments__payment_date')).order_by('due_date', 'id')[:5000])
+
+    # 最近一条催款跟进摘要（批量一次取，避免逐行查询）
+    from ..models import ARActivity
+    latest_note = {}
+    for a in (ARActivity.objects.filter(ar_record_id__in=[r.id for r in rows], stage='dunning')
+              .order_by('ar_record_id', '-created_at')
+              .values('ar_record_id', 'note', 'created_at')):
+        latest_note.setdefault(a['ar_record_id'], a['note'])
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '逾期清单'
+    headers = ['项目简称', '客户', '交付部门', '销售对接人', '运作年月', '应收到期',
+               '逾期天数', '未收金额', '最近回款', '最近跟进摘要']
+    ws.append(headers)
+    for rec in rows:
+        proj = rec.project
+        ws.append([
+            proj.short_name, proj.customer_name, rec.delivery_dept, proj.sales_contact or '',
+            f'{rec.operation_year}/{str(rec.operation_month).zfill(2)}', str(rec.due_date),
+            (today - rec.due_date).days, float(rec.outstanding_amount),
+            str(rec.last_pay) if rec.last_pay else '',
+            (latest_note.get(rec.id) or '')[:200],
+        ])
+    from wxcloudrun.excel_style import style_header_row, apply_money_format, append_total_row, append_filter_snapshot
+    style_header_row(ws)
+    apply_money_format(ws, money_headers=('未收金额',))
+    append_total_row(ws, money_headers=('未收金额',))
+    ws.freeze_panes = 'A2'
+    from openpyxl.utils import get_column_letter
+    for i, _ in enumerate(headers, 1):
+        ws.column_dimensions[get_column_letter(i)].width = 14
+    ws.column_dimensions['J'].width = 40
+    append_filter_snapshot(wb, [
+        ('部门', dept), ('关键字', q), ('账龄段', bucket), ('销售对接人', contact),
+        ('导出行数', len(rows)),
+    ])
+    return _export_response(wb, '催款作战台_逾期清单.xlsx')
 
 
 @csrf_exempt

@@ -948,6 +948,11 @@ def advance_export(request):
     for rec in qs:
         st = rec.aging_dict(today)
         ws.append([getter(rec, st) for _, _, getter in columns])
+    from wxcloudrun.excel_style import apply_money_format, append_total_row
+    _money = ('预收/预付金额', '已核销金额', '未核销余额')
+    apply_money_format(ws, money_headers=_money)
+    append_total_row(ws, money_headers=_money)
+    ws.freeze_panes = 'A2'
     return _export_response(wb, '预收预付明细.xlsx')
 
 

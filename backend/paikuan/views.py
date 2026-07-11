@@ -3651,6 +3651,20 @@ def _approval_export_core(request, export_cap=5000):
                    _safe(o.g7_number), _safe(o.summary), _safe(o.notes), float(o.amount), sched,
                    max(0.0, float(o.amount) - sched), _safe(o.payee),
                    cn.get(o.status, o.status)])
+    from wxcloudrun.excel_style import apply_money_format, append_total_row, append_filter_snapshot
+    _money = ('申请金额', '已排款金额', '剩余可排')
+    apply_money_format(ws, money_headers=_money)
+    append_total_row(ws, money_headers=_money)
+    ws.freeze_panes = 'A2'
+    append_filter_snapshot(wb, [
+        ('部门', request.GET.get('dept', '')),
+        ('登记日期起', request.GET.get('start_date', '')),
+        ('登记日期止', request.GET.get('end_date', '')),
+        ('批量单号', request.GET.get('numbers', '')),
+        ('关键字', request.GET.get('q', '')),
+        ('列头筛选', request.GET.get('filters', '')),
+        ('导出行数', qs.count()),
+    ])
     return _build_excel_response(wb, '审批记录.xlsx')
 
 
@@ -4673,6 +4687,33 @@ def _payment_export_core(request, export_cap=5000):
         max_len = max((len(str(c.value or '')) for c in col), default=10)
         ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 32)
 
+    # 金额列会计格式（表头含 金额/(元)/已付/剩余）+ 冻结表头
+    from wxcloudrun.excel_style import MONEY_FMT
+    _hdrs = [c.value for c in ws[1]]
+    _money_idx = {i for i, h in enumerate(_hdrs, 1)
+                  if isinstance(h, str) and ('金额' in h or '(元)' in h or h in ('已付', '剩余'))}
+    for _row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        for _c in _row:
+            if _c.column in _money_idx and isinstance(_c.value, (int, float)):
+                _c.number_format = MONEY_FMT
+    ws.freeze_panes = 'A2'
+
+    from wxcloudrun.excel_style import append_filter_snapshot
+    append_filter_snapshot(wb, [
+        ('部门', request.GET.get('dept', '')),
+        ('状态', request.GET.get('status', '')),
+        ('隐藏已付清', '是' if request.GET.get('hide_settled') == '1' else ''),
+        ('计划日期起', request.GET.get('start_date', '')),
+        ('计划日期止', request.GET.get('end_date', '')),
+        ('付款日期起', request.GET.get('pay_date_start', '')),
+        ('付款日期止', request.GET.get('pay_date_end', '')),
+        ('G7/对账单号', request.GET.get('g7_number', '')),
+        ('批量单号', request.GET.get('numbers', '')),
+        ('仅重点', '是' if request.GET.get('priority') == '1' else ''),
+        ('关键字', request.GET.get('q', '')),
+        ('列头筛选', request.GET.get('filters', '')),
+        ('导出行数', total_count),
+    ])
     today = timezone.localdate().strftime('%Y%m%d')
     return _build_excel_response(wb, f'排款记录_{today}.xlsx')
 

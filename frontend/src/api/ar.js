@@ -23,6 +23,7 @@ const ar = {
   listPaymentLedger: p => api.get('/ar/records/payments', { params: p }),
   exportPaymentLedger: p => api.get('/ar/records/payments/export', { params: p, responseType: 'blob' }),
   collectionWorkbench: p => api.get('/ar/records/collection', { params: p }),
+  exportCollectionWorkbench: p => api.get('/ar/records/collection/export', { params: p, responseType: 'blob' }),
   createDunning: d => api.post('/ar/records/collection/dunning', d),
   // 筛选方案（私有/公共团队共享）
   listFilterSchemes: p => api.get('/ar/filter-schemes', { params: p }),

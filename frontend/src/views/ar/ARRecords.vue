@@ -888,6 +888,15 @@ async function loadDunning(reset = false) {
     dunSummary.value = res.data.summary
   } finally { if (seq === _dunSeq) dunLoading.value = false }
 }
+const dunExporting = ref(false)
+async function exportDunning() {
+  dunExporting.value = true
+  try {
+    const res = await ar.exportCollectionWorkbench({ ...dunFilters })
+    downloadBlob(res, '催款作战台_逾期清单.xlsx')
+  } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
+  finally { dunExporting.value = false }
+}
 function onDunSearch() {
   clearTimeout(dunQTimer)
   dunQTimer = setTimeout(() => loadDunning(true), 300)
@@ -2667,6 +2676,7 @@ function clearFilters() {
                    @input="onDunSearch" @keydown.esc.stop="clearDunSearch" />
             <button v-if="dunFilters.bucket || dunFilters.contact" class="dun-clear"
                     title="撤掉账龄段/责任人筛选" @click="clearDunFacets">✕ 清除筛选</button>
+            <button class="aging-cfg-btn" :disabled="dunExporting" title="按当前筛选导出逾期清单" @click="exportDunning">{{ dunExporting ? '导出中…' : '⬇ 导出清单' }}</button>
             <button v-if="auth.isSuperAdmin" class="aging-cfg-btn" title="配置账龄分桶边界" @click="openAgingCfg">⚙ 账龄分桶</button>
             <span v-if="dunSummary" class="text-sm-muted" style="margin-left:auto;white-space:nowrap">
               当前范围逾期 <strong>{{ dunSummary.count }}</strong> 笔 / <strong style="color:var(--c-danger)">{{ fmtAmt(dunSummary.amount) }}</strong>
