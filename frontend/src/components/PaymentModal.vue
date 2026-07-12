@@ -154,6 +154,14 @@ function addInstallment() {
     : 1
   installments.value.push({ seq: nextSeq, pay_date: '', pay_amount: '', notes: '' })
 }
+// 补齐快填：本期金额 = 付款目标 − 其余各期合计（点 chip 或在金额框按 =）
+function fillInstRemaining(idx) {
+  const others = installments.value.reduce((s, r, i) => (i === idx ? s : s + (parseFloat(r.pay_amount) || 0)), 0)
+  const v = Math.max(0, adjustedTarget.value - others)
+  installments.value[idx].pay_amount = v.toFixed(2)
+}
+function onInstAmtKeydown(e, idx) { if (e.key === '=') { e.preventDefault(); fillInstRemaining(idx) } }
+
 function removeInstallment(idx) {
   installments.value.splice(idx, 1)
   // Re-assign seq
@@ -469,9 +477,12 @@ async function submit() {
             <input v-model="inst.pay_date" type="date" :disabled="!editable('installments')" />
           </div>
           <div class="form-group inst-amt-grp">
-            <label>付款金额 (元)</label>
+            <label>付款金额 (元)
+              <button v-if="editable('installments') && adjustedTarget > 0" type="button" class="inst-fill-chip"
+                      title="填入 目标 − 其余各期合计（也可在金额框按 = 填入）" @click="fillInstRemaining(idx)">＝ 补齐</button>
+            </label>
             <input v-model="inst.pay_amount" type="number" min="0" step="0.01" placeholder="0.00"
-                   :disabled="!editable('installments')" />
+                   :disabled="!editable('installments')" @keydown="e => onInstAmtKeydown(e, idx)" />
           </div>
           <div class="form-group inst-notes-grp">
             <label>备注</label>
@@ -637,4 +648,11 @@ async function submit() {
 .btn-primary-xs:hover { opacity: 0.88; }
 .btn-primary-xs:disabled { opacity: 0.6; cursor: not-allowed; }
 .btn-danger-xs { }
+.inst-fill-chip {
+  display: inline-flex; align-items: center; margin-left: 6px;
+  border: 1px dashed rgba(46,125,50,0.55); background: rgba(46,125,50,0.07);
+  color: #2e7d32; border-radius: 7px; padding: 0 6px;
+  font-size: 10.5px; font-weight: 700; cursor: pointer;
+}
+.inst-fill-chip:hover { background: rgba(46,125,50,0.15); }
 </style>

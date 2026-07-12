@@ -630,6 +630,29 @@ const adjForm = reactive({ amount: '', reason: '', date: todayCST() })
 const adjBusy = ref(false)
 const adjTotal = computed(() =>
   adjList.value.reduce((s, a) => s + (parseFloat(a.amount) || 0), 0))
+
+// 差额智能建议：系统替用户算数——实际开票 − 上账 − 已有调整合计。
+// 差超过半分钱即在输入框旁显示建议值，点击或在金额框按「=」一键填入。
+const adjSuggest = computed(() => {
+  const inv = parseFloat(recForm.actual_invoice_amount)
+  const est = parseFloat(recForm.estimated_amount)
+  if (!isFinite(inv) || !isFinite(est)) return null
+  const v = +(inv - est - (editRec.value ? adjTotal.value : 0)).toFixed(2)
+  return Math.abs(v) < 0.005 ? null : v
+})
+const adjSuggestTitle = computed(() => {
+  if (adjSuggest.value == null) return ''
+  const inv = parseFloat(recForm.actual_invoice_amount), est = parseFloat(recForm.estimated_amount)
+  const adj = editRec.value ? `− 已调 ${adjTotal.value.toFixed(2)} ` : ''
+  return `开票 ${inv.toFixed(2)} − 上账 ${est.toFixed(2)} ${adj}= ${adjSuggest.value.toFixed(2)}；点击或在金额框按 = 填入`
+})
+function applyAdjSuggest() {
+  if (adjSuggest.value == null) return
+  const s = adjSuggest.value.toFixed(2)
+  if (editRec.value) adjForm.amount = s
+  else recForm.account_diff_adjustment = s
+}
+function onAdjKeydown(e) { if (e.key === '=') { e.preventDefault(); applyAdjSuggest() } }
 async function addAdjustment() {
   if (!parseFloat(adjForm.amount)) { toast.error('调整金额不能为0（可正可负）'); return }
   if (!adjForm.reason.trim()) { toast.error('请填写调整原因（如：运费差、客户扣款、补付）'); return }
@@ -680,6 +703,12 @@ const showPayModal = ref(false)
 const payRec = ref(null)
 const DRAFT_ST = DRAFT_STATUSES
 const payForm = reactive({ amount: '', payment_date: '', notes: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, counterparty_dept: '' })
+// 全额快填：整笔收清是最高频场景，点 chip 或在金额框按「=」直接填入未收余额
+function fillPayFull() {
+  const v = parseFloat(payRec.value?.outstanding_amount)
+  if (v > 0) payForm.amount = v.toFixed(2)
+}
+function onPayAmtKeydown(e) { if (e.key === '=') { e.preventDefault(); fillPayFull() } }
 const paySaving = ref(false)
 // 录入回款时联动：该项目可用预收（只读提示，便于判断是否以预收冲抵应收）
 const payAdvance = ref(null)
@@ -3021,8 +3050,13 @@ function clearFilters() {
               <!-- 新建：初始差额+原因；编辑：调整明细管理器（多次、各带原因金额） -->
               <template v-if="!editRec">
                 <label class="form-field">
-                  <span>差额调整（选填）</span>
-                  <input v-model="recForm.account_diff_adjustment" type="number" step="0.01" placeholder="可正可负" />
+                  <span>差额调整（选填）
+                    <button v-if="adjSuggest != null" type="button" class="adj-suggest-chip" :title="adjSuggestTitle"
+                            @click="applyAdjSuggest">＝ {{ adjSuggest > 0 ? '+' : '' }}{{ adjSuggest.toFixed(2) }}（开票−上账）</button>
+                  </span>
+                  <input v-model="recForm.account_diff_adjustment" type="number" step="0.01"
+                         :placeholder="adjSuggest != null ? `按 = 填入 ${adjSuggest.toFixed(2)}` : '可正可负'"
+                         @keydown="onAdjKeydown" />
                 </label>
                 <label class="form-field">
                   <span>差额原因</span>
@@ -3042,7 +3076,11 @@ function clearFilters() {
                 </div>
                 <div v-else class="adj-empty">暂无调整——金额与原因逐笔记录，可多次追加</div>
                 <div class="adj-add">
-                  <input v-model="adjForm.amount" type="number" step="0.01" placeholder="金额（可负）" class="adj-amt-inp" />
+                  <input v-model="adjForm.amount" type="number" step="0.01" class="adj-amt-inp"
+                         :placeholder="adjSuggest != null ? `按 = 填 ${adjSuggest.toFixed(2)}` : '金额（可负）'"
+                         @keydown="onAdjKeydown" />
+                  <button v-if="adjSuggest != null" type="button" class="adj-suggest-chip" :title="adjSuggestTitle"
+                          @click="applyAdjSuggest">＝ {{ adjSuggest > 0 ? '+' : '' }}{{ adjSuggest.toFixed(2) }} 补齐</button>
                   <input v-model="adjForm.date" type="date" class="adj-date-inp" title="调整日期：决定该笔差额归入哪个月/周" />
                   <input v-model="adjForm.reason" placeholder="原因（必填，如：运费差/客户扣款）" maxlength="200" class="adj-reason-inp" />
                   <button type="button" class="btn btn-ghost btn-sm" :disabled="adjBusy" @click="addAdjustment">
@@ -3411,9 +3449,12 @@ function clearFilters() {
               </label>
               <label class="form-field span2">
                 <span>{{ payForm.source === '内部往来' ? '核销金额' : '回款金额' }} <em>*</em>
-                  <i v-if="payRec" class="field-hint">未收上限 {{ fmtCell(payRec.outstanding_amount) }}</i>
+                  <button v-if="payRec && parseFloat(payRec.outstanding_amount) > 0" type="button" class="adj-suggest-chip"
+                          title="填入全部未收金额（也可在金额框按 = 填入）" @click="fillPayFull">＝ 全额 {{ fmtCell(payRec.outstanding_amount) }}</button>
+                  <i v-else-if="payRec" class="field-hint">未收上限 {{ fmtCell(payRec.outstanding_amount) }}</i>
                 </span>
-                <input v-model="payForm.amount" type="number" step="0.01" :max="payRec?.outstanding_amount" autofocus />
+                <input v-model="payForm.amount" type="number" step="0.01" :max="payRec?.outstanding_amount" autofocus
+                       @keydown="onPayAmtKeydown" />
                 <i v-if="payRec && parseFloat(payForm.amount) > parseFloat(payRec.outstanding_amount)" class="field-warn">超过未收 {{ fmtCell(payRec.outstanding_amount) }}，将被拒绝（多收部分请核实原因，并到差额调整录入或「预收预付」录入）</i>
               </label>
               <label class="form-field span2">
@@ -3989,6 +4030,15 @@ function clearFilters() {
 .adj-empty { font-size: 12px; color: var(--muted); padding: 6px 0; }
 .adj-add { display: flex; gap: 6px; margin-top: 4px; }
 .adj-add .adj-amt-inp { width: 120px; }
+/* 智能建议/快填 chip：系统替用户算好的数，点一下或按 = 填入 */
+.adj-suggest-chip {
+  display: inline-flex; align-items: center; margin-left: 8px;
+  border: 1px dashed rgba(46,125,50,0.55); background: rgba(46,125,50,0.07);
+  color: #2e7d32; border-radius: 8px; padding: 1px 8px;
+  font-size: 11px; font-weight: 700; cursor: pointer; white-space: nowrap;
+  transition: background .15s;
+}
+.adj-suggest-chip:hover { background: rgba(46,125,50,0.15); }
 .adj-add .adj-date-inp { width: 140px; }
 .adj-add .adj-reason-inp { flex: 1; }
 

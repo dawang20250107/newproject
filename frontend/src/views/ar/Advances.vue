@@ -1211,8 +1211,10 @@ onMounted(async () => {
             <span v-if="woForm.ar_record_id" class="wo-offset-tip">↳ 核销后自动生成「预收抵扣」回款，冲减应收未收余额（不计现金）</span>
           </div>
           <div class="wo-inputs">
-            <input v-model="woForm.amount" type="number" step="0.01" class="inp" placeholder="核销金额(元)"
-                   :class="{ 'inp-bad': woAmountOver }" />
+            <input v-model="woForm.amount" type="number" step="0.01" class="inp"
+                   :placeholder="Number(woRec.balance_amount) > 0 ? '核销金额(元)，按 = 填全额' : '核销金额(元)'"
+                   :class="{ 'inp-bad': woAmountOver }"
+                   @keydown="e => { if (e.key === '=') { e.preventDefault(); if (Number(woRec.balance_amount) > 0) woForm.amount = Number(woRec.balance_amount).toFixed(2) } }" />
             <button v-if="Number(woRec.balance_amount) > 0" type="button" class="wo-fill-chip"
                     title="填入未核销余额" @click="woForm.amount = Number(woRec.balance_amount).toFixed(2)">全额 ¥{{ fmtAmt(woRec.balance_amount) }}</button>
             <input v-model="woForm.writeoff_date" type="date" class="inp" />
