@@ -570,14 +570,30 @@ const cw = useColWidths('ar_records', {
 const colFilters = reactive({})    // field -> {op, value}
 const sortField = ref('')
 const sortOrder = ref('')          // 'asc' | 'desc' | ''
-// 运作日期区间预设条 → 写入列头筛选管线（operation_date between），与手动列筛选同源
+// 时间条：日期字段可切换——对账/开票/回款日期使用频率高于运作日期，
+// 不再写死。区间写入列头筛选管线（<字段> between），与手动列筛选同源；
+// 切换字段时把已选区间迁移过去，字段选择记忆在本机。
+const DATE_FIELD_OPTS = [
+  { key: 'reconciliation_date', label: '对账日期' },
+  { key: 'invoice_date', label: '开票日期' },
+  { key: 'payment_date', label: '回款日期' },
+  { key: 'operation_date', label: '运作日期' },
+  { key: 'due_date', label: '应收到期' },
+]
+const dateField = ref(localStorage.getItem('arr:datefield') || 'operation_date')
+let _barField = dateField.value   // 时间条当前作用的字段（区分于用户手动加的列头筛选）
 const opDateStart = ref('')
 const opDateEnd = ref('')
 function applyOpDateRange() {
-  if (!opDateStart.value && !opDateEnd.value) delete colFilters.operation_date
-  else colFilters.operation_date = { op: 'between', value: [opDateStart.value || '', opDateEnd.value || ''] }
+  if (!opDateStart.value && !opDateEnd.value) delete colFilters[_barField]
+  else colFilters[_barField] = { op: 'between', value: [opDateStart.value || '', opDateEnd.value || ''] }
   clearSelection()
   load(true)
+}
+function onDateFieldChange() {
+  localStorage.setItem('arr:datefield', dateField.value)
+  if (_barField !== dateField.value) { delete colFilters[_barField]; _barField = dateField.value }
+  applyOpDateRange()
 }
 // 部门枚举选项复用页面既有可访问部门列表
 function setColFilter(field, val) {
@@ -786,7 +802,7 @@ const COL_FILTER_LABELS = {
   actual_invoice_amount: '实际开票', tax_amount: '税额', reconciliation_status: '对账状态',
   reconciliation_date: '对账日期', invoice_status: '开票状态', invoice_date: '开票日期',
   invoice_batch_no: '批次号', due_date: '应收到期', target_collection_date: '目标回款',
-  outstanding_amount: '未收金额', status: '回款状态', notes: '备注',
+  outstanding_amount: '未收金额', status: '回款状态', notes: '备注', payment_date: '回款日期',
   account_diff_adjustment: '账实差额', responsibility: '责任状态',
 }
 const _OP_TEXT = { eq: '等于', contains: '包含', gt: '>', lt: '<', gte: '≥', lte: '≤', between: '区间', empty: '为空', not_empty: '非空' }
@@ -2081,7 +2097,7 @@ function clearFilters() {
   quickQ.value = ''
   // 一并清掉 Excel 风格列头筛选 + 列头排序
   Object.keys(colFilters).forEach(k => delete colFilters[k])
-  opDateStart.value = ''; opDateEnd.value = ''   // 复位运作日期区间条，避免时间条仍高亮旧区间
+  opDateStart.value = ''; opDateEnd.value = ''   // 复位时间条区间，避免仍高亮旧区间
   sortField.value = ''
   sortOrder.value = ''
   onFilterChange()
@@ -2269,8 +2285,12 @@ function clearFilters() {
     <div class="card" :class="['density-' + density, { 'data-reloading': loading && items.length, 'pane-mode': activeTab === 'dunning' || activeTab === 'payments' }]">
       <!-- 运作日期区间预设条：写入列头筛选管线（operation_date between），列表/汇总/导出全联动 -->
       <div v-if="isDataTab" class="arr-timebar">
+        <select v-model="dateField" class="arr-datefield-sel" title="切换时间条按哪个日期字段筛选（选择会被记住）"
+                @change="onDateFieldChange">
+          <option v-for="o in DATE_FIELD_OPTS" :key="o.key" :value="o.key">{{ o.label }}</option>
+        </select>
         <DateRangeChips v-model:start="opDateStart" v-model:end="opDateEnd"
-                        label="运作日期" initial="all" @change="applyOpDateRange" />
+                        label="" initial="all" @change="applyOpDateRange" />
       </div>
       <!-- 合并指标条：左侧=本Tab进度/重点；右侧=当前筛选全集合计 -->
       <div v-if="isDataTab && (kpiData || summaryData)" class="metrics-bar">
@@ -3828,7 +3848,12 @@ function clearFilters() {
 
 /* KPI bar */
 .metrics-bar { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; overflow-x: auto; margin-bottom: 4px; padding: 5px 10px; background: rgba(0,0,0,0.02); border-radius: 8px; flex-shrink: 0; }
-.arr-timebar { padding: 2px 0 6px; flex-shrink: 0; }
+.arr-timebar { padding: 2px 0 6px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+.arr-datefield-sel {
+  flex-shrink: 0; border: 1px solid rgba(150,120,100,0.3); border-radius: 8px;
+  background: var(--row-bg, #fff); padding: 3px 6px; font-size: 12px; font-weight: 600;
+  color: var(--text); cursor: pointer;
+}
 .bp-overflow { font-size: 12.5px; color: var(--text-2); padding: 8px 10px; border-radius: 8px;
   border: 1px dashed var(--border); transition: border-color .15s, background .15s; }
 .bp-overflow.hot { border-color: var(--amber-deep, #f57f17); background: rgba(245,127,23,.05); }

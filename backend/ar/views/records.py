@@ -22,6 +22,8 @@ ARRECORD_FILTER_REGISTRY = {
     'due_date':           {'type': 'date', 'col': 'due_date'},
     'invoice_date':       {'type': 'date', 'col': 'invoice_date'},
     'reconciliation_date':{'type': 'date', 'col': 'reconciliation_date'},
+    # 回款日期（回款子表反向 JOIN：筛「区间内发生过回款」的记录，需 distinct）
+    'payment_date':       {'type': 'date', 'col': 'payments__payment_date', 'multi': True},
     'target_collection_date': {'type': 'date', 'col': 'target_collection_date'},
     # 数值（均为真实存储 DecimalField，非注解/计算）
     'estimated_amount':       {'type': 'number', 'col': 'estimated_amount'},
