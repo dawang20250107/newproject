@@ -125,6 +125,7 @@ urlpatterns = [
 
     # 资金池 (cash pool)
     path('pool', views.cash_pool),
+    path('pool/monthly', views.cash_pool_monthly),
     path('pool/config', views.cash_pool_config),
     path('pool/transfers', views.cash_pool_transfers),
     path('pool/transfers/<int:pk>', views.cash_pool_transfer_detail),

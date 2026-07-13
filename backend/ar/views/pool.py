@@ -71,6 +71,48 @@ def _pool_balance(dept, cfg, today):
     return cfg.initial_amount + c + ar_ + daily - p - ap + ti - to_
 
 
+def _month_end(d):
+    """d 所在自然月的最后一天。"""
+    if d.month == 12:
+        return d.replace(day=31)
+    return d.replace(month=d.month + 1, day=1) - datetime.timedelta(days=1)
+
+
+def _pool_monthly(dept, cfg, today):
+    """逐月收支台账：从期初日所在月到今天，每月 期初→各项收支→期末，滚动结转。
+    收支各项与 _pool_actual_flows / _pool_balance 完全同口径（含未兑付承兑排除、
+    预收预付按分期收付日期、调拨仅计 approved），故逐月期末与总余额、与现金流逐月
+    可对平。窗口边界 (b_i, b_{i+1}] 与 _pool_actual_flows 的排他起点一致，不重不漏。"""
+    start = cfg.initial_date
+    # 边界序列：期初日 → 各月末 → 今天；相邻两点构成一个月的 (排他, 含) 窗口
+    bounds = [start]
+    cur = _month_end(start)
+    while cur < today:
+        bounds.append(cur)
+        nxt = cur + datetime.timedelta(days=1)   # 下月 1 号
+        cur = _month_end(nxt)
+    bounds.append(today)
+
+    months = []
+    opening = cfg.initial_amount
+    for i in range(len(bounds) - 1):
+        w_start, w_end = bounds[i], bounds[i + 1]
+        c, ar_, p, po, ap, ti, to_, daily = _pool_actual_flows(dept, w_start, w_end)
+        net = c + ar_ + daily - p - ap + ti - to_
+        closing = opening + net
+        months.append({
+            'ym': w_end.strftime('%Y-%m'),
+            'opening': str(opening),
+            'collected': str(c), 'daily': str(daily), 'adv_recv': str(ar_),
+            'paid': str(p), 'adv_paid': str(ap),
+            'transfer_in': str(ti), 'transfer_out': str(to_),
+            'prepaid_offset': str(po),   # 展示备注：非现金，不入 net
+            'net': str(net), 'closing': str(closing),
+        })
+        opening = closing
+    return months
+
+
 def _pool_metrics(dept, cfg, today):
     """单个池子的全部指标：账面余额、资金预警线、刚性/在途流出、预期流入、余额预测。"""
     start = cfg.initial_date
@@ -249,6 +291,39 @@ def cash_pool(request):
         }
     return ok({'pools': pools, 'group': group, 'is_full_scope': is_full_scope,
                'today': str(today)})
+
+
+@csrf_exempt
+@pk_required()
+def cash_pool_monthly(request):
+    """单个池子的逐月收支台账（按需加载，供卡片展开）：期初→收支各项→期末滚动结转，
+    与现金流分析逐月同口径可对平。入参 dept。"""
+    denied = _page_denied(request, 'ar_cashflow')
+    if denied:
+        return denied
+    dept = (request.GET.get('dept') or '').strip()
+    if not dept:
+        return err('缺少事业部参数')
+    if dept not in _pool_visible_depts(request):
+        return err('无权查看该事业部资金池', 403)
+    try:
+        cfg = CashPoolConfig.objects.get(delivery_dept=dept)
+    except CashPoolConfig.DoesNotExist:
+        return err('该事业部尚未配置资金池期初', 404)
+    today = timezone.localdate()
+    try:
+        months = _pool_monthly(dept, cfg, today)
+    except Exception as exc:
+        import traceback
+        logger.error('cash_pool_monthly failed dept=%s: %s\n%s', dept, exc, traceback.format_exc())
+        return err(f'月度台账计算失败：{exc}', 500)
+    return ok({
+        'dept': dept,
+        'initial_date': str(cfg.initial_date),
+        'initial_amount': str(cfg.initial_amount),
+        'months': months,
+        'today': str(today),
+    })
 
 
 @csrf_exempt

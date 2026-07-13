@@ -202,6 +202,7 @@ const ar = {
 
   // 资金池 (cash pool)
   cashPool: p => api.get('/ar/pool', { params: p }),
+  poolMonthly: dept => api.get('/ar/pool/monthly', { params: { dept } }),
   poolConfigs: () => api.get('/ar/pool/config'),
   savePoolConfig: d => api.post('/ar/pool/config', d),
   listPoolTransfers: () => api.get('/ar/pool/transfers'),

@@ -4935,6 +4935,54 @@ class BulkSetDateTests(TestCase):
         self.r1.refresh_from_db()
         self.assertEqual(self.r1.operation_date, date(2026, 5, 1))
 
+class CashPoolMonthlyTests(TestCase):
+    """资金池逐月台账：每月期初→收支→期末滚动结转，末月期末=总账面余额；
+    收支各项与现金流分析逐月同口径可对平。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900002300', name='PoolMonthly', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456'); admin.save()
+        self.token = make_token(admin)
+        from ar.models import CashPoolConfig
+        CashPoolConfig.objects.create(delivery_dept=self.dept,
+                                      initial_date=date(2026, 1, 1),
+                                      initial_amount=Decimal('10000'))
+        proj = ARProject.objects.create(customer_name='池月客户', short_name='池月项目',
+                                        delivery_dept=self.dept, sales_contact='S', project_manager='M')
+        rec = ARRecord.objects.create(project=proj, operation_year=2026, operation_month=2,
+                                      estimated_amount=Decimal('9999'),
+                                      actual_invoice_amount=Decimal('9999'), invoice_date=date(2026, 2, 1))
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('2000'),
+                                 payment_date=date(2026, 2, 10), source='回款', method='银行转账')
+        ARPayment.objects.create(ar_record=rec, payment_no=2, amount=Decimal('1500'),
+                                 payment_date=date(2026, 3, 10), source='回款', method='银行转账')
+        ARPayment.objects.create(ar_record=rec, payment_no=3, amount=Decimal('800'),
+                                 payment_date=date(2026, 3, 12), source='回款',
+                                 method='承兑汇票', draft_status='未承兑')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_monthly_rolls_and_reconciles(self):
+        r = self.client.get('/api/pk/ar/pool/monthly', {'dept': self.dept}, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        rows = r.json()['data']['months']
+        months = {m['ym']: m for m in rows}
+        self.assertEqual(Decimal(months['2026-01']['opening']), Decimal('10000'))
+        self.assertEqual(Decimal(months['2026-01']['closing']), Decimal('10000'))
+        self.assertEqual(Decimal(months['2026-02']['collected']), Decimal('2000'))
+        self.assertEqual(Decimal(months['2026-02']['closing']), Decimal('12000'))
+        self.assertEqual(Decimal(months['2026-03']['collected']), Decimal('1500'))
+        self.assertEqual(Decimal(months['2026-03']['opening']), Decimal('12000'))
+        self.assertEqual(Decimal(months['2026-03']['closing']), Decimal('13500'))
+        for a, b in zip(rows, rows[1:]):
+            self.assertEqual(a['closing'], b['opening'])
+
+
 class CashflowDraftBillParityTests(TestCase):
     """未兑付承兑汇票现金口径：现金流分析与资金池同口径——都排除持票未兑付的承兑，
     到「已承兑」才计入。避免用户对账时现金流回款 ≠ 资金池回款（应只差期初）。"""
