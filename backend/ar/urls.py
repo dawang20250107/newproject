@@ -50,6 +50,7 @@ urlpatterns = [
     path('records/health', views.ar_data_health),
     path('records/recompute', views.ar_records_recompute_bulk),
     path('records/bulk-assign-collector', views.ar_records_bulk_assign_collector),
+    path('records/bulk-set-date', views.ar_records_bulk_set_date),
     path('records/bulk-delete', views.ar_records_bulk_delete),
     path('records/trash', views.ar_records_trash),
     path('records/<int:pk>', views.ar_record_detail),

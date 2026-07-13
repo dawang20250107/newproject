@@ -2,7 +2,7 @@
 import { onActivated } from 'vue'
 import { confirmDlg } from '../composables/confirm.js'
 import { resultDlg } from '../composables/bulkResult.js'
-import { ref, reactive, onMounted, onBeforeUnmount, computed, watch } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, computed, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
@@ -33,6 +33,7 @@ import { cachedGet } from '../api/refCache.js'
 import { useFileDrop } from '../composables/useFileDrop.js'
 import { useEscClearSelection } from '../composables/useEscClearSelection.js'
 import { useModalEsc } from '../composables/useModalEsc.js'
+import { useModalEnter } from '../composables/useModalEnter.js'
 const toast = useToast()
 
 // ── 桌面拖拽导入：普通导入 / 运输导入 双落区 ────────────────────────────────
@@ -579,11 +580,13 @@ async function load(){
 function search(){ page.value=1; clearSelection(); load() }
 function setPage(p){ page.value=p; load() }
 async function loadDepts(){ try{const r=await cachedGet('/departments'); depts.value=r.data}catch{}}
-function openCreate(){ editId.value=null; Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', notes:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
+// C3: 新增弹窗打开即聚焦首个可编辑字段（申请人），省一次点击；编辑回填场景不抢焦点
+const applicantInputRef = ref(null)
+function openCreate(){ editId.value=null; Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', notes:'', amount:'', payee:'', status:'pending' }); showCreate.value=true; nextTick(() => applicantInputRef.value?.focus()) }
 // 编辑：复用新增弹窗，回填后改走 PUT。已归档（已排款/已拒绝/已撤销）记录为终态不可编辑，
 // 仅金额、状态等受后端口径约束（金额仅「待审批」可改、审批/拒绝须审批权限），后端会兜底校验
 function openEdit(it){ editId.value=it.id; Object.assign(form,{ applicant:it.applicant||'', department:it.department||'', secondary_dept:it.secondary_dept||'', project_short_name:it.project_short_name||'', approval_number:it.approval_number||'', g7_number:it.g7_number||'', summary:it.summary||'', notes:it.notes||'', amount:it.amount||'', payee:it.payee||'', status:it.status||'pending' }); showCreate.value=true }
-async function create(){ saving.value=true; try{ if(editId.value){ await api.put(`/approvals/${editId.value}`, form) } else { await api.post('/approvals', form) } showCreate.value=false; load(); toast.success('已保存') } catch(e){ toast.error(e?.msg||e?.error||'操作失败') } finally{ saving.value=false } }
+async function create(){ if(saving.value) return; saving.value=true; try{ if(editId.value){ await api.put(`/approvals/${editId.value}`, form) } else { await api.post('/approvals', form) } showCreate.value=false; load(); toast.success('已保存') } catch(e){ toast.error(e?.msg||e?.error||'操作失败') } finally{ saving.value=false } }
 // 双击行 → 编辑（点在勾选框/状态下拉等控件上不触发；已归档不可编辑）
 function onRowDblClick(it, e){
   if (e.target.closest('input, button, select, textarea, a')) return
@@ -847,6 +850,10 @@ useModalEsc(
   [() => showBatchSched.value, () => (showBatchSched.value = false)],
   [() => showDelConfirm.value, () => (showDelConfirm.value = false)],
 )
+// C2: 弹窗 Ctrl/Cmd+Enter 提交（与 Esc 关闭配对）：各自只在对应弹窗打开时触发；
+// 防重由 handler 自身的 saving/schedBusy 守卫兜底
+useModalEnter(() => showCreate.value, create)
+useModalEnter(() => showSchedule.value, doSchedule)
 
 defineOptions({ name: 'ApprovalRecordsPage' })
 // keep-alive 返回本页:DOM 秒开,数据静默刷新(items 未清,列表不闪骨架)。
@@ -1094,7 +1101,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       申请金额仅「待审批」状态可改（已审批请先退回待审批）；设为「审批通过/已拒绝」需审批权限；已排款/已归档记录不可在此编辑。
     </p>
     <div class="form-grid">
-    <label class="form-field"><span>申请人*</span><input v-model="form.applicant"/></label>
+    <label class="form-field"><span>申请人*</span><input ref="applicantInputRef" v-model="form.applicant"/></label>
     <label class="form-field"><span>所属事业部*</span><select v-model="form.department"><option v-for="d in deptChoices" :key="d" :value="d">{{d}}</option></select></label>
     <label class="form-field"><span>二级部门</span><input v-model="form.secondary_dept" placeholder="选填，如：华东项目部"/></label>
     <label class="form-field"><span>项目简称</span><ProjectShortNamePicker v-model="form.project_short_name" @picked="p => onProjPicked(p, form)"/></label>

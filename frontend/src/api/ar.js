@@ -72,6 +72,8 @@ const ar = {
 
   // 批量分配催收人
   bulkAssignCollector: (body, params) => api.post('/ar/records/bulk-assign-collector', body, { params }),
+  // 批量指定日期：body {field, date, ids|all}；all 模式当前筛选走 params（与批量分配同契约）
+  bulkSetDate: (body, params) => api.post('/ar/records/bulk-set-date', body, { params }),
 
   // 账龄分桶配置
   getAgingConfig: () => api.get('/ar/aging-config'),

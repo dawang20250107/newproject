@@ -28,6 +28,7 @@ import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import { loadPref, savePref } from '../../utils/prefs.js'
 import { useModalEsc } from '../../composables/useModalEsc.js'
+import { useModalEnter } from '../../composables/useModalEnter.js'
 // 重型抽屉/弹窗按需加载：仅打开活动抽屉 / 导入预检时才拉取其代码块，
 // 大幅瘦身应收明细主路由块（ActivityPanel 单文件 1.7k 行）。
 const ActivityPanel = defineAsyncComponent(() => import('../../components/ar/ActivityPanel.vue'))
@@ -523,6 +524,38 @@ async function doBulkAssignCollector() {
   } finally { collectorAssigning.value = false }
 }
 
+// ── B2 批量设日期：对账/开票/目标回款日期一把改 ─────────────────────────────
+// 与批量分配催收人同一 ids/跨页全选(all+scopedParams) 口径；date 传 null 表示清空该日期
+const showBulkDate = ref(false)
+const BULK_DATE_FIELDS = [
+  { key: 'reconciliation_date', label: '对账日期' },
+  { key: 'invoice_date', label: '开票日期' },
+  { key: 'target_collection_date', label: '目标回款日期' },
+]
+const bulkDateField = ref('reconciliation_date')
+const bulkDateValue = ref('')
+const bulkDateBusy = ref(false)
+async function doBulkSetDate(clear = false) {
+  if (!clear && !bulkDateValue.value) { toast.error('请选择日期'); return }
+  bulkDateBusy.value = true
+  try {
+    const body = { field: bulkDateField.value, date: clear ? null : bulkDateValue.value }
+    let res
+    if (selectAllMatching.value) {
+      res = await ar.bulkSetDate({ all: true, ...body }, buildParams(scopedParams()))
+    } else {
+      res = await ar.bulkSetDate({ ids: [...selectedIds.value], ...body })
+    }
+    const lbl = BULK_DATE_FIELDS.find(f => f.key === bulkDateField.value)?.label || '日期'
+    toast.success(`已为 ${res.data?.updated ?? selectedCount.value} 条记录${clear ? '清空' : '设置'}${lbl}`)
+    showBulkDate.value = false
+    bulkDateValue.value = ''
+    clearSelection()
+    await load(true)
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
+  } finally { bulkDateBusy.value = false }
+}
+
 // ── 账龄分桶配置 ──────────────────────────────────────────────────────────────
 const showAgingCfgModal = ref(false)
 const agingCfgForm = reactive({ bucket1: 30, bucket2: 60, bucket3: 90 })
@@ -640,6 +673,10 @@ function focusRecModal() {
   nextTick(() => recModalBody.value?.querySelector('input:not([disabled]):not([type="date"])')?.focus())
 }
 const saving = ref(false)
+// B1a 连续录入：同一项目多期应收逐条录时，「保存并继续」不关弹窗——
+// 保留项目/搜索词/运作日期上下文，焦点直达金额框；计数在重新打开弹窗时归零
+const estAmtInput = ref(null)
+let contSaveCount = 0
 const recForm = reactive({
   project_id: '', operation_date: todayCST(),
   estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
@@ -744,6 +781,8 @@ function applyPayLast(form) {
   if (last.method === '承兑汇票' && DRAFT_STATUSES.includes(last.draft_status)) form.draft_status = last.draft_status
 }
 const paySaving = ref(false)
+// B1b 保存并录下一笔：批量过回款单时焦点直达金额框（弹窗不重开，autofocus 不再触发）
+const payAmtInput = ref(null)
 // 录入回款时联动：该项目可用预收（只读提示，便于判断是否以预收冲抵应收）
 const payAdvance = ref(null)
 const expandedPayments = ref({})
@@ -784,6 +823,39 @@ function onPanelClose() {
   panelRec.value = null
   if (dunPanelDirty && activeTab.value === 'dunning') loadDunning()
   dunPanelDirty = false
+}
+
+// ── B3 行内快改：对账/开票/目标回款日期双击即改 ──────────────────────────────
+// 免开编辑弹窗改一个日期。同一时刻只有一个格在编辑（共用一个 inlineEdit 状态）；
+// Enter/失焦保存、Esc 取消；保存走 quick-edit 端点（不触发全量重算），
+// 回传字段与 onPanelFieldSaved 同法就地合并回行，派生列不整表刷新。
+const inlineEdit = reactive({ id: 0, field: '', value: '', saving: false })
+function startInlineEdit(rec, field) {
+  window.getSelection?.()?.removeAllRanges?.()   // 清掉双击产生的文字选区
+  // 无写权限时保持与整行双击一致：打开催款工作台，不进入编辑态
+  if (!auth.canArWrite) { panelRec.value = rec; return }
+  inlineEdit.id = rec.id
+  inlineEdit.field = field
+  inlineEdit.value = rec[field] || ''
+  nextTick(() => document.querySelector('.qe-inp')?.focus())
+}
+function cancelInlineEdit() { inlineEdit.id = 0; inlineEdit.field = '' }
+async function commitInlineEdit(rec) {
+  // Enter 提交后随即触发 blur：id 已清零/保存中直接返回，避免重复提交
+  if (!inlineEdit.id || inlineEdit.saving) return
+  const field = inlineEdit.field
+  const val = inlineEdit.value || null
+  if ((rec[field] || '') === (val || '')) { cancelInlineEdit(); return }
+  inlineEdit.saving = true
+  try {
+    const res = await ar.quickEdit(rec.id, { [field]: val })
+    const data = res.data || {}
+    for (const k in data) { if (k !== 'id') rec[k] = data[k] }
+    if (!(field in data)) rec[field] = val   // 端点未回传该字段时前端兜底
+    // 保存期间用户可能已双击进入另一格：仅当状态仍指向本格时才收起，勿误关新编辑
+    if (inlineEdit.id === rec.id && inlineEdit.field === field) cancelInlineEdit()
+  } catch (e) { toast.error(e?.msg || e?.error || '保存失败') }
+  finally { inlineEdit.saving = false }
 }
 
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
@@ -1481,6 +1553,7 @@ function drillIntoGroup(row) {
 
 function openCreate() {
   editRec.value = null
+  contSaveCount = 0   // 弹窗全新打开，连续保存计数归零
   Object.assign(recForm, {
     project_id: '',
     operation_date: todayCST(),
@@ -1677,7 +1750,8 @@ async function undoBatchPay(b, ev) {
   finally { batchActing.value = false }
 }
 
-async function saveRec() {
+// andContinue=true（仅新建态）：保存成功后不关弹窗，进入连续录入
+async function saveRec(andContinue = false) {
   if (!recForm.project_id) { toast.error('请选择项目'); return }
   saving.value = true
   try {
@@ -1699,7 +1773,21 @@ async function saveRec() {
     }
     if (editRec.value) await ar.updateRecord(editRec.value.id, payload)
     else await ar.createRecord(payload)
-    showModal.value = false; await load()
+    if (andContinue && !editRec.value) {
+      // 保存并继续：保留 项目/项目搜索词/运作日期（同项目连录多期账最常见），
+      // 清空金额类/开票/税额/开票与对账日期/差额/批次号/备注，焦点回到金额框
+      contSaveCount += 1
+      Object.assign(recForm, {
+        estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
+        invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
+        adjustment_reason: '', invoice_batch_no: '', notes: '',
+      })
+      toast.success(`已连续保存 ${contSaveCount} 条`)
+      nextTick(() => estAmtInput.value?.focus())
+      await load()
+    } else {
+      showModal.value = false; await load()
+    }
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { saving.value = false }
 }
@@ -1902,7 +1990,8 @@ function gotoAdvance() {
   router.push({ path: '/ar/advances', query: { project_id: pid, direction: '预收' } })
 }
 
-async function savePayment() {
+// andNext=true：保存成功后弹窗不关，跳到当前列表中下一条未结清应收（批量过单）
+async function savePayment(andNext = false) {
   if (!payForm.amount || !payForm.payment_date) { toast.error('金额和日期必填'); return }
   if (payForm.source === '内部往来' && !payForm.counterparty_dept) {
     toast.error('内部往来核销请选择往来部门'); return
@@ -1919,7 +2008,27 @@ async function savePayment() {
     // 只有「回款」带方式/账户，内部往来核销不覆盖已记住的回款习惯
     if (isColl) savePref('ar_pay_last', { method: payForm.method, account: payForm.account, draft_status: payForm.draft_status })
     toast.success(payForm.source === '内部往来' ? '内部往来核销已保存' : '回款已保存')
-    showPayModal.value = false; await load()
+    if (andNext) {
+      // 先在刷新前的列表快照里定位下一条未结清（刷新后本条可能因结清被过滤掉、索引失效），
+      // 列表口径与工作台「下一条」同源（_panelList）；跳转前用刷新后的行替换以取最新未收
+      const list = _panelList()
+      const i = list.findIndex(r => r.id === payRec.value.id)
+      const nx = list.slice(i + 1).find(r => parseFloat(r.outstanding_amount) > 0)
+      await load()
+      if (!nx) {
+        showPayModal.value = false
+        toast.success('列表中已无下一条未结清记录，已收尾关闭')
+      } else {
+        payRec.value = items.value.find(r => r.id === nx.id) || nx
+        // 日期/方式/账户沿用本次值（同一批回款单常为同日同账户），金额/备注清空
+        payForm.amount = ''; payForm.notes = ''
+        payAdvance.value = null; advWoSel.value = null
+        loadPayAdvance(payRec.value)
+        nextTick(() => payAmtInput.value?.focus())
+      }
+    } else {
+      showPayModal.value = false; await load()
+    }
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { paySaving.value = false }
 }
@@ -2070,6 +2179,11 @@ useModalEsc(
   [() => showDelConfirm.value, () => (showDelConfirm.value = false)],
   [() => dunFollow.open, () => (dunFollow.open = false)],
 )
+
+// C2 Ctrl/Cmd+Enter 提交最高频的两个录入弹窗（多字段表单不用裸 Enter，防误触）；
+// 两弹窗互斥打开，无需分层判断；busy 态直接忽略组合键，防连击重复提交
+useModalEnter(() => showModal.value, () => { if (!saving.value) saveRec() })
+useModalEnter(() => showPayModal.value, () => { if (!paySaving.value) savePayment() })
 
 defineOptions({ name: 'ARRecordsPage' })
 // keep-alive 返回本页:DOM 秒开,数据静默刷新(items 未清,列表不闪骨架)。
@@ -2402,6 +2516,22 @@ function clearFilters() {
           </button>
           <button class="btn btn-ghost btn-sm" @click="showCollectorAssign = false; collectorInput = ''">取消</button>
         </template>
+        <template v-if="auth.canArWrite && !showBulkDate">
+          <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="showBulkDate = true">
+            批量设日期
+          </button>
+        </template>
+        <template v-if="showBulkDate">
+          <select v-model="bulkDateField" class="bulk-date-sel" title="选择要批量修改的日期字段">
+            <option v-for="f in BULK_DATE_FIELDS" :key="f.key" :value="f.key">{{ f.label }}</option>
+          </select>
+          <input v-model="bulkDateValue" type="date" class="bulk-date-inp" />
+          <button class="btn btn-primary btn-sm" :disabled="bulkDateBusy" @click="doBulkSetDate(false)">
+            {{ bulkDateBusy ? '…' : '应用' }}
+          </button>
+          <button class="btn btn-ghost btn-sm" :disabled="bulkDateBusy" title="清空所选记录的该日期字段" @click="doBulkSetDate(true)">清空</button>
+          <button class="btn btn-ghost btn-sm" @click="showBulkDate = false; bulkDateValue = ''">取消</button>
+        </template>
         <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">
           {{ bulkDeleting ? '删除中…' : `删除选中(${selectedCount})` }}
         </button>
@@ -2587,7 +2717,13 @@ function clearFilters() {
                   <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtCell(rec.account_diff_adjustment) : '—' }}</td>
                   <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
                   <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.due_date || '—' }}</td>
-                  <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.target_collection_date || '—' }}</td>
+                  <td v-if="show('r_due_date')" class="ctr text-sm-muted" :class="{ 'qe-cell': auth.canArWrite }"
+                    :title="auth.canArWrite ? '双击修改' : undefined" @dblclick.stop="startInlineEdit(rec, 'target_collection_date')">
+                    <input v-if="inlineEdit.id === rec.id && inlineEdit.field === 'target_collection_date'" v-model="inlineEdit.value"
+                      type="date" class="qe-inp" @blur="commitInlineEdit(rec)"
+                      @keydown.enter.prevent="commitInlineEdit(rec)" @keydown.esc.stop="cancelInlineEdit" />
+                    <template v-else>{{ rec.target_collection_date || '—' }}</template>
+                  </td>
                   <td v-if="show('r_reconciliation')" class="ctr">
                     <span :class="['status-pill', rec.reconciliation_status !== '未对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status === '已对账' ? '✓ 已对账' : rec.reconciliation_status === '已结清' ? '✓ 已结清' : '○ 未对账' }}</span>
                   </td>
@@ -2626,7 +2762,13 @@ function clearFilters() {
                   <td v-if="show('r_reconciliation')" class="ctr">
                     <span :class="['status-pill', rec.reconciliation_status !== '未对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status === '已对账' ? '✓ 已对账' : rec.reconciliation_status === '已结清' ? '✓ 已结清' : '○ 未对账' }}</span>
                   </td>
-                  <td v-if="show('r_reconciliation')" class="ctr text-sm-muted">{{ rec.reconciliation_date || '—' }}</td>
+                  <td v-if="show('r_reconciliation')" class="ctr text-sm-muted" :class="{ 'qe-cell': auth.canArWrite }"
+                    :title="auth.canArWrite ? '双击修改' : undefined" @dblclick.stop="startInlineEdit(rec, 'reconciliation_date')">
+                    <input v-if="inlineEdit.id === rec.id && inlineEdit.field === 'reconciliation_date'" v-model="inlineEdit.value"
+                      type="date" class="qe-inp" @blur="commitInlineEdit(rec)"
+                      @keydown.enter.prevent="commitInlineEdit(rec)" @keydown.esc.stop="cancelInlineEdit" />
+                    <template v-else>{{ rec.reconciliation_date || '—' }}</template>
+                  </td>
                   <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.due_date || '—' }}</td>
                   <td class="ctr">
                     <span v-if="rec.is_overdue" class="status-pill pill-danger">逾期{{ rec.overdue_days }}天</span>
@@ -2646,7 +2788,13 @@ function clearFilters() {
                   <td v-if="show('r_estimated_amount')" class="amt text-muted">{{ fmtCell(rec.estimated_amount) }}</td>
                   <td v-if="show('r_actual_invoice_amount')" class="amt fw">{{ rec.actual_invoice_amount ? fmtCell(rec.actual_invoice_amount) : '—' }}</td>
                   <td v-if="show('r_tax_amount')" class="amt text-muted">{{ rec.tax_amount ? fmtCell(rec.tax_amount) : '—' }}</td>
-                  <td v-if="show('r_invoice_date')" class="ctr text-sm-muted">{{ rec.invoice_date || '—' }}</td>
+                  <td v-if="show('r_invoice_date')" class="ctr text-sm-muted" :class="{ 'qe-cell': auth.canArWrite }"
+                    :title="auth.canArWrite ? '双击修改' : undefined" @dblclick.stop="startInlineEdit(rec, 'invoice_date')">
+                    <input v-if="inlineEdit.id === rec.id && inlineEdit.field === 'invoice_date'" v-model="inlineEdit.value"
+                      type="date" class="qe-inp" @blur="commitInlineEdit(rec)"
+                      @keydown.enter.prevent="commitInlineEdit(rec)" @keydown.esc.stop="cancelInlineEdit" />
+                    <template v-else>{{ rec.invoice_date || '—' }}</template>
+                  </td>
                   <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtCell(rec.account_diff_adjustment) : '—' }}</td>
                   <td v-if="show('r_invoice_status')" class="ctr">
                     <span :class="['status-pill', rec.invoice_status === '已结清' ? 'pill-ok' : rec.invoice_status === '部分回款' ? 'pill-blue' : rec.invoice_status === '已开票' ? 'pill-warn' : 'pill-muted']">{{ rec.invoice_status === '已开票' ? '✓ 已开票' : rec.invoice_status === '未开票' ? '○ 未开票' : rec.invoice_status }}</span>
@@ -3071,7 +3219,7 @@ function clearFilters() {
               </label>
               <label class="form-field">
                 <span>预估上账金额</span>
-                <input v-model="recForm.estimated_amount" type="number" step="0.01" />
+                <input ref="estAmtInput" v-model="recForm.estimated_amount" type="number" step="0.01" />
               </label>
               <label class="form-field">
                 <span>实际开票金额</span>
@@ -3146,7 +3294,11 @@ function clearFilters() {
           </div>
           <div class="modal-footer">
             <button class="btn btn-ghost" @click="showModal = false">取消</button>
-            <button class="btn btn-primary" :disabled="saving" @click="saveRec">{{ saving ? '保存中…' : '保存' }}</button>
+            <!-- B1a 连续录入：仅新建态提供——保存后弹窗不关，保留项目/运作日期连录下一条 -->
+            <button v-if="!editRec" class="btn btn-ghost" :disabled="saving"
+              title="保存后不关窗：保留项目与运作日期，清空金额/日期等字段，连续录入下一条"
+              @click="saveRec(true)">{{ saving ? '…' : '保存并继续' }}</button>
+            <button class="btn btn-primary" :disabled="saving" @click="saveRec()">{{ saving ? '保存中…' : '保存' }}</button>
           </div>
         </div>
       </div>
@@ -3499,7 +3651,7 @@ function clearFilters() {
                           title="填入全部未收金额（也可在金额框按 = 填入）" @click="fillPayFull">＝ 全额 {{ fmtCell(payRec.outstanding_amount) }}</button>
                   <i v-else-if="payRec" class="field-hint">未收上限 {{ fmtCell(payRec.outstanding_amount) }}</i>
                 </span>
-                <input v-model="payForm.amount" type="number" step="0.01" :max="payRec?.outstanding_amount" autofocus
+                <input ref="payAmtInput" v-model="payForm.amount" type="number" step="0.01" :max="payRec?.outstanding_amount" autofocus
                        @keydown="onPayAmtKeydown" />
                 <i v-if="payRec && parseFloat(payForm.amount) > parseFloat(payRec.outstanding_amount)" class="field-warn">超过未收 {{ fmtCell(payRec.outstanding_amount) }}，将被拒绝（多收部分请核实原因，并到差额调整录入或「预收预付」录入）</i>
               </label>
@@ -3531,7 +3683,11 @@ function clearFilters() {
           </div>
           <div class="modal-footer">
             <button class="btn btn-ghost" @click="showPayModal = false">取消</button>
-            <button class="btn btn-primary" :disabled="paySaving" @click="savePayment">{{ paySaving ? '保存中…' : (payForm.source === '内部往来' ? '保存核销' : '保存回款') }}</button>
+            <!-- B1b 批量过单：保存后不关窗，自动跳到列表中下一条未结清应收（仅回款态） -->
+            <button v-if="payForm.source === '回款'" class="btn btn-ghost" :disabled="paySaving"
+              title="保存后不关窗：跳到下一条未结清应收，日期/方式/账户沿用，金额/备注清空"
+              @click="savePayment(true)">{{ paySaving ? '…' : '保存并录下一笔' }}</button>
+            <button class="btn btn-primary" :disabled="paySaving" @click="savePayment()">{{ paySaving ? '保存中…' : (payForm.source === '内部往来' ? '保存核销' : '保存回款') }}</button>
           </div>
         </div>
       </div>
@@ -4472,6 +4628,22 @@ function clearFilters() {
   font-size: 12.5px; width: 140px; outline: none;
 }
 .collector-inp:focus { border-color: var(--primary); }
+
+/* ── 批量设日期（对账/开票/目标回款）────────────────────────────── */
+.bulk-date-sel, .bulk-date-inp {
+  padding: 4px 9px; border: 1px solid var(--border); border-radius: 7px;
+  font-size: 12.5px; outline: none; background: var(--card, #fff); color: var(--text);
+}
+.bulk-date-sel:focus, .bulk-date-inp:focus { border-color: var(--primary); }
+
+/* ── 行内快改（双击日期格直接改）──────────────────────────────────── */
+.qe-cell { cursor: cell; }
+.qe-cell:hover { background: rgba(201, 99, 66, 0.07); }
+.qe-inp {
+  width: 118px; padding: 1px 4px; font-size: 12px; outline: none;
+  border: 1px solid var(--primary); border-radius: 5px;
+  background: var(--card, #fff); color: var(--text);
+}
 
 /* ── 账龄配置按钮 ─────────────────────────────────────────────────── */
 .aging-cfg-btn {

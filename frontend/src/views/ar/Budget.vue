@@ -1,6 +1,6 @@
 <script setup>
 import { confirmDlg } from '../../composables/confirm.js'
-import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
@@ -19,6 +19,7 @@ import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import { loadPref, savePref } from '../../utils/prefs.js'
 import { useModalEsc } from '../../composables/useModalEsc.js'
+import { useModalEnter } from '../../composables/useModalEnter.js'
 const toast = useToast()
 
 const auth = useAuthStore()
@@ -427,6 +428,7 @@ async function loadAll() {
 
 function openCreate(type) {
   modalType.value = type; editItem.value = null
+  contSaved.value = 0
   const d = dateStart.value
   Object.assign(form, { project_no: '', short_name: '', expected_date: d, sub_dept: '', delivery_dept: selectedDept.value || (accessibleDepts.value[0] || ''), amount: '', notes: '' })
   showModal.value = true
@@ -439,6 +441,7 @@ function openEdit(type, item) {
 }
 
 async function save() {
+  if (saving.value) return
   if (!form.short_name || !form.expected_date || !form.amount) {
     toast.error('请填写项目简称、预计日期和金额'); return
   }
@@ -452,6 +455,27 @@ async function save() {
       else await ar.createPaymentBudget(form)
     }
     showModal.value = false; await loadAll()
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
+  } finally { saving.value = false }
+}
+// 「保存并继续」：批量排预算不关弹窗——保留上下文（预算类型/预计日期/交付部门），
+// 清空逐笔字段并聚焦项目简称；编号/二级部门随简称带出，属逐笔字段一并清空；计数随 openCreate 归零
+const contSaved = ref(0)
+const shortNameInp = ref(null)
+async function saveAndNext() {
+  if (saving.value) return
+  if (!form.short_name || !form.expected_date || !form.amount) {
+    toast.error('请填写项目简称、预计日期和金额'); return
+  }
+  saving.value = true
+  try {
+    if (modalType.value === 'collection') await ar.createCollectionBudget(form)
+    else await ar.createPaymentBudget(form)
+    contSaved.value++
+    toast.success(`已连续保存 ${contSaved.value} 笔`)
+    Object.assign(form, { project_no: '', short_name: '', sub_dept: '', amount: '', notes: '' })
+    loadAll()
+    nextTick(() => shortNameInp.value?.focus())
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { saving.value = false }
 }
@@ -613,6 +637,8 @@ async function exportData(type) {
 }
 
 useModalEsc([() => showModal.value, () => (showModal.value = false)])
+// Ctrl/Cmd+Enter 提交新增/编辑弹窗（save 内部自带校验与 saving 防重）
+useModalEnter(() => showModal.value, () => save())
 
 onMounted(loadAll)
 onMounted(loadProjects)
@@ -1070,7 +1096,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               </label>
               <label class="form-field">
                 <span>项目简称 / 摘要 <em>*</em></span>
-                <input v-model="form.short_name" list="budget-project-shortnames" placeholder="可手填非项目信息；也可下拉选择项目简称" />
+                <input ref="shortNameInp" v-model="form.short_name" list="budget-project-shortnames" placeholder="可手填非项目信息；也可下拉选择项目简称" />
                 <datalist id="budget-project-shortnames">
                   <option v-for="p in shortNameOptions" :key="p.id" :value="p.short_name">
                     {{ p.project_no }} · {{ p.short_name }}
@@ -1104,6 +1130,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           </div>
           <div class="modal-footer">
             <button class="btn btn-ghost" @click="showModal = false">取消</button>
+            <button v-if="!editItem" class="btn btn-ghost" :disabled="saving" @click="saveAndNext">保存并继续</button>
             <button class="btn btn-primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
           </div>
         </div>

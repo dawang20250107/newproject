@@ -24,6 +24,7 @@ import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import { loadPref, savePref } from '../../utils/prefs.js'
 import { useModalEsc } from '../../composables/useModalEsc.js'
+import { useModalEnter } from '../../composables/useModalEnter.js'
 import Pager from '../../components/Pager.vue'
 
 const toast = useToast()
@@ -397,6 +398,7 @@ function onProjBlur() { setTimeout(() => { showProjList.value = false }, 160) }
 
 function openCreate() {
   editRec.value = null
+  contSaved.value = 0
   // 录入记忆：沿用上次新增的交付部门；已不在可选部门内则回退第一个（选项目后仍以项目部门为准）
   const lastDept = loadPref('ar_adv_last_dept', '')
   Object.assign(form, {
@@ -427,6 +429,7 @@ function openEdit(rec) {
   showModal.value = true
 }
 async function save() {
+  if (saving.value) return
   saving.value = true
   try {
     const payload = { direction: direction.value, ...form }
@@ -439,6 +442,27 @@ async function save() {
     }
     showModal.value = false
     await load()
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+  finally { saving.value = false }
+}
+// 「保存并继续」：连续录入不关弹窗——保留期间/上下文字段（方向/交付部门/发生年月/款项日期/预计核销日期），
+// 清空逐笔字段（往来单位/关联项目/金额/备注）并聚焦项目搜索；计数随 openCreate 归零
+const contSaved = ref(0)
+async function saveAndNext() {
+  if (saving.value) return
+  saving.value = true
+  try {
+    const payload = { direction: direction.value, ...form }
+    if (!payload.project_id) delete payload.project_id
+    await ar.createAdvance(payload)
+    savePref('ar_adv_last_dept', form.delivery_dept)
+    contSaved.value++
+    toast.success(`已连续保存 ${contSaved.value} 笔`)
+    Object.assign(form, { project_id: '', counterparty: '', advance_amount: '', notes: '' })
+    projectKeyword.value = ''
+    autoCounterparty = ''
+    load()
+    nextTick(() => projKwInp.value?.focus())
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { saving.value = false }
 }
@@ -813,6 +837,8 @@ useModalEsc(
   [() => showProjList.value, () => (showProjList.value = false)],
   [() => showSupplierProjList.value, () => (showSupplierProjList.value = false)],
 )
+// Ctrl/Cmd+Enter 提交新增/编辑弹窗（save 内部自带 saving 防重）
+useModalEnter(() => showModal.value, () => save())
 
 onMounted(async () => {
   const q = route.query || {}
@@ -1186,6 +1212,7 @@ onMounted(async () => {
         </div>
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="showModal = false">取消</button>
+          <button v-if="!editRec" class="btn btn-ghost" :disabled="saving" @click="saveAndNext">保存并继续</button>
           <button class="btn btn-primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
         </div>
       </div>

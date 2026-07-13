@@ -8,6 +8,7 @@ import { loadPref, savePref } from '../utils/prefs.js'
 import ProjectShortNamePicker from './ProjectShortNamePicker.vue'
 import { useToast } from '../composables/useToast.js'
 import { confirmDlg } from '../composables/confirm.js'
+import { useModalEnter } from '../composables/useModalEnter.js'
 const toast = useToast()
 
 const props = defineProps({
@@ -308,6 +309,7 @@ function buildPayload() {
 }
 
 async function submit() {
+  if (loading.value) return   // 防重：保存中再触发（按钮已禁用，但快捷键仍可达）直接忽略
   error.value = ''
   loading.value = true
   clearTimeout(saveTimer)
@@ -329,6 +331,10 @@ async function submit() {
     loading.value = false
   }
 }
+
+// C2: Ctrl/Cmd+Enter 提交。本组件由父级 v-if 控制挂载（仅打开时存在），
+// 组件存在即弹窗打开，visible 恒真；防重由 submit 顶部的 loading 守卫兜底
+useModalEnter(() => true, submit)
 </script>
 
 <template>

@@ -4833,3 +4833,56 @@ class BudgetSummaryByMonthTests(TestCase):
         self.assertEqual(bm['2026-06']['budget_collection'], 2000.0)
         self.assertEqual(bm['2026-06']['actual_collection'], 600.0)
         self.assertEqual(bm['2026-07']['budget_collection'], 0.0)
+
+
+class BulkSetDateTests(TestCase):
+    """批量指定日期端点：ids 模式覆盖对账日期 + 字段白名单拦截。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900002000', name='BulkDateAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        proj = ARProject.objects.create(
+            customer_name='客户B', short_name='批量日期项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='BSD-0001')
+        self.r1 = ARRecord.objects.create(project=proj, operation_year=2026, operation_month=5,
+                                          estimated_amount=Decimal('1000'))
+        self.r2 = ARRecord.objects.create(project=proj, operation_year=2026, operation_month=6,
+                                          estimated_amount=Decimal('2000'))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_set_reconciliation_date_on_ids(self):
+        resp = self.client.post('/api/pk/ar/records/bulk-set-date', data=json.dumps({
+            'field': 'reconciliation_date', 'date': '2026-06-30',
+            'ids': [self.r1.id, self.r2.id]}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['updated'], 2)
+        self.assertEqual(d['field'], 'reconciliation_date')
+        self.r1.refresh_from_db(); self.r2.refresh_from_db()
+        self.assertEqual(self.r1.reconciliation_date, date(2026, 6, 30))
+        self.assertEqual(self.r2.reconciliation_date, date(2026, 6, 30))
+        # date 传空 → 清空该日期
+        resp = self.client.post('/api/pk/ar/records/bulk-set-date', data=json.dumps({
+            'field': 'reconciliation_date', 'date': '', 'ids': [self.r1.id]}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.r1.refresh_from_db()
+        self.assertIsNone(self.r1.reconciliation_date)
+
+    def test_field_whitelist_rejected(self):
+        # 白名单外的字段（含真实存在但不开放批量覆盖的列）一律 400，且不落库
+        resp = self.client.post('/api/pk/ar/records/bulk-set-date', data=json.dumps({
+            'field': 'operation_date', 'date': '2026-06-30', 'ids': [self.r1.id]}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.r1.refresh_from_db()
+        self.assertEqual(self.r1.operation_date, date(2026, 5, 1))

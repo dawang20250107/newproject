@@ -2497,6 +2497,58 @@ def ar_records_bulk_assign_collector(request):
     return ok({'updated': count, 'collector': collector})
 
 
+# 批量指定日期的字段白名单：仅登记真实存储、可整列覆盖的手工日期列；
+# 带派生联动的日期（如 operation_date 改动需重算年/月与账期）不开放批量覆盖
+BULK_SET_DATE_FIELDS = ('reconciliation_date', 'invoice_date', 'target_collection_date')
+
+
+@csrf_exempt
+@pk_required()
+def ar_records_bulk_set_date(request):
+    """批量指定日期（对账/开票/目标回款）。契约与批量分配催收人一致：
+    body: {field, date, ids: [int...]} 或 {field, date, all: true} + 查询串筛选参数
+    （conditions/match/filters 与列表同口径）；date 传 null/'' 表示清空该日期。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    data = _parse_body(request)
+    field = (data.get('field') or '').strip()
+    if field not in BULK_SET_DATE_FIELDS:
+        return err('不支持批量修改该日期字段')
+    raw = data.get('date')
+    if raw in (None, ''):
+        value = None   # 清空该日期
+    else:
+        try:
+            value = datetime.date.fromisoformat(str(raw)[:10])
+        except ValueError:
+            return err('日期格式不正确，应为 YYYY-MM-DD')
+    if data.get('all'):
+        today = timezone.localdate()
+        qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
+        qs = _apply_record_filters(qs, request)
+        qs = _apply_record_state_filters(qs, request, today)
+        qs = _apply_conditions(qs, request, today)
+        _fq, _fq_distinct = build_filter_q(request.GET.get('filters', ''), ARRECORD_FILTER_REGISTRY)
+        if _fq:
+            qs = qs.filter(_fq)
+            if _fq_distinct:
+                qs = qs.distinct()
+    else:
+        ids = [int(i) for i in (data.get('ids') or []) if str(i).isdigit()]
+        if not ids:
+            return err('请指定要操作的记录')
+        # ids 分支同样必须限定部门作用域，否则可跨部门改写任意记录的日期
+        qs = _ar_dept_filter(ARRecord.objects.filter(id__in=ids), request,
+                             shared_field='project__is_shared')
+    count = qs.update(**{field: value})
+    return ok({'updated': count, 'field': field,
+               'date': str(value) if value else None})
+
+
 @csrf_exempt
 @pk_required()
 def ar_records_bulk_delete(request):

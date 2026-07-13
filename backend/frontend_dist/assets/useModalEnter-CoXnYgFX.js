@@ -1,0 +1,1 @@
+import{F as e,P as t}from"./vendor-vue-C4B5ChHC.js";function n(n,r){function i(e){e.key!==`Enter`||!(e.ctrlKey||e.metaKey)||(typeof n==`function`?n():n?.value)&&(e.preventDefault(),r())}t(()=>document.addEventListener(`keydown`,i)),e(()=>document.removeEventListener(`keydown`,i))}export{n as t};

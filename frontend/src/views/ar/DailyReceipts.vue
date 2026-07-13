@@ -17,6 +17,7 @@ import ProjectShortNamePicker from '../../components/ProjectShortNamePicker.vue'
 import { downloadBlob } from '../../utils/download.js'
 import Amt from '../../components/Amt.vue'
 import { useModalEsc } from '../../composables/useModalEsc.js'
+import { useModalEnter } from '../../composables/useModalEnter.js'
 import { loadPref, savePref } from '../../utils/prefs.js'
 
 const toast = useToast()
@@ -106,6 +107,8 @@ async function load() {
   finally { loading.value = false }
 }
 useModalEsc([() => formOpen.value, () => (formOpen.value = false)])
+// Ctrl/Cmd+Enter 提交新增/编辑弹窗（save 内部自带校验与 saving 防重）
+useModalEnter(() => formOpen.value, () => save())
 
 onMounted(load)
 watch(() => [filter.source, filter.method, filter.dept], load)
@@ -177,6 +180,7 @@ async function loadRefundAdvances() {
 watch(() => form.delivery_dept, () => { if (isRefundSource.value) { form.advance_id = ''; loadRefundAdvances() } })
 function openCreate() {
   editingId.value = null
+  contSaved.value = 0
   projectKw.value = ''; refundAdvances.value = []
   Object.assign(form, { delivery_dept: filter.dept || depts.value[0] || '', receipt_date: todayCST(), amount: '', source: '项目收款', project_id: '', advance_id: '', method: '现金', account: '', payer: '', notes: '' })
   // 录入记忆：沿用上次新增的来源/方式/账户；来源与方式须仍在当前预设里，失效则保持默认
@@ -203,21 +207,46 @@ function openEdit(r) {
     })
   }
 }
+function validateForm() {
+  if (!form.delivery_dept) { toast.error('请选择事业部'); return false }
+  if (!(Number(form.amount) > 0)) { toast.error('金额必须大于 0'); return false }
+  if (!form.source.trim()) { toast.error('请填写收款来源'); return false }
+  return true
+}
+function buildBody() {
+  return { ...form, project_id: isProjectSource.value ? (form.project_id || null) : null,
+           advance_id: isRefundSource.value ? (form.advance_id || null) : null }
+}
 async function save() {
-  if (!form.delivery_dept) { toast.error('请选择事业部'); return }
-  if (!(Number(form.amount) > 0)) { toast.error('金额必须大于 0'); return }
-  if (!form.source.trim()) { toast.error('请填写收款来源'); return }
+  if (saving.value || !validateForm()) return
   saving.value = true
   try {
-    const body = { ...form, project_id: isProjectSource.value ? (form.project_id || null) : null,
-                   advance_id: isRefundSource.value ? (form.advance_id || null) : null }
-    if (editingId.value) { await ar.updateDailyReceipt(editingId.value, body) }
+    if (editingId.value) { await ar.updateDailyReceipt(editingId.value, buildBody()) }
     else {
-      await ar.createDailyReceipt(body)
+      await ar.createDailyReceipt(buildBody())
       // 录入记忆：下次新增默认沿用本次的来源/方式/账户
       savePref('ar_dr_last', { method: form.method, account: form.account, source: form.source })
     }
     toast.success('已保存'); formOpen.value = false; load()
+  } catch (e) { toast.error(e?.msg || e?.error || '保存失败') } finally { saving.value = false }
+}
+// 「保存并继续」：批量录入不关弹窗——保留上下文字段（事业部/日期/来源/方式/账户），
+// 清空逐笔字段（金额/付款方/项目/关联预付/备注）并聚焦金额；计数随 openCreate 归零
+const contSaved = ref(0)
+async function saveAndNext() {
+  if (saving.value || !validateForm()) return
+  saving.value = true
+  try {
+    await ar.createDailyReceipt(buildBody())
+    savePref('ar_dr_last', { method: form.method, account: form.account, source: form.source })
+    contSaved.value++
+    toast.success(`已连续保存 ${contSaved.value} 笔`)
+    Object.assign(form, { amount: '', payer: '', project_id: '', advance_id: '', notes: '' })
+    projectKw.value = ''
+    // 关联预付属单笔字段且余额刚被回冲，刷新候选避免复用陈旧余额
+    if (isRefundSource.value) loadRefundAdvances()
+    load()
+    nextTick(() => amountInp.value?.focus())
   } catch (e) { toast.error(e?.msg || e?.error || '保存失败') } finally { saving.value = false }
 }
 async function remove(r) {
@@ -370,7 +399,7 @@ async function exportXlsx(selectedOnly = false) {
             <div class="frow"><label>付款方</label><input v-model="form.payer" class="inp" placeholder="选填" /></div>
             <div class="frow"><label>摘要/备注</label><textarea v-model="form.notes" class="inp" rows="2" placeholder="选填"></textarea></div>
           </div>
-          <div class="d-foot"><button class="btn ghost" @click="formOpen = false">取消</button><button class="btn primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存收款' }}</button></div>
+          <div class="d-foot"><button class="btn ghost" @click="formOpen = false">取消</button><button v-if="!editingId" class="btn ghost" :disabled="saving" @click="saveAndNext">保存并继续</button><button class="btn primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存收款' }}</button></div>
         </div>
       </div>
     </Teleport>
