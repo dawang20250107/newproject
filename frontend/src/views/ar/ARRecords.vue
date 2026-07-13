@@ -736,6 +736,12 @@ function applyAdjSuggest() {
   else recForm.account_diff_adjustment = s
 }
 function onAdjKeydown(e) { if (e.key === '=') { e.preventDefault(); applyAdjSuggest() } }
+// 原因框自动增高：内容多行时随内容长高（上限 5 行左右），不裁字
+function autoGrowAdjReason(e) {
+  const el = e.target
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, 110) + 'px'
+}
 async function addAdjustment() {
   if (!parseFloat(adjForm.amount)) { toast.error('调整金额不能为0（可正可负）'); return }
   if (!adjForm.reason.trim()) { toast.error('请填写调整原因（如：运费差、客户扣款、补付）'); return }
@@ -3310,7 +3316,9 @@ function clearFilters() {
                 </label>
                 <label class="form-field">
                   <span>差额原因</span>
-                  <input v-model="recForm.adjustment_reason" placeholder="如：运费差/客户扣款/补付" maxlength="200" />
+                  <textarea v-model="recForm.adjustment_reason" rows="1" maxlength="200"
+                            class="adj-reason-mini" placeholder="如：运费差/客户扣款/补付"
+                            @input="autoGrowAdjReason"></textarea>
                 </label>
               </template>
               <div v-else class="form-field span2 adj-box">
@@ -3332,10 +3340,17 @@ function clearFilters() {
                   <button v-if="adjSuggest != null" type="button" class="adj-suggest-chip" :title="adjSuggestTitle"
                           @click="applyAdjSuggest">＝ {{ adjSuggest > 0 ? '+' : '' }}{{ adjSuggest.toFixed(2) }} 补齐</button>
                   <input v-model="adjForm.date" type="date" class="adj-date-inp" title="调整日期：决定该笔差额归入哪个月/周" />
-                  <input v-model="adjForm.reason" placeholder="原因（必填，如：运费差/客户扣款）" maxlength="200" class="adj-reason-inp" />
-                  <button type="button" class="btn btn-ghost btn-sm" :disabled="adjBusy" @click="addAdjustment">
+                  <button type="button" class="btn btn-ghost btn-sm adj-add-btn" :disabled="adjBusy" @click="addAdjustment">
                     {{ adjBusy ? '…' : '＋ 追加调整' }}
                   </button>
+                  <!-- 原因独占整行、自动增高：长原因全程可见（用户反馈：单行窄框看不到写了什么） -->
+                  <div class="adj-reason-wrap">
+                    <textarea v-model="adjForm.reason" rows="1" maxlength="200" class="adj-reason-inp"
+                              placeholder="原因（必填，如：运费差/客户扣款/补付，写清来龙去脉便于日后追溯）"
+                              @input="autoGrowAdjReason"></textarea>
+                    <span v-if="adjForm.reason.length >= 150" class="adj-reason-count"
+                          :class="{ full: adjForm.reason.length >= 200 }">{{ adjForm.reason.length }}/200</span>
+                  </div>
                 </div>
               </div>
               <label class="form-field span2">
@@ -4293,8 +4308,19 @@ function clearFilters() {
 .adj-del { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 12px; }
 .adj-del:hover { color: var(--c-danger); }
 .adj-empty { font-size: 12px; color: var(--muted); padding: 6px 0; }
-.adj-add { display: flex; gap: 6px; margin-top: 4px; }
+.adj-add { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
 .adj-add .adj-amt-inp { width: 120px; }
+.adj-add .adj-reason-wrap { position: relative; flex: 1 0 100%; }
+.adj-add .adj-reason-inp {
+  width: 100%; resize: none; overflow-y: auto; line-height: 1.5;
+  min-height: 30px; max-height: 110px; padding: 5px 52px 5px 8px;
+}
+.adj-reason-count {
+  position: absolute; right: 8px; bottom: 6px;
+  font-size: 10.5px; color: var(--muted); pointer-events: none;
+}
+.adj-reason-count.full { color: var(--c-danger); font-weight: 700; }
+.adj-reason-mini { resize: none; overflow-y: auto; line-height: 1.5; min-height: 34px; max-height: 110px; }
 /* 智能建议/快填 chip：系统替用户算好的数，点一下或按 = 填入 */
 .adj-suggest-chip {
   display: inline-flex; align-items: center; margin-left: 8px;
@@ -4305,7 +4331,6 @@ function clearFilters() {
 }
 .adj-suggest-chip:hover { background: rgba(46,125,50,0.15); }
 .adj-add .adj-date-inp { width: 140px; }
-.adj-add .adj-reason-inp { flex: 1; }
 
 /* ══ 预收核销工作台 ══ */
 .ow-wrap { margin-top: 12px; }
