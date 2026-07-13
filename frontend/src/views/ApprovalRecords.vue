@@ -582,11 +582,40 @@ function setPage(p){ page.value=p; load() }
 async function loadDepts(){ try{const r=await cachedGet('/departments'); depts.value=r.data}catch{}}
 // C3: 新增弹窗打开即聚焦首个可编辑字段（申请人），省一次点击；编辑回填场景不抢焦点
 const applicantInputRef = ref(null)
-function openCreate(){ editId.value=null; Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', notes:'', amount:'', payee:'', status:'pending' }); showCreate.value=true; nextTick(() => applicantInputRef.value?.focus()) }
+const summaryInputRef = ref(null)
+const apprNoInputRef = ref(null)
+function openCreate(){ editId.value=null; contSaved.value=0; Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', notes:'', amount:'', payee:'', status:'pending' }); showCreate.value=true; nextTick(() => applicantInputRef.value?.focus()) }
 // 编辑：复用新增弹窗，回填后改走 PUT。已归档（已排款/已拒绝/已撤销）记录为终态不可编辑，
 // 仅金额、状态等受后端口径约束（金额仅「待审批」可改、审批/拒绝须审批权限），后端会兜底校验
 function openEdit(it){ editId.value=it.id; Object.assign(form,{ applicant:it.applicant||'', department:it.department||'', secondary_dept:it.secondary_dept||'', project_short_name:it.project_short_name||'', approval_number:it.approval_number||'', g7_number:it.g7_number||'', summary:it.summary||'', notes:it.notes||'', amount:it.amount||'', payee:it.payee||'', status:it.status||'pending' }); showCreate.value=true }
-async function create(){ if(saving.value) return; saving.value=true; try{ if(editId.value){ await api.put(`/approvals/${editId.value}`, form) } else { await api.post('/approvals', form) } showCreate.value=false; load(); toast.success('已保存') } catch(e){ toast.error(e?.msg||e?.error||'操作失败') } finally{ saving.value=false } }
+const contSaved = ref(0)
+async function create(andContinue = false){
+  if(saving.value) return; saving.value=true
+  try{
+    if(editId.value){ await api.put(`/approvals/${editId.value}`, form) }
+    else { await api.post('/approvals', form) }
+    if(andContinue && !editId.value){
+      // 保存并继续：保留申请人/部门/二级部门上下文，仅清逐条字段，连续录同批审批
+      contSaved.value++
+      Object.assign(form, { project_short_name:'', approval_number:'', g7_number:'', summary:'', notes:'', amount:'', payee:'', status:'pending' })
+      load()
+      toast.success(`已连续保存 ${contSaved.value} 条`)
+      nextTick(() => summaryInputRef.value?.focus())
+    } else {
+      showCreate.value=false; load(); toast.success('已保存')
+    }
+  } catch(e){ toast.error(e?.msg||e?.error||'操作失败') } finally{ saving.value=false }
+}
+// 以此新建：复制业务字段（唯一编号除外，留空由用户填），连续开单省重录
+function createFrom(it){
+  openCreate()
+  Object.assign(form, {
+    applicant: it.applicant||'', department: it.department||'', secondary_dept: it.secondary_dept||'',
+    project_short_name: it.project_short_name||'', payee: it.payee||'', summary: it.summary||'',
+    amount: it.amount||'', notes: it.notes||'',
+  })   // approval_number / g7_number 留空：唯一单号需重填
+  nextTick(() => apprNoInputRef.value?.focus?.())
+}
 // 双击行 → 编辑（点在勾选框/状态下拉等控件上不触发；已归档不可编辑）
 function onRowDblClick(it, e){
   if (e.target.closest('input, button, select, textarea, a')) return
@@ -648,6 +677,7 @@ const ctxItems = computed(() => {
       action: r => dingtalkStatusSync([r.id]),
     },
     { key: 'edit', label: '编辑审批记录', icon: 'edit', shortcut: 'E', hidden: !auth.canCreate, disabled: i.archived, action: r => openEdit(r) },
+    { key: 'clone', label: '以此新建', icon: 'copy', hidden: !auth.canCreate, action: r => createFrom(r) },
     { key: 'meta', label: '补录二级部门 / 项目', icon: 'cell', action: r => openMeta(r) },
     { key: 'del', label: '删除审批记录', icon: 'trash', danger: true, hidden: !auth.canDelete, action: r => deleteOne(r) },
     { divider: true },
@@ -1105,14 +1135,14 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <label class="form-field"><span>所属事业部*</span><select v-model="form.department"><option v-for="d in deptChoices" :key="d" :value="d">{{d}}</option></select></label>
     <label class="form-field"><span>二级部门</span><input v-model="form.secondary_dept" placeholder="选填，如：华东项目部"/></label>
     <label class="form-field"><span>项目简称</span><ProjectShortNamePicker v-model="form.project_short_name" @picked="p => onProjPicked(p, form)"/></label>
-    <label class="form-field"><span>审批编号</span><input v-model="form.approval_number" placeholder="21位数字；留空自动填21个0占位"/></label>
+    <label class="form-field"><span>审批编号</span><input ref="apprNoInputRef" v-model="form.approval_number" placeholder="21位数字；留空自动填21个0占位"/></label>
     <label class="form-field"><span>G7编号</span><input v-model="form.g7_number" placeholder="选填，最多21位数字" maxlength="21"/></label>
-    <label class="form-field"><span>摘要</span><input v-model="form.summary"/></label>
+    <label class="form-field"><span>摘要</span><input ref="summaryInputRef" v-model="form.summary"/></label>
     <label class="form-field"><span>备注</span><input v-model="form.notes" placeholder="选填"/></label>
     <label class="form-field"><span>申请金额*</span><input v-model="form.amount" type="number" step="0.01"/></label>
     <label class="form-field"><span>收款主体</span><input v-model="form.payee"/></label>
     <label class="form-field"><span>审批状态</span><select v-model="form.status"><option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option></select></label>
-  </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showCreate=false">取消</button><button class="btn btn-primary" :disabled="saving" @click="create">保存</button></div></div></div></Teleport>
+  </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showCreate=false">取消</button><button v-if="!editId" class="btn btn-ghost" :disabled="saving" @click="create(true)" title="保存后不关窗，保留申请人/部门，连续录下一条">保存并继续</button><button class="btn btn-primary" :disabled="saving" @click="create()">保存</button></div></div></div></Teleport>
 
   <Teleport to="body"><div v-if="showSchedule" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>排款（支持分批）</h3></div><div class="modal-body">
     <div class="sched-progress">
