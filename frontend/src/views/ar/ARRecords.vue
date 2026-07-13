@@ -143,6 +143,8 @@ async function confirmBulkDelete() {
     showDelConfirm.value = false
     clearSelection()
     await load(true)
+    // 误删后悔药入口：应收批删进回收站，可一键找回
+    toast.success('已删除所选记录（已入回收站）', 3000, { label: '查看回收站', to: '/trash' })
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { bulkDeleting.value = false }
 }
@@ -439,6 +441,8 @@ const ctxItems = computed(() => {
   return [
     { key: 'log', label: '催款工作台', icon: 'log', shortcut: 'L', action: r => { panelRec.value = r } },
     { key: 'edit', label: '编辑', icon: 'edit', shortcut: 'E', hidden: !auth.canArWrite, action: r => openEdit(r) },
+    // B4a: 同项目多期应收最常见——以该行为模板开新建弹窗，项目/运作日期免重填
+    { key: 'clone-new', label: '以此新建应收', icon: 'plus', shortcut: 'N', hidden: !auth.canArWrite, action: r => openCreateFrom(r) },
     {
       key: 'pay', label: settled ? '录入回款（已结清）' : '录入回款', icon: 'payment', shortcut: 'P',
       hidden: !auth.canArWrite, disabled: settled, action: r => openAddPayment(r),
@@ -606,6 +610,22 @@ const cw = useColWidths('ar_records', {
 const colFilters = reactive({})    // field -> {op, value}
 const sortField = ref('')
 const sortOrder = ref('')          // 'asc' | 'desc' | ''
+// A3: 列头可排序字段白名单（与模板里各 ColumnFilter 的 field 一一对应）。
+// 本机记忆/方案快照还原排序时先过白名单，防字段下线后的脏数据打到后端 400。
+const SORTABLE_FIELDS = new Set([
+  'short_name', 'operation_date', 'estimated_amount', 'actual_invoice_amount',
+  'tax_amount', 'account_diff_adjustment', 'outstanding_amount', 'due_date',
+  'target_collection_date', 'notes', 'reconciliation_date', 'invoice_batch_no',
+  'invoice_date',
+])
+// A3: 列头排序本机记忆——setSort 时存，进页在首次 load 前还原（脏数据静默忽略）
+{
+  const lastSort = loadPref('arr:sort')
+  if (lastSort && SORTABLE_FIELDS.has(lastSort.field) && ['asc', 'desc'].includes(lastSort.order)) {
+    sortField.value = lastSort.field
+    sortOrder.value = lastSort.order
+  }
+}
 // 时间条：日期字段可切换——对账/开票/回款日期使用频率高于运作日期，
 // 不再写死。区间写入列头筛选管线（<字段> between），与手动列筛选同源；
 // 切换字段时把已选区间迁移过去，字段选择记忆在本机。
@@ -649,6 +669,7 @@ function setSort(field, order) {
   sortOrder.value = order || ''
   // 列头排序生效即清掉 SortTh 排序，避免两套排序争用 sort 参数
   if (order && sorter.sort.value) sorter.sort.value = ''
+  savePref('arr:sort', { field: sortField.value, order: sortOrder.value })   // A3: 本机记忆，下次进页还原
   load(true)
 }
 function buildParams(base = {}) {
@@ -750,12 +771,15 @@ const projectKeyword = ref('')
 const projectSearching = ref(false)
 let projectSearchTimer = null
 // Server-side search by project_no / short_name / customer_name (debounced).
+// latest-wins：连发两次搜索（如「以此新建」先空搜后带词搜）时只认最后一次，防乱序覆盖
+let _projSeq = 0
 async function searchProjects(kw) {
   projectSearching.value = true
+  const seq = ++_projSeq
   try {
     const res = await ar.listProjects({ size: 100, q: kw || undefined })
-    projects.value = res.data.items
-  } finally { projectSearching.value = false }
+    if (seq === _projSeq) projects.value = res.data.items
+  } finally { if (seq === _projSeq) projectSearching.value = false }
 }
 function onProjectKeywordInput() {
   clearTimeout(projectSearchTimer)
@@ -1304,10 +1328,30 @@ function syncQuickQFromConditions() {
   const q = conditions.value.find(c => c.t === 'dim' && c.field === 'q')
   quickQ.value = q ? (q.value || '') : ''
 }
-function applyScheme(s) {
+// A3+B5: 套用方案 = 整套还原（条件 + 列头筛选 + 列头排序），不触发加载；
+// 供点选方案与进页默认方案两处复用。老方案无快照字段 → 列头回到干净状态。
+function applySchemeState(s) {
   conditions.value = JSON.parse(JSON.stringify(s.conditions || []))
   matchMode.value = s.match || 'all'
   syncQuickQFromConditions()   // 方案含 q 条件时回填搜索框，避免搜索框空白却在过滤
+  // 列头筛选：先清空现有（含时间条区间），再套方案快照
+  Object.keys(colFilters).forEach(k => delete colFilters[k])
+  opDateStart.value = ''; opDateEnd.value = ''
+  Object.assign(colFilters, JSON.parse(JSON.stringify(s.colFilters || {})))
+  const bar = colFilters[_barField]
+  if (bar && bar.op === 'between' && Array.isArray(bar.value)) {
+    // 快照恰落在时间条当前字段 → 回填时间条输入框，保持 UI 与筛选同源
+    opDateStart.value = bar.value[0] || ''
+    opDateEnd.value = bar.value[1] || ''
+  }
+  // 列头排序：空即清；过白名单防脏数据，生效时与 SortTh 互斥
+  sortField.value = SORTABLE_FIELDS.has(s.sort) ? s.sort : ''
+  sortOrder.value = (sortField.value && ['asc', 'desc'].includes(s.order)) ? s.order : ''
+  if (!sortOrder.value) sortField.value = ''
+  if (sortField.value && sorter.sort.value) sorter.sort.value = ''
+}
+function applyScheme(s) {
+  applySchemeState(s)
   showPresetDrop.value = false
   onFilterChange()
 }
@@ -1318,6 +1362,8 @@ async function saveCurrentScheme() {
     await ar.createFilterScheme({
       name, scope: newSchemeScope.value, module: 'ar_records',
       conditions: conditions.value, match: matchMode.value,
+      // A3+B5: 一并快照列头筛选与列头排序，套用方案即还原整套表格视图
+      colFilters: { ...colFilters }, sort: sortField.value, order: sortOrder.value,
     })
     newPresetName.value = ''
     showPresetDrop.value = false
@@ -1567,6 +1613,18 @@ function openCreate() {
   focusRecModal()
   projectKeyword.value = ''
   searchProjects('')  // initial page of projects
+}
+
+// B4a: 右键「以此新建应收」——同项目多期录入免重搜项目：复用 openCreate 后回填
+// 项目 + 运作日期上下文（交付部门随项目带出）；金额/开票/对账等留空按新一期填。
+// 用行的项目简称重搜，保证下拉里有该项目可回显；焦点直达金额框（项目已选定）
+function openCreateFrom(rec) {
+  openCreate()
+  recForm.project_id = rec.project_id || ''
+  recForm.operation_date = rec.operation_date || todayCST()
+  projectKeyword.value = rec.short_name || rec.customer_name || ''
+  searchProjects(projectKeyword.value.trim())
+  nextTick(() => estAmtInput.value?.focus())
 }
 
 function openEdit(rec) {
@@ -2206,10 +2264,8 @@ onMounted(async () => {
   await loadSchemes()
   const def = !fromRoute && defaultSchemeId.value
     && schemes.value.find(s => s.id === defaultSchemeId.value)
-  if (def && def.conditions?.length) {
-    conditions.value = JSON.parse(JSON.stringify(def.conditions))
-    matchMode.value = def.match || 'all'
-    syncQuickQFromConditions()   // 默认方案含 q 时也回填搜索框
+  if (def && (def.conditions?.length || Object.keys(def.colFilters || {}).length || def.sort)) {
+    applySchemeState(def)   // A3+B5: 默认方案整套还原（条件+列头筛选+排序）
   } else if (!conditions.value.some(c => c.t === 'dim' && c.field === 'status')) {
     // 无默认方案 → 默认只看「未结清」（先聚焦没收完的）；可点掉该条件看全部
     conditions.value.push({ t: 'dim', field: 'status', value: 'outstanding' })
@@ -2364,7 +2420,7 @@ function clearFilters() {
               <div class="preset-save-row">
                 <input v-model="newPresetName" class="preset-name-input" placeholder="方案名称…" maxlength="40"
                        @keyup.enter="saveCurrentScheme" />
-                <button class="preset-save-btn" :disabled="!newPresetName.trim() || !conditions.length"
+                <button class="preset-save-btn" :disabled="!newPresetName.trim() || !hasAnyFilter"
                         @click="saveCurrentScheme">保存</button>
               </div>
               <div class="preset-scope-row">

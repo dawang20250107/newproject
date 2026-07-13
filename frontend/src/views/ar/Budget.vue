@@ -1,6 +1,6 @@
 <script setup>
 import { confirmDlg } from '../../composables/confirm.js'
-import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick, onActivated } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
@@ -12,6 +12,8 @@ import BaseChart from '../../components/ar/BaseChart.vue'
 import ProjectPnlCard from '../caiwu/ProjectPnlCard.vue'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
+import SchemePicker from '../../components/SchemePicker.vue'
+import { useTableSchemes } from '../../composables/useTableSchemes.js'
 import DateRangeChips from '../../components/DateRangeChips.vue'
 import { useToast } from '../../composables/useToast.js'
 import ContextMenu from '../../components/ContextMenu.vue'
@@ -379,6 +381,11 @@ function cmpSetSort(field, order) {
   cmpSortField.value = order ? field : ''
   cmpSortOrder.value = order || ''
 }
+// 通用筛选方案（表格方案基座）：项目对照表的列头筛选 + 排序存为命名方案。
+// 过滤/排序为纯前端计算（compareRows），套用即生效，无需回调重载
+const cmpSchemes = useTableSchemes('ar_budget_compare', {
+  colFilters: cmpColFilters, sortField: cmpSortField, sortOrder: cmpSortOrder,
+})
 const compareRows = computed(() => {
   let rows = compareData.value?.rows || []
   const q = compareQ.value.trim().toLowerCase()
@@ -640,8 +647,15 @@ useModalEsc([() => showModal.value, () => (showModal.value = false)])
 // Ctrl/Cmd+Enter 提交新增/编辑弹窗（save 内部自带校验与 saving 防重）
 useModalEnter(() => showModal.value, () => save())
 
+// keep-alive：命中 App.vue include 白名单；返回秒开，数据后台刷新（首次激活跳过，onMounted 已加载）
+defineOptions({ name: 'BudgetPage' })
+let _kaFirst = true
+onActivated(() => { if (_kaFirst) { _kaFirst = false; return } loadSummary(); loadLists() })
+
 onMounted(loadAll)
 onMounted(loadProjects)
+// 项目对照的方案为客户端过滤：默认方案直接套到 cmpColFilters/排序上，数据加载互不阻塞
+onMounted(() => cmpSchemes.loadAndApplyDefault())
 
 const onScopeChange = () => {
   if (selectedDept.value && !accessibleDepts.value.includes(selectedDept.value)) selectedDept.value = ''
@@ -875,6 +889,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           </div>
           <div class="hdr-acts">
             <input v-model="compareQ" class="cmp-search" placeholder="搜项目 / 客户 / 部门" />
+            <SchemePicker :ctl="cmpSchemes" :can-public="auth.canArWrite" :is-super-admin="auth.isSuperAdmin" />
           </div>
         </div>
         <EmptyState v-if="compareLoading" loading />

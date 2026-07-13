@@ -44,6 +44,8 @@ const routes = [
 const router = createRouter({
   history: createWebHashHistory(),
   routes,
+  // 后退/前进恢复上次滚动位置（keep-alive 页秒回原位）；正常进入新页则回到顶部
+  scrollBehavior(to, from, savedPosition) { return savedPosition || { top: 0 } },
 })
 
 function canVisit(auth, page) {

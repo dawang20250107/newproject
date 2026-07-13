@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, watch, nextTick, onActivated } from 'vue'
 import { useToast } from '../../composables/useToast.js'
 import { confirmDlg } from '../../composables/confirm.js'
 import { useAuthStore } from '../../stores/auth.js'
@@ -19,6 +19,8 @@ import Amt from '../../components/Amt.vue'
 import { useModalEsc } from '../../composables/useModalEsc.js'
 import { useModalEnter } from '../../composables/useModalEnter.js'
 import { loadPref, savePref } from '../../utils/prefs.js'
+import SchemePicker from '../../components/SchemePicker.vue'
+import { useTableSchemes } from '../../composables/useTableSchemes.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -68,6 +70,34 @@ const _init = computePreset('thismonth')
 const filter = reactive({ dept: '', source: '', method: '', start: _init.start, end: _init.end, q: '' })
 watch([() => filter.start, () => filter.end], () => { if (!_applying) activePreset.value = '' }, { flush: 'sync' })
 
+// 通用筛选方案（表格方案基座）：本页无列头筛选，快照为页级筛选（部门/来源/方式 + 时间预设）
+const schemeCols = reactive({})
+const schemeSortField = ref('')
+const schemeSortOrder = ref('')
+let _applyingScheme = false   // 套方案时抑制 dept/source/method watch 的重复加载
+const schemes = useTableSchemes('ar_daily_receipts', {
+  colFilters: schemeCols, sortField: schemeSortField, sortOrder: schemeSortOrder,
+  extra: {
+    get: () => ({ dept: filter.dept || '', source: filter.source || '', method: filter.method || '', preset: activePreset.value || '' }),
+    set: (p) => {
+      _applyingScheme = true
+      filter.dept = p.dept || ''
+      filter.source = p.source || ''
+      filter.method = p.method || ''
+      // 时间按预设（相对区间）回放，套用时重算成当天口径；保存时为自定义区间则不动当前区间
+      if (p.preset) {
+        _applying = true
+        const r = computePreset(p.preset)
+        filter.start = r.start; filter.end = r.end
+        _applying = false
+        activePreset.value = p.preset
+      }
+      nextTick(() => { _applyingScheme = false })
+    },
+  },
+  onApply: () => load(),
+})
+
 // ── 数据 ────────────────────────────────────────────────────────────────────
 const loading = ref(false)
 const items = ref([])
@@ -110,8 +140,17 @@ useModalEsc([() => formOpen.value, () => (formOpen.value = false)])
 // Ctrl/Cmd+Enter 提交新增/编辑弹窗（save 内部自带校验与 saving 防重）
 useModalEnter(() => formOpen.value, () => save())
 
-onMounted(load)
-watch(() => [filter.source, filter.method, filter.dept], load)
+// keep-alive：命中 App.vue include 白名单；返回秒开，数据后台刷新（首次激活跳过，onMounted 已加载）
+defineOptions({ name: 'DailyReceiptsPage' })
+let _kaFirst = true
+onActivated(() => { if (_kaFirst) { _kaFirst = false; return } load() })
+
+onMounted(async () => {
+  // 有默认方案则套用并由其触发加载；否则常规加载
+  const applied = await schemes.loadAndApplyDefault()
+  if (!applied) load()
+})
+watch(() => [filter.source, filter.method, filter.dept], () => { if (!_applyingScheme) load() })
 
 // ── 选择（单选/多选/Shift 连选）───────────────────────────────────────────────
 const selectedIds = ref(new Set())
@@ -286,6 +325,7 @@ async function exportXlsx(selectedOnly = false) {
         <select v-model="filter.source" class="inp mini"><option value="">全部来源</option><option v-for="s in Object.keys(bySource)" :key="s" :value="s">{{ s }}</option></select>
         <select v-model="filter.method" class="inp mini"><option value="">全部方式</option><option v-for="m in Object.keys(byMethod)" :key="m" :value="m">{{ m }}</option></select>
         <input v-model="filter.q" data-search class="inp search" placeholder="搜付款方 / 摘要 / 项目" @input="onSearchInput" @keyup.enter="load" />
+        <SchemePicker :ctl="schemes" :can-public="auth.canArWrite" :is-super-admin="auth.isSuperAdmin" />
         <button class="btn ghost sm" :disabled="exporting" @click="exportXlsx(false)">{{ exporting ? '导出中…' : '导出' }}</button>
         <button v-if="canWrite" class="btn-hero" @click="openCreate"><span>＋</span> 新增收款</button>
       </div>

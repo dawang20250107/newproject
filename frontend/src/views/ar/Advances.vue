@@ -1,6 +1,6 @@
 <script setup>
 import { confirmDlg } from '../../composables/confirm.js'
-import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, watch, nextTick, onActivated } from 'vue'
 import { useRoute } from 'vue-router'
 import { useToast } from '../../composables/useToast.js'
 import { useAuthStore } from '../../stores/auth.js'
@@ -414,6 +414,18 @@ function openCreate() {
   showModal.value = true
   nextTick(() => projKwInp.value?.focus())
 }
+// 右键「以此新建」：以选中行为模板打开新建弹窗——沿用方向（当前 Tab）/交付部门/
+// 往来单位/关联项目，金额、日期、备注等逐笔字段留空重填
+function createFrom(rec) {
+  openCreate()
+  Object.assign(form, {
+    project_id: rec.project_id || '',
+    delivery_dept: rec.delivery_dept || form.delivery_dept,
+    counterparty: rec.counterparty || '',
+  })
+  projectKeyword.value = rec.short_name || ''
+  if (rec.short_name) searchProjects(rec.short_name)
+}
 function openEdit(rec) {
   editRec.value = rec
   Object.assign(form, {
@@ -782,6 +794,7 @@ const ctxRecItems = computed(() => {
     { key: 'inst', label: '收付明细', icon: 'payment', hidden: !(canCreate.value || canInstAction.value), action: x => openInstallments(x) },
     { key: 'wo', label: '核销', icon: 'refresh', hidden: !(canCreate.value || canWoAction.value), action: x => openWriteoffs(x) },
     { key: 'edit', label: '编辑', icon: 'edit', shortcut: 'E', hidden: !canCreate.value, action: x => openEdit(x) },
+    { key: 'create-from', label: '以此新建', icon: 'plus', hidden: !canCreate.value, action: x => createFrom(x) },
     { divider: true },
     {
       key: 'copy', label: '复制', icon: 'copy',
@@ -839,6 +852,11 @@ useModalEsc(
 )
 // Ctrl/Cmd+Enter 提交新增/编辑弹窗（save 内部自带 saving 防重）
 useModalEnter(() => showModal.value, () => save())
+
+// keep-alive：命中 App.vue include 白名单；返回秒开，数据后台刷新（首次激活跳过，onMounted 已加载）
+defineOptions({ name: 'AdvancesPage' })
+let _kaFirst = true
+onActivated(() => { if (_kaFirst) { _kaFirst = false; return } load(true) })
 
 onMounted(async () => {
   const q = route.query || {}

@@ -1127,6 +1127,41 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(len(same), 1)            # 覆盖，不重复
         self.assertEqual(same[0]['conditions'], c2)   # 取最新快照
 
+    def test_filter_scheme_snapshots_col_filters_and_sort(self):
+        """A3+B5: 方案同时快照列头筛选与排序，往返保真；脏输入静默降级为空。"""
+        a = self.make_user('13900000217', 'finance_director', role='super_admin')
+        cf = {'outstanding_amount': {'op': 'gt', 'value': '0'},
+              'operation_date': {'op': 'between', 'value': ['2026-01-01', '2026-06-30']}}
+        r = self.json_post('/api/pk/ar/filter-schemes',
+                           {'name': '大额上半年', 'scope': 'private', 'conditions': [],
+                            'colFilters': cf, 'sort': 'outstanding_amount', 'order': 'desc'}, a)
+        self.assertEqual(r.status_code, 200)
+        d = r.json()['data']
+        self.assertEqual(d['colFilters'], cf)
+        self.assertEqual(d['sort'], 'outstanding_amount')
+        self.assertEqual(d['order'], 'desc')
+        # 列表接口同样带回快照（前端套用方案的数据来源）
+        items = self.client.get('/api/pk/ar/filter-schemes', **self.auth(a)).json()['data']['items']
+        s = next(x for x in items if x['name'] == '大额上半年')
+        self.assertEqual(s['colFilters'], cf)
+        self.assertEqual(s['sort'], 'outstanding_amount')
+        # 脏输入：colFilters 非 dict、sort 非 str、order 非法 → 静默降级为空，不报错
+        r2 = self.json_post('/api/pk/ar/filter-schemes',
+                            {'name': '脏快照', 'scope': 'private', 'conditions': [],
+                             'colFilters': ['bad'], 'sort': 123, 'order': 'sideways'}, a)
+        self.assertEqual(r2.status_code, 200)
+        d2 = r2.json()['data']
+        self.assertEqual(d2['colFilters'], {})
+        self.assertEqual(d2['sort'], '')
+        self.assertEqual(d2['order'], '')
+        # 历史方案（无 view 快照，默认 '{}'）读回空值 → 前端套用即清列头状态
+        from ar.models import ARFilterScheme
+        old = ARFilterScheme.objects.create(name='老方案', owner=a)
+        legacy = old.to_dict()
+        self.assertEqual(legacy['colFilters'], {})
+        self.assertEqual(legacy['sort'], '')
+        self.assertEqual(legacy['order'], '')
+
     def test_summary_not_inflated_by_multiple_payments(self):
         admin = self.make_user('13900000055', 'finance_director', role='super_admin')
         project = self.create_project()

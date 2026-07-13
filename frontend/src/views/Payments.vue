@@ -1088,7 +1088,7 @@ async function confirmBulkDelete() {
         const d2 = r2.data || {}
         const totalDeleted = (d.deleted || 0) + (d2.deleted || 0)
         if (d2.skipped?.length) resultDlg({ title: '批量删除结果', okLine: `已删除 ${totalDeleted} 条`, skipped: d2.skipped })
-        else toast.success(`已删除 ${totalDeleted} 条`)
+        else toast.success(`已删除 ${totalDeleted} 条（已入回收站）`, 3000, { label: '查看回收站', to: '/trash' })
       } else {
         showDelConfirm.value = false; clearSelection(); load()
         if (d.skipped?.length) resultDlg({ title: '批量删除结果', okLine: d.message, skipped: d.skipped })

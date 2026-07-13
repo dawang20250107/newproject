@@ -34,6 +34,19 @@ def _clean_conditions(raw):
     return _json.dumps(raw, ensure_ascii=False)
 
 
+def _clean_view(data):
+    """视图快照（列头筛选/排序）→ JSON 字符串。白名单键：colFilters(dict)、
+    sort(str)、order(asc|desc)；脏输入静默降级为空（与 _clean_conditions 同策略）。"""
+    cf = data.get('colFilters')
+    sort = data.get('sort')
+    order = data.get('order')
+    return _json.dumps({
+        'colFilters': cf if isinstance(cf, dict) else {},
+        'sort': sort if isinstance(sort, str) else '',
+        'order': order if order in ('asc', 'desc') else '',
+    }, ensure_ascii=False)
+
+
 @csrf_exempt
 @pk_required()
 def ar_filter_schemes(request):
@@ -81,6 +94,7 @@ def ar_filter_schemes(request):
             defaults={
                 'conditions': _clean_conditions(data.get('conditions')),
                 'match': 'any' if data.get('match') == 'any' else 'all',
+                'view': _clean_view(data),
                 'owner': user,
             })
         return ok(obj.to_dict())
@@ -128,6 +142,9 @@ def ar_filter_scheme_detail(request, pk):
             obj.conditions = _clean_conditions(data.get('conditions'))
         if 'match' in data:
             obj.match = 'any' if data.get('match') == 'any' else 'all'
+        # 视图快照整套替换（前端保存时三键一起下发，不做逐键合并）
+        if 'colFilters' in data or 'sort' in data or 'order' in data:
+            obj.view = _clean_view(data)
         obj.save()
         return ok(obj.to_dict())
 

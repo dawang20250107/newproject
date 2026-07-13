@@ -4,6 +4,8 @@ import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth.js'
 import { ROLE_LABELS, JOB_LABELS } from '../constants.js'
 import ChangePasswordModal from './ChangePasswordModal.vue'
+import { hotkeyHelpVisible } from '../composables/useInteractionFeel.js'
+import HotkeyHelp from './HotkeyHelp.vue'
 
 const props = defineProps({
   collapsed: { type: Boolean, default: false },
@@ -107,6 +109,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
 </script>
 
 <template>
+  <HotkeyHelp />
   <nav :class="['sidebar', collapsed ? 'collapsed' : '', mobileOpen ? 'mobile-open' : '']"
     @mouseenter="emit('hover', true)" @mouseleave="emit('hover', false)">
 
@@ -532,6 +535,12 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick))
               <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>
             </svg>
             退出
+          </button>
+          <button class="footer-btn density-btn" title="快捷键速查（?）" @click="hotkeyHelpVisible = !hotkeyHelpVisible">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="5" width="20" height="14" rx="2"/>
+              <path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M18 13h.01M9 13h6M7 17h10"/>
+            </svg>
           </button>
           <button class="footer-btn density-btn" @click="cycleDensity"
             :title="`表格密度：${DENSITY_LABELS[density]}（点击切换）`">

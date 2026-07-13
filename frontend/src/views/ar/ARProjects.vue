@@ -1,6 +1,6 @@
 <script setup>
 import { confirmDlg } from '../../composables/confirm.js'
-import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, defineAsyncComponent, onActivated } from 'vue'
 import { useToast } from '../../composables/useToast.js'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST } from '../../constants.js'
@@ -217,6 +217,7 @@ const ctxItems = computed(() => {
   return [
     { key: 'complete', label: '补充完善草稿', icon: 'edit', hidden: !(it.is_draft && auth.canArWrite), action: r => completeDraft(r) },
     { key: 'edit', label: '编辑项目', icon: 'edit', shortcut: 'E', action: r => openEdit(r) },
+    { key: 'create-from', label: '以此新建项目', icon: 'plus', hidden: !auth.canArWrite, action: r => createFrom(r) },
     {
       key: 'status', label: '改状态', icon: 'status', hidden: !auth.canArWrite,
       children: STATUSES.map(s => ({ key: 'st-' + s, label: s, icon: 'status', active: it.status === s, action: r => setStatus(r, s) })),
@@ -359,6 +360,31 @@ function openCreate() {
   linkedContracts.value = []
   ctQuery.value = ''; ctResults.value = []
   showModal.value = true
+}
+
+// 右键「以此新建项目」：以选中行为模板打开新建弹窗——复制业务字段（客户/部门/模式/
+// 等级/账期/开票配置等），身份字段（编号自动生成、项目简称）留空由用户填写
+function createFrom(item) {
+  openCreate()
+  Object.assign(form, {
+    customer_name: item.customer_name || '',
+    delivery_dept: accessibleDepts.value.includes(item.delivery_dept)
+      ? item.delivery_dept : (accessibleDepts.value[0] || ''),
+    sub_dept: item.sub_dept || '',
+    business_mode: item.business_mode || '',
+    customer_level: item.customer_level || 'A级',
+    sales_contact: item.sales_contact || '',
+    project_manager: item.project_manager || '',
+    has_contract: item.has_contract || '有',
+    reconciliation_days: item.reconciliation_days || 0,
+    invoice_wait_days: item.invoice_wait_days || 0,
+    post_invoice_days: item.post_invoice_days || 0,
+    cycle_start_day: item.cycle_start_day || 1,
+    invoice_mode: item.invoice_mode || '全额',
+    invoice_type: item.invoice_type || '专票',
+    tax_rate: item.tax_rate || '0.06',
+    customer_id: item.customer_id || '',
+  })
 }
 
 async function openEdit(item) {
@@ -559,6 +585,11 @@ useModalEsc(
   [() => showModal.value, () => (showModal.value = false)],
   [() => showDelConfirm.value, () => (showDelConfirm.value = false)],
 )
+
+// keep-alive：命中 App.vue include 白名单；返回秒开，数据后台刷新（首次激活跳过，onMounted 已加载）
+defineOptions({ name: 'ARProjectsPage' })
+let _kaFirst = true
+onActivated(() => { if (_kaFirst) { _kaFirst = false; return } load(true); loadStats() })
 
 onMounted(async () => {
   if (auth.perms?.ar_shared_only) filters.is_shared = '1'

@@ -1,4 +1,4 @@
-import { onMounted, onBeforeUnmount } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 
 // 全局操作手感（App.vue 一处接入，全站生效）：
 //   1. 「/」聚焦当前页第一个可见搜索框（未在输入态、无弹层时）
@@ -9,6 +9,10 @@ import { onMounted, onBeforeUnmount } from 'vue'
 //      （回收站/客户列表/预收核销）用 data-no-selzone 豁免
 //   4. 勾选列上的双击只属于勾选，不触发行双击打开（捕获阶段拦截）
 //   5. 数字输入框聚焦即全选：改金额直接输新值，不必先删旧值
+//   6. 「?」呼出快捷键速查面板（HotkeyHelp 组件消费 hotkeyHelpVisible）
+
+// 全局共享的速查面板开关：AppNav 的 ⌨ 按钮与「?」快捷键共用
+export const hotkeyHelpVisible = ref(false)
 
 const OVERLAY_SEL = '.modal-overlay, .overlay, .modal-mask, .edit-mask, .drawer-mask, .scrim, '
   + '.cfm-overlay, .colf-pop, .ctxm, .drop-overlay, .logs-overlay, .ap-backdrop, .lt-overlay'
@@ -21,6 +25,11 @@ const SEARCH_SEL = 'input.search-input, input.global-search, input.qs-input, inp
 const isVisible = el => !!el && el.offsetParent !== null && !el.disabled
 
 function onKeydown(e) {
+  if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey && !isTyping()) {
+    e.preventDefault()
+    hotkeyHelpVisible.value = !hotkeyHelpVisible.value
+    return
+  }
   if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey
       && !isTyping() && !document.querySelector(OVERLAY_SEL)) {
     // 各页搜索框类名不一（search-input/global-search/qs-input），统一在此枚举——
