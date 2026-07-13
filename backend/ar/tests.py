@@ -4921,3 +4921,68 @@ class BulkSetDateTests(TestCase):
         self.assertEqual(resp.status_code, 400, resp.content)
         self.r1.refresh_from_db()
         self.assertEqual(self.r1.operation_date, date(2026, 5, 1))
+
+class AdvanceCashTimingTests(TestCase):
+    """预收预付现金口径：真实收付=分期收付日期，发生年月仅为合作归属维度。
+
+    一条 1月发生（合作）的预收分 3月/4月 两期到账：现金流/资金窗口/区间筛选/
+    KPI 都必须按 3月600、4月400 计，而不是按主表日期整笔 1000 计入 1月。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900002100', name='AdvTiming', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.rec = AdvanceRecord.objects.create(
+            direction='预收', delivery_dept=self.dept, counterparty='合作客户A',
+            occur_year=2026, occur_month=1, occur_date=date(2026, 1, 5),
+            advance_amount=Decimal('1000'), balance_amount=Decimal('1000'))
+        AdvanceInstallment.objects.create(advance_record=self.rec, install_no=1,
+                                          amount=Decimal('600'), occur_date=date(2026, 3, 10))
+        AdvanceInstallment.objects.create(advance_record=self.rec, install_no=2,
+                                          amount=Decimal('400'), occur_date=date(2026, 4, 10))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_cash_flow_window_uses_installment_dates(self):
+        from ar.views import cash_flow_window
+        w1 = cash_flow_window([self.dept], date(2026, 1, 1), date(2026, 1, 31))
+        self.assertEqual(w1['advance_received'], Decimal('0'))   # 1月只是合作发生，无现金
+        w3 = cash_flow_window([self.dept], date(2026, 3, 1), date(2026, 3, 31))
+        self.assertEqual(w3['advance_received'], Decimal('600'))
+        w34 = cash_flow_window([self.dept], date(2026, 3, 1), date(2026, 4, 30))
+        self.assertEqual(w34['advance_received'], Decimal('1000'))
+
+    def test_cashflow_endpoint_buckets_by_installment_month(self):
+        resp = self.client.get('/api/pk/ar/cashflow',
+                               {'start_date': '2026-01-01', 'end_date': '2026-04-30',
+                                'depts': self.dept}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        by_month = dict(zip(d['months'], d['totals']['advance_received']))
+        self.assertEqual(by_month.get('2026-01', 0), 0)
+        self.assertEqual(by_month.get('2026-03'), 600.0)
+        self.assertEqual(by_month.get('2026-04'), 400.0)
+
+    def test_list_range_filter_matches_installments(self):
+        r = self.client.get('/api/pk/ar/advances',
+                            {'start_date': '2026-03-01', 'end_date': '2026-03-31'},
+                            **self.auth()).json()['data']
+        self.assertEqual(len(r['items']), 1)          # 3月有一期 → 命中
+        r2 = self.client.get('/api/pk/ar/advances',
+                             {'start_date': '2026-01-01', 'end_date': '2026-01-31'},
+                             **self.auth()).json()['data']
+        self.assertEqual(len(r2['items']), 0)         # 1月无实际收付 → 不命中
+
+    def test_kpi_amount_is_in_range_installment_sum(self):
+        k = self.client.get('/api/pk/ar/advances/kpi',
+                            {'start_date': '2026-03-01', 'end_date': '2026-03-31'},
+                            **self.auth()).json()['data']
+        self.assertEqual(k['预收']['advance_amount'], 600.0)   # 区间实际收付，非整笔 1000
+        k_all = self.client.get('/api/pk/ar/advances/kpi', **self.auth()).json()['data']
+        self.assertEqual(k_all['预收']['advance_amount'], 1000.0)  # 无区间=全额

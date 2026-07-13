@@ -36,10 +36,11 @@ def _pool_actual_flows(dept, start, end):
     daily = _dec(DailyReceipt.objects.filter(
         delivery_dept=dept, receipt_date__gt=start, receipt_date__lte=end)
         .aggregate(s=Sum('amount'))['s'])
-    adv = (AdvanceRecord.objects.filter(
-        delivery_dept=dept, occur_date__gt=start, occur_date__lte=end)
-        .values('direction').annotate(s=Sum('advance_amount')))
-    adv_map = {r['direction']: _dec(r['s']) for r in adv}
+    # 预收/预付按分期收付日期计现金（与 cash_flow_window 同口径修正）
+    adv = (AdvanceInstallment.objects.filter(
+        advance_record__delivery_dept=dept, occur_date__gt=start, occur_date__lte=end)
+        .values('advance_record__direction').annotate(s=Sum('amount')))
+    adv_map = {r['advance_record__direction']: _dec(r['s']) for r in adv}
     paid = _dec(PaymentInstallment.objects.filter(
         payment__department=dept, payment__deleted_at__isnull=True,
         pay_date__gt=start, pay_date__lte=end).aggregate(s=Sum('pay_amount'))['s'])

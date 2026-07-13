@@ -71,7 +71,7 @@ const size = ref(50)
 
 // 顶部全局关键字 + 与列头无重复的页级控件（实际收付时间区间/核销状态）。
 // 部门改由列头「交付部门」筛选，dept 不再出现于工具栏。
-// 时间维度按「款项日期」（实际收付现金事件日）筛选；默认不限（台账余额是全周期视角），
+// 时间维度按「分期收付日期」（真实现金事件日，命中任意一期即入选）筛选；默认不限（台账余额是全周期视角），
 // KPI/列表汇总/导出随区间联动（后端同一 _apply_advance_filters）。
 const filters = reactive({ start_date: '', end_date: '', writeoff_status: '', q: '' })
 
@@ -901,7 +901,7 @@ onMounted(async () => {
     <!-- KPI (advances only)：随时间区间/筛选联动的「筛选汇总」 -->
     <div v-if="isAdvanceMode && kpi" class="kpi-row">
       <div class="kpi"><div class="kpi-k">{{ dirLabel }}笔数<span class="kpi-range">{{ rangeLabel }}</span></div><div class="kpi-v">{{ kpi.count }} 笔</div></div>
-      <div v-if="show('adv_amount')" class="kpi"><div class="kpi-k">{{ dirLabel }}金额</div><div class="kpi-v"><Amt :v="kpi.advance_amount" :fmt="fmtAmt" /></div></div>
+      <div v-if="show('adv_amount')" class="kpi"><div class="kpi-k">{{ dirLabel }}{{ (filters.start_date || filters.end_date) ? '实际收付' : '金额' }}<span class="kpi-range">{{ rangeLabel }}</span></div><div class="kpi-v" :title="(filters.start_date || filters.end_date) ? '区间内按分期收付日期统计的实际收付合计（非记录整笔金额）' : ''"><Amt :v="kpi.advance_amount" :fmt="fmtAmt" /></div></div>
       <div v-if="show('adv_writeoff')" class="kpi"><div class="kpi-k">已核销</div><div class="kpi-v"><Amt :v="kpi.written_off" :fmt="fmtAmt" /><span class="kpi-sub">{{ kpi.writeoff_rate }}%</span></div></div>
       <div v-if="show('adv_writeoff') && !isReceive && Number(kpi.refunded) > 0" class="kpi"><div class="kpi-k">已退款</div><div class="kpi-v"><Amt :v="kpi.refunded" :fmt="fmtAmt" /></div></div>
       <div v-if="show('adv_writeoff')" class="kpi accent"><div class="kpi-k">未核销余额</div><div class="kpi-v"><Amt :v="kpi.balance" :fmt="fmtAmt" /></div></div>

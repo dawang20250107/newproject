@@ -27,6 +27,18 @@ def _advance_dept_filter(qs, request):
     return _ar_dept_filter(qs, request, shared_field='project__is_shared')
 
 
+def _advance_date_range(request):
+    """解析实际收付区间参数 → (start_date|None, end_date|None)。"""
+    sd = ed = None
+    s_raw = _normalize_date(request.GET.get('start_date'))
+    e_raw = _normalize_date(request.GET.get('end_date'))
+    if s_raw:
+        sd = datetime.date.fromisoformat(str(s_raw)[:10])
+    if e_raw:
+        ed = datetime.date.fromisoformat(str(e_raw)[:10])
+    return sd, ed
+
+
 def _apply_advance_filters(qs, request):
     """Shared dimension filters for advance list + kpi + summary."""
     direction = request.GET.get('direction', '').strip()
@@ -44,25 +56,19 @@ def _apply_advance_filters(qs, request):
     month = request.GET.get('month', '').strip()
     if month:
         qs = qs.filter(occur_month=int(month))
-    # 实际收付时间区间（款项日期 occur_date，现金事件日）：列表/KPI/汇总/导出共用。
-    # 存量行 occur_date 可能为空（仅有发生年月）——按 (occur_year, occur_month) 落月兜底，
-    # 避免这些记录被日期筛选悄悄排除、区间合计凭空变小。
-    s_raw = _normalize_date(request.GET.get('start_date'))
-    e_raw = _normalize_date(request.GET.get('end_date'))
-    if s_raw or e_raw:
-        dated = Q(occur_date__isnull=False)
-        undated = Q(occur_date__isnull=True)
-        if s_raw:
-            sd = datetime.date.fromisoformat(str(s_raw)[:10])
-            dated &= Q(occur_date__gte=sd)
-            undated &= (Q(occur_year__gt=sd.year)
-                        | Q(occur_year=sd.year, occur_month__gte=sd.month))
-        if e_raw:
-            ed = datetime.date.fromisoformat(str(e_raw)[:10])
-            dated &= Q(occur_date__lte=ed)
-            undated &= (Q(occur_year__lt=ed.year)
-                        | Q(occur_year=ed.year, occur_month__lte=ed.month))
-        qs = qs.filter(dated | undated)
+    # 实际收付时间区间：按「分期收付日期」筛（真实现金事件日）——主表
+    # occur_year/month 是合作发生年月（业务归属维度，由上方 year/month 参数承担），
+    # 一条记录可分多期收付，区间命中任意一期即入选。历史数据已由迁移 0032 回填
+    # 分期，凡有金额必有分期。用 id 子查询而非反向 JOIN，避免多期记录在下游
+    # Sum/count 里被重复计。
+    sd, ed = _advance_date_range(request)
+    if sd or ed:
+        inst = AdvanceInstallment.objects.all()
+        if sd:
+            inst = inst.filter(occur_date__gte=sd)
+        if ed:
+            inst = inst.filter(occur_date__lte=ed)
+        qs = qs.filter(id__in=inst.values('advance_record_id'))
     counterparty = request.GET.get('counterparty', '').strip()
     if counterparty:
         qs = qs.filter(counterparty__icontains=counterparty)
@@ -362,12 +368,24 @@ def advances_kpi(request):
     qs = _apply_advance_filters(
         _advance_dept_filter(AdvanceRecord.objects.all(), request), request)
 
+    sd, ed = _advance_date_range(request)
+
     def _block(direction):
         d_qs = qs.filter(direction=direction)
         agg = d_qs.aggregate(amt=Sum('advance_amount'), wo=Sum('written_off_amount'),
                              rf=Sum('refunded_amount'),
                              bal=Sum('balance_amount', filter=Q(balance_amount__gt=0)))
         total_amt = float(agg['amt'] or 0)
+        # 金额卡=区间内「实际收付」合计（分期口径）；无区间时分期合计=记录全额，
+        # 两者一致。核销率/核销/退款/余额是记录级存量口径，仍按命中记录全额算。
+        cash_amt = total_amt
+        if sd or ed:
+            inst = AdvanceInstallment.objects.filter(advance_record__in=d_qs)
+            if sd:
+                inst = inst.filter(occur_date__gte=sd)
+            if ed:
+                inst = inst.filter(occur_date__lte=ed)
+            cash_amt = float(inst.aggregate(s=Sum('amount'))['s'] or 0)
         wo = float(agg['wo'] or 0)
         rf = float(agg['rf'] or 0)
         bal = float(agg['bal'] or 0)
@@ -376,7 +394,7 @@ def advances_kpi(request):
         overdue_amt = float(overdue_qs.aggregate(s=Sum('balance_amount'))['s'] or 0)
         return {
             'count': d_qs.count(),
-            'advance_amount': total_amt,
+            'advance_amount': cash_amt,
             'written_off': wo,
             'refunded': rf,
             'balance': bal,
