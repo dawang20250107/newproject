@@ -13,6 +13,19 @@ from paikuan.models import JobPermission, PaikuanUser
 from paikuan.views import DEPARTMENTS, default_job_config, make_token, _invalidate_perm_cache
 
 
+def mk_advance(**kw):
+    """测试辅助：创建预收/预付并同步生成首笔收付分期——复刻生产不变量
+    （迁移 0032 回填 + 各创建路径均同步建分期）。现金口径按分期收付日期聚合，
+    直接裸建主表会让该笔在现金统计中不可见。"""
+    rec = AdvanceRecord.objects.create(**kw)
+    amt = kw.get('advance_amount') or Decimal('0')
+    if amt:
+        AdvanceInstallment.objects.create(
+            advance_record=rec, install_no=1, amount=amt,
+            occur_date=kw.get('occur_date') or date(kw.get('occur_year', 2000), kw.get('occur_month', 1), 1))
+    return rec
+
+
 class ARPermissionRegressionTests(TestCase):
     def setUp(self):
         _invalidate_perm_cache()
@@ -189,7 +202,7 @@ class ARPermissionRegressionTests(TestCase):
         真实现金：5 月 −1000、6 月 −300。冲抵的 1000 不得把 6 月的 300 真实付现抹掉。"""
         from paikuan.models import Payment, PaymentInstallment
         admin = self.make_user('13900000388', 'finance_director', role='super_admin')
-        adv = AdvanceRecord.objects.create(
+        adv = mk_advance(
             direction='预付', project=None, delivery_dept=self.dept, counterparty='供应商Y',
             occur_year=2026, occur_month=5, occur_date=date(2026, 5, 1),
             advance_amount=Decimal('1000'))
@@ -1543,10 +1556,10 @@ class AdvanceModuleTests(TestCase):
     # ── 现金流打通：净额含预收(流入)与预付(流出) ───────────────────────────────
     def test_cashflow_includes_advances(self):
         admin = self.make_user('13911100004', 'finance_director', role='super_admin')
-        AdvanceRecord.objects.create(direction='预收', delivery_dept=self.dept,
+        mk_advance(direction='预收', delivery_dept=self.dept,
                                      counterparty='客户甲', occur_year=2026, occur_month=3,
                                      occur_date=date(2026, 3, 10), advance_amount=Decimal('100000'))
-        AdvanceRecord.objects.create(direction='预付', delivery_dept=self.dept,
+        mk_advance(direction='预付', delivery_dept=self.dept,
                                      counterparty='供应商乙', occur_year=2026, occur_month=3,
                                      occur_date=date(2026, 3, 12), advance_amount=Decimal('30000'))
         resp = self.client.get('/api/pk/ar/cashflow',
@@ -1678,10 +1691,10 @@ class AdvanceModuleTests(TestCase):
         self.assertTrue(len(r.content) > 100)
 
     def test_advance_list_actual_date_range_filter_and_summary(self):
-        """预收预付按实际收付日(款项日期)区间筛选:列表/汇总/KPI 同口径联动;
-        occur_date 为空的存量行按发生年月落月兜底,不被日期筛选悄悄排除。"""
+        """预收预付按分期收付日期(真实现金事件日)区间筛选:列表/汇总/KPI 同口径联动;
+        mk_advance 对 occur_date 为空的行按发生年月月初落分期,命中任意一期即入选。"""
         admin = self.make_user('13911100095', 'finance_director', role='super_admin')
-        mk = lambda amt, y, m, od: AdvanceRecord.objects.create(
+        mk = lambda amt, y, m, od: mk_advance(
             direction='预收', delivery_dept=self.dept, counterparty='客户T',
             occur_year=y, occur_month=m, occur_date=od, advance_amount=Decimal(amt))
         mk('100', 2026, 5, date(2026, 5, 10))    # 区间内(有日期)
@@ -1807,7 +1820,7 @@ class AdvanceModuleTests(TestCase):
         admin = self.make_user('13911100010', 'finance_director', role='super_admin')
         proj = self.create_project()
         ar = self._ar_record(proj, 100000)
-        adv = AdvanceRecord.objects.create(
+        adv = mk_advance(
             direction='预收', project=proj, delivery_dept=self.dept, counterparty='客户甲',
             occur_year=2026, occur_month=3, occur_date=date(2026, 3, 10),
             advance_amount=Decimal('100000'))
@@ -2734,11 +2747,11 @@ class CashPoolTests(TestCase):
                                 estimated_amount=Decimal('300'),
                                 due_date=self.today + self.td(days=15))
         # 预收50 / 预付30
-        AdvanceRecord.objects.create(delivery_dept='运输事业部', direction='预收',
+        mk_advance(delivery_dept='运输事业部', direction='预收',
                                      occur_year=2026, occur_month=5,
                                      occur_date=self.today - self.td(days=5),
                                      advance_amount=Decimal('50'))
-        AdvanceRecord.objects.create(delivery_dept='运输事业部', direction='预付',
+        mk_advance(delivery_dept='运输事业部', direction='预付',
                                      occur_year=2026, occur_month=5,
                                      occur_date=self.today - self.td(days=3),
                                      advance_amount=Decimal('30'))
@@ -2817,7 +2830,7 @@ class CashPoolTests(TestCase):
         cfg = CashPoolConfig.objects.create(
             delivery_dept='劳务事业部', initial_date=self.today - self.td(days=60),
             initial_amount=Decimal('10000'))
-        adv = AdvanceRecord.objects.create(
+        adv = mk_advance(
             delivery_dept='劳务事业部', direction='预付', occur_year=2026, occur_month=5,
             occur_date=self.today - self.td(days=30), advance_amount=Decimal('1000'))
         pay = PkPayment.objects.create(
