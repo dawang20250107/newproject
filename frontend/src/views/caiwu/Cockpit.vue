@@ -20,6 +20,7 @@ import ProfitMekko from '../../components/caiwu/ProfitMekko.vue'
 import { streamAiAnalysis } from '../../utils/aiStream.js'
 import { renderMarkdown } from '../../utils/markdown.js'
 import { downloadBlob } from '../../utils/download.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import EmptyState from '../../components/EmptyState.vue'
 import AiMark from '../../components/AiMark.vue'
 import { useToast } from '../../composables/useToast.js'
@@ -64,6 +65,8 @@ const panelComp = computed(() => ({
   target: TargetDecompPanel, actions: ActionPanel, pool: CashPoolPanel,
   report: PeriodicReportPanel,
 }[mainTab.value] || null))
+// 主 Tab 记忆：跨会话恢复上次停留的分析视角；恢复时机与校验见 onMounted
+watch(mainTab, v => savePref('cw_cockpit_tab', v))
 
 // ── P4 行动项计数（驱动 Tab 角标）────────────────────────────────────────────
 const actionCounts = ref({ open: 0, in_progress: 0, done: 0, dismissed: 0 })
@@ -117,6 +120,9 @@ async function createActionFromSignal(a) {
 const year = ref(lastMonthCST().year)
 const month = ref(lastMonthCST().month)
 const selectedBu = ref('')
+// 期间/BU 记忆：带存档月份戳，恢复只在同一自然月内生效（防月初粘住旧期间），见 onMounted
+watch([year, month, selectedBu], () => savePref('cw_cockpit_period',
+  { year: year.value, month: month.value, bu: selectedBu.value, savedAt: new Date().toISOString().slice(0, 7) }))
 
 const loading = ref(false)
 const loadErr = ref('')
@@ -830,9 +836,17 @@ const engineLine = computed(() => {
 
 onMounted(() => {
   restoreChat()
-  // ?tab= 直达指定分析 Tab（如报表矩阵「净利归因」跳转 tab=charts）
-  const qt = route.query.tab
-  if (qt && MAIN_TABS.value.some(t => t.key === qt)) mainTab.value = qt
+  // ?tab= 直达指定分析 Tab（如报表矩阵「净利归因」跳转 tab=charts）优先于记忆；
+  // 两者都须仍在当前 Tab 列表内（权限收缩后键失效），否则留在默认总览
+  const qt = [route.query.tab, loadPref('cw_cockpit_tab')]
+    .find(k => k && MAIN_TABS.value.some(t => t.key === k))
+  if (qt) mainTab.value = qt
+  // 期间/BU 记忆：仅同一自然月内恢复，跨月回到默认上月；BU 须仍在可见范围内
+  const p = loadPref('cw_cockpit_period')
+  if (p && p.savedAt === new Date().toISOString().slice(0, 7)) {
+    if (years.includes(p.year) && months.includes(p.month)) { year.value = p.year; month.value = p.month }
+    if (p.bu && accessibleBus.value.includes(p.bu)) selectedBu.value = p.bu
+  }
   load()
 })
 

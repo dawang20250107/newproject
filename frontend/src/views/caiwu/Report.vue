@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
@@ -13,6 +13,7 @@ import EmptyState from '../../components/EmptyState.vue'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText } from '../../utils/clipboard.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import { useToast } from '../../composables/useToast.js'
 
 const auth = useCaiwuAuth()
@@ -34,6 +35,12 @@ const accessibleBus = computed(() => {
   if (auth.isAdmin) return BUSINESS_UNITS
   return (auth.user?.departments || []).filter(d => BUSINESS_UNITS.includes(d))
 })
+// 记忆年份/事业部（cw_analysis_prefs 与指标管理/目标分解共用一份；
+// 脏值回退默认，route.query 在 mounted 里后覆盖 → 始终优先于记忆）
+const pref = loadPref('cw_analysis_prefs') || {}
+if (years.includes(pref.year)) year.value = pref.year
+if (pref.bu && accessibleBus.value.includes(pref.bu)) selectedBu.value = pref.bu
+watch([year, selectedBu], ([y, bu]) => savePref('cw_analysis_prefs', { year: y, bu }))
 const hasFullAccess = computed(() => auth.isAdmin)
 const aiScope = computed(() => {
   if (selectedBu.value) return [selectedBu.value]

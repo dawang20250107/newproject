@@ -26,6 +26,7 @@ import { useRangeSelection } from '../../composables/useRangeSelection.js'
 import { useFileDrop } from '../../composables/useFileDrop.js'
 import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import { useModalEsc } from '../../composables/useModalEsc.js'
 // 重型抽屉/弹窗按需加载：仅打开活动抽屉 / 导入预检时才拉取其代码块，
 // 大幅瘦身应收明细主路由块（ActivityPanel 单文件 1.7k 行）。
@@ -62,7 +63,9 @@ const reqParams = () => (conditions.value.length
 // focus 由后端按与 KPI 进度条一致的口径过滤；全部明细不受影响。
 const FOCUS_TABS = ['reconciliation', 'invoice', 'collection']
 const isFocusTab = computed(() => FOCUS_TABS.includes(activeTab.value))
-const pendingOnly = ref(true)   // 进入聚焦页默认仅待处理
+// 口径记忆：仅严格 false 视为「全部」，脏数据/未存过一律回退默认「待处理」
+const loadPendingOnly = () => loadPref('ar_pending_only', true) !== false
+const pendingOnly = ref(loadPendingOnly())   // 进入聚焦页恢复上次口径，默认仅待处理
 const focusParam = computed(() => (isFocusTab.value && pendingOnly.value) ? activeTab.value : '')
 // 记录集作用域参数：reqParams 叠加聚焦过滤，供列表/导出/批量操作共用，使三者口径一致。
 // KPI 例外——它要对全集算分母（完成度/待办数），故仍用 reqParams（不加 focus）。
@@ -630,6 +633,12 @@ function buildParams(base = {}) {
 
 const showModal = ref(false)
 const editRec = ref(null)
+// 弹窗打开即可打字：聚焦首个可输入框（跳过禁用项与日期控件）——
+// 新建落在「项目搜索」，编辑（项目框禁用）落在「预估上账金额」
+const recModalBody = ref(null)
+function focusRecModal() {
+  nextTick(() => recModalBody.value?.querySelector('input:not([disabled]):not([type="date"])')?.focus())
+}
 const saving = ref(false)
 const recForm = reactive({
   project_id: '', operation_date: todayCST(),
@@ -725,6 +734,15 @@ function fillPayFull() {
   if (v > 0) payForm.amount = v.toFixed(2)
 }
 function onPayAmtKeydown(e) { if (e.key === '=') { e.preventDefault(); fillPayFull() } }
+// 回款习惯记忆：方式/账户（承兑汇票时含承兑状态）沿用上次保存值，单笔/批次共用；
+// 金额/日期/备注每次重置。方式必须在当前选项内，脏数据静默回退默认值。
+function applyPayLast(form) {
+  const last = loadPref('ar_pay_last')
+  if (!last || !COLLECTION_METHODS.includes(last.method)) return
+  form.method = last.method
+  if (typeof last.account === 'string') form.account = last.account
+  if (last.method === '承兑汇票' && DRAFT_STATUSES.includes(last.draft_status)) form.draft_status = last.draft_status
+}
 const paySaving = ref(false)
 // 录入回款时联动：该项目可用预收（只读提示，便于判断是否以预收冲抵应收）
 const payAdvance = ref(null)
@@ -1388,9 +1406,9 @@ function switchTab(key) {
   else if (key === 'offset') loadOffsetWorkbench()
   else if (key === 'batch') loadBatches()
   else {
-    // DATA_TABS（全部/对账/开票/回款）：进入聚焦页默认仅待办；
+    // DATA_TABS（全部/对账/开票/回款）：进入聚焦页恢复上次口径（默认仅待办）；
     // 当有效 focus 过滤变化（进/出聚焦页）时需重新拉数，否则沿用已加载集仅切列。
-    if (FOCUS_TABS.includes(key)) pendingOnly.value = true
+    if (FOCUS_TABS.includes(key)) pendingOnly.value = loadPendingOnly()
     if (!DATA_TABS.includes(prev) || FOCUS_TABS.includes(key) || FOCUS_TABS.includes(prev)) {
       clearSelection()
       load(true)
@@ -1398,10 +1416,11 @@ function switchTab(key) {
   }
 }
 
-// 聚焦页「待处理 ｜ 全部」切换：改变 focus 口径后重拉当前集
+// 聚焦页「待处理 ｜ 全部」切换：改变 focus 口径后重拉当前集；口径跨会话记忆
 function setPendingOnly(v) {
   if (pendingOnly.value === v) return
   pendingOnly.value = v
+  savePref('ar_pending_only', v)
   clearSelection()
   load(true)
 }
@@ -1472,6 +1491,7 @@ function openCreate() {
   })
   adjList.value = []
   showModal.value = true
+  focusRecModal()
   projectKeyword.value = ''
   searchProjects('')  // initial page of projects
 }
@@ -1492,6 +1512,7 @@ function openEdit(rec) {
   adjList.value = rec.adjustments || []
   Object.assign(adjForm, { amount: '', reason: '', date: todayCST() })
   showModal.value = true
+  focusRecModal()
 }
 
 // 批次号三种来源：auto=系统生成（客户简称-日期-序号，默认推荐，免人为编码）；
@@ -1623,6 +1644,7 @@ async function undoBatchInvoice(ev) {
 function openBatchPay(b) {
   batchTarget.value = b
   Object.assign(batchPayForm, { amount: '', payment_date: todayCST(), method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, notes: '', overflow_to_advance: false })
+  applyPayLast(batchPayForm)
   batchPayResult.value = null
   fetchBatchDetail(b.batch_no).catch(() => {})
   showBatchPay.value = true
@@ -1631,6 +1653,7 @@ async function doBatchPay() {
   batchActing.value = true
   try {
     const res = await ar.batchPayment(batchTarget.value.batch_no, { ...batchPayForm })
+    savePref('ar_pay_last', { method: batchPayForm.method, account: batchPayForm.account, draft_status: batchPayForm.draft_status })
     batchPayResult.value = res.data   // 留在弹窗里展示分摊回执
     await refreshAfterBatchAction(batchTarget.value.batch_no)
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
@@ -1822,6 +1845,7 @@ async function doBatchWriteoff() {
 function openAddPayment(rec) {
   payRec.value = rec
   Object.assign(payForm, { amount: '', payment_date: todayCST(), notes: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, counterparty_dept: '' })
+  applyPayLast(payForm)
   payAdvance.value = null
   advWoSel.value = null
   showPayModal.value = true
@@ -1892,6 +1916,8 @@ async function savePayment() {
       account: isColl ? payForm.account : '',
       draft_status: (isColl && payForm.method === '承兑汇票') ? payForm.draft_status : '' }
     await ar.addPayment(payRec.value.id, payload)
+    // 只有「回款」带方式/账户，内部往来核销不覆盖已记住的回款习惯
+    if (isColl) savePref('ar_pay_last', { method: payForm.method, account: payForm.account, draft_status: payForm.draft_status })
     toast.success(payForm.source === '内部往来' ? '内部往来核销已保存' : '回款已保存')
     showPayModal.value = false; await load()
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
@@ -2084,7 +2110,7 @@ onMounted(async () => {
     else if (savedTab === 'dunning') loadDunning(true)
     else if (savedTab === 'offset') loadOffsetWorkbench()
     else if (savedTab === 'batch') loadBatches()
-    else { if (FOCUS_TABS.includes(savedTab)) pendingOnly.value = true; load() }
+    else { if (FOCUS_TABS.includes(savedTab)) pendingOnly.value = loadPendingOnly(); load() }
   } else {
     load()
   }
@@ -3023,7 +3049,7 @@ function clearFilters() {
             <h3>{{ editRec ? '编辑应收记录' : '新增应收' }}</h3>
             <button class="modal-close" @click="showModal = false">✕</button>
           </div>
-          <div class="modal-body">
+          <div ref="recModalBody" class="modal-body">
             <div class="form-grid">
               <label class="form-field span2">
                 <span>关联项目 <em>*</em></span>

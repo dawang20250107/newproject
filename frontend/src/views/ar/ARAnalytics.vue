@@ -11,6 +11,7 @@ import BaseChart from '../../components/ar/BaseChart.vue'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 
 defineProps({ embedded: { type: Boolean, default: false } })
 
@@ -21,6 +22,11 @@ const selectedDept = ref('')
 const selectedYear = ref(yearCST())
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
+
+// 记忆上次的事业部（本机偏好；不在可见范围则回退全部。年份不记忆，始终默认当年）
+const savedDept = loadPref('ar_ana_dept')
+if (savedDept && accessibleDepts.value.includes(savedDept)) selectedDept.value = savedDept
+watch(selectedDept, v => savePref('ar_ana_dept', v))
 
 // ── Chart data ────────────────────────────────────────────────────────────────
 const agingData = ref(null)

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import { useToast } from '../../composables/useToast.js'
 import { confirmDlg } from '../../composables/confirm.js'
 import { useAuthStore } from '../../stores/auth.js'
@@ -17,6 +17,7 @@ import ProjectShortNamePicker from '../../components/ProjectShortNamePicker.vue'
 import { downloadBlob } from '../../utils/download.js'
 import Amt from '../../components/Amt.vue'
 import { useModalEsc } from '../../composables/useModalEsc.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -154,6 +155,7 @@ const formOpen = ref(false)
 const editingId = ref(null)
 const saving = ref(false)
 const form = reactive({ delivery_dept: '', receipt_date: todayCST(), amount: '', source: '项目收款', project_id: '', advance_id: '', method: '现金', account: '', payer: '', notes: '' })
+const amountInp = ref(null)
 const isProjectSource = computed(() => form.source === '项目收款')
 const isRefundSource = computed(() => form.source === '预付退款')
 const projectKw = ref('')   // 关联项目模糊搜索输入的显示值
@@ -177,7 +179,15 @@ function openCreate() {
   editingId.value = null
   projectKw.value = ''; refundAdvances.value = []
   Object.assign(form, { delivery_dept: filter.dept || depts.value[0] || '', receipt_date: todayCST(), amount: '', source: '项目收款', project_id: '', advance_id: '', method: '现金', account: '', payer: '', notes: '' })
+  // 录入记忆：沿用上次新增的来源/方式/账户；来源与方式须仍在当前预设里，失效则保持默认
+  const last = loadPref('ar_dr_last')
+  if (last) {
+    if (sourcePresets.value.includes(last.source)) form.source = last.source
+    if (methodPresets.value.includes(last.method)) form.method = last.method
+    if (typeof last.account === 'string') form.account = last.account
+  }
   formOpen.value = true
+  nextTick(() => amountInp.value?.focus())
 }
 function openEdit(r) {
   editingId.value = r.id
@@ -201,7 +211,12 @@ async function save() {
   try {
     const body = { ...form, project_id: isProjectSource.value ? (form.project_id || null) : null,
                    advance_id: isRefundSource.value ? (form.advance_id || null) : null }
-    if (editingId.value) await ar.updateDailyReceipt(editingId.value, body); else await ar.createDailyReceipt(body)
+    if (editingId.value) { await ar.updateDailyReceipt(editingId.value, body) }
+    else {
+      await ar.createDailyReceipt(body)
+      // 录入记忆：下次新增默认沿用本次的来源/方式/账户
+      savePref('ar_dr_last', { method: form.method, account: form.account, source: form.source })
+    }
     toast.success('已保存'); formOpen.value = false; load()
   } catch (e) { toast.error(e?.msg || e?.error || '保存失败') } finally { saving.value = false }
 }
@@ -241,7 +256,7 @@ async function exportXlsx(selectedOnly = false) {
         <select v-model="filter.dept" class="inp mini"><option value="">全部事业部</option><option v-for="d in depts" :key="d" :value="d">{{ d }}</option></select>
         <select v-model="filter.source" class="inp mini"><option value="">全部来源</option><option v-for="s in Object.keys(bySource)" :key="s" :value="s">{{ s }}</option></select>
         <select v-model="filter.method" class="inp mini"><option value="">全部方式</option><option v-for="m in Object.keys(byMethod)" :key="m" :value="m">{{ m }}</option></select>
-        <input v-model="filter.q" class="inp search" placeholder="搜付款方 / 摘要 / 项目" @input="onSearchInput" @keyup.enter="load" />
+        <input v-model="filter.q" data-search class="inp search" placeholder="搜付款方 / 摘要 / 项目" @input="onSearchInput" @keyup.enter="load" />
         <button class="btn ghost sm" :disabled="exporting" @click="exportXlsx(false)">{{ exporting ? '导出中…' : '导出' }}</button>
         <button v-if="canWrite" class="btn-hero" @click="openCreate"><span>＋</span> 新增收款</button>
       </div>
@@ -349,7 +364,7 @@ async function exportXlsx(selectedOnly = false) {
               <PillPicker v-model="form.method" :presets="methodPresets" placeholder="自定义方式，如 支付宝" />
             </div>
             <div class="grid2">
-              <div class="frow"><label>收款金额 <i>*</i></label><input v-model="form.amount" type="number" step="0.01" class="inp big-amt" placeholder="0.00" /></div>
+              <div class="frow"><label>收款金额 <i>*</i></label><input ref="amountInp" v-model="form.amount" type="number" step="0.01" class="inp big-amt" placeholder="0.00" /></div>
               <div class="frow"><label>收款账户</label><input v-model="form.account" class="inp" placeholder="如 微信-结算001" /></div>
             </div>
             <div class="frow"><label>付款方</label><input v-model="form.payer" class="inp" placeholder="选填" /></div>

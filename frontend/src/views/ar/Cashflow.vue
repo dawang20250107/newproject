@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, reactive, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, reactive, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
@@ -9,6 +9,7 @@ import DateRangeChips from '../../components/DateRangeChips.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useToast } from '../../composables/useToast.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import { downloadBlob } from '../../utils/download.js'
 import { fmtCompact } from '../../utils/format.js'
 import { HIDE_OVERLAP } from '../../utils/chartTheme.js'
@@ -102,6 +103,9 @@ const onScopeChange = () => {
   load()
 }
 
+// 部门记忆：跨会话沿用上次选的事业部；日期区间不记——过期区间比默认本月更误导
+watch(() => filters.dept, d => savePref('ar_cf_dept', d))
+
 // 导出 Excel：与页面完全同参数（区间+部门作用域），后端同口径共用 _cashflow_payload
 // 图表下钻:点击月度图任一柱/点 → 月度明细表定位并高亮该月
 const hiYm = ref('')
@@ -133,7 +137,13 @@ async function exportXlsx() {
   } catch (e) { toast.error(e?.error || '导出失败，请重试') }
   finally { exporting.value = false }
 }
-onMounted(() => { load(); window.addEventListener('pk:depts-changed', onScopeChange) })
+onMounted(() => {
+  // 部门记忆：须仍在当前可选范围内（权限变化后失效值静默回落「全部」）
+  const dept = loadPref('ar_cf_dept')
+  if (dept && accessibleDepts.value.includes(dept)) filters.dept = dept
+  load()
+  window.addEventListener('pk:depts-changed', onScopeChange)
+})
 onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChange))
 
 // ── KPI roll-ups (reactive — recompute whenever cfData changes after load()) ────

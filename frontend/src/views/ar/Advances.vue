@@ -1,6 +1,6 @@
 <script setup>
 import { confirmDlg } from '../../composables/confirm.js'
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { useToast } from '../../composables/useToast.js'
 import { useAuthStore } from '../../stores/auth.js'
@@ -22,6 +22,7 @@ import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import { useModalEsc } from '../../composables/useModalEsc.js'
 import Pager from '../../components/Pager.vue'
 
@@ -29,7 +30,7 @@ const toast = useToast()
 const auth = useAuthStore()
 const route = useRoute()
 
-const direction = ref('预收')          // '预收' | '预付' | 'suppliers'
+const direction = ref('预收')          // '预收' | '预付' | 'diff' | 'suppliers'
 const projectFilter = ref(null)        // { id, label } or null
 const items = ref([])
 const total = ref(0)
@@ -312,6 +313,9 @@ function setDiffView(v) {
   diffView.value = v
   v === 'project' ? loadDiff() : loadTimeline()
 }
+// 方向/视图记忆：记住上次停留的 Tab 与差异视角，下次进页沿用（route.query 指定时仍以其为准）
+watch([direction, diffView],
+      () => savePref('ar_adv_state', { direction: direction.value, diffView: diffView.value }))
 async function exportTimeline() {
   timelineExporting.value = true
   try {
@@ -359,6 +363,7 @@ const form = reactive({
 
 const projects = ref([])
 const projectKeyword = ref('')
+const projKwInp = ref(null)     // 新增弹窗打开后自动聚焦的首个可编辑控件
 const showProjList = ref(false)
 let projectTimer = null
 async function searchProjects(kw) {
@@ -392,8 +397,12 @@ function onProjBlur() { setTimeout(() => { showProjList.value = false }, 160) }
 
 function openCreate() {
   editRec.value = null
+  // 录入记忆：沿用上次新增的交付部门；已不在可选部门内则回退第一个（选项目后仍以项目部门为准）
+  const lastDept = loadPref('ar_adv_last_dept', '')
   Object.assign(form, {
-    project_id: '', delivery_dept: accessibleDepts.value[0] || '', counterparty: '',
+    project_id: '',
+    delivery_dept: accessibleDepts.value.includes(lastDept) ? lastDept : (accessibleDepts.value[0] || ''),
+    counterparty: '',
     occur_year: yearCST(), occur_month: monthCST(), occur_date: todayCST(),
     advance_amount: '', expected_writeoff_date: '', notes: '',
   })
@@ -401,6 +410,7 @@ function openCreate() {
   autoCounterparty = ''
   searchProjects('')
   showModal.value = true
+  nextTick(() => projKwInp.value?.focus())
 }
 function openEdit(rec) {
   editRec.value = rec
@@ -422,7 +432,11 @@ async function save() {
     const payload = { direction: direction.value, ...form }
     if (!payload.project_id) delete payload.project_id
     if (editRec.value) await ar.updateAdvance(editRec.value.id, payload)
-    else await ar.createAdvance(payload)
+    else {
+      await ar.createAdvance(payload)
+      // 录入记忆：下次新增默认沿用本次交付部门
+      savePref('ar_adv_last_dept', form.delivery_dept)
+    }
     showModal.value = false
     await load()
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
@@ -806,9 +820,17 @@ onMounted(async () => {
   if (q.project_id) {
     projectFilter.value = { id: Number(q.project_id), label: q.project_no || `项目#${q.project_id}` }
   }
-  // 有默认方案则套用并由其触发加载；否则常规加载
+  // 方向/视图记忆：route.query 优先（direction / project_id 下钻均视为显式指定方向）；脏值回退默认
+  const saved = loadPref('ar_adv_state') || {}
+  if (['project', 'month', 'week'].includes(saved.diffView)) diffView.value = saved.diffView
+  if (!q.direction && !q.project_id &&
+      ['预收', '预付', 'diff', 'suppliers'].includes(saved.direction)) direction.value = saved.direction
+  // 有默认方案则套用并由其触发加载；否则常规加载。
+  // 恢复到差异/供应商 Tab 时方案加载不会触发对应视图，需按 switchDir 同款分支补加载
   const applied = await schemes.loadAndApplyDefault()
-  if (!applied) load(true)
+  if (direction.value === 'suppliers') loadSuppliers()
+  else if (direction.value === 'diff') diffView.value === 'project' ? loadDiff() : loadTimeline()
+  else if (!applied) load(true)
 })
 </script>
 
@@ -1131,7 +1153,7 @@ onMounted(async () => {
           <label class="fld full">
             <span>关联项目（可选，搜索选择；留空则仅填往来单位）</span>
             <div class="combo">
-              <input v-model="projectKeyword" class="inp" placeholder="搜索项目简称 / 编号…"
+              <input ref="projKwInp" v-model="projectKeyword" class="inp" placeholder="搜索项目简称 / 编号…"
                      @focus="showProjList = true" @input="onProjectKeywordInput" @blur="onProjBlur" />
               <button v-if="form.project_id || projectKeyword" type="button" class="combo-clear"
                       @mousedown.prevent="pickProject(null)">×</button>

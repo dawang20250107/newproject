@@ -17,6 +17,7 @@ import { useToast } from '../../composables/useToast.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import { useModalEsc } from '../../composables/useModalEsc.js'
 const toast = useToast()
 
@@ -36,6 +37,13 @@ const dateStart = ref(_monthStart(yearCST(), monthCST()))
 const dateEnd = ref(_monthEnd(yearCST(), monthCST()))
 
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
+
+// 记忆上次的 Tab / 事业部（本机偏好；脏值回退默认。日期区间不记忆，始终默认本月）
+const BUDGET_TABS = ['summary', 'compare', 'collection', 'payment', 'data']
+const savedState = loadPref('ar_budget_state') || {}
+if (BUDGET_TABS.includes(savedState.tab)) activeTab.value = savedState.tab
+if (savedState.dept && accessibleDepts.value.includes(savedState.dept)) selectedDept.value = savedState.dept
+watch([activeTab, selectedDept], ([tab, dept]) => savePref('ar_budget_state', { tab, dept }))
 
 const summary = ref(null)
 const collItems = ref([])

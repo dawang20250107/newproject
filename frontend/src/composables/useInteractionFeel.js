@@ -17,18 +17,21 @@ function isTyping() {
   const ae = document.activeElement
   return !!ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)
 }
+const SEARCH_SEL = 'input.search-input, input.global-search, input.qs-input, input[data-search]'
 const isVisible = el => !!el && el.offsetParent !== null && !el.disabled
 
 function onKeydown(e) {
   if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey
       && !isTyping() && !document.querySelector(OVERLAY_SEL)) {
-    const inp = [...document.querySelectorAll('input.search-input')].find(isVisible)
+    // 各页搜索框类名不一（search-input/global-search/qs-input），统一在此枚举——
+    // 修复「/」在付款/审批/应收明细等最高频页失效的问题
+    const inp = [...document.querySelectorAll(SEARCH_SEL)].find(isVisible)
     if (inp) { e.preventDefault(); inp.focus(); inp.select() }
     return
   }
   if (e.key === 'Escape') {
     const ae = document.activeElement
-    if (ae && ae.tagName === 'INPUT' && ae.classList.contains('search-input') && ae.value) {
+    if (ae && ae.tagName === 'INPUT' && ae.matches(SEARCH_SEL) && ae.value) {
       // 页面级 Esc 监听（useModalEsc/useEscClearSelection）对输入态本就让路；
       // 这里再截断后续 document 监听，确保这次 Esc 只做「清空搜索」一件事
       e.stopImmediatePropagation()

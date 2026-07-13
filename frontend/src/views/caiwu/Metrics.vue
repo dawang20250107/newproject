@@ -11,6 +11,7 @@ import EmptyState from '../../components/EmptyState.vue'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText } from '../../utils/clipboard.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import { useToast } from '../../composables/useToast.js'
 
 const auth = useCaiwuAuth()
@@ -85,6 +86,14 @@ const accessibleBus = computed(() => {
 })
 const editBus = computed(() => selectedBu.value ? [selectedBu.value] : accessibleBus.value)
 const canEdit = computed(() => auth.isAdmin || auth.canUpload)
+
+// 记忆年份/事业部（cw_analysis_prefs 与报表/目标分解共用一份；脏值回退默认。
+// 月份不记忆，始终默认上月。需在下方 loadTargets/loadMetrics 的 watch 注册前恢复，
+// 否则恢复赋值会触发重复请求）
+const pref = loadPref('cw_analysis_prefs') || {}
+if (years.includes(pref.year)) { reportYear.value = pref.year; targetYear.value = pref.year }
+if (pref.bu && accessibleBus.value.includes(pref.bu)) selectedBu.value = pref.bu
+watch([reportYear, selectedBu], ([y, bu]) => savePref('cw_analysis_prefs', { year: y, bu }))
 
 const toWan = (yuan) => (yuan == null ? '' : +(yuan / 10000).toFixed(2))
 const fromWan = (wan) => Math.round((parseFloat(wan) || 0) * 10000 * 100) / 100

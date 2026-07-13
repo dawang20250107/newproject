@@ -10,6 +10,7 @@ import { TOOLTIP } from '../../utils/chartTheme.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText } from '../../utils/clipboard.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import { useToast } from '../../composables/useToast.js'
 
 const props = defineProps({ embedded: Boolean, selectedBu: { type: String, default: '' } })
@@ -21,6 +22,12 @@ const err = ref('')
 const expandedBu = ref('')
 
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
+
+// 记忆年份（cw_analysis_prefs 与报表/指标管理共用一份；脏值回退当年）。
+// 本页只记年份：合并写回，避免覆盖其他页记忆的事业部（本页事业部由父组件传入）
+const pref = loadPref('cw_analysis_prefs') || {}
+if (years.includes(pref.year)) year.value = pref.year
+watch(year, y => savePref('cw_analysis_prefs', { ...loadPref('cw_analysis_prefs'), year: y }))
 
 const wan = v => v == null ? '—' : (v / 10000).toFixed(0) + '万'
 const fmtRate = r => r == null ? '—' : r.toFixed(1) + '%'
