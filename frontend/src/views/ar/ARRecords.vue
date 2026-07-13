@@ -2289,7 +2289,7 @@ function clearFilters() {
                 @change="onDateFieldChange">
           <option v-for="o in DATE_FIELD_OPTS" :key="o.key" :value="o.key">{{ o.label }}</option>
         </select>
-        <DateRangeChips v-model:start="opDateStart" v-model:end="opDateEnd"
+        <DateRangeChips v-model:start="opDateStart" v-model:end="opDateEnd" class="arr-tb-chips"
                         label="" initial="all" @change="applyOpDateRange" />
       </div>
       <!-- 合并指标条：左侧=本Tab进度/重点；右侧=当前筛选全集合计 -->
@@ -3850,10 +3850,12 @@ function clearFilters() {
 .metrics-bar { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; overflow-x: auto; margin-bottom: 4px; padding: 5px 10px; background: rgba(0,0,0,0.02); border-radius: 8px; flex-shrink: 0; }
 .arr-timebar { padding: 2px 0 6px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
 .arr-datefield-sel {
-  flex-shrink: 0; border: 1px solid rgba(150,120,100,0.3); border-radius: 8px;
-  background: var(--row-bg, #fff); padding: 3px 6px; font-size: 12px; font-weight: 600;
+  width: auto; flex: 0 0 auto;   /* 全局 select 有 100% 宽度规则，这里压回内容宽 */
+  border: 1px solid rgba(150,120,100,0.3); border-radius: 8px;
+  background: var(--row-bg, #fff); padding: 3px 22px 3px 8px; font-size: 12px; font-weight: 600;
   color: var(--text); cursor: pointer;
 }
+.arr-tb-chips { flex: 1 1 auto; min-width: 0; }   /* 区间预设组占满时间条剩余空间 */
 .bp-overflow { font-size: 12.5px; color: var(--text-2); padding: 8px 10px; border-radius: 8px;
   border: 1px dashed var(--border); transition: border-color .15s, background .15s; }
 .bp-overflow.hot { border-color: var(--amber-deep, #f57f17); background: rgba(245,127,23,.05); }
