@@ -4935,6 +4935,51 @@ class BulkSetDateTests(TestCase):
         self.r1.refresh_from_db()
         self.assertEqual(self.r1.operation_date, date(2026, 5, 1))
 
+class CashflowDraftBillParityTests(TestCase):
+    """未兑付承兑汇票现金口径：现金流分析与资金池同口径——都排除持票未兑付的承兑，
+    到「已承兑」才计入。避免用户对账时现金流回款 ≠ 资金池回款（应只差期初）。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900002200', name='DraftParity', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456'); admin.save()
+        self.token = make_token(admin)
+        proj = ARProject.objects.create(customer_name='票据客户', short_name='票据项目',
+                                        delivery_dept=self.dept, sales_contact='S', project_manager='M')
+        rec = ARRecord.objects.create(project=proj, operation_year=2026, operation_month=3,
+                                      estimated_amount=Decimal('5000'),
+                                      actual_invoice_amount=Decimal('5000'), invoice_date=date(2026, 3, 1))
+        # 银行转账回款 1000（现金）
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('1000'),
+                                 payment_date=date(2026, 3, 10), source='回款', method='银行转账')
+        # 未兑付承兑 2000（非可动用现金）
+        ARPayment.objects.create(ar_record=rec, payment_no=2, amount=Decimal('2000'),
+                                 payment_date=date(2026, 3, 12), source='回款',
+                                 method='承兑汇票', draft_status='未承兑')
+        # 已承兑 500（视同现金）
+        ARPayment.objects.create(ar_record=rec, payment_no=3, amount=Decimal('500'),
+                                 payment_date=date(2026, 3, 15), source='回款',
+                                 method='承兑汇票', draft_status='已承兑')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_cash_flow_window_excludes_pending_draft(self):
+        from ar.views import cash_flow_window
+        w = cash_flow_window([self.dept], date(2026, 3, 1), date(2026, 3, 31))
+        # 1000 银行 + 500 已承兑 = 1500；未兑付 2000 不计
+        self.assertEqual(w['collected'], Decimal('1500'))
+
+    def test_cashflow_endpoint_collected_excludes_pending_draft(self):
+        r = self.client.get('/api/pk/ar/cashflow',
+                            {'start_date': '2026-03-01', 'end_date': '2026-03-31', 'depts': self.dept},
+                            **self.auth()).json()['data']
+        self.assertEqual(r['totals']['collected'][0], 1500.0)
+
+
 class AdvanceCashTimingTests(TestCase):
     """预收预付现金口径：真实收付=分期收付日期，发生年月仅为合作归属维度。
 

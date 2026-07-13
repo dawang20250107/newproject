@@ -57,11 +57,14 @@ def _cashflow_payload(request):
 
     # AR collections by month across all requested depts.
     # 排除非现金来源（预收抵扣/内部往来）：其不构成现金流入，计入会虚增现金。
+    # 排除未兑付承兑汇票：持票未兑付不是可动用现金，与资金池「可动用货币资金」口径
+    # 对齐（现金流=资金池−期初，两者回款须同口径，否则用户对不平）。
     ar_coll = (ARPayment.objects
                .filter(payment_date__gte=start_date, payment_date__lte=end_date,
                        ar_record__delivery_dept__in=depts,
                        ar_record__deleted_at__isnull=True)
                .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
+               .exclude(pending_draft_q())
                .annotate(ym=TruncMonth('payment_date'))
                .values('ym', 'ar_record__delivery_dept')
                .annotate(collected=Sum('amount')))

@@ -51,15 +51,18 @@ def cash_flow_window(depts, start, end):
     """[start,end] 区间的经营现金净流量——全系统统一口径（驾驶舱「现金流分析」、
     周期报表「现金流情况」、预算管理「净现金流」共用，确保三处口径一致）：
 
-      流入 = 现金回款（剔除非现金来源：预收抵扣/内部往来）+ 预收
+      流入 = 现金回款（剔除非现金来源：预收抵扣/内部往来；剔除未兑付承兑汇票）+ 预收
       流出 = 实付分期 + 预付（预付核销为非现金结转，不计入）
       净额 = 流入 − 流出
 
+    「可动用货币资金」口径，与资金池一致（资金池 = 期初 + 本窗口净流）；未兑付
+    承兑汇票持票未到期，非可动用现金，故排除。
     返回 Decimal 字典；金额格式化由各调用方按需处理。"""
     coll = (ARPayment.objects
             .filter(ar_record__delivery_dept__in=depts, payment_date__gte=start, payment_date__lte=end,
                     ar_record__deleted_at__isnull=True)
             .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
+            .exclude(pending_draft_q())
             .aggregate(x=Sum('amount'))['x'] or Decimal('0'))
     # 排除已软删除的付款台账（回收站）：删除的付款不构成现金流出
     paid = (PaymentInstallment.objects
