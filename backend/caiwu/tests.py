@@ -2275,6 +2275,32 @@ class BatchUnpublishFlowTests(TestCase):
         b.refresh_from_db()
         self.assertEqual(b.status, 'published')
 
+    def test_upload_next_month_with_prior_published_no_500(self):
+        """回归：上月已发布批次时，本月上传不得 500。
+        _prev_published_kpis 曾用 float 金额喂回 _compute_pl_check（内部 Decimal 累加），
+        Decimal += float → TypeError → 上传接口 500。老用户按月上传到下月必现。"""
+        import io
+        # 先造并发布 5 月批次（构成「上月已发布」前提）
+        self._mk(status=ImportBatch.STATUS_PUBLISHED)   # 劳务事业部 2026-05 published
+        # 真实上传 6 月单期部门明细账（同事业部）
+        wb = Workbook()
+        ws = wb.active
+        ws.append(['核算维度明细账'])
+        ws.append(['账簿 : 主账簿'])
+        ws.append(['序号', '部门名称', '科目编码', '科目名称', '会计期间', '摘要', '借方', '贷方'])
+        ws.append([1, '一部', '6001.01', '主营业务收入', '2026年6期', '6月收入', 0, 5000])
+        ws.append([2, '一部', '6401.01', '主营业务成本', '2026年6期', '6月成本', 3000, 0])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0); buf.name = 'jun.xlsx'
+        r = self.client.post('/api/cw/batches/upload',
+                             {'bu': '劳务事业部', 'year': 2026, 'month': 6, 'file': buf},
+                             **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)   # 修复前此处 500
+        d = r.json()['data']
+        # 修复后 prev_kpis 正常返回上月（5月）对账 KPI，且本月 pl_check 计算无误
+        self.assertIsNotNone(d.get('prev_kpis'))
+        self.assertEqual(d['prev_kpis']['month'], 5)
+        self.assertTrue(d['pl_check']['kpis'])
+
     def test_published_delete_still_guarded_for_non_super(self):
         """常规角色不能直接删已发布批次（保持 409 引导先撤回），超管可强删。"""
         b = self._mk()

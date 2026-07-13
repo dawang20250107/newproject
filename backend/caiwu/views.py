@@ -1325,8 +1325,12 @@ def _compute_pl_check(parsed_rows):
     raw = defaultdict(Decimal)
     l2_totals = defaultdict(lambda: defaultdict(Decimal))
     for r in parsed_rows:
-        raw[r['l1_name']] += r['amount']
-        l2_totals[r['l1_name']][r['l2_name'] or '（无项目部）'] += r['amount']
+        # 金额统一转 Decimal 累加：调用方既有解析出的 Decimal，也有
+        # _prev_published_kpis 传来的 float（float(e.amount)）——直接 Decimal += float
+        # 会 TypeError 让整个上传返回 500（老用户上月已发布→本月上传时必现）。
+        amt = r['amount'] if isinstance(r['amount'], Decimal) else Decimal(str(r['amount'] or 0))
+        raw[r['l1_name']] += amt
+        l2_totals[r['l1_name']][r['l2_name'] or '（无项目部）'] += amt
 
     l1_cats = list(L1Category.objects.order_by('sort_order', 'id').all())
     name_map = {}
