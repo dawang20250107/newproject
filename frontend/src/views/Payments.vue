@@ -338,6 +338,40 @@ async function loadFlow() {
   finally { flowLoading.value = false }
 }
 
+// 付款流水右键：与台账同款复制体验（用户反馈：流水表无右键、超长事项无法取用）
+const ctxFlow = useContextMenu()
+const FLOW_COPY_COLS = [
+  { key: 'department', label: '部门' },
+  { key: 'project_short_name', label: '项目简称' },
+  { key: 'project_desc', label: '付款事项' },
+  { key: 'payee', label: '收款方' },
+  { key: 'approval_number', label: '审批单号' },
+  { key: 'g7_number', label: 'G7编号' },
+  { key: 'planned_date', label: '计划日期' },
+  { key: 'pay_date', label: '付款日期' },
+  { key: 'pay_amount', label: '付款金额', format: v => fmtMoney(v) },
+  { key: 'notes', label: '备注' },
+]
+const ctxFlowItems = computed(() => {
+  const r = ctxFlow.menu.payload
+  if (!r) return []
+  return [
+    { key: 'copy-row', label: '复制整行（含表头，可贴 Excel）', icon: 'copy',
+      action: row => copyRowTSV(row, FLOW_COPY_COLS, { header: true }).then(ok => ok ? toast.success('已复制整行') : toast.error('复制失败')) },
+    { divider: true },
+    { key: 'copy-desc', label: '付款事项', icon: 'cell', hidden: !r.project_desc,
+      action: row => copyField(row.project_desc, '付款事项') },
+    { key: 'copy-payee', label: '收款方', icon: 'cell', hidden: !r.payee,
+      action: row => copyField(row.payee, row.payee) },
+    { key: 'copy-amt', label: '付款金额', icon: 'cell',
+      action: row => copyField(String(row.pay_amount ?? ''), '付款金额') },
+    { key: 'copy-appr', label: '审批单号', icon: 'cell', hidden: !r.approval_number,
+      action: row => copyField(row.approval_number, row.approval_number) },
+    { key: 'copy-notes', label: '备注', icon: 'cell', hidden: !r.notes,
+      action: row => copyField(row.notes, '备注') },
+  ]
+})
+
 function searchFlow() { flowPage.value = 1; loadFlow() }
 const flowExporting = ref(false)
 async function exportFlow() {
@@ -1663,10 +1697,11 @@ async function doBatchPay() {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="inst in flowItems" :key="inst.id" class="flow-row">
+            <tr v-for="inst in flowItems" :key="inst.id" class="flow-row"
+                @contextmenu.prevent="ctxFlow.open($event, inst)">
               <td>{{ inst.department }}</td>
               <td class="cell-clip" :title="inst.project_short_name">{{ inst.project_short_name || '—' }}</td>
-              <td class="cell-clip">
+              <td class="cell-clip" :title="inst.project_desc">
                 <span v-if="inst.project_short_name" class="proj-no">{{ inst.project_short_name }}</span>
                 {{ inst.project_desc }}
               </td>
@@ -1676,7 +1711,7 @@ async function doBatchPay() {
               <td>{{ inst.planned_date || '—' }}</td>
               <td style="font-weight:600;color:var(--c-info)">{{ inst.pay_date }}</td>
               <td class="amt amt-green">{{ inst.pay_amount != null ? fmt(inst.pay_amount) : '—' }}</td>
-              <td class="cell-clip" style="color:var(--muted);font-size:11.5px">{{ inst.notes || '—' }}</td>
+              <td class="cell-clip" style="color:var(--muted);font-size:11.5px" :title="inst.notes">{{ inst.notes || '—' }}</td>
             </tr>
           </tbody>
         </table>
@@ -1766,6 +1801,7 @@ async function doBatchPay() {
 
     <!-- 右键上下文菜单 -->
     <ContextMenu :ctx="ctx" :items="ctxItems" />
+    <ContextMenu :ctx="ctxFlow" :items="ctxFlowItems" />
 
     <!-- Change log drawer -->
     <Teleport to="body">
