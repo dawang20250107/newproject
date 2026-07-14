@@ -6,6 +6,8 @@ import { ref, onMounted, onBeforeUnmount, reactive, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useToast } from '../composables/useToast.js'
 import api from '../api/index.js'
+import { useHoverTip } from '../composables/useHoverTip.js'
+import HoverTip from '../components/HoverTip.vue'
 import { useAuthStore } from '../stores/auth.js'
 import { todayCST } from '../constants.js'
 import { fmtMoney, fmtTime } from '../utils/format.js'
@@ -468,20 +470,8 @@ const deptChoices = computed(() => {
   return departments.value.filter(d => scope.includes(d))
 })
 
-// Hover tooltip card for truncated long cells (付款事项 / 收款方).
-const tip = reactive({ show: false, text: '', x: 0, y: 0 })
-function showTip(e, text) {
-  if (!text) return
-  tip.text = text
-  positionTip(e)
-  tip.show = true
-}
-function positionTip(e) {
-  tip.x = Math.min(e.clientX + 16, window.innerWidth - 340)
-  tip.y = Math.min(e.clientY + 18, window.innerHeight - 60)
-}
-function moveTip(e) { if (tip.show) positionTip(e) }
-function hideTip() { tip.show = false }
+// 长文本单元格富悬浮卡（付款事项/收款方）：共用 useHoverTip
+const { tip, showTip, moveTip, hideTip } = useHoverTip()
 
 // 精确数值：千分位、两位小数、不带单位（工作中确切金额更常用；KPI 卡片才用单位）
 const fmt = (n) => fmtMoney(n, '0.00')
@@ -1491,13 +1481,14 @@ async function doBatchPay() {
               <SelCell class="sticky-col" :idx="idx" :id="p.id" :checked="selectedIds.has(p.id)" :on-sel="onRowSelClick" />
               <td v-if="colVisible('department')" class="cell-clip" :title="p.department">{{ p.department }}</td>
               <td v-if="colVisible('secondary_dept')" class="cell-clip" :title="p.secondary_dept">{{ p.secondary_dept || '—' }}</td>
-              <td v-if="colVisible('project_short_name')" class="cell-clip" :title="p.project_short_name">{{ p.project_short_name || '—' }}</td>
+              <td v-if="colVisible('project_short_name')" class="cell-clip" :title="p.project_no ? `项目编号 ${p.project_no}` : p.project_short_name">
+                <span v-if="p.project_no" class="proj-dot" title="已关联项目台账"></span>{{ p.project_short_name || '—' }}</td>
               <td v-if="colVisible('applicant')" class="cell-clip" :title="p.applicant">{{ p.applicant || '—' }}</td>
               <td v-if="colVisible('approval_number')" class="cell-clip" :title="p.approval_number">{{ p.approval_number || '—' }}</td>
               <td v-if="colVisible('g7_number')" class="cell-clip cell-muted" :title="p.g7_number">{{ p.g7_number || '—' }}</td>
               <td v-if="colVisible('project_desc')" class="cell-clip cell-desc"
                 @mouseenter="showTip($event, p.project_desc)" @mousemove="moveTip" @mouseleave="hideTip">
-                <span v-if="p.project_no" class="proj-no">{{ p.project_no }}</span>{{ p.project_desc }}
+                {{ p.project_desc }}
               </td>
               <td v-if="colVisible('payee')" class="cell-clip cell-payee"
                 @mouseenter="showTip($event, p.payee)" @mousemove="moveTip" @mouseleave="hideTip">
@@ -1700,9 +1691,10 @@ async function doBatchPay() {
             <tr v-for="inst in flowItems" :key="inst.id" class="flow-row"
                 @contextmenu.prevent="ctxFlow.open($event, inst)">
               <td>{{ inst.department }}</td>
-              <td class="cell-clip" :title="inst.project_short_name">{{ inst.project_short_name || '—' }}</td>
-              <td class="cell-clip" :title="inst.project_desc">
-                <span v-if="inst.project_short_name" class="proj-no">{{ inst.project_short_name }}</span>
+              <td class="cell-clip" :title="inst.project_short_name">
+                <span v-if="inst.project_short_name" class="proj-dot" title="已关联项目台账"></span>{{ inst.project_short_name || '—' }}</td>
+              <td class="cell-clip cell-desc"
+                  @mouseenter="showTip($event, inst.project_desc)" @mousemove="moveTip" @mouseleave="hideTip">
                 {{ inst.project_desc }}
               </td>
               <td class="cell-clip" :title="inst.payee">{{ inst.payee }}</td>
@@ -1838,12 +1830,7 @@ async function doBatchPay() {
       </div>
     </Teleport>
 
-    <!-- hover tooltip card for long cells -->
-    <Transition name="tip-fade">
-      <div v-if="tip.show" class="cell-tooltip" :style="{ left: tip.x + 'px', top: tip.y + 'px' }">
-        {{ tip.text }}
-      </div>
-    </Transition>
+    <HoverTip :tip="tip" />
 
     <!-- 批量付款（批量编辑）：点击卡片外部不关闭 -->
     <Teleport to="body">
@@ -2217,25 +2204,8 @@ async function doBatchPay() {
   font-size: 10px; font-weight: 700; color: var(--amber-text); background: rgba(245,166,35,0.16);
 }
 .proj-no { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 5px; background: rgba(201,99,66,0.1); color: var(--primary); font-size: 11px; font-weight: 600; }
-.cell-tooltip {
-  position: fixed;
-  z-index: 9000;
-  max-width: 320px;
-  padding: 10px 14px;
-  border-radius: 12px;
-  background: rgba(36, 18, 10, 0.94);
-  color: #f3e7dc;
-  font-size: 13px;
-  line-height: 1.55;
-  white-space: normal;
-  word-break: break-word;
-  box-shadow: 0 10px 30px rgba(20, 8, 4, 0.4);
-  border: 1px solid rgba(255,255,255,0.1);
-  pointer-events: none;
-  backdrop-filter: blur(6px);
-}
-.tip-fade-enter-active, .tip-fade-leave-active { transition: opacity 0.14s ease; }
-.tip-fade-enter-from, .tip-fade-leave-to { opacity: 0; }
+.proj-dot { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--c-danger, #c62828); vertical-align: middle; }
+.cell-desc { cursor: help; }
 
 /* import result popup → 见 components/ImportResultModal.vue */
 .btn-spin {

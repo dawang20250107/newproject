@@ -10,6 +10,8 @@ import ContextMenu from '../components/ContextMenu.vue'
 import SelCell from '../components/SelCell.vue'
 import DingtalkSyncPanel from '../components/DingtalkSyncPanel.vue'
 import { useContextMenu } from '../composables/useContextMenu.js'
+import { useHoverTip } from '../composables/useHoverTip.js'
+import HoverTip from '../components/HoverTip.vue'
 import { copyText, copyRowTSV } from '../utils/clipboard.js'
 import { todayCST } from '../constants.js'
 import { downloadBlob } from '../utils/download.js'
@@ -638,6 +640,7 @@ async function updateStatus(it, status){
 
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
 const ctx = useContextMenu()
+const { tip, showTip, moveTip, hideTip } = useHoverTip()
 const APR_STATUSES = [
   { v: 'pending', l: '待审批' }, { v: 'approved', l: '审批通过' },
   { v: 'rejected', l: '已拒绝' }, { v: 'canceled', l: '已撤销' },
@@ -1021,7 +1024,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <td :title="i.applicant">{{i.applicant}}</td><td :title="i.department">{{i.department}}</td>
       <td class="meta-cell" :title="i.secondary_dept">{{ i.secondary_dept || '—' }}</td>
       <td class="meta-cell" :title="i.project_short_name">{{ i.project_short_name || '—' }}</td>
-      <td class="mono" :title="i.approval_number">{{i.approval_number || '—'}}</td><td class="mono g7-cell" :title="i.g7_number">{{i.g7_number || '—'}}</td><td class="summary" :title="i.summary">{{i.summary}}</td>
+      <td class="mono" :title="i.approval_number">{{i.approval_number || '—'}}</td><td class="mono g7-cell" :title="i.g7_number">{{i.g7_number || '—'}}</td><td class="summary cell-desc" @mouseenter="showTip($event, i.summary)" @mousemove="moveTip" @mouseleave="hideTip">{{i.summary}}</td>
       <td :class="['status-cell', 'st-' + i.status]" :title="i.status === 'approved' ? '审批通过，可排款' : (i.status === 'pending' ? '待审批，通过后方可排款' : '')">
         <div class="status-wrap">
           <span class="status-badge">{{ {pending:'待审批',approved:'审批通过',rejected:'已拒绝',canceled:'已撤销'}[i.status] || i.status }}</span>
@@ -1251,6 +1254,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 
   <!-- 右键上下文菜单 -->
   <ContextMenu :ctx="ctx" :items="ctxItems" />
+  <HoverTip :tip="tip" />
 </div></template>
 
 <style scoped>
@@ -1408,6 +1412,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .remain-c { color: var(--c-warn); font-weight: 600; }
 .remain-c.remain-zero { color: var(--muted); font-weight: 400; }
 .summary, .payee { max-width: 100%; }
+.cell-desc { cursor: help; }
 .notes-cell { color: var(--muted); }
 .approval-table select { width: 100%; min-width: 0; max-width: 100%; height: 26px; font-size: 12px; padding: 0 20px 0 6px; background-position: right 6px center; }
 .pg-jump { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); margin-left: 8px; }
