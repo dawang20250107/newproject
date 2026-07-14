@@ -7,6 +7,7 @@ import { todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
 import ContextMenu from '../../components/ContextMenu.vue'
+import ColumnFilter from '../../components/ColumnFilter.vue'
 import SelCell from '../../components/SelCell.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useShiftSelect } from '../../composables/useShiftSelect.js'
@@ -70,13 +71,17 @@ const _init = computePreset('thismonth')
 const filter = reactive({ dept: '', source: '', method: '', start: _init.start, end: _init.end, q: '' })
 watch([() => filter.start, () => filter.end], () => { if (!_applying) activePreset.value = '' }, { flush: 'sync' })
 
-// 通用筛选方案（表格方案基座）：本页无列头筛选，快照为页级筛选（部门/来源/方式 + 时间预设）
-const schemeCols = reactive({})
-const schemeSortField = ref('')
-const schemeSortOrder = ref('')
+// ── 列头筛选 + 排序（与付款管理同一套 Excel 式交互；纳入筛选方案快照）──────────
+const colFilters = reactive({})
+const sortField = ref('')
+const sortOrder = ref('')
+function setColFilter(field, val) { if (val == null) delete colFilters[field]; else colFilters[field] = val; load() }
+function setSort(field, order) { sortField.value = order ? field : ''; sortOrder.value = order || ''; load() }
+
+// 通用筛选方案（表格方案基座）：列头筛选 + 排序 + 页级筛选（部门/来源/方式 + 时间预设）
 let _applyingScheme = false   // 套方案时抑制 dept/source/method watch 的重复加载
 const schemes = useTableSchemes('ar_daily_receipts', {
-  colFilters: schemeCols, sortField: schemeSortField, sortOrder: schemeSortOrder,
+  colFilters, sortField, sortOrder,
   extra: {
     get: () => ({ dept: filter.dept || '', source: filter.source || '', method: filter.method || '', preset: activePreset.value || '' }),
     set: (p) => {
@@ -121,6 +126,8 @@ async function load() {
   loading.value = true
   try {
     const p = { start_date: filter.start, end_date: filter.end, source: filter.source || undefined, method: filter.method || undefined, q: filter.q || undefined, depts: filter.dept || undefined }
+    if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
+    if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
     const d = (await ar.listDailyReceipts(p)).data || {}
     items.value = d.items || []
     total.value = d.total || '0'
@@ -305,6 +312,8 @@ async function exportXlsx(selectedOnly = false) {
   exporting.value = true
   try {
     const p = { start_date: filter.start, end_date: filter.end, source: filter.source || undefined, method: filter.method || undefined, q: filter.q || undefined, depts: filter.dept || undefined }
+    if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
+    if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
     if (selectedOnly && hasSel.value) p.ids = [...selectedIds.value].join(',')
     const res = await ar.exportDailyReceipts(p)
     const tag = selectedOnly ? `选中${selCount.value}笔` : `${filter.start}_${filter.end}`
@@ -351,7 +360,15 @@ async function exportXlsx(selectedOnly = false) {
         <thead>
           <tr>
             <th class="cb"><input type="checkbox" :checked="pageAll" :indeterminate.prop="hasSel && !pageAll" @change="toggleAll" /></th>
-            <th>收款日期</th><th>事业部</th><th>来源</th><th>项目</th><th>方式</th><th>账户</th><th>付款方</th><th class="r">金额</th><th>摘要</th>
+            <th><ColumnFilter label="收款日期" field="receipt_date" type="date" :model-value="colFilters.receipt_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('receipt_date',v)" @sort="o=>setSort('receipt_date',o)" /></th>
+            <th><ColumnFilter label="事业部" field="delivery_dept" type="enum" :options="depts" :model-value="colFilters.delivery_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('delivery_dept',v)" @sort="o=>setSort('delivery_dept',o)" /></th>
+            <th><ColumnFilter label="来源" field="source" type="enum" :options="sourcePresets" :model-value="colFilters.source" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('source',v)" @sort="o=>setSort('source',o)" /></th>
+            <th><ColumnFilter label="项目" field="project_name" type="text" :model-value="colFilters.project_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_name',v)" @sort="o=>setSort('project_name',o)" /></th>
+            <th><ColumnFilter label="方式" field="method" type="enum" :options="methodPresets" :model-value="colFilters.method" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('method',v)" @sort="o=>setSort('method',o)" /></th>
+            <th><ColumnFilter label="账户" field="account" type="text" :model-value="colFilters.account" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('account',v)" @sort="o=>setSort('account',o)" /></th>
+            <th><ColumnFilter label="付款方" field="payer" type="text" :model-value="colFilters.payer" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payer',v)" @sort="o=>setSort('payer',o)" /></th>
+            <th class="r amt-th"><ColumnFilter label="金额" field="amount" type="number" :model-value="colFilters.amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('amount',v)" @sort="o=>setSort('amount',o)" /></th>
+            <th><ColumnFilter label="摘要" field="notes" type="text" :model-value="colFilters.notes" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('notes',v)" @sort="o=>setSort('notes',o)" /></th>
           </tr>
         </thead>
         <tbody>
@@ -476,16 +493,17 @@ async function exportXlsx(selectedOnly = false) {
 .empty { padding: 64px 20px; text-align: center; color: var(--muted, #9b8070); }
 .empty-i { font-size: 42px; } .empty-t { font-size: 16px; font-weight: 700; color: var(--text, #4a3322); margin-top: 8px; } .empty-s { margin-top: 6px; font-size: 13px; }
 .dr-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-.dr-table thead th { text-align: left; padding: 11px 14px; font-size: 11px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; color: var(--muted, #9b8070); background: var(--surface-2, rgba(160,120,80,.07)); white-space: nowrap; position: sticky; top: 0; z-index: 2; }
+.dr-table thead th { text-align: left; padding: 8px 14px; font-size: 12px; font-weight: 600; color: var(--muted); background: var(--surface-2, rgba(160,120,80,.08)); white-space: nowrap; position: sticky; top: 0; z-index: 2; border-bottom: 1px solid var(--border-strong); }
+.dr-table thead th.amt-th { text-align: right; }
 .dr-table th.r, .dr-table td.r { text-align: right; } .dr-table th.cb, .dr-table td.cb { width: 40px; text-align: center; }
 .dr-table tbody td { padding: 10px 14px; border-top: 1px solid var(--border, #eadfd2); white-space: nowrap; }
 .dr-table tbody tr:nth-child(even) { background: color-mix(in srgb, var(--muted, #9b8070) 3.5%, transparent); }
-.dr-table tbody tr:hover { background: var(--surface-2, rgba(160,120,80,.1)); cursor: default; }
+.dr-table tbody tr:hover { background: rgba(201,99,66,0.048); cursor: default; }
 .dr-table tbody tr.sel { background: color-mix(in srgb, var(--primary) 10%, transparent) !important; }
-.amt { font-variant-numeric: tabular-nums; font-weight: 800; color: var(--primary); }
-.src { background: var(--primary-weak, #e8f1fb); color: var(--primary); border-radius: 8px; padding: 2px 9px; font-size: 12px; font-weight: 600; }
-.mtd { background: var(--surface-2, rgba(160,120,80,.12)); color: var(--text, #6a5641); border-radius: 7px; padding: 1px 8px; font-size: 12px; }
-.adv-tag { margin-left: 6px; font-size: 10.5px; color: var(--c-success, #2e7d32); background: rgba(46,125,50,.1); border-radius: 6px; padding: 1px 6px; white-space: nowrap; }
+.amt { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text); }
+.src { background: rgba(201,99,66,0.10); color: var(--primary); border-radius: var(--radius-sm); padding: 2px 9px; font-size: 12px; font-weight: 600; }
+.mtd { background: var(--surface-2, rgba(160,120,80,.12)); color: var(--text, #6a5641); border-radius: var(--radius-sm); padding: 1px 8px; font-size: 12px; }
+.adv-tag { margin-left: 6px; font-size: 10.5px; color: var(--c-success); background: var(--c-success-bg); border-radius: var(--radius-xs); padding: 1px 6px; white-space: nowrap; }
 .hint { font-weight: 400; font-size: 11px; color: var(--muted, #999); }
 .proj { color: var(--text, #4a3322); } .dim, .when { color: var(--muted, #7a6550); }
 .sumcell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; color: var(--muted, #7a6550); }
