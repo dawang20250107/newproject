@@ -12,6 +12,7 @@ import SelCell from '../../components/SelCell.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
+import { useRangeSelection } from '../../composables/useRangeSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import PillPicker from '../../components/PillPicker.vue'
 import ProjectShortNamePicker from '../../components/ProjectShortNamePicker.vue'
@@ -140,6 +141,8 @@ async function load() {
     // 清理已不存在的选择
     const live = new Set(items.value.map(i => i.id))
     selectedIds.value = new Set([...selectedIds.value].filter(id => live.has(id)))
+    rangeSel.clear()   // 数据换页/刷新后旧矩形选区坐标会错行，清掉
+
   } catch (e) { toast.error(e?.msg || e?.error || '加载失败') }
   finally { loading.value = false }
 }
@@ -169,6 +172,8 @@ function toggleAll() { const s = new Set(selectedIds.value); if (pageAll.value) 
 function clearSel() { selectedIds.value = new Set() }
 const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow })
 useEscClearSelection(() => hasSel.value, clearSel)
+// Excel 式单元格区域拖选 + 复制 + 底部求和/均值浮条（忽略首列勾选框，对齐付款管理）
+const rangeSel = useRangeSelection({ ignoreCols: [0], onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
 const selectedItems = computed(() => items.value.filter(r => selectedIds.value.has(r.id)))
 const selSum = computed(() => selectedItems.value.reduce((s, r) => s + Number(r.amount || 0), 0))
 
@@ -363,7 +368,7 @@ async function exportXlsx(selectedOnly = false) {
         <div class="empty-i">💰</div><div class="empty-t">此区间暂无收款记录</div>
         <div v-if="canWrite" class="empty-s">点右上「新增收款」录入第一笔。</div>
       </div>
-      <div v-else class="table-wrap dr-paytbl page-scroll">
+      <div v-else class="table-wrap dr-paytbl page-scroll" :ref="rangeSel.setRoot">
         <table>
           <thead>
             <tr>
@@ -506,6 +511,8 @@ async function exportXlsx(selectedOnly = false) {
 .dr-paytbl { --td-px: 12px; }
 .dr-paytbl th, .dr-paytbl td { padding: 9px var(--td-px); font-size: 12.5px; }
 .dr-paytbl td:not(.sel-col) { white-space: nowrap; }
+/* 拖选期间禁用原生文本选择（Excel 式区域框选）*/
+.dr-paytbl tbody { user-select: none; }
 .dr-paytbl thead th { overflow: visible; white-space: nowrap; vertical-align: middle; font-size: 12px; font-weight: 600; letter-spacing: -0.2px; text-transform: none; color: var(--muted); }
 .dr-paytbl thead :deep(.colf-label) { white-space: nowrap; }
 .table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
