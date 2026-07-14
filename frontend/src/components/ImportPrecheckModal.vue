@@ -136,6 +136,8 @@ function apply(mode) {
 .pc-tag-warn { color: var(--c-warn); background: rgba(245,127,23,.12); }
 .pc-tag-review { color: var(--c-info); background: rgba(21,101,192,.1); }
 .pc-fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 12px; }
+@media (max-width: 720px) { .pc-fields { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 480px) { .pc-fields { grid-template-columns: 1fr; } }
 .pc-fields label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
 .pc-fields label.wide { grid-column: 1 / -1; }
 .pc-fields input { border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; font-size: 13px; color: var(--text); background: var(--row-bg); }

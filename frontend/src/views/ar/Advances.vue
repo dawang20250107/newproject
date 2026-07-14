@@ -1530,6 +1530,7 @@ onMounted(async () => {
 }
 .modal h3 { margin: 0 0 16px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 620px) { .form-grid { grid-template-columns: 1fr; } }
 .fld { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .fld.full { grid-column: 1 / -1; }
 .fld span { color: var(--muted); }
@@ -1570,6 +1571,7 @@ onMounted(async () => {
 .sup-modal { max-width: 460px; }
 .sf-row { margin-bottom: 14px; }
 .sf-two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 620px) { .sf-two { grid-template-columns: 1fr; } }
 .sf-fld { display: flex; flex-direction: column; gap: 4px; }
 .sf-lbl { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
 .sf-lbl em { color: var(--c-danger); font-style: normal; }

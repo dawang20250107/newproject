@@ -1375,7 +1375,7 @@ const ctxMatrixItems = computed(() => {
 
 <style scoped>
 .kpi-6 { grid-template-columns: repeat(6, 1fr) !important; }
-@media (max-width: 1100px) { .kpi-6 { grid-template-columns: repeat(3, 1fr) !important; } }
+@media (max-width: 1400px) { .kpi-6 { grid-template-columns: repeat(3, 1fr) !important; } }
 @media (max-width: 560px) { .kpi-6 { grid-template-columns: repeat(2, 1fr) !important; } }
 
 .nodata-banner {
@@ -1428,7 +1428,7 @@ const ctxMatrixItems = computed(() => {
 .cfa-global-ghost { border: 1px solid rgba(0,0,0,0.12); background: var(--row-bg); border-radius: 9px; padding: 7px 12px; cursor: pointer; font-size: 12.5px; color: var(--muted); }
 
 .kpi-4 { grid-template-columns: repeat(4, 1fr) !important; }
-@media (max-width: 960px) { .kpi-4 { grid-template-columns: repeat(2, 1fr) !important; } }
+@media (max-width: 1120px) { .kpi-4 { grid-template-columns: repeat(2, 1fr) !important; } }
 @media (max-width: 520px) { .kpi-4 { grid-template-columns: 1fr !important; } }
 .kpi-card.kpi-muted { background: rgba(138,75,52,0.04); }
 .lbl-hint { font-size: 10px; color: var(--muted); margin-left: 4px; cursor: help; }

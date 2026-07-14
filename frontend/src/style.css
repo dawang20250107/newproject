@@ -203,6 +203,19 @@ body {
   scrollbar-gutter: stable;
 }
 .main-content.nav-collapsed { margin-left: var(--nav-w-collapsed); }
+/* 超宽屏（外接大显示器）留白居中：非全高的仪表盘/报表滚动页内容封顶 1760px，
+   避免 KPI 卡/图表/文字在 2K–4K 屏上摊得过散、阅读行过长。全高表格页排除——
+   台账要用满宽横向滚动。仅 ≥1900px 生效，笔记本/常规屏完全不受影响。 */
+@media (min-width: 1900px) {
+  .main-content:not(.full-height-view) {
+    padding-left: max(24px, calc((100vw - var(--nav-w) - 1760px) / 2));
+    padding-right: max(24px, calc((100vw - var(--nav-w) - 1760px) / 2));
+  }
+  .main-content.nav-collapsed:not(.full-height-view) {
+    padding-left: max(24px, calc((100vw - var(--nav-w-collapsed) - 1760px) / 2));
+    padding-right: max(24px, calc((100vw - var(--nav-w-collapsed) - 1760px) / 2));
+  }
+}
 /* ── 固定视口页面（列表/表格类，由 route.meta.fullHeight 驱动）─────────────────
    锁定主区不滚动，页面内部承担滚动的容器自行填满剩余高度并内部滚动，
    鼠标滚轮只滚表格行、不再整页上下翻。padding 去掉底部，底部交给内容填满

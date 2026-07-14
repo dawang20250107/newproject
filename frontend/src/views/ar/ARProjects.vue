@@ -1040,7 +1040,9 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .ed-btn.on { background: var(--primary); color: #fff; }
 .econ-hint { font-size: 12px; color: var(--muted); margin-left: auto; }
 .econ-kpis { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; margin-bottom: 16px; }
-@media (max-width: 1200px) { .econ-kpis { grid-template-columns: repeat(4, 1fr); } }
+/* 断点按「内容有效宽 = 视口 − 侧栏206 − 边距48」校准：7 卡仅宽显示器留 */
+@media (max-width: 1600px) { .econ-kpis { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 1080px) { .econ-kpis { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 640px) { .econ-kpis { grid-template-columns: repeat(2, 1fr); } }
 .econ-kpi { background: rgba(255,255,255,0.65); border: 1px solid rgba(180,140,110,.16); border-radius: 12px; padding: 11px 14px; }
 .ek-label { font-size: 11.5px; color: var(--muted); }

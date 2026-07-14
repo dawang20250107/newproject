@@ -660,9 +660,9 @@ onMounted(async () => {
 .toast-enter-active, .toast-leave-active { transition: opacity .2s; }
 .toast-enter-from, .toast-leave-to { opacity: 0; }
 
-@media (max-width: 640px) {
-  .dw-kpis { grid-template-columns: repeat(3, 1fr); }
-}
+@media (max-width: 1080px) { .dw-kpis { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 820px) { .dw-kpis { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 520px) { .dw-kpis { grid-template-columns: repeat(2, 1fr); } }
 
 /* 列宽拖拽柄 */
 .cu-table th { position: relative; }
