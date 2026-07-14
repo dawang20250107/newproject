@@ -1957,9 +1957,9 @@ async function doBatchPay() {
 .tp-btn:hover:not(:disabled) { background: rgba(201,99,66,0.08); border-color: var(--primary); }
 
 /* Tab bar */
-.tab-bar { display: flex; gap: 2px; background: rgba(0,0,0,0.05); border-radius: 10px; padding: 3px; }
-.tab-btn { border: none; background: none; padding: 5px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; transition: none; }
-.tab-btn.active { background: var(--row-bg); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
+.tab-bar { display: flex; gap: 2px; background: var(--surface-2, rgba(160,120,80,.08)); border-radius: var(--radius-sm); padding: 3px; }
+.tab-btn { border: none; background: none; padding: 5px 14px; border-radius: var(--radius-xs); font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; transition: all .16s; }
+.tab-btn.active { background: var(--card); color: var(--text); box-shadow: var(--shadow-sm); }
 
 /* 付款日期 label in filter bar */
 .filter-group-lbl { font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
@@ -1977,7 +1977,7 @@ async function doBatchPay() {
 /* 付款流水 table */
 .flow-tbl { width: 100%; table-layout: fixed; }
 .flow-tbl th, .flow-tbl td { padding: 8px 8px; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.flow-row:hover { background: var(--row-hover); }
+.flow-row:hover { background: rgba(201,99,66,0.048); }
 
 .date-range-hint {
   font-size: 11.5px; color: var(--muted); white-space: nowrap; flex-shrink: 0;
@@ -1991,7 +1991,7 @@ async function doBatchPay() {
 
 /* 付款管理：固定布局，不超出卡片宽度（table-layout:fixed 已防横向溢出，无需 overflow-x:hidden） */
 .table-wrap.pk-pay-tbl { padding-bottom: 70px; }
-.pk-pay-tbl table { table-layout: fixed;; min-width: 1100px; }
+.pk-pay-tbl table { table-layout: fixed; min-width: 1100px; }
 /* 列多、字段密：本表用更紧凑的字号/横向内边距，尽量让各列内容完整展示 */
 .pk-pay-tbl { --td-fs: 12px; --td-px: 6px; }
 .pk-pay-tbl th, .pk-pay-tbl td { padding: var(--td-py) var(--td-px); font-size: var(--td-fs); }
@@ -2076,26 +2076,32 @@ async function doBatchPay() {
 /* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
 
 /* 多选列 + 批量操作条 + 删除二次确认 */
-.pk-pay-tbl th.sel-col, .pk-pay-tbl td.sel-col { width: 30px; text-align: center; padding: 9px 4px; max-width: none; overflow: visible; }
+.pk-pay-tbl th.sel-col, .pk-pay-tbl td.sel-col { width: 30px; text-align: center; padding: var(--td-py, 6px) 4px; max-width: none; overflow: visible; }
 .pk-pay-tbl td.sel-col input, .pk-pay-tbl th.sel-col input { cursor: pointer; }
 .pk-pay-tbl tr.row-sel td { background: rgba(201,99,66,0.06); }
 /* 批量操作条：固定浮动在视口底部居中，全选后无需下拉即可操作 */
 .bulk-bar { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 1200;
   display: flex; align-items: center; gap: 12px; padding: 10px 18px;
-  border-radius: 12px; background: var(--card); border: 1px solid rgba(198,40,40,0.35);
-  box-shadow: 0 8px 28px rgba(0,0,0,0.18); }
+  border-radius: var(--radius); background: var(--card); border: 1px solid rgba(198,40,40,0.35);
+  box-shadow: var(--shadow-lg); }
 .bulk-n { font-size: 13px; color: var(--text); }
-.bulk-selall { border: 1px solid var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); border-radius: 8px; padding: 5px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.bulk-selall { border: 1px solid var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); border-radius: var(--radius-sm); padding: 5px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: filter .16s; }
+.bulk-selall:hover:not(:disabled) { background: rgba(201,99,66,0.14); }
 .bulk-selall:disabled { opacity: .5; cursor: default; }
-.bulk-act { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--primary); color: #fff; }
+.bulk-act { margin-left: auto; border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--primary); color: #fff; transition: filter .16s; }
+.bulk-act:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-act:disabled { opacity: .5; cursor: default; }
-.bulk-del { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
+.bulk-del { border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--danger); color: #fff; transition: filter .16s; }
+.bulk-del:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-del:disabled { opacity: .6; cursor: default; }
 /* 批量退回（橙）/ 标记重点（金）/ 取消重点（描边）*/
-.bulk-return { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--c-warn); color: #fff; }
+.bulk-return { border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--c-warn); color: #fff; transition: filter .16s; }
+.bulk-return:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-return:disabled { opacity: .6; cursor: default; }
-.bulk-star { border: none; border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--amber); color: #fff; }
-.bulk-star-off { border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--row-bg); color: var(--muted); }
+.bulk-star { border: none; border-radius: var(--radius-sm); padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--amber); color: #fff; transition: filter .16s; }
+.bulk-star:hover:not(:disabled) { filter: brightness(1.06); }
+.bulk-star-off { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--row-bg); color: var(--muted); transition: all .16s; }
+.bulk-star-off:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
 .bulk-star:disabled, .bulk-star-off:disabled { opacity: .5; cursor: default; }
 
 /* 重点付款：状态列内嵌星标（不占独立列）+ 行金色左缘 */
@@ -2177,7 +2183,7 @@ async function doBatchPay() {
   border-radius: 8px; white-space: nowrap; letter-spacing: -.2px;
 }
 .overdue-ok    { color: var(--muted); background: transparent; }
-.overdue-today { color: #b35309; background: rgba(245,127,23,0.12); font-weight: 600; }
+.overdue-today { color: var(--c-warn); background: var(--c-warn-bg); font-weight: 600; }
 .overdue-bad   { color: var(--c-danger); background: rgba(198,40,40,0.10); font-weight: 700; }
 
 /* truncated long cells + hover tooltip card */
@@ -2198,7 +2204,7 @@ async function doBatchPay() {
 /* 批量付款卡片内的核销警示 */
 .pay-offset-warn {
   margin: 0 0 12px; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.6;
-  color: #8a5a00; background: rgba(245,166,35,0.1); border: 1px solid rgba(245,166,35,0.35);
+  color: var(--amber-text); background: rgba(245,166,35,0.1); border: 1px solid var(--c-warn-bdr);
 }
 .pay-offset-warn .pow-list { color: var(--muted); font-size: 11.5px; }
 .brl-offset {

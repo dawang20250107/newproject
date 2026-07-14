@@ -1262,7 +1262,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 运输事业部专用导入按钮：强调色与普通导入区分 */
 .tp-btn { border-color: rgba(201,99,66,0.4); color: var(--primary); }
 .tp-btn:hover:not(:disabled) { background: rgba(201,99,66,0.08); border-color: var(--primary); }
-.err-banner { background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: #856404; display: flex; align-items: center; gap: 8px; }
+.err-banner { background: var(--c-warn-bg); border: 1px solid var(--c-warn-bdr); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: var(--c-warn); display: flex; align-items: center; gap: 8px; }
 .apr-timebar { padding: 2px 0 8px; }
 .approval-card { padding: 12px; }
 /* 固定视口布局：卡片底部为吸底合计条预留空间 */
@@ -1272,9 +1272,9 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .tb-left { display: flex; align-items: center; gap: 16px; }
 .subtabs { display: inline-flex; gap: 2px; background: var(--surface-2, rgba(160,120,80,.08)); border-radius: 9px; padding: 3px; }
 .subtabs button { border: none; background: none; padding: 6px 14px; border-radius: 7px; font-size: 13.5px; font-weight: 600;
-  color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; transition: all .14s; }
+  color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; transition: all .16s; }
 .subtabs button:hover { color: var(--text, #4a3322); }
-.subtabs button.on { background: var(--card-bg, #fff); color: var(--primary, #1565c0); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+.subtabs button.on { background: var(--card); color: var(--primary); box-shadow: var(--shadow-sm); }
 .topbar-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .topbar-tools .global-search { min-width: 180px; flex: 0 1 240px; height: 30px; }
 .tb-sep { width: 1px; align-self: stretch; min-height: 20px; background: var(--border); margin: 0 2px; }
@@ -1286,7 +1286,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 12px; text-align: left; }
 .nf-title { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
 .nf-title span { font-weight: 400; color: var(--muted); font-size: 11px; }
-.nf-area { width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; padding: 8px;
+.nf-area { width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 8px;
   font-size: 12.5px; font-family: ui-monospace, Menlo, monospace; resize: vertical; }
 .nf-area:focus { outline: none; border-color: var(--primary); }
 .nf-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
@@ -1324,8 +1324,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 审批状态色码徽章：badge 显示颜色，transparent overlay select 捕获交互 */
 .status-wrap { position: relative; display: inline-block; width: 100%; }
 .status-badge {
-  display: block; border-radius: 999px; padding: 2px 8px;
-  font-size: 11.5px; font-weight: 700; border: 1px solid transparent;
+  display: block; border-radius: var(--radius-lg); padding: 2px 8px;
+  font-size: 11.5px; font-weight: 600; border: 1px solid transparent;
   text-align: center; white-space: nowrap; pointer-events: none;
 }
 .status-overlay {
@@ -1333,13 +1333,13 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   width: 100%; height: 100%; border: none; background: none;
 }
 .status-overlay:disabled { cursor: default; }
-.status-cell.st-pending  .status-badge { color: #8a6d1a; background: rgba(255,213,79,0.25); border-color: rgba(255,193,7,0.6); }
-.status-cell.st-approved .status-badge { color: #1b5e20; background: rgba(46,125,50,0.18); border-color: rgba(46,125,50,0.6); }
-.status-cell.st-rejected .status-badge { color: #b71c1c; background: rgba(198,40,40,0.14); border-color: rgba(198,40,40,0.55); }
-.status-cell.st-canceled .status-badge { color: #5f5f5f; background: rgba(120,120,120,0.15); border-color: rgba(120,120,120,0.5); }
+.status-cell.st-pending  .status-badge { color: var(--c-warn); background: var(--c-warn-bg); border-color: var(--c-warn-bdr); }
+.status-cell.st-approved .status-badge { color: var(--c-success); background: var(--c-success-bg); border-color: var(--c-success-bdr); }
+.status-cell.st-rejected .status-badge { color: var(--c-danger); background: var(--c-danger-bg); border-color: var(--c-danger-bdr); }
+.status-cell.st-canceled .status-badge { color: var(--muted); background: rgba(120,120,120,0.12); border-color: rgba(120,120,120,0.3); }
 .g7-cell { color: var(--muted); }
 /* 行悬停高亮：宽表跨 14 列时帮助视线锁定整行（明细行/选中行不参与/不被覆盖） */
-.approval-table tbody tr:not(.apr-plan-detail-row):hover td { background: rgba(201,99,66,0.045); }
+.approval-table tbody tr:not(.apr-plan-detail-row):hover td { background: rgba(201,99,66,0.048); }
 .approval-table tr.row-sel td,
 .approval-table tbody tr.row-sel:hover td { background: rgba(201,99,66,0.09); }
 /* Excel 式区域选择高亮已收归全局 style.css（td.cell-range-sel） */
@@ -1348,27 +1348,31 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 批量操作条：固定浮动在视口底部居中，全选后无需下拉即可操作 */
 .bulk-bar { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 1200;
   display: flex; align-items: center; gap: 12px; padding: 10px 18px;
-  border-radius: 12px; background: var(--card); border: 1px solid rgba(198,40,40,0.35);
-  box-shadow: 0 8px 28px rgba(0,0,0,0.18); }
+  border-radius: var(--radius); background: var(--card); border: 1px solid rgba(198,40,40,0.35);
+  box-shadow: var(--shadow-lg); }
 .bulk-n { font-size: 13px; color: var(--text); }
-.bulk-selall { border: 1px solid var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); border-radius: 8px; padding: 5px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.bulk-selall { border: 1px solid var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); border-radius: var(--radius-sm); padding: 5px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: filter .16s; }
+.bulk-selall:hover:not(:disabled) { background: rgba(201,99,66,0.14); }
 .bulk-selall:disabled { opacity: .5; cursor: default; }
-.bulk-approve { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--c-success); color: #fff; }
+.bulk-approve { margin-left: auto; border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--c-success); color: #fff; transition: filter .16s; }
+.bulk-approve:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-approve:disabled { opacity: .5; cursor: default; }
-.bulk-act { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--primary); color: #fff; }
+.bulk-act { border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--primary); color: #fff; transition: filter .16s; }
+.bulk-act:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-act:disabled { opacity: .5; cursor: default; }
-.bulk-del { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
+.bulk-del { border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--danger); color: #fff; transition: filter .16s; }
+.bulk-del:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-del:disabled { opacity: .6; cursor: default; }
 .bulk-cancel { border: none; background: none; color: var(--muted); font-size: 12.5px; cursor: pointer; }
 .del-warn { font-size: 13px; color: var(--danger); margin: 0 0 12px; line-height: 1.6; }
 .del-tip { font-size: 13px; color: var(--text); margin: 0 0 8px; }
-.del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; box-sizing: border-box; }
+.del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: var(--radius-xs); font-size: 14px; box-sizing: border-box; }
 .del-input:focus { border-color: var(--danger); outline: none; }
 /* 实心危险按钮统一走全局 .btn-danger-solid（style.css） */
 .meta-cell { color: var(--muted); }
-.sched-prepaid-hint { font-size: 12.5px; color: #8a6d1a; background: rgba(255,213,79,0.14);
-  border: 1px solid rgba(255,193,7,0.35); border-radius: 9px; padding: 9px 12px; margin-bottom: 12px; line-height: 1.7; }
-.sched-prepaid-hint b { color: #6d4c00; }
+.sched-prepaid-hint { font-size: 12.5px; color: var(--amber-text); background: var(--amber-bg, rgba(245,127,23,0.10));
+  border: 1px solid var(--c-warn-bdr); border-radius: var(--radius-sm); padding: 9px 12px; margin-bottom: 12px; line-height: 1.7; }
+.sched-prepaid-hint b { color: var(--amber-deep, var(--c-warn)); }
 .sched-progress { display: flex; gap: 18px; font-size: 13px; color: var(--muted);
   background: rgba(201,99,66,.05); border-radius: 9px; padding: 9px 12px; margin-bottom: 10px; }
 .sched-progress b { font-variant-numeric: tabular-nums; color: var(--text); }
@@ -1392,7 +1396,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .batch-row-rem { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .batch-row-amt { width: 120px; height: 30px; padding: 0 8px; border: 1.5px solid var(--border);
-  border-radius: 7px; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; box-sizing: border-box; }
+  border-radius: var(--radius-xs); font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; box-sizing: border-box; }
 .batch-row-amt:focus { border-color: var(--primary); outline: none; }
 .batch-row-amt.bad { border-color: var(--danger); background: rgba(198,40,40,0.05); }
 .batch-row.row-bad { background: rgba(198,40,40,0.035); }
@@ -1415,16 +1419,18 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .summary, .payee { max-width: 100%; }
 .cell-desc { cursor: help; }
 .notes-cell { color: var(--muted); }
-.approval-table select { width: 100%; min-width: 0; max-width: 100%; height: 26px; font-size: 12px; padding: 0 20px 0 6px; background-position: right 6px center; }
+.approval-table select { width: 100%; min-width: 0; max-width: 100%; height: 28px; font-size: 12px; padding: 0 20px 0 6px; background-position: right 6px center; }
 .pg-jump { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); margin-left: 8px; }
 .pg-jump-input { width: 46px; text-align: center; padding: 2px 4px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
 /* 已排金额列：可点击展开排款明细 */
 .approval-table td.plan-cell { cursor: pointer; user-select: none; }
 .plan-caret { font-size: 9px; color: var(--muted); margin-left: 3px; }
 /* 批量退回按钮 */
-.bulk-return { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--c-warn); color: #fff; }
+.bulk-return { border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--c-warn); color: #fff; transition: filter .16s; }
+.bulk-return:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-return:disabled { opacity: .5; cursor: default; }
-.bulk-ding { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: #1565c0; color: #fff; }
+.bulk-ding { border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--c-info); color: #fff; transition: filter .16s; }
+.bulk-ding:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-ding:disabled { opacity: .5; cursor: default; }
 /* 排款批次明细展开行 */
 .apr-plan-detail-row td { padding: 0; }
@@ -1451,7 +1457,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .apd-cancel { border: 1px solid var(--border); background: none; border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; color: var(--muted); }
 .apd-return-all { margin-left: auto; border: 1px solid var(--c-warn); background: rgba(230,81,0,0.08); color: var(--c-warn); border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; font-weight: 600; }
 .apd-return-all:hover { background: var(--c-warn); color: #fff; }
-.num-inline { width: 168px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px;
+.num-inline { width: 168px; padding: 5px 9px; border: 1px solid var(--border); border-radius: var(--radius-xs);
   font-size: 12px; background: var(--row-bg); color: var(--text); flex-shrink: 0; }
 .num-inline::placeholder { color: var(--muted-light); }
 .num-inline:focus { border-color: var(--primary); outline: none; }
