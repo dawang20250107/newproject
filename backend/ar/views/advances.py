@@ -1332,22 +1332,23 @@ def advance_diff_summary(request):
     dept = (request.GET.get('dept') or '').strip()
     q = (request.GET.get('q') or '').strip().lower()
 
+    # 含散单（未挂项目）：归入「（未挂项目）」组，使合计与资金池/现金流（含全部
+    # 预收预付）对平——原 project__isnull=False 排除散单是逐月对不上的根因。
     qs = (_advance_dept_filter(AdvanceRecord.objects.select_related('project'), request)
-          .filter(project__isnull=False)
           .prefetch_related('installments'))
     if dept:
         qs = qs.filter(delivery_dept=dept)
 
     groups = {}
     for a in qs.order_by('occur_date', 'id'):
-        name = (a.project.short_name or '').strip()
-        if not name:
-            continue
-        if q and q not in name.lower():
+        linked = bool(a.project and (a.project.short_name or '').strip())
+        name = a.project.short_name.strip() if linked else '（未挂项目）'
+        # 散单不参与项目名搜索（无项目名）；搜索时仅命中挂项目记录
+        if q and (not linked or q not in name.lower()):
             continue
         g = groups.setdefault(name, {
             'project': name,
-            'dept': a.project.delivery_dept or a.delivery_dept or '',
+            'dept': (a.project.delivery_dept if a.project else '') or a.delivery_dept or '',
             'in_total': Decimal('0'), 'out_total': Decimal('0'),
             'in_items': [], 'out_items': [], '_notes': [],
         })
@@ -1463,8 +1464,9 @@ def _compute_diff_timeline(request):
     start = _pd((request.GET.get('start') or '').strip())
     end = _pd((request.GET.get('end') or '').strip())
 
+    # 含散单（未挂项目）：归入「（未挂项目）」组，使月度预收/预付合计与资金池、
+    # 现金流（含全部预收预付）对平——原 project__isnull=False 排除散单是逐月对不上的根因。
     qs = (_advance_dept_filter(AdvanceRecord.objects.select_related('project'), request)
-          .filter(project__isnull=False)
           .prefetch_related('installments'))
     if dept:
         qs = qs.filter(delivery_dept=dept)
@@ -1483,12 +1485,11 @@ def _compute_diff_timeline(request):
         })
 
     for a in qs.order_by('occur_date', 'id'):
-        name = (a.project.short_name or '').strip()
-        if not name:
+        linked = bool(a.project and (a.project.short_name or '').strip())
+        name = a.project.short_name.strip() if linked else '（未挂项目）'
+        if q and (not linked or q not in name.lower()):
             continue
-        if q and q not in name.lower():
-            continue
-        dept_name = a.project.delivery_dept or a.delivery_dept or ''
+        dept_name = (a.project.delivery_dept if a.project else '') or a.delivery_dept or ''
         # 逐笔资金流：优先收付明细；无明细回退记录级单笔。余额标在记录最后一笔。
         insts = list(a.installments.all())
         if insts:

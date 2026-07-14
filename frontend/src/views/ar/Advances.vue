@@ -1069,8 +1069,8 @@ onMounted(async () => {
         <div v-if="diffBusy" class="empty" style="padding:30px;text-align:center">⏳ 加载中…</div>
         <div v-else-if="!diffRows.length" class="empty" style="padding:30px;text-align:center">
           {{ diffView === 'project'
-            ? '暂无数据——只有挂了项目台账的预收/预付才参与差异对照'
-            : '该期间暂无挂项目的预收/预付发生记录' }}
+            ? '暂无预收/预付数据（未挂项目的散单归入「（未挂项目）」组）'
+            : '该期间暂无预收/预付发生记录' }}
         </div>
         <div v-else class="table-wrap page-scroll">
           <table class="diff-table">

@@ -4451,15 +4451,18 @@ class AdvanceDiffSummaryTests(TestCase):
         s = d['summary']
         self.assertEqual(Decimal(s['diff']), Decimal('9000'))
 
-    def test_diff_excludes_loose_advances(self):
-        # 散单（未挂项目）不参与差异对照
+    def test_diff_includes_loose_advances_as_unlinked_group(self):
+        # 口径对齐（CFO 决策）：散单（未挂项目）纳入「（未挂项目）」组，
+        # 使收付差异合计与资金池/现金流（含全部预收预付）对平。
         AdvanceRecord.objects.create(
             direction='预收', delivery_dept=self.dept, counterparty='散单客户',
             occur_year=2026, occur_month=3, occur_date=date(2026, 3, 1),
             advance_amount=Decimal('999'))
         resp = self.client.get('/api/pk/ar/advances/diff-summary', **self.auth())
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(resp.json()['data']['rows']), 0)
+        rows = {r['project']: r for r in resp.json()['data']['rows']}
+        self.assertIn('（未挂项目）', rows)
+        self.assertEqual(Decimal(rows['（未挂项目）']['in_total']), Decimal('999'))
 
     def test_diff_q_filter(self):
         self._adv('预收', '100', date(2026, 3, 1), '客户A')
@@ -4934,6 +4937,52 @@ class BulkSetDateTests(TestCase):
         self.assertEqual(resp.status_code, 400, resp.content)
         self.r1.refresh_from_db()
         self.assertEqual(self.r1.operation_date, date(2026, 5, 1))
+
+class AdvanceDiffTimelineReconcileTests(TestCase):
+    """收付差异·按月 预付合计与现金流对平：含散单（未挂项目）预付，同分期收付日期口径。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900002400', name='DiffRecon', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456'); admin.save()
+        self.token = make_token(admin)
+        proj = ARProject.objects.create(customer_name='差异客户', short_name='差异项目',
+                                        delivery_dept=self.dept, sales_contact='S', project_manager='M')
+        # 挂项目预付 300（3月分期）
+        a1 = AdvanceRecord.objects.create(direction='预付', delivery_dept=self.dept, project=proj,
+                                          counterparty='供应商A', occur_year=2026, occur_month=1,
+                                          occur_date=date(2026, 1, 5), advance_amount=Decimal('300'))
+        AdvanceInstallment.objects.create(advance_record=a1, install_no=1, amount=Decimal('300'),
+                                          occur_date=date(2026, 3, 10))
+        # 散单预付 200（3月分期，未挂项目）
+        a2 = AdvanceRecord.objects.create(direction='预付', delivery_dept=self.dept,
+                                          counterparty='散单供应商', occur_year=2026, occur_month=2,
+                                          occur_date=date(2026, 2, 1), advance_amount=Decimal('200'))
+        AdvanceInstallment.objects.create(advance_record=a2, install_no=1, amount=Decimal('200'),
+                                          occur_date=date(2026, 3, 12))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_march_paid_matches_cashflow(self):
+        # 现金流分析 3 月预付 = 300 + 200 = 500（含散单）
+        cf = self.client.get('/api/pk/ar/cashflow',
+                            {'start_date': '2026-03-01', 'end_date': '2026-03-31', 'depts': self.dept},
+                            **self.auth()).json()['data']
+        self.assertEqual(cf['totals']['advance_paid'][0], 500.0)
+        # 收付差异·按月 3 月预付合计（out_total）= 500，与现金流对平（含散单）
+        tl = self.client.get('/api/pk/ar/advances/diff-timeline',
+                            {'grain': 'month', 'start': '2026-03-01', 'end': '2026-03-31'},
+                            **self.auth()).json()['data']
+        march = next(p for p in tl['periods'] if p['period'] == '2026-03')
+        self.assertEqual(Decimal(march['out_total']), Decimal('500'))
+        # 散单以「（未挂项目）」组出现在该期项目拆分里
+        projs = {x['project'] for x in march['projects']}
+        self.assertIn('（未挂项目）', projs)
+
 
 class CashPoolMonthlyTests(TestCase):
     """资金池逐月台账：每月期初→收支→期末滚动结转，末月期末=总账面余额；
