@@ -1448,20 +1448,20 @@ async function doBatchPay() {
             <tr>
               <th class="sel-col sticky-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
               <th v-if="colVisible('department')" :style="cw.thStyle('department')"><ColumnFilter label="部门" field="department" type="enum" :options="deptChoices" :model-value="colFilters.department" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('department',v)" @sort="o=>setSort('department',o)" /></th>
-              <th v-if="colVisible('secondary_dept')" style="width:84px"><ColumnFilter label="二级部门" field="secondary_dept" type="text" :model-value="colFilters.secondary_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('secondary_dept',v)" @sort="o=>setSort('secondary_dept',o)" /></th>
-              <th v-if="colVisible('project_short_name')" style="width:104px"><ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" /></th>
-              <th v-if="colVisible('applicant')" style="width:72px"><ColumnFilter label="申请人" field="applicant" type="text" :model-value="colFilters.applicant" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('applicant',v)" @sort="o=>setSort('applicant',o)" /></th>
-              <th v-if="colVisible('approval_number')" style="width:134px"><ColumnFilter label="审批单号" field="approval_number" type="text" :model-value="colFilters.approval_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('approval_number',v)" @sort="o=>setSort('approval_number',o)" /></th>
-              <th v-if="colVisible('g7_number')" style="width:120px"><ColumnFilter label="G7编号" field="g7_number" type="text" :model-value="colFilters.g7_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('g7_number',v)" @sort="o=>setSort('g7_number',o)" /></th>
-              <th v-if="colVisible('project_desc')" class="desc-th"><ColumnFilter label="付款事项" field="project_desc" type="text" :model-value="colFilters.project_desc" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_desc',v)" @sort="o=>setSort('project_desc',o)" /></th>
-              <th v-if="colVisible('payee')" style="width:120px"><ColumnFilter label="收款方" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
-              <th v-if="colVisible('planned_date')" style="width:98px"><ColumnFilter label="计划日期" field="planned_date" type="date" :model-value="colFilters.planned_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('planned_date',v)" @sort="o=>setSort('planned_date',o)" /></th>
-              <th v-if="colVisible('total_amount')" class="amt-th" style="width:98px"><ColumnFilter label="计划额" field="total_amount" type="number" :model-value="colFilters.total_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('total_amount',v)" @sort="o=>setSort('total_amount',o)" /></th>
-              <th v-if="colVisible('paid')" class="amt-th" style="width:90px"><ColumnFilter label="已付" field="paid" type="number" :model-value="colFilters.paid" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('paid',v)" @sort="o=>setSort('paid',o)" /></th>
-              <th v-if="colVisible('remaining')" class="amt-th" style="width:98px"><ColumnFilter label="剩余" field="remaining" type="number" :model-value="colFilters.remaining" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('remaining',v)" @sort="o=>setSort('remaining',o)" /></th>
-              <th v-if="colVisible('status')" style="width:106px"><ColumnFilter label="状态" field="status" type="enum" :options="PAY_STATUS_OPTS" :no-exclude="true" :sortable="false" :model-value="statusColModel" @update:model-value="setStatusFilter" /></th>
-              <th v-if="colVisible('overdue')" style="width:86px"><ColumnFilter label="逾期" field="overdue" type="enum" :options="OVERDUE_OPTS" :sortable="false" :model-value="colFilters.overdue" @update:model-value="v=>setColFilter('overdue',v)" /></th>
-              <th v-if="colVisible('plan_adjustment')" class="amt-th" style="width:96px"><ColumnFilter label="计划调整" field="plan_adjustment" type="number" :model-value="colFilters.plan_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('plan_adjustment',v)" @sort="o=>setSort('plan_adjustment',o)" /></th>
+              <th v-if="colVisible('secondary_dept')"><ColumnFilter label="二级部门" field="secondary_dept" type="text" :model-value="colFilters.secondary_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('secondary_dept',v)" @sort="o=>setSort('secondary_dept',o)" /></th>
+              <th v-if="colVisible('project_short_name')"><ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" /></th>
+              <th v-if="colVisible('applicant')"><ColumnFilter label="申请人" field="applicant" type="text" :model-value="colFilters.applicant" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('applicant',v)" @sort="o=>setSort('applicant',o)" /></th>
+              <th v-if="colVisible('approval_number')"><ColumnFilter label="审批单号" field="approval_number" type="text" :model-value="colFilters.approval_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('approval_number',v)" @sort="o=>setSort('approval_number',o)" /></th>
+              <th v-if="colVisible('g7_number')"><ColumnFilter label="G7编号" field="g7_number" type="text" :model-value="colFilters.g7_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('g7_number',v)" @sort="o=>setSort('g7_number',o)" /></th>
+              <th v-if="colVisible('project_desc')"><ColumnFilter label="付款事项" field="project_desc" type="text" :model-value="colFilters.project_desc" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_desc',v)" @sort="o=>setSort('project_desc',o)" /></th>
+              <th v-if="colVisible('payee')"><ColumnFilter label="收款方" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
+              <th v-if="colVisible('planned_date')"><ColumnFilter label="计划日期" field="planned_date" type="date" :model-value="colFilters.planned_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('planned_date',v)" @sort="o=>setSort('planned_date',o)" /></th>
+              <th v-if="colVisible('total_amount')" class="amt-th"><ColumnFilter label="计划额" field="total_amount" type="number" :model-value="colFilters.total_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('total_amount',v)" @sort="o=>setSort('total_amount',o)" /></th>
+              <th v-if="colVisible('paid')" class="amt-th"><ColumnFilter label="已付" field="paid" type="number" :model-value="colFilters.paid" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('paid',v)" @sort="o=>setSort('paid',o)" /></th>
+              <th v-if="colVisible('remaining')" class="amt-th"><ColumnFilter label="剩余" field="remaining" type="number" :model-value="colFilters.remaining" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('remaining',v)" @sort="o=>setSort('remaining',o)" /></th>
+              <th v-if="colVisible('status')"><ColumnFilter label="状态" field="status" type="enum" :options="PAY_STATUS_OPTS" :no-exclude="true" :sortable="false" :model-value="statusColModel" @update:model-value="setStatusFilter" /></th>
+              <th v-if="colVisible('overdue')"><ColumnFilter label="逾期" field="overdue" type="enum" :options="OVERDUE_OPTS" :sortable="false" :model-value="colFilters.overdue" @update:model-value="v=>setColFilter('overdue',v)" /></th>
+              <th v-if="colVisible('plan_adjustment')" class="amt-th"><ColumnFilter label="计划调整" field="plan_adjustment" type="number" :model-value="colFilters.plan_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('plan_adjustment',v)" @sort="o=>setSort('plan_adjustment',o)" /></th>
               <th v-if="colVisible('notes')" :style="cw.thStyle('notes')"><ColumnFilter label="备注" field="notes" type="text" :model-value="colFilters.notes" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('notes',v)" @sort="o=>setSort('notes',o)" /></th>
             </tr>
           </thead>
@@ -1991,11 +1991,15 @@ async function doBatchPay() {
 
 /* 付款管理：固定布局，不超出卡片宽度（table-layout:fixed 已防横向溢出，无需 overflow-x:hidden） */
 .table-wrap.pk-pay-tbl { padding-bottom: 70px; }
-.pk-pay-tbl table { table-layout: fixed; min-width: 1100px; }
+.pk-pay-tbl table { table-layout: auto; min-width: 1100px; }
 /* 列多、字段密：本表用更紧凑的字号/横向内边距，尽量让各列内容完整展示 */
 .pk-pay-tbl { --td-fs: 12px; --td-px: 6px; }
 .pk-pay-tbl th, .pk-pay-tbl td { padding: var(--td-py) var(--td-px); font-size: var(--td-fs); }
-.pk-pay-tbl td:not(.ops-cell) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+.pk-pay-tbl td:not(.ops-cell) { white-space: nowrap; }
+/* 长文本列封顶：付款事项/收款方 超宽截断+悬浮看全文，其余列按内容自适应全展示 */
+.pk-pay-tbl td.cell-desc { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+.pk-pay-tbl td.cell-payee { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.pk-pay-tbl td.cell-clip { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
 /* 空状态整行：跨列居中，取消定宽/裁剪，表头留在顶部、提示紧贴其下（不再把表头挤到页面中间） */
 .pk-pay-tbl td.empty-cell { max-width: none; overflow: visible; white-space: normal; text-align: center; padding: 20px 8px; }
 /* Excel 式区域选择高亮已收归全局 style.css（td.cell-range-sel） */
@@ -2193,7 +2197,7 @@ async function doBatchPay() {
 /* 金额列：右对齐 + 等宽数字，数值完整展示、位数对齐；超长仍可 hover(title) 查看 */
 .pk-pay-tbl td.amt { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pk-pay-tbl th.amt-th { text-align: right; }
-.pk-pay-tbl th.desc-th { width: auto; min-width: 220px; }
+
 /* 核销提醒角标：该行项目/收款方存在未核销预付余额，点击直达核销弹窗（防重复支付） */
 .offset-hint {
   display: inline-block; margin-right: 4px; padding: 0 5px; border-radius: 5px;

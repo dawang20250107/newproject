@@ -951,14 +951,14 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
     <SchemePicker :ctl="schemes" :can-public="auth.canCreate" :is-super-admin="auth.isSuperAdmin" />
     <span class="tb-sep"></span>
     <button class="btn btn-ghost btn-sm" @click="downloadTemplate">模板</button>
+    <button v-if="canTransport" class="btn btn-ghost btn-sm tp-btn" :disabled="importingTransport" @click="triggerTransportImport"
+            title="运输事业部专用：上传运输系统导出的对账单原始表 → 金额自动取绝对值、对账单号去重，建为「已通过」审批记录，再排款进付款管理">
+      <span style="margin-right:3px">🚚</span>{{ importingTransport?'导入中…':'运输导入' }}</button>
     <button class="btn btn-ghost btn-sm" :disabled="importing" @click="triggerImport"
             title="导入会自动做规则校验 + AI 智能复核；发现问题时 AI 会介入，协助你就地修正后再导入">{{ importing?'导入中…':'导入' }}</button>
     <button class="btn btn-ghost btn-sm" @click="doExport" :disabled="exporting || bgExporting"
             title="导出当前筛选结果；超过 5000 行自动转后台导出，完成后自动下载">{{ exporting?'导出中…':(bgExporting?'后台导出中…':'导出') }}</button>
     <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增</button>
-    <button v-if="canTransport" class="btn btn-ghost btn-sm tp-btn" :disabled="importingTransport" @click="triggerTransportImport"
-            title="运输事业部专用：上传运输系统导出的对账单原始表 → 金额自动取绝对值、对账单号去重，建为「已通过」审批记录，再排款进付款管理">
-      <span style="margin-right:3px">🚚</span>{{ importingTransport?'导入中…':'运输导入' }}</button>
   </div></div>
   <input ref="fileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImport" />
   <input ref="transportFileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onTransportImport" />
@@ -978,20 +978,20 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <div v-if="!loadErr" class="table-wrap page-scroll" :ref="rangeSel.setRoot"><table class="approval-table">
     <colgroup>
       <col class="cg-sel" /><!-- 选择 -->
-      <!-- 元数据列固定 px（不随宽屏放大），摘要列 auto 吸收剩余空间；min-width 保底≥188 -->
-      <col style="width:72px" /><!-- 申请人 -->
-      <col style="width:84px" /><!-- 所属事业部 -->
-      <col style="width:78px" /><!-- 二级部门 -->
-      <col style="width:96px" /><!-- 项目简称 -->
-      <col style="width:130px" /><!-- 审批编号（长编号截断+悬浮全文） -->
-      <col style="width:112px" /><!-- G7编号 -->
-      <col /><!-- 摘要（auto，吸收剩余空间） -->
+      <!-- table-layout:auto → 各结构化列按内容自适应全展示；摘要/收款主体/备注由 td max-width 封顶 -->
+      <col /><!-- 申请人 -->
+      <col /><!-- 所属事业部 -->
+      <col /><!-- 二级部门 -->
+      <col /><!-- 项目简称 -->
+      <col /><!-- 审批编号 -->
+      <col /><!-- G7编号 -->
+      <col /><!-- 摘要 -->
       <col class="cg-status" /><!-- 审批状态 -->
-      <col style="width:88px" /><!-- 申请金额 -->
-      <col style="width:88px" /><!-- 已排金额 -->
-      <col style="width:88px" /><!-- 未排金额 -->
-      <col style="width:110px" /><!-- 收款主体 -->
-      <col style="width:88px" /><!-- 备注 -->
+      <col /><!-- 申请金额 -->
+      <col /><!-- 已排金额 -->
+      <col /><!-- 未排金额 -->
+      <col /><!-- 收款主体 -->
+      <col /><!-- 备注 -->
     </colgroup>
     <thead><tr>
       <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
@@ -1307,7 +1307,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .bb-hint { font-size: 11px; color: var(--muted); margin-left: 8px; opacity: 0.8; white-space: nowrap; cursor: help; }
 @media (max-width: 900px) { .bb-hint { display: none; } }
 /* width:100% 充满；min-width 保证窄屏下横向滚动而非把列名/数据挤扁 */
-.approval-table { width: 100%; min-width: 1340px; table-layout: fixed; }
+.approval-table { width: 100%; min-width: 1200px; table-layout: auto; }
 /* 列宽由 <colgroup> 统一声明；选择列固定窄宽、审批状态列缩小，其余按百分比分配 */
 .approval-table col.cg-sel { width: 34px; }
 /* 审批状态列：宽度够放下「审批通过」整词 + 下拉箭头，不再截断成「审批」 */
@@ -1316,7 +1316,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 紧凑排版：数据量大，行间距固定收紧（固定行高 + 单行省略，超出鼠标悬停 title 展示） */
 /* 列多、字段密：本表用更紧凑的字号/横向内边距，尽量让各列内容完整展示 */
 .approval-table { --td-fs: 12px; --td-px: 6px; }
-.approval-table th, .approval-table td { padding: var(--td-py) var(--td-px); height: var(--td-h); box-sizing: border-box; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--td-fs); line-height: 1.4; }
+.approval-table th, .approval-table td { padding: var(--td-py) var(--td-px); height: var(--td-h); box-sizing: border-box; white-space: nowrap; font-size: var(--td-fs); line-height: 1.4; }
+/* 长文本列封顶：摘要超宽截断+悬浮看全文，其余列按内容自适应全展示 */
+.approval-table td.summary { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+.approval-table td.meta-cell, .approval-table td.notes-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 /* 空状态整行：跨列居中、取消定高/裁剪，表头留顶部、提示紧贴其下 */
 .approval-table td.empty-cell { height: auto; white-space: normal; overflow: visible; text-align: center; padding: 20px 8px; }
 .approval-table th.sel-col, .approval-table td.sel-col { text-align: center; overflow: visible; padding: 4px 4px; }
