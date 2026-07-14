@@ -15,6 +15,8 @@ const props = defineProps({
   label: { type: String, default: '时间' },
   // 初始高亮的预设键(父组件用对应区间初始化时传入,如 'thismonth')
   initial: { type: String, default: 'all' },
+  // 紧凑模式：把常显的起止日期输入收成「自定义」chip 放在预设旁，点开才展开日期框，省横向空间
+  customChip: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:start', 'update:end', 'change'])
 
@@ -50,6 +52,10 @@ function _compute(k) {
 }
 
 const active = ref(props.initial)
+// 紧凑模式：自定义日期框展开态；已手填自定义区间时视为激活
+const showCustom = ref(false)
+const customActive = computed(() => !!(props.start || props.end) && !active.value)
+function toggleCustom() { showCustom.value = !showCustom.value }
 let lastApplied = null
 function apply(k) {
   const r = _compute(k)
@@ -75,8 +81,12 @@ watch(() => [props.start, props.end], ([s, e]) => {
     <div class="drc-chips">
       <button v-for="c in chips" :key="c.k" class="drc-chip" :class="{ on: active === c.k }"
               @click="apply(c.k)">{{ c.l }}</button>
+      <!-- 紧凑模式：预设旁的「自定义」chip，点开才显示起止日期框 -->
+      <button v-if="customChip" class="drc-chip" :class="{ on: customActive || showCustom }"
+              @click="toggleCustom">自定义</button>
     </div>
-    <div class="drc-range">
+    <!-- 紧凑模式：日期框内联展开在预设条右侧 -->
+    <div v-if="!customChip || showCustom" class="drc-range">
       <input :value="start" type="date" class="inp sm drc-date" @change="onManual('start', $event.target.value)" />
       <span class="drc-sep">~</span>
       <input :value="end" type="date" class="inp sm drc-date" @change="onManual('end', $event.target.value)" />

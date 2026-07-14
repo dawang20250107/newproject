@@ -955,10 +955,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
             title="导入会自动做规则校验 + AI 智能复核；发现问题时 AI 会介入，协助你就地修正后再导入">{{ importing?'导入中…':'导入' }}</button>
     <button class="btn btn-ghost btn-sm" @click="doExport" :disabled="exporting || bgExporting"
             title="导出当前筛选结果；超过 5000 行自动转后台导出，完成后自动下载">{{ exporting?'导出中…':(bgExporting?'后台导出中…':'导出') }}</button>
+    <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增</button>
     <button v-if="canTransport" class="btn btn-ghost btn-sm tp-btn" :disabled="importingTransport" @click="triggerTransportImport"
             title="运输事业部专用：上传运输系统导出的对账单原始表 → 金额自动取绝对值、对账单号去重，建为「已通过」审批记录，再排款进付款管理">
       <span style="margin-right:3px">🚚</span>{{ importingTransport?'导入中…':'运输导入' }}</button>
-    <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增</button>
   </div></div>
   <input ref="fileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImport" />
   <input ref="transportFileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onTransportImport" />
@@ -966,7 +966,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <div v-show="subtab === 'list'" class="card approval-card fh-fill">
   <!-- 登记时间区间：与其他台账同款预设条；列表/汇总/导出随之联动 -->
   <div class="apr-timebar">
-    <DateRangeChips v-model:start="dateStart" v-model:end="dateEnd"
+    <DateRangeChips v-model:start="dateStart" v-model:end="dateEnd" custom-chip
                     label="登记时间" initial="all" @change="onRangeChange" />
   </div>
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
@@ -978,19 +978,20 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <div v-if="!loadErr" class="table-wrap page-scroll" :ref="rangeSel.setRoot"><table class="approval-table">
     <colgroup>
       <col class="cg-sel" /><!-- 选择 -->
-      <col style="width:6%" /><!-- 申请人 -->
-      <col style="width:7%" /><!-- 所属事业部 -->
-      <col style="width:7%" /><!-- 二级部门 -->
-      <col style="width:8%" /><!-- 项目简称 -->
-      <col style="width:12%" /><!-- 审批编号（放宽，尽量完整展示 ZD…对账单号/长编号） -->
-      <col style="width:8%" /><!-- G7编号 -->
-      <col style="width:13%" /><!-- 摘要 -->
-      <col class="cg-status" /><!-- 审批状态（缩小） -->
-      <col style="width:7%" /><!-- 申请金额 -->
-      <col style="width:7%" /><!-- 已排金额 -->
-      <col style="width:7%" /><!-- 未排金额 -->
-      <col style="width:10%" /><!-- 收款主体 -->
-      <col style="width:8%" /><!-- 备注（末列，压缩） -->
+      <!-- 元数据列固定 px（不随宽屏放大），摘要列 auto 吸收剩余空间；min-width 保底≥188 -->
+      <col style="width:72px" /><!-- 申请人 -->
+      <col style="width:84px" /><!-- 所属事业部 -->
+      <col style="width:78px" /><!-- 二级部门 -->
+      <col style="width:96px" /><!-- 项目简称 -->
+      <col style="width:130px" /><!-- 审批编号（长编号截断+悬浮全文） -->
+      <col style="width:112px" /><!-- G7编号 -->
+      <col /><!-- 摘要（auto，吸收剩余空间） -->
+      <col class="cg-status" /><!-- 审批状态 -->
+      <col style="width:88px" /><!-- 申请金额 -->
+      <col style="width:88px" /><!-- 已排金额 -->
+      <col style="width:88px" /><!-- 未排金额 -->
+      <col style="width:110px" /><!-- 收款主体 -->
+      <col style="width:88px" /><!-- 备注 -->
     </colgroup>
     <thead><tr>
       <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
@@ -1306,7 +1307,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .bb-hint { font-size: 11px; color: var(--muted); margin-left: 8px; opacity: 0.8; white-space: nowrap; cursor: help; }
 @media (max-width: 900px) { .bb-hint { display: none; } }
 /* width:100% 充满；min-width 保证窄屏下横向滚动而非把列名/数据挤扁 */
-.approval-table { width: 100%; min-width: 1120px; table-layout: fixed; }
+.approval-table { width: 100%; min-width: 1340px; table-layout: fixed; }
 /* 列宽由 <colgroup> 统一声明；选择列固定窄宽、审批状态列缩小，其余按百分比分配 */
 .approval-table col.cg-sel { width: 34px; }
 /* 审批状态列：宽度够放下「审批通过」整词 + 下拉箭头，不再截断成「审批」 */

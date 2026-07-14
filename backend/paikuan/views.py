@@ -1421,7 +1421,8 @@ def _payments_filtered_qs(request):
         qs = qs.filter(
             Q(project_desc__icontains=q) | Q(payee__icontains=q) |
             Q(approval_number__icontains=q) | Q(g7_number__icontains=q) |
-            Q(department__icontains=q) | Q(applicant__icontains=q)
+            Q(department__icontains=q) | Q(secondary_dept__icontains=q) |
+            Q(applicant__icontains=q)
         )
 
     # 列头精确筛选（filters JSON，白名单解析）+ 列头排序
@@ -2171,7 +2172,7 @@ def payment_installments(request):
         qs = qs.filter(
             Q(payment__project_desc__icontains=q) | Q(payment__payee__icontains=q) |
             Q(payment__approval_number__icontains=q) | Q(payment__g7_number__icontains=q) |
-            Q(payment__applicant__icontains=q)
+            Q(payment__secondary_dept__icontains=q) | Q(payment__applicant__icontains=q)
         )
 
     qs = qs.order_by('-pay_date', '-id')
@@ -2254,7 +2255,7 @@ def payment_installments_export(request):
         qs = qs.filter(
             Q(payment__project_desc__icontains=q) | Q(payment__payee__icontains=q) |
             Q(payment__approval_number__icontains=q) | Q(payment__g7_number__icontains=q) |
-            Q(payment__applicant__icontains=q))
+            Q(payment__secondary_dept__icontains=q) | Q(payment__applicant__icontains=q))
     qs = qs.order_by('-pay_date', '-id')
     if qs.count() > 20000:
         return err('付款流水超过 20000 行，请缩小日期范围后再导出')
