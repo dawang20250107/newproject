@@ -1291,15 +1291,14 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .nf-area:focus { outline: none; border-color: var(--primary); }
 .nf-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
 .nf-count { font-size: 12px; color: var(--muted); }
-/* 列头：字段名完整展示，空间不足时换行成两行（不挤压、不截断），漏斗不裁切 */
+/* 列头：字段名整体不换行、不压缩；宽度不足时表格整体横向滚动，绝不把短表头挤成竖排 */
 .approval-table thead th {
-  overflow: visible; white-space: normal; vertical-align: middle;
+  overflow: visible; white-space: nowrap; vertical-align: middle;
   line-height: 1.25; height: auto; padding-top: 5px; padding-bottom: 5px;
   font-size: 12px; letter-spacing: -0.2px;
 }
 .approval-table thead :deep(.colf) { align-items: center; }
-/* 换行时两行字数尽量均衡（text-wrap:balance），避免 4+1 这种头重脚轻 */
-.approval-table thead :deep(.colf-label) { white-space: normal; text-wrap: balance; }
+.approval-table thead :deep(.colf-label) { white-space: nowrap; }
 /* 表头随表体滚动吸顶（不透明背景，避免行透出） */
 .table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 

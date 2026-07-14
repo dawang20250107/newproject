@@ -18,6 +18,7 @@ _MODULE_PAGE = {
     'ar_customers': 'ar_projects',   # 客户列表沿用项目页权限
     'ar_advances': 'ar_advance',
     'ar_budget': 'ar_budget',
+    'ar_daily_receipts': 'ar_daily_receipts',
 }
 # 仅超管可见的列表（无 pages 权限位，单独按角色门禁）
 _ADMIN_MODULES = {'pk_users', 'pk_audit_logs'}

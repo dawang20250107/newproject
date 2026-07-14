@@ -2004,15 +2004,14 @@ async function doBatchPay() {
 .pk-pay-tbl td.empty-cell { max-width: none; overflow: visible; white-space: normal; text-align: center; padding: 20px 8px; }
 /* Excel 式区域选择高亮已收归全局 style.css（td.cell-range-sel） */
 .pk-pay-tbl tbody { user-select: none; }
-/* 列头：字段名完整展示，空间不足时换行成两行（不挤压、不截断），漏斗不裁切 */
+/* 列头：字段名整体不换行、不压缩；宽度不足时表格整体横向滚动，绝不把短表头挤成竖排 */
 .pk-pay-tbl thead th {
-  overflow: visible; white-space: normal; vertical-align: middle;
+  overflow: visible; white-space: nowrap; vertical-align: middle;
   line-height: 1.25; padding-top: 5px; padding-bottom: 5px;
   font-size: 12px; letter-spacing: -0.2px;
 }
 .pk-pay-tbl thead :deep(.colf) { align-items: center; }
-/* 换行时两行字数尽量均衡，避免头重脚轻 */
-.pk-pay-tbl thead :deep(.colf-label) { white-space: normal; text-wrap: balance; }
+.pk-pay-tbl thead :deep(.colf-label) { white-space: nowrap; }
 /* 可收缩：导航展开、内容变窄时优先压缩搜索框而不是把整行挤成两行 */
 .global-search { min-width: 130px; flex: 1 1 200px; }
 .clear-all-btn { background: var(--bg2); border: none; color: var(--primary); }
