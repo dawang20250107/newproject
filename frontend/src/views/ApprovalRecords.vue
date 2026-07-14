@@ -1269,10 +1269,12 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 吸底 bottom-bar(36px) 占位：滚动区底部留白，最后一行不被遮挡 */
 .table-wrap.page-scroll { padding-bottom: 40px; }
 /* 搜索 + 方案 + 导入导出 收纳进页头右侧，腾出整行垂直空间给表格 */
-.tb-left { display: flex; align-items: center; gap: 16px; }
-.subtabs { display: inline-flex; gap: 2px; background: var(--surface-2, rgba(160,120,80,.08)); border-radius: 9px; padding: 3px; }
+.tb-left { display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+/* 页头标题/子标签不换行：空间不足时优先压缩右侧工具区（topbar-tools 可换行），标题恒定一行 */
+.tb-left h1 { white-space: nowrap; flex-shrink: 0; margin: 0; }
+.subtabs { display: inline-flex; gap: 2px; background: var(--surface-2, rgba(160,120,80,.08)); border-radius: 9px; padding: 3px; flex-shrink: 0; }
 .subtabs button { border: none; background: none; padding: 6px 14px; border-radius: 7px; font-size: 13.5px; font-weight: 600;
-  color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; transition: all .16s; }
+  white-space: nowrap; color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; transition: all .16s; }
 .subtabs button:hover { color: var(--text, #4a3322); }
 .subtabs button.on { background: var(--card); color: var(--primary); box-shadow: var(--shadow-sm); }
 .topbar-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
