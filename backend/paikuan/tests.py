@@ -2444,7 +2444,7 @@ class ListSchemeTests(TestCase):
     def test_ar_module_uses_project_page_perm(self):
         # AR 列表模块映射到对应页权限；超管直接放行，能建并取回
         a = self._user('13900000306')
-        for module in ('ar_projects', 'ar_customers', 'ar_advances', 'ar_budget', 'ar_daily_receipts'):
+        for module in ('ar_projects', 'ar_customers', 'ar_advances', 'ar_budget', 'ar_budget_compare', 'ar_daily_receipts'):
             r = self.post('/api/pk/list-schemes',
                           {'module': module, 'name': f'{module}方案', 'scope': 'private',
                            'payload': {'colFilters': {}, 'sort': '', 'order': ''}}, a)

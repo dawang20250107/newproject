@@ -642,6 +642,17 @@ async function exportData(type) {
   } catch (e) { toast.error(e?.response?.data?.msg || e?.msg || e?.error || '操作失败')
   } finally { exporting.value = false }
 }
+// 项目对照导出：后端按当前时段/部门口径产出 Excel（列与页面一致 + 合计行）
+const cmpExporting = ref(false)
+async function exportCompare() {
+  if (!compareRows.value.length) { toast.warn('当前无可导出的项目对照数据'); return }
+  cmpExporting.value = true
+  try {
+    const res = await ar.exportProjectCompare({ date_start: dateStart.value, date_end: dateEnd.value, dept: selectedDept.value })
+    saveBlob(res, `项目对照_${dateStart.value}_${dateEnd.value}.xlsx`)
+  } catch (e) { toast.error(e?.response?.data?.msg || e?.msg || e?.error || '导出失败')
+  } finally { cmpExporting.value = false }
+}
 
 useModalEsc([() => showModal.value, () => (showModal.value = false)])
 // Ctrl/Cmd+Enter 提交新增/编辑弹窗（save 内部自带校验与 saving 防重）
@@ -889,6 +900,9 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           </div>
           <div class="hdr-acts">
             <input v-model="compareQ" class="cmp-search" placeholder="搜项目 / 客户 / 部门" />
+            <button class="btn btn-ghost btn-sm" :disabled="cmpExporting || !compareRows.length"
+                    title="按当前时段/部门导出项目对照 Excel（列与页面一致，末尾附合计）"
+                    @click="exportCompare">{{ cmpExporting ? '导出中…' : '↓ 导出' }}</button>
             <SchemePicker :ctl="cmpSchemes" :can-public="auth.canArWrite" :is-super-admin="auth.isSuperAdmin" />
           </div>
         </div>
@@ -899,14 +913,19 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <div v-else class="table-wrap">
           <table class="cmp-table">
             <thead>
+              <!-- 两级表头：预算↔实际成对归入「收款执行 / 付款执行」组，一眼看清计划对实际 -->
+              <tr class="cmp-grp-row">
+                <th rowspan="2" class="col-proj"><ColumnFilter label="项目" field="project" type="text" :model-value="cmpColFilters.project" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('project',v)" @sort="o=>cmpSetSort('project',o)" /></th>
+                <th colspan="2" class="cmp-grp grp-in grp-start">收款执行</th>
+                <th colspan="2" class="cmp-grp grp-out grp-start">付款执行</th>
+                <th rowspan="2" class="amt col-net grp-start"><ColumnFilter label="净现金(实际)" field="actual_net" type="number" :model-value="cmpColFilters.actual_net" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_net',v)" @sort="o=>cmpSetSort('actual_net',o)" /></th>
+                <th rowspan="2" class="col-tags grp-start"><ColumnFilter label="状态" field="tags" type="enum" :sortable="false" :options="CMP_TAG_OPTS" :model-value="cmpColFilters.tags" @update:model-value="v=>cmpSetColFilter('tags',v)" /></th>
+              </tr>
               <tr>
-                <th style="min-width:150px"><ColumnFilter label="项目" field="project" type="text" :model-value="cmpColFilters.project" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('project',v)" @sort="o=>cmpSetSort('project',o)" /></th>
-                <th class="amt"><ColumnFilter label="收款预算" field="budget_in" type="number" :model-value="cmpColFilters.budget_in" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('budget_in',v)" @sort="o=>cmpSetSort('budget_in',o)" /></th>
-                <th style="min-width:150px"><ColumnFilter label="实际收款 / 达成" field="actual_in" type="number" :model-value="cmpColFilters.actual_in" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_in',v)" @sort="o=>cmpSetSort('actual_in',o)" /></th>
-                <th class="amt"><ColumnFilter label="付款预算" field="budget_out" type="number" :model-value="cmpColFilters.budget_out" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('budget_out',v)" @sort="o=>cmpSetSort('budget_out',o)" /></th>
-                <th style="min-width:150px"><ColumnFilter label="实际付款 / 执行" field="actual_out" type="number" :model-value="cmpColFilters.actual_out" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_out',v)" @sort="o=>cmpSetSort('actual_out',o)" /></th>
-                <th class="amt"><ColumnFilter label="净现金(实际)" field="actual_net" type="number" :model-value="cmpColFilters.actual_net" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_net',v)" @sort="o=>cmpSetSort('actual_net',o)" /></th>
-                <th><ColumnFilter label="状态" field="tags" type="enum" :sortable="false" :options="CMP_TAG_OPTS" :model-value="cmpColFilters.tags" @update:model-value="v=>cmpSetColFilter('tags',v)" /></th>
+                <th class="amt col-bud grp-start"><ColumnFilter label="预算" field="budget_in" type="number" :model-value="cmpColFilters.budget_in" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('budget_in',v)" @sort="o=>cmpSetSort('budget_in',o)" /></th>
+                <th class="col-act"><ColumnFilter label="实际 / 达成" field="actual_in" type="number" :model-value="cmpColFilters.actual_in" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_in',v)" @sort="o=>cmpSetSort('actual_in',o)" /></th>
+                <th class="amt col-bud grp-start"><ColumnFilter label="预算" field="budget_out" type="number" :model-value="cmpColFilters.budget_out" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('budget_out',v)" @sort="o=>cmpSetSort('budget_out',o)" /></th>
+                <th class="col-act"><ColumnFilter label="实际 / 执行" field="actual_out" type="number" :model-value="cmpColFilters.actual_out" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_out',v)" @sort="o=>cmpSetSort('actual_out',o)" /></th>
               </tr>
             </thead>
             <tbody>
@@ -915,8 +934,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   <div class="fw">{{ r.project }}</div>
                   <div class="cmp-sub">{{ r.dept || '—' }}<template v-if="r.manager"> · {{ r.manager }}</template></div>
                 </td>
-                <td class="amt muted">{{ parseFloat(r.budget_in) ? fmtAmt(r.budget_in) : '—' }}</td>
-                <td>
+                <td class="amt muted col-bud grp-start">{{ parseFloat(r.budget_in) ? fmtAmt(r.budget_in) : '—' }}</td>
+                <td class="col-act">
                   <div class="cmp-bar-line">
                     <b class="ok">{{ parseFloat(r.actual_in) ? fmtAmt(r.actual_in) : '—' }}</b>
                     <span v-if="r.in_rate != null" class="cmp-rate" :class="r.in_rate >= 100 ? 'ok' : (r.in_rate >= monthProgress.pct ? '' : 'warn')">{{ r.in_rate }}%</span>
@@ -926,8 +945,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                     <i class="cmp-tick" :style="`left:${monthProgress.pct}%`" title="时间进度"></i>
                   </div>
                 </td>
-                <td class="amt muted">{{ parseFloat(r.budget_out) ? fmtAmt(r.budget_out) : '—' }}</td>
-                <td>
+                <td class="amt muted col-bud grp-start">{{ parseFloat(r.budget_out) ? fmtAmt(r.budget_out) : '—' }}</td>
+                <td class="col-act">
                   <div class="cmp-bar-line">
                     <b class="bad">{{ parseFloat(r.actual_out) ? fmtAmt(r.actual_out) : '—' }}</b>
                     <span v-if="r.out_rate != null" class="cmp-rate" :class="r.out_rate > 100 ? 'bad' : ''">{{ r.out_rate }}%</span>
@@ -936,8 +955,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                     <div class="cmp-fill out" :class="{ over: r.out_rate > 100 }" :style="`width:${barPct(r.actual_out, r.budget_out)}%`"></div>
                   </div>
                 </td>
-                <td class="amt fw" :style="{ color: parseFloat(r.actual_net) >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ fmtAmt(r.actual_net) }}</td>
-                <td>
+                <td class="amt fw col-net grp-start" :style="{ color: parseFloat(r.actual_net) >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ fmtAmt(r.actual_net) }}</td>
+                <td class="col-tags grp-start">
                   <span v-for="t in r.tags" :key="t" class="cmp-tag"
                     :style="{ background: TAG_STYLE[t]?.bg, color: TAG_STYLE[t]?.c }">{{ t }}</span>
                   <span v-if="!r.tags.length" class="muted" style="font-size:11px">—</span>
@@ -1365,10 +1384,21 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .cmp-chip.blue { background: rgba(21,101,192,.08); color: var(--c-info); }
 
 .cmp-search { border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; width: 210px; background: rgba(255,255,255,.8); }
-.cmp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cmp-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: auto; }
 .cmp-table th { padding: 9px 12px; text-align: left; font-size: 11.5px; font-weight: 700; color: var(--muted);
   background: rgba(201,99,66,.05); border-bottom: 1px solid rgba(180,140,110,.15); white-space: nowrap; overflow: visible; }
 .cmp-table th.amt { text-align: right; }
+/* 分组表头 + 列宽收敛：项目列吸收余量（左对齐叙事），数字列定宽成对聚拢，去列间空隙 */
+.cmp-grp { text-align: center; font-size: 11px; font-weight: 800; letter-spacing: .06em;
+  padding: 5px 12px; background: rgba(201,99,66,.07); }
+.cmp-grp.grp-in { color: var(--c-success); }
+.cmp-grp.grp-out { color: #c2410c; }
+.cmp-table th.grp-start, .cmp-table td.grp-start { border-left: 1px solid rgba(180,140,110,.2); }
+.cmp-table th.col-proj { min-width: 180px; }
+.cmp-table th.col-bud, .cmp-table td.col-bud { width: 116px; }
+.cmp-table th.col-act, .cmp-table td.col-act { width: 208px; }
+.cmp-table th.col-net, .cmp-table td.col-net { width: 128px; }
+.cmp-table th.col-tags, .cmp-table td.col-tags { width: 152px; }
 .cmp-table td { padding: 9px 12px; border-bottom: 1px solid rgba(180,140,110,.08); vertical-align: middle; }
 .cmp-table td.amt { text-align: right; font-variant-numeric: tabular-nums; }
 .cmp-row { cursor: pointer; }

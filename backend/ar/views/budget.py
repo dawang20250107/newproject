@@ -730,22 +730,9 @@ def budget_summary(request):
     })
 
 
-@csrf_exempt
-@pk_required()
-def budget_project_compare(request):
-    """项目维度预算对照 — 预算（收/付，按项目简称）与实际（应收回款/排款实付，
-    按项目简称）同窗对齐，逐项目展示「计划 vs 实际」全貌。
-
-    入参：date_start/date_end（默认本月）、dept（可选）。
-    返回 rows：每个涉及项目一行（收款预算/实际收款/达成率/付款预算/实际付款/
-    执行率/净现金计划与实际/状态标签）+ summary 汇总。
-    """
-    denied = _page_denied(request, 'ar_budget')
-    if denied:
-        return denied
-    if request.method != 'GET':
-        return err('Method not allowed', 405)
-
+def _compute_project_compare(request):
+    """项目维度预算对照的核心计算，供 JSON 视图与导出共用。
+    返回 (start_date, end_date, out_rows, summary)。"""
     today = timezone.localdate()
     start_date, end_date = _parse_budget_date_range(request, today)
 
@@ -850,21 +837,75 @@ def budget_project_compare(request):
     t_ai = sum(Decimal(x['actual_in']) for x in out_rows)
     t_bo = sum(Decimal(x['budget_out']) for x in out_rows)
     t_ao = sum(Decimal(x['actual_out']) for x in out_rows)
-    return ok({
-        'start_date': str(start_date), 'end_date': str(end_date),
-        'rows': out_rows,
-        'summary': {
-            'count': len(out_rows),
-            'budget_in': str(t_bi), 'actual_in': str(t_ai), 'in_rate': _rate(t_ai, t_bi),
-            'budget_out': str(t_bo), 'actual_out': str(t_ao), 'out_rate': _rate(t_ao, t_bo),
-            'budget_net': str(t_bi - t_bo), 'actual_net': str(t_ai - t_ao),
-            'achieved': sum(1 for x in out_rows if '收款达成' in x['tags']),
-            'lagging': sum(1 for x in out_rows if '收款滞后' in x['tags']),
-            'over_budget': sum(1 for x in out_rows if '付款超预算' in x['tags']),
-            'unplanned': sum(1 for x in out_rows
-                             if '计划外收款' in x['tags'] or '计划外付款' in x['tags']),
-        },
-    })
+    summary = {
+        'count': len(out_rows),
+        'budget_in': str(t_bi), 'actual_in': str(t_ai), 'in_rate': _rate(t_ai, t_bi),
+        'budget_out': str(t_bo), 'actual_out': str(t_ao), 'out_rate': _rate(t_ao, t_bo),
+        'budget_net': str(t_bi - t_bo), 'actual_net': str(t_ai - t_ao),
+        'achieved': sum(1 for x in out_rows if '收款达成' in x['tags']),
+        'lagging': sum(1 for x in out_rows if '收款滞后' in x['tags']),
+        'over_budget': sum(1 for x in out_rows if '付款超预算' in x['tags']),
+        'unplanned': sum(1 for x in out_rows
+                         if '计划外收款' in x['tags'] or '计划外付款' in x['tags']),
+    }
+    return start_date, end_date, out_rows, summary
+
+
+@csrf_exempt
+@pk_required()
+def budget_project_compare(request):
+    """项目维度预算对照 — 预算（收/付，按项目简称）与实际（应收回款/排款实付，
+    按项目简称）同窗对齐，逐项目展示「计划 vs 实际」全貌。
+
+    入参：date_start/date_end（默认本月）、dept（可选）。
+    返回 rows：每个涉及项目一行（收款预算/实际收款/达成率/付款预算/实际付款/
+    执行率/净现金计划与实际/状态标签）+ summary 汇总。
+    """
+    denied = _page_denied(request, 'ar_budget')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    start_date, end_date, out_rows, summary = _compute_project_compare(request)
+    return ok({'start_date': str(start_date), 'end_date': str(end_date),
+               'rows': out_rows, 'summary': summary})
+
+
+@csrf_exempt
+@pk_required()
+def budget_project_compare_export(request):
+    """项目对照导出为 Excel：列与页面表格一致，含达成/执行率、缺口、净现金及状态，
+    末尾附合计行。范围随 date_start/date_end/dept，与页面同口径。"""
+    denied = _page_denied(request, 'ar_budget')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    start_date, end_date, out_rows, summary = _compute_project_compare(request)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '项目对照'
+    headers = ['项目简称', '交付部门', '客户', '负责人',
+               '收款预算', '实际收款', '收款达成率%', '收款缺口',
+               '付款预算', '实际付款', '付款执行率%', '付款缺口',
+               '净现金(计划)', '净现金(实际)', '状态']
+    _header_row(ws, headers, color='1B6E35')
+
+    def _f(v):
+        return float(v) if v not in (None, '') else 0.0
+    for r in out_rows:
+        ws.append([
+            r['project'], r['dept'], r['customer'], r['manager'],
+            _f(r['budget_in']), _f(r['actual_in']), r['in_rate'], _f(r['in_gap']),
+            _f(r['budget_out']), _f(r['actual_out']), r['out_rate'], _f(r['out_gap']),
+            _f(r['budget_net']), _f(r['actual_net']), ' / '.join(r['tags']),
+        ])
+    ws.append([])
+    ws.append(['合计', '', '', '',
+               _f(summary['budget_in']), _f(summary['actual_in']), summary['in_rate'], '',
+               _f(summary['budget_out']), _f(summary['actual_out']), summary['out_rate'], '',
+               _f(summary['budget_net']), _f(summary['actual_net']), ''])
+    return _export_response(wb, f'项目对照_{start_date}_{end_date}.xlsx')
 
 
 

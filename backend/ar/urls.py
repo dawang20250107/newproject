@@ -153,6 +153,7 @@ urlpatterns = [
     path('budget/payment/<int:pk>', views.budget_payment_detail),
     path('budget/summary', views.budget_summary),
     path('budget/project-compare', views.budget_project_compare),
+    path('budget/project-compare/export', views.budget_project_compare_export),
 
     # 催收跟进日志
     path('records/<int:pk>/collection-logs', views.ar_collection_logs),
