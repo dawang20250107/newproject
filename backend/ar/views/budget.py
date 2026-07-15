@@ -620,13 +620,14 @@ def budget_summary(request):
         expected_date__range=(start_date, end_date),
         delivery_dept__in=depts).aggregate(total=Sum('amount'))
 
-    # Actual AR collections (from ARPayment)——排除非现金来源(预收抵扣/内部往来):
-    # 回款预算是现金口径,与周期报表 _collection_actual 同口径,否则同一「回款达成率」两页两个数
+    # Actual AR collections (from ARPayment)——现金口径,与现金流/资金池同步:
+    # 排除非现金来源(预收抵扣/内部往来核销)与未兑付承兑汇票,否则同一「回款达成率」两页两个数
     ac = ARPayment.objects.filter(
         payment_date__range=(start_date, end_date),
         ar_record__deleted_at__isnull=True,
         ar_record__delivery_dept__in=depts).exclude(
-        source__in=NON_CASH_PAYMENT_SOURCES).aggregate(total=Sum('amount'))
+        source__in=NON_CASH_PAYMENT_SOURCES).exclude(
+        pending_draft_q()).aggregate(total=Sum('amount'))
 
     # Actual AP payments (from installments subtable)
     ap_total = (PaymentInstallment.objects
@@ -654,6 +655,7 @@ def budget_summary(request):
                 payment_date__range=(start_date, end_date), ar_record__delivery_dept=d,
                 ar_record__deleted_at__isnull=True,
             ).exclude(source__in=NON_CASH_PAYMENT_SOURCES
+                      ).exclude(pending_draft_q()
                       ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
             ap_d = (PaymentInstallment.objects
                     .filter(pay_date__range=(start_date, end_date), payment__department=d,
@@ -668,7 +670,7 @@ def budget_summary(request):
             })
 
     # 逐月序列（预算燃尽跑道）：预算/实际按月分桶，前端画累计燃尽曲线。
-    # 口径与上方合计一致：回款排除非现金来源，付款=实付分期。
+    # 口径与上方合计一致：回款排除非现金来源+未兑付承兑，付款=实付分期。
     def _by_month(qs, date_field, amount_field):
         out = {}
         for r in qs.annotate(_m=TruncMonth(date_field)).values('_m').annotate(_t=Sum(amount_field)):
@@ -685,7 +687,8 @@ def budget_summary(request):
     ac_m = _by_month(ARPayment.objects.filter(
         payment_date__range=(start_date, end_date),
         ar_record__deleted_at__isnull=True,
-        ar_record__delivery_dept__in=depts).exclude(source__in=NON_CASH_PAYMENT_SOURCES),
+        ar_record__delivery_dept__in=depts).exclude(
+        source__in=NON_CASH_PAYMENT_SOURCES).exclude(pending_draft_q()),
         'payment_date', 'amount')
     ap_m = _by_month(PaymentInstallment.objects.filter(
         pay_date__range=(start_date, end_date),
@@ -774,13 +777,16 @@ def _compute_project_compare(request):
               .values('short_name').annotate(s=Sum('amount'))):
         _row(g['short_name'])['budget_out'] += g['s'] or Decimal('0')
 
-    # 实际收款：应收回款经 项目简称（含预收抵扣——预算达成按应收口径）
+    # 实际收款：应收回款经 项目简称，现金口径与现金流/资金池同步——排除非现金来源
+    # （预收抵扣/内部往来核销）与未兑付承兑汇票，不虚增达成。付款侧取实付分期本就为付现口径。
     for g in (ARPayment.objects
               .filter(payment_date__range=(start_date, end_date),
                       ar_record__delivery_dept__in=depts,
                       ar_record__deleted_at__isnull=True,
                       ar_record__project__short_name__isnull=False)
               .exclude(ar_record__project__short_name='')
+              .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
+              .exclude(pending_draft_q())
               .values('ar_record__project__short_name').annotate(s=Sum('amount'))):
         _row(g['ar_record__project__short_name'])['actual_in'] += g['s'] or Decimal('0')
 

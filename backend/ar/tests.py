@@ -4458,6 +4458,31 @@ class BudgetProjectCompareTests(TestCase):
         self.assertIn('预算项目', col1)
         self.assertIn('合计', col1)   # 末尾合计行
 
+    def test_compare_actual_in_matches_cashflow_caliber(self):
+        # 实际收款与现金流同步：排除预收抵扣/内部往来核销与未兑付承兑，只计现金回款
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                      estimated_amount=Decimal('100000'))
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('3000'),
+                                 payment_date=date(2026, 6, 5), source='回款', method='银行转账')
+        ARPayment.objects.create(ar_record=rec, payment_no=2, amount=Decimal('1000'),
+                                 payment_date=date(2026, 6, 6), source='预收抵扣')
+        ARPayment.objects.create(ar_record=rec, payment_no=3, amount=Decimal('2000'),
+                                 payment_date=date(2026, 6, 7), source='内部往来',
+                                 counterparty_dept='自营事业部')
+        ARPayment.objects.create(ar_record=rec, payment_no=4, amount=Decimal('5000'),
+                                 payment_date=date(2026, 6, 8), source='回款',
+                                 method='承兑汇票', draft_status='未承兑')
+        ARPayment.objects.create(ar_record=rec, payment_no=5, amount=Decimal('4000'),
+                                 payment_date=date(2026, 6, 9), source='回款',
+                                 method='承兑汇票', draft_status='已承兑')
+        resp = self.client.get('/api/pk/ar/budget/project-compare',
+                               {'date_start': '2026-06-01', 'date_end': '2026-06-30'},
+                               **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        r = resp.json()['data']['rows'][0]
+        # 计入：现金 3000 + 已承兑 4000 = 7000；排除：预收抵扣1000/内部往来2000/未兑付承兑5000
+        self.assertEqual(Decimal(r['actual_in']), Decimal('7000'))
+
 
 class AdvanceDiffSummaryTests(TestCase):
     """收付差异：预收 vs 预付按项目简称对齐 + 两侧逐笔明细。"""
