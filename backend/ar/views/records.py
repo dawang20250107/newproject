@@ -1527,9 +1527,25 @@ def ar_payment_ledger(request):
     page = max(1, int(request.GET.get('page', 1) or 1))
     size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
     rows = [_payment_ledger_row(p) for p in qs[(page - 1) * size: page * size]]
+    # 底部分类汇总：来源覆盖全体（回款/预收抵扣/内部往来）；方式/账户仅对现金回款
+    # (source='回款') 有意义，预收抵扣/内部往来无真实收款方式/账户，归口会失真故排除。
+    # empty= 空值归口标签：方式空值按列表默认「银行转账」归并（与前端 method||'银行转账'
+    # 展示口径一致），空账户则记「未填」。同名键累加，避免 dict 覆盖丢金额。
+    def _bd(vals_qs, key, empty='未填'):
+        agg = {}
+        for r in vals_qs.values(key).annotate(s=Sum('amount')).order_by():
+            k = r[key] or empty
+            agg[k] = agg.get(k, Decimal('0')) + (r['s'] or Decimal('0'))
+        return {k: str(v) for k, v in agg.items()}
+    cash_qs = qs.filter(source='回款')
     return ok({
         'items': rows, 'total': total, 'page': page, 'size': size,
-        'summary': {'count': total, 'total_amount': str(total_amount)},
+        'summary': {
+            'count': total, 'total_amount': str(total_amount),
+            'by_source': _bd(qs, 'source'),
+            'by_method': _bd(cash_qs, 'method', empty='银行转账'),
+            'by_account': _bd(cash_qs, 'account'),
+        },
     })
 
 

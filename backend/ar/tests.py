@@ -457,6 +457,38 @@ class ARPermissionRegressionTests(TestCase):
         stale.refresh_from_db()
         self.assertEqual(stale.outstanding_amount, Decimal('670000.00'))
 
+    def test_payment_ledger_summary_breakdowns(self):
+        # 回款流水底部分类汇总：来源覆盖全体；方式/账户仅统计现金回款(source='回款')
+        admin = self.make_user('13900000097', 'finance_director', role='super_admin')
+        rec = self.create_record()
+        ARPayment.objects.bulk_create([
+            ARPayment(ar_record=rec, payment_no=1, amount=Decimal('300.00'), payment_date=date(2026, 6, 1),
+                      source='回款', method='银行转账', account='工行'),
+            ARPayment(ar_record=rec, payment_no=2, amount=Decimal('200.00'), payment_date=date(2026, 6, 2),
+                      source='回款', method='现金', account='现金'),
+            ARPayment(ar_record=rec, payment_no=3, amount=Decimal('100.00'), payment_date=date(2026, 6, 3),
+                      source='预收抵扣', method='', account=''),
+            # 空方式回款：应按默认「银行转账」归并（与前端 method||'银行转账' 展示口径一致）
+            ARPayment(ar_record=rec, payment_no=4, amount=Decimal('50.00'), payment_date=date(2026, 6, 4),
+                      source='回款', method='', account='招行'),
+        ])
+        resp = self.client.get('/api/pk/ar/records/payments', **self.auth(admin))
+        self.assertEqual(resp.status_code, 200)
+        s = resp.json()['data']['summary']
+        # 金额比较用 Decimal（sqlite 聚合会丢小数位，字面串不稳）
+        self.assertEqual(Decimal(s['total_amount']), Decimal('650'))
+        # 来源：覆盖全体
+        self.assertEqual(Decimal(s['by_source']['回款']), Decimal('550'))
+        self.assertEqual(Decimal(s['by_source']['预收抵扣']), Decimal('100'))
+        # 方式：仅现金回款；空方式并入「银行转账」= 300 + 50，不产生空键
+        self.assertEqual(Decimal(s['by_method']['银行转账']), Decimal('350'))
+        self.assertEqual(Decimal(s['by_method']['现金']), Decimal('200'))
+        self.assertNotIn('', s['by_method'])
+        self.assertEqual(sum(Decimal(v) for v in s['by_method'].values()), Decimal('550'))
+        # 账户：空账户记「未填」，预收抵扣不计入
+        self.assertEqual(Decimal(s['by_account']['工行']), Decimal('300'))
+        self.assertEqual(Decimal(s['by_account']['招行']), Decimal('50'))
+
     def test_project_update_syncs_budget_dept_fields(self):
         project = self.create_project()
         cb = CollectionBudget.objects.create(

@@ -941,15 +941,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         <button :class="{ on: subtab === 'dingtalk' }" @click="subtab = 'dingtalk'">🔗 钉钉同步</button>
       </div>
     </div>
+    <!-- 页头右侧只留操作类（模板/导入/导出/新增），单行不换行；搜索类下沉到卡片内筛选条 -->
     <div class="topbar-tools" v-show="subtab === 'list'">
-    <input v-model="q" class="global-search" placeholder="申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
-    <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
-    <input v-model="numbersInput" class="num-inline" :class="{ on: !!numbersFilter }"
-           :placeholder="numbersFilter ? `单号筛选中(${numbersFilter.split(',').length})…` : '单号筛选·支持批量粘贴'"
-           title="粘贴一个或一批单号（空格/换行/+/逗号等任意分隔）回车筛选；命中 审批编号/对账单号/G7" @keyup.enter="applyNumbersInput" />
-    <button v-if="activeFilterCount || q || sortField || numbersFilter" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters" title="清除全部列筛选 / 搜索 / 排序 / 单号">清除筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
-    <SchemePicker :ctl="schemes" :can-public="auth.canCreate" :is-super-admin="auth.isSuperAdmin" />
-    <span class="tb-sep"></span>
     <button class="btn btn-ghost btn-sm" @click="downloadTemplate">模板</button>
     <button v-if="canTransport" class="btn btn-ghost btn-sm tp-btn" :disabled="importingTransport" @click="triggerTransportImport"
             title="运输事业部专用：上传运输系统导出的对账单原始表 → 金额自动取绝对值、对账单号去重，建为「已通过」审批记录，再排款进付款管理">
@@ -964,6 +957,16 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <input ref="transportFileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onTransportImport" />
   <DingtalkSyncPanel v-if="subtab === 'dingtalk'" @synced="load()" />
   <div v-show="subtab === 'list'" class="card approval-card fh-fill">
+  <!-- 搜索类筛选下沉到表格内上方（对齐付款管理版式）：全局搜索 + 单号 + 清除 + 方案 -->
+  <div class="filter-bar apr-filter-bar">
+    <input v-model="q" class="global-search" placeholder="申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
+    <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
+    <input v-model="numbersInput" class="num-inline" :class="{ on: !!numbersFilter }"
+           :placeholder="numbersFilter ? `单号筛选中(${numbersFilter.split(',').length})…` : '单号筛选·支持批量粘贴'"
+           title="粘贴一个或一批单号（空格/换行/+/逗号等任意分隔）回车筛选；命中 审批编号/对账单号/G7" @keyup.enter="applyNumbersInput" />
+    <button v-if="activeFilterCount || q || sortField || numbersFilter" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters" title="清除全部列筛选 / 搜索 / 排序 / 单号">清除筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
+    <SchemePicker :ctl="schemes" :can-public="auth.canCreate" :is-super-admin="auth.isSuperAdmin" />
+  </div>
   <!-- 登记时间区间：与其他台账同款预设条；列表/汇总/导出随之联动 -->
   <div class="apr-timebar">
     <DateRangeChips v-model:start="dateStart" v-model:end="dateEnd" custom-chip
@@ -1278,8 +1281,9 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .subtabs button:hover { color: var(--text, #4a3322); }
 .subtabs button.on { background: var(--card); color: var(--primary); box-shadow: var(--shadow-sm); }
 .topbar-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-.topbar-tools .global-search { min-width: 180px; flex: 0 1 240px; height: 30px; }
-.tb-sep { width: 1px; align-self: stretch; min-height: 20px; background: var(--border); margin: 0 2px; }
+/* 卡片内筛选条（搜索类下沉，对齐付款管理）：搜索占主，单号/清除/方案跟随；比默认 filter-bar 更紧凑 */
+.apr-filter-bar { margin-bottom: 6px; }
+.apr-filter-bar .global-search { flex: 1 1 300px; min-width: 200px; height: 32px; }
 .clear-all { color: var(--primary); }
 /* 批量单号筛选弹层 */
 .numfilter-wrap { position: relative; }

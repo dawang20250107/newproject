@@ -77,16 +77,24 @@ watch(() => [props.start, props.end], ([s, e]) => {
 
 <template>
   <div class="drc">
-    <span class="drc-lbl">{{ label }}</span>
+    <span v-if="label" class="drc-lbl">{{ label }}</span>
     <div class="drc-chips">
       <button v-for="c in chips" :key="c.k" class="drc-chip" :class="{ on: active === c.k }"
               @click="apply(c.k)">{{ c.l }}</button>
-      <!-- 紧凑模式：预设旁的「自定义」chip，点开才显示起止日期框 -->
-      <button v-if="customChip" class="drc-chip" :class="{ on: customActive || showCustom }"
-              @click="toggleCustom">自定义</button>
+      <!-- 紧凑模式：预设旁的「自定义」chip，点开就在其右侧就地展开起止日期框（不跳到最右）-->
+      <template v-if="customChip">
+        <button class="drc-chip" :class="{ on: customActive || showCustom }"
+                @click="toggleCustom">自定义</button>
+        <div v-if="showCustom" class="drc-range drc-range-inline">
+          <input :value="start" type="date" class="inp sm drc-date" @change="onManual('start', $event.target.value)" />
+          <span class="drc-sep">~</span>
+          <input :value="end" type="date" class="inp sm drc-date" @change="onManual('end', $event.target.value)" />
+          <button v-if="start || end" class="btn btn-ghost btn-sm" @click="apply('all')">清除</button>
+        </div>
+      </template>
     </div>
-    <!-- 紧凑模式：日期框内联展开在预设条右侧 -->
-    <div v-if="!customChip || showCustom" class="drc-range">
+    <!-- 常规模式：日期框右对齐在预设条右侧 -->
+    <div v-if="!customChip" class="drc-range">
       <input :value="start" type="date" class="inp sm drc-date" @change="onManual('start', $event.target.value)" />
       <span class="drc-sep">~</span>
       <input :value="end" type="date" class="inp sm drc-date" @change="onManual('end', $event.target.value)" />
@@ -105,6 +113,8 @@ watch(() => [props.start, props.end], ([s, e]) => {
 .drc-chip:hover { border-color: var(--primary); color: var(--primary); }
 .drc-chip.on { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
 .drc-range { display: flex; align-items: center; gap: 6px; flex-shrink: 0; margin-left: auto; }
+/* 紧凑模式：起止日期就地展开在「自定义」chip 右侧，不再靠 margin-left:auto 甩到最右 */
+.drc-range-inline { margin-left: 4px; }
 .drc-date { width: 132px; }
 .drc-sep { color: var(--muted); font-size: 12px; }
 </style>

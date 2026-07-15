@@ -890,6 +890,12 @@ async function commitInlineEdit(rec) {
 
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
+// 时间条旁的「全部事业部」快捷筛选：读写同一个 dept dim 条件，与筛选面板/chip 同源，
+// setDimFilter 内部已 upsert/remove + onFilterChange 触发重载。多选(数组)时下拉留空不误显。
+const deptQuickFilter = computed({
+  get: () => { const v = deptOfConditions(); return Array.isArray(v) ? '' : (v || '') },
+  set: v => setDimFilter('dept', v),
+})
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
 // Field-permission column visibility (aliased to showCol after col-panel additions above)
@@ -971,6 +977,17 @@ function clearQuickQ() { quickQ.value = ''; clearTimeout(quickTimer); applyQuick
 const payFilters = reactive({ pay_start: '', pay_end: '', dept: '', q: '', source: '', method: '', draft_status: '' })
 const payItems = ref([])
 const paySummary = ref(null)
+// 底部分类汇总：来源(全体)/方式·账户(仅现金回款)，各维内部占比 + 配色，金额降序
+const PAY_CAT_COLORS = ['#1565c0', '#2e9e6b', '#c47d0a', '#8e24aa', '#00897b', '#d64545', '#5c6bc0', '#00838f']
+function _catStats(obj) {
+  const entries = Object.entries(obj || {}).map(([name, v]) => ({ name, amount: Number(v) || 0 }))
+  const tot = entries.reduce((s, e) => s + e.amount, 0)
+  return entries.sort((a, b) => b.amount - a.amount)
+    .map((x, i) => ({ ...x, pct: tot ? x.amount / tot * 100 : 0, color: PAY_CAT_COLORS[i % PAY_CAT_COLORS.length] }))
+}
+const paySourceStats = computed(() => _catStats(paySummary.value?.by_source))
+const payMethodStats = computed(() => _catStats(paySummary.value?.by_method))
+const payAccountStats = computed(() => _catStats(paySummary.value?.by_account))
 const payTotal = ref(0)
 const payPage = ref(1)
 const payLoading = ref(false)
@@ -2491,8 +2508,12 @@ function clearFilters() {
                 @change="onDateFieldChange">
           <option v-for="o in DATE_FIELD_OPTS" :key="o.key" :value="o.key">{{ o.label }}</option>
         </select>
+        <select v-model="deptQuickFilter" class="arr-datefield-sel" title="按事业部快捷筛选">
+          <option value="">全部事业部</option>
+          <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+        </select>
         <DateRangeChips v-model:start="opDateStart" v-model:end="opDateEnd" class="arr-tb-chips"
-                        label="" initial="all" @change="applyOpDateRange" />
+                        label="" initial="all" :custom-chip="true" @change="applyOpDateRange" />
       </div>
       <!-- 合并指标条：左侧=本Tab进度/重点；右侧=当前筛选全集合计 -->
       <div v-if="isDataTab && (kpiData || summaryData)" class="metrics-bar">
@@ -3142,11 +3163,6 @@ function clearFilters() {
             <button class="btn btn-ghost btn-sm" :disabled="payExporting" @click="exportPayments">↓ 导出</button>
           </div>
 
-          <div v-if="paySummary" class="totals-strip">
-            <span class="tot-label">区间合计</span>
-            <span class="tot-item"><i>笔数</i>{{ paySummary.count }}</span>
-            <span class="tot-item tot-green"><i>回款总额</i>{{ fmtCell(paySummary.total_amount) }}</span>
-          </div>
         </div>
 
         <div class="table-wrap pane-scroll">
@@ -3196,6 +3212,35 @@ function clearFilters() {
           <span class="page-info"><template v-if="payTotal > size">第 {{ payPage }} / {{ Math.ceil(payTotal / size) }} 页 · </template>共 {{ payTotal }} 条</span>
           <button v-if="payTotal > size" :disabled="payPage * size >= payTotal" class="page-btn" @click="payPage++; loadPayments()">下一页 ›</button>
           <span v-if="payTotal > size" class="pg-jump">跳至<input v-model.number="payJumpPage" class="pg-jump-input" type="number" min="1" :max="Math.ceil(payTotal / size)" @keyup.enter="payDoJump" />页<button class="page-btn" @click="payDoJump">Go</button></span>
+        </div>
+
+        <!-- 底部汇总栏：区间合计 + 来源/方式/账户 分类占比（对齐日常收款底部风格）-->
+        <div v-if="paySummary" class="pay-foot">
+          <span class="pf-total">
+            <span class="pf-lbl">区间合计</span>
+            <b class="pf-val">{{ fmtCell(paySummary.total_amount) }}</b>
+            <span class="pf-cnt">{{ paySummary.count }} 笔</span>
+          </span>
+          <div class="pf-cats">
+            <div v-if="paySourceStats.length" class="pf-cat">
+              <span class="pf-cat-lbl">来源</span>
+              <span v-for="s in paySourceStats" :key="'s' + s.name" class="pf-chip" :title="`${s.name} ${fmtCell(s.amount)} · ${s.pct.toFixed(1)}%`">
+                <i :style="{ background: s.color }"></i>{{ s.name }}<b>{{ fmtCompact(s.amount) }}</b><em>{{ s.pct.toFixed(0) }}%</em>
+              </span>
+            </div>
+            <div v-if="payMethodStats.length" class="pf-cat">
+              <span class="pf-cat-lbl" title="仅现金回款（预收抵扣/内部往来无收款方式）">方式</span>
+              <span v-for="s in payMethodStats" :key="'m' + s.name" class="pf-chip" :title="`${s.name} ${fmtCell(s.amount)} · ${s.pct.toFixed(1)}%`">
+                <i :style="{ background: s.color }"></i>{{ s.name }}<b>{{ fmtCompact(s.amount) }}</b><em>{{ s.pct.toFixed(0) }}%</em>
+              </span>
+            </div>
+            <div v-if="payAccountStats.length" class="pf-cat">
+              <span class="pf-cat-lbl" title="仅现金回款">账户</span>
+              <span v-for="s in payAccountStats" :key="'a' + s.name" class="pf-chip" :title="`${s.name} ${fmtCell(s.amount)} · ${s.pct.toFixed(1)}%`">
+                <i :style="{ background: s.color }"></i>{{ s.name }}<b>{{ fmtCompact(s.amount) }}</b><em>{{ s.pct.toFixed(0) }}%</em>
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -4018,6 +4063,20 @@ function clearFilters() {
 /* 表头吸顶，长表滚动时列名常驻 */
 .pane-flex .pane-scroll .rec-table thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 .pane-flex .pane-scroll .rec-table thead .sel-col { z-index: 6; }
+/* 回款流水底部汇总栏：区间合计 + 来源/方式/账户 分类占比（对齐日常收款底部风格）*/
+.ar-pane.pane-flex > .pay-foot { flex-shrink: 0; }
+.pay-foot { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; padding: 8px 14px; border-top: 1px solid var(--border); background: var(--glass, rgba(255,254,251,.7)); }
+.pf-total { display: flex; align-items: baseline; gap: 8px; flex: none; }
+.pf-lbl { font-size: 11.5px; font-weight: 700; letter-spacing: .04em; color: var(--muted); text-transform: uppercase; }
+.pf-val { font-size: 18px; font-weight: 850; color: var(--c-success); font-variant-numeric: tabular-nums; }
+.pf-cnt { font-size: 12px; color: var(--muted); }
+.pf-cats { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; min-width: 0; }
+.pf-cat { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pf-cat-lbl { font-size: 11px; font-weight: 700; color: var(--muted); background: var(--surface-2, rgba(160,120,80,.1)); border-radius: 5px; padding: 1px 7px; flex: none; }
+.pf-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text); }
+.pf-chip i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.pf-chip b { font-weight: 800; font-variant-numeric: tabular-nums; }
+.pf-chip em { font-style: normal; color: var(--muted); font-size: 11px; }
 
 /* 页头：三行结构——标题+主操作 / Tab 栏 / 筛选工具栏，各占一行互不挤压 */
 .ar-head { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-bottom: 8px; flex-shrink: 0; }
