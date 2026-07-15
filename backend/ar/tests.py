@@ -354,6 +354,39 @@ class ARPermissionRegressionTests(TestCase):
             403,
         )
 
+    def test_budget_list_col_filter_by_dept_and_bulk_delete(self):
+        admin = self.make_user('13900000094', 'finance_director', role='super_admin')
+        a = CollectionBudget.objects.create(short_name='甲项目', delivery_dept=self.dept,
+                                            expected_date=date(2026, 6, 5), amount=Decimal('1000'))
+        b = CollectionBudget.objects.create(short_name='乙项目', delivery_dept=self.other_dept,
+                                            expected_date=date(2026, 6, 6), amount=Decimal('2000'))
+        params = {'date_start': '2026-06-01', 'date_end': '2026-06-30'}
+        # 列表返回 by_dept 分类汇总（两部门）
+        r = self.client.get('/api/pk/ar/budget/collection', params, **self.auth(admin))
+        self.assertEqual(r.status_code, 200)
+        d = r.json()['data']
+        self.assertEqual(d['total'], 2)
+        self.assertEqual(Decimal(d['by_dept'][self.dept]), Decimal('1000'))
+        self.assertEqual(Decimal(d['by_dept'][self.other_dept]), Decimal('2000'))
+        # 列头筛选：short_name 包含「甲」→ 只剩甲项目
+        fp = dict(params, filters=json.dumps({'short_name': {'op': 'contains', 'value': '甲'}}))
+        r2 = self.client.get('/api/pk/ar/budget/collection', fp, **self.auth(admin))
+        self.assertEqual([i['short_name'] for i in r2.json()['data']['items']], ['甲项目'])
+        # 批量删除
+        r3 = self.json_post('/api/pk/ar/budget/collection/bulk-delete', {'ids': [a.id, b.id]}, admin)
+        self.assertEqual(r3.status_code, 200)
+        self.assertEqual(r3.json()['data']['deleted'], 2)
+        self.assertEqual(CollectionBudget.objects.count(), 0)
+
+    def test_budget_bulk_delete_requires_delete_perm_and_scopes_dept(self):
+        # 无删除权限（出纳默认）被拒；且只能删可见部门
+        cashier = self.make_user('13900000093', 'cashier')
+        b = CollectionBudget.objects.create(short_name='X', delivery_dept=self.dept,
+                                            expected_date=date(2026, 6, 5), amount=Decimal('1'))
+        r = self.json_post('/api/pk/ar/budget/collection/bulk-delete', {'ids': [b.id]}, cashier)
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(CollectionBudget.objects.count(), 1)
+
     def test_ar_exports_respect_hidden_field_permissions(self):
         cfg = default_job_config('cashier')
         cfg['pages']['ar_projects'] = True

@@ -1,9 +1,21 @@
 """预算（budget）业务域：回款预算/付款预算 列表·详情·模板·导入导出·汇总·项目对比。共享基座来自 _common。"""
 from ._common import *  # noqa: F401,F403
+from paikuan.list_filters import build_filter_q, resolve_sort
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Budget
 # ══════════════════════════════════════════════════════════════════════════════
+
+# 收款/付款预算列表的 Excel 式列头筛选 + 排序白名单（收付两表字段一致，共用）
+BUDGET_FILTER_REGISTRY = {
+    'project_no':    {'type': 'text',   'col': 'project_no'},
+    'short_name':    {'type': 'text',   'col': 'short_name'},
+    'expected_date': {'type': 'date',   'col': 'expected_date'},
+    'sub_dept':      {'type': 'text',   'col': 'sub_dept'},
+    'delivery_dept': {'type': 'enum',   'col': 'delivery_dept'},
+    'amount':        {'type': 'number', 'col': 'amount'},
+    'notes':         {'type': 'text',   'col': 'notes'},
+}
 
 def _budget_list_create(request, Model, page_key):
     denied = _page_denied(request, page_key)
@@ -19,13 +31,24 @@ def _budget_list_create(request, Model, page_key):
         _today = timezone.localdate()
         _ds, _de = _parse_budget_date_range(request, _today)
         qs = qs.filter(expected_date__gte=_ds, expected_date__lte=_de)
+        # Excel 式列头筛选 + 排序（白名单驱动，与付款/日常收款同一基座）
+        fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), BUDGET_FILTER_REGISTRY)
+        if fq:
+            qs = qs.filter(fq)
+            if fq_distinct:
+                qs = qs.distinct()
+        sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), BUDGET_FILTER_REGISTRY)
+        qs = qs.order_by(sort_by) if sort_by else qs.order_by('-expected_date', '-id')
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
         total = qs.count()
         items = [obj.to_dict() for obj in qs[(page - 1) * size: page * size]]
         total_amount = str(qs.aggregate(s=Sum('amount'))['s'] or 0)
+        # 底部汇总栏：按事业部分类合计（占比条）
+        by_dept = {(r['delivery_dept'] or '未填'): str(r['s'] or 0)
+                   for r in qs.values('delivery_dept').annotate(s=Sum('amount')).order_by()}
         return ok({'items': items, 'total': total, 'page': page, 'size': size,
-                   'total_amount': total_amount})
+                   'total_amount': total_amount, 'by_dept': by_dept})
 
     if request.method == 'POST':
         denied = _write_denied(request)
@@ -144,6 +167,37 @@ def budget_payment(request):
 @pk_required()
 def budget_payment_detail(request, pk):
     return _budget_detail(request, pk, PaymentBudget, 'ar_budget')
+
+
+def _budget_bulk_delete(request, Model):
+    denied = _page_denied(request, 'ar_budget')
+    if denied:
+        return denied
+    denied = _delete_denied(request)
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    ids = _parse_body(request).get('ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('未选择要删除的记录')
+    # 仅允许删除可见部门内的记录（越权守卫）
+    qs = _ar_dept_filter(Model.objects.filter(id__in=ids), request, dept_field='delivery_dept')
+    n = qs.count()
+    qs.delete()
+    return ok({'deleted': n})
+
+
+@csrf_exempt
+@pk_required()
+def budget_collection_bulk_delete(request):
+    return _budget_bulk_delete(request, CollectionBudget)
+
+
+@csrf_exempt
+@pk_required()
+def budget_payment_bulk_delete(request):
+    return _budget_bulk_delete(request, PaymentBudget)
 
 
 def _parse_budget_date_range(request, today):

@@ -19,6 +19,8 @@ _MODULE_PAGE = {
     'ar_advances': 'ar_advance',
     'ar_budget': 'ar_budget',
     'ar_budget_compare': 'ar_budget',   # 项目对照表的列筛选/排序方案，复用预算页权限
+    'ar_budget_coll': 'ar_budget',      # 收款预算列表的列筛选/排序方案
+    'ar_budget_pay': 'ar_budget',       # 付款预算列表的列筛选/排序方案
     'ar_daily_receipts': 'ar_daily_receipts',
 }
 # 仅超管可见的列表（无 pages 权限位，单独按角色门禁）
