@@ -183,6 +183,55 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(by_name[COST], 600.0)
         self.assertEqual(by_name[NET_PROFIT], 260.0)
 
+    def test_dept_pl_export_pivots_by_department(self):
+        # 分部门利润表导出：科目行(分节+明细+计算行) × 项目部列 + 合计
+        import io
+        import openpyxl
+        batch = ImportBatch.objects.create(
+            business_unit=self.bu, year=2026, month=5, batch_type=ImportBatch.TYPE_DEPT,
+            status=ImportBatch.STATUS_PUBLISHED, uploaded_by=self.admin, row_count=0,
+            file_name='t.xlsx')
+        d1 = L2Category.objects.create(business_unit=self.bu, name='甲部', sort_order=1)
+        d2 = L2Category.objects.create(business_unit=self.bu, name='乙部', sort_order=2)
+        rev, cost = self.l1[REV], self.l1[COST]
+        l3rev = L3Category.objects.create(business_unit=self.bu, l1_category=rev,
+                                          name='劳务外包', kingdee_code='6001.03.01', sort_order=1)
+        l3cost = L3Category.objects.create(business_unit=self.bu, l1_category=cost,
+                                           name='工资', kingdee_code='6401.01', sort_order=1)
+
+        def _e(l1, l2, l3, amt):
+            FinancialEntry.objects.create(batch=batch, l1=l1, l2=l2, l3=l3, amount=Decimal(str(amt)))
+        _e(rev, d1, l3rev, 1000); _e(cost, d1, l3cost, 400)
+        _e(rev, d2, l3rev, 500);  _e(cost, d2, l3cost, 300)
+
+        resp = self.client.get('/api/cw/report/dept-pl-export', {'year': 2026, 'bu': self.bu}, **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        ws = wb.worksheets[0]
+        heads = [ws.cell(row=2, column=c).value for c in range(1, ws.max_column + 1)]
+        self.assertEqual(heads[:3], ['科目编码', '科目 / 项目', '合计'])
+        self.assertIn('甲部', heads); self.assertIn('乙部', heads)
+        ci = {h: i for i, h in enumerate(heads)}
+        grid = {}
+        for r in range(3, ws.max_row + 1):
+            code = ws.cell(row=r, column=1).value
+            label = ws.cell(row=r, column=2).value
+            grid[(code, label)] = [ws.cell(row=r, column=c + 1).value for c in range(len(heads))]
+        # 收入分节：合计 1500，甲 1000 / 乙 500
+        rev_row = next(v for (c, l), v in grid.items() if l == REV)
+        self.assertEqual(rev_row[ci['合计']], 1500.0)
+        self.assertEqual(rev_row[ci['甲部']], 1000.0)
+        self.assertEqual(rev_row[ci['乙部']], 500.0)
+        # 明细行（编码 6001.03.01 劳务外包）分部门
+        det = grid[('6001.03.01', '劳务外包')]
+        self.assertEqual(det[ci['甲部']], 1000.0)
+        self.assertEqual(det[ci['乙部']], 500.0)
+        # 计算行 运营毛利 = 收入-成本-税金，逐列独立：甲 600 / 乙 200 / 合计 800
+        gp = next(v for (c, l), v in grid.items() if l == OPERATING_GROSS)
+        self.assertEqual(gp[ci['甲部']], 600.0)
+        self.assertEqual(gp[ci['乙部']], 200.0)
+        self.assertEqual(gp[ci['合计']], 800.0)
+
     def test_publish_replaces_same_period_and_type_only(self):
         old_dept = self.create_batch(amounts=BASE_AMOUNTS, batch_type=ImportBatch.TYPE_DEPT)
         old_pl = self.create_batch(amounts={REV: '9999.00'}, batch_type=ImportBatch.TYPE_PL)

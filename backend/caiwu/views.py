@@ -2457,6 +2457,166 @@ def report_export(request):
     return _build_excel_response(wb, f'财务报表_{bu_label}_{year}年.xlsx')
 
 
+def _dept_pl_sheet(ws, bu, year, month):
+    """写一张「事业部·月」分部门利润表：P&L 科目行(L1 分节 + L3 明细 + 计算行) ×
+    项目部(L2)列 + 合计。数据取该 (事业部,年,月) 已发布的部门明细表，口径与报表一致
+    （剔除集团内部部门）。返回是否有数据。"""
+    from collections import defaultdict
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    l1_cats = list(L1Category.objects.order_by('sort_order', 'id'))
+    batch_ids = list(ImportBatch.objects.filter(
+        business_unit=bu, year=year, month=month,
+        status=ImportBatch.STATUS_PUBLISHED, batch_type=ImportBatch.TYPE_DEPT
+    ).values_list('id', flat=True))
+    entries = _exclude_internal_depts(FinancialEntry.objects.filter(batch_id__in=batch_ids))
+
+    # 聚合：(l1,l3)×l2 金额、每 l2 的 l1 原始额（供计算行）、l3 元信息
+    l3_cell = defaultdict(lambda: defaultdict(float))   # (l1_id,l3_id) -> {l2_key: amt}
+    l3_meta = {}                                        # (l1_id,l3_id) -> [code, name, sort]
+    raw_by_l2 = defaultdict(lambda: defaultdict(float)) # l2_key -> {l1_id: amt}
+    dept_meta = {}                                      # l2_key -> (name, sort)
+    for r in (entries.values('l1_id', 'l2_id', 'l2__name', 'l2__sort_order',
+                             'l3_id', 'l3__name', 'l3__kingdee_code', 'l3__sort_order')
+              .annotate(amt=Sum('amount'))):
+        l1, l3 = r['l1_id'], r['l3_id']
+        l2k = r['l2_id'] if r['l2_id'] is not None else '__none__'
+        amt = float(r['amt'] or 0)
+        raw_by_l2[l2k][l1] += amt
+        dept_meta.setdefault(l2k, (r['l2__name'] or '（无项目部）',
+                                   r['l2__sort_order'] if r['l2__sort_order'] is not None else 9999))
+        if l3 is not None:
+            key = (l1, l3)
+            l3_cell[key][l2k] += amt
+            l3_meta[key] = [r['l3__kingdee_code'] or '', r['l3__name'] or '（无明细）',
+                            r['l3__sort_order'] if r['l3__sort_order'] is not None else 0]
+
+    # 列顺序：项目部按 sort_order，末尾放「无项目部」
+    dept_cols = sorted(dept_meta.keys(),
+                       key=lambda k: (k == '__none__', dept_meta[k][1], dept_meta[k][0]))
+    dept_names = [dept_meta[k][0] for k in dept_cols]
+    if not batch_ids:
+        return False
+
+    # 每列（及合计）的计算行 id_map
+    col_idmap = {k: _compute_l1_name_map(l1_cats, dict(raw_by_l2.get(k, {})))[1] for k in dept_cols}
+    total_raw = defaultdict(float)
+    for k in dept_cols:
+        for l1id, amt in raw_by_l2.get(k, {}).items():
+            total_raw[l1id] += amt
+    total_idmap = _compute_l1_name_map(l1_cats, dict(total_raw))[1]
+
+    def _label(l1):
+        if l1.is_calculated:
+            return l1.name
+        return ('减：' + l1.name) if l1.sign < 0 else l1.name
+
+    # ── 样式 ──
+    THIN = Side(style='thin', color='E3D6C6')
+    bd = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+    ncols = 3 + len(dept_cols)   # 科目编码 + 科目/项目 + 合计 + 各项目部
+    # 标题
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncols)
+    tc = ws.cell(row=1, column=1, value=f'{bu}{year}年{month}月财务报表·分部门利润表')
+    tc.font = Font(bold=True, size=13); tc.alignment = Alignment(horizontal='center')
+    # 表头
+    heads = ['科目编码', '科目 / 项目', '合计'] + dept_names
+    for c, h in enumerate(heads, 1):
+        cell = ws.cell(row=2, column=c, value=h)
+        cell.font = Font(bold=True, color='FFFFFF')
+        cell.fill = PatternFill('solid', fgColor='8A5A2B')
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.border = bd
+    row = 3
+
+    def _num(v):
+        return round(float(v or 0), 2)
+    for l1 in l1_cats:
+        # 分节/计算行
+        sec_total = total_idmap.get(l1.id)
+        is_calc = l1.is_calculated
+        sec_fill = PatternFill('solid', fgColor='F1E4D6' if is_calc else 'FAF3EC')
+        ws.cell(row=row, column=1, value='').border = bd
+        bcell = ws.cell(row=row, column=2, value=_label(l1)); bcell.font = Font(bold=True); bcell.border = bd
+        tcell = ws.cell(row=row, column=3, value=_num(sec_total)); tcell.font = Font(bold=True); tcell.border = bd
+        for i, k in enumerate(dept_cols):
+            cc = ws.cell(row=row, column=4 + i, value=_num(col_idmap.get(k, {}).get(l1.id)))
+            cc.font = Font(bold=True); cc.border = bd
+        for c in range(1, ncols + 1):
+            ws.cell(row=row, column=c).fill = sec_fill
+        row += 1
+        # 明细行（计算行无明细）
+        if is_calc:
+            continue
+        det = sorted([(k, m) for k, m in l3_meta.items() if k[0] == l1.id], key=lambda x: (x[1][2], x[1][0]))
+        for key, meta in det:
+            code, name, _ = meta
+            ws.cell(row=row, column=1, value=code).border = bd
+            ws.cell(row=row, column=2, value=name).border = bd
+            rowtot = sum(l3_cell[key].values())
+            ws.cell(row=row, column=3, value=_num(rowtot)).border = bd
+            for i, k in enumerate(dept_cols):
+                v = l3_cell[key].get(k)
+                ws.cell(row=row, column=4 + i, value=_num(v) if v else None).border = bd
+            row += 1
+
+    # 列宽
+    ws.column_dimensions['A'].width = 15
+    ws.column_dimensions['B'].width = 30
+    from openpyxl.utils import get_column_letter
+    for c in range(3, ncols + 1):
+        ws.column_dimensions[get_column_letter(c)].width = 13
+    ws.freeze_panes = 'C3'
+    return True
+
+
+@cw_required()
+def report_dept_pl_export(request):
+    """分部门利润表导出：科目行 × 项目部列，逐(事业部,已发布月)各一个 sheet。
+    参数 year、bu（可选，缺省=可见全部事业部）。与月度矩阵导出并列的第二种形式。"""
+    if request.method != 'GET':
+        return err('方法不允许', 405)
+    ctx, e = _report_scope(request)
+    if e:
+        return e
+    bu_list, bu_param, _level = ctx
+    if not _can_view(request, 'export'):
+        return err('无导出权限', 403, 403)
+    try:
+        year = int(request.GET.get('year', ''))
+        assert 2000 <= year <= 2100
+    except Exception:
+        return err('年份无效')
+    try:
+        import openpyxl
+    except ImportError:
+        return err('服务器缺少 openpyxl 依赖')
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    def _short(bu):
+        return bu.replace('事业部', '')
+
+    def _safe_title(s):
+        for ch in '[]:*?/\\':
+            s = s.replace(ch, '·')
+        return s[:31] or '报表'
+
+    for bu in bu_list:
+        months = sorted(ImportBatch.objects.filter(
+            business_unit=bu, year=year, status=ImportBatch.STATUS_PUBLISHED,
+            batch_type=ImportBatch.TYPE_DEPT
+        ).values_list('month', flat=True).distinct())
+        for m in months:
+            ws = wb.create_sheet(_safe_title(f'{_short(bu)}·{m}月'))
+            _dept_pl_sheet(ws, bu, year, m)
+
+    if not wb.worksheets:
+        wb.create_sheet('无数据')
+    bu_label = bu_param or '全部事业部'
+    return _build_excel_response(wb, f'分部门利润表_{bu_label}_{year}年.xlsx')
+
+
 # ── 指标管理 & 财务驾驶舱 ──────────────────────────────────────────────────────
 #
 # Headline metrics are revenue (主营业务收入) and profit (经营净利). Targets are

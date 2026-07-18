@@ -152,6 +152,17 @@ async function exportReport() {
   } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
   finally { exporting.value = false }
 }
+// 分部门利润表：科目行 × 项目部列，逐(事业部,已发布月)各一个 sheet
+async function exportDeptPl() {
+  exporting.value = true
+  try {
+    const params = { year: year.value }
+    if (selectedBu.value) params.bu = selectedBu.value
+    const res = await api.get('/report/dept-pl-export', { params, responseType: 'blob' })
+    downloadBlob(res, `分部门利润表_${selectedBu.value || '全部事业部'}_${year.value}年.xlsx`)
+  } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
+  finally { exporting.value = false }
+}
 
 const toast = useToast()
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
@@ -226,6 +237,10 @@ onMounted(() => {
         <LevelToggle v-model="level" :max-level="maxLevel" @update:model-value="load" />
         <button v-if="canExport" class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportReport">
           {{ exporting ? '导出中…' : '↓ 导出美化表' }}
+        </button>
+        <button v-if="canExport" class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportDeptPl"
+                title="按 科目行 × 项目部列 导出分部门利润表，逐月各一个 sheet（金蝶部门明细口径）">
+          {{ exporting ? '导出中…' : '↓ 分部门利润表' }}
         </button>
       </div>
     </div>
