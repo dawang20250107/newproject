@@ -33,7 +33,10 @@ api.interceptors.response.use(
     }
     const status = err.response?.status
     let msg
-    if (!err.response) {
+    const isTimeout = err.code === 'ECONNABORTED' || /timeout/i.test(err.message || '')
+    if (isTimeout) {
+      msg = '请求超时：大文件解析入库较慢，请稍候重试（如为大额明细账导入，已放宽超时，请重试一次）'
+    } else if (!err.response) {
       msg = '无法连接服务器，请检查网络后重试'
     } else if (status === 404) {
       msg = '接口不存在（404），请检查后端服务配置'

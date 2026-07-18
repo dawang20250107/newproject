@@ -158,7 +158,9 @@ async function doUpload() {
     fd.append('year', year.value)
     fd.append('month', month.value)
     fd.append('file', upFile.value)
-    const res = await api.post('/internal/upload', fd)
+    // 内部往来明细分类账常是「全账簿×多月」的大文件（上万行），解析+入库耗时远超默认
+    // 20s；给足 3 分钟超时，避免大文件在慢网络/远端库下被前端提前中断（上传受阻）。
+    const res = await api.post('/internal/upload', fd, { timeout: 180000 })
     upResult.value = res.data
     toast.success(`已导入 ${res.data.rows} 行`)
     upFile.value = null

@@ -213,7 +213,8 @@ async function doUpload() {
     fd.append('year', upYear.value)
     fd.append('month', upMonth.value)
     fd.append('file', upFile.value)
-    const res = await api.post('/batches/upload', fd)
+    // 金蝶核算维度明细账常上万行，解析+入库耗时可能超过默认 20s；给足 3 分钟超时
+    const res = await api.post('/batches/upload', fd, { timeout: 180000 })
     uploadResult.value = res.data
     previewTab.value = 'l1'
   } catch (e) {
