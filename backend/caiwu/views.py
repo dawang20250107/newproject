@@ -2510,59 +2510,81 @@ def _dept_pl_sheet(ws, bu, year, month):
             return l1.name
         return ('减：' + l1.name) if l1.sign < 0 else l1.name
 
+    _CN = '一二三四五六七八九十'
+    def _cn(n):
+        return _CN[n - 1] if n <= 10 else ('十' + _CN[n - 11])   # 11→十一, 12→十二
+
     # ── 样式 ──
+    from openpyxl.utils import get_column_letter
     THIN = Side(style='thin', color='E3D6C6')
     bd = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-    ncols = 3 + len(dept_cols)   # 科目编码 + 科目/项目 + 合计 + 各项目部
+    ndept = len(dept_cols)
+    col_total = 3 + ndept            # 合计放最后一列
+    ncols = col_total
+    NUMFMT = '#,##0.00'
+    HEAD_FILL = PatternFill('solid', fgColor='8A5A2B')
+    L1_FILL = PatternFill('solid', fgColor='FBEFE0')     # 一级科目分节
+    CALC_FILL = PatternFill('solid', fgColor='F3DDBE')   # 计算行（运营毛利/经营毛利/经营净利）
+    center = Alignment(horizontal='center', vertical='center')
+    right = Alignment(horizontal='right')
+
     # 标题
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncols)
     tc = ws.cell(row=1, column=1, value=f'{bu}{year}年{month}月财务报表·分部门利润表')
-    tc.font = Font(bold=True, size=13); tc.alignment = Alignment(horizontal='center')
-    # 表头
-    heads = ['科目编码', '科目 / 项目', '合计'] + dept_names
+    tc.font = Font(bold=True, size=14, color='5A3A1B'); tc.alignment = center
+    ws.row_dimensions[1].height = 26
+    # 表头：科目编码 | 科目/项目 | 各项目部… | 合计
+    heads = ['科目编码', '科目 / 项目'] + dept_names + ['合计']
     for c, h in enumerate(heads, 1):
         cell = ws.cell(row=2, column=c, value=h)
-        cell.font = Font(bold=True, color='FFFFFF')
-        cell.fill = PatternFill('solid', fgColor='8A5A2B')
-        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.font = Font(bold=True, color='FFFFFF'); cell.fill = HEAD_FILL
+        cell.alignment = center; cell.border = bd
+    ws.row_dimensions[2].height = 20
+
+    def _put(r, c, v, *, bold=False, num=False, fill=None, align=None, muted=False):
+        cell = ws.cell(row=r, column=c, value=v)
         cell.border = bd
-    row = 3
+        cell.font = Font(bold=bold, color=('5A3A1B' if bold else ('9B8070' if muted else '3A2A1A')))
+        if num:
+            cell.number_format = NUMFMT; cell.alignment = right
+        elif align:
+            cell.alignment = align
+        if fill:
+            cell.fill = fill
+        return cell
 
     def _num(v):
         return round(float(v or 0), 2)
+
+    row = 3
+    seq = 0
     for l1 in l1_cats:
-        # 分节/计算行
-        sec_total = total_idmap.get(l1.id)
         is_calc = l1.is_calculated
-        sec_fill = PatternFill('solid', fgColor='F1E4D6' if is_calc else 'FAF3EC')
-        ws.cell(row=row, column=1, value='').border = bd
-        bcell = ws.cell(row=row, column=2, value=_label(l1)); bcell.font = Font(bold=True); bcell.border = bd
-        tcell = ws.cell(row=row, column=3, value=_num(sec_total)); tcell.font = Font(bold=True); tcell.border = bd
+        fill = CALC_FILL if is_calc else L1_FILL
+        seq += 1
+        _put(row, 1, _cn(seq), bold=True, fill=fill, align=center)
+        _put(row, 2, _label(l1), bold=True, fill=fill)
         for i, k in enumerate(dept_cols):
-            cc = ws.cell(row=row, column=4 + i, value=_num(col_idmap.get(k, {}).get(l1.id)))
-            cc.font = Font(bold=True); cc.border = bd
-        for c in range(1, ncols + 1):
-            ws.cell(row=row, column=c).fill = sec_fill
+            _put(row, 3 + i, _num(col_idmap.get(k, {}).get(l1.id)), bold=True, num=True, fill=fill)
+        _put(row, col_total, _num(total_idmap.get(l1.id)), bold=True, num=True, fill=fill)
         row += 1
-        # 明细行（计算行无明细）
         if is_calc:
             continue
+        # 明细行（金蝶科目编码 + 名称缩进）
         det = sorted([(k, m) for k, m in l3_meta.items() if k[0] == l1.id], key=lambda x: (x[1][2], x[1][0]))
         for key, meta in det:
             code, name, _ = meta
-            ws.cell(row=row, column=1, value=code).border = bd
-            ws.cell(row=row, column=2, value=name).border = bd
-            rowtot = sum(l3_cell[key].values())
-            ws.cell(row=row, column=3, value=_num(rowtot)).border = bd
+            _put(row, 1, code, muted=True, align=center)
+            _put(row, 2, '　' + name)
             for i, k in enumerate(dept_cols):
                 v = l3_cell[key].get(k)
-                ws.cell(row=row, column=4 + i, value=_num(v) if v else None).border = bd
+                _put(row, 3 + i, _num(v) if v else None, num=True)
+            _put(row, col_total, _num(sum(l3_cell[key].values())), num=True)
             row += 1
 
-    # 列宽
-    ws.column_dimensions['A'].width = 15
+    # 列宽 / 冻结（首两列 + 表头）
+    ws.column_dimensions['A'].width = 16
     ws.column_dimensions['B'].width = 30
-    from openpyxl.utils import get_column_letter
     for c in range(3, ncols + 1):
         ws.column_dimensions[get_column_letter(c)].width = 13
     ws.freeze_panes = 'C3'

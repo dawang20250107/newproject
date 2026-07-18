@@ -209,13 +209,14 @@ class CaiwuCalculationLogicTests(TestCase):
         wb = openpyxl.load_workbook(io.BytesIO(resp.content))
         ws = wb.worksheets[0]
         heads = [ws.cell(row=2, column=c).value for c in range(1, ws.max_column + 1)]
-        self.assertEqual(heads[:3], ['科目编码', '科目 / 项目', '合计'])
+        self.assertEqual(heads[:2], ['科目编码', '科目 / 项目'])
+        self.assertEqual(heads[-1], '合计')   # 合计放最后一列
         self.assertIn('甲部', heads); self.assertIn('乙部', heads)
         ci = {h: i for i, h in enumerate(heads)}
         grid = {}
         for r in range(3, ws.max_row + 1):
             code = ws.cell(row=r, column=1).value
-            label = ws.cell(row=r, column=2).value
+            label = (ws.cell(row=r, column=2).value or '').replace('　', '').strip()
             grid[(code, label)] = [ws.cell(row=r, column=c + 1).value for c in range(len(heads))]
         # 收入分节：合计 1500，甲 1000 / 乙 500
         rev_row = next(v for (c, l), v in grid.items() if l == REV)
