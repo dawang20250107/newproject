@@ -11,8 +11,12 @@ B 主体账上「对 A 的应付」（负债类，贷增）。每行/每余额 s
 （债权为正），A 对 B 与 B 对 A 的 signed 之和即镜像差异。
 """
 import datetime
+import json
+import logging
 import re
 from decimal import Decimal, InvalidOperation
+
+logger = logging.getLogger(__name__)
 
 from django.db import transaction
 from django.db.models import F, Sum
@@ -463,6 +467,57 @@ def internal_batch_detail(request, bid):
         return err('无权操作该主体数据', 403)
     batch.delete()
     return ok({'deleted': bid})
+
+
+@csrf_exempt
+@cw_required()
+def internal_clear(request):
+    """超管一键清除内部往来数据。body: {scope, year?, month?, bu?}
+    scope=month → 该年月全部主体；bu → 该主体全部期间；all → 全部。
+    删除 InternalBatch（级联 entries + balances）。仅超级管理员可用（破坏性批量操作）。"""
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    denied = _page_denied(request, 'internal')
+    if denied:
+        return denied
+    if request.pk_role != 'super_admin':
+        return err('仅超级管理员可一键清除', 403, 403)
+    try:
+        data = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except (ValueError, UnicodeDecodeError):
+        data = {}
+    if not isinstance(data, dict) or not data:
+        data = request.POST
+    scope = (data.get('scope') or '').strip()
+
+    qs = InternalBatch.objects.all()
+    if scope == 'month':
+        try:
+            y = int(data.get('year')); m = int(data.get('month'))
+            assert 2000 <= y <= 2100 and 1 <= m <= 12
+        except (TypeError, ValueError, AssertionError):
+            return err('年月无效')
+        qs = qs.filter(year=y, month=m)
+        label = f'{y}年{m}月'
+    elif scope == 'bu':
+        bu = (data.get('bu') or '').strip()
+        if bu not in VALID_BUSINESS_UNITS:
+            return err('记账主体无效')
+        qs = qs.filter(business_unit=bu)
+        label = bu
+    elif scope == 'all':
+        label = '全部'
+    else:
+        return err('清除范围无效（month / bu / all）')
+
+    n_batch = qs.count()
+    n_entry = InternalEntry.objects.filter(batch__in=qs).count()
+    n_bal = InternalBalance.objects.filter(batch__in=qs).count()
+    qs.delete()   # 级联删除 entries + balances
+    logger.warning('internal-clear uid=%s scope=%s label=%s batches=%s entries=%s balances=%s',
+                   request.pk_uid, scope, label, n_batch, n_entry, n_bal)
+    return ok({'scope': scope, 'label': label,
+               'batches': n_batch, 'entries': n_entry, 'balances': n_bal})
 
 
 def _positions(year, month):

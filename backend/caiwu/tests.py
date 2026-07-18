@@ -1830,6 +1830,53 @@ class InternalReconTests(TestCase):
                                 {'bu': bu, 'year': year, 'month': month, 'file': f},
                                 **self.auth())
 
+    def test_clear_scopes_and_super_admin_only(self):
+        """一键清除：按月/按事业部/全部；级联删明细；仅超管可用。"""
+        import json as _json
+
+        def mk(bu, y, m):
+            b = InternalBatch.objects.create(business_unit=bu, year=y, month=m, kind='detail')
+            InternalEntry.objects.create(batch=b, business_unit=bu, counterparty='X', year=y, month=m, debit=1)
+            return b
+
+        def clear(payload, auth=None):
+            return self.client.post('/api/cw/internal/clear', data=_json.dumps(payload),
+                                    content_type='application/json', **(auth or self.auth()))
+
+        mk('集团总部', 2026, 5); mk('集团总部', 2026, 6)
+        mk('劳务事业部', 2026, 6); mk('运输事业部', 2026, 6)
+        self.assertEqual(InternalBatch.objects.count(), 4)
+
+        # 非超管被拒
+        op = PaikuanUser(phone='13900000078', name='OP', role='operator', job_title='cashier',
+                         departments=[], is_active=True, is_approved=True)
+        op.set_password('Test123456'); op.save()
+        r = clear({'scope': 'all'}, {'HTTP_AUTHORIZATION': f'Bearer {_make_token(op)}'})
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(InternalBatch.objects.count(), 4)
+
+        # 按月：删 2026-6 的 3 批（级联删明细）
+        r = clear({'scope': 'month', 'year': 2026, 'month': 6})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['data']['batches'], 3)
+        self.assertEqual(InternalBatch.objects.count(), 1)
+        self.assertEqual(InternalEntry.objects.count(), 1)
+
+        # 按事业部：删该主体全部期间
+        mk('劳务事业部', 2026, 6); mk('劳务事业部', 2026, 7)
+        r = clear({'scope': 'bu', 'bu': '劳务事业部'})
+        self.assertEqual(r.json()['data']['batches'], 2)
+        self.assertFalse(InternalBatch.objects.filter(business_unit='劳务事业部').exists())
+
+        # 全部
+        r = clear({'scope': 'all'})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(InternalBatch.objects.count(), 0)
+        self.assertEqual(InternalEntry.objects.count(), 0)
+
+        # 非法 scope
+        self.assertEqual(clear({'scope': 'xx'}).status_code, 400)
+
     def test_upload_parse_and_counterparty_mapping(self):
         res = self._upload('劳务事业部', [
             ['2026-06-05', '记-1', '青岛运输事业部有限公司', '1221.01', '其他应收款', '代付运费', 1000, 0],

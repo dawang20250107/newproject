@@ -5,6 +5,7 @@ import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { useToast } from '../../composables/useToast.js'
 import { confirmDlg } from '../../composables/confirm.js'
 import { fmtMoney, fmtCompact } from '../../utils/format.js'
+import { BUSINESS_UNITS } from '../../constants.js'
 import EmptyState from '../../components/EmptyState.vue'
 
 const auth = useCaiwuAuth()
@@ -169,6 +170,36 @@ async function doUpload() {
   } catch (e) { toast.error(e?.msg || e?.error || '上传失败')
   } finally { uploading.value = false }
 }
+// ── 超管一键清除（按月 / 按事业部 / 全部）──────────────────────────────────────
+const showClearMenu = ref(false)
+const clearBu = ref('')
+const clearing = ref(false)
+const clearUnits = BUSINESS_UNITS
+async function doClear(scope) {
+  let msg, payload
+  if (scope === 'month') {
+    msg = `确定清除 ${year.value}年${month.value}月 的全部内部往来数据（所有主体的明细与余额）？此操作不可撤销。`
+    payload = { scope, year: year.value, month: month.value }
+  } else if (scope === 'bu') {
+    if (!clearBu.value) { toast.error('请选择要清除的事业部'); return }
+    msg = `确定清除「${clearBu.value}」全部期间的内部往来数据？此操作不可撤销。`
+    payload = { scope, bu: clearBu.value }
+  } else {
+    msg = `确定清除【全部】内部往来数据？将删除所有主体、所有期间的明细与余额，操作不可撤销，请谨慎确认！`
+    payload = { scope: 'all' }
+  }
+  if (!(await confirmDlg(msg))) return
+  clearing.value = true
+  try {
+    const res = await api.post('/internal/clear', payload)
+    const d = res.data
+    toast.success(`已清除 ${d.batches} 批 · 明细 ${d.entries} 行 · 余额 ${d.balances} 行`)
+    showClearMenu.value = false; clearBu.value = ''
+    load()
+    if (pairData.value) loadPair()
+  } catch (e) { toast.error(e?.msg || e?.error || '清除失败') }
+  finally { clearing.value = false }
+}
 async function delBatch(b) {
   if (!b) return
   if (!(await confirmDlg(`删除「${b.business_unit}」${b.year}年${b.month}月的${b.kind === 'balance' ? '余额' : '明细'}数据（${b.row_count} 行）？删除后矩阵与比对将不含该数据。`))) return
@@ -235,6 +266,25 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
           <select v-model.number="month"><option v-for="m in 12" :key="m" :value="m">{{ m }} 月</option></select>
         </div>
         <button v-if="auth.canUpload" class="btn btn-primary btn-sm" @click="openUpload('')">↑ 上传金蝶数据</button>
+        <div v-if="auth.isSuperAdmin" class="clear-wrap">
+          <button class="btn btn-ghost btn-sm clear-btn" :disabled="clearing" title="超管一键清除内部往来数据"
+                  @click="showClearMenu = !showClearMenu">🗑 清除数据</button>
+          <div v-if="showClearMenu" class="clear-backdrop" @click="showClearMenu = false"></div>
+          <div v-if="showClearMenu" class="clear-pop">
+            <div class="cp-title">一键清除内部往来（超管）</div>
+            <button class="cp-item" :disabled="clearing" @click="doClear('month')">
+              清除本期<i>{{ year }}年{{ month }}月 · 全部主体</i></button>
+            <div class="cp-row">
+              <select v-model="clearBu" class="cp-sel">
+                <option value="">按事业部…</option>
+                <option v-for="u in clearUnits" :key="u" :value="u">{{ u }}</option>
+              </select>
+              <button class="cp-go" :disabled="clearing || !clearBu" @click="doClear('bu')">清除</button>
+            </div>
+            <button class="cp-item cp-danger" :disabled="clearing" @click="doClear('all')">
+              清除全部<i>所有主体 · 所有期间</i></button>
+          </div>
+        </div>
         <span v-if="kpi.unmatched_rows" class="warn-chip" title="维度原文无法识别为集团内主体的行（按外部往来处理，不参与核对）">
           ⚠ 未识别 {{ kpi.unmatched_rows }} 行</span>
       </div>
@@ -547,6 +597,29 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
   padding: 3px 10px; border-radius: 999px; font-size: 11px;
   background: rgba(245, 127, 23, 0.13); color: var(--c-warn); cursor: help;
 }
+/* 超管一键清除 */
+.clear-wrap { position: relative; }
+.clear-btn { color: var(--c-danger); border-color: rgba(214,69,69,.35); }
+.clear-btn:hover:not(:disabled) { background: rgba(214,69,69,.08); border-color: var(--c-danger); }
+.clear-backdrop { position: fixed; inset: 0; z-index: 40; }
+.clear-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 41; width: 300px;
+  background: var(--card, #fff); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 14px 40px -12px rgba(80,50,20,.4); padding: 8px; }
+.cp-title { font-size: 12px; font-weight: 700; color: var(--muted); padding: 4px 8px 8px; }
+.cp-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;
+  text-align: left; border: none; background: none; padding: 9px 10px; border-radius: 8px;
+  font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer; font-family: inherit; }
+.cp-item:hover:not(:disabled) { background: rgba(201,99,66,.07); }
+.cp-item i { font-style: normal; font-size: 11px; font-weight: 400; color: var(--muted); }
+.cp-item.cp-danger { color: var(--c-danger); }
+.cp-item.cp-danger:hover:not(:disabled) { background: rgba(214,69,69,.08); }
+.cp-item:disabled, .cp-go:disabled { opacity: .5; cursor: default; }
+.cp-row { display: flex; gap: 6px; align-items: center; padding: 4px 10px 6px; }
+.cp-sel { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px;
+  font-size: 12.5px; background: var(--card, #fff); color: var(--text); font-family: inherit; }
+.cp-go { border: 1px solid var(--c-danger); color: var(--c-danger); background: none; border-radius: 8px;
+  padding: 6px 12px; font-size: 12.5px; font-weight: 650; cursor: pointer; font-family: inherit; }
+.cp-go:hover:not(:disabled) { background: rgba(214,69,69,.08); }
 
 /* ══ 主体带 ═══════════════════════════════════════════════════════════ */
 .entities { display: flex; gap: 8px; flex-wrap: wrap; }
