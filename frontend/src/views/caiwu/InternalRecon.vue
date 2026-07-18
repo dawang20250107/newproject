@@ -142,11 +142,16 @@ function openUpload(bu) {
   showUpload.value = true
 }
 function onUpPick(e) { upFile.value = e.target.files[0] || null }
+// 金蝶导出后缀多样（.xlsx 真表 / .xls 老格式或网页伪装 / .xml SpreadsheetML / .html 网页），
+// 一律放行让后端统一识别解析（后端 _load_ws_any 会给不可解析格式明确提示）。
+const UPLOAD_ACCEPT = '.xlsx,.xls,.xlsm,.xlsb,.xml,.html,.htm,.et'
 function onUpDrop(e) {
   upDropping.value = false
   const f = Array.from(e.dataTransfer?.files || [])[0]
   if (!f) return
-  if (!/\.xlsx?$/i.test(f.name)) { toast.error(`不支持的文件类型：${f.name}（请拖入 .xlsx/.xls）`); return }
+  if (!/\.(xlsx?|xlsm|xlsb|xml|html?|et)$/i.test(f.name)) {
+    toast.error(`不支持的文件类型：${f.name}（请拖入金蝶导出的表格文件）`); return
+  }
   upFile.value = f
 }
 async function doUpload() {
@@ -521,9 +526,9 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
         </div>
         <label class="up-drop" :class="{ filled: upFile, dropping: upDropping }"
           @dragover.prevent="upDropping = true" @dragleave="upDropping = false" @drop.prevent="onUpDrop">
-          <input type="file" accept=".xlsx,.xls" hidden @change="onUpPick" />
+          <input type="file" :accept="UPLOAD_ACCEPT" hidden @change="onUpPick" />
           <span v-if="upFile">{{ upFile.name }}</span>
-          <span v-else>点击选择或拖入金蝶导出的文件（.xlsx）</span>
+          <span v-else>点击选择或拖入金蝶导出的文件（.xlsx / .xls / 网页导出均可）</span>
         </label>
         <div v-if="upResult" class="ir-up-res">
           <div class="ir-up-ok">✓ 已识别为「{{ upResult.kind === 'balance' ? '核算维度余额表' : '明细分类账' }}」，
