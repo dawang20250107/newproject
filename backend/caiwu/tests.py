@@ -413,6 +413,56 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(
             L3Category.objects.get(business_unit=self.bu, name='工资').kingdee_code, '6401.03.01')
 
+    def test_ledger_reimport_lifecycle_backfills_kingdee_code(self):
+        """全流程：导入→发布→撤回发布→重新导入→再发布→导出，分部门利润表三级明细
+        带金蝶编码；模拟历史空编码经重导回填。"""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        import io
+        import openpyxl
+        bu = self.bu
+        dept = '项目部A'
+        # 模拟 pre-fix 历史：三级明细已存在但编码为空
+        L3Category.objects.create(business_unit=bu, l1_category=self.l1[REV],
+                                  name='服务费收入', kingdee_code='', sort_order=0)
+
+        def _ledger_file():
+            wb = openpyxl.Workbook(); ws = wb.active
+            ws.append(['部门名称', '科目编码', '科目名称', '摘要', '借方', '贷方'])
+            ws.append([dept, '6001.03.01', '服务费收入', '凭证1', 0, 1000])
+            ws.append([dept, '6401.03.01', '工资', '凭证2', 400, 0])
+            buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+            return SimpleUploadedFile(
+                'ledger.xlsx', buf.read(),
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+        def _upload():
+            r = self.client.post('/api/cw/batches/upload',
+                                 {'bu': bu, 'year': 2026, 'month': 6, 'file': _ledger_file()}, **self.auth())
+            self.assertEqual(r.status_code, 200, r.content)
+            return r.json()['data']['batch']['id']
+
+        def _publish(bid):
+            self.assertEqual(self.client.put(f'/api/cw/batches/{bid}/publish', **self.auth()).status_code, 200)
+
+        # 首次导入 + 发布 → 编码回填/写入
+        bid1 = _upload(); _publish(bid1)
+        self.assertEqual(L3Category.objects.get(business_unit=bu, name='服务费收入').kingdee_code, '6001.03.01')
+
+        # 撤回发布 → 重新导入 → 再发布（用户实际流程）
+        self.assertEqual(self.client.put(f'/api/cw/batches/{bid1}/unpublish', **self.auth()).status_code, 200)
+        bid2 = _upload(); _publish(bid2)
+
+        # 导出分部门利润表 → 三级明细带金蝶编码
+        exp = self.client.get('/api/cw/report/dept-pl-export', {'year': 2026, 'bu': bu}, **self.auth())
+        self.assertEqual(exp.status_code, 200)
+        wb = openpyxl.load_workbook(io.BytesIO(exp.content))
+        ws = wb.worksheets[0]
+        codes = {}
+        for row in ws.iter_rows(min_row=3, values_only=True):
+            codes[str(row[1] or '').replace('　', '').strip()] = row[0]
+        self.assertEqual(codes.get('服务费收入'), '6001.03.01')
+        self.assertEqual(codes.get('工资'), '6401.03.01')
+
     def test_hq_import_excludes_finance_dept(self):
         """集团总部导入时整段剔除「财务金融」部门（供应链金融独立条线），
         其收入/成本/费用均不计入集团总部报表；其他部门正常计入。"""
