@@ -1125,9 +1125,16 @@ def _parse_dept_ledger_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map):
         if name:
             key = (l1.id, name)
             if key not in l3_map:
-                obj = L3Category(business_unit=bu, l1_category=l1, name=name, sort_order=len(l3_map))
+                # 核算维度明细账带金蝶科目编码 → 落到三级明细，导出/分部门利润表可用
+                obj = L3Category(business_unit=bu, l1_category=l1, name=name,
+                                 kingdee_code=code, sort_order=len(l3_map))
                 obj.save()
                 l3_map[key] = obj
+            else:
+                obj = l3_map[key]
+                if code and not obj.kingdee_code:   # 回填历史导入遗留的空编码
+                    obj.kingdee_code = code
+                    obj.save(update_fields=['kingdee_code'])
             l3 = l3_map[key]
 
         parsed.append({

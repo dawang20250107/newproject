@@ -388,6 +388,31 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(by_name[MGMT_EXP], Decimal('150'))
         self.assertEqual(by_name[GROUP_MGMT], Decimal('200'))
 
+    def test_dept_ledger_import_persists_kingdee_code_to_l3(self):
+        """核算维度明细账带科目编码 → 落到三级明细 kingdee_code（分部门利润表/导出用）；
+        历史遗留空编码的三级明细在再次导入时回填。"""
+        rev = self.l1[REV]
+        # 历史遗留：同名三级明细但 kingdee_code 为空
+        L3Category.objects.create(business_unit=self.bu, l1_category=rev, name='劳务外包',
+                                  kingdee_code='', sort_order=0)
+        wb = Workbook(); ws = wb.active
+        ws.append(['部门名称', '科目编码', '科目名称', '摘要', '借方', '贷方'])
+        ws.append([self.bu, '6001.03.01', '劳务外包', '凭证001', 0, 1000])   # 收入(贷增)
+        ws.append([self.bu, '6401.03.01', '工资', '凭证002', 400, 0])        # 成本(借增)
+        data_start, col_map = _detect_dept_ledger(ws)
+        _parsed, errors = _parse_dept_ledger_rows(
+            ws, data_start, col_map, self.bu, self.l1,
+            {c.name: c for c in L2Category.objects.filter(business_unit=self.bu)},
+            {(c.l1_category_id, c.name): c for c in L3Category.objects.filter(business_unit=self.bu)},
+        )
+        self.assertEqual(errors, [])
+        # 历史空编码被回填
+        self.assertEqual(
+            L3Category.objects.get(business_unit=self.bu, name='劳务外包').kingdee_code, '6001.03.01')
+        # 新建三级明细带上编码
+        self.assertEqual(
+            L3Category.objects.get(business_unit=self.bu, name='工资').kingdee_code, '6401.03.01')
+
     def test_hq_import_excludes_finance_dept(self):
         """集团总部导入时整段剔除「财务金融」部门（供应链金融独立条线），
         其收入/成本/费用均不计入集团总部报表；其他部门正常计入。"""
