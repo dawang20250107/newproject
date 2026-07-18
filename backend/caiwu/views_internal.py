@@ -159,8 +159,10 @@ def _detect_detail_ledger(ws):
 
 
 def _parse_detail(ws, data_start, cm, bu_param, form_period):
-    """→ (entries[未绑 batch 的 InternalEntry], unmatched{原文:次数}, skipped, errors[])"""
-    entries, unmatched, skipped, errors = [], {}, 0, []
+    """→ (entries, unmatched{原文:次数}, self_ref{原文:次数}, skipped, errors[])
+    unmatched=对方主体无法识别为集团内主体（按外部往来处理）；
+    self_ref=对方主体经识别后与记账主体本身相同（本主体自身的往来，自动跳过、不参与核对）。"""
+    entries, unmatched, self_ref, skipped, errors = [], {}, {}, 0, []
     unknown_books = {}
     for ri in range(data_start, ws.max_row + 1):
         summ = str(ws.cell(row=ri, column=cm['summary']).value or '').strip()
@@ -184,7 +186,7 @@ def _parse_detail(ws, data_start, cm, bu_param, form_period):
             bu = bu_param
             if not bu:
                 errors.append('文件无「账簿」列，请在上传时选择记账主体')
-                return [], {}, 0, errors
+                return [], {}, {}, 0, errors
         # 期间：记账日期 → 期间列 → 上传参数
         d = _cell_date(ws.cell(row=ri, column=cm['date']).value) if 'date' in cm else None
         ym = _period_of(d, ws.cell(row=ri, column=cm['period']).value if 'period' in cm else '')
@@ -195,7 +197,8 @@ def _parse_detail(ws, data_start, cm, bu_param, form_period):
         raw_cp = str(ws.cell(row=ri, column=cm['cp']).value or '').strip()
         cp = _map_entity(raw_cp)
         if cp == bu:
-            unmatched[f'{raw_cp}（与记账主体相同）'] = unmatched.get(f'{raw_cp}（与记账主体相同）', 0) + 1
+            # 本主体自身的往来（对方=记账主体），非「未识别」——单列自动跳过、不参与核对
+            self_ref[raw_cp or '（空）'] = self_ref.get(raw_cp or '（空）', 0) + 1
             skipped += 1
             continue
         if not cp:
@@ -212,7 +215,7 @@ def _parse_detail(ws, data_start, cm, bu_param, form_period):
         ))
     for raw, n in unknown_books.items():
         unmatched[f'账簿未识别：{raw}'] = n
-    return entries, unmatched, skipped, errors
+    return entries, unmatched, self_ref, skipped, errors
 
 
 # ── 核算维度余额表解析 ─────────────────────────────────────────────────────────
@@ -399,7 +402,7 @@ def internal_upload(request):
     if dstart is None:
         return err('无法识别文件：请上传金蝶「明细分类账」（核算维度=组织机构）或'
                    '「核算维度余额表」导出的 xlsx')
-    entries, unmatched, skipped, errors = _parse_detail(ws, dstart, dcm, bu_param, form_period)
+    entries, unmatched, self_ref, skipped, errors = _parse_detail(ws, dstart, dcm, bu_param, form_period)
     if errors:
         return err('；'.join(errors))
     if not entries:
@@ -427,6 +430,8 @@ def internal_upload(request):
         'batches': [b.to_dict() for b in batch_by_key.values()],
         'unmatched': [{'raw': k, 'count': v} for k, v in
                       sorted(unmatched.items(), key=lambda kv: -kv[1])[:50]],
+        'self_ref': [{'raw': k, 'count': v} for k, v in
+                     sorted(self_ref.items(), key=lambda kv: -kv[1])[:50]],
     })
 
 

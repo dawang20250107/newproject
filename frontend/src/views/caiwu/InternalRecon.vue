@@ -540,10 +540,14 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
             <b>{{ upResult.unmatched.length }} 类往来单位未能识别为内部主体</b>（按外部往来处理，不参与核对）：
             <div class="ir-up-un"><span v-for="u in upResult.unmatched" :key="u.raw">{{ u.raw }} ×{{ u.count }}</span></div>
           </div>
+          <div v-if="upResult.self_ref?.length" class="ir-up-self">
+            <b>{{ upResult.self_ref.length }} 类为本主体自身的往来</b>（对方=记账主体，已自动跳过、不参与核对，属正常）：
+            <div class="ir-up-un"><span v-for="u in upResult.self_ref" :key="u.raw">{{ u.raw }} ×{{ u.count }}</span></div>
+          </div>
         </div>
         <div class="modal-actions">
           <button class="btn btn-ghost" @click="showUpload = false">关闭</button>
-          <button class="btn btn-primary" :disabled="uploading" @click="doUpload">{{ uploading ? '解析导入中…' : '上传并解析' }}</button>
+          <button class="btn btn-primary" :disabled="uploading || !upFile" @click="doUpload">{{ uploading ? '解析导入中…' : (upResult && !upFile ? '已导入 · 选文件可继续' : '上传并解析') }}</button>
         </div>
       </div>
     </div>
@@ -824,6 +828,9 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
 .ir-up-batches { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
 .ir-up-bt { padding: 1px 8px; background: rgba(46, 125, 50, 0.1); color: #2e7d32; border-radius: 999px; font-size: 11px; }
 .ir-up-warn { margin-top: 6px; color: var(--c-warn); line-height: 1.5; }
+/* 本主体自身往来：信息性提示（非警告），与「未识别」区分开 */
+.ir-up-self { margin-top: 6px; color: var(--muted); line-height: 1.5; font-size: 12.5px; }
+.ir-up-self b { color: var(--text); font-weight: 700; }
 .ir-up-un { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
 .ir-up-un span { padding: 1px 8px; background: rgba(245, 127, 23, 0.12); border-radius: 999px; font-size: 11px; }
 

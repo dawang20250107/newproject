@@ -1882,13 +1882,16 @@ class InternalReconTests(TestCase):
             ['2026-06-05', '记-1', '青岛运输事业部有限公司', '1221.01', '其他应收款', '代付运费', 1000, 0],
             ['2026-06-08', '记-2', '集团总部', '2241.01', '其他应付款', '总部借款', 0, 500],
             ['2026-06-09', '记-3', '不认识的公司', '1221.01', '其他应收款', '外部往来', 200, 0],
+            ['2026-06-10', '记-4', '四川迭黎信息技术有限公司', '2241.04', '内部往来', '本主体自身往来', 300, 0],
             ['', '', '', '', '', '本期合计', 1200, 500],       # 小计行须跳过
         ])
         self.assertEqual(res.status_code, 200, res.content)
         d = res.json()['data']
         self.assertEqual(d['rows'], 3)
-        self.assertEqual(d['skipped'], 1)
+        self.assertEqual(d['skipped'], 2)   # 本期合计 + 自身往来
+        # 未识别（外部）与「本主体自身往来」分列，后者不再混入未识别
         self.assertEqual(d['unmatched'], [{'raw': '不认识的公司', 'count': 1}])
+        self.assertEqual(d['self_ref'], [{'raw': '四川迭黎信息技术有限公司', 'count': 1}])
         ents = {e.counterparty_raw: e for e in InternalEntry.objects.all()}
         self.assertEqual(ents['青岛运输事业部有限公司'].counterparty, '运输事业部')
         self.assertEqual(ents['青岛运输事业部有限公司'].side, 'ar')
