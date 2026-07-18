@@ -24,7 +24,7 @@ from .models import (
 )
 from .views import (
     cw_required, ok, err, _page_denied, _can_upload, _can_delete,
-    _can_access_bu, IMPORT_SIZE_LIMIT,
+    _can_access_bu, IMPORT_SIZE_LIMIT, _load_ws_any,
 )
 
 # 集团主体公司全称 ↔ 事业部（用户提供的对应关系）。
@@ -350,12 +350,9 @@ def internal_upload(request):
         return err('请上传文件')
     if f.size > IMPORT_SIZE_LIMIT:
         return err('文件过大（上限5MB）')
-    try:
-        import openpyxl
-        wb = openpyxl.load_workbook(f, data_only=True)
-        ws = wb.active
-    except Exception:
-        return err('文件格式错误，请上传金蝶导出的 Excel(.xlsx)')
+    ws, hint = _load_ws_any(f)   # .xlsx / 网页HTML / Excel2003 XML 皆可；老版 .xls 明确提示
+    if ws is None:
+        return err(hint)
 
     uploader = getattr(getattr(request, 'pk_user', None), 'name', '') or ''
     fname = (f.name or '')[:200]

@@ -463,6 +463,42 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(codes.get('服务费收入'), '6001.03.01')
         self.assertEqual(codes.get('工资'), '6401.03.01')
 
+    def test_load_ws_any_spreadsheetml_and_old_xls(self):
+        """金蝶非 .xlsx 导出：Excel2003 XML(SpreadsheetML) 可解析；老版 .xls(BIFF) 明确提示。"""
+        import io
+        from caiwu.views import _load_ws_any
+        xml = ('<?xml version="1.0"?><Workbook '
+               'xmlns="urn:schemas-microsoft-com:office:spreadsheet" '
+               'xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">'
+               '<Worksheet ss:Name="S"><Table>'
+               '<Row><Cell><Data ss:Type="String">甲</Data></Cell>'
+               '<Cell ss:Index="3"><Data ss:Type="Number">99</Data></Cell></Row>'
+               '</Table></Worksheet></Workbook>').encode('utf-8')
+        ws, hint = _load_ws_any(io.BytesIO(xml))
+        self.assertIsNone(hint)
+        self.assertEqual(ws.cell(1, 1).value, '甲')
+        self.assertIsNone(ws.cell(1, 2).value)          # ss:Index=3 跳列还原
+        self.assertEqual(ws.cell(1, 3).value, 99.0)
+        # OLE2/BIFF → 无法解析，提示指向 .xlsx
+        ws2, hint2 = _load_ws_any(io.BytesIO(b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1' + b'\x00' * 64))
+        self.assertIsNone(ws2)
+        self.assertIn('.xlsx', hint2)
+
+    def test_internal_upload_accepts_html_export(self):
+        """金蝶「网页/HTML 表格」导出（openpyxl 打不开）也能上传解析——lxml 兜底。"""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        html = ('<table>'
+                '<tr><td>核算维度</td><td>摘要</td><td>借方</td><td>贷方</td></tr>'
+                '<tr><td>组织机构:四川阔展物流有限公司</td><td>转账</td><td>1,234.50</td><td></td></tr>'
+                '</table>').encode('utf-8')
+        f = SimpleUploadedFile('金蝶导出.xls', html, content_type='application/vnd.ms-excel')
+        r = self.client.post('/api/cw/internal/upload',
+                             {'bu': self.bu, 'year': 2026, 'month': 6, 'file': f}, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()['data']
+        self.assertEqual(d['kind'], 'detail')
+        self.assertEqual(d['rows'], 1)
+
     def test_hq_import_excludes_finance_dept(self):
         """集团总部导入时整段剔除「财务金融」部门（供应链金融独立条线），
         其收入/成本/费用均不计入集团总部报表；其他部门正常计入。"""

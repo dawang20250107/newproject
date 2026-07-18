@@ -28,6 +28,148 @@ BUILD_VERSION = '2026-05-24.2'
 EXCEL_HEADERS = ['一级科目', '二级项目部', '三级科目明细', '借方(元)', '贷方(元)']
 IMPORT_SIZE_LIMIT = 5 * 1024 * 1024  # 5 MB
 
+_EXCEL_HINT_GENERIC = ('文件无法解析：请上传金蝶导出的 Excel(.xlsx)。若导出的是 .xls 老格式或'
+                       '网页/XML 表格，请在金蝶选「导出→Excel(.xlsx)」，或用 Excel/WPS 打开后另存为 .xlsx。')
+
+
+class _ListWS:
+    """最小 openpyxl worksheet 兼容层：由二维行列表构造，供既有解析器（.cell/.max_row/
+    .max_column/.iter_rows）无改动复用。金蝶「网页/XML 表格」导出经此转成同一接口。"""
+    class _Cell:
+        __slots__ = ('value',)
+        def __init__(self, v):
+            self.value = v
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.max_row = len(rows)
+        self.max_column = max((len(r) for r in rows), default=0)
+
+    def cell(self, row=1, column=1):
+        r, c = row - 1, column - 1
+        if 0 <= r < len(self._rows) and 0 <= c < len(self._rows[r]):
+            return self._Cell(self._rows[r][c])
+        return self._Cell(None)
+
+    def iter_rows(self, min_row=1, max_row=None, values_only=False):
+        hi = max_row or self.max_row
+        for r in range(min_row, hi + 1):
+            raw = self._rows[r - 1] if r - 1 < len(self._rows) else []
+            padded = list(raw) + [None] * (self.max_column - len(raw))
+            yield tuple(padded) if values_only else [self._Cell(v) for v in padded]
+
+    @property
+    def active(self):
+        return self
+
+
+def _coerce_cell(txt):
+    """网页/XML 文本单元格 → 数值或原文：纯数字（可含千分位）转 float，空转 None。"""
+    if txt is None:
+        return None
+    s = str(txt).strip()
+    if not s:
+        return None
+    t = s.replace(',', '')
+    try:
+        if t and (t.lstrip('-').replace('.', '', 1).isdigit()):
+            return float(t)
+    except (ValueError, AttributeError):
+        pass
+    return s
+
+
+def _rows_from_spreadsheetml(data):
+    """Excel 2003 XML（SpreadsheetML，金蝶常见导出）→ 行列表。含 ss:Index 跳列还原。"""
+    from lxml import etree
+    root = etree.fromstring(data)   # 遵循 XML 声明里的 encoding
+    ns = {'ss': 'urn:schemas-microsoft-com:office:spreadsheet'}
+    table = root.find('.//ss:Worksheet/ss:Table', ns)
+    if table is None:
+        table = root.find('.//ss:Table', ns)
+    if table is None:
+        return None
+    idx_attr = '{urn:schemas-microsoft-com:office:spreadsheet}Index'
+    rows = []
+    for row_el in table.findall('ss:Row', ns):
+        row, col = [], 0
+        for cell_el in row_el.findall('ss:Cell', ns):
+            idx = cell_el.get(idx_attr)
+            if idx:
+                while col < int(idx) - 1:
+                    row.append(None); col += 1
+            d = cell_el.find('ss:Data', ns)
+            row.append(_coerce_cell(d.text if d is not None else None)); col += 1
+        rows.append(row)
+    return rows or None
+
+
+def _rows_from_html(data):
+    """网页表格（HTML `<table>`）→ 行列表；取行数最多的表，展开 colspan。
+    先按 UTF-8→GBK 兜底解码成文本再交 lxml，避免其对无 charset 的字节猜成 latin-1 乱码。"""
+    from lxml import html as lxml_html
+    if isinstance(data, (bytes, bytearray)):
+        for enc in ('utf-8', 'gbk', 'gb18030'):
+            try:
+                data = bytes(data).decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            data = bytes(data).decode('utf-8', 'ignore')
+    doc = lxml_html.fromstring(data)
+    tables = doc.xpath('//table')
+    if not tables:
+        return None
+    table = max(tables, key=lambda t: len(t.xpath('.//tr')))
+    rows = []
+    for tr in table.xpath('.//tr'):
+        row = []
+        for td in tr.xpath('./td|./th'):
+            row.append(_coerce_cell(td.text_content()))
+            for _ in range(max(1, int(td.get('colspan') or 1)) - 1):
+                row.append(None)
+        if row:
+            rows.append(row)
+    return rows or None
+
+
+def _load_ws_any(f):
+    """加载上传的电子表格 → (ws, None) 或 (None, 错误提示)。
+    优先 openpyxl(.xlsx)；失败则按文件头识别：老版 .xls(BIFF) 明确提示无法解析；
+    金蝶网页(HTML)/Excel2003(XML) 用 lxml 兜底解析成 _ListWS，令既有解析器无改动复用。"""
+    import openpyxl
+    try:
+        f.seek(0)
+    except Exception:
+        pass
+    try:
+        return openpyxl.load_workbook(f, data_only=True).active, None
+    except Exception:
+        pass
+    try:
+        f.seek(0)
+        data = f.read()
+    except Exception:
+        return None, _EXCEL_HINT_GENERIC
+    if isinstance(data, str):
+        data = data.encode('utf-8', 'ignore')
+    if data[:4] == b'\xd0\xcf\x11\xe0':   # OLE2 = 老版 .xls (BIFF)
+        return None, ('这是老版 .xls（Excel 97-2003）格式，系统只认 .xlsx。请在金蝶导出时选'
+                      '「Excel(.xlsx)」，或用 Excel/WPS 打开后「另存为 .xlsx」再上传。')
+    low = data.lstrip()[:400].lower()
+    rows = None
+    try:
+        if b'spreadsheet' in low or b'<workbook' in low:
+            rows = _rows_from_spreadsheetml(data)
+        if rows is None and (b'<table' in data.lower() or b'<html' in low):
+            rows = _rows_from_html(data)
+    except Exception:
+        rows = None
+    if rows:
+        return _ListWS(rows), None
+    return None, _EXCEL_HINT_GENERIC
+
 # Hardcoded KXT P&L calculation formulas.
 # Keys are L1 category names; each lambda receives a name->float dict
 # (built in sort_order so earlier results are available to later ones).
@@ -1446,12 +1588,9 @@ def batch_upload(request):
 
     # ── Excel：金蝶核算维度明细账 / KXT模板 = 部门明细 ─────────────────────────────
     else:
-        try:
-            import openpyxl
-            wb = openpyxl.load_workbook(f, data_only=True)
-            ws = wb.active
-        except Exception:
-            return err('文件格式错误，请使用Excel(.xlsx)格式')
+        ws, hint = _load_ws_any(f)   # .xlsx / 网页HTML / Excel2003 XML 皆可；老版 .xls 明确提示
+        if ws is None:
+            return err(hint)
 
         batch_type = ImportBatch.TYPE_DEPT
         ledger_start, ledger_cm = _detect_dept_ledger(ws)
