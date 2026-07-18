@@ -719,6 +719,16 @@ _KD_CODE_L1_SPECIFIC = {
     '6602.99.03': '集团管理费用',
 }
 
+# 反向：KXT 一级科目 → 其金蝶科目编码（分部门利润表一级行的「科目编码」列用）。
+# 一个一级科目可归集多个金蝶前缀（如主营业务收入 ← 6001/6051），以「/」连接；
+# 集团管理费用取其专属明细编码；计算行（运营毛利/经营毛利/经营净利）无编码。
+_L1_KD_CODE = {}
+for _code, _name in _KD_CODE_L1.items():
+    _L1_KD_CODE.setdefault(_name, []).append(_code)
+for _name in list(_L1_KD_CODE):
+    _L1_KD_CODE[_name] = '/'.join(sorted(_L1_KD_CODE[_name]))
+_L1_KD_CODE['集团管理费用'] = '6602.99.03'
+
 # 集团总部导入口径：财务金融（供应链金融）属独立业务条线，不并入集团总部园区经营报表。
 # 导入「集团总部」部门明细账时，整段剔除这些内部部门（收入/成本/费用全部不计）。
 _BU_EXCLUDE_DEPTS = {
@@ -2510,10 +2520,6 @@ def _dept_pl_sheet(ws, bu, year, month):
             return l1.name
         return ('减：' + l1.name) if l1.sign < 0 else l1.name
 
-    _CN = '一二三四五六七八九十'
-    def _cn(n):
-        return _CN[n - 1] if n <= 10 else ('十' + _CN[n - 11])   # 11→十一, 12→十二
-
     # ── 样式 ──
     from openpyxl.utils import get_column_letter
     THIN = Side(style='thin', color='E3D6C6')
@@ -2557,12 +2563,11 @@ def _dept_pl_sheet(ws, bu, year, month):
         return round(float(v or 0), 2)
 
     row = 3
-    seq = 0
     for l1 in l1_cats:
         is_calc = l1.is_calculated
         fill = CALC_FILL if is_calc else L1_FILL
-        seq += 1
-        _put(row, 1, _cn(seq), bold=True, fill=fill, align=center)
+        # 一级科目「科目编码」列取其金蝶科目编码（计算行无编码 → 空）
+        _put(row, 1, _L1_KD_CODE.get(l1.name, ''), bold=True, fill=fill, align=center)
         _put(row, 2, _label(l1), bold=True, fill=fill)
         for i, k in enumerate(dept_cols):
             _put(row, 3 + i, _num(col_idmap.get(k, {}).get(l1.id)), bold=True, num=True, fill=fill)
