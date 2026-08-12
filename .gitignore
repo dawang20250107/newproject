@@ -37,5 +37,9 @@ pnpm-debug.log*
 *.swo
 
 # ── Tooling ──────────────────────────────────────────────
-.claude/
+# .claude：项目级 hooks/settings 入库（云端容器自举依赖它）；个人本地配置仍忽略
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+.claude/settings.local.json
 
