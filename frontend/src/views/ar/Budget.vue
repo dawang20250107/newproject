@@ -1,6 +1,6 @@
 <script setup>
 import { confirmDlg } from '../../composables/confirm.js'
-import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick, onActivated } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { DEPARTMENTS, yearCST, monthCST } from '../../constants.js'
 import ar from '../../api/ar.js'
@@ -12,12 +12,16 @@ import BaseChart from '../../components/ar/BaseChart.vue'
 import ProjectPnlCard from '../caiwu/ProjectPnlCard.vue'
 import ImportPrecheckModal from '../../components/ImportPrecheckModal.vue'
 import ColumnFilter from '../../components/ColumnFilter.vue'
+import SchemePicker from '../../components/SchemePicker.vue'
+import { useTableSchemes } from '../../composables/useTableSchemes.js'
 import DateRangeChips from '../../components/DateRangeChips.vue'
 import { useToast } from '../../composables/useToast.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import { useModalEsc } from '../../composables/useModalEsc.js'
+import { useModalEnter } from '../../composables/useModalEnter.js'
 const toast = useToast()
 
 const auth = useAuthStore()
@@ -36,6 +40,13 @@ const dateStart = ref(_monthStart(yearCST(), monthCST()))
 const dateEnd = ref(_monthEnd(yearCST(), monthCST()))
 
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
+
+// 记忆上次的 Tab / 事业部（本机偏好；脏值回退默认。日期区间不记忆，始终默认本月）
+const BUDGET_TABS = ['summary', 'compare', 'collection', 'payment', 'data']
+const savedState = loadPref('ar_budget_state') || {}
+if (BUDGET_TABS.includes(savedState.tab)) activeTab.value = savedState.tab
+if (savedState.dept && accessibleDepts.value.includes(savedState.dept)) selectedDept.value = savedState.dept
+watch([activeTab, selectedDept], ([tab, dept]) => savePref('ar_budget_state', { tab, dept }))
 
 const summary = ref(null)
 const collItems = ref([])
@@ -127,6 +138,7 @@ const comparisonChartOption = computed(() => {
   const ap = parseFloat(summary.value.actual_payment) || 0
   return {
     tooltip: {
+      confine: true,
       trigger: 'axis', axisPointer: { type: 'shadow' },
       backgroundColor: 'rgba(255,255,255,0.97)', borderColor: 'rgba(0,0,0,0.08)', textStyle: { fontSize: 12 },
       formatter(params) {
@@ -176,6 +188,7 @@ const deptCompareOption = computed(() => {
   }
   return {
     tooltip: {
+      confine: true,
       trigger: 'axis', axisPointer: { type: 'shadow' },
       backgroundColor: 'rgba(255,255,255,0.97)', borderColor: 'rgba(0,0,0,0.08)', textStyle: { fontSize: 12 },
     },
@@ -208,6 +221,80 @@ const deptCompareOption = computed(() => {
   }
 })
 
+// ── 预算燃尽跑道（预算板块专属图）─────────────────────────────────────────────
+// 回答预算的第一问题「预算池烧得快不快」：收款=burn-up（累计实收向预算爬坡），
+// 付款=burn-down（预算余额逐月递减）；实/虚线对比即「快/慢于匀速」，
+// 付款余额跌破 0 的段落转红（超烧预警）。单月区间画不出跑道，自动隐藏。
+const burnOption = computed(() => {
+  const bm = summary.value?.by_month
+  if (!bm || bm.length < 2) return null
+  const budgetColl = bm.reduce((a, m) => a + (m.budget_collection || 0), 0)
+  const budgetPay = bm.reduce((a, m) => a + (m.budget_payment || 0), 0)
+  if (!budgetColl && !budgetPay) return null
+  const lbls = bm.map(m => m.ym.slice(5) + '月')
+  const n = bm.length
+  let cc = 0, cp = 0
+  const collCum = bm.map(m => (cc += (m.actual_collection || 0)))
+  const payRemain = bm.map(m => (cp += (m.actual_payment || 0), budgetPay - cp))
+  const collPace = bm.map((_, i) => (budgetColl * (i + 1)) / n)
+  const payPace = bm.map((_, i) => budgetPay * (1 - (i + 1) / n))
+  const payNeg = payRemain.map(v => (v < 0 ? v : null))
+  const series = []
+  if (budgetColl) {
+    series.push(
+      { name: '累计实收', type: 'line', smooth: true, z: 10, data: collCum,
+        symbol: 'circle', symbolSize: 6, lineStyle: { color: '#2e7d32', width: 3 },
+        itemStyle: { color: '#2e7d32' },
+        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [{ offset: 0, color: 'rgba(46,125,50,.18)' }, { offset: 1, color: 'rgba(46,125,50,.02)' }] } },
+        markLine: { silent: true, symbol: 'none',
+          lineStyle: { color: '#2e7d32', type: 'dashed', width: 1.5 },
+          label: { formatter: `收款预算 ${fmtAmt(budgetColl)}`, color: '#2e7d32', fontSize: 10, position: 'insideEndTop' },
+          data: [{ yAxis: budgetColl }] } },
+      { name: '收款匀速基准', type: 'line', data: collPace, symbol: 'none',
+        itemStyle: { color: 'rgba(46,125,50,.5)' },
+        lineStyle: { type: 'dashed', color: 'rgba(46,125,50,.5)', width: 1.5 } })
+  }
+  if (budgetPay) {
+    series.push(
+      { name: '付款预算余额', type: 'line', smooth: true, z: 10, data: payRemain,
+        symbol: 'circle', symbolSize: 6, lineStyle: { color: '#e65100', width: 3 },
+        itemStyle: { color: '#e65100' },
+        markLine: { silent: true, symbol: 'none',
+          lineStyle: { color: 'rgba(198,40,40,.55)', type: 'dashed' },
+          label: { formatter: '烧穿线', color: '#c62828', fontSize: 10, position: 'insideEndBottom' },
+          data: [{ yAxis: 0 }] } },
+      { name: '付款匀速基准', type: 'line', data: payPace, symbol: 'none',
+        itemStyle: { color: 'rgba(230,81,0,.5)' },
+        lineStyle: { type: 'dashed', color: 'rgba(230,81,0,.5)', width: 1.5 } })
+    if (payNeg.some(v => v != null)) {
+      series.push({ name: '超烧', type: 'line', smooth: true, z: 11, data: payNeg, symbol: 'none',
+        connectNulls: false, lineStyle: { color: '#c62828', width: 4 },
+        areaStyle: { color: 'rgba(198,40,40,.14)' } })
+    }
+  }
+  return {
+    tooltip: { confine: true, trigger: 'axis',
+      backgroundColor: 'rgba(255,255,255,0.97)', borderColor: 'rgba(0,0,0,0.08)', textStyle: { fontSize: 12 },
+      formatter(ps) {
+        let h = `<div style="font-weight:700;margin-bottom:5px">${ps[0]?.axisValueLabel}</div>`
+        ps.forEach(p => {
+          if (p.value == null || p.seriesName === '超烧') return
+          h += `<div style="display:flex;gap:8px"><span style="color:${p.color}">●</span><span style="flex:1">${p.seriesName}</span><b>${fmtAmt(p.value)}</b></div>`
+        })
+        return h
+      } },
+    legend: { bottom: 0, icon: 'roundRect', itemWidth: 14, itemHeight: 8, textStyle: { fontSize: 11 },
+      data: series.map(s => s.name).filter(nm => nm !== '超烧') },
+    grid: { top: 28, right: 24, bottom: 40, left: 16, containLabel: true },
+    xAxis: { type: 'category', data: lbls, axisLabel: { fontSize: 11, color: '#888' },
+      axisLine: { lineStyle: { color: 'rgba(0,0,0,0.06)' } }, axisTick: { show: false } },
+    yAxis: { type: 'value', axisLabel: { formatter: v => fmtAmt(v), fontSize: 11, color: '#888' },
+      splitLine: { lineStyle: { color: 'rgba(0,0,0,0.06)' } } },
+    series,
+  }
+})
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // 亿/万 两级单位（无空格），万元以下两位小数；空值显示 0.00（保持原表现）
@@ -226,16 +313,89 @@ async function loadSummary() {
 async function loadLists() {
   listLoading.value = true
   try {
-    const params = { date_start: dateStart.value, date_end: dateEnd.value, dept: selectedDept.value, size: 200 }
-    const [c, p] = await Promise.all([ar.listCollectionBudget(params), ar.listPaymentBudget(params)])
+    const base = { date_start: dateStart.value, date_end: dateEnd.value, dept: selectedDept.value, size: 200 }
+    const cp = { ...base }
+    if (Object.keys(collColFilters).length) cp.filters = JSON.stringify(collColFilters)
+    if (collSortField.value && collSortOrder.value) { cp.sort = collSortField.value; cp.order = collSortOrder.value }
+    const pp = { ...base }
+    if (Object.keys(payColFilters).length) pp.filters = JSON.stringify(payColFilters)
+    if (paySortField.value && paySortOrder.value) { pp.sort = paySortField.value; pp.order = paySortOrder.value }
+    const [c, p] = await Promise.all([ar.listCollectionBudget(cp), ar.listPaymentBudget(pp)])
     collItems.value = c.data.items; collTotal.value = c.data.total_amount
+    collByDept.value = c.data.by_dept || {}; collCount.value = c.data.total ?? c.data.items.length
     payItems.value = p.data.items; payTotal.value = p.data.total_amount
+    payByDept.value = p.data.by_dept || {}; payCount.value = p.data.total ?? p.data.items.length
+    // 清理已不存在的选择
+    const cl = new Set(collItems.value.map(i => i.id)); collSel.value = new Set([...collSel.value].filter(id => cl.has(id)))
+    const pl = new Set(payItems.value.map(i => i.id)); paySel.value = new Set([...paySel.value].filter(id => pl.has(id)))
   } finally { listLoading.value = false }
 }
 async function loadProjects() {
   const res = await ar.listProjects({ size: 500 })
   projects.value = res.data.items || []
 }
+
+// ── 收款/付款预算列表：列头筛选 + 排序 + 多选 + 底部分类汇总 ────────────────────
+const collColFilters = reactive({}); const collSortField = ref(''); const collSortOrder = ref('')
+const payColFilters = reactive({}); const paySortField = ref(''); const paySortOrder = ref('')
+const collByDept = ref({}); const payByDept = ref({})
+const collCount = ref(0); const payCount = ref(0)
+const collSel = ref(new Set()); const paySel = ref(new Set())
+function budgetState(type) {
+  return type === 'collection'
+    ? { colFilters: collColFilters, sortField: collSortField, sortOrder: collSortOrder, sel: collSel, items: collItems }
+    : { colFilters: payColFilters, sortField: paySortField, sortOrder: paySortOrder, sel: paySel, items: payItems }
+}
+function budgetSetColFilter(type, field, val) {
+  const st = budgetState(type)
+  if (val == null) delete st.colFilters[field]; else st.colFilters[field] = val
+  loadLists()
+}
+function budgetSetSort(type, field, order) {
+  const st = budgetState(type)
+  st.sortField.value = order ? field : ''; st.sortOrder.value = order || ''
+  loadLists()
+}
+function budgetToggleRow(type, id) {
+  const st = budgetState(type); const s = new Set(st.sel.value)
+  s.has(id) ? s.delete(id) : s.add(id); st.sel.value = s
+}
+function budgetPageAll(type) {
+  const st = budgetState(type)
+  return st.items.value.length > 0 && st.items.value.every(r => st.sel.value.has(r.id))
+}
+function budgetToggleAll(type) {
+  const st = budgetState(type); const s = new Set(st.sel.value)
+  if (budgetPageAll(type)) st.items.value.forEach(r => s.delete(r.id))
+  else st.items.value.forEach(r => s.add(r.id))
+  st.sel.value = s
+}
+function clearBudgetSel(type) { budgetState(type).sel.value = new Set() }
+const collSelSum = computed(() => collItems.value.filter(r => collSel.value.has(r.id)).reduce((s, r) => s + Number(r.amount || 0), 0))
+const paySelSum = computed(() => payItems.value.filter(r => paySel.value.has(r.id)).reduce((s, r) => s + Number(r.amount || 0), 0))
+async function budgetBulkDelete(type) {
+  const st = budgetState(type); const ids = [...st.sel.value]
+  if (!ids.length) return
+  const lbl = type === 'collection' ? '收款' : '付款'
+  if (!(await confirmDlg(`批量删除所选 ${ids.length} 笔${lbl}预算？此操作不可撤销。`))) return
+  try {
+    const r = type === 'collection' ? await ar.bulkDeleteCollectionBudget(ids) : await ar.bulkDeletePaymentBudget(ids)
+    toast.success(`已删除 ${r.data?.deleted ?? ids.length} 笔`); st.sel.value = new Set(); await loadAll()
+  } catch (e) { toast.error(e?.msg || e?.error || '删除失败') }
+}
+// 底部按事业部占比（金额降序 + 配色）
+const BGT_DEPT_COLORS = ['#1565c0', '#2e9e6b', '#c47d0a', '#8e24aa', '#00897b', '#d64545', '#5c6bc0', '#00838f']
+function _deptStats(obj) {
+  const entries = Object.entries(obj || {}).map(([name, v]) => ({ name, amount: Number(v) || 0 }))
+  const tot = entries.reduce((s, e) => s + e.amount, 0)
+  return entries.sort((a, b) => b.amount - a.amount)
+    .map((x, i) => ({ ...x, pct: tot ? x.amount / tot * 100 : 0, color: BGT_DEPT_COLORS[i % BGT_DEPT_COLORS.length] }))
+}
+const collDeptStats = computed(() => _deptStats(collByDept.value))
+const payDeptStats = computed(() => _deptStats(payByDept.value))
+// 列表筛选方案（收/付各一套，客户端触发重载）
+const collSchemes = useTableSchemes('ar_budget_coll', { colFilters: collColFilters, sortField: collSortField, sortOrder: collSortOrder, onApply: () => loadLists() })
+const paySchemes = useTableSchemes('ar_budget_pay', { colFilters: payColFilters, sortField: paySortField, sortOrder: paySortOrder, onApply: () => loadLists() })
 
 // ── 项目对照（预算 vs 实际，按项目简称打通）──────────────────────────────────
 const compareData = ref(null)
@@ -294,6 +454,11 @@ function cmpSetSort(field, order) {
   cmpSortField.value = order ? field : ''
   cmpSortOrder.value = order || ''
 }
+// 通用筛选方案（表格方案基座）：项目对照表的列头筛选 + 排序存为命名方案。
+// 过滤/排序为纯前端计算（compareRows），套用即生效，无需回调重载
+const cmpSchemes = useTableSchemes('ar_budget_compare', {
+  colFilters: cmpColFilters, sortField: cmpSortField, sortOrder: cmpSortOrder,
+})
 const compareRows = computed(() => {
   let rows = compareData.value?.rows || []
   const q = compareQ.value.trim().toLowerCase()
@@ -343,6 +508,7 @@ async function loadAll() {
 
 function openCreate(type) {
   modalType.value = type; editItem.value = null
+  contSaved.value = 0
   const d = dateStart.value
   Object.assign(form, { project_no: '', short_name: '', expected_date: d, sub_dept: '', delivery_dept: selectedDept.value || (accessibleDepts.value[0] || ''), amount: '', notes: '' })
   showModal.value = true
@@ -355,6 +521,7 @@ function openEdit(type, item) {
 }
 
 async function save() {
+  if (saving.value) return
   if (!form.short_name || !form.expected_date || !form.amount) {
     toast.error('请填写项目简称、预计日期和金额'); return
   }
@@ -368,6 +535,27 @@ async function save() {
       else await ar.createPaymentBudget(form)
     }
     showModal.value = false; await loadAll()
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
+  } finally { saving.value = false }
+}
+// 「保存并继续」：批量排预算不关弹窗——保留上下文（预算类型/预计日期/交付部门），
+// 清空逐笔字段并聚焦项目简称；编号/二级部门随简称带出，属逐笔字段一并清空；计数随 openCreate 归零
+const contSaved = ref(0)
+const shortNameInp = ref(null)
+async function saveAndNext() {
+  if (saving.value) return
+  if (!form.short_name || !form.expected_date || !form.amount) {
+    toast.error('请填写项目简称、预计日期和金额'); return
+  }
+  saving.value = true
+  try {
+    if (modalType.value === 'collection') await ar.createCollectionBudget(form)
+    else await ar.createPaymentBudget(form)
+    contSaved.value++
+    toast.success(`已连续保存 ${contSaved.value} 笔`)
+    Object.assign(form, { project_no: '', short_name: '', sub_dept: '', amount: '', notes: '' })
+    loadAll()
+    nextTick(() => shortNameInp.value?.focus())
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { saving.value = false }
 }
@@ -527,11 +715,32 @@ async function exportData(type) {
   } catch (e) { toast.error(e?.response?.data?.msg || e?.msg || e?.error || '操作失败')
   } finally { exporting.value = false }
 }
+// 项目对照导出：后端按当前时段/部门口径产出 Excel（列与页面一致 + 合计行）
+const cmpExporting = ref(false)
+async function exportCompare() {
+  if (!compareRows.value.length) { toast.warn('当前无可导出的项目对照数据'); return }
+  cmpExporting.value = true
+  try {
+    const res = await ar.exportProjectCompare({ date_start: dateStart.value, date_end: dateEnd.value, dept: selectedDept.value })
+    saveBlob(res, `项目对照_${dateStart.value}_${dateEnd.value}.xlsx`)
+  } catch (e) { toast.error(e?.response?.data?.msg || e?.msg || e?.error || '导出失败')
+  } finally { cmpExporting.value = false }
+}
 
 useModalEsc([() => showModal.value, () => (showModal.value = false)])
+// Ctrl/Cmd+Enter 提交新增/编辑弹窗（save 内部自带校验与 saving 防重）
+useModalEnter(() => showModal.value, () => save())
+
+// keep-alive：命中 App.vue include 白名单；返回秒开，数据后台刷新（首次激活跳过，onMounted 已加载）
+defineOptions({ name: 'BudgetPage' })
+let _kaFirst = true
+onActivated(() => { if (_kaFirst) { _kaFirst = false; return } loadSummary(); loadLists() })
 
 onMounted(loadAll)
 onMounted(loadProjects)
+// 项目对照的方案为客户端过滤：默认方案直接套到 cmpColFilters/排序上，数据加载互不阻塞
+onMounted(() => cmpSchemes.loadAndApplyDefault())
+onMounted(() => { collSchemes.loadAndApplyDefault(); paySchemes.loadAndApplyDefault() })
 
 const onScopeChange = () => {
   if (selectedDept.value && !accessibleDepts.value.includes(selectedDept.value)) selectedDept.value = ''
@@ -556,8 +765,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
     <div class="bgt-filterbar">
       <div class="fbg fbg-grow">
         <DateRangeChips v-model:start="dateStart" v-model:end="dateEnd"
-                        label="日期" initial="thismonth"
-                        :presets="['thismonth', 'lastmonth', 'thisquarter', 'lastquarter', 'thisyear', 'lastyear']"
+                        label="日期" initial="thismonth" custom-chip
+                        :presets="['thismonth', 'lastmonth', 'thisquarter', 'lastquarter', 'halfyear', 'thisyear', 'lastyear', 'year1', 'd30', 'd90']"
                         @change="loadAll" />
       </div>
       <div class="fb-divider"></div>
@@ -709,10 +918,19 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         </div>
       </div>
 
+      <!-- 预算燃尽跑道（跨月区间才有跑道，单月自动隐藏） -->
+      <div v-if="burnOption" class="card" style="margin-top:16px;padding:20px">
+        <div class="section-title">预算燃尽跑道
+          <span class="section-sub">绿实线=累计实收爬向预算 · 橙实线=付款预算余额递减 · 虚线=匀速基准 · 跌破烧穿线转红</span>
+        </div>
+        <BaseChart :option="burnOption" height="280px" />
+      </div>
+
       <!-- Per-dept comparison (only when user has access to multiple depts and no specific dept selected) -->
       <div v-if="summary?.by_dept?.length > 1" class="card" style="margin-top:16px;padding:20px">
         <div class="section-title">各事业部对比</div>
         <BaseChart v-if="deptCompareOption" :option="deptCompareOption" height="240px" />
+        <EmptyState v-else icon="📊" text="暂无事业部数据" />
       </div>
 
     </template>
@@ -756,6 +974,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           </div>
           <div class="hdr-acts">
             <input v-model="compareQ" class="cmp-search" placeholder="搜项目 / 客户 / 部门" />
+            <button class="btn btn-ghost btn-sm" :disabled="cmpExporting || !compareRows.length"
+                    title="按当前时段/部门导出项目对照 Excel（列与页面一致，末尾附合计）"
+                    @click="exportCompare">{{ cmpExporting ? '导出中…' : '↓ 导出' }}</button>
+            <SchemePicker :ctl="cmpSchemes" :can-public="auth.canArWrite" :is-super-admin="auth.isSuperAdmin" />
           </div>
         </div>
         <EmptyState v-if="compareLoading" loading />
@@ -765,14 +987,19 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
         <div v-else class="table-wrap">
           <table class="cmp-table">
             <thead>
+              <!-- 两级表头：预算↔实际成对归入「收款执行 / 付款执行」组，一眼看清计划对实际 -->
+              <tr class="cmp-grp-row">
+                <th rowspan="2" class="col-proj"><ColumnFilter label="项目" field="project" type="text" :model-value="cmpColFilters.project" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('project',v)" @sort="o=>cmpSetSort('project',o)" /></th>
+                <th colspan="2" class="cmp-grp grp-in grp-start">收款执行</th>
+                <th colspan="2" class="cmp-grp grp-out grp-start">付款执行</th>
+                <th rowspan="2" class="amt col-net grp-start"><ColumnFilter label="净现金(实际)" field="actual_net" type="number" :model-value="cmpColFilters.actual_net" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_net',v)" @sort="o=>cmpSetSort('actual_net',o)" /></th>
+                <th rowspan="2" class="col-tags grp-start"><ColumnFilter label="状态" field="tags" type="enum" :sortable="false" :options="CMP_TAG_OPTS" :model-value="cmpColFilters.tags" @update:model-value="v=>cmpSetColFilter('tags',v)" /></th>
+              </tr>
               <tr>
-                <th style="min-width:150px"><ColumnFilter label="项目" field="project" type="text" :model-value="cmpColFilters.project" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('project',v)" @sort="o=>cmpSetSort('project',o)" /></th>
-                <th class="amt"><ColumnFilter label="收款预算" field="budget_in" type="number" :model-value="cmpColFilters.budget_in" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('budget_in',v)" @sort="o=>cmpSetSort('budget_in',o)" /></th>
-                <th style="min-width:150px"><ColumnFilter label="实际收款 / 达成" field="actual_in" type="number" :model-value="cmpColFilters.actual_in" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_in',v)" @sort="o=>cmpSetSort('actual_in',o)" /></th>
-                <th class="amt"><ColumnFilter label="付款预算" field="budget_out" type="number" :model-value="cmpColFilters.budget_out" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('budget_out',v)" @sort="o=>cmpSetSort('budget_out',o)" /></th>
-                <th style="min-width:150px"><ColumnFilter label="实际付款 / 执行" field="actual_out" type="number" :model-value="cmpColFilters.actual_out" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_out',v)" @sort="o=>cmpSetSort('actual_out',o)" /></th>
-                <th class="amt"><ColumnFilter label="净现金(实际)" field="actual_net" type="number" :model-value="cmpColFilters.actual_net" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_net',v)" @sort="o=>cmpSetSort('actual_net',o)" /></th>
-                <th><ColumnFilter label="状态" field="tags" type="enum" :sortable="false" :options="CMP_TAG_OPTS" :model-value="cmpColFilters.tags" @update:model-value="v=>cmpSetColFilter('tags',v)" /></th>
+                <th class="amt col-bud grp-start"><ColumnFilter label="预算" field="budget_in" type="number" :model-value="cmpColFilters.budget_in" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('budget_in',v)" @sort="o=>cmpSetSort('budget_in',o)" /></th>
+                <th class="col-act"><ColumnFilter label="实际 / 达成" field="actual_in" type="number" :model-value="cmpColFilters.actual_in" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_in',v)" @sort="o=>cmpSetSort('actual_in',o)" /></th>
+                <th class="amt col-bud grp-start"><ColumnFilter label="预算" field="budget_out" type="number" :model-value="cmpColFilters.budget_out" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('budget_out',v)" @sort="o=>cmpSetSort('budget_out',o)" /></th>
+                <th class="col-act"><ColumnFilter label="实际 / 执行" field="actual_out" type="number" :model-value="cmpColFilters.actual_out" :sort-field="cmpSortField" :sort-order="cmpSortOrder" @update:model-value="v=>cmpSetColFilter('actual_out',v)" @sort="o=>cmpSetSort('actual_out',o)" /></th>
               </tr>
             </thead>
             <tbody>
@@ -781,8 +1008,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   <div class="fw">{{ r.project }}</div>
                   <div class="cmp-sub">{{ r.dept || '—' }}<template v-if="r.manager"> · {{ r.manager }}</template></div>
                 </td>
-                <td class="amt muted">{{ parseFloat(r.budget_in) ? fmtAmt(r.budget_in) : '—' }}</td>
-                <td>
+                <td class="amt muted col-bud grp-start">{{ parseFloat(r.budget_in) ? fmtAmt(r.budget_in) : '—' }}</td>
+                <td class="col-act">
                   <div class="cmp-bar-line">
                     <b class="ok">{{ parseFloat(r.actual_in) ? fmtAmt(r.actual_in) : '—' }}</b>
                     <span v-if="r.in_rate != null" class="cmp-rate" :class="r.in_rate >= 100 ? 'ok' : (r.in_rate >= monthProgress.pct ? '' : 'warn')">{{ r.in_rate }}%</span>
@@ -792,8 +1019,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                     <i class="cmp-tick" :style="`left:${monthProgress.pct}%`" title="时间进度"></i>
                   </div>
                 </td>
-                <td class="amt muted">{{ parseFloat(r.budget_out) ? fmtAmt(r.budget_out) : '—' }}</td>
-                <td>
+                <td class="amt muted col-bud grp-start">{{ parseFloat(r.budget_out) ? fmtAmt(r.budget_out) : '—' }}</td>
+                <td class="col-act">
                   <div class="cmp-bar-line">
                     <b class="bad">{{ parseFloat(r.actual_out) ? fmtAmt(r.actual_out) : '—' }}</b>
                     <span v-if="r.out_rate != null" class="cmp-rate" :class="r.out_rate > 100 ? 'bad' : ''">{{ r.out_rate }}%</span>
@@ -802,8 +1029,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                     <div class="cmp-fill out" :class="{ over: r.out_rate > 100 }" :style="`width:${barPct(r.actual_out, r.budget_out)}%`"></div>
                   </div>
                 </td>
-                <td class="amt fw" :style="{ color: parseFloat(r.actual_net) >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ fmtAmt(r.actual_net) }}</td>
-                <td>
+                <td class="amt fw col-net grp-start" :style="{ color: parseFloat(r.actual_net) >= 0 ? 'var(--c-success)' : 'var(--c-danger)' }">{{ fmtAmt(r.actual_net) }}</td>
+                <td class="col-tags grp-start">
                   <span v-for="t in r.tags" :key="t" class="cmp-tag"
                     :style="{ background: TAG_STYLE[t]?.bg, color: TAG_STYLE[t]?.c }">{{ t }}</span>
                   <span v-if="!r.tags.length" class="muted" style="font-size:11px">—</span>
@@ -817,37 +1044,41 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
     <!-- ── Collection Budget Tab ── -->
     <template v-else-if="activeTab === 'collection'">
-      <div class="card">
+      <div class="card bgt-list-card">
         <div class="list-header">
           <div>
             <div class="section-title" style="margin:0">收款预算</div>
             <div style="font-size:13px;color:var(--muted);margin-top:3px">
-              合计 <b style="color:var(--text)">{{ fmtAmt(collTotal) }}</b>
+              共 <b style="color:var(--text)">{{ collCount }}</b> 笔 · 合计 <b style="color:var(--text)">{{ fmtAmt(collTotal) }}</b>
             </div>
           </div>
           <div class="hdr-acts">
+            <SchemePicker :ctl="collSchemes" :can-public="auth.canArWrite" :is-super-admin="auth.isSuperAdmin" />
             <button class="btn btn-ghost btn-sm" @click="activeTab = 'data'">⇅ 模板/导入/导出</button>
             <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate('collection')">+ 新增收款预算</button>
           </div>
         </div>
         <div class="table-wrap">
-          <table class="budget-table">
+          <table class="budget-table bgt-ftable">
             <thead>
               <tr>
-                <th>项目编号</th><th>项目简称 / 摘要</th>
-                <th class="ctr">预计收款日期</th><th>二级部门</th>
-                <th>交付部门</th><th class="amt">金额</th>
-                <th>备注</th>
+                <th class="cb"><input type="checkbox" :checked="budgetPageAll('collection')" :indeterminate.prop="collSel.size > 0 && !budgetPageAll('collection')" title="全选本页" @change="budgetToggleAll('collection')" /></th>
+                <th><ColumnFilter label="项目编号" field="project_no" type="text" :model-value="collColFilters.project_no" :sort-field="collSortField" :sort-order="collSortOrder" @update:model-value="v=>budgetSetColFilter('collection','project_no',v)" @sort="o=>budgetSetSort('collection','project_no',o)" /></th>
+                <th><ColumnFilter label="项目简称 / 摘要" field="short_name" type="text" :model-value="collColFilters.short_name" :sort-field="collSortField" :sort-order="collSortOrder" @update:model-value="v=>budgetSetColFilter('collection','short_name',v)" @sort="o=>budgetSetSort('collection','short_name',o)" /></th>
+                <th><ColumnFilter label="预计收款日期" field="expected_date" type="date" :model-value="collColFilters.expected_date" :sort-field="collSortField" :sort-order="collSortOrder" @update:model-value="v=>budgetSetColFilter('collection','expected_date',v)" @sort="o=>budgetSetSort('collection','expected_date',o)" /></th>
+                <th><ColumnFilter label="二级部门" field="sub_dept" type="text" :model-value="collColFilters.sub_dept" :sort-field="collSortField" :sort-order="collSortOrder" @update:model-value="v=>budgetSetColFilter('collection','sub_dept',v)" @sort="o=>budgetSetSort('collection','sub_dept',o)" /></th>
+                <th><ColumnFilter label="交付部门" field="delivery_dept" type="enum" :options="accessibleDepts" :model-value="collColFilters.delivery_dept" :sort-field="collSortField" :sort-order="collSortOrder" @update:model-value="v=>budgetSetColFilter('collection','delivery_dept',v)" @sort="o=>budgetSetSort('collection','delivery_dept',o)" /></th>
+                <th class="amt"><ColumnFilter label="金额" field="amount" type="number" :model-value="collColFilters.amount" :sort-field="collSortField" :sort-order="collSortOrder" @update:model-value="v=>budgetSetColFilter('collection','amount',v)" @sort="o=>budgetSetSort('collection','amount',o)" /></th>
+                <th><ColumnFilter label="备注" field="notes" type="text" :model-value="collColFilters.notes" :sort-field="collSortField" :sort-order="collSortOrder" @update:model-value="v=>budgetSetColFilter('collection','notes',v)" @sort="o=>budgetSetSort('collection','notes',o)" /></th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!collItems.length">
-                <td colspan="7" class="empty-cell">暂无收款预算数据</td>
-              </tr>
-              <tr v-for="item in collItems" :key="item.id" class="data-row" @contextmenu.prevent="ctxBudget.open($event, { btype: 'collection', item })" @dblclick="onRowDblClick('collection', item, $event)">
+              <tr v-if="!collItems.length"><td colspan="8" class="empty-cell">暂无收款预算数据</td></tr>
+              <tr v-for="item in collItems" :key="item.id" class="data-row" :class="{ 'row-sel': collSel.has(item.id) }" @contextmenu.prevent="ctxBudget.open($event, { btype: 'collection', item })" @dblclick="onRowDblClick('collection', item, $event)">
+                <td class="cb"><input type="checkbox" :checked="collSel.has(item.id)" @click.stop="budgetToggleRow('collection', item.id)" /></td>
                 <td><span class="proj-no-tag">{{ item.project_no || '—' }}</span></td>
                 <td class="fw">{{ item.short_name }}</td>
-                <td class="ctr text-sm">{{ item.expected_date }}</td>
+                <td class="text-sm">{{ item.expected_date }}</td>
                 <td class="text-muted">{{ item.sub_dept }}</td>
                 <td><span class="dept-chip">{{ item.delivery_dept || '—' }}</span></td>
                 <td class="amt coll-amt fw">{{ fmtAmt(item.amount) }}</td>
@@ -856,42 +1087,61 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
             </tbody>
           </table>
         </div>
+        <!-- 底部汇总栏：区间合计 + 笔数 + 按事业部占比；勾选时显示选中合计 + 批量删除 -->
+        <div class="bgt-foot">
+          <template v-if="collSel.size">
+            <span class="bf-sel">已选 <b>{{ collSel.size }}</b> 笔 · 合计 <b class="hl">{{ fmtAmt(collSelSum) }}</b></span>
+            <button v-if="auth.canDelete" class="bf-btn del" @click="budgetBulkDelete('collection')">批量删除</button>
+            <button class="bf-btn" @click="clearBudgetSel('collection')">取消选择</button>
+          </template>
+          <template v-else>
+            <span class="bf-total"><span class="bf-lbl">区间合计</span><b class="bf-val">{{ fmtAmt(collTotal) }}</b><span class="bf-cnt">{{ collCount }} 笔</span></span>
+            <div v-if="collDeptStats.length" class="bf-cats">
+              <span class="bf-cat-lbl">事业部</span>
+              <span v-for="s in collDeptStats" :key="s.name" class="bf-chip" :title="`${s.name} ${fmtAmt(s.amount)} · ${s.pct.toFixed(1)}%`"><i :style="{ background: s.color }"></i>{{ s.name }}<b>{{ fmtAmt(s.amount) }}</b><em>{{ s.pct.toFixed(0) }}%</em></span>
+            </div>
+          </template>
+        </div>
       </div>
     </template>
 
     <!-- ── Payment Budget Tab ── -->
     <template v-else-if="activeTab === 'payment'">
-      <div class="card">
+      <div class="card bgt-list-card">
         <div class="list-header">
           <div>
             <div class="section-title" style="margin:0">付款预算</div>
             <div style="font-size:13px;color:var(--muted);margin-top:3px">
-              合计 <b style="color:var(--text)">{{ fmtAmt(payTotal) }}</b>
+              共 <b style="color:var(--text)">{{ payCount }}</b> 笔 · 合计 <b style="color:var(--text)">{{ fmtAmt(payTotal) }}</b>
             </div>
           </div>
           <div class="hdr-acts">
+            <SchemePicker :ctl="paySchemes" :can-public="auth.canArWrite" :is-super-admin="auth.isSuperAdmin" />
             <button class="btn btn-ghost btn-sm" @click="activeTab = 'data'">⇅ 模板/导入/导出</button>
             <button v-if="auth.canArWrite" class="btn btn-primary btn-sm" @click="openCreate('payment')">+ 新增付款预算</button>
           </div>
         </div>
         <div class="table-wrap">
-          <table class="budget-table">
+          <table class="budget-table bgt-ftable">
             <thead>
               <tr>
-                <th>项目编号</th><th>项目简称 / 摘要</th>
-                <th class="ctr">预计付款日期</th><th>二级部门</th>
-                <th>交付部门</th><th class="amt">金额</th>
-                <th>备注</th>
+                <th class="cb"><input type="checkbox" :checked="budgetPageAll('payment')" :indeterminate.prop="paySel.size > 0 && !budgetPageAll('payment')" title="全选本页" @change="budgetToggleAll('payment')" /></th>
+                <th><ColumnFilter label="项目编号" field="project_no" type="text" :model-value="payColFilters.project_no" :sort-field="paySortField" :sort-order="paySortOrder" @update:model-value="v=>budgetSetColFilter('payment','project_no',v)" @sort="o=>budgetSetSort('payment','project_no',o)" /></th>
+                <th><ColumnFilter label="项目简称 / 摘要" field="short_name" type="text" :model-value="payColFilters.short_name" :sort-field="paySortField" :sort-order="paySortOrder" @update:model-value="v=>budgetSetColFilter('payment','short_name',v)" @sort="o=>budgetSetSort('payment','short_name',o)" /></th>
+                <th><ColumnFilter label="预计付款日期" field="expected_date" type="date" :model-value="payColFilters.expected_date" :sort-field="paySortField" :sort-order="paySortOrder" @update:model-value="v=>budgetSetColFilter('payment','expected_date',v)" @sort="o=>budgetSetSort('payment','expected_date',o)" /></th>
+                <th><ColumnFilter label="二级部门" field="sub_dept" type="text" :model-value="payColFilters.sub_dept" :sort-field="paySortField" :sort-order="paySortOrder" @update:model-value="v=>budgetSetColFilter('payment','sub_dept',v)" @sort="o=>budgetSetSort('payment','sub_dept',o)" /></th>
+                <th><ColumnFilter label="交付部门" field="delivery_dept" type="enum" :options="accessibleDepts" :model-value="payColFilters.delivery_dept" :sort-field="paySortField" :sort-order="paySortOrder" @update:model-value="v=>budgetSetColFilter('payment','delivery_dept',v)" @sort="o=>budgetSetSort('payment','delivery_dept',o)" /></th>
+                <th class="amt"><ColumnFilter label="金额" field="amount" type="number" :model-value="payColFilters.amount" :sort-field="paySortField" :sort-order="paySortOrder" @update:model-value="v=>budgetSetColFilter('payment','amount',v)" @sort="o=>budgetSetSort('payment','amount',o)" /></th>
+                <th><ColumnFilter label="备注" field="notes" type="text" :model-value="payColFilters.notes" :sort-field="paySortField" :sort-order="paySortOrder" @update:model-value="v=>budgetSetColFilter('payment','notes',v)" @sort="o=>budgetSetSort('payment','notes',o)" /></th>
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!payItems.length">
-                <td colspan="7" class="empty-cell">暂无付款预算数据</td>
-              </tr>
-              <tr v-for="item in payItems" :key="item.id" class="data-row" @contextmenu.prevent="ctxBudget.open($event, { btype: 'payment', item })" @dblclick="onRowDblClick('payment', item, $event)">
+              <tr v-if="!payItems.length"><td colspan="8" class="empty-cell">暂无付款预算数据</td></tr>
+              <tr v-for="item in payItems" :key="item.id" class="data-row" :class="{ 'row-sel': paySel.has(item.id) }" @contextmenu.prevent="ctxBudget.open($event, { btype: 'payment', item })" @dblclick="onRowDblClick('payment', item, $event)">
+                <td class="cb"><input type="checkbox" :checked="paySel.has(item.id)" @click.stop="budgetToggleRow('payment', item.id)" /></td>
                 <td><span class="proj-no-tag">{{ item.project_no || '—' }}</span></td>
                 <td class="fw">{{ item.short_name }}</td>
-                <td class="ctr text-sm">{{ item.expected_date }}</td>
+                <td class="text-sm">{{ item.expected_date }}</td>
                 <td class="text-muted">{{ item.sub_dept }}</td>
                 <td><span class="dept-chip">{{ item.delivery_dept || '—' }}</span></td>
                 <td class="amt pay-amt fw">{{ fmtAmt(item.amount) }}</td>
@@ -899,6 +1149,20 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               </tr>
             </tbody>
           </table>
+        </div>
+        <div class="bgt-foot">
+          <template v-if="paySel.size">
+            <span class="bf-sel">已选 <b>{{ paySel.size }}</b> 笔 · 合计 <b class="hl">{{ fmtAmt(paySelSum) }}</b></span>
+            <button v-if="auth.canDelete" class="bf-btn del" @click="budgetBulkDelete('payment')">批量删除</button>
+            <button class="bf-btn" @click="clearBudgetSel('payment')">取消选择</button>
+          </template>
+          <template v-else>
+            <span class="bf-total"><span class="bf-lbl">区间合计</span><b class="bf-val">{{ fmtAmt(payTotal) }}</b><span class="bf-cnt">{{ payCount }} 笔</span></span>
+            <div v-if="payDeptStats.length" class="bf-cats">
+              <span class="bf-cat-lbl">事业部</span>
+              <span v-for="s in payDeptStats" :key="s.name" class="bf-chip" :title="`${s.name} ${fmtAmt(s.amount)} · ${s.pct.toFixed(1)}%`"><i :style="{ background: s.color }"></i>{{ s.name }}<b>{{ fmtAmt(s.amount) }}</b><em>{{ s.pct.toFixed(0) }}%</em></span>
+            </div>
+          </template>
         </div>
       </div>
     </template>
@@ -977,7 +1241,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
               </label>
               <label class="form-field">
                 <span>项目简称 / 摘要 <em>*</em></span>
-                <input v-model="form.short_name" list="budget-project-shortnames" placeholder="可手填非项目信息；也可下拉选择项目简称" />
+                <input ref="shortNameInp" v-model="form.short_name" list="budget-project-shortnames" placeholder="可手填非项目信息；也可下拉选择项目简称" />
                 <datalist id="budget-project-shortnames">
                   <option v-for="p in shortNameOptions" :key="p.id" :value="p.short_name">
                     {{ p.project_no }} · {{ p.short_name }}
@@ -1011,6 +1275,7 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
           </div>
           <div class="modal-footer">
             <button class="btn btn-ghost" @click="showModal = false">取消</button>
+            <button v-if="!editItem" class="btn btn-ghost" :disabled="saving" @click="saveAndNext">保存并继续</button>
             <button class="btn btn-primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
           </div>
         </div>
@@ -1028,6 +1293,8 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 </template>
 
 <style scoped>
+.section-sub { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 8px; }
+
 /* ── Fixed-viewport layout: header/tabs stay put, tab body scrolls ── */
 .bgt-body { /* .page-scroll (global) handles flex-grow + overflow */ }
 .topbar,
@@ -1203,6 +1470,29 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .coll-amt { color: var(--c-success); }
 .pay-amt  { color: var(--c-warn); }
 
+/* 预算列表增强：勾选列 / 列头筛选去大写 / 选中行 / 底部吸底汇总栏 */
+.bgt-list-card { display: flex; flex-direction: column; }
+.bgt-ftable th { text-transform: none; letter-spacing: -0.1px; font-size: 11.5px; overflow: visible; white-space: nowrap; }
+.bgt-ftable th.cb, .bgt-ftable td.cb { width: 34px; text-align: center; padding-left: 6px; padding-right: 6px; }
+.bgt-ftable td.amt { font-variant-numeric: tabular-nums; }
+.bgt-ftable tr.row-sel td { background: color-mix(in srgb, var(--primary) 9%, transparent) !important; }
+.bgt-ftable input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
+.bgt-foot { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  margin-top: 10px; padding: 10px 2px; border-top: 1px solid var(--border); background: var(--card, #fffdfb); backdrop-filter: blur(4px); }
+.bf-total { display: flex; align-items: baseline; gap: 8px; flex: none; }
+.bf-lbl { font-size: 11.5px; font-weight: 700; letter-spacing: .04em; color: var(--muted); text-transform: uppercase; }
+.bf-val { font-size: 19px; font-weight: 850; color: var(--primary); font-variant-numeric: tabular-nums; }
+.bf-cnt { font-size: 12px; color: var(--muted); }
+.bf-cats { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.bf-cat-lbl { font-size: 11px; font-weight: 700; color: var(--muted); background: rgba(160,120,80,.1); border-radius: 5px; padding: 1px 7px; flex: none; }
+.bf-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text); }
+.bf-chip i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.bf-chip b { font-weight: 800; font-variant-numeric: tabular-nums; }
+.bf-chip em { font-style: normal; color: var(--muted); font-size: 11px; }
+.bf-sel { font-size: 13.5px; color: var(--text); } .bf-sel b { font-weight: 800; } .bf-sel .hl { color: var(--primary); }
+.bf-btn { border: 1px solid var(--border); background: var(--card, #fffdfb); color: var(--text); border-radius: 8px; padding: 5px 14px; font-size: 13px; font-weight: 650; cursor: pointer; font-family: inherit; }
+.bf-btn.del { border-color: var(--c-danger); color: var(--c-danger); }
+
 .row-acts { display: flex; gap: 4px; justify-content: center; }
 .icon-btn { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255,252,250,0.7); display: flex; align-items: center; justify-content: center; color: var(--muted); cursor: pointer; transition: all 0.13s; }
 .icon-btn:hover { border-color: var(--primary); color: var(--primary); }
@@ -1228,10 +1518,21 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .cmp-chip.blue { background: rgba(21,101,192,.08); color: var(--c-info); }
 
 .cmp-search { border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; width: 210px; background: rgba(255,255,255,.8); }
-.cmp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cmp-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: auto; }
 .cmp-table th { padding: 9px 12px; text-align: left; font-size: 11.5px; font-weight: 700; color: var(--muted);
   background: rgba(201,99,66,.05); border-bottom: 1px solid rgba(180,140,110,.15); white-space: nowrap; overflow: visible; }
 .cmp-table th.amt { text-align: right; }
+/* 分组表头 + 列宽收敛：项目列吸收余量（左对齐叙事），数字列定宽成对聚拢，去列间空隙 */
+.cmp-grp { text-align: center; font-size: 11px; font-weight: 800; letter-spacing: .06em;
+  padding: 5px 12px; background: rgba(201,99,66,.07); }
+.cmp-grp.grp-in { color: var(--c-success); }
+.cmp-grp.grp-out { color: #c2410c; }
+.cmp-table th.grp-start, .cmp-table td.grp-start { border-left: 1px solid rgba(180,140,110,.2); }
+.cmp-table th.col-proj { min-width: 180px; }
+.cmp-table th.col-bud, .cmp-table td.col-bud { width: 116px; }
+.cmp-table th.col-act, .cmp-table td.col-act { width: 208px; }
+.cmp-table th.col-net, .cmp-table td.col-net { width: 128px; }
+.cmp-table th.col-tags, .cmp-table td.col-tags { width: 152px; }
 .cmp-table td { padding: 9px 12px; border-bottom: 1px solid rgba(180,140,110,.08); vertical-align: middle; }
 .cmp-table td.amt { text-align: right; font-variant-numeric: tabular-nums; }
 .cmp-row { cursor: pointer; }

@@ -11,8 +11,12 @@ B 主体账上「对 A 的应付」（负债类，贷增）。每行/每余额 s
 （债权为正），A 对 B 与 B 对 A 的 signed 之和即镜像差异。
 """
 import datetime
+import json
+import logging
 import re
 from decimal import Decimal, InvalidOperation
+
+logger = logging.getLogger(__name__)
 
 from django.db import transaction
 from django.db.models import F, Sum
@@ -24,7 +28,7 @@ from .models import (
 )
 from .views import (
     cw_required, ok, err, _page_denied, _can_upload, _can_delete,
-    _can_access_bu, IMPORT_SIZE_LIMIT,
+    _can_access_bu, IMPORT_SIZE_LIMIT, _load_ws_any,
 )
 
 # 集团主体公司全称 ↔ 事业部（用户提供的对应关系）。
@@ -155,8 +159,10 @@ def _detect_detail_ledger(ws):
 
 
 def _parse_detail(ws, data_start, cm, bu_param, form_period):
-    """→ (entries[未绑 batch 的 InternalEntry], unmatched{原文:次数}, skipped, errors[])"""
-    entries, unmatched, skipped, errors = [], {}, 0, []
+    """→ (entries, unmatched{原文:次数}, self_ref{原文:次数}, skipped, errors[])
+    unmatched=对方主体无法识别为集团内主体（按外部往来处理）；
+    self_ref=对方主体经识别后与记账主体本身相同（本主体自身的往来，自动跳过、不参与核对）。"""
+    entries, unmatched, self_ref, skipped, errors = [], {}, {}, 0, []
     unknown_books = {}
     for ri in range(data_start, ws.max_row + 1):
         summ = str(ws.cell(row=ri, column=cm['summary']).value or '').strip()
@@ -180,7 +186,7 @@ def _parse_detail(ws, data_start, cm, bu_param, form_period):
             bu = bu_param
             if not bu:
                 errors.append('文件无「账簿」列，请在上传时选择记账主体')
-                return [], {}, 0, errors
+                return [], {}, {}, 0, errors
         # 期间：记账日期 → 期间列 → 上传参数
         d = _cell_date(ws.cell(row=ri, column=cm['date']).value) if 'date' in cm else None
         ym = _period_of(d, ws.cell(row=ri, column=cm['period']).value if 'period' in cm else '')
@@ -191,7 +197,8 @@ def _parse_detail(ws, data_start, cm, bu_param, form_period):
         raw_cp = str(ws.cell(row=ri, column=cm['cp']).value or '').strip()
         cp = _map_entity(raw_cp)
         if cp == bu:
-            unmatched[f'{raw_cp}（与记账主体相同）'] = unmatched.get(f'{raw_cp}（与记账主体相同）', 0) + 1
+            # 本主体自身的往来（对方=记账主体），非「未识别」——单列自动跳过、不参与核对
+            self_ref[raw_cp or '（空）'] = self_ref.get(raw_cp or '（空）', 0) + 1
             skipped += 1
             continue
         if not cp:
@@ -208,7 +215,7 @@ def _parse_detail(ws, data_start, cm, bu_param, form_period):
         ))
     for raw, n in unknown_books.items():
         unmatched[f'账簿未识别：{raw}'] = n
-    return entries, unmatched, skipped, errors
+    return entries, unmatched, self_ref, skipped, errors
 
 
 # ── 核算维度余额表解析 ─────────────────────────────────────────────────────────
@@ -350,12 +357,9 @@ def internal_upload(request):
         return err('请上传文件')
     if f.size > IMPORT_SIZE_LIMIT:
         return err('文件过大（上限5MB）')
-    try:
-        import openpyxl
-        wb = openpyxl.load_workbook(f, data_only=True)
-        ws = wb.active
-    except Exception:
-        return err('文件格式错误，请上传金蝶导出的 Excel(.xlsx)')
+    ws, hint = _load_ws_any(f)   # .xlsx / 网页HTML / Excel2003 XML 皆可；老版 .xls 明确提示
+    if ws is None:
+        return err(hint)
 
     uploader = getattr(getattr(request, 'pk_user', None), 'name', '') or ''
     fname = (f.name or '')[:200]
@@ -398,7 +402,7 @@ def internal_upload(request):
     if dstart is None:
         return err('无法识别文件：请上传金蝶「明细分类账」（核算维度=组织机构）或'
                    '「核算维度余额表」导出的 xlsx')
-    entries, unmatched, skipped, errors = _parse_detail(ws, dstart, dcm, bu_param, form_period)
+    entries, unmatched, self_ref, skipped, errors = _parse_detail(ws, dstart, dcm, bu_param, form_period)
     if errors:
         return err('；'.join(errors))
     if not entries:
@@ -426,6 +430,8 @@ def internal_upload(request):
         'batches': [b.to_dict() for b in batch_by_key.values()],
         'unmatched': [{'raw': k, 'count': v} for k, v in
                       sorted(unmatched.items(), key=lambda kv: -kv[1])[:50]],
+        'self_ref': [{'raw': k, 'count': v} for k, v in
+                     sorted(self_ref.items(), key=lambda kv: -kv[1])[:50]],
     })
 
 
@@ -466,6 +472,57 @@ def internal_batch_detail(request, bid):
         return err('无权操作该主体数据', 403)
     batch.delete()
     return ok({'deleted': bid})
+
+
+@csrf_exempt
+@cw_required()
+def internal_clear(request):
+    """超管一键清除内部往来数据。body: {scope, year?, month?, bu?}
+    scope=month → 该年月全部主体；bu → 该主体全部期间；all → 全部。
+    删除 InternalBatch（级联 entries + balances）。仅超级管理员可用（破坏性批量操作）。"""
+    if request.method != 'POST':
+        return err('方法不允许', 405)
+    denied = _page_denied(request, 'internal')
+    if denied:
+        return denied
+    if request.pk_role != 'super_admin':
+        return err('仅超级管理员可一键清除', 403, 403)
+    try:
+        data = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except (ValueError, UnicodeDecodeError):
+        data = {}
+    if not isinstance(data, dict) or not data:
+        data = request.POST
+    scope = (data.get('scope') or '').strip()
+
+    qs = InternalBatch.objects.all()
+    if scope == 'month':
+        try:
+            y = int(data.get('year')); m = int(data.get('month'))
+            assert 2000 <= y <= 2100 and 1 <= m <= 12
+        except (TypeError, ValueError, AssertionError):
+            return err('年月无效')
+        qs = qs.filter(year=y, month=m)
+        label = f'{y}年{m}月'
+    elif scope == 'bu':
+        bu = (data.get('bu') or '').strip()
+        if bu not in VALID_BUSINESS_UNITS:
+            return err('记账主体无效')
+        qs = qs.filter(business_unit=bu)
+        label = bu
+    elif scope == 'all':
+        label = '全部'
+    else:
+        return err('清除范围无效（month / bu / all）')
+
+    n_batch = qs.count()
+    n_entry = InternalEntry.objects.filter(batch__in=qs).count()
+    n_bal = InternalBalance.objects.filter(batch__in=qs).count()
+    qs.delete()   # 级联删除 entries + balances
+    logger.warning('internal-clear uid=%s scope=%s label=%s batches=%s entries=%s balances=%s',
+                   request.pk_uid, scope, label, n_batch, n_entry, n_bal)
+    return ok({'scope': scope, 'label': label,
+               'batches': n_batch, 'entries': n_entry, 'balances': n_bal})
 
 
 def _positions(year, month):

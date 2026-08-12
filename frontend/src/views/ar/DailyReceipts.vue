@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch, nextTick, onActivated } from 'vue'
 import { useToast } from '../../composables/useToast.js'
 import { confirmDlg } from '../../composables/confirm.js'
 import { useAuthStore } from '../../stores/auth.js'
@@ -7,16 +7,22 @@ import { todayCST } from '../../constants.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
 import ContextMenu from '../../components/ContextMenu.vue'
+import ColumnFilter from '../../components/ColumnFilter.vue'
 import SelCell from '../../components/SelCell.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { useShiftSelect } from '../../composables/useShiftSelect.js'
 import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
+import { useRangeSelection } from '../../composables/useRangeSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import PillPicker from '../../components/PillPicker.vue'
 import ProjectShortNamePicker from '../../components/ProjectShortNamePicker.vue'
 import { downloadBlob } from '../../utils/download.js'
 import Amt from '../../components/Amt.vue'
 import { useModalEsc } from '../../composables/useModalEsc.js'
+import { useModalEnter } from '../../composables/useModalEnter.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
+import SchemePicker from '../../components/SchemePicker.vue'
+import { useTableSchemes } from '../../composables/useTableSchemes.js'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -66,6 +72,38 @@ const _init = computePreset('thismonth')
 const filter = reactive({ dept: '', source: '', method: '', start: _init.start, end: _init.end, q: '' })
 watch([() => filter.start, () => filter.end], () => { if (!_applying) activePreset.value = '' }, { flush: 'sync' })
 
+// ── 列头筛选 + 排序（与付款管理同一套 Excel 式交互；纳入筛选方案快照）──────────
+const colFilters = reactive({})
+const sortField = ref('')
+const sortOrder = ref('')
+function setColFilter(field, val) { if (val == null) delete colFilters[field]; else colFilters[field] = val; load() }
+function setSort(field, order) { sortField.value = order ? field : ''; sortOrder.value = order || ''; load() }
+
+// 通用筛选方案（表格方案基座）：列头筛选 + 排序 + 页级筛选（部门/来源/方式 + 时间预设）
+let _applyingScheme = false   // 套方案时抑制 dept/source/method watch 的重复加载
+const schemes = useTableSchemes('ar_daily_receipts', {
+  colFilters, sortField, sortOrder,
+  extra: {
+    get: () => ({ dept: filter.dept || '', source: filter.source || '', method: filter.method || '', preset: activePreset.value || '' }),
+    set: (p) => {
+      _applyingScheme = true
+      filter.dept = p.dept || ''
+      filter.source = p.source || ''
+      filter.method = p.method || ''
+      // 时间按预设（相对区间）回放，套用时重算成当天口径；保存时为自定义区间则不动当前区间
+      if (p.preset) {
+        _applying = true
+        const r = computePreset(p.preset)
+        filter.start = r.start; filter.end = r.end
+        _applying = false
+        activePreset.value = p.preset
+      }
+      nextTick(() => { _applyingScheme = false })
+    },
+  },
+  onApply: () => load(),
+})
+
 // ── 数据 ────────────────────────────────────────────────────────────────────
 const loading = ref(false)
 const items = ref([])
@@ -89,6 +127,8 @@ async function load() {
   loading.value = true
   try {
     const p = { start_date: filter.start, end_date: filter.end, source: filter.source || undefined, method: filter.method || undefined, q: filter.q || undefined, depts: filter.dept || undefined }
+    if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
+    if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
     const d = (await ar.listDailyReceipts(p)).data || {}
     items.value = d.items || []
     total.value = d.total || '0'
@@ -101,13 +141,26 @@ async function load() {
     // 清理已不存在的选择
     const live = new Set(items.value.map(i => i.id))
     selectedIds.value = new Set([...selectedIds.value].filter(id => live.has(id)))
+    rangeSel.clear()   // 数据换页/刷新后旧矩形选区坐标会错行，清掉
+
   } catch (e) { toast.error(e?.msg || e?.error || '加载失败') }
   finally { loading.value = false }
 }
 useModalEsc([() => formOpen.value, () => (formOpen.value = false)])
+// Ctrl/Cmd+Enter 提交新增/编辑弹窗（save 内部自带校验与 saving 防重）
+useModalEnter(() => formOpen.value, () => save())
 
-onMounted(load)
-watch(() => [filter.source, filter.method, filter.dept], load)
+// keep-alive：命中 App.vue include 白名单；返回秒开，数据后台刷新（首次激活跳过，onMounted 已加载）
+defineOptions({ name: 'DailyReceiptsPage' })
+let _kaFirst = true
+onActivated(() => { if (_kaFirst) { _kaFirst = false; return } load() })
+
+onMounted(async () => {
+  // 有默认方案则套用并由其触发加载；否则常规加载
+  const applied = await schemes.loadAndApplyDefault()
+  if (!applied) load()
+})
+watch(() => [filter.source, filter.method, filter.dept], () => { if (!_applyingScheme) load() })
 
 // ── 选择（单选/多选/Shift 连选）───────────────────────────────────────────────
 const selectedIds = ref(new Set())
@@ -119,6 +172,8 @@ function toggleAll() { const s = new Set(selectedIds.value); if (pageAll.value) 
 function clearSel() { selectedIds.value = new Set() }
 const { onRowSelClick } = useShiftSelect({ items, selectedIds, toggleSingle: toggleRow })
 useEscClearSelection(() => hasSel.value, clearSel)
+// Excel 式单元格区域拖选 + 复制 + 底部求和/均值浮条（忽略首列勾选框，对齐付款管理）
+const rangeSel = useRangeSelection({ ignoreCols: [0], onCopy: n => toast.success(`已复制 ${n} 个单元格，可粘贴进 Excel`) })
 const selectedItems = computed(() => items.value.filter(r => selectedIds.value.has(r.id)))
 const selSum = computed(() => selectedItems.value.reduce((s, r) => s + Number(r.amount || 0), 0))
 
@@ -154,6 +209,7 @@ const formOpen = ref(false)
 const editingId = ref(null)
 const saving = ref(false)
 const form = reactive({ delivery_dept: '', receipt_date: todayCST(), amount: '', source: '项目收款', project_id: '', advance_id: '', method: '现金', account: '', payer: '', notes: '' })
+const amountInp = ref(null)
 const isProjectSource = computed(() => form.source === '项目收款')
 const isRefundSource = computed(() => form.source === '预付退款')
 const projectKw = ref('')   // 关联项目模糊搜索输入的显示值
@@ -175,9 +231,18 @@ async function loadRefundAdvances() {
 watch(() => form.delivery_dept, () => { if (isRefundSource.value) { form.advance_id = ''; loadRefundAdvances() } })
 function openCreate() {
   editingId.value = null
+  contSaved.value = 0
   projectKw.value = ''; refundAdvances.value = []
   Object.assign(form, { delivery_dept: filter.dept || depts.value[0] || '', receipt_date: todayCST(), amount: '', source: '项目收款', project_id: '', advance_id: '', method: '现金', account: '', payer: '', notes: '' })
+  // 录入记忆：沿用上次新增的来源/方式/账户；来源与方式须仍在当前预设里，失效则保持默认
+  const last = loadPref('ar_dr_last')
+  if (last) {
+    if (sourcePresets.value.includes(last.source)) form.source = last.source
+    if (methodPresets.value.includes(last.method)) form.method = last.method
+    if (typeof last.account === 'string') form.account = last.account
+  }
   formOpen.value = true
+  nextTick(() => amountInp.value?.focus())
 }
 function openEdit(r) {
   editingId.value = r.id
@@ -193,16 +258,46 @@ function openEdit(r) {
     })
   }
 }
+function validateForm() {
+  if (!form.delivery_dept) { toast.error('请选择事业部'); return false }
+  if (!(Number(form.amount) > 0)) { toast.error('金额必须大于 0'); return false }
+  if (!form.source.trim()) { toast.error('请填写收款来源'); return false }
+  return true
+}
+function buildBody() {
+  return { ...form, project_id: isProjectSource.value ? (form.project_id || null) : null,
+           advance_id: isRefundSource.value ? (form.advance_id || null) : null }
+}
 async function save() {
-  if (!form.delivery_dept) { toast.error('请选择事业部'); return }
-  if (!(Number(form.amount) > 0)) { toast.error('金额必须大于 0'); return }
-  if (!form.source.trim()) { toast.error('请填写收款来源'); return }
+  if (saving.value || !validateForm()) return
   saving.value = true
   try {
-    const body = { ...form, project_id: isProjectSource.value ? (form.project_id || null) : null,
-                   advance_id: isRefundSource.value ? (form.advance_id || null) : null }
-    if (editingId.value) await ar.updateDailyReceipt(editingId.value, body); else await ar.createDailyReceipt(body)
+    if (editingId.value) { await ar.updateDailyReceipt(editingId.value, buildBody()) }
+    else {
+      await ar.createDailyReceipt(buildBody())
+      // 录入记忆：下次新增默认沿用本次的来源/方式/账户
+      savePref('ar_dr_last', { method: form.method, account: form.account, source: form.source })
+    }
     toast.success('已保存'); formOpen.value = false; load()
+  } catch (e) { toast.error(e?.msg || e?.error || '保存失败') } finally { saving.value = false }
+}
+// 「保存并继续」：批量录入不关弹窗——保留上下文字段（事业部/日期/来源/方式/账户），
+// 清空逐笔字段（金额/付款方/项目/关联预付/备注）并聚焦金额；计数随 openCreate 归零
+const contSaved = ref(0)
+async function saveAndNext() {
+  if (saving.value || !validateForm()) return
+  saving.value = true
+  try {
+    await ar.createDailyReceipt(buildBody())
+    savePref('ar_dr_last', { method: form.method, account: form.account, source: form.source })
+    contSaved.value++
+    toast.success(`已连续保存 ${contSaved.value} 笔`)
+    Object.assign(form, { amount: '', payer: '', project_id: '', advance_id: '', notes: '' })
+    projectKw.value = ''
+    // 关联预付属单笔字段且余额刚被回冲，刷新候选避免复用陈旧余额
+    if (isRefundSource.value) loadRefundAdvances()
+    load()
+    nextTick(() => amountInp.value?.focus())
   } catch (e) { toast.error(e?.msg || e?.error || '保存失败') } finally { saving.value = false }
 }
 async function remove(r) {
@@ -222,6 +317,8 @@ async function exportXlsx(selectedOnly = false) {
   exporting.value = true
   try {
     const p = { start_date: filter.start, end_date: filter.end, source: filter.source || undefined, method: filter.method || undefined, q: filter.q || undefined, depts: filter.dept || undefined }
+    if (Object.keys(colFilters).length) p.filters = JSON.stringify(colFilters)
+    if (sortField.value && sortOrder.value) { p.sort = sortField.value; p.order = sortOrder.value }
     if (selectedOnly && hasSel.value) p.ids = [...selectedIds.value].join(',')
     const res = await ar.exportDailyReceipts(p)
     const tag = selectedOnly ? `选中${selCount.value}笔` : `${filter.start}_${filter.end}`
@@ -233,59 +330,77 @@ async function exportXlsx(selectedOnly = false) {
 
 <template>
   <div class="dr fh-fill">
-    <!-- 顶部：标题+筛选一行，时间快选独占一行 -->
-    <div class="dr-top">
-      <div class="dr-head">
-        <div class="dr-title">日常收款<span class="dr-sub">计入现金流与资金池</span></div>
-        <span class="grow"></span>
-        <select v-model="filter.dept" class="inp mini"><option value="">全部事业部</option><option v-for="d in depts" :key="d" :value="d">{{ d }}</option></select>
-        <select v-model="filter.source" class="inp mini"><option value="">全部来源</option><option v-for="s in Object.keys(bySource)" :key="s" :value="s">{{ s }}</option></select>
-        <select v-model="filter.method" class="inp mini"><option value="">全部方式</option><option v-for="m in Object.keys(byMethod)" :key="m" :value="m">{{ m }}</option></select>
-        <input v-model="filter.q" class="inp search" placeholder="搜付款方 / 摘要 / 项目" @input="onSearchInput" @keyup.enter="load" />
-        <button class="btn ghost sm" :disabled="exporting" @click="exportXlsx(false)">{{ exporting ? '导出中…' : '导出' }}</button>
-        <button v-if="canWrite" class="btn-hero" @click="openCreate"><span>＋</span> 新增收款</button>
+    <!-- 页头：标题 + 方案/导出/新增（对齐付款管理 topbar）-->
+    <div class="topbar">
+      <div class="tb-title">
+        <h1>日常收款</h1><span class="dr-sub">计入现金流与资金池</span>
       </div>
-      <!-- 时间维度：单行，超宽横向滚动 -->
+      <div class="tb-tools">
+        <SchemePicker :ctl="schemes" :can-public="auth.canArWrite" :is-super-admin="auth.isSuperAdmin" />
+        <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportXlsx(false)">
+          <span v-if="exporting" class="btn-spin"></span><span v-else style="margin-right:4px">📤</span>{{ exporting ? '导出中…' : '导出' }}
+        </button>
+        <button v-if="canWrite" class="btn btn-primary" @click="openCreate">＋ 新增收款</button>
+      </div>
+    </div>
+
+    <!-- 卡片：筛选 + 时间预设 + 表格（对齐付款管理 card 版式）-->
+    <div class="card fh-fill dr-card">
+      <div class="filter-bar">
+        <select v-model="filter.dept"><option value="">全部事业部</option><option v-for="d in depts" :key="d" :value="d">{{ d }}</option></select>
+        <select v-model="filter.source"><option value="">全部来源</option><option v-for="s in Object.keys(bySource)" :key="s" :value="s">{{ s }}</option></select>
+        <select v-model="filter.method"><option value="">全部方式</option><option v-for="m in Object.keys(byMethod)" :key="m" :value="m">{{ m }}</option></select>
+        <input v-model="filter.q" data-search class="global-search" placeholder="搜付款方 / 摘要 / 项目" @input="onSearchInput" @keyup.enter="load" />
+      </div>
+      <!-- 时间维度：预设 chip 单行，超宽横向滚动 -->
       <div class="dr-timebar">
+        <span class="filter-group-lbl">收款日</span>
         <button v-for="p in DATE_PRESETS" :key="p.k" class="pchip" :class="{ on: activePreset === p.k }" @click="applyPreset(p.k)">{{ p.l }}</button>
         <span class="fdiv"></span>
         <input v-model="filter.start" type="date" class="inp inp-date" @change="load" />
         <span class="tilde">~</span>
         <input v-model="filter.end" type="date" class="inp inp-date" @change="load" />
-        <button class="btn ghost sm reset" @click="resetFilters">重置</button>
+        <button class="btn btn-ghost btn-sm reset" @click="resetFilters">重置</button>
       </div>
-    </div>
 
-    <!-- 表格：主角，占据剩余空间 -->
-    <div class="dr-tablewrap">
       <div v-if="loading" class="empty">⏳ 加载中…</div>
       <div v-else-if="!items.length" class="empty">
         <div class="empty-i">💰</div><div class="empty-t">此区间暂无收款记录</div>
         <div v-if="canWrite" class="empty-s">点右上「新增收款」录入第一笔。</div>
       </div>
-      <table v-else class="dr-table">
-        <thead>
-          <tr>
-            <th class="cb"><input type="checkbox" :checked="pageAll" :indeterminate.prop="hasSel && !pageAll" @change="toggleAll" /></th>
-            <th>收款日期</th><th>事业部</th><th>来源</th><th>项目</th><th>方式</th><th>账户</th><th>付款方</th><th class="r">金额</th><th>摘要</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(r, idx) in items" :key="r.id" :class="{ sel: selectedIds.has(r.id) }"
-              @contextmenu.prevent="ctx.open($event, r)" @dblclick="canWrite && openEdit(r)">
-            <SelCell class="cb" :idx="idx" :id="r.id" :checked="selectedIds.has(r.id)" :on-sel="onRowSelClick" />
-            <td class="when">{{ r.receipt_date }}</td>
-            <td>{{ r.delivery_dept }}</td>
-            <td><span class="src">{{ r.source }}</span><span v-if="r.advance_record_id" class="adv-tag" :title="'已回冲预付：' + r.advance_label">↩冲预付</span></td>
-            <td class="proj">{{ r.project_name || '—' }}</td>
-            <td><span v-if="r.method" class="mtd">{{ r.method }}</span><span v-else class="dim">—</span></td>
-            <td class="dim">{{ r.account || '—' }}</td>
-            <td>{{ r.payer || '—' }}</td>
-            <td class="r amt"><Amt :v="r.amount" :fmt="money" /></td>
-            <td class="sumcell" :title="r.notes">{{ r.notes || '—' }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div v-else class="table-wrap dr-paytbl page-scroll" :ref="rangeSel.setRoot">
+        <table>
+          <thead>
+            <tr>
+              <th class="sel-col sticky-col"><input type="checkbox" :checked="pageAll" :indeterminate.prop="hasSel && !pageAll" @change="toggleAll" /></th>
+              <th><ColumnFilter label="收款日期" field="receipt_date" type="date" :model-value="colFilters.receipt_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('receipt_date',v)" @sort="o=>setSort('receipt_date',o)" /></th>
+              <th><ColumnFilter label="事业部" field="delivery_dept" type="enum" :options="depts" :model-value="colFilters.delivery_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('delivery_dept',v)" @sort="o=>setSort('delivery_dept',o)" /></th>
+              <th><ColumnFilter label="来源" field="source" type="enum" :options="sourcePresets" :model-value="colFilters.source" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('source',v)" @sort="o=>setSort('source',o)" /></th>
+              <th><ColumnFilter label="项目" field="project_name" type="text" :model-value="colFilters.project_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_name',v)" @sort="o=>setSort('project_name',o)" /></th>
+              <th><ColumnFilter label="方式" field="method" type="enum" :options="methodPresets" :model-value="colFilters.method" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('method',v)" @sort="o=>setSort('method',o)" /></th>
+              <th><ColumnFilter label="账户" field="account" type="text" :model-value="colFilters.account" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('account',v)" @sort="o=>setSort('account',o)" /></th>
+              <th><ColumnFilter label="付款方" field="payer" type="text" :model-value="colFilters.payer" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payer',v)" @sort="o=>setSort('payer',o)" /></th>
+              <th class="amt-th"><ColumnFilter label="金额" field="amount" type="number" :model-value="colFilters.amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('amount',v)" @sort="o=>setSort('amount',o)" /></th>
+              <th><ColumnFilter label="摘要" field="notes" type="text" :model-value="colFilters.notes" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('notes',v)" @sort="o=>setSort('notes',o)" /></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(r, idx) in items" :key="r.id" :class="{ 'row-sel': selectedIds.has(r.id) }"
+                @contextmenu.prevent="ctx.open($event, r)" @dblclick="canWrite && openEdit(r)">
+              <SelCell class="sel-col sticky-col" :idx="idx" :id="r.id" :checked="selectedIds.has(r.id)" :on-sel="onRowSelClick" />
+              <td class="cell-clip cell-muted">{{ r.receipt_date }}</td>
+              <td class="cell-clip">{{ r.delivery_dept }}</td>
+              <td class="cell-clip"><span class="src">{{ r.source }}</span><span v-if="r.advance_record_id" class="adv-tag" :title="'已回冲预付：' + r.advance_label">↩冲预付</span></td>
+              <td class="cell-clip" :title="r.project_name">{{ r.project_name || '—' }}</td>
+              <td class="cell-clip"><span v-if="r.method" class="mtd">{{ r.method }}</span><span v-else class="cell-muted">—</span></td>
+              <td class="cell-clip cell-muted" :title="r.account">{{ r.account || '—' }}</td>
+              <td class="cell-clip" :title="r.payer">{{ r.payer || '—' }}</td>
+              <td class="amt" :title="money(r.amount)"><Amt :v="r.amount" :fmt="money" /></td>
+              <td class="cell-clip cell-desc cell-muted" :title="r.notes">{{ r.notes || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- 底部汇总栏 -->
@@ -349,13 +464,13 @@ async function exportXlsx(selectedOnly = false) {
               <PillPicker v-model="form.method" :presets="methodPresets" placeholder="自定义方式，如 支付宝" />
             </div>
             <div class="grid2">
-              <div class="frow"><label>收款金额 <i>*</i></label><input v-model="form.amount" type="number" step="0.01" class="inp big-amt" placeholder="0.00" /></div>
+              <div class="frow"><label>收款金额 <i>*</i></label><input ref="amountInp" v-model="form.amount" type="number" step="0.01" class="inp big-amt" placeholder="0.00" /></div>
               <div class="frow"><label>收款账户</label><input v-model="form.account" class="inp" placeholder="如 微信-结算001" /></div>
             </div>
             <div class="frow"><label>付款方</label><input v-model="form.payer" class="inp" placeholder="选填" /></div>
             <div class="frow"><label>摘要/备注</label><textarea v-model="form.notes" class="inp" rows="2" placeholder="选填"></textarea></div>
           </div>
-          <div class="d-foot"><button class="btn ghost" @click="formOpen = false">取消</button><button class="btn primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存收款' }}</button></div>
+          <div class="d-foot"><button class="btn ghost" @click="formOpen = false">取消</button><button v-if="!editingId" class="btn ghost" :disabled="saving" @click="saveAndNext">保存并继续</button><button class="btn primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存收款' }}</button></div>
         </div>
       </div>
     </Teleport>
@@ -364,47 +479,59 @@ async function exportXlsx(selectedOnly = false) {
 
 <style scoped>
 .dr { display: flex; flex-direction: column; min-height: 0; height: 100%; padding: 0; }
-/* 顶部紧凑区 */
-.dr-top { flex: none; padding: 14px 20px 10px; border-bottom: 1px solid var(--border, #eadfd2); background: var(--glass, rgba(255,254,251,.6)); display: flex; flex-direction: column; gap: 10px; }
-.dr-head { display: flex; align-items: center; gap: 12px;; flex-wrap: wrap; }
-.dr-title { font-size: 19px; font-weight: 850; letter-spacing: -.01em; color: var(--text, #4a3322); }
-.dr-sub { font-size: 12px; font-weight: 500; color: var(--muted, #9b8070); margin-left: 10px; }
-.grow { flex: 1; }
-.btn-hero { border: none; background: var(--grad); color: #fff; border-radius: 10px; padding: 9px 18px; font-size: 14px; font-weight: 750; cursor: pointer; font-family: inherit; box-shadow: 0 6px 18px -7px color-mix(in srgb, var(--primary) 60%, transparent); display: inline-flex; align-items: center; gap: 7px; transition: transform .16s; }
-.btn-hero:hover { transform: translateY(-1px); } .btn-hero span { font-size: 17px; }
-.dr-timebar { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
+/* 页头（对齐付款管理 topbar）*/
+.topbar { flex: none; }
+.tb-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.tb-title h1 { font-size: 19px; font-weight: 800; letter-spacing: -.03em; color: var(--text); white-space: nowrap; }
+.dr-sub { font-size: 12px; font-weight: 500; color: var(--muted, #9b8070); white-space: nowrap; }
+.tb-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+/* 卡片：撑满剩余高度、内部表格滚动；筛选/时间条不压缩 */
+.dr-card { margin-bottom: 0; padding: 14px 16px; }
+.dr-card .filter-bar { margin-bottom: 10px; }
+/* 时间预设条：单行横向滚动 */
+.dr-timebar { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 8px; margin-bottom: 6px; scrollbar-width: thin; flex: none; }
 .dr-timebar::-webkit-scrollbar { height: 5px; } .dr-timebar::-webkit-scrollbar-thumb { background: var(--border, #d8c9b8); border-radius: 3px; }
-.pchip { flex: none; border: 1px solid var(--border, #e2d6c6); background-color: var(--card-bg, #fff); color: var(--text, #6a5641); border-radius: 20px; padding: 5px 13px; font-size: 12.5px; cursor: pointer; font-family: inherit; transition: .14s; white-space: nowrap; }
+.filter-group-lbl { font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap; flex-shrink: 0; margin-right: 2px; }
+.pchip { flex: none; border: 1px solid var(--border, #e2d6c6); background-color: var(--card, #fff); color: var(--text, #6a5641); border-radius: 20px; padding: 4px 12px; font-size: 12px; cursor: pointer; font-family: inherit; transition: .14s; white-space: nowrap; }
 .pchip:hover { border-color: var(--primary); color: var(--primary); }
 .pchip.on { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 650; box-shadow: 0 4px 12px -4px color-mix(in srgb, var(--primary) 55%, transparent); }
 .fdiv { flex: none; width: 1px; height: 18px; background: var(--border, #e2d6c6); margin: 0 3px; }
 .tilde { flex: none; color: var(--muted, #9b8070); }
 .dr-timebar .inp-date { flex: none; } .dr-timebar .reset { flex: none; margin-left: 4px; }
-.inp { border: 1px solid var(--border, #d8c9b8); border-radius: 8px; padding: 6px 10px; font-size: 13px; font-family: inherit; background-color: var(--card-bg, #fff); color: var(--text, #4a3322); outline: none; width: auto; transition: .14s; }
+.inp { border: 1px solid var(--border, #d8c9b8); border-radius: 8px; padding: 6px 10px; font-size: 13px; font-family: inherit; background-color: var(--card, #fff); color: var(--text, #4a3322); outline: none; width: auto; transition: .14s; }
 .inp:focus { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent); }
-.inp-date { width: 138px; } .search { width: 200px;; flex: 1 1 160px; min-width: 120px; width: auto; } .inp.mini { font-size: 12.5px; padding: 6px 26px 6px 9px; }
-.btn { border: 1px solid var(--border, #d8c9b8); background-color: var(--card-bg, #fff); color: var(--text, #4a3322); border-radius: 8px; padding: 6px 13px; font-size: 13px; font-weight: 650; cursor: pointer; font-family: inherit; }
-.btn.ghost { background: none; } .btn.sm { padding: 6px 12px; }
-.btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
-.btn:disabled { opacity: .6; cursor: default; }
-/* 表格区（主角）*/
-.dr-tablewrap { flex: 1; min-height: 0; overflow: auto; }
+.inp-date { width: 138px; }
+.global-search { min-width: 220px; flex: 1 1 220px; }
+/* 空状态 */
 .empty { padding: 64px 20px; text-align: center; color: var(--muted, #9b8070); }
 .empty-i { font-size: 42px; } .empty-t { font-size: 16px; font-weight: 700; color: var(--text, #4a3322); margin-top: 8px; } .empty-s { margin-top: 6px; font-size: 13px; }
-.dr-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-.dr-table thead th { text-align: left; padding: 11px 14px; font-size: 11px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; color: var(--muted, #9b8070); background: var(--surface-2, rgba(160,120,80,.07)); white-space: nowrap; position: sticky; top: 0; z-index: 2; }
-.dr-table th.r, .dr-table td.r { text-align: right; } .dr-table th.cb, .dr-table td.cb { width: 40px; text-align: center; }
-.dr-table tbody td { padding: 10px 14px; border-top: 1px solid var(--border, #eadfd2); white-space: nowrap; }
-.dr-table tbody tr:nth-child(even) { background: color-mix(in srgb, var(--muted, #9b8070) 3.5%, transparent); }
-.dr-table tbody tr:hover { background: var(--surface-2, rgba(160,120,80,.1)); cursor: default; }
-.dr-table tbody tr.sel { background: color-mix(in srgb, var(--primary) 10%, transparent) !important; }
-.amt { font-variant-numeric: tabular-nums; font-weight: 800; color: var(--primary); }
-.src { background: var(--primary-weak, #e8f1fb); color: var(--primary); border-radius: 8px; padding: 2px 9px; font-size: 12px; font-weight: 600; }
-.mtd { background: var(--surface-2, rgba(160,120,80,.12)); color: var(--text, #6a5641); border-radius: 7px; padding: 1px 8px; font-size: 12px; }
-.adv-tag { margin-left: 6px; font-size: 10.5px; color: var(--c-success, #2e7d32); background: rgba(46,125,50,.1); border-radius: 6px; padding: 1px 6px; white-space: nowrap; }
+/* 表格：对齐付款管理视觉系统 —— 奶油表头/无斑马/hover 暖赭/长文本封顶/金额右对齐等宽 */
+.table-wrap.dr-paytbl { flex: 1 1 auto; min-height: 0; padding-bottom: 8px; }
+.dr-paytbl table { table-layout: auto; min-width: 900px; }
+.dr-paytbl { --td-px: 12px; }
+.dr-paytbl th, .dr-paytbl td { padding: 9px var(--td-px); font-size: 12.5px; }
+.dr-paytbl td:not(.sel-col) { white-space: nowrap; }
+/* 拖选期间禁用原生文本选择（Excel 式区域框选）*/
+.dr-paytbl tbody { user-select: none; }
+.dr-paytbl thead th { overflow: visible; white-space: nowrap; vertical-align: middle; font-size: 12px; font-weight: 600; letter-spacing: -0.2px; text-transform: none; color: var(--muted); }
+.dr-paytbl thead :deep(.colf-label) { white-space: nowrap; }
+.table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
+/* 长文本列封顶 + 省略；结构化列按内容自适应全展示 */
+.dr-paytbl td.cell-clip { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.dr-paytbl td.cell-desc { max-width: 300px; cursor: help; }
+.cell-muted { color: var(--muted); }
+/* 金额列：右对齐 + 等宽数字 */
+.dr-paytbl td.amt { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text); }
+.dr-paytbl th.amt-th { text-align: right; }
+/* 勾选列：首列吸左，随表体横向滚动保持可见 */
+.dr-paytbl th.sel-col, .dr-paytbl td.sel-col { width: 30px; text-align: center; padding: 9px 4px; max-width: none; overflow: visible; }
+.sticky-col { position: sticky; left: 0; z-index: 3; background: var(--card); }
+.dr-paytbl thead th.sticky-col { z-index: 6; background: var(--thead-bg); }
+.dr-paytbl tbody tr.row-sel td { background: color-mix(in srgb, var(--primary) 10%, transparent) !important; }
+.src { background: rgba(201,99,66,0.10); color: var(--primary); border-radius: var(--radius-sm); padding: 2px 9px; font-size: 12px; font-weight: 600; }
+.mtd { background: var(--surface-2, rgba(160,120,80,.12)); color: var(--text, #6a5641); border-radius: var(--radius-sm); padding: 1px 8px; font-size: 12px; }
+.adv-tag { margin-left: 6px; font-size: 10.5px; color: var(--c-success); background: var(--c-success-bg); border-radius: var(--radius-xs); padding: 1px 6px; white-space: nowrap; }
 .hint { font-weight: 400; font-size: 11px; color: var(--muted, #999); }
-.proj { color: var(--text, #4a3322); } .dim, .when { color: var(--muted, #7a6550); }
-.sumcell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; color: var(--muted, #7a6550); }
 input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; }
 /* 底部汇总栏 */
 .dr-footer { flex: none; display: flex; align-items: center; gap: 18px; padding: 10px 20px; border-top: 1px solid var(--border, #eadfd2); background: var(--glass, rgba(255,254,251,.7)); backdrop-filter: blur(6px); min-height: 30px; }

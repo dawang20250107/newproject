@@ -1,6 +1,6 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import LevelToggle from '../../components/caiwu/report/LevelToggle.vue'
@@ -13,6 +13,7 @@ import EmptyState from '../../components/EmptyState.vue'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText } from '../../utils/clipboard.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import { useToast } from '../../composables/useToast.js'
 
 const auth = useCaiwuAuth()
@@ -34,6 +35,12 @@ const accessibleBus = computed(() => {
   if (auth.isAdmin) return BUSINESS_UNITS
   return (auth.user?.departments || []).filter(d => BUSINESS_UNITS.includes(d))
 })
+// 记忆年份/事业部（cw_analysis_prefs 与指标管理/目标分解共用一份；
+// 脏值回退默认，route.query 在 mounted 里后覆盖 → 始终优先于记忆）
+const pref = loadPref('cw_analysis_prefs') || {}
+if (years.includes(pref.year)) year.value = pref.year
+if (pref.bu && accessibleBus.value.includes(pref.bu)) selectedBu.value = pref.bu
+watch([year, selectedBu], ([y, bu]) => savePref('cw_analysis_prefs', { year: y, bu }))
 const hasFullAccess = computed(() => auth.isAdmin)
 const aiScope = computed(() => {
   if (selectedBu.value) return [selectedBu.value]
@@ -145,29 +152,62 @@ async function exportReport() {
   } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
   finally { exporting.value = false }
 }
+// 分部门利润表：科目行 × 项目部列，逐(事业部,已发布月)各一个 sheet
+async function exportDeptPl() {
+  exporting.value = true
+  try {
+    const params = { year: year.value }
+    if (selectedBu.value) params.bu = selectedBu.value
+    const res = await api.get('/report/dept-pl-export', { params, responseType: 'blob' })
+    downloadBlob(res, `分部门利润表_${selectedBu.value || '全部事业部'}_${year.value}年.xlsx`)
+  } catch (e) { toast.error(e?.msg || e?.error || '导出失败') }
+  finally { exporting.value = false }
+}
 
 const toast = useToast()
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
 const ctxReport = useContextMenu()
+// 归因直达：矩阵里看到某月异动 → 一键跳到图表分析「因素分析瀑布」并预填对比期，
+// 不必再手动切页选期。参数经 sessionStorage 传递（图表分析是驾驶舱内嵌 Tab）。
+function gotoAttribution(mi) {
+  const mlist = months.value
+  const m = mlist[mi]
+  if (!m) return
+  let cy = year.value, cm = m - 1
+  if (cm === 0) { cm = 12; cy -= 1 }
+  sessionStorage.setItem('cw:wf-prefill', JSON.stringify({
+    bu: selectedBu.value || '', year: year.value, month: m, cmpYear: cy, cmpMonth: cm,
+  }))
+  router.push({ path: '/caiwu/cockpit', query: { tab: 'charts' } })
+}
+
 const ctxReportItems = computed(() => {
   const r = ctxReport.menu.payload
   if (!r) return []
-  return [
-    {
-      key: 'copy', label: '复制', icon: 'copy',
-      children: [
-        { key: 'copy-name', label: '科目名称', icon: 'cell', action: row => copyText(row.name).then(ok => ok ? toast.success('已复制：' + row.name) : toast.error('复制失败')) },
-        { key: 'copy-total', label: '合计金额', icon: 'cell', action: row => copyText(fmt(row.total)).then(ok => ok ? toast.success('已复制：' + fmt(row.total)) : toast.error('复制失败')) },
-        { key: 'copy-row', label: '整行（含各月，可贴 Excel）', icon: 'cell', action: row => {
-            const cells = [row.name, ...row.values.map(v => v ?? ''), row.total ?? '']
-            copyText(cells.join('\t')).then(ok => ok ? toast.success('已复制整行，可粘贴进 Excel') : toast.error('复制失败'))
-          } },
-      ],
-    },
-  ]
+  const items = []
+  if (r._mi != null) {
+    const m = months.value[r._mi]
+    items.push(
+      { key: 'attr', label: `净利归因：${m}月 vs 上月`, icon: 'chart', action: () => gotoAttribution(r._mi) },
+      { divider: true },
+    )
+  }
+  items.push({
+    key: 'copy', label: '复制', icon: 'copy',
+    children: [
+      { key: 'copy-name', label: '科目名称', icon: 'cell', action: row => copyText(row.name).then(ok => ok ? toast.success('已复制：' + row.name) : toast.error('复制失败')) },
+      { key: 'copy-total', label: '合计金额', icon: 'cell', action: row => copyText(fmt(row.total)).then(ok => ok ? toast.success('已复制：' + fmt(row.total)) : toast.error('复制失败')) },
+      { key: 'copy-row', label: '整行（含各月，可贴 Excel）', icon: 'cell', action: row => {
+          const cells = [row.name, ...row.values.map(v => v ?? ''), row.total ?? '']
+          copyText(cells.join('\t')).then(ok => ok ? toast.success('已复制整行，可粘贴进 Excel') : toast.error('复制失败'))
+        } },
+    ],
+  })
+  return items
 })
 
 const route = useRoute()
+const router = useRouter()
 onMounted(() => {
   const qb = route.query.bu, qy = +route.query.year
   if (qb && BUSINESS_UNITS.includes(qb)) selectedBu.value = qb
@@ -197,6 +237,10 @@ onMounted(() => {
         <LevelToggle v-model="level" :max-level="maxLevel" @update:model-value="load" />
         <button v-if="canExport" class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportReport">
           {{ exporting ? '导出中…' : '↓ 导出美化表' }}
+        </button>
+        <button v-if="canExport" class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportDeptPl"
+                title="按 科目行 × 项目部列 导出分部门利润表，逐月各一个 sheet（金蝶部门明细口径）">
+          {{ exporting ? '导出中…' : '↓ 分部门利润表' }}
         </button>
       </div>
     </div>
@@ -271,13 +315,14 @@ onMounted(() => {
             <tbody>
               <tr v-for="r in flatRows" :key="r.key" :class="['mx-row', `d${r.depth}`, { calc: r.calc, 'has-pct': r.pct }]" @contextmenu.prevent="ctxReport.open($event, r)">
                 <td class="mx-name" :style="`padding-left:${10 + r.depth * 16}px`">{{ r.name }}</td>
-                <td v-for="(v, i) in r.values" :key="i" class="mx-num" :class="{ neg: v < 0 }">
-                  <div class="mx-amt">{{ fmt(v) }}</div>
-                  <div v-if="r.pct" class="mx-pct">{{ r.pct[i] != null ? r.pct[i].toFixed(1) + '%' : '—' }}</div>
+                <td v-for="(v, i) in r.values" :key="i" class="mx-num" :class="{ neg: v < 0, zero: !v }"
+                    @contextmenu.prevent.stop="ctxReport.open($event, { ...r, _mi: i })">
+                  <div class="mx-amt">{{ v ? fmt(v) : '–' }}</div>
+                  <div v-if="r.pct && v" class="mx-pct">{{ r.pct[i] != null ? r.pct[i].toFixed(1) + '%' : '—' }}</div>
                 </td>
-                <td class="mx-num mx-total" :class="{ neg: r.total < 0 }">
-                  <div class="mx-amt">{{ fmt(r.total) }}</div>
-                  <div v-if="r.pct" class="mx-pct">{{ r.totalPct != null ? r.totalPct.toFixed(1) + '%' : '—' }}</div>
+                <td class="mx-num mx-total" :class="{ neg: r.total < 0, zero: !r.total }">
+                  <div class="mx-amt">{{ r.total ? fmt(r.total) : '–' }}</div>
+                  <div v-if="r.pct && r.total" class="mx-pct">{{ r.totalPct != null ? r.totalPct.toFixed(1) + '%' : '—' }}</div>
                 </td>
               </tr>
             </tbody>
@@ -362,6 +407,8 @@ onMounted(() => {
 .mx-row:hover td { background: rgba(201,99,66,0.04); }
 .mx-row:hover .mx-name { background: #fbf1ec; }
 .mx-num.neg { color: var(--danger); }
+.mx-num.zero .mx-amt { color: var(--muted-light); font-weight: 400; }   /* 零值淡化短横线：让眼睛只追非零数字 */
+.mx-row.calc .mx-num.zero .mx-amt { color: #c9b3a5; }
 .mx-total { font-weight: 700; }
 
 /* 费销比：成本/费用/集团管理费 行在金额下方加一行占总收入百分比 */

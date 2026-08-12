@@ -149,6 +149,7 @@ export function endLabel(formatter, extra = {}) {
 
 /** 统一 tooltip 外观：白底、细边、柔和投影、圆角，全站一致。 */
 export const TOOLTIP = {
+  confine: true,   // 关键：提示框限制在图表容器内，不被卡片 overflow 裁切/溢出到视口外
   backgroundColor: 'rgba(255,255,255,0.97)',
   borderColor: 'rgba(0,0,0,0.08)', borderWidth: 1,
   textStyle: { fontSize: 12, color: '#3a2f28' },

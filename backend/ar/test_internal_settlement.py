@@ -210,21 +210,22 @@ class CollectionMethodTests(TestCase):
         self.assertEqual(p.method, '')
         self.assertEqual(p.account, '')
 
-    def test_cashflow_neutral_to_method(self):
-        # 承兑汇票与银行转账都属 source='回款'，同计入现金回款（method 不影响现金口径）
+    def test_cashflow_excludes_pending_draft(self):
+        # 口径对齐（CFO 决策）：未兑付承兑不算可动用现金，现金流分析与资金池同口径排除，
+        # 仅银行转账等已到账现金计入；到「已承兑」后两处同时计入。
         self._post_pay({'amount': 200, 'payment_date': '2026-03-12',
-                        'source': '回款', 'method': '承兑汇票'})
+                        'source': '回款', 'method': '承兑汇票'})   # 未承兑（默认）
         self._post_pay({'amount': 300, 'payment_date': '2026-03-12',
                         'source': '回款', 'method': '银行转账'})
         resp = self.client.get('/api/pk/ar/cashflow',
                                {'start_date': '2026-03-01', 'end_date': '2026-03-31',
                                 'depts': self.dept}, **self.auth())
         t = resp.json()['data']['totals']
-        self.assertEqual(t['collected'][0], 500.0)   # 承兑也计入
+        self.assertEqual(t['collected'][0], 300.0)   # 未兑付承兑200 不计入
 
-    def test_acceptance_draft_excluded_from_pool_but_in_cashflow(self):
-        """承兑汇票口径：不算「可动用现金」→ 资金池账面余额排除；但仍是已实现现金流入
-        → 现金流分析照常计入。"""
+    def test_acceptance_draft_excluded_from_both_pool_and_cashflow(self):
+        """承兑汇票口径（对齐后）：未兑付不算「可动用现金」→ 资金池与现金流分析均排除。
+        资金池 = 期初 + 现金流净额（＋净调拨），两处回款须同口径，否则用户对不平。"""
         from django.utils import timezone
         from ar.models import CashPoolConfig
         from ar.views.pool import _pool_balance
@@ -234,15 +235,15 @@ class CollectionMethodTests(TestCase):
         self._post_pay({'amount': 300, 'payment_date': '2026-03-12',
                         'source': '回款', 'method': '银行转账'})
         self._post_pay({'amount': 200, 'payment_date': '2026-03-12',
-                        'source': '回款', 'method': '承兑汇票'})
-        # 资金池可动用现金：期初1000 + 银行转账300；承兑汇票200 不计入
+                        'source': '回款', 'method': '承兑汇票'})   # 未承兑（默认）
+        # 资金池可动用现金：期初1000 + 银行转账300；未兑付承兑200 不计入
         bal = _pool_balance(self.dept, cfg, timezone.localdate())
         self.assertEqual(bal, Decimal('1300'))
-        # 现金流分析仍计入承兑：collected = 500
+        # 现金流分析同口径排除未兑付承兑：collected = 300（＝资金池净流，与池对平）
         resp = self.client.get('/api/pk/ar/cashflow',
                                {'start_date': '2026-03-01', 'end_date': '2026-03-31',
                                 'depts': self.dept}, **self.auth())
-        self.assertEqual(resp.json()['data']['totals']['collected'][0], 500.0)
+        self.assertEqual(resp.json()['data']['totals']['collected'][0], 300.0)
 
     def test_draft_status_default_persist_and_validate(self):
         # 承兑汇票默认「未承兑」；可指定「已承兑」；非四选一状态被拒

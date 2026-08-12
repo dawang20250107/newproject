@@ -232,9 +232,11 @@ def _ar_metric(depts, p_start, p_end):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _collection_actual(depts_q, s, e):
+    # 现金口径，与现金流/资金池/预算同步：排除非现金来源(预收抵扣/内部往来)与未兑付承兑汇票
     return (ARPayment.objects
             .filter(ar_record__delivery_dept__in=depts_q, payment_date__gte=s, payment_date__lte=e)
             .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
+            .exclude(pending_draft_q())
             .aggregate(x=Sum('amount'))['x'] or Decimal('0'))
 
 

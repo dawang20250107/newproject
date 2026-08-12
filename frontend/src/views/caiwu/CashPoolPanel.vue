@@ -214,6 +214,36 @@ const projDimMode = ref('project')
 const projDimData = ref({})
 const projDimLoading = ref({})
 
+// ── 月度收支台账（按需加载）：与现金流逐月同口径，逐月期初→收支→期末对平 ──────
+const monthlyData = ref({})     // dept -> { months, initial_date, initial_amount }
+const monthlyLoading = ref({})
+const monthlyOpen = ref('')     // 当前展开月度台账的事业部（一次一个，省空间）
+async function toggleMonthly(dept) {
+  if (monthlyOpen.value === dept) { monthlyOpen.value = ''; return }
+  monthlyOpen.value = dept
+  if (monthlyData.value[dept] || monthlyLoading.value[dept]) return
+  monthlyLoading.value = { ...monthlyLoading.value, [dept]: true }
+  try {
+    const res = await ar.poolMonthly(dept)
+    monthlyData.value = { ...monthlyData.value, [dept]: res.data }
+  } catch (e) {
+    toast.error(e?.msg || e?.error || '月度台账加载失败')
+    monthlyOpen.value = ''
+  } finally {
+    monthlyLoading.value = { ...monthlyLoading.value, [dept]: false }
+  }
+}
+// 月度台账单元格：与全站 0 值规范一致（0=无流水 → 短横线，只追非零数字）
+const mCell = v => { const n = parseFloat(v); return !n ? '–' : wan(v) }
+const mNet = v => { const n = parseFloat(v) || 0; return (n > 0 ? '+' : n < 0 ? '−' : '') + (n ? wan(Math.abs(n)) : '–') }
+// 期末余额迷你条：相对本池历史峰值的占比，一眼看资金水位走势
+function mClosingPct(dept, v) {
+  const rows = monthlyData.value[dept]?.months || []
+  const peak = Math.max(1, ...rows.map(m => Math.abs(parseFloat(m.closing) || 0)))
+  return Math.min(100, Math.abs(parseFloat(v) || 0) / peak * 100)
+}
+const mLabel = ym => { const [y, m] = (ym || '').split('-'); return `${y?.slice(2)}/${+m}月` }
+
 const dimKey = dept => `${dept}|${projDimMode.value}`
 
 async function fetchProjDim(dept) {
@@ -393,7 +423,11 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 
                 <!-- 收支构成 -->
                 <div class="pd-col">
-                  <div class="pd-col-head">收支构成</div>
+                  <div class="pd-col-head">收支构成（累计）
+                    <button class="pd-load-btn" @click.stop="toggleMonthly(p.dept)">
+                      {{ monthlyOpen === p.dept ? '收起月度' : '📅 按月拆解' }}
+                    </button>
+                  </div>
                   <div class="pd-row"><i>期初（{{ p.config.initial_date }}）</i><b>{{ wan(p.parts.initial) }}</b></div>
                   <div class="pd-row in"><i>＋ 回款</i><b>{{ wan(p.parts.collected) }}</b></div>
                   <div v-if="parseFloat(p.parts.daily_receipts)" class="pd-row in"><i>＋ 日常收款</i><b>{{ wan(p.parts.daily_receipts) }}</b></div>
@@ -458,6 +492,54 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   <div v-else class="pd-hint">点击「加载」查看{{ projDimMode === 'project' ? '项目' : '二级部门' }}维度现金分布</div>
                 </div>
               </div>
+
+              <!-- ── 月度收支台账（全宽，按需加载）：逐月与现金流对平 ── -->
+              <Transition name="acc">
+                <div v-if="monthlyOpen === p.dept" class="pm-wrap" @click.stop>
+                  <div class="pm-head">
+                    <span class="pm-title">月度收支台账</span>
+                    <span class="pm-sub">期初 → 收支各项 → 期末，逐月滚动结转；口径与「现金流分析」一致，可逐月对平</span>
+                  </div>
+                  <div v-if="monthlyLoading[p.dept]" class="pd-loading">加载中…</div>
+                  <div v-else-if="monthlyData[p.dept]" class="pm-scroll">
+                    <table class="pm-tbl">
+                      <thead>
+                        <tr>
+                          <th class="pm-mo">月份</th>
+                          <th>期初</th>
+                          <th class="pm-in">回款</th><th class="pm-in">日常</th><th class="pm-in">预收</th>
+                          <th class="pm-out">实付</th><th class="pm-out">预付</th>
+                          <th class="pm-tr">调拨</th>
+                          <th class="pm-net">净流</th>
+                          <th class="pm-cl">期末</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(m, i) in monthlyData[p.dept].months" :key="m.ym"
+                            :class="{ 'pm-last': i === monthlyData[p.dept].months.length - 1 }">
+                          <td class="pm-mo">{{ mLabel(m.ym) }}</td>
+                          <td class="pm-dim">{{ mCell(m.opening) }}</td>
+                          <td class="pm-in">{{ mCell(m.collected) }}</td>
+                          <td class="pm-in">{{ mCell(m.daily) }}</td>
+                          <td class="pm-in">{{ mCell(m.adv_recv) }}</td>
+                          <td class="pm-out">{{ mCell(m.paid) }}</td>
+                          <td class="pm-out">{{ mCell(m.adv_paid) }}</td>
+                          <td class="pm-tr" :title="`调入 ${wan(m.transfer_in)} / 调出 ${wan(m.transfer_out)}`">
+                            {{ mNet((parseFloat(m.transfer_in)||0) - (parseFloat(m.transfer_out)||0)) }}
+                          </td>
+                          <td class="pm-net" :class="(parseFloat(m.net)||0) >= 0 ? 'pos' : 'neg'">{{ mNet(m.net) }}</td>
+                          <td class="pm-cl">
+                            <span class="pm-cl-bar" :style="`width:${mClosingPct(p.dept, m.closing)}%`"
+                                  :class="{ neg: parseFloat(m.closing) < 0 }"></span>
+                            <b :class="{ neg: parseFloat(m.closing) < 0 }">{{ wan(m.closing) }}</b>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div class="pm-foot">绿=流入 · 橙=流出 · 蓝=调拨净额 · 期末含运行水位条；「–」表示该月无此项流水</div>
+                </div>
+              </Transition>
             </div>
           </Transition>
         </template>
@@ -524,9 +606,10 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
                   <b>为什么与「现金流分析」对不上？</b>
                   资金池余额是<b>存量</b>（期初基准日累计至今，含池间调拨）；
                   现金流分析是<b>选定区间的流量</b>（不含期初基准，不含内部调拨）。
-                  二者口径不同，<b>不应直接相等</b>。单个事业部尤其明显——调拨改变池余额，但不进入现金流分析。
+                  <b>资金池余额 ＝ 期初 ＋ 现金流净额 ＋ 净调拨</b>：回款/日常/预收/实付/预付口径两处已完全一致，
+                  差异只剩<b>期初基准</b>与<b>内部调拨</b>（调拨改变池余额，但不进入现金流分析，单个事业部尤其明显）。
                 </li>
-                <li><b>现金流入</b> ＝ 应收回款 ＋ 日常收款 ＋ 预收款。<b>预收冲抵</b>不计现金流入——现金在预收入账时已计入，冲抵只是账务确认。<b>承兑汇票</b>回款不计入可动用现金（贴现/到期前非货币资金），故不进池子余额，但仍计入「现金流分析」的经营活动现金流入。</li>
+                <li><b>现金流入</b> ＝ 应收回款 ＋ 日常收款 ＋ 预收款。<b>预收冲抵</b>不计现金流入——现金在预收入账时已计入，冲抵只是账务确认。<b>未兑付承兑汇票</b>不计可动用现金（贴现/到期前非货币资金），资金池与现金流分析<b>均不计入</b>，待「已承兑」到账后两处同时计入。</li>
                 <li><b>现金流出</b> ＝ 实付分期 ＋ 预付款。<b>预付核销冲抵</b>不计现金流出——预付的现金在预付发生（occur_date）时已作为「预付款」流出，核销只是把这笔预付资产结转到某张应付上，本身无新现金事件（与预收冲抵对称）。实付分期与预付冲抵是计划的两块互不重叠部分（已付＋冲抵＝已覆盖），故实付分期即本期真实付现。</li>
                 <li><b>刚性待付</b> ＝ 付款管理中已审批待付余额（计划金额 − 已付 − 预付冲抵），按计划付款日分 30/60/90 天窗口。</li>
                 <li><b>在途支出</b> ＝ 审批记录中「已批待排 / 审批中」金额 ＋ 待审批调拨出款申请。尚未排款，金额存在不确定性。</li>
@@ -867,6 +950,47 @@ onBeforeUnmount(() => window.removeEventListener('pk:depts-changed', onScopeChan
 .dim-seg button.on { background: var(--primary); color: #fff; }
 .pd-load-btn { border: 1px solid var(--border-strong); background: var(--surface-tint); color: var(--text-2); font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-xs); cursor: pointer; margin-left: 4px; transition: all .12s; }
 .pd-load-btn:hover { background: rgba(201,99,66,.12); border-color: var(--primary); color: var(--primary); }
+
+/* ── 月度收支台账 ─────────────────────────────────────────────── */
+.pm-wrap { margin-top: 12px; border-top: 1px dashed var(--border-strong); padding-top: 10px; }
+.pm-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.pm-title { font-size: 12.5px; font-weight: 800; color: var(--text); }
+.pm-sub { font-size: 11px; color: var(--muted); }
+.pm-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+.pm-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; white-space: nowrap; }
+.pm-tbl th, .pm-tbl td { padding: 5px 10px; text-align: right; font-variant-numeric: tabular-nums; }
+.pm-tbl thead th {
+  position: sticky; top: 0; z-index: 1; background: var(--surface-tint);
+  font-size: 10.5px; font-weight: 700; color: var(--muted);
+  border-bottom: 1px solid var(--border-strong);
+}
+.pm-tbl th.pm-mo, .pm-tbl td.pm-mo { text-align: left; position: sticky; left: 0;
+  background: var(--card); font-weight: 700; color: var(--text); z-index: 1; }
+.pm-tbl thead th.pm-mo { z-index: 2; background: var(--surface-tint); }
+.pm-tbl tbody tr { border-bottom: 1px solid rgba(150,120,100,.1); }
+.pm-tbl tbody tr:nth-child(even) td { background: rgba(180,140,110,.035); }
+.pm-tbl tbody tr:nth-child(even) td.pm-mo { background: var(--card); }
+.pm-tbl tbody tr:hover td { background: rgba(201,99,66,.06); }
+.pm-tbl tbody tr:hover td.pm-mo { background: rgba(201,99,66,.06); }
+.pm-tbl .pm-in { color: #2e7d32; }
+.pm-tbl .pm-out { color: #e65100; }
+.pm-tbl .pm-tr { color: #1565c0; }
+.pm-tbl .pm-dim { color: var(--muted); }
+.pm-tbl .pm-net { font-weight: 700; }
+.pm-tbl .pm-net.pos { color: #2e7d32; }
+.pm-tbl .pm-net.neg { color: #c62828; }
+.pm-tbl thead th.pm-net, .pm-tbl thead th.pm-cl { border-left: 1px solid var(--border-strong); }
+.pm-tbl td.pm-net, .pm-tbl td.pm-cl { border-left: 1px solid rgba(150,120,100,.12); }
+/* 期末：运行水位条 + 数值 */
+.pm-tbl td.pm-cl { position: relative; min-width: 84px; }
+.pm-cl-bar { position: absolute; left: 0; bottom: 2px; height: 3px; border-radius: 2px;
+  background: linear-gradient(90deg, rgba(46,125,50,.35), #2e7d32); }
+.pm-cl-bar.neg { background: linear-gradient(90deg, rgba(198,40,40,.35), #c62828); }
+.pm-tbl td.pm-cl b { font-weight: 800; color: var(--text); }
+.pm-tbl td.pm-cl b.neg { color: #c62828; }
+.pm-tbl tr.pm-last td { background: rgba(46,125,50,.07) !important; font-weight: 600; }
+.pm-tbl tr.pm-last td.pm-mo { background: rgba(46,125,50,.07) !important; }
+.pm-foot { margin-top: 6px; font-size: 10.5px; color: var(--muted); }
 .pd-loading { font-size: 11px; color: var(--muted); padding: 8px 0; }
 .pd-hint { font-size: 11px; color: var(--muted); padding: 8px 0; font-style: italic; }
 .pd-proj-list { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; }

@@ -28,6 +28,148 @@ BUILD_VERSION = '2026-05-24.2'
 EXCEL_HEADERS = ['一级科目', '二级项目部', '三级科目明细', '借方(元)', '贷方(元)']
 IMPORT_SIZE_LIMIT = 5 * 1024 * 1024  # 5 MB
 
+_EXCEL_HINT_GENERIC = ('文件无法解析：请上传金蝶导出的 Excel(.xlsx)。若导出的是 .xls 老格式或'
+                       '网页/XML 表格，请在金蝶选「导出→Excel(.xlsx)」，或用 Excel/WPS 打开后另存为 .xlsx。')
+
+
+class _ListWS:
+    """最小 openpyxl worksheet 兼容层：由二维行列表构造，供既有解析器（.cell/.max_row/
+    .max_column/.iter_rows）无改动复用。金蝶「网页/XML 表格」导出经此转成同一接口。"""
+    class _Cell:
+        __slots__ = ('value',)
+        def __init__(self, v):
+            self.value = v
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.max_row = len(rows)
+        self.max_column = max((len(r) for r in rows), default=0)
+
+    def cell(self, row=1, column=1):
+        r, c = row - 1, column - 1
+        if 0 <= r < len(self._rows) and 0 <= c < len(self._rows[r]):
+            return self._Cell(self._rows[r][c])
+        return self._Cell(None)
+
+    def iter_rows(self, min_row=1, max_row=None, values_only=False):
+        hi = max_row or self.max_row
+        for r in range(min_row, hi + 1):
+            raw = self._rows[r - 1] if r - 1 < len(self._rows) else []
+            padded = list(raw) + [None] * (self.max_column - len(raw))
+            yield tuple(padded) if values_only else [self._Cell(v) for v in padded]
+
+    @property
+    def active(self):
+        return self
+
+
+def _coerce_cell(txt):
+    """网页/XML 文本单元格 → 数值或原文：纯数字（可含千分位）转 float，空转 None。"""
+    if txt is None:
+        return None
+    s = str(txt).strip()
+    if not s:
+        return None
+    t = s.replace(',', '')
+    try:
+        if t and (t.lstrip('-').replace('.', '', 1).isdigit()):
+            return float(t)
+    except (ValueError, AttributeError):
+        pass
+    return s
+
+
+def _rows_from_spreadsheetml(data):
+    """Excel 2003 XML（SpreadsheetML，金蝶常见导出）→ 行列表。含 ss:Index 跳列还原。"""
+    from lxml import etree
+    root = etree.fromstring(data)   # 遵循 XML 声明里的 encoding
+    ns = {'ss': 'urn:schemas-microsoft-com:office:spreadsheet'}
+    table = root.find('.//ss:Worksheet/ss:Table', ns)
+    if table is None:
+        table = root.find('.//ss:Table', ns)
+    if table is None:
+        return None
+    idx_attr = '{urn:schemas-microsoft-com:office:spreadsheet}Index'
+    rows = []
+    for row_el in table.findall('ss:Row', ns):
+        row, col = [], 0
+        for cell_el in row_el.findall('ss:Cell', ns):
+            idx = cell_el.get(idx_attr)
+            if idx:
+                while col < int(idx) - 1:
+                    row.append(None); col += 1
+            d = cell_el.find('ss:Data', ns)
+            row.append(_coerce_cell(d.text if d is not None else None)); col += 1
+        rows.append(row)
+    return rows or None
+
+
+def _rows_from_html(data):
+    """网页表格（HTML `<table>`）→ 行列表；取行数最多的表，展开 colspan。
+    先按 UTF-8→GBK 兜底解码成文本再交 lxml，避免其对无 charset 的字节猜成 latin-1 乱码。"""
+    from lxml import html as lxml_html
+    if isinstance(data, (bytes, bytearray)):
+        for enc in ('utf-8', 'gbk', 'gb18030'):
+            try:
+                data = bytes(data).decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            data = bytes(data).decode('utf-8', 'ignore')
+    doc = lxml_html.fromstring(data)
+    tables = doc.xpath('//table')
+    if not tables:
+        return None
+    table = max(tables, key=lambda t: len(t.xpath('.//tr')))
+    rows = []
+    for tr in table.xpath('.//tr'):
+        row = []
+        for td in tr.xpath('./td|./th'):
+            row.append(_coerce_cell(td.text_content()))
+            for _ in range(max(1, int(td.get('colspan') or 1)) - 1):
+                row.append(None)
+        if row:
+            rows.append(row)
+    return rows or None
+
+
+def _load_ws_any(f):
+    """加载上传的电子表格 → (ws, None) 或 (None, 错误提示)。
+    优先 openpyxl(.xlsx)；失败则按文件头识别：老版 .xls(BIFF) 明确提示无法解析；
+    金蝶网页(HTML)/Excel2003(XML) 用 lxml 兜底解析成 _ListWS，令既有解析器无改动复用。"""
+    import openpyxl
+    try:
+        f.seek(0)
+    except Exception:
+        pass
+    try:
+        return openpyxl.load_workbook(f, data_only=True).active, None
+    except Exception:
+        pass
+    try:
+        f.seek(0)
+        data = f.read()
+    except Exception:
+        return None, _EXCEL_HINT_GENERIC
+    if isinstance(data, str):
+        data = data.encode('utf-8', 'ignore')
+    if data[:4] == b'\xd0\xcf\x11\xe0':   # OLE2 = 老版 .xls (BIFF)
+        return None, ('这是老版 .xls（Excel 97-2003）格式，系统只认 .xlsx。请在金蝶导出时选'
+                      '「Excel(.xlsx)」，或用 Excel/WPS 打开后「另存为 .xlsx」再上传。')
+    low = data.lstrip()[:400].lower()
+    rows = None
+    try:
+        if b'spreadsheet' in low or b'<workbook' in low:
+            rows = _rows_from_spreadsheetml(data)
+        if rows is None and (b'<table' in data.lower() or b'<html' in low):
+            rows = _rows_from_html(data)
+    except Exception:
+        rows = None
+    if rows:
+        return _ListWS(rows), None
+    return None, _EXCEL_HINT_GENERIC
+
 # Hardcoded KXT P&L calculation formulas.
 # Keys are L1 category names; each lambda receives a name->float dict
 # (built in sort_order so earlier results are available to later ones).
@@ -719,6 +861,16 @@ _KD_CODE_L1_SPECIFIC = {
     '6602.99.03': '集团管理费用',
 }
 
+# 反向：KXT 一级科目 → 其金蝶科目编码（分部门利润表一级行的「科目编码」列用）。
+# 一个一级科目可归集多个金蝶前缀（如主营业务收入 ← 6001/6051），以「/」连接；
+# 集团管理费用取其专属明细编码；计算行（运营毛利/经营毛利/经营净利）无编码。
+_L1_KD_CODE = {}
+for _code, _name in _KD_CODE_L1.items():
+    _L1_KD_CODE.setdefault(_name, []).append(_code)
+for _name in list(_L1_KD_CODE):
+    _L1_KD_CODE[_name] = '/'.join(sorted(_L1_KD_CODE[_name]))
+_L1_KD_CODE['集团管理费用'] = '6602.99.03'
+
 # 集团总部导入口径：财务金融（供应链金融）属独立业务条线，不并入集团总部园区经营报表。
 # 导入「集团总部」部门明细账时，整段剔除这些内部部门（收入/成本/费用全部不计）。
 _BU_EXCLUDE_DEPTS = {
@@ -1115,9 +1267,16 @@ def _parse_dept_ledger_rows(ws, data_start, cm, bu, l1_map, l2_map, l3_map):
         if name:
             key = (l1.id, name)
             if key not in l3_map:
-                obj = L3Category(business_unit=bu, l1_category=l1, name=name, sort_order=len(l3_map))
+                # 核算维度明细账带金蝶科目编码 → 落到三级明细，导出/分部门利润表可用
+                obj = L3Category(business_unit=bu, l1_category=l1, name=name,
+                                 kingdee_code=code, sort_order=len(l3_map))
                 obj.save()
                 l3_map[key] = obj
+            else:
+                obj = l3_map[key]
+                if code and not obj.kingdee_code:   # 回填历史导入遗留的空编码
+                    obj.kingdee_code = code
+                    obj.save(update_fields=['kingdee_code'])
             l3 = l3_map[key]
 
         parsed.append({
@@ -1325,8 +1484,12 @@ def _compute_pl_check(parsed_rows):
     raw = defaultdict(Decimal)
     l2_totals = defaultdict(lambda: defaultdict(Decimal))
     for r in parsed_rows:
-        raw[r['l1_name']] += r['amount']
-        l2_totals[r['l1_name']][r['l2_name'] or '（无项目部）'] += r['amount']
+        # 金额统一转 Decimal 累加：调用方既有解析出的 Decimal，也有
+        # _prev_published_kpis 传来的 float（float(e.amount)）——直接 Decimal += float
+        # 会 TypeError 让整个上传返回 500（老用户上月已发布→本月上传时必现）。
+        amt = r['amount'] if isinstance(r['amount'], Decimal) else Decimal(str(r['amount'] or 0))
+        raw[r['l1_name']] += amt
+        l2_totals[r['l1_name']][r['l2_name'] or '（无项目部）'] += amt
 
     l1_cats = list(L1Category.objects.order_by('sort_order', 'id').all())
     name_map = {}
@@ -1425,12 +1588,9 @@ def batch_upload(request):
 
     # ── Excel：金蝶核算维度明细账 / KXT模板 = 部门明细 ─────────────────────────────
     else:
-        try:
-            import openpyxl
-            wb = openpyxl.load_workbook(f, data_only=True)
-            ws = wb.active
-        except Exception:
-            return err('文件格式错误，请使用Excel(.xlsx)格式')
+        ws, hint = _load_ws_any(f)   # .xlsx / 网页HTML / Excel2003 XML 皆可；老版 .xls 明确提示
+        if ws is None:
+            return err(hint)
 
         batch_type = ImportBatch.TYPE_DEPT
         ledger_start, ledger_cm = _detect_dept_ledger(ws)
@@ -2294,7 +2454,7 @@ def _write_matrix_sheet(ws, scope_label, year, level, months, rows):
     pct_font = Font(size=9, color='5B7763')
     title_font = Font(bold=True, size=14, color='8A3B22')
     sub_font = Font(size=10, color='9A8170')
-    money_fmt = '#,##0;[Red]-#,##0'
+    money_fmt = '#,##0;[Red]-#,##0;"–"'   # 第三段=零值显示短横线，与屏幕矩阵一致
     pct_fmt = '0.0%'
 
     last_lbl = f'{months[-1]}月' if months else '—'
@@ -2451,6 +2611,183 @@ def report_export(request):
 
     bu_label = bu_param or '全部事业部'
     return _build_excel_response(wb, f'财务报表_{bu_label}_{year}年.xlsx')
+
+
+def _dept_pl_sheet(ws, bu, year, month):
+    """写一张「事业部·月」分部门利润表：P&L 科目行(L1 分节 + L3 明细 + 计算行) ×
+    项目部(L2)列 + 合计。数据取该 (事业部,年,月) 已发布的部门明细表，口径与报表一致
+    （剔除集团内部部门）。返回是否有数据。"""
+    from collections import defaultdict
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    l1_cats = list(L1Category.objects.order_by('sort_order', 'id'))
+    batch_ids = list(ImportBatch.objects.filter(
+        business_unit=bu, year=year, month=month,
+        status=ImportBatch.STATUS_PUBLISHED, batch_type=ImportBatch.TYPE_DEPT
+    ).values_list('id', flat=True))
+    entries = _exclude_internal_depts(FinancialEntry.objects.filter(batch_id__in=batch_ids))
+
+    # 聚合：(l1,l3)×l2 金额、每 l2 的 l1 原始额（供计算行）、l3 元信息
+    l3_cell = defaultdict(lambda: defaultdict(float))   # (l1_id,l3_id) -> {l2_key: amt}
+    l3_meta = {}                                        # (l1_id,l3_id) -> [code, name, sort]
+    raw_by_l2 = defaultdict(lambda: defaultdict(float)) # l2_key -> {l1_id: amt}
+    dept_meta = {}                                      # l2_key -> (name, sort)
+    for r in (entries.values('l1_id', 'l2_id', 'l2__name', 'l2__sort_order',
+                             'l3_id', 'l3__name', 'l3__kingdee_code', 'l3__sort_order')
+              .annotate(amt=Sum('amount'))):
+        l1, l3 = r['l1_id'], r['l3_id']
+        l2k = r['l2_id'] if r['l2_id'] is not None else '__none__'
+        amt = float(r['amt'] or 0)
+        raw_by_l2[l2k][l1] += amt
+        dept_meta.setdefault(l2k, (r['l2__name'] or '（无项目部）',
+                                   r['l2__sort_order'] if r['l2__sort_order'] is not None else 9999))
+        if l3 is not None:
+            key = (l1, l3)
+            l3_cell[key][l2k] += amt
+            l3_meta[key] = [r['l3__kingdee_code'] or '', r['l3__name'] or '（无明细）',
+                            r['l3__sort_order'] if r['l3__sort_order'] is not None else 0]
+
+    # 列顺序：项目部按 sort_order，末尾放「无项目部」
+    dept_cols = sorted(dept_meta.keys(),
+                       key=lambda k: (k == '__none__', dept_meta[k][1], dept_meta[k][0]))
+    dept_names = [dept_meta[k][0] for k in dept_cols]
+    if not batch_ids:
+        return False
+
+    # 每列（及合计）的计算行 id_map
+    col_idmap = {k: _compute_l1_name_map(l1_cats, dict(raw_by_l2.get(k, {})))[1] for k in dept_cols}
+    total_raw = defaultdict(float)
+    for k in dept_cols:
+        for l1id, amt in raw_by_l2.get(k, {}).items():
+            total_raw[l1id] += amt
+    total_idmap = _compute_l1_name_map(l1_cats, dict(total_raw))[1]
+
+    def _label(l1):
+        if l1.is_calculated:
+            return l1.name
+        return ('减：' + l1.name) if l1.sign < 0 else l1.name
+
+    # ── 样式 ──
+    from openpyxl.utils import get_column_letter
+    THIN = Side(style='thin', color='E3D6C6')
+    bd = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+    ndept = len(dept_cols)
+    col_total = 3 + ndept            # 合计放最后一列
+    ncols = col_total
+    NUMFMT = '#,##0.00'
+    HEAD_FILL = PatternFill('solid', fgColor='8A5A2B')
+    L1_FILL = PatternFill('solid', fgColor='FBEFE0')     # 一级科目分节
+    CALC_FILL = PatternFill('solid', fgColor='F3DDBE')   # 计算行（运营毛利/经营毛利/经营净利）
+    center = Alignment(horizontal='center', vertical='center')
+    right = Alignment(horizontal='right')
+
+    # 标题
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncols)
+    tc = ws.cell(row=1, column=1, value=f'{bu}{year}年{month}月财务报表·分部门利润表')
+    tc.font = Font(bold=True, size=14, color='5A3A1B'); tc.alignment = center
+    ws.row_dimensions[1].height = 26
+    # 表头：科目编码 | 科目/项目 | 各项目部… | 合计
+    heads = ['科目编码', '科目 / 项目'] + dept_names + ['合计']
+    for c, h in enumerate(heads, 1):
+        cell = ws.cell(row=2, column=c, value=h)
+        cell.font = Font(bold=True, color='FFFFFF'); cell.fill = HEAD_FILL
+        cell.alignment = center; cell.border = bd
+    ws.row_dimensions[2].height = 20
+
+    def _put(r, c, v, *, bold=False, num=False, fill=None, align=None, muted=False):
+        cell = ws.cell(row=r, column=c, value=v)
+        cell.border = bd
+        cell.font = Font(bold=bold, color=('5A3A1B' if bold else ('9B8070' if muted else '3A2A1A')))
+        if num:
+            cell.number_format = NUMFMT; cell.alignment = right
+        elif align:
+            cell.alignment = align
+        if fill:
+            cell.fill = fill
+        return cell
+
+    def _num(v):
+        return round(float(v or 0), 2)
+
+    row = 3
+    for l1 in l1_cats:
+        is_calc = l1.is_calculated
+        fill = CALC_FILL if is_calc else L1_FILL
+        # 一级科目「科目编码」列取其金蝶科目编码（计算行无编码 → 空）
+        _put(row, 1, _L1_KD_CODE.get(l1.name, ''), bold=True, fill=fill, align=center)
+        _put(row, 2, _label(l1), bold=True, fill=fill)
+        for i, k in enumerate(dept_cols):
+            _put(row, 3 + i, _num(col_idmap.get(k, {}).get(l1.id)), bold=True, num=True, fill=fill)
+        _put(row, col_total, _num(total_idmap.get(l1.id)), bold=True, num=True, fill=fill)
+        row += 1
+        if is_calc:
+            continue
+        # 明细行（金蝶科目编码 + 名称缩进）
+        det = sorted([(k, m) for k, m in l3_meta.items() if k[0] == l1.id], key=lambda x: (x[1][2], x[1][0]))
+        for key, meta in det:
+            code, name, _ = meta
+            _put(row, 1, code, muted=True, align=center)
+            _put(row, 2, '　' + name)
+            for i, k in enumerate(dept_cols):
+                v = l3_cell[key].get(k)
+                _put(row, 3 + i, _num(v) if v else None, num=True)
+            _put(row, col_total, _num(sum(l3_cell[key].values())), num=True)
+            row += 1
+
+    # 列宽 / 冻结（首两列 + 表头）
+    ws.column_dimensions['A'].width = 16
+    ws.column_dimensions['B'].width = 30
+    for c in range(3, ncols + 1):
+        ws.column_dimensions[get_column_letter(c)].width = 13
+    ws.freeze_panes = 'C3'
+    return True
+
+
+@cw_required()
+def report_dept_pl_export(request):
+    """分部门利润表导出：科目行 × 项目部列，逐(事业部,已发布月)各一个 sheet。
+    参数 year、bu（可选，缺省=可见全部事业部）。与月度矩阵导出并列的第二种形式。"""
+    if request.method != 'GET':
+        return err('方法不允许', 405)
+    ctx, e = _report_scope(request)
+    if e:
+        return e
+    bu_list, bu_param, _level = ctx
+    if not _can_view(request, 'export'):
+        return err('无导出权限', 403, 403)
+    try:
+        year = int(request.GET.get('year', ''))
+        assert 2000 <= year <= 2100
+    except Exception:
+        return err('年份无效')
+    try:
+        import openpyxl
+    except ImportError:
+        return err('服务器缺少 openpyxl 依赖')
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    def _short(bu):
+        return bu.replace('事业部', '')
+
+    def _safe_title(s):
+        for ch in '[]:*?/\\':
+            s = s.replace(ch, '·')
+        return s[:31] or '报表'
+
+    for bu in bu_list:
+        months = sorted(ImportBatch.objects.filter(
+            business_unit=bu, year=year, status=ImportBatch.STATUS_PUBLISHED,
+            batch_type=ImportBatch.TYPE_DEPT
+        ).values_list('month', flat=True).distinct())
+        for m in months:
+            ws = wb.create_sheet(_safe_title(f'{_short(bu)}·{m}月'))
+            _dept_pl_sheet(ws, bu, year, m)
+
+    if not wb.worksheets:
+        wb.create_sheet('无数据')
+    bu_label = bu_param or '全部事业部'
+    return _build_excel_response(wb, f'分部门利润表_{bu_label}_{year}年.xlsx')
 
 
 # ── 指标管理 & 财务驾驶舱 ──────────────────────────────────────────────────────

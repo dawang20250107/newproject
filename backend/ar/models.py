@@ -879,6 +879,9 @@ class ARFilterScheme(models.Model):
                              default='private', db_index=True)
     conditions = models.TextField('条件快照(JSON)', blank=True, default='[]')
     match = models.CharField('组间连接', max_length=4, default='all')  # all(且) | any(或)
+    # 视图快照：列头筛选(colFilters)与列头排序(sort/order)，与 conditions 一起构成
+    # 完整可还原的表格状态。历史方案默认 '{}' → 套用即回到无列头筛选/排序。
+    view = models.TextField('视图快照(JSON)', blank=True, default='{}')
     owner = models.ForeignKey(PaikuanUser, on_delete=models.SET_NULL,
                               null=True, blank=True, related_name='ar_filter_schemes')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -898,6 +901,12 @@ class ARFilterScheme(models.Model):
             conds = _json.loads(self.conditions or '[]')
         except (ValueError, TypeError):
             conds = []
+        try:
+            view = _json.loads(self.view or '{}')
+        except (ValueError, TypeError):
+            view = {}
+        if not isinstance(view, dict):
+            view = {}
         return {
             'id': self.id,
             'name': self.name,
@@ -905,6 +914,10 @@ class ARFilterScheme(models.Model):
             'scope': self.scope,
             'conditions': conds,
             'match': self.match,
+            # 视图快照打平回传，与前端保存 payload 同键名（colFilters/sort/order）
+            'colFilters': view.get('colFilters') or {},
+            'sort': view.get('sort') or '',
+            'order': view.get('order') or '',
             'owner_id': self.owner_id,
             'owner_name': self.owner.name if self.owner else '',
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,

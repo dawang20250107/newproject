@@ -1,12 +1,14 @@
 <script setup>
-import { ref, watch, nextTick, computed } from 'vue'
+import { ref, watch, nextTick, computed, onMounted } from 'vue'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
 import { DEPARTMENTS as DEPT_CONST, todayCST } from '../constants.js'
 import { fmtMoney } from '../utils/format.js'
+import { loadPref, savePref } from '../utils/prefs.js'
 import ProjectShortNamePicker from './ProjectShortNamePicker.vue'
 import { useToast } from '../composables/useToast.js'
 import { confirmDlg } from '../composables/confirm.js'
+import { useModalEnter } from '../composables/useModalEnter.js'
 const toast = useToast()
 
 const props = defineProps({
@@ -55,19 +57,36 @@ const FIELD_COLS = {
   plan_adjustment: ['plan_adjustment'],
 }
 
+// 新增时的部门默认值：可选部门唯一 → 直接带出；否则回填上次使用的部门，
+// 但须仍在当前可选列表内（权限/部门变动后不带出失效值）
 function _autoDefaultDept() {
-  return ''
+  if (deptOptions.value.length === 1) return deptOptions.value[0]
+  const last = loadPref('pk_pay_last_dept', '')
+  return deptOptions.value.includes(last) ? last : ''
+}
+
+// 新增时的申请人默认值：回填上次使用值；脏数据（非字符串）回退空
+function _autoDefaultApplicant() {
+  const last = loadPref('pk_pay_last_applicant', '')
+  return typeof last === 'string' ? last : ''
 }
 
 function resetForm() {
   isResetting = true
   const p = props.payment
   const isNew = !p?.id
+  // 可选部门须先于表单默认值计算：_autoDefaultDept 依赖它校验记忆值有效性
+  const myDepts = auth.isAdmin ? null : (auth.user?.departments || [])
+  const extra = props.departments.filter(d => !DEPT_LIST.includes(d))
+  const allDepts = [...DEPT_LIST, ...extra]
+  let opts = myDepts ? allDepts.filter(d => myDepts.includes(d)) : allDepts
+  if (!isNew && p?.department && !opts.includes(p.department)) opts = [p.department, ...opts]
+  deptOptions.value = opts
   form.value = {
     department: p?.department || (isNew ? _autoDefaultDept() : ''),
     secondary_dept: p?.secondary_dept || '',
     project_short_name: p?.project_short_name || '',
-    applicant: p?.applicant || '',
+    applicant: p?.applicant || (isNew ? _autoDefaultApplicant() : ''),
     approval_number: p?.approval_number || '',
     g7_number: p?.g7_number || '',
     project_no: p?.project_no || '',
@@ -87,12 +106,6 @@ function resetForm() {
     notes: inst.notes || '',
   }))
 
-  const myDepts = auth.isAdmin ? null : (auth.user?.departments || [])
-  const extra = props.departments.filter(d => !DEPT_LIST.includes(d))
-  const allDepts = [...DEPT_LIST, ...extra]
-  let opts = myDepts ? allDepts.filter(d => myDepts.includes(d)) : allDepts
-  if (!isNew && p?.department && !opts.includes(p.department)) opts = [p.department, ...opts]
-  deptOptions.value = opts
   // c5: 捕获打开编辑时的原始快照，供「取消」时一键撤销自动保存
   _autoSaved = false
   _originalPayload = p?.id ? buildPayload() : null
@@ -100,6 +113,17 @@ function resetForm() {
 }
 
 watch(() => props.payment, resetForm, { immediate: true })
+
+// C3: 新增时自动聚焦首个可编辑字段（DOM 顺序：部门 → 申请人），省一次点击
+const deptSelectRef = ref(null)
+const applicantRef = ref(null)
+onMounted(() => {
+  if (props.payment?.id) return
+  nextTick(() => {
+    const el = [deptSelectRef.value, applicantRef.value].find(e => e && !e.disabled)
+    el?.focus()
+  })
+})
 
 watch([form, installments], async () => {
   if (!props.payment?.id || isResetting) return
@@ -154,6 +178,14 @@ function addInstallment() {
     : 1
   installments.value.push({ seq: nextSeq, pay_date: '', pay_amount: '', notes: '' })
 }
+// 补齐快填：本期金额 = 付款目标 − 其余各期合计（点 chip 或在金额框按 =）
+function fillInstRemaining(idx) {
+  const others = installments.value.reduce((s, r, i) => (i === idx ? s : s + (parseFloat(r.pay_amount) || 0)), 0)
+  const v = Math.max(0, adjustedTarget.value - others)
+  installments.value[idx].pay_amount = v.toFixed(2)
+}
+function onInstAmtKeydown(e, idx) { if (e.key === '=') { e.preventDefault(); fillInstRemaining(idx) } }
+
 function removeInstallment(idx) {
   installments.value.splice(idx, 1)
   // Re-assign seq
@@ -277,6 +309,7 @@ function buildPayload() {
 }
 
 async function submit() {
+  if (loading.value) return   // 防重：保存中再触发（按钮已禁用，但快捷键仍可达）直接忽略
   error.value = ''
   loading.value = true
   clearTimeout(saveTimer)
@@ -287,6 +320,9 @@ async function submit() {
       res = await api.put(`/payments/${props.payment.id}`, payload)
     } else {
       res = await api.post('/payments', payload)
+      // 仅新增成功后记忆部门/申请人，供下次新增带出（编辑不覆盖习惯值）
+      savePref('pk_pay_last_dept', form.value.department)
+      savePref('pk_pay_last_applicant', form.value.applicant)
     }
     emit('saved', res.data)
   } catch (e) {
@@ -295,6 +331,10 @@ async function submit() {
     loading.value = false
   }
 }
+
+// C2: Ctrl/Cmd+Enter 提交。本组件由父级 v-if 控制挂载（仅打开时存在），
+// 组件存在即弹窗打开，visible 恒真；防重由 submit 顶部的 loading 守卫兜底
+useModalEnter(() => true, submit)
 </script>
 
 <template>
@@ -324,14 +364,14 @@ async function submit() {
       <div class="form-row">
         <div v-if="vis('department')" class="form-group">
           <label>部门 *</label>
-          <select v-model="form.department" :disabled="!editable('department')">
+          <select ref="deptSelectRef" v-model="form.department" :disabled="!editable('department')">
             <option value="">请选择部门</option>
             <option v-for="d in deptOptions" :key="d" :value="d">{{ d }}</option>
           </select>
         </div>
         <div v-if="vis('applicant')" class="form-group">
           <label>申请人 <span class="hint-text">选填</span></label>
-          <input v-model="form.applicant" placeholder="如：张三" maxlength="100"
+          <input ref="applicantRef" v-model="form.applicant" placeholder="如：张三" maxlength="100"
             :disabled="!editable('applicant')" />
         </div>
       </div>
@@ -469,9 +509,12 @@ async function submit() {
             <input v-model="inst.pay_date" type="date" :disabled="!editable('installments')" />
           </div>
           <div class="form-group inst-amt-grp">
-            <label>付款金额 (元)</label>
+            <label>付款金额 (元)
+              <button v-if="editable('installments') && adjustedTarget > 0" type="button" class="inst-fill-chip"
+                      title="填入 目标 − 其余各期合计（也可在金额框按 = 填入）" @click="fillInstRemaining(idx)">＝ 补齐</button>
+            </label>
             <input v-model="inst.pay_amount" type="number" min="0" step="0.01" placeholder="0.00"
-                   :disabled="!editable('installments')" />
+                   :disabled="!editable('installments')" @keydown="e => onInstAmtKeydown(e, idx)" />
           </div>
           <div class="form-group inst-notes-grp">
             <label>备注</label>
@@ -637,4 +680,11 @@ async function submit() {
 .btn-primary-xs:hover { opacity: 0.88; }
 .btn-primary-xs:disabled { opacity: 0.6; cursor: not-allowed; }
 .btn-danger-xs { }
+.inst-fill-chip {
+  display: inline-flex; align-items: center; margin-left: 6px;
+  border: 1px dashed rgba(46,125,50,0.55); background: rgba(46,125,50,0.07);
+  color: #2e7d32; border-radius: 7px; padding: 0 6px;
+  font-size: 10.5px; font-weight: 700; cursor: pointer;
+}
+.inst-fill-chip:hover { background: rgba(46,125,50,0.15); }
 </style>

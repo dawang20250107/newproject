@@ -113,8 +113,10 @@ function onNavCollapse(v) {
       <main :class="showNav ? ['main-content', navCollapsed ? 'nav-collapsed' : '', route.meta.fullHeight ? 'full-height-view' : ''] : 'main-public'">
         <router-view v-slot="{ Component }">
           <ErrorBoundary :key="route.path">
-            <!-- 最重的三个台账页 keep-alive:返回秒开(DOM 缓存),数据由页面 onActivated 后台刷新 -->
-            <KeepAlive :include="['PaymentsPage', 'ARRecordsPage', 'ApprovalRecordsPage']" :max="3">
+            <!-- 高频台账页 keep-alive:返回秒开(DOM 缓存),数据由各页面 onActivated 后台刷新 -->
+            <KeepAlive
+              :include="['PaymentsPage', 'ARRecordsPage', 'ApprovalRecordsPage', 'DailyReceiptsPage', 'AdvancesPage', 'ARProjectsPage', 'CustomerListPage', 'BudgetPage']"
+              :max="8">
               <component :is="Component" />
             </KeepAlive>
           </ErrorBoundary>

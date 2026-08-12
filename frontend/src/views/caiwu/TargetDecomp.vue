@@ -2,13 +2,15 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import ar from '../../api/ar.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
+import TargetRunway from '../../components/caiwu/TargetRunway.vue'
 import EmptyState from '../../components/EmptyState.vue'
 import { yearCST , monthCST} from '../../constants.js'
 import { fmtCompact } from '../../utils/format.js'
-import { valueAxis, catAxis, TOOLTIP } from '../../utils/chartTheme.js'
+import { TOOLTIP } from '../../utils/chartTheme.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText } from '../../utils/clipboard.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import { useToast } from '../../composables/useToast.js'
 
 const props = defineProps({ embedded: Boolean, selectedBu: { type: String, default: '' } })
@@ -20,6 +22,12 @@ const err = ref('')
 const expandedBu = ref('')
 
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
+
+// 记忆年份（cw_analysis_prefs 与报表/指标管理共用一份；脏值回退当年）。
+// 本页只记年份：合并写回，避免覆盖其他页记忆的事业部（本页事业部由父组件传入）
+const pref = loadPref('cw_analysis_prefs') || {}
+if (years.includes(pref.year)) year.value = pref.year
+watch(year, y => savePref('cw_analysis_prefs', { ...loadPref('cw_analysis_prefs'), year: y }))
 
 const wan = v => v == null ? '—' : (v / 10000).toFixed(0) + '万'
 const fmtRate = r => r == null ? '—' : r.toFixed(1) + '%'
@@ -89,35 +97,14 @@ function cellTitle(c, label) {
   return `${label}：目标 ${t} / 实际 ${wan(c.actual)}${c.rate != null ? ` / 达成 ${c.rate}%` : ''}`
 }
 
-// Overview bar chart: each BU's annual target vs YTD actual vs projected
-const overviewOption = computed(() => {
-  const rows = data.value?.rows || []
-  if (!rows.length) return null
-  const bus = rows.map(r => r.bu)
-  const targets = rows.map(r => r.annual_target_revenue / 10000)
-  const ytd = rows.map(r => r.ytd_actual_revenue / 10000)
-  const projected = rows.map(r => r.projected != null ? r.projected / 10000 : null)
-
-  return {
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
-      formatter: p => {
-        const bu = p[0]?.axisValueLabel
-        const row = rows.find(r => r.bu === bu)
-        if (!row) return bu
-        return `<b>${bu}</b><br/>年度目标：${wan(row.annual_target_revenue)}<br/>YTD实际：${wan(row.ytd_actual_revenue)}（达成${fmtRate(row.ytd_achieved)}）<br/>全年预测：${row.projected != null ? wan(row.projected) : '—'}`
-      } },
-    legend: { data: ['年度目标', 'YTD实际', '全年预测'], bottom: 0, textStyle: { fontSize: 11 } },
-    grid: { top: 20, right: 20, bottom: 48, left: 16, containLabel: true },
-    xAxis: { type: 'category', data: bus, axisLabel: { color: '#6b5a4a', fontSize: 11, interval: 0, rotate: bus.length > 6 ? 30 : 0 } },
-    yAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => (v / 10000).toFixed(0) + '万' }, splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } } },
-    series: [
-      { name: '年度目标', type: 'bar', data: targets, barMaxWidth: 28, itemStyle: { color: 'rgba(21,101,192,.25)', borderColor: '#1565c0', borderWidth: 1, borderType: 'dashed', borderRadius: [3, 3, 0, 0] } },
-      { name: 'YTD实际', type: 'bar', data: ytd, barMaxWidth: 18, barGap: '-60%',
-        itemStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: '#2e7d32' }, { offset: 1, color: '#81c784' }] }, borderRadius: [3, 3, 0, 0] } },
-      { name: '全年预测', type: 'line', data: projected, symbol: 'diamond', symbolSize: 8, lineStyle: { type: 'dashed', color: '#e65100', width: 1.5 }, itemStyle: { color: '#e65100' } },
-    ],
-  }
-})
+// 年度目标射程图数据：仅已设目标的事业部入图（无目标算不出达成/预测落点）
+const runwayRows = computed(() => (data.value?.rows || [])
+  .filter(r => r.annual_target_revenue)
+  .map(r => ({ bu: r.bu, target: r.annual_target_revenue, ytd: r.ytd_actual_revenue,
+               ach: r.ytd_achieved, projected: r.projected })))
+const runwayNoTarget = computed(() =>
+  (data.value?.rows || []).length - runwayRows.value.length)
+function onRunwaySelect(bu) { expandedBu.value = expandedBu.value === bu ? '' : bu }
 
 // Monthly detail for an expanded BU
 const monthlyOption = computed(() => {
@@ -254,7 +241,7 @@ onMounted(load)
                     :title="cellTitle(c, matrixCols[i].label)">
                   <template v-if="c.past">
                     <div class="tdmx-rate" :style="`color:${rateColor(c.rate)}`">{{ c.rate != null ? c.rate.toFixed(0) + '%' : '—' }}</div>
-                    <div class="tdmx-amt">{{ wan(c.actual) }}</div>
+                    <div class="tdmx-amt" :class="{ 'tdmx-zero': !c.actual }">{{ c.actual ? wan(c.actual) : '–' }}</div>
                   </template>
                   <span v-else class="tdmx-future">·</span>
                 </td>
@@ -270,9 +257,12 @@ onMounted(load)
 
       <!-- Overview chart -->
       <div class="card td-chart-card">
-        <div class="section-title" style="margin-bottom:8px">各事业部年度目标 vs YTD实际（点击行查看月度进度）</div>
-        <BaseChart v-if="overviewOption" :option="overviewOption" height="280px" />
-        <div v-else class="td-empty">暂无目标数据</div>
+        <div class="section-title" style="margin-bottom:8px">年度目标射程 · 谁能达成 / 谁堵不上
+          <span class="td-tip">每行按自身目标归一 · 实条=YTD达成 · 橙虚线=时间进度 · ◆=全年预测落点 · 点击行看月度进度</span>
+        </div>
+        <TargetRunway v-if="runwayRows.length" :rows="runwayRows" :time-progress="timeProgress" @select="onRunwaySelect" />
+        <div v-else class="td-empty">暂无已设目标的事业部</div>
+        <div v-if="runwayNoTarget" class="td-note">另有 {{ runwayNoTarget }} 个事业部未设年度目标，未入图</div>
       </div>
 
       <!-- BU rows table -->
@@ -347,6 +337,8 @@ onMounted(load)
 }
 .td-sel:focus { box-shadow: 0 0 0 3px var(--primary-glow); }
 .td-empty { text-align: center; padding: 40px; color: var(--muted); }
+.td-tip { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 8px; }
+.td-note { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
 .td-empty.err { color: var(--c-danger); }
 .td-chart-card { padding: 16px; margin-bottom: 14px; }
 
@@ -414,4 +406,5 @@ onMounted(load)
   border-left: 4px solid var(--c-danger); font-size: 13px; color: #a02418; }
 .td-lag-ico { flex-shrink: 0; font-size: 15px; }
 .td-lag-item { font-weight: 600; }
+.tdmx-amt.tdmx-zero { color: var(--muted-light); }   /* 0=当月无收入，淡化短横线让非零数字更醒目 */
 </style>

@@ -50,6 +50,7 @@ urlpatterns = [
     path('records/health', views.ar_data_health),
     path('records/recompute', views.ar_records_recompute_bulk),
     path('records/bulk-assign-collector', views.ar_records_bulk_assign_collector),
+    path('records/bulk-set-date', views.ar_records_bulk_set_date),
     path('records/bulk-delete', views.ar_records_bulk_delete),
     path('records/trash', views.ar_records_trash),
     path('records/<int:pk>', views.ar_record_detail),
@@ -124,6 +125,7 @@ urlpatterns = [
 
     # 资金池 (cash pool)
     path('pool', views.cash_pool),
+    path('pool/monthly', views.cash_pool_monthly),
     path('pool/config', views.cash_pool_config),
     path('pool/transfers', views.cash_pool_transfers),
     path('pool/transfers/<int:pk>', views.cash_pool_transfer_detail),
@@ -142,15 +144,18 @@ urlpatterns = [
     path('budget/collection/import', views.budget_collection_import),
     path('budget/collection/import/precheck', views.budget_collection_import_precheck),
     path('budget/collection/export', views.budget_collection_export),
+    path('budget/collection/bulk-delete', views.budget_collection_bulk_delete),
     path('budget/collection/<int:pk>', views.budget_collection_detail),
     path('budget/payment', views.budget_payment),
     path('budget/payment/template', views.budget_payment_template),
     path('budget/payment/import', views.budget_payment_import),
     path('budget/payment/import/precheck', views.budget_payment_import_precheck),
     path('budget/payment/export', views.budget_payment_export),
+    path('budget/payment/bulk-delete', views.budget_payment_bulk_delete),
     path('budget/payment/<int:pk>', views.budget_payment_detail),
     path('budget/summary', views.budget_summary),
     path('budget/project-compare', views.budget_project_compare),
+    path('budget/project-compare/export', views.budget_project_compare_export),
 
     # 催收跟进日志
     path('records/<int:pk>/collection-logs', views.ar_collection_logs),

@@ -5,6 +5,7 @@ import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { useToast } from '../../composables/useToast.js'
 import { confirmDlg } from '../../composables/confirm.js'
 import { fmtMoney, fmtCompact } from '../../utils/format.js'
+import { BUSINESS_UNITS } from '../../constants.js'
 import EmptyState from '../../components/EmptyState.vue'
 
 const auth = useCaiwuAuth()
@@ -141,11 +142,16 @@ function openUpload(bu) {
   showUpload.value = true
 }
 function onUpPick(e) { upFile.value = e.target.files[0] || null }
+// 金蝶导出后缀多样（.xlsx 真表 / .xls 老格式或网页伪装 / .xml SpreadsheetML / .html 网页），
+// 一律放行让后端统一识别解析（后端 _load_ws_any 会给不可解析格式明确提示）。
+const UPLOAD_ACCEPT = '.xlsx,.xls,.xlsm,.xlsb,.xml,.html,.htm,.et'
 function onUpDrop(e) {
   upDropping.value = false
   const f = Array.from(e.dataTransfer?.files || [])[0]
   if (!f) return
-  if (!/\.xlsx?$/i.test(f.name)) { toast.error(`不支持的文件类型：${f.name}（请拖入 .xlsx/.xls）`); return }
+  if (!/\.(xlsx?|xlsm|xlsb|xml|html?|et)$/i.test(f.name)) {
+    toast.error(`不支持的文件类型：${f.name}（请拖入金蝶导出的表格文件）`); return
+  }
   upFile.value = f
 }
 async function doUpload() {
@@ -158,7 +164,9 @@ async function doUpload() {
     fd.append('year', year.value)
     fd.append('month', month.value)
     fd.append('file', upFile.value)
-    const res = await api.post('/internal/upload', fd)
+    // 内部往来明细分类账常是「全账簿×多月」的大文件（上万行），解析+入库耗时远超默认
+    // 20s；给足 3 分钟超时，避免大文件在慢网络/远端库下被前端提前中断（上传受阻）。
+    const res = await api.post('/internal/upload', fd, { timeout: 180000 })
     upResult.value = res.data
     toast.success(`已导入 ${res.data.rows} 行`)
     upFile.value = null
@@ -166,6 +174,36 @@ async function doUpload() {
     if (pairData.value) loadPair()
   } catch (e) { toast.error(e?.msg || e?.error || '上传失败')
   } finally { uploading.value = false }
+}
+// ── 超管一键清除（按月 / 按事业部 / 全部）──────────────────────────────────────
+const showClearMenu = ref(false)
+const clearBu = ref('')
+const clearing = ref(false)
+const clearUnits = BUSINESS_UNITS
+async function doClear(scope) {
+  let msg, payload
+  if (scope === 'month') {
+    msg = `确定清除 ${year.value}年${month.value}月 的全部内部往来数据（所有主体的明细与余额）？此操作不可撤销。`
+    payload = { scope, year: year.value, month: month.value }
+  } else if (scope === 'bu') {
+    if (!clearBu.value) { toast.error('请选择要清除的事业部'); return }
+    msg = `确定清除「${clearBu.value}」全部期间的内部往来数据？此操作不可撤销。`
+    payload = { scope, bu: clearBu.value }
+  } else {
+    msg = `确定清除【全部】内部往来数据？将删除所有主体、所有期间的明细与余额，操作不可撤销，请谨慎确认！`
+    payload = { scope: 'all' }
+  }
+  if (!(await confirmDlg(msg))) return
+  clearing.value = true
+  try {
+    const res = await api.post('/internal/clear', payload)
+    const d = res.data
+    toast.success(`已清除 ${d.batches} 批 · 明细 ${d.entries} 行 · 余额 ${d.balances} 行`)
+    showClearMenu.value = false; clearBu.value = ''
+    load()
+    if (pairData.value) loadPair()
+  } catch (e) { toast.error(e?.msg || e?.error || '清除失败') }
+  finally { clearing.value = false }
 }
 async function delBatch(b) {
   if (!b) return
@@ -233,6 +271,25 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
           <select v-model.number="month"><option v-for="m in 12" :key="m" :value="m">{{ m }} 月</option></select>
         </div>
         <button v-if="auth.canUpload" class="btn btn-primary btn-sm" @click="openUpload('')">↑ 上传金蝶数据</button>
+        <div v-if="auth.isSuperAdmin" class="clear-wrap">
+          <button class="btn btn-ghost btn-sm clear-btn" :disabled="clearing" title="超管一键清除内部往来数据"
+                  @click="showClearMenu = !showClearMenu">🗑 清除数据</button>
+          <div v-if="showClearMenu" class="clear-backdrop" @click="showClearMenu = false"></div>
+          <div v-if="showClearMenu" class="clear-pop">
+            <div class="cp-title">一键清除内部往来（超管）</div>
+            <button class="cp-item" :disabled="clearing" @click="doClear('month')">
+              清除本期<i>{{ year }}年{{ month }}月 · 全部主体</i></button>
+            <div class="cp-row">
+              <select v-model="clearBu" class="cp-sel">
+                <option value="">按事业部…</option>
+                <option v-for="u in clearUnits" :key="u" :value="u">{{ u }}</option>
+              </select>
+              <button class="cp-go" :disabled="clearing || !clearBu" @click="doClear('bu')">清除</button>
+            </div>
+            <button class="cp-item cp-danger" :disabled="clearing" @click="doClear('all')">
+              清除全部<i>所有主体 · 所有期间</i></button>
+          </div>
+        </div>
         <span v-if="kpi.unmatched_rows" class="warn-chip" title="维度原文无法识别为集团内主体的行（按外部往来处理，不参与核对）">
           ⚠ 未识别 {{ kpi.unmatched_rows }} 行</span>
       </div>
@@ -469,9 +526,9 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
         </div>
         <label class="up-drop" :class="{ filled: upFile, dropping: upDropping }"
           @dragover.prevent="upDropping = true" @dragleave="upDropping = false" @drop.prevent="onUpDrop">
-          <input type="file" accept=".xlsx,.xls" hidden @change="onUpPick" />
+          <input type="file" :accept="UPLOAD_ACCEPT" hidden @change="onUpPick" />
           <span v-if="upFile">{{ upFile.name }}</span>
-          <span v-else>点击选择或拖入金蝶导出的文件（.xlsx）</span>
+          <span v-else>点击选择或拖入金蝶导出的文件（.xlsx / .xls / 网页导出均可）</span>
         </label>
         <div v-if="upResult" class="ir-up-res">
           <div class="ir-up-ok">✓ 已识别为「{{ upResult.kind === 'balance' ? '核算维度余额表' : '明细分类账' }}」，
@@ -483,10 +540,14 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
             <b>{{ upResult.unmatched.length }} 类往来单位未能识别为内部主体</b>（按外部往来处理，不参与核对）：
             <div class="ir-up-un"><span v-for="u in upResult.unmatched" :key="u.raw">{{ u.raw }} ×{{ u.count }}</span></div>
           </div>
+          <div v-if="upResult.self_ref?.length" class="ir-up-self">
+            <b>{{ upResult.self_ref.length }} 类为本主体自身的往来</b>（对方=记账主体，已自动跳过、不参与核对，属正常）：
+            <div class="ir-up-un"><span v-for="u in upResult.self_ref" :key="u.raw">{{ u.raw }} ×{{ u.count }}</span></div>
+          </div>
         </div>
         <div class="modal-actions">
           <button class="btn btn-ghost" @click="showUpload = false">关闭</button>
-          <button class="btn btn-primary" :disabled="uploading" @click="doUpload">{{ uploading ? '解析导入中…' : '上传并解析' }}</button>
+          <button class="btn btn-primary" :disabled="uploading || !upFile" @click="doUpload">{{ uploading ? '解析导入中…' : (upResult && !upFile ? '已导入 · 选文件可继续' : '上传并解析') }}</button>
         </div>
       </div>
     </div>
@@ -545,6 +606,29 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
   padding: 3px 10px; border-radius: 999px; font-size: 11px;
   background: rgba(245, 127, 23, 0.13); color: var(--c-warn); cursor: help;
 }
+/* 超管一键清除 */
+.clear-wrap { position: relative; }
+.clear-btn { color: var(--c-danger); border-color: rgba(214,69,69,.35); }
+.clear-btn:hover:not(:disabled) { background: rgba(214,69,69,.08); border-color: var(--c-danger); }
+.clear-backdrop { position: fixed; inset: 0; z-index: 40; }
+.clear-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 41; width: 300px;
+  background: var(--card, #fff); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 14px 40px -12px rgba(80,50,20,.4); padding: 8px; }
+.cp-title { font-size: 12px; font-weight: 700; color: var(--muted); padding: 4px 8px 8px; }
+.cp-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;
+  text-align: left; border: none; background: none; padding: 9px 10px; border-radius: 8px;
+  font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer; font-family: inherit; }
+.cp-item:hover:not(:disabled) { background: rgba(201,99,66,.07); }
+.cp-item i { font-style: normal; font-size: 11px; font-weight: 400; color: var(--muted); }
+.cp-item.cp-danger { color: var(--c-danger); }
+.cp-item.cp-danger:hover:not(:disabled) { background: rgba(214,69,69,.08); }
+.cp-item:disabled, .cp-go:disabled { opacity: .5; cursor: default; }
+.cp-row { display: flex; gap: 6px; align-items: center; padding: 4px 10px 6px; }
+.cp-sel { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px;
+  font-size: 12.5px; background: var(--card, #fff); color: var(--text); font-family: inherit; }
+.cp-go { border: 1px solid var(--c-danger); color: var(--c-danger); background: none; border-radius: 8px;
+  padding: 6px 12px; font-size: 12.5px; font-weight: 650; cursor: pointer; font-family: inherit; }
+.cp-go:hover:not(:disabled) { background: rgba(214,69,69,.08); }
 
 /* ══ 主体带 ═══════════════════════════════════════════════════════════ */
 .entities { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -744,6 +828,9 @@ const compact = (v) => fmtCompact(v, { dash: '0' })
 .ir-up-batches { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
 .ir-up-bt { padding: 1px 8px; background: rgba(46, 125, 50, 0.1); color: #2e7d32; border-radius: 999px; font-size: 11px; }
 .ir-up-warn { margin-top: 6px; color: var(--c-warn); line-height: 1.5; }
+/* 本主体自身往来：信息性提示（非警告），与「未识别」区分开 */
+.ir-up-self { margin-top: 6px; color: var(--muted); line-height: 1.5; font-size: 12.5px; }
+.ir-up-self b { color: var(--text); font-weight: 700; }
 .ir-up-un { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
 .ir-up-un span { padding: 1px 8px; background: rgba(245, 127, 23, 0.12); border-radius: 999px; font-size: 11px; }
 

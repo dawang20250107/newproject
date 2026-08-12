@@ -49,7 +49,8 @@ function onUpDrop(e) {
   upDropping.value = false
   const f = Array.from(e.dataTransfer?.files || [])[0]
   if (!f) return
-  if (!/\.(xlsx|json)$/i.test(f.name)) { uploadErr.value = `不支持的文件类型：${f.name}（请拖入 .xlsx 或 .json）`; return }
+  // 金蝶导出后缀多样（.xlsx/.xls/.xml/.html/.et）+ KXT .json；一律放行由后端统一识别
+  if (!/\.(xlsx?|xlsm|xlsb|xml|html?|et|json)$/i.test(f.name)) { uploadErr.value = `不支持的文件类型：${f.name}（请拖入金蝶导出的表格或 .json）`; return }
   uploadErr.value = ''
   upFile.value = f
 }
@@ -191,7 +192,7 @@ function openUpload() {
 // Derive the detected table type from the chosen file name for inline hinting
 const detectedType = computed(() => {
   const n = upFile.value?.name?.toLowerCase() || ''
-  if (n.endsWith('.xlsx') || n.endsWith('.json')) return { label: '部门明细表', cls: 'dept' }
+  if (/\.(xlsx?|xlsm|xlsb|xml|html?|et|json)$/i.test(n)) return { label: '部门明细表', cls: 'dept' }
   return null
 })
 
@@ -213,7 +214,8 @@ async function doUpload() {
     fd.append('year', upYear.value)
     fd.append('month', upMonth.value)
     fd.append('file', upFile.value)
-    const res = await api.post('/batches/upload', fd)
+    // 金蝶核算维度明细账常上万行，解析+入库耗时可能超过默认 20s；给足 3 分钟超时
+    const res = await api.post('/batches/upload', fd, { timeout: 180000 })
     uploadResult.value = res.data
     previewTab.value = 'l1'
   } catch (e) {
@@ -502,7 +504,7 @@ onMounted(() => {
             <label class="up-drop" :class="{ filled: upFile, dropping: upDropping }"
               @dragover.prevent="upDropping = true" @dragleave="upDropping = false"
               @drop.prevent="onUpDrop">
-              <input type="file" accept=".xlsx,.json" @change="e => upFile = e.target.files[0]" hidden />
+              <input type="file" accept=".xlsx,.xls,.xlsm,.xlsb,.xml,.html,.htm,.et,.json" @change="e => upFile = e.target.files[0]" hidden />
               <template v-if="upFile">
                 <span class="up-file-name">{{ upFile.name }}</span>
                 <span v-if="detectedType" class="up-type-tag" :class="detectedType.cls">{{ detectedType.label }}</span>

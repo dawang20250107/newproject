@@ -183,6 +183,56 @@ class CaiwuCalculationLogicTests(TestCase):
         self.assertEqual(by_name[COST], 600.0)
         self.assertEqual(by_name[NET_PROFIT], 260.0)
 
+    def test_dept_pl_export_pivots_by_department(self):
+        # 分部门利润表导出：科目行(分节+明细+计算行) × 项目部列 + 合计
+        import io
+        import openpyxl
+        batch = ImportBatch.objects.create(
+            business_unit=self.bu, year=2026, month=5, batch_type=ImportBatch.TYPE_DEPT,
+            status=ImportBatch.STATUS_PUBLISHED, uploaded_by=self.admin, row_count=0,
+            file_name='t.xlsx')
+        d1 = L2Category.objects.create(business_unit=self.bu, name='甲部', sort_order=1)
+        d2 = L2Category.objects.create(business_unit=self.bu, name='乙部', sort_order=2)
+        rev, cost = self.l1[REV], self.l1[COST]
+        l3rev = L3Category.objects.create(business_unit=self.bu, l1_category=rev,
+                                          name='劳务外包', kingdee_code='6001.03.01', sort_order=1)
+        l3cost = L3Category.objects.create(business_unit=self.bu, l1_category=cost,
+                                           name='工资', kingdee_code='6401.01', sort_order=1)
+
+        def _e(l1, l2, l3, amt):
+            FinancialEntry.objects.create(batch=batch, l1=l1, l2=l2, l3=l3, amount=Decimal(str(amt)))
+        _e(rev, d1, l3rev, 1000); _e(cost, d1, l3cost, 400)
+        _e(rev, d2, l3rev, 500);  _e(cost, d2, l3cost, 300)
+
+        resp = self.client.get('/api/cw/report/dept-pl-export', {'year': 2026, 'bu': self.bu}, **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        ws = wb.worksheets[0]
+        heads = [ws.cell(row=2, column=c).value for c in range(1, ws.max_column + 1)]
+        self.assertEqual(heads[:2], ['科目编码', '科目 / 项目'])
+        self.assertEqual(heads[-1], '合计')   # 合计放最后一列
+        self.assertIn('甲部', heads); self.assertIn('乙部', heads)
+        ci = {h: i for i, h in enumerate(heads)}
+        grid = {}
+        for r in range(3, ws.max_row + 1):
+            code = ws.cell(row=r, column=1).value
+            label = (ws.cell(row=r, column=2).value or '').replace('　', '').strip()
+            grid[(code, label)] = [ws.cell(row=r, column=c + 1).value for c in range(len(heads))]
+        # 收入分节：合计 1500，甲 1000 / 乙 500
+        rev_row = next(v for (c, l), v in grid.items() if l == REV)
+        self.assertEqual(rev_row[ci['合计']], 1500.0)
+        self.assertEqual(rev_row[ci['甲部']], 1000.0)
+        self.assertEqual(rev_row[ci['乙部']], 500.0)
+        # 明细行（编码 6001.03.01 劳务外包）分部门
+        det = grid[('6001.03.01', '劳务外包')]
+        self.assertEqual(det[ci['甲部']], 1000.0)
+        self.assertEqual(det[ci['乙部']], 500.0)
+        # 计算行 运营毛利 = 收入-成本-税金，逐列独立：甲 600 / 乙 200 / 合计 800
+        gp = next(v for (c, l), v in grid.items() if l == OPERATING_GROSS)
+        self.assertEqual(gp[ci['甲部']], 600.0)
+        self.assertEqual(gp[ci['乙部']], 200.0)
+        self.assertEqual(gp[ci['合计']], 800.0)
+
     def test_publish_replaces_same_period_and_type_only(self):
         old_dept = self.create_batch(amounts=BASE_AMOUNTS, batch_type=ImportBatch.TYPE_DEPT)
         old_pl = self.create_batch(amounts={REV: '9999.00'}, batch_type=ImportBatch.TYPE_PL)
@@ -337,6 +387,117 @@ class CaiwuCalculationLogicTests(TestCase):
         # 管理费用 sign=-1 → 办公费100 + 培训费50 = 150；集团管理费用 = 仅 6602.99.03 的 200
         self.assertEqual(by_name[MGMT_EXP], Decimal('150'))
         self.assertEqual(by_name[GROUP_MGMT], Decimal('200'))
+
+    def test_dept_ledger_import_persists_kingdee_code_to_l3(self):
+        """核算维度明细账带科目编码 → 落到三级明细 kingdee_code（分部门利润表/导出用）；
+        历史遗留空编码的三级明细在再次导入时回填。"""
+        rev = self.l1[REV]
+        # 历史遗留：同名三级明细但 kingdee_code 为空
+        L3Category.objects.create(business_unit=self.bu, l1_category=rev, name='劳务外包',
+                                  kingdee_code='', sort_order=0)
+        wb = Workbook(); ws = wb.active
+        ws.append(['部门名称', '科目编码', '科目名称', '摘要', '借方', '贷方'])
+        ws.append([self.bu, '6001.03.01', '劳务外包', '凭证001', 0, 1000])   # 收入(贷增)
+        ws.append([self.bu, '6401.03.01', '工资', '凭证002', 400, 0])        # 成本(借增)
+        data_start, col_map = _detect_dept_ledger(ws)
+        _parsed, errors = _parse_dept_ledger_rows(
+            ws, data_start, col_map, self.bu, self.l1,
+            {c.name: c for c in L2Category.objects.filter(business_unit=self.bu)},
+            {(c.l1_category_id, c.name): c for c in L3Category.objects.filter(business_unit=self.bu)},
+        )
+        self.assertEqual(errors, [])
+        # 历史空编码被回填
+        self.assertEqual(
+            L3Category.objects.get(business_unit=self.bu, name='劳务外包').kingdee_code, '6001.03.01')
+        # 新建三级明细带上编码
+        self.assertEqual(
+            L3Category.objects.get(business_unit=self.bu, name='工资').kingdee_code, '6401.03.01')
+
+    def test_ledger_reimport_lifecycle_backfills_kingdee_code(self):
+        """全流程：导入→发布→撤回发布→重新导入→再发布→导出，分部门利润表三级明细
+        带金蝶编码；模拟历史空编码经重导回填。"""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        import io
+        import openpyxl
+        bu = self.bu
+        dept = '项目部A'
+        # 模拟 pre-fix 历史：三级明细已存在但编码为空
+        L3Category.objects.create(business_unit=bu, l1_category=self.l1[REV],
+                                  name='服务费收入', kingdee_code='', sort_order=0)
+
+        def _ledger_file():
+            wb = openpyxl.Workbook(); ws = wb.active
+            ws.append(['部门名称', '科目编码', '科目名称', '摘要', '借方', '贷方'])
+            ws.append([dept, '6001.03.01', '服务费收入', '凭证1', 0, 1000])
+            ws.append([dept, '6401.03.01', '工资', '凭证2', 400, 0])
+            buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+            return SimpleUploadedFile(
+                'ledger.xlsx', buf.read(),
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+        def _upload():
+            r = self.client.post('/api/cw/batches/upload',
+                                 {'bu': bu, 'year': 2026, 'month': 6, 'file': _ledger_file()}, **self.auth())
+            self.assertEqual(r.status_code, 200, r.content)
+            return r.json()['data']['batch']['id']
+
+        def _publish(bid):
+            self.assertEqual(self.client.put(f'/api/cw/batches/{bid}/publish', **self.auth()).status_code, 200)
+
+        # 首次导入 + 发布 → 编码回填/写入
+        bid1 = _upload(); _publish(bid1)
+        self.assertEqual(L3Category.objects.get(business_unit=bu, name='服务费收入').kingdee_code, '6001.03.01')
+
+        # 撤回发布 → 重新导入 → 再发布（用户实际流程）
+        self.assertEqual(self.client.put(f'/api/cw/batches/{bid1}/unpublish', **self.auth()).status_code, 200)
+        bid2 = _upload(); _publish(bid2)
+
+        # 导出分部门利润表 → 三级明细带金蝶编码
+        exp = self.client.get('/api/cw/report/dept-pl-export', {'year': 2026, 'bu': bu}, **self.auth())
+        self.assertEqual(exp.status_code, 200)
+        wb = openpyxl.load_workbook(io.BytesIO(exp.content))
+        ws = wb.worksheets[0]
+        codes = {}
+        for row in ws.iter_rows(min_row=3, values_only=True):
+            codes[str(row[1] or '').replace('　', '').strip()] = row[0]
+        self.assertEqual(codes.get('服务费收入'), '6001.03.01')
+        self.assertEqual(codes.get('工资'), '6401.03.01')
+
+    def test_load_ws_any_spreadsheetml_and_old_xls(self):
+        """金蝶非 .xlsx 导出：Excel2003 XML(SpreadsheetML) 可解析；老版 .xls(BIFF) 明确提示。"""
+        import io
+        from caiwu.views import _load_ws_any
+        xml = ('<?xml version="1.0"?><Workbook '
+               'xmlns="urn:schemas-microsoft-com:office:spreadsheet" '
+               'xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">'
+               '<Worksheet ss:Name="S"><Table>'
+               '<Row><Cell><Data ss:Type="String">甲</Data></Cell>'
+               '<Cell ss:Index="3"><Data ss:Type="Number">99</Data></Cell></Row>'
+               '</Table></Worksheet></Workbook>').encode('utf-8')
+        ws, hint = _load_ws_any(io.BytesIO(xml))
+        self.assertIsNone(hint)
+        self.assertEqual(ws.cell(1, 1).value, '甲')
+        self.assertIsNone(ws.cell(1, 2).value)          # ss:Index=3 跳列还原
+        self.assertEqual(ws.cell(1, 3).value, 99.0)
+        # OLE2/BIFF → 无法解析，提示指向 .xlsx
+        ws2, hint2 = _load_ws_any(io.BytesIO(b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1' + b'\x00' * 64))
+        self.assertIsNone(ws2)
+        self.assertIn('.xlsx', hint2)
+
+    def test_internal_upload_accepts_html_export(self):
+        """金蝶「网页/HTML 表格」导出（openpyxl 打不开）也能上传解析——lxml 兜底。"""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        html = ('<table>'
+                '<tr><td>核算维度</td><td>摘要</td><td>借方</td><td>贷方</td></tr>'
+                '<tr><td>组织机构:四川阔展物流有限公司</td><td>转账</td><td>1,234.50</td><td></td></tr>'
+                '</table>').encode('utf-8')
+        f = SimpleUploadedFile('金蝶导出.xls', html, content_type='application/vnd.ms-excel')
+        r = self.client.post('/api/cw/internal/upload',
+                             {'bu': self.bu, 'year': 2026, 'month': 6, 'file': f}, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()['data']
+        self.assertEqual(d['kind'], 'detail')
+        self.assertEqual(d['rows'], 1)
 
     def test_hq_import_excludes_finance_dept(self):
         """集团总部导入时整段剔除「财务金融」部门（供应链金融独立条线），
@@ -1669,18 +1830,68 @@ class InternalReconTests(TestCase):
                                 {'bu': bu, 'year': year, 'month': month, 'file': f},
                                 **self.auth())
 
+    def test_clear_scopes_and_super_admin_only(self):
+        """一键清除：按月/按事业部/全部；级联删明细；仅超管可用。"""
+        import json as _json
+
+        def mk(bu, y, m):
+            b = InternalBatch.objects.create(business_unit=bu, year=y, month=m, kind='detail')
+            InternalEntry.objects.create(batch=b, business_unit=bu, counterparty='X', year=y, month=m, debit=1)
+            return b
+
+        def clear(payload, auth=None):
+            return self.client.post('/api/cw/internal/clear', data=_json.dumps(payload),
+                                    content_type='application/json', **(auth or self.auth()))
+
+        mk('集团总部', 2026, 5); mk('集团总部', 2026, 6)
+        mk('劳务事业部', 2026, 6); mk('运输事业部', 2026, 6)
+        self.assertEqual(InternalBatch.objects.count(), 4)
+
+        # 非超管被拒
+        op = PaikuanUser(phone='13900000078', name='OP', role='operator', job_title='cashier',
+                         departments=[], is_active=True, is_approved=True)
+        op.set_password('Test123456'); op.save()
+        r = clear({'scope': 'all'}, {'HTTP_AUTHORIZATION': f'Bearer {_make_token(op)}'})
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(InternalBatch.objects.count(), 4)
+
+        # 按月：删 2026-6 的 3 批（级联删明细）
+        r = clear({'scope': 'month', 'year': 2026, 'month': 6})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['data']['batches'], 3)
+        self.assertEqual(InternalBatch.objects.count(), 1)
+        self.assertEqual(InternalEntry.objects.count(), 1)
+
+        # 按事业部：删该主体全部期间
+        mk('劳务事业部', 2026, 6); mk('劳务事业部', 2026, 7)
+        r = clear({'scope': 'bu', 'bu': '劳务事业部'})
+        self.assertEqual(r.json()['data']['batches'], 2)
+        self.assertFalse(InternalBatch.objects.filter(business_unit='劳务事业部').exists())
+
+        # 全部
+        r = clear({'scope': 'all'})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(InternalBatch.objects.count(), 0)
+        self.assertEqual(InternalEntry.objects.count(), 0)
+
+        # 非法 scope
+        self.assertEqual(clear({'scope': 'xx'}).status_code, 400)
+
     def test_upload_parse_and_counterparty_mapping(self):
         res = self._upload('劳务事业部', [
             ['2026-06-05', '记-1', '青岛运输事业部有限公司', '1221.01', '其他应收款', '代付运费', 1000, 0],
             ['2026-06-08', '记-2', '集团总部', '2241.01', '其他应付款', '总部借款', 0, 500],
             ['2026-06-09', '记-3', '不认识的公司', '1221.01', '其他应收款', '外部往来', 200, 0],
+            ['2026-06-10', '记-4', '四川迭黎信息技术有限公司', '2241.04', '内部往来', '本主体自身往来', 300, 0],
             ['', '', '', '', '', '本期合计', 1200, 500],       # 小计行须跳过
         ])
         self.assertEqual(res.status_code, 200, res.content)
         d = res.json()['data']
         self.assertEqual(d['rows'], 3)
-        self.assertEqual(d['skipped'], 1)
+        self.assertEqual(d['skipped'], 2)   # 本期合计 + 自身往来
+        # 未识别（外部）与「本主体自身往来」分列，后者不再混入未识别
         self.assertEqual(d['unmatched'], [{'raw': '不认识的公司', 'count': 1}])
+        self.assertEqual(d['self_ref'], [{'raw': '四川迭黎信息技术有限公司', 'count': 1}])
         ents = {e.counterparty_raw: e for e in InternalEntry.objects.all()}
         self.assertEqual(ents['青岛运输事业部有限公司'].counterparty, '运输事业部')
         self.assertEqual(ents['青岛运输事业部有限公司'].side, 'ar')
@@ -2274,6 +2485,32 @@ class BatchUnpublishFlowTests(TestCase):
         self.assertEqual(r.status_code, 403)
         b.refresh_from_db()
         self.assertEqual(b.status, 'published')
+
+    def test_upload_next_month_with_prior_published_no_500(self):
+        """回归：上月已发布批次时，本月上传不得 500。
+        _prev_published_kpis 曾用 float 金额喂回 _compute_pl_check（内部 Decimal 累加），
+        Decimal += float → TypeError → 上传接口 500。老用户按月上传到下月必现。"""
+        import io
+        # 先造并发布 5 月批次（构成「上月已发布」前提）
+        self._mk(status=ImportBatch.STATUS_PUBLISHED)   # 劳务事业部 2026-05 published
+        # 真实上传 6 月单期部门明细账（同事业部）
+        wb = Workbook()
+        ws = wb.active
+        ws.append(['核算维度明细账'])
+        ws.append(['账簿 : 主账簿'])
+        ws.append(['序号', '部门名称', '科目编码', '科目名称', '会计期间', '摘要', '借方', '贷方'])
+        ws.append([1, '一部', '6001.01', '主营业务收入', '2026年6期', '6月收入', 0, 5000])
+        ws.append([2, '一部', '6401.01', '主营业务成本', '2026年6期', '6月成本', 3000, 0])
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0); buf.name = 'jun.xlsx'
+        r = self.client.post('/api/cw/batches/upload',
+                             {'bu': '劳务事业部', 'year': 2026, 'month': 6, 'file': buf},
+                             **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)   # 修复前此处 500
+        d = r.json()['data']
+        # 修复后 prev_kpis 正常返回上月（5月）对账 KPI，且本月 pl_check 计算无误
+        self.assertIsNotNone(d.get('prev_kpis'))
+        self.assertEqual(d['prev_kpis']['month'], 5)
+        self.assertTrue(d['pl_check']['kpis'])
 
     def test_published_delete_still_guarded_for_non_super(self):
         """常规角色不能直接删已发布批次（保持 409 引导先撤回），超管可强删。"""

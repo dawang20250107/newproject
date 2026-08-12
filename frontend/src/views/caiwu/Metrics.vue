@@ -5,12 +5,13 @@ import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
 import BaseChart from '../../components/caiwu/charts/BaseChart.vue'
 import api from '../../api/caiwu.js'
 import { fmtCompact, fmtPct } from '../../utils/format.js'
-import { valueAxis, catAxis, gridFor, bottomLegend, topLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
+import { axisMoney, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
 import { downloadBlob } from '../../utils/download.js'
 import EmptyState from '../../components/EmptyState.vue'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText } from '../../utils/clipboard.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import { useToast } from '../../composables/useToast.js'
 
 const auth = useCaiwuAuth()
@@ -85,6 +86,14 @@ const accessibleBus = computed(() => {
 })
 const editBus = computed(() => selectedBu.value ? [selectedBu.value] : accessibleBus.value)
 const canEdit = computed(() => auth.isAdmin || auth.canUpload)
+
+// 记忆年份/事业部（cw_analysis_prefs 与报表/目标分解共用一份；脏值回退默认。
+// 月份不记忆，始终默认上月。需在下方 loadTargets/loadMetrics 的 watch 注册前恢复，
+// 否则恢复赋值会触发重复请求）
+const pref = loadPref('cw_analysis_prefs') || {}
+if (years.includes(pref.year)) { reportYear.value = pref.year; targetYear.value = pref.year }
+if (pref.bu && accessibleBus.value.includes(pref.bu)) selectedBu.value = pref.bu
+watch([reportYear, selectedBu], ([y, bu]) => savePref('cw_analysis_prefs', { year: y, bu }))
 
 const toWan = (yuan) => (yuan == null ? '' : +(yuan / 10000).toFixed(2))
 const fromWan = (wan) => Math.round((parseFloat(wan) || 0) * 10000 * 100) / 100
@@ -289,37 +298,75 @@ function chgClass(v) {
   return v >= 0 ? 'chg-up' : 'chg-down'
 }
 
-const chartOption = computed(() => {
-  const bus = (metricsData.value?.bus || [])
-  const names = bus.map(b => b.business_unit)
+// ── 目标缺口图（指标管理专属图）───────────────────────────────────────────────
+// 旧「各事业部当月达成率」簇状柱与上方三表的达成率列完全重复，且达成率不封顶时
+// 100% 基准线会被极端值挤扁。重构为缺口图：横向分歧条 = 实际 − 目标（金额），
+// 绿=超额 / 红=欠账，按缺口排序——回答「谁贡献超额、谁欠了多少、集团净缺口」。
+const gapMetric = ref('revenue')   // revenue | gross | profit
+const gapScope = ref('month')      // month | ytd
+const GAP_METRICS = [
+  { key: 'revenue', label: '收入', tKey: 'target_revenue', aKey: 'actual_revenue', rKey: 'revenue_rate' },
+  { key: 'gross', label: '经营毛利', tKey: 'target_gross_profit', aKey: 'actual_gross_profit', rKey: 'gross_profit_rate' },
+  { key: 'profit', label: '经营净利', tKey: 'target_profit', aKey: 'actual_profit', rKey: 'profit_rate' },
+]
+const gapRowsAll = computed(() => {
+  const m = GAP_METRICS.find(g => g.key === gapMetric.value)
+  const scope = gapScope.value
+  return (metricsData.value?.bus || []).map(b => {
+    const blk = scope === 'month' ? b.month : b.ytd
+    return { bu: b.business_unit, target: blk[m.tKey], actual: blk[m.aKey], rate: blk[m.rKey] }
+  })
+})
+const gapNoTarget = computed(() => gapRowsAll.value.filter(r => !r.target).length)
+const gapChartOption = computed(() => {
+  const scope = gapScope.value
+  const withTarget = gapRowsAll.value.filter(r => r.target)
+  if (!withTarget.length) return null
+  const items = withTarget
+    .map(r => ({ ...r, gap: (r.actual || 0) - r.target }))
+    .sort((a, b) => a.gap - b.gap)   // 缺口最大在下，超额在上（横向条自下而上）
+  const totalGap = items.reduce((s, r) => s + r.gap, 0)
+  // 合计标题按真实口径命名：只有「未选事业部且可见全部事业部」才叫「集团」；
+  // 部分权限/筛选场景叫「N 个事业部合计」，避免把可见范围合计冒充集团口径。
+  // 图中只有一个事业部时合计=该条本身，不再重复显示。
+  const isGroupScope = !selectedBu.value && accessibleBus.value.length >= BUSINESS_UNITS.length
+  const scopeLabel = isGroupScope ? '集团' : `图内 ${items.length} 个事业部合计`
+  const showTotal = items.length > 1
   return {
-    tooltip: {
-      trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
-      formatter(params) {
-        let s = `<b>${params[0]?.axisValue}</b><br/>`
-        params.forEach(p => {
-          s += `${p.marker}${p.seriesName}：${p.value == null ? '—' : p.value.toFixed(1) + '%'}<br/>`
-        })
-        return s
-      },
-    },
-    legend: bottomLegend(),
-    grid: gridFor(names, { nameTop: true }),
-    xAxis: catAxis(names),
-    yAxis: valueAxis({ name: '达成率%', formatter: '{value}%' }),
-    series: [
-      { name: '收入达成率', type: 'bar', data: bus.map(b => b.month.revenue_rate),
-        itemStyle: { color: '#2e7d32', borderRadius: [4,4,0,0] }, barMaxWidth: 22,
-        label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP,
-        markLine: { silent: true, symbol: 'none', lineStyle: { color: '#c96342', type: 'dashed' },
-          data: [{ yAxis: 100, label: { formatter: '100%', color: '#c96342', fontSize: 10 } }] } },
-      { name: '经营毛利达成率', type: 'bar', data: bus.map(b => b.month.gross_profit_rate),
-        itemStyle: { color: '#6a1b9a', borderRadius: [4,4,0,0] }, barMaxWidth: 22,
-        label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP },
-      { name: '经营净利达成率', type: 'bar', data: bus.map(b => b.month.profit_rate),
-        itemStyle: { color: '#1565c0', borderRadius: [4,4,0,0] }, barMaxWidth: 22,
-        label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP },
-    ],
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
+      formatter: ps => {
+        const r = items[ps[0].dataIndex]
+        return `<b>${r.bu}</b><br/>目标：${fmtWan(r.target)}<br/>实际：${fmtWan(r.actual)}<br/>`
+          + `${r.gap >= 0 ? '超额' : '缺口'}：<b style="color:${r.gap >= 0 ? '#2e7d32' : '#c62828'}">${r.gap >= 0 ? '+' : '−'}${fmtWan(Math.abs(r.gap))}</b>`
+          + `（达成 ${r.rate == null ? '—' : r.rate.toFixed(0) + '%'}）`
+      } },
+    title: showTotal ? { text: `${scopeLabel}${scope === 'month' ? '当月' : 'YTD'}净${totalGap >= 0 ? '超额' : '缺口'} ${totalGap >= 0 ? '+' : '−'}${fmtWan(Math.abs(totalGap))}`,
+      right: 8, top: 0, textStyle: { fontSize: 12, fontWeight: 700, color: totalGap >= 0 ? '#2e7d32' : '#c62828' } } : undefined,
+    grid: { top: 26, right: 80, bottom: 8, left: 16, containLabel: true },
+    // 两端各留 22% 余量：最长条外侧的「±金额（达成%）」标签不再撞上事业部名/出界
+    xAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => axisMoney(v) },
+      min: v => (v.min < 0 ? v.min * 1.22 : 0), max: v => (v.max > 0 ? v.max * 1.22 : 0),
+      splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } } },
+    yAxis: { type: 'category', data: items.map(r => r.bu),
+      axisLabel: { color: '#6b5a4a', width: 96, overflow: 'truncate' },
+      axisLine: { show: false }, axisTick: { show: false } },
+    series: [{
+      type: 'bar', barMaxWidth: 22,
+      data: items.map(r => ({ value: r.gap,
+        itemStyle: { color: r.gap >= 0 ? '#2e7d32' : '#c62828',
+          borderRadius: r.gap >= 0 ? [0, 4, 4, 0] : [4, 0, 0, 4] },
+        label: { position: r.gap >= 0 ? 'right' : 'left' } })),
+      label: { show: true, fontSize: 10.5, fontWeight: 600, color: '#6b5a4a',
+        formatter: p => {
+          const r = items[p.dataIndex]
+          return `${r.gap >= 0 ? '+' : '−'}${axisMoney(Math.abs(r.gap))}（${r.rate == null ? '—' : r.rate.toFixed(0) + '%'}）`
+        } },
+      labelLayout: HIDE_OVERLAP,
+      markLine: { silent: true, symbol: 'none',
+        lineStyle: { color: 'rgba(120,90,70,.55)', width: 1.5 },
+        label: { formatter: '目标线', color: '#9b8070', fontSize: 10, position: 'insideEndTop' },
+        data: [{ xAxis: 0 }] },
+    }],
   }
 })
 
@@ -505,8 +552,25 @@ onMounted(load)
           </div>
 
           <div v-if="(metricsData.bus || []).length" class="card">
-            <div class="section-title" style="margin-bottom:8px">各事业部当月达成率</div>
-            <BaseChart :option="chartOption" height="320px" />
+            <div class="gap-head">
+              <div class="section-title" style="margin:0">目标缺口 · 谁超额 / 谁欠账
+                <span class="tip">条长=实际−目标金额 · 绿=超额 · 红=欠账 · 悬浮看目标/实际明细</span>
+              </div>
+              <div class="gap-ctrls">
+                <div class="gap-seg">
+                  <button v-for="g in GAP_METRICS" :key="g.key"
+                    :class="['gap-seg-btn', gapMetric === g.key ? 'on' : '']"
+                    @click="gapMetric = g.key">{{ g.label }}</button>
+                </div>
+                <div class="gap-seg">
+                  <button :class="['gap-seg-btn', gapScope === 'month' ? 'on' : '']" @click="gapScope = 'month'">当月</button>
+                  <button :class="['gap-seg-btn', gapScope === 'ytd' ? 'on' : '']" @click="gapScope = 'ytd'">YTD</button>
+                </div>
+              </div>
+            </div>
+            <BaseChart v-if="gapChartOption" :option="gapChartOption" height="300px" />
+            <div v-else class="gap-empty">所选指标暂无已设目标的事业部</div>
+            <div v-if="gapNoTarget" class="gap-note">另有 {{ gapNoTarget }} 个事业部未设该指标目标，未入图（可在上方「目标设定」补录）</div>
           </div>
         </div>
       </template>
@@ -552,6 +616,20 @@ onMounted(load)
 </template>
 
 <style scoped>
+/* ── 目标缺口图 ── */
+.tip { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 8px; }
+.gap-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.gap-ctrls { display: flex; gap: 8px; flex-shrink: 0; }
+.gap-seg { display: inline-flex; border: 1px solid rgba(150,120,100,0.3); border-radius: 9px; overflow: hidden; }
+.gap-seg-btn {
+  border: none; background: none; cursor: pointer; padding: 4px 12px;
+  font-size: 12px; color: var(--muted); transition: background .15s, color .15s;
+}
+.gap-seg-btn + .gap-seg-btn { border-left: 1px solid rgba(150,120,100,0.2); }
+.gap-seg-btn.on { background: var(--primary); color: #fff; font-weight: 700; }
+.gap-empty { padding: 28px 0; text-align: center; color: var(--muted); font-size: 13px; }
+.gap-note { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+
 .card-header-row {
   display: flex; align-items: flex-start; justify-content: space-between;
   flex-wrap: wrap; gap: 12px; margin-bottom: 14px;

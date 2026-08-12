@@ -55,9 +55,12 @@ const option = computed(() => {
         let str = `<b>${params[0]?.axisValue}</b><br/>`
         params.forEach(p => {
           if (p.value != null) {
-            const v = Math.abs(p.value) >= 10000
-              ? (p.value / 10000).toFixed(2) + ' 万'
-              : p.value.toFixed(2)
+            const a = Math.abs(p.value)
+            const v = a >= 1e8
+              ? (p.value / 1e8).toFixed(2) + ' 亿'
+              : a >= 1e4
+                ? (p.value / 1e4).toFixed(2) + ' 万'
+                : p.value.toFixed(2)
             str += `${p.marker}${p.seriesName}：${v}<br/>`
           }
         })

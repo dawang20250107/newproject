@@ -1,6 +1,6 @@
 <script setup>
 import { confirmDlg } from '../../composables/confirm.js'
-import { ref, reactive, computed, onMounted, defineAsyncComponent, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, defineAsyncComponent, nextTick, onActivated } from 'vue'
 import { useAuthStore } from '../../stores/auth.js'
 import { yearCST, todayCST, DEPARTMENTS } from '../../constants.js'
 import ar from '../../api/ar.js'
@@ -319,6 +319,11 @@ const ctxItems = computed(() => {
     { key: 'del', label: '删除客户', icon: 'trash', danger: true, hidden: !auth.canDelete, action: r => deleteCustomerRow(r) },
   ]
 })
+
+// keep-alive：命中 App.vue include 白名单；返回秒开，数据后台刷新（首次激活跳过，onMounted 已加载）
+defineOptions({ name: 'CustomerListPage' })
+let _kaFirst = true
+onActivated(() => { if (_kaFirst) { _kaFirst = false; return } load(true) })
 
 onMounted(async () => {
   const applied = await schemes.loadAndApplyDefault()
@@ -655,9 +660,9 @@ onMounted(async () => {
 .toast-enter-active, .toast-leave-active { transition: opacity .2s; }
 .toast-enter-from, .toast-leave-to { opacity: 0; }
 
-@media (max-width: 640px) {
-  .dw-kpis { grid-template-columns: repeat(3, 1fr); }
-}
+@media (max-width: 1080px) { .dw-kpis { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 820px) { .dw-kpis { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 520px) { .dw-kpis { grid-template-columns: repeat(2, 1fr); } }
 
 /* 列宽拖拽柄 */
 .cu-table th { position: relative; }

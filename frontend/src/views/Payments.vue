@@ -6,6 +6,8 @@ import { ref, onMounted, onBeforeUnmount, reactive, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useToast } from '../composables/useToast.js'
 import api from '../api/index.js'
+import { useHoverTip } from '../composables/useHoverTip.js'
+import HoverTip from '../components/HoverTip.vue'
 import { useAuthStore } from '../stores/auth.js'
 import { todayCST } from '../constants.js'
 import { fmtMoney, fmtTime } from '../utils/format.js'
@@ -338,6 +340,40 @@ async function loadFlow() {
   finally { flowLoading.value = false }
 }
 
+// 付款流水右键：与台账同款复制体验（用户反馈：流水表无右键、超长事项无法取用）
+const ctxFlow = useContextMenu()
+const FLOW_COPY_COLS = [
+  { key: 'department', label: '部门' },
+  { key: 'project_short_name', label: '项目简称' },
+  { key: 'project_desc', label: '付款事项' },
+  { key: 'payee', label: '收款方' },
+  { key: 'approval_number', label: '审批单号' },
+  { key: 'g7_number', label: 'G7编号' },
+  { key: 'planned_date', label: '计划日期' },
+  { key: 'pay_date', label: '付款日期' },
+  { key: 'pay_amount', label: '付款金额', format: v => fmtMoney(v) },
+  { key: 'notes', label: '备注' },
+]
+const ctxFlowItems = computed(() => {
+  const r = ctxFlow.menu.payload
+  if (!r) return []
+  return [
+    { key: 'copy-row', label: '复制整行（含表头，可贴 Excel）', icon: 'copy',
+      action: row => copyRowTSV(row, FLOW_COPY_COLS, { header: true }).then(ok => ok ? toast.success('已复制整行') : toast.error('复制失败')) },
+    { divider: true },
+    { key: 'copy-desc', label: '付款事项', icon: 'cell', hidden: !r.project_desc,
+      action: row => copyField(row.project_desc, '付款事项') },
+    { key: 'copy-payee', label: '收款方', icon: 'cell', hidden: !r.payee,
+      action: row => copyField(row.payee, row.payee) },
+    { key: 'copy-amt', label: '付款金额', icon: 'cell',
+      action: row => copyField(String(row.pay_amount ?? ''), '付款金额') },
+    { key: 'copy-appr', label: '审批单号', icon: 'cell', hidden: !r.approval_number,
+      action: row => copyField(row.approval_number, row.approval_number) },
+    { key: 'copy-notes', label: '备注', icon: 'cell', hidden: !r.notes,
+      action: row => copyField(row.notes, '备注') },
+  ]
+})
+
 function searchFlow() { flowPage.value = 1; loadFlow() }
 const flowExporting = ref(false)
 async function exportFlow() {
@@ -434,20 +470,8 @@ const deptChoices = computed(() => {
   return departments.value.filter(d => scope.includes(d))
 })
 
-// Hover tooltip card for truncated long cells (付款事项 / 收款方).
-const tip = reactive({ show: false, text: '', x: 0, y: 0 })
-function showTip(e, text) {
-  if (!text) return
-  tip.text = text
-  positionTip(e)
-  tip.show = true
-}
-function positionTip(e) {
-  tip.x = Math.min(e.clientX + 16, window.innerWidth - 340)
-  tip.y = Math.min(e.clientY + 18, window.innerHeight - 60)
-}
-function moveTip(e) { if (tip.show) positionTip(e) }
-function hideTip() { tip.show = false }
+// 长文本单元格富悬浮卡（付款事项/收款方）：共用 useHoverTip
+const { tip, showTip, moveTip, hideTip } = useHoverTip()
 
 // 精确数值：千分位、两位小数、不带单位（工作中确切金额更常用；KPI 卡片才用单位）
 const fmt = (n) => fmtMoney(n, '0.00')
@@ -1088,7 +1112,7 @@ async function confirmBulkDelete() {
         const d2 = r2.data || {}
         const totalDeleted = (d.deleted || 0) + (d2.deleted || 0)
         if (d2.skipped?.length) resultDlg({ title: '批量删除结果', okLine: `已删除 ${totalDeleted} 条`, skipped: d2.skipped })
-        else toast.success(`已删除 ${totalDeleted} 条`)
+        else toast.success(`已删除 ${totalDeleted} 条（已入回收站）`, 3000, { label: '查看回收站', to: '/trash' })
       } else {
         showDelConfirm.value = false; clearSelection(); load()
         if (d.skipped?.length) resultDlg({ title: '批量删除结果', okLine: d.message, skipped: d.skipped })
@@ -1424,20 +1448,20 @@ async function doBatchPay() {
             <tr>
               <th class="sel-col sticky-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
               <th v-if="colVisible('department')" :style="cw.thStyle('department')"><ColumnFilter label="部门" field="department" type="enum" :options="deptChoices" :model-value="colFilters.department" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('department',v)" @sort="o=>setSort('department',o)" /></th>
-              <th v-if="colVisible('secondary_dept')" style="width:5%"><ColumnFilter label="二级部门" field="secondary_dept" type="text" :model-value="colFilters.secondary_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('secondary_dept',v)" @sort="o=>setSort('secondary_dept',o)" /></th>
-              <th v-if="colVisible('project_short_name')" style="width:6%"><ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" /></th>
-              <th v-if="colVisible('applicant')" style="width:4%"><ColumnFilter label="申请人" field="applicant" type="text" :model-value="colFilters.applicant" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('applicant',v)" @sort="o=>setSort('applicant',o)" /></th>
-              <th v-if="colVisible('approval_number')" style="width:12%"><ColumnFilter label="审批单号" field="approval_number" type="text" :model-value="colFilters.approval_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('approval_number',v)" @sort="o=>setSort('approval_number',o)" /></th>
-              <th v-if="colVisible('g7_number')" style="width:8%"><ColumnFilter label="G7编号" field="g7_number" type="text" :model-value="colFilters.g7_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('g7_number',v)" @sort="o=>setSort('g7_number',o)" /></th>
-              <th v-if="colVisible('project_desc')" :style="cw.thStyle('project_desc')"><ColumnFilter label="付款事项" field="project_desc" type="text" :model-value="colFilters.project_desc" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_desc',v)" @sort="o=>setSort('project_desc',o)" /></th>
-              <th v-if="colVisible('payee')" style="width:8%"><ColumnFilter label="收款方" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
-              <th v-if="colVisible('planned_date')" style="width:9%"><ColumnFilter label="计划日期" field="planned_date" type="date" :model-value="colFilters.planned_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('planned_date',v)" @sort="o=>setSort('planned_date',o)" /></th>
-              <th v-if="colVisible('total_amount')" style="width:8%"><ColumnFilter label="计划额" field="total_amount" type="number" :model-value="colFilters.total_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('total_amount',v)" @sort="o=>setSort('total_amount',o)" /></th>
-              <th v-if="colVisible('paid')" style="width:7%"><ColumnFilter label="已付" field="paid" type="number" :model-value="colFilters.paid" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('paid',v)" @sort="o=>setSort('paid',o)" /></th>
-              <th v-if="colVisible('remaining')" style="width:6%"><ColumnFilter label="剩余" field="remaining" type="number" :model-value="colFilters.remaining" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('remaining',v)" @sort="o=>setSort('remaining',o)" /></th>
-              <th v-if="colVisible('status')" style="width:9%"><ColumnFilter label="状态" field="status" type="enum" :options="PAY_STATUS_OPTS" :no-exclude="true" :sortable="false" :model-value="statusColModel" @update:model-value="setStatusFilter" /></th>
-              <th v-if="colVisible('overdue')" style="width:6%"><ColumnFilter label="逾期" field="overdue" type="enum" :options="OVERDUE_OPTS" :sortable="false" :model-value="colFilters.overdue" @update:model-value="v=>setColFilter('overdue',v)" /></th>
-              <th v-if="colVisible('plan_adjustment')" style="width:6%"><ColumnFilter label="计划调整" field="plan_adjustment" type="number" :model-value="colFilters.plan_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('plan_adjustment',v)" @sort="o=>setSort('plan_adjustment',o)" /></th>
+              <th v-if="colVisible('secondary_dept')"><ColumnFilter label="二级部门" field="secondary_dept" type="text" :model-value="colFilters.secondary_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('secondary_dept',v)" @sort="o=>setSort('secondary_dept',o)" /></th>
+              <th v-if="colVisible('project_short_name')"><ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" /></th>
+              <th v-if="colVisible('applicant')"><ColumnFilter label="申请人" field="applicant" type="text" :model-value="colFilters.applicant" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('applicant',v)" @sort="o=>setSort('applicant',o)" /></th>
+              <th v-if="colVisible('approval_number')"><ColumnFilter label="审批单号" field="approval_number" type="text" :model-value="colFilters.approval_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('approval_number',v)" @sort="o=>setSort('approval_number',o)" /></th>
+              <th v-if="colVisible('g7_number')"><ColumnFilter label="G7编号" field="g7_number" type="text" :model-value="colFilters.g7_number" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('g7_number',v)" @sort="o=>setSort('g7_number',o)" /></th>
+              <th v-if="colVisible('project_desc')"><ColumnFilter label="付款事项" field="project_desc" type="text" :model-value="colFilters.project_desc" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_desc',v)" @sort="o=>setSort('project_desc',o)" /></th>
+              <th v-if="colVisible('payee')"><ColumnFilter label="收款方" field="payee" type="text" :model-value="colFilters.payee" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('payee',v)" @sort="o=>setSort('payee',o)" /></th>
+              <th v-if="colVisible('planned_date')"><ColumnFilter label="计划日期" field="planned_date" type="date" :model-value="colFilters.planned_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('planned_date',v)" @sort="o=>setSort('planned_date',o)" /></th>
+              <th v-if="colVisible('total_amount')" class="amt-th"><ColumnFilter label="计划额" field="total_amount" type="number" :model-value="colFilters.total_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('total_amount',v)" @sort="o=>setSort('total_amount',o)" /></th>
+              <th v-if="colVisible('paid')" class="amt-th"><ColumnFilter label="已付" field="paid" type="number" :model-value="colFilters.paid" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('paid',v)" @sort="o=>setSort('paid',o)" /></th>
+              <th v-if="colVisible('remaining')" class="amt-th"><ColumnFilter label="剩余" field="remaining" type="number" :model-value="colFilters.remaining" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('remaining',v)" @sort="o=>setSort('remaining',o)" /></th>
+              <th v-if="colVisible('status')"><ColumnFilter label="状态" field="status" type="enum" :options="PAY_STATUS_OPTS" :no-exclude="true" :sortable="false" :model-value="statusColModel" @update:model-value="setStatusFilter" /></th>
+              <th v-if="colVisible('overdue')"><ColumnFilter label="逾期" field="overdue" type="enum" :options="OVERDUE_OPTS" :sortable="false" :model-value="colFilters.overdue" @update:model-value="v=>setColFilter('overdue',v)" /></th>
+              <th v-if="colVisible('plan_adjustment')" class="amt-th"><ColumnFilter label="计划调整" field="plan_adjustment" type="number" :model-value="colFilters.plan_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('plan_adjustment',v)" @sort="o=>setSort('plan_adjustment',o)" /></th>
               <th v-if="colVisible('notes')" :style="cw.thStyle('notes')"><ColumnFilter label="备注" field="notes" type="text" :model-value="colFilters.notes" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('notes',v)" @sort="o=>setSort('notes',o)" /></th>
             </tr>
           </thead>
@@ -1457,13 +1481,14 @@ async function doBatchPay() {
               <SelCell class="sticky-col" :idx="idx" :id="p.id" :checked="selectedIds.has(p.id)" :on-sel="onRowSelClick" />
               <td v-if="colVisible('department')" class="cell-clip" :title="p.department">{{ p.department }}</td>
               <td v-if="colVisible('secondary_dept')" class="cell-clip" :title="p.secondary_dept">{{ p.secondary_dept || '—' }}</td>
-              <td v-if="colVisible('project_short_name')" class="cell-clip" :title="p.project_short_name">{{ p.project_short_name || '—' }}</td>
+              <td v-if="colVisible('project_short_name')" class="cell-clip" :title="p.project_no ? `项目编号 ${p.project_no}` : p.project_short_name">
+                <span v-if="p.project_no" class="proj-dot" title="已关联项目台账"></span>{{ p.project_short_name || '—' }}</td>
               <td v-if="colVisible('applicant')" class="cell-clip" :title="p.applicant">{{ p.applicant || '—' }}</td>
               <td v-if="colVisible('approval_number')" class="cell-clip" :title="p.approval_number">{{ p.approval_number || '—' }}</td>
               <td v-if="colVisible('g7_number')" class="cell-clip cell-muted" :title="p.g7_number">{{ p.g7_number || '—' }}</td>
               <td v-if="colVisible('project_desc')" class="cell-clip cell-desc"
                 @mouseenter="showTip($event, p.project_desc)" @mousemove="moveTip" @mouseleave="hideTip">
-                <span v-if="p.project_no" class="proj-no">{{ p.project_no }}</span>{{ p.project_desc }}
+                {{ p.project_desc }}
               </td>
               <td v-if="colVisible('payee')" class="cell-clip cell-payee"
                 @mouseenter="showTip($event, p.payee)" @mousemove="moveTip" @mouseleave="hideTip">
@@ -1663,11 +1688,13 @@ async function doBatchPay() {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="inst in flowItems" :key="inst.id" class="flow-row">
+            <tr v-for="inst in flowItems" :key="inst.id" class="flow-row"
+                @contextmenu.prevent="ctxFlow.open($event, inst)">
               <td>{{ inst.department }}</td>
-              <td class="cell-clip" :title="inst.project_short_name">{{ inst.project_short_name || '—' }}</td>
-              <td class="cell-clip">
-                <span v-if="inst.project_short_name" class="proj-no">{{ inst.project_short_name }}</span>
+              <td class="cell-clip" :title="inst.project_short_name">
+                <span v-if="inst.project_short_name" class="proj-dot" title="已关联项目台账"></span>{{ inst.project_short_name || '—' }}</td>
+              <td class="cell-clip cell-desc"
+                  @mouseenter="showTip($event, inst.project_desc)" @mousemove="moveTip" @mouseleave="hideTip">
                 {{ inst.project_desc }}
               </td>
               <td class="cell-clip" :title="inst.payee">{{ inst.payee }}</td>
@@ -1676,7 +1703,7 @@ async function doBatchPay() {
               <td>{{ inst.planned_date || '—' }}</td>
               <td style="font-weight:600;color:var(--c-info)">{{ inst.pay_date }}</td>
               <td class="amt amt-green">{{ inst.pay_amount != null ? fmt(inst.pay_amount) : '—' }}</td>
-              <td class="cell-clip" style="color:var(--muted);font-size:11.5px">{{ inst.notes || '—' }}</td>
+              <td class="cell-clip" style="color:var(--muted);font-size:11.5px" :title="inst.notes">{{ inst.notes || '—' }}</td>
             </tr>
           </tbody>
         </table>
@@ -1766,6 +1793,7 @@ async function doBatchPay() {
 
     <!-- 右键上下文菜单 -->
     <ContextMenu :ctx="ctx" :items="ctxItems" />
+    <ContextMenu :ctx="ctxFlow" :items="ctxFlowItems" />
 
     <!-- Change log drawer -->
     <Teleport to="body">
@@ -1802,12 +1830,7 @@ async function doBatchPay() {
       </div>
     </Teleport>
 
-    <!-- hover tooltip card for long cells -->
-    <Transition name="tip-fade">
-      <div v-if="tip.show" class="cell-tooltip" :style="{ left: tip.x + 'px', top: tip.y + 'px' }">
-        {{ tip.text }}
-      </div>
-    </Transition>
+    <HoverTip :tip="tip" />
 
     <!-- 批量付款（批量编辑）：点击卡片外部不关闭 -->
     <Teleport to="body">
@@ -1934,9 +1957,9 @@ async function doBatchPay() {
 .tp-btn:hover:not(:disabled) { background: rgba(201,99,66,0.08); border-color: var(--primary); }
 
 /* Tab bar */
-.tab-bar { display: flex; gap: 2px; background: rgba(0,0,0,0.05); border-radius: 10px; padding: 3px; }
-.tab-btn { border: none; background: none; padding: 5px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; transition: none; }
-.tab-btn.active { background: var(--row-bg); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
+.tab-bar { display: flex; gap: 2px; background: var(--surface-2, rgba(160,120,80,.08)); border-radius: var(--radius-sm); padding: 3px; }
+.tab-btn { border: none; background: none; padding: 5px 14px; border-radius: var(--radius-xs); font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; transition: all .16s; }
+.tab-btn.active { background: var(--card); color: var(--text); box-shadow: var(--shadow-sm); }
 
 /* 付款日期 label in filter bar */
 .filter-group-lbl { font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
@@ -1954,7 +1977,7 @@ async function doBatchPay() {
 /* 付款流水 table */
 .flow-tbl { width: 100%; table-layout: fixed; }
 .flow-tbl th, .flow-tbl td { padding: 8px 8px; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.flow-row:hover { background: var(--row-hover); }
+.flow-row:hover { background: rgba(201,99,66,0.048); }
 
 .date-range-hint {
   font-size: 11.5px; color: var(--muted); white-space: nowrap; flex-shrink: 0;
@@ -1968,24 +1991,27 @@ async function doBatchPay() {
 
 /* 付款管理：固定布局，不超出卡片宽度（table-layout:fixed 已防横向溢出，无需 overflow-x:hidden） */
 .table-wrap.pk-pay-tbl { padding-bottom: 70px; }
-.pk-pay-tbl table { table-layout: fixed;; min-width: 1100px; }
+.pk-pay-tbl table { table-layout: auto; min-width: 1100px; }
 /* 列多、字段密：本表用更紧凑的字号/横向内边距，尽量让各列内容完整展示 */
 .pk-pay-tbl { --td-fs: 12px; --td-px: 6px; }
 .pk-pay-tbl th, .pk-pay-tbl td { padding: var(--td-py) var(--td-px); font-size: var(--td-fs); }
-.pk-pay-tbl td:not(.ops-cell) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+.pk-pay-tbl td:not(.ops-cell) { white-space: nowrap; }
+/* 长文本列封顶：付款事项/收款方 超宽截断+悬浮看全文，其余列按内容自适应全展示 */
+.pk-pay-tbl td.cell-desc { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+.pk-pay-tbl td.cell-payee { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.pk-pay-tbl td.cell-clip { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
 /* 空状态整行：跨列居中，取消定宽/裁剪，表头留在顶部、提示紧贴其下（不再把表头挤到页面中间） */
 .pk-pay-tbl td.empty-cell { max-width: none; overflow: visible; white-space: normal; text-align: center; padding: 20px 8px; }
 /* Excel 式区域选择高亮已收归全局 style.css（td.cell-range-sel） */
 .pk-pay-tbl tbody { user-select: none; }
-/* 列头：字段名完整展示，空间不足时换行成两行（不挤压、不截断），漏斗不裁切 */
+/* 列头：字段名整体不换行、不压缩；宽度不足时表格整体横向滚动，绝不把短表头挤成竖排 */
 .pk-pay-tbl thead th {
-  overflow: visible; white-space: normal; vertical-align: middle;
+  overflow: visible; white-space: nowrap; vertical-align: middle;
   line-height: 1.25; padding-top: 5px; padding-bottom: 5px;
   font-size: 12px; letter-spacing: -0.2px;
 }
 .pk-pay-tbl thead :deep(.colf) { align-items: center; }
-/* 换行时两行字数尽量均衡，避免头重脚轻 */
-.pk-pay-tbl thead :deep(.colf-label) { white-space: normal; text-wrap: balance; }
+.pk-pay-tbl thead :deep(.colf-label) { white-space: nowrap; }
 /* 可收缩：导航展开、内容变窄时优先压缩搜索框而不是把整行挤成两行 */
 .global-search { min-width: 130px; flex: 1 1 200px; }
 .clear-all-btn { background: var(--bg2); border: none; color: var(--primary); }
@@ -2053,26 +2079,32 @@ async function doBatchPay() {
 /* .bottom-bar, .bb-*, .page-btn, .page-info → global styles in style.css */
 
 /* 多选列 + 批量操作条 + 删除二次确认 */
-.pk-pay-tbl th.sel-col, .pk-pay-tbl td.sel-col { width: 30px; text-align: center; padding: 9px 4px; max-width: none; overflow: visible; }
+.pk-pay-tbl th.sel-col, .pk-pay-tbl td.sel-col { width: 30px; text-align: center; padding: var(--td-py, 6px) 4px; max-width: none; overflow: visible; }
 .pk-pay-tbl td.sel-col input, .pk-pay-tbl th.sel-col input { cursor: pointer; }
 .pk-pay-tbl tr.row-sel td { background: rgba(201,99,66,0.06); }
 /* 批量操作条：固定浮动在视口底部居中，全选后无需下拉即可操作 */
 .bulk-bar { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 1200;
   display: flex; align-items: center; gap: 12px; padding: 10px 18px;
-  border-radius: 12px; background: var(--card); border: 1px solid rgba(198,40,40,0.35);
-  box-shadow: 0 8px 28px rgba(0,0,0,0.18); }
+  border-radius: var(--radius); background: var(--card); border: 1px solid rgba(198,40,40,0.35);
+  box-shadow: var(--shadow-lg); }
 .bulk-n { font-size: 13px; color: var(--text); }
-.bulk-selall { border: 1px solid var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); border-radius: 8px; padding: 5px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.bulk-selall { border: 1px solid var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); border-radius: var(--radius-sm); padding: 5px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: filter .16s; }
+.bulk-selall:hover:not(:disabled) { background: rgba(201,99,66,0.14); }
 .bulk-selall:disabled { opacity: .5; cursor: default; }
-.bulk-act { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--primary); color: #fff; }
+.bulk-act { margin-left: auto; border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--primary); color: #fff; transition: filter .16s; }
+.bulk-act:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-act:disabled { opacity: .5; cursor: default; }
-.bulk-del { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
+.bulk-del { border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--danger); color: #fff; transition: filter .16s; }
+.bulk-del:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-del:disabled { opacity: .6; cursor: default; }
 /* 批量退回（橙）/ 标记重点（金）/ 取消重点（描边）*/
-.bulk-return { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--c-warn); color: #fff; }
+.bulk-return { border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--c-warn); color: #fff; transition: filter .16s; }
+.bulk-return:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-return:disabled { opacity: .6; cursor: default; }
-.bulk-star { border: none; border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--amber); color: #fff; }
-.bulk-star-off { border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--row-bg); color: var(--muted); }
+.bulk-star { border: none; border-radius: var(--radius-sm); padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--amber); color: #fff; transition: filter .16s; }
+.bulk-star:hover:not(:disabled) { filter: brightness(1.06); }
+.bulk-star-off { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--row-bg); color: var(--muted); transition: all .16s; }
+.bulk-star-off:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
 .bulk-star:disabled, .bulk-star-off:disabled { opacity: .5; cursor: default; }
 
 /* 重点付款：状态列内嵌星标（不占独立列）+ 行金色左缘 */
@@ -2154,7 +2186,7 @@ async function doBatchPay() {
   border-radius: 8px; white-space: nowrap; letter-spacing: -.2px;
 }
 .overdue-ok    { color: var(--muted); background: transparent; }
-.overdue-today { color: #b35309; background: rgba(245,127,23,0.12); font-weight: 600; }
+.overdue-today { color: var(--c-warn); background: var(--c-warn-bg); font-weight: 600; }
 .overdue-bad   { color: var(--c-danger); background: rgba(198,40,40,0.10); font-weight: 700; }
 
 /* truncated long cells + hover tooltip card */
@@ -2163,6 +2195,8 @@ async function doBatchPay() {
 .cell-muted { color: var(--muted); }
 /* 金额列：右对齐 + 等宽数字，数值完整展示、位数对齐；超长仍可 hover(title) 查看 */
 .pk-pay-tbl td.amt { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pk-pay-tbl th.amt-th { text-align: right; }
+
 /* 核销提醒角标：该行项目/收款方存在未核销预付余额，点击直达核销弹窗（防重复支付） */
 .offset-hint {
   display: inline-block; margin-right: 4px; padding: 0 5px; border-radius: 5px;
@@ -2173,7 +2207,7 @@ async function doBatchPay() {
 /* 批量付款卡片内的核销警示 */
 .pay-offset-warn {
   margin: 0 0 12px; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.6;
-  color: #8a5a00; background: rgba(245,166,35,0.1); border: 1px solid rgba(245,166,35,0.35);
+  color: var(--amber-text); background: rgba(245,166,35,0.1); border: 1px solid var(--c-warn-bdr);
 }
 .pay-offset-warn .pow-list { color: var(--muted); font-size: 11.5px; }
 .brl-offset {
@@ -2181,25 +2215,8 @@ async function doBatchPay() {
   font-size: 10px; font-weight: 700; color: var(--amber-text); background: rgba(245,166,35,0.16);
 }
 .proj-no { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 5px; background: rgba(201,99,66,0.1); color: var(--primary); font-size: 11px; font-weight: 600; }
-.cell-tooltip {
-  position: fixed;
-  z-index: 9000;
-  max-width: 320px;
-  padding: 10px 14px;
-  border-radius: 12px;
-  background: rgba(36, 18, 10, 0.94);
-  color: #f3e7dc;
-  font-size: 13px;
-  line-height: 1.55;
-  white-space: normal;
-  word-break: break-word;
-  box-shadow: 0 10px 30px rgba(20, 8, 4, 0.4);
-  border: 1px solid rgba(255,255,255,0.1);
-  pointer-events: none;
-  backdrop-filter: blur(6px);
-}
-.tip-fade-enter-active, .tip-fade-leave-active { transition: opacity 0.14s ease; }
-.tip-fade-enter-from, .tip-fade-leave-to { opacity: 0; }
+.proj-dot { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--c-danger, #c62828); vertical-align: middle; }
+.cell-desc { cursor: help; }
 
 /* import result popup → 见 components/ImportResultModal.vue */
 .btn-spin {

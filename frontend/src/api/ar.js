@@ -72,6 +72,8 @@ const ar = {
 
   // 批量分配催收人
   bulkAssignCollector: (body, params) => api.post('/ar/records/bulk-assign-collector', body, { params }),
+  // 批量指定日期：body {field, date, ids|all}；all 模式当前筛选走 params（与批量分配同契约）
+  bulkSetDate: (body, params) => api.post('/ar/records/bulk-set-date', body, { params }),
 
   // 账龄分桶配置
   getAgingConfig: () => api.get('/ar/aging-config'),
@@ -183,6 +185,7 @@ const ar = {
   createCollectionBudget: d => api.post('/ar/budget/collection', d),
   updateCollectionBudget: (id, d) => api.put(`/ar/budget/collection/${id}`, d),
   deleteCollectionBudget: id => api.delete(`/ar/budget/collection/${id}`),
+  bulkDeleteCollectionBudget: ids => api.post('/ar/budget/collection/bulk-delete', { ids }),
   collectionBudgetTemplate: () => api.get('/ar/budget/collection/template', { responseType: 'blob' }),
   importCollectionBudget: fd => api.post('/ar/budget/collection/import', fd),
   precheckCollectionBudget: fd => api.post('/ar/budget/collection/import/precheck', fd),
@@ -191,15 +194,18 @@ const ar = {
   createPaymentBudget: d => api.post('/ar/budget/payment', d),
   updatePaymentBudget: (id, d) => api.put(`/ar/budget/payment/${id}`, d),
   deletePaymentBudget: id => api.delete(`/ar/budget/payment/${id}`),
+  bulkDeletePaymentBudget: ids => api.post('/ar/budget/payment/bulk-delete', { ids }),
   paymentBudgetTemplate: () => api.get('/ar/budget/payment/template', { responseType: 'blob' }),
   importPaymentBudget: fd => api.post('/ar/budget/payment/import', fd),
   precheckPaymentBudget: fd => api.post('/ar/budget/payment/import/precheck', fd),
   exportPaymentBudget: p => api.get('/ar/budget/payment/export', { params: p, responseType: 'blob' }),
   budgetSummary: p => api.get('/ar/budget/summary', { params: p }),
   budgetProjectCompare: p => api.get('/ar/budget/project-compare', { params: p }),
+  exportProjectCompare: p => api.get('/ar/budget/project-compare/export', { params: p, responseType: 'blob' }),
 
   // 资金池 (cash pool)
   cashPool: p => api.get('/ar/pool', { params: p }),
+  poolMonthly: dept => api.get('/ar/pool/monthly', { params: { dept } }),
   poolConfigs: () => api.get('/ar/pool/config'),
   savePoolConfig: d => api.post('/ar/pool/config', d),
   listPoolTransfers: () => api.get('/ar/pool/transfers'),

@@ -22,6 +22,8 @@ ARRECORD_FILTER_REGISTRY = {
     'due_date':           {'type': 'date', 'col': 'due_date'},
     'invoice_date':       {'type': 'date', 'col': 'invoice_date'},
     'reconciliation_date':{'type': 'date', 'col': 'reconciliation_date'},
+    # 回款日期（回款子表反向 JOIN：筛「区间内发生过回款」的记录，需 distinct）
+    'payment_date':       {'type': 'date', 'col': 'payments__payment_date', 'multi': True},
     'target_collection_date': {'type': 'date', 'col': 'target_collection_date'},
     # 数值（均为真实存储 DecimalField，非注解/计算）
     'estimated_amount':       {'type': 'number', 'col': 'estimated_amount'},
@@ -1525,9 +1527,25 @@ def ar_payment_ledger(request):
     page = max(1, int(request.GET.get('page', 1) or 1))
     size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
     rows = [_payment_ledger_row(p) for p in qs[(page - 1) * size: page * size]]
+    # 底部分类汇总：来源覆盖全体（回款/预收抵扣/内部往来）；方式/账户仅对现金回款
+    # (source='回款') 有意义，预收抵扣/内部往来无真实收款方式/账户，归口会失真故排除。
+    # empty= 空值归口标签：方式空值按列表默认「银行转账」归并（与前端 method||'银行转账'
+    # 展示口径一致），空账户则记「未填」。同名键累加，避免 dict 覆盖丢金额。
+    def _bd(vals_qs, key, empty='未填'):
+        agg = {}
+        for r in vals_qs.values(key).annotate(s=Sum('amount')).order_by():
+            k = r[key] or empty
+            agg[k] = agg.get(k, Decimal('0')) + (r['s'] or Decimal('0'))
+        return {k: str(v) for k, v in agg.items()}
+    cash_qs = qs.filter(source='回款')
     return ok({
         'items': rows, 'total': total, 'page': page, 'size': size,
-        'summary': {'count': total, 'total_amount': str(total_amount)},
+        'summary': {
+            'count': total, 'total_amount': str(total_amount),
+            'by_source': _bd(qs, 'source'),
+            'by_method': _bd(cash_qs, 'method', empty='银行转账'),
+            'by_account': _bd(cash_qs, 'account'),
+        },
     })
 
 
@@ -2493,6 +2511,58 @@ def ar_records_bulk_assign_collector(request):
                              shared_field='project__is_shared')
     count = qs.update(collector=collector)
     return ok({'updated': count, 'collector': collector})
+
+
+# 批量指定日期的字段白名单：仅登记真实存储、可整列覆盖的手工日期列；
+# 带派生联动的日期（如 operation_date 改动需重算年/月与账期）不开放批量覆盖
+BULK_SET_DATE_FIELDS = ('reconciliation_date', 'invoice_date', 'target_collection_date')
+
+
+@csrf_exempt
+@pk_required()
+def ar_records_bulk_set_date(request):
+    """批量指定日期（对账/开票/目标回款）。契约与批量分配催收人一致：
+    body: {field, date, ids: [int...]} 或 {field, date, all: true} + 查询串筛选参数
+    （conditions/match/filters 与列表同口径）；date 传 null/'' 表示清空该日期。"""
+    denied = _page_denied(request, 'ar_records')
+    if denied:
+        return denied
+    denied = _write_denied(request)
+    if denied:
+        return denied
+    data = _parse_body(request)
+    field = (data.get('field') or '').strip()
+    if field not in BULK_SET_DATE_FIELDS:
+        return err('不支持批量修改该日期字段')
+    raw = data.get('date')
+    if raw in (None, ''):
+        value = None   # 清空该日期
+    else:
+        try:
+            value = datetime.date.fromisoformat(str(raw)[:10])
+        except ValueError:
+            return err('日期格式不正确，应为 YYYY-MM-DD')
+    if data.get('all'):
+        today = timezone.localdate()
+        qs = _ar_dept_filter(ARRecord.objects.all(), request, shared_field='project__is_shared')
+        qs = _apply_record_filters(qs, request)
+        qs = _apply_record_state_filters(qs, request, today)
+        qs = _apply_conditions(qs, request, today)
+        _fq, _fq_distinct = build_filter_q(request.GET.get('filters', ''), ARRECORD_FILTER_REGISTRY)
+        if _fq:
+            qs = qs.filter(_fq)
+            if _fq_distinct:
+                qs = qs.distinct()
+    else:
+        ids = [int(i) for i in (data.get('ids') or []) if str(i).isdigit()]
+        if not ids:
+            return err('请指定要操作的记录')
+        # ids 分支同样必须限定部门作用域，否则可跨部门改写任意记录的日期
+        qs = _ar_dept_filter(ARRecord.objects.filter(id__in=ids), request,
+                             shared_field='project__is_shared')
+    count = qs.update(**{field: value})
+    return ok({'updated': count, 'field': field,
+               'date': str(value) if value else None})
 
 
 @csrf_exempt

@@ -1,9 +1,21 @@
 """预算（budget）业务域：回款预算/付款预算 列表·详情·模板·导入导出·汇总·项目对比。共享基座来自 _common。"""
 from ._common import *  # noqa: F401,F403
+from paikuan.list_filters import build_filter_q, resolve_sort
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Budget
 # ══════════════════════════════════════════════════════════════════════════════
+
+# 收款/付款预算列表的 Excel 式列头筛选 + 排序白名单（收付两表字段一致，共用）
+BUDGET_FILTER_REGISTRY = {
+    'project_no':    {'type': 'text',   'col': 'project_no'},
+    'short_name':    {'type': 'text',   'col': 'short_name'},
+    'expected_date': {'type': 'date',   'col': 'expected_date'},
+    'sub_dept':      {'type': 'text',   'col': 'sub_dept'},
+    'delivery_dept': {'type': 'enum',   'col': 'delivery_dept'},
+    'amount':        {'type': 'number', 'col': 'amount'},
+    'notes':         {'type': 'text',   'col': 'notes'},
+}
 
 def _budget_list_create(request, Model, page_key):
     denied = _page_denied(request, page_key)
@@ -19,13 +31,24 @@ def _budget_list_create(request, Model, page_key):
         _today = timezone.localdate()
         _ds, _de = _parse_budget_date_range(request, _today)
         qs = qs.filter(expected_date__gte=_ds, expected_date__lte=_de)
+        # Excel 式列头筛选 + 排序（白名单驱动，与付款/日常收款同一基座）
+        fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), BUDGET_FILTER_REGISTRY)
+        if fq:
+            qs = qs.filter(fq)
+            if fq_distinct:
+                qs = qs.distinct()
+        sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), BUDGET_FILTER_REGISTRY)
+        qs = qs.order_by(sort_by) if sort_by else qs.order_by('-expected_date', '-id')
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
         total = qs.count()
         items = [obj.to_dict() for obj in qs[(page - 1) * size: page * size]]
         total_amount = str(qs.aggregate(s=Sum('amount'))['s'] or 0)
+        # 底部汇总栏：按事业部分类合计（占比条）
+        by_dept = {(r['delivery_dept'] or '未填'): str(r['s'] or 0)
+                   for r in qs.values('delivery_dept').annotate(s=Sum('amount')).order_by()}
         return ok({'items': items, 'total': total, 'page': page, 'size': size,
-                   'total_amount': total_amount})
+                   'total_amount': total_amount, 'by_dept': by_dept})
 
     if request.method == 'POST':
         denied = _write_denied(request)
@@ -144,6 +167,37 @@ def budget_payment(request):
 @pk_required()
 def budget_payment_detail(request, pk):
     return _budget_detail(request, pk, PaymentBudget, 'ar_budget')
+
+
+def _budget_bulk_delete(request, Model):
+    denied = _page_denied(request, 'ar_budget')
+    if denied:
+        return denied
+    denied = _delete_denied(request)
+    if denied:
+        return denied
+    if request.method != 'POST':
+        return err('Method not allowed', 405)
+    ids = _parse_body(request).get('ids') or []
+    if not isinstance(ids, list) or not ids:
+        return err('未选择要删除的记录')
+    # 仅允许删除可见部门内的记录（越权守卫）
+    qs = _ar_dept_filter(Model.objects.filter(id__in=ids), request, dept_field='delivery_dept')
+    n = qs.count()
+    qs.delete()
+    return ok({'deleted': n})
+
+
+@csrf_exempt
+@pk_required()
+def budget_collection_bulk_delete(request):
+    return _budget_bulk_delete(request, CollectionBudget)
+
+
+@csrf_exempt
+@pk_required()
+def budget_payment_bulk_delete(request):
+    return _budget_bulk_delete(request, PaymentBudget)
 
 
 def _parse_budget_date_range(request, today):
@@ -620,13 +674,14 @@ def budget_summary(request):
         expected_date__range=(start_date, end_date),
         delivery_dept__in=depts).aggregate(total=Sum('amount'))
 
-    # Actual AR collections (from ARPayment)——排除非现金来源(预收抵扣/内部往来):
-    # 回款预算是现金口径,与周期报表 _collection_actual 同口径,否则同一「回款达成率」两页两个数
+    # Actual AR collections (from ARPayment)——现金口径,与现金流/资金池同步:
+    # 排除非现金来源(预收抵扣/内部往来核销)与未兑付承兑汇票,否则同一「回款达成率」两页两个数
     ac = ARPayment.objects.filter(
         payment_date__range=(start_date, end_date),
         ar_record__deleted_at__isnull=True,
         ar_record__delivery_dept__in=depts).exclude(
-        source__in=NON_CASH_PAYMENT_SOURCES).aggregate(total=Sum('amount'))
+        source__in=NON_CASH_PAYMENT_SOURCES).exclude(
+        pending_draft_q()).aggregate(total=Sum('amount'))
 
     # Actual AP payments (from installments subtable)
     ap_total = (PaymentInstallment.objects
@@ -654,6 +709,7 @@ def budget_summary(request):
                 payment_date__range=(start_date, end_date), ar_record__delivery_dept=d,
                 ar_record__deleted_at__isnull=True,
             ).exclude(source__in=NON_CASH_PAYMENT_SOURCES
+                      ).exclude(pending_draft_q()
                       ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
             ap_d = (PaymentInstallment.objects
                     .filter(pay_date__range=(start_date, end_date), payment__department=d,
@@ -666,6 +722,45 @@ def budget_summary(request):
                 'budget_payment': float(bp_d),
                 'actual_payment': float(ap_d),
             })
+
+    # 逐月序列（预算燃尽跑道）：预算/实际按月分桶，前端画累计燃尽曲线。
+    # 口径与上方合计一致：回款排除非现金来源+未兑付承兑，付款=实付分期。
+    def _by_month(qs, date_field, amount_field):
+        out = {}
+        for r in qs.annotate(_m=TruncMonth(date_field)).values('_m').annotate(_t=Sum(amount_field)):
+            if r['_m']:
+                out[r['_m'].strftime('%Y-%m')] = float(r['_t'] or 0)
+        return out
+
+    bc_m = _by_month(CollectionBudget.objects.filter(
+        expected_date__range=(start_date, end_date), delivery_dept__in=depts),
+        'expected_date', 'amount')
+    bp_m = _by_month(PaymentBudget.objects.filter(
+        expected_date__range=(start_date, end_date), delivery_dept__in=depts),
+        'expected_date', 'amount')
+    ac_m = _by_month(ARPayment.objects.filter(
+        payment_date__range=(start_date, end_date),
+        ar_record__deleted_at__isnull=True,
+        ar_record__delivery_dept__in=depts).exclude(
+        source__in=NON_CASH_PAYMENT_SOURCES).exclude(pending_draft_q()),
+        'payment_date', 'amount')
+    ap_m = _by_month(PaymentInstallment.objects.filter(
+        pay_date__range=(start_date, end_date),
+        payment__department__in=depts, payment__deleted_at__isnull=True),
+        'pay_date', 'pay_amount')
+
+    by_month = []
+    cur = start_date.replace(day=1)
+    while cur <= end_date:
+        ym = cur.strftime('%Y-%m')
+        by_month.append({
+            'ym': ym,
+            'budget_collection': bc_m.get(ym, 0.0),
+            'actual_collection': ac_m.get(ym, 0.0),
+            'budget_payment': bp_m.get(ym, 0.0),
+            'actual_payment': ap_m.get(ym, 0.0),
+        })
+        cur = (cur + datetime.timedelta(days=32)).replace(day=1)
 
     # 净现金流——与「现金流分析」「周期报表」同一口径（剔除非现金回款、含预收/预付、
     # 预付核销为非现金不扣），避免预算页与驾驶舱算出的净现金流不一致。
@@ -684,6 +779,7 @@ def budget_summary(request):
         'payment_gap': str(budget_paid - actual_paid),
         'has_alert': actual_paid > actual_coll,
         'by_dept': by_dept_result,
+        'by_month': by_month,
         # 现金净流量（统一口径）
         'cash_inflow': str(cw['inflow']),
         'cash_outflow': str(cw['outflow']),
@@ -691,22 +787,9 @@ def budget_summary(request):
     })
 
 
-@csrf_exempt
-@pk_required()
-def budget_project_compare(request):
-    """项目维度预算对照 — 预算（收/付，按项目简称）与实际（应收回款/排款实付，
-    按项目简称）同窗对齐，逐项目展示「计划 vs 实际」全貌。
-
-    入参：date_start/date_end（默认本月）、dept（可选）。
-    返回 rows：每个涉及项目一行（收款预算/实际收款/达成率/付款预算/实际付款/
-    执行率/净现金计划与实际/状态标签）+ summary 汇总。
-    """
-    denied = _page_denied(request, 'ar_budget')
-    if denied:
-        return denied
-    if request.method != 'GET':
-        return err('Method not allowed', 405)
-
+def _compute_project_compare(request):
+    """项目维度预算对照的核心计算，供 JSON 视图与导出共用。
+    返回 (start_date, end_date, out_rows, summary)。"""
     today = timezone.localdate()
     start_date, end_date = _parse_budget_date_range(request, today)
 
@@ -748,13 +831,16 @@ def budget_project_compare(request):
               .values('short_name').annotate(s=Sum('amount'))):
         _row(g['short_name'])['budget_out'] += g['s'] or Decimal('0')
 
-    # 实际收款：应收回款经 项目简称（含预收抵扣——预算达成按应收口径）
+    # 实际收款：应收回款经 项目简称，现金口径与现金流/资金池同步——排除非现金来源
+    # （预收抵扣/内部往来核销）与未兑付承兑汇票，不虚增达成。付款侧取实付分期本就为付现口径。
     for g in (ARPayment.objects
               .filter(payment_date__range=(start_date, end_date),
                       ar_record__delivery_dept__in=depts,
                       ar_record__deleted_at__isnull=True,
                       ar_record__project__short_name__isnull=False)
               .exclude(ar_record__project__short_name='')
+              .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
+              .exclude(pending_draft_q())
               .values('ar_record__project__short_name').annotate(s=Sum('amount'))):
         _row(g['ar_record__project__short_name'])['actual_in'] += g['s'] or Decimal('0')
 
@@ -811,21 +897,75 @@ def budget_project_compare(request):
     t_ai = sum(Decimal(x['actual_in']) for x in out_rows)
     t_bo = sum(Decimal(x['budget_out']) for x in out_rows)
     t_ao = sum(Decimal(x['actual_out']) for x in out_rows)
-    return ok({
-        'start_date': str(start_date), 'end_date': str(end_date),
-        'rows': out_rows,
-        'summary': {
-            'count': len(out_rows),
-            'budget_in': str(t_bi), 'actual_in': str(t_ai), 'in_rate': _rate(t_ai, t_bi),
-            'budget_out': str(t_bo), 'actual_out': str(t_ao), 'out_rate': _rate(t_ao, t_bo),
-            'budget_net': str(t_bi - t_bo), 'actual_net': str(t_ai - t_ao),
-            'achieved': sum(1 for x in out_rows if '收款达成' in x['tags']),
-            'lagging': sum(1 for x in out_rows if '收款滞后' in x['tags']),
-            'over_budget': sum(1 for x in out_rows if '付款超预算' in x['tags']),
-            'unplanned': sum(1 for x in out_rows
-                             if '计划外收款' in x['tags'] or '计划外付款' in x['tags']),
-        },
-    })
+    summary = {
+        'count': len(out_rows),
+        'budget_in': str(t_bi), 'actual_in': str(t_ai), 'in_rate': _rate(t_ai, t_bi),
+        'budget_out': str(t_bo), 'actual_out': str(t_ao), 'out_rate': _rate(t_ao, t_bo),
+        'budget_net': str(t_bi - t_bo), 'actual_net': str(t_ai - t_ao),
+        'achieved': sum(1 for x in out_rows if '收款达成' in x['tags']),
+        'lagging': sum(1 for x in out_rows if '收款滞后' in x['tags']),
+        'over_budget': sum(1 for x in out_rows if '付款超预算' in x['tags']),
+        'unplanned': sum(1 for x in out_rows
+                         if '计划外收款' in x['tags'] or '计划外付款' in x['tags']),
+    }
+    return start_date, end_date, out_rows, summary
+
+
+@csrf_exempt
+@pk_required()
+def budget_project_compare(request):
+    """项目维度预算对照 — 预算（收/付，按项目简称）与实际（应收回款/排款实付，
+    按项目简称）同窗对齐，逐项目展示「计划 vs 实际」全貌。
+
+    入参：date_start/date_end（默认本月）、dept（可选）。
+    返回 rows：每个涉及项目一行（收款预算/实际收款/达成率/付款预算/实际付款/
+    执行率/净现金计划与实际/状态标签）+ summary 汇总。
+    """
+    denied = _page_denied(request, 'ar_budget')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    start_date, end_date, out_rows, summary = _compute_project_compare(request)
+    return ok({'start_date': str(start_date), 'end_date': str(end_date),
+               'rows': out_rows, 'summary': summary})
+
+
+@csrf_exempt
+@pk_required()
+def budget_project_compare_export(request):
+    """项目对照导出为 Excel：列与页面表格一致，含达成/执行率、缺口、净现金及状态，
+    末尾附合计行。范围随 date_start/date_end/dept，与页面同口径。"""
+    denied = _page_denied(request, 'ar_budget')
+    if denied:
+        return denied
+    if request.method != 'GET':
+        return err('Method not allowed', 405)
+    start_date, end_date, out_rows, summary = _compute_project_compare(request)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '项目对照'
+    headers = ['项目简称', '交付部门', '客户', '负责人',
+               '收款预算', '实际收款', '收款达成率%', '收款缺口',
+               '付款预算', '实际付款', '付款执行率%', '付款缺口',
+               '净现金(计划)', '净现金(实际)', '状态']
+    _header_row(ws, headers, color='1B6E35')
+
+    def _f(v):
+        return float(v) if v not in (None, '') else 0.0
+    for r in out_rows:
+        ws.append([
+            r['project'], r['dept'], r['customer'], r['manager'],
+            _f(r['budget_in']), _f(r['actual_in']), r['in_rate'], _f(r['in_gap']),
+            _f(r['budget_out']), _f(r['actual_out']), r['out_rate'], _f(r['out_gap']),
+            _f(r['budget_net']), _f(r['actual_net']), ' / '.join(r['tags']),
+        ])
+    ws.append([])
+    ws.append(['合计', '', '', '',
+               _f(summary['budget_in']), _f(summary['actual_in']), summary['in_rate'], '',
+               _f(summary['budget_out']), _f(summary['actual_out']), summary['out_rate'], '',
+               _f(summary['budget_net']), _f(summary['actual_net']), ''])
+    return _export_response(wb, f'项目对照_{start_date}_{end_date}.xlsx')
 
 
 

@@ -768,6 +768,7 @@ onMounted(async () => {
 .dbg-t2 th { background: var(--panel-2, #faf6f0); color: var(--muted, #9b8070); }
 .dbg-t2 .mono { font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; }
 .ding-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; }
+@media (max-width: 620px) { .ding-form { grid-template-columns: 1fr; } }
 .ding-fld { display: flex; flex-direction: column; gap: 2px; }
 .ding-fld.wide { grid-column: 1 / -1; }
 .ding-fld label { font-size: 11px; color: var(--muted, #9b8070); }

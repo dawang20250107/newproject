@@ -2,7 +2,7 @@
 import { onActivated } from 'vue'
 import { confirmDlg } from '../composables/confirm.js'
 import { resultDlg } from '../composables/bulkResult.js'
-import { ref, reactive, onMounted, onBeforeUnmount, computed, watch } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, computed, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../api/index.js'
 import { useAuthStore } from '../stores/auth.js'
@@ -10,6 +10,8 @@ import ContextMenu from '../components/ContextMenu.vue'
 import SelCell from '../components/SelCell.vue'
 import DingtalkSyncPanel from '../components/DingtalkSyncPanel.vue'
 import { useContextMenu } from '../composables/useContextMenu.js'
+import { useHoverTip } from '../composables/useHoverTip.js'
+import HoverTip from '../components/HoverTip.vue'
 import { copyText, copyRowTSV } from '../utils/clipboard.js'
 import { todayCST } from '../constants.js'
 import { downloadBlob } from '../utils/download.js'
@@ -33,6 +35,7 @@ import { cachedGet } from '../api/refCache.js'
 import { useFileDrop } from '../composables/useFileDrop.js'
 import { useEscClearSelection } from '../composables/useEscClearSelection.js'
 import { useModalEsc } from '../composables/useModalEsc.js'
+import { useModalEnter } from '../composables/useModalEnter.js'
 const toast = useToast()
 
 // ── 桌面拖拽导入：普通导入 / 运输导入 双落区 ────────────────────────────────
@@ -579,11 +582,42 @@ async function load(){
 function search(){ page.value=1; clearSelection(); load() }
 function setPage(p){ page.value=p; load() }
 async function loadDepts(){ try{const r=await cachedGet('/departments'); depts.value=r.data}catch{}}
-function openCreate(){ editId.value=null; Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', notes:'', amount:'', payee:'', status:'pending' }); showCreate.value=true }
+// C3: 新增弹窗打开即聚焦首个可编辑字段（申请人），省一次点击；编辑回填场景不抢焦点
+const applicantInputRef = ref(null)
+const summaryInputRef = ref(null)
+const apprNoInputRef = ref(null)
+function openCreate(){ editId.value=null; contSaved.value=0; Object.assign(form,{ applicant:'', department:deptChoices.value[0]||'', secondary_dept:'', project_short_name:'', approval_number:'', g7_number:'', summary:'', notes:'', amount:'', payee:'', status:'pending' }); showCreate.value=true; nextTick(() => applicantInputRef.value?.focus()) }
 // 编辑：复用新增弹窗，回填后改走 PUT。已归档（已排款/已拒绝/已撤销）记录为终态不可编辑，
 // 仅金额、状态等受后端口径约束（金额仅「待审批」可改、审批/拒绝须审批权限），后端会兜底校验
 function openEdit(it){ editId.value=it.id; Object.assign(form,{ applicant:it.applicant||'', department:it.department||'', secondary_dept:it.secondary_dept||'', project_short_name:it.project_short_name||'', approval_number:it.approval_number||'', g7_number:it.g7_number||'', summary:it.summary||'', notes:it.notes||'', amount:it.amount||'', payee:it.payee||'', status:it.status||'pending' }); showCreate.value=true }
-async function create(){ saving.value=true; try{ if(editId.value){ await api.put(`/approvals/${editId.value}`, form) } else { await api.post('/approvals', form) } showCreate.value=false; load(); toast.success('已保存') } catch(e){ toast.error(e?.msg||e?.error||'操作失败') } finally{ saving.value=false } }
+const contSaved = ref(0)
+async function create(andContinue = false){
+  if(saving.value) return; saving.value=true
+  try{
+    if(editId.value){ await api.put(`/approvals/${editId.value}`, form) }
+    else { await api.post('/approvals', form) }
+    if(andContinue && !editId.value){
+      // 保存并继续：保留申请人/部门/二级部门上下文，仅清逐条字段，连续录同批审批
+      contSaved.value++
+      Object.assign(form, { project_short_name:'', approval_number:'', g7_number:'', summary:'', notes:'', amount:'', payee:'', status:'pending' })
+      load()
+      toast.success(`已连续保存 ${contSaved.value} 条`)
+      nextTick(() => summaryInputRef.value?.focus())
+    } else {
+      showCreate.value=false; load(); toast.success('已保存')
+    }
+  } catch(e){ toast.error(e?.msg||e?.error||'操作失败') } finally{ saving.value=false }
+}
+// 以此新建：复制业务字段（唯一编号除外，留空由用户填），连续开单省重录
+function createFrom(it){
+  openCreate()
+  Object.assign(form, {
+    applicant: it.applicant||'', department: it.department||'', secondary_dept: it.secondary_dept||'',
+    project_short_name: it.project_short_name||'', payee: it.payee||'', summary: it.summary||'',
+    amount: it.amount||'', notes: it.notes||'',
+  })   // approval_number / g7_number 留空：唯一单号需重填
+  nextTick(() => apprNoInputRef.value?.focus?.())
+}
 // 双击行 → 编辑（点在勾选框/状态下拉等控件上不触发；已归档不可编辑）
 function onRowDblClick(it, e){
   if (e.target.closest('input, button, select, textarea, a')) return
@@ -606,6 +640,7 @@ async function updateStatus(it, status){
 
 // ── 右键上下文菜单 ────────────────────────────────────────────────────────────
 const ctx = useContextMenu()
+const { tip, showTip, moveTip, hideTip } = useHoverTip()
 const APR_STATUSES = [
   { v: 'pending', l: '待审批' }, { v: 'approved', l: '审批通过' },
   { v: 'rejected', l: '已拒绝' }, { v: 'canceled', l: '已撤销' },
@@ -645,6 +680,7 @@ const ctxItems = computed(() => {
       action: r => dingtalkStatusSync([r.id]),
     },
     { key: 'edit', label: '编辑审批记录', icon: 'edit', shortcut: 'E', hidden: !auth.canCreate, disabled: i.archived, action: r => openEdit(r) },
+    { key: 'clone', label: '以此新建', icon: 'copy', hidden: !auth.canCreate, action: r => createFrom(r) },
     { key: 'meta', label: '补录二级部门 / 项目', icon: 'cell', action: r => openMeta(r) },
     { key: 'del', label: '删除审批记录', icon: 'trash', danger: true, hidden: !auth.canDelete, action: r => deleteOne(r) },
     { divider: true },
@@ -847,6 +883,10 @@ useModalEsc(
   [() => showBatchSched.value, () => (showBatchSched.value = false)],
   [() => showDelConfirm.value, () => (showDelConfirm.value = false)],
 )
+// C2: 弹窗 Ctrl/Cmd+Enter 提交（与 Esc 关闭配对）：各自只在对应弹窗打开时触发；
+// 防重由 handler 自身的 saving/schedBusy 守卫兜底
+useModalEnter(() => showCreate.value, create)
+useModalEnter(() => showSchedule.value, doSchedule)
 
 defineOptions({ name: 'ApprovalRecordsPage' })
 // keep-alive 返回本页:DOM 秒开,数据静默刷新(items 未清,列表不闪骨架)。
@@ -901,7 +941,24 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
         <button :class="{ on: subtab === 'dingtalk' }" @click="subtab = 'dingtalk'">🔗 钉钉同步</button>
       </div>
     </div>
+    <!-- 页头右侧只留操作类（模板/导入/导出/新增），单行不换行；搜索类下沉到卡片内筛选条 -->
     <div class="topbar-tools" v-show="subtab === 'list'">
+    <button class="btn btn-ghost btn-sm" @click="downloadTemplate">模板</button>
+    <button v-if="canTransport" class="btn btn-ghost btn-sm tp-btn" :disabled="importingTransport" @click="triggerTransportImport"
+            title="运输事业部专用：上传运输系统导出的对账单原始表 → 金额自动取绝对值、对账单号去重，建为「已通过」审批记录，再排款进付款管理">
+      <span style="margin-right:3px">🚚</span>{{ importingTransport?'导入中…':'运输导入' }}</button>
+    <button class="btn btn-ghost btn-sm" :disabled="importing" @click="triggerImport"
+            title="导入会自动做规则校验 + AI 智能复核；发现问题时 AI 会介入，协助你就地修正后再导入">{{ importing?'导入中…':'导入' }}</button>
+    <button class="btn btn-ghost btn-sm" @click="doExport" :disabled="exporting || bgExporting"
+            title="导出当前筛选结果；超过 5000 行自动转后台导出，完成后自动下载">{{ exporting?'导出中…':(bgExporting?'后台导出中…':'导出') }}</button>
+    <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增</button>
+  </div></div>
+  <input ref="fileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImport" />
+  <input ref="transportFileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onTransportImport" />
+  <DingtalkSyncPanel v-if="subtab === 'dingtalk'" @synced="load()" />
+  <div v-show="subtab === 'list'" class="card approval-card fh-fill">
+  <!-- 搜索类筛选下沉到表格内上方（对齐付款管理版式）：全局搜索 + 单号 + 清除 + 方案 -->
+  <div class="filter-bar apr-filter-bar">
     <input v-model="q" class="global-search" placeholder="申请人 / 编号 / 项目 / 摘要 / 收款方…" @keyup.enter="search"/>
     <button class="btn btn-ghost btn-sm" @click="search">搜索</button>
     <input v-model="numbersInput" class="num-inline" :class="{ on: !!numbersFilter }"
@@ -909,24 +966,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
            title="粘贴一个或一批单号（空格/换行/+/逗号等任意分隔）回车筛选；命中 审批编号/对账单号/G7" @keyup.enter="applyNumbersInput" />
     <button v-if="activeFilterCount || q || sortField || numbersFilter" class="btn btn-ghost btn-sm clear-all" @click="clearAllFilters" title="清除全部列筛选 / 搜索 / 排序 / 单号">清除筛选<span v-if="activeFilterCount">（{{ activeFilterCount }}）</span></button>
     <SchemePicker :ctl="schemes" :can-public="auth.canCreate" :is-super-admin="auth.isSuperAdmin" />
-    <span class="tb-sep"></span>
-    <button class="btn btn-ghost btn-sm" @click="downloadTemplate">模板</button>
-    <button class="btn btn-ghost btn-sm" :disabled="importing" @click="triggerImport"
-            title="导入会自动做规则校验 + AI 智能复核；发现问题时 AI 会介入，协助你就地修正后再导入">{{ importing?'导入中…':'导入' }}</button>
-    <button class="btn btn-ghost btn-sm" @click="doExport" :disabled="exporting || bgExporting"
-            title="导出当前筛选结果；超过 5000 行自动转后台导出，完成后自动下载">{{ exporting?'导出中…':(bgExporting?'后台导出中…':'导出') }}</button>
-    <button v-if="canTransport" class="btn btn-ghost btn-sm tp-btn" :disabled="importingTransport" @click="triggerTransportImport"
-            title="运输事业部专用：上传运输系统导出的对账单原始表 → 金额自动取绝对值、对账单号去重，建为「已通过」审批记录，再排款进付款管理">
-      <span style="margin-right:3px">🚚</span>{{ importingTransport?'导入中…':'运输导入' }}</button>
-    <button v-if="auth.canCreate" class="btn btn-primary btn-sm" @click="openCreate">+ 新增</button>
-  </div></div>
-  <input ref="fileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onImport" />
-  <input ref="transportFileRef" type="file" accept=".xlsx,.xls,.csv" style="display:none" @change="onTransportImport" />
-  <DingtalkSyncPanel v-if="subtab === 'dingtalk'" @synced="load()" />
-  <div v-show="subtab === 'list'" class="card approval-card fh-fill">
+  </div>
   <!-- 登记时间区间：与其他台账同款预设条；列表/汇总/导出随之联动 -->
   <div class="apr-timebar">
-    <DateRangeChips v-model:start="dateStart" v-model:end="dateEnd"
+    <DateRangeChips v-model:start="dateStart" v-model:end="dateEnd" custom-chip
                     label="登记时间" initial="all" @change="onRangeChange" />
   </div>
   <div v-if="loadErr" class="err-banner">⚠️ {{ loadErr }} <button class="btn-link" @click="load()">重试</button></div>
@@ -938,19 +981,20 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   <div v-if="!loadErr" class="table-wrap page-scroll" :ref="rangeSel.setRoot"><table class="approval-table">
     <colgroup>
       <col class="cg-sel" /><!-- 选择 -->
-      <col style="width:6%" /><!-- 申请人 -->
-      <col style="width:7%" /><!-- 所属事业部 -->
-      <col style="width:7%" /><!-- 二级部门 -->
-      <col style="width:8%" /><!-- 项目简称 -->
-      <col style="width:12%" /><!-- 审批编号（放宽，尽量完整展示 ZD…对账单号/长编号） -->
-      <col style="width:8%" /><!-- G7编号 -->
-      <col style="width:13%" /><!-- 摘要 -->
-      <col class="cg-status" /><!-- 审批状态（缩小） -->
-      <col style="width:7%" /><!-- 申请金额 -->
-      <col style="width:7%" /><!-- 已排金额 -->
-      <col style="width:7%" /><!-- 未排金额 -->
-      <col style="width:10%" /><!-- 收款主体 -->
-      <col style="width:8%" /><!-- 备注（末列，压缩） -->
+      <!-- table-layout:auto → 各结构化列按内容自适应全展示；摘要/收款主体/备注由 td max-width 封顶 -->
+      <col /><!-- 申请人 -->
+      <col /><!-- 所属事业部 -->
+      <col /><!-- 二级部门 -->
+      <col /><!-- 项目简称 -->
+      <col /><!-- 审批编号 -->
+      <col /><!-- G7编号 -->
+      <col /><!-- 摘要 -->
+      <col class="cg-status" /><!-- 审批状态 -->
+      <col /><!-- 申请金额 -->
+      <col /><!-- 已排金额 -->
+      <col /><!-- 未排金额 -->
+      <col /><!-- 收款主体 -->
+      <col /><!-- 备注 -->
     </colgroup>
     <thead><tr>
       <th class="sel-col"><input type="checkbox" :checked="pageAllSelected" :indeterminate.prop="hasSelection && !pageAllSelected" title="全选本页" @change="toggleSelectPage" /></th>
@@ -984,7 +1028,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       <td :title="i.applicant">{{i.applicant}}</td><td :title="i.department">{{i.department}}</td>
       <td class="meta-cell" :title="i.secondary_dept">{{ i.secondary_dept || '—' }}</td>
       <td class="meta-cell" :title="i.project_short_name">{{ i.project_short_name || '—' }}</td>
-      <td class="mono" :title="i.approval_number">{{i.approval_number || '—'}}</td><td class="mono g7-cell" :title="i.g7_number">{{i.g7_number || '—'}}</td><td class="summary" :title="i.summary">{{i.summary}}</td>
+      <td class="mono" :title="i.approval_number">{{i.approval_number || '—'}}</td><td class="mono g7-cell" :title="i.g7_number">{{i.g7_number || '—'}}</td><td class="summary cell-desc" @mouseenter="showTip($event, i.summary)" @mousemove="moveTip" @mouseleave="hideTip">{{i.summary}}</td>
       <td :class="['status-cell', 'st-' + i.status]" :title="i.status === 'approved' ? '审批通过，可排款' : (i.status === 'pending' ? '待审批，通过后方可排款' : '')">
         <div class="status-wrap">
           <span class="status-badge">{{ {pending:'待审批',approved:'审批通过',rejected:'已拒绝',canceled:'已撤销'}[i.status] || i.status }}</span>
@@ -1094,18 +1138,18 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
       申请金额仅「待审批」状态可改（已审批请先退回待审批）；设为「审批通过/已拒绝」需审批权限；已排款/已归档记录不可在此编辑。
     </p>
     <div class="form-grid">
-    <label class="form-field"><span>申请人*</span><input v-model="form.applicant"/></label>
+    <label class="form-field"><span>申请人*</span><input ref="applicantInputRef" v-model="form.applicant"/></label>
     <label class="form-field"><span>所属事业部*</span><select v-model="form.department"><option v-for="d in deptChoices" :key="d" :value="d">{{d}}</option></select></label>
     <label class="form-field"><span>二级部门</span><input v-model="form.secondary_dept" placeholder="选填，如：华东项目部"/></label>
     <label class="form-field"><span>项目简称</span><ProjectShortNamePicker v-model="form.project_short_name" @picked="p => onProjPicked(p, form)"/></label>
-    <label class="form-field"><span>审批编号</span><input v-model="form.approval_number" placeholder="21位数字；留空自动填21个0占位"/></label>
+    <label class="form-field"><span>审批编号</span><input ref="apprNoInputRef" v-model="form.approval_number" placeholder="21位数字；留空自动填21个0占位"/></label>
     <label class="form-field"><span>G7编号</span><input v-model="form.g7_number" placeholder="选填，最多21位数字" maxlength="21"/></label>
-    <label class="form-field"><span>摘要</span><input v-model="form.summary"/></label>
+    <label class="form-field"><span>摘要</span><input ref="summaryInputRef" v-model="form.summary"/></label>
     <label class="form-field"><span>备注</span><input v-model="form.notes" placeholder="选填"/></label>
     <label class="form-field"><span>申请金额*</span><input v-model="form.amount" type="number" step="0.01"/></label>
     <label class="form-field"><span>收款主体</span><input v-model="form.payee"/></label>
     <label class="form-field"><span>审批状态</span><select v-model="form.status"><option value="pending">待审批</option><option value="approved">审批通过</option><option value="rejected">已拒绝</option><option value="canceled">已撤销</option></select></label>
-  </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showCreate=false">取消</button><button class="btn btn-primary" :disabled="saving" @click="create">保存</button></div></div></div></Teleport>
+  </div></div><div class="modal-footer"><button class="btn btn-ghost" @click="showCreate=false">取消</button><button v-if="!editId" class="btn btn-ghost" :disabled="saving" @click="create(true)" title="保存后不关窗，保留申请人/部门，连续录下一条">保存并继续</button><button class="btn btn-primary" :disabled="saving" @click="create()">保存</button></div></div></div></Teleport>
 
   <Teleport to="body"><div v-if="showSchedule" class="modal-overlay"><div class="modal-box"><div class="modal-header"><h3>排款（支持分批）</h3></div><div class="modal-body">
     <div class="sched-progress">
@@ -1214,28 +1258,32 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 
   <!-- 右键上下文菜单 -->
   <ContextMenu :ctx="ctx" :items="ctxItems" />
+  <HoverTip :tip="tip" />
 </div></template>
 
 <style scoped>
 /* 运输事业部专用导入按钮：强调色与普通导入区分 */
 .tp-btn { border-color: rgba(201,99,66,0.4); color: var(--primary); }
 .tp-btn:hover:not(:disabled) { background: rgba(201,99,66,0.08); border-color: var(--primary); }
-.err-banner { background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: #856404; display: flex; align-items: center; gap: 8px; }
+.err-banner { background: var(--c-warn-bg); border: 1px solid var(--c-warn-bdr); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: var(--c-warn); display: flex; align-items: center; gap: 8px; }
 .apr-timebar { padding: 2px 0 8px; }
 .approval-card { padding: 12px; }
 /* 固定视口布局：卡片底部为吸底合计条预留空间 */
 /* 吸底 bottom-bar(36px) 占位：滚动区底部留白，最后一行不被遮挡 */
 .table-wrap.page-scroll { padding-bottom: 40px; }
 /* 搜索 + 方案 + 导入导出 收纳进页头右侧，腾出整行垂直空间给表格 */
-.tb-left { display: flex; align-items: center; gap: 16px; }
-.subtabs { display: inline-flex; gap: 2px; background: var(--surface-2, rgba(160,120,80,.08)); border-radius: 9px; padding: 3px; }
+.tb-left { display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+/* 页头标题/子标签不换行：空间不足时优先压缩右侧工具区（topbar-tools 可换行），标题恒定一行 */
+.tb-left h1 { white-space: nowrap; flex-shrink: 0; margin: 0; }
+.subtabs { display: inline-flex; gap: 2px; background: var(--surface-2, rgba(160,120,80,.08)); border-radius: 9px; padding: 3px; flex-shrink: 0; }
 .subtabs button { border: none; background: none; padding: 6px 14px; border-radius: 7px; font-size: 13.5px; font-weight: 600;
-  color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; transition: all .14s; }
+  white-space: nowrap; color: var(--muted, #9b8070); cursor: pointer; font-family: inherit; transition: all .16s; }
 .subtabs button:hover { color: var(--text, #4a3322); }
-.subtabs button.on { background: var(--card-bg, #fff); color: var(--primary, #1565c0); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+.subtabs button.on { background: var(--card); color: var(--primary); box-shadow: var(--shadow-sm); }
 .topbar-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-.topbar-tools .global-search { min-width: 180px; flex: 0 1 240px; height: 30px; }
-.tb-sep { width: 1px; align-self: stretch; min-height: 20px; background: var(--border); margin: 0 2px; }
+/* 卡片内筛选条（搜索类下沉，对齐付款管理）：搜索占主，单号/清除/方案跟随；比默认 filter-bar 更紧凑 */
+.apr-filter-bar { margin-bottom: 6px; }
+.apr-filter-bar .global-search { flex: 1 1 300px; min-width: 200px; height: 32px; }
 .clear-all { color: var(--primary); }
 /* 批量单号筛选弹层 */
 .numfilter-wrap { position: relative; }
@@ -1244,20 +1292,19 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 12px; text-align: left; }
 .nf-title { font-size: 12.5px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
 .nf-title span { font-weight: 400; color: var(--muted); font-size: 11px; }
-.nf-area { width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; padding: 8px;
+.nf-area { width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 8px;
   font-size: 12.5px; font-family: ui-monospace, Menlo, monospace; resize: vertical; }
 .nf-area:focus { outline: none; border-color: var(--primary); }
 .nf-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
 .nf-count { font-size: 12px; color: var(--muted); }
-/* 列头：字段名完整展示，空间不足时换行成两行（不挤压、不截断），漏斗不裁切 */
+/* 列头：字段名整体不换行、不压缩；宽度不足时表格整体横向滚动，绝不把短表头挤成竖排 */
 .approval-table thead th {
-  overflow: visible; white-space: normal; vertical-align: middle;
+  overflow: visible; white-space: nowrap; vertical-align: middle;
   line-height: 1.25; height: auto; padding-top: 5px; padding-bottom: 5px;
   font-size: 12px; letter-spacing: -0.2px;
 }
 .approval-table thead :deep(.colf) { align-items: center; }
-/* 换行时两行字数尽量均衡（text-wrap:balance），避免 4+1 这种头重脚轻 */
-.approval-table thead :deep(.colf-label) { white-space: normal; text-wrap: balance; }
+.approval-table thead :deep(.colf-label) { white-space: nowrap; }
 /* 表头随表体滚动吸顶（不透明背景，避免行透出） */
 .table-wrap.page-scroll thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 
@@ -1265,7 +1312,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .bb-hint { font-size: 11px; color: var(--muted); margin-left: 8px; opacity: 0.8; white-space: nowrap; cursor: help; }
 @media (max-width: 900px) { .bb-hint { display: none; } }
 /* width:100% 充满；min-width 保证窄屏下横向滚动而非把列名/数据挤扁 */
-.approval-table { width: 100%; min-width: 1120px; table-layout: fixed; }
+.approval-table { width: 100%; min-width: 1200px; table-layout: auto; }
 /* 列宽由 <colgroup> 统一声明；选择列固定窄宽、审批状态列缩小，其余按百分比分配 */
 .approval-table col.cg-sel { width: 34px; }
 /* 审批状态列：宽度够放下「审批通过」整词 + 下拉箭头，不再截断成「审批」 */
@@ -1274,7 +1321,10 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 紧凑排版：数据量大，行间距固定收紧（固定行高 + 单行省略，超出鼠标悬停 title 展示） */
 /* 列多、字段密：本表用更紧凑的字号/横向内边距，尽量让各列内容完整展示 */
 .approval-table { --td-fs: 12px; --td-px: 6px; }
-.approval-table th, .approval-table td { padding: var(--td-py) var(--td-px); height: var(--td-h); box-sizing: border-box; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--td-fs); line-height: 1.4; }
+.approval-table th, .approval-table td { padding: var(--td-py) var(--td-px); height: var(--td-h); box-sizing: border-box; white-space: nowrap; font-size: var(--td-fs); line-height: 1.4; }
+/* 长文本列封顶：摘要超宽截断+悬浮看全文，其余列按内容自适应全展示 */
+.approval-table td.summary { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+.approval-table td.meta-cell, .approval-table td.notes-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 /* 空状态整行：跨列居中、取消定高/裁剪，表头留顶部、提示紧贴其下 */
 .approval-table td.empty-cell { height: auto; white-space: normal; overflow: visible; text-align: center; padding: 20px 8px; }
 .approval-table th.sel-col, .approval-table td.sel-col { text-align: center; overflow: visible; padding: 4px 4px; }
@@ -1282,8 +1332,8 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 审批状态色码徽章：badge 显示颜色，transparent overlay select 捕获交互 */
 .status-wrap { position: relative; display: inline-block; width: 100%; }
 .status-badge {
-  display: block; border-radius: 999px; padding: 2px 8px;
-  font-size: 11.5px; font-weight: 700; border: 1px solid transparent;
+  display: block; border-radius: var(--radius-lg); padding: 2px 8px;
+  font-size: 11.5px; font-weight: 600; border: 1px solid transparent;
   text-align: center; white-space: nowrap; pointer-events: none;
 }
 .status-overlay {
@@ -1291,13 +1341,13 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   width: 100%; height: 100%; border: none; background: none;
 }
 .status-overlay:disabled { cursor: default; }
-.status-cell.st-pending  .status-badge { color: #8a6d1a; background: rgba(255,213,79,0.25); border-color: rgba(255,193,7,0.6); }
-.status-cell.st-approved .status-badge { color: #1b5e20; background: rgba(46,125,50,0.18); border-color: rgba(46,125,50,0.6); }
-.status-cell.st-rejected .status-badge { color: #b71c1c; background: rgba(198,40,40,0.14); border-color: rgba(198,40,40,0.55); }
-.status-cell.st-canceled .status-badge { color: #5f5f5f; background: rgba(120,120,120,0.15); border-color: rgba(120,120,120,0.5); }
+.status-cell.st-pending  .status-badge { color: var(--c-warn); background: var(--c-warn-bg); border-color: var(--c-warn-bdr); }
+.status-cell.st-approved .status-badge { color: var(--c-success); background: var(--c-success-bg); border-color: var(--c-success-bdr); }
+.status-cell.st-rejected .status-badge { color: var(--c-danger); background: var(--c-danger-bg); border-color: var(--c-danger-bdr); }
+.status-cell.st-canceled .status-badge { color: var(--muted); background: rgba(120,120,120,0.12); border-color: rgba(120,120,120,0.3); }
 .g7-cell { color: var(--muted); }
 /* 行悬停高亮：宽表跨 14 列时帮助视线锁定整行（明细行/选中行不参与/不被覆盖） */
-.approval-table tbody tr:not(.apr-plan-detail-row):hover td { background: rgba(201,99,66,0.045); }
+.approval-table tbody tr:not(.apr-plan-detail-row):hover td { background: rgba(201,99,66,0.048); }
 .approval-table tr.row-sel td,
 .approval-table tbody tr.row-sel:hover td { background: rgba(201,99,66,0.09); }
 /* Excel 式区域选择高亮已收归全局 style.css（td.cell-range-sel） */
@@ -1306,27 +1356,31 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 /* 批量操作条：固定浮动在视口底部居中，全选后无需下拉即可操作 */
 .bulk-bar { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 1200;
   display: flex; align-items: center; gap: 12px; padding: 10px 18px;
-  border-radius: 12px; background: var(--card); border: 1px solid rgba(198,40,40,0.35);
-  box-shadow: 0 8px 28px rgba(0,0,0,0.18); }
+  border-radius: var(--radius); background: var(--card); border: 1px solid rgba(198,40,40,0.35);
+  box-shadow: var(--shadow-lg); }
 .bulk-n { font-size: 13px; color: var(--text); }
-.bulk-selall { border: 1px solid var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); border-radius: 8px; padding: 5px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.bulk-selall { border: 1px solid var(--primary); background: rgba(201,99,66,0.08); color: var(--primary); border-radius: var(--radius-sm); padding: 5px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: filter .16s; }
+.bulk-selall:hover:not(:disabled) { background: rgba(201,99,66,0.14); }
 .bulk-selall:disabled { opacity: .5; cursor: default; }
-.bulk-approve { margin-left: auto; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--c-success); color: #fff; }
+.bulk-approve { margin-left: auto; border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--c-success); color: #fff; transition: filter .16s; }
+.bulk-approve:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-approve:disabled { opacity: .5; cursor: default; }
-.bulk-act { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--primary); color: #fff; }
+.bulk-act { border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--primary); color: #fff; transition: filter .16s; }
+.bulk-act:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-act:disabled { opacity: .5; cursor: default; }
-.bulk-del { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--danger); color: #fff; }
+.bulk-del { border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--danger); color: #fff; transition: filter .16s; }
+.bulk-del:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-del:disabled { opacity: .6; cursor: default; }
 .bulk-cancel { border: none; background: none; color: var(--muted); font-size: 12.5px; cursor: pointer; }
 .del-warn { font-size: 13px; color: var(--danger); margin: 0 0 12px; line-height: 1.6; }
 .del-tip { font-size: 13px; color: var(--text); margin: 0 0 8px; }
-.del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 14px; box-sizing: border-box; }
+.del-input { width: 100%; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: var(--radius-xs); font-size: 14px; box-sizing: border-box; }
 .del-input:focus { border-color: var(--danger); outline: none; }
 /* 实心危险按钮统一走全局 .btn-danger-solid（style.css） */
 .meta-cell { color: var(--muted); }
-.sched-prepaid-hint { font-size: 12.5px; color: #8a6d1a; background: rgba(255,213,79,0.14);
-  border: 1px solid rgba(255,193,7,0.35); border-radius: 9px; padding: 9px 12px; margin-bottom: 12px; line-height: 1.7; }
-.sched-prepaid-hint b { color: #6d4c00; }
+.sched-prepaid-hint { font-size: 12.5px; color: var(--amber-text); background: var(--amber-bg, rgba(245,127,23,0.10));
+  border: 1px solid var(--c-warn-bdr); border-radius: var(--radius-sm); padding: 9px 12px; margin-bottom: 12px; line-height: 1.7; }
+.sched-prepaid-hint b { color: var(--amber-deep, var(--c-warn)); }
 .sched-progress { display: flex; gap: 18px; font-size: 13px; color: var(--muted);
   background: rgba(201,99,66,.05); border-radius: 9px; padding: 9px 12px; margin-bottom: 10px; }
 .sched-progress b { font-variant-numeric: tabular-nums; color: var(--text); }
@@ -1350,7 +1404,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .batch-row-rem { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .batch-row-amt { width: 120px; height: 30px; padding: 0 8px; border: 1.5px solid var(--border);
-  border-radius: 7px; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; box-sizing: border-box; }
+  border-radius: var(--radius-xs); font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; box-sizing: border-box; }
 .batch-row-amt:focus { border-color: var(--primary); outline: none; }
 .batch-row-amt.bad { border-color: var(--danger); background: rgba(198,40,40,0.05); }
 .batch-row.row-bad { background: rgba(198,40,40,0.035); }
@@ -1371,17 +1425,20 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .remain-c { color: var(--c-warn); font-weight: 600; }
 .remain-c.remain-zero { color: var(--muted); font-weight: 400; }
 .summary, .payee { max-width: 100%; }
+.cell-desc { cursor: help; }
 .notes-cell { color: var(--muted); }
-.approval-table select { width: 100%; min-width: 0; max-width: 100%; height: 26px; font-size: 12px; padding: 0 20px 0 6px; background-position: right 6px center; }
+.approval-table select { width: 100%; min-width: 0; max-width: 100%; height: 28px; font-size: 12px; padding: 0 20px 0 6px; background-position: right 6px center; }
 .pg-jump { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); margin-left: 8px; }
 .pg-jump-input { width: 46px; text-align: center; padding: 2px 4px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
 /* 已排金额列：可点击展开排款明细 */
 .approval-table td.plan-cell { cursor: pointer; user-select: none; }
 .plan-caret { font-size: 9px; color: var(--muted); margin-left: 3px; }
 /* 批量退回按钮 */
-.bulk-return { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: var(--c-warn); color: #fff; }
+.bulk-return { border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--c-warn); color: #fff; transition: filter .16s; }
+.bulk-return:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-return:disabled { opacity: .5; cursor: default; }
-.bulk-ding { border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; background: #1565c0; color: #fff; }
+.bulk-ding { border: none; border-radius: var(--radius-sm); padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--c-info); color: #fff; transition: filter .16s; }
+.bulk-ding:hover:not(:disabled) { filter: brightness(1.06); }
 .bulk-ding:disabled { opacity: .5; cursor: default; }
 /* 排款批次明细展开行 */
 .apr-plan-detail-row td { padding: 0; }
@@ -1408,7 +1465,7 @@ onBeforeUnmount(()=>window.removeEventListener('pk:depts-changed', onScopeChange
 .apd-cancel { border: 1px solid var(--border); background: none; border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; color: var(--muted); }
 .apd-return-all { margin-left: auto; border: 1px solid var(--c-warn); background: rgba(230,81,0,0.08); color: var(--c-warn); border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; font-weight: 600; }
 .apd-return-all:hover { background: var(--c-warn); color: #fff; }
-.num-inline { width: 168px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px;
+.num-inline { width: 168px; padding: 5px 9px; border: 1px solid var(--border); border-radius: var(--radius-xs);
   font-size: 12px; background: var(--row-bg); color: var(--text); flex-shrink: 0; }
 .num-inline::placeholder { color: var(--muted-light); }
 .num-inline:focus { border-color: var(--primary); outline: none; }

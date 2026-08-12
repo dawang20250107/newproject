@@ -51,15 +51,18 @@ def cash_flow_window(depts, start, end):
     """[start,end] 区间的经营现金净流量——全系统统一口径（驾驶舱「现金流分析」、
     周期报表「现金流情况」、预算管理「净现金流」共用，确保三处口径一致）：
 
-      流入 = 现金回款（剔除非现金来源：预收抵扣/内部往来）+ 预收
+      流入 = 现金回款（剔除非现金来源：预收抵扣/内部往来；剔除未兑付承兑汇票）+ 预收
       流出 = 实付分期 + 预付（预付核销为非现金结转，不计入）
       净额 = 流入 − 流出
 
+    「可动用货币资金」口径，与资金池一致（资金池 = 期初 + 本窗口净流）；未兑付
+    承兑汇票持票未到期，非可动用现金，故排除。
     返回 Decimal 字典；金额格式化由各调用方按需处理。"""
     coll = (ARPayment.objects
             .filter(ar_record__delivery_dept__in=depts, payment_date__gte=start, payment_date__lte=end,
                     ar_record__deleted_at__isnull=True)
             .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
+            .exclude(pending_draft_q())
             .aggregate(x=Sum('amount'))['x'] or Decimal('0'))
     # 排除已软删除的付款台账（回收站）：删除的付款不构成现金流出
     paid = (PaymentInstallment.objects
@@ -69,11 +72,14 @@ def cash_flow_window(depts, start, end):
     # 预付核销冲抵不从实付中扣：实付分期即本期真实付现，预付冲抵是计划的另一块
     # （covered=已付+冲抵，互不重叠）；预付现金已在 occur_date 作为 advance_paid 计出，
     # 核销无新现金事件。与预收核销对称（预收核销由'预收抵扣'非现金来源排除）。
+    # 预收/预付按「分期收付日期」计现金（真实收付日）；主表 occur_* 是合作
+    # 发生维度，一条记录可分多期收付，按主表日期整笔计会错期。
     adv_recv = adv_paid = Decimal('0')
-    for r in (AdvanceRecord.objects
-              .filter(delivery_dept__in=depts, occur_date__gte=start, occur_date__lte=end)
-              .values('direction').annotate(x=Sum('advance_amount'))):
-        if r['direction'] == '预收':
+    for r in (AdvanceInstallment.objects
+              .filter(advance_record__delivery_dept__in=depts,
+                      occur_date__gte=start, occur_date__lte=end)
+              .values('advance_record__direction').annotate(x=Sum('amount'))):
+        if r['advance_record__direction'] == '预收':
             adv_recv += r['x'] or Decimal('0')
         else:
             adv_paid += r['x'] or Decimal('0')

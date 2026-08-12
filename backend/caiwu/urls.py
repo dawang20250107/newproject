@@ -64,6 +64,7 @@ urlpatterns = [
     path('report', views.report),
     path('report/matrix', views.report_matrix),
     path('report/export', views.report_export),
+    path('report/dept-pl-export', views.report_dept_pl_export),
     path('report/ai-analysis', views.report_ai_analysis),
     path('report/ai-analysis/stream', views.report_ai_analysis_stream),
 
@@ -75,6 +76,7 @@ urlpatterns = [
     # 内部往来核对（金蝶补位）
     path('internal/upload', views_internal.internal_upload),
     path('internal/batches', views_internal.internal_batches),
+    path('internal/clear', views_internal.internal_clear),
     path('internal/batches/<int:bid>', views_internal.internal_batch_detail),
     path('internal/matrix', views_internal.internal_matrix),
     path('internal/pair', views_internal.internal_pair),

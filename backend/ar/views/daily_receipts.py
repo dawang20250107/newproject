@@ -1,6 +1,7 @@
 """日常收款（daily receipts）业务域：一般性现金流入台账（项目收款/预付退款/自定义来源）。
 全额计入现金流与资金池（见 pool.py / cashflow.py 对 DailyReceipt 的聚合）。共享基座来自 _common。"""
 from ._common import *  # noqa: F401,F403
+from paikuan.list_filters import build_filter_q, resolve_sort
 
 _PAGE = 'ar_daily_receipts'
 
@@ -84,6 +85,20 @@ def _clean_payload(request, data, rec=None):
     return fields, project, advance, None
 
 
+# 列头筛选/排序注册表（与付款管理对齐）：仅真实存储列，白名单驱动
+DAILYRECEIPT_FILTER_REGISTRY = {
+    'receipt_date':  {'type': 'date',   'col': 'receipt_date'},
+    'delivery_dept': {'type': 'enum',   'col': 'delivery_dept'},
+    'source':        {'type': 'enum',   'col': 'source'},
+    'method':        {'type': 'enum',   'col': 'method'},
+    'account':       {'type': 'text',   'col': 'account'},
+    'payer':         {'type': 'text',   'col': 'payer'},
+    'amount':        {'type': 'number', 'col': 'amount'},
+    'notes':         {'type': 'text',   'col': 'notes'},
+    'project_name':  {'type': 'text',   'col': 'project__short_name', 'multi': True},
+}
+
+
 def _filtered_qs(request):
     """按可见部门 + 来源/方式/项目/日期/搜索过滤（列表与导出共用）。"""
     qs = DailyReceipt.objects.filter(delivery_dept__in=_visible_depts(request)).select_related('project')
@@ -107,6 +122,14 @@ def _filtered_qs(request):
         qs = qs.filter(Q(payer__icontains=kw) | Q(notes__icontains=kw)
                        | Q(source__icontains=kw) | Q(project__short_name__icontains=kw)
                        | Q(project__customer_name__icontains=kw))
+    # 列头筛选（filters JSON）+ 列头排序（与付款管理同一套 Excel 式交互）
+    fq, fq_distinct = build_filter_q(request.GET.get('filters', ''), DAILYRECEIPT_FILTER_REGISTRY)
+    if fq:
+        qs = qs.filter(fq)
+        if fq_distinct:
+            qs = qs.distinct()
+    sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'), DAILYRECEIPT_FILTER_REGISTRY)
+    qs = qs.order_by(sort_by) if sort_by else qs.order_by('-receipt_date', '-id')
     return qs
 
 

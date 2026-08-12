@@ -13,6 +13,19 @@ from paikuan.models import JobPermission, PaikuanUser
 from paikuan.views import DEPARTMENTS, default_job_config, make_token, _invalidate_perm_cache
 
 
+def mk_advance(**kw):
+    """测试辅助：创建预收/预付并同步生成首笔收付分期——复刻生产不变量
+    （迁移 0032 回填 + 各创建路径均同步建分期）。现金口径按分期收付日期聚合，
+    直接裸建主表会让该笔在现金统计中不可见。"""
+    rec = AdvanceRecord.objects.create(**kw)
+    amt = kw.get('advance_amount') or Decimal('0')
+    if amt:
+        AdvanceInstallment.objects.create(
+            advance_record=rec, install_no=1, amount=amt,
+            occur_date=kw.get('occur_date') or date(kw.get('occur_year', 2000), kw.get('occur_month', 1), 1))
+    return rec
+
+
 class ARPermissionRegressionTests(TestCase):
     def setUp(self):
         _invalidate_perm_cache()
@@ -189,7 +202,7 @@ class ARPermissionRegressionTests(TestCase):
         真实现金：5 月 −1000、6 月 −300。冲抵的 1000 不得把 6 月的 300 真实付现抹掉。"""
         from paikuan.models import Payment, PaymentInstallment
         admin = self.make_user('13900000388', 'finance_director', role='super_admin')
-        adv = AdvanceRecord.objects.create(
+        adv = mk_advance(
             direction='预付', project=None, delivery_dept=self.dept, counterparty='供应商Y',
             occur_year=2026, occur_month=5, occur_date=date(2026, 5, 1),
             advance_amount=Decimal('1000'))
@@ -341,6 +354,39 @@ class ARPermissionRegressionTests(TestCase):
             403,
         )
 
+    def test_budget_list_col_filter_by_dept_and_bulk_delete(self):
+        admin = self.make_user('13900000094', 'finance_director', role='super_admin')
+        a = CollectionBudget.objects.create(short_name='甲项目', delivery_dept=self.dept,
+                                            expected_date=date(2026, 6, 5), amount=Decimal('1000'))
+        b = CollectionBudget.objects.create(short_name='乙项目', delivery_dept=self.other_dept,
+                                            expected_date=date(2026, 6, 6), amount=Decimal('2000'))
+        params = {'date_start': '2026-06-01', 'date_end': '2026-06-30'}
+        # 列表返回 by_dept 分类汇总（两部门）
+        r = self.client.get('/api/pk/ar/budget/collection', params, **self.auth(admin))
+        self.assertEqual(r.status_code, 200)
+        d = r.json()['data']
+        self.assertEqual(d['total'], 2)
+        self.assertEqual(Decimal(d['by_dept'][self.dept]), Decimal('1000'))
+        self.assertEqual(Decimal(d['by_dept'][self.other_dept]), Decimal('2000'))
+        # 列头筛选：short_name 包含「甲」→ 只剩甲项目
+        fp = dict(params, filters=json.dumps({'short_name': {'op': 'contains', 'value': '甲'}}))
+        r2 = self.client.get('/api/pk/ar/budget/collection', fp, **self.auth(admin))
+        self.assertEqual([i['short_name'] for i in r2.json()['data']['items']], ['甲项目'])
+        # 批量删除
+        r3 = self.json_post('/api/pk/ar/budget/collection/bulk-delete', {'ids': [a.id, b.id]}, admin)
+        self.assertEqual(r3.status_code, 200)
+        self.assertEqual(r3.json()['data']['deleted'], 2)
+        self.assertEqual(CollectionBudget.objects.count(), 0)
+
+    def test_budget_bulk_delete_requires_delete_perm_and_scopes_dept(self):
+        # 无删除权限（出纳默认）被拒；且只能删可见部门
+        cashier = self.make_user('13900000093', 'cashier')
+        b = CollectionBudget.objects.create(short_name='X', delivery_dept=self.dept,
+                                            expected_date=date(2026, 6, 5), amount=Decimal('1'))
+        r = self.json_post('/api/pk/ar/budget/collection/bulk-delete', {'ids': [b.id]}, cashier)
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(CollectionBudget.objects.count(), 1)
+
     def test_ar_exports_respect_hidden_field_permissions(self):
         cfg = default_job_config('cashier')
         cfg['pages']['ar_projects'] = True
@@ -443,6 +489,38 @@ class ARPermissionRegressionTests(TestCase):
 
         stale.refresh_from_db()
         self.assertEqual(stale.outstanding_amount, Decimal('670000.00'))
+
+    def test_payment_ledger_summary_breakdowns(self):
+        # 回款流水底部分类汇总：来源覆盖全体；方式/账户仅统计现金回款(source='回款')
+        admin = self.make_user('13900000097', 'finance_director', role='super_admin')
+        rec = self.create_record()
+        ARPayment.objects.bulk_create([
+            ARPayment(ar_record=rec, payment_no=1, amount=Decimal('300.00'), payment_date=date(2026, 6, 1),
+                      source='回款', method='银行转账', account='工行'),
+            ARPayment(ar_record=rec, payment_no=2, amount=Decimal('200.00'), payment_date=date(2026, 6, 2),
+                      source='回款', method='现金', account='现金'),
+            ARPayment(ar_record=rec, payment_no=3, amount=Decimal('100.00'), payment_date=date(2026, 6, 3),
+                      source='预收抵扣', method='', account=''),
+            # 空方式回款：应按默认「银行转账」归并（与前端 method||'银行转账' 展示口径一致）
+            ARPayment(ar_record=rec, payment_no=4, amount=Decimal('50.00'), payment_date=date(2026, 6, 4),
+                      source='回款', method='', account='招行'),
+        ])
+        resp = self.client.get('/api/pk/ar/records/payments', **self.auth(admin))
+        self.assertEqual(resp.status_code, 200)
+        s = resp.json()['data']['summary']
+        # 金额比较用 Decimal（sqlite 聚合会丢小数位，字面串不稳）
+        self.assertEqual(Decimal(s['total_amount']), Decimal('650'))
+        # 来源：覆盖全体
+        self.assertEqual(Decimal(s['by_source']['回款']), Decimal('550'))
+        self.assertEqual(Decimal(s['by_source']['预收抵扣']), Decimal('100'))
+        # 方式：仅现金回款；空方式并入「银行转账」= 300 + 50，不产生空键
+        self.assertEqual(Decimal(s['by_method']['银行转账']), Decimal('350'))
+        self.assertEqual(Decimal(s['by_method']['现金']), Decimal('200'))
+        self.assertNotIn('', s['by_method'])
+        self.assertEqual(sum(Decimal(v) for v in s['by_method'].values()), Decimal('550'))
+        # 账户：空账户记「未填」，预收抵扣不计入
+        self.assertEqual(Decimal(s['by_account']['工行']), Decimal('300'))
+        self.assertEqual(Decimal(s['by_account']['招行']), Decimal('50'))
 
     def test_project_update_syncs_budget_dept_fields(self):
         project = self.create_project()
@@ -1127,6 +1205,41 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(len(same), 1)            # 覆盖，不重复
         self.assertEqual(same[0]['conditions'], c2)   # 取最新快照
 
+    def test_filter_scheme_snapshots_col_filters_and_sort(self):
+        """A3+B5: 方案同时快照列头筛选与排序，往返保真；脏输入静默降级为空。"""
+        a = self.make_user('13900000217', 'finance_director', role='super_admin')
+        cf = {'outstanding_amount': {'op': 'gt', 'value': '0'},
+              'operation_date': {'op': 'between', 'value': ['2026-01-01', '2026-06-30']}}
+        r = self.json_post('/api/pk/ar/filter-schemes',
+                           {'name': '大额上半年', 'scope': 'private', 'conditions': [],
+                            'colFilters': cf, 'sort': 'outstanding_amount', 'order': 'desc'}, a)
+        self.assertEqual(r.status_code, 200)
+        d = r.json()['data']
+        self.assertEqual(d['colFilters'], cf)
+        self.assertEqual(d['sort'], 'outstanding_amount')
+        self.assertEqual(d['order'], 'desc')
+        # 列表接口同样带回快照（前端套用方案的数据来源）
+        items = self.client.get('/api/pk/ar/filter-schemes', **self.auth(a)).json()['data']['items']
+        s = next(x for x in items if x['name'] == '大额上半年')
+        self.assertEqual(s['colFilters'], cf)
+        self.assertEqual(s['sort'], 'outstanding_amount')
+        # 脏输入：colFilters 非 dict、sort 非 str、order 非法 → 静默降级为空，不报错
+        r2 = self.json_post('/api/pk/ar/filter-schemes',
+                            {'name': '脏快照', 'scope': 'private', 'conditions': [],
+                             'colFilters': ['bad'], 'sort': 123, 'order': 'sideways'}, a)
+        self.assertEqual(r2.status_code, 200)
+        d2 = r2.json()['data']
+        self.assertEqual(d2['colFilters'], {})
+        self.assertEqual(d2['sort'], '')
+        self.assertEqual(d2['order'], '')
+        # 历史方案（无 view 快照，默认 '{}'）读回空值 → 前端套用即清列头状态
+        from ar.models import ARFilterScheme
+        old = ARFilterScheme.objects.create(name='老方案', owner=a)
+        legacy = old.to_dict()
+        self.assertEqual(legacy['colFilters'], {})
+        self.assertEqual(legacy['sort'], '')
+        self.assertEqual(legacy['order'], '')
+
     def test_summary_not_inflated_by_multiple_payments(self):
         admin = self.make_user('13900000055', 'finance_director', role='super_admin')
         project = self.create_project()
@@ -1508,10 +1621,10 @@ class AdvanceModuleTests(TestCase):
     # ── 现金流打通：净额含预收(流入)与预付(流出) ───────────────────────────────
     def test_cashflow_includes_advances(self):
         admin = self.make_user('13911100004', 'finance_director', role='super_admin')
-        AdvanceRecord.objects.create(direction='预收', delivery_dept=self.dept,
+        mk_advance(direction='预收', delivery_dept=self.dept,
                                      counterparty='客户甲', occur_year=2026, occur_month=3,
                                      occur_date=date(2026, 3, 10), advance_amount=Decimal('100000'))
-        AdvanceRecord.objects.create(direction='预付', delivery_dept=self.dept,
+        mk_advance(direction='预付', delivery_dept=self.dept,
                                      counterparty='供应商乙', occur_year=2026, occur_month=3,
                                      occur_date=date(2026, 3, 12), advance_amount=Decimal('30000'))
         resp = self.client.get('/api/pk/ar/cashflow',
@@ -1643,10 +1756,10 @@ class AdvanceModuleTests(TestCase):
         self.assertTrue(len(r.content) > 100)
 
     def test_advance_list_actual_date_range_filter_and_summary(self):
-        """预收预付按实际收付日(款项日期)区间筛选:列表/汇总/KPI 同口径联动;
-        occur_date 为空的存量行按发生年月落月兜底,不被日期筛选悄悄排除。"""
+        """预收预付按分期收付日期(真实现金事件日)区间筛选:列表/汇总/KPI 同口径联动;
+        mk_advance 对 occur_date 为空的行按发生年月月初落分期,命中任意一期即入选。"""
         admin = self.make_user('13911100095', 'finance_director', role='super_admin')
-        mk = lambda amt, y, m, od: AdvanceRecord.objects.create(
+        mk = lambda amt, y, m, od: mk_advance(
             direction='预收', delivery_dept=self.dept, counterparty='客户T',
             occur_year=y, occur_month=m, occur_date=od, advance_amount=Decimal(amt))
         mk('100', 2026, 5, date(2026, 5, 10))    # 区间内(有日期)
@@ -1772,7 +1885,7 @@ class AdvanceModuleTests(TestCase):
         admin = self.make_user('13911100010', 'finance_director', role='super_admin')
         proj = self.create_project()
         ar = self._ar_record(proj, 100000)
-        adv = AdvanceRecord.objects.create(
+        adv = mk_advance(
             direction='预收', project=proj, delivery_dept=self.dept, counterparty='客户甲',
             occur_year=2026, occur_month=3, occur_date=date(2026, 3, 10),
             advance_amount=Decimal('100000'))
@@ -2699,11 +2812,11 @@ class CashPoolTests(TestCase):
                                 estimated_amount=Decimal('300'),
                                 due_date=self.today + self.td(days=15))
         # 预收50 / 预付30
-        AdvanceRecord.objects.create(delivery_dept='运输事业部', direction='预收',
+        mk_advance(delivery_dept='运输事业部', direction='预收',
                                      occur_year=2026, occur_month=5,
                                      occur_date=self.today - self.td(days=5),
                                      advance_amount=Decimal('50'))
-        AdvanceRecord.objects.create(delivery_dept='运输事业部', direction='预付',
+        mk_advance(delivery_dept='运输事业部', direction='预付',
                                      occur_year=2026, occur_month=5,
                                      occur_date=self.today - self.td(days=3),
                                      advance_amount=Decimal('30'))
@@ -2782,7 +2895,7 @@ class CashPoolTests(TestCase):
         cfg = CashPoolConfig.objects.create(
             delivery_dept='劳务事业部', initial_date=self.today - self.td(days=60),
             initial_amount=Decimal('10000'))
-        adv = AdvanceRecord.objects.create(
+        adv = mk_advance(
             delivery_dept='劳务事业部', direction='预付', occur_year=2026, occur_month=5,
             occur_date=self.today - self.td(days=30), advance_amount=Decimal('1000'))
         pay = PkPayment.objects.create(
@@ -4355,6 +4468,54 @@ class BudgetProjectCompareTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(resp.json()['data']['rows']), 0)
 
+    def test_compare_export_xlsx(self):
+        # 项目对照导出：同口径产出 xlsx（含表头 + 数据行 + 合计行）
+        CollectionBudget.objects.create(short_name='预算项目', project_no='BGT-0001',
+                                        delivery_dept=self.dept,
+                                        expected_date=date(2026, 6, 15), amount=Decimal('10000'))
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                      estimated_amount=Decimal('20000'))
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('6000'),
+                                 payment_date=date(2026, 6, 10))
+        resp = self.client.get('/api/pk/ar/budget/project-compare/export',
+                               {'date_start': '2026-06-01', 'date_end': '2026-06-30'},
+                               **self.auth())
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('spreadsheetml', resp['Content-Type'])
+        import io, openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(resp.getvalue()))
+        ws = wb.active
+        self.assertEqual(ws.title, '项目对照')
+        self.assertEqual(ws.cell(row=1, column=1).value, '项目简称')
+        col1 = [ws.cell(row=r, column=1).value for r in range(2, ws.max_row + 1)]
+        self.assertIn('预算项目', col1)
+        self.assertIn('合计', col1)   # 末尾合计行
+
+    def test_compare_actual_in_matches_cashflow_caliber(self):
+        # 实际收款与现金流同步：排除预收抵扣/内部往来核销与未兑付承兑，只计现金回款
+        rec = ARRecord.objects.create(project=self.proj, operation_date=date(2026, 5, 1),
+                                      estimated_amount=Decimal('100000'))
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('3000'),
+                                 payment_date=date(2026, 6, 5), source='回款', method='银行转账')
+        ARPayment.objects.create(ar_record=rec, payment_no=2, amount=Decimal('1000'),
+                                 payment_date=date(2026, 6, 6), source='预收抵扣')
+        ARPayment.objects.create(ar_record=rec, payment_no=3, amount=Decimal('2000'),
+                                 payment_date=date(2026, 6, 7), source='内部往来',
+                                 counterparty_dept='自营事业部')
+        ARPayment.objects.create(ar_record=rec, payment_no=4, amount=Decimal('5000'),
+                                 payment_date=date(2026, 6, 8), source='回款',
+                                 method='承兑汇票', draft_status='未承兑')
+        ARPayment.objects.create(ar_record=rec, payment_no=5, amount=Decimal('4000'),
+                                 payment_date=date(2026, 6, 9), source='回款',
+                                 method='承兑汇票', draft_status='已承兑')
+        resp = self.client.get('/api/pk/ar/budget/project-compare',
+                               {'date_start': '2026-06-01', 'date_end': '2026-06-30'},
+                               **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        r = resp.json()['data']['rows'][0]
+        # 计入：现金 3000 + 已承兑 4000 = 7000；排除：预收抵扣1000/内部往来2000/未兑付承兑5000
+        self.assertEqual(Decimal(r['actual_in']), Decimal('7000'))
+
 
 class AdvanceDiffSummaryTests(TestCase):
     """收付差异：预收 vs 预付按项目简称对齐 + 两侧逐笔明细。"""
@@ -4403,15 +4564,18 @@ class AdvanceDiffSummaryTests(TestCase):
         s = d['summary']
         self.assertEqual(Decimal(s['diff']), Decimal('9000'))
 
-    def test_diff_excludes_loose_advances(self):
-        # 散单（未挂项目）不参与差异对照
+    def test_diff_includes_loose_advances_as_unlinked_group(self):
+        # 口径对齐（CFO 决策）：散单（未挂项目）纳入「（未挂项目）」组，
+        # 使收付差异合计与资金池/现金流（含全部预收预付）对平。
         AdvanceRecord.objects.create(
             direction='预收', delivery_dept=self.dept, counterparty='散单客户',
             occur_year=2026, occur_month=3, occur_date=date(2026, 3, 1),
             advance_amount=Decimal('999'))
         resp = self.client.get('/api/pk/ar/advances/diff-summary', **self.auth())
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(resp.json()['data']['rows']), 0)
+        rows = {r['project']: r for r in resp.json()['data']['rows']}
+        self.assertIn('（未挂项目）', rows)
+        self.assertEqual(Decimal(rows['（未挂项目）']['in_total']), Decimal('999'))
 
     def test_diff_q_filter(self):
         self._adv('预收', '100', date(2026, 3, 1), '客户A')
@@ -4790,3 +4954,303 @@ class BatchPaymentUndoTests(TestCase):
         self.assertEqual(Decimal(d2['collections'][0]['total']), Decimal('500'))
 
 
+
+class BudgetSummaryByMonthTests(TestCase):
+    """预算摘要 by_month：逐月预算/实际分桶（预算燃尽跑道数据源）。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900001900', name='BurnAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_by_month_buckets(self):
+        # 5月/6月各一笔收款预算；6月一笔实收
+        CollectionBudget.objects.create(short_name='P1', delivery_dept=self.dept,
+                                        expected_date=date(2026, 5, 10), amount=Decimal('1000'))
+        CollectionBudget.objects.create(short_name='P2', delivery_dept=self.dept,
+                                        expected_date=date(2026, 6, 20), amount=Decimal('2000'))
+        proj = ARProject.objects.create(customer_name='C', short_name='P1', delivery_dept=self.dept,
+                                        sales_contact='S', project_manager='M', project_no='BURN-1')
+        rec = ARRecord.objects.create(project=proj, operation_year=2026, operation_month=5,
+                                      estimated_amount=Decimal('3000'),
+                                      actual_invoice_amount=Decimal('3000'),
+                                      invoice_date=date(2026, 5, 31))
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('600'),
+                                 payment_date=date(2026, 6, 15), source='bank')
+
+        resp = self.client.get('/api/pk/ar/budget/summary',
+                               {'date_start': '2026-05-01', 'date_end': '2026-07-31'},
+                               **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        bm = {m['ym']: m for m in d['by_month']}
+        self.assertEqual(list(bm.keys()), ['2026-05', '2026-06', '2026-07'])
+        self.assertEqual(bm['2026-05']['budget_collection'], 1000.0)
+        self.assertEqual(bm['2026-06']['budget_collection'], 2000.0)
+        self.assertEqual(bm['2026-06']['actual_collection'], 600.0)
+        self.assertEqual(bm['2026-07']['budget_collection'], 0.0)
+
+
+class BulkSetDateTests(TestCase):
+    """批量指定日期端点：ids 模式覆盖对账日期 + 字段白名单拦截。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900002000', name='BulkDateAdmin', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        proj = ARProject.objects.create(
+            customer_name='客户B', short_name='批量日期项目', delivery_dept=self.dept,
+            sales_contact='S', project_manager='M', project_no='BSD-0001')
+        self.r1 = ARRecord.objects.create(project=proj, operation_year=2026, operation_month=5,
+                                          estimated_amount=Decimal('1000'))
+        self.r2 = ARRecord.objects.create(project=proj, operation_year=2026, operation_month=6,
+                                          estimated_amount=Decimal('2000'))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_set_reconciliation_date_on_ids(self):
+        resp = self.client.post('/api/pk/ar/records/bulk-set-date', data=json.dumps({
+            'field': 'reconciliation_date', 'date': '2026-06-30',
+            'ids': [self.r1.id, self.r2.id]}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        self.assertEqual(d['updated'], 2)
+        self.assertEqual(d['field'], 'reconciliation_date')
+        self.r1.refresh_from_db(); self.r2.refresh_from_db()
+        self.assertEqual(self.r1.reconciliation_date, date(2026, 6, 30))
+        self.assertEqual(self.r2.reconciliation_date, date(2026, 6, 30))
+        # date 传空 → 清空该日期
+        resp = self.client.post('/api/pk/ar/records/bulk-set-date', data=json.dumps({
+            'field': 'reconciliation_date', 'date': '', 'ids': [self.r1.id]}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.r1.refresh_from_db()
+        self.assertIsNone(self.r1.reconciliation_date)
+
+    def test_field_whitelist_rejected(self):
+        # 白名单外的字段（含真实存在但不开放批量覆盖的列）一律 400，且不落库
+        resp = self.client.post('/api/pk/ar/records/bulk-set-date', data=json.dumps({
+            'field': 'operation_date', 'date': '2026-06-30', 'ids': [self.r1.id]}),
+            content_type='application/json', **self.auth())
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.r1.refresh_from_db()
+        self.assertEqual(self.r1.operation_date, date(2026, 5, 1))
+
+class AdvanceDiffTimelineReconcileTests(TestCase):
+    """收付差异·按月 预付合计与现金流对平：含散单（未挂项目）预付，同分期收付日期口径。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900002400', name='DiffRecon', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456'); admin.save()
+        self.token = make_token(admin)
+        proj = ARProject.objects.create(customer_name='差异客户', short_name='差异项目',
+                                        delivery_dept=self.dept, sales_contact='S', project_manager='M')
+        # 挂项目预付 300（3月分期）
+        a1 = AdvanceRecord.objects.create(direction='预付', delivery_dept=self.dept, project=proj,
+                                          counterparty='供应商A', occur_year=2026, occur_month=1,
+                                          occur_date=date(2026, 1, 5), advance_amount=Decimal('300'))
+        AdvanceInstallment.objects.create(advance_record=a1, install_no=1, amount=Decimal('300'),
+                                          occur_date=date(2026, 3, 10))
+        # 散单预付 200（3月分期，未挂项目）
+        a2 = AdvanceRecord.objects.create(direction='预付', delivery_dept=self.dept,
+                                          counterparty='散单供应商', occur_year=2026, occur_month=2,
+                                          occur_date=date(2026, 2, 1), advance_amount=Decimal('200'))
+        AdvanceInstallment.objects.create(advance_record=a2, install_no=1, amount=Decimal('200'),
+                                          occur_date=date(2026, 3, 12))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_march_paid_matches_cashflow(self):
+        # 现金流分析 3 月预付 = 300 + 200 = 500（含散单）
+        cf = self.client.get('/api/pk/ar/cashflow',
+                            {'start_date': '2026-03-01', 'end_date': '2026-03-31', 'depts': self.dept},
+                            **self.auth()).json()['data']
+        self.assertEqual(cf['totals']['advance_paid'][0], 500.0)
+        # 收付差异·按月 3 月预付合计（out_total）= 500，与现金流对平（含散单）
+        tl = self.client.get('/api/pk/ar/advances/diff-timeline',
+                            {'grain': 'month', 'start': '2026-03-01', 'end': '2026-03-31'},
+                            **self.auth()).json()['data']
+        march = next(p for p in tl['periods'] if p['period'] == '2026-03')
+        self.assertEqual(Decimal(march['out_total']), Decimal('500'))
+        # 散单以「（未挂项目）」组出现在该期项目拆分里
+        projs = {x['project'] for x in march['projects']}
+        self.assertIn('（未挂项目）', projs)
+
+
+class CashPoolMonthlyTests(TestCase):
+    """资金池逐月台账：每月期初→收支→期末滚动结转，末月期末=总账面余额；
+    收支各项与现金流分析逐月同口径可对平。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900002300', name='PoolMonthly', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456'); admin.save()
+        self.token = make_token(admin)
+        from ar.models import CashPoolConfig
+        CashPoolConfig.objects.create(delivery_dept=self.dept,
+                                      initial_date=date(2026, 1, 1),
+                                      initial_amount=Decimal('10000'))
+        proj = ARProject.objects.create(customer_name='池月客户', short_name='池月项目',
+                                        delivery_dept=self.dept, sales_contact='S', project_manager='M')
+        rec = ARRecord.objects.create(project=proj, operation_year=2026, operation_month=2,
+                                      estimated_amount=Decimal('9999'),
+                                      actual_invoice_amount=Decimal('9999'), invoice_date=date(2026, 2, 1))
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('2000'),
+                                 payment_date=date(2026, 2, 10), source='回款', method='银行转账')
+        ARPayment.objects.create(ar_record=rec, payment_no=2, amount=Decimal('1500'),
+                                 payment_date=date(2026, 3, 10), source='回款', method='银行转账')
+        ARPayment.objects.create(ar_record=rec, payment_no=3, amount=Decimal('800'),
+                                 payment_date=date(2026, 3, 12), source='回款',
+                                 method='承兑汇票', draft_status='未承兑')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_monthly_rolls_and_reconciles(self):
+        r = self.client.get('/api/pk/ar/pool/monthly', {'dept': self.dept}, **self.auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        rows = r.json()['data']['months']
+        months = {m['ym']: m for m in rows}
+        self.assertEqual(Decimal(months['2026-01']['opening']), Decimal('10000'))
+        self.assertEqual(Decimal(months['2026-01']['closing']), Decimal('10000'))
+        self.assertEqual(Decimal(months['2026-02']['collected']), Decimal('2000'))
+        self.assertEqual(Decimal(months['2026-02']['closing']), Decimal('12000'))
+        self.assertEqual(Decimal(months['2026-03']['collected']), Decimal('1500'))
+        self.assertEqual(Decimal(months['2026-03']['opening']), Decimal('12000'))
+        self.assertEqual(Decimal(months['2026-03']['closing']), Decimal('13500'))
+        for a, b in zip(rows, rows[1:]):
+            self.assertEqual(a['closing'], b['opening'])
+
+
+class CashflowDraftBillParityTests(TestCase):
+    """未兑付承兑汇票现金口径：现金流分析与资金池同口径——都排除持票未兑付的承兑，
+    到「已承兑」才计入。避免用户对账时现金流回款 ≠ 资金池回款（应只差期初）。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900002200', name='DraftParity', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456'); admin.save()
+        self.token = make_token(admin)
+        proj = ARProject.objects.create(customer_name='票据客户', short_name='票据项目',
+                                        delivery_dept=self.dept, sales_contact='S', project_manager='M')
+        rec = ARRecord.objects.create(project=proj, operation_year=2026, operation_month=3,
+                                      estimated_amount=Decimal('5000'),
+                                      actual_invoice_amount=Decimal('5000'), invoice_date=date(2026, 3, 1))
+        # 银行转账回款 1000（现金）
+        ARPayment.objects.create(ar_record=rec, payment_no=1, amount=Decimal('1000'),
+                                 payment_date=date(2026, 3, 10), source='回款', method='银行转账')
+        # 未兑付承兑 2000（非可动用现金）
+        ARPayment.objects.create(ar_record=rec, payment_no=2, amount=Decimal('2000'),
+                                 payment_date=date(2026, 3, 12), source='回款',
+                                 method='承兑汇票', draft_status='未承兑')
+        # 已承兑 500（视同现金）
+        ARPayment.objects.create(ar_record=rec, payment_no=3, amount=Decimal('500'),
+                                 payment_date=date(2026, 3, 15), source='回款',
+                                 method='承兑汇票', draft_status='已承兑')
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_cash_flow_window_excludes_pending_draft(self):
+        from ar.views import cash_flow_window
+        w = cash_flow_window([self.dept], date(2026, 3, 1), date(2026, 3, 31))
+        # 1000 银行 + 500 已承兑 = 1500；未兑付 2000 不计
+        self.assertEqual(w['collected'], Decimal('1500'))
+
+    def test_cashflow_endpoint_collected_excludes_pending_draft(self):
+        r = self.client.get('/api/pk/ar/cashflow',
+                            {'start_date': '2026-03-01', 'end_date': '2026-03-31', 'depts': self.dept},
+                            **self.auth()).json()['data']
+        self.assertEqual(r['totals']['collected'][0], 1500.0)
+
+
+class AdvanceCashTimingTests(TestCase):
+    """预收预付现金口径：真实收付=分期收付日期，发生年月仅为合作归属维度。
+
+    一条 1月发生（合作）的预收分 3月/4月 两期到账：现金流/资金窗口/区间筛选/
+    KPI 都必须按 3月600、4月400 计，而不是按主表日期整笔 1000 计入 1月。"""
+
+    def setUp(self):
+        self.client = Client()
+        self.dept = '运输事业部'
+        admin = PaikuanUser(phone='13900002100', name='AdvTiming', role='super_admin',
+                            job_title='finance_director', departments=[self.dept],
+                            is_active=True, is_approved=True)
+        admin.set_password('Test123456')
+        admin.save()
+        self.token = make_token(admin)
+        self.rec = AdvanceRecord.objects.create(
+            direction='预收', delivery_dept=self.dept, counterparty='合作客户A',
+            occur_year=2026, occur_month=1, occur_date=date(2026, 1, 5),
+            advance_amount=Decimal('1000'), balance_amount=Decimal('1000'))
+        AdvanceInstallment.objects.create(advance_record=self.rec, install_no=1,
+                                          amount=Decimal('600'), occur_date=date(2026, 3, 10))
+        AdvanceInstallment.objects.create(advance_record=self.rec, install_no=2,
+                                          amount=Decimal('400'), occur_date=date(2026, 4, 10))
+
+    def auth(self):
+        return {'HTTP_AUTHORIZATION': f'Bearer {self.token}'}
+
+    def test_cash_flow_window_uses_installment_dates(self):
+        from ar.views import cash_flow_window
+        w1 = cash_flow_window([self.dept], date(2026, 1, 1), date(2026, 1, 31))
+        self.assertEqual(w1['advance_received'], Decimal('0'))   # 1月只是合作发生，无现金
+        w3 = cash_flow_window([self.dept], date(2026, 3, 1), date(2026, 3, 31))
+        self.assertEqual(w3['advance_received'], Decimal('600'))
+        w34 = cash_flow_window([self.dept], date(2026, 3, 1), date(2026, 4, 30))
+        self.assertEqual(w34['advance_received'], Decimal('1000'))
+
+    def test_cashflow_endpoint_buckets_by_installment_month(self):
+        resp = self.client.get('/api/pk/ar/cashflow',
+                               {'start_date': '2026-01-01', 'end_date': '2026-04-30',
+                                'depts': self.dept}, **self.auth())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        d = resp.json()['data']
+        by_month = dict(zip(d['months'], d['totals']['advance_received']))
+        self.assertEqual(by_month.get('2026-01', 0), 0)
+        self.assertEqual(by_month.get('2026-03'), 600.0)
+        self.assertEqual(by_month.get('2026-04'), 400.0)
+
+    def test_list_range_filter_matches_installments(self):
+        r = self.client.get('/api/pk/ar/advances',
+                            {'start_date': '2026-03-01', 'end_date': '2026-03-31'},
+                            **self.auth()).json()['data']
+        self.assertEqual(len(r['items']), 1)          # 3月有一期 → 命中
+        r2 = self.client.get('/api/pk/ar/advances',
+                             {'start_date': '2026-01-01', 'end_date': '2026-01-31'},
+                             **self.auth()).json()['data']
+        self.assertEqual(len(r2['items']), 0)         # 1月无实际收付 → 不命中
+
+    def test_kpi_amount_is_in_range_installment_sum(self):
+        k = self.client.get('/api/pk/ar/advances/kpi',
+                            {'start_date': '2026-03-01', 'end_date': '2026-03-31'},
+                            **self.auth()).json()['data']
+        self.assertEqual(k['预收']['advance_amount'], 600.0)   # 区间实际收付，非整笔 1000
+        k_all = self.client.get('/api/pk/ar/advances/kpi', **self.auth()).json()['data']
+        self.assertEqual(k_all['预收']['advance_amount'], 1000.0)  # 无区间=全额

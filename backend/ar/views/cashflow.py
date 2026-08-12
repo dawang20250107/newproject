@@ -57,11 +57,14 @@ def _cashflow_payload(request):
 
     # AR collections by month across all requested depts.
     # 排除非现金来源（预收抵扣/内部往来）：其不构成现金流入，计入会虚增现金。
+    # 排除未兑付承兑汇票：持票未兑付不是可动用现金，与资金池「可动用货币资金」口径
+    # 对齐（现金流=资金池−期初，两者回款须同口径，否则用户对不平）。
     ar_coll = (ARPayment.objects
                .filter(payment_date__gte=start_date, payment_date__lte=end_date,
                        ar_record__delivery_dept__in=depts,
                        ar_record__deleted_at__isnull=True)
                .exclude(source__in=NON_CASH_PAYMENT_SOURCES)
+               .exclude(pending_draft_q())
                .annotate(ym=TruncMonth('payment_date'))
                .values('ym', 'ar_record__delivery_dept')
                .annotate(collected=Sum('amount')))
@@ -102,19 +105,21 @@ def _cashflow_payload(request):
     # advance_paid 计出，核销只是账务结转、无新现金事件。故 paid 保持为实付分期之和，
     # 与预收核销对称（预收核销由'预收抵扣'非现金来源排除，同样不进现金）。
 
-    # 预收(流入) / 预付(流出) by occur_date month — advances move cash on occur_date
+    # 预收(流入) / 预付(流出) —— 按「分期收付日期」分桶（真实现金事件日）。
+    # 主表 occur_year/month 是合作发生年月（业务归属维度）、occur_date 是首笔款项日；
+    # 一条预收可分多期到账，若整笔按主表日期入一个月会错月且虚增单月现金。
     adv_recv_map = defaultdict(lambda: defaultdict(Decimal))
     adv_paid_map = defaultdict(lambda: defaultdict(Decimal))
-    adv_qs = (AdvanceRecord.objects
+    adv_qs = (AdvanceInstallment.objects
               .filter(occur_date__gte=start_date, occur_date__lte=end_date,
-                      delivery_dept__in=depts)
+                      advance_record__delivery_dept__in=depts)
               .annotate(ym=TruncMonth('occur_date'))
-              .values('ym', 'delivery_dept', 'direction')
-              .annotate(amt=Sum('advance_amount')))
+              .values('ym', 'advance_record__delivery_dept', 'advance_record__direction')
+              .annotate(amt=Sum('amount')))
     for row in adv_qs:
         ym = row['ym'].strftime('%Y-%m')
-        target = adv_recv_map if row['direction'] == '预收' else adv_paid_map
-        target[row['delivery_dept']][ym] += row['amt'] or Decimal('0')
+        target = adv_recv_map if row['advance_record__direction'] == '预收' else adv_paid_map
+        target[row['advance_record__delivery_dept']][ym] += row['amt'] or Decimal('0')
 
     # Also include budget data for comparison
     budget_coll_map = defaultdict(lambda: defaultdict(Decimal))

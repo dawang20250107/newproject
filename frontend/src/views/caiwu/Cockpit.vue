@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, defineAsyncComponent } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useCaiwuAuth } from '../../composables/useCaiwuAuth.js'
 import { useAuthStore } from '../../stores/auth.js'
 import { BUSINESS_UNITS, yearCST, lastMonthCST } from '../../constants.js'
@@ -12,10 +12,15 @@ import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
 import ar from '../../api/ar.js'
 import { fmtCompact } from '../../utils/format.js'
-import { valueAxis, catAxis, gridFor, bottomLegend, axisMoney, topLabel, endLabel, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
+import { axisMoney, HIDE_OVERLAP, TOOLTIP } from '../../utils/chartTheme.js'
+import { densityOf } from '../../utils/chartDensity.js'
+import PaceStory from '../../components/caiwu/PaceStory.vue'
+import BuGlance from '../../components/caiwu/BuGlance.vue'
+import ProfitMekko from '../../components/caiwu/ProfitMekko.vue'
 import { streamAiAnalysis } from '../../utils/aiStream.js'
 import { renderMarkdown } from '../../utils/markdown.js'
 import { downloadBlob } from '../../utils/download.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import EmptyState from '../../components/EmptyState.vue'
 import AiMark from '../../components/AiMark.vue'
 import { useToast } from '../../composables/useToast.js'
@@ -37,6 +42,7 @@ const ProjectPnlCard = defineAsyncComponent(() => import('./ProjectPnlCard.vue')
 const auth = useCaiwuAuth()
 const pkAuth = useAuthStore()
 const router = useRouter()
+const route = useRoute()
 
 // ── 顶部主 Tab ───────────────────────────────────────────────────────────────
 const mainTab = ref('overview')
@@ -59,6 +65,8 @@ const panelComp = computed(() => ({
   target: TargetDecompPanel, actions: ActionPanel, pool: CashPoolPanel,
   report: PeriodicReportPanel,
 }[mainTab.value] || null))
+// 主 Tab 记忆：跨会话恢复上次停留的分析视角；恢复时机与校验见 onMounted
+watch(mainTab, v => savePref('cw_cockpit_tab', v))
 
 // ── P4 行动项计数（驱动 Tab 角标）────────────────────────────────────────────
 const actionCounts = ref({ open: 0, in_progress: 0, done: 0, dismissed: 0 })
@@ -112,6 +120,9 @@ async function createActionFromSignal(a) {
 const year = ref(lastMonthCST().year)
 const month = ref(lastMonthCST().month)
 const selectedBu = ref('')
+// 期间/BU 记忆：带存档月份戳，恢复只在同一自然月内生效（防月初粘住旧期间），见 onMounted
+watch([year, month, selectedBu], () => savePref('cw_cockpit_period',
+  { year: year.value, month: month.value, bu: selectedBu.value, savedAt: new Date().toISOString().slice(0, 7) }))
 
 const loading = ref(false)
 const loadErr = ref('')
@@ -133,7 +144,7 @@ const accessibleBus = computed(() => {
 })
 
 const fmtMoney = (v) => fmtCompact(v, { space: true })
-const wan = (v) => (v == null ? '—' : (v / 10000).toFixed(0) + '万')
+const wan = (v) => (v == null ? '—' : Math.abs(v) >= 1e8 ? (v / 1e8).toFixed(2) + '亿' : (v / 10000).toFixed(0) + '万')
 
 async function load() {
   loading.value = true
@@ -518,108 +529,54 @@ function rateColor(r) {
 }
 function chgLabel(v) {
   if (v == null) return '— '
-  return (v >= 0 ? '▲ +' : '▼ ') + v.toFixed(1) + '%'
+  if (v === 0) return '0.0%'   // 持平：不带涨跌箭头
+  return (v > 0 ? '▲ +' : '▼ ') + v.toFixed(1) + '%'
 }
-function chgClass(v) { return v == null ? 'mom-neutral' : (v >= 0 ? 'mom-up' : 'mom-down') }
+function chgClass(v) { return v == null || v === 0 ? 'mom-neutral' : (v > 0 ? 'mom-up' : 'mom-down') }
 
-const grad = (c1, c2, horiz = false) => ({ type: 'linear', x: 0, y: 0, x2: horiz ? 1 : 0, y2: horiz ? 0 : 1,
-  colorStops: [{ offset: 0, color: c1 }, { offset: 1, color: c2 }] })
 
-// ── 经营趋势全景：收入规模柱 + 目标线 + 毛利率/净利率双色区域线
-// 正值段绿/蓝渐变填充，负值段红色区域 + 警告标记 + 盈亏平衡参考线
-const panoramaOption = computed(() => {
-  const t = data.value?.trend || []
-  if (!t.length) return null
-  const x = t.map(m => `${m.month}月`)
-  const rev = t.map(m => m.actual_revenue)
-  const tgt = t.map(m => m.target_revenue)
-  const gm  = t.map(m => m.actual_revenue ? +(m.actual_gross_profit / m.actual_revenue * 100).toFixed(1) : null)
-  const nm  = t.map(m => m.actual_revenue ? +(m.actual_profit    / m.actual_revenue * 100).toFixed(1) : null)
-
-  // Split at zero: positive keeps area fill, negative gets red alarm treatment
-  const gmPos = gm.map(v => (v != null && v >= 0) ? v : null)
-  const gmNeg = gm.map(v => (v != null && v  < 0) ? v : null)
-  const nmPos = nm.map(v => (v != null && v >= 0) ? v : null)
-  const nmNeg = nm.map(v => (v != null && v  < 0) ? v : null)
-
-  const allM = [...gm, ...nm].filter(v => v != null)
-  const hasNeg = allM.some(v => v < 0)
-  const minY = allM.length ? (hasNeg ? Math.min(...allM) - 6 : -4) : -10
-  const maxY = allM.length ? Math.max(14, ...allM) + 6 : 20
-
-  const lineBase = { type: 'line', yAxisIndex: 1, smooth: true, symbolSize: 5, connectNulls: false }
-
+// ── 数据密度感知（与现金流同一套语言）：数据少讲结论，数据多讲结构 ────────────
+// 趋势稀疏（已发布 ≤2 个月，年初常态）→ 经营节奏卡；事业部 ≤2 → 事业部速览。
+const trendActive = computed(() =>
+  (data.value?.trend || []).filter(m =>
+    (m.actual_revenue || 0) !== 0 || (m.actual_gross_profit || 0) !== 0 || (m.actual_profit || 0) !== 0))
+const trendDensity = computed(() => densityOf(trendActive.value.length))
+const paceData = computed(() => {
+  const rows = trendActive.value
+  if (!rows.length) return null
   return {
-    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, ...TOOLTIP,
-      formatter(params) {
-        let s = `<b>${params[0]?.axisValue}</b><br/>`
-        const seen = new Map()
-        params.forEach(p => {
-          if (p.value == null) return
-          // strip trailing "−" to merge pos+neg into one tooltip row
-          const base = p.seriesName.endsWith('−') ? p.seriesName.slice(0, -1) : p.seriesName
-          if (!seen.has(base)) seen.set(base, { marker: p.marker, value: p.value })
-        })
-        seen.forEach(({ marker, value }, name) => {
-          const isPct = name.includes('率')
-          s += `${marker}${name}：<b>${isPct ? value.toFixed(1) + '%' : axisMoney(value)}</b><br/>`
-        })
-        return s
-      } },
-    legend: bottomLegend({ data: ['实际收入', '目标收入', '经营毛利率', '经营净利率'] }),
-    grid: { ...gridFor(x, { threshold: 12, right: 64 }), top: 36 },
-    xAxis: catAxis(x, { threshold: 12 }),
-    yAxis: [
-      valueAxis({ formatter: axisMoney }),
-      { type: 'value', name: '利润率%', position: 'right', min: minY, max: maxY,
-        axisLabel: { color: '#9b8070', formatter: '{value}%' },
-        splitLine: { show: false },
-        axisLine: { show: true, lineStyle: { color: '#ddc9b6' } } },
-    ],
-    series: [
-      // ── 收入规模 ──────────────────────────────────────────────
-      { name: '实际收入', type: 'bar', yAxisIndex: 0, data: rev, barMaxWidth: 28,
-        itemStyle: { color: grad('#c8e6c9', '#388e3c'), borderRadius: [4, 4, 0, 0] },
-        label: topLabel(p => axisMoney(p.value)), labelLayout: HIDE_OVERLAP },
-      { name: '目标收入', type: 'line', yAxisIndex: 0, data: tgt, smooth: true,
-        symbol: 'none', lineStyle: { type: 'dashed', width: 2, color: '#9b8070' } },
-
-      // ── 经营毛利率：正段（青绿渐变区域） ─────────────────────
-      { ...lineBase, name: '经营毛利率', data: gmPos, symbol: 'circle',
-        lineStyle: { color: '#00897b', width: 2.5 }, itemStyle: { color: '#00897b' },
-        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [{ offset: 0, color: 'rgba(0,137,123,.28)' }, { offset: 1, color: 'rgba(0,137,123,.03)' }] } },
-        endLabel: endLabel(p => p.value != null ? p.value.toFixed(1) + '%' : '', { color: '#00897b' }),
-        labelLayout: HIDE_OVERLAP },
-      // ── 经营毛利率：负段（红色区域 + 下三角警告标记） ────────
-      { ...lineBase, name: '经营毛利率−', data: gmNeg, symbol: 'triangle', symbolSize: 8, symbolRotate: 180,
-        lineStyle: { color: '#e53935', width: 2.5 }, itemStyle: { color: '#e53935' },
-        areaStyle: { color: 'rgba(229,57,53,.20)' },
-        endLabel: endLabel(p => p.value != null ? `▼ ${p.value.toFixed(1)}%` : '', { color: '#e53935', fontWeight: 'bold' }),
-        labelLayout: HIDE_OVERLAP },
-
-      // ── 经营净利率：正段（蓝色渐变区域） ─────────────────────
-      { ...lineBase, name: '经营净利率', data: nmPos, symbol: 'circle',
-        lineStyle: { color: '#1565c0', width: 2.5 }, itemStyle: { color: '#1565c0' },
-        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [{ offset: 0, color: 'rgba(21,101,192,.24)' }, { offset: 1, color: 'rgba(21,101,192,.03)' }] } },
-        endLabel: endLabel(p => p.value != null ? p.value.toFixed(1) + '%' : '', { color: '#1565c0' }),
-        labelLayout: HIDE_OVERLAP },
-      // ── 经营净利率：负段（深红 + 危险区底色 + 盈亏平衡线） ──
-      { ...lineBase, name: '经营净利率−', data: nmNeg, symbol: 'triangle', symbolSize: 10, symbolRotate: 180,
-        lineStyle: { color: '#b71c1c', width: 3 }, itemStyle: { color: '#b71c1c' },
-        areaStyle: { color: 'rgba(183,28,28,.24)' },
-        markArea: { silent: true, z: 0,
-          data: [[{ yAxis: minY, itemStyle: { color: 'rgba(229,57,53,.06)' } }, { yAxis: 0 }]] },
-        markLine: { silent: true, symbol: 'none', data: [{
-          yAxis: 0,
-          lineStyle: { color: 'rgba(198,40,40,.55)', width: 1.5, type: 'solid' },
-          label: { formatter: '盈亏平衡', position: 'insideStartTop', color: '#c62828', fontSize: 9, padding: [2, 4] } }] },
-        endLabel: endLabel(p => p.value != null ? `⚠ ${p.value.toFixed(1)}%` : '', { color: '#b71c1c', fontWeight: 'bold' }),
-        labelLayout: HIDE_OVERLAP },
-    ],
+    rows: rows.map(m => ({
+      label: `${m.month}月`,
+      rev: m.actual_revenue || 0, gross: m.actual_gross_profit || 0, prof: m.actual_profit || 0,
+      margin: m.actual_revenue ? (m.actual_profit / m.actual_revenue) * 100 : null,
+      target: m.target_revenue,
+    })),
+    totalMonths: (data.value?.trend || []).length || 12,
   }
 })
+
+// ── 经营全景 Mekko：柱宽=当月收入规模，柱内=成本/费用/净利结构，顶=净利率 ────
+// 替代原「经营趋势全景」（双轴 5 系列，量与质互相干扰）与「利润形成瀑布」对读卡
+// （与 Zone1 比率条信息重复）——两图合一。点击月份直达该月净利归因。
+const mekkoData = computed(() => {
+  const rows = trendActive.value
+  if (!rows.length) return null
+  return rows.map(m => ({
+    label: `${m.month}月`, rev: m.actual_revenue || 0,
+    gross: m.actual_gross_profit ?? 0, prof: m.actual_profit ?? 0,
+    target: m.target_revenue,
+  }))
+})
+function onMekkoMonth(c) {
+  const m = parseInt(c.label)
+  if (!m) return
+  let cy = year.value, cm = m - 1
+  if (cm === 0) { cm = 12; cy -= 1 }
+  sessionStorage.setItem('cw:wf-prefill', JSON.stringify({
+    bu: selectedBu.value || '', year: year.value, month: m, cmpYear: cy, cmpMonth: cm,
+  }))
+  mainTab.value = 'charts'
+}
 
 // ── 目标达成子弹图组：收入/毛利/净利 YTD达成率 vs 目标(100%) vs 时间进度 ──────────
 const bulletOption = computed(() => {
@@ -650,7 +607,10 @@ const bulletOption = computed(() => {
       type: 'bar', barWidth: 16,
       data: rows.map(r => ({ value: r.ach || 0, itemStyle: { color: barColor(r.ach), borderRadius: 8 } })).reverse(),
       label: { show: true, position: 'right', fontSize: 11, fontWeight: 700, color: '#5f4d3d',
-        formatter: p => (p.value).toFixed(0) + '%' },
+        formatter: p => {
+          const r = rows[rows.length - 1 - p.dataIndex]
+          return r.ach == null ? '未设目标' : r.ach.toFixed(0) + '%'
+        } },
       markArea: { silent: true, data: [
         [{ xAxis: 0, itemStyle: { color: 'rgba(229,57,53,0.05)' } }, { xAxis: 60 }],
         [{ xAxis: 60, itemStyle: { color: 'rgba(249,168,37,0.05)' } }, { xAxis: 90 }],
@@ -666,60 +626,19 @@ const bulletOption = computed(() => {
   }
 })
 
-// ── per-BU current-month actual (revenue & profit) ───────────────────────────
-const buActualOption = computed(() => {
+// ── 事业部经营结构 Mekko（密集模式）：柱宽=当月收入占比，柱内=成本/费用/净利 ──
+// 替代原「收入构成饼图」（与矩阵占比列重复）、「各BU当月收入/毛利双柱」（绝对值
+// 把小事业部压扁 + 重复矩阵数字）、「YTD达成率柱」（重复矩阵达成列，射程判断
+// 由目标分解 Tab 的射程图承担）——四图并二。点击事业部下钻。
+const buMekkoData = computed(() => {
   const bus = data.value?.bus || []
-  const names = bus.map(b => b.business_unit)
-  return {
-    tooltip: {
-      trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
-      formatter(params) {
-        let s = `<b>${params[0]?.axisValue}</b><br/>`
-        params.forEach(p => {
-          const v = p.value == null ? '—' : (Math.abs(p.value) >= 10000 ? (p.value / 10000).toFixed(1) + '万' : p.value.toFixed(0))
-          s += `${p.marker}${p.seriesName}：${v}<br/>`
-        })
-        return s
-      },
-    },
-    legend: bottomLegend(),
-    grid: gridFor(names),
-    xAxis: catAxis(names),
-    yAxis: valueAxis({ formatter: axisMoney }),
-    series: [
-      { name: '收入', type: 'bar', data: bus.map(b => b.month.actual_revenue), itemStyle: { color: '#2e7d32', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
-        label: topLabel(p => axisMoney(p.value)), labelLayout: HIDE_OVERLAP },
-      { name: '经营毛利', type: 'bar', data: bus.map(b => b.month.actual_gross_profit), itemStyle: { color: '#00897b', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
-        label: topLabel(p => axisMoney(p.value)), labelLayout: HIDE_OVERLAP },
-    ],
-  }
-})
-
-// ── per-BU YTD achievement rate (revenue & profit) ───────────────────────────
-const buRateOption = computed(() => {
-  const bus = data.value?.bus || []
-  const names = bus.map(b => b.business_unit)
-  return {
-    tooltip: {
-      trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
-      formatter(params) {
-        let s = `<b>${params[0]?.axisValue}</b><br/>`
-        params.forEach(p => { s += `${p.marker}${p.seriesName}：${p.value == null ? '—' : p.value.toFixed(1) + '%'}<br/>` })
-        return s
-      },
-    },
-    legend: bottomLegend(),
-    grid: gridFor(names, { nameTop: true }),
-    xAxis: catAxis(names),
-    yAxis: valueAxis({ name: '达成率%', formatter: '{value}%' }),
-    series: [
-      { name: 'YTD收入达成', type: 'bar', data: bus.map(b => b.ytd.revenue_rate), itemStyle: { color: '#66bb6a', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
-        label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP,
-        markLine: { silent: true, symbol: 'none', lineStyle: { color: '#c96342', type: 'dashed' }, data: [{ yAxis: 100, label: { formatter: '100%', color: '#c96342', fontSize: 10 } }] } },
-      { name: 'YTD毛利达成', type: 'bar', data: bus.map(b => b.ytd.gross_profit_rate), itemStyle: { color: '#26a69a', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26,
-        label: topLabel(p => p.value == null ? '' : p.value.toFixed(0) + '%'), labelLayout: HIDE_OVERLAP },
-    ],
-  }
+  if (!bus.length) return null
+  const rows = bus.map(b => ({
+    label: b.business_unit, rev: b.month.actual_revenue || 0,
+    gross: b.month.actual_gross_profit ?? 0, prof: b.month.actual_profit ?? 0,
+    target: b.month.target_revenue,
+  })).filter(r => r.rev > 0)
+  return rows.length ? rows : null
 })
 
 const hasData = computed(() => (data.value?.bus || []).some(b => b.month.actual_revenue != null || b.month.actual_profit != null))
@@ -755,6 +674,7 @@ const heroCards = computed(() => {
       rate: m.revenue_rate, mom: m.revenue_mom, yoy: m.revenue_yoy },
     { key: 'gross', label: '本月经营毛利', value: m.actual_gross_profit, color: '#00897b',
       rate: m.gross_profit_rate, mom: m.gross_profit_mom, yoy: m.gross_profit_yoy,
+      neg: (m.actual_gross_profit ?? 0) < 0,
       sub: `毛利率 ${fmtPctVal(d?.grossMargin)}` },
     { key: 'prof', label: '本月经营净利', value: m.actual_profit, color: '#1565c0',
       rate: m.profit_rate, mom: m.profit_mom, yoy: m.profit_yoy, neg: (m.actual_profit ?? 0) < 0,
@@ -822,23 +742,12 @@ const buMatrix = computed(() => {
   return rows
 })
 
-const COMP_COLORS = ['#2e7d32', '#1565c0', '#00897b', '#f57f17', '#6a1b9a', '#c96342', '#5c6bc0', '#26a69a']
-
-// 收入构成（环形）
-const revStructOption = computed(() => {
-  const rows = buMatrix.value.filter(r => (r.rev ?? 0) > 0)
+// 事业部 ≤2 时：构成饼图/贡献条/双柱图撑不起对比，切「事业部速览」叙事行
+const buDensity = computed(() => densityOf(buMatrix.value.length))
+const buGlanceData = computed(() => {
+  const rows = buMatrix.value
   if (!rows.length) return null
-  const pie = rows.map((r, i) => ({ name: r.bu, value: r.rev, itemStyle: { color: COMP_COLORS[i % COMP_COLORS.length] } }))
-  return {
-    tooltip: { trigger: 'item', ...TOOLTIP, formatter: p => `${p.name}<br/>${wan(p.value)} 元 (${p.percent.toFixed(1)}%)` },
-    legend: { bottom: 0, type: 'scroll', textStyle: { fontSize: 11, color: '#6b5a4a' } },
-    series: [{
-      type: 'pie', radius: ['42%', '68%'], center: ['50%', '44%'], data: pie,
-      label: { formatter: p => `${p.name}\n${p.percent.toFixed(0)}%`, fontSize: 11, lineHeight: 14, color: '#5f4d3d' },
-      labelLine: { length: 8, length2: 8 }, labelLayout: HIDE_OVERLAP,
-      emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.25)' } },
-    }],
-  }
+  return { rows, timeProgress: timeProgressPct.value }
 })
 
 // 毛利贡献（横向分歧条：正绿负红，直观看谁在拖累集团毛利）
@@ -848,7 +757,7 @@ const profitContribOption = computed(() => {
   const names = rows.map(r => r.bu)
   return {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TOOLTIP,
-      formatter: p => `${p[0].name}<br/>经营毛利：${wan(p[0].value)} 元` },
+      formatter: p => `${p[0].name}<br/>经营毛利：${wan(p[0].value)}` },
     grid: { top: 8, right: 64, bottom: 8, left: 16, containLabel: true },
     xAxis: { type: 'value', axisLabel: { color: '#9b8070', formatter: v => axisMoney(v) },
       splitLine: { lineStyle: { color: 'rgba(180,140,110,.15)' } } },
@@ -925,16 +834,31 @@ const engineLine = computed(() => {
   return { eng, drag, sameOne: eng === drag }
 })
 
-onMounted(() => { restoreChat(); load() })
+onMounted(() => {
+  restoreChat()
+  // ?tab= 直达指定分析 Tab（如报表矩阵「净利归因」跳转 tab=charts）优先于记忆；
+  // 两者都须仍在当前 Tab 列表内（权限收缩后键失效），否则留在默认总览
+  const qt = [route.query.tab, loadPref('cw_cockpit_tab')]
+    .find(k => k && MAIN_TABS.value.some(t => t.key === k))
+  if (qt) mainTab.value = qt
+  // 期间/BU 记忆：仅同一自然月内恢复，跨月回到默认上月；BU 须仍在可见范围内
+  const p = loadPref('cw_cockpit_period')
+  if (p && p.savedAt === new Date().toISOString().slice(0, 7)) {
+    if (years.includes(p.year) && months.includes(p.month)) { year.value = p.year; month.value = p.month }
+    if (p.bu && accessibleBus.value.includes(p.bu)) selectedBu.value = p.bu
+  }
+  load()
+})
 
 // ── 右键上下文菜单（事业部矩阵表）────────────────────────────────────────────
 const ctxMatrix = useContextMenu()
+// 复制为裸数值（与报表模块「整行复制」一致），贴进 Excel 可直接参与计算
 const MATRIX_COPY_COLS = [
   { key: 'bu', label: '事业部' },
-  { key: 'rev', label: '本月收入', format: (v) => wan ? wan(v) : String(v) },
-  { key: 'gross', label: '毛利', format: (v) => wan ? wan(v) : String(v) },
-  { key: 'prof', label: '净利润', format: (v) => wan ? wan(v) : String(v) },
-  { key: 'ytdRev', label: 'YTD收入', format: (v) => wan ? wan(v) : String(v) },
+  { key: 'rev', label: '本月收入' },
+  { key: 'gross', label: '经营毛利' },
+  { key: 'prof', label: '经营净利' },
+  { key: 'ytdRev', label: 'YTD收入' },
 ]
 const ctxMatrixItems = computed(() => {
   const r = ctxMatrix.menu.payload
@@ -1070,10 +994,12 @@ const ctxMatrixItems = computed(() => {
       <!-- ════ ZONE 3 · 经营趋势全景 + 目标达成子弹图组 ══════════════════════════ -->
       <div class="zone-2col zone-pano">
         <div class="card">
-          <div class="section-title" style="margin-bottom:8px">经营趋势全景（{{ data.year }}年）
-            <span class="tip">收入柱 · 正值绿/蓝渐变 · 负值红区预警</span>
+          <div class="section-title" style="margin-bottom:8px">
+            {{ trendDensity === 'sparse' ? '经营节奏' : `经营全景 · 规模×利润结构（${data.year}年）` }}
+            <span class="tip">{{ trendDensity === 'sparse' ? '已发布月份较少 · 逐月讲结论' : '柱宽=当月收入规模 · 柱内=每元收入去向 · 顶=净利率' }}</span>
           </div>
-          <BaseChart v-if="panoramaOption" :option="panoramaOption" height="320px" />
+          <PaceStory v-if="trendDensity === 'sparse' && paceData" v-bind="paceData" />
+          <ProfitMekko v-else-if="mekkoData" :months="mekkoData" height="300px" @month-click="onMekkoMonth" />
           <div v-else class="mini-empty">暂无趋势数据</div>
         </div>
         <div class="card">
@@ -1124,12 +1050,25 @@ const ctxMatrixItems = computed(() => {
         </div>
       </div>
 
-      <!-- ════ ZONE 5 · 收入构成 + 毛利贡献 ══════════════════════════════════════ -->
+      <!-- ════ ZONE 5+6 · 事业部 ≤2 时：四张结构图 → 一张事业部速览（叙事行）════ -->
+      <div v-if="buDensity === 'sparse' && buGlanceData" class="card">
+        <div class="section-title" style="margin-bottom:8px">事业部速览 · {{ data.year }}年{{ data.month }}月
+          <span class="tip">事业部较少 · 直接讲数与节奏 · 点击行下钻</span>
+        </div>
+        <BuGlance v-bind="buGlanceData" @drill="openDrill" />
+      </div>
+
+      <template v-else>
+      <!-- ════ ZONE 5 · 事业部经营结构 Mekko + 毛利贡献（原四图并二）═══════════════ -->
       <div class="chart-grid">
         <div class="card">
-          <div class="section-title" style="margin-bottom:8px">收入构成 · 各事业部占比</div>
-          <BaseChart v-if="revStructOption" :option="revStructOption" height="300px" />
-          <div v-else class="mini-empty">暂无收入数据</div>
+          <div class="section-title" style="margin-bottom:8px">事业部经营结构 · 规模×利润
+            <span class="tip">柱宽=当月收入占比 · 柱内=每元收入去向 · 顶=净利率</span>
+          </div>
+          <ProfitMekko v-if="buMekkoData" :months="buMekkoData" height="300px"
+                       hint="柱宽 = 当月收入占比 · 悬浮看明细 · 点击事业部可下钻"
+                       @month-click="c => openDrill(c.label)" />
+          <div v-else class="mini-empty">暂无事业部数据</div>
         </div>
         <div class="card">
           <div class="section-title" style="margin-bottom:8px">毛利贡献 · 谁在贡献 / 拖累</div>
@@ -1137,18 +1076,7 @@ const ctxMatrixItems = computed(() => {
           <div v-else class="mini-empty">暂无毛利数据</div>
         </div>
       </div>
-
-      <!-- ════ ZONE 6 · 各事业部当月收入毛利 + YTD 达成率 ════════════════════════ -->
-      <div class="chart-grid">
-        <div class="card">
-          <div class="section-title" style="margin-bottom:8px">各事业部当月收入 / 经营毛利</div>
-          <BaseChart :option="buActualOption" height="300px" />
-        </div>
-        <div class="card">
-          <div class="section-title" style="margin-bottom:8px">各事业部 YTD 达成率</div>
-          <BaseChart :option="buRateOption" height="300px" />
-        </div>
-      </div>
+      </template>
       </div>
     </template>
     </template>
@@ -1351,7 +1279,7 @@ const ctxMatrixItems = computed(() => {
                 </div>
               </div>
               <div class="pp-chart-wrap">
-                <BaseChart v-if="panoramaOption" :option="panoramaOption" height="340px" />
+                <ProfitMekko v-if="mekkoData" :months="mekkoData" height="340px" />
               </div>
             </template>
             <!-- 盈利 -->
@@ -1359,7 +1287,8 @@ const ctxMatrixItems = computed(() => {
               <div class="pp-title">💰 盈利 — 事业部贡献</div>
               <div class="pp-chart-grid">
                 <BaseChart v-if="profitContribOption" :option="profitContribOption" height="380px" />
-                <BaseChart v-if="revStructOption" :option="revStructOption" height="380px" />
+                <ProfitMekko v-if="buMekkoData" :months="buMekkoData" height="380px"
+                             hint="柱宽 = 当月收入占比" />
               </div>
             </template>
             <!-- 业财 -->
@@ -1446,7 +1375,7 @@ const ctxMatrixItems = computed(() => {
 
 <style scoped>
 .kpi-6 { grid-template-columns: repeat(6, 1fr) !important; }
-@media (max-width: 1100px) { .kpi-6 { grid-template-columns: repeat(3, 1fr) !important; } }
+@media (max-width: 1400px) { .kpi-6 { grid-template-columns: repeat(3, 1fr) !important; } }
 @media (max-width: 560px) { .kpi-6 { grid-template-columns: repeat(2, 1fr) !important; } }
 
 .nodata-banner {
@@ -1499,7 +1428,7 @@ const ctxMatrixItems = computed(() => {
 .cfa-global-ghost { border: 1px solid rgba(0,0,0,0.12); background: var(--row-bg); border-radius: 9px; padding: 7px 12px; cursor: pointer; font-size: 12.5px; color: var(--muted); }
 
 .kpi-4 { grid-template-columns: repeat(4, 1fr) !important; }
-@media (max-width: 960px) { .kpi-4 { grid-template-columns: repeat(2, 1fr) !important; } }
+@media (max-width: 1120px) { .kpi-4 { grid-template-columns: repeat(2, 1fr) !important; } }
 @media (max-width: 520px) { .kpi-4 { grid-template-columns: 1fr !important; } }
 .kpi-card.kpi-muted { background: rgba(138,75,52,0.04); }
 .lbl-hint { font-size: 10px; color: var(--muted); margin-left: 4px; cursor: help; }

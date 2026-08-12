@@ -184,7 +184,7 @@ onMounted(async () => {
         <span class="audit-sub">系统自动记录的全部写操作（谁 / 何时 / 做了什么 / 结果），共 {{ total }} 条</span>
       </div>
       <div class="ctrl-row">
-        <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportCsv">⬇ 导出CSV</button>
+        <button class="btn btn-ghost btn-sm" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⬇ 导出CSV' }}</button>
         <button class="btn btn-ghost btn-sm" :disabled="pruning" @click="prune">🧹 清理180天前</button>
       </div>
     </div>

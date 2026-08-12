@@ -26,7 +26,9 @@ import { useRangeSelection } from '../../composables/useRangeSelection.js'
 import { useFileDrop } from '../../composables/useFileDrop.js'
 import { useEscClearSelection } from '../../composables/useEscClearSelection.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import { useModalEsc } from '../../composables/useModalEsc.js'
+import { useModalEnter } from '../../composables/useModalEnter.js'
 // 重型抽屉/弹窗按需加载：仅打开活动抽屉 / 导入预检时才拉取其代码块，
 // 大幅瘦身应收明细主路由块（ActivityPanel 单文件 1.7k 行）。
 const ActivityPanel = defineAsyncComponent(() => import('../../components/ar/ActivityPanel.vue'))
@@ -62,7 +64,9 @@ const reqParams = () => (conditions.value.length
 // focus 由后端按与 KPI 进度条一致的口径过滤；全部明细不受影响。
 const FOCUS_TABS = ['reconciliation', 'invoice', 'collection']
 const isFocusTab = computed(() => FOCUS_TABS.includes(activeTab.value))
-const pendingOnly = ref(true)   // 进入聚焦页默认仅待处理
+// 口径记忆：仅严格 false 视为「全部」，脏数据/未存过一律回退默认「待处理」
+const loadPendingOnly = () => loadPref('ar_pending_only', true) !== false
+const pendingOnly = ref(loadPendingOnly())   // 进入聚焦页恢复上次口径，默认仅待处理
 const focusParam = computed(() => (isFocusTab.value && pendingOnly.value) ? activeTab.value : '')
 // 记录集作用域参数：reqParams 叠加聚焦过滤，供列表/导出/批量操作共用，使三者口径一致。
 // KPI 例外——它要对全集算分母（完成度/待办数），故仍用 reqParams（不加 focus）。
@@ -139,6 +143,8 @@ async function confirmBulkDelete() {
     showDelConfirm.value = false
     clearSelection()
     await load(true)
+    // 误删后悔药入口：应收批删进回收站，可一键找回
+    toast.success('已删除所选记录（已入回收站）', 3000, { label: '查看回收站', to: '/trash' })
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { bulkDeleting.value = false }
 }
@@ -435,6 +441,8 @@ const ctxItems = computed(() => {
   return [
     { key: 'log', label: '催款工作台', icon: 'log', shortcut: 'L', action: r => { panelRec.value = r } },
     { key: 'edit', label: '编辑', icon: 'edit', shortcut: 'E', hidden: !auth.canArWrite, action: r => openEdit(r) },
+    // B4a: 同项目多期应收最常见——以该行为模板开新建弹窗，项目/运作日期免重填
+    { key: 'clone-new', label: '以此新建应收', icon: 'plus', shortcut: 'N', hidden: !auth.canArWrite, action: r => openCreateFrom(r) },
     {
       key: 'pay', label: settled ? '录入回款（已结清）' : '录入回款', icon: 'payment', shortcut: 'P',
       hidden: !auth.canArWrite, disabled: settled, action: r => openAddPayment(r),
@@ -520,6 +528,38 @@ async function doBulkAssignCollector() {
   } finally { collectorAssigning.value = false }
 }
 
+// ── B2 批量设日期：对账/开票/目标回款日期一把改 ─────────────────────────────
+// 与批量分配催收人同一 ids/跨页全选(all+scopedParams) 口径；date 传 null 表示清空该日期
+const showBulkDate = ref(false)
+const BULK_DATE_FIELDS = [
+  { key: 'reconciliation_date', label: '对账日期' },
+  { key: 'invoice_date', label: '开票日期' },
+  { key: 'target_collection_date', label: '目标回款日期' },
+]
+const bulkDateField = ref('reconciliation_date')
+const bulkDateValue = ref('')
+const bulkDateBusy = ref(false)
+async function doBulkSetDate(clear = false) {
+  if (!clear && !bulkDateValue.value) { toast.error('请选择日期'); return }
+  bulkDateBusy.value = true
+  try {
+    const body = { field: bulkDateField.value, date: clear ? null : bulkDateValue.value }
+    let res
+    if (selectAllMatching.value) {
+      res = await ar.bulkSetDate({ all: true, ...body }, buildParams(scopedParams()))
+    } else {
+      res = await ar.bulkSetDate({ ids: [...selectedIds.value], ...body })
+    }
+    const lbl = BULK_DATE_FIELDS.find(f => f.key === bulkDateField.value)?.label || '日期'
+    toast.success(`已为 ${res.data?.updated ?? selectedCount.value} 条记录${clear ? '清空' : '设置'}${lbl}`)
+    showBulkDate.value = false
+    bulkDateValue.value = ''
+    clearSelection()
+    await load(true)
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
+  } finally { bulkDateBusy.value = false }
+}
+
 // ── 账龄分桶配置 ──────────────────────────────────────────────────────────────
 const showAgingCfgModal = ref(false)
 const agingCfgForm = reactive({ bucket1: 30, bucket2: 60, bucket3: 90 })
@@ -570,14 +610,46 @@ const cw = useColWidths('ar_records', {
 const colFilters = reactive({})    // field -> {op, value}
 const sortField = ref('')
 const sortOrder = ref('')          // 'asc' | 'desc' | ''
-// 运作日期区间预设条 → 写入列头筛选管线（operation_date between），与手动列筛选同源
+// A3: 列头可排序字段白名单（与模板里各 ColumnFilter 的 field 一一对应）。
+// 本机记忆/方案快照还原排序时先过白名单，防字段下线后的脏数据打到后端 400。
+const SORTABLE_FIELDS = new Set([
+  'short_name', 'operation_date', 'estimated_amount', 'actual_invoice_amount',
+  'tax_amount', 'account_diff_adjustment', 'outstanding_amount', 'due_date',
+  'target_collection_date', 'notes', 'reconciliation_date', 'invoice_batch_no',
+  'invoice_date',
+])
+// A3: 列头排序本机记忆——setSort 时存，进页在首次 load 前还原（脏数据静默忽略）
+{
+  const lastSort = loadPref('arr:sort')
+  if (lastSort && SORTABLE_FIELDS.has(lastSort.field) && ['asc', 'desc'].includes(lastSort.order)) {
+    sortField.value = lastSort.field
+    sortOrder.value = lastSort.order
+  }
+}
+// 时间条：日期字段可切换——对账/开票/回款日期使用频率高于运作日期，
+// 不再写死。区间写入列头筛选管线（<字段> between），与手动列筛选同源；
+// 切换字段时把已选区间迁移过去，字段选择记忆在本机。
+const DATE_FIELD_OPTS = [
+  { key: 'reconciliation_date', label: '对账日期' },
+  { key: 'invoice_date', label: '开票日期' },
+  { key: 'payment_date', label: '回款日期' },
+  { key: 'operation_date', label: '运作日期' },
+  { key: 'due_date', label: '应收到期' },
+]
+const dateField = ref(localStorage.getItem('arr:datefield') || 'operation_date')
+let _barField = dateField.value   // 时间条当前作用的字段（区分于用户手动加的列头筛选）
 const opDateStart = ref('')
 const opDateEnd = ref('')
 function applyOpDateRange() {
-  if (!opDateStart.value && !opDateEnd.value) delete colFilters.operation_date
-  else colFilters.operation_date = { op: 'between', value: [opDateStart.value || '', opDateEnd.value || ''] }
+  if (!opDateStart.value && !opDateEnd.value) delete colFilters[_barField]
+  else colFilters[_barField] = { op: 'between', value: [opDateStart.value || '', opDateEnd.value || ''] }
   clearSelection()
   load(true)
+}
+function onDateFieldChange() {
+  localStorage.setItem('arr:datefield', dateField.value)
+  if (_barField !== dateField.value) { delete colFilters[_barField]; _barField = dateField.value }
+  applyOpDateRange()
 }
 // 部门枚举选项复用页面既有可访问部门列表
 function setColFilter(field, val) {
@@ -597,6 +669,7 @@ function setSort(field, order) {
   sortOrder.value = order || ''
   // 列头排序生效即清掉 SortTh 排序，避免两套排序争用 sort 参数
   if (order && sorter.sort.value) sorter.sort.value = ''
+  savePref('arr:sort', { field: sortField.value, order: sortOrder.value })   // A3: 本机记忆，下次进页还原
   load(true)
 }
 function buildParams(base = {}) {
@@ -614,7 +687,17 @@ function buildParams(base = {}) {
 
 const showModal = ref(false)
 const editRec = ref(null)
+// 弹窗打开即可打字：聚焦首个可输入框（跳过禁用项与日期控件）——
+// 新建落在「项目搜索」，编辑（项目框禁用）落在「预估上账金额」
+const recModalBody = ref(null)
+function focusRecModal() {
+  nextTick(() => recModalBody.value?.querySelector('input:not([disabled]):not([type="date"])')?.focus())
+}
 const saving = ref(false)
+// B1a 连续录入：同一项目多期应收逐条录时，「保存并继续」不关弹窗——
+// 保留项目/搜索词/运作日期上下文，焦点直达金额框；计数在重新打开弹窗时归零
+const estAmtInput = ref(null)
+let contSaveCount = 0
 const recForm = reactive({
   project_id: '', operation_date: todayCST(),
   estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
@@ -630,6 +713,35 @@ const adjForm = reactive({ amount: '', reason: '', date: todayCST() })
 const adjBusy = ref(false)
 const adjTotal = computed(() =>
   adjList.value.reduce((s, a) => s + (parseFloat(a.amount) || 0), 0))
+
+// 差额智能建议：系统替用户算数——实际开票 − 上账 − 已有调整合计。
+// 差超过半分钱即在输入框旁显示建议值，点击或在金额框按「=」一键填入。
+const adjSuggest = computed(() => {
+  const inv = parseFloat(recForm.actual_invoice_amount)
+  const est = parseFloat(recForm.estimated_amount)
+  if (!isFinite(inv) || !isFinite(est)) return null
+  const v = +(inv - est - (editRec.value ? adjTotal.value : 0)).toFixed(2)
+  return Math.abs(v) < 0.005 ? null : v
+})
+const adjSuggestTitle = computed(() => {
+  if (adjSuggest.value == null) return ''
+  const inv = parseFloat(recForm.actual_invoice_amount), est = parseFloat(recForm.estimated_amount)
+  const adj = editRec.value ? `− 已调 ${adjTotal.value.toFixed(2)} ` : ''
+  return `开票 ${inv.toFixed(2)} − 上账 ${est.toFixed(2)} ${adj}= ${adjSuggest.value.toFixed(2)}；点击或在金额框按 = 填入`
+})
+function applyAdjSuggest() {
+  if (adjSuggest.value == null) return
+  const s = adjSuggest.value.toFixed(2)
+  if (editRec.value) adjForm.amount = s
+  else recForm.account_diff_adjustment = s
+}
+function onAdjKeydown(e) { if (e.key === '=') { e.preventDefault(); applyAdjSuggest() } }
+// 原因框自动增高：内容多行时随内容长高（上限 5 行左右），不裁字
+function autoGrowAdjReason(e) {
+  const el = e.target
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, 110) + 'px'
+}
 async function addAdjustment() {
   if (!parseFloat(adjForm.amount)) { toast.error('调整金额不能为0（可正可负）'); return }
   if (!adjForm.reason.trim()) { toast.error('请填写调整原因（如：运费差、客户扣款、补付）'); return }
@@ -665,12 +777,15 @@ const projectKeyword = ref('')
 const projectSearching = ref(false)
 let projectSearchTimer = null
 // Server-side search by project_no / short_name / customer_name (debounced).
+// latest-wins：连发两次搜索（如「以此新建」先空搜后带词搜）时只认最后一次，防乱序覆盖
+let _projSeq = 0
 async function searchProjects(kw) {
   projectSearching.value = true
+  const seq = ++_projSeq
   try {
     const res = await ar.listProjects({ size: 100, q: kw || undefined })
-    projects.value = res.data.items
-  } finally { projectSearching.value = false }
+    if (seq === _projSeq) projects.value = res.data.items
+  } finally { if (seq === _projSeq) projectSearching.value = false }
 }
 function onProjectKeywordInput() {
   clearTimeout(projectSearchTimer)
@@ -680,7 +795,24 @@ const showPayModal = ref(false)
 const payRec = ref(null)
 const DRAFT_ST = DRAFT_STATUSES
 const payForm = reactive({ amount: '', payment_date: '', notes: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, counterparty_dept: '' })
+// 全额快填：整笔收清是最高频场景，点 chip 或在金额框按「=」直接填入未收余额
+function fillPayFull() {
+  const v = parseFloat(payRec.value?.outstanding_amount)
+  if (v > 0) payForm.amount = v.toFixed(2)
+}
+function onPayAmtKeydown(e) { if (e.key === '=') { e.preventDefault(); fillPayFull() } }
+// 回款习惯记忆：方式/账户（承兑汇票时含承兑状态）沿用上次保存值，单笔/批次共用；
+// 金额/日期/备注每次重置。方式必须在当前选项内，脏数据静默回退默认值。
+function applyPayLast(form) {
+  const last = loadPref('ar_pay_last')
+  if (!last || !COLLECTION_METHODS.includes(last.method)) return
+  form.method = last.method
+  if (typeof last.account === 'string') form.account = last.account
+  if (last.method === '承兑汇票' && DRAFT_STATUSES.includes(last.draft_status)) form.draft_status = last.draft_status
+}
 const paySaving = ref(false)
+// B1b 保存并录下一笔：批量过回款单时焦点直达金额框（弹窗不重开，autofocus 不再触发）
+const payAmtInput = ref(null)
 // 录入回款时联动：该项目可用预收（只读提示，便于判断是否以预收冲抵应收）
 const payAdvance = ref(null)
 const expandedPayments = ref({})
@@ -723,8 +855,47 @@ function onPanelClose() {
   dunPanelDirty = false
 }
 
+// ── B3 行内快改：对账/开票/目标回款日期双击即改 ──────────────────────────────
+// 免开编辑弹窗改一个日期。同一时刻只有一个格在编辑（共用一个 inlineEdit 状态）；
+// Enter/失焦保存、Esc 取消；保存走 quick-edit 端点（不触发全量重算），
+// 回传字段与 onPanelFieldSaved 同法就地合并回行，派生列不整表刷新。
+const inlineEdit = reactive({ id: 0, field: '', value: '', saving: false })
+function startInlineEdit(rec, field) {
+  window.getSelection?.()?.removeAllRanges?.()   // 清掉双击产生的文字选区
+  // 无写权限时保持与整行双击一致：打开催款工作台，不进入编辑态
+  if (!auth.canArWrite) { panelRec.value = rec; return }
+  inlineEdit.id = rec.id
+  inlineEdit.field = field
+  inlineEdit.value = rec[field] || ''
+  nextTick(() => document.querySelector('.qe-inp')?.focus())
+}
+function cancelInlineEdit() { inlineEdit.id = 0; inlineEdit.field = '' }
+async function commitInlineEdit(rec) {
+  // Enter 提交后随即触发 blur：id 已清零/保存中直接返回，避免重复提交
+  if (!inlineEdit.id || inlineEdit.saving) return
+  const field = inlineEdit.field
+  const val = inlineEdit.value || null
+  if ((rec[field] || '') === (val || '')) { cancelInlineEdit(); return }
+  inlineEdit.saving = true
+  try {
+    const res = await ar.quickEdit(rec.id, { [field]: val })
+    const data = res.data || {}
+    for (const k in data) { if (k !== 'id') rec[k] = data[k] }
+    if (!(field in data)) rec[field] = val   // 端点未回传该字段时前端兜底
+    // 保存期间用户可能已双击进入另一格：仅当状态仍指向本格时才收起，勿误关新编辑
+    if (inlineEdit.id === rec.id && inlineEdit.field === field) cancelInlineEdit()
+  } catch (e) { toast.error(e?.msg || e?.error || '保存失败') }
+  finally { inlineEdit.saving = false }
+}
+
 const accessibleDepts = computed(() => auth.effectiveDepts.filter(d => DEPARTMENTS.includes(d)))
 const years = Array.from({ length: 5 }, (_, i) => yearCST() - 2 + i)
+// 时间条旁的「全部事业部」快捷筛选：读写同一个 dept dim 条件，与筛选面板/chip 同源，
+// setDimFilter 内部已 upsert/remove + onFilterChange 触发重载。多选(数组)时下拉留空不误显。
+const deptQuickFilter = computed({
+  get: () => { const v = deptOfConditions(); return Array.isArray(v) ? '' : (v || '') },
+  set: v => setDimFilter('dept', v),
+})
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
 // Field-permission column visibility (aliased to showCol after col-panel additions above)
@@ -757,7 +928,7 @@ const COL_FILTER_LABELS = {
   actual_invoice_amount: '实际开票', tax_amount: '税额', reconciliation_status: '对账状态',
   reconciliation_date: '对账日期', invoice_status: '开票状态', invoice_date: '开票日期',
   invoice_batch_no: '批次号', due_date: '应收到期', target_collection_date: '目标回款',
-  outstanding_amount: '未收金额', status: '回款状态', notes: '备注',
+  outstanding_amount: '未收金额', status: '回款状态', notes: '备注', payment_date: '回款日期',
   account_diff_adjustment: '账实差额', responsibility: '责任状态',
 }
 const _OP_TEXT = { eq: '等于', contains: '包含', gt: '>', lt: '<', gte: '≥', lte: '≤', between: '区间', empty: '为空', not_empty: '非空' }
@@ -806,6 +977,17 @@ function clearQuickQ() { quickQ.value = ''; clearTimeout(quickTimer); applyQuick
 const payFilters = reactive({ pay_start: '', pay_end: '', dept: '', q: '', source: '', method: '', draft_status: '' })
 const payItems = ref([])
 const paySummary = ref(null)
+// 底部分类汇总：来源(全体)/方式·账户(仅现金回款)，各维内部占比 + 配色，金额降序
+const PAY_CAT_COLORS = ['#1565c0', '#2e9e6b', '#c47d0a', '#8e24aa', '#00897b', '#d64545', '#5c6bc0', '#00838f']
+function _catStats(obj) {
+  const entries = Object.entries(obj || {}).map(([name, v]) => ({ name, amount: Number(v) || 0 }))
+  const tot = entries.reduce((s, e) => s + e.amount, 0)
+  return entries.sort((a, b) => b.amount - a.amount)
+    .map((x, i) => ({ ...x, pct: tot ? x.amount / tot * 100 : 0, color: PAY_CAT_COLORS[i % PAY_CAT_COLORS.length] }))
+}
+const paySourceStats = computed(() => _catStats(paySummary.value?.by_source))
+const payMethodStats = computed(() => _catStats(paySummary.value?.by_method))
+const payAccountStats = computed(() => _catStats(paySummary.value?.by_account))
 const payTotal = ref(0)
 const payPage = ref(1)
 const payLoading = ref(false)
@@ -1169,10 +1351,30 @@ function syncQuickQFromConditions() {
   const q = conditions.value.find(c => c.t === 'dim' && c.field === 'q')
   quickQ.value = q ? (q.value || '') : ''
 }
-function applyScheme(s) {
+// A3+B5: 套用方案 = 整套还原（条件 + 列头筛选 + 列头排序），不触发加载；
+// 供点选方案与进页默认方案两处复用。老方案无快照字段 → 列头回到干净状态。
+function applySchemeState(s) {
   conditions.value = JSON.parse(JSON.stringify(s.conditions || []))
   matchMode.value = s.match || 'all'
   syncQuickQFromConditions()   // 方案含 q 条件时回填搜索框，避免搜索框空白却在过滤
+  // 列头筛选：先清空现有（含时间条区间），再套方案快照
+  Object.keys(colFilters).forEach(k => delete colFilters[k])
+  opDateStart.value = ''; opDateEnd.value = ''
+  Object.assign(colFilters, JSON.parse(JSON.stringify(s.colFilters || {})))
+  const bar = colFilters[_barField]
+  if (bar && bar.op === 'between' && Array.isArray(bar.value)) {
+    // 快照恰落在时间条当前字段 → 回填时间条输入框，保持 UI 与筛选同源
+    opDateStart.value = bar.value[0] || ''
+    opDateEnd.value = bar.value[1] || ''
+  }
+  // 列头排序：空即清；过白名单防脏数据，生效时与 SortTh 互斥
+  sortField.value = SORTABLE_FIELDS.has(s.sort) ? s.sort : ''
+  sortOrder.value = (sortField.value && ['asc', 'desc'].includes(s.order)) ? s.order : ''
+  if (!sortOrder.value) sortField.value = ''
+  if (sortField.value && sorter.sort.value) sorter.sort.value = ''
+}
+function applyScheme(s) {
+  applySchemeState(s)
   showPresetDrop.value = false
   onFilterChange()
 }
@@ -1183,6 +1385,8 @@ async function saveCurrentScheme() {
     await ar.createFilterScheme({
       name, scope: newSchemeScope.value, module: 'ar_records',
       conditions: conditions.value, match: matchMode.value,
+      // A3+B5: 一并快照列头筛选与列头排序，套用方案即还原整套表格视图
+      colFilters: { ...colFilters }, sort: sortField.value, order: sortOrder.value,
     })
     newPresetName.value = ''
     showPresetDrop.value = false
@@ -1343,9 +1547,9 @@ function switchTab(key) {
   else if (key === 'offset') loadOffsetWorkbench()
   else if (key === 'batch') loadBatches()
   else {
-    // DATA_TABS（全部/对账/开票/回款）：进入聚焦页默认仅待办；
+    // DATA_TABS（全部/对账/开票/回款）：进入聚焦页恢复上次口径（默认仅待办）；
     // 当有效 focus 过滤变化（进/出聚焦页）时需重新拉数，否则沿用已加载集仅切列。
-    if (FOCUS_TABS.includes(key)) pendingOnly.value = true
+    if (FOCUS_TABS.includes(key)) pendingOnly.value = loadPendingOnly()
     if (!DATA_TABS.includes(prev) || FOCUS_TABS.includes(key) || FOCUS_TABS.includes(prev)) {
       clearSelection()
       load(true)
@@ -1353,10 +1557,11 @@ function switchTab(key) {
   }
 }
 
-// 聚焦页「待处理 ｜ 全部」切换：改变 focus 口径后重拉当前集
+// 聚焦页「待处理 ｜ 全部」切换：改变 focus 口径后重拉当前集；口径跨会话记忆
 function setPendingOnly(v) {
   if (pendingOnly.value === v) return
   pendingOnly.value = v
+  savePref('ar_pending_only', v)
   clearSelection()
   load(true)
 }
@@ -1417,6 +1622,7 @@ function drillIntoGroup(row) {
 
 function openCreate() {
   editRec.value = null
+  contSaveCount = 0   // 弹窗全新打开，连续保存计数归零
   Object.assign(recForm, {
     project_id: '',
     operation_date: todayCST(),
@@ -1427,8 +1633,21 @@ function openCreate() {
   })
   adjList.value = []
   showModal.value = true
+  focusRecModal()
   projectKeyword.value = ''
   searchProjects('')  // initial page of projects
+}
+
+// B4a: 右键「以此新建应收」——同项目多期录入免重搜项目：复用 openCreate 后回填
+// 项目 + 运作日期上下文（交付部门随项目带出）；金额/开票/对账等留空按新一期填。
+// 用行的项目简称重搜，保证下拉里有该项目可回显；焦点直达金额框（项目已选定）
+function openCreateFrom(rec) {
+  openCreate()
+  recForm.project_id = rec.project_id || ''
+  recForm.operation_date = rec.operation_date || todayCST()
+  projectKeyword.value = rec.short_name || rec.customer_name || ''
+  searchProjects(projectKeyword.value.trim())
+  nextTick(() => estAmtInput.value?.focus())
 }
 
 function openEdit(rec) {
@@ -1447,6 +1666,7 @@ function openEdit(rec) {
   adjList.value = rec.adjustments || []
   Object.assign(adjForm, { amount: '', reason: '', date: todayCST() })
   showModal.value = true
+  focusRecModal()
 }
 
 // 批次号三种来源：auto=系统生成（客户简称-日期-序号，默认推荐，免人为编码）；
@@ -1578,6 +1798,7 @@ async function undoBatchInvoice(ev) {
 function openBatchPay(b) {
   batchTarget.value = b
   Object.assign(batchPayForm, { amount: '', payment_date: todayCST(), method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, notes: '', overflow_to_advance: false })
+  applyPayLast(batchPayForm)
   batchPayResult.value = null
   fetchBatchDetail(b.batch_no).catch(() => {})
   showBatchPay.value = true
@@ -1586,6 +1807,7 @@ async function doBatchPay() {
   batchActing.value = true
   try {
     const res = await ar.batchPayment(batchTarget.value.batch_no, { ...batchPayForm })
+    savePref('ar_pay_last', { method: batchPayForm.method, account: batchPayForm.account, draft_status: batchPayForm.draft_status })
     batchPayResult.value = res.data   // 留在弹窗里展示分摊回执
     await refreshAfterBatchAction(batchTarget.value.batch_no)
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
@@ -1609,7 +1831,8 @@ async function undoBatchPay(b, ev) {
   finally { batchActing.value = false }
 }
 
-async function saveRec() {
+// andContinue=true（仅新建态）：保存成功后不关弹窗，进入连续录入
+async function saveRec(andContinue = false) {
   if (!recForm.project_id) { toast.error('请选择项目'); return }
   saving.value = true
   try {
@@ -1631,7 +1854,21 @@ async function saveRec() {
     }
     if (editRec.value) await ar.updateRecord(editRec.value.id, payload)
     else await ar.createRecord(payload)
-    showModal.value = false; await load()
+    if (andContinue && !editRec.value) {
+      // 保存并继续：保留 项目/项目搜索词/运作日期（同项目连录多期账最常见），
+      // 清空金额类/开票/税额/开票与对账日期/差额/批次号/备注，焦点回到金额框
+      contSaveCount += 1
+      Object.assign(recForm, {
+        estimated_amount: '', actual_invoice_amount: '', tax_amount: '',
+        invoice_date: '', reconciliation_date: '', account_diff_adjustment: '',
+        adjustment_reason: '', invoice_batch_no: '', notes: '',
+      })
+      toast.success(`已连续保存 ${contSaveCount} 条`)
+      nextTick(() => estAmtInput.value?.focus())
+      await load()
+    } else {
+      showModal.value = false; await load()
+    }
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { saving.value = false }
 }
@@ -1777,6 +2014,7 @@ async function doBatchWriteoff() {
 function openAddPayment(rec) {
   payRec.value = rec
   Object.assign(payForm, { amount: '', payment_date: todayCST(), notes: '', source: '回款', method: DEFAULT_COLLECTION_METHOD, account: '', draft_status: DEFAULT_DRAFT_STATUS, counterparty_dept: '' })
+  applyPayLast(payForm)
   payAdvance.value = null
   advWoSel.value = null
   showPayModal.value = true
@@ -1833,7 +2071,8 @@ function gotoAdvance() {
   router.push({ path: '/ar/advances', query: { project_id: pid, direction: '预收' } })
 }
 
-async function savePayment() {
+// andNext=true：保存成功后弹窗不关，跳到当前列表中下一条未结清应收（批量过单）
+async function savePayment(andNext = false) {
   if (!payForm.amount || !payForm.payment_date) { toast.error('金额和日期必填'); return }
   if (payForm.source === '内部往来' && !payForm.counterparty_dept) {
     toast.error('内部往来核销请选择往来部门'); return
@@ -1847,8 +2086,30 @@ async function savePayment() {
       account: isColl ? payForm.account : '',
       draft_status: (isColl && payForm.method === '承兑汇票') ? payForm.draft_status : '' }
     await ar.addPayment(payRec.value.id, payload)
+    // 只有「回款」带方式/账户，内部往来核销不覆盖已记住的回款习惯
+    if (isColl) savePref('ar_pay_last', { method: payForm.method, account: payForm.account, draft_status: payForm.draft_status })
     toast.success(payForm.source === '内部往来' ? '内部往来核销已保存' : '回款已保存')
-    showPayModal.value = false; await load()
+    if (andNext) {
+      // 先在刷新前的列表快照里定位下一条未结清（刷新后本条可能因结清被过滤掉、索引失效），
+      // 列表口径与工作台「下一条」同源（_panelList）；跳转前用刷新后的行替换以取最新未收
+      const list = _panelList()
+      const i = list.findIndex(r => r.id === payRec.value.id)
+      const nx = list.slice(i + 1).find(r => parseFloat(r.outstanding_amount) > 0)
+      await load()
+      if (!nx) {
+        showPayModal.value = false
+        toast.success('列表中已无下一条未结清记录，已收尾关闭')
+      } else {
+        payRec.value = items.value.find(r => r.id === nx.id) || nx
+        // 日期/方式/账户沿用本次值（同一批回款单常为同日同账户），金额/备注清空
+        payForm.amount = ''; payForm.notes = ''
+        payAdvance.value = null; advWoSel.value = null
+        loadPayAdvance(payRec.value)
+        nextTick(() => payAmtInput.value?.focus())
+      }
+    } else {
+      showPayModal.value = false; await load()
+    }
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败')
   } finally { paySaving.value = false }
 }
@@ -2000,6 +2261,11 @@ useModalEsc(
   [() => dunFollow.open, () => (dunFollow.open = false)],
 )
 
+// C2 Ctrl/Cmd+Enter 提交最高频的两个录入弹窗（多字段表单不用裸 Enter，防误触）；
+// 两弹窗互斥打开，无需分层判断；busy 态直接忽略组合键，防连击重复提交
+useModalEnter(() => showModal.value, () => { if (!saving.value) saveRec() })
+useModalEnter(() => showPayModal.value, () => { if (!paySaving.value) savePayment() })
+
 defineOptions({ name: 'ARRecordsPage' })
 // keep-alive 返回本页:DOM 秒开,数据静默刷新(items 未清,列表不闪骨架)。
 // 首次挂载 onMounted 已加载,跳过首个 activated 防双载
@@ -2011,19 +2277,18 @@ onBeforeUnmount(() => document.removeEventListener('click', closeExpMenu))
 
 onMounted(async () => {
   // 路由跳转带入的筛选（来自现金流/分析/项目台账等）→ 转成条件
-  const fromRoute = route.query.status || route.query.project_id || route.query.dept
+  const fromRoute = route.query.status || route.query.project_id || route.query.dept || route.query.q
   if (route.query.status) conditions.value.push({ t: 'dim', field: 'status', value: route.query.status })
   if (route.query.project_id) conditions.value.push({ t: 'dim', field: 'project_id', value: route.query.project_id })
   if (route.query.dept) conditions.value.push({ t: 'dim', field: 'dept', value: route.query.dept })
+  if (route.query.q) { conditions.value.push({ t: 'dim', field: 'q', value: route.query.q }); quickQ.value = route.query.q }  // 客户压款地图等跳转带入模糊搜索
   loadAgingCfg()   // 账龄边界驱动作战台严重度/行色/微条，尽早加载
   // 拉取筛选方案；无路由带入时自动套用用户设的「默认方案」（对标金蝶默认过滤方案）
   await loadSchemes()
   const def = !fromRoute && defaultSchemeId.value
     && schemes.value.find(s => s.id === defaultSchemeId.value)
-  if (def && def.conditions?.length) {
-    conditions.value = JSON.parse(JSON.stringify(def.conditions))
-    matchMode.value = def.match || 'all'
-    syncQuickQFromConditions()   // 默认方案含 q 时也回填搜索框
+  if (def && (def.conditions?.length || Object.keys(def.colFilters || {}).length || def.sort)) {
+    applySchemeState(def)   // A3+B5: 默认方案整套还原（条件+列头筛选+排序）
   } else if (!conditions.value.some(c => c.t === 'dim' && c.field === 'status')) {
     // 无默认方案 → 默认只看「未结清」（先聚焦没收完的）；可点掉该条件看全部
     conditions.value.push({ t: 'dim', field: 'status', value: 'outstanding' })
@@ -2038,7 +2303,7 @@ onMounted(async () => {
     else if (savedTab === 'dunning') loadDunning(true)
     else if (savedTab === 'offset') loadOffsetWorkbench()
     else if (savedTab === 'batch') loadBatches()
-    else { if (FOCUS_TABS.includes(savedTab)) pendingOnly.value = true; load() }
+    else { if (FOCUS_TABS.includes(savedTab)) pendingOnly.value = loadPendingOnly(); load() }
   } else {
     load()
   }
@@ -2051,7 +2316,7 @@ function clearFilters() {
   quickQ.value = ''
   // 一并清掉 Excel 风格列头筛选 + 列头排序
   Object.keys(colFilters).forEach(k => delete colFilters[k])
-  opDateStart.value = ''; opDateEnd.value = ''   // 复位运作日期区间条，避免时间条仍高亮旧区间
+  opDateStart.value = ''; opDateEnd.value = ''   // 复位时间条区间，避免仍高亮旧区间
   sortField.value = ''
   sortOrder.value = ''
   onFilterChange()
@@ -2178,7 +2443,7 @@ function clearFilters() {
               <div class="preset-save-row">
                 <input v-model="newPresetName" class="preset-name-input" placeholder="方案名称…" maxlength="40"
                        @keyup.enter="saveCurrentScheme" />
-                <button class="preset-save-btn" :disabled="!newPresetName.trim() || !conditions.length"
+                <button class="preset-save-btn" :disabled="!newPresetName.trim() || !hasAnyFilter"
                         @click="saveCurrentScheme">保存</button>
               </div>
               <div class="preset-scope-row">
@@ -2239,8 +2504,16 @@ function clearFilters() {
     <div class="card" :class="['density-' + density, { 'data-reloading': loading && items.length, 'pane-mode': activeTab === 'dunning' || activeTab === 'payments' }]">
       <!-- 运作日期区间预设条：写入列头筛选管线（operation_date between），列表/汇总/导出全联动 -->
       <div v-if="isDataTab" class="arr-timebar">
-        <DateRangeChips v-model:start="opDateStart" v-model:end="opDateEnd"
-                        label="运作日期" initial="all" @change="applyOpDateRange" />
+        <select v-model="dateField" class="arr-datefield-sel" title="切换时间条按哪个日期字段筛选（选择会被记住）"
+                @change="onDateFieldChange">
+          <option v-for="o in DATE_FIELD_OPTS" :key="o.key" :value="o.key">{{ o.label }}</option>
+        </select>
+        <select v-model="deptQuickFilter" class="arr-datefield-sel" title="按事业部快捷筛选">
+          <option value="">全部事业部</option>
+          <option v-for="d in accessibleDepts" :key="d" :value="d">{{ d }}</option>
+        </select>
+        <DateRangeChips v-model:start="opDateStart" v-model:end="opDateEnd" class="arr-tb-chips"
+                        label="" initial="all" :custom-chip="true" @change="applyOpDateRange" />
       </div>
       <!-- 合并指标条：左侧=本Tab进度/重点；右侧=当前筛选全集合计 -->
       <div v-if="isDataTab && (kpiData || summaryData)" class="metrics-bar">
@@ -2325,6 +2598,22 @@ function clearFilters() {
             {{ collectorAssigning ? '…' : '确定' }}
           </button>
           <button class="btn btn-ghost btn-sm" @click="showCollectorAssign = false; collectorInput = ''">取消</button>
+        </template>
+        <template v-if="auth.canArWrite && !showBulkDate">
+          <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="showBulkDate = true">
+            批量设日期
+          </button>
+        </template>
+        <template v-if="showBulkDate">
+          <select v-model="bulkDateField" class="bulk-date-sel" title="选择要批量修改的日期字段">
+            <option v-for="f in BULK_DATE_FIELDS" :key="f.key" :value="f.key">{{ f.label }}</option>
+          </select>
+          <input v-model="bulkDateValue" type="date" class="bulk-date-inp" />
+          <button class="btn btn-primary btn-sm" :disabled="bulkDateBusy" @click="doBulkSetDate(false)">
+            {{ bulkDateBusy ? '…' : '应用' }}
+          </button>
+          <button class="btn btn-ghost btn-sm" :disabled="bulkDateBusy" title="清空所选记录的该日期字段" @click="doBulkSetDate(true)">清空</button>
+          <button class="btn btn-ghost btn-sm" @click="showBulkDate = false; bulkDateValue = ''">取消</button>
         </template>
         <button v-if="auth.canDelete" class="bulk-del" :disabled="bulkDeleting" @click="bulkDelete">
           {{ bulkDeleting ? '删除中…' : `删除选中(${selectedCount})` }}
@@ -2511,7 +2800,13 @@ function clearFilters() {
                   <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtCell(rec.account_diff_adjustment) : '—' }}</td>
                   <td v-if="show('r_outstanding')" class="amt" :class="parseFloat(rec.outstanding_amount) > 0 ? 'amt-warn' : 'amt-zero'">{{ parseFloat(rec.outstanding_amount) > 0 ? fmtCell(rec.outstanding_amount) : '—' }}</td>
                   <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.due_date || '—' }}</td>
-                  <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.target_collection_date || '—' }}</td>
+                  <td v-if="show('r_due_date')" class="ctr text-sm-muted" :class="{ 'qe-cell': auth.canArWrite }"
+                    :title="auth.canArWrite ? '双击修改' : undefined" @dblclick.stop="startInlineEdit(rec, 'target_collection_date')">
+                    <input v-if="inlineEdit.id === rec.id && inlineEdit.field === 'target_collection_date'" v-model="inlineEdit.value"
+                      type="date" class="qe-inp" @blur="commitInlineEdit(rec)"
+                      @keydown.enter.prevent="commitInlineEdit(rec)" @keydown.esc.stop="cancelInlineEdit" />
+                    <template v-else>{{ rec.target_collection_date || '—' }}</template>
+                  </td>
                   <td v-if="show('r_reconciliation')" class="ctr">
                     <span :class="['status-pill', rec.reconciliation_status !== '未对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status === '已对账' ? '✓ 已对账' : rec.reconciliation_status === '已结清' ? '✓ 已结清' : '○ 未对账' }}</span>
                   </td>
@@ -2550,7 +2845,13 @@ function clearFilters() {
                   <td v-if="show('r_reconciliation')" class="ctr">
                     <span :class="['status-pill', rec.reconciliation_status !== '未对账' ? 'pill-ok' : 'pill-warn']">{{ rec.reconciliation_status === '已对账' ? '✓ 已对账' : rec.reconciliation_status === '已结清' ? '✓ 已结清' : '○ 未对账' }}</span>
                   </td>
-                  <td v-if="show('r_reconciliation')" class="ctr text-sm-muted">{{ rec.reconciliation_date || '—' }}</td>
+                  <td v-if="show('r_reconciliation')" class="ctr text-sm-muted" :class="{ 'qe-cell': auth.canArWrite }"
+                    :title="auth.canArWrite ? '双击修改' : undefined" @dblclick.stop="startInlineEdit(rec, 'reconciliation_date')">
+                    <input v-if="inlineEdit.id === rec.id && inlineEdit.field === 'reconciliation_date'" v-model="inlineEdit.value"
+                      type="date" class="qe-inp" @blur="commitInlineEdit(rec)"
+                      @keydown.enter.prevent="commitInlineEdit(rec)" @keydown.esc.stop="cancelInlineEdit" />
+                    <template v-else>{{ rec.reconciliation_date || '—' }}</template>
+                  </td>
                   <td v-if="show('r_due_date')" class="ctr text-sm-muted">{{ rec.due_date || '—' }}</td>
                   <td class="ctr">
                     <span v-if="rec.is_overdue" class="status-pill pill-danger">逾期{{ rec.overdue_days }}天</span>
@@ -2570,7 +2871,13 @@ function clearFilters() {
                   <td v-if="show('r_estimated_amount')" class="amt text-muted">{{ fmtCell(rec.estimated_amount) }}</td>
                   <td v-if="show('r_actual_invoice_amount')" class="amt fw">{{ rec.actual_invoice_amount ? fmtCell(rec.actual_invoice_amount) : '—' }}</td>
                   <td v-if="show('r_tax_amount')" class="amt text-muted">{{ rec.tax_amount ? fmtCell(rec.tax_amount) : '—' }}</td>
-                  <td v-if="show('r_invoice_date')" class="ctr text-sm-muted">{{ rec.invoice_date || '—' }}</td>
+                  <td v-if="show('r_invoice_date')" class="ctr text-sm-muted" :class="{ 'qe-cell': auth.canArWrite }"
+                    :title="auth.canArWrite ? '双击修改' : undefined" @dblclick.stop="startInlineEdit(rec, 'invoice_date')">
+                    <input v-if="inlineEdit.id === rec.id && inlineEdit.field === 'invoice_date'" v-model="inlineEdit.value"
+                      type="date" class="qe-inp" @blur="commitInlineEdit(rec)"
+                      @keydown.enter.prevent="commitInlineEdit(rec)" @keydown.esc.stop="cancelInlineEdit" />
+                    <template v-else>{{ rec.invoice_date || '—' }}</template>
+                  </td>
                   <td v-if="show('r_account_diff')" class="amt">{{ parseFloat(rec.account_diff_adjustment) !== 0 ? fmtCell(rec.account_diff_adjustment) : '—' }}</td>
                   <td v-if="show('r_invoice_status')" class="ctr">
                     <span :class="['status-pill', rec.invoice_status === '已结清' ? 'pill-ok' : rec.invoice_status === '部分回款' ? 'pill-blue' : rec.invoice_status === '已开票' ? 'pill-warn' : 'pill-muted']">{{ rec.invoice_status === '已开票' ? '✓ 已开票' : rec.invoice_status === '未开票' ? '○ 未开票' : rec.invoice_status }}</span>
@@ -2856,11 +3163,6 @@ function clearFilters() {
             <button class="btn btn-ghost btn-sm" :disabled="payExporting" @click="exportPayments">↓ 导出</button>
           </div>
 
-          <div v-if="paySummary" class="totals-strip">
-            <span class="tot-label">区间合计</span>
-            <span class="tot-item"><i>笔数</i>{{ paySummary.count }}</span>
-            <span class="tot-item tot-green"><i>回款总额</i>{{ fmtCell(paySummary.total_amount) }}</span>
-          </div>
         </div>
 
         <div class="table-wrap pane-scroll">
@@ -2910,6 +3212,35 @@ function clearFilters() {
           <span class="page-info"><template v-if="payTotal > size">第 {{ payPage }} / {{ Math.ceil(payTotal / size) }} 页 · </template>共 {{ payTotal }} 条</span>
           <button v-if="payTotal > size" :disabled="payPage * size >= payTotal" class="page-btn" @click="payPage++; loadPayments()">下一页 ›</button>
           <span v-if="payTotal > size" class="pg-jump">跳至<input v-model.number="payJumpPage" class="pg-jump-input" type="number" min="1" :max="Math.ceil(payTotal / size)" @keyup.enter="payDoJump" />页<button class="page-btn" @click="payDoJump">Go</button></span>
+        </div>
+
+        <!-- 底部汇总栏：区间合计 + 来源/方式/账户 分类占比（对齐日常收款底部风格）-->
+        <div v-if="paySummary" class="pay-foot">
+          <span class="pf-total">
+            <span class="pf-lbl">区间合计</span>
+            <b class="pf-val">{{ fmtCell(paySummary.total_amount) }}</b>
+            <span class="pf-cnt">{{ paySummary.count }} 笔</span>
+          </span>
+          <div class="pf-cats">
+            <div v-if="paySourceStats.length" class="pf-cat">
+              <span class="pf-cat-lbl">来源</span>
+              <span v-for="s in paySourceStats" :key="'s' + s.name" class="pf-chip" :title="`${s.name} ${fmtCell(s.amount)} · ${s.pct.toFixed(1)}%`">
+                <i :style="{ background: s.color }"></i>{{ s.name }}<b>{{ fmtCompact(s.amount) }}</b><em>{{ s.pct.toFixed(0) }}%</em>
+              </span>
+            </div>
+            <div v-if="payMethodStats.length" class="pf-cat">
+              <span class="pf-cat-lbl" title="仅现金回款（预收抵扣/内部往来无收款方式）">方式</span>
+              <span v-for="s in payMethodStats" :key="'m' + s.name" class="pf-chip" :title="`${s.name} ${fmtCell(s.amount)} · ${s.pct.toFixed(1)}%`">
+                <i :style="{ background: s.color }"></i>{{ s.name }}<b>{{ fmtCompact(s.amount) }}</b><em>{{ s.pct.toFixed(0) }}%</em>
+              </span>
+            </div>
+            <div v-if="payAccountStats.length" class="pf-cat">
+              <span class="pf-cat-lbl" title="仅现金回款">账户</span>
+              <span v-for="s in payAccountStats" :key="'a' + s.name" class="pf-chip" :title="`${s.name} ${fmtCell(s.amount)} · ${s.pct.toFixed(1)}%`">
+                <i :style="{ background: s.color }"></i>{{ s.name }}<b>{{ fmtCompact(s.amount) }}</b><em>{{ s.pct.toFixed(0) }}%</em>
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -2973,7 +3304,7 @@ function clearFilters() {
             <h3>{{ editRec ? '编辑应收记录' : '新增应收' }}</h3>
             <button class="modal-close" @click="showModal = false">✕</button>
           </div>
-          <div class="modal-body">
+          <div ref="recModalBody" class="modal-body">
             <div class="form-grid">
               <label class="form-field span2">
                 <span>关联项目 <em>*</em></span>
@@ -2995,7 +3326,7 @@ function clearFilters() {
               </label>
               <label class="form-field">
                 <span>预估上账金额</span>
-                <input v-model="recForm.estimated_amount" type="number" step="0.01" />
+                <input ref="estAmtInput" v-model="recForm.estimated_amount" type="number" step="0.01" />
               </label>
               <label class="form-field">
                 <span>实际开票金额</span>
@@ -3020,12 +3351,19 @@ function clearFilters() {
               <!-- 新建：初始差额+原因；编辑：调整明细管理器（多次、各带原因金额） -->
               <template v-if="!editRec">
                 <label class="form-field">
-                  <span>差额调整（选填）</span>
-                  <input v-model="recForm.account_diff_adjustment" type="number" step="0.01" placeholder="可正可负" />
+                  <span>差额调整（选填）
+                    <button v-if="adjSuggest != null" type="button" class="adj-suggest-chip" :title="adjSuggestTitle"
+                            @click="applyAdjSuggest">＝ {{ adjSuggest > 0 ? '+' : '' }}{{ adjSuggest.toFixed(2) }}（开票−上账）</button>
+                  </span>
+                  <input v-model="recForm.account_diff_adjustment" type="number" step="0.01"
+                         :placeholder="adjSuggest != null ? `按 = 填入 ${adjSuggest.toFixed(2)}` : '可正可负'"
+                         @keydown="onAdjKeydown" />
                 </label>
                 <label class="form-field">
                   <span>差额原因</span>
-                  <input v-model="recForm.adjustment_reason" placeholder="如：运费差/客户扣款/补付" maxlength="200" />
+                  <textarea v-model="recForm.adjustment_reason" rows="1" maxlength="200"
+                            class="adj-reason-mini" placeholder="如：运费差/客户扣款/补付"
+                            @input="autoGrowAdjReason"></textarea>
                 </label>
               </template>
               <div v-else class="form-field span2 adj-box">
@@ -3041,12 +3379,23 @@ function clearFilters() {
                 </div>
                 <div v-else class="adj-empty">暂无调整——金额与原因逐笔记录，可多次追加</div>
                 <div class="adj-add">
-                  <input v-model="adjForm.amount" type="number" step="0.01" placeholder="金额（可负）" class="adj-amt-inp" />
+                  <input v-model="adjForm.amount" type="number" step="0.01" class="adj-amt-inp"
+                         :placeholder="adjSuggest != null ? `按 = 填 ${adjSuggest.toFixed(2)}` : '金额（可负）'"
+                         @keydown="onAdjKeydown" />
+                  <button v-if="adjSuggest != null" type="button" class="adj-suggest-chip" :title="adjSuggestTitle"
+                          @click="applyAdjSuggest">＝ {{ adjSuggest > 0 ? '+' : '' }}{{ adjSuggest.toFixed(2) }} 补齐</button>
                   <input v-model="adjForm.date" type="date" class="adj-date-inp" title="调整日期：决定该笔差额归入哪个月/周" />
-                  <input v-model="adjForm.reason" placeholder="原因（必填，如：运费差/客户扣款）" maxlength="200" class="adj-reason-inp" />
-                  <button type="button" class="btn btn-ghost btn-sm" :disabled="adjBusy" @click="addAdjustment">
+                  <button type="button" class="btn btn-ghost btn-sm adj-add-btn" :disabled="adjBusy" @click="addAdjustment">
                     {{ adjBusy ? '…' : '＋ 追加调整' }}
                   </button>
+                  <!-- 原因独占整行、自动增高：长原因全程可见（用户反馈：单行窄框看不到写了什么） -->
+                  <div class="adj-reason-wrap">
+                    <textarea v-model="adjForm.reason" rows="1" maxlength="200" class="adj-reason-inp"
+                              placeholder="原因（必填，如：运费差/客户扣款/补付，写清来龙去脉便于日后追溯）"
+                              @input="autoGrowAdjReason"></textarea>
+                    <span v-if="adjForm.reason.length >= 150" class="adj-reason-count"
+                          :class="{ full: adjForm.reason.length >= 200 }">{{ adjForm.reason.length }}/200</span>
+                  </div>
                 </div>
               </div>
               <label class="form-field span2">
@@ -3061,7 +3410,11 @@ function clearFilters() {
           </div>
           <div class="modal-footer">
             <button class="btn btn-ghost" @click="showModal = false">取消</button>
-            <button class="btn btn-primary" :disabled="saving" @click="saveRec">{{ saving ? '保存中…' : '保存' }}</button>
+            <!-- B1a 连续录入：仅新建态提供——保存后弹窗不关，保留项目/运作日期连录下一条 -->
+            <button v-if="!editRec" class="btn btn-ghost" :disabled="saving"
+              title="保存后不关窗：保留项目与运作日期，清空金额/日期等字段，连续录入下一条"
+              @click="saveRec(true)">{{ saving ? '…' : '保存并继续' }}</button>
+            <button class="btn btn-primary" :disabled="saving" @click="saveRec()">{{ saving ? '保存中…' : '保存' }}</button>
           </div>
         </div>
       </div>
@@ -3410,9 +3763,12 @@ function clearFilters() {
               </label>
               <label class="form-field span2">
                 <span>{{ payForm.source === '内部往来' ? '核销金额' : '回款金额' }} <em>*</em>
-                  <i v-if="payRec" class="field-hint">未收上限 {{ fmtCell(payRec.outstanding_amount) }}</i>
+                  <button v-if="payRec && parseFloat(payRec.outstanding_amount) > 0" type="button" class="adj-suggest-chip"
+                          title="填入全部未收金额（也可在金额框按 = 填入）" @click="fillPayFull">＝ 全额 {{ fmtCell(payRec.outstanding_amount) }}</button>
+                  <i v-else-if="payRec" class="field-hint">未收上限 {{ fmtCell(payRec.outstanding_amount) }}</i>
                 </span>
-                <input v-model="payForm.amount" type="number" step="0.01" :max="payRec?.outstanding_amount" autofocus />
+                <input ref="payAmtInput" v-model="payForm.amount" type="number" step="0.01" :max="payRec?.outstanding_amount" autofocus
+                       @keydown="onPayAmtKeydown" />
                 <i v-if="payRec && parseFloat(payForm.amount) > parseFloat(payRec.outstanding_amount)" class="field-warn">超过未收 {{ fmtCell(payRec.outstanding_amount) }}，将被拒绝（多收部分请核实原因，并到差额调整录入或「预收预付」录入）</i>
               </label>
               <label class="form-field span2">
@@ -3443,7 +3799,11 @@ function clearFilters() {
           </div>
           <div class="modal-footer">
             <button class="btn btn-ghost" @click="showPayModal = false">取消</button>
-            <button class="btn btn-primary" :disabled="paySaving" @click="savePayment">{{ paySaving ? '保存中…' : (payForm.source === '内部往来' ? '保存核销' : '保存回款') }}</button>
+            <!-- B1b 批量过单：保存后不关窗，自动跳到列表中下一条未结清应收（仅回款态） -->
+            <button v-if="payForm.source === '回款'" class="btn btn-ghost" :disabled="paySaving"
+              title="保存后不关窗：跳到下一条未结清应收，日期/方式/账户沿用，金额/备注清空"
+              @click="savePayment(true)">{{ paySaving ? '…' : '保存并录下一笔' }}</button>
+            <button class="btn btn-primary" :disabled="paySaving" @click="savePayment()">{{ paySaving ? '保存中…' : (payForm.source === '内部往来' ? '保存核销' : '保存回款') }}</button>
           </div>
         </div>
       </div>
@@ -3703,6 +4063,20 @@ function clearFilters() {
 /* 表头吸顶，长表滚动时列名常驻 */
 .pane-flex .pane-scroll .rec-table thead th { position: sticky; top: 0; z-index: 5; background: var(--thead-bg); }
 .pane-flex .pane-scroll .rec-table thead .sel-col { z-index: 6; }
+/* 回款流水底部汇总栏：区间合计 + 来源/方式/账户 分类占比（对齐日常收款底部风格）*/
+.ar-pane.pane-flex > .pay-foot { flex-shrink: 0; }
+.pay-foot { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; padding: 8px 14px; border-top: 1px solid var(--border); background: var(--glass, rgba(255,254,251,.7)); }
+.pf-total { display: flex; align-items: baseline; gap: 8px; flex: none; }
+.pf-lbl { font-size: 11.5px; font-weight: 700; letter-spacing: .04em; color: var(--muted); text-transform: uppercase; }
+.pf-val { font-size: 18px; font-weight: 850; color: var(--c-success); font-variant-numeric: tabular-nums; }
+.pf-cnt { font-size: 12px; color: var(--muted); }
+.pf-cats { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; min-width: 0; }
+.pf-cat { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pf-cat-lbl { font-size: 11px; font-weight: 700; color: var(--muted); background: var(--surface-2, rgba(160,120,80,.1)); border-radius: 5px; padding: 1px 7px; flex: none; }
+.pf-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text); }
+.pf-chip i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.pf-chip b { font-weight: 800; font-variant-numeric: tabular-nums; }
+.pf-chip em { font-style: normal; color: var(--muted); font-size: 11px; }
 
 /* 页头：三行结构——标题+主操作 / Tab 栏 / 筛选工具栏，各占一行互不挤压 */
 .ar-head { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-bottom: 8px; flex-shrink: 0; }
@@ -3786,7 +4160,14 @@ function clearFilters() {
 
 /* KPI bar */
 .metrics-bar { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; overflow-x: auto; margin-bottom: 4px; padding: 5px 10px; background: rgba(0,0,0,0.02); border-radius: 8px; flex-shrink: 0; }
-.arr-timebar { padding: 2px 0 6px; flex-shrink: 0; }
+.arr-timebar { padding: 2px 0 6px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+.arr-datefield-sel {
+  width: auto; flex: 0 0 auto;   /* 全局 select 有 100% 宽度规则，这里压回内容宽 */
+  border: 1px solid rgba(150,120,100,0.3); border-radius: 8px;
+  background: var(--row-bg, #fff); padding: 3px 22px 3px 8px; font-size: 12px; font-weight: 600;
+  color: var(--text); cursor: pointer;
+}
+.arr-tb-chips { flex: 1 1 auto; min-width: 0; }   /* 区间预设组占满时间条剩余空间 */
 .bp-overflow { font-size: 12.5px; color: var(--text-2); padding: 8px 10px; border-radius: 8px;
   border: 1px dashed var(--border); transition: border-color .15s, background .15s; }
 .bp-overflow.hot { border-color: var(--amber-deep, #f57f17); background: rgba(245,127,23,.05); }
@@ -3986,10 +4367,29 @@ function clearFilters() {
 .adj-del { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 12px; }
 .adj-del:hover { color: var(--c-danger); }
 .adj-empty { font-size: 12px; color: var(--muted); padding: 6px 0; }
-.adj-add { display: flex; gap: 6px; margin-top: 4px; }
+.adj-add { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
 .adj-add .adj-amt-inp { width: 120px; }
+.adj-add .adj-reason-wrap { position: relative; flex: 1 0 100%; }
+.adj-add .adj-reason-inp {
+  width: 100%; resize: none; overflow-y: auto; line-height: 1.5;
+  min-height: 30px; max-height: 110px; padding: 5px 52px 5px 8px;
+}
+.adj-reason-count {
+  position: absolute; right: 8px; bottom: 6px;
+  font-size: 10.5px; color: var(--muted); pointer-events: none;
+}
+.adj-reason-count.full { color: var(--c-danger); font-weight: 700; }
+.adj-reason-mini { resize: none; overflow-y: auto; line-height: 1.5; min-height: 34px; max-height: 110px; }
+/* 智能建议/快填 chip：系统替用户算好的数，点一下或按 = 填入 */
+.adj-suggest-chip {
+  display: inline-flex; align-items: center; margin-left: 8px;
+  border: 1px dashed rgba(46,125,50,0.55); background: rgba(46,125,50,0.07);
+  color: #2e7d32; border-radius: 8px; padding: 1px 8px;
+  font-size: 11px; font-weight: 700; cursor: pointer; white-space: nowrap;
+  transition: background .15s;
+}
+.adj-suggest-chip:hover { background: rgba(46,125,50,0.15); }
 .adj-add .adj-date-inp { width: 140px; }
-.adj-add .adj-reason-inp { flex: 1; }
 
 /* ══ 预收核销工作台 ══ */
 .ow-wrap { margin-top: 12px; }
@@ -4368,6 +4768,22 @@ function clearFilters() {
   font-size: 12.5px; width: 140px; outline: none;
 }
 .collector-inp:focus { border-color: var(--primary); }
+
+/* ── 批量设日期（对账/开票/目标回款）────────────────────────────── */
+.bulk-date-sel, .bulk-date-inp {
+  padding: 4px 9px; border: 1px solid var(--border); border-radius: 7px;
+  font-size: 12.5px; outline: none; background: var(--card, #fff); color: var(--text);
+}
+.bulk-date-sel:focus, .bulk-date-inp:focus { border-color: var(--primary); }
+
+/* ── 行内快改（双击日期格直接改）──────────────────────────────────── */
+.qe-cell { cursor: cell; }
+.qe-cell:hover { background: rgba(201, 99, 66, 0.07); }
+.qe-inp {
+  width: 118px; padding: 1px 4px; font-size: 12px; outline: none;
+  border: 1px solid var(--primary); border-radius: 5px;
+  background: var(--card, #fff); color: var(--text);
+}
 
 /* ── 账龄配置按钮 ─────────────────────────────────────────────────── */
 .aging-cfg-btn {

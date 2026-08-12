@@ -12,17 +12,21 @@
  * @param {boolean} [opts.yi=true] 是否启用「亿」（false 时大额只用万）
  * @param {boolean} [opts.smallRound=false] 万元以下是否取整（否则两位小数）
  * @param {string} [opts.dash='—'] 空值/非数字占位
+ * @param {boolean} [opts.zeroDash=false] 零值是否也用占位符（财务表规范：零值密集网格用短横线，让眼睛只追非零数字）
+ * @param {boolean} [opts.trim=false] 去掉小数末尾多余的 0（228.00万→228万、79.50万→79.5万），叙事卡/大数字场景更干净
  */
 export function fmtCompact(v, opts = {}) {
-  const { decimals = 2, space = false, yuan = false, yi = true, smallRound = false, dash = '—' } = opts
+  const { decimals = 2, space = false, yuan = false, yi = true, smallRound = false, dash = '—', zeroDash = false, trim = false } = opts
   const n = parseFloat(v)
   if (!isFinite(n)) return dash
+  if (zeroDash && n === 0) return '–'
   const abs = Math.abs(n)
   const sp = space ? ' ' : ''
-  if (yi && abs >= 1e8) return (n / 1e8).toFixed(decimals) + sp + '亿'
-  if (abs >= 1e4) return (n / 1e4).toFixed(decimals) + sp + '万'
+  const t = (s) => (trim ? String(parseFloat(s)) : s)
+  if (yi && abs >= 1e8) return t((n / 1e8).toFixed(decimals)) + sp + '亿'
+  if (abs >= 1e4) return t((n / 1e4).toFixed(decimals)) + sp + '万'
   if (smallRound) return String(Math.round(n))
-  return n.toFixed(2) + (yuan ? sp + '元' : '')
+  return t(n.toFixed(2)) + (yuan ? sp + '元' : '')
 }
 
 /** 千分位 + 两位小数，不带单位（用于表格金额列）。非数字回退 fallback。 */

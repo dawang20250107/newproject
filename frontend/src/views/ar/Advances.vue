@@ -1,6 +1,6 @@
 <script setup>
 import { confirmDlg } from '../../composables/confirm.js'
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch, nextTick, onActivated } from 'vue'
 import { useRoute } from 'vue-router'
 import { useToast } from '../../composables/useToast.js'
 import { useAuthStore } from '../../stores/auth.js'
@@ -22,14 +22,16 @@ import { useColWidths } from '../../composables/useColWidths.js'
 import ContextMenu from '../../components/ContextMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu.js'
 import { copyText, copyRowTSV } from '../../utils/clipboard.js'
+import { loadPref, savePref } from '../../utils/prefs.js'
 import { useModalEsc } from '../../composables/useModalEsc.js'
+import { useModalEnter } from '../../composables/useModalEnter.js'
 import Pager from '../../components/Pager.vue'
 
 const toast = useToast()
 const auth = useAuthStore()
 const route = useRoute()
 
-const direction = ref('预收')          // '预收' | '预付' | 'suppliers'
+const direction = ref('预收')          // '预收' | '预付' | 'diff' | 'suppliers'
 const projectFilter = ref(null)        // { id, label } or null
 const items = ref([])
 const total = ref(0)
@@ -69,7 +71,7 @@ const size = ref(50)
 
 // 顶部全局关键字 + 与列头无重复的页级控件（实际收付时间区间/核销状态）。
 // 部门改由列头「交付部门」筛选，dept 不再出现于工具栏。
-// 时间维度按「款项日期」（实际收付现金事件日）筛选；默认不限（台账余额是全周期视角），
+// 时间维度按「分期收付日期」（真实现金事件日，命中任意一期即入选）筛选；默认不限（台账余额是全周期视角），
 // KPI/列表汇总/导出随区间联动（后端同一 _apply_advance_filters）。
 const filters = reactive({ start_date: '', end_date: '', writeoff_status: '', q: '' })
 
@@ -312,6 +314,9 @@ function setDiffView(v) {
   diffView.value = v
   v === 'project' ? loadDiff() : loadTimeline()
 }
+// 方向/视图记忆：记住上次停留的 Tab 与差异视角，下次进页沿用（route.query 指定时仍以其为准）
+watch([direction, diffView],
+      () => savePref('ar_adv_state', { direction: direction.value, diffView: diffView.value }))
 async function exportTimeline() {
   timelineExporting.value = true
   try {
@@ -359,6 +364,7 @@ const form = reactive({
 
 const projects = ref([])
 const projectKeyword = ref('')
+const projKwInp = ref(null)     // 新增弹窗打开后自动聚焦的首个可编辑控件
 const showProjList = ref(false)
 let projectTimer = null
 async function searchProjects(kw) {
@@ -392,8 +398,13 @@ function onProjBlur() { setTimeout(() => { showProjList.value = false }, 160) }
 
 function openCreate() {
   editRec.value = null
+  contSaved.value = 0
+  // 录入记忆：沿用上次新增的交付部门；已不在可选部门内则回退第一个（选项目后仍以项目部门为准）
+  const lastDept = loadPref('ar_adv_last_dept', '')
   Object.assign(form, {
-    project_id: '', delivery_dept: accessibleDepts.value[0] || '', counterparty: '',
+    project_id: '',
+    delivery_dept: accessibleDepts.value.includes(lastDept) ? lastDept : (accessibleDepts.value[0] || ''),
+    counterparty: '',
     occur_year: yearCST(), occur_month: monthCST(), occur_date: todayCST(),
     advance_amount: '', expected_writeoff_date: '', notes: '',
   })
@@ -401,6 +412,19 @@ function openCreate() {
   autoCounterparty = ''
   searchProjects('')
   showModal.value = true
+  nextTick(() => projKwInp.value?.focus())
+}
+// 右键「以此新建」：以选中行为模板打开新建弹窗——沿用方向（当前 Tab）/交付部门/
+// 往来单位/关联项目，金额、日期、备注等逐笔字段留空重填
+function createFrom(rec) {
+  openCreate()
+  Object.assign(form, {
+    project_id: rec.project_id || '',
+    delivery_dept: rec.delivery_dept || form.delivery_dept,
+    counterparty: rec.counterparty || '',
+  })
+  projectKeyword.value = rec.short_name || ''
+  if (rec.short_name) searchProjects(rec.short_name)
 }
 function openEdit(rec) {
   editRec.value = rec
@@ -417,14 +441,40 @@ function openEdit(rec) {
   showModal.value = true
 }
 async function save() {
+  if (saving.value) return
   saving.value = true
   try {
     const payload = { direction: direction.value, ...form }
     if (!payload.project_id) delete payload.project_id
     if (editRec.value) await ar.updateAdvance(editRec.value.id, payload)
-    else await ar.createAdvance(payload)
+    else {
+      await ar.createAdvance(payload)
+      // 录入记忆：下次新增默认沿用本次交付部门
+      savePref('ar_adv_last_dept', form.delivery_dept)
+    }
     showModal.value = false
     await load()
+  } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
+  finally { saving.value = false }
+}
+// 「保存并继续」：连续录入不关弹窗——保留期间/上下文字段（方向/交付部门/发生年月/款项日期/预计核销日期），
+// 清空逐笔字段（往来单位/关联项目/金额/备注）并聚焦项目搜索；计数随 openCreate 归零
+const contSaved = ref(0)
+async function saveAndNext() {
+  if (saving.value) return
+  saving.value = true
+  try {
+    const payload = { direction: direction.value, ...form }
+    if (!payload.project_id) delete payload.project_id
+    await ar.createAdvance(payload)
+    savePref('ar_adv_last_dept', form.delivery_dept)
+    contSaved.value++
+    toast.success(`已连续保存 ${contSaved.value} 笔`)
+    Object.assign(form, { project_id: '', counterparty: '', advance_amount: '', notes: '' })
+    projectKeyword.value = ''
+    autoCounterparty = ''
+    load()
+    nextTick(() => projKwInp.value?.focus())
   } catch (e) { toast.error(e?.msg || e?.error || '操作失败') }
   finally { saving.value = false }
 }
@@ -744,6 +794,7 @@ const ctxRecItems = computed(() => {
     { key: 'inst', label: '收付明细', icon: 'payment', hidden: !(canCreate.value || canInstAction.value), action: x => openInstallments(x) },
     { key: 'wo', label: '核销', icon: 'refresh', hidden: !(canCreate.value || canWoAction.value), action: x => openWriteoffs(x) },
     { key: 'edit', label: '编辑', icon: 'edit', shortcut: 'E', hidden: !canCreate.value, action: x => openEdit(x) },
+    { key: 'create-from', label: '以此新建', icon: 'plus', hidden: !canCreate.value, action: x => createFrom(x) },
     { divider: true },
     {
       key: 'copy', label: '复制', icon: 'copy',
@@ -799,6 +850,13 @@ useModalEsc(
   [() => showProjList.value, () => (showProjList.value = false)],
   [() => showSupplierProjList.value, () => (showSupplierProjList.value = false)],
 )
+// Ctrl/Cmd+Enter 提交新增/编辑弹窗（save 内部自带 saving 防重）
+useModalEnter(() => showModal.value, () => save())
+
+// keep-alive：命中 App.vue include 白名单；返回秒开，数据后台刷新（首次激活跳过，onMounted 已加载）
+defineOptions({ name: 'AdvancesPage' })
+let _kaFirst = true
+onActivated(() => { if (_kaFirst) { _kaFirst = false; return } load(true) })
 
 onMounted(async () => {
   const q = route.query || {}
@@ -806,9 +864,17 @@ onMounted(async () => {
   if (q.project_id) {
     projectFilter.value = { id: Number(q.project_id), label: q.project_no || `项目#${q.project_id}` }
   }
-  // 有默认方案则套用并由其触发加载；否则常规加载
+  // 方向/视图记忆：route.query 优先（direction / project_id 下钻均视为显式指定方向）；脏值回退默认
+  const saved = loadPref('ar_adv_state') || {}
+  if (['project', 'month', 'week'].includes(saved.diffView)) diffView.value = saved.diffView
+  if (!q.direction && !q.project_id &&
+      ['预收', '预付', 'diff', 'suppliers'].includes(saved.direction)) direction.value = saved.direction
+  // 有默认方案则套用并由其触发加载；否则常规加载。
+  // 恢复到差异/供应商 Tab 时方案加载不会触发对应视图，需按 switchDir 同款分支补加载
   const applied = await schemes.loadAndApplyDefault()
-  if (!applied) load(true)
+  if (direction.value === 'suppliers') loadSuppliers()
+  else if (direction.value === 'diff') diffView.value === 'project' ? loadDiff() : loadTimeline()
+  else if (!applied) load(true)
 })
 </script>
 
@@ -835,7 +901,7 @@ onMounted(async () => {
     <!-- KPI (advances only)：随时间区间/筛选联动的「筛选汇总」 -->
     <div v-if="isAdvanceMode && kpi" class="kpi-row">
       <div class="kpi"><div class="kpi-k">{{ dirLabel }}笔数<span class="kpi-range">{{ rangeLabel }}</span></div><div class="kpi-v">{{ kpi.count }} 笔</div></div>
-      <div v-if="show('adv_amount')" class="kpi"><div class="kpi-k">{{ dirLabel }}金额</div><div class="kpi-v"><Amt :v="kpi.advance_amount" :fmt="fmtAmt" /></div></div>
+      <div v-if="show('adv_amount')" class="kpi"><div class="kpi-k">{{ dirLabel }}{{ (filters.start_date || filters.end_date) ? '实际收付' : '金额' }}<span class="kpi-range">{{ rangeLabel }}</span></div><div class="kpi-v" :title="(filters.start_date || filters.end_date) ? '区间内按分期收付日期统计的实际收付合计（非记录整笔金额）' : ''"><Amt :v="kpi.advance_amount" :fmt="fmtAmt" /></div></div>
       <div v-if="show('adv_writeoff')" class="kpi"><div class="kpi-k">已核销</div><div class="kpi-v"><Amt :v="kpi.written_off" :fmt="fmtAmt" /><span class="kpi-sub">{{ kpi.writeoff_rate }}%</span></div></div>
       <div v-if="show('adv_writeoff') && !isReceive && Number(kpi.refunded) > 0" class="kpi"><div class="kpi-k">已退款</div><div class="kpi-v"><Amt :v="kpi.refunded" :fmt="fmtAmt" /></div></div>
       <div v-if="show('adv_writeoff')" class="kpi accent"><div class="kpi-k">未核销余额</div><div class="kpi-v"><Amt :v="kpi.balance" :fmt="fmtAmt" /></div></div>
@@ -1003,8 +1069,8 @@ onMounted(async () => {
         <div v-if="diffBusy" class="empty" style="padding:30px;text-align:center">⏳ 加载中…</div>
         <div v-else-if="!diffRows.length" class="empty" style="padding:30px;text-align:center">
           {{ diffView === 'project'
-            ? '暂无数据——只有挂了项目台账的预收/预付才参与差异对照'
-            : '该期间暂无挂项目的预收/预付发生记录' }}
+            ? '暂无预收/预付数据（未挂项目的散单归入「（未挂项目）」组）'
+            : '该期间暂无预收/预付发生记录' }}
         </div>
         <div v-else class="table-wrap page-scroll">
           <table class="diff-table">
@@ -1131,7 +1197,7 @@ onMounted(async () => {
           <label class="fld full">
             <span>关联项目（可选，搜索选择；留空则仅填往来单位）</span>
             <div class="combo">
-              <input v-model="projectKeyword" class="inp" placeholder="搜索项目简称 / 编号…"
+              <input ref="projKwInp" v-model="projectKeyword" class="inp" placeholder="搜索项目简称 / 编号…"
                      @focus="showProjList = true" @input="onProjectKeywordInput" @blur="onProjBlur" />
               <button v-if="form.project_id || projectKeyword" type="button" class="combo-clear"
                       @mousedown.prevent="pickProject(null)">×</button>
@@ -1164,6 +1230,7 @@ onMounted(async () => {
         </div>
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="showModal = false">取消</button>
+          <button v-if="!editRec" class="btn btn-ghost" :disabled="saving" @click="saveAndNext">保存并继续</button>
           <button class="btn btn-primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
         </div>
       </div>
@@ -1211,8 +1278,10 @@ onMounted(async () => {
             <span v-if="woForm.ar_record_id" class="wo-offset-tip">↳ 核销后自动生成「预收抵扣」回款，冲减应收未收余额（不计现金）</span>
           </div>
           <div class="wo-inputs">
-            <input v-model="woForm.amount" type="number" step="0.01" class="inp" placeholder="核销金额(元)"
-                   :class="{ 'inp-bad': woAmountOver }" />
+            <input v-model="woForm.amount" type="number" step="0.01" class="inp"
+                   :placeholder="Number(woRec.balance_amount) > 0 ? '核销金额(元)，按 = 填全额' : '核销金额(元)'"
+                   :class="{ 'inp-bad': woAmountOver }"
+                   @keydown="e => { if (e.key === '=') { e.preventDefault(); if (Number(woRec.balance_amount) > 0) woForm.amount = Number(woRec.balance_amount).toFixed(2) } }" />
             <button v-if="Number(woRec.balance_amount) > 0" type="button" class="wo-fill-chip"
                     title="填入未核销余额" @click="woForm.amount = Number(woRec.balance_amount).toFixed(2)">全额 ¥{{ fmtAmt(woRec.balance_amount) }}</button>
             <input v-model="woForm.writeoff_date" type="date" class="inp" />
@@ -1461,6 +1530,7 @@ onMounted(async () => {
 }
 .modal h3 { margin: 0 0 16px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 620px) { .form-grid { grid-template-columns: 1fr; } }
 .fld { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .fld.full { grid-column: 1 / -1; }
 .fld span { color: var(--muted); }
@@ -1501,6 +1571,7 @@ onMounted(async () => {
 .sup-modal { max-width: 460px; }
 .sf-row { margin-bottom: 14px; }
 .sf-two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 620px) { .sf-two { grid-template-columns: 1fr; } }
 .sf-fld { display: flex; flex-direction: column; gap: 4px; }
 .sf-lbl { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
 .sf-lbl em { color: var(--c-danger); font-style: normal; }
