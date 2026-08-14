@@ -1052,10 +1052,8 @@ onMounted(async () => {
               <tr>
                 <th v-if="canDelete" class="sel-col"><input type="checkbox" :checked="pageAll" @change="toggleAll" title="全选本页" /></th>
                 <th v-if="show('adv_counterparty')"><ColumnFilter label="往来单位" field="counterparty" type="text" :model-value="colFilters.counterparty" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('counterparty',v)" @sort="o=>setSort('counterparty',o)" /></th>
-                <th class="proj-dept-th">
-                  <ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" />
-                  <ColumnFilter label="部门" field="delivery_dept" type="enum" :options="deptOptions" :model-value="colFilters.delivery_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('delivery_dept',v)" @sort="o=>setSort('delivery_dept',o)" />
-                </th>
+                <th><ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" /></th>
+                <th><ColumnFilter label="部门" field="delivery_dept" type="enum" :options="deptOptions" :model-value="colFilters.delivery_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('delivery_dept',v)" @sort="o=>setSort('delivery_dept',o)" /></th>
                 <th title="合作入驻/业务归属年月，不参与金额统计——金额按分期实际收付日期统计">入驻年月</th>
                 <th><ColumnFilter label="款项日期" field="occur_date" type="date" :model-value="colFilters.occur_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('occur_date',v)" @sort="o=>setSort('occur_date',o)" /></th>
                 <th v-if="show('adv_amount')" class="amt"><ColumnFilter :label="`${dirLabel}金额`" field="advance_amount" type="number" :model-value="colFilters.advance_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('advance_amount',v)" @sort="o=>setSort('advance_amount',o)" /></th>
@@ -1068,20 +1066,18 @@ onMounted(async () => {
             </thead>
             <tbody>
               <template v-if="loading && !items.length">
-                <SkeletonRow v-for="n in 8" :key="n" :cols="10" />
+                <SkeletonRow v-for="n in 8" :key="n" :cols="12" />
               </template>
               <tr v-else-if="loadErr">
-                <td colspan="10" class="empty">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer;font-size:13px;text-decoration:underline" @click="load()">重试</button></td>
+                <td colspan="12" class="empty">⚠️ {{ loadErr }} <button style="border:none;background:none;color:var(--primary);cursor:pointer;font-size:13px;text-decoration:underline" @click="load()">重试</button></td>
               </tr>
-              <tr v-else-if="!items.length"><td colspan="10" class="empty">暂无{{ dirLabel }}记录</td></tr>
+              <tr v-else-if="!items.length"><td colspan="12" class="empty">暂无{{ dirLabel }}记录</td></tr>
               <tr v-for="(r, idx) in items" :key="r.id" :class="{ 'row-sel': selectedIds.has(r.id) }"
                   @contextmenu.prevent="ctxRec.open($event, r)" @dblclick="onRowDblClick(r, $event)">
                 <SelCell v-if="canDelete" :idx="idx" :id="r.id" :checked="selectedIds.has(r.id)" :on-sel="onRowSelClick" />
                 <td v-if="show('adv_counterparty')">{{ r.counterparty || '—' }}</td>
-                <td>
-                  <div v-if="r.short_name" class="proj-name">{{ r.short_name }}</div>
-                  <div class="dept-tag">{{ r.delivery_dept }}</div>
-                </td>
+                <td><span v-if="r.short_name" class="proj-name">{{ r.short_name }}</span><span v-else class="dept-tag">—</span></td>
+                <td><span class="dept-tag">{{ r.delivery_dept }}</span></td>
                 <td>{{ r.occur_year }}-{{ String(r.occur_month).padStart(2, '0') }}</td>
                 <td>{{ r.occur_date || '—' }}</td>
                 <td v-if="show('adv_amount')" class="amt num-strong">{{ fmtAmt(r.advance_amount) }}</td>
@@ -1607,7 +1603,6 @@ onMounted(async () => {
 /* 列头漏斗按钮 / 弹层定位锚点不被单元格裁切 */
 .data-table thead th { overflow: visible; }
 /* 项目简称 + 部门 两个列头筛选并排 */
-.proj-dept-th { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .global-search { width: 360px; min-width: 160px; flex: 1 1 300px; max-width: 100%; flex: 0 1 360px; }
 .filter-hint { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .data-table th.amt, .data-table td.amt { text-align: right; }
