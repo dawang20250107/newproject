@@ -124,6 +124,26 @@ async function applyBulkLevel() {
   finally { bulkSaving.value = false }
 }
 
+// 批量改状态：可选联动名下项目（与编辑弹窗 push_status 同一契约）
+const bulkStatus = ref('运作中')
+const bulkPushStatus = ref(false)
+const bulkStatusSaving = ref(false)
+async function applyBulkStatus() {
+  if (!selected.value.size) return toast.error('请先勾选客户')
+  const n = selected.value.size
+  const pushTip = bulkPushStatus.value ? '，并联动改名下所有项目状态' : '（不动名下项目）'
+  if (!(await confirmDlg(`把选中的 ${n} 个客户状态改为「${bulkStatus.value}」${pushTip}？`))) return
+  bulkStatusSaving.value = true
+  try {
+    const res = await ar.bulkSetCustomerStatus({
+      ids: [...selected.value], status: bulkStatus.value, push_status: bulkPushStatus.value })
+    toast.success(res.data?.message || '已更新')
+    clearSel()
+    await load()
+  } catch (e) { toast.error(e?.error || '批量改状态失败') }
+  finally { bulkStatusSaving.value = false }
+}
+
 // 批量删除：名下有项目/合同关联的客户由后端保护跳过并说明原因
 const bulkDeleting = ref(false)
 async function bulkDeleteCustomers() {
@@ -369,6 +389,15 @@ onMounted(async () => {
         <option v-for="l in LEVELS" :key="l" :value="l">{{ l }}</option>
       </select>
       <button class="btn btn-primary btn-sm" :disabled="bulkSaving" @click="applyBulkLevel">{{ bulkSaving ? '应用中…' : '应用' }}</button>
+      <span class="bb-sep"></span>
+      <span class="bb-label">状态改为</span>
+      <select v-model="bulkStatus" class="bb-sel">
+        <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
+      </select>
+      <label class="bb-push" title="勾选后同时把该状态下发到这些客户名下的所有项目；不勾选则只改客户，项目状态各自独立">
+        <input type="checkbox" v-model="bulkPushStatus" /> 联动项目
+      </label>
+      <button class="btn btn-primary btn-sm" :disabled="bulkStatusSaving" @click="applyBulkStatus">{{ bulkStatusSaving ? '应用中…' : '应用' }}</button>
       <button v-if="auth.canDelete" class="bb-del" :disabled="bulkDeleting" @click="bulkDeleteCustomers">
         {{ bulkDeleting ? '删除中…' : `删除选中(${selected.size})` }}
       </button>
@@ -566,6 +595,9 @@ onMounted(async () => {
 .bb-count b { color: var(--c-info); }
 .bb-label { font-size: 12px; color: #9b8070; margin-left: 4px; }
 .bb-sel { padding: 5px 10px; border: 1px solid #d4b896; border-radius: 7px; background: var(--row-bg); font-size: 13px; }
+.bb-sep { width: 1px; align-self: stretch; min-height: 18px; background: rgba(160,120,80,.28); margin: 0 2px; }
+.bb-push { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #6a5641; cursor: pointer; white-space: nowrap; }
+.bb-push input { accent-color: var(--primary); cursor: pointer; }
 .bb-del { margin-left: auto; padding: 5px 12px; border: 1px solid rgba(198,40,40,.45); border-radius: 7px;
   background: rgba(198,40,40,.06); color: var(--c-danger); font-size: 12.5px; font-weight: 700; cursor: pointer; }
 .bb-del:hover:not(:disabled) { background: rgba(198,40,40,.13); }

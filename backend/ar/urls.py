@@ -18,6 +18,7 @@ urlpatterns = [
     path('customers', views.customers),
     path('customers/bulk-delete', views.customers_bulk_delete),
     path('customers/bulk-tag-level', views.customers_bulk_tag_level),
+    path('customers/bulk-set-status', views.customers_bulk_set_status),
     path('customers/sync-from-projects', views.customers_sync_from_projects),
     path('customers/<int:pk>', views.customer_detail),
 

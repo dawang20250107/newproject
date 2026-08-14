@@ -97,6 +97,7 @@ const ar = {
   updateCustomer: (id, d) => api.put(`/ar/customers/${id}`, d),
   deleteCustomer: id => api.delete(`/ar/customers/${id}`),
   bulkTagCustomerLevel: d => api.post('/ar/customers/bulk-tag-level', d),
+  bulkSetCustomerStatus: d => api.post('/ar/customers/bulk-set-status', d),
   bulkDeleteCustomers: d => api.post('/ar/customers/bulk-delete', d),
   syncCustomersFromProjects: () => api.post('/ar/customers/sync-from-projects', {}),
 

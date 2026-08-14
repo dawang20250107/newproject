@@ -818,6 +818,51 @@ class ARPermissionRegressionTests(TestCase):
         self.assertEqual(resp.status_code, 403, resp.content)
         self.assertTrue(ARProject.objects.filter(pk=p.id).exists())
 
+    def test_customers_bulk_set_status_scope_push_and_guards(self):
+        """客户批量改状态：部门越权守卫 + push_status 联动名下项目 + 白名单 + 写权限。"""
+        import json as _json
+        writer = self.make_user('13910000094', 'finance_director')   # 仅 self.dept
+        # 项目保存时按 customer_name 自动挂客户（_autolink_customer），按真实链路建模：
+        # 客户名与项目 customer_name 一致 → create_project 即挂到 c1
+        c1 = Customer.objects.create(name='Contract A', delivery_dept=self.dept)
+        c2 = Customer.objects.create(name='批量客户乙', delivery_dept=self.other_dept)
+        p1 = self.create_project()
+        self.assertEqual(p1.customer_id, c1.id)   # autolink 挂接成功
+
+        def post(payload, user):
+            return self.client.post('/api/pk/ar/customers/bulk-set-status',
+                                    data=_json.dumps(payload),
+                                    content_type='application/json', **self.auth(user))
+
+        # 不联动：只改客户，项目不动；c2 因部门越权被过滤
+        r = post({'ids': [c1.id, c2.id], 'status': '中断'}, writer)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['data']['updated'], 1)
+        self.assertEqual(r.json()['data']['projects_updated'], 0)
+        c1.refresh_from_db(); c2.refresh_from_db(); p1.refresh_from_db()
+        self.assertEqual(c1.status, '中断')
+        self.assertEqual(c2.status, '运作中')        # 跨部门未被改
+        self.assertEqual(p1.status, '运作中')        # 未联动
+
+        # 联动：push_status=true → 名下项目一并改
+        r = post({'ids': [c1.id], 'status': '结束', 'push_status': True}, writer)
+        self.assertEqual(r.json()['data']['projects_updated'], 1)
+        p1.refresh_from_db()
+        self.assertEqual(p1.status, '结束')
+
+        # 白名单：非法状态 400
+        self.assertEqual(post({'ids': [c1.id], 'status': '乱写'}, writer).status_code, 400)
+
+        # 写权限：无 ar_can_create/can_create 的角色被拒
+        cfg = default_job_config('cashier')
+        cfg['pages']['ar_projects'] = True
+        cfg['ar_can_create'] = False
+        cfg['can_create'] = False
+        JobPermission.objects.create(job_title='cashier', config=cfg)
+        _invalidate_perm_cache('cashier')
+        ro = self.make_user('13910000093', 'cashier')
+        self.assertEqual(post({'ids': [c1.id], 'status': '运作中'}, ro).status_code, 403)
+
     def test_bulk_delete_allowed_with_can_delete(self):
         """非超管但 can_delete=true 应被允许批量删除（验证授权链路正确）。"""
         import json as _json

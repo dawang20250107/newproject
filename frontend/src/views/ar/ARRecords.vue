@@ -505,6 +505,11 @@ function toggleColVis(key) {
 }
 // 覆盖原 show()：同时考虑权限和用户隐藏
 const showCol = k => auth.canArView(k) && !hiddenCols.value.has(k)
+// 税额列：开票跟踪是税额的业务主场，恒显（仅受字段权限门控）；
+// 其余 tab 沿用列偏好——全部明细维持「默认隐藏税额去杂」的既有约定，手动打开仍持久生效
+const showTax = computed(() =>
+  auth.canArView('r_tax_amount') &&
+  (activeTab.value === 'invoice' || !hiddenCols.value.has('r_tax_amount')))
 
 // ── 批量分配催收人 ────────────────────────────────────────────────────────────
 const showCollectorAssign = ref(false)
@@ -2738,7 +2743,7 @@ function clearFilters() {
                 <th class="ctr"><ColumnFilter label="批次号" field="invoice_batch_no" type="text" :values-provider="distinctProvider" :model-value="colFilters.invoice_batch_no" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('invoice_batch_no',v)" @sort="o=>setSort('invoice_batch_no',o)" /></th>
                 <th v-if="show('r_estimated_amount')" class="amt"><ColumnFilter label="预估金额" field="estimated_amount" type="number" :model-value="colFilters.estimated_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('estimated_amount',v)" @sort="o=>setSort('estimated_amount',o)" /></th>
                 <th v-if="show('r_actual_invoice_amount')" class="amt"><ColumnFilter label="实际开票额" field="actual_invoice_amount" type="number" :model-value="colFilters.actual_invoice_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('actual_invoice_amount',v)" @sort="o=>setSort('actual_invoice_amount',o)" /></th>
-                <th v-if="show('r_tax_amount')" class="amt"><ColumnFilter label="税额" field="tax_amount" type="number" :model-value="colFilters.tax_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('tax_amount',v)" @sort="o=>setSort('tax_amount',o)" /></th>
+                <th v-if="showTax" class="amt"><ColumnFilter label="税额" field="tax_amount" type="number" :model-value="colFilters.tax_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('tax_amount',v)" @sort="o=>setSort('tax_amount',o)" /></th>
                 <th v-if="show('r_invoice_date')" class="ctr"><ColumnFilter label="开票日期" field="invoice_date" type="date" :model-value="colFilters.invoice_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('invoice_date',v)" @sort="o=>setSort('invoice_date',o)" /></th>
                 <th v-if="show('r_account_diff')" class="amt"><ColumnFilter label="账实差额" field="account_diff_adjustment" type="number" :model-value="colFilters.account_diff_adjustment" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('account_diff_adjustment',v)" @sort="o=>setSort('account_diff_adjustment',o)" /></th>
                 <th v-if="show('r_invoice_status')" class="ctr"><ColumnFilter label="开票状态" field="invoice_status" type="enum" :sortable="false" :no-exclude="true" :options="DIM_OPTS.invoice_status" :model-value="dimModel('invoice_status')" @update:model-value="v=>onDimCol('invoice_status',v)" /></th>
@@ -2870,7 +2875,7 @@ function clearFilters() {
                   </td>
                   <td v-if="show('r_estimated_amount')" class="amt text-muted">{{ fmtCell(rec.estimated_amount) }}</td>
                   <td v-if="show('r_actual_invoice_amount')" class="amt fw">{{ rec.actual_invoice_amount ? fmtCell(rec.actual_invoice_amount) : '—' }}</td>
-                  <td v-if="show('r_tax_amount')" class="amt text-muted">{{ rec.tax_amount ? fmtCell(rec.tax_amount) : '—' }}</td>
+                  <td v-if="showTax" class="amt text-muted">{{ rec.tax_amount ? fmtCell(rec.tax_amount) : '—' }}</td>
                   <td v-if="show('r_invoice_date')" class="ctr text-sm-muted" :class="{ 'qe-cell': auth.canArWrite }"
                     :title="auth.canArWrite ? '双击修改' : undefined" @dblclick.stop="startInlineEdit(rec, 'invoice_date')">
                     <input v-if="inlineEdit.id === rec.id && inlineEdit.field === 'invoice_date'" v-model="inlineEdit.value"
@@ -2951,7 +2956,7 @@ function clearFilters() {
             <span class="bb-item"><i>合计</i><b>{{ summaryData.count }}</b> 条</span>
             <span v-if="show('r_estimated_amount')" class="bb-item"><i>预估</i><b>{{ fmtCell(summaryData.estimated) }}</b></span>
             <span v-if="show('r_actual_invoice_amount')" class="bb-item"><i>开票</i><b>{{ fmtCell(summaryData.invoiced) }}</b></span>
-            <span v-if="show('r_tax_amount')" class="bb-item"><i>税额</i><b>{{ fmtCell(summaryData.tax) }}</b></span>
+            <span v-if="showTax" class="bb-item"><i>税额</i><b>{{ fmtCell(summaryData.tax) }}</b></span>
             <span v-if="show('r_account_diff')" class="bb-item adj"><i>差额调整</i><b>{{ fmtCell(summaryData.adj) }}</b></span>
             <span v-if="show('r_payments')" class="bb-item ok"><i>已收</i><b>{{ fmtCell(summaryData.collected) }}</b></span>
             <span v-if="show('r_outstanding')" class="bb-item warn"><i>未收</i><b>{{ fmtCell(summaryData.outstanding) }}</b></span>
