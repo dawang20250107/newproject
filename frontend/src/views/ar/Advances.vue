@@ -151,6 +151,46 @@ function buildParams() {
   return p
 }
 
+// ── 按单位聚合视图（客户/供应商 → 名下项目 两级下钻）─────────────────────────
+const viewMode = ref('detail')          // detail=明细台账 | bycp=按单位聚合
+const cpRows = ref([])
+const cpCashBasis = ref(false)          // true=区间实际收付口径（选了收付时间）
+const cpLoading = ref(false)
+const expandedCps = ref(new Set())
+function toggleCpExpand(cp) {
+  const s = new Set(expandedCps.value); s.has(cp) ? s.delete(cp) : s.add(cp); expandedCps.value = s
+}
+async function loadByCp() {
+  if (!isAdvanceMode.value || viewMode.value !== 'bycp') return
+  cpLoading.value = true
+  try {
+    const p = { direction: direction.value, ...filters }
+    if (projectFilter.value) p.project_id = projectFilter.value.id
+    const res = await ar.advancesByCounterparty(p)
+    cpRows.value = res.data.rows
+    cpCashBasis.value = res.data.cash_basis
+  } catch (e) { toast.error(e?.msg || e?.error || '聚合加载失败') }
+  finally { cpLoading.value = false }
+}
+function switchView(v) {
+  if (viewMode.value === v) return
+  viewMode.value = v
+  if (v === 'bycp') loadByCp()
+}
+// 下钻：聚合行 → 明细视图（单位精确匹配走列头筛选管线，与方案/漏斗状态一致）
+function drillCp(row) {
+  if (row.counterparty !== '（未填单位）') colFilters.counterparty = { op: 'eq', value: row.counterparty }
+  viewMode.value = 'detail'
+  load(true)
+}
+function drillProject(row, p) {
+  if (row.counterparty !== '（未填单位）') colFilters.counterparty = { op: 'eq', value: row.counterparty }
+  if (p.project_id) projectFilter.value = { id: p.project_id, label: p.short_name }
+  else colFilters.project_short_name = { op: 'empty' }   // 散单：项目为空
+  viewMode.value = 'detail'
+  load(true)
+}
+
 // 部门下拉数据源：优先用与系统常量匹配的事业部；若用户真实部门名不在常量内
 // （历史命名/二级部门等），回退到其真实可见部门，避免下拉为空导致无法选择部门。
 const accessibleDepts = computed(() => {
@@ -203,6 +243,8 @@ async function load(reset = false) {
     // 选中集只保留仍在当前列表中的行（翻页/切方向/筛选后清掉不可见的陈旧选中）
     const live = new Set(items.value.map(r => r.id))
     selectedIds.value = new Set([...selectedIds.value].filter(id => live.has(id)))
+    // 聚合视图开着时同步刷新（筛选/区间/方向变化经由 load 汇聚于此，单点挂钩全覆盖）
+    if (viewMode.value === 'bycp') loadByCp()
   } catch (e) { loadErr.value = e?.error || e?.message || '加载失败，请刷新重试'
   } finally { loading.value = false }
 }
@@ -781,7 +823,7 @@ const REC_COPY_COLS = [
   { key: 'counterparty', label: '往来单位' },
   { key: 'short_name', label: '项目' },
   { key: 'delivery_dept', label: '交付部门' },
-  { key: 'occur_date', label: '发生日期' },
+  { key: 'occur_date', label: '款项日期' },
   { key: 'advance_amount', label: '总额', format: v => fmtAmt(v) },
   { key: 'written_off_amount', label: '已核销', format: v => fmtAmt(v) },
   { key: 'balance_amount', label: '余额', format: v => fmtAmt(v) },
@@ -923,6 +965,11 @@ onMounted(async () => {
             项目：{{ projectFilter.label }} ✕
           </button>
           <SchemePicker :ctl="schemes" :can-public="auth.canArWrite" :is-super-admin="auth.isSuperAdmin" />
+          <!-- 视图切换：明细台账 / 按单位聚合（客户或供应商 → 名下项目 两级下钻） -->
+          <div class="view-seg" role="tablist">
+            <button :class="['vs-btn', { on: viewMode === 'detail' }]" @click="switchView('detail')">明细</button>
+            <button :class="['vs-btn', { on: viewMode === 'bycp' }]" @click="switchView('bycp')">按{{ partyLabel }}</button>
+          </div>
           <div class="spacer"></div>
           <button class="btn btn-ghost btn-sm" @click="downloadTemplate">下载模板</button>
           <label v-if="canCreate" class="btn btn-ghost btn-sm" :class="{ disabled: importing }">
@@ -949,7 +996,57 @@ onMounted(async () => {
           </div>
         </div>
 
-        <div class="table-scroll page-scroll range-root" :ref="rangeSel.setRoot">
+        <!-- ══ 按单位聚合视图：客户/供应商 → 名下项目 两级下钻 ══ -->
+        <div v-if="viewMode === 'bycp'" class="table-scroll page-scroll">
+          <table class="data-table cp-agg-table">
+            <thead>
+              <tr>
+                <th>{{ partyLabel }}（往来单位）</th>
+                <th class="ctr">笔数</th>
+                <th class="ctr">项目数</th>
+                <th class="amt" :title="cpCashBasis ? '区间内按分期收付日期统计的实际收付合计' : '记录全额合计'">{{ dirLabel }}{{ cpCashBasis ? '实际收付' : '金额' }}</th>
+                <th v-if="show('adv_writeoff')" class="amt">已核销</th>
+                <th v-if="show('adv_writeoff') && !isReceive" class="amt">已退款</th>
+                <th v-if="show('adv_writeoff')" class="amt">未核销余额</th>
+                <th v-if="show('adv_writeoff')" class="amt">逾期挂账</th>
+                <th class="ctr">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="cpLoading && !cpRows.length"><td colspan="9" class="empty">⏳ 加载中…</td></tr>
+              <tr v-else-if="!cpRows.length"><td colspan="9" class="empty">当前筛选无{{ dirLabel }}记录</td></tr>
+              <template v-for="row in cpRows" :key="row.counterparty">
+                <tr class="cp-row" @click="toggleCpExpand(row.counterparty)">
+                  <td class="cp-name">
+                    <span class="cp-caret">{{ expandedCps.has(row.counterparty) ? '▾' : '▸' }}</span>{{ row.counterparty }}
+                  </td>
+                  <td class="ctr">{{ row.count }}</td>
+                  <td class="ctr">{{ row.project_count }}<span v-if="row.projects.some(p => !p.project_id)" class="loose-tag" title="含未挂项目的散单">+散单</span></td>
+                  <td class="amt num-strong">{{ fmtAmt(row.advance_amount) }}</td>
+                  <td v-if="show('adv_writeoff')" class="amt">{{ fmtAmt(row.written_off) }}</td>
+                  <td v-if="show('adv_writeoff') && !isReceive" class="amt">{{ Number(row.refunded) ? fmtAmt(row.refunded) : '—' }}</td>
+                  <td v-if="show('adv_writeoff')" class="amt num-strong">{{ fmtAmt(row.balance) }}</td>
+                  <td v-if="show('adv_writeoff')" class="amt" :class="{ 'txt-warn': Number(row.overdue_balance) > 0 }">{{ Number(row.overdue_balance) ? fmtAmt(row.overdue_balance) : '—' }}</td>
+                  <td class="ctr"><button class="btn btn-ghost btn-sm" @click.stop="drillCp(row)">查看明细</button></td>
+                </tr>
+                <tr v-for="p in (expandedCps.has(row.counterparty) ? row.projects : [])"
+                    :key="row.counterparty + '·' + (p.project_id ?? 'loose')" class="cp-proj-row">
+                  <td class="cp-proj-name">└ {{ p.short_name }}</td>
+                  <td class="ctr">{{ p.count }}</td>
+                  <td class="ctr">—</td>
+                  <td class="amt">{{ fmtAmt(p.advance_amount) }}</td>
+                  <td v-if="show('adv_writeoff')" class="amt">{{ fmtAmt(p.written_off) }}</td>
+                  <td v-if="show('adv_writeoff') && !isReceive" class="amt">{{ Number(p.refunded) ? fmtAmt(p.refunded) : '—' }}</td>
+                  <td v-if="show('adv_writeoff')" class="amt">{{ fmtAmt(p.balance) }}</td>
+                  <td v-if="show('adv_writeoff')" class="amt" :class="{ 'txt-warn': Number(p.overdue_balance) > 0 }">{{ Number(p.overdue_balance) ? fmtAmt(p.overdue_balance) : '—' }}</td>
+                  <td class="ctr"><button class="btn btn-ghost btn-sm" @click.stop="drillProject(row, p)">查看明细</button></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <div v-if="viewMode === 'detail'" class="table-scroll page-scroll range-root" :ref="rangeSel.setRoot">
           <table class="data-table">
             <thead>
               <tr>
@@ -959,7 +1056,7 @@ onMounted(async () => {
                   <ColumnFilter label="项目简称" field="project_short_name" type="text" :model-value="colFilters.project_short_name" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('project_short_name',v)" @sort="o=>setSort('project_short_name',o)" />
                   <ColumnFilter label="部门" field="delivery_dept" type="enum" :options="deptOptions" :model-value="colFilters.delivery_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('delivery_dept',v)" @sort="o=>setSort('delivery_dept',o)" />
                 </th>
-                <th>发生年月</th>
+                <th title="合作入驻/业务归属年月，不参与金额统计——金额按分期实际收付日期统计">入驻年月</th>
                 <th><ColumnFilter label="款项日期" field="occur_date" type="date" :model-value="colFilters.occur_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('occur_date',v)" @sort="o=>setSort('occur_date',o)" /></th>
                 <th v-if="show('adv_amount')" class="amt"><ColumnFilter :label="`${dirLabel}金额`" field="advance_amount" type="number" :model-value="colFilters.advance_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('advance_amount',v)" @sort="o=>setSort('advance_amount',o)" /></th>
                 <th v-if="show('adv_writeoff')" class="amt"><ColumnFilter label="已核销" field="written_off_amount" type="number" :model-value="colFilters.written_off_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('written_off_amount',v)" @sort="o=>setSort('written_off_amount',o)" /></th>
@@ -1024,7 +1121,7 @@ onMounted(async () => {
           <span class="sb-range">{{ rangeLabel }}</span>
         </div>
 
-        <Pager v-model:page="page" v-model:size="size" :total="total" storage-key="ar_advances" @change="load()" />
+        <Pager v-if="viewMode === 'detail'" v-model:page="page" v-model:size="size" :total="total" storage-key="ar_advances" @change="load()" />
       </div>
     </template>
 
@@ -1219,9 +1316,9 @@ onMounted(async () => {
           </label>
           <label class="fld"><span>{{ partyLabel }}（往来单位） <em>*</em></span>
             <input v-model="form.counterparty" class="inp" :placeholder="`${partyLabel}名称`" /></label>
-          <label class="fld"><span>发生年 <em>*</em></span>
+          <label class="fld"><span>入驻年 <em>*</em></span>
             <select v-model.number="form.occur_year" class="sel"><option v-for="y in years" :key="y" :value="y">{{ y }}</option></select></label>
-          <label class="fld"><span>发生月 <em>*</em></span>
+          <label class="fld"><span>入驻月 <em>*</em></span>
             <select v-model.number="form.occur_month" class="sel"><option v-for="m in months" :key="m" :value="m">{{ m }}</option></select></label>
           <label class="fld"><span>款项日期</span><input v-model="form.occur_date" type="date" class="inp" /></label>
           <label class="fld"><span>{{ dirLabel }}金额（元）</span><input v-model="form.advance_amount" type="number" step="0.01" class="inp" /></label>
@@ -1479,6 +1576,20 @@ onMounted(async () => {
 .proj-chip:hover { background: rgba(var(--primary-rgb,255,138,76),0.18); }
 .sel, .inp { padding: 6px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); font-size: 13px; }
 .filter-row .sel, .filter-row .inp { width: auto; font-size: 12.5px; }
+/* 视图切换：明细 / 按单位聚合 */
+.view-seg { display: inline-flex; gap: 2px; background: var(--surface-2, rgba(160,120,80,.08)); border-radius: 8px; padding: 3px; flex-shrink: 0; }
+.vs-btn { border: none; background: none; padding: 4px 12px; border-radius: 6px; font-size: 12.5px; font-weight: 600;
+  color: var(--muted); cursor: pointer; font-family: inherit; white-space: nowrap; transition: all .15s; }
+.vs-btn.on { background: var(--card); color: var(--primary); box-shadow: var(--shadow-sm); }
+/* 按单位聚合表 */
+.cp-agg-table .cp-row { cursor: pointer; }
+.cp-agg-table .cp-row:hover td { background: rgba(201,99,66,.05); }
+.cp-name { font-weight: 650; }
+.cp-caret { display: inline-block; width: 16px; color: var(--muted); }
+.cp-proj-row td { background: rgba(160,120,80,.04); font-size: 12.5px; }
+.cp-proj-name { padding-left: 26px; color: var(--muted); }
+.loose-tag { margin-left: 4px; font-size: 10.5px; color: var(--c-warn); background: var(--c-warn-bg, rgba(245,166,35,.12)); border-radius: 4px; padding: 0 5px; }
+.txt-warn { color: var(--c-warn); }
 .sel.sm { padding: 5px 8px; font-size: 12.5px; }
 .inp.sm { padding: 5px 9px; font-size: 12.5px; width: 240px; max-width: 100%; }
 .btn.disabled { opacity: .6; pointer-events: none; }

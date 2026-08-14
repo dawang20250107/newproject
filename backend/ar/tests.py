@@ -5323,3 +5323,46 @@ class AdvanceCashTimingTests(TestCase):
         self.assertEqual(k['预收']['advance_amount'], 600.0)   # 区间实际收付，非整笔 1000
         k_all = self.client.get('/api/pk/ar/advances/kpi', **self.auth()).json()['data']
         self.assertEqual(k_all['预收']['advance_amount'], 1000.0)  # 无区间=全额
+
+    def test_by_counterparty_groups_projects_and_range_cash(self):
+        """按单位聚合：单位→项目两级；散单归（未挂项目）；选区间时金额=实际收付。"""
+        proj = ARProject.objects.create(
+            customer_name='合作客户A', short_name='聚合项目甲', delivery_dept=self.dept,
+            sales_contact='s', project_manager='m')
+        # setUp 的 rec(1000, 3月600/4月400) 挂到项目甲
+        AdvanceRecord.objects.filter(pk=self.rec.pk).update(project=proj)
+        # 同客户散单 200（5月收付）
+        mk_advance(direction='预收', delivery_dept=self.dept, counterparty='合作客户A',
+                   occur_year=2026, occur_month=2, occur_date=date(2026, 5, 3),
+                   advance_amount=Decimal('200'), balance_amount=Decimal('200'))
+        # 另一部门客户B —— 部门隔离下的可见性由 _advance_dept_filter 保证（超管可见）
+        mk_advance(direction='预收', delivery_dept='劳务事业部', counterparty='客户B',
+                   occur_year=2026, occur_month=2, occur_date=date(2026, 3, 8),
+                   advance_amount=Decimal('900'), balance_amount=Decimal('900'))
+
+        # 全周期：客户A = 2笔 / 1项目+散单 / 金额1200
+        d = self.client.get('/api/pk/ar/advances/by-counterparty',
+                            {'direction': '预收'}, **self.auth()).json()['data']
+        self.assertFalse(d['cash_basis'])
+        rows = {r['counterparty']: r for r in d['rows']}
+        a = rows['合作客户A']
+        self.assertEqual(a['count'], 2)
+        self.assertEqual(a['project_count'], 1)
+        self.assertEqual(float(a['advance_amount']), 1200.0)
+        pj = {p['short_name']: p for p in a['projects']}
+        self.assertEqual(float(pj['聚合项目甲']['advance_amount']), 1000.0)
+        self.assertEqual(float(pj['（未挂项目）']['advance_amount']), 200.0)
+        self.assertIn('客户B', rows)
+
+        # 3月区间：现金口径——客户A 金额=600（仅项目甲3月分期），散单(5月)整条不命中
+        d3 = self.client.get('/api/pk/ar/advances/by-counterparty',
+                             {'direction': '预收', 'start_date': '2026-03-01',
+                              'end_date': '2026-03-31'}, **self.auth()).json()['data']
+        self.assertTrue(d3['cash_basis'])
+        rows3 = {r['counterparty']: r for r in d3['rows']}
+        a3 = rows3['合作客户A']
+        self.assertEqual(float(a3['advance_amount']), 600.0)
+        names3 = [p['short_name'] for p in a3['projects']]
+        self.assertNotIn('（未挂项目）', names3)   # 散单区间外不出现
+        # 余额是存量口径，不随区间切割
+        self.assertEqual(float(a3['balance']), 1000.0)

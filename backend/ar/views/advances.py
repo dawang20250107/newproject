@@ -425,19 +425,27 @@ def advances_summary(request):
     }
     rows = []
     if group_by == 'month':
-        agg = (qs.values('occur_year', 'occur_month')
-               .annotate(count=Count('id'), advance_amount=Sum('advance_amount'),
-                         written_off=Sum('written_off_amount'),
-                         balance=Sum('balance_amount'))
-               .order_by('occur_year', 'occur_month'))
+        # 按月=实际收付口径：金额按「分期收付日期」归月（真实现金事件），不按主表
+        # 入驻年月（occur_year/month 是业务归属维度，不参与金额统计）。
+        # 核销/余额是记录级存量、无法无重复地摊到收付月，故月透视只给 金额+笔数。
+        inst = AdvanceInstallment.objects.filter(advance_record__in=qs)
+        sd, ed = _advance_date_range(request)
+        if sd:
+            inst = inst.filter(occur_date__gte=sd)
+        if ed:
+            inst = inst.filter(occur_date__lte=ed)
+        agg = (inst.annotate(_m=TruncMonth('occur_date')).values('_m')
+               .annotate(advance_amount=Sum('amount'),
+                         count=Count('advance_record_id', distinct=True))
+               .order_by('_m'))
         for r in agg:
+            if not r['_m']:
+                continue
             rows.append({
-                'key': f"{r['occur_year']}-{r['occur_month']:02d}",
-                'year': r['occur_year'], 'month': r['occur_month'],
+                'key': r['_m'].strftime('%Y-%m'),
+                'year': r['_m'].year, 'month': r['_m'].month,
                 'count': r['count'],
                 'advance_amount': str(r['advance_amount'] or 0),
-                'written_off': str(r['written_off'] or 0),
-                'balance': str(r['balance'] or 0),
             })
     else:
         field = field_map.get(group_by, 'delivery_dept')
@@ -455,6 +463,91 @@ def advances_summary(request):
                 'balance': str(r['balance'] or 0),
             })
     return ok({'group_by': group_by, 'rows': rows})
+
+
+@csrf_exempt
+@pk_required()
+def advances_by_counterparty(request):
+    """GET /advances/by-counterparty — 按往来单位（预收=客户 / 预付=供应商）聚合，
+    每个单位下再按项目拆分（未挂项目的散单归入「（未挂项目）」）。
+
+    口径：
+    - 金额（advance_amount）：选了实际收付区间(start_date/end_date)时 = 区间内分期
+      收付合计（真实现金口径，与 KPI 金额卡一致）；未选区间 = 记录全额合计。
+    - 已核销/已退款/未核销余额/逾期余额：记录级存量口径（全周期），不随区间切割。
+    沿用列表同一套筛选（方向/部门/核销状态/搜索/列头筛选），部门权限隔离一致。
+    """
+    denied = _page_denied(request, 'ar_advance')
+    if denied:
+        return denied
+    today = timezone.localdate()
+    qs = _apply_advance_filters(
+        _advance_dept_filter(AdvanceRecord.objects.all(), request), request)
+    sd, ed = _advance_date_range(request)
+
+    def _stock(vals_qs, keys):
+        return (vals_qs.values(*keys)
+                .annotate(count=Count('id'),
+                          advance_amount=Sum('advance_amount'),
+                          written_off=Sum('written_off_amount'),
+                          refunded=Sum('refunded_amount'),
+                          balance=Sum('balance_amount', filter=Q(balance_amount__gt=0)),
+                          overdue_balance=Sum('balance_amount', filter=Q(
+                              balance_amount__gt=0, expected_writeoff_date__lt=today))))
+
+    def _cash_map(keys):
+        """区间内分期实际收付合计 → {key元组: Decimal}；未选区间返回 None（用全额）。"""
+        if not (sd or ed):
+            return None
+        inst = AdvanceInstallment.objects.filter(advance_record__in=qs)
+        if sd:
+            inst = inst.filter(occur_date__gte=sd)
+        if ed:
+            inst = inst.filter(occur_date__lte=ed)
+        prefixed = [f'advance_record__{k}' for k in keys]
+        return {tuple(r[p] for p in prefixed): r['s']
+                for r in inst.values(*prefixed).annotate(s=Sum('amount'))}
+
+    def _row(r, cash, key, extra=None):
+        amt = r['advance_amount'] or 0
+        if cash is not None:
+            amt = cash.get(key) or 0
+        out = {
+            'count': r['count'],
+            'advance_amount': str(amt),
+            'written_off': str(r['written_off'] or 0),
+            'refunded': str(r['refunded'] or 0),
+            'balance': str(r['balance'] or 0),
+            'overdue_balance': str(r['overdue_balance'] or 0),
+        }
+        if extra:
+            out.update(extra)
+        return out
+
+    # 单位级
+    cp_cash = _cash_map(['counterparty'])
+    cp_rows = {}
+    for r in _stock(qs, ['counterparty']):
+        cp = r['counterparty'] or '（未填单位）'
+        cp_rows[cp] = _row(r, cp_cash, (r['counterparty'],),
+                           {'counterparty': cp, 'projects': [], 'project_count': 0})
+    # 项目级（挂在单位下；散单=（未挂项目））
+    pj_cash = _cash_map(['counterparty', 'project_id'])
+    for r in (_stock(qs, ['counterparty', 'project_id', 'project__short_name'])):
+        cp = r['counterparty'] or '（未填单位）'
+        parent = cp_rows.get(cp)
+        if parent is None:
+            continue
+        parent['projects'].append(_row(
+            r, pj_cash, (r['counterparty'], r['project_id']),
+            {'project_id': r['project_id'],
+             'short_name': r['project__short_name'] or '（未挂项目）'}))
+    for row in cp_rows.values():
+        row['projects'].sort(key=lambda x: -float(x['balance'] or 0))
+        row['project_count'] = sum(1 for p in row['projects'] if p['project_id'])
+    rows = sorted(cp_rows.values(),
+                  key=lambda x: (-float(x['balance'] or 0), -float(x['advance_amount'] or 0)))
+    return ok({'rows': rows, 'cash_basis': bool(sd or ed)})
 
 
 @csrf_exempt
@@ -947,8 +1040,8 @@ def advance_export(request):
         ('p_short_name', '项目简称', lambda rec, st: rec.project.short_name if rec.project_id else ''),
         (None, '交付部门', lambda rec, st: rec.delivery_dept),
         ('adv_counterparty', '往来单位', lambda rec, st: rec.counterparty),
-        (None, '发生年', lambda rec, st: rec.occur_year),
-        (None, '发生月', lambda rec, st: rec.occur_month),
+        (None, '入驻年', lambda rec, st: rec.occur_year),
+        (None, '入驻月', lambda rec, st: rec.occur_month),
         (None, '款项日期', lambda rec, st: str(rec.occur_date) if rec.occur_date else ''),
         ('adv_amount', '预收/预付金额', lambda rec, st: float(rec.advance_amount)),
         ('adv_amount', '收付明细',

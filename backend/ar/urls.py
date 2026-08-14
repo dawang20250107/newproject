@@ -79,6 +79,7 @@ urlpatterns = [
     path('advances/bulk-delete', views.advances_bulk_delete),
     path('advances/kpi', views.advances_kpi),
     path('advances/summary', views.advances_summary),
+    path('advances/by-counterparty', views.advances_by_counterparty),
     path('advances/available', views.advances_available),
     path('advances/offsettable', views.advance_offsettable_records),
     path('advances/template', views.advance_template),

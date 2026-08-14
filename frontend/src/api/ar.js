@@ -124,6 +124,7 @@ const ar = {
   listAdvances: p => api.get('/ar/advances', { params: p }),
   advancesKpi: p => api.get('/ar/advances/kpi', { params: p }),
   advancesSummary: p => api.get('/ar/advances/summary', { params: p }),
+  advancesByCounterparty: p => api.get('/ar/advances/by-counterparty', { params: p }),
   advancesAvailable: p => api.get('/ar/advances/available', { params: p }),
   // 预收核销工作台 + 批量核销（一笔预收按先进先出冲抵多条应收）
   offsetWorkbench: p => api.get('/ar/advances/offset-workbench', { params: p }),
