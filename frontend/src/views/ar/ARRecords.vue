@@ -2211,7 +2211,9 @@ async function onPrecheckApply({ mode }) {
 async function exportData() {
   exporting.value = true
   try {
-    const visCols = COL_VIS_DEFS.filter(d => showCol(d.key)).map(d => d.key)
+    // 导出列取「生效可见性」：税额在开票跟踪 tab 被 showTax 恒显时，导出须同屏一致
+    const effVis = k => (k === 'r_tax_amount' ? showTax.value : showCol(k))
+    const visCols = COL_VIS_DEFS.filter(d => effVis(d.key)).map(d => d.key)
     const params = buildParams(scopedParams())
     if (visCols.length < COL_VIS_DEFS.filter(d => auth.canArView(d.key)).length) {
       params.vis_cols = visCols.join(',')
@@ -2364,9 +2366,14 @@ function clearFilters() {
             </button>
             <div v-if="showColPanel" class="col-vis-drop">
               <div class="col-vis-head">列显示设置</div>
-              <label v-for="c in COL_VIS_DEFS.filter(d => auth.canArView(d.key))" :key="c.key" class="col-vis-item">
-                <input type="checkbox" :checked="!hiddenCols.has(c.key)" @change="toggleColVis(c.key)" />
-                {{ c.label }}
+              <!-- 税额在开票跟踪 tab 被 showTax 恒显：面板置灰勾选态并标注，避免开关看似失灵 -->
+              <label v-for="c in COL_VIS_DEFS.filter(d => auth.canArView(d.key))" :key="c.key" class="col-vis-item"
+                :class="{ 'cv-forced': c.key === 'r_tax_amount' && activeTab === 'invoice' }">
+                <input type="checkbox"
+                  :checked="c.key === 'r_tax_amount' && activeTab === 'invoice' ? true : !hiddenCols.has(c.key)"
+                  :disabled="c.key === 'r_tax_amount' && activeTab === 'invoice'"
+                  @change="toggleColVis(c.key)" />
+                {{ c.label }}<i v-if="c.key === 'r_tax_amount' && activeTab === 'invoice'" class="cv-note">本页恒显</i>
               </label>
             </div>
             <div v-if="showColPanel" class="col-vis-backdrop" @click="showColPanel = false"></div>
@@ -4752,6 +4759,8 @@ function clearFilters() {
   transition: background .1s; border-radius: 6px; margin: 1px 4px;
 }
 .col-vis-item:hover { background: rgba(201,99,66,0.06); }
+.col-vis-item.cv-forced { opacity: .75; cursor: default; }
+.cv-note { font-style: normal; font-size: 10.5px; color: var(--muted); margin-left: auto; padding-left: 8px; }
 .col-vis-item input { cursor: pointer; }
 .col-vis-backdrop { position: fixed; inset: 0; z-index: 199; }
 .btn.on { border-color: var(--primary); color: var(--primary); background: rgba(201,99,66,0.06); }

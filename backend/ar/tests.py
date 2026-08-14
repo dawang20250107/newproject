@@ -850,8 +850,22 @@ class ARPermissionRegressionTests(TestCase):
         p1.refresh_from_db()
         self.assertEqual(p1.status, '结束')
 
-        # 白名单：非法状态 400
+        # 白名单：非法状态 400；非字符串参数（数字/布尔/数组）走 400 而非 .strip() 崩 500
         self.assertEqual(post({'ids': [c1.id], 'status': '乱写'}, writer).status_code, 400)
+        self.assertEqual(post({'ids': [c1.id], 'status': 123}, writer).status_code, 400)
+        self.assertEqual(post({'ids': [c1.id], 'status': True}, writer).status_code, 400)
+        self.assertEqual(post({'all': True, 'status': '结束', 'q': 1}, writer).status_code, 400)
+
+        # ids 数量上限：>5000 直接 400（防超长 pk__in 绕过 all 分支护栏）
+        self.assertEqual(post({'ids': list(range(1, 5002)), 'status': '结束'}, writer).status_code, 400)
+
+        # 联动纵深防御：项目部门被历史数据破坏（≠客户部门）时，联动不得跨部门改写
+        ARProject.objects.filter(pk=p1.pk).update(delivery_dept=self.other_dept, status='运作中')
+        r = post({'ids': [c1.id], 'status': '中断', 'push_status': True}, writer)
+        self.assertEqual(r.json()['data']['projects_updated'], 0)   # 越权项目未被联动
+        p1.refresh_from_db()
+        self.assertEqual(p1.status, '运作中')
+        ARProject.objects.filter(pk=p1.pk).update(delivery_dept=self.dept)   # 复原
 
         # 写权限：无 ar_can_create/can_create 的角色被拒
         cfg = default_job_config('cashier')
@@ -862,6 +876,16 @@ class ARPermissionRegressionTests(TestCase):
         _invalidate_perm_cache('cashier')
         ro = self.make_user('13910000093', 'cashier')
         self.assertEqual(post({'ids': [c1.id], 'status': '运作中'}, ro).status_code, 403)
+
+        # 共享业务岗位（ar_shared_only）即便被叠加写权限，也不得批量改状态
+        cfg2 = default_job_config('sales_bp')
+        cfg2['pages']['ar_projects'] = True
+        cfg2['ar_can_create'] = True
+        cfg2['ar_shared_only'] = True
+        JobPermission.objects.create(job_title='sales_bp', config=cfg2)
+        _invalidate_perm_cache('sales_bp')
+        bp = self.make_user('13910000092', 'sales_bp')
+        self.assertEqual(post({'ids': [c1.id], 'status': '结束'}, bp).status_code, 403)
 
     def test_bulk_delete_allowed_with_can_delete(self):
         """非超管但 can_delete=true 应被允许批量删除（验证授权链路正确）。"""
