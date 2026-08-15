@@ -5366,3 +5366,52 @@ class AdvanceCashTimingTests(TestCase):
         self.assertNotIn('（未挂项目）', names3)   # 散单区间外不出现
         # 余额是存量口径，不随区间切割
         self.assertEqual(float(a3['balance']), 1000.0)
+
+    def test_list_rows_and_summary_follow_range_cash_basis(self):
+        """行级联动（用户反馈的BUG）：选收付区间后，列表每行的 金额/已核销 都须为
+        区间内分期收付/核销合计，而非记录整笔存量；筛选合计同口径；排序按区间值。"""
+        # setUp 的 rec：1000 整笔，分期 3月600 / 4月400；补一笔 3月核销 250
+        AdvanceWriteoff.objects.create(advance_record=self.rec, writeoff_no=1,
+                                       amount=Decimal('250'), writeoff_date=date(2026, 3, 20))
+        AdvanceRecord.objects.filter(pk=self.rec.pk).update(
+            written_off_amount=Decimal('250'), balance_amount=Decimal('750'))
+
+        # 3月区间：行内金额=600（非1000），已核销=250；合计同口径
+        d = self.client.get('/api/pk/ar/advances',
+                            {'direction': '预收', 'start_date': '2026-03-01',
+                             'end_date': '2026-03-31'}, **self.auth()).json()['data']
+        self.assertTrue(d['cash_basis'])
+        row = d['items'][0]
+        self.assertEqual(float(row['advance_amount']), 600.0)
+        self.assertEqual(float(row['written_off_amount']), 250.0)
+        self.assertEqual(float(d['summary']['预收']['advance_amount']), 600.0)
+        self.assertEqual(float(d['summary']['预收']['written_off']), 250.0)
+
+        # 4月区间：金额=400、核销=0（3月的核销不算入4月）
+        d4 = self.client.get('/api/pk/ar/advances',
+                             {'direction': '预收', 'start_date': '2026-04-01',
+                              'end_date': '2026-04-30'}, **self.auth()).json()['data']
+        self.assertEqual(float(d4['items'][0]['advance_amount']), 400.0)
+        self.assertEqual(float(d4['items'][0]['written_off_amount']), 0.0)
+
+        # 无区间：回到整笔存量口径
+        da = self.client.get('/api/pk/ar/advances', {'direction': '预收'},
+                             **self.auth()).json()['data']
+        self.assertFalse(da['cash_basis'])
+        self.assertEqual(float(da['items'][0]['advance_amount']), 1000.0)
+        self.assertEqual(float(da['items'][0]['written_off_amount']), 250.0)
+
+        # KPI：区间核销联动、核销率仍为全周期进度 (250/1000=25%)
+        k = self.client.get('/api/pk/ar/advances/kpi',
+                            {'start_date': '2026-04-01', 'end_date': '2026-04-30'},
+                            **self.auth()).json()['data']['预收']
+        self.assertEqual(k['written_off'], 0.0)
+        self.assertEqual(k['writeoff_rate'], 25.0)
+
+        # 按单位聚合：区间核销同口径
+        bc = self.client.get('/api/pk/ar/advances/by-counterparty',
+                             {'direction': '预收', 'start_date': '2026-03-01',
+                              'end_date': '2026-03-31'}, **self.auth()).json()['data']
+        r0 = bc['rows'][0]
+        self.assertEqual(float(r0['advance_amount']), 600.0)
+        self.assertEqual(float(r0['written_off']), 250.0)

@@ -106,10 +106,38 @@ def advances(request):
         qs = _advance_dept_filter(
             AdvanceRecord.objects.select_related('project', 'created_by'), request)
         qs = _apply_advance_filters(qs, request)
-        # 列头排序仅作用于分页列表（汇总不受影响）；非法/未指定回退模型默认排序
+        # 区间联动（现金口径）：选了收付时间时，行内 预收/预付金额=区间内分期收付合计、
+        # 已核销=区间内核销合计（按核销日期），与 KPI/合计同口径——记录整笔金额不再出现。
+        sd, ed = _advance_date_range(request)
+        _range_on = bool(sd or ed)
+        if _range_on:
+            inst_sq = AdvanceInstallment.objects.filter(advance_record=OuterRef('pk'))
+            wo_sq = AdvanceWriteoff.objects.filter(advance_record=OuterRef('pk'))
+            if sd:
+                inst_sq = inst_sq.filter(occur_date__gte=sd)
+                wo_sq = wo_sq.filter(writeoff_date__gte=sd)
+            if ed:
+                inst_sq = inst_sq.filter(occur_date__lte=ed)
+                wo_sq = wo_sq.filter(writeoff_date__lte=ed)
+            _dec0 = Value(Decimal('0'), output_field=DecimalField(max_digits=15, decimal_places=2))
+            qs = qs.annotate(
+                range_amount=Coalesce(Subquery(
+                    inst_sq.values('advance_record').annotate(s=Sum('amount')).values('s')), _dec0),
+                range_written_off=Coalesce(Subquery(
+                    wo_sq.values('advance_record').annotate(s=Sum('amount')).values('s')), _dec0),
+            )
+        # 列头排序仅作用于分页列表（汇总不受影响）；非法/未指定回退模型默认排序。
+        # 区间联动时金额/核销列显示的是区间值，排序须同口径重映射到注解列，避免「排序按
+        # 整笔、显示按区间」的错位。
         sort_by = resolve_sort(request.GET.get('sort'), request.GET.get('order'),
                                ADVANCE_FILTER_REGISTRY)
         if sort_by:
+            if _range_on:
+                _remap = {'advance_amount': 'range_amount',
+                          'written_off_amount': 'range_written_off'}
+                _sign = '-' if sort_by.startswith('-') else ''
+                _bare = sort_by.lstrip('-')
+                sort_by = _sign + _remap.get(_bare, _bare)
             qs = qs.order_by(sort_by)
         page = max(1, int(request.GET.get('page', 1) or 1))
         size = min(200, max(1, int(request.GET.get('size', 50) or 50)))
@@ -120,6 +148,19 @@ def advances(request):
         total = len(ids)
         base = AdvanceRecord.objects.filter(id__in=ids)
 
+        def _range_sums(d_qs):
+            """区间内 (分期收付合计, 核销合计)。"""
+            inst = AdvanceInstallment.objects.filter(advance_record__in=d_qs)
+            wo = AdvanceWriteoff.objects.filter(advance_record__in=d_qs)
+            if sd:
+                inst = inst.filter(occur_date__gte=sd)
+                wo = wo.filter(writeoff_date__gte=sd)
+            if ed:
+                inst = inst.filter(occur_date__lte=ed)
+                wo = wo.filter(writeoff_date__lte=ed)
+            return (inst.aggregate(s=Sum('amount'))['s'] or 0,
+                    wo.aggregate(s=Sum('amount'))['s'] or 0)
+
         def _dir_summary(direction):
             d_qs = base.filter(direction=direction)
             agg = d_qs.aggregate(
@@ -128,13 +169,16 @@ def advances(request):
                 rf=Sum('refunded_amount'),
                 bal=Sum('balance_amount', filter=Q(balance_amount__gt=0)),
             )
+            amt, wo_amt = agg['amt'] or 0, agg['wo'] or 0
+            if _range_on:
+                amt, wo_amt = _range_sums(d_qs)   # 合计与行内同口径：区间现金
             overdue = (d_qs.filter(balance_amount__gt=0,
                                    expected_writeoff_date__lt=today)
                        .aggregate(s=Sum('balance_amount'))['s'] or 0)
             return {
                 'count': d_qs.count(),
-                'advance_amount': str(agg['amt'] or 0),
-                'written_off': str(agg['wo'] or 0),
+                'advance_amount': str(amt),
+                'written_off': str(wo_amt),
                 'refunded': str(agg['rf'] or 0),
                 'balance': str(agg['bal'] or 0),
                 'overdue_balance': str(overdue),
@@ -142,6 +186,7 @@ def advances(request):
 
         summary = {
             'count': total,
+            'cash_basis': _range_on,
             '预收': _dir_summary('预收'),
             '预付': _dir_summary('预付'),
         }
@@ -149,10 +194,15 @@ def advances(request):
         perms = get_request_perms(request)
         include_wo = request.GET.get('include_writeoffs', '') in ('1', 'true')
         items = list(qs[(page - 1) * size: page * size])
-        rows = [apply_ar_view_mask(r.to_dict(today=today, include_writeoffs=include_wo),
-                                   perms, 'advance') for r in items]
+        rows = []
+        for r in items:
+            d = r.to_dict(today=today, include_writeoffs=include_wo)
+            if _range_on:
+                d['advance_amount'] = str(r.range_amount)
+                d['written_off_amount'] = str(r.range_written_off)
+            rows.append(apply_ar_view_mask(d, perms, 'advance'))
         return ok({'items': rows, 'total': total, 'page': page, 'size': size,
-                   'summary': summary})
+                   'summary': summary, 'cash_basis': _range_on})
 
     if request.method == 'POST':
         denied = _write_denied(request)
@@ -376,17 +426,23 @@ def advances_kpi(request):
                              rf=Sum('refunded_amount'),
                              bal=Sum('balance_amount', filter=Q(balance_amount__gt=0)))
         total_amt = float(agg['amt'] or 0)
-        # 金额卡=区间内「实际收付」合计（分期口径）；无区间时分期合计=记录全额，
-        # 两者一致。核销率/核销/退款/余额是记录级存量口径，仍按命中记录全额算。
+        # 金额卡=区间内「实际收付」合计（分期口径）、已核销=区间内核销合计（按核销
+        # 日期）——与列表行/筛选合计同口径；无区间时等于记录级存量。核销率/退款/余额
+        # 保持存量口径（进度与挂账是全周期概念）。
         cash_amt = total_amt
+        wo_stock = float(agg['wo'] or 0)   # 核销率恒用存量口径（全周期进度）
+        wo = wo_stock
         if sd or ed:
             inst = AdvanceInstallment.objects.filter(advance_record__in=d_qs)
+            wo_qs = AdvanceWriteoff.objects.filter(advance_record__in=d_qs)
             if sd:
                 inst = inst.filter(occur_date__gte=sd)
+                wo_qs = wo_qs.filter(writeoff_date__gte=sd)
             if ed:
                 inst = inst.filter(occur_date__lte=ed)
+                wo_qs = wo_qs.filter(writeoff_date__lte=ed)
             cash_amt = float(inst.aggregate(s=Sum('amount'))['s'] or 0)
-        wo = float(agg['wo'] or 0)
+            wo = float(wo_qs.aggregate(s=Sum('amount'))['s'] or 0)
         rf = float(agg['rf'] or 0)
         bal = float(agg['bal'] or 0)
         pending = d_qs.filter(balance_amount__gt=0).count()
@@ -398,8 +454,9 @@ def advances_kpi(request):
             'written_off': wo,
             'refunded': rf,
             'balance': bal,
-            # 核销进度按「已核销+已退款」占比:退款也消耗预付余额,只算核销会让进度虚低
-            'writeoff_rate': round((wo + rf) / total_amt * 100, 1) if total_amt else 100.0,
+            # 核销进度按「已核销+已退款」占比:退款也消耗预付余额,只算核销会让进度虚低。
+            # 恒用存量口径（wo_stock）——区间联动只改显示金额，不改全周期进度。
+            'writeoff_rate': round((wo_stock + rf) / total_amt * 100, 1) if total_amt else 100.0,
             'pending_count': pending,
             'overdue_count': overdue_qs.count(),
             'overdue_balance': overdue_amt,
@@ -495,27 +552,37 @@ def advances_by_counterparty(request):
                           overdue_balance=Sum('balance_amount', filter=Q(
                               balance_amount__gt=0, expected_writeoff_date__lt=today))))
 
-    def _cash_map(keys):
-        """区间内分期实际收付合计 → {key元组: Decimal}；未选区间返回 None（用全额）。"""
+    def _range_map(model, date_field, keys):
+        """区间内合计 → {key元组: Decimal}；未选区间返回 None（用存量/全额）。
+        model=AdvanceInstallment(分期收付) 或 AdvanceWriteoff(核销，按核销日期)。"""
         if not (sd or ed):
             return None
-        inst = AdvanceInstallment.objects.filter(advance_record__in=qs)
+        sub = model.objects.filter(advance_record__in=qs)
         if sd:
-            inst = inst.filter(occur_date__gte=sd)
+            sub = sub.filter(**{f'{date_field}__gte': sd})
         if ed:
-            inst = inst.filter(occur_date__lte=ed)
+            sub = sub.filter(**{f'{date_field}__lte': ed})
         prefixed = [f'advance_record__{k}' for k in keys]
         return {tuple(r[p] for p in prefixed): r['s']
-                for r in inst.values(*prefixed).annotate(s=Sum('amount'))}
+                for r in sub.values(*prefixed).annotate(s=Sum('amount'))}
 
-    def _row(r, cash, key, extra=None):
+    def _cash_map(keys):
+        return _range_map(AdvanceInstallment, 'occur_date', keys)
+
+    def _wo_map(keys):
+        return _range_map(AdvanceWriteoff, 'writeoff_date', keys)
+
+    def _row(r, cash, wo, key, extra=None):
         amt = r['advance_amount'] or 0
+        wo_amt = r['written_off'] or 0
         if cash is not None:
             amt = cash.get(key) or 0
+        if wo is not None:
+            wo_amt = wo.get(key) or 0
         out = {
             'count': r['count'],
             'advance_amount': str(amt),
-            'written_off': str(r['written_off'] or 0),
+            'written_off': str(wo_amt),
             'refunded': str(r['refunded'] or 0),
             'balance': str(r['balance'] or 0),
             'overdue_balance': str(r['overdue_balance'] or 0),
@@ -526,20 +593,22 @@ def advances_by_counterparty(request):
 
     # 单位级
     cp_cash = _cash_map(['counterparty'])
+    cp_wo = _wo_map(['counterparty'])
     cp_rows = {}
     for r in _stock(qs, ['counterparty']):
         cp = r['counterparty'] or '（未填单位）'
-        cp_rows[cp] = _row(r, cp_cash, (r['counterparty'],),
+        cp_rows[cp] = _row(r, cp_cash, cp_wo, (r['counterparty'],),
                            {'counterparty': cp, 'projects': [], 'project_count': 0})
     # 项目级（挂在单位下；散单=（未挂项目））
     pj_cash = _cash_map(['counterparty', 'project_id'])
+    pj_wo = _wo_map(['counterparty', 'project_id'])
     for r in (_stock(qs, ['counterparty', 'project_id', 'project__short_name'])):
         cp = r['counterparty'] or '（未填单位）'
         parent = cp_rows.get(cp)
         if parent is None:
             continue
         parent['projects'].append(_row(
-            r, pj_cash, (r['counterparty'], r['project_id']),
+            r, pj_cash, pj_wo, (r['counterparty'], r['project_id']),
             {'project_id': r['project_id'],
              'short_name': r['project__short_name'] or '（未挂项目）'}))
     for row in cp_rows.values():

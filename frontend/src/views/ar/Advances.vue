@@ -125,6 +125,7 @@ function applyPreset(k) {
 watch([() => filters.start_date, () => filters.end_date],
       () => { if (!_applyingPreset) activePreset.value = '' }, { flush: 'sync' })
 // KPI 区间提示：让「页面汇总=当前筛选汇总」这一点对用户可见
+const rangeActive = computed(() => !!(filters.start_date || filters.end_date))
 const rangeLabel = computed(() => {
   if (!filters.start_date && !filters.end_date) return '全部期间'
   return `${filters.start_date || '…'} ~ ${filters.end_date || '…'}`
@@ -953,7 +954,7 @@ onMounted(async () => {
     <div v-if="isAdvanceMode && kpi" class="kpi-row">
       <div class="kpi"><div class="kpi-k">{{ dirLabel }}笔数<span class="kpi-range">{{ rangeLabel }}</span></div><div class="kpi-v">{{ kpi.count }} 笔</div></div>
       <div v-if="show('adv_amount')" class="kpi"><div class="kpi-k">{{ dirLabel }}{{ (filters.start_date || filters.end_date) ? '实际收付' : '金额' }}<span class="kpi-range">{{ rangeLabel }}</span></div><div class="kpi-v" :title="(filters.start_date || filters.end_date) ? '区间内按分期收付日期统计的实际收付合计（非记录整笔金额）' : ''"><Amt :v="kpi.advance_amount" :fmt="fmtAmt" /></div></div>
-      <div v-if="show('adv_writeoff')" class="kpi"><div class="kpi-k">已核销</div><div class="kpi-v"><Amt :v="kpi.written_off" :fmt="fmtAmt" /><span class="kpi-sub">{{ kpi.writeoff_rate }}%</span></div></div>
+      <div v-if="show('adv_writeoff')" class="kpi"><div class="kpi-k">{{ rangeActive ? '区间核销' : '已核销' }}<span class="kpi-range">{{ rangeLabel }}</span></div><div class="kpi-v" :title="rangeActive ? '区间内按核销日期统计的核销合计' : ''"><Amt :v="kpi.written_off" :fmt="fmtAmt" /><span v-if="!rangeActive" class="kpi-sub">{{ kpi.writeoff_rate }}%</span></div></div>
       <div v-if="show('adv_writeoff') && !isReceive && Number(kpi.refunded) > 0" class="kpi"><div class="kpi-k">已退款</div><div class="kpi-v"><Amt :v="kpi.refunded" :fmt="fmtAmt" /></div></div>
       <div v-if="show('adv_writeoff')" class="kpi accent"><div class="kpi-k">未核销余额</div><div class="kpi-v"><Amt :v="kpi.balance" :fmt="fmtAmt" /></div></div>
       <div v-if="show('adv_writeoff')" class="kpi warn"><div class="kpi-k">逾期挂账</div><div class="kpi-v"><Amt :v="kpi.overdue_balance" :fmt="fmtAmt" /><span class="kpi-sub">{{ kpi.overdue_count }} 笔</span></div></div>
@@ -1014,7 +1015,7 @@ onMounted(async () => {
                 <th class="ctr">笔数</th>
                 <th class="ctr">项目数</th>
                 <th class="amt" :title="cpCashBasis ? '区间内按分期收付日期统计的实际收付合计' : '记录全额合计'">{{ dirLabel }}{{ cpCashBasis ? '实际收付' : '金额' }}</th>
-                <th v-if="show('adv_writeoff')" class="amt">已核销</th>
+                <th v-if="show('adv_writeoff')" class="amt">{{ cpCashBasis ? '区间核销' : '已核销' }}</th>
                 <th v-if="show('adv_writeoff') && !isReceive" class="amt">已退款</th>
                 <th v-if="show('adv_writeoff')" class="amt">未核销余额</th>
                 <th v-if="show('adv_writeoff')" class="amt">逾期挂账</th>
@@ -1065,8 +1066,8 @@ onMounted(async () => {
                 <th><ColumnFilter label="部门" field="delivery_dept" type="enum" :options="deptOptions" :model-value="colFilters.delivery_dept" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('delivery_dept',v)" @sort="o=>setSort('delivery_dept',o)" /></th>
                 <th title="合作入驻/业务归属年月，不参与金额统计——金额按分期实际收付日期统计">入驻年月</th>
                 <th><ColumnFilter label="款项日期" field="occur_date" type="date" :model-value="colFilters.occur_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('occur_date',v)" @sort="o=>setSort('occur_date',o)" /></th>
-                <th v-if="show('adv_amount')" class="amt"><ColumnFilter :label="`${dirLabel}金额`" field="advance_amount" type="number" :model-value="colFilters.advance_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('advance_amount',v)" @sort="o=>setSort('advance_amount',o)" /></th>
-                <th v-if="show('adv_writeoff')" class="amt"><ColumnFilter label="已核销" field="written_off_amount" type="number" :model-value="colFilters.written_off_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('written_off_amount',v)" @sort="o=>setSort('written_off_amount',o)" /></th>
+                <th v-if="show('adv_amount')" class="amt"><ColumnFilter :label="rangeActive ? `${dirLabel}实际收付` : `${dirLabel}金额`" field="advance_amount" type="number" :model-value="colFilters.advance_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('advance_amount',v)" @sort="o=>setSort('advance_amount',o)" /></th>
+                <th v-if="show('adv_writeoff')" class="amt"><ColumnFilter :label="rangeActive ? '区间核销' : '已核销'" field="written_off_amount" type="number" :model-value="colFilters.written_off_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('written_off_amount',v)" @sort="o=>setSort('written_off_amount',o)" /></th>
                 <th v-if="show('adv_writeoff')" class="amt"><ColumnFilter label="未核销余额" field="balance_amount" type="number" :model-value="colFilters.balance_amount" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('balance_amount',v)" @sort="o=>setSort('balance_amount',o)" /></th>
                 <th v-if="show('adv_writeoff')" class="ctr">核销状态</th>
                 <th v-if="show('adv_expected_date')" class="ctr"><ColumnFilter label="挂账账龄" field="expected_writeoff_date" type="date" :model-value="colFilters.expected_writeoff_date" :sort-field="sortField" :sort-order="sortOrder" @update:model-value="v=>setColFilter('expected_writeoff_date',v)" @sort="o=>setSort('expected_writeoff_date',o)" /></th>
@@ -1118,8 +1119,8 @@ onMounted(async () => {
         <div v-else-if="listSummary" class="adv-sumbar">
           <span class="sb-k">筛选合计</span>
           <span class="sb-i">{{ listSummary.count }} 笔</span>
-          <span v-if="show('adv_amount')" class="sb-i">{{ dirLabel }}金额 <b><Amt :v="listSummary.advance_amount" :fmt="fmtAmt" /></b></span>
-          <span v-if="show('adv_writeoff')" class="sb-i">已核销 <b><Amt :v="listSummary.written_off" :fmt="fmtAmt" /></b></span>
+          <span v-if="show('adv_amount')" class="sb-i">{{ dirLabel }}{{ rangeActive ? '实际收付' : '金额' }} <b><Amt :v="listSummary.advance_amount" :fmt="fmtAmt" /></b></span>
+          <span v-if="show('adv_writeoff')" class="sb-i">{{ rangeActive ? '区间核销' : '已核销' }} <b><Amt :v="listSummary.written_off" :fmt="fmtAmt" /></b></span>
           <span v-if="show('adv_writeoff') && !isReceive && Number(listSummary.refunded) > 0" class="sb-i">已退款 <b><Amt :v="listSummary.refunded" :fmt="fmtAmt" /></b></span>
           <span v-if="show('adv_writeoff')" class="sb-i">未核销余额 <b class="sb-accent"><Amt :v="listSummary.balance" :fmt="fmtAmt" /></b></span>
           <span v-if="show('adv_writeoff') && Number(listSummary.overdue_balance) > 0" class="sb-i">逾期挂账 <b class="sb-warn"><Amt :v="listSummary.overdue_balance" :fmt="fmtAmt" /></b></span>
